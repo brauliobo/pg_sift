@@ -478,7 +478,7 @@ sift_scope_start(Relation heap, Relation index, bool read_after)
 /*
  * Refresh: is a scope segment worth a rewrite for what its stamps say? The rule of sift_conn_stale for each scope whose journals vouch now: never filled (lineage 0), filled under a journal
  * a relation has since lost (REINDEX, TRUNCATE) or without the journals the scope has now, a journal cannot tell what changed, or the members changed since the stamps are
- * sift.col_connect_refresh_pct percent of the rows of the pairs relation, and for two paths of its via relation too (an upper bound of the distinct members: below that a read patches them).
+ * sift.col_scope_refresh_pct percent of the rows of the pairs relation, and for two paths of its via relation too (an upper bound of the distinct members: below that a read patches them).
  */
 struct SiftScopeStale
 {
@@ -561,7 +561,7 @@ sift_scope_stale(SiftScopeStale *st, const SiftColSegment *seg)
 	{
 		const ScopeJournals *J = &st->s[i].J;
 		SiftConnStamp stamp[SIFT_SCOPE_JOURNALS] = {{0}};
-		double		limit = st->s[i].members * sift_col_connect_refresh_pct / 100;
+		double		limit = st->s[i].members * sift_col_scope_refresh_pct / 100;
 		SiftConnKeys keys;
 		bool		many;
 

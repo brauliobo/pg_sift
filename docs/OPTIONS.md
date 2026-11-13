@@ -34,7 +34,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 102 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 20 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 41 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
@@ -1484,6 +1484,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave at 10: a read patches the rows of the changed keys from the join, so a few changed keys cost less than the rewrite. Lower it to rewrite sooner, at more WAL; a segment never filled or whose parent index was rebuilt is rewritten whatever the share.
 - **Sources:** benchmark `test:col_conn_refresh`; [COL-CONNECT](COL-CONNECT.md#refresh)
 
+#### sift.col_scope_refresh_pct
+
+`sift_col` · default · since 5.0 · default 10
+
+- **What it does:** percent of the pairs of the scope relations that changed since the stamp of the scope segments of a sift_col index from which the automatic rewrite fills the scope segments again
+- **Gain:** **not measured**
+- **Impact:** index size: **not measured**; build, merge and writes: n/a: not measured yet; other: a rewrite of the scope segments of the index (the fill reads the pairs of the scope relations once); the rewrite is within the WAL budget of sift.col_auto_merge
+- **When:** A scope index whose relations of pairs change: inserted, updated or deleted pairs.
+- **Default:** 10 — The scope entries age with the pairs; the rewrite is their whole cost.
+- **Turn off:** ALTER INDEX .. RESET (scope) for the index; SET sift.col_auto_merge = off for the automatic rewrite
+- **Upgrade from 4.3:** New in 5.0.
+- **Advice:** Leave at 10: a read patches the members whose pairs changed from the join, so a few changed members cost less than the rewrite of the scope segments. Lower it to rewrite sooner, at more WAL; scope segments never filled, or stamped under a journal a relation has since lost, are rewritten whatever the share. sift.col_connect_refresh_pct is the same rule for connected indexes.
+- **Sources:** benchmark `test:col_scope_journal`; [COL-SCOPE](COL-SCOPE.md#what-it-costs)
+
 ### opt-in
 
 #### sift(analyzer)
@@ -2751,7 +2765,7 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_max_multiplicity`, `sift.col_value_store`, `sift_col(scope)`, `sift_col(projection)`, `sift.table_key_order`.
+No default changed since 4.3; new: `sift.col_scope_refresh_pct`, `sift.agg_scope`, `sift.scope_max_multiplicity`, `sift.col_value_store`, `sift_col(scope)`, `sift_col(projection)`, `sift.table_key_order`.
 
 | Option | 4.3 | 5.0 | Column format | What a 4.3 user gets after the update |
 |---|---|---|---|---|
@@ -2770,6 +2784,7 @@ No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_max_multiplicit
 | `sift.col_auto_connect` | on | on |  | An index built before 4.3 is connected by its next REINDEX if the foreign keys qualify; a restore of a dump keeps what the dump says. |
 | `sift.col_value_store` | new | on |  | No existing index changes: a member that shares keeps the store until its REINDEX (with the setting off, the REINDEX takes its strings back and the last member takes the store with it). |
 | `sift.col_connect_refresh_pct` | 10 | 10 |  | New in 4.3. |
+| `sift.col_scope_refresh_pct` | new | 10 |  | New in 5.0. |
 | `sift_col(scope)` | new | '' | minor 45, unreadable by 4.3 | A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 5.0 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the segments. |
 | `sift.agg_scope` | new | on |  | New in 5.0. |
 | `sift.scope_max_multiplicity` | new | 3 |  | New in 5.0. |

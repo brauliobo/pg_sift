@@ -60,6 +60,7 @@ maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 	SiftConnStale *conn = sift_conn_stale_begin(index, cx);
 	SiftScopeStale *scope = sift_scope_stale_begin(index, cx);
 	bool	   *left = sift_vstore_left_leaves(index, sift_col_rel(index)->schema);
+	bool		stale_conn;
 
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
@@ -69,7 +70,9 @@ maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 			v->span[v->n] = maint_seg_spans(v->seg[v->n]);
 			v->over[v->n] = !maint_is_partition(&v->imm[v->n]);
 			v->old_epoch[v->n] = sift_cseg_names_old_epoch(v->seg[v->n], left);
-			v->stale[v->n] = v->old_epoch[v->n] || (conn != NULL && sift_conn_stale(conn, v->seg[v->n])) || (scope != NULL && sift_scope_stale(scope, v->seg[v->n]));
+			stale_conn = conn != NULL && sift_conn_stale(conn, v->seg[v->n]);
+			v->conn_stale |= stale_conn;
+			v->stale[v->n] = v->old_epoch[v->n] || stale_conn || (scope != NULL && sift_scope_stale(scope, v->seg[v->n]));
 			v->n++;
 		}
 	for (int i = 0; i < v->n; i++)

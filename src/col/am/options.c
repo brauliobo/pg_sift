@@ -284,6 +284,12 @@ sift_col_init(void)
 							"A segment that was never filled (the first child of a parent, whose journal starts after its scan) or whose parent index was rebuilt is rewritten whatever the share, "
 							"within the rules of sift.col_auto_merge (the WAL budget included).",
 							&sift_col_connect_refresh_pct, 10, 1, 100, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_scope_refresh_pct",
+							"Percent of the pairs of the scope relations that changed since the stamp of the scope segments of a sift_col index from which the automatic rewrite fills the scope segments again.",
+							"A read patches the members whose pairs changed from the join, so a few changed members cost less than the rewrite of the scope segments. "
+							"Scope segments never filled, or stamped under a journal a relation has since lost, are rewritten whatever the share, within the rules of sift.col_auto_merge (the WAL budget included). "
+							"The reason in sift.col_maintenance_due is 'stale scope'; sift.col_connect_refresh_pct is the same rule for the connected indexes.",
+							&sift_col_scope_refresh_pct, 10, 1, 100, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_scope",
 							 "EXPERIMENTAL: a scan of an index with the option scope answers the rows of a scope key (a join to its scope relation, or IN, EXISTS over it, by that key) from the scope segments of the index.",
 							 "Off: the planner does not recognise the scope forms, and a scan that carries one reads the entity path (the join as written).",

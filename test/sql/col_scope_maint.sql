@@ -122,7 +122,7 @@ SELECT sift.col_merge('events_col', true) >= 0 AS merged_after_vacuum;
 SELECT * FROM state('merged after vacuum');
 SELECT sift.col_verify('events_col', true);
 
--- a rewrite fills the entries again when they are stale (the journal says that members changed since their stamp: the edit below changes half of them, over sift.col_connect_refresh_pct of
+-- a rewrite fills the entries again when they are stale (the journal says that members changed since their stamp: the edit below changes half of them, over sift.col_scope_refresh_pct of
 -- the pairs) and when an entity segment lost its flag (a merge of a covered segment with one that was not): the read falls back meanwhile, exact, and the rewrite covers
 SELECT sift._test_col_scope_flag('events_col', false);
 SELECT state, covered, same, stored, why FROM state('flag lost');

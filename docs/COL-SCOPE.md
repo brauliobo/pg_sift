@@ -207,7 +207,7 @@ the scan cannot do: the statement keeps the normal plan (`sift.explain_refusals`
 
 `CREATE INDEX` and `REINDEX` say it for each scope: `NOTICE: scope "tenant_id": 93,340 entries for 100,000 rows (0.93 per row); the index grows from 1.4 MB to 2.3 MB (+67%)` (the NOTICE counts the bytes of the
 segments, not the file, and says the growth from 1 MB of entities). The scope segments are written with the entity segments by the build, the parallel build, a promotion and a merge, in the same switch of the directory; a rewrite fills
-them again when the journal says that many members changed (`sift.col_connect_refresh_pct`), when the reads that pay for the changed members cost more than the rewrite (a thousand
+them again when the journal says that many members changed (`sift.col_scope_refresh_pct`, percent of the pairs, 10; reason `stale scope` of `sift.col_maintenance_due`), when the reads that pay for the changed members cost more than the rewrite (a thousand
 reads against the 1,500 instructions an entity row and 680 a column of an entry the rewrite takes: 20 members of a table of 60,000 rows are refreshed, 1 is not) or an entity segment lost its flag. The relation of pairs pays the journal index: a 32-byte record for each pair an UPDATE or DELETE ends and each pair inserted.
 
 The fixture of this page (100,000 events of integer id, member, kind and value and a `timestamptz` over a year; 5,000 members, 4,667 of them in one of 40 tenants, so 0.93 entries a row; a 5-column index with the default choices; one backend, no parallel
@@ -510,7 +510,7 @@ the next `REINDEX` of the scope index, which starts it before it reads and stamp
 a member depend on no other row (the three lists above), a row of one of them that changed names the member, or the group whose members are looked up now, in a journal; a member that left a group is in
 J3. The read is the one of one path: the units of the keys less the changed members, plus the entity rows of those that have a pair with a key now (the patch), and the write buffer's
 members the same way. The reader's cap bounds the changed members (a group with more members than the cap is `too many changed keys`: the entity rows are read; [the price](#what-the-planner-recognises)), and the refresh of the maintenance
-counts them against `sift.col_connect_refresh_pct` as it counts those of one path, the members of a changed group included.
+counts them against `sift.col_scope_refresh_pct` as it counts those of one path, the members of a changed group included.
 
 **Cost.** 100,000 facts, 2,000 entities, 200 groups, 20 accounts, 3,321 pairs; a read of one key (the account), instructions:u of the backend, cold and warm, in millions:
 
@@ -523,7 +523,7 @@ The changes cost 6.5 M instructions for one group and 20.5 M for 100 groups over
 
 **Column format minor 49.** A segment of an index that declares a scope of two paths holds three stamps and is written as column format minor 49 (docs/FORMATS.md); an index whose scopes all have one path
 keeps writing minor 45 with one stamp for each scope. A library before 5.0, and a 5.0 build before minor 49, refuse the index (`Use a newer pg_sift`, `REINDEX`): `CREATE INDEX` says so in a `NOTICE`. A scope
-declared with another number of paths than its segments were written with (`ALTER INDEX .. SET (scope = ..)` from one to two paths or back) is not read as stored (`unfilled`, the maintenance says `stale connection`)
+declared with another number of paths than its segments were written with (`ALTER INDEX .. SET (scope = ..)` from one to two paths or back) is not read as stored (`unfilled`, the maintenance says `stale scope`)
 until `REINDEX`.
 
 **The planner and the legs.** The scan takes the conjunct from the join as an application writes it (the recognition below), as for one path. The planner reads the paths from `sift_scope_legs(index, scope, legs[2])` (2 legs for this declaration, the second one joined: `via_rel`, `via_join`, `via_member`, `via_btree`, `via_pred`) and recognises the `UNION` of the two

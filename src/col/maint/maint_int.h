@@ -51,7 +51,8 @@ typedef struct RewriteView
 	SiftColSegment *seg[SIFT_MAX_SEGMENTS];
 	SbSpans		span[SIFT_MAX_SEGMENTS];
 	bool		over[SIFT_MAX_SEGMENTS];
-	bool		stale[SIFT_MAX_SEGMENTS];	/* a segment of a connected index whose found flags a rewrite should fill again (sift_conn_stale) */
+	bool		stale[SIFT_MAX_SEGMENTS];	/* a segment of a connected or scope index whose found flags or scope entries a rewrite should fill again (sift_conn_stale, sift_scope_stale) */
+	bool		conn_stale;					/* ... of them one by its connection: the reason is "stale connection", else "stale scope" */
 	bool		old_epoch[SIFT_MAX_SEGMENTS];	/* a segment that names an old epoch of a shared value store: its rewrite moves the strings to the current one (col/vstore/vstore_gc.c) */
 	bool		kover[SIFT_MAX_SEGMENTS];	/* a partition-sized segment of a key-cut index whose key range overlaps another one's: it is no partition of the key */
 	int			nkover;

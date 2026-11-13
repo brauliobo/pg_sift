@@ -265,6 +265,10 @@ Three features write column formats that 4.3 and older refuse (`sift.upgrade_che
 
 `sift.col_value_store = off` is the narrow switch: it stops only the store. `sift.col_format_minor = 14` stops the store too, and with it change tracking (a build says so in a `NOTICE` and its reads check the heap) and every structure of minors 15 and above, so it is for a release before 4.3 only.
 
+## Names of the scope index's maintenance (5.0)
+
+`sift.col_scope_refresh_pct` (default 10) is new and is the only setting of the refresh of scope segments: `sift.col_connect_refresh_pct` governs the connected indexes of 4.3, as before, and no longer a scope (4.3 had none, so no stored value changes meaning). `sift.col_maintenance_due` reports `stale scope` for a scope index and keeps `stale connection` for a connected one; a monitor that matches the reason text of a scope index of the 5.0 development builds matches the new one.
+
 ## What 5.0 removes
 
 **`sift.col_auto_merge_dirty_pct` is removed.** It was the percent of the units of a `sift_col` index holding a dead row above which the automatic rewrite ran (30). Under churn every unit holds one, so the rule never told a rewrite that pays from one that does not; a unit with a dead row is now the reason and the pace is the one that stayed: `sift.col_auto_merge_wal_pct` (which the reads that have cost half of the rewrite skip) and the snapshots that hold blocks. An index with dead rows in under 30% of its units, which waited for those reads, is rewritten when the budget allows, as one with more was. The index WAL of the write benchmark does not change.

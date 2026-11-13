@@ -253,6 +253,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 				key_overlap;
 	OverlayEv	ev;
 	bool		stale = false,
+				conn_stale,
 				old_epoch = false;
 
 	maint_overlay_asked = false;
@@ -263,6 +264,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	partitioned = maint_part_kb > 0;
 	v = maint_view_open(index, snap, cx);
 	nseg = v->n;
+	conn_stale = v->conn_stale;
 	key_overlap = v->nkover;
 	build_peers = peers_overlap(v) || key_runs(v);
 	overlay_due = maint_overlay_set(index, v, take, &ev) && overlay_worth(index, &ev);
@@ -325,8 +327,10 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	}
 	else if (old_epoch)
 		why = "value store epoch";
-	else if (stale || maint_scope_refill_due(index))
+	else if (conn_stale)
 		why = "stale connection";
+	else if (stale || maint_scope_refill_due(index))
+		why = "stale scope";
 	else if (sift_col_rel(index)->nscope > 0 && maint_scope_merge_due(index, maint_after_build))
 		why = "scope segments";
 	buffer_due = buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered);

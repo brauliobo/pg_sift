@@ -39,6 +39,7 @@
 
 bool		sift_agg_scope = true;
 double		sift_scope_max_multiplicity = 3.0;
+int			sift_col_scope_refresh_pct = 10;
 #ifdef SIFT_TESTING
 bool		sift_test_scope_patch = false;
 #endif

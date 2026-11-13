@@ -148,7 +148,7 @@ extern SiftConnWhy sift_scope_changed(Relation index, int scope, const SiftConnS
 
 /*
  * Refresh: is a scope segment of the index worth a rewrite for what its stamps say (sift_conn_stale for the scopes)? NULL from begin: the index declares no scope. The reason in
- * sift.col_maintenance_due is "stale connection".
+ * sift.col_maintenance_due is "stale scope".
  */
 typedef struct SiftScopeStale SiftScopeStale;
 extern SiftScopeStale *sift_scope_stale_begin(Relation index, MemoryContext mcxt);
@@ -487,6 +487,7 @@ extern PGDLLIMPORT bool sift_test_scope_patch;	/* sift.test_scope_patch: a read 
 #define SIFT_TEST_SCOPE_PATCH false
 #endif
 extern PGDLLIMPORT double sift_scope_max_multiplicity;
+extern PGDLLIMPORT int sift_col_scope_refresh_pct;
 
 /* Refuses a scope of more than sift.scope_max_multiplicity entries a row; estimated: the figures are those of a sample (scope_sample.c), before and added are the bytes of the index and of the scope segments, 0 before the build */
 extern void sift_scope_refuse(const char *what, uint64 entries, uint64 rows, bool estimated, double before, double added);
