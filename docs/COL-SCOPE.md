@@ -480,7 +480,7 @@ is read. What else a statement says keeps the join as written, and `sift.explain
 
 **What stays impossible.** A relation that is a view, a CTE or a function (the three are heap tables with a btree on their two columns, unique or not); a condition on a third table (a group's own soft delete: the memberships of a deleted group
 stay pairs; put the condition on the memberships or use the copy path of [INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view)); a predicate that depends on time (`now()` is refused in an index predicate: sweep it
-into a column, see above); a partitioned table among the three; text or uuid members and keys in a scope of two paths; deny rows (a row that removes a pair another path gives); three or more hops, or more than one joined path.
+into a column, see above); a partitioned table among the three; deny rows (a row that removes a pair another path gives); three or more hops, or more than one joined path.
 
 ### Key types
 
@@ -535,16 +535,45 @@ What it costs, against the integer member on the same data (300,000 facts, 3,000
 
 The text member's index is 11% larger (each row of a scope unit holds its member string, where an integer member holds the integer). With changed pairs a string member costs 1.3 times the instructions of the integer member (the leave-out hashes the strings of every unit read, and the patch reads the member leaf of every entity unit), with none the read is the same. The units are priced against the join as written: at this size the planner's price of the patch is above the join's, and the figures of the scope rows are those of a forced read (`sift.agg_force`), as for an integer member. The join a node holds runs the lookup join of the sift aggregate node, which costs 311 ms for the five uuid keys here with the scope index or without it (`sift.agg_scope = off`), against 19 ms of the plain hash join that the planner chooses when `sift.agg_force` is not set: the figures of the join rows are those of the forced node.
 
+### Two paths with text, varchar or uuid keys and members
+
+A scope of two paths (a direct grant and a grant on a group) takes a `text`, `varchar` or `uuid` scope key and member too, with the same refusals as one path. The scope key of the direct pairs and of the grants of groups are of one type, and the member of the direct pairs and of the memberships
+are of one type (a declaration where they differ is refused with both columns and their types); the group column that joins the second path to the memberships stays an `int2`, `int4` or `int8`. The key column is coded in the value store of the pairs relation (the units are cut by the code, as for one path), the
+members of the three relations are coded by one map of the statement, and the three journals record a member as the journal of one path does (the word of its bytes) and a group by its integer. The paths of a read
+are the integer scope's: the stored units less the members the journals say changed (a member that was reached by the other path is read again from the entity rows), the entity rows of those members read by value, the write buffer by the pairs of its member, and the dedupe of a member that two keys reach.
+A colliding word leaves out and patches more members, never fewer or different ones: `col_scope_texttwohop_collide` and the fuzz leg `--two-paths --hash-bits 3` run it with the words cut to 3 bits. Tests: `col_scope_texttwohop` (a text key and member, a varchar fact column, a uuid key and member, an integer key with a text member, in 18 states of the
+three relations and of the facts, then vacuum, rebuild, promotion and merge; the rows of 13 forms are those of the join as written and of the normal plan in every one), `col_scope_textkey_refusals`, and the fuzz (32 seeds, 16 with collisions, in `test/t/col_scope_textkey_fuzz.sh`).
+
+What it costs, against the integer scope of the same data (300,000 facts, 3,000 members, 100 groups, 200 keys, 13,470 pairs, a direct grant to a member, a grant on a group and its memberships, three journal indexes, one `sift_col` index with four columns, PostgreSQL 18, shared buffers 128 MB, one backend; user-space instructions per statement, mean of 20 runs; `sift.scope_max_multiplicity = 10` for the build of all three):
+
+| | int | text | uuid |
+|---|---|---|---|
+| build (`CREATE INDEX`), s | 1.99 | 1.82 | 2.10 |
+| WAL of the build, MB | 6.0 | 6.6 | 5.6 |
+| index file, MB | 6.18 | 6.66 | 5.65 |
+| one key, thousand instructions (warm blocks hit / read; cold hit / read) | 1,730 (88 / 0; 590 / 37) | 1,445 (59 / 0; 653 / 45) | 1,466 (54 / 0; 732 / 37) |
+| one key and a month, thousand instructions | 2,040 | 1,725 | 1,746 |
+| every key grouped by the key, thousand instructions | 7,033 | 7,991 | 7,776 |
+| five keys counted once, thousand instructions | 4,997 | 8,983 | 8,563 |
+| one key with 375 changed pairs, thousand instructions (ms) | 90,299 (21.0) | 118,136 (17.3) | 118,313 (19.4) |
+| five keys counted once with 375 changed pairs | 91,281 (19.8) | 116,194 (14.5) | 116,432 (18.2) |
+| one key with a changed group grant and 40 changed memberships on top | 101,412 (14.3) | 131,747 (17.2) | 132,058 (20.1) |
+| the same and 3,000 facts in the write buffer | 100,461 (15.8) | 128,786 (20.1) | 129,101 (20.5) |
+| the same, the join as written (`sift.agg_scope = off`) | 7,818 (2.6) | 11,933 (2.0) | 324,161 (39.5) |
+
+Unchanged, a string key or member reads as the integer one (the five keys are read from the pairs by a scan of their btree, which translates each pair, as for one path); with changed pairs it costs 1.3 times the instructions, the figure of one path. The figures of the reads with changed pairs are those of a forced read
+(`sift.agg_force`): the join as written costs less at this size for any type and the planner prices the patch against it, as for an integer scope. The uuid join is the slow one of the aggregate node's lookup join (see [Member types](#member-types)).
+
 ### Limits
 
 EXPERIMENTAL; a library before 5.0 refuses the index. What a scope does not do in 5.0:
 
-- **Declaration.** The member key and the columns of the relations are `int2`, `int4` or `int8`, or `text`, `varchar` or `uuid` of a deterministic collation in a scope of one path (a coded key or member: see
-  [Key types](#key-types) and [Member types](#member-types); `char(n)`, `citext`, a domain and a nondeterministic collation are refused with their reason, and the member of the pairs and the column of the index are of one kind). A relation is a heap table that is not partitioned, not a view and not the indexed
+- **Declaration.** The member key and the columns of the relations are `int2`, `int4` or `int8`, or `text`, `varchar` or `uuid` of a deterministic collation, in a scope of one path or of two (a coded key or member: see
+  [Key types](#key-types), [Member types](#member-types) and [Two paths with text or uuid](#two-paths-with-text-varchar-or-uuid-keys-and-members); the group column of a scope of two paths stays an integer; `char(n)`, `citext`, a domain and a nondeterministic collation are refused with their reason, and the member of the pairs and the column of the index are of one kind). A relation is a heap table that is not partitioned, not a view and not the indexed
   table; a scope of one path has both columns NOT NULL. At most 4 scopes and 8 connections on an index, and a scan reads one scope. At most one joined path and no third hop; no deny rows; no condition on a third table and no predicate that depends on time.
 - **Forms.** A statement that is not in the table of recognised forms keeps the join (`sift.explain_why`, arm `scope`): among them a join or a read for each pair over the pairs of a non-unique btree, a join to a table of keys that may hold a key twice,
   a key in an expression, a range of keys, `ROLLUP` / `CUBE` / grouping sets over the key. A top-N cannot take the patch or the delta of a changed pair (`top-n, changed pairs`): the join answers.
-- **Text, varchar and uuid members.** A patch reads the member leaf of every entity unit (no point directory, no zone), and the leave-out of the units hashes the strings of every unit it reads: with changed pairs a read costs 1.3 times an integer member's (table in [Member types](#member-types)), and the planner may keep the join for it. A column of another type, and a scope of two paths with a string key or member, are refused.
+- **Text, varchar and uuid members.** A patch reads the member leaf of every entity unit (no point directory, no zone), and the leave-out of the units hashes the strings of every unit it reads: with changed pairs a read costs 1.3 times an integer member's (table in [Member types](#member-types)), and the planner may keep the join for it. A column of another type is refused. In a scope of two paths a read of one key with any changed pair leaves out and patches the changed members of every key, not of the key read (the records of a string key carry no tag), which an integer key does not.
 - **No parallel workers.** A scope read is decided once, by the leader (test `col_scope_read` launches none); the join the node falls back to runs serial in the leader. The builds do run in parallel.
 - **`CREATE INDEX CONCURRENTLY`** starts the journal at the end of its build, so the scope segments carry no stamp and the reads say `unfilled` until a `REINDEX` of the scope index or the rewrite the maintenance makes.
 - **Snapshots.** A `SERIALIZABLE` or non-MVCC snapshot always takes the join (`snapshot`).
