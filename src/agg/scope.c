@@ -27,6 +27,7 @@
 #include "col/scope.h"
 #include "col/seg.h"
 #include "agg/agg_int.h"
+#include "agg/cost/model.h"
 #include "agg/lookcol_int.h"
 
 static bool test_scope_join;
@@ -380,6 +381,13 @@ changed_limit(const SiftAggScope *sc, const SiftScopeCounts *c)
 	return (uint32) Min(Max(room, 0.0) / sift_scope_member_instr(c), (double) PG_UINT32_MAX);
 }
 
+/* what the join as written costs for the keys the entries of a read stand for */
+static double
+join_price(const SiftAggScope *sc, const SiftScopeCounts *c)
+{
+	return alt_price(sc, alt_keys(sc, c->entries));
+}
+
 /* the reason EXPLAIN gives for the join the node runs */
 static const char *
 join_cheaper_why(const SiftAggScope *sc)
@@ -395,11 +403,12 @@ join_cheaper_why(const SiftAggScope *sc)
  * whatever they cost says so (sift.test_scope_patch).
  */
 static void
-run_join(AggExec *ex, const char *why)
+run_join(AggExec *ex, const char *why, double price)
 {
 	const SiftAggScope *sc = ex->spec->scope;
 
 	ex->scope_why = why;
+	ex->scope_price = price;
 	SIFT_INVARIANT(sc->alt->nkeys == ex->spec->nkeys && sc->alt->naggs == ex->spec->naggs && sc->alt->nparts == 0, "sift: the join a scope read holds has the groups of the node's own");
 	ex->spec = sc->alt;
 }
@@ -424,6 +433,7 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	{
 		ex->scope_rd = NULL;
 		ex->scope_why = NULL;
+		ex->scope_price = 0.0;
 		ex->delta_units = 0;
 	}
 	if (sc == NULL)
@@ -432,7 +442,7 @@ scope_open(AggExec *ex, Snapshot snapshot)
 		return ex->scope_why == NULL;
 	if (sc->alt != NULL && test_scope_join)
 	{
-		run_join(ex, "sift.test_scope_join");
+		run_join(ex, "sift.test_scope_join", 0.0);
 		return false;
 	}
 	leaves = read_leaves(ex->spec, sift_colsrc_layout(ex->index), &nleaves);
@@ -441,7 +451,7 @@ scope_open(AggExec *ex, Snapshot snapshot)
 		c = unit_counts(ex, snapshot);
 		if (join_cheaper(sc, &c))
 		{
-			run_join(ex, join_cheaper_why(sc));
+			run_join(ex, join_cheaper_why(sc), join_price(sc, &c));
 			return false;
 		}
 		max_changed = changed_limit(sc, &c);
@@ -454,25 +464,27 @@ scope_open(AggExec *ex, Snapshot snapshot)
 		SiftScopeCounts e = c;
 
 		read_counts(sc, &e, rd);
-		if (sift_scope_units_price(&e) > alt_price(sc, alt_keys(sc, e.entries)) * SCOPE_ESTIMATE_MARGIN)
+		if (sift_scope_units_price(&e) > join_price(sc, &e) * SCOPE_ESTIMATE_MARGIN)
 		{
-			run_join(ex, join_cheaper_why(sc));
+			run_join(ex, join_cheaper_why(sc), join_price(sc, &e));
 			return false;
 		}
 	}
 	sift_scope_read_pairs(rd);
-	if (sc->alt != NULL && rd->why != NULL)
-	{
-		run_join(ex, rd->why);
-		return false;
-	}
 	if (priced)
 		read_counts(sc, &c, rd);
-	if (priced && join_cheaper(sc, &c))
+	if (sc->alt != NULL && rd->why != NULL)
 	{
-		run_join(ex, join_cheaper_why(sc));
+		run_join(ex, rd->why, priced ? join_price(sc, &c) : 0.0);
 		return false;
 	}
+	if (priced && join_cheaper(sc, &c))
+	{
+		run_join(ex, join_cheaper_why(sc), join_price(sc, &c));
+		return false;
+	}
+	/* what the workers share: the units, not the patch and the delta of the changed members, which the leader reads */
+	ex->scope_price = priced ? sift_scope_units_price(&c) - sift_scope_changed_price(&c) : 0.0;
 	/* a patch and a delta that cost less than the pricing do not call for it; with the join as written to compare with, join_cheaper has priced them */
 	if (rd->why == NULL && sc->alt == NULL && patch_extra(rd) > SIFT_SCOPE_PRICING_INSTR && (sc->once || sc->nkeys == 1) && !sift_test_scope_patch && patch_dearer(ex, snapshot))
 		rd->why = "patch dearer than the entity path";
@@ -794,4 +806,16 @@ scope_share_adopt(AggExec *ex)
 		SIFT_INVARIANT(code == -1 - i, "sift: a worker's map of the scope members has other codes than its leader's");
 		p += sizeof(len) + len;
 	}
+}
+
+/* the instructions a millisecond of the backend runs in a read of the scope units (the real-shaped lab: 34.7 million in 6.0 ms, 154.8 in 20.8) */
+#define SCOPE_INSTR_PER_MS	6.0e6
+
+/* Do the workers pay for a read the model prices at ex->scope_price instructions: the participants share it, and starting them costs what the planner charges for it (agg/cost/model.h) */
+bool
+scope_workers_pay(const AggExec *ex)
+{
+	int			nw = ex->spec->nworkers;
+
+	return ex->scope_price / SCOPE_INSTR_PER_MS * nw / (nw + 1) > AGG_START_BASE_MS + AGG_START_WORKER_MS * nw;
 }

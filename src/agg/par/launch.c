@@ -49,12 +49,17 @@ select_stmt(AggExec *ex, Plan *tree)
  */
 int			sift_agg_par_min_rows = 80000;
 
-/* a scope read has its keys when it runs (a generic plan prices the average key), so its rows are counted for any plan */
+/*
+ * A scope read has its keys when it runs (a generic plan prices the average key): the node knows what the read costs, in instructions, and keeps one process where the workers do not pay for their start;
+ * a read it has no price for counts the rows the units leave, as the scans of lookups do. sift.agg_par_min_rows = 0 asks for the workers whatever they save.
+ */
 static bool
 par_scan_small(AggExec *ex)
 {
 	SkipMap    *m;
 
+	if (ex->scope_price > 0)
+		return sift_agg_par_min_rows > 0 && !scope_workers_pay(ex);
 	if (ex->spec->wide_unit_rows <= 0 && !(ex->unpacked != NULL && ex->unpacked->scope != NULL))
 		return false;
 	m = skip_map(ex);

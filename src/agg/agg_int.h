@@ -277,6 +277,7 @@ typedef struct AggExec
 	const char *scope_why;		/* ... or why it reads the entity rows of the members the scope relation lists (the word EXPLAIN prints) */
 	uint64		scope_members;	/* ... and how many members it listed */
 	int			scope_preds;	/* the conjuncts scope_filter added to the spec */
+	double		scope_price;	/* what the model prices the read the node runs at, in instructions: the units (less the changed members) or the join as written; 0: not priced (scope_open) */
 	int64	   *scope_listed;	/* the members the entity rows are read for (scope_filter), which the workers get as listed */
 	uint32		delta_units;	/* the last superblocks of the source are the units of the delta of the scope read, which only the leader holds: the items of the workers end before them */
 	const void *scope_share;	/* a worker: what its leader decided for the scope conjunct (scope_share_build); the leader has none */
