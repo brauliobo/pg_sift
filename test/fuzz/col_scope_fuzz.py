@@ -25,7 +25,7 @@ insert or a delete of the last rows. The final entries of the scope units must b
 (a join, a read for each pair or by the key) run as written, the join of the rows, and say the multiset reason.
 
 The journal index of the pairs is made first and the scope index is made again (REINDEX) after its first build, which starts the journal. 'planner' (probed: the SQL forms IN and EXISTS have a
-scope conjunct; the planner's recognition of the join forms is not in every tree) asserts that, and half of the seeds declare a cols(..) subset drawn per seed from the columns of the index (with or without the primary key,
+scope conjunct; the planner's recognition of the join forms is not in every tree, nor on a server that plans the semi join of one key over a unique pair as an inner join) asserts that, and half of the seeds declare a cols(..) subset drawn per seed from the columns of the index (with or without the primary key,
 the member key and the time column; a read of a column the scope units do not keep must fall back with the column reason).
 
 The union family (a third of the seeds, those with seed % 3 == 0; --family union makes every seed one, --family pairs none) is the scope of two paths: the pairs are the distinct union of the direct
@@ -161,7 +161,17 @@ INSERT INTO sfp SELECT i, 1 + i % 40, TIMESTAMP '2026-01-01' + i * interval '1 h
 CREATE INDEX sfp_i ON sfp USING sift_col (id, m, t, v) WITH (scope = 'k: m -> sfp_s(m, k)');
 REINDEX INDEX sfp_i;
 VACUUM (FREEZE, ANALYZE) sfp, sfp_s;
-SELECT 'planner', engaged FROM scope_run('SELECT count(*) FROM sfp e WHERE e.m IN (SELECT m FROM sfp_s WHERE k = 2)', 'SELECT 1');
+CREATE OR REPLACE FUNCTION sf_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; p text := '';
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	SET LOCAL sift.agg_scope = on;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP p := p || l || chr(10); END LOOP;
+	RETURN p;
+END $$;
+-- a server that plans the semi join of one key over a unique pair (PostgreSQL 17.12, 18.7 and later) as an inner join leaves the scope read or the join of the pairs to the cost: no form is wanted engaged
+SELECT 'planner', engaged AND sf_plan('SELECT count(*) FROM sfp e WHERE e.m IN (SELECT m FROM sfp_s WHERE k = 2)') ~ 'Scope Semantics: once'
+FROM scope_run('SELECT count(*) FROM sfp e WHERE e.m IN (SELECT m FROM sfp_s WHERE k = 2)', 'SELECT 1');
 """
 
 # the number of tenants of entity m, by the distribution of the seed (h: a hash of m in 0..999)
