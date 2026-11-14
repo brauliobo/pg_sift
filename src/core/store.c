@@ -382,6 +382,18 @@ sift_xid_unassignable(void)
 	return IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny());
 }
 
+bool
+sift_catalog_write_ok(void)
+{
+	return !IsInParallelMode() && !(MyProc->statusFlags & PROC_IN_VACUUM);
+}
+
+void
+sift_catalog_write_guard(const char *what)
+{
+	SIFT_INVARIANT(sift_catalog_write_ok(), "%s writes a catalog row in a VACUUM or a parallel operation", what);
+}
+
 /* Physical directory changes survive transaction abort; publish their cache invalidation before a relation lock can be released. */
 void
 invalidate_mapping(Relation index)
