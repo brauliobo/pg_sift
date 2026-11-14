@@ -10,9 +10,11 @@
 
 #include "agg/leaf/int.h"
 
+/* A column of a domain type is stored, and read, as its base type: the leaf's */
 int
 scalar_leaf(AggCtx *c, int att, List *path, Oid typid)
 {
+	typid = getBaseType(typid);
 	for (int i = 0; i < c->lay->nleaves; i++)
 	{
 		SiftSrcLeaf *l = leaf_of(c, i);

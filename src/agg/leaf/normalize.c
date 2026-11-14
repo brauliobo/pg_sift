@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
@@ -127,6 +128,23 @@ jsonb_int_mutator(Node *n, AggCtx *c)
 		}
 	}
 	return n == NULL ? NULL : expression_tree_mutator(n, jsonb_int_mutator, c);
+}
+
+/* A column of a domain type is the base type's value (the leaf is stored as it): the Var is read as its base type, as PostgreSQL's own operators read it */
+static Node *
+domain_mutator(Node *n, void *arg)
+{
+	Var		   *v = (Var *) n;
+	int32		typmod;
+	Oid			base;
+
+	if (n == NULL)
+		return NULL;
+	if (!IsA(n, Var) || get_typtype(v->vartype) != TYPTYPE_DOMAIN)
+		return expression_tree_mutator(n, domain_mutator, arg);
+	typmod = v->vartypmod;
+	base = getBaseTypeAndTypmod(v->vartype, &typmod);
+	return (Node *) makeRelabelType((Expr *) copyObject(v), base, typmod, v->varcollid, COERCE_IMPLICIT_CAST);
 }
 
 /* the RTE_GROUP of the grouping step of the query, 0 when there is none (PostgreSQL before 18 has none) */
@@ -288,5 +306,5 @@ normalize_expr(AggCtx *c, Node *n)
 	/* the group expressions of grouping sets are marked as nulled by the grouping step (Vars with the RTE_GROUP in varnullingrels) */
 	if (group_rti(c) > 0)
 		n = remove_nulling_relids(n, bms_make_singleton(group_rti(c)), NULL);
-	return jsonb_int_mutator(nulltest_mutator(exists_mutator(n, c), c), c);
+	return jsonb_int_mutator(nulltest_mutator(exists_mutator(domain_mutator(n, NULL), c), c), c);
 }

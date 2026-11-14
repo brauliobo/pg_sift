@@ -120,14 +120,14 @@ typedef enum NumericForm
 } NumericForm;
 
 static NumericForm
-numeric_form(Form_pg_attribute att, uint8 *scale)
+numeric_form(int32 typmod, uint8 *scale)
 {
-	int32		tm = att->atttypmod - VARHDRSZ;
+	int32		tm = typmod - VARHDRSZ;
 	int			prec = (tm >> 16) & 0xFFFF,
 				s = ((tm & 0x7FF) ^ 1024) - 1024;
 
 	*scale = 0;
-	if (att->atttypmod < VARHDRSZ || s < 0 || s > SIFT_COL_MAX_WIDE_SCALE || prec > SIFT_COL_MAX_WIDE_SCALE)
+	if (typmod < VARHDRSZ || s < 0 || s > SIFT_COL_MAX_WIDE_SCALE || prec > SIFT_COL_MAX_WIDE_SCALE)
 		return NUMERIC_IMAGE;
 	*scale = s;
 	return prec <= SIFT_COL_MAX_SCALE && s <= SIFT_COL_MAX_SCALE ? NUMERIC_NARROW : NUMERIC_WIDE;
@@ -137,9 +137,11 @@ numeric_form(Form_pg_attribute att, uint8 *scale)
 bool
 sift_col_numeric_scale(Form_pg_attribute att, uint8 *scale)
 {
+	int32		typmod = att->atttypmod;
 	uint8		s;
 
-	if (numeric_form(att, &s) != NUMERIC_NARROW)
+	(void) getBaseTypeAndTypmod(att->atttypid, &typmod);
+	if (numeric_form(typmod, &s) != NUMERIC_NARROW)
 		return false;
 	*scale = s;
 	return true;
@@ -190,7 +192,8 @@ sift_col_is_array_type(Oid typid)
 int
 sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, int arr)
 {
-	Oid			typid = att->atttypid;
+	int32		typmod = att->atttypmod;
+	Oid			typid = getBaseTypeAndTypmod(att->atttypid, &typmod);
 	SiftColStore store = SIFT_COLS_INT;
 	int			shape;
 
@@ -206,7 +209,7 @@ sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, int arr)
 		case TIMEOID:
 			return make_lanes(att, defs, 1);
 		case NUMERICOID:
-			switch (numeric_form(att, &defs[0].scale))
+			switch (numeric_form(typmod, &defs[0].scale))
 			{
 				case NUMERIC_NARROW:
 					return make_lanes(att, defs, 1);
@@ -221,7 +224,7 @@ sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, int arr)
 			if (col_leaf_store(typid, &store))
 			{
 				defs[0].store = store;
-				defs[0].flags = typid == BPCHAROID && att->atttypmod < 0 ? SIFT_COLD_LOSSY : 0;
+				defs[0].flags = typid == BPCHAROID && typmod < 0 ? SIFT_COLD_LOSSY : 0;
 				return make_lanes(att, defs, 1);
 			}
 			if (defs[0].type == SIFT_COLT_ENUM)
@@ -246,7 +249,7 @@ sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, int arr)
 	}
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("sift_col does not support the type %s of column \"%s\"", format_type_be(typid), NameStr(att->attname)),
+			 errmsg("sift_col does not support the type %s of column \"%s\"", format_type_be(att->atttypid), NameStr(att->attname)),
 			 errhint("Supported: smallint, integer, bigint, boolean, date, time, timetz, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, inet, cidr, macaddr, macaddr8, bit, varbit, enums, arrays, ranges and jsonb with paths.")));
 	return 0;
 }
