@@ -419,6 +419,7 @@ extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_rewrite_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_read_rewrite_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_decide_worker_main(Datum main_arg);
+extern void sift_col_decide_request(Relation index);
 extern PGDLLEXPORT void sift_col_read_promote_worker_main(Datum main_arg);
 /* sift.col_auto_merge* (col/am/am.c): the rewrite VACUUM asks the worker for when the churn has scattered the index (col/maint/maint.c) */
 extern PGDLLIMPORT bool sift_col_auto_merge;

@@ -170,8 +170,8 @@ vacuum_store(Oid store)
  * The leaves of the index that use a store nothing else shares (sift_vstore_leaf_left) and none of whose segments names it any more, because the merges and
  * rewrites have put the strings back: the index stops depending on the store, which goes with the transaction
  */
-static void
-finish_left(Relation index)
+void
+sift_vstore_release_left(Relation index)
 {
 	const SiftColSchema *schema = sift_col_rel(index)->schema;
 	bool	   *left = sift_vstore_left_leaves(index, schema);
@@ -179,6 +179,12 @@ finish_left(Relation index)
 
 	if (left == NULL)
 		return;
+	/* releasing a store deletes dependency rows (and drops the store with the transaction): not in a VACUUM, whose transaction id the other sessions do not see */
+	if (!sift_catalog_write_ok())
+	{
+		sift_col_decide_request(index);
+		return;
+	}
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	for (int c = 0; c < schema->ncols; c++)
 	{
@@ -225,5 +231,5 @@ sift_vstore_vacuum(Relation index)
 		if (!again && low == RelationGetRelid(index))
 			vacuum_store(stores[c]);
 	}
-	finish_left(index);
+	sift_vstore_release_left(index);
 }

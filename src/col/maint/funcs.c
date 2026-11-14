@@ -12,6 +12,7 @@
 #include "core/ops.h"
 #include "core/sql.h"
 #include "col/maint/maint_int.h"
+#include "col/vstore/vstore.h"
 #include "core/tomb.h"
 
 /* sift.col_maintenance_due(index, automatic): why the rewrite is due now (dirty units, fragmented units, write buffer rows), NULL if it is not; automatic: as the server's own */
@@ -80,7 +81,7 @@ sift_col_maintenance_status(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
-/* sift.col_maintain(index): the rewrite of sift.col_auto_merge, now and in this session, whatever that setting says; false when nothing is due or the maintenance lock is held */
+/* sift.col_maintain(index): what the worker of sift.col_auto_merge does, now and in this session, whatever that setting says (the shared value stores the index left, and the rewrite); false when no rewrite is due or the maintenance lock is held */
 Datum
 sift_col_maintain(PG_FUNCTION_ARGS)
 {
@@ -90,6 +91,7 @@ sift_col_maintain(PG_FUNCTION_ARGS)
 	PreventCommandIfReadOnly("sift.col_maintain()");
 	PreventCommandDuringRecovery("sift.col_maintain()");
 	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
+	sift_vstore_release_left(index);
 	n = sift_mops_rewrite(&maint_col_ops, &index, false);
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_BOOL(n >= 0);

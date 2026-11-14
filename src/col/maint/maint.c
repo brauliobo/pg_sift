@@ -13,6 +13,7 @@
 #include "col/gorder.h"
 #include "col/wbuf.h"
 #include "col/maint/maint_int.h"
+#include "col/vstore/vstore.h"
 
 /* The automatic rewrite (sift.col_auto_merge*, registered in col/am/am.c) */
 bool		sift_col_auto_merge = true;
@@ -501,6 +502,8 @@ sift_col_rewrite_worker_main(Datum main_arg)
 			{
 				TimestampTz start = GetCurrentTimestamp();
 
+				if (maint_decide_asked)
+					sift_vstore_release_left(index);
 				if (sift_mops_rewrite(&maint_col_ops, &index, true) >= 0 && index != NULL)
 					sift_log_maint(index, "column rewrite worker finished", start, -1, -1);
 			}

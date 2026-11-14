@@ -1,5 +1,5 @@
 -- The only index left on a shared value store goes back to its own strings by itself (docs/COL-VSTORE.md, the only index left): DROP INDEX says which index it is,
--- its next rewrite puts the strings back into its segments (the size is of the index and the vstores of the table, against an index that never shared), the VACUUM after it lets the store go, and the index is then as large as one that never shared.
+-- its next rewrite puts the strings back into its segments (the size is of the index and the vstores of the table, against an index that never shared), the maintenance after it (the worker the VACUUM asks for, sift.col_maintain here: a VACUUM writes no catalog row) lets the store go, and the index is then as large as one that never shared.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
@@ -50,11 +50,11 @@ INSERT INTO lf0 SELECT * FROM lf WHERE id > 20000;
 SELECT sift.col_promote('lf_a') > 0 AS promoted, sift.col_promote('lf0_a') > 0 AS promoted_never_shared;
 SELECT sift.col_merge('lf_a', true) >= 0 AS merged, sift.col_merge('lf0_a', true) >= 0 AS merged_never_shared;
 SELECT * FROM lf_check('rows added'), lf_state('rows added');
+VACUUM lf;
+SELECT * FROM lf_check('vacuumed'), lf_state('vacuumed');
 SELECT sift.col_maintain('lf_a') AS rewrote;
 SELECT * FROM lf_check('rewritten'), lf_state('rewritten');
 SELECT sift.col_maintain('lf_a') AS nothing_more;
-VACUUM lf;
-SELECT * FROM lf_check('vacuumed'), lf_state('vacuumed');
 SELECT count(*) AS relations_left FROM pg_class WHERE relname LIKE 'lf%sift\_values%';
 SELECT sift.col_verify('lf_a', true);
 
