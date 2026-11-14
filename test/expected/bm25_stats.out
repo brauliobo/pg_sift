@@ -1,0 +1,151 @@
+-- A search over a sift index counts in pg_stat_user_indexes (idx_scan, idx_tup_read) as a scan of any other index does, so that a report of unused indexes
+-- does not list the index that serves every search: the bitmap scan, and the custom scans (ranked, heap order, count). The counts of a backend are
+-- flushed with pg_stat_force_next_flush, in a statement of their own, before they are read.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE d (id int PRIMARY KEY, cat int, body text);
+INSERT INTO d SELECT i, i % 5, 'common word' || i % 10 || ' tail' || i FROM generate_series(1, 5000) i;
+CREATE INDEX d_body ON d USING sift (body);
+VACUUM (ANALYZE) d;
+CREATE FUNCTION plan_nodes(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ '(Sift|Bitmap Index)' THEN RETURN NEXT btrim(l); END IF;
+	END LOOP;
+END $$;
+-- bitmap scan: 500 matches
+SET sift.enable_scan = off;
+SET sift.enable_count = off;
+SET enable_seqscan = off;
+SELECT pg_stat_reset_single_table_counters('d_body'::regclass);
+ pg_stat_reset_single_table_counters 
+-------------------------------------
+ 
+(1 row)
+
+SELECT count(*) FROM d WHERE body @@> 'word7 common';
+ count 
+-------
+   500
+(1 row)
+
+SELECT plan_nodes($$SELECT count(*) FROM d WHERE body @@> 'word7 common'$$);
+           plan_nodes            
+---------------------------------
+ ->  Bitmap Index Scan on d_body
+(1 row)
+
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+SELECT idx_scan, idx_tup_read FROM pg_stat_user_indexes WHERE indexrelname = 'd_body';
+ idx_scan | idx_tup_read 
+----------+--------------
+        1 |          500
+(1 row)
+
+RESET sift.enable_scan;
+RESET sift.enable_count;
+RESET enable_seqscan;
+-- ranked custom scan: the ties of the score on the second key are all read, 500 rows
+SELECT pg_stat_reset_single_table_counters('d_body'::regclass);
+ pg_stat_reset_single_table_counters 
+-------------------------------------
+ 
+(1 row)
+
+SELECT id FROM d WHERE body @@> 'word9' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+ id 
+----
+  9
+ 19
+ 29
+(3 rows)
+
+SELECT plan_nodes($$SELECT id FROM d WHERE body @@> 'word9' ORDER BY sift.score(ctid) DESC, id LIMIT 3$$);
+           plan_nodes            
+---------------------------------
+ ->  Custom Scan (SiftScan) on d
+(1 row)
+
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+SELECT idx_scan, idx_tup_read FROM pg_stat_user_indexes WHERE indexrelname = 'd_body';
+ idx_scan | idx_tup_read 
+----------+--------------
+        1 |          500
+(1 row)
+
+-- heap-order custom scan: 500 matches
+SELECT pg_stat_reset_single_table_counters('d_body'::regclass);
+ pg_stat_reset_single_table_counters 
+-------------------------------------
+ 
+(1 row)
+
+SELECT count(*) FROM (SELECT id FROM d WHERE body @@> 'word9' AND cat = 4 OFFSET 0) x;
+ count 
+-------
+   500
+(1 row)
+
+SELECT plan_nodes($$SELECT id FROM d WHERE body @@> 'word9' AND cat = 4 OFFSET 0$$);
+         plan_nodes          
+-----------------------------
+ Custom Scan (SiftScan) on d
+(1 row)
+
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+SELECT idx_scan, idx_tup_read FROM pg_stat_user_indexes WHERE indexrelname = 'd_body';
+ idx_scan | idx_tup_read 
+----------+--------------
+        1 |          500
+(1 row)
+
+-- count custom scan: 500 matches
+SELECT pg_stat_reset_single_table_counters('d_body'::regclass);
+ pg_stat_reset_single_table_counters 
+-------------------------------------
+ 
+(1 row)
+
+SELECT count(*) FROM d WHERE body @@> 'word3';
+ count 
+-------
+   500
+(1 row)
+
+SELECT plan_nodes($$SELECT count(*) FROM d WHERE body @@> 'word3'$$);
+       plan_nodes        
+-------------------------
+ Custom Scan (SiftCount)
+(1 row)
+
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+SELECT idx_scan, idx_tup_read FROM pg_stat_user_indexes WHERE indexrelname = 'd_body';
+ idx_scan | idx_tup_read 
+----------+--------------
+        1 |          500
+(1 row)
+
+DROP FUNCTION plan_nodes(text);
+DROP TABLE d;
+DROP EXTENSION pg_sift;

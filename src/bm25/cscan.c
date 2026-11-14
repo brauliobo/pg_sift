@@ -20,6 +20,7 @@
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "nodes/tidbitmap.h"
+#include "pgstat.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
 #include "utils/array.h"
@@ -295,6 +296,7 @@ start_scan(SiftScanState *ss)
 
 	ss->started = true;
 	ss->nsearches++;
+	pgstat_count_index_scan(ss->index);
 	ss->late = ss->mode == SIFT_MODE_RANKED && ss->nkeys == 0 && ss->quals != NULL && ss->late_rows > 0 && !ss->secure && !ss->par.sh;
 	ss->nread = ss->nkept = 0;
 	if (ss->bitmap && !gated(ss))
@@ -494,6 +496,7 @@ count_next(SiftScanState *ss)
 		sift_eval_count_ranges(ss->plan, &ss->vis, scan_verify, ss, ss->par.sh ? sift_par_next_range : NULL, &ss->par);
 
 	ss->done = true;
+	pgstat_count_index_tuples(ss->index, n);
 	ExecClearTuple(slot);
 	for (int i = 0; i < ss->ncols; i++)
 	{
@@ -503,10 +506,21 @@ count_next(SiftScanState *ss)
 	return ExecStoreVirtualTuple(slot);
 }
 
+static TupleTableSlot *
+next_slot(SiftScanState *ss)
+{
+	if (ss->empty)
+		return NULL;
+	if (ss->mode == SIFT_MODE_RANKED)
+		return ss->nkeys > 0 ? keyed_next(ss) : ranked_next(ss);
+	return unordered_next(ss);
+}
+
 TupleTableSlot *
 scan_next(ScanState *node)
 {
 	SiftScanState *ss = (SiftScanState *) node;
+	TupleTableSlot *slot;
 
 	if (ss->done)
 		return NULL;
@@ -514,11 +528,10 @@ scan_next(ScanState *node)
 		start_scan(ss);
 	if (ss->mode == SIFT_MODE_COUNT)
 		return count_next(ss);
-	if (ss->empty)
-		return NULL;
-	if (ss->mode == SIFT_MODE_RANKED)
-		return ss->nkeys > 0 ? keyed_next(ss) : ranked_next(ss);
-	return unordered_next(ss);
+	slot = next_slot(ss);
+	if (slot != NULL)
+		pgstat_count_index_tuples(ss->index, 1);
+	return slot;
 }
 
 bool
