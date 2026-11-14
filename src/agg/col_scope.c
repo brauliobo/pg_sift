@@ -17,6 +17,12 @@ sift_col_open_scope(Relation heap, Relation index, Snapshot snapshot, MemoryCont
 	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS | SIFT_COLO_SCOPE, view);
 }
 
+uint32
+col_super_align(void *impl, uint32 sb)
+{
+	return sift_col_super_align(((ColSource *) impl)->cs, sb);
+}
+
 void
 sift_col_open_scope_delta(void *impl, const SiftScopeRead *rd)
 {

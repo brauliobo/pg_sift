@@ -296,6 +296,12 @@ sift_colsrc_unit_count(SiftSrcSource *src, const SiftSrcUnit *unit, int64 *rows)
 }
 
 static inline uint32
+sift_colsrc_super_align(SiftSrcSource *src, uint32 sb)
+{
+	return src->prov->super_align ? src->prov->super_align(src->impl, sb) : sb;
+}
+
+static inline uint32
 sift_colsrc_super_span(SiftSrcSource *src)
 {
 	return src->prov->super_span ? src->prov->super_span(src->impl) : 0;

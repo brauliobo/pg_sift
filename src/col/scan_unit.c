@@ -739,7 +739,7 @@ units_allvisible(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n
 	uint64		pm[SIFT_SUPER_MAX_FAN * SIFT_PAGEMASK_WORDS];
 	bool		all = true;
 
-	sift_cseg_super_pagemask(seg, first / sift_cseg_super_fan(seg), n, pm);
+	sift_cseg_unit_pagemasks(seg, first, n, pm);
 	for (uint32 i = 0; i < n && all; i++)
 	{
 		if (sift_cseg_keyed(&seg->entry))
@@ -853,7 +853,7 @@ col_whole_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 }
 
 /*
- * The group of units at the cursor as one unit. Every unit of the group must have passed the zone tests and be exact on its own: its pages that hold rows
+ * The group of units at the cursor as one unit (of the groups that start there, the largest that can: a key group of a scope segment, else the groups of fan units in it). Every unit of the group must have passed the zone tests and be exact on its own: its pages that hold rows
  * all-visible (the masks of the units are in the summary, so no unit record is read) and no dead row, read in the order of unit_allvisible and
  * unit_clean: the all-visible bits first, then the directory, then the liveness.
  */
@@ -862,7 +862,9 @@ col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 {
 	SiftColSegment *seg = c->seg;
 	uint32		fan = sift_cseg_super_fan(seg),
+				first,
 				n,
+				k,
 				rows = 0;
 
 	if (c->count_ok && src->pcnt)
@@ -879,23 +881,22 @@ col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 		return true;
 	if (!src->super)
 		return false;
-	if (fan == 0 || c->cur % fan != 0 || c->cur < c->nosuper_to)
+	if (fan == 0 || c->cur < c->nosuper_to)
 		return false;
-	n = Min(fan, seg->nsb - c->cur);
-	if (n < 2 || c->cur + n > c->end)
-		return false;
-	for (uint32 i = 0; i < n; i++)
-		if (!sift_col_bit_test(c->keep, c->cur + i))
+	for (uint32 skip = 0; sift_cseg_super_at(seg, c->cur, skip, &k); skip++)
+	{
+		sift_cseg_super_range(seg, k, &first, &n);
+		if (n < 2 || c->cur + n > c->end || !keep_all(c, c->cur, n) || !units_allvisible(src, seg, c->cur, n))
+			continue;
+		if (!(src->flags & COLO_TABLE) && !segments_current(src))
 			return false;
-	if (!units_allvisible(src, seg, c->cur, n))
-		return false;
-	if (!(src->flags & COLO_TABLE) && !segments_current(src))
-		return false;
-	SIFT_COL_JITTER();
-	if (!units_clean(seg, c->cur, n, &rows))
-		return false;
-	take_units(c, cu, c->cur, n, rows);
-	return true;
+		SIFT_COL_JITTER();
+		if (!units_clean(seg, c->cur, n, &rows))
+			continue;
+		take_units(c, cu, c->cur, n, rows);
+		return true;
+	}
+	return false;
 }
 
 bool
@@ -906,8 +907,7 @@ sift_col_unit_super(const SiftColUnit *unit, SiftColSegment **seg, uint32 *k)
 	if (cu->nsu == 0 || cu->whole || cu->counted)
 		return false;
 	*seg = cu->seg;
-	*k = cu->u / sift_cseg_super_fan(cu->seg);
-	return true;
+	return sift_cseg_super_of(cu->seg, cu->u, cu->nsu, k);
 }
 
 bool

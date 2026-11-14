@@ -273,7 +273,8 @@ preagg_init(AggExec *ex)
 	ex->pa_on = ex->pa_why == SPW_OK;
 	ex->pa_dead_sub = ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex, false);
 	ex->pa_dead = ex->pa_dead_sub || (ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex, true));
-	ex->super_on = ex->pa_on && !PA_ROLLUP(ex->pa) && sift_agg_super && ex->search == NULL && !ex->pa.ktab && sift_colsrc_super(ex->src, true);
+	/* a superunit holds no calendar cells: a scan that needs them would try its groups and split each */
+	ex->super_on = ex->pa_on && !PA_ROLLUP(ex->pa) && !ex->pa.cal && !ex->pa.hcal && sift_agg_super && ex->search == NULL && !ex->pa.ktab && sift_colsrc_super(ex->src, true);
 	if (ex->pa_on && PA_ROLLUP(ex->pa))
 	{
 		rollup_need(ex);

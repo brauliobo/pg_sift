@@ -428,6 +428,17 @@ tbl_whole(void *impl, int leaf, const int *meas, int nmeas)
 }
 
 uint32
+tbl_super_align(void *impl, uint32 sb)
+{
+	TblSource  *t = impl;
+	uint32		at = sb;
+
+	for (int k = 0; k < t->nparts; k++)
+		at = Max(at, sift_col_super_align(t->part[k].src, sb));
+	return at;
+}
+
+uint32
 tbl_super_span(void *impl)
 {
 	TblSource  *t = impl;

@@ -91,8 +91,40 @@ typedef struct SetAcc
 	uint32		kinds;			/* SETS_EXACT, SETS_BLOOM, SETS_PRES (RUNS_ORD, RUNS_IDENT): the kinds of blob the units have */
 } SetAcc;
 
+/*
+ * The key groups of a scope segment (docs/COL-SCOPE.md): runs of consecutive units that hold the rows of one scope key, with the cube of the rows of the run. A unit of the segment holds a
+ * few rows of each member of its key, so no unit has a table of the members; the run holds hundreds of them. The open group collects the leaves its cube reads, a closed one keeps its blob.
+ */
+typedef struct KeyGroups
+{
+	bool		on;
+	MemoryContext cx;			/* the work of closing a group */
+	SiftCPaggSpec spec;			/* the dims of the cube of a group: those of the segment that fit a run, with their integer measures */
+	int			nleaf;			/* the leaves the cube reads */
+	int			leaf[SIFT_COL_MAX_COLS];
+	int64	  **vals;			/* [nleaf] the rows of the open group, in the key domain */
+	uint64	  **nulls;			/* ... their null and overflow bits, and whether any is set */
+	uint64	  **ovf;
+	bool	   *anynull;
+	bool	   *anyovf;
+	bool	   *ready;
+	uint32		first;			/* the open group: its first unit, its units, its rows, its key */
+	uint32		nunits;
+	uint32		rows;
+	int64		key;
+	uint32		ng;				/* the closed groups: first unit, units, and the blobs of their cubes */
+	uint32		cap;
+	uint32	   *gfirst;
+	uint32	   *gn;
+	uint64	   *xsplit;			/* [ng] the bytes of the merged cube, which the cube of the dims of the rows follows in the blob of the group */
+	uint64	   *cubeoff;		/* [ng + 1] */
+	StringInfoData cube;
+} KeyGroups;
+
 struct SiftColSegWriter
 {
+	KeyGroups  *kg;				/* NULL: not a scope segment, or its pre-aggregates are off (segw_kg_add decides at the first unit) */
+	bool		kg_known;
 	SiftWriteTarget *wt;
 	SiftColFill *fill;	/* the found flags of every unit are filled from the parent tables, and the stamps are written (sift_colw_set_fill) */
 	SiftColFoundView *found;	/* the view of a batch with leaves of its own for the flags, NULL for a schema without connections */
@@ -186,6 +218,10 @@ extern bool	segw_gorder_plain(const SiftColSegWriter *w, int c);
 extern void	segw_add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes);
 
 extern void	segw_add_vers(SiftColSegWriter *w, const SiftColBatch *b);
+
+/* The key groups (col/seg_write/groups.c): the unit just encoded (its zones are in place) joins the open group of its key or opens one; at the end the closed ones are written by build_super */
+extern void	segw_kg_add(SiftColSegWriter *w, const SiftCPaggCol *cols, uint32 nrows);
+extern void	segw_kg_close(SiftColSegWriter *w);
 
 extern uint64	segw_put8(SiftColSegWriter *w, const void *data, Size len);
 /* Writes the bytes to the stream and keeps a copy for the mirror of the header page (prio: how long it stays when they do not all fit); segw_mirror alone keeps the copy of bytes written at off */

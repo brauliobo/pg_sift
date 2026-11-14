@@ -332,6 +332,7 @@ segw_add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	if (w->kt)
 		sift_ktab_add(w->kt, cols, b->nrows);
 	add_points(w, b, cols);
+	segw_kg_add(w, cols, b->nrows);
 	for (int c = 0; c < ncols; c++)
 		if (tk[c])
 			pfree(tk[c]);

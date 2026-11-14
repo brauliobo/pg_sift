@@ -24,7 +24,8 @@ spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblo
 
 		if (!sift_cpagg_decode(s, blob, len, cx, &h) || (h.dim[0].minmax && format < SIFT_COL_FORMAT_MINMAX))
 			return false;
-		spec->minmax = h.dim[0].minmax;
+		for (int d = 0; d < h.ndims; d++)
+			spec->minmax |= h.dim[d].minmax;
 		for (int d = 0; d < h.ndims; d++, spec->ndims++)
 		{
 			spec->dim[spec->ndims].leaf = h.dim[d].leaf % SIFT_PAGG_CAL;

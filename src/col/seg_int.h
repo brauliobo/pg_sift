@@ -179,6 +179,12 @@ StaticAssertDecl(sizeof(SetsHeader) == 16 && sizeof(SetsLeaf) == 24, "the small-
  *     SiftCSuperLeaf of every group (nsu x 64 bytes), then (cubedir_off, when any group has a merged cube) the directory of nsu + 1 offsets and the blobs.
  */
 #define SUPER_MAGIC		0x53505543		/* "CUPS" */
+/*
+ * The block of a scope segment (column format 51): the groups are the runs of consecutive units that hold one scope key, not a fan of units; `fan` is the fan the index asks for (the span of
+ * a parallel item), `nsu` the groups. After the header come the first unit of each group (nsu x u32) and its units (nsu x u32, 2 to SIFT_SUPER_MAX_FAN) a u64 that repeats the fan and the bytes of the merged cube in the blob of each group (nsu x u64; the cube of the dims of the rows of the group follows it), then the page masks, the leaf
+ * records and the cubes as above, in groups. A unit of no group (units of several small keys) has a page mask and no summary.
+ */
+#define SUPER_KMAGIC	0x4b505543		/* "CUPK" */
 typedef struct SuperHeader
 {
 	uint32		magic;
@@ -190,6 +196,25 @@ typedef struct SuperHeader
 } SuperHeader;
 
 StaticAssertDecl(sizeof(SuperHeader) == 32, "the superunit header is 32 bytes");
+
+/* Appends the n bits of src (words past n are not read) to dst at bit position at; dst has room for the word after the last */
+static inline void
+seg_bits_put(uint64 *dst, uint32 at, const uint64 *src, uint32 n)
+{
+	uint32		sh = at % 64,
+				base = at / 64;
+
+	for (uint32 i = 0; i * 64 < n; i++)
+	{
+		uint64		v = src[i];
+
+		if ((i + 1) * 64 > n && n % 64)
+			v &= (UINT64CONST(1) << (n % 64)) - 1;
+		dst[base + i] |= v << sh;
+		if (sh)
+			dst[base + i + 1] |= v >> (64 - sh);
+	}
+}
 
 /* The leaves a superunit block summarises: the integer leaves (with their exact sums) and the text leaves (counts only). Floats are left out: their sum depends on the order of the additions */
 static inline bool
@@ -479,6 +504,9 @@ typedef struct SegPriv
 	Size		cubecap;
 	const SuperHeader *super;	/* the superunit block's header, read on first use; NULL with super_checked: there is none */
 	bool		super_checked;
+	uint32	   *sgfirst;		/* the key groups of a scope segment (SUPER_KMAGIC): the first unit of each and its units, nsu of each; NULL for a fan of units */
+	uint32	   *sgn;
+	uint64	   *sgx;			/* the bytes of the merged cube in the blob of each key group */
 	uint64	   *supdir;			/* nsu + 1 */
 	uint8	   *supbuf;
 	Size		supcap;

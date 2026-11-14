@@ -85,6 +85,16 @@ typedef struct ColCursor
 	uint64	   *ppend;
 } ColCursor;
 
+/* Did every unit [first, first + n) pass the zone tests */
+static inline bool
+keep_all(const ColCursor *c, uint32 first, uint32 n)
+{
+	for (uint32 i = 0; i < n; i++)
+		if (!sift_col_bit_test(c->keep, first + i))
+			return false;
+	return true;
+}
+
 /* a cursor moved, or its kept units changed, other than by the unit sift_col_next read from it: the heap of heads is made again */
 #define COL_HEAD_RESET(src)	((src)->hvalid = false)
 

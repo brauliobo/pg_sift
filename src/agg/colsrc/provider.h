@@ -132,6 +132,7 @@ typedef struct SiftSrcProvider
 	/* Optional (NULL: none): the element tests (prune_str's tests that stand for an EXISTS over a list, bit i: the i-th test given) whose rows the unit's point directory lists exactly: the unit comes narrowed to them, and the executor need not test them again */
 	uint64		(*point_exact) (void *impl, const SiftSrcUnit *unit);
 	void		(*split) (void *impl, const SiftSrcUnit *unit);
+	uint32		(*super_align) (void *impl, uint32 sb);	/* Optional: the first superblock at or after sb that no group of units straddles */
 	uint32		(*super_span) (void *impl);	/* the superblocks a range of a parallel scan should span for a group of units to fit in it */
 	/*
 	 * Optional (NULL: no ordered top-N scan on this source, sift_colsrc_can_tids says so to the planner). tids: the heap TIDs of the rows

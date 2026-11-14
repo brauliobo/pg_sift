@@ -302,9 +302,10 @@ extern const uint8 *sift_cseg_xecube(SiftColSegment *seg, uint32 u, uint32 *len)
 extern const uint8 *sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len);
 /*
  * Superunits (docs/COL-PREAGG.md section 10): the units in groups of fan consecutive ones, group k = units [k * fan, min((k + 1) * fan, nsb)), with the page
- * masks of the units, the merged sums of every INT leaf and the merged cube of the dims all of them hold. fan 0: the segment has none.
+ * masks of the units, the merged sums of every INT leaf and the merged cube of the dims all of them hold. fan 0: the segment has none. A scope segment's groups
+ * are the key groups (docs/COL-SCOPE.md): the runs of units of one key, a key group and the groups of fan units inside it; its cube is the merge of those of its units, and apart the cube of the dims of its rows that they lack.
  * sift_cseg_super_agg: false when the leaf has no summary in the group (not INT, an overflow value, one unit). sift_cseg_super_cube: NULL when the group has none,
- * else valid until the next call on seg. sift_cseg_super_pagemask fills 4 words for each of the n units from the first of group k.
+ * else valid until the next call on seg.
  */
 extern uint32 sift_cseg_super_fan(SiftColSegment *seg);
 extern bool sift_cseg_unit_pagemask(SiftColSegment *seg, uint32 u, uint64 *pm);
@@ -321,9 +322,24 @@ typedef struct SiftCSbSpan
 extern uint32 sift_cseg_sb_spans(SiftColSegment *seg, const SiftCSbSpan **spans);
 /* Is superblock sb inside one of the spans? */
 extern bool sift_cseg_sb_in_spans(SiftColSegment *seg, uint32 sb);
-extern void sift_cseg_super_pagemask(SiftColSegment *seg, uint32 k, uint32 n, uint64 *pm);
+/* The page masks of n units from the first (4 words each, at most SIFT_SUPER_MAX_FAN units), of any segment with a superunit block */
+extern void sift_cseg_unit_pagemasks(SiftColSegment *seg, uint32 first, uint32 n, uint64 *pm);
+/*
+ * The groups by index k: their number, the first unit and the units of one, the skip-th largest that starts at unit u (a fan of units: at multiples of the fan only; the key groups
+ * of a scope segment: a key group and the groups of fan units inside it start at the same unit), and the group of units [first, first + n). False: none
+ */
+extern uint32 sift_cseg_super_count(SiftColSegment *seg);
+extern void sift_cseg_super_range(SiftColSegment *seg, uint32 k, uint32 *first, uint32 *n);
+/* The unit a range of units that starts or ends at u starts or ends at instead, so that no group of a scope segment is cut by it: u, or the end of the group it is inside */
+extern uint32 sift_cseg_super_align(SiftColSegment *seg, uint32 u);
+extern bool sift_cseg_super_at(SiftColSegment *seg, uint32 u, uint32 skip, uint32 *k);
+extern bool sift_cseg_super_of(SiftColSegment *seg, uint32 first, uint32 n, uint32 *k);
+/* Are the groups the key groups of a scope segment */
+extern bool sift_cseg_super_keyed(SiftColSegment *seg);
 extern bool sift_cseg_super_agg(SiftColSegment *seg, int col, uint32 k, SiftCAgg *a);
 extern const uint8 *sift_cseg_super_cube(SiftColSegment *seg, uint32 k, uint32 *len);
+/* The cube of the dims of the rows of a key group that the cubes of its units lack, NULL when it has none (and for any other group) */
+extern const uint8 *sift_cseg_super_extra(SiftColSegment *seg, uint32 k, uint32 *len);
 /* sift.col_verify: the superunit block says what the units say (page masks, sums, cubes); an error otherwise, nothing when the segment has none */
 extern void sift_cseg_verify_super(SiftColSegment *seg);
 #ifdef SIFT_TESTING

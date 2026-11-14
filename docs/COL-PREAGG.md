@@ -194,6 +194,8 @@ Default 16: +1.0% of the index (200,000 rows, 53 units: whole-table `count`/`sum
 
 Questions 02, 03 and 04 are answered entirely from metadata at 10 M (all 511 units, Rows Scanned 0, results identical to the scan and the heap): 8.0 -> 2.1 ms, 35.0 -> 1.4 ms and 46.8 -> 3.6 ms, 6x, 46x and 13x faster than ClickHouse and 2.7x, 160x and 74x faster than Elasticsearch (medians). 05 and 07 stay scans; a depth-2 cube (`country, status, month`: up to 5 400 groups per 19.6 k rows, about 12% of the index) would answer 05 but is not worth it by default. 06 stays distinct-set work.
 
+- **Scope segments (column format minor 51).** The groups of a scope segment are not a fan of units at absolute positions: they are the runs of units that hold one scope key (`SUPER_KMAGIC`, [COL-SCOPE.md](COL-SCOPE.md) "Key groups"), the first unit and the units of each group, a repeat of the fan, and where the cube of the dims of the rows of the group begins in its blob come before the page masks. `sift.col_verify` checks them against the units.
+
 ## 11. Exceptions: a filter `leaf IS NULL` answered from the pre-aggregates (column format minor 19)
 
 A leaf that is NULL in nearly every row (a soft-delete stamp) keeps `WHERE stamp IS NULL` from the pre-aggregates. Without exceptions a unit holding one stamped row fails the zone test and is scanned (166 of 171 units of a 353,029-row table with 655 stamped rows).

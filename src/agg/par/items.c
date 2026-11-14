@@ -207,6 +207,15 @@ empty_set_groups(AggExec *ex)
 	ex->arm_mask = ~(uint32) 0;
 }
 
+/* The first superblock of an item: a scan of superunits moves the end of an item to the end of the key group it cuts (the next item starts there), so that the group is taken whole */
+static uint32
+item_start(AggExec *ex, uint32 item)
+{
+	uint32		sb = Min(item * ex->shared->morsel, ex->shared->nsb);
+
+	return ex->super_on ? sift_colsrc_super_align(ex->src, sb) : sb;
+}
+
 static void
 scan_item(AggExec *ex, uint32 item)
 {
@@ -220,7 +229,7 @@ scan_item(AggExec *ex, uint32 item)
 		for (uint32 sb = next_kept(ex, item, SIFT_AGG_LANES); sb < sh->nsb; sb = next_kept(ex, sb + SIFT_AGG_LANES, SIFT_AGG_LANES))
 			scan_range(ex, sb, sb + 1);
 	else
-		scan_range(ex, item * sh->morsel, Min((item + 1) * sh->morsel, sh->nsb));
+		scan_range(ex, item_start(ex, item), item_start(ex, item + 1));
 }
 
 /*
@@ -232,12 +241,17 @@ static uint32
 next_item(AggExec *ex, uint32 item)
 {
 	const ScanShared *sh = ex->shared;
-	uint32		sb;
+	uint32		sb,
+				first;
 
 	if (sh->ordered || part_flush_on(ex) || item >= sh->nitems)
 		return item;
-	sb = next_kept(ex, item * sh->morsel, 1);
-	return sb >= sh->nsb ? sh->nitems : sb / sh->morsel;
+	sb = next_kept(ex, item_start(ex, item), 1);
+	if (sb >= sh->nsb)
+		return sh->nitems;
+	for (first = sb / sh->morsel; first > item && item_start(ex, first) > sb; first--)
+		;
+	return first;
 }
 
 bool

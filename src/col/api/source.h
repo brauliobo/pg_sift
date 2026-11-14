@@ -197,6 +197,8 @@ extern bool sift_col_unit_counted(const SiftColUnit *unit, uint64 *rows);
 extern void sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit);
 /* The superblocks a parallel range should span for a group of units to fit in it: several groups of the largest fan, whatever the number of segments that interleave */
 extern uint32 sift_col_super_span(SiftColSource *src);
+/* The first superblock at or after sb that no key group of a segment straddles: ranges cut there take a group whole (the end of one range is the start of the next) */
+extern uint32 sift_col_super_align(SiftColSource *src, uint32 sb);
 
 /*
  * Opens the source: copies the directory (registered snapshot held until close), starts the visibility state (sift_vis) for snapshot, takes

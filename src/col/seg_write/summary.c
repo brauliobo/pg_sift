@@ -25,6 +25,59 @@ unit_agg_of(const SiftCZone *z, const SiftCLeafAgg *la, SiftCAgg *a)
 	a->has_sums = la != NULL;
 }
 
+/* The block of the key groups of a scope segment (seg_int.h, SUPER_KMAGIC); false when no key has two units of its own */
+static bool
+build_key_super(SiftColSegWriter *w, StringInfo out)
+{
+	KeyGroups  *g = w->kg;
+	int			ncols = w->schema->ncols;
+	SuperHeader h = {.magic = SUPER_KMAGIC,.fan = w->pagg.super};
+	SiftCAgg   *ua;
+	uint64		fan = h.fan;
+
+	segw_kg_close(w);
+	if (g->ng == 0 || w->nsb < 2)
+		return false;
+	h.nsu = g->ng;
+	for (int c = 0; c < ncols; c++)
+		h.nleaf += super_leaf_ok(&w->schema->cols[c]);
+	h.cubedir_off = g->cube.len > 0 ? sizeof(SuperHeader) + (Size) h.nsu * 2 * sizeof(uint64) + sizeof(uint64) + (Size) w->nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64) +
+		(Size) h.nleaf * h.nsu * sizeof(SiftCSuperLeaf) : 0;
+	h.cube_bytes = g->cube.len;
+	appendBinaryStringInfo(out, (const char *) &h, sizeof(h));
+	appendBinaryStringInfo(out, (const char *) g->gfirst, (Size) h.nsu * sizeof(uint32));
+	appendBinaryStringInfo(out, (const char *) g->gn, (Size) h.nsu * sizeof(uint32));
+	appendBinaryStringInfo(out, (const char *) &fan, sizeof(fan));
+	appendBinaryStringInfo(out, (const char *) g->xsplit, (Size) h.nsu * sizeof(uint64));
+	appendBinaryStringInfo(out, (const char *) w->pmask, (Size) w->nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64));
+	ua = palloc(SIFT_SUPER_MAX_FAN * sizeof(SiftCAgg));
+	for (int c = 0; c < ncols; c++)
+	{
+		bool		sums = w->schema->cols[c].store == SIFT_COLS_INT;
+
+		if (!super_leaf_ok(&w->schema->cols[c]))
+			continue;
+		for (uint32 k = 0; k < h.nsu; k++)
+		{
+			SiftCSuperLeaf sl;
+
+			for (uint32 i = 0; i < g->gn[k]; i++)
+				unit_agg_of(&w->zones[(Size) (g->gfirst[k] + i) * ncols + c], sums ? &w->lagg[(Size) (g->gfirst[k] + i) * ncols + c] : NULL, &ua[i]);
+			if (!sift_cpagg_super_leaf(ua, g->gn[k], sums, &sl))
+				memset(&sl, 0, sizeof(sl));
+			appendBinaryStringInfo(out, (const char *) &sl, sizeof(sl));
+		}
+	}
+	if (h.cubedir_off)
+	{
+		appendBinaryStringInfo(out, (const char *) g->cubeoff, (Size) (h.nsu + 1) * sizeof(uint64));
+		appendBinaryStringInfo(out, g->cube.data, g->cube.len);
+	}
+	pfree(ua);
+	w->format = Max(w->format, SIFT_COL_FORMAT_KEYGROUPS);
+	return true;
+}
+
 /* The superunit block (seg_int.h) of the units written so far, in out; false when the segment has none (not asked for, one unit) */
 static bool
 build_super(SiftColSegWriter *w, StringInfo out)
@@ -40,6 +93,8 @@ build_super(SiftColSegWriter *w, StringInfo out)
 	uint64	   *cdir;
 	StringInfoData cubes;
 
+	if (w->kg != NULL)
+		return build_key_super(w, out);
 	if (fan == 0 || nsb < 2)
 		return false;
 	for (int c = 0; c < ncols; c++)

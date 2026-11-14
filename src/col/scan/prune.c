@@ -481,8 +481,9 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 	uint32		nw = SIFT_COL_NWORDS(seg->nsb);
 	PruneRange	pr = {sift_cseg_unit_lower_bound(seg, sb_lo), sb_hi == PG_UINT32_MAX ? seg->nsb : sift_cseg_unit_lower_bound(seg, sb_hi), NULL,
 	(src->flags & SIFT_COLO_POINTS) ? c : NULL};
-	PruneRange	zr = pr;
+	PruneRange	zr;
 
+	zr = pr;
 	c->nosuper_to = 0;
 	COL_HEAD_RESET(src);
 	c->cur = pr.ulo;
@@ -575,4 +576,21 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 	for (int i = 0; i < nzones; i++)
 		prune_zone(src, seg, &zones[i], c->keep, &zr);
 	c->setcut = pr.setcut;
+}
+
+uint32
+sift_col_super_align(SiftColSource *src, uint32 sb)
+{
+	uint32		at = sb;
+
+	for (int i = 0; i < src->nseg; i++)
+	{
+		SiftColSegment *seg = src->seg[i].seg;
+		uint32		u = sift_cseg_unit_lower_bound(seg, sb);
+		uint32		e = sift_cseg_super_align(seg, u);
+
+		if (e > u)
+			at = Max(at, e < seg->nsb ? seg->sbdir[e].id : seg->sbdir[seg->nsb - 1].id + 1);
+	}
+	return at;
 }

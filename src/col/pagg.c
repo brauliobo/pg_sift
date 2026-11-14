@@ -426,6 +426,8 @@ super_hist(SiftColSegment *seg, uint32 k, int dim, MemoryContext mcxt, const Sif
 		return false;
 	if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, need, out)) < 0)
 		corrupt_cube(seg, k);
+	if (found == 0 && (blob = sift_cseg_super_extra(seg, k, &len)) != NULL && (found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, need, out)) < 0)
+		corrupt_cube(seg, k);
 	return found > 0;
 }
 

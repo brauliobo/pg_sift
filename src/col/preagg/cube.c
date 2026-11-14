@@ -367,6 +367,12 @@ cpagg_build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCP
 		}
 		db[d].ok = build_dim(s, &spec->dim[d], &cols[spec->dim[d].leaf], cols, nrows, cubeg, &sc, &db[d]) &&
 			(uint64) db[d].ngroups * spec->dim_rows <= nrows;
+		if (db[d].ok && sc.minmax && spec->minmax_groups > 0 && db[d].ngroups > spec->minmax_groups)
+		{
+			resetStringInfo(&db[d].blob);
+			sc.minmax = false;
+			db[d].ok = build_dim(s, &spec->dim[d], &cols[spec->dim[d].leaf], cols, nrows, cubeg, &sc, &db[d]);
+		}
 	}
 	pfree(sc.gid);
 	pfree(sc.perm);

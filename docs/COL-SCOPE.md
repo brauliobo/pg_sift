@@ -327,6 +327,32 @@ and the latest rows stay in one process: the pre-aggregates answer the first two
 The default plan of the distinct count by month of the 49.5% tenant at 10 million events is the join (`Scope Fallback: join is cheaper for 1 key`), and the planner prices it at 3,570 units, under the 4,000 that a priced parallel plan costs at least, for a read that takes 45 to 83 ms: the workers it would launch read it in 25 ms
 (on a quiet host, with the workers forced), so that read stays in one process by price, not by the workers.
 
+## Key groups: one summary for the run of units of a key
+
+A key of many units (tenant 1 of the fixture below: 130 to 2,200 rows of each of its 1,149 members, 2,000 rows a unit) used to be summarised by groups of 16 units at absolute positions, so the units of a key that did not
+start at a multiple of 16 were read one by one, and an aggregate by member read every unit: a unit holds about two rows of each member of its key, which is too few for a table of the members (a histogram needs 8 rows a group to
+pay, `SIFT_PAGG_SCOPE_DIM_ROWS`). A scope segment of column format minor 51 writes its superunit block as **key groups**: a group is a run of two units or more that hold one scope key and no other (at most 256 units and 131,072 rows), and a run
+longer than the fan of the index is followed by the groups of a fan of units inside it, for a range of days that cuts the run. The cube of a group is the merge of the cubes of its units (as before) and, apart, the cube of the dims the units
+lack, built from the rows of the run: the member (and any other column of the index's cube that a unit has no table of) with the integer measures, within a tenth of the bytes of the units, the smallest tables first, with no minimum and no
+maximum for a dim of more than 16 groups, and not for dates (the calendar cells of the units answer a range of days). A read takes the group where it takes a fan of units, and takes the merged part before the part of the rows: an aggregate that
+needs a dim the units have reads the same bytes as before. The scan items end at the end of the group they cut (the next item starts there), so a group is never split between two participants. `sift.col_verify(index, true)` recomputes the page
+masks, the sums of every leaf, the merged cube and the dims of the rows of every group from the units.
+
+Tenant 1 of the 600,000-event fixture (events with a tenant a member of 2,648 members, one backend, `perf stat` instructions of the backend, warm blocks hit and cold blocks read after eviction, md5 of the rows equal to the plain statement
+in every cell of the nine classes at tenants 1, 4 and 8):
+
+| class (tenant 1) | instructions | blocks hit | blocks read cold |
+|---|---:|---:|---:|
+| top 20 members | 14.18 M to 4.12 M | 466 to 105 | 277 to 90 |
+| count by member | 17.57 M to 5.27 M | 513 to 111 | 311 to 93 |
+| count by score | 1.71 M to 1.59 M | 76 to 50 | 58 to 32 |
+| count by kind | 2.02 M to 1.94 M | 80 to 64 | 62 to 52 |
+| tenant 4: top 20 members / count by member | 3.05 M to 2.02 M / 3.34 M to 2.00 M | 83 to 31 / 89 to 31 | 60 to 20 / 75 to 20 |
+
+The cost: the scope segment of that fixture is 8.63 MB without and 9.30 MB with the groups (+7.7%; its pre-aggregates 2.57 to 3.23 MB: the dims of the rows are bounded by a tenth of the bytes of the units, the merged cubes are those of the groups of 16 that they replace), the index file 16.28 to 16.91 MB (+3.9%), the build 3.6 and 3.3 s (one run each, the difference is noise) and its WAL 50.7 to 52.0 MB (+2.5%); a promotion of 30,000 events writes the same 0.57 MB of WAL (the new segment is small). A segment with no run of units of one key keeps its minor. What the groups do not answer: a count by member over a range of days (a group cut by a bound is read unit by unit), the filter on two columns (`channel = 9 AND region = 'DE'`: the summary has a histogram of each, not their
+combinations, so a group that the filter cuts is tried and read unit by unit: at tenant 4, 4 more blocks hit and 5 more read of 66 and 44), and the distinct members by month (a table of (month, member) cells has 3.3 rows a cell at tenant 1, 3 times
+smaller than the rows but not an answer by itself). The first two are what a rollup of the rows of a group would answer (240 cells of (channel, region) for 297,000 rows of tenant 1); it is not written yet.
+
 ## Break-even: the multiplicity limit
 
 A scope entry is a copy of the row in the index, so the scope segments grow with the average number of keys of a member (the entries a row has). The weighted formula of the program prices it for the classes

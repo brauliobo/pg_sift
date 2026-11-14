@@ -910,6 +910,7 @@ static const SiftSrcProvider col_provider = {
 	.unit_count = col_unit_count,
 	.point_exact = col_point_exact,
 	.split = col_split,
+	.super_align = col_super_align,
 	.super_span = col_super_span,
 	.read = col_read,
 	.live = col_live,

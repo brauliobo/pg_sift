@@ -71,7 +71,7 @@ SELECT c.n, c.label, r.* FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
   3 | min and max by score, big key     | t    | t           | t      | f
   4 | sum, no group, two keys           | t    | t           | f      | f
   5 | count in a date range, big key    | t    | t           | t      | f
-  6 | count by kind, small key          | t    | t           | f      | f
+  6 | count by kind, small key          | t    | t           | t      | f
   7 | latest 20, big key                | t    | t           | f      | t
   8 | latest 20 with a column, mid key  | t    | t           | f      | t
   9 | latest 20, small key              | t    | t           | f      | t

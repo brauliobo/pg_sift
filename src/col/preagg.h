@@ -143,6 +143,7 @@ typedef struct SiftCPaggSpec
 	SiftCPaggRollup rollup[SIFT_PAGG_MAX_ROLLUPS];
 	uint32		max_groups;
 	uint32		permille;				/* default: of the unit's bytes; 0 = no budget */
+	uint32		minmax_groups;			/* a dim with more groups than this holds no minimum and maximum, whatever minmax says (0: every dim does): the table of the members of a key group costs ten bytes less a group and measure */
 	uint8		dim_rows;				/* a dim has a histogram in a unit only when each of its groups stands for this many rows or more on average; 0: any number of groups up to the cap */
 } SiftCPaggSpec;
 
@@ -259,6 +260,9 @@ extern void sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, c
  */
 #define SIFT_SUPER_MIN_FAN		2
 #define SIFT_SUPER_MAX_FAN		256
+#define SIFT_PAGG_KEYGROUP_PERMILLE	100		/* the dims a key group of a scope segment adds to the merge of the cubes of its units take at most this share of the bytes of the units (at least SIFT_PAGG_CUBE_MIN_BUDGET) */
+#define SIFT_PAGG_KEYGROUP_MINMAX_GROUPS	16	/* ... and a dim of more groups than this holds no minimum and maximum: ten bytes less a group and measure for a table of the members */
+#define SIFT_SUPER_KEY_ROWS		131072	/* the most rows of a key group of a scope segment (SUPER_KMAGIC): its cube is built from them in memory */
 #define SIFT_SUPER_DEFAULT_FAN	16			/* the default of the reloption superunit: +1.0% of the index, a whole-table aggregate 4 to 7 times faster, and the groups stay small enough for a range to cut few of them */
 #define SIFT_SUPER_LEAF_OK		0x2			/* in SiftCSuperLeaf.flags, above SIFT_CAGG_SUMSQ_OVF: the leaf is summarised for this group */
 

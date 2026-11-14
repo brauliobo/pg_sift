@@ -85,6 +85,7 @@ typedef struct ColSource
 #define COL_MAX_WIDE		8		/* the wide conjuncts of a scan (SIFT_AGG_MAX_WIDE) */
 
 extern bool col_overflow(void *impl, const SiftSrcUnit *unit, int leaf);
+extern uint32 col_super_align(void *impl, uint32 sb);
 extern void col_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast);
 extern void col_overflow_raise(void *impl, const SiftSrcUnit *unit, const uint64 *rows);
 extern void recheck_close(ColRecheck *k);
