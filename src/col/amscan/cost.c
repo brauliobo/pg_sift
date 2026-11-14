@@ -186,6 +186,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	IndexOptInfo *index = path->indexinfo;
 	GenericCosts costs = {0};
 	Relation	irel;
+	ColEstimate est;
 	double		kept,
 				pkept,
 				zkept,
@@ -205,8 +206,10 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	double		redundant = redundant_scans(root, path, &narrowed);
 	int			nprobes;
 
-	if (sift_col_index_stale(index->indexoid))
+	irel = index_open(index->indexoid, AccessShareLock);
+	if (sift_col_rel(irel)->stale)
 	{
+		index_close(irel, AccessShareLock);
 		*indexStartupCost = *indexTotalCost = COL_SCAN_STALE;
 		*indexSelectivity = 1.0;
 		*indexCorrelation = 0.0;
@@ -247,15 +250,19 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 		*indexSelectivity = costs.indexSelectivity;
 		*indexCorrelation = 0.0;
 		*indexPages = Max(1.0, (double) index->pages);
+		index_close(irel, AccessShareLock);
 		return;
 	}
-	irel = index_open(index->indexoid, AccessShareLock);
-	units = Max(1.0, ceil(index->rel->pages / 256.0));
-	pkept = point_kept(root, path, irel, units, &nprobes, &tid, &extra);
-	zkept = zones_kept(root, path, irel);
-	skept = sets_kept(root, path, irel);
-	kept = Min(Min(zkept, skept), pkept);
+	est.ls = sift_col_leaf_stats(irel, false);
+	est.z = sift_col_zones(irel, false);
+	memcpy(est.first, sift_col_rel(irel)->first, (index->nkeycolumns + 1) * sizeof(int));
+	est.nleaves = sift_col_rel(irel)->schema->ncols;
 	index_close(irel, AccessShareLock);
+	units = Max(1.0, ceil(index->rel->pages / 256.0));
+	pkept = point_kept(root, path, &est, units, &nprobes, &tid, &extra);
+	zkept = zones_kept(root, path, &est);
+	skept = sets_kept(root, path, &est);
+	kept = Min(Min(zkept, skept), pkept);
 	kept_units = kept * units;
 	/* an IN list or ANY (array) is a scan for each element, and genericcostestimate counts the tuples of one: the lists of a leaf that has an equality, or another list, are one test of the fewest keys (narrow_lists) */
 	idx_rows = costs.numIndexTuples * Max(costs.num_sa_scans / redundant, 1);

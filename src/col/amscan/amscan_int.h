@@ -112,10 +112,22 @@ extern void	like_pred(ColKeys *k, SiftColPred *p, SiftColValue *v, bool starts_w
 
 extern bool	scan_preds(IndexScanDesc scan, ColKeys *k, SiftColPred *preds);
 
-extern double	zones_kept(PlannerInfo *root, IndexPath *path, Relation irel);
+/*
+ * What the estimates of one index path read of the index: the statistics and zones its cache holds, and the first leaf of each column (a copy: a catalog read of
+ * the estimates can reload the relcache entry, and with it the array of the entry)
+ */
+typedef struct ColEstimate
+{
+	const SiftColLeafStats *ls;
+	const SiftColZones *z;
+	int			first[INDEX_MAX_KEYS + 1];
+	int			nleaves;
+} ColEstimate;
 
-extern double	sets_kept(PlannerInfo *root, IndexPath *path, Relation irel);
+extern double	zones_kept(PlannerInfo *root, IndexPath *path, const ColEstimate *e);
 
-extern double	point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int *nprobes, double *tid, double *extra);
+extern double	sets_kept(PlannerInfo *root, IndexPath *path, const ColEstimate *e);
+
+extern double	point_kept(PlannerInfo *root, IndexPath *path, const ColEstimate *e, double units, int *nprobes, double *tid, double *extra);
 
 #endif

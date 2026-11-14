@@ -219,9 +219,9 @@ param_zones_kept(const SiftColZones *z, int leaf, Oid opfamily, Node *clause)
  * a column the sample does not describe). The quals are ANDed: a unit stays when every one of them may hold in it.
  */
 double
-zones_kept(PlannerInfo *root, IndexPath *path, Relation irel)
+zones_kept(PlannerInfo *root, IndexPath *path, const ColEstimate *e)
 {
-	const SiftColZones *z = sift_col_zones(irel, false);
+	const SiftColZones *z = e->z;
 	IndexOptInfo *index = path->indexinfo;
 	bool	   *alive;
 	bool		tested = false;
@@ -234,8 +234,7 @@ zones_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 	memset(alive, true, z->n * sizeof(bool));
 	foreach_node(IndexClause, ic, path->indexclauses)
 	{
-		/* the estimates below read the catalog, which can reload the index's relcache entry: ask for its cached state where it is used */
-		int			leaf = sift_col_rel(irel)->first[ic->indexcol + 1];
+		int			leaf = e->first[ic->indexcol + 1];
 
 		foreach_node(RestrictInfo, ri, ic->indexquals)
 		{
@@ -271,15 +270,15 @@ zones_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 #define COL_SCAN_SET_USEFUL	0.85
 
 double
-sets_kept(PlannerInfo *root, IndexPath *path, Relation irel)
+sets_kept(PlannerInfo *root, IndexPath *path, const ColEstimate *e)
 {
-	const SiftColLeafStats *ls = sift_col_leaf_stats(irel, false);
+	const SiftColLeafStats *ls = e->ls;
 	IndexOptInfo *index = path->indexinfo;
 	double		kept = 1.0;
 
 	foreach_node(IndexClause, ic, path->indexclauses)
 	{
-		const SiftColLeafStats *l = &ls[sift_col_rel(irel)->first[ic->indexcol + 1]];
+		const SiftColLeafStats *l = &ls[e->first[ic->indexcol + 1]];
 
 		if (l->set_units <= 0 || l->set_sampled <= 0)
 			continue;
@@ -324,9 +323,9 @@ prefix_clause(const OpExpr *op, int strategy)
  * share of those units whose directory lists heap addresses (point_tid_columns): the scan returns their rows without reading the unit (an index-only scan reads it, for the values).
  */
 double
-point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int *nprobes, double *tid, double *extra)
+point_kept(PlannerInfo *root, IndexPath *path, const ColEstimate *e, double units, int *nprobes, double *tid, double *extra)
 {
-	const SiftColLeafStats *ls = sift_col_leaf_stats(irel, false);
+	const SiftColLeafStats *ls = e->ls;
 	IndexOptInfo *index = path->indexinfo;
 	double		kept = 1.0;
 
@@ -335,7 +334,7 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 	*extra = 0.0;
 	foreach_node(IndexClause, ic, path->indexclauses)
 	{
-		const SiftColLeafStats *l = &ls[sift_col_rel(irel)->first[ic->indexcol + 1]];
+		const SiftColLeafStats *l = &ls[e->first[ic->indexcol + 1]];
 
 		if (l->point_units <= 0 || l->nunits <= 0)
 			continue;
@@ -373,7 +372,7 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 	/* a range or an equality on a leaf with a global order is a seek in the sorted keys, an IN list one seek a key: the addresses of the rows between the bounds, in as many units as a lookup of that many rows finds */
 	for (int col = 0; col < index->nkeycolumns; col++)
 	{
-		const SiftColLeafStats *l = &ls[sift_col_rel(irel)->first[col + 1]];
+		const SiftColLeafStats *l = &ls[e->first[col + 1]];
 		List	   *ranges = NIL;
 		bool		other = false,
 					eqonly = true;
@@ -405,8 +404,8 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 			}
 		}
 		/* the leaf that is the group of second orders has no order of its own: an equality, an IN list or a range finds its rows in the table of groups of those */
-		for (int j = 0; j < sift_col_rel(irel)->schema->ncols; j++)
-			if (ls[j].gord_gcol == sift_col_rel(irel)->first[col + 1])
+		for (int j = 0; j < e->nleaves; j++)
+			if (ls[j].gord_gcol == e->first[col + 1])
 				gcover = Max(gcover, Min(ls[j].gord_grp_rows / Max(index->rel->tuples, 1.0), 1.0));
 		if (ranges != NIL && !other && l->nunits > 0 && (l->gord_rows > l->gord_grp_rows || gcover > 0.0))
 		{
