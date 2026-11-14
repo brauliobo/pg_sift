@@ -17,6 +17,7 @@
 #include "executor/tuptable.h"
 #include "storage/sinval.h"
 #include "utils/rel.h"
+#include "utils/resowner.h"
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
@@ -57,6 +58,42 @@ static struct JournalMemo
 } journal_memo[JOURNAL_MEMO_N];
 static int	journal_memo_next;
 
+#ifdef SIFT_TESTING
+/* sift._test_scope_journals_open: the ERROR raised before the journal_fail_at-th open of a relation or journal index of a journals_open, to see what an error leaves behind */
+static int	journal_fail_at;
+static int	journal_steps;
+#endif
+
+static void
+journal_step(void)
+{
+#ifdef SIFT_TESTING
+	if (journal_fail_at > 0 && ++journal_steps == journal_fail_at)
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("injected error before open %d of the journals", journal_steps),
+						errhint("Raised by sift._test_scope_journals_open, which asks for it.")));
+#endif
+}
+
+/* Counts journal j of the state once its relation and journal index are both open: J->n is the number open, whatever an ERROR interrupts (the rest is the resource owner's) */
+static void
+journal_add(ScopeJournals *J, Relation rel, Oid jidx, LOCKMODE lock)
+{
+	journal_step();
+	J->jidx[J->n] = index_open(jidx, lock);
+	J->rel[J->n++] = rel;
+}
+
+static void
+journals_close(ScopeJournals *J)
+{
+	while (J->n > 0)
+	{
+		J->n--;
+		index_close(J->jidx[J->n], NoLock);
+		table_close(J->rel[J->n], NoLock);
+	}
+}
+
 static bool
 journals_open_memo(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 {
@@ -69,15 +106,14 @@ journals_open_memo(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 		if (m->index != RelationGetRelid(index) || m->scope != scope || m->gen != SharedInvalidMessageCounter)
 			continue;
 		sift_catalog_memo_hits++;
-		J->n = m->n;
 		J->via_btree = m->via_btree;
 		J->via = m->via;
 		J->member = m->member;
 		for (int j = 0; j < m->n; j++)
 		{
-			J->rel[j] = table_open(m->rel[j], AccessShareLock);
-			J->jidx[j] = index_open(m->jidx[j], lock);
+			journal_step();
 			J->skey[j] = m->skey[j];
+			journal_add(J, table_open(m->rel[j], AccessShareLock), m->jidx[j], lock);
 		}
 		return true;
 	}
@@ -86,7 +122,7 @@ journals_open_memo(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 
 /*
  * The relations and journal indexes of the journals of the scope, locked AccessShare (lock on the index: lock); false: the scope is not declared now, or one of its relations has no
- * journal index. Journal j: 0 the pairs relation keyed by its member, 1 the joined relation keyed by its via column, 2 the via relation keyed by its member column.
+ * journal index, and nothing is left open. Journal j: 0 the pairs relation keyed by its member, 1 the joined relation keyed by its via column, 2 the via relation keyed by its member column.
  */
 static bool
 journals_open(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
@@ -94,7 +130,6 @@ journals_open(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 	SiftScopeSpecs *specs = sift_scope_specs(index);
 	const SiftScopeSpec *s;
 	Relation	heap;
-	bool		ok = true;
 	uint64		gen = SharedInvalidMessageCounter;
 
 	*J = (ScopeJournals) {.index = index,.scope = scope};
@@ -104,14 +139,21 @@ journals_open(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 		return true;
 	s = specs->s[scope];
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-	J->n = sift_scope_njournals(s);
-	for (int j = 0; j < J->n && ok; j++)
+	for (int j = 0; j < sift_scope_njournals(s); j++)
 	{
 		AttrNumber	a,
 					b;
-		Oid			btree = j == 0 ? sift_scope_relation_index(heap, index, s, &J->rel[j], &a, &b) : sift_scope_hop_index(heap, index, s, j, &J->rel[j], &a, &b);
-		Oid			joid = sift_scope_hop_journal(J->rel[j], j, a, b, btree);
+		Relation	rel;
+		Oid			btree = (journal_step(), j == 0) ? sift_scope_relation_index(heap, index, s, &rel, &a, &b) : sift_scope_hop_index(heap, index, s, j, &rel, &a, &b);
+		Oid			joid = sift_scope_hop_journal(rel, j, a, b, btree);
 
+		if (!OidIsValid(joid))
+		{
+			table_close(rel, NoLock);
+			journals_close(J);
+			table_close(heap, NoLock);
+			return false;
+		}
 		J->skey[j] = j == 2 ? a : b;
 		if (j == 2)
 		{
@@ -119,14 +161,10 @@ journals_open(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 			J->via = a;
 			J->member = b;
 		}
-		ok = OidIsValid(joid);
-		if (ok)
-			J->jidx[j] = index_open(joid, lock);
-		else
-			J->n = j + 1;
+		journal_add(J, rel, joid, lock);
 	}
 	table_close(heap, NoLock);
-	if (ok && !TransactionIdIsValid(GetTopTransactionIdIfAny()))
+	if (!TransactionIdIsValid(GetTopTransactionIdIfAny()))
 	{
 		struct JournalMemo *m = &journal_memo[journal_memo_next++ % JOURNAL_MEMO_N];
 
@@ -141,18 +179,7 @@ journals_open(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 			m->skey[j] = J->skey[j];
 		}
 	}
-	return ok;
-}
-
-static void
-journals_close(ScopeJournals *J)
-{
-	for (int j = 0; j < J->n; j++)
-	{
-		if (J->jidx[j] != NULL)
-			index_close(J->jidx[j], NoLock);
-		table_close(J->rel[j], NoLock);
-	}
+	return true;
 }
 
 bool
@@ -175,6 +202,47 @@ sift_scope_has_journal(Relation index, int scope)
 	journals_close(&J);
 	return ok;
 }
+
+#ifdef SIFT_TESTING
+/*
+ * The journals of the scope opened in a subtransaction with an ERROR raised before the fail_at-th open (0: none), then closed as any caller closes what it was given: what an error leaves is
+ * a state journals_close can handle. Returns the journals the state counts at that point; *failed says whether the error was raised.
+ */
+int
+sift_scope_journals_probe(Relation index, int scope, int fail_at, bool *failed)
+{
+	ScopeJournals J = {0};
+	MemoryContext mcx = CurrentMemoryContext;
+	ResourceOwner owner = CurrentResourceOwner;
+	int			counted;
+
+	*failed = false;
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(mcx);
+	journal_fail_at = fail_at;
+	journal_steps = 0;
+	PG_TRY();
+	{
+		journals_open(index, scope, AccessShareLock, &J);
+	}
+	PG_CATCH();
+	{
+		MemoryContextSwitchTo(mcx);
+		FlushErrorState();
+		*failed = true;
+	}
+	PG_END_TRY();
+	journal_fail_at = 0;
+	counted = J.n;
+	journals_close(&J);
+	if (*failed)
+		RollbackAndReleaseCurrentSubTransaction();
+	else
+		ReleaseCurrentSubTransaction();
+	CurrentResourceOwner = owner;
+	return counted;
+}
+#endif
 
 SiftConnWhy
 sift_scope_take(Relation index, int scope, Snapshot snap, SiftConnStamp *stamp)

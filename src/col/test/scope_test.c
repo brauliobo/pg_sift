@@ -422,6 +422,20 @@ sift_test_scope_take(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
 }
 
+PG_FUNCTION_INFO_V1(sift_test_scope_journals_open);
+
+/* sift._test_scope_journals_open(index, scope, fail_at): the journals of the scope opened with an ERROR raised before the fail_at-th open (0: none) and closed again: 'ok' or 'error', and the journals the state counted */
+Datum
+sift_test_scope_journals_open(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	bool		failed;
+	int			counted = sift_scope_journals_probe(index, PG_GETARG_INT32(1), PG_GETARG_INT32(2), &failed);
+
+	index_close(index, NoLock);
+	PG_RETURN_TEXT_P(cstring_to_text(psprintf("%s, %d counted", failed ? "error" : "ok", counted)));
+}
+
 /* sift._test_scope_vouch(index, scope, lineage, horizon, lineage2, lineage3): may a derivation stamped so be read by the snapshot of the statement: 'ok' or why not */
 Datum
 sift_test_scope_vouch(PG_FUNCTION_ARGS)

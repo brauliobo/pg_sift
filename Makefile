@@ -291,6 +291,7 @@ TESTING_REGRESS += col_scope_journal
 TESTING_REGRESS += col_scope_journal_auto
 TESTING_REGRESS += col_scope_journal_partial
 TESTING_REGRESS += col_scope_journal_tags
+TESTING_REGRESS += col_scope_journals_error
 TESTING_REGRESS += col_scope_keyed_patch
 TESTING_REGRESS += col_scope_maint
 TESTING_REGRESS += col_scope_manymany

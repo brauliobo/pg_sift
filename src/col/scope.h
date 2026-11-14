@@ -552,6 +552,8 @@ extern void sift_scope_refuse(const char *what, double limit, uint64 entries, ui
 extern void sift_scope_precheck(Relation heap, Relation index);
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT int sift_test_scope_sample_blocks;
+/* The journals of a scope opened with an ERROR raised before the fail_at-th open and closed again (sift._test_scope_journals_open) */
+extern int	sift_scope_journals_probe(Relation index, int scope, int fail_at, bool *failed);
 #endif
 
 #endif							/* SIFT_COL_SCOPE_H */

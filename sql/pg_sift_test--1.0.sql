@@ -572,6 +572,8 @@ CREATE FUNCTION sift._test_scope_stamps(index regclass, scope int, OUT journal i
 	AS 'MODULE_PATHNAME', 'sift_test_scope_stamps' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_scope_journal_stamps(index regclass, OUT gen int8, OUT family text, OUT scope int, OUT journal int, OUT lineage int8, OUT horizon xid) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_scope_journal_stamps' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_scope_journals_open(index regclass, scope int, fail_at int) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_scope_journals_open' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_scope_vouch(index regclass, scope int, lineage int8, horizon xid, lineage2 int8 DEFAULT 0, lineage3 int8 DEFAULT 0) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_scope_vouch' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_scope_journal_changes(index regclass, scope int, lineage int8, horizon xid, cap int DEFAULT 1000000, lineage2 int8 DEFAULT 0, lineage3 int8 DEFAULT 0,
