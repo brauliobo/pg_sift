@@ -707,14 +707,21 @@ typedef struct ScopeStage
 	SiftKeyMap *mm;
 } ScopeStage;
 
-static bool refused_here;		/* a stored read of this backend was refused since the last sift_scope_refused_take */
+static Oid	refused_index = InvalidOid;	/* the scope index a stored read of this backend was refused by, or found changed members in, since the last sift_scope_refused_take */
+
+void
+sift_scope_changed_note(Relation index)
+{
+	refused_index = RelationGetRelid(index);
+}
 
 bool
-sift_scope_refused_take(void)
+sift_scope_refused_take(Oid index)
 {
-	bool		was = refused_here;
+	bool		was = refused_index == index;
 
-	refused_here = false;
+	if (was)
+		refused_index = InvalidOid;
 	return was;
 }
 
@@ -743,13 +750,13 @@ stored_changed(Relation heap, Relation index, Snapshot snap, int ord, SiftKeyMap
 	{
 		if (!sift_scope_has_journal(index, ord))
 			rd->why = sift_conn_why_name(SIFT_CONN_NO_JOURNAL);
-		refused_here = true;
+		sift_scope_changed_note(index);
 		return;
 	}
 	if ((verdict = sift_scope_changed(index, ord, stamp, snap, cap, keys, nkeys, km, &changed)) != SIFT_CONN_OK)
 	{
 		rd->why = sift_conn_why_name(verdict);
-		refused_here = true;
+		sift_scope_changed_note(index);
 		return;
 	}
 	rd->nchanged = rd->nexcept = changed.n;

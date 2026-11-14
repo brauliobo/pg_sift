@@ -533,8 +533,12 @@ extern void sift_scope_read_rows(SiftScopeRead *rd);
 extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, SiftKeyMap *km, const int64 *keys, int nkeys, bool once,
 									   const int *leaves, int nleaves, uint32 max_changed, bool lazy);
 extern void sift_scope_read_pairs(SiftScopeRead *rd);
-/* whether a stored read of this backend was refused by the stamps, the cover or the journal since the last call (the scan that was looks for the rewrite that fills the units again, sift_col_vacuum_tick) */
-extern bool sift_scope_refused_take(void);
+/*
+ * whether a stored read of this backend was refused by the stamps, the cover or the journal, or found members changed since the stamps (it patched them, or the join cost less for them), in this index since the last call:
+ * the scan that was looks for the rewrite that fills the units again (sift_col_vacuum_tick), which the rule of `stale scope` decides
+ */
+extern bool sift_scope_refused_take(Oid index);
+extern void sift_scope_changed_note(Relation index);
 /*
  * The counts of what a read of one key pays for the members that changed since the stamps (changed, patch_units, patch_scan_rows, delta_rows of SiftScopeCounts): the key is the one most of the changed
  * members have a pair with now, which pays the most. False: the stored read is not exact (the verdict on the stamps, too many changed members, the patch is refused): another rule of the refresh says so.

@@ -445,7 +445,7 @@ sift_col_rewrite_tick(Relation index, double owed, bool scope_refused)
 		asked = sift_maint_request_worker(index, "sift_col_rewrite_worker_main");
 	pfree(peers);
 	pfree(snap);
-	/* a read the scope units could not answer (a journal rebuilt, units never filled): the reads owe the rewrite that fills them, and a table nothing writes is never vacuumed to ask for it */
+	/* a read the scope units could not answer (a journal rebuilt, units never filled) or that paid for changed members: the reads owe the rewrite that fills them when the rule of `stale scope` says so, and a table nothing writes is never vacuumed to ask for it */
 	if (!asked && scope_refused && maint_scope_refill_due(index))
 		asked = sift_maint_request_worker(index, "sift_col_read_rewrite_worker_main");
 	return asked || (owed > 0 && maint_read_due(index, owed) && sift_maint_request_worker(index, "sift_col_read_rewrite_worker_main"));
