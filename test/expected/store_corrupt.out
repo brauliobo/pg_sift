@@ -30,6 +30,7 @@ SELECT expect($$ SELECT sift._test_check('t_idx') $$);
  ok
 (1 row)
 
+SELECT sift._test_meta_size() + 24 AS over \gset
 -- Data page type in the special space
 SELECT sift._test_poke('t_idx', 3, 8176, 9, 2);
  _test_poke 
@@ -138,7 +139,7 @@ SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
  XX002: sift index "t_idx" is corrupted | Bad metapage (magic 0x00000000, 64 bytes).
 (1 row)
 
--- the used bytes of the metapage (pd_lower at offset 12, the data at 24): the 64 of a build without the failure note, the 272 with it and the 400 with the analyzer configuration are read, others are not
+-- the used bytes of the metapage (pd_lower at offset 12, the data at 24): the 64 of a build without the failure note, the 272 with it and the 400 with the analyzer configuration are read, others are not, nor is one past the struct
 SELECT fresh();
  fresh 
 -------
@@ -163,16 +164,16 @@ SELECT fresh();
  
 (1 row)
 
-SELECT sift._test_poke('t_idx', 0, 12, 24 + 500, 2);
+SELECT sift._test_poke('t_idx', 0, 12, :over + 1, 2);
  _test_poke 
 ------------
  
 (1 row)
 
-SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                        expect                                        
---------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Bad metapage (magic 0x53494654, 500 bytes).
+SELECT regexp_replace(expect($$ SELECT sift._test_check('t_idx') $$), ', [0-9]+ bytes', ', <size> bytes');
+                                     regexp_replace                                      
+-----------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Bad metapage (magic 0x53494654, <size> bytes).
 (1 row)
 
 SELECT fresh();

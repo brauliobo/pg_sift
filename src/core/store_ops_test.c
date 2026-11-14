@@ -16,6 +16,7 @@ PG_FUNCTION_INFO_V1(sift_test_space);
 PG_FUNCTION_INFO_V1(sift_test_info);
 PG_FUNCTION_INFO_V1(sift_test_maint_failures);
 PG_FUNCTION_INFO_V1(sift_test_meta_note);
+PG_FUNCTION_INFO_V1(sift_test_meta_size);
 PG_FUNCTION_INFO_V1(sift_test_maint_wait_us);
 PG_FUNCTION_INFO_V1(sift_test_freelist);
 PG_FUNCTION_INFO_V1(sift_test_page);
@@ -110,6 +111,13 @@ sift_test_maint_failures(PG_FUNCTION_ARGS)
 	sift_dir_read(index, &snap);
 	relation_close(index, AccessShareLock);
 	PG_RETURN_INT32(snap.meta.flags & SIFT_META_FAILURES_MASK);
+}
+
+/* sift._test_meta_size(): the bytes of the metapage struct, the most pd_lower of a metapage may cover */
+Datum
+sift_test_meta_size(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT32(sizeof(SiftMetaPageData));
 }
 
 /*
