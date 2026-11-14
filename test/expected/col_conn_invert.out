@@ -34,8 +34,8 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 CREATE TABLE orders (id int PRIMARY KEY, account_id int, v int, flag boolean) WITH (autovacuum_enabled = false);
 INSERT INTO orders SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 99999 ELSE 1 + (i * 7) % 2800 END, i % 10, i % 3 = 0 FROM generate_series(1, 120000) i;
 CREATE INDEX orders_col ON orders USING sift_col (id, account_id, v, flag) WITH (connect = 'account_id -> accounts(id)');
-NOTICE:  sift_col index "orders_col": 2 automatic choices (key_cut, track_changes)
-DETAIL:  key_cut = account_id; track_changes = id
+NOTICE:  sift_col index "orders_col": 3 automatic choices (rollup_columns, key_cut, track_changes)
+DETAIL:  rollup_columns = v, flag; key_cut = account_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('orders_col');
 -- the keys of the parent are not unique
 CREATE TABLE loose (id int, region int) WITH (autovacuum_enabled = false);
