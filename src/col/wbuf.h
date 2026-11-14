@@ -125,7 +125,7 @@ extern ItemPointerData *sift_cwbuf_lookup(Relation index, const SiftSegEntry *en
 extern int64 sift_cwbuf_bulkdelete(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, IndexBulkDeleteCallback cb,
 								  void *cbstate, IndexBulkDeleteResult *stats);
 
-/* The rows the backends of the server decoded from the buffer of generation gen to read it, since it was opened (col/wbuf/reads.c): what its promotion is weighed against (maint_wbuf_read_due) */
+/* The rows the backends of the server decoded from the buffer of generation gen to read it, since it was opened (col/wbuf/reads.c): what its promotion is weighed against (maint_wbuf_read_due). The sum is in the metapage (SiftMetaPageData.reads) and what this backend has not written yet */
 extern void sift_cwbuf_decoded_note(Relation index, uint64 gen, uint64 rows);
 #ifdef SIFT_TESTING
 typedef struct SiftWbufSetStats
@@ -139,7 +139,7 @@ typedef struct SiftWbufSetStats
 } SiftWbufSetStats;
 extern void sift_cwbuf_last_set(SiftWbufSetStats *out);
 #endif
-extern uint64 sift_cwbuf_decoded(Relation index, uint64 gen);
+extern uint64 sift_cwbuf_decoded(Relation index, const SiftMetaPageData *meta, uint64 gen);
 /* whether this backend decoded rows since the last call (the scan that did looks for the promotion, sift_col_vacuum_tick) */
 extern bool sift_cwbuf_decoded_take(void);
 /*
@@ -147,7 +147,10 @@ extern bool sift_cwbuf_decoded_take(void);
  * blocks, or did without its pre-aggregate: col/scan_unit.c), what the fold of the marks is weighed against (sift_col_fold_due); whether this backend paid some since the last call
  */
 extern void sift_col_marks_note(Relation index, uint64 loggen, uint64 instr);
-extern uint64 sift_col_marks_paid(Relation index, uint64 loggen);
+extern uint64 sift_col_marks_paid(Relation index, const SiftMetaPageData *meta, uint64 loggen);
+/* Does this backend hold sums not written to the metapage of the index; write them, except those whose rule is met already (the callers' due functions, NULL for a sum the index has none of): the end of a statement (col/wbuf/reads.c) */
+extern bool sift_reads_pending(Oid index);
+extern void sift_reads_flush(Relation index, bool (*wbuf_met) (Relation), bool (*marks_met) (Relation));
 extern bool sift_col_marks_take(void);
 /* Extents (header and data pages) for release after promotion; records, rows (deleted included) and pages */
 extern SiftExtent *sift_cwbuf_pages(Relation index, const SiftSegEntry *entry, int *n);

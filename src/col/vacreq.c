@@ -227,6 +227,15 @@ look_of(Oid indexoid)
 	return oldest;
 }
 
+static void
+flush_reads(Oid indexoid)
+{
+	Relation	index = index_open(indexoid, AccessShareLock);
+
+	sift_col_reads_flush(index);
+	index_close(index, AccessShareLock);
+}
+
 /*
  * A backend looks at the table of the index: once per naptime for each index, whether it inserted a row version (everything 0) or read the rows of the
  * index in the heap (vetted, which must be many to be worth a look).
@@ -257,6 +266,8 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	/* counted whether or not maintenance may run: this is how a stopped maintenance shows */
 	sift_stat_add(SIFT_STAT_ROWS_DIRTY, dirty_rows);
 	sift_stat_add(SIFT_STAT_READ_PENALTY_KINSTR, (vetted * PEN_VET_ROW + dirty_rows * PEN_DIRTY_ROW) / 1000);
+	if (sift_reads_pending(indexoid))
+		flush_reads(indexoid);
 	if (!sift_col_auto_merge || !sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress())
 		return;
 	if (sift_scope_paid_pending(indexoid))

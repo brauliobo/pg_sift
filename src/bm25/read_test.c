@@ -92,7 +92,7 @@ sift_test_wbuf_reads(PG_FUNCTION_ARGS)
 						npages;
 
 			sift_wbuf_summary(index, &snap->segs[i], &ndocs, &sum_dl, &npages);
-			values[0] = Int64GetDatum(sift_cwbuf_decoded(index, snap->segs[i].gen));
+			values[0] = Int64GetDatum(sift_cwbuf_decoded(index, &snap->meta, snap->segs[i].gen));
 			values[1] = Int64GetDatum(ndocs);
 			values[3] = Int32GetDatum(snap->segs[i].format);
 		}

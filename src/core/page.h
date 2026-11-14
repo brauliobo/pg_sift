@@ -69,6 +69,17 @@ typedef struct SiftMetaStamp
 	uint32		reserved;
 } SiftMetaStamp;
 
+/* The reads of the server that maintenance weighs against a step of its own: one sum for the write buffer open now and one for the tombstone log, each for the generation of the segment it was paid to */
+#define SIFT_META_READS			2
+#define SIFT_READ_WBUF			0
+#define SIFT_READ_MARKS			1
+
+typedef struct SiftMetaReads
+{
+	uint64		gen;			/* the segment generation the sum is for; 0: none. A generation is never reused, and a newer one starts the sum again */
+	uint64		paid;
+} SiftMetaReads;
+
 typedef struct SiftMetaPageData
 {
 	uint32		magic;
@@ -94,6 +105,8 @@ typedef struct SiftMetaPageData
 	SiftMetaStamp scope_floor[SIFT_META_STAMPS];
 	/* What the reads of the server paid, for each scope, on top of the filled read, for the pairs changed since its floor, in instructions (col/scope_paid.c); zero again in the switch that moves the floor */
 	uint64		scope_paid[SIFT_META_SCOPES];
+	/* What the reads of the server paid for what maintenance would spare them, for the segment generation each was paid under (col/wbuf/reads.c): the open write buffer's rows decoded, the instructions of the tombstone log's marks */
+	SiftMetaReads reads[SIFT_META_READS];
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF
@@ -110,6 +123,9 @@ sift_meta_extended(const SiftMetaPageData *meta)
 			return true;
 	for (int i = 0; i < SIFT_META_SCOPES; i++)
 		if (meta->scope_paid[i] != 0)
+			return true;
+	for (int i = 0; i < SIFT_META_READS; i++)
+		if (meta->reads[i].gen != 0)
 			return true;
 	return false;
 }

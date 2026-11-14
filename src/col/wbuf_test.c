@@ -738,7 +738,7 @@ sift_test_col_wbuf_reads(PG_FUNCTION_ARGS)
 						npages;
 
 			sift_cwbuf_summary(index, &snap->segs[i], &nrows, &npages);
-			values[0] = Int64GetDatum(sift_cwbuf_decoded(index, snap->segs[i].gen));
+			values[0] = Int64GetDatum(sift_cwbuf_decoded(index, &snap->meta, snap->segs[i].gen));
 			values[1] = Int64GetDatum(nrows);
 		}
 	values[2] = BoolGetDatum(maint_wbuf_read_due(index));
