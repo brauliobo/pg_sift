@@ -54,9 +54,20 @@ BEGIN
 	PERFORM set_config('sift.agg_scope', 'on', true);
 	same_rows := a = b;
 END $$;
-SELECT t AS member_type, c.same_rows, c.patched_units, c.delta_rows, c.hit <= 75 AS hits_within_the_cell FROM unnest(ARRAY['int', 'text', 'uuid']) t, LATERAL cell(t) c;
+-- a server built with CATCACHE_FORCE_RELEASE reads the catalog again at every lookup: a hundred lookups of a type hit buffers there and none in another build, and the read hits 150 to 190 blocks for the same plan
+CREATE FUNCTION catalog_reread() RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(format_type(23, NULL)) FROM generate_series(1, 100)' LOOP
+		IF l ~ 'Buffers: shared hit' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+SELECT catalog_reread() AS catalog_reread \gset
+SELECT t AS member_type, c.same_rows, c.patched_units, c.delta_rows, c.hit <= CASE WHEN :'catalog_reread' THEN 200 ELSE 75 END AS hits_within_the_cell FROM unnest(ARRAY['int', 'text', 'uuid']) t, LATERAL cell(t) c;
 
-DROP FUNCTION cell, tables;
+DROP FUNCTION cell, tables, catalog_reread;
 DROP TABLE facts_int, facts_text, facts_uuid, pairs_int, pairs_text, pairs_uuid CASCADE;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
