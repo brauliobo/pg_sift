@@ -457,6 +457,7 @@ TESTING_REGRESS += verify_%
 # these assert the segments of a parallel build of an index with a key cut, which the release library builds in one process (build_pays in src/col/build_par.c)
 TESTING_REGRESS += agg_numeric_in_list
 TESTING_REGRESS += agg_prepass_const_list
+TESTING_REGRESS += agg_shape_walks
 TESTING_REGRESS += agg_shape_widths
 TESTING_REGRESS += agg_source_cache
 TESTING_REGRESS += col_cost_keys_sorted_once

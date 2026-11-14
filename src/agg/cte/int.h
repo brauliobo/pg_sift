@@ -28,6 +28,23 @@ typedef struct SharedCteWalk
 #define SHARED_CTE_BIT(pos)	((pos) < 32 ? (uint32) 1 << (pos) : 0)
 #define SHARED_CTES(n)		((n) < 32 ? ((uint32) 1 << (n)) - 1 : ~(uint32) 0)
 
+/*
+ * The kinds of node of a statement (its sub-selects, CTEs and sub-links included) that a rewrite candidate needs: a candidate asked with none of its kind
+ * in the tree finds nothing. They describe the tree as it was walked: a rewrite of it is followed by a new walk.
+ */
+typedef struct QueryShape
+{
+	bool		ctes,			/* a WITH */
+				json,			/* json_build_object() */
+				case_aggs,		/* an aggregate of one CASE */
+				exists,			/* an EXISTS sub-link */
+				array,			/* an ARRAY(SELECT ..) sub-link */
+				minmax,			/* a scalar sub-select with an aggregate */
+				lateral_sublinks,	/* a lateral sub-select that holds a sub-link */
+				left_joins;		/* a LEFT JOIN */
+} QueryShape;
+
+extern QueryShape sift_agg_shape(Query *q);
 extern bool shared_cte_walker(Node *n, SharedCteWalk *w);
 extern bool has_shared_cte(Query *parse);
 extern bool query_nests(Query *q);

@@ -68,6 +68,15 @@ static bool planning_second;
 /* set for the plan in full that follows a verdict the plan of the variant did not confirm: that plan reads no verdict */
 static bool verdict_replan;
 
+/* the statement has a WITH: no rewrite makes one, so a statement without it is planned in no form that has a shared CTE */
+static bool statement_ctes;
+
+static bool
+shares_cte(Query *parse)
+{
+	return statement_ctes && has_shared_cte(parse);
+}
+
 /* the plan of the statement and the context it is in, which the caller deletes when it plans another statement instead */
 static PlannedStmt *
 plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
@@ -90,7 +99,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 
 	inline_won = false;
 	verdict_replan = false;
-	if (!sift_enable_agg || !has_shared_cte(parse))
+	if (!sift_enable_agg || !shares_cte(parse))
 		return plan_in_own_context(SIFT_PLANNER_ARGS(parse), cx);
 	agg_vet_forget();
 	verdict_lookup(parse, VERDICT_CTE, &vd);
@@ -386,7 +395,7 @@ plan_flat_pair(SIFT_PLANNER_PARAMS, bool wanted)
 	if (wanted)
 	{
 		/* the two forms are both planned where the flat plan is no better in every scan (a statement with no aggregate to push down plans twice for a plan that is the first one's): their choice is kept as the one between the CTE and its inline plan is (verdict.c), and a hit plans the form that won */
-		shared_cte = has_shared_cte(parse);
+		shared_cte = shares_cte(parse);
 		verdict_lookup(parse, VERDICT_FLAT, &fv);
 		if (fv.known)
 		{
@@ -422,7 +431,7 @@ plan_flat_pair(SIFT_PLANNER_PARAMS, bool wanted)
 			 * its cost only, selectivities of a list of thousands of keys and all (it doubled the planning of such a statement). With a shared CTE the plan as written may
 			 * share the scope's reads, which the cost weighs.
 			 */
-			if (sift_agg_fence_alone && !has_shared_cte(parse))
+			if (sift_agg_fence_alone && !shares_cte(parse))
 				by_cost = false;
 		}
 		quiet = sift_explain_refusals && sift_agg_push_arms > 0;
@@ -531,7 +540,7 @@ plan_beside(SIFT_PLANNER_PARAMS, PlannedStmt *stmt, double margin)
  * groups, 9,500 entities of the request).
  */
 static PlannedStmt *
-plan_flat(SIFT_PLANNER_PARAMS, bool owned)
+plan_flat(SIFT_PLANNER_PARAMS, bool owned, const QueryShape *shape)
 {
 	Query	   *first = NULL,
 			   *rows = NULL,
@@ -547,13 +556,13 @@ plan_flat(SIFT_PLANNER_PARAMS, bool owned)
 
 	if (sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse))
 	{
-		if (sift_agg_minmax_sublinks(parse, false))
+		if (shape->minmax && sift_agg_minmax_sublinks(parse, false))
 		{
 			first = copyObject(parse);
 			sift_agg_minmax_sublinks(first, true);
 		}
-		arrays = sift_agg_array_sublinks(parse);
-		if (sift_agg_decor_rows_candidate(parse))
+		arrays = shape->array ? sift_agg_array_sublinks(parse) : NULL;
+		if (shape->lateral_sublinks && sift_agg_decor_rows_candidate(parse))
 		{
 			rows = copyObject(parse);
 			verdict_lookup(rows, VERDICT_ROWS, &rv);
@@ -588,12 +597,15 @@ sift_planner(SIFT_PLANNER_PARAMS)
 {
 	MemoryContext memo = sift_agg_memo_begin();
 	bool		col_plan = sift_col_plan_begin();
+	bool		outer_ctes = statement_ctes;
 	bool		reads,
 				nests,
+				inlines,
 				swap,
 				casef,
 				split_exists,
 				owned;
+	QueryShape	shape = {0};
 	Query	   *written = NULL;
 	PlannedStmt *stmt;
 
@@ -606,11 +618,16 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	 * reads no table with a column index and has no shared CTE is planned once, in place, as without the extension: no plan loses, no copy.
 	 */
 	reads = sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse);
-	split_exists = sift_enable_agg && parse->commandType == CMD_SELECT && parse->hasSubLinks && parse->rowMarks == NIL && sift_agg_exists_or_candidate(parse);
+	if (sift_enable_agg && parse->commandType == CMD_SELECT && (reads || query_nests(parse)))
+		shape = sift_agg_shape(parse);
+	statement_ctes = shape.ctes;
+	split_exists = shape.exists && parse->hasSubLinks && parse->rowMarks == NIL && sift_agg_exists_or_candidate(parse);
 	nests = reads && (query_nests(parse) || sift_agg_probe_joins(parse, false));
-	swap = reads && sift_json_build_object_calls(parse);
-	casef = reads && sift_agg_case_filter_calls(parse);
-	owned = nests || swap || casef || split_exists || (sift_enable_agg && has_shared_cte(parse));
+	/* the passes of a statement that nests change the tree only where there is a WITH to inline or a left join to drop or defer */
+	inlines = nests && (shape.ctes || shape.left_joins);
+	swap = reads && shape.json && sift_json_build_object_calls(parse);
+	casef = reads && shape.case_aggs && sift_agg_case_filter_calls(parse);
+	owned = inlines || swap || casef || split_exists || shares_cte(parse);
 	if (owned)
 		parse = copyObject(parse);
 	/* the statement as written is planned when the rewritten one does not run in the scan: its plan is the one PostgreSQL makes of what the user wrote */
@@ -624,21 +641,27 @@ sift_planner(SIFT_PLANNER_PARAMS)
 			sift_json_build_object_swap(parse);
 		if (casef)
 			sift_agg_case_filter(parse);
-		if (nests && parse->rowMarks == NIL)
+		if (inlines && parse->rowMarks == NIL)
 		{
 			sift_agg_preinline(parse);
 			sift_agg_drop_unused_laterals(parse);
 			sift_agg_defer_lookups(parse);
 		}
 	}
+	if (inlines || swap || casef || split_exists)
+		shape = sift_agg_shape(parse);
 	PG_TRY();
 	{
-		stmt = plan_flat(SIFT_PLANNER_ARGS(parse), owned);
+		stmt = plan_flat(SIFT_PLANNER_ARGS(parse), owned, &shape);
 		if (written != NULL && !uses_sift_agg(stmt->planTree) && !any_sift_agg(stmt->subplans))
-			stmt = plan_flat(SIFT_PLANNER_ARGS(written), true);
+		{
+			shape = sift_agg_shape(written);
+			stmt = plan_flat(SIFT_PLANNER_ARGS(written), true, &shape);
+		}
 	}
 	PG_FINALLY();
 	{
+		statement_ctes = outer_ctes;
 		sift_agg_memo_end(memo);
 		sift_col_plan_end(col_plan);
 	}
