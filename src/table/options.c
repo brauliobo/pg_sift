@@ -356,6 +356,7 @@ config_delete(Relation cfg, Oid relid, const char *name)
 	HeapTuple	tup;
 	bool		found = false;
 
+	sift_catalog_write_guard("a table option");
 	ScanKeyInit(&key, 1, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(relid));
 	scan = systable_beginscan(cfg, config_index(cfg), true, NULL, 1, &key);
 	while (HeapTupleIsValid(tup = systable_getnext(scan)))
@@ -395,6 +396,7 @@ sift_table_set_option(PG_FUNCTION_ARGS)
 	if (PG_ARGISNULL(2))
 		ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("the value of an option must not be NULL"),
 						errhint("sift.table_reset_option takes the option off the table.")));
+	sift_catalog_write_guard("a table option");
 	rel = opt_open(relid, ShareUpdateExclusiveLock);
 	opt_require_owner(rel);
 	id = opt_require(text_to_cstring(PG_GETARG_TEXT_PP(1)));

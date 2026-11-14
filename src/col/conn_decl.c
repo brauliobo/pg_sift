@@ -233,6 +233,8 @@ drop_stale_edges(Oid child, List *keep)
 	HeapTuple	tup;
 	List	   *stale = NIL;
 
+	sift_catalog_write_guard("a connection dependency");
+
 	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
 	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(child));
 	scan = systable_beginscan(drel, DependDependerIndexId, true, NULL, 2, key);
