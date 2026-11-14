@@ -37,5 +37,11 @@ WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e' AND objid = 'sift.
 -- an index built by this release has no word cut at 255 bytes: nothing is left to REINDEX
 SELECT kind, object, required FROM sift.upgrade_commands() WHERE object::text ~ '^up_';
 
+-- the owner of the database is told how to preload the library, once; nothing is said when it is
+SELECT kind, object, required, command ~ '^ALTER DATABASE .* SET session_preload_libraries = ' AS command FROM sift.upgrade_commands() WHERE kind = 'preload';
+SET session_preload_libraries = 'pg_sift';
+SELECT count(*) AS preload_rows FROM sift.upgrade_commands() WHERE kind = 'preload';
+RESET session_preload_libraries;
+
 DROP TABLE up, up_tbl;
 DROP EXTENSION pg_sift CASCADE;

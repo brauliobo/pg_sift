@@ -334,7 +334,7 @@ check "to 4.3: both are blockers" test -n "$(row "$out" blocker one_col)" -a -n 
 check "to 4.3: the journal indexes and the grants of the scopes, which have no scope, are ok" test -z "$(row "$out" blocker grants_by_member)" -a -z "$(row "$out" blocker memberships_by_member)"
 out=$(uc --to 5.0 hop)
 check "to 5.0: neither is a blocker" test -z "$(row "$out" blocker one_col)" -a -z "$(row "$out" blocker hop_col)"
-check "the preflight lists no REINDEX for the scope indexes or their journals" test "$(q hop "SELECT count(*) FROM sift.upgrade_commands()")" == 0
+check "the preflight lists no REINDEX for the scope indexes or their journals" test "$(q hop "SELECT count(*) FROM sift.upgrade_commands() WHERE kind <> 'preload'")" == 0
 check "a scope of two paths the older library cannot read is a finding with an advice, not an error" test "$(uc --to 4.3 hop | grep -c -E '^blocker +hop_col .+')" == 1
 check "the advice for a scope names RESET (scope), the setting 14 and the REINDEX" grep -q -E '^blocker +one_col .*ALTER INDEX one_col RESET \(scope\), then SET sift\.col_format_minor = 14 and REINDEX INDEX one_col ' <<<"$(uc --to 4.3 hop)"
 # the setting alone cannot write a scope (it used to fail with "duplicate segment generation"): the build says so and names the RESET

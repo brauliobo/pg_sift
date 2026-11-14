@@ -254,7 +254,7 @@ if (( PG_MAJOR >= 18 )); then
 	check "a fresh $EXT install lists as many slugs as the updated 4.1 one" test "$(q life upg41 "SELECT count(*) FROM sift.refusal_slugs()")" == "$(q life freshext "SELECT count(*) FROM sift.refusal_slugs()")"
 	q life upg41 "SELECT sift.table_set_option('t41', 'hot_update', 'off')" >/dev/null
 	check "after the update the table of 4.1 reads its rows and takes an option" test "$(q life upg41 "SELECT count(*) || sift.table_get_option('t41', 'hot_update') FROM t41")" == 2000off
-	check "after the update the index whose key_cut came after its units is listed" test "$(q life upg33 "SELECT command FROM sift.upgrade_commands()")" == "REINDEX INDEX CONCURRENTLY public.kc_col;"
+	check "after the update the index whose key_cut came after its units is listed" test "$(q life upg33 "SELECT command FROM sift.upgrade_commands() WHERE kind <> 'preload'")" == "REINDEX INDEX CONCURRENTLY public.kc_col;"
 	q life upg31 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.1'" \
 		"CREATE TABLE kinds31 (id int, doc jsonb)" \
 		"INSERT INTO kinds31 SELECT i, jsonb_build_array(CASE i % 3 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{\"s\":null}'::jsonb ELSE '{\"s\":\"gift\"}'::jsonb END) FROM generate_series(1,8000) i" \
@@ -336,7 +336,7 @@ if (( PG_MAJOR >= 18 )); then
 	q life lock32 "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'lock32' AND pid <> pg_backend_pid() AND query LIKE '%pg_sleep(60)%'" >/dev/null; wait
 	check "the update with a locked index finishes and says to run the function after reconnecting" test "$rc/$(grep -c 'the check for what to REINDEX or rewrite did not run' <<<"$upd")/$(q life lock32 \
 		"SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 0/1/$EXT
-	check "the function answers once the lock is gone" test "$(q life lock32 "SELECT command FROM sift.upgrade_commands()")" == "REINDEX INDEX CONCURRENTLY public.f_1;"
+	check "the function answers once the lock is gone" test "$(q life lock32 "SELECT command FROM sift.upgrade_commands() WHERE kind <> 'preload'")" == "REINDEX INDEX CONCURRENTLY public.f_1;"
 	ROLLUPSQL="SELECT (SELECT requested FROM sift.col_rollup_state) = 0 AND (SELECT count(*) FROM sift.col_rollup_requests) = 0"
 	check "the rollup refresh views exist after a fresh $EXT install" test "$(q life freshext "$ROLLUPSQL")" == t
 	check "the rollup refresh views exist after ALTER EXTENSION UPDATE 3.0 to $EXT" test "$(q life upg "$ROLLUPSQL")" == t
