@@ -50,7 +50,12 @@ REINDEX INDEX events_col;
 ALTER INDEX events_col SET (superunit = 8);
 SELECT count(*) AS edges FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'events_col'::regclass AND refobjid = 'dim_a_col'::regclass;
 
--- off removes the connection, the text brings it back, RESET removes it again
+-- off removes the connection, the text brings it back, RESET removes it again: an index that holds segments keeps its connection (the ALTER is
+-- refused and changes no dependency), an index with none takes the change
+ALTER INDEX events_col SET (connect = 'off');
+ALTER INDEX events_col RESET (connect);
+SELECT edges('events_col') AS after_refused;
+TRUNCATE events;
 ALTER INDEX events_col SET (connect = 'off');
 SELECT edges('events_col') AS after_off;
 ALTER INDEX events_col SET (connect = 'dim_a_id -> dim_a(id)');

@@ -48,7 +48,7 @@ SELECT agree('p', 'common'), agree('p', 'moved');
 SELECT sift.verify(c.oid::regclass, true) FROM pg_class c WHERE c.relname ~ '^p[0-9]_body_idx' ORDER BY c.relname;
 DROP TABLE p;
 
--- an option change that alters the analyzer needs a REINDEX; reads, writes and verify say so
+-- an option change that alters the analyzer is refused while the index holds documents, and the table goes on working; the new index is built beside it
 CREATE TABLE a (id int, body text);
 INSERT INTO a SELECT i, 'running runner runs cats' FROM generate_series(1, 100) i;
 CREATE INDEX a_idx ON a USING sift (body);
@@ -57,7 +57,9 @@ ALTER INDEX a_idx SET (stemmer = 'english_stem');
 SELECT ids('a', 'run');
 INSERT INTO a VALUES (200, 'x');
 SELECT sift.verify('a_idx');
-REINDEX INDEX a_idx;
+DELETE FROM a WHERE id = 200;
+DROP INDEX a_idx;
+CREATE INDEX a_idx ON a USING sift (body) WITH (stemmer = 'english_stem');
 SELECT agree('a', 'runs'), agree('a', 'run');
 INSERT INTO a VALUES (200, 'x');
 SELECT sift.verify('a_idx', true);
@@ -69,6 +71,8 @@ REINDEX INDEX a_idx;
 SELECT sift.verify('a_idx', true);
 ALTER INDEX a_idx RESET (k1, stemmer);
 SELECT ids('a', 'run');
+DROP INDEX a_idx;
+CREATE INDEX a_idx ON a USING sift (body);
 REINDEX INDEX CONCURRENTLY a_idx;
 SELECT agree('a', 'runs'), agree('a', 'run');
 SELECT sift.verify('a_idx', true);

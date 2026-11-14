@@ -176,11 +176,14 @@ SELECT leaf, path, type FROM sift.col_leaves('ac_col') ORDER BY leaf;
    10 | rep[]  | text
 (11 rows)
 
--- the HINT of the NOTICE: paths = 'auto:' keeps the arrays and leaves the elements out (an empty value is auto, which chooses the elements again)
+-- paths = 'auto:' keeps the arrays and leaves the elements out (an empty value is auto, which chooses the elements again); the leaf list of an index that
+-- holds segments is not changed by an ALTER INDEX, the index is made again
 ALTER INDEX aa_col SET (paths = 'auto:');
-NOTICE:  sift_col index "aa_col": its segments were written with other options than it has now
-HINT:  REINDEX INDEX aa_col writes them again; until then queries do not scan the index.
-REINDEX INDEX aa_col;
+ERROR:  cannot change the column definitions of index "aa_col" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.aa_col: no scan is lost while it is built.
+DROP INDEX aa_col;
+CREATE INDEX aa_col ON aa USING sift_col (id, uniq, rep, mid, ids) WITH (paths = 'auto:');
 NOTICE:  sift_col index "aa_col": 1 automatic choice (array_lengths), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key; array_lengths = uniq, rep, mid, ids
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('aa_col');
@@ -203,7 +206,8 @@ SELECT leaf, path FROM sift.col_leaves('aa_col') ORDER BY leaf;
 (13 rows)
 
 ALTER INDEX aa_col SET (paths = '');
-REINDEX INDEX aa_col;
+DROP INDEX aa_col;
+CREATE INDEX aa_col ON aa USING sift_col (id, uniq, rep, mid, ids) WITH (paths = '');
 NOTICE:  sift_col index "aa_col": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; array_lengths = uniq, rep, mid, ids;
 array_elements = uniq, rep, mid, ids

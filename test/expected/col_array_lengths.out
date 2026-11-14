@@ -312,7 +312,11 @@ SELECT * FROM shapes('reindexed');
 (20 rows)
 
 ALTER INDEX al_col SET (array_lengths = off);
-REINDEX INDEX al_col;
+ERROR:  cannot change the column definitions of index "al_col" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.al_col: no scan is lost while it is built.
+DROP INDEX al_col;
+CREATE INDEX al_col ON al USING sift_col (id, grp, ia, ta, na, ma, lb) WITH (array_lengths = off);
 SELECT count(*) AS leaves_after_off FROM sift.col_leaves('al_col');
  leaves_after_off 
 ------------------
@@ -433,7 +437,8 @@ SELECT * FROM shapes('off merged');
 (20 rows)
 
 ALTER INDEX al_col SET (array_lengths = auto);
-REINDEX INDEX al_col;
+DROP INDEX al_col;
+CREATE INDEX al_col ON al USING sift_col (id, grp, ia, ta, na, ma, lb) WITH (array_lengths = auto);
 SELECT count(*) AS leaves_after_auto FROM sift.col_leaves('al_col');
  leaves_after_auto 
 -------------------

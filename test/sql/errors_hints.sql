@@ -49,7 +49,19 @@ RESET sift.table_write_buffer_limit;
 SELECT expect($$SELECT * FROM sift.explain_why('select 1; select 2')$$);
 SELECT expect('SELECT sift.score(ctid) FROM many');
 
-DROP TABLE one, many, tbl, docs;
+-- an ALTER INDEX that changes what the segments were written with is refused once the index holds a segment, and the table goes on working;
+-- an index with no segment takes it, and the first write uses the new options
+CREATE TABLE alt (id int, v text);
+CREATE INDEX alt_idx ON alt USING sift (v);
+SELECT expect('ALTER INDEX alt_idx SET (prefix_index = 2)');
+INSERT INTO alt VALUES (1, 'alpha beta');
+SELECT count(*) FROM alt WHERE v @@> 'al*';
+SELECT expect('ALTER INDEX alt_idx SET (prefix_index = 3)');
+SELECT expect('ALTER INDEX alt_idx RESET (prefix_index)');
+INSERT INTO alt VALUES (2, 'alpha gamma');
+SELECT count(*) FROM alt WHERE v @@> 'al*';
+
+DROP TABLE one, many, tbl, docs, alt;
 DROP FUNCTION expect(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

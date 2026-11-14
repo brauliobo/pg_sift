@@ -37,7 +37,8 @@ FROM shapes, LATERAL sift.explain_why(q) w ORDER BY n;
 
 -- the lists beside the arrays: all four on the index
 ALTER INDEX ev_col SET (paths = '+tags[] int4');
-REINDEX INDEX ev_col;
+DROP INDEX ev_col;
+CREATE INDEX ev_col ON ev USING sift_col (id, dim_a_id, d, tags, amount) WITH (paths = '+tags[] int4');
 SELECT n, w.used, w.slug, rows_md5(q, true) = rows_md5(q, false) AS same_rows
 FROM shapes, LATERAL sift.explain_why(q) w ORDER BY n;
 

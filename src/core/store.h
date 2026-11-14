@@ -132,6 +132,26 @@ typedef struct SiftDirSnapshot
 	SiftSegEntry segs[SIFT_MAX_SEGMENTS];
 } SiftDirSnapshot;
 
+/*
+ * Do the segments of the index hold documents written under other options than hash (the analyzer of a BM25 index, the leaf list of a column index)? An index with
+ * no such segment has written nothing under the options of its metapage, so they do not count: its first write takes the current ones (sift_lane_refresh)
+ */
+static inline bool
+sift_dir_layout_differs(const SiftDirSnapshot *snap, uint32 hash)
+{
+	return snap->meta.analyzer_hash != hash && sift_segs_have_layout(snap->segs, snap->nsegs);
+}
+
+/* The one error of an index whose segments were written under other options than it has (a read or a write): 55000, REINDEX; what names the options, "analyzer options" or "column definitions" */
+static inline void
+sift_lane_layout_error(Relation index, const char *what)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+			 errmsg("index \"%s\" was built with other %s", RelationGetRelationName(index), what),
+			 errhint("Use REINDEX to apply the new options.")));
+}
+
 /* The bytes of a directory copy that matter: the segments it lists, not the room for the most the directory holds */
 static inline Size
 sift_dir_bytes(const SiftDirSnapshot *dir)

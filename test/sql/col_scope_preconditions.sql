@@ -1,7 +1,6 @@
 -- What a scope declaration needs of its relations and its journals is said when the index is made or altered, not when it is first read: a temporary table of pairs, a relation with
--- row-level security, a scope of two paths without its journals (refused), a partition, an ALTER INDEX that declares a scope the segments do not hold, a journal that is not
--- one, and an ALTER INDEX that would take the journal away. The index that ALTER INDEX leaves unwritten is not scanned (a plan that cost it read the segments with the leaf list of
--- the options and failed with a corrupted segment): every statement over its table runs, and sift.explain_why says what to do.
+-- row-level security, a scope of two paths without its journals (refused), a partition, an ALTER INDEX that declares or gives up a scope the segments do not hold (refused), a journal
+-- that is not one, and an ALTER INDEX that would take the journal away.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -14,8 +13,6 @@ CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
 $$ DECLARE hint text; detail text; BEGIN EXECUTE stmt; RETURN 'ok';
    EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT, detail = PG_EXCEPTION_DETAIL;
    RETURN sqlerrm || coalesce(' {' || nullif(detail, '') || '}', '') || coalesce(' [' || hint || ']', ''); END $$;
-CREATE FUNCTION scope_reasons(q text) RETURNS SETOF text LANGUAGE sql AS
-$$ SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') FROM sift.explain_why(q) WHERE arm = 'scope' $$;
 
 -- a temporary table of pairs: the index would be dropped with it when the session ends
 CREATE TEMP TABLE pairs_temp (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s));
@@ -55,14 +52,11 @@ CREATE TABLE part_events_1 PARTITION OF part_events FOR VALUES FROM (0) TO (1000
 CREATE INDEX part_col ON part_events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 DROP TABLE part_events;
 
--- ALTER INDEX .. RESET (scope) leaves segments that hold a scope the index no longer declares: the notice says REINDEX, and the statements over the table run
+-- ALTER INDEX .. RESET (scope) would leave segments that hold a scope the index no longer declares: it is refused, and the statements over the table run on the scope
 CREATE INDEX altered_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 ALTER INDEX altered_col RESET (scope);
 SELECT count(*) AS by_key FROM events WHERE id = 5;
 SELECT sum(amount) AS total FROM events;
-SELECT sum(e.amount) AS tenant_total FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3);
-SELECT * FROM scope_reasons($q$SELECT sum(e.amount) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)$q$);
-REINDEX INDEX altered_col;
 SELECT sum(e.amount) AS tenant_total FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3);
 DROP INDEX altered_col;
 
@@ -76,5 +70,5 @@ SELECT try('ALTER INDEX tenant_scope_journal SET (track_changes = ''ctid'')') AS
 DROP INDEX altered_col;
 
 DROP TABLE events, tenant_scope, pairs_unjournaled, pairs_rls, grants, memberships CASCADE;
-DROP FUNCTION try(text), scope_reasons(text);
+DROP FUNCTION try(text);
 DROP EXTENSION pg_sift;

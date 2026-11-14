@@ -40,7 +40,11 @@ FROM shapes, LATERAL sift.explain_why(q) w ORDER BY n;
 
 -- the lists beside the arrays: all four on the index
 ALTER INDEX ev_col SET (paths = '+tags[] int4');
-REINDEX INDEX ev_col;
+ERROR:  cannot change the column definitions of index "ev_col" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.ev_col: no scan is lost while it is built.
+DROP INDEX ev_col;
+CREATE INDEX ev_col ON ev USING sift_col (id, dim_a_id, d, tags, amount) WITH (paths = '+tags[] int4');
 SELECT n, w.used, w.slug, rows_md5(q, true) = rows_md5(q, false) AS same_rows
 FROM shapes, LATERAL sift.explain_why(q) w ORDER BY n;
  n | used | slug | same_rows 

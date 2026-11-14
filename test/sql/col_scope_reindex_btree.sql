@@ -56,22 +56,20 @@ REINDEX INDEX CONCURRENTLY facts_col;
 SELECT edges(), pred();
 SELECT * FROM group_read(9);
 
--- using cannot name another btree than the recorded one (ALTER INDEX is refused), and does where nothing is recorded
+-- using cannot name another btree than the recorded one (ALTER INDEX is refused), and does where nothing is recorded (the index made again)
 SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_active'')') AS other_btree;
-ALTER INDEX facts_col RESET (scope);
-ALTER INDEX facts_col SET (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_active');
+DROP INDEX facts_col;
 SET client_min_messages = notice;
-REINDEX INDEX facts_col;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_active');
 SET client_min_messages = warning;
 SELECT edges(), pred();
 -- the reads follow the partial btree now: the soft deleted pairs are no pairs
 SELECT scope_rows < join_rows AS fewer FROM group_read(9);
 
--- the rule chooses again where nothing is recorded: after RESET (scope) and SET (scope = ..)
-ALTER INDEX facts_col RESET (scope);
-ALTER INDEX facts_col SET (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
+-- the rule chooses again where nothing is recorded: in the index made again
+DROP INDEX facts_col;
 SET client_min_messages = notice;
-REINDEX INDEX facts_col;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
 SET client_min_messages = warning;
 SELECT edges(), pred();
 

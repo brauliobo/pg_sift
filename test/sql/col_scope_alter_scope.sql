@@ -1,6 +1,6 @@
 -- ALTER INDEX .. SET (scope = ..) on a sift_col index that has segments would leave them written with another leaf list than the index has, and every scan of it would stop until a REINDEX
--- (the plans of the table go without it). It is refused, and the index goes on serving: the replacement is made beside it (CREATE INDEX CONCURRENTLY, then DROP INDEX). On an index with no
--- segment the ALTER is let through (its REINDEX is empty), and RESET (scope), the way to give a scope up, stays an ALTER that says what the REINDEX does.
+-- (the plans of the table go without it). It is refused, and the index goes on serving: the replacement is made beside it (CREATE INDEX CONCURRENTLY, then DROP INDEX). So is RESET (scope).
+-- On an index with no segment the ALTER is let through (it has nothing to write again).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -48,9 +48,8 @@ SELECT * FROM plan_of('SELECT kind_amount, count(*) FROM (SELECT amount AS kind_
 DROP INDEX facts_col;
 SELECT * FROM plan_of('SELECT kind_amount, count(*) FROM (SELECT amount AS kind_amount FROM facts) t GROUP BY 1');
 
--- RESET (scope) gives the scope up: the index is rewritten by its REINDEX, which says so
+-- RESET (scope) is refused too: the scope is given up by a replacement without it
 SELECT try('ALTER INDEX facts_scope RESET (scope)') AS reset_scope;
-SELECT try('REINDEX INDEX facts_scope') AS reindex;
 SELECT * FROM plan_of('SELECT kind_amount, count(*) FROM (SELECT amount AS kind_amount FROM facts) t GROUP BY 1');
 
 DROP TABLE facts, pairs;

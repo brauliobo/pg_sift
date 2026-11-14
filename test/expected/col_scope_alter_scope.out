@@ -1,6 +1,6 @@
 -- ALTER INDEX .. SET (scope = ..) on a sift_col index that has segments would leave them written with another leaf list than the index has, and every scan of it would stop until a REINDEX
--- (the plans of the table go without it). It is refused, and the index goes on serving: the replacement is made beside it (CREATE INDEX CONCURRENTLY, then DROP INDEX). On an index with no
--- segment the ALTER is let through (its REINDEX is empty), and RESET (scope), the way to give a scope up, stays an ALTER that says what the REINDEX does.
+-- (the plans of the table go without it). It is refused, and the index goes on serving: the replacement is made beside it (CREATE INDEX CONCURRENTLY, then DROP INDEX). So is RESET (scope).
+-- On an index with no segment the ALTER is let through (it has nothing to write again).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -48,9 +48,9 @@ SELECT * FROM plan_of('SELECT kind_amount, count(*) FROM (SELECT amount AS kind_
 
 -- the index has segments: the scope is refused, and nothing changed
 SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> pairs(dim_a_id, group_id)'')') AS with_segments;
-                                                                                                          with_segments                                                                                                          
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- sift_col index "facts_col": its segments were written with other options than this ALTER INDEX gives it [CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX facts_col: no scan is lost while it is built.]
+                                                                                                with_segments                                                                                                 
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ cannot change the column definitions of index "facts_col" while it holds data [CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.facts_col: no scan is lost while it is built.]
 (1 row)
 
 SELECT reloptions IS NOT DISTINCT FROM (SELECT reloptions FROM pg_class WHERE relname = 'facts_col') AS unchanged, bool_and(o NOT LIKE 'scope=%') AS no_scope
@@ -88,17 +88,11 @@ SELECT * FROM plan_of('SELECT kind_amount, count(*) FROM (SELECT amount AS kind_
  facts_scope | 
 (1 row)
 
--- RESET (scope) gives the scope up: the index is rewritten by its REINDEX, which says so
+-- RESET (scope) is refused too: the scope is given up by a replacement without it
 SELECT try('ALTER INDEX facts_scope RESET (scope)') AS reset_scope;
- reset_scope 
--------------
- ok
-(1 row)
-
-SELECT try('REINDEX INDEX facts_scope') AS reindex;
- reindex 
----------
- ok
+                                                                                                   reset_scope                                                                                                    
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ cannot change the column definitions of index "facts_scope" while it holds data [CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.facts_scope: no scan is lost while it is built.]
 (1 row)
 
 SELECT * FROM plan_of('SELECT kind_amount, count(*) FROM (SELECT amount AS kind_amount FROM facts) t GROUP BY 1');

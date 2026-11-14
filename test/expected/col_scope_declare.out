@@ -318,67 +318,88 @@ SELECT format, kind FROM sift.col_segments('events_col') WHERE kind = 'immutable
      45 | immutable
 (2 rows)
 
--- off removes the declaration (the leaf stays in the segments until the next REINDEX), the text brings it back, RESET removes it again
-ALTER INDEX events_col SET (scope = 'off');
-NOTICE:  sift_col index "events_col": its segments were written with other options than it has now
-HINT:  REINDEX INDEX events_col writes them again; until then queries do not scan the index.
-SELECT edges('events_col') AS after_off;
+-- off, a new declaration and RESET change the leaf list: an index that has segments refuses them and keeps its dependencies
+SELECT try('ALTER INDEX events_col SET (scope = ''off'')');
+                                                                                                      try                                                                                                       
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ cannot change the column definitions of index "events_col" while it holds data [CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.events_col: no scan is lost while it is built.]
+(1 row)
+
+SELECT try('ALTER INDEX events_col RESET (scope)');
+                                                                                                      try                                                                                                       
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ cannot change the column definitions of index "events_col" while it holds data [CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.events_col: no scan is lost while it is built.]
+(1 row)
+
+SELECT edges('events_col') AS after_refused;
+             after_refused              
+----------------------------------------
+ tenant_scope_journal tenant_scope_pkey
+(1 row)
+
+-- an index with none takes them: off removes the declaration, the text brings it back, RESET removes it again
+CREATE TABLE events_empty (LIKE events);
+CREATE INDEX events_empty_col ON events_empty USING sift_col (id, dim_a_id, created_at, kind, label, value_num)
+	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
+NOTICE:  scope "tenant_id": 0 entries for 0 rows (0.00 per row)
+NOTICE:  sift_col index "events_empty_col": 1 automatic choice (key_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; key_columns = dim_a_id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_empty_col');
+NOTICE:  sift_col index "events_empty_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
+ALTER INDEX events_empty_col SET (scope = 'off');
+SELECT edges('events_empty_col') AS after_off;
  after_off 
 -----------
  none
 (1 row)
 
-ALTER INDEX events_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+ALTER INDEX events_empty_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-SELECT edges('events_col') AS after_set;
+SELECT edges('events_empty_col') AS after_set;
                after_set                
 ----------------------------------------
  tenant_scope_journal tenant_scope_pkey
 (1 row)
 
-SELECT try('ALTER INDEX events_col SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, nokey)'')');
+SELECT try('ALTER INDEX events_empty_col SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, nokey)'')');
                                  try                                 
 ---------------------------------------------------------------------
  scope "tenant_id": relation "tenant_scope" has no column "nokey" []
 (1 row)
 
-SELECT edges('events_col') AS after_bad_set;
+SELECT edges('events_empty_col') AS after_bad_set;
              after_bad_set              
 ----------------------------------------
  tenant_scope_journal tenant_scope_pkey
 (1 row)
 
-ALTER INDEX events_col RESET (scope);
-NOTICE:  sift_col index "events_col": its segments were written with other options than it has now
-HINT:  REINDEX INDEX events_col writes them again; until then queries do not scan the index.
-SELECT edges('events_col') AS after_reset;
+ALTER INDEX events_empty_col RESET (scope);
+SELECT edges('events_empty_col') AS after_reset;
  after_reset 
 -------------
  none
 (1 row)
 
-REINDEX INDEX events_col;
+DROP TABLE events_empty;
+-- a scope is not declared by ALTER INDEX on an index that has segments (it would stop every scan): the index is made again
+DROP INDEX events_col;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num);
 NOTICE:  sift_col index "events_col": 3 automatic choices (key_columns, rollup_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; rollup_columns = kind, label; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
-SELECT format, kind FROM sift.col_segments('events_col') WHERE kind = 'immutable';
- format |   kind    
---------+-----------
-     37 | immutable
-(1 row)
-
 SELECT count(*) AS scope_leaves FROM sift.col_leaves('events_col') WHERE path LIKE '%#scope';
  scope_leaves 
 --------------
             0
 (1 row)
 
--- a scope is not declared by ALTER INDEX on an index that has segments (it would stop every scan): the index is made again
 SELECT try('ALTER INDEX events_col SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-                                                                                                                try                                                                                                                
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- sift_col index "events_col": its segments were written with other options than this ALTER INDEX gives it [CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX events_col: no scan is lost while it is built.]
+                                                                                                      try                                                                                                       
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ cannot change the column definitions of index "events_col" while it holds data [CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.events_col: no scan is lost while it is built.]
 (1 row)
 
 DROP INDEX events_col;
@@ -495,20 +516,22 @@ SELECT sift.col_verify('events_two', true);
  
 (1 row)
 
-ALTER INDEX events_two SET (connect = 'off');
-NOTICE:  sift_col index "events_two": its segments were written with other options than it has now
-HINT:  REINDEX INDEX events_two writes them again; until then queries do not scan the index.
-SELECT edges('events_two') AS after_connect_off;
-                                              after_connect_off                                              
--------------------------------------------------------------------------------------------------------------
- other.region_scope_journal other.region_scope_region_id_dim_a_id_key tenant_scope_journal tenant_scope_pkey
+SELECT try('ALTER INDEX events_two SET (connect = ''off'')');
+                                                                                                      try                                                                                                       
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ cannot change the column definitions of index "events_two" while it holds data [CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.events_two: no scan is lost while it is built.]
 (1 row)
 
-ALTER INDEX events_two SET (connect = 'dim_a_id -> dim_a(id)');
+SELECT edges('events_two') AS after_connect_off_refused;
+                                               after_connect_off_refused                                               
+-----------------------------------------------------------------------------------------------------------------------
+ dim_a_col other.region_scope_journal other.region_scope_region_id_dim_a_id_key tenant_scope_journal tenant_scope_pkey
+(1 row)
+
 SELECT try('ALTER INDEX events_two SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')');
-                                                                                                                try                                                                                                                
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- sift_col index "events_two": its segments were written with other options than this ALTER INDEX gives it [CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX events_two: no scan is lost while it is built.]
+                                                                                                      try                                                                                                       
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ cannot change the column definitions of index "events_two" while it holds data [CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.events_two: no scan is lost while it is built.]
 (1 row)
 
 SELECT edges('events_two') AS after_one_scope_refused;
@@ -517,13 +540,16 @@ SELECT edges('events_two') AS after_one_scope_refused;
  dim_a_col other.region_scope_journal other.region_scope_region_id_dim_a_id_key tenant_scope_journal tenant_scope_pkey
 (1 row)
 
-ALTER INDEX events_two RESET (scope);
-NOTICE:  sift_col index "events_two": its segments were written with other options than it has now
-HINT:  REINDEX INDEX events_two writes them again; until then queries do not scan the index.
+SELECT try('ALTER INDEX events_two RESET (scope)');
+                                                                                                      try                                                                                                       
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ cannot change the column definitions of index "events_two" while it holds data [CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.events_two: no scan is lost while it is built.]
+(1 row)
+
 SELECT edges('events_two') AS after_scope_reset;
- after_scope_reset 
--------------------
- dim_a_col
+                                                   after_scope_reset                                                   
+-----------------------------------------------------------------------------------------------------------------------
+ dim_a_col other.region_scope_journal other.region_scope_region_id_dim_a_id_key tenant_scope_journal tenant_scope_pkey
 (1 row)
 
 DROP INDEX events_two;

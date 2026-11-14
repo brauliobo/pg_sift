@@ -103,7 +103,7 @@ SELECT sift.verify(c.oid::regclass, true) FROM pg_class c WHERE c.relname ~ '^p[
 (4 rows)
 
 DROP TABLE p;
--- an option change that alters the analyzer needs a REINDEX; reads, writes and verify say so
+-- an option change that alters the analyzer is refused while the index holds documents, and the table goes on working; the new index is built beside it
 CREATE TABLE a (id int, body text);
 INSERT INTO a SELECT i, 'running runner runs cats' FROM generate_series(1, 100) i;
 CREATE INDEX a_idx ON a USING sift (body);
@@ -114,21 +114,25 @@ SELECT agree('a', 'runs'), agree('a', 'run');
 (1 row)
 
 ALTER INDEX a_idx SET (stemmer = 'english_stem');
-WARNING:  sift index "a_idx": it was built with other analyzer options
-DETAIL:  Queries and inserts on its table fail until the index is rebuilt with REINDEX.
-HINT:  For no downtime, CREATE INDEX CONCURRENTLY a new index with the options, then drop this one.
+ERROR:  cannot change the analyzer options of index "a_idx" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.a_idx: no scan is lost while it is built.
 SELECT ids('a', 'run');
-ERROR:  index "a_idx" was built with other analyzer options
-HINT:  Use REINDEX to apply the new options.
-CONTEXT:  SQL statement "SELECT count(*) || ':' || coalesce(sum(id), 0) FROM a WHERE body @@> 'run'"
-PL/pgSQL function ids(regclass,text) line 4 at EXECUTE
+ ids 
+-----
+ 0:0
+(1 row)
+
 INSERT INTO a VALUES (200, 'x');
-ERROR:  index "a_idx" was built with other analyzer options
-HINT:  Use REINDEX to apply the new options.
 SELECT sift.verify('a_idx');
-ERROR:  sift index "a_idx" was built with other options
-HINT:  REINDEX the index after changing k1, b or analyzer options.
-REINDEX INDEX a_idx;
+ verify 
+--------
+ 
+(1 row)
+
+DELETE FROM a WHERE id = 200;
+DROP INDEX a_idx;
+CREATE INDEX a_idx ON a USING sift (body) WITH (stemmer = 'english_stem');
 SELECT agree('a', 'runs'), agree('a', 'run');
   agree   |  agree   
 ----------+----------
@@ -161,14 +165,17 @@ SELECT sift.verify('a_idx', true);
 (1 row)
 
 ALTER INDEX a_idx RESET (k1, stemmer);
-WARNING:  sift index "a_idx": it was built with other analyzer options
-DETAIL:  Queries and inserts on its table fail until the index is rebuilt with REINDEX.
-HINT:  For no downtime, CREATE INDEX CONCURRENTLY a new index with the options, then drop this one.
+ERROR:  cannot change the analyzer options of index "a_idx" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.a_idx: no scan is lost while it is built.
 SELECT ids('a', 'run');
-ERROR:  index "a_idx" was built with other analyzer options
-HINT:  Use REINDEX to apply the new options.
-CONTEXT:  SQL statement "SELECT count(*) || ':' || coalesce(sum(id), 0) FROM a WHERE body @@> 'run'"
-PL/pgSQL function ids(regclass,text) line 4 at EXECUTE
+   ids    
+----------
+ 100:5050
+(1 row)
+
+DROP INDEX a_idx;
+CREATE INDEX a_idx ON a USING sift (body);
 REINDEX INDEX CONCURRENTLY a_idx;
 SELECT agree('a', 'runs'), agree('a', 'run');
   agree   | agree 

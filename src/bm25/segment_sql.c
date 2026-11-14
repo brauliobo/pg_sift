@@ -472,7 +472,7 @@ bm25_verify(PG_FUNCTION_ARGS)
 	opts = sift_index_options(index);
 	sift_analyzer_config_from_index(index, &cfg);
 	if (snap->meta.k1 != (float4) opts->k1 || snap->meta.b != (float4) opts->b ||
-		snap->meta.analyzer_hash != cfg.hash)
+		sift_dir_layout_differs(snap, cfg.hash))
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("sift index \"%s\" was built with other options", RelationGetRelationName(index)),

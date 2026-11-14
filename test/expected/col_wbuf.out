@@ -26,19 +26,6 @@ SELECT count(*) AS segments FROM sift._test_col_wbuf_segments('t_idx');
         0
 (1 row)
 
--- a definition that is not the index's is refused with the REINDEX hint
-SELECT sift._test_col_wbuf_prepare('t_idx', 1) IS NOT NULL AS stale;
- stale 
--------
- t
-(1 row)
-
-SELECT expect($$ SELECT sift._test_col_wbuf_append('t_idx', 7, 0, 1) $$);
-                                              expect                                              
---------------------------------------------------------------------------------------------------
- N: index "t_idx" was built with other column definitions | Use REINDEX to apply the new options.
-(1 row)
-
 SELECT sift._test_col_wbuf_prepare('t_idx') IS NOT NULL AS prepared;
  prepared 
 ----------
@@ -117,6 +104,25 @@ SELECT count(*) AS records, count(DISTINCT id) AS ids FROM sift._test_col_wbuf_r
  records | ids  
 ---------+------
     3000 | 3000
+(1 row)
+
+-- a definition that is not the one of the segments is refused with the REINDEX hint (an index with no segment takes the definition of its first write)
+SELECT sift._test_col_wbuf_prepare('t_idx', 1) IS NOT NULL AS stale;
+ stale 
+-------
+ t
+(1 row)
+
+SELECT expect($$ SELECT sift._test_col_wbuf_append('t_idx', 7, 0, 1) $$);
+                                              expect                                              
+--------------------------------------------------------------------------------------------------
+ N: index "t_idx" was built with other column definitions | Use REINDEX to apply the new options.
+(1 row)
+
+SELECT sift._test_col_wbuf_prepare('t_idx') IS NOT NULL AS prepared_again;
+ prepared_again 
+----------------
+ t
 (1 row)
 
 -- appends that find the lane tails locked go to other lanes

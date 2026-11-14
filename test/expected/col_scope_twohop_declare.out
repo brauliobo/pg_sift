@@ -214,26 +214,23 @@ SELECT edges('facts_col') AS after_other_option;
  grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member
 (1 row)
 
--- two partial unique btrees on the columns of the joined path: REINDEX keeps the recorded one; where none is recorded the pairs are a guess, which SET (scope) says, naming the index in USING settles it, ALTER keeps the recorded one
+-- two partial unique btrees on the columns of the joined path: REINDEX keeps the recorded one; where none is recorded the pairs are a guess, which CREATE INDEX says, naming the index in USING settles it, ALTER keeps the recorded one
 SELECT try('REINDEX INDEX facts_col') AS two_partial;
  two_partial 
 -------------
  ok
 (1 row)
 
-BEGIN;
-ALTER INDEX facts_col RESET (scope);
-SELECT try('ALTER INDEX facts_col SET (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS two_partial_guess;
+SELECT try('CREATE INDEX facts_guess ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS two_partial_guess;
                                                                                             two_partial_guess                                                                                            
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  scope "tenant_id": "grants" has two partial unique btrees on (group_id, tenant_id) [The predicate of the btree says which rows are pairs: name the one that does with USING <index> after the columns.]
 (1 row)
 
-ROLLBACK;
 SELECT try('ALTER INDEX facts_col SET (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using grants_other via memberships(group_id, dim_a_id)'')') AS using_other;
-                                                                                                                       using_other                                                                                                                       
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "tenant_id": the scope segments were written under the pairs of "grants_group", not "grants_other" [Change the btree that defines the pairs with DROP INDEX and CREATE INDEX of this index, or REINDEX after RESET (scope) and SET (scope = ..).]
+                                                                                                                        using_other                                                                                                                        
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "tenant_id": the scope segments were written under the pairs of "grants_group", not "grants_other" [Change the btree that defines the pairs with DROP INDEX and CREATE INDEX of this index, or make the index again without the scope and with it.]
 (1 row)
 
 ALTER INDEX facts_col SET (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using grants_group via memberships(group_id, dim_a_id)');
@@ -243,18 +240,39 @@ SELECT edges('facts_col') AS after_using_recorded;
  grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member
 (1 row)
 
-ALTER INDEX facts_col RESET (scope);
+-- RESET (scope) and SET (scope = 'off') are refused on an index that has segments: the replacement is made again
+SELECT try('ALTER INDEX facts_col RESET (scope)') AS reset_refused;
+                                                                                                reset_refused                                                                                                 
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ cannot change the column definitions of index "facts_col" while it holds data [CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.facts_col: no scan is lost while it is built.]
+(1 row)
+
+SELECT edges('facts_col') AS after_reset_refused;
+                                         after_reset_refused                                          
+------------------------------------------------------------------------------------------------------
+ grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member
+(1 row)
+
+DROP INDEX facts_col;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad);
 SELECT edges('facts_col') AS after_reset;
  after_reset 
 -------------
  none
 (1 row)
 
+DROP INDEX facts_col;
 SET client_min_messages = notice;
-ALTER INDEX facts_col SET (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using grants_other via memberships(group_id, dim_a_id)');
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using grants_other via memberships(group_id, dim_a_id)');
 NOTICE:  scope "tenant_id": the direct pairs of "grants" (dim_a_id, tenant_id) are the rows of its unique btree "grants_direct" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": the joined pairs of "grants" (group_id, tenant_id) are the rows of its unique btree "grants_other" that satisfy (id > 0)
 NOTICE:  scope "tenant_id": the via relation of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
+NOTICE:  scope "tenant_id": 1,120 entries for 2,000 rows (0.56 per row)
+NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
+NOTICE:  sift_col index "facts_col" has a scope: column format minor 49, which a library before 5.0 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
 SET client_min_messages = warning;
 SELECT edges('facts_col') AS after_using_other;
                                           after_using_other                                           
@@ -262,15 +280,15 @@ SELECT edges('facts_col') AS after_using_other;
  grants_by_group grants_by_member grants_direct grants_other memberships_active memberships_by_member
 (1 row)
 
-ALTER INDEX facts_col SET (scope = 'off');
-SELECT edges('facts_col') AS after_off;
- after_off 
------------
- none
+SELECT try('ALTER INDEX facts_col SET (scope = ''off'')') AS off_refused;
+                                                                                                 off_refused                                                                                                  
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ cannot change the column definitions of index "facts_col" while it holds data [CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.facts_col: no scan is lost while it is built.]
 (1 row)
 
+DROP INDEX facts_col;
 DROP INDEX grants_other;
-ALTER INDEX facts_col SET (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 SELECT edges('facts_col') AS after_set;
                                               after_set                                               
 ------------------------------------------------------------------------------------------------------
@@ -287,7 +305,7 @@ SELECT count(*) AS edges_after_drop FROM pg_depend WHERE classid = 'pg_class'::r
 (1 row)
 
 SELECT :'ddl' AS restore \gexec
-CREATE INDEX facts_col ON public.facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (track_changes=id, point_tid_columns='auto: id', superunit='8', key_columns=auto, scope='tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)')
+CREATE INDEX facts_col ON public.facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope='tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(3)', track_changes=id, point_tid_columns='auto: id', key_columns=auto)
 SELECT edges('facts_col') AS after_restore;
                                             after_restore                                             
 ------------------------------------------------------------------------------------------------------

@@ -248,16 +248,18 @@ SELECT sift.parse_query('Häuser AND "Hund und Katze" OR Wet*', 'dg_idx'::regcla
  wet* OR haus AND "hund katz"
 (1 row)
 
--- the metapage keeps the configuration the index was built with: the option naming another one is another analyzer, which verify names
+-- the metapage keeps the configuration the index was built with: the option naming another one is another analyzer, which the ALTER refuses;
+-- verify names the configuration of an index whose scoring options differ
 ALTER INDEX dg_idx SET (stemmer = 'french');
-WARNING:  sift index "dg_idx": it was built with other analyzer options
-DETAIL:  Queries and inserts on its table fail until the index is rebuilt with REINDEX.
-HINT:  For no downtime, CREATE INDEX CONCURRENTLY a new index with the options, then drop this one.
+ERROR:  cannot change the analyzer options of index "dg_idx" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.dg_idx: no scan is lost while it is built.
+ALTER INDEX dg_idx SET (k1 = 2.0);
 SELECT sift.verify('dg_idx');
 ERROR:  sift index "dg_idx" was built with other options
-DETAIL:  The index was built with text search configuration "german", the stemmer option names "french".
+DETAIL:  The index was built with text search configuration "german", the stemmer option names "german".
 HINT:  REINDEX the index after changing k1, b or analyzer options.
-ALTER INDEX dg_idx SET (stemmer = 'german');
+ALTER INDEX dg_idx RESET (k1);
 SELECT sift.verify('dg_idx', true);
  verify 
 --------

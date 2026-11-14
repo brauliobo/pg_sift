@@ -124,15 +124,16 @@ SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) F
 	   (SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM small_events e JOIN small_scope s ON s.dim_a_id = e.dim_a_id) AS entries_are_the_join;
 
 -- a lowered sift.col_format_minor cannot write the scope segments (the REINDEX that the rollback advice used to give for a scope failed on a duplicate segment generation): it is refused,
--- the index stays as it was, and the advice that works is RESET (scope) first
+-- the index stays as it was, and the advice that works is a replacement without the scope (RESET (scope) is refused on an index that has segments)
 SET sift.col_format_minor = 14;
 REINDEX INDEX small_col;
 CREATE INDEX small_low ON small_events USING sift_col (id, dim_a_id, kind) WITH (scope = 'tenant_id: dim_a_id -> small_scope(dim_a_id, tenant_id)');
 RESET sift.col_format_minor;
 SELECT sift.col_verify('small_col', true);
 ALTER INDEX small_col RESET (scope);
+DROP INDEX small_col;
 SET sift.col_format_minor = 14;
-REINDEX INDEX small_col;
+CREATE INDEX small_col ON small_events USING sift_col (id, dim_a_id, created_at, kind, value_num);
 RESET sift.col_format_minor;
 SELECT max((to_jsonb(s)->>'format')::int) AS column_format FROM sift.col_segments('small_col') s;
 

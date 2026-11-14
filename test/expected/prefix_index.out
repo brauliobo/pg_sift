@@ -162,15 +162,19 @@ SELECT sift.verify('px_idx', true);
  
 (1 row)
 
--- the option is part of the analyzer: switching it needs a REINDEX
+-- the option is part of the analyzer: an index that holds documents keeps it, and the new one is built beside it
 ALTER INDEX pn_idx SET (prefix_index = 2);
-WARNING:  sift index "pn_idx": it was built with other analyzer options
-DETAIL:  Queries and inserts on its table fail until the index is rebuilt with REINDEX.
-HINT:  For no downtime, CREATE INDEX CONCURRENTLY a new index with the options, then drop this one.
+ERROR:  cannot change the analyzer options of index "pn_idx" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.pn_idx: no scan is lost while it is built.
 SELECT count(*) FROM pn WHERE body @@> 'al*';
-ERROR:  index "pn_idx" was built with other analyzer options
-HINT:  Use REINDEX to apply the new options.
-REINDEX INDEX pn_idx;
+ count 
+-------
+   439
+(1 row)
+
+DROP INDEX pn_idx;
+CREATE INDEX pn_idx ON pn USING sift (body) WITH (prefix_index = 2);
 SELECT count(*) FROM pn WHERE body @@> 'al*';
  count 
 -------

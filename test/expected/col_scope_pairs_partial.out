@@ -252,30 +252,34 @@ SELECT btree FROM sift._test_scope_legs('facts_col', 0);
  memberships_active
 (1 row)
 
--- a second partial unique btree made later changes nothing: REINDEX keeps the recorded one. Where none is recorded the pairs are a guess, which SET (scope) says; USING names the one
+-- a second partial unique btree made later changes nothing: REINDEX keeps the recorded one. Where none is recorded the pairs are a guess, which CREATE INDEX says; USING names the one
 SELECT try('REINDEX INDEX facts_col') AS two_partial;
  two_partial 
 -------------
  ok
 (1 row)
 
-BEGIN;
-ALTER INDEX facts_col RESET (scope);
-SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id)'')') AS two_partial_guess;
+SELECT try('CREATE INDEX facts_guess ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id)'')') AS two_partial_guess;
                                                                                              two_partial_guess                                                                                              
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  scope "group_id": "memberships" has two partial unique btrees on (dim_a_id, group_id) [The predicate of the btree says which rows are pairs: name the one that does with USING <index> after the columns.]
 (1 row)
 
-ROLLBACK;
-SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_active'')') AS using_active;
- using_active 
---------------
- ok
+SELECT try('CREATE INDEX facts_guess ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_missing'')') AS using_unknown;
+                                                  using_unknown                                                  
+-----------------------------------------------------------------------------------------------------------------
+ scope "group_id": "memberships" has no index "memberships_missing" [USING names a btree of the scope relation.]
 (1 row)
 
+SELECT try('CREATE INDEX facts_guess ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using facts_pkey'')') AS using_not_a_pair_btree;
+                                         using_not_a_pair_btree                                         
+--------------------------------------------------------------------------------------------------------
+ scope "group_id": "memberships" has no index "facts_pkey" [USING names a btree of the scope relation.]
+(1 row)
+
+DROP INDEX facts_col;
 SET client_min_messages = notice;
-REINDEX INDEX facts_col;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_active');
 NOTICE:  scope "group_id": the pairs of "memberships" are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "group_id": 14,906 entries for 20,000 rows (0.75 per row)
 NOTICE:  sift_col index "facts_col": 2 automatic choices (key_columns, track_changes)
@@ -296,19 +300,6 @@ SELECT * FROM compare();
       0 |         0
 (1 row)
 
-SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_missing'')') AS using_unknown;
-                                                  using_unknown                                                  
------------------------------------------------------------------------------------------------------------------
- scope "group_id": "memberships" has no index "memberships_missing" [USING names a btree of the scope relation.]
-(1 row)
-
-SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using facts_pkey'')') AS using_not_a_pair_btree;
-                                         using_not_a_pair_btree                                         
---------------------------------------------------------------------------------------------------------
- scope "group_id": "memberships" has no index "facts_pkey" [USING names a btree of the scope relation.]
-(1 row)
-
-ALTER INDEX facts_col SET (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
 DROP INDEX memberships_other;
 -- a journal index must hear of every pair: partial on the predicate of the pairs is fine, partial on another is not (the build makes a journal of its own beside a partial one that does not qualify)
 CREATE INDEX memberships_journal_b ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') WHERE group_id < 10;

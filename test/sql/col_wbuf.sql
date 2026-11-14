@@ -19,9 +19,6 @@ CREATE TABLE t (doc int);
 CREATE INDEX t_idx ON t USING sift_col (doc) WITH (write_buffer_limit = 64);
 SELECT count(*) AS segments FROM sift._test_col_wbuf_segments('t_idx');
 
--- a definition that is not the index's is refused with the REINDEX hint
-SELECT sift._test_col_wbuf_prepare('t_idx', 1) IS NOT NULL AS stale;
-SELECT expect($$ SELECT sift._test_col_wbuf_append('t_idx', 7, 0, 1) $$);
 SELECT sift._test_col_wbuf_prepare('t_idx') IS NOT NULL AS prepared;
 
 -- 3000 rows from this backend: one active segment, one lane, the segment found full (every 1000th row is a record of many pages)
@@ -44,6 +41,11 @@ SELECT sift._test_col_wbuf_seal('t_idx') AS sealed_again;
 SELECT sift._test_col_wbuf_seal('t_idx', true) AS forced_empty;
 SELECT kind, nrows, live FROM sift._test_col_wbuf_segments('t_idx') ORDER BY gen;
 SELECT count(*) AS records, count(DISTINCT id) AS ids FROM sift._test_col_wbuf_rows('t_idx', 7);
+
+-- a definition that is not the one of the segments is refused with the REINDEX hint (an index with no segment takes the definition of its first write)
+SELECT sift._test_col_wbuf_prepare('t_idx', 1) IS NOT NULL AS stale;
+SELECT expect($$ SELECT sift._test_col_wbuf_append('t_idx', 7, 0, 1) $$);
+SELECT sift._test_col_wbuf_prepare('t_idx') IS NOT NULL AS prepared_again;
 
 -- appends that find the lane tails locked go to other lanes
 SELECT sift._test_col_wbuf_append('t_idx', 7, 3000, 4000, true) >= 0 AS appended;

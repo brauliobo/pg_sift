@@ -70,7 +70,7 @@ extern Oid	sift_scope_hop_index(Relation heap, Relation index, const SiftScopeSp
 extern void sift_scope_resolve(Relation heap, Relation index, bool sticky);
 /* Is the value store the one of the scope key of an index (the codes of a text or uuid key): no epoch of it begins */
 extern bool sift_scope_key_store_pinned(Oid store);
-/* After ALTER INDEX of any option of a sift_col index: resolves again, so that scope = 'off' or RESET (scope) removes the dependency */
+/* After ALTER INDEX of any option of a sift_col index: resolves again, so that scope = 'off' or RESET (scope) of an index with no segment removes the dependency */
 extern void sift_scope_alter(Relation index);
 /* col/scope_guard.c: what the declaration needs of its relations and journals, said when the index is made or altered */
 /* The sift_col indexes with a scope that depend on the index (they took it for the journal or the btree of a relation of their scopes) */
@@ -80,7 +80,6 @@ extern Oid	sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop
 extern void sift_scope_journal_drop_unused(void);
 extern void sift_scope_notice_relation(const char *key_name, const char *name, Relation rel);
 extern void sift_scope_journal_alter(Relation index);
-extern void sift_scope_notice_stale(Relation index, bool scope_set);
 extern void sift_scope_stamp_concurrent(Relation index);
 /* The scope of the index from its column fk to the relation's columns: its ordinal, the leaf of its derived key and the btree; -1 when the index declares no such scope */
 extern int	sift_scope_find(Relation heap, Relation index, AttrNumber fk, Oid rel, AttrNumber member, AttrNumber scope_key, int *leaf, Oid *btree);

@@ -18,6 +18,7 @@
 #include "col/am/am_int.h"
 #include "col/conn.h"
 #include "col/scope.h"
+#include "core/lane.h"
 #include "core/ops.h"
 
 int			sift_col_test_unit_rows = 0;
@@ -547,7 +548,7 @@ sift_col_init(void)
 					   "sift.cluster_advice() may recommend a physical order or a key_cut for the table of this index, and CREATE INDEX may suggest key_cut (default on; maintenance only, not part of the format)",
 					   true, ShareUpdateExclusiveLock);
 	add_enum_reloption(col_relopt_kind, "array_lengths",
-					   "The array columns of the index keep their cardinality and array_length(x, 1) as two integer columns of their own, so that cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read without the arrays (about 1 byte a row for each array column): on for every array column, off for none, auto (default) is on for the index that CREATE INDEX or REINDEX builds and off for an index built before the option; after a change the table takes no write until the REINDEX",
+					   "The array columns of the index keep their cardinality and array_length(x, 1) as two integer columns of their own, so that cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read without the arrays (about 1 byte a row for each array column): on for every array column, off for none, auto (default) is on for the index that CREATE INDEX or REINDEX builds and off for an index built before the option; a change is refused while the index holds segments",
 					   array_lengths_names, SIFT_COL_ARRLEN_AUTO,
 					   "Valid values are \"auto\", \"on\" and \"off\".", ShareUpdateExclusiveLock);
 	add_enum_reloption(col_relopt_kind, "dict_lookup",
@@ -812,11 +813,13 @@ COL_OPT_STR(sift_col_options_compression, compression, "")
 COL_OPT_STR(sift_col_options_preagg, preagg, "")
 
 /*
- * An ALTER INDEX is checked by building the state the new options give. paths = 'auto' without a spec (or RESET (paths)) asks for the documents to be read
+ * An ALTER INDEX is checked by building the state the new options give; an index that has segments written under the leaf list of the old options (stale) is not left with the
+ * new ones, so that it goes on serving while its replacement is built beside it (CREATE INDEX CONCURRENTLY, which writes the stamp of its scope as a REINDEX does). An index with
+ * no segment has nothing to write again: its first write takes the options. paths = 'auto' without a spec (or RESET (paths)) asks for the documents to be read
  * again at the next REINDEX (col/keycols/keycols.c), and has no schema until then, as any change of paths leaves the segments on the old one: it is let through.
  */
 void
-sift_col_alter_check(Relation index, bool scope_set)
+sift_col_alter_check(Relation index)
 {
 	if (!sift_col_is_index(index))
 		return;
@@ -828,7 +831,8 @@ sift_col_alter_check(Relation index, bool scope_set)
 	sift_col_track_reconcile(index);
 	sift_conn_alter(index);
 	sift_scope_alter(index);
-	sift_scope_notice_stale(index, scope_set);
+	if (sift_col_rel(index)->stale)
+		sift_lane_alter_refuse(index, "column definitions");
 }
 
 

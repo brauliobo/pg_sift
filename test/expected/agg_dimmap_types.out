@@ -167,9 +167,11 @@ RESET max_parallel_workers_per_gather;
 SET max_parallel_workers_per_gather = 0;
 -- the child connected to the parent's journal (via map: nothing is carried): a write to the parent is a new map without a vacuum
 ALTER INDEX ch_col SET (connect = 'k -> pd(k)');
-NOTICE:  sift_col index "ch_col": its segments were written with other options than it has now
-HINT:  REINDEX INDEX ch_col writes them again; until then queries do not scan the index.
-REINDEX INDEX ch_col;
+ERROR:  cannot change the column definitions of index "ch_col" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.ch_col: no scan is lost while it is built.
+DROP INDEX ch_col;
+CREATE INDEX ch_col ON ch USING sift_col (id, k, g, v, tag) WITH (connect = 'k -> pd(k)');
 NOTICE:  sift_col index "ch_col": 2 automatic choices (rollup_columns, track_changes)
 DETAIL:  rollup_columns = g, tag; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ch_col');
