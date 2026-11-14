@@ -2,7 +2,7 @@
 # Everything below reads MODE, PLAN, LANES, BUDGET_MB, MAX_MB and JOB_TIMEOUT from here. Sourced by scripts/ci.sh; not a script of its own.
 PLAN=
 [[ $MODE != --plan ]] || { PLAN=1; MODE=${2:-quick}; }
-[[ $MODE == quick || $MODE == full ]] || { sed -n '2,27p' "$0"; exit 1; }
+[[ $MODE == quick || $MODE == full ]] || { usage; exit 1; }
 [[ -n $PLAN ]] || renice -n 19 $$ >/dev/null
 S=$REPO/scripts
 CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
