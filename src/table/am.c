@@ -481,17 +481,19 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 	SiftTblDel	del;
 	TM_Result	result;
 	bool		logical = sift_tbl_check_publication(rel);
+	/* the caller may pass the address of the slot's tid, which the append of the new version rewrites: the claim, its unlock and the tombstone name the old one */
+	ItemPointerData old = *otid;
 
 	*lockmode = LockTupleExclusive;
 	*update_indexes = TU_All;
-	result = tomb_claim(rel, st, otid, cid, wait, LockWaitBlock, false, tmfd, &del);
+	result = tomb_claim(rel, st, &old, cid, wait, LockWaitBlock, false, tmfd, &del);
 	if (result != TM_Ok)
 		return result;
 	if (crosscheck != InvalidSnapshot)
 	{
 		SiftTblRowVer rv;
 
-		if (sift_tbl_fetch_lazy(rel, st, otid, &rv))
+		if (sift_tbl_fetch_lazy(rel, st, &old, &rv))
 		{
 			if (!sift_tbl_visible(rel, st, crosscheck, &rv))
 				result = TM_Updated;
@@ -501,21 +503,21 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 	if (result == TM_Ok)
 	{
 		MinimalTuple mtup = form_mtuple(rel, slot);
-		bool		hot = index_columns_kept(rel, st, otid, mtup);
+		bool		hot = index_columns_kept(rel, st, &old, mtup);
 
 		CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 		sift_tbl_append(rel, st, mtup, GetCurrentTransactionId(), cid, 0, &slot->tts_tid);
 		slot->tts_tableOid = RelationGetRelid(rel);
 		if (logical)
-			log_old_row(rel, st, SIFT_TBL_OP_UPDATE, otid, mtup);
+			log_old_row(rel, st, SIFT_TBL_OP_UPDATE, &old, mtup);
 		heap_free_minimal_tuple(mtup);
-		sift_tomb_append(rel, &st->tomb, sift_key_from_tid(otid), GetCurrentTransactionId(), cid, SIFT_TOMB_UPDATE,
+		sift_tomb_append(rel, &st->tomb, sift_key_from_tid(&old), GetCurrentTransactionId(), cid, SIFT_TOMB_UPDATE,
 							 hot ? SIFT_TOMB_HOT : 0, sift_key_from_tid(&slot->tts_tid));
 		if (hot)
 			*update_indexes = TU_None;
 		pgstat_count_heap_update(rel, hot, false);
 	}
-	UnlockTuple(rel, otid, ExclusiveLock);
+	UnlockTuple(rel, &old, ExclusiveLock);
 	return result;
 }
 
