@@ -39,6 +39,7 @@ extern PGDLLEXPORT Datum sift_verify(PG_FUNCTION_ARGS);			/* (regclass, bool) vo
 
 /* bm25/funcs.c, bm25/segment_sql.c */
 extern PGDLLEXPORT Datum sift_version(PG_FUNCTION_ARGS);		/* () text */
+extern PGDLLEXPORT Datum sift_build_info(PG_FUNCTION_ARGS);	/* () setof (name text, value text) */
 extern PGDLLEXPORT Datum sift_index_info(PG_FUNCTION_ARGS);		/* (regclass) record */
 extern PGDLLEXPORT Datum sift_index_format(PG_FUNCTION_ARGS);	/* (regclass) record */
 extern PGDLLEXPORT Datum sift_worker_state(PG_FUNCTION_ARGS);	/* (regclass) record */

@@ -8,6 +8,7 @@
 #include "access/genam.h"
 #include "access/relation.h"
 #include "catalog/pg_index.h"
+#include "funcapi.h"
 #include "nodes/makefuncs.h"
 #include "nodes/pathnodes.h"
 #include "nodes/supportnodes.h"
@@ -28,6 +29,13 @@
 #include "bm25/planner.h"
 #include "bm25/query.h"
 #include "core/sql.h"
+
+#ifdef SIFT_HAVE_LZ4
+#include <lz4.h>
+#endif
+#ifdef SIFT_HAVE_ZSTD
+#include <zstd.h>
+#endif
 
 /* Analyzer config of a sift index, or the default one for InvalidOid */
 static void
@@ -444,6 +452,40 @@ Datum
 sift_version(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_TEXT_P(cstring_to_text(SIFT_MODULE_VERSION));
+}
+
+/* sift.build_info(): what this build of the library was made with, to compare two servers: a codec a build lacks cannot open chunks another wrote with it */
+Datum
+sift_build_info(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	const char *lz4 = "no";
+	const char *zstd = "no";
+	const char *rows[][2] = {{"version", SIFT_MODULE_VERSION}, {"postgres", PG_VERSION}, {"lz4", NULL}, {"zstd", NULL},
+#ifdef USE_ASSERT_CHECKING
+							 {"assertions", "on"}
+#else
+							 {"assertions", "off"}
+#endif
+	};
+
+#ifdef SIFT_HAVE_LZ4
+	lz4 = LZ4_versionString();
+#endif
+#ifdef SIFT_HAVE_ZSTD
+	zstd = ZSTD_versionString();
+#endif
+	rows[2][1] = lz4;
+	rows[3][1] = zstd;
+	InitMaterializedSRF(fcinfo, 0);
+	for (int i = 0; i < lengthof(rows); i++)
+	{
+		Datum		values[2] = {CStringGetTextDatum(rows[i][0]), CStringGetTextDatum(rows[i][1])};
+		bool		nulls[2] = {false, false};
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+	return (Datum) 0;
 }
 
 static Datum

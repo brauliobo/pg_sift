@@ -69,6 +69,7 @@ PG_FUNCTION_INFO_V1(sift_segment_postings);
 PG_FUNCTION_INFO_V1(sift_verify);
 PG_FUNCTION_INFO_V1(sift_facet_counts);
 PG_FUNCTION_INFO_V1(sift_version);
+PG_FUNCTION_INFO_V1(sift_build_info);
 PG_FUNCTION_INFO_V1(sift_json_build_object);
 PG_FUNCTION_INFO_V1(sift_index_info);
 PG_FUNCTION_INFO_V1(sift_index_format);

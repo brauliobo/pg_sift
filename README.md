@@ -17,6 +17,7 @@ Install from source (PostgreSQL 17, 18 or 19 with server headers and a C compile
 ```sh
 make USE_PGXS=1 && sudo make USE_PGXS=1 install
 psql -d mydb -c 'CREATE EXTENSION pg_sift'      # as a superuser
+psql -d mydb -c "ALTER DATABASE mydb SET session_preload_libraries = 'pg_sift'"   # for aggregate workloads; CREATE EXTENSION prints it too
 ```
 
 Then, in `psql -d mydb`, a generated table of 1,000,000 orders, nothing to download:
@@ -153,7 +154,7 @@ PostgreSQL 17, 18 and 19 on Linux (x86-64 and arm64); 17 and 18 on macOS arm64 (
 | macOS arm64 | the Homebrew formula below |
 | anything else | from source (the first snippet of [In five minutes](#in-five-minutes); needs server headers with `pg_config` on `PATH` and a C compiler; `PG_CONFIG=/path/to/pg_config` picks another installation) |
 
-Then, as a superuser, `CREATE EXTENSION pg_sift` in each database (after an upgrade: `ALTER EXTENSION pg_sift UPDATE`). Details: [docs/USAGE.md](docs/USAGE.md#install), [docs/UPGRADING.md](docs/UPGRADING.md), [docs/SUPPORT.md](docs/SUPPORT.md).
+Then, as a superuser, `CREATE EXTENSION pg_sift` in each database (after an upgrade: `ALTER EXTENSION pg_sift UPDATE`). `CREATE EXTENSION` and `ALTER EXTENSION UPDATE` end with a notice and the exact `ALTER DATABASE .. SET session_preload_libraries = 'pg_sift'` command when the library is not preloaded; an aggregate workload plans its first statement of a session once with it (docs/USAGE.md). Details: [docs/USAGE.md](docs/USAGE.md#install), [docs/UPGRADING.md](docs/UPGRADING.md), [docs/SUPPORT.md](docs/SUPPORT.md).
 
 <details>
 <summary>macOS with Homebrew</summary>
@@ -377,9 +378,9 @@ SELECT sift_count('news', 'power AND plant');
 <!-- sift-reference:start -->
 ## SQL reference
 
-Schema `sift` has 103 functions, 8 views, 4 tables, 2 operator classes, 1 operator. Signatures, results, the release that added each and a line on what it does are in [docs/REFERENCE.md](docs/REFERENCE.md), generated from the SQL scripts.
+Schema `sift` has 104 functions, 8 views, 4 tables, 2 operator classes, 1 operator. Signatures, results, the release that added each and a line on what it does are in [docs/REFERENCE.md](docs/REFERENCE.md), generated from the SQL scripts.
 
-- **[Search and ranking](docs/REFERENCE.md#search-and-ranking)**: `@@>`, `facet_counts`, `facet_sql`, `facets`, `field_query`, `highlight`, `index_info`, `json_build_object`, `match`, `match_idx`, `max_score`, `parse_query`, `projection_create`, `projection_drop`, `projection_filter_served`, `projection_guard`, `projection_holds`, `projection_index`, `projection_index_sql`, `projection_indexes`, `projection_listed`, `projection_names`, `projection_option`, `projection_plan`, `projection_probe`, `projection_replace`, `projection_rollup_holds`, `projection_same_layout`, `projection_serves`, `projection_status`, `projection_with`, `projections`, `scope_expire_pairs`, `scope_follow_pairs`, `scope_follow_trg`, `scope_follows`, `scope_names_sql`, `scope_pairs_where`, `scope_qualified`, `scope_refresh_named`, `scope_refresh_pairs`, `scope_trigger_name`, `scope_unfollow_pairs`, `score`, `sections`, `segment_postings`, `segments`, `text_ops`, `tokenize`, `verify`
+- **[Search and ranking](docs/REFERENCE.md#search-and-ranking)**: `@@>`, `build_info`, `facet_counts`, `facet_sql`, `facets`, `field_query`, `highlight`, `index_info`, `json_build_object`, `match`, `match_idx`, `max_score`, `parse_query`, `projection_create`, `projection_drop`, `projection_filter_served`, `projection_guard`, `projection_holds`, `projection_index`, `projection_index_sql`, `projection_indexes`, `projection_listed`, `projection_names`, `projection_option`, `projection_plan`, `projection_probe`, `projection_replace`, `projection_rollup_holds`, `projection_same_layout`, `projection_serves`, `projection_status`, `projection_with`, `projections`, `scope_expire_pairs`, `scope_follow_pairs`, `scope_follow_trg`, `scope_follows`, `scope_names_sql`, `scope_pairs_where`, `scope_qualified`, `scope_refresh_named`, `scope_refresh_pairs`, `scope_trigger_name`, `scope_unfollow_pairs`, `score`, `sections`, `segment_postings`, `segments`, `text_ops`, `tokenize`, `verify`
 - **[Column index](docs/REFERENCE.md#column-index)**: `approx_count_distinct`, `cluster_advice`, `col_*_ops`, `col_arena_status`, `col_clustering`, `col_connection_fill`, `col_connection_list`, `col_connection_state`, `col_connections`, `col_extents`, `col_index_info`, `col_index_status`, `col_leaves`, `col_maintenance_status`, `col_ops`, `col_scope_verify`, `col_sections`, `col_segments`, `col_space`, `col_stamps`, `col_track_convert`, `col_track_old_rows`, `col_tracking`, `col_value_store_compact`, `col_value_store_members`, `col_value_store_status`, `col_value_store_usage`, `col_verify`, `index_advice`, `index_choices`, `key_cut_decision`, `suggest_paths`
 - **[Tables](docs/REFERENCE.md#tables)**: `table_find_stale_versions`, `table_get_option`, `table_layouts`, `table_option_values`, `table_option_values_trg`, `table_options`, `table_paths`, `table_paths_maintained`, `table_reset_option`, `table_segments`, `table_set_option`, `table_set_paths`, `table_space`
 - **[Maintenance and workers](docs/REFERENCE.md#maintenance-and-workers)**: `col_maintain`, `col_maintenance_due`, `col_merge`, `col_promote`, `col_refresh`, `col_rollup_counters`, `col_rollup_queue`, `col_rollup_refresh`, `col_rollup_requests`, `col_rollup_state`, `merge`, `promote`, `table_maintain`, `worker_state`, `workers`

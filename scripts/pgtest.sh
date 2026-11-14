@@ -95,6 +95,8 @@ conf() {
 	leak_conf
 	# the background pass of a sift_table is on by default; a test counts the segments, blocks and dead rows its own statements leave, so the
 	# clusters run without it as without autovacuum, and the tests of the pass switch it on
+	# CREATE EXTENSION ends with a notice that the library is not preloaded (sql/5.0/24-install-notices.sql); no expected output carries it. Not a sift. setting: any release accepts it
+	echo "pg_sift.install_notice = off"
 	echo "sift.table_auto_defrag = off"
 	# likewise the worker that vacuums the tables of sift_col indexes and rewrites the indexes (on by default)
 	echo "sift.col_auto_merge = off"
