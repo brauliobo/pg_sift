@@ -39,6 +39,7 @@
 #include "col/am.h"
 #include "col/scope.h"
 #include "col/vstore/vstore.h"
+#include "core/restrict.h"
 
 bool		sift_agg_scope = true;
 double		sift_scope_max_multiplicity = 3.0;
@@ -447,7 +448,7 @@ sync_edges(Oid index, List *keep)
 			stale = lappend_oid(stale, edge);
 	}
 	foreach_oid(old, stale)
-		deleteDependencyRecordsForSpecific(RelationRelationId, index, DEPENDENCY_NORMAL, RelationRelationId, old);
+		sift_undepend(RelationRelationId, index, DEPENDENCY_NORMAL, RelationRelationId, old);
 	ObjectAddressSet(from, RelationRelationId, index);
 	foreach_oid(btree, keep)
 		if (!list_member_oid(present, btree))
@@ -455,7 +456,7 @@ sync_edges(Oid index, List *keep)
 			ObjectAddress to;
 
 			ObjectAddressSet(to, RelationRelationId, btree);
-			recordDependencyOn(&from, &to, DEPENDENCY_NORMAL);
+			sift_depend(&from, &to, DEPENDENCY_NORMAL);
 		}
 	CommandCounterIncrement();
 }
