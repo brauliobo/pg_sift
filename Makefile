@@ -227,6 +227,7 @@ TESTING_REGRESS += col_key_cut_ranges_small
 TESTING_REGRESS += col_key_cut_redecide
 TESTING_REGRESS += col_key_cut_redecide_async
 TESTING_REGRESS += col_key_cut_segment_cap
+TESTING_REGRESS += col_key_cut_unrecorded
 TESTING_REGRESS += col_key_presence
 TESTING_REGRESS += col_key_runs
 TESTING_REGRESS += col_key_table

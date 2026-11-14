@@ -106,6 +106,7 @@ compact(ColBuild *b)
 	SiftSegEntry in[32],
 				neu;
 	SiftColSegment *seg[32];
+	bool		stream[32];
 	SiftExtent *rel = NULL;
 	SiftColSegWriter *w;
 
@@ -166,8 +167,9 @@ compact(ColBuild *b)
 		sift_colw_set_fill(w, b->fill);
 	sift_colw_set_preagg(w, &b->r->pagg);
 	sift_colw_set_index_rows(w, b->total_rows);
-	sift_colw_set_keyed(w, b->aim, b->r->ncut > 0 ? b->r->cut[0] : -1);
-	sift_colk_merge(w, in, seg, n, NULL, NULL, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->budget / 1024, cx, NULL, NULL, 0, 1, 0, false, NULL);
+	sift_colw_set_keyed(w, b->aim, b->r->cut, b->r->ncut);
+	sift_colk_streams(stream, seg, n, b->r->cut, b->r->ncut, false, cx);
+	sift_colk_merge(w, in, seg, n, NULL, NULL, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->budget / 1024, cx, NULL, NULL, 0, 1, 0, stream, NULL);
 	sift_colw_finish(w, &neu);
 	for (int i = 0; i < n; i++)
 		sift_cseg_close(seg[i]);
@@ -207,7 +209,7 @@ colb_write_run(ColBuild *b, bool last)
 	sift_colw_set_index_rows(b->w, b->total_rows);
 	sift_colw_set_preagg(b->w, &b->r->pagg);
 	b->aim = b->spill_aim > 0 ? b->spill_aim : sift_colk_run_rows(b->index, in, n);
-	sift_colw_set_keyed(b->w, b->aim, b->r->ncut > 0 ? b->r->cut[0] : -1);
+	sift_colw_set_keyed(b->w, b->aim, b->r->cut, b->r->ncut);
 	/* the runs of a build by ranges follow each other in the key as the partitions of a rewrite do: their units are numbered on from the last run's */
 	b->unit_base += sift_colk_write(b->w, in, n, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->wcxt, b->spill_final ? b->unit_base : 0) * (b->spill_final ? 1 : 0);
 	end_segment(b);

@@ -21,7 +21,6 @@
 #include "col/scope.h"
 
 /* The relcache entry's amcache: leaves, shredder, insert hint and a scratch context for aminsert */
-#define SIFT_COL_CUT_MAX 4
 
 typedef struct SiftColRel
 {
@@ -315,7 +314,13 @@ typedef struct SiftColWindow
 
 extern int	sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
 							const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg,
-							int slice, int nslices, uint32 unit_base, bool resort, const SiftColWindow *win);
+							int slice, int nslices, uint32 unit_base, const bool *stream, const SiftColWindow *win);
+/* stream[i]: whether a merge that reads the order of the leaves leaf[nleaf] (the TIDs for none) takes input seg[i] as a stream; an input that is not is loaded whole and sorted. An input cut like the merge reads is; one cut another way is not; one that does not record its cut (SIFT_SEG_CUTREC) is checked unit by unit (cut unknown), unless resort says the cut changed since it was written. Returns whether some keyed input is not a stream */
+/* Is every one of the n segments cut by the key_cut of the index, as its record says? */
+extern bool sift_colk_recorded(Relation index, const SiftSegEntry *sel, int n);
+/* The order of row ra of batch a and row rb of batch b by the leaves, then by address, as the cut sorts the rows */
+extern int	sift_colk_row_cmp(const SiftColSchema *schema, const int *leaf, int nleaf, const SiftColBatch *a, uint32 ra, const SiftColBatch *b, uint32 rb);
+extern bool sift_colk_streams(bool *stream, SiftColSegment *const *seg, int n, const int *leaf, int nleaf, bool resort, MemoryContext cx);
 
 /*
  * numeric(p <= 18, s) leaves hold the number times 10^s as their INT value (SiftColDef.scale). A predicate constant is scaled with

@@ -113,6 +113,7 @@ Units that follow a declared key, so a lookup or a range of the key reads the un
   - **What**: the units are cut by the range of a key column, not by the order of the heap, so an equality, a list or a range of the key reads the few units of its range.
   - **Default**: on where an equality on the key would read at least 8 times the units its rows fill and at least 64 units, and the index is predicted from a sample to grow by at most 3%; a build 41% longer and a promotion 21% longer pay for it.
   - **Off**: `ALTER INDEX .. SET (key_cut = 'off')` and `REINDEX` (or `CREATE INDEX .. WITH (key_cut = 'off')`).
+  - **Switching**: `ALTER INDEX .. SET (key_cut = ..)` (another key, a list of leaves, or `off`) needs no `REINDEX`: it applies to the units written from now on. A segment records the leaves it is cut by (a directory flag and a record in its header, no format change), and a merge, `VACUUM` or the maintenance worker streams an input cut the way the merge reads it and loads any other input whole and sorts its rows, within `maintenance_work_mem`. The first merge that meets a segment written before the record (any release since 3.4.0) checks its units once.
   - **Measured**: `count/sum` of one key 5.06 to 0.35 ms on 1,500,000 rows, 419 units; case `keycut_customer_agg`.
   - **Message**: `key-cut-chosen`, `key-cut-advised`, `key-order`.
 - **`key_cut_rows`** (deprecated, accepted and ignored).

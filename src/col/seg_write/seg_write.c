@@ -90,6 +90,41 @@ segw_put_stamps(const SiftColSegWriter *w, StringInfo schema)
 	appendBinaryStringInfo(schema, (char *) tail, sizeof(tail));
 }
 
+#ifdef SIFT_TESTING
+int			sift_test_col_cut_record = 0;
+#define CUT_RECORD() (sift_test_col_cut_record == 0)
+#define CUT_FLAGS() (sift_test_col_cut_record < 2)
+#else
+#define CUT_RECORD() true
+#define CUT_FLAGS() true
+#endif
+
+/* The directory flags of a keyed segment: how its units are cut, and whether it says which leaves (testing: as the builds before them wrote) */
+static uint16
+segw_cut_flags(const SiftColSegWriter *w)
+{
+	if (!CUT_FLAGS())
+		return SIFT_SEG_KEYED;
+	if (w->ncut == 0)
+		return SIFT_SEG_KEYED | SIFT_SEG_BYTID;
+	return SIFT_SEG_KEYED | SIFT_SEG_BYKEY | (CUT_RECORD() ? SIFT_SEG_CUTREC : 0);
+}
+
+/* The leaves a segment cut by a key is in the order of follow its schema, before the stamps (a reader of the stamps counts from the end of the section and never meets them): [leaf, int16 each][ncut][magic] */
+static void
+segw_put_cut(const SiftColSegWriter *w, StringInfo schema)
+{
+	uint32		tail[2] = {w->ncut, SEG_CUT_MAGIC};
+
+	for (int i = 0; i < w->ncut; i++)
+	{
+		int16		leaf = w->cut[i];
+
+		appendBinaryStringInfo(schema, (char *) &leaf, sizeof(leaf));
+	}
+	appendBinaryStringInfo(schema, (char *) tail, sizeof(tail));
+}
+
 SiftColSegWriter *
 sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, const SiftCcPolicy *pol, int format, MemoryContext mcxt)
 {
@@ -300,12 +335,17 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
  * for each of its scope keys: its entries repeat an address, and no entry names the scope key a walk would have to stay in.
  */
 void
-sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol)
+sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, const int *cut, int ncut)
 {
+	int			keycol = ncut > 0 ? cut[0] : -1;
+
 	SIFT_INVARIANT(w->nsb == 0, "sift_col: a segment is keyed before its first unit");
 	w->keyed = true;
 	w->aim_rows = aim_rows;
 	w->keycol = keycol;
+	w->ncut = ncut;
+	for (int i = 0; i < ncut; i++)
+		w->cut[i] = cut[i];
 	if (w->pt)
 		for (int c = 0; c < w->schema->ncols; c++)
 			w->pt[c].tids = false;
@@ -656,6 +696,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	initStringInfo(&schema);
 	sift_cschema_serialize(w->schema, &schema);
 	segw_sw_pad8(w->sw);
+	if (w->ncut > 0 && CUT_RECORD())
+		segw_put_cut(w, &schema);
 	if (w->schema->connected || w->schema->scoped)
 		segw_put_stamps(w, &schema);
 	h.sections[SIFT_SEC_DOCMAP].off = sift_sw_tell(w->sw);
@@ -700,7 +742,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		entry->reserved = w->vmin;
 	}
 	if (w->keyed)
-		entry->flags |= SIFT_SEG_KEYED | (w->keycol < 0 ? SIFT_SEG_BYTID : SIFT_SEG_BYKEY);
+		entry->flags |= segw_cut_flags(w);
 	if (w->lst != NULL)
 		entry->flags |= SIFT_SEG_LSTATS;
 	entry->ndocs = w->rows;

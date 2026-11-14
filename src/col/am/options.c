@@ -458,6 +458,9 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_point_unpacked",
 							 "Testing: the point directories are written as tables of slots (column format minor 33), not as packed tables (minor 35).",
 							 NULL, &sift_test_col_point_unpacked, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_cut_record",
+							"Testing: a segment cut by a key is written without the record of its cut (1: with the flag of the cut, as before SIFT_SEG_CUTREC; 2: without it, as 4.3 and older).",
+							NULL, &sift_test_col_cut_record, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_gorder_strings",
 							 "Testing: the global order of a text leaf keeps a copy of its strings (as before column format minor 42), not the dictionary codes of them.",
 							 NULL, &sift_test_col_gorder_strings, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

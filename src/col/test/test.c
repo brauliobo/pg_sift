@@ -7,8 +7,10 @@
 #ifdef SIFT_TESTING
 #include "access/relation.h"
 #include "access/visibilitymap.h"
+#include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "storage/bufmgr.h"
+#include "utils/array.h"
 #include "agg/agg.h"
 #include "agg/cost/model.h"
 #include "col/am.h"
@@ -27,6 +29,9 @@ PG_FUNCTION_INFO_V1(sift_test_col_unit_of_block);
 PG_FUNCTION_INFO_V1(sift_test_col_formats);
 
 PG_FUNCTION_INFO_V1(sift_test_col_mirror);
+
+PG_FUNCTION_INFO_V1(sift_test_col_cuts);
+PG_FUNCTION_INFO_V1(sift_test_col_cut_probes);
 
 PG_FUNCTION_INFO_V1(sift_test_seg_flip);
 
@@ -75,6 +80,46 @@ sift_test_col_formats(PG_FUNCTION_ARGS)
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+/* sift._test_col_cuts(index): for every immutable segment, whether it is cut by a key (SIFT_SEG_BYKEY) or by TID range (SIFT_SEG_BYTID) and the leaves it records it is cut by (SIFT_SEG_CUTREC; empty: none) */
+Datum
+sift_test_col_cuts(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		Datum		leaves[SIFT_COL_CUT_MAX];
+		Datum		v[4];
+		bool		nulls[4] = {false};
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		for (int c = 0; c < seg->ncut; c++)
+			leaves[c] = Int32GetDatum(seg->cut[c]);
+		v[0] = Int64GetDatum(snap->segs[i].gen);
+		v[1] = BoolGetDatum((snap->segs[i].flags & SIFT_SEG_BYKEY) != 0);
+		v[2] = BoolGetDatum((snap->segs[i].flags & SIFT_SEG_BYTID) != 0);
+		v[3] = PointerGetDatum(construct_array_builtin(leaves, seg->ncut, INT4OID));
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+		sift_cseg_close(seg);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/* sift._test_col_cut_probes(): how many segments of unrecorded cut this backend has checked unit by unit (sift_colk_streams) */
+Datum
+sift_test_col_cut_probes(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(sift_test_cut_probes);
 }
 
 /* sift._test_col_mirror(index): the ranges of the stream that the mirror in the header page of each immutable segment keeps, and the bytes of the whole block */

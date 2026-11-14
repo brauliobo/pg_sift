@@ -430,16 +430,6 @@ tid_take(TidIn *t, uint32 sb, SiftColBatch *part, SiftColFreezeFn freeze, void *
 		sift_cbatch_add_from(part, t->buf, t->pos++);
 }
 
-/* Is an input cut by a key? Of an index that is not cut by one now (ALTER INDEX switched it off) its units are no stream of the TIDs: the merge sorts its rows again */
-static bool
-merge_has_key_input(const SiftSegEntry *in, int n)
-{
-	for (int i = 0; i < n; i++)
-		if (!sift_cseg_tid_ordered(&in[i]))
-			return true;
-	return false;
-}
-
 /* The segments a merge writes: its output is one segment, or partitions, each done when it holds its share of the units */
 typedef struct MergeOut
 {
@@ -468,7 +458,8 @@ typedef struct MergeOut
 	SiftXStamp	xstamp;			/* who inserted the rows of the segments merged, each settled: none when one does not say */
 	bool		roots;			/* every segment merged has SIFT_SEG_ROOTS */
 	int			scope;			/* the scope the segments merged hold the entries of (their cut is its key's), -1 for the entities of the index */
-	int			cut0;			/* the leaf the units of the output are cut by, -1 for none */
+	int			cut[SIFT_COL_CUT_MAX];	/* the leaves the units of the output are cut by, none: by TID range */
+	int			ncut;
 	int			nconn;
 	SiftConnStamp carry[SIFT_SCOPE_MAX][SIFT_SCOPE_JOURNALS];	/* the stamps of the scopes of the output, one for each journal: the oldest of the segments merged, whose entries it holds */
 } MergeOut;
@@ -499,7 +490,7 @@ out_begin(MergeOut *o)
 	sift_colw_set_fill(o->w, o->fill);
 	if (o->pagg) sift_colw_set_preagg(o->w, o->pagg);
 	if (o->keyed)
-		sift_colw_set_keyed(o->w, sift_colk_aim_rows(o->index), o->cut0);
+		sift_colw_set_keyed(o->w, sift_colk_aim_rows(o->index), o->cut, o->ncut);
 }
 
 static void
@@ -576,7 +567,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	int			nscope = sift_cschema_nscope(schema);
 	bool		scope = n > 0 && (in[0].flags & SIFT_SEG_SCOPE) != 0;	/* the segments are those of one scope: the rows of the entities are not merged with them */
 	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .xstamp = sift_col_is_index(index) ? sift_xstamp_inputs(in, n) : (SiftXStamp) {InvalidTransactionId, InvalidTransactionId, 0}, .roots = sift_col_is_index(index) && merge_roots(in, n),
-		.scope = scope ? (int) in[0].pad : -1, .nconn = sift_cschema_nconn(schema), .cut0 = -1};
+		.scope = scope ? (int) in[0].pad : -1, .nconn = sift_cschema_nconn(schema)};
 	uint64		live_bytes = 0,
 				live_units = 0;
 	TimestampTz start = GetCurrentTimestamp();
@@ -589,7 +580,11 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 				heap_sbs;
 	uint32		unit;
 	SiftCPaggSpec rewrite;
-	bool		resort = merge_recut;
+	bool		resort = merge_recut,
+				by_key = false,
+				stream[SIFT_MAX_SEGMENTS];
+	int			cut[SIFT_COL_CUT_MAX] = {0},
+				ncut = 0;
 
 	merge_recut = false;
 	if (sift_col_is_index(index))
@@ -676,7 +671,16 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	by_tid = o.parts == 1 && maint_unit_floor_applies(unit, live_rows, heap_sbs);
 	for (int i = 0; i < n && by_tid; i++)
 		by_tid = maint_rows_sparse(sift_cseg_live_rows(seg[i]), sift_cseg_keyed(&in[i]) ? heap_sbs : seg[i]->nsb, unit);
-	if (key_cut || by_tid || resort || merge_has_key_input(in, n))
+	if (live_rows > 0)
+	{
+		/* the cut is copied: the merge takes locks, which reload the cached state of the index and free what it holds */
+		ncut = scope ? sift_scope_cut(sift_col_rel(index), o.scope, cut) : key_cut ? sift_col_rel(index)->ncut : 0;
+		if (!scope)
+			memcpy(cut, sift_col_rel(index)->cut, ncut * sizeof(int));
+		/* an index that is not cut by a key now (ALTER INDEX switched it off) merges by the TIDs, unless a keyed input is not in their order */
+		by_key = sift_colk_streams(stream, seg, n, cut, ncut, resort, cx);
+	}
+	if (key_cut || by_tid || resort || by_key)
 	{
 		/*
 		 * An index with an order key: the live rows of the inputs, merged in the order of the key, are cut again into units of a key range, so the
@@ -686,21 +690,16 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		 */
 		if (live_rows > 0)
 		{
-			/* the cut is copied: the merge takes locks, which reload the cached state of the index and free what it holds */
-			int			cut[SIFT_COL_CUT_MAX];
-			int			ncut = scope ? sift_scope_cut(sift_col_rel(index), o.scope, cut) : key_cut ? sift_col_rel(index)->ncut : 0;
-
-			if (!scope)
-				memcpy(cut, sift_col_rel(index)->cut, ncut * sizeof(int));
-			o.cut0 = ncut > 0 ? cut[0] : -1;
+			memcpy(o.cut, cut, sizeof(o.cut));
+			o.ncut = ncut;
 			o.keyed = true;
 			if (slice == NULL)
 				out_begin(&o);	/* a slice may hold no row: its writer is begun by its first unit */
-			sift_colk_merge(o.w, in, seg, n, freeze, freeze_arg, schema, key_cut ? cut : NULL, ncut,
+			sift_colk_merge(o.w, in, seg, n, freeze, freeze_arg, schema, cut, ncut,
 							by_tid && !key_cut ? unit : sift_colk_unit_rows(sift_colk_aim_rows(index)), maintenance_work_mem, o.cx, out_next, &o,
 							slice ? slice->i : 0, slice ? slice->nslices : 1,
 							/* the units of the slices are numbered one after the other, by the rows that come before: the directory counts the units a segment spans */
-							slice && slice->win ? slice->win->unit_base : slice && key_cut ? live_rows * slice->i / slice->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0, resort,
+							slice && slice->win ? slice->win->unit_base : slice && key_cut ? live_rows * slice->i / slice->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0, stream,
 							slice ? slice->win : NULL);
 		}
 		for (int i = 0; i < n; i++)
@@ -857,10 +856,10 @@ merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, int r
 
 	if (workers == 0 || n < 2 || (!cut && maint_after_build) || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
 		return false;
+	if (!sift_colk_recorded(index, sel, n))
+		return false;
 	for (int i = 0; i < n; i++)
 	{
-		if (!sift_cseg_key_ordered(&sel[i]))
-			return false;
 		bytes += sel[i].bytes;
 		rows += sel[i].ndocs;
 	}
