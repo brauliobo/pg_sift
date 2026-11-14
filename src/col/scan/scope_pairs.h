@@ -100,4 +100,9 @@ pairs_of_member(const PairFirsts *f, const SiftScopePair *p, uint32 n, int64 mem
 	return off < f->span && f->first[off] != PG_UINT32_MAX ? f->first[off] : n;
 }
 
+/* helpers of scope_delta.c that the entity-segment reader (scope_segrows.c) shares */
+extern int	sift_scope_fk_leaf(Relation index, int scope);
+extern const int64 *sift_scope_batch_members(SiftKeyMap *mm, const SiftColBatch *b, int fk);
+extern void sift_scope_delta_kept(Relation index, int scope, const int *leaves, int nleaves, bool *kept);
+
 #endif
