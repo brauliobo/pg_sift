@@ -196,18 +196,6 @@ extern void sift_meta_update(Relation index, SiftMetaMutator fn, void *arg);
 /* Reserves a fresh segment generation (logged, P6) */
 extern uint64 sift_store_new_gen(Relation index);
 
-/* True where this backend cannot assign a transaction id: the leader of a parallel VACUUM runs the cleanup of the indexes that have no parallel pass in parallel mode */
-extern bool sift_xid_unassignable(void);
-
-/*
- * May this backend write a catalog row (an index option in pg_class, a trigger, a dependency, a relation)? A lazy VACUUM runs with PROC_IN_VACUUM: GetSnapshotData() leaves its
- * transaction id out of every snapshot, so a session that reads a row the VACUUM updated takes the VACUUM's xid for an aborted one, writes HEAP_XMAX_INVALID on the old version
- * and the row is there twice (or its update is lost) once the VACUUM commits. A parallel operation cannot assign the id at all. Every writer of a catalog row goes through
- * sift_catalog_write_guard, the deciders that a VACUUM reaches ask sift_catalog_write_ok and leave the choice to the maintenance worker (docs/COL-MAINTENANCE.md).
- */
-extern bool sift_catalog_write_ok(void);
-extern void sift_catalog_write_guard(const char *what);
-
 /* Is xid older than every snapshot (the heap's GlobalVis horizon)? */
 extern bool sift_store_removable(Relation index, FullTransactionId xid);
 

@@ -14,10 +14,10 @@
 #include "storage/sinval.h"
 #include "catalog/pg_control.h"
 #include "miscadmin.h"
-#include "storage/proc.h"
 
 #include "col/col.h"
 #include "core/ops.h"
+#include "core/restrict.h"
 #include "core/store.h"
 #include "core/store_int.h"
 #include "core/visibility.h"
@@ -393,26 +393,8 @@ finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *befo
 static bool
 xid_safexid(void)
 {
-	return !(MyProc->statusFlags & PROC_IN_VACUUM) &&
+	return !sift_in_vacuum() &&
 		(FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()) || !(IsInParallelMode() || IsParallelWorker()));
-}
-
-bool
-sift_xid_unassignable(void)
-{
-	return IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny());
-}
-
-bool
-sift_catalog_write_ok(void)
-{
-	return !IsInParallelMode() && !(MyProc->statusFlags & PROC_IN_VACUUM);
-}
-
-void
-sift_catalog_write_guard(const char *what)
-{
-	SIFT_INVARIANT(sift_catalog_write_ok(), "%s writes a catalog row in a VACUUM or a parallel operation", what);
 }
 
 /* Physical directory changes survive transaction abort; publish their cache invalidation before a relation lock can be released. */

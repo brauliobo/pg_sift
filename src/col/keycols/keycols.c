@@ -26,6 +26,7 @@
 #include "col/am.h"
 #include "col/gorder.h"
 #include "col/keycols/keycols_int.h"
+#include "core/restrict.h"
 #include "col/ktab.h"
 #include "col/setsum.h"
 
@@ -178,7 +179,7 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 	nulls[Anum_pg_class_reloptions - 1] = newopts == (Datum) 0;
 	repl[Anum_pg_class_reloptions - 1] = true;
 	newtuple = heap_modify_tuple(tuple, RelationGetDescr(pgclass), values, nulls, repl);
-	CatalogTupleUpdate(pgclass, &newtuple->t_self, newtuple);
+	sift_cat_update(pgclass, newtuple);
 	UnlockTuple(pgclass, &otid, InplaceUpdateTupleLock);
 	heap_freetuple(newtuple);
 	ReleaseSysCache(tuple);

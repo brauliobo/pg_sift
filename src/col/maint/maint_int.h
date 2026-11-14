@@ -9,6 +9,7 @@
 #include "col/conn.h"
 #include "col/scope.h"
 #include "bm25/maint.h"
+#include "core/restrict.h"
 
 /*
  * col/maint/maint.c - promotion, merge, VACUUM, the maintenance worker and the SQL functions of sift_col indexes.
