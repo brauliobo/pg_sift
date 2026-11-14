@@ -41,3 +41,4 @@ src/col/autocut/	src/col/autocut.c	acut_
 src/agg/par/	src/agg/par.c	
 src/agg/vk/	src/agg/vk.c	
 src/bm25/runs/	src/bm25/runs.c	runs_
+src/col/maint/merge_pick.c	src/col/maint/merge.c	maint_
