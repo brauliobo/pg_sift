@@ -11,6 +11,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "core/errctx.h"
 #include "core/sift.h"
 #include "bm25/estimate.h"
 
@@ -85,6 +86,7 @@ sift_estimate_cached_src(Relation index, const SiftQuerySrc *srcs, int nqueries,
 	Size		len;
 	char	   *key = estimate_key(index, srcs, nqueries, &len);
 	EstimateMemo *m;
+	SiftErrCtx	ctx;
 
 	for (int i = 0; i < ESTIMATE_MEMO; i++)
 		if (estimate_memo[i].len == len && memcmp(estimate_memo[i].key, key, len) == 0)
@@ -93,7 +95,9 @@ sift_estimate_cached_src(Relation index, const SiftQuerySrc *srcs, int nqueries,
 			pfree(key);
 			return;
 		}
+	sift_errctx_push(&ctx, RelationGetRelid(index));
 	sift_eval_estimate_src(index, srcs, nqueries, est);
+	sift_errctx_pop(&ctx);
 	if (len <= ESTIMATE_MEMO_MAX_KEY)
 	{
 		m = &estimate_memo[estimate_memo_next++ % ESTIMATE_MEMO];

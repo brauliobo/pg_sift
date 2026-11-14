@@ -15,6 +15,7 @@
 
 #include "bm25/am.h"
 #include "bm25/eval.h"
+#include "core/errctx.h"
 
 typedef struct SiftScanOpaque
 {
@@ -80,8 +81,10 @@ sift_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	MemoryContext old = MemoryContextSwitchTo(so->cxt);
 	SiftIndexState *st = sift_state_open(scan->indexRelation, so->cxt);
 	SiftQuery **queries = palloc(scan->numberOfKeys * sizeof(SiftQuery *));
+	SiftErrCtx	ctx;
 	int64		ntids = 0;
 
+	sift_errctx_push(&ctx, RelationGetRelid(scan->indexRelation));
 	sift_count_search(scan);
 	pgstat_count_index_scan(scan->indexRelation);
 	if (scan_queries(scan, st, queries))
@@ -94,6 +97,7 @@ sift_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		sift_iter_end(it);
 	}
 	sift_state_close(st);
+	sift_errctx_pop(&ctx);
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(so->cxt);
 	return ntids;

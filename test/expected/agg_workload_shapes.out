@@ -164,7 +164,8 @@ SELECT * FROM same($$WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS 
 	SELECT k, avg(a) AS value, count(DISTINCT rid) AS items
 	FROM (SELECT rid, k, avg(n::float8) AS a FROM b GROUP BY rid, k UNION ALL SELECT rid, NULL::text, avg(n::float8) FROM b GROUP BY rid) x GROUP BY k$$);
 ERROR:  invalid input syntax for type double precision: "n/a"
-CONTEXT:  SQL statement "CREATE TEMP TABLE r_on ON COMMIT DROP AS WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS n
+CONTEXT:  sift index "public.ev_col"
+SQL statement "CREATE TEMP TABLE r_on ON COMMIT DROP AS WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS n
 	FROM ev r, jsonb_to_recordset(op_txt(r.doc) -> 'parts') AS i(category text, score text) WHERE r.deleted_at IS NULL)
 	SELECT k, avg(a) AS value, count(DISTINCT rid) AS items
 	FROM (SELECT rid, k, avg(n::float8) AS a FROM b GROUP BY rid, k UNION ALL SELECT rid, NULL::text, avg(n::float8) FROM b GROUP BY rid) x GROUP BY k"

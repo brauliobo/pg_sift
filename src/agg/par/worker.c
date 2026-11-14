@@ -11,6 +11,7 @@
 #include "col/dictshm.h"
 #include "agg/memo.h"
 #include "agg/par/int.h"
+#include "core/errctx.h"
 
 static void
 send_blob(shm_mq_handle *mqh, const void *data, Size len)
@@ -40,6 +41,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	ParamListInfo wparams;
 	char	   *subtxt,
 			   *inittxt;
+	SiftErrCtx	ctx;
 
 	ParStats   *stats = par_stats_begin(false);
 
@@ -53,6 +55,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	ex->scope_share = shm_toc_lookup(toc, KEY_SCOPE, true);
 	if (ex->scope_share != NULL && scope_share_is_join(ex->scope_share))
 		ex->spec = ex->spec->scope->alt;
+	sift_errctx_push(&ctx, OidIsValid(ex->spec->indexoid) ? ex->spec->indexoid : ex->spec->heapoid);
 	ex->pmaps = palloc0(Max(ex->spec->ncombo, 1) * sizeof(char *));
 	ex->pfmaps = palloc0(Max(ex->spec->ncombo, 1) * sizeof(char *));
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
@@ -179,6 +182,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 			.n_skipped = done.n_skipped,.n_runs = done.n_runs,.n_lazy = done.n_lazy};
 	send_blob(ex->mqh, &done, sizeof(done));
 	par_stats_end(stats, ex, "worker");
+	sift_errctx_pop(&ctx);
 	shm_mq_detach(ex->mqh);
 	/* before the executor states: the expression context of the lookups is a child of the state of the sub-plans */
 	engine_close(ex);

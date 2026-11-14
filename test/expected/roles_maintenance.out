@@ -172,8 +172,8 @@ $$);
  SELECT * FROM sift.col_unit_agg('rm.docs_col', 'id')                          | ERROR: permission denied for table docs                                 | rm_non
  SELECT * FROM sift.col_unit_hist('rm.docs_col', 'g')                          | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
  SELECT * FROM sift.col_unit_hist('rm.docs_col', 'g')                          | ERROR: permission denied for table docs                                 | rm_non
- SELECT sift.col_verify('rm.docs_col', true)                                   | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
- SELECT sift.col_verify('rm.docs_col', true)                                   | ERROR: permission denied for index "docs_col"                           | rm_non
+ SELECT sift.col_verify('rm.docs_col', true)                                   | ok                                                                      | rm_own, rm_mem, rm_mt
+ SELECT sift.col_verify('rm.docs_col', true)                                   | ERROR: permission denied for index "docs_col"                           | rm_wr, rm_rd, rm_non, rm_nos
  SELECT * FROM sift.table_segments('rm.facts')                                 | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
  SELECT * FROM sift.table_segments('rm.facts')                                 | ERROR: permission denied for table "facts"                              | rm_non
  SELECT * FROM sift.table_space('rm.facts')                                    | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos

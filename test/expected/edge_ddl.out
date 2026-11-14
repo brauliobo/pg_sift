@@ -157,6 +157,7 @@ SELECT agree('a', 'run');
 SELECT sift.verify('a_idx');
 ERROR:  sift index "a_idx" was built with other options
 HINT:  REINDEX the index after changing k1, b or analyzer options.
+CONTEXT:  sift index "public.a_idx"
 REINDEX INDEX a_idx;
 SELECT sift.verify('a_idx', true);
  verify 

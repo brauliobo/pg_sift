@@ -122,6 +122,7 @@ sift_approx_deserial(PG_FUNCTION_ARGS)
 	if (VARSIZE_ANY_EXHDR(b) > 0)
 	{
 		if (!sift_hll_check((const uint8 *) VARDATA_ANY(b), VARSIZE_ANY_EXHDR(b)))
+			/* check-errors: allow a state value given to the function, not the data of an index */
 			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("malformed sift.approx_count_distinct state")));
 		sift_hll_merge_blob(h, (const uint8 *) VARDATA_ANY(b));
 	}

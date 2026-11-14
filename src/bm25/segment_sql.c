@@ -16,6 +16,8 @@
 #include "col/api/format.h"
 #include "col/pg.h"
 #include "bm25/maint_int.h"
+#include "core/check.h"
+#include "core/errctx.h"
 #include "core/explain.h"
 #include "core/sql.h"
 #include "table/table.h"
@@ -482,85 +484,166 @@ verify_heap(Relation index, const SiftDirSnapshot *snap, Snapshot snapshot, uint
 	table_close(heap, AccessShareLock);
 }
 
-/*
- * sift.verify(index, heapallindexed): store invariants, metapage totals and
- * options, every immutable segment (sift_seg_walk with verify) and invariant
- * I1 between segments. ERRCODE_INDEX_CORRUPTED on the first violation.
- */
-static Datum
-bm25_verify(PG_FUNCTION_ARGS)
+/* One verification, in steps (core/check.h): the store and the directory, each segment, then the totals and the heap */
+typedef struct Bm25Verify
 {
+	SiftErrCtx	errctx;
 	Relation	index;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift verify", ALLOCSET_DEFAULT_SIZES);
-	MemoryContext walk = AllocSetContextCreate(cxt, "sift verify walk", ALLOCSET_DEFAULT_SIZES);
-	MemoryContext old;
+	SiftDirSnapshot *snap;
+	MemoryContext cxt;
+	MemoryContext walk;
+	const SiftSegEntry *seg;
+	Snapshot	snapshot;		/* taken before the directory was read: the heap rows it shows were inserted before the postings were read */
+	uint64		ndocs,
+				sum_dl,
+				nelems;
+} Bm25Verify;
+
+static void
+step_store(void *arg)
+{
+	Bm25Verify *bv = arg;
 	const SiftOptions *opts;
 	SiftAnalyzerConfig cfg;
-	SiftSegment **segs;
-	Snapshot	snapshot = PG_GETARG_BOOL(1) ? RegisterSnapshot(GetTransactionSnapshot()) : InvalidSnapshot;
-	uint64		ndocs = 0,
-				sum_dl = 0,
-				nelems = 0;
 
-	index = open_sift(PG_GETARG_OID(0), NULL);
-	sift_check_maintain(index);	/* it holds the maintenance lock: a role that only reads must not hold maintenance back */
-	/* Keeps promotion, merges and the sweep from releasing what the directory snapshot references */
-	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
-	sift_store_verify(index);
-	sift_dir_read(index, snap);
-	opts = sift_index_options(index);
-	sift_analyzer_config_from_index(index, &cfg);
-	if (snap->meta.k1 != (float4) opts->k1 || snap->meta.b != (float4) opts->b ||
-		sift_dir_layout_differs(snap, cfg.hash))
+	sift_store_verify(bv->index);
+	sift_dir_read(bv->index, bv->snap);
+	opts = sift_index_options(bv->index);
+	sift_analyzer_config_from_index(bv->index, &cfg);
+	if (bv->snap->meta.k1 != (float4) opts->k1 || bv->snap->meta.b != (float4) opts->b ||
+		sift_dir_layout_differs(bv->snap, cfg.hash))
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("sift index \"%s\" was built with other options", RelationGetRelationName(index)),
-				 snap->meta.analyzer_config[0] || cfg.tsconfig[0] ?
+				 errmsg("sift index \"%s\" was built with other options", RelationGetRelationName(bv->index)),
+				 bv->snap->meta.analyzer_config[0] || cfg.tsconfig[0] ?
 				 errdetail("The index was built with text search configuration \"%s\", the stemmer option names \"%s\".",
-						   snap->meta.analyzer_config[0] ? snap->meta.analyzer_config : "(none)", cfg.tsconfig[0] ? cfg.tsconfig : "(none)") : 0,
+						   bv->snap->meta.analyzer_config[0] ? bv->snap->meta.analyzer_config : "(none)", cfg.tsconfig[0] ? cfg.tsconfig : "(none)") : 0,
 				 errhint("REINDEX the index after changing k1, b or analyzer options.")));
-	segs = palloc0(Max(snap->nsegs, 1) * sizeof(SiftSegment *));
-	for (int i = 0; i < snap->nsegs; i++)
-	{
-		const SiftSegEntry *e = &snap->segs[i];
-		SiftScoreRef ref = meta_ref(snap);
-		SiftSegStats st;
+}
 
-		if (e->kind != SIFT_SEG_IMMUTABLE)
-		{
-			nelems += sift_wbuf_verify(index, e);
-			continue;
-		}
-		ndocs += e->ndocs;
-		sum_dl += e->sum_dl;
-		segs[i] = sift_seg_open(index, e, cxt);
-		old = MemoryContextSwitchTo(walk);
-		sift_seg_walk(segs[i], &ref, true, &st, NULL, NULL);
-		nelems += st.postings + e->ndocs;
-		MemoryContextSwitchTo(old);
-		MemoryContextReset(walk);
-		for (int j = 0; j < i; j++)
-			if (segs[j] && segs[j]->hdr->sb_hi >= segs[i]->hdr->sb_lo && segs[i]->hdr->sb_hi >= segs[j]->hdr->sb_lo)
-				verify_disjoint(index, segs[j], segs[i]);
-		sift_seg_close(segs[i]);
-	}
-	if (ndocs != snap->meta.ndocs || sum_dl != snap->meta.sum_dl)
-		corrupt(index, "Metapage totals %llu docs and %llu tokens, segments %llu and %llu.",
-				(unsigned long long) snap->meta.ndocs, (unsigned long long) snap->meta.sum_dl,
-				(unsigned long long) ndocs, (unsigned long long) sum_dl);
-	for (int i = 0; i < snap->nsegs; i++)
-		if (segs[i])
-			sift_seg_close(segs[i]);
-	if (snapshot != InvalidSnapshot)
+/* Invariant I1 of the segment with the ones before it that cover blocks of its own (opened again for the check: no segment stays open between steps) */
+static void
+disjoint_from_earlier(Bm25Verify *bv, SiftSegment *seg)
+{
+	for (const SiftSegEntry *e = bv->snap->segs; e < bv->seg; e++)
 	{
-		verify_heap(index, snap, snapshot, nelems, cxt);
-		UnregisterSnapshot(snapshot);
+		SiftSegment *earlier;
+
+		if (e->kind != SIFT_SEG_IMMUTABLE || e->sb_hi < bv->seg->sb_lo || bv->seg->sb_hi < e->sb_lo)
+			continue;
+		earlier = sift_seg_open(bv->index, e, bv->cxt);
+		verify_disjoint(bv->index, earlier, seg);
+		sift_seg_close(earlier);
 	}
-	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
-	MemoryContextDelete(cxt);
+}
+
+/* One segment, under the maintenance lock for its length alone: a promotion or merge waits for one segment, not for the index (the snapshot keeps the others readable) */
+static void
+step_segment(void *arg)
+{
+	Bm25Verify *bv = arg;
+	const SiftSegEntry *e = bv->seg;
+	SiftScoreRef ref = meta_ref(bv->snap);
+	SiftSegStats st;
+	SiftSegment *seg;
+	MemoryContext old;
+
+	LockPage(bv->index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
+	if (e->kind != SIFT_SEG_IMMUTABLE)
+		bv->nelems += sift_wbuf_verify(bv->index, e);
+	else
+	{
+		bv->ndocs += e->ndocs;
+		bv->sum_dl += e->sum_dl;
+		seg = sift_seg_open(bv->index, e, bv->cxt);
+		old = MemoryContextSwitchTo(bv->walk);
+		sift_seg_walk(seg, &ref, true, &st, NULL, NULL);
+		bv->nelems += st.postings + e->ndocs;
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(bv->walk);
+		disjoint_from_earlier(bv, seg);
+		sift_seg_close(seg);
+	}
+	UnlockPage(bv->index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
+}
+
+static void
+step_totals(void *arg)
+{
+	Bm25Verify *bv = arg;
+
+	if (bv->ndocs != bv->snap->meta.ndocs || bv->sum_dl != bv->snap->meta.sum_dl)
+		corrupt(bv->index, "Metapage totals %llu docs and %llu tokens, segments %llu and %llu.",
+				(unsigned long long) bv->snap->meta.ndocs, (unsigned long long) bv->snap->meta.sum_dl,
+				(unsigned long long) bv->ndocs, (unsigned long long) bv->sum_dl);
+}
+
+static void
+step_heap(void *arg)
+{
+	Bm25Verify *bv = arg;
+
+	verify_heap(bv->index, bv->snap, bv->snapshot, bv->nelems, bv->cxt);
+}
+
+/*
+ * sift.verify(index, heapallindexed): store invariants, metapage totals and options, every immutable segment (sift_seg_walk with verify) and invariant
+ * I1 between segments. ERRCODE_INDEX_CORRUPTED on the first violation of the raising form, a row for each segment (and for the totals and the heap) of sift.check.
+ */
+static void
+bm25_verify(SiftCheck *ck, Relation index, bool heapallindexed)
+{
+	Bm25Verify *bv = palloc0(sizeof(Bm25Verify));
+	MemoryContext old = CurrentMemoryContext;
+	Snapshot	snapshot = RegisterSnapshot(GetTransactionSnapshot());
+	bool		listed,
+				sound;
+
+	bv->index = index;
+	bv->snapshot = snapshot;
+	bv->snap = palloc(sizeof(SiftDirSnapshot));
+	bv->cxt = AllocSetContextCreate(old, "sift verify", ALLOCSET_DEFAULT_SIZES);
+	bv->walk = AllocSetContextCreate(bv->cxt, "sift verify walk", ALLOCSET_DEFAULT_SIZES);
+	MemoryContextSwitchTo(bv->cxt);
+	sift_errctx_push(&bv->errctx, RelationGetRelid(index));
+	/* registered before the directory is read, and kept: the segments of the copy stay readable while they are verified one at a time */
+	sound = listed = sift_check_step(ck, SIFT_CHECK_WHOLE, step_store, bv);
+	for (int i = 0; listed && i < bv->snap->nsegs; i++)
+	{
+		bv->seg = &bv->snap->segs[i];
+		sift_errctx_segment(&bv->errctx, bv->seg->gen);
+		sound &= sift_check_step(ck, bv->seg->gen, step_segment, bv);
+	}
+	sift_errctx_whole(&bv->errctx);
+	if (sound)
+		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_totals, bv);
+	if (sound && heapallindexed)
+		sift_check_step(ck, SIFT_CHECK_WHOLE, step_heap, bv);
+	sift_errctx_pop(&bv->errctx);
+	UnregisterSnapshot(snapshot);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(bv->cxt);
+}
+
+static Datum
+bm25_verify_sql(PG_FUNCTION_ARGS)
+{
+	Relation	index = open_sift(PG_GETARG_OID(0), NULL);
+
+	sift_check_maintain(index);	/* it holds the maintenance lock: a role that only reads must not hold maintenance back */
+	bm25_verify(NULL, index, PG_GETARG_BOOL(1));
 	index_close(index, AccessShareLock);
 	PG_RETURN_VOID();
+}
+
+void
+sift_bm25_check(SiftCheck *ck, Oid indexoid, bool heapallindexed)
+{
+	Relation	index = open_sift(indexoid, NULL);
+
+	sift_check_maintain(index);
+	bm25_verify(ck, index, heapallindexed);
+	index_close(index, AccessShareLock);
 }
 
 Datum
@@ -568,5 +651,5 @@ sift_verify(PG_FUNCTION_ARGS)
 {
 	if (sift_col_is_index_oid(PG_GETARG_OID(0)))
 		return sift_col_verify(fcinfo);
-	return bm25_verify(fcinfo);
+	return bm25_verify_sql(fcinfo);
 }

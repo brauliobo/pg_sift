@@ -23,6 +23,7 @@
 #include "bm25/cscan_int.h"
 #include "core/cmp.h"
 #include "core/compat.h"
+#include "core/errctx.h"
 #include "core/explain.h"
 
 #include "cscan_int.h"
@@ -234,7 +235,13 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 static TupleTableSlot *
 sift_exec(CustomScanState *node)
 {
-	return ExecScan(&node->ss, scan_next, scan_recheck);
+	SiftErrCtx	ctx;
+	TupleTableSlot *slot;
+
+	sift_errctx_push(&ctx, ((SiftScanState *) node)->indexoid);
+	slot = ExecScan(&node->ss, scan_next, scan_recheck);
+	sift_errctx_pop(&ctx);
+	return slot;
 }
 
 static void

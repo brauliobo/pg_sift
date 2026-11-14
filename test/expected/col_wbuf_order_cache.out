@@ -508,6 +508,7 @@ SELECT on_both('INSERT INTO @ (id, k, v) SELECT 90000 + i, (i * 29) % 20011, i F
 SET sift.test_col_gkept_fail = on;
 SELECT count(*) FROM (SELECT k, id FROM t ORDER BY k, id LIMIT 60) s;
 ERROR:  kept order of the write buffer: injected failure before the order takes its new arrays
+CONTEXT:  sift index "public.t_ix"
 RESET sift.test_col_gkept_fail;
 SELECT * FROM reads();
          shape          | result 

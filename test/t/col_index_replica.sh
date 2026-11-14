@@ -10,7 +10,7 @@
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
-plan 22
+plan 25
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
@@ -19,6 +19,7 @@ node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"${COL_WEIGHT_FUNCS[@]}" \
 	"CREATE TABLE orders (id bigserial PRIMARY KEY, tenant_id int, status text, qty bigint, gone bigint, doc jsonb)" \
+	"CREATE TABLE check_found (at timestamptz DEFAULT now(), index regclass, segment bigint, problem text, detail text)" \
 	"CREATE FUNCTION kept_same(tbl regclass) RETURNS bool LANGUAGE plpgsql AS \$\$
 	DECLARE q text = format('SELECT md5(string_agg(x::text, '','' ORDER BY x::text)) FROM (WITH ev AS (SELECT k, grp, v FROM %s WHERE v < 6)
 			SELECT c.grp, c.n, s.total FROM (SELECT grp, count(*) AS n FROM ev GROUP BY grp) c JOIN (SELECT grp, sum(v) AS total FROM ev GROUP BY grp) s USING (grp)) x', tbl);
@@ -72,6 +73,8 @@ UPDATE orders SET gone = id WHERE id = :id;
 DELETE FROM orders WHERE id BETWEEN :id + 1000 AND :id + 1020;
 EOF
 echo "VACUUM orders;" >"$P/vac.sql"
+# sift.check holds the maintenance lock of one segment at a time: the promotions and merges of the churn run between its segments, and it finds nothing wrong all the while
+echo "INSERT INTO check_found (index, segment, problem, detail) SELECT * FROM sift.check('o_col');" >"$P/check.sql"
 cat >"$P/maint.sql" <<'EOF'
 SELECT sift.col_promote('o_col');
 SELECT sift.col_merge('o_col', random() < 0.3);
@@ -83,7 +86,7 @@ SELECT typeof_same();
 SELECT gone_same();
 COMMIT;
 EOF
-pgbench_bg primary 6 "$SECS" -f "$P/ins.sql@40" -f "$P/upd.sql@10" -f "$P/vac.sql@1" -f "$P/maint.sql@2"
+pgbench_bg primary 6 "$SECS" -f "$P/ins.sql@40" -f "$P/upd.sql@10" -f "$P/vac.sql@1" -f "$P/maint.sql@2" -f "$P/check.sql@2"
 PRIMARY_PID=$PGBENCH_PID
 pgbench -n -h "$(dir standby)/sock" -p "$(port standby)" -U postgres -c 2 -j 2 -T "$SECS" -f "$P/read.sql" postgres >"$P/reader.log" 2>&1 &
 READER=$!
@@ -92,6 +95,8 @@ wait "$READER"
 check "churn on the primary had no failed transaction" grep -q "number of failed transactions: 0 " "$P/pgbench.log"
 check "readers on the standby had no failed transaction" grep -q "number of failed transactions: 0 " "$P/reader.log"
 catchup primary standby
+check "sift.check ran during the churn" test "$(awk '/check\.sql/ {f = 1} f && / transactions \(/ {print $2; exit}' "$P/pgbench.log")" -gt 0
+check "sift.check found nothing wrong on the primary while the churn went on" test "$(sql primary "SELECT count(*) FROM check_found")" == 0
 
 CHECKS="SELECT (SELECT count(*) FROM sift._test_col_tids('o_col', '')) || ' ' || (SELECT count(*) FROM sift._test_col_tids('o_col', '0:lt:10;1:eq:paid'))
 	|| ' ' || (SELECT count(*) FROM orders) || ' ' || (SELECT count(*) FROM orders WHERE tenant_id < 10 AND status = 'paid')"
@@ -123,6 +128,8 @@ APPROX="SELECT sift.approx_count_distinct(qty) || ' ' || sift.approx_count_disti
 check "the standby merges the sketches of its units to the number the primary's heap gives" \
 	test "$(sql standby "SET sift.agg_force = on" "$APPROX")" == "$(sql primary "SET sift.enable_agg = off" "$APPROX")"
 check "the index verifies on the standby" test -z "$(sql standby "SELECT sift.col_verify('o_col', true)" 2>&1)"
+check "sift.check walks the indexes of the standby, a server in recovery, and finds nothing wrong" \
+	test "$(sql standby "SELECT pg_is_in_recovery() AND NOT EXISTS (SELECT 1 FROM sift.check(heapallindexed => true))")" == t
 TYPED="SELECT count(*) || ' ' || sum((doc->>'weight')::float8) FROM orders WHERE jsonb_typeof(doc->'weight') = 'number'"
 check "a type filter plans as an aggregate scan on the standby" \
 	test "$(sql standby "SET seq_page_cost = 10000" "EXPLAIN (COSTS OFF) $TYPED" | grep -c SiftAgg)" == 1

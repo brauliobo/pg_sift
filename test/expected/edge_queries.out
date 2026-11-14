@@ -34,12 +34,14 @@ SELECT same((SELECT string_agg('tok' || g, ' OR ') FROM generate_series(1, 256) 
 
 SELECT hits((SELECT string_agg('tok' || g, ' OR ') FROM generate_series(1, 257) g));
 ERROR:  sift query: more than 256 terms at position 2453
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits((SELECT string_agg('tok' || g, ' OR ') FROM generate_series(1, 200000) g));
 ERROR:  sift query is too long
 DETAIL:  The query has 2488891 bytes, the maximum is 262144.
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 -- long queries
 SELECT hits(repeat('x', 262144));
@@ -51,16 +53,19 @@ SELECT hits(repeat('x', 262144));
 SELECT hits(repeat('x', 262145));
 ERROR:  sift query is too long
 DETAIL:  The query has 262145 bytes, the maximum is 262144.
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits(repeat('x', 10000000));
 ERROR:  sift query is too long
 DETAIL:  The query has 10000000 bytes, the maximum is 262144.
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits(repeat('word1 ', 40000));
 ERROR:  sift query: more than 256 terms at position 1537
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 -- nesting
 SELECT same(repeat('(', 30) || 'tok5' || repeat(')', 30));
@@ -71,20 +76,24 @@ SELECT same(repeat('(', 30) || 'tok5' || repeat(')', 30));
 
 SELECT hits(repeat('(', 100000) || 'tok5' || repeat(')', 100000));
 ERROR:  sift query: nesting deeper than 32 at position 33
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits(repeat('NOT ', 100000) || 'tok5');
 ERROR:  sift query is too long
 DETAIL:  The query has 400004 bytes, the maximum is 262144.
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits(repeat('(', 100));
 ERROR:  sift query: nesting deeper than 32 at position 33
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits(repeat(')', 100));
 ERROR:  sift query: unexpected ")" at position 1
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 -- phrases
 SELECT same('"' || (SELECT string_agg('tok' || g, ' ') FROM generate_series(1, 100) g) || '"');
@@ -95,7 +104,8 @@ SELECT same('"' || (SELECT string_agg('tok' || g, ' ') FROM generate_series(1, 1
 
 SELECT hits('"' || (SELECT string_agg('tok' || g, ' ') FROM generate_series(1, 1000) g) || '"');
 ERROR:  sift query: phrase longer than 128 terms at position 1
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 -- expansions
 SELECT same('tok12*'), same('tok1*'), same('*k12'), same('/tok1[0-9]/'), same('tok12~1');
@@ -130,7 +140,8 @@ SELECT hits('t?*');
 
 SELECT hits('*');
 ERROR:  sift query: wildcard pattern needs a literal character at position 1
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits(repeat('a', 300) || '*');
  hits 
@@ -146,7 +157,8 @@ SELECT hits('t' || repeat('o', 500) || '~2');
 
 SELECT hits('tok1~9');
 ERROR:  sift query: fuzzy distance must be 1 or 2 at position 5
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits('/(((((((((((a*)*)*)*)*)*)*)*)*)*)*)*b/');
  hits 
@@ -156,11 +168,13 @@ SELECT hits('/(((((((((((a*)*)*)*)*)*)*)*)*)*)*)*b/');
 
 SELECT hits('/' || repeat('a?', 5000) || '/');
 ERROR:  sift query: regular expression longer than 1000 bytes at position 1
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits('/' || repeat('(', 3000) || 'a' || repeat(')', 3000) || '/');
 ERROR:  sift query: regular expression longer than 1000 bytes at position 1
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 -- boosts, odd operators, odd characters, empty queries
 SELECT hits('tok5^0');
@@ -171,23 +185,28 @@ SELECT hits('tok5^0');
 
 SELECT hits('tok5^99999999999999999999');
 ERROR:  sift query: boost must be between 0 and 10000 at position 6
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits('^');
 ERROR:  sift query: unexpected "^" at position 1
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits('AND');
 ERROR:  sift query: unexpected AND at position 1
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits('tok5 AND');
 ERROR:  sift query: expected a term after AND, found end of query at position 9
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits('OR OR');
 ERROR:  sift query: unexpected OR at position 1
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits('tok5 e' || chr(769) || ' ' || chr(128512));
  hits 
@@ -209,11 +228,13 @@ SELECT hits('tok5' || E'\n\tOR\ttok6');
 
 SELECT hits('');
 ERROR:  sift query: empty query at position 1
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits('   ');
 ERROR:  sift query: empty query at position 4
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits('-');
  hits 
@@ -223,7 +244,8 @@ SELECT hits('-');
 
 SELECT hits('"');
 ERROR:  sift query: unterminated phrase at position 1
-CONTEXT:  SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
+CONTEXT:  sift index "public.q_idx"
+SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits('"" tok5');
  hits 

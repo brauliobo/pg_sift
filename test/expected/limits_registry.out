@@ -131,6 +131,7 @@ SELECT count(*) FROM items WHERE body @@> 'alpha';
 SELECT count(*) FROM items WHERE body @@> repeat('alpha ', 20);
 ERROR:  sift query is too long
 DETAIL:  The query has 120 bytes, the maximum is 64.
+CONTEXT:  sift index "public.items_idx"
 SELECT count(*) FROM items WHERE body @@> '"alpha beta gamma"';
  count 
 -------
@@ -139,6 +140,7 @@ SELECT count(*) FROM items WHERE body @@> '"alpha beta gamma"';
 
 SELECT count(*) FROM items WHERE body @@> '"alpha beta gamma delta"';
 ERROR:  sift query: phrase longer than 3 terms at position 1
+CONTEXT:  sift index "public.items_idx"
 RESET sift.test_limits;
 SELECT count(*) FROM items WHERE body @@> repeat('alpha ', 20);
  count 
@@ -186,6 +188,7 @@ SET sift.test_limits = 'query_bytes=0';
 SELECT count(*) FROM items WHERE body @@> 'alpha';
 ERROR:  sift query is too long
 DETAIL:  The query has 5 bytes, the maximum is 0.
+CONTEXT:  sift index "public.items_idx"
 RESET sift.test_limits;
 DROP TABLE items;
 DROP EXTENSION pg_sift_test;
