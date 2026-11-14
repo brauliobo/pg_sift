@@ -198,6 +198,35 @@ vacuum_cost(Oid heapoid, bool *unclean)
 	return rows * VAC_ROW + (double) (nblocks - allvisible) * (VAC_PAGE + VAC_WAL_PAGE);
 }
 
+/* What a backend keeps of its looks at an index: when it looked last, and what its reads owe since */
+typedef struct Look
+{
+	Oid			index;
+	TimestampTz at;
+	double		owed_vacuum,
+				owed_rewrite;
+} Look;
+
+#define LOOKS	4
+
+/* The look state of an index: a statement that reads two (the facts and the journal of their pairs) comes by each of them in turn, so one slot would be reset by the other; the oldest slot makes room */
+static Look *
+look_of(Oid indexoid)
+{
+	static Look looks[LOOKS];
+	Look	   *oldest = &looks[0];
+
+	for (int i = 0; i < LOOKS; i++)
+	{
+		if (looks[i].index == indexoid)
+			return &looks[i];
+		if (looks[i].at < oldest->at)
+			oldest = &looks[i];
+	}
+	*oldest = (Look) {.index = indexoid};
+	return oldest;
+}
+
 /*
  * A backend looks at the table of the index: once per naptime for each index, whether it inserted a row version (everything 0) or read the rows of the
  * index in the heap (vetted, which must be many to be worth a look).
@@ -215,11 +244,7 @@ vacuum_cost(Oid heapoid, bool *unclean)
 void
 sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 {
-	static Oid	looked = InvalidOid;
-	static TimestampTz looked_at = 0;
-	static Oid	owing = InvalidOid;
-	static double owed_vacuum = 0,
-				owed_rewrite = 0;
+	Look	   *lk;
 	bool		priced = sift_eval_on(SIFT_EVAL_PENALTY_MAINTENANCE);
 	const char *worker = NULL;
 	TimestampTz now;
@@ -234,13 +259,9 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	sift_stat_add(SIFT_STAT_READ_PENALTY_KINSTR, (vetted * PEN_VET_ROW + dirty_rows * PEN_DIRTY_ROW) / 1000);
 	if (!sift_col_auto_merge || !sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress())
 		return;
-	if (owing != indexoid)
-	{
-		owing = indexoid;
-		owed_vacuum = owed_rewrite = 0;
-	}
-	owed_rewrite += (double) dirty_rows * PEN_DIRTY_ROW;
-	owed_vacuum += (double) vetted * PEN_VET_ROW;
+	lk = look_of(indexoid);
+	lk->owed_rewrite += (double) dirty_rows * PEN_DIRTY_ROW;
+	lk->owed_vacuum += (double) vetted * PEN_VET_ROW;
 	/* a scan that checked a few rows in the heap saved nothing worth a VACUUM, but if it decoded the write buffer the reads may have paid for its promotion */
 	decoded = sift_cwbuf_decoded_take();
 	marked = sift_col_marks_take();
@@ -249,10 +270,9 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	if (small && !decoded)
 		return;
 	now = GetCurrentTimestamp();
-	if (looked == indexoid && now - looked_at < (int64) sift_maintenance_naptime * 1000)
+	if (now - lk->at < (int64) sift_maintenance_naptime * 1000)
 		return;
-	looked = indexoid;
-	looked_at = now;
+	lk->at = now;
 	index = index_open(indexoid, AccessShareLock);
 	if (small)
 	{
@@ -265,13 +285,13 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	{
 		bool		unclean;
 
-		if (owed_vacuum > 0 && OidIsValid(vacuum_heap_of(indexoid)))
+		if (lk->owed_vacuum > 0 && OidIsValid(vacuum_heap_of(indexoid)))
 		{
 			double		cost = vacuum_cost(heapoid, &unclean);
 
 			if (!unclean)
-				owed_vacuum = 0;
-			else if (owed_vacuum >= MAINT_HALF * cost && table_state(heapoid, true, false) == TABLE_DUE)
+				lk->owed_vacuum = 0;
+			else if (lk->owed_vacuum >= MAINT_HALF * cost && table_state(heapoid, true, false) == TABLE_DUE)
 				worker = "sift_col_vacuum_once_worker_main";
 		}
 	}
@@ -282,16 +302,16 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 		if (index->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
 			sift_maint_register_worker(index, worker);
 		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
-		owed_vacuum = 0;
+		lk->owed_vacuum = 0;
 	}
 	else if (sift_col_promote_tick(index) || (marked && sift_col_fold_tick(index)))
 	{
 		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
 	}
-	else if (OidIsValid(vacuum_heap_of(indexoid)) && sift_col_rewrite_tick(index, owed_rewrite, refused))
+	else if (OidIsValid(vacuum_heap_of(indexoid)) && sift_col_rewrite_tick(index, lk->owed_rewrite, refused))
 	{
 		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
-		owed_rewrite = 0;
+		lk->owed_rewrite = 0;
 	}
 	index_close(index, AccessShareLock);
 }
