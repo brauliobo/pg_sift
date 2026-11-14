@@ -237,8 +237,65 @@ DROP INDEX CONCURRENTLY rrd.conc_col;
 DROP TABLE rrd.conc;
 RESET SESSION AUTHORIZATION;
 
+-- introspection and the writers of the 5.0 catalogs as ordinary roles: one rule for every view and inspector (sift._may_inspect: SELECT on the table, a
+-- maintain right, or pg_monitor), and the owner of a table defines projections and follows pairs without any right on the sift tables
+GRANT USAGE ON SCHEMA sift TO PUBLIC;
+CREATE ROLE rrd_monitor IN ROLE pg_monitor;
+GRANT USAGE ON SCHEMA rrd TO rrd_monitor;
+SELECT * FROM rr_run($$
+rrd_owner | CREATE TABLE rrd.ins (id int PRIMARY KEY, member int, tenant int, kind text, g int, v float8)
+rrd_owner | INSERT INTO rrd.ins SELECT i, i, i % 7, 'k' || i % 5, i % 3, i FROM generate_series(1, 300) i
+rrd_owner | CREATE INDEX ins_col ON rrd.ins USING sift_col (id, member, tenant, kind, g, v)
+rrd_owner | CREATE INDEX ins_bm ON rrd.ins USING sift (kind)
+rrd_owner | CREATE TABLE rrd.pairs (member int, tenant int, UNIQUE (member, tenant))
+rrd_owner | CREATE VIEW rrd.pairs_v AS SELECT member, tenant FROM rrd.ins
+rrd_owner | GRANT SELECT ON rrd.ins TO rrd_reader
+rrd_owner | GRANT INSERT ON rrd.ins TO rrd_writer
+rrd_owner | SELECT sift.projection_create('rrd_p', 'rrd.ins', ARRAY['member', 'tenant', 'kind'])
+rrd_owner | SELECT * FROM sift.scope_follow_pairs('rrd.pairs', 'rrd.pairs_v', 'rrd.ins', 'member', 'member')
+rrd_writer | INSERT INTO rrd.ins VALUES (301, 301, 1, 'k1', 1, 301)
+$$);
+SELECT * FROM rr_run($$
+rrd_owner | SELECT count(*) FROM rrd.pairs
+rrd_owner | SELECT count(*) FROM sift.projections
+rrd_owner | SELECT * FROM sift.scope_expire_pairs('rrd.pairs')
+rrd_owner | SELECT sift.scope_unfollow_pairs('rrd.pairs')
+rrd_owner | SELECT * FROM sift.scope_follow_pairs('rrd.pairs', 'rrd.pairs_v', 'rrd.ins', 'member', 'member')
+rrd_other | SELECT sift.projection_create('rrd_x', 'rrd.ins', ARRAY['member'])
+rrd_other | SELECT * FROM sift.scope_follow_pairs('rrd.pairs', 'rrd.pairs_v', 'rrd.ins', 'member', 'member')
+rrd_other | SELECT sift.scope_unfollow_pairs('rrd.pairs')
+rrd_other | DELETE FROM sift.projections
+rrd_other | SELECT sift.projection_drop('rrd_p')
+$$);
+SELECT * FROM rr_matrix(ARRAY['rrd_owner', 'rrd_reader', 'rrd_monitor', 'rrd_none'], $$
+SELECT count(*) FROM sift.col_index_status
+SELECT count(*) FROM sift.workers
+SELECT projection || ' ' || state FROM sift.projection_status
+SELECT count(*) FROM sift.col_value_store_status
+SELECT count(*) FROM sift.col_connections
+SELECT sift._may_inspect('rrd.ins')
+SELECT segments > 0 FROM sift.col_index_info('rrd.ins_col')
+SELECT count(*) > 0 FROM sift.col_segments('rrd.ins_col')
+SELECT used_blocks > 0 FROM sift.col_space('rrd.ins_col')
+SELECT segments > 0 FROM sift.index_info('rrd.ins_bm')
+SELECT count(*) > 0 FROM sift.segments('rrd.ins_bm')
+SELECT segments > 0 FROM sift.worker_state('rrd.ins_col')
+SELECT segments >= 0 FROM sift.worker_state('rrd.ins_bm')
+$$);
+SELECT * FROM rr_run($$
+rrd_monitor | SELECT sift.col_maintain('rrd.ins_col')
+rrd_reader | SELECT sift.col_maintain('rrd.ins_col')
+rrd_monitor | SELECT sift.projection_create('rrd_m', 'rrd.ins', ARRAY['member'])
+$$);
+SELECT * FROM rr_run($$
+rrd_owner | SELECT sift.projection_replace('rrd_p', ARRAY['member', 'tenant'])
+rrd_owner | SELECT sift.projection_drop('rrd_p')
+rrd_owner | DROP TABLE rrd.pairs CASCADE
+rrd_owner | DROP TABLE rrd.ins CASCADE
+$$);
+
 DROP SCHEMA rrd, rrd2 CASCADE;
 DROP FUNCTION rr_run(text), rr_matrix(text[], text), rr_pushdown_diff(text[], text), rr_script(text[], text), rr_roles_drop(text);
-DROP OWNED BY rrd_owner, rrd_member, rrd_other, rrd_writer, rrd_reader, rrd_none;
-DROP ROLE rrd_owner, rrd_member, rrd_other, rrd_writer, rrd_reader, rrd_none;
+DROP OWNED BY rrd_owner, rrd_member, rrd_other, rrd_writer, rrd_reader, rrd_none, rrd_monitor;
+DROP ROLE rrd_owner, rrd_member, rrd_other, rrd_writer, rrd_reader, rrd_none, rrd_monitor;
 DROP EXTENSION pg_sift;

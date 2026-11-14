@@ -100,6 +100,8 @@ extern Oid	sift_col_am_oid(void);
  * is no sift_col index
  */
 extern Relation sift_col_open_index(Oid indexoid, LOCKMODE lock);
+/* The same for an inspector (AccessShareLock): the caller must be able to look at the table (core/inspect.c); bm25_use: the function that does the same for a sift index, or NULL */
+extern Relation sift_col_open_inspect(Oid relid, const char *bm25_use);
 
 extern PGDLLIMPORT int sift_col_format_minor;	/* the minor of the segments written: 4, or 3 to stay readable by 3.0 */
 

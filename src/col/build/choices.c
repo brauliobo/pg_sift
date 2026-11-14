@@ -872,7 +872,7 @@ Datum
 sift_col_index_choices(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
-	Relation	index = sift_col_open_index(relid, AccessShareLock);
+	Relation	index = sift_col_open_inspect(relid, NULL);
 	Relation	heap;
 	ListCell   *lc;
 	const char *name;

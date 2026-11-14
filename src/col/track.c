@@ -811,7 +811,7 @@ sift_col_track_incomplete(Relation index)
 Datum
 sift_col_tracking(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_col_open_index(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	Relation	heap;
 	TupleDesc	desc;
 	Datum		v[4];
@@ -837,7 +837,7 @@ sift_col_tracking(PG_FUNCTION_ARGS)
 Datum
 sift_col_stamps(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_col_open_index(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 
 	InitMaterializedSRF(fcinfo, 0);

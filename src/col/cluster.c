@@ -221,7 +221,7 @@ Datum
 sift_col_clustering(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_col_open_index(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	double		width = PG_GETARG_FLOAT8(1) / 100.0;
 	const SiftColSchema *sc;
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));

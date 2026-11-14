@@ -49,10 +49,10 @@ SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'text_source', 'k
 ERROR:  scope_follow_pairs: table public.text_source has no date or timestamp column "label"
 CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 26 at RAISE
 SELECT sift.scope_expire_pairs('scope_pairs');
-ERROR:  scope_expire_pairs: no source of "scope_pairs" has an expires column
+ERROR:  scope_expire_pairs: no source of "public.scope_pairs" has an expires column
 CONTEXT:  PL/pgSQL function sift.scope_expire_pairs(regclass,interval) line 18 at RAISE
 SELECT sift.scope_unfollow_pairs('scope_pairs');
-ERROR:  scope_unfollow_pairs: "scope_pairs" follows no such table
+ERROR:  scope_unfollow_pairs: "public.scope_pairs" follows no such table
 CONTEXT:  PL/pgSQL function sift.scope_unfollow_pairs(regclass,regclass) line 13 at RAISE
 SELECT count(*) AS follows FROM sift.scope_follows;
  follows 
@@ -419,7 +419,7 @@ SELECT source, source_column FROM sift.scope_follows ORDER BY 1;
 (1 row)
 
 SELECT sift.scope_unfollow_pairs('scope_pairs', 'group_members');
-ERROR:  scope_unfollow_pairs: "scope_pairs" follows no such table
+ERROR:  scope_unfollow_pairs: "public.scope_pairs" follows no such table
 CONTEXT:  PL/pgSQL function sift.scope_unfollow_pairs(regclass,regclass) line 13 at RAISE
 SELECT sift.scope_unfollow_pairs('scope_pairs');
  scope_unfollow_pairs 

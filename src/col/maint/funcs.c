@@ -9,17 +9,30 @@
 #include "common/int.h"
 #include "funcapi.h"
 #include "utils/timestamp.h"
+#include "core/inspect.h"
 #include "core/ops.h"
 #include "core/sql.h"
 #include "col/maint/maint_int.h"
 #include "col/vstore/vstore.h"
 #include "core/tomb.h"
 
+/* The index that an inspector reads, for a role that may look at its table (core/inspect.c); bm25_use: the function that does the same for a sift index */
+Relation
+sift_col_open_inspect(Oid relid, const char *bm25_use)
+{
+	Relation	index;
+
+	sift_inspect_expect(relid, "sift_col", bm25_use);
+	index = sift_mops_open(&maint_col_ops, relid, AccessShareLock);
+	sift_check_inspect(index);
+	return index;
+}
+
 /* sift.col_maintenance_due(index, automatic): why the rewrite is due now (dirty units, fragmented units, write buffer rows), NULL if it is not; automatic: as the server's own */
 Datum
 sift_col_maintenance_due(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_mops_open(&maint_col_ops, PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	const char *why = maint_rewrite_due(index, PG_GETARG_BOOL(1));
 
 	index_close(index, AccessShareLock);
@@ -35,7 +48,7 @@ sift_col_maintenance_due(PG_FUNCTION_ARGS)
 Datum
 sift_col_maintenance_status(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_mops_open(&maint_col_ops, PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	Relation	heap = relation_open(index->rd_index->indrelid, AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	Datum		v[7],
@@ -112,7 +125,7 @@ sift_col_merge(PG_FUNCTION_ARGS)
 Datum
 sift_col_index_info(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_mops_open(&maint_col_ops, PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), "index_info");
 	const SiftColIndexMeta *defs = sift_col_index_defs(index);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftFreeStats fs;
@@ -206,7 +219,7 @@ Datum
 sift_col_extents(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_mops_open(&maint_col_ops, PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	ExtentRows	rows = {palloc(256 * sizeof(ExtentRow)), 0, 256};
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -269,7 +282,7 @@ tally_extent(void *arg, const char *what, uint64 gen, BlockNumber start, uint64 
 Datum
 sift_col_space(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_mops_open(&maint_col_ops, PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	SpaceTally	t = {0};
 	Datum		v[12];
 	bool		nulls[12] = {0};
@@ -301,7 +314,7 @@ Datum
 sift_col_segments(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_mops_open(&maint_col_ops, PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), "segments");
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -357,7 +370,7 @@ Datum
 sift_col_leaves(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_mops_open(&maint_col_ops, PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	const SiftColSchema *sc = sift_col_rel(index)->schema;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	int64	   *chunks = palloc0(sc->ncols * 5 * sizeof(int64)),

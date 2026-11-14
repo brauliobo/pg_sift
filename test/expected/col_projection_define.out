@@ -178,14 +178,14 @@ SELECT t.label, sift_helpers.statement_outcome(t.stmt) AS outcome FROM (VALUES
       label      |                            outcome                             
 -----------------+----------------------------------------------------------------
  delete          | 2BP01 the projection "by_dim" is held by events_dim
- drop            | 2BP01 the projection "by_dim" is held by events_dim
+ drop            | 2BP01 the projection "by_dim" is held by public.events_dim
  drop unknown    | 42704 projection_drop: the projection "nope" is not defined
  truncate        | 2BP01 the projection "by_dim" is held by events_dim
  rename          | 2BP01 the projection "by_dim" is held by events_dim
  columns         | 2BP01 the projection "by_dim" is held by events_dim
  filter          | 2BP01 the projection "by_dim" is held by events_dim
- replace columns | 2BP01 the projection "by_dim" is held by events_dim
- replace filter  | 2BP01 the projection "by_dim" is held by events_dim
+ replace columns | 2BP01 the projection "by_dim" is held by public.events_dim
+ replace filter  | 2BP01 the projection "by_dim" is held by public.events_dim
  replace unknown | 42704 projection_replace: the projection "nope" is not defined
  same definition | ok
 (11 rows)
@@ -260,9 +260,9 @@ SELECT sift.projection_index_sql('events_dim_plain', ARRAY['by_dim'], '{"track_c
 (1 row)
 
 SELECT sift.projection_index_sql('events_dim2', ARRAY['by_dim'], '{"key_order": "dim_a_id", "track_changes": "off"}') AS served;
-                       served                       
-----------------------------------------------------
- ALTER INDEX events_dim SET (projection = 'by_dim')
+                          served                           
+-----------------------------------------------------------
+ ALTER INDEX public.events_dim SET (projection = 'by_dim')
 (1 row)
 
 SELECT sift_helpers.statement_outcome($$SELECT sift.projection_index_sql('events_dim', ARRAY['by_dim_open'])$$) AS name_taken;
