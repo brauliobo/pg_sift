@@ -69,6 +69,8 @@ extern Oid	sift_vstore_table(Oid store);
 extern void sift_vstore_drop_unused(Relation heap);
 /* The owner of the stores of the table follows the table's */
 extern void sift_vstore_follow_owner(Oid heapoid);
+/* The stores of a table take the names its name and schema give them */
+extern void sift_vstore_follow_names(Oid heapoid);
 
 /* The hooks of src/core/ops.c: the library loads (the transaction callback that drops a store with its last index), an index is being dropped */
 extern void sift_vstore_init(void);

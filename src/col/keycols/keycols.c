@@ -137,11 +137,12 @@ option_holds(Datum options, const char *name, const char *value)
 }
 
 /*
- * The option name of index set to value (NULL: reset); visible to the relcache entry at once. It is a catalog update (and moves the option to the end of the list), so a
- * choice that stands is not written again: a decision that the data repeats leaves the row as it is.
+ * The options of index as defs (DefElem, a value each) written in one update of its catalog row, or reset (the names of defs): visible to the relcache entry at once. It is a catalog update (and
+ * moves the options to the end of the list), so a choice that stands is not written again: a decision that the data repeats leaves the row as it is. The options are a set that must be valid
+ * together (the column lists of a renamed column), which is why they go in one write.
  */
-void
-sift_col_set_option(Relation index, const char *name, const char *value)
+static void
+write_options(Relation index, List *defs, bool reset, bool validate)
 {
 	Relation	pgclass = table_open(RelationRelationId, RowExclusiveLock);
 	HeapTuple	tuple,
@@ -153,7 +154,7 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 	bool		isnull,
 				nulls[Natts_pg_class] = {false},
 				repl[Natts_pg_class] = {false};
-	List	   *def = list_make1(makeDefElem((char *) name, value ? (Node *) makeString(pstrdup(value)) : NULL, -1));
+	List	   *todo = NIL;
 
 	sift_catalog_write_guard("an index option");
 	CommandCounterIncrement();
@@ -166,15 +167,19 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 	otid = tuple->t_self;
 	LockTuple(pgclass, &otid, InplaceUpdateTupleLock);
 	old = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions, &isnull);
-	if (option_holds(isnull ? (Datum) 0 : old, name, value))
+	foreach_node(DefElem, def, defs)
+		if (!option_holds(isnull ? (Datum) 0 : old, def->defname, reset ? NULL : defGetString(def)))
+			todo = lappend(todo, def);
+	if (todo == NIL)
 	{
 		UnlockTuple(pgclass, &otid, InplaceUpdateTupleLock);
 		ReleaseSysCache(tuple);
 		table_close(pgclass, RowExclusiveLock);
 		return;
 	}
-	newopts = transformRelOptions(isnull ? (Datum) 0 : old, def, NULL, NULL, false, value == NULL);
-	(void) index_reloptions(index->rd_indam->amoptions, newopts, true);
+	newopts = transformRelOptions(isnull ? (Datum) 0 : old, todo, NULL, NULL, false, reset);
+	if (validate)
+		(void) index_reloptions(index->rd_indam->amoptions, newopts, true);
 	values[Anum_pg_class_reloptions - 1] = newopts;
 	nulls[Anum_pg_class_reloptions - 1] = newopts == (Datum) 0;
 	repl[Anum_pg_class_reloptions - 1] = true;
@@ -186,6 +191,20 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 	table_close(pgclass, RowExclusiveLock);
 	CommandCounterIncrement();
 	sift_maint_options_written(index);
+}
+
+/* The option name of index set to value (NULL: reset) */
+void
+sift_col_set_option(Relation index, const char *name, const char *value)
+{
+	write_options(index, list_make1(makeDefElem((char *) name, value ? (Node *) makeString(pstrdup(value)) : NULL, -1)), value == NULL, true);
+}
+
+/* The options of defs (DefElem, a string value each) of index set together, as they are: the caller checks the index after, which another change that it makes goes with these */
+void
+sift_col_set_options(Relation index, List *defs)
+{
+	write_options(index, defs, false, false);
 }
 
 void

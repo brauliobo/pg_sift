@@ -7,25 +7,24 @@ CREATE FUNCTION sift.scope_qualified(rel regclass) RETURNS text LANGUAGE sql STA
 
 COMMENT ON FUNCTION sift.scope_qualified(regclass) IS 'Internal: the schema-qualified, quoted name of a relation';
 
--- A name for the triggers of followed pairs: stable text, not the oid, so a restore keeps it
-CREATE FUNCTION sift.scope_trigger_name(pairs text, kind text) RETURNS name LANGUAGE sql IMMUTABLE PARALLEL SAFE
-	RETURN format('sift_scope_%s_%s', left(md5(pairs), 12), kind)::name;
-
-COMMENT ON FUNCTION sift.scope_trigger_name(text, text) IS 'Internal: the name of one trigger that keeps pairs equal to their view';
-
+-- The tables are kept by identity: a regclass is the oid of the table, so a rename or a move to another schema leaves it as it was (it dumps and restores as the name the table has then; the
+-- columns of the source are names, which the event trigger sift.col_names_follow keeps when one is renamed). The triggers of a follow are found by the name they carry, trigger_base
+-- with a suffix, which the dump keeps: a trigger has no arguments that a restore would leave naming oids.
 CREATE TABLE sift.scope_follows (
-	pairs         text   NOT NULL,
-	definition    text   NOT NULL,
-	source        text   NOT NULL,
-	refresh_by    text   NOT NULL CHECK (refresh_by IN ('member', 'key', 'pair')),
-	source_column name   NOT NULL,
+	pairs         regclass NOT NULL,
+	definition    regclass NOT NULL,
+	source        regclass NOT NULL,
+	trigger_base  name     NOT NULL,
+	refresh_by    text     NOT NULL CHECK (refresh_by IN ('member', 'key', 'pair')),
+	source_column name     NOT NULL,
 	expires       name,
 	swept_at      timestamptz NOT NULL,
-	PRIMARY KEY (pairs, source, source_column)
+	PRIMARY KEY (pairs, source, source_column),
+	UNIQUE (source, trigger_base)
 );
 SELECT pg_catalog.pg_extension_config_dump('sift.scope_follows', '');
 
-COMMENT ON TABLE sift.scope_follows IS 'The tables that sift.scope_follow_pairs follows: for each pair table, its defining view, a source table of the view, the column that names the member ids or scope keys a change touches, and the column of the source that expires pairs';
+COMMENT ON TABLE sift.scope_follows IS 'The tables that sift.scope_follow_pairs follows: for each pair table, its defining view, a source table of the view, the base of the names of its triggers, the column that names the member ids or scope keys a change touches, and the column of the source that expires pairs';
 
 -- The condition on the columns of a view or of the pair table (qualified by q) that names the rows of a refresh: $1 are the member ids or the scope keys, $2 the scope keys of a pair mode
 CREATE FUNCTION sift.scope_pairs_where(by text, cols name[], everything boolean, q text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
@@ -58,7 +57,7 @@ BEGIN
 	IF (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = pairs AND a.attname = ANY (cols) AND NOT a.attisdropped) <> 2 THEN
 		RAISE EXCEPTION 'scope_refresh_pairs: table % has no columns %, %', target, cols[1], cols[2] USING ERRCODE = 'undefined_column';
 	END IF;
-	PERFORM pg_advisory_xact_lock(hashtextextended('sift.scope_pairs ' || target, 0));
+	PERFORM pg_advisory_xact_lock(hashtext('sift.scope_pairs'), pairs::oid::int);
 	RETURN QUERY EXECUTE format($q$
 		WITH want AS MATERIALIZED (SELECT DISTINCT %1$I, %2$I FROM %3$s WHERE %5$s),
 		     have AS MATERIALIZED (SELECT ctid AS tid, %1$I, %2$I FROM %4$s p WHERE %6$s),
@@ -81,7 +80,7 @@ CREATE FUNCTION sift.scope_names_sql(f sift.scope_follows, changed text) RETURNS
 		THEN format('SELECT COALESCE(array_agg(DISTINCT %1$I::bigint), ''{}''), NULL::bigint[] FROM (%2$s) t WHERE %1$I IS NOT NULL', f.source_column, changed)
 		ELSE format('SELECT COALESCE(array_agg(m), ''{}''), COALESCE(array_agg(k), ''{}'') FROM (SELECT DISTINCT %1$I::bigint m, %2$I::bigint k FROM (%3$s) t) s', v.m, v.k, changed) END
 	FROM (SELECT (array_agg(a.attname ORDER BY a.attnum))[1] m, (array_agg(a.attname ORDER BY a.attnum))[2] k FROM pg_attribute a
-		  WHERE a.attrelid = f.definition::regclass AND a.attnum > 0 AND NOT a.attisdropped) v
+		  WHERE a.attrelid = f.definition AND a.attnum > 0 AND NOT a.attisdropped) v
 $$;
 
 -- Refreshes what scope_names_sql named: the member ids or scope keys, or in pair mode the (member, key) pairs of the rows that name both; a row that names only its key or only its
@@ -97,7 +96,7 @@ BEGIN
 			 UNION ALL SELECT 'key', array_agg(DISTINCT u.k), NULL FROM unnest(ids, keys) u(m, k) WHERE f.refresh_by = 'pair' AND u.m IS NULL AND u.k IS NOT NULL
 			 UNION ALL SELECT 'member', array_agg(DISTINCT u.m), NULL FROM unnest(ids, keys) u(m, k) WHERE f.refresh_by = 'pair' AND u.k IS NULL AND u.m IS NOT NULL LOOP
 		IF cardinality(x.a) > 0 THEN
-			SELECT * INTO r FROM sift.scope_refresh_pairs(f.pairs::regclass, f.definition::regclass, x.mode, x.a, x.b);
+			SELECT * INTO r FROM sift.scope_refresh_pairs(f.pairs, f.definition, x.mode, x.a, x.b);
 			inserted := inserted + r.inserted; deleted := deleted + r.deleted;
 		END IF;
 	END LOOP;
@@ -105,15 +104,16 @@ BEGIN
 END $$;
 
 -- The statement trigger of a followed table: the rows it changed (the old and the new ones of an update) are what is refreshed; a TRUNCATE refreshes all the pairs
+-- (it finds its follow by the table it fires on and its own name)
 CREATE FUNCTION sift.scope_follow_trg() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
 	f    sift.scope_follows;
 	ids  bigint[];
 	keys bigint[];
 BEGIN
-	SELECT * INTO STRICT f FROM sift.scope_follows s WHERE s.pairs = TG_ARGV[0] AND s.source = TG_ARGV[1] AND s.source_column = TG_ARGV[2];
+	SELECT * INTO STRICT f FROM sift.scope_follows s WHERE s.source::oid = TG_RELID AND s.trigger_base = regexp_replace(TG_NAME, '_s(ins|upd|del|t)$', '');
 	IF TG_OP = 'TRUNCATE' THEN
-		PERFORM sift.scope_refresh_pairs(f.pairs::regclass, f.definition::regclass, f.refresh_by);
+		PERFORM sift.scope_refresh_pairs(f.pairs, f.definition, f.refresh_by);
 	ELSE
 		EXECUTE sift.scope_names_sql(f, CASE TG_OP WHEN 'INSERT' THEN 'SELECT * FROM new_rows' WHEN 'DELETE' THEN 'SELECT * FROM old_rows'
 											ELSE 'SELECT * FROM old_rows UNION ALL SELECT * FROM new_rows' END) INTO ids, keys;
@@ -128,8 +128,8 @@ END $$;
 CREATE FUNCTION sift.scope_follow_pairs(pairs regclass, definition regclass, source regclass, by text, source_column name, expires name DEFAULT NULL)
 	RETURNS TABLE (inserted bigint, deleted bigint) LANGUAGE plpgsql AS $$
 DECLARE
-	target text := sift.scope_qualified(pairs);
 	src    text := sift.scope_qualified(source);
+	base   name := format('sift_scope_%s', left(md5(format('%s %s %s', pairs::oid, source::oid, source_column)), 12));
 	tr     text;
 BEGIN
 	IF (SELECT relkind FROM pg_class WHERE oid = source) NOT IN ('r', 'p') THEN
@@ -157,15 +157,14 @@ BEGIN
 		RAISE EXCEPTION 'scope_follow_pairs: a table is the target of a logical replication subscription'
 			USING DETAIL = 'The apply worker changes rows without firing statement triggers, so the pairs would miss the changes.', ERRCODE = 'feature_not_supported';
 	END IF;
-	INSERT INTO sift.scope_follows VALUES (target, sift.scope_qualified(definition), src, by, source_column, expires, now());
+	INSERT INTO sift.scope_follows VALUES (pairs, definition, source, base, by, source_column, expires, now());
 	FOR tr IN SELECT unnest(ARRAY['ins', 'upd', 'del']) LOOP
-		EXECUTE format('CREATE TRIGGER %I AFTER %s ON %s REFERENCING %s AS %s FOR EACH STATEMENT EXECUTE FUNCTION sift.scope_follow_trg(%L, %L, %L)',
-					   sift.scope_trigger_name(target || ' ' || src || ' ' || source_column, 's' || tr), CASE tr WHEN 'ins' THEN 'INSERT' WHEN 'upd' THEN 'UPDATE' ELSE 'DELETE' END, src,
+		EXECUTE format('CREATE TRIGGER %I AFTER %s ON %s REFERENCING %s AS %s FOR EACH STATEMENT EXECUTE FUNCTION sift.scope_follow_trg()',
+					   base || '_s' || tr, CASE tr WHEN 'ins' THEN 'INSERT' WHEN 'upd' THEN 'UPDATE' ELSE 'DELETE' END, src,
 					   CASE tr WHEN 'ins' THEN 'NEW TABLE' WHEN 'upd' THEN 'OLD TABLE AS old_rows NEW TABLE' ELSE 'OLD TABLE' END,
-					   CASE tr WHEN 'del' THEN 'old_rows' ELSE 'new_rows' END, target, src, source_column);
+					   CASE tr WHEN 'del' THEN 'old_rows' ELSE 'new_rows' END);
 	END LOOP;
-	EXECUTE format('CREATE TRIGGER %I AFTER TRUNCATE ON %s FOR EACH STATEMENT EXECUTE FUNCTION sift.scope_follow_trg(%L, %L, %L)',
-				   sift.scope_trigger_name(target || ' ' || src || ' ' || source_column, 'st'), src, target, src, source_column);
+	EXECUTE format('CREATE TRIGGER %I AFTER TRUNCATE ON %s FOR EACH STATEMENT EXECUTE FUNCTION sift.scope_follow_trg()', base || '_st', src);
 	-- the triggers hold the source against writers until this transaction ends, so the full refresh below is the state they continue from
 	RETURN QUERY SELECT * FROM sift.scope_refresh_pairs(pairs, definition, by);
 END $$;
@@ -182,8 +181,8 @@ DECLARE
 	typ    text;
 BEGIN
 	inserted := 0; deleted := 0;
-	FOR f IN SELECT * FROM sift.scope_follows s WHERE s.pairs = sift.scope_qualified(scope_expire_pairs.pairs) AND s.expires IS NOT NULL ORDER BY s.source FOR UPDATE LOOP
-		SELECT format_type(a.atttypid, NULL) INTO typ FROM pg_attribute a WHERE a.attrelid = f.source::regclass AND a.attname = f.expires;
+	FOR f IN SELECT * FROM sift.scope_follows s WHERE s.pairs = scope_expire_pairs.pairs AND s.expires IS NOT NULL ORDER BY s.source FOR UPDATE LOOP
+		SELECT format_type(a.atttypid, NULL) INTO typ FROM pg_attribute a WHERE a.attrelid = f.source AND a.attname = f.expires;
 		EXECUTE sift.scope_names_sql(f, format('SELECT * FROM %s WHERE %I BETWEEN %L::%s AND %L::%s', f.source, f.expires, f.swept_at - overlap, typ, now(), typ)) INTO ids, keys;
 		SELECT * INTO r FROM sift.scope_refresh_named(f, ids, keys);
 		inserted := inserted + r.inserted; deleted := deleted + r.deleted;
@@ -201,10 +200,10 @@ DECLARE
 	f sift.scope_follows;
 	t text;
 BEGIN
-	FOR f IN WITH d AS (DELETE FROM sift.scope_follows s WHERE s.pairs = sift.scope_qualified(scope_unfollow_pairs.pairs)
-						AND (scope_unfollow_pairs.source IS NULL OR s.source = sift.scope_qualified(scope_unfollow_pairs.source)) RETURNING s.*) SELECT * FROM d LOOP
+	FOR f IN WITH d AS (DELETE FROM sift.scope_follows s WHERE s.pairs = scope_unfollow_pairs.pairs
+						AND (scope_unfollow_pairs.source IS NULL OR s.source = scope_unfollow_pairs.source) RETURNING s.*) SELECT * FROM d LOOP
 		FOREACH t IN ARRAY ARRAY['sins', 'supd', 'sdel', 'st'] LOOP
-			EXECUTE format('DROP TRIGGER IF EXISTS %I ON %s', sift.scope_trigger_name(f.pairs || ' ' || f.source || ' ' || f.source_column, t), f.source);
+			EXECUTE format('DROP TRIGGER IF EXISTS %I ON %s', f.trigger_base || '_' || t, f.source);
 		END LOOP;
 	END LOOP;
 	IF NOT FOUND THEN

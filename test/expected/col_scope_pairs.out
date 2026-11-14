@@ -413,9 +413,9 @@ SELECT sift.scope_unfollow_pairs('scope_pairs', 'group_members');
 (1 row)
 
 SELECT source, source_column FROM sift.scope_follows ORDER BY 1;
-     source     | source_column 
-----------------+---------------
- public.links_a | tenant_id
+ source  | source_column 
+---------+---------------
+ links_a | tenant_id
 (1 row)
 
 SELECT sift.scope_unfollow_pairs('scope_pairs', 'group_members');

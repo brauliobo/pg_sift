@@ -1,0 +1,328 @@
+-- What a sift_col index and sift.scope_follows keep under the name of a column or a table follows the name (src/col/names.c). The options of an index name its columns as text (key_cut,
+-- key_columns, rollup_columns, track_changes ...), which pg_dump writes and a restore reads again: a column renamed under them made a dump that could not restore its index. The renames
+-- here are checked as the dump and the restore see them: the definition of the index (pg_get_indexdef, with its options) is run again on the table as it is. A column whose leaves the
+-- segments keep under its name (an array with lengths, a jsonb with paths) is refused. The pairs a scope follows are kept by the oid of their tables: a rename or a move of the pair
+-- table or of the source table, and of the column of the source, does not stop the writes to the source.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SET client_min_messages = warning;
+CREATE TABLE rn (id int PRIMARY KEY, region text, cust int, created date, amount numeric(10, 2), tags int[], doc jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO rn SELECT g, 'r' || g % 5, g % 20, date '2025-01-01' + g % 300, g, ARRAY[g % 3], jsonb_build_object('k', g % 4) FROM generate_series(1, 3000) g;
+CREATE INDEX rn_col ON rn USING sift_col (id, region, cust, created, amount) WITH (key_cut = 'created', key_columns = 'cust', rollup_columns = 'region, cust', order_array_columns = 'amount');
+CREATE INDEX rn_arr ON rn USING sift_col (id, tags);
+CREATE INDEX rn_json ON rn USING sift_col (id, doc) WITH (paths = 'doc.k int4');
+ANALYZE rn;
+CREATE FUNCTION rn_state(idx regclass) RETURNS TABLE (options text, attributes text, verified boolean) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM sift.col_verify(idx);
+	RETURN QUERY SELECT (SELECT string_agg(o, ' ' ORDER BY o) FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = idx AND o NOT LIKE 'array_lengths%'),
+	                    (SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute WHERE attrelid = idx), true;
+END $$;
+-- the reads are written for the names the table has now: they are replaced once the columns are renamed
+CREATE FUNCTION rn_reads_as(created text, cust text, amount text) RETURNS TABLE (q text, pushed boolean, same boolean) LANGUAGE sql AS $$
+	SELECT c.q, sift_helpers.plan_mentions_siftagg(c.q), sift_helpers.agg_equals_normal_all(c.q) FROM (SELECT replace(replace(replace(q, 'created_', created), 'cust_', cust), 'amount_', amount) FROM
+		(SELECT unnest(ARRAY[
+			'SELECT region, count(*), sum(amount_) FROM rn GROUP BY region',
+			'SELECT cust_, count(*), sum(amount_) FROM rn WHERE created_ >= date ''2025-06-01'' GROUP BY cust_',
+			'SELECT created_, count(*) FROM rn WHERE cust_ = 3 GROUP BY created_']) q) x) AS c(q) $$;
+SELECT * FROM rn_state('rn_col');
+                                                               options                                                               |          attributes           | verified 
+-------------------------------------------------------------------------------------------------------------------------------------+-------------------------------+----------
+ key_columns=cust key_cut=created order_array_columns=amount point_tid_columns=auto: id rollup_columns=region, cust track_changes=id | id,region,cust,created,amount | t
+(1 row)
+
+SELECT * FROM rn_reads_as('created', 'cust', 'amount');
+                                              q                                              | pushed | same 
+---------------------------------------------------------------------------------------------+--------+------
+ SELECT region, count(*), sum(amount) FROM rn GROUP BY region                                | t      | t
+ SELECT cust, count(*), sum(amount) FROM rn WHERE created >= date '2025-06-01' GROUP BY cust | t      | t
+ SELECT created, count(*) FROM rn WHERE cust = 3 GROUP BY created                            | t      | t
+(3 rows)
+
+-- the columns the options name are renamed, one statement each, as a user does
+ALTER TABLE rn RENAME COLUMN created TO created_at;
+ALTER TABLE rn RENAME COLUMN cust TO customer_id;
+ALTER TABLE rn RENAME COLUMN amount TO total;
+SELECT * FROM rn_state('rn_col');
+                                                                       options                                                                       |               attributes               | verified 
+-----------------------------------------------------------------------------------------------------------------------------------------------------+----------------------------------------+----------
+ key_columns=customer_id key_cut=created_at order_array_columns=total point_tid_columns=auto: id rollup_columns=region, customer_id track_changes=id | id,region,customer_id,created_at,total | t
+(1 row)
+
+SELECT * FROM rn_reads_as('created_at', 'customer_id', 'total');
+                                                      q                                                      | pushed | same 
+-------------------------------------------------------------------------------------------------------------+--------+------
+ SELECT region, count(*), sum(total) FROM rn GROUP BY region                                                 | t      | t
+ SELECT customer_id, count(*), sum(total) FROM rn WHERE created_at >= date '2025-06-01' GROUP BY customer_id | t      | t
+ SELECT created_at, count(*) FROM rn WHERE customer_id = 3 GROUP BY created_at                               | t      | t
+(3 rows)
+
+-- what a restore does: the definition of the index, as pg_dump writes it, run on the table as it is now
+SELECT pg_get_indexdef('rn_col'::regclass) AS def \gset
+SELECT options AS before_options FROM rn_state('rn_col') \gset
+DROP INDEX rn_col;
+:def;
+SELECT options = :'before_options' AS restored_with_the_same_options, verified FROM rn_state('rn_col');
+ restored_with_the_same_options | verified 
+--------------------------------+----------
+ t                              | t
+(1 row)
+
+SELECT * FROM rn_reads_as('created_at', 'customer_id', 'total');
+                                                      q                                                      | pushed | same 
+-------------------------------------------------------------------------------------------------------------+--------+------
+ SELECT region, count(*), sum(total) FROM rn GROUP BY region                                                 | t      | t
+ SELECT customer_id, count(*), sum(total) FROM rn WHERE created_at >= date '2025-06-01' GROUP BY customer_id | t      | t
+ SELECT created_at, count(*) FROM rn WHERE customer_id = 3 GROUP BY created_at                               | t      | t
+(3 rows)
+
+-- the table is written and the index maintained under the new names
+INSERT INTO rn SELECT 3000 + g, 'r1', g % 20, date '2025-12-01', g, ARRAY[1], '{"k": 1}' FROM generate_series(1, 200) g;
+UPDATE rn SET total = total + 1 WHERE id % 7 = 0;
+DELETE FROM rn WHERE id % 11 = 0;
+SELECT sift.col_promote('rn_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT * FROM rn_reads_as('created_at', 'customer_id', 'total');
+                                                      q                                                      | pushed | same 
+-------------------------------------------------------------------------------------------------------------+--------+------
+ SELECT region, count(*), sum(total) FROM rn GROUP BY region                                                 | t      | t
+ SELECT customer_id, count(*), sum(total) FROM rn WHERE created_at >= date '2025-06-01' GROUP BY customer_id | t      | t
+ SELECT created_at, count(*) FROM rn WHERE customer_id = 3 GROUP BY created_at                               | t      | t
+(3 rows)
+
+REINDEX INDEX rn_col;
+SELECT * FROM rn_state('rn_col');
+                                                                       options                                                                       |               attributes               | verified 
+-----------------------------------------------------------------------------------------------------------------------------------------------------+----------------------------------------+----------
+ key_columns=customer_id key_cut=created_at order_array_columns=total point_tid_columns=auto: id rollup_columns=region, customer_id track_changes=id | id,region,customer_id,created_at,total | t
+(1 row)
+
+-- a rename back, and a rename of the primary key the track_changes option names
+ALTER TABLE rn RENAME COLUMN customer_id TO cust;
+ALTER TABLE rn RENAME COLUMN id TO rn_id;
+SELECT * FROM rn_state('rn_col');
+                                                                   options                                                                   |             attributes             | verified 
+---------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------+----------
+ key_columns=cust key_cut=created_at order_array_columns=total point_tid_columns=auto: rn_id rollup_columns=region, cust track_changes=rn_id | rn_id,region,cust,created_at,total | t
+(1 row)
+
+ALTER TABLE rn RENAME COLUMN rn_id TO id;
+-- the leaves of these are kept under the name of their column
+ALTER TABLE rn RENAME COLUMN tags TO labels;
+ERROR:  cannot rename column "tags": the segments of sift_col index "rn_arr" keep leaves under that name
+HINT:  CREATE INDEX CONCURRENTLY the index again after the rename, then DROP INDEX rn_arr.
+ALTER TABLE rn RENAME COLUMN doc TO document;
+ERROR:  cannot rename column "doc": sift_col index "rn_json" keeps the paths of its documents under that name
+HINT:  CREATE INDEX CONCURRENTLY the index again after the rename, then DROP INDEX rn_json.
+SELECT attname FROM pg_attribute WHERE attrelid = 'rn'::regclass AND attnum > 0 AND NOT attisdropped ORDER BY attnum;
+  attname   
+------------
+ id
+ region
+ cust
+ created_at
+ total
+ tags
+ doc
+(7 rows)
+
+SELECT * FROM rn_state('rn_arr');
+                   options                   | attributes | verified 
+---------------------------------------------+------------+----------
+ point_tid_columns=auto: id track_changes=id | id,tags    | t
+(1 row)
+
+SELECT count(*) FROM rn WHERE tags = ARRAY[1];
+ count 
+-------
+  1091
+(1 row)
+
+-- a column of a partitioned table: the index of the partition follows too
+CREATE TABLE rp (id int, grp int, created date, v int) PARTITION BY RANGE (id);
+CREATE TABLE rp1 PARTITION OF rp FOR VALUES FROM (0) TO (1000);
+CREATE TABLE rp2 PARTITION OF rp FOR VALUES FROM (1000) TO (2000);
+INSERT INTO rp SELECT g, g % 9, date '2025-01-01' + g % 100, g FROM generate_series(1, 1999) g;
+CREATE INDEX rp_col ON rp USING sift_col (id, grp, created, v) WITH (key_cut = 'created', key_columns = 'grp');
+ALTER TABLE rp RENAME COLUMN created TO day;
+ALTER TABLE rp RENAME COLUMN grp TO bucket;
+SELECT i.indrelid::regclass::text AS on_table, o AS option FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am a ON a.oid = c.relam, unnest(c.reloptions) o
+ WHERE a.amname = 'sift_col' AND i.indrelid::regclass::text LIKE 'rp%' AND o ~ '^key_' ORDER BY 1, 2;
+ on_table |       option       
+----------+--------------------
+ rp       | key_columns=bucket
+ rp       | key_cut=day
+ rp1      | key_columns=bucket
+ rp1      | key_cut=day
+ rp2      | key_columns=bucket
+ rp2      | key_cut=day
+(6 rows)
+
+SELECT sift_helpers.agg_equals_normal_all('SELECT bucket, count(*), sum(v) FROM rp WHERE day >= date ''2025-02-01'' GROUP BY bucket') AS partitioned_same;
+ partitioned_same 
+------------------
+ t
+(1 row)
+
+-- the pairs a scope follows: the pair table, the source table and its column, and the schema of the source change their names
+CREATE TABLE fl_src (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int NOT NULL) WITH (autovacuum_enabled = off);
+CREATE VIEW fl_view AS SELECT DISTINCT dim_a_id, tenant_id FROM fl_src;
+CREATE TABLE fl_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id)) WITH (autovacuum_enabled = off);
+INSERT INTO fl_src (tenant_id, dim_a_id) SELECT 1 + g % 4, g FROM generate_series(1, 40) g;
+SELECT inserted, deleted FROM sift.scope_follow_pairs('fl_pairs', 'fl_view', 'fl_src', 'key', 'tenant_id');
+ inserted | deleted 
+----------+---------
+       40 |       0
+(1 row)
+
+CREATE FUNCTION fl_equal(pairs regclass, view regclass) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM ((TABLE %1$s EXCEPT TABLE %2$s) UNION ALL (TABLE %2$s EXCEPT TABLE %1$s)) d', pairs, view) INTO n;
+	RETURN n = 0;
+END $$;
+SELECT fl_equal('fl_pairs', 'fl_view') AS equal_to_view;
+ equal_to_view 
+---------------
+ t
+(1 row)
+
+ALTER TABLE fl_pairs RENAME TO fl_pairs2;
+INSERT INTO fl_src (tenant_id, dim_a_id) VALUES (9, 90);
+SELECT fl_equal('fl_pairs2', 'fl_view') AS after_the_pair_table_was_renamed, (SELECT count(*) FROM fl_pairs2 WHERE tenant_id = 9) AS new_pair;
+ after_the_pair_table_was_renamed | new_pair 
+----------------------------------+----------
+ t                                |        1
+(1 row)
+
+ALTER TABLE fl_src RENAME TO fl_src2;
+INSERT INTO fl_src2 (tenant_id, dim_a_id) VALUES (9, 91);
+SELECT fl_equal('fl_pairs2', 'fl_view') AS after_the_source_was_renamed, (SELECT count(*) FROM fl_pairs2 WHERE tenant_id = 9) AS new_pairs;
+ after_the_source_was_renamed | new_pairs 
+------------------------------+-----------
+ t                            |         2
+(1 row)
+
+ALTER TABLE fl_src2 RENAME COLUMN tenant_id TO tenant;
+SELECT source, source_column FROM sift.scope_follows;
+ source  | source_column 
+---------+---------------
+ fl_src2 | tenant
+(1 row)
+
+INSERT INTO fl_src2 (tenant, dim_a_id) VALUES (10, 92);
+DELETE FROM fl_src2 WHERE tenant = 9;
+SELECT fl_equal('fl_pairs2', 'fl_view') AS after_the_column_was_renamed, (SELECT count(*) FROM fl_pairs2 WHERE tenant_id = 9) AS gone_pairs;
+ after_the_column_was_renamed | gone_pairs 
+------------------------------+------------
+ t                            |          0
+(1 row)
+
+CREATE SCHEMA fl_s;
+ALTER TABLE fl_src2 SET SCHEMA fl_s;
+INSERT INTO fl_s.fl_src2 (tenant, dim_a_id) VALUES (11, 93);
+SELECT fl_equal('fl_pairs2', 'fl_view') AS after_the_source_moved, (SELECT count(*) FROM fl_pairs2 WHERE tenant_id = 11) AS moved_pair;
+ after_the_source_moved | moved_pair 
+------------------------+------------
+ t                      |          1
+(1 row)
+
+SELECT source, pairs, definition FROM sift.scope_follows;
+    source    |   pairs   | definition 
+--------------+-----------+------------
+ fl_s.fl_src2 | fl_pairs2 | fl_view
+(1 row)
+
+SELECT sift.scope_unfollow_pairs('fl_pairs2');
+ scope_unfollow_pairs 
+----------------------
+ 
+(1 row)
+
+SELECT count(*) AS follows FROM sift.scope_follows;
+ follows 
+---------
+       0
+(1 row)
+
+SELECT count(*) AS triggers_left FROM pg_trigger WHERE tgname LIKE 'sift\_scope\_%';
+ triggers_left 
+---------------
+             0
+(1 row)
+
+-- the owner of a table, who is no superuser, renames a column too (the trigger writes what the owner has no right to)
+CREATE ROLE rn_owner;
+GRANT CREATE ON SCHEMA public TO rn_owner;
+CREATE TABLE rn_own (id int PRIMARY KEY, cust int, created date) WITH (autovacuum_enabled = off);
+INSERT INTO rn_own SELECT g, g % 5, date '2025-01-01' + g FROM generate_series(1, 500) g;
+CREATE INDEX rn_own_col ON rn_own USING sift_col (id, cust, created) WITH (key_columns = 'cust', key_cut = 'created');
+ALTER TABLE rn_own OWNER TO rn_owner;
+SET ROLE rn_owner;
+ALTER TABLE rn_own RENAME COLUMN cust TO customer_id;
+ALTER TABLE rn_own RENAME TO rn_owned;
+RESET ROLE;
+CREATE TABLE rn_osrc (id serial PRIMARY KEY, member int NOT NULL, tenant int NOT NULL);
+CREATE TABLE rn_opairs (member int NOT NULL, tenant int NOT NULL, PRIMARY KEY (tenant, member));
+CREATE VIEW rn_oview AS SELECT DISTINCT member, tenant FROM rn_osrc;
+ALTER TABLE rn_osrc OWNER TO rn_owner;
+ALTER TABLE rn_opairs OWNER TO rn_owner;
+ALTER VIEW rn_oview OWNER TO rn_owner;
+GRANT USAGE ON SCHEMA sift TO rn_owner;
+SET ROLE rn_owner;
+SELECT inserted FROM sift.scope_follow_pairs('rn_opairs', 'rn_oview', 'rn_osrc', 'key', 'tenant');
+ inserted 
+----------
+        0
+(1 row)
+
+ALTER TABLE rn_osrc RENAME COLUMN tenant TO tenant_id;
+ALTER TABLE rn_osrc RENAME TO rn_osrc2;
+INSERT INTO rn_osrc2 (member, tenant_id) VALUES (5, 1), (6, 2);
+SELECT count(*) AS owner_pairs FROM rn_opairs;
+ owner_pairs 
+-------------
+           2
+(1 row)
+
+RESET ROLE;
+SELECT source, source_column FROM sift.scope_follows;
+  source  | source_column 
+----------+---------------
+ rn_osrc2 | tenant_id
+(1 row)
+
+SET ROLE rn_owner;
+SELECT sift.scope_unfollow_pairs('rn_opairs');
+ scope_unfollow_pairs 
+----------------------
+ 
+(1 row)
+
+RESET ROLE;
+SELECT * FROM rn_state('rn_own_col');
+                                       options                                       |       attributes       | verified 
+-------------------------------------------------------------------------------------+------------------------+----------
+ key_columns=customer_id key_cut=created point_tid_columns=auto: id track_changes=id | id,customer_id,created | t
+(1 row)
+
+DROP VIEW rn_oview;
+DROP TABLE rn_osrc2, rn_opairs;
+REVOKE USAGE ON SCHEMA sift FROM rn_owner;
+DROP TABLE rn_owned;
+REVOKE CREATE ON SCHEMA public FROM rn_owner;
+DROP ROLE rn_owner;
+DROP TABLE fl_pairs2, rp, rn;
+DROP VIEW fl_view;
+DROP TABLE fl_s.fl_src2;
+DROP SCHEMA fl_s;
+DROP FUNCTION fl_equal(regclass, regclass), rn_state(regclass), rn_reads_as(text, text, text);
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;
