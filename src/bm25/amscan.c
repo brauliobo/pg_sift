@@ -9,6 +9,7 @@
 #include "access/relscan.h"
 #include "access/skey.h"
 #include "nodes/tidbitmap.h"
+#include "pgstat.h"
 #include "port/pg_bitutils.h"
 #include "utils/memutils.h"
 
@@ -82,6 +83,7 @@ sift_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	int64		ntids = 0;
 
 	sift_count_search(scan);
+	pgstat_count_index_scan(scan->indexRelation);
 	if (scan_queries(scan, st, queries))
 	{
 		SiftMatchIter *it = sift_iter_begin(sift_plan_bind(st, queries, scan->numberOfKeys, 0));
