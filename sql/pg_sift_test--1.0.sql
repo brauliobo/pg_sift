@@ -51,6 +51,9 @@ CREATE FUNCTION sift._test_maint_failures(index regclass) RETURNS int4
 -- the metapage as an older build wrote it ('old') or with a failure note of garbage ('junk')
 CREATE FUNCTION sift._test_meta_note(index regclass, mode text) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_meta_note' LANGUAGE C STRICT;
+-- the bytes of the metapage struct: a used size above it is invalid
+CREATE FUNCTION sift._test_meta_size() RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_meta_size' LANGUAGE C STRICT IMMUTABLE;
 -- longest wait of this backend for the maintenance of others since the last call, in microseconds
 CREATE FUNCTION sift._test_maint_wait_us() RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_maint_wait_us' LANGUAGE C STRICT;
