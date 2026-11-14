@@ -240,6 +240,7 @@ sift_index_format(PG_FUNCTION_ARGS)
 	bool		nulls[4] = {0};
 	bool		bm25 = rel->rd_rel->relam == sift_catalog()->am;
 
+	sift_check_inspect(rel);
 	sift_dir_read(rel, snap);
 	v[0] = Int32GetDatum(snap->meta.format_major);
 	v[1] = Int32GetDatum(snap->meta.format_minor);

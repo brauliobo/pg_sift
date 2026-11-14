@@ -16,6 +16,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
+#include "col/pg.h"
 #include "col/seg.h"
 #include "core/cmp.h"
 
@@ -329,7 +330,7 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 Datum
 sift_col_verify(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_col_open_index(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	bool		heapallindexed = PG_GETARG_BOOL(1);
 	SiftColRel *r;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
