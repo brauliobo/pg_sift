@@ -232,6 +232,23 @@ sift_cseg_rollup(SiftColSegment *seg, uint32 u, int list, uint32 *len)
 	return e;
 }
 
+/* The bytes of the rollups of the rows of the segment: those of every key group, and those of the units, from an even sample of them (at most sample) scaled to all */
+double
+sift_cseg_rollup_bytes(SiftColSegment *seg, uint32 sample)
+{
+	double		bytes = 0;
+	uint32		len,
+				n = Min(seg->nsb, sample);
+
+	for (uint32 k = 0; k < sift_cseg_super_count(seg); k++)
+		if (sift_cseg_super_rollup(seg, k, &len) != NULL)
+			bytes += len;
+	for (uint32 i = 0; i < n; i++)
+		if (sift_cseg_rollup(seg, (uint64) i * seg->nsb / n, -1, &len) != NULL)
+			bytes += (double) len * seg->nsb / n;
+	return bytes;
+}
+
 const uint8 *
 sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len)
 {

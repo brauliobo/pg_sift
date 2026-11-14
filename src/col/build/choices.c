@@ -854,6 +854,8 @@ sift_col_choices_say(Relation heap, Relation index, int kinds, bool build)
 			(errmsg("sift_col index \"%s\": %s", name, head.data),
 			 errdetail_internal("%s", detail.data),
 			 errhint("Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('%s');", name)));
+	if (build && sift_scope_specs(index) != NULL)
+		colb_scope_say_rollup(index);
 	if (minor >= SIFT_COL_FORMAT_SCOPE && (kinds & SIFT_CHOICE_AUTO))
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\" has a scope: column format minor %d, which a library before %s cannot read", name, minor, minor_lib(minor)),

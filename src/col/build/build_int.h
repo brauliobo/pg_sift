@@ -69,6 +69,7 @@ extern void colb_scope_cut(SiftColRel *r, int scope);
 extern void colb_scope_begin(ColBuild *b, SiftSegEntry *segs, int room);
 extern void colb_scope_feed(ColBuild *b, const SiftColBatch *src);
 extern void colb_scope_gather(ColBuild *b);
+extern void colb_scope_say_rollup(Relation index);
 extern void colb_finish_runs(ColBuild *b);
 extern Size colb_run_budget(ColBuild *b, Size held);
 extern Size colb_writer_budget(int nslots);

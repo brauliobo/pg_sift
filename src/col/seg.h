@@ -377,6 +377,7 @@ extern bool sift_cseg_test_point_span(SiftColSegment *seg, uint64 *off, uint64 *
 #endif
 /* the rollup blob of a list in unit u (NULL, len 0: none), for sift_cpagg_rollup_decode */
 extern const uint8 *sift_cseg_rollup(SiftColSegment *seg, uint32 u, int list, uint32 *len);
+extern double sift_cseg_rollup_bytes(SiftColSegment *seg, uint32 sample);
 extern uint64 sift_cseg_preagg_bytes(SiftColSegment *seg);
 extern uint32 sift_cseg_preagg_units(SiftColSegment *seg);
 /* What the sidecar of the segment holds against the spec an index writes now, and whether a rewrite can give it what it lacks (sift_col_refresh); setting: sift.col_format_minor */

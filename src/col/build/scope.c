@@ -12,6 +12,7 @@
 
 #include "col/build/build_int.h"
 #include "col/scope.h"
+#include "col/seg.h"
 
 #define SCOPE_ROWS_FACTOR	2		/* the rows a scope family is expected to hold for each row of the table, to fit its segments to the directory (a bound: the average is the keys of a member) */
 
@@ -147,4 +148,46 @@ colb_scope_gather(ColBuild *b)
 		}
 		b->nsegs += sb->nsegs;
 	}
+}
+
+#define ROLLUP_SAMPLE	64		/* the units of a segment whose rollups are measured */
+
+/* The bytes of the rollups of the rows the immutable segments hold: the groups of a key all, the units a sample */
+static double
+rollup_bytes(Relation index)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	double		bytes = 0;
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			SiftColSegment *seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+
+			bytes += sift_cseg_rollup_bytes(seg, ROLLUP_SAMPLE);
+			sift_cseg_close(seg);
+		}
+	return bytes;
+}
+
+/*
+ * What the rollup of the rows costs a scope index (its key groups keep it, docs/COL-SCOPE.md), measured on the finished build: said like the growth of the scope, in MB from 1 MB of
+ * index (below, a few kB that the compressors change from one library version to the next).
+ */
+void
+colb_scope_say_rollup(Relation index)
+{
+	const char *opt = sift_col_options_rollup_columns(index);
+	const char *cols = strncmp(opt, "auto:", 5) == 0 ? opt + 5 + strspn(opt + 5, " ") : opt;
+	double		bytes,
+				total = (double) RelationGetNumberOfBlocks(index) * BLCKSZ;
+
+	if (*opt == '\0' || pg_strcasecmp(opt, "off") == 0 || pg_strcasecmp(opt, "auto") == 0 || (bytes = rollup_bytes(index)) == 0)
+		return;
+	if (total >= 1000000)
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": the rollup of the rows (%s) takes %.1f MB of the index (+%.1f%%)", sift_col_final_name(index), cols, bytes / 1e6,
+								100.0 * bytes / (total - bytes))));
+	else
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": the rollup of the rows (%s) is kept in the units and key groups", sift_col_final_name(index), cols)));
 }
