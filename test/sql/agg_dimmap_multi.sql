@@ -58,7 +58,8 @@ SELECT * FROM report('dimension b shared again');
 
 -- the second connection switched off: the journal of dimension b stays
 ALTER INDEX ev_col SET (connect = 'ka -> dim_a(k)');
-REINDEX INDEX ev_col;
+DROP INDEX ev_col;
+CREATE INDEX ev_col ON ev USING sift_col (id, ka, kb, v) WITH (connect = 'ka -> dim_a(k)');
 UPDATE dim_b SET x = 4 WHERE k = 7;
 SELECT * FROM report('connection b off, written');
 SELECT * FROM report('connection b off, shared');

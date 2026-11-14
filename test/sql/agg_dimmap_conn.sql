@@ -69,7 +69,8 @@ SELECT * FROM report('shared after the rollback');
 
 -- the connection switched off: the journal of the dimension stays, and so does its stamp
 ALTER INDEX ev_col SET (connect = 'off');
-REINDEX INDEX ev_col;
+DROP INDEX ev_col;
+CREATE INDEX ev_col ON ev USING sift_col (id, k, v) WITH (connect = 'off');
 UPDATE dim SET a = 5 WHERE k = 11;
 SELECT * FROM report('connection off, written');
 SELECT * FROM report('connection off, shared');

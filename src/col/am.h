@@ -46,7 +46,7 @@ typedef struct SiftColRel
 	SiftCWbufHint hint;
 	int			cut[SIFT_COL_CUT_MAX];	/* the leaves of the option key_cut, most significant first; ncut 0: units are cut by superblock */
 	int			ncut;
-	bool		stale;			/* the segments were written under another leaf list than the options give now (ALTER INDEX of a scope or connection): the planner leaves the index alone until REINDEX */
+	bool		stale;			/* the segments were written under another leaf list than the options give now (an ALTER INDEX of an older release, which did not refuse it): the planner leaves the index alone and a read or a write fails until REINDEX */
 	bool		rowkey;			/* the option track_changes names a column of the index: its attribute */
 	bool		track;			/* the index tracks changes: by a key column (rowkey) or by the address of the rows (track_changes = ctid) */
 	int			rowkey_attno;

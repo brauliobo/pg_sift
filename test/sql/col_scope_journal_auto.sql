@@ -74,9 +74,12 @@ DROP INDEX events_col;
 SELECT journal, commented, used_by FROM journals;
 DROP INDEX tenant_scope_dim_a_id_tenant_id_sift_journal;
 
--- ALTER INDEX .. RESET (scope) and DROP TABLE drop the journal too, the other ways a scope index goes
+-- ALTER INDEX .. RESET (scope) (an index that has segments refuses it) and DROP TABLE drop the journal too, the other ways a scope index goes
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 SELECT count(*) AS journals FROM journals;
+ALTER INDEX events_col RESET (scope);
+SELECT count(*) AS journals_after_refused_reset FROM journals;
+TRUNCATE events;
 ALTER INDEX events_col RESET (scope);
 SELECT count(*) AS journals_after_reset FROM journals;
 ALTER INDEX events_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');

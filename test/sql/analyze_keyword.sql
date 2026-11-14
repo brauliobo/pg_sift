@@ -65,8 +65,6 @@ SELECT reloptions FROM pg_class WHERE relname IN ('k_fold', 't_idx') ORDER BY re
 -- the analyzer is fixed at build time
 ALTER INDEX k_fold SET (analyzer = text);
 SELECT sift.verify('k_fold');
-REINDEX INDEX k_fold;
-SELECT sift.verify('k_fold');
 
 DROP TABLE k;
 DROP FUNCTION k_ids(text), k_ids_seq(text);

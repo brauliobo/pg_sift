@@ -54,9 +54,10 @@ REINDEX INDEX notvalid_col;
 REINDEX INDEX facts_col;
 REINDEX INDEX CONCURRENTLY facts_col;
 SELECT child, ordinal, declaration, automatic FROM sift.col_connections WHERE child IN ('notvalid_col'::regclass, 'facts_col'::regclass) ORDER BY child::text, ordinal;
--- the option turned off, then REINDEX: nothing is connected, and the parent can be dropped
+-- the option cannot be turned off on an index that holds segments: built again without it, nothing is connected, and the parent can be dropped
 ALTER INDEX facts_col SET (connect = 'off');
-REINDEX INDEX facts_col;
+DROP INDEX facts_col;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, dim_b_id, v) WITH (connect = 'off');
 SELECT count(*) AS connections FROM sift.col_connections WHERE child = 'facts_col'::regclass;
 -- an index that was connected by itself behaves as one connected by hand: the parent index is under it
 DROP INDEX dim_a_col;

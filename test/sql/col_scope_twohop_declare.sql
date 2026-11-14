@@ -114,25 +114,27 @@ SELECT edges('facts_col') AS after_reindex_concurrently;
 CREATE UNIQUE INDEX grants_other ON grants (tenant_id, group_id) WHERE id > 0;
 ALTER INDEX facts_col SET (superunit = 8);
 SELECT edges('facts_col') AS after_other_option;
--- two partial unique btrees on the columns of the joined path: REINDEX keeps the recorded one; where none is recorded the pairs are a guess, which SET (scope) says, naming the index in USING settles it, ALTER keeps the recorded one
+-- two partial unique btrees on the columns of the joined path: REINDEX keeps the recorded one; where none is recorded the pairs are a guess, which CREATE INDEX says, naming the index in USING settles it, ALTER keeps the recorded one
 SELECT try('REINDEX INDEX facts_col') AS two_partial;
-BEGIN;
-ALTER INDEX facts_col RESET (scope);
-SELECT try('ALTER INDEX facts_col SET (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS two_partial_guess;
-ROLLBACK;
+SELECT try('CREATE INDEX facts_guess ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS two_partial_guess;
 SELECT try('ALTER INDEX facts_col SET (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using grants_other via memberships(group_id, dim_a_id)'')') AS using_other;
 ALTER INDEX facts_col SET (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using grants_group via memberships(group_id, dim_a_id)');
 SELECT edges('facts_col') AS after_using_recorded;
-ALTER INDEX facts_col RESET (scope);
+-- RESET (scope) and SET (scope = 'off') are refused on an index that has segments: the replacement is made again
+SELECT try('ALTER INDEX facts_col RESET (scope)') AS reset_refused;
+SELECT edges('facts_col') AS after_reset_refused;
+DROP INDEX facts_col;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad);
 SELECT edges('facts_col') AS after_reset;
+DROP INDEX facts_col;
 SET client_min_messages = notice;
-ALTER INDEX facts_col SET (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using grants_other via memberships(group_id, dim_a_id)');
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using grants_other via memberships(group_id, dim_a_id)');
 SET client_min_messages = warning;
 SELECT edges('facts_col') AS after_using_other;
-ALTER INDEX facts_col SET (scope = 'off');
-SELECT edges('facts_col') AS after_off;
+SELECT try('ALTER INDEX facts_col SET (scope = ''off'')') AS off_refused;
+DROP INDEX facts_col;
 DROP INDEX grants_other;
-ALTER INDEX facts_col SET (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 SELECT edges('facts_col') AS after_set;
 
 -- the text is the record: pg_dump writes it and a restore makes the same index

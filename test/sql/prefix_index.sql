@@ -87,10 +87,11 @@ SELECT sift.merge('px_idx', true) IS NOT NULL AS merged;
 SELECT q FROM qs() q WHERE cnt('px', q) <> oracle('pn', q);
 SELECT sift.verify('px_idx', true);
 
--- the option is part of the analyzer: switching it needs a REINDEX
+-- the option is part of the analyzer: an index that holds documents keeps it, and the new one is built beside it
 ALTER INDEX pn_idx SET (prefix_index = 2);
 SELECT count(*) FROM pn WHERE body @@> 'al*';
-REINDEX INDEX pn_idx;
+DROP INDEX pn_idx;
+CREATE INDEX pn_idx ON pn USING sift (body) WITH (prefix_index = 2);
 SELECT count(*) FROM pn WHERE body @@> 'al*';
 CREATE INDEX bad_idx ON pn USING sift (body) WITH (prefix_index = 16);
 

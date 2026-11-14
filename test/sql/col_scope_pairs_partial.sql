@@ -91,21 +91,17 @@ CREATE UNIQUE INDEX memberships_other ON memberships (group_id, dim_a_id) WHERE 
 INSERT INTO memberships VALUES (8, 433, NULL);
 SELECT * FROM compare();
 SELECT btree FROM sift._test_scope_legs('facts_col', 0);
--- a second partial unique btree made later changes nothing: REINDEX keeps the recorded one. Where none is recorded the pairs are a guess, which SET (scope) says; USING names the one
+-- a second partial unique btree made later changes nothing: REINDEX keeps the recorded one. Where none is recorded the pairs are a guess, which CREATE INDEX says; USING names the one
 SELECT try('REINDEX INDEX facts_col') AS two_partial;
-BEGIN;
-ALTER INDEX facts_col RESET (scope);
-SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id)'')') AS two_partial_guess;
-ROLLBACK;
-SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_active'')') AS using_active;
+SELECT try('CREATE INDEX facts_guess ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id)'')') AS two_partial_guess;
+SELECT try('CREATE INDEX facts_guess ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_missing'')') AS using_unknown;
+SELECT try('CREATE INDEX facts_guess ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using facts_pkey'')') AS using_not_a_pair_btree;
+DROP INDEX facts_col;
 SET client_min_messages = notice;
-REINDEX INDEX facts_col;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_active');
 SET client_min_messages = warning;
 SELECT btree FROM sift._test_scope_legs('facts_col', 0);
 SELECT * FROM compare();
-SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_missing'')') AS using_unknown;
-SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using facts_pkey'')') AS using_not_a_pair_btree;
-ALTER INDEX facts_col SET (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
 DROP INDEX memberships_other;
 
 -- a journal index must hear of every pair: partial on the predicate of the pairs is fine, partial on another is not (the build makes a journal of its own beside a partial one that does not qualify)

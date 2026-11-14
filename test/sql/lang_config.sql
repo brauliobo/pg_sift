@@ -147,10 +147,12 @@ SELECT id FROM dg WHERE body @@> '"Hund Katze"' ORDER BY id;
 SELECT id FROM dg WHERE body @@> 'und der' ORDER BY id;
 SELECT sift.parse_query('Häuser AND "Hund und Katze" OR Wet*', 'dg_idx'::regclass);
 
--- the metapage keeps the configuration the index was built with: the option naming another one is another analyzer, which verify names
+-- the metapage keeps the configuration the index was built with: the option naming another one is another analyzer, which the ALTER refuses;
+-- verify names the configuration of an index whose scoring options differ
 ALTER INDEX dg_idx SET (stemmer = 'french');
+ALTER INDEX dg_idx SET (k1 = 2.0);
 SELECT sift.verify('dg_idx');
-ALTER INDEX dg_idx SET (stemmer = 'german');
+ALTER INDEX dg_idx RESET (k1);
 SELECT sift.verify('dg_idx', true);
 
 -- prefixes (word prefixes of the stemmed terms; the wildcard folds, it does not stem), and the indexed prefix terms

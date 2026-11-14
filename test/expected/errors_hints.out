@@ -91,7 +91,47 @@ SELECT expect('SELECT sift.score(ctid) FROM many');
    hint: Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 (1 row)
 
-DROP TABLE one, many, tbl, docs;
+-- an ALTER INDEX that changes what the segments were written with is refused once the index holds a segment, and the table goes on working;
+-- an index with no segment takes it, and the first write uses the new options
+CREATE TABLE alt (id int, v text);
+CREATE INDEX alt_idx ON alt USING sift (v);
+SELECT expect('ALTER INDEX alt_idx SET (prefix_index = 2)');
+  expect  
+----------
+ no error
+(1 row)
+
+INSERT INTO alt VALUES (1, 'alpha beta');
+SELECT count(*) FROM alt WHERE v @@> 'al*';
+ count 
+-------
+     1
+(1 row)
+
+SELECT expect('ALTER INDEX alt_idx SET (prefix_index = 3)');
+                                                                    expect                                                                    
+----------------------------------------------------------------------------------------------------------------------------------------------
+ 0A000 cannot change the analyzer options of index "alt_idx" while it holds data                                                             +
+   detail: Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.+
+   hint: CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.alt_idx: no scan is lost while it is built.
+(1 row)
+
+SELECT expect('ALTER INDEX alt_idx RESET (prefix_index)');
+                                                                    expect                                                                    
+----------------------------------------------------------------------------------------------------------------------------------------------
+ 0A000 cannot change the analyzer options of index "alt_idx" while it holds data                                                             +
+   detail: Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.+
+   hint: CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.alt_idx: no scan is lost while it is built.
+(1 row)
+
+INSERT INTO alt VALUES (2, 'alpha gamma');
+SELECT count(*) FROM alt WHERE v @@> 'al*';
+ count 
+-------
+     2
+(1 row)
+
+DROP TABLE one, many, tbl, docs, alt;
 DROP FUNCTION expect(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

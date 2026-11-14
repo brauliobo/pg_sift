@@ -105,17 +105,16 @@ SELECT * FROM group_read(9);
  t    |        890 |       890
 (1 row)
 
--- using cannot name another btree than the recorded one (ALTER INDEX is refused), and does where nothing is recorded
+-- using cannot name another btree than the recorded one (ALTER INDEX is refused), and does where nothing is recorded (the index made again)
 SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_active'')') AS other_btree;
-                                                                                                                           other_btree                                                                                                                            
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "group_id": the scope segments were written under the pairs of "memberships_pkey", not "memberships_active" [Change the btree that defines the pairs with DROP INDEX and CREATE INDEX of this index, or REINDEX after RESET (scope) and SET (scope = ..).]
+                                                                                                                            other_btree                                                                                                                             
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "group_id": the scope segments were written under the pairs of "memberships_pkey", not "memberships_active" [Change the btree that defines the pairs with DROP INDEX and CREATE INDEX of this index, or make the index again without the scope and with it.]
 (1 row)
 
-ALTER INDEX facts_col RESET (scope);
-ALTER INDEX facts_col SET (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_active');
+DROP INDEX facts_col;
 SET client_min_messages = notice;
-REINDEX INDEX facts_col;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_active');
 NOTICE:  scope "group_id": the pairs of "memberships" are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "group_id": 15,842 entries for 20,000 rows (0.79 per row)
 NOTICE:  sift_col index "facts_col": 2 automatic choices (key_columns, track_changes)
@@ -137,11 +136,10 @@ SELECT scope_rows < join_rows AS fewer FROM group_read(9);
  t
 (1 row)
 
--- the rule chooses again where nothing is recorded: after RESET (scope) and SET (scope = ..)
-ALTER INDEX facts_col RESET (scope);
-ALTER INDEX facts_col SET (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
+-- the rule chooses again where nothing is recorded: in the index made again
+DROP INDEX facts_col;
 SET client_min_messages = notice;
-REINDEX INDEX facts_col;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
 NOTICE:  scope "group_id": the pairs of "memberships" are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "group_id": 15,842 entries for 20,000 rows (0.79 per row)
 NOTICE:  sift_col index "facts_col": 2 automatic choices (key_columns, track_changes)

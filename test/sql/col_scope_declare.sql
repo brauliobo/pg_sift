@@ -125,19 +125,27 @@ SELECT edges('events_col') AS after_btree_reindex_concurrently;
 REINDEX INDEX events_col;
 SELECT format, kind FROM sift.col_segments('events_col') WHERE kind = 'immutable';
 
--- off removes the declaration (the leaf stays in the segments until the next REINDEX), the text brings it back, RESET removes it again
-ALTER INDEX events_col SET (scope = 'off');
-SELECT edges('events_col') AS after_off;
-ALTER INDEX events_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
-SELECT edges('events_col') AS after_set;
-SELECT try('ALTER INDEX events_col SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, nokey)'')');
-SELECT edges('events_col') AS after_bad_set;
-ALTER INDEX events_col RESET (scope);
-SELECT edges('events_col') AS after_reset;
-REINDEX INDEX events_col;
-SELECT format, kind FROM sift.col_segments('events_col') WHERE kind = 'immutable';
-SELECT count(*) AS scope_leaves FROM sift.col_leaves('events_col') WHERE path LIKE '%#scope';
+-- off, a new declaration and RESET change the leaf list: an index that has segments refuses them and keeps its dependencies
+SELECT try('ALTER INDEX events_col SET (scope = ''off'')');
+SELECT try('ALTER INDEX events_col RESET (scope)');
+SELECT edges('events_col') AS after_refused;
+-- an index with none takes them: off removes the declaration, the text brings it back, RESET removes it again
+CREATE TABLE events_empty (LIKE events);
+CREATE INDEX events_empty_col ON events_empty USING sift_col (id, dim_a_id, created_at, kind, label, value_num)
+	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+ALTER INDEX events_empty_col SET (scope = 'off');
+SELECT edges('events_empty_col') AS after_off;
+ALTER INDEX events_empty_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+SELECT edges('events_empty_col') AS after_set;
+SELECT try('ALTER INDEX events_empty_col SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, nokey)'')');
+SELECT edges('events_empty_col') AS after_bad_set;
+ALTER INDEX events_empty_col RESET (scope);
+SELECT edges('events_empty_col') AS after_reset;
+DROP TABLE events_empty;
 -- a scope is not declared by ALTER INDEX on an index that has segments (it would stop every scan): the index is made again
+DROP INDEX events_col;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num);
+SELECT count(*) AS scope_leaves FROM sift.col_leaves('events_col') WHERE path LIKE '%#scope';
 SELECT try('ALTER INDEX events_col SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')');
 DROP INDEX events_col;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num)
@@ -169,12 +177,11 @@ SELECT edges('events_two') AS edges;
 SELECT leaf, path, type FROM sift.col_leaves('events_two') ORDER BY leaf;
 SELECT format, rows FROM sift.col_segments('events_two') WHERE kind = 'immutable';
 SELECT sift.col_verify('events_two', true);
-ALTER INDEX events_two SET (connect = 'off');
-SELECT edges('events_two') AS after_connect_off;
-ALTER INDEX events_two SET (connect = 'dim_a_id -> dim_a(id)');
+SELECT try('ALTER INDEX events_two SET (connect = ''off'')');
+SELECT edges('events_two') AS after_connect_off_refused;
 SELECT try('ALTER INDEX events_two SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')');
 SELECT edges('events_two') AS after_one_scope_refused;
-ALTER INDEX events_two RESET (scope);
+SELECT try('ALTER INDEX events_two RESET (scope)');
 SELECT edges('events_two') AS after_scope_reset;
 DROP INDEX events_two;
 DROP SCHEMA other CASCADE;

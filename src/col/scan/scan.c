@@ -10,6 +10,7 @@
 #include "storage/predicate.h"
 #include "utils/acl.h"
 #include "core/cmp.h"
+#include "core/lane.h"
 #include "col/gorder.h"
 #include "col/scan_int.h"
 
@@ -138,11 +139,8 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	segments_pin(src, flags);
 	col_hf_open(src);
 	SIFT_COL_OPEN_GATE();
-	if (!(src->dir.meta.flags & SIFT_COL_META_FLAG) || src->dir.meta.analyzer_hash != src->schema->hash)
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("sift_col index \"%s\" does not match its column layout", RelationGetRelationName(index)),
-				 errhint("REINDEX the index.")));
+	if (!(src->dir.meta.flags & SIFT_COL_META_FLAG) || sift_dir_layout_differs(&src->dir, src->schema->hash))
+		sift_lane_layout_error(index, "column definitions");
 	src->seg = palloc0(src->dir.nsegs * sizeof(ColCursor));
 	for (int i = 0; i < src->dir.nsegs; i++)
 		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)

@@ -12,6 +12,8 @@
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "mb/pg_wchar.h"
+#include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
 
 #include "core/lane.h"
@@ -112,6 +114,7 @@ typedef struct SwapArg
 {
 	uint64		sealed;			/* 0: only add */
 	SiftSegEntry fresh;
+	uint32		hash;			/* the options of the first segment of an index (open_first) */
 } SwapArg;
 
 void
@@ -129,6 +132,15 @@ swap_active(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *ar
 	SwapArg    *a = arg;
 
 	sift_lane_swap_active(dir, a->sealed, &a->fresh);
+}
+
+/* The first segment of an index with none: the metapage takes the options it is written under */
+static void
+open_first(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	if (!sift_segs_have_layout(dir->segs, dir->nsegs))
+		meta->analyzer_hash = ((SwapArg *) arg)->hash;
+	swap_active(meta, dir, extra, arg);
 }
 
 /* The directory entries a write may fill: the page holds SIFT_MAX_SEGMENTS, sift.test_limits lowers it in a test build */
@@ -149,7 +161,7 @@ last_failure(const SiftDirSnapshot *snap)
 
 /* Creates the active segment unless another backend did meanwhile; false when the directory is full */
 static bool
-create_active(Relation index, Size hdrsize, uint16 format, uint16 flags)
+create_active(Relation index, uint32 hash, Size hdrsize, uint16 format, uint16 flags)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	bool		room = true;
@@ -160,8 +172,9 @@ create_active(Relation index, Size hdrsize, uint16 format, uint16 flags)
 	{
 		SwapArg		arg = {0};
 
+		arg.hash = hash;
 		arg.fresh = new_segment(index, hdrsize, format, flags);
-		sift_dir_update(index, &(SiftDirChange) {.fn = swap_active,.arg = &arg,.extra = InvalidBuffer});
+		sift_dir_update(index, &(SiftDirChange) {.fn = open_first,.arg = &arg,.extra = InvalidBuffer});
 	}
 	UnlockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	pfree(snap);
@@ -269,6 +282,17 @@ sift_lane_rotate(Relation index, Size hdrsize, uint16 format, uint16 flags)
 }
 
 void
+sift_lane_alter_refuse(Relation index, const char *what)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot change the %s of index \"%s\" while it holds data", what, RelationGetRelationName(index)),
+			 errdetail("Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again."),
+			 errhint("CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX %s: no scan is lost while it is built.",
+					 quote_qualified_identifier(get_namespace_name(RelationGetNamespace(index)), RelationGetRelationName(index)))));
+}
+
+void
 sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, uint16 format, uint16 flags, bool (*make_room) (Relation),
 				  uint64 *gen, BlockNumber *hdr_blk, BlockNumber *tail)
 {
@@ -279,14 +303,11 @@ sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, u
 	for (;;)
 	{
 		sift_dir_read(index, snap);
-		if (snap->meta.analyzer_hash != hash)
-			ereport(ERROR,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("index \"%s\" was built with other %s", RelationGetRelationName(index), what),
-					 errhint("Use REINDEX to apply the new options.")));
+		if (sift_dir_layout_differs(snap, hash))
+			sift_lane_layout_error(index, what);
 		if ((act = find_kind(snap, SIFT_SEG_WBUF_OPEN)) != NULL)
 			break;
-		if (!create_active(index, hdrsize, format, flags) && !make_room(index))
+		if (!create_active(index, hash, hdrsize, format, flags) && !make_room(index))
 		{
 			const char *why;
 

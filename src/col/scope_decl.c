@@ -543,7 +543,7 @@ choose_btree(Oid owner, const SiftScopeSpec *s, int i, Relation rel, AttrNumber 
 
 	if (OidIsValid(btree) && r->index_name != NULL && pair_index(rel, s, r, a, b) != btree)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the scope segments were written under the pairs of \"%s\", not \"%s\"", s->key_name, get_rel_name(btree), r->index_name),
-						errhint("Change the btree that defines the pairs with DROP INDEX and CREATE INDEX of this index, or REINDEX after RESET (scope) and SET (scope = ..).")));
+						errhint("Change the btree that defines the pairs with DROP INDEX and CREATE INDEX of this index, or make the index again without the scope and with it.")));
 	if (!OidIsValid(btree))
 	{
 		btree = pair_index(rel, s, r, a, b);

@@ -347,7 +347,7 @@ sift_col_verify(PG_FUNCTION_ARGS)
 	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
 	sift_store_verify(index);
 	sift_dir_read(index, snap);
-	if (!(snap->meta.flags & SIFT_COL_META_FLAG) || snap->meta.analyzer_hash != r->schema->hash)
+	if (!(snap->meta.flags & SIFT_COL_META_FLAG) || sift_dir_layout_differs(snap, r->schema->hash))
 		corrupt(index, "The metapage does not describe this column layout.");
 	for (int i = 0; i < snap->nsegs; i++)
 	{

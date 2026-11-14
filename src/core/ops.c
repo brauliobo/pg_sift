@@ -112,26 +112,18 @@ sift_maint_context(ErrorContextCallback *cb, Oid indexoid)
 	error_context_stack = cb;
 }
 
-/* Does the index hold documents analyzed with other options than it now has? */
-static bool
-analyzer_changed(Relation index)
+/* An index that holds documents analyzed with other options than it now has is not left so: the ALTER INDEX fails, and the queries and inserts of its table go on */
+static void
+check_analyzer_options(Relation index)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftAnalyzerConfig cfg;
 
 	sift_dir_read(index, snap);
 	sift_analyzer_config_from_index(index, &cfg);
-	return snap->meta.analyzer_hash != cfg.hash;
-}
-
-static void
-warn_analyzer_options(Relation index)
-{
-	if (analyzer_changed(index))
-		ereport(WARNING,
-				(errmsg("sift index \"%s\": it was built with other analyzer options", RelationGetRelationName(index)),
-				 errdetail("Queries and inserts on its table fail until the index is rebuilt with REINDEX."),
-				 errhint("For no downtime, CREATE INDEX CONCURRENTLY a new index with the options, then drop this one.")));
+	if (sift_dir_layout_differs(snap, cfg.hash))
+		sift_lane_alter_refuse(index, "analyzer options");
+	pfree(snap);
 }
 
 /* The reloptions of an index as the catalog holds them now (a copy), NULL when it has none */
@@ -142,16 +134,6 @@ index_reloptions_copy(HeapTuple tuple)
 	Datum		d = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions, &isnull);
 
 	return isnull ? NULL : DatumGetArrayTypePCopy(d);
-}
-
-/* The scope option of an index as an options array holds it, NULL when it has none */
-static char *
-scope_option(ArrayType *options)
-{
-	foreach_node(DefElem, opt, untransformRelOptions(options == NULL ? (Datum) 0 : PointerGetDatum(options)))
-		if (strcmp(opt->defname, "scope") == 0)
-			return defGetString(opt);
-	return NULL;
 }
 
 /*
@@ -201,13 +183,11 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 		if (!same)
 		{
 			Relation	index = relation_open(objectId, NoLock);
-			char	   *scope = scope_option(after);
-			char	   *was = scope_option(before);
 
 			if (sift_col_is_index(index))
-				sift_col_alter_check(index, scope != NULL && (was == NULL || strcmp(scope, was) != 0));
+				sift_col_alter_check(index);
 			else
-				warn_analyzer_options(index);
+				check_analyzer_options(index);
 			relation_close(index, NoLock);
 		}
 	}

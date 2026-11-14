@@ -184,6 +184,16 @@ sift_seg_is_wbuf(const SiftSegEntry *e)
 	return e->kind == SIFT_SEG_WBUF_OPEN || e->kind == SIFT_SEG_WBUF_SEALED;
 }
 
+/* Do the entries hold a segment whose bytes depend on the options of the index (its analyzer, its leaf list)? The tombstone log and the runs of a value store do not */
+static inline bool
+sift_segs_have_layout(const SiftSegEntry *segs, int nsegs)
+{
+	for (int i = 0; i < nsegs; i++)
+		if (segs[i].kind == SIFT_SEG_IMMUTABLE || sift_seg_is_wbuf(&segs[i]))
+			return true;
+	return false;
+}
+
 typedef struct SiftDirectoryData
 {
 	uint32		version;		/* bumped by every directory update */

@@ -391,15 +391,19 @@ SELECT q, plans('ft', 'name @@> ' || quote_literal(q)) AS no_sift_index_on_the_c
  name:(alpha beta) | 0
 (2 rows)
 
--- the field count is part of the analyzer
+-- the field count is part of the analyzer: an index that holds documents keeps it, and the new one is built beside it
 ALTER INDEX fn_idx SET (fields = 'name');
-WARNING:  sift index "fn_idx": it was built with other analyzer options
-DETAIL:  Queries and inserts on its table fail until the index is rebuilt with REINDEX.
-HINT:  For no downtime, CREATE INDEX CONCURRENTLY a new index with the options, then drop this one.
+ERROR:  cannot change the analyzer options of index "fn_idx" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.fn_idx: no scan is lost while it is built.
 SELECT count(*) FROM fn WHERE sections(name, city, rest) @@> 'name:alpha';
-ERROR:  index "fn_idx" was built with other analyzer options
-HINT:  Use REINDEX to apply the new options.
-REINDEX INDEX fn_idx;
+ count 
+-------
+     0
+(1 row)
+
+DROP INDEX fn_idx;
+CREATE INDEX fn_idx ON fn USING sift (sections(name, city, rest)) WITH (fields = 'name');
 SELECT count(*) > 0 AS name_matches FROM fn WHERE sections(name, city, rest) @@> 'name:alpha';
  name_matches 
 --------------

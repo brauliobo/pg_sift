@@ -131,39 +131,5 @@ sift_scope_journal_alter(Relation index)
 		return;
 	foreach_oid(user, sift_scope_users(RelationGetRelid(index)))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("index \"%s\" is the journal of a scope of index \"%s\"", RelationGetRelationName(index), get_rel_name(user)),
-						errhint("The journal keeps track_changes = 'ctid': a read of the scope index learns from it which pairs changed. ALTER INDEX %s RESET (scope) first to give the scope up.", get_rel_name(user))));
-}
-
-/* Has the index a segment: the rows of its table are in it, which a REINDEX would write again */
-static bool
-has_segments(Relation index)
-{
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
-	bool		found = false;
-
-	sift_dir_read(index, dir);
-	for (int i = 0; i < dir->nsegs && !found; i++)
-		found = dir->segs[i].kind == SIFT_SEG_IMMUTABLE;
-	pfree(dir);
-	return found;
-}
-
-/*
- * After ALTER INDEX of an option that changed the leaf list of the segments (a scope declared or given up, paths, connect ..): the index is not scanned until a REINDEX writes them again. An
- * index that has segments is not left so by an ALTER INDEX that declares a scope (scope_set): it is refused, and the index goes on serving while its replacement is built beside it (the build is
- * a CREATE INDEX CONCURRENTLY, which writes the stamp of its scope as a REINDEX does). RESET (scope), the way to give a scope up, and an index with no segment, whose REINDEX writes nothing, say what the REINDEX does.
- */
-void
-sift_scope_notice_stale(Relation index, bool scope_set)
-{
-	const char *name = RelationGetRelationName(index);
-
-	if (!sift_col_rel(index)->stale)
-		return;
-	if (scope_set && sift_scope_specs(index) != NULL && has_segments(index))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col index \"%s\": its segments were written with other options than this ALTER INDEX gives it", name),
-						errdetail("Every scan of the index would stop until a REINDEX writes them again."),
-						errhint("CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX %s: no scan is lost while it is built.", name)));
-	ereport(NOTICE, (errmsg("sift_col index \"%s\": its segments were written with other options than it has now", name),
-					 errhint("REINDEX INDEX %s writes them again; until then queries do not scan the index.", name)));
+						errhint("The journal keeps track_changes = 'ctid': a read of the scope index learns from it which pairs changed. DROP INDEX %s first to give the scope up.", get_rel_name(user))));
 }

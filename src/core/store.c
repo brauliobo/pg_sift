@@ -258,22 +258,23 @@ sift_dir_read_segs(Relation index, SiftDirSnapshot *snap)
 	UnlockReleaseBuffer(dirbuf);
 }
 
-/* The schema hash and the flags the metapage of a column index was written with; false while the index has no page yet (CREATE INDEX has not started to write) and for a partitioned
- * index, which has no storage (PostgreSQL 19 asks it for amcanreturn while it plans a query on the partitioned table) */
+/* The schema hash and the flags the segments of a column index were written with; false while the index has no segment (CREATE INDEX has not started to write, or nothing was
+ * written yet: sift_dir_layout_differs) and for a partitioned index, which has no storage (PostgreSQL 19 asks it for amcanreturn while it plans a query on the partitioned table) */
 bool
 sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags)
 {
-	Buffer		metabuf;
-	SiftMetaPageData *meta;
+	SiftDirSnapshot *snap;
+	bool		written;
 
 	if (index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX || RelationGetNumberOfBlocks(index) <= SIFT_DIRECTORY_BLKNO)
 		return false;
-	metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
-	meta = META(BufferGetPage(metabuf));
-	*hash = meta->analyzer_hash;
-	*flags = meta->flags;
-	UnlockReleaseBuffer(metabuf);
-	return true;
+	snap = palloc(sizeof(SiftDirSnapshot));
+	sift_dir_read(index, snap);
+	*hash = snap->meta.analyzer_hash;
+	*flags = snap->meta.flags;
+	written = sift_segs_have_layout(snap->segs, snap->nsegs);
+	pfree(snap);
+	return written;
 }
 
 Buffer

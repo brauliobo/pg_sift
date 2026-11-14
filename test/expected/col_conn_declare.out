@@ -116,10 +116,27 @@ SELECT count(*) AS edges FROM pg_depend WHERE classid = 'pg_class'::regclass AND
      1
 (1 row)
 
--- off removes the connection, the text brings it back, RESET removes it again
+-- off removes the connection, the text brings it back, RESET removes it again: an index that holds segments keeps its connection (the ALTER is
+-- refused and changes no dependency), an index with none takes the change
 ALTER INDEX events_col SET (connect = 'off');
-NOTICE:  sift_col index "events_col": its segments were written with other options than it has now
-HINT:  REINDEX INDEX events_col writes them again; until then queries do not scan the index.
+ERROR:  cannot change the column definitions of index "events_col" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.events_col: no scan is lost while it is built.
+ALTER INDEX events_col RESET (connect);
+ERROR:  cannot change the column definitions of index "events_col" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.events_col: no scan is lost while it is built.
+SELECT edges('events_col') AS after_refused;
+ after_refused 
+---------------
+ dim_a_col
+(1 row)
+
+TRUNCATE events;
+NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
+ALTER INDEX events_col SET (connect = 'off');
 SELECT edges('events_col') AS after_off;
  after_off 
 -----------
@@ -136,8 +153,6 @@ SELECT edges('events_col') AS after_set;
 ALTER INDEX events_col SET (connect = 'dim_a_id -> dim_a(nokey)');
 ERROR:  connect: table "dim_a" has no column "nokey"
 ALTER INDEX events_col RESET (connect);
-NOTICE:  sift_col index "events_col": its segments were written with other options than it has now
-HINT:  REINDEX INDEX events_col writes them again; until then queries do not scan the index.
 SELECT edges('events_col') AS after_reset;
  after_reset 
 -------------

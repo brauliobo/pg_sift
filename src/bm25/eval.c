@@ -33,11 +33,8 @@ sift_state_open_dir(Relation index, MemoryContext mcxt, const SiftDirSnapshot *d
 	else
 		sift_dir_read(index, &st->dir);
 	sift_analyzer_config_from_index(index, &cfg);
-	if (cfg.hash != st->dir.meta.analyzer_hash)
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("index \"%s\" was built with other analyzer options", RelationGetRelationName(index)),
-				 errhint("Use REINDEX to apply the new options.")));
+	if (sift_dir_layout_differs(&st->dir, cfg.hash))
+		sift_lane_layout_error(index, "analyzer options");
 	st->analyzer = sift_analyzer_create(&cfg, mcxt);
 	st->priv = palloc0(Max(st->dir.nsegs, 1) * sizeof(SiftSegment *));
 	MemoryContextSwitchTo(old);

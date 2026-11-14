@@ -1,0 +1,53 @@
+-- ALTER INDEX of an option that changes the leaf list the segments are written with (paths, array_lengths, connect, scope): refused (0A000) once the
+-- index holds a segment, so that the table keeps its writes and its reads; accepted on an index with no segment, whose first write uses the new
+-- options. An index that an older release altered reads and writes with the same SQLSTATE and text, and REINDEX makes it usable again.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift_test CASCADE;
+
+CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	st text; m text; d text; h text;
+BEGIN
+	EXECUTE q;
+	RETURN 'no error';
+EXCEPTION WHEN OTHERS THEN
+	GET STACKED DIAGNOSTICS st = RETURNED_SQLSTATE, m = MESSAGE_TEXT, d = PG_EXCEPTION_DETAIL, h = PG_EXCEPTION_HINT;
+	RETURN concat_ws(E'\n  ', st || ' ' || m, 'detail: ' || nullif(d, ''), 'hint: ' || nullif(h, ''));
+END
+$$;
+
+-- an index with no segment
+CREATE TABLE al_empty (id int, tags int[], g int) WITH (autovacuum_enabled = off);
+CREATE INDEX al_empty_col ON al_empty USING sift_col (id, tags, g) WITH (array_lengths = on);
+SELECT expect('ALTER INDEX al_empty_col SET (array_lengths = off)');
+INSERT INTO al_empty SELECT i, ARRAY[i, i + 1], i % 3 FROM generate_series(1, 100) i;
+SELECT count(*), sum(cardinality(tags)) FROM al_empty WHERE g = 1;
+SELECT expect('ALTER INDEX al_empty_col SET (array_lengths = on)');
+
+-- an index with a segment
+CREATE TABLE al_full (id int, tags int[], g int, doc jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO al_full SELECT i, ARRAY[i, i + 1], i % 3, jsonb_build_object('a', i) FROM generate_series(1, 100) i;
+CREATE INDEX al_full_col ON al_full USING sift_col (id, tags, g, doc) WITH (array_lengths = on, paths = 'doc.a int4');
+SELECT expect('ALTER INDEX al_full_col SET (array_lengths = off)');
+SELECT expect('ALTER INDEX al_full_col SET (paths = ''doc.a int4, doc.b text'')');
+SELECT expect('ALTER INDEX al_full_col SET (paths = ''doc.a int4'')');
+INSERT INTO al_full SELECT i, ARRAY[i], i % 3, jsonb_build_object('a', i) FROM generate_series(101, 150) i;
+SELECT count(*), sum(cardinality(tags)) FROM al_full WHERE g = 1;
+SELECT sift.verify('al_full_col');
+
+-- an index a release without the check altered: the write and the read fail alike, the REINDEX repairs both
+SELECT sift._test_poke('al_full_col', 0, 40, 1, 1);
+\c
+SET client_min_messages = warning;
+SELECT expect('INSERT INTO al_full VALUES (200, ARRAY[1], 0, ''{"a": 1}'')');
+SET enable_seqscan = off;
+SELECT expect('SELECT count(*) FROM al_full WHERE g = 1');
+RESET enable_seqscan;
+REINDEX INDEX al_full_col;
+INSERT INTO al_full VALUES (200, ARRAY[1], 0, '{"a": 1}');
+SELECT count(*) FROM al_full WHERE g = 1;
+
+DROP TABLE al_empty, al_full;
+DROP FUNCTION expect(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

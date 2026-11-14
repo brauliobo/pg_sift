@@ -35,9 +35,12 @@ extern uint32 sift_lane_npages(const SiftWbufHeaderData *hdr);
 extern Buffer sift_lane_read_locked(Relation index, BlockNumber blk, int mode);
 extern void sift_lane_read_header(Relation index, const SiftSegEntry *e, SiftWbufHeaderData *hdr);
 
+/* The one refusal of an ALTER INDEX that would leave the segments of an index that holds some under other options (0A000): the replacement is built beside it */
+extern void sift_lane_alter_refuse(Relation index, const char *what);
+
 /*
  * The active segment's header block, generation and lane tails, creating the segment when there is none (make_room: called when the
- * directory is full; false when nothing can be merged). format and flags are the owner's directory format and entry flags for a fresh buffer. hash is checked against meta->analyzer_hash; what names it in the error.
+ * directory is full; false when nothing can be merged). format and flags are the owner's directory format and entry flags for a fresh buffer. hash is checked against meta->analyzer_hash when the index holds a segment (sift_dir_layout_differs), and an index with none takes it with its first segment; what names it in the error.
  */
 extern void sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, uint16 format, uint16 flags, bool (*make_room) (Relation),
 							  uint64 *gen, BlockNumber *hdr_blk, BlockNumber *tail);

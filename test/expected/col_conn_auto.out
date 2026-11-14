@@ -167,11 +167,13 @@ SELECT child, ordinal, declaration, automatic FROM sift.col_connections WHERE ch
  notvalid_col |       1 | dim_a_id -> dim_a(id) | t
 (3 rows)
 
--- the option turned off, then REINDEX: nothing is connected, and the parent can be dropped
+-- the option cannot be turned off on an index that holds segments: built again without it, nothing is connected, and the parent can be dropped
 ALTER INDEX facts_col SET (connect = 'off');
-NOTICE:  sift_col index "facts_col": its segments were written with other options than it has now
-HINT:  REINDEX INDEX facts_col writes them again; until then queries do not scan the index.
-REINDEX INDEX facts_col;
+ERROR:  cannot change the column definitions of index "facts_col" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.facts_col: no scan is lost while it is built.
+DROP INDEX facts_col;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, dim_b_id, v) WITH (connect = 'off');
 NOTICE:  sift_col index "facts_col" stores columns id, dim_a_id, v of index "facts_off", which has the same layout
 HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "facts_col": 2 automatic choices (key_columns, track_changes)

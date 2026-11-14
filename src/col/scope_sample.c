@@ -98,7 +98,7 @@ sift_scope_precheck(Relation heap, Relation index)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						errmsg("sift_col index \"%s\" has a scope, which sift.col_format_minor %d cannot write", RelationGetRelationName(index), sift_col_format_minor),
 						errdetail("A scope needs the units cut by key, written at sift.col_format_minor %d or more, and a release before 5.0 cannot read it.", SIFT_COL_FORMAT_PRESENCE),
-						errhint("Build it at the normal setting, or give up the scope (ALTER INDEX .. RESET (scope)) to write an index that an older library reads.")));
+						errhint("Build it at the normal setting, or build the index without the scope, which an older library reads.")));
 #ifdef SIFT_TESTING
 	if (sift_test_scope_sample_blocks > 0)
 		min_blocks = sift_test_scope_sample_blocks;

@@ -194,10 +194,11 @@ SELECT q, plans('fn', 'sections(name, city, rest) @@> ' || quote_literal(q)) FRO
 	'name:alpha', 'nope:alpha', 'nope:(alpha beta)', 'name:(alpha OR beta) gamma']) q;
 SELECT q, plans('ft', 'name @@> ' || quote_literal(q)) AS no_sift_index_on_the_column FROM unnest(ARRAY['name:alpha', 'name:(alpha beta)']) q;
 
--- the field count is part of the analyzer
+-- the field count is part of the analyzer: an index that holds documents keeps it, and the new one is built beside it
 ALTER INDEX fn_idx SET (fields = 'name');
 SELECT count(*) FROM fn WHERE sections(name, city, rest) @@> 'name:alpha';
-REINDEX INDEX fn_idx;
+DROP INDEX fn_idx;
+CREATE INDEX fn_idx ON fn USING sift (sections(name, city, rest)) WITH (fields = 'name');
 SELECT count(*) > 0 AS name_matches FROM fn WHERE sections(name, city, rest) @@> 'name:alpha';
 
 -- two indexes on one key: `@@>` means the default analyzer, so the index with fields (the lowest OID
