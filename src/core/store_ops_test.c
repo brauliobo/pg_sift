@@ -113,7 +113,7 @@ sift_test_maint_failures(PG_FUNCTION_ARGS)
 }
 
 /*
- * sift._test_meta_note(index, mode): the metapage as a build without the failure note wrote it ('old': pd_lower stops short of the note) or
+ * sift._test_meta_note(index, mode): the metapage as a build without the failure note and the long words mark wrote it ('old': pd_lower stops short of the note) or
  * with a note of bytes no build wrote ('junk': every byte 0xFF, one failure in a row), for the readers of sift.workers
  */
 Datum
@@ -135,7 +135,7 @@ sift_test_meta_note(PG_FUNCTION_ARGS)
 		memset(SiftPageGetData(page) + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
 		SiftPageSetUsed(page, SIFT_META_BASE_SIZE);
 		/* one failure counted by such a build, which kept no note */
-		meta->flags = (meta->flags & ~SIFT_META_FAILURES_MASK) | 1;
+		meta->flags = (meta->flags & ~(SIFT_META_FAILURES_MASK | SIFT_META_LONG_WORDS)) | 1;
 		meta->maint_requested_at = GetCurrentTimestamp();
 	}
 	else if (strcmp(mode, "junk") == 0)

@@ -311,7 +311,7 @@ check_package() {
 	local U=$W/package sock=$W/package/sock port=$((PORT0 + 10)) root=$W/package/root f from ver=$(control_version)
 	tree HEAD "$W/pkg"
 	( cd "$W/pkg" && nice make -j2 USE_PGXS=1 SIFT_TESTING= >/dev/null && make USE_PGXS=1 SIFT_TESTING= DESTDIR="$root" install >/dev/null ) || { echo "make install failed"; return 1; }
-	for f in "$R/pg_sift.control" "$R"/sql/pg_sift--*.sql; do
+	for f in "$R/pg_sift.control" "$R"/sql/pg_sift--*.sql "$R/sql/pg_sift_upgrade_check.sql"; do
 		cmp "$f" "$root$(pg_config --sharedir)/extension/${f##*/}" || { echo "the install target did not preserve ${f##*/}"; return 1; }
 	done
 	[[ -f $root$(pg_config --pkglibdir)/pg_sift.so && ! -e $root$(pg_config --sharedir)/extension/pg_sift_test.control && ! -e $root$(pg_config --sharedir)/extension/pg_sift_helpers.control ]] || { echo "the library is missing, or a test-only extension is installed"; return 1; }

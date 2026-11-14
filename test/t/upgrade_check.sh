@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The upgrade preflight (scripts/upgrade-check.sh, scripts/upgrade_check.sql): the findings for a clean database, for the formats a release could
+# The upgrade preflight (sift.upgrade_check, scripts/upgrade-check.sh): the findings for a clean database, for the formats a release could
 # not read (--to), for options that wait for a REINDEX, for settings and test objects left behind, for an extension older than the library, for an
 # index the library refuses, and that the check leaves nothing behind in the database.
 . "$(dirname "$0")/lib.bash"
@@ -56,7 +56,7 @@ check "a BM25 index reports its metapage format" grep -q -E '^ok +docs_idx +inde
 check "a column index reports the metapage and its column format" grep -q -E '^ok +facts_col +index +format 1\.[0-9]+, column format [0-9]+' <<<"$out"
 check "a table that was never written says so" grep -q -E '^ok +unwritten +table +nothing written yet' <<<"$out"
 check "the check leaves no function in the database" test "$(q clean "SELECT count(*) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace")" == "$procs"
-check "the check leaves no sift.upgrade_check behind" test "$(q clean "SELECT to_regprocedure('sift.upgrade_check(text)') IS NULL")" == t
+check "the installed sift.upgrade_check stays a member of the extension" test "$(q clean "SELECT count(*) FROM pg_depend WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e' AND objid = 'sift.upgrade_check(text)'::regprocedure")" == 1
 
 # what a release could not read: the first release that reads each format (docs/FORMATS.md)
 out=$(uc --to 3.0 clean); rc=$?
@@ -99,9 +99,9 @@ check "key_columns set after the build warns that the old units have no summary,
 check "rollup_columns set after the build warns that the old units have no rollup of their rows, with the REINDEX" grep -q -E '^warn +facts_late_roll +option +rollup_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_roll;' <<<"$out"
 check "order_columns (deprecated, ignored by a build) warns to reset it, and no REINDEX is asked for it" grep -q -E '^warn +facts_late_ord +option +order_columns +deprecated and ignored .*ALTER INDEX facts_late_ord RESET \(order_columns\)' <<<"$out"
 check "an index built with key_columns and rollup_dims has no warning" test -z "$(grep -E '^(warn|blocker) +scat_new_opts ' <<<"$out")"
-check "sift.upgrade_commands gives the same indexes, one command each, after the text index that queries need" test "$(q clean \
+check "sift.upgrade_commands gives the same indexes, one command each (no text index: those built by this release hold no cut word)" test "$(q clean \
 	"SELECT string_agg(kind || ' ' || required::text || ' ' || command, ' ' ORDER BY ord) FROM (SELECT *, row_number() OVER () ord FROM sift.upgrade_commands()) c WHERE kind = 'reindex'")" == \
-	"reindex true REINDEX INDEX CONCURRENTLY public.docs_idx; reindex true REINDEX INDEX CONCURRENTLY public.facts_old_opt; reindex false REINDEX INDEX CONCURRENTLY public.facts_late; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_roll; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_set;"
+	"reindex false REINDEX INDEX CONCURRENTLY public.facts_late; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_roll; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_set;"
 # cube_minmax and superunit are on unless the index says otherwise: an index written before 3.3 lacks them, and a REINDEX gives them
 q clean "SET sift.col_format_minor = 6" "CREATE INDEX facts_legacy ON facts USING sift_col (id, g, n)" >/dev/null
 out=$(uc clean)
@@ -198,10 +198,10 @@ q clean "CREATE INDEX scat_late ON scat USING sift_col (id, k, g, n) WITH (cube_
 check "an index with an option set after its units is listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'scat_late'::regclass")" == 1
 q clean "REINDEX INDEX CONCURRENTLY public.scat_late" >/dev/null
 check "after the listed REINDEX the index is not listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'scat_late'::regclass")" == 0
-# a text index is listed whatever its data (a word over 255 bytes is stored differently since 3.3), a keyword index never; a sift_table below the format of its schema
+# a text index built by this release is not listed (upgrade_path.sh has the one without the mark), a keyword index never; a sift_table below the format of its schema
 q clean "CREATE INDEX docs_kw ON docs USING sift (body) WITH (analyzer = keyword)" "SET sift.col_format_minor = 6" "CREATE TABLE months_old (id int, at timestamp) USING sift_table" \
 	"INSERT INTO months_old SELECT g, timestamp '2026-01-01' + g * interval '1 hour' FROM generate_series(1, 3000) g" "VACUUM months_old" >/dev/null
-check "a text index is required, a keyword index is not listed" test "$(q clean "SELECT string_agg(object::text, ',' ORDER BY object::text) FROM sift.upgrade_commands() WHERE required")" == docs_idx,facts_old_opt
+check "no text index is required, and a keyword index is not listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE required")" == 0
 check "a sift_table written below column format 8 is listed with a VACUUM FULL" test "$(q clean "SELECT kind || ' ' || command FROM sift.upgrade_commands() WHERE object = 'months_old'::regclass")" == "rewrite VACUUM FULL public.months_old;"
 check "the table written by this library with a timestamp column is not listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'months'::regclass")" == 0
 out=$(uc clean)
@@ -238,7 +238,7 @@ q old "CREATE EXTENSION pg_sift VERSION '3.1'" "CREATE TABLE docs (id int, body 
 	"INSERT INTO docs SELECT g, 'alpha' || g % 7 FROM generate_series(1, 2000) g" "CREATE INDEX docs_idx ON docs USING sift (body)" \
 	"CREATE INDEX docs_col ON docs USING sift_col (id)" >/dev/null || bail "the 3.1 extension cannot be created"
 out=$(uc old); rc=$?
-check "an extension older than the library warns with the update" grep -q -E '^warn +pg_sift +version +extension 3\.1, library [0-9.]+ +ALTER EXTENSION pg_sift UPDATE' <<<"$out"
+check "an extension older than the library warns with the update, and that the library writes its formats before it" grep -q -E '^warn +pg_sift +version +extension 3\.1, library [0-9.]+ +ALTER EXTENSION pg_sift UPDATE\. The library writes its formats before the update runs' <<<"$out"
 check "the indexes of the older SQL are read" test "$(grep -c -E '^ok +docs_(idx|col) ' <<<"$out")" == 2
 check "an older extension exits 0, and 1 with --strict" test "$rc$(uc --strict old >/dev/null; echo $?)" == 01
 q old "ALTER EXTENSION pg_sift UPDATE" >/dev/null

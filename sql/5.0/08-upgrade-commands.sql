@@ -1,6 +1,7 @@
 
 -- 5.0 removes key_cut_rows, point_columns and order_columns: a build ignores them, so a REINDEX no longer writes the point directory of point_columns (its row is gone) and
--- the command that an index holding one waits for is the RESET that drops it (kind reset). The rest of the function is the one of 4.3.
+-- the command that an index holding one waits for is the RESET that drops it (kind reset). A relation that another session holds locked at once (lock_timeout) is a row of
+-- kind skipped, not an error that hides the rest. A text index is listed until the REINDEX of a 5.0 build marks it (sift.index_format long_words). The rest is the function of 4.3.
 CREATE OR REPLACE FUNCTION sift.upgrade_commands(OUT kind text, OUT object regclass, OUT reason text, OUT command text, OUT required bool)
 	RETURNS SETOF record
 	LANGUAGE plpgsql SET lock_timeout = '100ms' AS $fn$
@@ -8,14 +9,28 @@ DECLARE
 	r record;
 	lo int;
 	why text;
+	built boolean;
 BEGIN
 	kind := 'reindex'; required := true;
 	FOR r IN SELECT c.oid AS relid, format('%I.%I', n.nspname, c.relname) AS name
 			 FROM pg_class c JOIN pg_am am ON am.oid = c.relam JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_index i ON i.indexrelid = c.oid
-			 WHERE am.amname = 'sift' AND c.relkind = 'i' AND has_table_privilege(i.indrelid, 'MAINTAIN') AND 'analyzer=keyword' <> ALL (coalesce(c.reloptions, '{}')) ORDER BY n.nspname, c.relname
+			 WHERE am.amname = 'sift' AND c.relkind = 'i' AND i.indisvalid AND has_table_privilege(i.indrelid, 'MAINTAIN') AND 'analyzer=keyword' <> ALL (coalesce(c.reloptions, '{}')) ORDER BY n.nspname, c.relname
 	LOOP
+		BEGIN
+			SELECT f.long_words INTO built FROM sift.index_format(r.relid) f;
+		EXCEPTION
+			WHEN lock_not_available THEN
+				kind := 'skipped'; required := NULL; object := r.relid; reason := 'locked, run again'; command := NULL;
+				RETURN NEXT;
+				kind := 'reindex'; required := true;
+				CONTINUE;
+			WHEN OTHERS THEN
+				IF SQLSTATE IN ('42883', '58P01') THEN RAISE; END IF;
+				CONTINUE;
+		END;
+		CONTINUE WHEN built;
 		object := r.relid; command := format('REINDEX INDEX CONCURRENTLY %s;', r.name);
-		reason := 'long words (over 255 bytes) are found only after REINDEX: an index built before 3.3 holds such a word cut at 255 bytes, so a query for it finds nothing';
+		reason := 'long words (over 255 bytes) may be found only after REINDEX: the index was built by a release before 5.0, which does not record whether it holds such a word cut at 255 bytes (an index built before 3.3 does), so a query for it finds nothing; the REINDEX marks the index and takes it off this list';
 		RETURN NEXT;
 	END LOOP;
 	required := false;
@@ -25,9 +40,15 @@ BEGIN
 	LOOP
 		BEGIN
 			SELECT min((to_jsonb(s)->>'format')::int) INTO lo FROM sift.col_segments(r.relid) s;
-		EXCEPTION WHEN OTHERS THEN
-			IF SQLSTATE IN ('42883', '58P01', '55P03') THEN RAISE; END IF;
-			CONTINUE;
+		EXCEPTION
+			WHEN lock_not_available THEN
+				kind := 'skipped'; required := NULL; object := r.relid; reason := 'locked, run again'; command := NULL;
+				RETURN NEXT;
+				kind := 'reindex'; required := false;
+				CONTINUE;
+			WHEN OTHERS THEN
+				IF SQLSTATE IN ('42883', '58P01') THEN RAISE; END IF;
+				CONTINUE;
 		END;
 		CONTINUE WHEN lo IS NULL;
 		-- a segment is minor 9, 10, 13, 14, 15 or 20 when some unit holds the section (for 14, when the segment holds a point directory), so a lower minor means none does
@@ -79,9 +100,15 @@ BEGIN
 	LOOP
 		BEGIN
 			SELECT min(s.format) INTO lo FROM sift.table_segments(r.relid) s WHERE s.kind = 'columns';
-		EXCEPTION WHEN OTHERS THEN
-			IF SQLSTATE IN ('42883', '58P01', '55P03') THEN RAISE; END IF;
-			CONTINUE;
+		EXCEPTION
+			WHEN lock_not_available THEN
+				kind := 'skipped'; required := NULL; object := r.relid; reason := 'locked, run again'; command := NULL;
+				RETURN NEXT;
+				kind := 'rewrite'; required := false;
+				CONTINUE;
+			WHEN OTHERS THEN
+				IF SQLSTATE IN ('42883', '58P01') THEN RAISE; END IF;
+				CONTINUE;
 		END;
 		-- the segments of a table with declared paths are never minor 8 (src/col/seg_write.c)
 		why := concat_ws('; ',
@@ -97,4 +124,4 @@ BEGIN
 END
 $fn$;
 
-COMMENT ON FUNCTION sift.upgrade_commands() IS 'What an update leaves to do for the indexes and tables the caller owns or may maintain, one row per command, the cheapest first: kind (reindex, reset, rewrite), the index or table, the reason and the statement; required when queries miss rows until it runs. Changes nothing.';
+COMMENT ON FUNCTION sift.upgrade_commands() IS 'What an update leaves to do for the indexes and tables the caller owns or may maintain, one row per command, the cheapest first: kind (reindex, reset, rewrite; skipped for a relation that another session holds locked, to run again), the index or table, the reason and the statement; required when queries miss rows until it runs. Changes nothing.';

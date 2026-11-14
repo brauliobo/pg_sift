@@ -63,7 +63,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
 # the checks of the extension_control_path block below: run on 18, skipped as many on 17 (add to it with every check of the block)
-UPG_CHECKS=106
+UPG_CHECKS=109
 plan $((12 + $(wc -w <<<"$DBS") + UPG_CHECKS))
 # no autovacuum (as in the other clusters, scripts/pgtest.sh): a worker vacuuming docs after the first minute of a slow run drops its dead documents from the
 # corpus statistics, and the scores the index answers with move in the fourth digit
@@ -163,6 +163,11 @@ if (( PG_MAJOR >= 18 )); then
 	q life fresh32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" >/dev/null
 	check "a fresh $EXT install prints nothing about a REINDEX" test -z "$(LC_ALL=C q life freshext "CREATE EXTENSION pg_sift" 2>&1)"
 	check "3.0 updated to $EXT has the objects of a fresh $EXT install" test "$(q life upg "$MEMBERS")" == "$(q life freshext "$MEMBERS")"
+	# a fresh install is one script, built from the chain (scripts/sql-parts.sh), and the preflight is installed beside the scripts
+	check "a fresh $EXT install is the one script of its minor" test -f "$SHAREDIR/extension/pg_sift--$(sed 's/^\([0-9]*[.][0-9]*\).*/\1/' <<<"$EXT").sql"
+	check "the preflight for an update that is not made yet is installed beside the scripts" test -f "$SHAREDIR/extension/pg_sift_upgrade_check.sql"
+	check "sift.upgrade_check() answers in a fresh install and after the update from 3.0" test "$(q life freshext "SELECT status FROM sift.upgrade_check() WHERE kind = 'version'")/$(q life upg \
+		"SELECT status FROM sift.upgrade_check() WHERE kind = 'version'")" == ok/ok
 	# (a fixture of its own, whatever the version of the tree: patch releases of 4.2 and the minor after it)
 	# a patch release moves the extension version: the steps are those scripts/release.sh --ext-version writes (4.2.1, 4.2.2 and 4.2.3 here), with the real chain up to 4.2, and only the
 	# script of the next minor (4.2 -> 4.3, empty here) is written for the minor: a database at any patch release reaches it by the script back to 4.2

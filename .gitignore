@@ -36,3 +36,5 @@ src/*/code_id.h
 __pycache__/
 *.pyc
 /sql/pg_sift--4.3--5.0.sql
+/sql/pg_sift--5.0.sql
+/sql/pg_sift_upgrade_check.sql

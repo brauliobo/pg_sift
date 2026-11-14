@@ -137,7 +137,7 @@ extents_subtract(SiftWriteTarget *wt, SiftExtent *a, int *na, SiftExtent *b, int
 void
 sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyzer_hash, const char *analyzer_config)
 {
-	sift_store_init_meta_ex(wt, (float4) opts->k1, (float4) opts->b, analyzer_hash, 0);
+	sift_store_init_meta_ex(wt, (float4) opts->k1, (float4) opts->b, analyzer_hash, SIFT_META_LONG_WORDS);
 	strlcpy(wt->meta.analyzer_config, analyzer_config, sizeof(wt->meta.analyzer_config));
 	if (analyzer_config[0])
 		wt->meta.format_minor = SIFT_FORMAT_MINOR_CONFIG;

@@ -1,19 +1,12 @@
+
 -- sift.upgrade_check(target): what to look at before ALTER EXTENSION pg_sift UPDATE, a library swap or a downgrade. It reads the catalogs and the
 -- metapages and changes nothing. One row per finding: object, kind (version, index, table, option, setting, test), detected (the version or format minor found),
 -- status (ok, warn, blocker) and advice. target, a release such as '3.1', asks what that release could not read: an index or table in a format
 -- it does not know is a blocker. docs/UPGRADING.md has the commands.
 --
--- scripts/upgrade-check.sh loads this file in a transaction that it rolls back, so that a database whose extension is older can be checked
--- before the update. The format minors need sift.index_format of the loaded library (this release or later; without it those rows say so).
-
-DO $do$
-BEGIN
-	EXECUTE format('CREATE OR REPLACE FUNCTION sift.index_format(rel regclass, OUT major int4, OUT minor int4) RETURNS record AS %L, %L LANGUAGE C STRICT VOLATILE',
-				   (SELECT probin FROM pg_proc WHERE oid = 'sift.version()'::regprocedure), 'sift_index_format');
-EXCEPTION WHEN undefined_function THEN NULL;
-END
-$do$;
-
+-- It is part of the extension from 5.0. Before the update, the database has the older extension: pg_sift_upgrade_check.sql (installed beside the scripts, built from
+-- this part by scripts/sql-parts.sh; scripts/upgrade-check.sh runs it) loads the function in a transaction that it rolls back. The format minors need sift.index_format
+-- of the loaded library (this release or later; without it those rows say so).
 CREATE OR REPLACE FUNCTION sift.upgrade_check(target text DEFAULT NULL)
 RETURNS TABLE (object text, kind text, detected text, status text, advice text)
 LANGUAGE plpgsql AS $fn$
@@ -52,7 +45,8 @@ BEGIN
 	IF string_to_array(lib, '.')::int[] < string_to_array(ext, '.')::int[] THEN
 		status := 'blocker'; advice := format('the library is older than the extension scripts: install pg_sift %s or later', ext);
 	ELSIF string_to_array(lib, '.')::int[] > string_to_array(ext, '.')::int[] THEN
-		status := 'warn'; advice := 'ALTER EXTENSION pg_sift UPDATE';
+		status := 'warn';
+		advice := 'ALTER EXTENSION pg_sift UPDATE. The library writes its formats before the update runs (a sift index moves to a newer metapage minor at its next insert, a sift_col index and a sift_table write new segments in the newer column format), which an older library refuses: go back with the files only before the first write, else REINDEX with the older release';
 	ELSIF avail IS DISTINCT FROM ext THEN
 		status := 'warn'; detected := detected || format(' (%s is available)', avail); advice := 'ALTER EXTENSION pg_sift UPDATE';
 	ELSE
@@ -187,9 +181,15 @@ BEGIN
 	IF to_regprocedure('sift.upgrade_commands()') IS NOT NULL THEN
 		BEGIN
 			-- the RESET of a removed option is listed above, for a library that has no such row
-			FOR r IN SELECT * FROM sift.upgrade_commands() u WHERE NOT u.required AND u.kind <> 'reset' LOOP
-				object := r.object::text; kind := CASE r.kind WHEN 'rewrite' THEN 'table' ELSE 'option' END; status := 'warn';
-				detected := split_part(r.reason, ': ', 1); advice := substr(r.reason, length(detected) + 3) || '; ' || r.command;
+			FOR r IN SELECT * FROM sift.upgrade_commands() u WHERE u.required IS DISTINCT FROM true AND u.kind <> 'reset' LOOP
+				object := r.object::text; status := 'warn';
+				IF r.kind = 'skipped' THEN
+					kind := CASE WHEN (SELECT relkind FROM pg_class WHERE oid = r.object) = 'i' THEN 'index' ELSE 'table' END;
+					detected := 'locked by another session'; advice := 'sift.upgrade_commands() skipped it: ' || r.reason;
+				ELSE
+					kind := CASE r.kind WHEN 'rewrite' THEN 'table' ELSE 'option' END;
+					detected := split_part(r.reason, ': ', 1); advice := substr(r.reason, length(detected) + 3) || '; ' || r.command;
+				END IF;
 				RETURN NEXT;
 			END LOOP;
 		EXCEPTION WHEN undefined_function OR undefined_file OR lock_not_available THEN NULL;
@@ -265,3 +265,5 @@ BEGIN
 	END LOOP;
 END
 $fn$;
+
+COMMENT ON FUNCTION sift.upgrade_check(text) IS 'What to look at before ALTER EXTENSION pg_sift UPDATE, a library swap or a downgrade, one row per finding (object, kind, detected, status ok, warn or blocker, advice); a target release such as 3.1 asks what that release could not read. Changes nothing; run it as a superuser';

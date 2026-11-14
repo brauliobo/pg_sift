@@ -110,6 +110,8 @@ typedef struct SiftMetaPageData
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF
+/* flags bit 8, set by sift_store_init_meta (the build of a sift index, BM25) from 5.0 on: a word over 255 bytes is stored as a prefix and a hash (3.3's rule). An earlier build leaves it clear, which does not say it cut a word */
+#define SIFT_META_LONG_WORDS	0x00000100
 /* The bytes of a metapage of a build without the note and the configuration */
 #define SIFT_META_BASE_SIZE		offsetof(SiftMetaPageData, maint_failed_at)
 /* Does the metapage hold something past its base, so that pd_lower covers all of it */
