@@ -9,6 +9,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "parser/parsetree.h"
 #include "utils/fmgroids.h"
 #include "catalog/pg_type.h"
 
@@ -312,6 +313,9 @@ two_arms(TwoLevel *t)
 	PlannerInfo *base = NULL;
 	bool		own = true;
 
+	/* a UNION ALL has arms; a lone sub-select has them when it groups by a unique row id (two_arm_terms) */
+	if (rt_fetch(t->srti, t->root->parse->rtable)->inh)
+		agg_arm_candidate();
 	t->roots = outer_arms(t->root, t->srti, &t->gates);
 	if (t->roots == NIL)
 	{
@@ -387,6 +391,8 @@ two_arm_terms(TwoLevel *t, int k)
 			nid++;
 		}
 	}
+	if (nid > 0)
+		agg_arm_candidate();
 	if (nid != 1)
 		return agg_refuse_f(TWO_ARMS, "arm %d groups by %d unique row ids, not one", k + 1, nid);
 	/* the WHERE of an arm that reads a common table expression, or the conditions of its own that other arms lack */

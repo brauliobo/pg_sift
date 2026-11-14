@@ -29,9 +29,9 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	FromScan	fs = {.ok = true};
 	PlannerInfo *base;
 
+	agg_arm_claim_required();
 	if (!two_from(&t))
 		return;
-	agg_arm_candidate();
 	if (list_length(parse->groupClause) > sift_limit(group_keys, SIFT_AGG_MAX_KEYS) - 1)
 	{
 		agg_refused_limit(TOO_MANY_KEYS, group_keys, sift_limit(group_keys, SIFT_AGG_MAX_KEYS) - 1, "%d group keys, and the arms' row id takes one", list_length(parse->groupClause));

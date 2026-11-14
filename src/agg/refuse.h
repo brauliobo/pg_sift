@@ -80,6 +80,7 @@ extern void agg_refuse_retry(void);
 /* the same for a refusal by the limit lim of the registry (SiftLimitId): the arm counts it under that name */
 extern bool agg_refuse_limit_note(AggRefusal why, int lim, const char *detail);
 extern void agg_arm_begin(const char *name, bool candidate);
+extern void agg_arm_claim_required(void);
 extern void agg_arm_candidate(void);
 extern void agg_arm_spill(double cost, double groups, double bytes);
 extern void agg_arm_vet(double cost, double pct);

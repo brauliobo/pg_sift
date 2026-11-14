@@ -75,6 +75,7 @@ typedef struct ArmNote
 	const char *detail;
 	const char *limit;			/* the id of the limit of core/limits.h the refusal is for */
 	bool		candidate;
+	bool		claim;			/* the statement has to show the arm's shape (agg_arm_candidate) before a refusal is reported: the sites of the arm see statements that have none */
 	bool		used;
 	List	   *paths;
 	RelOptInfo *rel;
@@ -136,7 +137,7 @@ agg_refuse_note(AggRefusal why, const char *detail)
 	{
 		arm->why = why;
 		arm->detail = detail ? pstrdup(detail) : NULL;
-		arm->candidate = true;
+		arm->candidate |= !arm->claim;
 	}
 	return false;
 }
@@ -177,6 +178,13 @@ agg_arm_begin(const char *name, bool candidate)
 	arm->limited = strcmp(name, "topn") == 0;
 	arm->candidate = candidate;
 	arm->scan = arm->normal = get_float8_infinity();
+}
+
+void
+agg_arm_claim_required(void)
+{
+	if (arm != NULL)
+		arm->claim = true;
 }
 
 void
