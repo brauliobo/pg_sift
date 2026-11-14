@@ -15,7 +15,8 @@
  * A cache must not turn into an error. The shortage of what a table is made of (no room in /dev/shm, no more segments, a limit of files or memory: SQLSTATE class 53, from the
  * creation of the segment) is caught where it is raised, in sift_dsm_try: no table, and the reason in sift_dsm_why; the callers go without it, in a parallel worker, in a
  * background worker and under a statement that writes, none of which can start the subtransaction of sift_dsm_attach, which catches whatever else fails and also gives back the locks.
- * The directory itself is a segment of the registry of PostgreSQL, made once by the first backend that asks (a shortage there is an error where no subtransaction can be started).
+ * The directory itself is a segment of the registry of PostgreSQL, made once by the first backend that asks: the room for it is made sure of first (dir_segment), so that a shortage there is "no
+ * table" as well.
  */
 #include "postgres.h"
 
@@ -99,17 +100,77 @@ sift_dsm_why(void)
 	return why;
 }
 
+/*
+ * The segment of a table, NULL where the system cannot make it (why says it). The attempt has a resource owner of its own: the descriptor that a failed creation leaves is released here, and
+ * a transaction that commits does not report it as a leak. Any error that is not a shortage goes on.
+ */
+static dsm_segment *
+create_segment(const char *name, Size size)
+{
+	MemoryContext cx = CurrentMemoryContext;
+	ResourceOwner owner = CurrentResourceOwner,
+				attempt = ResourceOwnerCreate(owner, "sift shared table");
+	dsm_segment *seg = NULL;
+	uint32		holdoff = InterruptHoldoffCount;
+
+	CurrentResourceOwner = attempt;
+	PG_TRY();
+	{
+#ifdef SIFT_TESTING
+		if (test_fails(name))
+			ereport(ERROR, (errcode(ERRCODE_DISK_FULL), errmsg("could not resize shared memory segment \"/PostgreSQL.0\" to %zu bytes: No space left on device (test)", size)));
+#endif
+		seg = dsm_create(size, 0);
+		dsm_pin_mapping(seg);
+	}
+	PG_CATCH();
+	{
+		ErrorData  *e;
+
+		MemoryContextSwitchTo(cx);
+		e = CopyErrorData();
+		if (ERRCODE_TO_CATEGORY(e->sqlerrcode) != ERRCODE_INSUFFICIENT_RESOURCES)
+		{
+			FreeErrorData(e);
+			PG_RE_THROW();
+		}
+		FlushErrorState();
+		InterruptHoldoffCount = holdoff;	/* errfinish zeroed it, and a caller may hold an lwlock (sift_dsm_try holds AddinShmemInitLock) */
+		ResourceOwnerRelease(attempt, RESOURCE_RELEASE_BEFORE_LOCKS, false, false);
+		strlcpy(why_text, e->message, sizeof(why_text));
+		why = why_text;
+		why_hint = "Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm).";
+		FreeErrorData(e);
+		seg = NULL;
+	}
+	PG_END_TRY();
+	CurrentResourceOwner = owner;
+	ResourceOwnerDelete(attempt);
+	return seg;
+}
+
+/*
+ * The directory is made by the registry of PostgreSQL, which raises a shortage as an ordinary error with its locks held, and keeps an entry for the name that the failed creation never filled (every
+ * later ask of the name is an error too, until the server restarts). So the room is made sure of first, with a segment of the directory's size that is given back at once and a shortage caught as
+ * that of any table (create_segment): NULL, and why says it. A backend pays one segment, once, for the directory it maps for the life of its process; the registry then finds it made, or makes it
+ * with the room just seen (another backend taking that room in between is the one case left for PostgreSQL's error).
+ */
 static Dir *
 dir_segment(void)
 {
 	static Dir *dir;
+	dsm_segment *probe;
 	bool		found;
 
-	if (dir == NULL)
+	if (dir != NULL)
+		return dir;
+	if ((probe = create_segment(DIR_NAME, sizeof(Dir))) == NULL)
+		return NULL;
+	dsm_detach(probe);
 #if PG_VERSION_NUM >= 190000
-		dir = GetNamedDSMSegment(DIR_NAME, sizeof(Dir), dir_init, &found, NULL);
+	dir = GetNamedDSMSegment(DIR_NAME, sizeof(Dir), dir_init, &found, NULL);
 #else
-		dir = GetNamedDSMSegment(DIR_NAME, sizeof(Dir), dir_init, &found);
+	dir = GetNamedDSMSegment(DIR_NAME, sizeof(Dir), dir_init, &found);
 #endif
 	return dir;
 }
@@ -120,6 +181,8 @@ dir_get(void)
 {
 	Dir		   *d = dir_segment();
 
+	if (d == NULL)
+		return NULL;
 	if (d->magic == DIR_MAGIC)
 		return d;
 	why = "the directory of the shared tables is not one this library can read";
@@ -194,55 +257,6 @@ hold(dsm_segment *seg, DirEnt *e)
 	dsm_pin_mapping(seg);
 	on_dsm_detach(seg, release_users, PointerGetDatum(&e->users));
 	pg_atomic_fetch_add_u32(&e->users, 1);
-}
-
-/*
- * The segment of a table, NULL where the system cannot make it (why says it). The attempt has a resource owner of its own: the descriptor that a failed creation leaves is released here, and
- * a transaction that commits does not report it as a leak. Any error that is not a shortage goes on.
- */
-static dsm_segment *
-create_segment(const char *name, Size size)
-{
-	MemoryContext cx = CurrentMemoryContext;
-	ResourceOwner owner = CurrentResourceOwner,
-				attempt = ResourceOwnerCreate(owner, "sift shared table");
-	dsm_segment *seg = NULL;
-	uint32		holdoff = InterruptHoldoffCount;
-
-	CurrentResourceOwner = attempt;
-	PG_TRY();
-	{
-#ifdef SIFT_TESTING
-		if (test_fails(name))
-			ereport(ERROR, (errcode(ERRCODE_DISK_FULL), errmsg("could not resize shared memory segment \"/PostgreSQL.0\" to %zu bytes: No space left on device (test)", size)));
-#endif
-		seg = dsm_create(size, 0);
-		dsm_pin_mapping(seg);
-	}
-	PG_CATCH();
-	{
-		ErrorData  *e;
-
-		MemoryContextSwitchTo(cx);
-		e = CopyErrorData();
-		if (ERRCODE_TO_CATEGORY(e->sqlerrcode) != ERRCODE_INSUFFICIENT_RESOURCES)
-		{
-			FreeErrorData(e);
-			PG_RE_THROW();
-		}
-		FlushErrorState();
-		InterruptHoldoffCount = holdoff;	/* errfinish zeroed it, and the caller holds AddinShmemInitLock */
-		ResourceOwnerRelease(attempt, RESOURCE_RELEASE_BEFORE_LOCKS, false, false);
-		strlcpy(why_text, e->message, sizeof(why_text));
-		why = why_text;
-		why_hint = "Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm).";
-		FreeErrorData(e);
-		seg = NULL;
-	}
-	PG_END_TRY();
-	CurrentResourceOwner = owner;
-	ResourceOwnerDelete(attempt);
-	return seg;
 }
 
 void *
@@ -322,9 +336,11 @@ sift_dsm_entry(int i, const char **name, const char **build, uint64 *size, dsm_h
 {
 	DirEnt	   *e;
 
-	if (i >= DIR_ENTRIES)
+	Dir		   *d = dir_segment();
+
+	if (d == NULL || i >= DIR_ENTRIES)
 		return false;
-	e = &dir_segment()->ent[i];
+	e = &d->ent[i];
 	*name = e->name;
 	*build = e->build;
 	*size = e->size;
@@ -338,8 +354,10 @@ uint32
 sift_dsm_test_magic(uint32 magic)
 {
 	Dir		   *d = dir_segment();
-	uint32		was = d->magic;
+	uint32		was;
 
+	SIFT_INVARIANT(d != NULL, "sift: the directory of the shared tables cannot be made: %s", why);
+	was = d->magic;
 	d->magic = magic;
 	return was;
 }

@@ -18,8 +18,8 @@
 typedef void (*SiftDsmInit) (SIFT_DSM_INIT_ARGS);
 
 /*
- * The table, or NULL where it cannot be had: the directory is full, it is not the directory of this library, or the system has no memory for the segment (no room in /dev/shm, no
- * more segments; sift_dsm_why says which). Never an error for a shortage, wherever it is called (a parallel worker, a background worker and a statement that writes cannot start the
+ * The table, or NULL where it cannot be had: the directory is full, it is not the directory of this library, or the system has no memory for the segment of the table or of the
+ * directory (no room in /dev/shm, no more segments; sift_dsm_why says which). Never an error for a shortage, wherever it is called (a parallel worker, a background worker and a statement that writes cannot start the
  * subtransaction of sift_dsm_attach): the caller goes without the table and decides what that costs
  */
 extern void *sift_dsm_try(const char *name, Size size, SiftDsmInit init);
