@@ -13,15 +13,16 @@ SET sift.test_scope_patch = off;
 
 -- each term alone, from the counts that are not named being 0 (pure: the same counts give the same price)
 CREATE FUNCTION price(nkeys int, once bool, units int8 DEFAULT 0, entries int8 DEFAULT 0, preagg float8 DEFAULT 0, drops int DEFAULT 0, key_pairs int8 DEFAULT 0, changed int8 DEFAULT 0,
-	patch_units int8 DEFAULT 0, patch_scan_rows int8 DEFAULT 0, delta_rows int8 DEFAULT 0, pairs int8 DEFAULT 0, entry_instr float8 DEFAULT 0, topn bool DEFAULT false, walk_units int8 DEFAULT 0) RETURNS float8 LANGUAGE sql AS
+	patch_units int8 DEFAULT 0, patch_scan_rows int8 DEFAULT 0, delta_rows int8 DEFAULT 0, pairs int8 DEFAULT 0, entry_instr float8 DEFAULT 0, topn bool DEFAULT false, walk_units int8 DEFAULT 0, group_frac float8 DEFAULT 0, group_units float8 DEFAULT 0) RETURNS float8 LANGUAGE sql AS
 $$ SELECT units_price FROM sift._test_scope_price(nkeys, once, units, entries, preagg, entry_instr, drops, key_pairs, changed, patch_units, patch_scan_rows, delta_rows, pairs,
-	topn => topn, walk_units => walk_units) $$;
+	topn => topn, walk_units => walk_units, group_frac => group_frac, group_units => group_units) $$;
 CREATE FUNCTION term(label text, got float8, per float8, n float8) RETURNS TABLE (term text, instructions float8, per_count float8) LANGUAGE sql AS $$ SELECT label, got, round((got / n)::numeric, 1)::float8 $$;
 CREATE TABLE base AS SELECT price(2, true) AS setup;
 SELECT t.* FROM base, LATERAL (VALUES
 	('the read before any unit', setup, 1),
 	('a unit read row by row', price(2, true, units => 10) - setup, 10),
 	('a unit its pre-aggregates answer', price(1, true, units => 10, preagg => 1) - setup, 10),
+	('a unit its pre-aggregates answer, 20 of them in a group with the rollup of the rows', price(1, true, units => 200, preagg => 1, group_frac => 1, group_units => 20) - setup, 200),
 	('an entry, with the aggregation of the model', price(2, true, entries => 1000, entry_instr => 45) - setup, 1000),
 	('an entry more for each key with a drop list', price(2, true, entries => 1000, drops => 2) - price(2, true, entries => 1000), 2000),
 	('the read of a top-N before any unit', price(1, false, topn => true) , 1),

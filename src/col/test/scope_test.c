@@ -489,6 +489,8 @@ sift_test_scope_price(PG_FUNCTION_ARGS)
 		.scan_pairs = PG_GETARG_INT64(15),
 		.topn = PG_GETARG_BOOL(16),
 		.walk_units = PG_GETARG_INT64(17),
+		.group_frac = PG_GETARG_FLOAT8(18),
+		.group_units = PG_GETARG_FLOAT8(19),
 	};
 	TupleDesc	desc;
 	Datum		v[2] = {Float8GetDatum(sift_scope_units_price(&c)), Float8GetDatum(sift_scope_entity_price(&c))};

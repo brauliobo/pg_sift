@@ -550,6 +550,7 @@ extern bool out_walker(Node *n, OutWalk *w);
 extern double elems_of(AggCtx *c, int grp);
 extern double tuple_group_count(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel);
 extern double preagg_share(AggCtx *c, SiftAggSpec *s);
+extern double preagg_groups(AggCtx *c, SiftAggSpec *s, double *units);
 extern double zone_sample_kept(AggCtx *c, SiftAggSpec *s, List **rest);
 extern double in_list_table_bytes(AggCtx *c, const SiftAggPred *p);
 extern int	in_list_keys(AggCtx *c, const SiftAggPred *p);

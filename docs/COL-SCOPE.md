@@ -355,6 +355,27 @@ The cost: the scope segment of that fixture is 8.63 MB without and 9.30 MB with 
 summary has a histogram of each, not their combinations, so the units are read one by one; the scan checks the zones of the units of a group against the comparisons that its histograms do not answer before it reads the summary of the group,
 so a group that cannot answer costs no block: at tenant 4 the filter reads 46 blocks hit and 45 cold with the groups and without them), and the distinct members by month (see Edges).
 
+**The rollup of the rows of a group.** Declared as `rollup_columns = 'channel_id, region: amount'` (no option of its own: the groups reuse the declaration of the entity index, and `'auto'` picks nothing for a scope index
+yet: its derived key column made the candidate list of the choice fail, see Edges), the filter class goes from the units of the key to one rollup per group. The 2.4-million-event comparison (`bench scope-stock --size standard`, arms
+`sift_scope` and `sift_scope_rollup`, the filter on two columns; instructions of the backend, blocks hit warm and read cold, md5 of the rows equal in every cell):
+
+| tenant (share of the events) | `sift_scope` | `sift_scope_rollup` |
+|---|---:|---:|
+| 1 (49%) | 35.84 M, 790 hit, 787 read | 2.65 M, 76 hit, 56 read |
+| 2 (20%) | 8.29 M, 354 hit, 352 read | 2.37 M, 66 hit, 51 read |
+| 3 (17%) | 7.53 M, 326 hit, 326 read | 2.32 M, 63 hit, 50 read |
+| 4 (6%) | 3.82 M, 147 hit, 135 read | 2.29 M, 67 hit, 54 read |
+| 5 (6%) | 3.82 M, 136 hit, 122 read | 2.24 M, 64 hit, 51 read |
+| 6 (4%) | 3.26 M, 114 hit, 102 read | 2.33 M, 71 hit, 61 read |
+| 7 (1%) | 2.36 M, 73 hit, 61 read | 2.43 M, 93 hit, 81 read |
+| 8 (0.1%) | 2.04 M, 63 hit, 51 read | 2.07 M, 69 hit, 57 read |
+
+At tenant 1 the plan without the groups is the join (35.8 M: the units cost 17.5 M forced, and the price of a unit read did not know of the groups); the group term of the price (`SiftScopeCounts.group_frac`, `group_units`: the units that groups
+with a rollup cover are priced by the groups) makes the units the cheaper read. The cost: the index of the arm is 70 MB against 68 MB (+3%: the rollups of the groups), the build 8.6 s against 7.5 s, the other eight classes at every tenant within 1.7% of the
+arm without it, writes unchanged. The two smallest tenants read 20 and 6 more blocks (+3% and +1.5% instructions): declaring a rollup the units cannot hold costs each unit a look at its rollup (14 blocks at tenant 7 with the groups off), and a key of
+a few units reads its group's block besides. Measured and not taken: a rollup only in groups of 4 or more units (the tenants 7 and 8 read the same, the gain of tenants 2 to 6 is kept) or of 8 or more (the gain is lost: the scope segments of a serial build
+hold 8 to 55 units of a key), and in groups of a fan of 16 (tenants 2 to 6 lose it, tenant 1 reads 3.0 M).
+
 ## Break-even: the multiplicity limit
 
 A scope entry is a copy of the row in the index, so the scope segments grow with the average number of keys of a member (the entries a row has). The weighted formula of the program prices it for the classes

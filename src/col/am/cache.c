@@ -172,6 +172,16 @@ fold_pre_seg(const SiftCPaggSpec *spec, SiftColSegment *seg, SiftColPreStats *pr
 			pre->roll[spec->rollup[k].list] += census.roll[k] * w;
 		else
 			pre->rows += census.roll[k] * w;
+	if (seg->entry.flags & SIFT_SEG_SCOPE)
+	{
+		uint32		groups,
+					units;
+
+		sift_cseg_super_rollups(seg, &groups, &units);
+		pre->rgroups += groups;
+		pre->gunits += units;
+		pre->rows += units;
+	}
 }
 
 /* what the directory says of the leaves, whichever segments were folded */

@@ -353,6 +353,8 @@ typedef struct SiftScopeCounts
 	uint32		drops;			/* with once: the keys that have a drop list (SiftScopeRead.ndrop), 0 where the read has not been made: the least the units cost */
 	uint64		units;			/* the scope units of the keys */
 	uint64		entries;		/* the rows of the scope units of the keys */
+	double		group_frac;		/* the share of the units that key groups with the rollup of the rows answer, each group in the place of group_units of them (0: none) */
+	double		group_units;
 	double		preagg;			/* the share of the units their pre-aggregates answer (0..1, the planner's: 0 for a read of several keys counted once), the rest are read row by row */
 	bool		topn;			/* a top-N: the units are walked from the end of the sort key, the units the keys have are probed by their zones and walk_units of them are read */
 	uint64		walk_units;		/* ... the units whose zone reaches the n-th best row of the keys (a bound: the walk reads these at most) */
@@ -450,9 +452,10 @@ sift_scope_rows_price(const SiftScopeCounts *c)
 {
 	double		rows = 1.0 - c->preagg,
 				entry = SIFT_SCOPE_ENTRY_INSTR + c->entry_instr + (c->once ? SIFT_SCOPE_DEDUPE_INSTR * (double) c->drops : 0),
-				except = c->changed > 0 ? SIFT_SCOPE_EXCEPT_INSTR : 0;
+				except = c->changed > 0 ? SIFT_SCOPE_EXCEPT_INSTR : 0,
+				reads = 1.0 - c->group_frac + c->group_frac / Max(c->group_units, 1.0);	/* a group is read in the place of its units */
 
-	return SIFT_SCOPE_SETUP_INSTR + (rows * SIFT_SCOPE_UNIT_INSTR + c->preagg * SIFT_SCOPE_PREAGG_UNIT_INSTR) * (double) c->units + rows * (entry + except) * (double) c->entries +
+	return SIFT_SCOPE_SETUP_INSTR + (rows * SIFT_SCOPE_UNIT_INSTR + c->preagg * SIFT_SCOPE_PREAGG_UNIT_INSTR * reads) * (double) c->units + rows * (entry + except) * (double) c->entries +
 		sift_scope_list_price(c) + sift_scope_changed_price(c);
 }
 

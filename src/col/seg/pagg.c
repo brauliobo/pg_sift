@@ -608,6 +608,18 @@ sift_cseg_super_has_rollup(SiftColSegment *seg, uint32 k)
 	return h != NULL && h->magic == SUPER_KMAGIC && k < h->nsu && SUPER_X_ROLLUP(PRIV(seg)->sgx[k]);
 }
 
+void
+sift_cseg_super_rollups(SiftColSegment *seg, uint32 *groups, uint32 *units)
+{
+	*groups = *units = 0;
+	for (uint32 k = 0; k < sift_cseg_super_count(seg); k++)
+		if (sift_cseg_super_has_rollup(seg, k))
+		{
+			(*groups)++;
+			*units += PRIV(seg)->sgn[k];
+		}
+}
+
 uint64
 sift_cseg_set_bytes(SiftColSegment *seg)
 {

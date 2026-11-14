@@ -48,6 +48,8 @@ typedef struct SiftColPreStats
 	double		mm[SIFT_COL_MAX_COLS];
 	double		roll[SIFT_COL_MAX_COLS];
 	double		rows;			/* the rollup of the rows */
+	double		gunits;			/* the units of a scope segment that a group with the rollup of the rows covers (counted in rows too), and the groups: the units answer by group */
+	double		rgroups;
 } SiftColPreStats;
 extern const SiftColPreStats *sift_col_pre_stats(Relation index, bool scope);
 #ifdef SIFT_TESTING

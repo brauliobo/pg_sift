@@ -258,6 +258,8 @@ unit_counts(AggExec *ex, Snapshot snapshot)
 	if (ex->spec->topn != NULL)
 		topn_counts(ex, &c);
 	c.preagg = sc->alt == NULL || (sc->once && sc->nkeys > 1) ? 0.0 : 1.0 - sc->rowwise;
+	c.group_frac = c.preagg > 0 ? sc->rgroup_frac : 0.0;
+	c.group_units = sc->rgroup_units;
 	pair_counts(ex, &c);
 	if (sc->once && sc->nkeys > 1)
 	{

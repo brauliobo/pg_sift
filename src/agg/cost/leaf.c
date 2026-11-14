@@ -161,6 +161,17 @@ miss_read(AggCtx *c)
 	index_close(index, AccessShareLock);
 }
 
+/* is the leaf a dim of the rollup of the rows that answers the shape */
+static bool
+rollup_dim(const SiftAggPaShape *shape, int leaf)
+{
+	bool		in = false;
+
+	for (int d = 0; shape->rows && d < shape->ndims; d++)
+		in |= shape->rdim[d] == leaf;
+	return in;
+}
+
 /* The share of the units the pre-aggregates answer (a unit is exact when its pages are all-visible, its superblock plain); 0 when the spec cannot use them */
 double
 preagg_share(AggCtx *c, SiftAggSpec *s)
@@ -184,11 +195,26 @@ preagg_share(AggCtx *c, SiftAggSpec *s)
 		miss = c->stats.roll_miss[shape.list];
 	else if (dim >= 0)
 		miss = minmax ? c->stats.mm_miss[dim] : c->stats.dim_miss[dim];
-	/* a unit whose zone straddles a bound of the query is scanned, not answered: the units are exact only where a range on a leaf holds them whole */
+	/* a unit whose zone straddles a bound of the query is scanned, not answered: the units are exact only where a range on a leaf holds them whole (the tuples of a rollup test the comparisons of their dims) */
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->kind == SAP_CMP && s->pred[i]->leaf >= 0 && s->pred[i]->op != SCMP_NE)
+		if (s->pred[i]->kind == SAP_CMP && s->pred[i]->leaf >= 0 && s->pred[i]->op != SCMP_NE && !rollup_dim(&shape, s->pred[i]->leaf))
 			miss = 1.0 - (1.0 - miss) * (1.0 - Min(c->stats.zone_span[s->pred[i]->leaf], 1.0));
 	return Min(Max(c->stats.exact_frac, 0.0), 1.0) * (1.0 - Min(Max(miss, 0.0), 1.0));
+}
+
+/* The share of the units that key groups with the rollup of the rows answer where that rollup answers the spec, and the units of a group: the group is read in the place of them */
+double
+preagg_groups(AggCtx *c, SiftAggSpec *s, double *units)
+{
+	SiftAggPaShape shape;
+
+	*units = 1.0;
+	if (!sift_agg_preagg || !sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &shape) || !shape.rows)
+		return 0.0;
+	if (c->stats.miss_pending)
+		miss_read(c);
+	*units = c->stats.rows_group_units;
+	return c->stats.rows_group_frac;
 }
 
 /* The bytes of a leaf's values in the executor's vectors: the weight of its share of the stored bytes */

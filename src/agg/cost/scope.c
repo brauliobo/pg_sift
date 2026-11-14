@@ -270,6 +270,7 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 	one_scope.nkeys = 1;
 	one.scope = &one_scope;
 	sc->rowwise = 1.0 - preagg_share(c, &one);
+	sc->rgroup_frac = preagg_groups(c, &one, &sc->rgroup_units);
 	s->scope = sc;
 	/* the node costs what the cheaper of its two ways does, and a hair less than the join it holds: the plan that can only be that join has no reason to win */
 	p->total_cost = Min(p->total_cost, best->total * (1.0 - 1e-6));

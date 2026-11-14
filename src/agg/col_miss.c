@@ -23,6 +23,8 @@ sift_col_miss(Relation index, SiftSrcStats *st)
 
 	st->miss_pending = false;
 	st->rows_miss = miss_share(pre->rows, pre->units);
+	st->rows_group_frac = pre->units > 0 ? Min(pre->gunits / pre->units, 1.0) : 0.0;
+	st->rows_group_units = pre->rgroups > 0 ? pre->gunits / pre->rgroups : 1.0;
 	for (int i = 0; i < sift_col_index_defs(index)->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
 	{
 		st->dim_miss[i] = miss_share(pre->dim[i], pre->units);
