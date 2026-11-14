@@ -181,6 +181,9 @@ fold_pre_seg(const SiftCPaggSpec *spec, SiftColSegment *seg, SiftColPreStats *pr
 		pre->rgroups += groups;
 		pre->gunits += units;
 		pre->rows += units;
+		sift_cseg_super_sets_count(seg, &groups, &units);
+		pre->sgroups += groups;
+		pre->sunits += units;
 	}
 }
 

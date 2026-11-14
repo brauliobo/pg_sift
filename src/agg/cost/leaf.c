@@ -189,7 +189,9 @@ preagg_share(AggCtx *c, SiftAggSpec *s)
 	for (int i = 0; i < s->naggs; i++)
 		minmax |= saa_minmax(s->agg[i].kind);
 	dim = shape.dim >= 0 ? shape.dim : shape.hdim;
-	if (shape.rows)
+	if (shape.dset)
+		miss = 1.0 - c->stats.sets_frac;
+	else if (shape.rows)
 		miss = c->stats.rows_miss;
 	else if (shape.list >= 0)
 		miss = c->stats.roll_miss[shape.list];
@@ -202,19 +204,19 @@ preagg_share(AggCtx *c, SiftAggSpec *s)
 	return Min(Max(c->stats.exact_frac, 0.0), 1.0) * (1.0 - Min(Max(miss, 0.0), 1.0));
 }
 
-/* The share of the units that key groups with the rollup of the rows answer where that rollup answers the spec, and the units of a group: the group is read in the place of them */
+/* The share of the units that key groups with the rollup of the rows (or, for a count(DISTINCT) by month, with the id sets) answer where that answers the spec, and the units of a group: the group is read in the place of them */
 double
 preagg_groups(AggCtx *c, SiftAggSpec *s, double *units)
 {
 	SiftAggPaShape shape;
 
 	*units = 1.0;
-	if (!sift_agg_preagg || !sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &shape) || !shape.rows)
+	if (!sift_agg_preagg || !sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &shape) || !(shape.rows || shape.dset))
 		return 0.0;
 	if (c->stats.miss_pending)
 		miss_read(c);
-	*units = c->stats.rows_group_units;
-	return c->stats.rows_group_frac;
+	*units = shape.dset ? c->stats.sets_units : c->stats.rows_group_units;
+	return shape.dset ? c->stats.sets_frac : c->stats.rows_group_frac;
 }
 
 /* The bytes of a leaf's values in the executor's vectors: the weight of its share of the stored bytes */

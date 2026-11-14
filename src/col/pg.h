@@ -50,6 +50,8 @@ typedef struct SiftColPreStats
 	double		rows;			/* the rollup of the rows */
 	double		gunits;			/* the units of a scope segment that a group with the rollup of the rows covers (counted in rows too), and the groups: the units answer by group */
 	double		rgroups;
+	double		sunits;			/* the same for the groups that keep the id sets by calendar month (counted in dim of the calendar leaf too) */
+	double		sgroups;
 } SiftColPreStats;
 extern const SiftColPreStats *sift_col_pre_stats(Relation index, bool scope);
 #ifdef SIFT_TESTING
