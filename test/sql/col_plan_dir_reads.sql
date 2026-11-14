@@ -1,6 +1,6 @@
 -- Planning a statement validates the statistics of each column index it considers against the directory of the index: the version of the directory page is read (one buffer
 -- access for each index), and the metapage and the segments only when the version is not the one the statistics were made for. The statistics follow every change of the directory:
--- a write that is promoted, a REINDEX. Counts of buffer accesses and of validations only, no timings.
+-- a write that is promoted, a REINDEX, an ALTER INDEX that changes the leaves the index keeps, a DROP INDEX. Counts of buffer accesses and of validations only, no timings.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -36,6 +36,18 @@ SELECT dir_read = 0 AS then_not_read, built = 0 AS then_kept FROM plan_stats(:'q
 REINDEX INDEX pd_a;
 SELECT dir_read >= 1 AS directory_read_after_reindex, built >= 1 AS statistics_made_again_after_reindex FROM plan_stats(:'q');
 SELECT dir_read = 0 AS then_not_read_again, built = 0 AS then_kept_again FROM plan_stats(:'q');
+
+-- an ALTER INDEX that changes the leaves of the index: its statistics are made again, once
+ALTER INDEX pd_b SET (rollup_columns = 'off');
+SELECT dir_read >= 1 AS directory_read_after_alter, built >= 1 AS statistics_made_again_after_alter FROM plan_stats(:'q');
+SELECT dir_read = 0 AS then_not_read_after_alter, built = 0 AS then_kept_after_alter FROM plan_stats(:'q');
+
+-- a DROP INDEX: the planning validates the indexes that are left, and reads nothing for them; an index made in its place has statistics of its own
+DROP INDEX pd_d;
+SELECT checked = 3 AS indexes_left_validated, dir_read = 0 AS directories_not_read, built = 0 AS statistics_kept FROM plan_stats(:'q');
+CREATE INDEX pd_d ON pd USING sift_col (id, a, amount);
+SELECT checked >= 4 AS indexes_validated, dir_read >= 1 AS new_directory_read, built >= 1 AS new_statistics_made FROM plan_stats(:'q');
+SELECT dir_read = 0 AS then_not_read_new, built = 0 AS then_kept_new FROM plan_stats(:'q');
 
 DROP FUNCTION plan_stats(text);
 DROP TABLE pd;
