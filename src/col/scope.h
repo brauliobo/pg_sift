@@ -308,6 +308,8 @@ typedef struct SiftScopeRead
 #define SIFT_SCOPE_UNIT_INSTR		36700
 #define SIFT_SCOPE_PREAGG_UNIT_INSTR	13300
 #define SIFT_SCOPE_ENTRY_INSTR		18
+/* an entry the statement's conditions leave out, tested in the source and not decoded further */
+#define SIFT_SCOPE_SKIP_INSTR		5
 /* a top-N walks the units of the keys by their zones: before the first (the read of the journal's vouch and the directory, 350,000), and for each unit of the keys its zone is probed (14,000: 0.41, 0.88, 2.34 and 3.46 million for 1, 36, 114 and 289 units, the first n rows read) */
 #define SIFT_SCOPE_TOPN_SETUP_INSTR	350000
 #define SIFT_SCOPE_TOPN_UNIT_INSTR	14000
@@ -358,6 +360,7 @@ typedef struct SiftScopeCounts
 	double		preagg;			/* the share of the units their pre-aggregates answer (0..1, the planner's: 0 for a read of several keys counted once), the rest are read row by row */
 	bool		topn;			/* a top-N: the units are walked from the end of the sort key, the units the keys have are probed by their zones and walk_units of them are read */
 	uint64		walk_units;		/* ... the units whose zone reaches the n-th best row of the keys (a bound: the walk reads these at most) */
+	double		skip;			/* the share of the entries read that the statement's conditions leave out: the source tests them and nothing aggregates them (0: none, the least the filters save); a read with changed members goes through every entry row by row, and its entries cost what the units of a read of the keys do */
 	double		entry_instr;	/* the instructions the aggregation of an entry costs on top of reading it (the operators of the model a row has, which the join pays too: SiftAggScope.entry_instr) */
 	uint64		key_pairs;		/* with once and several keys: the pairs of the keys the read lists to dedupe them (SiftScopeRead.pairs) */
 	uint64		changed;		/* the members whose pairs changed since the stamp (SiftScopeRead.nchanged): their stored entries are left out of the units */
@@ -465,11 +468,12 @@ static inline double
 sift_scope_rows_price(const SiftScopeCounts *c)
 {
 	double		rows = 1.0 - c->preagg,
+				skip = c->changed > 0 ? 0.0 : c->skip,
 				entry = SIFT_SCOPE_ENTRY_INSTR + c->entry_instr + (c->once ? SIFT_SCOPE_DEDUPE_INSTR * (double) c->drops : 0),
 				except = c->changed > 0 ? SIFT_SCOPE_EXCEPT_INSTR : 0,
 				reads = 1.0 - c->group_frac + c->group_frac / Max(c->group_units, 1.0);	/* a group is read in the place of its units */
 
-	return SIFT_SCOPE_SETUP_INSTR + (rows * SIFT_SCOPE_UNIT_INSTR + c->preagg * SIFT_SCOPE_PREAGG_UNIT_INSTR * reads) * (double) c->units + rows * (entry + except) * (double) c->entries +
+	return SIFT_SCOPE_SETUP_INSTR + (rows * SIFT_SCOPE_UNIT_INSTR + c->preagg * SIFT_SCOPE_PREAGG_UNIT_INSTR * reads) * (double) c->units + rows * (skip * SIFT_SCOPE_SKIP_INSTR + (1.0 - skip) * entry + except) * (double) c->entries +
 		sift_scope_list_price(c) + sift_scope_changed_price(c);
 }
 

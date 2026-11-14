@@ -214,6 +214,7 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 	nd = column_distinct(c, makeVar(c->relid, fk, InvalidOid, -1, InvalidOid, 0), false);
 	per_pair = Max(c->rel->rows, 1.0) / (nd > 0 ? nd : DEFAULT_NUM_DISTINCT);
 	a->knot_rows = Max(per * per_pair, 1.0);
+	a->skip = 1.0 - Min(c->rel->rows / Max(c->rel->tuples, 1.0), 1.0);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (jc->cpath != NULL)
 			a->children = lappend(a->children, jc->cpath);
@@ -262,6 +263,7 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 	for (int i = 0; t->key_read && i < sc->nknot; i++)
 		sc->knot_instr[i] += AGG_ALT_JOIN * (sc->knot_k[i] - sc->knot_k[0]) * best->knot_rows;
 	sc->knot_rows = best->knot_rows;
+	sc->skip = best->skip;
 	sc->entry_instr = best->entry_instr;
 	/* the units answer from their pre-aggregates, where the spec can use them (a unit with a changed member does not): a read per pair always, a read counted once of one key, which the execution may have of the many the plan was
 	 * priced for (a read of several keys counted once leaves rows out of its units by the dedupe and reads them: sift_aggspec_preagg_why) */

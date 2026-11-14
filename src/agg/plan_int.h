@@ -314,6 +314,7 @@ typedef struct ScopeAlt
 	double		knot_k[SIFT_AGG_SCOPE_KNOTS];
 	double		knot_instr[SIFT_AGG_SCOPE_KNOTS];
 	double		entry_instr;
+	double		skip;
 	double		knot_rows;
 	List	   *children;		/* the plans its joins read (a sub-select, a union of the two paths of a scope), numbered as the first pass's children: the node of the second pass holds them after its own */
 } ScopeAlt;

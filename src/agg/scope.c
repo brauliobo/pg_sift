@@ -249,6 +249,7 @@ unit_counts(AggExec *ex, Snapshot snapshot)
 	SiftScopeCounts c = {.nkeys = sc->nkeys,.once = sc->once,.entry_instr = sc->entry_instr};
 
 	unit_entries(ex, snapshot, &c);
+	c.skip = sc->skip;
 	if (ex->spec->topn != NULL)
 		topn_counts(ex, &c);
 	c.preagg = sc->alt == NULL || (sc->once && sc->nkeys > 1) ? 0.0 : 1.0 - sc->rowwise;

@@ -197,6 +197,7 @@ codec_scope(Codec *c, SiftAggScope **sc)
 		pk_dbl(c, &(*sc)->knot_instr[i]);
 	}
 	pk_dbl(c, &(*sc)->knot_rows);
+	pk_dbl(c, &(*sc)->skip);
 	pk_dbl(c, &(*sc)->entry_instr);
 	pk_dbl(c, &(*sc)->rowwise);
 	pk_dbl(c, &(*sc)->rgroup_frac);

@@ -47,6 +47,7 @@ typedef struct SiftAggScope
 	double		knot_k[SIFT_AGG_SCOPE_KNOTS];
 	double		knot_instr[SIFT_AGG_SCOPE_KNOTS];
 	double		entry_instr;	/* the instructions the aggregation of a row of the keys costs, on top of the entry the units read (SIFT_SCOPE_ENTRY_INSTR): the operators of the model a row has, which both ways pay */
+	double		skip;			/* the share of the entries of the keys that the statement's own conditions leave out (the planner's selectivity of them on the table): the source tests those rows and aggregates none of them */
 	double		knot_rows;		/* the rows the alternative reads for one key of the average size: the entries of a read, over this, are the keys it has in those units */
 	double		rgroup_frac;	/* the share of the units key groups with the rollup of the rows answer, and the units of a group: a group is read in the place of its units (0, 1: none) */
 	double		rgroup_units;
