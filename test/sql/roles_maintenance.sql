@@ -24,7 +24,7 @@ SELECT * FROM rr_run($$
 rm_own | CREATE TABLE rm.docs (id int PRIMARY KEY, body text, g int, v float8)
 rm_own | INSERT INTO rm.docs SELECT i, 'alpha beta ' || i, i % 3, i FROM generate_series(1, 300) i
 rm_own | CREATE INDEX docs_idx ON rm.docs USING sift (body)
-rm_own | CREATE INDEX docs_col ON rm.docs USING sift_col (id, g, v)
+rm_own | CREATE INDEX docs_col ON rm.docs USING sift_col (id, g, v) WITH (point_columns = 'g')
 rm_own | CREATE TABLE rm.facts (id int, g int, val float8, doc jsonb) USING sift_table
 rm_own | INSERT INTO rm.facts SELECT i, i % 3, i, '{"a": 1}' FROM generate_series(1, 300) i
 rm_own | GRANT SELECT ON rm.docs, rm.facts TO rm_mt, rm_wr, rm_rd, rm_nos

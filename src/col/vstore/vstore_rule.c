@@ -32,6 +32,7 @@
 #include "col/keycols/keycols_int.h"
 #include "col/pg.h"
 #include "col/vstore/vstore.h"
+#include "core/ops.h"
 
 bool		sift_col_value_store = true;
 
@@ -259,7 +260,7 @@ sift_vstore_auto(Relation heap, Relation index)
 {
 	const SiftColSchema *schema;
 
-	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
+	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || !sift_extension_at_least("5.0"))	/* the access method of the stores is in the SQL of 5.0 */
 		return;
 #ifdef SIFT_TESTING
 	if (sift_test_vstore_columns != NULL && strcmp(sift_test_vstore_columns, "-") == 0)	/* "-": nothing is shared (the baseline of a measurement) */

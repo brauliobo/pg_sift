@@ -13,6 +13,7 @@
 #include "utils/timestamp.h"
 
 #include "bm25/wbuf.h"
+#include "col/api/format.h"
 #include "col/pg.h"
 #include "bm25/maint_int.h"
 #include "core/sql.h"
@@ -188,19 +189,26 @@ sift_worker_state(PG_FUNCTION_ARGS)
 
 /*
  * sift.index_format(rel): the on-disk format of the metapage of a sift index, a sift_col index or a sift_table, the minor a build must read to
- * open it. A newer minor than this build reads is refused here as everywhere (scripts/upgrade_check.sql reports it).
+ * open it. A newer minor than this build reads is refused here as everywhere (sift.upgrade_check reports it). long_words, for a sift (BM25) index
+ * only: it was built by a release that stores a word over 255 bytes as a prefix and a hash (5.0 and later; an index of an earlier build says false
+ * whether it was built before 3.3 or not, and a REINDEX tells). reads, for a sift_col index or a sift_table: the column formats this build reads.
  */
 Datum
 sift_index_format(PG_FUNCTION_ARGS)
 {
 	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	Datum		v[2];
-	bool		nulls[2] = {0};
+	Datum		v[4];
+	bool		nulls[4] = {0};
+	bool		bm25 = rel->rd_rel->relam == sift_catalog()->am;
 
 	sift_dir_read(rel, snap);
 	v[0] = Int32GetDatum(snap->meta.format_major);
 	v[1] = Int32GetDatum(snap->meta.format_minor);
+	v[2] = BoolGetDatum((snap->meta.flags & SIFT_META_LONG_WORDS) != 0);
+	v[3] = CStringGetTextDatum(psprintf("%d to %d", SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MAX_READ));
+	nulls[2] = !bm25;
+	nulls[3] = bm25;
 	relation_close(rel, AccessShareLock);
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }

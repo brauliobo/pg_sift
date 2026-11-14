@@ -30,6 +30,7 @@ CHECKS=(
 	'code-id		scripts/code-id.sh --selftest'
 	'options		scripts/gen-options.sh --check && scripts/gen-options.sh --selftest'
 	'docs		scripts/lint-cache.sh docs . -- python3 scripts/gen-docs.py --check'
+	'docs-steps	scripts/check-docs-steps.sh --selftest && scripts/check-docs-steps.sh'
 	'messages	scripts/gen-messages.sh --check && scripts/gen-messages.sh --selftest'
 	'errors		scripts/check-errors.sh'
 	'guards		scripts/check-guards.sh && scripts/check-guards.sh --selftest'

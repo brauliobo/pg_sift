@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Upgrade preflight: runs sift.upgrade_check() (scripts/upgrade_check.sql) in each database and prints what to look at before
-# ALTER EXTENSION pg_sift UPDATE, a library swap or a downgrade. Nothing is changed: the function is loaded in a transaction that is rolled back,
-# so a database whose extension is older than this checkout can be checked too (run it as a superuser, on the primary, with the new library files
-# installed).
+# Upgrade preflight for several databases: runs sift.upgrade_check() in each and prints what to look at before
+# ALTER EXTENSION pg_sift UPDATE, a library swap or a downgrade. Nothing is changed: the function is loaded from sql/pg_sift_upgrade_check.sql (built from
+# sql/5.0/27-upgrade-check.sql, installed beside the extension scripts as pg_sift_upgrade_check.sql) in a transaction that is rolled back, so a database
+# whose extension is older than this checkout can be checked too (run it as a superuser, on the primary, with the new library files installed).
+# From 5.0 on, SELECT * FROM sift.upgrade_check() in the database does the same.
 #
 #   scripts/upgrade-check.sh [--to RELEASE] [--strict] [--all | DATABASE_OR_CONNINFO...]
 #
@@ -31,19 +32,13 @@ done
 [[ -n $all ]] && mapfile -t dbs < <(psql -X -At -d postgres -c "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY 1")
 ((${#dbs[@]})) || { echo "usage: scripts/upgrade-check.sh [--to RELEASE] [--strict] [--all | DATABASE...]" >&2; exit 2; }
 
+"$HERE/sql-parts.sh" build
+FILE=$HERE/../sql/pg_sift_upgrade_check.sql
 rc=0
 for db in "${dbs[@]}"; do
 	has=$(psql -X -At -d "$db" -c "SELECT 1 FROM pg_extension WHERE extname = 'pg_sift'") || { echo "== $db: cannot connect" >&2; rc=2; continue; }
 	[[ -n $has ]] || { echo "== $db: no pg_sift, skipped"; continue; }
-	out=$(psql -X -q -At -F $'\t' -v ON_ERROR_STOP=1 -v to="$to" -d "$db" <<SQL
-BEGIN;
-\i $HERE/upgrade_check.sql
-SELECT status, object, kind, detected, replace(coalesce(advice, ''), E'\n', ' ')
-FROM sift.upgrade_check(nullif(:'to', ''))
-ORDER BY CASE status WHEN 'blocker' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, object;
-ROLLBACK;
-SQL
-	) || { echo "== $db: the check failed" >&2; rc=2; continue; }
+	out=$(psql -X -q -At -F $'\t' -v ON_ERROR_STOP=1 -v to="$to" -d "$db" -f "$FILE") || { echo "== $db: the check failed" >&2; rc=2; continue; }
 	echo "== $db"
 	printf 'STATUS\tOBJECT\tKIND\tDETECTED\tADVICE\n%s\n' "$out" | { column -t -s $'\t' 2>/dev/null || cat; }
 	grep -q $'^blocker\t' <<<"$out" && { ((rc == 2)) || rc=1; }

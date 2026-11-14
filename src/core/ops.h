@@ -35,6 +35,9 @@ extern bool sift_maintenance_busy(Relation index);
 /* After ALTER INDEX ... SET / RESET (options) of a sift_col index: errors when the options do not fit its leaves (nothing for other indexes) */
 extern void sift_col_alter_check(Relation index, bool scope_set);
 
+/* Whether the extension version of the database (the SQL objects) is at least since, e.g. "5.0"; for a feature that stays off until ALTER EXTENSION UPDATE (core/extver.c) */
+extern bool sift_extension_at_least(const char *since);
+
 extern void sift_ops_init(void);
 
 #endif							/* SIFT_OPS_H */

@@ -139,11 +139,11 @@ def check(opts, notes, errors, released, srcs=None):
     colh = ((srcs or {}).get('col/col.h') or read('src/col/col.h')) + ((srcs or {}).get('col/api/format.h') or read('src/col/api/format.h'))
     minors = [int(x) for x in re.findall(r'#define SIFT_COL_FORMAT_[A-Z0-9_]+\s+(\d+)\b', colh)]
     minor_max = max([int(minor_now)] + minors)
-    # every minor the library reads has the release that first reads it in scripts/upgrade_check.sql (col_first): without it upgrade_check('3.x') takes it for 3.0's and cannot block an index that 3.x cannot read
-    first = json.loads(re.search(r"col_first CONSTANT jsonb := '(\{.*?\})'", read('scripts/upgrade_check.sql')).group(1))
+    # every minor the library reads has the release that first reads it in sql/5.0/27-upgrade-check.sql (col_first): without it upgrade_check('3.x') takes it for 3.0's and cannot block an index that 3.x cannot read
+    first = json.loads(re.search(r"col_first CONSTANT jsonb := '(\{.*?\})'", read('sql/5.0/27-upgrade-check.sql')).group(1))
     for n in range(int(re.search(r'#define SIFT_COL_FORMAT_MIN_READ\s+(\d+)', colh).group(1)), minor_max + 1):
         if str(n) not in first:
-            errors.append('scripts/upgrade_check.sql: col_first has no entry for column format minor %d (the release that first reads it)' % n)
+            errors.append('sql/5.0/27-upgrade-check.sql: col_first has no entry for column format minor %d (the release that first reads it)' % n)
     # the snapshot of the defaults of the last release must be the newest release before this tree's version (4.2 -> 4.1): the version bump after a release replaces it (scripts/gen-options.sh --snapshot, run in the tree of the tag)
     vkey = lambda t: tuple(int(x) for x in t.split('.'))
     older = [vkey(m.group(1) + '.' + m.group(2)) for f in os.listdir(os.path.join(ROOT, 'docs/releases')) for m in [re.fullmatch(r'v(\d+)\.(\d+)\.\d+\.md', f)] if m and vkey(m.group(1) + '.' + m.group(2)) < vkey(release_label())]

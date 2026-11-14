@@ -29,7 +29,7 @@ first release that reads each: [FORMATS.md](FORMATS.md).
 
 ## 1. Preflight
 
-`scripts/upgrade-check.sh` runs `sift.upgrade_check()` (`scripts/upgrade_check.sql`) in each database. It reads the catalogs and metapages and changes nothing
+`scripts/upgrade-check.sh` runs `sift.upgrade_check()` (`sql/5.0/27-upgrade-check.sql`, installed beside the extension scripts as `pg_sift_upgrade_check.sql` for an update that is not made yet) in each database. It reads the catalogs and metapages and changes nothing
 (the function is loaded in a transaction that is rolled back, so a database with an older extension can be checked). It needs a superuser on the primary
 and the files of the new release installed:
 
@@ -61,11 +61,12 @@ Run it before and after the update: the second run must have no `warn` the first
 sudo apt install ./postgresql-N-pg-sift_X.Y.Z-1_amd64.deb
 make USE_PGXS=1 && sudo make USE_PGXS=1 install
 
-# 2. preflight (section 1), then in every database that has the extension
-psql -d app -c "ALTER EXTENSION pg_sift UPDATE"
-
-#    library keeps it until its connection ends, so after every library install restart the server or reconnect every pool and worker)
+# 2. restart the server, a standby too (a backend keeps the library it loaded until its connection ends, so after every library install
+#    restart the server or reconnect every pool and worker)
 sudo systemctl restart postgresql
+
+# 3. preflight (section 1), then in every database that has the extension
+psql -d app -c "ALTER EXTENSION pg_sift UPDATE"
 
 # 4. check the update
 psql -d app -c "SELECT extversion, sift.version() FROM pg_extension WHERE extname = 'pg_sift'"
@@ -95,7 +96,7 @@ one row per command (`kind` `reindex` or `rewrite`, the `object`, the `reason`, 
 
 | Warning | Why | Command |
 |---|---|---|
-| a `sift` (text) index needs a `REINDEX` | **queries miss rows**: since 3.3 a word over 255 bytes is stored as its first 236 bytes and a hash; an older index holds it cut at 255 bytes, so a query for it finds nothing. The index does not record whether it holds such a word, so every text index except `analyzer = keyword` is listed, also after its `REINDEX` | `REINDEX INDEX CONCURRENTLY schema.index;` |
+| a `sift` (text) index needs a `REINDEX` | **queries miss rows**: since 3.3 a word over 255 bytes is stored as its first 236 bytes and a hash; an older index holds it cut at 255 bytes, so a query for it finds nothing. An index of an earlier release does not record whether it holds such a word, so every text index except `analyzer = keyword` is listed until its `REINDEX`, which marks the index (`long_words` of `sift.index_format`) and takes it off the list | `REINDEX INDEX CONCURRENTLY schema.index;` |
 | a `sift_col` index would gain from a `REINDEX` | an option set after the units were written (`cube_minmax`, JSON `paths`, `rollup_columns`, `key_columns`, `order_columns`, `point_columns`, `point_tid_columns`, `key_cut`, `hll_columns`): older units stay readable and are scanned (for `order_columns`, read whole by an `ORDER BY .. LIMIT`) until then | `REINDEX INDEX CONCURRENTLY schema.index;` |
 | a `sift_table` would gain from a rewrite | segments below the column format of its schema: no calendar cells for its date and timestamp columns (format 8), JSON kinds that may be incomplete for declared paths (format 6). A `sift_table` cannot be reindexed | `VACUUM FULL schema.table;` |
 
@@ -367,7 +368,8 @@ scripts/upgrade-check.sh --to 3.2 app
 # 2. every write from now on is readable by 3.2 (superuser; new sessions pick it up)
 psql -d postgres -c "ALTER SYSTEM SET sift.col_format_minor = 6" -c "SELECT pg_reload_conf()"
 
-#    with DISABLE (the 3.2 library has not the function of the two event triggers of 3.3, and would fail every ALTER TABLE and CREATE TRIGGER of the database)
+# 3. rewrite each blocker row: an index with REINDEX, a sift_table with VACUUM FULL (one command each, outside a transaction block), and disable the two event
+#    triggers of 3.3 (the 3.2 library has not their function and would fail every ALTER TABLE and CREATE TRIGGER of the database)
 psql -d app -c "REINDEX INDEX CONCURRENTLY public.facts_col"
 psql -d app -c "VACUUM FULL public.orders"
 psql -d app -c "ALTER EVENT TRIGGER sift_table_ddl_check DISABLE" -c "ALTER EVENT TRIGGER sift_table_repack_guard DISABLE"
@@ -475,7 +477,7 @@ An existing index or table keeps what it holds; the new default applies to units
 | column format 45 (a scope index: the derived key of a scope and its scope segments), 49 (a scope of two paths: three stamps in a segment) and 51 (key groups in a scope segment) | 5.0; 4.3 and older refuse the segments; `ALTER INDEX x RESET (scope)` and `REINDEX` write the entities they read |
 | column format 46 (strings held by a shared value store) | 5.0; 4.3 and older refuse the segments and the store; `SET sift.col_value_store = off` and `REINDEX` write the strings in the segments (minor 44 at the most), `sift.col_format_minor` 14 does it for a release before 4.3 |
 
-`scripts/upgrade_check.sql` holds this table; a release that adds a format adds its row there.
+`sql/5.0/27-upgrade-check.sql` holds this table; a release that adds a format adds its row there.
 
 ## Schema `sift` is open to PUBLIC since 3.3
 

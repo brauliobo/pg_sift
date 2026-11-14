@@ -103,7 +103,7 @@ after_auto(const char *opt)
 	return *opt ? opt : NULL;
 }
 
-/* The first release that reads a column format minor, as scripts/upgrade_check.sql lists it: the segments of 4.0 are minor 40 and up, the others of 3.7 are 33 to 39 */
+/* The first release that reads a column format minor, as sift.upgrade_check lists it (sql/5.0/27-upgrade-check.sql): the segments of 4.0 are minor 40 and up, the others of 3.7 are 33 to 39 */
 static const char *
 minor_lib(int minor)
 {

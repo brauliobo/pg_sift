@@ -26,7 +26,7 @@ SELECT * FROM rr_run($$
 rm_own | CREATE TABLE rm.docs (id int PRIMARY KEY, body text, g int, v float8)
 rm_own | INSERT INTO rm.docs SELECT i, 'alpha beta ' || i, i % 3, i FROM generate_series(1, 300) i
 rm_own | CREATE INDEX docs_idx ON rm.docs USING sift (body)
-rm_own | CREATE INDEX docs_col ON rm.docs USING sift_col (id, g, v)
+rm_own | CREATE INDEX docs_col ON rm.docs USING sift_col (id, g, v) WITH (point_columns = 'g')
 rm_own | CREATE TABLE rm.facts (id int, g int, val float8, doc jsonb) USING sift_table
 rm_own | INSERT INTO rm.facts SELECT i, i % 3, i, '{"a": 1}' FROM generate_series(1, 300) i
 rm_own | GRANT SELECT ON rm.docs, rm.facts TO rm_mt, rm_wr, rm_rd, rm_nos
@@ -38,7 +38,7 @@ $$);
  1 | rm_own | CREATE TABLE rm.docs (id int PRIMARY KEY, body text, g int, v float8)                     | ok
  2 | rm_own | INSERT INTO rm.docs SELECT i, 'alpha beta ' || i, i % 3, i FROM generate_series(1, 300) i | ok (300)
  3 | rm_own | CREATE INDEX docs_idx ON rm.docs USING sift (body)                                        | ok
- 4 | rm_own | CREATE INDEX docs_col ON rm.docs USING sift_col (id, g, v)                                | ok
+ 4 | rm_own | CREATE INDEX docs_col ON rm.docs USING sift_col (id, g, v) WITH (point_columns = 'g')     | ok
  5 | rm_own | CREATE TABLE rm.facts (id int, g int, val float8, doc jsonb) USING sift_table             | ok
  6 | rm_own | INSERT INTO rm.facts SELECT i, i % 3, i, '{"a": 1}' FROM generate_series(1, 300) i        | ok (300)
  7 | rm_own | GRANT SELECT ON rm.docs, rm.facts TO rm_mt, rm_wr, rm_rd, rm_nos                          | ok
@@ -141,7 +141,7 @@ $$);
  SELECT sift.stats_reset()                                                     | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
  SELECT * FROM sift.refusal_slugs()                                            | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
  SELECT * FROM sift.refusal_actions()                                          | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT object::text, kind FROM sift.upgrade_commands() ORDER BY 1             | ok: (rm.docs_idx,reindex)                                               | rm_own, rm_mem, rm_mt
+ SELECT object::text, kind FROM sift.upgrade_commands() ORDER BY 1             | ok: (rm.docs_col,reset)                                                 | rm_own, rm_mem, rm_mt
  SELECT object::text, kind FROM sift.upgrade_commands() ORDER BY 1             | ok: (no rows)                                                           | rm_wr, rm_rd, rm_non, rm_nos
  SELECT * FROM sift.col_rollup_counters()                                      | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
  SELECT * FROM sift.col_rollup_queue()                                         | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
