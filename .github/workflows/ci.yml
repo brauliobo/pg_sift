@@ -197,6 +197,11 @@ jobs:
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
           echo /usr/lib/ccache >> "$GITHUB_PATH"
 
+      # a build whose lz4 or zstd header is missing stops with the error that names the switch (SIFT_NO_LZ4=1, SIFT_NO_ZSTD=1) and does not drop the codec
+      - name: Codec probe
+        if: ${{ !matrix.git && !matrix.cassert && matrix.pg == 18 }}
+        run: scripts/check-codec-probe.sh
+
       # the compiler cache of the build and of the 8-page flavour of the scaling gate (58 s cold, 3 s warm). The key is the compiler and the sources the objects come from, so a commit that
       # changes none of them (tests, docs, workflows) finds its cache and saves nothing new, and any other restores the newest cache of the branch or of main (caches of the default branch
       # are read by every branch) and saves its own. The first job of the entry to finish saves it, a failed run included: the objects are the cost, not the tests
