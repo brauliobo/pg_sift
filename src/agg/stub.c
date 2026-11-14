@@ -38,7 +38,6 @@
 #include "commands/defrem.h"
 #include "commands/vacuum.h"
 #include "nodes/makefuncs.h"
-#include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
@@ -55,7 +54,6 @@ typedef struct StubOptions
 } StubOptions;
 
 static relopt_kind stub_relopt_kind;
-static Oid	stub_am_oid = InvalidOid;
 
 typedef struct StubItem
 {
@@ -571,34 +569,19 @@ sift_aggstub_handler(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(am);
 }
 
-static void
-am_oid_invalidate(Datum arg, int cacheid, uint32 hashvalue)
-{
-	stub_am_oid = InvalidOid;
-}
-
-static Oid
-am_oid(void)
-{
-	if (!OidIsValid(stub_am_oid))
-		stub_am_oid = get_index_am_oid(SIFT_COLSTUB_AM, true);
-	return stub_am_oid;
-}
-
 void
 sift_aggstub_init(void)
 {
 	stub_relopt_kind = add_reloption_kind();
 	add_string_reloption(stub_relopt_kind, "paths", "jsonb paths of the key columns: attname: a.b type, a.b[]{f type}, *:type; ...",
 						 NULL, validate_paths, AccessExclusiveLock);
-	CacheRegisterSyscacheCallback(AMOID, am_oid_invalidate, (Datum) 0);
 	sift_aggstub_register();
 }
 
 bool
 sift_aggstub_owns_index(Oid indexrelam)
 {
-	return OidIsValid(indexrelam) && indexrelam == am_oid();
+	return OidIsValid(indexrelam) && indexrelam == sift_catalog()->colstub_am;
 }
 
 #endif							/* SIFT_TESTING */

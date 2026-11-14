@@ -736,7 +736,7 @@ tables_have_sift_index(const PlannedStmt *ps, Oid amoid)
 static void
 why_index_arm(RawStmt *raw, const char *sql, const PlannedStmt *ps, const Oid *ptypes, int nparams, ParamListInfo params)
 {
-	Oid			amoid = get_am_oid("sift_col", true);
+	Oid			amoid = sift_catalog()->col_am;
 	int			nest;
 	PlannedStmt *again = NULL;
 
