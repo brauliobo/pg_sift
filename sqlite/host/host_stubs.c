@@ -17,6 +17,14 @@ sift_host_pin_heap(void)
 {
 }
 
+/* ---------- the name of an index in a hint (core/store.h): a table of the host has no schema ---------- */
+
+const char *
+sift_index_ident(Relation index)
+{
+	return RelationGetRelationName(index);
+}
+
 /* ---------- text search configurations (bm25/analyze_ts.c): a PostgreSQL catalog object, so the hosts have none ---------- */
 
 SiftTsStem *

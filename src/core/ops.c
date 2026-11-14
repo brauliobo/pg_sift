@@ -24,6 +24,7 @@
 #include "col/am.h"
 #include "col/pg.h"
 #include "col/vstore/vstore.h"
+#include "core/errctx.h"
 #include "core/ops.h"
 #include "core/store.h"
 
@@ -100,7 +101,7 @@ sift_log_refused(Relation index)
 static void
 maint_errcontext(void *arg)
 {
-	errcontext("sift maintenance worker of index %u", (Oid) (uintptr_t) arg);
+	errcontext("sift maintenance worker of index \"%s\"", sift_errctx_name((Oid) (uintptr_t) arg));
 }
 
 void

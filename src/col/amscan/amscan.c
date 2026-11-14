@@ -13,6 +13,7 @@
 #include "utils/uuid.h"
 #include "col/am.h"
 #include "col/amscan/amscan_int.h"
+#include "core/errctx.h"
 #include "core/tomb.h"
 
 
@@ -441,8 +442,8 @@ col_scan_unit(ColScanOpaque *so, SiftColUnit *unit, SiftColSel *sel)
 	return false;
 }
 
-int64
-sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
+static int64
+col_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 {
 	ColScanOpaque *so = scan->opaque;
 	MemoryContext old = MemoryContextSwitchTo(so->cxt);
@@ -842,12 +843,28 @@ sift_col_amrestrpos(IndexScanDesc scan)
 	sift_col_ordered_restore(scan->opaque);
 }
 
+int64
+sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
+{
+	SiftErrCtx	ctx;
+	int64		n;
+
+	sift_errctx_push(&ctx, RelationGetRelid(scan->indexRelation));
+	n = col_getbitmap(scan, tbm);
+	sift_errctx_pop(&ctx);
+	return n;
+}
+
 bool
 sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir)
 {
-	if (((ColScanOpaque *) scan->opaque)->ordered)
-		return sift_col_ordered_next(scan, dir);
-	return sift_col_unordered_next(scan);
+	SiftErrCtx	ctx;
+	bool		found;
+
+	sift_errctx_push(&ctx, RelationGetRelid(scan->indexRelation));
+	found = ((ColScanOpaque *) scan->opaque)->ordered ? sift_col_ordered_next(scan, dir) : sift_col_unordered_next(scan);
+	sift_errctx_pop(&ctx);
+	return found;
 }
 
 /*

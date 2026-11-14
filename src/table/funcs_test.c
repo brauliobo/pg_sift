@@ -170,25 +170,6 @@ sift_test_tbl_preagg_bytes(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(bytes);
 }
 
-PG_FUNCTION_INFO_V1(sift_test_tbl_verify);
-
-/* The checks of sift.col_verify on every column segment of the table (chunks, zones, the cube and rollups against the chunks); the live rows, an error on damage */
-Datum
-sift_test_tbl_verify(PG_FUNCTION_ARGS)
-{
-	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
-	SiftTblRel *st = sift_tbl_rel(rel);
-	SiftColSegment *seg;
-	int64		live = 0;
-
-	sift_tbl_require(rel);
-	sift_tbl_refresh(rel, st);
-	for (int i = 0; (seg = next_column_segment(rel, st, &i)) != NULL; sift_cseg_close(seg))
-		live += sift_cseg_verify(seg);
-	table_close(rel, AccessShareLock);
-	PG_RETURN_INT64(live);
-}
-
 PG_FUNCTION_INFO_V1(sift_test_tbl_tagged);
 
 /* The column groups of the table with unfrozen rows (rows that are not final) */

@@ -292,9 +292,11 @@ SET sift.test_fail_who = 2;
 SELECT sift.merge('mr_b');
 ERROR:  canceling statement due to sift.test_fail_merge
 CONTEXT:  parallel worker
+sift index "public.mr_b"
 SET sift.test_fail_who = 1;
 SELECT sift.merge('mr_b');
 ERROR:  canceling statement due to sift.test_fail_merge
+CONTEXT:  sift index "public.mr_b"
 RESET sift.test_fail_merge;
 RESET sift.test_fail_who;
 SELECT count(*) AS segments_after_failures FROM sift.segments('mr_b') WHERE kind = 'immutable';

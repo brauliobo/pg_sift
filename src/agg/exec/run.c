@@ -16,6 +16,7 @@
 #include "agg/stats.h"
 #include "col/am.h"
 #include "col/scope.h"
+#include "core/errctx.h"
 #include "agg/exec/int.h"
 
 bool		sift_enable_agg = true;
@@ -778,7 +779,14 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 static TupleTableSlot *
 agg_exec(CustomScanState *node)
 {
-	return ExecScan(&node->ss, agg_next, agg_recheck);
+	AggExec    *ex = (AggExec *) node;
+	SiftErrCtx	ctx;
+	TupleTableSlot *slot;
+
+	sift_errctx_push(&ctx, OidIsValid(ex->spec->indexoid) ? ex->spec->indexoid : ex->spec->heapoid);
+	slot = ExecScan(&node->ss, agg_next, agg_recheck);
+	sift_errctx_pop(&ctx);
+	return slot;
 }
 
 /* what the source counted for the run, with the workers' */

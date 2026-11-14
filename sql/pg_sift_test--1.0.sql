@@ -439,9 +439,9 @@ CREATE FUNCTION sift._test_tbl_cal_grains(tbl regclass, OUT days int8, OUT month
 CREATE FUNCTION sift._test_tbl_preagg_bytes(tbl regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_preagg_bytes' LANGUAGE C STRICT;
 
--- Table module (src/table/funcs.c): the checks of sift.col_verify on every column segment of a sift_table: its live rows, an error on damage
+-- Table module (src/table/verify.c): sift.table_verify under its old test name
 CREATE FUNCTION sift._test_tbl_verify(tbl regclass) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_tbl_verify' LANGUAGE C STRICT;
+	AS 'MODULE_PATHNAME', 'sift_table_verify' LANGUAGE C STRICT;
 
 -- Table module (src/table/funcs.c): the column groups of a sift_table that still carry their writer (rows that are not final)
 CREATE FUNCTION sift._test_tbl_tagged(tbl regclass) RETURNS int4

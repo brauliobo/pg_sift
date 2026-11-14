@@ -20,6 +20,7 @@
 #include "col/pg.h"
 #include "col/am.h"
 #include "col/amscan/amscan_int.h"
+#include "core/errctx.h"
 
 /* the price of a scan of an index whose segments another leaf list wrote (col/am.h, stale): the path is never the cheapest, whatever the table */
 #define COL_SCAN_STALE	1.0e10
@@ -179,9 +180,9 @@ ios_var_columns(IndexOptInfo *index)
  * zones and summaries of each, or the keys looked up in the point directory and the bits of the kept units); the rest is reading the kept units, filtering their
  * values (only the rows the directory lists, when it is what keeps them) and handing the rows over. The start is separate so that a LIMIT stops the scan early: the units are read one at a time.
  */
-void
-sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *indexStartupCost, Cost *indexTotalCost,
-						Selectivity *indexSelectivity, double *indexCorrelation, double *indexPages)
+static void
+col_costestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *indexStartupCost, Cost *indexTotalCost,
+				 Selectivity *indexSelectivity, double *indexCorrelation, double *indexPages)
 {
 	IndexOptInfo *index = path->indexinfo;
 	GenericCosts costs = {0};
@@ -285,6 +286,17 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	/* the addresses of a lookup come in heap order (a list ascends, the segments follow each other), so the tuple scan reads the heap as a bitmap scan does */
 	*indexCorrelation = nprobes > 0 ? tid : 0.0;
 	*indexPages = Max(1.0, kept * index->pages);
+}
+
+void
+sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *indexStartupCost, Cost *indexTotalCost,
+						Selectivity *indexSelectivity, double *indexCorrelation, double *indexPages)
+{
+	SiftErrCtx	ctx;
+
+	sift_errctx_push(&ctx, path->indexinfo->indexoid);
+	col_costestimate(root, path, loop_count, indexStartupCost, indexTotalCost, indexSelectivity, indexCorrelation, indexPages);
+	sift_errctx_pop(&ctx);
 }
 
 /* sift.plan_scale: the table the index covers has that many times the pages and rows, with the statistics of the columns as they are (an absolute n_distinct stays, a fraction grows) */

@@ -584,9 +584,9 @@ SELECT sift._test_poke('t2_idx', :empty_page, 28, 5, 2);
 (1 row)
 
 SELECT expect($$ SELECT * FROM sift._test_col_wbuf_segments('t2_idx') $$);
-                                          expect                                          
-------------------------------------------------------------------------------------------
- XXN: sift index "tN_idx" is corrupted | Write buffer block N holds N rows, its header N.
+                                                                       expect                                                                       
+----------------------------------------------------------------------------------------------------------------------------------------------------
+ XXN: sift index "tN_idx" is corrupted | Write buffer block N holds N rows, its header N. | REINDEX INDEX public.tN_idx rebuilds it from the table.
 (1 row)
 
 SELECT sift._test_poke('t2_idx', :empty_page, 28, 0, 2);
@@ -602,9 +602,9 @@ SELECT sift._test_poke('t2_idx', :rec_page, 38, 16, 2);
 (1 row)
 
 SELECT expect($$ SELECT * FROM sift._test_col_wbuf_segments('t2_idx') $$);
-                                          expect                                          
-------------------------------------------------------------------------------------------
- XXN: sift index "tN_idx" is corrupted | A write buffer record has tid (N,N) and flags N.
+                                                                       expect                                                                       
+----------------------------------------------------------------------------------------------------------------------------------------------------
+ XXN: sift index "tN_idx" is corrupted | A write buffer record has tid (N,N) and flags N. | REINDEX INDEX public.tN_idx rebuilds it from the table.
 (1 row)
 
 SELECT sift._test_poke('t2_idx', :rec_page, 38, 0, 2);
@@ -620,15 +620,15 @@ SELECT sift._test_poke('t2_idx', :rec_page, 40, 100000, 4);
 (1 row)
 
 SELECT expect($$ SELECT * FROM sift._test_col_wbuf_segments('t2_idx') $$);
-                                                         expect                                                          
--------------------------------------------------------------------------------------------------------------------------
- XXN: sift index "tN_idx" is corrupted | A record of N bytes at byte N overruns the N used bytes of a write buffer page.
+                                                                                      expect                                                                                       
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XXN: sift index "tN_idx" is corrupted | A record of N bytes at byte N overruns the N used bytes of a write buffer page. | REINDEX INDEX public.tN_idx rebuilds it from the table.
 (1 row)
 
 SELECT expect($$ SELECT * FROM sift._test_col_wbuf_rows('t2_idx', 3) $$);
-                                                         expect                                                          
--------------------------------------------------------------------------------------------------------------------------
- XXN: sift index "tN_idx" is corrupted | A record of N bytes at byte N overruns the N used bytes of a write buffer page.
+                                                                                      expect                                                                                       
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XXN: sift index "tN_idx" is corrupted | A record of N bytes at byte N overruns the N used bytes of a write buffer page. | REINDEX INDEX public.tN_idx rebuilds it from the table.
 (1 row)
 
 DROP TABLE t, t2, t3, t4, t5, t6, opened, opened6, r, b, p, pages, counts;

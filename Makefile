@@ -134,6 +134,7 @@ TESTING_REGRESS += col_build_paths
 TESTING_REGRESS += col_build_same_options
 TESTING_REGRESS += col_calendar_columns
 TESTING_REGRESS += col_census_sample
+TESTING_REGRESS += col_check
 TESTING_REGRESS += col_conn_auto
 TESTING_REGRESS += col_conn_declare
 TESTING_REGRESS += col_conn_fill

@@ -39,9 +39,9 @@ SELECT sift._test_poke('t_idx', 3, 8176, 9, 2);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
-                                                     expect                                                      
------------------------------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Block 3: expected page type 4 generation 1, found type 9 generation 1.
+                                                                                  expect                                                                                  
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Block 3: expected page type 4 generation 1, found type 9 generation 1. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 -- Data page generation
@@ -58,9 +58,9 @@ SELECT sift._test_poke('t_idx', 4, 8184, 77, 8);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
-                                                      expect                                                      
-------------------------------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Block 4: expected page type 4 generation 1, found type 4 generation 77.
+                                                                                  expect                                                                                   
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Block 4: expected page type 4 generation 1, found type 4 generation 77. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 -- Truncated page: pd_lower below the bytes the stream needs
@@ -77,9 +77,9 @@ SELECT sift._test_poke('t_idx', 4, 12, 1000, 2);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
-                                              expect                                              
---------------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Read past the 976 written bytes of block 4 (segment 1).
+                                                                          expect                                                                           
+-----------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Read past the 976 written bytes of block 4 (segment 1). | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 -- Broken layout: pd_upper moved
@@ -96,9 +96,9 @@ SELECT sift._test_poke('t_idx', 2, 14, 8000, 2);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1, 2) $$);
-                                                       expect                                                        
----------------------------------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Block 2 has an invalid page layout (lower 8176, upper 8000, special 8176).
+                                                                                    expect                                                                                    
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Block 2 has an invalid page layout (lower 8176, upper 8000, special 8176). | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 -- Segment header type
@@ -115,9 +115,9 @@ SELECT sift._test_poke('t_idx', 5, 8176, 4, 2);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
-                                                     expect                                                      
------------------------------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Block 5: expected page type 3 generation 1, found type 4 generation 1.
+                                                                                  expect                                                                                  
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Block 5: expected page type 3 generation 1, found type 4 generation 1. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 -- Metapage magic, format version, high-water mark
@@ -134,9 +134,9 @@ SELECT sift._test_poke('t_idx', 0, 24, 0, 4);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
-                                       expect                                        
--------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Bad metapage (magic 0x00000000, 64 bytes).
+                                                                    expect                                                                    
+----------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Bad metapage (magic 0x00000000, 64 bytes). | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 -- the used bytes of the metapage (pd_lower at offset 12, the data at 24): the 64 of a build without the failure note, the 272 with it and the 400 with the analyzer configuration are read, others are not, nor is one past the struct
@@ -153,9 +153,9 @@ SELECT sift._test_poke('t_idx', 0, 12, 24 + 40, 2);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                       expect                                        
--------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Bad metapage (magic 0x53494654, 40 bytes).
+                                                                    expect                                                                    
+----------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Bad metapage (magic 0x53494654, 40 bytes). | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 SELECT fresh();
@@ -171,9 +171,9 @@ SELECT sift._test_poke('t_idx', 0, 12, :over + 1, 2);
 (1 row)
 
 SELECT regexp_replace(expect($$ SELECT sift._test_check('t_idx') $$), ', [0-9]+ bytes', ', <size> bytes');
-                                     regexp_replace                                      
------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Bad metapage (magic 0x53494654, <size> bytes).
+                                                                  regexp_replace                                                                  
+--------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Bad metapage (magic 0x53494654, <size> bytes). | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 SELECT fresh();
@@ -315,9 +315,9 @@ SELECT sift._test_poke('t_idx', 0, 76, 1, 4);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                          expect                                           
--------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | High-water mark 1 is below the first data block.
+                                                                       expect                                                                       
+----------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | High-water mark 1 is below the first data block. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 SELECT fresh();
@@ -333,9 +333,9 @@ SELECT sift._test_poke('t_idx', 0, 76, 100, 4);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                             expect                                             
-------------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Relation has 8 blocks, below the high-water mark 100.
+                                                                         expect                                                                          
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Relation has 8 blocks, below the high-water mark 100. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 -- Directory: segment count and entry generation
@@ -352,9 +352,9 @@ SELECT sift._test_poke('t_idx', 1, 28, 129, 2);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                       expect                                        
--------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Directory holds 129 segments in 120 bytes.
+                                                                    expect                                                                    
+----------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Directory holds 129 segments in 120 bytes. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 SELECT fresh();
@@ -370,9 +370,9 @@ SELECT sift._test_poke('t_idx', 1, 32 + 56, 1, 8);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                        expect                                         
----------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Generation 1 appears twice in the directory.
+                                                                     expect                                                                     
+------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Generation 1 appears twice in the directory. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 -- Segment header extent past the high-water mark, and overlapping another segment
@@ -389,9 +389,9 @@ SELECT sift._test_poke('t_idx', 5, 160, 50, 4);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                                           expect                                                           
-----------------------------------------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | The segment extent of generation 1 (blocks 2+50) lies past the high-water mark 8.
+                                                                                       expect                                                                                        
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | The segment extent of generation 1 (blocks 2+50) lies past the high-water mark 8. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 SELECT fresh();
@@ -407,9 +407,9 @@ SELECT sift._test_poke('t_idx', 5, 156, 4, 4);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                                 expect                                                 
---------------------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Block 5 is referenced twice (segment extent of generation 1).
+                                                                             expect                                                                              
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Block 5 is referenced twice (segment extent of generation 1). | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 -- Free list: a record covering a live block is caught by check and by a release
@@ -447,15 +447,15 @@ SELECT sift._test_poke('t_idx', :fl, 32, 5, 4);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                       expect                                        
--------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Block 5 is referenced twice (free extent).
+                                                                    expect                                                                    
+----------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Block 5 is referenced twice (free extent). | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 SELECT expect($$ SELECT sift._test_seg_drop('t_idx', 1) $$);
-                               expect                                
----------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Block 5 is released twice.
+                                                            expect                                                            
+------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Block 5 is released twice. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 -- Free list record past the high-water mark, and a chain pointing at itself
@@ -466,9 +466,9 @@ SELECT sift._test_poke('t_idx', :fl, 32, 5000, 4);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_alloc('t_idx', 1, 1) $$);
-                                                   expect                                                    
--------------------------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Free list block 24 has record 5000+14 past the high-water mark 25.
+                                                                                expect                                                                                
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Free list block 24 has record 5000+14 past the high-water mark 25. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 SELECT sift._test_poke('t_idx', :fl, 28, 0, 4), sift._test_poke('t_idx', :fl, 12, 32, 2);
@@ -484,15 +484,15 @@ SELECT sift._test_poke('t_idx', :fl, 24, :fl, 4);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                         expect                                          
------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Block 24 is referenced twice (free list page).
+                                                                      expect                                                                      
+--------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Block 24 is referenced twice (free list page). | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 SELECT expect($$ SELECT sift._test_alloc('t_idx', 1, 1) $$);
-                                          expect                                           
--------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Free list chain reaches block 24 after 25 pages.
+                                                                       expect                                                                       
+----------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Free list chain reaches block 24 after 25 pages. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 -- A fresh build is clean again

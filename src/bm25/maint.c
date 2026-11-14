@@ -29,6 +29,7 @@
 
 #include "bm25/am.h"
 #include "col/pg.h"
+#include "core/errctx.h"
 #include "core/limits.h"
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
@@ -290,11 +291,14 @@ make_room_locked(const SiftMaintOps *ops, Relation index)
 int
 sift_mops_promote(const SiftMaintOps *ops, Relation index, bool wait)
 {
+	SiftErrCtx	ctx;
 	int			n;
 
 	if (!maint_lock_mode(index, wait, ops->step_lock))
 		return 0;
+	sift_errctx_push(&ctx, RelationGetRelid(index));
 	n = promote_locked(ops, index, false, false);
+	sift_errctx_pop(&ctx);
 	maint_unlock_mode(index, ops->step_lock);
 	return n;
 }
@@ -303,6 +307,7 @@ bool
 sift_mops_make_room(const SiftMaintOps *ops, Relation index)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftErrCtx	ctx;
 	bool		room = false;
 
 	sift_dir_read(index, snap);
@@ -312,7 +317,9 @@ sift_mops_make_room(const SiftMaintOps *ops, Relation index)
 
 		maint_lock_mode(index, true, ops->step_lock);
 		wait_done(start);
+		sift_errctx_push(&ctx, RelationGetRelid(index));
 		room = make_room_locked(ops, index);
+		sift_errctx_pop(&ctx);
 		maint_unlock_mode(index, ops->step_lock);
 		sift_log_stall(index, start);
 	}
@@ -324,11 +331,14 @@ bool
 sift_mops_merge_step(const SiftMaintOps *ops, Relation index, bool wait)
 {
 	SiftStepResult	r;
+	SiftErrCtx	ctx;
 	uint64		busy = 0;
 
 	if (!maint_lock_mode(index, wait, ops->step_lock))
 		return false;
+	sift_errctx_push(&ctx, RelationGetRelid(index));
 	r = ops->merge_next(index, false, SIFT_GOAL_BACKGROUND, false, &busy);
+	sift_errctx_pop(&ctx);
 	maint_unlock_mode(index, ops->step_lock);
 	return r == SIFT_STEP_DONE;
 }
@@ -369,12 +379,14 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 {
 	Relation	index = info->index;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftErrCtx	ctx;
 	double		removed;
 
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
 	removed = stats->tuples_removed;
 	sift_maint_lock(index, true);
+	sift_errctx_push(&ctx, RelationGetRelid(index));
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
@@ -391,6 +403,7 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 	/* The heap marks pages all-visible only after this returns: a scan that reads the map after that finds the version moved (sift_vis_begin) */
 	if (stats->tuples_removed > removed)
 		sift_dir_update(index, &(SiftDirChange) {.extra = InvalidBuffer});
+	sift_errctx_pop(&ctx);
 	sift_maint_unlock(index);
 	pfree(snap);
 	return stats;
@@ -417,6 +430,7 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 {
 	Relation	index = info->index;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftErrCtx	ctx;
 	bool		skipped = stats == NULL;
 
 	if (info->analyze_only)
@@ -424,6 +438,7 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
 	sift_maint_lock(index, true);
+	sift_errctx_push(&ctx, RelationGetRelid(index));
 	if (ops->vacuum_seal)
 		ops->vacuum_seal(index);
 	promote_locked(ops, index, false, false);
@@ -466,6 +481,7 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 		if (!leave)
 			online_fallback(ops, index, info->message_level);
 	}
+	sift_errctx_pop(&ctx);
 	sift_maint_unlock(index);
 	if (ops->vacuum_done)
 		ops->vacuum_done(index);
@@ -569,55 +585,22 @@ sift_mops_cut_free_end(const SiftMaintOps *ops, Relation index)
 	cut_free_end(ops, index, false);
 }
 
-Datum
-sift_mops_sql_promote(const SiftMaintOps *ops, PG_FUNCTION_ARGS)
-{
-	Relation	index = sift_mops_open_maintain(ops, PG_GETARG_OID(0));
-	int			n;
-
-	sift_maint_lock(index, true);
-	n = promote_locked(ops, index, true, true);
-	sift_maint_unlock(index);
-	index_close(index, RowExclusiveLock);
-	PG_RETURN_INT32(n);
-}
-
-/* Runs merge steps until the policy asks for none; force merges all immutable segments into one (and, if the kind says so, those of the open write buffer too) */
-Datum
-sift_mops_sql_merge(const SiftMaintOps *ops, PG_FUNCTION_ARGS)
-{
-	Relation	index = sift_mops_open_maintain(ops, PG_GETARG_OID(0));
-	bool		force = PG_NARGS() > 1 && PG_GETARG_BOOL(1);
-	uint64		busy = 0;
-	int			n = 0;
-
-	sift_maint_lock(index, true);
-	promote_locked(ops, index, force && ops->force_seals, true);
-	while (ops->merge_next(index, force && n == 0, SIFT_GOAL_ANY, true, &busy) == SIFT_STEP_DONE)
-	{
-		n++;
-		CHECK_FOR_INTERRUPTS();
-	}
-	sift_maint_unlock(index);
-	/* also when no merge was due: the end a merge left is cut by the first call that finds the lock free, however many calls the busy ones were */
-	cut_free_end(ops, index, false);
-	index_close(index, RowExclusiveLock);
-	PG_RETURN_INT32(n);
-}
-
 int
 sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic)
 {
 	Relation	index = *indexp;
 	const char *why;
 	TimestampTz start = GetCurrentTimestamp();
+	SiftErrCtx	ctx;
 	bool		all;
 	int			n = 0;
 
 	if (!maint_lock_mode(index, false, ops->step_lock))
 		return -1;
+	sift_errctx_push(&ctx, RelationGetRelid(index));
 	if ((why = ops->rewrite_due(index, automatic)) == NULL)
 	{
+		sift_errctx_pop(&ctx);
 		maint_unlock_mode(index, ops->step_lock);
 		return -1;
 	}
@@ -629,6 +612,7 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic)
 		uint64		busy = 0;
 		bool		more = ops->merge_next(index, false, all ? SIFT_GOAL_REWRITE : SIFT_GOAL_ANY, true, &busy) == SIFT_STEP_DONE;
 
+		sift_errctx_pop(&ctx);
 		maint_unlock_mode(index, ops->step_lock);
 		if (!more)
 			break;
@@ -641,6 +625,7 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic)
 		if (index == NULL)
 			return n;
 		maint_lock_mode(index, true, ops->step_lock);
+		sift_errctx_push(&ctx, RelationGetRelid(index));
 	}
 	if (n > 0)
 		cut_free_end(ops, index, true);

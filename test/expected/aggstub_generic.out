@@ -223,6 +223,7 @@ RESET work_mem;
 -- errors are the aggregate's own: float4 overflow in the transition function, and the same row order
 SELECT kind, sum(f4 * 1e38::float4) FROM o GROUP BY kind;
 ERROR:  value out of range: overflow
+CONTEXT:  sift index "public.o_col"
 SET sift.enable_agg = off;
 SELECT kind, sum(f4 * 1e38::float4) FROM o GROUP BY kind;
 ERROR:  value out of range: overflow
@@ -247,6 +248,7 @@ REVOKE EXECUTE ON FUNCTION sum_sq(float8) FROM PUBLIC;
 SET ROLE generic_reader;
 SELECT kind, round(sum_sq(f8)::numeric, 3) AS q FROM o GROUP BY kind ORDER BY kind;
 ERROR:  permission denied for aggregate sum_sq
+CONTEXT:  sift index "public.o_col"
 RESET ROLE;
 -- the shared database of a plain installcheck goes on with the next test
 DROP OWNED BY generic_reader;

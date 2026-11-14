@@ -83,19 +83,24 @@
 
 #include "core/page.h"
 
+/* The index as REINDEX INDEX takes it: schema-qualified and quoted where PostgreSQL has a schema (core/errctx.c) */
+extern const char *sift_index_ident(Relation index);
+
 /* ERRCODE_INDEX_CORRUPTED: a page, record or directory of the index that the format does not allow (index: the Relation) */
 #define SIFT_CORRUPT(index, ...) \
 	ereport(ERROR, \
 			(errcode(ERRCODE_INDEX_CORRUPTED), \
 			 errmsg("sift index \"%s\" is corrupted", RelationGetRelationName(index)), \
-			 errdetail(__VA_ARGS__)))
+			 errdetail(__VA_ARGS__), \
+			 errhint("REINDEX INDEX %s rebuilds it from the table.", sift_index_ident(index))))
 
 /* The same for one segment of the index (gen: its generation) */
 #define SIFT_SEG_CORRUPT(index, gen, ...) \
 	ereport(ERROR, \
 			(errcode(ERRCODE_INDEX_CORRUPTED), \
 			 errmsg("sift index \"%s\" segment %llu is corrupted", RelationGetRelationName(index), (unsigned long long) (gen)), \
-			 errdetail(__VA_ARGS__)))
+			 errdetail(__VA_ARGS__), \
+			 errhint("REINDEX INDEX %s rebuilds it from the table.", sift_index_ident(index))))
 
 #ifdef SIFT_TESTING
 /*

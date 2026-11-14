@@ -8,17 +8,23 @@
 #include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
+#include "catalog/pg_operator_d.h"
+#include "catalog/pg_type_d.h"
 #include "common/hashfn.h"
 #include "storage/lmgr.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/relcache.h"
 #include "utils/snapmgr.h"
+#include "utils/tuplesort.h"
 
 #include "col/am.h"
 #include "col/pg.h"
 #include "col/seg.h"
+#include "core/check.h"
 #include "core/cmp.h"
+#include "core/errctx.h"
+#include "core/ops.h"
 
 #define corrupt SIFT_CORRUPT
 
@@ -48,6 +54,31 @@ typedef struct Collect
 	int64		n;
 	int64		cap;
 } Collect;
+
+/*
+ * One verification, in steps (core/check.h): the store and the directory, each segment, then what needs all of them. Memory: the keys of the live rows go to a
+ * sort that spills (maintenance_work_mem); the hashes of the rows (80 bytes each, docs/SIZING.md) are kept only when the index has scope segments or heapallindexed
+ * compares the rows with the heap.
+ */
+typedef struct ColVerify
+{
+	SiftErrCtx	errctx;
+	Snapshot	snapshot;		/* taken before the directory was read: the heap rows it shows were inserted before the rows of the index were read */
+	ResourceOwner owner;		/* of the call: the temporary files of the key sort belong to it, not to the subtransaction of the step that spilled */
+	Relation	index;
+	SiftColRel *r;
+	MemoryContext cxt;
+	SiftDirSnapshot *snap;
+	SiftColBatch *batch;
+	Tuplesortstate *keys;
+	Collect		cl,
+				sl;				/* the live entries of the scope segments */
+	const SiftSegEntry *seg;	/* the segment of the step */
+	uint64		ndocs;
+	bool		hashes;
+	bool		heapallindexed;
+	bool		sorted;
+} ColVerify;
 
 static uint64
 value_hash(uint64 h, const SiftColDef *def, const SiftColValue *v)
@@ -225,24 +256,41 @@ scope_same(const SiftColRel *r, const RowHash *e, const RowHash *s)
 }
 
 static void
-collect_batch(Relation index, Collect *cl, const SiftColRel *rel, const SiftColBatch *b, bool scope)
+put_key(ColVerify *cv, SiftKey key)
 {
+	ResourceOwner step = CurrentResourceOwner;
+
+	CurrentResourceOwner = cv->owner;
+	tuplesort_putdatum(cv->keys, Int64GetDatum((int64) key), false);
+	CurrentResourceOwner = step;
+}
+
+/* The rows of a decoded unit: each is checked on its own, its key goes to the duplicate sort, and its hashes are kept when a scope segment or the heap is compared with them */
+static void
+collect_batch(ColVerify *cv, const SiftColBatch *b, bool scope)
+{
+	const SiftColRel *rel = cv->r;
 	const SiftColSchema *sc = rel->schema;
+	Collect    *cl = scope ? &cv->sl : &cv->cl;
 	SiftColRow	row = {0};
 
 	for (uint32 r_ = 0; r_ < b->nrows; r_++)
 	{
+		sift_cbatch_row(b, r_, &row);
+		check_wide(cv->index, sc, &row);
+		if (!scope)
+			put_key(cv, b->keys[r_]);
+		if (!scope && !cv->hashes)
+			continue;
 		if (cl->n == cl->cap)
 		{
 			cl->cap = Max(1024, cl->cap * 2);
 			cl->rows = cl->rows ? repalloc_huge(cl->rows, cl->cap * sizeof(RowHash)) :
 				MemoryContextAllocHuge(CurrentMemoryContext, cl->cap * sizeof(RowHash));
 		}
-		sift_cbatch_row(b, r_, &row);
-		check_wide(index, sc, &row);
 		if (scope)
 		{
-			int			leaf = scope_leaf_of(index, sc, b, r_);
+			int			leaf = scope_leaf_of(cv->index, sc, b, r_);
 			int			s = 0;
 
 			while (rel->scope_leaf[s] != leaf)
@@ -327,100 +375,223 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 	MemoryContextReset(hc->tmp);
 }
 
+
+static void
+step_store(void *arg)
+{
+	ColVerify  *cv = arg;
+
+	cv->r = sift_col_rel_private(cv->index, cv->cxt);
+	cv->batch = sift_cbatch_create(cv->cxt, cv->r->schema);
+	sift_store_verify(cv->index);
+	sift_dir_read(cv->index, cv->snap);
+	if (!(cv->snap->meta.flags & SIFT_COL_META_FLAG) || sift_dir_layout_differs(cv->snap, cv->r->schema->hash))
+		corrupt(cv->index, "The metapage does not describe this column layout.");
+}
+
+static void
+verify_immutable(ColVerify *cv, const SiftSegEntry *e)
+{
+	SiftColSegment *seg = sift_cseg_open(cv->index, e, cv->cxt);
+	uint64		live = sift_cseg_verify(seg);
+	bool		scope = (e->flags & SIFT_SEG_SCOPE) != 0;
+
+	if (live != sift_cseg_live_rows(seg))
+		corrupt(cv->index, "Segment %llu holds %llu live rows, its liveness says %llu.", (unsigned long long) e->gen,
+				(unsigned long long) live, (unsigned long long) sift_cseg_live_rows(seg));
+	if (scope && !sift_cseg_keyed(e))
+		corrupt(cv->index, "Scope segment %llu is not cut by key.", (unsigned long long) e->gen);
+	cv->ndocs += scope ? 0 : e->ndocs;
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		sift_cseg_decode_unit(seg, u, cv->batch);
+		collect_batch(cv, cv->batch, scope);
+	}
+	sift_cseg_close(seg);
+}
+
+static void
+verify_wbuf(ColVerify *cv, const SiftSegEntry *e)
+{
+	int			n;
+	SiftColBatch **bs;
+
+	sift_cwbuf_verify(cv->index, e, cv->r->schema);
+	bs = sift_cwbuf_batches(cv->index, e, cv->r->schema, cv->cxt, &n, NULL);
+	for (int j = 0; j < n; j++)
+		collect_batch(cv, bs[j], false);
+}
+
+/*
+ * One segment. The maintenance lock is held for this segment alone, so that a promotion or merge waits for the length of one and not of the index: the
+ * segments that go while the others are verified stay readable, the registered snapshot keeps their blocks from being reused (P4 of core/store.h), as for a scan.
+ */
+static void
+step_segment(void *arg)
+{
+	ColVerify  *cv = arg;
+	const SiftSegEntry *e = cv->seg;
+
+	LockPage(cv->index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
+	if (e->kind == SIFT_SEG_IMMUTABLE)
+		verify_immutable(cv, e);
+	else if (e->kind != SIFT_SEG_TOMB)
+		verify_wbuf(cv, e);
+	UnlockPage(cv->index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
+}
+
+static void
+step_totals(void *arg)
+{
+	ColVerify  *cv = arg;
+
+	if (cv->ndocs != cv->snap->meta.ndocs)
+		corrupt(cv->index, "Metapage totals %llu rows, segments %llu.", (unsigned long long) cv->snap->meta.ndocs, (unsigned long long) cv->ndocs);
+}
+
+static void
+step_duplicates(void *arg)
+{
+	ColVerify  *cv = arg;
+	Datum		key,
+				prev = 0;
+	bool		isnull,
+				first = true;
+
+	CurrentResourceOwner = cv->owner;
+	tuplesort_performsort(cv->keys);
+	while (tuplesort_getdatum(cv->keys, true, false, &key, &isnull, NULL))
+	{
+		if (!first && key == prev)
+			corrupt(cv->index, "Row (%u,%u) is live in the index twice.", sift_key_block(DatumGetInt64(key)), (uint32) (DatumGetInt64(key) & 0xFFFF));
+		prev = key;
+		first = false;
+	}
+}
+
+static void
+sort_rows(ColVerify *cv)
+{
+	if (cv->sorted)
+		return;
+	if (cv->cl.n > 0)
+		qsort(cv->cl.rows, cv->cl.n, sizeof(RowHash), rowhash_cmp);
+	/* an entry of a scope segment is a copy of a row of the entities, once for each of its scope keys */
+	if (cv->sl.n > 0)
+		qsort(cv->sl.rows, cv->sl.n, sizeof(RowHash), scope_cmp);
+	cv->sorted = true;
+}
+
+static void
+step_scope(void *arg)
+{
+	ColVerify  *cv = arg;
+	const Collect *cl = &cv->cl,
+			   *sl = &cv->sl;
+
+	sort_rows(cv);
+	for (int64 i = 0; i < sl->n; i++)
+	{
+		const RowHash *s = &sl->rows[i],
+				   *e = bsearch(s, cl->rows, cl->n, sizeof(RowHash), rowhash_cmp);
+
+		if (i > 0 && scope_cmp(s, &sl->rows[i - 1]) == 0)
+			corrupt(cv->index, "Row (%u,%u) is live twice in the scope segments under the scope key " INT64_FORMAT ".", sift_key_block(s->key), (uint32) (s->key & 0xFFFF), s->skey);
+		if (e == NULL)
+			corrupt(cv->index, "Row (%u,%u) of the scope segments is not in the segments of the entities.", sift_key_block(s->key), (uint32) (s->key & 0xFFFF));
+		if (!scope_same(cv->r, e, s))
+			corrupt(cv->index, "The values of row (%u,%u) in the scope segments differ from those of the segments of the entities.", sift_key_block(s->key), (uint32) (s->key & 0xFFFF));
+	}
+}
+
+static void
+step_heap(void *arg)
+{
+	ColVerify  *cv = arg;
+	Relation	heap = table_open(cv->index->rd_index->indrelid, AccessShareLock);
+	IndexInfo  *info = BuildIndexInfo(cv->index);
+	HeapCheck	hc = {cv->index, cv->r, &cv->cl, AllocSetContextCreate(cv->cxt, "sift_col verify tuple", ALLOCSET_DEFAULT_SIZES), 0};
+
+	sort_rows(cv);
+	info->ii_Concurrent = true;
+	table_index_build_scan(heap, cv->index, info, true, false, heap_cb, &hc, table_beginscan_strat(heap, cv->snapshot, 0, NULL, true, false));
+	table_close(heap, AccessShareLock);
+}
+
+/* Whether the index has a scope segment: its entries are compared with the rows of the entities, which then keep their hashes */
+static bool
+has_scope_segments(const SiftDirSnapshot *snap)
+{
+	for (int i = 0; i < snap->nsegs; i++)
+		if (sift_seg_is_scope(&snap->segs[i]))
+			return true;
+	return false;
+}
+
+static void
+col_verify(SiftCheck *ck, Relation index, bool heapallindexed)
+{
+	ColVerify  *cv = palloc0(sizeof(ColVerify));
+	MemoryContext old = CurrentMemoryContext;
+	Snapshot	snapshot = RegisterSnapshot(GetTransactionSnapshot());
+	bool		listed,
+				sound;
+
+	cv->owner = CurrentResourceOwner;
+	cv->snapshot = snapshot;
+	cv->index = index;
+	cv->heapallindexed = heapallindexed;
+	cv->cxt = AllocSetContextCreate(old, "sift_col verify", ALLOCSET_DEFAULT_SIZES);
+	MemoryContextSwitchTo(cv->cxt);
+	cv->snap = palloc(sizeof(SiftDirSnapshot));
+	sift_errctx_push(&cv->errctx, RelationGetRelid(index));
+	/* the snapshot is registered before the directory is read, and kept: the segments of the copy stay readable while they are verified one at a time */
+	sound = listed = sift_check_step(ck, SIFT_CHECK_WHOLE, step_store, cv);
+	if (listed)
+	{
+		cv->hashes = heapallindexed || has_scope_segments(cv->snap);
+		cv->keys = tuplesort_begin_datum(INT8OID, Int8LessOperator, InvalidOid, false, maintenance_work_mem, NULL, TUPLESORT_NONE);
+	}
+	for (int i = 0; listed && i < cv->snap->nsegs; i++)
+	{
+		cv->seg = &cv->snap->segs[i];
+		sift_errctx_segment(&cv->errctx, cv->seg->gen);
+		sound &= sift_check_step(ck, cv->seg->gen, step_segment, cv);
+	}
+	sift_errctx_whole(&cv->errctx);
+	if (sound)
+		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_totals, cv);
+	if (sound)
+		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_duplicates, cv);
+	if (sound && cv->sl.n > 0)
+		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_scope, cv);
+	if (sound && heapallindexed)
+		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_heap, cv);
+	sift_errctx_pop(&cv->errctx);
+	if (cv->keys)
+		tuplesort_end(cv->keys);
+	UnregisterSnapshot(snapshot);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cv->cxt);
+}
+
 Datum
 sift_col_verify(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
-	bool		heapallindexed = PG_GETARG_BOOL(1);
-	SiftColRel *r;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col verify", ALLOCSET_DEFAULT_SIZES);
-	MemoryContext old = MemoryContextSwitchTo(cxt);
-	Snapshot	snapshot = heapallindexed ? RegisterSnapshot(GetTransactionSnapshot()) : InvalidSnapshot;
-	Collect		cl = {0},
-				sl = {0};		/* the live entries of the scope segments */
-	SiftColBatch *batch;
-	uint64		ndocs = 0;
 
-	r = sift_col_rel_private(index, cxt);
-	batch = sift_cbatch_create(cxt, r->schema);
-	/* Keeps promotion, merges and the sweep from releasing what the directory snapshot references */
-	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
-	sift_store_verify(index);
-	sift_dir_read(index, snap);
-	if (!(snap->meta.flags & SIFT_COL_META_FLAG) || sift_dir_layout_differs(snap, r->schema->hash))
-		corrupt(index, "The metapage does not describe this column layout.");
-	for (int i = 0; i < snap->nsegs; i++)
-	{
-		const SiftSegEntry *e = &snap->segs[i];
-
-		if (e->kind == SIFT_SEG_IMMUTABLE)
-		{
-			SiftColSegment *seg = sift_cseg_open(index, e, cxt);
-			uint64		live = sift_cseg_verify(seg);
-
-			if (live != sift_cseg_live_rows(seg))
-				corrupt(index, "Segment %llu holds %llu live rows, its liveness says %llu.", (unsigned long long) e->gen,
-						(unsigned long long) live, (unsigned long long) sift_cseg_live_rows(seg));
-			bool		scope = (e->flags & SIFT_SEG_SCOPE) != 0;
-
-			if (scope && !sift_cseg_keyed(e))
-				corrupt(index, "Scope segment %llu is not cut by key.", (unsigned long long) e->gen);
-			ndocs += scope ? 0 : e->ndocs;
-			for (uint32 u = 0; u < seg->nsb; u++)
-			{
-				sift_cseg_decode_unit(seg, u, batch);
-				collect_batch(index, scope ? &sl : &cl, r, batch, scope);
-			}
-			sift_cseg_close(seg);
-		}
-		else if (e->kind != SIFT_SEG_TOMB)
-		{
-			int			n;
-			SiftColBatch **bs;
-
-			sift_cwbuf_verify(index, e, r->schema);
-			bs = sift_cwbuf_batches(index, e, r->schema, cxt, &n, NULL);
-			for (int j = 0; j < n; j++)
-				collect_batch(index, &cl, r, bs[j], false);
-		}
-	}
-	if (ndocs != snap->meta.ndocs)
-		corrupt(index, "Metapage totals %llu rows, segments %llu.", (unsigned long long) snap->meta.ndocs, (unsigned long long) ndocs);
-	if (cl.n > 0)
-		qsort(cl.rows, cl.n, sizeof(RowHash), rowhash_cmp);
-	for (int64 i = 1; i < cl.n; i++)
-		if (cl.rows[i].key == cl.rows[i - 1].key)
-			corrupt(index, "Row (%u,%u) is live in the index twice.", sift_key_block(cl.rows[i].key), (uint32) (cl.rows[i].key & 0xFFFF));
-	/* an entry of a scope segment is a copy of a row of the entities, once for each of its scope keys */
-	if (sl.n > 0)
-		qsort(sl.rows, sl.n, sizeof(RowHash), scope_cmp);
-	for (int64 i = 0; i < sl.n; i++)
-	{
-		const RowHash *s = &sl.rows[i],
-				   *e = bsearch(s, cl.rows, cl.n, sizeof(RowHash), rowhash_cmp);
-
-		if (i > 0 && scope_cmp(s, &sl.rows[i - 1]) == 0)
-			corrupt(index, "Row (%u,%u) is live twice in the scope segments under the scope key " INT64_FORMAT ".", sift_key_block(s->key), (uint32) (s->key & 0xFFFF), s->skey);
-		if (e == NULL)
-			corrupt(index, "Row (%u,%u) of the scope segments is not in the segments of the entities.", sift_key_block(s->key), (uint32) (s->key & 0xFFFF));
-		if (!scope_same(r, e, s))
-			corrupt(index, "The values of row (%u,%u) in the scope segments differ from those of the segments of the entities.", sift_key_block(s->key), (uint32) (s->key & 0xFFFF));
-	}
-	if (heapallindexed)
-	{
-		Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-		IndexInfo  *info = BuildIndexInfo(index);
-		HeapCheck	hc = {index, r, &cl, AllocSetContextCreate(cxt, "sift_col verify tuple", ALLOCSET_DEFAULT_SIZES), 0};
-
-		info->ii_Concurrent = true;
-		table_index_build_scan(heap, index, info, false, false, heap_cb, &hc, NULL);
-		table_close(heap, AccessShareLock);
-		UnregisterSnapshot(snapshot);
-	}
-	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
-	MemoryContextSwitchTo(old);
-	MemoryContextDelete(cxt);
+	sift_check_maintain(index);
+	col_verify(NULL, index, PG_GETARG_BOOL(1));
 	index_close(index, AccessShareLock);
 	PG_RETURN_VOID();
+}
+
+void
+sift_col_check(SiftCheck *ck, Oid indexoid, bool heapallindexed)
+{
+	Relation	index = sift_col_open_inspect(indexoid, NULL);
+
+	sift_check_maintain(index);
+	col_verify(ck, index, heapallindexed);
+	index_close(index, AccessShareLock);
 }

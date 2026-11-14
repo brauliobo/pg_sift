@@ -330,12 +330,16 @@ SELECT id FROM t WHERE body @@> ANY (ARRAY[NULL, 'nomatch']) ORDER BY sift.score
 -- an element is a whole query: an empty or a malformed one is the error of the same query on its own
 SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['omega', '']);
 ERROR:  sift query: empty query at position 1
+CONTEXT:  sift index "public.t_idx"
 SELECT count(*) FROM t WHERE body @@> '';
 ERROR:  sift query: empty query at position 1
+CONTEXT:  sift index "public.t_idx"
 SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['omega', 'sigma AND']);
 ERROR:  sift query: expected a term after AND, found end of query at position 10
+CONTEXT:  sift index "public.t_idx"
 SELECT id FROM t WHERE body @@> ANY (ARRAY['omega', '(sigma']) ORDER BY sift.score(ctid) DESC LIMIT 3;
 ERROR:  sift query: unclosed "(" at position 1
+CONTEXT:  sift index "public.t_idx"
 -- ALL and NOT ANY are not an OR of matches: no scan answers them, and they have no score
 DO $$ BEGIN
 	EXECUTE 'EXPLAIN SELECT id FROM t WHERE body @@> ALL (ARRAY[''omega'', ''sigma''])';

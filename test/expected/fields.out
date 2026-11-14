@@ -566,6 +566,7 @@ EXECUTE gf('city:alpha');
 EXECUTE gf('nope:alpha');
 ERROR:  sift query: unknown field "nope" (available fields: name, city) at position 1
 HINT:  Fields come from the fields option of the sift index; a literal colon is written \:.
+CONTEXT:  sift index "public.ft_idx"
 EXECUTE gf('name:alpha');
  count 
 -------
