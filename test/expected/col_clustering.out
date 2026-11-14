@@ -131,7 +131,7 @@ SELECT count(*) FILTER (WHERE zoned_units IS NULL) AS leaves_without_zones FROM 
 
 CREATE INDEX ev_bm25 ON ev USING sift (lbl);
 SELECT * FROM sift.col_clustering('ev_bm25');
-ERROR:  "ev_bm25" is not a sift_col index
+ERROR:  "ev_bm25" is a sift index
 SELECT * FROM sift.col_clustering('ev_col', 101);
 ERROR:  width_pct must be between 0 and 100
 CREATE TABLE empty_t (id int);

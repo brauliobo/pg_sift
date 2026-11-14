@@ -282,6 +282,53 @@ SELECT count(*) > 0 FROM sift.segments('rrd.ins_bm')
 SELECT segments > 0 FROM sift.worker_state('rrd.ins_col')
 SELECT segments >= 0 FROM sift.worker_state('rrd.ins_bm')
 $$);
+-- the inspectors that read the segments or the metapage of a sift_col index, for the same four roles (col_unit_agg and col_unit_hist return values of the table: a
+-- monitor, who may look at the index but not read the table, stays out)
+SELECT * FROM rr_matrix(ARRAY['rrd_owner', 'rrd_reader', 'rrd_monitor', 'rrd_none'], $$
+SELECT count(*) > 0 FROM sift.col_sections('rrd.ins_col')
+SELECT count(*) >= 0 FROM sift.col_stamps('rrd.ins_col')
+SELECT count(*) >= 0 FROM sift.col_unit_agg('rrd.ins_col', 'v')
+SELECT count(*) >= 0 FROM sift.col_unit_hist('rrd.ins_col', 'g')
+SELECT lineage IS NULL FROM sift.col_connection_state('rrd.ins_col')
+SELECT count(*) FROM sift.col_connection_list('rrd.ins_col')
+SELECT count(*) FROM sift.col_connection_fill('rrd.ins_col')
+SELECT count(*) > 0 FROM sift.cluster_advice('rrd.ins', 1)
+SELECT major FROM sift.index_format('rrd.ins_col')
+SELECT major FROM sift.index_format('rrd.ins_bm')
+SELECT count(*) >= 0 FROM sift.col_verify('rrd.ins_col')
+SELECT count(*) FROM sift.workers WHERE "table" = 'rrd.ins'::regclass AND relation = index
+$$);
+-- a child index connected to the index of a table another role owns: the child's owner lists the connection, and sees the state of the parent journal only where it may look at the parent
+SELECT * FROM rr_run($$
+rrd_other | CREATE TABLE rrd.dim (id int PRIMARY KEY, c int)
+rrd_other | CREATE INDEX dim_col ON rrd.dim USING sift_col (id, c)
+rrd_owner | CREATE TABLE rrd.fact (id int PRIMARY KEY, dim_id int NOT NULL)
+rrd_owner | CREATE INDEX fact_col ON rrd.fact USING sift_col (id, dim_id) WITH (connect = 'dim_id -> rrd.dim(id)')
+rrd_owner | SELECT child, parent, stamp FROM sift.col_connections
+rrd_other | GRANT SELECT ON rrd.dim TO rrd_owner
+rrd_owner | SELECT child, parent, stamp FROM sift.col_connections
+$$);
+SELECT * FROM rr_run($$
+rrd_owner | DROP TABLE rrd.fact
+rrd_other | DROP TABLE rrd.dim
+$$);
+-- sift.scope_expire_pairs asks who calls before it refreshes anything: a view that fails when it is read shows whether the refresh ran
+SELECT * FROM rr_run($$
+rrd_owner | CREATE TABLE rrd.exp (member int, ends date)
+rrd_owner | INSERT INTO rrd.exp SELECT i, current_date - 1 FROM generate_series(1, 5) i
+rrd_owner | CREATE TABLE rrd.exp_pairs (member int, tenant int, UNIQUE (member, tenant))
+rrd_owner | CREATE VIEW rrd.exp_v AS SELECT member, 1 AS tenant FROM rrd.exp
+rrd_owner | SELECT * FROM sift.scope_follow_pairs('rrd.exp_pairs', 'rrd.exp_v', 'rrd.exp', 'member', 'member', 'ends')
+rrd_owner | CREATE OR REPLACE VIEW rrd.exp_v AS SELECT member, 1 AS tenant FROM rrd.exp WHERE 1 / (member - member) > 0 OR member > 0
+rrd_other | SELECT * FROM sift.scope_expire_pairs('rrd.exp_pairs', '1 year')
+rrd_reader | SELECT * FROM sift.scope_expire_pairs('rrd.exp_pairs', '1 year')
+rrd_owner | SELECT * FROM sift.scope_expire_pairs('rrd.exp_pairs', '1 year')
+rrd_owner | CREATE OR REPLACE VIEW rrd.exp_v AS SELECT member, 1 AS tenant FROM rrd.exp
+rrd_owner | SELECT * FROM sift.scope_expire_pairs('rrd.exp_pairs', '1 year')
+rrd_owner | SELECT sift.scope_unfollow_pairs('rrd.exp_pairs')
+rrd_owner | DROP TABLE rrd.exp_pairs CASCADE
+rrd_owner | DROP TABLE rrd.exp CASCADE
+$$);
 SELECT * FROM rr_run($$
 rrd_monitor | SELECT sift.col_maintain('rrd.ins_col')
 rrd_reader | SELECT sift.col_maintain('rrd.ins_col')

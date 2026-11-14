@@ -32,6 +32,7 @@
 
 #include "col/am.h"
 #include "col/conn.h"
+#include "col/pg.h"
 #include "core/restrict.h"
 
 const char *
@@ -424,7 +425,7 @@ PG_FUNCTION_INFO_V1(sift_col_connection_state);
 Datum
 sift_col_connection_state(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	SiftConnStamp st;
 	SiftConnGen gen;
@@ -453,14 +454,14 @@ PG_FUNCTION_INFO_V1(sift_col_connection_fill);
 Datum
 sift_col_connection_fill(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	SiftConnSpecs *specs;
 	int64		segments = 0,
 				filled[SIFT_CONN_MAX_CONNECTIONS] = {0};
 
 	InitMaterializedSRF(fcinfo, 0);
-	specs = sift_col_is_index(index) ? sift_conn_specs(index) : NULL;
+	specs = sift_conn_specs(index);
 	if (specs != NULL && specs->n > 0)
 	{
 		SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
@@ -513,12 +514,12 @@ connection_text(const SiftConnSpec *s)
 Datum
 sift_col_connection_list(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	SiftConnSpecs *specs;
 
 	InitMaterializedSRF(fcinfo, 0);
-	specs = sift_col_is_index(index) ? sift_conn_specs(index) : NULL;
+	specs = sift_conn_specs(index);
 	for (int c = 0; specs != NULL && c < specs->n; c++)
 	{
 		const SiftConnSpec *s = specs->c[c];

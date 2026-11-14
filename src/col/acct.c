@@ -12,6 +12,7 @@
 
 #include "col/am.h"
 #include "col/seg.h"
+#include "core/inspect.h"
 #include "table/table.h"
 
 typedef struct SectionRows
@@ -124,6 +125,7 @@ sections(FunctionCallInfo fcinfo, int64 only_gen)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index or a sift_table", RelationGetRelationName(rel))));
 	if (rel->rd_rel->relkind == RELKIND_INDEX)
 		sift_store_require_ready(rel);
+	sift_check_inspect(rel);
 	InitMaterializedSRF(fcinfo, 0);
 	if (RelationGetNumberOfBlocks(rel) == 0)	/* a sift_table nothing was written to has no metapage */
 	{
