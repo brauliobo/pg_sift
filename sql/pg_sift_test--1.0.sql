@@ -719,3 +719,7 @@ CREATE FUNCTION sift._test_scope_exact(index regclass) RETURNS float8
 	AS 'MODULE_PATHNAME', 'sift_test_scope_exact' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_set_stats(OUT rows int8, OUT allocated int8, OUT consumed int8, OUT recbytes int8, OUT kept bool, OUT batches int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_set_stats' LANGUAGE C STRICT;
+
+-- core/restrict.c: the writer `kind` of the catalog (update, insert, delete, depend, undepend, trigger, drop) as a lazy VACUUM runs it (as_vacuum) or as a session does
+CREATE FUNCTION sift._test_catalog_write(kind text, as_vacuum bool DEFAULT false, a regclass DEFAULT NULL, b regclass DEFAULT NULL) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_catalog_write' LANGUAGE C PARALLEL SAFE;
