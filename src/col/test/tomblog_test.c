@@ -62,8 +62,11 @@ sift_test_col_marks_paid(PG_FUNCTION_ARGS)
 {
 	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftTombLog *log = sift_col_log(index);
-	int64		paid = log == NULL ? 0 : (int64) sift_col_marks_paid(index, log->gen);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	int64		paid;
 
+	sift_dir_read(index, snap);
+	paid = log == NULL ? 0 : (int64) sift_col_marks_paid(index, &snap->meta, log->gen);
 	index_close(index, AccessShareLock);
 	PG_RETURN_INT64(paid);
 }

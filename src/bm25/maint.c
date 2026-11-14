@@ -857,7 +857,7 @@ sift_maint_wbuf_read_due(Relation index)
 
 		if (snap->segs[i].kind != SIFT_SEG_WBUF_OPEN)
 			continue;
-		paid = (double) sift_cwbuf_decoded(index, snap->segs[i].gen) * WBUF_WALK_PRICE;
+		paid = (double) sift_cwbuf_decoded(index, &snap->meta, snap->segs[i].gen) * WBUF_WALK_PRICE;
 		if (paid < WBUF_PROMOTE_HALF * WBUF_PROMOTE_PRICE * WBUF_READ_MIN_DOCS)
 			continue;
 		sift_wbuf_summary(index, &snap->segs[i], &ndocs, &sum_dl, &npages);
@@ -867,7 +867,7 @@ sift_maint_wbuf_read_due(Relation index)
 	return due;
 }
 
-/* A search walked docs documents of the open buffer of generation gen: note them, and now and then ask whether the reads have paid for the promotion (at most once per sift.maintenance_naptime for a backend) */
+/* A search walked docs documents of the open buffer of generation gen: note them, write the sum to the metapage (col/wbuf/reads.c), and now and then ask whether the reads have paid for the promotion (at most once per sift.maintenance_naptime for a backend) */
 void
 sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs)
 {
@@ -876,6 +876,7 @@ sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs)
 	TimestampTz now;
 
 	sift_cwbuf_decoded_note(index, gen, docs);
+	sift_reads_flush(index, sift_maint_wbuf_read_due, NULL);
 	if (!sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
 		return;
 	now = GetCurrentTimestamp();

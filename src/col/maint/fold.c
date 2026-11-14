@@ -189,7 +189,8 @@ sift_col_fold_due(Relation index)
 {
 	SiftTombLog *log = sift_col_log(index);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	uint64		rows = 0;
+	uint64		rows = 0,
+				paid;
 	double		cost;
 
 	if (log == NULL)
@@ -198,9 +199,10 @@ sift_col_fold_due(Relation index)
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			rows += snap->segs[i].ndocs;
+	paid = sift_col_marks_paid(index, &snap->meta, log->gen);
 	pfree(snap);
 	cost = FOLD_ROW_PRICE * (double) rows + FOLD_MARK_PRICE * (double) (log->nents + log->nrecent) + FOLD_WAL_PRICE;
-	return (double) sift_col_marks_paid(index, log->gen) >= MAINT_HALF * cost;
+	return (double) paid >= MAINT_HALF * cost;
 }
 
 bool

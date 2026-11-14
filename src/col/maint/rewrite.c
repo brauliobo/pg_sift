@@ -92,7 +92,7 @@ maint_wbuf_read_due(Relation index)
 
 		if (snap->segs[i].kind != SIFT_SEG_WBUF_OPEN)
 			continue;
-		paid = (double) sift_cwbuf_decoded(index, snap->segs[i].gen) * WBUF_READ_ROW_PRICE;
+		paid = (double) sift_cwbuf_decoded(index, &snap->meta, snap->segs[i].gen) * WBUF_READ_ROW_PRICE;
 		if (paid < MAINT_HALF * WBUF_PROMOTE_ROW_PRICE * least)
 			continue;
 		sift_cwbuf_summary(index, &snap->segs[i], &nrows, &npages);
@@ -100,6 +100,13 @@ maint_wbuf_read_due(Relation index)
 	}
 	pfree(snap);
 	return due;
+}
+
+/* The end of a statement: what it decoded of the buffer and paid for the marks of the log goes to the metapage, unless the sums meet the rules already */
+void
+sift_col_reads_flush(Relation index)
+{
+	sift_reads_flush(index, maint_wbuf_read_due, sift_col_fold_due);
 }
 
 /* The worker that seals and promotes the open write buffer, when the reads of the server have paid for it (a table that opted out of autovacuum is promoted too: no VACUUM is asked) */

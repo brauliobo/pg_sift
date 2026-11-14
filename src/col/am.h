@@ -413,6 +413,7 @@ extern int	sift_col_maint_promote(Relation index, bool wait);
 extern uint64 sift_col_fold_marks(Relation index);
 /* Have the reads of the server paid for the fold of the marks, and the worker asked for when they have */
 extern bool sift_col_fold_due(Relation index);
+extern void sift_col_reads_flush(Relation index);
 extern bool sift_col_fold_tick(Relation index);
 extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
