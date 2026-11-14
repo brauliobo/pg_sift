@@ -233,6 +233,8 @@ Every label that `src/` raises is named in a document. The ones not described wh
 
 | Label | Node | What it counts or says |
 |---|---|---|
+| `Sift Index State` (`Sift Segments`, `Sift Buffered Rows`, `Sift Dead Percent`) | the scan of a `sift` or `sift_col` index | with `EXPLAIN (SIFT)` (PostgreSQL 18 and later): the immutable segments of the index, the rows in write buffers that no segment holds yet, and the share of the rows of the segments that are dead; it reads the header of each segment |
+| `Sift` (text), `Sift Refusals` (`Arm`, `Slug`, `Reason`) | the statement | with `EXPLAIN (SIFT)`: each candidate path that was not used, with the slug and sentence of `sift.explain_why` and the arm, as one line `not used: slug: sentence (arm name)` after the plan, or a list in the other formats |
 | `Scope Index` | `SiftAgg` | the scope of the index the scan reads, `index (key_name)` (col/scope.h): the rows whose member key has a pair with the scope keys; shown by `EXPLAIN` too |
 | `Scope Keys` | `SiftAgg` | the scope keys of the conjunct |
 | `Scope Semantics` | `SiftAgg` | `once` (a row counts once whichever of the keys it has: `IN`, `EXISTS`) or `per pair` (once for each pair, as a join and `GROUP BY` the key count it) |

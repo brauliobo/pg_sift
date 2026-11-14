@@ -16,6 +16,7 @@
 #define SIFT_EXPLAIN_H
 
 #include "commands/explain.h"
+#include "utils/relcache.h"
 #include "core/compat.h"
 
 #if PG_VERSION_NUM >= 180000
@@ -42,7 +43,34 @@ extern void sift_explain_int(SiftExplainLine *ln, const char *prop, const char *
 /* A time in milliseconds, three decimals */
 extern void sift_explain_ms(SiftExplainLine *ln, const char *prop, const char *words, double ms, int flags);
 
+/* A percentage with one decimal */
+extern void sift_explain_pct(SiftExplainLine *ln, const char *prop, const char *words, double pct, int flags);
+
 /* Emits the text line; the other formats printed their fields at each call */
 extern void sift_explain_end(SiftExplainLine *ln);
+
+/*
+ * EXPLAIN (SIFT) (PostgreSQL 18 and later; sift.explain_refusals is the way on 17): after the plan it says for each candidate path that was not used
+ * why (the slug and sentence of sift.explain_why), and the node of a scan of a sift or sift_col index says what the index holds. Nothing changes
+ * without the option.
+ */
+typedef struct SiftIndexStats
+{
+	int64		segments;		/* immutable segments */
+	int64		buffered_rows;	/* rows in write buffers, not in a segment yet */
+	int64		rows;			/* rows of the segments, dead ones included */
+	int64		dead_rows;
+} SiftIndexStats;
+
+/* the counts of an index, from its directory and the headers of its segments (bm25/segment_sql.c, col/maint/funcs.c) */
+extern void sift_bm25_stats(Relation index, SiftIndexStats *st);
+extern void sift_col_stats(Relation index, SiftIndexStats *st);
+
+extern void sift_explain_init(void);
+#if PG_VERSION_NUM >= 180000
+extern void sift_explain_index(ExplainState *es, Oid indexoid);
+#else
+#define sift_explain_index(es, indexoid) ((void) 0)
+#endif
 
 #endif

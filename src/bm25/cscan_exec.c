@@ -313,6 +313,7 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	SiftExplainLine ln;
 
 	ExplainPropertyText("Index", RelationGetRelationName(ss->index), es);
+	sift_explain_index(es, RelationGetRelid(ss->index));
 	ExplainPropertyText("Query", and_text(linitial_node(List, cs->custom_exprs), dctx), es);
 	if (list_nth_node(List, cs->custom_exprs, 4) != NIL)
 		ExplainPropertyText("Score Filter", and_text(list_nth_node(List, cs->custom_exprs, 4), dctx), es);

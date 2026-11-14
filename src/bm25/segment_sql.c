@@ -16,6 +16,7 @@
 #include "col/api/format.h"
 #include "col/pg.h"
 #include "bm25/maint_int.h"
+#include "core/explain.h"
 #include "core/sql.h"
 #include "table/table.h"
 #include "bm25/segment_sql.h"
@@ -88,6 +89,41 @@ sift_segments(PG_FUNCTION_ARGS)
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+/* The directory of the index as EXPLAIN (SIFT) reports it: no privilege is asked, a plan that reads the index has the right to the table */
+void
+sift_bm25_stats(Relation index, SiftIndexStats *st)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift index stats", ALLOCSET_DEFAULT_SIZES);
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		const SiftSegEntry *e = &snap->segs[i];
+
+		if (e->kind == SIFT_SEG_IMMUTABLE)
+		{
+			SiftSegment *seg = sift_seg_open(index, e, cxt);
+
+			st->segments++;
+			st->rows += e->ndocs;
+			st->dead_rows += e->ndocs - sift_seg_live_docs(seg);
+			sift_seg_close(seg);
+			MemoryContextReset(cxt);
+		}
+		else if (e->kind == SIFT_SEG_WBUF_OPEN || e->kind == SIFT_SEG_WBUF_SEALED)
+		{
+			uint64		ndocs,
+						sum_dl,
+						npages;
+
+			sift_wbuf_summary(index, e, &ndocs, &sum_dl, &npages);
+			st->buffered_rows += ndocs;
+		}
+	}
+	MemoryContextDelete(cxt);
 }
 
 /* Is the maintenance lock held (a promotion, merge, VACUUM or verify is running)? A momentary probe. */

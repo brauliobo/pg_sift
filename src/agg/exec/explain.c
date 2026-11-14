@@ -83,6 +83,8 @@ static void
 explain_source(SiftAggSpec *s, ExplainState *es)
 {
 	ExplainPropertyText("Index", s->nparts > 0 ? "(partitions)" : s->indexoid ? get_rel_name(s->indexoid) : "(table)", es);
+	if (s->nparts == 0 && s->indexoid)
+		sift_explain_index(es, s->indexoid);
 	if (s->nparts > 0)
 	{
 		List	   *names = NIL;
