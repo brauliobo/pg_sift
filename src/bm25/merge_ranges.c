@@ -10,6 +10,7 @@
 #include "utils/snapmgr.h"
 
 #include "core/store.h"
+#include "core/restrict.h"
 
 PGDLLEXPORT void sift_merge_worker(dsm_segment *seg, shm_toc *toc);
 

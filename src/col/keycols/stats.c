@@ -15,6 +15,7 @@
 #include "utils/syscache.h"
 #include "col/keycols/keycols_int.h"
 #include "core/store.h"
+#include "core/restrict.h"
 
 
 /* the live rows per page of a table that no VACUUM or ANALYZE has counted: those of up to 32 pages spread over it. The planner's guess from the widths of the columns is 16 times too many for a table of 1,000-byte strings,

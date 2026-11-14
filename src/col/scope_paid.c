@@ -17,6 +17,7 @@
 #include "utils/memutils.h"
 
 #include "col/scope.h"
+#include "core/restrict.h"
 #include "core/store.h"
 
 typedef struct Pending

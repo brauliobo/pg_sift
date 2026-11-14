@@ -4,6 +4,7 @@
  */
 #include "freelist_int.h"
 #include "core/rowmem.h"
+#include "core/restrict.h"
 
 /*
  * The recovery conflict with the snapshots of a standby that precede horizon, for a change they could not tell from the snapshots of the primary (blk: the block reused, if any).
@@ -549,7 +550,7 @@ cut_horizon(void)
 {
 	if (cut_online)
 		return InvalidFullTransactionId;
-	return (MyProc->statusFlags & PROC_IN_VACUUM) ? FullTransactionIdFromU64(PG_UINT64_MAX) : InvalidFullTransactionId;
+	return sift_in_vacuum() ? FullTransactionIdFromU64(PG_UINT64_MAX) : InvalidFullTransactionId;
 }
 
 /* Clears the safexid of free-list records past the horizon and coalesces adjacent reusable records */

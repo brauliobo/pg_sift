@@ -51,6 +51,7 @@
 #include "bm25/maint.h"
 #include "col/am.h"
 #include "core/tomb.h"
+#include "core/restrict.h"
 #include "core/visibility.h"
 
 PG_FUNCTION_INFO_V1(sift_col_tracking);
@@ -236,7 +237,6 @@ create_trigger(Relation heap, Relation index, bool update)
 	ObjectAddress trig,
 				idx;
 
-	sift_catalog_write_guard("a track_changes trigger");
 	tt->name = "old_rows";
 	tt->isNew = false;
 	tt->isTable = true;
@@ -248,9 +248,9 @@ create_trigger(Relation heap, Relation index, bool update)
 	stmt->timing = TRIGGER_TYPE_AFTER;
 	stmt->events = update ? TRIGGER_TYPE_UPDATE : TRIGGER_TYPE_DELETE;
 	stmt->transitionRels = row ? NIL : list_make1(tt);
-	trig = CreateTriggerFiringOn(stmt, "", RelationGetRelid(heap), InvalidOid, InvalidOid, InvalidOid, funcoid, InvalidOid, NULL, true, false, TRIGGER_FIRES_ALWAYS);
+	trig = sift_create_trigger(stmt, RelationGetRelid(heap), funcoid);
 	ObjectAddressSet(idx, RelationRelationId, RelationGetRelid(index));
-	recordDependencyOn(&idx, &trig, DEPENDENCY_NORMAL);
+	sift_depend(&idx, &trig, DEPENDENCY_NORMAL);
 }
 
 static void
@@ -258,12 +258,11 @@ drop_triggers(Relation heap, Relation index)
 {
 	HearTrig	t[2];
 
-	sift_catalog_write_guard("a track_changes trigger");
 	find_triggers(RelationGetRelid(heap), index, t, false);
 	for (int i = 0; i < 2; i++)
 		if (OidIsValid(t[i].oid))
 		{
-			deleteDependencyRecordsForSpecific(RelationRelationId, RelationGetRelid(index), DEPENDENCY_NORMAL, TriggerRelationId, t[i].oid);
+			sift_undepend(RelationRelationId, RelationGetRelid(index), DEPENDENCY_NORMAL, TriggerRelationId, t[i].oid);
 			CommandCounterIncrement();
 			sift_col_track_delete_trigger(t[i].oid);
 		}
