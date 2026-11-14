@@ -43,6 +43,7 @@ sift_col_track_delete_trigger(Oid trigger)
 {
 	ObjectAddress obj;
 
+	sift_catalog_write_guard("a track_changes trigger");
 	ObjectAddressSet(obj, TriggerRelationId, trigger);
 	performDeletion(&obj, DROP_RESTRICT, PERFORM_DELETION_INTERNAL);
 }
@@ -401,6 +402,7 @@ sift_col_track_convert(PG_FUNCTION_ARGS)
 
 	if (!superuser())
 		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE), errmsg("must be superuser to convert the triggers of track_changes")));
+	sift_catalog_write_guard("a track_changes trigger");
 	foreach_ptr(TrackTrigger, t, our_triggers(sift_col_track_function(false)))
 	{
 		Oid			index;

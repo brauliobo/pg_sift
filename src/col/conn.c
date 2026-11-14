@@ -298,6 +298,7 @@ sift_conn_depend(Relation child_index, Relation parent_index)
 
 	if (list_member_oid(sift_conn_children(RelationGetRelid(parent_index)), RelationGetRelid(child_index)))
 		return;
+	sift_catalog_write_guard("a connection dependency");
 	ObjectAddressSet(child, RelationRelationId, RelationGetRelid(child_index));
 	ObjectAddressSet(parent, RelationRelationId, RelationGetRelid(parent_index));
 	recordDependencyOn(&child, &parent, DEPENDENCY_NORMAL);

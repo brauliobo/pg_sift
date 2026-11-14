@@ -63,6 +63,7 @@ CHECKS=(
 	'scratch	scripts/check-scratch.sh --selftest && scripts/check-scratch.sh'
 	'no-raw-dsm-registry	! git grep -n "GetNamedDSMSegment" -- src ":!src/col/dsmreg.c" ":!src/col/dictshm_test.c"'
 	'test-settings	scripts/check-test-settings.sh && scripts/check-test-settings.sh --selftest'
+	'catalog-writes	scripts/check-catalog-writes.sh'
 	'no-pattern-kill	! git grep -nE "\\b(pkil[l]|killal[l])\\b" -- scripts test bench packaging .github Makefile ":!scripts/land-selftest.sh"'
 	'compat-calls	scripts/check-compat-calls.sh && scripts/check-compat-calls.sh --selftest'
 	'package-text	scripts/check-package-text.sh --selftest && scripts/check-package-text.sh'
