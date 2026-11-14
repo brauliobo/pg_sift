@@ -613,6 +613,7 @@ parse_rows(const char *opt, const SiftColSchema *s, const char *const *names, Si
 	OptCur	   *c = &cur;
 	SiftCPaggRollup ru = {.list = -1};
 	int			nrows = 0;
+	bool		named;
 
 	if (is_word(opt, "off") || is_word(opt, "auto"))
 		return NULL;
@@ -644,7 +645,8 @@ parse_rows(const char *opt, const SiftColSchema *s, const char *const *names, Si
 	} while (eat(c, ','));
 	if (nrows < 2)
 		return "rollup_columns needs at least two columns (the cube answers one)";
-	if (eat(c, ':'))
+	named = eat(c, ':');
+	if (named && !rest_blank(c->p))	/* "a, b:" names no measure: what 'auto' writes for a table with no sum worth keeping */
 	{
 		do
 		{
@@ -664,7 +666,7 @@ parse_rows(const char *opt, const SiftColSchema *s, const char *const *names, Si
 			ru.meas[ru.nmeas++] = m;
 		} while (eat(c, ','));
 	}
-	else if (s)
+	else if (!named && s)
 	{
 		/* no measures named: the integer and numeric columns that are not dims, decimals first */
 		for (int pass = 0; pass < 2; pass++)

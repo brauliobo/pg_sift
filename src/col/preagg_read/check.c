@@ -11,7 +11,10 @@ same_bytes(const StringInfoData *a, const uint8 *b, uint32 len)
 	return a->len == (int) len && (len == 0 || memcmp(a->data, b, len) == 0);
 }
 
-/* The spec that recomputes a stored cube and element blob: the dims, rollups and measures they hold, exactly */
+/*
+ * The spec that recomputes a stored cube and element blob: the dims, rollups and measures they hold, exactly. The length flag of a rollup is the one of the format of the segment: with no
+ * measure (a rollup of counts) nothing else would tell a flipped flag
+ */
 static bool
 spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, int format, MemoryContext cx, SiftCPaggSpec *spec)
 {
@@ -53,7 +56,8 @@ spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblo
 			SiftCRollup r;
 			SiftCPaggRollup *ru = &spec->rollup[spec->nrollups++];
 
-			if (!sift_cpagg_rollup_decode(s, p, blen[i], cx, &r) || r.list != list[i] || (r.list < 0 && format < SIFT_COL_FORMAT_ROWS))
+			if (!sift_cpagg_rollup_decode(s, p, blen[i], cx, &r) || r.list != list[i] || (r.list < 0 && format < SIFT_COL_FORMAT_ROWS) ||
+				r.measlen != (format >= SIFT_COL_FORMAT_MEASLEN))
 				return false;
 			spec->measlen = r.measlen;
 			*ru = (SiftCPaggRollup) {.list = r.list, .ndims = r.ndims, .nmeas = r.nmeas};

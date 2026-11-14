@@ -9,6 +9,7 @@
 #include "utils/lsyscache.h"
 #include "col/am.h"
 #include "col/keycols/keycols_int.h"
+#include "col/scope.h"
 #include "col/shred_pg.h"
 #include "core/hash.h"
 
@@ -125,8 +126,8 @@ cube_stretch(Relation heap, BlockNumber start, BlockNumber len, CubeCand *cand, 
 }
 
 /*
- * The plain columns of the cube's kind (a dimension of the top level, not a jsonb path) in the order of the schema; -1 when the choice is not made here: an
- * index of jsonb paths, a column that is an expression, or a name the option cannot hold (it is a list split at commas, and its names are not quoted).
+ * The plain columns of the cube's kind (a dimension of the top level, not a jsonb path nor the derived key of a scope, which no column of the table holds) in the
+ * order of the schema; -1 when the choice is not made here: an index of jsonb paths, a column that is an expression, or a name the option cannot hold (it is a list split at commas, and its names are not quoted).
  */
 static int
 cube_cands(Relation index, const SiftColSchema *schema, CubeCand *cand)
@@ -140,7 +141,7 @@ cube_cands(Relation index, const SiftColSchema *schema, CubeCand *cand)
 		const SiftColDef *d = &schema->cols[c];
 		const char *name = keycols_leaf_name(index, d);
 
-		if (d->parent >= 0 || !sift_cpagg_dim_ok(schema, d))
+		if (d->parent >= 0 || (d->flags & SIFT_COLD_DERIVED) || !sift_cpagg_dim_ok(schema, d))
 			continue;
 		if (keycols_heap_attno(index, d) == 0 || name[0] == '\0' || strpbrk(name, ",:;)") != NULL)
 			return -1;
@@ -425,6 +426,10 @@ sift_col_auto_cube(Relation heap, Relation index)
  * histograms in ROWS_AGREE_PCT of the sampled stretches (the SIFT_PAGG_MAX_RDIMS with the fewest values), the pair whose combinations fit the cells a unit may
  * keep (a tenth of its rows, at most SIFT_PAGG_ROWS_CELLS) in as many stretches, and has the fewest of them (the cheapest rollup, far from the limit of a unit),
  * is written to the option as 'auto: a, b'; none fits, nothing. It is the default (an empty option): the cells pay by the default formula (docs/OPTIONS.md); 'off' writes none.
+ * A scope index (docs/COL-SCOPE.md) writes none by default: its reads are those of the key groups, and no pair of the table says which filter or GROUP BY they will be asked; the
+ * default pair read the same instructions on all nine classes of the comparison and cost the small keys blocks (docs/COL-SCOPE.md, Edges). rollup_columns = 'auto' asks for the
+ * pair of a plain index and writes it as 'auto: a, b: m' with the sums that are worth keeping, the integer columns that are not keys (unique, an entity's id, nearly unique: a sum
+ * of ids says nothing, and a measure costs a word in every cell); a plain index keeps every integer column that is not a dimension.
  */
 #define ROWS_AGREE_PCT	90
 #define ROWS_CAP		(1 << 16)		/* rows of a stretch looked at */
@@ -545,6 +550,26 @@ sift_col_auto_arrlen(Relation index)
 	sift_col_set_option(index, "array_lengths", "on");
 }
 
+/* the sums of the rollup of a scope index by the columns x and y: the other integer columns that are not keys */
+static void
+rows_measures(Relation heap, Relation index, const SiftColSchema *schema, int x, int y, StringInfo meas)
+{
+	int			n = 0;
+
+	for (int c = 0; c < schema->ncols && n < SIFT_PAGG_MAX_MEAS; c++)
+	{
+		const SiftColDef *d = &schema->cols[c];
+		const char *name = keycols_leaf_name(index, d);
+		double		corr;
+
+		if (c == x || c == y || d->parent >= 0 || (d->flags & SIFT_COLD_DERIVED) || d->store != SIFT_COLS_INT || !sift_cpagg_meas_ok(schema, d, d) ||
+			keycols_heap_attno(index, d) == 0 || name[0] == '\0' || strpbrk(name, ",:;)") != NULL ||
+			sift_col_leaf_unique(heap, index, d) || sift_col_key_shaped(heap, index, schema, d) || keycols_point_key(heap, index, schema, d, &corr))
+			continue;
+		appendStringInfo(meas, "%s%s", n++ ? ", " : "", name);
+	}
+}
+
 void
 sift_col_auto_rows(Relation heap, Relation index)
 {
@@ -560,7 +585,7 @@ sift_col_auto_rows(Relation heap, Relation index)
 	BlockNumber nblocks;
 	StringInfoData v;
 
-	if (*opt != '\0' && pg_strcasecmp(opt, "auto") != 0)
+	if ((*opt != '\0' && pg_strcasecmp(opt, "auto") != 0) || (*opt == '\0' && sift_scope_specs(index) != NULL))
 		return;
 	rel = sift_col_rel_private(index, CurrentMemoryContext);
 	if ((n = cube_cands(index, rel->schema, cand)) < 2 || (nst = cube_sample(heap, cand, n)) == 0)
@@ -597,5 +622,13 @@ sift_col_auto_rows(Relation heap, Relation index)
 		appendStringInfo(&v, "auto: %s, %s", keycols_leaf_name(index, &rel->schema->cols[cand[bx].leaf]), keycols_leaf_name(index, &rel->schema->cols[cand[by].leaf]));
 	else
 		appendStringInfo(&v, "auto: %s, %s", keycols_leaf_name(index, &rel->schema->cols[cand[by].leaf]), keycols_leaf_name(index, &rel->schema->cols[cand[bx].leaf]));
+	if (sift_scope_specs(index) != NULL)
+	{
+		StringInfoData meas;
+
+		initStringInfo(&meas);
+		rows_measures(heap, index, rel->schema, cand[bx].leaf, cand[by].leaf, &meas);
+		appendStringInfo(&v, ":%s%s", meas.len ? " " : "", meas.data);
+	}
 	sift_col_set_option(index, "rollup_columns", v.data);
 }
