@@ -472,11 +472,7 @@ sift_col_is_index_oid(Oid indexoid)
 Oid
 sift_col_am_oid(void)
 {
-	static Oid	am = InvalidOid;
-
-	if (!OidIsValid(am))
-		am = get_index_am_oid("sift_col", true);
-	return am;
+	return sift_catalog()->col_am;
 }
 
 #ifdef SIFT_TESTING

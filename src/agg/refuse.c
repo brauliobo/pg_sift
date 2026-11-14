@@ -39,6 +39,7 @@
 #include "agg/refuse.h"
 #include "agg/stats.h"
 #include "core/limits.h"
+#include "core/sift.h"
 
 PG_FUNCTION_INFO_V1(sift_agg_explain_why);
 PG_FUNCTION_INFO_V1(sift_agg_refusal_slugs);
@@ -675,7 +676,7 @@ tables_have_sift_index(const PlannedStmt *ps, Oid amoid)
 static void
 why_index_arm(RawStmt *raw, const char *sql, const PlannedStmt *ps, const Oid *ptypes, int nparams, ParamListInfo params)
 {
-	Oid			amoid = get_am_oid("sift_col", true);
+	Oid			amoid = sift_catalog()->col_am;
 	int			nest;
 	PlannedStmt *again = NULL;
 
