@@ -51,6 +51,7 @@
 #include "bm25/maint.h"
 #include "col/am.h"
 #include "core/tomb.h"
+#include "core/visibility.h"
 
 PG_FUNCTION_INFO_V1(sift_col_tracking);
 PG_FUNCTION_INFO_V1(sift_col_stamps);
@@ -282,6 +283,7 @@ baseline(Relation index, Relation heap, SiftTombLog *log)
 	TransactionId xid = GetCurrentTransactionId();
 	CommandId	cid = GetCurrentCommandId(true);
 
+	SIFT_TEST_GATE(sift_test_cleanup_gate, 11);
 	InitDirtySnapshot(dirty);
 	for (BlockNumber blk = 0; blk < nblocks; blk++)
 	{
