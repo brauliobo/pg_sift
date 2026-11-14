@@ -299,8 +299,8 @@ scope_of_arms(const Arm arm[2], SiftScopeLeg (*legs)[2], const int *nlegs, int n
  * The union of the item q as the pairs relation of the scope of two paths its arms read, with the reason when it is not (ScopeItem.why). The first scope of the index whose relations an arm
  * reads is the item's sp: none, and the item is none of the index's.
  */
-ScopeItem
-scope_union_item(AggCtx *c, const SiftScopeSpecs *specs, Query *q)
+static ScopeItem
+union_item(AggCtx *c, const SiftScopeSpecs *specs, Query *q)
 {
 	ScopeItem	it = {0};
 	Leaves		lv = {.only_union = true};
@@ -369,6 +369,24 @@ scope_union_item(AggCtx *c, const SiftScopeSpecs *specs, Query *q)
 			it.perms = lappend(it.perms, getRTEPermissionInfo(arm[i].q->rteperminfos, e));
 		}
 	return it;
+}
+
+/* the two passes of a statement analyze the same union: the second takes the first's analysis (the arms are not changed between them) */
+ScopeItem
+scope_union_item(AggCtx *c, const SiftScopeSpecs *specs, Query *q)
+{
+	ScopeTake  *t = c->scope_pass;
+
+	if (t == NULL)
+		return union_item(c, specs, q);
+	if (t->union_q != q || t->union_index != c->indexoid)
+	{
+		t->union_item = palloc(sizeof(ScopeItem));
+		*t->union_item = union_item(c, specs, q);
+		t->union_q = q;
+		t->union_index = c->indexoid;
+	}
+	return *t->union_item;
 }
 
 /*

@@ -334,6 +334,9 @@ typedef struct ScopeTake
 	bool		key_read;		/* the statement groups by the key column of the item, which the scan reads as the derived leaf of the scope (sift_agg_scope_key_leaf) */
 	SiftAggScope sc;			/* the conjunct as the join states it: all but fk (the leaf, which the scan's layout gives) */
 	double		pairs;			/* the rows of the scope relation the keys leave, as PostgreSQL expects them (for a parameter, those of the average key) */
+	Query	   *union_q;		/* the union item the first pass analyzed (scope_union_item), which the second takes as it is: the same select of the same index */
+	Oid			union_index;
+	struct ScopeItem *union_item;
 } ScopeTake;
 
 typedef struct FromScan
