@@ -235,6 +235,7 @@ create_trigger(Relation heap, Relation index, bool update)
 	ObjectAddress trig,
 				idx;
 
+	sift_catalog_write_guard("a track_changes trigger");
 	tt->name = "old_rows";
 	tt->isNew = false;
 	tt->isTable = true;
@@ -256,6 +257,7 @@ drop_triggers(Relation heap, Relation index)
 {
 	HearTrig	t[2];
 
+	sift_catalog_write_guard("a track_changes trigger");
 	find_triggers(RelationGetRelid(heap), index, t, false);
 	for (int i = 0; i < 2; i++)
 		if (OidIsValid(t[i].oid))
