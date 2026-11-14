@@ -10,7 +10,7 @@ SIFT_ORACLE_VERIFY_EVERY=1 runs sift.col_scope_verify after every step and windo
 SIFT_ORACLE_SET is SQL every session of the primary runs first (`SET sift.test_no_track = on;` is a mutant of the tracking that the gate must catch).
 
 A seed draws a shape (one path, soft deleted pairs, a scope of two paths), a size and builds the facts and the pairs. Steps change facts and pairs (inserts, updates, moves of the member, HOT updates, deletes, upserts; pairs
-inserted, deleted, moved, reloaded, soft deleted, restored; grants and memberships), run VACUUM, promotion, merge, REINDEX (also CONCURRENTLY) and CREATE INDEX CONCURRENTLY of a second scope index, leave a writer's transaction open
+inserted, deleted, moved, reloaded, soft deleted, restored; grants and memberships), run VACUUM, promotion, merge, REINDEX (also CONCURRENTLY, and of a journal index of the pairs) and CREATE INDEX CONCURRENTLY of a second scope index, leave a writer's transaction open
 while the others read, roll back with savepoints, and read inside the transaction that edited (own command ids). After a step the battery of reads (one key, sets of keys counted once, per pair, per key, top-N, EXISTS) runs:
   - on the primary through the scope units, through the planned plan and through the plain plan (sift disabled, no index used), in ONE REPEATABLE READ snapshot: the three must be equal;
   - on the STOCK node (once its subscription has caught up), on the STANDBY (once it replayed) and on the RESTORE node: each must equal the primary's plain answer, row for row.
@@ -164,6 +164,10 @@ class Shape:
         if self.name == 'union':
             return f"INSERT INTO grants (tenant_id, dim_a_id) SELECT 1 + m % {T}, m FROM generate_series({M + 1}, {M + 20}) m ON CONFLICT DO NOTHING;"
         return f"INSERT INTO pairs (dim_a_id, tenant_id) SELECT m, 1 + m % {T} FROM generate_series({M + 1}, {M + 20}) m ON CONFLICT DO NOTHING;"
+
+    # the journal indexes of the pairs: a REINDEX of one is another lineage, so the reads are the join's until the maintenance fills the units again
+    def journals(self):
+        return ('grants_by_member', 'grants_by_group', 'members_by_member') if self.name == 'union' else ('pairs_journal',)
 
     # the sift DDL of the primary
     def sift_ddl(self, opts):
@@ -675,7 +679,7 @@ def run_seed(a, seed):
         if r.random() < 0.4:
             M2.run(r.choice(["SELECT sift.col_promote('facts_col');", "SELECT sift.col_merge('facts_col', false);", "SELECT sift.col_merge('facts_col', true);"]))
         if r.random() < 0.15:
-            M2.run(r.choice(["REINDEX INDEX facts_col;", "REINDEX INDEX CONCURRENTLY facts_col;"]), allow=r'.')
+            M2.run(r.choice(["REINDEX INDEX facts_col;", "REINDEX INDEX CONCURRENTLY facts_col;", f"REINDEX INDEX {r.choice(shape.journals())};"]), allow=r'.')
         quiesce(step, f'step {step}')
         if r.random() < 0.6:
             own_command(step)
