@@ -59,6 +59,9 @@ export SIFT_CI_DEPTH=$(( ${SIFT_CI_DEPTH:-0} + 1 ))
 (( SIFT_CI_DEPTH <= 8 )) || { echo "ci.sh started from itself $SIFT_CI_DEPTH levels deep, stopping" >&2; exit 2; }
 MAIN=$$
 MODE=${1:-quick}
+# the header above, for -h/--help of every subcommand and for an unknown one (config.sh): printed before anything starts
+usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; }
+[[ " $* " != *' -h '* && " $* " != *' --help '* ]] || { usage; exit 0; }
 # --times [RESULTS]: the per-job table of a kept run (KEEP=1; default the newest $TMPDIR/sift-ci-*), longest first: job, wall seconds, CPU
 # seconds (client plus server processes), lane, status
 # --shards PG [deep]: the runners of the full tier on that PostgreSQL major, the one place the workflow and the selftest read (the weights below balance the jobs over them)
