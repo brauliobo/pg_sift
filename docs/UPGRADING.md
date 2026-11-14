@@ -275,7 +275,7 @@ Three features write column formats that 4.3 and older refuse (`sift.upgrade_che
 
 ## `REINDEX` keeps the triggers of track_changes (5.0)
 
-A `REINDEX` of a `sift_col` index that tracks changes keeps its two triggers when they are what the option made (a trigger that was dropped, disabled or changed is made again, as before), so their names and oids stay and an index of an earlier release keeps the form of its dependencies until `ALTER EXTENSION pg_sift UPDATE` converts them. The new log still names the triggers' identities and its baseline is taken in the same transaction: what a read may trust does not change. Nothing to do.
+A `REINDEX` of a `sift_col` index that tracks changes keeps its two triggers when they are what the option made (a trigger that was disabled, and the triggers an index of an earlier release has not got yet, are made again, as before, unless another statement holds the table: then the log stays incomplete, a `NOTICE` says so and the maintenance worker makes missing triggers at the next read that checks the heap), so their names and oids stay and an index of an earlier release keeps the form of its dependencies until `ALTER EXTENSION pg_sift UPDATE` converts them. The new log still names the triggers' identities and its baseline is taken in the same transaction: what a read may trust does not change. Nothing to do.
 
 ## A scope index is built by a role that can read its pairs (5.0)
 

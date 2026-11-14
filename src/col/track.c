@@ -43,6 +43,7 @@
 
 #include "access/xlog.h"
 #include "storage/lmgr.h"
+#include "storage/lock.h"
 #include "storage/sinval.h"
 #include "utils/timestamp.h"
 
@@ -59,6 +60,7 @@ PG_FUNCTION_INFO_V1(sift_col_stamps);
 #ifdef SIFT_TESTING
 bool		sift_test_no_track = false;
 bool		sift_test_no_chain_root = false;
+int			sift_test_col_track_gate = 0;
 #endif
 
 /*
@@ -423,7 +425,29 @@ sift_col_swap_origin(Relation heap, Relation index, bool triggered)
 }
 
 /*
- * Installs the two triggers and makes the log complete: unless all is in place already (a new baseline whenever a trigger is new or another row). A NOTICE says it.
+ * May the triggers be made now? That takes ShareRowExclusiveLock of the table (DROP TRIGGER, AccessExclusiveLock). A REINDEX holds ShareLock, and the REINDEX of another index of the table
+ * holds it as well: two of them that ask for the stronger lock wait for each other (a deadlock). Taking the stronger lock first, in the statement, is not possible for a library that is
+ * loaded on first use: REINDEX fires no event trigger, and the statement that touches the first sift_col index of a session loads the library (and its hooks) after it holds its locks. So a
+ * REINDEX asks only when no other session holds a lock that conflicts with it: one that finds another holder of ShareLock does not wait for it (that one may be waiting for this one) and leaves
+ * the triggers to the maintenance worker (sift_col_track_rearmable); both of two that must make them find the other and wait for nothing. CREATE INDEX takes the lock first (the event trigger of sql/5.0/05-index-build-lock.sql) and an index that this transaction made has no other REINDEX; ALTER INDEX
+ * holds it; a concurrent build holds ShareUpdateExclusiveLock, which two of them cannot hold.
+ */
+static bool
+may_make_triggers(Relation heap, Relation index, bool concurrent)
+{
+	LOCKTAG		tag;
+	int			holders;
+
+	if (concurrent || index->rd_createSubid != InvalidSubTransactionId || CheckRelationLockedByMe(heap, ShareRowExclusiveLock, true))
+		return true;
+	SET_LOCKTAG_RELATION(tag, MyDatabaseId, RelationGetRelid(heap));
+	(void) GetLockConflicts(&tag, ShareRowExclusiveLock, &holders);
+	return holders == 0;
+}
+
+/*
+ * Installs the two triggers and makes the log complete: unless all is in place already (a new baseline whenever a trigger is new or another row). A NOTICE says it. Triggers that are not what
+ * the option makes and cannot be made under the lock the caller holds (may_make_triggers) are left, and the log stays incomplete: the reads check the heap.
  */
 void
 sift_col_track_install(Relation heap, Relation index, bool concurrent)
@@ -438,16 +462,25 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 		sift_col_log_create(index);
 		log = sift_col_log(index);
 	}
+#ifdef SIFT_TESTING
+	sift_test_hold(sift_test_col_track_gate);
+#endif
 	if (channel_as_asked(heap, index, log))
 		return;
 	channel_read(heap, index, present, ok, chan.witness);
 	/*
-	 * The triggers stay when they are what the option made, whatever log they come to: the log names their identities and its baseline is taken under the lock of the caller, so a REINDEX (whose
-	 * new log has no channel yet) needs no stronger lock than its own ShareLock, which a second REINDEX of the table holds as well (DROP TRIGGER takes AccessExclusiveLock: both waited for the
-	 * other). The copy of a concurrent swap has none of its own: dropping the old index would drop them with it, and DROP TRIGGER takes the lock that no writer gets past.
+	 * The triggers stay when they are what the option made, whatever log they come to: the log names their identities and its baseline is taken under the lock of the caller. The copy of a
+	 * concurrent swap has none of its own: dropping the old index would drop them with it, and DROP TRIGGER takes the lock that no writer gets past.
 	 */
 	if (!(ok[0] && ok[1]) && (!concurrent || !OidIsValid(sift_col_swap_origin(heap, index, true))))
 	{
+		if (!may_make_triggers(heap, index, concurrent))
+		{
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": its track_changes triggers were not made, so its log is not complete", sift_col_final_name(index)),
+							 errdetail("Another statement holds the table and a REINDEX does not wait for it. The maintenance worker makes missing triggers; ALTER INDEX makes any other."),
+							 errhint("ALTER INDEX %s SET (track_changes = 'off'), then SET (track_changes = '%s')", sift_col_final_name(index), sift_col_options_row_key(index))));
+			return;
+		}
 		drop_triggers(heap, index);
 		create_trigger(heap, index, false);
 		create_trigger(heap, index, true);
@@ -517,7 +550,7 @@ sift_col_track_rebaseline(Relation index, Relation heap)
 /*
  * Triggers that are the option's but for being enabled for the origin only: what ENABLE TRIGGER makes of them after DISABLE TRIGGER ALL (pg_restore --disable-triggers does both). They fire
  * for a session with the usual session_replication_role and not for one with replica (a data loader), which writes unheard, so the log is not taken for complete; a trigger that is disabled is
- * the user's decision and stays so.
+ * the user's decision and stays so. And no trigger at all for an index that tracks (a REINDEX that found another statement holding the table did not make them: may_make_triggers).
  */
 bool
 sift_col_track_rearmable(Relation index, Relation heap)
@@ -525,11 +558,13 @@ sift_col_track_rearmable(Relation index, Relation heap)
 	HearTrig	t[2];
 
 	find_triggers(RelationGetRelid(heap), index, t, sift_col_track_ctid(index));
+	if (t[0].n == 0 && t[1].n == 0)
+		return sift_index_ready(index) && trackable(heap, index);
 	return t[0].n == 1 && t[1].n == 1 && (t[0].ok || t[0].origin) && (t[1].ok || t[1].origin) && (t[0].origin || t[1].origin);
 }
 
 /*
- * Enables them for every session again, as ALTER INDEX does by making them: the catalog change of ENABLE ALWAYS TRIGGER, which takes the ShareRowExclusiveLock of the table that the caller
+ * Enables them for every session again (or makes them), as ALTER INDEX does by making them: the catalog change of ENABLE ALWAYS TRIGGER, which takes the ShareRowExclusiveLock of the table that the caller
  * holds (and keeps the writers out of it until it commits: a catalog row or two). The log is not complete for them yet: the re-baseline follows, under the lock that lets writers in.
  */
 bool
@@ -541,6 +576,11 @@ sift_col_track_rearm(Relation index, Relation heap)
 	if (RecoveryInProgress() || !trackable(heap, index) || !sift_col_track_rearmable(index, heap))
 		return false;
 	find_triggers(RelationGetRelid(heap), index, t, sift_col_track_ctid(index));
+	if (t[0].n == 0 && t[1].n == 0)
+	{
+		create_trigger(heap, index, false);
+		create_trigger(heap, index, true);
+	}
 	for (int i = 0; i < 2; i++)
 		if (t[i].origin)
 			EnableDisableTrigger(heap, NameStr(t[i].name), InvalidOid, TRIGGER_FIRES_ALWAYS, false, false, ShareRowExclusiveLock);
