@@ -10,7 +10,17 @@ DECLARE
 	lo int;
 	why text;
 	built boolean;
+	off int;
+	total int;
 BEGIN
+	-- the event triggers of the extension that are off (sift.ddl_hooks): what they check and clean up is not done, and only a superuser can enable them
+	kind := 'hooks'; required := true; object := NULL;
+	SELECT count(*) FILTER (WHERE NOT h.enabled), count(*) INTO off, total FROM sift.ddl_hooks h;
+	IF off > 0 AND (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+		reason := format('%s of %s event triggers of pg_sift are disabled: what they refuse and clean up (the rows of a dropped table, a value store no index uses) is not done', off, total);
+		command := 'SELECT sift.ddl_hooks_enable(true);';
+		RETURN NEXT;
+	END IF;
 	kind := 'reindex'; required := true;
 	FOR r IN SELECT c.oid AS relid, format('%I.%I', n.nspname, c.relname) AS name
 			 FROM pg_class c JOIN pg_am am ON am.oid = c.relam JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_index i ON i.indexrelid = c.oid
@@ -134,4 +144,4 @@ BEGIN
 END
 $fn$;
 
-COMMENT ON FUNCTION sift.upgrade_commands() IS 'What an update leaves to do for the indexes and tables the caller owns or may maintain, one row per command, the cheapest first: kind (reindex, reset, rewrite; skipped: locked by another session, run again; preload: the library is not preloaded), the index or table, the reason and the statement; required when queries miss rows until it runs. Changes nothing.';
+COMMENT ON FUNCTION sift.upgrade_commands() IS 'What an update leaves to do for the indexes and tables the caller owns or may maintain, one row per command, the cheapest first: kind (reindex, reset, rewrite; skipped: locked by another session, run again; preload: the library is not preloaded; hooks: event triggers off), the index or table, the reason and the statement; required when queries miss rows until it runs. Changes nothing.';
