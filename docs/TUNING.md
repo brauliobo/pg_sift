@@ -130,6 +130,10 @@ The same four questions have three sets of settings. They are different mechanis
 | Wait while clients are busy | `sift.col_auto_merge_max_active` (0: never) | `sift.table_auto_defrag_max_active` (0: never) | none |
 | Slow down | none | `sift.table_auto_defrag_delay` (10 ms) | `sift.maintenance_cost_delay` (0 ms), `sift.maintenance_naptime` (2000 ms) |
 
+### Why a VACUUM does not choose the options of an index
+
+The options a `sift_col` build chooses and keeps in the catalog (`key_cut`, `key_columns`, `order_array_columns`, `point_tid_columns` and the others that are `'auto'`) are chosen again from the data when the segments are rewritten. Writing an option is an update of the index's row in `pg_class`, and a `VACUUM` (a manual one or autovacuum's) is not a transaction that may update a catalog row: PostgreSQL leaves its transaction id out of the snapshots of other sessions, so a session that reads the row meanwhile takes the old version for one nobody updated, and the row ends up twice in `pg_class` or its update is lost (`dead heap-only tuple ... is not linked to from any HOT chain` when the page is pruned). So the merge a `VACUUM` does keeps the options as they are and asks for a maintenance worker that chooses them, in a transaction of its own, and rewrites the segments with the new choice if an option changed (the log line says `options chosen again`). That needs `sift.col_auto_merge` and `sift.async_maintenance` (on); with either off the choice is made by the next `sift.col_maintain` or `sift.col_merge` call (a session, not a `VACUUM`) and by a rewrite the worker does for other reasons. Nothing in the extension writes a catalog row while `PROC_IN_VACUUM` is set: `sift_col_set_option` raises an error then (test `col_vacuum_catalog_xid`).
+
 ## Two pairs of options that look alike
 
 Both pairs were measured side by side (400,000 rows, a table of an `int4` id spread over the heap, an `int4` of 100 rows a key, a timestamp and an `int4` spread over the heap; instructions of one backend a statement, user space, the mean of 30 statements with other constants; the other automatic choices off so that only the pair differs).
