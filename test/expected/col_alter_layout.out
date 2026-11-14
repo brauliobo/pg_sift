@@ -64,6 +64,22 @@ SELECT expect('ALTER INDEX al_full_col SET (paths = ''doc.a int4'')');
  no error
 (1 row)
 
+SELECT expect('ALTER INDEX al_full_col SET (paths = ''auto'')');
+                                                                    expect                                                                    
+----------------------------------------------------------------------------------------------------------------------------------------------
+ 0A000 cannot change the column definitions of index "al_full_col" while it holds data                                                       +
+   detail: Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.+
+   hint: CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.al_full_col: no scan is lost while it is built.
+(1 row)
+
+SELECT expect('ALTER INDEX al_full_col RESET (paths)');
+                                                                    expect                                                                    
+----------------------------------------------------------------------------------------------------------------------------------------------
+ 0A000 cannot change the column definitions of index "al_full_col" while it holds data                                                       +
+   detail: Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.+
+   hint: CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.al_full_col: no scan is lost while it is built.
+(1 row)
+
 INSERT INTO al_full SELECT i, ARRAY[i], i % 3, jsonb_build_object('a', i) FROM generate_series(101, 150) i;
 SELECT count(*), sum(cardinality(tags)) FROM al_full WHERE g = 1;
  count | sum 
@@ -72,6 +88,53 @@ SELECT count(*), sum(cardinality(tags)) FROM al_full WHERE g = 1;
 (1 row)
 
 SELECT sift.verify('al_full_col');
+ verify 
+--------
+ 
+(1 row)
+
+-- paths = 'auto' without a spec reads the documents again at the next build: refused once the index holds a segment; an option that keeps the leaf list is let through
+CREATE TABLE al_auto (id int, g int, doc jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO al_auto SELECT i, i % 3, jsonb_build_object('a', i) FROM generate_series(1, 100) i;
+CREATE INDEX al_auto_col ON al_auto USING sift_col (id, g, doc) WITH (paths = 'auto');
+SELECT expect('ALTER INDEX al_auto_col SET (paths = ''auto'')');
+                                                                    expect                                                                    
+----------------------------------------------------------------------------------------------------------------------------------------------
+ 0A000 cannot change the column definitions of index "al_auto_col" while it holds data                                                       +
+   detail: Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.+
+   hint: CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.al_auto_col: no scan is lost while it is built.
+(1 row)
+
+SELECT expect('ALTER INDEX al_auto_col RESET (paths)');
+                                                                    expect                                                                    
+----------------------------------------------------------------------------------------------------------------------------------------------
+ 0A000 cannot change the column definitions of index "al_auto_col" while it holds data                                                       +
+   detail: Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.+
+   hint: CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.al_auto_col: no scan is lost while it is built.
+(1 row)
+
+SELECT expect('ALTER INDEX al_auto_col SET (paths = '''')');
+                                                                    expect                                                                    
+----------------------------------------------------------------------------------------------------------------------------------------------
+ 0A000 cannot change the column definitions of index "al_auto_col" while it holds data                                                       +
+   detail: Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.+
+   hint: CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.al_auto_col: no scan is lost while it is built.
+(1 row)
+
+SELECT expect('ALTER INDEX al_auto_col SET (vacuum_truncate = off)');
+  expect  
+----------
+ no error
+(1 row)
+
+INSERT INTO al_auto SELECT i, i % 3, jsonb_build_object('a', i) FROM generate_series(101, 150) i;
+SELECT count(*) FROM al_auto WHERE g = 1;
+ count 
+-------
+    50
+(1 row)
+
+SELECT sift.verify('al_auto_col');
  verify 
 --------
  
@@ -110,7 +173,7 @@ SELECT count(*) FROM al_full WHERE g = 1;
     50
 (1 row)
 
-DROP TABLE al_empty, al_full;
+DROP TABLE al_empty, al_full, al_auto;
 DROP FUNCTION expect(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
