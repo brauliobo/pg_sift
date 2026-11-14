@@ -142,6 +142,7 @@ run_scan(AggExec *ex)
 	ex->null_input = false;
 	ex->started = true;
 	ex->glist = NULL;
+	(void) par_stats_begin(true);
 	engine_open(ex, ex->snap, ex->params);
 	/* after engine_open: a correlated child read as a lookup table (join_first_rows) has no parameters, which the lanes of a scan with float sums ask of the spec */
 	ordered = sift_aggspec_ordered(ex->spec);
@@ -212,6 +213,7 @@ scan_tail(AggExec *ex)
 	osa_finish_all(ex);
 	gen_flush(ex);
 	final_checks(ex, ex->n_tuples);
+	par_stats_leader_end(ex);
 }
 
 /* the groups that exist, in index order */

@@ -552,8 +552,11 @@ topn_next(AggExec *ex, TupleTableSlot *slot)
 
 	if (!ex->started)
 	{
+		ParStats   *stats = par_stats_begin(true);
+
 		topn_run(ex);
 		topn_widen(ex);
+		par_stats_end(stats, ex, "leader");
 		if (s->naggs > 0 && !sift_topn_empty(ex->topn))
 		{
 			MemoryContext old = MemoryContextSwitchTo(ex->cxt);

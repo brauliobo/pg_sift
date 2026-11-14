@@ -54,6 +54,12 @@ void scan_delta(AggExec *ex);
 bool take_item(AggExec *ex, uint32 *item);
 void par_launch(AggExec *ex);
 void par_finish(AggExec *ex);
+
+/* par/stats.c, testing (sift.test_par_stats): what a participant cost, one LOG line each; no-ops in a release build */
+typedef struct ParStats ParStats;
+ParStats *par_stats_begin(bool leader);
+void par_stats_end(ParStats *s, AggExec *ex, const char *role);
+void par_stats_leader_end(AggExec *ex);
 bool split_shape_ok(const SiftAggSpec *s);
 bool split_pass_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf);
 bool split_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf);

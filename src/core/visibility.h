@@ -91,6 +91,7 @@ extern PGDLLIMPORT bool sift_test_export_gate;
 extern PGDLLIMPORT bool sift_test_drop_gate;
 extern PGDLLIMPORT bool sift_test_build_gate;
 extern PGDLLIMPORT bool sift_test_par_gate;
+extern PGDLLIMPORT bool sift_test_par_stats;
 extern void sift_test_wait(int key);
 extern void sift_test_wait_inval(int key);
 extern void sift_test_hold(int64 key);

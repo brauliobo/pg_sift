@@ -84,6 +84,23 @@ void lane_keep(AggExec *ex, uint32 lane);
 void par_poll(AggExec *ex);
 void par_forget_memo(AggExec *ex);
 
+/* par/stats.c, testing (sift.test_par_stats): what a participant cost, one LOG line each */
+typedef struct ParStatsDsm
+{
+	int			launched;
+	Size		segment,
+				shared,
+				spec,
+				params,
+				snapshot,
+				view,
+				queues,
+				maps,
+				scope,
+				other;
+} ParStatsDsm;
+void par_stats_dsm(const ParStatsDsm *d);
+
 #pragma GCC visibility pop
 
 #endif

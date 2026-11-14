@@ -152,6 +152,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_par_gate",
 							 "Testing: a worker of a parallel aggregate waits for advisory lock (0x51F7, 10) before it opens anything of the leader's statement.",
 							 NULL, &sift_test_par_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_par_stats",
+							 "Testing: each participant of a parallel aggregate logs its instructions, blocks, memory and group table (bench/steps/scope_parallel.py reads them).",
+							 NULL, &sift_test_par_stats, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_ahead_cold",
 							 "Testing: a segment reader reads ahead from its first read, as one whose pages are not in shared buffers does.",
 							 NULL, &sift_test_ahead_cold, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

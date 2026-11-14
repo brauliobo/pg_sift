@@ -41,6 +41,8 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	char	   *subtxt,
 			   *inittxt;
 
+	ParStats   *stats = par_stats_begin(false);
+
 	SIFT_TEST_GATE(sift_test_par_gate, 10);
 	if (shm_toc_lookup(toc, KEY_DICTSHM, true) != NULL)
 		sift_dictshm_join();
@@ -176,6 +178,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 		done = (WorkerDone) {.magic = DONE_MAGIC,.n_tuples = done.n_tuples,.n_dense = done.n_dense,.n_combo_trim = done.n_combo_trim,.n_matches = done.n_matches,
 			.n_skipped = done.n_skipped,.n_runs = done.n_runs,.n_lazy = done.n_lazy};
 	send_blob(ex->mqh, &done, sizeof(done));
+	par_stats_end(stats, ex, "worker");
 	shm_mq_detach(ex->mqh);
 	/* before the executor states: the expression context of the lookups is a child of the state of the sub-plans */
 	engine_close(ex);

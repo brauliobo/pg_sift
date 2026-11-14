@@ -273,6 +273,9 @@ par_launch(AggExec *ex)
 	if (ex->spec->spine)
 		put_chunk(pcxt, KEY_SPINE, ex->spine_buf, ((const SpineHdr *) ex->spine_buf)->len);
 	LaunchParallelWorkers(pcxt);
+	par_stats_dsm(&(ParStatsDsm) {pcxt->nworkers_launched, dsm_segment_map_length(pcxt->seg), shared_size(ex->spec, ex->nvorder), strlen(spec_txt) + 1, plen, slen, vlen,
+								  mul_size(MQ_SIZE, nw), msize, scope_txt ? scope_txt->len : 0,
+								  (sub_txt ? strlen(sub_txt) + 1 : 0) + (init_txt ? strlen(init_txt) + 1 : 0) + (ex->spec->spine ? ((const SpineHdr *) ex->spine_buf)->len : 0)});
 	if (pcxt->nworkers_launched == 0)
 	{
 		par_forget_memo(ex);
