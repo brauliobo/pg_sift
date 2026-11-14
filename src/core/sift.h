@@ -200,12 +200,17 @@ extern PGDLLIMPORT bool sift_vis_page_cache;
 
 /*
  * Catalog OIDs of extension objects, cached per backend and reset by syscache
- * invalidation. Fields are InvalidOid when the extension is not installed in
- * the current database.
+ * invalidation (the access methods, the schema, the functions and the operators:
+ * DROP EXTENSION and CREATE EXTENSION give them new OIDs under a backend that
+ * keeps the library). Fields are InvalidOid when the extension is not installed in
+ * the current database. Any other OID of an extension object that a backend
+ * remembers is read here, or looked up at each use.
  */
 typedef struct SiftCatalog
 {
 	Oid			am;
+	Oid			col_am;			/* sift_col */
+	Oid			colstub_am;		/* sift_colstub, in a test build */
 	Oid			match_op;		/* text @@> text */
 	Oid			match_func;		/* sift.match(text, text) */
 	Oid			match_idx_func; /* sift.match_idx(text, text, oid) */

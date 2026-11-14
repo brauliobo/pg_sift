@@ -426,6 +426,7 @@ TESTING_REGRESS += col_zone_jnull
 TESTING_REGRESS += colcodec_%
 TESTING_REGRESS += core_radix_sort
 TESTING_REGRESS += errors_hints
+TESTING_REGRESS += ext_recreate
 TESTING_REGRESS += fuzzy_seek
 TESTING_REGRESS += include_filter
 TESTING_REGRESS += include_store

@@ -293,6 +293,7 @@ _PG_init(void)
 #endif
 	/* after the last GUC is defined: a value set before the library loaded is applied to its GUC, not dropped with the placeholder */
 	MarkGUCPrefixReserved("sift");
+	CacheRegisterSyscacheCallback(AMOID, catalog_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(NAMESPACEOID, catalog_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(PROCOID, catalog_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(OPEROID, catalog_invalidate, (Datum) 0);
@@ -328,10 +329,14 @@ sift_catalog(void)
 	if (catalog_valid)
 		return &catalog;
 	memset(&catalog, 0, sizeof(catalog));
+	catalog.am = get_index_am_oid("sift", true);
+	catalog.col_am = get_index_am_oid("sift_col", true);
+#ifdef SIFT_TESTING
+	catalog.colstub_am = get_index_am_oid(SIFT_COLSTUB_AM, true);
+#endif
 	nsp = get_namespace_oid("sift", true);
 	if (OidIsValid(nsp))
 	{
-		catalog.am = get_index_am_oid("sift", true);
 		catalog.match_op = OpernameGetOprid(list_make2(makeString("pg_catalog"), makeString("@@>")),
 											TEXTOID, TEXTOID);
 		catalog.match_func = sift_func(nsp, "match", 2, text2);
