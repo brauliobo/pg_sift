@@ -43,5 +43,12 @@ SET session_preload_libraries = 'pg_sift';
 SELECT count(*) AS preload_rows FROM sift.upgrade_commands() WHERE kind = 'preload';
 RESET session_preload_libraries;
 
+-- event triggers of the extension that are disabled are listed as required, with the command that enables them (a superuser's row; nothing when all are on)
+SELECT count(*) AS hooks_rows_when_enabled FROM sift.upgrade_commands() WHERE kind = 'hooks';
+SELECT sift.ddl_hooks_enable(false) > 0 AS disabled;
+SELECT kind, object, required, command, reason ~ '^[0-9]+ of [0-9]+ event triggers of pg_sift are disabled' AS says_count FROM sift.upgrade_commands() WHERE kind = 'hooks';
+SELECT sift.ddl_hooks_enable(true) > 0 AS enabled;
+SELECT count(*) AS hooks_rows_after FROM sift.upgrade_commands() WHERE kind = 'hooks';
+
 DROP TABLE up, up_tbl;
 DROP EXTENSION pg_sift CASCADE;
