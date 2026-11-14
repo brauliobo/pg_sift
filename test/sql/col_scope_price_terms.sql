@@ -13,8 +13,9 @@ SET sift.test_scope_patch = off;
 
 -- each term alone, from the counts that are not named being 0 (pure: the same counts give the same price)
 CREATE FUNCTION price(nkeys int, once bool, units int8 DEFAULT 0, entries int8 DEFAULT 0, preagg float8 DEFAULT 0, drops int DEFAULT 0, key_pairs int8 DEFAULT 0, changed int8 DEFAULT 0,
-	patch_units int8 DEFAULT 0, patch_scan_rows int8 DEFAULT 0, delta_rows int8 DEFAULT 0, pairs int8 DEFAULT 0, entry_instr float8 DEFAULT 0) RETURNS float8 LANGUAGE sql AS
-$$ SELECT units_price FROM sift._test_scope_price(nkeys, once, units, entries, preagg, entry_instr, drops, key_pairs, changed, patch_units, patch_scan_rows, delta_rows, pairs) $$;
+	patch_units int8 DEFAULT 0, patch_scan_rows int8 DEFAULT 0, delta_rows int8 DEFAULT 0, pairs int8 DEFAULT 0, entry_instr float8 DEFAULT 0, topn bool DEFAULT false, walk_units int8 DEFAULT 0) RETURNS float8 LANGUAGE sql AS
+$$ SELECT units_price FROM sift._test_scope_price(nkeys, once, units, entries, preagg, entry_instr, drops, key_pairs, changed, patch_units, patch_scan_rows, delta_rows, pairs,
+	topn => topn, walk_units => walk_units) $$;
 CREATE FUNCTION term(label text, got float8, per float8, n float8) RETURNS TABLE (term text, instructions float8, per_count float8) LANGUAGE sql AS $$ SELECT label, got, round((got / n)::numeric, 1)::float8 $$;
 CREATE TABLE base AS SELECT price(2, true) AS setup;
 SELECT t.* FROM base, LATERAL (VALUES
@@ -23,6 +24,9 @@ SELECT t.* FROM base, LATERAL (VALUES
 	('a unit its pre-aggregates answer', price(1, true, units => 10, preagg => 1) - setup, 10),
 	('an entry, with the aggregation of the model', price(2, true, entries => 1000, entry_instr => 45) - setup, 1000),
 	('an entry more for each key with a drop list', price(2, true, entries => 1000, drops => 2) - price(2, true, entries => 1000), 2000),
+	('the read of a top-N before any unit', price(1, false, topn => true) , 1),
+	('a unit of the keys a top-N probes', price(1, false, units => 100, topn => true) - price(1, false, topn => true), 100),
+	('a unit a top-N walk reads, of 1,000 entries', price(1, false, units => 10, entries => 10000, topn => true, walk_units => 5) - price(1, false, units => 10, entries => 10000, topn => true), 5),
 	('a pair of the relation listed for several keys', price(2, true, pairs => 1000) - setup, 1000),
 	('a pair of the keys listed and deduped', price(2, true, key_pairs => 1000) - setup, 1000),
 	('the same pairs for one key: not listed', price(1, true, pairs => 1000, key_pairs => 1000) - setup, 1000),
@@ -36,6 +40,11 @@ SELECT t.* FROM base, LATERAL (VALUES
 -- the entity path: the pairs it reads, the units and the rows of the fact segments that may hold a dim_a_id of the keys, the entries it keeps
 SELECT round((e.entity_price - b.entity_price)::numeric / 1000) AS thousand_instr_for_60_units
 FROM sift._test_scope_price(1, true, 0, 0, path_units => 60) e, sift._test_scope_price(1, true, 0, 0) b;
+
+-- a top-N (latest 20) reads the units of the keys from the end of its sort key: the price against the read measured on four tenants of 2,400,000 events (units and entries of the keys, instructions of the backend, warm)
+SELECT units, entries, round((p / 1e6)::numeric, 2) AS priced_m, measured AS measured_m, round((100 * (p / 1e6 - measured) / measured)::numeric) AS error_percent
+FROM (SELECT t.*, price(1, false, units, entries, entry_instr => 17, topn => true, walk_units => least(units, 1 + ceil(20 / (entries::float8 / units)))::int8) AS p
+	FROM (VALUES (1, 2413, 0.41), (36, 150072, 0.88), (114, 470174, 2.34), (289, 1186783, 3.46)) t(units, entries, measured)) c ORDER BY units;
 
 -- the cells: the price of the scope read for the counts the executor has, against the read measured, and the arm the price takes against the one that was cheaper
 CREATE TABLE cells (n int GENERATED ALWAYS AS IDENTITY, shape text, keys int, once bool, units int8, entries int8, preagg float8, drops int, key_pairs int8, changed int8, patch_units int8, patch_scan_rows int8, delta_rows int8, pairs int8,

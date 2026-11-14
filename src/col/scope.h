@@ -308,6 +308,9 @@ typedef struct SiftScopeRead
 #define SIFT_SCOPE_UNIT_INSTR		36700
 #define SIFT_SCOPE_PREAGG_UNIT_INSTR	13300
 #define SIFT_SCOPE_ENTRY_INSTR		18
+/* a top-N walks the units of the keys by their zones: before the first (the read of the journal's vouch and the directory, 350,000), and for each unit of the keys its zone is probed (14,000: 0.41, 0.88, 2.34 and 3.46 million for 1, 36, 114 and 289 units, the first n rows read) */
+#define SIFT_SCOPE_TOPN_SETUP_INSTR	350000
+#define SIFT_SCOPE_TOPN_UNIT_INSTR	14000
 #define SIFT_SCOPE_LIST_INSTR		39
 #define SIFT_SCOPE_KEY_PAIR_INSTR	286
 #define SIFT_SCOPE_EXCEPT_INSTR		20
@@ -351,6 +354,8 @@ typedef struct SiftScopeCounts
 	uint64		units;			/* the scope units of the keys */
 	uint64		entries;		/* the rows of the scope units of the keys */
 	double		preagg;			/* the share of the units their pre-aggregates answer (0..1, the planner's: 0 for a read of several keys counted once), the rest are read row by row */
+	bool		topn;			/* a top-N: the units are walked from the end of the sort key, the units the keys have are probed by their zones and walk_units of them are read */
+	uint64		walk_units;		/* ... the units whose zone reaches the n-th best row of the keys (a bound: the walk reads these at most) */
 	double		entry_instr;	/* the instructions the aggregation of an entry costs on top of reading it (the operators of the model a row has, which the join pays too: SiftAggScope.entry_instr) */
 	uint64		key_pairs;		/* with once and several keys: the pairs of the keys the read lists to dedupe them (SiftScopeRead.pairs) */
 	uint64		changed;		/* the members whose pairs changed since the stamp (SiftScopeRead.nchanged): their stored entries are left out of the units */
@@ -441,7 +446,7 @@ sift_scope_list_price(const SiftScopeCounts *c)
 
 /* What the scope units cost, with the listing of the pairs, the changed members, the patch and the delta (pure) */
 static inline double
-sift_scope_units_price(const SiftScopeCounts *c)
+sift_scope_rows_price(const SiftScopeCounts *c)
 {
 	double		rows = 1.0 - c->preagg,
 				entry = SIFT_SCOPE_ENTRY_INSTR + c->entry_instr + (c->once ? SIFT_SCOPE_DEDUPE_INSTR * (double) c->drops : 0),
@@ -449,6 +454,21 @@ sift_scope_units_price(const SiftScopeCounts *c)
 
 	return SIFT_SCOPE_SETUP_INSTR + (rows * SIFT_SCOPE_UNIT_INSTR + c->preagg * SIFT_SCOPE_PREAGG_UNIT_INSTR) * (double) c->units + rows * (entry + except) * (double) c->entries +
 		sift_scope_list_price(c) + sift_scope_changed_price(c);
+}
+
+/* What a top-N costs: its units are probed by their zones and the walk reads those that reach its n-th best row (a row costs an entry and its aggregation as everywhere: the heap) */
+static inline double
+sift_scope_topn_price(const SiftScopeCounts *c)
+{
+	return SIFT_SCOPE_TOPN_SETUP_INSTR + SIFT_SCOPE_TOPN_UNIT_INSTR * (double) c->units +
+		(SIFT_SCOPE_UNIT_INSTR + (SIFT_SCOPE_ENTRY_INSTR + c->entry_instr) * (double) c->entries / Max((double) c->units, 1.0)) * (double) c->walk_units +
+		sift_scope_list_price(c) + sift_scope_changed_price(c);
+}
+
+static inline double
+sift_scope_units_price(const SiftScopeCounts *c)
+{
+	return c->topn ? sift_scope_topn_price(c) : sift_scope_rows_price(c);
 }
 
 /* What the entity path (the join as written) costs: the pairs read, the units of the entity rows that may hold a member of the keys, the rows the key filter tests and those it keeps (pure) */

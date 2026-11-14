@@ -141,8 +141,8 @@ ORDER BY f.name COLLATE "C", k.n, m.mode;
  latest 5, ANY ($1)                       |    1 | force_generic_plan | scope read |                             | t
  latest 5, ANY ($1)                       |   10 | force_custom_plan  | scope read |                             | t
  latest 5, ANY ($1)                       |   10 | force_generic_plan | scope read |                             | t
- latest 5, ANY ($1)                       |   30 | force_custom_plan  | join       | join is cheaper for 30 keys | t
- latest 5, ANY ($1)                       |   30 | force_generic_plan | join       | join is cheaper for 30 keys | t
+ latest 5, ANY ($1)                       |   30 | force_custom_plan  | scope read |                             | t
+ latest 5, ANY ($1)                       |   30 | force_generic_plan | scope read |                             | t
  top 5 ids, ANY ($1)                      |    1 | force_custom_plan  | scope read |                             | t
  top 5 ids, ANY ($1)                      |    1 | force_generic_plan | scope read |                             | t
  top 5 ids, ANY ($1)                      |   10 | force_custom_plan  | scope read |                             | t
@@ -253,7 +253,7 @@ SELECT * FROM states('built');
  built | join, ANY ($1), a row for each pair | 30      | scope read |                             | t
  built | latest 5, ANY ($1)                  | 1 (22)  | scope read |                             | t
  built | latest 5, ANY ($1)                  | 4       | scope read |                             | t
- built | latest 5, ANY ($1)                  | 30      | join       | join is cheaper for 30 keys | t
+ built | latest 5, ANY ($1)                  | 30      | scope read |                             | t
 (9 rows)
 
 SELECT churn(20, 22);
@@ -293,7 +293,7 @@ SELECT * FROM states('every pair of every tenant changed');
  every pair of every tenant changed | join, ANY ($1), a row for each pair | 30      | join   | join is cheaper for 30 keys | t
  every pair of every tenant changed | latest 5, ANY ($1)                  | 1 (22)  | join   | join is cheaper for 1 key   | t
  every pair of every tenant changed | latest 5, ANY ($1)                  | 4       | join   | join is cheaper for 4 keys  | t
- every pair of every tenant changed | latest 5, ANY ($1)                  | 30      | join   | join is cheaper for 30 keys | t
+ every pair of every tenant changed | latest 5, ANY ($1)                  | 30      | join   | too many changed keys       | t
 (9 rows)
 
 INSERT INTO tenant_scope SELECT dim_a_id, 1 + tenant_id % 40 FROM tenant_scope WHERE dim_a_id % 3 = 0 ON CONFLICT DO NOTHING;
@@ -308,7 +308,7 @@ SELECT * FROM states('items of two tenants');
  items of two tenants | join, ANY ($1), a row for each pair | 30      | join   | join is cheaper for 30 keys | t
  items of two tenants | latest 5, ANY ($1)                  | 1 (22)  | join   | join is cheaper for 1 key   | t
  items of two tenants | latest 5, ANY ($1)                  | 4       | join   | join is cheaper for 4 keys  | t
- items of two tenants | latest 5, ANY ($1)                  | 30      | join   | join is cheaper for 30 keys | t
+ items of two tenants | latest 5, ANY ($1)                  | 30      | join   | too many changed keys       | t
 (9 rows)
 
 RESET plan_cache_mode;

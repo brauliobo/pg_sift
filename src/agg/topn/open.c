@@ -156,6 +156,17 @@ sift_topn_leaves(Node *spec)
 	return out;
 }
 
+int64
+sift_topn_rows(Node *spec)
+{
+	Node	   *count = SPEC_COUNT(spec),
+			   *offset = SPEC_OFFSET(spec);
+
+	if (count == NULL || !IsA(count, Const) || ((Const *) count)->constisnull)
+		return 0;
+	return DatumGetInt64(((Const *) count)->constvalue) + (offset != NULL && IsA(offset, Const) && !((Const *) offset)->constisnull ? DatumGetInt64(((Const *) offset)->constvalue) : 0);
+}
+
 /* The rows the scan holds for LIMIT and OFFSET, as EXPLAIN shows them: their sum when they are constants; ", sorted" when the plan sorts every row that passes; ", stored dictionary" when the first key is read as the codes of the stored dictionary */
 char *
 sift_topn_limit_text(Node *spec)

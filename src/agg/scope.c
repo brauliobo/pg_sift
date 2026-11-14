@@ -29,6 +29,7 @@
 #include "agg/agg_int.h"
 #include "agg/cost/model.h"
 #include "agg/lookcol_int.h"
+#include "agg/topn.h"
 
 #ifdef SIFT_TESTING
 static bool test_scope_join;
@@ -160,6 +161,9 @@ scope_entries(AggExec *ex)
  */
 #define SCOPE_CHANGED_SPREAD	1.8
 
+/* the rows a top-N is taken to ask for when its LIMIT is a parameter */
+#define SCOPE_TOPN_ROWS	100
+
 /* what the journal's expectation of the patch may err by: the join is run for it when the units cost more than this times its price */
 #define SCOPE_ESTIMATE_MARGIN	1.1
 
@@ -226,6 +230,21 @@ unit_entries(AggExec *ex, Snapshot snapshot, SiftScopeCounts *c)
 }
 
 /*
+ * A top-N takes the units of the keys from the end of its sort key and stops at the n-th best row: it probes the zone of each unit of the keys and reads the units that hold the n rows, one
+ * more than the units those take (the next unit may reach the n-th best too). The join as written stops after its n rows as well, so the price of the join the planner gives (a scan of every row)
+ * is the most it costs.
+ */
+static void
+topn_counts(AggExec *ex, SiftScopeCounts *c)
+{
+	int64		rows = sift_topn_rows(ex->spec->topn);
+	double		per_unit = (double) c->entries / Max((double) c->units, 1.0);
+
+	c->topn = true;
+	c->walk_units = Min(c->units, 1 + (uint64) ceil((rows > 0 ? rows : SCOPE_TOPN_ROWS) / Max(per_unit, 1.0)));
+}
+
+/*
  * The counts of the scope units of the keys (col/scope.h): the units and their entries as the scan prunes them, and the pairs of the relation a read of several keys counted once lists whole. With several keys
  * counted once none of the units is answered from their pre-aggregates.
  */
@@ -236,6 +255,8 @@ unit_counts(AggExec *ex, Snapshot snapshot)
 	SiftScopeCounts c = {.nkeys = sc->nkeys,.once = sc->once,.entry_instr = sc->entry_instr};
 
 	unit_entries(ex, snapshot, &c);
+	if (ex->spec->topn != NULL)
+		topn_counts(ex, &c);
 	c.preagg = sc->alt == NULL || (sc->once && sc->nkeys > 1) ? 0.0 : 1.0 - sc->rowwise;
 	pair_counts(ex, &c);
 	if (sc->once && sc->nkeys > 1)

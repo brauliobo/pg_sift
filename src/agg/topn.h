@@ -92,6 +92,8 @@ extern void sift_topn_keep_offset(Node *spec);
 
 /* The rows of the heap for EXPLAIN: LIMIT + OFFSET when they are constants */
 extern char *sift_topn_limit_text(Node *spec);
+/* the LIMIT of the spec when it is a constant, plus its OFFSET when that is one too (0 otherwise) */
+extern int64 sift_topn_rows(Node *spec);
 
 /* ---- executor ---- */
 
