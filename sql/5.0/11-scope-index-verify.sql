@@ -64,7 +64,7 @@ BEGIN
 	PERFORM set_config('sift.agg_scope', 'on', true);
 	FOREACH clause IN ARRAY string_to_array(substr(opts, 7), ';') LOOP
 		m := regexp_match(btrim(regexp_replace(clause, '\s*cols\s*\([^)]*\)\s*$', '')), '^\s*(' || ident || ')\s*:\s*(' || ident || ')\s*->\s*(.+)$');
-		IF m IS NULL THEN RAISE EXCEPTION 'col_scope_verify: cannot read the scope declaration "%"', btrim(clause); END IF;
+		IF m IS NULL THEN RAISE EXCEPTION 'col_scope_verify: cannot read the scope declaration "%"', btrim(clause) USING ERRCODE = 'syntax_error'; END IF;
 		-- the legs: (a, b) of each relation with the predicate of its recorded btree: (member, key) of the direct path, and of a joined path (via, key) and (via, member)
 		quals := ARRAY[]::text[];
 		rels := ARRAY[]::text[]; aa := rels; bb := rels; preds := rels;
@@ -93,7 +93,7 @@ BEGIN
 				aa[1], rels[1], bb[1], ktype, replace(quals[1], '{alias}', 'p'), bb[3], rels[2], rels[3], aa[3], aa[2], bb[2], ktype, replace(quals[2], '{alias}', 'g'), replace(quals[3], '{alias}', 'v'));
 			pool_sql := format('SELECT %s::text FROM %s WHERE %s UNION SELECT %s::text FROM %s WHERE %s', bb[1], rels[1], preds[1], bb[2], rels[2], preds[2]);
 		ELSE
-			RAISE EXCEPTION 'col_scope_verify: cannot read the scope declaration "%"', btrim(clause);
+			RAISE EXCEPTION 'col_scope_verify: cannot read the scope declaration "%"', btrim(clause) USING ERRCODE = 'syntax_error';
 		END IF;
 		IF col_scope_verify.keys IS NOT NULL THEN
 			ks := col_scope_verify.keys;

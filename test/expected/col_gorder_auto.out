@@ -21,7 +21,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; point_
 order_array_columns = id, r; order_layout = id exact, r compact in 1% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ga_nostats');
 NOTICE:  sift_col index "ga_nostats" is column format minor 41, which a library before 4.0 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ga_nostats') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_nostats';
                            reloptions                            
 -----------------------------------------------------------------
@@ -37,7 +38,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; point_
 order_array_columns = id, r; order_layout = id exact, r compact in 1% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ga_auto');
 NOTICE:  sift_col index "ga_auto" is column format minor 41, which a library before 4.0 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ga_auto') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_auto';
                            reloptions                            
 -----------------------------------------------------------------
@@ -69,7 +71,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; point_
 order_array_columns = g
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ga_list');
 NOTICE:  sift_col index "ga_list" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ga_list') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT relname, reloptions FROM pg_class WHERE relname IN ('ga_off', 'ga_list') ORDER BY 1;
  relname |                        reloptions                         
 ---------+-----------------------------------------------------------
@@ -99,7 +102,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; order_
 order_layout = id exact, r compact in 1% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ga_narrow');
 NOTICE:  sift_col index "ga_narrow" is column format minor 41, which a library before 4.0 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ga_narrow') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_narrow';
                         reloptions                         
 -----------------------------------------------------------
@@ -127,7 +131,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; point_
 order_array_columns = id, r; order_layout = id exact, r compact in 1% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ga_re');
 NOTICE:  sift_col index "ga_re" is column format minor 41, which a library before 4.0 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ga_re') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_re';
                            reloptions                            
 -----------------------------------------------------------------
@@ -141,7 +146,8 @@ NOTICE:  sift_col index "ga_re": 1 automatic choice (order_array_columns), 1 adv
 DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = id, r
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ga_re');
 NOTICE:  sift_col index "ga_re" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ga_re') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_re';
                          reloptions                         
 ------------------------------------------------------------
@@ -164,7 +170,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; point_
 order_array_columns = id, v, ts; order_layout = id exact, and 2 more
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('gt_i');
 NOTICE:  sift_col index "gt_i" is column format minor 41, which a library before 4.0 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('gt_i') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT reloptions FROM pg_class WHERE relname = 'gt_i';
                              reloptions                              
 ---------------------------------------------------------------------

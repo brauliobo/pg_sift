@@ -597,7 +597,7 @@ left_visit(Oid store, void *arg)
 			ereport(NOTICE,
 					(errmsg("shared value store \"%s\": index \"%s\" is the only one left that uses it", get_rel_name(store), RelationGetRelationName(index)),
 					 errdetail("Its next merge, rewrite or VACUUM stores the strings of the column in its segments again, and the store is dropped."),
-					 errhint("REINDEX INDEX %s does it now.", quote_identifier(RelationGetRelationName(index)))));
+					 errhint("REINDEX INDEX %s does it now.", sift_col_index_ref(index))));
 		index_close(index, AccessShareLock);
 	}
 	return false;

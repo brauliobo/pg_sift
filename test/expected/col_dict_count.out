@@ -342,7 +342,8 @@ NOTICE:  sift_col index "dk_idx": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = s; order_array_columns = s
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dk_idx');
 NOTICE:  sift_col index "dk_idx" is column format minor 44, which a library before 4.3 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('dk_idx') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 VACUUM dk;
 SELECT max(format) >= 25 AS format_by_default_is_the_hashs_or_later FROM sift._test_col_formats('dk_idx'::regclass);
  format_by_default_is_the_hashs_or_later 
@@ -402,7 +403,8 @@ NOTICE:  sift_col index "dk_idx": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = s; order_array_columns = s
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dk_idx');
 NOTICE:  sift_col index "dk_idx" is column format minor 44, which a library before 4.3 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('dk_idx') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT max(format) >= 25 AS format_with_count_columns_off_is_the_hashs_or_later FROM sift._test_col_formats('dk_idx'::regclass);
  format_with_count_columns_off_is_the_hashs_or_later 
 -----------------------------------------------------
@@ -427,7 +429,7 @@ DROP TABLE dk;
 CREATE INDEX dc_bad ON dc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (count_columns = 'id');
 ERROR:  invalid count_columns option: "id" is not a text column
 CREATE INDEX dc_bad2 ON dc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (count_columns = 'nope');
-ERROR:  invalid count_columns option: unknown column
+ERROR:  invalid count_columns option "nope": "nope" is not a column of the index
 DROP FUNCTION dc_check(text);
 DROP FUNCTION dc_rows_scanned(text);
 DROP TABLE dcs, dc;

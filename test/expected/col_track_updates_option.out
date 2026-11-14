@@ -103,17 +103,17 @@ CREATE INDEX t_bad ON t USING sift_col (id, g, v) WITH (track_changes = 'v');
 ERROR:  track_changes: column "v" can be NULL
 HINT:  A row is found by its key: declare the column NOT NULL, or use its primary key.
 CREATE INDEX t_bad ON t USING sift_col (id, g) WITH (track_changes = 'v');
-ERROR:  invalid track_changes option: "v" is not a column of the index
+ERROR:  invalid track_changes option "v": "v" is not a column of the index
 CREATE INDEX t_bad ON t USING sift_col (id, g, p) WITH (track_changes = 'p');
 DROP INDEX t_bad;
 CREATE INDEX t_bad ON t USING sift_col (id, g, d) WITH (track_changes = 'd');
 DROP INDEX t_bad;
 CREATE INDEX t_bad ON t USING sift_col (id, g) WITH (track_changes = 'nope');
-ERROR:  invalid track_changes option: "nope" is not a column of the index
+ERROR:  invalid track_changes option "nope": "nope" is not a column of the index
 CREATE INDEX t_bad ON t USING sift_col (id, g) WITH (track_changes = 'id, g');
 ERROR:  invalid track_changes option "id, g": a single column: a composite key is not supported
 CREATE INDEX t_bad ON t USING sift_col (g, v) WITH (track_changes = 'id');
-ERROR:  invalid track_changes option: "id" is not a column of the index
+ERROR:  invalid track_changes option "id": "id" is not a column of the index
 -- a table with no primary key: auto says so and keeps no key
 CREATE TABLE n (a int, b int);
 INSERT INTO n SELECT i, i FROM generate_series(1, 100) i;

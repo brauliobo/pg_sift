@@ -2,6 +2,8 @@
  * col/preagg_opt.c - the pre-aggregates option: the leaves that can be dims and measures, the default spec, the parser (docs/COL-PREAGG.md).
  */
 
+#include <ctype.h>
+
 #include "col/preagg.h"
 
 /* a scalar leaf of the top level, or of a list of the top level: a list inside a list has no cube */
@@ -43,6 +45,51 @@ sift_cpagg_auto_list(const char *opt, bool *autolist)
 	return p;
 }
 
+/*
+ * One name of a list in an option, from *pp up to the first character of stops (or the end); *pp is left on it. Blanks, tabs and newlines around the name go.
+ * "A name in double quotes" is taken as written ("" stands for a quote), so a column may be called "Order Date" or "a,b"; any other name is taken as written
+ * too, case included: the names of JSON keys are case-sensitive, and the options the build wrote in earlier releases carry the column names as they are.
+ */
+char *
+sift_cpagg_name_take(const char **pp, const char *stops)
+{
+	const char *p = *pp;
+	StringInfoData name;
+
+	while (isspace((unsigned char) *p))
+		p++;
+	initStringInfo(&name);
+	if (*p == '"')
+	{
+		const char *open = p++;
+
+		for (; *p != '"' || p[1] == '"'; p++)
+		{
+			if (*p == '\0')
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid list of column names: the quote that opens at \"%s\" is not closed", open)));
+			appendStringInfoChar(&name, *p);
+			p += *p == '"';
+		}
+		for (p++; isspace((unsigned char) *p); p++)
+			;
+		if (*p != '\0' && strchr(stops, *p) == NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid list of column names: \"%s\" follows a quoted name", p)));
+	}
+	else
+	{
+		const char *end;
+
+		for (end = p; *end != '\0' && strchr(stops, *end) == NULL; end++)
+			;
+		for (*pp = end; end > p && isspace((unsigned char) end[-1]); end--)
+			;
+		appendBinaryStringInfo(&name, p, end - p);
+		p = *pp;
+	}
+	*pp = p;
+	return name.data;
+}
+
 /* 'a, b': the names of the leaves an option takes, each one ok(); empty or 'off': none. s NULL: the syntax only. Returns NULL, or why the option is not valid */
 const char *
 sift_cpagg_leaf_list(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf,
@@ -50,36 +97,31 @@ sift_cpagg_leaf_list(const char *opt, const SiftColSchema *s, const char *const 
 {
 	const char *p = opt;
 
-	while (*p == ' ')
+	while (isspace((unsigned char) *p))
 		p++;
 	if (*p == '\0' || strcmp(p, "off") == 0)
 		return NULL;
 	for (;;)
 	{
-		const char *end = strchr(p, ',');
-		size_t		len = end ? (size_t) (end - p) : strlen(p);
+		char	   *name = sift_cpagg_name_take(&p, ",");
 		int			c = -1;
 
-		while (len > 0 && p[len - 1] == ' ')
-			len--;
-		if (len == 0)
+		if (*name == '\0')
 			return "empty column name";
 		if (s != NULL)
 		{
 			for (int i = 0; i < s->ncols && c < 0; i++)
-				if (strlen(names[i]) == len && strncmp(names[i], p, len) == 0)
+				if (strcmp(names[i], name) == 0)
 					c = i;
 			if (c < 0)
-				return "unknown column";
+				return psprintf("\"%s\" is not a column of the index", name);
 			if (!ok(s, &s->cols[c]))
 				return bad;
 			leaf[c] = true;
 		}
-		if (end == NULL)
+		if (*p == '\0')
 			return NULL;
-		p = end + 1;
-		while (*p == ' ')
-			p++;
+		p++;
 	}
 }
 
@@ -250,25 +292,11 @@ skip_ws(OptCur *c)
 		c->p++;
 }
 
-/* A name: up to the next delimiter, trimmed; empty at the end of the text */
+/* A name: up to the next delimiter, as sift_cpagg_name_take reads it; empty at the end of the text */
 static char *
 take_name(OptCur *c)
 {
-	const char *b,
-			   *e;
-	char	   *n;
-
-	skip_ws(c);
-	b = c->p;
-	while (*c->p && *c->p != ':' && *c->p != ',' && *c->p != ';' && *c->p != ')')
-		c->p++;
-	e = c->p;
-	while (e > b && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\n'))
-		e--;
-	n = palloc(e - b + 1);
-	memcpy(n, b, e - b);
-	n[e - b] = '\0';
-	return n;
+	return sift_cpagg_name_take(&c->p, ":,;)");
 }
 
 static bool

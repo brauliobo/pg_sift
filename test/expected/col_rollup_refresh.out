@@ -51,19 +51,19 @@ INSERT INTO rr_q VALUES
 	(4, 'SELECT e.q, e.a, count(*) FROM rr d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8) GROUP BY 1, 2');
 -- the names of the option: leaves of array elements or map values declared in paths, low cardinality, at most 6 per list
 CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup_leaves = 'lines[].nosuch');
-ERROR:  invalid rollup_leaves option: "lines[].nosuch" is not a leaf declared in paths
+ERROR:  invalid rollup_leaves option "lines[].nosuch": "lines[].nosuch" is not a leaf declared in paths
 CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup_leaves = 'id');
-ERROR:  invalid rollup_leaves option: "id" is not a leaf of an array element or a map value
+ERROR:  invalid rollup_leaves option "id": "id" is not a leaf of an array element or a map value
 CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup_leaves = 'lines[].w');
-ERROR:  invalid rollup_leaves option: "lines[].w" is not a low-cardinality leaf: it must be a boolean, integer, date, numeric or text leaf
+ERROR:  invalid rollup_leaves option "lines[].w": "lines[].w" is not a low-cardinality leaf: it must be a boolean, integer, date, numeric or text leaf
 CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup_leaves = 'lines[].a, lines[].a');
-ERROR:  invalid rollup_leaves option: "lines[].a" is named twice
+ERROR:  invalid rollup_leaves option "lines[].a, lines[].a": "lines[].a" is named twice
 CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup_leaves = 'lines[].a, , lines[].b');
 ERROR:  invalid rollup_leaves option "lines[].a, , lines[].b": a leaf name is missing
 CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup_leaves = 'lines[].a: lines[].q');
 ERROR:  invalid rollup_leaves option "lines[].a: lines[].q": unexpected ": lines[].q"
 CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, d int2, e int2, f int2, g int2, h int2}', rollup_leaves = 'lines[].a, lines[].b, lines[].c, lines[].d, lines[].e, lines[].f, lines[].g');
-ERROR:  invalid rollup_leaves option: the list of "lines[].g" has more than 6 rollup leaves
+ERROR:  invalid rollup_leaves option "lines[].a, lines[].b, lines[].c, lines[].d, lines[].e, lines[].f, lines[].g": the list of "lines[].g" has more than 6 rollup leaves
 SELECT count(*) AS indexes FROM pg_class WHERE relname = 'rr_bad';
  indexes 
 ---------
@@ -88,9 +88,9 @@ SELECT (SELECT requested FROM rr_state) AS requested, (SELECT count(*) FROM rr_r
 -- the units are clean but have no rollup: a SELECT scans them and queues their segments; its rows are those of the plain plan
 ALTER INDEX rr_i SET (rollup_leaves = 'lines[].a, lines[].b');
 ALTER INDEX rr_i SET (rollup_leaves = 'lines[].nosuch');
-ERROR:  invalid rollup_leaves option: "lines[].nosuch" is not a leaf declared in paths
+ERROR:  invalid rollup_leaves option "lines[].nosuch": "lines[].nosuch" is not a leaf declared in paths
 ALTER INDEX rr_i SET (rollup_leaves = 'lines[].w');
-ERROR:  invalid rollup_leaves option: "lines[].w" is not a low-cardinality leaf: it must be a boolean, integer, date, numeric or text leaf
+ERROR:  invalid rollup_leaves option "lines[].w": "lines[].w" is not a low-cardinality leaf: it must be a boolean, integer, date, numeric or text leaf
 SELECT reloptions FROM pg_class WHERE relname = 'rr_i';
                                                         reloptions                                                        
 --------------------------------------------------------------------------------------------------------------------------

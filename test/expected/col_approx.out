@@ -301,13 +301,13 @@ ERROR:  invalid hll_columns option: "c" is a character column, whose hash a unit
 CREATE INDEX ap_bad_n ON ap_bad USING sift_col (id, nm) WITH (hll_columns = 'nm');
 ERROR:  invalid hll_columns option: "nm" is a name column, whose hash a unit cannot compute (char(n) and name hash differently from text)
 CREATE INDEX ap_bad_x ON ap_bad USING sift_col (id, f) WITH (hll_columns = 'zz');
-ERROR:  invalid hll_columns option: unknown column
+ERROR:  invalid hll_columns option "zz": "zz" is not a column of the index
 CREATE INDEX ap_bad_k ON ap_bad USING sift_col (id, f) WITH (hll_columns = 'id', key_columns = 'id');
 ERROR:  invalid hll_columns option: "id" is in key_columns, which keeps its distinct keys exactly
 CREATE INDEX ap_bad_s ON ap_bad USING sift_col (id, f) WITH (hll_columns = 'id,');
 ERROR:  invalid hll_columns option "id,": empty column name
 CREATE INDEX ap_ok_f ON ap_bad USING sift_col (id, f) WITH (hll_columns = 'f');
-ERROR:  invalid hll_columns option: not an int2, int4, int8, date, timestamp, timestamptz, text, varchar or uuid column
+ERROR:  invalid hll_columns option "f": not an int2, int4, int8, date, timestamp, timestamptz, text, varchar or uuid column
 SELECT sift.approx_count_distinct(f) FROM (VALUES (0.0::float8), (-0.0), ('NaN'), ('NaN'), (1)) t(f);
  approx_count_distinct 
 -----------------------

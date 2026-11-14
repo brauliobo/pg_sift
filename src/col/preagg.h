@@ -158,6 +158,8 @@ extern bool sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d);
 /* The leaf names of an option that lists columns ('a, b', empty or off for none): sets leaf[c] for each, checked by ok (false: the message bad); s NULL checks the syntax only */
 /* The list of an option that the build may choose ('auto: a, b'): the text after the word, and whether the word is there */
 extern const char *sift_cpagg_auto_list(const char *opt, bool *autolist);
+/* One name of an option list up to a character of stops, trimmed or in double quotes (palloc'd; empty at the end); *pp is left on the stop. ERROR for a quote that is not closed */
+extern char *sift_cpagg_name_take(const char **pp, const char *stops);
 extern const char *sift_cpagg_leaf_list(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf,
 										bool (*ok) (const SiftColSchema *, const SiftColDef *), const char *bad);
 extern bool sift_cpagg_meas_ok(const SiftColSchema *s, const SiftColDef *m, const SiftColDef *dim);

@@ -156,7 +156,7 @@ check_column(Relation heap, Relation index, const char *name, bool build)
 	{
 		ereport(NOTICE, (errmsg("sift_col index \"%s\": track_changes column \"%s\" has no unique index of its own yet", RelationGetRelationName(index), name),
 						 errdetail("Reads check the heap until the table has a UNIQUE or PRIMARY KEY constraint on the column alone, and a row written before that is not in the log, so the log stays incomplete after it."),
-						 errhint("REINDEX INDEX %s gives it a baseline once the constraint exists.", RelationGetRelationName(index))));
+						 errhint("REINDEX INDEX %s gives it a baseline once the constraint exists.", sift_col_index_ref(index))));
 		return;
 	}
 	if (!OidIsValid(unique_on(heap, att, false, NULL)))

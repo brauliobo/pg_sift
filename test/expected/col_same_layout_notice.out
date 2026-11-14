@@ -41,18 +41,27 @@ CREATE INDEX open_b ON events USING sift_col (dim_a_id, created_at, kind, qty) W
 NOTICE:  sift_col index "open_b" stores columns dim_a_id, created_at, kind, qty of index "open_a", which has the same layout
 NOTICE:  sift_col index "open_b": 2 automatic choices (key_order, order_array_columns)
 NOTICE:  sift_col index "open_b" is column format minor 38, which a library before 3.7 cannot read
--- a rebuild says it again for the other index and never names the index itself (the copy REINDEX CONCURRENTLY builds), a btree is no sift_col index, client_min_messages = warning hides it
+CREATE INDEX CONCURRENTLY open_cic ON events USING sift_col (dim_a_id, created_at, kind, qty) WITH (key_order = 'dim_a_id, created_at', rollup_columns = 'dim_a_id, kind: qty', track_changes = off) WHERE status = 'open';
+NOTICE:  sift_col index "open_cic" stores columns dim_a_id, created_at, kind, qty of index "open_a", which has the same layout
+NOTICE:  sift_col index "open_cic": 2 automatic choices (key_order, order_array_columns)
+NOTICE:  sift_col index "open_cic" is column format minor 38, which a library before 3.7 cannot read
+-- a rebuild says nothing (the index was chosen when it was created, and REINDEX TABLE would say it again for each index), a btree is no sift_col index, client_min_messages = warning hides it
 REINDEX INDEX open_a;
-NOTICE:  sift_col index "open_a" stores columns dim_a_id, created_at, kind, qty of index "open_b", which has the same layout
 NOTICE:  sift_col index "open_a": 2 automatic choices (key_order, order_array_columns)
 NOTICE:  sift_col index "open_a" is column format minor 38, which a library before 3.7 cannot read
 REINDEX INDEX CONCURRENTLY open_b;
-NOTICE:  sift_col index "open_b" stores columns dim_a_id, created_at, kind, qty of index "open_a", which has the same layout
+NOTICE:  sift_col index "open_b": 2 automatic choices (key_order, order_array_columns)
+NOTICE:  sift_col index "open_b" is column format minor 38, which a library before 3.7 cannot read
+REINDEX TABLE events;
+NOTICE:  sift_col index "open_a": 2 automatic choices (key_order, order_array_columns)
+NOTICE:  sift_col index "open_a" is column format minor 38, which a library before 3.7 cannot read
+NOTICE:  sift_col index "open_cic": 2 automatic choices (key_order, order_array_columns)
+NOTICE:  sift_col index "open_cic" is column format minor 38, which a library before 3.7 cannot read
 NOTICE:  sift_col index "open_b": 2 automatic choices (key_order, order_array_columns)
 NOTICE:  sift_col index "open_b" is column format minor 38, which a library before 3.7 cannot read
 CREATE INDEX events_kind_btree ON events (kind, qty);
 SET client_min_messages = warning;
-REINDEX INDEX open_a;
+CREATE INDEX open_c ON events USING sift_col (dim_a_id, created_at, kind, qty, id) WITH (key_order = 'dim_a_id, created_at', rollup_columns = 'dim_a_id, kind: qty', track_changes = off) WHERE status = 'open';
 RESET client_min_messages;
 DROP TABLE events;
 DROP EXTENSION pg_sift;

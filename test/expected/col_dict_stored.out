@@ -579,7 +579,8 @@ NOTICE:  sift_col index "ds_auto_point": 1 automatic choice (point_tid_columns),
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = u
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ds_auto_point');
 NOTICE:  sift_col index "ds_auto_point" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ds_auto_point') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 CREATE INDEX ds_auto_ret ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', return_columns = 's, v');
 NOTICE:  sift_col index "ds_auto_ret" stores columns s, u, v, id of index "ds_new", which has the same layout
 HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
@@ -593,7 +594,8 @@ NOTICE:  sift_col index "ds_auto_off": 1 automatic choice (point_tid_columns), 1
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = s, u
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ds_auto_off');
 NOTICE:  sift_col index "ds_auto_off" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ds_auto_off') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 RESET max_parallel_maintenance_workers;
 SELECT i.idx, d.leaf, d.bytes = (SELECT x.bytes FROM sift.col_sections('ds_on') x WHERE x.section = 'dict' AND x.leaf = d.leaf) AS with_order
 FROM (VALUES ('ds_on'), ('ds_off2'), ('ds_auto'), ('ds_auto_set'), ('ds_auto_point'), ('ds_auto_ret'), ('ds_auto_off')) i(idx), LATERAL sift.col_sections(i.idx::regclass) d

@@ -48,11 +48,11 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 CREATE INDEX ra_alone ON ra USING sift_col (id, g, h, v) WITH (rollup_dims = 'nope, g');
 NOTICE:  reloption "rollup_dims" is the older name of "rollup_columns"
 HINT:  Use "rollup_columns"; the older name keeps working.
-ERROR:  invalid rollup_columns option: "nope" is not a column of the index
+ERROR:  invalid rollup_columns option "nope, g": "nope" is not a column of the index
 CREATE INDEX ra_leaf_alone ON ra USING sift_col (id, items) WITH (paths = 'items[]{kind text}', rollup = 'items[].nope');
 NOTICE:  reloption "rollup" is the older name of "rollup_leaves"
 HINT:  Use "rollup_leaves"; the older name keeps working.
-ERROR:  invalid rollup_leaves option: "items[].nope" is not a leaf declared in paths
+ERROR:  invalid rollup_leaves option "items[].nope": "items[].nope" is not a leaf declared in paths
 -- both words of auto
 CREATE INDEX ra_auto ON ra USING sift_col (id, g, h, v) WITH (rollup_columns = 'auto');
 NOTICE:  sift_col index "ra_auto": 1 automatic choice (rollup_columns), 1 advice (track_changes)

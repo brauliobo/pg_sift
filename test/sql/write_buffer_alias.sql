@@ -4,7 +4,10 @@ CREATE TABLE wa (id serial PRIMARY KEY, body text);
 CREATE INDEX wa_old ON wa USING sift (body) WITH (mutable_limit = 64);
 CREATE INDEX wa_new ON wa USING sift (body) WITH (write_buffer_limit = 64);
 CREATE INDEX wa_def ON wa USING sift (body);
-SELECT relname, reloptions FROM pg_class WHERE relname IN ('wa_old', 'wa_new', 'wa_def') ORDER BY relname;
+-- both names: the new one wins, also when it is given with its default value
+CREATE INDEX wa_both ON wa USING sift (body) WITH (write_buffer_limit = 4096, mutable_limit = 64);
+CREATE INDEX wa_both_small ON wa USING sift (body) WITH (mutable_limit = 4096, write_buffer_limit = 64);
+SELECT relname, reloptions FROM pg_class WHERE relname IN ('wa_old', 'wa_new', 'wa_def', 'wa_both', 'wa_both_small') ORDER BY relname;
 
 -- both names check their range
 CREATE INDEX wa_bad1 ON wa USING sift (body) WITH (mutable_limit = 0);
@@ -22,5 +25,7 @@ INSERT INTO wa (body) SELECT 'alpha beta word' || (i % 50) || ' gamma' FROM gene
 SELECT count(*) FILTER (WHERE kind IN ('sealed buffer', 'immutable')) > 0 AS old_sealed FROM sift.segments('wa_old');
 SELECT count(*) FILTER (WHERE kind IN ('sealed buffer', 'immutable')) > 0 AS new_sealed FROM sift.segments('wa_new');
 SELECT count(*) FILTER (WHERE kind IN ('sealed buffer', 'immutable')) = 0 AS def_sealed FROM sift.segments('wa_def');
+SELECT count(*) FILTER (WHERE kind IN ('sealed buffer', 'immutable')) = 0 AS both_default_wins FROM sift.segments('wa_both');
+SELECT count(*) FILTER (WHERE kind IN ('sealed buffer', 'immutable')) > 0 AS both_small_wins FROM sift.segments('wa_both_small');
 DROP TABLE wa;
 DROP EXTENSION pg_sift;

@@ -4,7 +4,7 @@
 # working on the restored index, and REINDEX must not lose the rollups.
 . "$(dirname "$0")/lib.bash"
 
-plan 9
+plan 10
 node_init a 37 "autovacuum = off"
 node_start a || bail "start failed"
 D=$(dir a)
@@ -22,6 +22,8 @@ dbq src "CREATE EXTENSION pg_sift" \
 	"CREATE TABLE al (id int, g int, h int, v int, items jsonb) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO al SELECT i, i % 5, i % 7, i, jsonb_build_array(jsonb_build_object('kind', 'k' || i % 3, 'flag', i % 2 = 0)) FROM generate_series(1, 4000) i" \
 	"CREATE INDEX al_old ON al USING sift_col (id, g, h, v, items) WITH (paths = 'items[]{kind text, flag bool}', rollup = 'items[].kind, items[].flag', rollup_dims = 'g, h: v')" >/dev/null || bail "setup failed"
+dbq src "CREATE TABLE wb (id serial PRIMARY KEY, body text)" \
+	"CREATE INDEX wb_both ON wb USING sift (body) WITH (write_buffer_limit = 4096, mutable_limit = 64)" >/dev/null || bail "setup of the BM25 index failed"
 dbq src "CREATE INDEX al_new ON al USING sift_col (id, g, h, v, items) WITH (paths = 'items[]{kind text, flag bool}', rollup_leaves = 'items[].kind, items[].flag', rollup_columns = 'g, h: v')" >/dev/null
 check "the index made with the old names keeps them in its options, the other has the new" test "$(dbq src "$OPTS" | grep -c 'al_old:.*rollup=.*rollup_dims=')" == 1 -a "$(dbq src "$OPTS" | grep -c 'al_new:.*rollup_leaves=.*rollup_columns=')" == 1
 WANT=$(dbq src "SET sift.enable_agg = off" "$ANS" | tail -n 1)
@@ -43,4 +45,6 @@ check "after the SET the old options carry the new values and answer as the heap
 dbq r1 "ALTER INDEX al_old RESET (rollup, rollup_dims)" >/dev/null
 check "RESET of the old names removes them, REINDEX rebuilds, and the answers stay the heap's" test "$(dbq r1 "SELECT count(*) FROM pg_class WHERE relname = 'al_old' AND array_to_string(reloptions, ',') ~ 'rollup'")" == 0 -a "$(dbq r1 "REINDEX INDEX al_old" "$ANS" | tail -n 1)" == "$WANT"
 check "the new names are the ones a rebuild writes: an automatic choice lands in rollup_columns" test "$(dbq r1 "CREATE INDEX al_auto ON al USING sift_col (id, g, h, v) WITH (rollup_columns = 'auto')" "SELECT array_to_string(reloptions, ',') ~ 'rollup_columns=auto: ' OR array_to_string(reloptions, ',') ~ 'rollup_columns=auto' FROM pg_class WHERE relname = 'al_auto'" | tail -n 1)" == t
+# a sift index that carries both spellings of the write buffer limit: the dump keeps both and the restored index reads the new name, 4096 kB, so 3000 small documents seal no buffer
+check "BM25 index with both spellings: restored with both, the new name sets the limit" test "$(dbq r1 "SELECT array_to_string(reloptions, ',') FROM pg_class WHERE relname = 'wb_both'")" == "write_buffer_limit=4096,mutable_limit=64" -a "$(dbq r1 "SET sift.async_maintenance = off" "INSERT INTO wb (body) SELECT 'alpha beta word' || (i % 50) || ' gamma' FROM generate_series(1, 3000) i" "SELECT count(*) FROM sift.segments('wb_both') WHERE kind IN ('sealed buffer', 'immutable')" | tail -n 1)" == 0
 finish

@@ -349,7 +349,7 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 		{
 			ereport(NOTICE, (errmsg("sift_col index \"%s\": its track_changes triggers were not made, so its log is not complete", sift_col_final_name(index)),
 							 errdetail("Another statement holds the table, or a table above it, and a REINDEX does not wait for it. The maintenance worker makes missing triggers; ALTER INDEX makes any other."),
-							 errhint("ALTER INDEX %s SET (track_changes = 'off'), then SET (track_changes = '%s')", sift_col_final_name(index), sift_col_options_row_key(index))));
+							 errhint("ALTER INDEX %s SET (track_changes = 'off'), then SET (track_changes = %s)", sift_col_index_ref(index), quote_literal_cstr(sift_col_options_row_key(index)))));
 			return;
 		}
 		sift_col_hear_drop_all(index);
@@ -360,7 +360,7 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 	if (concurrent)
 	{
 		ereport(NOTICE, (errmsg("sift_col index \"%s\": track_changes log is not complete after a concurrent build", sift_col_final_name(index)),
-						 errhint("The next VACUUM completes the log; REINDEX INDEX %s without CONCURRENTLY does it now.", sift_col_final_name(index))));
+						 errhint("The next VACUUM completes the log; REINDEX INDEX %s without CONCURRENTLY does it now.", sift_col_index_ref(index))));
 		return;
 	}
 	baseline(index, heap, log);
@@ -570,7 +570,7 @@ sift_col_track_reconcile(Relation index)
 		table_close(heap, NoLock);
 		if (sift_col_track_ctid(index))
 			ereport(NOTICE, (errmsg("sift_col index \"%s\": track_changes = ctid queues about 42 bytes a changed row", sift_col_final_name(index)),
-							 errhint("Before a huge UPDATE or DELETE: ALTER INDEX %s SET (track_changes = 'off'), then 'ctid' again.", sift_col_final_name(index))));
+							 errhint("Before a huge UPDATE or DELETE: ALTER INDEX %s SET (track_changes = 'off'), then 'ctid' again.", sift_col_index_ref(index))));
 		return;
 	}
 	channel_read(heap, index, present, ok, witness);

@@ -1,0 +1,41 @@
+-- The two settings that the regression tests of the release library set are ordinary settings, not test ones (scripts/check-test-settings.sh keeps every
+-- other sift.test_ setting out of the release library); the settings that only the background workers read cannot be set by a session; sift_table has no
+-- setting for its per-table key_order.
+CREATE EXTENSION pg_sift;
+SELECT name, context, short_desc LIKE 'Testing%' OR short_desc LIKE '%(test only)' AS says_test
+FROM pg_settings WHERE name IN ('sift.col_unit_rows', 'sift.search_chunk_sbs') ORDER BY name;
+         name          | context | says_test 
+-----------------------+---------+-----------
+ sift.col_unit_rows    | user    | f
+ sift.search_chunk_sbs | user    | f
+(2 rows)
+
+SELECT name, context FROM pg_settings
+WHERE name IN ('sift.table_auto_defrag_delay', 'sift.table_auto_defrag_max_active', 'sift.table_auto_defrag_wal_rate') ORDER BY name;
+               name                | context 
+-----------------------------------+---------
+ sift.table_auto_defrag_delay      | sighup
+ sift.table_auto_defrag_max_active | sighup
+ sift.table_auto_defrag_wal_rate   | sighup
+(3 rows)
+
+SELECT count(*) AS table_key_order_settings FROM pg_settings WHERE name = 'sift.table_key_order';
+ table_key_order_settings 
+--------------------------
+                        0
+(1 row)
+
+SET sift.col_unit_rows = 512;
+SET sift.search_chunk_sbs = 8;
+SELECT current_setting('sift.col_unit_rows'), current_setting('sift.search_chunk_sbs');
+ current_setting | current_setting 
+-----------------+-----------------
+ 512             | 8
+(1 row)
+
+SET sift.table_auto_defrag_delay = 5;
+ERROR:  parameter "sift.table_auto_defrag_delay" cannot be changed now
+SET sift.table_key_order = 'k';
+ERROR:  invalid configuration parameter name "sift.table_key_order"
+DETAIL:  "sift" is a reserved prefix.
+DROP EXTENSION pg_sift;

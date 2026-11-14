@@ -113,7 +113,7 @@ CREATE INDEX d_n ON d USING sift_col (id, g, v, n) WITH (track_changes = 'n');
 ERROR:  track_changes: column "n" can be NULL
 HINT:  A row is found by its key: declare the column NOT NULL, or use its primary key.
 CREATE INDEX d_x ON d USING sift_col (id, g, v, n) WITH (track_changes = 'nope');
-ERROR:  invalid track_changes option: "nope" is not a column of the index
+ERROR:  invalid track_changes option "nope": "nope" is not a column of the index
 DROP TABLE a, b, c, d;
 DROP FUNCTION same_groups(regclass);
 DROP EXTENSION pg_sift_helpers;

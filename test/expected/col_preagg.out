@@ -396,7 +396,7 @@ BEGIN
 		                    FROM pa WHERE id BETWEEN k.lo AND k.hi) h
 	$q$, idx, leaf, typ, withsum, CASE WHEN withsum THEN format('sum(%I)::numeric', leaf) ELSE 'NULL::numeric' END);
 END $f$;
-SET sift.test_col_unit_rows = 3000;
+SET sift.col_unit_rows = 3000;
 CREATE INDEX pa_cut ON pa USING sift_col (id, i2, i4, n, d, b, s) WITH (key_cut = 'id');
 -- the parallel build already merged its own peers: one segment, so a manual merge has nothing to do; after the DML below it has
 SELECT segments, units FROM sift.col_index_info('pa_cut');
@@ -451,11 +451,11 @@ SELECT reloptions FROM pg_class WHERE relname = 'pa_off';
 (1 row)
 
 CREATE INDEX pa_bad1 ON pa USING sift_col (i2, s) WITH (preagg = 'cube(nosuch)');
-ERROR:  invalid preagg option: cube dimension "nosuch" is not a column of the index
+ERROR:  invalid preagg option "cube(nosuch)": cube dimension "nosuch" is not a column of the index
 CREATE INDEX pa_bad2 ON pa USING sift_col (i2, f8) WITH (preagg = 'cube(f8)');
-ERROR:  invalid preagg option: cube dimension "f8" must be a scalar integer, date, numeric or text column
+ERROR:  invalid preagg option "cube(f8)": cube dimension "f8" must be a scalar integer, date, numeric or text column
 CREATE INDEX pa_bad3 ON pa USING sift_col (i2, s) WITH (preagg = 'cube(i2: s)');
-ERROR:  invalid preagg option: cube measure "s" must be a smallint, integer, bigint, numeric, real or double precision column
+ERROR:  invalid preagg option "cube(i2: s)": cube measure "s" must be a smallint, integer, bigint, numeric, real or double precision column
 CREATE INDEX pa_bad4 ON pa USING sift_col (i2, s) WITH (preagg = 'sometimes');
 ERROR:  invalid preagg option "sometimes": expected default, auto, off, cube(...) or rollup(...), got "sometimes"
 CREATE INDEX pa_bad5 ON pa USING sift_col (i2, s) WITH (preagg = 'cube(i2: ');

@@ -488,7 +488,7 @@ sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
 	ereport(NOTICE,
 			(errmsg("sift_col index \"%s\": the rewrite chooses again from the data: %s", RelationGetRelationName(index), what.data),
 			 errdetail("Rows appended since the build change what the defaults choose; an option you wrote is never changed."),
-			 errhint("ALTER INDEX %s SET (key_cut = 'off') keeps a choice off, and the same for the other options.", quote_identifier(RelationGetRelationName(index)))));
+			 errhint("ALTER INDEX %s SET (key_cut = 'off') keeps a choice off, and the same for the other options.", sift_col_index_ref(index))));
 	return SIFT_REDECIDED_ANY | (changed ? SIFT_REDECIDED_CUT : 0);
 }
 

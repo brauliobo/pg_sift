@@ -160,7 +160,9 @@ extern bool sift_col_rollup_request(Relation index, uint64 gen);
 #define SIFT_CHOICE_ALL		15
 typedef void (*SiftChoiceFn) (void *ctx, const char *id, const char *value);
 extern void sift_col_choices_say(Relation heap, Relation index, int kinds, bool build);
+extern void sift_col_option_error(const char *option, const char *value, const char *err) __attribute__((noreturn));
 extern const char *sift_col_final_name(Relation index);
+extern const char *sift_col_index_ref(Relation index);	/* quoted where it needs it, for a statement in a hint */
 extern void sift_col_caps(Relation index, SiftChoiceFn add, void *ctx);
 extern char *sift_col_key_cut_note(Relation index);
 extern double sift_col_leaf_rows_per_value(Relation index, const SiftColDef *def, double rows);
@@ -441,7 +443,7 @@ extern PGDLLIMPORT int sift_col_auto_merge_max_active;
 extern PGDLLIMPORT int sift_col_auto_merge_partition_kb;
 extern PGDLLIMPORT int sift_col_auto_merge_max_workers;
 extern PGDLLIMPORT int sift_col_unit_floor;
-extern PGDLLIMPORT int sift_col_test_unit_rows;	/* sift.test_col_unit_rows */
+extern PGDLLIMPORT int sift_col_unit_rows;	/* sift.col_unit_rows */
 /* The VACUUM that churn, and scans that check many rows in the heap, ask a worker for under sift.col_auto_merge (col/vacreq.c) */
 extern void sift_col_vacuum_notice(Relation heap, Relation index);
 extern BlockNumber sift_col_build_gap(Relation heap, Relation index);

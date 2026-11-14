@@ -439,7 +439,7 @@ def run_seed(a, seed):
     root = Pg('admin', P, 'postgres', log, sift=False)
     for n in (P, B, R):
         Pg('admin', n, 'postgres', log, sift=False).run(f"DROP DATABASE IF EXISTS {db} WITH (FORCE); CREATE DATABASE {db};")
-    setup = (f"SET sift.test_scope_patch = {patch}; SET sift.scope_max_multiplicity = 64;" + (f" SET sift.test_col_segment_kb = {seg};" if seg else '') + (f" SET sift.test_col_unit_rows = {urows};" if urows else '')
+    setup = (f"SET sift.test_scope_patch = {patch}; SET sift.scope_max_multiplicity = 64;" + (f" SET sift.test_col_segment_kb = {seg};" if seg else '') + (f" SET sift.col_unit_rows = {urows};" if urows else '')
              + os.environ.get('SIFT_ORACLE_SET', ''))
     shell(f"echo 'seed {seed}: shape {shape.name} rows {rows} index options [{opts}] test_scope_patch {patch} segment_kb {seg} unit_rows {urows} late {late}' >> {out}/summary.txt")
     print(f'seed {seed}: shape {shape.name}, {rows} rows, options [{opts}], patch {patch}, segment_kb {seg}, unit_rows {urows}, late {late}', flush=True)

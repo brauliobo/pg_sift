@@ -16,7 +16,7 @@ SELECT ml_rows(40000);
  
 (1 row)
 
-SET sift.test_col_unit_rows = 100;
+SET sift.col_unit_rows = 100;
 CREATE INDEX ml_idx ON ml USING sift_col (id, k, kind_id, amount) WITH (key_cut = k);
 SET sift.col_auto_merge = off;
 -- two promotions of 3,000 rows each over the same keys: two overlays of 7.5% of the rows of the first segment

@@ -63,15 +63,12 @@ ALTER INDEX ro_plain SET (cube_minmax = true)
 SELECT format('REINDEX INDEX ro_%s', opt) FROM ro_opts \gexec
 REINDEX INDEX ro_key_cut_rows
 NOTICE:  reloption "key_cut_rows" is deprecated and ignored
-NOTICE:  sift_col index "ro_key_cut_rows" stores columns id, tenant_id, uid, ts of index "ro_plain", which has the same layout
 NOTICE:  sift_col index "ro_key_cut_rows": 1 advice (track_changes)
 REINDEX INDEX ro_point_columns
 NOTICE:  reloption "point_columns" is deprecated and ignored
-NOTICE:  sift_col index "ro_point_columns" stores columns id, tenant_id, uid, ts of index "ro_plain", which has the same layout
 NOTICE:  sift_col index "ro_point_columns": 1 advice (track_changes)
 REINDEX INDEX ro_order_columns
 NOTICE:  reloption "order_columns" is deprecated and ignored
-NOTICE:  sift_col index "ro_order_columns" stores columns id, tenant_id, uid, ts of index "ro_plain", which has the same layout
 NOTICE:  sift_col index "ro_order_columns": 1 advice (track_changes)
 SELECT opt, ro_layout('ro_' || opt) = ro_layout('ro_plain') AS same_layout_after_reindex, sift.col_verify(('ro_' || opt)::regclass, true) IS NOT NULL AS verified FROM ro_opts ORDER BY opt;
       opt      | same_layout_after_reindex | verified 

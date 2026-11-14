@@ -815,7 +815,7 @@ sift_vstore_read_open(Relation index, uint32 store, uint32 epoch, MemoryContext 
 	uint64		ep = epoch;
 
 	if (!sift_vstore_is_store(store))
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("a segment names relation %u as its shared value store, which is none", store)));
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("a segment names relation %s as its shared value store, which is none", sift_rel_label(store))));
 	LockRelationOid(store, AccessShareLock);
 	rel = RelationIdGetRelation(store);
 	sift_dir_read(rel, snap);

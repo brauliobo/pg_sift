@@ -79,6 +79,7 @@ rs_user | ALTER ROLE rs_user RESET ALL
 rs_user | ALTER ROLE rs_grant SET sift.enable_scan = off
 rs_user | ALTER DATABASE postgres SET sift.enable_scan = off
 $$);
+WARNING:  sift.agg_lookup_max_rows is deprecated and will be removed in a later release
  n  |  role   |                            stmt                             |                                         result                                          
 ----+---------+-------------------------------------------------------------+-----------------------------------------------------------------------------------------
   1 | rs_user | SET sift.enable_scan = off                                  | ok

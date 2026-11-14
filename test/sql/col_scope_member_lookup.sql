@@ -4,7 +4,7 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
-SET sift.test_col_unit_rows = 1000;
+SET sift.col_unit_rows = 1000;
 SET sift.agg_force = on;
 SET sift.test_scope_patch = on;
 
