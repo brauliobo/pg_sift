@@ -13,6 +13,7 @@
 #include "col/gorder.h"
 #include "col/wbuf.h"
 #include "col/maint/maint_int.h"
+#include "core/restrict.h"
 
 /* The automatic rewrite (sift.col_auto_merge*, registered in col/am/am.c) */
 bool		sift_col_auto_merge = true;

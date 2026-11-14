@@ -23,6 +23,7 @@
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
 #include "core/ops.h"
+#include "core/restrict.h"
 #include "core/cmp.h"
 
 /* VACUUM's truncation of a heap gives back at least this many blocks, or a 16th of the relation */

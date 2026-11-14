@@ -7,6 +7,7 @@
 #include "utils/timestamp.h"
 #include "bm25/merge.h"
 #include "col/maint/maint_int.h"
+#include "core/restrict.h"
 #include "col/point.h"
 
 /* the key the rewrite is about to cut by is not the one the segments were written for: their rows are sorted again (col/order.c) */

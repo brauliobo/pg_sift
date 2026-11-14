@@ -29,6 +29,7 @@
 #include "col/am.h"
 #include "col/conn.h"
 #include "core/rowmem.h"
+#include "core/restrict.h"
 #include "core/tomb.h"
 
 /* A stamp older than this many transaction ids is not compared with a current one: the comparison of two ids wraps at 2^31 and the journal drops records past this */
@@ -201,10 +202,9 @@ sift_conn_depend(Relation child_index, Relation parent_index)
 
 	if (list_member_oid(sift_conn_children(RelationGetRelid(parent_index)), RelationGetRelid(child_index)))
 		return;
-	sift_catalog_write_guard("a connection dependency");
 	ObjectAddressSet(child, RelationRelationId, RelationGetRelid(child_index));
 	ObjectAddressSet(parent, RelationRelationId, RelationGetRelid(parent_index));
-	recordDependencyOn(&child, &parent, DEPENDENCY_NORMAL);
+	sift_depend(&child, &parent, DEPENDENCY_NORMAL);
 }
 
 void

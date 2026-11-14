@@ -32,6 +32,7 @@
 
 #include "col/am.h"
 #include "col/conn.h"
+#include "core/restrict.h"
 
 static const char *
 skip_ws(const char *p)
@@ -233,7 +234,6 @@ drop_stale_edges(Oid child, List *keep)
 	HeapTuple	tup;
 	List	   *stale = NIL;
 
-	sift_catalog_write_guard("a connection dependency");
 
 	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
 	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(child));
@@ -249,7 +249,7 @@ drop_stale_edges(Oid child, List *keep)
 	systable_endscan(scan);
 	table_close(drel, RowExclusiveLock);
 	foreach_oid(old, stale)
-		deleteDependencyRecordsForSpecific(RelationRelationId, child, DEPENDENCY_NORMAL, RelationRelationId, old);
+		sift_undepend(RelationRelationId, child, DEPENDENCY_NORMAL, RelationRelationId, old);
 	list_free(stale);
 }
 

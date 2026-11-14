@@ -30,6 +30,7 @@
 #include "utils/rel.h"
 
 #include "col/seg.h"
+#include "core/restrict.h"
 #include "table/table.h"
 
 typedef enum OptKind
@@ -356,7 +357,6 @@ config_delete(Relation cfg, Oid relid, const char *name)
 	HeapTuple	tup;
 	bool		found = false;
 
-	sift_catalog_write_guard("a table option");
 	ScanKeyInit(&key, 1, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(relid));
 	scan = systable_beginscan(cfg, config_index(cfg), true, NULL, 1, &key);
 	while (HeapTupleIsValid(tup = systable_getnext(scan)))
@@ -365,7 +365,7 @@ config_delete(Relation cfg, Oid relid, const char *name)
 
 		if (name != NULL && strcmp(TextDatumGetCString(heap_getattr(tup, 2, RelationGetDescr(cfg), &isnull)), name) != 0)
 			continue;
-		CatalogTupleDelete(cfg, &tup->t_self);
+		sift_cat_delete(cfg, &tup->t_self);
 		found = true;
 	}
 	systable_endscan(scan);
@@ -396,7 +396,6 @@ sift_table_set_option(PG_FUNCTION_ARGS)
 	if (PG_ARGISNULL(2))
 		ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("the value of an option must not be NULL"),
 						errhint("sift.table_reset_option takes the option off the table.")));
-	sift_catalog_write_guard("a table option");
 	rel = opt_open(relid, ShareUpdateExclusiveLock);
 	opt_require_owner(rel);
 	id = opt_require(text_to_cstring(PG_GETARG_TEXT_PP(1)));
@@ -406,7 +405,7 @@ sift_table_set_option(PG_FUNCTION_ARGS)
 	values[0] = ObjectIdGetDatum(relid);
 	values[1] = CStringGetTextDatum(opt_desc[id].name);
 	values[2] = CStringGetTextDatum(canon);
-	CatalogTupleInsert(cfg, heap_form_tuple(RelationGetDescr(cfg), values, nulls));
+	sift_cat_insert(cfg, heap_form_tuple(RelationGetDescr(cfg), values, nulls));
 	table_close(cfg, NoLock);
 	opt_changed(relid);
 	relation_close(rel, NoLock);
