@@ -6,9 +6,9 @@
 #ifndef SIFT_AGG_LOOKUP_DIR_INT_H
 #define SIFT_AGG_LOOKUP_DIR_INT_H
 
-#include "common/hashfn.h"
-
+#include "agg/agg.h"
 #include "agg/agg_int.h"
+#include "core/hash.h"
 
 /* the order columns of the rows of a first-row lookup: the value of each (NULL: 0 and isnull) */
 typedef struct FirstOrd
@@ -23,7 +23,7 @@ typedef struct FirstOrd
 typedef struct KeptTry
 {
 	char	   *key;
-	LookFinger *before;
+	LookValid  *before;
 	MemoryContext cx;
 	LookCols	cols;
 } KeptTry;
@@ -87,27 +87,11 @@ kd_int(KeyDict *d, int64 v, MemoryContext cxt)
 	}
 	if ((id = kd_int_find(d, v, &h)) != 0)
 		return id;
-	if (d->n == d->cap)
-	{
-		d->cap *= 2;
-		d->ival = repalloc(d->ival, d->cap * sizeof(int64));
-	}
+	SIFT_GROW(d->ival, d->n, d->cap);
 	d->ival[d->n] = v;
 	d->slot[h] = ++d->n;
 	if (d->n * 2 > d->nslot)
-	{
-		pfree(d->slot);
-		d->nslot *= 2;
-		d->slot = MemoryContextAllocZero(cxt, d->nslot * sizeof(uint32));
-		for (uint32 i = 1; i <= d->n; i++)
-		{
-			int64		x = d->ival[i - 1];
-
-			for (h = kd_int_slot(d, x); d->slot[h]; h = (h + 1) & (d->nslot - 1))
-				;
-			d->slot[h] = i;
-		}
-	}
+		SIFT_SLOT_REHASH(i, d->slot, d->nslot, MemoryContextAllocZero(cxt, d->nslot * sizeof(uint32)), d->n, kd_int_slot(d, d->ival[i - 1]));
 	return d->n;
 }
 
@@ -164,31 +148,21 @@ kd_text(KeyDict *d, const char *b, uint32 len, MemoryContext cxt)
 	d->hv[d->n] = hv;
 	d->slot[h] = ++d->n;
 	if (d->n * 2 > d->nslot)
-	{
-		pfree(d->slot);
-		d->nslot *= 2;
-		d->slot = MemoryContextAllocZero(cxt, d->nslot * sizeof(uint32));
-		for (uint32 i = 1; i <= d->n; i++)
-		{
-			for (h = d->hv[i - 1] & (d->nslot - 1); d->slot[h]; h = (h + 1) & (d->nslot - 1))
-				;
-			d->slot[h] = i;
-		}
-	}
+		SIFT_SLOT_REHASH(i, d->slot, d->nslot, MemoryContextAllocZero(cxt, d->nslot * sizeof(uint32)), d->n, d->hv[i - 1]);
 	return d->n;
 }
 
 static inline uint32
 map_hash_ids(int nkey, const uint32 *kid)
 {
-	uint64		h = UINT64CONST(0x9E3779B97F4A7C15);
+	uint64		h = SIFT_FIB64;
 
 	for (int k = 0; k < nkey; k++)
 	{
-		h = (h ^ kid[k]) * UINT64CONST(0xD6E8FEB86659FD93);
+		h = sift_fold64(h, kid[k]);
 		h ^= h >> 32;
 	}
-	h *= UINT64CONST(0x9E3779B97F4A7C15);
+	h = sift_fib64(h);
 	return (uint32) (h >> 32);
 }
 
@@ -199,13 +173,15 @@ extern void first_order_row(const MapTab *m, const SiftAggFirst *f, FirstOrd *o,
 extern void map_keep_first(MapTab *m, const SiftAggFirst *f, const FirstOrd *o);
 extern void map_keep_agreeing(MapTab *m);
 extern MapTab * map_load_table(AggExec *ex, int ci, MemoryContext cxt);
-extern char * shared_map_key(AggExec *ex, int ci, bool cols);
+extern void map_note_table(AggExec *ex, Relation rel);
+extern char * look_key(AggExec *ex, int ci, bool cols, bool user);
 
 extern void map_index_rows(MapTab *m);
 
+extern int	look_col_att(const SiftAggJoin *j, int c);
 extern MapTab * map_view(MapTab *m, const LookCols *have, const SiftAggJoin *j, MemoryContext mcxt);
 extern MapTab * map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, KeptTry *t);
-extern void map_kept_keep(Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt);
+extern void map_kept_keep(AggExec *ex, Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt);
 extern int map_keyed_dependent(AggExec *ex, int ci, int *att, Oid *typ);
 
 extern Relation map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *keys, int *nkeys);

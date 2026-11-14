@@ -17,7 +17,6 @@
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "pgtime.h"
-#include "utils/datetime.h"
 #include "utils/fmgroids.h"
 #include "utils/numeric.h"
 #include "utils/timestamp.h"

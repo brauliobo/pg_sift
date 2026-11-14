@@ -7,7 +7,6 @@
 
 #include "utils/datum.h"
 #include "utils/float.h"
-#include "utils/fmgrprotos.h"
 
 #include "agg/blob/int.h"
 #include "agg/group/int.h"

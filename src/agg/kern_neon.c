@@ -5,6 +5,7 @@
  * without a NEON kernel (lookups and per group accumulation are gathers and scatters, which NEON has no instruction for) are the
  * scalar functions.
  */
+
 #include "core/host.h"
 
 #define SIFT_VEC_NEON

@@ -4,7 +4,9 @@
  */
 #include "postgres.h"
 
+#include "common/int.h"
 #include "utils/datum.h"
+#include "utils/fmgroids.h"
 #include "utils/float.h"
 
 #include "col/am.h"
@@ -15,6 +17,104 @@
  * table of the distinct values of the aggregate. count(x) counts the ids; the others add the (group, id) pairs to a set (with the
  * times each was added, for sum and avg) that mapped_finish turns into the result with PostgreSQL's own comparison and arithmetic.
  */
+/* the larger or the smaller value of the group of each tuple, as float8smaller and float8larger take it (a tie, and a NaN, take the later value) */
+#define MAPPED_MINMAX(TYPE, LT, GT) \
+	for (int j = 0; j < nsel; j++) \
+	{ \
+		uint32		id = combo_val(ex, a->combo, out[j], a->slot); \
+		uint32		g = ex->gid[j]; \
+		Datum		d; \
+		\
+		if (id == 0 || (ok && !sift_colsrc_bit(ok, j))) \
+			continue; \
+		d = val[id - 1]; \
+		if (acc->n[g] == 0 || !(a->kind == SAA_M_MIN ? LT(TYPE(acc->v[g]), TYPE(d)) : GT(TYPE(acc->v[g]), TYPE(d)))) \
+			acc->v[g] = d; \
+		acc->n[g] = 1; \
+	}
+
+#define MM_LT(x, y) ((x) < (y))
+#define MM_GT(x, y) ((x) > (y))
+#define MM_I16(d) ((int16) DatumGetInt16(d))
+#define MM_I32(d) DatumGetInt32(d)
+#define MM_I64(d) DatumGetInt64(d)
+#define MM_F64(d) DatumGetFloat8(d)
+
+static void
+mapped_minmax(AggExec *ex, int ai, const uint64 *ok, int nsel)
+{
+	SiftAggAgg *a = &ex->spec->agg[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	const uint32 *out = combo_outs(ex, a->combo);
+	const Datum *val = ex->aot[ai].val;
+
+	switch (a->argtype)
+	{
+		case INT2OID:
+			MAPPED_MINMAX(MM_I16, MM_LT, MM_GT)
+			break;
+		case INT4OID:
+		case DATEOID:
+			MAPPED_MINMAX(MM_I32, MM_LT, MM_GT)
+			break;
+		case FLOAT8OID:
+			MAPPED_MINMAX(MM_F64, float8_lt, float8_gt)
+			break;
+		default:
+			MAPPED_MINMAX(MM_I64, MM_LT, MM_GT)
+	}
+}
+
+/* the value of each tuple added to its group: sum(int2), sum(int4) in an int8 that raises PostgreSQL's overflow error, the other aggregates through their transition function */
+static void
+mapped_sum(AggExec *ex, int ai, const uint64 *ok, int nsel)
+{
+	SiftAggAgg *a = &ex->spec->agg[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	const uint32 *out = combo_outs(ex, a->combo);
+	const Datum *val = ex->aot[ai].val;
+	bool		i8 = a->kind == SAA_M_PG && (a->aggfn == F_SUM_INT4 || a->aggfn == F_SUM_INT2);
+
+	for (int j = 0; j < nsel; j++)
+	{
+		uint32		id = combo_val(ex, a->combo, out[j], a->slot);
+		uint32		g = ex->gid[j];
+
+		if (id == 0 || (ok && !sift_colsrc_bit(ok, j)))
+			continue;
+		if (a->kind != SAA_M_PG)
+		{
+			double		x = DatumGetFloat8(val[id - 1]);
+
+			acc->d[g] += x;
+			if (!isfinite(x))
+				acc->nf[g] = 1;
+			else
+				ex->amax[ai] = Max(ex->amax[ai], fabs(x));
+		}
+		else if (i8)
+		{
+			int64		x = a->aggfn == F_SUM_INT4 ? DatumGetInt32(val[id - 1]) : DatumGetInt16(val[id - 1]);
+
+			if (!acc->nf[g])
+				acc->v[g] = Int64GetDatum(x);
+			else if (pg_add_s64_overflow(DatumGetInt64(acc->v[g]), x, &x))
+				ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE), errmsg("bigint out of range")));
+			else
+				acc->v[g] = Int64GetDatum(x);
+			acc->nf[g] = 1;
+		}
+		else
+		{
+			bool		has = acc->nf[g];
+
+			pgagg_step(ex->pgagg[ai], ex->pgstate, a->collid, ex->comcxt, &acc->v[g], &has, val[id - 1]);
+			acc->nf[g] = has;
+		}
+		acc->n[g]++;
+	}
+}
+
 void
 mapped_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 {
@@ -22,6 +122,16 @@ mapped_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 	AggAcc	   *acc = &ex->acc[ai];
 	const uint32 *out = combo_outs(ex, a->combo);
 
+	if (saa_m_minmax_direct(a->kind, a->argtype))
+	{
+		mapped_minmax(ex, ai, ok, nsel);
+		return;
+	}
+	if (saa_m_sumavg_direct(a->kind, a->restype))
+	{
+		mapped_sum(ex, ai, ok, nsel);
+		return;
+	}
 	for (int j = 0; j < nsel; j++)
 	{
 		uint32		id = combo_val(ex, a->combo, out[j], a->slot);

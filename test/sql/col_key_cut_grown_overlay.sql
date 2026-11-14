@@ -1,0 +1,38 @@
+-- New rows of a key_cut index in partitions are promoted into a segment that holds rows of every key. Once it is as large as half a partition it overlaps
+-- every partition, as the runs of a build do, but it is a few percent of the index and the rewrite that takes it in rewrites all the partitions it meets:
+-- that is churn, which waits for the WAL budget, and not the build's rewrite, which does not.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+SET sift.vacuum_rewrite_limit = 1;
+SET sift.col_auto_merge_partition_kb = 512;
+SET sift.col_auto_merge_wal_pct = 5;
+SET sift.test_col_segment_kb = 7000;
+SET sift.col_build_key_ranges = off;
+
+CREATE TABLE go (id int, tenant_id int, d date, amount int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO go SELECT i, (i * 7919) % 400, date '2026-01-01' + (i * 31) % 300, i % 100, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) FROM generate_series(1, 168960) i;
+VACUUM (FREEZE, ANALYZE) go;
+CREATE INDEX go_idx ON go USING sift_col (id, tenant_id, d, amount, pad) WITH (key_cut = 'tenant_id', dict_lookup = off);
+
+-- the runs of the build overlap each other and are the index: their rewrite is due at once, whatever the WAL budget
+SELECT sift.col_maintenance_due('go_idx', true) AS build_due;
+SELECT sift.col_maintain('go_idx') AS partitioned;
+SELECT sift.col_maintenance_due('go_idx', true) AS due_after_build;
+
+-- 12,000 new rows over all the tenants, promoted: a segment of at least half a partition that meets every partition, 6% of the index
+INSERT INTO go SELECT 200000 + i, (i * 7919) % 400, date '2026-01-01' + (i * 31) % 300, i % 100, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) FROM generate_series(1, 12000) i;
+SELECT sift.col_promote('go_idx');
+SELECT count(*) FILTER (WHERE bytes * 2 >= 512 * 1024) AS overlay_partition_sized
+  FROM sift.col_segments('go_idx') WHERE kind = 'immutable' AND rows = 12000;
+
+-- the automatic rewrite waits for the WAL of the churn that makes it worth its bytes; the manual rule still sees the overlap
+SELECT sift.col_maintenance_due('go_idx', true) AS due_automatic;
+SELECT sift.col_maintenance_due('go_idx', false) AS due_manual;
+SELECT sift.col_maintain('go_idx') AS rewritten;
+SELECT sift.col_verify('go_idx', true);
+SELECT sift.col_maintenance_due('go_idx', false) AS due_again;
+DROP TABLE go;
+DROP EXTENSION pg_sift;

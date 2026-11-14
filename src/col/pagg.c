@@ -6,18 +6,13 @@
 #include <math.h>
 
 #include "access/table.h"
-#include "catalog/index.h"
-#include "catalog/pg_type_d.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/lsyscache.h"
-#include "utils/memutils.h"
-#include "utils/numeric.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
-#include "utils/timestamp.h"
 #include "utils/tuplestore.h"
 
 #include "col/am.h"
@@ -614,11 +609,9 @@ typedef struct PaggScan
 static void
 pagg_open(PaggScan *ps, Oid indexoid)
 {
-	ps->index = index_open(indexoid, AccessShareLock);
-	if (!sift_col_is_index(ps->index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(ps->index))));
+	ps->index = sift_col_open_index(indexoid, AccessShareLock);
 	ps->heap = table_open(ps->index->rd_index->indrelid, AccessShareLock);
-	ps->src = sift_col_open(ps->heap, ps->index, GetActiveSnapshot(), CurrentMemoryContext, 0);
+	ps->src = sift_col_open(ps->heap, ps->index, GetActiveSnapshot(), CurrentMemoryContext, 0, NULL);
 	sift_col_begin(ps->src, NULL, 0, 0, PG_UINT32_MAX);
 }
 

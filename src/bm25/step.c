@@ -11,24 +11,18 @@
 #include "catalog/index.h"
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
-#include "common/int.h"
 #include "executor/executor.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "port/pg_bswap.h"
-#include "postmaster/bgworker.h"
-#include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
-#include "tcop/tcopprot.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
-#include "utils/wait_event.h"
 #include "utils/tuplesort.h"
 #include "utils/timestamp.h"
 
-#include "bm25/am.h"
 #include "bm25/analyze.h"
 #include "bm25/build.h"
 #include "core/compat.h"
@@ -37,8 +31,6 @@
 #include "bm25/maint_int.h"
 #include "bm25/merge.h"
 #include "bm25/wbuf.h"
-#include "core/ops.h"
-#include "core/sql.h"
 #include "core/varint.h"
 #include "core/visibility.h"
 
@@ -112,7 +104,7 @@ sift_maint_record_failure(Oid indexoid, ErrorData *err)
 	Relation	index;
 
 	StartTransactionCommand();
-	index = try_index_open(indexoid, RowExclusiveLock);
+	index = sift_try_open_index(indexoid, RowExclusiveLock);
 	if (index != NULL)
 	{
 		sift_dir_update(index, &(SiftDirChange) {.fn = stamp_failure,.arg = err,.extra = InvalidBuffer});
@@ -327,6 +319,7 @@ doctext_open(Relation index)
 		return NULL;
 #endif
 	d = palloc0(sizeof(DocText));
+	SIFT_TEST_GATE(sift_test_worker_gate && MyBackendType == B_BG_WORKER, 7);
 	d->heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	d->info = BuildIndexInfo(index);
 	d->estate = CreateExecutorState();
@@ -516,8 +509,8 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	int			npages;
 	TimestampTz start = GetCurrentTimestamp();
 
-	sift_wbuf_flag_sealed(index, sealed);
-	pages = sift_wbuf_pages(index, sealed, &npages);
+	sift_lane_flag_sealed(index, sealed);
+	pages = sift_lane_extents(index, sealed, &npages);
 	sift_wt_expect(wt, extents_bytes(pages, npages));
 	sort = sort_docs(index, sealed);
 	any = write_docs(index, wt, sort, sift_store_new_gen(index), &neu);

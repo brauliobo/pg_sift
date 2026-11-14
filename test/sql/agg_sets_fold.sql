@@ -10,7 +10,7 @@ INSERT INTO sf_events
 SELECT g, g % 211, CASE WHEN g % 17 = 0 THEN NULL ELSE 'c' || g % 6 END, CASE WHEN g % 13 = 0 THEN NULL ELSE 'k' || g % 4 END, (ARRAY['paid', 'open', 'void'])[1 + g % 3],
        CASE WHEN g % 29 = 0 THEN NULL ELSE (g % 997) / 7.0 END, CASE WHEN g % 23 = 0 THEN NULL ELSE g % 31 END, (g % 101) / 8.0, date '2025-01-01' + g % 90
 FROM generate_series(1, 40000) g;
-CREATE INDEX sf_events_col ON sf_events USING sift_col (id, dim_a_id, country, category, status, amount, qty, score, created) WITH (rollup_dims = 'country, category, status');
+CREATE INDEX sf_events_col ON sf_events USING sift_col (id, dim_a_id, country, category, status, amount, qty, score, created) WITH (rollup_columns = 'country, category, status');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) sf_events;
 SET sift.agg_force = on;
 

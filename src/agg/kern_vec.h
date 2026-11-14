@@ -5,8 +5,6 @@
  * (agg/vnum.c) wraps (unsigned lanes): the caller has proved that no value leaves int64.
  */
 
-#include "core/simd_isa.h"
-
 #define AKV_VB SIFT_V_BYTES
 
 typedef uint64 akv_u __attribute__((vector_size(AKV_VB), aligned(8), may_alias));
@@ -18,7 +16,6 @@ typedef double akv_f64 __attribute__((vector_size(AKV_VB), aligned(8), may_alias
 #define AKV_L		(AKV_VB / 8)
 #define AKV_L32		(AKV_VB / 4)
 #define AKV_LD(p)	(*(const akv_u *) (p))
-#define AKV_ST(p, x) (*(akv_u *) (p) = (x))
 
 #ifndef AKV_NO_ABSMAX
 static uint64

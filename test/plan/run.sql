@@ -57,6 +57,7 @@ BEGIN
 	ELSIF current_setting('plangate.lane', true) LIKE '%@%' THEN
 		anyband := true; plan := 'either';	-- a size with no bands recorded (plangate.sh --rows): the results and the loses are checked
 	END IF;
+	IF band[1] = 'any' THEN anyband := true; band := ARRAY['-', NULL]; END IF;	-- the tag `normal any`: a scan path that exists on some minors of the server only
 	PERFORM plangate.path('native');
 	native := plangate.cost(q);
 	err := coldiff.materialize(q, 'pg_native');
@@ -103,7 +104,7 @@ END $$;
 
 -- every shape of a file whose name matches `pattern`: a shape starts at its `-- name:` line
 CREATE FUNCTION plangate.run_all(shapes text, runs int, pattern text DEFAULT '') RETURNS void LANGUAGE sql AS $$
-	SELECT plangate.run(s, runs) FROM regexp_split_to_table(shapes, E'\n(?=-- name: )') s WHERE s ~ ('^-- name: ' || pattern) $$;
+	SELECT plangate.run(s, runs) FROM regexp_split_to_table(shapes, E'\n(?=-- name: )') s WHERE substring(s FROM '^-- name: (\S+)') ~ pattern $$;
 
 -- the `-- expect:` line each shape would have from this run: its plan (the chosen one where it is new) and a band of a factor of 2 either way, in 2 significant digits
 CREATE VIEW plangate.suggestions AS

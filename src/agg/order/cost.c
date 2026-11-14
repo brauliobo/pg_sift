@@ -39,7 +39,7 @@ topn_value(PlannerInfo *root, Node *e, int64 unknown)
 bool
 topn_bounds(Query *parse, PlannerInfo *root, double *count, double *offset)
 {
-	if (parse->limitCount == NULL || parse->limitOption != LIMIT_OPTION_COUNT || !topn_bound_ok(parse->limitCount) || !topn_bound_ok(parse->limitOffset))
+	if (parse->limitCount == NULL || (parse->limitOption != LIMIT_OPTION_COUNT && parse->limitOption != LIMIT_OPTION_WITH_TIES) || !topn_bound_ok(parse->limitCount) || !topn_bound_ok(parse->limitOffset))
 		return false;
 	*count = topn_value(root, parse->limitCount, TOPN_ASSUMED_ROWS);
 	*offset = parse->limitOffset ? topn_value(root, parse->limitOffset, 0) : 0;

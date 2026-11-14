@@ -10,13 +10,13 @@
 # the regression tests of its own area there, not of the whole stack above it; the push to main and the nightly run use the rows below, which run the stack.
 #
 # groups (a job may be in several: the stack col, agg and table is one chain of code, so a change of one runs the groups above it)
-=bm25	^(installcheck-(roles_|sift_basic|limits_|core_radix_sort|errors_hints|array_any_|facet_counts|field_weights|index_parts|segfmt_mixed|analy[sz]|and_many|build_|count_scan|dead_|bm25_buffer_share|dirty_query|edge_|fuzzy_|facets|fields|filter_pushdown|include_|lang_|index_build_|insert_backpressure|kernels_|list_slice_|live_stats|maint_|merge_fanin|merge_heal|merge_parts|merge_ranges|merge_slope|ops_info|parallel_|phrase_|plan|position_|prefix_|promote_spill|query_|rank_|read_|recheck_|reference|rls_stats|scan_|store_|vacuum_|verify_|wbuf_|write_)|tap-0(0[1-5]|12)_|tap-shell-(compat_|old_lib_refusal|extension_lifecycle|roles_|upgrade_check|pg_upgrade|upgrade_settings|replica_mixed|index_|leakcheck_gate|maint_|replication|store_|vacuum_count|vacuum_standby_cut)|difftest(-nopos|-mutants)?$|soak(-gin)?$)
-=col	^(installcheck-(roles_|col_|segfmt_mixed|facet_counts|colcodec_|shred_|cache_discard)|tap-shell-(col_|instr_budget_lib|leaf_stats_shared|compat_matrix|sb_mask_small)|tap-01[56]_space|soak-col$|difftest-col)
+=bm25	^(installcheck-(roles_|sift_basic|bm25_bitmap_recheck|bm25_wbuf_read_promote|bm25_wbuf_wide_bloom|bm25_budgets|bm25_dead_windows|bm25_rescan_context|limits_|core_radix_sort|errors_hints|array_any_|facet_counts|field_weights|index_parts|segfmt_mixed|analy[sz]|and_many|build_|count_scan|dead_|bm25_buffer_share|dirty_query|edge_|fuzzy_|facets|fields|filter_pushdown|include_|lang_|index_build_|insert_backpressure|kernels_|list_slice_|live_stats|maint_|merge_fanin|merge_heal|merge_parts|merge_ranges|merge_slope|ops_info|parallel_|phrase_|plan|position_|prefix_|promote_spill|query_|rank_|read_|recheck_|reference|rls_stats|scan_|store_|vacuum_|verify_|wbuf_|write_)|tap-0(0[1-5]|12|22)_|tap-shell-(bm25_cold_stems|compat_|old_lib_refusal|extension_lifecycle|roles_|upgrade_check|pg_upgrade|upgrade_settings|replica_mixed|publication_all_tables|index_|leakcheck_gate|maint_|replication|store_|vacuum_count|vacuum_parallel_merge|vacuum_standby_cut)|difftest(-nopos|-mutants(-[123])?|-[12])?$|soak(-gin)?$)
+=col	^(installcheck-(roles_|settings_removed|reloption_aliases|col_|segfmt_mixed|facet_counts|colcodec_|shred_|cache_discard)|tap-shell-(col_|reloption_alias_dump|maint_lock_order|instr_budget_lib|leaf_stats_shared|compat_matrix|sb_mask_small)|tap-01[56]_space|soak-col$|difftest-col)
 =layout	^tap-shell-scaling_slope$
-=agg	^(installcheck-(roles_|agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(agg_first_statement|interrupt_dict_filter|relcache_slots|vacuum_agg|topn_vacuum|leak_path_vets|sb_mask_small|verdict_shared)|tap-0(18|20)_lookup_shared|difftest-(col|fuzz)|plan-gate|plan-budget|exec-budget)
-=tbl	^(installcheck-(roles_|tbl_|segfmt_mixed)|tap-shell-(old_lib_refusal|tbl_load_workers|tbl_load_ring|tbl_load_stream)|tap-0[0-9]+_(tbl|truncate|space)|difftest-col|difftest-fuzz-tbl)
+=agg	^(installcheck-(roles_|slot_owner|agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(lookup_shared_claim|agg_first_statement|fresh_backend|interrupt_dict_filter|relcache_slots|vacuum_agg|topn_vacuum|leak_path_vets|sb_mask_small|verdict_shared)|tap-0(18|20)_lookup_shared|tap-023_dimmap|difftest-(col|fuzz|txn(-shapes)?|bm25)|plan-gate|plan-budget|exec-budget|corpus)
+=tbl	^(installcheck-(roles_|settings_removed|tbl_|segfmt_mixed)|tap-shell-(old_lib_refusal|tbl_twin_fuzz(_[b-h])?|tbl_first_writer_crash|tbl_load_workers|tbl_load_ring|tbl_load_stream|tbl_options_cluster)|tap-0[0-9]+_(tbl|truncate|space)|difftest-col|difftest-fuzz-tbl)
 =dec	^(fuzz|hardened|tools-build)$
-=any	^(release-library-regress|installcheck-json_build_object|coverage|coverage-pct|reference-live|options-live|isa-baseline|isolation(-emulated)?|static)$
+=any	^(release-library-regress(-[12])?|installcheck-json_build_object|coverage|coverage-pct|reference-live|options-live|isa-baseline|isolation(-emulated)?|static)$
 # the search the other areas call
 =search	^installcheck-(col_search|tbl_bm25|aggstub_)
 # what the fast tier of a pull request runs besides the tests of the area: the proof of the coverage table and the emulated isolation tests (a few seconds each)
@@ -27,7 +27,7 @@
 # the CI machinery: it runs every job, and builds nothing the focused performance gate measures
 ^(scripts/(ci/|(ci|pgtest|tap|leakcheck|cpu_time|simd_level|pressure|ci_stats|areas|pg19-build|sha256)\.|leftovers\.(sql|allow)$)|test/t/(lib|SiftTest)|\.github/(workflows/ci\.yml|actions/pg19/))	.|{perf}
 ^test/fixtures/	^tap-shell-compat_2x|{ci}
-^test/agg_(helpers|preagg_helpers|preagg_units|check_query|check_pushed|probe_helpers|rows_helpers|same_helpers|cte_inline_fixture)\.sql$	^installcheck-(agg_|col_|tbl_agg)|{ci}
+^test/agg_(helpers|having_helpers|preagg_helpers|preagg_units|check_query|check_pushed|probe_helpers|rows_helpers|same_helpers|cte_inline_fixture)\.sql$	^installcheck-(agg_|col_|tbl_agg)|{ci}
 ^test/sift_plan\.sql$	^installcheck-(count_scan|filter_pushdown|rank_)|{ci}
 ^test/roles_helpers\.sql$	^installcheck-roles_|{ci}
 ^test/(sql|expected)/(.+)\.(sql|out)$	^installcheck-\2$|{ci}
@@ -37,8 +37,12 @@
 ^test/matrix/	^coverage-pct$|{ci}
 ^test/plan/	^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$|{ci}
 ^test/diff/	^difftest|{ci}
-^test/fuzz/[^d]	^(fuzz|hardened|tools-build)$|{ci}
-^test/fuzz/diff_fuzz	^difftest-fuzz(-tbl)?(-[12])?$|{ci}
+^test/fuzz/[^dtbc]	^(fuzz|hardened|tools-build)$|{ci}
+^test/fuzz/diff_fuzz	^difftest-fuzz(-tbl|-having)?(-[12])?$|{ci}
+^test/fuzz/tbl_twin_fuzz	^tap-shell-tbl_twin_fuzz(_[b-h])?$|{ci}
+^test/fuzz/col_twin_fuzz	^tap-shell-col_twin_fuzz(_b)?$|{ci}
+^test/fuzz/txn_fuzz	^difftest-txn(-shapes)?$|{ci}
+^test/fuzz/bm25_fuzz	^difftest-bm25$|{ci}
 ^test/isolation/	^isolation|{ci}
 # the fast tier: the tests of the area of a source file (the stack above it, and the other versions, run on the push to main)
 ^src/bm25/	fast:{bm25}|{search}|{cheap}
@@ -67,13 +71,14 @@
 ^scripts/coverage\.sh$	^(coverage|difftest-col)
 ^scripts/hardened\.sh$	^hardened$
 ^scripts/isa_check\.sh$	^isa-baseline$
-^scripts/release-library-check\.sh$	^release-library-regress$
+^scripts/release-library-check\.sh$	^release-library-regress(-[12])?$
 ^scripts/isolation\.sh$	^isolation
 ^scripts/static\.sh$	^static$
 ^scripts/plangate\.sh$	^plan-gate
 ^scripts/plan-margin\.sh$	-
 ^bench/steps/plan_budget\.py$	^plan-budget$
 ^(scripts/exec-budget\.sh|bench/steps/cases\.sh|bench/steps/cases/.*|test/plan/execution\.tsv)$	^exec-budget$
+^(scripts/corpus(-local)?\.sh|test/corpus/)	^corpus$
 ^scripts/(replication|check-portable)\.sh$	gh:replication|gh:sqlite|gh:mariadb
 ^(sqlite/|packaging/sqlite/|scripts/package-sqlite\.sh|scripts/docker-cpus\.sh)	gh:sqlite
 ^(mariadb/|packaging/mariadb/|scripts/package-mariadb\.sh|scripts/docker-cpus\.sh)	gh:mariadb
@@ -83,7 +88,8 @@
 ^Formula/	gh:macos|{perf}
 ^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|META\.json|LICENSE|NOTICE|\.(git|docker)ignore)	-
 ^scripts/neutral\.(denylist|words|allow|since)$	-
-^scripts/(pgdg-repo|apt-install|lint-cache|check-neutral|check-aarch64-baseline|check-testing-regress|check-errors|check-approx|check-memory|check-pg-includes|check-bench-fresh|check-slugs|check-scratch|check-hosted\.py|scratch\.allow|pg-includes\.tsv|check-readme-tables|gen-docs|gen-refusals|check-file-size|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|instr-budget|instr-budget-zone|instr-budget-fetch|check-kernels|kernels\.allow|bench-cases\.allow|instr-budget-ungrouped|instr-budget-vet|instr-budget-wbuf|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|gen-options|gen-messages|expected-messages-check\.py|genlib|options-released|limits\.allow|refusals\.allow)	-
+^(scripts/fresh-psql\.py|test/fresh/|test/t/fresh_backend\.sh)	tap-shell-fresh_backend
+^scripts/(pgdg-repo|apt-install|lint-cache|check-neutral|check-aarch64-baseline|check-testing-regress|check-errors|check-guards|check-approx|check-memory|check-pg-includes|check-undefined|check-alternates|check-quick-skip|quick-skip\.allow|check-bench-fresh|check-slugs|check-scratch|check-hosted\.py|scratch\.allow|pg-includes\.tsv|check-readme-tables|gen-docs|gen-refusals|check-file-size|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|instr-budget|instr-budget-zone|instr-budget-fetch|check-kernels|kernels\.allow|bench-cases\.allow|instr-budget-ungrouped|instr-budget-vet|instr-budget-wbuf|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|gen-options|gen-messages|expected-messages-check\.py|genlib|options-released|limits\.allow|refusals\.allow)	-
 ^scripts/old-lib-check\.sh$	^tap-shell-old_lib_refusal$
 ^scripts/instr-budget-lib\.sh$	^tap-shell-instr_budget_lib$
 ^(bench/scaling/|scripts/scaling-gate\.sh$)	^tap-shell-scaling_slope$
@@ -91,11 +97,11 @@
 ^(Makefile$|src/core/(sift|page|limits)\.h$|src/col/api/(format|meta)\.h$|src/(bm25/(count|cscan_exec|iter|planner_path|prefix|rank_search|writer)|col/(build/run|build_par|seg/(points|verify)|test/query))\.c$)	{layout}
 ^src/core/visibility\.c$	^tap-shell-sb_mask_small$
 ^scripts/upgrade[-_]check\.(sh|sql)$	^tap-shell-upgrade_check$
-^scripts/(static\.baseline|build-bench\.sql|lint\.sh|test-ci-claim\.sh|test-affected-untracked\.sh|test-affected-wide\.sh|test-ci-stop\.sh|test-ci-ready\.sh|test-scaling-gate\.sh|check-pg-bare\.sh|pg-bare\.allow|check-scaling-triggers\.sh|check-format-literals\.sh|check-compat-calls\.sh|check-package-text\.sh|check-expected-oracle\.py|expected-oracle\.allow|test-gen-docs-skip\.sh|format-literals\.tsv)	-
+^scripts/(static\.baseline|build-bench\.sql|lint\.sh|test-ci-claim\.sh|test-affected-untracked\.sh|test-affected-wide\.sh|test-ci-stop\.sh|test-ci-ready\.sh|test-scaling-gate\.sh|check-pg-bare\.sh|check-tap-timeouts\.sh|pg-bare\.allow|check-scaling-triggers\.sh|check-format-literals\.sh|check-compat-calls\.sh|check-relcache-slots\.sh|check-package-text\.sh|check-expected-oracle\.py|expected-oracle\.allow|test-gen-docs-skip\.sh|format-literals\.tsv)	-
 ^scripts/source-snapshot\.sh$	^(hardened|assert|valgrind)$
 ^scripts/port-isa-check\.sh$	gh:sqlite|gh:mariadb
 # the focus table and its generator: read by `scripts/ci.sh affected --focus` only (a local shortcut; CI runs the jobs of the map above)
-^scripts/(focus(-gen\.sh|-pins\.tsv|\.tsv)|moved-sources\.tsv)$	-
+^scripts/(focus(-gen\.sh|-pins\.tsv|/[A-Za-z0-9_]+\.tsv)|moved-sources\.tsv)$	-
 # the landing script: run by people, by no job
 ^scripts/land(\.sh|-selftest\.sh|-union\.py)$	-
 
@@ -106,8 +112,8 @@
 =perf	^gh:perf$
 =ci	^gh:ci$
 ^sql/.*\.sql$	.
-^scripts/(perf-select\.py|test-perf-select\.py)$	{perf}
+^scripts/(perf-select\.py|test-perf-select\.py|dry-perf-gate(\.sh|\.py|/.*))$	{perf}
 ^(bench/steps/perf_gate(\.py|/.*)|bench/perf/.*|\.github/workflows/performance\.yml)$	{perf}
 # the weights of the deep full tier, read by scripts/ci.sh only to cut the shards (the jobs run are those of the map above)
-^scripts/(weights-deep\.tsv|ci-times\.py)$	-
+^scripts/(weights-(deep|full|quick)\.tsv|ci-times\.py)$	-
 ^(scripts/(apply-rename\.(py|sh)|private-overlay\.sh)|test/README\.md)$	-

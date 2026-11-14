@@ -13,6 +13,7 @@
 
 #define PS_START		1024		/* pairs of the first array */
 #define PS_CHUNK		8192		/* pairs a run is read in */
+#define PS_PROBE		(1 << 20)	/* pairs of the array at which its repeats are looked at before it grows */
 
 typedef struct PsRun
 {
@@ -34,6 +35,7 @@ struct PairSort
 	uint64	   *runlen;
 	uint32		nruns;
 	uint32		runcap;
+	bool		unique;			/* the array lost less than a quarter of its pairs to repeats at PS_PROBE: it grows without looking */
 	BufFile    *out;			/* the merged distinct pairs */
 	uint64		nout;
 	uint64		pos;			/* the pairs given so far */
@@ -95,7 +97,7 @@ ps_write_run(PairSort *s)
 	if (s->nruns == s->runcap)
 	{
 		s->runcap = s->runcap ? s->runcap * 2 : 8;
-		s->runlen = s->runlen ? repalloc(s->runlen, s->runcap * sizeof(uint64)) : MemoryContextAlloc(s->cxt, s->runcap * sizeof(uint64));
+		SIFT_REGROW_IN(s->cxt, s->runlen, s->runcap * sizeof(uint64));
 	}
 	ps_strip(s);
 	BufFileWrite(s->runs, s->buf, s->n * sizeof(uint64));
@@ -103,15 +105,26 @@ ps_write_run(PairSort *s)
 	s->n = 0;
 }
 
-/* the array is full: it grows up to hash memory, then the repeats go, and what is still more than half of it goes out as a run */
+/*
+ * the array is full: it grows up to hash memory, then the repeats go, and what is still more than half of it goes out as a run. A set of many repeats
+ * would grow to hash memory before it lost any, so the array is stripped at PS_PROBE pairs, and again each time it fills while the repeats were a quarter of it
+ */
 static void
 ps_room(PairSort *s)
 {
+	if (s->cap >= PS_PROBE && s->cap < s->maxcap && s->nruns == 0 && !s->unique)
+	{
+		uint64		n = s->n;
+
+		s->unique = ps_strip(s) > n - n / 4;
+		if (s->n <= s->cap / 2)
+			return;
+	}
 	if (s->cap < s->maxcap)
 	{
 		uint64		cap = Min(s->cap ? s->cap * 2 : PS_START, s->maxcap);
 
-		s->buf = s->buf ? repalloc_huge(s->buf, cap * sizeof(uint64)) : MemoryContextAllocHuge(s->cxt, cap * sizeof(uint64));
+		SIFT_REGROW_HUGE_IN(s->cxt, s->buf, cap * sizeof(uint64));
 		s->cap = cap;
 		return;
 	}

@@ -1,0 +1,77 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1fill s2set s2join s1b s1upd s1del s1ins s2join s2anti s1commit s2join s2anti
+step s1fill: SELECT sift.col_maintain('iso_f_ev_c');
+col_maintain
+------------
+t           
+(1 row)
+
+step s2set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s2join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_f_ev e JOIN iso_f_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s1b: BEGIN;
+step s1upd: UPDATE iso_f_dim SET label = 'changed' WHERE id <= 5;
+step s1del: DELETE FROM iso_f_dim WHERE id = 7;
+step s1ins: INSERT INTO iso_f_dim VALUES (900, 'new', 0);
+step s2join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_f_ev e JOIN iso_f_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   6|   
+(1 row)
+
+step s2anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_f_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_f_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   6|   
+(1 row)
+
+step s1commit: COMMIT;
+step s2join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_f_ev e JOIN iso_f_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   6|   
+(1 row)
+
+step s2anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_f_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_f_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   6|   
+(1 row)
+
+
+starting permutation: s1fill s2set s1b s1upd s1del s1ins s2join s1abort s2join s2anti
+step s1fill: SELECT sift.col_maintain('iso_f_ev_c');
+col_maintain
+------------
+t           
+(1 row)
+
+step s2set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s1b: BEGIN;
+step s1upd: UPDATE iso_f_dim SET label = 'changed' WHERE id <= 5;
+step s1del: DELETE FROM iso_f_dim WHERE id = 7;
+step s1ins: INSERT INTO iso_f_dim VALUES (900, 'new', 0);
+step s2join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_f_ev e JOIN iso_f_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   6|   
+(1 row)
+
+step s1abort: ROLLBACK;
+step s2join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_f_ev e JOIN iso_f_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s2anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_f_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_f_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+

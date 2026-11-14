@@ -12,12 +12,8 @@
  */
 #include "core/host.h"
 
-#include <math.h>
-
 #include "bm25/eval.h"
 #include "bm25/eval_int.h"
-#include "bm25/kernels.h"
-#include "bm25/wbuf.h"
 #include "bm25/prefix.h"
 #include "bm25/segment.h"
 
@@ -43,7 +39,6 @@ sift_state_open_dir(Relation index, MemoryContext mcxt, const SiftDirSnapshot *d
 				 errmsg("index \"%s\" was built with other analyzer options", RelationGetRelationName(index)),
 				 errhint("Use REINDEX to apply the new options.")));
 	st->analyzer = sift_analyzer_create(&cfg, mcxt);
-	st->opts = sift_index_options(index);
 	st->priv = palloc0(Max(st->dir.nsegs, 1) * sizeof(SiftSegment *));
 	MemoryContextSwitchTo(old);
 	return st;
@@ -137,8 +132,7 @@ en_leaf(SiftPlan *p, const SiftQNode *node, Place at, const SiftQNode *phrase)
 	if (p->nleaves == p->maxleaves)
 	{
 		p->maxleaves = Max(8, 2 * p->maxleaves);
-		p->leaves = p->leaves ? repalloc(p->leaves, p->maxleaves * sizeof(EvalLeaf)) :
-			MemoryContextAlloc(p->mcxt, p->maxleaves * sizeof(EvalLeaf));
+		SIFT_REGROW_IN(p->mcxt, p->leaves, p->maxleaves * sizeof(EvalLeaf));
 	}
 	p->leaves[p->nleaves] = (EvalLeaf) {.node = node,.scoring = at.positive,.phrase = phrase,
 	.optional = phrase && !at.required};
@@ -316,8 +310,7 @@ expand_add(Expand *e, const char *term, int len, const SiftTermInfo *info)
 	if (e->n == e->cap)
 	{
 		e->cap = Max(4, 2 * e->cap);
-		e->terms = e->terms ? repalloc(e->terms, e->cap * sizeof(LeafTerm)) :
-			MemoryContextAlloc(e->plan->mcxt, e->cap * sizeof(LeafTerm));
+		SIFT_REGROW_IN(e->plan->mcxt, e->terms, e->cap * sizeof(LeafTerm));
 	}
 	t = &e->terms[e->n++];
 	t->term = MemoryContextAlloc(e->plan->mcxt, len);

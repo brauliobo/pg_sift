@@ -3,35 +3,11 @@
  */
 #include "postgres.h"
 
-#include "access/generic_xlog.h"
-#include "access/nbtxlog.h"
-#include "access/parallel.h"
-#include "access/transam.h"
-#include "access/xact.h"
-#include "access/xlog.h"
-#include "access/xloginsert.h"
 #include "executor/instrument.h"
 #include "portability/instr_time.h"
-#include "catalog/pg_class.h"
-#include "catalog/storage.h"
-#include "storage/procarray.h"
-#include "storage/sinval.h"
-#include "catalog/pg_control.h"
-#include "common/int.h"
 #include "miscadmin.h"
-#include "nodes/bitmapset.h"
-#include "storage/bulk_write.h"
-#include "storage/latch.h"
-#include "storage/proc.h"
 #include "storage/read_stream.h"
-#include "storage/smgr.h"
-#include "utils/memutils.h"
-#include "utils/snapmgr.h"
-#include "utils/wait_event.h"
 
-#include "col/col.h"
-#include "bm25/estimate.h"
-#include "core/lane.h"
 #include "core/store.h"
 #include "core/store_int.h"
 
@@ -336,6 +312,13 @@ sr_bytes(SiftStreamReader *sr, uint32 lpage, size_t in, size_t len)
 		corrupt(sr->index, "Read past the %u written bytes of block %u (segment %llu).",
 				SiftPageGetUsed(page), blk, ULL(sr->gen));
 	return SiftPageGetData(page) + in;
+}
+
+/* The next read is a lookup of a place, not a step of a scan in order: the pages after it are not read ahead, whatever the read before it was */
+void
+sift_sr_point(SiftStreamReader *sr)
+{
+	sr->miss_page = -9;
 }
 
 const void *

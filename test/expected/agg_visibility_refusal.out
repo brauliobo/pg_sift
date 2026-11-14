@@ -10,13 +10,13 @@ CREATE INDEX ordered_k ON ordered (k);
 -- point_tid_columns is named: the default chooses id by the statistics of the table, which PostgreSQL 17 and 18 do not give alike at this point
 CREATE INDEX ordered_col ON ordered USING sift_col (id, k, v) WITH (point_tid_columns = 'id');
 NOTICE:  sift_col index "ordered_col": 2 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = k, v; point_tid_columns = id
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = k, v; point_tid_columns = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ordered_col');
 NOTICE:  sift_col index "ordered_col" is column format minor 33, which a library before 3.7 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 CLUSTER ordered USING ordered_k;
 NOTICE:  sift_col index "ordered_col": 2 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = k, v; point_tid_columns = id
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = k, v; point_tid_columns = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ordered_col');
 NOTICE:  sift_col index "ordered_col" is column format minor 33, which a library before 3.7 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.

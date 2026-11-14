@@ -52,6 +52,13 @@ INSERT INTO facts SELECT i, 1 + (i::bigint * 104729) % :np, date '2024-01-01' + 
 CREATE INDEX facts_parent ON facts (parent_id, ts);
 CREATE INDEX facts_col ON facts USING sift_col (id, parent_id, ts, role, val);
 
+-- pings: the latest row of each parent (a sub-select that is the first row of its parent in the order of ts): the order array of ts is grouped by parent_id; ts is unique, status passes one row in 400
+CREATE TABLE pings (id int PRIMARY KEY, parent_id int NOT NULL, ts timestamp NOT NULL, status text NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO pings SELECT i, 1 + (i::bigint * 104729) % :np, timestamp '2024-01-01' + ((i::bigint * 7919) % 100003) * interval '5 minutes', 'st_' || lpad((i % 400)::text, 4, '0')
+	FROM generate_series(1, :n / 3) i;
+CREATE INDEX pings_parent ON pings (parent_id, ts);
+CREATE INDEX pings_col ON pings USING sift_col (id, parent_id, ts, status) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'parent_id');
+
 CREATE TABLE buckets (bucket date PRIMARY KEY, span text NOT NULL);
 INSERT INTO buckets SELECT d::date, CASE WHEN d < date '2025-01-01' THEN 'span_b' ELSE 'span_a' END FROM generate_series(date '2024-01-01', date '2025-12-01', interval '1 month') d;
 
@@ -68,11 +75,11 @@ SELECT format('CREATE INDEX %1$s_parent ON %1$s (parent_id, ts, deleted_at); CRE
 -- the visible fraction of a table prices the index-only scans of the native plan and so every cost ratio of the gate, and a first pass has been seen to set the all-visible bit of only
 -- part of the pages it freezes (a different part each time): a table left with pages that are not all visible gets a second pass, and one that still has them stops the run
 \set unseen 'SELECT count(*) > 0 AS partial, coalesce(string_agg(relname || '' '' || relallvisible || ''/'' || relpages, '', ''), '''') AS tables FROM pg_class WHERE relnamespace = ''public''::regnamespace AND relkind = ''r'' AND relallvisible < relpages'
-VACUUM (FREEZE, ANALYZE) dims, parents, events, facts, buckets, events_part;
+VACUUM (FREEZE, ANALYZE) dims, parents, events, facts, pings, buckets, events_part;
 :unseen \gset
 \if :partial
 \echo gen.sql: pages not all visible after the first VACUUM (allvisible/pages): :tables
-VACUUM (FREEZE, ANALYZE) dims, parents, events, facts, buckets, events_part;
+VACUUM (FREEZE, ANALYZE) dims, parents, events, facts, pings, buckets, events_part;
 :unseen \gset
 \endif
 \if :partial

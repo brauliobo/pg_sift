@@ -3,34 +3,19 @@
  */
 #include "postgres.h"
 
-#include "agg/agg.h"
-
 #if __has_include("col/col.h")
 
-#include "access/genam.h"
-#include "access/relation.h"
-#include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
-#include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "nodes/execnodes.h"
-#include "utils/lsyscache.h"
 #include "utils/memutils.h"
-#include "utils/rel.h"
 
-#include "agg/kern.h"
-#include "agg/pre.h"
 #include "agg/sel.h"
-#include "agg/wide.h"
-#include "core/popcount.h"
 #include "col/col.h"
-#include "col/gpu.h"
-#include "col/pagg.h"
 #include "col/am.h"
 #include "col/enc.h"
 #include "col/pg.h"
-#include "agg/colsrc.h"
 #include "col/shred_pg.h"
 
 #include "agg/col_int.h"
@@ -69,13 +54,21 @@ col_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast)
 
 	if (mode == SRK_NONE)
 		return;
-	if (key != NULL)
+	if (mode == SRK_HASKEY)
+		sift_col_shred_recheck_haskey(k->rc, r->shred, att, leaf - r->first[att], key);
+	else if (key != NULL)
 		sift_col_shred_recheck_member(k->rc, r->shred, att, leaf - r->first[att], key, cast);
 	else
 		sift_col_shred_recheck_set(k->rc, r->shred, att, leaf - r->first[att], mode == SRK_RECORDSET ? SRG_RECORDSET : mode == SRK_CAST ? SRC_JSONCAST : SRC_TEXTIO);
 	for (int i = 0; i < k->nleaf; i++)
 		if (k->leaf[i] == leaf)
+		{
+			k->haskey[i] |= mode == SRK_HASKEY;
+			k->read[i] |= mode != SRK_HASKEY;
 			return;
+		}
+	k->haskey[k->nleaf] = mode == SRK_HASKEY;
+	k->read[k->nleaf] = mode != SRK_HASKEY;
 	k->leaf[k->nleaf++] = leaf;
 }
 
@@ -105,6 +98,36 @@ recheck_flag_leaf(ColSource *src, int leaf, uint64 *rows)
 }
 
 /*
+ * The rows of the key of doc ? 'key' that the heap must tell: the documents that are no object, which the leaf stores as the overflow of a path that leads nowhere. A unit of a
+ * segment that does not say its string roots are flagged (SIFT_SEG_ROOTS) stores such a document as a NULL slot like any missing key, so all its NULL slots are read again.
+ */
+static bool
+recheck_flag_haskey(ColSource *src, int leaf, uint32 nw, uint64 *rows)
+{
+	const SiftColUnit *cu = &src->unit;
+	uint64	   *none = palloc0(Max(nw, 1) * sizeof(uint64));
+	bool		any = false;
+
+	if (col_overflow(src, NULL, leaf) && sift_col_ovf_none_slots(cu, leaf, none))
+	{
+		for (uint32 w = 0; w < nw; w++)
+			rows[w] |= none[w];
+		any = true;
+	}
+	if (!sift_col_unit_roots(cu))
+	{
+		uint32		n;
+		const uint64 *nul = sift_col_null_slots(cu, leaf, &n);
+
+		for (uint32 w = 0; nul != NULL && w < nw; w++)
+			rows[w] |= nul[w];
+		any |= nul != NULL;
+	}
+	pfree(none);
+	return any;
+}
+
+/*
  * Called by `live` for the stored unit the source is at: the rows that hold such a value and are live leave `bits` and become the candidates
  * (k->cand, which the executor may narrow, col_recheck_rows), read again from the heap by the next call of col_next (recheck_pending).
  * Once per unit: the flagged rows are kept, a second call only takes them out of its bits again.
@@ -122,15 +145,19 @@ recheck_collect(ColSource *src, uint32 nrow, uint64 *bits)
 		k->gen = src->ugen;
 		k->taken = false;
 		k->nrow = nrow;
-		k->flag = k->flag ? repalloc(k->flag, Max(nw, 1) * sizeof(uint64)) : MemoryContextAlloc(src->cxt, Max(nw, 1) * sizeof(uint64));
-		k->cand = k->cand ? repalloc(k->cand, Max(nw, 1) * sizeof(uint64)) : MemoryContextAlloc(src->cxt, Max(nw, 1) * sizeof(uint64));
+		SIFT_REGROW_IN(src->cxt, k->flag, Max(nw, 1) * sizeof(uint64));
+		SIFT_REGROW_IN(src->cxt, k->cand, Max(nw, 1) * sizeof(uint64));
 		memset(k->flag, 0, Max(nw, 1) * sizeof(uint64));
 		for (int i = 0; i < k->nleaf; i++)
-			if (col_overflow(src, NULL, k->leaf[i]))
+		{
+			if (k->haskey[i])
+				any |= recheck_flag_haskey(src, k->leaf[i], nw, k->flag);
+			if (k->read[i] && col_overflow(src, NULL, k->leaf[i]))
 			{
 				recheck_flag_leaf(src, k->leaf[i], k->flag);
 				any = true;
 			}
+		}
 		if (!any)
 			return;
 	}
@@ -173,7 +200,7 @@ recheck_pending(ColSource *src)
 	for (uint32 v = 0; v < nw; v++)
 		for (uint64 b = k->cand[v]; b; b &= b - 1)
 			ords[m++] = v * 64 + pg_rightmost_one_pos64(b);
-	k->tid = k->tid ? repalloc(k->tid, m * sizeof(ItemPointerData)) : MemoryContextAlloc(src->cxt, m * sizeof(ItemPointerData));
+	SIFT_REGROW_IN(src->cxt, k->tid, m * sizeof(ItemPointerData));
 	sift_col_row_tids(&src->unit, ords, m, k->tid);
 	pfree(ords);
 	k->npend = m;

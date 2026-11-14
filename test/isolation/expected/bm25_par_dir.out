@@ -1,0 +1,50 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s2lock s1b s1plan s1scan s3i s3p s3d s3v s2unlock s1ref s1c
+step s2lock: SELECT pg_advisory_lock(20983, 5);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) > 0 AS snapshot FROM iso_par;
+snapshot
+--------
+t       
+(1 row)
+
+step s1plan: SELECT iso_par_parallel('SELECT id FROM iso_par WHERE body @@> ''common''') AS parallel_scan;
+parallel_scan
+-------------
+t            
+(1 row)
+
+step s1scan: SELECT count(*) AS n, sum(id) AS ids FROM iso_par WHERE body @@> 'common'; <waiting ...>
+step s3i: INSERT INTO iso_par SELECT g, 'common fresh ' || g || repeat(' filler', 20), repeat('x', 1500) FROM generate_series(5001, 5600) g;
+step s3p: SELECT sift.promote('iso_par_idx') >= 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s3d: DELETE FROM iso_par WHERE id % 3 = 0;
+step s3v: VACUUM iso_par;
+step s2unlock: SELECT pg_advisory_unlock(20983, 5);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1scan: <... completed>
+   n|    ids
+----+-------
+3000|4501500
+(1 row)
+
+step s1ref: SELECT count(*) AS n, sum(id) AS ids FROM iso_par WHERE sift_ref.match(body, 'common');
+   n|    ids
+----+-------
+3000|4501500
+(1 row)
+
+step s1c: COMMIT;

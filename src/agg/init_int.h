@@ -35,6 +35,7 @@ void join_first_rows(AggExec *ex);
 Node *first_param_expr(const SiftAggJoin *j);
 void join_filters(AggExec *ex, MemoryContext caller);
 bool join_none(AggExec *ex);
+bool join_found(AggExec *ex, int ci, int *total, List **add);
 void table_init(AggExec *ex);
 void table_reset(AggExec *ex);
 void scan_buffers(AggExec *ex);

@@ -3,6 +3,7 @@
 -- (a date and the period and week it belongs to) make a few groups in a product of hundreds of thousands, and every doubling copied and zeroed the
 -- arrays of all of it. Past 4,096 slots, when the planner expects fewer than a quarter of them groups, the arrays go to the hash table from the start (seven keys start with 4^7 slots) or as soon as fewer than a sixteenth of the slots hold one. When most rows open a group of their own the table is the hash table from the start, sized for the groups the planner expects. The result is the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE sp_facts (id int, parent_id int, ts date, wk int, dow int, quarter int, amount float8) WITH (autovacuum_enabled = false);
@@ -12,21 +13,7 @@ CREATE STATISTICS sp_facts_days (ndistinct) ON ts, wk, dow FROM sp_facts;
 CREATE INDEX sp_facts_col ON sp_facts USING sift_col (id, parent_id, ts, wk, dow, quarter, amount);
 VACUUM (FREEZE, ANALYZE) sp_facts;
 
-CREATE FUNCTION same_rows(q text) RETURNS TABLE (scan text, rows_pushed bigint, differences bigint) LANGUAGE plpgsql AS $$
-DECLARE
-	j jsonb;
-BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO j;
-	scan := CASE WHEN jsonb_path_exists(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")') THEN 'SiftAgg' ELSE 'normal' END;
-	EXECUTE format('CREATE TEMP TABLE on_rows ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE off_rows ON COMMIT DROP AS %s', q);
-	RESET sift.enable_agg;
-	rows_pushed := (SELECT count(*) FROM on_rows);
-	differences := (SELECT count(*) FROM ((TABLE on_rows EXCEPT TABLE off_rows) UNION ALL (TABLE off_rows EXCEPT TABLE on_rows)) d);
-	DROP TABLE on_rows, off_rows;
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same_rows(q text) RETURNS TABLE (scan text, rows_pushed bigint, differences bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_scan_kind_rows_and_differences(q) $$;
 
 -- three keys that follow the day: 90 groups (the statistics say so) in 128 * 16 * 8 slots
 SELECT * FROM same_rows('SELECT ts, wk, dow, count(*) AS n, sum(amount) AS s, count(DISTINCT parent_id) AS p FROM sp_facts GROUP BY ts, wk, dow');
@@ -53,4 +40,5 @@ SELECT * FROM same_rows('SELECT id % 5000 AS a, parent_id, count(*) AS n, sum(am
 
 DROP FUNCTION same_rows(text);
 DROP TABLE sp_facts, sp_nulls;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

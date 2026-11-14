@@ -8,6 +8,7 @@
 #include "storage/proc.h"
 
 #include "agg/agg.h"
+#include "col/am.h"
 #include "col/dictshm.h"
 #include "agg/memo.h"
 #include "agg/init_int.h"
@@ -76,6 +77,7 @@ par_launch(AggExec *ex)
 	Size		plen = EstimateParamListSpace(ex->params),
 				slen = EstimateSnapshotSpace(ex->snap);
 	int			nw = ex->spec->nworkers;
+	Size		vlen;
 	ScanShared  *ps;
 	AggPar	   *par;
 	MapShared  *ml,
@@ -93,6 +95,7 @@ par_launch(AggExec *ex)
 	ex->gp_n = ex->gp_mine = 0;
 	if (nw <= 0 || IsParallelWorker() || par_scan_small(ex))
 		return;
+	vlen = sift_colsrc_view_size(ex->src);
 	spec_txt = nodeToString(ex->pack);
 	/* the rows of the spine are those of a plan the leader runs once, before the workers start: they read the rows from the shared memory */
 	if (ex->spec->spine)
@@ -139,21 +142,27 @@ par_launch(AggExec *ex)
 		}
 		if (m == NULL)
 			return;
+		if (m->proof)
+			continue;
 		msize += map_share_size(m, &ex->spec->join[cb->join], &ml[ci]);
 		nmaps++;
 	}
 	if (msize > SHARE_MAX)
 		return;
 	dictshm = sift_dictshm_prepare();
+	/* the plans of the children and sub-plans that a worker starts read indexes of their own */
+	sift_col_flush_held();
 	EnterParallelMode();
 	pcxt = CreateParallelContext("pg_sift", "sift_agg_worker_main", nw);
 	shm_toc_estimate_chunk(&pcxt->estimator, shared_size(ex->spec, ex->nvorder));
 	shm_toc_estimate_chunk(&pcxt->estimator, strlen(spec_txt) + 1);
 	shm_toc_estimate_chunk(&pcxt->estimator, plen);
 	shm_toc_estimate_chunk(&pcxt->estimator, slen);
+	if (vlen > 0)
+		shm_toc_estimate_chunk(&pcxt->estimator, vlen);
 	shm_toc_estimate_chunk(&pcxt->estimator, mul_size(MQ_SIZE, nw));
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
-		if (ex->spec->combo[ci].join >= 0 && ex->spec->join[ex->spec->combo[ci].join].params == NIL)
+		if (ex->spec->combo[ci].join >= 0 && ex->spec->join[ex->spec->combo[ci].join].params == NIL && !ex->cs[ci].map->proof)
 			shm_toc_estimate_chunk(&pcxt->estimator, ml[ci].size);
 		else if (ex->spec->combo[ci].join >= 0 && ex->fjoin && ex->fjoin[ex->spec->combo[ci].join] && ex->cs[ci].fmap)
 			shm_toc_estimate_chunk(&pcxt->estimator, mlf[ci].size);
@@ -171,7 +180,7 @@ par_launch(AggExec *ex)
 		shm_toc_estimate_chunk(&pcxt->estimator, strlen(init_txt) + 1);
 	if (dictshm)
 		shm_toc_estimate_chunk(&pcxt->estimator, 1);
-	shm_toc_estimate_keys(&pcxt->estimator, 5 + nmaps + (ex->spec->spine != NULL) + 2 * ncorr + (sub_txt != NULL) + (init_txt != NULL) + dictshm);
+	shm_toc_estimate_keys(&pcxt->estimator, 5 + nmaps + (ex->spec->spine != NULL) + 2 * ncorr + (sub_txt != NULL) + (init_txt != NULL) + dictshm + (vlen > 0));
 	InitializeParallelDSM(pcxt);
 	if (pcxt->seg == NULL)
 	{
@@ -195,6 +204,12 @@ par_launch(AggExec *ex)
 	p = shm_toc_allocate(pcxt->toc, slen);
 	SerializeSnapshot(ex->snap, p);
 	shm_toc_insert(pcxt->toc, KEY_SNAP, p);
+	if (vlen > 0)
+	{
+		p = shm_toc_allocate(pcxt->toc, vlen);
+		sift_colsrc_view_export(ex->src, p);
+		shm_toc_insert(pcxt->toc, KEY_VIEW, p);
+	}
 	p = shm_toc_allocate(pcxt->toc, mul_size(MQ_SIZE, nw));
 	for (int i = 0; i < nw; i++)
 		shm_mq_set_receiver(shm_mq_create(p + (Size) i * MQ_SIZE, MQ_SIZE), MyProc);
@@ -223,7 +238,7 @@ par_launch(AggExec *ex)
 			ex->lookup_shared += mlf[ci].nrow;
 			continue;
 		}
-		if (cb->join < 0 || ex->spec->join[cb->join].params != NIL)
+		if (cb->join < 0 || ex->spec->join[cb->join].params != NIL || ex->cs[ci].map->proof)
 			continue;
 		mp = shm_toc_allocate(pcxt->toc, ml[ci].size);
 		map_share_write(ex->cs[ci].map, &ex->spec->join[cb->join], &ml[ci], mp);
@@ -261,7 +276,7 @@ par_launch(AggExec *ex)
 		return;
 	}
 	if (ps->gpart_n)
-		split_begin(ex, ex->spec->gpart - 1, ps->gpart_n, ((UINT64CONST(1) << ps->gpart_n) - 1) & ~(((UINT64CONST(1) << (pcxt->nworkers_launched + 1)) - 1) & ~UINT64CONST(1)));
+		split_begin(ex, split_leaf(ex->spec), ps->gpart_n, ((UINT64CONST(1) << ps->gpart_n) - 1) & ~(((UINT64CONST(1) << (pcxt->nworkers_launched + 1)) - 1) & ~UINT64CONST(1)));
 	par = MemoryContextAllocZero(ex->cxt, sizeof(AggPar));
 	par->pcxt = pcxt;
 	par->nlaunched = pcxt->nworkers_launched;

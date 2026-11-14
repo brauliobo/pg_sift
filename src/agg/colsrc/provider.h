@@ -14,16 +14,27 @@ typedef struct SiftSrcProvider
 	bool		(*owns_table) (Oid tablerelam);
 	SiftSrcLayout *(*layout) (Relation rel);
 	void		(*stats) (Relation rel, SiftSrcStats *st);
+	/* Optional (NULL: stats reads the *_miss fields): reads them for stats that left them pending (miss_pending) */
+	void		(*miss) (Relation rel, SiftSrcStats *st);
 	/* Optional, required with open_part: what changes the layout, statistics and pre-aggregates of an index besides its catalog entries and its table's (sift_colsrc_stamp) */
 	void		(*stamp) (Relation index, SiftSrcStamp *stamp);
-	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
+	/* view: what view_export wrote for another source of the statement (a parallel worker opens on the directory of its leader), NULL: read the directory now */
+	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
 	/* Optional (NULL: the provider has no partitioned tables, sift_colsrc_can_part): open for a partition read as part of its partitioned table, whose privileges and row security were checked */
-	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
+	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
+	/* Optional (NULL: the source reads no directory it could share): the bytes of the directory the source read, and their number; the participants of a parallel scan number the units of its items by one copy */
+	Size		(*view_size) (void *impl);
+	void		(*view_export) (void *impl, void *buf);
 	void		(*close) (void *impl);
 	/* Optional: make a source that has read nothing (no begin, no test but the filters) ready for another scan of the same statement, the counters at zero; false: it holds state of the last (the caller opens again) */
 	bool		(*rescan) (void *impl);
 	/* Optional: release the buffers the source keeps pinned between units; a partitioned table's scan calls it when it leaves a partition */
 	void		(*unpin) (void *impl);
+	/*
+	 * Optional (NULL: no connected index): the flag `leaf` of a connection of the index (col/conn.h) tells, for every row the source reads, whether the parent row was found when the
+	 * row was stored: NULL with the lineage and the xid of the oldest stamp of the rows, else the reason it does not (a word for EXPLAIN).
+	 */
+	const char *(*conn_proof) (void *impl, int leaf, uint64 *lineage, uint32 *xmin, bool *clean);
 	const SiftSrcLayout *(*source_layout) (const void *impl);
 	uint32		(*nsb) (void *impl);
 	void		(*begin) (void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune);
@@ -97,8 +108,8 @@ typedef struct SiftSrcProvider
 	/* Optional (NULL: none): `next` may hand over a group of exact units as one unit that has pre-aggregates only (nsu > 0); split gives the units of the group back, one by one, to the next calls */
 	void		(*super) (void *impl, bool on);
 	bool		(*whole) (void *impl, int leaf, const int *meas, int nmeas);	/* a unit may be a whole segment whose key table of leaf, with these measures, answers (a superunit that has that histogram only); true: an item of the scan has to span a segment for that, which a source with no superunits does not do alone */
-	/* Optional (NULL: none), after super: the count(*) of the rows of text leaf that pass one test (op a SiftSrcStrOp of EQ, LT, LE, GT, GE or PREFIX against s) and nothing else; a segment whose dictionary holds the rows of each string may be handed over as one unit (nsu > 0) whose unit_count is the rows that pass: the consumer folds them and reads nothing */
-	void		(*count_range) (void *impl, int leaf, SiftSrcStrOp op, const char *s, uint32 len);
+	/* Optional (NULL: none), after super: the count(*) of the rows of text leaf that pass one test (op a SiftColOp of EQ, LT, LE, GT, GE or PREFIX against s) and nothing else; a segment whose dictionary holds the rows of each string may be handed over as one unit (nsu > 0) whose unit_count is the rows that pass: the consumer folds them and reads nothing */
+	void		(*count_range) (void *impl, int leaf, SiftColOp op, const char *s, uint32 len);
 	/* Optional: the same for the comparisons of an integer leaf, all the conditions of the scan: a segment whose global order of the leaf holds the keys counts them */
 	void		(*count_cmp) (void *impl, int leaf);
 	/* Optional: the same for the comparisons of a text leaf that lie between two bounds (a NULL one: none) under the collation collid, all the conditions of the scan: a segment whose global order of the leaf holds the ranks of its strings counts them */
@@ -163,7 +174,8 @@ typedef struct SiftSrcProvider
 	void		(*gorder_range) (void *impl, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the value entries [vs, ve) and the NULL ones [ns, ne) of the pinned group (all of a source that is not grouped) */
 	bool		(*gorder_before) (void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, struct SiftCGOrdBuf *memo);	/* optional: of the entries [vs, ve) of source i, how many come before v in the scan (clo certainly, chi at most); false when the source cannot say */
 	int			(*gorder_exact) (void *impl, int i, SiftKey tid);	/* optional: what is known of the entry of source i at heap address tid: SIFT_GORD_EXACT (a row that is live and visible to every snapshot, so the heap need not confirm it), SIFT_GORD_CHECK (the unit holds the row live, the heap says whether this snapshot sees it), SIFT_GORD_DEAD (the unit has cleared the row: another source holds the row now at the address, if any), SIFT_GORD_UNKNOWN */
-	bool		(*gorder_group_values) (void *impl, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n);	/* optional: the values of leaf gleaf of the rows of the scan (only: that one alone), ascending, once each, if the second order of kleaf grouped by it is in every source (an index-only scan ordered by both) */
+	void	   *(*gorder_groups_open) (void *impl, int gleaf, int kleaf, const int64 *only, bool desc, MemoryContext cxt);	/* optional: a cursor over the values of leaf gleaf of the rows of the scan (only: that one alone), once each, ascending (descending), if the second order of kleaf grouped by it is in every source (an index-only scan ordered by both); NULL if not */
+	bool		(*gorder_groups_next) (void *cursor, int64 *group);	/* ... the next value; false after the last */
 	bool		(*gorder_clean) (void *impl, int i);	/* optional: every entry of source i is exact (gorder_exact would answer SIFT_GORD_EXACT for each), so the merge need not ask for each */
 	void		(*gorder_values) (void *impl, int leaf, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st);	/* optional: the values of integer leaf at the addresses of entries that gorder_exact called exact, read from the sources (st 1 value, 2 NULL, 0 not read: the heap has it) */
 	uint32		(*gorder_seek) (void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep);	/* the first entry of [vs, ve) with key >= key (after: > key); ve when none; a segment leaves the chunk it ends in in keep (when not NULL) */

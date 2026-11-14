@@ -4,60 +4,32 @@
  */
 #include "postgres.h"
 
-#include "access/genam.h"
 #include "access/xact.h"
-#include "catalog/index.h"
-#include "catalog/pg_operator_d.h"
-#include "catalog/pg_type_d.h"
 #include "common/int.h"
 #include "miscadmin.h"
-#include "port/pg_bswap.h"
-#include "postmaster/bgworker.h"
+#include "commands/defrem.h"
+#include "nodes/parsenodes.h"
+#include "postmaster/autovacuum.h"
 #include "replication/walsender.h"
 #include "replication/walsender_private.h"
-#include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
-#include "tcop/tcopprot.h"
-#include "utils/memutils.h"
+#include "tcop/pquery.h"
+#include "utils/portal.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
-#include "utils/wait_event.h"
-#include "utils/tuplesort.h"
 #include "utils/timestamp.h"
 
-#include "bm25/am.h"
-#include "bm25/build.h"
 #include "core/lane.h"
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
-#include "bm25/merge.h"
-#include "bm25/wbuf.h"
 #include "core/ops.h"
-#include "core/sql.h"
-#include "core/visibility.h"
 #include "core/cmp.h"
 
 /* VACUUM's truncation of a heap gives back at least this many blocks, or a 16th of the relation */
 #define TRUNCATE_MIN_BLOCKS	1000
 #define TRUNCATE_FRACTION	16
 
-static SiftExtent *
-bitmap_extents(Bitmapset *set, int *n)
-{
-	SiftExtent *ext = palloc((bms_num_members(set) + 1) * sizeof(SiftExtent));
-	int			x = -1;
-
-	*n = 0;
-	while ((x = bms_next_member(set, x)) >= 0)
-	{
-		if (*n > 0 && ext[*n - 1].start + ext[*n - 1].nblocks == (BlockNumber) x)
-			ext[*n - 1].nblocks++;
-		else
-			ext[(*n)++] = (SiftExtent) {x, 1};
-	}
-	return ext;
-}
+static bool space_worth(int64 blocks, BlockNumber nblocks);
 
 /*
  * The scan for candidates runs without blocking appenders. A segment created
@@ -83,7 +55,7 @@ sift_maint_orphan_sweep(Relation index)
 	sift_dir_read(index, snap);
 	ref = sift_store_referenced_blocks(index, snap);
 	cand = bms_del_members(cand, ref);
-	ext = bitmap_extents(cand, &n);
+	ext = sift_store_block_extents(cand, &n);
 	freed = bms_num_members(cand);
 	if (n > 0)
 		sift_dir_update(index, &(SiftDirChange) {.release = ext,.nrelease = n,.extra = InvalidBuffer});
@@ -135,43 +107,175 @@ cut_lock(Relation rel)
 	return rel->rd_rel->relkind == RELKIND_INDEX && !rel->rd_index->indisready ? ExclusiveLock : AccessExclusiveLock;
 }
 
-#define CUT_LOCK_TRIES		100
-#define CUT_LOCK_NAP_US		50000
+#define CUT_LOCK_WAIT_MS	5000
+#define CUT_LOCK_NAP_MS		50
+
+static bool cut_nowait = false;
+
+void
+sift_maint_cut_nowait(bool on)
+{
+	cut_nowait = on;
+}
 
 /*
- * The executor opens every index of a table, the one of a concurrent build that is not ready included, and a writer holds a RowExclusiveLock on it for the length of its
- * statement: under a steady stream of writes the lock is rarely free at one instant. The new index has no other user, so the cut asks again for a few seconds (the
- * writers wait behind the request only that long). The AccessExclusiveLock of a ready index is asked once: its holders are scans and steps that may run for minutes.
+ * The executor opens every index of a table, the one of a concurrent build that is not ready included, and a reader or a writer holds a lock on a ready one for the length of
+ * its statement: on a busy table the lock is rarely free at one instant. Like the truncation of a heap (VACUUM_TRUNCATE_LOCK_TIMEOUT) the cut asks again every 50 ms for
+ * 5 seconds, conditionally, so that nobody queues behind the request; lock_timeout, when set and shorter, ends the wait, and a cancel ends it at once. The background
+ * worker asks once: it holds the maintenance lock between its steps and the next step asks again. So does sift.table_maintain() (sift_maint_cut_nowait): its
+ * contract is a pass that takes only what is free now and says busy otherwise, which a call from a client backend must keep.
  */
 static bool
-cut_lock_try(Relation rel)
+cut_lock_try(Relation rel, LOCKMODE mode, int *waited_ms)
 {
-	LOCKMODE	mode = cut_lock(rel);
+	int			wait_ms = LockTimeout > 0 ? Min(LockTimeout, CUT_LOCK_WAIT_MS) : CUT_LOCK_WAIT_MS;
+	int			waited;
 
-	for (int i = 0; i < CUT_LOCK_TRIES; i++)
+	if (MyBackendType == B_BG_WORKER || cut_nowait)
+		wait_ms = 0;
+
+	for (waited = 0;; waited += CUT_LOCK_NAP_MS)
 	{
 		if (ConditionalLockRelation(rel, mode))
-			return true;
-		if (mode == AccessExclusiveLock)
 			break;
+		if (waited >= wait_ms)
+		{
+			*waited_ms = waited;
+			return false;
+		}
 		CHECK_FOR_INTERRUPTS();
-		pg_usleep(CUT_LOCK_NAP_US);
+		pg_usleep(CUT_LOCK_NAP_MS * 1000L);
+	}
+	return true;
+}
+
+/* Is the statement being run a VACUUM (VERBOSE)? An index access method is told DEBUG2 whatever the options (IndexVacuumInfo.message_level), so the statement is looked at */
+static bool
+vacuum_verbose(void)
+{
+	ListCell   *lc;
+
+	if (ActivePortal == NULL)
+		return false;
+	foreach(lc, ActivePortal->stmts)
+	{
+		PlannedStmt *ps = lfirst(lc);
+
+		if (IsA(ps, PlannedStmt) && ps->utilityStmt != NULL && IsA(ps->utilityStmt, VacuumStmt))
+			foreach_node(DefElem, opt, ((VacuumStmt *) ps->utilityStmt)->options)
+				if (strcmp(opt->defname, "verbose") == 0)
+					return defGetBoolean(opt);
 	}
 	return false;
+}
+
+/*
+ * A cut that does not happen says so once per VACUUM, with the blocks that stay in the file: at INFO under VACUUM VERBOSE, and at LOG in an autovacuum that logs
+ * (log_autovacuum_min_duration >= 0). The worker's DEBUG1 stays.
+ */
+static int
+skip_level(int elevel)
+{
+	if (elevel != DEBUG2)
+		return elevel;
+	if (AmAutoVacuumWorkerProcess() && Log_autovacuum_min_duration >= 0)
+		return LOG;
+	return vacuum_verbose() ? INFO : elevel;
+}
+
+typedef enum CutSkip
+{
+	SKIP_STANDBY,
+	SKIP_LOCK,
+	SKIP_ONLINE_LOCK,
+	SKIP_SNAPSHOT,
+	SKIP_FALLBACK
+} CutSkip;
+
+/* why: what kept the cut; blocks: the free blocks that stay in the file (SKIP_FALLBACK: the blocks moved); waited: the ms the lock was asked for; more: the blocks given back (SKIP_FALLBACK) */
+static void
+cut_skipped(Relation rel, const char *what, int elevel, CutSkip why, int64 blocks, int waited, int64 more)
+{
+	const char *name = RelationGetRelationName(rel);
+
+	elevel = skip_level(elevel);
+	switch (why)
+	{
+		case SKIP_STANDBY:
+			ereport(elevel, (errmsg("%s \"%s\": not truncating while a standby streams: %lld free blocks stay", what, name, (long long) blocks)));
+			break;
+		case SKIP_LOCK:
+			ereport(elevel, (errmsg("%s \"%s\": not truncating, a lock is held on it (waited %d ms): %lld free blocks stay", what, name, waited, (long long) blocks)));
+			break;
+		case SKIP_ONLINE_LOCK:
+			ereport(elevel, (errmsg("index \"%s\": not truncating, a lock is held on it (waited %d ms): %lld free blocks stay", name, waited, (long long) blocks)));
+			break;
+		case SKIP_FALLBACK:
+			ereport(elevel, (errmsg("index \"%s\": a lock is held on it (waited %d ms): %lld blocks moved, %lld given back online", name, waited, (long long) blocks, (long long) more)));
+			break;
+		case SKIP_SNAPSHOT:
+			ereport(elevel, (errmsg("index \"%s\": %lld free blocks stay, held by a snapshot that may still read them", name, (long long) blocks)));
+			break;
+	}
+}
+
+/*
+ * The online cut and shrink (no AccessExclusiveLock: readers are never kept out, a writer waits for the cut of the free end only) are the way to give blocks back on an index
+ * that a reader or a writer holds all the time: the VACUUM whose AccessExclusiveLock was refused uses them as a standby that streams makes it, on the horizon
+ * of the blocks that left. cut_busy: the last cut asked for its lock in vain (sift_maint_cut_lock_busy); cut_fallback: the online path is on for this VACUUM.
+ */
+static bool cut_busy = false;
+static int	cut_busy_ms = 0;
+static bool cut_fallback = false;
+
+static bool
+online_fallback_possible(Relation rel)
+{
+	return rel->rd_rel->relkind == RELKIND_INDEX && cut_lock(rel) == AccessExclusiveLock && !sift_maint_file_is_new(rel) && !RecoveryInProgress();
+}
+
+bool
+sift_maint_cut_lock_busy(void)
+{
+	return cut_busy;
+}
+
+/* What the online cut did in place of the cut that waited for its lock: one report per VACUUM, with the blocks it moved and the blocks it gave back */
+void
+sift_maint_report_fallback(Relation index, int elevel, uint64 moved, BlockNumber freed)
+{
+	cut_skipped(index, "index", elevel, SKIP_FALLBACK, moved / BLCKSZ, cut_busy_ms, freed);
+}
+
+void
+sift_maint_online_fallback(bool on)
+{
+	cut_fallback = on;
+	if (!on)
+		cut_busy = false;
 }
 
 /* The lock of a cut of the file, only if it is free right now (any scan, insert or step of the worker holds a lock on it) and no standby would stall on it */
 static bool
 lock_for_cut(Relation rel, const char *what, int elevel)
 {
+	int			waited;
+
 	if (cut_lock(rel) == AccessExclusiveLock && !sift_maint_file_is_new(rel) && sift_maint_standby_streams())
 	{
-		ereport(elevel, (errmsg("%s \"%s\": not truncating while a standby streams", what, RelationGetRelationName(rel))));
+		cut_skipped(rel, what, elevel, SKIP_STANDBY, sift_store_free_stats(rel).blocks, 0, 0);
 		return false;
 	}
-	if (!cut_lock_try(rel))
+	if (!cut_lock_try(rel, cut_lock(rel), &waited))
 	{
-		ereport(elevel, (errmsg("%s \"%s\": stopping truncate due to conflicting lock request", what, RelationGetRelationName(rel))));
+		/* the cut that needs no lock beyond the ExclusiveLock of the online cut is the next thing the VACUUM tries (sift_maint_online_fallback), and says what it finds */
+		if (online_fallback_possible(rel))
+		{
+			cut_busy = true;
+			cut_busy_ms = waited;
+		}
+		else
+			cut_skipped(rel, what, elevel, SKIP_LOCK, sift_store_free_stats(rel).blocks, waited, 0);
 		return false;
 	}
 	return true;
@@ -194,13 +298,23 @@ online_cut(Relation index, int elevel)
 		tail = sift_store_tail_blocks(index);
 		if (tail > 0 && (tail >= TRUNCATE_MIN_BLOCKS || tail >= RelationGetNumberOfBlocks(index) / TRUNCATE_FRACTION))
 		{
-			if (ConditionalLockRelation(index, ExclusiveLock))
+			int			waited;
+
+			if (cut_lock_try(index, ExclusiveLock, &waited))
 			{
 				freed = sift_store_truncate(index);
 				UnlockRelation(index, ExclusiveLock);
 			}
 			else
-				ereport(elevel, (errmsg("index \"%s\": stopping truncate due to conflicting lock request", RelationGetRelationName(index))));
+				cut_skipped(index, "index", elevel, SKIP_ONLINE_LOCK, sift_store_free_stats(index).blocks, waited, 0);
+		}
+		else
+		{
+			/* what the horizon holds back is cut by a later VACUUM, once the snapshots that may read it are gone */
+			SiftFreeStats fs = sift_store_free_stats(index);
+
+			if (space_worth(fs.blocks - fs.reusable, RelationGetNumberOfBlocks(index)))
+				cut_skipped(index, "index", elevel, SKIP_SNAPSHOT, fs.blocks - fs.reusable, 0, 0);
 		}
 	}
 	PG_FINALLY();
@@ -217,7 +331,7 @@ online_cut(Relation index, int elevel)
 static bool
 online_cut_wanted(Relation rel)
 {
-	return rel->rd_rel->relkind == RELKIND_INDEX && cut_lock(rel) == AccessExclusiveLock && !sift_maint_file_is_new(rel) && sift_maint_standby_streams();
+	return online_fallback_possible(rel) && (cut_fallback || sift_maint_standby_streams());
 }
 
 /*
@@ -232,8 +346,8 @@ sift_maint_truncate(Relation index, int elevel)
 	BlockNumber tail;
 	BlockNumber freed;
 
-	/* The lock is WAL-logged for a standby, which takes a transaction id; the leader of a parallel VACUUM runs the cleanup in parallel mode and cannot assign one */
-	if (IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))
+	/* The lock is WAL-logged for a standby, which takes a transaction id */
+	if (sift_xid_unassignable())
 		return;
 	if (online_cut_wanted(index))
 	{
@@ -282,22 +396,11 @@ cmp_space_end_desc(const void *a, const void *b)
 	return pg_cmp_u32(((const SpaceSeg *) b)->end, ((const SpaceSeg *) a)->end);
 }
 
-/*
- * Rank tail prefixes by the expected file shrinkage within the remaining copy allowance. The destination boundary already includes
- * the free capacity occupied by the copies: subtracting their size again would reject useful moves in interleaved layouts.
- * sift_store_relocate proves each exact reservation fits below that boundary before accepting the candidate.
- */
+/* The segments of the directory with the blocks they take and where they end, the highest end first */
 static int
-space_plan(Relation rel, const SiftDirSnapshot *snap, uint64 budget, SpaceSeg *seg, int64 *gain, BlockNumber *limit)
+space_segments(Relation rel, const SiftDirSnapshot *snap, SpaceSeg *seg)
 {
 	int			n = 0;
-	int			best = 0,
-				step = 0;
-	uint64		moved = 0;
-	int64		all = 0;
-	BlockNumber step_limit = 0;
-	BlockNumber hwm = snap->meta.high_water;
-	BlockNumber top;
 
 	for (int i = 0; i < snap->nsegs; i++)
 	{
@@ -315,6 +418,26 @@ space_plan(Relation rel, const SiftDirSnapshot *snap, uint64 budget, SpaceSeg *s
 		n++;
 	}
 	qsort(seg, n, sizeof(SpaceSeg), cmp_space_end_desc);
+	return n;
+}
+
+/*
+ * Rank tail prefixes by the expected file shrinkage within the remaining copy allowance. The destination boundary already includes
+ * the free capacity occupied by the copies: subtracting their size again would reject useful moves in interleaved layouts.
+ * sift_store_relocate proves each exact reservation fits below that boundary before accepting the candidate.
+ */
+static int
+space_plan(Relation rel, const SiftDirSnapshot *snap, uint64 budget, SpaceSeg *seg, int64 *gain, BlockNumber *limit)
+{
+	int			n = space_segments(rel, snap, seg);
+	int			best = 0,
+				step = 0;
+	uint64		moved = 0;
+	int64		all = 0;
+	BlockNumber step_limit = 0;
+	BlockNumber hwm = snap->meta.high_water;
+	BlockNumber top;
+
 	top = n > 0 ? seg[0].end : 0;	/* the free blocks above it go with the cut anyway */
 	*gain = 0;
 	for (int j = 1; j <= n; j++)
@@ -772,10 +895,11 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 {
 	BlockNumber nblocks;
 
-	/* The lock is WAL-logged for a standby, which takes a transaction id; the leader of a parallel VACUUM runs the cleanup in parallel mode and cannot assign one */
-	if (IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))
+	/* The lock is WAL-logged for a standby, which takes a transaction id */
+	if (sift_xid_unassignable())
 		return 0;
 	space_copied = 0;
+	cut_busy = false;
 	if (online_cut_wanted(rel))
 		return online_cut(rel, elevel);
 	nblocks = RelationGetNumberOfBlocks(rel);
@@ -798,6 +922,7 @@ BlockNumber
 sift_maint_cut_released(Relation rel, int elevel)
 {
 	space_copied = 0;
+	cut_busy = false;
 	if (online_cut_wanted(rel))
 		return online_cut(rel, elevel);
 	return cut_locked(rel, NULL, elevel, 0);

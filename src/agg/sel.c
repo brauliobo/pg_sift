@@ -1,6 +1,7 @@
 /*
  * agg/sel.c - the rows of a column unit that a match set keeps (agg/sel.h).
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include "catalog/pg_type.h"
@@ -8,7 +9,6 @@
 #include "agg/kern.h"
 #include "agg/sel.h"
 #include "core/popcount.h"
-#include "agg/colsrc.h"
 #include "col/wbuf.h"
 
 /* Few kept rows are decoded one by one; many are decoded with the whole chunk, and the mask keeps the others out */
@@ -47,7 +47,6 @@ sift_aggsel_unit(SiftAggSel *a, const SiftColUnit *cu, uint32 *nrow)
 		return false;
 	}
 	a->compact = (uint64) a->sel.count * SEL_SPARSE <= a->nrow;
-	a->units_compact += a->compact;
 	*nrow = a->compact ? a->sel.count : a->nrow;
 	if (a->compact)
 		compact_idx(a);

@@ -3,26 +3,15 @@
  */
 #include "postgres.h"
 
-#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/tableam.h"
 #include "access/tsmapi.h"
 #include "access/xact.h"
-#include "catalog/index.h"
-#include "commands/progress.h"
-#include "commands/vacuum.h"
-#include "executor/executor.h"
 #include "miscadmin.h"
 #include "nodes/execnodes.h"
-#include "pgstat.h"
-#include "storage/bufmgr.h"
-#include "storage/lmgr.h"
 #include "storage/predicate.h"
-#include "storage/procarray.h"
-#include "storage/read_stream.h"
 #include "core/popcount.h"
 #include "utils/memutils.h"
-#include "utils/rel.h"
 #include "utils/snapmgr.h"
 
 #include "col/kern.h"
@@ -35,6 +24,11 @@ typedef struct SiftTblFetch
 	IndexFetchTableData base;
 	SiftTblRel *st;
 	bool		fresh;			/* the tombstones were synced by the begin and no fetch followed yet */
+	/* the page filter's own state (sift_tbl_filter_page): a copy of the cache entry's write buffers and versions, followed up when a page lies past it */
+	MemoryContext parent;		/* where the begin ran: the state's context is made under it */
+	MemoryContext cxt;
+	SiftTblScanState ss;
+	uint64		vend;			/* the next virtual block of the directory the state was copied from */
 } SiftTblFetch;
 
 IndexFetchTableData *
@@ -43,6 +37,7 @@ sift_tbl_index_fetch_begin(Relation rel SIFT_TAM_FLAGS_PARAM)
 	SiftTblFetch *f = palloc0(sizeof(SiftTblFetch));
 
 	f->base.rel = rel;
+	f->parent = CurrentMemoryContext;
 	f->st = sift_tbl_rel(rel);
 	sift_tbl_auto_defrag_tick(rel, f->st);
 	sift_tbl_refresh(rel, f->st);
@@ -59,7 +54,11 @@ sift_tbl_index_fetch_reset(IndexFetchTableData *data)
 void
 sift_tbl_index_fetch_end(IndexFetchTableData *data)
 {
-	pfree(data);
+	SiftTblFetch *f = (SiftTblFetch *) data;
+
+	if (f->cxt)
+		MemoryContextDelete(f->cxt);
+	pfree(f);
 }
 
 /*
@@ -208,14 +207,21 @@ vblock_tid_visible(void *arg, ItemPointer tid)
 	return sift_tbl_visible(t->rel, t->st, t->snapshot, &rv) || chain_visible(t, rv.key);
 }
 
-/* Keeps the offsets of vblock whose row is visible to snapshot (chain: or whose HOT chain has a version that is: the TIDs of an index); the write buffer page is read once; a unit the snapshot sees no insertion of is no row at all */
+/*
+ * Keeps the offsets of vblock whose row is visible to the snapshot of ss (chain: or whose HOT chain has a version that is: the TIDs of an index); the
+ * write buffer page is read once; a unit the snapshot sees no insertion of is no row at all. Only ss is read of the table's state: the write buffers and
+ * versions of the directory the scan began with, and the tombstones it read
+ */
 int
-sift_tbl_filter_page_vers(Relation rel, Snapshot snapshot, SiftTblVers *vers, BlockNumber vblock, uint64 *offmask, bool chain)
+sift_tbl_filter_page_vers(Relation rel, const SiftTblScanState *ss, BlockNumber vblock, uint64 *offmask, bool chain)
 {
 	PGAlignedBlock copy;
-	VblockTest	t = {.rel = rel,.st = sift_tbl_rel(rel),.snapshot = snapshot,.copy = copy.data,.chain = chain};
+	Snapshot	snapshot = ss->snapshot;
+	SiftTblVers *vers = ss->vers;
+	bool		held;
+	VblockTest	t = {.rel = rel,.st = ss->st,.snapshot = snapshot,.copy = copy.data,.chain = chain};
 
-	if (!sift_tbl_load_vblock(rel, t.st, vblock, copy.data, &t.gen))
+	if (!sift_tbl_load_vblock_in(rel, ss->wbuf, ss->nwbuf, vblock, copy.data, &t.gen, &held))
 	{
 		SiftTblVerState state = sift_tbl_vers_sb(rel, snapshot, vers, vblock / SIFT_SB_PAGES);
 
@@ -262,22 +268,37 @@ sift_tbl_filter_page_vers(Relation rel, Snapshot snapshot, SiftTblVers *vers, Bl
 	return sift_vis_filter_mask(vblock, offmask, vblock_tid_visible, &t);
 }
 
-/* The same for a reader that goes by the directory this backend holds (the BM25 index's heap check) */
-int
-sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask)
+/* The scan's own copy of the cache entry's write buffers and of the versions of its directory, taken after the entry follows the table */
+static void
+fetch_state_copy(SiftTblFetch *f, Relation rel)
 {
-	SiftTblRel *st = sift_tbl_rel(rel);
+	SiftTblRel *st = f->st;
 
-	if (st->curvers == NULL || st->curvers_version != st->dir.version || st->curvers_rel != rel)
-	{
-		if (st->curvers_cxt)
-			MemoryContextDelete(st->curvers_cxt);
-		st->curvers_cxt = AllocSetContextCreate(st->cxt, "sift_table versions of the directory", ALLOCSET_SMALL_SIZES);
-		st->curvers = sift_tbl_vers_build(rel, st, &st->dir, st->curvers_cxt);
-		st->curvers_version = st->dir.version;
-		st->curvers_rel = rel;
-	}
-	return sift_tbl_filter_page_vers(rel, snapshot, st->curvers, vblock, offmask, true);
+	sift_tbl_refresh(rel, st);
+	if (f->cxt)
+		MemoryContextReset(f->cxt);
+	else
+		f->cxt = AllocSetContextCreate(f->parent, "sift_table fetch state", ALLOCSET_SMALL_SIZES);
+	f->ss = (SiftTblScanState) {.st = st,.nwbuf = st->nwbuf,.vers = sift_tbl_vers_build(rel, st, &st->dir, f->cxt)};
+	f->ss.wbuf = sift_tbl_wbuf_copy(st->wbuf, st->nwbuf, f->cxt);
+	f->vend = st->initialized ? SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) : 0;
+}
+
+/*
+ * The same for a reader that goes by the directory its fetch scan began with (the heap check of the BM25 and column indexes): the tombstones of that
+ * scan, not those of the cache entry the backend holds when it asks, which an invalidation (a VACUUM of the table) may have replaced by an entry that
+ * has read none; and the write buffers and versions of the scan's own copy, which no other scan of the backend moves. The scan follows the table when
+ * it is asked for a page past the directory it holds: a row inserted since (visible to a dirty or own snapshot)
+ */
+int
+sift_tbl_filter_page(IndexFetchTableData *fetch, Snapshot snapshot, BlockNumber vblock, uint64 *offmask)
+{
+	SiftTblFetch *f = (SiftTblFetch *) fetch;
+
+	if (f->cxt == NULL || vblock >= f->vend)
+		fetch_state_copy(f, fetch->rel);
+	f->ss.snapshot = snapshot;
+	return sift_tbl_filter_page_vers(fetch->rel, &f->ss, vblock, offmask, true);
 }
 
 bool
@@ -466,8 +487,7 @@ bitmap_add(SiftTblScan *s, HeapTuple tup)
 	if (s->nbrows == s->nbcap)
 	{
 		s->nbcap = Max(64, s->nbcap * 2);
-		s->brows = s->brows ? repalloc(s->brows, s->nbcap * sizeof(HeapTuple)) :
-			MemoryContextAlloc(GetMemoryChunkContext(s), s->nbcap * sizeof(HeapTuple));
+		SIFT_REGROW_IN(GetMemoryChunkContext(s), s->brows, s->nbcap * sizeof(HeapTuple));
 	}
 	s->brows[s->nbrows++] = tup;
 }

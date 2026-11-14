@@ -170,7 +170,7 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys, double *share
 						kept_keys;
 
 			if (lf == NULL || lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->vtype != SCV_I32 || e == NULL || !IsA(e, Var) ||
-				(nd = column_distinct(c, (Var *) e)) <= 0)
+				(nd = column_distinct(c, (Var *) e, true)) <= 0)
 				continue;
 			list_keys = Min(cte_list_keys(c, jc, k), dj ? cte_list_keys(c, dj, dkey) : HUGE_VAL);
 			if (sure / nd < selective && !lookup_guessed(c, jc) && (dj == NULL || !lookup_guessed(c, dj)))
@@ -340,7 +340,7 @@ lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups)
 			Node	   *e = lf && lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
 			double		d;
 
-			if (lf != NULL && lf->kind == SCL_SCALAR && lf->parent < 0 && e != NULL && IsA(e, Var) && (d = column_distinct(c, (Var *) e)) > nd)
+			if (lf != NULL && lf->kind == SCL_SCALAR && lf->parent < 0 && e != NULL && IsA(e, Var) && (d = column_distinct(c, (Var *) e, true)) > nd)
 			{
 				key = (Var *) e;
 				nd = d;
@@ -348,11 +348,16 @@ lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups)
 		}
 		if (key == NULL)
 			continue;
-		/* a counted lookup's keys are as many as PostgreSQL says, but each has the rows of the keys a query passes, not the mean's */
+		/*
+	 * a counted lookup's keys are as many as PostgreSQL says, but each has the rows of the keys a query passes, not the mean's: the keys a join passes are the ones
+	 * with rows, so the plan that probes them is under-counted by the skew of the column (the whole of it: its square root left 12 hot keys of a column of skew 7 priced
+	 * at 1.9 times the mean's rows, 282 million cycles of the normal plan against 8 million of the scan, and 108 against 7 on the test agg_set_key_skew; a set of cold keys is
+	 * 2.5 times faster with the scan as well, so the factor errs on the side of a scan that costs a few milliseconds at most)
+	 */
 		if (lookup_counted(c, jc))
 		{
 			if (sift_agg_key_skew && !groups)
-				g = sqrt(Max(column_skew(c, key) / AGG_KEY_SKEW_FLOOR, 1.0));
+				g = Max(column_skew(c, key) / AGG_KEY_SKEW_FLOOR, 1.0);
 		}
 		else if (nd > keys)
 			g = groups ? nd / keys : sqrt(nd / keys);
@@ -414,7 +419,7 @@ set_kept(AggCtx *c, SiftAggSpec *s)
 		SiftSrcStrTest st;
 		double		share;
 
-		if (p->kind == SAP_LUT && sift_aggspec_str_test(p, c->lay, c->lay->nleaves - c->nvleaf, &st) && (st.op == SSTR_EQ || st.op == SSTR_IN) &&
+		if (p->kind == SAP_LUT && sift_aggspec_str_test(p, c->lay, c->lay->nleaves - c->nvleaf, &st) && (st.op == SIFT_COLOP_EQ || st.op == SIFT_COLOP_IN) &&
 			c->stats.ndistinct[p->leaf] > 0)
 			share = st.nvals / c->stats.ndistinct[p->leaf];
 		else if ((p->kind == SAP_CMP && p->op == SCMP_EQ) || (p->kind == SAP_IN && p->op == 0))

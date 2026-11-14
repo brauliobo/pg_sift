@@ -32,6 +32,8 @@ sift_col_write_minor(const SiftColSchema *schema, int setting, bool kinds_exact)
 		minor = Max(minor, SIFT_COL_FORMAT_WIDE);	/* a wide schema has no older form */
 	if (schema->contain)
 		minor = Max(minor, SIFT_COL_FORMAT_CONTAIN);
+	if (schema->connected)
+		minor = Max(minor, SIFT_COL_FORMAT_CONN);
 	return minor;
 }
 
@@ -41,6 +43,8 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftColSegWriter *w = palloc0(sizeof(SiftColSegWriter));
 
+	sift_host_pin_heap();
+
 	w->wt = wt;
 	w->gen = gen;
 	w->schema = schema;
@@ -49,6 +53,7 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->format = sift_col_write_minor(schema, format, true);
 	w->setting = format;
 	w->sw = sift_sw_begin(wt, gen);
+	w->found = sift_cfound_create(mcxt, schema);
 	w->dict = palloc0(schema->ncols * sizeof(SiftCDict *));
 	w->dictmap = palloc0(schema->ncols * sizeof(uint32 *));
 	w->inl = palloc0(schema->ncols * sizeof(bool));
@@ -113,7 +118,7 @@ count_rows(SiftColSegWriter *w, const SiftColBatch *b)
 		{
 			uint32		cap = Max(n, 2 * a->cap);
 
-			a->rows = a->rows ? repalloc(a->rows, (Size) cap * sizeof(uint32)) : MemoryContextAlloc(w->mcxt, (Size) cap * sizeof(uint32));
+			a->rows = a->rows ? repalloc_huge(a->rows, (Size) cap * sizeof(uint32)) : MemoryContextAllocHuge(w->mcxt, (Size) cap * sizeof(uint32));
 			memset(a->rows + a->cap, 0, (Size) (cap - a->cap) * sizeof(uint32));
 			a->cap = cap;
 		}
@@ -212,17 +217,22 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 	/* the point directories are written with the dictionaries, minor 14 */
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && w->pt == NULL)
 		for (int c = 0; c < w->schema->ncols; c++)
-			if (spec->point[c] || spec->point_tid[c] || spec->gorder[c] || segw_elem_point(w, c))
+		{
+			bool		want = !spec->lean && (spec->point[c] || spec->point_tid[c] || segw_elem_point(w, c));
+			bool		ord = spec->gorder[c] && !spec->unordered;
+
+			if (want || ord)
 			{
 				MemoryContext old = MemoryContextSwitchTo(w->mcxt);
 
 				if (w->pt == NULL)
 					w->pt = palloc0(w->schema->ncols * sizeof(PointAcc));
 				MemoryContextSwitchTo(old);
-				w->pt[c].want = spec->point[c] || spec->point_tid[c] || segw_elem_point(w, c);
-				w->pt[c].ord = spec->gorder[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE;	/* stamps minor 21 itself, as the lists of addresses do 16 */
-				w->pt[c].tids = spec->point_tid[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE && !w->keyed;	/* the option is what stamps minor 16: the setting stays at 15 */
+				w->pt[c].want = want;
+				w->pt[c].ord = ord && w->setting >= SIFT_COL_FORMAT_PRESENCE;	/* stamps minor 21 itself, as the lists of addresses do 16 */
+				w->pt[c].tids = want && spec->point_tid[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE && !w->keyed;	/* the option is what stamps minor 16: the setting stays at 15 */
 			}
+		}
 }
 
 /*
@@ -269,7 +279,30 @@ segw_gorder_plain(const SiftColSegWriter *w, int c)
 }
 
 void
+sift_colw_set_fill(SiftColSegWriter *w, SiftColFill *fill)
+{
+	SIFT_INVARIANT(fill == NULL || w->found != NULL, "sift_col: a fill for a segment without connection flags");
+	w->fill = fill;
+}
+
+static void colw_add(SiftColSegWriter *w, const SiftColBatch *b);
+
+void
 sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
+{
+	if (w->fill == NULL)
+	{
+		colw_add(w, b);
+		return;
+	}
+	b = sift_cfound_view(w->found, b);
+	w->fill->batch(w->fill, (SiftColBatch *) b);
+	colw_add(w, b);
+	sift_cfound_done(w->found);
+}
+
+static void
+colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 {
 	int			ncols = w->schema->ncols;
 	Size		start;
@@ -356,6 +389,36 @@ sift_colw_bytes(const SiftColSegWriter *w)
 	return sift_sw_tell(w->sw);
 }
 
+/*
+ * The bytes of a segment that grow with its rows and not with its units: the keys, rows and addresses kept for each point directory and order array, with the
+ * arrays the end of the segment builds from them (a sort copy of 24 bytes an entry for an order, 16 for each of the two copies of a directory), the blobs of the
+ * summaries, runs and sketches of the units, and the rows of the counted codes. Without them a table whose units are small never reaches the budget, and
+ * the segment holds every row of it.
+ */
+static Size
+rows_memory(const SiftColSegWriter *w)
+{
+	Size		m = 0,
+				build = 0;
+
+	for (int c = 0; w->pt && c < w->schema->ncols; c++)
+	{
+		const PointAcc *a = &w->pt[c];
+
+		m += (Size) a->cap * (sizeof(int64) + (a->row ? sizeof(uint32) : 0) + (a->tid ? sizeof(uint64) : 0)) + (Size) a->gcap * (sizeof(int64) + sizeof(uint8)) +
+			(Size) a->ncap * (sizeof(uint64) + (a->ngk ? sizeof(int64) + sizeof(uint8) : 0));
+		/* the end of the segment builds one leaf at a time: the largest of them is what it adds (the entries of the order, group + key + address; the entries and the copy of the directory) */
+		build = Max(build, (a->ord ? ((Size) a->n + a->nn) * 3 * sizeof(int64) : 0) + (a->want ? (Size) a->n * 2 * 2 * sizeof(int64) : 0));
+	}
+	m += build + w->vblob.len;
+	for (int c = 0; c < w->schema->ncols; c++)
+	{
+		m += (w->set ? w->set[c].blobs.len : 0) + (w->run ? w->run[c].blobs.len : 0) + (w->hll ? w->hll[c].blobs.len : 0);
+		m += w->cnt ? (Size) w->cnt[c].cap * sizeof(uint32) : 0;
+	}
+	return m;
+}
+
 Size
 sift_colw_memory(const SiftColSegWriter *w)
 {
@@ -364,19 +427,68 @@ sift_colw_memory(const SiftColSegWriter *w)
 	for (int c = 0; c < w->schema->ncols; c++)
 		if (w->dict[c])
 			m += w->dict[c]->nbytes + (Size) w->dict[c]->n * 3 * sizeof(uint32);
-	return m;
+	return m + rows_memory(w);
+}
+
+bool
+sift_colw_full(const SiftColSegWriter *w, Size budget)
+{
+	return sift_colw_memory(w) > budget || w->rows >= SIFT_CPOINT_BUILD_ROWS;
+}
+
+/*
+ * The memory a participant that writes segments within `mem` bytes may let its writer estimate (sift_colw_memory), when the writer resides at resident_pct percent of
+ * its estimate and the participant takes base bytes besides, and at least a segment worth writing: below it the participants overshoot, a writer that estimates nothing
+ * would cut a segment at every batch. A build resides at 140% and 30 MB (the batches of the scan, the blobs of the end of the segment, the allocator's; a fit of the peaks
+ * of 5,000,000 rows at 64 and 256 MB), a merge at 100% and 36 MB (it streams its inputs: the arrays it holds count in the estimate; a fit of the peaks of its partitions of
+ * 417,000 to 2,500,000 rows: 77 to 90 bytes a row for an estimate of 83).
+ */
+Size
+sift_colw_budget(Size mem, int resident_pct, Size base)
+{
+	return Max(mem > base ? (mem - base) * 100 / resident_pct : 0, SIFT_COLW_MIN_BUDGET);
+}
+
+/* The bytes of a row of a segment that sift_colw_memory counts for it, at its peak */
+Size
+sift_colw_leaves_memory(int leaves, int ords, bool grouped)
+{
+	/* a leaf keeps a key and a row or address (16 bytes), a grouped order the group and its flag (9) besides; the end builds one leaf at a time: 24 bytes an entry of an order, 32 of a directory */
+	return leaves ? (Size) leaves * 16 + (grouped ? (Size) ords * 9 : 0) + 24 + 32 : 0;
+}
+
+Size
+sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols)
+{
+	int			leaves = 0,
+				ords = 0;
+
+	for (int c = 0; c < ncols; c++)
+	{
+		leaves += spec->point[c] || spec->point_tid[c] || spec->gorder[c];
+		ords += spec->gorder[c] != 0;
+	}
+	return sift_colw_leaves_memory(leaves, ords, spec->gorder_group > 0);
+}
+
+Size
+sift_colw_fit_budget(Size budget, uint64 seg_rows, uint64 rows_left, int segs_left)
+{
+	double		need = (double) rows_left / Max(segs_left, 1);
+
+	return need > (double) seg_rows ? (Size) ((double) budget * need / (double) Max(seg_rows, 1)) : budget;
 }
 
 void
 sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 {
-	PGIOAlignedBlock page;
-	SiftSegHeaderData *hdr = (SiftSegHeaderData *) SiftPageGetData(page.data);
 	SiftSegHeaderData h = {0};
 	StringInfoData schema;
 	SiftExtent *ext;
 	int			n;
 	uint64		blocks;
+	uint32		mirror_len;
+	void	   *mirror;
 
 	SIFT_INVARIANT(w->nsb != 0, "sift_col: a segment needs at least one unit");
 	Assert(!w->anyver || w->format >= SIFT_COL_FORMAT_VERS);
@@ -411,10 +523,14 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, SIFT_COL_FORMAT_ENDORD);
 	if (w->anycompact)
 		w->format = Max(w->format, SIFT_COL_FORMAT_ORDLAYOUT);
+	if (w->anyseek)
+		w->format = Max(w->format, SIFT_COL_FORMAT_SEEKORD);
 	if (w->keyed)
 		w->format = Max(w->format, w->setting >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_TABFIRST : SIFT_COL_FORMAT_KEYED);
 	if (w->schema->contain)
 		w->format = Max(w->format, SIFT_COL_FORMAT_CONTAIN);
+	if (w->schema->connected)
+		w->format = Max(w->format, SIFT_COL_FORMAT_CONN);
 	if (w->anymeaslen)
 		w->format = Max(w->format, SIFT_COL_FORMAT_MEASLEN);
 	/* a dictionary of many strings is written with the order to be searched in place when the setting allows it, the leaf asks for it (spec.lookup) and the kinds are complete */
@@ -470,10 +586,24 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	initStringInfo(&schema);
 	sift_cschema_serialize(w->schema, &schema);
 	segw_sw_pad8(w->sw);
+	if (w->schema->connected)
+	{
+		/* the stamps of the connections follow the schema: [n stamps][n][magic], where a reader of the schema looks at no more than it needs */
+		int			nconn = sift_cschema_nconn(w->schema);
+		uint32		tail[2] = {(uint32) nconn, SEG_STAMPS_MAGIC};
+
+		for (int i = 0; i < nconn; i++)
+		{
+			SiftConnStamp st = w->fill ? w->fill->stamp(w->fill, i) : (SiftConnStamp) {0};
+
+			appendBinaryStringInfo(&schema, (char *) &st, sizeof(st));
+		}
+		appendBinaryStringInfo(&schema, (char *) tail, sizeof(tail));
+	}
 	h.sections[SIFT_SEC_DOCMAP].off = sift_sw_tell(w->sw);
 	h.dictroot_off = schema.len;
-	sift_sw_write(w->sw, schema.data, schema.len);
-	segw_put8(w, w->sbdir, (Size) w->nsb * sizeof(SiftColSBRef));
+	segw_write_mirrored(w, MIR_HEAD, schema.data, schema.len);
+	segw_mirror(w, MIR_HEAD, segw_put8(w, w->sbdir, (Size) w->nsb * sizeof(SiftColSBRef)), w->sbdir, (Size) w->nsb * sizeof(SiftColSBRef));
 	segw_sw_pad8(w->sw);
 	if (w->anyver)
 		segw_write_vers(w);
@@ -495,10 +625,6 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	h.sb_hi = w->sb_hi;
 	h.dictroot_n = w->nsb;
 	h.nextents = n;
-	sift_page_init(page.data, SIFT_PT_SEGHEADER, w->gen);
-	memcpy(hdr, &h, offsetof(SiftSegHeaderData, extents));
-	memcpy(hdr->extents, ext, n * sizeof(SiftExtent));
-	SiftPageSetUsed(page.data, offsetof(SiftSegHeaderData, extents) + n * sizeof(SiftExtent));
 	blocks = 1 + h.live_npages;
 	for (int i = 0; i < n; i++)
 		blocks += ext[i].nblocks;
@@ -506,7 +632,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	entry->gen = w->gen;
 	entry->kind = SIFT_SEG_IMMUTABLE;
 	entry->format = w->format;
-	entry->header_blk = sift_wt_write_page(w->wt, page.data);
+	mirror = segw_mirror_block(w, n, &mirror_len);
+	entry->header_blk = sift_wt_write_seghdr(w->wt, &h, ext, n, mirror, mirror_len);
 	entry->sb_lo = w->sb_lo;
 	entry->sb_hi = w->sb_hi;
 	if (w->anyver)

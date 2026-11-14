@@ -1,0 +1,55 @@
+-- The Lookup line of EXPLAIN ANALYZE says what the direct probes of a correlated child did (the keys probed, the leaf pages they moved to, the pages above the leaves they pinned, the heap
+-- fetches and the entries of an index-only child that the visibility map answered) and how much of the lookup tables' pages the visibility map holds all-visible; under half of them (a table of
+-- 64 pages or more) it adds a hint to VACUUM. The numbers move with the host, so the cases state what must hold of them, and one text line is shown with its digits replaced.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 100; SET random_page_cost = 4;
+SET sift.agg_force = on;
+
+CREATE TABLE dr (id int, n int);
+INSERT INTO dr SELECT g, (g * 37) % 30000 FROM generate_series(1, 400) g;
+CREATE INDEX dr_col ON dr USING sift_col (id, n);
+VACUUM (FREEZE, ANALYZE) dr;
+-- lookup tables of about five hundred pages: one read through the heap, one through a covering index; neither is vacuumed yet
+CREATE TABLE lk_heap (k int, v int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO lk_heap SELECT g, g % 7, repeat('x', 100) FROM generate_series(0, 29999) g;
+CREATE INDEX lk_heap_k ON lk_heap (k);
+CREATE TABLE lk_cover (k int, v int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO lk_cover SELECT g, g % 7, repeat('x', 100) FROM generate_series(0, 29999) g;
+CREATE INDEX lk_cover_k ON lk_cover (k) INCLUDE (v);
+
+CREATE FUNCTION lookup_node(tab text, fmt text DEFAULT 'JSON') RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+  FOR l IN EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT %s) SELECT x.v, count(*) FROM dr d LEFT JOIN LATERAL (SELECT v FROM %I WHERE k = d.n LIMIT 1) x ON true GROUP BY 1', fmt, tab) LOOP
+    RETURN NEXT l;
+  END LOOP;
+END $$;
+-- the node of the scan, as jsonb
+CREATE FUNCTION lookup_props(tab text) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT jsonb_path_query_first(string_agg(l, '')::jsonb, '$[0].Plan.** ? (exists(@."Child Direct Probes"))') FROM lookup_node(tab) l $$;
+CREATE FUNCTION shape(tab text) RETURNS TABLE (probed bool, leaves_bounded bool, pins_counted bool, heap_fetches text, index_only_entries text, all_visible text, hint bool) LANGUAGE sql AS $$
+  SELECT (n->>'Child Direct Probes')::int > 0,
+         (n->>'Child Probe Leaves')::int BETWEEN 1 AND (n->>'Child Direct Probes')::int,
+         (n->>'Child Probe Upper Pages Pinned')::int > 0,
+         CASE WHEN (n->>'Child Probe Heap Fetches')::int = (n->>'Child Direct Probes')::int THEN 'one a probe' WHEN (n->>'Child Probe Heap Fetches')::int = 0 THEN 'none' ELSE 'some' END,
+         CASE WHEN (n->>'Child Probe Index Only Entries')::int = (n->>'Child Direct Probes')::int THEN 'one a probe' WHEN n ? 'Child Probe Index Only Entries' THEN 'some' ELSE 'none' END,
+         (n->>'Lookup Pages All Visible') || ' %',
+         n ? 'Lookup Hint'
+  FROM (SELECT lookup_props(tab) AS n) q $$;
+
+-- not vacuumed: nothing is all-visible, so the hint comes; the heap table is read through the heap, the covering one too (no page is all-visible)
+SELECT 'heap table' AS lookup, * FROM shape('lk_heap');
+SELECT 'covering index' AS lookup, * FROM shape('lk_cover');
+-- vacuumed: the hint is gone; the covering index answers from the visibility map
+VACUUM (FREEZE, ANALYZE) lk_heap, lk_cover;
+SELECT 'heap table' AS lookup, * FROM shape('lk_heap');
+SELECT 'covering index' AS lookup, * FROM shape('lk_cover');
+-- the text line, its digits replaced
+SELECT regexp_replace(regexp_replace(trim(l), ', [0-9]+ child blocks prefetched', ''), '[0-9]+', 'N', 'g') AS lookup_line FROM lookup_node('lk_cover', 'TEXT') l WHERE l ~ '^ *Lookup: ';
+SELECT regexp_replace(regexp_replace(trim(l), ', [0-9]+ child blocks prefetched', ''), '[0-9]+', 'N', 'g') AS lookup_line FROM lookup_node('lk_heap', 'TEXT') l WHERE l ~ '^ *Lookup: ';
+
+DROP FUNCTION shape(text), lookup_props(text), lookup_node(text, text);
+DROP TABLE dr, lk_heap, lk_cover;
+DROP EXTENSION pg_sift;

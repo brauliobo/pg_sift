@@ -11,8 +11,8 @@ INSERT INTO ev
 SELECT i, date '2020-01-01' + i / 300, (i / 10000) * 1000 + i % 100, i % 50, abs(hashint4(i)) % 100000, 'k' || i % 7, repeat('x', 1000)
 FROM generate_series(0, 59999) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, day, blk, grp, rnd, lbl);
-NOTICE:  sift_col index "ev_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = day, lbl
+NOTICE:  sift_col index "ev_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = day, lbl
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 SELECT pg_stat_force_next_flush() \gset
 VACUUM (FREEZE, ANALYZE) ev;

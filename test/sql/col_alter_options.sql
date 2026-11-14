@@ -4,6 +4,7 @@
 -- late for the check.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_col_legacy_options = on;
 
 CREATE TABLE ao (id int, pid int, d date, ts timestamptz, cc text, f float8, metrics jsonb, parts jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO ao SELECT i, i % 50, date '2024-01-01' + i % 300, timestamptz '2024-01-01' + i * interval '1 minute', 'c' || i % 7, i % 10,
@@ -38,12 +39,14 @@ ALTER INDEX ao_paths SET (key_columns = 'f');
 \c
 ALTER INDEX ao_paths SET (key_columns = 'auto: nope');
 \c
-ALTER INDEX ao_paths SET (rollup_dims = 'nope, pid');
+ALTER INDEX ao_paths SET (rollup_columns = 'nope, pid');
 \c
-ALTER INDEX ao_paths SET (rollup_dims = 'f, pid');
+ALTER INDEX ao_paths SET (rollup_columns = 'f, pid');
 \c
+SET sift.test_col_legacy_options = on;
 ALTER INDEX ao_paths SET (order_columns = 'nope');
 \c
+SET sift.test_col_legacy_options = on;
 ALTER INDEX ao_paths SET (order_columns = 'cc');
 \c
 ALTER INDEX ao_paths SET (return_columns = 'nope');
@@ -71,7 +74,7 @@ VACUUM ao;
 
 -- values that fit are applied, and the table goes on working
 \c
-ALTER INDEX ao_paths SET (key_columns = 'pid', order_columns = 'pid', rollup_dims = 'pid, d', return_columns = 'cc');
+ALTER INDEX ao_paths SET (key_columns = 'pid', order_columns = 'pid', rollup_columns = 'pid, d', return_columns = 'cc');
 \c
 ALTER INDEX ap_plain SET (calendar_columns = 'd, ts');
 SET client_min_messages = warning;
@@ -79,6 +82,14 @@ INSERT INTO ao VALUES (-1, 0, '2024-01-01', now(), 'x', 0, '{"a": 1}', '[]');
 INSERT INTO ap VALUES (-1, 0, '2024-01-01', now(), 'x', 0);
 SELECT count(*) FROM ao;
 SELECT count(*) FROM ap;
+-- auto is the word of the default for calendar_columns and rollup (empty, and 'default' for rollup, mean the same); a word that is none of them is refused
+\c
+ALTER INDEX ap_plain SET (calendar_columns = 'auto', rollup_leaves = 'auto');
+ALTER INDEX ap_plain SET (rollup_leaves = 'default');
+\c
+ALTER INDEX ap_plain SET (rollup_leaves = 'nope');
+ALTER INDEX ap_plain SET (calendar_columns = 'autos');
+ALTER INDEX ap_plain RESET (calendar_columns, rollup);
 VACUUM ao;
 VACUUM ap;
 SELECT sift.col_verify('ao_paths', true), sift.col_verify('ap_plain', true);

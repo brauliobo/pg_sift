@@ -1,7 +1,6 @@
 /*
  * col/gquant.c - the quantized keys of a compact chunk of a global order (col/gquant.h)
  */
-#include "core/host.h"
 #include "col/gquant.h"
 
 #if defined(__x86_64__) || defined(SIFT_HAVE_NEON)

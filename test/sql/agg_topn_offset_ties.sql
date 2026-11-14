@@ -3,6 +3,7 @@
 -- fetched whole and sorted by the tie-break key. The rows are the plan's without the extension through ties across the boundary, nulls, deleted and updated rows, a VACUUM, new rows
 -- and a merge; the heap fetches say which entries were confirmed.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_col_legacy_options = off;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

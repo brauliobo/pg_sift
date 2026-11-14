@@ -6,75 +6,13 @@
 #include <float.h>
 #include <math.h>
 
-#include "access/genam.h"
-#include "access/heapam.h"
-#include "access/htup_details.h"
-#include "access/parallel.h"
-#include "access/relation.h"
-#include "access/table.h"
-#include "access/tableam.h"
-#include "catalog/pg_aggregate.h"
-#include "catalog/pg_proc.h"
-#include "access/skey.h"
-#include "access/stratnum.h"
-#include "access/xact.h"
-#include "catalog/pg_am.h"
-#include "catalog/pg_index.h"
-#include "catalog/pg_type.h"
-#include "commands/explain.h"
-#include "common/hashfn.h"
-#include "common/int.h"
-#include "executor/executor.h"
-#include "executor/nodeAgg.h"
-#include "executor/nodeHash.h"
-#include "executor/nodeSubplan.h"
 #include "miscadmin.h"
-#include "nodes/extensible.h"
-#include "nodes/makefuncs.h"
-#include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
-#include "optimizer/optimizer.h"
-#include "portability/instr_time.h"
-#include "parser/parse_agg.h"
-#include "storage/predicate.h"
-#include "storage/proc.h"
-#include "storage/shm_mq.h"
-#include "storage/shm_toc.h"
-#include "utils/acl.h"
-#include "utils/array.h"
-#include "utils/builtins.h"
-#include "utils/date.h"
-#include "utils/datum.h"
-#include "utils/fmgroids.h"
-#include "utils/fmgrprotos.h"
-#include "utils/expandeddatum.h"
 #include "utils/float.h"
-#include "utils/guc.h"
-#include "utils/numeric.h"
-#include "utils/lsyscache.h"
-#include "utils/numeric.h"
-#include "utils/rel.h"
-#include "utils/snapmgr.h"
-#include "utils/syscache.h"
-#include "utils/timestamp.h"
-#include "utils/tuplesort.h"
-#include "utils/wait_event.h"
-#include "utils/typcache.h"
 
-#include "agg/agg.h"
-#include "agg/wide.h"
-#include "agg/back.h"
-#include "agg/kern.h"
-#include "agg/part.h"
-#include "agg/spec.h"
 #include "col/kern.h"
-#include "agg/colsrc.h"
-#include "agg/search.h"
-#include "agg/topn.h"
-#include "core/visibility.h"
-#include "core/popcount.h"
 #include "agg/agg_int.h"
 #include "core/cmp.h"
+#include "core/hash.h"
 
 #define OSA_SIGN	(UINT64CONST(1) << 63)
 
@@ -107,19 +45,16 @@ key_f8(uint64 k)
 static inline uint64
 osa_hash(uint32 sid, uint64 key)
 {
-	uint64		x = key ^ ((uint64) sid * UINT64CONST(0xC2B2AE3D27D4EB4F));
-
-	x ^= x >> 33;
-	x *= UINT64CONST(0xFF51AFD7ED558CCD);
-	x ^= x >> 33;
-	x *= UINT64CONST(0xC4CEB9FE1A85EC53);
-	return x ^ (x >> 33);
+	return sift_fmix64(key ^ ((uint64) sid * SIFT_XXP64_2));
 }
 
 Osa *
-osa_new(AggExec *ex)
+osa_new(AggExec *ex, int ai)
 {
 	Osa		   *o = MemoryContextAllocZero(ex->tcxt, sizeof(Osa));
+
+	for (int j = 0; j < ex->spec->naggs; j++)
+		o->noflat |= ex->spec->agg[j].share == ai && is_ordered_agg(&ex->spec->agg[j]) && osa_is_mode(&ex->spec->agg[j]);
 
 	o->cap = 1024;
 	o->slot = MemoryContextAllocZero(ex->tcxt, o->cap * sizeof(OsaSlot));
@@ -130,33 +65,75 @@ osa_new(AggExec *ex)
 static void
 osa_put(Osa *o, uint32 sid, uint64 key, uint64 cnt)
 {
-	TupleTableSlot *t = o->put;
-
-	for (; cnt > 0; cnt--)
+	while (cnt > 0)
 	{
-		ExecClearTuple(t);
-		t->tts_values[0] = Int32GetDatum((int32) sid);
-		t->tts_values[1] = Int64GetDatum((int64) (key ^ OSA_SIGN));
-		t->tts_isnull[0] = t->tts_isnull[1] = false;
-		ExecStoreVirtualTuple(t);
-		tuplesort_puttupleslot(o->sort, t);
+		uint32		take = (uint32) Min(cnt, (uint64) UINT32_MAX);
+
+		osa_runs_put(o, sid, key, take);
+		cnt -= take;
 	}
 }
 
-/* the histogram does not fit work_mem: its pairs, and from now on every value, go through a tuplesort */
+/* the histogram does not fit work_mem: its pairs, dense, are the first run, and from now on every value is appended to the run being made */
 static void
 osa_spill(AggExec *ex, Osa *o)
 {
-	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+	if (!o->flat)
+	{
+		uint64		w = 0;
 
-	agg_pair_sort(2, TUPLESORT_NONE, &o->sort, &o->put, &o->get);
-	MemoryContextSwitchTo(old);
+		for (uint64 i = 0; i < o->cap; i++)
+			if (o->slot[i].sid1)
+				o->slot[w++] = o->slot[i];
+	}
+	osa_runs_begin(ex, o);
+	ex->n_osa_spilled++;
+}
+
+/*
+ * A histogram of values that are nearly all distinct (prices, times) is a hash that costs a probe, a slot and a rehash for every value and
+ * saves nothing: after OSA_FLAT_MIN pairs, when four in five values added were new, the pairs are appended to a plain array instead. The
+ * readers walk the pairs (OSA_SPAN) and weigh each by its count, so equal values side by side are what they would find in one slot; a mode() counts
+ * runs of one slot, which is why it keeps the hash. The array has no load factor to keep, so it holds work_mem / 16 pairs where the
+ * hash held a quarter of that.
+ */
+#define OSA_FLAT_MIN	8192
+
+static void
+osa_flat_start(AggExec *ex, Osa *o)
+{
+	uint64		w = 0;
+
 	for (uint64 i = 0; i < o->cap; i++)
 		if (o->slot[i].sid1)
-			osa_put(o, o->slot[i].sid1 - 1, o->slot[i].key, o->slot[i].cnt);
-	pfree(o->slot);
-	o->slot = NULL;
-	ex->n_osa_spilled++;
+			o->slot[w++] = o->slot[i];
+	o->flat = true;
+	ex->n_osa_flat++;
+}
+
+/* cnt of the value (sid, key) appended to the array: it grows to the memory work_mem allows, and past that the values go to the sort */
+static void
+osa_flat_add(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint32 cnt)
+{
+	uint64		room = (uint64) work_mem * 1024 / sizeof(OsaSlot);
+
+	if (o->n >= o->cap)
+	{
+		OsaSlot    *old = o->slot;
+		uint64		ncap = Min(o->cap * 2, room);
+
+		if (ncap <= o->cap)
+		{
+			osa_spill(ex, o);
+			osa_put(o, sid, key, cnt);
+			return;
+		}
+		o->slot = MemoryContextAlloc(ex->tcxt, ncap * sizeof(OsaSlot));
+		memcpy(o->slot, old, o->n * sizeof(OsaSlot));
+		pfree(old);
+		o->cap = ncap;
+	}
+	o->slot[o->n++] = (OsaSlot) {key, sid + 1, cnt};
 }
 
 static void
@@ -183,11 +160,17 @@ osa_grow(AggExec *ex, Osa *o)
 static void
 osa_add(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 h)
 {
-	if (o->sort)
+	if (o->runs)
 	{
 		osa_put(o, sid, key, 1);
 		return;
 	}
+	if (o->flat)
+	{
+		osa_flat_add(ex, o, sid, key, 1);
+		return;
+	}
+	o->rows++;
 	for (; o->slot[h].sid1; h = (h + 1) & (o->cap - 1))
 		if (o->slot[h].sid1 == sid + 1 && o->slot[h].key == key && o->slot[h].cnt != UINT32_MAX)
 		{
@@ -202,7 +185,12 @@ osa_add(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 h)
 	}
 	o->slot[h] = (OsaSlot) {key, sid + 1, 1};
 	if (++o->n * 2 > o->cap)
-		osa_grow(ex, o);
+	{
+		if (!o->noflat && o->n >= OSA_FLAT_MIN && o->n * 5 > o->rows * 4)
+			osa_flat_start(ex, o);
+		else
+			osa_grow(ex, o);
+	}
 }
 
 /* cnt more of the value (sid, key): the counts of a partial table, a slot holds at most UINT32_MAX */
@@ -214,11 +202,19 @@ osa_add_n(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 cnt)
 		uint64		h;
 		uint32		take;
 
-		if (o->sort)
+		if (o->runs)
 		{
 			osa_put(o, sid, key, cnt);
 			return;
 		}
+		if (o->flat)
+		{
+			take = (uint32) Min(cnt, (uint64) UINT32_MAX);
+			osa_flat_add(ex, o, sid, key, take);
+			cnt -= take;
+			continue;
+		}
+		o->rows += cnt;
 		h = osa_hash(sid, key) & (o->cap - 1);
 		for (; o->slot[h].sid1; h = (h + 1) & (o->cap - 1))
 			if (o->slot[h].sid1 == sid + 1 && o->slot[h].key == key && o->slot[h].cnt != UINT32_MAX)
@@ -235,7 +231,12 @@ osa_add_n(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 cnt)
 		{
 			o->slot[h] = (OsaSlot) {key, sid + 1, take};
 			if (++o->n * 2 > o->cap)
-				osa_grow(ex, o);
+			{
+				if (!o->noflat && o->n >= OSA_FLAT_MIN && o->n * 5 > o->rows * 4)
+					osa_flat_start(ex, o);
+				else
+					osa_grow(ex, o);
+			}
 		}
 		cnt -= take;
 	}
@@ -318,13 +319,13 @@ osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 				own->i[g] = ++o->nsid;
 			sid[m] = own->i[g] - 1;
 			key[m] = ik ? ik[b + k] : f8_key(x[b + k]);
-			h[m] = osa_hash(sid[m], key[m]) & (cap - 1);
-			if (o->slot)
+			h[m] = o->flat ? 0 : osa_hash(sid[m], key[m]) & (cap - 1);
+			if (o->slot && !o->flat)
 				__builtin_prefetch(&o->slot[h[m]]);
 			m++;
 		}
 		for (int k = 0; k < m; k++)
-			osa_add(ex, o, sid[k], key[k], o->cap == cap && o->slot ? h[k] : osa_hash(sid[k], key[k]) & (o->cap - 1));
+			osa_add(ex, o, sid[k], key[k], o->flat || (o->cap == cap && o->slot) ? h[k] : osa_hash(sid[k], key[k]) & (o->cap - 1));
 	}
 }
 
@@ -345,12 +346,12 @@ osa_sort(Osa *o)
 {
 	uint64		w = 0;
 
-	if (o->sort)
+	if (o->runs)
 	{
-		tuplesort_performsort(o->sort);
+		osa_runs_sort(o);
 		return;
 	}
-	for (uint64 i = 0; i < o->cap; i++)
+	for (uint64 i = 0; i < OSA_SPAN(o); i++)
 		if (o->slot[i].sid1)
 			o->slot[w++] = o->slot[i];
 	qsort(o->slot, w, sizeof(OsaSlot), osa_cmp);
@@ -361,17 +362,8 @@ osa_sort(Osa *o)
 bool
 osa_next(Osa *o, OsaRun *r)
 {
-	bool		isnull;
-
-	if (o->sort)
-	{
-		if (!tuplesort_gettupleslot(o->sort, true, false, o->get, NULL))
-			return false;
-		r->sid = DatumGetInt32(slot_getattr(o->get, 1, &isnull));
-		r->key = (uint64) DatumGetInt64(slot_getattr(o->get, 2, &isnull)) ^ OSA_SIGN;
-		r->cnt = 1;
-		return true;
-	}
+	if (o->runs)
+		return osa_runs_next(o, r);
 	if (o->next >= o->n)
 		return false;
 	r->sid = o->slot[o->next].sid1 - 1;
@@ -548,7 +540,7 @@ osa_finish_select(AggExec *ex, int owner, const int64 *nrows)
 	OsaPick    *pick = palloc(s->naggs * sizeof(OsaPick));
 	OsaSlot    *by;
 
-	for (uint64 i = 0; i < o->cap; i++)
+	for (uint64 i = 0; i < OSA_SPAN(o); i++)
 		if (o->slot[i].sid1)
 			start[o->slot[i].sid1 - 1 + 1]++, w++;
 	for (uint32 g = 0; g < o->nsid; g++)
@@ -558,7 +550,7 @@ osa_finish_select(AggExec *ex, int owner, const int64 *nrows)
 		uint32	   *at = palloc((o->nsid + 1) * sizeof(uint32));
 
 		memcpy(at, start, (o->nsid + 1) * sizeof(uint32));
-		for (uint64 i = 0; i < o->cap; i++)
+		for (uint64 i = 0; i < OSA_SPAN(o); i++)
 			if (o->slot[i].sid1)
 				by[at[o->slot[i].sid1 - 1]++] = o->slot[i];
 		pfree(at);
@@ -702,11 +694,7 @@ osa_finish(AggExec *ex, int owner)
 						pick[ai].key[k] = r.key;
 		pos += r.cnt;
 	}
-	if (o->sort)
-	{
-		tuplesort_end(o->sort);
-		o->sort = NULL;
-	}
+	osa_runs_end(o);
 }
 
 void

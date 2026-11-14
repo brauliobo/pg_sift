@@ -416,17 +416,6 @@ static void ops(double secs)
 		}
 }
 
-#define K1 1.2f
-#define BB 0.75f
-enum { F_OR2, F_OR3, F_AND2, F_AND3, F_ORHHH, NF };
-static const char *f_name[NF] = { "or(h,m)", "or(h,m,m)", "and(h,m)", "and(h,m,m)", "or(h,h,h)" };
-#define NRQ 48
-
-typedef struct { int nt, conj; uint32_t t[4]; } rquery;
-
-static float *knorm_slot, *knorm_doc;
-#include "bench_rank.h"
-
 typedef struct { uint32_t ng, *gid; uint8_t **chunk; } chunked;
 
 static void chunk_term(uint32_t t, chunked *c)
@@ -510,8 +499,6 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[3], "lists")) list_alts();
 	op_filter = argc > 5 ? argv[5] : NULL, class_filter = argc > 6 ? argv[6] : NULL, rep_filter = argc > 7 ? argv[7] : NULL;
 	if (!strcmp(argv[3], "ops")) ops(argc > 4 ? atof(argv[4]) : 0.2);
-	if (!strcmp(argv[3], "facets")) facet_bench(argv[1], 0);
 	if (!strcmp(argv[3], "canon")) canon_bench();
-	if (!strcmp(argv[3], "rank")) rank_bench(argc > 4 ? atof(argv[4]) : 0.5);  /* any 5th arg: skip references */
 	return 0;
 }

@@ -79,20 +79,20 @@ if [[ $MODE == --selftest ]]; then
 		done <<<"$PLAN_OUT"
 	done
 	[[ $(areas_regex docs/USAGE.md CHANGELOG.md README.md bench/README.md) == '^$' ]] || { echo "FAIL: areas: a change of documentation or benchmarks selects jobs"; bad=1; }
-	# the focus table (scripts/focus.tsv, made by scripts/focus-gen.sh): a row for every regression test and none for a test that is gone; the lookup selects the
+	# the focus table (one file scripts/focus/NAME.tsv for each test, made by scripts/focus-gen.sh): a row for every regression test and none for a test that is gone; the lookup selects the
 	# tests that execute a function, the tests of the area for a hot function or a change outside functions
-	focus_rows=$(cut -f1 "$REPO/scripts/focus.tsv" | grep -v '^[#=]' | sort)
+	focus_rows=$(cat "$REPO"/scripts/focus/*.tsv | cut -f1 | grep -v '^=' | sort)
 	focus_missing=$(comm -23 <(ls "$REPO/test/sql" | sed 's/\.sql$//' | sort) <(echo "$focus_rows"))
-	[[ -z $focus_missing ]] || { echo "FAIL: focus: no row in scripts/focus.tsv for $(echo $focus_missing) (scripts/focus-gen.sh NAME...)"; bad=1; }
+	[[ -z $focus_missing ]] || { echo "FAIL: focus: no scripts/focus/NAME.tsv for $(echo $focus_missing) (scripts/focus-gen.sh NAME...)"; bad=1; }
 	focus_stale=$(comm -13 <(ls "$REPO/test/sql" | sed 's/\.sql$//' | sort) <(echo "$focus_rows"))
-	[[ -z $focus_stale ]] || { echo "FAIL: focus: scripts/focus.tsv has rows for $(echo $focus_stale), which are not tests"; bad=1; }
-	read -r focus_t focus_tok _ < <(awk -F'\t' '!/^[#=]/ && $2 != "" { split($2, a, " "); print $1, a[1]; exit }' "$REPO/scripts/focus.tsv")
+	[[ -z $focus_stale ]] || { echo "FAIL: focus: scripts/focus has files for $(echo $focus_stale), which are not tests"; bad=1; }
+	read -r focus_t focus_tok _ < <(awk -F'\t' '$1 != "=hot" && $2 != "" { split($2, a, " "); print $1, a[1]; exit }' "$REPO"/scripts/focus/*.tsv)
 	[[ -z $focus_t || installcheck-$focus_t =~ $(focus_regex "$focus_tok") ]] || { echo "FAIL: focus: $focus_tok does not select its test $focus_t"; bad=1; }
-	focus_hot=$(awk -F'\t' '$1 == "=hot" { split($2, a, " "); print a[1]; exit }' "$REPO/scripts/focus.tsv")
+	focus_hot=$(awk -F'\t' '$1 == "=hot" { split($2, a, " "); print a[1]; exit }' "$REPO/scripts/focus/_hot.tsv")
 	[[ -z $focus_hot || $(focus_regex "$focus_hot") == "$(focus_regex "${focus_hot%%:*}:*")" ]] || { echo "FAIL: focus: the hot function $focus_hot does not select the tests of its area"; bad=1; }
 	# a function of a file split into a folder (scripts/moved-sources.tsv) selects the tests of the row made for the old file, with and without the prefix a split gave it
 	read -r mv_new mv_old mv_pre < <(awk -F'\t' '!/^#/ && NF >= 2 { print $1, $2, $3; exit }' "$REPO/scripts/moved-sources.tsv")
-	mv_fn=$(grep -o "$mv_old:[A-Za-z_0-9]*" "$REPO/scripts/focus.tsv" | head -1 | cut -d: -f2)
+	mv_fn=$(cat "$REPO"/scripts/focus/*.tsv | grep -o "$mv_old:[A-Za-z_0-9]*" | head -1 | cut -d: -f2)
 	[[ -z $mv_fn || ( $(focus_regex "${mv_new}x.c:${mv_pre}${mv_fn}") == "$(focus_regex "$mv_old:$mv_fn")" && $(focus_regex "$mv_old:$mv_fn") != '^(coverage|isolation-emulated)$' ) ]] || { echo "FAIL: focus: a function of a file split into a folder does not select the tests of the row of the old file ($mv_old:$mv_fn)"; bad=1; }
 	[[ $(focus_regex src/agg/accum.c:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
 	# the assertions family of a pull request: the tests that run workers exist, and the file that starts them is a trigger
@@ -158,12 +158,12 @@ if [[ $MODE == --selftest ]]; then
 	done
 	# the smoke of the release library (release_library_tests): each name is a test the release build runs, or the quick tier would silently drop it
 	plan_of quick 18
-	prod=$(grep '^release-library-regress ' <<<"$PLAN_OUT")
-	for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress job (no test of that name, a slow or test-only one)"; bad=1; }; done
+	prod=$(grep '^release-library-regress-[12] ' <<<"$PLAN_OUT")
+	for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress jobs (no test of that name, a slow or test-only one)"; bad=1; }; done
 	# one list of the tests the release build cannot run (TESTING_REGRESS): the deep plan runs on the release library every test that make runs there (scripts/release-library-check.sh
 	# without names), except the slow ones, which are jobs of their own
 	plan_of quick 18 1
-	got=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /release-library-check\.sh$/) { for (j = i + 1; j <= NF; j++) print $j; exit } }' <<<"$(grep '^release-library-regress ' <<<"$PLAN_OUT")" | sort)
+	got=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /release-library-check\.sh$/) { for (j = i + 1; j <= NF; j++) print $j; next } }' <<<"$(grep '^release-library-regress-[12] ' <<<"$PLAN_OUT")" | sort)
 	# the Makefile refuses a pg_config older than 17 (the lint job of the hosted CI has none or a 16): the list is compared where there is a usable one
 	pgc=${PG_CONFIG:-pg_config}
 	if "$pgc" --version 2>/dev/null | grep -qE '^PostgreSQL (1[7-9]|[2-9][0-9])' && [[ -r $("$pgc" --pgxs 2>/dev/null) ]]; then
@@ -193,6 +193,53 @@ if [[ $MODE == --selftest ]]; then
 		(( hi * 100 <= lo * 115 )) || { echo "FAIL: the shards of the full tier on PostgreSQL $pg ${deep:+deep }are unbalanced by the weights of scripts/ci.sh (heaviest $hi s, lightest $lo s)"; bad=1; }
 	done
 	done
+	# the quick tier (PostgreSQL 18, no job after the pool) is cut by weight as well: every job once, and the shards within 15% of each other
+	for ns in 2 3; do
+		plan_of quick 18 '' ; all=$(awk '{print $1}' <<<"$PLAN_OUT" | sort)
+		got= lo='' hi=0
+		for (( k = 1; k <= ns; k++ )); do
+			plan_of quick 18 '' $k/$ns; got+=$PLAN_OUT$'\n'; l=0
+			while read -r j _; do MODE=quick weight_of "$j" '' 18; l=$(( l + WEIGHT )); done <<<"$PLAN_OUT"
+			(( l > hi )) && hi=$l
+			[[ -z $lo ]] || (( l < lo )) && lo=$l
+		done
+		[[ $all == "$(awk 'NF {print $1}' <<<"$got" | sort)" ]] || { echo "FAIL: the $ns shards of the quick tier on PostgreSQL 18 are not the plan, each job once"; bad=1; }
+		(( hi * 100 <= lo * 115 )) || { echo "FAIL: the $ns shards of the quick tier on PostgreSQL 18 are unbalanced by the weights (heaviest $hi s, lightest $lo s)"; bad=1; }
+	done
+	# the budget of a job: the slowest job of a hosted run is the floor of its shard, so a job over the ceiling is sliced or shrunk (CI_JOB_TIMEOUT kills it at 3 times the ceiling of its tier)
+	for tier in quick:300 full:1300; do
+		over=$(awk -F'\t' -v max="${tier#*:}" '!/^#/ && ($2 > max || $3 > max) {print $1 " " $2 "/" $3}' "$REPO/scripts/weights-${tier%:*}.tsv")
+		[[ -z $over ]] || { echo "FAIL: scripts/weights-${tier%:*}.tsv: a job takes more than ${tier#*:} lane seconds (PostgreSQL 17/18): $over"; bad=1; }
+	done
+	# the footprint sampler ends on the stop file and on TERM, prints its report and nothing on stderr (a hosted run printed "trap: line 2: unexpected EOF" and the sampler outlived the run)
+	mkdir -p "$ST/stats/logs"
+	for how in file term; do
+		bash "$REPO/scripts/ci_stats.sh" "$ST/stats" >"$ST/stats/out" 2>"$ST/stats/err" &
+		p=$!
+		sleep 1.5
+		if [[ $how == file ]]; then touch "$ST/stats/logs/stats.stop"; else kill "$p"; fi
+		for _ in {1..10}; do kill -0 "$p" 2>/dev/null || break; sleep 0.5; done
+		! kill -0 "$p" 2>/dev/null || { kill -9 "$p"; echo "FAIL: the footprint sampler does not end within 5 s of its $how"; bad=1; }
+		wait "$p" 2>/dev/null
+		{ grep -q 'peak total' "$ST/stats/out" && [[ ! -s $ST/stats/err ]]; } || { echo "FAIL: the footprint sampler ended by its $how without its report or with output on stderr: $(head -c 200 "$ST/stats/err")"; bad=1; }
+		rm -f "$ST/stats/logs/stats.stop"
+	done
+	# the jobs that build older releases are all in the first shard (the workflow caches those builds for each shard), in every tier and layout
+	for lay in quick:3 quick:4 full:5; do
+		bad_pin=$(for k in 2 3; do (( k <= ${lay#*:} )) && SIFT_CI_SHARD=$k/${lay#*:} SIFT_CI_PG_MAJOR=18 "$0" --plan "${lay%:*}" | awk '$1 ~ /^tap-shell-(compat_matrix|old_lib_refusal|replica_mixed|pg_upgrade)/ {print $1}'; done)
+		[[ -z $bad_pin ]] || { echo "FAIL: the ${lay%:*} tier cut in ${lay#*:} shards puts jobs that build older releases outside the first shard: $bad_pin"; bad=1; }
+	done
+	# a failed check of a TAP shell test shows what the test had captured in $out
+	out=$(SIFT_NODES=docker SIFT_TMP="$ST/tl" bash -c '. "$0/test/t/lib.bash"; out="line one"$'"'"'\n'"'"'"line two"; check "x" false; check "y" true' "$REPO" 2>&1)
+	[[ $out == *"# what the check read (out):"*"# line two"*"ok 2 - y"* ]] || { echo "FAIL: a failed check of test/t/lib.bash does not show the out of the test: $out"; bad=1; }
+	# the CPU-bound jobs (HEAVY_JOBS of scripts/ci/shards.sh) are spread: no shard has two more of them than another, in every tier and layout
+	for lay in quick:3 quick:4 full:5; do
+		counts=$(for k in $(seq 1 "${lay#*:}"); do SIFT_CI_SHARD=$k/${lay#*:} SIFT_CI_PG_MAJOR=18 "$0" --plan "${lay%:*}" | awk '$1 ~ /^(difftest|hardened|fuzz|release-library-regress|tap-shell-scaling_slope)/ && $3 == "pool" {n++} END {print n + 0}'; done | sort -n)
+		lo=$(head -1 <<<"$counts"); hi=$(tail -1 <<<"$counts")
+		(( hi - lo <= 1 )) || { echo "FAIL: the ${lay%:*} tier cut in ${lay#*:} shards has $lo to $hi CPU-bound jobs in a shard (at most one apart)"; bad=1; }
+	done
+	# the weights of scripts/ci-times.py are the median of the runs, not the newest (one hosted run is noisy)
+	out=$(python3 -I "$REPO/scripts/ci-times.py" --selftest 2>&1) || { echo "FAIL: scripts/ci-times.py --selftest: $out"; bad=1; }
 	# the plans of the shards made all at once (SIFT_CI_SHARD=all/N) are those of a run for the shard alone, for a shard of the pool and the last one (it runs the jobs after the pool)
 	for k in 3 9; do
 		plan_of full 18 1 $k/9

@@ -1,0 +1,37 @@
+-- The recheck context of a BM25 scan survives the rescan of the scan: a correlated subquery runs the scan once for each outer row, and a rescan resets
+-- the context of the scan, which deletes the contexts made inside it. The recheck context stood in it, and the next recheck (the phrase of the second row)
+-- worked in a context that was gone, which another context took the place of (the stem memo of the backend, reset by a recheck: a crash in the first
+-- statement of a backend, test/t/bm25_cold_stems.sh).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+CREATE TABLE pd (id int PRIMARY KEY, body text);
+INSERT INTO pd
+SELECT i, s[1 + i % 5] || ' ' || s[1 + (i * 3) % 5]
+FROM generate_series(1, 300) i, (SELECT ARRAY['der Hund und Katze', 'Katze die Straße', 'Kinder laufen über die Straßen', 'das Wetter war gestern schlecht', 'Haus Häuser schön'] s) x;
+CREATE INDEX pd_idx ON pd USING sift (body) WITH (stemmer = 'german');
+SET enable_seqscan = off;
+SET max_parallel_workers_per_gather = 0;
+-- one row of the outer query for each phrase and word: every one runs the scan again
+SELECT q, (SELECT count(*) FROM pd WHERE body @@> q) AS n
+FROM unnest(ARRAY['"Hund und Katze"', '"Katze die Straße"', 'Haus', '"Kinder laufen"', '"Hund und Katze"']) q;
+         q          |  n  
+--------------------+-----
+ "Hund und Katze"   |  60
+ "Katze die Straße" | 120
+ Haus               | 120
+ "Kinder laufen"    | 120
+ "Hund und Katze"   |  60
+(5 rows)
+
+-- the answers are the heap's (to_tsvector, the same stems and stop words)
+SELECT q, (SELECT count(*) FROM pd WHERE body @@> q) = (SELECT count(*) FROM pd WHERE to_tsvector('german', body) @@ phraseto_tsquery('german', btrim(q, '"'))) AS same
+FROM unnest(ARRAY['"Hund und Katze"', '"Katze die Straße"', '"Kinder laufen"']) q;
+         q          | same 
+--------------------+------
+ "Hund und Katze"   | t
+ "Katze die Straße" | t
+ "Kinder laufen"    | t
+(3 rows)
+
+DROP TABLE pd;
+DROP EXTENSION pg_sift;

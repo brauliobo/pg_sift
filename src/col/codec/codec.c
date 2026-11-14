@@ -9,7 +9,6 @@
  * its data; blobs start 8-byte aligned (the engine's chunks do), so all loads below are aligned. Little-endian hosts only, as every
  * on-disk format of pg_sift.
  */
-#include "core/host.h"
 #include "col/codec/decode_int.h"
 
 void

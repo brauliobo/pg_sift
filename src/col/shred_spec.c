@@ -248,7 +248,7 @@ member_slot(SiftShredNode *n, const char *key, int len)
 	if (n->nmembers == n->capmembers)
 	{
 		n->capmembers = n->capmembers ? n->capmembers * 2 : 4;
-		n->members = n->members ? repalloc(n->members, n->capmembers * sizeof(Member)) : palloc(n->capmembers * sizeof(Member));
+		SIFT_REGROW(n->members, n->capmembers * sizeof(Member));
 	}
 	memmove(&n->members[pos + 1], &n->members[pos], (n->nmembers - pos) * sizeof(Member));
 	n->members[pos].key = pnstrdup(key, len);

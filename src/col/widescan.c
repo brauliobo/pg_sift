@@ -3,9 +3,9 @@
  * pair of keys, (lane 0, lane 1) in turn, which the column source builds out of ordinary tests of the lanes. Only the public API of the source
  * and the kernel table are used; col/scan/scan.c and col/scan_filter.c call into this file from sift_col_begin and sift_col_filter.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
-#include "utils/builtins.h"
 #include "utils/numeric.h"
 #include "utils/timestamp.h"
 
@@ -417,8 +417,10 @@ sift_colw_test(const SiftColDef *def, Oid typid, int op, int nvals, const Datum 
 {
 	memset(t, 0, sizeof(*t));
 	t->pred.col = def->id;
-	if (op >= SIFT_COLW_SHAPE_FIRST)
-		sift_col_shape_test(def, typid, op, vals[0], mcxt, t);
+	if (op >= SIFT_COLW_SHAPE_FIRST && nvals > 0 && isnull[0])
+		t->verdict = SIFT_COLW_NONE;	/* a test with a NULL operand is NULL for every row */
+	else if (op >= SIFT_COLW_SHAPE_FIRST)
+		sift_col_shape_test(def, typid, op, nvals > 0 ? vals[0] : (Datum) 0, mcxt, t);
 	else if (op == SIFT_COLW_ISNULL || op == SIFT_COLW_NOTNULL)
 		test_pred(t, def, op == SIFT_COLW_ISNULL ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL, 0, NULL, op == SIFT_COLW_NOTNULL);
 	else if (op == SIFT_COLW_IN || op == SIFT_COLW_NOTIN)

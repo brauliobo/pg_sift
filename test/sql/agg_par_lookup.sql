@@ -30,14 +30,7 @@ ANALYZE labels;
 CREATE FUNCTION unsafe_id(int) RETURNS int LANGUAGE sql PARALLEL UNSAFE AS 'SELECT $1';
 CREATE FUNCTION restricted_imm(int) RETURNS int LANGUAGE plpgsql IMMUTABLE PARALLEL RESTRICTED AS 'BEGIN RETURN $1; END';
 
-CREATE FUNCTION p_rows(q text, push bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION p_rows(q text, push bool, workers int) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_with_workers(q, push, workers) $$;
 
 CREATE FUNCTION p_mode(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_mode_two_workers(q) $$;
 

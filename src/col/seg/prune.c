@@ -3,7 +3,6 @@
  * which units have rows a predicate can match, which pre-aggregates are
  * stale and what the planner learns from them before it opens a unit
  */
-#include "core/host.h"
 #include "core/cmp.h"
 #include "col/seg_int.h"
 

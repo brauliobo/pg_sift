@@ -7,6 +7,7 @@
 #define SIFT_AGG_COLSRC_EXEC_H
 
 #include "agg/colsrc/meta.h"
+#include "col/col.h"
 
 /* ---- executor side ---- */
 
@@ -119,60 +120,19 @@ typedef struct SiftSrcPrune
  * pushes EQ, NE, IN, NOT IN, PREFIX and CONTAINS for any deterministic collation (CONTAINS only where a byte match is a character match) and the range operators only for the C collation. vals are
  * not copied: they outlive the call (prune_str: the scan).
  */
-typedef enum SiftSrcStrOp
-{
-	SSTR_EQ = 1,
-	SSTR_NE,					/* non-NULL values different from vals[0] */
-	SSTR_LT,
-	SSTR_LE,
-	SSTR_GT,
-	SSTR_GE,
-	SSTR_IN,
-	SSTR_NOTIN,					/* non-NULL values none of vals */
-	SSTR_PREFIX,				/* values that start with vals[0] */
-	SSTR_CONTAINS,				/* values that hold vals[0] (not empty), bytewise */
-	SSTR_NOTCONTAINS,			/* non-NULL values that do not hold vals[0] */
-	SSTR_SUFFIX,				/* values that end with vals[0] */
-	SSTR_ICONTAINS				/* values whose lower() holds vals[0] (ASCII, lower case; nvals 3: and vals[1], vals[2] are lower() of U+0130 and U+212A) */
-} SiftSrcStrOp;
-
 typedef struct SiftSrcStrTest
 {
 	int			leaf;
-	SiftSrcStrOp op;
+	SiftColOp op;
 	Oid			collid;			/* the collation the test compares under (set by the planner's recognizer; the source ignores it) */
 	int			nvals;
-	const char *const *vals;
-	const uint32 *lens;
-	const int64 *ints;			/* the operands of a test of an integer leaf (an element of a list of integers): vals and lens are unused */
+	const SiftColValue *vals;	/* v.s and len, or v.i for a test of an integer leaf (an element of a list of integers) */
 } SiftSrcStrTest;
 
 /*
- * A test of a conjunct on a wide leaf: SWT_* ops are the comparison operators of SiftCmpOp (0..5) and the four below. vals are the operands in
+ * A test of a conjunct on a wide leaf: the ops are the comparison operators of SiftCmpOp (0..5) and the other SIFT_COLW_* (col/col.h: IN, NOT IN, the NULL tests, the operators of a range or a network). vals are the operands in
  * the type of the leaf (a NULL operand is isnull[i]; an IN or NOT IN list has nvals of them, a comparison one, a NULL test none).
  */
-#define SWT_IN			6
-#define SWT_NOTIN		7
-#define SWT_ISNULL		8
-#define SWT_NOTNULL		9
-/* the operators of a leaf with shape != 0, the leaf on the left (SIFT_COLW_R_*, SIFT_COLW_N_* of col/col.h are the same numbers); the operand is a range, an element of its subtype, or a network */
-#define SWT_SHAPE_FIRST	16
-#define SWT_R_CONTAINS	16
-#define SWT_R_CONTAINED	17
-#define SWT_R_OVERLAPS	18
-#define SWT_R_BEFORE	19
-#define SWT_R_AFTER		20
-#define SWT_R_OVERLEFT	21
-#define SWT_R_OVERRIGHT	22
-#define SWT_R_ADJACENT	23
-#define SWT_R_ELEM		24
-#define SWT_N_SUB		25
-#define SWT_N_SUBEQ		26
-#define SWT_N_SUP		27
-#define SWT_N_SUPEQ		28
-#define SWT_N_OVERLAP	29
-#define SWT_R_EQ		30
-#define SWT_N_EQ		31
 
 typedef struct SiftSrcWideTest
 {
@@ -181,6 +141,7 @@ typedef struct SiftSrcWideTest
 	int			nvals;
 	const Datum *vals;
 	const bool *isnull;
+	bool		rows;			/* a test whose rows the executor asks for (filter_wide on all the rows of a unit) and no conjunct: it prunes no unit */
 } SiftSrcWideTest;
 
 /* The zone of a scalar leaf in a unit: min and max of the integer-typed (SCV_I32/SCV_I64) values, dead rows included (docs/COL-SEARCH.md, top-N) */
@@ -216,7 +177,6 @@ typedef struct SiftSrcUnitAgg
 	double		min_f;			/* SCV_F64 leaves (NaN is the largest value, as in PostgreSQL's order) */
 	double		max_f;
 	bool		has_sums;		/* integer leaf: sum and sumsq are exact */
-	bool		has_sumsq;		/* sumsq did not overflow int128 */
 	SiftSrcI128 sum;
 	SiftSrcI128 sumsq;
 	double		sum_f;			/* SCV_F64: the sum in the unit's row order (the order caveat of a parallel sum) */
@@ -336,25 +296,17 @@ typedef struct SiftSrcPreagg
  * passes). A source that accepts it (set_filters) applies it exactly: the executor does not test the rows again, and the source may use
  * it to skip units (docs/COL-PLAN.md, "Filters in the source"). The text tests are SiftSrcStrTest above.
  */
-typedef enum SiftSrcFilterOp
+/* the op of a filter: a SiftColOp (IN and NOTIN carry set, the others val; NOTNULL: a value is present), or one of the unions of ranges */
+enum
 {
-	SSF_EQ,
-	SSF_NE,
-	SSF_LT,
-	SSF_LE,
-	SSF_GT,
-	SSF_GE,
-	SSF_IN,
-	SSF_NOTIN,
-	SSF_NOTNULL,				/* a value is present */
-	SSF_RANGES,					/* the union of ranges: set holds nset / 2 pairs (lo, hi), inclusive, ascending and apart, PG_INT64_MIN / PG_INT64_MAX where a side is open */
+	SSF_RANGES = SIFT_COLOP_SHAPE + 1,	/* set holds nset / 2 pairs (lo, hi), inclusive, ascending and apart, PG_INT64_MIN / PG_INT64_MAX where a side is open */
 	SSF_RANGES_HINT				/* the same, for rows the executor tests again: a unit that holds many of the ranges is left as it is */
-} SiftSrcFilterOp;
+};
 
 typedef struct SiftSrcFilter
 {
 	int			leaf;
-	SiftSrcFilterOp op;
+	int			op;
 	int64		val;			/* a comparison */
 	int			nset;			/* IN, NOTIN: the members; RANGES: twice the number of ranges */
 	const int64 *set;

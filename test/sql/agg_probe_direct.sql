@@ -20,6 +20,17 @@ INSERT INTO types (name, coltype, idxdef, rowkey, itemkey) VALUES
   ('int4 nulls first','int4',        '(k NULLS FIRST)',        'g::int4',                                                  'o.n::int4'),
   ('date',            'date',        '(k)',                    'date ''2025-01-01'' + g',                                  'date ''2025-01-01'' + o.n::int'),
   ('timestamptz',     'timestamptz', '(k)',                    'timestamptz ''2025-01-01 00:00+00'' + g * interval ''1 hour''', 'timestamptz ''2025-01-01 00:00+00'' + o.n::int * interval ''1 hour'''),
+  -- negative integers and dates before 2000 (stored as negative integers), the infinities of date and timestamps, and the uuid that is compared as its 16 bytes, ascending, descending and with the NULLs first
+  ('int4 negative',   'int4',        '(k)',                    '(g - 150)::int4',                                          '(o.n::int - 150)::int4'),
+  ('int8 negative desc', 'int8',     '(k DESC)',               '(g - 150)::int8 * 100000000000',                           '(o.n::int - 150)::int8 * 100000000000'),
+  ('date negative',   'date',        '(k)',                    'date ''1999-06-01'' + g',                                  'date ''1999-06-01'' + o.n::int'),
+  ('date infinity',   'date',        '(k DESC NULLS FIRST)',   'CASE WHEN g % 50 = 0 THEN ''infinity''::date WHEN g % 50 = 1 THEN ''-infinity''::date ELSE date ''2025-01-01'' + g END', 'CASE WHEN o.n::int % 50 = 0 THEN ''infinity''::date WHEN o.n::int % 50 = 1 THEN ''-infinity''::date ELSE date ''2025-01-01'' + o.n::int END'),
+  ('timestamp',       'timestamp',   '(k)',                    'timestamp ''2025-01-01 00:00'' + (g - 150) * interval ''1 hour''', 'timestamp ''2025-01-01 00:00'' + (o.n::int - 150) * interval ''1 hour'''),
+  ('timestamp infinity', 'timestamp', '(k)',                   'CASE WHEN g % 50 = 0 THEN ''infinity''::timestamp WHEN g % 50 = 1 THEN ''-infinity''::timestamp ELSE timestamp ''1999-12-30 00:00'' + g * interval ''1 hour'' END', 'CASE WHEN o.n::int % 50 = 0 THEN ''infinity''::timestamp WHEN o.n::int % 50 = 1 THEN ''-infinity''::timestamp ELSE timestamp ''1999-12-30 00:00'' + o.n::int * interval ''1 hour'' END'),
+  ('timestamptz infinity desc', 'timestamptz', '(k DESC)',     'CASE WHEN g % 50 = 0 THEN ''infinity''::timestamptz WHEN g % 50 = 1 THEN ''-infinity''::timestamptz ELSE timestamptz ''2000-01-01 00:00+00'' + (g - 150) * interval ''1 hour'' END', 'CASE WHEN o.n::int % 50 = 0 THEN ''infinity''::timestamptz WHEN o.n::int % 50 = 1 THEN ''-infinity''::timestamptz ELSE timestamptz ''2000-01-01 00:00+00'' + (o.n::int - 150) * interval ''1 hour'' END'),
+  ('uuid',            'uuid',        '(k)',                    'md5(g::text)::uuid',                                       'md5(d.n::text)::uuid'),
+  ('uuid desc',       'uuid',        '(k DESC)',               'md5(g::text)::uuid',                                       'md5(d.n::text)::uuid'),
+  ('uuid nulls first','uuid',        '(k NULLS FIRST)',        'CASE WHEN g % 40 = 0 THEN NULL ELSE md5(g::text)::uuid END', 'md5(d.n::text)::uuid'),
   ('numeric',         'numeric',     '(k)',                    'g::numeric',                                               'o.n::numeric'),
   ('float8',          'float8',      '(k)',                    'g::float8',                                                'o.n'),
   ('interval',        'interval',    '(k)',                    'g * interval ''1 minute''',                                'o.n::int * interval ''1 minute'''),
@@ -37,7 +48,12 @@ INSERT INTO types (name, coltype, idxdef, rowkey, itemkey) VALUES
   ('partial',         'int4',        '(k) WHERE v IS NOT NULL','g::int4',                                                  'o.n::int4'),
   ('include',         'int4',        '(k) INCLUDE (v)',        'g::int4',                                                  'o.n::int4'),
   ('hash',            'int4',        'USING hash (k)',         'g::int4',                                                  'o.n::int4'),
-  ('brin',            'int4',        'USING brin (k)',         'g::int4',                                                  'o.n::int4');
+  ('brin',            'int4',        'USING brin (k)',         'g::int4',                                                  'o.n::int4'),
+  -- an integer column compared with the key of another integer type, and keys beyond the range of the column (no entry equals them)
+  ('int2 key int4',   'int2',        '(k)',                    'g::int2',                                                  'o.n::int4 + CASE WHEN o.n::int % 4 = 0 THEN 65536 ELSE 0 END'),
+  ('int4 key int8',   'int4',        '(k)',                    'g::int4',                                                  'o.n::int8 + CASE WHEN o.n::int % 4 = 0 THEN 4294967296 ELSE 0 END'),
+  ('int8 key int2',   'int8',        '(k)',                    'g::int8',                                                  'o.n::int2'),
+  ('int8 desc key int4', 'int8',     '(k DESC)',               'g::int8',                                                  'o.n::int4');
 DO $$
 DECLARE t record;
 BEGIN
@@ -54,7 +70,33 @@ UPDATE types SET cond = 'k COLLATE "C" = (' || itemkey || ')' WHERE name = 'text
 UPDATE types SET cond = 'k = (' || itemkey || ')' WHERE cond IS NULL;
 VACUUM (FREEZE, ANALYZE) entries;
 ANALYZE;
-SELECT t.name, p.* FROM types t, LATERAL probe_check(case_query('lk_' || t.ord, t.cond)) p ORDER BY t.ord;
+-- the key of the uuid cases is built from a column (md5 is not evaluated on the items of a document): a table of numbers, one in nine NULL
+CREATE TABLE ud (id int, n int);
+INSERT INTO ud SELECT g, CASE WHEN g % 9 = 0 THEN NULL ELSE (g * 7) % 330 END FROM generate_series(1, 2000) g;
+CREATE INDEX ud_col ON ud USING sift_col (id, n);
+VACUUM (FREEZE, ANALYZE) ud;
+CREATE FUNCTION case_query_ud(tab text, cond text) RETURNS text LANGUAGE sql AS $$
+  SELECT format($q$SELECT m.v, count(*) AS n, sum(d.n) AS total FROM ud d LEFT JOIN LATERAL (SELECT v FROM %s WHERE %s LIMIT 1) m ON true GROUP BY 1$q$, tab, cond) $$;
+CREATE FUNCTION types_query(t types) RETURNS text LANGUAGE sql AS $$
+  SELECT CASE WHEN t.name LIKE 'uuid%' THEN case_query_ud('lk_' || t.ord, t.cond) ELSE case_query('lk_' || t.ord, t.cond) END $$;
+SELECT t.name, p.* FROM types t, LATERAL probe_check(types_query(t)) p ORDER BY t.ord;
+
+-- the integers, dates, timestamps, uuids and strings of a bytewise order are compared in the probe itself, never through the opclass's order function (sift._test_probe_stats counts those
+-- calls); the other types are
+CREATE EXTENSION pg_sift_test;
+CREATE FUNCTION order_function_calls(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+  SET LOCAL sift.enable_agg = on;
+  PERFORM sift._test_probe_stats(true);
+  EXECUTE 'SELECT count(*) FROM (' || q || ') q';
+  SELECT generic_compares INTO n FROM sift._test_probe_stats(true);
+  RETURN n > 0;
+END $$;
+SELECT t.name, order_function_calls(types_query(t)) AS order_function_called FROM types t
+WHERE t.name IN ('int2', 'int4', 'int8', 'int8 desc', 'int4 nulls first', 'date', 'timestamptz', 'text C', 'text pattern', 'int4 negative', 'int8 negative desc', 'date negative', 'date infinity',
+                 'timestamp', 'timestamp infinity', 'timestamptz infinity desc', 'uuid', 'uuid desc', 'uuid nulls first', 'int2 key int4', 'int4 key int8', 'int8 key int2', 'numeric', 'float8', 'interval')
+ORDER BY t.ord;
 
 -- duplicate keys, versions and dead entries. Three rows per key (the match of a LIMIT 1 is the first visible entry of the key in index order); an index on w too, so that
 -- a change of w is not a HOT update and leaves the old entry of k in the index until a VACUUM
@@ -165,6 +207,11 @@ UPDATE lk_io SET v = v || 'u' WHERE k % 3 = 0;
 SELECT * FROM step_io('entries of dead versions', 'lk_io', 'k = o.n::int');
 SELECT * FROM step_io('entries marked dead', 'lk_io', 'k = o.n::int');
 SELECT * FROM step_io('all rows, dead versions', 'lk_io', 'k = o.n::int', 'OFFSET 0');
+-- the child's filter on an index column rejects an entry before the heap is asked about it (a row of a dead version no more than a visible one); and keys of another integer type
+SELECT * FROM step_io('filter on an index column, dead versions', 'lk_io', $c$k = o.n::int AND v ~ 'u$'$c$);
+SELECT * FROM step_io('filter rejects every entry', 'lk_io', $c$k = o.n::int AND v = 'none'$c$);
+SELECT * FROM step_io('key of a wider integer type', 'lk_io', 'k = o.n::int8');
+SELECT * FROM step_io('key of a narrower integer type', 'lk_io', 'k = o.n::int2');
 DELETE FROM lk_io WHERE k % 11 = 0 AND w = 1;
 SELECT * FROM step_io('deleted rows', 'lk_io', 'k = o.n::int');
 INSERT INTO lk_io SELECT g, 'late' || g, 0, 0 FROM generate_series(0, 299, 4) g;
@@ -187,8 +234,43 @@ INSERT INTO lk_inc SELECT g, 'v' || g FROM generate_series(0, 299) g WHERE g % 7
 CREATE INDEX lk_inc_k ON lk_inc (k) INCLUDE (v);
 VACUUM (FREEZE, ANALYZE) lk_inc;
 SELECT * FROM step_io('include column', 'lk_inc', 'k = o.n::int');
+-- A NULL in an INCLUDE column (or a later key column) is not among the columns a probe compares: the compare keeps its fast way, and only a NULL in a compared column
+-- reads the columns one by one (sift._test_probe_stats, slow_compares). The covering index is what the planner takes for an Index Only Scan when it holds every column the
+-- child reads, the column inside an indexed expression included: a lookup child that reads (scope, mapped value) through coalesce(scope, '{}') is answered from the
+-- visibility map once the table is vacuumed.
+CREATE TABLE lk_incn (k int, a text, b int, v text);
+INSERT INTO lk_incn SELECT g, CASE WHEN g % 3 = 0 THEN 'a' || g END, CASE WHEN g % 5 = 0 THEN g END, 'v' || g FROM generate_series(0, 299) g WHERE g % 7 <> 0;
+CREATE INDEX lk_incn_k ON lk_incn (k) INCLUDE (a, b, v);
+CREATE TABLE lk_nullk (k int, a text, v text);
+INSERT INTO lk_nullk SELECT CASE WHEN g % 2 = 0 THEN NULL ELSE g END, CASE WHEN g % 3 = 0 THEN 'a' || g END, 'v' || g FROM generate_series(0, 299) g WHERE g % 7 <> 0;
+CREATE INDEX lk_nullk_k ON lk_nullk (k NULLS FIRST) INCLUDE (a, v);
+CREATE TABLE lk_incx (s int[], t text, v text);
+INSERT INTO lk_incx SELECT CASE WHEN g % 40 = 0 THEN ARRAY[g] END, 't' || g, 'v' || g FROM generate_series(0, 299) g WHERE g % 7 <> 0;
+CREATE INDEX lk_incx_k ON lk_incx ((coalesce(s, '{}'::int[])), t) INCLUDE (s, v);
+VACUUM (FREEZE, ANALYZE) lk_incn, lk_nullk, lk_incx;
+SELECT * FROM step_io('include columns with NULLs', 'lk_incn', 'k = o.n::int', 'LIMIT 1', 'a');
+SELECT * FROM step_io('include column read when NULL', 'lk_incn', 'k = o.n::int', 'LIMIT 1', 'b');
+SELECT * FROM step_io('NULL in a key column', 'lk_nullk', 'k = o.n::int', 'LIMIT 1', 'a');
+SELECT * FROM step_io('expression key, its column included', 'lk_incx', 'coalesce(s, ''{}''::int[]) = ''{}'' AND t = ''t'' || o.n::int', 'LIMIT 1', 'v');
+CREATE FUNCTION slow_compares(q text) RETURNS TABLE (compared bool, slow bigint) LANGUAGE plpgsql AS $$
+DECLARE s record;
+BEGIN
+  SET LOCAL sift.enable_agg = on;
+  PERFORM sift._test_probe_stats(true);
+  EXECUTE 'SELECT count(*) FROM (' || q || ') q';
+  SELECT tuple_compares, slow_compares INTO s FROM sift._test_probe_stats(true);
+  compared := s.tuple_compares > 0;
+  slow := s.slow_compares;
+  RETURN NEXT;
+END $$;
+SELECT 'NULL only in INCLUDE columns' AS lookup, * FROM slow_compares(case_query_col('lk_incn', 'k = o.n::int', 'LIMIT 1', 'a'));
+SELECT 'NULL in the compared column' AS lookup, compared, slow > 0 AS slow_path FROM slow_compares(case_query_col('lk_nullk', 'k = o.n::int', 'LIMIT 1', 'a'));
+SELECT 'expression key, NULL in its INCLUDE column' AS lookup, * FROM slow_compares(case_query_col('lk_incx', 'coalesce(s, ''{}''::int[]) = ''{}'' AND t = ''t'' || o.n::int', 'LIMIT 1', 'v'));
+DROP FUNCTION slow_compares(text);
+DROP TABLE lk_incn, lk_nullk, lk_incx;
 
 DO $$ DECLARE t record; BEGIN FOR t IN SELECT ord FROM types LOOP EXECUTE format('DROP TABLE lk_%s', t.ord); END LOOP; END $$;
-DROP FUNCTION step_io(text, text, text, text, text), case_query_col(text, text, text, text), step(text, text, text, text), case_query(text, text, text), probe_check(text), check_query(text);
-DROP TABLE types, entries, lk_dup, lk_run, lk_back, lk_io, lk_inc;
+DROP FUNCTION order_function_calls(text), types_query(types), case_query_ud(text, text), step_io(text, text, text, text, text), case_query_col(text, text, text, text), step(text, text, text, text), case_query(text, text, text), probe_check(text), check_query(text);
+DROP TABLE types, ud, entries, lk_dup, lk_run, lk_back, lk_io, lk_inc;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

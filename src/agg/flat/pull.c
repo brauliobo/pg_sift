@@ -256,10 +256,19 @@ flatten_query(Query *q, bool apply)
 	}
 	foreach_ptr(struct DecorJoin, r, decor)
 		decor_apply(q, r);
+	/* the child's scan answers the parents' EXISTS: probing it key by key (below) is the lookups it replaces */
+	if (sift_agg_invert_parents(q, apply))
+	{
+		flat_levels = list_delete_first(flat_levels);
+		return true;
+	}
 	changed |= decorrelate_sublinks(q, apply);
 	flat_fenced |= fence_sublinks(q, apply);
 	/* before the joins are read as probes: the queries they move have their tables joined as written (a table read as a probe is a sub-select the keys are not looked up in) */
 	changed |= sift_agg_eager_lookup(q, apply);
+	changed |= sift_agg_distinct_split(q, apply);
+	changed |= sift_agg_partial_left(q, apply);
+	changed |= sift_agg_pct_arrays(q, apply);
 	changed |= sift_agg_push_dim_keys(q, apply);
 	probe_mixed = changed;
 	probed = probe_sublinks(q, apply);
@@ -272,6 +281,8 @@ flatten_query(Query *q, bool apply)
 	after |= sift_agg_push_dim_keys(q, apply);
 	after |= sift_agg_factor_constants(q, apply);
 	changed |= after;
+	/* last: the passes above would turn the sub-select it moves into a probe for each key, which the planner prices by the keys where a semi join of the rows costs none (having.c) */
+	changed |= sift_agg_having_to_where(q, apply);
 	/* the probes are not the only rewrite of the statement: the margin that they win by (cte/hook.c) is not asked of the others */
 	if (probed && (probe_mixed || after))
 		sift_agg_probe_mixed = true;
@@ -293,6 +304,7 @@ sift_agg_flatten_laterals(Query *q)
 	flat_levels = NIL;
 	sift_agg_by_cost = false;
 	sift_agg_flat_any = false;
+	sift_agg_flat_margin = 0;
 	sift_agg_probe_applied = sift_agg_probe_mixed = false;
 	flat_fenced = false;
 	sift_agg_fence_alone = false;

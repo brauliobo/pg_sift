@@ -4,7 +4,6 @@
  * the runs, the publication and the NOTICEs are in the files next to it
  */
 #include "postgres.h"
-#include <math.h>
 #include "commands/progress.h"
 #include "pgstat.h"
 #include "utils/lsyscache.h"
@@ -12,8 +11,7 @@
 #include "bm25/build.h"
 #endif
 #include "col/build/build_int.h"
-#include "col/maint/maint_int.h"
-#include "core/eval.h"
+#include "col/conn.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_col_workers = 0;
@@ -84,7 +82,7 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	if (!key_cut)
 		sift_store_init_meta_ex(wt, 0, 0, b->r->schema->hash, SIFT_COL_META_FLAG);
 	sift_wt_finish(wt);
-	sift_colb_publish(index, segs, nsegs, !info->ii_Concurrent && sift_col_row_key_on(index));
+	sift_colb_publish(index, segs, nsegs, !info->ii_Concurrent && sift_col_track_on(index));
 	sift_colb_free(b);
 	return res;
 }
@@ -118,6 +116,8 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("operator class sift.col_numeric_ops needs numeric(p, s) with p up to 18"),
 							errhint("Use the default operator class for a numeric column of another precision.")));
 	}
+	sift_conn_auto(heap, index);
+	sift_conn_resolve(heap, index);
 #ifdef SIFT_TESTING
 	sift_test_col_workers = 0;
 	sift_test_col_merge_slices = 0;
@@ -136,19 +136,15 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
 		res = serial_build(heap, index, info);
-	if (sift_col_row_key_on(index))
+	if (sift_col_track_on(index))
 	{
 		sift_col_log_create(index);
 		sift_col_track_install(heap, index, info->ii_Concurrent);
+		sift_conn_build(heap, index);
 	}
 	else
 		sift_col_track_reconcile(index);
-	if (sift_eval_on(SIFT_EVAL_UNIT_REWRITE))
-	{
-		(void) sift_maint_lock(index, true);
-		maint_unit_layout(index, true);
-		sift_maint_unlock(index);
-	}
+	sift_conn_start(heap, index);
 	if (chosen)
 		sift_col_auto_keys_report(index);
 	sift_col_vacuum_notice(heap, index);

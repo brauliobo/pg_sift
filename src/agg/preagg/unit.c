@@ -99,7 +99,7 @@ preagg_dead_ok(AggExec *ex, bool net)
 
 		if (a->kind == SAA_COUNT_DISTINCT || a->kind == SAA_GEN)
 			return false;
-		if (!net && (a->kind == SAA_MIN || a->kind == SAA_MAX || a->kind == SAA_SUM_F64 || a->kind == SAA_AVG_F64 ||
+		if (!net && (saa_minmax(a->kind) || saa_sumavg_f64(a->kind) ||
 					 (leaf >= 0 && a->kind != SAA_COUNT && ex->lay->leaf[leaf].vtype == SCV_F64)))
 			return false;
 	}
@@ -315,10 +315,10 @@ preagg_init(AggExec *ex)
 			only = ex->spec->agg[ai].kind == SAA_COUNT_STAR && ex->spec->agg[ai].filter == NULL;
 		for (int i = 0; only && ex->pushed && t != NULL && i < ex->spec->npred; i++)
 			only = !ex->pushed[i];
-		text = ex->super_on && only && t != NULL && t->nvals == 1 && (t->op == SSTR_EQ || (t->op >= SSTR_LT && t->op <= SSTR_GE) || t->op == SSTR_PREFIX);
+		text = ex->super_on && only && t != NULL && t->nvals == 1 && (t->op == SIFT_COLOP_EQ || (t->op >= SIFT_COLOP_LT && t->op <= SIFT_COLOP_GE) || t->op == SIFT_COLOP_PREFIX);
 		if (text)
 		{
-			sift_colsrc_count_range(ex->src, t->leaf, t->op, t->vals[0], t->lens[0]);
+			sift_colsrc_count_range(ex->src, t->leaf, t->op, t->vals[0].v.s, t->vals[0].len);
 			ex->pcount = true;
 		}
 		/* ... or of the one test that an element of a list equals a value: a segment whose point directory lists the rows of the value counts them */
@@ -343,8 +343,8 @@ preagg_init(AggExec *ex)
 			/* ... or of the strings of a text leaf between two bounds: the ranks of its global order */
 			else if ((leaf = sift_agg_text_range(ex, &lo, &hi)) >= 0)
 			{
-				sift_colsrc_count_strs(ex->src, leaf, lo != NULL ? lo->collid : hi->collid, lo != NULL ? lo->vals[0] : NULL, lo != NULL ? lo->lens[0] : 0, lo != NULL && lo->op == SSTR_GT,
-									   hi != NULL ? hi->vals[0] : NULL, hi != NULL ? hi->lens[0] : 0, hi != NULL && hi->op == SSTR_LT);
+				sift_colsrc_count_strs(ex->src, leaf, lo != NULL ? lo->collid : hi->collid, lo != NULL ? lo->vals[0].v.s : NULL, lo != NULL ? lo->vals[0].len : 0, lo != NULL && lo->op == SIFT_COLOP_GT,
+									   hi != NULL ? hi->vals[0].v.s : NULL, hi != NULL ? hi->vals[0].len : 0, hi != NULL && hi->op == SIFT_COLOP_LT);
 				ex->pcount = ex->pcount_cmp = true;
 			}
 		}

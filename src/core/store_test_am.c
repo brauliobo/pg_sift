@@ -30,7 +30,7 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	if (bs->n == bs->max)
 	{
 		bs->max = Max(16, bs->max * 2);
-		bs->v = bs->v ? repalloc(bs->v, bs->max * sizeof(int32)) : palloc(bs->max * sizeof(int32));
+		SIFT_REGROW(bs->v, bs->max * sizeof(int32));
 	}
 	bs->v[bs->n++] = DatumGetInt32(values[0]);
 }

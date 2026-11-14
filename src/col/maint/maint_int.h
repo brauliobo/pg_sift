@@ -6,6 +6,7 @@
 #define SIFT_COL_MAINT_INT_H
 
 #include "col/build.h"
+#include "col/conn.h"
 #include "bm25/maint.h"
 
 /*
@@ -49,6 +50,7 @@ typedef struct RewriteView
 	SiftColSegment *seg[SIFT_MAX_SEGMENTS];
 	SbSpans		span[SIFT_MAX_SEGMENTS];
 	bool		over[SIFT_MAX_SEGMENTS];
+	bool		stale[SIFT_MAX_SEGMENTS];	/* a segment of a connected index whose found flags a rewrite should fill again (sift_conn_stale) */
 	bool		kover[SIFT_MAX_SEGMENTS];	/* a partition-sized segment of a key-cut index whose key range overlaps another one's: it is no partition of the key */
 	int			nkover;
 	int64		klo[SIFT_MAX_SEGMENTS],		/* the range of the cut leaf over the units of each segment of a key-cut index in partitions (klo > khi: no value) */
@@ -58,13 +60,43 @@ typedef struct RewriteView
 extern int maint_merge_workers;
 extern uint64 maint_pass_bytes;
 extern bool maint_after_build;
+extern bool maint_redecided;
 
 extern const SiftMaintOps maint_col_ops;
 
-extern void	maint_use_partitions(const SiftDirSnapshot *snap);
-extern int	maint_part_kb_for(uint64 bytes);
+#define MAINT_MEM_RATIO	2.1	/* the memory a writer estimates (sift_colw_memory) for each byte of segment, usually: a partition is under half of the memory a writer may estimate */
+extern void	maint_use_partitions(Relation index, const SiftDirSnapshot *snap);
+extern int	maint_part_kb_for(uint64 bytes, double mem_ratio);
 
 extern bool	maint_is_partition(const SiftSegEntry *e);
+extern SbSpans	maint_seg_spans(SiftColSegment *seg);
+extern bool	maint_share_superblock(const SbSpans *a, const SbSpans *b, int allowed);
+
+/* The overlays of a key-cut index in partitions: what a merge of the small ones into one would rewrite and spare the reads (maint_overlay_set) */
+typedef struct OverlayEv
+{
+	int			n;				/* the overlays taken */
+	bool		forced;			/* more overlays alive than the reads are to open: taken whatever their sizes */
+	uint64		rows;			/* their rows: what the merge rewrites */
+	uint64		units;			/* their units: the rows of one is what a read of a key in it scans */
+	double		sum;			/* the width of the key ranges of their units, each overlay's added: the units a read of a random key opens in them */
+	double		cover;			/* the width of the key ranges of their units in all: the units it would open in the merged one */
+} OverlayEv;
+
+extern bool	maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev);
+/* A segment is an overlay when it holds under half of the rows of the largest of the index (the size rule of maint_overlay_set): it is written lean, and gets no net sidecar */
+#define maint_is_overlay(rows, largest_rows)	((uint64) (rows) * 2 < (uint64) (largest_rows))
+/*
+ * The overlays of an index whose order arrays are the choice of the build (order_array_columns 'auto: ..'; one that names them keeps them everywhere, a group walk reads every segment's) keep none (they span the rows of the whole index, as the point directories do) while all of them together, with the one in hand, hold at most
+ * a tenth of the rows of the index (the arrays of the larger segments cover at least 0.9 of the values, which the order planner asks, agg/order/shape.c) and no more rows than a walk takes
+ * from them in memory (SIFT_CGORD_FREE_CAP of the tightest leaf with an array): past it the walk would read the units, 20 to 70 times the instructions. The rows of the overlays
+ * of seg[], the segments of skip (those the step replaces) left out; the rule of maint_is_overlay.
+ */
+extern void maint_set_unordered(SiftCPaggSpec *spec, const SiftColSchema *schema, uint64 overlay_rows, uint64 index_rows);
+extern uint64 maint_overlay_rows(const SiftSegEntry *seg, int n, const SiftSegEntry *skip, int nskip);
+/* set by a rule that found the overlays due: the rewrite then takes them alone */
+extern bool	maint_overlay_asked;
+extern int	maint_overlay_steps;
 
 extern void	maint_throttle(SiftWriteTarget *wt);
 
@@ -81,13 +113,12 @@ extern uint32	maint_dirty_units(SiftColSegment *seg);
 extern void	maint_net_refresh(Relation index);
 
 extern RewriteView *	maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx);
+extern void	maint_mark_key_overlap(Relation index, RewriteView *v);
+extern bool	maint_key_meets(const RewriteView *v, int i);
 
 extern SiftStepResult	maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy);
 
 extern bool	maint_is_col(Relation index);
-
-extern void maint_unit_layout(Relation index, bool strict);
-extern void maint_unit_bulkdelete(Relation index, SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 
 extern void	maint_bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 
@@ -96,6 +127,7 @@ extern void	maint_bulkdelete_tomb(Relation index, const SiftSegEntry *e, IndexBu
 extern void	maint_bulkdelete_wbuf(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 
 extern void	maint_reap_overflow(Relation index, Relation heap);
+extern void	maint_roots_verify(Relation index, Relation heap);
 
 extern bool	maint_vacuum_truncates(Relation index);
 
@@ -115,6 +147,8 @@ extern bool	maint_rewrite_all(const char *why);
 /* the reads of a backend owe the rewrite (maint_read_due); the worker started for it takes the rewrite as due */
 extern bool	maint_read_asked;
 extern bool	maint_read_due(Relation index, double owed);
+/* the backends that read the open write buffer decoded rows that cost more than its promotion (the worker started for it seals and promotes) */
+extern bool	maint_wbuf_read_due(Relation index);
 
 extern void	maint_rewrite_request(Relation index);
 

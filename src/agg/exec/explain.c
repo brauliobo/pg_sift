@@ -175,6 +175,9 @@ explain_correlated(CustomScanState *node, int i, ExplainState *es)
 	ExplainCloseGroup(group, label, true, es);
 }
 
+/* a handful of pages is never all-visible before its first VACUUM and costs nothing to read: the hint is for tables that matter */
+#define LOOKUP_HINT_PAGES 64
+
 /* The lookup tables a run loaded and the key filters and semi tables it built from them */
 static void
 explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
@@ -190,9 +193,13 @@ explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 		sift_explain_int(&ln, "Lookup Index Scans", NULL, "index scans", c->lookup_index, SIFT_XI_OPT);
 		sift_explain_int(&ln, "Lookup Heap Fetches", NULL, "heap fetches", c->lookup_heap, SIFT_XI_OPT);
 		sift_explain_int(&ln, "Lookup Column Loads", NULL, "column loads", c->lookup_cols, SIFT_XI_OPT);
+		sift_explain_int(&ln, "Lookup Rows Classed", NULL, "rows classed", c->lookup_dense, SIFT_XI_OPT);
+		sift_explain_int(&ln, "Lookup Class Workers", NULL, "class workers", c->lookup_class_workers, SIFT_XI_OPT);
 		if (es->timing)
 			sift_explain_ms(&ln, "Lookup Load Time", "to load", c->lookup_us / 1000.0, SIFT_XI_KEEP);
 	}
+	if (es->verbose && c->lookup_why != NULL && c->lookup_why[0] != '\0')
+		ExplainPropertyText("Lookup Heap Reason", c->lookup_why, es);
 	if (es->verbose)
 	{
 		int64		hits = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS] - c->dict_shared0[0],
@@ -202,12 +209,28 @@ explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 			ExplainPropertyText("Shared Dictionaries", psprintf("hits " INT64_FORMAT ", misses " INT64_FORMAT, hits, misses), es);
 	}
 	sift_explain_int(&ln, "Child Direct Probes", NULL, "child direct probes", c->probe_direct, SIFT_XI_OPT);
+	if (c->probe_direct > 0)
+	{
+		sift_explain_int(&ln, "Child Probe Leaves", NULL, "leaves", c->probe_leaves, SIFT_XI_SUB | SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Child Probe Upper Pages Pinned", NULL, "upper pages pinned", c->probe_pins, SIFT_XI_SUB | SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Child Probe Heap Fetches", NULL, "heap fetches", c->probe_heap, SIFT_XI_SUB | SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Child Probe Index Only Entries", NULL, "from the visibility map", c->probe_vm, SIFT_XI_SUB | SIFT_XI_OPT);
+	}
 	sift_explain_int(&ln, "Child Blocks Prefetched", NULL, "child blocks prefetched", c->child_warmed, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Join Key Filters", NULL, "key filters", c->njfilter, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Join Text Filters", NULL, "text key filters", c->njstr, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Join Key Passes", NULL, "key passes", c->njpass, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Found Proofs", NULL, "found proofs", c->nfound, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Found Keys Outside The Proof", NULL, "keys outside the proof", c->found_keys, SIFT_XI_OPT);
+	if (sift_agg_connected(c))
+	{
+		sift_explain_int(&ln, "Parent Leaf Reads", NULL, "parent leaf reads", c->lookup_cols, SIFT_XI_OPT);
+		sift_explain_int(&ln, "Parent Heap Fetches", NULL, "parent heap fetches", c->lookup_heap + c->lookup_hscan, SIFT_XI_OPT);
+	}
 	sift_explain_int(&ln, "Shared Lookup Tables", NULL, "shared tables", c->nshared, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Cached Lookup Tables", NULL, "cached tables", c->ncached, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Dimension Maps Shared", NULL, "maps shared", c->ndim_shared, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Dimension Maps Built", NULL, "maps built", c->ndim_built, SIFT_XI_OPT);
 	sift_explain_int(&ln, "First Row Lookup Tables", NULL, "first row tables", c->nfirst, SIFT_XI_OPT);
 	if (c->first_hit > 0 || c->first_differ > 0)
 	{
@@ -219,7 +242,13 @@ explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 		sift_explain_int(&ln, "Semi Lookup Tables", NULL, "semi tables", c->nsemi, SIFT_XI_KEEP);
 		sift_explain_int(&ln, "Semi Lookup Table Size", "kB", NULL, (c->semi_bytes + 1023) / 1024, SIFT_XI_SUB | SIFT_XI_KEEP);
 	}
+	if (c->lookup_pages > 0)
+		sift_explain_int(&ln, "Lookup Pages All Visible", "%", "of the lookup tables' pages all-visible", c->lookup_allvis * 100 / c->lookup_pages, SIFT_XI_KEEP);
 	sift_explain_end(&ln);
+	if (c->found_why != NULL)
+		ExplainPropertyText("Found Fallback", c->found_why, es);
+	if (c->lookup_pages >= LOOKUP_HINT_PAGES && c->lookup_allvis * 2 < c->lookup_pages)
+		ExplainPropertyText("Lookup Hint", "VACUUM the lookup tables: under half of their pages are all-visible, so the lookups fetch heap pages", es);
 }
 
 /* The units a run read, pruned, and answered from the pre-aggregates */
@@ -304,6 +333,7 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 	if (part_flush_on(ex))
 		ExplainPropertyText("Groups Finished", "per partition", es);
 	sift_explain_int(&ln, "Ordered Sets Spilled", NULL, "ordered sets spilled", c->n_osa_spilled, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Ordered Sets Flat", NULL, "ordered sets of distinct values", c->n_osa_flat, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Group Table Spills", NULL, "group table spills", c->n_spills, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Group Passes", NULL, "group passes", c->n_passes, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Group Pass Restarts", NULL, "group pass restarts", c->n_pass_restarts, SIFT_XI_OPT);
@@ -382,6 +412,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Workers Planned", NULL, s->nworkers, es);
 	if (s->gpart > 0)
 		ExplainPropertyText("Groups Split By", s->key[s->gpart - 1].desc, es);
+	if (s->jpart > 0)
+		ExplainPropertyText("Rows Split By", "the key of a lookup join", es);
 	if (s->wide_unit_rows > 0)
 		ExplainPropertyText("Workers Priced For", "the rows the scan reads", es);
 	if (es->analyze && ex->started)

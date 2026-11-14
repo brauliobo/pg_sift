@@ -13,6 +13,7 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "access/genam.h"
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
 
@@ -20,7 +21,7 @@
 #include "agg/cost/int.h"
 #include "agg/dist_int.h"
 
-/* does a predicate test the leaf? `values`: its values, not only its null flags, and the leaves of a combo slot */
+/* does a predicate test the leaf? `values`: its values, not only its null flags (nor the source's own tests of its lanes), and the leaves of a combo slot */
 bool
 pred_uses_leaf(const SiftAggSpec *s, const SiftAggPred *p, int leaf, bool values)
 {
@@ -33,7 +34,7 @@ pred_uses_leaf(const SiftAggSpec *s, const SiftAggPred *p, int leaf, bool values
 				return true;
 		return false;
 	}
-	if (p->kind != SAP_AND && p->kind != SAP_OR && (p->leaf == leaf || p->leaf2 == leaf) && !(values && p->kind == SAP_NULL))
+	if (p->kind != SAP_AND && p->kind != SAP_OR && (p->leaf == leaf || p->leaf2 == leaf) && !(values && (p->kind == SAP_NULL || p->kind == SAP_WIDE)))
 		return true;
 	for (int i = 0; i < p->nchild; i++)
 		if (pred_uses_leaf(s, p->child[i], leaf, values))
@@ -150,6 +151,16 @@ preagg_unit_ops(AggCtx *c, SiftAggSpec *s, double units, double rows, double row
 	return Min(Min(tuples, 4096.0) * tcost * sift_agg_rollup_cost, elems * ecost) / SIFT_AGG_INSTR_PER_OP;
 }
 
+/* The statistics of the source left the shares of the units without a section unread (miss_pending): an index source reads them now, once for the plan */
+static void
+miss_read(AggCtx *c)
+{
+	Relation	index = index_open(c->indexoid, AccessShareLock);
+
+	sift_colsrc_miss(index, &c->stats);
+	index_close(index, AccessShareLock);
+}
+
 /* The share of the units the pre-aggregates answer (a unit is exact when its pages are all-visible, its superblock plain); 0 when the spec cannot use them */
 double
 preagg_share(AggCtx *c, SiftAggSpec *s)
@@ -161,9 +172,11 @@ preagg_share(AggCtx *c, SiftAggSpec *s)
 
 	if (!sift_agg_preagg || !sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &shape))
 		return 0.0;
+	if (c->stats.miss_pending)
+		miss_read(c);
 	/* a unit written before the options asked for the section it is answered from has none and is scanned: a half refreshed index is priced for the units that have it */
 	for (int i = 0; i < s->naggs; i++)
-		minmax |= s->agg[i].kind == SAA_MIN || s->agg[i].kind == SAA_MAX;
+		minmax |= saa_minmax(s->agg[i].kind);
 	dim = shape.dim >= 0 ? shape.dim : shape.hdim;
 	if (shape.rows)
 		miss = c->stats.rows_miss;
@@ -211,7 +224,8 @@ double
 recheck_cost(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 {
 	double		rows = 0,
-				flagged = 0;
+				flagged = 0,
+				rootless = 0;
 
 	for (int i = 0; i < s->nleaves + s->nvleaf; i++)
 	{
@@ -233,8 +247,10 @@ recheck_cost(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		frac = c->stats.ovf_frac[leaf] < 0 ? AGG_RECHECK_FRAC : c->stats.ovf_frac[leaf];
 		rows = Max(rows, k->rows * c->stats.ovf_units[leaf] * frac);
 		flagged = Max(flagged, c->stats.ovf_units[leaf]);
+		if (bms_is_member(leaf, c->haskey))
+			rootless += k->rows * c->stats.rootless[leaf];	/* a segment that does not say its string roots are flagged: all its NULL slots are read again */
 	}
-	return Max(rows, k->units * flagged) * AGG_RECHECK_ROW;
+	return (Max(rows, k->units * flagged) + rootless) * AGG_RECHECK_ROW;
 }
 
 /* is the leaf one the source tests on its stored values (a comparison, IN list or null test of the query's WHERE): decoded for every row of a unit */
@@ -378,7 +394,7 @@ wide_cold_ops(AggCtx *c, int leaf, const CostAcc *k)
 }
 
 /* the bytes of an array of the column an image leaf holds, 0 when the leaf is not the image of an array */
-static double
+double
 array_image_width(AggCtx *c, int leaf)
 {
 	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];

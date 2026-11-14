@@ -2,6 +2,8 @@
 -- costs more as a page costs more, so a large table read for a small outer side does not win by pricing its rows alone.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
+-- the scan is priced in the units of the normal plan when that plan reads the table for more than AGG_JOIN_SCALAR_FLOOR units: held above it for every page cost below
+SET cpu_tuple_cost = 0.1;
 
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 20000, i % 7 FROM generate_series(1, 40000) i;
@@ -13,7 +15,7 @@ VACUUM (FREEZE, ANALYZE) ev, dims;
 
 CREATE TABLE page_costs (seq float8, cost float8);
 DO $$ DECLARE s float8; BEGIN
-	FOREACH s IN ARRAY ARRAY[1, 11]::float8[] LOOP
+	FOREACH s IN ARRAY ARRAY[1, 11, 21]::float8[] LOOP
 		PERFORM set_config('seq_page_cost', s::text, false);
 		PERFORM set_config('random_page_cost', (s * 4)::text, false);
 		INSERT INTO page_costs SELECT s, scan_cost FROM sift.explain_why('SELECT d.label, count(*), sum(e.v) FROM ev e JOIN dims d ON d.k = e.k GROUP BY d.label');
@@ -21,9 +23,12 @@ DO $$ DECLARE s float8; BEGIN
 END $$;
 RESET seq_page_cost;
 RESET random_page_cost;
--- ten more for each page of the lookup table, nearly all of what the 11 add to the scan
+-- ten more for each page of the lookup table, in the units of the normal plan the scan is priced in (a quarter of them: AGG_NORMAL_UNITS_MS), and the same ten more again
 SELECT (SELECT cost FROM page_costs WHERE seq = 11) - (SELECT cost FROM page_costs WHERE seq = 1)
-	BETWEEN 0.9 * 10 * pg_relation_size('dims') / 8192 AND 1.1 * 10 * pg_relation_size('dims') / 8192 AS pages_priced;
+	BETWEEN 0.9 * 0.25 * 10 * pg_relation_size('dims') / 8192 AND 1.1 * 10 * pg_relation_size('dims') / 8192
+	AND (SELECT cost FROM page_costs WHERE seq = 21) - (SELECT cost FROM page_costs WHERE seq = 11)
+	BETWEEN 0.99 * ((SELECT cost FROM page_costs WHERE seq = 11) - (SELECT cost FROM page_costs WHERE seq = 1))
+		AND 1.01 * ((SELECT cost FROM page_costs WHERE seq = 11) - (SELECT cost FROM page_costs WHERE seq = 1)) AS pages_priced;
 
 -- a page is never priced above a random fetch: sequential 100 with random 4 costs what sequential 4 with random 4 does
 CREATE TABLE capped (seq float8, cost float8);

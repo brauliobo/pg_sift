@@ -16,6 +16,7 @@ bool member_arg(AggCtx *c, Node *arg);
 Node *plain_child_sig(AggCtx *c, RangeTblEntry *e, Index rti, RelOptInfo *rel);
 bool planned_correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc);
 bool ancestor_param_walker(Node *n, PlannerInfo *root);
+extern void join_index_quals(AggCtx *c, JoinCtx *jc, List *conds);
 
 #pragma GCC visibility pop
 

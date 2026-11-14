@@ -3,42 +3,14 @@
  */
 #include "postgres.h"
 
-#include "access/genam.h"
-#include "access/heapam.h"
-#include "access/table.h"
 #include "access/htup_details.h"
-#include "access/tupmacs.h"
-#include "access/xact.h"
-#include "catalog/namespace.h"
-#include "catalog/objectaddress.h"
-#include "catalog/pg_class.h"
-#include "utils/acl.h"
-#include "utils/fmgroids.h"
-#include "utils/inval.h"
-#include "catalog/pg_type.h"
-#include "funcapi.h"
 #include "miscadmin.h"
-#include "access/skey.h"
-#include "port/pg_bitutils.h"
-#include "storage/bufmgr.h"
-#include "storage/procarray.h"
-#include "utils/builtins.h"
-#include "utils/datum.h"
-#include "utils/lsyscache.h"
 #include "utils/memutils.h"
-#include "utils/numeric.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
-#include "utils/timestamp.h"
-#include "utils/tuplestore.h"
 
-#include "col/am.h"
-#include "col/pg.h"
 #include "col/seg.h"
 #include "core/lane.h"
 #include "bm25/maint.h"
-#include "bm25/merge.h"
-#include "core/ops.h"
 #include "table/table.h"
 #include "table/seg_int.h"
 
@@ -220,7 +192,6 @@ promote_sealed(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum)
 	SegClass	class;
 	bool		pressure;
 
-	sift_tbl_refresh(rel, st);
 	pressure = dir_pressure(st);
 	dir = MemoryContextAlloc(CurrentMemoryContext, sizeof(SiftDirSnapshot));
 	*dir = st->dir;
@@ -251,7 +222,7 @@ sift_tbl_promote(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum
 {
 	int			promoted;
 
-	if (!sift_maint_lock(rel, vacuum))
+	if (!sift_tbl_maint_lock(rel, st, vacuum))
 		return 0;
 	promoted = promote_sealed(rel, st, oldest, vacuum);
 	sift_maint_unlock(rel);
@@ -272,7 +243,7 @@ sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest, bool wait, i
 {
 	int			promoted;
 
-	if (!sift_maint_lock(rel, wait))
+	if (!sift_tbl_maint_lock(rel, st, wait))
 		return 0;
 	promoted = promote_sealed(rel, st, oldest, false);
 	(void) sift_tbl_freeze_groups(rel, st, oldest);

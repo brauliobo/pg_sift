@@ -1,22 +1,20 @@
 # The records of a cases run (steps/records): each query case measured again on the arms the case can answer with, by the shared collector, for `bench cases --records FILE`.
 #
 # The arms of a case are forced on its own table: heap (a sequential scan), sift (the access method alone), a b-tree twin when the case has a `btree` variant (its schema in the
-# search path), and every other variant as a sift arm with its name as the option. The plan the planner chooses with nothing forced is the default row. A case whose backend is
+# search path), every other variant as a sift arm with its name as the option, and, for a case with a native lane, the arm `native`: the normal plan (sift.enable_agg off), whatever
+# structure it names, never the picked one. The plan the planner chooses with nothing forced is the default row. A case whose backend is
 # fresh for every run (-- fresh: yes) runs each repetition in a new backend (collect's `fresh`). A load case has no plan to pick: its lanes (the sift table with its index, the heap
 # with the b-tree or GIN twin, each variant) are forced arms, each repetition prepares the table again and the statements are timed and added. A case that gives no records is
 # listed with its reason (SKIPPED) and fails the run.
 
-import json
 import os
 import re
-import subprocess
 import time
 
 import iolib
 
 from . import runcfg
 from .measure import expand
-from .runcfg import REPO
 from .server import Fresh, server_session
 
 import records.collect as collect  # noqa: E402
@@ -27,10 +25,6 @@ ROWS = []
 RUN = {}
 SKIPPED = []
 UNAVAILABLE = []
-
-
-def tip():
-    return subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'unknown'
 
 
 def table_state(case, sections=('setup', 'prepare')):
@@ -63,30 +57,21 @@ def arms(case):
     return out
 
 
-def native_arm(session, case, sql, table):
-    """the arm of the native lane's own statement when the case has one (`--@ pg` beside `--@ sift`: a GIN match against the BM25 operator, a plain query against the rewritten one): the
-    structure its plan names with sift.enable_agg off, under the option native_text; None when its plan mixes structures"""
-    native = expand(case.statement('native'), case)
-    if native.strip() == sql.strip():
+def native_arm(case, sql):
+    """the arm of the native lane, the normal plan (`sift.enable_agg = off`, and the column scan off when the case sets it), measured like every other arm: its own statement when the case has one
+    (`--@ pg` beside `--@ sift`: a GIN match against the BM25 operator, a plain query against the rewritten one), else the statement of the sift lane. Its structure is whatever the plan names
+    and it is never the picked arm (collect.NATIVE); None for a case that has no native lane"""
+    if case.baselines[:1] != ['native']:
         return None
+    native = expand(case.statement('native'), case)
     settings = ['SET sift.enable_agg = off'] + (['SET sift.enable_col_scan = off'] if 'sift.enable_col_scan' in case.opt.get('set', '') else [])
-    restore = collect.session_base(session)
-    for st in settings:
-        session.run(st)
-    try:
-        _, rows, err, *_ = session.run('EXPLAIN (FORMAT JSON) ' + native.rstrip().rstrip(';'))
-        got = 'mixed' if err else collect.plan_structure(json.loads('\n'.join(rows))[0]['Plan'], *collect.catalog_of(session, table))
-    finally:
-        session.run('RESET ALL')
-        for st in restore:
-            session.run(st)
-    return None if got == 'mixed' else collect.Arm(got, option='native_text', settings=settings, sql=native)
+    return collect.Arm(collect.NATIVE, settings=settings, sql=None if native.strip() == sql.strip() else native)
 
 
 def run_env(session, runs):
     if not RUN:
         pid = collect.backend_pid(session)
-        RUN.update(tip=tip(), run=schema.run_id(tip()), cpus=collect.host_cpus(collect.postmaster_pid(pid)))
+        RUN.update(tip=collect.git_tip(), run=schema.run_id(collect.git_tip()), cpus=collect.host_cpus(collect.postmaster_pid(pid)))
     # the cluster of the cases is a test cluster (scripts/pgtest.sh: no autovacuum, no automatic merge, so a state is the one the setup made): the records say so, and the report shows it
     off = 'disabled' if schema.maintenance_switches(collect.settings_of(session)) else 'default'
     return collect.Env(RUN['tip'], 'bench cases', RUN['run'], RUN['cpus'], reps=max(3, runs), cool=iolib.cool, maintenance=off, arm_budget=ARM_BUDGET)
@@ -111,7 +96,7 @@ def emit(case, lanes, rows, runs):
         subject = collect.Subject(case.dataset, rows, 'other', table_state(case), table, protocol='fresh backend' if fresh else 'single')
         missed = []
         forced = arms(case)
-        extra = None if fresh else native_arm(session, case, sql, table)
+        extra = native_arm(case, sql)
         try:
             ROWS.extend(collect.measure_statement(session, case.id, sql, subject, forced + ([extra] if extra else []), env, fresh=fresh, unavailable=missed))
         except (collect.PerfUnavailable, collect.ArmTimeout) as e:

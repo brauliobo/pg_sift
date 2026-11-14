@@ -5,20 +5,22 @@
  */
 #include "postgres.h"
 
+#include "agg/agg.h"
 #include "agg/combo/int.h"
+#include "core/hash.h"
 
 /* the ids are small and dense: every input is multiplied in and folded, or the entries of a few hundred thousand combinations pile up in a few slots */
 static inline uint32
 combo_hash(const uint64 *v, int ninputs, bool null_input)
 {
-	uint64		h = UINT64CONST(0x9E3779B97F4A7C15);
+	uint64		h = SIFT_FIB64;
 
 	for (int p = 0; p < ninputs; p++)
 	{
-		h = (h ^ v[p]) * UINT64CONST(0xD6E8FEB86659FD93);
+		h = sift_fold64(h, v[p]);
 		h ^= h >> 32;
 	}
-	h *= UINT64CONST(0x9E3779B97F4A7C15);
+	h = sift_fib64(h);
 	return (uint32) (h >> 32) ^ (null_input ? 0x85EBCA6BU : 0);
 }
 
@@ -39,12 +41,12 @@ combo_grow_ent(ComboSt *cs)
 	if (cs->nent < cs->entcap)
 		return;
 	cs->entcap = Max(cs->entcap * 2, 64);
-	cs->vid = cs->vid ? repalloc(cs->vid, (size_t) cs->entcap * cs->ninputs * sizeof(uint64)) :
-		MemoryContextAlloc(cs->cxt, (size_t) cs->entcap * cs->ninputs * sizeof(uint64));
-	cs->ent = cs->ent ? repalloc(cs->ent, (size_t) cs->entcap * sizeof(ComboEnt)) :
-		MemoryContextAlloc(cs->cxt, (size_t) cs->entcap * sizeof(ComboEnt));
-	cs->null_input = cs->null_input ? repalloc(cs->null_input, cs->entcap * sizeof(bool)) :
-		MemoryContextAlloc(cs->cxt, cs->entcap * sizeof(bool));
+	cs->vid = cs->vid ? repalloc_huge(cs->vid, (size_t) cs->entcap * cs->ninputs * sizeof(uint64)) :
+		MemoryContextAllocHuge(cs->cxt, (size_t) cs->entcap * cs->ninputs * sizeof(uint64));
+	cs->ent = cs->ent ? repalloc_huge(cs->ent, (size_t) cs->entcap * sizeof(ComboEnt)) :
+		MemoryContextAllocHuge(cs->cxt, (size_t) cs->entcap * sizeof(ComboEnt));
+	cs->null_input = cs->null_input ? repalloc_huge(cs->null_input, cs->entcap * sizeof(bool)) :
+		MemoryContextAllocHuge(cs->cxt, cs->entcap * sizeof(bool));
 }
 
 /* the entry of a value id of a by_id combo: the entries up to it exist (ids come in order from 1, 0 is the NULL) */
@@ -116,18 +118,8 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 	if (direct)
 		combo_dir_set(cs, v[0], cs->nent);
 	if (cs->nent * 2 > cs->nht)
-	{
-		pfree(cs->ht);
-		cs->nht *= 2;
-		cs->ht = MemoryContextAllocZero(cs->cxt, cs->nht * sizeof(uint32));
-		for (uint32 x = 0; x < cs->nent; x++)
-		{
-			h = combo_hash(&cs->vid[(size_t) x * cs->ninputs], cs->ninputs, cs->null_input[x]) & (cs->nht - 1);
-			while (cs->ht[h])
-				h = (h + 1) & (cs->nht - 1);
-			cs->ht[h] = x + 1;
-		}
-	}
+		SIFT_SLOT_REHASH(id, cs->ht, cs->nht, MemoryContextAllocZero(cs->cxt, cs->nht * sizeof(uint32)), cs->nent,
+						 combo_hash(&cs->vid[(size_t) (id - 1) * cs->ninputs], cs->ninputs, cs->null_input[id - 1]));
 	return cs->nent - 1;
 }
 
@@ -146,9 +138,9 @@ combo_forget_priors(AggExec *ex, int ci)
 			pfree(cs->pv[p].memo);
 		if (cs->pv[p].rep)
 			pfree(cs->pv[p].rep);
-		if (cs->id64[p].tab)
+		if (cs->id64[p].val)
 		{
-			pfree(cs->id64[p].tab);
+			intids_free(&cs->id64[p].ix);
 			pfree(cs->id64[p].val);
 		}
 		memset(&cs->pv[p], 0, sizeof(cs->pv[p]));
@@ -184,6 +176,7 @@ combo_reset(AggExec *ex, int ci)
 	cs->dircap = 0;
 	cs->byrow = NULL;
 	cs->nbyrow = 0;
+	cs->cent = NULL;
 	cs->qtab = NULL;
 	cs->qcap = 0;
 	cs->fq = NULL;

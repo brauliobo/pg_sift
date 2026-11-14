@@ -4,26 +4,11 @@
 
 #include "postgres.h"
 
-#include "common/pg_prng.h"
-
 #include "access/htup_details.h"
-#include "access/xact.h"
-#include "miscadmin.h"
-#include "utils/rls.h"
-#include "storage/bufmgr.h"
-#include "storage/predicate.h"
-#include "utils/acl.h"
-#include "utils/memutils.h"
-#include "utils/rel.h"
-#include "utils/snapmgr.h"
 
 #include "col/am.h"
 #include "core/popcount.h"
-#include "col/gpu.h"
-#include "col/pagg.h"
-#include "bm25/estimate.h"
 #include "col/seg.h"
-#include "core/visibility.h"
 #include "col/scan_int.h"
 #include "core/cmp.h"
 
@@ -414,6 +399,48 @@ sift_col_ovf_bits(const SiftColUnit *unit, int col, uint64 *bits)
 	return true;
 }
 
+/* Were the documents of the unit shredded with a string root flagged as an overflow (SIFT_SEG_ROOTS of its segment or lane)? A batch of memory made here was */
+bool
+sift_col_unit_roots(const SiftColUnit *unit)
+{
+	const ColUnit *cu = unit->priv;
+
+	return cu->seg == NULL ? cu->roots : (cu->seg->entry.flags & SIFT_SEG_ROOTS) != 0;
+}
+
+/* The slots of the leaf that overflowed with the type "no value" (a document that is no object, whose path leads nowhere), as a bit for each row of the unit: false when there is none */
+bool
+sift_col_ovf_none_slots(const SiftColUnit *unit, int col, uint64 *bits)
+{
+	SiftCChunk	c;
+	uint64	   *tagged;
+	bool		any = false;
+
+	if (!unit_chunk(unit->priv, col, &c) || c.ovf == NULL)
+		return false;
+	tagged = palloc((c.n + 63) / 64 * sizeof(uint64));
+	sift_cchunk_tag_bits(&c, SIFT_COLTAG_NONE, tagged);
+	for (uint32 w = 0; w < (c.n + 63) / 64; w++)
+	{
+		bits[w] = tagged[w] & c.ovf[w];
+		any |= bits[w] != 0;
+	}
+	pfree(tagged);
+	return any;
+}
+
+/* The NULL slots of the leaf, a bit for each row of the unit (NULL: none) */
+const uint64 *
+sift_col_null_slots(const SiftColUnit *unit, int col, uint32 *n)
+{
+	SiftCChunk	c;
+
+	if (!unit_chunk(unit->priv, col, &c) || c.nulls == NULL)
+		return NULL;
+	*n = c.n;
+	return c.nulls;
+}
+
 const uint64 *
 sift_col_ovf_slots(const SiftColUnit *unit, int col, uint32 *n)
 {
@@ -668,7 +695,9 @@ paranoid_report(SiftColSource *src, const ColUnit *cu, BlockNumber blk, OffsetNu
 }
 #endif
 
+#ifdef SIFT_TESTING
 int64		sift_col_vet_offsets;
+#endif
 
 /* The first selected row at or after from; sel->nwords * 64 when there is none */
 static uint32
@@ -803,7 +832,9 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 		if (!dense)
 		{
 			sift_cunit_page_offsets(&cu->v, p, offs);
+#ifdef SIFT_TESTING
 			sift_col_vet_offsets += hi - lo;
+#endif
 		}
 		for (uint32 q = sel_next(sel, lo); q < hi; q = sel_next(sel, q + 1))
 		{

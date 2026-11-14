@@ -36,7 +36,7 @@ for st in "${STATEMENTS[@]}"; do
 	check "$sql: no DETAIL or HINT for each choice ($details at most)" test "$(grep -c -E '^(DETAIL|HINT):' <<<"$out")" -le "$details"
 	if [[ $sql == *CONCURRENTLY* ]]; then
 		check "the concurrent build says in one line that the log is not complete and the command that completes it" grep -q -E '^NOTICE:  sift_col index "facts_sift_col": track_changes log is not complete after a concurrent build$' <<<"$out"
-		check "... and its hint is one line with the command" grep -q -E '^HINT:  Run REINDEX INDEX facts_sift_col without CONCURRENTLY' <<<"$out"
+		check "... and its hint is one line with the command" grep -q -E '^HINT:  The next VACUUM completes the log; REINDEX INDEX facts_sift_col without CONCURRENTLY does it now\.$' <<<"$out"
 	fi
 	summary=$out
 done

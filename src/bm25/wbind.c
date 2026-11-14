@@ -3,14 +3,10 @@
  */
 #include "core/host.h"
 
-#include <math.h>
-
 #include "bm25/eval.h"
 #include "bm25/eval_int.h"
 #include "bm25/kernels.h"
 #include "bm25/wbuf.h"
-#include "bm25/prefix.h"
-#include "bm25/segment.h"
 
 /*
  * Write buffers are not indexed by term: their docs are matched one by
@@ -19,7 +15,7 @@
  */
 
 static bool
-node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom)
+node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom, int nwords)
 {
 	int			npos = 0;
 
@@ -28,7 +24,7 @@ node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom)
 		case EN_NOTHING:
 			return false;
 		case EN_LEAF:
-			return p->leaves[n->leaf].m != NULL || sift_wbuf_bloom_has(bloom, p->leaves[n->leaf].hash);
+			return p->leaves[n->leaf].m != NULL || sift_wbuf_bloom_has(bloom, nwords, p->leaves[n->leaf].hash);
 		case EN_NOT:
 			return true;
 		case EN_AND:
@@ -36,13 +32,13 @@ node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom)
 				if (n->child[i]->kind != EN_NOT)
 				{
 					npos++;
-					if (!node_may_match(p, n->child[i], bloom))
+					if (!node_may_match(p, n->child[i], bloom, nwords))
 						return false;
 				}
 			return npos > 0;
 		case EN_OR:
 			for (int i = 0; i < n->nchild; i++)
-				if (node_may_match(p, n->child[i], bloom))
+				if (node_may_match(p, n->child[i], bloom, nwords))
 					return true;
 			return false;
 	}
@@ -50,21 +46,21 @@ node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom)
 }
 
 static bool
-wbuf_page_ok(void *arg, const uint64 *bloom)
+wbuf_page_ok(void *arg, const uint64 *bloom, int nwords)
 {
 	SiftPlan   *p = arg;
 
-	return node_may_match(p, p->root, bloom);
+	return node_may_match(p, p->root, bloom, nwords);
 }
 
 /* Pages with a term of a scoring leaf: every doc that has one counts in the document frequencies */
 static bool
-wbuf_leaf_ok(void *arg, const uint64 *bloom)
+wbuf_leaf_ok(void *arg, const uint64 *bloom, int nwords)
 {
 	const SiftPlan *p = arg;
 
 	for (int i = 0; i < p->nleaves; i++)
-		if (p->leaves[i].scoring && (p->leaves[i].m != NULL || sift_wbuf_bloom_has(bloom, p->leaves[i].hash)))
+		if (p->leaves[i].scoring && (p->leaves[i].m != NULL || sift_wbuf_bloom_has(bloom, nwords, p->leaves[i].hash)))
 			return true;
 	return false;
 }
@@ -279,11 +275,11 @@ bind_wbuf(SiftPlan *p)
 			if (p->nmhit == cap)
 			{
 				cap = Max(64, 2 * cap);
-				p->mhit = p->mhit ? repalloc_huge(p->mhit, cap * sizeof(WbufHit)) :
-					MemoryContextAllocHuge(p->mcxt, cap * sizeof(WbufHit));
+				SIFT_REGROW_HUGE_IN(p->mcxt, p->mhit, cap * sizeof(WbufHit));
 			}
 			p->mhit[p->nmhit++] = (WbufHit) {sift_key_from_tid(&doc.tid), 0, p->scoring ? wbufdoc_copy(p->mcxt, &doc) : NULL};
 		}
+		sift_wbuf_note_walked(r);
 		sift_wbuf_totals(r, &n, &sum);
 		ndocs += n;
 		sum_dl += sum;
@@ -439,7 +435,7 @@ weigh_leaf(SiftPlan *p, EvalLeaf *l)
 void
 bind_scoring(SiftPlan *p)
 {
-	const SiftOptions *o = p->st->opts;
+	const SiftOptions *o = sift_index_options(p->st->index);
 
 	sift_kern_bm25_init(&p->bm, (float4) o->k1, (float4) o->b, p->stats.avgdl > 0 ? (float4) p->stats.avgdl : 1.0f);
 	for (int i = 0; i < p->nleaves; i++)

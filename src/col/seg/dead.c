@@ -2,10 +2,10 @@
  * col/seg/dead.c - the heap addresses of the dead rows of a unit of a segment, kept for the next scan of the backend
  */
 #include "postgres.h"
+#include "miscadmin.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "core/cmp.h"
 #include "col/am.h"
 #include "col/seg_int.h"
 
@@ -82,6 +82,12 @@ dead_put(const DeadKey *key, uint32 stamp, const SiftKey *dead, uint32 n)
 	dead_bytes += n * sizeof(SiftKey);
 }
 
+bool
+sift_cseg_dead_fits(SiftColSegment *seg)
+{
+	return (uint64) sift_live_ndead(&PRIV(seg)->live) * sizeof(SiftKey) <= (uint64) work_mem * 1024;
+}
+
 /*
  * Appends the heap addresses of the dead rows of unit u to *dead (grown in mcxt, *room entries, *ndead used), in the order of the unit's rows; false when the unit cannot be
  * viewed.
@@ -121,7 +127,7 @@ sift_cseg_unit_dead(SiftColSegment *seg, uint32 u, MemoryContext mcxt, SiftKey *
 	if (*ndead + nd > *room)
 	{
 		*room = Max(*room * 2, *ndead + nd);
-		*dead = *dead ? repalloc(*dead, *room * sizeof(SiftKey)) : MemoryContextAlloc(mcxt, *room * sizeof(SiftKey));
+		SIFT_REGROW_HUGE_IN(mcxt, *dead, *room * sizeof(SiftKey));
 	}
 	if (e)
 	{

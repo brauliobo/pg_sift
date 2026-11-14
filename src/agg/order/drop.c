@@ -13,23 +13,13 @@
  */
 #include "postgres.h"
 
-#include "catalog/pg_type_d.h"
-#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/plannodes.h"
 #include "utils/lsyscache.h"
 
 #include "agg/agg.h"
-#include "agg/spec.h"
 #include "agg/topn.h"
-
-static Node *
-unrelabel(Node *n)
-{
-	while (n != NULL && IsA(n, RelabelType))
-		n = (Node *) ((RelabelType *) n)->arg;
-	return n;
-}
+#include "agg/plan_int.h"
 
 /* a column of the scan's result: the key it is, and the constant a NULL key stands for (COALESCE(key, constant)) */
 typedef struct Col
@@ -51,7 +41,7 @@ column_key(Plan *p, AttrNumber attno, Col *col)
 		if (attno < 1 || attno > list_length(p->targetlist))
 			return false;
 		tle = list_nth_node(TargetEntry, p->targetlist, attno - 1);
-		e = unrelabel((Node *) tle->expr);
+		e = strip_relabel((Node *) tle->expr);
 		col->subst = NULL;
 		if (IsA(p, CustomScan) && IsA(e, CoalesceExpr))
 		{
@@ -60,7 +50,7 @@ column_key(Plan *p, AttrNumber attno, Col *col)
 			if (list_length(ce->args) != 2 || !IsA(lsecond(ce->args), Const) || ((Const *) lsecond(ce->args))->constisnull)
 				return false;
 			col->subst = (Const *) lsecond(ce->args);
-			e = unrelabel((Node *) linitial(ce->args));
+			e = strip_relabel((Node *) linitial(ce->args));
 		}
 		v = (Var *) e;
 		if (!IsA(v, Var) || v->varlevelsup != 0)
@@ -135,7 +125,7 @@ sort_entry(Sort *srt, int i, const SiftAggSpec *s, SiftAggOrd *o)
 	if (attno < 1 || attno > list_length(in->targetlist))
 		return false;
 	tle = list_nth_node(TargetEntry, in->targetlist, attno - 1);
-	e = unrelabel((Node *) tle->expr);
+	e = strip_relabel((Node *) tle->expr);
 	memset(o, 0, sizeof(*o));
 	o->sortop = srt->sortOperators[i];
 	o->collation = srt->collations[i];
@@ -148,8 +138,8 @@ sort_entry(Sort *srt, int i, const SiftAggSpec *s, SiftAggOrd *o)
 	else if (IsA(e, OpExpr) && list_length(((OpExpr *) e)->args) == 2)
 	{
 		OpExpr	   *op = (OpExpr *) e;
-		Node	   *l = unrelabel(linitial(op->args)),
-				   *r = unrelabel(lsecond(op->args));
+		Node	   *l = strip_relabel(linitial(op->args)),
+				   *r = strip_relabel(lsecond(op->args));
 		if (!IsA(l, Var) || !IsA(r, Const) || ((Const *) r)->constisnull)
 			return false;
 		/* a merge join operator is the equality of a btree operator class */

@@ -19,6 +19,11 @@ CREATE FUNCTION ranked() RETURNS text AS $$
 $$ LANGUAGE sql;
 -- the reference: serial, memory to spare
 SET max_parallel_maintenance_workers = 0;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE br_rows AS SELECT * FROM br ORDER BY ctid;
+TRUNCATE br;
+INSERT INTO br SELECT * FROM br_rows;
+DROP TABLE br_rows;
 CREATE INDEX br_ref ON br USING sift (body);
 CREATE TABLE ref AS SELECT a.*, ranked() AS top FROM answers() a;
 SELECT n, top IS NOT NULL AS ranked FROM ref;

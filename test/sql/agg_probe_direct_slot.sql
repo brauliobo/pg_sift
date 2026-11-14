@@ -1,0 +1,34 @@
+-- The direct probe of an Index Only Scan child keeps its heap slot in the executor state's slot table, which ExecutorEnd resets after the scan node's memory
+-- context is gone: the slot must live in the executor state's own context. A testing build errors when the node ends with a slot of the table in its context; a
+-- release build read freed memory and crashed a backend, now and then (the plan with that child came from the verdict cache a new backend shares).
+-- Each block runs in a session of its own (the shared verdict cache is filled by the one before) and the rows are those of the plan without the scan.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 100; SET random_page_cost = 4;
+SET sift.agg_force = on;
+\ir test/agg_probe_helpers.sql
+CREATE TABLE lk_io (k int, v text, w int);
+INSERT INTO lk_io SELECT g, 'v' || g || '.' || r, r FROM generate_series(0, 299) g, generate_series(1, 3) r WHERE g % 7 <> 0 ORDER BY r, g;
+CREATE INDEX lk_io_kv ON lk_io (k, v);
+VACUUM (FREEZE, ANALYZE) lk_io;
+SET enable_bitmapscan = off;
+SELECT * FROM step_io('first backend', 'lk_io', 'k = o.n::int');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 100; SET random_page_cost = 4;
+SET sift.agg_force = on;
+SET enable_bitmapscan = off;
+SELECT * FROM step_io('new backend', 'lk_io', 'k = o.n::int');
+SELECT * FROM step_io('new backend, all rows of the key', 'lk_io', 'k = o.n::int', 'OFFSET 0');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 100; SET random_page_cost = 4;
+SET sift.agg_force = on;
+SET enable_bitmapscan = off;
+SELECT * FROM step_io('third backend', 'lk_io', 'k = o.n::int');
+DROP FUNCTION step_io(text, text, text, text, text), case_query_col(text, text, text, text), step(text, text, text, text), case_query(text, text, text), probe_check(text), check_query(text);
+DROP TABLE entries, lk_io;
+DROP EXTENSION pg_sift;

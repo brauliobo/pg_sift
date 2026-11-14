@@ -49,9 +49,9 @@ SELECT * FROM same(query_of('r.parent_id = 7 AND r.id < 1800'));
 -- a short list of parents: the units whose zone holds one of them
 SELECT * FROM same(query_of('r.parent_id IN (3, 200, 470)'));
 
--- the zones decide the price: the windows that meet in no unit cost much less than either alone, the list of three parents less than the window
-SELECT (plan_of(query_of('r.parent_id <= 100 AND r.ts >= date ''2025-01-01'''))).cost < (plan_of(query_of('r.ts >= date ''2025-01-01'''))).cost / 2 AS meeting_windows_cheaper,
-       (plan_of(query_of('r.parent_id IN (3, 200, 470)'))).cost < (plan_of(query_of('r.parent_id BETWEEN 100 AND 400'))).cost / 4 AS list_cheaper_than_window,
+-- the zones decide the price: the windows that meet in no unit cost 30% less than either alone (the start of the scan is the rest: its rows count in the units of the normal plan), the list of three parents 30% less than the window
+SELECT (plan_of(query_of('r.parent_id <= 100 AND r.ts >= date ''2025-01-01'''))).cost < (plan_of(query_of('r.ts >= date ''2025-01-01'''))).cost * 0.7 AS meeting_windows_cheaper,
+       (plan_of(query_of('r.parent_id IN (3, 200, 470)'))).cost < (plan_of(query_of('r.parent_id BETWEEN 100 AND 400'))).cost * 0.7 AS list_cheaper_than_window,
        (plan_of(query_of('r.ts >= date ''2025-01-01'''))).cost < (plan_of(query_of('true'))).cost AS window_cheaper_than_table;
 
 DROP FUNCTION query_of(text), plan_of(text), same(text);

@@ -5,15 +5,13 @@
  */
 #include "postgres.h"
 
-#include <math.h>
 
 #include "access/visibilitymap.h"
 #include "miscadmin.h"
 
-#include "port/pg_bitutils.h"
-#include "lib/stringinfo.h"
 #include "utils/memutils.h"
 
+#include "core/cmp.h"
 #include "agg/gord.h"
 #include "agg/topn/int.h"
 
@@ -119,26 +117,26 @@ gcond_sbox(const SiftTopGPred *p, Oid collid)
 			return r;
 		switch (p->sop)
 		{
-			case SSTR_EQ:
+			case SIFT_COLOP_EQ:
 				r.has_lo = r.has_hi = true;
 				r.lo = r.hi = p->str;
 				r.lolen = r.hilen = p->slen;
 				break;
-			case SSTR_LT:
-			case SSTR_LE:
+			case SIFT_COLOP_LT:
+			case SIFT_COLOP_LE:
 				r.has_hi = true;
 				r.hi = p->str;
 				r.hilen = p->slen;
-				r.hi_excl = p->sop == SSTR_LT;
+				r.hi_excl = p->sop == SIFT_COLOP_LT;
 				break;
-			case SSTR_GT:
-			case SSTR_GE:
+			case SIFT_COLOP_GT:
+			case SIFT_COLOP_GE:
 				r.has_lo = true;
 				r.lo = p->str;
 				r.lolen = p->slen;
-				r.lo_excl = p->sop == SSTR_GT;
+				r.lo_excl = p->sop == SIFT_COLOP_GT;
 				break;
-			case SSTR_PREFIX:
+			case SIFT_COLOP_PREFIX:
 				r.has_lo = true;
 				r.lo = p->str;
 				r.lolen = p->slen;
@@ -216,18 +214,18 @@ gcond_str_test(const SiftTopGPred *p, Datum d)
 	uint32		len = VARSIZE_ANY_EXHDR(v);
 	int			c;
 
-	if (p->sop == SSTR_PREFIX)
+	if (p->sop == SIFT_COLOP_PREFIX)
 		return len >= p->slen && memcmp(s, p->str, p->slen) == 0;
 	c = sift_cgord_str_order(s, len, p->str, p->slen, p->collid);
 	switch (p->sop)
 	{
-		case SSTR_EQ:
+		case SIFT_COLOP_EQ:
 			return c == 0;
-		case SSTR_LT:
+		case SIFT_COLOP_LT:
 			return c < 0;
-		case SSTR_LE:
+		case SIFT_COLOP_LE:
 			return c <= 0;
-		case SSTR_GT:
+		case SIFT_COLOP_GT:
 			return c > 0;
 		default:
 			return c >= 0;
@@ -267,7 +265,7 @@ gcond_test(const SiftTopGPred *p, TupleTableSlot *slot)
 
 		if (isnull)
 			return false;
-		return p->kind == STG_STR ? gcond_str_test(p, d) : gcond_cmp(p->op, heap_key(p->typid, d), p->val);
+		return p->kind == STG_STR ? gcond_str_test(p, d) : gcond_cmp(p->op, sift_int_key(p->typid, d), p->val);
 	}
 	for (int i = 0; i < p->nchild; i++)
 		if (gcond_test(p->child[i], slot) == (p->kind == STG_OR))
@@ -344,10 +342,12 @@ gcond_loose(const SiftTopGPred *p, int gl, bool top)
 	return n;
 }
 
-/* The condition is nothing but bounds on the first key (a conjunction of =, <, <=, >, >= and IS NOT NULL on it): every value entry between the bounds the array was opened with passes it */
+/* The condition is nothing but bounds on the first key (a conjunction of =, <, <=, >, >= and IS NOT NULL on it, and the IN list the walk reads, in): every value entry between the bounds the array was opened with passes it */
 static bool
-gcond_bounds_only(const SiftTopGPred *p)
+gcond_bounds_only(const SiftTopGPred *p, const SiftTopGPred *in)
 {
+	if (p == in)
+		return true;
 	if (p->kind == STG_ISNULL || p->kind == STG_BOOL)
 		return false;
 	if (p->kind == STG_NOTNULL)
@@ -357,9 +357,61 @@ gcond_bounds_only(const SiftTopGPred *p)
 	if (p->kind != STG_AND)
 		return false;
 	for (int i = 0; i < p->nchild; i++)
-		if (!gcond_bounds_only(p->child[i]))
+		if (!gcond_bounds_only(p->child[i], in))
 			return false;
 	return true;
+}
+
+/* an OR of equalities of the first key with constants (its IN list) */
+static bool
+gcond_lead_in(const SiftTopGPred *p)
+{
+	if (p->kind != STG_OR)
+		return false;
+	for (int i = 0; i < p->nchild; i++)
+		if (p->child[i]->kind != STG_CMP || p->child[i]->op != SCMP_EQ || !p->child[i]->lead)
+			return false;
+	return true;
+}
+
+/*
+ * The IN list of the first key at the top of the conjunction, as the walk of the array reads it: the values the bounds keep, ascending and distinct, in b (the walk takes the entries of
+ * one value after another, where a range from the first to the last would test every entry between). Fewer than two values are a range or nothing. Returns the condition the list is.
+ */
+static const SiftTopGPred *
+gcond_in(const SiftTopGPred *p, SiftGBound *b)
+{
+	const SiftTopGPred *in = gcond_lead_in(p) ? p : NULL;
+	int64	   *v;
+	uint32		n = 0,
+				m;
+
+	for (int i = 0; in == NULL && p->kind == STG_AND && i < p->nchild; i++)
+		in = gcond_lead_in(p->child[i]) ? p->child[i] : NULL;
+	if (in == NULL)
+		return NULL;
+	v = palloc(in->nchild * sizeof(int64));
+	for (int i = 0; i < in->nchild; i++)
+		if (!(b->has_lo && in->child[i]->val < b->lo) && !(b->has_hi && in->child[i]->val > b->hi))
+			v[n++] = in->child[i]->val;
+	qsort(v, n, sizeof(int64), sift_cmp_i64);
+	m = 0;
+	for (uint32 i = 0; i < n; i++)
+		if (m == 0 || v[m - 1] != v[i])
+			v[m++] = v[i];
+	n = m;
+	if (n < 2)
+	{
+		b->has_lo = b->has_hi = true;
+		b->lo = n == 0 ? 1 : v[0];
+		b->hi = n == 0 ? 0 : v[0];
+		return NULL;
+	}
+	b->lo = v[0];
+	b->hi = v[n - 1];
+	b->nin = n;
+	b->in = v;
+	return in;
 }
 
 /* the leaves of a condition, into t->rleaf: false when there are more than it holds */
@@ -459,6 +511,7 @@ bool
 sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 {
 	SiftGBound	b = {0};
+	const SiftTopGPred *in = NULL;
 	bool		bounds = false,
 				loose;
 	int			gl;
@@ -501,6 +554,8 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 			b.has_lo = box.has_lo, b.has_hi = box.has_hi, b.lo = box.lo, b.hi = box.hi;
 		bounds = box.empty || box.has_lo || box.has_hi;
 		(void) gcond_pins(cond, &b);
+		if (!box.empty)
+			in = gcond_in(cond, &b);
 	}
 	t->go = sift_gord_open(src, t->key[0].leaf, t->all ? t->gwant : t->limit, t->key[0].desc, t->key[0].nulls_first, t->gtext ? (uint32) t->key[0].collid : 0, cond != NULL ? &b : NULL, GetMemoryChunkContext(t));
 	if (t->go == NULL)
@@ -511,7 +566,7 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 	 * to test it, and gives the rows to the units when the fetches it needs are more than they cost (gord_giveup).
 	 */
 	loose = cond != NULL && ((!bounds && gl < 0) || gcond_loose(cond, gl, true) > 0);
-	t->gcond = t->nkey == 1 && !t->gtext && cond != NULL && gcond_bounds_only(cond) ? NULL : cond;
+	t->gcond = t->nkey == 1 && !t->gtext && cond != NULL && gcond_bounds_only(cond, in) ? NULL : cond;
 	t->limit = t->all ? t->gwant : t->limit;
 	/* the walk queues every row of the LIMIT and the OFFSET before the first goes out, outside work_mem: a longer page reads the units */
 	if (loose && (t->all || (uint64) t->limit * sizeof(GRow) > (uint64) work_mem * 1024))

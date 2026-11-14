@@ -81,12 +81,12 @@ leaf_add(WbufLeaf *lf, uint64 h, ItemPointerData tid)
 	if (lf->n == lf->cap)
 	{
 		lf->cap = Max(64, lf->cap * 2);
-		lf->ent = lf->ent ? repalloc(lf->ent, lf->cap * sizeof(WbufEnt)) : MemoryContextAlloc(wbuf_cxt, lf->cap * sizeof(WbufEnt));
+		SIFT_REGROW_IN(wbuf_cxt, lf->ent, lf->cap * sizeof(WbufEnt));
 	}
 	if (lf->n >= lf->nbuckets)
 	{
 		lf->nbuckets = Max(64, lf->nbuckets * 2);
-		lf->bucket = lf->bucket ? repalloc(lf->bucket, lf->nbuckets * sizeof(uint32)) : MemoryContextAlloc(wbuf_cxt, lf->nbuckets * sizeof(uint32));
+		SIFT_REGROW_IN(wbuf_cxt, lf->bucket, lf->nbuckets * sizeof(uint32));
 		memset(lf->bucket, 0, lf->nbuckets * sizeof(uint32));
 		for (uint32 i = 0; i < lf->n; i++)
 		{
@@ -126,7 +126,7 @@ leaf_read_rec(void *arg, const RawRec *rec)
 		if (lf->nover == lf->capover)
 		{
 			lf->capover = Max(16, lf->capover * 2);
-			lf->over = lf->over ? repalloc(lf->over, lf->capover * sizeof(ItemPointerData)) : MemoryContextAlloc(wbuf_cxt, lf->capover * sizeof(ItemPointerData));
+			SIFT_REGROW_IN(wbuf_cxt, lf->over, lf->capover * sizeof(ItemPointerData));
 		}
 		lf->over[lf->nover++] = rec->tid;
 	}
@@ -307,7 +307,7 @@ verify_page(void *arg, Page page, BlockNumber blk)
 		Size		size;
 		const SiftColRecHead *h = wbuf_rec_at(&c, &size);
 
-		if (!ItemPointerIsValid(&h->tid) || (h->flags & ~(SIFT_COLR_DELETED | SIFT_COLR_CONT | SIFT_COLR_XMIN)))
+		if (!ItemPointerIsValid(&h->tid) || (h->flags & ~(SIFT_COLR_DELETED | SIFT_COLR_CONT | SIFT_COLR_XMIN | SIFT_COLR_REF)))
 			SIFT_CORRUPT(index, "A write buffer record has tid (%u,%u) and flags %x.", ItemPointerGetBlockNumberNoCheck(&h->tid),
 					ItemPointerGetOffsetNumberNoCheck(&h->tid), h->flags);
 		nrecs += !(h->flags & SIFT_COLR_CONT);

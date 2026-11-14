@@ -6,18 +6,18 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
-#include "utils/datetime.h"
 #include "utils/datum.h"
-#include "utils/numeric.h"
 #include "utils/timestamp.h"
 #include "utils/lsyscache.h"
 
 #include "port/pg_bitutils.h"
 
 #include "agg/part.h"
-#include "agg/wide.h"
 #include "core/cmp.h"
 #include "agg/agg_int.h"
+
+StaticAssertDecl(SCMP_NE + SIFT_COLOP_EQ == SIFT_COLOP_NE && SCMP_LT + SIFT_COLOP_EQ == SIFT_COLOP_LT && SCMP_LE + SIFT_COLOP_EQ == SIFT_COLOP_LE &&
+				 SCMP_GT + SIFT_COLOP_EQ == SIFT_COLOP_GT && SCMP_GE + SIFT_COLOP_EQ == SIFT_COLOP_GE, "a filter's op is its comparison plus SIFT_COLOP_EQ");
 
 /* the values of an IN set that has gaps in [in_lo, in_hi] (a bit table, or a hash table of values far apart), sorted */
 static int64 *
@@ -344,16 +344,16 @@ text_range(AggExec *ex, SiftAggPred *p, int *leaf, const SiftSrcStrTest **lo, co
 		return true;
 	}
 	t = palloc0(sizeof(SiftSrcStrTest));
-	if (p->kind != SAP_LUT || p->level != 0 || p->late || p->leaf >= ex->nbase || !sift_aggspec_text_bound(p, ex->lay, ex->nbase, t) || t->nvals != 1 || t->op == SSTR_PREFIX)
+	if (p->kind != SAP_LUT || p->level != 0 || p->late || p->leaf >= ex->nbase || !sift_aggspec_text_bound(p, ex->lay, ex->nbase, t) || t->nvals != 1 || t->op == SIFT_COLOP_PREFIX)
 		return false;
 	if ((*leaf >= 0 && *leaf != p->leaf) || ((*lo != NULL || *hi != NULL) && (*lo ? (*lo)->collid : (*hi)->collid) != t->collid))
 		return false;
 	*leaf = p->leaf;
-	if (t->op == SSTR_EQ && *lo == NULL && *hi == NULL)
+	if (t->op == SIFT_COLOP_EQ && *lo == NULL && *hi == NULL)
 		*lo = *hi = t;
-	else if ((t->op == SSTR_GT || t->op == SSTR_GE) && *lo == NULL && !(*hi != NULL && (*hi)->op == SSTR_EQ))
+	else if ((t->op == SIFT_COLOP_GT || t->op == SIFT_COLOP_GE) && *lo == NULL && !(*hi != NULL && (*hi)->op == SIFT_COLOP_EQ))
 		*lo = t;
-	else if ((t->op == SSTR_LT || t->op == SSTR_LE) && *hi == NULL && !(*lo != NULL && (*lo)->op == SSTR_EQ))
+	else if ((t->op == SIFT_COLOP_LT || t->op == SIFT_COLOP_LE) && *hi == NULL && !(*lo != NULL && (*lo)->op == SIFT_COLOP_EQ))
 		*hi = t;
 	else
 		return false;
@@ -472,11 +472,12 @@ int_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 			/* every value passes (a NaN too: not null) or none does; the NaN rows of the others are the executor's */
 			if (st->konst == 0 || !st->nan_res)
 				return false;
-			f->op = SSF_NOTNULL;
+			f->op = SIFT_COLOP_NOTNULL;
 		}
 		else
 		{
-			f->op = (SiftSrcFilterOp) (num ? st->nop : p->op);
+			/* SCMP_x and SIFT_COLOP_x list the six comparisons in the same order */
+			f->op = (num ? st->nop : p->op) + SIFT_COLOP_EQ;
 			f->val = num ? (int64) st->cn : st->ci;
 		}
 		return true;
@@ -492,7 +493,7 @@ int_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 			return false;
 		n = st->in_nvals;
 		memcpy(set, st->in_vals, n * sizeof(int64));
-		f->op = p->op ? SSF_NOTIN : SSF_IN;
+		f->op = p->op ? SIFT_COLOP_NOTIN : SIFT_COLOP_IN;
 		f->nset = n;
 		f->set = set;
 		return true;
@@ -521,23 +522,23 @@ arm_range(AggExec *ex, SiftAggPred *p, int leaf, int64 *lo, int64 *hi)
 		return false;
 	switch (f.op)
 	{
-		case SSF_EQ:
+		case SIFT_COLOP_EQ:
 			*lo = Max(*lo, f.val);
 			*hi = Min(*hi, f.val);
 			return true;
-		case SSF_LT:
-		case SSF_LE:
-			if (f.op == SSF_LT && f.val == PG_INT64_MIN)
+		case SIFT_COLOP_LT:
+		case SIFT_COLOP_LE:
+			if (f.op == SIFT_COLOP_LT && f.val == PG_INT64_MIN)
 				*hi = PG_INT64_MIN, *lo = PG_INT64_MAX;
 			else
-				*hi = Min(*hi, f.op == SSF_LT ? f.val - 1 : f.val);
+				*hi = Min(*hi, f.op == SIFT_COLOP_LT ? f.val - 1 : f.val);
 			return true;
-		case SSF_GT:
-		case SSF_GE:
-			if (f.op == SSF_GT && f.val == PG_INT64_MAX)
+		case SIFT_COLOP_GT:
+		case SIFT_COLOP_GE:
+			if (f.op == SIFT_COLOP_GT && f.val == PG_INT64_MAX)
 				*lo = PG_INT64_MAX, *hi = PG_INT64_MIN;
 			else
-				*lo = Max(*lo, f.op == SSF_GT ? f.val + 1 : f.val);
+				*lo = Max(*lo, f.op == SIFT_COLOP_GT ? f.val + 1 : f.val);
 			return true;
 		default:
 			return false;
@@ -738,10 +739,15 @@ recheck_init(AggExec *ex)
 	for (int i = 0; i < s->nleaves; i++)
 		if (s->recheck[i] != SRK_NONE)
 		{
-			sift_colsrc_set_recheck(ex->src, s->leaves[i], s->recheck[i] == SRK_RECORDSET_LAZY ? SRK_RECORDSET : s->recheck[i] == SRK_CAST_TESTED ? SRK_CAST : s->recheck[i] == SRK_IOCAST ? SRK_TEXT : s->recheck[i], NULL, InvalidOid);
+			SiftSrcRecheck mode = SRK_MODE(s->recheck[i]);
+
+			if (mode != SRK_HASKEY)
+				sift_colsrc_set_recheck(ex->src, s->leaves[i], mode == SRK_RECORDSET_LAZY ? SRK_RECORDSET : mode == SRK_CAST_TESTED ? SRK_CAST : mode == SRK_IOCAST ? SRK_TEXT : mode, NULL, InvalidOid);
+			if (mode == SRK_HASKEY || (s->recheck[i] & SRK_WITH_HASKEY))
+				sift_colsrc_set_recheck(ex->src, s->leaves[i], SRK_HASKEY, strVal(linitial(ex->lay->leaf[s->leaves[i]].path)), InvalidOid);
 			ex->recheck = true;
-			ex->recheck_late |= s->recheck[i] == SRK_CAST || s->recheck[i] == SRK_IOCAST;
-			if (s->recheck[i] == SRK_RECORDSET)
+			ex->recheck_late |= mode == SRK_CAST || mode == SRK_IOCAST;
+			if (mode == SRK_RECORDSET)
 				for (int k = 0; k < s->npred; k++)
 					ex->recheck_after_late |= s->pred[k]->late && s->pred[k]->level == 0;
 		}
@@ -756,19 +762,27 @@ recheck_init(AggExec *ex)
 }
 
 /*
- * The conjuncts on the JSON type of a leaf's path (SAP_TYPE) are the source's: it keeps the rows of the types and raises for one whose value
- * it cannot give. The other rows may hold such a value in this leaf, which its reads then give as NULL.
+ * The tests on the JSON type of a leaf's path (SAP_TYPE) are the source's: a conjunct keeps the rows of the types and raises for one whose value
+ * it cannot give, any other place (a branch of OR, a FILTER, a CASE) gets the rows of the types as a bitmap of the unit (row_bitmap). The other rows
+ * may hold such a value in this leaf, which its reads then give as NULL.
  */
 void
 type_init(AggExec *ex)
 {
+	for (int i = 0; i < ex->spec->ntype; i++)
+	{
+		bool		reread = false;
+
+		/* a leaf the query reads beside a key test gives the value it cannot hold from the rows read again, which raise for it */
+		for (int j = 0; j < ex->spec->nleaves; j++)
+			reread |= ex->spec->leaves[j] == ex->spec->type_leaf[i] && (ex->spec->recheck[j] & SRK_WITH_HASKEY);
+		if (!reread)
+			sift_colsrc_tolerate_ovf(ex->src, ex->spec->type_leaf[i]);
+	}
 	for (int i = 0; i < ex->spec->npred; i++)
 		if (ex->spec->pred[i]->kind == SAP_TYPE)
-		{
-			sift_colsrc_tolerate_ovf(ex->src, ex->spec->pred[i]->leaf);
 			ex->pushed[i] = true;
-			ex->ntype++;
-		}
+	ex->ntype = ex->spec->ntype;
 }
 
 /* A numeric leaf that only sums and averages read is given to the executor as one integer and scale for each row, where the source can (SiftSrcDict.numrec) */
@@ -798,7 +812,7 @@ wide_operand(AggExec *ex, const SiftAggPred *p, SiftSrcWideTest *t)
 	bool		byval;
 	char		align;
 
-	if (p->op == SWT_ISNULL || p->op == SWT_NOTNULL)
+	if (p->op == SIFT_COLW_ISNULL || p->op == SIFT_COLW_NOTNULL || p->op >= SIFT_COLW_R_UNARY)
 		return;
 	e = operand_state(ex, p->expr);
 	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
@@ -807,7 +821,7 @@ wide_operand(AggExec *ex, const SiftAggPred *p, SiftSrcWideTest *t)
 	nulls[0] = isnull;
 	if (isnull)
 		vals[0] = (Datum) 0;
-	else if (p->op == SWT_IN || p->op == SWT_NOTIN)
+	else if (p->op == SIFT_COLW_IN || p->op == SIFT_COLW_NOTIN)
 		deconstruct_array(DatumGetArrayTypePCopy(d), p->argtype, len, byval, align, &vals, &nulls, &t->nvals);
 	else
 		vals[0] = datumCopy(d, byval, len);
@@ -821,17 +835,20 @@ wide_init(AggExec *ex)
 	SiftAggSpec *s = ex->spec;
 	SiftSrcWideTest t[SIFT_AGG_MAX_WIDE];
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
-	int			n = 0;
 
+	for (int k = 0; k < s->nwide; k++)
+	{
+		t[k] = (SiftSrcWideTest) {.leaf = s->wide[k]->leaf, .op = s->wide[k]->op, .rows = true};
+		wide_operand(ex, s->wide[k], &t[k]);
+	}
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->kind == SAP_WIDE)
+		if (s->pred[i]->kind == SAP_WIDE && !s->pred[i]->negated)
 		{
-			t[n] = (SiftSrcWideTest) {.leaf = s->pred[i]->leaf, .op = s->pred[i]->op};
-			wide_operand(ex, s->pred[i], &t[n++]);
+			t[s->pred[i]->wslot].rows = false;
 			ex->pushed[i] = true;
 		}
-	SIFT_INVARIANT(n == 0 || sift_colsrc_set_wide(ex->src, t, n) == n, "sift: the source did not take the conjuncts on wide leaves");
-	ex->nwide = n;
+	SIFT_INVARIANT(s->nwide == 0 || sift_colsrc_set_wide(ex->src, t, s->nwide) == s->nwide, "sift: the source did not take the tests on wide leaves");
+	ex->nwide = s->nwide;
 	MemoryContextSwitchTo(old);
 }
 

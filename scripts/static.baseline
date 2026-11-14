@@ -22,7 +22,6 @@ scan|analyzer|src/bm25/inv.c|Array access (via field 'pos') results in a null po
 scan|analyzer|src/bm25/prefix.c|Access to field 'size' results in a dereference of a null pointer (loaded from variable 'lru') [core.NullDereference]
 scan|analyzer|src/bm25/segment_int.h|Addition of a null pointer (via field 'xdl') and a probably nonzero integer value may result in undefined behavior [core.NullPointerArithm]
 scan|analyzer|src/bm25/step.c|Although the value stored to 'maxruns' is used in the enclosing expression, the value is never actually read from 'maxruns' [deadcode.DeadStores]
-scan|analyzer|src/bm25/topk.c|1st function call argument is an uninitialized value [core.CallAndMessage]
 scan|analyzer|src/col/chunk.c|Array access (from variable 'bits') results in a null pointer dereference [core.NullDereference]
 scan|analyzer|src/col/chunk.c|Array access (via field 'nulls') results in a null pointer dereference [core.NullDereference]
 scan|analyzer|src/col/codec_kern.c|Left shift by '32' overflows the capacity of 'uint32' [core.BitwiseShift]
@@ -71,8 +70,6 @@ tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/runs/runs.c|pe
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/segment.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/segment.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/segment.c|result of multiplication in type 'uint32' (aka 'unsigned int') is used as a pointer offset after an implicit widening conversion to type 'size_t'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/topk.c|performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/topk.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/walk.c|performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/walk.c|result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 tidy|bugprone-implicit-widening-of-multiplication-result|src/bm25/wbuf.c|performing an implicit widening conversion to type 'uint64' (aka 'unsigned long') of a multiplication performed in type 'int'
@@ -112,7 +109,6 @@ tidy|bugprone-suspicious-memory-comparison,cert-exp42-c|src/table/seg.c|comparin
 tidy|clang-analyzer-core.BitwiseShift|src/bm25/bitmap_int.h|Right shift by '4294967295' overflows the capacity of 'uint64_t'
 tidy|clang-analyzer-core.BitwiseShift|src/col/codec_kern.c|Left shift by '32' overflows the capacity of 'uint32'
 tidy|clang-analyzer-core.BitwiseShift|src/col/gpu.c|Left shift by '32' overflows the capacity of 'uint32'
-tidy|clang-analyzer-core.CallAndMessage|src/bm25/topk.c|1st function call argument is an uninitialized value
 tidy|clang-analyzer-core.NonNullParamChecker|src/agg/col_read.c|Null pointer passed to 1st parameter expecting 'nonnull'
 tidy|clang-analyzer-core.NullDereference|src/agg/combo/keys.c|Array access (from variable 'v') results in a null pointer dereference
 tidy|clang-analyzer-core.NullDereference|src/agg/dist/add.c|Array access (from variable 'ocnt') results in a null pointer dereference

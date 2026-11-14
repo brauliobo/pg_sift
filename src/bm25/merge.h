@@ -6,8 +6,6 @@
 #ifndef SIFT_MERGE_H
 #define SIFT_MERGE_H
 
-#include "core/host.h"
-
 #include "bm25/segment.h"
 
 #define SIFT_MERGE_FANIN		8		/* segments of a tier that trigger a merge (the default of a host that lets it be set) */

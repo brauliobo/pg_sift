@@ -9,7 +9,6 @@
 
 #include "agg/dense_int.h"
 #include "agg/vnum.h"
-#include "col/am.h"
 #include "agg/update/int.h"
 
 /* What the update of one aggregate over a chunk works on: its selected rows (ok: those its FILTER passes, NULL for all) and column */

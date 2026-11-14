@@ -5,13 +5,10 @@
  */
 #include "postgres.h"
 
-#include "catalog/pg_type_d.h"
 #include "lib/stringinfo.h"
 #include "utils/memutils.h"
 
 #include "agg/agg.h"
-#include "agg/colsrc.h"
-#include "agg/spec.h"
 #include "agg/par/int.h"
 #include "agg/spill/int.h"
 
@@ -76,7 +73,7 @@ step_value(AggExec *ex, int64 z)
 
 	if (k->kind == SAK_LEAF)
 		return z;
-	return spill_datum_int(k->typid, key_input_datum(ex, ki, spill_int_datum(k->typid, z), &isnull));
+	return sift_int_key(k->typid, key_input_datum(ex, ki, spill_int_datum(k->typid, z), &isnull));
 }
 
 static int

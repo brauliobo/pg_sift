@@ -1,12 +1,12 @@
 /*
  * agg/spine.c - the spine of a two level aggregate: its rows, and the rows each cell of the arms joins
  */
+/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which sift.agg_lookup_max_kb bounds at plan time */
 #include "postgres.h"
 
 #include "access/tupdesc.h"
 #include "executor/executor.h"
 #include "utils/datum.h"
-#include "nodes/makefuncs.h"
 #include "utils/memutils.h"
 
 #include "agg/agg_int.h"
@@ -297,9 +297,9 @@ spine_rows(AggExec *ex, int k, const uint32 *ids, const uint32 **rows)
 	if (m->n == m->cap)
 	{
 		m->cap = m->cap ? m->cap * 2 : 16;
-		m->ids = m->ids ? repalloc(m->ids, (Size) m->cap * sa->npair * sizeof(uint32)) : palloc((Size) m->cap * sa->npair * sizeof(uint32));
-		m->first = m->first ? repalloc(m->first, m->cap * sizeof(uint32)) : palloc(m->cap * sizeof(uint32));
-		m->count = m->count ? repalloc(m->count, m->cap * sizeof(uint32)) : palloc(m->cap * sizeof(uint32));
+		SIFT_REGROW(m->ids, (Size) m->cap * sa->npair * sizeof(uint32));
+		SIFT_REGROW(m->first, m->cap * sizeof(uint32));
+		SIFT_REGROW(m->count, m->cap * sizeof(uint32));
 	}
 	e = m->n++;
 	memcpy(&m->ids[(Size) e * sa->npair], ids, sa->npair * sizeof(uint32));

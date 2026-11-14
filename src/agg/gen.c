@@ -4,76 +4,30 @@
 #include "postgres.h"
 
 #include <float.h>
-#include <math.h>
 
-#include "access/genam.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
-#include "access/parallel.h"
-#include "access/relation.h"
-#include "access/table.h"
-#include "access/tableam.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
-#include "access/skey.h"
-#include "access/stratnum.h"
-#include "access/xact.h"
-#include "catalog/pg_am.h"
-#include "catalog/pg_index.h"
 #include "catalog/pg_type.h"
-#include "commands/explain.h"
-#include "common/hashfn.h"
-#include "common/int.h"
 #include "executor/executor.h"
 #include "executor/nodeAgg.h"
-#include "executor/nodeHash.h"
-#include "executor/nodeSubplan.h"
 #include "miscadmin.h"
-#include "nodes/extensible.h"
-#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
-#include "portability/instr_time.h"
 #include "parser/parse_agg.h"
-#include "storage/predicate.h"
-#include "storage/proc.h"
-#include "storage/shm_mq.h"
-#include "storage/shm_toc.h"
 #include "utils/acl.h"
-#include "utils/array.h"
 #include "utils/builtins.h"
-#include "utils/date.h"
 #include "utils/datum.h"
-#include "utils/fmgroids.h"
-#include "utils/fmgrprotos.h"
 #include "utils/expandeddatum.h"
-#include "utils/float.h"
-#include "utils/guc.h"
 #include "utils/numeric.h"
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
-#include "utils/rel.h"
-#include "utils/snapmgr.h"
 #include "utils/syscache.h"
-#include "utils/timestamp.h"
 #include "utils/tuplesort.h"
-#include "utils/wait_event.h"
 #include "utils/typcache.h"
 
-#include "agg/agg.h"
 #include "agg/wide.h"
-#include "agg/back.h"
-#include "agg/kern.h"
-#include "agg/part.h"
-#include "agg/spec.h"
-#include "col/kern.h"
-#include "agg/colsrc.h"
-#include "agg/search.h"
-#include "agg/topn.h"
-#include "core/visibility.h"
-#include "core/popcount.h"
 #include "agg/agg_int.h"
 #include "agg/init_int.h"
 #include "col/hll.h"
@@ -157,8 +111,15 @@ gen_sort_put(GenSt *st, AggAcc *acc, uint32 gid, const Datum *args, const bool *
 {
 	if (acc->i[gid] == 0)
 		acc->i[gid] = ++st->nsid;
+	gen_sort_put_sid(st, acc->i[gid] - 1, args, nulls);
+}
+
+/* ... and an input of the group numbered sid */
+void
+gen_sort_put_sid(GenSt *st, uint32 sid, const Datum *args, const bool *nulls)
+{
 	ExecClearTuple(st->put);
-	st->put->tts_values[0] = Int32GetDatum((int32) (acc->i[gid] - 1));
+	st->put->tts_values[0] = Int32GetDatum((int32) sid);
 	st->put->tts_isnull[0] = false;
 	for (int k = 0; k < st->g->nargs; k++)
 		if (st->vcol[k] >= 0)
@@ -322,11 +283,17 @@ gen_new(AggExec *ex, const SiftAggAgg *a, int ai)
 		st->cmp = &tc->cmp_proc_finfo;
 		st->eq = &tc->eq_opr_finfo;
 	}
-	if (g->sorted || g->ordered)
+	if (!(g->ordered && gen_mode_pick(ex, st)) && (g->sorted || g->ordered))
 		gen_sort_begin(st);
 	if (g->first)
 	{
 		st->has_final = false;
+		gen_first_begin(st);
+	}
+	gen_stat_pick(ex, st);
+	if (g->topn)
+	{
+		st->tcx = AllocSetContextCreate(ex->cxt, "sift agg first rows", ALLOCSET_DEFAULT_SIZES);
 		gen_first_begin(st);
 	}
 	return st;
@@ -439,7 +406,7 @@ gen_arg(AggExec *ex, GenSt *st, const GenIn *in, int j, int k, Datum *arg, bool 
 }
 
 /* initialize_aggregate */
-static void
+void
 gen_state_init(GenSt *st, AggAcc *acc, uint32 g)
 {
 	acc->nf[g] = GEN_INIT;

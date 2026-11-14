@@ -9,7 +9,7 @@ from .db import REF, psql
 from .tablemode import TABLE_SKIP
 from .fam_lists import dml_trail, dml_txn
 from .fam_cte import dml_ctecopies, dml_dictcount, dml_exceptions, dml_flatkeys, dml_gorder, dml_keylist, dml_keytable
-from .registry import FAMILIES, variants
+from .registry import FAMILIES, prepared_variants, variants
 from .dml import dml, dml_arrlen, dml_dead, dml_floor, dml_kcut, dml_nullzone, dml_window
 
 # ---------- a run ----------
@@ -22,8 +22,15 @@ def keycols(ordered):
     return 'NULL::int[]' if ordered else "'{}'::int[]"
 
 
+def split_pre(sql):
+    """a family whose query needs a statement before it (PREPARE) separates the two by a line with @@"""
+    pre, _, q = sql.rpartition('\n@@\n')
+    return pre, q
+
+
 def query_script(qid, sql, ordered, base, vs):
-    out = [f'\\echo FZQ|{qid}', 'SELECT fz.start();', f"SELECT fz.ref('{qid}', {sqlq(sql)}, '{base};{REF}');"]
+    pre, sql = split_pre(sql)
+    out = ([pre + ';'] if pre else []) + [f'\\echo FZQ|{qid}', 'SELECT fz.start();', f"SELECT fz.ref('{qid}', {sqlq(sql)}, '{base};{REF}');"]
     for name, spec in vs:
         out.append(f"SELECT fz.var('{qid}', {sqlq(sql)}, {keycols(ordered)}, '{name}', '{base};{spec}');")
     return '\n'.join(out)
@@ -36,10 +43,11 @@ def lines_of(out):
 def gen_query(seed, i, ctx, only):
     r = random.Random(seed * 1000003 + i)
     names = [n for n in FAMILIES if (not only or n in only) and not (tablemode.TABLE and n in TABLE_SKIP)]
-    fam = r.choices(names, [FAMILIES[n][2] for n in names])[0]
+    fam = r.choices(names, [FAMILIES[n][2] or (1 if only else 0) for n in names])[0]
     gen, render, _ = FAMILIES[fam]
     parts = gen(r, ctx)
-    return fam, parts, variants(r, fam), r.random() < 0.3
+    vs = variants(r, fam)
+    return fam, parts, prepared_variants(vs) if parts.get('prep') else vs, r.random() < 0.3
 
 
 def episodes(seed, nq, ctx, only, dmls=4):

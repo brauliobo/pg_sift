@@ -92,7 +92,7 @@ checks=$(awk '/^number of transactions actually processed/ { print $6; exit }' "
 diffs=$(q -c "SELECT count(*) FROM bad")
 q -c "SELECT what FROM bad LIMIT 5" >&2
 q -c "VACUUM s" -c "SELECT sift.col_verify('s_col', true)" >/dev/null 2>"$OUT/verify.err" || { log "VERIFY FAILED: $(head -1 "$OUT/verify.err")"; bad=1; }
-totals=$(q -c "SET sift.enable_col = off; SET sift.enable_agg = off; SELECT count(*), sum(n) FROM s" | tail -1)
+totals=$(q -c "SET sift.enable_agg = off; SELECT count(*), sum(n) FROM s" | tail -1)
 agg=$(q -c "SET cpu_tuple_cost = 0.5; SET max_parallel_workers_per_gather = 0; SELECT count(*), sum(n) FROM s" | tail -1)
 [[ $totals == "$agg" ]] || { log "TOTALS DIFFER: plain $totals / SiftAgg $agg"; bad=1; }
 log "$(grep -c . "$OUT/memory.txt") backends sampled for memory; $(grep -m1 -E 'tps = ' "$OUT/pgbench.txt")"

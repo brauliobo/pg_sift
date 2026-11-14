@@ -121,6 +121,7 @@ extern void sift_page_init(Page page, SiftPageType type, uint64 gen);
  * on a standby the mismatch path unlocks it to consult the directory.
  */
 extern void sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen);
+extern void sift_store_require_ready(Relation index);
 
 /* Directory snapshot: plain copy of metapage + directory (invariant I3) */
 typedef struct SiftDirSnapshot
@@ -131,8 +132,16 @@ typedef struct SiftDirSnapshot
 	SiftSegEntry segs[SIFT_MAX_SEGMENTS];
 } SiftDirSnapshot;
 
+/* The bytes of a directory copy that matter: the segments it lists, not the room for the most the directory holds */
+static inline Size
+sift_dir_bytes(const SiftDirSnapshot *dir)
+{
+	return offsetof(SiftDirSnapshot, segs) + dir->nsegs * sizeof(SiftSegEntry);
+}
+
 /* The caller holds no buffer lock: the metapage comes first in lock order */
 extern void sift_dir_read(Relation index, SiftDirSnapshot *snap);
+extern bool sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags);
 
 /*
  * The directory's version through a pinned directory buffer, without its content lock: for a reader that compares it with a version it
@@ -177,6 +186,18 @@ extern void sift_wt_publish(SiftWriteTarget *wt, const SiftDirChange *chg);
 
 /* Reserves a fresh segment generation (logged, P6) */
 extern uint64 sift_store_new_gen(Relation index);
+
+/* True where this backend cannot assign a transaction id: the leader of a parallel VACUUM runs the cleanup of the indexes that have no parallel pass in parallel mode */
+extern bool sift_xid_unassignable(void);
+
+/*
+ * May this backend write a catalog row (an index option in pg_class, a trigger, a dependency, a relation)? A lazy VACUUM runs with PROC_IN_VACUUM: GetSnapshotData() leaves its
+ * transaction id out of every snapshot, so a session that reads a row the VACUUM updated takes the VACUUM's xid for an aborted one, writes HEAP_XMAX_INVALID on the old version
+ * and the row is there twice (or its update is lost) once the VACUUM commits. A parallel operation cannot assign the id at all. Every writer of a catalog row goes through
+ * sift_catalog_write_guard, the deciders that a VACUUM reaches ask sift_catalog_write_ok and leave the choice to the maintenance worker (docs/COL-MAINTENANCE.md).
+ */
+extern bool sift_catalog_write_ok(void);
+extern void sift_catalog_write_guard(const char *what);
 
 /* Is xid older than every snapshot (the heap's GlobalVis horizon)? */
 extern bool sift_store_removable(Relation index, FullTransactionId xid);
@@ -303,6 +324,8 @@ extern BlockNumber sift_store_truncate(Relation index);
  *   BULK   ambuild into a new relfilenode: smgr_bulk_*, single writer, WAL
  *          skipped when not needed; blocks 0-1 are written at finish.
  *   INIT   ambuildempty: BULK on the init fork, always WAL-logged.
+ *   LAYOUT the metapage and the empty directory of an empty relation that exists already (the first writer
+ *          of a table): the pages reach the file only after their WAL is flushed.
  *   SHARED promotion/merge: shared buffers, each page logged as a full image
  *          when written; unused allocated blocks go back to the free list at
  *          finish.
@@ -313,7 +336,8 @@ typedef enum SiftWriteMode
 {
 	SIFT_WRITE_BULK,
 	SIFT_WRITE_SHARED,
-	SIFT_WRITE_INIT
+	SIFT_WRITE_INIT,
+	SIFT_WRITE_LAYOUT
 } SiftWriteMode;
 
 extern SiftWriteTarget *sift_wt_begin(Relation index, SiftWriteMode mode);
@@ -374,6 +398,16 @@ sift_extlist_init(SiftExtentList *l)
 	l->cap = 8;
 	l->max = SIFT_MAX_EXTENTS;
 	l->ext = palloc(l->cap * sizeof(SiftExtent));
+}
+
+/* Appends the run of nblocks from start to ext[0..*n), joining the last run when it ends at start (ext has room for one more) */
+static inline void
+sift_extent_push(SiftExtent *ext, int *n, BlockNumber start, uint32 nblocks)
+{
+	if (*n > 0 && ext[*n - 1].start + ext[*n - 1].nblocks == start)
+		ext[*n - 1].nblocks += nblocks;
+	else
+		ext[(*n)++] = (SiftExtent) {start, nblocks};
 }
 
 /* The next page of the stream is block blk: it extends the last extent when it follows it */
@@ -473,6 +507,8 @@ extern SiftExtent *sift_sw_finish(SiftStreamWriter *sw, int *nextents);
  * them must then be written with sift_wt_put_page.
  */
 extern BlockNumber sift_wt_write_page(SiftWriteTarget *wt, Page page);
+/* extra, extralen: bytes the header page keeps after its extents (the mirror of a column segment); NULL, 0 for none. They must fit the page with the extents */
+extern BlockNumber sift_wt_write_seghdr(SiftWriteTarget *wt, const SiftSegHeaderData *h, const SiftExtent *ext, uint32 n, const void *extra, uint32 extralen);
 extern BlockNumber sift_wt_reserve(SiftWriteTarget *wt, uint32 nblocks);
 /* The lowest reusable run below limit (up to want blocks, at least min), InvalidBlockNumber when none: a SHARED target only, the file is never extended */
 extern BlockNumber sift_wt_reserve_below(SiftWriteTarget *wt, uint32 want, uint32 min, BlockNumber limit, uint32 *got);
@@ -556,6 +592,7 @@ extern void sift_sr_release(SiftStreamReader *sr);
 
 /* Drops the share lock the last read left on its page (a pointer it returned is invalid): the caller may then serve interrupts */
 extern void sift_sr_unlock(SiftStreamReader *sr);
+extern void sift_sr_point(SiftStreamReader *sr);
 
 /*
  * Blocks referenced by any directory entry, the free list or the metapage
@@ -575,6 +612,7 @@ extern SiftExtent *sift_store_immutable_extents(Relation index, const SiftSegEnt
  * writers are write buffer appenders of published segments.
  */
 extern struct Bitmapset *sift_store_orphans(Relation index);
+extern SiftExtent *sift_store_block_extents(const struct Bitmapset *set, int *n);
 
 /*
  * Checks metapage, directory, free list (bounds, overlap, chain, reference

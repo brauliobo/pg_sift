@@ -107,18 +107,11 @@ topn_num_type(Oid t)
 	}
 }
 
-/* The types a cast reads or gives besides the numbers: the strings its text form is made of */
-static bool
-topn_str_type(Oid t)
-{
-	return t == TEXTOID || t == VARCHAROID;
-}
-
 /* the types of a leaf the evaluator reads: a number, a string, a uuid, a bytea or an inet */
 static bool
 topn_val_type(Oid t)
 {
-	return topn_num_type(t) || topn_str_type(t) || t == UUIDOID || t == BYTEAOID || t == INETOID;
+	return topn_num_type(t) || sift_str_type(t) || t == UUIDOID || t == BYTEAOID || t == INETOID;
 }
 
 /* A leaf the evaluator can build a datum of: the plain types of a column, as the index keeps them */
@@ -395,7 +388,7 @@ lookup_add(JoinCtx *jc, Var *v, List **lookups)
 	l = palloc(sizeof(TopLookup));
 	l->jc = jc;
 	l->var = v;
-	if ((l->col = join_col(jc, v)) < 0)
+	if ((l->col = join_col(jc, (Node *) v)) < 0)
 		return false;
 	*lookups = lappend(*lookups, l);
 	return true;

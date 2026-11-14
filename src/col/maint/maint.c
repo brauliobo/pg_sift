@@ -4,9 +4,14 @@
  * the files next to it hold what they run
  */
 #include "postgres.h"
+#include "access/table.h"
+#include "catalog/index.h"
 #include "core/ops.h"
+#include "storage/lmgr.h"
 #include "storage/lock.h"
 #include "utils/timestamp.h"
+#include "col/gorder.h"
+#include "col/wbuf.h"
 #include "col/maint/maint_int.h"
 
 /* The automatic rewrite (sift.col_auto_merge*, registered in col/am/am.c) */
@@ -28,14 +33,14 @@ int			sift_col_auto_merge_max_workers = 0;
 
 /*
  * The size of a partition in effect for the directory in hand: sift.col_auto_merge_partition_kb, else the smaller of sift.vacuum_rewrite_limit (for an index
- * over it, so that the rewrite of a large index is a step for each partition, the lock let go between them, and not one step for all of it) and a third of
- * maintenance_work_mem: the writer of a segment keeps the key and address of each row of a global order until its last unit is in, about 2.5 bytes of memory
+ * over it, so that the rewrite of a large index is a step for each partition, the lock let go between them, and not one step for all of it) and the share of
+ * the memory a writer may take within maintenance_work_mem (sift_colw_budget): it keeps the key and address of each row of a global order until its last unit is in, about 2.5 bytes of memory
  * for each byte of segment. The memory bound gives way to the directory: an index never has more than PART_DIVISOR partitions. 0: no partitions.
  */
 int	maint_part_kb = 0;
 
 int
-maint_part_kb_for(uint64 bytes)
+maint_part_kb_for(uint64 bytes, double mem_ratio)
 {
 	int			kb = sift_col_auto_merge_partition_kb > 0 ? sift_col_auto_merge_partition_kb :
 		bytes > ((uint64) sift_vacuum_rewrite_limit << 20) ? sift_vacuum_rewrite_limit * 1024 : 0;
@@ -43,21 +48,30 @@ maint_part_kb_for(uint64 bytes)
 
 	if (sift_col_auto_merge_partition_kb > 0)
 		return kb;
-	mem_kb = Max((uint64) maintenance_work_mem / 3, Max(bytes / 1024 / PART_DIVISOR, PART_MIN_KB));
+	mem_kb = Max((uint64) (sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE) / 1024 / mem_ratio), Max(bytes / 1024 / PART_DIVISOR, (uint64) (PART_MIN_KB * MAINT_MEM_RATIO / mem_ratio)));
 	if (bytes / 1024 > mem_kb && (kb == 0 || mem_kb < (uint64) kb))
 		kb = (int) Min(mem_kb, (uint64) INT_MAX);
 	return kb;
 }
 
 void
-maint_use_partitions(const SiftDirSnapshot *snap)
+maint_use_partitions(Relation index, const SiftDirSnapshot *snap)
 {
-	uint64		bytes = 0;
+	uint64		bytes = 0,
+				rows = 0;
+	double		ratio = MAINT_MEM_RATIO;
 
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
 			bytes += snap->segs[i].bytes;
-	maint_part_kb = maint_part_kb_for(bytes);
+			rows += snap->segs[i].ndocs;
+		}
+	/* a narrow row costs more memory in the writer for each byte of segment than the usual one does. The build's own merge of its runs keeps the byte rule: the
+	 * writer is cut at its memory anyway, and a run is no partition of the key (each holds rows of every key) */
+	if (rows > 0 && !maint_after_build && sift_col_is_index(index))
+		ratio = Max(ratio, (double) sift_colw_row_memory(&sift_col_rel(index)->pagg, sift_col_rel(index)->schema->ncols) * rows / Max(bytes, 1));
+	maint_part_kb = maint_part_kb_for(bytes, ratio);
 }
 
 /*
@@ -81,9 +95,42 @@ maint_throttle(SiftWriteTarget *wt)
 	}
 }
 
+uint64
+maint_overlay_rows(const SiftSegEntry *seg, int n, const SiftSegEntry *skip, int nskip)
+{
+	uint64		largest = 0,
+				rows = 0;
+
+	for (int i = 0; i < n; i++)
+		if (seg[i].kind == SIFT_SEG_IMMUTABLE)
+			largest = Max(largest, seg[i].ndocs);
+	for (int i = 0; i < n; i++)
+	{
+		bool		replaced = false;
+
+		for (int k = 0; k < nskip; k++)
+			replaced |= skip[k].gen == seg[i].gen;
+		if (seg[i].kind == SIFT_SEG_IMMUTABLE && !replaced && maint_is_overlay(seg[i].ndocs, largest))
+			rows += seg[i].ndocs;
+	}
+	return rows;
+}
+
+void
+maint_set_unordered(SiftCPaggSpec *spec, const SiftColSchema *schema, uint64 overlay_rows, uint64 index_rows)
+{
+	uint64		cap = PG_UINT64_MAX;
+
+	for (int c = 0; c < schema->ncols; c++)
+		if (spec->gorder[c])
+			cap = Min(cap, SIFT_CGORD_FREE_CAP(schema->cols[c].store != SIFT_COLS_INT));
+	spec->unordered = spec->lean && spec->gorderauto && overlay_rows * 10 <= index_rows && overlay_rows <= cap;
+}
+
 /* The participants of the parallel build that is merging its own segments (col/build_par.c); 0: one process merges, as VACUUM and the maintenance worker do */
 int	maint_merge_workers = 0;
 bool		maint_after_build = false;	/* the rewrite is the one right after the build: the choices of the build stand */
+bool		maint_redecided = false;	/* the rewrite in hand has chosen again from the data (col/maint/merge.c): once for all its steps */
 
 const SiftMaintOps maint_col_ops = {
 	.name = "sift_col",
@@ -103,6 +150,7 @@ const SiftMaintOps maint_col_ops = {
 	.bulkdelete_wbuf = maint_bulkdelete_wbuf,
 	.bulkdelete_tomb = maint_bulkdelete_tomb,
 	.vacuum_net = maint_net_refresh,
+	.vacuum_heap = maint_roots_verify,
 	.vacuum_log = maint_vacuum_log,
 	.vacuum_skipped = maint_reap_overflow,
 	.rewrite_due = maint_rewrite_due,
@@ -110,6 +158,12 @@ const SiftMaintOps maint_col_ops = {
 	.vacuum_space_defer = maint_space_deferred,
 	.vacuum_done = maint_rewrite_request,
 };
+
+Relation
+sift_col_open_index(Oid indexoid, LOCKMODE lock)
+{
+	return sift_mops_open(&maint_col_ops, indexoid, lock);
+}
 
 /*
  * After a parallel build. The segments of its participants overlap (each holds some rows of every key and of every superblock), so the first VACUUM
@@ -138,7 +192,7 @@ sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers)
 	maint_after_build = true;
 	PG_TRY();
 	{
-		merged = sift_mops_rewrite(&maint_col_ops, index, false) > 0;
+		merged = sift_mops_rewrite(&maint_col_ops, &index, false) > 0;
 	}
 	PG_FINALLY();
 	{
@@ -161,6 +215,8 @@ void
 sift_col_maint_after_seal(Relation index)
 {
 	sift_mops_after_seal(&maint_col_ops, index);
+	if (sift_cwbuf_arena_asked_back(index))
+		sift_mops_promote(&maint_col_ops, index, false);
 }
 
 bool
@@ -202,14 +258,100 @@ worker_failed(Oid indexoid, const char *name, MemoryContext cx)
 	FreeErrorData(err);
 }
 
+/*
+ * The re-baseline of a log that is due for it (sift_col_track_rebaseline), in a transaction of its own: it holds ShareUpdateExclusiveLock on the table, which keeps VACUUM
+ * and the autovacuum worker waiting or skipping for as long as the transaction lasts, and the merges of the worker are longer. A table that is busy with a VACUUM is left to it (it re-baselines too).
+ * Triggers that ENABLE TRIGGER left enabled for the origin only are enabled for all again first (sift_col_track_rearm), in a transaction of its own, which returns true for the caller to run the step again.
+ */
+static bool
+rebaseline_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
+{
+	Oid			heapoid;
+	Relation	index;
+	Relation	heap;
+	bool		rearmed = false;
+
+	StartTransactionCommand();
+	PushActiveSnapshot(GetTransactionSnapshot());
+	heapoid = IndexGetRelation(indexoid, true);
+	if (OidIsValid(heapoid) && !RecoveryInProgress() && ConditionalLockRelationOid(heapoid, ShareUpdateExclusiveLock) &&
+		(index = try_index_open(indexoid, RowExclusiveLock)) != NULL)
+	{
+		*name = MemoryContextStrdup(cx, RelationGetRelationName(index));
+		if (sift_col_is_index(index))
+		{
+			TimestampTz start = GetCurrentTimestamp();
+
+			heap = table_open(heapoid, NoLock);
+			/* triggers enabled for the origin only: the lock that ENABLE TRIGGER takes, if it is free this instant (held for a catalog row, never waited for), and the re-baseline in the next transaction */
+			if (sift_col_track_rearmable(index, heap) && ConditionalLockRelationOid(heapoid, ShareRowExclusiveLock))
+			{
+				rearmed = sift_col_track_rearm(index, heap);
+				if (rearmed)
+					sift_log_maint(index, "column track triggers enabled again", start, -1, -1);
+			}
+			else if (sift_col_track_rebaseline(index, heap))
+				sift_log_maint(index, "column track re-baseline finished", start, -1, -1);
+			table_close(heap, NoLock);
+		}
+		index_close(index, RowExclusiveLock);
+	}
+	PopActiveSnapshot();
+	CommitTransactionCommand();
+	return rearmed;
+}
+
+/* The re-baseline that a read of a log asked for (sift_col_track_ask) */
 void
-sift_col_maint_worker_main(Datum main_arg)
+sift_col_track_worker_main(Datum main_arg)
 {
 	ErrorContextCallback errctx;
-	TimestampTz start = GetCurrentTimestamp();
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
 	MemoryContext cx = CurrentMemoryContext;
+	const char *volatile name = psprintf("%u", indexoid);
+
+	PG_TRY();
+	{
+		if (rebaseline_step(indexoid, cx, &name))
+			rebaseline_step(indexoid, cx, &name);
+	}
+	PG_CATCH();
+	{
+		worker_failed(indexoid, name, cx);
+	}
+	PG_END_TRY();
+}
+
+/* The open write buffer sealed first, as the reads that decoded it asked (maint_wbuf_read_due, judged again here: it may have been promoted since) */
+static void
+seal_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
+{
+	Relation	index;
+
+	StartTransactionCommand();
+	PushActiveSnapshot(GetTransactionSnapshot());
+	index = sift_try_open_index(indexoid, RowExclusiveLock);
+	if (index != NULL)
+	{
+		*name = MemoryContextStrdup(cx, RelationGetRelationName(index));
+		if (sift_col_is_index(index) && maint_wbuf_read_due(index))
+			sift_cwbuf_seal(index, true);
+		index_close(index, RowExclusiveLock);
+	}
+	PopActiveSnapshot();
+	CommitTransactionCommand();
+}
+
+/*
+ * One promotion or merge in a transaction of its own (sift_maint_worker_stay). The lock is busy when a VACUUM or a SQL merge is at it, which merge to the end,
+ * and when an inserter promotes, which leaves the merges to the worker: the next look finds it free.
+ */
+static SiftStepResult
+col_worker_step(Oid indexoid, TimestampTz start, bool last)
+{
+	MemoryContext cx = CurrentMemoryContext;
 	const char *volatile name = psprintf("%u", indexoid);	/* the name of the index, once it is open: a failure before that names the oid */
+	volatile SiftStepResult r = SIFT_STEP_IDLE;
 
 	PG_TRY();
 	{
@@ -217,16 +359,17 @@ sift_col_maint_worker_main(Datum main_arg)
 
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
-		index = try_index_open(indexoid, RowExclusiveLock);
-		if (index != NULL)
-			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
+		index = sift_try_open_index(indexoid, RowExclusiveLock);
 		if (index != NULL && sift_col_is_index(index))
 		{
-			/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
-			while (sift_col_maint_promote(index, false) > 0 || sift_col_maint_merge_step(index, false))
-				CHECK_FOR_INTERRUPTS();
-			sift_mops_cut_free_end(&maint_col_ops, index);
-			sift_log_maint(index, "column maintenance worker finished", start, -1, -1);
+			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
+			if (sift_col_maint_promote(index, false) > 0 || sift_col_maint_merge_step(index, false))
+				r = SIFT_STEP_DONE;
+			else if (last)
+			{
+				sift_mops_cut_free_end(&maint_col_ops, index);
+				sift_log_maint(index, "column maintenance worker finished", start, -1, -1);
+			}
 		}
 		if (index != NULL)
 			index_close(index, RowExclusiveLock);
@@ -236,8 +379,52 @@ sift_col_maint_worker_main(Datum main_arg)
 	PG_CATCH();
 	{
 		worker_failed(indexoid, name, cx);
+		r = SIFT_STEP_FAILED;
 	}
 	PG_END_TRY();
+	return r;
+}
+
+/* seal: the open write buffer is sealed first */
+static void
+maint_worker(Datum main_arg, bool seal)
+{
+	ErrorContextCallback errctx;
+	TimestampTz start = GetCurrentTimestamp();
+	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
+	MemoryContext cx = CurrentMemoryContext;
+	const char *volatile name = psprintf("%u", indexoid);
+	volatile bool failed = false;
+
+	sift_maint_own_xacts = true;
+
+	PG_TRY();
+	{
+		if (rebaseline_step(indexoid, cx, &name))
+			rebaseline_step(indexoid, cx, &name);
+		if (seal)
+			seal_step(indexoid, cx, &name);
+	}
+	PG_CATCH();
+	{
+		worker_failed(indexoid, name, cx);
+		failed = true;
+	}
+	PG_END_TRY();
+	if (!failed)
+		sift_maint_worker_stay(indexoid, start, col_worker_step);
+}
+
+void
+sift_col_maint_worker_main(Datum main_arg)
+{
+	maint_worker(main_arg, false);
+}
+
+void
+sift_col_read_promote_worker_main(Datum main_arg)
+{
+	maint_worker(main_arg, true);
 }
 
 /*
@@ -268,6 +455,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	MemoryContext cx = CurrentMemoryContext;
 	const char *volatile name = psprintf("%u", indexoid);
 
+	sift_maint_own_xacts = true;
 	/* sift.col_auto_merge_max_active, then a slot of sift.col_auto_merge_max_workers; False: it stayed busy, and the next VACUUM asks again */
 	if (!sift_maint_wait_quiet(sift_col_auto_merge_max_active) || !sift_nap_until(take_slot, NULL))
 		return;
@@ -277,7 +465,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
-		index = try_index_open(indexoid, RowExclusiveLock);
+		index = sift_try_open_index(indexoid, RowExclusiveLock);
 		if (index != NULL)
 		{
 			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
@@ -285,10 +473,11 @@ sift_col_rewrite_worker_main(Datum main_arg)
 			{
 				TimestampTz start = GetCurrentTimestamp();
 
-				if (sift_mops_rewrite(&maint_col_ops, index, true) >= 0)
+				if (sift_mops_rewrite(&maint_col_ops, &index, true) >= 0 && index != NULL)
 					sift_log_maint(index, "column rewrite worker finished", start, -1, -1);
 			}
-			index_close(index, RowExclusiveLock);
+			if (index != NULL)
+				index_close(index, RowExclusiveLock);
 		}
 		PopActiveSnapshot();
 		CommitTransactionCommand();

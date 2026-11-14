@@ -3,6 +3,7 @@
  * The vid of a wide value, the resolve of the combos of the rows of a chunk and the rows and
  * outputs it leaves.
  */
+/* check-memory: allow-allocs the entries of the classes of a dense table, at most DENSE_MAX_CLASSES + 1 */
 #include "postgres.h"
 
 #include "agg/combo/int.h"
@@ -25,6 +26,67 @@ wide_vid(ComboSt *cs, int p, const SiftSrcLeaf *lf, const SiftSrcVec *v, uint32 
 }
 
 /*
+ * The entry of the key x (the value + 1 of an int4 leaf) of a dense table: the keys of a class share one, made for the first key seen of it (the table's own
+ * row of the class, the key it was loaded with), and the keys without a row share one made for the first of them.
+ */
+static uint32
+dense_ent(AggExec *ex, int ci, uint64 x, uint32 c)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	const MapTab *m = cs->map;
+	uint64		v = c == 0 ? x : (uint64) (uint32) map_kint(m, c - 1, 0) + 1;
+
+	cs->cent[c] = combo_ent(ex, ci, &v) + 1;
+	return cs->cent[c] - 1;
+}
+
+/* the keys of a dense table from which its classes (2 bytes a key) outgrow a second-level cache, and how far ahead the line of a key is asked for */
+#define DENSE_FAR	(1u << 19)
+#define DENSE_AHEAD	64
+
+/*
+ * The entries of the keys of an int4 leaf against a dense table, the common case of a join to a dimension: the class of a key is one array read and the entry of a class another, with no test
+ * of the repeat of the value before it. The entry of a class met for the first time and a NULL key are made in the order of the tuples, as the general loop does: the ids are the same.
+ */
+static void
+resolve_dense(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const uint64 *alive, const SiftSrcVec *v)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	const MapTab *m = cs->map;
+	const int32 *key = (const int32 *) v->data;
+	const uint16 *cls = m->dcls;
+	uint32		dn = m->dn;
+
+	int			ahead = dn > DENSE_FAR ? DENSE_AHEAD : n;	/* n: none */
+
+	if (cs->cent == NULL)
+		cs->cent = MemoryContextAllocZero(cs->cxt, ((Size) m->nrow + 1) * sizeof(uint32));
+	for (int i = 0; i < n; i++)
+	{
+		int32		k;
+
+		if (i + ahead < n)
+			__builtin_prefetch(cls + key[idx[i + ahead]]);
+		k = key[idx[i]];
+		uint32		c = (uint32) k < dn ? cls[k] : 0;
+		uint32		e = cs->cent[c];
+		uint64		x = (uint64) (uint32) k + 1;
+
+		if (alive && !sift_colsrc_bit(alive, i))
+			eid[i] = COMBO_NONE;
+		else if (v->isnull && v->isnull[idx[i]])
+		{
+			x = 0;
+			eid[i] = cs->dircap > 0 && cs->dir[0] != 0 ? cs->dir[0] - 1 : combo_ent(ex, ci, &x);
+		}
+		else if (e == 0)
+			eid[i] = dense_ent(ex, ci, x, c);
+		else
+			eid[i] = e - 1;
+	}
+}
+
+/*
  * combo_resolve of a combo of one leaf of the scan, the common case: a loop per kind of leaf (`kind` is a constant where it is inlined), the
  * directory of the entries probed inline, and the value of a position read once for the tuples that share it (a row seen from each of its
  * elements). The values and the entries come in the order of the tuples, as in the general loop, so the ids are the same.
@@ -38,6 +100,11 @@ resolve_one(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const ui
 	uint32		last = UINT32_MAX;
 	uint64		x = 0;
 
+	if (kind == SCV_I32 && cs->map != NULL && cs->map->dcls != NULL)
+	{
+		resolve_dense(ex, ci, n, idx, eid, alive, v);
+		return;
+	}
 	for (int i = 0; i < n; i++)
 	{
 		uint32		d;
@@ -156,8 +223,8 @@ combo_resolve_gen(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, co
 			for (int i = 0; i < n; i++)
 			{
 				/* the table of a column with many values does not fit the cache: ask for the line a few values ahead */
-				if (i + WIDE_AHEAD < n && leaf_wide(lf) && cs->id64[p].nslot > 4096)
-					__builtin_prefetch(&cs->id64[p].tab[id64_hash(((const int64 *) v->data)[idx[i + WIDE_AHEAD]]) & (cs->id64[p].nslot - 1)]);
+				if (i + WIDE_AHEAD < n && leaf_wide(lf))
+					intids_prefetch(&cs->id64[p].ix, ((const int64 *) v->data)[idx[i + WIDE_AHEAD]]);
 				if (alive && !sift_colsrc_bit(alive, i))
 					vid[i] = 0;
 				else if (leaf_wide(lf))
@@ -204,8 +271,9 @@ combo_row_parent(AggExec *ex, int ci)
 		}
 	if (par < 0 || ex->spec->combo[par].join < 0 || ex->spec->combo[par].nleaves != 1)
 		return -1;
+	/* the row of a dense table is that of the first key of its class: it names no key */
 	for (int p = 0; p < cb->nleaves; p++)
-		if (cb->leaf[p] >= 0 && cb->leaf[p] != ex->spec->combo[par].leaf[0])
+		if (cb->leaf[p] >= 0 && (cb->leaf[p] != ex->spec->combo[par].leaf[0] || (ex->cs[par].map != NULL && ex->cs[par].map->dcls != NULL)))
 			return -1;
 	return par;
 }
@@ -249,7 +317,7 @@ combo_resolve_in(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, con
 
 			while (cap <= row[i])
 				cap *= 2;
-			cs->byrow = cs->byrow ? repalloc(cs->byrow, (Size) cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, (Size) cap * sizeof(uint32));
+			SIFT_REGROW_IN(cs->cxt, cs->byrow, (Size) cap * sizeof(uint32));
 			memset(cs->byrow + cs->nbyrow, 0, (Size) (cap - cs->nbyrow) * sizeof(uint32));
 			cs->nbyrow = cap;
 		}

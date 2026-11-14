@@ -5,6 +5,7 @@
 #define SIFT_AGG_COMBO_INT_H
 
 #include "agg/agg_fwd_int.h"
+#include "agg/intids.h"
 #include "agg/lookup_int.h"
 #include "agg/tup_int.h"
 
@@ -26,22 +27,14 @@ typedef struct ComboEnt
 	uint32		base;			/* first output row */
 } ComboEnt;
 
-/* the ids (1..) of the distinct values of a 64-bit leaf of a combo: one table of (value, id), so a probe is one cache line */
-typedef struct Id64Ent
-{
-	int64		key;
-	uint32		id;				/* 0: free */
-} Id64Ent;
-
+/* the ids (1..) of the distinct values of a 64-bit leaf of a combo */
 typedef struct Id64
 {
-	MemoryContext cxt;
-	Id64Ent    *tab;
-	uint32		nslot;
+	IntIds		ix;
 	uint32		n;
 	uint32		cap;
 	int64	   *val;			/* the value of an id */
-	uint32		nan_id;			/* the id of the NaN of a numeric leaf (not in tab), 0 until one is seen */
+	uint32		nan_id;			/* the id of the NaN of a numeric leaf (not in ix), 0 until one is seen */
 } Id64;
 
 /* a numeric value as an integer times 10^-scale (ok: it is a finite number of at most 38 digits) */
@@ -94,15 +87,12 @@ typedef struct ComboSt
 	uint32	   *fruns;			/* the child runs for the keys while the table is not read, over the arms that read it */
 	uint32		fthresh;		/* ... after which it is */
 	ExprState  *fpq;			/* ... and the child's condition on its parameters, over the combo's leaves */
-	struct ChildWarm *warm;		/* the relations the correlated child reads and what its runs read of them (combo/child.c child_warm) */
 	struct DProbe *dp;			/* the direct probe of the correlated child (combo/probe.c), NULL until the combo's first chunk */
 	struct DKey *dkey;			/* the key of the entry being made, when the batch probed it */
 	bool		dbatch;			/* the entries made now wait for the probe of their keys together (combo_probe_defer) */
 	uint32	   *kmemo[SIFT_AGG_MAX_JKEYS];	/* per text key of the join: the id of the table's value of each interned value of the leaf (COMBO_UNEVAL: not looked up yet, 0: no row has it) */
 	uint32		nmemo[SIFT_AGG_MAX_JKEYS];
-	uint8	   *slut;			/* a semi or anti join that is a plain filter on one integer leaf: a table over [slo, slo + snlut) of its keys */
-	int32		slo;
-	uint32		snlut;
+	SemiSet		sset;			/* a semi or anti join that is a plain filter on one integer leaf: the test of its keys */
 	bool		kfilt;			/* the scan's join key filter is the keys of the table, which hold its own conditions (join_filters) */
 	bool		spass;			/* ... and every tuple that reaches the join passes it: a semi join, or an inner one with unique keys, that returns no column */
 	ExprState **slot;
@@ -130,6 +120,7 @@ typedef struct ComboSt
 	bool		reuse_off;		/* the debt ran out: no more tests */
 	uint32		dircap;			/* one input: entry + 1 of the id (below COMBO_DIR_MAX) by index, 0 not seen (combo_ent) */
 	uint32	   *dir;
+	uint32	   *cent;			/* a dense table (MapTab.dcls): the entry + 1 of each class of its keys, 0 not made yet; slot 0 is the class of the keys it has no row for */
 	uint32	   *byrow;			/* a combo of one earlier lookup's output row (and of that lookup's own leaf): entry + 1 by that row, 0 not seen (combo_resolve) */
 	uint32		nbyrow;
 	int8		prow;			/* the earlier lookup that byrow is by, plus one; -1: none, 0: not asked yet (combo_row_parent) */

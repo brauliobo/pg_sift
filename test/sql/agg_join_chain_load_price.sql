@@ -1,0 +1,32 @@
+-- A lookup table that depends on another (the tenants' datasets, whose rows a fact reaches through the dimension that names them) is loaded for the keys
+-- of the rows the other keeps, by its index on the column the join names: the scan is priced for those rows, not for the whole table. The price of the
+-- scan of a chain of three lookups restricted to one tenant is a fraction of the price of the same chain over every tenant.
+CREATE EXTENSION pg_sift;
+
+SET client_min_messages = warning;
+
+CREATE TABLE ch_tenant (id int PRIMARY KEY);
+CREATE TABLE ch_set (id int PRIMARY KEY, tenant_id int NOT NULL);
+CREATE TABLE ch_dim (id int PRIMARY KEY, set_id int NOT NULL, attr int NOT NULL);
+CREATE TABLE ch_fact (id int PRIMARY KEY, dim_id int NOT NULL, val int NOT NULL);
+INSERT INTO ch_tenant SELECT g FROM generate_series(1, 40) g;
+INSERT INTO ch_set SELECT g, 1 + g % 40 FROM generate_series(1, 1000) g;
+INSERT INTO ch_dim SELECT g, 1 + g % 1000, g % 4 FROM generate_series(1, 100000) g;
+INSERT INTO ch_fact SELECT g, 1 + (g::bigint * 7919) % 100000, g % 1000 FROM generate_series(1, 400000) g;
+CREATE INDEX ch_set_tenant ON ch_set (tenant_id, id);
+CREATE INDEX ch_dim_set ON ch_dim (set_id);
+CREATE INDEX ch_tenant_col ON ch_tenant USING sift_col (id);
+CREATE INDEX ch_set_col ON ch_set USING sift_col (id, tenant_id);
+CREATE INDEX ch_dim_col ON ch_dim USING sift_col (id, set_id, attr);
+CREATE INDEX ch_fact_col ON ch_fact USING sift_col (id, dim_id, val);
+VACUUM (FREEZE, ANALYZE) ch_tenant, ch_set, ch_dim, ch_fact;
+
+CREATE FUNCTION ch_cost(q text) RETURNS float8 LANGUAGE sql AS $$ SELECT scan_cost FROM sift.explain_why(q) $$;
+
+SELECT ch_cost('SELECT d.attr, sum(f.val) FROM ch_fact f JOIN ch_dim d ON d.id = f.dim_id JOIN ch_set s ON s.id = d.set_id JOIN ch_tenant t ON t.id = s.tenant_id WHERE t.id = 3 GROUP BY 1')
+	< 0.6 * ch_cost('SELECT d.attr, sum(f.val) FROM ch_fact f JOIN ch_dim d ON d.id = f.dim_id JOIN ch_set s ON s.id = d.set_id JOIN ch_tenant t ON t.id = s.tenant_id GROUP BY 1')
+	AS one_tenant_is_priced_for_its_rows;
+
+DROP FUNCTION ch_cost(text);
+DROP TABLE ch_fact, ch_dim, ch_set, ch_tenant;
+DROP EXTENSION pg_sift;

@@ -62,9 +62,23 @@ sift_colsrc_layout(Relation rel)
 }
 
 void
-sift_colsrc_stats(Relation rel, SiftSrcStats *st)
+sift_colsrc_stats_lazy(Relation rel, SiftSrcStats *st)
 {
 	provider_of_rel(rel)->stats(rel, st);
+}
+
+void
+sift_colsrc_miss(Relation rel, SiftSrcStats *st)
+{
+	if (st->miss_pending)
+		provider_of_rel(rel)->miss(rel, st);
+}
+
+void
+sift_colsrc_stats(Relation rel, SiftSrcStats *st)
+{
+	sift_colsrc_stats_lazy(rel, st);
+	sift_colsrc_miss(rel, st);
 }
 
 void
@@ -88,13 +102,13 @@ sift_colsrc_preagg(Relation rel, SiftSrcPreagg *pa)
 }
 
 SiftSrcSource *
-sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
 {
 	const SiftSrcProvider *prov = provider_of_rel(index ? index : heap);
 	SiftSrcSource *src = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
 
 	src->prov = prov;
-	src->impl = prov->open(heap, index, snapshot, mcxt);
+	src->impl = prov->open(heap, index, snapshot, mcxt, view);
 	return src;
 }
 
@@ -107,14 +121,32 @@ sift_colsrc_can_part(Oid relam, bool index)
 }
 
 SiftSrcSource *
-sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
 {
 	const SiftSrcProvider *prov = provider_of_rel(index ? index : heap);
 	SiftSrcSource *src = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
 
 	src->prov = prov;
-	src->impl = prov->open_part(heap, index, snapshot, mcxt);
+	src->impl = prov->open_part(heap, index, snapshot, mcxt, view);
 	return src;
+}
+
+Size
+sift_colsrc_view_size(SiftSrcSource *src)
+{
+	return src->prov->view_size ? src->prov->view_size(src->impl) : 0;
+}
+
+void
+sift_colsrc_view_export(SiftSrcSource *src, void *buf)
+{
+	src->prov->view_export(src->impl, buf);
+}
+
+const char *
+sift_colsrc_conn_proof(SiftSrcSource *src, int leaf, uint64 *lineage, uint32 *xmin, bool *clean)
+{
+	return src->prov->conn_proof ? src->prov->conn_proof(src->impl, leaf, lineage, xmin, clean) : "source without connections";
 }
 
 void
@@ -439,10 +471,16 @@ sift_colsrc_gorder_clean(SiftSrcSource *src, int i)
 	return src->prov->gorder_clean && src->prov->gorder_clean(src->impl, i);
 }
 
-bool
-sift_colsrc_gorder_group_values(SiftSrcSource *src, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n)
+void *
+sift_colsrc_gorder_groups_open(SiftSrcSource *src, int gleaf, int kleaf, const int64 *only, bool desc, MemoryContext cxt)
 {
-	return src->prov->gorder_group_values && src->prov->gorder_group_values(src->impl, gleaf, kleaf, only, vals, n);
+	return src->prov->gorder_groups_open ? src->prov->gorder_groups_open(src->impl, gleaf, kleaf, only, desc, cxt) : NULL;
+}
+
+bool
+sift_colsrc_gorder_groups_next(SiftSrcSource *src, void *cursor, int64 *group)
+{
+	return src->prov->gorder_groups_next(cursor, group);
 }
 
 bool

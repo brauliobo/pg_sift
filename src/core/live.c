@@ -8,7 +8,7 @@
 #define corrupt(l, ...) SIFT_SEG_CORRUPT((l)->index, (l)->gen, __VA_ARGS__)
 
 SiftSegHeaderData *
-sift_seg_read_header(Relation index, const SiftSegEntry *entry)
+sift_seg_read_header_used(Relation index, const SiftSegEntry *entry, uint32 *usedp)
 {
 	Buffer		buf = ReadBuffer(index, entry->header_blk);
 	Page		page;
@@ -30,7 +30,16 @@ sift_seg_read_header(Relation index, const SiftSegEntry *entry)
 	copy = palloc(used);
 	memcpy(copy, h, used);
 	UnlockReleaseBuffer(buf);
+	*usedp = used;
 	return copy;
+}
+
+SiftSegHeaderData *
+sift_seg_read_header(Relation index, const SiftSegEntry *entry)
+{
+	uint32		used;
+
+	return sift_seg_read_header_used(index, entry, &used);
 }
 
 static void
@@ -110,6 +119,31 @@ sift_live_byte(const SiftLive *l, uint64 b, Buffer *buf)
 	if (b % SIFT_PAGE_PAYLOAD >= SiftPageGetUsed(page))
 		corrupt(l, "Liveness byte %llu lies past the written bytes of block %u.", (unsigned long long) b, blk);
 	return SiftPageGetData(page)[b % SIFT_PAGE_PAYLOAD];
+}
+
+uint8
+sift_live_byte_kept(const SiftLive *l, uint64 b, Buffer *pin)
+{
+	BlockNumber blk = l->first + b / SIFT_PAGE_PAYLOAD;
+	Page		page;
+	uint8		v;
+
+	if (b / SIFT_PAGE_PAYLOAD >= l->npages)
+		corrupt(l, "Liveness byte %llu lies past %u LIVE pages.", (unsigned long long) b, l->npages);
+	if (!BufferIsValid(*pin) || BufferGetBlockNumber(*pin) != blk)
+	{
+		if (BufferIsValid(*pin))
+			ReleaseBuffer(*pin);
+		*pin = ReadBuffer(l->index, blk);
+	}
+	LockBuffer(*pin, BUFFER_LOCK_SHARE);
+	sift_store_check_page(l->index, *pin, SIFT_PT_LIVE, l->gen);
+	page = BufferGetPage(*pin);
+	if (b % SIFT_PAGE_PAYLOAD >= SiftPageGetUsed(page))
+		corrupt(l, "Liveness byte %llu lies past the written bytes of block %u.", (unsigned long long) b, blk);
+	v = SiftPageGetData(page)[b % SIFT_PAGE_PAYLOAD];
+	LockBuffer(*pin, BUFFER_LOCK_UNLOCK);
+	return v;
 }
 
 void

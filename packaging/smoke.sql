@@ -30,3 +30,4 @@ ALTER EXTENSION pg_sift UPDATE;
 SET smoke.version = :'to';
 DO $$ BEGIN ASSERT (SELECT extversion FROM pg_extension WHERE extname = 'pg_sift') = current_setting('smoke.version'); END $$;
 CALL pg_temp.check_sift();
+DO $$ BEGIN ASSERT to_regprocedure('sift.table_find_stale_versions(regclass,integer)') IS NOT NULL; END $$;

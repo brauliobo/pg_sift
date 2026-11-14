@@ -10,19 +10,14 @@
  */
 #include "postgres.h"
 
-#include "access/generic_xlog.h"
-#include "access/heapam.h"
-#include "access/htup_details.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/ipc.h"
-#include "storage/procarray.h"
-#include "utils/fmgrprotos.h"
+#include "bm25/maint.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "core/lane.h"
 #include "table/table.h"
 #include "table/store_int.h"
 
@@ -32,20 +27,6 @@ int			sift_tbl_vblock_floor = 0;	/* testing: the first virtual block of a new wr
 int			sift_tbl_max_segments = SIFT_MAX_SEGMENTS;	/* the directory entries a table may use (lowered by a test setting) */
 int			sift_tbl_init_gate = 0;	/* testing: the first writer waits for this advisory lock before it writes the tombstone segment */
 int			sift_tbl_seal_gate = 0;	/* testing: the writer that closed a write buffer waits for this advisory lock before it flags the pages sealed */
-
-#ifdef SIFT_TESTING
-void
-sift_tbl_gate(int number)
-{
-	if (number > 0)
-	{
-		Datum		key = Int64GetDatum(number);
-
-		DirectFunctionCall1(pg_advisory_lock_int8, key);
-		DirectFunctionCall1(pg_advisory_unlock_int8, key);
-	}
-}
-#endif
 
 typedef struct CacheEnt
 {
@@ -138,6 +119,8 @@ sift_tbl_rel(Relation rel)
 		e->st->cxt = cxt;
 		e->st->tgt_blk = InvalidBlockNumber;
 		sift_tomb_init(&e->st->tomb, cxt, &e->st->dir);
+		e->st->tomb.bounded = true;
+		sift_tbl_opts_load(e->st);
 	}
 	return e->st;
 }
@@ -186,7 +169,7 @@ sift_tbl_ensure_init(Relation rel)
 		LockRelationForExtension(rel, ExclusiveLock);
 		if (RelationGetNumberOfBlocks(rel) == 0)
 		{
-			SiftWriteTarget *wt = sift_wt_begin(rel, SIFT_WRITE_BULK);
+			SiftWriteTarget *wt = sift_wt_begin(rel, SIFT_WRITE_LAYOUT);
 
 			sift_store_init_meta(wt, &none, 0, "");
 			sift_wt_finish(wt);
@@ -254,6 +237,17 @@ sift_tbl_refresh_full(Relation rel, SiftTblRel *st)
 		pfree(old);
 }
 
+/* A copy of n write buffers in cxt. A table with no page has none, and then the cache holds no array to copy (memcpy takes no null pointer, whatever the size) */
+SiftTblSeg *
+sift_tbl_wbuf_copy(const SiftTblSeg *wbuf, int n, MemoryContext cxt)
+{
+	SiftTblSeg *copy = MemoryContextAlloc(cxt, Max(n, 1) * sizeof(SiftTblSeg));
+
+	if (n > 0)
+		memcpy(copy, wbuf, n * sizeof(SiftTblSeg));
+	return copy;
+}
+
 /* Every directory update bumps its version: a cache that holds the current one has nothing to read (the metapage fields that change without an update, the high-water mark and the generation counter, are not the cache's: sift_tbl_refresh_full) */
 void
 sift_tbl_refresh(Relation rel, SiftTblRel *st)
@@ -261,6 +255,16 @@ sift_tbl_refresh(Relation rel, SiftTblRel *st)
 	if (st->initialized && st->wbuf != NULL && sift_dir_version(rel) == st->wbuf_version)
 		return;
 	sift_tbl_refresh_full(rel, st);
+}
+
+/* The maintenance lock, and the directory as it is once the lock is held: whoever held it before may have promoted or merged the segments the cache lists */
+bool
+sift_tbl_maint_lock(Relation rel, SiftTblRel *st, bool wait)
+{
+	if (!sift_maint_lock(rel, wait))
+		return false;
+	sift_tbl_refresh(rel, st);
+	return true;
 }
 
 uint64

@@ -16,22 +16,32 @@ extern bool sift_colsrc_is_table(Oid tablerelam);
 
 /* The layout of an open index (table) relation; palloc'd in CurrentMemoryContext */
 extern SiftSrcLayout *sift_colsrc_layout(Relation rel);
+/* The statistics of the source, the *_miss fields read (sift_colsrc_stats), or left pending for sift_colsrc_miss (the _lazy form: most statements never price a pre-aggregate answer) */
 extern void sift_colsrc_stats(Relation rel, SiftSrcStats *st);
+extern void sift_colsrc_stats_lazy(Relation rel, SiftSrcStats *st);
+extern void sift_colsrc_miss(Relation rel, SiftSrcStats *st);
 extern void sift_colsrc_stamp(Relation index, SiftSrcStamp *stamp);
 
 /*
  * Opens the source of an index relation (heap == its table) or of a sift_table table (index == NULL). The snapshot is the
- * scan's. mcxt holds everything the source allocates until sift_colsrc_close.
+ * scan's. mcxt holds everything the source allocates until sift_colsrc_close. view: the directory another source of the statement exported
+ * (sift_colsrc_view_export), NULL to read it now.
  */
-extern SiftSrcSource *sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
+extern SiftSrcSource *sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
+/* The bytes of the directory the source read, 0 when the provider has none to share; the participants of a parallel scan open on the leader's copy, whose superblocks and units all number the same */
+extern Size sift_colsrc_view_size(SiftSrcSource *src);
+extern void sift_colsrc_view_export(SiftSrcSource *src, void *buf);
 
 /* Can the sources of an index (or, with index false, a table) of this access method be read as the partitions of one table (src/agg/part.h)? sift_colsrc_open_part is sift_colsrc_open for one of them */
 extern bool sift_colsrc_can_part(Oid relam, bool index);
-extern SiftSrcSource *sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
+extern SiftSrcSource *sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
 extern void sift_colsrc_close(SiftSrcSource *src);
 extern bool sift_colsrc_rescan(SiftSrcSource *src);
 extern void sift_colsrc_unpin(SiftSrcSource *src);
 extern const SiftSrcLayout *sift_colsrc_source_layout(const SiftSrcSource *src);
+
+/* The flag of a connection as a statement may read it (SiftSrcProvider.conn_proof): NULL, with the stamp of the oldest of the rows, or why not */
+extern const char *sift_colsrc_conn_proof(SiftSrcSource *src, int leaf, uint64 *lineage, uint32 *xmin, bool *clean);
 
 /* Superblocks of the heap now: the morsels of a parallel scan are ranges of [0, nsb) */
 extern uint32 sift_colsrc_nsb(SiftSrcSource *src);
@@ -121,7 +131,8 @@ extern bool sift_colsrc_gorder_before(SiftSrcSource *src, int i, int leaf, uint3
 extern int	sift_colsrc_gorder_state(SiftSrcSource *src, int i, SiftKey tid);
 extern bool sift_colsrc_gorder_exact(SiftSrcSource *src, int i, SiftKey tid);
 extern bool sift_colsrc_gorder_clean(SiftSrcSource *src, int i);
-extern bool sift_colsrc_gorder_group_values(SiftSrcSource *src, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n);
+extern void *sift_colsrc_gorder_groups_open(SiftSrcSource *src, int gleaf, int kleaf, const int64 *only, bool desc, MemoryContext cxt);
+extern bool sift_colsrc_gorder_groups_next(SiftSrcSource *src, void *cursor, int64 *group);
 extern void sift_colsrc_gorder_values(SiftSrcSource *src, int leaf, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st);
 extern void sift_colsrc_gorder_head(SiftSrcSource *src, int i, int leaf, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
 extern bool sift_colsrc_gorder_groups(SiftSrcSource *src, int i, int leaf, uint32 *ngroups);
@@ -238,7 +249,7 @@ sift_colsrc_whole(SiftSrcSource *src, int leaf, const int *meas, int nmeas)
 }
 
 static inline void
-sift_colsrc_count_range(SiftSrcSource *src, int leaf, SiftSrcStrOp op, const char *s, uint32 len)
+sift_colsrc_count_range(SiftSrcSource *src, int leaf, SiftColOp op, const char *s, uint32 len)
 {
 	if (src->prov->count_range != NULL)
 		src->prov->count_range(src->impl, leaf, op, s, len);
@@ -349,8 +360,13 @@ typedef enum SiftSrcRecheck
 	SRK_CAST,					/* a member of jsonb_each read only through the cast of its jsonb value to the leaf's number type: a value of another JSON type raises where the row reaches the aggregate */
 	SRK_RECORDSET_LAZY,			/* a spec's SRK_RECORDSET whose error the EXISTS test of the list raises when it reaches the row, not the rows' conjuncts (the source is given SRK_RECORDSET) */
 	SRK_CAST_TESTED,			/* a spec's SRK_CAST that a conjunct of the members casts too: the cast of the conjunct raises first, for every row that reaches the members, so the error is raised before they are tested (the source is given SRK_CAST) */
+	SRK_HASKEY,					/* the top-level key of the test doc ? 'key' (key): the rows whose document is no object, which the leaf stores as the overflow of a path that leads nowhere, are read again to tell a document that has the key (a string equal to it, an array holding it) from one that has not */
 	SRK_IOCAST					/* a path of the document read only as `(doc ->> 'k')::T`, T the leaf's type: the text of the scalar through the input function of T, which raises where the row reaches the aggregate (the source is given SRK_TEXT) */
 } SiftSrcRecheck;
+
+/* in a spec, or'd onto the read mode of a leaf that a key test (SRK_HASKEY) tests too: the source reads again the rows of both */
+#define SRK_WITH_HASKEY	0x40
+#define SRK_MODE(r)		((SiftSrcRecheck) ((r) & ~SRK_WITH_HASKEY))
 
 /* Can the source of this access method recheck its overflow rows (SiftSrcProvider.set_recheck)? */
 extern bool sift_colsrc_can_recheck(Oid relam, bool index);

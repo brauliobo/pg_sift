@@ -1,11 +1,12 @@
 # Macros named *_MAX_* or *_LIMIT* that are not limits a user can reach, so they have no row in SIFT_LIMITS (src/core/limits.h).
 # NAME, a tab, the reason. scripts/gen-limits.sh --check fails for a macro that is neither here nor a row, and for a line whose macro is gone.
 # A bound that a user can reach gets a row, not a line here.
+DENSE_MAX_CLASSES	the tuples of column values a dense lookup table tells apart (agg/lookcol.c): past it the table is hashed row by row and the rows are the same
+ARR_MAX_CANDS	array columns whose elements the default of paths samples: a memory bound of the sample (128 MB of sets), the others keep their image
 CHUNK_MAX_N	sanity bound on the row count a decoder reads from a chunk: a corruption check
 COL_MAX_WIDE	array size that mirrors wide_conjuncts (SIFT_AGG_MAX_WIDE)
 ESTIMATE_MEMO_MAX_KEY	size of the key of a planner memo: an internal cache bound with no visible effect
 INLINE_JOIN_LIMIT	width of the join-order search of the inline plan of a shared CTE: a planning-cost choice with no visible limit (the plan differs, the rows do not)
-LOOKCACHE_MAX_BLOCKS	derived from the lookup cache budget (sift.agg_lookup_cache_kb)
 MERGE_MAX_BYTES	no caller left: delete it in a cleanup
 ORDER_MAX_ROWS	the most rows of a key-cut unit, the maximum of key_cut_rows (the directory of a unit is read with the head of its record)
 PAGG_MAX_TUPLES	decoder bound for a rollup blob (a corruption check), derived from rollup_tuples
@@ -51,10 +52,11 @@ VK_MAX_MEMORY_TYPES	constant of the Vulkan API
 VK_MAX_PHYSICAL_DEVICE_NAME_SIZE	constant of the Vulkan API
 VSHM_MAX_SETS	the array of the shared verdict table, which sift.verdict_cache_kb (up to 1 MB) fills in part
 CAL_MAX_CUTS	the most clock changes of the session zone the prefilter of a periodic calendar step splits its windows at (a span of several centuries); more and the step is tested by the expression, no result changes
-WARM_MAX_RELS	the relations a correlated child tracks for its read-ahead (the indexes and heaps of its scans); a further relation is left alone, no result changes
-WARM_MAX_BLOCKS	the largest relation (8 GB) a correlated child asks the OS to read ahead; a larger one is left alone, no result changes
 LOAD_MAX_GROUPS	groups a bulk load writes at once: the backend and three workers, bounded by max_parallel_maintenance_workers and maintenance_work_mem
 LOAD_MAX_UNITS	array size of the units of a run: LOAD_SBS for each of LOAD_MAX_GROUPS
 DP_MAX_LEVELS	size of the array of the pages of one descent: a btree is never as deep, the probe falls back to the index scan when it is
 DP_MAX_PEND	keys of a chunk the direct probe holds before it flushes them: a memory bound of the batch with no visible effect
 JSTR_MAX_KEYS	a text join key list longer than this, or than a sixteenth of the table's rows, is left to the join: a speed threshold, the rows are the same either way
+SIFT_CONN_MAX_CONNECTIONS	connections one connect option names: a syntax bound of the option text, rejected with an error
+FOUND_MAX_KEYS	keys the journal of a parent may name for a join answered from the found flag (agg/found.c): past it the join loads the parent, the rows are the same
+FOUND_MAX_PROBES	keys deleted or changed in a parent that a join answered from the found flag probes in its btree (agg/found.c): past it the join loads the parent, the rows are the same

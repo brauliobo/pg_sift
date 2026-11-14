@@ -7,7 +7,7 @@ make                                # builds pg_sift.so; PG_CONFIG=/path/to/pg_c
 make installcheck                   # regression tests against a running server that can load pg_sift
 make check                          # quick tier: every suite in throwaway clusters, about 1.5 minutes on 8 cores, 2.5 on 4
 scripts/ci.sh affected              # the same, only the jobs your diff against origin/main (with the working tree) can break (scripts/areas.tsv); use it before a push
-scripts/ci.sh affected --focus      # while developing: of the changed functions of src/, the regression tests that execute them (scripts/focus.tsv); the full set is the push
+scripts/ci.sh affected --focus      # while developing: of the changed functions of src/, the regression tests that execute them (scripts/focus/); the full set is the push
 make check-full                     # full tier: ASan build, long soak and fuzz runs, all mutants
 ```
 
@@ -83,12 +83,16 @@ Before sending a change:
 
 Contributions are licensed under the [PostgreSQL License](LICENSE) like the rest of the project.
 
+## Removing a deprecated option
+
+The options that a release deprecates (`order_columns`, `point_columns` and `key_cut_rows`, removed in 4.4) go in one commit each, with the setting that keeps them alive in tests (`sift.test_col_legacy_options`, `grep` for it in `src/col/am/` and `scripts/pgtest.sh`), the regression tests that name them or set that setting (`test/sql/`, `grep -l`), the bench cases that name them (`bench/cases/`), the advice rows of `docs/messages.tsv` and the preflight rows of `scripts/upgrade_check.sql` and the option rows of `sift.upgrade_commands()` in `sql/`. A test that checks a layout only the removed option wrote is deleted with it; a test that only passed the option drops the argument and keeps its answers.
+
 ## Merging
 
-`scripts/land.sh PR` lands one pull request: it merges the tip of the PR's base into the branch (conflicts only in lists both sides add to, in the CHANGELOG and in generated files are resolved; any other conflict is exit 2, `SOURCE CONFLICT`: merge the tip yourself), runs `scripts/lint.sh`, the privacy gate and the check that a new regression test has a row in `scripts/focus.tsv`, pushes only when needed, waits for the required checks (`gate` and `neutral`, or the branch protection list) and merges by rebase, or by squash when the branch holds a merge commit. Exit codes: 0 merged, 1 required checks red, 2 source conflict, 3 merge commit failed, 4 a gate is red, 5 the PR deletes files (`ALLOW_DELETE=1` after checking they are its own), 6 closed, 75 try again (checks pending, the tip or the branch moved). `--dry-run` prints the plan and pushes and merges nothing. Landings take turns on one kernel lock (`land.lock`), which goes away with its holder however it ends; nothing matches process names. State and settings are outside git, in `$XDG_STATE_HOME/pg_sift/land` (`LAND_DIR`): the lock, `MERGED.md`, and `privacy.deny`, the private list of names the privacy gate refuses (one regular expression per line; `LAND_DENY` names another file; without it the gate fails closed). `scripts/land.sh --selftest` is part of `scripts/lint.sh`.
+`scripts/land.sh PR` lands one pull request: it merges the tip of the PR's base into the branch (conflicts only in lists both sides add to, in the CHANGELOG and in generated files are resolved; any other conflict is exit 2, `SOURCE CONFLICT`: merge the tip yourself), runs `scripts/lint.sh`, the privacy gate and the check that a new regression test has a file `scripts/focus/NAME.tsv`, pushes only when needed, waits for the required checks (`gate` and `neutral`, or the branch protection list) and merges by rebase, or by squash when the branch holds a merge commit. Exit codes: 0 merged, 1 required checks red, 2 source conflict, 3 merge commit failed, 4 a gate is red, 5 the PR deletes files (`ALLOW_DELETE=1` after checking they are its own), 6 closed, 75 try again (checks pending, the tip or the branch moved). `--dry-run` prints the plan and pushes and merges nothing. Landings take turns on one kernel lock (`land.lock`), which goes away with its holder however it ends; nothing matches process names. State and settings are outside git, in `$XDG_STATE_HOME/pg_sift/land` (`LAND_DIR`): the lock, `MERGED.md`, and `privacy.deny`, the private list of names the privacy gate refuses (one regular expression per line; `LAND_DENY` names another file; without it the gate fails closed). `scripts/land.sh --selftest` is part of `scripts/lint.sh`.
 
 ## Releasing
 
-Write `docs/releases/vX.Y.Z.md` from the notes of the previous release (`docs/releases/v4.0.2.md` has the sections the release workflow checks), keep the release notes under `## Unreleased` of the CHANGELOGs, push `main`, then
+Write `docs/releases/vX.Y.Z.md` with what is about the release (the sections up to Compatibility, from the notes of the previous release), run `scripts/release.sh X.Y.Z --notes` to append the Packages, SQLite extension and MariaDB extension sections that the release workflow checks (`scripts/release-components.tmpl`: the same text in every patch release, the version filled in; edit the file after for a release that changes them), keep the release notes under `## Unreleased` of the CHANGELOGs, push `main`, then
 `scripts/release.sh X.Y.Z --dry-run` and `scripts/release.sh X.Y.Z`. It takes the green full CI run of the commit, checks the upgrade from the previous release and
 `AUR_SSH_KEY`).

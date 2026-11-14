@@ -65,7 +65,7 @@ BEGIN
 	RETURN NEXT;
 END $$;
 -- IN, EXISTS and NOT EXISTS over a membership table (its own conditions: the group, the soft delete), a NULL key and a duplicate; the whole table
--- (the last two) spans more than the byte table holds (group 9: keys from -3 to 2147483640): the generic join
+-- (the last two) spans more than the byte table holds (group 9: keys from -3 to 2147483640): a hash set of the keys
 SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 3 AND deleted_at IS NULL) GROUP BY kind$$);
          plan          | result_rows | vs_generic_join | vs_normal_plan 
 -----------------------+-------------+-----------------+----------------
@@ -85,9 +85,9 @@ SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE 
 (1 row)
 
 SELECT * FROM same($$SELECT count(*) AS n, count(dim_a_id) AS c FROM ev WHERE NOT EXISTS (SELECT 1 FROM dim_b m WHERE m.dim_a_id = ev.dim_a_id)$$);
-  plan   | result_rows | vs_generic_join | vs_normal_plan 
----------+-------------+-----------------+----------------
- SiftAgg |           1 |               0 |              0
+         plan          | result_rows | vs_generic_join | vs_normal_plan 
+-----------------------+-------------+-----------------+----------------
+ SiftAgg semi tables 1 |           1 |               0 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b)$$);
@@ -218,7 +218,7 @@ SELECT * FROM same($$SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id
  SiftAgg semi tables 1 |          60 |               0 |              0
 (1 row)
 
--- the span of the keys is bounded by sift.agg_semi_lut_size: wider keys keep the generic join, the answer is the same
+-- the span of the keys is bounded by sift.agg_semi_lut_size: wider keys are a hash set of them while that fits the same memory, else the generic join; the answer is the same
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse)$$) AS span_3m_default;
     span_3m_default    
 -----------------------

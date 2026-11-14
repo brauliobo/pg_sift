@@ -93,7 +93,7 @@ def check(root, strict=False, since=None):
     for c in (c for c in cases if c.gap):   # `-- gap:` cases run and assert their plan; the release has none
         notes.append(f'{c.id}: a known gap on the {c.gap[0]} lane, closes with {c.gap[1]}')
         if strict:
-            errors.append((f'{c.id}: a known gap on the {c.gap[0]} lane ({c.gap[1]}); the release gate wants the flag gone', []))
+            errors.append((f'{c.id}: a known gap on the {c.gap[0]} lane ({c.gap[1]}); --strict wants the flag gone', []))
 
     claims = []   # (text, the case that measures it or None)
     commits = landed(root, since)
@@ -194,7 +194,7 @@ def cmd_coverage(args):
     for m, _ in errors:
         print(('coverage: ' if args.strict else 'coverage: warning: ') + m)
     gaps = sum(1 for c in read_registry(root) if c.gap)
-    print('coverage: %d claims unmet, %d known gaps%s' % (len(errors), gaps, '' if args.strict else ' (a warning: --strict is the release gate)'))
+    print('coverage: %d claims unmet, %d known gaps%s' % (len(errors), gaps, '' if args.strict else ' (warnings; --strict fails on them)'))
     figures = claim_figures(root, [args.records] if args.records else None, args.strict)
     return 1 if (errors and args.strict) or figures else 0
 
@@ -207,7 +207,7 @@ def claim_figures(root, records=None, strict=False):
     """the problems of the figures the CHANGELOG states. Every `## Unreleased` line that states a figure has a row in bench/claims.tsv (its phrase, statement, size, arm, metric and the
     value it gives) or a `figure PHRASE<TAB>reason` line in ALLOW, and a waiver of a line that has a row, or of no line, fails. With RECORDS (files of steps/records) the rows whose statement and
     size are in them are checked against the median of the records (a figure off by more than its tolerance fails, naming the line and the run); the rows of other sizes wait for their run,
-    and STRICT (the release gate) fails them"""
+    and STRICT fails them"""
     sys.path.insert(0, os.path.join(HERE, 'records'))
     import claims
     import schema

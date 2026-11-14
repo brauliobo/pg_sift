@@ -32,11 +32,9 @@ split_shape_ok(const SiftAggSpec *s)
 
 /* the values that are equal when their bytes are, and a word each: an integer, a date or a timestamp (a text key would be hashed for every row of every participant: 16,000 rows a unit, a dictionary of its own) */
 bool
-split_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf)
+split_leaf_ok(const SiftSrcLeaf *lf)
 {
-	const SiftAggKey *k = &s->key[j];
-
-	if (k->kind != SAK_LEAF || lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->wide || lf->lossy)
+	if (lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->wide || lf->lossy)
 		return false;
 	switch (lf->typid)
 	{
@@ -49,6 +47,33 @@ split_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf)
 			return lf->vtype == SCV_I32 || lf->vtype == SCV_I64;
 	}
 	return false;
+}
+
+bool
+split_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf)
+{
+	return s->key[j].kind == SAK_LEAF && split_leaf_ok(lf);
+}
+
+/* the leaf of the scanned table that a lookup join with one plain key is keyed by: its rows split by it keep the keys of the join apart; -1 when the key is not one */
+int
+split_join_leaf(const SiftAggSpec *s, int ji)
+{
+	const SiftAggJoin *j = &s->join[ji];
+
+	if (j->params != NIL || j->nkey != 1 || j->keyexpr[0])
+		return -1;
+	for (int ci = 0; ci < s->ncombo; ci++)
+		if (s->combo[ci].join == ji)
+			return s->combo[ci].leaf[j->keypos[0]];
+	return -1;
+}
+
+/* the leaf a scan that splits by a key reads it from: the key of the groups or of the join */
+int
+split_leaf(const SiftAggSpec *s)
+{
+	return s->gpart > 0 ? s->key[s->gpart - 1].leaf : s->jpart > 0 ? split_join_leaf(s, s->jpart - 1) : -1;
 }
 
 /* a text key too, for the passes of a serial scan (agg/spill/pass.c): it is hashed once for each entry of the dictionary of a unit, not for each row */
@@ -67,10 +92,10 @@ split_pass_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf)
 bool
 split_run_ok(const AggExec *ex)
 {
-	int			j = ex->spec->gpart - 1;
+	int			leaf = split_leaf(ex->spec);
 
-	return j >= 0 && split_shape_ok(ex->spec) && parallel_leader_participation && !ex->pa_on && !ex->pcount && ex->fuse == NULL && !ex->topn &&
-		split_key_ok(ex->spec, j, &ex->lay->leaf[ex->spec->key[j].leaf]);
+	return leaf >= 0 && split_shape_ok(ex->spec) && parallel_leader_participation && !ex->pa_on && !ex->pcount && ex->fuse == NULL && !ex->topn &&
+		split_leaf_ok(&ex->lay->leaf[leaf]);
 }
 
 /* not the golden ratio of the tables of the ids of the values (group/int.h wide_hash): the values of one share would crowd one part of those */
@@ -109,24 +134,49 @@ pack_flags(const uint8 *flag)
 	return keep;
 }
 
-SPLIT_CLONES static uint64
-word_i32(const int32 *d, uint32 lo, uint32 w)
+/* the hashes of 64 values (the vectors are padded past their end): a loop of a fixed length over arrays that cannot overlap is the one the compiler vectorizes at -O2 */
+SPLIT_CLONES static void
+hash64_i32(const int32 *restrict d, uint32 *restrict h)
 {
-	uint8		flag[64];
-
 	for (int b = 0; b < 64; b++)
-		flag[b] = ((uint32) d[b] * SPLIT_MUL - lo) < w;
-	return pack_flags(flag);
+		h[b] = (uint32) d[b] * SPLIT_MUL;
 }
 
-SPLIT_CLONES static uint64
-word_i64(const int64 *d, uint32 lo, uint32 w)
+SPLIT_CLONES static void
+hash64_i64(const int64 *restrict d, uint32 *restrict h)
 {
-	uint8		flag[64];
-
 	for (int b = 0; b < 64; b++)
-		flag[b] = (((uint32) d[b] ^ (uint32) ((uint64) d[b] >> 32)) * SPLIT_MUL - lo) < w;
-	return pack_flags(flag);
+		h[b] = ((uint32) d[b] ^ (uint32) ((uint64) d[b] >> 32)) * SPLIT_MUL;
+}
+
+static void *
+split_scratch(AggExec *ex, Size bytes)
+{
+	return (void *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAlloc(ex->ucxt, bytes + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));
+}
+
+/* The rows of a unit in the one share of the process (a range of hashes), as bits: the hashes of the keys, then the range test of the column kernels; a NULL key is in the first share */
+static uint64 *
+share_bits(AggExec *ex, const SiftSrcVec *v, bool wide, int nrow)
+{
+	uint32	   *h = split_scratch(ex, ((Size) nrow + 63) / 64 * 64 * sizeof(uint32));
+	uint64	   *keep = split_scratch(ex, SIFT_COL_NWORDS(nrow) * sizeof(uint64));
+
+	for (int i = 0; i < nrow; i += 64)
+		if (wide)
+			hash64_i64((const int64 *) v->data + i, h + i);
+		else
+			hash64_i32((const int32 *) v->data + i, h + i);
+	sift_colk->range[SIFT_COLW_32](h, nrow, ex->gp_lo, (uint64) ex->gp_w - 1, keep);
+	if (v->isnull)
+	{
+		uint64	   *nulls = split_scratch(ex, SIFT_COL_NWORDS(nrow) * sizeof(uint64));
+
+		sift_colk_nonzero((const uint8 *) v->isnull, nrow, nulls);
+		for (int w = 0; w < (nrow + 63) / 64; w++)
+			keep[w] = (keep[w] & ~nulls[w]) | ((ex->gp_mine & 1) ? nulls[w] : 0);
+	}
+	return keep;
 }
 
 /* the same for the shares of a process that has several (the workers that did not start): by the share of each row */
@@ -172,14 +222,14 @@ code_flags(AggExec *ex, const SiftSrcDict *d)
 	return ex->gp_code;
 }
 
-/* The shares of this process (gp_mine) out of the n of the scan: the leader's is 0, a worker's its number + 1; a NULL key is the leader's */
+/* The shares of this process (gp_mine) out of the n of the scan, of the rows' values of leaf: the leader's is 0, a worker's its number + 1; a NULL key is the leader's */
 void
-split_begin(AggExec *ex, int key, uint32 n, uint32 mine)
+split_begin(AggExec *ex, int leaf, uint32 n, uint32 mine)
 {
 	uint32		first = (uint32) __builtin_ctz(mine),
 				count = sift_pc64(mine);
 
-	ex->gp_leaf = ex->spec->key[key].leaf;
+	ex->gp_leaf = leaf;
 	ex->gp_n = n;
 	ex->gp_mine = mine;
 	ex->gp_dict = NULL;
@@ -208,6 +258,14 @@ split_rows(AggExec *ex, uint64 *rmask, int nrow)
 	if (ex->gp_one && ex->gp_w == 0)
 		return;
 	v = get_vec(ex, ex->gp_leaf);
+	if (ex->gp_one && lf->vtype != SCV_CODE)
+	{
+		const uint64 *keep = share_bits(ex, v, lf->vtype == SCV_I64, nrow);
+
+		for (int w = 0; w < (nrow + 63) / 64; w++)
+			rmask[w] &= keep[w];
+		return;
+	}
 	for (int w = 0; w < (nrow + 63) / 64; w++)
 	{
 		uint64		keep;
@@ -223,18 +281,12 @@ split_rows(AggExec *ex, uint64 *rmask, int nrow)
 			for (int b = 0; b < 64; b++)
 				keep |= (uint64) flag[v->isnull && v->isnull[w * 64 + b] ? 0 : code[b]] << b;
 		}
-		else if (!ex->gp_one)
-			keep = word_shares(v, lf->vtype == SCV_I64, w * 64, ex->gp_n, ex->gp_mine);
-		else if (lf->vtype == SCV_I32)
-			keep = word_i32((const int32 *) v->data + w * 64, ex->gp_lo, ex->gp_w);
 		else
-			keep = word_i64((const int64 *) v->data + w * 64, ex->gp_lo, ex->gp_w);
+			keep = word_shares(v, lf->vtype == SCV_I64, w * 64, ex->gp_n, ex->gp_mine);
 		if (v->isnull)
 		{
-			uint64		nulls = 0;
+			uint64		nulls = pack_flags((const uint8 *) v->isnull + w * 64);
 
-			for (int b = 0; b < 64; b++)
-				nulls |= (uint64) (v->isnull[w * 64 + b] != 0) << b;
 			keep = (keep & ~nulls) | ((ex->gp_mine & 1) ? nulls : 0);
 		}
 		rmask[w] &= keep;

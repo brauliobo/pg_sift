@@ -5,8 +5,6 @@
 #ifndef SIFT_AGG_CHUNKFILTER_H
 #define SIFT_AGG_CHUNKFILTER_H
 
-#include "core/host.h"
-
 #include "col/col.h"
 #include "agg/colsrc.h"
 
@@ -33,7 +31,6 @@ typedef struct SiftAggFilters
 #define COL_MAX_STR_PRUNE	16
 
 /* A text test (prune_str, filter_str) as an engine predicate on the column col of the source, over the constants in vals (room for t->nvals) */
-extern SiftColPred sift_aggfilt_str_pred(const SiftSrcStrTest *t, SiftColValue *vals, int col);
 
 /* Does the source narrow a unit with this zone to the rows of a ranges hint (SSF_RANGES_HINT)? */
 extern bool sift_aggfilt_hint_narrows(const SiftSrcFilter *f, const SiftSrcZone *z);

@@ -9,7 +9,6 @@ warm and cold. The statements read few columns (kind and amount), then a string 
 """
 import argparse
 import os
-import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -21,7 +20,6 @@ import records.collect as collect  # noqa: E402
 import records.schema as schema  # noqa: E402
 from duckdb import Session  # noqa: E402
 
-REPO = os.path.dirname(os.path.dirname(HERE))
 STATEMENTS = (
     ('one_parent_narrow', "SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE parent_id = 7 AND ts >= date '2025-03-01' AND ts < date '2025-06-01' GROUP BY 1 ORDER BY 1"),
     ('parents_2', "SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE parent_id <= 2 AND ts >= date '2024-06-01' GROUP BY 1 ORDER BY 1"),
@@ -67,7 +65,7 @@ def main():
     s = Session(a.port, 600, None, db=a.db, host=a.host)
     s.run('CREATE EXTENSION pg_sift')
     s.run('CREATE EXTENSION IF NOT EXISTS pg_buffercache')
-    tip = subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'unknown'
+    tip = collect.git_tip()
     env = collect.Env(tip, 'table bitmap records', schema.run_id(tip), collect.host_cpus(collect.postmaster_pid(collect.backend_pid(s))), reps=a.reps, cool=iolib.cool)
     build(s, a.rows)
     out = []

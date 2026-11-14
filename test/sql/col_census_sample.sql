@@ -1,6 +1,6 @@
 -- The planner prices an index for the share of its units that hold each pre-aggregate section. Reading the sections of every unit costs a few buffers each, on the
--- first plan of every backend, so the units are counted up to sift.test_limits pre_census_units (256 by default) together, spread over the segments in proportion to
--- their units, and each count stands for the units of its segment. An index of fewer units is counted whole.
+-- first plan of every backend, so the units are counted up to sift.test_limits pre_census_units (16 by default) of each segment, spread over it; the count stands for the units of its segment.
+-- A segment of fewer units is counted whole.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;

@@ -7,7 +7,6 @@
  */
 #include "postgres.h"
 #include "utils/timestamp.h"
-#include "col/am.h"
 #include "col/maint/maint_int.h"
 #include "bm25/maint_int.h"
 #include "core/ops.h"
@@ -18,14 +17,17 @@ typedef struct NetStep
 	uint64		written;		/* pages */
 } NetStep;
 
-static void
-net_write(Relation index, SiftWriteTarget *wt, const void *arg)
+/*
+ * The sidecar of seg as it is now, written after the segment's own stream (the old sidecar's pages are left out and released with the old header page), and the header page that
+ * lists the extents, switched in for the old one by sift_wt_publish. Returns the pages written (the sidecar's and the header's); 0 with *nextents set to the extents the header
+ * would need, when it cannot list that many: the stream is written, nothing is published, and the caller aborts the write or raises the error. The caller closes seg.
+ */
+uint64
+sift_col_net_write(SiftWriteTarget *wt, SiftColSegment *seg, const SiftSegEntry *entry, int *nextents)
 {
-	NetStep    *st = (NetStep *) arg;
-	SiftColSegment *seg = sift_cseg_open(index, st->entry, CurrentMemoryContext);
 	const SiftSegHeaderData *old = seg->hdr;
 	uint64		at;
-	uint32		keep_pages = seg->sr.npages - sift_cseg_net_pages(seg, &at) ;
+	uint32		keep_pages = seg->sr.npages - sift_cseg_net_pages(seg, &at);
 	StringInfo	net = sift_cseg_net_build(seg);
 	SiftStreamWriter *sw;
 	SiftExtent *add,
@@ -34,15 +36,15 @@ net_write(Relation index, SiftWriteTarget *wt, const void *arg)
 	int			nadd,
 				nlist = 0,
 				nrelease = 0;
-	PGIOAlignedBlock page;
-	SiftSegHeaderData *hdr = (SiftSegHeaderData *) SiftPageGetData(page.data);
-	SiftSegEntry fresh = *st->entry;
-	SiftMaintSwitch sw_dir = {.old = &st->entry->gen,.nold = 1,.neu = &fresh};
-	uint32		left = keep_pages;
+	SiftSegEntry fresh = *entry;
+	SiftMaintSwitch sw_dir = {.old = &entry->gen,.nold = 1,.neu = &fresh};
+	uint32		left = keep_pages,
+				mirror_len;
+	const void *mirror;
 	uint64		blocks = 0;
 
 	sift_cseg_net_finish(net, at);
-	sw = sift_sw_begin(wt, st->entry->gen);
+	sw = sift_sw_begin(wt, entry->gen);
 	sift_sw_write(sw, net->data, net->len);
 	add = sift_sw_finish(sw, &nadd);
 	/* the extents of the segment's own stream, then the sidecar's; the old sidecar's are released */
@@ -64,21 +66,32 @@ net_write(Relation index, SiftWriteTarget *wt, const void *arg)
 		blocks += add[i].nblocks;
 	}
 	if (nlist > (int) SIFT_MAX_EXTENTS)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the net pre-aggregates need %d extents, the header holds %d", nlist, (int) SIFT_MAX_EXTENTS),
-						errhint("Merge the segments first (sift.col_merge) so that the segment is written in fewer extents.")));
-	sift_page_init(page.data, SIFT_PT_SEGHEADER, st->entry->gen);
-	memcpy(hdr, old, offsetof(SiftSegHeaderData, extents));
-	hdr->nextents = nlist;
-	memcpy(hdr->extents, list, nlist * sizeof(SiftExtent));
-	SiftPageSetUsed(page.data, offsetof(SiftSegHeaderData, extents) + nlist * sizeof(SiftExtent));
-	fresh.header_blk = sift_wt_write_page(wt, page.data);
-	release[nrelease++] = (SiftExtent) {st->entry->header_blk, 1};
+	{
+		*nextents = nlist;
+		return 0;
+	}
+	mirror = sift_cseg_mirror_for(seg, nlist, &mirror_len);
+	fresh.header_blk = sift_wt_write_seghdr(wt, old, list, nlist, mirror, mirror_len);
+	release[nrelease++] = (SiftExtent) {entry->header_blk, 1};
 	fresh.flags |= SIFT_SEG_NET;
-	fresh.bytes = st->entry->bytes + (blocks - (seg->sr.npages - keep_pages)) * BLCKSZ;
+	fresh.bytes = entry->bytes + (blocks - (seg->sr.npages - keep_pages)) * BLCKSZ;
 	sift_wt_finish(wt);
 	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw_dir,.release = release,.nrelease = nrelease,.extra = InvalidBuffer});
+	return blocks + 1;
+}
+
+static void
+net_write(Relation index, SiftWriteTarget *wt, const void *arg)
+{
+	NetStep    *st = (NetStep *) arg;
+	SiftColSegment *seg = sift_cseg_open(index, st->entry, CurrentMemoryContext);
+	int			nextents;
+
+	st->written = sift_col_net_write(wt, seg, st->entry, &nextents);
+	if (st->written == 0)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the net pre-aggregates need %d extents, the header holds %d", nextents, (int) SIFT_MAX_EXTENTS),
+						errhint("Merge the segments first (sift.col_merge) so that the segment is written in fewer extents.")));
 	sift_cseg_close(seg);
-	st->written = blocks + 1;
 }
 
 /*
@@ -89,6 +102,7 @@ void
 maint_net_refresh(Relation index)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	uint64		largest = 0;
 
 	if (RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
 		return;
@@ -98,12 +112,18 @@ maint_net_refresh(Relation index)
 #endif
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			largest = Max(largest, snap->segs[i].ndocs);
+	for (int i = 0; i < snap->nsegs; i++)
 	{
 		NetStep		st = {.entry = &snap->segs[i]};
 		SiftColSegment *seg;
 		bool		due;
 
 		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE || !(snap->segs[i].flags & SIFT_SEG_DIRTY))
+			continue;
+		/* an overlay is merged into a larger segment before its dead rows are worth a sidecar of its own: it would be written again by each VACUUM that kills one more row */
+		if (maint_is_overlay(snap->segs[i].ndocs, largest))
 			continue;
 		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
 		due = sift_cseg_net_due(seg);

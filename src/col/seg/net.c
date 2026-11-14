@@ -131,7 +131,7 @@ sift_cseg_net_blob(SiftColSegment *seg, uint32 u, int kind, uint32 *len)
 	if (*len > w->cap[kind])
 	{
 		w->cap[kind] = Max(*len, 2 * w->cap[kind]);
-		w->buf[kind] = w->buf[kind] ? repalloc(w->buf[kind], w->cap[kind]) : MemoryContextAlloc(seg->mcxt, w->cap[kind]);
+		SIFT_REGROW_IN(seg->mcxt, w->buf[kind], w->cap[kind]);
 	}
 	seg_read(seg, n->at + n->h.blob_off + n->unit[u].off + (kind == 1 ? n->unit[u].len[0] : 0), *len, w->buf[kind]);
 	return w->buf[kind];

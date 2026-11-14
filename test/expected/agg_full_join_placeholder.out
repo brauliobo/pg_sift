@@ -9,8 +9,8 @@ INSERT INTO dims SELECT i, CASE WHEN i % 4 = 0 THEN NULL ELSE 'n' || i END, i % 
 CREATE TABLE facts (id int, dim_id int, v int);
 INSERT INTO facts SELECT i, 1 + i % 40, i % 10 FROM generate_series(1, 3000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_id, v);
-NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = dim_id, v
+NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_id, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts, dims;
 \ir test/agg_helpers.sql

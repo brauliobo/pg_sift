@@ -4,26 +4,27 @@
  */
 #include "postgres.h"
 
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
+
 #include "access/amapi.h"
 #include "access/htup_details.h"
 #include "access/reloptions.h"
+#include "access/xact.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type_d.h"
 #include "commands/defrem.h"
-#include "commands/vacuum.h"
+#include "datatype/timestamp.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "nodes/value.h"
-#include "parser/parse_func.h"
-#include "parser/parse_oper.h"
-#include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
-#include "utils/tuplestore.h"
 
 #include "core/sift.h"
 #include "core/limits.h"
@@ -32,7 +33,6 @@
 #include "bm25/am.h"
 #include "bm25/analyze.h"
 #include "bm25/bitmap.h"
-#include "bm25/build.h"
 #include "col/am.h"
 #include "col/kern.h"
 #include "col/codec.h"
@@ -40,14 +40,11 @@
 #include "bm25/kernels.h"
 #include "bm25/merge.h"
 #include "core/ops.h"
-#include "bm25/posting.h"
 #include "bm25/prefix.h"
 #include "table/table.h"
-#include "bm25/segment.h"
 #include "core/visibility.h"
 #include "bm25/pushdown.h"
 #include "col/shred.h"
-#include "core/parbuild.h"
 #include "core/sql.h"
 #include "core/build_id.h"
 #include "core/eval.h"
@@ -256,6 +253,19 @@ catalog_invalidate(Datum arg, int cacheid, uint32 hashvalue)
 	catalog_valid = false;
 }
 
+/*
+ * glibc raises the size from which it maps a block to that of the largest it freed, and serves the next arrays of a writer (the accumulators of a segment and the
+ * arrays its end builds) from the heap, where what is freed in the middle stays the process's: a build held twice the memory its segments took. Pinning the size keeps
+ * those arrays mapped, and unmapped when freed, so that maintenance_work_mem bounds the resident memory (5,000,000 rows at 64 MB: 133 MB peak, 82 MB pinned).
+ */
+void
+sift_host_pin_heap(void)
+{
+#ifdef __GLIBC__
+	mallopt(M_MMAP_THRESHOLD, 1024 * 1024);
+#endif
+}
+
 void
 _PG_init(void)
 {
@@ -350,6 +360,31 @@ static const relopt_parse_elt sift_relopt_tab[] = {
 	{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftOptions, vacuum_truncate)},
 };
 
+/* An older name of a reloption that stays accepted: said where the option is written (CREATE and ALTER INDEX), never when the stored options are only read */
+void
+sift_relopt_alias_notice(const char *old, const char *new)
+{
+	/* the options of one statement are parsed more than once (the check, then the stored value): say it once for each name */
+	static TimestampTz stmt;
+	static char said[8][NAMEDATALEN];
+	static int	nsaid;
+	TimestampTz now = GetCurrentStatementStartTimestamp();
+
+	if (now != stmt)
+	{
+		stmt = now;
+		nsaid = 0;
+	}
+	for (int i = 0; i < nsaid; i++)
+		if (strcmp(said[i], old) == 0)
+			return;
+	if (nsaid < lengthof(said))
+		strlcpy(said[nsaid++], old, NAMEDATALEN);
+	ereport(NOTICE,
+			(errmsg("reloption \"%s\" is the older name of \"%s\"", old, new),
+			 errhint("Use \"%s\"; the older name keeps working.", new)));
+}
+
 static bytea *
 sift_amoptions(Datum reloptions, bool validate)
 {
@@ -359,7 +394,11 @@ sift_amoptions(Datum reloptions, bool validate)
 	/* given, even as its default: relopt_parse_elt has no isset_offset in PostgreSQL 19, so the list says it on every version */
 	if (o != NULL)
 		foreach_ptr(DefElem, def, untransformRelOptions(reloptions))
+		{
 			o->accent_folding_set |= strcmp(def->defname, "accent_folding") == 0;
+			if (validate && strcmp(def->defname, "mutable_limit") == 0)
+				sift_relopt_alias_notice("mutable_limit", "write_buffer_limit");
+		}
 	/* the alias counts when write_buffer_limit is left at its default */
 	if (o != NULL && o->write_buffer_limit == SIFT_DEFAULT_WRITE_BUFFER_LIMIT)
 		o->write_buffer_limit = o->mutable_limit;	/* DEPRECATED ALIAS */

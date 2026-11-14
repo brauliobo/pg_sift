@@ -2,6 +2,7 @@
 -- values in a unit has no histogram there, so the columns that fit come first (the option preagg is written as 'auto: a, b', which a rebuild keeps), and
 -- the answers are the plain plan's. Without the option the columns keep their order.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -18,14 +19,7 @@ VACUUM (FREEZE, ANALYZE) cr;
 
 CREATE FUNCTION cr_option(i text) RETURNS text LANGUAGE sql AS
 $$ SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = i AND o LIKE 'preagg=%'), 'not set') $$;
-CREATE FUNCTION cr_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION cr_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_other_scans_off(q, push) $$;
 CREATE TABLE cr_q (n int, q text);
 INSERT INTO cr_q VALUES
 	(1, 'SELECT l2, count(*), sum(v) FROM cr GROUP BY 1'),
@@ -43,7 +37,7 @@ BEGIN
 END $$;
 
 -- preagg = 'auto': the columns that fit take the first dimensions
-CREATE INDEX cr_auto ON cr USING sift_col (id, v, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13, h14, l1, l2, l3, t) WITH (rollup_dims = 'off', preagg = 'auto');
+CREATE INDEX cr_auto ON cr USING sift_col (id, v, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13, h14, l1, l2, l3, t) WITH (rollup_columns = 'off', preagg = 'auto');
 SELECT cr_option('cr_auto');
 SELECT sift.col_verify('cr_auto', true);
 SELECT * FROM cr_check();
@@ -55,7 +49,7 @@ REINDEX INDEX cr_auto;
 SELECT cr_option('cr_auto');
 -- no option is the order of the columns, and auto decides again at the next REINDEX
 DROP INDEX cr_auto;
-CREATE INDEX cr_order ON cr USING sift_col (id, v, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13, h14, l1, l2, l3, t) WITH (rollup_dims = 'off');
+CREATE INDEX cr_order ON cr USING sift_col (id, v, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13, h14, l1, l2, l3, t) WITH (rollup_columns = 'off');
 SELECT cr_option('cr_order');
 SELECT * FROM cr_check();
 ALTER INDEX cr_order SET (preagg = 'auto');
@@ -67,9 +61,10 @@ SELECT sift.col_verify('cr_order', true);
 -- 16 columns or fewer keep their order and write nothing, auto or not
 CREATE TABLE cr_few (id int, a int, b int, c text) WITH (autovacuum_enabled = off);
 INSERT INTO cr_few SELECT i, i, i % 5, 'k' || i % 7 FROM generate_series(1, 2000) i;
-CREATE INDEX cr_few_col ON cr_few USING sift_col (id, a, b, c) WITH (rollup_dims = 'off', preagg = 'auto');
+CREATE INDEX cr_few_col ON cr_few USING sift_col (id, a, b, c) WITH (rollup_columns = 'off', preagg = 'auto');
 SELECT cr_option('cr_few_col');
 
 DROP TABLE cr, cr_q, cr_few;
 DROP FUNCTION cr_option(text), cr_rows(text, bool), cr_check(), pa_units(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

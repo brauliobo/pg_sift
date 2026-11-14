@@ -3,6 +3,7 @@
 -- date spine (a set-returning function in the select list) joined to the rows of two periods with no key the scan can use, and the same
 -- aggregate without it. Every statement is also run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;	-- the NOTICE of the order array gives bytes a row that follow the sample of ANALYZE
 SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
@@ -27,18 +28,7 @@ BEGIN
 	RETURN CASE n WHEN 0 THEN 'normal' WHEN 1 THEN 'SiftAgg' ELSE n || ' SiftAgg' END;
 END $$;
 
-CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	plan := plan_of(q);
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	RESET sift.enable_agg;
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
-	DROP TABLE r_on, r_off;
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_plan_and_differences(plan_of(q), q) $$;
 
 CREATE FUNCTION spine(scope text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 WITH ids AS MATERIALIZED (SELECT id FROM nc_entities WHERE id %s),
@@ -68,4 +58,5 @@ SELECT * FROM same(grouped('<= 300'));
 SELECT * FROM same(grouped('= 7 AND r.day BETWEEN date ''2025-03-01'' AND date ''2025-03-31'''));
 DROP FUNCTION grouped(text), spine(text), same(text), plan_of(text);
 DROP TABLE nc_rows, nc_entities;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

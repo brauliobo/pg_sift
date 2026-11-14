@@ -1,6 +1,6 @@
 -- The caps of the options, told at CREATE INDEX: a cube(...) dim has no histogram in a unit with more groups than its cap, a key_columns leaf keeps a
 -- bloom filter, not its keys, in a unit with more than 32 distinct ones and nothing where its keys are one value or fill their range, and no key list or
--- bitmap over 3% of the unit, a rollup_dims rollup is not written in a unit with too many cells, and calendar_columns = 'all' leaves out the
+-- bitmap over 3% of the unit, a rollup_columns rollup is not written in a unit with too many cells, and calendar_columns = 'all' leaves out the
 -- date columns past the 16 dimensions of the cube; a query on them scans those units, so the build says how many, and what to set.
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -31,18 +31,18 @@ NOTICE:  sift_col index "caps_d": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_d');
 -- no key list or bitmap of many (over 3% of the unit: a bloom filter instead), a rollup of more cells than a tenth of the rows
-CREATE INDEX caps_e ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few, many', rollup_dims = 'few, many', point_tid_columns = 'off', order_array_columns = 'off');
-NOTICE:  sift_col index "caps_e": 1 advice (track_changes), 2 limits (key_columns, rollup_dims)
+CREATE INDEX caps_e ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few, many', rollup_columns = 'few, many', point_tid_columns = 'off', order_array_columns = 'off');
+NOTICE:  sift_col index "caps_e": 1 advice (track_changes), 2 limits (key_columns, rollup_columns)
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: key_columns = many;
-limit: rollup_dims = few, many
+limit: rollup_columns = few, many
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_e');
 -- what is written is silent: a bitmap that fits (few); the 2,800 combinations of a rollup fit two units and not the third, which holds fewer rows (34%)
-CREATE INDEX caps_f ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few', rollup_dims = 'few, mid', point_tid_columns = 'off', order_array_columns = 'off');
+CREATE INDEX caps_f ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few', rollup_columns = 'few, mid', point_tid_columns = 'off', order_array_columns = 'off');
 NOTICE:  sift_col index "caps_f": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_f');
 -- two columns hit by one kind of cap are one NOTICE, with the share of the units of each in the DETAIL
-CREATE INDEX caps_g ON caps USING sift_col (id, few, many, many2) WITH (preagg = 'cube(few: id; many: id; many2: id)', rollup_dims = 'off', point_tid_columns = 'off', order_array_columns = 'off');
+CREATE INDEX caps_g ON caps USING sift_col (id, few, many, many2) WITH (preagg = 'cube(few: id; many: id; many2: id)', rollup_columns = 'off', point_tid_columns = 'off', order_array_columns = 'off');
 NOTICE:  sift_col index "caps_g": 1 advice (track_changes), 1 limit (cube)
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: cube = many, many2
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_g');
@@ -52,13 +52,13 @@ INSERT INTO caps_cal SELECT g, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, 
 CREATE INDEX caps_cal_all ON caps_cal USING sift_col (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, d1, d2) WITH (calendar_columns = 'all');
 NOTICE:  sift_col index "caps_cal_all": 1 automatic choice, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: cube = "c15", "c16", "d1", "d2";
-rollup_dims = c2, c9
+rollup_columns = c2, c9
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_cal_all');
 -- the default is the same list
 CREATE INDEX caps_cal_default ON caps_cal USING sift_col (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, d1, d2);
 NOTICE:  sift_col index "caps_cal_default": 1 automatic choice, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: cube = "c15", "c16", "d1", "d2";
-rollup_dims = c2, c9
+rollup_columns = c2, c9
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_cal_default');
 -- the dates alone past the cap
 CREATE TABLE caps_dates (d1 date, d2 date, d3 date, d4 date, d5 date, d6 date, d7 date, d8 date, d9 date, d10 date, d11 date, d12 date, d13 date, d14 date, d15 date, d16 date, d17 date) WITH (autovacuum_enabled = off);
@@ -68,12 +68,12 @@ INSERT INTO caps_dates SELECT date '2024-01-01' + g % 30, date '2024-01-01' + g 
 CREATE INDEX caps_dates_all ON caps_dates USING sift_col (d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17);
 NOTICE:  sift_col index "caps_dates_all": 1 automatic choice, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key;
-limit: cube = "d1", "d2", "d3", "d4", "d5", "d6", and 12 more; rollup_dims = d11, d12
+limit: cube = "d1", "d2", "d3", "d4", "d5", "d6", and 12 more; rollup_columns = d11, d12
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_dates_all');
 -- all of them fit
 CREATE INDEX caps_cal_two ON caps_cal USING sift_col (c1, c2, d1, d2) WITH (calendar_columns = 'all');
-NOTICE:  sift_col index "caps_cal_two": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = c2, d1
+NOTICE:  sift_col index "caps_cal_two": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = c2, d1
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_cal_two');
 -- off says nothing
 ALTER INDEX caps_a SET (key_columns = 'off');

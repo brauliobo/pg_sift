@@ -3,7 +3,6 @@
  * a constant, a bit-packed run, a dictionary, a scale, the decoded values
  * portable C
  */
-#include "core/host.h"
 #include "core/popcount.h"
 #include "core/cmp.h"
 #include "col/codec/decode_int.h"

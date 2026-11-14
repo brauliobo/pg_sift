@@ -18,14 +18,14 @@ SELECT track_changes, triggers, complete, heap_free FROM sift.col_tracking('even
 SELECT * FROM sift._test_tomb_header('events_c');
  covered | flags 
 ---------+-------
- t       |     1
+ t       |     3
 (1 row)
 
 -- the page of a release before the record, with the bytes of a complete record still on it
 SELECT * FROM sift._test_tomb_header('events_c', true, true);
  covered | flags 
 ---------+-------
- f       |     1
+ f       |     3
 (1 row)
 
 SELECT track_changes, triggers, complete, heap_free FROM sift.col_tracking('events_c');
@@ -88,7 +88,7 @@ ALTER INDEX events_c SET (track_changes = 'id');
 SELECT * FROM sift._test_tomb_header('events_c');
  covered | flags 
 ---------+-------
- f       |     1
+ f       |     3
 (1 row)
 
 SELECT track_changes, triggers, complete, heap_free FROM sift.col_tracking('events_c');

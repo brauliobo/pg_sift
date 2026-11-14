@@ -1,0 +1,95 @@
+-- sift.col_wbuf_ref: the root of a HOT chain whose first version is pruned is a line pointer that redirects to the live version. A HOT update changes no column of the index,
+-- so the values the reader fetches from the live member of the chain are the values the record stood for; the answers are the heap's, before and after the promotion.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET sift.col_auto_merge = off;
+SET max_parallel_workers_per_gather = 0;
+SET check_function_bodies = off;
+CREATE FUNCTION answers() RETURNS text LANGUAGE sql AS $$
+  SELECT md5(concat_ws('|',
+    (SELECT count(*) || ',' || sum(v) FROM h),
+    (SELECT count(*) || ',' || sum(v) FROM h WHERE g = 3),
+    (SELECT string_agg(id::text, ',' ORDER BY v DESC, id) FROM (SELECT id, v FROM h ORDER BY v DESC, id LIMIT 30) x),
+    (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT g, count(*), sum(v) FROM h GROUP BY g) x))) $$;
+CREATE FUNCTION same_as_heap() RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE native text; sift text;
+BEGIN
+  PERFORM set_config('sift.enable_agg', 'off', true);
+  native := answers();
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  sift := answers();
+  RETURN native = sift;
+END $$;
+CREATE TABLE h (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false, fillfactor = 50);
+CREATE INDEX h_ix ON h USING sift_col (id, g, v);
+SET sift.col_wbuf_ref = on;
+INSERT INTO h SELECT i, i % 10, i, 'x' FROM generate_series(1, 2000) i;
+SELECT rows AS buffered FROM sift.col_segments('h_ix') WHERE kind = 'buffer';
+ buffered 
+----------
+     2000
+(1 row)
+
+-- a HOT update of a column the index does not hold (every new version stays on its page), then the prune that turns the roots into redirects
+BEGIN;
+UPDATE h SET pad = 'y';
+SELECT pg_stat_get_xact_tuples_hot_updated('h'::regclass) AS hot_updates;
+ hot_updates 
+-------------
+        2000
+(1 row)
+
+COMMIT;
+VACUUM (INDEX_CLEANUP off) h;
+SELECT same_as_heap() AS same_redirected;
+ same_redirected 
+-----------------
+ t
+(1 row)
+
+SELECT sift.col_verify('h_ix', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- a second version behind the redirect, and an update of an indexed column in the middle of the chains: its new tuple has its own record
+UPDATE h SET pad = 'z' WHERE id % 2 = 0;
+UPDATE h SET v = v + 1000 WHERE id % 7 = 0;
+UPDATE h SET pad = 'w' WHERE id % 5 = 0;
+VACUUM (INDEX_CLEANUP off) h;
+SELECT same_as_heap() AS same_mixed;
+ same_mixed 
+------------
+ t
+(1 row)
+
+SELECT sift.col_verify('h_ix', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT sift.col_promote('h_ix') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT same_as_heap() AS same_promoted;
+ same_promoted 
+---------------
+ t
+(1 row)
+
+SELECT sift.col_verify('h_ix', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP FUNCTION same_as_heap();
+DROP FUNCTION answers();
+DROP TABLE h;
+DROP EXTENSION pg_sift CASCADE;

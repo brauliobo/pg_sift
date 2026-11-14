@@ -3,8 +3,10 @@
  * reads: the global order and the point directory against the units
  * they were built from; run by the verify functions, never by a scan
  */
-#include "core/host.h"
 #include "col/seg_int.h"
+
+/* the groups of a grouped block are read and checked in windows of this many */
+#define VERIFY_GROUPS	1024
 
 /* The global order of a leaf holds every row of the segment once, the values by key then address, the rows with no value by address */
 static void
@@ -16,14 +18,19 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 	uint32		have = UINT32_MAX;
 	int64		pk = 0;
 	uint64		pa = 0;
-	uint32		nranges;
-	SiftCGOrdGrp *grp = NULL;
+	uint32		nranges,
+				wat = 0,
+				wn = 0;
+	SiftCGOrdGrp win[VERIFY_GROUPS];
+	SiftCGOrdGrpRun run;
 
 	if (g == NULL)
 		return;
+	run = SIFT_CGORD_GRPRUN(&g->hdr);
 	if (g->hdr.strbytes != 0)
 		(void) seg_gord_strs(seg, g, col);
-	seg_gord_dir_read(seg, g);
+	seg_gord_dir_read(seg, g, col);
+	(void) seg_gord_gat(seg, g, col);
 	if (g->hdr.vtotal != 0)
 	{
 		if (g->hdr.vtotal > total || g->hdr.entries - g->hdr.values > total - g->hdr.vtotal)
@@ -48,16 +55,6 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 		}
 	}
 	/* the entries of a range ascend by (key, address), those of a NULL range by address; a block that is not grouped is two ranges, the values and the NULL rows */
-	if (g->hdr.gcol >= 0)
-	{
-		uint8	   *gb = palloc((Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
-
-		grp = palloc((Size) g->hdr.ngroups * sizeof(SiftCGOrdGrp));
-		seg_read(seg, g->at + g->gat, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT, gb);
-		if (!sift_cgord_groups(gb, &g->hdr, (uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT, grp))
-			corrupt(seg, "The global order of leaf %d has malformed groups.", col);
-		pfree(gb);
-	}
 	nranges = g->hdr.gcol < 0 ? 2 : 2 * g->hdr.ngroups;
 	for (uint32 r = 0; r < nranges; r++)
 	{
@@ -72,7 +69,17 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 		}
 		else
 		{
-			const SiftCGOrdGrp *gr = &grp[r / 2];
+			const SiftCGOrdGrp *gr;
+
+			if (r / 2 >= wat + wn)
+			{
+				wat = r / 2;
+				wn = Min(VERIFY_GROUPS, g->hdr.ngroups - wat);
+				seg_gord_grp_read(seg, g, col, wat, wn, win);
+				if (!sift_cgord_groups_check(&g->hdr, &run, win, wn))
+					corrupt(seg, "The global order of leaf %d has malformed groups.", col);
+			}
+			gr = &win[r / 2 - wat];
 
 			from = isnull ? gr->nstart : gr->vstart;
 			count = isnull ? gr->ncount : gr->vcount;
@@ -96,6 +103,8 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 				CHECK_FOR_INTERRUPTS();
 		}
 	}
+	if (g->hdr.gcol >= 0 && !sift_cgord_groups_done(&g->hdr, &run))
+		corrupt(seg, "The global order of leaf %d has malformed groups.", col);
 	/* the strings of a text block: every one is there, and each is at most a dictionary entry long */
 	if (g->hdr.strbytes != 0)
 	{

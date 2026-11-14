@@ -52,6 +52,10 @@ sift_cwbuf_close(SiftCWbufReader *r)
 		pfree(r->joined);
 	if (r->evals)
 		pfree(r->evals);
+	if (r->ref)
+		pfree(r->ref);
+	if (r->refpay.data)
+		pfree(r->refpay.data);
 	pfree(r->val);
 	pfree(r->elem);
 	pfree(r->page);
@@ -64,13 +68,14 @@ wbuf_advance_page(SiftCWbufReader *r)
 	if (!sift_lane_iter_next(&r->it, r->page, HDRSIZE))
 		return false;
 	wbuf_cursor_set(&r->cur, r->page);
+	r->refready = false;
 	r->pflags = SiftLaneHead(r->page)->flags;
 	if (r->pagefn)
 		r->pagefn(r->pagearg, r->it.blk, r->page, r->cur.used);
 	return true;
 }
 
-/* The records of a page that start in bytes from to upto and are flagged dead */
+/* The records of a page that start in bytes from to upto and are flagged dead; from is the start of a record (0, or the used bytes of an earlier read of the page) */
 uint32
 wbuf_page_dead(Relation index, Page page, Size from, Size upto)
 {
@@ -78,12 +83,13 @@ wbuf_page_dead(Relation index, Page page, Size from, Size upto)
 	uint32		n = 0;
 
 	wbuf_cursor_set(&c, page);
+	c.pos = from;
 	while (c.pos < c.used && c.pos < upto)
 	{
 		Size		size;
 		const SiftColRecHead *h = wbuf_rec_at(&c, &size);
 
-		n += c.pos >= from && (h->flags & SIFT_COLR_DELETED) != 0;
+		n += (h->flags & SIFT_COLR_DELETED) != 0;
 		c.pos += size;
 	}
 	return n;
@@ -95,7 +101,7 @@ join_append(SiftCWbufReader *r, const uint8 *payload, Size len)
 	if (r->joinedlen + len > r->joinedcap)
 	{
 		r->joinedcap = Max(2 * r->joinedcap, r->joinedlen + len);
-		r->joined = r->joined ? repalloc(r->joined, r->joinedcap) : MemoryContextAlloc(r->mcxt, r->joinedcap);
+		SIFT_REGROW_IN(r->mcxt, r->joined, r->joinedcap);
 	}
 	memcpy(r->joined + r->joinedlen, payload, len);
 	r->joinedlen += len;
@@ -127,14 +133,15 @@ join_pieces(SiftCWbufReader *r)
 	return true;
 }
 
-/* The next row's record, pieces joined; false at the end of the segment */
+/* The next row's record, pieces joined, the values of a REF record fetched from the heap (a row the heap has no tuple for is passed over); false at the end of the segment */
 bool
 wbuf_next_rec(SiftCWbufReader *r, RawRec *rec)
 {
 	for (;;)
 	{
 		const SiftColRecHead *h;
-		Size		size;
+		Size		size,
+					pos;
 
 		if (r->cur.pos >= r->cur.used)
 		{
@@ -142,6 +149,7 @@ wbuf_next_rec(SiftCWbufReader *r, RawRec *rec)
 				return false;
 			continue;
 		}
+		pos = r->cur.pos;
 		h = wbuf_rec_at(&r->cur, &size);
 		if (h->flags & SIFT_COLR_CONT)
 			SIFT_CORRUPT(r->cur.index, "A continuation record of segment %llu has no first piece.", (unsigned long long) r->entry.gen);
@@ -158,6 +166,13 @@ wbuf_next_rec(SiftCWbufReader *r, RawRec *rec)
 			memcpy(&rec->xmin, rec->payload, sizeof(TransactionId));
 			rec->payload += sizeof(TransactionId);
 			rec->len -= sizeof(TransactionId);
+		}
+		/* a record that is a reference is of one piece, and one that VACUUM flagged dead has no tuple to fetch */
+		if (h->flags & SIFT_COLR_REF)
+		{
+			if (rec->deleted || !wbuf_ref_values(r, pos, rec))
+				continue;
+			return true;
 		}
 		if (r->cur.pos < r->cur.used || !(r->pflags & SIFT_WBUFPAGE_SPANS))
 			return true;
@@ -254,8 +269,7 @@ evals_reserve(SiftCWbufReader *r, Size n)
 	if (n <= r->evalcap)
 		return;
 	r->evalcap = Max(2 * r->evalcap, Max(n, 16));
-	r->evals = r->evals ? repalloc(r->evals, r->evalcap * sizeof(SiftColValue)) :
-		MemoryContextAlloc(r->mcxt, r->evalcap * sizeof(SiftColValue));
+	SIFT_REGROW_IN(r->mcxt, r->evals, r->evalcap * sizeof(SiftColValue));
 }
 
 void

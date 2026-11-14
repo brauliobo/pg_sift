@@ -92,6 +92,7 @@ typedef struct SiftAggJoin
 	Oid			coltype[SIFT_AGG_MAX_JCOLS];
 	int32		coltypmod[SIFT_AGG_MAX_JCOLS];
 	Oid			colcoll[SIFT_AGG_MAX_JCOLS];
+	Node	   *colexpr[SIFT_AGG_MAX_JCOLS];	/* the column is this expression of the table's columns (varno 1; colatt 0), the expression of a sift_col index of the table: the leaf of that index, else evaluated for each row loaded; NULL: the column colatt */
 	SiftAggFirst first;			/* a correlated child that is a lookup of one row by unique key */
 	char	   *desc;
 } SiftAggJoin;

@@ -7,9 +7,15 @@
 
 #include <math.h>
 
+#include "catalog/pg_am_d.h"
 #include "catalog/pg_statistic.h"
+#include "nodes/pathnodes.h"
+#include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/paths.h"
 #include "parser/parsetree.h"
+#include "rewrite/rewriteManip.h"
+#include "utils/selfuncs.h"
 #include "utils/syscache.h"
 #include "access/htup_details.h"
 
@@ -24,10 +30,11 @@ elems_of(AggCtx *c, int grp)
 
 /*
  * The distinct values of a column under the table's own conditions on it: the values of the table (PostgreSQL's statistics) times the
- * share the conditions keep (a range of dates keeps the dates of the range). 0 when there are no statistics.
+ * share the conditions keep (a range of dates keeps the dates of the range). 0 when there are no statistics. Without `conditions`, the values of the table: what a
+ * test PostgreSQL evaluates for each value (a hashed subplan) is made for the values it rejects too.
  */
 double
-column_distinct(AggCtx *c, Var *v)
+column_distinct(AggCtx *c, Var *v, bool conditions)
 {
 	List	   *clauses = NIL;
 	HeapTuple	tup;
@@ -39,7 +46,7 @@ column_distinct(AggCtx *c, Var *v)
 	nd = ((Form_pg_statistic) GETSTRUCT(tup))->stadistinct;
 	ReleaseSysCache(tup);
 	nd = nd > 0 ? nd : -nd * c->rel->tuples;
-	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
+	foreach_node(RestrictInfo, ri, conditions ? c->rel->baserestrictinfo : NIL)
 	{
 		Bitmapset  *atts = NULL;
 
@@ -55,10 +62,19 @@ double
 joined_distinct(AggCtx *c, JoinCtx *jc, int col)
 {
 	RelOptInfo *rel = c->root->simple_rel_array[jc->rti];
-	HeapTuple	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(jc->rti, c->root)->relid),
-									  Int16GetDatum(jc->j.colatt[col]), BoolGetDatum(false));
+	Node	   *x = jc->j.colexpr[col];
+	HeapTuple	tup;
 	double		nd = 0;
 
+	if (x != NULL)
+	{
+		/* an expression of the table: the statistics of an index on it, as PostgreSQL reads them */
+		x = copyObject(x);
+		ChangeVarNodes(x, 1, jc->rti, 0);
+		return Min(estimate_num_groups(c->root, list_make1(x), Max(rel->tuples, 1.0), NULL, NULL), Max(rel->rows, 1.0));
+	}
+	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(jc->rti, c->root)->relid),
+						  Int16GetDatum(jc->j.colatt[col]), BoolGetDatum(false));
 	if (HeapTupleIsValid(tup))
 	{
 		nd = ((Form_pg_statistic) GETSTRUCT(tup))->stadistinct;
@@ -104,6 +120,17 @@ cost_tuples(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, CostAcc *k)
 	k->scan_cost += k->agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
 }
 
+/* does PostgreSQL evaluate an expression of the lookup's columns for the slot: a key that is no column, or the NULL test of one (count(x + y)) */
+static bool
+slot_expr_evaluated(const SiftAggSlot *slot)
+{
+	Node	   *e = (Node *) slot->expr;
+
+	if (!slot->is_key)
+		return IsA(e, NullTest) && !IsA(((NullTest *) e)->arg, Param);
+	return !IsA(e, Param);
+}
+
 /*
  * What a joined tuple beyond the rows the scan reads costs, before the share of a cache the lookup table's rows leave (cost_work): the match is gathered and
  * the combo's slots written for it, and the aggregates add what each reads of it. A slot costs by what it holds: the id of a group key's value (more when
@@ -121,22 +148,26 @@ fan_row_ops(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, JoinCtx *jc
 	for (int ci = 0; ci < s->ncombo; ci++)
 		for (int sl = 0; sl < s->combo[ci].nslots; sl++)
 		{
-			Node	   *e = (Node *) s->combo[ci].slot[sl].expr;
-
-			if (s->combo[ci].slot[sl].is_key && !IsA(e, Param))
+			if (slot_expr_evaluated(&s->combo[ci].slot[sl]))
 				return AGG_FAN_ROW_EXPR + cb->nslots * AGG_FAN_SLOT;
 		}
 	for (int sl = 0; sl < cb->nslots; sl++)
 	{
 		const SiftAggSlot *slot = &cb->slot[sl];
 		int			col = IsA(slot->expr, Param) ? ((Param *) slot->expr)->paramid - cb->nleaves : -1;
+		bool		wide = col >= 0 && col < jc->j.ncol && joined_distinct(c, jc, col) * AGG_FAN_WIDE_SHARE > rows;
 
 		if (!slot->is_key)
 			ops += AGG_FAN_FLAG;
 		else if (slot->agg >= 0)
-			ops += AGG_FAN_ARG;
+		{
+			const SiftAggAgg *ag = &s->agg[slot->agg];
+
+			/* the value of each tuple is added as it comes (no set of the distinct values of its group, whose size past every cache is the wide price) */
+			ops += wide && !saa_m_minmax_direct(ag->kind, ag->argtype) && !saa_m_sumavg_direct(ag->kind, ag->restype) ? AGG_FAN_ARG_WIDE : AGG_FAN_ARG;
+		}
 		else
-			ops += col >= 0 && col < jc->j.ncol && joined_distinct(c, jc, col) * AGG_FAN_WIDE_SHARE > rows ? AGG_FAN_KEY_WIDE : AGG_FAN_KEY;
+			ops += wide ? AGG_FAN_KEY_WIDE : AGG_FAN_KEY;
 	}
 	return ops;
 }
@@ -168,16 +199,18 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 
 			k->scan_cost += Max(k->agg_rows - k->sel_rows * k->elems, 0.0) * fan_row_ops(c, s, &s->combo[ci], jc) * Min(sqrt(Max(past, 0.0) / AGG_FAN_CACHE), AGG_FAN_CAP);
 		}
-	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows, k->rows * Max(k->zone_kept, 1.0 / k->units), k->sel_rows * k->elems * k->key_share, &entry_cost) + bucket_eval_cost(c, s, k->agg_rows) + distinct_id_ops(c, s, k);
+	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows, k->rows * Max(k->zone_kept, 1.0 / k->units), k->sel_rows * k->elems * k->key_share, &entry_cost, k) + bucket_eval_cost(c, s, k->agg_rows) + distinct_id_ops(c, s, k);
 	/* each process evaluates the entries it meets: the workers divide the probes, not those (cost_parallel divides the cold operators with the rest) */
-	k->cold_ops += entry_cost * (s->gpart > 0 ? 0.0 : parallel_divisor(s->nworkers) - 1.0);
+	k->cold_ops += entry_cost * (s->gpart > 0 || s->jpart > 0 ? 0.0 : parallel_divisor(s->nworkers) - 1.0);
+	if (s->gpart == 0 && s->jpart == 0)
+		k->cold_ops += Min(k->entry_ops * (parallel_divisor(s->nworkers) - 1.0) * AGG_ENTRY_AGAIN, Max(k->entry_all - k->entry_ops, 0.0));
 	for (int i = 0; i < s->nkeys; i++)
 		k->scan_cost += k->agg_rows * num_cost(&s->key[i].num);
 	for (int i = 0; i < s->npred; i++)
 		k->scan_cost += k->rows * pred_num_cost(s->pred[i]);
 	k->scan_cost = Max(k->scan_cost - plain_credit(c, s, k->agg_rows), k->scan_cost * 0.1);
 	/* after the credit, which prices what the normal plan under-estimates: the rows read again from the heap are work it does not do */
-	k->scan_cost += recheck_cost(c, s, k) * Max(k->zone_kept, 1.0 / k->units);
+	k->recheck = recheck_cost(c, s, k) * Max(k->zone_kept, 1.0 / k->units);
 	k->scan_cost += chunks * AGG_DIST_CHUNK;
 	k->scan_cost += scan_bytes(c, s, k->rows) * AGG_BYTE * Max(k->zone_kept, 1.0 / k->units);
 }
@@ -211,6 +244,51 @@ agg_open_cost(int nparts)
 #define AGG_WIDE_CAP		0.5
 
 double		agg_read_rows;
+
+/* the cheapest path of the table, under its Gather when it has one: what the normal plan reads the table with */
+static Path *
+cheapest_read(AggCtx *c)
+{
+	Path	   *best = NULL;
+
+	foreach_ptr(Path, p, c->rel->pathlist)
+		if (best == NULL || p->total_cost < best->total_cost)
+			best = p;
+	if (best && IsA(best, GatherPath))
+		best = ((GatherPath *) best)->subpath;
+	return best;
+}
+
+/*
+ * Does the normal plan run at AGG_NORMAL_UNITS_MS a millisecond (its executor takes about 4 times the estimate), so the scan's operators are priced in its units? A plan that reads the
+ * heap in order (a sequential scan) does. A join query does when the plan reads more than AGG_JOIN_SCALAR_FLOOR units from the table, whatever the path: an index scan that reads
+ * a few rows is priced by what it reads, and the estimate of a plan of a few hundred units is no measure of its time.
+ */
+static bool
+normal_units(AggCtx *c)
+{
+	Path	   *best = cheapest_read(c);
+
+	if (c->joins != NIL)
+		return best && best->total_cost > AGG_JOIN_SCALAR_FLOOR;
+	return best && best->pathtype == T_SeqScan;
+}
+
+/* does a b-tree index of the table give the first key of the query's order (a top-N over it reads the rows in that order from the heap, as the scan does) */
+static bool
+btree_presorts(AggCtx *c)
+{
+	foreach_ptr(Path, p, c->rel->pathlist)
+	{
+		int			n = 0;
+
+		if (IsA(p, IndexPath) && ((IndexPath *) p)->indexinfo->relam == BTREE_AM_OID && p->pathkeys != NIL)
+			(void) pathkeys_count_contained_in(c->root->query_pathkeys, p->pathkeys, &n);
+		if (n > 0)
+			return true;
+	}
+	return false;
+}
 
 void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
@@ -246,8 +324,16 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	cost_work(c, s, &k);
 	entries = key_entries(c, s, &k, &ids, &key_ops);
 	k.scan_cost += key_ops;
-	/* the reads of the lookup tables are PostgreSQL's own, priced as its plans are */
-	k.scan_cost = (k.scan_cost - k.load_cost) * AGG_SCAN_SPEED + k.load_cost;
+	/*
+	 * The scan's operators are counted at AGG_OP_NS, which is 833 cost units a millisecond; the estimate of the normal plan it is compared with runs at
+	 * AGG_NORMAL_UNITS_MS a millisecond (its executor takes about 4 times what the plan prices), so the same time costs the scan 4 times more units and a
+	 * scan up to 4 times faster was refused. The whole estimate of a scan with group keys, without a search or a top-N, whose normal plan reads in those units (normal_units), is
+	 * priced in them, the load of the lookup tables included (load_cost: the rows of a lookup table through PostgreSQL's executor, priced as its plans are). A search keeps its price (the normal plan's
+	 * count of the index answers it in a tenth of a millisecond: search_count), so does one whose normal plan reads an index of a few rows (agg_in_list_cost: 0.4 ms against 2.7) and an ungrouped aggregate.
+	 */
+	k.ms = !c->search && !s->topn && s->nkeys > 0 && normal_units(c) ? AGG_NORMAL_UNITS_MS * AGG_OP_NS * 1e-6 / DEFAULT_CPU_OPERATOR_COST : 1.0;
+	k.scan_cost = ((k.scan_cost - k.load_cost) * AGG_SCAN_SPEED + k.load_cost) * k.ms + k.recheck * AGG_SCAN_SPEED +
+		k.ms_ops * AGG_SCAN_SPEED * AGG_NORMAL_UNITS_MS * AGG_OP_NS * 1e-6 / DEFAULT_CPU_OPERATOR_COST;
 	/* a top-N reads a fraction of the units, but opens the match set whole */
 	if (s->topn)
 	{
@@ -278,7 +364,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	exact = preagg_share(c, s);
 	if (exact > 0)
 	{
-		double		pre_cost = k.units * Max(k.zone_kept, 1.0 / k.units) * (AGG_UNIT_COST + preagg_unit_ops(c, s, k.units, k.rows, k.rows_out)) * AGG_SCAN_SPEED * cpu_operator_cost;
+		double		pre_cost = k.units * Max(k.zone_kept, 1.0 / k.units) * (AGG_UNIT_COST + preagg_unit_ops(c, s, k.units, k.rows, k.rows_out)) * AGG_SCAN_SPEED * k.ms * cpu_operator_cost;
 
 		k.scan_cost += exact * (Min(pre_cost, k.scan_cost) - k.scan_cost);
 	}
@@ -309,8 +395,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* no unit is read where the order array gives the rows (sift_topn_gorder): the heap confirms the n of them */
 	if (s->topn && c->topn_array && s->nworkers == 0)
 	{
-		startup = c->level_params != NIL ? (AGG_GORD_RESTART + (c->nparts > 1 ? AGG_GORD_RESTART_PART * c->nparts : 0.0)) * cpu_operator_cost :
-			(AGG_GORD_START + AGG_GORD_SEG * ceil(Max(c->nparts > 0 ? c->part_tuples / c->nparts : c->rel->tuples, 1.0) / AGG_GORD_SEG_ROWS)) * cpu_operator_cost;
+		/* the rows sorted in memory are read and sorted again by each scan, a probe restarted for each row of a join included */
+		startup = (c->level_params != NIL ? AGG_GORD_RESTART + (c->nparts > 1 ? AGG_GORD_RESTART_PART * c->nparts : 0.0) :
+				   AGG_GORD_START + AGG_GORD_SEG * ceil(Max(c->nparts > 0 ? c->part_tuples / c->nparts : c->rel->tuples, 1.0) / AGG_GORD_SEG_ROWS) +
+				   AGG_GORD_MEM_ROW * c->topn_free) * cpu_operator_cost;
 		k.scan_cost = 0;
 	}
 	/* the price of the scan is in the operators of the model: its share against the native plan (SIFT_COST_AGG_SHARE); the plans PostgreSQL makes for the child and the sub-plans are its own prices */
@@ -319,8 +407,14 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	p->total_cost = p->startup_cost + k.rows_out * cpu_tuple_cost;
 	/* the rows of a top-N are fetched from the heap, one page each; those the order array or a sorted run gives come in the order of the key (the entries a walk tests too), a page in the buffers, the cache or the disk */
 	if (s->topn)
-		p->total_cost += c->topn_array || c->topn_runs ? Max(c->topn_array ? c->topn_walk : 0.0, c->topn_fetch) * heap_visit_ops(rel_pages(c)) * cpu_operator_cost * SIFT_COST_AGG_SHARE :
-			c->topn_fetch * random_page_cost * 0.5;
+	{
+		double		walk = Max(c->topn_array ? c->topn_walk : 0.0, c->topn_fetch) * heap_visit_ops(rel_pages(c)) * cpu_operator_cost * SIFT_COST_AGG_SHARE;
+		/* the pages a b-tree plan with a LIMIT reads for the same rows, at the price its own plan pays for them (PostgreSQL's pages, not the operators of the model, which a b-tree plan does not meet): the scan costs no less than it where a b-tree gives the order's first key */
+		bool		presorts = btree_presorts(c);
+		double		pages = presorts ? index_pages_fetched(c->topn_fetch, Max(rel_pages(c), 1.0), 0.0, c->root) * random_page_cost * TOPN_FETCH_PAGE : 0.0;
+
+		p->total_cost += Max(c->topn_array || c->topn_runs ? walk : c->topn_fetch * random_page_cost * (presorts ? TOPN_FETCH_PAGE : 0.5), pages);
+	}
 	/* the groups of the rows the lists pass (spec_finish) tell the plan above how many rows to expect; they are not part of the path's own price */
 	p->rows = s->topn ? k.rows_out : Max(k.rows_out, c->path_rows);
 	if (c->having_sel > 0 && !s->topn)

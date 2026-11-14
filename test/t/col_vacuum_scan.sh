@@ -53,7 +53,7 @@ check "dirty units: the index verifies" test "$(sql vs "SELECT sift.col_verify('
 # a merge replaces the segments of the scan's directory copy before the VACUUM: the VACUUM flags the merged segment, never the ones the scan reads
 # (the index is built empty, the inserts fill small write buffers, which are promoted: several immutable segments)
 IMM="SELECT count(*) FROM sift.col_segments('merged_idx') WHERE kind = 'immutable'"
-sql vs "CREATE TABLE merged (id int, g int, n int)" "CREATE INDEX merged_idx ON merged USING sift_col (id, g, n) WITH (write_buffer_limit = 64)" \
+sql vs "SET sift.async_maintenance = off" "CREATE TABLE merged (id int, g int, n int)" "CREATE INDEX merged_idx ON merged USING sift_col (id, g, n) WITH (write_buffer_limit = 64)" \
 	"INSERT INTO merged SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" "VACUUM merged" "DELETE FROM merged WHERE id % 5 = 0" >/dev/null || bail "setup merged failed"
 before=$(sql vs "$IMM")
 [[ $before -gt 1 ]] || bail "the index has $before immutable segments: nothing to merge"

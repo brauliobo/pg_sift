@@ -216,9 +216,6 @@ typedef struct SiftPosBuf
 /* Positions of the posting of the given rank in the term (the group's base plus the rank in the group) */
 extern void sift_post_positions(SiftPostingCursor *c, uint32 rank, SiftPosBuf *out);
 
-/* The checkpoints and the records of a term with positions, and the records' length */
-extern void sift_post_pos_stream(SiftPostingCursor *c, const uint32 **ckpt, const uint8 **rec, uint32 *len);
-
 /*
  * The records of a term with positions in rank order, read through a window of the stream instead of whole: each call returns
  * the next record and its length, valid until the next call. The cursor must outlive the reader.
@@ -227,6 +224,9 @@ typedef struct SiftPosReader SiftPosReader;
 
 extern SiftPosReader *sift_post_pos_reader(SiftPostingCursor *c, MemoryContext mcxt);
 extern const uint8 *sift_post_pos_next(SiftPosReader *r, uint32 *len);
+/* What sift_seg_walk checks of a term's records: the next one starts at its block's checkpoint, and none is left after the last posting */
+extern bool sift_post_pos_ckpt_ok(SiftPosReader *r, uint32 rank);
+extern uint64 sift_post_pos_rest(const SiftPosReader *r);
 
 /*
  * The record at p: its end, the occurrences it holds and the last one; raises

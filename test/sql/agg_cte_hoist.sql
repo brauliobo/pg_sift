@@ -3,6 +3,7 @@
 -- which PostgreSQL computes once. Only an IN sub-select that reads nothing of the query around it moves; the CTEs it reads (periods) stay the ones
 -- of the WITH. The rows are the normal plan's.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, payload jsonb) WITH (autovacuum_enabled = false);
@@ -42,27 +43,17 @@ BEGIN
 	END LOOP;
 	RETURN NEXT;
 END $$;
-CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE d bigint;
-BEGIN
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	RESET sift.enable_agg;
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	IF (SELECT count(*) FROM r_off) < 10 THEN RAISE EXCEPTION 'the series has few rows'; END IF;
-	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) x;
-	DROP TABLE r_on, r_off;
-	RETURN d;
-END $$;
+CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.agg_differences_min_10_rows(q) $$;
 
 -- an aggregating sub-select moves (the second reads a CTE of the WITH from inside it); a lookup of the table, a correlated one and NOT IN stay
 SELECT 'aggregate' AS filter, * FROM plan_nodes(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25'));
 SELECT 'reads periods' AS filter, * FROM plan_nodes(series_query($f$SELECT x.parent_id FROM events x JOIN periods p ON x.ts <@ p.range GROUP BY x.parent_id HAVING min(x.id) < 35 AND count(*) > 100$f$));
 SELECT 'lookup' AS filter, * FROM plan_nodes(series_query('SELECT parent_id FROM events WHERE id < 5000'));
-SELECT 'correlated' AS filter, * FROM plan_nodes(series_query('SELECT x.parent_id FROM events x WHERE x.id = e.id GROUP BY x.parent_id'));
-SELECT 'not in' AS filter, * FROM plan_nodes(replace(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25'), 'e.parent_id IN', 'e.parent_id NOT IN'));
+SELECT 'correlated' AS filter, hoisted_ctes, hoisted_reads FROM plan_nodes(series_query('SELECT x.parent_id FROM events x WHERE x.id = e.id GROUP BY x.parent_id'));
+SELECT 'not in' AS filter, hoisted_ctes, hoisted_reads FROM plan_nodes(replace(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25'), 'e.parent_id IN', 'e.parent_id NOT IN'));
 SELECT differences(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25')) AS aggregate_differences,
        differences(series_query($f$SELECT x.parent_id FROM events x JOIN periods p ON x.ts <@ p.range GROUP BY x.parent_id HAVING min(x.id) < 35 AND count(*) > 100$f$)) AS periods_differences;
 DROP TABLE events;
 DROP FUNCTION differences(text), plan_nodes(text), series_query(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

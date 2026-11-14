@@ -121,6 +121,18 @@ sift_agg_memo_begin(void)
 	return part_memo_cx;
 }
 
+MemoryContext
+sift_agg_memo_cx(void)
+{
+	return part_memo_cx;
+}
+
+uint64
+sift_agg_memo_seq(void)
+{
+	return memo_seq;
+}
+
 void
 sift_agg_memo_end(MemoryContext cx)
 {
@@ -212,6 +224,7 @@ stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
 	dst->allvisible_frac = src->allvisible_frac;
 	dst->exact_frac = src->exact_frac;
 	dst->rows_miss = src->rows_miss;
+	dst->miss_pending = src->miss_pending;
 	dst->zones = src->zones;
 	memcpy(dst->dim_miss, src->dim_miss, d);
 	memcpy(dst->mm_miss, src->mm_miss, d);
@@ -225,6 +238,7 @@ stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
 	memcpy(dst->zone_span, src->zone_span, d);
 	memcpy(dst->head_cover, src->head_cover, d);
 	memcpy(dst->gord_cover, src->gord_cover, d);
+	memcpy(dst->gord_free, src->gord_free, d);
 	memcpy(dst->gord_group, src->gord_group, n * sizeof(int));
 	memcpy(dst->gord_bygroup, src->gord_bygroup, n * sizeof(bool));
 	memcpy(dst->gord_coll, src->gord_coll, n * sizeof(uint32));
@@ -234,6 +248,7 @@ stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
 	memcpy(dst->ovf, src->ovf, b);
 	memcpy(dst->jnull, src->jnull, b);
 	memcpy(dst->nokinds, src->nokinds, b);
+	memcpy(dst->rootless, src->rootless, d);
 }
 
 /*
@@ -259,7 +274,7 @@ facts_check(Relation rel, SrcFacts *e, bool found)
 		e->table_gen = e->table->gen;
 		e->all_gen = facts_all;
 		e->read = false;
-		sift_colsrc_stats(rel, &fresh);
+		sift_colsrc_stats_lazy(rel, &fresh);
 		fresh.zones = zones_copy(fresh.zones, facts_cx);
 		e->stats = fresh;
 		sift_colsrc_preagg(rel, &e->pa);

@@ -9,8 +9,8 @@ INSERT INTO facts
 SELECT i, i % 40, '2026-01-01'::date + (i % 15), CASE WHEN i % 9 = 0 THEN NULL ELSE i % 11 END, repeat('payload', 50)
 FROM generate_series(1, 60000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, day, amount);
-NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = dim_a_id, day
+NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, day
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 CREATE TABLE left_names (id int, name text);
 INSERT INTO left_names SELECT i, 'n' || (i % 6) FROM generate_series(0, 19) i;

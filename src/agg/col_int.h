@@ -4,32 +4,14 @@
 #ifndef SIFT_AGG_COL_INT_H
 #define SIFT_AGG_COL_INT_H
 
-#include "access/genam.h"
-#include "access/relation.h"
-#include "access/table.h"
-#include "access/tableam.h"
-#include "catalog/index.h"
-#include "catalog/pg_type.h"
-#include "executor/executor.h"
 #include "nodes/execnodes.h"
-#include "utils/lsyscache.h"
-#include "utils/memutils.h"
-#include "utils/rel.h"
 
-#include "agg/kern.h"
 #include "agg/pre.h"
 #include "agg/zoneprune.h"
 #include "agg/chunkfilter.h"
 #include "agg/sel.h"
 #include "agg/wide.h"
-#include "core/popcount.h"
 #include "col/col.h"
-#include "col/gpu.h"
-#include "col/pagg.h"
-#include "col/am.h"
-#include "col/enc.h"
-#include "col/pg.h"
-#include "agg/colsrc.h"
 #include "col/shred_pg.h"
 
 /*
@@ -45,6 +27,8 @@ typedef struct ColRecheck
 	SiftShredRecheck *rc;
 	int			nleaf;
 	int			leaf[SIFT_COLSRC_MAX_LEAVES];	/* the leaves with a mode */
+	bool		haskey[SIFT_COLSRC_MAX_LEAVES];	/* ... that are the key of doc ? 'key' (SRK_HASKEY): the rows to read again are those of a document that is no object */
+	bool		read[SIFT_COLSRC_MAX_LEAVES];	/* ... that the query reads, beside a key test or alone: the rows to read again are those that hold a value the leaf cannot store */
 	uint64		gen;			/* the unit (ColSource.ugen) the rows were collected for */
 	uint64	   *flag;			/* its flagged rows, live or not */
 	uint64	   *cand;			/* the live ones: they are read again unless the executor clears them (col_recheck_rows) */
@@ -96,8 +80,6 @@ typedef struct ColSource
 	uint64	   *wgen;
 	uint64		ugen;			/* the unit the source is at, counted */
 	uint64		wseq;			/* dictionaries made, for their ids */
-	SiftColValue *fvals;		/* the constants of one filter_str call */
-	int			fcap;
 	SiftAggPre	pre;			/* the histogram or rollup of the last unit_hist / unit_rollup */
 } ColSource;
 #define COL_MAX_WIDE		8		/* the wide conjuncts of a scan (SIFT_AGG_MAX_WIDE) */
@@ -142,9 +124,12 @@ extern void col_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits);
 extern bool col_vet_needed(void *impl, const SiftSrcUnit *unit);
 extern bool col_gorder_compact(void *impl, int i, int leaf);
 extern bool col_gorder_clean(void *impl, int i);
-extern bool col_gorder_group_values(void *impl, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n);
+extern void *col_gorder_groups_open(void *impl, int gleaf, int kleaf, const int64 *only, bool desc, MemoryContext cxt);
+extern bool col_gorder_groups_next(void *cursor, int64 *group);
 extern bool col_gorder_groups(void *impl, int i, int leaf, uint32 *ngroups);
 extern void col_gorder_group_at(void *impl, int i, int leaf, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
 extern void col_stats_bygroup(SiftSrcStats *st, const SiftColLeafStats *ls, int ncols);
+extern const char *sift_col_conn_proof(void *impl, int leaf, uint64 *lineage, uint32 *xmin, bool *clean);
+extern void sift_col_miss(Relation index, SiftSrcStats *st);
 
 #endif							/* SIFT_AGG_COL_INT_H */

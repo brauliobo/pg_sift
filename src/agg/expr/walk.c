@@ -15,7 +15,6 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
-#include "access/htup_details.h"
 #include "catalog/pg_type.h"
 #include "utils/memutils.h"
 

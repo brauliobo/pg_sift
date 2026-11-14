@@ -14,14 +14,15 @@
 #include "col/setsum.h"
 #include "col/seg.h"
 #include "col/am/am_int.h"
+#include "col/conn.h"
 #include "core/ops.h"
+
+bool		sift_col_legacy_options = false;
 
 /*
  * col/am/am.c - the sift_col index access method: handler, options, the per-relation leaf list, tuple to row conversion and
  * aminsert. The build is in col/build/build.c, VACUUM and maintenance in col/maint/maint.c, the read side in col/scan/scan.c.
  */
-
-bool		sift_enable_col = true;
 
 /* 5 is the minor of the wide leaves, which a schema takes by itself, and 11 the format of the write buffer of a table with a wide row: the setting is 3, 4, 6, 7, 8, 9, 10, 12, 13, 14 or 15 */
 static bool
@@ -134,6 +135,8 @@ order_array_syntax(const char *value)
 SYNTAX_VALIDATOR(preagg, sift_cpagg_syntax(value))
 SYNTAX_VALIDATOR(rollup, sift_cpagg_rollup_syntax(value))
 SYNTAX_VALIDATOR(rollup_dims, sift_cpagg_rows_syntax(value))
+SYNTAX_VALIDATOR(rollup_leaves, sift_cpagg_rollup_syntax(value))
+SYNTAX_VALIDATOR(rollup_columns, sift_cpagg_rows_syntax(value))
 SYNTAX_VALIDATOR(calendar_columns, sift_cpagg_calendar_syntax(value))
 SYNTAX_VALIDATOR(return_columns, am_return_walk(value, NULL, NULL))
 SYNTAX_VALIDATOR(order_columns, sift_crun_syntax(value))
@@ -155,6 +158,19 @@ row_key_syntax(const char *value)
 }
 
 SYNTAX_VALIDATOR(track_changes, row_key_syntax(value))
+
+/* 'fk -> parent(key)', or empty or off: the names are resolved where the connection is made (col/conn_decl.c) */
+static const char *
+connect_syntax(const char *value)
+{
+	const char *err = NULL;
+
+	if (value[0] == '\0' || strcmp(value, "off") == 0 || strcmp(value, "auto") == 0 || strcmp(value, "auto:") == 0)
+		return NULL;
+	return sift_conn_parse(value, &err) ? NULL : err;
+}
+
+SYNTAX_VALIDATOR(connect, connect_syntax(value))
 
 /* one column, or 'group, key': the names themselves are checked where the options they stand for are */
 static const char *
@@ -204,10 +220,6 @@ gord_strcmp(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid)
 void
 sift_col_init(void)
 {
-	DefineCustomBoolVariable("sift.enable_col",
-							 "Enables the column scans over sift_col indexes.",
-							 NULL, &sift_enable_col, true,
-							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.enable_col_scan",
 							 "Lets the planner use a sift_col index with the sift.col_*_ops operator classes as a bitmap index scan.",
 							 "On by default: the planner chooses it by cost against the b-trees and the sequential scan; off keeps the aggregate scans of SiftAgg only, see docs/COL-SCAN.md.",
@@ -231,6 +243,18 @@ sift_col_init(void)
 							 "A request for a rollup refresh starts the background worker that makes it.",
 							 "Off: the requests wait in the queue until sift.col_rollup_refresh(index) is called.",
 							 &sift_col_rollup_worker, true, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.col_auto_connect",
+							 "CREATE INDEX and REINDEX of a sift_col index connect it to the sift_col indexes of the tables its validated foreign keys reference.",
+							 "On: an index without the option connect that holds the column of a validated single column foreign key to an int2, int4 or int8 key of a heap table that has a sift_col index tracking that key "
+							 "is connected to it (the choice is written into the option as 'auto: ..', and a NOTICE names it). "
+							 "Off: only an index with connect = 'auto' or an explicit connect option is connected. The first child connected to a parent index holds the writers of the parent table out from the end of its scan to the end of the statement.",
+							 &sift_col_auto_connect, true, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_connect_refresh_pct",
+							"Percent of the rows of a parent table whose keys changed since the stamp of a segment of a connected sift_col index from which the automatic rewrite fills the segment again.",
+							"A read patches the rows of the changed keys from the join, so a few changed keys cost less than the rewrite of the segment (the found flags it holds are as of its stamp). "
+							"A segment that was never filled (the first child of a parent, whose journal starts after its scan) or whose parent index was rebuilt is rewritten whatever the share, "
+							"within the rules of sift.col_auto_merge (the WAL budget included).",
+							&sift_col_connect_refresh_pct, 10, 1, 100, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_auto_merge",
 							 "Keeps the sift_col indexes answerable after churn: a background worker vacuums the heap table, and after a VACUUM that left an index scattered it seals the write buffer and merges all its segments into one.",
 							 "Rows on a page the visibility map does not call all-visible (any page with an UPDATE or DELETE since the last VACUUM) are checked one by one in the heap, "
@@ -270,7 +294,8 @@ sift_col_init(void)
 							"Megabytes of overlapping runs one pass of the automatic rewrite of a sift_col index rewrites.",
 							"A build leaves runs of rows sorted by the key_cut key, each as large as a partition and overlapping its neighbours in the key; the rewrite cuts them by key, "
 							"a window of the runs that overlap at a time, and stops when a pass has written this much. The next VACUUM, worker pass or sift.col_maintain(index) goes on, "
-							"so the WAL and the I/O of the rewrite are spread over passes (the index stays valid and equal between them). 0: one pass does all of it.",
+							"so the WAL and the I/O of the rewrite are spread over passes (the index stays valid and equal between them). The blocks a pass frees are reusable only when the snapshots that may read them end, "
+							"so the automatic rewrite waits for them once they reach this much (or half the index, when that is less): the file stands at the live bytes plus one pass meanwhile. 0: one pass does all of it.",
 							&sift_col_auto_merge_pass_mb, 1024, 0, MAX_KILOBYTES / 1024, PGC_SUSET, GUC_UNIT_MB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_active",
 							"Client backends of the database running a statement above which the automatic rewrite of a sift_col index waits for a quieter moment.",
@@ -288,6 +313,16 @@ sift_col_init(void)
 							"16 superblocks or more with under half this many rows each is written as units of this many rows in TID order, and a merge that stays that sparse does the same. "
 							"A merge that reaches this many rows per superblock cuts by superblock again. Needs a table of 16 superblocks (4,096 pages) or more.",
 							&sift_col_unit_floor, 2048, 0, 32768, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.col_wbuf_ref",
+							 "A row of a heap table with a sift_col index that tracks changes goes to the write buffer as a 16 byte reference to its heap tuple, not as its values.",
+							 "The backend that inserts the row keeps its values in shared memory (1 MB segments made on demand, 128 MB for the server at most, 88 bytes a row of a 13 column table), and the reader of the buffer "
+							 "takes them from there. A server that starts again, a standby and a promoted standby have none: the first reader builds them from the heap, once for the buffer. A row that finds no room "
+							 "is written with its values (sift.col_arena_status shows how many). Records written while it was on stay references after it is turned off; a buffer that holds one is column format minor 44. "
+							 "An index without track_changes, a speculative insertion and a table that is not a heap keep the values.",
+							 &sift_col_wbuf_ref, true, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_legacy_options",
+							 "Testing: a build honors the options that 4.3 deprecated (key_cut_rows, point_columns, order_columns, order_layout), which are ignored by default and removed in 4.4.",
+							 NULL, &sift_col_legacy_options, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
@@ -301,13 +336,13 @@ sift_col_init(void)
 							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_leaf_cache_kb",
 							"Shared memory, for all backends together, that keeps what the zones of the units of a sift_col index say to the planner (a record for each leaf and a sample of the unit zones), so that a new backend does not read them all (0: off).",
-							"The table is allocated, at the size of this setting, by the first backend that plans a statement over a sift_col index after the server starts; a later change turns the use of it on and off (0), not its size. A record is about 33 kB for each integer leaf and 0.4 kB for the others; a record that does not fit is not kept, and the oldest goes when the table is full.",
+							"The table is allocated, at the size of this setting, by the first backend that plans a statement over a sift_col index after the server starts; a later change turns the use of it on and off (0), and a size no table has yet is a table of its own (the tables of other sizes stay until the server restarts). A record is about 33 kB for each integer leaf and 0.4 kB for the others; a record that does not fit is not kept, and the oldest goes when the table is full.",
 							&sift_col_leaf_cache_kb, 16384, 0, 262144,
 							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
-							"Column format minor of the segments written (15, the newest 3.3 writes, by default): 6 keeps them readable by pg_sift 3.2, 4 by 3.1, 3 by 3.0.",
+							"Column format minor of the segments written (15 by default; an option with a newer layout, such as key_cut or point_tid_columns, stamps its own higher minor): 6 keeps them readable by pg_sift 3.2, 4 by 3.1, 3 by 3.0.",
 							"Segments already written keep their minor; a 3.2 library refuses the ones above 6. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
-							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a date or timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option key_columns, the minor 12 only for one with the option superunit, the minor 13 only for one with the option order_columns, the minor 14 only for one with a dictionary of 1,024 strings or more (the option dict_lookup), the minor 15 only for one whose key_columns keep a key list or a bitmap.",
+							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a date or timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option key_columns, the minor 12 only for one with the option superunit, the minor 13 only for one with the option order_columns, the minor 14 only for one with a dictionary of 1,024 strings or more (the option dict_lookup), the minor 15 only for one whose key_columns keep a key list or a bitmap. Those above 15 are written by the options that need them, and a library older than the release that added the layout refuses the segment.",
 							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
 							PGC_SUSET, 0, check_col_format_minor, NULL, NULL);
 #ifdef SIFT_TESTING
@@ -317,9 +352,15 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_merge_panic",
 							 "Testing: a column merge (promotion excepted) PANICs after it wrote the new segment, before it replaces the old ones.",
 							 NULL, &sift_test_col_merge_panic, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_gorder_seek",
+							 "Testing: every chunk of an order array is written seekable (a fence key every 32 entries), whatever its bytes.",
+							 NULL, &sift_test_col_gorder_seek, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_gorder_rows",
 							"Testing: 1024 writes the global order with the chunks of column format minor 21 (1,024 entries), 0 the current ones (512).",
 							NULL, &sift_test_col_gorder_rows, 0, 0, 1024, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_conn_fill",
+							"Testing: how the fill of the found flags of a connected index knows the keys of the parent: 1 reads the parent, 2 probes its btree, 0 takes the cheaper.",
+							NULL, &sift_test_conn_fill, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_floor_sbs",
 							"Testing: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16).",
 							NULL, &sift_test_col_floor_sbs, 0, 0, 1000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -400,6 +441,15 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_segment_kb",
 							"Testing: kB of memory a sift_col build's segment writer holds before the segment is cut (0 = by maintenance_work_mem).",
 							NULL, &sift_test_col_segment_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spill_run_kb",
+							"Testing: kB of memory a run of a sift_col build by key ranges may take (0 = 768 MB).",
+							NULL, &sift_test_col_spill_run_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_no_present",
+							 "Testing: a sift_col build writes no presence leaf for the jsonb documents (the layout of an index made before 4.2).",
+							 NULL, &sift_test_col_no_present, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_log_max_read",
+							"Testing: the newest column format whose tombstone log a sift_col index opens (0 = the build's own); a log of a newer format is refused.",
+							NULL, &sift_test_col_log_max_read, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_max_segments",
 							"Testing: segments a participant of a sift_col build with key_cut may hold before it merges runs (0 = what the directory has room for).",
 							NULL, &sift_test_col_max_segments, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -444,8 +494,11 @@ sift_col_init(void)
 					   "The segments written from now on keep, for each key_columns leaf, a table of its distinct keys with the rows, sums, minima and maxima of each, where that adds at most 3% to the segment, so that count, sum, min and max WHERE key = x read one record of a segment, not its units; the segments are column format minor 22, which 3.4 and older libraries cannot read (default on)",
 					   true, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup_dims",
-						 "the scalar columns that the rollup of the rows of every unit written from now on groups by: 'col, col' or 'col, col: measure, ...', 'auto' (default) or 'off'; the segments are column format minor 8",
+						 "Deprecated alias of rollup_columns, which wins when both are set",
 						 "", sift_col_validate_rollup_dims, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "rollup_columns",
+						 "the scalar columns that the rollup of the rows of every unit written from now on groups by: 'col, col' or 'col, col: measure, ...', 'auto' (default) or 'off'; the segments are column format minor 8",
+						 "", sift_col_validate_rollup_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "calendar_columns",
 						 "the date, timestamp and timestamptz columns whose calendar cells (days, else months, else years) every unit written from now on keeps, so that a GROUP BY of date_trunc, extract or a cast of them, and a range, are answered from the cells; 'col, col', 'all' or 'off' (default all, unless the index has JSON paths; the cube holds at most 16 dimensions with the default dims, a list that does not fit is refused and 'all' keeps the columns that fit; the segments are column format minor 8)",
 						 "", sift_col_validate_calendar_columns, ShareUpdateExclusiveLock);
@@ -456,16 +509,16 @@ sift_col_init(void)
 						 "the integer, date, timestamp, numeric and float columns, most significant first, whose range cuts the units that promotion, merge and REINDEX write (a key-cut unit lists its TIDs; the segments are column format minor 17); 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX sample the heap and cut by the first key-shaped column whose equality reads many units and that no ordered leaf competes with; a unit is a superblock otherwise; default auto)",
 						 NULL, NULL, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "key_cut_rows",
-					  "Rows a key-cut unit aims at (0: as many as an average superblock of the table holds)",
+					  "Deprecated, ignored and removed in 4.4: the rows a key-cut unit aims at (the units aim at the rows of an average superblock)",
 					  0, 0, 32768, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_columns",
-						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
+						 "Deprecated, ignored and removed in 4.4: the columns whose rows every unit kept in the order of the column (a sorted run); the order arrays of order_array_columns answer what it did (default none)",
 						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_array_columns",
-						 "the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted (with the sorted run of the column), so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
+						 "the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted, so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
 						 NULL, sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "key_order",
-						 "the integer, date, timestamp, numeric and float column, or 'group, key', whose order the rows are kept in: for one column it stands for key_cut, order_columns, order_array_columns and point_tid_columns on it, for 'group, key' for order_columns and order_array_columns on the key and order_array_group on the group (key_cut is left to the build), each while the option itself is not set; for a table that is stored in the order of the key (default none)",
+						 "the integer, date, timestamp, numeric and float column, or 'group, key', whose order the rows are kept in: for one column it stands for key_cut and order_array_columns on it, for 'group, key' for order_array_columns on the key and order_array_group on the group (key_cut is left to the build), each while the option itself is not set; for a table that is stored in the order of the key (default none)",
 						 "", sift_col_validate_key_order, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_layout",
 						 "how the order arrays of order_array_columns are laid out: 'whole' keeps the key of every row, 'compact' keeps the heap address of every row and its key rounded to a bucket (the exact key is read from the table row where a scan needs it); 'auto' (default) keeps each chunk of 512 entries compact where that is at least a fifth smaller and whole elsewhere; a list gives a layout to columns: 'compact: ts, created; whole: id'. It never adds an array: order_array_columns says which columns have one",
@@ -477,7 +530,7 @@ sift_col_init(void)
 						 "the int2, int4, int8, date, timestamp, timestamptz, text, varchar and uuid columns whose distinct values every unit written from now on keeps as a HyperLogLog sketch (sift.approx_count_distinct reads one sketch a unit, not the rows; count(DISTINCT) stays exact); the segments are column format minor 18 (default none)",
 						 "", sift_col_validate_hll_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "point_columns",
-						 "the plain integer, text and uuid columns whose rows every segment written from now on lists by value (a point directory that lets an equality or a short IN list of the access method find its rows with a probe, and the heap check them); the segments are column format minor 14 (default none)",
+						 "Deprecated, removed in 4.4: the plain integer, text and uuid columns whose rows every segment written from now on lists by value; a build lists them in the directory of heap addresses of point_tid_columns instead (default none)",
 						 "", sift_col_validate_point_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "count_columns",
 						 "the text columns whose dictionary of 1,024 strings or more every segment written from now on stores with the rows of each string in byte order (the columns whose dictionary is read in place do so unless this is off, the ones named here also get that order), so that count(*) of a prefix (LIKE 'abc%'), a range or an equality of the column over segments with no dead row reads two positions of the dictionary and no row; 0.1 to 1 byte for each distinct string, the segments are column format minor 24, which only 3.5 and later read (default empty: automatic; off: none)",
@@ -488,6 +541,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "track_changes",
 						 "the column that identifies a row (off, auto = the primary key when the index holds it, else off with a NOTICE, or a column with a unique index of its own, NOT NULL): the index records the entries of the row versions that stopped being live (an UPDATE, a key change, a DELETE) in a tombstone log, so that a read of rows changed and not yet vacuumed can leave the heap out. It installs two internal statement triggers on the table (AFTER UPDATE and AFTER DELETE), dropped with the index, and writes a baseline of the dead versions in a pass over the heap (column format minor 43, which only 4.0 and later read); it adds the column to point_tid_columns",
 						 "auto", sift_col_validate_track_changes, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "connect",
+						 "connects this index to the sift_col index of the table it joins: 'fk -> [schema.]parent(key)' names the column of this index that holds the parent key, the parent table (in the schema of this index's table when not qualified) and its key column; the parent columns that queries read come from the parent's own index. The parent index (the one that tracks the key) keeps a journal of the keys its updates and deletes end, and this index depends on it, so DROP INDEX of the parent index needs CASCADE (column format minor 44, which only 4.3 and later read); the key is an int2, int4 or int8 column (default none)",
+						 "", sift_col_validate_connect, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "return_columns",
 						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
 						 "", sift_col_validate_return_columns, ShareUpdateExclusiveLock);
@@ -495,8 +551,11 @@ sift_col_init(void)
 					  "Units per superunit summary: the sums and the cube of every group of this many consecutive units of a segment are stored once more, merged, and answer a query that no predicate cuts through from one read; the segments written from now on are column format minor 12 (0: none, else 2 to 256; default 16)",
 					  SIFT_SUPER_DEFAULT_FAN, 0, SIFT_SUPER_MAX_FAN, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup",
-						 "the leaves of array elements and map values that the rollup of every unit groups by: 'leaf, leaf, ...', or off",
+						 "Deprecated alias of rollup_leaves, which wins when both are set",
 						 "", sift_col_validate_rollup, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "rollup_leaves",
+						 "the leaves of array elements and map values that the rollup of every unit groups by: 'leaf, leaf, ...', 'auto' (default) or off",
+						 "", sift_col_validate_rollup_leaves, ShareUpdateExclusiveLock);
 }
 
 static const relopt_parse_elt col_relopt_tab[] = {
@@ -508,13 +567,15 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"preagg", RELOPT_TYPE_STRING, offsetof(SiftColOptions, preagg)},
 	{"rollup", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup)},
 	{"rollup_dims", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_dims)},
+	{"rollup_leaves", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_leaves)},
+	{"rollup_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_columns)},
 	{"calendar_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, calendar_columns)},
 	{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
 	{"cluster_advice", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cluster_advice)},
 	{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
 	{"key_table", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, key_table)},
 	{"array_lengths", RELOPT_TYPE_ENUM, offsetof(SiftColOptions, array_lengths)},
-	{"dict_lookup", RELOPT_TYPE_ENUM, offsetof(SiftColOptions, dict_lookup)},
+		{"dict_lookup", RELOPT_TYPE_ENUM, offsetof(SiftColOptions, dict_lookup)},
 	{"return_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, return_columns)},
 	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
 	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
@@ -530,12 +591,13 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"count_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, count_columns)},
 	{"point_tid_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_tid_columns)},
 	{"track_changes", RELOPT_TYPE_STRING, offsetof(SiftColOptions, track_changes)},
+	{"connect", RELOPT_TYPE_STRING, offsetof(SiftColOptions, connect)},
 };
 
 /*
  * The columns key_order stands for are appended to the options, where the accessors of the options it fills read them while those are not set. 'a, b' is a
- * group and a key (the group of the order arrays; key_cut and the point directory are left to the build, which cuts by the group only where its rule says), 'a' is
- * a key (key_cut, order_columns, order_array_columns and point_tid_columns). The columns are trimmed: 'a,b' and 'a , b' are the same option.
+ * group and a key (the group of the order arrays; key_cut is left to the build, which cuts by the group where the units read by an equality on it are many), 'a' is
+ * a key (key_cut and order_array_columns; the point directory is left out, it makes the index 71 to 95% larger for lists of the key alone). The columns are trimmed: 'a,b' and 'a , b' are the same option.
  */
 static void
 key_order_expand(SiftColOptions **op)
@@ -580,10 +642,32 @@ key_order_expand(SiftColOptions **op)
 	*op = o;
 }
 
+/* The older name counts when the new one is empty (the strings live in the same bytea, so the offset is shared) */
+static void
+alias_string(const SiftColOptions *o, int old, int *neu)
+{
+	if (old && *((const char *) o + old) && !(*neu && *((const char *) o + *neu)))
+		*neu = old;
+}
+
 bytea *
 am_col_amoptions(Datum reloptions, bool validate)
 {
 	SiftColOptions *o = build_reloptions(reloptions, validate, col_relopt_kind, sizeof(SiftColOptions), col_relopt_tab, lengthof(col_relopt_tab));
+
+	if (o)
+	{
+		alias_string(o, o->rollup, &o->rollup_leaves);
+		alias_string(o, o->rollup_dims, &o->rollup_columns);
+	}
+	if (validate && o && reloptions != (Datum) 0)
+		foreach_ptr(DefElem, def, untransformRelOptions(reloptions))
+		{
+			if (strcmp(def->defname, "rollup") == 0)
+				sift_relopt_alias_notice("rollup", "rollup_leaves");
+			else if (strcmp(def->defname, "rollup_dims") == 0)
+				sift_relopt_alias_notice("rollup_dims", "rollup_columns");
+		}
 
 	if (validate && o && o->superunit == 1)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("superunit must be 0 or between %d and %d", SIFT_SUPER_MIN_FAN, SIFT_SUPER_MAX_FAN)));
@@ -664,7 +748,9 @@ sift_col_alter_check(Relation index)
 	(void) sift_col_rel(index);
 	sift_col_row_key_check(index);
 	sift_col_track_reconcile(index);
+	sift_conn_alter(index);
 }
+
 
 COL_OPT_STR(sift_col_options_key_columns, key_columns, NULL)
 
@@ -672,7 +758,7 @@ COL_OPT_STR(sift_col_options_point_columns, point_columns, "")
 
 COL_OPT_STR(sift_col_options_count_columns, count_columns, "")
 
-COL_OPT_STR_KO(sift_col_options_point_tid_columns, point_tid_columns, ko_key)
+COL_OPT_STR(sift_col_options_point_tid_columns, point_tid_columns, "")
 
 COL_OPT_STR(sift_col_options_key_order, key_order, "")
 
@@ -685,13 +771,41 @@ sift_col_options_key_order_auto(Relation index)
 
 COL_OPT_STR(sift_col_options_row_key, track_changes, "auto")
 
+COL_OPT_STR(sift_col_options_connect, connect, "")
+
+bool
+sift_col_options_key_cut_rows_set(Relation index)
+{
+	return sift_col_options(index)->key_cut_rows != 0;
+}
+
+/* the option order_columns is set: a deprecated one, honored only under sift.test_col_legacy_options */
+bool
+sift_col_options_order_columns_option(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->order_columns && *((const char *) o + o->order_columns);
+}
+
 /* whether the user set order_columns, by the option or by a key_order of their own: what the build chose with key_cut ('auto: a, b' in key_order) is decided again with it */
 bool
 sift_col_options_order_columns_set(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
-	return (o->order_columns && *((const char *) o + o->order_columns)) || (o->ko_last && !o->ko_auto);
+	return (sift_col_legacy_options && sift_col_options_order_columns_option(index)) || (o->ko_last && !o->ko_auto);
+}
+
+/* the group of a key_order of the user's, 'group, key', with no order_columns of their own (NULL for any other): the column a build with no key_cut cuts the units by */
+const char *
+sift_col_options_key_order_group(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	if (o->ko_group == 0 || o->ko_auto || (sift_col_legacy_options && sift_col_options_order_columns_option(index)))
+		return NULL;
+	return (const char *) o + o->ko_group;
 }
 
 /* the leaves the option names: 'auto: a, b' is the choice of a build, 'auto' and 'off' name none */

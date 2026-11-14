@@ -3,10 +3,12 @@
  * The conjuncts over the joined rows each once, the aggregates the arms share, and the
  * split of the conjuncts over the rows between the pass and the arms.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "nodes/nodeFuncs.h"
 
+#include "agg/agg.h"
 #include "agg/spec_fuse/int.h"
 
 static SiftAggPred *
@@ -35,7 +37,7 @@ remap_pred(const SiftAggPred *p, const FuseArm *arm)
 static bool
 agg_reads_combo(const SiftAggAgg *a)
 {
-	return (a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG) || a->kind == SAA_M_PG || (a->kind >= SAA_X_COUNT && a->kind <= SAA_X_AVG);
+	return saa_joined(a->kind) || saa_x(a->kind);
 }
 
 /* the conjunct with its own ids in the pass (an executor state each) */
@@ -135,17 +137,11 @@ fuse_posts(Fuse *f)
 }
 
 /* does the expression run a plan (a sub-select, or a parameter an InitPlan sets); the Param 0 of a SAP_LUT is the leaf's value */
-static bool
-runs_plan(Node *n, void *lut)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(runs_plan, void *, lut,
 	if (IsA(n, SubPlan) || IsA(n, AlternativeSubPlan))
 		return true;
 	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && !(lut && ((Param *) n)->paramid == 0))
-		return true;
-	return expression_tree_walker(n, runs_plan, lut);
-}
+		return true;)
 
 static bool
 pred_runs_plan(const SiftAggPred *p)

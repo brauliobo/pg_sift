@@ -11,8 +11,8 @@ SELECT i, (hashint4(i) & 2147483647) % 9, (hashint4(i + 1) & 2147483647) % 4, (h
 	   timestamp '2024-01-01' + (hashint4(i + 5) & 2147483647) % 100000 * interval '1 second'
 FROM generate_series(1, 6000) i;
 CREATE INDEX cl_col ON cl USING sift_col (id, a, b, c, f, amount, ts);
-NOTICE:  sift_col index "cl_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = b, c; track_changes = id
+NOTICE:  sift_col index "cl_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = b, c; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cl_col');
 VACUUM (ANALYZE) cl;
 CREATE FUNCTION cl_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;

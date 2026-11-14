@@ -2,6 +2,7 @@
 -- the row not dead in its unit) are the entries' keys and no heap row is read; the other entries are confirmed by the heap as before. The rows are the plan's without the extension after
 -- deleted, updated (HOT and not), rolled back and vacuumed rows, new rows, a promotion and a merge, and for a cursor opened before an update.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_col_legacy_options = off;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

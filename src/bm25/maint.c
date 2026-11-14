@@ -17,33 +17,25 @@
 #include "access/genam.h"
 #include "access/xact.h"
 #include "catalog/index.h"
-#include "catalog/pg_operator_d.h"
-#include "catalog/pg_type_d.h"
-#include "common/int.h"
 #include "miscadmin.h"
-#include "port/pg_bswap.h"
 #include "postmaster/bgworker.h"
-#include "storage/latch.h"
 #include "storage/lmgr.h"
-#include "storage/proc.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_status.h"
-#include "utils/memutils.h"
+#include "utils/inval.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
-#include "utils/wait_event.h"
-#include "utils/tuplesort.h"
 #include "utils/timestamp.h"
 
 #include "bm25/am.h"
-#include "bm25/build.h"
-#include "core/lane.h"
+#include "col/pg.h"
 #include "core/limits.h"
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
 #include "bm25/merge.h"
 #include "bm25/wbuf.h"
 #include "core/ops.h"
+#include "col/wbuf.h"
 #include "core/sql.h"
 #include "core/visibility.h"
 
@@ -70,20 +62,33 @@ int64		sift_maint_wait_max_us = 0;
 StaticAssertDecl(SIFT_MERGE_ENTRIES(SIFT_MERGE_MAX_FANIN) + SELF_PROMOTE_SEALED + 1 < ROOM_SEGMENTS, "merge policy acts after the room threshold");
 StaticAssertDecl(2 * SIFT_MERGE_MAX_FANIN <= SIFT_MAX_SEGMENTS, "a merge of the largest merge_fanin overflows a directory");
 
+static Oid	options_index = InvalidOid;
+static TransactionId options_xid = InvalidTransactionId;
+
+void
+sift_maint_options_written(Relation index)
+{
+	options_index = RelationGetRelid(index);
+	options_xid = GetTopTransactionId();
+}
+
+/* The lock a maintainer took after the commit of an option change reads the options of the commit, not those the cached state of its backend held while it waited */
 static bool
 maint_lock_mode(Relation index, bool wait, LOCKMODE mode)
 {
 	if (wait)
-	{
 		LockPage(index, SIFT_MAINT_LOCK_BLKNO, mode);
-		return true;
-	}
-	return ConditionalLockPage(index, SIFT_MAINT_LOCK_BLKNO, mode);
+	else if (!ConditionalLockPage(index, SIFT_MAINT_LOCK_BLKNO, mode))
+		return false;
+	AcceptInvalidationMessages();
+	return true;
 }
 
 static void
 maint_unlock_mode(Relation index, LOCKMODE mode)
 {
+	if (options_index == RelationGetRelid(index) && TransactionIdEquals(options_xid, GetTopTransactionIdIfAny()))
+		return;
 	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, mode);
 }
 
@@ -136,6 +141,8 @@ sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page 
 	if (sw->neu)
 	{
 		int			k = 1 + sw->nmore;
+
+		Assert(at >= 0);
 
 		if (n + k > SIFT_MAX_SEGMENTS)
 			ereport(ERROR,
@@ -225,7 +232,7 @@ in_backoff(const SiftMetaPageData *meta)
 static bool make_room_locked(const SiftMaintOps *ops, Relation index);
 
 /* Promotes every sealed segment, oldest first, until one fails; returns the number promoted */
-static int
+int
 promote_locked(const SiftMaintOps *ops, Relation index, bool seal_active, bool propagate)
 {
 	uint64		busy = 0;
@@ -423,6 +430,8 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 		ops->vacuum_log(index);
 	if (skipped && ops->vacuum_skipped)
 		ops->vacuum_skipped(index, info->heaprel);
+	if (ops->vacuum_heap)
+		ops->vacuum_heap(index, info->heaprel);
 	if (ops->vacuum_net)
 		ops->vacuum_net(index);
 	vacuum_merge(ops, index);
@@ -436,15 +445,10 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 		bool		defer = ops->vacuum_space_defer && ops->vacuum_space_defer(index);
 
 		if (!defer)
-		{
-			if (ops->vacuum_rotate && sift_maint_buffer_above_shrink(index))
-			{
-				ops->vacuum_rotate(index);
-				promote_locked(ops, index, false, false);
-			}
-			(void) sift_maint_shrink(index, info->message_level);
-		}
+			(void) online_shrink(ops, index, info->message_level);
 		sift_maint_space_rounds(index, NULL, info->message_level, defer ? 0 : (uint64) sift_vacuum_rewrite_limit << 20);
+		if (!defer)
+			online_fallback(ops, index, info->message_level);
 	}
 	sift_maint_unlock(index);
 	if (ops->vacuum_done)
@@ -459,15 +463,48 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	return stats;
 }
 
+/*
+ * Opens an index with its table locked first, in the order of a statement: DROP TABLE and the commands like it lock the table and then its indexes, so a backend that holds an
+ * index and then asks for the table waits for a command that waits for the index. The locks are held to the end of the transaction; NULL when the index is gone (missing_ok).
+ * An index that its creating transaction had not committed when the table was looked up is opened after that commit, with no table lock: it is closed, and the table it
+ * belongs to is locked on the next turn.
+ */
+static Relation
+open_index_table_first(Oid indexoid, LOCKMODE lock, bool missing_ok)
+{
+	for (;;)
+	{
+		Oid			heapoid = IndexGetRelation(indexoid, true);
+		Relation	index;
+
+		SIFT_POINT("sift-maint-before-table-lock");
+		if (OidIsValid(heapoid))
+			LockRelationOid(heapoid, lock);
+		SIFT_POINT("sift-maint-after-table-lock");
+		index = missing_ok ? try_index_open(indexoid, lock) : index_open(indexoid, lock);
+		if (index == NULL || index->rd_index->indrelid == heapoid)
+			return index;
+		index_close(index, lock);
+	}
+}
+
+/* What a worker or a transaction that records a failure opens: NULL when the index is gone */
+Relation
+sift_try_open_index(Oid indexoid, LOCKMODE lock)
+{
+	return open_index_table_first(indexoid, lock, true);
+}
+
 Relation
 sift_mops_open(const SiftMaintOps *ops, Oid indexoid, LOCKMODE lock)
 {
-	Relation	index = index_open(indexoid, lock);
+	Relation	index = open_index_table_first(indexoid, lock, false);
 
 	if (!ops->is_index(index))
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a %s index", RelationGetRelationName(index), ops->name)));
+	sift_store_require_ready(index);
 	return index;
 }
 
@@ -480,42 +517,54 @@ sift_mops_open_maintain(const SiftMaintOps *ops, Oid indexoid)
 	return index;
 }
 
-/* Seals the active segment and promotes every sealed one; returns the number promoted */
-/* The free end of the file that a step of the worker leaves, cut when it is worth the lock (released: the step freed it itself, which its own snapshot holds back from the screen) */
-static void
-cut_free_end(const SiftMaintOps *ops, Relation index, bool released)
+bool		sift_maint_own_xacts = false;
+
+/*
+ * The end of a step of a background worker: its transaction commits and the next step runs in a new one. What a step frees carries its transaction's xid and the
+ * worker's snapshot holds the horizon at that xid for as long as the transaction lasts, so a step could not reuse what the one before freed (the file grew by
+ * the size of the output of every step of a rewrite, and the next VACUUM cut it back). NULL when the index is gone.
+ */
+Relation
+sift_maint_step_boundary(Relation index)
 {
-	if (!ops->vacuum_truncate || !ops->vacuum_truncate(index) || RecoveryInProgress())
-		return;
-	sift_maint_lock(index, true);
-	if (released)
-		(void) sift_maint_cut_released(index, DEBUG1);
-	else
-		(void) sift_maint_space_budget(index, NULL, DEBUG1, 0);
-	sift_maint_unlock(index);
+	Oid			indexoid = RelationGetRelid(index);
+
+	if (!sift_maint_own_xacts)
+		return index;
+	index_close(index, RowExclusiveLock);
+	PopActiveSnapshot();
+	CommitTransactionCommand();
+	StartTransactionCommand();
+	PushActiveSnapshot(GetTransactionSnapshot());
+	return sift_try_open_index(indexoid, RowExclusiveLock);
 }
 
+/* Seals the active segment and promotes every sealed one; returns the number promoted */
 void
 sift_mops_cut_free_end(const SiftMaintOps *ops, Relation index)
 {
 	cut_free_end(ops, index, false);
 }
 
-int
-sift_mops_sql_promote(const SiftMaintOps *ops, Relation index)
+Datum
+sift_mops_sql_promote(const SiftMaintOps *ops, PG_FUNCTION_ARGS)
 {
+	Relation	index = sift_mops_open_maintain(ops, PG_GETARG_OID(0));
 	int			n;
 
 	sift_maint_lock(index, true);
 	n = promote_locked(ops, index, true, true);
 	sift_maint_unlock(index);
-	return n;
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_INT32(n);
 }
 
 /* Runs merge steps until the policy asks for none; force merges all immutable segments into one (and, if the kind says so, those of the open write buffer too) */
-int
-sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force)
+Datum
+sift_mops_sql_merge(const SiftMaintOps *ops, PG_FUNCTION_ARGS)
 {
+	Relation	index = sift_mops_open_maintain(ops, PG_GETARG_OID(0));
+	bool		force = PG_NARGS() > 1 && PG_GETARG_BOOL(1);
 	uint64		busy = 0;
 	int			n = 0;
 
@@ -529,12 +578,14 @@ sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force)
 	sift_maint_unlock(index);
 	/* also when no merge was due: the end a merge left is cut by the first call that finds the lock free, however many calls the busy ones were */
 	cut_free_end(ops, index, false);
-	return n;
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_INT32(n);
 }
 
 int
-sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic)
+sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic)
 {
+	Relation	index = *indexp;
 	const char *why;
 	TimestampTz start = GetCurrentTimestamp();
 	bool		all;
@@ -563,6 +614,9 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic)
 		/* a step of the kind makes progress; this is the end of a kind that does not */
 		if (n >= SIFT_MAX_SEGMENTS)
 			break;
+		*indexp = index = sift_maint_step_boundary(index);
+		if (index == NULL)
+			return n;
 		maint_lock_mode(index, true, ops->step_lock);
 	}
 	if (n > 0)
@@ -662,8 +716,9 @@ stamp_request(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	meta->maint_requested_at = *(TimestampTz *) arg;
 }
 
+/* By oid: what a commit callback has, where no relation can be opened */
 bool
-sift_maint_register_worker(Relation index, const char *function)
+sift_maint_register_worker_oid(Oid indexoid, const char *function)
 {
 	BackgroundWorker bw = {0};
 	BackgroundWorkerHandle *handle;
@@ -673,11 +728,17 @@ sift_maint_register_worker(Relation index, const char *function)
 	bw.bgw_restart_time = BGW_NEVER_RESTART;
 	snprintf(bw.bgw_library_name, BGW_MAXLEN, "pg_sift");
 	snprintf(bw.bgw_function_name, BGW_MAXLEN, "%s", function);
-	snprintf(bw.bgw_name, BGW_MAXLEN, "sift maintenance (index %u)", RelationGetRelid(index));
+	snprintf(bw.bgw_name, BGW_MAXLEN, "sift maintenance (index %u)", indexoid);
 	snprintf(bw.bgw_type, BGW_MAXLEN, "sift maintenance");
-	bw.bgw_main_arg = ObjectIdGetDatum(RelationGetRelid(index));
+	bw.bgw_main_arg = ObjectIdGetDatum(indexoid);
 	memcpy(bw.bgw_extra, &MyDatabaseId, sizeof(Oid));
-	if (RegisterDynamicBackgroundWorker(&bw, &handle))
+	return RegisterDynamicBackgroundWorker(&bw, &handle);
+}
+
+bool
+sift_maint_register_worker(Relation index, const char *function)
+{
+	if (sift_maint_register_worker_oid(RelationGetRelid(index), function))
 		return true;
 	sift_log_refused(index);
 	return false;
@@ -743,6 +804,67 @@ sift_maint_worker_connect(Datum main_arg, ErrorContextCallback *errctx)
 }
 
 /*
+ * What a document of the open write buffer costs each query that walks it (its page passed the bloom filter, which a 256-bit bloom on 900 and more terms a page lets nearly all
+ * pages do: 170 cycles for an absent term, 440 for a term of 5% of the documents, against 80 once it is in a segment) and what the promotion costs, once (55,000 cycles a
+ * document: 295 M cycles for 5,000, 95 ms with the WAL). Cycles, measured on 200,000 documents with a 5,000-document buffer.
+ */
+#define WBUF_WALK_PRICE			250.0
+#define WBUF_PROMOTE_PRICE		55000.0
+/* a maintenance step counts at half, and a buffer under this many documents is not worth a segment (a segment costs every later query about 140,000 cycles, the walk of 600 documents) */
+#define WBUF_PROMOTE_HALF		0.5
+#define WBUF_READ_MIN_DOCS		2000
+
+/*
+ * Have the queries that walked the open write buffer paid for its promotion? A buffer nobody reads has no walks noted, so a table that is only written never promotes before
+ * its limit, and the sum is per generation of the buffer, so one promotion ends the debt.
+ */
+bool
+sift_maint_wbuf_read_due(Relation index)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	bool		due = false;
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs && !due; i++)
+	{
+		double		paid;
+		uint64		ndocs,
+					sum_dl,
+					npages;
+
+		if (snap->segs[i].kind != SIFT_SEG_WBUF_OPEN)
+			continue;
+		paid = (double) sift_cwbuf_decoded(index, snap->segs[i].gen) * WBUF_WALK_PRICE;
+		if (paid < WBUF_PROMOTE_HALF * WBUF_PROMOTE_PRICE * WBUF_READ_MIN_DOCS)
+			continue;
+		sift_wbuf_summary(index, &snap->segs[i], &ndocs, &sum_dl, &npages);
+		due = ndocs >= WBUF_READ_MIN_DOCS && paid >= WBUF_PROMOTE_HALF * WBUF_PROMOTE_PRICE * (double) ndocs;
+	}
+	pfree(snap);
+	return due;
+}
+
+/* A search walked docs documents of the open buffer of generation gen: note them, and now and then ask whether the reads have paid for the promotion (at most once per sift.maintenance_naptime for a backend) */
+void
+sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs)
+{
+	static Oid	looked = InvalidOid;
+	static TimestampTz looked_at = 0;
+	TimestampTz now;
+
+	sift_cwbuf_decoded_note(index, gen, docs);
+	if (!sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+		return;
+	now = GetCurrentTimestamp();
+	if (looked == RelationGetRelid(index) && now - looked_at < (int64) sift_maintenance_naptime * 1000)
+		return;
+	looked = RelationGetRelid(index);
+	looked_at = now;
+	if (sift_maint_wbuf_read_due(index))
+		sift_maint_request_worker(index, "sift_read_promote_worker_main");
+}
+
+/*
  * One promotion or merge in a transaction of its own, holding no snapshot: the extents it frees are
  * reusable by the next step, because neither its xid nor its xmin hold the horizon back once it
  * committed. The worker lock makes it the only worker of the index at work; the others leave.
@@ -754,7 +876,7 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 	SiftStepResult	r = SIFT_STEP_IDLE;
 
 	StartTransactionCommand();
-	index = try_index_open(indexoid, RowExclusiveLock);
+	index = sift_try_open_index(indexoid, RowExclusiveLock);
 	if (index != NULL)
 	{
 		/* the lock is busy when a VACUUM is at it, which then does the work */
@@ -777,22 +899,19 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 
 /*
  * The worker stays until sift.maintenance_naptime after it started, looking for work every so often: a seal inside that window
- * of the request that started it asks for no worker of its own, and its segments would wait for the next seal or a VACUUM.
+ * of the request that started it asks for no worker of its own, and its segments would wait for the next seal or a VACUUM. So
+ * does a look that finds the maintenance lock with an inserter, which promotes and leaves the merges to the worker.
  * The last look is made after the window ended, so every such seal is before it.
  */
 void
-sift_maint_worker_main(Datum main_arg)
+sift_maint_worker_stay(Oid indexoid, TimestampTz start, SiftWorkerStep step)
 {
-	ErrorContextCallback errctx;
-	TimestampTz start = GetCurrentTimestamp();
-	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
-
 	for (;;)
 	{
 		long		left = sift_maintenance_naptime - TimestampDifferenceMilliseconds(start, GetCurrentTimestamp());
 		SiftStepResult	r;
 
-		while ((r = worker_step(indexoid, start, left <= 0)) == SIFT_STEP_DONE)
+		while ((r = step(indexoid, start, left <= 0)) == SIFT_STEP_DONE)
 			CHECK_FOR_INTERRUPTS();
 		if (r == SIFT_STEP_FAILED || left <= 0)
 			break;
@@ -800,22 +919,56 @@ sift_maint_worker_main(Datum main_arg)
 	}
 }
 
+static void
+worker_main(Datum main_arg, bool seal)
+{
+	ErrorContextCallback errctx;
+	TimestampTz start = GetCurrentTimestamp();
+	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
+
+	if (seal)
+	{
+		Relation	index;
+
+		StartTransactionCommand();
+		index = sift_try_open_index(indexoid, RowExclusiveLock);
+		if (index != NULL)
+		{
+			/* judged again: the buffer may have been promoted since the reads asked */
+			if (is_sift(index) && sift_maint_wbuf_read_due(index))
+				sift_wbuf_seal(index, true);
+			index_close(index, RowExclusiveLock);
+		}
+		CommitTransactionCommand();
+	}
+	sift_maint_worker_stay(indexoid, start, worker_step);
+}
+
+void
+sift_maint_worker_main(Datum main_arg)
+{
+	worker_main(main_arg, false);
+}
+
+/* The worker that seals the open write buffer first, as the reads that walked it asked */
+void
+sift_read_promote_worker_main(Datum main_arg)
+{
+	worker_main(main_arg, true);
+}
+
 Datum
 sift_promote(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_mops_open_maintain(&bm25_ops, PG_GETARG_OID(0));
-	int			n = sift_mops_sql_promote(&bm25_ops, index);
-
-	index_close(index, RowExclusiveLock);
-	PG_RETURN_INT32(n);
+	if (sift_col_is_index_oid(PG_GETARG_OID(0)))
+		return sift_col_promote(fcinfo);
+	return sift_mops_sql_promote(&bm25_ops, fcinfo);
 }
 
 Datum
 sift_merge(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_mops_open_maintain(&bm25_ops, PG_GETARG_OID(0));
-	int			n = sift_mops_sql_merge(&bm25_ops, index, PG_NARGS() > 1 && PG_GETARG_BOOL(1));
-
-	index_close(index, RowExclusiveLock);
-	PG_RETURN_INT32(n);
+	if (sift_col_is_index_oid(PG_GETARG_OID(0)))
+		return sift_col_merge(fcinfo);
+	return sift_mops_sql_merge(&bm25_ops, fcinfo);
 }

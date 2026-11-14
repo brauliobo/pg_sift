@@ -22,11 +22,8 @@
 #define SIFT_AGGBACK_H
 
 #include "commands/explain.h"
-#include "utils/rel.h"
 
 #include "agg/spec.h"
-#include "agg/colsrc.h"
-#include "core/compat.h"
 
 /* What a backend sees of a scan. Valid for the scan; the pointers are the scan's own. */
 typedef struct SiftAggScan

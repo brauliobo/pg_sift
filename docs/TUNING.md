@@ -1,0 +1,187 @@
+# Tuning: what to touch, and what to leave alone
+
+pg_sift has about 150 options, and you should not need most of them. The build and the planner decide: `CREATE INDEX` picks the structures a table pays for and prints one NOTICE that says what it chose and how to turn each choice off; the planner chooses between the aggregate scan and PostgreSQL's own plan by cost. This page is the short list of what is worth knowing, in the order you meet it. Every option has its full case (what it does, measured gain, cost, how to turn it off) in [OPTIONS.md](OPTIONS.md); the generated tables are in [USAGE.md](USAGE.md#maintenance-and-operations); the SQL functions are in [REFERENCE.md](REFERENCE.md).
+
+## The ten things a user touches
+
+| # | What | Kind | Use it when |
+|---|---|---|---|
+| 1 | `sift.enable_agg = off` | setting | you want the plan PostgreSQL has without pg_sift, for one statement, a role or a database: to compare answers and times, or to find out which side gave a wrong result |
+| 2 | `sift.explain_why(query)` | function | a query kept the normal plan and you want to know why and what to change |
+| 3 | `sift.index_choices(index)` | function | you want to read what `CREATE INDEX` chose for a `sift_col` index and the command that turns each choice off |
+| 4 | `track_changes` | index option | the index is read without the table (on by default for the primary key) |
+| 5 | `key_order` | index option | the table is written in the order of a key and you read ranges, `ORDER BY .. LIMIT` or the latest rows of each tenant |
+| 6 | `paths`, `sift.suggest_paths()` | index option, function | a `jsonb` column is in a `sift_col` index and you choose which of its keys are columns |
+| 7 | `sift.workers` | view | you ask whether maintenance runs, has failed, or an index is due for a rewrite |
+| 8 | `sift.upgrade_commands()` | function | after `ALTER EXTENSION pg_sift UPDATE`: what to `REINDEX` or rewrite (it changes nothing) |
+| 9 | `stemmer`, `prefix_index`, `analyzer = 'keyword'` | index options of `sift` (BM25) | you want word forms to match, autocomplete, or exact keys and facets |
+| 10 | `sift.table_options()`, `sift.table_set_option()` | functions | you tune one `sift_table` (its options are set per table, with functions, because PostgreSQL has no table options for an extension before version 20) |
+
+```sql
+-- 1  the plan without pg_sift, for this transaction only
+BEGIN; SET LOCAL sift.enable_agg = off; EXPLAIN SELECT kind, count(*) FROM events GROUP BY kind; ROLLBACK;
+
+-- 2  why the aggregate scan was not used
+SELECT arm, used, slug, reason FROM sift.explain_why('SELECT kind, count(*) FROM events GROUP BY 1');
+
+-- 3  what the index build chose (and "off": the command that undoes it)
+SELECT choice, kind, value, off FROM sift.index_choices('events_col');
+
+-- 4  reading without the table: keep it, or turn it off
+ALTER INDEX events_col SET (track_changes = 'off');
+
+-- 5  rows written in the order of ts
+CREATE INDEX events_col ON events USING sift_col (id, kind, ts) WITH (key_order = 'ts');
+--    the latest rows of each tenant in one big table
+CREATE INDEX events_col ON events USING sift_col (id, tenant_id, ts) WITH (key_order = 'tenant_id, ts');
+
+-- 6  the keys of a jsonb column that are worth a column: the function reads a sample and writes the option
+SELECT sift.suggest_paths('events', 'payload');
+
+-- 7  maintenance: running, failed, due
+SELECT index, kind, segments, sealed, running, failures, due FROM sift.workers;
+
+-- 8  after an update of the extension
+SELECT kind, object, reason, command, required FROM sift.upgrade_commands();
+
+-- 9  BM25: English word forms, prefixes of up to 3 letters, exact keys
+CREATE INDEX docs_body ON docs USING sift (body) WITH (stemmer = 'en', prefix_index = 3);
+CREATE INDEX docs_kind ON docs USING sift (kind) WITH (analyzer = 'keyword');
+
+-- 10 one sift_table: the value in force, where it comes from, and a change
+SELECT * FROM sift.table_options('events');
+SELECT sift.table_set_option('events', 'write_buffer_limit', '8MB');
+```
+
+Two more habits are worth having. After a load or a heavy delete, `VACUUM` is what returns space and merges segments; the background workers (`sift.col_auto_merge`, `sift.table_auto_defrag`, `sift.async_maintenance`) do the same in the background and are on. And `sift.stats()` / `sift.explain_refusals = on` are for support, when `explain_why` is not enough.
+
+## You should not need these
+
+Every option has a class in [OPTIONS.md](OPTIONS.md). **default** is on and right: leave it. **opt-in** is off because it fails a term of the rule for a default (its `why` says which) and pays only for the workload it names. **safety** is a limit on memory, locks, I/O or replicas: set one when a limit hurts, not before. **diagnostic** is for measuring, comparing or explaining a plan, not for a deployed configuration: switching one of these off gives the same rows by another path, which is the point when you must find out whether an optimization gave a wrong result. **deprecated** is an older spelling that is still accepted.
+
+The diagnostic options (generated from [options.tsv](options.tsv)):
+
+<!-- sift-diagnostics:start -->
+| Option | Applies to | What it does |
+|---|---|---|
+| `build_segments` | BM25 | forces N segments at build and turns the parallel build off |
+| `cluster_advice` | sift_col | sift.cluster_advice() may recommend a physical order or a key_cut for the table, and CREATE INDEX may suggest key_cut |
+| `sift.enable_scan` | BM25 | switches of the ranked scan, the count(*) pushdown, the bitmap of the other quals and the read-ahead |
+| `sift.enable_count` | BM25 | switches of the ranked scan, the count(*) pushdown, the bitmap of the other quals and the read-ahead |
+| `sift.prefetch` | BM25 | switches of the ranked scan, the count(*) pushdown, the bitmap of the other quals and the read-ahead |
+| `sift.log_min_duration` | all | logs promotions, merges and worker runs of at least that long |
+| `sift.simd` | all | caps the SIMD level of every kernel; every level returns the same results bit for bit |
+| `sift.vis_page_cache` | sift_col | the rows of a heap page that a scan reads twice (the units of a key-cut index list rows of the same page) are checked for visibility once |
+| `sift.cluster_advice` | sift_col | sift.cluster_advice() may recommend a physical order or a key_cut for the tables, and CREATE INDEX may suggest key_cut |
+| `sift.agg_left_lateral` | sift_col, sift_table | a LEFT JOIN LATERAL over jsonb_to_recordset or jsonb_array_elements of a list of the scanned row is answered by the scan: a row none of whose elements passes is one tuple with NULL element columns |
+| `sift.agg_probe_direct` | sift_col, sift_table | the keys of a correlated LIMIT 1 child (LEFT JOIN LATERAL .. LIMIT 1 into a table with a btree, an Index Scan or an Index Only Scan) are probed in the child's btree by the aggregate scan, a sorted batch of keys at a time, instead of running the child's plan once for each key |
+| `sift.agg_float_step` | sift_col, sift_table | a key, an aggregate argument or a filter of a float column that reads it only through floor, ceil, trunc, round or an integer cast of the column, of the column divided by a constant or of the column times a constant is evaluated by PostgreSQL once for each bucket of the values, not for each distinct value; the bucket numbers of a chunk come from the vector kernels of the scan (AVX2, AVX-512, NEON) |
+| `sift.agg_preagg` | sift_col, sift_table | units whose rows are all visible are answered from the pre-aggregates stored with them, the exact count/sum/min/max, and groups of units from their superunit summary |
+| `sift.agg_preagg_distinct` | sift_col, sift_table | units whose rows are all visible are answered from the pre-aggregates stored with them, the exact count/sum/min/max, and groups of units from their superunit summary |
+| `sift.agg_super` | sift_col, sift_table | units whose rows are all visible are answered from the pre-aggregates stored with them, the exact count/sum/min/max, and groups of units from their superunit summary |
+| `sift.topn_walk` | sift_col, sift_table | ORDER BY .. LIMIT n from the units, bounded by their zones and sorted runs |
+| `sift.topn_zone_keys` | sift_col, sift_table | ORDER BY .. LIMIT n from the units, bounded by their zones and sorted runs |
+| `sift.topn_runs` | sift_col, sift_table | ORDER BY .. LIMIT n from the units, bounded by their zones and sorted runs |
+| `sift.agg_lookup_pushdown` | sift_col, sift_table | the table of a lookup join loads only the rows its own conditions can match (the keys of the scan's IN list or of a dependent lookup are read by one scan of its btree, from its entries where it holds the columns, while that costs less than the whole table), and keeps its rows between queries (backend cache, shared memory) |
+| `sift.agg_lookup_columns` | sift_col, sift_table | the rows of a lookup table are read from the leaves of a sift_col index of it that holds the columns the join reads, not from the heap; a table of one int4 key whose columns are integer leaves with few distinct tuples of values is kept as one class of its keys for each tuple (`rows classed`), not row by row; an expression of an inner-joined table's columns that an index of it holds as a column (a presence mask) is read as one column (`column loads`) |
+| `sift.agg_probe_rewrite` | sift_col, sift_table | a join to a large btree table (JOIN, comma join), EXISTS, NOT EXISTS, IN and NOT IN over one is also planned as a probe of the table's btree for each key the scan meets, and kept where that costs less |
+| `sift.agg_case_filter` | sift_col, sift_table | sum, avg, min, max and count over CASE WHEN p THEN x [ELSE NULL] END, sum over CASE WHEN p THEN x ELSE 0 END, count with any ELSE that is not NULL, and min, max (integers) and avg (integers, numerics) with ELSE 0, run as the aggregates of x with a filter on p: the kernels of x under a test of p, not the CASE for every row |
+| `sift.agg_verdict_cache` | sift_col, sift_table | a plan that does not depend on the statements planned before it: the choice between a shared CTE and its inline plan, and between the flattened form of a statement and the form as written, is made in full for every statement (support, benchmarks, comparing two plans) |
+| `sift.agg_share_lookups` | sift_col, sift_table | the table of a lookup join loads only the rows its own conditions can match (the keys of the scan's IN list or of a dependent lookup are read by one scan of its btree, from its entries where it holds the columns, while that costs less than the whole table), and keeps its rows between queries (backend cache, shared memory) |
+| `sift.agg_semi_lut` | sift_col, sift_table | a semi or anti join (IN, EXISTS, NOT EXISTS) on an int2, int4, int8 or date leaf is answered from a byte table over the keys of the joined table, or a hash set of them where they span more |
+| `sift.agg_connect_found` | sift_col | a semi, anti or inner join to the parent of a connected sift_col index that reads no column of the parent is answered from the flag the index keeps that the parent row was found, less the keys the journal of the parent names (at most 16,384) and plus those of them the parent holds now |
+| `sift.agg_child_first` | sift_col | the count of the rows of a table that have (or have no) row in another by a unique key, and the aggregates of a table left-joined to a table by its key, are planned also from the other table first (its rows counted by their keys, or grouped by them), and kept where that costs less |
+| `sift.agg_key_skew` | sift_col, sift_table | the probes of a lookup join are priced by the rows of the most common keys, not the mean |
+| `sift.agg_dense` | sift_col, sift_table | one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort |
+| `sift.agg_two_level` | sift_col, sift_table | one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort |
+| `sift.agg_dist_stream` | sift_col, sift_table | one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort |
+| `sift.agg_fuse` | sift_col, sift_table | one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort |
+| `sift.agg_join_filter` | sift_col, sift_table | one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort |
+| `sift.agg_rows` | sift_col, sift_table | one switch for each execution shortcut of the aggregate scan: dense chunks, one scan for aggregates over per-row aggregates, UNION ALL arms in one pass, key filters on lookup joins, exact count(DISTINCT) without a sort |
+| `sift.explain_refusals` | sift_col, sift_table | a notice says why a query kept the normal plan instead of SiftAgg |
+| `sift.count_refusals` | sift_col, sift_table | a notice says why a query kept the normal plan instead of SiftAgg |
+| `sift.plan_scale` | sift_col, sift_table | plan as if the tables with a sift_col index had this many times the pages and rows, to see the planner's choice at a larger size (on every supported PostgreSQL) |
+| `sift.agg_force` | sift_col, sift_table | takes the aggregate scan wherever one is possible, whatever the plans cost, to time the plan the cost model refused |
+| `sift.eval_methods` | sift_col | selects the developer evaluation method named: penalty_maintenance prices the VACUUM that reads ask for |
+<!-- sift-diagnostics:end -->
+
+## Same word, three places
+
+An option that means the same thing in the three kinds has the same name, but not the same default, because the work it controls costs different amounts:
+
+| Name | `sift` (BM25 index) | `sift_col` index | `sift_table` |
+|---|---|---|---|
+| `write_buffer_limit` | index option, kB, 4096 | index option, kB, 4096 | `sift.table_write_buffer_limit` or table option, kB 2048 to 8192, 4096 |
+| `dead_rewrite_pct` | index option, 50 (100 never rewrites a lone segment) | index option, 0 = by cost (100 never) | `sift.table_dead_rewrite_pct` or table option, 30 |
+| `vacuum_truncate` | index option, true | index option, true | none |
+| `dict_lookup` | none | index option, `auto`, `on` or `off` | `sift.table_dict_lookup` or table option, `on` or `off` |
+| `key_table`, `compression` | none | index options | `sift.table_key_table`, `sift.table_compression`, or table options |
+| background work | `sift.async_maintenance` | `sift.col_auto_merge` | `sift.table_auto_defrag` |
+
+## The limits of the background work
+
+The same four questions have three sets of settings. They are different mechanisms with different units and defaults, which is why they were not merged:
+
+| Question | `sift_col` (rewrite after churn) | `sift_table` (background pass) | Shared |
+|---|---|---|---|
+| Is it on? | `sift.col_auto_merge` (on) | `sift.table_auto_defrag` (on) | `sift.async_maintenance` (on) |
+| Limit the WAL | `sift.col_auto_merge_wal_pct`: percent of the server's WAL (5; 0 does not wait) | `sift.table_auto_defrag_wal_rate`: kB/s (0: no limit) | `sift.maintenance_wal_rate`: kB/s of the merges of the worker (0: no limit) |
+| Work in one pass | `sift.col_auto_merge_pass_mb` (1024 MB) | `sift.table_auto_defrag_budget` (128 MB) | `sift.vacuum_rewrite_limit` (128 MB a `VACUUM` of a column index or table) |
+| Wait while clients are busy | `sift.col_auto_merge_max_active` (0: never) | `sift.table_auto_defrag_max_active` (0: never) | none |
+| Slow down | none | `sift.table_auto_defrag_delay` (10 ms) | `sift.maintenance_cost_delay` (0 ms), `sift.maintenance_naptime` (2000 ms) |
+
+## Two pairs of options that look alike
+
+Both pairs were measured side by side (400,000 rows, a table of an `int4` id spread over the heap, an `int4` of 100 rows a key, a timestamp and an `int4` spread over the heap; instructions of one backend a statement, user space, the mean of 30 statements with other constants; the other automatic choices off so that only the pair differs).
+
+**`point_tid_columns`** (the directory of the rows of a key). Leave it on `auto`: it is the better one in every shape measured. `point_columns`, the directory of rows it is compared with below, is deprecated (4.3) and lists its columns as heap addresses too; they are column format minor 33 and above, read from 3.7.
+
+| Statement | no directory | `point_columns` | `point_tid_columns` |
+|---|---|---|---|
+| `WHERE id = k`, all columns, one row | 1.55 M | 133 k | 95 k |
+| `WHERE id = k`, the key only | 1.55 M | 148 k | 86 k |
+| `count(*) WHERE id = k` | sequential scan, 218 M | sequential scan, 218 M | 114 k |
+| `count(*) WHERE id IN (5 keys)` / `(64 keys)` | sequential scan, 335 M / 256 M | sequential scan, 335 M / 256 M | 180 k / 905 k |
+| `WHERE grp = k`, 100 rows | 2.07 M | 1.20 M | 540 k |
+| the same after 5% of the rows were deleted (not vacuumed) | `IN` of 64 keys 267 M | same plan as before | 1.78 M (a unit with a dead row is read) |
+| index size (5 columns) | 5.14 MB | 7.39 MB (+43.9%) | 7.50 MB (+45.9%) |
+| `CREATE INDEX`, instructions | 1.45 G | 1.60 G (+10.5%) | 1.63 G (+12.4%) |
+
+**`order_array_columns`** (the global order of a column). The build chooses the columns (`auto`, the default) and the arrays answer `ORDER BY .. LIMIT`, an `OFFSET`, a range and an `IN` list over any number of units. `order_columns`, the sorted run of each unit that earlier releases wrote beside the array, is deprecated (4.3): a build ignores it, the runs already written are read as before, and 4.4 removes it. The run alone read 4 to 6 times the instructions of the array beyond a top-N of 32 for the same bytes.
+
+## The words that mean several things
+
+- **key.** `key_columns` (and `sift.table_key_table`, `key_table`) are *lookup keys*: the columns whose distinct values every unit lists, for equality, `IN` and `count(DISTINCT)`. `key_cut` is a *sort key*: the column whose range cuts the units. `key_order` is the sort key of the table as a whole and stands for `key_cut`, `order_columns`, `order_array_columns` and `point_tid_columns` on it. For ordered reads set `key_order` and nothing else.
+- **rollup.** `rollup_leaves` is the *array elements and map values* a unit groups by, `rollup_columns` the *scalar columns* a unit groups by (the rollup of the rows), `rollup_on_demand` and `sift.col_rollup_on_demand` / `sift.col_rollup_worker` the *refresh* of rollups in the background (`sift.col_rollup_on_demand` asks, `sift.col_rollup_worker` serves; with the worker off the requests wait for `sift.col_rollup_refresh(index)`), `sift.agg_rollup_cost` the price of reading one.
+- **field and section.** The text of a `fields` index is made of fields; `sift.sections()` is the function that joins them.
+- **`cluster_advice`.** A setting, an index option and a function share the name: the function `sift.cluster_advice()` recommends a physical order; the setting and the option only switch the recommendation off.
+
+## The values of the list options
+
+(`track_changes` defaults to `auto`.) Most options of a `sift_col` index that take columns accept `auto` (the build decides), `off` and a list. What `''` (not set) means depends on the option, and the word `auto` is not accepted by all of them:
+
+| Option | `''` means | `auto` | `off` | Other words |
+|---|---|---|---|---|
+| `key_columns`, `key_cut`, `order_array_columns`, `order_array_group`, `rollup_columns`, `count_columns` | automatic | yes | yes | |
+| `calendar_columns` | every date and timestamp column | yes | yes | `all` |
+| `rollup_leaves` | the byte-budget rule (2% of the unit) | yes | yes | `default` |
+| `preagg` | the default | yes | yes | `default`, `cube(..)` |
+| `order_layout` | `auto` | yes | no | `whole`, `compact` |
+| `compression` | `auto` | yes | no | `none`, `lz4`, `zstd` |
+| `point_columns`, `point_tid_columns` | none | yes | yes | |
+| `hll_columns`, `return_columns`, `key_order` | none | no | yes | |
+| `array_lengths`, `dict_lookup` (enums) | not allowed | yes | yes | `on` |
+
+## Which function to call
+
+| You want | `sift` (BM25) | `sift_col` | `sift_table` |
+|---|---|---|---|
+| size and free space of the file | `sift.index_info` | `sift.col_space` (free space in detail), `sift.col_index_info` (rows, bytes, units), `sift.col_extents` (every run of blocks) | `sift.table_space` |
+| the segments | `sift.segments` | `sift.col_segments` | `sift.table_segments` |
+| what it holds | `sift.segment_postings` | `sift.col_leaves`, `sift.col_sections` | |
+| merge, promote, check | `sift.merge`, `sift.promote`, `sift.verify` | the same three (`sift.col_merge`, `sift.col_promote`, `sift.col_verify` are the same calls) | `sift.table_maintain` |
+| maintenance state | `sift.workers`, `sift.worker_state` | `sift.workers`, `sift.col_maintenance_status`, `sift.col_maintenance_due` | `sift.workers` (segments, sealed buffers, running), `sift.table_space` |
+| what the build chose or advises | | `sift.index_choices`, `sift.index_advice`, `sift.key_cut_decision`, `sift.cluster_advice` | |
+| what a notice, a choice or a refusal slug means | | `sift.help(slug)`, `sift.refusal_slugs()`, `sift.refusal_actions()` | `sift.help(slug)` |
+
+A function with the prefix of the other kind answers `"x" is not a sift index` (or `sift_col`) and changes nothing.

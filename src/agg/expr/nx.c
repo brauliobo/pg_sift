@@ -8,7 +8,6 @@
 #include "nodes/nodeFuncs.h"
 #include "utils/fmgroids.h"
 #include "catalog/pg_type.h"
-#include "utils/builtins.h"
 
 #include "agg/expr/int.h"
 

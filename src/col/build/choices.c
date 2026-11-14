@@ -7,17 +7,15 @@
  * command that turns each choice off from the table docs/messages.tsv generates (choices_gen.h), so a text is written once, there.
  */
 #include "postgres.h"
-#include <math.h>
 #include "access/table.h"
 #include "catalog/pg_constraint.h"
 #include "funcapi.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
-#include "col/shred.h"
-#include "core/limits.h"
 #include "col/build/build_int.h"
 #include "col/build/choices_gen.h"
+#include "agg/refuse.h"
 
 #define SUMMARY_LINE	100		/* characters of the first line of the summary */
 #define DETAIL_LINE		112		/* ... and of a line of its values (two lines) */
@@ -38,6 +36,7 @@ typedef struct Derive
 	bool		build;			/* the statement that built the index: its key_cut verdict is at hand, and nothing is decided again */
 	List	   *out;
 	const SiftColLeafStats *ls;
+	SiftColIndexMeta defs;		/* a copy: the cached one is freed when a lock reloads the index entry */
 	int			minor;			/* the column format minor the choices need, 0: none that an older library refuses */
 } Derive;
 
@@ -82,7 +81,12 @@ static const SiftColLeafStats *
 stats(Derive *d)
 {
 	if (d->ls == NULL)
+	{
+#ifdef SIFT_TESTING
+		sift_col_test_inval(d->index);	/* reading the leaf statistics can take a lock that reloads the entry */
+#endif
 		d->ls = sift_col_leaf_stats(d->index);
+	}
 	return d->ls;
 }
 
@@ -100,7 +104,7 @@ after_auto(const char *opt)
 static const char *
 minor_lib(int minor)
 {
-	return minor >= SIFT_COL_FORMAT_ENDORD ? "4.0" : "3.7";
+	return minor >= SIFT_COL_FORMAT_SEEKORD ? "4.3" : minor >= SIFT_COL_FORMAT_ENDORD ? "4.0" : "3.7";
 }
 
 static void
@@ -200,8 +204,8 @@ d_preagg(Derive *d)
 static void
 d_rollup(Derive *d)
 {
-	if (after_auto(sift_col_options_rollup_dims(d->index)))
-		add(d, "rows-rollup", pstrdup(after_auto(sift_col_options_rollup_dims(d->index))), NULL);
+	if (after_auto(sift_col_options_rollup_columns(d->index)))
+		add(d, "rows-rollup", pstrdup(after_auto(sift_col_options_rollup_columns(d->index))), NULL);
 }
 
 static void
@@ -257,7 +261,7 @@ d_point_tid(Derive *d)
 		add(d, "point-tid-key-cut", shown, NULL);
 		return;
 	}
-	for (int c = 0; c < sift_col_index_defs(d->index)->ncols; c++)
+	for (int c = 0; c < d->defs.ncols; c++)
 		if (stats(d)[c].point_tid_units > 0)
 		{
 			need_minor(d, SIFT_COL_FORMAT_EXACTSLOT);
@@ -268,13 +272,16 @@ d_point_tid(Derive *d)
 
 /* The column format minor the complete order arrays of an index have (a compact one is newer than the others) */
 static int
-order_minor(const SiftColLeafStats *ls, int ncols)
+order_minor(Relation index, const SiftColLeafStats *ls, int ncols)
 {
+	for (int c = 0; c < ncols; c++)
+		if ((ls[c].gord_rows > 0 || ls[c].gord_ends_rows > 0) && sift_col_gorder_chunks(index, c, SIFT_CGORD_SEEK | SIFT_CGORD_POS, false) > 0)
+			return SIFT_COL_FORMAT_SEEKORD;
 	for (int c = 0; c < ncols; c++)
 		if (ls[c].gord_perm > 0)
 			return SIFT_COL_FORMAT_TEXTPERM;
 	for (int c = 0; c < ncols; c++)
-		if (ls[c].gord_compact_chunks > 0)
+		if (ls[c].gord_compact_blocks > 0)
 			return SIFT_COL_FORMAT_ORDLAYOUT;
 	return SIFT_COL_FORMAT_ADDRPACK;
 }
@@ -283,12 +290,12 @@ order_minor(const SiftColLeafStats *ls, int ncols)
 static void
 d_order_arrays(Derive *d)
 {
-	const SiftColIndexMeta *defs = sift_col_index_defs(d->index);
+	const SiftColIndexMeta *defs = &d->defs;
 	const char *opt = sift_col_options_order_array_columns(d->index);
 	const SiftColLeafStats *ls;
 	bool		autolist,
 				gauto;
-	const char *glist = sift_cpagg_auto_list(sift_col_options_order_array_group(d->index), &gauto);
+	const char *glist = pstrdup(sift_cpagg_auto_list(sift_col_options_order_array_group(d->index), &gauto));
 	StringInfoData names;
 	double		rows = 0,
 				bytes = 0;
@@ -315,7 +322,7 @@ d_order_arrays(Derive *d)
 	}
 	if (n + ne == 0)
 		return;
-	minor = order_minor(ls, defs->ncols);
+	minor = order_minor(d->index, ls, defs->ncols);
 	need_minor(d, ne > 0 ? Max(minor, SIFT_COL_FORMAT_ENDORD) : minor);
 	while (*glist == ' ')
 		glist++;
@@ -323,7 +330,10 @@ d_order_arrays(Derive *d)
 	{
 		const char *end = strpbrk(glist, ",;");
 
-		appendStringInfo(&names, " (second order by %.*s)", end ? (int) (end - glist) : (int) strlen(glist), glist);
+		int			len = end ? (int) (end - glist) : (int) strlen(glist);
+
+		appendStringInfo(&names, " (second order by %.*s: %s)", len, glist,
+						 d->heap ? sift_col_group_reason(d->heap, d->index, pnstrdup(glist, len)) : "hint");
 	}
 	add(d, autolist ? "order-array-auto" : "order-array-listed", names.data,
 		n > 0 ? psprintf("%.1f bytes a row, %.1f MB together", bytes / rows, bytes / (1024.0 * 1024.0)) : NULL);
@@ -333,7 +343,7 @@ d_order_arrays(Derive *d)
 static void
 d_order_layout(Derive *d)
 {
-	const SiftColIndexMeta *defs = sift_col_index_defs(d->index);
+	const SiftColIndexMeta *defs = &d->defs;
 	const char *opt = sift_col_options_order_array_columns(d->index);
 	const SiftColLeafStats *ls;
 	StringInfoData out,
@@ -351,9 +361,9 @@ d_order_layout(Derive *d)
 
 		if (ls[c].gord_rows <= 0)
 			continue;
-		any = any || ls[c].gord_compact_chunks > 0;
-		if (ls[c].gord_compact_chunks > 0)
-			appendStringInfo(&out, "%s%s compact in %.0f%% of chunks", out.len ? ", " : "", name, 100.0 * ls[c].gord_compact_chunks / ls[c].gord_chunks);
+		any = any || ls[c].gord_compact_blocks > 0;
+		if (ls[c].gord_compact_blocks > 0)
+			appendStringInfo(&out, "%s%s compact in %.0f%% of chunks", out.len ? ", " : "", name, 100.0 * sift_col_gorder_chunks(d->index, c, SIFT_CGORD_COMPACT, true) / ls[c].gord_chunks);
 		else
 			appendStringInfo(&out, "%s%s exact", out.len ? ", " : "", name);
 		appendStringInfo(&cost, "%s%s %.1f bytes a row", cost.len ? ", " : "", name, ls[c].gord_bytes / ls[c].gord_rows);
@@ -369,13 +379,13 @@ d_order_layout(Derive *d)
 static void
 d_track(Derive *d)
 {
-	const char *rk = sift_col_options_row_key(d->index);
+	const char *rk = pstrdup(sift_col_options_row_key(d->index));
 	AttrNumber	pk;
 	const char *why;
 
-	if (sift_col_row_key_on(d->index))
+	if (sift_col_track_on(d->index))
 	{
-		add(d, "sift-col-index-installed-two-statement-triggers", pstrdup(rk), NULL);
+		add(d, sift_col_track_ctid(d->index) ? "sift-col-index-installed-row-triggers" : "sift-col-index-installed-two-statement-triggers", pstrdup(rk), NULL);
 		if (sift_col_track_incomplete(d->index))
 			add(d, "track-changes-concurrent", pstrdup(rk), NULL);
 	}
@@ -397,11 +407,20 @@ d_key_cut_advice(Derive *d)
 		add(d, "key-cut-advised", pstrdup(keys), NULL);
 }
 
+static void
+d_key_cut_hot(Derive *d)
+{
+	const char *why = d->heap == NULL ? NULL : sift_col_key_cut_hot(d->heap, d->index, d->build);
+
+	if (why != NULL)
+		add(d, "key-cut-hot-value", pstrdup(why), NULL);
+}
+
 /* The keys of a wildcard path (m.*) past the dictionary of the shredder leave the key and its values as overflow, and a query that reads the leaf keeps the normal plan */
 static void
 d_key_overflow(Derive *d)
 {
-	const SiftColIndexMeta *defs = sift_col_index_defs(d->index);
+	const SiftColIndexMeta *defs = &d->defs;
 	const SiftColLeafStats *ls = NULL;
 	StringInfoData names;
 
@@ -522,6 +541,39 @@ d_hot_updates(Derive *d)
 		add(d, "hot-update-columns", cols.data, NULL);
 }
 
+static bool
+point_columns_set(Relation index)
+{
+	return *sift_col_options_point_columns(index) != '\0';
+}
+
+/* An option that 4.3 deprecated is accepted and ignored by the build, which decides by itself; each row says it once and the release that removes the option */
+static void
+d_deprecated(Derive *d)
+{
+	static const struct
+	{
+		const char *id;
+		bool		(*set) (Relation index);
+		const char *value;
+	} opts[] = {
+		{"key-cut-rows-deprecated", sift_col_options_key_cut_rows_set, "ignored, removed in 4.4"},
+		{"point-columns-deprecated", point_columns_set, "now point_tid_columns, removed in 4.4"},
+		{"order-columns-deprecated", sift_col_options_order_columns_option, "ignored, removed in 4.4"},
+	};
+
+	if (sift_col_legacy_options)
+		return;
+	for (int i = 0; i < lengthof(opts); i++)
+		if (opts[i].set(d->index))
+			add(d, opts[i].id, pstrdup(opts[i].value), NULL);
+	/* the directory of heap addresses that point_columns now asks for is a newer column format than the directory of rows */
+	if (point_columns_set(d->index))
+		for (int c = 0; c < d->defs.ncols; c++)
+			if (stats(d)[c].point_tid_units > 0)
+				need_minor(d, SIFT_COL_FORMAT_EXACTSLOT);
+}
+
 static void
 d_caps(Derive *d)
 {
@@ -551,12 +603,17 @@ static const struct
 	{"order-array-listed", d_order_arrays},
 	{"order-layout", d_order_layout},
 	{"sift-col-index-installed-two-statement-triggers", d_track},
+	{"sift-col-index-installed-row-triggers", d_track},
 	{"sift-col-index-does-not-track-changes", d_track},
 	{"track-changes-concurrent", d_track},
 	{"key-cut-advised", d_key_cut_advice},
+	{"key-cut-hot-value", d_key_cut_hot},
 	{"wildcard-keys-overflow", d_key_overflow},
 	{"foreign-key-not-indexed", d_foreign_keys},
 	{"hot-update-columns", d_hot_updates},
+	{"key-cut-rows-deprecated", d_deprecated},
+	{"point-columns-deprecated", d_deprecated},
+	{"order-columns-deprecated", d_deprecated},
 	{"cube-dim-no-histogram", d_caps},
 	{"keys-bloom-filter", d_caps},
 	{"keys-no-summary", d_caps},
@@ -568,7 +625,7 @@ static const struct
 static List *
 derive(Relation heap, Relation index, int kinds, bool build, int *minor)
 {
-	Derive		d = {.heap = heap, .index = index, .kinds = kinds, .build = build};
+	Derive		d = {.heap = heap, .index = index, .kinds = kinds, .build = build, .defs = *sift_col_index_defs(index)};
 
 	for (int i = 0; i < lengthof(derive_fn); i++)
 	{
@@ -751,13 +808,11 @@ Datum
 sift_col_index_choices(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
-	Relation	index = index_open(relid, AccessShareLock);
+	Relation	index = sift_col_open_index(relid, AccessShareLock);
 	Relation	heap;
 	ListCell   *lc;
 	const char *name;
 
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	InitMaterializedSRF(fcinfo, 0);
 	name = quote_identifier(RelationGetRelationName(index));
@@ -787,34 +842,59 @@ sift_col_index_choices(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_help);
 
-/* sift.help(slug): the row of docs/messages.tsv of a message or choice (all of them without a slug): what it says, when, what pg_sift chose, why and how to change it */
+static void
+help_row(ReturnSetInfo *rsi, const char *const *cells, int n)
+{
+	Datum		v[10];
+	bool		nulls[10];
+
+	for (int c = 0; c < n; c++)
+	{
+		nulls[c] = cells[c][0] == '\0';
+		v[c] = nulls[c] ? (Datum) 0 : CStringGetTextDatum(cells[c]);
+	}
+	tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+}
+
+/*
+ * sift.help(slug): the row of docs/messages.tsv of a message or choice, or the registry row of a refusal slug of sift.explain_why (kind refusal: the reason is the message,
+ * the action the hint); the rows of docs/messages.tsv without a slug (the refusal slugs are in sift.refusal_slugs())
+ */
 Datum
 sift_help(PG_FUNCTION_ARGS)
 {
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	bool		all = PG_ARGISNULL(0);
 	const char *slug = all ? "" : text_to_cstring(PG_GETARG_TEXT_PP(0));
 	bool		found = all;
+	const char *rslug,
+			   *text,
+			   *action;
+	bool		limit;
 
 	InitMaterializedSRF(fcinfo, 0);
 	for (int i = 0; i < lengthof(sift_msg_rows); i++)
 	{
 		const SiftMsgRow *r = &sift_msg_rows[i];
 		const char *cells[] = {r->id, r->kind, r->level, r->message, r->detail, r->hint, r->decision, r->why, r->off[0] ? psprintf(r->off, "<index>", "<index>") : "", r->doc};
-		Datum		v[lengthof(cells)];
-		bool		nulls[lengthof(cells)];
 
 		if (!all && strcmp(r->id, slug) != 0)
 			continue;
 		found = true;
-		for (int c = 0; c < lengthof(cells); c++)
-		{
-			nulls[c] = cells[c][0] == '\0';
-			v[c] = nulls[c] ? (Datum) 0 : CStringGetTextDatum(cells[c]);
-		}
-		tuplestore_putvalues(((ReturnSetInfo *) fcinfo->resultinfo)->setResult, ((ReturnSetInfo *) fcinfo->resultinfo)->setDesc, v, nulls);
+		help_row(rsi, cells, lengthof(cells));
+	}
+	for (int i = 1; !all && sift_agg_refusal_row(i, &rslug, &text, &action, &limit); i++)
+	{
+		const char *cells[] = {rslug, "refusal", "", text, "", action, "",
+			limit ? "The query has more of something than a fixed limit of the scan." : "The scan does not answer this shape of query.", "", "USAGE.md#why-a-query-kept-the-normal-plan"};
+
+		if (strcmp(rslug, slug) != 0)
+			continue;
+		found = true;
+		help_row(rsi, cells, lengthof(cells));
 	}
 	if (!found)
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("no message or choice \"%s\"", slug),
-						errhint("SELECT id FROM sift.help() lists them.")));
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("no message, choice or refusal \"%s\"", slug),
+						errhint("SELECT id FROM sift.help() lists the messages and choices, SELECT slug FROM sift.refusal_slugs() the refusals.")));
 	PG_RETURN_NULL();
 }
