@@ -210,12 +210,22 @@ SELECT * FROM verdict();
 SELECT edge FROM (SELECT refobjid::regclass::text AS edge FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'events_col'::regclass AND refclassid = 'pg_class'::regclass
 	AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i') e ORDER BY 1;
 
--- refresh: the rewrite of the 20,000 rows costs less than a thousand reads that patch even a few changed members, and so do as many as sift.col_scope_refresh_pct percent of the pairs ('stale scope');
--- a table whose rewrite costs more leaves a few changed members to the reads (col_scope_refresh_price)
+-- refresh: as many changed members as sift.col_scope_refresh_pct percent of the pairs are refreshed whatever the reads ('stale scope'); a few are left to the reads, which ask for the rewrite
+-- when what they paid for them comes to half of what it costs (col_scope_stale_price: no read, no rewrite)
 REINDEX INDEX events_col;
 SELECT sift.col_maintenance_due('events_col', false) AS due_filled;
 DELETE FROM tenant_scope WHERE dim_a_id <= 5;
 SELECT sift.col_maintenance_due('events_col', false) AS due_few_changed;
+DO $$
+BEGIN
+	FOR i IN 1..5000 LOOP
+		EXIT WHEN sift.col_maintenance_due('events_col', false) IS NOT NULL;
+		FOR k IN 1..12 LOOP
+			EXECUTE format('SELECT count(*) FROM events e WHERE sift.in_scope(''events_col''::regclass, ''tenant_id'', e.dim_a_id, %s)', k);
+		END LOOP;
+	END LOOP;
+END $$;
+SELECT sift.col_maintenance_due('events_col', false) AS due_few_changed_read;
 DELETE FROM tenant_scope WHERE dim_a_id <= 120;
 SELECT sift.col_maintenance_due('events_col', false) AS due_many_changed;
 REINDEX INDEX events_col;

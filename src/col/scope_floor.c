@@ -12,6 +12,7 @@
  * Lineage 0 is no stamp: the index is not filled (a concurrent build, a journal that could not vouch), and the maintenance fills it.
  */
 #include "postgres.h"
+#include "common/hashfn.h"
 #include "col/seg.h"
 #include "col/scope.h"
 #include "core/store.h"
@@ -23,6 +24,13 @@ void
 sift_scope_floor_get(const SiftMetaPageData *meta, int scope, SiftConnStamp *out)
 {
 	memcpy(out, &meta->scope_floor[scope * SIFT_SCOPE_JOURNALS], SIFT_SCOPE_JOURNALS * sizeof(SiftConnStamp));
+}
+
+/* The high bit keeps it from the generations of the segments and logs that share the table of the reads (col/wbuf/reads.c) */
+uint64
+sift_scope_epoch(const SiftConnStamp *floor, int ord)
+{
+	return hash_bytes_extended((const unsigned char *) floor, SIFT_SCOPE_JOURNALS * sizeof(SiftConnStamp), ord) | (UINT64CONST(1) << 63);
 }
 
 static void

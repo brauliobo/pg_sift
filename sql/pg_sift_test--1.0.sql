@@ -590,10 +590,14 @@ CREATE FUNCTION sift._test_scope_price(nkeys int, once bool, units int8, entries
 CREATE FUNCTION sift._test_scope_preagg_kept(changed int8, units int8) RETURNS float8
 	AS 'MODULE_PATHNAME', 'sift_test_scope_preagg_kept' LANGUAGE C STRICT;
 
--- the price of the refresh of the scope segments, of what a read pays for the members that changed, and whether the refresh is due (pure: instructions)
+-- the price of the refresh of the scope segments, of what a read pays for the members that changed, and the reads of that price that make the refresh due (pure: instructions)
 CREATE FUNCTION sift._test_scope_refresh(rows int8, entries int8, columns int, changed int8 DEFAULT 0, patch_units int8 DEFAULT 0, patch_scan_rows int8 DEFAULT 0, delta_rows int8 DEFAULT 0,
-	OUT refresh_price float8, OUT read_price float8, OUT due bool) RETURNS record
+	OUT refresh_price float8, OUT read_price float8, OUT reads_due int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_scope_refresh' LANGUAGE C STRICT;
+
+-- the instructions the reads of the server paid for the pairs of a scope that changed since its floor, on top of the filled read
+CREATE FUNCTION sift._test_scope_paid(index regclass, scope int) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_scope_paid' LANGUAGE C STRICT;
 
 CREATE FUNCTION sift._test_col_log_cache(OUT entries int8, OUT bytes int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_cache' LANGUAGE C STRICT;

@@ -554,7 +554,7 @@ struct SiftScopeStale
 	Snapshot	snap;
 	Relation	index;
 	Relation	heap;
-	int			priced;			/* the refresh is due by its price: 0 not asked yet, 1 due, -1 not */
+	int			priced;			/* the refresh is due by what the reads paid: 0 not asked yet, 1 due, -1 not */
 	int			floored;		/* the floor is stale: 0 not asked yet, 1 stale, -1 not */
 	struct
 	{
@@ -589,16 +589,16 @@ sift_scope_stale_begin(Relation index, MemoryContext mcxt)
 }
 
 /*
- * Is the refresh cheaper than the reads of the index that pay for the members that changed since the stamps (sift_scope_refresh_due): what a read of the worst key of each scope pays, against
- * the rewrite of the scope segments, which refreshes every scope at once.
+ * Have the reads of the index paid for the members that changed since the stamps what the refresh costs (sift_scope_paid: what each read paid on top of the filled read, from the floor it read under), half of it
+ * as for every maintenance step: the refresh of every scope at once, against what the reads of the scopes that vouch paid for theirs. No read, no refresh: nobody pays for the changed members.
  */
 static bool
 refresh_priced(SiftScopeStale *st)
 {
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
-	double		read = 0,
-				entry_columns = 0;
-	uint64		rows = 0;
+	double		entry_columns = 0;
+	uint64		rows = 0,
+				paid = 0;
 
 	sift_dir_read(st->index, dir);
 	for (int i = 0; i < dir->nsegs; i++)
@@ -606,7 +606,7 @@ refresh_priced(SiftScopeStale *st)
 			rows += dir->segs[i].ndocs;
 	for (int i = 0; i < st->n; i++)
 	{
-		SiftScopeCounts c;
+		SiftConnStamp floor[SIFT_SCOPE_JOURNALS];
 		int			kept,
 					all;
 
@@ -614,14 +614,15 @@ refresh_priced(SiftScopeStale *st)
 		for (int j = 0; j < dir->nsegs; j++)
 			if (sift_seg_is_scope(&dir->segs[j]) && sift_seg_scope_ordinal(&dir->segs[j]) == i)
 				entry_columns += (double) dir->segs[j].ndocs * kept;
-		if (st->s[i].vouches && sift_scope_patch_counts(st->heap, st->index, st->snap, i, &c))
-			read += sift_scope_changed_price(&c);
+		sift_scope_floor_get(&dir->meta, i, floor);
+		if (st->s[i].vouches)
+			paid += sift_scope_paid(st->index, sift_scope_epoch(floor, i));
 	}
 	pfree(dir);
-	return sift_scope_refresh_due(read, sift_scope_refresh_price(rows, entry_columns));
+	return (double) paid >= MAINT_HALF * sift_scope_refresh_price(rows, entry_columns);
 }
 
-/* The floor of the index (col/scope_floor.c) is not the journal's position any more: its lineage is another, or the pairs that changed since are many, or the refresh is cheaper than the reads (the entity segments have nothing stored: no floor is stale) */
+/* The floor of the index (col/scope_floor.c) is not the journal's position any more: its lineage is another, or the pairs that changed since are many, or the reads have paid for the changed ones what the refresh costs (the entity segments have nothing stored: no floor is stale) */
 static bool
 scope_floor_stale(SiftScopeStale *st, const SiftMetaPageData *meta, int i)
 {

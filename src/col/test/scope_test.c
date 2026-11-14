@@ -556,20 +556,38 @@ sift_test_scope_price(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_test_scope_refresh);
 
-/* sift._test_scope_refresh(rows, entries, columns, changed, patch_units, patch_scan_rows, delta_rows): the price of the refresh of the scope segments, of a read for the changed members, and whether the refresh is due (pure) */
+/* sift._test_scope_refresh(rows, entries, columns, changed, patch_units, patch_scan_rows, delta_rows): the price of the refresh of the scope segments, of what a read pays for the changed members, and the reads of that price that make the refresh due (pure) */
 Datum
 sift_test_scope_refresh(PG_FUNCTION_ARGS)
 {
 	SiftScopeCounts c = {.changed = PG_GETARG_INT64(3),.patch_units = PG_GETARG_INT64(4),.patch_scan_rows = PG_GETARG_INT64(5),.delta_rows = PG_GETARG_INT64(6)};
 	double		refresh = sift_scope_refresh_price(PG_GETARG_INT64(0), (double) PG_GETARG_INT64(1) * PG_GETARG_INT32(2)),
 				read = sift_scope_changed_price(&c);
-	Datum		v[3] = {Float8GetDatum(refresh), Float8GetDatum(read), BoolGetDatum(sift_scope_refresh_due(read, refresh))};
-	bool		nulls[3] = {false, false, false};
+	Datum		v[3] = {Float8GetDatum(refresh), Float8GetDatum(read), Int64GetDatum((int64) ceil(MAINT_HALF * refresh / Max(read, 1.0)))};
+	bool		nulls[3] = {false, false, read == 0};
 	TupleDesc	desc;
 
 	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
+}
+
+PG_FUNCTION_INFO_V1(sift_test_scope_paid);
+
+/* sift._test_scope_paid(index, scope): the instructions the reads of the server paid for the pairs changed since the floor of the scope, on top of the filled read (col/wbuf/reads.c) */
+Datum
+sift_test_scope_paid(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftConnStamp floor[SIFT_SCOPE_JOURNALS];
+	uint64		paid;
+
+	sift_dir_read(index, dir);
+	sift_scope_floor_get(&dir->meta, PG_GETARG_INT32(1), floor);
+	paid = sift_scope_paid(index, sift_scope_epoch(floor, PG_GETARG_INT32(1)));
+	index_close(index, AccessShareLock);
+	PG_RETURN_INT64((int64) paid);
 }
 
 /* a predicate as text, NULL when the leg has none */

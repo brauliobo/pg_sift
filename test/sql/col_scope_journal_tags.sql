@@ -78,7 +78,14 @@ SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state',
 SELECT k, r.same, r.stored, r.changed, r.patched FROM generate_series(1, 8) k, LATERAL read_keys('events_col', 'tenant_id', ARRAY[k]::int8[]) r ORDER BY k;
 SELECT sift.col_verify('events_col', true);
 
--- a refresh makes the stamps current: no key lists a changed dim_a_id
+-- a refresh makes the stamps current: no key lists a changed dim_a_id (the reads of the keys have paid for the changed pairs until the rule of the refresh says so)
+DO $$
+BEGIN
+	FOR i IN 1..5000 LOOP
+		EXIT WHEN sift.col_maintenance_due('events_col') IS NOT NULL;
+		PERFORM * FROM state_line();
+	END LOOP;
+END $$;
 SELECT sift.col_maintain('events_col') AS rewritten;
 SELECT * FROM state_line();
 DROP TABLE states;

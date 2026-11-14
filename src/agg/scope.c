@@ -17,6 +17,7 @@
 #include "common/hashfn.h"
 #include "port/pg_bitutils.h"
 #include "access/table.h"
+#include "access/xlog.h"
 #include "utils/lsyscache.h"
 
 #include "core/cmp.h"
@@ -440,18 +441,47 @@ run_join(AggExec *ex, const char *why, double price)
 	ex->spec = sc->alt;
 }
 
+static bool scope_decide(AggExec *ex, Snapshot snapshot, SiftScopeCounts *c, double *filled);
+
+/*
+ * What a read that found members changed since the stamps (or that the stored read refused for the journal) paid on top of the filled read, by the planner's prices: the arm it took (the join, or the units
+ * with the changed members, their patch and the delta, and the row by row reads of the units they leave) less the units without them (filled). Without a join to compare with, the least the members and the patch cost.
+ */
+static double
+read_extra(const SiftAggScope *sc, const SiftScopeCounts *c, double filled, const SiftScopeRead *rd, bool join)
+{
+	if (sc->alt == NULL || SIFT_TEST_SCOPE_PATCH)
+		return patch_extra(rd);
+	return Max((join ? join_price(sc, c) : sift_scope_units_price(c)) - filled, 0.0);
+}
+
 /*
  * Decides how the scan reads the conjunct, before its source is opened (the source of the scope segments is another one); true: the scope segments, and the rows of the entity
- * too when ex->scope_rd->npatch > 0.
+ * too when ex->scope_rd->npatch > 0. A read that found changed members says what it paid for them to the maintenance, which sees no statement (sift_scope_paid_note): the rule of `stale scope` weighs the sum of
+ * what the reads of the server paid against the refresh. A standby cannot ask for it.
  */
 bool
 scope_open(AggExec *ex, Snapshot snapshot)
+{
+	const SiftAggSpec *spec = ex->spec;
+	const SiftAggScope *sc = spec->scope;
+	SiftScopeCounts c = {0};
+	double		filled = 0.0;
+	bool		scope = scope_decide(ex, snapshot, &c, &filled);
+	const SiftScopeRead *rd = ex->scope_rd;
+
+	if (ex->scope_share == NULL && rd != NULL && rd->epoch != 0 && (rd->nchanged > 0 || rd->why != NULL) && !RecoveryInProgress())
+		sift_scope_paid_note(ex->index, rd->epoch, (uint64) read_extra(sc, &c, filled, rd, ex->spec != spec));
+	return scope;
+}
+
+static bool
+scope_decide(AggExec *ex, Snapshot snapshot, SiftScopeCounts *c, double *filled)
 {
 	const SiftAggScope *sc = ex->spec->scope;
 	SiftScopeRead *rd;
 	int		   *leaves;
 	int			nleaves;
-	SiftScopeCounts c;
 	uint32		max_changed = PG_UINT32_MAX;
 	bool		priced = sc != NULL && sc->alt != NULL && !SIFT_TEST_SCOPE_PATCH;
 
@@ -475,13 +505,14 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	leaves = read_leaves(ex->spec, sift_colsrc_layout(ex->index), &nleaves);
 	if (priced)
 	{
-		c = unit_counts(ex, snapshot);
-		if (join_cheaper(sc, &c))
+		*c = unit_counts(ex, snapshot);
+		*filled = sift_scope_units_price(c);
+		if (join_cheaper(sc, c))
 		{
-			run_join(ex, join_cheaper_why(sc), join_price(sc, &c));
+			run_join(ex, join_cheaper_why(sc), join_price(sc, c));
 			return false;
 		}
-		max_changed = changed_limit(sc, &c);
+		max_changed = changed_limit(sc, c);
 	}
 	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, ex->scope_km, sc->all ? NULL : sc->keys, sc->nkeys, sc->once,
 										leaves, nleaves, max_changed, priced);
@@ -491,30 +522,31 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	if (priced && rd->why == NULL && rd->stage != NULL)
 	{
 		/* the journal alone says what the changed members cost: a join that costs less by more than the error of that is run without asking for their pairs */
-		SiftScopeCounts e = c;
+		SiftScopeCounts e = *c;
 
 		read_counts(sc, &e, rd);
 		if (sift_scope_units_price(&e) > join_price(sc, &e) * SCOPE_ESTIMATE_MARGIN)
 		{
-			run_join(ex, join_cheaper_why(sc), join_price(sc, &e));
+			*c = e;
+			run_join(ex, join_cheaper_why(sc), join_price(sc, c));
 			return false;
 		}
 	}
 	sift_scope_read_pairs(rd);
 	if (priced)
-		read_counts(sc, &c, rd);
+		read_counts(sc, c, rd);
 	if (sc->alt != NULL && rd->why != NULL)
 	{
-		run_join(ex, rd->why, priced ? join_price(sc, &c) : 0.0);
+		run_join(ex, rd->why, priced ? join_price(sc, c) : 0.0);
 		return false;
 	}
-	if (priced && join_cheaper(sc, &c))
+	if (priced && join_cheaper(sc, c))
 	{
-		run_join(ex, join_cheaper_why(sc), join_price(sc, &c));
+		run_join(ex, join_cheaper_why(sc), join_price(sc, c));
 		return false;
 	}
 	/* what the workers share: the units, not the patch and the delta of the changed members, which the leader reads */
-	ex->scope_price = priced ? sift_scope_units_price(&c) - sift_scope_changed_price(&c) : 0.0;
+	ex->scope_price = priced ? sift_scope_units_price(c) - sift_scope_changed_price(c) : 0.0;
 	/* a patch and a delta that cost less than the pricing do not call for it; with the join as written to compare with, join_cheaper has priced them */
 	if (rd->why == NULL && sc->alt == NULL && patch_extra(rd) > SIFT_SCOPE_PRICING_INSTR && (sc->once || sc->nkeys == 1) && !SIFT_TEST_SCOPE_PATCH && patch_dearer(ex, snapshot))
 		rd->why = "patch dearer than the entity path";

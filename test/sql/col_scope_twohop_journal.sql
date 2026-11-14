@@ -120,12 +120,21 @@ RESET sift.test_scope_patch;
 SELECT * FROM probe();
 UPDATE grants SET deleted_at = NULL WHERE id IN (3, 4, 5);
 
--- refresh: the members of a changed group count as changed members (sift.col_scope_refresh_pct percent, 10, of the rows of the pairs relation and the via relation, 65 here: 6.5 members); the rewrite of a table this small costs less than a thousand reads that patch even one (col_scope_refresh_price: a larger one leaves it to the reads)
+-- refresh: the members of a changed group count as changed members (sift.col_scope_refresh_pct percent, 10, of the rows of the pairs relation and the via relation, 65 here: 6.5 members); one member of the tenant 3 is left to the reads of it, which ask for the rewrite when what they paid for it comes to half of what it costs (col_scope_stale_price)
 VACUUM (ANALYZE) grants, memberships;
 REINDEX INDEX facts_col;
 SELECT sift.col_maintenance_due('facts_col', false) AS due_filled;
 UPDATE grants SET deleted_at = now() WHERE id = 5;
 SELECT sift.col_maintenance_due('facts_col', false) AS due_a_member;
+DO $$
+BEGIN
+	FOR i IN 1..5000 LOOP
+		EXIT WHEN sift.col_maintenance_due('facts_col', false) IS NOT NULL;
+		SET LOCAL sift.enable_agg = on;
+		PERFORM count(*), sum(amount) FROM facts f WHERE sift.in_scope('facts_col'::regclass, 'tenant_id', f.dim_a_id, ARRAY[3]::int8[]);
+	END LOOP;
+END $$;
+SELECT sift.col_maintenance_due('facts_col', false) AS due_a_member_read;
 UPDATE grants SET deleted_at = NULL WHERE id = 5;
 UPDATE memberships SET deleted_at = now() WHERE group_id = 2 AND dim_a_id <= 18;
 SELECT sift.col_maintenance_due('facts_col', false) AS due_members_changed;

@@ -299,6 +299,7 @@ typedef struct SiftScopeRead
 	int64	   *added;			/* the members of except whose journal records include an inserted pair: those the patch is expected to read (the pairs of the second half are the exact ones) */
 	uint32		nadded;
 	uint64		entity_rows;	/* the rows of the entity segments */
+	uint64		epoch;			/* what the reads that pay for the changed members are counted under (sift_scope_epoch): 0 where the read took no stamp */
 	struct ScopeStage *stage;	/* the second half of the read is still to be made (sift_scope_read_pairs); until then patch_*, delta_rows are the journal's expectation */
 	struct SiftScopeSegPlan *est_plan;	/* the plan made for the members expected */
 	SiftKeyMap *mm;				/* a text, varchar or uuid member: the map of the read, whose codes the pairs, the patch, the delta and the rows of the segments and buffers name a member by (NULL: an integer member); except holds the journal words then */
@@ -433,32 +434,21 @@ sift_scope_changed_price(const SiftScopeCounts *c)
 }
 
 /*
- * What a refresh costs: the rewrite of the scope segments from the entity segments that a stale scope gets (maint_scope_refill and the merge of the runs it writes), and what it takes to be worth it.
+ * What a refresh costs: the rewrite of the scope segments from the entity segments that a stale scope gets (maint_scope_refill and the merge of the runs it writes).
  * Instructions of the backend that ran sift.col_maintain on a settled index (entity and scope segments each one, every pair changed since the stamp), from 300,000 and 600,000 rows with 253,000 to 862,000
  * entries (0.84 to 1.44 an entity row) of an index of 7 columns, and 300,000 rows with 481,000 entries of one of 4: 1.64, 2.75 and 5.08 thousand million with 7 columns, 1.77 with 4 (the fit 1,500 an
- * entity row and 680 a column of an entry is within 2% of the four; the WAL is the 9 bytes an entry the segments have). A read pays for the changed members the price above, every time: the refresh is due
- * when SIFT_SCOPE_REFRESH_READS of them cost more than it does. The reads an index sees between two refreshes are not known to the maintenance, which sees no statement: a thousand is a dashboard that reads
- * once a minute for an afternoon, and an index read less often than that is not worth the 2.5 seconds of a table of a million rows. A measured rate is not free: the scans the statistics count of
- * an index (idx_scan) are cumulative since the last reset of the statistics of the database, with no time of their own, and the scans are not the reads that patch a scope; a rate needs two
- * samples of the counter and their times kept by the worker, which a restart or a reset of the statistics loses and a first decision cannot have, so the constant would stay as its start. The due
- * point is linear in it (twice the reads, half the refresh price that is worth paying), and a refresh that comes late costs the reads in between their patch, which the price above bounds.
+ * entity row and 680 a column of an entry is within 2% of the four; the WAL is the 9 bytes an entry the segments have). A read that finds members changed since the stamps pays for them, on top of the filled read,
+ * what the planner prices it at (agg/scope.c); the reads add that up for the index (col/wbuf/reads.c, one table for every backend, by the epoch of the floor), and the refresh is due when what they paid comes to
+ * half of what it costs (MAINT_HALF: the same rule as the reads that owe a rewrite): the reads that came are the reads to come, so that a refresh is made after the delta has cost its price once.
  */
 #define SIFT_SCOPE_REFRESH_ROW_INSTR	1500
 #define SIFT_SCOPE_REFRESH_ENTRY_INSTR	680
-#define SIFT_SCOPE_REFRESH_READS		1000
 
 /* What the refresh of the scope segments costs: the entity rows it decodes, and for each scope its entries times the columns they keep (pure) */
 static inline double
 sift_scope_refresh_price(uint64 rows, double entry_columns)
 {
 	return SIFT_SCOPE_REFRESH_ROW_INSTR * (double) rows + SIFT_SCOPE_REFRESH_ENTRY_INSTR * entry_columns;
-}
-
-/* Is the refresh cheaper than the reads it spares the patch of the changed members (pure) */
-static inline bool
-sift_scope_refresh_due(double read_price, double refresh_price)
-{
-	return read_price * SIFT_SCOPE_REFRESH_READS > refresh_price;
 }
 
 /* The pairs a read of several keys counted once lists before it reads a unit: the relation's, whole, and those of its keys (pure) */
@@ -540,10 +530,10 @@ extern void sift_scope_read_pairs(SiftScopeRead *rd);
 extern bool sift_scope_refused_take(Oid index);
 extern void sift_scope_changed_note(Relation index);
 /*
- * The counts of what a read of one key pays for the members that changed since the stamps (changed, patch_units, patch_scan_rows, delta_rows of SiftScopeCounts): the key is the one most of the changed
- * members have a pair with now, which pays the most. False: the stored read is not exact (the verdict on the stamps, too many changed members, the patch is refused): another rule of the refresh says so.
+ * The key the reads that paid for the pairs changed since the floor of scope ord are counted under (col/wbuf/reads.c): it changes with the floor, which only a refill raises, so what the reads paid
+ * to the segments it replaced is not owed to the new ones
  */
-extern bool sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap, int scope, SiftScopeCounts *c);
+extern uint64 sift_scope_epoch(const SiftConnStamp *floor, int ord);
 /* The member keys that have a pair with one of the keys under the snapshot (keys NULL: with any), ascending, each once */
 /* The columns of the index the scope segments of key_name keep values of, of all its columns (EXPLAIN "Scope Columns") */
 extern void sift_scope_columns(Relation index, const char *key_name, int *kept, int *all);

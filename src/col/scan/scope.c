@@ -753,6 +753,7 @@ stored_changed(Relation heap, Relation index, Snapshot snap, int ord, SiftKeyMap
 		sift_scope_changed_note(index);
 		return;
 	}
+	rd->epoch = sift_scope_epoch(stamp, ord);
 	if ((verdict = sift_scope_changed(index, ord, stamp, snap, cap, keys, nkeys, km, &changed)) != SIFT_CONN_OK)
 	{
 		rd->why = sift_conn_why_name(verdict);
@@ -872,65 +873,6 @@ sift_scope_read_rows(SiftScopeRead *rd)
 	d = sift_scope_delta_select(f->index, f->ord, f->mm, segs + f->nbufs, nsegs - f->nbufs, f->delta.p, f->delta.n, f->leaves, f->nleaves, &copies);
 	rd->delta = sift_scope_delta_merge(rd->delta, d);
 	rd->delta_rows += copies;
-}
-
-/* the key most of the pairs of ps have (the least of them when several do) */
-static int64
-commonest_key(const ScopePairs *ps)
-{
-	int64	   *k = palloc(ps->n * sizeof(int64));
-	int64		key = 0;
-	uint32		best = 0,
-				run = 0;
-
-	for (uint32 i = 0; i < ps->n; i++)
-		k[i] = ps->p[i].key;
-	sift_sort_i64(k, ps->n);
-	for (uint32 i = 0; i < ps->n; i++)
-	{
-		run = i > 0 && k[i] == k[i - 1] ? run + 1 : 1;
-		if (run > best)
-		{
-			best = run;
-			key = k[i];
-		}
-	}
-	pfree(k);
-	return key;
-}
-
-bool
-sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap, int scope, SiftScopeCounts *c)
-{
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
-	SiftConnStamp stamp[SIFT_SCOPE_JOURNALS];
-	SiftConnKeys changed = {0};
-	ScopePairs	pairs;
-	SiftScopeRead *rd;
-	SiftKeyMap *km;
-	int64		key;
-
-	*c = (SiftScopeCounts) {.nkeys = 1,.once = true};
-	if (sift_scope_member_text(index, scope))
-		return false;
-	sift_dir_read(index, dir);
-	if (floor_stamp(index, dir, scope, stamp) != NULL || sift_scope_vouch(index, scope, stamp, snap) != SIFT_CONN_OK ||
-		sift_scope_changed(index, scope, stamp, snap, SIFT_SCOPE_CHANGED_MAX, NULL, 0, NULL, &changed) != SIFT_CONN_OK)
-		return false;
-	c->changed = changed.n;
-	km = sift_scope_keymap(heap, index, sift_scope_specs(index)->s[scope]->key_name);
-	pairs = scope_pairs(heap, index, scope, km, NULL, snap, NULL, 0, changed.keys, changed.n, 0);
-	sift_conn_keys_free(&changed);
-	if (pairs.n == 0)
-		return true;	/* no changed member has a pair now: nothing to patch */
-	key = commonest_key(&pairs);
-	rd = sift_scope_read(heap, index, snap, sift_scope_specs(index)->s[scope]->key_name, km, &key, 1, true, NULL, 0, PG_UINT32_MAX, false);
-	if (rd->why != NULL)
-		return false;
-	c->patch_units = rd->patch_units;
-	c->patch_scan_rows = rd->patch_scan;
-	c->delta_rows = rd->patch_rows;
-	return true;
 }
 
 SiftScopeRead *

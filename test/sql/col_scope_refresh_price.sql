@@ -1,5 +1,5 @@
--- The maintenance rewrites the scope segments of an index whose pairs changed since they were filled when the reads that pay for the changed members cost more than the rewrite (a read pays for
--- them every time: the journal, their pairs, the patch of their rows and the delta). The prices are pure (instructions, from the counts of col/scope.h): the refresh of the segments grows with the
+-- The maintenance rewrites the scope segments of an index whose pairs changed since they were filled when the reads that pay for the changed members have paid half of what the rewrite costs (a read pays for
+-- them every time: the journal, their pairs, the patch of their rows and the delta; col_scope_stale_price has the reads of a server that asks). The prices are pure (instructions, from the counts of col/scope.h): the refresh of the segments grows with the
 -- entity rows and the entries it writes, a read with the changed members and the units they fall in. Then the decision on an index: a pair edit of one member leaves the segments as they are (md5 of
 -- the scope read equal to the plain join, the stamps unchanged), the edit of twenty more is refreshed by sift.col_maintain (new stamp, no member changed since, md5 equal). Counts and md5 only,
 -- no timings.
@@ -11,9 +11,9 @@ SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
 
--- the refresh and the read of the changed members, for the entity rows, the entries times the columns they keep and the counts a read has, and whether the refresh is due
+-- the refresh and the read of the changed members, for the entity rows, the entries times the columns they keep and the counts a read has, and the reads of that price that make the refresh due
 SELECT rows, entries, columns, changed, patch_units, patch_scan_rows, delta_rows,
-	   round(refresh_price / 1e6) AS refresh_m, round(read_price / 1e3) AS read_k, due
+	   round(refresh_price / 1e6) AS refresh_m, round(read_price / 1e3) AS read_k, reads_due
 FROM (VALUES (60000, 150000, 4, 0, 0, 0, 0),
 			 (60000, 150000, 4, 1, 1, 12000, 20),
 			 (60000, 150000, 4, 20, 5, 60000, 400),
@@ -60,8 +60,17 @@ SELECT changed_members() AS changed, sift.col_maintain('events_col') AS rewritte
 UPDATE tenant_scope SET tenant_id = 12 WHERE dim_a_id = 1 AND tenant_id = 1 + 5 % 12;
 SELECT changed_members() AS changed, same_as_join() AS same, sift.col_maintain('events_col') AS rewritten, changed_members() AS changed_after;
 
--- twenty more members: the reads cost more than the rewrite
+-- twenty more members: the reads of the tenant that took them pay for them until they come to half of the rewrite
 UPDATE tenant_scope SET tenant_id = 12 WHERE dim_a_id BETWEEN 2 AND 21 AND tenant_id = 1 + (dim_a_id * 5) % 12;
+SELECT sift.col_maintenance_due('events_col') AS due_before_reads;
+DO $$
+BEGIN
+	FOR i IN 1..5000 LOOP
+		EXIT WHEN sift.col_maintenance_due('events_col') IS NOT NULL;
+		SET LOCAL sift.enable_agg = on;
+		PERFORM count(*), sum(amount) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 12);
+	END LOOP;
+END $$;
 SELECT changed_members() AS changed, same_as_join() AS same, sift.col_maintain('events_col') AS rewritten, changed_members() AS changed_after, same_as_join() AS same_after;
 SELECT (SELECT min(horizon) FROM sift._test_col_scope_stamps('events_col') WHERE family = 'scope' AND scope = 0) >
 	   (SELECT min(horizon) FROM stamp_before) AS stamp_is_new;
