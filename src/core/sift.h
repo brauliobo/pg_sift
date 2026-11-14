@@ -117,6 +117,9 @@ sift_block_sb(BlockNumber blk)
 #define SIFT_TSCONFIG_BYTES	128
 
 /* Index reloptions (amoptions); strings are offsets from the struct start */
+/* A relation for a message: "name", or OID n when it was dropped */
+extern const char *sift_rel_label(Oid relid);
+
 typedef struct SiftOptions
 {
 	int32		vl_len_;

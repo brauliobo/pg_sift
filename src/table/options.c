@@ -42,11 +42,14 @@ typedef enum OptKind
 
 typedef struct OptDesc
 {
-	const char *name;			/* the setting is sift.table_<name> */
+	const char *name;			/* the setting is sift.table_<name>, except for key_order */
 	OptKind		kind;
 	void	   *var;			/* the variable of the setting: where the table sets nothing */
 	int			unit;			/* GUC_UNIT_* of an integer, to read a stored value back */
 } OptDesc;
+
+/* key_order is a per-table option only: no setting stands behind it, a table that sets none has none */
+static char *no_key_order = "";
 
 static const OptDesc opt_desc[SIFT_TBLOPT_N] = {
 	[SIFT_TBLOPT_WRITE_BUFFER_LIMIT] = {"write_buffer_limit", OPT_INT, &sift_tbl_write_buffer_limit, GUC_UNIT_KB},
@@ -65,7 +68,7 @@ static const OptDesc opt_desc[SIFT_TBLOPT_N] = {
 	[SIFT_TBLOPT_AUTO_DEFRAG_BUDGET] = {"auto_defrag_budget", OPT_INT, &sift_tbl_auto_defrag_budget, GUC_UNIT_MB},
 	[SIFT_TBLOPT_AUTO_DEFRAG_COALESCE] = {"auto_defrag_coalesce", OPT_BOOL, &sift_tbl_auto_defrag_coalesce, 0},
 	[SIFT_TBLOPT_AUTO_DEFRAG_INDEXES] = {"auto_defrag_indexes", OPT_BOOL, &sift_tbl_auto_defrag_indexes, 0},
-	[SIFT_TBLOPT_KEY_ORDER] = {"key_order", OPT_STRING, &sift_tbl_key_order_spec, 0},
+	[SIFT_TBLOPT_KEY_ORDER] = {"key_order", OPT_STRING, &no_key_order, 0},
 };
 
 /* What the table sets: a bit and a value per option, and the text as stored (the canonical text of the setting) */
@@ -259,7 +262,7 @@ sift_tbl_opts_load(SiftTblRel *st)
 				o->text[id] = MemoryContextStrdup(st->cxt, txt);
 			}
 			else
-				ereport(LOG, (errmsg("ignoring the option \"%s\" = \"%s\" of table %u in sift.table_option_values", name, txt, st->relid)));
+				ereport(LOG, (errmsg("ignoring the option \"%s\" = \"%s\" of table %s in sift.table_option_values", name, txt, sift_rel_label(st->relid))));
 		}
 		systable_endscan(scan);
 		table_close(cfg, AccessShareLock);
@@ -452,7 +455,7 @@ opt_stored(Oid relid, const char *name, bool effective)
 	st = sift_tbl_rel(rel);
 	t = st->opts->text[id];
 	if (t == NULL && effective)
-		t = GetConfigOptionByName(opt_setting(id), NULL, false);
+		t = id == SIFT_TBLOPT_KEY_ORDER ? no_key_order : GetConfigOptionByName(opt_setting(id), NULL, false);
 	relation_close(rel, AccessShareLock);
 	return t ? cstring_to_text(t) : NULL;
 }

@@ -38,7 +38,7 @@ open_locked(Oid store)
 	Oid			heap = sift_vstore_table(store);
 
 	if (!sift_vstore_is_store(store) || !OidIsValid(heap))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("relation %u is not a shared value store", store)));
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("relation %s is not a shared value store", sift_rel_label(store))));
 	if (!object_ownercheck(RelationRelationId, heap, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_TABLE, get_rel_name(heap));
 	LockRelationOid(heap, ShareUpdateExclusiveLock);
@@ -156,8 +156,8 @@ vacuum_store(Oid store)
 					(errmsg("shared value store \"%s\": %.0f%% of its %s codes are named by no index (%.1f MB): a new epoch begins",
 							get_rel_name(store), 100.0 * (total - live) / total, psprintf(UINT64_FORMAT, total), bytes / 1048576.0),
 					 errdetail("The segments that merges and rewrites write name the new epoch; the old one is removed when no segment names it."),
-					 errhint("SELECT sift.col_value_store_compact('%s', '%s') does it now.", get_rel_name(sift_vstore_table(store)),
-							 get_attname(store, 1, false))));
+					 errhint("SELECT sift.col_value_store_compact(%s, %s) does it now.", quote_literal_cstr(get_rel_name(sift_vstore_table(store))),
+							 quote_literal_cstr(get_attname(store, 1, false)))));
 			sift_vstore_bump_epoch(vs);
 		}
 	}

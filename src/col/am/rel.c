@@ -119,7 +119,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 		const char *err = am_return_walk(sift_col_options_return_columns(index), r, desc);
 
 		if (err)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid return_columns option: %s", err)));
+			sift_col_option_error("return_columns", sift_col_options_return_columns(index), err);
 		for (int a = 1; a <= natts; a++)
 			if (r->ret[a] && index->rd_index->indkey.values[a - 1] == 0)
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid return_columns option: \"%s\" is an expression, not a column", NameStr(TupleDescAttr(desc, a - 1)->attname))));
@@ -134,23 +134,23 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 
 		names[i] = pstrdup(name);
 		if (err)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid compression option: %s", err)));
+			sift_col_option_error("compression", sift_col_options_compression(index), err);
 	}
 	{
 		const char *err = sift_cpagg_spec_parse(sift_col_options_preagg(index), r->schema, (const char *const *) names, &r->pagg);
 
 		if (err)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid preagg option: %s", err)));
+			sift_col_option_error("preagg", sift_col_options_preagg(index), err);
 		if ((err = sift_cpagg_rollup_apply(sift_col_options_rollup_leaves(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_leaves option: %s", err)));
+			sift_col_option_error("rollup_leaves", sift_col_options_rollup_leaves(index), err);
 		if ((err = sift_cpagg_rows_apply(sift_col_options_rollup_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_columns option: %s", err)));
+			sift_col_option_error("rollup_columns", sift_col_options_rollup_columns(index), err);
 		if ((err = sift_cpagg_calendar_apply(sift_col_options_calendar_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid calendar_columns option: %s", err)));
+			sift_col_option_error("calendar_columns", sift_col_options_calendar_columns(index), err);
 		r->pagg.minmax = sift_col_options(index)->cube_minmax;
 		r->pagg.key_table = sift_col_options(index)->key_table;
 		if ((err = sift_cset_keys_parse(sift_col_options_key_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_columns option: %s", err)));
+			sift_col_option_error("key_columns", sift_col_options_key_columns(index), err);
 		r->pagg.super = sift_col_options(index)->superunit;
 		for (int d = 0; r->nscope > 0 && r->pagg.super >= SIFT_SUPER_MIN_FAN && d < r->pagg.ndims; d++)
 			r->pagg.dsets[r->pagg.dim[d].leaf] = !r->pagg.dim[d].cal && sift_cdsets_leaf_ok(r->schema, r->pagg.dim[d].leaf);
@@ -167,12 +167,12 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 		}
 		if ((err = sift_cpagg_leaf_list(sift_cpagg_auto_list(sift_col_options_order_array_columns(index), &r->pagg.gorderauto), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_array_ok,
 										"not an integer, date, timestamp, numeric or text column")) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: %s", err)));
+			sift_col_option_error("order_array_columns", sift_col_options_order_array_columns(index), err);
 		for (int i = 0; i < n; i++)
 			if (r->pagg.gorder[i] && sift_cgord_leaf_text(&r->schema->cols[i]))
 				r->pagg.gorder_coll[i] = TupleDescAttr(desc, defs[i].attno - 1)->attcollation;	/* deterministic: the operator class of a text leaf demands it */
 		if ((err = sift_cgord_layout_parse(sift_col_options_order_layout(index), r->schema, (const char *const *) names, r->pagg.glayout)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_layout option: %s", err)));
+			sift_col_option_error("order_layout", sift_col_options_order_layout(index), err);
 		const char *glist = sift_cpagg_auto_list(sift_col_options_order_array_group(index), &r->pagg.gorder_group_auto);
 		if (glist[0] != '\0' && strcmp(glist, "off") != 0)
 		{
@@ -185,7 +185,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 			if (with != NULL)
 			{
 				if ((err = sift_cpagg_leaf_list(with + 1, r->schema, (const char *const *) names, r->pagg.gorder_with, sift_cgord_leaf_ok, "not an integer, date or timestamp column")) != NULL)
-					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: %s", err)));
+					sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), err);
 				r->pagg.gorder_listed = true;
 				glist = pnstrdup(glist, with - glist);
 			}
@@ -195,12 +195,12 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 			if (only != NULL)
 			{
 				if ((err = sift_cpagg_leaf_list(only + 1, r->schema, (const char *const *) names, r->pagg.gorder_only, sift_cgord_leaf_ok, "not an integer, date or timestamp column")) != NULL)
-					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: %s", err)));
+					sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), err);
 				glist = pnstrdup(glist, only - glist);
 			}
 			if ((err = sift_cpagg_leaf_list(glist, r->schema, (const char *const *) names, grp, sift_cgord_leaf_ok,
 											"not an integer, date or timestamp column")) != NULL)
-				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: %s", err)));
+				sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), err);
 			for (int i = 0; i < n; i++)
 				if (grp[i])
 				{
@@ -218,7 +218,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 				if (defs[i].attno == 2 && r->pagg.glayout[i] == SIFT_CGORD_OL_AUTO)
 					r->pagg.glayout[i] = SIFT_CGORD_OL_WHOLE;
 		if ((err = sift_hll_spec_parse(sift_col_options_hll_columns(index), r->schema, (const char *const *) names, r->pagg.hll)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: %s", err)));
+			sift_col_option_error("hll_columns", sift_col_options_hll_columns(index), err);
 		for (int i = 0; i < n; i++)
 			if (r->pagg.hll[i])
 			{
@@ -235,9 +235,9 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: \"%s\" is in key_columns, which keeps its distinct keys exactly", names[i])));
 			}
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_tid_columns(index), r->schema, (const char *const *) names, r->pagg.point_tid)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_tid_columns option: %s", err)));
+			sift_col_option_error("point_tid_columns", sift_col_options_point_tid_columns(index), err);
 		if ((err = sift_cpoint_spec_parse(sift_col_options_count_columns(index), r->schema, (const char *const *) names, r->pagg.count)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid count_columns option: %s", err)));
+			sift_col_option_error("count_columns", sift_col_options_count_columns(index), err);
 		for (int i = 0; i < n; i++)
 			if (r->pagg.count[i] && r->schema->cols[i].store != SIFT_COLS_STR)
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid count_columns option: \"%s\" is not a text column", names[i])));
@@ -254,18 +254,17 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 				if (r->schema->cols[i].store == SIFT_COLS_STR && r->schema->cols[i].type == SIFT_COLT_TEXT && r->pagg.lookup[i])
 					r->pagg.count[i] = true;
 		{
-			char	   *list = pstrdup(sift_col_options_key_cut(index)),
-					   *save = NULL;
-
-			for (char *tok = strtok_r(list, ", ", &save); tok != NULL; tok = strtok_r(NULL, ", ", &save))
+			for (const char *p = sift_col_options_key_cut(index); *p != '\0'; p += *p == ',')
 			{
+				char	   *tok = sift_cpagg_name_take(&p, ",");
 				int			id = -1;
 
 				for (int i = 0; i < n && id < 0; i++)
 					if (strcmp(names[i], tok) == 0)
 						id = i;
 				if (id < 0 || r->ncut == SIFT_COL_CUT_MAX || !(sift_crun_leaf_ok(r->schema, &r->schema->cols[id]) || sift_col_def_shape_start(r->schema->cols, id)))
-					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_cut option: \"%s\" is not an integer, date, timestamp, numeric or float column of the index (at most %d)", tok, SIFT_COL_CUT_MAX)));
+					sift_col_option_error("key_cut", sift_col_options_key_cut(index),
+										  psprintf("\"%s\" is not an integer, date, timestamp, numeric or float column of the index (at most %d)", tok, SIFT_COL_CUT_MAX));
 				r->cut[r->ncut++] = id;
 			}
 		}
@@ -279,7 +278,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 			if (strcmp(names[i], rk) == 0)
 				id = i;
 		if (id < 0)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid track_changes option: \"%s\" is not a column of the index", rk)));
+			sift_col_option_error("track_changes", rk, psprintf("\"%s\" is not a column of the index", rk));
 		for (int a = 1; a <= natts; a++)
 			if (r->first[a] == id)
 				r->rowkey_attno = a;

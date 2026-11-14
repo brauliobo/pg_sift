@@ -43,8 +43,8 @@ SELECT key, ko_err(key) FROM (VALUES ('k'), (' k , id '), ('K'), ('"Mixed"'), ('
 	('id, k, s, "Mixed", id2, id3, id4, id5, id6')) AS t(key);
 SELECT sift.table_reset_option('ko', 'key_order');
 SELECT sift.table_get_option('ko', 'key_order') = '' AS none_after_reset, (SELECT source FROM sift.table_options('ko') WHERE name = 'key_order') AS source;
-SET sift.table_key_order = 'k';
-SHOW sift.table_key_order;
+-- key_order is a per-table option: there is no setting of that name
+SELECT count(*) AS settings_named_key_order FROM pg_settings WHERE name = 'sift.table_key_order';
 SELECT sift.table_set_option('ko_heap', 'key_order', 'id');
 
 -- the status view: a table with no key, with one set on an empty table, with its rows scattered, sorted again

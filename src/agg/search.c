@@ -270,7 +270,8 @@ int			sift_search_chunk_sbs = 32;
 void
 sift_search_init(void)
 {
-	DefineCustomIntVariable("sift.test_search_chunk_sbs", "Superblocks whose BM25 matches an aggregate scan holds at a time (test only).", NULL,
+	DefineCustomIntVariable("sift.search_chunk_sbs", "Superblocks whose BM25 matches an aggregate scan holds at a time.",
+							"A page of matches takes 64 bytes a superblock; a smaller chunk asks the match set more often.",
 							&sift_search_chunk_sbs, 32, 1, 1 << 20, PGC_USERSET, 0, NULL, NULL, NULL);
 }
 

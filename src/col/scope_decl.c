@@ -398,7 +398,7 @@ path_index(Relation heap, Relation index, const SiftScopeSpec *s, int path, Rela
 	btree = recorded_btree(RelationGetRelid(index), *rel, *a, *b);
 	if (!OidIsValid(btree))
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": index \"%s\" has no recorded btree on (%s, %s) of \"%s\"", s->key_name, RelationGetRelationName(index), r->a, r->b, r->name),
-						errhint("REINDEX INDEX %s records it again.", RelationGetRelationName(index))));
+						errhint("REINDEX INDEX %s records it again.", sift_col_index_ref(index))));
 	return btree;
 }
 

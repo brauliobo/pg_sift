@@ -85,9 +85,9 @@ CREATE FUNCTION cs_stage(name text) RETURNS TABLE (stage text, results text) LAN
 	SELECT name, string_agg(tag || '=' || cs_check(q), E'\n' ORDER BY tag) FROM cs_q $$;
 
 SELECT * FROM cs_stage('build');
-SET sift.test_search_chunk_sbs = 1;
+SET sift.search_chunk_sbs = 1;
 SELECT * FROM cs_stage('chunks of one superblock');
-RESET sift.test_search_chunk_sbs;
+RESET sift.search_chunk_sbs;
 SELECT cs_check('SELECT status, count(*) AS n FROM cs WHERE memo @@> $1 GROUP BY status ORDER BY status', 'cable wire') AS param;
 SELECT cs_check('SELECT status, count(*) AS n FROM cs WHERE memo @@> ($1 || '' wire'') GROUP BY status ORDER BY status', 'cable') AS param_expr;
 SELECT cs_check('SELECT status, count(*) AS n FROM cs WHERE memo @@> $1 GROUP BY status ORDER BY status') AS param_null;

@@ -44,8 +44,6 @@ NOTICE:  sift_col index "lf_b": 2 automatic choices (track_changes, value store)
 DETAIL:  track_changes = id; value store = url
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lf_b');
 REINDEX INDEX lf_a;
-NOTICE:  sift_col index "lf_a" stores columns url, id of index "lf_b", which has the same layout
-HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "lf_a": 2 automatic choices (track_changes, value store)
 DETAIL:  track_changes = id; value store = url
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lf_a');

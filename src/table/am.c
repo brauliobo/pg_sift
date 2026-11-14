@@ -39,7 +39,6 @@ bool		sift_tbl_inline_promote = true;
 bool		sift_tbl_hot_update = true;
 int			sift_tbl_backpressure = 0;
 char	   *sift_tbl_compression_spec = NULL;
-char	   *sift_tbl_key_order_spec = NULL;
 
 /* The directory is half full from the first merge on (dir_pressure), so a threshold at or under that is no backpressure */
 static bool
@@ -64,19 +63,6 @@ static bool
 compression_check_hook(char **newval, void **extra, GucSource source)
 {
 	check_compression(*newval);
-	return true;
-}
-
-/* The columns of a key_order belong to one table, and sift.table_set_option checks them against it without the setting: the setting itself holds no value */
-static bool
-key_order_check_hook(char **newval, void **extra, GucSource source)
-{
-	if (*newval != NULL && (*newval)[0] != '\0')
-	{
-		GUC_check_errdetail("The columns of a key_order belong to one table.");
-		GUC_check_errhint("Use sift.table_set_option(table, 'key_order', 'column, ...').");
-		return false;
-	}
 	return true;
 }
 
@@ -137,7 +123,7 @@ sift_tbl_define_gucs(void)
 	DefineCustomIntVariable("sift.table_auto_defrag_delay",
 							"Cost delay of the background pass of a sift_table, in milliseconds: it sleeps this long (at most four times) each time its page accesses add up to vacuum_cost_limit, and after each segment it rewrites.",
 							"0 never waits; at most 100, the most vacuum_cost_delay allows.", &sift_tbl_auto_defrag_delay, 10, 0, 100,
-							PGC_USERSET, GUC_UNIT_MS, NULL, NULL, NULL);
+							PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_budget",
 							"Megabytes of column segments one background pass of a sift_table rewrites by merging at most.",
 							"The worker passes again while the budget stopped the last one. 0 is no limit.",
@@ -145,11 +131,11 @@ sift_tbl_define_gucs(void)
 	DefineCustomIntVariable("sift.table_auto_defrag_max_active",
 							"Client backends of the database running a statement above which the background pass of a sift_table waits for a quieter moment.",
 							"The worker looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all, and between the merges of a pass; a later request asks again. 0: never waits.",
-							&sift_tbl_auto_defrag_max_active, 0, 0, 10000, PGC_USERSET, 0, NULL, NULL, NULL);
+							&sift_tbl_auto_defrag_max_active, 0, 0, 10000, PGC_SIGHUP, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_wal_rate",
 							"Kilobytes of WAL per second the background pass of a sift_table may write on average.",
 							"After a step that put it ahead of that rate the worker sleeps until the rate is met. A rewritten segment makes every backend that reads it load its dictionaries again, so the rate also bounds how often that happens. 0: no limit.",
-							&sift_tbl_auto_defrag_wal_rate, 0, 0, INT_MAX, PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
+							&sift_tbl_auto_defrag_wal_rate, 0, 0, INT_MAX, PGC_SIGHUP, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_auto_defrag_coalesce",
 							 "The background pass of a sift_table merges the small column groups next to the ones it rewrites into one group.",
 							 NULL, &sift_tbl_auto_defrag_coalesce, true, PGC_USERSET, 0, NULL, NULL, NULL);
@@ -160,10 +146,6 @@ sift_tbl_define_gucs(void)
 	DefineCustomStringVariable("sift.table_compression",
 							   "Compression of the column segments a sift_table writes: auto, none, lz4, zstd or encodings; per column: 'auto; col=zstd:9'.",
 							   NULL, &sift_tbl_compression_spec, "", PGC_USERSET, 0, compression_check_hook, NULL, NULL);
-	DefineCustomStringVariable("sift.table_key_order",
-							   "The columns a sift_table is sorted by when VACUUM FULL rewrites it; a per-table option, empty here.",
-							   "Set it for one table with sift.table_set_option(table, 'key_order', 'column, ...'); the setting itself holds no value.",
-							   &sift_tbl_key_order_spec, "", PGC_USERSET, 0, key_order_check_hook, NULL, NULL);
 #ifdef SIFT_TESTING
 	DefineCustomIntVariable("sift.table_max_segments", "Test only: the directory entries a sift_table may use.", NULL,
 							&sift_tbl_max_segments, SIFT_MAX_SEGMENTS, 8, SIFT_MAX_SEGMENTS, PGC_USERSET, 0, NULL, NULL, NULL);

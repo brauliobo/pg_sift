@@ -146,16 +146,12 @@ NOTICE:  sift_col index "notvalid_col": 2 automatic choices (key_columns, track_
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('notvalid_col');
 REINDEX INDEX facts_col;
-NOTICE:  sift_col index "facts_col" stores columns id, dim_a_id, v of index "facts_off", which has the same layout
-HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "facts_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 REINDEX INDEX CONCURRENTLY facts_col;
 NOTICE:  sift_col index "facts_col": track_changes log is not complete after a concurrent build
 HINT:  The next VACUUM completes the log; REINDEX INDEX facts_col without CONCURRENTLY does it now.
-NOTICE:  sift_col index "facts_col" stores columns id, dim_a_id, v of index "facts_off", which has the same layout
-HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "facts_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');

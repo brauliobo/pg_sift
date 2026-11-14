@@ -29,39 +29,39 @@ ALTER INDEX ao_paths SET (calendar_columns = 'all');
 -- a column that is not in the index, and one of a type the option does not take
 \c
 ALTER INDEX ao_paths SET (key_columns = 'nope');
-ERROR:  invalid key_columns option: unknown column
+ERROR:  invalid key_columns option "nope": "nope" is not a column of the index
 \c
 ALTER INDEX ao_paths SET (key_columns = 'f');
-ERROR:  invalid key_columns option: not a plain integer, text or uuid column
+ERROR:  invalid key_columns option "f": not a plain integer, text or uuid column
 \c
 ALTER INDEX ao_paths SET (key_columns = 'auto: nope');
-ERROR:  invalid key_columns option: unknown column
+ERROR:  invalid key_columns option "auto: nope": "nope" is not a column of the index
 \c
 ALTER INDEX ao_paths SET (rollup_columns = 'nope, pid');
-ERROR:  invalid rollup_columns option: "nope" is not a column of the index
+ERROR:  invalid rollup_columns option "nope, pid": "nope" is not a column of the index
 \c
 ALTER INDEX ao_paths SET (rollup_columns = 'f, pid');
-ERROR:  invalid rollup_columns option: "f" must be a boolean, integer, date, numeric or text column
+ERROR:  invalid rollup_columns option "f, pid": "f" must be a boolean, integer, date, numeric or text column
 \c
 ALTER INDEX ao_paths SET (return_columns = 'nope');
-ERROR:  invalid return_columns option: unknown column
+ERROR:  invalid return_columns option "nope": "nope" is not a column of the index
 \c
 ALTER INDEX ao_paths SET (return_columns = 'pid');
-ERROR:  invalid return_columns option: not a text, varchar or uuid column
+ERROR:  invalid return_columns option "pid": not a text, varchar or uuid column
 \c
 ALTER INDEX ap_plain SET (calendar_columns = 'id');
-ERROR:  invalid calendar_columns option: "id" must be a date, timestamp or timestamptz column
+ERROR:  invalid calendar_columns option "id": "id" must be a date, timestamp or timestamptz column
 \c
 ALTER INDEX ap_plain SET (calendar_columns = 'nope');
-ERROR:  invalid calendar_columns option: "nope" is not a column of the index
+ERROR:  invalid calendar_columns option "nope": "nope" is not a column of the index
 \c
 ALTER INDEX ap_plain SET (calendar_columns = 'd, d');
-ERROR:  invalid calendar_columns option: "d" is named twice
+ERROR:  invalid calendar_columns option "d, d": "d" is named twice
 \c
 ALTER INDEX aw_wide SET (calendar_columns = 'd1, d2');
 \c
 ALTER INDEX ad_dates SET (calendar_columns = 'd1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17');
-ERROR:  invalid calendar_columns option: too many dimensions
+ERROR:  invalid calendar_columns option "d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17": too many dimensions
 -- the refused options changed nothing (aw_wide took its list), and the table still takes statements
 \c
 SELECT relname, reloptions FROM pg_class WHERE relname IN ('ao_paths', 'ap_plain', 'aw_wide', 'ad_dates') ORDER BY 1;
@@ -109,9 +109,9 @@ ALTER INDEX ap_plain SET (calendar_columns = 'auto', rollup_leaves = 'auto');
 ALTER INDEX ap_plain SET (rollup_leaves = 'default');
 \c
 ALTER INDEX ap_plain SET (rollup_leaves = 'nope');
-ERROR:  invalid rollup_leaves option: "nope" is not a leaf declared in paths
+ERROR:  invalid rollup_leaves option "nope": "nope" is not a leaf declared in paths
 ALTER INDEX ap_plain SET (calendar_columns = 'autos');
-ERROR:  invalid calendar_columns option: "autos" is not a column of the index
+ERROR:  invalid calendar_columns option "autos": "autos" is not a column of the index
 ALTER INDEX ap_plain RESET (calendar_columns, rollup);
 VACUUM ao;
 VACUUM ap;

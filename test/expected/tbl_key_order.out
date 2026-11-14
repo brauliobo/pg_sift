@@ -159,14 +159,11 @@ SELECT sift.table_get_option('ko', 'key_order') = '' AS none_after_reset, (SELEC
  t                | default
 (1 row)
 
-SET sift.table_key_order = 'k';
-ERROR:  invalid value for parameter "sift.table_key_order": "k"
-DETAIL:  The columns of a key_order belong to one table.
-HINT:  Use sift.table_set_option(table, 'key_order', 'column, ...').
-SHOW sift.table_key_order;
- sift.table_key_order 
-----------------------
- 
+-- key_order is a per-table option: there is no setting of that name
+SELECT count(*) AS settings_named_key_order FROM pg_settings WHERE name = 'sift.table_key_order';
+ settings_named_key_order 
+--------------------------
+                        0
 (1 row)
 
 SELECT sift.table_set_option('ko_heap', 'key_order', 'id');

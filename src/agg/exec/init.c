@@ -10,6 +10,17 @@
 #include "agg/rows.h"
 #include "agg/exec/int.h"
 
+/* The warning comes when the value is set (SET, ALTER SYSTEM, a reload of the file), not at the first query of every session that has it */
+static bool
+lookup_max_rows_check(int *newval, void **extra, GucSource source)
+{
+	if (*newval >= 0)
+		ereport(WARNING,
+				(errmsg("sift.agg_lookup_max_rows is deprecated and will be removed in a later release"),
+				 errhint("Use sift.agg_lookup_max_kb, the memory of the lookup tables, and RESET sift.agg_lookup_max_rows.")));
+	return true;
+}
+
 void
 sift_agg_init(void)
 {
@@ -201,7 +212,7 @@ sift_agg_init(void)
 	DefineCustomIntVariable("sift.agg_lookup_max_rows",
 							"The older form of sift.agg_lookup_max_kb: rows a sub-select, VALUES list or function joined to Custom Scan (SiftAgg) may return, whatever their width (-1: the memory limit decides).",
 							NULL, &sift_agg_lookup_max_rows, -1, -3, INT_MAX,
-							PGC_USERSET, 0, NULL, NULL, NULL);
+							PGC_USERSET, 0, lookup_max_rows_check, NULL, NULL);
 #ifdef SIFT_TESTING
 	DefineCustomBoolVariable("sift.test_verdict_shm_fail",
 							 "Testing: the table of the shared verdicts cannot be had (an error in the registry), once for a backend.",

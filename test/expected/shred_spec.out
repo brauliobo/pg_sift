@@ -89,6 +89,7 @@ SELECT sift._test_shred_spec('');
 ERROR:  sift shred paths: expected a key at the start of a path at position 1
 SELECT sift._test_shred_spec('a');
 ERROR:  sift shred paths: expected a type after the path (bool, int2, int4, int8, float4, float8, text or astext) at position 2
+HINT:  Name the type of every path, 'doc.id int4, doc.items[]{sku text}'; 'auto' lets the build choose the paths from the documents.
 SELECT sift._test_shred_spec('a nope');
 ERROR:  sift shred paths: unknown type "nope" (bool, int2, int4, int8, float4, float8, text or astext) at position 3
 SELECT sift._test_shred_spec('a int4,');

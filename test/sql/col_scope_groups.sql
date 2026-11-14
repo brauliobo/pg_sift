@@ -9,7 +9,7 @@ SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.test_col_unit_rows = 100;
+SET sift.col_unit_rows = 100;
 
 -- key 1 holds ids 1 to 60 (several hundred rows of each), key 2 ids 61 to 66, key 3 id 67 only
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));

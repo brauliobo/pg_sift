@@ -6,13 +6,22 @@ NOTICE:  reloption "mutable_limit" is the older name of "write_buffer_limit"
 HINT:  Use "write_buffer_limit"; the older name keeps working.
 CREATE INDEX wa_new ON wa USING sift (body) WITH (write_buffer_limit = 64);
 CREATE INDEX wa_def ON wa USING sift (body);
-SELECT relname, reloptions FROM pg_class WHERE relname IN ('wa_old', 'wa_new', 'wa_def') ORDER BY relname;
- relname |       reloptions        
----------+-------------------------
- wa_def  | 
- wa_new  | {write_buffer_limit=64}
- wa_old  | {mutable_limit=64}
-(3 rows)
+-- both names: the new one wins, also when it is given with its default value
+CREATE INDEX wa_both ON wa USING sift (body) WITH (write_buffer_limit = 4096, mutable_limit = 64);
+NOTICE:  reloption "mutable_limit" is the older name of "write_buffer_limit"
+HINT:  Use "write_buffer_limit"; the older name keeps working.
+CREATE INDEX wa_both_small ON wa USING sift (body) WITH (mutable_limit = 4096, write_buffer_limit = 64);
+NOTICE:  reloption "mutable_limit" is the older name of "write_buffer_limit"
+HINT:  Use "write_buffer_limit"; the older name keeps working.
+SELECT relname, reloptions FROM pg_class WHERE relname IN ('wa_old', 'wa_new', 'wa_def', 'wa_both', 'wa_both_small') ORDER BY relname;
+    relname    |                 reloptions                 
+---------------+--------------------------------------------
+ wa_both       | {write_buffer_limit=4096,mutable_limit=64}
+ wa_both_small | {mutable_limit=4096,write_buffer_limit=64}
+ wa_def        | 
+ wa_new        | {write_buffer_limit=64}
+ wa_old        | {mutable_limit=64}
+(5 rows)
 
 -- both names check their range
 CREATE INDEX wa_bad1 ON wa USING sift (body) WITH (mutable_limit = 0);
@@ -56,6 +65,18 @@ SELECT count(*) FILTER (WHERE kind IN ('sealed buffer', 'immutable')) > 0 AS new
 SELECT count(*) FILTER (WHERE kind IN ('sealed buffer', 'immutable')) = 0 AS def_sealed FROM sift.segments('wa_def');
  def_sealed 
 ------------
+ t
+(1 row)
+
+SELECT count(*) FILTER (WHERE kind IN ('sealed buffer', 'immutable')) = 0 AS both_default_wins FROM sift.segments('wa_both');
+ both_default_wins 
+-------------------
+ t
+(1 row)
+
+SELECT count(*) FILTER (WHERE kind IN ('sealed buffer', 'immutable')) > 0 AS both_small_wins FROM sift.segments('wa_both_small');
+ both_small_wins 
+-----------------
  t
 (1 row)
 

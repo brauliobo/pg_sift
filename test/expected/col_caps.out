@@ -86,8 +86,6 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 -- off says nothing
 ALTER INDEX caps_a SET (key_columns = 'off');
 REINDEX INDEX caps_a;
-NOTICE:  sift_col index "caps_a" stores columns id, few, wide of index "caps_b", which has the same layout
-HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "caps_a": 1 advice (track_changes), 1 limit (cube)
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: cube = many
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_a');

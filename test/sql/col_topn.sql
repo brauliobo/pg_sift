@@ -128,9 +128,9 @@ CREATE FUNCTION ct_stage(name text) RETURNS TABLE (stage text, results text) LAN
 	SELECT name, string_agg(tag || '=' || ct_check(q), E'\n' ORDER BY tag COLLATE "C") FROM ct_q $$;
 
 SELECT * FROM ct_stage('build');
-SET sift.test_search_chunk_sbs = 1;
+SET sift.search_chunk_sbs = 1;
 SELECT * FROM ct_stage('chunks of one superblock');
-RESET sift.test_search_chunk_sbs;
+RESET sift.search_chunk_sbs;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10', 'cable wire') AS param;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10') AS param_null;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10 OFFSET 3') AS offset_lit;

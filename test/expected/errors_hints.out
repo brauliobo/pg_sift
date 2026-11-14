@@ -131,6 +131,32 @@ SELECT count(*) FROM alt WHERE v @@> 'al*';
      2
 (1 row)
 
+-- a paths spec that names a column, not a path with its type, and the lists of columns of the options: the name, what is wrong with it, what to write
+SELECT expect($$CREATE INDEX ON docs USING sift_col (id, payload) WITH (paths = 'payload')$$);
+                                                                expect                                                                 
+---------------------------------------------------------------------------------------------------------------------------------------
+ 42601 sift shred paths: expected a type after the path (bool, int2, int4, int8, float4, float8, text or astext) at position 8        +
+   hint: Name the type of every path, 'doc.id int4, doc.items[]{sku text}'; 'auto' lets the build choose the paths from the documents.
+(1 row)
+
+SELECT expect($$CREATE INDEX ON many USING sift_col (id, v) WITH (key_columns = 'nope')$$);
+                                    expect                                    
+------------------------------------------------------------------------------
+ 22023 invalid key_columns option "nope": "nope" is not a column of the index
+(1 row)
+
+SELECT expect($$CREATE INDEX ON many USING sift_col (id, v) WITH (key_columns = '"v')$$);
+                                     expect                                     
+--------------------------------------------------------------------------------
+ 22023 invalid list of column names: the quote that opens at ""v" is not closed
+(1 row)
+
+SELECT expect($$CREATE INDEX ON many USING sift_col (id, v) WITH (key_cut = 'v')$$);
+                                                           expect                                                           
+----------------------------------------------------------------------------------------------------------------------------
+ 22023 invalid key_cut option "v": "v" is not an integer, date, timestamp, numeric or float column of the index (at most 4)
+(1 row)
+
 DROP TABLE one, many, tbl, docs, alt;
 DROP FUNCTION expect(text);
 DROP EXTENSION pg_sift_test;

@@ -111,7 +111,8 @@ NOTICE:  sift_col index "pd_k": 1 automatic choice (point_tid_columns), 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_k');
 NOTICE:  sift_col index "pd_k" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('pd_k') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 CREATE INDEX pd_n ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256);
 NOTICE:  sift_col index "pd_n" stores columns k, v, id of index "pd_k", which has the same layout
 HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
@@ -192,7 +193,8 @@ NOTICE:  sift_col index "pd_all": 1 automatic choice (point_tid_columns), 1 advi
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k, s, u, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_all');
 NOTICE:  sift_col index "pd_all" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('pd_all') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT sift.col_verify('pd_all', true);
  col_verify 
 ------------
@@ -263,7 +265,8 @@ NOTICE:  sift_col index "pd_one": 1 automatic choice (point_tid_columns), 1 advi
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = s, u, k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_one');
 NOTICE:  sift_col index "pd_one" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('pd_one') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 RESET max_parallel_maintenance_workers;
 SELECT sift.col_verify('pd_one', true), (SELECT count(*) FROM sift.col_segments('pd_one') WHERE kind = 'immutable') AS segments;
  col_verify | segments 
@@ -653,7 +656,8 @@ NOTICE:  sift_col index "pd_all": 1 automatic choice (point_tid_columns), 1 advi
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_all');
 NOTICE:  sift_col index "pd_all" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('pd_all') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
  n  | pd_cmp 
 ----+--------
@@ -741,7 +745,8 @@ NOTICE:  sift_col index "ph_k": 1 automatic choice (point_tid_columns), 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ph_k');
 NOTICE:  sift_col index "ph_k" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ph_k') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 CREATE INDEX ph_s ON ph USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_tid_columns = 's');
 NOTICE:  sift_col index "ph_s" stores columns id of index "ph_k", which has the same layout
 HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
@@ -778,7 +783,8 @@ NOTICE:  sift_col index "phb_k": 1 automatic choice (point_tid_columns), 1 advic
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('phb_k');
 NOTICE:  sift_col index "phb_k" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('phb_k') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT sift.col_verify('phb_k', true);
  col_verify 
 ------------
@@ -810,7 +816,8 @@ NOTICE:  sift_col index "px_i": 1 automatic choice (point_tid_columns), 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = v, ts
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('px_i');
 NOTICE:  sift_col index "px_i" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('px_i') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT sift.col_verify('px_i', true);
  col_verify 
 ------------
@@ -839,7 +846,8 @@ NOTICE:  sift_col index "pw_k": 1 automatic choice (point_tid_columns), 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pw_k');
 NOTICE:  sift_col index "pw_k" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('pw_k') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 CREATE INDEX pw_n ON pw USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops);
 NOTICE:  sift_col index "pw_n" stores columns k, id of index "pw_k", which has the same layout
 HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
@@ -890,7 +898,8 @@ NOTICE:  sift_col index "pt_i": 1 automatic choice (point_tid_columns), 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = i2, d, t, tz, n, b
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_i');
 NOTICE:  sift_col index "pt_i" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('pt_i') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT sift.col_verify('pt_i', true);
  col_verify 
 ------------
@@ -952,9 +961,9 @@ DROP FUNCTION pt_arr(text, bool), pt_plan(text);
 -- the option names plain integer, text and uuid columns of the top level (a date is an integer leaf)
 CREATE TABLE pe (id int, f float8, j jsonb, d date);
 CREATE INDEX pe_f ON pe USING sift_col (f sift.col_float8_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'f');
-ERROR:  invalid point_tid_columns option: not a plain integer, text or uuid column of the top level
+ERROR:  invalid point_tid_columns option "f": not a plain integer, text or uuid column of the top level
 CREATE INDEX pe_x ON pe USING sift_col (id sift.col_int4_ops) WITH (point_tid_columns = 'nope');
-ERROR:  invalid point_tid_columns option: unknown column
+ERROR:  invalid point_tid_columns option "nope": "nope" is not a column of the index
 CREATE INDEX pe_s ON pe USING sift_col (id sift.col_int4_ops, d sift.col_date_ops) WITH (point_tid_columns = 'id, d');
 NOTICE:  sift_col index "pe_s": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key

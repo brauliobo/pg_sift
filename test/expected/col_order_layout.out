@@ -18,11 +18,11 @@ ERROR:  invalid order_layout option "compact ts": unknown layout "compact ts" (a
 CREATE INDEX x ON t USING sift_col (id, ts) WITH (order_layout = 'compact:');
 ERROR:  invalid order_layout option "compact:": empty column list
 CREATE INDEX x ON t USING sift_col (id, ts) WITH (order_layout = 'compact: nope');
-ERROR:  invalid order_layout option: unknown column
+ERROR:  invalid order_layout option "compact: nope": "nope" is not a column of the index
 CREATE INDEX x ON t USING sift_col (id, ts) WITH (order_layout = 'compact: name');
-ERROR:  invalid order_layout option: unknown column
+ERROR:  invalid order_layout option "compact: name": "name" is not a column of the index
 CREATE INDEX x ON t USING sift_col (id, ts) WITH (order_layout = 'compact: ts; whole: ts');
-ERROR:  invalid order_layout option: column "ts" is in two layouts
+ERROR:  invalid order_layout option "compact: ts; whole: ts": column "ts" is in two layouts
 -- the layout of each segment and the bytes of each column, as CREATE INDEX says them
 CREATE INDEX t_ix ON t USING sift_col (id, ts, c) WITH (order_array_columns = 'id, ts, c', order_layout = 'compact: ts, c; whole: id');
 NOTICE:  sift_col index "t_ix": 2 automatic choices, 1 advice
@@ -30,7 +30,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; order_
 order_layout = id exact, and 2 more
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t_ix');
 NOTICE:  sift_col index "t_ix" is column format minor 41, which a library before 4.0 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('t_ix') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT format, rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable';
  format | rows  
 --------+-------
@@ -44,7 +45,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; order_
 order_layout = ts compact in 92% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('u_ix');
 NOTICE:  sift_col index "u_ix" is column format minor 41, which a library before 4.0 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('u_ix') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT format FROM sift.col_segments('u_ix') WHERE kind = 'immutable';
  format 
 --------
@@ -58,7 +60,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; order_
 order_layout = ts exact
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('w_ix');
 NOTICE:  sift_col index "w_ix" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('w_ix') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT format FROM sift.col_segments('w_ix') WHERE kind = 'immutable';
  format 
 --------
@@ -79,20 +82,23 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; order_
 order_layout = day exact
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('d_whole');
 NOTICE:  sift_col index "d_whole" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('d_whole') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 CREATE INDEX d_compact ON d USING sift_col (id, day) WITH (order_array_columns = 'day', order_layout = 'compact');
 NOTICE:  sift_col index "d_compact": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = day;
 order_layout = day compact in 92% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('d_compact');
 NOTICE:  sift_col index "d_compact" is column format minor 41, which a library before 4.0 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('d_compact') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 CREATE INDEX d_smaller ON d USING sift_col (id, day) WITH (order_array_columns = 'day');
 NOTICE:  sift_col index "d_smaller": 1 automatic choice (order_array_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = day
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('d_smaller');
 NOTICE:  sift_col index "d_smaller" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('d_smaller') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT pg_relation_size('d_smaller') <= LEAST(pg_relation_size('d_whole'), pg_relation_size('d_compact')) AS smaller_is_least,
 	   pg_relation_size('d_compact') > pg_relation_size('d_whole') AS compact_costs_more_on_ties;
  smaller_is_least | compact_costs_more_on_ties 
@@ -121,7 +127,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; order_
 order_layout = ts compact in 92% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('e_smaller');
 NOTICE:  sift_col index "e_smaller" is column format minor 41, which a library before 4.0 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('e_smaller') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT format FROM sift.col_segments('e_smaller') WHERE kind = 'immutable';
  format 
 --------
@@ -153,21 +160,24 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; order_
 order_layout = ts compact in 39% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('mx_ix');
 NOTICE:  sift_col index "mx_ix" is column format minor 41, which a library before 4.0 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('mx_ix') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 CREATE INDEX mw_ix ON mw USING sift_col (id, ts) WITH (order_array_columns = 'ts', order_layout = 'whole');
 NOTICE:  sift_col index "mw_ix": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = ts;
 order_layout = ts exact
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('mw_ix');
 NOTICE:  sift_col index "mw_ix" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('mw_ix') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 CREATE INDEX mc_ix ON mc USING sift_col (id, ts) WITH (order_array_columns = 'ts', order_layout = 'compact');
 NOTICE:  sift_col index "mc_ix": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = ts;
 order_layout = ts compact in 97% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('mc_ix');
 NOTICE:  sift_col index "mc_ix" is column format minor 41, which a library before 4.0 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('mc_ix') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 VACUUM ANALYZE mx;
 VACUUM ANALYZE mw;
 VACUUM ANALYZE mc;
@@ -291,7 +301,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; order_
 order_layout = id exact, ts compact in 95% of chunks, c exact
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t_ix');
 NOTICE:  sift_col index "t_ix" is column format minor 41, which a library before 4.0 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('t_ix') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT format, rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable';
  format | rows  
 --------+-------

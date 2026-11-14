@@ -205,9 +205,9 @@ DROP ROLE fc_reader, fc_nobody;
 \set VERBOSITY default
 
 -- writes: each kind of change, with the facets of the table compared again
-SET sift.test_search_chunk_sbs = 1;
+SET sift.search_chunk_sbs = 1;
 SELECT * FROM fc_stage('chunks of one superblock');
-RESET sift.test_search_chunk_sbs;
+RESET sift.search_chunk_sbs;
 
 INSERT INTO fc (title, brand, category, price, qty, added, ts, active, tags)
 SELECT 'wireless fresh w' || i, (ARRAY['acme', 'new', NULL])[1 + i % 3], 20 + i % 3, i % 700, i % 40, date '2025-06-01' + i % 90, timestamp '2025-06-01' + i % 90 * interval '1 day',

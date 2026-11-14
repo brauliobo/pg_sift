@@ -21,7 +21,7 @@
 #include "core/lane.h"
 #include "core/ops.h"
 
-int			sift_col_test_unit_rows = 0;
+int			sift_col_unit_rows = 0;
 
 /*
  * col/am/am.c - the sift_col index access method: handler, options, the per-relation leaf list, tuple to row conversion and
@@ -69,36 +69,31 @@ am_return_walk(const char *opt, SiftColRel *r, TupleDesc desc)
 {
 	const char *p = opt;
 
-	while (*p == ' ')
+	while (isspace((unsigned char) *p))
 		p++;
 	if (*p == '\0' || strcmp(p, "off") == 0)
 		return NULL;
 	for (;;)
 	{
-		const char *end = strchr(p, ',');
-		size_t		len = end ? (size_t) (end - p) : strlen(p);
+		char	   *name = sift_cpagg_name_take(&p, ",");
 		int			a = 0;
 
-		while (len > 0 && p[len - 1] == ' ')
-			len--;
-		if (len == 0)
+		if (*name == '\0')
 			return "empty column name";
 		if (r != NULL)
 		{
 			for (int i = 1; i <= r->natts && a == 0; i++)
-				if (strlen(NameStr(TupleDescAttr(desc, i - 1)->attname)) == len && strncmp(NameStr(TupleDescAttr(desc, i - 1)->attname), p, len) == 0)
+				if (strcmp(NameStr(TupleDescAttr(desc, i - 1)->attname), name) == 0)
 					a = i;
 			if (a == 0)
-				return "unknown column";
+				return psprintf("\"%s\" is not a column of the index", name);
 			if (!sift_col_returns_str(desc, a, r->nleaves[a], r->json[a]))
 				return "not a text, varchar or uuid column";
 			r->ret[a] = true;
 		}
-		if (end == NULL)
+		if (*p == '\0')
 			return NULL;
-		p = end + 1;
-		while (*p == ' ')
-			p++;
+		p++;
 	}
 }
 
@@ -116,6 +111,13 @@ sift_col_validate_key_columns(const char *value)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_columns option \"%s\": %s", value, err)));
 }
 
+/* The option that is not valid, with its value and what is wrong: one text for the check of the value and for the use of it */
+void
+sift_col_option_error(const char *option, const char *value, const char *err)
+{
+	ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid %s option \"%s\": %s", option, value, err)));
+}
+
 /* An option whose value is a list with its own syntax checker: the error names the option and what is wrong */
 #define SYNTAX_VALIDATOR(option, check) \
 void \
@@ -124,7 +126,7 @@ sift_col_validate_##option(const char *value) \
 	const char *err = check; \
 \
 	if (err) \
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid " #option " option \"%s\": %s", value, err))); \
+		sift_col_option_error(#option, value, err); \
 }
 
 /* 'auto' or 'auto: a, b' stands for the columns the build chooses: the rest is a list of columns */
@@ -154,9 +156,10 @@ SYNTAX_VALIDATOR(point_tid_columns, sift_cpoint_syntax(value))
 static const char *
 row_key_syntax(const char *value)
 {
-	if (strpbrk(value, ", ;") != NULL)
-		return "a single column: a composite key is not supported";
-	return NULL;
+	const char *p = value;
+
+	(void) sift_cpagg_name_take(&p, ",;");
+	return *p == '\0' ? NULL : "a single column: a composite key is not supported";
 }
 
 SYNTAX_VALIDATOR(track_changes, row_key_syntax(value))
@@ -207,17 +210,22 @@ SYNTAX_VALIDATOR(projection, projection_syntax(value))
 static const char *
 key_order_syntax(const char *value)
 {
-	const char *comma;
+	const char *p = value;
+	char	   *name;
 
 	if (value[0] == '\0' || strcmp(value, "off") == 0)
 		return NULL;
 	if (strncmp(value, "auto:", 5) == 0)
-		value += 5 + strspn(value + 5, " ");
-	comma = strchr(value, ',');
-	if (value[0] == ' ' || value[0] == ',')
+		p += 5;
+	name = sift_cpagg_name_take(&p, ",");
+	if (*name == '\0')
 		return "a column name, or 'group, key'";
-	if (comma && (strchr(comma + 1, ',') != NULL || comma[1 + strspn(comma + 1, " ")] == '\0'))
-		return "at most two columns, 'group, key'";
+	if (*p == ',')
+	{
+		p++;
+		if (*sift_cpagg_name_take(&p, ",") == '\0' || *p != '\0')
+			return "at most two columns, 'group, key'";
+	}
 	return NULL;
 }
 
@@ -363,9 +371,10 @@ sift_col_init(void)
 							 "is written with its values (sift.col_arena_status shows how many). Records written while it was on stay references after it is turned off; a buffer that holds one is column format minor 44. "
 							 "An index without track_changes, a speculative insertion and a table that is not a heap keep the values.",
 							 &sift_col_wbuf_ref, true, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.test_col_unit_rows",
-							"Testing: the rows a key-cut unit aims at (0 = the rows of 256 average heap pages), to get several units out of a small table.",
-							NULL, &sift_col_test_unit_rows, 0, 0, 32768, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_unit_rows",
+							"The rows a key-cut unit aims at, 0 for the rows of 256 average heap pages.",
+							"A smaller unit prunes finer and costs more directory per row; it applies to the units written from now on. It also gets several units out of a small table.",
+							&sift_col_unit_rows, 0, 0, 32768, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
@@ -584,7 +593,7 @@ sift_col_init(void)
 						 NULL, NULL, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "key_cut_rows",
 					  "Deprecated and ignored; accepted so that an index that stores it, a dump and ALTER INDEX .. RESET keep working",
-					  0, 0, 32768, ShareUpdateExclusiveLock);
+					  0, 0, INT_MAX, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_columns",
 						 "Deprecated and ignored; accepted so that an index that stores it, a dump and ALTER INDEX .. RESET keep working (the order arrays of order_array_columns answer what its sorted runs did)",
 						 "", NULL, ShareUpdateExclusiveLock);
@@ -687,38 +696,33 @@ key_order_expand(SiftColOptions **op)
 	SiftColOptions *o = *op;
 	const char *spec = (const char *) o + o->key_order;
 	bool		autochosen = strncmp(spec, "auto:", 5) == 0;
-	char	   *first,
-			   *last,
-			   *comma;
+	const char *p = autochosen ? spec + 5 : spec;
+	char	   *first = sift_cpagg_name_take(&p, ","),
+			   *last = first;
+	bool		two = *p == ',';
 	size_t		base = VARSIZE(o);
 	char	   *dst;
 
 	if (strcmp(spec, "off") == 0)
 		return;
-	first = pstrdup(autochosen ? spec + 5 + strspn(spec + 5, " ") : spec);
-	last = first;
-	comma = strchr(first, ',');
-
-	if (comma)
+	if (two)
 	{
-		*comma = '\0';
-		last = comma + 1 + strspn(comma + 1, " ");
-		while (comma > first && comma[-1] == ' ')
-			*--comma = '\0';
+		p++;
+		last = sift_cpagg_name_take(&p, ",");
 	}
 	o = repalloc(o, base + strlen(first) + strlen(last) + 4);
 	dst = (char *) o + base;
 	o->ko_lead = base;
 	dst += sprintf(dst, "%s", first) + 1;
-	if (comma)
+	if (two)
 	{
 		o->ko_last = dst - (char *) o;
 		dst += sprintf(dst, "%s", last) + 1;
 	}
 	else
 		o->ko_last = base;
-	o->ko_group = comma ? o->ko_lead : 0;
-	o->ko_key = comma || autochosen ? 0 : o->ko_lead;
+	o->ko_group = two ? o->ko_lead : 0;
+	o->ko_key = two || autochosen ? 0 : o->ko_lead;
 	o->ko_auto = autochosen;
 	SET_VARSIZE(o, dst - (char *) o);
 	*op = o;
@@ -865,7 +869,22 @@ sift_col_options_key_order_auto(Relation index)
 	return strncmp(sift_col_options_key_order(index), "auto:", 5) == 0;
 }
 
-COL_OPT_STR(sift_col_options_row_key, track_changes, "auto")
+static const char *
+row_key_text(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->track_changes ? (const char *) o + o->track_changes : "auto";
+}
+
+/* the column that track_changes names: its quotes ("Order Id") are not part of the name */
+const char *
+sift_col_options_row_key(Relation index)
+{
+	const char *p = row_key_text(index);
+
+	return *p == '"' ? sift_cpagg_name_take(&p, "") : p;
+}
 
 COL_OPT_STR(sift_col_options_connect, connect, "")
 

@@ -12,7 +12,8 @@ NOTICE:  sift_col index "pdn_ix": 1 automatic choice (point_tid_columns), 1 advi
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = u, d
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pdn_ix');
 NOTICE:  sift_col index "pdn_ix" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('pdn_ix') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 ANALYZE pdn;
 CREATE FUNCTION pdn_from_point(w text) RETURNS text LANGUAGE plpgsql
 	SET sift.agg_force = on SET max_parallel_workers_per_gather = 0 SET jit = off AS $$

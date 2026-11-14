@@ -13,13 +13,15 @@ NOTICE:  sift_col index "ordered_col": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = k, v; point_tid_columns = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ordered_col');
 NOTICE:  sift_col index "ordered_col" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ordered_col') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 CLUSTER ordered USING ordered_k;
 NOTICE:  sift_col index "ordered_col": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = k, v; point_tid_columns = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ordered_col');
 NOTICE:  sift_col index "ordered_col" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ordered_col') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 -- the statistics of every row, not of a random sample: the cost of the normal plan moved by 15% from one ANALYZE to the next, and the refusals below
 -- are decided by a few percent. k < 3 sits 23% above the btree's price with the empty map (k < 4 is below it).
 SET default_statistics_target = 1000;

@@ -13,7 +13,8 @@ NOTICE:  sift_col index "os_i": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = k; order_layout = k exact
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('os_i');
 NOTICE:  sift_col index "os_i" is column format minor 44, which a library before 4.3 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('os_i') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 CREATE TABLE ot (id int, k int8, pad text DEFAULT repeat('x', 200));
 ALTER TABLE ot ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ot (id, k) SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 104729::int8) % 5003 - 2500 END FROM generate_series(1, 6000) i;
@@ -35,7 +36,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; order_
 order_layout = k compact in 49% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('oc_i');
 NOTICE:  sift_col index "oc_i" is column format minor 44, which a library before 4.3 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('oc_i') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 VACUUM (ANALYZE) oc;
 VACUUM (ANALYZE) oa;
 VACUUM (ANALYZE) os;

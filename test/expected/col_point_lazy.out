@@ -13,7 +13,8 @@ NOTICE:  sift_col index "lz_t": 1 automatic choice (point_tid_columns), 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k, g, h
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lz_t');
 NOTICE:  sift_col index "lz_t" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('lz_t') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 VACUUM (ANALYZE) lz;
 SELECT sift.col_verify('lz_t', true);
  col_verify 

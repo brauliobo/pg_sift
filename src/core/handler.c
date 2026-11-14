@@ -23,6 +23,7 @@
 #include "utils/catcache.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
@@ -197,7 +198,7 @@ define_reloptions(void)
 	add_real_reloption(sift_relopt_kind, "b", "BM25 document length normalization",
 					   SIFT_DEFAULT_B, 0.0, 1.0, AccessExclusiveLock);
 	add_string_reloption(sift_relopt_kind, "stemmer",
-						 "Stemmer: en (Snowball English) or none",
+						 "Stemmer: none, en (Snowball English) or the name of a text search configuration (german, simple, ...; psql \\dF lists them)",
 						 "", sift_analyze_validate_stemmer, AccessExclusiveLock);
 	add_bool_reloption(sift_relopt_kind, "case_folding", "Fold case",
 					   true, AccessExclusiveLock);
@@ -223,7 +224,7 @@ define_reloptions(void)
 					   "Store word positions, so phrase queries are decided by the index instead of rechecked in the heap (REINDEX to apply)",
 					   true, AccessExclusiveLock);
 	add_string_reloption(sift_relopt_kind, "fields",
-						 "Names of the first sections of the indexed text (split at chr(29)) that queries can search apart, as name:word",
+						 "Names of the first sections of the indexed text (split at chr(29)) that queries can search apart: lowercase names separated by commas, as in 'title,body'",
 						 "", sift_analyze_validate_fields, AccessExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "prefix_index",
 					  "Index the first 1..n characters of every word, so prefix queries of up to n characters need no expansion (0 = off, REINDEX to apply)",
@@ -269,9 +270,27 @@ sift_host_pin_heap(void)
 #endif
 }
 
+/*
+ * A session keeps the library it loaded first. A second file of pg_sift (another path, or the same one replaced where the server resolves it again) would define the settings a
+ * second time and fail with "attempt to redefine parameter": say what happened instead.
+ */
+static void
+refuse_second_load(void)
+{
+	void	  **loaded = find_rendezvous_variable("pg_sift_build_id");
+
+	if (*loaded != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("this session already holds pg_sift build %s and cannot load build %s", (const char *) *loaded, SIFT_BUILD_ID),
+				 errhint("Reconnect: a session keeps the library it loaded first.")));
+	*loaded = (void *) SIFT_BUILD_ID;
+}
+
 void
 _PG_init(void)
 {
+	refuse_second_load();
 	sift_cpu_init();
 	sift_init();
 	sift_cpu_register(codec_rebind);
@@ -391,6 +410,15 @@ relopt_first_mention(const char *name)
 	return true;
 }
 
+/* A relation in a message: its quoted name, or its OID when the relation is gone (a background worker's context runs after a DROP) */
+const char *
+sift_rel_label(Oid relid)
+{
+	const char *name = get_rel_name(relid);
+
+	return name != NULL ? psprintf("\"%s\"", name) : psprintf("OID %u", relid);
+}
+
 /* An older name of a reloption that stays accepted: said where the option is written (CREATE and ALTER INDEX), never when the stored options are only read */
 void
 sift_relopt_alias_notice(const char *old, const char *new)
@@ -408,7 +436,7 @@ sift_relopt_removed_notice(const char *name)
 	if (relopt_first_mention(name))
 		ereport(NOTICE,
 				(errmsg("reloption \"%s\" is deprecated and ignored", name),
-				 errhint("Drop it from the index with ALTER INDEX <index> RESET (%s).", name)));
+				 errhint("Drop it with RESET (%s) in an ALTER INDEX statement of the index.", name)));
 }
 
 static bytea *
@@ -417,16 +445,24 @@ sift_amoptions(Datum reloptions, bool validate)
 	SiftOptions *o = (SiftOptions *) build_reloptions(reloptions, validate, sift_relopt_kind,
 													  sizeof(SiftOptions), sift_relopt_tab, lengthof(sift_relopt_tab));
 
+	bool		alias_given = false,
+				new_given = false;
+
 	/* given, even as its default: relopt_parse_elt has no isset_offset in PostgreSQL 19, so the list says it on every version */
 	if (o != NULL)
 		foreach_ptr(DefElem, def, untransformRelOptions(reloptions))
 		{
 			o->accent_folding_set |= strcmp(def->defname, "accent_folding") == 0;
-			if (validate && strcmp(def->defname, "mutable_limit") == 0)
-				sift_relopt_alias_notice("mutable_limit", "write_buffer_limit");
+			new_given |= strcmp(def->defname, "write_buffer_limit") == 0;
+			if (strcmp(def->defname, "mutable_limit") == 0)
+			{
+				alias_given = true;
+				if (validate)
+					sift_relopt_alias_notice("mutable_limit", "write_buffer_limit");
+			}
 		}
-	/* the alias counts when write_buffer_limit is left at its default */
-	if (o != NULL && o->write_buffer_limit == SIFT_DEFAULT_WRITE_BUFFER_LIMIT)
+	/* the new name wins when both are given, even with its default value */
+	if (alias_given && !new_given)
 		o->write_buffer_limit = o->mutable_limit;	/* DEPRECATED ALIAS */
 	return (bytea *) o;
 }

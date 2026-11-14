@@ -14,7 +14,7 @@ CREATE TABLE rv (id int, prop int, d date, upd timestamp, del timestamp, note te
 INSERT INTO rv SELECT i, ((i::bigint * 7919) % 5000)::int, date '2020-01-01' + i / 400, timestamp '2020-01-01' + i * interval '40 seconds',
 	CASE WHEN i % 17 = 0 THEN timestamp '2024-01-01' + i * interval '1 minute' END, 'n' FROM generate_series(1, 250000) i;
 VACUUM (FREEZE, ANALYZE) rv;
-SET sift.test_col_unit_rows = 100;
+SET sift.col_unit_rows = 100;
 CREATE INDEX rv_idx ON rv USING sift_col (id, prop, d, upd, del) WITH (key_cut = 'prop', point_tid_columns = 'id, upd');
 
 CREATE FUNCTION rv_peers() RETURNS TABLE (peers_overlap boolean, unequal_units boolean, dirty_units boolean) LANGUAGE sql AS

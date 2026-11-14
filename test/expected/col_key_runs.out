@@ -96,7 +96,8 @@ NOTICE:  sift_col index "kr_i": 3 automatic choices (key_columns, order_array_co
 DETAIL:  key_columns = id; order_array_columns = val; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('kr_i');
 NOTICE:  sift_col index "kr_i" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('kr_i') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT q, kr_rows(q, true) = kr_rows(q, false) AS same FROM kr_queries() q ORDER BY 1;
                                                    q                                                    | same 
 --------------------------------------------------------------------------------------------------------+------

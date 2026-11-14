@@ -9,11 +9,16 @@
 #include "postgres.h"
 #include "access/genam.h"
 #include "access/table.h"
+#include "catalog/index.h"
 #include "catalog/pg_constraint.h"
 #include "funcapi.h"
+#include "nodes/parsenodes.h"
+#include "nodes/plannodes.h"
+#include "tcop/pquery.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/portal.h"
 #include "col/build/build_int.h"
 #include "col/build/choices_gen.h"
 #include "agg/refuse.h"
@@ -41,6 +46,7 @@ typedef struct Derive
 	const SiftColLeafStats *ls;
 	SiftColIndexMeta defs;		/* a copy: the cached one is freed when a lock reloads the index entry */
 	int			minor;			/* the column format minor the choices need, 0: none that an older library refuses */
+	const char *minor_choice;	/* the choice that needs it, as sift.index_choices names it */
 } Derive;
 
 static const SiftMsgRow *
@@ -111,9 +117,19 @@ minor_lib(int minor)
 }
 
 static void
-need_minor(Derive *d, int minor)
+need_minor(Derive *d, int minor, const char *id)
 {
-	d->minor = Max(d->minor, minor);
+	if (minor <= d->minor)
+		return;
+	d->minor = minor;
+	d->minor_choice = msg_row(id)->choice;
+}
+
+/* The index as a statement of a hint writes it: quoted where the name needs it, under the name it will have */
+const char *
+sift_col_index_ref(Relation index)
+{
+	return quote_identifier(sift_col_final_name(index));
 }
 
 /* The index under the name it will have: REINDEX CONCURRENTLY builds "name_ccnew" and renames it */
@@ -273,7 +289,7 @@ d_point_tid(Derive *d)
 	for (int c = 0; c < d->defs.ncols; c++)
 		if (stats(d)[c].point_tid_units > 0)
 		{
-			need_minor(d, SIFT_COL_FORMAT_EXACTSLOT);
+			need_minor(d, SIFT_COL_FORMAT_EXACTSLOT, "point-tid-explicit");
 			add(d, "point-tid-explicit", shown, NULL);
 			return;
 		}
@@ -333,7 +349,7 @@ d_order_arrays(Derive *d)
 	if (n + ne == 0)
 		return;
 	minor = order_minor(d->index, ls, defs->ncols);
-	need_minor(d, ne > 0 ? Max(minor, SIFT_COL_FORMAT_ENDORD) : minor);
+	need_minor(d, ne > 0 ? Max(minor, SIFT_COL_FORMAT_ENDORD) : minor, autolist ? "order-array-auto" : "order-array-listed");
 	while (*glist == ' ')
 		glist++;
 	if (gauto && glist[0] != '\0')
@@ -381,7 +397,7 @@ d_order_layout(Derive *d)
 	if (out.len == 0 || !(any || sift_col_options_order_layout(d->index)[0] != '\0'))
 		return;
 	if (any)
-		need_minor(d, SIFT_COL_FORMAT_ORDLAYOUT);
+		need_minor(d, SIFT_COL_FORMAT_ORDLAYOUT, "order-layout");
 	add(d, "order-layout", out.data, cost.data);
 }
 
@@ -610,7 +626,7 @@ static const struct
 };
 
 static List *
-derive(Relation heap, Relation index, int kinds, bool build, int *minor)
+derive(Relation heap, Relation index, int kinds, bool build, int *minor, const char **minor_choice)
 {
 	Derive		d = {.heap = heap, .index = index, .kinds = kinds, .build = build, .defs = *sift_col_index_defs(index)};
 
@@ -624,9 +640,11 @@ derive(Relation heap, Relation index, int kinds, bool build, int *minor)
 			derive_fn[i].fn(&d);
 	}
 	if (sift_scope_specs(index) != NULL)
-		need_minor(&d, sift_scope_coded(index) ? SIFT_COL_FORMAT_SCOPEKEY : sift_scope_two_paths(index) ? SIFT_COL_FORMAT_TWOHOP : SIFT_COL_FORMAT_SCOPE);
+		need_minor(&d, sift_scope_coded(index) ? SIFT_COL_FORMAT_SCOPEKEY : sift_scope_two_paths(index) ? SIFT_COL_FORMAT_TWOHOP : SIFT_COL_FORMAT_SCOPE, "index-format-minor-scope");
 	if (minor)
 		*minor = d.minor;
+	if (minor_choice)
+		*minor_choice = d.minor_choice;
 	return d.out;
 }
 
@@ -732,15 +750,30 @@ shared_columns(Relation heap, Relation a, Relation b)
 	return names.len ? names.data : NULL;
 }
 
+/* REINDEX, CLUSTER and VACUUM FULL build an index again: inside a function that is the reindex state of the index; REINDEX CONCURRENTLY has none, and its statement is the portal's */
+static bool
+rebuilding(Relation index)
+{
+	if (ReindexIsProcessingIndex(RelationGetRelid(index)))
+		return true;
+	if (ActivePortal != NULL)
+		foreach_node(PlannedStmt, stmt, ActivePortal->stmts)
+			if (stmt->utilityStmt != NULL && IsA(stmt->utilityStmt, ReindexStmt))
+				return true;
+	return false;
+}
+
 /*
  * The same structures twice: another sift_col index of the table with the same layout and the same predicate that lists some of the columns of this one stores their leaves
- * again, and one index over both lists reads each column at the cost it has in either. Said once for a build (the first such index), advice only.
+ * again, and one index over both lists reads each column at the cost it has in either. Said once when the index is created (the first such index), not when REINDEX, CLUSTER or VACUUM FULL build it again; advice only.
  */
 static void
 say_same_layout(Relation heap, Relation index)
 {
 	const char *name = sift_col_final_name(index);
 
+	if (rebuilding(index))
+		return;
 	foreach_oid(oid, RelationGetIndexList(heap))
 	{
 		Relation	other;
@@ -770,7 +803,8 @@ void
 sift_col_choices_say(Relation heap, Relation index, int kinds, bool build)
 {
 	int			minor = 0;
-	List	   *found = derive(heap, index, kinds, build, &minor);
+	const char *minor_choice = NULL;
+	List	   *found = derive(heap, index, kinds, build, &minor, &minor_choice);
 	StringInfoData head,
 				line,
 				detail;
@@ -850,7 +884,7 @@ sift_col_choices_say(Relation heap, Relation index, int kinds, bool build)
 	ereport(NOTICE,
 			(errmsg("sift_col index \"%s\": %s", name, head.data),
 			 errdetail_internal("%s", detail.data),
-			 errhint("Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('%s');", name)));
+			 errhint("Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices(%s);", quote_literal_cstr(sift_col_index_ref(index)))));
 	if (build && sift_scope_specs(index) != NULL)
 		colb_scope_say_rollup(index);
 	if (minor >= SIFT_COL_FORMAT_SCOPE && (kinds & SIFT_CHOICE_AUTO))
@@ -860,7 +894,9 @@ sift_col_choices_say(Relation heap, Relation index, int kinds, bool build)
 	else if (minor > 0 && (kinds & SIFT_CHOICE_AUTO))
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\" is column format minor %d, which a library before %s cannot read", name, minor, minor_lib(minor)),
-				 errhint("SET sift.col_format_minor = 14 before the build to write a format the older library reads.")));
+				 errdetail("The choice %s writes it; sift.col_format_minor (%d) numbers the formats of 3.x only, up to %d. sift.index_choices(%s) says how to turn each choice off.",
+						   minor_choice, sift_col_format_minor, SIFT_COL_FORMAT_MINOR, quote_literal_cstr(sift_col_index_ref(index))),
+				 errhint("A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.")));
 }
 
 /* ---- the SQL functions ---- */
@@ -880,7 +916,7 @@ sift_col_index_choices(PG_FUNCTION_ARGS)
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	InitMaterializedSRF(fcinfo, 0);
 	name = quote_identifier(RelationGetRelationName(index));
-	foreach(lc, derive(heap, index, SIFT_CHOICE_ALL, false, NULL))
+	foreach(lc, derive(heap, index, SIFT_CHOICE_ALL, false, NULL, NULL))
 	{
 		const Found *f = lfirst(lc);
 		Datum		v[9];

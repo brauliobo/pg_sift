@@ -256,21 +256,21 @@ SELECT sift.col_verify('cr_on', true);
 CREATE INDEX cr_bad ON cr USING sift_col (id, a, b, f) WITH (rollup_columns = 'a', cube_minmax = false, superunit = 0);
 ERROR:  invalid rollup_columns option "a": rollup_columns needs at least two columns (the cube answers one)
 CREATE INDEX cr_bad ON cr USING sift_col (id, a, b, f) WITH (rollup_columns = 'a, nosuch', cube_minmax = false, superunit = 0);
-ERROR:  invalid rollup_columns option: "nosuch" is not a column of the index
+ERROR:  invalid rollup_columns option "a, nosuch": "nosuch" is not a column of the index
 CREATE INDEX cr_bad ON cr USING sift_col (id, a, b, f) WITH (rollup_columns = 'a, f', cube_minmax = false, superunit = 0);
-ERROR:  invalid rollup_columns option: "f" must be a boolean, integer, date, numeric or text column
+ERROR:  invalid rollup_columns option "a, f": "f" must be a boolean, integer, date, numeric or text column
 CREATE INDEX cr_bad ON cr USING sift_col (id, a, b, f) WITH (rollup_columns = 'a, a', cube_minmax = false, superunit = 0);
-ERROR:  invalid rollup_columns option: "a" is named twice
+ERROR:  invalid rollup_columns option "a, a": "a" is named twice
 CREATE INDEX cr_bad ON cr USING sift_col (id, a, b, f) WITH (rollup_columns = 'a, b: f', cube_minmax = false, superunit = 0);
-ERROR:  invalid rollup_columns option: measure "f" must be a smallint, integer, bigint or numeric column
+ERROR:  invalid rollup_columns option "a, b: f": measure "f" must be a smallint, integer, bigint or numeric column
 CREATE INDEX cr_bad ON cr USING sift_col (id, a, b, f) WITH (rollup_columns = 'a, b: nosuch', cube_minmax = false, superunit = 0);
-ERROR:  invalid rollup_columns option: "nosuch" is not a column of the index
+ERROR:  invalid rollup_columns option "a, b: nosuch": "nosuch" is not a column of the index
 CREATE INDEX cr_bad ON cr USING sift_col (id, a, b, f) WITH (rollup_columns = 'a, b,', cube_minmax = false, superunit = 0);
 ERROR:  invalid rollup_columns option "a, b,": a column name is missing
 CREATE INDEX cr_bad ON cr USING sift_col (id, a, b, f) WITH (rollup_columns = 'a, b: id, id, id, id, id, id, id, id, id', cube_minmax = false, superunit = 0);
-ERROR:  invalid rollup_columns option: a rollup holds at most 8 measures
+ERROR:  invalid rollup_columns option "a, b: id, id, id, id, id, id, id, id, id": a rollup holds at most 8 measures
 ALTER INDEX cr_on SET (rollup_columns = 'b, nosuch');
-ERROR:  invalid rollup_columns option: "nosuch" is not a column of the index
+ERROR:  invalid rollup_columns option "b, nosuch": "nosuch" is not a column of the index
 ALTER INDEX cr_on SET (rollup_columns = 'off');
 SELECT sift.col_verify('cr_on', true);
  col_verify 

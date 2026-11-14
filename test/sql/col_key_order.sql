@@ -13,7 +13,7 @@ INSERT INTO ko SELECT i, i % 40, timestamp '2024-01-01' + i * interval '1 minute
 -- one column, or 'group, key', nothing else; the columns are checked as the options they stand for are
 CREATE INDEX ko_bad ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ent, ts, v');
 CREATE INDEX ko_bad ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ent,');
-CREATE INDEX ko_bad ON ko USING sift_col (id, ent, ts, v) WITH (key_order = ' ts');
+CREATE INDEX ko_bad ON ko USING sift_col (id, ent, ts, v) WITH (key_order = '"ts');
 CREATE INDEX ko_bad ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'nope');
 
 SET client_min_messages = notice;

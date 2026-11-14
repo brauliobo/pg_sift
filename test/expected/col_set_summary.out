@@ -76,16 +76,16 @@ SELECT pg_relation_size('ss_on') > pg_relation_size('ss_off') AS index_is_larger
 
 -- the options are checked
 CREATE INDEX ss_bad1 ON ss USING sift_col (id, kind) WITH (rollup_columns = 'off', key_columns = 'nosuch', cube_minmax = false, superunit = 0);
-ERROR:  invalid key_columns option: unknown column
+ERROR:  invalid key_columns option "nosuch": "nosuch" is not a column of the index
 CREATE INDEX ss_bad2 ON ss USING sift_col (id, kind, val) WITH (rollup_columns = 'off', key_columns = 'kind,,val', cube_minmax = false, superunit = 0);
 ERROR:  invalid key_columns option "kind,,val": empty column name
 CREATE INDEX ss_bad3 ON ss USING sift_col (id, kind, big) WITH (rollup_columns = 'off', key_columns = 'auto: nosuch', cube_minmax = false, superunit = 0);
-ERROR:  invalid key_columns option: unknown column
+ERROR:  invalid key_columns option "auto: nosuch": "nosuch" is not a column of the index
 CREATE INDEX ss_bad4 ON ss USING sift_col (id, kind, big) WITH (rollup_columns = 'off', key_columns = 'kind, auto', cube_minmax = false, superunit = 0);
-ERROR:  invalid key_columns option: unknown column
+ERROR:  invalid key_columns option "kind, auto": "auto" is not a column of the index
 CREATE TABLE ss_f (id int, f float8);
 CREATE INDEX ss_bad5 ON ss_f USING sift_col (id, f) WITH (rollup_columns = 'off', key_columns = 'f', cube_minmax = false, superunit = 0);
-ERROR:  invalid key_columns option: not a plain integer, text or uuid column
+ERROR:  invalid key_columns option "f": not a plain integer, text or uuid column
 DROP TABLE ss_f;
 -- three ways: the summaries on, the zones alone (the same rows in a table of their own), the plain plan; the units the summaries alone skipped
 CREATE FUNCTION ss_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_error_text(q, push) $$;

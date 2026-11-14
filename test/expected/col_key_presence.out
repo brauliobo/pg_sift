@@ -76,12 +76,12 @@ SELECT bytes > 0 AS sets_take_bytes, bytes * 100 < pg_relation_size('kp_on') * 8
 DROP INDEX kp_old, kp_old0;
 -- the options are checked
 CREATE INDEX kp_bad1 ON kp USING sift_col (id, k) WITH (rollup_columns = 'off', key_columns = 'nosuch');
-ERROR:  invalid key_columns option: unknown column
+ERROR:  invalid key_columns option "nosuch": "nosuch" is not a column of the index
 CREATE INDEX kp_bad2 ON kp USING sift_col (id, k, val) WITH (rollup_columns = 'off', key_columns = 'k,,val');
 ERROR:  invalid key_columns option "k,,val": empty column name
 CREATE TABLE kp_t (id int, t text, b bigint, f float8, ts timestamp, u uuid);
 CREATE INDEX kp_bad5 ON kp_t USING sift_col (id, f) WITH (rollup_columns = 'off', key_columns = 'f');
-ERROR:  invalid key_columns option: not a plain integer, text or uuid column
+ERROR:  invalid key_columns option "f": not a plain integer, text or uuid column
 DROP TABLE kp_t;
 -- three ways: the bitmaps on, the twin table's index without them, the plain plan; the units the bitmaps answered
 CREATE FUNCTION kp_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_error_text(q, push) $$;

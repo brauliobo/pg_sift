@@ -25,11 +25,11 @@ CREATE INDEX cc_seven ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write
 RESET sift.col_format_minor;
 -- refused: a column that is no date, an unknown column, a name twice, an index with paths
 CREATE INDEX cc_bad1 ON cc USING sift_col (id, ts) WITH (calendar_columns = 'id', cube_minmax = false, superunit = 0);
-ERROR:  invalid calendar_columns option: "id" must be a date, timestamp or timestamptz column
+ERROR:  invalid calendar_columns option "id": "id" must be a date, timestamp or timestamptz column
 CREATE INDEX cc_bad2 ON cc USING sift_col (id, ts) WITH (calendar_columns = 'nope', cube_minmax = false, superunit = 0);
-ERROR:  invalid calendar_columns option: "nope" is not a column of the index
+ERROR:  invalid calendar_columns option "nope": "nope" is not a column of the index
 CREATE INDEX cc_bad3 ON cc USING sift_col (id, ts) WITH (calendar_columns = 'ts, ts', cube_minmax = false, superunit = 0);
-ERROR:  invalid calendar_columns option: "ts" is named twice
+ERROR:  invalid calendar_columns option "ts, ts": "ts" is named twice
 CREATE INDEX cc_bad4 ON cc USING sift_col (id, ts) WITH (calendar_columns = 'ts,', cube_minmax = false, superunit = 0);
 ERROR:  invalid calendar_columns option "ts,": a column name is missing
 ALTER INDEX cc_on SET (calendar_columns = 'ts, d');

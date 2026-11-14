@@ -120,7 +120,7 @@ NOTICE:  table "ct_b" does not exist, skipping
        | two_keys=same+topn 25
 (1 row)
 
-SET sift.test_search_chunk_sbs = 1;
+SET sift.search_chunk_sbs = 1;
 SELECT * FROM ct_stage('chunks of one superblock');
           stage           |         results         
 --------------------------+-------------------------
@@ -159,7 +159,7 @@ SELECT * FROM ct_stage('chunks of one superblock');
                           | two_keys=same+topn 25
 (1 row)
 
-RESET sift.test_search_chunk_sbs;
+RESET sift.search_chunk_sbs;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10', 'cable wire') AS param;
     param     
 --------------

@@ -61,6 +61,12 @@ SELECT expect('ALTER INDEX alt_idx RESET (prefix_index)');
 INSERT INTO alt VALUES (2, 'alpha gamma');
 SELECT count(*) FROM alt WHERE v @@> 'al*';
 
+-- a paths spec that names a column, not a path with its type, and the lists of columns of the options: the name, what is wrong with it, what to write
+SELECT expect($$CREATE INDEX ON docs USING sift_col (id, payload) WITH (paths = 'payload')$$);
+SELECT expect($$CREATE INDEX ON many USING sift_col (id, v) WITH (key_columns = 'nope')$$);
+SELECT expect($$CREATE INDEX ON many USING sift_col (id, v) WITH (key_columns = '"v')$$);
+SELECT expect($$CREATE INDEX ON many USING sift_col (id, v) WITH (key_cut = 'v')$$);
+
 DROP TABLE one, many, tbl, docs, alt;
 DROP FUNCTION expect(text);
 DROP EXTENSION pg_sift_test;

@@ -80,7 +80,8 @@ NOTICE:  sift_col index "pt_t": 1 automatic choice (point_tid_columns), 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k, s, u
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_t');
 NOTICE:  sift_col index "pt_t" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('pt_t') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 VACUUM (ANALYZE) pt;
 SELECT sift.col_verify('pt_t', true);
  col_verify 
@@ -503,7 +504,8 @@ NOTICE:  sift_col index "pt_r": 1 automatic choice (point_tid_columns), 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k, s, u
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_r');
 NOTICE:  sift_col index "pt_r" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('pt_r') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'point_tid_columns';
  commands 
 ----------
@@ -556,7 +558,8 @@ NOTICE:  sift_col index "pb_t": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k; order_array_columns = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pb_t');
 NOTICE:  sift_col index "pb_t" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('pb_t') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT sift.col_verify('pb_t', true);
  col_verify 
 ------------
@@ -591,7 +594,8 @@ NOTICE:  sift_col index "pbs_t": 1 automatic choice (point_tid_columns), 1 advic
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pbs_t');
 NOTICE:  sift_col index "pbs_t" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('pbs_t') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 INSERT INTO pbs SELECT i, i % 7 FROM generate_series(60001, 90000) i;
 SELECT sift.col_promote('pbs_t'::regclass) >= 0 AS promoted;
  promoted 
@@ -662,9 +666,9 @@ DROP TABLE pj, pj_i;
 -- not a leaf that can be listed, and a bad list
 CREATE TABLE pe (id int, f float8, d date);
 CREATE INDEX pe_f ON pe USING sift_col (f sift.col_float8_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'f');
-ERROR:  invalid point_tid_columns option: not a plain integer, text or uuid column of the top level
+ERROR:  invalid point_tid_columns option "f": not a plain integer, text or uuid column of the top level
 CREATE INDEX pe_x ON pe USING sift_col (id sift.col_int4_ops) WITH (point_tid_columns = 'nope');
-ERROR:  invalid point_tid_columns option: unknown column
+ERROR:  invalid point_tid_columns option "nope": "nope" is not a column of the index
 ALTER INDEX pt_r SET (point_tid_columns = 'k,');
 ERROR:  invalid point_tid_columns option "k,": empty column name
 DROP TABLE pe;

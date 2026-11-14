@@ -234,7 +234,8 @@ NOTICE:  sift_col index "dl_idx": 1 automatic choice (point_tid_columns), 1 advi
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = s
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dl_idx');
 NOTICE:  sift_col index "dl_idx" is column format minor 33, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('dl_idx') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SET sift.test_limits = 'dict_cache_kb=1';
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
  reset 

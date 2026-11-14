@@ -411,9 +411,10 @@ parse_type(Parser *P, Add *a)
 {
 	int			i;
 
-	expect_word(P, "a type after the path (bool, int2, int4, int8, float4, float8, text or astext)");
-	if (P->quoted)
-		SPEC_SYNTAX(P->loc, "expected a type after the path");
+	if (P->tok != T_WORD || P->quoted)
+		ereport(ERROR, (errcode(ERRCODE_SYNTAX_ERROR),
+						errmsg("sift shred paths: expected a type after the path (bool, int2, int4, int8, float4, float8, text or astext) at position %d", P->loc),
+						errhint("Name the type of every path, 'doc.id int4, doc.items[]{sku text}'; 'auto' lets the build choose the paths from the documents.")));
 	for (i = 0; type_names[i].name; i++)
 		if (pg_strcasecmp(P->word, type_names[i].name) == 0)
 			break;

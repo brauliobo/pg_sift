@@ -598,8 +598,6 @@ typedef enum SiftTblOptId
 extern int	sift_tbl_key_order(Relation rel, const SiftTblRel *st, AttrNumber *att);
 /* The canonical text of a key_order for the table (names as it has them, quoted where needed); ERROR for a column it lacks, a repeated one, a type with no btree order */
 extern char *sift_tbl_key_order_check(Relation rel, const char *spec);
-/* sift.table_key_order is a per-table option only: the setting refuses a value */
-extern PGDLLIMPORT char *sift_tbl_key_order_spec;
 
 /* How far the rows of the table are from its key_order, read from the zones of the first key column of every unit (no chunk is read) */
 typedef struct SiftTblKeyState
