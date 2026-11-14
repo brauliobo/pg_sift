@@ -11,6 +11,7 @@
 #include "storage/buffile.h"
 #include "storage/fd.h"
 #include "col/build/build_int.h"
+#include "col/rowpack.h"
 #include "col/runs.h"
 #include "core/cmp.h"
 
@@ -35,130 +36,33 @@ struct ColSpill
 	int64	   *bound;			/* [n - 1]: range i holds the keys up to bound[i] (the last the rest and the NULLs) */
 	BufFile   **file;
 	uint64	   *rows;
+	StringInfoData buf;			/* the bytes of the row in hand */
 };
 
-/* the values of a leaf that are bytes (v.s, len), not a number */
+/* A row of a file is its length and its bytes (col/rowpack.c); buf holds the row in hand */
+static void
+put_row(BufFile *f, StringInfo buf, const SiftColSchema *sc, const SiftColRow *row)
+{
+	uint32		len;
+
+	resetStringInfo(buf);
+	sift_colrow_pack(buf, sc, row);
+	len = buf->len;
+	BufFileWrite(f, &len, sizeof(len));
+	BufFileWrite(f, buf->data, len);
+}
+
+/* Reads the next row of the file into row (arrays of ncols, allocated by the caller): its strings stay in buf, its arrays of elements are in the current context; false at the end */
 static bool
-is_bytes(const SiftColDef *def)
+get_row(BufFile *f, StringInfo buf, const SiftColSchema *sc, SiftColRow *row)
 {
-	return def->store == SIFT_COLS_STR || def->store == SIFT_COLS_VAR;
-}
+	uint32		len;
 
-static void
-put(BufFile *f, const void *p, size_t n)
-{
-	BufFileWrite(f, p, n);
-}
-
-static void
-put_val(BufFile *f, const SiftColDef *def, const SiftColValue *v)
-{
-	uint8		head[2] = {(v->isnull ? 1 : 0) | (v->overflow ? 2 : 0) | (v->lo != 0 ? 4 : 0), v->tag};
-
-	put(f, head, 2);
-	if (!v->isnull)
-	{
-		if (is_bytes(def))
-		{
-			put(f, &v->len, sizeof(v->len));
-			put(f, v->v.s, v->len);
-		}
-		else
-			put(f, &v->v, sizeof(v->v));
-	}
-	if (head[0] & 4)
-		put(f, &v->lo, sizeof(v->lo));
-}
-
-static void
-get(BufFile *f, void *p, size_t n)
-{
-	BufFileReadExact(f, p, n);
-}
-
-static void
-get_val(BufFile *f, const SiftColDef *def, SiftColValue *v)
-{
-	uint8		head[2];
-
-	get(f, head, 2);
-	memset(v, 0, sizeof(*v));
-	v->isnull = head[0] & 1;
-	v->overflow = (head[0] & 2) != 0;
-	v->tag = head[1];
-	if (!v->isnull)
-	{
-		if (is_bytes(def))
-		{
-			char	   *s;
-
-			get(f, &v->len, sizeof(v->len));
-			s = palloc(Max(v->len, 1));
-			get(f, s, v->len);
-			v->v.s = s;
-		}
-		else
-			get(f, &v->v, sizeof(v->v));
-	}
-	if (head[0] & 4)
-		get(f, &v->lo, sizeof(v->lo));
-}
-
-static void
-put_row(BufFile *f, const SiftColSchema *sc, const SiftColRow *row)
-{
-	put(f, &row->tid, sizeof(row->tid));
-	for (int c = 0; c < sc->ncols; c++)
-		if (sc->cols[c].parent < 0)
-			put_val(f, &sc->cols[c], &row->val[c]);
-	for (int c = 0; c < sc->ncols; c++)
-	{
-		const SiftColDef *def = &sc->cols[c];
-		uint8		has;
-
-		if (def->parent < 0)
-			continue;
-		has = row->elem[c] != NULL;
-		put(f, &has, 1);
-		if (has)
-		{
-			int64		n = row->val[def->parent].isnull ? 0 : row->val[def->parent].v.i;
-
-			for (int64 i = 0; i < n; i++)
-				put_val(f, def, &row->elem[c][i]);
-		}
-	}
-}
-
-/* Reads the next row of the file into row (arrays of ncols, allocated by the caller), its strings in the current context; false at the end */
-static bool
-get_row(BufFile *f, const SiftColSchema *sc, SiftColRow *row)
-{
-	if (!BufFileReadMaybeEOF(f, &row->tid, sizeof(row->tid), true))
+	if (!BufFileReadMaybeEOF(f, &len, sizeof(len), true))
 		return false;
-	row->ncols = sc->ncols;
-	memset(row->val, 0, sc->ncols * sizeof(SiftColValue));
-	memset(row->elem, 0, sc->ncols * sizeof(SiftColValue *));
-	for (int c = 0; c < sc->ncols; c++)
-		if (sc->cols[c].parent < 0)
-			get_val(f, &sc->cols[c], &row->val[c]);
-	for (int c = 0; c < sc->ncols; c++)
-	{
-		const SiftColDef *def = &sc->cols[c];
-		uint8		has;
-
-		if (def->parent < 0)
-			continue;
-		get(f, &has, 1);
-		if (has)
-		{
-			int64		n = row->val[def->parent].isnull ? 0 : row->val[def->parent].v.i;
-
-			row->elem[c] = palloc(Max(n, 1) * sizeof(SiftColValue));
-			for (int64 i = 0; i < n; i++)
-				get_val(f, def, &row->elem[c][i]);
-		}
-	}
+	enlargeStringInfo(buf, len);
+	BufFileReadExact(f, buf->data, len);
+	sift_colrow_unpack(buf->data, sc, row);
 	return true;
 }
 
@@ -287,7 +191,7 @@ colb_spill_batch(ColBuild *b, const SiftColBatch *batch)
 
 		sift_cbatch_row(batch, r, &row);
 		i = range_of(s, &row.val[s->leaf]);
-		put_row(s->file[i], b->r->schema, &row);
+		put_row(s->file[i], &s->buf, b->r->schema, &row);
 		s->rows[i]++;
 	}
 	sift_cbatch_row_free(&row);
@@ -396,6 +300,12 @@ colb_spill_start(ColBuild *b)
 	b->spill_aim = sift_colk_run_rows(b->index, in, nin);
 	s->file = MemoryContextAlloc(b->cxt, s->n * sizeof(BufFile *));
 	s->rows = MemoryContextAllocZero(b->cxt, s->n * sizeof(uint64));
+	{
+		MemoryContext old = MemoryContextSwitchTo(b->cxt);
+
+		initStringInfo(&s->buf);
+		MemoryContextSwitchTo(old);
+	}
 	for (int i = 0; i < s->n; i++)
 		s->file[i] = BufFileCreateTemp(false);
 	b->spill = s;
@@ -467,7 +377,7 @@ colb_spill_finish(ColBuild *b)
 			for (uint64 n = 0; n < s->rows[k]; n++)
 			{
 				MemoryContext old = MemoryContextSwitchTo(rcx);
-				bool		more = get_row(f, sc, &row);
+				bool		more = get_row(f, &s->buf, sc, &row);
 
 				MemoryContextSwitchTo(old);
 				SIFT_INVARIANT(more, "sift_col build: the file of a key range ends before its rows");
