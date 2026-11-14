@@ -500,6 +500,17 @@ sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const Sif
 	return units;
 }
 
+/* The order of row ra of batch a and row rb of batch b by the leaves, then by address, as the cut sorts the rows (sift_colk_streams checks a segment against it) */
+int
+sift_colk_row_cmp(const SiftColSchema *schema, const int *leaf, int nleaf, const SiftColBatch *a, uint32 ra, const SiftColBatch *b, uint32 rb)
+{
+	OrderCtx	ctx = {schema, leaf, nleaf};
+	RowRef		x = {a, ra, 0},
+				y = {b, rb, 0};
+
+	return ref_cmp(&x, &y, &ctx);
+}
+
 /* One input of a merge: a key-cut segment, whose units follow each other in the order of the key, or an older one, which is loaded and sorted whole */
 typedef struct MergeIn
 {
@@ -875,11 +886,11 @@ merge_done(void *state, const RowRef *refs, uint64 n)
 /*
  * The merge of segments of an index with key_cut: the live rows of the inputs, in the order of the key, cut again into units. The units of a key-cut
  * segment follow each other in the order of the key, so each input holds one unit (a segment written before the option is loaded whole and sorted, up
- * to memory_kb; resort: every input is, the key having changed since they were written) and the cut holds a window of rows: the memory does not depend on the number of rows. Returns the number of units.
+ * to memory_kb; so is every input that stream does not take as one: it is cut another way) and the cut holds a window of rows: the memory does not depend on the number of rows. Returns the number of units.
  */
 int
 sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
-				 const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg, int slice, int nslices, uint32 unit_base, bool resort, const SiftColWindow *win)
+				 const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg, int slice, int nslices, uint32 unit_base, const bool *stream, const SiftColWindow *win)
 {
 	OrderCtx	ctx = {schema, leaf, nleaf};
 	MergeSrc	m = {.in = palloc0_array(MergeIn, n), .n = n, .ctx = &ctx, .freeze = freeze, .freeze_arg = freeze_arg, .cx = cx,
@@ -889,7 +900,7 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 	int			units;
 
 	for (int i = 0; i < n; i++)
-		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = !resort && (nleaf == 0 ? sift_cseg_tid_ordered(&ent[i]) : sift_cseg_key_ordered(&ent[i])), .chunk = -1, .bounded = win ? win->bounded[i] : true};
+		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = stream[i], .chunk = -1, .bounded = win ? win->bounded[i] : true};
 	if (win)
 	{
 		const SiftColDef *col = &schema->cols[leaf[0]];

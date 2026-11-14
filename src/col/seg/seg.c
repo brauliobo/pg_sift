@@ -69,15 +69,15 @@ seg_sec(const SiftColSegment *seg, SiftSection s)
  * The stamps after the schema: [conn stamps][scope stamps][n stamps][magic], where a scope has one stamp; or, when a scope has a stamp for each of its journals (a scope of two paths,
  * column format 49), [conn stamps][the stamps of scope 0][the stamps of scope 1]..[the number of stamps of each scope, uint32][n stamps][journals magic]
  */
-static void
-head_stamps(const SiftColSegment *seg, SegHead *hd, const char *schema)
+static Size
+head_stamps(const SiftColSegment *seg, SegHead *hd, const char *schema, Size end)
 {
 	uint32		tail[2],
 				counts[SIFT_SCOPE_MAX],
 				total;
 	int			nconn = sift_cschema_nconn(hd->schema),
 				nscope = sift_cschema_nscope(hd->schema);
-	Size		end = seg->hdr->dictroot_off;
+	Size		start;
 	bool		journals;
 
 	if (end < sizeof(tail))
@@ -106,6 +106,7 @@ head_stamps(const SiftColSegment *seg, SegHead *hd, const char *schema)
 	if (tail[0] != total || end < total * sizeof(SiftConnStamp))
 		corrupt(seg, "The stamps of the %d connections and %d scopes of the schema are not there.", nconn, nscope);
 	end -= total * sizeof(SiftConnStamp);
+	start = end;
 	hd->nconn = nconn;
 	hd->nscope = nscope;
 	memcpy(hd->conn, schema + end, nconn * sizeof(SiftConnStamp));
@@ -115,6 +116,31 @@ head_stamps(const SiftColSegment *seg, SegHead *hd, const char *schema)
 		memcpy(hd->scope[s], schema + end, counts[s] * sizeof(SiftConnStamp));
 		hd->scope_journals[s] = counts[s];
 		end += counts[s] * sizeof(SiftConnStamp);
+	}
+	return start;
+}
+
+/* The leaves the units of a segment cut by a key are in the order of (SIFT_SEG_CUTREC): [leaf, int16 each][ncut][magic] ends at end, the start of the stamps of the schema section (its end, without stamps) */
+static void
+head_cut(const SiftColSegment *seg, SegHead *hd, const char *schema, Size end)
+{
+	uint32		tail[2];
+	int16		leaf[SIFT_COL_CUT_MAX];
+
+	if (end < sizeof(tail))
+		corrupt(seg, "The schema section of a segment cut by a key has no record of the cut.");
+	memcpy(tail, schema + end - sizeof(tail), sizeof(tail));
+	end -= sizeof(tail);
+	if (tail[1] != SEG_CUT_MAGIC || tail[0] < 1 || tail[0] > SIFT_COL_CUT_MAX || end < tail[0] * sizeof(int16))
+		corrupt(seg, "The schema section of a segment cut by a key has no record of the leaves it is cut by.");
+	end -= tail[0] * sizeof(int16);
+	memcpy(leaf, schema + end, tail[0] * sizeof(int16));
+	hd->ncut = tail[0];
+	for (int i = 0; i < hd->ncut; i++)
+	{
+		if (leaf[i] < 0 || leaf[i] >= hd->schema->ncols)
+			corrupt(seg, "The segment is cut by leaf %d, the schema has %d.", leaf[i], hd->schema->ncols);
+		hd->cut[i] = leaf[i];
 	}
 }
 
@@ -128,6 +154,7 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 	char	   *schema = palloc(h->dictroot_off);
 	SiftColSBRef *dir = MemoryContextAlloc(cx, (Size) h->dictroot_n * sizeof(SiftColSBRef));
 	uint64		rank = 0;
+	Size		slen = h->dictroot_off;
 
 	hd->hdrlen = SEG_HDRLEN(h);
 	hd->hdr = MemoryContextAlloc(cx, hd->hdrlen);
@@ -147,7 +174,9 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 	if (hd->schema->contain && seg->entry.format < SIFT_COL_FORMAT_CONTAIN)
 		corrupt(seg, "The schema has containment lanes, a segment of column format 1.%d cannot.", seg->entry.format);
 	if (hd->schema->connected || hd->schema->scoped)
-		head_stamps(seg, hd, schema);
+		slen = head_stamps(seg, hd, schema, slen);
+	if (seg->entry.flags & SIFT_SEG_CUTREC)
+		head_cut(seg, hd, schema, slen);
 	pfree(schema);
 	seg_read(seg, s[SIFT_SEC_DOCMAP].off + ALIGN8(h->dictroot_off), (Size) h->dictroot_n * sizeof(SiftColSBRef), dir);
 	for (uint32 i = 0; i < h->dictroot_n; i++)
@@ -223,6 +252,8 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	pv->mirror_sound |= head->mirror_sound;
 	seg->schema = head->schema;
 	seg->nconn = head->nconn;
+	seg->ncut = head->ncut;
+	memcpy(seg->cut, head->cut, sizeof(seg->cut));
 	memcpy(seg->conn, head->conn, sizeof(seg->conn));
 	seg->nscope = head->nscope;
 	memcpy(seg->scope, head->scope, sizeof(seg->scope));

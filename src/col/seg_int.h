@@ -602,6 +602,8 @@ extern void seg_read_stream(SiftColSegment *seg, uint64 off, Size len, void *dst
 #define SEG_STAMPS_MAGIC	0x50545343	/* "CSTP": the stamps are those of the connections, then one for each scope */
 #define SEG_STAMPS_JOURNALS_MAGIC	0x4A545343	/* "CSTJ": ... a scope has a stamp for each of its journals, the number of each (SIFT_SCOPE_MAX bytes) before the count */
 
+#define SEG_CUT_MAGIC	0x54554343	/* "CCUT": after the schema and before the stamps (SIFT_SEG_CUTREC), the leaves the units of a segment cut by a key are in the order of, as int16, then their number */
+
 typedef struct SegHead
 {
 	SiftSegHeaderData *hdr;
@@ -613,6 +615,8 @@ typedef struct SegHead
 	int			nscope;
 	SiftConnStamp scope[SIFT_SCOPE_MAX][SIFT_SCOPE_JOURNALS];
 	int			scope_journals[SIFT_SCOPE_MAX];	/* the stamps each scope has in the segment (1: the stamp of its relation; 3: one for each journal of two paths) */
+	int			ncut;			/* the record of the leaves the units are cut by (SEG_CUT_MAGIC), 0: none */
+	int			cut[SIFT_COL_CUT_MAX];
 	bool		mirror_sound;	/* the checksum of the mirror of the header it was made under was checked: the backend does not again for each statement */
 } SegHead;
 

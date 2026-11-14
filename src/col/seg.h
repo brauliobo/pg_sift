@@ -57,8 +57,8 @@ extern void sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 /* The rows of the whole index the segment belongs to (a build: the heap's estimate; a merge or promotion: the directory's): the writer signs the dictionaries when those of the index overflow the cache of parsed dictionaries. 0: unknown */
 extern void sift_colw_set_index_rows(SiftColSegWriter *w, uint64 rows);
 /* The rows the segment will hold, from the table's estimate or the partition the merge cuts: the arrays of the entries of the point directories and orders are allocated at that size, not grown by doubling */
-/* The units added from now on are key-cut (SiftColBatch.keyed); after set_preagg, before the first unit */
-extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol);
+/* The units added from now on are key-cut (SiftColBatch.keyed) by the leaves cut[ncut], most significant first (none: by TID range); after set_preagg, before the first unit. The segment records them (SIFT_SEG_CUTREC) */
+extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, const int *cut, int ncut);
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
 extern void sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 /* A segment of a connected index: the found flags of the units added from now on are filled by fill (a host fill, col/conn.h) and its stamps are written with the segment; without it the leaves are what the batches hold and the stamps are empty */
@@ -92,6 +92,8 @@ extern Size sift_colw_fit_budget(Size budget, uint64 seg_rows, uint64 rows_left,
 /* Writes DICTS, ZONES, SBDIR, SCHEMA, the all-live LIVE pages and the header; fills the directory entry (kind IMMUTABLE, format, header_blk, sb_lo/hi, ndocs = rows, bytes) */
 extern void sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry);
 
+#define SIFT_COL_CUT_MAX 4	/* the leaves of a key_cut (or a scope's cut) at most */
+
 typedef struct SiftColSegment
 {
 	Relation	index;
@@ -108,6 +110,8 @@ typedef struct SiftColSegment
 	int			nscope;			/* scopes of the schema (col/scope.h) and the stamps of each, one for each journal of the scope (lineage 0: none): the snapshot of the relations the segment's entries were expanded under */
 	SiftConnStamp scope[SIFT_SCOPE_MAX][SIFT_SCOPE_JOURNALS];
 	int			scope_journals[SIFT_SCOPE_MAX];	/* the stamps the segment holds for each scope: 1, or one for each journal of a scope of two paths */
+	int			ncut;			/* the leaves the units of a segment cut by a key (SIFT_SEG_BYKEY) are in the order of, most significant first; 0: none recorded (a segment written before SIFT_SEG_CUTREC, or not cut by a key) */
+	int			cut[SIFT_COL_CUT_MAX];
 } SiftColSegment;
 
 /* Reads the header, SCHEMA and SBDIR; ERRCODE_INDEX_CORRUPTED on inconsistencies (type/gen checks included). Everything lives in mcxt. */
@@ -633,21 +637,37 @@ sift_cseg_keyed(const SiftSegEntry *e)
 	return (e->flags & SIFT_SEG_KEYED) != 0 || e->format == SIFT_COL_FORMAT_KEYED;
 }
 
-/* Do the units of the segment follow each other in the order of the TIDs, as a merge by superblock reads them? Not the units of a segment cut by a key */
+/* Not marked as cut by a key in its directory entry (view.c: a segment cut by one is not an overlay by TID range) */
 static inline bool
 sift_cseg_tid_ordered(const SiftSegEntry *e)
 {
 	return (e->flags & SIFT_SEG_BYKEY) == 0;
 }
 
-/* Do they follow each other in the order of a key, as a merge of a key_cut index reads them? Not those of a segment cut by TID range; which key, only the cut of the index tells */
-static inline bool
-sift_cseg_key_ordered(const SiftSegEntry *e)
+/* Whether the units of a segment follow each other in the order a merge reads them: SIFT_CUT_NO, SIFT_CUT_YES, or SIFT_CUT_UNKNOWN for a keyed segment that does not record its cut (written before SIFT_SEG_CUTREC) */
+typedef enum SiftCutOrder
 {
-	return sift_cseg_keyed(e) && (e->flags & SIFT_SEG_BYTID) == 0;
+	SIFT_CUT_NO,
+	SIFT_CUT_YES,
+	SIFT_CUT_UNKNOWN
+} SiftCutOrder;
+
+/* ... by the leaves cut[ncut], or by the TIDs for none. A segment cut by superblock is in the order of the TIDs; one cut by TID range (SIFT_SEG_BYTID) is; one cut by a key is in the order of that key and no other */
+static inline SiftCutOrder
+sift_cseg_cut_order(const SiftColSegment *seg, const int *cut, int ncut)
+{
+	const SiftSegEntry *e = &seg->entry;
+
+	if (!sift_cseg_keyed(e) || (e->flags & SIFT_SEG_BYTID))
+		return ncut == 0 ? SIFT_CUT_YES : SIFT_CUT_NO;
+	if (seg->ncut > 0)
+		return seg->ncut == ncut && memcmp(seg->cut, cut, ncut * sizeof(int)) == 0 ? SIFT_CUT_YES : SIFT_CUT_NO;
+	return (e->flags & SIFT_SEG_BYKEY) && ncut == 0 ? SIFT_CUT_NO : SIFT_CUT_UNKNOWN;
 }
 
 #ifdef SIFT_TESTING
+extern int64 sift_test_cut_probes;	/* sift._test_col_cut_probes(): the segments whose units sift_colk_streams has checked in this backend */
+extern int sift_test_col_cut_record;	/* sift.test_col_cut_record: 1 writes a segment cut by a key as the 5.0 development builds before SIFT_SEG_CUTREC did (the flag SIFT_SEG_BYKEY or SIFT_SEG_BYTID, no record of the cut), 2 as 4.3 and older (neither) */
 extern bool sift_test_col_gorder_strings;	/* sift.test_col_gorder_strings: the global order of a text leaf keeps a copy of its strings (version 3, as before column format minor 42), not the dictionary codes of them */
 extern bool sift_test_col_gorder_unpacked;	/* sift.test_col_gorder_unpacked: the chunks of a global order code their addresses with 9 bits of offset (column format minor 37), not the bits of the largest */
 extern bool sift_test_col_dict_unpacked;	/* sift.test_col_dict_unpacked: the order of a dictionary searched in place takes 32 bits a code (as before column format minor 39) */

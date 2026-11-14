@@ -65,7 +65,7 @@ maint_scope_write(Relation index, SiftWriteTarget *wt, struct SiftScopeFill *sf,
 		sift_colw_set_fill(w, fill);
 		sift_colw_set_index_rows(w, index_rows);
 		sift_colw_set_preagg(w, &pagg);
-		sift_colw_set_keyed(w, aim, cut[0]);
+		sift_colw_set_keyed(w, aim, cut, ncut);
 		sift_colk_write(w, &rep, 1, r->schema, cut, ncut, sift_colk_unit_rows(aim), cx, 0);
 		sift_colw_finish(w, &out[n]);
 		out[n].flags |= SIFT_SEG_SCOPE;

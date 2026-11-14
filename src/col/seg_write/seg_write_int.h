@@ -168,7 +168,9 @@ struct SiftColSegWriter
 	uint64		rows;
 	uint32		sb_lo;
 	uint32		sb_hi;
-	int			keycol;			/* the leaf the key-cut units are cut by (the first of key_cut), -1: unknown or not an integer */
+	int			keycol;			/* the leaf the key-cut units are cut by (the first of cut), -1: none */
+	int			ncut;			/* the leaves the units are cut by (the key_cut of the index, the cut of a scope), recorded after the schema; 0: by TID range */
+	int			cut[SIFT_COL_CUT_MAX];
 	uint32		aim_rows;		/* the rows of a unit of the page cut of the table: a key-cut unit's cube is budgeted as that unit's */
 	bool		keyed;			/* the units are key-cut: the segment is column format minor 17 */
 	uint8		format;			/* SiftSegEntry.format: what the writer was begun with (a segment with a version section needs SIFT_COL_FORMAT_VERS, the sift_table sees to it); 4 writes the tags of overflow values */

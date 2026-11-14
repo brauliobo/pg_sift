@@ -254,6 +254,12 @@ CREATE FUNCTION sift._test_col_types(index regclass, leaf int4, tagmask int4, de
 CREATE FUNCTION sift._test_col_formats(index regclass, OUT gen int8, OUT format int4, OUT lstats bool, OUT roots bool) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_formats' LANGUAGE C STRICT;
 -- the ranges of the stream that the mirror of each segment keeps, and its bytes (src/col/seg/mirror.c); a byte of the stream read as itself xor a mask
+-- the cut of every immutable segment: by a key (bykey) or by TID range (bytid), and the leaves it records (an empty array: none), src/col/test/test.c
+CREATE FUNCTION sift._test_col_cuts(index regclass, OUT gen int8, OUT bykey bool, OUT bytid bool, OUT cut int4[]) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_cuts' LANGUAGE C STRICT;
+-- the segments of unrecorded cut that merges of this backend have checked unit by unit (src/col/order.c)
+CREATE FUNCTION sift._test_col_cut_probes() RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_cut_probes' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_mirror(index regclass, OUT gen int8, OUT range int4, OUT off int8, OUT len int4, OUT block int4)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_mirror' LANGUAGE C STRICT;
