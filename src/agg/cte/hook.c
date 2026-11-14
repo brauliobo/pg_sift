@@ -802,6 +802,7 @@ sift_executor_start(QueryDesc *queryDesc, int eflags)
 			ResetPlanCache();
 		}
 	}
+	agg_explain_planned();
 	if (prev_executor_start)
 		prev_executor_start(queryDesc, eflags);
 	else

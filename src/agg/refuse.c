@@ -49,6 +49,9 @@ PG_FUNCTION_INFO_V1(sift_agg_refusal_actions);
 bool		sift_explain_refusals = false;
 static bool notice_refusals = false;
 static bool count_refusals = false;
+static bool explaining = false;			/* EXPLAIN (SIFT): the statement being explained is planned, its refusals are kept for the plan's report */
+static List *explained;
+static MemoryContext explain_cx;			/* the context of the EXPLAIN statement: it holds explained until the plan is printed */
 const char *agg_variant = NULL;
 
 #define AGG_REFUSAL_ROW(id, slug, text, limit, by_design, action) {slug, text, limit, by_design, action},
@@ -331,6 +334,17 @@ agg_quiet_reports(bool quiet)
 }
 
 static void
+explain_note(const char *arm, const char *slug, const char *reason)
+{
+	MemoryContext old = MemoryContextSwitchTo(explain_cx);
+	SiftRefusalNote *n = palloc(sizeof(SiftRefusalNote));
+
+	*n = (SiftRefusalNote) {pstrdup(arm), slug, pstrdup(reason)};
+	explained = lappend(explained, n);
+	MemoryContextSwitchTo(old);
+}
+
+static void
 emit(const ArmNote *a)
 {
 	const char *slug = refusals[a->why].slug;
@@ -353,6 +367,8 @@ emit(const ArmNote *a)
 		v[5] = Float8GetDatum(a->normal);
 		tuplestore_putvalues(why_store, why_desc, v, n);
 	}
+	else if (!a->used && explaining)
+		explain_note(a->name, slug, reason);
 	else if (!a->used && notice_refusals)
 		ereport(NOTICE, (errmsg("SiftAgg not used: %s: %s", slug, reason), errdetail("arm: %s", a->name), errhint("%s", action)));
 }
@@ -438,10 +454,50 @@ final_wait_gone(void *arg)
 	final_cx = NULL;
 }
 
+static void
+set_explain_refusals(void)
+{
+	sift_explain_refusals = notice_refusals || count_refusals || explaining;
+}
+
+/* the statement EXPLAIN (SIFT) was given to is planned: its refusals are kept until the plan is printed */
+void
+agg_explain_begin(void)
+{
+	explaining = true;
+	explained = NIL;
+	explain_cx = CurrentMemoryContext;
+	set_explain_refusals();
+}
+
+/* the explained statement starts: what is planned from here on (a function it calls) is not its plan's */
+void
+agg_explain_planned(void)
+{
+	if (explaining)
+	{
+		explaining = false;
+		set_explain_refusals();
+	}
+}
+
+/* the refusals of the plan for its report; the next statement starts with none */
+List *
+agg_explain_take(void)
+{
+	List	   *notes = explained;
+
+	explained = NIL;
+	return notes;
+}
+
 /* an error in the middle of a plan leaves the arm and its list in a context that is gone */
 static void
 forget_arms(void)
 {
+	explained = NIL;
+	explaining = false;
+	set_explain_refusals();
 	arm = NULL;
 	done = NIL;
 	final_wait = NIL;
@@ -471,19 +527,12 @@ forget_arms_subxact(SubXactEvent event, SubTransactionId my_subid, SubTransactio
 void
 agg_stage_begin(AggStage *st, PlannerInfo *root)
 {
-	static bool registered;
 	int			level = root->query_level;
 
 	st->on = sift_explain_refusals;
 	st->root = root;
 	if (!st->on)
 		return;
-	if (!registered)
-	{
-		RegisterXactCallback(forget_arms_xact, NULL);
-		RegisterSubXactCallback(forget_arms_subxact, NULL);
-		registered = true;
-	}
 	st->outer_arm = arm;
 	st->outer_done = done;
 	st->outer_level = stage_level;
@@ -871,18 +920,20 @@ sift_agg_explain_why(PG_FUNCTION_ARGS)
 static void
 assign_notice(bool newval, void *extra)
 {
-	sift_explain_refusals = newval || count_refusals;
+	sift_explain_refusals = newval || count_refusals || explaining;
 }
 
 static void
 assign_count(bool newval, void *extra)
 {
-	sift_explain_refusals = newval || notice_refusals;
+	sift_explain_refusals = newval || notice_refusals || explaining;
 }
 
 void
 sift_agg_refuse_init(void)
 {
+	RegisterXactCallback(forget_arms_xact, NULL);
+	RegisterSubXactCallback(forget_arms_subxact, NULL);
 	DefineCustomBoolVariable("sift.explain_refusals",
 							 "Reports as a notice why a query kept the normal plan instead of Custom Scan (SiftAgg): the first reason each candidate path gave up for.",
 							 NULL, &notice_refusals, false,

@@ -10,6 +10,7 @@
 #include "funcapi.h"
 #include "utils/timestamp.h"
 #include "core/inspect.h"
+#include "core/explain.h"
 #include "core/ops.h"
 #include "core/sql.h"
 #include "col/maint/maint_int.h"
@@ -363,6 +364,37 @@ sift_col_segments(PG_FUNCTION_ARGS)
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+/* The directory of the index as EXPLAIN (SIFT) reports it (the scope segments hold copies of rows: they are not counted) */
+void
+sift_col_stats(Relation index, SiftIndexStats *st)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		const SiftSegEntry *e = &snap->segs[i];
+
+		if (e->kind == SIFT_SEG_IMMUTABLE && !(e->flags & SIFT_SEG_SCOPE))
+		{
+			SiftColSegment *seg = sift_cseg_open(index, e, CurrentMemoryContext);
+
+			st->segments++;
+			st->rows += e->ndocs;
+			st->dead_rows += e->ndocs - sift_cseg_live_rows(seg);
+			sift_cseg_close(seg);
+		}
+		else if (e->kind == SIFT_SEG_WBUF_OPEN || e->kind == SIFT_SEG_WBUF_SEALED)
+		{
+			uint64		nrows,
+						npages;
+
+			sift_cwbuf_summary(index, e, &nrows, &npages);
+			st->buffered_rows += nrows;
+		}
+	}
 }
 
 /* One row per leaf: the chunks of all immutable segments by encoding, their bytes, and the dictionaries */

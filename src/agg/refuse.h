@@ -75,6 +75,17 @@ extern const char *agg_variant;
 
 /* the refusal that gave up the arm being planned, if it is the first: false, so that a site returns it */
 extern bool agg_refuse_note(AggRefusal why, const char *detail);
+/* a refusal of the plan EXPLAIN (SIFT) reports: the arm, the slug of the registry and the reason */
+typedef struct SiftRefusalNote
+{
+	const char *arm;
+	const char *slug;
+	const char *reason;
+} SiftRefusalNote;
+
+extern void agg_explain_begin(void);
+extern void agg_explain_planned(void);
+extern List *agg_explain_take(void);
 extern bool sift_agg_refusal_row(int i, const char **slug, const char **text, const char **action, bool *limit);
 extern void agg_refuse_retry(void);
 /* the same for a refusal by the limit lim of the registry (SiftLimitId): the arm counts it under that name */

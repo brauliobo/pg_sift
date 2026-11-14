@@ -27,6 +27,7 @@
 #include "utils/syscache.h"
 
 #include "core/sift.h"
+#include "core/explain.h"
 #include "core/limits.h"
 #include "agg/agg.h"
 #include "agg/stub.h"
@@ -283,6 +284,7 @@ _PG_init(void)
 	define_reloptions();
 	sift_planner_init();
 	sift_agg_init();
+	sift_explain_init();
 	sift_tbl_init();
 #ifdef SIFT_TESTING
 	sift_leak_test_init();
