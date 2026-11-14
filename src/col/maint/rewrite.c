@@ -415,7 +415,7 @@ overlay_maybe(Relation index, const SiftDirSnapshot *snap)
  * the one of VACUUM, so that its backoff and the stamp in the index keep the backends that look from starting a worker each.
  */
 bool
-sift_col_rewrite_tick(Relation index, double owed)
+sift_col_rewrite_tick(Relation index, double owed, bool scope_refused)
 {
 	SiftDirSnapshot *snap;
 	SiftDirSnapshot *peers;
@@ -445,5 +445,8 @@ sift_col_rewrite_tick(Relation index, double owed)
 		asked = sift_maint_request_worker(index, "sift_col_rewrite_worker_main");
 	pfree(peers);
 	pfree(snap);
+	/* a read the scope units could not answer (a journal rebuilt, units never filled): the reads owe the rewrite that fills them, and a table nothing writes is never vacuumed to ask for it */
+	if (!asked && scope_refused && maint_scope_refill_due(index))
+		asked = sift_maint_request_worker(index, "sift_col_read_rewrite_worker_main");
 	return asked || (owed > 0 && maint_read_due(index, owed) && sift_maint_request_worker(index, "sift_col_read_rewrite_worker_main"));
 }

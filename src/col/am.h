@@ -442,7 +442,7 @@ extern bool sift_col_autovacuum_enabled(Relation heap);
 extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, TimestampTz *last);
 extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows);
 extern void sift_col_vacuum_note_insert(Relation index, Relation heap);
-extern bool sift_col_rewrite_tick(Relation index, double owed);
+extern bool sift_col_rewrite_tick(Relation index, double owed, bool scope_refused);
 extern bool sift_col_promote_tick(Relation index);
 extern PGDLLEXPORT void sift_col_vacuum_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_vacuum_scan_worker_main(Datum main_arg);

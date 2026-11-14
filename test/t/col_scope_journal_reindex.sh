@@ -16,7 +16,11 @@ sql jr "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"CREATE INDEX cp_j ON cp USING sift_col (m, t) WITH (track_changes = 'ctid')" \
 	"CREATE TABLE ce (id int PRIMARY KEY, m int, d timestamptz, v int, pad text)" \
 	"INSERT INTO ce SELECT i, 1 + (i * 7919) % 210, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, 'x' FROM generate_series(1, 30000) i" \
-	"VACUUM (FREEZE, ANALYZE) ce, cp" "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (scope = 't: m -> cp(m, t)')" >/dev/null || bail "setup failed"
+	>/dev/null || bail "setup failed"
+# the VACUUM comes in a session of its own, after the load's counters are flushed: the table is then quiet (nothing changed since its VACUUM), as a table nobody writes is,
+# so nothing but the reads of the scope index can ask for the rewrite
+sql jr "VACUUM (FREEZE, ANALYZE) ce, cp" >/dev/null || bail "vacuum failed"
+sql jr "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (scope = 't: m -> cp(m, t)')" >/dev/null || bail "build failed"
 
 READ="SELECT count(*), sum(v) FROM ce e WHERE sift.in_scope('ce_col'::regclass, 't', e.m, 5)"
 JOIN="SELECT count(*), sum(v) FROM ce e WHERE e.m IN (SELECT m FROM cp WHERE t = 5)"

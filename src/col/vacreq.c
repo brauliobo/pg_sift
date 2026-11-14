@@ -37,6 +37,7 @@
 #include "utils/timestamp.h"
 #include "agg/stats.h"
 #include "col/am.h"
+#include "col/scope.h"
 #include "core/eval.h"
 #include "bm25/maint.h"
 
@@ -207,6 +208,9 @@ vacuum_cost(Oid heapoid, bool *unclean)
  *
  * With the method penalty_maintenance (sift.eval_methods, core/eval.h) the VACUUM is asked for the same way: when the rows the reads checked in the heap come to half of what that VACUUM costs, and not when a fixed share of the rows has changed or one scan checked a thousand rows.
  * The worker vacuums once for the request. A table that churns and is not read is left to autovacuum; the reads stay correct either way.
+ *
+ * A scan whose scope units were refused (the journal of the pairs rebuilt, units never filled) looks at once, as one that decoded the write buffer does: the rewrite that fills them
+ * is asked for by the look (sift_col_rewrite_tick), whatever the table has changed.
  */
 void
 sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
@@ -222,7 +226,8 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	Relation	index;
 	bool		small,
 				decoded,
-				marked;
+				marked,
+				refused;
 
 	/* counted whether or not maintenance may run: this is how a stopped maintenance shows */
 	sift_stat_add(SIFT_STAT_ROWS_DIRTY, dirty_rows);
@@ -239,7 +244,8 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	/* a scan that checked a few rows in the heap saved nothing worth a VACUUM, but if it decoded the write buffer the reads may have paid for its promotion */
 	decoded = sift_cwbuf_decoded_take();
 	marked = sift_col_marks_take();
-	small = !priced && vetted > 0 && vetted < MIN_VETTED;
+	refused = sift_scope_refused_take();
+	small = !priced && vetted > 0 && vetted < MIN_VETTED && !refused;
 	if (small && !decoded)
 		return;
 	now = GetCurrentTimestamp();
@@ -282,7 +288,7 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	{
 		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
 	}
-	else if (OidIsValid(vacuum_heap_of(indexoid)) && sift_col_rewrite_tick(index, owed_rewrite))
+	else if (OidIsValid(vacuum_heap_of(indexoid)) && sift_col_rewrite_tick(index, owed_rewrite, refused))
 	{
 		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
 		owed_rewrite = 0;
