@@ -430,6 +430,16 @@ tid_take(TidIn *t, uint32 sb, SiftColBatch *part, SiftColFreezeFn freeze, void *
 		sift_cbatch_add_from(part, t->buf, t->pos++);
 }
 
+/* Is an input cut by a key? Of an index that is not cut by one now (ALTER INDEX switched it off) its units are no stream of the TIDs: the merge sorts its rows again */
+static bool
+merge_has_key_input(const SiftSegEntry *in, int n)
+{
+	for (int i = 0; i < n; i++)
+		if (!sift_cseg_tid_ordered(&in[i]))
+			return true;
+	return false;
+}
+
 /* The segments a merge writes: its output is one segment, or partitions, each done when it holds its share of the units */
 typedef struct MergeOut
 {
@@ -666,7 +676,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	by_tid = o.parts == 1 && maint_unit_floor_applies(unit, live_rows, heap_sbs);
 	for (int i = 0; i < n && by_tid; i++)
 		by_tid = maint_rows_sparse(sift_cseg_live_rows(seg[i]), sift_cseg_keyed(&in[i]) ? heap_sbs : seg[i]->nsb, unit);
-	if (key_cut || by_tid)
+	if (key_cut || by_tid || resort || merge_has_key_input(in, n))
 	{
 		/*
 		 * An index with an order key: the live rows of the inputs, merged in the order of the key, are cut again into units of a key range, so the
@@ -687,7 +697,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 			if (slice == NULL)
 				out_begin(&o);	/* a slice may hold no row: its writer is begun by its first unit */
 			sift_colk_merge(o.w, in, seg, n, freeze, freeze_arg, schema, key_cut ? cut : NULL, ncut,
-							key_cut ? sift_colk_unit_rows(sift_colk_aim_rows(index)) : unit, maintenance_work_mem, o.cx, out_next, &o,
+							by_tid && !key_cut ? unit : sift_colk_unit_rows(sift_colk_aim_rows(index)), maintenance_work_mem, o.cx, out_next, &o,
 							slice ? slice->i : 0, slice ? slice->nslices : 1,
 							/* the units of the slices are numbered one after the other, by the rows that come before: the directory counts the units a segment spans */
 							slice && slice->win ? slice->win->unit_base : slice && key_cut ? live_rows * slice->i / slice->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0, resort,
@@ -849,7 +859,7 @@ merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, int r
 		return false;
 	for (int i = 0; i < n; i++)
 	{
-		if (!sift_cseg_keyed(&sel[i]))
+		if (!sift_cseg_key_ordered(&sel[i]))
 			return false;
 		bytes += sel[i].bytes;
 		rows += sel[i].ndocs;

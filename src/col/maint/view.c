@@ -15,7 +15,7 @@ maint_seg_spans(SiftColSegment *seg)
 	if (!key_cut)
 	{
 		sp.n = sift_cseg_sb_spans(seg, &sp.r);
-		sp.by_tid = sift_cseg_keyed(&seg->entry);
+		sp.by_tid = sift_cseg_keyed(&seg->entry) && sift_cseg_tid_ordered(&seg->entry);
 		return sp;
 	}
 	/* the units of a key-cut index are told by their sequence, as they always were: the rows of a key range lie in any block */
