@@ -104,6 +104,8 @@ typedef struct VerdictShm
 	slock_t		mutex;
 	uint32		tick;
 	int			nsets;
+	uint64		hits,			/* plans that took a kept verdict, and that planned in full: since the table was made (sift.shared_memory) */
+				misses;
 	VerdictShmEnt ents[VSHM_MAX_SETS][VSHM_WAYS];
 } VerdictShm;
 
@@ -197,6 +199,10 @@ vshm_read(uint64 key, CteVerdict *vd)
 			}
 			break;
 		}
+	if (found)
+		s->hits++;
+	else
+		s->misses++;
 	SpinLockRelease(&s->mutex);
 	return found;
 }
@@ -591,4 +597,24 @@ verdict_remember(CteVerdict *vd, bool won, double scans, double shared, double s
 		local_enter(keys[i], vd, i == 0);
 		vshm_write(keys[i], vd);
 	}
+}
+
+/* sift.shared_memory(): the bytes of the verdicts the table keeps and the plans that took one and that did not */
+bool
+sift_verdict_shm_stat(SiftShmStat *st)
+{
+	VerdictShm *s = sift_dsm_find(VSHM_NAME, NULL);
+
+	if (s == NULL)
+		return false;
+	SpinLockAcquire(&s->mutex);
+	for (int i = 0; i < s->nsets; i++)
+		for (int j = 0; j < VSHM_WAYS; j++)
+			if (s->ents[i][j].key != 0)
+				st->used += sizeof(VerdictShmEnt);
+	st->hits = s->hits;
+	st->misses = s->misses;
+	SpinLockRelease(&s->mutex);
+	st->has_used = st->has_counts = true;
+	return true;
 }

@@ -34,6 +34,7 @@
 #include "col/am.h"
 #include "col/dsmreg.h"
 #include "col/wbuf/wbuf_int.h"
+#include "core/waits.h"
 
 #define ARENA_SLOTS			256
 #define ARENA_PAGE_SHIFT	14
@@ -132,8 +133,12 @@ arena_get(void)
 		Assert(CritSectionCount == 0);	/* the join allocates */
 		if ((arena = sift_dsm_try(ARENA_NAME, sizeof(Arena), arena_init)) == NULL)
 		{
+			char		why[200];
+
 			arena_failed = true;
-			ereport(LOG, (errmsg("sift: the references of the write buffers are not shared with other backends: %s", sift_dsm_why())));
+			strlcpy(why, sift_dsm_why(), sizeof(why));
+			if (sift_shm_first(ARENA_NAME, why))
+				ereport(LOG, (errmsg("sift: the references of the write buffers are not shared with other backends: %s", why)));
 		}
 	}
 	return arena;
@@ -183,7 +188,13 @@ arena_sync(Arena *a)
 	if (seg_map(n) == NULL)		/* the directory is full, or the system has no memory for the segment: the pool stays as it is */
 	{
 		if (grow_refused_at == 0)
-			ereport(LOG, (errmsg("sift: the pool of the write buffer references takes no more memory: %s", sift_dsm_why())));
+		{
+			char		why[200];
+
+			strlcpy(why, sift_dsm_why(), sizeof(why));
+			if (sift_shm_first(ARENA_NAME "_seg", why))
+				ereport(LOG, (errmsg("sift: the pool of the write buffer references takes no more memory: %s", why)));
+		}
 		grow_refused_at = GetCurrentTimestamp();
 		SpinLockAcquire(&a->mutex);
 		a->want_grow = false;
@@ -679,7 +690,7 @@ wbuf_arena_rebuild_enter(Relation index, uint64 gen)
 		}
 		SpinLockRelease(&a->mutex);
 		waited = true;
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, 1, PG_WAIT_EXTENSION);
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, 1, sift_wait_event(SIFT_WAIT_ARENA));
 		ResetLatch(MyLatch);
 		CHECK_FOR_INTERRUPTS();
 	}

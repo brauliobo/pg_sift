@@ -281,3 +281,36 @@ END $$;
 REVOKE ALL ON FUNCTION sift.ddl_hooks_enable(boolean) FROM PUBLIC;
 COMMENT ON FUNCTION sift.ddl_hooks_enable(boolean) IS 'Superuser: disables (false) or enables (true) every event trigger of pg_sift in one call and returns how many it changed; enabling also removes what the drops left meanwhile (declared paths, options, unused value stores). For a library that does not match the SQL, which fails every DDL statement a hook fires on.';
 
+-- The shared memory of the server that pg_sift uses: each table of the directory (dynamic shared memory that the backends of the server share: the parsed dictionaries, the statistics, the planner's
+-- verdicts, the write buffers) with the size its setting asks for, what is mapped, what is in use and how many reads found what they looked for. A table that a backend went without (no room in
+-- /dev/shm, the directory full) is a row with shared false and the reason; the server log says it once for all the backends, not once for each.
+CREATE FUNCTION sift.shared_memory(OUT name text, OUT configured_bytes int8, OUT mapped_bytes int8, OUT used_bytes int8, OUT hits int8, OUT misses int8,
+								   OUT shared boolean, OUT reason text) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_shared_memory' LANGUAGE C STABLE;
+COMMENT ON FUNCTION sift.shared_memory() IS 'The shared memory of the server that pg_sift uses: for each table the size its setting asks for (configured), what is mapped, what is in use and the reads that found and that missed (NULL where the table keeps none), whether it is shared and, for a table that is not or that was cut down, why';
+
+-- The locks of pg_sift, named. A sift index or sift_table is locked by page (pg_locks: locktype page, the block says what it is), and the extension keeps a few advisory locks of its own in the key
+-- spaces 20983 and 20984 (0x51F7 and 0x51F8): this view reads pg_locks and says which is which, for the operator who sees a session wait and does not know for what.
+-- kind: maintenance (a promotion, merge, VACUUM or verify of the index), active segment (the writers, one at a time), worker (the maintenance worker of the index), tombstones (deletes share it, the rewrite
+-- of VACUUM excludes them), load (a bulk load not yet in the directory); rewrite slot (a worker that rewrites a sift_col index holds one of sift.col_auto_merge_max_workers), table vacuum (the worker that
+-- vacuums a table), orphan sweep (the cleanup of the triggers of a dropped index). relation: the index, or the table for a sift_table and for table vacuum.
+CREATE VIEW sift.locks AS
+	SELECT l.relation::regclass AS relation, k.kind, k.detail, l.mode, l.granted, l.waitstart AS waiting_since, l.pid
+	FROM pg_locks l
+	JOIN pg_class c ON c.oid = l.relation
+	JOIN pg_am a ON a.oid = c.relam AND a.amname IN ('sift', 'sift_col', 'sift_table')
+	LEFT JOIN pg_index i ON i.indexrelid = c.oid
+	CROSS JOIN LATERAL (SELECT CASE l.page WHEN 0 THEN 'maintenance' WHEN 2 THEN 'active segment' WHEN 3 THEN 'worker' WHEN 4 THEN 'tombstones'
+											WHEN 5 THEN 'load' ELSE 'page' END AS kind, 'block ' || l.page AS detail) k
+	WHERE l.locktype = 'page' AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()) AND sift._may_inspect(COALESCE(i.indrelid, c.oid))
+	UNION ALL
+	SELECT CASE WHEN l.classid = 20984 AND l.objsubid = 3 THEN l.objid::regclass END, k.kind, k.detail, l.mode, l.granted, l.waitstart, l.pid
+	FROM pg_locks l
+	CROSS JOIN LATERAL (SELECT CASE WHEN l.classid = 20983 AND l.objid >= 1397948416::oid AND l.objid < 1397948480::oid THEN 'rewrite slot'
+									WHEN l.classid = 20984 AND l.objsubid = 3 THEN 'table vacuum'
+									WHEN l.classid = 20984 AND l.objid = 1::oid THEN 'orphan sweep' END AS kind,
+							   CASE WHEN l.classid = 20983 THEN 'slot ' || (l.objid::text::int8 - 1397948416) END AS detail) k
+	WHERE l.locktype = 'advisory' AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()) AND k.kind IS NOT NULL
+	  AND (l.classid <> 20984 OR l.objsubid <> 3 OR sift._may_inspect(l.objid::regclass));
+COMMENT ON VIEW sift.locks IS 'The locks of pg_sift held or waited for now, named: the page locks of an index or sift_table (maintenance, active segment, worker, tombstones, load) and its advisory locks (a rewrite slot, the vacuum of a table, the sweep of orphan triggers), with the mode, whether it is granted, since when a session waits and its pid';
+GRANT SELECT ON sift.locks TO PUBLIC;

@@ -24,6 +24,10 @@ typedef struct DictKey
 /* sift.col_dict_shared_cache_kb: the size of the ring of records, 0 shares nothing */
 extern int	sift_col_dict_shared_cache_kb;
 
+/* sift.shared_memory(): what the ring holds and how its reads went; false where the table is not made */
+struct SiftShmStat;
+extern bool sift_dictshm_stat(struct SiftShmStat *st);
+
 /* The table is there for this backend: a parallel leader asks before it enters parallel mode, where it cannot be made, and tells its workers, which join it */
 extern bool sift_dictshm_prepare(void);
 extern void sift_dictshm_join(void);

@@ -9,6 +9,7 @@
 #include "utils/wait_event.h"
 
 #include "agg/par/int.h"
+#include "core/waits.h"
 
 static void
 par_message(AggExec *ex, int w, const char *data, Size len)
@@ -122,7 +123,7 @@ par_finish(AggExec *ex)
 	{
 		if (!par_receive(ex))
 		{
-			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0, PG_WAIT_EXTENSION);
+			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0, sift_wait_event(SIFT_WAIT_PAR_LEADER));
 			ResetLatch(MyLatch);
 		}
 		CHECK_FOR_INTERRUPTS();

@@ -47,35 +47,52 @@ static char *ring;
 static bool dshm_failed,
 			ring_failed;
 
-/* The setting, a multiple of the record alignment, and at most a quarter of /dev/shm: the segments of parallel queries live in the same one (a container has 64 MB) */
+/* The setting, a multiple of the record alignment, and at most a quarter of /dev/shm: the segments of parallel queries live in the same one (a container has 64 MB); *capped says the second */
 static Size
-ring_bytes(void)
+ring_bytes(bool *capped)
 {
 	Size		bytes = TYPEALIGN(DSHM_ALIGN, (Size) sift_col_dict_shared_cache_kb * 1024);
 	struct statvfs sv;
 
+	*capped = false;
 	if (dynamic_shared_memory_type == DSM_IMPL_POSIX && statvfs("/dev/shm", &sv) == 0)
 	{
 		Size		room = Max((Size) 4 << 20, (Size) sv.f_blocks * sv.f_frsize / 4);
 
 		if (bytes > room)
 		{
-			ereport(LOG,
-					(errmsg("sift: the shared dictionaries take %zu kB, not the %d kB of sift.col_dict_shared_cache_kb: a quarter of /dev/shm", room / 1024, sift_col_dict_shared_cache_kb)));
 			bytes = room;
+			*capped = true;
 		}
 	}
 	return bytes;
+}
+
+/* The cap is said once for the postmaster, outside the lock of the registry that makes the table (sift.shared_memory() shows it as the reason of the ring) */
+static void
+ring_cap_report(void)
+{
+	bool		capped;
+	Size		bytes = ring_bytes(&capped);
+	char		note[160];
+
+	if (!capped)
+		return;
+	snprintf(note, sizeof(note), "capped at %zu kB, a quarter of /dev/shm (sift.col_dict_shared_cache_kb is %d kB)", bytes / 1024, sift_col_dict_shared_cache_kb);
+	if (sift_shm_first(DSHM_RING_NAME, note))
+		ereport(LOG,
+				(errmsg("sift: the shared dictionaries take %zu kB, not the %d kB of sift.col_dict_shared_cache_kb: a quarter of /dev/shm", bytes / 1024, sift_col_dict_shared_cache_kb)));
 }
 
 static void
 dshm_init(SIFT_DSM_INIT_ARGS)
 {
 	Dshm	   *s = ptr;
+	bool		capped;
 
 	memset(s, 0, sizeof(Dshm));
 	SpinLockInit(&s->mutex);
-	s->size = ring_bytes();
+	s->size = ring_bytes(&capped);
 }
 
 /* The ring is made on the first record kept, not on the first read: a server that shares no dictionary takes only the directory */
@@ -94,8 +111,12 @@ dshm_get(void)
 	if (sift_col_dict_shared_cache_kb <= 0 || dshm_failed)
 		return NULL;
 	if (dshm == NULL)
+	{
 		dshm = sift_dsm_attach(DSHM_NAME, sizeof(Dshm), dshm_init, &dshm_failed,
 							   "the parsed dictionaries of the column indexes", "sift.col_dict_shared_cache_kb", TEST_MODE(2));
+		if (dshm != NULL)
+			ring_cap_report();
+	}
 	return dshm;
 }
 
@@ -226,6 +247,10 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
 			len = b[i].len;
 			break;
 		}
+	if (at < 0)
+		s->misses++;
+	else
+		s->hits++;
 	SpinLockRelease(&s->mutex);
 	if (at < 0)
 		return NULL;
@@ -409,3 +434,22 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 	return slot >= 0;
 }
 
+
+/* sift.shared_memory(): the bytes of the live records of the ring and the reads of the directory that found one and that did not */
+bool
+sift_dictshm_stat(SiftShmStat *st)
+{
+	Dshm	   *s = sift_dsm_find(DSHM_NAME, NULL);
+
+	if (s == NULL)
+		return false;
+	SpinLockAcquire(&s->mutex);
+	for (int i = 0; i < DSHM_BUCKETS * DSHM_WAYS; i++)
+		if (s->dir[i].state == E_LIVE)
+			st->used += s->dir[i].len;
+	st->hits = s->hits;
+	st->misses = s->misses;
+	SpinLockRelease(&s->mutex);
+	st->has_used = st->has_counts = true;
+	return true;
+}

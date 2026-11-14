@@ -24,6 +24,7 @@
 #include "col/build.h"
 #include "core/limits.h"
 #include "core/parbuild.h"
+#include "core/waits.h"
 
 /* The directory is shared by the participants: 16 of them leave 7 segments each */
 #define MAX_WORKERS		15
@@ -174,7 +175,7 @@ await_gate(ColShared *sh)
 {
 	ConditionVariablePrepareToSleep(&sh->readycv);
 	while (pg_atomic_read_membarrier_u32(&sh->ready) == 0)
-		ConditionVariableSleep(&sh->readycv, PG_WAIT_EXTENSION);
+		ConditionVariableSleep(&sh->readycv, sift_wait_event(SIFT_WAIT_BUILD_GATE));
 	ConditionVariableCancelSleep();
 }
 

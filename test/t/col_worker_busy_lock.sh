@@ -4,7 +4,7 @@
 # until the test lets go of advisory lock (0x51F7, 11), so no timing is involved: the worker is seen waiting for the next look, and the merges follow once the lock is free.
 . "$(dirname "$0")/lib.bash"
 
-plan 5
+plan 7
 node_init busy 47 "autovacuum = off
 sift.maintenance_naptime = 10000"
 node_start busy || bail "start failed"
@@ -14,7 +14,7 @@ sql busy "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE INDEX t_idx ON t USING sift_col (id, grp, amount, pad) WITH (vacuum_truncate = false, write_buffer_limit = 1024)" >/dev/null || bail "setup failed"
 
 SEGMENTS="SELECT count(*) FROM sift.col_segments('t_idx')"
-WORKER="SELECT coalesce(max(CASE WHEN wait_event = 'Extension' THEN 'waits' ELSE 'runs' END), 'none') FROM pg_stat_activity WHERE backend_type = 'sift maintenance'"
+WORKER="SELECT coalesce(max(CASE WHEN wait_event = 'SiftMaintenanceNap' THEN 'waits' ELSE 'runs' END), 'none') FROM pg_stat_activity WHERE backend_type = 'sift maintenance'"
 WAITING="SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
 
 sql busy "SET sift.async_maintenance = off" "DO \$\$ BEGIN FOR i IN 1..16 LOOP
@@ -46,6 +46,8 @@ for _ in $(seq 600); do
 done
 check "the worker that found the lock held waits for its next look" test "$state" == waits
 check "nothing merged while the lock was held" test "$(sql busy "$SEGMENTS")" -ge 16
+check "the nap has a name of its own in pg_stat_activity" test "$(sql busy "SELECT wait_event_type || ' ' || wait_event FROM pg_stat_activity WHERE backend_type = 'sift maintenance'")" == "Extension SiftMaintenanceNap"
+check "sift.locks names the maintenance lock the holder has on the index" test "$(sql busy "SELECT kind || ' ' || mode || ' ' || granted FROM sift.locks WHERE relation = 't_idx'::regclass")" == "maintenance ExclusiveLock true"
 
 touch "$D/release"
 wait "$gate" "$holder"

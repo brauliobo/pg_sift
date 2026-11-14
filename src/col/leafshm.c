@@ -46,6 +46,8 @@ typedef struct Lshm
 {
 	slock_t		mutex;
 	uint64		tick;
+	uint64		hits,			/* reads of a record that found it, and that did not: since the table was made (sift.shared_memory) */
+				misses;
 	Size		size;
 	Size		head;
 	LshmEnt		dir[LSHM_DIR];
@@ -159,6 +161,10 @@ lshm_copy(RelFileNumber rel, bool scope, LshmKind kind, uint64 stamp, Size *len)
 			s->dir[i].tick = ++s->tick;
 			break;
 		}
+	if (*len < sizeof(LshmHdr))
+		s->misses++;
+	else
+		s->hits++;
 	SpinLockRelease(&s->mutex);
 	if (*len < sizeof(LshmHdr))
 		return NULL;
@@ -315,4 +321,23 @@ sift_col_leafshm_pre_write(RelFileNumber rel, bool scope, uint64 stamp, const Si
 	memcpy(rec + sizeof(LshmHdr), pre, sizeof(*pre));
 	lshm_put(rel, scope, stamp, rec, len, (LshmHdr) {.kind = LSHM_PRE});
 	pfree(rec);
+}
+
+/* sift.shared_memory(): the bytes of the records the ring holds and the reads that found one and that did not */
+bool
+sift_col_leafshm_stat(SiftShmStat *st)
+{
+	Lshm	   *s = sift_dsm_find(LSHM_NAME, NULL);
+
+	if (s == NULL)
+		return false;
+	SpinLockAcquire(&s->mutex);
+	for (int i = 0; i < LSHM_DIR; i++)
+		if (s->dir[i].used)
+			st->used += s->dir[i].len;
+	st->hits = s->hits;
+	st->misses = s->misses;
+	SpinLockRelease(&s->mutex);
+	st->has_used = st->has_counts = true;
+	return true;
 }

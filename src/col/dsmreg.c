@@ -327,6 +327,54 @@ sift_dsm_join(const char *name, Size size, SiftDsmInit init)
 	return p;
 }
 
+/* A table of this library that exists, mapped in this backend and held like the ones it asks for; NULL where there is none (nothing is made) */
+void *
+sift_dsm_find(const char *name, Size *size)
+{
+	Dir		   *d = dir_get();
+	const char *build = build_id();
+	DirEnt	   *e = NULL;
+	dsm_segment *seg = NULL;
+	MemoryContext cx;
+
+	if (d == NULL)
+		return NULL;
+	cx = MemoryContextSwitchTo(TopMemoryContext);
+	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+	for (int i = 0; i < DIR_ENTRIES && e == NULL; i++)
+		if (d->ent[i].handle != DSM_HANDLE_INVALID && strcmp(d->ent[i].name, name) == 0 && strcmp(d->ent[i].build, build) == 0)
+			e = &d->ent[i];
+	if (e != NULL && (seg = dsm_find_mapping(e->handle)) == NULL && (seg = dsm_attach(e->handle)) != NULL)
+		hold(seg, e);
+	if (seg != NULL && size != NULL)
+		*size = e->size;
+	LWLockRelease(AddinShmemInitLock);
+	MemoryContextSwitchTo(cx);
+	return seg ? dsm_segment_address(seg) : NULL;
+}
+
+/* The name and size of entry i of the tables of this library (false past the last, an empty name for an entry that is free or another library's) */
+bool
+sift_dsm_list(int i, char name[SIFT_DSM_NAME_LEN], uint64 *size)
+{
+	Dir		   *d = dir_get();
+	const DirEnt *e;
+
+	if (d == NULL || i >= DIR_ENTRIES)
+		return false;
+	e = &d->ent[i];
+	LWLockAcquire(AddinShmemInitLock, LW_SHARED);
+	if (e->handle != DSM_HANDLE_INVALID && strcmp(e->build, build_id()) == 0)
+	{
+		strlcpy(name, e->name, SIFT_DSM_NAME_LEN);
+		*size = e->size;
+	}
+	else
+		name[0] = '\0';
+	LWLockRelease(AddinShmemInitLock);
+	return true;
+}
+
 #ifdef SIFT_TESTING
 char		sift_dsm_test_build[16];
 SiftDsmDeferred sift_dsm_deferred[SIFT_DSM_DEFERRED_MAX];
@@ -376,13 +424,18 @@ deferred_note(const char *name)
 }
 #endif
 
-/* The backend goes without the table for good: one line says why */
+/* The backend goes without the table for good; the first backend of the postmaster that has this reason for the table says why in the log (sift.shared_memory() has it for the rest) */
 static void
-shortage(bool *failed, const char *what, const char *guc, const char *message, const char *hint)
+shortage(bool *failed, const char *name, const char *what, const char *guc, const char *message, const char *hint)
 {
+	char		reason[200];
+
 	*failed = true;
+	strlcpy(reason, message, sizeof(reason));
+	if (!sift_shm_first(name, reason))
+		return;
 	ereport(LOG,
-			(errmsg("sift: %s are not shared with other backends: %s", what, message),
+			(errmsg("sift: %s are not shared with other backends: %s", what, reason),
 			 hint ? errhint("%s", hint)
 			 : guc ? errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm), or set %s to 0.", guc)
 			 : errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm).")));
@@ -399,7 +452,7 @@ sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, con
 	if (!IsTransactionState() || IsInParallelMode())
 	{
 		if ((s = sift_dsm_try(name, size, init)) == NULL)
-			shortage(failed, what, guc, why, why_hint);
+			shortage(failed, name, what, guc, why, why_hint);
 		return s;
 	}
 	/* and one must not start under a write (sift_col_writing): its commit advances the command id under the statement; the next statement of the backend tries again */
@@ -432,7 +485,7 @@ sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, con
 		MemoryContextSwitchTo(cx);
 		CurrentResourceOwner = owner;
 		s = NULL;
-		shortage(failed, what, guc, e->message, e->hint);
+		shortage(failed, name, what, guc, e->message, e->hint);
 		FreeErrorData(e);
 	}
 	PG_END_TRY();

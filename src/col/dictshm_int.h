@@ -61,6 +61,8 @@ typedef struct Dshm
 	uint32		writes,
 				thrown,
 				found;			/* of the window */
+	uint64		hits,			/* reads that found a record, and that did not: since the table was made (sift.shared_memory) */
+				misses;
 	DshmFlight	flight[DSHM_FLIGHT];
 	DshmEnt		dir[DSHM_BUCKETS * DSHM_WAYS];
 }			Dshm;
