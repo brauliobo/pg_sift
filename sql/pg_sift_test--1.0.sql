@@ -583,3 +583,7 @@ CREATE FUNCTION sift._test_probe_stats(reset bool DEFAULT false, OUT probes int8
 -- Executor end (src/agg/cte/hook.c): whether the check of the executor state's slot table accepts a slot made in the query context (false) or in a context of a node (true)
 CREATE FUNCTION sift._test_slot_owner(in_node_cxt bool) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_slot_owner' LANGUAGE C STRICT;
+
+-- core/restrict.c: the writer `kind` of the catalog (update, insert, delete, depend, undepend, trigger, drop) as a lazy VACUUM runs it (as_vacuum) or as a session does
+CREATE FUNCTION sift._test_catalog_write(kind text, as_vacuum bool DEFAULT false, a regclass DEFAULT NULL, b regclass DEFAULT NULL) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_catalog_write' LANGUAGE C PARALLEL SAFE;
