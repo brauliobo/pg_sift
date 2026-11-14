@@ -826,7 +826,7 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 	int			units;
 
 	for (int i = 0; i < n; i++)
-		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = !resort && (nleaf == 0 || sift_cseg_keyed(&ent[i])), .chunk = -1};
+		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = !resort && (nleaf == 0 ? sift_cseg_tid_ordered(&ent[i]) : sift_cseg_key_ordered(&ent[i])), .chunk = -1};
 	if (nslices > 1)
 	{
 		uint64		nb;

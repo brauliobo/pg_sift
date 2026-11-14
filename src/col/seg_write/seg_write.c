@@ -642,7 +642,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		entry->reserved = w->vmin;
 	}
 	if (w->keyed)
-		entry->flags |= SIFT_SEG_KEYED;
+		entry->flags |= SIFT_SEG_KEYED | (w->keycol < 0 ? SIFT_SEG_BYTID : SIFT_SEG_BYKEY);
 	if (w->lst != NULL)
 		entry->flags |= SIFT_SEG_LSTATS;
 	entry->ndocs = w->rows;

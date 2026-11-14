@@ -548,6 +548,20 @@ sift_cseg_keyed(const SiftSegEntry *e)
 	return (e->flags & SIFT_SEG_KEYED) != 0 || e->format == SIFT_COL_FORMAT_KEYED;
 }
 
+/* Do the units of the segment follow each other in the order of the TIDs, as a merge by superblock reads them? Not the units of a segment cut by a key */
+static inline bool
+sift_cseg_tid_ordered(const SiftSegEntry *e)
+{
+	return (e->flags & SIFT_SEG_BYKEY) == 0;
+}
+
+/* Do they follow each other in the order of a key, as a merge of a key_cut index reads them? Not those of a segment cut by TID range; which key, only the cut of the index tells */
+static inline bool
+sift_cseg_key_ordered(const SiftSegEntry *e)
+{
+	return sift_cseg_keyed(e) && (e->flags & SIFT_SEG_BYTID) == 0;
+}
+
 #ifdef SIFT_TESTING
 extern bool sift_test_col_gorder_strings;	/* sift.test_col_gorder_strings: the global order of a text leaf keeps a copy of its strings (version 3, as before column format minor 42), not the dictionary codes of them */
 extern bool sift_test_col_gorder_unpacked;	/* sift.test_col_gorder_unpacked: the chunks of a global order code their addresses with 9 bits of offset (column format minor 37), not the bits of the largest */
