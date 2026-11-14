@@ -326,7 +326,35 @@ def generate(root):
 UNPUBLISHED = ('docs/COVERAGE.md',)   # generated for the maintainers, left out of the public tree (public-repo-allowlist): a checkout without it does not compare it, and says so
 
 
+FORMAT_PAGES = ('docs/FORMATS.md', 'docs/UPGRADING.md', 'docs/releases/v5.0.0.md')
+
+
+def format_docs(root):
+    """the newest column format minor the library reads (format.h) is the one FORMATS, UPGRADING and the release notes state"""
+    h = read(os.path.join(root, 'src/col/api/format.h'))
+    defs = dict(re.findall(r'#define (SIFT_COL_FORMAT_\w+)\s+(\w+)', h))
+    top = defs['SIFT_COL_FORMAT_MAX_READ']
+    top = int(top) if top.isdigit() else int(defs[top])
+    bad = []
+    for page in FORMAT_PAGES:
+        text = read(os.path.join(root, page))
+        ranges = [int(n) for n in re.findall(r'(?:minors|5\.0) 3 through (\d+)|any minor up to (\d+)', text) for n in n if n]
+        bad += ['%s says the library reads up to %d, format.h %d' % (page, n, top) for n in ranges if n != top]
+        stated = []
+        for lst in re.findall(r'minors? (\d+(?:(?:, | and )\d+)*)', text):
+            stated += [int(n) for n in re.findall(r'\d+', lst) if int(n) >= 45]
+        if page == 'docs/FORMATS.md':
+            nxt = re.search(r'^Next free column format minor: (\d+)$', text, re.M)
+            stated += [int(nxt.group(1)) - 1] if nxt else [0]
+            stated += [max(int(n) for r in re.findall(r'^\| ([\d, ]+) \|', text, re.M) for n in re.findall(r'\d+', r))]
+        if max(stated, default=0) != top:
+            bad.append('%s says %d, format.h reads up to %d' % (page, max(stated, default=0), top))
+    if bad:
+        sys.exit('gen-docs: the column format minors disagree: ' + '; '.join(bad))
+
+
 def check():
+    format_docs(REPO)
     with tempfile.TemporaryDirectory(prefix='sift-gen-docs.') as tmp:
         files = subprocess.run(['git', '-C', REPO, 'ls-files', '-z'], check=True, capture_output=True).stdout.split(b'\0')[:-1]
         for f in files:
