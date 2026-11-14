@@ -185,6 +185,14 @@ extern void sift_dir_update(Relation index, const SiftDirChange *chg);
 /* Publish a completed SHARED write target; subsequent abort frees only unpublished allocations. */
 extern void sift_wt_publish(SiftWriteTarget *wt, const SiftDirChange *chg);
 
+/*
+ * A change of the metapage alone, one WAL record: the directory is not touched, so its version stays and no scan that holds a copy of it is told of a change. fn changes the page and says
+ * whether it did (false: nothing is logged). For what a reader keeps in the metapage that is not part of a segment switch (the scope counter, col/scope_paid.c); not for the fields a switch of the
+ * directory owns.
+ */
+typedef bool (*SiftMetaMutator) (SiftMetaPageData *meta, void *arg);
+extern void sift_meta_update(Relation index, SiftMetaMutator fn, void *arg);
+
 /* Reserves a fresh segment generation (logged, P6) */
 extern uint64 sift_store_new_gen(Relation index);
 

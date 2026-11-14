@@ -311,6 +311,27 @@ sift_store_new_gen(Relation index)
 	return gen;
 }
 
+void
+sift_meta_update(Relation index, SiftMetaMutator fn, void *arg)
+{
+	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
+	GenericXLogState *state = GenericXLogStart(index);
+	Page		mp = GenericXLogRegisterBuffer(state, metabuf, 0);
+
+	if (SiftPageGetUsed(mp) < sizeof(SiftMetaPageData))
+		memset((char *) META(mp) + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
+	if (!fn(META(mp), arg))
+	{
+		GenericXLogAbort(state);
+		UnlockReleaseBuffer(metabuf);
+		return;
+	}
+	if (sift_meta_extended(META(mp)))
+		SiftPageSetUsed(mp, sizeof(SiftMetaPageData));
+	GenericXLogFinish(state);
+	UnlockReleaseBuffer(metabuf);
+}
+
 /* Validates the mutator's result inside the record; aborts it on failure */
 static void
 finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *before, const SiftMetaPageData *meta,

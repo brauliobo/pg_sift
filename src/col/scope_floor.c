@@ -19,6 +19,7 @@
 
 StaticAssertDecl(sizeof(SiftMetaStamp) == sizeof(SiftConnStamp), "the floor of the metapage holds the stamps of col/api/meta.h");
 StaticAssertDecl(SIFT_META_STAMPS == SIFT_SCOPE_MAX * SIFT_SCOPE_JOURNALS, "the metapage has room for the stamps of every journal of every scope");
+StaticAssertDecl(SIFT_META_SCOPES == SIFT_SCOPE_MAX, "the metapage has room for the paid sum of every scope");
 
 void
 sift_scope_floor_get(const SiftMetaPageData *meta, int scope, SiftConnStamp *out)
@@ -26,16 +27,19 @@ sift_scope_floor_get(const SiftMetaPageData *meta, int scope, SiftConnStamp *out
 	memcpy(out, &meta->scope_floor[scope * SIFT_SCOPE_JOURNALS], SIFT_SCOPE_JOURNALS * sizeof(SiftConnStamp));
 }
 
-/* The high bit keeps it from the generations of the segments and logs that share the table of the reads (col/wbuf/reads.c) */
+/* What the reads that pay for the changed pairs are counted under (col/scope_paid.c): the floor they read under. The high bit keeps it from 0, which is no stamp */
 uint64
 sift_scope_epoch(const SiftConnStamp *floor, int ord)
 {
 	return hash_bytes_extended((const unsigned char *) floor, SIFT_SCOPE_JOURNALS * sizeof(SiftConnStamp), ord) | (UINT64CONST(1) << 63);
 }
 
+/* What the reads paid for the pairs changed since a floor is not owed to another: the sum starts again in the switch that moves the floor */
 static void
 floor_put(SiftMetaPageData *meta, int scope, const SiftConnStamp *stamp)
 {
+	if (memcmp(&meta->scope_floor[scope * SIFT_SCOPE_JOURNALS], stamp, SIFT_SCOPE_JOURNALS * sizeof(SiftConnStamp)) != 0)
+		meta->scope_paid[scope] = 0;
 	memcpy(&meta->scope_floor[scope * SIFT_SCOPE_JOURNALS], stamp, SIFT_SCOPE_JOURNALS * sizeof(SiftConnStamp));
 }
 

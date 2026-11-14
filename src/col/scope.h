@@ -165,6 +165,11 @@ struct SiftColSegment;
 extern bool sift_scope_stale(SiftScopeStale *st, const struct SiftColSegment *seg);
 /* ... of the floor of the stamps of the index, whatever its segments (a promotion that wrote none, an index with no scope segment): a refill makes it again */
 extern bool sift_scope_floor_stale(SiftScopeStale *st);
+/* What the reads paid for the changed pairs of the index and half of the refresh price: the rule of `stale scope` is paid >= half */
+extern void sift_scope_refresh_balance(SiftScopeStale *st, uint64 *paid, double *half);
+/* ... and the half alone, from a directory the caller read */
+struct SiftDirSnapshot;
+extern double sift_scope_refresh_half(Relation index, const struct SiftDirSnapshot *dir);
 extern void sift_scope_stale_end(SiftScopeStale *st);
 
 /*
@@ -438,7 +443,7 @@ sift_scope_changed_price(const SiftScopeCounts *c)
  * Instructions of the backend that ran sift.col_maintain on a settled index (entity and scope segments each one, every pair changed since the stamp), from 300,000 and 600,000 rows with 253,000 to 862,000
  * entries (0.84 to 1.44 an entity row) of an index of 7 columns, and 300,000 rows with 481,000 entries of one of 4: 1.64, 2.75 and 5.08 thousand million with 7 columns, 1.77 with 4 (the fit 1,500 an
  * entity row and 680 a column of an entry is within 2% of the four; the WAL is the 9 bytes an entry the segments have). A read that finds members changed since the stamps pays for them, on top of the filled read,
- * what the planner prices it at (agg/scope.c); the reads add that up for the index (col/wbuf/reads.c, one table for every backend, by the epoch of the floor), and the refresh is due when what they paid comes to
+ * what the planner prices it at (agg/scope.c); the reads add that up for the index (col/scope_paid.c, in its metapage), and the refresh is due when what they paid comes to
  * half of what it costs (MAINT_HALF: the same rule as the reads that owe a rewrite): the reads that came are the reads to come, so that a refresh is made after the delta has cost its price once.
  */
 #define SIFT_SCOPE_REFRESH_ROW_INSTR	1500
@@ -530,10 +535,16 @@ extern void sift_scope_read_pairs(SiftScopeRead *rd);
 extern bool sift_scope_refused_take(Oid index);
 extern void sift_scope_changed_note(Relation index);
 /*
- * The key the reads that paid for the pairs changed since the floor of scope ord are counted under (col/wbuf/reads.c): it changes with the floor, which only a refill raises, so what the reads paid
- * to the segments it replaced is not owed to the new ones
+ * What the reads of the server paid, on top of the filled read, for the pairs changed since the floor of scope ord (col/scope_paid.c), in the instructions of the prices of this file. The sum is in the metapage
+ * of the index (SiftMetaPageData.scope_paid: logged, so a restart or a crash keeps it, and a standby replays it), zero again in the switch that moves the floor; the epoch is the floor a read
+ * paid under (sift_scope_epoch), so that a read that ends after the refill raised the floor adds nothing to the new one. A read notes in its backend (sift_scope_paid_note) and the look of the backend
+ * writes the sum (sift_scope_paid_flush: at the end of the statement, up to half the price of the refresh, never in a standby, a parallel operation or a VACUUM); sift_scope_paid is what the metapage has plus what this backend has not written yet
  */
 extern uint64 sift_scope_epoch(const SiftConnStamp *floor, int ord);
+extern void sift_scope_paid_note(Relation index, int ord, uint64 epoch, uint64 instr);
+extern uint64 sift_scope_paid(Relation index, const struct SiftMetaPageData *meta, int ord);
+extern void sift_scope_paid_flush(Relation index);
+extern bool sift_scope_paid_pending(Oid index);
 /* The member keys that have a pair with one of the keys under the snapshot (keys NULL: with any), ascending, each once */
 /* The columns of the index the scope segments of key_name keep values of, of all its columns (EXPLAIN "Scope Columns") */
 extern void sift_scope_columns(Relation index, const char *key_name, int *kept, int *all);

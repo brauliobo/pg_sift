@@ -5,9 +5,8 @@
  * paid again by each backend that comes after, and by none while the buffer is promoted away. Maintenance weighs the sum of what the backends paid against the promotion
  * (maint_wbuf_read_due): the sum is here, in a table of the DSM registry (nothing is allocated at postmaster start) keyed by the generation of the buffer, which no
  * other buffer of the index ever has. A write-only buffer has no entry. The marks of a log are weighed the same way (sift_col_fold_due), keyed by the generation of the log, which
- * is a new one when the log is rewritten (the fold of the marks, a VACUUM): what the reads paid to the log it replaced is not owed to the new one. The instructions the reads of a scope paid for the pairs changed since its
- * floor are weighed against the refill of the scope segments the same way (maint_scope_refill_due), keyed by the epoch of the floor, which the refill raises. The table is in shared memory of the server: it is empty after a restart, and a standby has its own (its
- * reads do not count for the primary).
+ * is a new one when the log is rewritten (the fold of the marks, a VACUUM): what the reads paid to the log it replaced is not owed to the new one. The table is in shared memory of the server: it is empty after a restart, and a standby has its own (its
+ * reads do not count for the primary). What the reads of a scope paid for its changed pairs is not here but in the metapage of the index (col/scope_paid.c), which a restart keeps and no other count competes for.
  */
 #include "postgres.h"
 
@@ -145,16 +144,4 @@ uint64
 sift_col_marks_paid(Relation index, uint64 loggen)
 {
 	return reads_paid(index, loggen);
-}
-
-void
-sift_scope_paid_note(Relation index, uint64 epoch, uint64 instr)
-{
-	reads_add(index, epoch, instr);
-}
-
-uint64
-sift_scope_paid(Relation index, uint64 epoch)
-{
-	return reads_paid(index, epoch);
 }

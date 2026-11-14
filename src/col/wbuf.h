@@ -149,13 +149,6 @@ extern bool sift_cwbuf_decoded_take(void);
 extern void sift_col_marks_note(Relation index, uint64 loggen, uint64 instr);
 extern uint64 sift_col_marks_paid(Relation index, uint64 loggen);
 extern bool sift_col_marks_take(void);
-/*
- * The instructions the reads of the server paid, on top of the filled read, for the pairs of a scope that changed since its floor (col/scope.h: the epoch is the key of the floor), what the refill of the scope
- * segments is weighed against (maint_scope_refill_due)
- */
-extern void sift_scope_paid_note(Relation index, uint64 epoch, uint64 instr);
-extern uint64 sift_scope_paid(Relation index, uint64 epoch);
-
 /* Extents (header and data pages) for release after promotion; records, rows (deleted included) and pages */
 extern SiftExtent *sift_cwbuf_pages(Relation index, const SiftSegEntry *entry, int *n);
 extern void sift_cwbuf_summary(Relation index, const SiftSegEntry *entry, uint64 *nrows, uint64 *npages);

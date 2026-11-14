@@ -60,6 +60,7 @@ typedef SiftPageOpaqueData *SiftPageOpaque;
 #define SIFT_MAINT_ERRMSG_LEN	192
 /* The stamps of the metapage (col/scope.h, the floor of a scope index): 4 scopes of at most 3 journals; the layout is that of SiftConnStamp (col/api/meta.h) */
 #define SIFT_META_STAMPS		12
+#define SIFT_META_SCOPES		4
 
 typedef struct SiftMetaStamp
 {
@@ -91,6 +92,8 @@ typedef struct SiftMetaPageData
 	char		analyzer_config[SIFT_TSCONFIG_BYTES];
 	/* The floor of the stamps of a scope index: for each scope its journals' stamps (lineage 0: none), the oldest journal position its scope entries and its rows with no entry are exact as of; pd_lower covers it once one is set */
 	SiftMetaStamp scope_floor[SIFT_META_STAMPS];
+	/* What the reads of the server paid, for each scope, on top of the filled read, for the pairs changed since its floor, in instructions (col/scope_paid.c); zero again in the switch that moves the floor */
+	uint64		scope_paid[SIFT_META_SCOPES];
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF
@@ -104,6 +107,9 @@ sift_meta_extended(const SiftMetaPageData *meta)
 		return true;
 	for (int i = 0; i < SIFT_META_STAMPS; i++)
 		if (meta->scope_floor[i].lineage != 0)
+			return true;
+	for (int i = 0; i < SIFT_META_SCOPES; i++)
+		if (meta->scope_paid[i] != 0)
 			return true;
 	return false;
 }

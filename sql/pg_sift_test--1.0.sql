@@ -599,6 +599,14 @@ CREATE FUNCTION sift._test_scope_refresh(rows int8, entries int8, columns int, c
 CREATE FUNCTION sift._test_scope_paid(index regclass, scope int) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_scope_paid' LANGUAGE C STRICT;
 
+-- the same, and half of the price of the refresh of the scope segments (the rule of `stale scope`: paid >= half)
+CREATE FUNCTION sift._test_scope_balance(index regclass, OUT paid int8, OUT half float8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_scope_balance' LANGUAGE C STRICT;
+
+-- this backend's sum is written to the metapage now (the look does it once for each naptime)
+CREATE FUNCTION sift._test_scope_paid_flush(index regclass) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_scope_paid_flush' LANGUAGE C STRICT;
+
 CREATE FUNCTION sift._test_col_log_cache(OUT entries int8, OUT bytes int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_cache' LANGUAGE C STRICT;
 

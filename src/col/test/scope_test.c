@@ -574,20 +574,57 @@ sift_test_scope_refresh(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_test_scope_paid);
 
-/* sift._test_scope_paid(index, scope): the instructions the reads of the server paid for the pairs changed since the floor of the scope, on top of the filled read (col/wbuf/reads.c) */
+/* sift._test_scope_paid(index, scope): the instructions the reads of the server paid for the pairs changed since the floor of the scope, on top of the filled read: the metapage's and this backend's not yet written (col/scope_paid.c) */
 Datum
 sift_test_scope_paid(PG_FUNCTION_ARGS)
 {
 	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
-	SiftConnStamp floor[SIFT_SCOPE_JOURNALS];
 	uint64		paid;
 
 	sift_dir_read(index, dir);
-	sift_scope_floor_get(&dir->meta, PG_GETARG_INT32(1), floor);
-	paid = sift_scope_paid(index, sift_scope_epoch(floor, PG_GETARG_INT32(1)));
+	paid = sift_scope_paid(index, &dir->meta, PG_GETARG_INT32(1));
 	index_close(index, AccessShareLock);
 	PG_RETURN_INT64((int64) paid);
+}
+
+PG_FUNCTION_INFO_V1(sift_test_scope_balance);
+
+/* sift._test_scope_balance(index): what the reads paid for the changed pairs of the index, and half of the price of its refresh (the rule of `stale scope` is paid >= half) */
+Datum
+sift_test_scope_balance(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftScopeStale *st = sift_scope_stale_begin(index, CurrentMemoryContext);
+	Datum		v[2];
+	bool		nulls[2] = {false, false};
+	uint64		paid;
+	double		half;
+	TupleDesc	desc;
+
+	if (st == NULL)
+		elog(ERROR, "the index has no scope");
+	sift_scope_refresh_balance(st, &paid, &half);
+	sift_scope_stale_end(st);
+	index_close(index, AccessShareLock);
+	v[0] = Int64GetDatum((int64) paid);
+	v[1] = Float8GetDatum(half);
+	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
+}
+
+PG_FUNCTION_INFO_V1(sift_test_scope_paid_flush);
+
+/* sift._test_scope_paid_flush(index): this backend's sum is written to the metapage now, as the look does once for each naptime (col/scope_paid.c) */
+Datum
+sift_test_scope_paid_flush(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+
+	sift_scope_paid_flush(index);
+	index_close(index, AccessShareLock);
+	PG_RETURN_VOID();
 }
 
 /* a predicate as text, NULL when the leg has none */

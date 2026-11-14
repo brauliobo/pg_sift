@@ -588,38 +588,55 @@ sift_scope_stale_begin(Relation index, MemoryContext mcxt)
 	return st;
 }
 
-/*
- * Have the reads of the index paid for the members that changed since the stamps what the refresh costs (sift_scope_paid: what each read paid on top of the filled read, from the floor it read under), half of it
- * as for every maintenance step: the refresh of every scope at once, against what the reads of the scopes that vouch paid for theirs. No read, no refresh: nobody pays for the changed members.
- */
-static bool
-refresh_priced(SiftScopeStale *st)
+/* Half of what the refresh of every scope of the index costs, as for every maintenance step (the rows of its entity segments, the entries of its scope segments by the columns they keep), from the directory */
+double
+sift_scope_refresh_half(Relation index, const SiftDirSnapshot *dir)
 {
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
 	double		entry_columns = 0;
-	uint64		rows = 0,
-				paid = 0;
+	uint64		rows = 0;
 
-	sift_dir_read(st->index, dir);
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_seg_is_scope(&dir->segs[i]))
 			rows += dir->segs[i].ndocs;
-	for (int i = 0; i < st->n; i++)
+	for (int i = 0; i < sift_col_rel(index)->nscope; i++)
 	{
-		SiftConnStamp floor[SIFT_SCOPE_JOURNALS];
 		int			kept,
 					all;
 
-		sift_scope_columns(st->index, sift_scope_specs(st->index)->s[i]->key_name, &kept, &all);
+		sift_scope_columns(index, sift_scope_specs(index)->s[i]->key_name, &kept, &all);
 		for (int j = 0; j < dir->nsegs; j++)
 			if (sift_seg_is_scope(&dir->segs[j]) && sift_seg_scope_ordinal(&dir->segs[j]) == i)
 				entry_columns += (double) dir->segs[j].ndocs * kept;
-		sift_scope_floor_get(&dir->meta, i, floor);
-		if (st->s[i].vouches)
-			paid += sift_scope_paid(st->index, sift_scope_epoch(floor, i));
 	}
+	return MAINT_HALF * sift_scope_refresh_price(rows, entry_columns);
+}
+
+/*
+ * What the reads of the index paid for the members that changed since the stamps (sift_scope_paid: what each read paid on top of the filled read, since the floor), of the scopes that vouch, and half of the
+ * refresh: the rule of `stale scope` is that the first comes to the second. No read, no refresh: nobody pays for the changed members.
+ */
+void
+sift_scope_refresh_balance(SiftScopeStale *st, uint64 *paid, double *half)
+{
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+
+	*paid = 0;
+	sift_dir_read(st->index, dir);
+	for (int i = 0; i < st->n; i++)
+		if (st->s[i].vouches)
+			*paid += sift_scope_paid(st->index, &dir->meta, i);
+	*half = sift_scope_refresh_half(st->index, dir);
 	pfree(dir);
-	return (double) paid >= MAINT_HALF * sift_scope_refresh_price(rows, entry_columns);
+}
+
+static bool
+refresh_priced(SiftScopeStale *st)
+{
+	uint64		paid;
+	double		half;
+
+	sift_scope_refresh_balance(st, &paid, &half);
+	return (double) paid >= half;
 }
 
 /* The floor of the index (col/scope_floor.c) is not the journal's position any more: its lineage is another, or the pairs that changed since are many, or the reads have paid for the changed ones what the refresh costs (the entity segments have nothing stored: no floor is stale) */

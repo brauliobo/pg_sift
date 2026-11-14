@@ -259,6 +259,13 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	sift_stat_add(SIFT_STAT_READ_PENALTY_KINSTR, (vetted * PEN_VET_ROW + dirty_rows * PEN_DIRTY_ROW) / 1000);
 	if (!sift_col_auto_merge || !sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress())
 		return;
+	if (sift_scope_paid_pending(indexoid))
+	{
+		Relation	scoped = index_open(indexoid, AccessShareLock);
+
+		sift_scope_paid_flush(scoped);
+		index_close(scoped, AccessShareLock);
+	}
 	lk = look_of(indexoid);
 	lk->owed_rewrite += (double) dirty_rows * PEN_DIRTY_ROW;
 	lk->owed_vacuum += (double) vetted * PEN_VET_ROW;

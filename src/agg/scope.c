@@ -458,7 +458,7 @@ read_extra(const SiftAggScope *sc, const SiftScopeCounts *c, double filled, cons
 /*
  * Decides how the scan reads the conjunct, before its source is opened (the source of the scope segments is another one); true: the scope segments, and the rows of the entity
  * too when ex->scope_rd->npatch > 0. A read that found changed members says what it paid for them to the maintenance, which sees no statement (sift_scope_paid_note): the rule of `stale scope` weighs the sum of
- * what the reads of the server paid against the refresh. A standby cannot ask for it.
+ * what the reads of the server paid against the refresh (col/scope_paid.c keeps it in the metapage). A standby cannot ask for it.
  */
 bool
 scope_open(AggExec *ex, Snapshot snapshot)
@@ -471,7 +471,7 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	const SiftScopeRead *rd = ex->scope_rd;
 
 	if (ex->scope_share == NULL && rd != NULL && rd->epoch != 0 && (rd->nchanged > 0 || rd->why != NULL) && !RecoveryInProgress())
-		sift_scope_paid_note(ex->index, rd->epoch, (uint64) read_extra(sc, &c, filled, rd, ex->spec != spec));
+		sift_scope_paid_note(ex->index, rd->scope, rd->epoch, (uint64) read_extra(sc, &c, filled, rd, ex->spec != spec));
 	return scope;
 }
 
