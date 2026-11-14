@@ -445,7 +445,7 @@ ERROR:  invalid value for boolean option "key_table": maybe
 SELECT reloptions FROM pg_class WHERE relname = 'ka_idx';
                                                                                reloptions                                                                               
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- {dict_lookup=off,write_buffer_limit=4096,key_order=off,key_columns=grp_id,key_table=off,"order_array_group=auto: grp_id, ts;","order_array_columns=auto: id, amt, ts"}
+ {dict_lookup=off,write_buffer_limit=4096,key_order=off,key_columns=grp_id,"order_array_group=auto: grp_id, ts;","order_array_columns=auto: id, amt, ts",key_table=off}
 (1 row)
 
 DROP TABLE kt, kt_b, kt_c, ka, kt_q;
