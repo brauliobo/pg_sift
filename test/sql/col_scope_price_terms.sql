@@ -47,6 +47,11 @@ SELECT units, entries, round((p / 1e6)::numeric, 2) AS priced_m, measured AS mea
 FROM (SELECT t.*, price(1, false, units, entries, entry_instr => 17, topn => true, walk_units => least(units, 1 + ceil(20 / (entries::float8 / units)))::int8) AS p
 	FROM (VALUES (1, 2413, 0.41), (36, 150072, 0.88), (114, 470174, 2.34), (289, 1186783, 3.46)) t(units, entries, measured)) c ORDER BY units;
 
+-- the units a changed member's entries leave are read row by row: the share of the units of the keys against the entries read in the fit (50 keys of one unit, 300,000 events, 5,000 members), and the
+-- same share of the 36 units of a tenant of 148,000 entries
+SELECT changed, units, measured_percent, round((100 * (1 - sift._test_scope_preagg_kept(changed, units)))::numeric) AS modelled_percent
+FROM (VALUES (0, 36, 0.0), (4, 50, 12.8), (18, 50, 44.0), (45, 50, 92.0), (10, 36, NULL), (10, 1, NULL)) t(changed, units, measured_percent) ORDER BY units, changed;
+
 -- the cells: the price of the scope read for the counts the executor has, against the read measured, and the arm the price takes against the one that was cheaper
 CREATE TABLE cells (n int GENERATED ALWAYS AS IDENTITY, shape text, keys int, once bool, units int8, entries int8, preagg float8, drops int, key_pairs int8, changed int8, patch_units int8, patch_scan_rows int8, delta_rows int8, pairs int8,
 	entry_instr float8, measured float8, join_as_written float8);

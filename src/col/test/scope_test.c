@@ -370,6 +370,7 @@ sift_test_in_scope_set(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_test_scope_legs);
 PG_FUNCTION_INFO_V1(sift_test_scope_price);
+PG_FUNCTION_INFO_V1(sift_test_scope_preagg_kept);
 PG_FUNCTION_INFO_V1(sift_test_scope_take);
 PG_FUNCTION_INFO_V1(sift_test_scope_journal_changes);
 PG_FUNCTION_INFO_V1(sift_test_scope_vouch);
@@ -467,6 +468,12 @@ sift_test_scope_journal_changes(PG_FUNCTION_ARGS)
 
 
 /* sift._test_scope_price(counts...): what the units of a read and the entity path cost for the counts (col/scope.h SiftScopeCounts), in instructions: the pure price the executor and the planner share */
+Datum
+sift_test_scope_preagg_kept(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_FLOAT8(sift_scope_preagg_kept(PG_GETARG_INT64(0), PG_GETARG_INT64(1)));
+}
+
 Datum
 sift_test_scope_price(PG_FUNCTION_ARGS)
 {

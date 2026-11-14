@@ -584,6 +584,10 @@ CREATE FUNCTION sift._test_scope_price(nkeys int, once bool, units int8, entries
 	topn bool DEFAULT false, walk_units int8 DEFAULT 0, group_frac float8 DEFAULT 0, group_units float8 DEFAULT 0, OUT units_price float8, OUT entity_price float8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_scope_price' LANGUAGE C STRICT;
 
+-- the share of the pre-aggregated units of a read that no changed member's entries leave
+CREATE FUNCTION sift._test_scope_preagg_kept(changed int8, units int8) RETURNS float8
+	AS 'MODULE_PATHNAME', 'sift_test_scope_preagg_kept' LANGUAGE C STRICT;
+
 -- the price of the refresh of the scope segments, of what a read pays for the members that changed, and whether the refresh is due (pure: instructions)
 CREATE FUNCTION sift._test_scope_refresh(rows int8, entries int8, columns int, changed int8 DEFAULT 0, patch_units int8 DEFAULT 0, patch_scan_rows int8 DEFAULT 0, delta_rows int8 DEFAULT 0,
 	OUT refresh_price float8, OUT read_price float8, OUT due bool) RETURNS record

@@ -155,12 +155,6 @@ scope_entries(AggExec *ex)
 	return rows;
 }
 
-/*
- * A read of units whose changed members' entries leave them (SCOPE_CHANGED_SPREAD) reads those units row by row: of the keys, a changed member leaves the share exp(-SCOPE_CHANGED_SPREAD * changed / keys)
- * of the units without one (the fit of the entries read, 12.8% of them with 4 changed keys, 44% with 18, 92% with 45; 300,000 events, 5,000 members, 50 keys).
- */
-#define SCOPE_CHANGED_SPREAD	1.8
-
 /* the rows a top-N is taken to ask for when its LIMIT is a parameter */
 #define SCOPE_TOPN_ROWS	100
 
@@ -278,7 +272,7 @@ read_counts(const SiftAggScope *sc, SiftScopeCounts *c, const SiftScopeRead *rd)
 	c->patch_units = rd->patch_units;
 	c->patch_scan_rows = rd->patch_scan;
 	c->delta_rows = rd->delta_rows + rd->patch_rows;
-	c->preagg *= exp(-SCOPE_CHANGED_SPREAD * rd->nexcept / Max(alt_keys(sc, c->entries), 1.0));
+	c->preagg *= sift_scope_preagg_kept(rd->nexcept, c->units);
 }
 
 /* what the read's patch and delta cost, from the counts it planned */

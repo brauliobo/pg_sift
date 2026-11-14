@@ -446,6 +446,20 @@ sift_scope_list_price(const SiftScopeCounts *c)
 	return c->once && c->nkeys > 1 ? SIFT_SCOPE_LIST_INSTR * (double) c->pairs + SIFT_SCOPE_SCAN_PAIR_INSTR * (double) c->scan_pairs + SIFT_SCOPE_KEY_PAIR_INSTR * (double) c->key_pairs : 0.0;
 }
 
+/*
+ * A read of units whose changed members' entries leave them reads those units row by row, not from their pre-aggregates: a changed member leaves the units its entries are in, and of the units of the keys the
+ * share exp(-SIFT_SCOPE_CHANGED_SPREAD * changed / units) has none (pure). The fit of the entries read, 12.8% of them with 4 changed members, 44% with 18, 92% with 45 (300,000 events, 5,000 members, 50 keys of one
+ * unit each). The members spread over the units, so the share is of the units and not of the keys: 10 changed members of the largest tenant (148,000 entries in 36 units) took 3.5% of the pre-aggregated
+ * units for row by row with the keys (the model's count of the keys the entries stand for) and 39% with the units.
+ */
+#define SIFT_SCOPE_CHANGED_SPREAD	1.8
+
+static inline double
+sift_scope_preagg_kept(uint64 changed, uint64 units)
+{
+	return exp(-SIFT_SCOPE_CHANGED_SPREAD * (double) changed / Max((double) units, 1.0));
+}
+
 /* What the scope units cost, with the listing of the pairs, the changed members, the patch and the delta (pure) */
 static inline double
 sift_scope_rows_price(const SiftScopeCounts *c)
