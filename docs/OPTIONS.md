@@ -233,9 +233,9 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: index 2.3 MB against 56 MB heap and 6.2 MB for a GIN on the same documents (100,000 documents); the declared leaves are stored once more; build, merge and writes: build 609 ms against 651 ms for the GIN (100,000 documents); other: the declared leaves are stored once more; the chosen paths are written to the option as 'auto: spec' and a REINDEX keeps them; a table with no key that qualifies still refuses a jsonb column
 - **When:** A sift_col index with a jsonb column: its leaves are stored as typed columns. Other columns are untouched; paths written by hand are never changed; a table with no qualifying key still refuses the jsonb column.
 - **Default:** '' — Empty or auto so that a jsonb column needs no declaration: GROUP BY of an array element key 192 to 4.9 ms and an index of 2.3 MB against 6.2 MB for a GIN (100,000 documents).
-- **Turn off:** n/a: the layout of a jsonb column; leave the column out of the index to shred nothing. SET (paths = 'auto') or RESET (paths) re-reads the sample; any change needs REINDEX at once, writes fail until then.
+- **Turn off:** n/a: the layout of a jsonb column; leave the column out of the index to shred nothing. a new index with paths = 'auto' re-reads the sample; ALTER INDEX SET (paths) of an index that holds data is refused.
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave empty or auto for a jsonb column: paths come from a sample at CREATE INDEX and REINDEX keeps them. Declare them by hand to choose leaves and types; SET paths = 'auto' re-reads the sample.
+- **Advice:** Leave empty or auto for a jsonb column: paths come from a sample at CREATE INDEX and REINDEX keeps them. Declare them by hand to choose leaves and types; A new index with paths = 'auto' re-reads the sample.
 - **Sources:** benchmark `jsonb_each_member`; [COL-SHRED](COL-SHRED.md#declaring-paths-reloption-paths)
 
 #### sift_col(compression)

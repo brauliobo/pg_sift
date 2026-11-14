@@ -53,8 +53,8 @@ CREATE TABLE pa_empty (id int, doc jsonb);
 CREATE INDEX pa_empty_col ON pa_empty USING sift_col (id, doc);
 SELECT pa_option('pa_empty_col');
 
--- ALTER INDEX ... SET (paths = 'auto') or RESET (paths) asks for the documents to be read again at the next REINDEX (as after any change of paths the
--- index has no layout until then, so the REINDEX follows at once)
+-- ALTER INDEX ... SET (paths = 'auto') or RESET (paths) of an index that holds a segment is refused (col_alter_layout): the documents are read again by an
+-- index built beside it
 CREATE TABLE pa_re (id int, doc jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO pa_re SELECT i, jsonb_build_object('a', i % 7) FROM generate_series(1, 2000) i;
 CREATE INDEX pa_re_col ON pa_re USING sift_col (id, doc);
@@ -62,13 +62,15 @@ SELECT pa_option('pa_re_col');
 DELETE FROM pa_re;
 INSERT INTO pa_re SELECT i, jsonb_build_object('b', i % 11, 'label', 'l' || i % 3) FROM generate_series(1, 2000) i;
 ALTER INDEX pa_re_col SET (paths = 'auto');
+ALTER INDEX pa_re_col RESET (paths);
 SELECT pa_option('pa_re_col');
-REINDEX INDEX pa_re_col;
+DROP INDEX pa_re_col;
+CREATE INDEX pa_re_col ON pa_re USING sift_col (id, doc) WITH (paths = 'auto');
 SELECT pa_option('pa_re_col');
 DELETE FROM pa_re;
 INSERT INTO pa_re SELECT i, jsonb_build_object('c', i % 5) FROM generate_series(1, 2000) i;
-ALTER INDEX pa_re_col RESET (paths);
-REINDEX INDEX pa_re_col;
+DROP INDEX pa_re_col;
+CREATE INDEX pa_re_col ON pa_re USING sift_col (id, doc);
 SELECT pa_option('pa_re_col');
 SELECT sift.col_verify('pa_re_col', true);
 

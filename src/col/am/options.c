@@ -818,8 +818,8 @@ COL_OPT_STR(sift_col_options_preagg, preagg, "")
 /*
  * An ALTER INDEX is checked by building the state the new options give; an index that has segments written under the leaf list of the old options (stale) is not left with the
  * new ones, so that it goes on serving while its replacement is built beside it (CREATE INDEX CONCURRENTLY, which writes the stamp of its scope as a REINDEX does). An index with
- * no segment has nothing to write again: its first write takes the options. paths = 'auto' without a spec (or RESET (paths)) asks for the documents to be read
- * again at the next REINDEX (col/keycols/keycols.c), and has no schema until then, as any change of paths leaves the segments on the old one: it is let through.
+ * no segment has nothing to write again: its first write takes the options. paths = 'auto' without a spec (or RESET (paths)) on an index with a jsonb column has no leaf list until
+ * the next build reads the documents; the segments an index of that kind holds all have the paths of an earlier build, so it is refused as any other change of the leaf list.
  */
 void
 sift_col_alter_check(Relation index)
@@ -827,7 +827,15 @@ sift_col_alter_check(Relation index)
 	if (!sift_col_is_index(index))
 		return;
 	if (sift_col_paths_redecide(index))
+	{
+		SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+		sift_dir_read(index, snap);
+		if (sift_segs_have_layout(snap->segs, snap->nsegs))
+			sift_lane_alter_refuse(index, "column definitions");
+		pfree(snap);
 		return;
+	}
 	(void) sift_col_rel(index);
 	sift_col_row_key_check(index);
 	sift_scope_journal_alter(index);

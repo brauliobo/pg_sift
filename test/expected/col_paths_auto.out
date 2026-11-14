@@ -126,8 +126,8 @@ SELECT pa_option('pa_empty_col');
  not set
 (1 row)
 
--- ALTER INDEX ... SET (paths = 'auto') or RESET (paths) asks for the documents to be read again at the next REINDEX (as after any change of paths the
--- index has no layout until then, so the REINDEX follows at once)
+-- ALTER INDEX ... SET (paths = 'auto') or RESET (paths) of an index that holds a segment is refused (col_alter_layout): the documents are read again by an
+-- index built beside it
 CREATE TABLE pa_re (id int, doc jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO pa_re SELECT i, jsonb_build_object('a', i % 7) FROM generate_series(1, 2000) i;
 CREATE INDEX pa_re_col ON pa_re USING sift_col (id, doc);
@@ -143,13 +143,21 @@ SELECT pa_option('pa_re_col');
 DELETE FROM pa_re;
 INSERT INTO pa_re SELECT i, jsonb_build_object('b', i % 11, 'label', 'l' || i % 3) FROM generate_series(1, 2000) i;
 ALTER INDEX pa_re_col SET (paths = 'auto');
+ERROR:  cannot change the column definitions of index "pa_re_col" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.pa_re_col: no scan is lost while it is built.
+ALTER INDEX pa_re_col RESET (paths);
+ERROR:  cannot change the column definitions of index "pa_re_col" while it holds data
+DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
+HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.pa_re_col: no scan is lost while it is built.
 SELECT pa_option('pa_re_col');
- pa_option  
-------------
- paths=auto
+       pa_option        
+------------------------
+ paths=auto: doc.a int4
 (1 row)
 
-REINDEX INDEX pa_re_col;
+DROP INDEX pa_re_col;
+CREATE INDEX pa_re_col ON pa_re USING sift_col (id, doc) WITH (paths = 'auto');
 NOTICE:  sift_col index "pa_re_col": 1 automatic choice (paths), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key; paths = doc.b int4, doc.label text
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pa_re_col');
@@ -161,8 +169,8 @@ SELECT pa_option('pa_re_col');
 
 DELETE FROM pa_re;
 INSERT INTO pa_re SELECT i, jsonb_build_object('c', i % 5) FROM generate_series(1, 2000) i;
-ALTER INDEX pa_re_col RESET (paths);
-REINDEX INDEX pa_re_col;
+DROP INDEX pa_re_col;
+CREATE INDEX pa_re_col ON pa_re USING sift_col (id, doc);
 NOTICE:  sift_col index "pa_re_col": 1 automatic choice (paths), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key; paths = doc.c int4
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pa_re_col');

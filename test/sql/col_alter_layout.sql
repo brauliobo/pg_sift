@@ -31,9 +31,23 @@ CREATE INDEX al_full_col ON al_full USING sift_col (id, tags, g, doc) WITH (arra
 SELECT expect('ALTER INDEX al_full_col SET (array_lengths = off)');
 SELECT expect('ALTER INDEX al_full_col SET (paths = ''doc.a int4, doc.b text'')');
 SELECT expect('ALTER INDEX al_full_col SET (paths = ''doc.a int4'')');
+SELECT expect('ALTER INDEX al_full_col SET (paths = ''auto'')');
+SELECT expect('ALTER INDEX al_full_col RESET (paths)');
 INSERT INTO al_full SELECT i, ARRAY[i], i % 3, jsonb_build_object('a', i) FROM generate_series(101, 150) i;
 SELECT count(*), sum(cardinality(tags)) FROM al_full WHERE g = 1;
 SELECT sift.verify('al_full_col');
+
+-- paths = 'auto' without a spec reads the documents again at the next build: refused once the index holds a segment; an option that keeps the leaf list is let through
+CREATE TABLE al_auto (id int, g int, doc jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO al_auto SELECT i, i % 3, jsonb_build_object('a', i) FROM generate_series(1, 100) i;
+CREATE INDEX al_auto_col ON al_auto USING sift_col (id, g, doc) WITH (paths = 'auto');
+SELECT expect('ALTER INDEX al_auto_col SET (paths = ''auto'')');
+SELECT expect('ALTER INDEX al_auto_col RESET (paths)');
+SELECT expect('ALTER INDEX al_auto_col SET (paths = '''')');
+SELECT expect('ALTER INDEX al_auto_col SET (vacuum_truncate = off)');
+INSERT INTO al_auto SELECT i, i % 3, jsonb_build_object('a', i) FROM generate_series(101, 150) i;
+SELECT count(*) FROM al_auto WHERE g = 1;
+SELECT sift.verify('al_auto_col');
 
 -- an index a release without the check altered: the write and the read fail alike, the REINDEX repairs both
 SELECT sift._test_poke('al_full_col', 0, 40, 1, 1);
@@ -47,7 +61,7 @@ REINDEX INDEX al_full_col;
 INSERT INTO al_full VALUES (200, ARRAY[1], 0, '{"a": 1}');
 SELECT count(*) FROM al_full WHERE g = 1;
 
-DROP TABLE al_empty, al_full;
+DROP TABLE al_empty, al_full, al_auto;
 DROP FUNCTION expect(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
