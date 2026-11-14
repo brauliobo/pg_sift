@@ -235,7 +235,7 @@ DROP INDEX t1_cic;
 CREATE INDEX t2_multi ON t2 USING sift (body, body);
 ERROR:  access method "sift" does not support multicolumn indexes
 SELECT sift.verify('t2'::regclass);
-ERROR:  "t2" is not an index
+ERROR:  "t2" is not a sift index
 CREATE INDEX t2_btree ON t2 (id);
 SELECT * FROM sift.segments('t2_btree');
 ERROR:  "t2_btree" is not a sift index
