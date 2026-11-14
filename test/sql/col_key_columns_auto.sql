@@ -115,7 +115,14 @@ SELECT au_option('au_m_i') AS option;
 SELECT bytes * 100 < pg_relation_size('au_m_i') * 5 AS sets_under_5_percent FROM sift.col_sections('au_m_i') WHERE section = 'sets';
 SELECT sift.col_verify('au_m_i', true);
 
-DROP TABLE au, au_m, au_p CASCADE;
+-- the advice names the foreign key columns in the order of the table, not of the catalog scan (the constraints are added last column first)
+CREATE TABLE au_r (id int PRIMARY KEY, x_fk int, y_fk int, z_fk int, val int) WITH (autovacuum_enabled = off);
+ALTER TABLE au_r ADD FOREIGN KEY (z_fk) REFERENCES au_p NOT VALID;
+ALTER TABLE au_r ADD FOREIGN KEY (y_fk) REFERENCES au_p NOT VALID;
+ALTER TABLE au_r ADD FOREIGN KEY (x_fk) REFERENCES au_p NOT VALID;
+CREATE INDEX au_r_i ON au_r USING sift_col (id, val) WITH (key_cut = 'off');
+
+DROP TABLE au, au_m, au_p, au_r CASCADE;
 DROP FUNCTION au_rows(text, bool), au_scanned(text), au_option(text), au_minors(text);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

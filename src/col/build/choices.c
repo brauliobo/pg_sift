@@ -477,7 +477,8 @@ d_foreign_keys(Derive *d)
 	ScanKeyData key;
 	HeapTuple	tup;
 	StringInfoData names;
-	Bitmapset  *seen = NULL;
+	Bitmapset  *fkcols = NULL;
+	int			attnum = -1;
 
 	if (d->heap == NULL)
 		return;
@@ -501,19 +502,15 @@ d_foreign_keys(Derive *d)
 		arr = DatumGetArrayTypeP(datum);
 		att = (int16 *) ARR_DATA_PTR(arr);
 		for (int k = 0; k < ARR_DIMS(arr)[0]; k++)
-		{
-			bool		listed = false;
-
-			for (int i = 0; i < d->index->rd_index->indnatts; i++)
-				listed |= d->index->rd_index->indkey.values[i] == att[k];
-			if (listed || bms_is_member(att[k], seen))
-				continue;
-			seen = bms_add_member(seen, att[k]);
-			appendStringInfo(&names, "%s%s", names.len ? ", " : "", quote_identifier(get_attname(RelationGetRelid(d->heap), att[k], false)));
-		}
+			fkcols = bms_add_member(fkcols, att[k]);
 	}
 	systable_endscan(scan);
 	table_close(conrel, AccessShareLock);
+	/* the catalog scan returns the constraints in heap order, which free space left by dropped ones reshuffles: name the columns in the order of the table */
+	for (int i = 0; i < d->index->rd_index->indnatts; i++)
+		fkcols = bms_del_member(fkcols, d->index->rd_index->indkey.values[i]);
+	while ((attnum = bms_next_member(fkcols, attnum)) >= 0)
+		appendStringInfo(&names, "%s%s", names.len ? ", " : "", quote_identifier(get_attname(RelationGetRelid(d->heap), attnum, false)));
 	if (names.len > 0)
 		add(d, "foreign-key-not-indexed", names.data, NULL);
 }
