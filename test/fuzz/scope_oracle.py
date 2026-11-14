@@ -98,7 +98,7 @@ class Shape:
         self.name, self.rng, self.M, self.T, self.walk = name, rng, n_members, tenants, walk
         self.G = max(6, n_members // 10)
         self.pad = rng.choice([800, 1500, 2400]) if walk else 0
-        self.icols = rng.choice(['id, dim_a_id, created_at', 'id, dim_a_id, created_at, kind, amount'])
+        self.icols = rng.choice(['id, dim_a_id, created_at, d', 'id, dim_a_id, created_at, kind, amount, d'])
         # a time series (created_at grows with the id, as in an append-only table, a few facts to an instant or none) or a cyclic one
         step = rng.choice([1, 9])
         self.created = (f"timestamptz '2026-01-01' + (i / {step}) * interval '40 seconds'" if rng.random() < 0.5
@@ -110,7 +110,7 @@ class Shape:
     # the SQL every node runs: tables and the plain btrees (no sift)
     def base_ddl(self):
         pad = f" DEFAULT repeat('x', {self.pad})" if self.walk else ''
-        f = ("CREATE TABLE marks (n int PRIMARY KEY); CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz NOT NULL, kind int NOT NULL, amount int NOT NULL, pad text" + pad + ") "
+        f = ("CREATE TABLE marks (n int PRIMARY KEY); CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz NOT NULL, kind int NOT NULL, amount int NOT NULL, pad text" + pad + ", d date GENERATED ALWAYS AS ((created_at AT TIME ZONE 'UTC')::date) STORED) "
              f"WITH ({'' if self.walk else 'fillfactor = 70, '}autovacuum_enabled = false);" + ("ALTER TABLE facts ALTER COLUMN pad SET STORAGE PLAIN;" if self.walk else ''))
         if self.name == 'plain':
             return f + ("CREATE TABLE pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, note text, PRIMARY KEY (dim_a_id, tenant_id)) WITH (fillfactor = 70, autovacuum_enabled = false);")
@@ -220,6 +220,11 @@ class Shape:
             ('top_ties_desc', f"SELECT f.id, f.created_at FROM facts f WHERE f.dim_a_id IN ({self.scope_members(k1)}) ORDER BY f.created_at DESC, f.id DESC LIMIT 20"),
             ('top_ties_mixed', f"SELECT f.id, f.created_at FROM facts f WHERE f.dim_a_id IN ({self.scope_members(K)}) ORDER BY f.created_at DESC, f.id ASC LIMIT 60"),
             ('top_ties_amount', f"SELECT f.id, f.created_at, f.amount FROM facts f WHERE f.dim_a_id IN ({self.scope_members(k1)}) ORDER BY f.created_at ASC, f.amount DESC, f.id ASC LIMIT 40"),
+            # the id sets by month of the key groups: a month, a month a test cuts, from a month on, several keys
+            ('distinct_by_month', f"SELECT date_trunc('month', f.d) m, count(DISTINCT f.dim_a_id) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(k1)}) GROUP BY 1 ORDER BY 1"),
+            ('distinct_by_month_from', f"SELECT date_trunc('month', f.d) m, count(*), count(DISTINCT f.dim_a_id) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(k1)}) AND f.d >= date '2026-03-01' GROUP BY 1 ORDER BY 1"),
+            ('distinct_by_month_cut', f"SELECT date_trunc('month', f.d) m, count(DISTINCT f.dim_a_id) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(k1)}) AND f.d >= date '2026-03-15' GROUP BY 1 ORDER BY 1"),
+            ('distinct_by_month_keys', f"SELECT date_trunc('year', f.d) y, count(DISTINCT f.dim_a_id) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(K)}) GROUP BY 1 ORDER BY 1"),
             ('no_key', f"SELECT count(*) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(str(T + 50))})"),
         ]
 
