@@ -1,0 +1,12 @@
+Parsed test spec with 2 sessions
+
+starting permutation: rlock reindex rread rend
+step rlock: BEGIN; LOCK TABLE iso_ri IN ACCESS SHARE MODE;
+step reindex: REINDEX INDEX iso_ri_col;
+step rread: SELECT count(*) AS rows FROM iso_ri;
+rows
+----
+2000
+(1 row)
+
+step rend: COMMIT;
