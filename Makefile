@@ -279,6 +279,7 @@ TESTING_REGRESS += col_scope_changed_pairs
 TESTING_REGRESS += col_scope_cols
 TESTING_REGRESS += col_scope_cols_maint
 TESTING_REGRESS += col_scope_covered
+TESTING_REGRESS += col_scope_dead_stamp
 TESTING_REGRESS += col_scope_declare
 TESTING_REGRESS += col_scope_dedupe
 TESTING_REGRESS += col_scope_delta

@@ -327,6 +327,104 @@ scope_pick(Relation index, const SiftDirSnapshot *all, int s, bool force, SiftSe
 	return force && n > 1 && scope_apart(index, sel, n, s) ? 0 : n;
 }
 
+typedef struct Uncover
+{
+	const uint64 *gen;
+	int			n;
+} Uncover;
+
+static void
+uncover_gens(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	const Uncover *u = arg;
+
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_seg_is_scope(&dir->segs[i]) && in_gens(u->gen, u->n, dir->segs[i].gen))
+			dir->segs[i].flags &= ~SIFT_SEG_SCOPED;
+}
+
+/* The oldest stamp of each journal among the scope s segments of dir (those of skip[0..nskip) left out); the live rows of the segments left out; false when no segment is in the first set */
+static bool
+scope_oldest_stamp(Relation index, const SiftDirSnapshot *dir, int s, const SiftSegEntry *skip, int nskip, SiftConnStamp *oldest, uint64 *skipped_live)
+{
+	int			nj = sift_scope_njournals(sift_scope_specs(index)->s[s]);
+	bool		any = false;
+
+	*skipped_live = 0;
+	for (int i = 0; i < dir->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		bool		skipped = false;
+
+		if (!sift_seg_is_scope(&dir->segs[i]) || sift_seg_scope_ordinal(&dir->segs[i]) != s)
+			continue;
+		for (int k = 0; k < nskip; k++)
+			skipped |= skip[k].gen == dir->segs[i].gen;
+		seg = sift_cseg_open(index, &dir->segs[i], CurrentMemoryContext);
+		if (skipped)
+			*skipped_live += sift_cseg_live_rows(seg);
+		else
+		{
+			for (int j = 0; j < nj; j++)
+				if (!any || TransactionIdPrecedes(seg->scope[s][j].xmin, oldest[j].xmin))
+					oldest[j] = seg->scope[s][j];
+			any = true;
+		}
+		sift_cseg_close(seg);
+	}
+	return any;
+}
+
+/*
+ * The entries of an entity segment are exact as of the stamp it was written under, and a read takes the pairs that changed since the oldest stamp of the scope segments as changed. When scope
+ * segments with no live entry are dropped (the rows that had pairs were deleted and those that stay have none, so the merge writes nothing), their stamp goes with them and the oldest is a newer
+ * one: a pair that arrived for a member of a row that stays, between the two, was read as in the entries it never was in. The entity segments written under a stamp older than the oldest that
+ * is left are not covered by what is left: they say so before the switch that drops the segments, so that no read sees the new stamp with the old flags, and the maintenance fills the scope
+ * again (maint_scope_refill_due). A merge of scope segments that has an output carries the oldest stamp of its inputs, which is no such case.
+ */
+static void
+scope_uncover_dropped(Relation index, const SiftDirSnapshot *all, const SiftSegEntry *sel, int n, int s)
+{
+	SiftConnStamp left[SIFT_SCOPE_JOURNALS] = {{0}},
+				dying[SIFT_SCOPE_JOURNALS] = {{0}};
+	int			nj = sift_scope_njournals(sift_scope_specs(index)->s[s]);
+	uint64		live,
+			   *stale = palloc(Max(all->nsegs, 1) * sizeof(uint64));
+	int			nstale = 0;
+	bool		advances = false;
+
+	if (!scope_oldest_stamp(index, all, s, sel, n, left, &live) || live > 0)
+		return;
+	for (int i = 0; i < n; i++)
+	{
+		SiftColSegment *seg = sift_cseg_open(index, &sel[i], CurrentMemoryContext);
+
+		for (int j = 0; j < nj; j++)
+			if (i == 0 || TransactionIdPrecedes(seg->scope[s][j].xmin, dying[j].xmin))
+				dying[j] = seg->scope[s][j];
+		sift_cseg_close(seg);
+	}
+	for (int j = 0; j < nj; j++)
+		advances |= TransactionIdPrecedes(dying[j].xmin, left[j].xmin);
+	for (int i = 0; i < all->nsegs && advances; i++)
+	{
+		SiftColSegment *seg;
+		bool		older = false;
+
+		if (all->segs[i].kind != SIFT_SEG_IMMUTABLE || sift_seg_is_scope(&all->segs[i]) || !sift_seg_is_scoped(&all->segs[i]))
+			continue;
+		seg = sift_cseg_open(index, &all->segs[i], CurrentMemoryContext);
+		for (int j = 0; j < nj; j++)
+			older |= s >= seg->nscope || seg->scope[s][j].lineage != left[j].lineage || TransactionIdPrecedes(seg->scope[s][j].xmin, left[j].xmin);
+		sift_cseg_close(seg);
+		if (older)
+			stale[nstale++] = all->segs[i].gen;
+	}
+	if (nstale > 0)
+		sift_dir_update(index, &(SiftDirChange) {.fn = uncover_gens,.arg = &(Uncover) {stale, nstale},.extra = InvalidBuffer});
+	pfree(stale);
+}
+
 /*
  * One step of the merge of the scope segments (col/scope.h): the segments of the first scope that has some to merge, by the tiers of the policy (all of them when force is asked, or
  * after a parallel build, whose participants each left a run of every key), into one segment or partitions of the range of the key. The entities are not merged with them. The stamp of
@@ -347,6 +445,7 @@ maint_scope_merge_step(Relation index, bool force)
 
 		if (n == 0)
 			continue;
+		scope_uncover_dropped(index, all, sel, n, s);
 		maint_merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
 					   maint_part_kb > 0 ? (uint64) maint_part_kb * 1024 : 0, Max(SIFT_MAX_SEGMENTS - 16 - (all->nsegs - n), 1), NULL);
 		done = true;
