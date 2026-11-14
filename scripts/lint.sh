@@ -67,6 +67,7 @@ CHECKS=(
 	'compat-calls	scripts/check-compat-calls.sh && scripts/check-compat-calls.sh --selftest'
 	'package-text	scripts/check-package-text.sh --selftest && scripts/check-package-text.sh'
 	'formula-sha	scripts/formula-sha.sh --selftest'
+	'release-badge	[ "$(sed -n "s/^pkgver=//p" packaging/PKGBUILD)" = "$(grep -o "release-[0-9.]*-blue" README.md | head -n 1 | sed "s/release-\\(.*\\)-blue/\\1/")" ] || { echo "README.md release badge and packaging/PKGBUILD pkgver name different releases (scripts/release.sh bumps both)"; exit 1; }'
 	'version-shape	! git grep -nE "version\(\).*cut -d[.] -f1-2|version\(\) ~ .\^\[0-9\]\+\[[.]\]\[0-9\]\+[$]." -- test'
 	'format-literals	scripts/check-format-literals.sh && scripts/check-format-literals.sh --selftest'
 	'expected-oracle	scripts/check-expected-oracle.py --selftest && scripts/check-expected-oracle.py'
