@@ -195,7 +195,7 @@ Datum
 sift_col_index_advice(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_col_open_index(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	Relation	heap;
 	const SiftColRel *rel;
 	const SiftColSchema *sc;

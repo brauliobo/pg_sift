@@ -5,20 +5,20 @@
 #define SIFT_BM25_SEGMENT_SQL_H
 
 #include "postgres.h"
+#include "core/inspect.h"
 #include "core/ops.h"
 #include "bm25/segment.h"
 
+/* col_use: the function of a sift_col index that does what the caller does for a sift index (NULL: none) */
 static inline Relation
-open_sift(Oid relid)
+open_sift(Oid relid, const char *col_use)
 {
-	Relation	index = index_open(relid, AccessShareLock);
+	Relation	index;
 
-	if (index->rd_rel->relam != sift_catalog()->am)
-		ereport(ERROR,
-				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("\"%s\" is not a sift index", RelationGetRelationName(index))));
+	sift_inspect_expect(relid, "sift", col_use);
+	index = index_open(relid, AccessShareLock);
 	sift_store_require_ready(index);
-	sift_check_maintain(index);
+	sift_check_inspect(index);
 	return index;
 }
 

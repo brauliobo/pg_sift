@@ -35,7 +35,7 @@ sift_segments(PG_FUNCTION_ARGS)
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segments", ALLOCSET_DEFAULT_SIZES);
 
 	InitMaterializedSRF(fcinfo, 0);
-	index = open_sift(PG_GETARG_OID(0));
+	index = open_sift(PG_GETARG_OID(0), "col_segments");
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
@@ -104,7 +104,7 @@ sift_maintenance_busy(Relation index)
 Datum
 sift_index_info(PG_FUNCTION_ARGS)
 {
-	Relation	index = open_sift(PG_GETARG_OID(0));
+	Relation	index = open_sift(PG_GETARG_OID(0), "col_index_info");
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftFreeStats fs;
 	Datum		v[10];
@@ -142,6 +142,7 @@ sift_worker_state(PG_FUNCTION_ARGS)
 	uint32		failures;
 	int			sealed = 0;
 
+	sift_inspect_expect(relid, NULL, NULL);
 	if (!ConditionalLockRelationOid(relid, AccessShareLock))
 		PG_RETURN_NULL();
 	index = try_relation_open(relid, NoLock);
@@ -154,6 +155,7 @@ sift_worker_state(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a sift index", RelationGetRelationName(index))));
+	sift_check_inspect(index);
 	if (index->rd_rel->relkind == RELKIND_INDEX)
 		sift_store_require_ready(index);
 	snap = palloc(sizeof(SiftDirSnapshot));
@@ -226,7 +228,7 @@ sift_segment_postings(PG_FUNCTION_ARGS)
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segment postings", ALLOCSET_DEFAULT_SIZES);
 
 	InitMaterializedSRF(fcinfo, 0);
-	index = open_sift(PG_GETARG_OID(0));
+	index = open_sift(PG_GETARG_OID(0), NULL);
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
@@ -464,7 +466,8 @@ bm25_verify(PG_FUNCTION_ARGS)
 				sum_dl = 0,
 				nelems = 0;
 
-	index = open_sift(PG_GETARG_OID(0));
+	index = open_sift(PG_GETARG_OID(0), "col_verify");
+	sift_check_maintain(index);	/* it holds the maintenance lock: a role that only reads must not hold maintenance back */
 	/* Keeps promotion, merges and the sweep from releasing what the directory snapshot references */
 	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
 	sift_store_verify(index);

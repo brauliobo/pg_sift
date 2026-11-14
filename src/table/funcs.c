@@ -17,6 +17,7 @@
 #include "utils/tuplestore.h"
 
 #include "col/seg.h"
+#include "core/inspect.h"
 #include "core/sql.h"
 #include "table/table.h"
 
@@ -34,6 +35,7 @@ sift_table_segments(PG_FUNCTION_ARGS)
 	Snapshot	snap = RegisterSnapshot(GetTransactionSnapshot());
 
 	sift_tbl_require(rel);
+	sift_check_inspect(rel);
 	InitMaterializedSRF(fcinfo, 0);
 	sift_tbl_refresh(rel, st);
 	for (int i = 0; i < st->dir.nsegs; i++)
@@ -112,6 +114,7 @@ sift_table_layouts(PG_FUNCTION_ARGS)
 	bool		keyed;
 
 	sift_tbl_require(rel);
+	sift_check_inspect(rel);
 	InitMaterializedSRF(fcinfo, 0);
 	order = sift_tbl_opt_str(st, SIFT_TBLOPT_KEY_ORDER);
 	keyed = sift_tbl_key_order(rel, st, att) > 0;
@@ -150,6 +153,7 @@ sift_table_space(PG_FUNCTION_ARGS)
 	bool		nulls[6] = {0};
 
 	sift_tbl_require(rel);
+	sift_check_inspect(rel);
 	sift_tbl_refresh_full(rel, st);
 	fs = RelationGetNumberOfBlocks(rel) > 0 ? sift_store_free_stats(rel) : (SiftFreeStats) {0};	/* nothing written yet: no metapage */
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(rel));

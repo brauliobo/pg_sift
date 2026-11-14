@@ -30,15 +30,27 @@ ERROR:  permission denied for index "pr_idx"
 SELECT sift.merge('pr_idx', true);
 ERROR:  permission denied for index "pr_idx"
 SELECT count(*) FROM sift.segments('pr_idx');
-ERROR:  permission denied for index "pr_idx"
+ count 
+-------
+     1
+(1 row)
+
 SELECT count(*) FROM sift.segment_postings('pr_idx');
-ERROR:  permission denied for index "pr_idx"
+ count 
+-------
+     2
+(1 row)
+
 SELECT sift.verify('pr_idx');
 ERROR:  permission denied for index "pr_idx"
 SELECT sift.verify('pr_idx', true);
 ERROR:  permission denied for index "pr_idx"
 SELECT * FROM sift.index_info('pr_idx');
-ERROR:  permission denied for index "pr_idx"
+ relation_blocks | high_water | free_blocks | reusable_blocks | free_extents | segments | max_segments | ndocs | sum_dl | maintenance_busy 
+-----------------+------------+-------------+-----------------+--------------+----------+--------------+-------+--------+------------------
+               5 |          5 |           0 |               0 |            0 |        1 |          128 |   300 |    900 | f
+(1 row)
+
 RESET ROLE;
 -- the owner and a role with MAINTAIN may
 SET ROLE sift_t_owner;
