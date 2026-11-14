@@ -22,8 +22,8 @@ sql jr "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 sql jr "VACUUM (FREEZE, ANALYZE) ce, cp" >/dev/null || bail "vacuum failed"
 sql jr "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (scope = 't: m -> cp(m, t)')" >/dev/null || bail "build failed"
 
-READ="SELECT count(*), sum(v) FROM ce e WHERE sift.in_scope('ce_col'::regclass, 't', e.m, 5)"
-JOIN="SELECT count(*), sum(v) FROM ce e WHERE e.m IN (SELECT m FROM cp WHERE t = 5)"
+READ="SELECT count(*), sum(v) FROM ce e WHERE sift.in_scope('ce_col'::regclass, 't', e.m, 6)"
+JOIN="SELECT count(*), sum(v) FROM ce e WHERE e.m IN (SELECT m FROM cp WHERE t = 6)"
 why() { sql jr "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $READ" | sed -n 's/^ *Scope Fallback: //p;s/^ *Scope Units: .*/stored/p' | head -n 1; }
 same() { [[ $(sql jr "SET sift.agg_force = on" "$READ" | tail -n 1) == $(sql jr "SET sift.enable_agg = off" "$JOIN" | tail -n 1) ]]; }
 
@@ -34,7 +34,7 @@ check "... and its answer is the join's" same
 filled() { why >/dev/null; [[ $(why) == stored ]]; }
 check "the reads ask for the rewrite and read the scope units again within 60 s, with no REINDEX of the scope index" wait_for filled 60
 check "... with the same answer as the join" same
-sql jr "INSERT INTO cp SELECT 201 + i, 5 FROM generate_series(1, 5) i" >/dev/null
+sql jr "INSERT INTO cp SELECT 201 + i, 6 FROM generate_series(1, 5) i" >/dev/null
 check "a pair written after it is patched into the read, which is the join's" same
 check "... and no key differs from the join" test "$(sql jr "SELECT count(*) FROM sift.col_scope_verify('ce_col', 1000) WHERE problem <> 'unverified'" | tail -n 1)" == 0
 finish
