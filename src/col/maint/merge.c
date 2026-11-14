@@ -885,7 +885,7 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 				snap->segs[keep++] = snap->segs[i];
 		snap->nsegs = keep;
 	}
-	n = goal == SIFT_GOAL_REWRITE ? pick_rewrite(index, snap, sel, &cut, &paced) : pick_merge(index, snap, force, sel);
+	n = maint_decide_only ? 0 : goal == SIFT_GOAL_REWRITE ? pick_rewrite(index, snap, sel, &cut, &paced) : pick_merge(index, snap, force, sel);
 	/* a pass of the rewrite of overlapping runs does about sift.col_auto_merge_pass_mb of them: the next VACUUM, worker or sift.col_maintain call goes on from the directory this one left */
 	if (paced && n > 0)
 	{
@@ -901,14 +901,15 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	/* the output of a merge of an index over the limit is partitions too: one segment of all the bytes of a build's tier would be larger than the space step moves */
 	if (goal != SIFT_GOAL_REWRITE)
 		cut = maint_part_kb > 0;
-	bool		recut = false;
+	int			decided = 0;
+	bool		decide_only = maint_decide_only && nimm > 0 && !maint_redecided;
 	/*
 	 * The key is chosen again from the data for the rewrite of every segment: a new key sorts the rows of all of them, the ones left would stay in the order of the old
 	 * key. So a step decides for all of them once for the rewrite, whichever it takes (the overlays alone, the dirty ones: the history of the index), and takes them all
 	 * when the key changes. It needs the heap lock, which a VACUUM or the worker holds at times and which is not waited for (the merge holds the metapage a VACUUM waits for):
 	 * the step is left to the next call then, not made without the choice.
 	 */
-	if (n > 0 && goal == SIFT_GOAL_REWRITE && !maint_after_build && !maint_redecided)
+	if ((n > 0 || decide_only) && goal == SIFT_GOAL_REWRITE && !maint_after_build && !maint_redecided)
 	{
 		SiftSegEntry all[SIFT_MAX_SEGMENTS];
 		int			nall = 0;
@@ -922,7 +923,8 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 		for (int i = 0; i < snap->nsegs; i++)
 			if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 				all[nall++] = snap->segs[i];
-		if ((recut = sift_col_auto_redecide(index, all, nall)))
+		decided = sift_col_auto_redecide(index, all, nall);
+		if ((decided & SIFT_REDECIDED_CUT) || decide_only)
 		{
 			memcpy(sel, all, nall * sizeof(SiftSegEntry));
 			n = nimm = nall;
@@ -937,7 +939,14 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 		 * build has just chosen from the same data, and choosing again took 40% of a build of 1,000,000 rows */
 		bool		keyed = n == nimm && sift_col_auto_keys_merge(index, sel, n);
 
-		merge_recut = recut || (goal != SIFT_GOAL_REWRITE && n == nimm && !maint_after_build && sift_col_auto_redecide(index, sel, n));
+		if (goal != SIFT_GOAL_REWRITE && n == nimm && !maint_after_build)
+			decided |= sift_col_auto_redecide(index, sel, n);
+		/* the choice a VACUUM could not write (it holds a transaction id the other sessions do not see): the worker it asks for makes it (maint_rewrite_request) */
+		maint_decide_wanted |= n == nimm && !maint_after_build && !sift_catalog_write_ok();
+		/* a step that only chooses again leaves the segments as they are when nothing changed */
+		if (decide_only && !keyed && !decided)
+			return SIFT_STEP_IDLE;
+		merge_recut = decided & SIFT_REDECIDED_CUT;
 
 		const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 
