@@ -20,6 +20,8 @@
 #   lint       scripts/lint.sh on the bumped tree, what the push CI of main runs on the release commit, with the vocabulary required (SIFT_NEUTRAL_REQUIRED=1,
 #              which the push CI cannot do: a name it lets pass stops the release here): a red one stops the release before the tag
 #   publish    push main and the tag, watch the workflow `release`, verify the assets (names, SHA256SUMS)
+#   formula    the stable stanza of Formula/pg_sift.rb points at the tag tarball (scripts/formula-sha.sh; its hash exists only once the tag does): one more commit on main
+#   aur        packaging/PKGBUILD and pg_sift.install go to the AUR
 # A step that passed is in $RELEASE_STATE/VERSION/manifest (default $XDG_STATE_HOME/pg_sift-release): --resume skips it. --dry-run does it all
 # on a scratch clone and pushes, tags and publishes nothing (the AUR is cloned over https, the diff shown); a failed run says what to run.
 # --skip-ci leaves out the ci check only, for a release whose CI the person releasing accepts as it is (no full-scope run, or a lighter one): it prints
@@ -408,6 +410,12 @@ assets() { # the downloads are the files the workflow built: names with the vers
 	done
 	for n in "$d"/*.deb "$d"/*.rpm "$d"/*.tar.gz; do grep -q "$(basename "$n")" "$d/SHA256SUMS" || { echo "$(basename "$n") is not in SHA256SUMS"; return 1; }; done
 }
+formula() {
+	[[ -z $DRY ]] || { echo "dry run: the Formula would point at the tarball of $TAG"; return 0; }
+	"$R/scripts/formula-sha.sh" "$VERSION" "$R/Formula/pg_sift.rb" || return 1
+	g diff --quiet -- Formula/pg_sift.rb && return 0
+	g add Formula/pg_sift.rb && g commit -q -m "packaging: formula: pg_sift $VERSION" && g push -q origin HEAD:refs/heads/main
+}
 aur() {
 	[[ -z $DRY ]] && { "$R/scripts/release-aur.sh"; return; }
 	# no key and a script that knows --dry-run: an older one would push
@@ -425,6 +433,7 @@ step lint "$VERSION" lint_release || exit 1
 step publish "$VERSION" publish || exit 1
 step workflow "$VERSION" workflow || exit 1
 step assets "$VERSION" assets || exit 1
+step formula "$VERSION" formula || exit 1
 step aur "$VERSION" aur || exit 1
 printf 'done\t%s\t%ss\n' "$VERSION" $((SECONDS - T0)) >>"$MAN"
 echo "release: $VERSION ${DRY:+(dry run) }done in $((SECONDS - T0)) s$(ci_skipped && echo ", $CI_SKIPPED")"
