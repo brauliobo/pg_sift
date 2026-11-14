@@ -27,6 +27,26 @@ extern void *sift_dsm_try(const char *name, Size size, SiftDsmInit init);
 extern const char *sift_dsm_why(void);
 /* The table as sift_dsm_try gives it, an ERROR where that gives NULL: for sift_dsm_attach, which catches it, and the tests */
 extern void *sift_dsm_join(const char *name, Size size, SiftDsmInit init);
+/* A table of this library that exists, mapped in this backend; NULL where there is none: nothing is made. *size: what the directory records (may be NULL) */
+extern void *sift_dsm_find(const char *name, Size *size);
+/* Entry i of the tables of this library, for sift.shared_memory(): false past the last, an empty name where the entry is free or another library's */
+#define SIFT_DSM_NAME_LEN	40
+extern bool sift_dsm_list(int i, char name[SIFT_DSM_NAME_LEN], uint64 *size);
+/* What one table of the directory says of its use for sift.shared_memory(): the bytes in use and the reads that found and that missed; what a table does not keep is left out */
+typedef struct SiftShmStat
+{
+	bool		has_used;
+	bool		has_counts;
+	int64		used;
+	int64		hits;
+	int64		misses;
+} SiftShmStat;
+/*
+ * Whether the postmaster has not been told yet why this table is not shared (or has been told another reason): the caller logs it then. The record is a table of the directory
+ * (col/shmstatus.c) that sift.shared_memory() reads; where even that cannot be made, every backend says it.
+ */
+extern bool sift_shm_first(const char *name, const char *reason);
+
 /* NULL (and *failed set, so that the backend does not try again) where the table could not be had; `what` names what is not shared, `guc` the setting that turns it off (NULL: none) */
 extern void *sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, const char *what, const char *guc, bool test_fail);
 

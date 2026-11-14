@@ -5,7 +5,7 @@
 # leak" warning at the commit) and returns no table; each caller goes without it. sift.test_dsm_fail makes the segment of a table whose name has the given part fail with the error a full
 # /dev/shm raises, so the tables are the ones of a server that never had them: a fresh cluster, the failing cases first.
 . "$(dirname "$0")/lib.bash"
-plan 17
+plan 18
 
 node_init sh 53 "autovacuum = off
 sift.test_dsm_fail = 'bgworker:rollup'"
@@ -43,7 +43,8 @@ answers_agree() {
 L0=$(logged "references of the write buffers are not shared")
 write_rows sift_col_wbuf_arena 21 3000
 check "an INSERT of a backend whose first row finds no room for the arena: the statement ends, with no error" test "$(cat "$D/err")|$(sql sh "SELECT count(*) FROM w")" == "|3000"
-check "... the log says it once, and no arena was made" test "$(($(logged "references of the write buffers are not shared") - L0))|$(entries sift_col_wbuf_arena)" == "1|0"
+check "... the log said it once for the postmaster (the first backend, at the setup), and no arena was made" test "$(($(logged "references of the write buffers are not shared") - L0))|$(entries sift_col_wbuf_arena)" == "0|0"
+check "... sift.shared_memory() says why the arena is not shared" test "$(sql sh "SELECT shared || ' ' || (reason LIKE '%No space left%') FROM sift.shared_memory() WHERE name = 'sift_col_wbuf_arena'")" == "false true"
 check "... the aggregate through the index is the heap's" answers_agree
 # the arena is made, and no room for the first segment of its pool: the rows carry their values, and the backend asks again a second later, not at each row
 L0=$(logged "pool of the write buffer references takes no more memory")

@@ -441,6 +441,9 @@ extern int		sift_agg_lookup_cache_kb;
 extern int		sift_agg_lookup_shared_kb;
 extern int		sift_agg_dimmap_kb;
 extern int		sift_verdict_cache_kb;
+/* sift.shared_memory(): what the table of verdicts holds and how its reads went; false where it is not made */
+struct SiftShmStat;
+extern bool sift_verdict_shm_stat(struct SiftShmStat *st);
 extern bool		sift_agg_verdict_cache;
 #ifdef SIFT_TESTING
 extern bool		sift_test_verdict_fail;

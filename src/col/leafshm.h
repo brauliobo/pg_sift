@@ -9,6 +9,10 @@
 
 extern int	sift_col_leaf_cache_kb;
 
+/* sift.shared_memory(): what the ring holds and how its reads went; false where the table is not made */
+struct SiftShmStat;
+extern bool sift_col_leafshm_stat(struct SiftShmStat *st);
+
 /* the two records an index has in the ring: its leaf statistics with the zone sample, and its pre-aggregate counts (only the planner of an aggregate reads those) */
 typedef enum LshmKind
 {

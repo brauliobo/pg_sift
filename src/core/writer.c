@@ -20,6 +20,7 @@
 #include "core/store.h"
 #include "core/store_int.h"
 #include "core/visibility.h"
+#include "core/waits.h"
 
 #define RUN_MIN				16
 #define RUN_MAX				1024
@@ -244,7 +245,7 @@ sift_wt_wal_rate(SiftWriteTarget *wt, int kb_per_sec)
 void
 sift_nap(long ms)
 {
-	(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, ms, PG_WAIT_EXTENSION);
+	(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, ms, sift_wait_event(SIFT_WAIT_NAP));
 	ResetLatch(MyLatch);
 	CHECK_FOR_INTERRUPTS();
 }

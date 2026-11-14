@@ -16,6 +16,7 @@
 #include "utils/wait_event.h"
 
 #include "table/load/load_int.h"
+#include "core/waits.h"
 
 /*
  * The ring: the workers of a COPY that stay for the command. A run of one group (LOAD_SBS units) is written by the backend straight into a slot
@@ -123,7 +124,7 @@ sift_tbl_load_ring_worker(dsm_segment *seg, shm_toc *toc)
 
 		ConditionVariablePrepareToSleep(&rg->cv);
 		while ((sl = ring_claim(rg, &g)) == NULL && !pg_atomic_read_u32(&rg->closed))
-			ConditionVariableSleep(&rg->cv, PG_WAIT_EXTENSION);
+			ConditionVariableSleep(&rg->cv, sift_wait_event(SIFT_WAIT_LOAD_RING));
 		ConditionVariableCancelSleep();
 		if (sl == NULL)
 			break;
@@ -167,7 +168,7 @@ ring_reap(Load *ld, Relation rel, bool wait)
 			ConditionVariablePrepareToSleep(&rg->cv);
 			continue;
 		}
-		ConditionVariableSleep(&rg->cv, PG_WAIT_EXTENSION);
+		ConditionVariableSleep(&rg->cv, sift_wait_event(SIFT_WAIT_LOAD_RING));
 	}
 	ConditionVariableCancelSleep();
 	pg_read_barrier();
@@ -252,7 +253,7 @@ load_ring_hand_over(Load *ld, Relation rel, SiftTblRel *st, bool last)
 
 			ConditionVariablePrepareToSleep(&rg->cv);
 			while (!slot_done(late))
-				ConditionVariableSleep(&rg->cv, PG_WAIT_EXTENSION);
+				ConditionVariableSleep(&rg->cv, sift_wait_event(SIFT_WAIT_LOAD_RING));
 			ConditionVariableCancelSleep();
 		}
 #endif
