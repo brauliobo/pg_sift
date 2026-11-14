@@ -8,7 +8,7 @@
 . "$(dirname "$0")/lib.bash"
 . "$(dirname "$0")/lib_twohop.bash"
 
-plan 16
+plan 25
 node_init scd 51 "$TWOHOP_CONF"
 node_start scd || bail "start failed"
 D=$(dir scd)
@@ -119,4 +119,57 @@ dbq r2 "REINDEX INDEX events_col" "REINDEX INDEX events_two" "REINDEX INDEX hop_
 check "REINDEX of the restored indexes keeps the options, the dependencies and the entries" test "$(state r2)" == "$WANT" -a "$(dbq r2 "$TWO")" == 4 -a "$(hopstate r2)" == "$HOP"
 check "the restored indexes verify, and the first REINDEX of a scope of two paths gives it three stamps that vouch" test -z "$(dbq r2 "SELECT sift.col_verify('events_col', true)" "SELECT sift.col_verify('events_two', true)" \
 	"SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('hop_using', true)" 2>&1)" -a "$(TWOHOP_SQL=dbq twohop_vouch r2)" == ok
+# the pairs a scope follows (sift.scope_follow_pairs) are kept by the oid of their tables: the pair table and the source are renamed, the column of the source is renamed and the source moves to
+# another schema, each in a session of its own (none has used the library), and the dump of it restores the follow under the names the tables have then, its triggers with no argument that names a table
+fresh fsrc
+dbq fsrc "CREATE EXTENSION pg_sift" "CREATE TABLE fl_src (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int NOT NULL)" \
+	"CREATE VIEW fl_view AS SELECT DISTINCT dim_a_id, tenant_id FROM fl_src" "CREATE TABLE fl_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id))" \
+	"INSERT INTO fl_src (tenant_id, dim_a_id) SELECT 1 + g % 4, g FROM generate_series(1, 40) g" "SELECT sift.scope_follow_pairs('fl_pairs', 'fl_view', 'fl_src', 'key', 'tenant_id')" \
+	"CREATE SCHEMA fs" >/dev/null || bail "the followed pairs failed"
+for stmt in "ALTER TABLE fl_pairs RENAME TO fl_pairs2" "ALTER TABLE fl_src RENAME TO fl_src2" "ALTER TABLE fl_src2 RENAME COLUMN tenant_id TO tenant" "ALTER TABLE fl_src2 SET SCHEMA fs"; do
+	dbq fsrc "$stmt" >/dev/null || bail "$stmt failed"
+done
+FOLLOW="SELECT (SELECT string_agg(source || ':' || source_column || ':' || pairs || ':' || definition, ',') FROM sift.scope_follows) || ' ' || (SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'sift\_scope\_%')
+	|| ' ' || (SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'sift\_scope\_%' AND tgnargs > 0)"
+FOLLOWS="fs.fl_src2:tenant:fl_pairs2:fl_view 4 0"
+followed() { # DB: a write to the source changes the pairs, and the state is the one the tables have now
+	local db=$1
+	dbq "$db" "INSERT INTO fs.fl_src2 (tenant, dim_a_id) VALUES (9, 90)" >/dev/null
+	echo "$(dbq "$db" "$FOLLOW") $(dbq "$db" "SELECT count(*) FROM fl_pairs2 WHERE tenant_id = 9 AND dim_a_id = 90") $(dbq "$db" "SELECT count(*) FROM (TABLE fl_pairs2 EXCEPT TABLE fl_view) d")"
+}
+check "the follow after the renames and the move: its names, four triggers with no argument, a write to the source changes the pairs, which equal the view" test "$(followed fsrc)" == "$FOLLOWS 1 0"
+pg_dump "${S[@]}" -Fc -f "$D/follow.custom" fsrc
+pg_dump "${S[@]}" -Fp -f "$D/follow.sql" fsrc
+fresh f1
+check "pg_restore, serial: no error and the follow of the tables as they are named now" test "$(pg_restore "${S[@]}" -d f1 "$D/follow.custom" 2>&1 | errors)" == 0 -a "$(followed f1)" == "$FOLLOWS 1 0"
+ok_runs=0
+for run in 1 2 3 4; do
+	fresh f2
+	out=$(pg_restore "${S[@]}" -j8 -d f2 "$D/follow.custom" 2>&1)
+	[[ $(errors <<<"$out") == 0 && $(followed f2) == "$FOLLOWS 1 0" ]] && ok_runs=$((ok_runs + 1)) || diag "run $run: $(grep -m1 -A3 'ERROR' <<<"$out" | tr '\n' ' ')"
+done
+check "pg_restore -j8, four runs: no error and the same follow" test "$ok_runs" == 4
+fresh f3
+check "pg_dump | psql: no error and the same follow" test "$(psql -X -q "${S[@]}" -d f3 -f "$D/follow.sql" 2>&1 | errors)" == 0 -a "$(followed f3)" == "$FOLLOWS 1 0"
+check "the restored follow stops: its triggers go with it" test "$(dbq f3 "SELECT sift.scope_unfollow_pairs('fl_pairs2')" "SELECT count(*) FROM sift.scope_follows" "SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'sift\_scope\_%'" | tr '\n' ' ')" == " 0 0 "
+# the options of an index name its columns as text: columns renamed (each in a session of its own, none has used the library) are renamed in them, so the dump restores the index it dumped
+fresh rsrc
+dbq rsrc "CREATE EXTENSION pg_sift" "CREATE TABLE rn (id int PRIMARY KEY, region text, cust int, created date, amount numeric(10, 2))" \
+	"INSERT INTO rn SELECT g, 'r' || g % 5, g % 20, date '2025-01-01' + g % 300, g FROM generate_series(1, 2000) g" \
+	"CREATE INDEX rn_col ON rn USING sift_col (id, region, cust, created, amount) WITH (key_cut = 'created', key_columns = 'cust', rollup_columns = 'region, cust', order_array_columns = 'amount')" >/dev/null || bail "the renamed index failed"
+for stmt in "ALTER TABLE rn RENAME COLUMN created TO created_at" "ALTER TABLE rn RENAME COLUMN cust TO customer_id" "ALTER TABLE rn RENAME COLUMN amount TO total" "ALTER TABLE rn RENAME COLUMN id TO rn_id"; do
+	dbq rsrc "$stmt" >/dev/null || bail "$stmt failed"
+done
+RN="SELECT (SELECT string_agg(o, ' ' ORDER BY o) FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'rn_col' AND o NOT LIKE 'array_lengths%') || ' | ' || (SELECT count(*) FROM rn WHERE customer_id = 3 AND created_at > '2025-06-01')
+	|| ' ' || (SELECT sum(total) FROM rn WHERE customer_id = 3)"
+RN_WANT="key_columns=customer_id key_cut=created_at order_array_columns=total point_tid_columns=auto: rn_id rollup_columns=region, customer_id track_changes=rn_id | 44 99300.00"
+check "the renamed columns are renamed in the options of the index, and the index reads as the table does" test "$(dbq rsrc "$RN")" == "$RN_WANT"
+pg_dump "${S[@]}" -Fc -f "$D/rn.custom" rsrc
+for run in serial parallel; do
+	fresh rn1
+	out=$(pg_restore "${S[@]}" $([[ $run == parallel ]] && echo -j8) -d rn1 "$D/rn.custom" 2>&1)
+	check "pg_restore, $run: no error, the index with the options of the source, equal reads, and its first write" test "$(errors <<<"$out")" == 0 -a "$(dbq rn1 "$RN")" == "$RN_WANT" -a \
+		"$(dbq rn1 "INSERT INTO rn VALUES (5000, 'r1', 3, '2025-07-01', 5)" "SELECT sift.col_verify('rn_col')" "SELECT count(*) FROM rn WHERE customer_id = 3 AND created_at > '2025-06-01'" | tr '\n' ' ')" == " 45 "
+done
+check "a column of an array, which the segments keep under its name, is not renamed under the index" test "$(dbq rsrc "ALTER TABLE rn ADD COLUMN tags int[]" "CREATE INDEX rn_arr ON rn USING sift_col (rn_id, tags)" "ALTER TABLE rn RENAME COLUMN tags TO labels" 2>&1 | grep -c 'cannot rename column "tags"')" == 1
 finish

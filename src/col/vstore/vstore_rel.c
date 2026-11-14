@@ -706,3 +706,54 @@ sift_vstore_follow_owner(Oid heapoid)
 	ReleaseSysCache(tp);
 	each_store(heapoid, owner_visit, &owner);
 }
+
+/*
+ * The stores of a table take the name its name and schema give them (<table>_<column>_sift_values, in the schema of the table) when it is renamed or moved, as the stores of a table made now
+ * have it: a restored dump has the relation of a store without its dependency on the table, and the first index that is built adopts the relation of that name (store_by_name).
+ */
+static bool
+names_visit(Oid store, void *arg)
+{
+	Relation	heap = arg;
+	Oid			nsp = RelationGetNamespace(heap),
+				was = get_rel_namespace(store);
+	const char *col = get_attname(store, 1, false);
+	char	   *name = NULL;
+
+	for (int pass = 0; name == NULL; pass++)
+	{
+		char	   *cand = store_name(heap, col, pass);
+
+		if (was == nsp && strcmp(cand, get_rel_name(store)) == 0)
+			return false;
+		if (!OidIsValid(get_relname_relid(cand, nsp)))
+			name = cand;
+	}
+	if (strcmp(name, get_rel_name(store)) != 0)
+	{
+		RenameRelationInternal(store, name, true, false);
+		CommandCounterIncrement();
+	}
+	if (was != nsp)
+	{
+		Relation	rel = relation_open(store, AccessExclusiveLock);
+		ObjectAddresses *moved = new_object_addresses();
+
+		AlterTableNamespaceInternal(rel, was, nsp, moved);
+		free_object_addresses(moved);
+		relation_close(rel, NoLock);
+	}
+	CreateComments(store, RelationRelationId, 0, psprintf(vstore_comment, col, RelationGetRelationName(heap)));
+	return false;
+}
+
+void
+sift_vstore_follow_names(Oid heapoid)
+{
+	Relation	heap = try_table_open(heapoid, AccessShareLock);
+
+	if (heap == NULL)
+		return;
+	each_store(heapoid, names_visit, heap);
+	table_close(heap, AccessShareLock);
+}

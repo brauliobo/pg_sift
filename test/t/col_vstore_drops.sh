@@ -9,7 +9,7 @@
 #     DROP TABLE and DROP SCHEMA .. CASCADE take their vstores and no other table's
 #  3. a reader that compares the indexes with the heap all the while peers are dropped concurrently, reindexed concurrently, and promoted and merged after rows with new strings
 #  4. kill -9: an uncommitted drop, a committed drop, REINDEX and col_promote killed in the leader at a directory update
-#  5. pg_dump and pg_restore (serially and in parallel): one store for each column, every member adopts it
+#  5. pg_dump and pg_restore (serially and in parallel): one store for each column, every member adopts it; after a RENAME TO and a SET SCHEMA of the table too (the stores follow its name)
 # SIFT_VD_ROWS (60000, 20000 quick)
 . "$(dirname "$0")/lib.bash"
 
@@ -327,6 +327,34 @@ restored() { # DB: the restored table as the source was
 }
 restored r1
 restored r2 -j4
+
+# --- 5b. the stores follow the name of their table (RENAME TO, SET SCHEMA): a restore adopts the relation of a store by the name its table gives it, so a store that kept the name of the table
+# before the rename was left in the restored database as a relation no index used, with a new store made beside it
+sql primary "CREATE TABLE rt AS SELECT * FROM public.t WHERE id <= $((ROWS / 4))" "ANALYZE rt" "CREATE INDEX rt_a ON rt USING sift_col (id, uid, url)" \
+	"CREATE INDEX rt_b ON rt USING sift_col (uid, url, tenant)" "ALTER TABLE rt RENAME TO rt2" "CREATE SCHEMA sy" "ALTER TABLE rt2 SET SCHEMA sy" >/dev/null || bail "rename failed"
+sy_stores() { sql "${2:-primary}" "SELECT coalesce(string_agg(n.nspname || '.' || c.relname, ',' ORDER BY c.relname), 'none') FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+	JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_values' AND c.relname LIKE 'rt%'"; }
+check "rename: the store relations of the table are renamed and moved with it" test "$(sy_stores)" == "sy.rt2_uid_sift_values,sy.rt2_url_sift_values"
+check "rename: they are the store relations of its indexes still (two of them, used by both)" test "$(sql primary "SELECT string_agg(column_name || '=' || indexes_using, ' ' ORDER BY column_name)
+	FROM sift.col_value_store_status WHERE table_name = 'sy.rt2'::regclass")" == "uid=2 url=2"
+check "rename: a new index shares them (no store is made)" sql primary "CREATE INDEX rt_c ON sy.rt2 USING sift_col (url, id)"
+check "rename: still two store relations, three users of the url one" test "$(sy_stores)|$(sql primary "SELECT indexes_using FROM sift.col_value_store_status WHERE table_name = 'sy.rt2'::regclass AND column_name = 'url'")" \
+	== "sy.rt2_uid_sift_values,sy.rt2_url_sift_values|3"
+check "rename: the names are the standby's too" test "$(catchup primary standby; sy_stores standby)" == "sy.rt2_uid_sift_values,sy.rt2_url_sift_values"
+pg_dump "${PGARGS[@]}" -Fc -f "$D/rn.custom" postgres 2>"$D/dump.err"
+check "rename: pg_dump -Fc succeeds" test $? -eq 0 -a ! -s "$D/dump.err"
+for flags in "" "-j4"; do
+	db=rn_$(tr -dc a-z0-9 <<<"x$flags")
+	dbq primary postgres "CREATE DATABASE $db" >/dev/null || bail "create $db failed"
+	out=$(PGOPTIONS="-c client_min_messages=warning" pg_restore "${PGARGS[@]}" $flags -d "$db" "$D/rn.custom" 2>&1)
+	check "restore $db: pg_restore runs without errors" test "$(grep -c 'ERROR\|pg_restore: error' <<<"$out")" == 0
+	out=; check "restore $db: the store relations of the moved table are the ones its name gives, one for each column and no orphan under the old name" test \
+		"$(dbq primary "$db" "SELECT string_agg(n.nspname || '.' || c.relname, ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+			JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_values' AND c.relname LIKE 'rt%'")" == "sy.rt2_uid_sift_values,sy.rt2_url_sift_values"
+	out=; check "restore $db: its indexes use them (no orphan store: two users of uid, three of url)" test "$(dbq primary "$db" "SELECT string_agg(column_name || '=' || indexes_using, ' ' ORDER BY column_name)
+		FROM sift.col_value_store_status WHERE table_name = 'sy.rt2'::regclass")" == "uid=2 url=3"
+done
+sql primary "DROP TABLE sy.rt2" "DROP SCHEMA sy" "DROP DATABASE rn_x" "DROP DATABASE rn_xj4" >/dev/null || bail "cleanup of the rename section failed"
 
 # --- 2c. DROP TABLE and DROP SCHEMA .. CASCADE take the vstores of their table and no other
 cnt_stores() { sql "$1" "SELECT count(*) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_values' ${2:-}"; }
