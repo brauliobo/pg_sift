@@ -594,3 +594,44 @@ sift_col_super_align(SiftColSource *src, uint32 sb)
 	}
 	return at;
 }
+
+void
+sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int dim, int hdim)
+{
+	if (src->suptest != NULL)
+		pfree(src->suptest);
+	src->suptest = nt > 0 ? MemoryContextAlloc(src->mcxt, nt * sizeof(SiftColSuperTest)) : NULL;
+	if (nt > 0)
+		memcpy(src->suptest, t, nt * sizeof(SiftColSuperTest));
+	src->nsuptest = nt;
+	src->supdim = dim;
+	src->suphdim = hdim;
+}
+
+/* Does the zone of every leaf the statement compares lie inside the comparison in each unit [first, first + n), as the consumer asks of the summary of the group (preagg_zones)? */
+bool
+col_super_inside(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n)
+{
+	for (int k = 0; k < src->nsuptest; k++)
+	{
+		const SiftColSuperTest *t = &src->suptest[k];
+
+		if (t->leaf == src->supdim || t->leaf == src->suphdim)
+			continue;
+		for (uint32 i = 0; i < n; i++)
+		{
+			SiftCZone	z;
+			bool		in = false;
+
+			sift_cseg_zone(seg, t->leaf, first + i, &z);
+			if (z.nnull > 0 || z.nvals == 0 || z.min < t->lo || z.max > t->hi)
+				return false;
+			for (int v = 0; t->nvals > 0 && !in && v < t->nvals; v++)
+				in = z.min == z.max && t->vals[v] == z.min;
+			if (t->nvals > 0 && !in)
+				return false;
+		}
+	}
+	return true;
+}
+

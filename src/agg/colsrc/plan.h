@@ -239,6 +239,14 @@ sift_colsrc_unit_rollup_miss(SiftSrcSource *src, const SiftSrcUnit *unit)
 	return src->prov->unit_rollup_miss != NULL && src->prov->unit_rollup_miss(src->impl, unit);
 }
 
+/* What a group of units must lie inside to answer the statement (provider.h super_tests) */
+static inline void
+sift_colsrc_super_tests(SiftSrcSource *src, const SiftSrcPrune *z, int nz, int dim, int hdim)
+{
+	if (src->prov->super_tests != NULL)
+		src->prov->super_tests(src->impl, z, nz, dim, hdim);
+}
+
 /* Asks the source for superunits (docs/COL-PREAGG.md section 10): true when it has them */
 static inline bool
 sift_colsrc_super(SiftSrcSource *src, bool on)

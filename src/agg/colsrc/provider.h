@@ -119,6 +119,8 @@ typedef struct SiftSrcProvider
 	bool		(*unit_rollup_miss) (void *impl, const SiftSrcUnit *unit);
 	/* Optional (NULL: none): `next` may hand over a group of exact units as one unit that has pre-aggregates only (nsu > 0); split gives the units of the group back, one by one, to the next calls */
 	void		(*super) (void *impl, bool on);
+	/* Optional: what a group of units must lie inside to be tried (the comparisons of the statement but those of the leaves its histograms answer) */
+	void		(*super_tests) (void *impl, const SiftSrcPrune *z, int nz, int dim, int hdim);
 	bool		(*whole) (void *impl, int leaf, const int *meas, int nmeas);	/* a unit may be a whole segment whose key table of leaf, with these measures, answers (a superunit that has that histogram only); true: an item of the scan has to span a segment for that, which a source with no superunits does not do alone */
 	/* Optional (NULL: none), after super: the count(*) of the rows of text leaf that pass one test (op a SiftColOp of EQ, LT, LE, GT, GE or PREFIX against s) and nothing else; a segment whose dictionary holds the rows of each string may be handed over as one unit (nsu > 0) whose unit_count is the rows that pass: the consumer folds them and reads nothing */
 	void		(*count_range) (void *impl, int leaf, SiftColOp op, const char *s, uint32 len);

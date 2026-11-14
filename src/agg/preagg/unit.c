@@ -379,4 +379,6 @@ preagg_init(AggExec *ex)
 		}
 		ex->whole_on = only && sift_colsrc_whole(ex->src, key, meas, nmeas);
 	}
+	if (ex->super_on)
+		sift_colsrc_super_tests(ex->src, ex->prune, ex->nprune, ex->pa.dim, ex->pa.hdim);
 }

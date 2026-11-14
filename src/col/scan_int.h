@@ -260,6 +260,10 @@ struct SiftColSource
 	MemoryContext gxcx;		/* the exactness of the units (sift_col_gorder_exact: their dead rows and all-visible pages), which sift_col_rescan keeps; made on first use */
 	MemoryContext gcx;			/* what sift_col_gorder_open and the reads of the global order make (the lists of dead rows, the orders of the write buffers and their holds), reset by sift_col_rescan; made on first use */
 	bool		super;			/* sift_col_super */
+	SiftColSuperTest *suptest;	/* sift_col_super_tests: what a group of units must lie inside to be tried, in mcxt */
+	int			nsuptest;
+	int			supdim;			/* the leaves the histograms answer for the tests above */
+	int			suphdim;
 	int64	   *sx;				/* a scope source (sift_col_scope_delta): the members whose stored entries the scan leaves out, ascending, in mcxt; no unit may answer from its pre-aggregates then, nor a segment from its summaries */
 	uint32		nsx;
 	uint64	   *sxb;			/* ... as a bitmap over their range when it is not too wide (NULL: bisect sx), sx_span bits */
@@ -358,6 +362,7 @@ struct SiftColSource
 
 /* scan_unit.c: the group of units at the cursor as one unit in cu, when its summary can answer (docs/COL-PREAGG.md section 10); false: read the units one by one */
 extern bool col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu);
+extern bool col_super_inside(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n);
 extern bool col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds);
 extern bool units_allvisible(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n);
 extern bool units_clean(SiftColSegment *seg, uint32 first, uint32 n, uint32 *rows);

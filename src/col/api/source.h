@@ -199,6 +199,19 @@ extern void sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit);
 extern uint32 sift_col_super_span(SiftColSource *src);
 /* The first superblock at or after sb that no key group of a segment straddles: ranges cut there take a group whole (the end of one range is the start of the next) */
 extern uint32 sift_col_super_align(SiftColSource *src, uint32 sb);
+/*
+ * The comparisons of a statement a group of units must lie inside to answer it (the zone of the leaf in every unit, no NULL), all but those of the leaves the histograms answer (dim, hdim; -1: none):
+ * a group the units of which are not inside them is not tried, which costs the reads of its summary and a split. The tests are copied.
+ */
+typedef struct SiftColSuperTest
+{
+	int			leaf;
+	int64		lo;
+	int64		hi;
+	int			nvals;
+	const int64 *vals;
+} SiftColSuperTest;
+extern void sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int dim, int hdim);
 
 /*
  * Opens the source: copies the directory (registered snapshot held until close), starts the visibility state (sift_vis) for snapshot, takes

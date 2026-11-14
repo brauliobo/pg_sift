@@ -17,10 +17,29 @@ sift_col_open_scope(Relation heap, Relation index, Snapshot snapshot, MemoryCont
 	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS | SIFT_COLO_SCOPE, view);
 }
 
+void
+col_super(void *impl, bool on)
+{
+	sift_col_super(((ColSource *) impl)->cs, on);
+}
+
 uint32
 col_super_align(void *impl, uint32 sb)
 {
 	return sift_col_super_align(((ColSource *) impl)->cs, sb);
+}
+
+void
+col_super_tests(void *impl, const SiftSrcPrune *z, int nz, int dim, int hdim)
+{
+	SiftColSuperTest *t = palloc(Max(nz, 1) * sizeof(SiftColSuperTest));
+	int			nt = 0;
+
+	for (int k = 0; k < nz; k++)
+		if (z[k].nkids == 0 && !z[k].nulltest)
+			t[nt++] = (SiftColSuperTest) {z[k].leaf, z[k].lo, z[k].hi, z[k].nvals, z[k].vals};
+	sift_col_super_tests(((ColSource *) impl)->cs, t, nt, dim, hdim);
+	pfree(t);
 }
 
 void

@@ -491,12 +491,6 @@ col_narrow(void *impl, SiftSrcUnit *unit, const uint64 *bits)
 	return true;
 }
 
-static void
-col_super(void *impl, bool on)
-{
-	sift_col_super(((ColSource *) impl)->cs, on);
-}
-
 static bool
 col_whole(void *impl, int leaf, const int *meas, int nmeas)
 {
@@ -911,6 +905,7 @@ static const SiftSrcProvider col_provider = {
 	.point_exact = col_point_exact,
 	.split = col_split,
 	.super_align = col_super_align,
+	.super_tests = col_super_tests,
 	.super_span = col_super_span,
 	.read = col_read,
 	.live = col_live,
