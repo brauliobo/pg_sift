@@ -154,7 +154,7 @@ PostgreSQL 17, 18 and 19 on Linux (x86-64 and arm64); 17 and 18 on macOS arm64 (
 | macOS arm64 | the Homebrew formula below |
 | anything else | from source (the first snippet of [In five minutes](#in-five-minutes); needs server headers with `pg_config` on `PATH` and a C compiler; `PG_CONFIG=/path/to/pg_config` picks another installation) |
 
-Then, as a superuser, `CREATE EXTENSION pg_sift` in each database (after an upgrade: `ALTER EXTENSION pg_sift UPDATE`). `CREATE EXTENSION` and `ALTER EXTENSION UPDATE` end with a notice and the exact `ALTER DATABASE .. SET session_preload_libraries = 'pg_sift'` command when the library is not preloaded; an aggregate workload plans its first statement of a session once with it (docs/USAGE.md). Details: [docs/USAGE.md](docs/USAGE.md#install), [docs/UPGRADING.md](docs/UPGRADING.md), [docs/SUPPORT.md](docs/SUPPORT.md).
+Then, as a superuser, `CREATE EXTENSION pg_sift` in each database (after an upgrade: `ALTER EXTENSION pg_sift UPDATE`). `CREATE EXTENSION` and `ALTER EXTENSION UPDATE` end with a notice and the exact `ALTER DATABASE .. SET session_preload_libraries = 'pg_sift'` command when the library is not preloaded; an aggregate workload plans its first statement of a session once with it, and `SHOW sift.enable_agg` works in a new session instead of saying `unrecognized configuration parameter` until a statement has used the extension (docs/USAGE.md). Details: [docs/USAGE.md](docs/USAGE.md#install), [docs/UPGRADING.md](docs/UPGRADING.md), [docs/SUPPORT.md](docs/SUPPORT.md).
 
 <details>
 <summary>macOS with Homebrew</summary>
