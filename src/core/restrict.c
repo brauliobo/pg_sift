@@ -4,10 +4,14 @@
 #include "postgres.h"
 
 #include "access/xact.h"
+#include "catalog/heap.h"
 #include "catalog/indexing.h"
+#include "commands/defrem.h"
+#include "commands/tablecmds.h"
 #include "commands/trigger.h"
 #include "storage/proc.h"
 
+#include "core/compat.h"
 #include "core/restrict.h"
 #include "core/sift.h"
 
@@ -82,4 +86,26 @@ sift_drop_object(const ObjectAddress *object)
 {
 	sift_catalog_write_guard("a drop");
 	performDeletion(object, DROP_RESTRICT, PERFORM_DELETION_INTERNAL);
+}
+
+ObjectAddress
+sift_create_index(Oid relid, IndexStmt *stmt)
+{
+	sift_catalog_write_guard("an index");
+	return sift_define_index(relid, stmt);
+}
+
+Oid
+sift_create_matview(const char *name, Oid namespaceId, Oid ownerId, Oid accessMethod, TupleDesc tupdesc, char persistence)
+{
+	sift_catalog_write_guard("a relation");
+	return heap_create_with_catalog(name, namespaceId, InvalidOid, InvalidOid, InvalidOid, InvalidOid, ownerId, accessMethod, tupdesc, NIL, RELKIND_MATVIEW,
+									persistence, false, false, ONCOMMIT_NOOP, (Datum) 0, false, false, true, InvalidOid, NULL);
+}
+
+void
+sift_change_owner(Oid relid, Oid ownerId)
+{
+	sift_catalog_write_guard("an owner");
+	ATExecChangeOwner(relid, ownerId, false, AccessExclusiveLock);
 }

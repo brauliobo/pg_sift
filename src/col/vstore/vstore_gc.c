@@ -25,6 +25,7 @@
 #include "col/am.h"
 #include "col/scope.h"
 #include "col/vstore/vstore.h"
+#include "core/restrict.h"
 #include "utils/builtins.h"
 
 PG_FUNCTION_INFO_V1(sift_col_value_store_begin);

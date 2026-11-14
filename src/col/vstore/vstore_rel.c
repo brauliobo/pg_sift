@@ -47,6 +47,7 @@
 #include "col/am.h"
 #include "col/scope.h"
 #include "col/vstore/vstore.h"
+#include "core/restrict.h"
 #include "core/store.h"
 
 #define VSTORE_LOCK_CLASS	0x5D1C
@@ -231,7 +232,7 @@ depend_on(Oid classid_obj, Oid obj, Oid ref, DependencyType type)
 
 	ObjectAddressSet(a, classid_obj, obj);
 	ObjectAddressSet(b, RelationRelationId, ref);
-	recordDependencyOn(&a, &b, type);
+	sift_depend(&a, &b, type);
 }
 
 /* The names a store of the column can have: the first is the plain one, then those that ChooseRelationName picks when it is taken */
@@ -320,9 +321,7 @@ create_store(Relation heap, const char *col)
 	Oid			store;
 
 	TupleDescInitEntry(td, 1, col, TEXTOID, -1, 0);
-	store = heap_create_with_catalog(name, RelationGetNamespace(heap), InvalidOid, InvalidOid, InvalidOid, InvalidOid, heap->rd_rel->relowner, vstore_am(),
-									 td, NIL, RELKIND_MATVIEW, heap->rd_rel->relpersistence, false, false, ONCOMMIT_NOOP, (Datum) 0, false, false, true,
-									 InvalidOid, NULL);
+	store = sift_create_matview(name, RelationGetNamespace(heap), heap->rd_rel->relowner, vstore_am(), td, heap->rd_rel->relpersistence);
 	CommandCounterIncrement();
 	make_unpopulated_view(store, col);
 	depend_on(RelationRelationId, store, RelationGetRelid(heap), DEPENDENCY_AUTO);
@@ -387,7 +386,7 @@ sift_vstore_release(Relation heap, Relation index, AttrNumber attno)
 
 	if (!OidIsValid(store) || !index_depends_on(RelationGetRelid(index), store))
 		return;
-	deleteDependencyRecordsForSpecific(RelationRelationId, RelationGetRelid(index), DEPENDENCY_NORMAL, RelationRelationId, store);
+	sift_undepend(RelationRelationId, RelationGetRelid(index), DEPENDENCY_NORMAL, RelationRelationId, store);
 	CommandCounterIncrement();
 	sift_vstore_dropping(RelationGetRelid(index), RelationGetRelid(heap), true, false);
 }
@@ -482,7 +481,7 @@ sift_vstore_drop_unused(Relation heap)
 		ObjectAddress obj;
 
 		ObjectAddressSet(obj, RelationRelationId, store);
-		performDeletion(&obj, DROP_RESTRICT, PERFORM_DELETION_INTERNAL);
+		sift_drop_object(&obj);
 	}
 }
 
@@ -691,7 +690,7 @@ owner_visit(Oid store, void *arg)
 	differs = ((Form_pg_class) GETSTRUCT(tp))->relowner != owner;
 	ReleaseSysCache(tp);
 	if (differs)
-		ATExecChangeOwner(store, owner, false, AccessExclusiveLock);
+		sift_change_owner(store, owner);
 	return false;
 }
 

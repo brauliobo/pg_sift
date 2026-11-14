@@ -26,7 +26,7 @@ extern bool sift_xid_unassignable(void);
 extern bool sift_catalog_write_ok(void);
 extern void sift_catalog_write_guard(const char *what);
 
-/* The writers: CatalogTupleUpdate/Insert/Delete (tup: the new version, tid: the row), recordDependencyOn, deleteDependencyRecordsForSpecific, CreateTrigger, performDeletion (restrict, internal) */
+/* The writers: CatalogTupleUpdate/Insert/Delete (tup: the new version, tid: the row), recordDependencyOn, deleteDependencyRecordsForSpecific, CreateTrigger, performDeletion (restrict, internal), DefineIndex, heap_create_with_catalog, ATExecChangeOwner */
 extern void sift_cat_update(Relation catalog, HeapTuple tup);
 extern void sift_cat_insert(Relation catalog, HeapTuple tup);
 extern void sift_cat_delete(Relation catalog, ItemPointer tid);
@@ -34,5 +34,8 @@ extern void sift_depend(const ObjectAddress *dependent, const ObjectAddress *ref
 extern void sift_undepend(Oid classId, Oid objectId, DependencyType deptype, Oid refClassId, Oid refObjectId);
 extern ObjectAddress sift_create_trigger(CreateTrigStmt *stmt, Oid relid, Oid funcoid);
 extern void sift_drop_object(const ObjectAddress *object);
+extern ObjectAddress sift_create_index(Oid relid, IndexStmt *stmt);
+extern Oid sift_create_matview(const char *name, Oid namespaceId, Oid ownerId, Oid accessMethod, TupleDesc tupdesc, char persistence);
+extern void sift_change_owner(Oid relid, Oid ownerId);
 
 #endif

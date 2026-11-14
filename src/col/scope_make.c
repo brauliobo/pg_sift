@@ -31,6 +31,7 @@
 
 #include "col/am.h"
 #include "col/scope.h"
+#include "core/restrict.h"
 
 #define JOURNAL_LABEL	"sift_journal"
 #define JOURNAL_COMMENT	"Journal of the pairs of \"%s\" (%s, %s), made by CREATE INDEX of a scope index and managed by sift: it records the pairs that change, and goes with the last scope index that uses it."
@@ -86,7 +87,7 @@ sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumbe
 	stmt->indexParams = list_make2(journal_column(mname), journal_column(kname));
 	stmt->options = list_make1(makeDefElem("track_changes", (Node *) makeString("ctid"), -1));
 	stmt = transformIndexStmt(relid, stmt, journal_statement(rel, mname, kname, false));
-	addr = sift_define_index(relid, stmt);
+	addr = sift_create_index(relid, stmt);
 	CommandCounterIncrement();
 	sift_col_track_made(addr.objectId);
 	CreateComments(addr.objectId, RelationRelationId, 0, psprintf(JOURNAL_COMMENT, RelationGetRelationName(rel), mname, kname));
@@ -133,6 +134,6 @@ sift_scope_journal_drop_unused(void)
 		if (!OidIsValid(heap) || sift_scope_users(index) != NIL || !ConditionalLockRelationOid(heap, AccessExclusiveLock))
 			continue;
 		ObjectAddressSet(obj, RelationRelationId, index);
-		performDeletion(&obj, DROP_RESTRICT, PERFORM_DELETION_INTERNAL);
+		sift_drop_object(&obj);
 	}
 }
