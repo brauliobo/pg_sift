@@ -30,12 +30,12 @@ check "the call does not fail" test "$(grep -c -i 'error' <<<"$out")" == 0
 # a text index built by this release holds no word cut at 255 bytes; one without the mark of such a build (an older build wrote none) is listed until its REINDEX
 q marked "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "CREATE TABLE docs (id int PRIMARY KEY, body text)" \
 	"INSERT INTO docs SELECT i, 'alpha' || i % 7 || ' beta' || i % 11 FROM generate_series(1, 500) i" "CREATE INDEX docs_idx ON docs USING sift (body)" >/dev/null || bail "setup failed"
-check "a text index of this build is not listed" test "$(q marked "SELECT count(*) FROM sift.upgrade_commands()")" == 0
+check "a text index of this build is not listed" test "$(q marked "SELECT count(*) FROM sift.upgrade_commands() WHERE kind <> 'preload'")" == 0
 check "its format says it holds long words as a prefix and a hash" test "$(q marked "SELECT long_words FROM sift.index_format('docs_idx')")" == t
 q marked "SELECT sift._test_meta_note('docs_idx', 'old')" >/dev/null
-check "an index without the mark is listed" test "$(q marked "SELECT command FROM sift.upgrade_commands()")" == "REINDEX INDEX CONCURRENTLY public.docs_idx;"
+check "an index without the mark is listed" test "$(q marked "SELECT command FROM sift.upgrade_commands() WHERE kind <> 'preload'")" == "REINDEX INDEX CONCURRENTLY public.docs_idx;"
 q marked "REINDEX INDEX docs_idx" >/dev/null
-check "its REINDEX takes it off the list" test "$(q marked "SELECT count(*) FROM sift.upgrade_commands()")" == 0
+check "its REINDEX takes it off the list" test "$(q marked "SELECT count(*) FROM sift.upgrade_commands() WHERE kind <> 'preload'")" == 0
 
 # the 5.0 library over the SQL of 4.3: a column that the value store would share (forced here) is stored in the segments, with no catalog error
 q oldsql "CREATE EXTENSION pg_sift VERSION '4.3'" "CREATE TABLE t (id int, a text, n int)" \

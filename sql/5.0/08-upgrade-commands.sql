@@ -121,7 +121,17 @@ BEGIN
 		command := format('VACUUM FULL %s;', r.name);
 		RETURN NEXT;
 	END LOOP;
+	-- the owner of the database (who may run the command) is told when the library is not preloaded; the settings it reads are for pg_read_all_settings
+	kind := 'preload'; required := false; object := NULL;
+	IF pg_has_role(current_user, 'pg_read_all_settings', 'USAGE')
+	   AND pg_has_role(current_user, (SELECT datdba FROM pg_database WHERE datname = current_database()), 'USAGE') THEN
+		command := sift._preload_hint();
+		IF command IS NOT NULL THEN
+			reason := 'pg_sift is not preloaded in this database: the first statement of each session is planned twice';
+			RETURN NEXT;
+		END IF;
+	END IF;
 END
 $fn$;
 
-COMMENT ON FUNCTION sift.upgrade_commands() IS 'What an update leaves to do for the indexes and tables the caller owns or may maintain, one row per command, the cheapest first: kind (reindex, reset, rewrite; skipped for a relation that another session holds locked, to run again), the index or table, the reason and the statement; required when queries miss rows until it runs. Changes nothing.';
+COMMENT ON FUNCTION sift.upgrade_commands() IS 'What an update leaves to do for the indexes and tables the caller owns or may maintain, one row per command, the cheapest first: kind (reindex, reset, rewrite; skipped: locked by another session, run again; preload: the library is not preloaded), the index or table, the reason and the statement; required when queries miss rows until it runs. Changes nothing.';

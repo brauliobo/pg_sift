@@ -82,5 +82,20 @@ SELECT kind, object, required FROM sift.upgrade_commands() WHERE object::text ~ 
 ------+--------+----------
 (0 rows)
 
+-- the owner of the database is told how to preload the library, once; nothing is said when it is
+SELECT kind, object, required, command ~ '^ALTER DATABASE .* SET session_preload_libraries = ' AS command FROM sift.upgrade_commands() WHERE kind = 'preload';
+  kind   | object | required | command 
+---------+--------+----------+---------
+ preload |        | f        | t
+(1 row)
+
+SET session_preload_libraries = 'pg_sift';
+SELECT count(*) AS preload_rows FROM sift.upgrade_commands() WHERE kind = 'preload';
+ preload_rows 
+--------------
+            0
+(1 row)
+
+RESET session_preload_libraries;
 DROP TABLE up, up_tbl;
 DROP EXTENSION pg_sift CASCADE;

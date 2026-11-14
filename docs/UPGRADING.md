@@ -29,9 +29,20 @@ first release that reads each: [FORMATS.md](FORMATS.md).
 
 ## 1. Preflight
 
-`scripts/upgrade-check.sh` runs `sift.upgrade_check()` (`sql/5.0/27-upgrade-check.sql`, installed beside the extension scripts as `pg_sift_upgrade_check.sql` for an update that is not made yet) in each database. It reads the catalogs and metapages and changes nothing
-(the function is loaded in a transaction that is rolled back, so a database with an older extension can be checked). It needs a superuser on the primary
-and the files of the new release installed:
+From 5.0 the preflight is a function of the extension. It reads the catalogs and metapages and changes nothing; it needs a superuser on the primary:
+
+```
+psql -d app -c "SELECT * FROM sift.upgrade_check()"           # this release
+psql -d app -c "SELECT * FROM sift.upgrade_check('4.3')"      # what 4.3 could not read, for a way back or a standby that stays
+```
+
+Before the update is made (the database has an older extension, the files of the new release are installed and the session is new), the file installed beside the extension scripts loads the same function in a transaction that it rolls back:
+
+```
+psql -d app -f "$(pg_config --sharedir)/extension/pg_sift_upgrade_check.sql"             # -v to=4.3 for a target release
+```
+
+In a source checkout, `scripts/upgrade-check.sh` runs that file in several databases and sets the exit status:
 
 ```
 scripts/upgrade-check.sh --all                 # every database that accepts connections
@@ -65,14 +76,15 @@ make USE_PGXS=1 && sudo make USE_PGXS=1 install
 #    restart the server or reconnect every pool and worker)
 sudo systemctl restart postgresql
 
-# 3. preflight (section 1), then in every database that has the extension
+# 3. preflight (section 1: the installed file, the extension is older than the library), then in every database that has the extension
+psql -d app -f "$(pg_config --sharedir)/extension/pg_sift_upgrade_check.sql"
 psql -d app -c "ALTER EXTENSION pg_sift UPDATE"
 
 # 4. check the update
 psql -d app -c "SELECT extversion, sift.version() FROM pg_extension WHERE extname = 'pg_sift'"
 psql -d app -c "SELECT sift.verify('docs_idx', true)"            # a sift index
 psql -d app -c "SELECT sift.col_verify('facts_col', true)"       # a sift_col index
-scripts/upgrade-check.sh app
+psql -d app -c "SELECT * FROM sift.upgrade_check()"
 ```
 
 **Replacing the library under a running server (5.0 and later).** The shared tables of the server (the rows of joined tables, the dimension maps, the choices of the planner, the shared dictionaries, the statistics of the leaves, the write-buffer arena and the rollup state) are told apart by the identity of the library, not only by name and size, and the segments of a library that was replaced are given back when its last backend ends: install the files, run `ALTER EXTENSION pg_sift UPDATE`, and reconnect (or restart, as above). Old and new backends run side by side with tables of their own, no statement fails for it, and nothing is left in `/dev/shm` once the old backends are gone. If the directory of the tables cannot be used (all its entries are mapped, or it is not one this library reads), the caches go unshared with a message in the log, and no statement fails. A background worker started before the install (a rollup worker) keeps the older library and its tables until it restarts. From 4.3.4 and older the segments that release made stay until a restart, which is one more reason to restart once when moving to 5.0.

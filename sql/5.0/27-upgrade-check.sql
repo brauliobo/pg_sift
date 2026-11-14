@@ -181,7 +181,7 @@ BEGIN
 	IF to_regprocedure('sift.upgrade_commands()') IS NOT NULL THEN
 		BEGIN
 			-- the RESET of a removed option is listed above, for a library that has no such row
-			FOR r IN SELECT * FROM sift.upgrade_commands() u WHERE u.required IS DISTINCT FROM true AND u.kind <> 'reset' LOOP
+			FOR r IN SELECT * FROM sift.upgrade_commands() u WHERE u.required IS DISTINCT FROM true AND u.kind NOT IN ('reset', 'preload') LOOP
 				object := r.object::text; status := 'warn';
 				IF r.kind = 'skipped' THEN
 					kind := CASE WHEN (SELECT relkind FROM pg_class WHERE oid = r.object) = 'i' THEN 'index' ELSE 'table' END;
