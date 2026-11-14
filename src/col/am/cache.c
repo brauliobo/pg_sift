@@ -44,6 +44,8 @@ typedef struct LeafEntry
 {
 	Oid			index;			/* hash key */
 	uint64		stamp;
+	uint64		base;			/* what the stamp holds besides the segments: the index file and its options */
+	uint32		dirver;			/* the version of the directory the stamp was made from: the same version is the same segments */
 	uint64		checked;		/* the planning (leaf_plan) that validated the stamp */
 	int			ncols;
 	ClassStats	cls[2];			/* [true]: st is NULL when the index has no scope segment */
@@ -296,7 +298,8 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	SiftDirSnapshot own;
 	const SiftDirSnapshot *dir = snap;
 	SiftDirSnapshot *sdir = palloc(sizeof(SiftDirSnapshot));	/* the family of the scope segments */
-	uint64		stamp = index->rd_locator.relNumber;	/* REINDEX starts the generations over */
+	uint64		stamp = index->rd_locator.relNumber,	/* REINDEX starts the generations over */
+				base;
 	Oid			key = RelationGetRelid(index);
 	LeafEntry  *e;
 
@@ -310,13 +313,23 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 		}
 	}
 	sift_stat_add(SIFT_STAT_LEAF_CHECKED, 1);
-	stamp = stamp * 31 + sift_col_pagg_hash(index);	/* the sections of the units are counted against the options */
+	base = stamp * 31 + sift_col_pagg_hash(index);	/* the sections of the units are counted against the options */
+	e = leaf_cache == NULL ? NULL : hash_search(leaf_cache, &key, HASH_FIND, NULL);
+	if (dir == NULL && e != NULL && e->base == base && e->ncols == ncols && e->dirver == sift_dir_version(index))
+	{
+		e->checked = am_leaf_plan;
+		pfree(sdir);
+		return e;
+	}
+	sift_stat_add(SIFT_STAT_LEAF_DIR_READ, 1);
 	if (dir == NULL)
 	{
-		sift_col_dir_read_segs(index, &own, false);
+		sift_col_dir_read_families(index, &own, sdir);
 		dir = &own;
 	}
-	sift_col_dir_read_segs(index, sdir, true);
+	else
+		sift_col_dir_read_segs(index, sdir, true);
+	stamp = base;
 	for (int k = 0; k < 2; k++)
 	{
 		const SiftDirSnapshot *d = k == 0 ? dir : sdir;
@@ -334,6 +347,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	if (e != NULL && e->stamp == stamp && e->ncols == ncols)
 	{
 		e->checked = am_leaf_plan;
+		e->dirver = dir->version;
 		pfree(sdir);
 		return e;
 	}
@@ -355,6 +369,8 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	}
 	e = hash_search(leaf_cache, &key, HASH_ENTER, NULL);
 	e->stamp = stamp;
+	e->base = base;
+	e->dirver = dir->version;
 	e->checked = am_leaf_plan;
 	e->ncols = ncols;
 	memset(e->cls, 0, sizeof(e->cls));

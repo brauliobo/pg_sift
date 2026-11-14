@@ -791,6 +791,17 @@ sift_col_dir_read_segs(Relation index, SiftDirSnapshot *snap, bool scope)
 	sift_col_dir_family(snap, scope);
 }
 
+void
+sift_col_dir_read_families(Relation index, SiftDirSnapshot *entity, SiftDirSnapshot *scope)
+{
+	sift_dir_read_segs(index, entity);
+	scope->version = entity->version;
+	scope->nsegs = entity->nsegs;
+	memcpy(scope->segs, entity->segs, entity->nsegs * sizeof(SiftSegEntry));
+	sift_col_dir_family(entity, false);
+	sift_col_dir_family(scope, true);
+}
+
 /* The dirty bit of the unit's SB, read from the LIVE page now: neither the directory snapshot nor an earlier read may stand for it, because
  * a scan must read liveness after it reads the all-visible mask */
 bool

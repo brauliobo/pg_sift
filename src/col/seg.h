@@ -174,6 +174,8 @@ extern void sift_col_dir_read(Relation index, SiftDirSnapshot *snap, bool scope)
 extern void sift_col_dir_read_segs(Relation index, SiftDirSnapshot *snap, bool scope);
 /* ... of a directory read already: keeps the segments of that family */
 extern void sift_col_dir_family(SiftDirSnapshot *snap, bool scope);
+/* both families from one read of the directory: the entity family into entity, the scope segments into scope */
+extern void sift_col_dir_read_families(Relation index, SiftDirSnapshot *entity, SiftDirSnapshot *scope);
 
 /* Index of the first unit whose id >= id, nsb if none (the id of a unit is a superblock of a segment cut by superblock and a sequence number of one cut by key) */
 extern uint32 sift_cseg_unit_lower_bound(const SiftColSegment *seg, uint32 id);
