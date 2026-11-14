@@ -15,6 +15,7 @@
 #include "catalog/indexing.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_statistic.h"
+#include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "storage/lmgr.h"
 #include "utils/lsyscache.h"
@@ -118,7 +119,26 @@ keycols_group_btree(Relation heap, Relation index, AttrNumber hatt)
 	return found;
 }
 
-/* The option name of index set to value (NULL: reset); visible to the relcache entry at once */
+/* Does the option list hold name = value (value NULL: no name)? */
+static bool
+option_holds(Datum options, const char *name, const char *value)
+{
+	ListCell   *lc;
+
+	foreach(lc, untransformRelOptions(options))
+	{
+		DefElem    *d = lfirst(lc);
+
+		if (strcmp(d->defname, name) == 0)
+			return value != NULL && strcmp(defGetString(d), value) == 0;
+	}
+	return value == NULL;
+}
+
+/*
+ * The option name of index set to value (NULL: reset); visible to the relcache entry at once. It is a catalog update (and moves the option to the end of the list), so a
+ * choice that stands is not written again: a decision that the data repeats leaves the row as it is.
+ */
 void
 sift_col_set_option(Relation index, const char *name, const char *value)
 {
@@ -145,6 +165,13 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 	otid = tuple->t_self;
 	LockTuple(pgclass, &otid, InplaceUpdateTupleLock);
 	old = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions, &isnull);
+	if (option_holds(isnull ? (Datum) 0 : old, name, value))
+	{
+		UnlockTuple(pgclass, &otid, InplaceUpdateTupleLock);
+		ReleaseSysCache(tuple);
+		table_close(pgclass, RowExclusiveLock);
+		return;
+	}
 	newopts = transformRelOptions(isnull ? (Datum) 0 : old, def, NULL, NULL, false, value == NULL);
 	(void) index_reloptions(index->rd_indam->amoptions, newopts, true);
 	values[Anum_pg_class_reloptions - 1] = newopts;

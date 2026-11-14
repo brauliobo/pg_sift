@@ -287,7 +287,7 @@ SELECT count(*) AS edges_after_drop FROM pg_depend WHERE classid = 'pg_class'::r
 (1 row)
 
 SELECT :'ddl' AS restore \gexec
-CREATE INDEX facts_col ON public.facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (track_changes=id, superunit='8', point_tid_columns='auto: id', key_columns=auto, scope='tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)')
+CREATE INDEX facts_col ON public.facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (track_changes=id, point_tid_columns='auto: id', superunit='8', key_columns=auto, scope='tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)')
 SELECT edges('facts_col') AS after_restore;
                                             after_restore                                             
 ------------------------------------------------------------------------------------------------------
