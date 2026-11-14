@@ -219,6 +219,7 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 		if (jc->cpath != NULL)
 			a->children = lappend(a->children, jc->cpath);
 	a->entry_instr = 0;
+	a->credit = s->nkeys > 0 ? 0.0 : AGG_ALT_GROUP_ROW * Max(c->rel->tuples, 1.0);
 	alt_pair_instr(c, &fixed, &pair_instr);
 	for (int i = 0; i <= lengthof(counts); i++)
 	{
@@ -265,6 +266,7 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 	sc->knot_rows = best->knot_rows;
 	sc->skip = best->skip;
 	sc->entry_instr = best->entry_instr;
+	sc->join_credit = best->credit;
 	/* the units answer from their pre-aggregates, where the spec can use them (a unit with a changed member does not): a read per pair always, a read counted once of one key, which the execution may have of the many the plan was
 	 * priced for (a read of several keys counted once leaves rows out of its units by the dedupe and reads them: sift_aggspec_preagg_why) */
 	one = *s;

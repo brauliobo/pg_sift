@@ -340,6 +340,16 @@ typedef struct SiftScopeRead
 #define SIFT_SCOPE_LIST_INSTR		39
 #define SIFT_SCOPE_KEY_PAIR_INSTR	286
 #define SIFT_SCOPE_EXCEPT_INSTR		20
+/*
+ * What the entries of a read that ran cost (sift_scope_ran_price), measured, where the planner's price above is the expectation it chooses by (it is not the same number: the share of the units that keep their pre-aggregate and the
+ * entry term compensate each other in the cells the choice was fitted on, and changing the one alone moved 6 of 216 choices to the dearer arm). A row of the units is routed to its group (SIFT_SCOPE_GROUP_INSTR for each group key) and
+ * each aggregate costs what the operators of the join as written say beyond the join's own row, which the units' entries do not have (SIFT_SCOPE_JOIN_ROW_INSTR: its semi-join test and tuple, the operators of a bare count(*)).
+ * Measured on 300,000 entries of a clean read row by row, 17 aggregates: a count or sum with no group 0 to 1, a count by 7, 100 and 365 values 18 to 21, a sum and a count 29, two keys 49 to 58. A member that changed adds the test of each
+ * row against the changed members and the rows left out (SIFT_SCOPE_RAN_EXCEPT_INSTR): 32.5 an entry for each of the 17, from 26 to 33.
+ */
+#define SIFT_SCOPE_GROUP_INSTR		18
+#define SIFT_SCOPE_JOIN_ROW_INSTR	28.8
+#define SIFT_SCOPE_RAN_EXCEPT_INSTR	32
 #define SIFT_SCOPE_PATCH_UNIT_INSTR	11000
 #define SIFT_SCOPE_SCAN_INSTR		23
 #define SIFT_SCOPE_ENTITY_INSTR		25
@@ -386,6 +396,7 @@ typedef struct SiftScopeCounts
 	uint64		walk_units;		/* ... the units whose zone reaches the n-th best row of the keys (a bound: the walk reads these at most) */
 	double		skip;			/* the share of the entries read that the statement's conditions leave out: the source tests them and nothing aggregates them (0: none, the least the filters save); a read with changed members goes through every entry row by row, and its entries cost what the units of a read of the keys do */
 	double		entry_instr;	/* the instructions the aggregation of an entry costs on top of reading it (the operators of the model a row has, which the join pays too: SiftAggScope.entry_instr) */
+	uint32		group_keys;		/* the group keys of the statement: a row of the units is routed to its group (SIFT_SCOPE_GROUP_INSTR each) */
 	uint64		key_pairs;		/* with once and several keys: the pairs of the keys the read lists to dedupe them (SiftScopeRead.pairs) */
 	uint64		changed;		/* the members whose pairs changed since the stamp (SiftScopeRead.nchanged): their stored entries are left out of the units */
 	uint64		patch_units;	/* the units of the entity segments the rows of the changed members that have a pair now are read from */
@@ -516,6 +527,13 @@ sift_scope_rows_price(const SiftScopeCounts *c)
 	return sift_scope_units_cost(c, rows * (double) c->units, c->preagg * (double) c->units, rows * (double) c->entries, skip * SIFT_SCOPE_SKIP_INSTR + (1.0 - skip) * entry + except);
 }
 
+/* What the aggregation of an entry that ran cost: its group and its aggregates, the operators beyond the join's own row (pure) */
+static inline double
+sift_scope_exec_instr(const SiftScopeCounts *c)
+{
+	return SIFT_SCOPE_GROUP_INSTR * (double) c->group_keys + Max(c->entry_instr - SIFT_SCOPE_JOIN_ROW_INSTR, 0.0);
+}
+
 /*
  * What a read of the counts c cost once it ran: the units it read, those its pre-aggregates answered and the entries it decoded are the executor's own (a read with changed members goes through every entry it decodes
  * row by row), the rest the counts of the read. This is what the rule of `stale scope` weighs against the refresh: the planner's share of the units that keep their pre-aggregate was 0.43 of the measured price for
@@ -524,7 +542,9 @@ sift_scope_rows_price(const SiftScopeCounts *c)
 static inline double
 sift_scope_ran_price(const SiftScopeCounts *c, uint64 units, uint64 preagg_units, uint64 entries)
 {
-	return sift_scope_units_cost(c, (double) (units - preagg_units), (double) preagg_units, (double) entries, sift_scope_entry_cost(c));
+	double		entry = sift_scope_exec_instr(c) + (c->once ? SIFT_SCOPE_DEDUPE_INSTR * (double) c->drops : 0) + (c->changed > 0 ? SIFT_SCOPE_RAN_EXCEPT_INSTR : 0);
+
+	return sift_scope_units_cost(c, (double) (units - preagg_units), (double) preagg_units, (double) entries, entry);
 }
 
 /* What a top-N costs: its units are probed by their zones and the walk reads those that reach its n-th best row (a row costs an entry and its aggregation as everywhere: the heap) */
