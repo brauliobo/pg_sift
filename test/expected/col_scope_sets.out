@@ -35,7 +35,7 @@ INSERT INTO cases VALUES
 	(3, 'distinct ids by month from a month on', 'SELECT date_trunc(''month'', created_at) m, count(DISTINCT dim_a_id) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND created_at >= date ''2026-03-01'' GROUP BY 1'),
 	(4, 'distinct ids by month from a day inside a month', 'SELECT date_trunc(''month'', created_at) m, count(DISTINCT dim_a_id) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND created_at >= date ''2026-03-15'' GROUP BY 1'),
 	(5, 'distinct ids by year', 'SELECT date_trunc(''year'', created_at) y, count(DISTINCT dim_a_id) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) GROUP BY 1'),
-	(6, 'distinct scores and ids by month', 'SELECT date_trunc(''month'', created_at) m, count(DISTINCT score), count(DISTINCT dim_a_id) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) GROUP BY 1'),
+	(6, 'two distinct dims by month', 'SELECT date_trunc(''month'', created_at) m, count(DISTINCT score), count(DISTINCT dim_a_id) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) GROUP BY 1'),
 	(7, 'distinct ids by month, two keys', 'SELECT date_trunc(''month'', created_at) m, count(DISTINCT dim_a_id) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (1, 2)) GROUP BY 1'),
 	(8, 'distinct ids by month, mid key', 'SELECT date_trunc(''month'', created_at) m, count(DISTINCT dim_a_id) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 2) GROUP BY 1'),
 	(9, 'distinct ids by month, small key', 'SELECT date_trunc(''month'', created_at) m, count(DISTINCT dim_a_id) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY 1'),
@@ -66,7 +66,7 @@ SELECT c.n, c.label, r.* FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
   3 | distinct ids by month from a month on           | t    | t
   4 | distinct ids by month from a day inside a month | t    | f
   5 | distinct ids by year                            | t    | t
-  6 | distinct scores and ids by month                | t    | t
+  6 | two distinct dims by month                      | t    | t
   7 | distinct ids by month, two keys                 | t    | f
   8 | distinct ids by month, mid key                  | t    | t
   9 | distinct ids by month, small key                | t    | t
