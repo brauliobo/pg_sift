@@ -510,6 +510,14 @@ typedef struct SegPriv
 	uint64	   *supdir;			/* nsu + 1 */
 	uint8	   *supbuf;
 	Size		supcap;
+	uint64		setsat;			/* the offset in the superunit block of the id sets of the key groups (nsu + 1 offsets, the sets) and their bytes */
+	uint64		setsbytes;
+	uint64	   *setsdir;
+	uint8	   *setsbuf;
+	Size		setscap;
+	uint32		setsk;			/* the group whose sets are in setsblob (PG_UINT32_MAX: none) */
+	uint8	   *setsblob;
+	uint32		setslen;
 	SiftCSuperLeaf **sleaf;		/* [ncols] the records of the INT leaf over the groups, read on first use */
 	uint64	   *ecubedir;		/* the same for the element blobs */
 	uint8	   *ecubebuf;

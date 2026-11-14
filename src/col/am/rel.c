@@ -151,6 +151,8 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 		if ((err = sift_cset_keys_parse(sift_col_options_key_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_columns option: %s", err)));
 		r->pagg.super = sift_col_options(index)->superunit;
+		for (int d = 0; r->nscope > 0 && r->pagg.super >= SIFT_SUPER_MIN_FAN && d < r->pagg.ndims; d++)
+			r->pagg.dsets[r->pagg.dim[d].leaf] = !r->pagg.dim[d].cal && sift_cdsets_leaf_ok(r->schema, r->pagg.dim[d].leaf);
 		for (int k = 0; k < 2 && sift_col_options(index)->ko_lead; k++)
 		{
 			const SiftColOptions *ko = sift_col_options(index);

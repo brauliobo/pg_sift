@@ -18,6 +18,7 @@ spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblo
 	memset(spec, 0, sizeof(*spec));
 	spec->fixed = spec->rfixed = true;
 	spec->max_groups = SIFT_PAGG_CUBE_GROUPS;
+	spec->cal_groups = SIFT_PAGG_KEYGROUP_CAL_GROUPS;
 	if (len > 0)
 	{
 		SiftCHist	h;

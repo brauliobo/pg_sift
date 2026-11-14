@@ -73,6 +73,11 @@ build_key_super(SiftColSegWriter *w, StringInfo out)
 		appendBinaryStringInfo(out, (const char *) g->cubeoff, (Size) (h.nsu + 1) * sizeof(uint64));
 		appendBinaryStringInfo(out, g->cube.data, g->cube.len);
 	}
+	if (g->sets.len > 0)
+	{
+		appendBinaryStringInfo(out, (const char *) g->setsoff, (Size) (h.nsu + 1) * sizeof(uint64));
+		appendBinaryStringInfo(out, g->sets.data, g->sets.len);
+	}
 	pfree(ua);
 	w->format = Max(w->format, SIFT_COL_FORMAT_KEYGROUPS);
 	return true;

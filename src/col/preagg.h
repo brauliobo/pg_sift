@@ -43,6 +43,7 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_PAGG_DEF_MEAS		8			/* measures of a default dim */
 #define SIFT_PAGG_DEF_GROUPS	256			/* default: a dim with more groups in a unit has no histogram in that unit */
 #define SIFT_PAGG_CAL_GROUPS	1024		/* the cells of a calendar dim in a unit: 2.8 years of days, 85 of months */
+#define SIFT_PAGG_KEYGROUP_CAL_GROUPS	8192	/* ... in a key group, whose rows span years: 22 years of days */
 #define SIFT_PAGG_CAL_ROWS		8			/* a cell stands for this many rows or more on average, else the unit goes on to the next grain: answering from cells has to read far fewer than the rows */
 #define SIFT_PAGG_SCOPE_DIM_ROWS	8			/* the units of a scope segment are small (a scope key holds a few of them): a histogram of groups of fewer rows costs as much as the rows it stands for */
 #define SIFT_PAGG_CUBE_GROUPS	4096		/* explicit cube(...): the same bound */
@@ -119,6 +120,8 @@ typedef struct SiftCPaggSpec
 	int16		ktm[SIFT_COL_MAX_COLS][SIFT_KTAB_MEAS];
 	bool		keyauto;				/* key_columns is the choice of the build ('auto: a, b'): a leaf keeps only a key list or a bitmap, within the share of the unit, never a filter */
 	uint16		super;					/* units per superunit summary (column format minor 12); 0: none */
+	uint32		cal_groups;				/* the most cells of a calendar dim (0: SIFT_PAGG_CAL_GROUPS) */
+	bool		dsets[SIFT_COL_MAX_COLS];	/* the 32-bit integer dims whose id sets by calendar month the key groups of a scope index keep (col/preagg/dsets.c) */
 	bool		lookup[SIFT_COL_MAX_COLS];	/* the leaves whose dictionary of many strings is written to be searched in place (option dict_lookup, column format minor 14); the others have the compact form */
 	bool		dict_hash;				/* a sift_col index: a dictionary of many strings written in blocks also keeps the hash of its strings (option dict_lookup other than off, column format minor 25) */
 	uint8		lookup_pct;				/* a sift_table: the orders of the dictionaries together take at most this percent of the segment's chunks (the leaves of lookup); 0: no cap */
@@ -416,5 +419,25 @@ extern bool sift_cpagg_check_excepts(const SiftColSchema *s, const SiftCPaggCol 
 extern bool sift_cpagg_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, bool *need);
 /* The cells of a calendar grain of the n rows of a date or timestamp leaf (the dead rows of a unit, col/delta.c); false for an infinity or a day no cell can start on */
 extern bool sift_cpagg_cal_rows(const SiftColSchema *s, int leaf, int grain, const SiftCPaggCol *c, int64 *cells);
+
+/*
+ * The id sets by calendar month of a key group (col/preagg/dsets.c): the bitmaps of the values of the 32-bit integer leaves leaf[nleaf] in each month of the date or timestamp leaf cal, from
+ * the rows of the group, in out (empty when there is none)
+ */
+/* The order of the leaf among those of the schema the id sets can hold (SIFT_CDSETS_LEAVES at most), -1 when it is not one of them */
+#define SIFT_CDSETS_LEAVES	7			/* the bits of the word of a key group */
+extern int sift_cdsets_ordinal(const SiftColSchema *s, int leaf);
+extern bool sift_cdsets_leaf_ok(const SiftColSchema *s, int leaf);
+extern void sift_cdsets_build(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, int cal, const int *leaf, int nleaf, StringInfo out);
+typedef struct SiftCDset
+{
+	int64		wbase;					/* the bit b of the words is the value wbase * 64 + b */
+	uint64		nwords;					/* 0: no value */
+	const uint8 *words;
+} SiftCDset;
+/* The set of a leaf in the month starting on the day cell, the months of the date leaf cal: 1 (an empty set for a month the group has no rows in), 0 when the blob holds none of the leaf, -1 when the blob is malformed */
+extern int	sift_cdsets_get(const uint8 *blob, uint32 len, int cal, int leaf, int64 cell, SiftCDset *out);
+/* The date leaf and the leaves (ascending, room for ncols of them) a blob holds sets of: their number, or -1 when it is malformed */
+extern int	sift_cdsets_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, int *cal, int *leaf);
 
 #endif							/* SIFT_COL_PREAGG_H */

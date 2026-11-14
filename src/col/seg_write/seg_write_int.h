@@ -100,6 +100,7 @@ typedef struct KeyGroups
 	bool		on;
 	MemoryContext cx;			/* the work of closing a group */
 	SiftCPaggSpec spec;			/* the dims of the cube of a group: those of the segment that fit a run, with their integer measures */
+	SiftCPaggSpec calspec;		/* the cells of days of the first calendar dim, the cube that the id sets by month go with (ndims 0: none) */
 	int			nleaf;			/* the leaves the cube reads */
 	int			leaf[SIFT_COL_MAX_COLS];
 	int64	  **vals;			/* [nleaf] the rows of the open group, in the key domain */
@@ -119,6 +120,8 @@ typedef struct KeyGroups
 	uint64	   *xsplit;			/* [ng] the bytes of the merged cube which the cube of the dims of the rows follows, and then the rollup of the rows (SUPER_X), in the blob of the group */
 	uint64	   *cubeoff;		/* [ng + 1] */
 	StringInfoData cube;
+	uint64	   *setsoff;		/* [ng + 1]: the id sets of each group, in sets (a section after the cubes: reading a cube never crosses them) */
+	StringInfoData sets;		/* [bytes of the cells of days u64][the cells][the id sets by month] */
 } KeyGroups;
 
 struct SiftColSegWriter

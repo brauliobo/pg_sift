@@ -10,7 +10,11 @@
 #include "core/host.h"
 #include "col/seg_write/seg_write_int.h"
 
-/* The cube of a group: the dims of the segment's cube that are not calendar cells or lists, with their integer measures (a float sum depends on the order of its additions, which the units fix) */
+/*
+ * The cube of a group: the dims of the segment's cube that are not calendar cells, lists or the histograms of a date or timestamp, with their integer measures (a float sum depends on the order of
+ * its additions, which the units fix). The first calendar dim is a cube of its own (calspec: cells of a day, no measures) that the id sets by month are asked by: it is kept with them, so
+ * that the reads of the dims never cross it
+ */
 static void
 kg_spec(SiftColSegWriter *w, KeyGroups *g)
 {
@@ -34,10 +38,20 @@ kg_spec(SiftColSegWriter *w, KeyGroups *g)
 	g->spec.permille = SIFT_PAGG_KEYGROUP_PERMILLE;
 	g->spec.max_groups = SIFT_PAGG_CUBE_GROUPS;
 	g->spec.minmax_groups = SIFT_PAGG_KEYGROUP_MINMAX_GROUPS;
+	g->calspec = g->spec;
+	g->calspec.ndims = g->calspec.nrollups = 0;
+	g->calspec.cal_groups = SIFT_PAGG_KEYGROUP_CAL_GROUPS;
 	for (int d = 0; d < w->pagg.ndims; d++)
 	{
 		SiftCPaggDim dim = w->pagg.dim[d];
 
+		if (dim.cal && g->calspec.ndims == 0)
+		{
+			dim.grain = SIFT_CAL_DAY;		/* a key through the zone of the session is exact at the day of a date only (docs/COL-PREAGG.md) */
+			dim.nmeas = 0;
+			g->calspec.dim[g->calspec.ndims++] = dim;
+			seen[dim.leaf] = true;
+		}
 		if (dim.cal || s->cols[dim.leaf].parent >= 0 || s->cols[dim.leaf].type == SIFT_COLT_DATE || s->cols[dim.leaf].type == SIFT_COLT_TIMESTAMP ||
 			s->cols[dim.leaf].type == SIFT_COLT_TIMESTAMPTZ)
 			continue;			/* the calendar cells of a time column answer what its histogram does */
@@ -94,7 +108,10 @@ kg_begin(SiftColSegWriter *w)
 	g->xsplit = palloc(g->cap * sizeof(uint64));
 	g->cubeoff = palloc((g->cap + 1) * sizeof(uint64));
 	g->cubeoff[0] = 0;
+	g->setsoff = palloc((g->cap + 1) * sizeof(uint64));
+	g->setsoff[0] = 0;
 	initStringInfo(&g->cube);
+	initStringInfo(&g->sets);
 	g->on = true;
 	w->kg = g;
 	return true;
@@ -135,6 +152,68 @@ kg_merged(SiftColSegWriter *w, uint32 first, uint32 n, StringInfo merged)
 	pfree(len);
 }
 
+static SiftCPaggCol *
+kg_cols(SiftColSegWriter *w, KeyGroups *g)
+{
+	SiftCPaggCol *cols = palloc0(w->schema->ncols * sizeof(SiftCPaggCol));
+
+	for (int i = 0; i < g->nleaf; i++)
+		cols[g->leaf[i]] = (SiftCPaggCol) {g->vals[i], g->anynull[i] ? g->nulls[i] : NULL, g->anyovf[i] ? g->ovf[i] : NULL, g->rows, g->ready[i]};
+	return cols;
+}
+
+/* The cells of days of the calendar dim and the id sets by month of the 32-bit integer dims of the cube, from the rows of the open group; empty when it has none (more days than a cube holds, or no such dim) */
+static uint32
+kg_sets(SiftColSegWriter *w, KeyGroups *g, StringInfo part)
+{
+	SiftCPaggCol *cols;
+	SiftCHist	h;
+	StringInfoData days,
+				none,
+				sets;
+	Size		unit_bytes = 0;
+	int			n = 0,
+				leaf[SIFT_PAGG_MAX_DIMS];
+	uint64		len;
+
+	uint32		mask = 0;
+	int			cal;
+
+	resetStringInfo(part);
+	for (int d = 0; d < g->spec.ndims; d++)
+		if (w->pagg.dsets[g->spec.dim[d].leaf])
+			leaf[n++] = g->spec.dim[d].leaf;
+	if (g->calspec.ndims == 0 || n == 0)
+		return 0;
+	for (uint32 i = 0; i < g->nunits; i++)
+		unit_bytes += w->sbdir[g->first + i].len;
+	initStringInfo(&days);
+	initStringInfo(&none);
+	initStringInfo(&sets);
+	cols = kg_cols(w, g);
+	sift_cpagg_cube(w->schema, &g->calspec, cols, g->rows, unit_bytes, &days, &none);
+	if (days.len > 0 && sift_cpagg_decode(w->schema, (const uint8 *) days.data, days.len, CurrentMemoryContext, &h) && h.ndims == 1 &&
+		h.dim[0].leaf == g->calspec.dim[0].leaf + SIFT_CAL_DAY * SIFT_PAGG_CAL)
+		sift_cdsets_build(w->schema, cols, g->rows, g->calspec.dim[0].leaf, leaf, n, &sets);
+	if (sets.len > 0)
+	{
+		n = sift_cdsets_leaves(w->schema, (const uint8 *) sets.data, sets.len, &cal, leaf);
+		for (int i = 0; i < n; i++)
+			mask |= 1 << sift_cdsets_ordinal(w->schema, leaf[i]);
+		len = days.len;
+		appendBinaryStringInfo(part, (const char *) &len, sizeof(len));
+		appendBinaryStringInfo(part, days.data, days.len);
+		while (part->len % sizeof(uint64))
+			appendStringInfoChar(part, '\0');		/* the sets are words */
+		appendBinaryStringInfo(part, sets.data, sets.len);
+	}
+	pfree(cols);
+	pfree(days.data);
+	pfree(none.data);
+	pfree(sets.data);
+	return mask;
+}
+
 /* The dims of the spec of the rows that the merged cube lacks, built from the rows of the open group within their budget, in extra */
 static void
 kg_extra(SiftColSegWriter *w, KeyGroups *g, const StringInfoData *merged, StringInfo extra, StringInfo rollup)
@@ -160,16 +239,14 @@ kg_extra(SiftColSegWriter *w, KeyGroups *g, const StringInfoData *merged, String
 	}
 	for (uint32 i = 0; i < g->nunits; i++)
 		unit_bytes += w->sbdir[g->first + i].len;
-	cols = palloc0(s->ncols * sizeof(SiftCPaggCol));
-	for (int i = 0; i < g->nleaf; i++)
-		cols[g->leaf[i]] = (SiftCPaggCol) {g->vals[i], g->anynull[i] ? g->nulls[i] : NULL, g->anyovf[i] ? g->ovf[i] : NULL, g->rows, g->ready[i]};
+	cols = kg_cols(w, g);
 	sift_cpagg_cube(s, &xs, cols, g->rows, unit_bytes, extra, rollup);
 	pfree(cols);
 }
 
 /* A group of the units [first, first + n) with the cube of the merge of its units and the cube of the dims of its rows (either possibly empty: the sums of its leaves are still its own) */
 static void
-kg_push(KeyGroups *g, uint32 first, uint32 n, const StringInfoData *merged, const StringInfoData *extra, const StringInfoData *rollup)
+kg_push(KeyGroups *g, uint32 first, uint32 n, const StringInfoData *merged, const StringInfoData *extra, const StringInfoData *sets, uint32 setmask, const StringInfoData *rollup)
 {
 	if (g->ng == g->cap)
 	{
@@ -178,13 +255,17 @@ kg_push(KeyGroups *g, uint32 first, uint32 n, const StringInfoData *merged, cons
 		g->gn = repalloc(g->gn, g->cap * sizeof(uint32));
 		g->xsplit = repalloc(g->xsplit, g->cap * sizeof(uint64));
 		g->cubeoff = repalloc(g->cubeoff, (g->cap + 1) * sizeof(uint64));
+		g->setsoff = repalloc(g->setsoff, (g->cap + 1) * sizeof(uint64));
 	}
+	Assert(extra->len < (1 << 24));		/* the bytes of the dims of the rows in the word of the group: a tenth of the bytes of at most SIFT_SUPER_KEY_ROWS rows */
 	appendBinaryStringInfo(&g->cube, merged->data, merged->len);
 	appendBinaryStringInfo(&g->cube, extra->data, extra->len);
 	appendBinaryStringInfo(&g->cube, rollup->data, rollup->len);
+	appendBinaryStringInfo(&g->sets, sets->data, sets->len);
 	g->gfirst[g->ng] = first;
 	g->gn[g->ng] = n;
-	g->xsplit[g->ng] = SUPER_X(merged->len, rollup->len > 0 ? extra->len : 0, rollup->len > 0);
+	g->xsplit[g->ng] = SUPER_X(merged->len, rollup->len > 0 ? extra->len : 0, rollup->len > 0, setmask);
+	g->setsoff[g->ng + 1] = g->sets.len;
 	g->cubeoff[++g->ng] = g->cube.len;
 }
 
@@ -204,23 +285,27 @@ segw_kg_close(SiftColSegWriter *w)
 		MemoryContext old = MemoryContextSwitchTo(g->cx);
 		StringInfoData merged,
 					extra,
+					sets,
 					rollup,
 					none;
+		uint32		setmask;
 
 		initStringInfo(&merged);
 		initStringInfo(&extra);
 		initStringInfo(&rollup);
+		initStringInfo(&sets);
 		initStringInfo(&none);
 		kg_merged(w, g->first, g->nunits, &merged);
 		kg_extra(w, g, &merged, &extra, &rollup);
-		kg_push(g, g->first, g->nunits, &merged, &extra, &rollup);
+		setmask = kg_sets(w, g, &sets);
+		kg_push(g, g->first, g->nunits, &merged, &extra, &sets, setmask, &rollup);
 		for (uint32 at = 0; g->nunits > w->pagg.super && at + SIFT_SUPER_MIN_FAN <= g->nunits; at += w->pagg.super)
 		{
 			uint32		n = Min(w->pagg.super, g->nunits - at);
 
 			resetStringInfo(&merged);
 			kg_merged(w, g->first + at, n, &merged);
-			kg_push(g, g->first + at, n, &merged, &none, &none);
+			kg_push(g, g->first + at, n, &merged, &none, &none, 0, &none);
 		}
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(g->cx);

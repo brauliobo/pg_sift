@@ -19,7 +19,9 @@ verify_key_cube(SiftColSegment *seg, uint32 k, uint32 first, uint32 n)
 	bool		anycube = false;
 	StringInfoData want,
 				x,
-				e;
+				e,
+				dc,
+				ds;
 	uint32		glen;
 	const uint8 *got = sift_cseg_super_cube(seg, k, &glen);
 
@@ -45,15 +47,42 @@ verify_key_cube(SiftColSegment *seg, uint32 k, uint32 first, uint32 n)
 		appendBinaryStringInfo(&e, (const char *) got, glen);
 	if (sift_cseg_super_has_rollup(seg, k) != (e.len > 0))
 		corrupt(seg, "The rollup of the rows of key group %u is flagged and absent, or present and not flagged.", k);
-	if (x.len + e.len > 0)
+	initStringInfo(&dc);
+	got = sift_cseg_super_days(seg, k, &glen);
+	if (glen > 0)
+		appendBinaryStringInfo(&dc, (const char *) got, glen);
+	initStringInfo(&ds);
+	got = sift_cseg_super_sets(seg, k, &glen);
+	if (glen > 0)
+		appendBinaryStringInfo(&ds, (const char *) got, glen);
+	if (sift_cseg_super_has_sets(seg, k) != (ds.len > 0) || (ds.len > 0) != (dc.len > 0))
+		corrupt(seg, "The id sets of key group %u are flagged and absent, or present and not flagged, or have no cells of days.", k);
+	if (x.len + e.len + ds.len > 0)
 	{
 		bool		need[SIFT_COL_MAX_COLS] = {false};
 		SiftCPaggCol cols[SIFT_COL_MAX_COLS] = {{0}};
+		int			sleaf[SIFT_COL_MAX_COLS],
+					scal = -1,
+					ns = 0;
+		uint32		want_mask = 0;
 		uint32		rows = 0,
 					at = 0;
 
-		if (!sift_cpagg_leaves(sc, (const uint8 *) x.data, x.len, (const uint8 *) e.data, e.len, need))
+		if (x.len + e.len > 0 && !sift_cpagg_leaves(sc, (const uint8 *) x.data, x.len, (const uint8 *) e.data, e.len, need))
 			corrupt(seg, "The cube of key group %u does not decode.", k);
+		if (ds.len > 0 && (ns = sift_cdsets_leaves(sc, (const uint8 *) ds.data, ds.len, &scal, sleaf)) < 0)
+			corrupt(seg, "The id sets of key group %u do not decode.", k);
+		if (!sift_cpagg_leaves(sc, (const uint8 *) dc.data, dc.len, NULL, 0, need))
+			corrupt(seg, "The cells of days of key group %u do not decode.", k);
+		for (int i = 0; i < ns; i++)
+		{
+			need[sleaf[i]] = true;
+			want_mask |= 1 << sift_cdsets_ordinal(sc, sleaf[i]);
+		}
+		if (want_mask != sift_cseg_super_dset_mask(seg, k))
+			corrupt(seg, "The leaves of the id sets of key group %u are not those its word says.", k);
+		if (ns > 0)
+			need[scal] = true;
 		for (uint32 i = 0; i < n; i++)
 			rows += seg->sbdir[first + i].nrows;
 		for (int c = 0; c < sc->ncols; c++)
@@ -90,8 +119,19 @@ verify_key_cube(SiftColSegment *seg, uint32 k, uint32 first, uint32 n)
 			}
 			at += nrows;
 		}
-		if (!sift_cpagg_check(sc, cols, rows, (const uint8 *) x.data, x.len, (const uint8 *) e.data, e.len, seg->entry.format))
+		if (x.len + e.len > 0 && !sift_cpagg_check(sc, cols, rows, (const uint8 *) x.data, x.len, (const uint8 *) e.data, e.len, seg->entry.format))
 			corrupt(seg, "The dims and the rollup of the rows of key group %u differ from the rows of its units.", k);
+		if (dc.len > 0 && !sift_cpagg_check(sc, cols, rows, (const uint8 *) dc.data, dc.len, NULL, 0, seg->entry.format))
+			corrupt(seg, "The cells of days of key group %u differ from the rows of its units.", k);
+		if (ns > 0)
+		{
+			StringInfoData built;
+
+			initStringInfo(&built);
+			sift_cdsets_build(sc, cols, rows, scal, sleaf, ns, &built);
+			if (built.len != ds.len || memcmp(built.data, ds.data, ds.len) != 0)
+				corrupt(seg, "The id sets of key group %u differ from the rows of its units.", k);
+		}
 		for (int c = 0; c < sc->ncols; c++)
 			if (need[c])
 			{

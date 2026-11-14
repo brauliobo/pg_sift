@@ -342,11 +342,32 @@ extern const uint8 *sift_cseg_super_cube(SiftColSegment *seg, uint32 k, uint32 *
 extern const uint8 *sift_cseg_super_extra(SiftColSegment *seg, uint32 k, uint32 *len);
 extern const uint8 *sift_cseg_super_rollup(SiftColSegment *seg, uint32 k, uint32 *len);
 /* The key groups that hold a rollup of the rows and the units they cover (the groups of a fan of units inside a run hold none) */
-/* The word of a key group in the block: the bytes of the merged cube, and with the rollup of the rows (bit 63, which follows them) the bytes of the dims of the rows; without it, the rest of the blob is those dims */
-#define SUPER_X(merged, extra, rollup)	((uint64) (merged) | (uint64) (extra) << 32 | (uint64) (rollup) << 63)
+/*
+ * The word of a key group in the block: the bytes of the merged cube (bits 0-31), and with the rollup of the rows (bit 63, which follows them) the bytes of the dims of the rows (24 bits); without it,
+ * the rest of the blob is those dims. Bits 56-62: the leaves the id sets of the group hold, by their order among the leaves sift_cdsets_leaf_ok takes (a read that wants others reads nothing)
+ */
+#define SUPER_X(merged, extra, rollup, sets)	((uint64) (merged) | (uint64) (extra) << 32 | (uint64) (sets) << 56 | (uint64) (rollup) << 63)
 #define SUPER_X_MERGED(x)	((x) & UINT32_MAX)
-#define SUPER_X_EXTRA(x)	((x) >> 32 & INT32_MAX)
+#define SUPER_X_EXTRA(x)	((x) >> 32 & 0xFFFFFF)
+#define SUPER_X_SETS(x)	((x) >> 56 & 0x7F)
 #define SUPER_X_ROLLUP(x)	((x) >> 63)
+/* The sets blob: u32 nleaves, u32 0, then per leaf a record, its month cells (int64, ascending) and per cell nwords bitmap words from the key wbase * 64 */
+typedef struct SiftCSetsLeaf
+{
+	uint32		leaf;
+	uint32		nmonths;
+	int64		wbase;
+	uint32		nwords;
+	uint32		pad;
+} SiftCSetsLeaf;
+extern const uint8 *sift_cseg_super_days(SiftColSegment *seg, uint32 k, uint32 *len);
+extern bool sift_cseg_super_has_sets(SiftColSegment *seg, uint32 k);
+extern uint32 sift_cseg_super_dset_mask(SiftColSegment *seg, uint32 k);
+extern bool sift_cseg_super_has_dsets(SiftColSegment *seg, uint32 k, uint64 leaves);
+/* The key groups that keep id sets and the units they cover */
+extern void sift_cseg_super_sets_count(SiftColSegment *seg, uint32 *groups, uint32 *units);
+/* The id sets of key group k by calendar month (docs/COL-SCOPE.md), valid until the next call on seg; NULL: the group has none */
+extern const uint8 *sift_cseg_super_sets(SiftColSegment *seg, uint32 k, uint32 *len);
 extern bool sift_cseg_super_has_rollup(SiftColSegment *seg, uint32 k);
 extern void sift_cseg_super_rollups(SiftColSegment *seg, uint32 *groups, uint32 *units);
 /* sift.col_verify: the superunit block says what the units say (page masks, sums, cubes); an error otherwise, nothing when the segment has none */
@@ -509,6 +530,8 @@ typedef struct SiftCPresence
 	int64	   *keys;
 } SiftCPresence;
 extern bool sift_cseg_presence(SiftColSegment *seg, int col, uint32 u, SiftCPresence *p);
+/* The same of leaf col in the month of day cell of date leaf cal in key group k: the id sets of the group; false when it has none of the leaf */
+extern bool sift_cseg_super_dset(SiftColSegment *seg, uint32 k, int cal, int col, int64 cell, SiftCPresence *p);
 
 /* Liveness: is any row of the SB's unit dead; the live bits of unit u's rows (nrows bits, padded words) */
 extern bool sift_cseg_dirty(SiftColSegment *seg, uint32 u);

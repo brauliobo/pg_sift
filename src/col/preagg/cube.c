@@ -295,7 +295,7 @@ cpagg_emit_cube(const SiftCPaggSpec *spec, const DimBuild *db, int nd, StringInf
  * of the budget of the calendar dims (*left; 0: no budget). A unit with an infinity or a day no cell can start on has none.
  */
 static void
-build_cal(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *cols, uint32 nrows, const Scratch *sc, Size *left, bool budget, DimBuild *b)
+build_cal(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *cols, uint32 nrows, uint32 maxcells, const Scratch *sc, Size *left, bool budget, DimBuild *b)
 {
 	const SiftCPaggCol *dc = &cols[sd->leaf];
 	SiftCPaggCol mc;
@@ -314,7 +314,7 @@ build_cal(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 			mc = (SiftCPaggCol) {cells, dc->nulls, NULL, nrows, true};
 			resetStringInfo(&b->blob);
 			b->grain = g;
-			b->ok = build_dim(s, sd, &mc, cols, nrows, SIFT_PAGG_CAL_GROUPS, sc, b);
+			b->ok = build_dim(s, sd, &mc, cols, nrows, maxcells, sc, b);
 			if (!sd->grain)
 				b->ok = b->ok && (uint64) b->ngroups * SIFT_PAGG_CAL_ROWS <= nrows && (!budget || b->blob.len + 1 <= *left);
 		}
@@ -332,13 +332,14 @@ void
 cpagg_build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, uint32 cubeg, Size cal_budget, DimBuild *db)
 {
 	uint32		hsize = 16,
-				maxg = cubeg;
+				maxg = cubeg,
+				calg = spec->cal_groups ? spec->cal_groups : SIFT_PAGG_CAL_GROUPS;
 	Size		left = cal_budget;
 	Scratch		sc;
 
 	for (int d = 0; d < spec->ndims; d++)
 		if (spec->dim[d].cal)
-			maxg = Max(maxg, SIFT_PAGG_CAL_GROUPS);
+			maxg = Max(maxg, calg);
 	while (hsize < 2 * (maxg + 1))
 		hsize *= 2;
 	sc.hsize = hsize;
@@ -362,7 +363,7 @@ cpagg_build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCP
 		initStringInfo(&db[d].blob);
 		if (spec->dim[d].cal)
 		{
-			build_cal(s, &spec->dim[d], cols, nrows, &sc, &left, cal_budget > 0, &db[d]);
+			build_cal(s, &spec->dim[d], cols, nrows, calg, &sc, &left, cal_budget > 0, &db[d]);
 			continue;
 		}
 		db[d].ok = build_dim(s, &spec->dim[d], &cols[spec->dim[d].leaf], cols, nrows, cubeg, &sc, &db[d]) &&

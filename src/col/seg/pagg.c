@@ -262,9 +262,11 @@ super_header(SiftColSegment *seg)
 			SuperHeader *h = MemoryContextAlloc(seg->mcxt, sizeof(SuperHeader));
 			uint64		bytes = PAGG_SUPER_BYTES(ph),
 						base = seg_sec(seg, SIFT_SEC_DICTIDX)->off + pv->pagg_end + PAGG_SUPERDIR(ph),
-						need;
+						need,
+						setsat;
 			uint32		nleaf = 0;
-			bool		keyed;
+			bool		keyed,
+						anysets = false;
 
 			seg_read(seg, base, sizeof(SuperHeader), h);
 			keyed = h->magic == SUPER_KMAGIC;
@@ -276,10 +278,11 @@ super_header(SiftColSegment *seg)
 				corrupt(seg, "The superunit block starts with 0x%08x, groups of %u units, %u groups and %u leaves for %u units and %u leaves.", h->magic,
 						h->fan, h->nsu, h->nleaf, seg->nsb, nleaf);
 			need = super_pm_off(h) + (uint64) seg->nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64) + (uint64) nleaf * h->nsu * sizeof(SiftCSuperLeaf);
-			if (h->cubedir_off == 0 ? (h->cube_bytes != 0 || bytes != need) :
-				(h->cubedir_off != need || h->cube_bytes > bytes || bytes != need + (h->nsu + 1) * sizeof(uint64) + h->cube_bytes))
+			if (h->cubedir_off == 0 ? (h->cube_bytes != 0 || bytes < need) :
+				(h->cubedir_off != need || h->cube_bytes > bytes || bytes < need + (h->nsu + 1) * sizeof(uint64) + h->cube_bytes))
 				corrupt(seg, "The superunit block holds %llu bytes, its sections say %llu and a cube of %llu bytes at %llu.", ULL(bytes), ULL(need),
 						ULL(h->cube_bytes), ULL(h->cubedir_off));
+			setsat = need + (h->cubedir_off ? (h->nsu + 1) * sizeof(uint64) + h->cube_bytes : 0);
 			if (keyed)
 			{
 				Size		bytes_g = (Size) h->nsu * 2 * sizeof(uint32);
@@ -298,6 +301,7 @@ super_header(SiftColSegment *seg)
 
 					if (!SUPER_X_ROLLUP(xs[k]) && SUPER_X_EXTRA(xs[k]) != 0)
 						corrupt(seg, "The key group %u of the superunit block has no rollup of the rows and the bytes of one.", k);
+					anysets |= SUPER_X_SETS(xs[k]) != 0;
 
 					if (n < SIFT_SUPER_MIN_FAN || n > SIFT_SUPER_MAX_FAN || (uint64) first + n > seg->nsb || (k > 0 && (first < g[k - 1] || (first == g[k - 1] && n >= g[h->nsu + k - 1]))) ||
 						(k > 0 && first < end && first + n > end))
@@ -310,6 +314,11 @@ super_header(SiftColSegment *seg)
 				pv->sgn = g + h->nsu;
 				pv->sgx = (uint64 *) (raw + bytes_g + sizeof(uint64));
 			}
+			/* the id sets of the key groups are a section after the cubes (nsu + 1 offsets, the sets), there when a group says so */
+			if (anysets ? bytes <= setsat + (h->nsu + 1) * sizeof(uint64) : bytes != setsat)
+				corrupt(seg, "The superunit block holds %llu bytes, its cubes end at %llu and %s id sets.", ULL(bytes), ULL(setsat), anysets ? "its groups have" : "no group has");
+			pv->setsat = setsat;
+			pv->setsbytes = anysets ? bytes - setsat - (h->nsu + 1) * sizeof(uint64) : 0;
 			pv->super = h;
 			pv->sleaf = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(SiftCSuperLeaf *));
 		}
@@ -376,11 +385,12 @@ super_lower(SiftColSegment *seg, const SuperHeader *h, uint32 u)
 uint32
 sift_cseg_super_align(SiftColSegment *seg, uint32 u)
 {
-	const SuperHeader *h = super_header(seg);
+	const SuperHeader *h;
 	SegPriv    *pv = PRIV(seg);
 	uint32		end = u;
 
-	if (h == NULL || h->magic != SUPER_KMAGIC || u >= seg->nsb)
+	/* no group straddles the first unit or one past the last: the block of the segment is not read for them */
+	if (u == 0 || u >= seg->nsb || (h = super_header(seg)) == NULL || h->magic != SUPER_KMAGIC)
 		return u;
 	for (uint32 k = super_lower(seg, h, u); k-- > 0 && pv->sgfirst[k] + SIFT_SUPER_MAX_FAN > u;)
 		end = Max(end, pv->sgfirst[k] + pv->sgn[k]);
@@ -556,7 +566,7 @@ typedef enum SuperPart
 	SUPER_ROLLUP
 } SuperPart;
 
-
+/* blob of a key group: merged cube, dims of the rows, [rollup] */
 static const uint8 *
 super_blob(SiftColSegment *seg, uint32 k, SuperPart part, uint32 *len)
 {
@@ -599,6 +609,107 @@ sift_cseg_super_rollup(SiftColSegment *seg, uint32 k, uint32 *len)
 	return super_blob(seg, k, SUPER_ROLLUP, len);
 }
 
+/* The part of group k after its cubes: [bytes of the cells of days u64][the cells][the id sets]; cached for the group read last */
+static const uint8 *
+super_sets_part(SiftColSegment *seg, uint32 k, uint32 *len)
+{
+	SegPriv    *pv = PRIV(seg);
+	const uint8 *b;
+
+	if (pv->setsblob == NULL || pv->setsk != k)
+	{
+		uint32		nsu = pv->super->nsu;
+
+		if (!sift_cseg_super_has_sets(seg, k) ||
+			(b = seg_unit_blob_part(seg, nsu, k, PAGG_SUPERDIR(pv->pagg) + pv->setsat, pv->setsbytes, &pv->setsdir, &pv->setsbuf, &pv->setscap, 0, UINT64_MAX, len)) == NULL)
+			return NULL;
+		if (pv->setsdir[0] != 0 || pv->setsdir[nsu] != pv->setsbytes)
+			corrupt(seg, "The id sets of the key groups end at %llu of %llu bytes.", ULL(pv->setsdir[nsu]), ULL(pv->setsbytes));
+		if (*len < sizeof(uint64) || TYPEALIGN(sizeof(uint64), *(const uint64 *) b) > *len - sizeof(uint64))
+			corrupt(seg, "The id sets of key group %u start with %llu bytes of cells of days, in %u.", k, ULL(*(const uint64 *) b), *len);
+		for (uint64 i = *(const uint64 *) b; i < TYPEALIGN(sizeof(uint64), *(const uint64 *) b); i++)
+			if (b[sizeof(uint64) + i] != 0)
+				corrupt(seg, "The cells of days of key group %u are followed by a byte that is not padding.", k);
+		if (pv->setsblob)
+			pfree(pv->setsblob);
+		pv->setsblob = MemoryContextAlloc(seg->mcxt, *len);
+		memcpy(pv->setsblob, b, *len);
+		pv->setslen = *len;
+		pv->setsk = k;
+	}
+	*len = pv->setslen;
+	return pv->setsblob;
+}
+
+const uint8 *
+sift_cseg_super_days(SiftColSegment *seg, uint32 k, uint32 *len)
+{
+	const uint8 *b = super_sets_part(seg, k, len);
+
+	*len = b ? *(const uint64 *) b : 0;
+	return b ? b + sizeof(uint64) : NULL;
+}
+
+const uint8 *
+sift_cseg_super_sets(SiftColSegment *seg, uint32 k, uint32 *len)
+{
+	const uint8 *b = super_sets_part(seg, k, len);
+	uint64		days = b ? *(const uint64 *) b : 0;
+
+	if (b == NULL)
+		return NULL;
+	days = TYPEALIGN(sizeof(uint64), days);
+	*len -= sizeof(uint64) + days;
+	return b + sizeof(uint64) + days;
+}
+
+bool
+sift_cseg_super_dset(SiftColSegment *seg, uint32 k, int cal, int col, int64 cell, SiftCPresence *p)
+{
+	SegPriv    *pv = PRIV(seg);
+	uint32		len;
+	const uint8 *b;
+	SiftCDset	d;
+	int			found;
+
+	/* the word of the group says whether it holds the sets of the leaf: nothing is read otherwise (a cell of a group already read has it) */
+	if ((pv->setsblob == NULL || pv->setsk != k) && (col >= 64 || !sift_cseg_super_has_dsets(seg, k, UINT64CONST(1) << col)))
+		return false;
+	if ((b = sift_cseg_super_sets(seg, k, &len)) == NULL)
+		return false;
+	if ((found = sift_cdsets_get(b, len, cal, col, cell, &d)) < 0)
+		corrupt(seg, "The id sets of key group %u are malformed.", k);
+	*p = (SiftCPresence) {d.wbase, d.nwords, d.words, 0, NULL};
+	return found > 0;
+}
+
+bool
+sift_cseg_super_has_sets(SiftColSegment *seg, uint32 k)
+{
+	return sift_cseg_super_dset_mask(seg, k) != 0;
+}
+
+/* The leaves of the id sets of key group k by their order (SIFT_CDSETS_LEAVES, seg.h SUPER_X): bit o */
+uint32
+sift_cseg_super_dset_mask(SiftColSegment *seg, uint32 k)
+{
+	const SuperHeader *h = super_header(seg);
+
+	return h != NULL && h->magic == SUPER_KMAGIC && k < h->nsu ? SUPER_X_SETS(PRIV(seg)->sgx[k]) : 0;
+}
+
+/* Does key group k hold the id sets of every leaf of the bit mask (bit l: leaf l), from its word, no read */
+bool
+sift_cseg_super_has_dsets(SiftColSegment *seg, uint32 k, uint64 leaves)
+{
+	uint64		have = sift_cseg_super_dset_mask(seg, k);
+
+	for (int l = 0; l < seg->schema->ncols && l < 64; l++)
+		if ((leaves >> l & 1) && (sift_cdsets_ordinal(seg->schema, l) < 0 || !(have >> sift_cdsets_ordinal(seg->schema, l) & 1)))
+			return false;
+	return leaves != 0 && have != 0;
+}
+
 /* Does key group k hold the rollup of its rows (a bit of its word, no read) */
 bool
 sift_cseg_super_has_rollup(SiftColSegment *seg, uint32 k)
@@ -606,6 +717,18 @@ sift_cseg_super_has_rollup(SiftColSegment *seg, uint32 k)
 	const SuperHeader *h = super_header(seg);
 
 	return h != NULL && h->magic == SUPER_KMAGIC && k < h->nsu && SUPER_X_ROLLUP(PRIV(seg)->sgx[k]);
+}
+
+void
+sift_cseg_super_sets_count(SiftColSegment *seg, uint32 *groups, uint32 *units)
+{
+	*groups = *units = 0;
+	for (uint32 k = 0; k < sift_cseg_super_count(seg); k++)
+		if (sift_cseg_super_has_sets(seg, k))
+		{
+			(*groups)++;
+			*units += PRIV(seg)->sgn[k];
+		}
 }
 
 void
