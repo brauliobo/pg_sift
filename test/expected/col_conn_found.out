@@ -41,8 +41,8 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 999 ELSE 1 + i % 200 END, i % 10 FROM generate_series(1, 3000) i;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, v) WITH (connect = 'dim_a_id -> dim_a(id)');
-NOTICE:  sift_col index "events_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = dim_a_id, v; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 CREATE TABLE shapes (n int, sql text);
 INSERT INTO shapes VALUES
