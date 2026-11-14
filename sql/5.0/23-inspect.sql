@@ -140,28 +140,6 @@ CREATE OR REPLACE VIEW sift.workers AS
 	CROSS JOIN LATERAL sift.worker_state(c.oid) w
 	WHERE c.relkind IN ('r', 'm') AND sift._may_inspect(c.oid) AND w.segments IS NOT NULL;
 
-CREATE OR REPLACE VIEW sift.col_index_status AS
-	SELECT c.oid::regclass AS index, m.heap AS "table",
-		   pg_relation_size(c.oid) AS index_bytes, x.bytes AS segment_bytes,
-		   x.free_blocks * bs.n AS free_bytes, x.reusable_blocks * bs.n AS reusable_bytes,
-		   x.rows AS segment_rows, x.segments, x.max_segments, s.largest_segment_bytes, x.units, s.listed_units,
-		   s.dirty_segments, s.dead_rows, round(100.0 * s.dead_rows / NULLIF(x.rows, 0), 2) AS dead_pct,
-		   s.buffer_rows, w.sealed AS sealed_buffers, w.running, w.failures, w.next_retry,
-		   m.last_vacuum, m.changed_rows, m.vacuum_at, m.rewrite_due AS due, m.last_request, m.blocked_by
-	FROM pg_class c
-	JOIN pg_am a ON a.oid = c.relam AND a.amname = 'sift_col'
-	JOIN pg_index i ON i.indexrelid = c.oid AND i.indisready
-	CROSS JOIN (SELECT current_setting('block_size')::int8 AS n) bs
-	CROSS JOIN LATERAL sift.col_index_info(c.oid) x
-	CROSS JOIN LATERAL sift.worker_state(c.oid) w
-	CROSS JOIN LATERAL sift.col_maintenance_status(c.oid) m
-	CROSS JOIN LATERAL (SELECT max(bytes) FILTER (WHERE kind = 'immutable') AS largest_segment_bytes,
-							   sum(units) AS listed_units, count(*) FILTER (WHERE dirty) AS dirty_segments,
-							   coalesce(sum(dead_rows), 0) AS dead_rows,
-							   coalesce(sum(rows) FILTER (WHERE kind <> 'immutable'), 0) AS buffer_rows
-						FROM sift.col_segments(c.oid)) s
-	WHERE sift._may_inspect(i.indrelid) AND w.segments IS NOT NULL;
-
 CREATE OR REPLACE VIEW sift.col_connections AS
 	SELECT c.oid::regclass AS child, l.ordinal, l.fk, l.parent_index AS parent, l.declaration, l.automatic, s.lineage, s.records, s.stamp,
 		CASE WHEN f.filled = f.segments THEN 'filled'
@@ -211,3 +189,95 @@ CREATE OR REPLACE VIEW sift.projection_status AS
 		AND sift._may_inspect((SELECT x.indrelid FROM pg_index x WHERE x.indexrelid = l.idx))
 	ORDER BY 1, 3;
 GRANT SELECT ON sift.projection_status TO PUBLIC;
+
+-- The status of the sift_col indexes is read by the same rule as the inspectors (sql/5.0/20-index-format.sql has the columns).
+CREATE OR REPLACE VIEW sift.col_index_status AS
+	SELECT c.oid::regclass AS index, m.heap AS "table",
+		   pg_relation_size(c.oid) AS index_bytes, x.bytes AS segment_bytes,
+		   x.free_blocks * bs.n AS free_bytes, x.reusable_blocks * bs.n AS reusable_bytes,
+		   x.rows AS segment_rows, x.segments, x.max_segments, s.largest_segment_bytes, x.units, s.listed_units,
+		   s.dirty_segments, s.dead_rows, round(100.0 * s.dead_rows / NULLIF(x.rows, 0), 2) AS dead_pct,
+		   s.buffer_rows, w.sealed AS sealed_buffers, w.running, w.failures, w.next_retry,
+		   m.last_vacuum, m.changed_rows, m.vacuum_at, m.rewrite_due AS due, m.last_request, m.blocked_by,
+		   f.major || '.' || f.minor AS format, s.min_segment_format, s.max_segment_format, f.reads AS library_reads
+	FROM pg_class c
+	JOIN pg_am a ON a.oid = c.relam AND a.amname = 'sift_col'
+	JOIN pg_index i ON i.indexrelid = c.oid AND i.indisready
+	CROSS JOIN (SELECT current_setting('block_size')::int8 AS n) bs
+	CROSS JOIN LATERAL sift.col_index_info(c.oid) x
+	CROSS JOIN LATERAL sift.worker_state(c.oid) w
+	CROSS JOIN LATERAL sift.col_maintenance_status(c.oid) m
+	CROSS JOIN LATERAL sift.index_format(c.oid) f
+	CROSS JOIN LATERAL (SELECT max(bytes) FILTER (WHERE kind = 'immutable') AS largest_segment_bytes,
+							   sum(units) AS listed_units, count(*) FILTER (WHERE dirty) AS dirty_segments,
+							   coalesce(sum(dead_rows), 0) AS dead_rows,
+							   coalesce(sum(rows) FILTER (WHERE kind <> 'immutable'), 0) AS buffer_rows,
+							   min(format) AS min_segment_format, max(format) AS max_segment_format
+						FROM sift.col_segments(c.oid)) s
+	WHERE sift._may_inspect(i.indrelid) AND w.segments IS NOT NULL;
+COMMENT ON VIEW sift.col_index_status IS 'One row per sift_col index the caller can read, for the DBA of a large table: sizes, segments against the limit, rows, dirty segments and dead rows, write buffers, the maintenance state and what blocks a rewrite (sift.col_maintenance_status), and the format: the metapage, the oldest and newest column format of its segments, and the range this library reads.';
+GRANT SELECT ON sift.col_index_status TO PUBLIC;
+
+-- One row per sift object of the database the caller may look at, whatever its access method and state: the BM25 and the sift_col indexes (an index that CREATE INDEX CONCURRENTLY is still
+-- building, or a failed one, is listed as invalid), and the sift_tables. state: invalid (not valid: still building, or a build that failed), locked (a REINDEX or another session holds the object), failing
+-- (the last step of its maintenance failed), maintaining (a step runs now) or ready.
+CREATE VIEW sift.indexes AS
+	SELECT c.oid::regclass AS relation, a.amname::text AS kind, i.indrelid::regclass AS "table", pg_relation_size(c.oid) AS bytes, w.segments, f.major || '.' || f.minor AS format,
+		   CASE WHEN NOT i.indisvalid OR NOT i.indisready THEN 'invalid' WHEN w.segments IS NULL THEN 'locked'
+				WHEN w.failures > 0 THEN 'failing' WHEN w.running THEN 'maintaining' ELSE 'ready' END AS state
+	FROM pg_class c
+	JOIN pg_am a ON a.oid = c.relam AND a.amname IN ('sift', 'sift_col')
+	JOIN pg_index i ON i.indexrelid = c.oid
+	LEFT JOIN LATERAL sift.worker_state(CASE WHEN i.indisvalid AND i.indisready THEN c.oid END) w ON true
+	LEFT JOIN LATERAL sift.index_format(CASE WHEN i.indisvalid AND i.indisready THEN c.oid END) f ON true
+	WHERE c.relkind = 'i' AND sift._may_inspect(i.indrelid)
+	UNION ALL
+	SELECT c.oid::regclass, a.amname::text, c.oid::regclass, pg_relation_size(c.oid), w.segments, f.major || '.' || f.minor,
+		   CASE WHEN w.segments IS NULL THEN 'locked' WHEN w.failures > 0 THEN 'failing' WHEN w.running THEN 'maintaining' ELSE 'ready' END
+	FROM pg_class c
+	JOIN pg_am a ON a.oid = c.relam AND a.amname = 'sift_table'
+	CROSS JOIN LATERAL sift.worker_state(c.oid) w
+	CROSS JOIN LATERAL sift.index_format(c.oid) f
+	WHERE c.relkind IN ('r', 'm') AND sift._may_inspect(c.oid);
+COMMENT ON VIEW sift.indexes IS 'One row per sift object of the database the caller can read, whatever its access method: sift and sift_col indexes and sift_tables, with their table, size, segments, format and state (invalid, locked, failing, maintaining or ready).';
+GRANT SELECT ON sift.indexes TO PUBLIC;
+
+-- The event triggers of the extension, for the operator who has to see what runs on every DDL statement of the database and to switch it off in an emergency (a library that does not match the
+-- SQL fails every statement a hook fires on). sift.ddl_hooks_enable(false) disables them all in one statement; enable sweeps what the drops left meanwhile.
+COMMENT ON EVENT TRIGGER sift_col_build_lock IS 'Before CREATE INDEX: takes the table lock that the build of the change log of a sift_col index needs first, so that two builds on one table do not deadlock';
+COMMENT ON EVENT TRIGGER sift_col_value_store_sql_drop IS 'After a DROP that takes an index: drops the shared value stores that no index uses any more';
+COMMENT ON EVENT TRIGGER sift_publication_check IS 'After CREATE or ALTER PUBLICATION: refuses a publication of a sift_table when pg_sift is not in shared_preload_libraries';
+COMMENT ON EVENT TRIGGER sift_table_ddl_check IS 'After ALTER TABLE: refuses a column that a sift_table cannot hold (more than 127), and notes a table that becomes the partition or child of another';
+COMMENT ON EVENT TRIGGER sift_table_option_values_drop IS 'After a DROP: removes the rows of sift.table_option_values of the tables that went';
+COMMENT ON EVENT TRIGGER sift_table_paths_drop IS 'After a DROP: removes the declared paths of sift.table_paths of the tables that went';
+COMMENT ON EVENT TRIGGER sift_table_repack_guard IS 'Before CREATE TRIGGER: refuses the trigger of pg_repack on a sift_table, which the swap of its files would destroy';
+
+CREATE VIEW sift.ddl_hooks AS
+	SELECT t.evtname::text AS name, t.evtevent::text AS event, t.evttags AS tags, t.evtenabled <> 'D' AS enabled,
+		   obj_description(t.oid, 'pg_event_trigger') AS effect
+	FROM pg_event_trigger t
+	JOIN pg_depend d ON d.classid = 'pg_event_trigger'::regclass AND d.objid = t.oid AND d.deptype = 'e'
+	JOIN pg_extension e ON e.oid = d.refobjid AND e.extname = 'pg_sift'
+	ORDER BY t.evtname;
+COMMENT ON VIEW sift.ddl_hooks IS 'The event triggers of pg_sift: what each fires on (event and command tags), whether it is enabled and what it does. sift.ddl_hooks_enable disables or enables all of them.';
+GRANT SELECT ON sift.ddl_hooks TO PUBLIC;
+
+CREATE FUNCTION sift.ddl_hooks_enable(enable boolean) RETURNS int LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+	n int := 0;
+	h text;
+BEGIN
+	FOR h IN SELECT name FROM sift.ddl_hooks LOOP
+		EXECUTE format('ALTER EVENT TRIGGER %I %s', h, CASE WHEN enable THEN 'ENABLE' ELSE 'DISABLE' END);
+		n := n + 1;
+	END LOOP;
+	IF enable THEN
+		DELETE FROM sift.table_paths p WHERE NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = p.relid::oid);
+		DELETE FROM sift.table_option_values v WHERE NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = v.rel::oid);
+		PERFORM sift._col_value_store_drop_unused();
+	END IF;
+	RETURN n;
+END $$;
+REVOKE ALL ON FUNCTION sift.ddl_hooks_enable(boolean) FROM PUBLIC;
+COMMENT ON FUNCTION sift.ddl_hooks_enable(boolean) IS 'Superuser: disables (false) or enables (true) every event trigger of pg_sift in one call and returns how many it changed; enabling also removes what the drops left meanwhile (declared paths, options, unused value stores). For a library that does not match the SQL, which fails every DDL statement a hook fires on.';
+

@@ -466,7 +466,7 @@ bm25_verify(PG_FUNCTION_ARGS)
 				sum_dl = 0,
 				nelems = 0;
 
-	index = open_sift(PG_GETARG_OID(0), "col_verify");
+	index = open_sift(PG_GETARG_OID(0), NULL);
 	sift_check_maintain(index);	/* it holds the maintenance lock: a role that only reads must not hold maintenance back */
 	/* Keeps promotion, merges and the sweep from releasing what the directory snapshot references */
 	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ShareLock);

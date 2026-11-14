@@ -1,0 +1,119 @@
+-- sift.ddl_hooks lists the event triggers of the extension; sift.ddl_hooks_enable(false) turns every one of them off, the DDL each one guards then runs unguarded, and
+-- enabling turns them on again and sweeps what the drops left behind.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SELECT name, event, tags, enabled, effect IS NOT NULL AS described FROM sift.ddl_hooks;
+             name              |       event       |                    tags                    | enabled | described 
+-------------------------------+-------------------+--------------------------------------------+---------+-----------
+ sift_col_build_lock           | ddl_command_start | {"CREATE INDEX"}                           | t       | t
+ sift_col_value_store_sql_drop | sql_drop          |                                            | t       | t
+ sift_publication_check        | ddl_command_end   | {"CREATE PUBLICATION","ALTER PUBLICATION"} | t       | t
+ sift_table_ddl_check          | ddl_command_end   | {"ALTER TABLE"}                            | t       | t
+ sift_table_option_values_drop | sql_drop          |                                            | t       | t
+ sift_table_paths_drop         | sql_drop          |                                            | t       | t
+ sift_table_repack_guard       | ddl_command_start | {"CREATE TRIGGER"}                         | t       | t
+(7 rows)
+
+CREATE TABLE dh_t (id int, doc jsonb) USING sift_table;
+SELECT sift.table_set_paths('dh_t', 'doc', 'doc.k int4');
+ table_set_paths 
+-----------------
+ 
+(1 row)
+
+SELECT sift.table_set_option('dh_t', 'key_order', 'id') IS NOT NULL AS option_set;
+ option_set 
+------------
+ t
+(1 row)
+
+CREATE TABLE dh_s (id int, url text, note text);
+INSERT INTO dh_s SELECT g, 'u' || g % 50, 'n' || g % 7 FROM generate_series(1, 2000) g;
+CREATE INDEX dh_s_a ON dh_s USING sift_col (id, url);
+CREATE INDEX dh_s_b ON dh_s USING sift_col (id, url, note);
+CREATE SCHEMA dh_repack;
+CREATE FUNCTION dh_repack.repack_trigger() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;
+DO $$ BEGIN EXECUTE format('CREATE TABLE dh_wide (%s) USING sift_table', (SELECT string_agg('c' || g || ' int', ', ') FROM generate_series(1, 127) g)); END $$;
+-- with the hooks on
+CREATE TRIGGER dh_repack AFTER INSERT ON dh_t FOR EACH ROW EXECUTE FUNCTION dh_repack.repack_trigger();
+ERROR:  pg_repack cannot rewrite the sift_table "dh_t"
+DETAIL:  pg_repack copies the rows into a heap table and swaps the files, which would destroy the column segments.
+HINT:  Use CLUSTER ... USING <index> or VACUUM FULL, which rewrite a sift_table; pg_repack --only-indexes is fine.
+ALTER TABLE dh_wide ADD COLUMN extra int;
+ERROR:  a sift_table holds at most 127 columns
+DETAIL:  Table "dh_wide" has 128.
+-- off
+SELECT sift.ddl_hooks_enable(false) AS changed;
+ changed 
+---------
+       7
+(1 row)
+
+SELECT count(*) FILTER (WHERE enabled) AS enabled, count(*) AS hooks FROM sift.ddl_hooks;
+ enabled | hooks 
+---------+-------
+       0 |     7
+(1 row)
+
+CREATE TRIGGER dh_repack AFTER INSERT ON dh_t FOR EACH ROW EXECUTE FUNCTION dh_repack.repack_trigger();
+DROP TRIGGER dh_repack ON dh_t;
+ALTER TABLE dh_wide ADD COLUMN extra int;
+ALTER TABLE dh_wide DROP COLUMN extra;
+DROP INDEX dh_s_a, dh_s_b;
+DROP TABLE dh_t;
+SELECT count(*) AS paths_left FROM sift.table_paths WHERE relid::oid NOT IN (SELECT oid FROM pg_class);
+ paths_left 
+------------
+          1
+(1 row)
+
+SELECT count(*) AS options_left FROM sift.table_option_values WHERE rel::oid NOT IN (SELECT oid FROM pg_class);
+ options_left 
+--------------
+            1
+(1 row)
+
+-- on again: the leftovers go
+SELECT sift.ddl_hooks_enable(true) AS changed;
+ changed 
+---------
+       7
+(1 row)
+
+SELECT count(*) FILTER (WHERE NOT enabled) AS disabled FROM sift.ddl_hooks;
+ disabled 
+----------
+        0
+(1 row)
+
+SELECT count(*) AS paths_left FROM sift.table_paths WHERE relid::oid NOT IN (SELECT oid FROM pg_class);
+ paths_left 
+------------
+          0
+(1 row)
+
+SELECT count(*) AS options_left FROM sift.table_option_values WHERE rel::oid NOT IN (SELECT oid FROM pg_class);
+ options_left 
+--------------
+            0
+(1 row)
+
+ALTER TABLE dh_wide ADD COLUMN extra int;
+ERROR:  a sift_table holds at most 127 columns
+DETAIL:  Table "dh_wide" has 128.
+-- only a superuser
+CREATE ROLE dh_user;
+SET SESSION AUTHORIZATION dh_user;
+SELECT sift.ddl_hooks_enable(false);
+ERROR:  permission denied for function ddl_hooks_enable
+SELECT count(*) AS hooks_seen FROM sift.ddl_hooks;
+ hooks_seen 
+------------
+          7
+(1 row)
+
+RESET SESSION AUTHORIZATION;
+DROP ROLE dh_user;
+DROP TABLE dh_s, dh_wide;
+DROP SCHEMA dh_repack CASCADE;
+DROP EXTENSION pg_sift;
