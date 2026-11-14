@@ -886,7 +886,7 @@ col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 	for (uint32 skip = 0; sift_cseg_super_at(seg, c->cur, skip, &k); skip++)
 	{
 		sift_cseg_super_range(seg, k, &first, &n);
-		if (n < 2 || c->cur + n > c->end || !keep_all(c, c->cur, n) || !col_super_inside(src, seg, c->cur, n) || !units_allvisible(src, seg, c->cur, n))
+		if (n < 2 || c->cur + n > c->end || !keep_all(c, c->cur, n) || (src->suprows && !sift_cseg_super_has_rollup(seg, k)) || !col_super_inside(src, seg, c->cur, n) || !units_allvisible(src, seg, c->cur, n))
 			continue;
 		if (!(src->flags & COLO_TABLE) && !segments_current(src))
 			return false;

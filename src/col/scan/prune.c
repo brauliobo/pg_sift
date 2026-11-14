@@ -596,7 +596,7 @@ sift_col_super_align(SiftColSource *src, uint32 sb)
 }
 
 void
-sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int dim, int hdim)
+sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int dim, int hdim, bool rollup)
 {
 	if (src->suptest != NULL)
 		pfree(src->suptest);
@@ -606,6 +606,7 @@ sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int 
 	src->nsuptest = nt;
 	src->supdim = dim;
 	src->suphdim = hdim;
+	src->suprows = rollup;
 }
 
 /* Does the zone of every leaf the statement compares lie inside the comparison in each unit [first, first + n), as the consumer asks of the summary of the group (preagg_zones)? */

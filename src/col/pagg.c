@@ -464,6 +464,21 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, const S
 	return true;
 }
 
+/* The rollup of the rows of key group k: the element blob of the group holds it as the one of a unit does */
+static const uint8 *
+super_rollup(SiftColSegment *seg, uint32 k, uint32 *len)
+{
+	uint32		elen;
+	const uint8 *e = sift_cseg_super_rollup(seg, k, &elen);
+
+	if (e == NULL)
+	{
+		*len = 0;
+		return NULL;
+	}
+	return sift_cpagg_elem_cube(seg->schema, e, elen, -1, len);
+}
+
 bool
 sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r, SiftColDict *dict)
 {
@@ -472,10 +487,16 @@ sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, cons
 				len;
 	const uint8 *blob;
 
-	if (!sift_col_unit_preagg_ok(unit) || sift_col_unit_super(unit, &seg, &u))
+	if (!sift_col_unit_preagg_ok(unit))
 		return false;
-	sift_col_unit_stored(unit, &seg, &u);
-	if ((blob = sift_col_unit_net(unit) ? sift_cseg_net_rollup(seg, u, list, &len) : sift_cseg_rollup(seg, u, list, &len)) == NULL)
+	if (sift_col_unit_super(unit, &seg, &u))
+		blob = list < 0 ? super_rollup(seg, u, &len) : NULL;
+	else
+	{
+		sift_col_unit_stored(unit, &seg, &u);
+		blob = sift_col_unit_net(unit) ? sift_cseg_net_rollup(seg, u, list, &len) : sift_cseg_rollup(seg, u, list, &len);
+	}
+	if (blob == NULL)
 		return false;
 	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, unit->except >= 0 || sift_col_unit_dead_on(unit) ? NULL : need, r) || r->list != list)
 		corrupt_cube(seg, u);
@@ -513,10 +534,16 @@ sift_col_unit_rollup_tuples(const SiftColUnit *unit, int list)
 				len;
 	const uint8 *blob;
 
-	if (!sift_col_unit_preagg_ok(unit) || sift_col_unit_super(unit, &seg, &u))
+	if (!sift_col_unit_preagg_ok(unit))
 		return 0;
-	sift_col_unit_stored(unit, &seg, &u);
-	if ((blob = sift_col_unit_net(unit) ? sift_cseg_net_rollup(seg, u, list, &len) : sift_cseg_rollup(seg, u, list, &len)) == NULL)
+	if (sift_col_unit_super(unit, &seg, &u))
+		blob = list < 0 ? super_rollup(seg, u, &len) : NULL;
+	else
+	{
+		sift_col_unit_stored(unit, &seg, &u);
+		blob = sift_col_unit_net(unit) ? sift_cseg_net_rollup(seg, u, list, &len) : sift_cseg_rollup(seg, u, list, &len);
+	}
+	if (blob == NULL)
 		return 0;
 	return sift_cpagg_rollup_tuples(blob, len);
 }

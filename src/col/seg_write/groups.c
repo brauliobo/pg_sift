@@ -20,6 +20,17 @@ kg_spec(SiftColSegWriter *w, KeyGroups *g)
 	g->spec = w->pagg;
 	g->spec.ndims = 0;
 	g->spec.nrollups = 0;
+	for (int r = 0; r < w->pagg.nrollups; r++)
+		if (w->pagg.rollup[r].list < 0)
+		{
+			SiftCPaggRollup *ru = &g->spec.rollup[g->spec.nrollups++];
+
+			*ru = w->pagg.rollup[r];
+			for (int d = 0; d < ru->ndims; d++)
+				seen[ru->dim[d]] = true;
+			for (int m = 0; m < ru->nmeas; m++)
+				seen[ru->meas[m]] = true;
+		}
 	g->spec.permille = SIFT_PAGG_KEYGROUP_PERMILLE;
 	g->spec.max_groups = SIFT_PAGG_CUBE_GROUPS;
 	g->spec.minmax_groups = SIFT_PAGG_KEYGROUP_MINMAX_GROUPS;
@@ -126,7 +137,7 @@ kg_merged(SiftColSegWriter *w, uint32 first, uint32 n, StringInfo merged)
 
 /* The dims of the spec of the rows that the merged cube lacks, built from the rows of the open group within their budget, in extra */
 static void
-kg_extra(SiftColSegWriter *w, KeyGroups *g, const StringInfoData *merged, StringInfo extra)
+kg_extra(SiftColSegWriter *w, KeyGroups *g, const StringInfoData *merged, StringInfo extra, StringInfo rollup)
 {
 	const SiftColSchema *s = w->schema;
 	SiftCHist	h;
@@ -152,13 +163,13 @@ kg_extra(SiftColSegWriter *w, KeyGroups *g, const StringInfoData *merged, String
 	cols = palloc0(s->ncols * sizeof(SiftCPaggCol));
 	for (int i = 0; i < g->nleaf; i++)
 		cols[g->leaf[i]] = (SiftCPaggCol) {g->vals[i], g->anynull[i] ? g->nulls[i] : NULL, g->anyovf[i] ? g->ovf[i] : NULL, g->rows, g->ready[i]};
-	sift_cpagg_cube(s, &xs, cols, g->rows, unit_bytes, extra, NULL);
+	sift_cpagg_cube(s, &xs, cols, g->rows, unit_bytes, extra, rollup);
 	pfree(cols);
 }
 
 /* A group of the units [first, first + n) with the cube of the merge of its units and the cube of the dims of its rows (either possibly empty: the sums of its leaves are still its own) */
 static void
-kg_push(KeyGroups *g, uint32 first, uint32 n, const StringInfoData *merged, const StringInfoData *extra)
+kg_push(KeyGroups *g, uint32 first, uint32 n, const StringInfoData *merged, const StringInfoData *extra, const StringInfoData *rollup)
 {
 	if (g->ng == g->cap)
 	{
@@ -170,9 +181,10 @@ kg_push(KeyGroups *g, uint32 first, uint32 n, const StringInfoData *merged, cons
 	}
 	appendBinaryStringInfo(&g->cube, merged->data, merged->len);
 	appendBinaryStringInfo(&g->cube, extra->data, extra->len);
+	appendBinaryStringInfo(&g->cube, rollup->data, rollup->len);
 	g->gfirst[g->ng] = first;
 	g->gn[g->ng] = n;
-	g->xsplit[g->ng] = merged->len;
+	g->xsplit[g->ng] = SUPER_X(merged->len, rollup->len > 0 ? extra->len : 0, rollup->len > 0);
 	g->cubeoff[++g->ng] = g->cube.len;
 }
 
@@ -192,21 +204,23 @@ segw_kg_close(SiftColSegWriter *w)
 		MemoryContext old = MemoryContextSwitchTo(g->cx);
 		StringInfoData merged,
 					extra,
+					rollup,
 					none;
 
 		initStringInfo(&merged);
 		initStringInfo(&extra);
+		initStringInfo(&rollup);
 		initStringInfo(&none);
 		kg_merged(w, g->first, g->nunits, &merged);
-		kg_extra(w, g, &merged, &extra);
-		kg_push(g, g->first, g->nunits, &merged, &extra);
+		kg_extra(w, g, &merged, &extra, &rollup);
+		kg_push(g, g->first, g->nunits, &merged, &extra, &rollup);
 		for (uint32 at = 0; g->nunits > w->pagg.super && at + SIFT_SUPER_MIN_FAN <= g->nunits; at += w->pagg.super)
 		{
 			uint32		n = Min(w->pagg.super, g->nunits - at);
 
 			resetStringInfo(&merged);
 			kg_merged(w, g->first + at, n, &merged);
-			kg_push(g, g->first + at, n, &merged, &none);
+			kg_push(g, g->first + at, n, &merged, &none, &none);
 		}
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(g->cx);

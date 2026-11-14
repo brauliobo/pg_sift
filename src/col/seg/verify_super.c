@@ -18,7 +18,8 @@ verify_key_cube(SiftColSegment *seg, uint32 k, uint32 first, uint32 n)
 	uint32	   *len = palloc(n * sizeof(uint32));
 	bool		anycube = false;
 	StringInfoData want,
-				x;
+				x,
+				e;
 	uint32		glen;
 	const uint8 *got = sift_cseg_super_cube(seg, k, &glen);
 
@@ -38,14 +39,20 @@ verify_key_cube(SiftColSegment *seg, uint32 k, uint32 first, uint32 n)
 	got = sift_cseg_super_extra(seg, k, &glen);
 	if (glen > 0)
 		appendBinaryStringInfo(&x, (const char *) got, glen);
-	if (x.len > 0)
+	initStringInfo(&e);
+	got = sift_cseg_super_rollup(seg, k, &glen);
+	if (glen > 0)
+		appendBinaryStringInfo(&e, (const char *) got, glen);
+	if (sift_cseg_super_has_rollup(seg, k) != (e.len > 0))
+		corrupt(seg, "The rollup of the rows of key group %u is flagged and absent, or present and not flagged.", k);
+	if (x.len + e.len > 0)
 	{
 		bool		need[SIFT_COL_MAX_COLS] = {false};
 		SiftCPaggCol cols[SIFT_COL_MAX_COLS] = {{0}};
 		uint32		rows = 0,
 					at = 0;
 
-		if (!sift_cpagg_leaves(sc, (const uint8 *) x.data, x.len, NULL, 0, need))
+		if (!sift_cpagg_leaves(sc, (const uint8 *) x.data, x.len, (const uint8 *) e.data, e.len, need))
 			corrupt(seg, "The cube of key group %u does not decode.", k);
 		for (uint32 i = 0; i < n; i++)
 			rows += seg->sbdir[first + i].nrows;
@@ -83,8 +90,8 @@ verify_key_cube(SiftColSegment *seg, uint32 k, uint32 first, uint32 n)
 			}
 			at += nrows;
 		}
-		if (!sift_cpagg_check(sc, cols, rows, (const uint8 *) x.data, x.len, NULL, 0, seg->entry.format))
-			corrupt(seg, "The dims of the rows of key group %u differ from the rows of its units.", k);
+		if (!sift_cpagg_check(sc, cols, rows, (const uint8 *) x.data, x.len, (const uint8 *) e.data, e.len, seg->entry.format))
+			corrupt(seg, "The dims and the rollup of the rows of key group %u differ from the rows of its units.", k);
 		for (int c = 0; c < sc->ncols; c++)
 			if (need[c])
 			{

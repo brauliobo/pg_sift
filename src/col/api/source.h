@@ -211,7 +211,8 @@ typedef struct SiftColSuperTest
 	int			nvals;
 	const int64 *vals;
 } SiftColSuperTest;
-extern void sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int dim, int hdim);
+/* rollup: the statement is answered from the rollup of the rows, which only a key group of a scope segment holds: no other group is tried */
+extern void sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int dim, int hdim, bool rollup);
 
 /*
  * Opens the source: copies the directory (registered snapshot held until close), starts the visibility state (sift_vis) for snapshot, takes

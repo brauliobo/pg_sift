@@ -87,7 +87,7 @@ typedef struct ColSource
 extern bool col_overflow(void *impl, const SiftSrcUnit *unit, int leaf);
 extern void col_super(void *impl, bool on);
 extern uint32 col_super_align(void *impl, uint32 sb);
-extern void col_super_tests(void *impl, const SiftSrcPrune *z, int nz, int dim, int hdim);
+extern void col_super_tests(void *impl, const SiftSrcPrune *z, int nz, int dim, int hdim, bool rollup);
 extern void col_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast);
 extern void col_overflow_raise(void *impl, const SiftSrcUnit *unit, const uint64 *rows);
 extern void recheck_close(ColRecheck *k);

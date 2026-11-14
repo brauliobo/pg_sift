@@ -340,6 +340,13 @@ extern bool sift_cseg_super_agg(SiftColSegment *seg, int col, uint32 k, SiftCAgg
 extern const uint8 *sift_cseg_super_cube(SiftColSegment *seg, uint32 k, uint32 *len);
 /* The cube of the dims of the rows of a key group that the cubes of its units lack, NULL when it has none (and for any other group) */
 extern const uint8 *sift_cseg_super_extra(SiftColSegment *seg, uint32 k, uint32 *len);
+extern const uint8 *sift_cseg_super_rollup(SiftColSegment *seg, uint32 k, uint32 *len);
+/* The word of a key group in the block: the bytes of the merged cube, and with the rollup of the rows (bit 63, which follows them) the bytes of the dims of the rows; without it, the rest of the blob is those dims */
+#define SUPER_X(merged, extra, rollup)	((uint64) (merged) | (uint64) (extra) << 32 | (uint64) (rollup) << 63)
+#define SUPER_X_MERGED(x)	((x) & UINT32_MAX)
+#define SUPER_X_EXTRA(x)	((x) >> 32 & INT32_MAX)
+#define SUPER_X_ROLLUP(x)	((x) >> 63)
+extern bool sift_cseg_super_has_rollup(SiftColSegment *seg, uint32 k);
 /* sift.col_verify: the superunit block says what the units say (page masks, sums, cubes); an error otherwise, nothing when the segment has none */
 extern void sift_cseg_verify_super(SiftColSegment *seg);
 #ifdef SIFT_TESTING

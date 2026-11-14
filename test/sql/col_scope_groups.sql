@@ -59,7 +59,7 @@ END $$;
 SELECT c.n, c.label, r.* FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
 
 -- a group that cannot answer is not tried: a filter on two columns (one of them cuts every unit) and a range of days that cuts the group read no more blocks with the groups than without
-CREATE FUNCTION probe_blocks(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+CREATE FUNCTION probe_blocks(q text, slack int DEFAULT 1) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
 	p jsonb;
 	hit_on bigint;
@@ -73,7 +73,7 @@ BEGIN
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
 	hit_off := (jsonb_path_query_first(p, '$.**."Shared Hit Blocks"') #>> '{}')::bigint;
 	PERFORM set_config('sift.agg_super', 'on', true);
-	RETURN hit_on <= hit_off + 1;
+	RETURN hit_on <= hit_off + slack;
 END $$;
 SELECT probe_blocks('SELECT count(*) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND score = 3 AND kind = ''k1''') AS two_columns,
        probe_blocks('SELECT kind, count(*) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND created_at >= date ''2026-03-01'' GROUP BY 1') AS day_range,
@@ -88,6 +88,36 @@ REINDEX INDEX events_s_col;
 VACUUM (FREEZE, ANALYZE) events_s;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('events_s_col');
 SELECT supers > 0 AS has_blocks, damaged > 0 AS damages_made, refused = damaged AS all_refused, unnoticed = 0 AS none_unnoticed FROM sift._test_col_super_damage('events_s_col');
+
+-- the rollup of the rows of the index (rollup_columns) is kept for each group too: a filter on its columns, or a count by them, reads one rollup for the units of a key, md5 equal to the join with
+-- the sift plan off and at least 5 blocks fewer than without the groups; a range of days that cuts the key reads the units
+CREATE TABLE events_r (id int PRIMARY KEY, dim_a_id int, created_at date, score int, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO events_r SELECT id, dim_a_id, created_at, score, kind, amount FROM events;
+CREATE INDEX events_r_col ON events_r USING sift_col (id, dim_a_id, created_at, score, kind, amount)
+	WITH (rollup_columns = 'score, kind: amount', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+REINDEX INDEX events_r_col;
+VACUUM (FREEZE, ANALYZE) events_r;
+SELECT sift.col_verify('events_r_col', true);
+CREATE TABLE cases_r (n int, label text, stmt text);
+INSERT INTO cases_r VALUES
+	(1, 'filter on both columns, big key', 'SELECT count(*) FROM events_r WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND score = 3 AND kind = ''k1'''),
+	(2, 'sum by kind of a score, big key', 'SELECT kind, count(*), sum(amount) FROM events_r WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND score = 3 GROUP BY 1'),
+	(3, 'count by score of a kind, big key', 'SELECT score, count(*) FROM events_r WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND kind = ''k2'' GROUP BY 1'),
+	(4, 'filter on both columns, mid key', 'SELECT count(*), sum(amount) FROM events_r WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 2) AND score = 3 AND kind = ''k1'''),
+	(5, 'filter on both columns, small key', 'SELECT count(*) FROM events_r WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) AND score = 3 AND kind = ''k1'''),
+	(6, 'filter on both columns and a range of days', 'SELECT count(*) FROM events_r WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND score = 3 AND kind = ''k1'' AND created_at >= date ''2026-03-01'''),
+	(7, 'count by id of a score (the rollup lacks the id)', 'SELECT dim_a_id, count(*) FROM events_r WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND score = 3 GROUP BY 1');
+SELECT c.n, c.label, r.* FROM cases_r c, LATERAL probe(c.stmt) r ORDER BY c.n;
+SELECT probe_blocks(stmt, -5) AS fewer_blocks FROM cases_r WHERE n IN (1, 2, 3);
+
+-- every byte of the block of a small index with that rollup (groups of 4 units), refused when damaged
+CREATE TABLE events_rs (id int PRIMARY KEY, dim_a_id int, created_at date, score int, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO events_rs SELECT i, 1 + (i * 7919) % 67, date '2026-01-01' + (i / 40), 1 + i % 10, 'k' || (i % 4), i % 500 FROM generate_series(1, 1500) i;
+CREATE INDEX events_rs_col ON events_rs USING sift_col (id, dim_a_id, created_at, score, kind, amount)
+	WITH (rollup_columns = 'score, kind: amount', superunit = 4, scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+REINDEX INDEX events_rs_col;
+VACUUM (FREEZE, ANALYZE) events_rs;
+SELECT supers > 0 AS has_blocks, damaged > 0 AS damages_made, refused = damaged AS all_refused, unnoticed = 0 AS none_unnoticed FROM sift._test_col_super_damage('events_rs_col');
 
 -- writes since the build, deletes and VACUUM, a promotion and a merge: the groups of the segments written are of the rows that are left
 INSERT INTO events SELECT 30000 + i, 1 + (i * 31) % 67, date '2026-05-20' + i % 5, 1 + i % 10, 'k' || (i % 4), i % 500 FROM generate_series(1, 3000) i;
@@ -107,7 +137,16 @@ SELECT sift.col_verify('events_s_col', true);
 SELECT supers > 0 AS has_blocks, refused = damaged AS all_refused, unnoticed = 0 AS none_unnoticed FROM sift._test_col_super_damage('events_s_col');
 SELECT c.n, r.same, r.scope_units, r.supers FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
 
-DROP TABLE events, events_s, tenant_scope, cases;
-DROP FUNCTION probe(text), probe_blocks(text);
+-- the groups with the rollup follow writes, deletes, VACUUM, a promotion and a merge too: the answers stay those of the plain statement and the blocks check against the units
+INSERT INTO events_r SELECT 30000 + i, 1 + (i * 31) % 67, date '2026-05-20' + i % 5, 1 + i % 10, 'k' || (i % 4), i % 500 FROM generate_series(1, 3000) i;
+DELETE FROM events_r WHERE id % 7 = 0;
+VACUUM (FREEZE, index_cleanup on, disable_page_skipping) events_r;
+SELECT c.n, r.same, r.scope_units FROM cases_r c, LATERAL probe(c.stmt) r ORDER BY c.n;
+SELECT sift.col_promote('events_r_col') IS NOT NULL AND sift.col_merge('events_r_col', true) IS NOT NULL AS merged_rollup;
+SELECT sift.col_verify('events_r_col', true);
+SELECT c.n, r.same, r.scope_units, r.supers FROM cases_r c, LATERAL probe(c.stmt) r ORDER BY c.n;
+
+DROP TABLE events, events_s, events_r, events_rs, tenant_scope, cases, cases_r;
+DROP FUNCTION probe(text), probe_blocks(text, int);
 DROP EXTENSION pg_sift_test CASCADE;
 DROP EXTENSION pg_sift;

@@ -264,6 +264,7 @@ struct SiftColSource
 	int			nsuptest;
 	int			supdim;			/* the leaves the histograms answer for the tests above */
 	int			suphdim;
+	bool		suprows;		/* ... and the groups tried are those that hold the rollup of the rows */
 	int64	   *sx;				/* a scope source (sift_col_scope_delta): the members whose stored entries the scan leaves out, ascending, in mcxt; no unit may answer from its pre-aggregates then, nor a segment from its summaries */
 	uint32		nsx;
 	uint64	   *sxb;			/* ... as a bitmap over their range when it is not too wide (NULL: bisect sx), sx_span bits */

@@ -30,7 +30,7 @@ col_super_align(void *impl, uint32 sb)
 }
 
 void
-col_super_tests(void *impl, const SiftSrcPrune *z, int nz, int dim, int hdim)
+col_super_tests(void *impl, const SiftSrcPrune *z, int nz, int dim, int hdim, bool rollup)
 {
 	SiftColSuperTest *t = palloc(Max(nz, 1) * sizeof(SiftColSuperTest));
 	int			nt = 0;
@@ -38,7 +38,7 @@ col_super_tests(void *impl, const SiftSrcPrune *z, int nz, int dim, int hdim)
 	for (int k = 0; k < nz; k++)
 		if (z[k].nkids == 0 && !z[k].nulltest)
 			t[nt++] = (SiftColSuperTest) {z[k].leaf, z[k].lo, z[k].hi, z[k].nvals, z[k].vals};
-	sift_col_super_tests(((ColSource *) impl)->cs, t, nt, dim, hdim);
+	sift_col_super_tests(((ColSource *) impl)->cs, t, nt, dim, hdim, rollup);
 	pfree(t);
 }
 

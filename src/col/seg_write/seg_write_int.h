@@ -116,7 +116,7 @@ typedef struct KeyGroups
 	uint32		cap;
 	uint32	   *gfirst;
 	uint32	   *gn;
-	uint64	   *xsplit;			/* [ng] the bytes of the merged cube, which the cube of the dims of the rows follows in the blob of the group */
+	uint64	   *xsplit;			/* [ng] the bytes of the merged cube which the cube of the dims of the rows follows, and then the rollup of the rows (SUPER_X), in the blob of the group */
 	uint64	   *cubeoff;		/* [ng + 1] */
 	StringInfoData cube;
 } KeyGroups;

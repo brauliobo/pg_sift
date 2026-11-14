@@ -21,6 +21,7 @@ dropped after its reads and writes; the fixture and the arms are on one cluster 
   ivm            pg_ivm incremental views of events joined to the maintained pair table (latest-N: not answerable); skipped, with a notice, when pg_ivm is not installed under a --root
   sift_reuse     the sift_col entity index, the pairs read through the member key
   sift_scope     the same index with the scope of two paths
+  sift_scope_rollup  the same with rollup_columns of the filter class: the groups of a key keep that rollup too
 The stock arms run on a server without pg_sift loaded; the sift arms on the same data directory restarted with it. Every cell: warm (median of 3 of `instructions:u` of the backend, EXPLAIN
 ANALYZE time and shared blocks hit/read) and cold (shared buffers emptied: one run), the md5 of the rows against the oracle. Writes: 10,000 inserted events (statement), a pair edit
 (grant a member to a tenant, revoke it) for 10 member keys of ~400 events and for the largest member; the sift arm adds the promotion of the write buffer. Size: bytes of what the arm adds.
@@ -144,6 +145,7 @@ ARMS = {
     'sift_scope': (True, sql_text('sift_scope.sql'), semi_classes,
                    "SELECT pg_relation_size('events_col') + pg_relation_size('grants_by_member') + pg_relation_size('grants_by_group') + pg_relation_size('memberships_by_member')"),
 }
+ARMS['sift_scope_rollup'] = (True, sql_text('sift_scope_rollup.sql'), semi_classes, ARMS['sift_scope'][3])
 ORDER = list(ARMS)
 
 
@@ -338,7 +340,7 @@ def run_arm(cl, a, name, oracle, outdir):
     build_s, build_wal = time.time() - t0, wal(s) - w0
     size = int(s.run(size_sql)[0])
     sift_extra = ''
-    if name == 'sift_scope':
+    if name.startswith('sift_scope'):
         probe = s.run('EXPLAIN SELECT count(*) FROM events WHERE dim_a_id IN (SELECT member FROM tenant_pairs WHERE tenant_id = 1)')
         if not any('Scope' in l for l in probe):
             t1, w1 = time.time(), wal(s)

@@ -286,6 +286,7 @@ super_header(SiftColSegment *seg)
 				uint8	   *raw = MemoryContextAlloc(seg->mcxt, bytes_g + sizeof(uint64) + (Size) h->nsu * sizeof(uint64));
 				uint32	   *g = (uint32 *) raw;
 				uint32		end = 0;
+				const uint64 *xs = (const uint64 *) (raw + bytes_g + sizeof(uint64));
 
 				seg_read(seg, base + sizeof(SuperHeader), bytes_g + sizeof(uint64) + (Size) h->nsu * sizeof(uint64), raw);
 				if (*(uint64 *) (raw + bytes_g) != h->fan)
@@ -294,6 +295,9 @@ super_header(SiftColSegment *seg)
 				{
 					uint32		first = g[k],
 								n = g[h->nsu + k];
+
+					if (!SUPER_X_ROLLUP(xs[k]) && SUPER_X_EXTRA(xs[k]) != 0)
+						corrupt(seg, "The key group %u of the superunit block has no rollup of the rows and the bytes of one.", k);
 
 					if (n < SIFT_SUPER_MIN_FAN || n > SIFT_SUPER_MAX_FAN || (uint64) first + n > seg->nsb || (k > 0 && (first < g[k - 1] || (first == g[k - 1] && n >= g[h->nsu + k - 1]))) ||
 						(k > 0 && first < end && first + n > end))
@@ -544,35 +548,64 @@ sift_cseg_super_agg(SiftColSegment *seg, int col, uint32 k, SiftCAgg *a)
 	return true;
 }
 
-/* The cube of group k: the blob, or for a key group its first part (the merge of the cubes of its units) or, with extra, the rest (the dims of its rows) */
+/* The cube of group k: the blob, or for a key group its first part (the merge of the cubes of its units), then the dims of its rows and the rollup of its rows */
+typedef enum SuperPart
+{
+	SUPER_MERGED,
+	SUPER_EXTRA,
+	SUPER_ROLLUP
+} SuperPart;
+
+
 static const uint8 *
-super_blob(SiftColSegment *seg, uint32 k, bool extra, uint32 *len)
+super_blob(SiftColSegment *seg, uint32 k, SuperPart part, uint32 *len)
 {
 	SegPriv    *pv = PRIV(seg);
 	const SuperHeader *h = super_header(seg);
-	uint64		x = UINT64_MAX;
+	uint64		x = UINT64_MAX,
+				xe = 0;
 
 	*len = 0;
 	if (h == NULL || h->cubedir_off == 0 || k >= h->nsu)
 		return NULL;
 	if (h->magic == SUPER_KMAGIC)
-		x = pv->sgx[k];
-	else if (extra)
+	{
+		x = SUPER_X_MERGED(pv->sgx[k]);
+		xe = SUPER_X_ROLLUP(pv->sgx[k]) ? SUPER_X_EXTRA(pv->sgx[k]) : UINT64_MAX - x;	/* no rollup: the rest of the blob is the dims of the rows */
+	}
+	else if (part != SUPER_MERGED)
 		return NULL;
-	return seg_unit_blob_part(seg, h->nsu, k, PAGG_SUPERDIR(pv->pagg) + h->cubedir_off, h->cube_bytes, &pv->supdir, &pv->supbuf, &pv->supcap, extra ? x : 0,
-							  extra ? UINT64_MAX : x, len);
+	if (part == SUPER_ROLLUP && !SUPER_X_ROLLUP(pv->sgx[k]))
+		return NULL;
+	return seg_unit_blob_part(seg, h->nsu, k, PAGG_SUPERDIR(pv->pagg) + h->cubedir_off, h->cube_bytes, &pv->supdir, &pv->supbuf, &pv->supcap,
+							  part == SUPER_MERGED ? 0 : part == SUPER_EXTRA ? x : x + xe, part == SUPER_MERGED ? x : part == SUPER_EXTRA ? x + xe : UINT64_MAX, len);
 }
 
 const uint8 *
 sift_cseg_super_cube(SiftColSegment *seg, uint32 k, uint32 *len)
 {
-	return super_blob(seg, k, false, len);
+	return super_blob(seg, k, SUPER_MERGED, len);
 }
 
 const uint8 *
 sift_cseg_super_extra(SiftColSegment *seg, uint32 k, uint32 *len)
 {
-	return super_blob(seg, k, true, len);
+	return super_blob(seg, k, SUPER_EXTRA, len);
+}
+
+const uint8 *
+sift_cseg_super_rollup(SiftColSegment *seg, uint32 k, uint32 *len)
+{
+	return super_blob(seg, k, SUPER_ROLLUP, len);
+}
+
+/* Does key group k hold the rollup of its rows (a bit of its word, no read) */
+bool
+sift_cseg_super_has_rollup(SiftColSegment *seg, uint32 k)
+{
+	const SuperHeader *h = super_header(seg);
+
+	return h != NULL && h->magic == SUPER_KMAGIC && k < h->nsu && SUPER_X_ROLLUP(PRIV(seg)->sgx[k]);
 }
 
 uint64
