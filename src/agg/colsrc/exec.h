@@ -268,6 +268,7 @@ typedef struct SiftSrcPreagg
 	bool		aggs;
 	int			npres;			/* the integer leaves whose units keep every distinct value as a key list or bitmap (key_columns), answered by unit_presence */
 	int			pres[SIFT_SRC_MAX_DIMS];
+	bool		dsets[SIFT_SRC_CAL];	/* by leaf: the leaves whose id sets by calendar month the key groups keep, answered by unit_dset */
 	bool		hll[SIFT_SRC_CAL];	/* by leaf: the leaves whose units keep a HyperLogLog sketch (hll_columns), answered by unit_hll */
 	int			ndims;
 	struct

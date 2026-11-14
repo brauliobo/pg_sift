@@ -9,6 +9,7 @@
 
 #include "agg/agg_int.h"
 #include "agg/preagg/int.h"
+#include "col/preagg.h"
 
 /* the values of a float8 leaf of the unit are finite and so small that the sum of their squares, which avg(float8) is owed to check, cannot overflow */
 #define PA_FLOAT_MAX	1e100
@@ -53,6 +54,33 @@ rollup_net(AggExec *ex, SiftSrcRollup *r)
 	return ok;
 }
 
+/* What the groups a scan tries must hold (source.h SIFT_SUPER_NEED_*): the rollup of the rows, or the id sets of each leaf counted distinct */
+uint64
+preagg_super_need(const AggExec *ex)
+{
+	uint64		need = ex->pa.rows ? SIFT_SUPER_NEED_ROWS : 0;
+
+	for (int ai = 0; ex->pa.dset && ai < ex->spec->naggs; ai++)
+		if (ex->spec->agg[ai].kind == SAA_COUNT_DISTINCT)
+			need |= SIFT_SUPER_NEED_SETS(pa_leaf(&ex->spec->agg[ai]));
+	return need;
+}
+
+/* count(DISTINCT leaf) by calendar cell: does the unit hold the id sets of every leaf (a key group that has them; the cell PG_INT64_MIN has none, the set of a leaf it holds is empty)? Any other unit is scanned */
+bool
+preagg_dset_unit(AggExec *ex)
+{
+	for (int ai = 0; ai < ex->spec->naggs; ai++)
+	{
+		SiftSrcPresence p;
+
+		if (ex->spec->agg[ai].kind == SAA_COUNT_DISTINCT &&
+			!sift_colsrc_unit_dset(ex->src, &ex->unit, ex->pa.dim, pa_leaf(&ex->spec->agg[ai]), PG_INT64_MIN, &p))
+			return false;
+	}
+	return true;
+}
+
 /* the groups of the unit's histogram of the key's column, or of the column the conjuncts test (no key: one group) */
 bool
 preagg_hist(AggExec *ex)
@@ -64,6 +92,7 @@ preagg_hist(AggExec *ex)
 	uint32	   *kept,
 			   *ids,
 			   *gid;
+	int64	   *mc = NULL;			/* dset: the month cell of each cell of the histogram */
 	uint64	   *keep,
 			  **fkeep = MemoryContextAllocZero(ex->ucxt, Max(s->naggs, 1) * sizeof(uint64 *));
 	int			nkept = 0;
@@ -82,12 +111,12 @@ preagg_hist(AggExec *ex)
 		while (leaf >= 0 && leaf != ex->pa.dim && m < h.nmeas && h.meas[m] != leaf)
 			m++;
 		/* a unit written without min and max (an older segment, an index that does not ask for them) is scanned */
-		if (leaf >= 0 && leaf != ex->pa.dim &&
+		if (leaf >= 0 && leaf != ex->pa.dim && !(ex->pa.dset && s->agg[ai].kind == SAA_COUNT_DISTINCT) &&
 			(m == h.nmeas || (mm ? h.min[m] == NULL : s->agg[ai].kind != SAA_COUNT && h.sum[m] == NULL && h.sumf[m] == NULL)))
 			return false;
 		if (leaf >= 0 && saa_sumavg_f64(s->agg[ai].kind) && !preagg_floats(ex, leaf, true))
 			return false;
-		slot[ai] = leaf < 0 ? -1 : s->agg[ai].kind == SAA_COUNT_DISTINCT ? -3 : leaf == ex->pa.dim ? -2 : m;
+		slot[ai] = leaf < 0 ? -1 : s->agg[ai].kind == SAA_COUNT_DISTINCT ? (ex->pa.dset ? -4 : -3) : leaf == ex->pa.dim ? -2 : m;
 	}
 	keep = preagg_keep(ex, &h, fkeep);
 	if (ex->pa.cal && !cal_keep(ex, &h, &keep))
@@ -96,10 +125,33 @@ preagg_hist(AggExec *ex)
 	for (uint32 k = 0; k < h.ngroups; k++)
 		if (keep == NULL || sift_colsrc_bit(keep, k))
 			kept[nkept++] = k;
+	/* count(DISTINCT leaf) by cell: a key group that holds the id sets of the leaf by month; any other unit is scanned. The sets are of whole months: a month some of whose days a test dropped is scanned */
+	if (ex->pa.dset)
+	{
+		uint32		run = 0;
+
+		if (h.has_null && nkept > 0 && kept[nkept - 1] == h.ngroups - 1)
+			return false;		/* the rows without a date have no set */
+		mc = MemoryContextAlloc(ex->ucxt, Max(h.ngroups, 1) * sizeof(int64));
+		for (uint32 k = 0; k < h.ngroups - h.has_null; k++)
+			mc[k] = sift_cpagg_cal_cell(SIFT_CAL_MONTH, h.key[k]);
+		for (uint32 k = 1; k <= h.ngroups - h.has_null; k++)
+			if (k == h.ngroups - h.has_null || mc[k] != mc[run])
+			{
+				for (uint32 i = run; i < k; i++)
+					if ((keep == NULL || sift_colsrc_bit(keep, i)) != (keep == NULL || sift_colsrc_bit(keep, run)))
+						return false;
+				run = k;
+			}
+	}
 	ids = MemoryContextAllocZero(ex->ucxt, Max(nkept, 1) * sizeof(uint32));
 	gid = MemoryContextAllocZero(ex->ucxt, Max(nkept, 1) * sizeof(uint32));
 	if (s->nkeys == 1)
 		preagg_key_ids(ex, 0, h.key, NULL, h.ngroups - h.has_null, h.dict, kept, nkept, ids);
+	/* the days of a month one key: a zone that skips a day gives the last day of a month the key of the next */
+	for (int j = 1; mc != NULL && j < nkept; j++)
+		if (mc[kept[j]] == mc[kept[j - 1]] && ids[j] != ids[j - 1])
+			return false;
 	ids_to_gids(ex, nkept, ids, gid);
 	for (int j = 0; j < nkept; j++)
 	{
@@ -108,6 +160,16 @@ preagg_hist(AggExec *ex)
 			int			m = slot[ai];
 
 			v[ai].rows = v[ai].nn = h.count[kept[j]];
+			if (m == -4)
+			{
+				SiftSrcPresence p;
+
+				SIFT_INVARIANT(sift_colsrc_unit_dset(ex->src, &ex->unit, ex->pa.dim, pa_leaf(&s->agg[ai]), mc[kept[j]], &p), "key group without the id set of a calendar cell");
+				if (p.nwords > 0)
+					ex->acc[ai].n[gid[j]] += dist_or_words(ex, ex->dist[ai], gid[j], p.wbase, p.words, p.nwords);
+				v[ai] = (PaVal) {0};
+				continue;
+			}
 			if (m == -3)
 			{
 				/* the group is one value: a NULL group adds none, any other adds its id (the value for a 32-bit leaf, the id over all dictionaries for text) */

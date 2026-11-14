@@ -578,7 +578,8 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 				fdim,
 				zdim;
 	uint8		cmask = 0;
-	bool		hcal = false,
+	bool		dset = false,
+				hcal = false,
 				hcalalt = false,
 				calalt = false,
 				ktab;
@@ -626,10 +627,19 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 			/* without a key, the units of a leaf of key_columns give its values as a bitmap each (preagg_presence) */
 			if (s->nkeys == 0 && pa_pres(pa, s->agg[i].leaf))
 				continue;
+			if (cleaf >= 0 && dim < 0 && pa->dsets[s->agg[i].leaf])
+			{
+				dset = true;
+				continue;
+			}
 			if (cleaf >= 0 || (dim >= 0 && dim != s->agg[i].leaf))
 				return SPW_AGG_DISTINCT;
 			dim = s->agg[i].leaf;
 		}
+	/* the cells of a key group hold counts and the id sets, no sums */
+	for (int i = 0; dset && i < s->naggs; i++)
+		if (!distinct_leaf(&s->agg[i], lay) && !(s->agg[i].kind == SAA_COUNT_STAR && !s->agg[i].filter))
+			return SPW_AGG_DISTINCT;
 	/* tests of a date or timestamp that has no histogram of its own: its cells, when they are calendar tests */
 	if (cleaf < 0 && dim >= 0 && fdim < 0 && pa_dim(pa, dim) < 0 && pa_cal(pa, dim) >= 0)
 	{
@@ -657,7 +667,8 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 	else if (!pa->aggs)
 		why = SPW_ROW_NO_SUMS;
 	for (int i = 0; why == SPW_OK && i < s->naggs; i++)
-		why = cube_agg_ok(&s->agg[i], lay, nbase, pa, d);
+		if (!(dset && distinct_leaf(&s->agg[i], lay)))
+			why = cube_agg_ok(&s->agg[i], lay, nbase, pa, d);
 	/* the units the sums cannot answer (their zone is not inside the comparison) answer from the histogram of the dim it tests, when it holds the aggregates */
 	if (dim < 0 && zdim >= 0)
 	{
@@ -729,7 +740,7 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 
 		ktab = pd >= 0 && pa->dim[pd].ktab;
 	}
-	*out = (SiftAggPaShape) {.ktab = ktab, .dim = dim, .cal = cleaf >= 0, .calmask = cmask, .hcal = hcal, .hcalalt = hcalalt, .calalt = calalt, .hdim = hdim, .list = -1, .nullz = nullz};
+	*out = (SiftAggPaShape) {.ktab = ktab, .dim = dim, .cal = cleaf >= 0, .dset = dset && cleaf >= 0, .calmask = cmask, .hcal = hcal, .hcalalt = hcalalt, .calalt = calalt, .hdim = hdim, .list = -1, .nullz = nullz};
 	return SPW_OK;
 }
 

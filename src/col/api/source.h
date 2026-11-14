@@ -212,7 +212,9 @@ typedef struct SiftColSuperTest
 	const int64 *vals;
 } SiftColSuperTest;
 /* rollup: the statement is answered from the rollup of the rows, which only a key group of a scope segment holds: no other group is tried */
-extern void sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int dim, int hdim, bool rollup);
+#define SIFT_SUPER_NEED_ROWS	1		/* the groups tried hold the rollup of the rows */
+#define SIFT_SUPER_NEED_SETS(leaf)	((leaf) < 63 ? UINT64CONST(2) << (leaf) : 0)	/* ... or the id sets by calendar month of the leaf (or them or'ed) */
+extern void sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int dim, int hdim, uint64 need);
 
 /*
  * Opens the source: copies the directory (registered snapshot held until close), starts the visibility state (sift_vis) for snapshot, takes

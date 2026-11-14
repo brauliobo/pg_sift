@@ -46,6 +46,8 @@ extern bool sift_aggpre_unit_rollup(SiftAggPre *pre, const SiftColUnit *unit, co
 
 /* SiftSrcProvider.unit_presence of leaf col of the unit: the key list or bitmap of an exact unit, valid until the next call; false when it has none */
 extern bool sift_aggpre_unit_presence(const SiftColUnit *unit, int col, SiftSrcPresence *p);
+/* SiftSrcProvider.unit_dset: the ids of leaf col in the month starting on a day cell of the date leaf cal of a key group (the empty set for a month without ids); false: it holds none */
+extern bool sift_aggpre_unit_dset(const SiftColUnit *unit, int cal, int col, int64 cell, SiftSrcPresence *p);
 
 /*
  * The sorted run of leaf col in the unit, whose rows are in the stored numbering: not those of a unit narrowed by the match set sel or by

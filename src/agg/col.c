@@ -969,6 +969,7 @@ static const SiftSrcProvider col_provider = {
 	.unit_agg = col_unit_agg,
 	.unit_hist = col_unit_hist,
 	.unit_presence = col_unit_presence,
+	.unit_dset = col_unit_dset,
 	.unit_hll = col_unit_hll,
 	.gpu_unit = col_gpu_unit,
 	.gpu_dense = col_gpu_dense,

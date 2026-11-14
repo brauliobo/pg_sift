@@ -264,6 +264,7 @@ struct SiftColSource
 	int			nsuptest;
 	int			supdim;			/* the leaves the histograms answer for the tests above */
 	int			suphdim;
+	uint64		supsets;		/* ... or the id sets by month of these leaves (bit l: leaf l) */
 	bool		suprows;		/* ... and the groups tried are those that hold the rollup of the rows */
 	int64	   *sx;				/* a scope source (sift_col_scope_delta): the members whose stored entries the scan leaves out, ascending, in mcxt; no unit may answer from its pre-aggregates then, nor a segment from its summaries */
 	uint32		nsx;

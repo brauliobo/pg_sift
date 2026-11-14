@@ -30,7 +30,7 @@ col_super_align(void *impl, uint32 sb)
 }
 
 void
-col_super_tests(void *impl, const SiftSrcPrune *z, int nz, int dim, int hdim, bool rollup)
+col_super_tests(void *impl, const SiftSrcPrune *z, int nz, int dim, int hdim, uint64 need)
 {
 	SiftColSuperTest *t = palloc(Max(nz, 1) * sizeof(SiftColSuperTest));
 	int			nt = 0;
@@ -38,7 +38,7 @@ col_super_tests(void *impl, const SiftSrcPrune *z, int nz, int dim, int hdim, bo
 	for (int k = 0; k < nz; k++)
 		if (z[k].nkids == 0 && !z[k].nulltest)
 			t[nt++] = (SiftColSuperTest) {z[k].leaf, z[k].lo, z[k].hi, z[k].nvals, z[k].vals};
-	sift_col_super_tests(((ColSource *) impl)->cs, t, nt, dim, hdim, rollup);
+	sift_col_super_tests(((ColSource *) impl)->cs, t, nt, dim, hdim, need);
 	pfree(t);
 }
 
@@ -72,6 +72,12 @@ sift_col_scope_stats(Relation index, SiftSrcStats *st)
 	st->zones = col_zones(memo.scope_zones, meta, memo.scope_zones->units);
 	st->miss_pending = true;
 	return true;
+}
+
+bool
+col_unit_dset(void *impl, const SiftSrcUnit *unit, int cal, int leaf, int64 cell, SiftSrcPresence *p)
+{
+	return sift_aggpre_unit_dset(&((ColSource *) impl)->unit, cal, leaf, cell, p);
 }
 
 #endif							/* __has_include("col/col.h") */

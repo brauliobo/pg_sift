@@ -223,6 +223,7 @@ extern bool leaf_wsum_only(const SiftAggSpec *s, int leaf);
 typedef struct SiftAggPaShape
 {
 	int			dim;
+	bool		dset;				/* cal: count(DISTINCT leaf) per cell, from the id sets by month of the key groups (a unit that is not one scans) */
 	bool		cal;				/* dim >= 0: the cube's calendar dim of that date or timestamp leaf (the cells of a unit), not the leaf's own dim */
 	uint8		calmask;			/* cal: the grains (1 << SIFT_CAL_*) of the cells that hold one value of the key and the tests; a unit with other cells scans */
 	bool		hcal;				/* hdim is the calendar dim of the leaf */

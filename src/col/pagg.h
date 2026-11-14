@@ -28,6 +28,7 @@ extern bool sift_col_unit_preagg_ok(const SiftColUnit *unit);
  * until the next call on the segment. false for a superunit, a unit that is not exact or has no presence for the leaf.
  */
 extern bool sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p);
+extern bool sift_col_unit_dset(const SiftColUnit *unit, int cal, int col, int64 cell, SiftCPresence *p);
 /* The HyperLogLog sketch of col in an exact unit (col/hll.h), valid until the next call; false when the unit has none */
 extern bool sift_col_unit_hll(const SiftColUnit *unit, int col, const uint8 **blob);
 

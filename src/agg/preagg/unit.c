@@ -114,6 +114,9 @@ preagg_unit_try(AggExec *ex)
 	int			dead;
 
 	ex->pa_xleaf = -1;
+	/* the id sets are those of the key groups: any other unit is scanned, with no look at its pre-aggregates */
+	if (ex->pa.dset && !preagg_dset_unit(ex))
+		return false;
 	/* a segment the dictionary of the leaf counts the rows of: the rows that pass the one test, as the source read them from it */
 	if (ex->pcount && ex->unit.nsu > 0)
 	{
@@ -274,7 +277,7 @@ preagg_init(AggExec *ex)
 	ex->pa_dead_sub = ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex, false);
 	ex->pa_dead = ex->pa_dead_sub || (ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex, true));
 	/* a superunit holds no calendar cells: a scan that needs them would try its groups and split each */
-	ex->super_on = ex->pa_on && (!PA_ROLLUP(ex->pa) || ex->pa.rows) && !ex->pa.cal && !ex->pa.hcal && sift_agg_super && ex->search == NULL && !ex->pa.ktab && sift_colsrc_super(ex->src, true);
+	ex->super_on = ex->pa_on && (!PA_ROLLUP(ex->pa) || ex->pa.rows) && (!ex->pa.cal || ex->pa.dset) && !ex->pa.hcal && sift_agg_super && ex->search == NULL && !ex->pa.ktab && sift_colsrc_super(ex->src, true);
 	if (ex->pa_on && PA_ROLLUP(ex->pa))
 	{
 		rollup_need(ex);
@@ -385,9 +388,9 @@ preagg_init(AggExec *ex)
 		int			n = 0;
 
 		for (int k = 0; k < ex->nprune; k++)
-			if (!rollup_dim_leaf(ex, ex->prune[k].leaf))
+			if (!rollup_dim_leaf(ex, ex->prune[k].leaf) && !(ex->pa.dset && ex->prune[k].leaf == ex->pa.dim))	/* the cells of a key group are tested by cal_keep */
 				own[n++] = ex->prune[k];
-		sift_colsrc_super_tests(ex->src, own, n, ex->pa.dim, ex->pa.hdim, ex->pa.rows);
+		sift_colsrc_super_tests(ex->src, own, n, ex->pa.dim, ex->pa.hdim, preagg_super_need(ex));
 		pfree(own);
 	}
 }

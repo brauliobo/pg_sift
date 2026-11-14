@@ -474,6 +474,41 @@ prune_new_words(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int 
 	}
 }
 
+/* A scan that reads the id sets of key groups takes a group whole: the units of a group one of which the zones keep are all kept (the cells of the group hold the tests of its date) */
+static void
+prune_keep_groups(SiftColSource *src, SiftColSegment *seg, uint64 *keep, uint32 ulo, uint32 uhi)
+{
+	uint32		kept = 0;
+
+	/* a group has two units or more: no block is read for a segment that keeps fewer */
+	for (uint32 w = ulo / 64; src->supsets && w * 64 < uhi && kept < SIFT_SUPER_MIN_FAN; w++)
+	{
+		uint64		bits = keep[w];
+
+		if (w == ulo / 64)
+			bits &= ~UINT64CONST(0) << (ulo % 64);
+		if (uhi < (w + 1) * 64)
+			bits &= (UINT64CONST(1) << (uhi % 64)) - 1;
+		kept += pg_popcount64(bits);
+	}
+	if (kept < SIFT_SUPER_MIN_FAN)
+		return;
+	for (uint32 k = 0; k < sift_cseg_super_count(seg); k++)
+	{
+		uint32		first,
+					n;
+		bool		any = false;
+
+		sift_cseg_super_range(seg, k, &first, &n);
+		if (!sift_cseg_super_has_dsets(seg, k, src->supsets) || first < ulo || first + n > uhi)
+			continue;
+		for (uint32 u = first; !any && u < first + n; u++)
+			any = sift_col_bit_test(keep, u);
+		for (uint32 u = first; any && u < first + n; u++)
+			sift_col_bit_set(keep, u);
+	}
+}
+
 void
 scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi, bool cached)
 {
@@ -561,6 +596,7 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 		}
 		/* the words of units the range holds that no begin has tested yet, each run of them at once */
 		prune_new_words(src, c, preds, npreds, zones, nzones, pr.ulo / 64, (pr.uhi + 63) / 64);
+		prune_keep_groups(src, seg, c->ckeep, pr.ulo, pr.uhi);
 		c->keep = c->ckeep;
 		c->setcut = c->csetcut;
 		return;
@@ -575,7 +611,28 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 	prune_preds(src, seg, preds, npreds, c->keep, &pr, false);
 	for (int i = 0; i < nzones; i++)
 		prune_zone(src, seg, &zones[i], c->keep, &zr);
+	prune_keep_groups(src, seg, c->keep, pr.ulo, pr.uhi);
 	c->setcut = pr.setcut;
+}
+
+uint32
+sift_col_super_span(SiftColSource *src)
+{
+	uint32		fan = 0,
+				extent = 0;
+
+	for (int i = 0; i < src->nseg; i++)
+	{
+		SiftColSegment *seg = src->seg[i].seg;
+
+		/* the fan is the index's (one setting for every segment written): a read of the id sets takes the first block found, and a lone unit of a small key reads no other */
+		if (fan == 0 || !src->supsets)
+			fan = Max(fan, sift_cseg_super_fan(seg));
+		if (seg->nsb > 0)
+			extent = Max(extent, seg->sbdir[seg->nsb - 1].id - seg->sbdir[0].id + 1);
+	}
+	/* a segment the key table answers for lies in one item: four times its superblocks, as a scan with workers shares the span of four */
+	return Max(fan * 4 * Max(src->nseg, 1), (src->flags & COLO_TABLE) && src->whole ? extent * 4 : 0);
 }
 
 uint32
@@ -596,7 +653,7 @@ sift_col_super_align(SiftColSource *src, uint32 sb)
 }
 
 void
-sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int dim, int hdim, bool rollup)
+sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int dim, int hdim, uint64 need)
 {
 	if (src->suptest != NULL)
 		pfree(src->suptest);
@@ -606,7 +663,8 @@ sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int 
 	src->nsuptest = nt;
 	src->supdim = dim;
 	src->suphdim = hdim;
-	src->suprows = rollup;
+	src->suprows = need & SIFT_SUPER_NEED_ROWS;
+	src->supsets = need >> 1;
 }
 
 /* Does the zone of every leaf the statement compares lie inside the comparison in each unit [first, first + n), as the consumer asks of the summary of the group (preagg_zones)? */

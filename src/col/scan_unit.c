@@ -861,7 +861,7 @@ bool
 col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 {
 	SiftColSegment *seg = c->seg;
-	uint32		fan = sift_cseg_super_fan(seg),
+	uint32		fan,
 				first,
 				n,
 				k,
@@ -879,14 +879,15 @@ col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 	}
 	if (src->whole && col_whole_take(src, c, cu))
 		return true;
-	if (!src->super)
-		return false;
+	if (!src->super || c->cur + SIFT_SUPER_MIN_FAN > c->end || !keep_all(c, c->cur, SIFT_SUPER_MIN_FAN))
+		return false;			/* a group is of two units or more, all kept: a lone unit reads no block of the superunit block */
+	fan = sift_cseg_super_fan(seg);
 	if (fan == 0 || c->cur < c->nosuper_to)
 		return false;
 	for (uint32 skip = 0; sift_cseg_super_at(seg, c->cur, skip, &k); skip++)
 	{
 		sift_cseg_super_range(seg, k, &first, &n);
-		if (n < 2 || c->cur + n > c->end || !keep_all(c, c->cur, n) || (src->suprows && !sift_cseg_super_has_rollup(seg, k)) || !col_super_inside(src, seg, c->cur, n) || !units_allvisible(src, seg, c->cur, n))
+		if (n < 2 || c->cur + n > c->end || !keep_all(c, c->cur, n) || (src->suprows && !sift_cseg_super_has_rollup(seg, k)) || (src->supsets && !sift_cseg_super_has_dsets(seg, k, src->supsets)) || !col_super_inside(src, seg, c->cur, n) || !units_allvisible(src, seg, c->cur, n))
 			continue;
 		if (!(src->flags & COLO_TABLE) && !segments_current(src))
 			return false;

@@ -85,6 +85,16 @@ sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p)
 	return sift_cseg_presence(seg, col, u, p);
 }
 
+/* The key presence of leaf col in the month of day cell of date leaf cal in a key group with id sets; false: the unit is no such group or has none of the leaf */
+bool
+sift_col_unit_dset(const SiftColUnit *unit, int cal, int col, int64 cell, SiftCPresence *p)
+{
+	SiftColSegment *seg;
+	uint32		k;
+
+	return sift_col_unit_super(unit, &seg, &k) && sift_cseg_super_dset(seg, k, cal, col, cell, p);
+}
+
 bool
 sift_col_unit_hll(const SiftColUnit *unit, int col, const uint8 **blob)
 {
@@ -422,11 +432,14 @@ super_hist(SiftColSegment *seg, uint32 k, int dim, MemoryContext mcxt, const Sif
 	const uint8 *blob;
 	int			found;
 
-	if (dim >= SIFT_PAGG_CAL || seg->schema->cols[dim].parent >= 0 || (blob = sift_cseg_super_cube(seg, k, &len)) == NULL)
+	if ((dim < SIFT_PAGG_CAL && seg->schema->cols[dim].parent >= 0) || (blob = sift_cseg_super_cube(seg, k, &len)) == NULL)
 		return false;
-	if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, need, out)) < 0)
+	if (dim < SIFT_PAGG_CAL && (found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, need, out)) < 0)
 		corrupt_cube(seg, k);
-	if (found == 0 && (blob = sift_cseg_super_extra(seg, k, &len)) != NULL && (found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, need, out)) < 0)
+	if (dim >= SIFT_PAGG_CAL)
+		found = 0;
+	if (found == 0 && (blob = dim >= SIFT_PAGG_CAL ? sift_cseg_super_days(seg, k, &len) : sift_cseg_super_extra(seg, k, &len)) != NULL &&
+		(found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, need, out)) < 0)
 		corrupt_cube(seg, k);
 	return found > 0;
 }

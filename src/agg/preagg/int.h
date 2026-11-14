@@ -27,6 +27,8 @@ extern void rollup_need(AggExec *ex);
 extern void hist_need(AggExec *ex);
 extern bool rollup_skip(AggExec *ex);
 extern bool preagg_rollup(AggExec *ex);
+extern bool preagg_dset_unit(AggExec *ex);
+extern uint64 preagg_super_need(const AggExec *ex);
 
 /* the leaf an aggregate reads: its column, the only leaf of its numeric program; -1: count(*) */
 static inline int

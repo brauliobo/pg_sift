@@ -14,6 +14,7 @@ sift_aggpre_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa)
 	pa->aggs = true;
 	if (spec->off)
 		return;
+	memcpy(pa->dsets, spec->dsets, sizeof(pa->dsets));
 	for (int c = 0; c < SIFT_COL_MAX_COLS && pa->npres < SIFT_SRC_MAX_DIMS; c++)
 		if (spec->pres[c])
 			pa->pres[pa->npres++] = c;
@@ -235,6 +236,17 @@ sift_aggpre_unit_presence(const SiftColUnit *unit, int col, SiftSrcPresence *p)
 	SiftCPresence c;
 
 	if (!sift_col_unit_presence(unit, col, &c))
+		return false;
+	*p = (SiftSrcPresence) {c.wbase, c.nwords, c.words, c.nkeys, c.keys};
+	return true;
+}
+
+bool
+sift_aggpre_unit_dset(const SiftColUnit *unit, int cal, int col, int64 cell, SiftSrcPresence *p)
+{
+	SiftCPresence c;
+
+	if (!sift_col_unit_dset(unit, cal, col, cell, &c))
 		return false;
 	*p = (SiftSrcPresence) {c.wbase, c.nwords, c.words, c.nkeys, c.keys};
 	return true;
