@@ -163,6 +163,8 @@ typedef struct SiftScopeStale SiftScopeStale;
 extern SiftScopeStale *sift_scope_stale_begin(Relation index, MemoryContext mcxt);
 struct SiftColSegment;
 extern bool sift_scope_stale(SiftScopeStale *st, const struct SiftColSegment *seg);
+/* ... of the floor of the stamps of the index, whatever its segments (a promotion that wrote none, an index with no scope segment): a refill makes it again */
+extern bool sift_scope_floor_stale(SiftScopeStale *st);
 extern void sift_scope_stale_end(SiftScopeStale *st);
 
 /*
@@ -185,8 +187,25 @@ extern int64 sift_scope_fill_member(struct SiftScopeFill *f, int scope, Oid type
 extern const int64 *sift_scope_fill_members(struct SiftScopeFill *f, int scope, const struct SiftColBatch *b);
 extern uint32 sift_scope_fill_expand(struct SiftScopeFill *f, int scope, const int64 *fk, const uint64 *nulls, uint32 nrows, uint32 **row, int64 **key, uint32 *cap);
 
-/* Does every entity segment of the directory have its scope entries in the scope segments (SIFT_SEG_SCOPED; rows of a write buffer are the reader's: it reads them through the entity path) */
-extern bool sift_scope_covered(Relation index, int scope);
+/*
+ * The floor of the stamps of the index (col/scope_floor.c): the oldest journal positions its scope entries, and the rows that have none, are exact as of, kept in the metapage so that it does not
+ * depend on a scope segment existing. SiftScopeStamps: the stamps of a fill, for each scope its journals' (nj of them).
+ */
+typedef struct SiftScopeStamps
+{
+	int			n;
+	int			nj[SIFT_SCOPE_MAX];
+	SiftConnStamp stamp[SIFT_SCOPE_MAX][SIFT_SCOPE_JOURNALS];
+} SiftScopeStamps;
+extern void sift_scope_fill_stamps(const struct SiftScopeFill *f, SiftScopeStamps *out);
+/* The floor of scope in the metapage of a directory read (lineage 0: not filled) */
+extern void sift_scope_floor_get(const struct SiftMetaPageData *meta, int scope, SiftConnStamp *out);
+/* A segment written under mine is about to be published (a promotion): the floor goes down to them, or is set when the index has no entity segment */
+extern void sift_scope_floor_lower(Relation index, const SiftScopeStamps *mine);
+/* In the switch of the directory of a refill that read the entity segments ents and wrote every scope segment under mine */
+extern void sift_scope_floor_raise(struct SiftMetaPageData *meta, const struct SiftDirectoryData *dir, const SiftScopeStamps *mine, const uint64 *ents, int nents);
+/* The end of a build: the oldest stamp of the segments it wrote (that of a fill now for none) */
+extern void sift_scope_floor_after_build(Relation index);
 
 /*
  * The reader (col/scan/scope.c): what a scan that has a scope conjunct of nkeys keys of the scope key_name reads. A row of the scope units of the keys counts when its member

@@ -129,19 +129,12 @@ scope_report(const ColBuild *b, int s)
 		ereport(NOTICE, (errmsg("scope \"%s\": %s entries for %s rows (%.2f per row)", what, count_text(entries), count_text(rows), per_row)));
 }
 
-/* The segments of the scopes follow those of the entities in b->segs, flagged; the entities say that their rows have their entries */
+/* The segments of the scopes follow those of the entities in b->segs, flagged */
 void
 colb_scope_gather(ColBuild *b)
 {
-	bool		stamped = false;
-
 	for (int s = 0; s < b->nscope; s++)
-	{
 		scope_report(b, s);
-		stamped |= b->scope[s]->nsegs > 0;
-	}
-	for (int i = 0; stamped && i < b->nsegs; i++)
-		b->segs[i].flags |= SIFT_SEG_SCOPED;
 	for (int s = 0; s < b->nscope; s++)
 	{
 		const ColBuild *sb = b->scope[s];

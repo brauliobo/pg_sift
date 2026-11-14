@@ -269,6 +269,8 @@ Three features write column formats that 4.3 and older refuse (`sift.upgrade_che
 
 `sift.col_scope_refresh_pct` (default 10) is new and is the only setting of the refresh of scope segments: `sift.col_connect_refresh_pct` governs the connected indexes of 4.3, as before, and no longer a scope (4.3 had none, so no stored value changes meaning). `sift.col_maintenance_due` reports `stale scope` for a scope index and keeps `stale connection` for a connected one; a monitor that matches the reason text of a scope index of the 5.0 development builds matches the new one.
 
+A scope index keeps the stamp its entries are exact as of in its metapage (the floor of the stamps, `docs/FORMATS.md` section 4, minor 45). A 5.0 index built before the floor existed has none: its reads say `unfilled` (the join answers, exact) until the maintenance rewrites its scope segments, which sets it, so no `REINDEX` is needed for it; `sift.col_maintain('<index>')` does it at once.
+
 ## The journal index of a scope (5.0)
 
 `CREATE INDEX` of a scope index makes the journal index of the relation of pairs when it has none, so the statement of the 5.0 development builds that listed the journal first still works and finds it. A journal that exists is used as it is (its name, tablespace and options stay yours). One that the statement made carries a comment, which `pg_dump` keeps, and is dropped with the last scope index that uses it; remove the comment (`COMMENT ON INDEX .. IS NULL`) to keep it. A role that does not own the pairs relation cannot make the journal: its owner makes it first.

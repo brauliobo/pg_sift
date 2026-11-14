@@ -1,7 +1,6 @@
--- The entries of an entity segment are exact as of the stamp it was written under, and the read takes the pairs that changed since the oldest stamp of the scope segments as changed. The scope
--- segment that held that stamp had no live entry left when the rows that had pairs were deleted (the row that stays has a member with no pair), so the merge dropped it and the oldest stamp was
--- the next one's, newer than a pair that arrived for that member: the row read as having no entry for it. The entity segment says it is covered no more, the join answers, and the
--- maintenance writes the scope segments again.
+-- The entries of the index are exact as of a stamp, and the read takes the pairs that changed since it as changed. The scope segment that held the oldest stamp had no live entry left when the rows
+-- that had pairs were deleted (the row that stays has a member with no pair), so the merge dropped it: the stamp is the floor kept in the metapage, not a property of the segments, so it
+-- stays, the pair that arrived for that member is patched, and the read is from the units and exact (it was the join's, and before that wrong).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;

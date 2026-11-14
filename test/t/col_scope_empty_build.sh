@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# A scope index built on an empty table has no segment, so its reads say `unfilled` (the join answers) while the rows that arrive are in the write buffers; the promotion of the buffers writes the
-# segments with the stamp the journal of the scope gives at that moment, so the first promotion makes the reads stored with no refill, and the answers are the join's before and after.
+# A scope index built on an empty table has no segment, but it has its floor of stamps (the journal at the end of the build), so its reads are from the units from the start (none to read: the rows that
+# arrive are the write buffers', which no scope entry describes) and the first promotion of its rows writes the segments with no refill; the answers are the join's before and after.
 . "$(dirname "$0")/lib.bash"
 plan 5
 
@@ -21,7 +21,7 @@ JOIN="SELECT count(*), sum(v) FROM ce e WHERE e.m IN (SELECT m FROM cp WHERE t =
 why() { sql eb "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $READ" | sed -n 's/^ *Scope Fallback: //p;s/^ *Scope Units: .*/stored/p' | head -n 1; }
 same() { [[ $(sql eb "SET sift.agg_force = on" "$READ" | tail -n 1) == $(sql eb "SET sift.enable_agg = off" "$JOIN" | tail -n 1) ]]; }
 
-check "on an empty table the read says unfilled" test "$(why)" == unfilled
+check "on an empty table the read is from the units" test "$(why)" == stored
 sql eb "INSERT INTO ce SELECT i, 1 + (i * 7919) % 210, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, 'x' FROM generate_series(1, 30000) i" "VACUUM ce" >/dev/null
 check "... and its answer is the join's once rows arrive" same
 sql eb "SELECT sift.col_promote('ce_col')" >/dev/null

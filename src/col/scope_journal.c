@@ -555,6 +555,7 @@ struct SiftScopeStale
 	Relation	index;
 	Relation	heap;
 	int			priced;			/* the refresh is due by its price: 0 not asked yet, 1 due, -1 not */
+	int			floored;		/* the floor is stale: 0 not asked yet, 1 stale, -1 not */
 	struct
 	{
 		ScopeJournals J;
@@ -620,36 +621,62 @@ refresh_priced(SiftScopeStale *st)
 	return sift_scope_refresh_due(read, sift_scope_refresh_price(rows, entry_columns));
 }
 
-bool
-sift_scope_stale(SiftScopeStale *st, const SiftColSegment *seg)
+/* The floor of the index (col/scope_floor.c) is not the journal's position any more: its lineage is another, or the pairs that changed since are many, or the refresh is cheaper than the reads (the entity segments have nothing stored: no floor is stale) */
+static bool
+scope_floor_stale(SiftScopeStale *st, const SiftMetaPageData *meta, int i)
 {
-	if (!(seg->entry.flags & SIFT_SEG_SCOPE))
-		return false;
-	for (int i = 0; i < st->n; i++)
-	{
-		const ScopeJournals *J = &st->s[i].J;
-		SiftConnStamp stamp[SIFT_SCOPE_JOURNALS] = {{0}};
-		double		limit = st->s[i].members * sift_col_scope_refresh_pct / 100;
-		SiftConnKeys keys;
-		bool		many;
+	const ScopeJournals *J = &st->s[i].J;
+	SiftConnStamp stamp[SIFT_SCOPE_JOURNALS];
+	double		limit = st->s[i].members * sift_col_scope_refresh_pct / 100;
+	SiftConnKeys keys;
+	bool		many;
 
-		if (!st->s[i].vouches)
-			continue;
-		if (i < seg->nscope && seg->scope_journals[i] == J->n)
-			memcpy(stamp, seg->scope[i], J->n * sizeof(SiftConnStamp));
-		for (int j = 0; j < J->n; j++)
-			if (stamp[j].lineage != st->s[i].now[j].lineage)
-				return true;
-		if (journals_changed(J, stamp, st->snap, (uint32) Max(limit, 1), NULL, 0, NULL, &keys) != SIFT_CONN_OK)
+	if (!st->s[i].vouches)
+		return false;
+	sift_scope_floor_get(meta, i, stamp);
+	for (int j = 0; j < SIFT_SCOPE_JOURNALS; j++)
+		if (stamp[j].lineage != (j < J->n ? st->s[i].now[j].lineage : 0))
 			return true;
-		many = keys.n >= limit;
-		sift_conn_keys_free(&keys);
-		if (many)
-			return true;
-	}
+	if (journals_changed(J, stamp, st->snap, (uint32) Max(limit, 1), NULL, 0, NULL, &keys) != SIFT_CONN_OK)
+		return true;
+	many = keys.n >= limit;
+	sift_conn_keys_free(&keys);
+	return many;
+}
+
+static bool
+floor_stale(SiftScopeStale *st)
+{
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	bool		stored = false,
+				stale = false;
+
+	sift_dir_read(st->index, dir);
+	for (int i = 0; i < dir->nsegs && !stored; i++)
+		stored = dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_seg_is_scope(&dir->segs[i]);
+	for (int i = 0; i < st->n && stored && !stale; i++)
+		stale = scope_floor_stale(st, &dir->meta, i);
+	pfree(dir);
+	if (!stored || stale)
+		return stale;
 	if (st->priced == 0)
 		st->priced = refresh_priced(st) ? 1 : -1;
 	return st->priced > 0;
+}
+
+/* Is the floor of the index stale (asked once for the whole index: it is not the stamp of a segment) */
+bool
+sift_scope_floor_stale(SiftScopeStale *st)
+{
+	if (st->floored == 0)
+		st->floored = floor_stale(st) ? 1 : -1;
+	return st->floored > 0;
+}
+
+bool
+sift_scope_stale(SiftScopeStale *st, const SiftColSegment *seg)
+{
+	return (seg->entry.flags & SIFT_SEG_SCOPE) && sift_scope_floor_stale(st);
 }
 
 void

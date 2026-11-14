@@ -1,7 +1,6 @@
--- A promotion of rows none of whose members has a pair writes no scope segment, so there is no stamp to say when its rows were found to have no entries: an entity segment that said it was covered
--- anyway was read as exact by the stamp of a later promotion, which is newer than the pairs that arrived in between, and the read lost those rows. The entity segment says so only when its switch wrote a
--- scope segment, the reads run as the join says while one does not, and the maintenance writes the scope segments of every entity segment under one stamp. The same when VACUUM took the scope
--- segments of the rows that had pairs away (they were deleted) and the rows that stay have none: the first scope segment that comes after uncovers them.
+-- A promotion of rows none of whose members has a pair writes no scope segment: the stamp that says when its rows were found to have no entries is the floor of the metapage, not a scope segment, so
+-- the stamp of a later promotion, newer than the pairs that arrived in between, hides none of them (the read lost those rows, 650 for 5,650): the pairs are patched, from the units. The same when
+-- VACUUM took the scope segments of the rows that had pairs away (they were deleted) and the rows that stay have none. The test col_scope_stamp has the other states.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -22,9 +21,9 @@ CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v
 INSERT INTO events SELECT i, 201 + i % 100, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10 FROM generate_series(1, 5000) i;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 SELECT * FROM reads();
- same | stored |   why    
-------+--------+----------
- t    | f      | unfilled
+ same | stored | why 
+------+--------+-----
+ t    | t      | 
 (1 row)
 
 -- the pairs of those members arrive, then rows of members that have pairs, which a promotion writes scope segments for
@@ -37,9 +36,9 @@ SELECT sift.col_promote('events_col') >= 0 AS promoted;
 (1 row)
 
 SELECT * FROM reads();
- same | stored |                 why                  
-------+--------+--------------------------------------
- t    | f      | scope segments do not cover the rows
+ same | stored | why 
+------+--------+-----
+ t    | t      | 
 (1 row)
 
 -- the maintenance writes the scope segments of both entity segments under one stamp, and the units are read
@@ -91,9 +90,9 @@ SELECT sift.col_promote('events_col') >= 0 AS promoted;
 (1 row)
 
 SELECT * FROM reads();
- same | stored |                 why                  
-------+--------+--------------------------------------
- t    | f      | scope segments do not cover the rows
+ same | stored | why 
+------+--------+-----
+ t    | t      | 
 (1 row)
 
 SELECT sift.col_maintain('events_col') AS rewritten;

@@ -1,7 +1,6 @@
--- A promotion of rows none of whose members has a pair writes no scope segment, so there is no stamp to say when its rows were found to have no entries: an entity segment that said it was covered
--- anyway was read as exact by the stamp of a later promotion, which is newer than the pairs that arrived in between, and the read lost those rows. The entity segment says so only when its switch wrote a
--- scope segment, the reads run as the join says while one does not, and the maintenance writes the scope segments of every entity segment under one stamp. The same when VACUUM took the scope
--- segments of the rows that had pairs away (they were deleted) and the rows that stay have none: the first scope segment that comes after uncovers them.
+-- A promotion of rows none of whose members has a pair writes no scope segment: the stamp that says when its rows were found to have no entries is the floor of the metapage, not a scope segment, so
+-- the stamp of a later promotion, newer than the pairs that arrived in between, hides none of them (the read lost those rows, 650 for 5,650): the pairs are patched, from the units. The same when
+-- VACUUM took the scope segments of the rows that had pairs away (they were deleted) and the rows that stay have none. The test col_scope_stamp has the other states.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;

@@ -24,7 +24,7 @@ DECLARE
 	b text;
 	p jsonb;
 BEGIN
-	covered := sift._test_col_scope_covered(idx, 'tenant_id');
+	covered := sift._test_col_scope_filled(idx, 'tenant_id');
 	same := true;
 	stored := true;
 	FOREACH k IN ARRAY ARRAY[2, 5, 9, 12] LOOP

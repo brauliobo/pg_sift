@@ -38,7 +38,7 @@ BEGIN
 		same_md5 := same_md5 AND a = b;
 	END LOOP;
 	SET LOCAL sift.enable_agg = on;
-	covered := sift._test_col_scope_covered('events_col', 'tenant_id');
+	covered := sift._test_col_scope_filled('events_col', 'tenant_id');
 	PERFORM sift.col_verify('events_col', true);
 	verified := true;
 END $$;

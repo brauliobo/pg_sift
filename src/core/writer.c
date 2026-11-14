@@ -362,7 +362,7 @@ layout_pages(SiftWriteTarget *wt, Page meta, Page dir)
 {
 	sift_page_init(meta, SIFT_PT_META, 0);
 	*META(meta) = wt->meta;
-	SiftPageSetUsed(meta, wt->meta.analyzer_config[0] ? sizeof(SiftMetaPageData) : SIFT_META_BASE_SIZE);
+	SiftPageSetUsed(meta, sift_meta_extended(&wt->meta) ? sizeof(SiftMetaPageData) : SIFT_META_BASE_SIZE);
 	sift_page_init(dir, SIFT_PT_DIRECTORY, 0);
 	SiftPageSetUsed(dir, DIR_USED(0));
 }

@@ -58,6 +58,15 @@ typedef SiftPageOpaqueData *SiftPageOpaque;
  * stops short of it, so the note reads as zeros), one that knows it extends pd_lower when it first writes the note.
  */
 #define SIFT_MAINT_ERRMSG_LEN	192
+/* The stamps of the metapage (col/scope.h, the floor of a scope index): 4 scopes of at most 3 journals; the layout is that of SiftConnStamp (col/api/meta.h) */
+#define SIFT_META_STAMPS		12
+
+typedef struct SiftMetaStamp
+{
+	uint64		lineage;
+	uint32		xmin;
+	uint32		reserved;
+} SiftMetaStamp;
 
 typedef struct SiftMetaPageData
 {
@@ -80,11 +89,24 @@ typedef struct SiftMetaPageData
 	char		maint_errmsg[SIFT_MAINT_ERRMSG_LEN];	/* NUL-terminated, cut to fit */
 	/* The text search configuration of the stemmer option, as given at build time, "" for the built-in analyzers; pd_lower covers it like the note */
 	char		analyzer_config[SIFT_TSCONFIG_BYTES];
+	/* The floor of the stamps of a scope index: for each scope its journals' stamps (lineage 0: none), the oldest journal position its scope entries and its rows with no entry are exact as of; pd_lower covers it once one is set */
+	SiftMetaStamp scope_floor[SIFT_META_STAMPS];
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF
 /* The bytes of a metapage of a build without the note and the configuration */
 #define SIFT_META_BASE_SIZE		offsetof(SiftMetaPageData, maint_failed_at)
+/* Does the metapage hold something past its base, so that pd_lower covers all of it */
+static inline bool
+sift_meta_extended(const SiftMetaPageData *meta)
+{
+	if (meta->maint_failed_at != 0 || meta->analyzer_config[0])
+		return true;
+	for (int i = 0; i < SIFT_META_STAMPS; i++)
+		if (meta->scope_floor[i].lineage != 0)
+			return true;
+	return false;
+}
 
 /* Segment directory (block 1) */
 typedef enum SiftSegKind
@@ -99,7 +121,6 @@ typedef enum SiftSegKind
 #define SIFT_SEG_DIRTY	0x0001	/* some liveness bit cleared */
 #define SIFT_SEG_POSITIONS 0x0002	/* written with word positions (SIFT_TERM_POS terms) */
 #define SIFT_SEG_ROOTS	0x0004	/* a column segment whose documents were shredded with a string root stored as the overflow of every column below it, as an array root always was (shred.c): a column that tests doc ? 'k' is told a string document from an object without the key. No format minor: the bytes are the same, a reader that does not know the flag reads a string root as a missing key, and a merge by it drops the flag */
-#define SIFT_SEG_SCOPED	0x0020	/* an entity segment of a sift_col index with scopes whose rows all have their scope entries in the scope segments of the directory (written together with the segment, in one switch of the directory, and never lost by a merge of the entities, which keep the addresses): a merge of segments that do not all have it does not, and the stored read of a scope is exact only while every entity segment has it (col/scope.h). */
 #define SIFT_SEG_SCOPE	0x0008	/* a scope segment of a sift_col index with the reloption scope (col/scope.h): a key-cut segment whose rows are the fact rows replicated once per scope key; the entity readers skip it. Column format minor 45, so that an older library refuses the index */
 extern PGDLLIMPORT bool sift_test_wbuf_narrow;	/* testing: BM25 write buffers are opened in format 0 */
 extern PGDLLIMPORT bool sift_test_no_roots;	/* testing: write as before the flag (a string document is a missing key, no entry has it) */

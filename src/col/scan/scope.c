@@ -565,61 +565,20 @@ sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Rela
 /* ---- what the segments of the index say ---- */
 
 /*
- * The stamps the scope segments of the scope were filled under, one for each journal of the scope: the oldest of the segments when they differ in the horizon (the keys that changed since
- * it are the keys any of them may be wrong for), or the reason they cannot be read as one: none (unfilled, or filled for other journals than the scope has now), stamps of two journals.
+ * The stamps the entries of the scope are exact as of, one for each journal of the scope: the floor of the index (col/scope_floor.c), read with the directory the read goes by, so that the stamp
+ * and the segments are those of one switch. The reason it cannot be read: none (the index is not filled: a concurrent build the maintenance has not filled yet, journals that could not vouch).
  */
 static const char *
-segments_stamp(Relation index, const SiftDirSnapshot *dir, int ord, SiftConnStamp *oldest)
+floor_stamp(Relation index, const SiftDirSnapshot *dir, int ord, SiftConnStamp *floor)
 {
 	int			nj = sift_scope_njournals(sift_scope_specs(index)->s[ord]);
-	bool		first = true;
 
-	memset(oldest, 0, SIFT_SCOPE_JOURNALS * sizeof(SiftConnStamp));
-	for (int i = 0; i < dir->nsegs; i++)
-	{
-		SiftColSegment *seg;
-		SiftConnStamp st[SIFT_SCOPE_JOURNALS] = {{0}};
-
-		if (!sift_seg_is_scope(&dir->segs[i]))
-			continue;
-		seg = sift_cseg_open(index, &dir->segs[i], CurrentMemoryContext);
-		if (ord < seg->nscope && seg->scope_journals[ord] == nj)
-			memcpy(st, seg->scope[ord], nj * sizeof(SiftConnStamp));
-		sift_cseg_close(seg);
-		for (int j = 0; j < nj; j++)
-		{
-			if (st[j].lineage == 0)
-				return "unfilled";
-			if (!first && st[j].lineage != oldest[j].lineage)
-				return "several stamps";
-		}
-		for (int j = 0; j < nj; j++)
-			if (first || TransactionIdPrecedes(st[j].xmin, oldest[j].xmin))
-				oldest[j] = st[j];
-		first = false;
-	}
-	return first ? "unfilled" : NULL;
-}
-
-/*
- * Do the scope segments of the index cover its rows? Every entity segment of the directory says its rows have their entries in them (SIFT_SEG_SCOPED), which the writers keep
- * true: the build and a promotion write the entity segment and the scope segments of its rows together, in one switch of the directory, and say so only when they wrote one (its stamp
- * is the one the entries are exact as of: rows with no pair have no scope segment, and a stamp newer than theirs would miss the pairs that came after); a merge of entity segments keeps the
- * addresses, so the entries stay valid, and its output has the flag only if all its inputs had it; a merge of scope segments loses none; VACUUM ends the entries of a dead
- * address in every segment. A row not in an entity segment is in a write buffer, which the reader reads through the entity path. The flag is of the index (all its scopes are filled
- * together), the argument checks the ordinal.
- */
-bool
-sift_scope_covered(Relation index, int scope)
-{
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
-	bool		covered = scope >= 0 && scope < sift_col_rel(index)->nscope;
-
-	sift_dir_read_segs(index, dir);
-	for (int i = 0; i < dir->nsegs && covered; i++)
-		covered = dir->segs[i].kind != SIFT_SEG_IMMUTABLE || sift_seg_is_scope(&dir->segs[i]) || sift_seg_is_scoped(&dir->segs[i]);
-	pfree(dir);
-	return covered;
+	sift_scope_floor_get(&dir->meta, ord, floor);
+	/* the stamps of a scope declared with another number of journals than the floor was set for (ALTER INDEX .. SET (scope = ..)) are not its stamps */
+	for (int j = 0; j < SIFT_SCOPE_JOURNALS; j++)
+		if ((j < nj) == (floor[j].lineage == 0))
+			return "unfilled";
+	return NULL;
 }
 
 /*
@@ -769,15 +728,10 @@ stored_changed(Relation heap, Relation index, Snapshot snap, int ord, SiftKeyMap
 	PairScan	ps = {0};
 	ScopeStage *st;
 
-	if ((rd->why = segments_stamp(index, dir, ord, stamp)) != NULL)
+	if ((rd->why = floor_stamp(index, dir, ord, stamp)) != NULL)
 	{
 		if (!sift_scope_has_journal(index, ord))
 			rd->why = sift_conn_why_name(SIFT_CONN_NO_JOURNAL);
-		return;
-	}
-	if (!sift_scope_covered(index, ord))
-	{
-		rd->why = "scope segments do not cover the rows";
 		return;
 	}
 	if ((verdict = sift_scope_changed(index, ord, stamp, snap, cap, keys, nkeys, km, &changed)) != SIFT_CONN_OK)
@@ -940,7 +894,7 @@ sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap, int scope,
 	if (sift_scope_member_text(index, scope))
 		return false;
 	sift_dir_read(index, dir);
-	if (segments_stamp(index, dir, scope, stamp) != NULL || sift_scope_vouch(index, scope, stamp, snap) != SIFT_CONN_OK ||
+	if (floor_stamp(index, dir, scope, stamp) != NULL || sift_scope_vouch(index, scope, stamp, snap) != SIFT_CONN_OK ||
 		sift_scope_changed(index, scope, stamp, snap, SIFT_SCOPE_CHANGED_MAX, NULL, 0, NULL, &changed) != SIFT_CONN_OK)
 		return false;
 	c->changed = changed.n;

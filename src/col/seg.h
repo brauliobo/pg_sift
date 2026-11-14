@@ -161,13 +161,6 @@ sift_seg_scope_ordinal(const SiftSegEntry *e)
 	return (int) e->pad;
 }
 
-/* An entity segment whose rows have their scope entries in the scope segments (SIFT_SEG_SCOPED) */
-static inline bool
-sift_seg_is_scoped(const SiftSegEntry *e)
-{
-	return e->kind == SIFT_SEG_IMMUTABLE && (e->flags & SIFT_SEG_SCOPED) != 0;
-}
-
 /* sift_dir_read for one family of readers: the entity family (everything but the scope segments: the readers of the rows of the index), or the scope segments alone (no write buffer, no log) */
 extern void sift_col_dir_read(Relation index, SiftDirSnapshot *snap, bool scope);
 /* the segments of the family only (sift_dir_read_segs): for a caller that does not hand the snapshot to a scan */

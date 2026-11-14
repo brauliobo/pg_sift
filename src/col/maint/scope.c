@@ -5,7 +5,7 @@
  *
  * The scope segments are copies of the rows of the entity segments, once for each scope key of the member of a row, with the address of the row. So a merge of entity segments
  * leaves them where they are (the addresses stay), a promotion must write them with the entity segment (the rows have no entries else), and a VACUUM ends the entries of a dead
- * address in every segment. The entity segments that have their entries say so (SIFT_SEG_SCOPED): the stored read of a scope is exact only while every one does.
+ * address in every segment. The stamp the entries are exact as of is the floor of the index (col/scope_floor.c), not held by its segments.
  */
 #include "postgres.h"
 #include "datatype/timestamp.h"
@@ -74,60 +74,20 @@ maint_scope_write(Relation index, SiftWriteTarget *wt, struct SiftScopeFill *sf,
 	return n;
 }
 
-static void
-uncover_entities(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
-{
-	for (int i = 0; i < dir->nsegs; i++)
-		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
-			dir->segs[i].flags &= ~SIFT_SEG_SCOPED;
-}
-
 /*
- * Before a promotion adds the first scope segment of an index that has none (VACUUM took them, or rows with no pair never had one): the entity segments that said they were covered were found to
- * have no entries under no stamp, and the pairs that came since are older than the stamp of this one, so they are covered no more; the next refill fills them all. Before the switch that adds
- * it, so that no read sees the new stamp with the old flags.
- */
-void
-maint_scope_uncover_unstamped(Relation index)
-{
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
-	bool		stamped = false;
-
-	sift_dir_read(index, dir);
-	for (int i = 0; i < dir->nsegs && !stamped; i++)
-		stamped = sift_seg_is_scope(&dir->segs[i]);
-	pfree(dir);
-	if (!stamped)
-		sift_dir_update(index, &(SiftDirChange) {.fn = uncover_entities,.extra = InvalidBuffer});
-}
-
-/*
- * Are the scope entries something the rewrite is to make again: an entity segment has none while the index has scope segments (a promotion of rows without a pair writes none, and the
- * stamp of the others is newer than it: see sift_scope_covered), or the journal of the relation says they are stale (sift_scope_stale). An index with no scope segment reads through the join.
+ * Is the floor of the stamps of the index something the rewrite is to make again: the relation of the pairs changed since it past what a read patches or what the refresh costs
+ * (sift_scope_floor_stale), whether the index has scope segments or not (the rows it stores may have no entry).
  */
 bool
 maint_scope_refill_due(Relation index)
 {
-	SiftDirSnapshot *dir;
 	SiftScopeStale *st = sift_scope_stale_begin(index, CurrentMemoryContext);
-	bool		due = false,
-				covered;
+	bool		due;
 
 	if (st == NULL)
 		return false;
-	dir = palloc(sizeof(SiftDirSnapshot));
-	covered = sift_scope_covered(index, 0);
-	sift_dir_read(index, dir);
-	for (int i = 0; i < dir->nsegs && !due; i++)
-		if (sift_seg_is_scope(&dir->segs[i]))
-		{
-			SiftColSegment *seg = sift_cseg_open(index, &dir->segs[i], CurrentMemoryContext);
-
-			due = !covered || sift_scope_stale(st, seg);
-			sift_cseg_close(seg);
-		}
+	due = sift_scope_floor_stale(st);
 	sift_scope_stale_end(st);
-	pfree(dir);
 	return due;
 }
 
@@ -139,6 +99,7 @@ typedef struct Refill
 	int			nneu;
 	const uint64 *ents;			/* the entity segments whose rows the new ones hold the entries of */
 	int			nents;
+	const SiftScopeStamps *mine;	/* the stamps they were expanded under */
 } Refill;
 
 static bool
@@ -150,7 +111,7 @@ in_gens(const uint64 *gen, int n, uint64 g)
 	return false;
 }
 
-/* The one switch of the directory of a refill: the scope segments are replaced and the entity segments they were made from say they are covered */
+/* The one switch of the directory of a refill: the scope segments are replaced and the floor of the stamps is the stamp they were made under */
 static void
 refill_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
@@ -161,13 +122,12 @@ refill_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	{
 		if (in_gens(rf->old, rf->nold, dir->segs[i].gen))
 			continue;
-		if (rf->nneu > 0 && dir->segs[i].kind == SIFT_SEG_IMMUTABLE && in_gens(rf->ents, rf->nents, dir->segs[i].gen))
-			dir->segs[i].flags |= SIFT_SEG_SCOPED;
 		dir->segs[n++] = dir->segs[i];
 	}
 	if (n + rf->nneu > SIFT_MAX_SEGMENTS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the directory has no room for the %d scope segments this refill wrote", rf->nneu),
 						errhint("Merge the segments first (sift.col_merge()).")));
+	sift_scope_floor_raise(meta, dir, rf->mine, rf->ents, rf->nents);
 	memcpy(dir->segs + n, rf->neu, rf->nneu * sizeof(SiftSegEntry));
 	dir->nsegs = n + rf->nneu;
 	meta->flags &= ~SIFT_META_FAILURES_MASK;
@@ -178,9 +138,9 @@ refill_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 
 /*
  * The scope segments again, from the live rows of the entity segments, under a stamp taken now: the rows of each entity segment are decoded unit by unit, replicated by the keys of
- * their member and written as runs of the scope's cut, which the merge of the scope segments joins. The old scope segments go and the entity segments say they are covered in
- * one switch of the directory, so a crash leaves the index as it was. This is what the rewrite does when the entries are stale (the relation changed since their stamp, or an
- * entity segment lost its flag). False: no entity segment.
+ * their member and written as runs of the scope's cut, which the merge of the scope segments joins. The old scope segments go and the floor of the stamps becomes this stamp in
+ * one switch of the directory, so a crash leaves the index as it was; with no pair left it writes no segment and still moves the floor. This is what the rewrite does when the floor is
+ * stale (the relation changed since it). False: no entity segment.
  */
 bool
 maint_scope_refill(Relation index)
@@ -208,6 +168,7 @@ maint_scope_refill(Relation index)
 	SiftColFill *fill;
 	SiftWriteTarget *wt;
 	SiftMaintInputs mi;
+	SiftScopeStamps stamps;
 	Refill		rf;
 
 	sift_dir_read(index, snap);
@@ -257,10 +218,11 @@ maint_scope_refill(Relation index)
 		if (i == nents && nheld > 0)
 			nout += maint_scope_write(index, wt, sf, fill, held, nheld, rows, sift_col_format_minor, hcx, out + nout);
 	}
+	sift_scope_fill_stamps(sf, &stamps);
 	sift_conn_fill_end(fill);
 	sift_wt_finish(wt);
 	mi = sift_maint_inputs(index, scopes, nscopes);
-	rf = (Refill) {mi.gens, nscopes, out, nout, egen, nents};
+	rf = (Refill) {mi.gens, nscopes, out, nout, egen, nents, &stamps};
 	sift_dir_update(index, &(SiftDirChange) {.fn = refill_switch,.arg = &rf,.release = mi.release,.nrelease = mi.nrelease,.extra = InvalidBuffer});
 	sift_log_maint(index, "refilled the scope segments of", start, rows, 0);
 	MemoryContextSwitchTo(old);
@@ -327,104 +289,6 @@ scope_pick(Relation index, const SiftDirSnapshot *all, int s, bool force, SiftSe
 	return force && n > 1 && scope_apart(index, sel, n, s) ? 0 : n;
 }
 
-typedef struct Uncover
-{
-	const uint64 *gen;
-	int			n;
-} Uncover;
-
-static void
-uncover_gens(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
-{
-	const Uncover *u = arg;
-
-	for (int i = 0; i < dir->nsegs; i++)
-		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_seg_is_scope(&dir->segs[i]) && in_gens(u->gen, u->n, dir->segs[i].gen))
-			dir->segs[i].flags &= ~SIFT_SEG_SCOPED;
-}
-
-/* The oldest stamp of each journal among the scope s segments of dir (those of skip[0..nskip) left out); the live rows of the segments left out; false when no segment is in the first set */
-static bool
-scope_oldest_stamp(Relation index, const SiftDirSnapshot *dir, int s, const SiftSegEntry *skip, int nskip, SiftConnStamp *oldest, uint64 *skipped_live)
-{
-	int			nj = sift_scope_njournals(sift_scope_specs(index)->s[s]);
-	bool		any = false;
-
-	*skipped_live = 0;
-	for (int i = 0; i < dir->nsegs; i++)
-	{
-		SiftColSegment *seg;
-		bool		skipped = false;
-
-		if (!sift_seg_is_scope(&dir->segs[i]) || sift_seg_scope_ordinal(&dir->segs[i]) != s)
-			continue;
-		for (int k = 0; k < nskip; k++)
-			skipped |= skip[k].gen == dir->segs[i].gen;
-		seg = sift_cseg_open(index, &dir->segs[i], CurrentMemoryContext);
-		if (skipped)
-			*skipped_live += sift_cseg_live_rows(seg);
-		else
-		{
-			for (int j = 0; j < nj; j++)
-				if (!any || TransactionIdPrecedes(seg->scope[s][j].xmin, oldest[j].xmin))
-					oldest[j] = seg->scope[s][j];
-			any = true;
-		}
-		sift_cseg_close(seg);
-	}
-	return any;
-}
-
-/*
- * The entries of an entity segment are exact as of the stamp it was written under, and a read takes the pairs that changed since the oldest stamp of the scope segments as changed. When scope
- * segments with no live entry are dropped (the rows that had pairs were deleted and those that stay have none, so the merge writes nothing), their stamp goes with them and the oldest is a newer
- * one: a pair that arrived for a member of a row that stays, between the two, was read as in the entries it never was in. The entity segments written under a stamp older than the oldest that
- * is left are not covered by what is left: they say so before the switch that drops the segments, so that no read sees the new stamp with the old flags, and the maintenance fills the scope
- * again (maint_scope_refill_due). A merge of scope segments that has an output carries the oldest stamp of its inputs, which is no such case.
- */
-static void
-scope_uncover_dropped(Relation index, const SiftDirSnapshot *all, const SiftSegEntry *sel, int n, int s)
-{
-	SiftConnStamp left[SIFT_SCOPE_JOURNALS] = {{0}},
-				dying[SIFT_SCOPE_JOURNALS] = {{0}};
-	int			nj = sift_scope_njournals(sift_scope_specs(index)->s[s]);
-	uint64		live,
-			   *stale = palloc(Max(all->nsegs, 1) * sizeof(uint64));
-	int			nstale = 0;
-	bool		advances = false;
-
-	if (!scope_oldest_stamp(index, all, s, sel, n, left, &live) || live > 0)
-		return;
-	for (int i = 0; i < n; i++)
-	{
-		SiftColSegment *seg = sift_cseg_open(index, &sel[i], CurrentMemoryContext);
-
-		for (int j = 0; j < nj; j++)
-			if (i == 0 || TransactionIdPrecedes(seg->scope[s][j].xmin, dying[j].xmin))
-				dying[j] = seg->scope[s][j];
-		sift_cseg_close(seg);
-	}
-	for (int j = 0; j < nj; j++)
-		advances |= TransactionIdPrecedes(dying[j].xmin, left[j].xmin);
-	for (int i = 0; i < all->nsegs && advances; i++)
-	{
-		SiftColSegment *seg;
-		bool		older = false;
-
-		if (all->segs[i].kind != SIFT_SEG_IMMUTABLE || sift_seg_is_scope(&all->segs[i]) || !sift_seg_is_scoped(&all->segs[i]))
-			continue;
-		seg = sift_cseg_open(index, &all->segs[i], CurrentMemoryContext);
-		for (int j = 0; j < nj; j++)
-			older |= s >= seg->nscope || seg->scope[s][j].lineage != left[j].lineage || TransactionIdPrecedes(seg->scope[s][j].xmin, left[j].xmin);
-		sift_cseg_close(seg);
-		if (older)
-			stale[nstale++] = all->segs[i].gen;
-	}
-	if (nstale > 0)
-		sift_dir_update(index, &(SiftDirChange) {.fn = uncover_gens,.arg = &(Uncover) {stale, nstale},.extra = InvalidBuffer});
-	pfree(stale);
-}
-
 /*
  * One step of the merge of the scope segments (col/scope.h): the segments of the first scope that has some to merge, by the tiers of the policy (all of them when force is asked, or
  * after a parallel build, whose participants each left a run of every key), into one segment or partitions of the range of the key. The entities are not merged with them. The stamp of
@@ -445,7 +309,6 @@ maint_scope_merge_step(Relation index, bool force)
 
 		if (n == 0)
 			continue;
-		scope_uncover_dropped(index, all, sel, n, s);
 		maint_merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
 					   maint_part_kb > 0 ? (uint64) maint_part_kb * 1024 : 0, Max(SIFT_MAX_SEGMENTS - 16 - (all->nsegs - n), 1), NULL);
 		done = true;

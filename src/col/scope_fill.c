@@ -400,6 +400,17 @@ sift_scope_stamp_older(SiftConnStamp a, SiftConnStamp b)
 }
 
 void
+sift_scope_fill_stamps(const SiftScopeFill *f, SiftScopeStamps *out)
+{
+	out->n = f->n;
+	for (int s = 0; s < f->n; s++)
+	{
+		out->nj[s] = f->m[s].njournals;
+		memcpy(out->stamp[s], f->m[s].stamp, f->m[s].njournals * sizeof(SiftConnStamp));
+	}
+}
+
+void
 sift_scope_fill_end(SiftScopeFill *f)
 {
 	if (f != NULL && f->snap != NULL)

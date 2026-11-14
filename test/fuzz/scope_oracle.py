@@ -14,6 +14,8 @@ inserted, deleted, moved, reloaded, soft deleted, restored; grants and membershi
 while the others read, roll back with savepoints, and read inside the transaction that edited (own command ids). After a step the battery of reads (one key, sets of keys counted once, per pair, per key, top-N, EXISTS) runs:
   - on the primary through the scope units, through the planned plan and through the plain plan (sift disabled, no index used), in ONE REPEATABLE READ snapshot: the three must be equal;
   - on the STOCK node (once its subscription has caught up), on the STANDBY (once it replayed) and on the RESTORE node: each must equal the primary's plain answer, row for row.
+A seed in LATE mode (about a third of them) builds the scope index on facts whose pair relations are empty (the facts came before the grants: no scope segment, the stamp is the index's floor) and loads the
+pairs after the battery of the build; at the middle of its steps the rows whose member has a pair are deleted, VACUUM and a merge drain the scope segments, and the member of each row that stays is granted afterwards.
 Windows of concurrent writers (pgbench) run with REPEATABLE READ and SERIALIZABLE readers on the primary and the standby that each compare the scope read with the plain plan inside their snapshot and with the answer
 of the first read of that snapshot; a CREATE INDEX CONCURRENTLY runs inside one of them. At the end of a seed sift.col_scope_verify must find no differing key on the primary and the standby, and the dump of the primary is
 restored and read. The first wrong answer stops the run (exit 1) with the query, the arms and the first differing rows in OUT/FAIL-*.txt. Statistics (reads compared, reads that used the scope units) end the run.
@@ -126,10 +128,16 @@ class Shape:
     def tables(self):
         return ['marks', 'facts', 'pairs'] if self.name != 'union' else ['marks', 'facts', 'grants', 'group_members']
 
-    def populate(self, n):
+    def populate(self, n, pairs=True):
+        """The facts, and the pairs unless pairs is False (populate_pairs makes them later)."""
         M, T, G = self.M, self.T, self.G
         s = (f"INSERT INTO facts (id, dim_a_id, created_at, kind, amount{'' if self.walk else ', pad'}) SELECT i, {('1 + i % ' + str(M)) if self.walk else f'1 + (i::bigint * 7919 % {M + 20})::int'}, {self.created}, "
              f"i % 7, (i * 13) % 1000{'' if self.walk else ", 'x'"} FROM generate_series(1, {n}) i;")
+        return s + (self.populate_pairs() if pairs else '')
+
+    def populate_pairs(self):
+        M, T, G = self.M, self.T, self.G
+        s = ''
         if self.walk:   # 200 member ids, each in the group of one of 10 tenants (one tenant is a tenth of the table)
             if self.name == 'union':
                 s += (f"INSERT INTO group_members (group_id, dim_a_id) SELECT 1 + m % {T}, m FROM generate_series(1, {M}) m; "
@@ -149,6 +157,13 @@ class Shape:
                   f"INSERT INTO grants (tenant_id, dim_a_id) SELECT 1 + (m * 7) % {T}, m FROM generate_series(1, {M}) m WHERE m % 5 = 0 ON CONFLICT DO NOTHING;"
                   f"UPDATE grants SET deleted_at = now() WHERE id % 13 = 0; UPDATE group_members SET deleted_at = now() WHERE id % 17 = 0;")
         return s
+
+    def grant_late(self):
+        """Pairs for the member ids above M: no row has a member with a pair there until now (the facts draw member ids up to M + 20)."""
+        M, T = self.M, self.T
+        if self.name == 'union':
+            return f"INSERT INTO grants (tenant_id, dim_a_id) SELECT 1 + m % {T}, m FROM generate_series({M + 1}, {M + 20}) m ON CONFLICT DO NOTHING;"
+        return f"INSERT INTO pairs (dim_a_id, tenant_id) SELECT m, 1 + m % {T} FROM generate_series({M + 1}, {M + 20}) m ON CONFLICT DO NOTHING;"
 
     # the sift DDL of the primary
     def sift_ddl(self, opts):
@@ -413,6 +428,7 @@ def run_seed(a, seed):
     patch = rng.choice(['on', 'off'])
     seg = rng.choice([0, 64, 256])
     urows = rng.choice([0, 150, 600])   # the rows a unit aims at (0: from the statistics of the table): a key of many units has superunits
+    late = seed <= 12 and random.Random(seed * 31 + 7).random() < 0.34   # the seeds above 12 (the mutant's) run as before
     out = a.out
     log = Gate(a).log
     P, S, B, R = (a.primary, a.standby, a.stock, a.restore)
@@ -421,8 +437,8 @@ def run_seed(a, seed):
         Pg('admin', n, 'postgres', log, sift=False).run(f"DROP DATABASE IF EXISTS {db} WITH (FORCE); CREATE DATABASE {db};")
     setup = (f"SET sift.test_scope_patch = {patch}; SET sift.scope_max_multiplicity = 64;" + (f" SET sift.test_col_segment_kb = {seg};" if seg else '') + (f" SET sift.test_col_unit_rows = {urows};" if urows else '')
              + os.environ.get('SIFT_ORACLE_SET', ''))
-    shell(f"echo 'seed {seed}: shape {shape.name} rows {rows} index options [{opts}] test_scope_patch {patch} segment_kb {seg} unit_rows {urows}' >> {out}/summary.txt")
-    print(f'seed {seed}: shape {shape.name}, {rows} rows, options [{opts}], patch {patch}, segment_kb {seg}, unit_rows {urows}', flush=True)
+    shell(f"echo 'seed {seed}: shape {shape.name} rows {rows} index options [{opts}] test_scope_patch {patch} segment_kb {seg} unit_rows {urows} late {late}' >> {out}/summary.txt")
+    print(f'seed {seed}: shape {shape.name}, {rows} rows, options [{opts}], patch {patch}, segment_kb {seg}, unit_rows {urows}, late {late}', flush=True)
 
     # the base tables on the primary (with data) and on the stock node; the subscription copies the data
     A = Pg('primary', P, db, log, "CREATE EXTENSION IF NOT EXISTS pg_sift; " + setup)
@@ -430,7 +446,7 @@ def run_seed(a, seed):
     dbl = f'oraclel{seed}'
     Pg('admin', R, 'postgres', log, sift=False).run(f"DROP DATABASE IF EXISTS {dbl} WITH (FORCE); CREATE DATABASE {dbl};")
     LP = Pg('logical-sift', R, dbl, log, "CREATE EXTENSION IF NOT EXISTS pg_sift; " + setup)
-    A.run(shape.base_ddl() + shape.populate(rows))
+    A.run(shape.base_ddl() + shape.populate(rows, pairs=not late))
     SK.run(shape.base_ddl())
     tabs = ', '.join(shape.tables())
     A.run(f"CREATE PUBLICATION pub_{seed} FOR TABLE {tabs};")
@@ -629,12 +645,28 @@ def run_seed(a, seed):
         bench.wait()
         if bench.returncode not in (0, None):
             lg = open(f'{d}/pgbench.log').read()
-            if 'ERROR' in lg and 'deadlock' not in lg and 'serialize' not in lg:
+            if 'ERROR' in lg and not re.search(r'deadlock|serialize|duplicate key value', lg):
                 raise Fail(f'pgbench: {lg[-400:]}')
         return did
 
+    def drain(step):
+        """The scope segments are drained: every row whose member has a pair goes, VACUUM and a merge of everything take the segments that held the oldest stamp, and the member of each row that stays is granted."""
+        edit(W, f"DELETE FROM facts WHERE dim_a_id <= {shape.M};")
+        W.run("VACUUM facts;")
+        M2.run("SELECT sift.col_promote('facts_col'); SELECT sift.col_merge('facts_col', true);")
+        quiesce(step, 'scope segments drained')
+        edit(W, shape.grant_late())
+        quiesce(step, 'member of each row left, granted')
+        n = max(200, rows // 10)
+        edit(W, f"INSERT INTO facts SELECT {state['next']} + i, 1 + i % {shape.M}, timestamptz '2026-03-01' + (i % 3000) * interval '1 minute', i % 7, i % 1000, 'n' FROM generate_series(1, {n}) i;")
+        state['next'] += n
+
     steps = a.steps
     quiesce(0, 'after the build')
+    if late:
+        # the first pairs, after an index with no scope segment: the very next read is from the units, the new pairs patched
+        edit(W, shape.populate_pairs())
+        quiesce(0, 'after the pairs arrived')
     for step in range(1, steps + 1):
         for _ in range(r.randint(1, 3)):
             edit(W, r.choice([lambda: shape.pair_edit(r), lambda: fact_edit(r, shape.M, state), lambda: fact_edit(r, shape.M, state)])())
@@ -653,6 +685,8 @@ def run_seed(a, seed):
             open_writer(step)
         if step % VERIFY_EVERY == 0:
             verify(step)
+        if late and step == max(1, steps // 2):
+            drain(step)
     # windows of concurrent writers, a CREATE INDEX CONCURRENTLY in one of them
     for w in range(a.windows):
         cic = concurrent_window(steps + 1 + w, a.window_secs)

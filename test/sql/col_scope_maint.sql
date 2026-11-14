@@ -66,7 +66,7 @@ CREATE FUNCTION state(label text, OUT state text, OUT covered boolean, OUT entit
 					  OUT missing bigint, OUT extra bigint) LANGUAGE plpgsql AS $$
 BEGIN
 	state := label;
-	covered := sift._test_col_scope_covered('events_col', 'tenant_id');
+	covered := sift._test_col_scope_filled('events_col', 'tenant_id');
 	SELECT count(DISTINCT s.gen) FILTER (WHERE family = 'base'), count(DISTINCT s.gen) FILTER (WHERE family = 'scope')
 		INTO entity_segs, scope_segs FROM sift._test_col_scope_stamps('events_col') s;
 	SELECT bool_and(r.same), bool_and(r.stored), min(r.why) INTO same, stored, why FROM shapes s, LATERAL scope_run(s.q, s.plain) r;
@@ -102,7 +102,7 @@ SELECT * FROM state('updates promoted');
 -- the merge of everything: the entity segments into one (the entries stay, the addresses are the same), the scope segments into one by the range of their key, under the oldest stamp
 SELECT sift.col_merge('events_col', true) >= 0 AS merged;
 SELECT * FROM state('merged');
-SELECT family, count(DISTINCT gen) AS segments, count(DISTINCT horizon) AS horizons, bool_and(covered) FILTER (WHERE family = 'base') AS covered FROM sift._test_col_scope_stamps('events_col') WHERE scope = 0 GROUP BY family ORDER BY family;
+SELECT family, count(DISTINCT gen) AS segments, count(DISTINCT horizon) AS horizons FROM sift._test_col_scope_stamps('events_col') WHERE scope = 0 GROUP BY family ORDER BY family;
 SELECT (SELECT min(horizon) FROM sift._test_col_scope_stamps('events_col') WHERE family = 'scope' AND scope = 0) =
 	   (SELECT min(horizon) FROM stamps_before WHERE family = 'scope' AND scope = 0) AS oldest_stamp_kept;
 SELECT sift.col_merge('events_col', true) >= 0 AS merged_again;
@@ -123,9 +123,9 @@ SELECT * FROM state('merged after vacuum');
 SELECT sift.col_verify('events_col', true);
 
 -- a rewrite fills the entries again when they are stale (the journal says that members changed since their stamp: the edit below changes half of them, over sift.col_scope_refresh_pct of
--- the pairs) and when an entity segment lost its flag (a merge of a covered segment with one that was not): the read falls back meanwhile, exact, and the rewrite covers
-SELECT sift._test_col_scope_flag('events_col', false);
-SELECT state, covered, same, stored, why FROM state('flag lost');
+-- the pairs) and when the index has no floor of the stamps (one built before it existed): the read falls back meanwhile, exact, and the rewrite sets it
+SELECT sift._test_col_scope_unfill('events_col');
+SELECT state, covered, same, stored, why FROM state('floor lost');
 SELECT sift.col_maintain('events_col') AS rewritten;
 SELECT * FROM state('refilled');
 UPDATE tenant_scope SET tenant_id = tenant_id WHERE dim_a_id % 2 = 0;

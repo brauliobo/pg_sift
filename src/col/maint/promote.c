@@ -6,6 +6,7 @@
 #include "postgres.h"
 #include "utils/timestamp.h"
 #include "col/maint/maint_int.h"
+#include "col/scope.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_col_floor_sbs = 0;
@@ -80,6 +81,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	uint64		rows = 0;
 	SiftCPaggSpec rewrite = r->pagg;
 	SiftXWait	xwait = {InvalidTransactionId};
+	SiftScopeStamps stamps = {0};
 
 	sift_cwbuf_flag_sealed(index, sealed);
 	batches = sift_cwbuf_batches(index, sealed, schema, cx, &nb, &xwait);
@@ -139,10 +141,9 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		if (sf != NULL)
 		{
 			nneu += maint_scope_write(index, wt, sf, fill, batches, nb, idx_rows, format, cx, neu + 1);
-			if (nneu > 1)
-				neu[0].flags |= SIFT_SEG_SCOPED;
 			for (int i = 1; i < nneu; i++)
 				neu[i].flags |= neu[0].flags & SIFT_SEG_ROOTS;
+			sift_scope_fill_stamps(sf, &stamps);
 		}
 		sift_conn_fill_end(fill);
 		/* as late as the rows are written: the transactions that finished while they were leave no bit in the stamp */
@@ -151,8 +152,9 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		sift_wt_finish(wt);
 	}
 	pages = sift_cwbuf_pages(index, sealed, &npages);
-	if (nb > 0 && nneu > 1)
-		maint_scope_uncover_unstamped(index);
+	/* the floor of the stamps goes down to this promotion's before its segments are published, whether or not it wrote a scope segment: its rows with no pair are exact as of it too */
+	if (stamps.n > 0)
+		sift_scope_floor_lower(index, &stamps);
 	sift_maint_replace_n(index, &sealed->gen, 1, neu, nb > 0 ? nneu : 0, pages, npages, "promoted a sealed column segment of", start, rows);
 	sift_cwbuf_arena_drop(index, sealed->gen);
 	MemoryContextSwitchTo(old);

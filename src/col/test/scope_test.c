@@ -139,8 +139,9 @@ sift_test_col_scope_entries(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(sift_test_col_scope_stamps);
-PG_FUNCTION_INFO_V1(sift_test_col_scope_covered);
-PG_FUNCTION_INFO_V1(sift_test_col_scope_flag);
+PG_FUNCTION_INFO_V1(sift_test_col_scope_filled);
+PG_FUNCTION_INFO_V1(sift_test_col_scope_floor);
+PG_FUNCTION_INFO_V1(sift_test_col_scope_unfill);
 
 /*
  * sift._test_col_scope_stamps(index): the stamp each segment holds for each scope of the index: (generation, family 'entities' or 'scope', the segment says its rows are
@@ -165,10 +166,10 @@ sift_test_col_scope_stamps(PG_FUNCTION_ARGS)
 		seg = sift_cseg_open(index, e, CurrentMemoryContext);
 		for (int s = 0; s < seg->nscope; s++)
 		{
-			Datum		v[7] = {Int64GetDatum(e->gen), CStringGetTextDatum(sift_seg_is_scope(e) ? "scope" : "base"), BoolGetDatum(sift_seg_is_scoped(e)),
+			Datum		v[6] = {Int64GetDatum(e->gen), CStringGetTextDatum(sift_seg_is_scope(e) ? "scope" : "base"),
 			Int32GetDatum(sift_seg_is_scope(e) ? sift_seg_scope_ordinal(e) : -1), Int32GetDatum(s), Int64GetDatum((int64) seg->scope[s][0].lineage),
 			Int64GetDatum(seg->scope[s][0].xmin)};
-			bool		nulls[7] = {false};
+			bool		nulls[6] = {false};
 
 			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 		}
@@ -213,41 +214,71 @@ sift_test_col_scope_journal_stamps(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-/* sift._test_col_scope_covered(index, key_name): sift_scope_covered of the scope */
+/* sift._test_col_scope_filled(index, key_name): does the floor of the stamps of the scope say anything (lineage not 0) */
 Datum
-sift_test_col_scope_covered(PG_FUNCTION_ARGS)
+sift_test_col_scope_filled(PG_FUNCTION_ARGS)
 {
 	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftScopeSpecs *sp = sift_scope_specs(index);
 	char	   *name = text_to_cstring(PG_GETARG_TEXT_PP(1));
-	bool		covered = false;
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	bool		filled = false;
 
+	sift_dir_read(index, dir);
 	for (int i = 0; sp != NULL && i < sp->n; i++)
 		if (strcmp(sp->s[i]->key_name, name) == 0)
-			covered = sift_scope_covered(index, i);
+		{
+			SiftConnStamp floor[SIFT_SCOPE_JOURNALS];
+
+			sift_scope_floor_get(&dir->meta, i, floor);
+			filled = floor[0].lineage != 0;
+		}
 	index_close(index, AccessShareLock);
-	PG_RETURN_BOOL(covered);
+	PG_RETURN_BOOL(filled);
+}
+
+/* sift._test_col_scope_floor(index): the floor of the stamps of each journal of each scope: (scope, journal, lineage, xmin) */
+Datum
+sift_test_col_scope_floor(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftScopeSpecs *sp = sift_scope_specs(index);
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_dir_read(index, dir);
+	for (int s = 0; sp != NULL && s < sp->n; s++)
+	{
+		SiftConnStamp floor[SIFT_SCOPE_JOURNALS];
+
+		sift_scope_floor_get(&dir->meta, s, floor);
+		for (int j = 0; j < sift_scope_njournals(sp->s[s]); j++)
+		{
+			Datum		v[4] = {Int32GetDatum(s), Int32GetDatum(j), Int64GetDatum((int64) floor[j].lineage), TransactionIdGetDatum(floor[j].xmin)};
+			bool		nulls[4] = {false};
+
+			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+		}
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
 }
 
 static void
-flag_entities(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+clear_floor(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
-	bool		on = *(bool *) arg;
-
-	for (int i = 0; i < dir->nsegs; i++)
-		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !(dir->segs[i].flags & SIFT_SEG_SCOPE))
-			dir->segs[i].flags = on ? dir->segs[i].flags | SIFT_SEG_SCOPED : dir->segs[i].flags & ~SIFT_SEG_SCOPED;
+	memset(meta->scope_floor, 0, sizeof(meta->scope_floor));
 }
 
-/* sift._test_col_scope_flag(index, scoped): sets or clears the flag of every entity segment (a segment that was merged with an uncovered one has none) */
+/* sift._test_col_scope_unfill(index): clears the floor of the stamps, as an index that was never filled has it */
 Datum
-sift_test_col_scope_flag(PG_FUNCTION_ARGS)
+sift_test_col_scope_unfill(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_col_open_index(PG_GETARG_OID(0), RowExclusiveLock);
-	bool		on = PG_GETARG_BOOL(1);
 
 	sift_maint_lock(index, true);
-	sift_dir_update(index, &(SiftDirChange) {.fn = flag_entities,.arg = &on,.extra = InvalidBuffer});
+	sift_dir_update(index, &(SiftDirChange) {.fn = clear_floor,.extra = InvalidBuffer});
 	sift_maint_unlock(index);
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();

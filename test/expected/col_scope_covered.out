@@ -1,4 +1,4 @@
--- A scope read is exact whatever the maintenance did to the entity segments and the scope segments, and it is read from the scope units whenever they cover the rows (sift_scope_covered): the
+-- A scope read is exact whatever the maintenance did to the entity segments and the scope segments, and it is read from the scope units: the
 -- scope segments are those of the generation of the entity segments they were written with, none of the entity segments is newer than the scope segments that stand for it.
 -- (a) a promotion of new facts and then a VACUUM of the table (a promotion writes the scope segments of its rows, VACUUM rewrites the entity segments it cleans: the scope entries of the rows
 --     it removed go with them), with the facts deleted and updated in between;

@@ -458,7 +458,6 @@ typedef struct MergeOut
 	SiftXStamp	xstamp;			/* who inserted the rows of the segments merged, each settled: none when one does not say */
 	bool		roots;			/* every segment merged has SIFT_SEG_ROOTS */
 	int			scope;			/* the scope the segments merged hold the entries of (their cut is its key's), -1 for the entities of the index */
-	bool		scoped;			/* entities: every segment merged has SIFT_SEG_SCOPED, so the one written has */
 	int			cut0;			/* the leaf the units of the output are cut by, -1 for none */
 	int			nconn;
 	SiftConnStamp carry[SIFT_SCOPE_MAX][SIFT_SCOPE_JOURNALS];	/* the stamps of the scopes of the output, one for each journal: the oldest of the segments merged, whose entries it holds */
@@ -505,8 +504,6 @@ out_finish(MergeOut *o)
 		o->neu[o->nneu].flags |= SIFT_SEG_SCOPE;
 		o->neu[o->nneu].pad = o->scope;
 	}
-	else if (o->scoped)
-		o->neu[o->nneu].flags |= SIFT_SEG_SCOPED;
 	sift_seg_set_xstamp(&o->neu[o->nneu++], o->xstamp);
 	sift_wt_finish(o->wt);
 	o->w = NULL;
@@ -569,7 +566,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	int			nscope = sift_cschema_nscope(schema);
 	bool		scope = n > 0 && (in[0].flags & SIFT_SEG_SCOPE) != 0;	/* the segments are those of one scope: the rows of the entities are not merged with them */
 	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .xstamp = sift_col_is_index(index) ? sift_xstamp_inputs(in, n) : (SiftXStamp) {InvalidTransactionId, InvalidTransactionId, 0}, .roots = sift_col_is_index(index) && merge_roots(in, n),
-		.scope = scope ? (int) in[0].pad : -1, .scoped = schema->scoped && !scope, .nconn = sift_cschema_nconn(schema), .cut0 = -1};
+		.scope = scope ? (int) in[0].pad : -1, .nconn = sift_cschema_nconn(schema), .cut0 = -1};
 	uint64		live_bytes = 0,
 				live_units = 0;
 	TimestampTz start = GetCurrentTimestamp();
@@ -619,7 +616,6 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		live_bytes += (uint64) (in[i].bytes * live);
 		live_units += (uint64) (units * live);
 		live_rows += sift_cseg_live_rows(seg[i]);
-		o.scoped &= (in[i].flags & SIFT_SEG_SCOPED) != 0;
 		for (int k = 0; k < nscope; k++)
 			for (int j = 0; j < SIFT_SCOPE_JOURNALS; j++)
 				o.carry[k][j] = i == 0 ? seg[i]->scope[k][j] : sift_scope_stamp_older(o.carry[k][j], seg[i]->scope[k][j]);
@@ -979,7 +975,7 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 			maint_scope_merge_step(index, true);
 		return SIFT_STEP_DONE;
 	}
-	/* the entities have nothing more to do: the scope segments (a stale or uncovered set is made again first) */
+	/* the entities have nothing more to do: the scope segments (a stale set is made again first) */
 	if (goal == SIFT_GOAL_REWRITE && maint_scope_refill_due(index) && maint_scope_refill(index))
 		return SIFT_STEP_DONE;
 	return maint_scope_merge_step(index, force || maint_after_build) ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
