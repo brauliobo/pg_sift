@@ -129,6 +129,9 @@ maint_set_unordered(SiftCPaggSpec *spec, const SiftColSchema *schema, uint64 ove
 int	maint_merge_workers = 0;
 bool		maint_after_build = false;	/* the rewrite is the one right after the build: the choices of the build stand */
 bool		maint_redecided = false;	/* the rewrite in hand has chosen again from the data (col/maint/merge.c): once for all its steps */
+bool		maint_decide_wanted = false;	/* a merge of a VACUUM left the choice of its options to the worker VACUUM asks for (sift_catalog_write_ok) */
+bool		maint_decide_asked = false;	/* the worker was started to choose again, and rewrites only if the choice changes an option */
+bool		maint_decide_only = false;	/* the rule has nothing due: the rewrite in hand is the choice and, if it changes an option, the rewrite that applies it */
 
 const SiftMaintOps maint_col_ops = {
 	.name = "sift_col",
@@ -512,6 +515,14 @@ sift_col_rewrite_worker_main(Datum main_arg)
 		worker_failed(indexoid, name, cx);
 	}
 	PG_END_TRY();
+}
+
+/* The choice of the options that a VACUUM left (maint_decide_wanted): made here, in a transaction that other sessions see, and the rewrite it calls for */
+void
+sift_col_decide_worker_main(Datum main_arg)
+{
+	maint_decide_asked = true;
+	sift_col_rewrite_worker_main(main_arg);
 }
 
 /* The rewrite that the reads of a backend priced (sift_col_vacuum_tick): the rule of VACUUM and the WAL budget of the changes do not hold what the reads owe */

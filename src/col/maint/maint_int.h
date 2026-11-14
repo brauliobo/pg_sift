@@ -65,6 +65,9 @@ extern uint64 maint_pass_bytes;
 extern uint64 maint_pass_gen;
 extern bool maint_after_build;
 extern bool maint_redecided;
+extern bool maint_decide_wanted;
+extern bool maint_decide_asked;
+extern bool maint_decide_only;
 
 extern const SiftMaintOps maint_col_ops;
 

@@ -134,6 +134,7 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 				repl[Natts_pg_class] = {false};
 	List	   *def = list_make1(makeDefElem((char *) name, value ? (Node *) makeString(pstrdup(value)) : NULL, -1));
 
+	sift_catalog_write_guard("an index option");
 	CommandCounterIncrement();
 	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(RelationGetRelid(index)));
 	SIFT_INVARIANT(HeapTupleIsValid(tuple), "sift_col: no pg_class row for index %u", RelationGetRelid(index));
@@ -366,7 +367,7 @@ auto_cut_text(Relation index)
 bool
 sift_col_redecide_busy(Relation index)
 {
-	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || IsInParallelMode())
+	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || !sift_catalog_write_ok())
 		return false;
 	return !ConditionalLockRelationOid(index->rd_index->indrelid, ShareUpdateExclusiveLock);
 }
@@ -376,10 +377,10 @@ sift_col_redecide_busy(Relation index)
  * each 'auto' or 'auto: list') is chosen again, in the order of the build, so the segments about to be written are those a REINDEX would write: rows of every tenant appended
  * at the end of a heap built in the order of its tenants make a cut pay, the cut makes the ends of an order array and a point directory the better choices, and the index
  * a merge kept at the choices of the day of its build was a third larger. The rewrite is due for its own reasons (dead or fragmented units, the buffer), so the decision
- * adds the sample of the cut (at most a quarter of the heap, the build's) and no rewrite. An option the user wrote is left as it is. Returns whether an option changed; the
- * caller reads the schema again after it. Returns whether key_cut changed (the merge then sorts the rows of its inputs again).
+ * adds the sample of the cut (at most a quarter of the heap, the build's) and no rewrite. An option the user wrote is left as it is. Returns what changed
+ * (SIFT_REDECIDED_*); the caller reads the schema again after it. It writes the catalog: a VACUUM leaves it to the maintenance worker (sift_catalog_write_ok).
  */
-bool
+int
 sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
 {
 	Relation	heap;
@@ -393,11 +394,11 @@ sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
 	MemoryContext mcx;
 	StringInfoData what;
 
-	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || IsInParallelMode())
-		return false;
+	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || !sift_catalog_write_ok())
+		return 0;
 	/* the lock and the reasons of sift_col_auto_keys_merge: the merge holds the metapage, a VACUUM the heap */
 	if (!ConditionalLockRelationOid(index->rd_index->indrelid, ShareUpdateExclusiveLock))
-		return false;
+		return 0;
 	heap = table_open(index->rd_index->indrelid, NoLock);
 	if (!ActiveSnapshotSet())
 	{
@@ -435,13 +436,13 @@ sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
 	if (strcmp(pt, sift_col_options_point_tid_columns(index)) != 0)
 		appendStringInfo(&what, "point_tid_columns = '%s' (was '%s'); ", sift_col_options_point_tid_columns(index), pt);
 	if (what.len == 0)
-		return false;
+		return 0;
 	what.data[what.len - 2] = '\0';
 	ereport(NOTICE,
 			(errmsg("sift_col index \"%s\": the rewrite chooses again from the data: %s", RelationGetRelationName(index), what.data),
 			 errdetail("Rows appended since the build change what the defaults choose; an option you wrote is never changed."),
 			 errhint("ALTER INDEX %s SET (key_cut = 'off') keeps a choice off, and the same for the other options.", quote_identifier(RelationGetRelationName(index)))));
-	return changed;
+	return SIFT_REDECIDED_ANY | (changed ? SIFT_REDECIDED_CUT : 0);
 }
 
 /*
@@ -465,10 +466,10 @@ sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n)
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
 		return false;
 	/*
-	 * A VACUUM that vacuums the other indexes of the table with workers runs this index in its leader, in parallel mode, where the write of the option cannot
-	 * assign a transaction id (nor increment the command counter): the next merge decides.
+	 * A VACUUM does not write the catalog (sift_catalog_write_ok): the maintenance worker it asks for decides (maint_decide_wanted). The leader of a parallel index vacuum is in parallel mode,
+	 * where the write of the option cannot assign a transaction id (nor increment the command counter): the next merge decides.
 	 */
-	if (IsInParallelMode())
+	if (!sift_catalog_write_ok())
 		return false;
 	/*
 	 * The merge holds the index metapage; a VACUUM holds the heap and waits for the metapage, so waiting for the heap here is a deadlock. The lock is the one

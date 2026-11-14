@@ -188,7 +188,10 @@ extern bool sift_col_volatile_name(const char *name);
 #define SIFT_COL_AUTO_ADD_PCT	40		/* a merge of every segment adds a key list to a column the cube holds in fewer of the units than this; the report drops one it holds in SIFT_COL_AUTO_KEEP_PCT or more, so a column that sits between is not added and dropped in turn */
 extern bool sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n);
 extern bool sift_col_redecide_busy(Relation index);
-extern bool sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n);
+/* What sift_col_auto_redecide changed: an option (ANY), key_cut among them (CUT: the merge then sorts the rows of its inputs again) */
+#define SIFT_REDECIDED_ANY	1
+#define SIFT_REDECIDED_CUT	2
+extern int	sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n);
 extern void sift_col_pagg_rewrite(Relation index, const SiftSegEntry *in, int n, SiftCPaggSpec *spec);
 /* paths = 'auto' (col/keycols/keycols.c, col/suggest.c): before a build, the paths read from a sample of the jsonb documents and written to the option as 'auto: spec' */
 #define SIFT_COL_AUTO_PATHS_SAMPLE	2000
@@ -415,6 +418,7 @@ extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_rewrite_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_read_rewrite_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_col_decide_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_read_promote_worker_main(Datum main_arg);
 /* sift.col_auto_merge* (col/am/am.c): the rewrite VACUUM asks the worker for when the churn has scattered the index (col/maint/maint.c) */
 extern PGDLLIMPORT bool sift_col_auto_merge;

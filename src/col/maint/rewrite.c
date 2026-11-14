@@ -8,6 +8,7 @@
 #include "pgstat.h"
 
 #define WHY_BUFFER	"write buffer rows"
+#define WHY_DECIDE	"options chosen again"
 
 double		sift_col_auto_merge_buffer_pct = 1.0;
 int			sift_col_auto_merge_pass_mb = 1024;
@@ -226,8 +227,8 @@ rewrite_held(Relation index, uint64 bytes)
  * share of the whole index, units listed twice are those of the overlays over the partitions, the size of the index does not matter and the segments
  * a rewrite leaves are the partitions.
  */
-const char *
-maint_rewrite_check(Relation index, bool automatic, int *gates)
+static const char *
+rewrite_why(Relation index, bool automatic, int *gates)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col rewrite due", ALLOCSET_SMALL_SIZES);
@@ -359,6 +360,16 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	return why;
 }
 
+/* A worker started for the choice a VACUUM left (maint_decide_asked) has it to make when the rule finds nothing due, or the budget defers the rewrite: no rewrite unless the choice changes an option */
+const char *
+maint_rewrite_check(Relation index, bool automatic, int *gates)
+{
+	const char *why = rewrite_why(index, automatic, gates);
+
+	maint_decide_only = why == NULL && maint_decide_asked;
+	return maint_decide_only ? WHY_DECIDE : why;
+}
+
 const char *
 maint_rewrite_due(Relation index, bool automatic)
 {
@@ -374,13 +385,22 @@ maint_rewrite_all(const char *why)
 	return strcmp(why, WHY_BUFFER) != 0;
 }
 
-/* VACUUM leaves the rewrite to a worker of its own: it is not VACUUM's to hold the table for, and the worker sleeps as sift.maintenance_cost_delay says */
+/*
+ * VACUUM leaves the rewrite to a worker of its own: it is not VACUUM's to hold the table for, and the worker sleeps as sift.maintenance_cost_delay says. It leaves the choice of
+ * the options of the index to it as well (maint_decide_wanted): the write of an option is a catalog update, and the transaction id of a VACUUM is left out of the snapshots of the
+ * other sessions.
+ */
 void
 maint_rewrite_request(Relation index)
 {
+	bool		decide = maint_decide_wanted;
+
+	maint_decide_wanted = false;
 	if (!sift_col_auto_merge || !sift_async_maintenance || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
 		return;
-	if (maint_rewrite_due(index, true) != NULL)
+	if (decide)
+		sift_maint_register_worker(index, "sift_col_decide_worker_main");
+	else if (maint_rewrite_due(index, true) != NULL)
 		sift_maint_register_worker(index, "sift_col_rewrite_worker_main");
 }
 
