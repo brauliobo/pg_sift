@@ -824,6 +824,8 @@ stats_run(AggExec *c)
 	sift_stat_add(SIFT_STAT_UNITS_PREAGG, c->n_pre_units);
 	sift_stat_add(SIFT_STAT_ROWS_DECODED, c->n_rows);
 	sift_stat_add(SIFT_STAT_ROWS_VETTED, cc.rows_vetted);
+	if (c->scope_note != NULL)
+		scope_paid_end(c);
 	if (OidIsValid(c->spec->indexoid))
 		/* the rows the log decided read no heap page: a VACUUM would not spare their scan anything */
 		sift_col_vacuum_tick(c->spec->indexoid, c->spec->heapoid, cc.rows_vetted - cc.rows_log, cc.dirty_rows);

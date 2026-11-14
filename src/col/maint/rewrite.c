@@ -29,7 +29,7 @@ bool		maint_read_asked = false;
  * What a unit costs a read that need not have read it: 26,000 instructions to open and decode (the per-unit figure of the scan) and the block it reads when its page is cold, in the
  * instructions a row of the rewrite is priced in.
  */
-#define UNIT_PRICE	46000.0
+#define UNIT_PRICE	(26000.0 + MAINT_BLOCK_READ)
 
 /* What a row of a unit costs a read of one key in it, which scans the rows of the unit to find the key's (0.15 M instructions for a unit of 7,400 rows: 20 a row, the lowest of the statements measured) */
 #define UNIT_ROW_PRICE	20.0

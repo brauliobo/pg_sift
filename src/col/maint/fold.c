@@ -15,14 +15,14 @@
 #include "core/tomb.h"
 
 /*
- * What a fold costs, in instructions and WAL in instructions (a MB of WAL weighs 0.6 G instructions, as in the price of a row of the rewrite): the segments are opened and the directory of
+ * What a fold costs, in instructions and WAL in instructions (MAINT_WAL_BYTE: a MB of WAL weighs 0.6 G instructions, as in the price of a row of the rewrite): the segments are opened and the directory of
  * each unit decoded, 16 instructions for each row of the index (8.7 M for 548,000 rows in 57 units, one mark), a mark costs 55,000 more (the pages of its block bisected in every unit,
  * 19.4 M for 200 marks), and the WAL is the tombstone log written again, the liveness pages and the directory: 1 kB for one mark and 5 kB for 200 within a checkpoint, 90 kB for the
  * first of them after one (the pages go whole), so 64 kB are priced.
  */
 #define FOLD_ROW_PRICE		16.0
 #define FOLD_MARK_PRICE		55000.0
-#define FOLD_WAL_PRICE		(64.0 * 1024 * 600)
+#define FOLD_WAL_PRICE		(64.0 * 1024 * MAINT_WAL_BYTE)
 
 typedef struct Fold
 {

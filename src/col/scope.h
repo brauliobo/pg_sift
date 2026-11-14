@@ -439,21 +439,30 @@ sift_scope_changed_price(const SiftScopeCounts *c)
 }
 
 /*
- * What a refresh costs: the rewrite of the scope segments from the entity segments that a stale scope gets (maint_scope_refill and the merge of the runs it writes).
+ * The weights every price of maintenance is made in (instructions): a MB of WAL weighs 0.6 G (the price of a row of the rewrite, the fold of the marks, the VACUUM a read asks for), and a block a read takes from the file
+ * instead of the buffers 20,000 (the part of the price of a unit of the rewrite that is its block: 46,000 less the 26,000 to open and decode it). A block found in the buffers is in the instructions of the read already.
+ */
+#define MAINT_WAL_BYTE		600.0
+#define MAINT_BLOCK_READ	20000.0
+
+/*
+ * What a refresh costs: the rewrite of the scope segments from the entity segments that a stale scope gets (maint_scope_refill and the merge of the runs it writes), in instructions and the WAL in instructions.
  * Instructions of the backend that ran sift.col_maintain on a settled index (entity and scope segments each one, every pair changed since the stamp), from 300,000 and 600,000 rows with 253,000 to 862,000
  * entries (0.84 to 1.44 an entity row) of an index of 7 columns, and 300,000 rows with 481,000 entries of one of 4: 1.64, 2.75 and 5.08 thousand million with 7 columns, 1.77 with 4 (the fit 1,500 an
- * entity row and 680 a column of an entry is within 2% of the four; the WAL is the 9 bytes an entry the segments have). A read that finds members changed since the stamps pays for them, on top of the filled read,
- * what the planner prices it at (agg/scope.c); the reads add that up for the index (col/scope_paid.c, in its metapage), and the refresh is due when what they paid comes to
- * half of what it costs (MAINT_HALF: the same rule as the reads that owe a rewrite): the reads that came are the reads to come, so that a refresh is made after the delta has cost its price once.
+ * entity row and 680 a column of an entry is within 2% of the four). The WAL is 7.0 bytes an entry the segments have (4.07 MB for 581,800 entries of 300,000 rows, 5 columns; 5.8 in an earlier run of 603,000), 4.2 G
+ * instructions with the weight above for 600,000 entries. A read that finds members changed since the stamps pays for them, on top of the filled read, what it costs (agg/scope.c); the reads add that up for the index
+ * (col/scope_paid.c, in its metapage), and the refresh is due when what they paid comes to half of what it costs (MAINT_HALF: the same rule as the reads that owe a rewrite): the reads that came are the reads to
+ * come, so that a refresh is made after the delta has cost its price once.
  */
 #define SIFT_SCOPE_REFRESH_ROW_INSTR	1500
 #define SIFT_SCOPE_REFRESH_ENTRY_INSTR	680
+#define SIFT_SCOPE_REFRESH_WAL_ENTRY	7
 
-/* What the refresh of the scope segments costs: the entity rows it decodes, and for each scope its entries times the columns they keep (pure) */
+/* What the refresh of the scope segments costs: the entity rows it decodes, and for each scope its entries times the columns they keep, and the WAL of the entries (pure) */
 static inline double
-sift_scope_refresh_price(uint64 rows, double entry_columns)
+sift_scope_refresh_price(uint64 rows, uint64 entries, double entry_columns)
 {
-	return SIFT_SCOPE_REFRESH_ROW_INSTR * (double) rows + SIFT_SCOPE_REFRESH_ENTRY_INSTR * entry_columns;
+	return SIFT_SCOPE_REFRESH_ROW_INSTR * (double) rows + SIFT_SCOPE_REFRESH_ENTRY_INSTR * entry_columns + MAINT_WAL_BYTE * SIFT_SCOPE_REFRESH_WAL_ENTRY * (double) entries;
 }
 
 /* The pairs a read of several keys counted once lists before it reads a unit: the relation's, whole, and those of its keys (pure) */
@@ -477,18 +486,46 @@ sift_scope_preagg_kept(uint64 changed, uint64 units)
 	return exp(-SIFT_SCOPE_CHANGED_SPREAD * (double) changed / Max((double) units, 1.0));
 }
 
+/*
+ * What a read of scope units costs once the units, the entries and what they ask is known: the units read row by row and those their pre-aggregates answer (a rollup of a group read in the place of its units), the entries
+ * read and what one costs, with the listing of the pairs, the changed members, the patch and the delta (pure). The planner has the counts as it expects them, the executor as it ran them (sift_scope_ran_price).
+ */
+static inline double
+sift_scope_units_cost(const SiftScopeCounts *c, double rowwise_units, double preagg_units, double entries, double entry)
+{
+	double		reads = 1.0 - c->group_frac + c->group_frac / Max(c->group_units, 1.0);	/* a group is read in the place of its units */
+
+	return SIFT_SCOPE_SETUP_INSTR + SIFT_SCOPE_UNIT_INSTR * rowwise_units + SIFT_SCOPE_PREAGG_UNIT_INSTR * reads * preagg_units + entry * entries + sift_scope_list_price(c) + sift_scope_changed_price(c);
+}
+
+/* What one entry costs: read and aggregated, with what the drop lists and the changed members' exceptions add */
+static inline double
+sift_scope_entry_cost(const SiftScopeCounts *c)
+{
+	return SIFT_SCOPE_ENTRY_INSTR + c->entry_instr + (c->once ? SIFT_SCOPE_DEDUPE_INSTR * (double) c->drops : 0) + (c->changed > 0 ? SIFT_SCOPE_EXCEPT_INSTR : 0);
+}
+
 /* What the scope units cost, with the listing of the pairs, the changed members, the patch and the delta (pure) */
 static inline double
 sift_scope_rows_price(const SiftScopeCounts *c)
 {
 	double		rows = 1.0 - c->preagg,
 				skip = c->changed > 0 ? 0.0 : c->skip,
-				entry = SIFT_SCOPE_ENTRY_INSTR + c->entry_instr + (c->once ? SIFT_SCOPE_DEDUPE_INSTR * (double) c->drops : 0),
 				except = c->changed > 0 ? SIFT_SCOPE_EXCEPT_INSTR : 0,
-				reads = 1.0 - c->group_frac + c->group_frac / Max(c->group_units, 1.0);	/* a group is read in the place of its units */
+				entry = sift_scope_entry_cost(c) - except;
 
-	return SIFT_SCOPE_SETUP_INSTR + (rows * SIFT_SCOPE_UNIT_INSTR + c->preagg * SIFT_SCOPE_PREAGG_UNIT_INSTR * reads) * (double) c->units + rows * (skip * SIFT_SCOPE_SKIP_INSTR + (1.0 - skip) * entry + except) * (double) c->entries +
-		sift_scope_list_price(c) + sift_scope_changed_price(c);
+	return sift_scope_units_cost(c, rows * (double) c->units, c->preagg * (double) c->units, rows * (double) c->entries, skip * SIFT_SCOPE_SKIP_INSTR + (1.0 - skip) * entry + except);
+}
+
+/*
+ * What a read of the counts c cost once it ran: the units it read, those its pre-aggregates answered and the entries it decoded are the executor's own (a read with changed members goes through every entry it decodes
+ * row by row), the rest the counts of the read. This is what the rule of `stale scope` weighs against the refresh: the planner's share of the units that keep their pre-aggregate was 0.43 of the measured price for
+ * the largest tenant, whose changed members' rows lie in every unit (agg/scope.c).
+ */
+static inline double
+sift_scope_ran_price(const SiftScopeCounts *c, uint64 units, uint64 preagg_units, uint64 entries)
+{
+	return sift_scope_units_cost(c, (double) (units - preagg_units), (double) preagg_units, (double) entries, sift_scope_entry_cost(c));
 }
 
 /* What a top-N costs: its units are probed by their zones and the walk reads those that reach its n-th best row (a row costs an entry and its aggregation as everywhere: the heap) */

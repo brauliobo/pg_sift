@@ -41,6 +41,7 @@ SiftAggPred *pred_node(AggExec *ex, SiftAggPredKind kind, int *total, int leaf, 
 SiftAggPred *pred_in(AggExec *ex, int *total, int leaf, bool not_in, const int64 *keys, uint32 n, const char *desc);
 void scope_keys_init(AggExec *ex);
 bool scope_open(AggExec *ex, Snapshot snapshot);
+void scope_paid_end(AggExec *ex);
 struct StringInfoData *scope_share_build(AggExec *ex);
 void scope_share_adopt(AggExec *ex);
 bool scope_share_is_join(const void *share);

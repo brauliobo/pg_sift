@@ -31,6 +31,7 @@
 #include "agg/cost/model.h"
 #include "agg/lookcol_int.h"
 #include "agg/topn.h"
+#include "executor/instrument.h"
 
 #ifdef SIFT_TESTING
 static bool test_scope_join;
@@ -444,34 +445,93 @@ run_join(AggExec *ex, const char *why, double price)
 static bool scope_decide(AggExec *ex, Snapshot snapshot, SiftScopeCounts *c, double *filled);
 
 /*
- * What a read that found members changed since the stamps (or that the stored read refused for the journal) paid on top of the filled read, by the planner's prices: the arm it took (the join, or the units
- * with the changed members, their patch and the delta, and the row by row reads of the units they leave) less the units without them (filled). Without a join to compare with, the least the members and the patch cost.
+ * What a read that found members changed since the stamps (or that the stored read refused for the journal) paid on top of the filled read. The arm it took decides what is known of it:
+ * - the units with the changed members: they ran, and the price is of what they read (sift_scope_ran_price: the units, those their pre-aggregates answered, the entries decoded, as the executor counted them) less the units
+ *   without the members (filled). The planner's share of the units that keep their pre-aggregate (sift_scope_preagg_kept) is a fit to members whose rows lie in a few units; the largest tenant's lie in every one, and
+ *   it priced 9.1 M for a read that took 21 M;
+ * - a top-N, which is walked and not read: the planner's price of it;
+ * - the join: the planner's price of the join for the keys the read found (alt_price; it takes the join's operators by their model, 0.7 to 1.7 of what the join took), the join is not counted by units;
+ * - no join to compare, or a test that forces the units: the least the members and the patch cost.
+ * The blocks the statement took from the file while the node ran, less one for each unit it read (the filled read takes those), weigh MAINT_BLOCK_READ each: a delta that is read cold costs the blocks as well.
  */
-static double
-read_extra(const SiftAggScope *sc, const SiftScopeCounts *c, double filled, const SiftScopeRead *rd, bool join)
+typedef struct ScopeNote
 {
+	const SiftAggScope *sc;		/* the scope of the spec the node was planned with: the spec it runs is the join's when it took the join */
+	SiftScopeCounts c;
+	double		filled;
+	bool		join;
+	uint64		blks_read;		/* shared_blks_read of the backend when the node started */
+} ScopeNote;
+
+static double
+read_extra(const AggExec *ex, const ScopeNote *n)
+{
+	const SiftAggScope *sc = n->sc;
+	const SiftScopeRead *rd = ex->scope_rd;
+	double		price;
+
 	if (sc->alt == NULL || SIFT_TEST_SCOPE_PATCH)
 		return patch_extra(rd);
-	return Max((join ? join_price(sc, c) : sift_scope_units_price(c)) - filled, 0.0);
+	if (n->join)
+		price = join_price(sc, &n->c);
+	else if (n->c.topn)
+		price = sift_scope_units_price(&n->c);
+	else
+		price = sift_scope_ran_price(&n->c, ex->n_units, ex->n_pre_units, ex->n_rows);
+	return Max(price - n->filled, 0.0);
+}
+
+/* The note of the read that started: the counts it priced under and whether it took the join */
+static void
+scope_note_begin(AggExec *ex, const SiftAggScope *sc, const SiftScopeCounts *c, double filled, bool join)
+{
+	ScopeNote  *n = MemoryContextAllocZero(ex->cxt, sizeof(ScopeNote));
+
+	n->sc = sc;
+	n->c = *c;
+	n->filled = filled;
+	n->join = join;
+	n->blks_read = pgBufferUsage.shared_blks_read;
+	ex->scope_note = n;
+}
+
+/*
+ * The end of the run of a scope read that found changed members: what it paid for them, on top of the filled read, is said to the maintenance, which sees no statement (sift_scope_paid_note): the rule of `stale scope`
+ * weighs the sum of what the reads of the server paid against the refresh. Called when the run is over, for the counts of what it read and the blocks it took. A standby cannot ask for it (it cannot write).
+ */
+void
+scope_paid_end(AggExec *ex)
+{
+	ScopeNote  *n = ex->scope_note;
+	double		extra,
+				blocks;
+
+	if (n == NULL)
+		return;
+	ex->scope_note = NULL;
+	blocks = Max((double) (pgBufferUsage.shared_blks_read - n->blks_read) - (double) ex->n_units, 0.0);
+	extra = read_extra(ex, n) + MAINT_BLOCK_READ * blocks;
+	sift_scope_paid_note(ex->index, ex->scope_rd->scope, ex->scope_rd->epoch, (uint64) extra);
 }
 
 /*
  * Decides how the scan reads the conjunct, before its source is opened (the source of the scope segments is another one); true: the scope segments, and the rows of the entity
- * too when ex->scope_rd->npatch > 0. A read that found changed members says what it paid for them to the maintenance, which sees no statement (sift_scope_paid_note): the rule of `stale scope` weighs the sum of
- * what the reads of the server paid against the refresh (col/scope_paid.c keeps it in the metapage). A standby cannot ask for it.
+ * too when ex->scope_rd->npatch > 0. A read that found changed members is noted for the maintenance when it ends (scope_paid_end).
  */
 bool
 scope_open(AggExec *ex, Snapshot snapshot)
 {
 	const SiftAggSpec *spec = ex->spec;
-	const SiftAggScope *sc = spec->scope;
 	SiftScopeCounts c = {0};
 	double		filled = 0.0;
-	bool		scope = scope_decide(ex, snapshot, &c, &filled);
-	const SiftScopeRead *rd = ex->scope_rd;
+	bool		scope;
+	const SiftScopeRead *rd;
 
+	ex->scope_note = NULL;
+	scope = scope_decide(ex, snapshot, &c, &filled);
+	rd = ex->scope_rd;
 	if (ex->scope_share == NULL && rd != NULL && rd->epoch != 0 && (rd->nchanged > 0 || rd->why != NULL) && !RecoveryInProgress())
-		sift_scope_paid_note(ex->index, rd->scope, rd->epoch, (uint64) read_extra(sc, &c, filled, rd, ex->spec != spec));
+		scope_note_begin(ex, spec->scope, &c, filled, ex->spec != spec);
 	return scope;
 }
 

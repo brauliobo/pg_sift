@@ -273,6 +273,7 @@ typedef struct AggExec
 	double		scope_price;	/* what the model prices the read the node runs at, in instructions: the units (less the changed members) or the join as written; 0: not priced (scope_open) */
 	int64	   *scope_listed;	/* the members the entity rows are read for (scope_filter), which the workers get as listed */
 	uint32		delta_units;	/* the last superblocks of the source are the units of the delta of the scope read, which only the leader holds: the items of the workers end before them */
+	struct ScopeNote *scope_note;	/* the counts a scope read that found changed members priced under, for what it paid when it ends (scope_paid_end) */
 	const void *scope_share;	/* a worker: what its leader decided for the scope conjunct (scope_share_build); the leader has none */
 	uint64		lookup_hscan;	/* the rows of the lookup tables read from the heap of the table (a scan or an index fetch), not from the leaves of an index */
 	int			nshared;		/* the lookup tables another node of the statement had loaded (map_load_shared) */

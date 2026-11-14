@@ -561,7 +561,7 @@ Datum
 sift_test_scope_refresh(PG_FUNCTION_ARGS)
 {
 	SiftScopeCounts c = {.changed = PG_GETARG_INT64(3),.patch_units = PG_GETARG_INT64(4),.patch_scan_rows = PG_GETARG_INT64(5),.delta_rows = PG_GETARG_INT64(6)};
-	double		refresh = sift_scope_refresh_price(PG_GETARG_INT64(0), (double) PG_GETARG_INT64(1) * PG_GETARG_INT32(2)),
+	double		refresh = sift_scope_refresh_price(PG_GETARG_INT64(0), PG_GETARG_INT64(1), (double) PG_GETARG_INT64(1) * PG_GETARG_INT32(2)),
 				read = sift_scope_changed_price(&c);
 	Datum		v[3] = {Float8GetDatum(refresh), Float8GetDatum(read), Int64GetDatum((int64) ceil(MAINT_HALF * refresh / Max(read, 1.0)))};
 	bool		nulls[3] = {false, false, read == 0};

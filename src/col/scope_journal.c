@@ -588,12 +588,13 @@ sift_scope_stale_begin(Relation index, MemoryContext mcxt)
 	return st;
 }
 
-/* Half of what the refresh of every scope of the index costs, as for every maintenance step (the rows of its entity segments, the entries of its scope segments by the columns they keep), from the directory */
+/* Half of what the refresh of every scope of the index costs, as for every maintenance step (the rows of its entity segments, the entries of its scope segments by the columns they keep and their WAL), from the directory */
 double
 sift_scope_refresh_half(Relation index, const SiftDirSnapshot *dir)
 {
 	double		entry_columns = 0;
-	uint64		rows = 0;
+	uint64		rows = 0,
+				entries = 0;
 
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_seg_is_scope(&dir->segs[i]))
@@ -606,9 +607,12 @@ sift_scope_refresh_half(Relation index, const SiftDirSnapshot *dir)
 		sift_scope_columns(index, sift_scope_specs(index)->s[i]->key_name, &kept, &all);
 		for (int j = 0; j < dir->nsegs; j++)
 			if (sift_seg_is_scope(&dir->segs[j]) && sift_seg_scope_ordinal(&dir->segs[j]) == i)
+			{
+				entries += dir->segs[j].ndocs;
 				entry_columns += (double) dir->segs[j].ndocs * kept;
+			}
 	}
-	return MAINT_HALF * sift_scope_refresh_price(rows, entry_columns);
+	return MAINT_HALF * sift_scope_refresh_price(rows, entries, entry_columns);
 }
 
 /*
