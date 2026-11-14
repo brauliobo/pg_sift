@@ -2,6 +2,7 @@
 # A build whose lz4 or zstd header probe fails must stop with the error that names the switch, never drop the codec silently
 # (a server built so refuses the chunks another server wrote with it). Needs a PostgreSQL pg_config; make only parses the Makefile here.
 #   scripts/check-codec-probe.sh    each codec: header hidden -> error naming SIFT_NO_<CODEC>=1; hidden with SIFT_NO_<CODEC>=1 -> parses; present -> parses
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -uo pipefail
 cd "$(dirname "$0")/.."
 d=$(mktemp -d) && trap 'rm -rf "$d"' EXIT
