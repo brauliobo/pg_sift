@@ -248,7 +248,7 @@ static SiftScopeCounts
 unit_counts(AggExec *ex, Snapshot snapshot)
 {
 	const SiftAggScope *sc = ex->spec->scope;
-	SiftScopeCounts c = {.nkeys = sc->nkeys,.once = sc->once,.entry_instr = sc->entry_instr};
+	SiftScopeCounts c = {.nkeys = sc->nkeys,.once = sc->once,.entry_instr = sc->entry_instr,.group_keys = ex->spec->nkeys};
 
 	unit_entries(ex, snapshot, &c);
 	c.skip = sc->skip;
@@ -417,6 +417,21 @@ join_price(const SiftAggScope *sc, const SiftScopeCounts *c)
 	return alt_price(sc, alt_keys(sc, c->entries));
 }
 
+/*
+ * What a join that ran cost the read that took it (the rule of `stale scope` weighs it): the price the node chose by for the keys the read found, less what it holds for grouping the rows of a statement that does not
+ * group (SiftAggScope.join_credit), the rows of the first key, which the knots leave out (their operators are those beyond the first key's): its own row (SIFT_SCOPE_JOIN_ROW_INSTR) and the group and the aggregates a join
+ * pays as the units do (sift_scope_exec_instr: measured over 17 aggregates the join took 22.8 to 35 a row more than the clean units), and the routing of the rows beyond them to their groups, which its operators count at a fifth of
+ * what it costs (3.4 against 18 instructions for a group key)
+ */
+static double
+join_ran_price(const SiftAggScope *sc, const SiftScopeCounts *c)
+{
+	double		first = Min((double) c->entries, sc->knot_rows * sc->knot_k[0]);
+
+	return join_price(sc, c) - sc->join_credit + (SIFT_SCOPE_JOIN_ROW_INSTR + sift_scope_exec_instr(c)) * first +
+		SIFT_SCOPE_GROUP_INSTR * c->group_keys * ((double) c->entries - first);
+}
+
 /* the reason EXPLAIN gives for the join the node runs */
 static const char *
 join_cheaper_why(const SiftAggScope *sc)
@@ -473,7 +488,7 @@ read_extra(const AggExec *ex, const ScopeNote *n)
 	if (sc->alt == NULL || SIFT_TEST_SCOPE_PATCH)
 		return patch_extra(rd);
 	if (n->join)
-		price = join_price(sc, &n->c);
+		price = join_ran_price(sc, &n->c);
 	else if (n->c.topn)
 		price = sift_scope_units_price(&n->c);
 	else
