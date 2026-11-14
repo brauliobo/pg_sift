@@ -188,6 +188,8 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	Relation	irel;
 	double		kept,
 				pkept,
+				zkept,
+				skept,
 				tid,
 				extra,
 				units,
@@ -250,7 +252,9 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	irel = index_open(index->indexoid, AccessShareLock);
 	units = Max(1.0, ceil(index->rel->pages / 256.0));
 	pkept = point_kept(root, path, irel, units, &nprobes, &tid, &extra);
-	kept = Min(Min(zones_kept(root, path, irel), sets_kept(root, path, irel)), pkept);
+	zkept = zones_kept(root, path, irel);
+	skept = sets_kept(root, path, irel);
+	kept = Min(Min(zkept, skept), pkept);
 	index_close(irel, AccessShareLock);
 	kept_units = kept * units;
 	/* an IN list or ANY (array) is a scan for each element, and genericcostestimate counts the tuples of one: the lists of a leaf that has an equality, or another list, are one test of the fewest keys (narrow_lists) */
