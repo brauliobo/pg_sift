@@ -31,6 +31,12 @@ CREATE TABLE answers AS
 	UNION ALL SELECT 'groups', (SELECT string_agg(v || ':' || n, ',' ORDER BY v) FROM (SELECT v, count(*) n FROM t GROUP BY v) s);
 SELECT plan_of('SELECT count(*) FROM t WHERE v = 3') AS plan_before;
 
+CREATE TABLE healthy (id int, v int);
+CREATE INDEX healthy_idx ON healthy USING sift_col (id, v);
+INSERT INTO healthy SELECT i, i % 7 FROM generate_series(1, 3000) i;
+SELECT count(*) AS rows_written, (SELECT count(*) FROM sift.check('healthy_idx')) AS problems FROM healthy;
+DROP TABLE healthy;
+
 SET plan_cache_mode = force_generic_plan;
 PREPARE by_v AS SELECT count(*) FROM t WHERE v = 3;
 EXECUTE by_v;

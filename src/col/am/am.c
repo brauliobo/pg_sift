@@ -99,6 +99,8 @@ static CommandId batch_cid;	/* the command id the innermost statement that modif
 
 static bool batch_cid_set;
 
+static bool flushing_held;	/* inside sift_col_flush_held: the subtransactions it starts are its own */
+
 static bool batch_inserting;	/* inside sift_col_aminsert; an error leaves it set until the (sub)transaction aborts */
 
 static int	batch_updates;		/* statements running that replace row versions (UPDATE, MERGE, ON CONFLICT DO UPDATE): an index with track_changes supersedes the entries of the old versions */
@@ -125,21 +127,33 @@ flush_index(void *arg)
 		sift_col_maint_after_seal(arg);
 }
 
-/* The rows a transaction held for an index that damage took out of service are not written: the heap has them, and the rebuild reads them there */
+/*
+ * The rows a transaction held for an index that damage took out of service are not written: the heap has them, and the rebuild reads them there. The subtransaction of the guard
+ * is the flush's own: its start must not flush again (the rows are still pending) and its abort must not discard the rows of the other indexes.
+ */
 void
 sift_col_flush_held(void)
 {
 	Oid			oid;
 
 	sift_col_tombs_flush();
-	while (sift_cwbuf_pending(&oid))
+	flushing_held = true;
+	PG_TRY();
 	{
-		Relation	index = relation_open(oid, RowExclusiveLock);
+		while (sift_cwbuf_pending(&oid))
+		{
+			Relation	index = relation_open(oid, RowExclusiveLock);
 
-		if (!sift_quarantine_guard(index, SIFT_SKIP_WRITE, flush_index, index))
-			sift_cwbuf_discard(oid);
-		relation_close(index, NoLock);
+			if (!sift_quarantine_guard(index, SIFT_SKIP_WRITE, flush_index, index))
+				sift_cwbuf_discard(oid);
+			relation_close(index, NoLock);
+		}
 	}
+	PG_FINALLY();
+	{
+		flushing_held = false;
+	}
+	PG_END_TRY();
 }
 
 static void
@@ -166,6 +180,8 @@ batch_xact(XactEvent event, void *arg)
 static void
 batch_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId parentSubid, void *arg)
 {
+	if (flushing_held)
+		return;
 	if (event == SUBXACT_EVENT_START_SUB)
 		sift_col_flush_held();
 	else if (event == SUBXACT_EVENT_ABORT_SUB)
