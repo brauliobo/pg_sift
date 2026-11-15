@@ -35,3 +35,7 @@ wbuf-crash	tap:col_wbuf_crash	0	150	scripts/pgtest.sh tap col_wbuf_crash
 store-crash	tap:store_crash	0	365	scripts/pgtest.sh tap store_crash
 index-build-crash	tap:index_build_crash	0	225	scripts/pgtest.sh tap index_build_crash
 oracle-large	tap:col_scope_oracle	0	290	SIFT_ORACLE_ROWS=250000 SIFT_ORACLE_STEPS=2 SIFT_ORACLE_VERIFY_EVERY=1 SIFT_ORACLE_MUTANT=off SIFT_ORACLE_SEEDS=302 scripts/pgtest.sh tap col_scope_oracle
+regress-1	regress:shard	1	650	scripts/pgtest.sh regress $(ls test/sql | sed -n "s/\.sql$//p" | awk "NR % 4 == 0")
+regress-2	regress:shard	1	650	scripts/pgtest.sh regress $(ls test/sql | sed -n "s/\.sql$//p" | awk "NR % 4 == 1")
+regress-3	regress:shard	1	650	scripts/pgtest.sh regress $(ls test/sql | sed -n "s/\.sql$//p" | awk "NR % 4 == 2")
+regress-4	regress:shard	1	650	scripts/pgtest.sh regress $(ls test/sql | sed -n "s/\.sql$//p" | awk "NR % 4 == 3")
