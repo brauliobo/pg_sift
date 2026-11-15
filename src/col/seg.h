@@ -10,6 +10,7 @@
 #define SIFT_COL_SEG_H
 
 #include "core/host.h"
+#include "core/live.h"
 
 #include "col/enc.h"
 #include "col/gorder.h"
@@ -600,6 +601,10 @@ extern int64 sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback c
  * ndead. ERRCODE_INDEX_CORRUPTED. Returns the number of live rows.
  */
 extern uint64 sift_cseg_verify(SiftColSegment *seg);
+/* The liveness run against what sift_live_clear keeps true of it (col/seg/live.c): the audit reads it, the repair restores it, the verify raises on what the audit finds */
+extern void sift_cseg_live_audit(SiftColSegment *seg, SiftLiveAudit *a);
+extern void sift_cseg_live_repair(SiftColSegment *seg, SiftLiveAudit *a);
+extern void sift_cseg_live_verify(SiftColSegment *seg);
 
 /*
  * The source over the column segments of a sift_table (docs/COL-TAM.md section 6; col/scan/scan.c): dir is the caller's directory copy (no snapshot is

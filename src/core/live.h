@@ -67,6 +67,37 @@ extern void sift_live_bits(const SiftLive *l, uint64 rank, uint32 n, uint64 *out
  */
 extern void sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd);
 
+/* A unit of a segment: its rows are the liveness bits rank_base .. rank_base + nrows - 1, and the dirty bit sbidx says that one of them may be clear */
+typedef struct SiftLiveUnit
+{
+	uint32		sbidx;
+	uint32		nrows;
+	uint64		rank_base;
+} SiftLiveUnit;
+
+/* What a LIVE run holds against what sift_live_clear keeps true of it (sift_live_audit) */
+typedef struct SiftLiveAudit
+{
+	uint32		pages_damaged;	/* pages whose type, flags, reserved or generation are not those of a LIVE page of the segment */
+	BlockNumber first_damaged;
+	uint32		units_lost;		/* units with a cleared liveness bit and no dirty bit: scans read their rows as live */
+	uint64		cleared;		/* the cleared liveness bits */
+	uint64		ndead_header;	/* the dead rows the header counts */
+	uint32		pages_written;	/* sift_live_repair: the pages it wrote */
+} SiftLiveAudit;
+
+/*
+ * Reads the whole run without checking the special spaces and fills *a. ERRCODE_INDEX_CORRUPTED when a page has an invalid layout or a size that is not its
+ * share of the run (what no repair restores).
+ */
+extern void sift_live_audit(const SiftLive *l, const SiftLiveUnit *units, uint32 nunits, SiftLiveAudit *a);
+
+/*
+ * Makes the run what sift_live_clear keeps it: the special space of every page, the dirty bit of every unit that has a cleared bit, the header's count of the cleared bits.
+ * One generic WAL record a page that differs, the first page first; running it again finds nothing to write. The caller holds the maintenance lock. *a is what the audit found.
+ */
+extern void sift_live_repair(const SiftLive *l, const SiftLiveUnit *units, uint32 nunits, SiftLiveAudit *a);
+
 /*
  * Writes the LIVE run of a new segment of format 2, all docs live and no SB dirty: reg[nsb + 1] are the region starts and the end
  * (reg[nsb] bytes long), rows the spool file holding the regions, nslots the terms with a slot (their counters are zero)

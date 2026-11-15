@@ -88,6 +88,10 @@ CREATE FUNCTION sift._test_write(index regclass, blkno int8, "offset" int4, len 
 -- the header page of a segment with SIFT_MAX_EXTENTS + over extents and extralen bytes after them: the bytes it uses and SIFT_MAX_EXTENTS
 CREATE FUNCTION sift._test_seghdr(index regclass, over int4, extralen int4, OUT used int4, OUT max_extents int4)
 	AS 'MODULE_PATHNAME', 'sift_test_seghdr' LANGUAGE C STRICT;
+-- a LIVE run of nsb one-row superblocks with those of sbs killed and their dirty bit set where sift_live_clear of 4.2.1 to 4.3.5 put it: the audit, the repair, the audit, the repair again
+CREATE FUNCTION sift._test_live_repair(index regclass, nsb int4, sbs int4[], OUT stage text, OUT damaged_pages int4, OUT lost_units int4, OUT ndead int8, OUT cleared int8,
+									   OUT written int4, OUT dirty_read int4) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_live_repair' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_churn(index regclass, seed int8, maxbytes int8) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_churn' LANGUAGE C STRICT;
 

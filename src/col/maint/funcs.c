@@ -111,6 +111,54 @@ sift_col_maintain(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(n >= 0);
 }
 
+/*
+ * sift.col_repair(index, dry_run): restores the liveness pages of every segment whose special space, dirty bits or count of dead rows are not what sift_live_clear keeps them
+ * (a VACUUM of 4.2.1 to 4.3.5 on a segment of more than 65,152 superblocks), under the lock of VACUUM and the merges; a row for each segment that needed it, none when nothing did.
+ * With dry_run it reads and reports and writes nothing.
+ */
+Datum
+sift_col_repair(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index;
+	bool		dry_run = PG_GETARG_BOOL(1);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	PreventCommandIfReadOnly("sift.col_repair()");
+	PreventCommandDuringRecovery("sift.col_repair()");
+	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
+	InitMaterializedSRF(fcinfo, 0);
+	sift_maint_lock(index, true);
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		SiftLiveAudit a;
+		Datum		v[5];
+		bool		nulls[5] = {0};
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		if (dry_run)
+			sift_cseg_live_audit(seg, &a);
+		else
+			sift_cseg_live_repair(seg, &a);
+		sift_cseg_close(seg);
+		if (a.pages_damaged == 0 && a.units_lost == 0 && a.ndead_header == a.cleared)
+			continue;
+		v[0] = Int64GetDatum(snap->segs[i].gen);
+		v[1] = Int32GetDatum(a.pages_damaged);
+		v[2] = Int32GetDatum(a.units_lost);
+		v[3] = Int64GetDatum(a.ndead_header);
+		v[4] = Int64GetDatum(a.cleared);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	sift_maint_unlock(index);
+	index_close(index, RowExclusiveLock);
+	return (Datum) 0;
+}
+
 Datum
 sift_col_promote(PG_FUNCTION_ARGS)
 {

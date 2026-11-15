@@ -247,6 +247,7 @@ extern PGDLLEXPORT Datum sift_col_segments(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_leaves(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_sections(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_verify(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum sift_col_repair(PG_FUNCTION_ARGS);	/* (index regclass, dry_run bool): the segments whose liveness pages it restored */
 extern PGDLLEXPORT Datum sift_col_promote(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_merge(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_maintain(PG_FUNCTION_ARGS);

@@ -239,6 +239,7 @@ TESTING_REGRESS += col_key_table
 TESTING_REGRESS += col_leaf_fold
 TESTING_REGRESS += col_leaf_stats
 TESTING_REGRESS += col_list_test_once
+TESTING_REGRESS += col_live_repair
 TESTING_REGRESS += col_log_newer_format
 TESTING_REGRESS += col_merge_idempotent
 TESTING_REGRESS += col_merge_keys
