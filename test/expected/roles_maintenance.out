@@ -225,10 +225,11 @@ SELECT c.relname, c.relkind, has_table_privilege('rm_nos', c.oid, 'SELECT') AS c
  ddl_hooks              | v       | t
  indexes                | v       | t
  locks                  | v       | t
+ progress               | v       | t
  projection_status      | v       | t
  table_paths_maintained | v       | t
  workers                | v       | t
-(11 rows)
+(12 rows)
 
 SELECT has_schema_privilege('rm_nos', 'sift', 'USAGE') AS usage, has_schema_privilege('rm_nos', 'sift', 'CREATE') AS create_in_sift;
  usage | create_in_sift 

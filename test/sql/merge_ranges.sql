@@ -5,9 +5,10 @@ CREATE EXTENSION pageinspect;
 SET maintenance_work_mem = '64MB';
 SET sift.test_range_bytes = 4000;
 
+-- every page but the metapage, which holds the time of the last cut of the file
 CREATE FUNCTION idx_digest(r regclass) RETURNS text LANGUAGE sql AS $$
 	SELECT md5(string_agg(substring(get_raw_page(r::text, n::int) FROM 11), ''::bytea ORDER BY n))
-	FROM generate_series(0, pg_relation_size(r) / 8192 - 1) n
+	FROM generate_series(1, pg_relation_size(r) / 8192 - 1) n
 $$;
 
 CREATE TABLE mr (id int, body text, cat int, created date);
