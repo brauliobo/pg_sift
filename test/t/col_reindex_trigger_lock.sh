@@ -2,13 +2,15 @@
 # Two REINDEX of two sift_col indexes of one table that both have to make their change-tracking triggers (they are disabled, or the index has none yet: the option was never resolved). Each holds
 # ShareLock of the table, and a REINDEX that made the triggers asked the table for a stronger lock under it, which the ShareLock of the other one refuses: one of them ended with "deadlock
 # detected". The window is held open with an advisory lock (sift.test_col_track_gate: the install waits for it before it asks for anything), so that both hold ShareLock before either goes on,
-# and the round does not depend on the speed of the host. A REINDEX asks for the lock only when no other session holds one that conflicts with it, and otherwise leaves the triggers: the log is
+# and the round does not depend on the speed of the host. A second gate (sift.test_col_track_decided_gate) holds both after each decided and before either goes on or ends, so that each decides
+# while the other still holds its ShareLock: without it the one that is first through ends and releases its lock before the other asks, which then finds no holder and makes the triggers. A REINDEX asks for the lock only when no other session holds one that conflicts with it, and otherwise leaves the triggers: the log is
 # not complete (the reads check the heap) until the maintenance worker makes missing triggers, or ALTER INDEX makes them.
 . "$(dirname "$0")/lib.bash"
 plan 11
 
 ROUNDS=$(knob SIFT_RT_ROUNDS 30 10)
 GATE=7311
+DECIDED=7312
 node_init n 63 "autovacuum = off
 sift.col_auto_merge = off
 deadlock_timeout = 200ms"
@@ -25,7 +27,9 @@ read_with() { sql n "SET sift.col_auto_merge = on" "SET sift.enable_agg = $1" "S
 ans() { read_with "$([[ $1 == heap ]] && echo off || echo on)"; }
 tracking() { sql n "SELECT complete AND triggers FROM sift.col_tracking('$1')"; }
 ntrig() { sql n "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'h'::regclass AND tgname LIKE 'sift_track_%'"; }
-at_gate() { [[ $(sql n "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted") == 2 ]]; }
+waiting_at() { [[ $(sql n "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid = $1") == 2 ]]; }
+at_gate() { waiting_at $GATE; }
+at_decided() { waiting_at $DECIDED; }
 deadlocks() { grep -c 'deadlock detected' "$D/postgres.log" || true; }
 both() { [[ $(tracking h_a)'|'$(tracking h_b)'|'$(ntrig) == "t|t|4" ]]; }
 
@@ -39,19 +43,22 @@ reset() {
 	fi
 }
 
-# one round: the gate is held, both REINDEX hold ShareLock of h and wait at it, then it opens
+# one round: the gate is held, both REINDEX hold ShareLock of h and wait at it; it opens, each decides and waits at the second gate with the other's lock still held, then that opens
 round() {
 	local a b g=$D/gate.$2
 	rm -f "$g".*
 	reset "$1"
-	{ echo "SELECT pg_advisory_lock($GATE);"; echo "\\! touch '$g.held'"; echo "\\! while [ ! -e '$g.open' ]; do sleep 0.05; done"; } | sql n >/dev/null 2>&1 &
+	{ echo "SELECT pg_advisory_lock($GATE), pg_advisory_lock($DECIDED);"; echo "\\! touch '$g.held'"; echo "\\! while [ ! -e '$g.open' ]; do sleep 0.05; done"
+	  echo "SELECT pg_advisory_unlock($GATE);"; echo "\\! while [ ! -e '$g.decided' ]; do sleep 0.05; done"; } | sql n >/dev/null 2>&1 &
 	g_pid=$!
 	wait_for "[[ -e $g.held ]]" 60 || bail "the gate was not taken"
-	sql n "SET client_min_messages = notice" "SET sift.test_col_track_gate = $GATE" "REINDEX INDEX h_a" >"$D/a.out" 2>&1 & a=$!
-	sql n "SET client_min_messages = notice" "SET sift.test_col_track_gate = $GATE" "REINDEX INDEX h_b" >"$D/b.out" 2>&1 & b=$!
+	sql n "SET client_min_messages = notice" "SET sift.test_col_track_gate = $GATE" "SET sift.test_col_track_decided_gate = $DECIDED" "REINDEX INDEX h_a" >"$D/a.out" 2>&1 & a=$!
+	sql n "SET client_min_messages = notice" "SET sift.test_col_track_gate = $GATE" "SET sift.test_col_track_decided_gate = $DECIDED" "REINDEX INDEX h_b" >"$D/b.out" 2>&1 & b=$!
 	wait_for at_gate 60 || bail "both REINDEX did not reach the gate"
 	ROUND_SHARE=$(sql n "SELECT count(*) FROM pg_locks WHERE relation = 'h'::regclass AND mode = 'ShareLock' AND granted")
 	touch "$g.open"
+	wait_for at_decided 60 || bail "both REINDEX did not decide"
+	touch "$g.decided"
 	wait "$a"; ROUND_RC=$?
 	wait "$b"; ROUND_RC=$((ROUND_RC + $?))
 	wait "$g_pid"
