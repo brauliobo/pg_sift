@@ -1,13 +1,5 @@
 -- A sift or sift_col index that finds its own damage leaves service (sift.on_corruption, docs/OPERATIONS.md): statements run on the heap until REINDEX rebuilds it.
 -- sift._quarantine() is the registry of the server for the files of this database; sift.quarantine lists the indexes that are out of service now.
-CREATE FUNCTION sift._quarantine(OUT index oid, OUT filenode oid, OUT detected_at timestamptz, OUT confirmed bool, OUT persisted bool, OUT error_code text, OUT reason text,
-								 OUT detections int8, OUT skipped_writes int8, OUT skipped_vacuums int8, OUT refused_scans int8)
-	RETURNS SETOF record
-	AS 'MODULE_PATHNAME', 'sift_quarantine_rows' LANGUAGE C STABLE;
-
-CREATE FUNCTION sift._meta_quarantined(index oid) RETURNS bool
-	AS 'MODULE_PATHNAME', 'sift_meta_quarantined' LANGUAGE C STABLE STRICT;
-
 CREATE VIEW sift.quarantine AS
 	SELECT q.index::regclass AS index, q.detected_at, q.persisted, q.error_code, q.reason, q.detections, q.skipped_writes, q.skipped_vacuums, q.refused_scans
 	FROM sift._quarantine() q
