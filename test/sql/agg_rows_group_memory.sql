@@ -77,6 +77,22 @@ BEGIN
 	RAISE WARNING 'fetched % rows', n;
 END $$;
 
+-- the groups are counted in 32 bits and the arrays double in 32 bits (docs/LIMITS.md, rows_groups): a node at the bound ends as one past hash memory does
+DROP TABLE got;
+RESET work_mem;
+RESET hash_mem_multiplier;
+SET client_min_messages = notice;
+SET sift.test_limits = 'rows_groups=5000';
+CREATE TEMP TABLE got AS EXECUTE r;
+SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
+DROP TABLE got;
+SET sift.test_limits = 'rows_groups=100000';
+SELECT plan_has('EXECUTE r', 'SiftAggRows') AS node_below_the_bound;
+CREATE TEMP TABLE got AS EXECUTE r;
+SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
+DROP TABLE got;
+RESET client_min_messages;
+
 DEALLOCATE r;
 RESET plan_cache_mode;
 RESET sift.test_limits;

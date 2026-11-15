@@ -54,6 +54,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `rows_shared` | aggregates sharing one rows-set (count(DISTINCT) grouping) | 32 | aggregates | normal plan (slug rows_shape) |  | `agg/rows.h` `SIFT_ROWS_MAX_SHARED` | yes |
 | `text_prune` | text conditions of a scan that prune units by prefix | 16 | conditions | the others do not prune units |  | `agg/chunkfilter.h` `COL_MAX_STR_PRUNE` |  |
 | `filter_set` | values of an IN set sent as a zone filter | 8 | values | a larger set is not used as a zone filter |  | `agg/init_filter.c` `FILTER_MAX_SET` |  |
+| `rows_groups` | groups the node that groups rows (SiftAggRows) holds: their count and the arrays of their keys and aggregates are 32 bits | 2,147,483,648 | groups | normal plan (NOTICE), ERROR 54000 once rows were sent |  | `agg/rows.h` `SIFT_ROWS_MAX_GROUPS` | yes |
 
 ## Column index (`src/col`)
 

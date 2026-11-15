@@ -76,6 +76,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  rollup_dims          | SIFT_PAGG_MAX_RDIMS             |                6 | t         | f
  rollup_tuples        | SIFT_PAGG_ROLLUP_TUPLES         |             4096 | t         | f
  rollups              | SIFT_PAGG_MAX_ROLLUPS           |                8 | t         | f
+ rows_groups          | SIFT_ROWS_MAX_GROUPS            |       2147483648 | t         | t
  rows_shared          | SIFT_ROWS_MAX_SHARED            |               32 | t         | t
  scan_filters         | SIFT_COLSRC_MAX_FILTERS         |               64 | t         | f
  scope_batch_entries  | SIFT_SCOPE_BATCH_MAX_ENTRIES    |       2147483648 | t         | t
@@ -111,7 +112,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  wide_dict_bytes      | -                               |       1073741823 | t         | t
  wide_digits          | SIFT_COL_MAX_WIDE_SCALE         |               38 | t         | f
  write_buffer_kb      | SIFT_DEFAULT_WRITE_BUFFER_LIMIT |             4096 | t         | f
-(107 rows)
+(108 rows)
 
 -- a hooked limit is lowered for the session and comes back with RESET
 SET sift.test_limits = 'query_bytes=64, phrase_terms=3';
