@@ -31,6 +31,10 @@ CREATE TABLE answers AS
 	UNION ALL SELECT 'groups', (SELECT string_agg(v || ':' || n, ',' ORDER BY v) FROM (SELECT v, count(*) n FROM t GROUP BY v) s);
 SELECT plan_of('SELECT count(*) FROM t WHERE v = 3') AS plan_before;
 
+SET plan_cache_mode = force_generic_plan;
+PREPARE by_v AS SELECT count(*) FROM t WHERE v = 3;
+EXECUTE by_v;
+
 SELECT sift._test_poke('t_idx', 2, 8176, 9, 2);
 SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS detecting_statement;
 SELECT index, error_code, detections FROM sift.quarantine;
@@ -40,6 +44,10 @@ UNION ALL SELECT 'sum', (SELECT sum(id) FROM t WHERE g = 1)::text
 UNION ALL SELECT 'groups', (SELECT string_agg(v || ':' || n, ',' ORDER BY v) FROM (SELECT v, count(*) n FROM t GROUP BY v) s)
 EXCEPT SELECT q, a FROM answers;
 SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS next_statement;
+-- the plan made before the index left service is refused once, and the retry is planned without it
+SELECT expect($$ EXECUTE by_v $$) AS stale_plan;
+SELECT expect($$ EXECUTE by_v $$) AS replanned;
+EXECUTE by_v;
 SELECT expect($$ SELECT * FROM t WHERE id = 5 $$) AS point_lookup;
 
 -- the error mode of a session that wants the failure: it ignores the quarantine and reads the index
@@ -50,8 +58,10 @@ SET sift.on_corruption = quarantine;
 REINDEX INDEX t_idx;
 SELECT count(*) AS listed_after_reindex FROM sift.quarantine;
 SELECT plan_of('SELECT count(*) FROM t WHERE v = 3') AS plan_after_reindex;
+SELECT plan_of('EXECUTE by_v') AS prepared_plan_after_reindex;
 SELECT count(*) FROM t WHERE v = 3;
 
+DEALLOCATE by_v;
 DROP TABLE answers, t;
 DROP FUNCTION plan_of(text), expect(text);
 DROP EXTENSION pg_sift_test;

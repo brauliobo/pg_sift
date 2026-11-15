@@ -28,6 +28,7 @@
 #include "bm25/eval.h"
 #include "bm25/planner.h"
 #include "agg/search.h"
+#include "core/quarantine.h"
 
 /*
  * What the match set costs, in operator costs: a posting decoded and combined, a matching row decoded and aggregated by the scan, a page of matches
@@ -359,6 +360,7 @@ sift_search_open(Node *spec, Relation heap, Snapshot snapshot, ExprContext *econ
 	s->snapshot = snapshot;
 	s->index = index_open(DatumGetObjectId(((Const *) linitial(l))->constvalue), AccessShareLock);
 	s->st = sift_state_open(s->index, cxt);
+	sift_quarantine_net(s->index, s->st->dir.meta.flags);
 	s->filter = sift_filter_create(cxt);
 	s->narms = list_length(l) - 1;
 	s->arm = palloc0(s->narms * sizeof(SearchArm));

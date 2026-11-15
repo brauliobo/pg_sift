@@ -8,6 +8,7 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "storage/spin.h"
+#include "utils/inval.h"
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 #include "utils/tuplestore.h"
@@ -308,6 +309,26 @@ sift_quarantine_skip(Relation index, SiftSkipKind kind)
 	e->skipped_vacuums += kind == SIFT_SKIP_VACUUM;
 	e->refused_scans += kind == SIFT_SKIP_SCAN;
 	unpublished = true;
+}
+
+void
+sift_quarantine_net(Relation index, uint32 meta_flags)
+{
+	SharedInvalidationMessage msg;
+
+	if (sift_on_corruption != SIFT_ON_CORRUPTION_QUARANTINE || !((meta_flags & SIFT_META_QUARANTINED) || overlay_has(index)))
+		return;
+	sift_quarantine_skip(index, SIFT_SKIP_SCAN);
+	msg.rc.id = SHAREDINVALRELCACHE_ID;
+	msg.rc.dbId = MyDatabaseId;
+	msg.rc.relId = RelationGetRelid(index);
+	LocalExecuteInvalidationMessage(&msg);
+	msg.rc.relId = index->rd_index->indrelid;
+	LocalExecuteInvalidationMessage(&msg);
+	ereport(ERROR,
+			(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+			 errmsg("sift index \"%s\" is out of service; the statement must be planned again", RelationGetRelationName(index)),
+			 errhint("Run the statement again: it is planned without the index. REINDEX INDEX %s puts it back in service.", sift_index_ident(index))));
 }
 
 /* sift._quarantine(): the files of this database the registry knows, one row each (the view sift.quarantine joins them to their indexes) */
