@@ -2,7 +2,8 @@
 """Regenerate every generated part of README.md and docs/ from the code, the tests and the committed benchmark results.
 
     scripts/gen-docs.py            rewrite the generated blocks in place
-    scripts/gen-docs.py --check    fail (exit 1) when a block is stale; renders into a scratch copy, touches nothing, needs no server
+    scripts/gen-docs.py --check    fail (exit 1) when a block is stale; renders into a scratch copy, touches nothing, needs no server;
+                                   with SIFT_PUBLIC_TREE=true (the hosted run of the public repository) a block whose results file is not in the tree is not compared
     scripts/gen-docs.py --resolve  in a rebase or merge with conflicts: settle the generated files (see resolve()), then regenerate; run `git add -A` and continue
 
 The options regions (scripts/gen-options.sh) are part of it, so `--check` covers them.
@@ -353,6 +354,23 @@ def format_docs(root):
         sys.exit('gen-docs: the column format minors disagree: ' + '; '.join(bad))
 
 
+PUBLIC_TREE = os.environ.get('SIFT_PUBLIC_TREE') == 'true'
+
+
+def without_unbacked_blocks(text):
+    """the text of a page without the benchmark blocks whose results file is not in the public tree (the results stay private)"""
+    for name in re.findall(r'<!-- bench:([\w-]+):begin', text):
+        if name in RESULTS and not have(REPO, name):
+            text = re.sub(r'<!-- bench:%s:begin.*?<!-- bench:%s:end' % (name, name), '', text, flags=re.S)
+    return text
+
+
+def same_page(shown, generated):
+    if PUBLIC_TREE:
+        return without_unbacked_blocks(shown.decode()) == without_unbacked_blocks(generated.decode())
+    return shown == generated
+
+
 def check():
     format_docs(REPO)
     with tempfile.TemporaryDirectory(prefix='sift-gen-docs.') as tmp:
@@ -371,7 +389,7 @@ def check():
                     other = os.path.join(REPO, rel)
                     if rel in UNPUBLISHED and not os.path.exists(other):
                         unpublished.append(rel)
-                    elif not os.path.exists(other) or open(other, 'rb').read() != open(os.path.join(d, f), 'rb').read():
+                    elif not os.path.exists(other) or not same_page(open(other, 'rb').read(), open(os.path.join(d, f), 'rb').read()):
                         stale.append(rel)
     if stale:
         sys.exit('gen-docs: stale (a generated block no longer matches its source): %s\nrun scripts/gen-docs.py and commit the result' % ', '.join(sorted(stale)))
