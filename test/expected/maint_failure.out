@@ -48,7 +48,7 @@ SELECT sift.verify('mf_idx', true);
  
 (1 row)
 
--- so does a failing merge, and a successful step clears the failure count
+-- so does a failing merge, and a successful step clears the failure count (the last error stays in sift.workers)
 SELECT sift.promote('mf_idx') >= 0 AS promoted;
  promoted 
 ----------
@@ -126,9 +126,9 @@ SELECT sift._test_maint_failures('mf_idx') AS failures;
 (1 row)
 
 SELECT failures, error_code, last_error, next_retry FROM sift.workers WHERE index = 'mf_idx'::regclass;
- failures | error_code | last_error | next_retry 
-----------+------------+------------+------------
-        0 |            |            | 
+ failures | error_code |                last_error                 | next_retry 
+----------+------------+-------------------------------------------+------------
+        0 | XX000      | sift test: injected failure after 3 pages | 
 (1 row)
 
 SELECT sift.verify('mf_idx', true);

@@ -107,6 +107,14 @@ typedef struct SiftMetaPageData
 	uint64		scope_paid[SIFT_META_SCOPES];
 	/* What the reads of the server paid for what maintenance would spare them, for the segment generation each was paid under (col/wbuf/reads.c): the open write buffer's rows decoded, the instructions of the tombstone log's marks */
 	SiftMetaReads reads[SIFT_META_READS];
+	/* What the workers did last (sift.workers, sift.col_space): when and how long the last background step that ended well ran and which job it was (core/worker.h), the failures counted for good (the backoff counts the ones in a row), and the last shrink of the file with why the next one is blocked */
+	TimestampTz maint_ok_at;	/* 0: none */
+	TimestampTz last_shrink;	/* 0: none */
+	uint32		failures_total;
+	uint32		maint_ok_ms;
+	uint16		maint_ok_job;	/* SiftJob */
+	uint16		shrink_blocked;	/* SiftShrinkBlock: why the last VACUUM left the file longer than the shrink target */
+	uint32		reserved;
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF
@@ -118,7 +126,8 @@ typedef struct SiftMetaPageData
 static inline bool
 sift_meta_extended(const SiftMetaPageData *meta)
 {
-	if (meta->maint_failed_at != 0 || meta->analyzer_config[0])
+	if (meta->maint_failed_at != 0 || meta->analyzer_config[0] || meta->maint_ok_at != 0 || meta->last_shrink != 0 || meta->failures_total != 0 ||
+		meta->shrink_blocked != 0)
 		return true;
 	for (int i = 0; i < SIFT_META_STAMPS; i++)
 		if (meta->scope_floor[i].lineage != 0)

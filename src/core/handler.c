@@ -75,6 +75,7 @@ PG_FUNCTION_INFO_V1(sift_json_build_object);
 PG_FUNCTION_INFO_V1(sift_index_info);
 PG_FUNCTION_INFO_V1(sift_index_format);
 PG_FUNCTION_INFO_V1(sift_worker_state);
+PG_FUNCTION_INFO_V1(sift_worker_history);
 PG_FUNCTION_INFO_V1(sift_col_handler);
 PG_FUNCTION_INFO_V1(sift_col_index_info);
 PG_FUNCTION_INFO_V1(sift_col_extents);

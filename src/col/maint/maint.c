@@ -7,6 +7,7 @@
 #include "access/table.h"
 #include "catalog/index.h"
 #include "core/ops.h"
+#include "core/worker.h"
 #include "storage/lmgr.h"
 #include "storage/lock.h"
 #include "utils/timestamp.h"
@@ -87,7 +88,7 @@ maint_is_partition(const SiftSegEntry *e)
 void
 maint_throttle(SiftWriteTarget *wt)
 {
-	if (MyBackendType == B_BG_WORKER && strcmp(MyBgworkerEntry->bgw_type, "sift maintenance") == 0)
+	if (sift_worker_paced())
 	{
 		sift_wt_throttle(wt, sift_maintenance_cost_delay);
 		sift_wt_wal_rate(wt, sift_maintenance_wal_rate);
@@ -240,27 +241,6 @@ sift_col_maint_merge_step(Relation index, bool wait)
 }
 
 /*
- * A worker whose transaction fails keeps the error where sift.workers and the backoff of the requests find it (the steps of a sift_col index run
- * outside a subtransaction, so the whole transaction of the worker is the unit), warns as a failed BM25 step does, and ends. Cancellation and
- * shutdown go on as they were.
- */
-static void
-worker_failed(Oid indexoid, const char *name, MemoryContext cx)
-{
-	ErrorData  *err;
-
-	MemoryContextSwitchTo(cx);
-	err = CopyErrorData();
-	FlushErrorState();
-	AbortCurrentTransaction();
-	if (ERRCODE_TO_CATEGORY(err->sqlerrcode) == ERRCODE_OPERATOR_INTERVENTION)
-		ReThrowError(err);
-	sift_maint_warn_failure("sift_col", name, err);
-	sift_maint_record_failure(indexoid, err);
-	FreeErrorData(err);
-}
-
-/*
  * The re-baseline of a log that is due for it (sift_col_track_rebaseline), in a transaction of its own: it holds ShareUpdateExclusiveLock on the table, which keeps VACUUM
  * and the autovacuum worker waiting or skipping for as long as the transaction lasts, and the merges of the worker are longer. A table that is busy with a VACUUM is left to it (it re-baselines too).
  * Triggers that ENABLE TRIGGER left enabled for the origin only are enabled for all again first (sift_col_track_rearm), in a transaction of its own, which returns true for the caller to run the step again.
@@ -272,6 +252,7 @@ rebaseline_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
 	Relation	index;
 	Relation	heap;
 	bool		rearmed = false;
+	bool		done = false;
 
 	StartTransactionCommand();
 	PushActiveSnapshot(GetTransactionSnapshot());
@@ -288,12 +269,14 @@ rebaseline_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
 			/* triggers enabled for the origin only: the lock that ENABLE TRIGGER takes, if it is free this instant (held for a catalog row, never waited for), and the re-baseline in the next transaction */
 			if (sift_col_track_rearmable(index, heap) && ConditionalLockRelationOid(heapoid, ShareRowExclusiveLock))
 			{
-				rearmed = sift_col_track_rearm(index, heap);
+				done = rearmed = sift_col_track_rearm(index, heap);
 				if (rearmed)
 					sift_log_maint(index, "column track triggers enabled again", start, -1, -1);
 			}
-			else if (sift_col_track_rebaseline(index, heap))
+			else if ((done = sift_col_track_rebaseline(index, heap)))
 				sift_log_maint(index, "column track re-baseline finished", start, -1, -1);
+			if (done)
+				sift_worker_ok(index, SIFT_JOB_TRACK, start);
 			table_close(heap, NoLock);
 		}
 		index_close(index, RowExclusiveLock);
@@ -319,7 +302,7 @@ sift_col_track_worker_main(Datum main_arg)
 	}
 	PG_CATCH();
 	{
-		worker_failed(indexoid, name, cx);
+		sift_maint_worker_failed("sift_col", indexoid, name, cx);
 	}
 	PG_END_TRY();
 }
@@ -364,9 +347,15 @@ col_worker_step(Oid indexoid, TimestampTz start, bool last)
 		index = sift_try_open_index(indexoid, RowExclusiveLock);
 		if (index != NULL && sift_col_is_index(index))
 		{
+			TimestampTz began = GetCurrentTimestamp();
+			SiftJob		job = SIFT_JOB_PROMOTE;
+
 			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
-			if (sift_col_maint_promote(index, false) > 0 || sift_col_maint_merge_step(index, false))
+			if (sift_col_maint_promote(index, false) > 0 || (job = SIFT_JOB_MERGE, sift_col_maint_merge_step(index, false)))
+			{
 				r = SIFT_STEP_DONE;
+				sift_worker_ok(index, job, began);
+			}
 			else if (last)
 			{
 				sift_mops_cut_free_end(&maint_col_ops, index);
@@ -380,7 +369,7 @@ col_worker_step(Oid indexoid, TimestampTz start, bool last)
 	}
 	PG_CATCH();
 	{
-		worker_failed(indexoid, name, cx);
+		sift_maint_worker_failed("sift_col", indexoid, name, cx);
 		r = SIFT_STEP_FAILED;
 	}
 	PG_END_TRY();
@@ -405,7 +394,10 @@ fold_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
 			uint64		rows = sift_col_fold_marks(index);
 
 			if (rows > 0)
+			{
 				sift_log_maint(index, "folded the marks of the log into", start, rows, -1);
+				sift_worker_ok(index, SIFT_JOB_TRACK, start);
+			}
 		}
 		index_close(index, RowExclusiveLock);
 	}
@@ -436,7 +428,7 @@ maint_worker(Datum main_arg, bool seal)
 	}
 	PG_CATCH();
 	{
-		worker_failed(indexoid, name, cx);
+		sift_maint_worker_failed("sift_col", indexoid, name, cx);
 		failed = true;
 	}
 	PG_END_TRY();
@@ -505,7 +497,10 @@ sift_col_rewrite_worker_main(Datum main_arg)
 				if (maint_decide_asked)
 					sift_vstore_release_left(index);
 				if (sift_mops_rewrite(&maint_col_ops, &index, true) >= 0 && index != NULL)
+				{
 					sift_log_maint(index, "column rewrite worker finished", start, -1, -1);
+					sift_worker_ok(index, SIFT_JOB_REWRITE, start);
+				}
 			}
 			if (index != NULL)
 				index_close(index, RowExclusiveLock);
@@ -515,7 +510,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	}
 	PG_CATCH();
 	{
-		worker_failed(indexoid, name, cx);
+		sift_maint_worker_failed("sift_col", indexoid, name, cx);
 	}
 	PG_END_TRY();
 }

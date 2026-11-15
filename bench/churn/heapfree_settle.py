@@ -83,7 +83,7 @@ def main():
             out.extend(collect.measure_statement(s, stmt, sql.format(t=table), subject, [collect.Arm('sift', variant, settings=BASE)], env, temps=('cold', 'warm'), hash_text=sql))
 
     def due(index):
-        return collect.one(s, "SELECT sift.col_maintenance_due('%s', true) IS NOT NULL OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type = 'sift maintenance')" % index)[0] == 't'
+        return collect.one(s, "SELECT sift.col_maintenance_due('%s', true) IS NOT NULL OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type LIKE 'sift %')" % index)[0] == 't'
 
     for variant, table, opts in VARIANTS:
         index = table + '_c'

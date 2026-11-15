@@ -32,7 +32,7 @@ merged() {
 	for k in $(seq 8); do sql delay "$(printf "$BATCH" "$1" "$((5000 + k))")" >/dev/null || bail "insert failed"; done
 	for _ in $(seq 2400); do
 		segs=$(sql delay "SELECT count(*) FROM sift.segments('${1}_idx')")
-		live=$(sql delay "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'")
+		live=$(sql delay "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'sift %'")
 		[[ $live == 0 && $segs -le 12 ]] && break
 		sleep 0.05
 	done

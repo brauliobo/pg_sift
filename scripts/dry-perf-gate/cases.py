@@ -214,7 +214,7 @@ GATE = [
 
 # --- background maintenance workers (opt-in group `bgw`): the statement asks a worker, the window ends when the worker has finished. The counters are those of the whole process tree,
 # so they hold the statement and the worker. The settings are the database's (a worker reads those, not the session's) and are reset by `cleanup`, whatever the run did.
-NO_WORKERS = "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'"
+NO_WORKERS = "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE backend_type LIKE 'sift %'"
 ASYNC_ON = ('ALTER DATABASE gate SET sift.async_maintenance = on', 'ALTER DATABASE gate SET sift.col_auto_merge = on', 'ALTER DATABASE gate SET sift.table_async_promote = on',
             'SET sift.async_maintenance = on', 'SET sift.col_auto_merge = on', 'SET sift.table_async_promote = on')
 ASYNC_OFF = ('ALTER DATABASE gate RESET sift.async_maintenance', 'ALTER DATABASE gate RESET sift.col_auto_merge', 'ALTER DATABASE gate RESET sift.table_async_promote', NO_WORKERS)

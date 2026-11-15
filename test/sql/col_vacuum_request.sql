@@ -21,7 +21,7 @@ END $$;
 CREATE FUNCTION vr_idle() RETURNS bool LANGUAGE plpgsql AS $$
 BEGIN
 	FOR i IN 1..300 LOOP
-		IF NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type = 'sift maintenance' AND datname = current_database()) THEN RETURN true; END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type LIKE 'sift %' AND datname = current_database()) THEN RETURN true; END IF;
 		PERFORM pg_sleep(0.1);
 	END LOOP;
 	RETURN false;

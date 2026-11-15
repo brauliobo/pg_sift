@@ -61,7 +61,7 @@ fresh() { # LABEL [index options, default $FRESH_OPTS]: empty table and index
 	q "$1" "DROP TABLE IF EXISTS t; CREATE TABLE t (id serial, body text); CREATE INDEX t_idx ON t USING sift (body) ${2:-${FRESH_OPTS:-}}" >/dev/null
 }
 settle() { # LABEL: waits for the maintenance worker to finish
-	until [[ $(q "$1" "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'") == 0 ]]; do sleep 0.2; done
+	until [[ $(q "$1" "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'sift %'") == 0 ]]; do sleep 0.2; done
 }
 backlog() { # LABEL: 60 promoted segments, the worker off
 	q "$1" "SET sift.async_maintenance = off" "DO \$\$ BEGIN FOR k IN 1..60 LOOP

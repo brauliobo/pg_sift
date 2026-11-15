@@ -20,6 +20,7 @@
 #include "core/errctx.h"
 #include "core/explain.h"
 #include "core/sql.h"
+#include "core/worker.h"
 #include "table/table.h"
 #include "bm25/segment_sql.h"
 
@@ -165,29 +166,20 @@ sift_index_info(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
-/*
- * sift.worker_state(index) behind the sift.workers view: whether maintenance is at work on the index (or the sift_table: its failures are not noted, so they are 0),
- * and for an index whose last background step failed what it was and when it is tried next. The delay is the one the background keeps (backoff_ms of bm25/maint.c). NULL while another session holds the index in a lock this probe would wait for (a REINDEX).
- */
-Datum
-sift_worker_state(PG_FUNCTION_ARGS)
+/* The index or sift_table of a worker inspector, locked for reading; NULL while another session holds it in a lock the probe would wait for (a REINDEX), or when it is gone */
+static Relation
+worker_open(Oid relid)
 {
-	Oid			relid = PG_GETARG_OID(0);
 	Relation	index;
-	SiftDirSnapshot *snap;
-	Datum		v[8];
-	bool		nulls[8] = {0};
-	uint32		failures;
-	int			sealed = 0;
 
 	sift_inspect_expect(relid, NULL, NULL);
 	if (!ConditionalLockRelationOid(relid, AccessShareLock))
-		PG_RETURN_NULL();
+		return NULL;
 	index = try_relation_open(relid, NoLock);
 	if (index == NULL)
 	{
 		UnlockRelationOid(relid, AccessShareLock);
-		PG_RETURN_NULL();
+		return NULL;
 	}
 	if (index->rd_rel->relkind == RELKIND_INDEX ? index->rd_rel->relam != sift_catalog()->am && !sift_col_is_index(index) : !sift_tbl_is_table(index))
 		ereport(ERROR,
@@ -196,6 +188,26 @@ sift_worker_state(PG_FUNCTION_ARGS)
 	sift_check_inspect(index);
 	if (index->rd_rel->relkind == RELKIND_INDEX)
 		sift_store_require_ready(index);
+	return index;
+}
+
+/*
+ * sift.worker_state(index) behind the sift.workers view: whether maintenance is at work on the index (or the sift_table: its failures are not noted, so they are 0),
+ * and for an index whose last background step failed what it was and when it is tried next. The delay is the one the background keeps (backoff_ms of bm25/maint.c). NULL while another session holds the index in a lock this probe would wait for (a REINDEX).
+ * The error stays after a later step that ended well (failed_at, error_code and last_error are those of the last failure ever noted); the next retry is only for the failures in a row.
+ */
+Datum
+sift_worker_state(PG_FUNCTION_ARGS)
+{
+	Relation	index = worker_open(PG_GETARG_OID(0));
+	SiftDirSnapshot *snap;
+	Datum		v[8];
+	bool		nulls[8] = {0};
+	uint32		failures;
+	int			sealed = 0;
+
+	if (index == NULL)
+		PG_RETURN_NULL();
 	snap = palloc(sizeof(SiftDirSnapshot));
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
@@ -211,7 +223,7 @@ sift_worker_state(PG_FUNCTION_ARGS)
 		v[5] = TimestampTzGetDatum(snap->meta.maint_requested_at +
 								   backoff_ms(&snap->meta) * INT64CONST(1000));
 	/* a build without the note counted the failure and left it zero */
-	nulls[4] = nulls[6] = nulls[7] = nulls[5] || snap->meta.maint_failed_at == 0;
+	nulls[4] = nulls[6] = nulls[7] = snap->meta.maint_failed_at == 0;
 	if (!nulls[4])
 	{
 		/* the note is a page's bytes: cut it where it ends, and refuse what is not text of the database encoding */
@@ -223,6 +235,40 @@ sift_worker_state(PG_FUNCTION_ARGS)
 		v[6] = CStringGetTextDatum(unpack_sql_state(snap->meta.maint_errcode));
 		v[7] = CStringGetTextDatum(pg_verifymbstr(msg, strlen(msg), true) ? msg : "(unreadable)");
 	}
+	relation_close(index, AccessShareLock);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+}
+
+/*
+ * sift.worker_history(index) joined by the sift.workers view: when the last background step that ended well ran, which job it was and how long it took, and the failures noted
+ * since the index was built. None of it for a sift_table (it has no metapage) and NULL where worker_state is.
+ */
+Datum
+sift_worker_history(PG_FUNCTION_ARGS)
+{
+	Relation	index = worker_open(PG_GETARG_OID(0));
+	SiftDirSnapshot *snap;
+	Datum		v[4];
+	bool		nulls[4] = {0};
+
+	if (index == NULL)
+		PG_RETURN_NULL();
+	if (index->rd_rel->relkind != RELKIND_INDEX)
+	{
+		relation_close(index, AccessShareLock);
+		nulls[0] = nulls[1] = nulls[2] = nulls[3] = true;
+		PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+	}
+	snap = palloc(sizeof(SiftDirSnapshot));
+	sift_dir_read(index, snap);
+	nulls[0] = nulls[1] = nulls[2] = snap->meta.maint_ok_at == 0;
+	if (!nulls[0])
+	{
+		v[0] = TimestampTzGetDatum(snap->meta.maint_ok_at);
+		v[1] = CStringGetTextDatum(sift_job_name(snap->meta.maint_ok_job) ? sift_job_name(snap->meta.maint_ok_job) : "");
+		v[2] = Int64GetDatum(snap->meta.maint_ok_ms);
+	}
+	v[3] = Int64GetDatum(snap->meta.failures_total);
 	relation_close(index, AccessShareLock);
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }

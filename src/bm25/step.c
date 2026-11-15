@@ -81,6 +81,7 @@ stamp_failure(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	TimestampTz now = GetCurrentTimestamp();
 
 	meta->flags = (meta->flags & ~SIFT_META_FAILURES_MASK) | Min(failures + 1, SIFT_META_FAILURES_MASK);
+	meta->failures_total = Min(meta->failures_total + 1, PG_UINT32_MAX - 1);
 	meta->maint_requested_at = meta->maint_failed_at = now;
 	meta->maint_errcode = err->sqlerrcode;
 	memset(meta->maint_errmsg, 0, sizeof(meta->maint_errmsg));
@@ -111,6 +112,26 @@ sift_maint_record_failure(Oid indexoid, ErrorData *err)
 		index_close(index, RowExclusiveLock);
 	}
 	CommitTransactionCommand();
+}
+
+/*
+ * A worker whose transaction failed (called from its PG_CATCH, in the memory context it was running in): the error is kept where sift.workers and the backoff of the requests find it,
+ * warned as a failed BM25 step is, and the worker goes on or ends as its caller says. Cancellation and shutdown go on as they were.
+ */
+void
+sift_maint_worker_failed(const char *kind, Oid indexoid, const char *name, MemoryContext cx)
+{
+	ErrorData  *err;
+
+	MemoryContextSwitchTo(cx);
+	err = CopyErrorData();
+	FlushErrorState();
+	AbortCurrentTransaction();
+	if (ERRCODE_TO_CATEGORY(err->sqlerrcode) == ERRCODE_OPERATOR_INTERVENTION)
+		ReThrowError(err);
+	sift_maint_warn_failure(kind, name, err);
+	sift_maint_record_failure(indexoid, err);
+	FreeErrorData(err);
 }
 
 /*

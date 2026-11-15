@@ -24,7 +24,7 @@ sql pw "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE po
 # quiet: no maintenance worker runs. The snapshot of a worker that started before the DELETEs of a churn keeps VACUUM from removing the dead rows, so the index
 # never learns of them and nothing is due (the same for the UPDATE of another table in the database); and the log a step measures from must hold all that
 # the workers of the steps before it write
-quiet() { for _ in $(seq 600); do [[ $(sql pw "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'") == 0 ]] && return 0; sleep 0.1; done; return 1; }
+quiet() { for _ in $(seq 600); do [[ $(sql pw "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'sift %'") == 0 ]] && return 0; sleep 0.1; done; return 1; }
 # churn_rows TABLE FROM M: of the rows from that id on, one of M updated and one of M deleted (other rows each time), 200 inserted; churn: and then VACUUM (the worker is asked for at its end)
 n=0
 churn_rows() { quiet; n=$((n + 1)); local r=$((n % $3)); sql pw "UPDATE $1 SET amount = amount + 1 WHERE id >= $2 AND id % $3 = $r" "DELETE FROM $1 WHERE id >= $2 AND id % $3 = ($r + $3 / 2) % $3" \

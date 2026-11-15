@@ -36,6 +36,7 @@
 #include "bm25/maint.h"
 #include "core/ops.h"
 #include "core/sql.h"
+#include "core/worker.h"
 
 #define ROLLUP_QUEUE		64		/* segments waiting */
 #define ROLLUP_DONE			256		/* refreshed segments remembered */
@@ -156,18 +157,7 @@ release_worker(Oid db)
 static bool
 register_worker(void)
 {
-	BackgroundWorker bw = {0};
-	BackgroundWorkerHandle *handle;
-
-	bw.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
-	bw.bgw_start_time = BgWorkerStart_RecoveryFinished;
-	bw.bgw_restart_time = BGW_NEVER_RESTART;
-	snprintf(bw.bgw_library_name, BGW_MAXLEN, "pg_sift");
-	snprintf(bw.bgw_function_name, BGW_MAXLEN, "sift_col_rollup_worker_main");
-	snprintf(bw.bgw_name, BGW_MAXLEN, "sift rollup refresh (database %u)", MyDatabaseId);
-	snprintf(bw.bgw_type, BGW_MAXLEN, "sift rollup refresh");
-	memcpy(bw.bgw_extra, &MyDatabaseId, sizeof(Oid));
-	return RegisterDynamicBackgroundWorker(&bw, &handle);
+	return sift_worker_register("sift_col_rollup_worker_main", sift_worker_subject_db(), (Datum) 0);
 }
 
 static void
@@ -322,7 +312,7 @@ refresh_segment(Relation index, uint64 rgen)
 }
 
 static void
-process(const RollupReq *r)
+process(const RollupReq *r, const char *volatile *name, MemoryContext cx)
 {
 	Relation	index;
 	uint64		gen = 0;
@@ -333,8 +323,14 @@ process(const RollupReq *r)
 	index = sift_try_open_index(r->index, RowExclusiveLock);
 	if (index != NULL && sift_col_is_index(index) && !RecoveryInProgress() && options_hash(index) == r->hash && sift_col_format_minor >= SIFT_COL_FORMAT_TAGS)
 	{
+		TimestampTz start = GetCurrentTimestamp();
+
+		*name = MemoryContextStrdup(cx, RelationGetRelationName(index));
+		SIFT_TEST_WORKER_FAIL(SIFT_JOB_ROLLUP);
 		gen = refresh_segment(index, r->gen);
 		ok = gen != 0;
+		if (ok)
+			sift_worker_ok(index, SIFT_JOB_ROLLUP, start);
 	}
 	if (index != NULL)
 		index_close(index, RowExclusiveLock);
@@ -343,16 +339,19 @@ process(const RollupReq *r)
 	finish(r, ok, gen);
 }
 
+/* A request that fails is recorded for its index and given up; the others of the queue are served */
 void
 sift_col_rollup_worker_main(Datum main_arg)
 {
 	Oid			db;
 	RollupReq	r;
+	MemoryContext cx = CurrentMemoryContext;
 
 	memcpy(&db, MyBgworkerEntry->bgw_extra, sizeof(Oid));
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 	BackgroundWorkerInitializeConnectionByOid(db, InvalidOid, 0);
+	sift_worker_announce();
 	before_shmem_exit(worker_exit, ObjectIdGetDatum(db));
 	if (try_shared() == NULL)
 	{
@@ -360,7 +359,20 @@ sift_col_rollup_worker_main(Datum main_arg)
 		return;
 	}
 	while (pop(db, InvalidOid, &r))
-		process(&r);
+	{
+		const char *volatile name = psprintf("%u", r.index);
+
+		PG_TRY();
+		{
+			process(&r, &name, cx);
+		}
+		PG_CATCH();
+		{
+			sift_maint_worker_failed("sift_col", r.index, name, cx);
+			finish(&r, false, 0);
+		}
+		PG_END_TRY();
+	}
 }
 
 PG_FUNCTION_INFO_V1(sift_col_rollup_refresh);

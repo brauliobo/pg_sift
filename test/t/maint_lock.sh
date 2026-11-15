@@ -50,7 +50,7 @@ check "no wait for the maintenance of others over 5 s" test "$(sed -n 's/^wait_m
 
 touch "$D/release"
 wait "$hp"
-sql lock "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'" >/dev/null
+sql lock "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type LIKE 'sift %'" >/dev/null
 verified=$(sql lock "VACUUM t" "SELECT sift.verify('t_idx', true)" 2>&1 && echo verified)
 check "VACUUM merges down, every row is indexed" test "$(tail -1 <<<"$verified")" == verified
 check "no orphan block" test "$(sql lock "SELECT sift._test_check('t_idx')")" == 0

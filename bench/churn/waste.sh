@@ -42,7 +42,7 @@ quiet() {
 	local l0 t0 t1 l1
 	l0=$(q -c "select pg_current_wal_lsn()"); t0=$(date +%s.%N); sleep 0.3
 	for _ in $(seq 1200); do
-		[[ $(q -c "select count(*) from pg_stat_activity where backend_type = 'sift maintenance' or (backend_type = 'autovacuum worker' and query like '%w_$1%')") == 0 ]] && break
+		[[ $(q -c "select count(*) from pg_stat_activity where backend_type LIKE 'sift %' or (backend_type = 'autovacuum worker' and query like '%w_$1%')") == 0 ]] && break
 		sleep 0.1
 	done
 	t1=$(date +%s.%N); l1=$(q -c "select pg_current_wal_lsn()")

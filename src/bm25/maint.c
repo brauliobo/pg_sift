@@ -36,6 +36,7 @@
 #include "bm25/merge.h"
 #include "bm25/wbuf.h"
 #include "core/ops.h"
+#include "core/worker.h"
 #include "col/wbuf.h"
 #include "core/sql.h"
 #include "core/visibility.h"
@@ -726,27 +727,15 @@ stamp_request(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 
 /* By oid: what a commit callback has, where no relation can be opened */
 bool
-sift_maint_register_worker_oid(Oid indexoid, const char *function)
+sift_maint_register_worker_oid(Oid indexoid, const char *function, const char *subject)
 {
-	BackgroundWorker bw = {0};
-	BackgroundWorkerHandle *handle;
-
-	bw.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
-	bw.bgw_start_time = BgWorkerStart_RecoveryFinished;
-	bw.bgw_restart_time = BGW_NEVER_RESTART;
-	snprintf(bw.bgw_library_name, BGW_MAXLEN, "pg_sift");
-	snprintf(bw.bgw_function_name, BGW_MAXLEN, "%s", function);
-	snprintf(bw.bgw_name, BGW_MAXLEN, "sift maintenance (index %u)", indexoid);
-	snprintf(bw.bgw_type, BGW_MAXLEN, "sift maintenance");
-	bw.bgw_main_arg = ObjectIdGetDatum(indexoid);
-	memcpy(bw.bgw_extra, &MyDatabaseId, sizeof(Oid));
-	return RegisterDynamicBackgroundWorker(&bw, &handle);
+	return sift_worker_register(function, subject, ObjectIdGetDatum(indexoid));
 }
 
 bool
 sift_maint_register_worker(Relation index, const char *function)
 {
-	if (sift_maint_register_worker_oid(RelationGetRelid(index), function))
+	if (sift_maint_register_worker_oid(RelationGetRelid(index), function, sift_worker_subject(index)))
 		return true;
 	sift_log_refused(index);
 	return false;
@@ -808,6 +797,7 @@ sift_maint_worker_connect(Datum main_arg, ErrorContextCallback *errctx)
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 	BackgroundWorkerInitializeConnectionByOid(dboid, InvalidOid, 0);
+	sift_worker_announce();
 	return indexoid;
 }
 
@@ -893,10 +883,17 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 			maint_lock_mode(index, false, RowExclusiveLock))
 		{
 			uint64		busy = 0;
+			TimestampTz began = GetCurrentTimestamp();
+			SiftJob		job = SIFT_JOB_PROMOTE;
 
 			if ((r = promote_next(index, false, &busy)) == SIFT_STEP_IDLE)
+			{
+				job = SIFT_JOB_MERGE;
 				r = merge_next(index, false, SIFT_GOAL_BACKGROUND, false, &busy);
+			}
 			maint_unlock_mode(index, RowExclusiveLock);
+			if (r == SIFT_STEP_DONE)
+				sift_worker_ok(index, job, began);
 		}
 		if (last || r == SIFT_STEP_FAILED)
 			sift_log_maint(index, "maintenance worker finished", start, -1, -1);
@@ -924,7 +921,7 @@ sift_maint_worker_stay(Oid indexoid, TimestampTz start, SiftWorkerStep step)
 			CHECK_FOR_INTERRUPTS();
 		if (r == SIFT_STEP_FAILED || left <= 0)
 			break;
-		sift_nap(Min(left, Min(Max(sift_maintenance_naptime / 20, 100), 1000)));
+		sift_worker_nap(Min(left, Min(Max(sift_maintenance_naptime / 20, 100), 1000)));
 	}
 }
 
