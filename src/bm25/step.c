@@ -27,6 +27,7 @@
 #include "bm25/build.h"
 #include "core/compat.h"
 #include "core/lane.h"
+#include "core/quarantine.h"
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
 #include "bm25/merge.h"
@@ -129,8 +130,16 @@ sift_maint_worker_failed(const char *kind, Oid indexoid, const char *name, Memor
 	AbortCurrentTransaction();
 	if (ERRCODE_TO_CATEGORY(err->sqlerrcode) == ERRCODE_OPERATOR_INTERVENTION)
 		ReThrowError(err);
-	sift_maint_warn_failure(kind, name, err);
-	sift_maint_record_failure(indexoid, err);
+	if (sift_damage_caught(err))
+		ereport(WARNING,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("%s index \"%s\" is quarantined; maintenance stopped", kind, name),
+				 errhint("Queries and maintenance run without it. REINDEX INDEX puts it back in service.")));
+	else
+	{
+		sift_maint_warn_failure(kind, name, err);
+		sift_maint_record_failure(indexoid, err);
+	}
 	FreeErrorData(err);
 }
 
@@ -172,6 +181,12 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
 	sift_wt_abort(wt);
 	if (propagate || ERRCODE_TO_CATEGORY(err->sqlerrcode) == ERRCODE_OPERATOR_INTERVENTION)
 		ReThrowError(err);
+	if (sift_damage_caught(err))
+	{
+		sift_quarantine_stopped(index, SIFT_SKIP_VACUUM);
+		FreeErrorData(err);
+		return SIFT_STEP_FAILED;
+	}
 	sift_maint_warn_failure("sift", RelationGetRelationName(index), err);
 	sift_dir_update(index, &(SiftDirChange) {.fn = stamp_failure,.arg = err,.extra = InvalidBuffer});
 	FreeErrorData(err);
