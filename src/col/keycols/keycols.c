@@ -428,7 +428,7 @@ sift_col_redecide_busy(Relation index)
  * (SIFT_REDECIDED_*); the caller reads the schema again after it. It writes the catalog: a VACUUM leaves it to the maintenance worker (sift_catalog_write_ok).
  */
 int
-sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
+sift_col_auto_redecide(Relation index)
 {
 	Relation	heap;
 	char	   *cut,
@@ -437,8 +437,6 @@ sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
 	const char *o;
 	bool		pushed = false,
 				changed;
-	uint64		loaded = 0;
-	MemoryContext mcx;
 	StringInfoData what;
 
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || !sift_catalog_write_ok())
@@ -452,23 +450,11 @@ sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n)
 		PushActiveSnapshot(GetTransactionSnapshot());
 		pushed = true;
 	}
-	/* a merge that cuts by another key than the segments' holds their rows whole and sorts them: a cut is chosen only if they fit (col/order.c) */
-	mcx = AllocSetContextCreate(CurrentMemoryContext, "sift_col redecide", ALLOCSET_DEFAULT_SIZES);
-	for (int i = 0; i < n; i++)
-	{
-		SiftColSegment *seg = sift_cseg_open(index, &in[i], mcx);
-
-		loaded += sift_cseg_live_rows(seg);
-		sift_cseg_close(seg);
-		MemoryContextReset(mcx);
-	}
-	loaded *= sift_colk_row_bytes(sift_col_rel_private(index, mcx)->schema);
-	MemoryContextDelete(mcx);
 	cut = auto_cut_text(index);
 	o = sift_col_options_order_array_columns(index);
 	arr = pstrdup(o ? o : "");
 	pt = pstrdup(sift_col_options_point_tid_columns(index));
-	changed = sift_col_auto_cut_again(heap, index, loaded <= (uint64) maintenance_work_mem * 1024);
+	changed = sift_col_auto_cut_again(heap, index);
 	sift_col_auto_gorder(heap, index, false);
 	sift_col_auto_point(heap, index);
 	if (pushed)

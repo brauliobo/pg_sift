@@ -1,0 +1,38 @@
+-- The rewrite chooses key_cut again from a bounded sample of the heap, whatever maintenance_work_mem is: with 1 MB, which the rows of the segments do not fit,
+-- it writes the key that the rewrite with the memory they fit writes (the merge sorts rows that do not fit on temporary files: col_key_cut_switch_spill)
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET sift.col_wbuf_ref = off;
+
+-- 100 tenants in heap order but for 15% of the rows, which land anywhere; ten leaves that follow nothing
+CREATE TABLE kr (id int, tenant_id int, a1 int, a2 int, a3 int, a4 int, a5 int, a6 int, a7 int, a8 int, a9 int, a10 int, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+SELECT setseed(0.5);
+INSERT INTO kr SELECT i, CASE WHEN random() < 0.15 THEN (random() * 100)::int ELSE i / 1250 END,
+	(i * 31) % 1000, (i * 37) % 1000, (i * 41) % 1000, (i * 43) % 1000, (i * 47) % 1000, (i * 53) % 1000, (i * 59) % 1000, (i * 61) % 1000, (i * 67) % 1000, (i * 71) % 1000, repeat('x', 100)
+FROM generate_series(1, 125000) i;
+VACUUM (FREEZE, ANALYZE) kr;
+CREATE INDEX kr_fit ON kr USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (order_array_columns = 'off');
+CREATE INDEX kr_small ON kr USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (order_array_columns = 'off');
+-- the segments are cut by tenant_id but the option says another leaf: the rewrite chooses tenant_id again
+ALTER INDEX kr_fit SET (key_cut = 'auto: a1');
+ALTER INDEX kr_small SET (key_cut = 'auto: a1');
+INSERT INTO kr SELECT 200000 + i, (random() * 100)::int, i % 1000, i % 999, i % 997, i % 991, i % 983, i % 977, i % 971, i % 967, i % 953, i % 947, 'x' FROM generate_series(1, 5000) i;
+
+-- the rows of the segments (125,000 at 208 bytes a row, 26 MB) fit 64 MB and do not fit 1 MB
+SET maintenance_work_mem = '64MB';
+SELECT sift.col_merge('kr_fit', true) > 0 AS merged;
+SET maintenance_work_mem = '1MB';
+SELECT sift.col_merge('kr_small', true) > 0 AS merged;
+RESET maintenance_work_mem;
+
+SELECT sift_helpers.index_key_cut_reloption('kr_fit') AS fit, sift_helpers.index_key_cut_reloption('kr_small') AS small;
+SELECT sift_helpers.index_key_cut_reloption('kr_fit') = sift_helpers.index_key_cut_reloption('kr_small') AS same_choice;
+SELECT (SELECT reloptions FROM pg_class WHERE relname = 'kr_fit') = (SELECT reloptions FROM pg_class WHERE relname = 'kr_small') AS same_options;
+SELECT sift.col_verify('kr_small', true);
+SELECT sift_helpers.differences_agg('SELECT tenant_id, count(*) AS n, sum(a1) AS s, max(id) AS m FROM kr GROUP BY tenant_id') AS differences;
+
+DROP TABLE kr;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;
