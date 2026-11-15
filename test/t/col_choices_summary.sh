@@ -12,11 +12,11 @@ p() { PGOPTIONS="-c client_min_messages=notice" psql -X -q -h "$SOCK" -p "$(port
 # s STATEMENT...: the output of the statements, tuples only
 s() { p -At "${@/#/--command=}"; }
 
-# statement|most lines it may print|most DETAIL and HINT lines: the summary (a DETAIL and a HINT), the format notice (a HINT); the concurrent build adds the HINT of the log
+# statement|most lines it may print|most DETAIL and HINT lines: the summary (a DETAIL and a HINT), the format notice (a DETAIL and a HINT); the concurrent build adds the HINT of the log
 STATEMENTS=(
-	"CREATE INDEX facts_sift_col ON facts USING sift_col (id, tenant_id, foreign_id, foreign_id_b, event_date, value_num, tags_a, updated_at)|8|3"
-	"REINDEX INDEX facts_sift_col|8|3"
-	"REINDEX INDEX CONCURRENTLY facts_sift_col|10|4"
+	"CREATE INDEX facts_sift_col ON facts USING sift_col (id, tenant_id, foreign_id, foreign_id_b, event_date, value_num, tags_a, updated_at)|8|4"
+	"REINDEX INDEX facts_sift_col|8|4"
+	"REINDEX INDEX CONCURRENTLY facts_sift_col|10|5"
 )
 
 plan 21
@@ -42,7 +42,7 @@ for st in "${STATEMENTS[@]}"; do
 done
 
 # what the last summary names: DETAIL entries "name = value" (advice: and limit: first), separated by semicolons, on at most two lines
-names=$(sed -n '/^DETAIL:/,/^HINT:/p' <<<"$summary" | sed -e '1s/^DETAIL:  //' -e '/^HINT:/d' | tr ';' '\n' | sed -E -e 's/^ *(advice: |limit: )?//' -e 's/ = .*//' -e '/^and [0-9]+ more$/d' -e '/^$/d')
+names=$(sed -n '/automatic choices\?/,/^HINT:/{/automatic choices\?/d;p}' <<<"$summary" | sed -e '1s/^DETAIL:  //' -e '/^HINT:/d' | tr ';' '\n' | sed -E -e 's/^ *(advice: |limit: )?//' -e 's/ = .*//' -e '/^and [0-9]+ more$/d' -e '/^$/d')
 choices=$(s "SELECT choice FROM sift.index_choices('facts_sift_col')")
 check "the summary names at least 4 choices" test "$(wc -l <<<"$names")" -ge 4
 check "every name of the summary is a row of sift.index_choices" test -z "$(comm -23 <(sort -u <<<"$names") <(sort -u <<<"$choices"))"
