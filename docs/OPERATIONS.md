@@ -87,6 +87,7 @@ On the 300,000-row lab the check takes 0.2 s, and 0.35 s with the comparison aga
 | directory | `segments` against `max_segments` (128) | within a few dozen of the maximum | merges are behind; inserts wait for the worker at 112 entries |
 | format rollout | `library_reads`, `format` | a node that reads fewer formats than the index holds | see [UPGRADING.md](UPGRADING.md) |
 | shared memory | `sift.shared_memory().shared` | `false` | read `reason`; the server needs more room in `/dev/shm` or `dynamic_shared_memory_type` |
+| a quarantined index | `sift.quarantine` | any row | the index found damage and is out of service; queries run on the heap. Rebuild it as above |
 | soundness | `sift.check()` | any row | follow section 3 |
 | object state | `sift.indexes.state` | `invalid` (an interrupted `CREATE INDEX CONCURRENTLY`), `failing`, `locked` for long | `maintaining` and `ready` are normal |
 
@@ -121,7 +122,19 @@ The order matters: look first (`sift.workers`, `pg_stat_activity`), then switch 
 
 **Worker slots.** The background workers never take the last slots of `max_worker_processes`: a worker of sift starts only while `Max(2, max_worker_processes / 4)` slots stay free after it, so a parallel query or another extension still finds one. With `max_worker_processes` of 4 and the logical replication launcher running, one worker of sift runs at a time; with 2 or less none starts and the sessions do the work. What could not start says so in one line a minute for the server (`sift: no background worker for <job> of index "<schema.index>"`, with the slots in the detail), whatever the job. A worker does its pass and ends; what is left is asked for again by the next read or write of the table, so `DROP DATABASE` is not held up by an idle worker.
 
-**Emergency for a damaged index.** A read that meets damage fails with `REINDEX INDEX <schema.index> rebuilds it from the table.` in the hint and `sift index "<schema.name>"`, with `, segment N` where known, in the context. Until the rebuild, `DROP INDEX` removes the index without touching the table, and `CREATE INDEX CONCURRENTLY` builds it again without blocking writes.
+**A damaged index leaves service.** A sift or sift_col index that finds bytes its format does not allow (SQLSTATE `XX001` or `XX002`) is taken out of service, and the database keeps serving:
+
+- The statement that found the damage fails once, with the original error and `REINDEX INDEX <schema.index> rebuilds it from the table.` in the hint.
+- The index is recorded in `sift.quarantine` (`index`, `detected_at`, `persisted`, `error_code`, `reason`, `detections`, `skipped_writes`, `skipped_vacuums`, `refused_scans`) in the registry of the server at once, and in its metapage by a background worker, so a restart and the standbys keep it. A standby that meets damage on its own confirms it on a second read at least a second later and keeps it in its own registry.
+- Every statement planned afterwards runs on the heap: PostgreSQL's own plans, with the answers the table gives, never a partial answer from the index. A plan made earlier gets SQLSTATE `40001` once (retry the statement) and is planned again without the index.
+- `INSERT`, `UPDATE`, `DELETE`, `VACUUM` and the background workers skip the index with a `WARNING` once a minute for each index and session. Nothing is lost by it: the index does not keep up with the table while it is out, so it leaves quarantine only by being rebuilt.
+- `REINDEX INDEX`, `REINDEX INDEX CONCURRENTLY`, `CREATE INDEX CONCURRENTLY` with `DROP INDEX`, and `sift.check` always work on a quarantined index; the rebuild gives a new file and with it a clean index.
+
+Detect with the `WARNING`, with `SELECT * FROM sift.quarantine`, and with `sift.check()` (damage that no statement has read yet); alert on any row of `sift.quarantine`. Recover with `REINDEX INDEX CONCURRENTLY <index>`, or `CREATE INDEX CONCURRENTLY` of the same definition and `DROP INDEX` of the damaged one. The rebuild of a large index is a decision of yours, at the time you choose: sift never starts one by itself, because an unattended rebuild of a multi-gigabyte index is a load nobody planned for.
+
+Plan for slower queries while an index is out: the heap plans of a large table can take far longer than the index did, and there is no fail-fast mode. A statement that must not run that long needs `statement_timeout`, or `SET sift.on_corruption = error` (a superuser; per database or role with `ALTER DATABASE` or `ALTER ROLE`) to have every read of damage fail as in 4.3.
+
+What it does not cover, on purpose: errors that PostgreSQL itself raises for an invalid page (`invalid page in block`, a checksum failure) are not sift's to swallow and are not recorded; a `sift_table` is the data and has no heap to fall back to; the diagnostics (`sift.check`, `sift.col_verify`, `sift.verify`) report damage and do not quarantine; a refusal of a newer format, a mismatch of options and cancellations (`57014`, `53200`, `40001`) are no damage.
 
 ## 3. After a crash
 

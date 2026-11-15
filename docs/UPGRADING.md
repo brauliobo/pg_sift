@@ -342,6 +342,10 @@ A `REINDEX` of a `sift_col` index that tracks changes keeps its two triggers whe
 
 `CREATE INDEX` and `REINDEX` of an index with a `scope` need `SELECT` on the relation of pairs (or on its member and scope key columns and those the predicate of its btree reads) and no row-level security that applies to the role. An existing scope index is unaffected until it is rebuilt: a `REINDEX` by a role without the privilege (the owner of the indexed table is not the owner of the pairs, and was never granted `SELECT` on them) is refused with the `GRANT` in the hint; a superuser, a restore and `pg_upgrade` are not affected. Reads are checked as the join as written was and is. Nothing to do before the upgrade; grant the privilege or `REINDEX` as a role that has it.
 
+## A damaged index leaves service instead of failing every statement (5.0)
+
+`sift.on_corruption` is `quarantine` by default (4.3 and earlier: every read of damage failed). A `sift` or `sift_col` index that finds bytes its format does not allow raises its error once, is recorded in `sift.quarantine`, and from then on statements run on the heap with exact answers while writes and `VACUUM` skip it with a warning. Only `REINDEX` of the index puts it back in service. Nothing changes for an index that is sound, and nothing is rebuilt by the update. `SET sift.on_corruption = error` (a superuser; `ALTER DATABASE`, `ALTER ROLE` or `postgresql.conf`) restores the behaviour of 4.3. Add an alert on `sift.quarantine` and read [OPERATIONS.md](OPERATIONS.md#2-emergency): the heap plans of a large table can be slow.
+
 ## A shortage of shared memory costs sharing, not statements (5.0)
 
 Where a shared table is only a way to share (a parallel lookup, the dictionaries of a parallel operation, the arena of the write buffers' references, the queue of the rollup refresh worker), a full `/dev/shm` or a missing segment is a line in the log and the statement goes on without it; before, it failed with `could not resize shared memory segment`. A log that shows these lines says the server needs more room for dynamic shared memory (`/dev/shm`, `dynamic_shared_memory_type`). Nothing to do before the upgrade.
