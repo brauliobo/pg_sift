@@ -9,9 +9,12 @@
 #include "access/xlog.h"
 #include "catalog/pg_class.h"
 #include "funcapi.h"
+#include "lib/stringinfo.h"
 #include "miscadmin.h"
+#include "storage/lmgr.h"
 #include "storage/spin.h"
 #include "utils/inval.h"
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
@@ -37,6 +40,9 @@ PG_FUNCTION_INFO_V1(sift_meta_quarantined);
 /* A replay applies a record of several pages one page at a time: on a standby damage counts when it is seen again this long after it was first seen */
 #define QUAR_STANDBY_CONFIRM_US	USECS_PER_SEC
 
+/* The worker that flags a metapage is asked for again, by the next plan or write that meets the index, when this long has passed and the flag is still not there (no slot was free) */
+#define QUAR_ASK_RETRY_US		(10 * USECS_PER_SEC)
+
 int			sift_on_corruption = SIFT_ON_CORRUPTION_QUARANTINE;
 
 static const struct config_enum_entry on_corruption_options[] = {
@@ -58,9 +64,11 @@ typedef struct QuarEntry
 	bool		used;
 	bool		confirmed;
 	bool		persisted;
+	bool		unflaggable;	/* the metapage cannot be written (it is damaged): the registry alone holds the index out of service, and no worker is asked for it again */
 	QuarKey		file;
 	Oid			indexoid;
 	TimestampTz detected_at;
+	TimestampTz asked_at;
 	TimestampTz first_seen;
 	int			sqlerrcode;
 	char		reason[QUAR_REASON_LEN];
@@ -227,6 +235,7 @@ static bool overlay_has(Relation index);
 typedef struct PersistAsk
 {
 	Oid			index;
+	QuarKey		file;
 	char		subject[2 * NAMEDATALEN + 2];
 } PersistAsk;
 
@@ -234,6 +243,29 @@ static PersistAsk asks[QUAR_ASKS];
 static int	nasks;
 static bool xact_hooked;
 static bool persisting;
+
+/*
+ * Whether the worker is to be asked for now: the registry holds the index out of service with no flag in the metapage, none was asked for in the last QUAR_ASK_RETRY_US (a server with
+ * no free slot is asked again by the next plan or write), and the metapage can be written. A server with no registry asks every time.
+ */
+static bool
+ask_due(const QuarKey *key)
+{
+	QuarShm    *q = table();
+	QuarEntry  *e;
+	TimestampTz now = GetCurrentTimestamp();
+	bool		due;
+
+	if (q == NULL)
+		return true;
+	SpinLockAcquire(&q->mutex);
+	e = slot(q->entry, QUAR_ENTRIES, key);
+	due = same_file(e, key) && e->confirmed && !e->persisted && !e->unflaggable && now - e->asked_at >= QUAR_ASK_RETRY_US;
+	if (due)
+		e->asked_at = now;
+	SpinLockRelease(&q->mutex);
+	return due;
+}
 
 /* What a transaction ended with is handed to the registry, and the workers asked for are started: a session that skips an index and ends (an autovacuum worker) leaves nothing behind in its own memory */
 static void
@@ -243,7 +275,8 @@ quarantine_xact(XactEvent event, void *arg)
 		return;
 	publish(shared);
 	for (int i = 0; i < nasks; i++)
-		(void) sift_maint_register_worker_oid(asks[i].index, "sift_quarantine_main", asks[i].subject);
+		if (ask_due(&asks[i].file))
+			(void) sift_maint_register_worker_oid(asks[i].index, "sift_quarantine_main", asks[i].subject);
 	nasks = 0;
 }
 
@@ -272,6 +305,7 @@ ask_persist(Relation index)
 	hook_xact();
 	a = &asks[nasks++];
 	a->index = RelationGetRelid(index);
+	key_of(index, &a->file);
 	snprintf(a->subject, sizeof(a->subject), "%s", sift_worker_subject(index));
 }
 
@@ -314,13 +348,42 @@ stamp_flag(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg
 	meta->flags |= SIFT_META_QUARANTINED;
 }
 
-/* The worker: flags the metapage of the index the registry holds out of service, once (a rebuilt index is another file the registry does not hold) */
+static void
+mark_unflaggable(const QuarKey *key)
+{
+	QuarShm    *q = table();
+	QuarEntry  *e;
+
+	if (q == NULL)
+		return;
+	SpinLockAcquire(&q->mutex);
+	e = slot(q->entry, QUAR_ENTRIES, key);
+	if (same_file(e, key))
+		e->unflaggable = true;
+	SpinLockRelease(&q->mutex);
+}
+
+static void
+flag_index(Relation index)
+{
+	if ((sift_store_meta_flags(index) & SIFT_META_QUARANTINED) == 0)
+		sift_dir_update(index, &(SiftDirChange) {.fn = stamp_flag,.extra = InvalidBuffer});
+	CacheInvalidateRelcacheByRelid(RelationGetRelid(index));
+	mark_persisted(index);
+}
+
+/*
+ * The worker: flags the metapage of the index the registry holds out of service, once (a rebuilt index is another file the registry does not hold). A metapage or directory that
+ * is damaged itself cannot be written: the registry alone holds the index out of service, said once with a LOG, and no worker is asked for it again.
+ */
 void
 sift_quarantine_main(Datum main_arg)
 {
 	ErrorContextCallback errctx;
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
+	MemoryContext cx = CurrentMemoryContext;
 	Relation	index;
+	volatile bool unflaggable = false;
 
 	persisting = true;
 	StartTransactionCommand();
@@ -328,14 +391,39 @@ sift_quarantine_main(Datum main_arg)
 	{
 		if (is_sift_index(index) && overlay_has(index))
 		{
-			if ((sift_store_meta_flags(index) & SIFT_META_QUARANTINED) == 0)
-				sift_dir_update(index, &(SiftDirChange) {.fn = stamp_flag,.extra = InvalidBuffer});
-			CacheInvalidateRelcacheByRelid(indexoid);
-			mark_persisted(index);
+			QuarKey		file;
+			char	   *name = MemoryContextStrdup(cx, RelationGetRelationName(index));
+
+			key_of(index, &file);
+			PG_TRY();
+			{
+				flag_index(index);
+			}
+			PG_CATCH();
+			{
+				ErrorData  *e;
+
+				MemoryContextSwitchTo(cx);
+				e = CopyErrorData();
+				if (!sift_damage_caught(e))
+					ReThrowError(e);
+				FlushErrorState();
+				AbortCurrentTransaction();
+				mark_unflaggable(&file);
+				ereport(LOG,
+						(errmsg("sift index \"%s\" is out of service in the registry of the server only", name),
+						 errdetail("Its metapage cannot be flagged: %s", e->detail ? e->detail : e->message),
+						 errhint("A restart forgets it until the damage is read again. REINDEX INDEX puts the index back in service.")));
+				FreeErrorData(e);
+				unflaggable = true;
+			}
+			PG_END_TRY();
 		}
-		index_close(index, RowExclusiveLock);
+		if (!unflaggable)
+			index_close(index, RowExclusiveLock);
 	}
-	CommitTransactionCommand();
+	if (!unflaggable)
+		CommitTransactionCommand();
 }
 
 void
@@ -374,9 +462,11 @@ record(Relation index)
 	key_of(index, &rec.file);
 	rec.detections = 1;
 	reason_of(&rec);
-	take(local, QUAR_LOCAL, &rec, RecoveryInProgress());
 	damage_unseen = true;
 	damage_code = rec.sqlerrcode;
+	if (persisting)
+		return;
+	take(local, QUAR_LOCAL, &rec, RecoveryInProgress());
 	unpublished = true;
 	publish(shared);
 	ask_persist(index);
@@ -423,6 +513,26 @@ overlay_has(Relation index)
 	found = same_file(e, &key) && e->confirmed;
 	SpinLockRelease(&q->mutex);
 	return found;
+}
+
+/* A plan that leaves a quarantined index out asks for the worker that flags its metapage when the registry holds it with no flag (a worker that found no slot, or damage a parallel worker found) */
+void
+sift_quarantine_planned(Relation index)
+{
+	QuarKey		key;
+	QuarShm    *q = table();
+	QuarEntry  *e;
+	bool		unflagged;
+
+	if (q == NULL || pg_atomic_read_u32(&q->any) == 0)
+		return;
+	key_of(index, &key);
+	SpinLockAcquire(&q->mutex);
+	e = slot(q->entry, QUAR_ENTRIES, &key);
+	unflagged = same_file(e, &key) && e->confirmed && !e->persisted && !e->unflaggable;
+	SpinLockRelease(&q->mutex);
+	if (unflagged)
+		ask_persist(index);
 }
 
 bool
@@ -572,6 +682,43 @@ sift_quarantine_stopped(Relation index, SiftSkipKind kind)
 }
 
 void
+sift_quarantine_require(Relation index, const char *what)
+{
+	if (sift_index_quarantined(index))
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("sift index \"%s\" is quarantined; %s has no result without it", RelationGetRelationName(index), what),
+				 errhint("REINDEX INDEX %s puts it back in service.", sift_index_ident(index))));
+}
+
+/* The indexes of this database that the registry holds out of service, as a list of names for a hint; NULL when there is none */
+const char *
+sift_quarantine_names(void)
+{
+	QuarShm    *q = table();
+	Oid			ids[QUAR_ENTRIES];
+	int			n = 0;
+	StringInfoData names;
+
+	if (q == NULL || pg_atomic_read_u32(&q->any) == 0 || !IsTransactionState())
+		return NULL;
+	SpinLockAcquire(&q->mutex);
+	for (int i = 0; i < QUAR_ENTRIES; i++)
+		if (q->entry[i].used && q->entry[i].confirmed && q->entry[i].file.db == MyDatabaseId)
+			ids[n++] = q->entry[i].indexoid;
+	SpinLockRelease(&q->mutex);
+	initStringInfo(&names);
+	for (int i = 0; i < n; i++)
+	{
+		char	   *name = get_rel_name(ids[i]);
+
+		if (name != NULL)
+			appendStringInfo(&names, "%s\"%s\"", names.len ? ", " : "", name);
+	}
+	return names.len ? names.data : NULL;
+}
+
+void
 sift_quarantine_net(Relation index, uint32 meta_flags)
 {
 	SharedInvalidationMessage msg;
@@ -635,17 +782,21 @@ sift_quarantine_rows(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-/* Whether the metapage of the index flags it out of service, whatever the registry says (the rows of sift.quarantine that no backend has met since the server started) */
+/* Whether the metapage of the index flags it out of service, whatever the registry says (the rows of sift.quarantine that no backend has met since the server started); false while a REINDEX holds the index, as the inspectors answer NULL then */
 Datum
 sift_meta_quarantined(PG_FUNCTION_ARGS)
 {
-	Relation	rel = try_relation_open(PG_GETARG_OID(0), AccessShareLock);
+	Oid			indexoid = PG_GETARG_OID(0);
+	Relation	rel;
 	bool		flagged = false;
 
-	if (rel == NULL)
+	if (!ConditionalLockRelationOid(indexoid, AccessShareLock))
 		PG_RETURN_BOOL(false);
-	if (is_sift_index(rel))
+	rel = try_relation_open(indexoid, NoLock);
+	if (rel != NULL && is_sift_index(rel))
 		flagged = sift_store_meta_has_flag(rel, SIFT_META_QUARANTINED);
-	relation_close(rel, AccessShareLock);
+	if (rel != NULL)
+		relation_close(rel, NoLock);
+	UnlockRelationOid(indexoid, AccessShareLock);
 	PG_RETURN_BOOL(flagged);
 }
