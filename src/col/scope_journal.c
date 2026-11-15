@@ -233,7 +233,8 @@ sift_scope_journals_probe(Relation index, int scope, int fail_at, bool *failed)
 	}
 	PG_END_TRY();
 	journal_fail_at = 0;
-	counted = J.n;
+	/* read from memory: after the longjmp of the error, clang on arm64 takes J.n for its initial 0 */
+	counted = ((volatile ScopeJournals *) &J)->n;
 	journals_close(&J);
 	if (*failed)
 		RollbackAndReleaseCurrentSubTransaction();
