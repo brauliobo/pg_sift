@@ -32,9 +32,12 @@ drop_quarantined(RelOptInfo *rel)
 			continue;
 		index = index_open(ii->indexoid, NoLock);
 		out = sift_index_quarantined(index);
-		index_close(index, NoLock);
 		if (out)
+		{
 			rel->indexlist = foreach_delete_current(rel->indexlist, lc);
+			sift_quarantine_planned(index);
+		}
+		index_close(index, NoLock);
 	}
 }
 

@@ -6,6 +6,7 @@
 #include "storage/buffile.h"
 #include "utils/timestamp.h"
 
+#include "core/errctx.h"
 #include "core/live.h"
 #include "core/lane.h"
 
@@ -25,6 +26,7 @@ PG_FUNCTION_INFO_V1(sift_test_maint_wait_us);
 PG_FUNCTION_INFO_V1(sift_test_freelist);
 PG_FUNCTION_INFO_V1(sift_test_page);
 PG_FUNCTION_INFO_V1(sift_test_poke);
+PG_FUNCTION_INFO_V1(sift_test_raise);
 PG_FUNCTION_INFO_V1(sift_test_live_clear);
 PG_FUNCTION_INFO_V1(sift_test_live2_clear);
 PG_FUNCTION_INFO_V1(sift_test_write);
@@ -334,6 +336,20 @@ sift_test_poke(PG_FUNCTION_ARGS)
 	MarkBufferDirty(buf);
 	UnlockReleaseBuffer(buf);
 	relation_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
+}
+
+/* sift._test_raise(index, sqlstate): raises the SQLSTATE under the error context of the index, as a sift path does when it fails for a reason that is no damage */
+Datum
+sift_test_raise(PG_FUNCTION_ARGS)
+{
+	char	   *state = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	SiftErrCtx	ctx;
+
+	if (strlen(state) != 5)
+		elog(ERROR, "invalid SQLSTATE");
+	sift_errctx_push(&ctx, PG_GETARG_OID(0));
+	ereport(ERROR, (errcode(MAKE_SQLSTATE(state[0], state[1], state[2], state[3], state[4])), errmsg("raised by sift._test_raise")));
 	PG_RETURN_VOID();
 }
 

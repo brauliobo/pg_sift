@@ -76,6 +76,9 @@ CREATE FUNCTION sift._test_page(index regclass, blkno int8, OUT type int4, OUT g
 CREATE FUNCTION sift._test_poke(index regclass, blkno int8, "offset" int4, value int8,
 								width int4) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_poke' LANGUAGE C STRICT;
+-- raises the SQLSTATE under the error context of the index, as a sift path does when it fails for a reason that is no damage
+CREATE FUNCTION sift._test_raise(index regclass, sqlstate text) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_raise' LANGUAGE C STRICT;
 -- a LIVE run of nsb superblocks with row 5 of superblock sbidx killed: pages whose special space changed, dirty bit read back
 CREATE FUNCTION sift._test_live_clear(index regclass, nsb int4, sbidx int4, OUT damaged int4, OUT dirty bool)
 	AS 'MODULE_PATHNAME', 'sift_test_live_clear' LANGUAGE C STRICT;

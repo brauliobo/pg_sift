@@ -33,6 +33,12 @@ extern void sift_quarantine_plan_init(void);
 extern bool sift_index_quarantined(Relation index);
 /* Recorded in this backend or in the registry: no page is read. The callbacks PostgreSQL makes while it plans (amcanreturn) ask this, as the planner has not left the index out yet */
 extern bool sift_index_known_out(Relation index);
+/* A plan that left the index out of its index list: asks for the worker that flags the metapage when it is not flagged yet */
+extern void sift_quarantine_planned(Relation index);
+/* A function that has no result without the index (sift.facets): refused with a hint while the index is out of service */
+extern void sift_quarantine_require(Relation index, const char *what);
+/* The indexes of this database that are out of service, quoted and joined by commas, for the hint of a function that exists only inside a sift scan; NULL when none is known */
+extern const char *sift_quarantine_names(void);
 /* The same for a caller that read the metapage already (meta_flags) */
 extern bool sift_index_out(Relation index, uint32 meta_flags);
 

@@ -98,7 +98,7 @@ static const char *const job_hints[SIFT_NJOBS] = {
 	[SIFT_JOB_ROLLUP] = "The requests stay queued; sift.col_rollup_refresh(index) refreshes them in a session.",
 	[SIFT_JOB_ORPHANS] = "The triggers do nothing; the next statement of their table that fires one asks again.",
 	[SIFT_JOB_TABLE] = "The next write asks for it again, and VACUUM does the same work.",
-	[SIFT_JOB_QUARANTINE] = "The index stays out of service in the registry of the server only (persisted = false in sift.quarantine); a restart forgets it, and the next read of the damage records it again.",
+	[SIFT_JOB_QUARANTINE] = "The index stays out of service in the registry of the server only (persisted = false in sift.quarantine); the next plan that leaves it out asks again, at most every 10 seconds, and a restart before the flag is written forgets it until the damage is read again.",
 };
 
 /* Rollup and orphans work for the database, the others for an index */
