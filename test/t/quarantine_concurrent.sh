@@ -56,9 +56,9 @@ uses_sift() { sql qc "EXPLAIN (COSTS OFF) SELECT count(*) FROM c WHERE v = 3" | 
 check "the column index is planned" uses_sift
 hold scan 'SELECT pg_advisory_lock(7201)'
 hs=$HOLD_PID
-err=$(sql qc "SET sift.test_col_open_gate = 7201" "SET statement_timeout = '500ms'" "SELECT count(*) FROM c WHERE v = 3" 2>&1)
+err=$(sql qc "SET sift.test_col_open_gate = 7201" "SET statement_timeout = '500ms'" "SELECT count(*) FROM c WHERE v = 3" 2>&1)  # timeout-ok: the scan waits on the gate until the timeout the test sets ends it, the error checked
 check "a held scan ends by statement_timeout" grep -q "statement timeout" <<<"$err"
-err=$(sql qc "SET sift.test_col_open_gate = 7201" "SET lock_timeout = '500ms'" "SELECT count(*) FROM c WHERE v = 3" 2>&1)
+err=$(sql qc "SET sift.test_col_open_gate = 7201" "SET lock_timeout = '500ms'" "SELECT count(*) FROM c WHERE v = 3" 2>&1)  # timeout-ok: the scan waits on the gate until the timeout the test sets ends it, the error checked
 check "a held scan ends by lock_timeout" grep -q "lock timeout" <<<"$err"
 touch "$D/release.scan"
 wait "$hs"
