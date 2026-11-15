@@ -1,0 +1,76 @@
+# The budget of every entry point of the tests and benchmarks (scripts/budget.sh runs under it; scripts/check-budgets.sh fails a runner, a fuzz driver or a stale row without one).
+# Tab separated: name, wall seconds, peak tmpfs MB, what and the measurement it rests on. A single run is at most 1800 s (aim 600-1200), an aggregate gate at most 2700 s, tmpfs at most 3072 MB.
+# name	wall_s	tmpfs_mb	what
+tap:default	1200	2000	any test/t file without its own row; the slowest measured 1-seed/-round passes are 400 s (tbl_twin_fuzz) and 900 s only under 4 parallel loops (col_auto_merge_dirty_reads: 152 s alone)
+tap:col_scope_oracle	1200	2500	4 nodes; one 20,000-row seed of 5 steps = 180-260 s (release), 350-490 s (cassert); the 10-seed chunks of 1400-2100 s are gone (scripts/stability.sh shards 1 seed a step)
+tap:col_auto_merge_dirty_reads	1200	2000	152 s alone, 760-907 s with three loops beside it
+tap:tbl_twin_fuzz	900	1500	3 seeds of 80 s = 330-400 s
+tap:col_twin_fuzz	900	1500	12 seeds = 185 s
+tap:col_scope_fuzz	900	1500	24 seeds = 296 s
+tap:col_scope_textkey_fuzz	900	1500	231 s
+tap:col_wbuf_arena_fuzz	600	1000	82 s
+tap:col_scope_kill_writes	600	1000	12 rounds = 92-98 s
+tap:col_crash_matrix	900	1500	170 s hosted
+tap:col_scope_crash	600	1000	60 s hosted
+tap:col_index_crash	900	1500	300-366 s hosted
+tap:col_wbuf_crash	600	1000	150 s hosted
+tap:store_crash	900	1500	365-391 s hosted
+tap:index_build_crash	900	1500	225-300 s hosted
+fuzz:diff_fuzz.py	900	1500	4 seeds x 300 queries x 6,000 rows: 357 s (table mode 496 s); cassert 3 seeds x 100 x 3,000 = 553-615 s
+fuzz:txn_fuzz.py	600	1000	60 seeds = 162 s; --shapes 60 seeds = 122-179 s; cassert 12 seeds = 108-123 s
+fuzz:bm25_fuzz.py	300	500	40 seeds = 30 s
+fuzz:col_scope_fuzz.py	900	1500	run through tap:col_scope_fuzz
+fuzz:col_scope_textkey_fuzz.py	900	1500	run through tap:col_scope_textkey_fuzz
+fuzz:col_twin_fuzz.py	900	1500	run through tap:col_twin_fuzz
+fuzz:tbl_twin_fuzz.py	900	1500	run through tap:tbl_twin_fuzz
+fuzz:scope_oracle.py	1200	2500	run through tap:col_scope_oracle
+gate:stability	2700	3072	scripts/stability.sh, 4 lanes; the steps of scripts/stability.tsv sum to about 4,400 s of one lane
+gate:release	2700	3072	preflight of the release: 33 steps on one box = 44 min 40 s (4 jobs at a time)
+script:ci.sh	2700	3072	quick: about 1 min on 8 free cores (hosted quick lane 15 min); full is a hosted tier
+script:pgtest.sh	1800	3072	regress of the whole suite serially: 2,459 s release / 5,556 s cassert: run it sharded (scripts/ci.sh, SIFT_CI_JOBS=installcheck); one test or TAP is bounded by its own row
+script:soak.sh	900	1500	600 s of pgbench + setup (default --duration 600); 191-220 s in the quick tier (15 s soak hosted)
+script:colsoak.sh	600	1000	300 s default duration; 124 s in the full tier
+script:fuzz.sh	1200	1500	scale 10 sanitizer fuzz; hosted 'fuzz' job 514 s (698-1024 s on the deep tier)
+script:difftest.sh	900	1500	hosted difftest jobs 392-994 s per shard
+script:coldiff.sh	900	1500	hosted difftest-col jobs 497-1115 s per shard
+script:plangate.sh	900	1500	hosted plan-gate jobs 66-133 s
+script:corpus.sh	600	1000	380 statements on 20,000 events
+script:coverage.sh	600	1000	-
+script:isolation.sh	600	1000	-
+script:replication.sh	600	1000	-
+script:hardened.sh	900	2000	hosted hardened job 207 s
+script:assert.sh	1800	3000	regression subset + two TAP on the assert build; -
+script:valgrind.sh	1800	3000	memcheck over a regression subset; -
+script:release.sh	2700	3072	the release from a green head; the gate is gate:release
+script:exec-budget.sh	600	1000	-
+script:perf-gate-maint.sh	1800	3000	two builds, interleaved cells; -
+script:dry-perf-gate.py	1800	3000	-
+script:instr-budget.sh	600	1000	callgrind of one backend; -
+script:instr-budget-ungrouped.sh	600	1000	-
+script:instr-budget-vet.sh	600	1000	-
+script:instr-budget-wbuf.sh	600	1000	-
+script:instr-budget-zone.sh	600	1000	-
+script:bm25-size.sh	600	1000	-
+script:merge-bytes.sh	600	1000	-
+script:plan-margin.sh	600	1000	-
+script:old-lib-check.sh	900	1500	builds an older release; -
+script:release-library-check.sh	900	1500	hosted release-library-regress 239-276 s
+script:multibuild.sh	900	2000	-
+script:tap.sh	1200	2000	the Perl TAP files: each is bounded by tap:default through prove --exec
+script:build-bench.sh	900	2000	-
+script:wait-profile.sh	600	1000	-
+script:focus-gen.sh	1800	3000	gcov run of the regression tests to cut scripts/focus/NAME.tsv; -
+script:make-compat-fixture.sh	900	1500	-
+script:budget.sh	-	-	a helper of the entry points above, no run of its own
+script:ci_stats.sh	-	-	a helper of the entry points above, no run of its own
+script:corpus-local.sh	-	-	a helper of the entry points above, no run of its own
+script:cpu_time.py	-	-	a helper of the entry points above, no run of its own
+script:fresh-psql.py	-	-	a helper of the entry points above, no run of its own
+script:instr-budget-fetch.sh	-	-	a helper of the entry points above, no run of its own
+script:instr-budget-lib.sh	-	-	a helper of the entry points above, no run of its own
+script:leakcheck.sh	-	-	a helper of the entry points above, no run of its own
+script:lint.sh	-	-	a helper of the entry points above, no run of its own
+script:private-overlay.sh	-	-	a helper of the entry points above, no run of its own
+script:simd_level.sh	-	-	a helper of the entry points above, no run of its own
+script:test-ci-ready.sh	-	-	a helper of the entry points above, no run of its own
+script:test-perf-select.py	-	-	a helper of the entry points above, no run of its own

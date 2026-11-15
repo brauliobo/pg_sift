@@ -273,7 +273,7 @@ tap() {
 	cd "$REPO"
 	# the sanitizer runtime goes into the servers (SIFT_PRELOAD) and not into prove, bash or psql
 	( sanitizer_env; SIFT_PRELOAD=${LD_PRELOAD:-}; unset LD_PRELOAD; export SIFT_PRELOAD
-	  SIFT_TMP=$TMP SIFT_ROOT=$ROOT SIFT_PORT=$PORT prove ${PROVE_FLAGS:---failures --comments} --exec bash "${tests[@]}" )
+	  SIFT_TMP=$TMP SIFT_ROOT=$ROOT SIFT_PORT=$PORT prove ${PROVE_FLAGS:---failures --comments} --exec "$REPO/scripts/budget.sh tap" "${tests[@]}" )
 }
 
 case ${1:-} in
