@@ -61,12 +61,11 @@ CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (modulus 3, remainder 1);
 CREATE TABLE p2 PARTITION OF p FOR VALUES WITH (modulus 3, remainder 2);
 CREATE INDEX p_c ON p USING sift_col (a, b);
 DROP TABLE p;
--- a table a statement trigger cannot hear (a partition: a statement on the parent fires no trigger of a child): the default is off with a NOTICE, a column named is an error
+-- a partition: the default chooses the key, and the triggers are on the partition and on its parent (a statement on the parent fires the triggers of the parent alone)
 CREATE TABLE pk (id int PRIMARY KEY, g int NOT NULL) PARTITION BY RANGE (id);
 CREATE TABLE pk0 PARTITION OF pk FOR VALUES FROM (0) TO (100);
 CREATE INDEX pk_auto ON pk USING sift_col (id, g);
-CREATE INDEX pk_named ON pk USING sift_col (id, g) WITH (track_changes = 'id');
-SELECT triggers_of('pk0') AS partition_triggers;
+SELECT triggers_of('pk0') AS partition_triggers, triggers_of('pk') AS parent_triggers;
 DROP TABLE pk;
 
 -- an index of an earlier release has no option: it is inert (no tombstone), then a REINDEX gives it the key

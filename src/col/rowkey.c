@@ -201,7 +201,7 @@ sift_col_row_key_why(Relation heap, Relation index, AttrNumber *pk)
 		return "point_tid_columns is off";
 	why = sift_col_track_deaf(heap);
 	if (why != NULL)
-		return strstr(why, "extension") ? "the extension is not updated yet" : strstr(why, "partition") ? "the table is a partition or a parent" : "the table is a subscription target";
+		return strstr(why, "extension") ? "the extension is not updated yet" : "the table is a subscription target";
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
 		return "sift.col_format_minor is below 15";
 	return NULL;
@@ -337,12 +337,22 @@ add_dead(SiftTomb **ents, int *nents, int *cap, const SiftTombLog *log, uint64 k
 	(*ents)[(*nents)++] = (SiftTomb) {.key = key, .xid = GetCurrentTransactionId(), .cid = sift_col_stmt_cid(), .kind = SIFT_TOMB_DELETE};
 }
 
+/* The attribute number of the key column of the index in the rows of rel, its table or a table above it (the transition table of a statement on a parent has the rowtype of the parent) */
+AttrNumber
+sift_col_row_key_attno(Relation index, Relation rel)
+{
+	Oid			heapoid = index->rd_index->indrelid;
+	AttrNumber	hatt = index->rd_index->indkey.values[sift_col_rel(index)->rowkey_attno - 1];
+
+	return RelationGetRelid(rel) == heapoid ? hatt : get_attnum(RelationGetRelid(rel), get_attname(heapoid, hatt, false));
+}
+
 /* The key journal of a connected parent: a record for the key of every old row of the statement (more than the entries it ended, which is all the journal needs) */
 static void
-journal_old_rows(Relation index, Relation heap, AttrNumber hatt, SiftTombLog *log, Tuplestorestate *old_rows)
+journal_old_rows(Relation index, Relation old_rel, AttrNumber oatt, SiftTombLog *log, Tuplestorestate *old_rows)
 {
-	Oid			typid = TupleDescAttr(RelationGetDescr(heap), hatt - 1)->atttypid;
-	TupleTableSlot *old = MakeSingleTupleTableSlot(RelationGetDescr(heap), &TTSOpsMinimalTuple);
+	Oid			typid = TupleDescAttr(RelationGetDescr(old_rel), oatt - 1)->atttypid;
+	TupleTableSlot *old = MakeSingleTupleTableSlot(RelationGetDescr(old_rel), &TTSOpsMinimalTuple);
 	SiftTomb   *recs = palloc(DEAD_KEYS_CHUNK * sizeof(SiftTomb));
 	int			n = 0;
 
@@ -350,7 +360,7 @@ journal_old_rows(Relation index, Relation heap, AttrNumber hatt, SiftTombLog *lo
 	while (tuplestore_gettupleslot(old_rows, true, false, old))
 	{
 		bool		isnull;
-		Datum		key = slot_getattr(old, hatt, &isnull);
+		Datum		key = slot_getattr(old, oatt, &isnull);
 
 		if (!isnull && sift_conn_record(index, typid, key, false, &recs[n]) && ++n == DEAD_KEYS_CHUNK)
 		{
@@ -368,12 +378,14 @@ journal_old_rows(Relation index, Relation heap, AttrNumber hatt, SiftTombLog *lo
  * A tombstone for each address the table's unique index lists for the key of each old row that no version is live for (a dirty snapshot: a version of an open transaction,
  * this one included, is live): the entries a delete or a key change left. An address that holds no entry of this index is harmless, VACUUM drops its tombstone when it
  * frees the address. The index is opened once for all the rows, which are looked up a chunk at a time with one array key (the b-tree sorts it and walks the leaves
- * once: the keys of a page share its descent), and the tombstones of a chunk go to the log by the page.
+ * once: the keys of a page share its descent), and the tombstones of a chunk go to the log by the page. The old rows are those of old_rel: the table of the index, or one above it
+ * (a statement on a partitioned or inheritance parent hands over the rows of all its children).
  */
 void
-sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows)
+sift_col_tomb_dead_keys(Relation index, Relation heap, Relation old_rel, Tuplestorestate *old_rows)
 {
 	AttrNumber	hatt = index->rd_index->indkey.values[sift_col_rel(index)->rowkey_attno - 1];
+	AttrNumber	oatt = sift_col_row_key_attno(index, old_rel);
 	Oid			uoid = sift_col_row_key_unique(heap, hatt);
 	SiftTombLog *log;
 	Relation	uidx;
@@ -404,7 +416,7 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 		log = sift_col_log(index);
 	}
 	if (sift_conn_journal_on(index))
-		journal_old_rows(index, heap, hatt, log, old_rows);
+		journal_old_rows(index, old_rel, oatt, log, old_rows);
 	ents = palloc(cap * sizeof(SiftTomb));
 	if (dead_share_is(heap, uoid, old_rows))
 	{
@@ -439,7 +451,7 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 	InitDirtySnapshot(dirty);
 	scan = sift_index_beginscan(heap, uidx, SnapshotAny, 1);
 	fetch = sift_table_index_fetch_begin(heap);
-	old = MakeSingleTupleTableSlot(RelationGetDescr(heap), &TTSOpsMinimalTuple);
+	old = MakeSingleTupleTableSlot(RelationGetDescr(old_rel), &TTSOpsMinimalTuple);
 	seen = table_slot_create(heap, NULL);
 	chunk_cxt = AllocSetContextCreate(CurrentMemoryContext, "sift dead keys", ALLOCSET_DEFAULT_SIZES);
 	tuplestore_rescan(old_rows);
@@ -456,7 +468,7 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 
 			if (!(more = tuplestore_gettupleslot(old_rows, true, false, old)))
 				break;
-			key = slot_getattr(old, hatt, &isnull);
+			key = slot_getattr(old, oatt, &isnull);
 			if (isnull)
 				continue;
 			keys = accumArrayResult(keys, key, false, intype, chunk_cxt);

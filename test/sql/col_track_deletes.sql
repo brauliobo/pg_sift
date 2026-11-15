@@ -24,14 +24,14 @@ CREATE TEMP TABLE b_deleted AS SELECT id, ctid AS old FROM t WHERE id BETWEEN 1 
 DELETE FROM t WHERE id BETWEEN 1 AND 10;
 SELECT count(*) AS entries FROM sift._test_col_log_entries('t_c');
 
--- refused, with what to do: a partition, a table with children, whose statements a trigger does not hear
+-- a partition, and a table with children, are tracked as any table (the triggers of a parent hear the rows of its children: col_track_partitions)
 CREATE TABLE p (id int, g int NOT NULL) PARTITION BY RANGE (id);
 CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (100);
 ALTER TABLE p1 ADD PRIMARY KEY (id);
 CREATE INDEX p1_c ON p1 USING sift_col (id, g) WITH (track_changes = 'id');
+SELECT triggers, complete FROM sift.col_tracking('p1_c');
 DROP TABLE p;
 CREATE TABLE child () INHERITS (t);
-CREATE INDEX t_bad ON t USING sift_col (id, g, v) WITH (track_changes = 'id');
 ALTER INDEX t_c SET (track_changes = 'off');
 ALTER INDEX t_c SET (track_changes = 'id');
 SELECT sift_triggers();

@@ -37,29 +37,25 @@ SELECT count(*) AS entries FROM sift._test_col_log_entries('t_c');
       10
 (1 row)
 
--- refused, with what to do: a partition, a table with children, whose statements a trigger does not hear
+-- a partition, and a table with children, are tracked as any table (the triggers of a parent hear the rows of its children: col_track_partitions)
 CREATE TABLE p (id int, g int NOT NULL) PARTITION BY RANGE (id);
 CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (100);
 ALTER TABLE p1 ADD PRIMARY KEY (id);
 CREATE INDEX p1_c ON p1 USING sift_col (id, g) WITH (track_changes = 'id');
-ERROR:  track_changes: table "p1" cannot be tracked
-DETAIL:  the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent.
-HINT:  WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.
+SELECT triggers, complete FROM sift.col_tracking('p1_c');
+ triggers | complete 
+----------+----------
+ t        | t
+(1 row)
+
 DROP TABLE p;
 CREATE TABLE child () INHERITS (t);
-CREATE INDEX t_bad ON t USING sift_col (id, g, v) WITH (track_changes = 'id');
-ERROR:  track_changes: table "t" cannot be tracked
-DETAIL:  the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent.
-HINT:  WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.
 ALTER INDEX t_c SET (track_changes = 'off');
 ALTER INDEX t_c SET (track_changes = 'id');
-ERROR:  track_changes: table "t" cannot be tracked
-DETAIL:  the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent.
-HINT:  WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.
 SELECT sift_triggers();
- sift_triggers 
----------------
- none
+                       sift_triggers                       
+-----------------------------------------------------------
+ sift_track_delete_t_c:A:true sift_track_update_t_c:A:true
 (1 row)
 
 DROP TABLE child;
@@ -384,7 +380,7 @@ SELECT 'subscribed' AS step, track_changes, heap_free FROM sift.col_tracking('su
 DROP INDEX sub_c;
 CREATE INDEX sub_c ON sub_t USING sift_col (id, g) WITH (track_changes = 'id');
 ERROR:  track_changes: table "sub_t" cannot be tracked
-DETAIL:  the table is the target of a logical replication subscription, and the apply worker fires no statement trigger.
+DETAIL:  the table is the target of a logical replication subscription, or its parent is, and the apply worker fires no statement trigger.
 HINT:  WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.
 DROP SUBSCRIPTION sub_s;
 DROP TABLE sub_t;
