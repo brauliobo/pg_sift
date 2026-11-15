@@ -207,10 +207,13 @@ The steps, the order for standbys and the way back are in [UPGRADING.md](UPGRADI
 
 ### After a rollback
 
-Install 4.3.6 on every node (standbys first) before moving to 5.0; `sift.upgrade_check()` warns while the extension is older. A 4.x library reading an index that a 5.0 server has touched answers by release:
+Install 4.3.6 on every node (standbys first) before moving to 5.0; `sift.upgrade_check()` warns while the extension is older. A 5.0 server keeps up to 704 bytes in the metapage of an index it has read or maintained (what the reads paid, the last background step, the floor of a scope), past the 400 that 3.3 to 4.3.5 know. An older library reading such an index answers by release:
 
-- **4.0.0 to 4.3.5** (as released): `sift index "x" is corrupted`, detail `Bad metapage (magic 0x53494654, 704 bytes)`. This means the metapage is longer than the library knows, not that the index is damaged: `sift.check()` and `amcheck` of the old node find nothing wrong. Do not repair it with `pg_surgery` or by editing the catalogs, which would damage a sound index. `REINDEX INDEX CONCURRENTLY <index>` with the old files rebuilds it from the table.
+- **3.0 to 3.2**: the library accepts the longer metapage and refuses a column format it does not know with the format error and the hint `Use a newer pg_sift, or REINDEX.`
+- **3.3 to 4.3.5** (as released): `sift index "x" is corrupted`, detail `Bad metapage (magic 0x53494654, 704 bytes)`. This means the metapage is longer than the library knows, not that the index is damaged: `sift.check()` and `amcheck` of the old node find nothing wrong. Do not repair it with `pg_surgery` or by editing the catalogs, which would damage a sound index. `REINDEX INDEX CONCURRENTLY <index>` with the old files rebuilds it from the table. These releases check the length when they open the metapage, before any change: a read or a `VACUUM` is refused and the index file is byte for byte as it was, so the counters of 5.0 are not lost by the attempt.
 - **4.3.6 and later**: the library keeps the bytes it does not know and reads the index, or refuses a segment in a format from 5.0 (a scope, strings in the shared store) with `index "x" has a segment of column format 1.45, this build reads 1.3 to 1.44`, hint `Use a newer pg_sift, or REINDEX.` The same `REINDEX` with the old files applies.
+
+An index created by 5.0 stores options under the names of 5.0. 4.2 and later know them; 3.3 to 4.1 call `rollup_columns` `rollup_dims`, so their `REINDEX` stops at `unrecognized parameter "rollup_columns"`: with the event triggers of 5.0 disabled ([UPGRADING.md](UPGRADING.md#going-back-to-43)), run `ALTER INDEX <index> RESET (rollup_columns)` first, or drop the index and create it again.
 
 The steps back are in [UPGRADING.md](UPGRADING.md#going-back-to-43).
 

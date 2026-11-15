@@ -27,9 +27,9 @@
 #   scripts/old-lib-check.sh scope                      the scope index of 5.0 (column format minor 45; SIFT_OLD_REF, default v4.3.0): this tree writes one index with a scope and one without; the older library refuses the first
 #                                                       with the format error and the standard hint (use a newer pg_sift), reads the second and the heap, and reads a plain index made in its place of the scope index
 #   scripts/old-lib-check.sh twohop                     the same for a scope of two paths (column format minor 49): the older library refuses it, an index with a scope of one path stays at 45
-#   scripts/old-lib-check.sh meta                       the metapage of 5.0 is longer (704 bytes) than any 4.x release accepts (400): what each release in SIFT_META_REFS (default v4.3.0 v4.3.5 v4.3.5+patch; a +patch
-#                                                       release is built with scripts/old-lib-patches/v4.x-metapage-tail.patch, what a 4.3.6 would carry) says for an index with a scope and for a plain
-#                                                       index that has served a read: as released it says "corrupted", with the patch it refuses by format or reads
+#   scripts/old-lib-check.sh meta                       the metapage of 5.0 is longer (704 bytes) than 3.3 to 4.3.5 accept (they check its length before its format): what each release
+#                                                       in SIFT_META_REFS (default v3.2.3 v3.6.0 v4.3.5 v4.3.6; a +patch release is built with scripts/old-lib-patches/v4.x-metapage-tail.patch, what 4.3.6 carries)
+#                                                       says for an index with a scope and for a plain index that has served a read: the format error up to 3.2, "corrupted" from 3.3 to 4.3.5, the format error or a read from 4.3.6
 #   scripts/old-lib-check.sh upgrade                    the other way: the older library writes a table with the groups it tags under pressure (a
 #                                                       committed load and a rolled back one), this tree reads them as it reads its own and VACUUM
 #                                                       freezes and drops them
@@ -50,6 +50,8 @@ OLD_REF=${SIFT_OLD_REF:-v3.0.1}
 ROWS=${ROWS:-40000}
 FORMAT_ERROR='on-disk format 1\.3|column format 1\.4'
 FAILED=0
+# the event triggers of 5.0 name functions that no older library has (docs/UPGRADING.md, `trigger`)
+TRIGGERS_OFF="$(printf 'ALTER EVENT TRIGGER sift_col_%s DISABLE; ' build_lock value_store_sql_drop names_follow names_before names_sql_drop)"
 
 pass() { echo "PASS $*"; }
 fail() { echo "FAIL $*"; FAILED=1; }
@@ -102,6 +104,11 @@ query() {
 expect_refused() { # DESCRIPTION SQL
 	query "$2"
 	if ((RC != 0)) && [[ -z $OUT && $ERR =~ $FORMAT_ERROR ]]; then pass "$1"; else fail "$1 (rc $RC, rows [$OUT], error [$ERR])"; fi
+}
+# a release whose check of the metapage length runs before its format check (3.3 to 4.3.5): the index is sound, the library only does not know the length
+expect_corrupted() { # DESCRIPTION SQL
+	query "$2"
+	if ((RC != 0)) && [[ -z $OUT && $ERR == *'is corrupted'* && $ERR =~ Bad\ metapage\ \(magic\ 0x[0-9a-f]+,\ [0-9]+\ bytes\) ]]; then pass "$1"; else fail "$1 (rc $RC, rows [$OUT], error [$ERR])"; fi
 }
 expect_rows() { # DESCRIPTION SQL WANT
 	query "$2"
@@ -224,7 +231,7 @@ upgrade() {
 # CY_NAME names the cluster, CY_SETUP (an array of statements) makes the table and the index $CY_IDX of the older library, which writes column format $CY_OLDMIN or more and below $CY_NEW;
 # CY_WHAT says what is read; CY_INSERT is the statement that adds rows
 cycle() {
-	local root log new_md5 old_md5 s
+	local root log new_md5 old_md5 s file before
 	OLD_REF=${SIFT_OLD_REF:-v3.6.0}
 	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-$CY_NAME}
 	export SIFT_PORT=${SIFT_PORT:-56140}
@@ -255,16 +262,17 @@ cycle() {
 	[[ $new_md5 == "$old_md5" ]] && pass "both layouts answer as the heap" || fail "both layouts answer as the heap (got [$new_md5], want [$old_md5])"
 	psql_new -c "SELECT sift.col_merge('$CY_IDX'::regclass, true)" >/dev/null
 	[[ $(psql_new -c "SELECT min(format) = max(format) AND max(format) >= $CY_NEW FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'") == t ]] && pass "a merge writes column format $CY_NEW or more, one for all its segments" || fail "a merge writes column format $CY_NEW or more, one for all its segments"
-	# the writer stamps the newest minor of what a segment holds, which may be above the one this cycle is about (a merge adds what a promotion does not)
-	NEWF=$(psql_new -c "SELECT max(format) FROM sift.col_segments('$CY_IDX') WHERE kind = 'immutable'")
 	[[ $(psql_new -c "SELECT count(*) FROM (SELECT sift.col_verify('$CY_IDX', true)) z") == 1 ]] && pass "sift.col_verify finds the merged tables sound" || fail "sift.col_verify finds the merged tables sound"
 	new_md5=$(psql_new "${CY_FAST[@]/#/-c}" -c "$CY_SQL" | tail -1)
 	[[ $new_md5 == "$old_md5" ]] && pass "the merged index answers as the heap" || fail "the merged index answers as the heap"
+	file=$SIFT_TMP/data/$(psql_new -c "SELECT pg_relation_filepath('$CY_IDX')")
 	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
+	before=$("$REPO/scripts/sha256.sh" "$file")
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts again"; return; }
-	FORMAT_ERROR="column format 1\\.$NEWF"
-	expect_refused "the older library refuses column format $CY_NEW or more with the format error" "$CY_REFUSED"
+	expect_corrupted "the older library reports the metapage of this tree, longer than it knows, as corrupted (its length check runs before its format check), not column format $CY_NEW" "$CY_REFUSED"
+	expect_corrupted "... as it does for VACUUM" "VACUUM"
 	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
+	[[ $("$REPO/scripts/sha256.sh" "$file") == "$before" ]] && pass "... and it writes nothing to the index file" || fail "... and it writes nothing to the index file"
 	"$PG" start >/dev/null || { fail "the cluster of this tree starts again"; return; }
 	psql_new -c "SET sift.col_format_minor = 14" -c "REINDEX INDEX $CY_IDX" >/dev/null
 	"$PG" stop >/dev/null
@@ -404,7 +412,7 @@ scope() {
 		pass "this tree writes column format $fmt for the index with a scope and an older one for the index without" ||
 		fail "this tree writes column format $fmt for the index with a scope and an older one for the index without"
 	# the older library has not the functions of the event triggers of 5.0 and would fail every CREATE INDEX and DROP INDEX (docs/UPGRADING.md, `trigger`)
-	psql_new -c "ALTER EVENT TRIGGER sift_col_build_lock DISABLE" -c "ALTER EVENT TRIGGER sift_col_value_store_sql_drop DISABLE" -c "ALTER EVENT TRIGGER sift_col_names_follow DISABLE" -c "ALTER EVENT TRIGGER sift_col_names_before DISABLE" -c "ALTER EVENT TRIGGER sift_col_names_sql_drop DISABLE" >/dev/null
+	psql_new -c "$TRIGGERS_OFF" >/dev/null
 	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts"; return; }
 	FORMAT_ERROR="column format 1\\.$fmt"
@@ -424,7 +432,7 @@ scope() {
 # What a 4.x release says of a metapage written by this tree. 5.0 keeps what the reads paid, what the workers did last and the floor of a scope in the metapage (704 bytes, covered by pd_lower so that
 # WAL and full-page images keep them); every 4.x release checks pd_lower against its own 400 bytes before the format, so it called the index corrupted. The patch is what a 4.3.6 carries.
 meta() {
-	local item ref patched root data dcopy log want wantp q qp used file files n plain scope
+	local item ref patched want_plain want_scope prep before root data dcopy log want wantp q qp used file files n plain scope
 	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-meta}
 	export SIFT_PORT=${SIFT_PORT:-56146}
 	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
@@ -456,29 +464,46 @@ meta() {
 		used=$(($(od -An -tu2 -j12 -N2 "$file" | tr -d ' ') - 24))	# pd_lower less the page header
 		((used > 400)) && pass "the metapage of $(basename "$file") holds $used bytes, past the 400 that every 4.x release accepts" || fail "the metapage of $(basename "$file") holds $used bytes, past the 400 that every 4.x release accepts"
 	done
-	for item in ${SIFT_META_REFS:-v4.3.0 v4.3.5 v4.3.5+patch}; do
+	for item in ${SIFT_META_REFS:-v3.2.3 v3.6.0 v4.3.5 v4.3.6}; do
 		ref=${item%+patch}; patched=
 		[[ $item == *+patch ]] && patched=$REPO/scripts/old-lib-patches/v4.x-metapage-tail.patch
 		OLD_REF=$ref
 		root=$(SIFT_OLD_DIR= SIFT_OLD_PATCH=$patched build) || { echo "SKIP $item: not built" >&2; continue; }
 		dcopy=$SIFT_TMP/data-$item
 		rm -rf "$dcopy" && cp -a "$data" "$dcopy"
+		before=$("$REPO/scripts/sha256.sh" "${files[@]/#$data/$dcopy}")
 		old_start "$root" "$dcopy" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "$item: the server with the older library starts"; continue; }
 		query "SET sift.agg_force = on; $qp"
 		plain=$(meta_class "$RC" "$OUT" "$ERR" "$wantp")
 		query "SET sift.agg_force = on; $q"
 		scope=$(meta_class "$RC" "$OUT" "$ERR" "$want")
 		echo "$item: a plain index that has served a read: $plain; an index with a scope: $scope" >&2
-		if [[ -n $patched ]]; then
-			[[ $plain == read ]] && pass "$item reads the plain index that this tree has read" || fail "$item reads the plain index that this tree has read ($plain)"
-			[[ $scope == refused ]] && pass "$item refuses the index with a scope with the format error and the standard hint" || fail "$item refuses the index with a scope with the format error and the standard hint ($scope)"
-		else
-			[[ $plain == "corrupted (704 bytes)" ]] && pass "$item, as released, calls the plain index corrupted (704 bytes)" || fail "$item, as released, calls the plain index corrupted (704 bytes) ($plain)"
-			[[ $scope == "corrupted (704 bytes)" ]] && pass "$item, as released, calls the index with a scope corrupted (704 bytes)" || fail "$item, as released, calls the index with a scope corrupted (704 bytes) ($scope)"
-		fi
+		IFS='|' read -r want_plain want_scope prep <<<"$(meta_expect "$ref" "$patched")"
+		[[ $plain == "$want_plain" ]] && pass "$item says '$want_plain' of the plain index that this tree has read" || fail "$item says '$want_plain' of the plain index that this tree has read ($plain)"
+		[[ $scope == "$want_scope" ]] && pass "$item says '$want_scope' of the index with a scope" || fail "$item says '$want_scope' of the index with a scope ($scope)"
 		pg_ctl -D "$dcopy" -m fast -w stop >/dev/null 2>&1
+		if [[ $want_plain != read ]]; then
+			[[ $("$REPO/scripts/sha256.sh" "${files[@]/#$data/$dcopy}") == "$before" ]] && pass "$item leaves the index files as they were" || fail "$item leaves the index files as they were"
+			old_start "$root" "$dcopy" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "$item: the server with the older library starts again"; continue; }
+			query "${TRIGGERS_OFF}${prep}REINDEX INDEX plain_ix"
+			((RC == 0)) && pass "$item rebuilds the plain index with REINDEX" || fail "$item rebuilds the plain index with REINDEX ($ERR)"
+			expect_rows "... and reads it with the answers of the heap" "SET sift.agg_force = on; $qp" "$wantp"
+			pg_ctl -D "$dcopy" -m fast -w stop >/dev/null 2>&1
+		fi
 		rm -rf "$dcopy"
 	done
+}
+
+version_before() { [[ $1 != "$2" && $(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1) == "$1" ]]; }
+
+# what a release says of the metapage of 5.0, for a plain index that has served a read and for an index with a scope: 3.0 to 3.2 check no upper length (the format error for both), 3.3 to 4.3.5 check
+# it before the format (corrupted, 704 bytes), 4.3.6 and the patch keep the bytes they do not know (a read, and the format error for a scope); the third field is what REINDEX needs first: before 4.2 the option
+# `rollup_columns` that this tree writes is called `rollup_dims`, and a REINDEX with the older library stops at `unrecognized parameter`
+meta_expect() { # REF PATCHED
+	if [[ -n $2 ]] || ! version_before "${1#v}" 4.3.6; then echo 'read|refused|'
+	elif version_before "${1#v}" 3.3.0; then echo 'refused|refused|'
+	elif version_before "${1#v}" 4.2.0; then echo 'corrupted (704 bytes)|corrupted (704 bytes)|ALTER INDEX plain_ix RESET (rollup_columns); '
+	else echo 'corrupted (704 bytes)|corrupted (704 bytes)|'; fi
 }
 
 # read, refused (the format error with the standard hint), corrupted (N bytes), or the error, from the status, the rows and the error of a query
