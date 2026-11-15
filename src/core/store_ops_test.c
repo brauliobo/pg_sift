@@ -3,6 +3,7 @@
  * the free list, pages and churn.
  */
 #include "store_test_int.h"
+#include "storage/buffile.h"
 #include "utils/timestamp.h"
 
 #include "core/live.h"
@@ -25,6 +26,7 @@ PG_FUNCTION_INFO_V1(sift_test_freelist);
 PG_FUNCTION_INFO_V1(sift_test_page);
 PG_FUNCTION_INFO_V1(sift_test_poke);
 PG_FUNCTION_INFO_V1(sift_test_live_clear);
+PG_FUNCTION_INFO_V1(sift_test_live2_clear);
 PG_FUNCTION_INFO_V1(sift_test_write);
 PG_FUNCTION_INFO_V1(sift_test_churn);
 PG_FUNCTION_INFO_V1(sift_test_dir_updates_count);
@@ -135,12 +137,12 @@ sift_test_meta_note(PG_FUNCTION_ARGS)
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	char	   *mode = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	Buffer		buf = ReadBuffer(index, SIFT_METAPAGE_BLKNO);
-	GenericXLogState *state;
+	SiftXlog	state;
 	Page		page;
 
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-	state = GenericXLogStart(index);
-	page = GenericXLogRegisterBuffer(state, buf, 0);
+	state = sift_xlog_start(index);
+	page = sift_xlog_register(&state, buf, 0);
 	if (strcmp(mode, "old") == 0)
 	{
 		SiftMetaPageData *meta = (SiftMetaPageData *) SiftPageGetData(page);
@@ -159,7 +161,7 @@ sift_test_meta_note(PG_FUNCTION_ARGS)
 	}
 	else
 		elog(ERROR, "sift test: unknown mode \"%s\"", mode);
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(buf);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
@@ -373,6 +375,59 @@ sift_test_live_clear(PG_FUNCTION_ARGS)
 	MAINT_UNLOCK(index, ShareLock);
 	values[0] = Int32GetDatum(damaged);
 	values[1] = BoolGetDatum(dirty[sbidx / 8] >> (sbidx % 8) & 1);
+	relation_close(index, RowExclusiveLock);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
+}
+
+/*
+ * sift._test_live2_clear(index, nsb, sbidx): the same for the LIVE run of a segment of format 2 (empty regions, a table of 4200 dead counters): kills
+ * the last bit of the run, so that the header, the dirty bitmap and the bit lie on three pages when the bitmap has more than one; returns the pages
+ * whose special space changed, whether the dirty bit reads back, and the dead count and dl of the header
+ */
+Datum
+sift_test_live2_clear(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	uint32		nsb = PG_GETARG_INT32(1),
+				sbidx = PG_GETARG_INT32(2),
+				nslots = 4200;
+	uint64	   *reg = palloc0((nsb + 1) * sizeof(uint64));
+	uint8	   *dirty = palloc0((nsb + 7) / 8);
+	BufFile    *rows = BufFileCreateTemp(false);
+	SiftLive	l = {.index = index, .nsb = nsb, .nbits = 64};
+	SiftLive2HeaderData h;
+	SiftWriteTarget *wt;
+	uint64		bit;
+	int32		damaged = 0;
+	Datum		values[4];
+	bool		nulls[4] = {0};
+
+	MAINT_LOCK(index, ShareLock);
+	l.gen = sift_store_new_gen(index);
+	wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
+	sift_live2_write(wt, l.gen, nsb, nslots, reg, rows, &l.first, &l.npages);
+	sift_wt_finish(wt);
+	BufFileClose(rows);
+	sift_live_copy(&l, 0, sizeof(h), (uint8 *) &h);
+	bit = (h.tbl_off + (uint64) nslots * sizeof(uint32)) * 8 - 1;
+	sift_live2_clear(&l, sbidx, &bit, 1, 7);
+	for (uint32 i = 0; i < l.npages; i++)
+	{
+		Buffer		buf = ReadBuffer(index, l.first + i);
+		SiftPageOpaque o;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		o = SiftPageGetOpaque(BufferGetPage(buf));
+		damaged += o->type != SIFT_PT_LIVE || o->flags != 0 || o->reserved != 0 || o->gen != l.gen;
+		UnlockReleaseBuffer(buf);
+	}
+	sift_live2_dirty(&l, &h, dirty);
+	sift_live_copy(&l, 0, sizeof(h), (uint8 *) &h);
+	MAINT_UNLOCK(index, ShareLock);
+	values[0] = Int32GetDatum(damaged);
+	values[1] = BoolGetDatum(dirty[sbidx / 8] >> (sbidx % 8) & 1);
+	values[2] = Int32GetDatum(h.ndead);
+	values[3] = Int64GetDatum(h.dead_dl);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
 }
