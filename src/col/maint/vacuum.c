@@ -7,6 +7,7 @@
 #include "access/parallel.h"
 #include "col/maint/maint_int.h"
 #include "core/live.h"
+#include "core/quarantine.h"
 #include "col/vstore/vstore.h"
 
 double		sift_col_auto_merge_wal_pct = 5.0;
@@ -184,12 +185,18 @@ sift_col_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, Index
 	return sift_mops_bulkdelete(&maint_col_ops, info, stats, callback, callback_state);
 }
 
+static void
+vstore_vacuum_index(void *index)
+{
+	sift_vstore_vacuum(index);
+}
+
 IndexBulkDeleteResult *
 sift_col_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
 	IndexBulkDeleteResult *result = sift_mops_vacuumcleanup(&maint_col_ops, info, stats);
 
-	if (!IsParallelWorker() && !RecoveryInProgress())
-		sift_vstore_vacuum(info->index);
+	if (!IsParallelWorker() && !RecoveryInProgress() && !sift_index_known_out(info->index))
+		sift_quarantine_guard(info->index, SIFT_SKIP_VACUUM, vstore_vacuum_index, info->index);
 	return result;
 }

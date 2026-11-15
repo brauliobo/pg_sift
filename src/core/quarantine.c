@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 
+#include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/pg_class.h"
 #include "funcapi.h"
@@ -10,11 +11,13 @@
 #include "storage/spin.h"
 #include "utils/inval.h"
 #include "utils/rel.h"
+#include "utils/resowner.h"
 #include "utils/timestamp.h"
 #include "utils/tuplestore.h"
 
 #include "col/dsmreg.h"
 #include "core/errctx.h"
+#include "core/progress.h"
 #include "core/quarantine.h"
 #include "core/sift.h"
 #include "core/sql.h"
@@ -38,14 +41,19 @@ static const struct config_enum_entry on_corruption_options[] = {
 };
 
 /* One index file. Counters are what the backend that skipped it has not handed over yet (an entry of the registry holds the totals) */
+typedef struct QuarKey
+{
+	Oid			db;
+	Oid			spc;
+	RelFileNumber rel;
+} QuarKey;
+
 typedef struct QuarEntry
 {
 	bool		used;
 	bool		confirmed;
 	bool		persisted;
-	Oid			db;
-	Oid			spc;
-	RelFileNumber rel;
+	QuarKey		file;
 	Oid			indexoid;
 	TimestampTz detected_at;
 	TimestampTz first_seen;
@@ -66,6 +74,8 @@ typedef struct QuarShm
 
 static QuarShm *shared;
 static bool unavailable;
+static bool damage_unseen;		/* damage of a sift index was recorded since a catch last looked, and the SQLSTATE of the last */
+static int	damage_code;
 static QuarEntry local[QUAR_LOCAL];
 static bool unpublished;
 
@@ -110,14 +120,14 @@ is_sift_index(Relation rel)
 }
 
 static bool
-same_file(const QuarEntry *e, const QuarEntry *key)
+same_file(const QuarEntry *e, const QuarKey *key)
 {
-	return e->used && e->rel == key->rel && e->db == key->db && e->spc == key->spc;
+	return e->used && e->file.rel == key->rel && e->file.db == key->db && e->file.spc == key->spc;
 }
 
 /* The entry of the file in the n entries of list, or the one to take: a free one, else the oldest. No allocation and no error: it runs under a spinlock and inside an error */
 static QuarEntry *
-slot(QuarEntry *list, int n, const QuarEntry *key)
+slot(QuarEntry *list, int n, const QuarKey *key)
 {
 	QuarEntry  *free = NULL,
 			   *oldest = &list[0];
@@ -148,9 +158,9 @@ confirms(QuarEntry *e, TimestampTz now, bool recovery)
 static bool
 take(QuarEntry *list, int n, QuarEntry *src, bool recovery)
 {
-	QuarEntry  *e = slot(list, n, src);
+	QuarEntry  *e = slot(list, n, &src->file);
 
-	if (!same_file(e, src))
+	if (!same_file(e, &src->file))
 	{
 		*e = *src;
 		e->confirmed = false;
@@ -208,10 +218,9 @@ sift_damage_prepare(void)
 }
 
 static void
-key_of(Relation index, QuarEntry *key)
+key_of(Relation index, QuarKey *key)
 {
-	*key = (QuarEntry) {.used = true,.db = index->rd_locator.dbOid,.spc = index->rd_locator.spcOid,.rel = index->rd_locator.relNumber,
-	.indexoid = RelationGetRelid(index)};
+	*key = (QuarKey) {.db = index->rd_locator.dbOid,.spc = index->rd_locator.spcOid,.rel = index->rd_locator.relNumber};
 }
 
 /* The reason a sift.quarantine row gives: what the error says is wrong, its detail where it has one. Called inside the error being raised, after its text is built */
@@ -231,11 +240,13 @@ record(Relation index)
 {
 	QuarEntry	rec;
 
-	key_of(index, &rec);
-	rec.detected_at = GetCurrentTimestamp();
+	rec = (QuarEntry) {.used = true,.indexoid = RelationGetRelid(index),.detected_at = GetCurrentTimestamp()};
+	key_of(index, &rec.file);
 	rec.detections = 1;
 	reason_of(&rec);
 	take(local, QUAR_LOCAL, &rec, RecoveryInProgress());
+	damage_unseen = true;
+	damage_code = rec.sqlerrcode;
 	unpublished = true;
 	publish(shared);
 }
@@ -265,7 +276,7 @@ sift_damage_report(Relation index)
 static bool
 overlay_has(Relation index)
 {
-	QuarEntry	key;
+	QuarKey		key;
 	QuarEntry  *e;
 	bool		found;
 	QuarShm    *q = table();
@@ -284,31 +295,144 @@ overlay_has(Relation index)
 }
 
 bool
+sift_index_known_out(Relation index)
+{
+	return sift_on_corruption == SIFT_ON_CORRUPTION_QUARANTINE && overlay_has(index);
+}
+
+bool
+sift_index_out(Relation index, uint32 meta_flags)
+{
+	return sift_on_corruption == SIFT_ON_CORRUPTION_QUARANTINE && ((meta_flags & SIFT_META_QUARANTINED) != 0 || overlay_has(index));
+}
+
+bool
 sift_index_quarantined(Relation index)
 {
 	if (sift_on_corruption != SIFT_ON_CORRUPTION_QUARANTINE || !index->rd_index->indisready || !is_sift_index(index))
 		return false;
-	return overlay_has(index) || (sift_store_meta_flags(index) & SIFT_META_QUARANTINED) != 0;
+	return overlay_has(index) || sift_index_out(index, sift_store_meta_flags(index));
 }
 
 void
 sift_quarantine_skip(Relation index, SiftSkipKind kind)
 {
-	QuarEntry	key;
+	QuarKey		key;
 	QuarEntry  *e;
 
 	key_of(index, &key);
 	e = slot(local, QUAR_LOCAL, &key);
 	if (!same_file(e, &key))
-	{
-		*e = key;
-		e->confirmed = e->persisted = true;
-		e->detected_at = GetCurrentTimestamp();
-	}
+		*e = (QuarEntry) {.used = true,.confirmed = true,.persisted = true,.file = key,.indexoid = RelationGetRelid(index),.detected_at = GetCurrentTimestamp()};
 	e->skipped_writes += kind == SIFT_SKIP_WRITE;
 	e->skipped_vacuums += kind == SIFT_SKIP_VACUUM;
 	e->refused_scans += kind == SIFT_SKIP_SCAN;
 	unpublished = true;
+}
+
+/* One notice for each index and a minute, whatever the writes and VACUUMs that skip it: the count is in sift.quarantine */
+static bool
+warn_due(Relation index)
+{
+	static struct
+	{
+		Oid			relid;
+		TimestampTz at;
+	}			seen[QUAR_LOCAL];
+	TimestampTz now = GetCurrentTimestamp();
+	int			at = 0;
+
+	for (int i = 0; i < QUAR_LOCAL; i++)
+	{
+		if (seen[i].relid == RelationGetRelid(index))
+		{
+			at = i;
+			break;
+		}
+		if (seen[i].at < seen[at].at)
+			at = i;
+	}
+	if (seen[at].relid == RelationGetRelid(index) && now - seen[at].at < 60 * USECS_PER_SEC)
+		return false;
+	seen[at].relid = RelationGetRelid(index);
+	seen[at].at = now;
+	return true;
+}
+
+static void
+warn_skipped(Relation index, SiftSkipKind kind)
+{
+	if (!warn_due(index))
+		return;
+	ereport(WARNING,
+			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+			 errmsg("sift index \"%s\" is quarantined; %s", RelationGetRelationName(index),
+					kind == SIFT_SKIP_WRITE ? "the write was not indexed" : "VACUUM skipped it"),
+			 errhint("Queries and maintenance run without it. REINDEX INDEX %s puts it back in service.", sift_index_ident(index))));
+}
+
+bool
+sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded fn, void *arg)
+{
+	MemoryContext cx = CurrentMemoryContext;
+	ResourceOwner owner = CurrentResourceOwner;
+	volatile bool ran = false;
+
+	if (sift_on_corruption != SIFT_ON_CORRUPTION_QUARANTINE)
+	{
+		fn(arg);
+		return true;
+	}
+	damage_unseen = false;
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(cx);
+	PG_TRY();
+	{
+		if (!sift_index_quarantined(index))
+		{
+			fn(arg);
+			ran = true;
+		}
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(cx);
+		CurrentResourceOwner = owner;
+	}
+	PG_CATCH();
+	{
+		ErrorData  *e;
+
+		MemoryContextSwitchTo(cx);
+		e = CopyErrorData();
+		FlushErrorState();
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(cx);
+		CurrentResourceOwner = owner;
+		if (!sift_damage_caught(e))
+			ReThrowError(e);
+		sift_progress_abort();
+		FreeErrorData(e);
+	}
+	PG_END_TRY();
+	if (!ran)
+		sift_quarantine_stopped(index, kind);
+	return ran;
+}
+
+bool
+sift_damage_caught(const ErrorData *e)
+{
+	bool		damage = damage_unseen && e->sqlerrcode == damage_code;
+
+	if (damage)
+		damage_unseen = false;
+	return damage;
+}
+
+void
+sift_quarantine_stopped(Relation index, SiftSkipKind kind)
+{
+	sift_quarantine_skip(index, kind);
+	warn_skipped(index, kind);
 }
 
 void
@@ -316,7 +440,7 @@ sift_quarantine_net(Relation index, uint32 meta_flags)
 {
 	SharedInvalidationMessage msg;
 
-	if (sift_on_corruption != SIFT_ON_CORRUPTION_QUARANTINE || !((meta_flags & SIFT_META_QUARANTINED) || overlay_has(index)))
+	if (!sift_index_out(index, meta_flags))
 		return;
 	sift_quarantine_skip(index, SIFT_SKIP_SCAN);
 	msg.rc.id = SHAREDINVALRELCACHE_ID;
@@ -346,13 +470,13 @@ sift_quarantine_rows(PG_FUNCTION_ARGS)
 	{
 		SpinLockAcquire(&q->mutex);
 		for (int i = 0; i < QUAR_ENTRIES; i++)
-			if (q->entry[i].used && q->entry[i].db == MyDatabaseId)
+			if (q->entry[i].used && q->entry[i].file.db == MyDatabaseId)
 				copy[n++] = q->entry[i];
 		SpinLockRelease(&q->mutex);
 	}
 	else
 		for (int i = 0; i < QUAR_LOCAL; i++)
-			if (local[i].used && local[i].db == MyDatabaseId)
+			if (local[i].used && local[i].file.db == MyDatabaseId)
 				copy[n++] = local[i];
 	for (int i = 0; i < n; i++)
 	{
@@ -360,7 +484,7 @@ sift_quarantine_rows(PG_FUNCTION_ARGS)
 		bool		nulls[11] = {false};
 
 		v[0] = ObjectIdGetDatum(copy[i].indexoid);
-		v[1] = ObjectIdGetDatum(copy[i].rel);
+		v[1] = ObjectIdGetDatum(copy[i].file.rel);
 		v[2] = TimestampTzGetDatum(copy[i].detected_at);
 		v[3] = BoolGetDatum(copy[i].confirmed);
 		v[4] = BoolGetDatum(copy[i].persisted);

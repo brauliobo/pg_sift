@@ -38,6 +38,7 @@
 #include "bm25/wbuf.h"
 #include "core/ops.h"
 #include "core/progress.h"
+#include "core/quarantine.h"
 #include "core/worker.h"
 #include "col/wbuf.h"
 #include "core/sql.h"
@@ -385,28 +386,36 @@ sift_mops_after_seal(const SiftMaintOps *ops, Relation index)
 	pfree(snap);
 }
 
-IndexBulkDeleteResult *
-sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulkDeleteCallback callback,
-					 void *callback_state)
+typedef struct BulkDelete
 {
-	Relation	index = info->index;
+	const SiftMaintOps *ops;
+	IndexVacuumInfo *info;
+	IndexBulkDeleteResult *stats;
+	IndexBulkDeleteCallback callback;
+	void	   *callback_state;
+} BulkDelete;
+
+static void
+bulkdelete_index(void *arg)
+{
+	BulkDelete *bd = arg;
+	const SiftMaintOps *ops = bd->ops;
+	Relation	index = bd->info->index;
+	IndexBulkDeleteResult *stats = bd->stats;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftErrCtx	ctx;
 	int			order[SIFT_MAX_SEGMENTS];
-	double		removed;
+	double		removed = stats->tuples_removed;
 
-	if (stats == NULL)
-		stats = palloc0(sizeof(IndexBulkDeleteResult));
-	removed = stats->tuples_removed;
 	sift_maint_lock(index, true);
 	sift_errctx_push(&ctx, RelationGetRelid(index));
 	sift_dir_read(index, snap);
 	for (int k = 0, n = sift_dir_clear_order(snap, order); k < n; k++)
 	{
 		if (snap->segs[order[k]].kind == SIFT_SEG_IMMUTABLE)
-			ops->bulkdelete_immutable(index, &snap->segs[order[k]], callback, callback_state, stats);
+			ops->bulkdelete_immutable(index, &snap->segs[order[k]], bd->callback, bd->callback_state, stats);
 		else
-			ops->bulkdelete_wbuf(index, &snap->segs[order[k]], callback, callback_state, stats);
+			ops->bulkdelete_wbuf(index, &snap->segs[order[k]], bd->callback, bd->callback_state, stats);
 		SIFT_CLEAR_TEST_POINT();
 	}
 	/*
@@ -415,14 +424,23 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 	 */
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_TOMB && ops->bulkdelete_tomb)
-			ops->bulkdelete_tomb(index, &snap->segs[i], callback, callback_state, stats);
+			ops->bulkdelete_tomb(index, &snap->segs[i], bd->callback, bd->callback_state, stats);
 	/* The heap marks pages all-visible only after this returns: a scan that reads the map after that finds the version moved (sift_vis_begin) */
 	if (stats->tuples_removed > removed)
 		sift_dir_update(index, &(SiftDirChange) {.extra = InvalidBuffer});
 	sift_errctx_pop(&ctx);
 	sift_maint_unlock(index);
 	pfree(snap);
-	return stats;
+}
+
+IndexBulkDeleteResult *
+sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulkDeleteCallback callback,
+					 void *callback_state)
+{
+	BulkDelete	bd = {ops, info, stats ? stats : palloc0(sizeof(IndexBulkDeleteResult)), callback, callback_state};
+
+	sift_quarantine_guard(info->index, SIFT_SKIP_VACUUM, bulkdelete_index, &bd);
+	return bd.stats;
 }
 
 /* The merges of VACUUM: until the policy asks for none, as a build that left many segments needs, or just one; stops at a failed step */
@@ -441,19 +459,27 @@ vacuum_merge(const SiftMaintOps *ops, Relation index)
 	}
 }
 
-IndexBulkDeleteResult *
-sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
+typedef struct VacuumCleanup
 {
+	const SiftMaintOps *ops;
+	IndexVacuumInfo *info;
+	IndexBulkDeleteResult *stats;
+	bool		skipped;
+} VacuumCleanup;
+
+static void
+vacuumcleanup_index(void *arg)
+{
+	VacuumCleanup *vc = arg;
+	const SiftMaintOps *ops = vc->ops;
+	IndexVacuumInfo *info = vc->info;
+	IndexBulkDeleteResult *stats = vc->stats;
+	bool		skipped = vc->skipped;
 	Relation	index = info->index;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftErrCtx	ctx;
-	bool		skipped = stats == NULL;
 	bool		began;
 
-	if (info->analyze_only)
-		return stats;
-	if (stats == NULL)
-		stats = palloc0(sizeof(IndexBulkDeleteResult));
 	sift_maint_lock(index, true);
 	sift_errctx_push(&ctx, RelationGetRelid(index));
 	began = sift_progress_begin(index, SIFT_JOB_VACUUM);
@@ -514,7 +540,18 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 		for (int i = 0; i < snap->nsegs; i++)
 			stats->num_index_tuples += snap->segs[i].ndocs;
 	pfree(snap);
-	return stats;
+}
+
+IndexBulkDeleteResult *
+sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
+{
+	VacuumCleanup vc;
+
+	if (info->analyze_only)
+		return stats;
+	vc = (VacuumCleanup) {ops, info, stats ? stats : palloc0(sizeof(IndexBulkDeleteResult)), stats == NULL};
+	sift_quarantine_guard(info->index, SIFT_SKIP_VACUUM, vacuumcleanup_index, &vc);
+	return vc.stats;
 }
 
 /*
@@ -778,7 +815,7 @@ sift_maint_request_worker(Relation index, const char *function)
 	bool		started;
 
 	sift_dir_read(index, snap);
-	started = now - snap->meta.maint_requested_at >= backoff_ms(&snap->meta) * INT64CONST(1000);
+	started = now - snap->meta.maint_requested_at >= backoff_ms(&snap->meta) * INT64CONST(1000) && !sift_index_out(index, snap->meta.flags);
 	pfree(snap);
 	if (!started)
 		return false;

@@ -168,6 +168,12 @@ sift_progress_step(int64 done, uint64 bytes)
 }
 
 void
+sift_progress_abort(void)
+{
+	release();
+}
+
+void
 sift_progress_end(bool began)
 {
 	if (began)

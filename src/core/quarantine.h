@@ -31,6 +31,10 @@ extern void sift_quarantine_plan_init(void);
 
 /* The index is out of service: recorded in this backend or in the registry, or flagged in its metapage. False under sift.on_corruption = error */
 extern bool sift_index_quarantined(Relation index);
+/* Recorded in this backend or in the registry: no page is read. The callbacks PostgreSQL makes while it plans (amcanreturn) ask this, as the planner has not left the index out yet */
+extern bool sift_index_known_out(Relation index);
+/* The same for a caller that read the metapage already (meta_flags) */
+extern bool sift_index_out(Relation index, uint32 meta_flags);
 
 /* What a statement that skipped a quarantined index counts for sift.quarantine */
 typedef enum SiftSkipKind
@@ -41,6 +45,18 @@ typedef enum SiftSkipKind
 } SiftSkipKind;
 
 extern void sift_quarantine_skip(Relation index, SiftSkipKind kind);
+
+/*
+ * Runs fn(arg), the work of a write or a VACUUM on the index, so that damage it finds does not fail the statement: it runs in a subtransaction, and damage of the index that
+ * core/damage.h recorded rolls it back, leaves the index out of service and goes on with a WARNING (false is returned); an index that is out of service already is skipped the
+ * same way. Every other error goes on. sift.on_corruption = error runs fn as it is.
+ */
+typedef void (*SiftGuarded) (void *arg);
+/* A caller that catches errors asks of each: is it the damage recorded since it last asked (it is, once). Such an error ends the work on the index, and is not a failure to retry */
+extern bool sift_damage_caught(const ErrorData *e);
+/* The work on the index ended because it is out of service: counted for sift.quarantine, and said once a minute with a WARNING */
+extern void sift_quarantine_stopped(Relation index, SiftSkipKind kind);
+extern bool sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded fn, void *arg);
 
 /*
  * Where a scan opens, after it read the directory (meta_flags: the flags of its metapage): a plan made before the index left service is refused with SQLSTATE 40001, the one a
