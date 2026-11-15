@@ -4,6 +4,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
+[[ ${SIFT_PUBLIC_TREE:-} != true ]] || { echo "gen-docs-public: skipped, the public tree does not hold the results file the cases are built on"; exit 0; }
 bad=0
 fail() { echo "FAIL: $*"; bad=1; }
 T=$(mktemp -d)
@@ -14,7 +15,8 @@ git -C "$T" add -A
 unset CI SIFT_LINT_NOCACHE SIFT_PUBLIC_TREE
 export SIFT_GEN_DOCS_CACHE=$T/.cache
 check() { (cd "$T" && env "$@" python3 -B -I scripts/gen-docs.py --check >"$T/check.log" 2>&1); }
-RESULTS=docs/results/scope-stock.tsv
+FILE=scope-stock.tsv
+RESULTS=docs/results/$FILE
 BLOCK=scope-stock-readme
 [[ -f $T/$RESULTS ]] || { echo "FAIL: the tree has no $RESULTS to build the cases on"; exit 1; }
 grep -q "bench:$BLOCK:begin" "$T/README.md" || { echo "FAIL: README.md has no $BLOCK block to build the cases on"; exit 1; }
