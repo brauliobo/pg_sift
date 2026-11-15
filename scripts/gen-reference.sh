@@ -424,7 +424,7 @@ def live():
             err('live: ' + r.stderr.strip())
             return
         seen = set()
-        plain = {(k[0], o.get('fname', k[1])) for k, o in objs.items()}
+        plain = {(k[0], o.get('fname', k[1])) for k, o in objs.items() if not k[1].startswith('_')}   # the names starting with _ are internal: listed in no direction
         texts = {}   # the comments an overloaded name has
         for (kd, nm), t in comments.items():
             texts.setdefault((kd, nm.split('(')[0]), set()).add(t.strip())
