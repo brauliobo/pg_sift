@@ -9,6 +9,7 @@
 #include "storage/sinval.h"
 #include "utils/rel.h"
 
+#include "core/ring.h"
 #include "col/am.h"
 #include "col/conn.h"
 #include "col/scope.h"
@@ -29,7 +30,7 @@ static struct RowsMemo
 	double		rows,
 				scanned;
 } rows_memo[ROWS_MEMO_N];
-static int	rows_memo_next;
+static SiftRing rows_memo_ring;
 
 static bool
 rows_memo_fresh(const struct RowsMemo *m)
@@ -82,7 +83,7 @@ sift_scope_relations_rows(Relation heap, Relation index, const char *key_name, d
 		table_close(rel, NoLock);
 	}
 	if (keep)
-		rows_memo[rows_memo_next++ % ROWS_MEMO_N] = m;
+		rows_memo[SIFT_RING_SLOT(rows_memo_ring, ROWS_MEMO_N)] = m;
 	*scanned = m.scanned;
 	return m.rows;
 }

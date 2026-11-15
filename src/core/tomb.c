@@ -571,6 +571,7 @@ static SiftTombVerdict
 verdict_memo(Snapshot snapshot, const SiftTomb *e, SiftTombMemo *memo, VerdictRun *run)
 {
 	SiftTombVerdict r;
+	uint32		slot;
 
 	if (snapshot->snapshot_type != SNAPSHOT_MVCC)
 		return sift_tomb_deletes(snapshot, e) ? SIFT_TOMB_DELETES : SIFT_TOMB_KEEPS;
@@ -578,15 +579,16 @@ verdict_memo(Snapshot snapshot, const SiftTomb *e, SiftTombMemo *memo, VerdictRu
 		return sift_tomb_verdict(snapshot, e);
 	if (e->xid == run->xid)
 		return run->verdict;
-	for (int i = 0; i < 4; i++)
+	for (int i = 0; i < SIFT_TOMB_MEMO; i++)
 		if (memo->xid[i] == e->xid)
 		{
 			run->xid = e->xid;
 			return run->verdict = memo->verdict[i];
 		}
 	r = sift_tomb_verdict(snapshot, e);
-	memo->xid[memo->next & 3] = e->xid;
-	memo->verdict[memo->next++ & 3] = r;
+	slot = SIFT_RING_SLOT(memo->ring, SIFT_TOMB_MEMO);
+	memo->xid[slot] = e->xid;
+	memo->verdict[slot] = r;
 	run->xid = e->xid;
 	return run->verdict = r;
 }

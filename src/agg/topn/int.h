@@ -18,6 +18,7 @@
 #include "agg/topn.h"
 #include "agg/kern.h"
 #include "core/cmp.h"
+#include "core/ring.h"
 
 /* Superblocks per window of the visit order at most: the zones are looked at again, and the match set is asked for, once per window */
 #define TOPN_WINDOW		8
@@ -188,7 +189,7 @@ struct SiftTopN
 	MemoryContext ucxt;			/* the copies of the unit's entries that the rows of one unit hold (reset at the next unit) */
 	MemoryContext ocxt;			/* the order codes of the dictionaries (unit_ord) */
 	struct OrdCode *oc;			/* ORD_CACHE of them */
-	int			oc_next;
+	SiftRing	oc_ring;
 	int64		nord[3];		/* units compared by an exact order code, by a prefix, as bytes */
 	int64		nties;			/* comparisons of the unit that a prefix could not decide */
 	int			nout;

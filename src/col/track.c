@@ -52,6 +52,7 @@
 #include "bm25/maint.h"
 #include "col/am.h"
 #include "col/track_hear.h"
+#include "core/ring.h"
 #include "core/tomb.h"
 #include "core/restrict.h"
 #include "core/visibility.h"
@@ -627,7 +628,7 @@ static struct TrackMemo
 	bool		ok[2];
 	uint32		witness[2];
 } track_memo[TRACK_MEMO_N];
-static int	track_memo_next;
+static SiftRing track_memo_ring;
 
 static bool
 track_state(Relation heap, Relation index, bool ok[2], uint32 witness[2])
@@ -648,7 +649,7 @@ track_state(Relation heap, Relation index, bool ok[2], uint32 witness[2])
 	if ((m.trackable = trackable(heap, index)))
 		channel_read(heap, index, present, m.ok, m.witness);
 	if (keep)
-		track_memo[track_memo_next++ % TRACK_MEMO_N] = m;
+		track_memo[SIFT_RING_SLOT(track_memo_ring, TRACK_MEMO_N)] = m;
 	memcpy(ok, m.ok, sizeof(m.ok));
 	memcpy(witness, m.witness, sizeof(m.witness));
 	return m.trackable;

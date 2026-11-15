@@ -22,6 +22,7 @@
 #include "utils/rel.h"
 
 #include "agg/agg_int.h"
+#include "core/ring.h"
 
 int			sift_agg_lookup_cache_kb = 256 * 1024;
 /* the pages of a table are fingerprinted at about 0.4 microseconds each, a twentieth of what loading their rows costs: what bounds a table is the memory of its rows, and the fingerprint itself may take half the budget of the store it is for */
@@ -60,6 +61,7 @@ typedef struct LookPin
 
 static LookRefused refused[LOOKCACHE_REFUSED];
 static int	nrefused;
+static SiftRing refused_ring;
 static List *entries;
 static MemoryContext cache_cx;
 static Size cache_bytes;
@@ -137,9 +139,7 @@ look_refuse(const char *key, const LookFinger *f)
 	if (r == NULL)
 	{
 		/* the oldest goes: the slots are used in turn */
-		static int	next;
-
-		r = &refused[next++ % LOOKCACHE_REFUSED];
+		r = &refused[SIFT_RING_SLOT(refused_ring, LOOKCACHE_REFUSED)];
 	}
 	if (r->key)
 		pfree(r->key);

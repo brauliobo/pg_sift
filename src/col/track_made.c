@@ -3,6 +3,7 @@
 #include "access/xact.h"
 #include "utils/snapshot.h"
 
+#include "core/ring.h"
 #include "col/am.h"
 
 /*
@@ -16,12 +17,12 @@ static struct
 	Oid			index;
 	CommandId	cid;
 }			made[MADE_N];
-static int	made_next;
+static SiftRing made_ring;
 
 void
 sift_col_track_made(Oid index)
 {
-	made[made_next++ % MADE_N] = (typeof(made[0])) {index, GetCurrentCommandId(false)};
+	made[SIFT_RING_SLOT(made_ring, MADE_N)] = (typeof(made[0])) {index, GetCurrentCommandId(false)};
 }
 
 bool

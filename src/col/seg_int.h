@@ -12,6 +12,7 @@
 #include "col/seg.h"
 #include "col/ver.h"
 #include "core/live.h"
+#include "core/ring.h"
 
 #define ULL(x)			((unsigned long long) (x))
 #define ALIGN8(x)		TYPEALIGN(8, x)
@@ -361,7 +362,7 @@ typedef struct DictLook
 	SiftCBisect *bc;			/* the backend's cache of the positions bisected (NULL: none yet, or too few strings) */
 	bool		bc_tried;
 	LookKept   *kept;			/* the last LOOK_KEEP compressed blocks read for a string by code, oldest replaced first (NULL: none yet) */
-	uint32		kept_next;
+	SiftRing	kept_ring;
 	uint32	   *boffw;			/* the block offsets around the last block read, boffw_n of them from block boffw_b0: blocks read in turn take them from one read (NULL: none yet) */
 	uint32		boffw_b0;
 	uint32		boffw_n;

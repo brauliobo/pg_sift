@@ -136,7 +136,7 @@ unit_ord(SiftTopN *t, const SiftSrcDict *d, int64 npass)
 			oc = &t->oc[i];
 	if (oc == NULL)
 	{
-		oc = &t->oc[t->oc_next++ % ORD_CACHE];
+		oc = &t->oc[SIFT_RING_SLOT(t->oc_ring, ORD_CACHE)];
 		if (oc->ord)
 			pfree(oc->ord);
 		*oc = (OrdCode) {.id = d->id,.bytes = d->bytes,.n = d->n};

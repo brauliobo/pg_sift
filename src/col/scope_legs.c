@@ -9,6 +9,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "core/ring.h"
 #include "col/am.h"
 #include "col/scope.h"
 
@@ -27,7 +28,7 @@ static struct LegsMemo
 	SiftScopeLeg legs[2];
 	MemoryContext cx;
 } legs_memo[LEGS_MEMO_N];
-static int	legs_memo_next;
+static SiftRing legs_memo_ring;
 
 static void
 legs_copy(SiftScopeLeg to[2], const SiftScopeLeg from[2], int n)
@@ -60,7 +61,7 @@ sift_scope_legs(Relation index, int scope, SiftScopeLeg legs[2])
 	n = sift_scope_legs_find(index, scope, legs);
 	if (!keep)
 		return n;
-	m = &legs_memo[legs_memo_next++ % LEGS_MEMO_N];
+	m = &legs_memo[SIFT_RING_SLOT(legs_memo_ring, LEGS_MEMO_N)];
 	if (m->cx == NULL)
 		m->cx = AllocSetContextCreate(TopMemoryContext, "sift cache scope legs", ALLOCSET_SMALL_SIZES);
 	MemoryContextReset(m->cx);

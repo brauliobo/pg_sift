@@ -39,6 +39,7 @@
 #include "col/am.h"
 #include "col/scope.h"
 #include "col/vstore/vstore.h"
+#include "core/ring.h"
 #include "core/restrict.h"
 
 bool		sift_agg_scope = true;
@@ -348,7 +349,7 @@ static struct
 	AttrNumber	key;
 	Oid			btree;
 } btree_memo[BTREE_MEMO_N];
-static int	btree_memo_next;
+static SiftRing btree_memo_ring;
 static bool btree_memo_hooked;
 
 static void
@@ -375,7 +376,7 @@ recorded_btree(Oid index, Relation rel, AttrNumber member, AttrNumber key)
 		CacheRegisterSyscacheCallback(RELOID, btree_memo_inval, (Datum) 0);
 		btree_memo_hooked = true;
 	}
-	btree_memo[btree_memo_next++ % BTREE_MEMO_N] = (typeof(btree_memo[0])) {index, GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(index)), GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(btree)),
+	btree_memo[SIFT_RING_SLOT(btree_memo_ring, BTREE_MEMO_N)] = (typeof(btree_memo[0])) {index, GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(index)), GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(btree)),
 															   RelationGetRelid(rel), member, key, btree};
 	return btree;
 }

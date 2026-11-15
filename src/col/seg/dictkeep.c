@@ -105,7 +105,7 @@ sift_cseg_look_block(DictLook *l, uint32 b)
 	DICT_BLOCK_DECODED();
 	if (l->kept == NULL)
 		l->kept = MemoryContextAllocZero(l->seg->mcxt, LOOK_KEEP * sizeof(LookKept));
-	k = &l->kept[l->kept_next++ % LOOK_KEEP];
+	k = &l->kept[SIFT_RING_SLOT(l->kept_ring, LOOK_KEEP)];
 	if (k->cap < l->blkoff[cnt])
 		k->raw = k->raw == NULL ? MemoryContextAlloc(l->seg->mcxt, k->cap = l->blkoff[cnt]) : repalloc(k->raw, k->cap = l->blkoff[cnt]);
 	memcpy(k->off, l->blkoff, (cnt + 1) * sizeof(uint16));

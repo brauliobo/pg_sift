@@ -20,6 +20,7 @@
 #include "access/xlog.h"
 #include "utils/lsyscache.h"
 
+#include "core/ring.h"
 #include "core/cmp.h"
 #include "core/store.h"
 #include "lib/stringinfo.h"
@@ -185,7 +186,7 @@ static struct
 	uint64		units;
 	uint64		entries;
 } unit_memo[UNIT_MEMO_N];
-static int	unit_memo_next;
+static SiftRing unit_memo_ring;
 
 static uint32
 unit_memo_keys(const SiftAggScope *sc)
@@ -222,7 +223,7 @@ unit_entries(AggExec *ex, Snapshot snapshot, SiftScopeCounts *c)
 	c->entries = unit_rows(units, sc->all ? not_null_prune(leaf) : values_prune(leaf, sc->keys, sc->nkeys), &c->units);
 	sift_colsrc_close(units);
 	MemoryContextDelete(cx);
-	unit_memo[unit_memo_next++ % UNIT_MEMO_N] = (typeof(unit_memo[0])) {RelationGetRelid(ex->index), ex->index->rd_locator.relNumber, version, keys, c->units, c->entries};
+	unit_memo[SIFT_RING_SLOT(unit_memo_ring, UNIT_MEMO_N)] = (typeof(unit_memo[0])) {RelationGetRelid(ex->index), ex->index->rd_locator.relNumber, version, keys, c->units, c->entries};
 }
 
 /*
