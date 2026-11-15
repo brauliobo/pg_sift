@@ -223,6 +223,8 @@ Words are `AND`ed; `OR`, `NOT`, `"phrases"`, `batt*`, `sq?eaky`, `/regex/`, `fre
 - **Plain PostgreSQL:** MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, generic WAL (crash and replica safe), `pg_dump`; a query the planner cannot prove equal keeps its normal plan.
 - **Vulkan (experimental, opt-in):** `make VULKAN=1` and `SET sift.gpu = auto|on` run grouped and filtered integer counts and sums of a `sift_col` index on a GPU ([below](#vulkan-experimental), [docs/GPU.md](docs/GPU.md)).
 - **Ports:** [SQLite](#sqlite) and [MariaDB](#mariadb) run the same search core.
+- **A damaged index leaves service, the database keeps serving:** a `sift` or `sift_col` index that finds damage in its own bytes fails the statement that found it once, is listed in `sift.quarantine`, and every statement then runs on the heap with exact answers until `REINDEX` ([docs/OPERATIONS.md](docs/OPERATIONS.md#2-emergency)); `sift.check` finds damage before a statement does, and `sift.col_repair` restores the liveness pages that 4.2.1 to 4.3.5 could damage.
+- **Named projections and shared strings:** `sift.projection_create` defines the columns, expressions, filter, roll-ups and options of an index once, and `sift.projection_index` makes one index for one or more of those projections; the `sift_col` indexes of a table that hold the same string column store its distinct strings once ([docs/INDEX-RECIPES.md](docs/INDEX-RECIPES.md), [docs/COL-VSTORE.md](docs/COL-VSTORE.md)).
 
 ## Compared with
 
@@ -366,7 +368,7 @@ SELECT sift_count('news', 'power AND plant');
 - **Options:** index options go in `WITH (...)` (`k1`, `b`, `analyzer`, `stemmer`, `positions`, `prefix_index`, `write_buffer_limit`, `merge_fanin`, ...); `merge_fanin` defaults to 4: an index that takes batches keeps 4.6 segments on average instead of the 6.5 of `merge_fanin = 8` and reads 4 to 10% fewer instructions and 13% fewer cold MB, for 37% more merge time and 11% more WAL while it ingests (`ALTER INDEX .. SET (merge_fanin = 8)` merges less often); `sift_table` is tuned with settings (`sift.table_*`), not per table.
 - **Maintenance** is on by default: a background worker (`sift.async_maintenance`) promotes write buffers and merges segments, `sift.col_auto_merge` vacuums and merges a `sift_col` index after churn, `sift.table_auto_defrag` clears the dead rows of a `sift_table`; VACUUM clears dead rows as usual.
 - **Large `work_mem` and unusual planner costs:** a `seq_page_cost` above `random_page_cost` moves the planner's choice between the scan and the normal plan most; the results are the same as the normal plan's either way.
-- **Inspection:** `sift.check`, `sift.workers`, `sift.progress`, `sift.col_index_status`, `sift.shared_memory`, `sift.index_info`, `sift.segments` and `sift.verify`; what to watch and what to do is [docs/OPERATIONS.md](docs/OPERATIONS.md).
+- **Inspection:** `sift.check`, `sift.quarantine`, `sift.workers`, `sift.progress`, `sift.col_index_status`, `sift.shared_memory`, `sift.index_info`, `sift.segments` and `sift.verify`; what to watch and what to do is [docs/OPERATIONS.md](docs/OPERATIONS.md).
 - **Replication:** physical replicas work through generic WAL; publishing a `sift_table` under logical replication needs `shared_preload_libraries`.
 - **One library:** the BM25 index and the column engine share one library, about twice the size of the search-only build, at a cost of at most 2% of the instructions of an operation[^lib].
 - **Platforms:** [docs/SUPPORT.md](docs/SUPPORT.md#compatibility).
