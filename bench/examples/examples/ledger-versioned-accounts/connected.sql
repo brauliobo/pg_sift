@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: entry -> account_version by account_id AND posted_on in [valid_from, valid_to): a range join, the version depends on the entry date

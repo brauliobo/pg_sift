@@ -1,0 +1,2 @@
+child_table	child_col	parent_table	parent_col	relation	reads
+session	user_id	users	id	n:1	plan,country

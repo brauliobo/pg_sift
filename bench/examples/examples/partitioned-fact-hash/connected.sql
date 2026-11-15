@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: fact (hash partitioned by dim_id, 8 partitions) -> dim: the join key is the partition key

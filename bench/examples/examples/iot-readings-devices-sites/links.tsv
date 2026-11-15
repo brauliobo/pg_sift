@@ -1,0 +1,3 @@
+child_table	child_col	parent_table	parent_col	relation	reads
+reading	device_id	device	id	n:1	site_id,model
+device	site_id	site	id	n:1	region,tz

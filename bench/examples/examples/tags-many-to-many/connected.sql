@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: event -> item (N:1); item <-> tag through item_tag (M:N: item_tag.item_id -> item.id, item_tag.tag_id -> tag.id, tag attributes)

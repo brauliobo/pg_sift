@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: fact -> dim with a live flag on both sides (deleted_at IS NULL): the derived class of a fact depends on two soft-delete flags

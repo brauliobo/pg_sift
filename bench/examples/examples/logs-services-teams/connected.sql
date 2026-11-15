@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: log.service_id (uuid) -> service.id; service.team_id (text) -> team.id: two key types in one chain, plus wide text filters on log.message
