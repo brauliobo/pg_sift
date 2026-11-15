@@ -80,8 +80,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# a maintenance worker of the cluster of LABEL is a child of its postmaster ("sift maintenance (index N)"); the check opens no session
-worker_up() { ps -o args= --ppid "${PM[$1]}" | awk '/sift maintenance/ {f = 1} END {exit !f}'; }
+# a maintenance worker of the cluster of LABEL is a child of its postmaster ("sift <job> schema.index"); the check opens no session
+worker_up() { ps -o args= --ppid "${PM[$1]}" | awk '/: sift / {f = 1} END {exit !f}'; }
 settle() { # LABEL: until no worker has been seen for two checks
 	local n=0 t=$SECONDS
 	while (( n < 2 )); do

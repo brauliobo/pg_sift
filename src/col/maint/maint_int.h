@@ -18,7 +18,7 @@
  *
  * Intentional differences from the BM25 maintenance (bm25/maint.c), kept so the behaviour of sift_col stays what it was:
  * - a step holds the maintenance lock exclusively, not in RowExclusiveLock with claims on its segments: one step of the index at a time;
- * - a step is not run in a subtransaction: an ERROR goes on to the caller (a worker records it, worker_failed, for the backoff of the shared
+ * - a step is not run in a subtransaction: an ERROR goes on to the caller (a worker records it, sift_maint_worker_failed, for the backoff of the shared
  *   flow and sift.workers; the other callers see it) and there is no segment another step could have claimed (busy stays 0);
  * - the policy has no goals: background, VACUUM and explicit merges pick alike; VACUUM merges until the policy asks for none or the rewrite limit is reached;
  * - the worker runs in one transaction until nothing is left to do; VACUUM merges to a fixed point only up to sift.vacuum_rewrite_limit.

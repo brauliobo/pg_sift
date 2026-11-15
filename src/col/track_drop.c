@@ -36,6 +36,7 @@
 #include "col/am.h"
 #include "core/restrict.h"
 #include "core/visibility.h"
+#include "core/worker.h"
 
 PG_FUNCTION_INFO_V1(sift_col_track_convert);
 
@@ -203,21 +204,9 @@ sift_col_track_dropping(Oid relid)
 static void
 ask_orphans(TransactionId xid)
 {
-	BackgroundWorker bw = {0};
-	BackgroundWorkerHandle *handle;
-
 	if (!IsUnderPostmaster)
 		return;
-	bw.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
-	bw.bgw_start_time = BgWorkerStart_RecoveryFinished;
-	bw.bgw_restart_time = BGW_NEVER_RESTART;
-	snprintf(bw.bgw_library_name, BGW_MAXLEN, "pg_sift");
-	snprintf(bw.bgw_function_name, BGW_MAXLEN, "sift_col_track_orphans_main");
-	snprintf(bw.bgw_name, BGW_MAXLEN, "sift track triggers (database %u)", MyDatabaseId);
-	snprintf(bw.bgw_type, BGW_MAXLEN, "sift maintenance");
-	bw.bgw_main_arg = TransactionIdGetDatum(xid);
-	memcpy(bw.bgw_extra, &MyDatabaseId, sizeof(Oid));
-	if (!RegisterDynamicBackgroundWorker(&bw, &handle))
+	if (!sift_worker_register("sift_col_track_orphans_main", sift_worker_subject_db(), TransactionIdGetDatum(xid)))
 		ereport(LOG, (errmsg("sift: no background worker is free to remove the track_changes triggers of a dropped index"),
 					  errdetail("They do nothing; the next statement of their table that fires one asks again.")));
 }
@@ -371,6 +360,7 @@ sift_col_track_orphans_main(Datum main_arg)
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 	BackgroundWorkerInitializeConnectionByOid(dboid, InvalidOid, 0);
+	sift_worker_announce();
 	SetConfigOption("lock_timeout", ORPHAN_LOCK_TIMEOUT_MS, PGC_SUSET, PGC_S_SESSION);
 	StartTransactionCommand();
 	if (TransactionIdIsValid(xid))
@@ -386,7 +376,7 @@ sift_col_track_orphans_main(Datum main_arg)
 	MemoryContextSwitchTo(cx);
 	for (int round = 0; OidIsValid(funcoid) && round < ORPHAN_ROUNDS && !drop_orphans(funcoid, cx); round++)
 	{
-		sift_nap(ORPHAN_NAP_MS);
+		sift_worker_nap(ORPHAN_NAP_MS);
 		CHECK_FOR_INTERRUPTS();
 	}
 }

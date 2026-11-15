@@ -9,6 +9,7 @@
 #include "bm25/build.h"
 #include "bm25/prefix.h"
 #include "core/tomb.h"
+#include "core/worker.h"
 #include "core/visibility.h"
 #include "core/parbuild.h"
 #include "col/am.h"
@@ -179,6 +180,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_fail_who",
 							"Testing: sift.test_fail_merge in the leader or a serial build (1), the workers (2), any (0).",
 							NULL, &sift_test_fail_who, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomStringVariable("sift.test_worker_error",
+							   "Testing: the background worker of this job (promote, merge, rewrite, vacuum, track, rollup, orphans) fails with an error where it starts its work.",
+							   NULL, &sift_test_worker_error, "", PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_space_error",
 							 "Testing: error after publishing an open write buffer relocation.",
 							 NULL, &sift_test_space_error, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

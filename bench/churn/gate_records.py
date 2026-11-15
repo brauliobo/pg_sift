@@ -112,7 +112,7 @@ def quiet(s, limit=90):
     """until no maintenance worker of the database is alive"""
     end = time.time() + limit
     while time.time() < end:
-        n = s.run("SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'sift maintenance' OR backend_type = 'autovacuum worker'")[1]
+        n = s.run("SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'sift %' OR backend_type = 'autovacuum worker'")[1]
         if n and n[0] == '0':
             return True
         time.sleep(0.5)

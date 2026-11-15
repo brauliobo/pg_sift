@@ -77,6 +77,9 @@ extern void sift_maint_warn_failure(const char *kind, const char *name, ErrorDat
 /* Counts a failed background transaction of the worker of the index (after AbortCurrentTransaction) for the backoff and sift.workers; err: the error it was aborted by */
 extern void sift_maint_record_failure(Oid indexoid, ErrorData *err);
 
+/* The PG_CATCH of a worker: records the failure of its transaction for the index (kind: "sift" or "sift_col"); an error of cancellation or shutdown is raised again */
+extern void sift_maint_worker_failed(const char *kind, Oid indexoid, const char *name, MemoryContext cx);
+
 /* Registers a dynamic background worker running function in pg_sift for this index */
 extern bool sift_maint_request_worker(Relation index, const char *function);
 
@@ -188,7 +191,7 @@ extern Relation sift_maint_step_boundary(Relation index);
 
 /* Like sift_maint_request_worker, but a request is not dropped for coming within the naptime of another: the worker itself leaves when it has nothing to do */
 extern bool sift_maint_register_worker(Relation index, const char *function);
-extern bool sift_maint_register_worker_oid(Oid indexoid, const char *function);
+extern bool sift_maint_register_worker_oid(Oid indexoid, const char *function, const char *subject);
 
 /* Returns blocks returned to the free list */
 extern int64 sift_maint_orphan_sweep(Relation index);

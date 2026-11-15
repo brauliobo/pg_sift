@@ -14,7 +14,7 @@ sql busy "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE INDEX t_idx ON t USING sift_col (id, grp, amount, pad) WITH (vacuum_truncate = false, write_buffer_limit = 1024)" >/dev/null || bail "setup failed"
 
 SEGMENTS="SELECT count(*) FROM sift.col_segments('t_idx')"
-WORKER="SELECT coalesce(max(CASE WHEN wait_event = 'SiftMaintenanceNap' THEN 'waits' ELSE 'runs' END), 'none') FROM pg_stat_activity WHERE backend_type = 'sift maintenance'"
+WORKER="SELECT coalesce(max(CASE WHEN wait_event = 'SiftMaintenanceNap' THEN 'waits' ELSE 'runs' END), 'none') FROM pg_stat_activity WHERE backend_type LIKE 'sift %'"
 WAITING="SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
 
 sql busy "SET sift.async_maintenance = off" "DO \$\$ BEGIN FOR i IN 1..16 LOOP
@@ -46,7 +46,7 @@ for _ in $(seq 600); do
 done
 check "the worker that found the lock held waits for its next look" test "$state" == waits
 check "nothing merged while the lock was held" test "$(sql busy "$SEGMENTS")" -ge 16
-check "the nap has a name of its own in pg_stat_activity" test "$(sql busy "SELECT wait_event_type || ' ' || wait_event FROM pg_stat_activity WHERE backend_type = 'sift maintenance'")" == "Extension SiftMaintenanceNap"
+check "the nap has a name of its own in pg_stat_activity" test "$(sql busy "SELECT wait_event_type || ' ' || wait_event FROM pg_stat_activity WHERE backend_type LIKE 'sift %'")" == "Extension SiftMaintenanceNap"
 check "sift.locks names the maintenance lock the holder has on the index" test "$(sql busy "SELECT kind || ' ' || mode || ' ' || granted FROM sift.locks WHERE relation = 't_idx'::regclass")" == "maintenance ExclusiveLock true"
 
 touch "$D/release"
@@ -56,6 +56,6 @@ for _ in $(seq 300); do
 	sleep 0.1
 done
 check "the worker merged the segments once the lock was free" test "$(sql busy "$SEGMENTS")" -le 8
-sql busy "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'" >/dev/null
+sql busy "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type LIKE 'sift %'" >/dev/null
 check "intact" test -z "$(sql busy "SELECT sift.col_verify('t_idx', true)" 2>&1)"
 finish

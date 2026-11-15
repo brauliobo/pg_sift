@@ -24,7 +24,7 @@ SELECT count(*) FROM mf WHERE body @@> 'common';
 SELECT count(*) FROM mf WHERE body @@> 't2x100';
 SELECT sift.verify('mf_idx', true);
 
--- so does a failing merge, and a successful step clears the failure count
+-- so does a failing merge, and a successful step clears the failure count (the last error stays in sift.workers)
 SELECT sift.promote('mf_idx') >= 0 AS promoted;
 INSERT INTO mf (body) SELECT 'again ' || big(i) FROM generate_series(1, 3) i;
 SELECT sift.promote('mf_idx') >= 0 AS promoted;

@@ -64,7 +64,7 @@ BEGIN
 	FOR i IN 1..600 LOOP
 		COMMIT;
 		PERFORM pg_sleep(0.1);
-		IF EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type = 'sift maintenance' AND datname = current_database()) THEN idle = 0; ELSE idle = idle + 1; END IF;
+		IF EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type LIKE 'sift %' AND datname = current_database()) THEN idle = 0; ELSE idle = idle + 1; END IF;
 		EXIT WHEN idle >= 20 AND NOT EXISTS (SELECT 1 FROM sift.col_segments('rr_idx') WHERE dirty);
 	END LOOP;
 END $$;

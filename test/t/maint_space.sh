@@ -24,7 +24,7 @@ for k in $(seq 7); do sql space "SET sift.async_maintenance = off" "$(printf "$B
 sql space "$(printf "$BATCH" 5008)" >/dev/null || bail "insert failed"
 # the worker is started after the statement commits: wait for its result (merged, and gone), not for its absence, which a slow start satisfies
 for _ in $(seq 600); do
-	[[ $(sql space "SELECT (SELECT count(*) FROM sift.segments('t_idx')) <= 12 AND NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type = 'sift maintenance')") == t ]] && break
+	[[ $(sql space "SELECT (SELECT count(*) FROM sift.segments('t_idx')) <= 12 AND NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type LIKE 'sift %')") == t ]] && break
 	sleep 0.2
 done
 read -r segs live file <<<"$(sql space "SELECT count(*), sum(bytes), pg_relation_size('t_idx') FROM sift.segments('t_idx')" | tr '|' ' ')"

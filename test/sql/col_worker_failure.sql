@@ -1,5 +1,5 @@
 -- A background worker of a sift_col index that fails keeps the error where sift.workers shows it (the steps of a column index run outside a
--- subtransaction; the worker's transaction is the unit), and the next successful step clears it. The worker reads the setting of the database.
+-- subtransaction; the worker's transaction is the unit), and the next successful step clears the failures in a row (the last error stays). The worker reads the setting of the database.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
@@ -28,7 +28,7 @@ END $$;
 SELECT kind, failures, error_code, last_error, next_retry > failed_at AS retry_later FROM sift.workers WHERE index = 'cw_idx'::regclass;
 SELECT count(*) FROM cw WHERE v > 0;
 
--- the failure is not in the way of the index: a promotion in this session (the setting is the database's, this session began before it) clears it
+-- the failure is not in the way of the index: a promotion in this session (the setting is the database's, this session began before it) clears the failures in a row; the last error stays
 SELECT sift.col_promote('cw_idx') >= 0 AS promoted;
 SELECT failures, last_error FROM sift.workers WHERE index = 'cw_idx'::regclass;
 SELECT sift.col_verify('cw_idx');

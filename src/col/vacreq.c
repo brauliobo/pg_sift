@@ -39,6 +39,7 @@
 #include "col/am.h"
 #include "col/scope.h"
 #include "core/eval.h"
+#include "core/worker.h"
 #include "bm25/maint.h"
 
 /*
@@ -354,6 +355,7 @@ typedef struct VacAsk
 	int64		rows;
 	int64		threshold;
 	bool		due;
+	char		subject[2 * NAMEDATALEN];	/* the name of the index, for its worker: a commit callback reads no catalog */
 } VacAsk;
 
 static VacAsk asks[ASKS];
@@ -373,7 +375,7 @@ asks_xact(XactEvent event, void *arg)
 		for (int j = 0; j < i; j++)
 			again |= asks[j].due && asks[j].heap == asks[i].heap;
 		if (event == XACT_EVENT_COMMIT && asks[i].due && !again)
-			(void) sift_maint_register_worker_oid(asks[i].index, "sift_col_vacuum_scan_worker_main");
+			(void) sift_maint_register_worker_oid(asks[i].index, "sift_col_vacuum_scan_worker_main", asks[i].subject);
 	}
 	nasks = 0;
 }
@@ -409,6 +411,13 @@ ask_for(Relation index, Relation heap)
 	return a;
 }
 
+static void
+ask_due(VacAsk *a, Relation index)
+{
+	a->due = true;
+	strlcpy(a->subject, sift_worker_subject(index), sizeof(a->subject));
+}
+
 /* A row version written to the index (its INSERT or UPDATE): the transaction that writes many asks for the VACUUM at its commit */
 void
 sift_col_vacuum_note_insert(Relation index, Relation heap)
@@ -417,7 +426,8 @@ sift_col_vacuum_note_insert(Relation index, Relation heap)
 
 	if (!asking(index) || (a = ask_for(index, heap)) == NULL || a->due)
 		return;
-	a->due = ++a->rows >= a->threshold && heap_vacuumable(heap);
+	if (++a->rows >= a->threshold && heap_vacuumable(heap))
+		ask_due(a, index);
 }
 
 /* A build over a table whose map holds few pages asks for the VACUUM that would make the first reads of the index cheap */
@@ -433,7 +443,7 @@ ask_build(Relation heap, Relation index)
 	visibilitymap_count(heap, &allvisible, NULL);
 	if (nblocks < Min(allvisible, nblocks) + MIN_UNCLEAN || (a = ask_for(index, heap)) == NULL)
 		return;
-	a->due = true;
+	ask_due(a, index);
 }
 
 /*
@@ -522,12 +532,21 @@ vacuum_heap(Oid heapoid)
 	MemoryContextDelete(cx);
 }
 
-/* asked: a scan started the worker, which takes its first look as a scan would (table_state); once: it leaves after the first VACUUM */
+/* A VACUUM of the table ended well: the index the worker was asked for says so (sift.workers) */
 static void
-vacuum_worker(Datum main_arg, bool asked, bool once)
+vacuum_ok(Oid indexoid, TimestampTz start)
 {
-	ErrorContextCallback errctx;
-	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
+	Relation	index = sift_try_open_index(indexoid, RowExclusiveLock);
+
+	if (index == NULL)
+		return;
+	sift_worker_ok(index, SIFT_JOB_VACUUM, start);
+	index_close(index, RowExclusiveLock);
+}
+
+static void
+vacuum_looks(Oid indexoid, bool asked, bool once)
+{
 	Oid			heapoid;
 	LOCKTAG		tag;
 	int			clean = 0;
@@ -550,15 +569,38 @@ vacuum_worker(Datum main_arg, bool asked, bool once)
 		clean = state == TABLE_CLEAN ? clean + 1 : 0;
 		if (state == TABLE_DUE)
 		{
+			TimestampTz start = GetCurrentTimestamp();
+
+			SIFT_TEST_WORKER_FAIL(SIFT_JOB_VACUUM);
 			VacuumUpdateCosts();
 			vacuum_heap(heapoid);
+			vacuum_ok(indexoid, start);
 		}
 		CommitTransactionCommand();
 		if (once)
 			break;
 		/* a VACUUM that skipped the table for a lock someone holds (a CREATE INDEX CONCURRENTLY) leaves it due: look again after a nap, not at once */
-		sift_nap(sift_maintenance_naptime);
+		sift_worker_nap(sift_maintenance_naptime);
 	}
+}
+
+/* asked: a scan started the worker, which takes its first look as a scan would (table_state); once: it leaves after the first VACUUM. A failure is recorded for the index like any worker's */
+static void
+vacuum_worker(Datum main_arg, bool asked, bool once)
+{
+	ErrorContextCallback errctx;
+	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
+	MemoryContext cx = CurrentMemoryContext;
+
+	PG_TRY();
+	{
+		vacuum_looks(indexoid, asked, once);
+	}
+	PG_CATCH();
+	{
+		sift_maint_worker_failed("sift_col", indexoid, sift_worker_target(), cx);
+	}
+	PG_END_TRY();
 }
 
 void
