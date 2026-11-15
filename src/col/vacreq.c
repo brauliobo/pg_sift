@@ -109,12 +109,15 @@ heap_unclean(Oid heapoid)
 static TableState
 table_state(Oid heapoid, bool asked, bool worker)
 {
-	const PgStat_StatTabEntry *tab = pgstat_fetch_stat_tabentry(heapoid);
+	const PgStat_StatTabEntry *tab;
 	TimestampTz last;
 	int64		wait_ms = (int64) NAPTIMES * sift_maintenance_naptime;
 	int64		changed,
 				threshold;
 
+	/* the look is once per naptime: a statement that runs for longer keeps its snapshot of the statistics, and would ask for a VACUUM the worker finds done */
+	pgstat_clear_snapshot();
+	tab = pgstat_fetch_stat_tabentry(heapoid);
 	if (tab == NULL)
 		return asked || (worker && heap_unclean(heapoid)) ? TABLE_DUE : TABLE_CLEAN;
 	churn_of(tab, &changed, &threshold);
