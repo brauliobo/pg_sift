@@ -134,3 +134,13 @@ par_finish(AggExec *ex)
 	par->pcxt = NULL;
 	ExitParallelMode();
 }
+
+/* the statement ended before the workers' tables came (an error): the workers stop and the parallel mode ends */
+void
+par_abort(AggExec *ex)
+{
+	par_forget_memo(ex);
+	DestroyParallelContext(ex->par->pcxt);
+	ex->par->pcxt = NULL;
+	ExitParallelMode();
+}

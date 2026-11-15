@@ -108,6 +108,7 @@ typedef struct SiftAggSpec
 	uint32	   *setmask;		/* per set: the keys it groups by (bit j), and the bit of the set key */
 	int			npreds_total;	/* number of SiftAggPred nodes (ids 0..n-1) */
 	double		est_groups;
+	double		bound_groups;	/* the most groups the scan can make: the rows of its source, for each set (the planner's estimate may predate a bulk load, the rows of the source do not) */
 	double		est_rows;		/* the rows the planner expects to aggregate: with est_groups, what a group of a count(DISTINCT) can hold */
 	int			nworkers;		/* parallel workers the plan asks for (0: the leader scans alone) */
 	int			jpart;			/* > 0 with workers: the lookup join (jpart - 1) whose key the participants split the rows by, each reading every row and aggregating those of its share of the key, so that each key is resolved by one of them (agg/par/split.c); 0: they split the rows or the groups */
@@ -120,6 +121,7 @@ typedef struct SiftAggSpec
 	Node	   *search;			/* BM25 match set the rows are restricted to: a List of the index Oid (Const) and the query operands (docs/COL-SEARCH.md); NULL: none */
 	Node	   *topn;			/* ORDER BY .. LIMIT n from the units: an integer list (agg/topn.h), the scan emits the heap rows of the n best instead of groups; NULL: none */
 	char	   *desc_topn;		/* EXPLAIN: the sort columns */
+	char	   *rerun;			/* a node that cannot spill: the statement's query and cursor options as a string (agg/cte/rerun.c), to plan it again when the groups outgrow hash memory; NULL: the statement cannot run again */
 	int			gtopn_k;		/* ORDER BY an aggregate LIMIT n (+ OFFSET): the groups that rank after the n-th of aggregate gtopn_agg are not emitted (agg/gtopn.c); 0: none */
 	int			gtopn_agg;
 	bool		gtopn_desc;
@@ -155,6 +157,7 @@ extern bool sift_gorder_call_free(const SiftAggOrd *o);
 /* the specs whose group table can also go to partitions on disk past hash memory (agg/spill.c): count, sum, avg, min and max over one pass */
 extern bool sift_aggspec_ord_range(const SiftAggSpec *s);
 extern bool sift_aggspec_spillable(const SiftAggSpec *s);
+extern bool sift_aggspec_holds_groups(const SiftAggSpec *s);
 
 /* the group table of a scan that cannot spill (and of the node that groups rows) may take this much: the planner leaves the scan to the normal plan, which spills, past it, and the scan raises an error */
 extern double sift_agg_nospill_bytes(int *factor, double *floor_bytes);

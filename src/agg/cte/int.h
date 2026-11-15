@@ -52,7 +52,7 @@ extern bool has_shared_cte(Query *parse);
 extern bool query_nests(Query *q);
 extern void sift_key_first_init(void);
 extern void sift_agg_rerun_init(void);
-extern PlannedStmt *sift_replan_text(QueryDesc *qd, bool executed);
+extern PlannedStmt *sift_replan_text(QueryDesc *qd);
 extern void sift_executor_start(QueryDesc *queryDesc, int eflags);
 
 typedef struct ScanArms

@@ -37,11 +37,11 @@
 	X(part_key_tests, "KEYS_MAX_TESTS", "agg/part/prune.c", 20000, "tests", \
 	  "keys times range or list partitions a list of keys is tested against exactly", "only the range of the keys prunes", "-", 1) \
 	X(group_nospill_factor, "GROUP_NOSPILL_FACTOR", "agg/spec.c", 32, "times hash memory", \
-	  "group table of a scan that cannot spill (a two level aggregate, ordered on a key that is not an integer, a date or a timestamp, generic and ordered-set aggregates, numeric or text min, max and sum over combos) or of the node that groups the rows of a plan, as a multiple of work_mem times hash_mem_multiplier (8 MB at least): estimated by the planner, held by the scan", \
-	  "normal plan (slug group_memory, the detail names the groups and the limit); when the table the scan holds passes it, the statement runs again as the normal plan (NOTICE), and ERROR 54000 naming work_mem and hash_mem_multiplier where it cannot (a cursor that fetches rows, a function's query with parameters)", "work_mem, hash_mem_multiplier", 1) \
+	  "group table of a scan that cannot spill (a two level aggregate, ordered on a key that is not an integer, a date or a timestamp, ordered-set aggregates and aggregates that sort their input, numeric or text min, max and sum over combos) or of the node that groups the rows of a plan, as a multiple of work_mem times hash_mem_multiplier (8 MB at least): estimated by the planner, held by the scan", \
+	  "normal plan (slug group_memory, the detail names the groups and the limit); when the table the scan holds passes it, the statement runs again as the normal plan (NOTICE; also a cursor's first fetch, a function's query with parameters, a prepared statement); a statement that cannot run again (INSERT, UPDATE, DELETE, volatile functions) gets the scan only when the most groups its source can make fit the bound (slug group_memory otherwise)", "work_mem, hash_mem_multiplier", 1) \
 	X(group_spill_parts, "SPILL_MAX_PARTS", "agg/spill.c", 128, "partitions", \
 	  "partitions a group table that outgrows hash memory is written to (the planner's groups over the groups the first table held, a power of two from 8)", "a partition that does not fit is partitioned again", "work_mem, hash_mem_multiplier", 1) \
-	X(group_spill_depth, "SPILL_MAX_DEPTH", "agg/spill.c", 8, "levels", \
+	X(group_spill_depth, "SPILL_MAX_DEPTH", "agg/spill_int.h", 8, "levels", \
 	  "levels of partitions a partition of a spilled group table is partitioned again (a hash of the same key values, another level each time)", "ERROR 54000 naming work_mem and hash_mem_multiplier", "work_mem, hash_mem_multiplier", 1) \
 	X(group_nospill_base, "GROUP_NOSPILL_BASE", "agg/spec.c", 8388608, "bytes", \
 	  "the hash memory group_nospill_factor is applied to when work_mem times hash_mem_multiplier is less (the memory the defaults give)", \

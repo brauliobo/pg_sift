@@ -67,16 +67,14 @@ SET sift.test_limits = 'group_nospill_factor=1,group_nospill_base=1638400';
 CREATE TEMP TABLE got AS EXECUTE r;
 SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
 
--- a cursor that fetches some rows cannot run again
+-- the node spills its groups: a cursor is no different
 DO $$
-DECLARE msg text; hint text;
+DECLARE n bigint;
 BEGIN
 	EXECUTE 'DECLARE c CURSOR FOR ' || many_groups();
 	EXECUTE 'FETCH 10 FROM c';
-	RAISE NOTICE 'no error';
-EXCEPTION WHEN program_limit_exceeded THEN
-	GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, hint = PG_EXCEPTION_HINT;
-	RAISE WARNING 'SQLSTATE % names the groups: % hint: %', SQLSTATE, msg ~ 'groups of the aggregate hold [0-9]+ kB', hint;
+	GET DIAGNOSTICS n = ROW_COUNT;
+	RAISE WARNING 'fetched % rows', n;
 END $$;
 
 DEALLOCATE r;

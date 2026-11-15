@@ -8,6 +8,9 @@
 
 struct AggSpill;
 
+/* levels of partitions a spilled group table is partitioned again (the limit group_spill_depth; the node that groups rows spills by the same rule) */
+#define SPILL_MAX_DEPTH		8
+
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 

@@ -16,7 +16,12 @@ extern PGDLLIMPORT bool sift_enable_agg;
 extern PGDLLIMPORT bool sift_agg_force;
 /* set just before the error of a node that holds its groups and cannot spill them: the statement is run again as PostgreSQL plans it (cte/hook.c) */
 extern bool sift_agg_overflow;
-extern bool sift_agg_nospill_planned(struct PlanState *ps);
+/* while a statement is planned: it can be run again as PostgreSQL plans it (the planner kept its query, agg/cte/rerun.c) */
+extern bool sift_agg_plan_reruns;
+extern bool sift_agg_workers_overflowed(struct PlanState *ps);
+extern const char *sift_agg_rerun_text(struct PlanState *ps);
+extern struct Query *sift_agg_rerun_query(struct Query *parse);
+extern void sift_agg_stash_rerun(struct PlannedStmt *stmt, struct Query *query, int cursorOptions);
 
 /*
  * The passes that rewrite a query before it is planned (agg/flat/, agg/preinline.c, agg/cte/rewrite.c, core/jsonbuild.c) look for sub-selects, CTE
@@ -171,7 +176,7 @@ extern void sift_agg_drop_unused_laterals(Query *q);
 extern void sift_agg_defer_lookups(Query *q);
 extern bool sift_agg_exists_or_candidate(Query *q);
 extern void sift_agg_split_exists_or(Query *q);
-extern void sift_agg_drop_sorts(PlannedStmt *stmt);
+extern void sift_agg_drop_sorts(PlannedStmt *stmt, bool reruns);
 extern void sift_agg_rank_sorts(PlannedStmt *stmt);
 extern PGDLLIMPORT const CustomScanMethods sift_agg_rank_plan_methods;
 #ifdef SIFT_TESTING

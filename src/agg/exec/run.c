@@ -828,6 +828,7 @@ stats_run(AggExec *c)
 	run_counters(c, &cc);
 	sift_stat_add(SIFT_STAT_SCANS, 1);
 	sift_stat_add(SIFT_STAT_WORKERS, c->par ? c->par->nlaunched : 0);
+	sift_stat_add(SIFT_STAT_GROUP_SPILLS, c->n_spills);
 	sift_stat_add(SIFT_STAT_UNITS, c->n_units);
 	sift_stat_add(SIFT_STAT_UNITS_PRUNED_ZONE, cc.units_pruned - cc.units_set_pruned - cc.units_search_pruned);
 	sift_stat_add(SIFT_STAT_UNITS_PRUNED_SET, cc.units_set_pruned);
@@ -858,6 +859,8 @@ agg_end(CustomScanState *node)
 	for (int i = 0; ex->osa && i < ex->spec->naggs; i++)
 		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->runs)
 			osa_runs_end(ex->osa[i]);
+	if (ex->par && ex->par->pcxt)
+		par_abort(ex);
 	gen_close(ex);
 	if (ex->done)
 		tuplestore_end(ex->done);
@@ -959,33 +962,6 @@ agg_rescan(CustomScanState *node)
 	ex->gpos = 0;
 	if (ex->topn)
 		sift_topn_rewind(ex->topn);
-}
-
-bool		sift_agg_overflow;
-
-static bool
-nospill_walk(PlanState *ps, void *context)
-{
-	if (IsA(ps, CustomScanState))
-	{
-		if (((CustomScanState *) ps)->methods == &agg_exec_methods)
-		{
-			const SiftAggSpec *s = ((AggExec *) ps)->spec;
-
-			if (s->nkeys > 0 && !s->topn && !sift_aggspec_spillable(s))
-				return true;
-		}
-		else if (((CustomScan *) ps->plan)->methods == &sift_agg_rows_plan_methods)
-			return true;
-	}
-	return planstate_tree_walker(ps, nospill_walk, context);
-}
-
-/* does the statement run a node that holds its groups to the end and cannot spill them? */
-bool
-sift_agg_nospill_planned(PlanState *ps)
-{
-	return nospill_walk(ps, NULL);
 }
 
 const CustomExecMethods agg_exec_methods = {

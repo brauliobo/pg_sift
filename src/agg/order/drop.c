@@ -254,6 +254,7 @@ sort_scan(Sort *srt, SiftAggOrd *ord, int *n)
 	return cs;
 }
 
+static bool drop_reruns;
 static Plan *drop_sorts(Plan *p);
 
 /* the scan under a Limit skips its OFFSET, so the Limit has none; else the scan returns those rows for the Limit to throw away */
@@ -293,6 +294,9 @@ drop_sort(Sort *srt)
 	s = sift_aggspec_unpack(cs->custom_private);
 	s->ord = memcpy(palloc(n * sizeof(SiftAggOrd)), ord, n * sizeof(SiftAggOrd));
 	s->nord = n;
+	/* a scan that gives its groups in an order the partitions of a spill cannot keep holds them all: the Sort stays unless that fits what such a scan may hold */
+	if (!nospill_fits(s, drop_reruns, NULL))
+		return NULL;
 	cs->custom_private = sift_aggspec_pack(s);
 	return srt->plan.lefttree;
 }
@@ -344,8 +348,9 @@ drop_sorts(Plan *p)
 }
 
 void
-sift_agg_drop_sorts(PlannedStmt *stmt)
+sift_agg_drop_sorts(PlannedStmt *stmt, bool reruns)
 {
+	drop_reruns = reruns;
 	stmt->planTree = drop_sorts(stmt->planTree);
 	drop_sorts_list(stmt->subplans);
 }

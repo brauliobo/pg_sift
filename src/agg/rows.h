@@ -37,6 +37,7 @@ typedef struct SiftRowsSpec
 	Oid		   *collid;
 	int			naggs;
 	SiftRowsAgg *agg;
+	const char *rerun;			/* the statement's query for planning it again, or NULL (agg/cte/rerun.c) */
 } SiftRowsSpec;
 
 /* at most this many count(DISTINCT) of one argument share a set: a pair carries a bit for each */
@@ -47,6 +48,8 @@ extern double sift_agg_rows_group_bytes(const SiftRowsSpec *s);
 
 extern List *sift_agg_rows_pack(const SiftRowsSpec *s);
 extern SiftRowsSpec *sift_agg_rows_unpack(List *pack);
+extern List *sift_agg_rows_with_rerun(List *pack, const char *rerun);
+extern const char *sift_agg_rows_rerun(CustomScanState *node);
 
 /* agg/plan_rows.c: the path, from the grouping stage of the upper path hook */
 extern void sift_agg_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);

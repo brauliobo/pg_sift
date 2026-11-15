@@ -1,6 +1,6 @@
 -- The bound on the group table of a scan that cannot spill counts the table: the groups at the bytes the planner prices them, not the sets, values and
 -- dictionaries that the aggregates keep beside it. A prepared (generic) aggregate whose groups take a few kB runs under a bound of 64 kB, where the memory of its
--- table context (sets, dictionaries) is more; the same statement ends with the error when the bound is under its groups.
+-- table context (sets, dictionaries) is more; the same statement runs again as PostgreSQL plans it when the bound is under its groups.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
@@ -12,12 +12,12 @@ VACUUM (FREEZE, ANALYZE) events;
 INSERT INTO events SELECT i, (i % 3000) * 1000, ((i::bigint * 7919) % 1000)::int, i % 7 FROM generate_series(20001, 60000) i;
 
 SET sift.enable_agg = off;
-CREATE TEMP TABLE want AS SELECT k, bit_or(v) AS b, count(DISTINCT w) AS c FROM events GROUP BY k;
+CREATE TEMP TABLE want AS SELECT k, string_agg(v::text, ',' ORDER BY v) AS b, count(DISTINCT w) AS c FROM events GROUP BY k;
 RESET sift.enable_agg;
 
 SET plan_cache_mode = force_generic_plan;
 SET sift.agg_force = on;
-PREPARE q AS SELECT k, bit_or(v) AS b, count(DISTINCT w) AS c FROM events GROUP BY k;
+PREPARE q AS SELECT k, string_agg(v::text, ',' ORDER BY v) AS b, count(DISTINCT w) AS c FROM events GROUP BY k;
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
 SET sift.test_limits = 'group_nospill_factor=1,group_nospill_base=65536';
@@ -25,21 +25,17 @@ SET sift.test_limits = 'group_nospill_factor=1,group_nospill_base=65536';
 CREATE TEMP TABLE got AS EXECUTE q;
 SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
 
--- the bound under the groups the table holds: the statement runs again as PostgreSQL plans it, and a cursor that fetches some rows ends with the error
+-- the bound under the groups the table holds: the statement runs again as PostgreSQL plans it, and so does a cursor, on its first fetch
 SET sift.test_limits = 'group_nospill_factor=0';
 CREATE TEMP TABLE again AS EXECUTE q;
 SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE again) d) AS differ FROM again;
 DO $$
-DECLARE msg text; hint text;
+DECLARE n bigint;
 BEGIN
-	SET sift.test_limits = 'group_nospill_factor=1,group_nospill_base=65536';
-	EXECUTE 'DECLARE c CURSOR FOR SELECT k, bit_or(v) AS b, count(DISTINCT w) AS c FROM events GROUP BY k';
-	SET sift.test_limits = 'group_nospill_factor=0';
+	EXECUTE 'DECLARE c CURSOR FOR SELECT k, string_agg(v::text, '','' ORDER BY v) AS b, count(DISTINCT w) AS c FROM events GROUP BY k';
 	EXECUTE 'FETCH 10 FROM c';
-	RAISE NOTICE 'no error';
-EXCEPTION WHEN program_limit_exceeded THEN
-	GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, hint = PG_EXCEPTION_HINT;
-	RAISE WARNING 'SQLSTATE % names the table: % hint: %', SQLSTATE, msg ~ 'group table of the aggregate holds [0-9]+ kB and cannot spill', hint;
+	GET DIAGNOSTICS n = ROW_COUNT;
+	RAISE WARNING 'fetched % rows', n;
 END $$;
 
 RESET sift.test_limits;

@@ -666,6 +666,7 @@ codec_spec(Codec *c, SiftAggSpec *s)
 	PK(c, s->nhidden);
 	PK(c, s->npreds_total);
 	pk_dbl(c, &s->est_groups);
+	pk_dbl(c, &s->bound_groups);
 	pk_dbl(c, &s->est_rows);
 	PK(c, s->nworkers);
 	PK(c, s->gpart);
@@ -678,6 +679,7 @@ codec_spec(Codec *c, SiftAggSpec *s)
 	PKS_OPT(c, s->scope_why);
 	PKN(c, s->topn);
 	PKS(c, s->desc_topn);
+	PKS_OPT(c, s->rerun);
 	PK(c, s->gtopn_k);
 	PK(c, s->gtopn_agg);
 	PK(c, s->gtopn_desc);
