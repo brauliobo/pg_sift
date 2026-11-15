@@ -23,6 +23,7 @@
 #include "col/preagg.h"
 #include "col/setsum.h"
 #include "col/shred.h"
+#include "col/vstore/vstore.h"
 #include "col/wide.h"
 #include "core/limits.h"
 #include "core/sift.h"
