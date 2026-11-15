@@ -55,6 +55,9 @@ SELECT sift.verify('mf_idx', true);
 SELECT sift._test_meta_note('mf_idx', 'old');
 SELECT failures, failed_at, error_code, last_error, next_retry IS NOT NULL AS has_retry, running
 	FROM sift.workers WHERE index = 'mf_idx'::regclass;
+SELECT sift._test_meta_note('mf_idx', 'old');
+SELECT sift._test_meta_stamp('mf_idx');
+SELECT lower = 24 + sift._test_meta_size() AS stamp_covered FROM sift._test_page('mf_idx', 0);
 SELECT sift._test_meta_note('mf_idx', 'junk');
 SELECT failures, error_code IS NOT NULL AS has_code, last_error FROM sift.workers WHERE index = 'mf_idx'::regclass;
 SELECT sift.verify('mf_idx', true);

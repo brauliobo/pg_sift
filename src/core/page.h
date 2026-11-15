@@ -147,21 +147,14 @@ typedef struct SiftMetaPageData
 #define SIFT_META_LONG_WORDS	0x00000100
 /* The bytes of a metapage of a build without the note and the configuration */
 #define SIFT_META_BASE_SIZE		offsetof(SiftMetaPageData, maint_failed_at)
-/* Does the metapage hold something past its base, so that pd_lower covers all of it */
+/* Does the metapage hold a byte past its base, so that pd_lower must cover all of the struct: whatever the tail holds, a field of a later build included, the log carries only what pd_lower covers */
 static inline bool
 sift_meta_extended(const SiftMetaPageData *meta)
 {
-	if (meta->maint_failed_at != 0 || meta->analyzer_config[0] || meta->maint_ok_at != 0 || meta->last_shrink != 0 || meta->failures_total != 0 ||
-		meta->shrink_blocked != 0)
-		return true;
-	for (int i = 0; i < SIFT_META_STAMPS; i++)
-		if (meta->scope_floor[i].lineage != 0)
-			return true;
-	for (int i = 0; i < SIFT_META_SCOPES; i++)
-		if (meta->scope_paid[i] != 0)
-			return true;
-	for (int i = 0; i < SIFT_META_READS; i++)
-		if (meta->reads[i].gen != 0)
+	const char *tail = (const char *) meta + SIFT_META_BASE_SIZE;
+
+	for (size_t i = 0; i < sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE; i++)
+		if (tail[i] != 0)
 			return true;
 	return false;
 }

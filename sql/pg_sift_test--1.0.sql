@@ -51,6 +51,9 @@ CREATE FUNCTION sift._test_maint_failures(index regclass) RETURNS int4
 -- the metapage as an older build wrote it ('old') or with a failure note of garbage ('junk')
 CREATE FUNCTION sift._test_meta_note(index regclass, mode text) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_meta_note' LANGUAGE C STRICT;
+-- a stamp of no lineage but a horizon in the floor of the metapage, written by sift_meta_update
+CREATE FUNCTION sift._test_meta_stamp(index regclass) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_meta_stamp' LANGUAGE C STRICT;
 -- the bytes of the metapage struct: a used size above it is invalid
 CREATE FUNCTION sift._test_meta_size() RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_meta_size' LANGUAGE C STRICT IMMUTABLE;
