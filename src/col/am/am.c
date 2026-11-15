@@ -7,6 +7,7 @@
 #include "access/relation.h"
 #include "parser/parsetree.h"
 #include "catalog/partition.h"
+#include "tcop/pquery.h"
 #include "catalog/pg_am_d.h"
 #include "bm25/am.h"
 #include "col/am/am_int.h"
@@ -74,7 +75,7 @@ sift_col_make_row(SiftColRel *r, ItemPointer tid, const Datum *values, const boo
  * The rows of a transaction after its first go to the write buffer in runs (wbuf.c, sift_cwbuf_pend). They are written before the commit record and before
  * a savepoint starts, dropped when the transaction or the savepoint aborts: the heap rows of an aborted savepoint are dead at once and VACUUM may free their
  * slots while the transaction goes on, so an index entry written for them later would point at whatever takes the slot. An ON CONFLICT statement kills
- * the heap row of a conflict after the index entries went in, with no abort to drop them: its rows go in at once (batch_stmts, or the row itself while no statement was heard).
+ * the heap row of a conflict after the index entries went in, with no abort to drop them: its rows go in at once (batch_stmts, or the row itself while batch_blind).
  */
 static bool batch_hooked;
 
@@ -82,7 +83,9 @@ static bool batch_seen;
 
 static int	batch_stmts;
 
-static bool batch_started;	/* the backend has heard a statement start: until then a statement that writes may be one whose start was missed (batch_stmts is 0 for an ON CONFLICT it runs) */
+static bool batch_blind;	/* the library loaded while a statement ran, so that statements in flight were not heard (sift_col_stmt_loaded): until the transaction ends */
+
+static bool batch_blind_wrote;	/* a row went into an index while batch_blind: a statement that writes and was not heard is running or ran (sift_col_ends_rows) */
 
 static int	batch_writes;		/* statements running that modify data (sift_col_writing) */
 
@@ -138,7 +141,11 @@ batch_xact(XactEvent event, void *arg)
 		batch_cid_set = false;
 	}
 	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT)
+	{
 		batch_seen = false;
+		batch_blind = false;
+		batch_blind_wrote = false;
+	}
 }
 
 static void
@@ -312,10 +319,25 @@ stmt_note(QueryDesc *queryDesc, bool late)
 	}
 }
 
+/*
+ * Called when the library loads. A statement that is executing then (its executor start went by before the hooks were set: an INSERT, a COPY or a MERGE reaches a partition, and its
+ * index, only when it routes a row) is not noted, nor are the statements around it. Until the transaction ends an insertion is looked at in the heap to tell a speculative one, which a
+ * conflict may kill without telling the index, whatever statements run in between (a trigger, a function); and once a row went into an index no table is known not to have its
+ * versions ended by the statement that wrote it.
+ */
+void
+sift_col_stmt_loaded(void)
+{
+	if (IsTransactionState() && ActivePortal != NULL)
+	{
+		batch_blind = true;
+		sift_col_batch_hook();
+	}
+}
+
 void
 sift_col_stmt_start(QueryDesc *queryDesc)
 {
-	batch_started = true;
 	stmt_note(queryDesc, false);
 }
 
@@ -344,6 +366,9 @@ bool
 sift_col_ends_rows(Oid heapoid)
 {
 	List	   *above = NIL;
+
+	if (batch_blind_wrote)
+		return true;
 
 	for (StmtState *st = batch_open; st != NULL; st = st->next)
 	{
@@ -388,7 +413,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	SiftColRow	row;
 	bool		crossed;
 	bool		supersede = r->rowkey && batch_updates > 0;
-	bool		speculative = batch_stmts > 0 || (!batch_started && heap->rd_rel->relam == HEAP_TABLE_AM_OID && sift_col_is_speculative(heap, heap_tid));
+	bool		speculative = batch_stmts > 0 || (batch_blind && heap->rd_rel->relam == HEAP_TABLE_AM_OID && sift_col_is_speculative(heap, heap_tid));
 	/*
 	 * The transaction that inserted the heap tuple (a subtransaction's id inside a savepoint), kept in the record for the reads that decide visibility from the index.
 	 * Not for a speculative insertion: the tuple may be killed when its conflict is found, and no one is told. A tuple that CREATE INDEX
@@ -399,6 +424,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	bool		ref = sift_col_wbuf_ref && TransactionIdIsValid(xmin) && index->rd_index->indisvalid && heap->rd_rel->relam == HEAP_TABLE_AM_OID;
 
 	batch_inserting = true;
+	batch_blind_wrote |= batch_blind;
 	sift_col_make_row(r, heap_tid, values, isnull, &row, rowcxt);
 	sift_col_batch_hook();
 	/* the first row of a transaction goes in at once: a statement of one row pays nothing for the buffer */

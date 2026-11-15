@@ -1,0 +1,391 @@
+-- track_changes on partitions, in the first statement of a new backend that loads the library while it runs (INSERT, COPY and MERGE reach a partition, and its index, only when they route a row),
+-- with what runs inside the statement: BEFORE ROW triggers and functions that read the table through the sift_col index before the statement is over (the counts must be the heap's: the
+-- versions the statement ended are not in the log yet), data-modifying CTEs, MERGE, COPY with reads in the same transaction, savepoints, prepared statements, attach and detach in a
+-- transaction and the parent of an inheritance tree. Every case runs as the first statement of a new backend, in the partitioned kinds: hash, range, list and two levels.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE trlog (seq serial, ev text, n_sift text, n_heap text);
+-- the count, the sum and the distinct keys of t, by the sift_col index (its read is priced in) and by the heap alone
+CREATE FUNCTION read_sift(t regclass) RETURNS text LANGUAGE plpgsql VOLATILE SET sift.enable_agg = on SET seq_page_cost = 10000 AS $$
+DECLARE r text;
+BEGIN EXECUTE format('SELECT count(*) || ''/'' || coalesce(sum(v), 0) || ''/'' || count(DISTINCT id) FROM %s', t) INTO r; RETURN r; END $$;
+CREATE FUNCTION read_heap(t regclass) RETURNS text LANGUAGE plpgsql VOLATILE SET sift.enable_agg = off SET enable_indexscan = off SET enable_indexonlyscan = off SET enable_bitmapscan = off AS $$
+DECLARE r text;
+BEGIN EXECUTE format('SELECT count(*) || ''/'' || coalesce(sum(v), 0) || ''/'' || count(DISTINCT id) FROM %s', t) INTO r; RETURN r; END $$;
+CREATE FUNCTION log_reads(ev text, t regclass) RETURNS void LANGUAGE sql AS $$ INSERT INTO trlog (ev, n_sift, n_heap) VALUES (ev, read_sift(t), read_heap(t)) $$;
+CREATE FUNCTION log_trigger() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN PERFORM log_reads(TG_ARGV[0] || ' ' || TG_WHEN || ' ' || TG_LEVEL || ' ' || TG_OP, TG_ARGV[0]::regclass); RETURN NEW; END $$;
+CREATE FUNCTION log_value(ev text, t regclass) RETURNS int LANGUAGE plpgsql AS $$ BEGIN PERFORM log_reads(ev, t); RETURN 1; END $$;
+-- what the statements read inside, by case: how many reads, and how many differ from the heap's
+CREATE FUNCTION log_summary(OUT ev text, OUT reads bigint, OUT differing bigint) RETURNS SETOF record LANGUAGE sql AS $$
+	SELECT l.ev, count(*), count(*) FILTER (WHERE n_sift <> n_heap) FROM trlog l GROUP BY l.ev ORDER BY l.ev $$;
+-- the leaves of t whose sift_col read is not the heap's, and the same for the table as a whole
+CREATE FUNCTION leaves_differing(t regclass) RETURNS bigint LANGUAGE sql AS $$
+	SELECT sum(sift_helpers.groups_differences_sift_vs_heap(relid)) + sift_helpers.groups_differences_sift_vs_heap(t) FROM pg_partition_tree(t) WHERE isleaf $$;
+CREATE TABLE th (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) PARTITION BY HASH (id);
+CREATE TABLE th0 PARTITION OF th FOR VALUES WITH (MODULUS 3, REMAINDER 0) WITH (autovacuum_enabled = false);
+CREATE TABLE th1 PARTITION OF th FOR VALUES WITH (MODULUS 3, REMAINDER 1) WITH (autovacuum_enabled = false);
+CREATE TABLE th2 PARTITION OF th FOR VALUES WITH (MODULUS 3, REMAINDER 2) WITH (autovacuum_enabled = false);
+CREATE TABLE tr (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) PARTITION BY RANGE (id);
+CREATE TABLE tr0 PARTITION OF tr FOR VALUES FROM (0) TO (2400) WITH (autovacuum_enabled = false);
+CREATE TABLE tr1 PARTITION OF tr FOR VALUES FROM (2400) TO (4800) WITH (autovacuum_enabled = false);
+CREATE TABLE tr2 PARTITION OF tr FOR VALUES FROM (4800) TO (100000) WITH (autovacuum_enabled = false);
+CREATE TABLE tl (id int NOT NULL, g int NOT NULL, v int NOT NULL, PRIMARY KEY (id, g)) PARTITION BY LIST (g);
+CREATE TABLE tl0 PARTITION OF tl FOR VALUES IN (0, 1, 2) WITH (autovacuum_enabled = false);
+CREATE TABLE tl1 PARTITION OF tl FOR VALUES IN (3, 4) WITH (autovacuum_enabled = false);
+CREATE TABLE tl2 PARTITION OF tl FOR VALUES IN (5, 6) WITH (autovacuum_enabled = false);
+CREATE TABLE tm (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) PARTITION BY RANGE (id);
+CREATE TABLE tm0 PARTITION OF tm FOR VALUES FROM (0) TO (4500) PARTITION BY HASH (id);
+CREATE TABLE tm00 PARTITION OF tm0 FOR VALUES WITH (MODULUS 2, REMAINDER 0) WITH (autovacuum_enabled = false);
+CREATE TABLE tm01 PARTITION OF tm0 FOR VALUES WITH (MODULUS 2, REMAINDER 1) WITH (autovacuum_enabled = false);
+CREATE TABLE tm1 PARTITION OF tm FOR VALUES FROM (4500) TO (100000) PARTITION BY HASH (id);
+CREATE TABLE tm10 PARTITION OF tm1 FOR VALUES WITH (MODULUS 2, REMAINDER 0) WITH (autovacuum_enabled = false);
+CREATE TABLE tm11 PARTITION OF tm1 FOR VALUES WITH (MODULUS 2, REMAINDER 1) WITH (autovacuum_enabled = false);
+INSERT INTO th SELECT i * 3, i % 7, i FROM generate_series(0, 2399) i;
+INSERT INTO tr SELECT i * 3, i % 7, i FROM generate_series(0, 2399) i;
+INSERT INTO tl SELECT i * 3, i % 7, i FROM generate_series(0, 2399) i;
+INSERT INTO tm SELECT i * 3, i % 7, i FROM generate_series(0, 2399) i;
+SELECT format('CREATE INDEX %s_c ON %s USING sift_col (id, g, v)', c, c) FROM unnest(ARRAY['th0', 'th1', 'th2', 'tr0', 'tr1', 'tr2', 'tl0', 'tl1', 'tl2', 'tm00', 'tm01', 'tm10', 'tm11']) c \gexec
+CREATE INDEX th0_c ON th0 USING sift_col (id, g, v)
+CREATE INDEX th1_c ON th1 USING sift_col (id, g, v)
+CREATE INDEX th2_c ON th2 USING sift_col (id, g, v)
+CREATE INDEX tr0_c ON tr0 USING sift_col (id, g, v)
+CREATE INDEX tr1_c ON tr1 USING sift_col (id, g, v)
+CREATE INDEX tr2_c ON tr2 USING sift_col (id, g, v)
+CREATE INDEX tl0_c ON tl0 USING sift_col (id, g, v)
+CREATE INDEX tl1_c ON tl1 USING sift_col (id, g, v)
+CREATE INDEX tl2_c ON tl2 USING sift_col (id, g, v)
+CREATE INDEX tm00_c ON tm00 USING sift_col (id, g, v)
+CREATE INDEX tm01_c ON tm01 USING sift_col (id, g, v)
+CREATE INDEX tm10_c ON tm10 USING sift_col (id, g, v)
+CREATE INDEX tm11_c ON tm11 USING sift_col (id, g, v)
+-- the triggers log what the statement reads at each row, from the partition and from the table the statement names
+SELECT format('CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON %s FOR EACH ROW EXECUTE FUNCTION log_trigger(%s)', leaf, quote_literal(t))
+FROM (VALUES ('th', 'th0'), ('th', 'th1'), ('th', 'th2'), ('tr', 'tr0'), ('tr', 'tr1'), ('tr', 'tr2'), ('tl', 'tl0'), ('tl', 'tl1'), ('tl', 'tl2'),
+	('tm', 'tm00'), ('tm', 'tm01'), ('tm', 'tm10'), ('tm', 'tm11')) x(t, leaf) \gexec
+CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON th0 FOR EACH ROW EXECUTE FUNCTION log_trigger('th')
+CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON th1 FOR EACH ROW EXECUTE FUNCTION log_trigger('th')
+CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON th2 FOR EACH ROW EXECUTE FUNCTION log_trigger('th')
+CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON tr0 FOR EACH ROW EXECUTE FUNCTION log_trigger('tr')
+CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON tr1 FOR EACH ROW EXECUTE FUNCTION log_trigger('tr')
+CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON tr2 FOR EACH ROW EXECUTE FUNCTION log_trigger('tr')
+CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON tl0 FOR EACH ROW EXECUTE FUNCTION log_trigger('tl')
+CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON tl1 FOR EACH ROW EXECUTE FUNCTION log_trigger('tl')
+CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON tl2 FOR EACH ROW EXECUTE FUNCTION log_trigger('tl')
+CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON tm00 FOR EACH ROW EXECUTE FUNCTION log_trigger('tm')
+CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON tm01 FOR EACH ROW EXECUTE FUNCTION log_trigger('tm')
+CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON tm10 FOR EACH ROW EXECUTE FUNCTION log_trigger('tm')
+CREATE TRIGGER trb BEFORE INSERT OR UPDATE ON tm11 FOR EACH ROW EXECUTE FUNCTION log_trigger('tm')
+VACUUM th, tr, tl, tm;
+SELECT 'start' AS "case", leaves_differing('th') AS h, leaves_differing('tr') AS r, leaves_differing('tl') AS l, leaves_differing('tm') AS m;
+ case  | h | r | l | m 
+-------+---+---+---+---
+ start | 0 | 0 | 0 | 0
+(1 row)
+
+-- an upsert with a BEFORE ROW trigger that reads the table: the rows it replaced are not counted twice
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO th SELECT i * 3, i % 7, i FROM generate_series(2390, 2409) i ON CONFLICT (id) DO UPDATE SET v = th.v + 1;
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO tr SELECT i * 3, i % 7, i FROM generate_series(2390, 2409) i ON CONFLICT (id) DO UPDATE SET v = tr.v + 1;
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO tl SELECT i * 3, i % 7, i FROM generate_series(2390, 2409) i ON CONFLICT (id, g) DO UPDATE SET v = tl.v + 1;
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO tm SELECT i * 3, i % 7, i FROM generate_series(2390, 2409) i ON CONFLICT (id) DO UPDATE SET v = tm.v + 1;
+SELECT * FROM log_summary();
+          ev          | reads | differing 
+----------------------+-------+-----------
+ th BEFORE ROW INSERT |    20 |         0
+ th BEFORE ROW UPDATE |    10 |         0
+ tl BEFORE ROW INSERT |    20 |         0
+ tl BEFORE ROW UPDATE |    10 |         0
+ tm BEFORE ROW INSERT |    20 |         0
+ tm BEFORE ROW UPDATE |    10 |         0
+ tr BEFORE ROW INSERT |    20 |         0
+ tr BEFORE ROW UPDATE |    10 |         0
+(8 rows)
+
+SELECT 'upsert' AS "case", leaves_differing('th') AS h, leaves_differing('tr') AS r, leaves_differing('tl') AS l, leaves_differing('tm') AS m;
+  case  | h | r | l | m 
+--------+---+---+---+---
+ upsert | 0 | 0 | 0 | 0
+(1 row)
+
+TRUNCATE trlog;
+SELECT format('DROP TRIGGER trb ON %s', c) FROM unnest(ARRAY['th0', 'th1', 'th2', 'tr0', 'tr1', 'tr2', 'tl0', 'tl1', 'tl2', 'tm00', 'tm01', 'tm10', 'tm11']) c \gexec
+DROP TRIGGER trb ON th0
+DROP TRIGGER trb ON th1
+DROP TRIGGER trb ON th2
+DROP TRIGGER trb ON tr0
+DROP TRIGGER trb ON tr1
+DROP TRIGGER trb ON tr2
+DROP TRIGGER trb ON tl0
+DROP TRIGGER trb ON tl1
+DROP TRIGGER trb ON tl2
+DROP TRIGGER trb ON tm00
+DROP TRIGGER trb ON tm01
+DROP TRIGGER trb ON tm10
+DROP TRIGGER trb ON tm11
+-- a function in SET, WHERE and RETURNING of the upsert reads the table too
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO th SELECT i * 3, i % 7, i FROM generate_series(2390, 2409) i
+	ON CONFLICT (id) DO UPDATE SET v = th.v + log_value('th set', 'th') WHERE log_value('th where', 'th') > 0 RETURNING log_value('th returning', 'th') AS returned;
+ returned 
+----------
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+(20 rows)
+
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO tr SELECT i * 3, i % 7, i FROM generate_series(2390, 2409) i
+	ON CONFLICT (id) DO UPDATE SET v = tr.v + log_value('tr set', 'tr') WHERE log_value('tr where', 'tr') > 0 RETURNING log_value('tr returning', 'tr') AS returned;
+ returned 
+----------
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+        1
+(20 rows)
+
+SELECT * FROM log_summary() WHERE ev NOT LIKE '% BEFORE %';
+      ev      | reads | differing 
+--------------+-------+-----------
+ th returning |    20 |         0
+ th set       |    20 |         0
+ th where     |    20 |         0
+ tr returning |    20 |         0
+ tr set       |    20 |         0
+ tr where     |    20 |         0
+(6 rows)
+
+TRUNCATE trlog;
+-- a data-modifying CTE that upserts, with a function in the statement that reads the table for each row it returns
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+WITH ins AS (INSERT INTO tm SELECT i * 3, i % 7, i FROM generate_series(2390, 2409) i ON CONFLICT (id) DO UPDATE SET v = tm.v + 1 RETURNING id)
+SELECT count(log_value('tm cte', 'tm')) AS rows_returned, (SELECT count(*) FROM tm) AS count_in_statement FROM ins;
+ rows_returned | count_in_statement 
+---------------+--------------------
+            20 |               2410
+(1 row)
+
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+WITH ins AS (INSERT INTO tl SELECT i * 3, i % 7, i FROM generate_series(2390, 2409) i ON CONFLICT (id, g) DO UPDATE SET v = tl.v + 1 RETURNING id),
+	del AS (DELETE FROM tl WHERE id % 5 = 0 RETURNING id)
+SELECT (SELECT count(*) FROM ins) AS upserted, (SELECT count(*) FROM del) AS deleted, (SELECT count(log_value('tl cte', 'tl')) FROM ins) AS reads;
+ upserted | deleted | reads 
+----------+---------+-------
+       20 |     478 |    20
+(1 row)
+
+SELECT * FROM log_summary() WHERE ev NOT LIKE '% BEFORE %';
+   ev   | reads | differing 
+--------+-------+-----------
+ tl cte |    20 |         0
+ tm cte |    20 |         0
+(2 rows)
+
+TRUNCATE trlog;
+SELECT 'functions and CTEs' AS "case", leaves_differing('th') AS h, leaves_differing('tr') AS r, leaves_differing('tl') AS l, leaves_differing('tm') AS m;
+        case        | h | r | l | m 
+--------------------+---+---+---+---
+ functions and CTEs | 0 | 0 | 0 | 0
+(1 row)
+
+-- MERGE as the first statement: update, delete and insert
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+MERGE INTO tr USING (SELECT i * 3 AS id, i % 7 AS g, i AS v FROM generate_series(2380, 2419) i) s ON tr.id = s.id
+	WHEN MATCHED AND s.v % 3 = 0 THEN DELETE WHEN MATCHED THEN UPDATE SET v = tr.v + log_value('tr merge update', 'tr')
+	WHEN NOT MATCHED THEN INSERT VALUES (s.id, s.g, s.v + log_value('tr merge insert', 'tr'));
+SELECT * FROM log_summary();
+       ev        | reads | differing 
+-----------------+-------+-----------
+ tr merge insert |    10 |         0
+ tr merge update |    20 |         0
+(2 rows)
+
+SELECT 'merge' AS "case", leaves_differing('tr') AS r;
+ case  | r 
+-------+---
+ merge | 0
+(1 row)
+
+TRUNCATE trlog;
+-- COPY, then reads in the same transaction, an update of the copied rows, a savepoint that rolls back an upsert
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+BEGIN;
+COPY th FROM STDIN;
+SELECT read_sift('th') = read_heap('th') AS same_after_copy;
+ same_after_copy 
+-----------------
+ t
+(1 row)
+
+UPDATE th SET v = v + 1 WHERE id > 90000;
+SELECT read_sift('th') = read_heap('th') AS same_after_update;
+ same_after_update 
+-------------------
+ t
+(1 row)
+
+SAVEPOINT s;
+INSERT INTO th SELECT i * 3, i % 7, i FROM generate_series(0, 2699) i ON CONFLICT (id) DO UPDATE SET v = th.v + 1;
+SELECT read_sift('th') = read_heap('th') AS same_after_upsert;
+ same_after_upsert 
+-------------------
+ t
+(1 row)
+
+ROLLBACK TO s;
+SELECT read_sift('th') = read_heap('th') AS same_after_rollback;
+ same_after_rollback 
+---------------------
+ t
+(1 row)
+
+COMMIT;
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+BEGIN;
+SAVEPOINT s;
+INSERT INTO tl SELECT i * 3, i % 7, i FROM generate_series(0, 2699) i ON CONFLICT (id, g) DO UPDATE SET v = tl.v + 1;
+SELECT read_sift('tl') = read_heap('tl') AS same_after_upsert;
+ same_after_upsert 
+-------------------
+ t
+(1 row)
+
+ROLLBACK TO s;
+INSERT INTO tl SELECT i * 3, i % 7, i FROM generate_series(0, 99) i ON CONFLICT (id, g) DO UPDATE SET v = tl.v + 2;
+SELECT read_sift('tl') = read_heap('tl') AS same_after_rollback_and_upsert;
+ same_after_rollback_and_upsert 
+--------------------------------
+ t
+(1 row)
+
+COMMIT;
+SELECT 'copy and savepoints' AS "case", leaves_differing('th') AS h, leaves_differing('tl') AS l;
+        case         | h | l 
+---------------------+---+---
+ copy and savepoints | 0 | 0
+(1 row)
+
+-- prepared statements and the extended protocol: the first statement of the backend is a plan that was not made by it
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+PREPARE up(int, int) AS INSERT INTO tm SELECT i * 3, i % 7, i FROM generate_series($1, $2) i ON CONFLICT (id) DO UPDATE SET v = tm.v + 1;
+EXECUTE up(0, 2699);
+SET plan_cache_mode = force_generic_plan;
+EXECUTE up(100, 199);
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO tr SELECT i * 3, i % 7, i FROM generate_series(0, $1::int) i ON CONFLICT (id) DO UPDATE SET v = tr.v + 1 \bind 2699 \g
+SELECT 'prepared and extended' AS "case", leaves_differing('tm') AS m, leaves_differing('tr') AS r;
+         case          | m | r 
+-----------------------+---+---
+ prepared and extended | 0 | 0
+(1 row)
+
+-- a partition detached and attached in the transaction that upserts into it and into the table
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+BEGIN;
+ALTER TABLE tr DETACH PARTITION tr0;
+INSERT INTO tr0 SELECT id, g, v FROM tr0 ON CONFLICT (id) DO UPDATE SET v = tr0.v + 1;
+ALTER TABLE tr ATTACH PARTITION tr0 FOR VALUES FROM (0) TO (2400);
+INSERT INTO tr SELECT id, g, v FROM tr WHERE id % 4 = 0 ON CONFLICT (id) DO UPDATE SET v = tr.v + 2;
+SELECT read_sift('tr') = read_heap('tr') AS same_in_the_transaction;
+ same_in_the_transaction 
+-------------------------
+ t
+(1 row)
+
+COMMIT;
+SELECT 'detach and attach' AS "case", leaves_differing('tr') AS r;
+       case        | r 
+-------------------+---
+ detach and attach | 0
+(1 row)
+
+-- the parent of an inheritance tree: its own rows only, its children keep theirs
+CREATE TABLE ti (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false);
+CREATE TABLE ti0 (LIKE ti INCLUDING ALL) INHERITS (ti) WITH (autovacuum_enabled = false);
+INSERT INTO ti0 SELECT i * 3, i % 7, i FROM generate_series(0, 1199) i;
+INSERT INTO ti SELECT i * 3 + 2, i % 7, i FROM generate_series(0, 599) i;
+CREATE INDEX ti_c ON ti USING sift_col (id, g, v);
+CREATE INDEX ti0_c ON ti0 USING sift_col (id, g, v);
+VACUUM ti, ti0;
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO ti SELECT i * 3 + 2, i % 7, i FROM generate_series(0, 699) i ON CONFLICT (id) DO UPDATE SET v = ti.v + 1;
+UPDATE ti SET v = v + 1 WHERE id % 5 = 0;
+SELECT 'inheritance' AS "case", sift_helpers.groups_differences_sift_vs_heap('ti') AS differing, sift_helpers.groups_differences_sift_vs_heap('ti0') AS differing_child;
+    case     | differing | differing_child 
+-------------+-----------+-----------------
+ inheritance |         0 |               0
+(1 row)
+
+DROP TABLE th, tr, tl, tm, ti0, ti, trlog;
+DROP FUNCTION read_sift, read_heap, log_reads, log_trigger, log_value, log_summary, leaves_differing;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;
