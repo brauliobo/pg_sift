@@ -60,6 +60,7 @@ CHECKS=(
 	'port-isa-check	sh scripts/port-isa-check.sh --selftest'
 	'ci-claim	scripts/test-ci-claim.sh'
 	'ci-stop	scripts/test-ci-stop.sh'
+	'ci-build-fail	scripts/test-ci-build-fail.sh'
 	'ci-ready	scripts/test-ci-ready.sh'
 	'scaling-lock	scripts/test-scaling-gate.sh'
 	'relcache-slots	scripts/check-relcache-slots.sh --selftest && scripts/check-relcache-slots.sh'
