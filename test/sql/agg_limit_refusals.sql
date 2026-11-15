@@ -1,4 +1,4 @@
--- A query past a fixed limit of the extension (docs/LIMITS.md) keeps the normal plan with a slug that names the limit and its value, and sift.stats()
+-- A query past a fixed limit of the extension (docs/LIMITS.md) keeps the normal plan with a slug that names the limit and its value, and sift.stats(local => true)
 -- counts it twice, as refused.<slug> and as limit.<id>. Each limit is lowered with sift.test_limits so that a few rows reach it; the answer must be
 -- the one the scan gives under the default limit (the refusal changes the plan, not the rows).
 CREATE EXTENSION pg_sift;
@@ -70,8 +70,8 @@ BEGIN
 	RESET sift.agg_lookup_max_kb;
 END $$;
 RESET sift.count_refusals;
-SELECT name, value > 0 AS counted FROM sift.stats() WHERE name LIKE 'limit.%' OR name IN ('refused.too_many_keys', 'refused.shape_width', 'refused.spine_rows') ORDER BY 1;
-SELECT count(*) = 0 AS only_limits FROM sift.stats() s WHERE s.name LIKE 'limit.%' AND substr(s.name, 7) NOT IN (SELECT id FROM limits UNION SELECT 'lookup_kb');
+SELECT name, value > 0 AS counted FROM sift.stats(local => true) WHERE name LIKE 'limit.%' OR name IN ('refused.too_many_keys', 'refused.shape_width', 'refused.spine_rows') ORDER BY 1;
+SELECT count(*) = 0 AS only_limits FROM sift.stats(local => true) s WHERE s.name LIKE 'limit.%' AND substr(s.name, 7) NOT IN (SELECT id FROM limits UNION SELECT 'lookup_kb');
 
 -- same rows under the default limit and under the lowered one
 CREATE FUNCTION answer(q text, setting text) RETURNS text LANGUAGE plpgsql AS $$

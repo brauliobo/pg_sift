@@ -41,7 +41,7 @@ BEGIN
 	END LOOP;
 END $$;
 CREATE FUNCTION shared() RETURNS TABLE (hits_found bool, misses_counted bool) LANGUAGE sql AS
-	$$ SELECT coalesce(max(value) FILTER (WHERE name = 'dict_shared_hits'), 0) > 0, coalesce(max(value) FILTER (WHERE name = 'dict_shared_misses'), 0) > 0 FROM sift.stats() $$;
+	$$ SELECT coalesce(max(value) FILTER (WHERE name = 'dict_shared_hits'), 0) > 0, coalesce(max(value) FILTER (WHERE name = 'dict_shared_misses'), 0) > 0 FROM sift.stats(local => true) $$;
 
 CREATE FUNCTION explain_has(q text, what text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -104,7 +104,7 @@ SET sift.test_col_dict_shared = 1;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
 SELECT snap('par_first');
-SELECT value > 0 AS workers_launched FROM sift.stats() WHERE name = 'workers_launched';
+SELECT value > 0 AS workers_launched FROM sift.stats(local => true) WHERE name = 'workers_launched';
 \c
 SET sift.test_col_dict_shared = 1;
 SET max_parallel_workers_per_gather = 2;

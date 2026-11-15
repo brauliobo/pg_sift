@@ -617,6 +617,9 @@ extern bool sift_col_unit_exact(const SiftColUnit *unit);
 extern bool sift_col_unit_allvisible(const SiftColUnit *unit);
 
 extern const SiftColCounters *sift_col_counters(const SiftColSource *src);
+/* The metapage as the scan read it when it opened */
+struct SiftMetaPageData;
+extern const struct SiftMetaPageData *sift_col_source_meta(const SiftColSource *src);
 
 /* An unsigned value as a varint at the end of out */
 static inline void

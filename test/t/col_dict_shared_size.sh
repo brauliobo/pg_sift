@@ -22,7 +22,7 @@ WANT=$(sql primary "SET sift.enable_agg = off" "SET sift.enable_col_scan = off" 
 # SETTING...: the rows, then held,hits,misses of a new backend
 backend() {
 	sql primary "LOAD 'pg_sift'" "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = on" "$@" "$SHAPE" \
-		"SELECT string_agg(value::text, ',' ORDER BY name) FROM sift.stats() WHERE name IN ('dict_shared_hits', 'dict_shared_held', 'dict_shared_misses')" | tr '\n' ' ' | sed 's/ $//'
+		"SELECT string_agg(value::text, ',' ORDER BY name) FROM sift.stats(local => true) WHERE name IN ('dict_shared_hits', 'dict_shared_held', 'dict_shared_misses')" | tr '\n' ' ' | sed 's/ $//'
 }
 segments() { local f n; for f in /dev/shm/PostgreSQL.*; do n=$(wc -c <"$f" 2>/dev/null | tr -d " ") && [[ -n $n ]] && echo "$n $f"; done | sort; true; }
 sized() { segments | awk -v n="$1" '$1 == n' | wc -l; }

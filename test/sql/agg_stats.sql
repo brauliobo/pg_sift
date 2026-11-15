@@ -1,4 +1,4 @@
--- sift.stats() holds what the Custom Scan (SiftAgg) scans of the session did, folded in when a scan ends from the counters EXPLAIN ANALYZE shows:
+-- sift.stats(local => true) holds what the Custom Scan (SiftAgg) scans of the session did, folded in when a scan ends from the counters EXPLAIN ANALYZE shows:
 -- each figure is compared with the one of the statement that made it. sift.col_rollup_misses() lists the scans the pre-aggregates did not answer.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -10,7 +10,7 @@ INSERT INTO ev SELECT i, i % 7, date '2020-01-01' + i / 300, i % 100, i % 13, re
 CREATE INDEX ev_col ON ev USING sift_col (id, grp, day, amount) WITH (rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) ev;
 
-CREATE FUNCTION stat(n text) RETURNS bigint LANGUAGE sql AS $$ SELECT coalesce((SELECT value FROM sift.stats() WHERE name = n), 0) $$;
+CREATE FUNCTION stat(n text) RETURNS bigint LANGUAGE sql AS $$ SELECT coalesce((SELECT value FROM sift.stats(local => true) WHERE name = n), 0) $$;
 
 -- the statement's EXPLAIN ANALYZE figures against the counters of a session that ran nothing else
 CREATE FUNCTION compare(q text) RETURNS TABLE (what text, same bool) LANGUAGE plpgsql AS $$
@@ -43,7 +43,7 @@ SELECT count(*) FROM (SELECT grp, count(*) FROM ev GROUP BY grp) a, (SELECT grp,
 SELECT grp, count(*) FROM ev GROUP BY grp ORDER BY grp LIMIT 1;
 SELECT stat('scans') AS scans, stat('units') >= 2 AS units;
 SELECT sift.stats_reset();
-SELECT count(*) FILTER (WHERE value <> 0) AS nonzero, count(*) AS counters FROM sift.stats();
+SELECT count(*) FILTER (WHERE value <> 0) AS nonzero, count(*) AS counters FROM sift.stats(local => true);
 
 -- the workers' share reaches the leader's figures
 SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
@@ -90,10 +90,10 @@ SELECT stat('lookup_cache_misses') AS lookup_misses, stat('lookup_cache_hits') A
 SELECT sift.stats_reset();
 SET client_min_messages = warning;
 SELECT d.country, count(*) FROM dims d GROUP BY 1 ORDER BY 1 LIMIT 1;
-SELECT name, value FROM sift.stats() WHERE name LIKE 'refused.%' ORDER BY name;
+SELECT name, value FROM sift.stats(local => true) WHERE name LIKE 'refused.%' ORDER BY name;
 SET sift.explain_refusals = on;
 SELECT d.country, count(*) FROM dims d GROUP BY 1 ORDER BY 1 LIMIT 1;
-SELECT name, value FROM sift.stats() WHERE name LIKE 'refused.%' ORDER BY name;
+SELECT name, value FROM sift.stats(local => true) WHERE name LIKE 'refused.%' ORDER BY name;
 RESET sift.explain_refusals; RESET client_min_messages;
 
 -- a statement that fails folds nothing in

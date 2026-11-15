@@ -42,8 +42,8 @@ pids=$(fresh $'BEGIN;\nSELECT pg_backend_pid();\nSELECT pg_backend_pid();\nCOMMI
 check "the statements of a transaction block run in one" test "$pids" == 1
 # the cold-backend class: the first statement of a backend loads the library and attaches what it shares; a backend that runs two statements has done that for the second
 fresh $'CREATE EXTENSION pg_sift;\nCREATE TABLE ev (id int, k int);\nINSERT INTO ev SELECT g, g % 7 FROM generate_series(1, 5000) g;\nCREATE INDEX ev_i ON ev USING sift_col (id, k);\nVACUUM ev;' >/dev/null
-warm=$(sql fb "SET sift.enable_agg = on" "SET sift.agg_force = on" "SELECT 'x', count(*) FROM ev GROUP BY k ORDER BY k" "SELECT 'scans', value FROM sift.stats() WHERE name = 'scans'" | tail -1)
-cold=$(fresh $'SET sift.enable_agg = on;\nSET sift.agg_force = on;\nSELECT \'x\', count(*) FROM ev GROUP BY k ORDER BY k;\nSELECT \'scans\', value FROM sift.stats() WHERE name = \'scans\';' | tail -1)
+warm=$(sql fb "SET sift.enable_agg = on" "SET sift.agg_force = on" "SELECT 'x', count(*) FROM ev GROUP BY k ORDER BY k" "SELECT 'scans', value FROM sift.stats(local => true) WHERE name = 'scans'" | tail -1)
+cold=$(fresh $'SET sift.enable_agg = on;\nSET sift.agg_force = on;\nSELECT \'x\', count(*) FROM ev GROUP BY k ORDER BY k;\nSELECT \'scans\', value FROM sift.stats(local => true) WHERE name = \'scans\';' | tail -1)
 check "a statement of a new backend sees none of the counters of the one before" test "$warm" != "$cold" -a "$cold" == "scans|0"
 out=$(fresh $'SET work_mem = \'nope\';\nSELECT 1;\nSELECT 2;' 2>&1)
 check "a SET the test saw fail does not fail again at every new connection" test "$(grep -c ERROR <<<"$out")" == 1

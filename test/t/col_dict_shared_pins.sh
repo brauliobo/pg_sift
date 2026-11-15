@@ -36,7 +36,7 @@ FETCH 1 FROM c;
 $(pinned);
 $(churn)
 $(pinned);
-SELECT 'M:' || (value >= $TABLES) FROM sift.stats() WHERE name = 'dict_shared_misses';
+SELECT 'M:' || (value >= $TABLES) FROM sift.stats(local => true) WHERE name = 'dict_shared_misses';
 FETCH ALL FROM c;
 COMMIT;
 $(pinned);

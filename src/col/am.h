@@ -425,6 +425,9 @@ extern uint64 sift_col_fold_marks(Relation index);
 /* Have the reads of the server paid for the fold of the marks, and the worker asked for when they have */
 extern bool sift_col_fold_due(Relation index);
 extern void sift_col_reads_flush(Relation index);
+/* A scan of the index begins on the source (the aggregate scan, a bitmap or index scan): counted for the merge of the overlays when the index has a key cut (maint/rewrite.c) */
+struct SiftColSource;
+extern void sift_col_scan_note(Relation index, const struct SiftColSource *src);
 extern bool sift_col_fold_tick(Relation index);
 extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);

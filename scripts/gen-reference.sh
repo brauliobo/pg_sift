@@ -173,7 +173,10 @@ def function(s, name, open_):
                      for p in ins)
     first = ins[0][2] if ins else ''
     internal = ret.lower() in ('event_trigger', 'index_am_handler', 'table_am_handler') or 'internal' in [p[2] for p in ins]
-    return dict(kind='function', sig='sift.%s(%s)' % (name, args), ret=shown, internal=internal, rawret=ret)
+    return dict(kind='function', sig='sift.%s(%s)' % (name, args), ret=shown, internal=internal, rawret=ret, fname=name, types=','.join(p[2] for p in ins))
+
+
+first_types = {}   # function name -> the argument types of the first CREATE the scans met: the order of the scans is the order of the releases
 
 
 def scan(*paths):
@@ -183,13 +186,15 @@ def scan(*paths):
         m = re.match(r'DROP\s+FUNCTION\s+sift\.(\w+)\s*\(', s, re.I)
         if m:
             objs.pop(('function', m.group(1)), None)    # dropped to be created again with another result
+            first_types.pop(m.group(1), None)
             continue
         m = re.match(r'CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+sift\.(\w+)\s*\(', s, re.I)
         if m:
             o = function(s, m.group(1), m.end() - 1)
-            if 'REPLACE' not in s[:30].upper() and m.group(1) in [k[1] for k in objs if k[0] == 'function']:
-                err('sift.%s is overloaded (scripts/gen-reference.sh keys the reference by name)' % m.group(1))
-            objs[('function', m.group(1))] = o
+            key = ('function', m.group(1))
+            if first_types.setdefault(m.group(1), o['types']) != o['types']:
+                key = ('function', '%s(%s)' % (m.group(1), o['types']))   # an overload of the first one the scripts create: its own row, the plain name for the links and the groups
+            objs[key] = o
             continue
         m = re.match(r'CREATE\s+AGGREGATE\s+sift\.(\w+)\s*\(', s, re.I)
         if m:
@@ -214,11 +219,15 @@ def scan(*paths):
             fn = f['FUNCTION'].replace('sift.', '')
             objs[('operator', m.group(1))] = dict(kind='operator', sig='%s %s %s' % (f['LEFTARG'], m.group(1), f['RIGHTARG']), ret='bool', internal=False, fn=fn)
             continue
-        m = re.match(r'COMMENT\s+ON\s+(FUNCTION|AGGREGATE|VIEW|TABLE|OPERATOR\s+CLASS|OPERATOR)\s+(?:sift\.|pg_catalog\.)?([^\s(]+)[^\']*?\s+IS\s+(\'(?:[^\']|\'\')*\'|NULL)$', s, re.I | re.S)
+        m = re.match(r'COMMENT\s+ON\s+(FUNCTION|AGGREGATE|VIEW|TABLE|OPERATOR\s+CLASS|OPERATOR)\s+(?:sift\.|pg_catalog\.)?([^\s(]+)(\([^)]*\))?[^\']*?\s+IS\s+(\'(?:[^\']|\'\')*\'|NULL)$', s, re.I | re.S)
         if m:
             k = {'operator class': 'opclass', 'aggregate': 'function'}.get(norm(m.group(1)).lower(), m.group(1).lower())
-            if m.group(3) != 'NULL':
-                comments[(k, m.group(2))] = m.group(3)[1:-1].replace("''", "'")
+            name = m.group(2)
+            types = ','.join(norm(t) for t in split_top(m.group(3)[1:-1])) if m.group(3) else ''
+            if (k, '%s(%s)' % (name, types)) in objs:
+                name = '%s(%s)' % (name, types)    # the comment of an overload
+            if m.group(4) != 'NULL':
+                comments[(k, name)] = m.group(4)[1:-1].replace("''", "'")
     return objs, comments
 
 
@@ -282,7 +291,7 @@ for n, line in enumerate(read('docs/reference-notes.tsv').split('\n'), 1):
     notes[f[0]] = (f[1], f[2], f[3].strip(), n)
 by_name = {}
 for k in objs:
-    by_name.setdefault(k[1], []).append(k)
+    by_name.setdefault(objs[k].get('fname', k[1]), []).append(k)
 globs = {name for name in notes if '*' in name}
 for name, (g, sn, d, n) in notes.items():
     if name not in globs and name not in by_name:
@@ -294,7 +303,7 @@ for name, (g, sn, d, n) in notes.items():
 rows = []   # dict(group, kind, name, sig, ret, since, desc, link)
 internal = []
 for k, o in sorted(objs.items(), key=lambda kv: kv[0][1]):
-    kind, name = k
+    kind, name = k[0], objs[k].get('fname', k[1])
     note = notes.get(name if kind != 'operator' else name)
     g = note[0] if note and note[0] else ('col' if name.startswith('col_') else 'table' if name.startswith('table_') else 'search')
     if o['internal'] or name.startswith('_') or (note and note[0] == '-'):
@@ -367,13 +376,13 @@ def generate():
             d = esc(r['desc']) + (' See [%s](%s).' % (r['link'][1:r['link'].index(']')], r['link'][r['link'].index('(') + 1:-1]) if r['link'] else '')
             doc.append('| `%s` | %s | %s | %s | %s |' % (esc(r['sig']), KINDS[r['kind']][0], '`%s`' % esc(r['ret']) if r['ret'] != '-' else '', r['since'], d))
         doc.append('')
-    doc += ['## Internal', '', 'Not meant to be called: ' + ', '.join('`sift.%s`' % x for x in sorted(internal)) + '. Names starting with `_` are for the tests.', '']
+    doc += ['## Internal', '', 'Not meant to be called: ' + ', '.join('`sift.%s`' % x for x in sorted(set(internal))) + '. Names starting with `_` are for the tests.', '']
     ref = '\n'.join(doc)
 
     rd = ['<!-- sift-reference:start -->', '## SQL reference', '',
           'Schema `sift` has %s. Signatures, results, the release that added each and a line on what it does are in [docs/REFERENCE.md](docs/REFERENCE.md), generated from the SQL scripts.' % counts, '']
     for gid, title, _ in GROUPS:
-        names = sorted(r['name'] for r in rows if r['group'] == gid)
+        names = sorted({r['name'] for r in rows if r['group'] == gid})
         if names:
             anchor = re.sub(r'\s', '-', title.lower())
             rd.append('- **[%s](docs/REFERENCE.md#%s)**: %s' % (title, anchor, ', '.join('`%s`' % x for x in names)))
@@ -415,16 +424,20 @@ def live():
             err('live: ' + r.stderr.strip())
             return
         seen = set()
+        plain = {(k[0], o.get('fname', k[1])) for k, o in objs.items()}
+        texts = {}   # the comments an overloaded name has
+        for (kd, nm), t in comments.items():
+            texts.setdefault((kd, nm.split('(')[0]), set()).add(t.strip())
         for kind, name, desc in list(csv.reader(r.stdout.splitlines(True)))[1:]:
             if name.startswith('_'):
                 continue
             seen.add((kind, name))
-            if (kind, name) in objs:
-                if (kind, name) in comments and desc.strip() != comments[(kind, name)].strip():
+            if (kind, name) in plain:
+                if (kind, name) in texts and desc.strip() not in texts[(kind, name)]:
                     err('live: the COMMENT on %s %s in the database differs from the script' % (kind, name))
             elif not (kind == 'opclass' and any(fnmatch.fnmatch(name, g) for g in globs)):
                 err('live: %s %s is in the database but not in sql/pg_sift--%s.sql as scripts/gen-reference.sh reads it (a DO block or a statement it does not parse: add the name to docs/reference-notes.tsv)' % (kind, name, latest))
-        for k in objs:
+        for k in plain:
             if k not in seen:
                 err('live: %s %s is in sql/pg_sift--%s.sql but not in the database' % (k[0], k[1], latest))
         for g in globs:

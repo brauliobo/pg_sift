@@ -42,7 +42,7 @@ BEGIN
 	END LOOP;
 END $$;
 CREATE TABLE cells (kind text, ctx text, rows bigint, differ bigint, spilled boolean, reran boolean, state text, workers boolean);
-CREATE FUNCTION stat(n text) RETURNS bigint LANGUAGE sql AS $$ SELECT value FROM sift.stats() WHERE name = n $$;
+CREATE FUNCTION stat(n text) RETURNS bigint LANGUAGE sql AS $$ SELECT value FROM sift.stats(local => true) WHERE name = n $$;
 CREATE FUNCTION run_cell(kind text, ctx text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE i int; q text; sp bigint; rr bigint; wl bigint; r record; err text := 'ok'; nrows bigint; nd bigint; js json;
 BEGIN

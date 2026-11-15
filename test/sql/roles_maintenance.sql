@@ -55,7 +55,7 @@ $$);
 -- declared paths are listed for the tables the role owns or may maintain, and for no other
 SELECT * FROM rr_matrix(ARRAY['rm_own', 'rm_mem', 'rm_mt', 'rm_wr', 'rm_rd', 'rm_non', 'rm_nos'], $$
 SELECT sift.version() ~ '^[0-9]+([.][0-9]+)+$'
-!SELECT * FROM sift.stats()
+!SELECT * FROM sift.stats(local => true)
 !SELECT sift.stats_reset()
 !SELECT * FROM sift.refusal_slugs()
 !SELECT * FROM sift.refusal_actions()
@@ -94,7 +94,7 @@ GRANT USAGE ON SCHEMA sift TO rm_own;
 SELECT * FROM rr_matrix(ARRAY['rm_own', 'rm_rd', 'rm_nos'], $$
 SELECT sift.version() ~ '^[0-9]+([.][0-9]+)+$'
 !SELECT sift.promote('rm.docs_idx')
-!SELECT * FROM sift.stats()
+!SELECT * FROM sift.stats(local => true)
 !SELECT * FROM sift.workers
 $$);
 REVOKE USAGE ON SCHEMA sift FROM rm_own;

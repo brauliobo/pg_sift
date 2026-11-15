@@ -413,8 +413,9 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	so->recheck = keys.recheck;
 	so->started = true;
 	MemoryContextSwitchTo(old);
-	/* pg_stat_*_indexes.idx_scan and the Index Searches of EXPLAIN (the access method counts them) */
+	/* pg_stat_*_indexes.idx_scan and the Index Searches of EXPLAIN (the access method counts them), and the scans the merge of the overlays is weighed against */
 	pgstat_count_index_scan(scan->indexRelation);
+	sift_col_scan_note(scan->indexRelation, so->src);
 #if PG_VERSION_NUM >= 180000
 	if (scan->instrument)
 		scan->instrument->nsearches++;
