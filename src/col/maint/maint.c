@@ -359,6 +359,7 @@ col_worker_step(Oid indexoid, TimestampTz start, bool last)
 			else if (last)
 			{
 				sift_mops_cut_free_end(&maint_col_ops, index);
+				sift_vstore_compact(index);
 				sift_log_maint(index, "column maintenance worker finished", start, -1, -1);
 			}
 		}
@@ -500,6 +501,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 				{
 					sift_log_maint(index, "column rewrite worker finished", start, -1, -1);
 					sift_worker_ok(index, SIFT_JOB_REWRITE, start);
+					sift_vstore_compact(index);
 				}
 			}
 			if (index != NULL)

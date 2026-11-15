@@ -197,6 +197,18 @@ extern int64 sift_maint_orphan_sweep(Relation index);
  * Reports at elevel what it did.
  */
 extern void sift_maint_truncate(Relation index, int elevel);
+/* Why the last cut of the file left blocks that the shrink target leaves out (the metapage keeps it for sift.col_space) */
+typedef enum SiftShrinkBlock
+{
+	SIFT_SHRINK_OPEN,
+	SIFT_SHRINK_STANDBY,
+	SIFT_SHRINK_LOCK,
+	SIFT_SHRINK_SNAPSHOT
+} SiftShrinkBlock;
+extern const char *sift_shrink_block_name(SiftShrinkBlock why);
+
+/* What the cut of an index left behind goes to its metapage (sift.col_shrink_history): why blocks stay (none: the blocks that are free but not reusable yet are the snapshot's) and, when shrunk, that the file was cut now */
+extern void sift_maint_note_shrink(Relation rel, SiftShrinkBlock why, bool shrunk);
 extern bool sift_maint_standby_streams(void);
 extern bool sift_maint_file_is_new(Relation rel);
 

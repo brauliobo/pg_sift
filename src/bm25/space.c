@@ -193,6 +193,8 @@ typedef enum CutSkip
 	SKIP_FALLBACK
 } CutSkip;
 
+static SiftShrinkBlock cut_why = SIFT_SHRINK_OPEN;
+
 /* why: what kept the cut; blocks: the free blocks that stay in the file (SKIP_FALLBACK: the blocks moved); waited: the ms the lock was asked for; more: the blocks given back (SKIP_FALLBACK) */
 static void
 cut_skipped(Relation rel, const char *what, int elevel, CutSkip why, int64 blocks, int waited, int64 more)
@@ -200,6 +202,7 @@ cut_skipped(Relation rel, const char *what, int elevel, CutSkip why, int64 block
 	const char *name = RelationGetRelationName(rel);
 
 	elevel = skip_level(elevel);
+	cut_why = why == SKIP_STANDBY ? SIFT_SHRINK_STANDBY : why == SKIP_SNAPSHOT ? SIFT_SHRINK_SNAPSHOT : why == SKIP_FALLBACK ? SIFT_SHRINK_OPEN : SIFT_SHRINK_LOCK;
 	switch (why)
 	{
 		case SKIP_STANDBY:
@@ -246,6 +249,7 @@ void
 sift_maint_report_fallback(Relation index, int elevel, uint64 moved, BlockNumber freed)
 {
 	cut_skipped(index, "index", elevel, SKIP_FALLBACK, moved / BLCKSZ, cut_busy_ms, freed);
+	sift_maint_note_shrink(index, SIFT_SHRINK_OPEN, freed > 0);
 }
 
 void
@@ -274,6 +278,7 @@ lock_for_cut(Relation rel, const char *what, int elevel)
 		{
 			cut_busy = true;
 			cut_busy_ms = waited;
+			cut_why = SIFT_SHRINK_LOCK;
 		}
 		else
 			cut_skipped(rel, what, elevel, SKIP_LOCK, sift_store_free_stats(rel).blocks, waited, 0);
@@ -293,6 +298,7 @@ online_cut(Relation index, int elevel)
 	BlockNumber freed = 0;
 	BlockNumber tail;
 
+	cut_why = SIFT_SHRINK_OPEN;
 	sift_store_cut_online(true);
 	PG_TRY();
 	{
@@ -323,6 +329,7 @@ online_cut(Relation index, int elevel)
 		sift_store_cut_online(false);
 	}
 	PG_END_TRY();
+	sift_maint_note_shrink(index, cut_why, freed > 0);
 	if (freed > 0)
 		ereport(elevel, (errmsg("index \"%s\": truncated %u to %u pages online", RelationGetRelationName(index),
 								RelationGetNumberOfBlocks(index) + freed, RelationGetNumberOfBlocks(index))));
@@ -895,8 +902,12 @@ cut_locked(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budg
 	const char *what = rel->rd_rel->relkind == RELKIND_INDEX ? "index" : "table";
 	BlockNumber freed = 0;
 
+	cut_why = SIFT_SHRINK_OPEN;
 	if (!lock_for_cut(rel, what, elevel))
+	{
+		sift_maint_note_shrink(rel, cut_why, false);
 		return 0;
+	}
 	PG_TRY();
 	{
 		sift_store_space_exclusive(rel, true);
@@ -914,6 +925,7 @@ cut_locked(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budg
 	}
 	PG_END_TRY();
 	UnlockRelation(rel, cut_lock(rel));
+	sift_maint_note_shrink(rel, SIFT_SHRINK_OPEN, freed > 0);
 	if (freed > 0)
 		ereport(elevel, (errmsg("%s \"%s\": truncated %u to %u pages", what, RelationGetRelationName(rel),
 								RelationGetNumberOfBlocks(rel) + freed, RelationGetNumberOfBlocks(rel))));
@@ -940,7 +952,10 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 	 */
 	if (!space_worth(sift_store_tail_blocks(rel), nblocks) &&
 		!(budget > 0 && (space_resume || space_worth(sift_store_free_stats(rel).blocks, nblocks))))
+	{
+		sift_maint_note_shrink(rel, SIFT_SHRINK_OPEN, false);
 		return 0;
+	}
 	return cut_locked(rel, relocate_page, elevel, budget);
 }
 

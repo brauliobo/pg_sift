@@ -39,3 +39,9 @@ CREATE VIEW sift.progress AS
 	WHERE sift._may_inspect(i.indrelid);
 COMMENT ON VIEW sift.progress IS 'The maintenance jobs of the database that run now on an index the caller can look at: the process (pid), the job (promote, merge, rewrite or vacuum), its phase, the segments it has replaced of those the phase found, the bytes it wrote and when it started.';
 GRANT SELECT ON sift.progress TO PUBLIC;
+
+-- Why the last cut of the file of a sift_col index left free blocks (shrink_blocked_by: standby, lock or snapshot, NULL when nothing blocks it) and when the file was last cut
+CREATE FUNCTION sift.col_shrink_history(index regclass, OUT shrink_blocked_by text, OUT last_shrink timestamptz)
+	RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_col_shrink_history' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.col_shrink_history(regclass) IS 'Why the last cut of the file of a sift_col index left free blocks (standby: a standby streams; lock: a lock on the index was held; snapshot: a snapshot may still read the blocks; NULL: nothing blocks it) and when the file was last cut. Read next to sift.col_space.';

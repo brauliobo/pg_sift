@@ -21,10 +21,12 @@
 #include "utils/acl.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/timestamp.h"
 
 #include "col/am.h"
 #include "col/scope.h"
 #include "col/vstore/vstore.h"
+#include "core/ops.h"
 #include "core/restrict.h"
 #include "utils/builtins.h"
 
@@ -124,7 +126,7 @@ fail:
  * writes name it (the index is then due for a rewrite, why "value store epoch")
  */
 static void
-vacuum_store(Oid store)
+vacuum_store(Relation index, Oid store)
 {
 	List	   *members = sift_vstore_members(store),
 			   *locked;
@@ -135,9 +137,12 @@ vacuum_store(Oid store)
 	Bitmapset  *epochs;
 	Relation	rel;
 	int64		bytes;
+	TimestampTz start;
+	bool		worked = true;
 
 	if (!try_lock_all(store, members, &locked))
 		return;
+	start = GetCurrentTimestamp();
 	rel = table_open(store, NoLock);
 	bytes = (int64) RelationGetNumberOfBlocks(rel) * BLCKSZ;
 	table_close(rel, NoLock);
@@ -160,11 +165,18 @@ vacuum_store(Oid store)
 							 quote_literal_cstr(get_attname(store, 1, false)))));
 			sift_vstore_bump_epoch(vs);
 		}
+		else
+			worked = false;
 	}
+	else
+		worked = false;
 	sift_vstore_close(vs);
 	foreach_oid(m, locked)
 		UnlockRelationOid(m, ShareUpdateExclusiveLock);
 	UnlockRelationOid(store, ShareRowExclusiveLock);
+	/* the writers of the members waited from the locks to here */
+	if (worked)
+		sift_log_maint(index, "value store compaction", start, -1, bytes);
 }
 
 /*
@@ -212,9 +224,9 @@ sift_vstore_release_left(Relation index)
 	table_close(heap, NoLock);
 }
 
-/* VACUUM of the table of the index: the stores its leaves use, each looked at by the member with the lowest oid, then the leaves left alone */
+/* The stores the leaves of the index use, each looked at by the member with the lowest oid: an epoch that no segment names is retired, a store of mostly unused codes begins a new one */
 void
-sift_vstore_vacuum(Relation index)
+sift_vstore_compact(Relation index)
 {
 	Oid		   *stores = sift_vstore_leaf_stores(index, sift_col_rel(index)->schema);
 
@@ -230,7 +242,14 @@ sift_vstore_vacuum(Relation index)
 		foreach_oid(m, sift_vstore_members(stores[c]))
 			low = Min(low, m);
 		if (!again && low == RelationGetRelid(index))
-			vacuum_store(stores[c]);
+			vacuum_store(index, stores[c]);
 	}
+}
+
+/* VACUUM of the table of the index: the stores compacted, then the leaves left alone */
+void
+sift_vstore_vacuum(Relation index)
+{
+	sift_vstore_compact(index);
 	sift_vstore_release_left(index);
 }
