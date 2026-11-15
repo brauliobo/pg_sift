@@ -1,0 +1,44 @@
+-- The functions that have no result without a BM25 index say so while it is out of service, and name what to do: sift.score() and sift.max_score() (computed inside a sift scan) name the
+-- quarantined index in their hint, sift.facets() refuses with the state of the index. With every index in service the messages are the ones of before.
+CREATE EXTENSION pg_sift_test CASCADE;
+CREATE FUNCTION diag(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	h text;
+BEGIN
+	EXECUTE q;
+	RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN
+	GET STACKED DIAGNOSTICS h = PG_EXCEPTION_HINT;
+	RETURN SQLSTATE || ' | ' || SQLERRM || ' | ' || h;
+END $$;
+
+SET client_min_messages = warning;
+SET sift.on_corruption = quarantine;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE d (id int, body text, tag text);
+INSERT INTO d SELECT i, 'alpha beta ' || (i % 10) || ' gamma' || (i % 3), 't' || (i % 4) FROM generate_series(1, 5000) i;
+CREATE INDEX d_idx ON d USING sift (body);
+CREATE INDEX d_kw ON d USING sift (tag) WITH (analyzer = keyword);
+ANALYZE d;
+
+SELECT diag($$ SELECT count(*) FROM sift.facets('d_idx', 'd_kw', 'alpha 3', 10) $$) AS facets_in_service;
+SELECT diag($$ SELECT sift.score(ctid) FROM d $$) AS score_not_in_a_scan;
+
+SELECT sift._test_poke('d_idx', 2, 8176, 9, 2);
+SELECT left(diag($$ SELECT count(*) FROM d WHERE body @@> 'alpha 3' $$), 5) AS detecting_statement;
+SELECT diag($$ SELECT sift.score(ctid) FROM d WHERE body @@> 'alpha 3' $$) AS score;
+SELECT diag($$ SELECT sift.max_score(ctid) FROM d WHERE body @@> 'alpha 3' $$) AS max_score;
+SELECT diag($$ SELECT count(*) FROM sift.facets('d_idx', 'd_kw', 'alpha 3', 10) $$) AS facets;
+REINDEX INDEX d_idx;
+
+SELECT sift._test_poke('d_kw', 2, 8176, 9, 2);
+SELECT left(diag($$ SELECT count(*) FROM sift.facets('d_idx', 'd_kw', 'alpha 3', 10) $$), 5) AS detecting_facets;
+SELECT diag($$ SELECT count(*) FROM sift.facets('d_idx', 'd_kw', 'alpha 3', 10) $$) AS facets_keyword_index_out;
+SELECT diag($$ SELECT sift.score(ctid) FROM d WHERE body @@> 'alpha 3' $$) AS score_with_the_other_index_out;
+REINDEX INDEX d_kw;
+SELECT diag($$ SELECT count(*) FROM sift.facets('d_idx', 'd_kw', 'alpha 3', 10) $$) AS facets_after_reindex;
+
+DROP TABLE d;
+DROP FUNCTION diag(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

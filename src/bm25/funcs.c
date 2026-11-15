@@ -28,6 +28,7 @@
 #include "core/ops.h"
 #include "bm25/planner.h"
 #include "bm25/query.h"
+#include "core/quarantine.h"
 #include "core/sql.h"
 
 #ifdef SIFT_HAVE_LZ4
@@ -491,11 +492,14 @@ sift_build_info(PG_FUNCTION_ARGS)
 static Datum
 scan_only(const char *name)
 {
+	const char *out = sift_quarantine_names();
+
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("sift.%s() must be computed by a sift scan of the same relation", name),
 			 errdetail("The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off."),
-			 errhint("Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.")));
+			 out ? errhint("Index %s of this database is quarantined (sift.quarantine), so no sift scan runs on it and the score has no value: REINDEX it to put it back in service.", out)
+			 : errhint("Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.")));
 	return (Datum) 0;
 }
 

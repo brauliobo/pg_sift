@@ -35,6 +35,7 @@
 #include "bm25/eval.h"
 #include "bm25/wbuf.h"
 #include "bm25/segment.h"
+#include "core/quarantine.h"
 #include "core/sql.h"
 #include "core/cmp.h"
 #include "core/rowmem.h"
@@ -705,6 +706,8 @@ sift_facet_counts(PG_FUNCTION_ARGS)
 	f.tmpcx = AllocSetContextCreate(f.mcxt, "sift facet value", ALLOCSET_DEFAULT_SIZES);
 	f.index = open_index(PG_GETARG_OID(0));
 	f.findex = open_index(PG_GETARG_OID(1));
+	sift_quarantine_require(f.index, "sift.facets");
+	sift_quarantine_require(f.findex, "sift.facets");
 	heapoid = f.index->rd_index->indrelid;
 	f.heap = table_open(heapoid, AccessShareLock);
 	check_indexes(&f);
