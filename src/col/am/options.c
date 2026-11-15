@@ -259,6 +259,7 @@ gord_strcmp(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid)
 void
 sift_col_init(void)
 {
+	sift_col_stmt_loaded();
 	DefineCustomBoolVariable("sift.enable_col_scan",
 							 "Lets the planner use a sift_col index with the sift.col_*_ops operator classes as a bitmap index scan.",
 							 "On by default: the planner chooses it by cost against the b-trees and the sequential scan; off keeps the aggregate scans of SiftAgg only, see docs/COL-SCAN.md.",

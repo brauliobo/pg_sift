@@ -390,6 +390,7 @@ extern void sift_col_amrestrpos(IndexScanDesc scan);
 extern void sift_col_ioss_want(QueryDesc *queryDesc);
 extern void sift_col_stmt_start(QueryDesc *queryDesc);
 extern void sift_col_stmt_finish(QueryDesc *queryDesc);
+extern void sift_col_stmt_loaded(void);
 /* The rows and tombstones the transaction holds back (they reach the pages when it reads the index): before a worker, which has none of its own, reads them */
 extern void sift_col_flush_held(void);
 extern bool sift_col_amcanreturn(Relation index, int attno);
