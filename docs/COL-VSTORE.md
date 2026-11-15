@@ -32,11 +32,11 @@ When the other indexes that held the column with the key order of an index are d
 
 A string that no segment names any more (its rows were deleted or replaced and the segments that held it were merged or rewritten) keeps its code: the store is append-only inside an epoch. `sift.col_value_store_usage(store)` reads, from the segments of the members, the codes each names by epoch, and `sift.col_value_store_status` shows `total_codes`, `live_codes` and `garbage_pct`.
 
-Compaction is lazy and does not rewrite anything by itself:
+Compaction is lazy: no write of a row copies anything, and a VACUUM or the maintenance worker starts it when the garbage passes the threshold:
 
-- A new epoch begins (the codes start again at 0; nothing is copied). VACUUM of the table begins one when the store takes at least 8 MB and half its codes or more are named by no segment, and says so with a NOTICE.
+- A new epoch begins (the codes start again at 0; nothing is copied). VACUUM of the table begins one when the store takes at least 8 MB and half its codes or more are named by no segment, and says so with a NOTICE. The maintenance worker of a member looks at the stores of its columns when it has merged or rewritten, as VACUUM does, so a table that nobody vacuums gets the same: it takes the locks of the store only where no one holds one against them (it tries again later otherwise) and logs `sift: value store compaction index "<name>" in N ms`, the time the writers of the store waited included, when `sift.log_min_duration` is reached.
 - A segment that is written afterwards names the new epoch: the merge, the rewrite and the REINDEX of a member read the strings of the old epoch from its runs and write the new epoch's. A segment that is not rewritten keeps naming the old epoch, and is read from the old epoch's runs.
-- When no segment of any member names an old epoch, VACUUM marks its runs retired, and removes them (their blocks are released) once the transactions that could have read a segment naming it have ended.
+- When no segment of any member names an old epoch, VACUUM (or the worker) marks its runs retired, and removes them (their blocks are released) once the transactions that could have read a segment naming it have ended.
 - `sift.col_value_store_compact(table, column)` does it now: it begins the epoch, rewrites the members that name the old one and retires it. The owner of the table runs it; it waits for the writers of the store and blocks them while it runs.
 
 ## Locks
@@ -110,7 +110,7 @@ Garbage (see above), 200,000 rows and two indexes: with 10% of the rows replaced
 
 ## Why on, and the off switch
 
-Default on because the rule shares only when another index holds the column with the key order, and then the gain is 5% at 200,000 rows with two indexes, 7.5% with three and 8% to 18% from 100,000 to 2,000,000 rows, for reads that cost 0.1 to 3.8 M instructions more at 200,000 rows and 4% more at 2,000,000, and builds 35% to 56% longer once. The cost is a relation more per column and the lock protocol above. Off: `SET sift.col_value_store = off` before the build (the strings stay in the segments; test `col_vstore_off`), or `REINDEX` an index that has no other index with its key order. `sift.col_format_minor = 14` is the rollback to a release before 4.3 and has the side effects above.
+Default on because the rule shares only when another index holds the column with the key order: a table whose indexes hold different string columns, one index on a column, or indexes that meet the rows in different orders makes no store and pays none of the costs below. Where the rule applies the gain is 5% at 200,000 rows with two indexes, 7.5% with three and 8% to 18% from 100,000 to 2,000,000 rows, for reads that cost 0.1 to 3.8 M instructions more at 200,000 rows and 4% more at 2,000,000, and builds 35% to 56% longer once. The cost is a relation more per column and the lock protocol above. Off: `SET sift.col_value_store = off` before the build (the strings stay in the segments; test `col_vstore_off`), or `REINDEX` an index that has no other index with its key order. `sift.col_format_minor = 14` is the rollback to a release before 4.3 and has the side effects above.
 
 ## Limits
 
