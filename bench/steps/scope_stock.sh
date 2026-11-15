@@ -62,9 +62,10 @@ python3 -I "$HERE/scope_stock_arms.py" report "$OUT"
 if [[ -n $DOCS ]]; then
 	RESULTS=$REPO/docs/results/scope-stock.tsv
 	if [[ " ${ARGS[*]} " == *" --arms "* ]]; then
-		python3 -I "$HERE/scope_stock_arms.py" merge "$RESULTS" "$OUT" --out "$OUT.merged"
-		mv "$OUT.merged" "$OUT"
+		python3 -I "$HERE/scope_stock_arms.py" merge "$RESULTS" "$OUT" --out "$RESULTS.merged"
+		mv "$RESULTS.merged" "$RESULTS"
+	else
+		cp "$OUT" "$RESULTS"
 	fi
-	cp "$OUT" "$RESULTS"
 	python3 -I "$REPO/scripts/gen-docs.py"
 fi

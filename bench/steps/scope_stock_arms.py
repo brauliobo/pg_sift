@@ -535,10 +535,10 @@ def cmd_merge(a):
     taken = new_meta['arms'].split(',')
     arms = [x for x in ORDER if x in base_meta['arms'].split(',') + taken]
     rows = fixture(base) + [r for x in arms for r in (new if x in taken else base) if r['arm'] == x]
-    meta = dict(new_meta, arms=','.join(arms), skipped=base_meta['skipped'])
+    meta = dict(new_meta, arms=','.join(arms), skipped=base_meta['skipped'], pg_ivm=new_meta['pg_ivm'] if 'ivm' in taken else base_meta['pg_ivm'])
     if any(base_meta[k] != new_meta[k] for k in ('date', 'pg_sift', 'postgresql', 'cpu')):
-        meta['note'] = 'measured %s at %s on %s: %s; the other arms %s at %s on %s' % (
-            new_meta['date'], new_meta['pg_sift'], new_meta['postgresql'], ', '.join(taken), base_meta['date'], base_meta['pg_sift'], base_meta['postgresql'])
+        meta['note'] = 'by arm: %s on %s at %s on %s; the other arms on %s at %s on %s' % (
+            ', '.join(taken), new_meta['date'], new_meta['pg_sift'], new_meta['postgresql'], base_meta['date'], base_meta['pg_sift'], base_meta['postgresql'])
     extras.write(a.out, base_meta['title'], {k: v for k, v in meta.items() if k != 'title'}, rows)
 
 

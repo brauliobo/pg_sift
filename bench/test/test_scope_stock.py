@@ -124,13 +124,14 @@ class Merge(unittest.TestCase):
 
     def test_the_other_arms_stay_byte_for_byte_and_the_header_says_what_was_measured_when(self):
         with tempfile.TemporaryDirectory() as d:
-            merged = self.merged(d, {}, dict(date='2026-11-15', pg_sift='5.0 (def)', postgresql='18.7'))
+            merged = self.merged(d, {}, dict(date='2026-11-15', pg_sift='5.0 (def)', postgresql='18.7', pg_ivm='not installed'))
             os.makedirs(os.path.join(d, 'old'))
             old = open(collected(os.path.join(d, 'old'))).read().splitlines()
             lines = open(merged).read().splitlines()
         self.assertEqual([l for l in lines if '\tivm\t' in l], [l for l in old if '\tivm\t' in l])
-        self.assertIn('# note: measured 2026-11-15 at 5.0 (def) on PostgreSQL 18.7: stock_default, sift_scope; the other arms 2026-11-13 at 5.0 (abc) on PostgreSQL 18.6', lines)
+        self.assertIn('# note: by arm: stock_default, sift_scope on 2026-11-15 at 5.0 (def) on PostgreSQL 18.7; the other arms on 2026-11-13 at 5.0 (abc) on PostgreSQL 18.6', lines)
         self.assertIn('# pg_sift: 5.0 (def)', lines)
+        self.assertIn('# pg_ivm: 1.17', lines)
         self.assertTrue(any(l.startswith('5.0 (def)\tt1:sum_by_month\tsift_scope\twarm_ms\t1.5') for l in lines))
 
     def test_a_different_fixture_is_refused(self):
