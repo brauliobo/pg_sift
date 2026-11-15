@@ -2,7 +2,7 @@
 """The scope index against tuned stock PostgreSQL on a real-shaped fixture: nine read classes, eight tenants, one arm at a time.
 
     python3 -I bench/steps/scope_stock_arms.py run --root PREFIX [--root PREFIX2] --dir SCRATCH --port N --out RAWDIR [--size quick|standard] [--arms a,b] [--facts N] [--tenants 1,4,8] [--resume]
-    python3 -I bench/steps/scope_stock_arms.py collect RAWDIR --out docs/results/scope-stock.tsv     # the one results file, in the format of steps/extras.py
+    python3 -I bench/steps/scope_stock_arms.py collect RAWDIR --out RESULTS.tsv     # the one results file, in the format of steps/extras.py
     python3 -I bench/steps/scope_stock_arms.py merge BASE NEW --out BASE                             # the arms of a partial run (--arms stock_default,sift_scope) replace theirs in BASE
     python3 -I bench/steps/scope_stock_arms.py report [RESULTS]                                    # every table of the results file (steps/scope_stock_tables.py)
 

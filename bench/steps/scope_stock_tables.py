@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The tables of the scope index against tuned stock PostgreSQL, from the one results file of steps/scope_stock_arms.py (docs/results/scope-stock.tsv).
+"""The tables of the scope index against tuned stock PostgreSQL, from the one results file of steps/scope_stock_arms.py.
 
     python3 -I bench/steps/scope_stock_tables.py render [--results FILE] [--root DIR]   rewrite the generated blocks of README.md and docs/COL-SCOPE.md
     python3 -I bench/steps/scope_stock_tables.py report [FILE]                          print every table (the full set, all arms and tenants)
