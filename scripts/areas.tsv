@@ -124,3 +124,5 @@
 # the weights of the deep full tier, read by scripts/ci.sh only to cut the shards (the jobs run are those of the map above)
 ^scripts/(weights-(deep|full|quick)\.tsv|ci-times\.py)$	-
 ^(scripts/(apply-rename\.(py|sh)|private-overlay\.sh)|test/README\.md)$	-
+^scripts/(budget\.sh|budgets\.tsv)$	.
+^scripts/(check-budgets|stability)\.sh$|^scripts/stability\.tsv$	-
