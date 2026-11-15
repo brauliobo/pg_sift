@@ -16,6 +16,7 @@
 #include "agg/rows.h"
 #include "agg/spec.h"
 #include "agg/topn.h"
+#include "bm25/dict.h"
 #include "bm25/query.h"
 #include "col/col.h"
 #include "col/gorder.h"
