@@ -667,6 +667,15 @@ sift_cunit_row_page(const SiftCUnitView *v, uint32 row)
 	return lo;
 }
 
+/* The page of a row at or after page p: p itself or the next one where the rows come dense, else a search */
+uint32
+sift_cunit_row_page_from(const SiftCUnitView *v, uint32 p, uint32 row)
+{
+	if (row < v->rowstart[p + 1])
+		return p;
+	return p + 1 < v->npages && row < v->rowstart[p + 2] ? p + 1 : sift_cunit_row_page(v, row);
+}
+
 void
 sift_cunit_keys(const SiftCUnitView *v, uint32 sb, SiftKey *keys)
 {
@@ -816,8 +825,7 @@ sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint3
 			SiftKey		blk;
 			uint32		end;
 
-			while (ords[k] >= v->rowstart[p + 1])
-				p++;
+			p = sift_cunit_row_page_from(v, p, ords[k]);
 			blk = (SiftKey) v->blocks[p] << 16;
 			end = v->rowstart[p + 1];
 			for (uint32 prev = 0; k < n && ords[k] < end; k++)

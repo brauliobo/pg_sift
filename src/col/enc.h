@@ -671,6 +671,7 @@ extern uint32 sift_cunit_page_sparse_len(const SiftCUnitView *v, uint32 p);
 extern void sift_cunit_page_offmask_at(const SiftCUnitView *v, uint32 p, uint32 soff, uint64 *offmask);
 /* Page index of a row (binary search of rowstart) */
 extern uint32 sift_cunit_row_page(const SiftCUnitView *v, uint32 row);
+extern uint32 sift_cunit_row_page_from(const SiftCUnitView *v, uint32 p, uint32 row);
 
 /*
  * Appends the live rows of the unit (live: bit vector over its rows, NULL = all) to dst, whose schema is the unit's and whose sb is sb.

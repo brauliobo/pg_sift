@@ -738,9 +738,7 @@ vet_next(VetCursor *c)
 	{
 		bool		allvis;
 
-		/* the page of the row: the same or the next one where the selection is dense */
-		if (c->r >= cu->v.rowstart[c->p + 1])
-			c->p = c->p + 1 < cu->v.npages && c->r < cu->v.rowstart[c->p + 2] ? c->p + 1 : sift_cunit_row_page(&cu->v, c->r);
+		c->p = sift_cunit_row_page_from(&cu->v, c->p, c->r);
 		c->lo = cu->v.rowstart[c->p];
 		c->hi = cu->v.rowstart[c->p + 1];
 		c->blk = sift_cunit_page_block(&cu->v, cu->sb, c->p);
