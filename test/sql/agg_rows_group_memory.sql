@@ -73,6 +73,24 @@ EXCEPTION WHEN program_limit_exceeded THEN
 	RAISE WARNING 'SQLSTATE % names the groups: % hint: %', SQLSTATE, msg ~ 'groups of the aggregate hold [0-9]+ kB', hint;
 END $$;
 
+-- the groups are counted in 32 bits and the arrays double in 32 bits (docs/LIMITS.md, rows_groups): a node at the bound ends with an error
+RESET work_mem;
+RESET hash_mem_multiplier;
+SET sift.test_limits = 'rows_groups=5000';
+DO $$
+DECLARE msg text;
+BEGIN
+	EXECUTE 'EXECUTE r';
+	RAISE NOTICE 'no error';
+EXCEPTION WHEN program_limit_exceeded THEN
+	GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+	RAISE WARNING 'SQLSTATE % %', SQLSTATE, msg;
+END $$;
+SET sift.test_limits = 'rows_groups=100000';
+CREATE TEMP TABLE got AS EXECUTE r;
+SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
+DROP TABLE got;
+
 DEALLOCATE r;
 RESET plan_cache_mode;
 RESET sift.test_limits;

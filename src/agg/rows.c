@@ -237,9 +237,15 @@ static void
 rows_groups_grow(RowsExec *ex)
 {
 	SiftRowsSpec *s = ex->spec;
-	uint32		cap = Max(ex->gcap * 2, 1024);
+	uint64		max = sift_limit(rows_groups, SIFT_ROWS_MAX_GROUPS);
+	uint32		cap = Min(Max((uint64) ex->gcap * 2, 1024), max);
 
 	rows_groups_check(ex);
+	if (ex->gcap >= max)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("sift: the aggregate holds more than " UINT64_FORMAT " groups", max),
+				 errhint("Set sift.agg_rows to off.")));
 
 	ex->kval = ex->kval ? repalloc_huge(ex->kval, (Size) cap * s->nkeys * sizeof(Datum)) : MemoryContextAllocHuge(ex->cxt, (Size) cap * s->nkeys * sizeof(Datum));
 	ex->knull = ex->knull ? repalloc_huge(ex->knull, (Size) cap * s->nkeys) : MemoryContextAllocHuge(ex->cxt, (Size) cap * s->nkeys);

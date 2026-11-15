@@ -125,6 +125,8 @@
 	  "leaves one value combination reads", "normal plan", "-", 0) \
 	X(rows_shared, "SIFT_ROWS_MAX_SHARED", "agg/rows.h", SIFT_ROWS_MAX_SHARED, "aggregates", \
 	  "aggregates sharing one rows-set (count(DISTINCT) grouping)", "normal plan (slug rows_shape)", "-", 1) \
+	X(rows_groups, "SIFT_ROWS_MAX_GROUPS", "agg/rows.h", SIFT_ROWS_MAX_GROUPS, "groups", \
+	  "groups the node that groups rows (SiftAggRows) holds: their count and the arrays of their keys and aggregates are 32 bits", "ERROR 54000", "-", 1) \
 	X(text_prune, "COL_MAX_STR_PRUNE", "agg/chunkfilter.h", COL_MAX_STR_PRUNE, "conditions", \
 	  "text conditions of a scan that prune units by prefix", "the others do not prune units", "-", 0) \
 	X(filter_set, "FILTER_MAX_SET", "agg/init_filter.c", 8, "values", \
