@@ -168,7 +168,7 @@ sift_dir_bytes(const SiftDirSnapshot *dir)
 }
 
 /* The caller holds no buffer lock: the metapage comes first in lock order */
-/* The flags of the metapage, read alone (the index must be ready): what the planner asks of each index it may use */
+/* The flags of the metapage, read alone: what the planner asks of each index it may use. An index whose file is empty is being built (a statement the build runs plans it): it has no flags */
 extern uint32 sift_store_meta_flags(Relation index);
 /* Whether the metapage holds the flag, read as it is: a page that is not a metapage holds none, and no error is raised for it (the report of the flags of an index that may be damaged) */
 extern bool sift_store_meta_has_flag(Relation index, uint32 flag);
