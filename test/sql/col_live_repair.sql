@@ -2,6 +2,7 @@
 -- superblocks: the special space of its first page overwritten (an error on every read), a dirty bit lost (the rows of the unit read as live, no error) or the count of dead
 -- rows wrong. The damage is made by hand here, in the bytes of the page.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.on_corruption = error;
 CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	d text;

@@ -88,8 +88,8 @@ install() {
 
 # The setting only the test library of this tree defines (the release library has none): a released library that runs on the data directory of the cluster (scripts/old-lib-check.sh) warns that
 # "sift" is a reserved prefix for it. The cluster of `start` gets it on the command line of the server of this tree, not in its postgresql.conf (`conf common`).
-# A test that asserts a corruption error sets nothing: the clusters raise it (sift.on_corruption = error); the tests of the quarantine say SET sift.on_corruption = quarantine
-TREE_CONF="sift.on_corruption = error${SIFT_TESTING:+$'\n'sift.test_scope_patch = on}"
+# The clusters run with the default sift.on_corruption (quarantine), so that every write of every test goes through the guard of the quarantine; a test that asserts a corruption error says SET sift.on_corruption = error
+TREE_CONF="${SIFT_TESTING:+sift.test_scope_patch = on}"
 tree_options() { local l; while IFS= read -r l; do printf -- '-c %s ' "${l// = /=}"; done <<<"$TREE_CONF"; }
 
 # The lines that make the staged sift loadable (the server's own install on PostgreSQL 17); `conf common`: those that any release of the library accepts
