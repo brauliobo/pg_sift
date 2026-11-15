@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # DROP TABLE beside a maintenance worker (the race between the lock order of the statements, table first and then its indexes, and a worker that opens an index
 # for the table): an injection point (src/bm25/maint.c, PostgreSQL built with --enable-injection-points: scripts/pg-assert.sh --inject) stops the worker without a sleep,
-# (a) after it locked the table: DROP TABLE waits for the worker, the worker goes on and ends, DROP TABLE ends: no deadlock, no error; (b) before it locked the
-# table: DROP TABLE ends first, the worker finds the index gone and ends without an error. Both beside the assertions of the lock order (Assert in sift_try_open_index).
+# (a) after it locked the table: DROP TABLE waits for the workers (the VACUUM worker and the rewrite worker it asked for stop at the same point), they go on and end,
+# DROP TABLE ends: no deadlock, no error; (b) before it locked the table: DROP TABLE ends first, the workers find the index gone and end without an error.
+# Both beside the assertions of the lock order (Assert in sift_try_open_index).
 . "$(dirname "$0")/lib.bash"
 
 pg_config --configure | grep -q -- --enable-injection-points || { echo "1..0 # SKIP PostgreSQL without injection points (scripts/pg-assert.sh --inject)"; exit 0; }
@@ -34,7 +35,15 @@ await_worker() {
 	return 1
 }
 errors() { grep -cE 'deadlock detected|ERROR|TRAP|cache lookup failed|could not open relation' "$D/postgres.log"; }
-release() { sql lo "SELECT injection_points_detach('$1')" "SELECT injection_points_wakeup('$1')" >/dev/null; }
+# injection_points_wakeup frees one waiter of a point, and the VACUUM worker and the rewrite worker it asked for both wait at the same point
+release() {
+	local n
+	sql lo "SELECT injection_points_detach('$1')" >/dev/null
+	while n=$(waiting "$1"); ((n > 0)); do
+		sql lo "SELECT injection_points_wakeup('$1')" >/dev/null
+		wait_for "((\$(waiting $1) < $n))" 60
+	done
+}
 idle() { for _ in $(seq 300); do [[ $(sql lo "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'InjectionPoint'") == 0 ]] && return 0; sleep 0.1; done; return 1; }
 
 # (a)
