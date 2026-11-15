@@ -9,7 +9,8 @@ NOTICE:  sift_col index "events_col": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = b, d; order_array_columns = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 NOTICE:  sift_col index "events_col" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('events_col') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 VACUUM(FREEZE,ANALYZE)events;
 CREATE FUNCTION check_query(q text)RETURNS TABLE(pushed bool,differences bigint)LANGUAGE plpgsql AS $$
 DECLARE line text;

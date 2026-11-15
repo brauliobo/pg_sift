@@ -40,7 +40,8 @@ NOTICE:  sift_col index "pd_col": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k; order_array_columns = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_col');
 NOTICE:  sift_col index "pd_col" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('pd_col') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 CREATE TABLE pe (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO pe SELECT i, CASE WHEN i % 50 = 0 THEN NULL ELSE (i::bigint * 7919 % 320000)::int END, i % 13 FROM generate_series(1, 400000) i;
 CREATE INDEX pe_col ON pe USING sift_col (id, k, v);
@@ -48,7 +49,8 @@ NOTICE:  sift_col index "pe_col": 3 automatic choices
 DETAIL:  point_tid_columns = k; order_array_columns = k; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pe_col');
 NOTICE:  sift_col index "pe_col" is column format minor 44, which a library before 4.3 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('pe_col') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 VACUUM (FREEZE, ANALYZE) pg, pm, pd, pe;
 CREATE TABLE shapes (n int, sql text);
 INSERT INTO shapes VALUES

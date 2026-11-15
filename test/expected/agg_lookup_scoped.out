@@ -11,7 +11,8 @@ NOTICE:  sift_col index "ev_col": 1 automatic choice (order_array_columns), 1 ad
 DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = id, k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 NOTICE:  sift_col index "ev_col" is column format minor 44, which a library before 4.3 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ev_col') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 CREATE TABLE dd (k int PRIMARY KEY, a text, b text) WITH (autovacuum_enabled = false);
 INSERT INTO dd SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE 'a' || i END, CASE WHEN i % 5 = 0 THEN '  ' ELSE 'b' END FROM generate_series(0, 99999) i;
 CREATE INDEX dd_col ON dd USING sift_col (k, (nullif(btrim(a), '') IS NOT NULL), (nullif(btrim(b), '') IS NOT NULL));

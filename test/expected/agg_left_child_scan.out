@@ -23,7 +23,8 @@ DETAIL:  key_order = parent_id, ts; key_columns = parent_id; rollup_columns = v,
 order_array_columns = ts (second order only); track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('child_col');
 NOTICE:  sift_col index "child_col" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('child_col') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 VACUUM (FREEZE, ANALYZE) parent, child;
 CREATE TABLE shapes (slug text, sql text);
 INSERT INTO shapes VALUES
