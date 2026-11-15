@@ -544,7 +544,7 @@ col_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 	cv->cxt = AllocSetContextCreate(old, "sift_col verify", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(cv->cxt);
 	cv->snap = palloc(sizeof(SiftDirSnapshot));
-	sift_errctx_push(&cv->errctx, RelationGetRelid(index));
+	sift_errctx_push_diagnostic(&cv->errctx, RelationGetRelid(index));
 	/* the snapshot is registered before the directory is read, and kept: the segments of the copy stay readable while they are verified one at a time */
 	sound = listed = sift_check_step(ck, SIFT_CHECK_WHOLE, step_store, cv);
 	if (listed)

@@ -44,6 +44,13 @@ errctx_callback(void *arg)
 		errcontext("sift %s \"%s\"", what, name);
 }
 
+/* The diagnostic scope reports like the other, and is told from it by its callback: a push costs the same four stores */
+static void
+errctx_diagnostic_callback(void *arg)
+{
+	errctx_callback(arg);
+}
+
 void
 sift_errctx_push(SiftErrCtx *ctx, Oid relid)
 {
@@ -51,6 +58,31 @@ sift_errctx_push(SiftErrCtx *ctx, Oid relid)
 	ctx->relid = relid;
 	ctx->segmented = false;
 	error_context_stack = &ctx->cb;
+}
+
+void
+sift_errctx_push_diagnostic(SiftErrCtx *ctx, Oid relid)
+{
+	sift_errctx_push(ctx, relid);
+	ctx->cb.callback = errctx_diagnostic_callback;
+}
+
+bool
+sift_errctx_scope(Oid *relid, bool *diagnostic)
+{
+	bool		found = false;
+
+	*diagnostic = false;
+	for (ErrorContextCallback *cb = error_context_stack; cb != NULL; cb = cb->previous)
+	{
+		if (cb->callback != errctx_callback && cb->callback != errctx_diagnostic_callback)
+			continue;
+		if (!found)
+			*relid = ((SiftErrCtx *) cb->arg)->relid;
+		found = true;
+		*diagnostic |= cb->callback == errctx_diagnostic_callback;
+	}
+	return found;
 }
 
 void

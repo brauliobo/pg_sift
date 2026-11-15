@@ -141,6 +141,8 @@ typedef struct SiftMetaPageData
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF
+/* The index found its own damage and is out of service until it is rebuilt (core/quarantine.h); the other flag bits are col/api/format.h and table/table.h */
+#define SIFT_META_QUARANTINED	0x00040000
 /* flags bit 8, set by sift_store_init_meta (the build of a sift index, BM25) from 5.0 on: a word over 255 bytes is stored as a prefix and a hash (3.3's rule). An earlier build leaves it clear, which does not say it cut a word */
 #define SIFT_META_LONG_WORDS	0x00000100
 /* The bytes of a metapage of a build without the note and the configuration */
