@@ -26,6 +26,9 @@
 
 #include <stdint.h>
 
+/* the default of array_bytes: no limit (a segment is bounded by its memory budget); a test lowers it */
+#define SIFT_ARRAY_UNLIMITED	1125899906842624
+
 #define SIFT_LIMITS(X) \
 	X(partitions, "SIFT_AGG_MAX_PARTS", "agg/part.h", SIFT_AGG_MAX_PARTS, "partitions", \
 	  "leaf partitions per SiftAgg scan, after PostgreSQL's pruning", "normal plan (slug partition_count, the detail has the count)", "-", 1) \
@@ -33,13 +36,16 @@
 	  "value combinations the remainders of a hash level are computed for (once per level)", "the partitions of the level are kept (not pruned)", "-", 1) \
 	X(part_key_tests, "KEYS_MAX_TESTS", "agg/part/prune.c", 20000, "tests", \
 	  "keys times range or list partitions a list of keys is tested against exactly", "only the range of the keys prunes", "-", 1) \
-	X(group_nospill_factor, "GROUP_NOSPILL_FACTOR", "agg/plan/finish.c", 32, "times hash memory", \
-	  "estimated group table of a scan that cannot spill (a two level aggregate, grouping sets, ordered, generic and numeric or text min, max and sum over combos), as a multiple of work_mem times hash_mem_multiplier (8 MB at least)", \
-	  "normal plan (slug group_memory, the detail names the groups and the limit)", "work_mem, hash_mem_multiplier", 1) \
+	X(group_nospill_factor, "GROUP_NOSPILL_FACTOR", "agg/spec.c", 32, "times hash memory", \
+	  "group table of a scan that cannot spill (a two level aggregate, grouping sets, ordered, generic and numeric or text min, max and sum over combos) or of the node that groups the rows of a plan, as a multiple of work_mem times hash_mem_multiplier (8 MB at least): estimated by the planner, held by the scan", \
+	  "normal plan (slug group_memory, the detail names the groups and the limit); ERROR 54000 naming work_mem and hash_mem_multiplier when the table the scan holds passes it", "work_mem, hash_mem_multiplier", 1) \
 	X(group_spill_parts, "SPILL_MAX_PARTS", "agg/spill.c", 128, "partitions", \
 	  "partitions a group table that outgrows hash memory is written to (the planner's groups over the groups the first table held, a power of two from 8)", "a partition that does not fit is partitioned again", "work_mem, hash_mem_multiplier", 1) \
 	X(group_spill_depth, "SPILL_MAX_DEPTH", "agg/spill.c", 8, "levels", \
 	  "levels of partitions a partition of a spilled group table is partitioned again (a hash of the same key values, another level each time)", "ERROR 54000 naming work_mem and hash_mem_multiplier", "work_mem, hash_mem_multiplier", 1) \
+	X(group_nospill_base, "GROUP_NOSPILL_BASE", "agg/spec.c", 8388608, "bytes", \
+	  "the hash memory group_nospill_factor is applied to when work_mem times hash_mem_multiplier is less (the memory the defaults give)", \
+	  "as group_nospill_factor", "-", 1) \
 	X(joins, "SIFT_AGG_MAX_JOINS", "agg/spec/expr.h", SIFT_AGG_MAX_JOINS, "tables", \
 	  "lookup-joined tables per scan", "normal plan (slug shape_width)", "-", 1) \
 	X(combos, "SIFT_AGG_MAX_COMBOS", "agg/spec/expr.h", SIFT_AGG_MAX_COMBOS, "combinations", \
@@ -64,6 +70,27 @@
 	  "ORDER BY columns a top-N scan keeps in a heap", "the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it", "-", 1) \
 	X(topn_code_entries, "ORD_MAX_ENTRIES", "agg/topn/int.h", 1048576, "entries", \
 	  "entries of the dictionary of a segment a top-N scan makes an order code for (8 bytes an entry, up to 8 dictionaries at a time)", "the rows of its units are compared with the bar as bytes, as before the order code", "-", 1) \
+	X(skip_pending, "GORD_PEND_MAX", "agg/gord/int.h", 1048576, "entries", \
+	  "the entries an OFFSET over a global order leaves to the heap to confirm, and the entries of one group of an order read group after group that it checks at once (12 bytes each); a longer one is walked", \
+	  "the entries the skip leaves are read one by one, as without the skip (the rows are the same)", "-", 1) \
+	X(gord_seek_pct, "SIFT_CGORD_SEEK_MAX_PCT", "col/gorder.h", 115, "percent", \
+	  "the bytes a seekable chunk of an order array (a fence key every 32 entries) may take, against the plain chunk of the same entries: the writer keeps the seekable form of a chunk up to this; 0 writes none", \
+	  "the chunk is written plain and read by the old walk (the rows are the same)", "-", 1) \
+	X(gord_pos_pct, "SIFT_CGORD_POS_MAX_PCT", "col/gorder.h", 75, "percent", \
+	  "the bytes a positional chunk of a grouped order array (its entries as positions in the plain order of the leaf, read through it) may take, against the other form of the same entries: the writer keeps the positional form of a chunk up to this; 0 writes none", \
+	  "the chunk keeps the keys and addresses of its entries (the rows are the same)", "-", 1) \
+	X(gord_pos_gap, "SIFT_CGORD_POS_MAX_GAP", "col/gorder.h", 1024, "entries", \
+	  "the mean distance between the positions of a group in a chunk of a grouped order array that the writer keeps positional (as many entries as two chunks of the plain order): farther apart, each entry a scan reads is in a chunk of the plain order of its own", \
+	  "the chunk keeps the keys and addresses of its entries (the rows are the same)", "-", 1) \
+	X(gord_mem_rows, "SIFT_CGORD_MEM_MAX", "col/gorder.h", SIFT_CGORD_MEM_MAX, "rows", \
+	  "rows a top-N, range or count by an order array sorts in memory for one source: the write buffers' and those of the segments the overlays left without the array (a text key under a locale: at least 16,384 or 8 for each row wanted)", \
+	  "the scan reads the units, and the planner prices no walk of the array (the rows are the same)", "-", 1) \
+	X(gord_free_rows, "SIFT_CGORD_FREE_MAX", "col/gorder.h", SIFT_CGORD_FREE_MAX, "rows", \
+	  "rows of the segments that keep no order array of a leaf (the overlays written lean) that a top-N, range or count by the array of the leaf decodes and sorts in memory for each scan", \
+	  "the scan reads the units, and the planner prices no walk of the array (the rows are the same)", "-", 1) \
+	X(blob_bytes, "BLOB_CHUNK_BYTES", "agg/blob/dump.c", 268435456, "bytes", \
+	  "the partial result a worker of a parallel aggregate sends in one message: the groups of its table go in messages of about this many bytes (a pair of a count(DISTINCT) takes 8); a group that alone takes more than four times this (1 GB at most) ends the scan", \
+	  "more messages (the leader adds them one after the other); ERROR 54000 for a single group that takes more than four times it, naming max_parallel_workers_per_gather", "-", 1) \
 	X(first_keys, "FIRST_MAX_KEYS", "agg/order/int.h", 4, "columns", \
 	  "sort columns after the DISTINCT ON columns", "normal plan", "-", 0) \
 	X(first_order_cols, "SIFT_AGG_MAX_FORD", "agg/spec/join.h", SIFT_AGG_MAX_FORD, "columns", \
@@ -119,9 +146,9 @@
 	X(par_build_rows, "PAR_BUILD_ROWS", "col/build_par.c", 150000, "rows", \
 	  "rows a participant of a parallel CREATE INDEX of a sift_col index takes at the least (a worker is launched for each further 150,000 rows of the table)", \
 	  "fewer workers are launched, down to the build of the leader alone: one segment", "max_parallel_maintenance_workers, the parallel_workers option of the table", 1) \
-	X(pre_census_units, "-", "col/am/cache.c", 256, "units", \
-	  "units of an index the planner counts the pre-aggregate sections of (the units counted are spread over its segments, in proportion to their units)", \
-	  "the share of the units that hold a section is that of the units counted; an index of fewer units is counted whole", "-", 1) \
+	X(pre_census_units, "-", "col/am/cache.c", 16, "units", \
+	  "units of each segment of an index the planner counts the pre-aggregate sections of (spread over the segment)", \
+	  "the share of the units that hold a section is that of the units counted; a segment of fewer units is counted whole", "-", 1) \
 	X(dict_cache_kb, "CDICT_CACHE_MAX_KB", "col/dictcache.c", 65536, "kB", \
 	  "parsed segment dictionaries a backend keeps for its next query, with the lookup table and the sorted order built over them", \
 	  "the least recently used unpinned dictionary is dropped; one over a half of it is kept for its scan only and searched entry by entry; a dictionary another backend parsed is copied from the shared ring (col/dictshm.c) and counts here too", "-", 1) \
@@ -137,6 +164,9 @@
 	X(lst_min_units, "LST_MIN_UNITS", "col/seg_write/seg_write_int.h", 64, "units", \
 	  "units a segment needs before it keeps its leaf statistics after its sections, so that a plan reads a few pages of it, not the zone arrays of every leaf", \
 	  "no statistics block: the plan reads the zone arrays of the segment (a few pages)", "-", 1) \
+	X(mirror_bytes, "SEG_MIRROR_BYTES", "col/seg_write/seg_write_int.h", 6144, "bytes", \
+	  "bytes of the header page of a segment that keep a copy of the small structures a plan and a first read of the segment open (the schema and the unit directory, the point directories, the order headers, the headers of the pre-aggregates), so that they cost no pages of their own", \
+	  "no copy: each of them is read from its own page of the segment", "-", 1) \
 	X(lst_share_div, "LST_SHARE_DIV", "col/seg_write/seg_write.c", 33, "1/n of a segment", \
 	  "the share of its segment a leaf statistics block may take: a segment whose block would take more than 1/n of its bytes (3% at 33; units of a few rows and many leaves) keeps none", \
 	  "no statistics block: the plan reads the zone arrays of the segment", "-", 1) \
@@ -182,6 +212,15 @@
 	  "a key of a jsonb wildcard object", "the value is OVERFLOW (read from the heap)", "-", 0) \
 	X(shred_keys, "SIFT_SHRED_DEFAULT_KEYS", "col/shred.h", SIFT_SHRED_DEFAULT_KEYS, "keys", \
 	  "distinct keys of a jsonb wildcard object per segment", "the value is OVERFLOW (read from the heap); CREATE INDEX says how many units hold one (NOTICE)", "-", 1) \
+	X(array_bytes, "SIFT_ARRAY_UNLIMITED", "core/limits.h", SIFT_ARRAY_UNLIMITED, "bytes", \
+	  "the largest array a build, merge or rewrite allocates in proportion to the rows of a segment or a run (a sort copy, the entries of a point directory or an order array)", \
+	  "none outside a test: a segment is cut at its memory budget, which counts these arrays, and one over 1 GB is allocated huge (a test lowers the limit: ERROR 54000 naming the size)", "maintenance_work_mem", 1) \
+	X(tomb_log_kb, "SIFT_TOMB_LOG_KB", "core/tomb.h", SIFT_TOMB_LOG_KB, "kB", \
+	  "the tombstone log of a sift_table that one backend keeps in memory (64 bytes an entry: the sorted entries, the scratch of a first look and the chain members), the entries of its own statement included", \
+	  "ERROR 54000 naming sift.tomb_log_limit and VACUUM, which is not bound by it and drops the entries of the rows it cleared; a worker VACUUM is asked for when the log reaches a quarter of it", "sift.tomb_log_limit", 0) \
+	X(wide_dict_bytes, "-", "table/wide.c", 1073741823, "bytes", \
+	  "the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group", \
+	  "ERROR 54000 naming the column", "-", 1) \
 	X(max_segments, "SIFT_MAX_SEGMENTS", "core/sift.h", SIFT_MAX_SEGMENTS, "segments", \
 	  "directory entries of a sift or sift_col index (a sift_table has sift.table_max_segments for a test)", \
 	  "writers merge the smallest closed segments from 16 entries below it; a forced seal leaves the write buffer open (NOTICE)", "-", 1) \

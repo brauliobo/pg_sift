@@ -8,8 +8,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE wc (id int, grp int, amount int, label text, pad text DEFAULT repeat('x', 100)) WITH (autovacuum_enabled = off);
 INSERT INTO wc (id, grp, amount, label) SELECT i, i % 7, i % 100, 'l' || i % 13 FROM generate_series(1, 3000) i;
 CREATE INDEX wc_col ON wc USING sift_col (id, grp, amount, label);
-NOTICE:  sift_col index "wc_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, label
+NOTICE:  sift_col index "wc_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, label
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('wc_col');
 VACUUM (FREEZE, ANALYZE) wc;
 CREATE FUNCTION wc_agg(use_col bool) RETURNS text LANGUAGE plpgsql AS $$
@@ -178,8 +178,8 @@ SELECT * FROM wc_same('after promotion');
 
 -- a rebuilt index
 REINDEX INDEX wc_col;
-NOTICE:  sift_col index "wc_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, label
+NOTICE:  sift_col index "wc_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, label
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('wc_col');
 SELECT * FROM wc_same('rebuilt');
   step   | aggregate | rows 

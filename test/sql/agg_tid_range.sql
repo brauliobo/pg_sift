@@ -1,6 +1,7 @@
 -- ctid range predicates in the aggregate scan (docs/AGG.md, "ctid ranges"): the scan reads the superblocks of the range and tests the TIDs of the rows of its
 -- edges. Every statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same, after every kind of write.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 SET enable_tidscan = off;
@@ -17,28 +18,9 @@ CREATE TABLE tt (id int, g int, v int, pad text) USING sift_table;
 INSERT INTO tt SELECT i, i % 7, i % 100, repeat('x', 100) FROM generate_series(1, 30000) i;
 SELECT max(ctid) AS last_tid, count(DISTINCT (ctid::text::point)[0]::int / 256) AS superblocks FROM tt;
 
-CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'normal';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
-		IF l LIKE '%Workers Planned: _%' AND l NOT LIKE '%Workers Planned: 0%' THEN r := r || ' with workers'; END IF;
-	END LOOP;
-	RETURN r;
-END $$;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_with_workers_label(q) $$;
 
-CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	plan := plan_of(q);
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	RESET sift.enable_agg;
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
-	DROP TABLE r_on, r_off;
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_plan_and_differences(plan_of(q), q) $$;
 
 -- the ranges, on a table: inside one block, across blocks, across a superblock boundary, bounds past the end, empty, crossed, strict, equal to one TID,
 -- an offset of 0 and the largest one, the largest TID there is
@@ -188,4 +170,5 @@ DROP FUNCTION th_q(int, int);
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
 DROP TABLE tp, tr_range, tt, th, th_before;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

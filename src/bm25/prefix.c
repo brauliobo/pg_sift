@@ -116,7 +116,7 @@ union_add(Union *u, uint32 gid, SiftKey key, uint8 tf)
 	if (b->n == b->cap)
 	{
 		b->cap = Max(64, 2 * b->cap);
-		b->e = b->e ? repalloc_huge(b->e, b->cap * sizeof(uint32)) : MemoryContextAllocHuge(u->cx, b->cap * sizeof(uint32));
+		SIFT_REGROW_HUGE_IN(u->cx, b->e, b->cap * sizeof(uint32));
 	}
 	b->e[b->n++] = SLOT(key) << 8 | tf;
 }

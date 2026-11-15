@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import test_records as base  # noqa: E402  (its fixtures; the module, so that its tests are not found twice)
 import collect  # noqa: E402
 import report  # noqa: E402
+import schema  # noqa: E402
 
 
 class PlanShape(unittest.TestCase):
@@ -70,6 +71,30 @@ class PlanShape(unittest.TestCase):
         # a row of an older schema says "not recorded" and is accepted
         old = [dict(r, plan_shape='not recorded (schema 6)', plan_hash=None, _schema=6) for r in clean()]
         self.assertEqual(problems(old), [])
+
+    def native_rows(self, plan, picked=0):
+        """the clean set and the arm native, the normal plan, measured like the others: its structure is what its plan names (a b-tree plan here), its plan is PLAN"""
+        rows = [dict(r, arm=schema.NATIVE, arm_option='default', structure='btree', picked=picked, plan_shape=plan, plan_hash=collect.plan_hash(plan), _line=r['_line'] + 1000)
+                for r in base.clean() if r['arm'] == 'btree' and r['mode'] == 'forced']
+        return base.clean() + rows
+
+    def test_the_native_arm_is_never_picked_even_when_it_ran_the_plan_the_planner_chose(self):
+        sift = base.SHAPES['sift']
+        rows = self.native_rows(sift)   # the normal plan is the one the planner chose with the scan on: the arm still is not the picked one, and the default row does not name it
+        collect.match_default(rows)
+        self.assertEqual({r['picked'] for r in rows if r['arm'] == schema.NATIVE}, {0})
+        self.assertEqual({r['arm_option'] for r in rows if r['mode'] == 'default'}, {'default'})
+        self.assertEqual(base.problems(rows), [])
+        # a native arm that says it was picked is refused, and so is a plan of another structure under any other arm
+        self.assertTrue(any('native arm is never picked' in p for p in base.problems(self.native_rows(sift, picked=1))))
+        wrong = base.clean()
+        wrong[0].update(structure='btree')
+        self.assertTrue(any('WRONG ARM' in p for p in base.problems(wrong)))
+
+    def test_the_native_arm_has_the_structure_its_plan_names_and_the_checker_does_not_ask_it_to_be_one(self):
+        for structure, plan in (('heap', base.SHAPES['heap']), ('mixed', 'Hash Join(Seq Scan t, Index Scan t_ix)')):
+            rows = [dict(r, structure=structure) if r['arm'] == schema.NATIVE else r for r in self.native_rows(plan)]
+            self.assertEqual(base.problems(rows), [], structure)
 
 
 if __name__ == '__main__':

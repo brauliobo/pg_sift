@@ -8,7 +8,7 @@
 #   5. TERM and KILL of the holder release its lock at once and the next run of that PR goes on; TERM stops the worker and removes the work tree
 #   6. a background process of the worker or of the merge call that outlives the landing holds no lock; the normal end removes what the worker left
 #   7. the privacy gate fails on a hit and closed without its deny list
-#   7b. overlapping runs of one PR fetch its head without disturbing each other
+#   7b. overlapping runs of one PR fetch its head, and overlapping fetches of the base tip (one moved under another) do not disturb each other
 #   8. land-union.py keeps both sides of added lines only, each entry once
 #   9. a CHANGELOG a merge of the tip left broken (markers, a duplicated line, an entry moved out of Unreleased or lost) is refused
 #  10. the verdict on the required checks (ok, missing, pending, red, a head that is not the PR head, a re-run) and the bounded wait for pending and missing ones
@@ -166,6 +166,20 @@ mover() { local i p; for i in $(seq 30); do p=$(git --git-dir="$T/origin.git" re
 mover & pm=$!; ft & p1=$!; ft & p2=$!; ft & p3=$!
 wait "$pm"; wait "$p1" && wait "$p2" && wait "$p3" || fail "overlapping fetches of a moving tip fail"
 
+# a landing that moves the tracking ref between the read and the lock of a fetch (the hook moves it under the first five) does not fail the other
+mkdir -p "$T/clone/.git/hooks"; echo 0 >"$T/moves"; g update-ref refs/remotes/origin/b "HEAD~2"
+cat >"$T/clone/.git/hooks/reference-transaction" <<HOOK
+#!/usr/bin/env bash
+[[ \$1 == preparing && -z \${MOVING:-} ]] && grep -q ' refs/remotes/origin/b\$' || exit 0
+n=\$(<"$T/moves"); (( n < 5 )) || exit 0; echo \$((n + 1)) >"$T/moves"
+MOVING=1 git update-ref refs/remotes/origin/b "HEAD~\$((1 + n % 2))"
+HOOK
+chmod +x "$T/clone/.git/hooks/reference-transaction"
+git --git-dir="$T/origin.git" update-ref refs/heads/b "$(g rev-parse HEAD)"
+( . "$LAND"; base=b; fetch_tip ) || fail "a fetch of the tip fails when another landing moved the ref under it"
+[[ $(g rev-parse refs/remotes/origin/b) == "$(g rev-parse HEAD)" ]] || fail "a fetch of the tip leaves the ref where another landing put it"
+rm -f "$T/clone/.git/hooks/reference-transaction"
+
 # 8. the union resolver
 while IFS='|' read -r want name ours theirs; do
 	printf 'A\n<<<<<<< HEAD\n%b\n=======\n%b\n>>>>>>> tip\nZ\n' "$ours" "$theirs" >"$T/$name"
@@ -175,7 +189,6 @@ while IFS='|' read -r want name ours theirs; do
 done <<'EOF2'
 0|Makefile|TESTING_REGRESS += a|TESTING_REGRESS += a\nTESTING_REGRESS += b
 1|Makefile|CFLAGS = -O2|CFLAGS = -O3
-0|focus.tsv|a|a\nb
 EOF2
 # a name or a row that is in the list twice after the merge is kept once, in the place of its first appearance
 mkdir -p "$T/dedupe"

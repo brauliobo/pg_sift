@@ -25,12 +25,17 @@ PG_FUNCTION_INFO_V1(sift_test_col_unit_of_block);
 
 PG_FUNCTION_INFO_V1(sift_test_col_formats);
 
+PG_FUNCTION_INFO_V1(sift_test_col_mirror);
+
+PG_FUNCTION_INFO_V1(sift_test_seg_flip);
+
 PG_FUNCTION_INFO_V1(sift_test_col_dict_count);
 
 PG_FUNCTION_INFO_V1(sift_test_eq_sel);
 
 PG_FUNCTION_INFO_V1(sift_test_eq_sel_calls);
 PG_FUNCTION_INFO_V1(sift_test_vet_offsets);
+PG_FUNCTION_INFO_V1(sift_test_gorder_decoded);
 
 PG_FUNCTION_INFO_V1(sift_test_key_sorts);
 
@@ -47,7 +52,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_dict_tsig);
 
 PG_FUNCTION_INFO_V1(sift_test_col_zone_flags);
 
-/* sift._test_col_formats(index): the column format minor of every immutable segment, by generation, and whether it holds the leaf statistics block */
+/* sift._test_col_formats(index): the column format minor of every immutable segment, by generation, whether it holds the leaf statistics block, and whether its string roots are flagged (SIFT_SEG_ROOTS) */
 Datum
 sift_test_col_formats(PG_FUNCTION_ARGS)
 {
@@ -59,15 +64,59 @@ sift_test_col_formats(PG_FUNCTION_ARGS)
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
-		Datum		v[3] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(snap->segs[i].format),
-							BoolGetDatum((snap->segs[i].flags & SIFT_SEG_LSTATS) != 0)};
-		bool		nulls[3] = {false};
+		Datum		v[4] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(snap->segs[i].format),
+							BoolGetDatum((snap->segs[i].flags & SIFT_SEG_LSTATS) != 0), BoolGetDatum((snap->segs[i].flags & SIFT_SEG_ROOTS) != 0)};
+		bool		nulls[4] = {false};
 
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+/* sift._test_col_mirror(index): the ranges of the stream that the mirror in the header page of each immutable segment keeps, and the bytes of the whole block */
+Datum
+sift_test_col_mirror(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		uint64		off;
+		uint32		len,
+					block;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		for (uint32 r = 0; sift_cseg_mirror_range(seg, r, &off, &len, &block); r++)
+		{
+			Datum		v[5] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(r), Int64GetDatum(off), Int32GetDatum(len), Int32GetDatum(block)};
+			bool		nulls[5] = {false};
+
+			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+		}
+		sift_cseg_close(seg);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/* sift._test_seg_flip(off, mask): the byte at that offset of every stream this backend reads is read as itself xor the mask (a negative offset: none) */
+Datum
+sift_test_seg_flip(PG_FUNCTION_ARGS)
+{
+	int64		off = PG_GETARG_INT64(0);
+
+	sift_test_seg_flip_at = off < 0 ? UINT64_MAX : (uint64) off;
+	sift_test_seg_flip_mask = (uint8) PG_GETARG_INT32(1);
+	PG_RETURN_VOID();
 }
 
 /* sift._test_col_dict_tsig(index, leaf, needle): for each immutable segment whether the dictionary of the leaf has trigram signatures, and how many of its blocks a substring test of needle reads */
@@ -276,37 +325,16 @@ sift_test_eq_sel(PG_FUNCTION_ARGS)
 }
 
 /* the calls since the last read; the argument true resets the count */
-Datum
-sift_test_eq_sel_calls(PG_FUNCTION_ARGS)
-{
-	int64		n = eq_sel_calls;
-
-	if (PG_GETARG_BOOL(0))
-		eq_sel_calls = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_eq_sel_calls, eq_sel_calls)
 
 /* the row offsets decoded to vet rows against the heap since the last read; the argument true resets the count */
-Datum
-sift_test_vet_offsets(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_col_vet_offsets;
+SIFT_TEST_COUNTER_FN(sift_test_vet_offsets, sift_col_vet_offsets)
 
-	if (PG_GETARG_BOOL(0))
-		sift_col_vet_offsets = 0;
-	PG_RETURN_INT64(n);
-}
+/* the entries of order array chunks decoded since the last read; the argument true resets the count */
+SIFT_TEST_COUNTER_FN(sift_test_gorder_decoded, sift_col_gorder_decoded)
 
 /* the sorts of an IN list by the cost estimates since the last read; the argument true resets the count */
-Datum
-sift_test_key_sorts(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_col_key_sorts;
-
-	if (PG_GETARG_BOOL(0))
-		sift_col_key_sorts = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_key_sorts, sift_col_key_sorts)
 
 /* {the questions, the walks made to answer them} about references to a query above that the planner asked since the last read; the argument true resets the counts */
 Datum
@@ -364,46 +392,14 @@ sift_test_vis_counts(PG_FUNCTION_ARGS)
 }
 
 /* the runs of PostgreSQL's planner that the hook made since the last read (a statement planned by one run is one; the variants of a shared CTE or a flattened form are more); the argument true resets the count */
-Datum
-sift_test_agg_plan_passes(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_agg_plan_passes;
-
-	if (PG_GETARG_BOOL(0))
-		sift_agg_plan_passes = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_agg_plan_passes, sift_agg_plan_passes)
 
 /* the selectivities of a list of keys that the planner computed since the last read; the argument true resets the count */
-Datum
-sift_test_agg_key_lists(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_agg_key_lists;
-
-	if (PG_GETARG_BOOL(0))
-		sift_agg_key_lists = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_agg_key_lists, sift_agg_key_lists)
 
 /* the asks of has_column_source that went to the catalog since the last read; the argument true resets the count */
-Datum
-sift_test_source_lookups(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_source_lookups;
-
-	if (PG_GETARG_BOOL(0))
-		sift_source_lookups = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_source_lookups, sift_source_lookups)
 
 /* the nodes the passes that rewrite a query before planning visited since the last read; the argument true resets the count */
-Datum
-sift_test_prepass_nodes(PG_FUNCTION_ARGS)
-{
-	int64		n = sift_prepass_nodes;
-
-	if (PG_GETARG_BOOL(0))
-		sift_prepass_nodes = 0;
-	PG_RETURN_INT64(n);
-}
+SIFT_TEST_COUNTER_FN(sift_test_prepass_nodes, sift_prepass_nodes)
 #endif							/* SIFT_TESTING */

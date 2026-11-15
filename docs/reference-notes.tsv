@@ -14,20 +14,20 @@ text_ops			Default operator class of the sift index for text: the @@> operator.
 segments			One row per segment of a sift index: documents, terms, bytes by section, dirty and dead documents.
 segment_postings			Postings of a sift index by segment and document-frequency class: representation counts, codec bytes and bits per posting.
 index_info			Space and directory state of a sift index: blocks, free list, segments, documents and whether maintenance runs.
-verify			Checks the structure of a sift index (and with heapallindexed, that every visible row is in it); raises on a problem.
+verify			Checks the structure of a sift or sift_col index (and with heapallindexed, that every visible row is in it); raises on a problem. col_verify is the same call.
 facets			Counts of the matches of a query per value of a keyword sift index, most frequent first.
 sections			Joins the fields of a document into the text a fields index is built on.
 field_query			The query with the weights of its fields: each term searched in every field with its boost times the field weight.
 facet_counts			Facet counts over a search: terms, range, histogram and date_histogram facets of any column type, several in one call.
 facet_sql			The SQL statement that facet_counts runs, one scan per facet.
-promote	maint		Turns the write buffer of a sift index into an immutable segment; returns the buffers promoted.
-merge	maint		Merges the segments of a sift index into fewer; force merges even when no policy asks; returns the segments merged.
+promote	maint		Turns the write buffer of a sift index into an immutable segment, or that of a sift_col index into column segments; returns the buffers promoted (col_promote is the same call).
+merge	maint		Merges the segments of a sift or sift_col index into fewer; force merges even when no policy asks; returns the segments merged (col_merge is the same call).
 version	diag		Version of the loaded library (the installed extension version is in pg_extension).
 col_ops			Default operator class of the sift_col index: it has no operators, the index is read by the column scans.
 col_*_ops	col	3.3	Operator classes per type (int2, int4, int8, float4, float8, date, timestamp, timestamptz, bool, numeric, text, bpchar, uuid) that let the planner scan a sift_col index; opt-in per column.
 col_index_info			Space and directory state of a sift_col index: blocks, free list, segments, rows, units (the superblocks the segments cover once; the units a key-cut segment stores, each) and the kernel level of the scans.
-col_unit_agg			Pre-aggregates of every stored unit of a leaf of a sift_col index (debug and test hook).
-col_unit_hist			Histogram of the groups of a dimension of a sift_col index per unit, with the count and sum of one measure (debug and test hook).
+col_unit_agg	-		Pre-aggregates of every stored unit of a leaf of a sift_col index (debug and test hook).
+col_unit_hist	-		Histogram of the groups of a dimension of a sift_col index per unit, with the count and sum of one measure (debug and test hook).
 col_segments			One row per segment of a sift_col index: rows, units, bytes, column format and the bytes of its pre-aggregates.
 col_leaves			One row per leaf of a sift_col index: its chunks by encoding, their bytes and the bytes of its dictionaries.
 col_sections			Where the bytes of a sift_col index or a sift_table go, one row per kind; they add up to pg_relation_size.
@@ -59,3 +59,13 @@ worker_state	maint
 workers	maint		
 col_refresh	maint		
 refusal_slugs	diag		
+refusal_actions	diag		
+cluster_advice	col		
+index_advice	col		
+index_choices	col		
+key_cut_decision	col		
+suggest_paths	col		
+approx_count_distinct	col		
+help	diag		
+tblref_in	-		
+tblref_out	-		

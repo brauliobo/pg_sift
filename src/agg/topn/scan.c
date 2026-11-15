@@ -3,6 +3,7 @@
  * The vector read of a segment, the monotone read of a key that follows the table, and the
  * entry that picks the way a unit is read.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include "port/pg_bitutils.h"

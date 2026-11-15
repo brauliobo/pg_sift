@@ -1,0 +1,1 @@
+col_index_stats	src/col/maint.c:sift_col_leaves src/col/test.c:sift_test_col_leaf_stats src/table/analyze.c:analyze_group_block src/table/analyze.c:analyze_start src/table/analyze.c:sift_tbl_scan_analyze_next_block src/table/analyze.c:sift_tbl_scan_analyze_next_tuple src/table/slot.c:slot_copy_heap_tuple src/table/wbuf.c:sift_tbl_rowver src/table/wbuf.c:sift_tbl_rowver_tuple

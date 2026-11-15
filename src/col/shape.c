@@ -14,6 +14,7 @@
  *     the way to it (an IN list), and no other node is in either set. A mask over 62 bits of IPv6 is a node of the 62nd bit: a test of such a mask
  *     is answered by PostgreSQL's operator on the candidates.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include <sys/socket.h>
@@ -25,7 +26,6 @@
 #include "utils/inet.h"
 #include "utils/lsyscache.h"
 #include "utils/rangetypes.h"
-#include "utils/timestamp.h"
 #include "utils/typcache.h"
 
 #include "col/am.h"
@@ -48,6 +48,9 @@ typedef struct SiftColShape
 	FmgrInfo	fn;				/* the operator as a function of (image, operand) */
 	Datum		operand;
 	bool		decided;		/* fn is set */
+	bool		unary;			/* fn is a function of the image alone (isempty, lower_inf ..) */
+	bool		negate;			/* the test is NOT fn(image) */
+	int			parity;			/* a range test of the inclusive bounds: the lane (1 + first, 2 + last position) whose parity the rows that pass the lanes are kept by, 0 none */
 } SiftColShape;
 
 /* ---- the lanes of a value ---- */
@@ -352,8 +355,110 @@ static const Oid shape_fn[] = {
 	[SIFT_COLW_N_SUPEQ - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_SUPEQ,
 	[SIFT_COLW_N_OVERLAP - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_OVERLAP,
 	[SIFT_COLW_R_EQ - SIFT_COLW_SHAPE_FIRST] = F_RANGE_EQ,
-	[SIFT_COLW_N_EQ - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_EQ
+	[SIFT_COLW_N_EQ - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_EQ,
+	[SIFT_COLW_R_EMPTY - SIFT_COLW_SHAPE_FIRST] = F_ISEMPTY_ANYRANGE,
+	[SIFT_COLW_R_NONEMPTY - SIFT_COLW_SHAPE_FIRST] = F_ISEMPTY_ANYRANGE,
+	[SIFT_COLW_R_LOWER_INF - SIFT_COLW_SHAPE_FIRST] = F_LOWER_INF_ANYRANGE,
+	[SIFT_COLW_R_LOWER_FIN - SIFT_COLW_SHAPE_FIRST] = F_LOWER_INF_ANYRANGE,
+	[SIFT_COLW_R_UPPER_INF - SIFT_COLW_SHAPE_FIRST] = F_UPPER_INF_ANYRANGE,
+	[SIFT_COLW_R_UPPER_FIN - SIFT_COLW_SHAPE_FIRST] = F_UPPER_INF_ANYRANGE,
+	[SIFT_COLW_R_LOWER_INC - SIFT_COLW_SHAPE_FIRST] = F_LOWER_INC_ANYRANGE,
+	[SIFT_COLW_R_LOWER_EXC - SIFT_COLW_SHAPE_FIRST] = F_LOWER_INC_ANYRANGE,
+	[SIFT_COLW_R_UPPER_INC - SIFT_COLW_SHAPE_FIRST] = F_UPPER_INC_ANYRANGE,
+	[SIFT_COLW_R_UPPER_EXC - SIFT_COLW_SHAPE_FIRST] = F_UPPER_INC_ANYRANGE
 };
+
+/*
+ * The tests of a range with no operand, on the first and last positions. A row whose lanes are an overflow is decided by PostgreSQL's function, as for the operators. The ranges of
+ * the discrete subtypes are canonical, [a, b), whenever the bound is a value: lower_inc is true of every finite lower bound and upper_inc of no finite upper one. A date that is
+ * infinity stays as written (daterange('-infinity', 'infinity', '[]')): its one position, 2 * INT32_MAX for an inclusive upper bound and the exclusive -infinity just after 2 * INT32_MIN
+ * for a lower one, is a test of its own. The continuous subtypes hold either, and the position tells which: an inclusive lower bound is the even position 2v, an exclusive one 2v + 1,
+ * and the last position is 2v for an inclusive upper bound and 2v - 1 for an exclusive one, so the lane of the bound (a finite one, a non-empty range) kept by its parity is exact.
+ */
+static void
+range_unary(SiftColShape *sh, SiftColWTest *t, int col, Oid typid, int op)
+{
+	int			s = col + 1,
+				e = col + 2;
+	Oid			sub = InvalidOid;
+	bool		continuous;
+
+	if (op >= SIFT_COLW_R_LOWER_INC)
+		sub = lookup_type_cache(typid, TYPECACHE_RANGE_INFO)->rngelemtype->type_id;
+	continuous = sub != INT4OID && sub != INT8OID && sub != DATEOID;
+	sh->unary = true;
+	sh->negate = op == SIFT_COLW_R_NONEMPTY || op == SIFT_COLW_R_LOWER_FIN || op == SIFT_COLW_R_UPPER_FIN || op == SIFT_COLW_R_LOWER_EXC || op == SIFT_COLW_R_UPPER_EXC;
+	switch (op)
+	{
+		case SIFT_COLW_R_EMPTY:
+			add(sh, 0, s, SIFT_COLOP_EQ, SPAN_NONE);
+			break;
+		case SIFT_COLW_R_NONEMPTY:
+			add(sh, 0, s, SIFT_COLOP_LT, SPAN_NONE);
+			break;
+		case SIFT_COLW_R_LOWER_INF:
+			add(sh, 0, s, SIFT_COLOP_EQ, PG_INT64_MIN);
+			break;
+		case SIFT_COLW_R_LOWER_FIN:
+			add(sh, 0, s, SIFT_COLOP_GT, PG_INT64_MIN);
+			break;
+		case SIFT_COLW_R_UPPER_INF:
+			add(sh, 0, e, SIFT_COLOP_EQ, PG_INT64_MAX);
+			break;
+		case SIFT_COLW_R_UPPER_FIN:
+			add(sh, 0, e, SIFT_COLOP_LT, PG_INT64_MAX);
+			break;
+		case SIFT_COLW_R_LOWER_INC:
+			add(sh, 0, s, SIFT_COLOP_GT, PG_INT64_MIN);
+			add(sh, 0, s, SIFT_COLOP_LT, SPAN_NONE);
+			if (sub == DATEOID)
+				add(sh, 0, s, SIFT_COLOP_NE, 2 * (int64) DATEVAL_NOBEGIN + 1);
+			sh->parity = continuous ? s : 0;
+			break;
+		case SIFT_COLW_R_LOWER_EXC:
+			/* the rows the test above leaves: an empty range, an infinite bound (a date also the exclusive -infinity) */
+			if (continuous)
+			{
+				sh->pred[0][sh->npred[0]++] = (SiftColPred) {s, SIFT_COLOP_NOTNULL, 0, NULL};
+				sh->parity = s;
+			}
+			else
+			{
+				sh->nalt = 2;
+				if (sub == DATEOID)
+				{
+					add(sh, 0, s, SIFT_COLOP_LE, 2 * (int64) DATEVAL_NOBEGIN + 1);
+					add(sh, 0, s, SIFT_COLOP_NE, 2 * (int64) DATEVAL_NOBEGIN);
+				}
+				else
+					add(sh, 0, s, SIFT_COLOP_EQ, PG_INT64_MIN);
+				add(sh, 1, s, SIFT_COLOP_EQ, SPAN_NONE);
+			}
+			break;
+		case SIFT_COLW_R_UPPER_INC:
+			if (sub == INT4OID || sub == INT8OID)
+				t->verdict = SIFT_COLW_NONE;
+			else if (sub == DATEOID)
+				add(sh, 0, e, SIFT_COLOP_EQ, 2 * (int64) DATEVAL_NOEND);
+			else
+			{
+				add(sh, 0, e, SIFT_COLOP_GT, SPAN_NEVER);
+				sh->parity = e;
+			}
+			break;
+		case SIFT_COLW_R_UPPER_EXC:
+			if (sub == INT4OID || sub == INT8OID)
+				t->verdict = SIFT_COLW_NONNULL;
+			else if (sub == DATEOID)
+				add(sh, 0, e, SIFT_COLOP_NE, 2 * (int64) DATEVAL_NOEND);
+			else
+			{
+				sh->pred[0][sh->npred[0]++] = (SiftColPred) {e, SIFT_COLOP_NOTNULL, 0, NULL};
+				sh->parity = e;
+			}
+			break;
+	}
+}
 
 void
 sift_col_shape_test(const SiftColDef *def, Oid typid, int op, Datum operand, MemoryContext mcxt, SiftColWTest *t)
@@ -370,6 +475,11 @@ sift_col_shape_test(const SiftColDef *def, Oid typid, int op, Datum operand, Mem
 	t->verdict = SIFT_COLW_SHAPE;
 	t->shape = sh;
 	t->pred.col = def->id;
+	if (op >= SIFT_COLW_R_UNARY)
+	{
+		range_unary(sh, t, def->id, typid, op);
+		return;
+	}
 	if (sift_col_def_shape(def) == SIFT_COL_SHAPE_INET)
 	{
 		net_test(sh, def->id, op, operand);
@@ -436,7 +546,8 @@ decide(const SiftColUnit *unit, int col, const SiftColShape *sh, SiftColSel *row
 		uint32		len = SIFT_COL_DICT_LEN(v.dict, v.codes[k]);
 		void	   *image = memcpy(palloc(len), SIFT_COL_DICT_STR(v.dict, v.codes[k]), len);
 
-		if (!DatumGetBool(FunctionCall2(&((SiftColShape *) sh)->fn, PointerGetDatum(image), sh->operand)))
+		if (DatumGetBool(sh->unary ? FunctionCall1(&((SiftColShape *) sh)->fn, PointerGetDatum(image))
+						 : FunctionCall2(&((SiftColShape *) sh)->fn, PointerGetDatum(image), sh->operand)) == sh->negate)
 			sift_col_bit_clear(rows->bits, idx[k]);
 		pfree(image);
 	}
@@ -457,6 +568,28 @@ andnot_into(SiftColSel *dst, const SiftColSel *src)
 	for (uint32 w = 0; w < dst->nwords; w++)
 		dst->bits[w] &= ~src->bits[w];
 	sift_col_sel_count(dst);
+}
+
+/*
+ * Keeps the rows of `rows` whose bound is inclusive (the test) or exclusive (its NOT) by the parity of the position of the bound: even for an inclusive one, odd for an exclusive one,
+ * and INT64_MIN, the position of an infinite lower bound (and of the last of an empty range), is no inclusive bound
+ */
+static void
+parity_rows(const SiftColUnit *unit, const SiftColShape *sh, SiftColSel *rows)
+{
+	SiftColVec	v;
+	uint32	   *idx;
+
+	if (rows->count == 0)
+		return;
+	idx = palloc((rows->count + SIFT_COL_IDXPAD) * sizeof(uint32));
+	sift_col_read(unit, sh->parity, rows, &v);
+	sift_col_sel_idx(rows, idx);
+	for (uint32 k = 0; k < rows->count; k++)
+		if (((v.i[k] & 1) == 0 && v.i[k] != PG_INT64_MIN) == sh->negate)
+			sift_col_bit_clear(rows->bits, idx[k]);
+	pfree(idx);
+	sift_col_sel_count(rows);
 }
 
 bool
@@ -499,9 +632,11 @@ sift_col_shape_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel 
 			sift_colw_ovf_rows(unit, col + 1, sel, hard->bits);	/* stored as overflows: every test keeps them */
 			andnot_into(res, hard);
 		}
+		if (sh->parity)
+			parity_rows(unit, sh, res);
 		if (sh->decide_rows)
 		{
-			memcpy(hard->bits, res->bits, hard->nwords * sizeof(uint64));
+			or_into(hard, res);
 			memset(res->bits, 0, res->nwords * sizeof(uint64));
 		}
 	}

@@ -42,7 +42,6 @@ typedef struct PageHeaderData
 typedef PageHeaderData *PageHeader;
 #define SizeOfPageHeaderData		sizeof(PageHeaderData)
 #define PageGetSpecialPointer(p)	((char *) (p) + ((PageHeader) (p))->pd_special)
-#define PageGetPageSize(p)			BLCKSZ
 
 #define InvalidBuffer				((Buffer) NULL)
 /* An empty page: the standard header, special space of specialSize at the end (storage/bufpage.h) */
@@ -74,6 +73,7 @@ extern BlockNumber BufferGetBlockNumber(Buffer buf);
 
 /* generic WAL: the page is edited in place, there is no log */
 typedef struct GenericXLogState GenericXLogState;
+#define GENERIC_XLOG_FULL_IMAGE	0x0001
 extern GenericXLogState *GenericXLogStart(Relation rel);
 extern Page GenericXLogRegisterBuffer(GenericXLogState *state, Buffer buf, int flags);
 extern void GenericXLogFinish(GenericXLogState *state);

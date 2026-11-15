@@ -2,6 +2,7 @@
 -- ARRAY sub-select returns, EXISTS and nested jsonpath tests over the parts, and per-item arms over a text leaf with the cast in the aggregate
 -- (docs/AGG.md, "Workload shapes"). Every statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 -- the table is small: page costs that keep the btree and bitmap plans from looking cheap as well
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -41,18 +42,7 @@ BEGIN
 	RETURN CASE n WHEN 0 THEN 'normal' WHEN 1 THEN 'SiftAgg' ELSE n || ' SiftAgg' END || CASE WHEN r = '' THEN '' ELSE ' (' || r || ')' END;
 END $$;
 
-CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	plan := plan_of(q);
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	RESET sift.enable_agg;
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
-	DROP TABLE r_on, r_off;
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_plan_and_differences(plan_of(q), q) $$;
 
 -- x = ANY (ARRAY (sub-select)): the sub-select runs once and its rows are a lookup table of the leaf; a sub-select that reads the row, is volatile or
 -- may raise keeps the normal plan
@@ -105,4 +95,5 @@ RESET sift.enable_agg;
 DROP TABLE ev;
 DROP TABLE ents;
 DROP FUNCTION same(text), plan_of(text), op_txt(jsonb), op_doc(int);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

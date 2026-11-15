@@ -89,7 +89,7 @@ def reflow(block, ren):
     off = [sum(v + 3 for v in w[:i]) for i in range(len(w))]
     n = len(w)
 
-    def cut(line, i, last_ok=False):
+    def cut(line, i):
         seg = line[off[i] + 1:off[i] + 1 + w[i]]
         if i < n - 1:
             if len(line) <= off[i] + w[i] + 2 or line[off[i] + w[i] + 2] != '|' or line[off[i]] != ' ' or line[off[i] + w[i] + 1] != ' ':

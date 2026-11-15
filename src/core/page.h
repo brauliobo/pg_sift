@@ -53,6 +53,16 @@ typedef SiftPageOpaqueData *SiftPageOpaque;
 #define SiftPageGetUsed(page)	((uint32) (((PageHeader) (page))->pd_lower - SIFT_PAGE_DATA_OFFSET))
 #define SiftPageSetUsed(page, n) (((PageHeader) (page))->pd_lower = SIFT_PAGE_DATA_OFFSET + (n))
 
+/* A page as the index lays it out: pd_upper == pd_special in front of the special space, and the bytes in use inside the payload */
+static inline bool
+sift_page_layout_ok(const char *page)
+{
+	const PageHeaderData *ph = (const PageHeaderData *) page;
+
+	return ph->pd_special == BLCKSZ - MAXALIGN(sizeof(SiftPageOpaqueData)) && ph->pd_upper == ph->pd_special &&
+		ph->pd_lower >= SIFT_PAGE_DATA_OFFSET && ph->pd_lower <= ph->pd_upper;
+}
+
 /*
  * Metapage (block 0). The failure note and the analyzer configuration at its end need no format minor: a build that does not know it keeps the page as it is (pd_lower
  * stops short of it, so the note reads as zeros), one that knows it extends pd_lower when it first writes the note.
@@ -97,11 +107,17 @@ typedef enum SiftSegKind
 
 #define SIFT_SEG_DIRTY	0x0001	/* some liveness bit cleared */
 #define SIFT_SEG_POSITIONS 0x0002	/* written with word positions (SIFT_TERM_POS terms) */
+#define SIFT_SEG_ROOTS	0x0004	/* a column segment whose documents were shredded with a string root stored as the overflow of every column below it, as an array root always was (shred.c): a column that tests doc ? 'k' is told a string document from an object without the key. No format minor: the bytes are the same, a reader that does not know the flag reads a string root as a missing key, and a merge by it drops the flag */
+extern PGDLLIMPORT bool sift_test_wbuf_narrow;	/* testing: BM25 write buffers are opened in format 0 */
+extern PGDLLIMPORT bool sift_test_no_roots;	/* testing: write as before the flag (a string document is a missing key, no entry has it) */
+#define SIFT_SEG_ROOTS_NOW (sift_test_no_roots ? 0 : SIFT_SEG_ROOTS)
 #define SIFT_SEG_KEYED	0x0800	/* a column segment whose units are cut by the range of the declared key; a segment written as column format minor 17 has no flag and is keyed too (sift_cseg_keyed) */
+#define SIFT_SEG_BYTID	0x0010	/* a keyed column segment cut by TID range (the floor's units, sift.col_unit_floor): its units follow each other in the order of the TIDs. No format minor: a reader that does not know the flag reads it as keyed */
+#define SIFT_SEG_BYKEY	0x0020	/* a keyed column segment cut by the range of a key: its units follow each other in the order of that key and each spans the heap. Neither flag: a keyed segment written before them, whose cut is the index's as far as anyone knows */
 #define SIFT_SEG_LSTATS	0x1000	/* a column segment with the leaf statistics block after its last section; no format minor: a reader that does not know the flag does not look there */
 #define SIFT_SEG_NET	0x2000	/* a column segment with the pre-aggregates of its dirty units net of their dead rows after the leaf statistics, in whole pages at the end of the stream, the last 16 bytes of which say where they start (col/seg/net.c); no format minor: a reader that does not know the flag does not look there */
 #define SIFT_SEG_XSTAMP	0x4000	/* a segment of a heap sift_col index with track_changes whose entries were all inserted by transactions that committed before the xid in reserved (sift_seg_xstamp): a snapshot whose xmin is not below it sees every inserter as committed and finished; not with SIFT_SEG_VERS */
-#define SIFT_SEG_UNIT	0x8000	/* independently owned one-unit generation; ordinary maintenance preserves its allocation boundary */
+#define SIFT_SEG_UNIT	0x8000	/* a one-unit generation written by the unit_rewrite method of 4.1 and earlier, which is gone: merge, rewrite and the overlay still keep its allocation boundary */
 #define SIFT_SEG_VERS	0x0400	/* a column segment with unfrozen rows: reserved = the smallest xid (docs/COL-TAM.md section 7); cleared when the rows are frozen */
 
 typedef struct SiftSegEntry
@@ -114,10 +130,13 @@ typedef struct SiftSegEntry
 	uint32		sb_lo;			/* SB range covered (inclusive) */
 	uint32		sb_hi;
 	uint32		reserved;		/* immutable: the owner's tag; write buffer of sift_col: the leaves that hold an overflow value (col/wbuf.h); sum_dl of such a buffer: those that hold a JSON null */
+	uint32		pad;			/* always 0: the alignment hole of ndocs, named so that an initializer zeroes it and a copy carries it into the page */
 	uint64		ndocs;
 	uint64		sum_dl;
 	uint64		bytes;
 } SiftSegEntry;
+
+StaticAssertDecl(sizeof(SiftSegEntry) == offsetof(SiftSegEntry, bytes) + sizeof(uint64), "a directory entry has no padding: its bytes are stored in the page");
 
 /* A write buffer (open or sealed): the segments that are neither this nor immutable are lane chains of another use (the tombstone log) */
 static inline bool
@@ -256,8 +275,17 @@ typedef struct SiftWbufPageHeaderData
 	uint64		bloom[4];		/* 256-bit bloom of term hashes, 2 probes */
 } SiftWbufPageHeaderData;
 
+/* A page of a buffer of format SIFT_WBUF_FORMAT_WIDE: the header above (its small bloom is kept) and room for the wide bloom, 2 probes, which is filled once, when the page is full (a log record of the changes of the head of every append would grow with it), then the records */
+#define SIFT_WBUF_WIDE_WORDS	128
+typedef struct SiftWbufWideHeaderData
+{
+	SiftWbufPageHeaderData base;
+	uint64		wide[SIFT_WBUF_WIDE_WORDS];	/* 8,192-bit bloom of term hashes */
+} SiftWbufWideHeaderData;
+
 #define SIFT_WBUFPAGE_SEALED	0x0001
 #define SIFT_WBUFPAGE_SPANS	0x0002
+#define SIFT_WBUFPAGE_WIDE	0x0004	/* the wide bloom of the page is filled (set when the page is full: the pages being appended to have the small one) */
 
 #define SIFT_WBUF_DELETED	0x0001
 #define SIFT_WBUF_CONT		0x0002	/* more terms of the preceding doc: no dl, not counted */

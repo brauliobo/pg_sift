@@ -2,8 +2,6 @@
  * col/preagg_opt.c - the pre-aggregates option: the leaves that can be dims and measures, the default spec, the parser (docs/COL-PREAGG.md).
  */
 
-#include "core/host.h"
-
 #include "col/preagg.h"
 
 /* a scalar leaf of the top level, or of a list of the top level: a list inside a list has no cube */
@@ -23,7 +21,7 @@ plain_type(const SiftColDef *d)
 bool
 sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d)
 {
-	return depth1(s, d) && plain_type(d) && (d->store == SIFT_COLS_INT || d->store == SIFT_COLS_STR);
+	return depth1(s, d) && plain_type(d) && !sift_col_def_is_present(d) && (d->store == SIFT_COLS_INT || d->store == SIFT_COLS_STR);
 }
 
 /* The list of an option that may be the choice of the build, without its 'auto' word and colon; *autolist: the build chose it (or is to), 'auto' alone is none chosen yet */
@@ -645,7 +643,7 @@ parse_rows(const char *opt, const SiftColSchema *s, const char *const *names, Si
 		ru.dim[ru.ndims++] = leaf;
 	} while (eat(c, ','));
 	if (nrows < 2)
-		return "rollup_dims needs at least two columns (the cube answers one)";
+		return "rollup_columns needs at least two columns (the cube answers one)";
 	if (eat(c, ':'))
 	{
 		do
@@ -753,7 +751,7 @@ parse_calendar(const char *opt, const SiftColSchema *s, const char *const *names
 const char *
 sift_cpagg_calendar_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
 {
-	if (opt == NULL || rest_blank(opt))
+	if (opt == NULL || rest_blank(opt) || is_word(opt, "auto"))
 	{
 		/* the default is every date, timestamp and timestamptz column, as for a sift_table; not with preagg = 'off', a cube given dim by dim, or JSON path leaves (their cells
 		 * grew the index of a wide API table by 12%: calendar_columns names them) */
@@ -770,13 +768,13 @@ sift_cpagg_calendar_apply(const char *opt, const SiftColSchema *s, const char *c
 const char *
 sift_cpagg_calendar_syntax(const char *opt)
 {
-	return opt == NULL || rest_blank(opt) ? NULL : parse_calendar(opt, NULL, NULL, NULL);
+	return opt == NULL || rest_blank(opt) || is_word(opt, "auto") ? NULL : parse_calendar(opt, NULL, NULL, NULL);
 }
 
 const char *
 sift_cpagg_rollup_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
 {
-	if (opt == NULL || rest_blank(opt))
+	if (opt == NULL || rest_blank(opt) || is_word(opt, "auto") || is_word(opt, "default"))
 		return NULL;
 	spec->rfixed = true;
 	return parse_rollup_dims(opt, s, names, spec);
@@ -785,7 +783,7 @@ sift_cpagg_rollup_apply(const char *opt, const SiftColSchema *s, const char *con
 const char *
 sift_cpagg_rollup_syntax(const char *opt)
 {
-	return opt == NULL || rest_blank(opt) ? NULL : parse_rollup_dims(opt, NULL, NULL, NULL);
+	return opt == NULL || rest_blank(opt) || is_word(opt, "auto") || is_word(opt, "default") ? NULL : parse_rollup_dims(opt, NULL, NULL, NULL);
 }
 
 const char *

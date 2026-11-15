@@ -1,7 +1,6 @@
 /*
  * col/schema.c - L1 of the column engine: the schema, the leaf list of an index.
  */
-#include "core/host.h"
 
 #include "col/enc.h"
 #include "col/enc_int.h"
@@ -117,6 +116,7 @@ schema_build(MemoryContext mcxt, const SiftColDef *defs, int n)
 		s->wide |= sift_col_def_needs_wide(&defs[i]);
 		s->contain |= sift_col_def_shape(&defs[i]) != 0;
 		s->kinds |= sift_col_def_has_kinds(&defs[i]);
+		s->connected |= (defs[i].flags & SIFT_COLD_FOUND) != 0;
 	}
 	s->hash = schema_hash(defs, n);
 	return s;
@@ -132,6 +132,19 @@ sift_cschema_create(MemoryContext mcxt, const SiftColDef *defs, int n)
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("invalid sift_col leaf list: %s", why)));
 	return schema_build(mcxt, defs, n);
+}
+
+/* The connections a schema has leaves for: one flag leaf "<fk>#found" each (col/conn.h) */
+int
+sift_cschema_nconn(const SiftColSchema *s)
+{
+	int			n = 0;
+
+	for (int i = 0; i < s->ncols; i++)
+	{
+		n += (s->cols[i].flags & SIFT_COLD_FOUND) != 0;
+	}
+	return n;
 }
 
 void

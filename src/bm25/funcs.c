@@ -9,7 +9,6 @@
 #include "access/relation.h"
 #include "catalog/pg_index.h"
 #include "nodes/makefuncs.h"
-#include "nodes/nodeFuncs.h"
 #include "nodes/pathnodes.h"
 #include "nodes/supportnodes.h"
 #include "optimizer/optimizer.h"

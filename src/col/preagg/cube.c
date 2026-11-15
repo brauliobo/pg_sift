@@ -3,7 +3,8 @@
  * the groups, the counts, the sums and the minima and maxima
  * emitted as the cube blob
  */
-#include "core/host.h"
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
+#include "core/hash.h"
 #include "col/preagg/pagg_build_int.h"
 
 /* Work areas of one unit's cube, sized by the group cap */
@@ -169,7 +170,7 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 				gp = &hg[k - dc->lo];
 			else
 			{
-				uint32		h = (uint32) (((uint64) k * UINT64CONST(0x9E3779B97F4A7C15)) >> 40) & mask;
+				uint32		h = (uint32) (sift_fib64((uint64) k) >> 40) & mask;
 
 				while (hg[h] >= 0 && hk[h] != k)
 					h = (h + 1) & mask;

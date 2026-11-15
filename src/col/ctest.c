@@ -1,6 +1,7 @@
 /*
  * col/ctest.c - L1 of the column engine: chunk tests, a predicate as a test in the key domain, run on a chunk or its zone.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "core/host.h"
 
 #include "core/cmp.h"

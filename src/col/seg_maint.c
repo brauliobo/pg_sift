@@ -2,8 +2,7 @@
  * col/seg_maint.c - column segments in maintenance: decoding for rewrites, overflow reaping, VACUUM and verification (col/seg.h).
  */
 
-#include "core/host.h"
-
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "col/hll.h"
 #include "col/ktab.h"
 #include "col/preagg.h"
@@ -14,27 +13,38 @@
 #include "col/ver.h"
 #include "core/live.h"
 
-void
-sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, SiftColFreezeFn freeze, void *arg)
+/* want: the scalar leaves to decode (NULL: all, with the versions of the rows): only their chunks and the directory of the rows are read from the unit, and only their dictionaries */
+static void
+decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst, const bool *want, SiftColFreezeFn freeze, void *arg)
 {
 	const SiftColSBRef *r = &seg->sbdir[u];
 	SiftCUnitView v;
 	uint32		len;
-	const uint8 *rec = sift_cseg_unit(seg, u, &len);
 	SiftCDict **dicts = palloc0(seg->schema->ncols * sizeof(SiftCDict *));
 	uint64	   *live = palloc(SIFT_COL_NWORDS(r->nrows) * sizeof(uint64));
 	bool		dirty = unit_dirty(seg, u);
 
-	if (!sift_cunit_parse(rec, len, seg->schema, &v) || v.nrows != r->nrows)
+	if (want == NULL)
+	{
+		const uint8 *rec = sift_cseg_unit(seg, u, &len);
+
+		if (!sift_cunit_parse(rec, len, seg->schema, &v) || v.nrows != r->nrows)
+			corrupt(seg, "Unit %u (SB %u) does not parse.", u, r->id);
+	}
+	else if (!sift_cseg_unit_view(seg, u, &v))
 		corrupt(seg, "Unit %u (SB %u) does not parse.", u, r->id);
 	for (int c = 0; c < seg->schema->ncols; c++)
-		dicts[c] = sift_cseg_dict(seg, c);
+	{
+		if (want != NULL && want[c] && v.chunk_len[c] > 0)
+			sift_cseg_unit_fill(seg, u, v.chunk_off[c], v.chunk_len[c]);
+		dicts[c] = want == NULL || want[c] ? sift_cseg_dict(seg, c) : NULL;
+	}
 	sift_cseg_live(seg, u, live);
 	sift_cbatch_reset(dst, r->id);
 	dst->keyed = v.keyed;
-	sift_cunit_decode(&v, r->id, dicts, dirty ? live : NULL, dst);
+	sift_cunit_decode(&v, r->id, dicts, dirty ? live : NULL, want, dst);
 	pfree(dicts);
-	if (sift_cseg_vers(seg))
+	if (want == NULL && sift_cseg_vers(seg))
 	{
 		SiftColVerSum sum;
 
@@ -63,9 +73,21 @@ sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, S
 }
 
 void
+sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, SiftColFreezeFn freeze, void *arg)
+{
+	decode_unit(seg, u, dst, NULL, freeze, arg);
+}
+
+void
 sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst)
 {
-	sift_cseg_decode_unit_freeze(seg, u, dst, NULL, NULL);
+	decode_unit(seg, u, dst, NULL, NULL, NULL);
+}
+
+void
+sift_cseg_decode_unit_leaves(SiftColSegment *seg, uint32 u, const bool *want, SiftColBatch *dst)
+{
+	decode_unit(seg, u, dst, want, NULL, NULL);
 }
 
 static bool
@@ -165,7 +187,7 @@ sift_cseg_reap_overflow(SiftColSegment *seg, SiftCsegDead dead, void *arg)
 		removed += nd;
 		CHECK_FOR_INTERRUPTS();
 	}
-	sift_sr_release(&seg->sr);
+	sift_cseg_close(seg);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 	return removed;
@@ -212,7 +234,7 @@ sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbst
 		removed += nd;
 		CHECK_FOR_INTERRUPTS();
 	}
-	sift_sr_release(&seg->sr);
+	sift_cseg_close(seg);
 	pfree(dead);
 	pfree(keys);
 	pfree(live);
@@ -326,17 +348,17 @@ verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, cons
 
 		for (uint32 r = 0; r < seg->sbdir[u].nrows; r++)
 		{
-			uint32		n = (grp->nulls && (grp->nulls[r / 64] >> (r % 64) & 1)) || grp->key[r] < 0 ? 0 : (uint32) grp->key[r];
+			uint32		n = sift_col_bit_test(grp->nulls, r) || grp->key[r] < 0 ? 0 : (uint32) grp->key[r];
 
 			for (uint32 i = j; i < j + n; i++)
 			{
 				bool		dense,
 							dup = false;
 
-				if (col->nulls && (col->nulls[i / 64] >> (i % 64) & 1))
+				if (sift_col_bit_test(col->nulls, i))
 					continue;
 				for (uint32 k = j; k < i && !dup; k++)
-					dup = !(col->nulls && (col->nulls[k / 64] >> (k % 64) & 1)) && col->key[k] == col->key[i];
+					dup = !sift_col_bit_test(col->nulls, k) && col->key[k] == col->key[i];
 				if (dup)
 					continue;
 				if (!sift_cseg_point_has(seg, c, col->key[i], base + r, &dense))
@@ -352,7 +374,7 @@ verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, cons
 	{
 		bool		dense;
 
-		if (col->nulls && (col->nulls[i / 64] >> (i % 64) & 1))
+		if (sift_col_bit_test(col->nulls, i))
 			continue;
 		if (!sift_cseg_point_has(seg, c, col->key[i], base + i, &dense))
 			corrupt(seg, "The point directory of leaf %d does not list row %u of unit %u under its key.", c, base + i, u);
@@ -434,7 +456,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 			SiftCDict  *d = sift_cseg_dict(seg, c);
 
 			for (uint32 i = 0; i < ch.n; i++)
-				if (!(ch.nulls && (ch.nulls[i / 64] >> (i % 64) & 1)))
+				if (!sift_col_bit_test(ch.nulls, i))
 				{
 					if ((uint64) vals[i] >= d->n)
 						corrupt(seg, "Leaf %d of the unit of SB %u holds code %lld of a dictionary of %u.", c, r->id,
@@ -495,7 +517,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 			pfree(kept[c]);
 }
 
-/* The version section: every unit's vectors decode, say what the directory of the section says, and the range of the xmins is the header's and the entry's */
+/* The version section: every unit's vectors decode, say what the directory of the section says, and the range of the xmins is the header's and the entry's. A group whose rows are final (the owner cleared SIFT_SEG_VERS) keeps the section in the file, but its rows read as frozen */
 static void
 verify_vers(SiftColSegment *seg)
 {
@@ -507,7 +529,7 @@ verify_vers(SiftColSegment *seg)
 				hi = 0;
 	bool		any = false;
 
-	if (pv->vers_len == 0)
+	if (pv->vers_len == 0 || !sift_cseg_vers(seg))
 		return;
 	vu = vers_units(seg);
 	xm = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(uint32));
@@ -769,6 +791,8 @@ sift_cseg_verify(SiftColSegment *seg)
 	kt = sift_ktab_begin(seg->schema, haskt, CurrentMemoryContext);
 	uint32	   *crows[SIFT_COL_MAX_COLS] = {NULL};
 
+	sift_cseg_live_verify(seg);
+	sift_cseg_verify_mirror(seg);	/* first: the reads that follow take its ranges, which are then the stream's */
 	verify_vers(seg);
 	verify_dicts(seg);
 	for (int c = 0; c < seg->schema->ncols; c++)
@@ -800,7 +824,7 @@ sift_cseg_verify(SiftColSegment *seg)
 	verify_hll_kinds(seg);
 	if (seg->entry.flags & SIFT_SEG_DIRTY)
 		live -= sift_live_ndead(&PRIV(seg)->live);
-	sift_sr_release(&seg->sr);
+	sift_cseg_close(seg);
 	pfree(keys);
 	return live;
 }

@@ -5,33 +5,19 @@
 #include "postgres.h"
 
 #include "access/generic_xlog.h"
-#include "access/nbtxlog.h"
 #include "access/parallel.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_class.h"
-#include "catalog/storage.h"
-#include "storage/procarray.h"
 #include "storage/sinval.h"
 #include "catalog/pg_control.h"
-#include "common/int.h"
 #include "miscadmin.h"
-#include "nodes/bitmapset.h"
-#include "storage/bulk_write.h"
-#include "storage/latch.h"
-#include "storage/proc.h"
-#include "storage/read_stream.h"
-#include "storage/smgr.h"
-#include "utils/memutils.h"
-#include "utils/snapmgr.h"
-#include "utils/wait_event.h"
 
 #include "col/col.h"
-#include "bm25/estimate.h"
-#include "core/lane.h"
 #include "core/ops.h"
+#include "core/restrict.h"
 #include "core/store.h"
 #include "core/store_int.h"
 #include "core/visibility.h"
@@ -100,6 +86,8 @@ log_pages(Relation index, Buffer *bufs, Page *srcs, int n)
 	bool		wal = RelationNeedsWAL(index);
 
 	Assert(n > 0 && n <= XLR_MAX_BLOCK_ID);
+	for (int i = 0; i < n; i++)
+		SIFT_INVARIANT(sift_page_layout_ok(srcs[i]), "sift: block %u is logged as a page that is not laid out as one of the index", BufferGetBlockNumber(bufs[i]));
 	if (wal)
 	{
 		XLogEnsureRecordSpace(n - 1, 0);
@@ -135,6 +123,21 @@ dir_has_gen(Relation index, uint64 gen)
 	return false;
 }
 
+#define LIVE_CORRUPT(index, ...) \
+	ereport(ERROR, \
+			(errcode(ERRCODE_INDEX_CORRUPTED), \
+			 errmsg("sift index \"%s\" is corrupted", RelationGetRelationName(index)), \
+			 errdetail(__VA_ARGS__), \
+			 errhint("A sift_col index that a VACUUM of pg_sift 4.2.1 to 4.3.5 damaged is restored in place by sift.col_repair; REINDEX rebuilds any index.")))
+
+#define PAGE_CORRUPT(index, type, ...) \
+	do { \
+		if ((type) == SIFT_PT_LIVE) \
+			LIVE_CORRUPT(index, __VA_ARGS__); \
+		else \
+			corrupt(index, __VA_ARGS__); \
+	} while (0)
+
 void
 sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 {
@@ -143,11 +146,10 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 	BlockNumber blkno = BufferGetBlockNumber(buf);
 	SiftPageOpaqueData found;
 
-	if (!layout_ok(page))
-		corrupt(index, "Block %u has an invalid page layout (lower %u, upper %u, special %u).",
-				blkno, ph->pd_lower, ph->pd_upper, ph->pd_special);
+	if (!sift_page_layout_ok(page))
+		PAGE_CORRUPT(index, type, "Block %u has an invalid page layout (lower %u, upper %u, special %u).", blkno, ph->pd_lower, ph->pd_upper, ph->pd_special);
 	found = *SiftPageGetOpaque(page);
-	if (likely(found.type == type && found.gen == gen))
+	if (likely(found.type == type && found.gen == gen && (found.flags | found.reserved) == 0))
 		return;
 	if (RecoveryInProgress() && gen != 0)
 	{
@@ -160,8 +162,27 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 							   RelationGetRelationName(index), ULL(gen), blkno),
 					 errhint("Set hot_standby_feedback = on on the standby to avoid this.")));
 	}
-	corrupt(index, "Block %u: expected page type %d generation %llu, found type %d generation %llu.",
-			blkno, type, ULL(gen), found.type, ULL(found.gen));
+	if ((found.flags | found.reserved) != 0)
+		PAGE_CORRUPT(index, type, "Block %u: expected page type %d generation %llu, found type %d generation %llu flags %u reserved %u.",
+					 blkno, type, ULL(gen), found.type, ULL(found.gen), found.flags, found.reserved);
+	PAGE_CORRUPT(index, type, "Block %u: expected page type %d generation %llu, found type %d generation %llu.",
+				 blkno, type, ULL(gen), found.type, ULL(found.gen));
+}
+
+/*
+ * The SQL functions and views that look inside an index read its metapage, which an index of CREATE INDEX CONCURRENTLY or REINDEX CONCURRENTLY has not got until its
+ * build ends (the file is empty, or written past shared buffers with the metapage last, and a standby replays the build from the same WAL): while it is not ready, or when the
+ * build failed and left it so, the read is no corruption but a question the index cannot answer yet.
+ */
+void
+sift_store_require_ready(Relation index)
+{
+	if (!index->rd_index->indisready)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("sift index \"%s\" is not ready to be read", RelationGetRelationName(index)),
+				 errdetail("Its CREATE INDEX CONCURRENTLY or REINDEX CONCURRENTLY has not finished building it."),
+				 errhint("Wait for the build to finish, or DROP INDEX the one a failed build left.")));
 }
 
 /*
@@ -183,7 +204,8 @@ check_meta(Relation index, Buffer buf)
 	SiftMetaPageData *meta = META(page);
 
 	sift_store_check_page(index, buf, SIFT_PT_META, 0);
-	if (meta->magic != SIFT_MAGIC || SiftPageGetUsed(page) < SIFT_META_BASE_SIZE || SiftPageGetUsed(page) > sizeof(SiftMetaPageData))
+	/* bytes past the struct of this build are the extension of a newer one: this build keeps them as they are (and refuses by format what it cannot read) */
+	if (meta->magic != SIFT_MAGIC || SiftPageGetUsed(page) < SIFT_META_BASE_SIZE)
 		corrupt(index, "Bad metapage (magic 0x%08x, %u bytes).", meta->magic, SiftPageGetUsed(page));
 	if (meta->format_major != SIFT_FORMAT_MAJOR || meta->format_minor > SIFT_FORMAT_MINOR)
 		ereport(ERROR,
@@ -242,6 +264,24 @@ sift_dir_read(Relation index, SiftDirSnapshot *snap)
 	UnlockReleaseBuffer(metabuf);
 }
 
+/* The schema hash and the flags the metapage of a column index was written with; false while the index has no page yet (CREATE INDEX has not started to write) and for a partitioned
+ * index, which has no storage (PostgreSQL 19 asks it for amcanreturn while it plans a query on the partitioned table) */
+bool
+sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags)
+{
+	Buffer		metabuf;
+	SiftMetaPageData *meta;
+
+	if (index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX || RelationGetNumberOfBlocks(index) <= SIFT_DIRECTORY_BLKNO)
+		return false;
+	metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
+	meta = META(BufferGetPage(metabuf));
+	*hash = meta->analyzer_hash;
+	*flags = meta->flags;
+	UnlockReleaseBuffer(metabuf);
+	return true;
+}
+
 Buffer
 sift_dir_pin(Relation index)
 {
@@ -269,17 +309,17 @@ uint64
 sift_store_new_gen(Relation index)
 {
 	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
-	GenericXLogState *state = GenericXLogStart(index);
-	uint64		gen = META(GenericXLogRegisterBuffer(state, metabuf, 0))->next_gen++;
+	SiftXlog state = sift_xlog_start(index);
+	uint64		gen = META(sift_xlog_register(&state, metabuf, 0))->next_gen++;
 
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(metabuf);
 	return gen;
 }
 
 /* Validates the mutator's result inside the record; aborts it on failure */
 static void
-finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *before, const SiftMetaPageData *meta,
+finish_dir(Relation index, SiftXlog *state, const SiftMetaPageData *before, const SiftMetaPageData *meta,
 		   Page dirpage)
 {
 	SiftDirectoryData *dir = DIR(dirpage);
@@ -290,7 +330,7 @@ finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *befo
 		err = "allocation state changed";
 	else if (dir->nsegs > SIFT_MAX_SEGMENTS)
 	{
-		GenericXLogAbort(state);
+		sift_xlog_abort(state);
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("sift index \"%s\" cannot hold more than %d segments", RelationGetRelationName(index), SIFT_MAX_SEGMENTS),
@@ -312,7 +352,7 @@ finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *befo
 	}
 	if (err)
 	{
-		GenericXLogAbort(state);
+		sift_xlog_abort(state);
 		SIFT_INVARIANT(false, "sift: invalid directory update: %s", err);
 	}
 	dir->version++;
@@ -338,7 +378,7 @@ finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *befo
 static bool
 xid_safexid(void)
 {
-	return !(MyProc->statusFlags & PROC_IN_VACUUM) &&
+	return !sift_in_vacuum() &&
 		(FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()) || !(IsInParallelMode() || IsParallelWorker()));
 }
 
@@ -361,7 +401,7 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	Buffer		metabuf;
 	Buffer		dirbuf;
 	FreePlan	plan = {.flbuf = InvalidBuffer, .newhead = InvalidBlockNumber};
-	GenericXLogState *state;
+	SiftXlog state;
 	SiftMetaPageData before;
 	Page		mp;
 	Page		dp = NULL;
@@ -377,14 +417,14 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 		safexid = ReadNextFullTransactionId();
 	if (chg->nrelease > 0)
 		prepare_free(index, metabuf, chg->release, chg->nrelease, safexid, &plan);
-	state = GenericXLogStart(index);
-	mp = GenericXLogRegisterBuffer(state, metabuf, 0);
+	state = sift_xlog_start(index);
+	mp = sift_xlog_register(&state, metabuf, 0);
 	if (publish)
-		dp = GenericXLogRegisterBuffer(state, dirbuf, 0);
+		dp = sift_xlog_register(&state, dirbuf, 0);
 	if (BufferIsValid(plan.flbuf))
-		fp = GenericXLogRegisterBuffer(state, plan.flbuf, 0);
+		fp = sift_xlog_register(&state, plan.flbuf, 0);
 	if (BufferIsValid(chg->extra))
-		xp = GenericXLogRegisterBuffer(state, chg->extra, 0);
+		xp = sift_xlog_register(&state, chg->extra, 0);
 	if (SiftPageGetUsed(mp) < sizeof(SiftMetaPageData))
 		memset((char *) META(mp) + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
 	before = *META(mp);
@@ -393,18 +433,18 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 		if (chg->fn)
 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
 		/* the page ends where the base does until a failure note is written: pd_lower covers the bytes of a note once it has one */
-		if (META(mp)->maint_failed_at != 0 || META(mp)->analyzer_config[0])
+		if ((META(mp)->maint_failed_at != 0 || META(mp)->analyzer_config[0]) && SiftPageGetUsed(mp) < sizeof(SiftMetaPageData))
 			SiftPageSetUsed(mp, sizeof(SiftMetaPageData));
 		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (col/col.h), its unfrozen rows raise the minor */
 		for (int i = 0; i < DIR(dp)->nsegs; i++)
 			META(mp)->format_minor = Max(META(mp)->format_minor, seg_minor(index, &DIR(dp)->segs[i]));
-		finish_dir(index, state, &before, META(mp), dp);
+		finish_dir(index, &state, &before, META(mp), dp);
 	}
 	apply_free(META(mp), fp, &plan);
 	/* Do not accept cancellation between a durable physical mapping change and its immediate invalidation. */
 	if (publish && space_exclusive && chg->nrelease > 0)
 		HOLD_INTERRUPTS();
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	SIFT_DIR_TEST_POINT(true);
 	/* These allocations now belong to the directory, even if the caller subsequently errors. */
 	if (published)

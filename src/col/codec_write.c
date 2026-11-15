@@ -8,6 +8,7 @@
 
 #include "bm25/analyze.h"
 #include "core/cmp.h"
+#include "core/hash.h"
 #include "col/codec_int.h"
 #include "col/compress.h"
 
@@ -216,7 +217,7 @@ distinct_sorted(const int64 *v, uint32 n, uint32 limit, uint32 *d)
 	out = palloc(sizeof(int64) * (limit + 1));
 	for (uint32 i = 0; i < n; i++)
 	{
-		uint64		h = ((uint64) v[i] * UINT64CONST(0x9E3779B97F4A7C15)) >> 32;
+		uint64		h = sift_fib64((uint64) v[i]) >> 32;
 		uint32		k = (uint32) h & (cap - 1);
 
 		while (used[k] && tab[k] != v[i])

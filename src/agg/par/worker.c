@@ -2,6 +2,7 @@
  * agg/par/worker.c - the entry point of a worker of a parallel scan
  * A worker opens the leader's statement from the shared memory, takes items, and sends its tables, hits and counters through its queue.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 #include "storage/proc.h"
 
@@ -19,6 +20,12 @@ send_blob(shm_mq_handle *mqh, const void *data, Size len)
 				(errcode(ERRCODE_CONNECTION_FAILURE),
 				 errmsg("sift: the leader of a parallel aggregate went away"),
 				 errhint("More details may be available in the server log.")));
+}
+
+static void
+send_part(void *mqh, int p, StringInfo b)
+{
+	send_blob(mqh, b->data, b->len);
 }
 
 void
@@ -49,6 +56,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	engine_contexts(ex, CurrentMemoryContext);
 	engine_rels(ex);
 	ex->snap = snap;
+	ex->view = shm_toc_lookup(toc, KEY_VIEW, true);
 	/* the executor states below start with the snapshot of the leader's statement as the active one (ExecutorStart asserts it), as in a backend */
 	PushActiveSnapshot(snap);
 	ex->partoff = ex->spec->nparts > 0 ? sh->partoff : NULL;
@@ -82,7 +90,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	ex->shared = sh;
 	ex->lanes = sh->ordered;
 	if (sh->gpart_n)
-		split_begin(ex, ex->spec->gpart - 1, sh->gpart_n, 1u << (ParallelWorkerNumber + 1));
+		split_begin(ex, split_leaf(ex->spec), sh->gpart_n, 1u << (ParallelWorkerNumber + 1));
 	if (ex->topn)
 	{
 		sift_topn_share(ex->topn, &sh->topn_bound);
@@ -112,11 +120,10 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 		scan_items(ex);
 	if (!ex->topn)
 	{
-		StringInfoData b;
+		MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift worker blobs", ALLOCSET_DEFAULT_SIZES);
 
-		initStringInfo(&b);
-		blob_dump(ex, -1, &b);
-		send_blob(ex->mqh, b.data, b.len);
+		blob_dump_chunks(ex, tmp, send_part, ex->mqh);
+		MemoryContextDelete(tmp);
 	}
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
 	{

@@ -2,6 +2,7 @@
 -- a spec: every shape runs on the pushdown and on the normal plan with equal results; the sanitizer lane (heap-buffer-overflow before the array of leaves) is
 -- what finds a missing guard.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ls (id int, g int, a int, b bigint, n numeric(10,2), f float8, t text, d date, doc jsonb) WITH (autovacuum_enabled = off);
@@ -11,13 +12,7 @@ FROM generate_series(1, 6000) i;
 VACUUM (FREEZE, ANALYZE) ls;
 CREATE INDEX ls_col ON ls USING sift_col (id, g, a, b, n, f, t, d, doc) WITH (paths = 'doc->v int4, doc->tags[] text');
 
-CREATE FUNCTION ls_rows(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', agg::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION ls_rows(q text, agg bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, agg) $$;
 
 SELECT n, ls_rows(q, true) IS NOT DISTINCT FROM ls_rows(q, false) AS same
 FROM (VALUES
@@ -43,4 +38,5 @@ FROM (VALUES
 
 DROP TABLE ls;
 DROP FUNCTION ls_rows(text, bool);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

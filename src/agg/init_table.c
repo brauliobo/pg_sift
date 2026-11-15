@@ -1,11 +1,11 @@
 /*
  * agg/init_table.c - the lookup tables: the join key filters, the load of a table and its reset
  */
+/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which sift.agg_lookup_max_kb bounds at plan time */
 #include "postgres.h"
 
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_operator_d.h"
-#include "executor/nodeAgg.h"
 #include "nodes/makefuncs.h"
 #include "utils/array.h"
 #include "utils/fmgroids.h"
@@ -74,6 +74,7 @@ join_filter_str(AggExec *ex, int ci, int k, int leaf, MemoryContext caller)
 {
 	MapTab	   *m;
 	SiftSrcStrTest *t;
+	SiftColValue *vals;
 
 	if (ex->cs[ci].map == NULL)
 	{
@@ -89,7 +90,10 @@ join_filter_str(AggExec *ex, int ci, int k, int leaf, MemoryContext caller)
 	ex->jtrial = ex->jtrial ? repalloc(ex->jtrial, (ex->njstr + 1) * sizeof(JstrTrial)) : palloc(sizeof(JstrTrial));
 	ex->jtrial[ex->njstr] = (JstrTrial) {0};
 	t = &ex->jstr[ex->njstr++];
-	*t = (SiftSrcStrTest) {.leaf = leaf,.op = m->kd[k].n == 1 ? SSTR_EQ : SSTR_IN,.nvals = (int) m->kd[k].n,.vals = m->kd[k].ptr,.lens = m->kd[k].len};
+	vals = palloc(m->kd[k].n * sizeof(SiftColValue));
+	for (uint32 i = 0; i < m->kd[k].n; i++)
+		vals[i] = (SiftColValue) {.v.s = m->kd[k].ptr[i],.len = m->kd[k].len[i]};
+	*t = (SiftSrcStrTest) {.leaf = leaf,.op = m->kd[k].n == 1 ? SIFT_COLOP_EQ : SIFT_COLOP_IN,.nvals = (int) m->kd[k].n,.vals = vals};
 }
 
 /*
@@ -409,6 +413,8 @@ join_filters(AggExec *ex, MemoryContext caller)
 			SiftAggPred *p;
 			bool	   *live;
 
+			if (k == 0 && ex->cs[ci].map == NULL && join_found(ex, ci, &total, &add))
+				continue;
 			if (join_filter_text(ex, ci, k, &leaf))
 			{
 				if (!s->topn)
@@ -443,7 +449,7 @@ join_filters(AggExec *ex, MemoryContext caller)
 				ex->cs[ci].map = map_load(ex, ci);
 				MemoryContextSwitchTo(ex->cxt);
 			}
-			if (ex->cs[ci].map->ktext[k])
+			if (ex->cs[ci].map->ktext[k] || ex->cs[ci].map->dcls)
 				continue;
 			/* the table of the predicate is the state of the id it is given: make room first */
 			ex->ps = repalloc(ex->ps, (total + 1) * sizeof(PredState));
@@ -494,7 +500,7 @@ join_none(AggExec *ex)
 		const SiftAggCombo *cb = &s->combo[ci];
 		const SiftAggJoin *j;
 
-		if (cb->join < 0 || cb->level != 0 || ex->cs[ci].map == NULL)
+		if (cb->join < 0 || cb->level != 0 || ex->cs[ci].map == NULL || ex->cs[ci].map->proof)
 			continue;
 		j = &s->join[cb->join];
 		if ((j->kind == SJ_INNER || j->kind == SJ_SEMI) && j->params == NIL && ex->cs[ci].map->nrow == 0)
@@ -552,7 +558,7 @@ table_init(AggExec *ex)
 		KeyState	keep = {.expr = k->expr, .param = k->param, .ident = k->ident, .numk = k->numk, .bucket = k->bucket, .zone = k->zone, .zcut = k->zcut, .cal = k->cal};
 
 		*k = keep;
-		ot_init(&k->ot, s->key[j].eqop, s->key[j].typid, s->key[j].collid);
+		ot_init_key(&k->ot, s->key[j].eqop, s->key[j].typid, s->key[j].collid);
 		rt_init(&k->rt, sizeof(uint32));
 		k->cap = 4;
 		k->nullid = UINT32_MAX;
@@ -587,6 +593,7 @@ table_init(AggExec *ex)
 	ex->gcap = total;
 	ex->seen = palloc0(total * sizeof(int64));
 	ex->acc = acc_alloc(ex, total);
+	table_nospill_check(ex);
 	arms_resize(ex, total, NULL, 0);
 	ex->dset = palloc0(Max(s->naggs, 1) * sizeof(DSet));
 	ex->dist = palloc0(Max(s->naggs, 1) * sizeof(Dist *));
@@ -609,7 +616,7 @@ table_init(AggExec *ex)
 			get_typlenbyval(a->argtype, &ex->xlen[i], &ex->xbyval[i]);
 		}
 		if (is_ordered_agg(a))
-			ex->osa[i] = a->share == i ? osa_new(ex) : ex->osa[a->share];
+			ex->osa[i] = a->share == i ? osa_new(ex, i) : ex->osa[a->share];
 		if (a->num.n && (a->kind == SAA_COUNT_DISTINCT || a->distinct))
 			idmap_init(&ex->amap[i]);
 		if (a->kind == SAA_GEN)
@@ -630,7 +637,7 @@ table_init(AggExec *ex)
 		}
 		else if (a->kind == SAA_O_COUNT_KEY)
 			ex->dist[i] = dist_new(ex, i, false);
-		if ((a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG) || a->kind == SAA_M_PG)
+		if (saa_joined(a->kind))
 			ex->dset[i].counted = a->kind == SAA_M_SUM || a->kind == SAA_M_AVG || a->kind == SAA_M_PG;
 		else if (a->kind != SAA_COUNT_DISTINCT || a->leaf < 0 || ex->lay->leaf[a->leaf].vtype != SCV_CODE)
 			continue;
@@ -671,6 +678,8 @@ table_reset(AggExec *ex)
 			if (!cs->null_input[x] && cs->vid[x] < cs->dircap)
 				cs->dir[cs->vid[x]] = 0;
 		cs->nent = cs->nout = 0;
+		if (cs->cent)
+			memset(cs->cent, 0, ((Size) cs->map->nrow + 1) * sizeof(uint32));
 		memset(cs->ht, 0, cs->nht * sizeof(uint32));
 		combo_forget_priors(ex, ci);
 	}

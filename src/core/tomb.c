@@ -11,13 +11,12 @@
 #include "storage/lwlock.h"
 #include "storage/procarray.h"
 #include "utils/hsearch.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
 #include "core/cmp.h"
 #include "core/tomb.h"
-#include "core/visibility.h"
+#include "core/rowmem.h"
 
 #define corrupt(rel, ...) \
 	ereport(ERROR, \
@@ -25,8 +24,8 @@
 			 errmsg("relation \"%s\" has a corrupted tombstone log", RelationGetRelationName(rel)), \
 			 errdetail(__VA_ARGS__)))
 
-static bool
-is_tomb(const SiftSegEntry *e)
+bool
+sift_tomb_is_seg(const SiftSegEntry *e)
 {
 	return e->kind != SIFT_SEG_IMMUTABLE && (e->flags & SIFT_TBL_SEG_TOMB);
 }
@@ -35,7 +34,7 @@ const SiftSegEntry *
 sift_tomb_find_seg(const SiftDirSnapshot *dir)
 {
 	for (int i = 0; i < dir->nsegs; i++)
-		if (is_tomb(&dir->segs[i]))
+		if (sift_tomb_is_seg(&dir->segs[i]))
 			return &dir->segs[i];
 	return NULL;
 }
@@ -70,6 +69,8 @@ tomb_reset(SiftTombLog *t, const SiftSegEntry *e)
 	t->seqbase = 0;
 	t->followed = false;
 	memset(&t->chan, 0, sizeof(t->chan));
+	memset(&t->keys, 0, sizeof(t->keys));
+	t->keys_cover = false;
 	t->nents = t->nrecent = 0;
 	if (t->hotm)
 	{
@@ -107,7 +108,7 @@ merge_tombs(SiftTombLog *t, SiftTomb **a, uint32 *na, uint32 *cap, const SiftTom
 	if (k > *cap)
 	{
 		*cap = Max(64, Max(*cap * 2, k));
-		*a = *a ? repalloc(*a, *cap * sizeof(SiftTomb)) : MemoryContextAlloc(t->cxt, *cap * sizeof(SiftTomb));
+		SIFT_REGROW_HUGE_IN(t->cxt, *a, *cap * sizeof(SiftTomb));
 	}
 	while (j > 0)
 		(*a)[--k] = i > 0 && cmp_tomb(&(*a)[i - 1], &b[j - 1]) > 0 ? (*a)[--i] : b[--j];
@@ -154,7 +155,7 @@ tomb_sort(SiftTomb *a, uint32 n)
 		qsort(a, n, sizeof(SiftTomb), cmp_tomb);
 		return;
 	}
-	dst = palloc(n * sizeof(SiftTomb));
+	dst = sift_rows_alloc(n * sizeof(SiftTomb));
 	for (int shift = 0; shift < 64 && ((hi - lo) >> shift) != 0; shift += TOMB_RADIX_BITS)
 	{
 		uint32		count[(1 << TOMB_RADIX_BITS) + 1] = {0};
@@ -251,10 +252,36 @@ tomb_held(const SiftTombLog *t, const SiftTomb *ent)
 	return false;
 }
 
-void
-sift_tomb_sync(Relation rel, SiftTombLog *t)
+int			sift_tomb_log_limit_kb = SIFT_TOMB_LOG_KB;
+
+bool
+sift_tomb_over(uint64 entries)
 {
-	const SiftSegEntry *e = sift_tomb_find_seg(t->dir);
+	return entries * SIFT_TOMB_ENTRY_BYTES / 1024 > (uint64) sift_tomb_log_limit_kb;
+}
+
+bool
+sift_tomb_pressure(uint64 entries)
+{
+	return entries * SIFT_TOMB_ENTRY_BYTES / 1024 >= (uint64) sift_tomb_log_limit_kb / 4;
+}
+
+/* The entries held and those to read must fit what a backend keeps: all the log of the relation lives in each backend that reads it */
+static void
+tomb_budget(Relation rel, const SiftTombLog *t, uint64 n)
+{
+	if (sift_tomb_over(t->nents + t->nrecent + (n - t->synced)))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("the tombstone log of relation \"%s\" holds %llu entries, more than a backend keeps of it (sift.tomb_log_limit = %d kB)",
+						RelationGetRelationName(rel), (unsigned long long) n, sift_tomb_log_limit_kb),
+				 errhint("Raise sift.tomb_log_limit (64 bytes of memory for each entry), or run VACUUM: it drops the entries of the rows it cleared.")));
+}
+
+static void
+tomb_sync(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir, bool bounded)
+{
+	const SiftSegEntry *e = sift_tomb_find_seg(dir);
 	Buffer		buf;
 	uint64		n;
 	BlockNumber blk;
@@ -278,18 +305,25 @@ sift_tomb_sync(Relation rel, SiftTombLog *t)
 	buf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_SHARE);
 	sift_store_check_page(rel, buf, SIFT_PT_WBUFHEADER, e->gen);
 	n = SIFT_TOMB_HDR(BufferGetPage(buf))->nentries;
-	/* a header written before the completeness record has fewer used bytes, and the bytes past them are whatever the page held: it says nothing */
-	if (SiftPageGetUsed(BufferGetPage(buf)) >= MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr))
+	/* a header written before the completeness record has fewer used bytes, and the bytes past them are whatever the page held: it says nothing. Likewise for the key journal record */
+	if (SiftPageGetUsed(BufferGetPage(buf)) >= MAXALIGN(sizeof(SiftWbufHeaderData)) + SIFT_TOMB_HDR_NOKEYS)
 		t->chan = SIFT_TOMB_HDR(BufferGetPage(buf))->chan;
 	else
 		memset(&t->chan, 0, sizeof(t->chan));
+	t->keys_cover = SiftPageGetUsed(BufferGetPage(buf)) >= MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr);
+	if (t->keys_cover)
+		t->keys = SIFT_TOMB_HDR(BufferGetPage(buf))->keys;
+	else
+		memset(&t->keys, 0, sizeof(t->keys));
 	blk = BlockNumberIsValid(t->last) ? t->last : SiftLaneHdr(BufferGetPage(buf))->lanes[0].head;
 	UnlockReleaseBuffer(buf);
 	if (n == t->synced)
 		return;
+	if (bounded)
+		tomb_budget(rel, t, n);
 	/* the header says how many entries are new: the batch is allocated once (appenders may add more while it is read) */
 	capbatch = Max(64, n - t->synced + SIFT_TOMB_CAP);
-	batch = palloc(capbatch * sizeof(SiftTomb));
+	batch = sift_rows_alloc(capbatch * sizeof(SiftTomb));
 	while (BlockNumberIsValid(blk))
 	{
 		const SiftTombPage *tp;
@@ -306,7 +340,7 @@ sift_tomb_sync(Relation rel, SiftTombLog *t)
 		if (nbatch + (tp->nent - from) > capbatch)
 		{
 			capbatch = Max(64, Max(capbatch * 2, nbatch + tp->nent));
-			batch = batch ? repalloc(batch, capbatch * sizeof(SiftTomb)) : palloc(capbatch * sizeof(SiftTomb));
+			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, batch, capbatch * sizeof(SiftTomb));
 		}
 		for (uint32 i = from; i < tp->nent; i++)
 		{
@@ -325,6 +359,29 @@ sift_tomb_sync(Relation rel, SiftTombLog *t)
 		tomb_add(t, batch, nbatch);
 	if (batch)
 		pfree(batch);
+}
+
+void
+sift_tomb_sync(Relation rel, SiftTombLog *t)
+{
+	tomb_sync(rel, t, t->dir, t->bounded);
+}
+
+/*
+ * The log of the generation that dir names, whatever the directory is now: a scan whose participants share the directory of its leader reads the
+ * tombstones of that one (a VACUUM that rewrote the log since has released the blocks of the old generation, which the snapshot of the scan keeps from
+ * being reused), so that no participant has the rows of the leader's write buffers without the tombstones that hide them
+ */
+void
+sift_tomb_sync_at(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
+{
+	tomb_sync(rel, t, dir, t->bounded);
+}
+
+void
+sift_tomb_sync_all(Relation rel, SiftTombLog *t)
+{
+	tomb_sync(rel, t, t->dir, false);
 }
 
 /* The run of entries for key in the sorted array a: its first element and length */
@@ -742,27 +799,6 @@ sift_tomb_append(Relation rel, SiftTombLog *t, uint64 key, TransactionId xid, Co
 	sift_tomb_append_many(rel, t, &ent, 1);
 }
 
-void
-sift_tomb_set_chan(Relation rel, SiftTombLog *t, const SiftTombChan *c)
-{
-	const SiftSegEntry *e;
-	Buffer		hbuf;
-	SiftPageEdit ed;
-
-	LockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
-	sift_dir_read(rel, t->dir);
-	if ((e = sift_tomb_find_seg(t->dir)) == NULL)
-		corrupt(rel, "There is no tombstone segment.");
-	hbuf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_EXCLUSIVE);
-	sift_page_edit_begin(&ed, hbuf, SIFT_PAGE_DATA_OFFSET);
-	sift_page_edit_extra(&ed, (char *) &SIFT_TOMB_HDR(ed.page)->chan - (char *) ed.page, sizeof(SiftTombChan));
-	SIFT_TOMB_HDR(ed.page)->chan = *c;
-	sift_page_edit_end(rel, &ed, 1);
-	UnlockReleaseBuffer(hbuf);
-	UnlockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
-	t->chan = *c;
-}
-
 typedef struct TombSwap
 {
 	uint64		old_gen;
@@ -800,21 +836,21 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 		corrupt(rel, "There is no tombstone segment.");
 	sw.old_gen = old->gen;
 	tomb_reset(t, NULL);			/* the cache is rebuilt from the segment under the lock */
-	sift_tomb_sync(rel, t);
+	sift_tomb_sync_all(rel, t);
 	tomb_flatten(t);
 	gen = sift_store_new_gen(rel);
 	hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
 	for (uint32 i = 0; i < t->nents;)
 	{
 		Buffer		nb = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
-		GenericXLogState *state = GenericXLogStart(rel);
+		SiftXlog state = sift_xlog_start(rel);
 		Page		np,
 					pp = NULL;
 		SiftTombPage *tp;
 
 		if (BufferIsValid(prev))
-			pp = GenericXLogRegisterBuffer(state, prev, 0);
-		np = GenericXLogRegisterBuffer(state, nb, 0);
+			pp = sift_xlog_register(&state, prev, 0);
+		np = sift_xlog_register(&state, nb, 0);
 		sift_lane_init_page(np, SIFT_TOMB_PAGE_INIT);
 		tp = SIFT_TOMB_PAGE(np);
 		for (; i < t->nents && tp->nent < SIFT_TOMB_CAP; i++)
@@ -826,7 +862,7 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 		SiftPageSetUsed(np, SIFT_TOMB_PAGE_INIT + tp->nent * sizeof(SiftTomb));
 		if (pp)
 			SIFT_TOMB_PAGE(pp)->next = BufferGetBlockNumber(nb);
-		GenericXLogFinish(state);
+		sift_xlog_finish(&state);
 		if (BufferIsValid(prev))
 			UnlockReleaseBuffer(prev);
 		else
@@ -839,19 +875,19 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 		prev = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
 		head = BufferGetBlockNumber(prev);
 		{
-			GenericXLogState *state = GenericXLogStart(rel);
-			Page		np = GenericXLogRegisterBuffer(state, prev, 0);
+			SiftXlog state = sift_xlog_start(rel);
+			Page		np = sift_xlog_register(&state, prev, 0);
 
 			sift_lane_init_page(np, SIFT_TOMB_PAGE_INIT);
-			GenericXLogFinish(state);
+			sift_xlog_finish(&state);
 		}
 		npages = 1;
 	}
 	last = BufferGetBlockNumber(prev);
 	UnlockReleaseBuffer(prev);
 	{
-		GenericXLogState *state = GenericXLogStart(rel);
-		Page		hp = GenericXLogRegisterBuffer(state, hbuf, 0);
+		SiftXlog state = sift_xlog_start(rel);
+		Page		hp = sift_xlog_register(&state, hbuf, 0);
 
 		sift_lane_init_header(hp, gen, head, 1);
 		SiftLaneHdr(hp)->lanes[0].tail = last;
@@ -859,8 +895,9 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 		SIFT_TOMB_HDR(hp)->magic = SIFT_TOMB_MAGIC;
 		SIFT_TOMB_HDR(hp)->nentries = kept;
 		SIFT_TOMB_HDR(hp)->chan = t->chan;
+		SIFT_TOMB_HDR(hp)->keys = t->keys;
 		SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr));
-		GenericXLogFinish(state);
+		sift_xlog_finish(&state);
 	}
 	sw.fresh = (SiftSegEntry) {.gen = gen,.kind = old->kind,.flags = old->flags,.format = old->format,
 	.header_blk = BufferGetBlockNumber(hbuf)};
@@ -908,16 +945,16 @@ sift_tomb_new_segment(Relation rel, SiftSegKind kind, uint8 format)
 	uint64		gen = sift_store_new_gen(rel);
 	Buffer		hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
 	Buffer		dbuf = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
-	GenericXLogState *state = GenericXLogStart(rel);
-	Page		hp = GenericXLogRegisterBuffer(state, hbuf, 0);
-	Page		dp = GenericXLogRegisterBuffer(state, dbuf, 0);
+	SiftXlog state = sift_xlog_start(rel);
+	Page		hp = sift_xlog_register(&state, hbuf, 0);
+	Page		dp = sift_xlog_register(&state, dbuf, 0);
 	SiftSegEntry e = {.gen = gen,.kind = kind,.flags = SIFT_TBL_SEG_TOMB,.format = format,.header_blk = BufferGetBlockNumber(hbuf)};
 
 	sift_lane_init_header(hp, gen, BufferGetBlockNumber(dbuf), 1);
 	SIFT_TOMB_HDR(hp)->magic = SIFT_TOMB_MAGIC;
 	SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr));
 	sift_lane_init_page(dp, SIFT_TOMB_PAGE_INIT);
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(hbuf);
 	UnlockReleaseBuffer(dbuf);
 	return e;

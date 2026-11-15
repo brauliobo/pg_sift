@@ -11,7 +11,7 @@ import subprocess
 import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, 'scripts')
-from genlib import call_end, esc, norm, split_args, strip_comments, testing_lines
+from genlib import call_end, esc, norm, read, split_args, strip_comments, testing_lines
 
 mode = sys.argv[1]
 ROOT = os.getcwd()
@@ -27,11 +27,6 @@ ARGS = {'Bool': ['name', 'short', 'long', 'var', 'default', 'ctx', 'flags'],
 RELARGS = {'int': ['kind', 'name', 'short', 'default', 'lo', 'hi', 'lock'], 'real': ['kind', 'name', 'short', 'default', 'lo', 'hi', 'lock'],
            'bool': ['kind', 'name', 'short', 'default', 'lock'], 'string': ['kind', 'name', 'short', 'default', 'check', 'lock'],
            'enum': ['kind', 'name', 'short', 'members', 'default', 'detail', 'lock']}
-
-
-def read(path):
-    with open(os.path.join(ROOT, path), encoding='utf-8') as f:
-        return f.read()
 
 
 def string(a):

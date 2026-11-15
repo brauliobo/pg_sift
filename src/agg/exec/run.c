@@ -10,7 +10,6 @@
 #include "storage/lock.h"
 #include "storage/predicate.h"
 #include "utils/float.h"
-#include "utils/tuplesort.h"
 
 #include "agg/agg.h"
 #include "agg/part.h"
@@ -610,10 +609,10 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	if (ex->kept)
 		ex->src = ex->kept;
 	else if (ex->param_scan && ex->spec->topn && ex->spec->nparts == 0)
-		ex->src = ex->kept = sift_colsrc_open(ex->heap, ex->index, snapshot, AllocSetContextCreate(ex->css.ss.ps.state->es_query_cxt, "sift agg source", ALLOCSET_SMALL_SIZES));
+		ex->src = ex->kept = sift_colsrc_open(ex->heap, ex->index, snapshot, AllocSetContextCreate(ex->css.ss.ps.state->es_query_cxt, "sift agg source", ALLOCSET_SMALL_SIZES), ex->view);
 	else
-		ex->src = ex->spec->nparts > 0 ? sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt) :
-			sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt);
+		ex->src = ex->spec->nparts > 0 ? sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt, ex->view) :
+			sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt, ex->view);
 	if (ex->partoff)
 		sift_aggpart_set_offsets(ex->src, ex->partoff);
 	ex->lay = sift_colsrc_source_layout(ex->src);
@@ -786,8 +785,8 @@ agg_end(CustomScanState *node)
 	AggExec    *ex = (AggExec *) node;
 
 	for (int i = 0; ex->osa && i < ex->spec->naggs; i++)
-		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->sort)
-			tuplesort_end(ex->osa[i]->sort);
+		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->runs)
+			osa_runs_end(ex->osa[i]);
 	gen_close(ex);
 	if (ex->done)
 		tuplestore_end(ex->done);

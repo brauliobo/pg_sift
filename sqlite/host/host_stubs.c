@@ -10,6 +10,13 @@
 #include "bm25/segment.h"
 #include "col/seg_int.h"
 
+/* ---------- the heap (core/host.h): the embedded hosts leave it to the system ---------- */
+
+void
+sift_host_pin_heap(void)
+{
+}
+
 /* ---------- text search configurations (bm25/analyze_ts.c): a PostgreSQL catalog object, so the hosts have none ---------- */
 
 SiftTsStem *
@@ -141,6 +148,33 @@ sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays 
 {
 }
 
+SegPts *
+sift_cseg_pts_find(SiftColSegment *seg)
+{
+	return NULL;
+}
+
+void
+sift_cseg_pts_keep(SiftColSegment *seg, MemoryContext cx, SegPts *p)
+{
+}
+
+SegGOrdHead *
+sift_cseg_gordh_find(SiftColSegment *seg, int col)
+{
+	return NULL;
+}
+
+void
+sift_cseg_gordh_keep(SiftColSegment *seg, int col, MemoryContext cx, SegGOrdHead *h)
+{
+}
+
+void
+sift_cseg_gordh_grew(SiftColSegment *seg, int col, Size bytes)
+{
+}
+
 void *
 sift_cseg_sets_find(SiftColSegment *seg, int col)
 {
@@ -168,7 +202,7 @@ sift_cseg_bisect_find(SiftColSegment *seg, int col)
 /* ---------- write buffers (bm25/wbuf.c): the directory never lists one ---------- */
 
 bool
-sift_wbuf_bloom_has(const uint64 *bloom, uint32 hash)
+sift_wbuf_bloom_has(const uint64 *bloom, int nwords, uint32 hash)
 {
 	return false;
 }
@@ -184,6 +218,11 @@ bool
 sift_wbuf_next(SiftWbufReader *r, SiftWbufDoc *doc)
 {
 	return false;
+}
+
+void
+sift_wbuf_note_walked(const SiftWbufReader *r)
+{
 }
 
 void

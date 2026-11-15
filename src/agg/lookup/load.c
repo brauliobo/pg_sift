@@ -16,6 +16,7 @@
 #include "access/tableam.h"
 #include "catalog/pg_am.h"
 #include "executor/executor.h"
+#include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "portability/instr_time.h"
 #include "storage/predicate.h"
@@ -25,7 +26,6 @@
 #include "utils/rel.h"
 
 #include "agg/agg.h"
-#include "agg/wide.h"
 #include "agg/lookup/int.h"
 #include "agg/init_int.h"
 
@@ -106,6 +106,37 @@ map_in_keys(AggExec *ex, int ci, int *att, Oid *typ, Datum **vals)
  */
 static bool map_index_covers(Relation idx, const SiftAggJoin *j);
 
+/*
+ * The entries a key has in the btree, where the statistics of the table say nothing (never analyzed): the index is asked for a few of the keys of the list, evenly spread,
+ * and the entries it holds for them counted (the entries only, no heap row; a key with more than MAP_PILOT_CAP is counted as that many).
+ */
+#define MAP_PILOT_KEYS	4
+#define MAP_PILOT_CAP	256
+
+static double
+map_pilot_rows(AggExec *ex, Relation rel, Relation idx, Oid typ, const Datum *vals, int nv)
+{
+	int			n = Min(nv, MAP_PILOT_KEYS);
+	double		entries = 0;
+	RegProcedure eq = get_opcode(get_opfamily_member(idx->rd_opfamily[0], typ, typ, BTEqualStrategyNumber));
+	IndexScanDesc iscan = sift_index_beginscan(rel, idx, ex->snap, 1);
+
+	for (int i = 0; i < n; i++)
+	{
+		ScanKeyData sk;
+		int			seen = 0;
+
+		ScanKeyEntryInitialize(&sk, 0, 1, BTEqualStrategyNumber, typ, InvalidOid, eq, vals[(int64) i * nv / n]);
+		index_rescan(iscan, &sk, 1, NULL, 0);
+		while (seen < MAP_PILOT_CAP && index_getnext_tid(iscan, ForwardScanDirection) != NULL)
+			seen++;
+		entries += seen;
+	}
+	index_endscan(iscan);
+	return n > 0 ? entries / n : 0;
+}
+
+
 static Relation
 map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key, int *nkeys, const Datum *val, bool own)
 {
@@ -116,11 +147,12 @@ map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key, int *nkeys, const
 	Oid			typ = InvalidOid;
 	double		nkey,
 				rpk,
-				tuples = Max(rel->rd_rel->reltuples, 1.0),
+				tuples = Max(sift_agg_table_rows(RelationGetRelid(rel)), 1.0),
 				pages = RelationGetNumberOfBlocks(rel),
 				bprice = HUGE_VAL,
 				allvis = rel->rd_rel->relallvisible / Max(pages, 1.0);
-	bool		bcov = false;
+	bool		heap = rel->rd_rel->relam == HEAP_TABLE_AM_OID,
+				bcov = false;
 	int			att = 0,
 				cd = map_keyed_dependent(ex, ci, &att, &typ),
 				nv = 0;
@@ -169,7 +201,9 @@ map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key, int *nkeys, const
 		}
 		cov = map_index_covers(idx, j);
 		r = sift_agg_key_rows(RelationGetRelid(rel), att, ta, n - 1, tuples, idx->rd_index->indisunique && idx->rd_index->indnkeyatts == 1);
-		price = r * sift_agg_entry_ops(cov ? allvis : 0);
+		if (r <= 0 && dm == NULL && nv > 0 && n == 1)
+			r = map_pilot_rows(ex, rel, idx, typ, vals, nv);
+		price = r * sift_agg_entry_ops(cov ? allvis : 0, heap);
 		if (r > 0 && price < bprice)
 		{
 			if (best)
@@ -188,7 +222,7 @@ map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key, int *nkeys, const
 		return NULL;
 	nkey = Min(dm ? dm->kd[0].n : nv, tuples);
 	cols = map_load_cols_possible(rel, j, &nnum);
-	if (!sift_agg_probe_pays(nkey, nkey * rpk, pages, bcov ? allvis : 0, sift_agg_whole_ops(tuples, pages, cols, nnum, !cols && lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase))))
+	if (!sift_agg_probe_pays(nkey, nkey * rpk, pages, bcov ? allvis : 0, heap, sift_agg_whole_ops(tuples, pages, cols, nnum, !cols && lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase))))
 	{
 		index_close(best, AccessShareLock);
 		return NULL;
@@ -234,7 +268,11 @@ map_index_covers(Relation idx, const SiftAggJoin *j)
 		need[nneed++] = j->keyatt[k];
 	}
 	for (int c = 0; c < j->ncol; c++)
+	{
+		if (j->colexpr[c])
+			return false;
 		need[nneed++] = j->colatt[c];
+	}
 	for (int n = 0; n < nneed; n++)
 	{
 		int			i;
@@ -291,6 +329,47 @@ map_scan_entries(AggExec *ex, MapTab *m, Relation rel, Relation idx, IndexScanDe
 	ExecDropSingleTupleTableSlot(vs);
 }
 
+/* a table the run reads: its pages and the share the visibility map holds all-visible, for the Lookup line of EXPLAIN */
+void
+map_note_table(AggExec *ex, Relation rel)
+{
+	BlockNumber pages = RelationGetNumberOfBlocks(rel);
+
+	if (rel->rd_rel->relam != HEAP_TABLE_AM_OID)
+		return;
+	ex->lookup_pages += pages;
+	ex->lookup_allvis += Min((BlockNumber) rel->rd_rel->relallvisible, pages);
+}
+
+/*
+ * Is the join of combo ci one whose table can be kept as classes of its keys (map_load_dense)? An inner or left join by one int4 leaf, nothing else in its
+ * ON clause, and expressions that read the columns alone (not the key itself): then the output rows of a key are those of its class. No other lookup may be keyed by this
+ * one's rows (they are no longer one for each key); an expression of its columns in a combo of its own is.
+ */
+bool
+sift_agg_dense_join(const SiftAggSpec *s, int ci, const SiftSrcLayout *lay)
+{
+	const SiftAggCombo *cb = &s->combo[ci];
+	const SiftAggJoin *j = &s->join[cb->join];
+
+	if (!sift_agg_lookup_columns || (j->kind != SJ_INNER && j->kind != SJ_LEFT) || j->nkey != 1 || j->keytype[0] != INT4OID || j->keynull[0] ||
+		j->keypos[0] < 0 || j->keyexpr[0] != NULL || j->tkey[0] != NULL || j->fslot >= 0 || j->nidx > 0 || j->params != NIL || j->child >= 0 ||
+		j->first.qual != NIL || j->first.hybrid || j->first.nord > 0 || cb->nleaves != 1 || cb->leaf[0] < 0 || cb->level != 0)
+		return false;
+	for (int sl = 0; sl < cb->nslots; sl++)
+		if (slot_reads_leaf(cb, sl))
+			return false;
+	/* the key as a column would be that of the first key of the class */
+	for (int c = 0; c < j->ncol; c++)
+		if (j->colexpr[c] == NULL && j->colatt[c] == j->keyatt[0])
+			return false;
+	for (int cd = 0; cd < s->ncombo; cd++)
+		for (int p = 0; s->combo[cd].join >= 0 && p < s->combo[cd].nleaves; p++)
+			if (s->combo[cd].leaf[p] < 0 && s->combo[cd].refcombo[p] == ci)
+				return false;
+	return lay->leaf[cb->leaf[0]].vtype == SCV_I32;
+}
+
 /* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree, from the cache of an earlier query when the table did not change */
 MapTab *
 map_load_table(AggExec *ex, int ci, MemoryContext cxt)
@@ -316,6 +395,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	instr_time	t0;
 
 	INSTR_TIME_SET_CURRENT(t0);
+	map_note_table(ex, rel);
 	for (int k = 0; sift_agg_lookup_pushdown && k < j->nidx && !none; k++)
 	{
 		bool		isnull;
@@ -329,6 +409,14 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	idx = sift_agg_lookup_pushdown && j->nidx > 0 && !none ? map_index(rel, j, val, keys, &nkeys) : NULL;
 	if (idx == NULL && !none && sift_agg_lookup_pushdown)
 		idx = map_probe(ex, ci, rel, keys, &nkeys, val, own != NULL);
+	if (idx == NULL && !none && own == NULL && (m = lookdim_load(ex, ci, rel, cxt)) != NULL)
+	{
+		MemoryContextSwitchTo(old);
+		ExecDropSingleTupleTableSlot(slot);
+		table_close(rel, NoLock);
+		map_loaded(ex, 0, t0);
+		return m;
+	}
 	if (idx == NULL && !none && (m = map_kept_find(ex, ci, rel, cxt, own != NULL, &kept)) != NULL)
 	{
 		MemoryContextSwitchTo(old);
@@ -353,7 +441,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		lj.ncol = kept.cols.n;
 		for (int c = 0; c < lj.ncol; c++)
 		{
-			lj.colatt[c] = kept.cols.att[c];
+			lj.colatt[c] = lj.colexpr[c] ? 0 : kept.cols.att[c];
 			lj.coltype[c] = kept.cols.type[c];
 		}
 	}
@@ -373,6 +461,12 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 			m->kcx = m->kcx ? m->kcx : CreateStandaloneExprContext();
 			m->kx[k] = ExecInitExpr((Expr *) j->tkey[k], NULL);
 		}
+	for (int c = 0; c < lj.ncol; c++)
+		if (lj.colexpr[c])
+		{
+			m->kcx = m->kcx ? m->kcx : CreateStandaloneExprContext();
+			m->cx[c] = ExecInitExpr((Expr *) lj.colexpr[c], NULL);
+		}
 	MemoryContextSwitchTo(kept.cx);
 	/* a table read whole (no condition of its own, no index) fills the map to about its rows */
 	if (idx == NULL && own == NULL && rel->rd_rel->reltuples > 0)
@@ -389,17 +483,31 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		if (entries)
 			map_scan_entries(ex, m, rel, idx, iscan, slot, &lj, cb, own);
 		else
+		{
 			while (index_getnext_slot(iscan, ForwardScanDirection, slot))
 				map_row(ex, m, slot, &lj, cb, own);
+			ex->lookup_hscan += m->nrow;
+		}
 		index_endscan(iscan);
 		index_close(idx, AccessShareLock);
 		ex->lookup_index++;
 	}
-	else if (!none && !map_load_cols(ex, m, &lj, cb, own, rel))
+	else if (!none && !(own == NULL && !m->lazy && sift_agg_dense_join(ex->spec, ci, ex->lay) && map_load_dense(ex, m, &lj, cb, rel)) &&
+			 !map_load_cols(ex, m, &lj, cb, own, rel))
 	{
 		/* the heap tests `column = value` on the page, before it makes a tuple of a row; another access method ignores the keys, the filter holds them too */
 		bool		heap = rel->rd_tableam == GetHeapamTableAmRoutine();
+
 		TableScanDesc scan;
+
+		if (ex->lookup_why == NULL && heap && own == NULL)
+		{
+			char	   *why = map_cols_why(rel, j);
+
+			ex->lookup_why = MemoryContextStrdup(ex->cxt, why ? why : "");
+			if (why)
+				elog(DEBUG1, "sift: lookup table \"%s\" is read from the heap: %s", RelationGetRelationName(rel), why);
+		}
 
 		for (int k = 0; heap && sift_agg_lookup_pushdown && k < j->nidx; k++)
 			if (!j->idxany[k])
@@ -427,6 +535,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 			}
 		}
 		table_endscan(scan);
+		ex->lookup_hscan += m->nrow;
 	}
 	if (ord.cx)
 	{
@@ -441,11 +550,12 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		FreeExprContext(m->kcx, true);
 		m->kcx = NULL;
 		memset(m->kx, 0, sizeof(m->kx));
+		memset(m->cx, 0, sizeof(m->cx));
 	}
 	if (firstcx)
 		FreeExprContext(firstcx, true);
 	MemoryContextSwitchTo(old);
-	map_kept_keep(rel, &kept, m, cxt);
+	map_kept_keep(ex, rel, &kept, m, cxt);
 	ExecDropSingleTupleTableSlot(slot);
 	table_close(rel, NoLock);
 	map_loaded(ex, m->nrow, t0);
@@ -507,13 +617,16 @@ lookup_keys_only(const SiftAggSpec *s, const SiftSrcLayout *lay, int ci, int nba
 	const SiftAggCombo *cb = &s->combo[ci];
 	const SiftAggJoin *j = &s->join[cb->join];
 
-	return semi_lut_possible(s, ci, nbase) && lay->leaf[cb->leaf[0]].vtype == SCV_I32 && j->params == NIL && j->child < 0 && j->first.qual == NIL && !j->first.hybrid &&
+	return semi_lut_possible(s, ci, nbase) && semi_lut_leaf(lay, cb->leaf[0]) && j->params == NIL && j->child < 0 && j->first.qual == NIL && !j->first.hybrid &&
 		j->first.nord == 0;
 }
 
-/* what decides the rows of a table: the relation, its key and (cols) output columns and the conditions that narrow the load */
+/*
+ * The name of a table's entry in the caches and in the shared memory, and of a statement's shared copy: what decides the rows of a table (the relation, its key and
+ * (cols) output columns and the conditions that narrow the load), and, for a copy another statement may read, the user, whose rows are the ones the table's policies let through.
+ */
 char *
-shared_map_key(AggExec *ex, int ci, bool cols)
+look_key(AggExec *ex, int ci, bool cols, bool user)
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
@@ -521,6 +634,8 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 	StringInfoData k;
 
 	initStringInfo(&k);
+	if (user)
+		appendStringInfo(&k, "%u|", GetUserId());
 	/* an own condition reads the table's columns as Params nleaves + i: the same text over another number of leaves is another condition */
 	appendStringInfo(&k, "%u %d %d %d %d|", j->relid, own, sift_agg_lookup_pushdown, own ? cb->nleaves : 0, j->nkey);
 	for (int i = 0; i < j->nkey; i++)
@@ -531,10 +646,17 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 		for (int i = 0; i < j->ncol; i++)
 			appendStringInfo(&k, "%d/%u ", j->colatt[i], j->coltype[i]);
 	}
+	/* the columns that are expressions are named by their place: the key says which they are */
+	for (int i = 0; i < j->ncol; i++)
+		if (j->colexpr[i])
+			appendStringInfo(&k, "|expr %s", nodeToString(j->colexpr[i]));
 	if (own)
 		appendStringInfo(&k, "|%s", nodeToString(cb->slot[j->fslot].expr));
 	if (lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase))
 		appendStringInfoString(&k, "|keys");
+	/* the rows of a dense table are the classes of its keys: only an arm that takes it that way can read them */
+	if (sift_agg_dense_join(ex->spec, ci, ex->lay))
+		appendStringInfoString(&k, "|dense");
 	if (j->first.qual != NIL)
 		appendStringInfo(&k, "|first %s", nodeToString(j->first.qual));
 	if (j->first.hybrid)
@@ -557,7 +679,7 @@ map_load_shared(AggExec *ex, int ci)
 
 	if (estate == NULL)
 		return map_load_table(ex, ci, ex->cxt);
-	key = shared_map_key(ex, ci, true);
+	key = look_key(ex, ci, true, false);
 	foreach_ptr(SharedMap, e, shared_maps)
 		if (e->estate == estate && strcmp(e->key, key) == 0)
 		{
@@ -599,15 +721,9 @@ map_load(AggExec *ex, int ci)
 }
 
 /* does an expression read one of the first n parameters (the leaves of a combo)? */
-static bool
-reads_leaf_param(Node *n, int *nleaves)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(reads_leaf_param, int *, nleaves,
 	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid < *nleaves)
-		return true;
-	return expression_tree_walker(n, reads_leaf_param, nleaves);
-}
+		return true;)
 
 /* does the expression of a slot of the combo read one of its leaves? */
 bool

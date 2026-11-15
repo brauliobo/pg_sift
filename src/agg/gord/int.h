@@ -6,7 +6,6 @@
 
 #include "postgres.h"
 
-#include "col/am.h"
 #include "col/gorder.h"
 #include "agg/gord.h"
 
@@ -21,6 +20,8 @@ typedef struct GCur
 	uint32		values;
 	uint32		vs;				/* the values in the range of the scan: [vs, ve) */
 	uint32		ve;
+	uint32		rvs;			/* the range of all the values of the source: the window [vs, ve) is cut from it */
+	uint32		rve;
 	uint32		ns;				/* the NULL rows of the group of the scan: [ns, ne) */
 	uint32		ne;
 	uint32		sk;				/* the entries sift_gord_skip took off the front of [vs, ve) (the back, descending) */
@@ -30,6 +31,7 @@ typedef struct GCur
 	uint32		gs;
 	uint32		ge;
 	bool		ends;			/* the source is the ends of a segment's order (cuts says where they stop being its own) */
+	bool		lazy;			/* the end of [vs, ve) the scan comes to last is not sought (it is the end of the segment's values): the scan stops at the first entry past SiftGOrd.far */
 	bool		gm;				/* the source lists its rows group after group, from the second order of another leaf: the key of an entry is its group (cur_next_g) */
 	bool		gnull;			/* ... the NULL-key entries [ns, ne) of the group have been (or are being) read */
 	uint32		ngrp;
@@ -56,6 +58,10 @@ struct SiftGOrd
 	bool		nulls_first;
 	int			grouped;		/* the leaf the arrays are grouped by (the scan reads the group of its condition), -1 */
 	bool		bounded;		/* a range of the key: the rows with no value are not in it */
+	uint32		nin;			/* an IN list on the key: its values (in, ascending), the one the cursors are in is the iin-th of the scan (the last first, descending) */
+	uint32		iin;
+	int64	   *in;
+	int64		far;			/* the bound of the key at the end of the scan (the upper one ascending, the lower one descending), where a cursor with lazy set stops */
 	uint32		head;			/* the entries of a chunk decoded when the scan enters it (the rows asked for, shared by the sources, at least GORD_HEAD_MIN) */
 	int			ncur;
 	GCur	  **cur;
@@ -86,11 +92,18 @@ extern bool gord_group_load(SiftGOrd *g, GCur *c);
 extern void gord_group_next(SiftGOrd *g, GCur *c);
 extern uint32 gord_group_skip(SiftGOrd *g, uint32 k);
 
+/* the address of the entry p is in the buffer: the window [afrom, afrom + an) of the chunk */
+static inline bool
+cur_addr_ok(const SiftCGOrdBuf *b, uint32 p)
+{
+	return p - b->at - b->afrom < b->an;
+}
+
 /* the entry p of the cursor's source (a cursor of addresses only, gm, has them for the whole chunk, whichever layout it is) */
 static inline void
 cur_at(SiftGOrd *g, GCur *c, uint32 p, int64 *key, uint64 *addr)
 {
-	if (c->gm ? p - c->buf->at >= c->buf->cm : p - c->buf->at - c->buf->kfrom >= c->buf->kn)
+	if (c->gm ? !cur_addr_ok(c->buf, p) : p - c->buf->at - c->buf->kfrom >= c->buf->kn || !cur_addr_ok(c->buf, p))
 		gord_cur_fill(g, c, p);
 	*key = c->buf->key[p - c->buf->at];
 	*addr = c->buf->addr[p - c->buf->at];

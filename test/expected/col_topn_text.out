@@ -167,8 +167,8 @@ CREATE COLLATION tx_nd (provider = icu, locale = 'und-u-ks-level1', deterministi
 CREATE TABLE tr (id int PRIMARY KEY, c char(5), nm name, cd cidr, p text);
 INSERT INTO tr SELECT i, 'c' || i % 5, 'n' || i % 4, ('10.0.' || i % 7 || '.0/24')::cidr, 'p' || i FROM generate_series(1, 500) i;
 CREATE INDEX tr_col ON tr USING sift_col (id, c, nm, cd, p);
-NOTICE:  sift_col index "tr_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = c, nm; track_changes = id
+NOTICE:  sift_col index "tr_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = c, nm; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tr_col');
 ANALYZE tr;
 SET sift.enable_agg = on;

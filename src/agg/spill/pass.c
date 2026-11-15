@@ -13,8 +13,6 @@
  */
 #include "postgres.h"
 
-#include <math.h>
-
 #include "agg/par_int.h"
 #include "agg/plan_int.h"
 #include "agg/agg_int.h"
@@ -250,7 +248,7 @@ pass_more(AggExec *ex)
 	{
 		w = Min(ex->pass_w, PASS_SHARES - ex->pass_a);
 		ex->row_base = 0;
-		split_begin(ex, ex->pass_key, PASS_SHARES, (uint32) ((UINT64CONST(1) << w) - 1) << ex->pass_a);
+		split_begin(ex, ex->spec->key[ex->pass_key].leaf, PASS_SHARES, (uint32) ((UINT64CONST(1) << w) - 1) << ex->pass_a);
 		start = COUNTS(ex);
 		scan_items(ex);
 		if (!ex->pass_stop)

@@ -13,32 +13,27 @@
  * The child plan is made by the planner (agg/plan_rows.c) to return only the columns this node reads, in the order of SiftRowsSpec:
  * PostgreSQL evaluates the group expressions, the arguments and the FILTERs, and the node never runs an expression.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
-#include "access/htup_details.h"
 #include "catalog/pg_type.h"
-#include "commands/explain.h"
 #include "common/hashfn.h"
 #include "executor/executor.h"
-#include "executor/nodeAgg.h"
-#include "executor/nodeHash.h"
 #include "miscadmin.h"
 #include "nodes/extensible.h"
-#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/optimizer.h"
 #include "utils/datum.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/tuplesort.h"
-#include "utils/typcache.h"
 
 #include "agg/accum_int.h"
 #include "agg/dist_int.h"
 #include "agg/rows.h"
-#include "core/compat.h"
+#include "agg/spec/spec.h"
 #include "core/explain.h"
+#include "core/hash.h"
 
 bool		sift_agg_rows = true;
 
@@ -169,6 +164,17 @@ typedef struct RowsExec
 	uint32		gpos;
 } RowsExec;
 
+double
+sift_agg_rows_group_bytes(const SiftRowsSpec *s)
+{
+	/* the keys and their null flags, the hash of the group and its slots in the table (at most half full), the states of the aggregates */
+	double		b = s->nkeys * (sizeof(Datum) + sizeof(bool)) + sizeof(uint32) + 2 * sizeof(uint32);
+
+	for (int i = 0; i < s->naggs; i++)
+		b += s->agg[i].kind == SRA_PG ? sizeof(Datum) + sizeof(bool) : sizeof(int64);
+	return b;
+}
+
 static void rows_rehash(RowsExec *ex);
 static void set_alloc(RowsExec *ex, RowsSet *st, uint64 cap);
 
@@ -211,26 +217,44 @@ rows_reset(RowsExec *ex)
 		rows_rehash(ex);
 }
 
+/* the groups are held to the end: past what the planner leaves the node (group_nospill_factor times hash memory) it ends with an error that says what to raise */
+static void
+rows_groups_check(RowsExec *ex)
+{
+	double		held = ex->gcap * sift_agg_rows_group_bytes(ex->spec) + (double) MemoryContextMemAllocated(ex->kcxt, true),
+				limit = sift_agg_nospill_bytes(NULL, NULL);
+
+	if (ex->pgstate)
+		held += (double) MemoryContextMemAllocated(ex->pgstate->curaggcontext->ecxt_per_tuple_memory, true);
+	if (held > limit)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("sift: the groups of the aggregate hold %.0f kB, past the %.0f kB the node that groups rows may take", held / 1024.0, limit / 1024.0),
+				 errhint("Raise work_mem or hash_mem_multiplier, or set sift.agg_rows to off.")));
+}
+
 static void
 rows_groups_grow(RowsExec *ex)
 {
 	SiftRowsSpec *s = ex->spec;
 	uint32		cap = Max(ex->gcap * 2, 1024);
 
-	ex->kval = ex->kval ? repalloc(ex->kval, (Size) cap * s->nkeys * sizeof(Datum)) : MemoryContextAlloc(ex->cxt, (Size) cap * s->nkeys * sizeof(Datum));
-	ex->knull = ex->knull ? repalloc(ex->knull, (Size) cap * s->nkeys) : MemoryContextAlloc(ex->cxt, (Size) cap * s->nkeys);
-	ex->ghash = ex->ghash ? repalloc(ex->ghash, cap * sizeof(uint32)) : MemoryContextAlloc(ex->cxt, cap * sizeof(uint32));
+	rows_groups_check(ex);
+
+	ex->kval = ex->kval ? repalloc_huge(ex->kval, (Size) cap * s->nkeys * sizeof(Datum)) : MemoryContextAllocHuge(ex->cxt, (Size) cap * s->nkeys * sizeof(Datum));
+	ex->knull = ex->knull ? repalloc_huge(ex->knull, (Size) cap * s->nkeys) : MemoryContextAllocHuge(ex->cxt, (Size) cap * s->nkeys);
+	ex->ghash = ex->ghash ? repalloc_huge(ex->ghash, cap * sizeof(uint32)) : MemoryContextAllocHuge(ex->cxt, cap * sizeof(uint32));
 	for (int i = 0; i < s->naggs; i++)
 	{
 		if (s->agg[i].kind == SRA_PG)
 		{
-			ex->val[i] = ex->val[i] ? repalloc(ex->val[i], cap * sizeof(Datum)) : MemoryContextAlloc(ex->cxt, cap * sizeof(Datum));
-			ex->has[i] = ex->has[i] ? repalloc(ex->has[i], cap) : MemoryContextAlloc(ex->cxt, cap);
+			ex->val[i] = ex->val[i] ? repalloc_huge(ex->val[i], cap * sizeof(Datum)) : MemoryContextAllocHuge(ex->cxt, cap * sizeof(Datum));
+			ex->has[i] = ex->has[i] ? repalloc_huge(ex->has[i], cap) : MemoryContextAllocHuge(ex->cxt, cap);
 			memset(ex->has[i] + ex->gcap, 0, cap - ex->gcap);
 		}
 		else
 		{
-			ex->cnt[i] = ex->cnt[i] ? repalloc(ex->cnt[i], cap * sizeof(int64)) : MemoryContextAlloc(ex->cxt, cap * sizeof(int64));
+			ex->cnt[i] = ex->cnt[i] ? repalloc_huge(ex->cnt[i], cap * sizeof(int64)) : MemoryContextAllocHuge(ex->cxt, cap * sizeof(int64));
 			memset(ex->cnt[i] + ex->gcap, 0, (cap - ex->gcap) * sizeof(int64));
 		}
 	}
@@ -244,7 +268,7 @@ rows_rehash(RowsExec *ex)
 
 	if (ex->tab)
 		pfree(ex->tab);
-	ex->tab = MemoryContextAllocZero(ex->cxt, cap * sizeof(uint32));
+	ex->tab = MemoryContextAllocExtended(ex->cxt, cap * sizeof(uint32), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 	ex->tabcap = cap;
 	for (uint32 g = 0; g < ex->ng; g++)
 	{
@@ -319,9 +343,9 @@ pair_hash(uint32 g, int64 v)
 {
 	uint64		x = (uint64) v ^ ((uint64) g << 32) ^ g;
 
-	x *= UINT64CONST(0x9E3779B97F4A7C15);
+	x = sift_fib64(x);
 	x ^= x >> 32;
-	x *= UINT64CONST(0xD6E8FEB86659FD93);
+	x *= SIFT_FOLD64;
 	return x ^ (x >> 32);
 }
 

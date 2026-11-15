@@ -1,0 +1,1 @@
+tbl_bulk_eligible	src/table/analyze.c:sift_tbl_index_build_range_scan src/table/funcs.c:sift_test_tbl_bulk_refusal src/table/load.c:calls_user_function src/table/load.c:row_expressions_call_user_function src/table/load.c:sift_tbl_bulk_refusal src/table/store.c:sift_tbl_nvblocks

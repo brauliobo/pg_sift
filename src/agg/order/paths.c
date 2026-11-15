@@ -3,6 +3,7 @@
  * Which ORDER BY ... LIMIT queries the scan answers, how a path for them is made and
  * priced, and the rows that tie with the last.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include <math.h>
@@ -95,7 +96,7 @@ topn_query_ok(PlannerInfo *root, double *count, double *offset)
 		return agg_refuse(QUERY_KIND);
 	if (!topn_bounds(parse, root, count, offset))
 	{
-		agg_refused_on(TOPN_SHAPE, "LIMIT and OFFSET are not constants or parameters, leave no row, or the limit has ties");
+		agg_refused_on(TOPN_SHAPE, "LIMIT and OFFSET are not constants or parameters, or leave no row");
 		return false;
 	}
 	if (parse->distinctClause || parse->setOperations)
@@ -293,6 +294,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	int			nkey = list_length(parse->sortClause),
 				nlead = nkey,
 				slack = 0;
+	bool		with_ties = parse->limitOption == LIMIT_OPTION_WITH_TIES;
 	PathTarget *target = root->upper_targets[UPPERREL_ORDERED] ? root->upper_targets[UPPERREL_ORDERED] : window_rel->reltarget;
 
 	c->topn_target = target;
@@ -344,7 +346,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	c->topn_cmpx = c->topn_keybytes = c->topn_xcost = 0;
 	c->topn_xserial = false;
 	c->topn_array = false;
-	c->topn_walk = 0;
+	c->topn_walk = c->topn_free = 0;
 	c->topn_runs = false;
 	exprs = NIL;
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
@@ -373,7 +375,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 			c->topn_keybytes += topn_key_width(c, e, exprType(e));
 		}
 	}
-	if (nlead < nkey && !topn_ties(c, root, nlead, leaf, xf, count + offset, &slack))
+	if ((nlead < nkey || with_ties) && !topn_ties(c, root, nlead, leaf, xf, count + offset, &slack))
 	{
 		agg_refused(TOPN_SHAPE);
 		return;
@@ -416,7 +418,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	}
 	rows = count + offset;
 	/* the Limit node throws the first OFFSET rows away unread: when the output is the scan tuple, they are not read from the heap (not when a Sort is between) */
-	skip_offset = nlead == nkey;
+	skip_offset = nlead == nkey && !with_ties;
 	foreach_ptr(Expr, e, target->exprs)
 		skip_offset &= IsA(e, Var) || IsA(e, WindowFunc);
 	c->topn_fetch = Min(skip_offset ? count : rows, Max(input_rel->rows, 1.0));
@@ -426,7 +428,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 
 	/* the heap holds the bound, or the scan sorts every row that passes: a heap of many rows costs more than the sort, so both are priced */
 	flags = (skip_offset ? TOPN_SKIP_OFFSET : 0) | (s->naggs > 0 ? TOPN_TOTALS : 0) | (topn_raw_key(c, leaf[0], xf[0].kind) ? TOPN_RAWKEY : 0) |
-		(nlead < nkey ? TOPN_TIES | slack << TOPN_SLACK_SHIFT : 0);
+		(nlead < nkey || with_ties ? TOPN_TIES | slack << TOPN_SLACK_SHIFT : 0);
 	rows += slack;
 	/* the order array gives the rows without a heap of them: only the LIMIT is held, an OFFSET past the cap is walked entry by entry (sift_topn_gorder) */
 	deep = rows > sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && skip_offset && nlead == 1 && count <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && topn_array_ok(c, s, leaf, xf, nlead, collid[0], rows, &walked);
@@ -435,22 +437,29 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	{
 		c->topn_sorted = false;
 		c->topn_array = topn_array_ok(c, s, leaf, xf, nlead, collid[0], rows, &walked);
+		/* the walk of the order array gives LIMIT rows and cannot start again for the rows that tie with the last: the Limit above counts them */
+		if (with_ties)
+		{
+			c->topn_array = false;
+			flags |= TOPN_NOGORD;
+		}
 		c->topn_walk = c->topn_array ? walked : 0.0;
+		c->topn_free = c->topn_array && leaf[0] >= 0 ? c->stats.gord_free[leaf[0]] * (leaf_of(c, leaf[0])->typid == TEXTOID || leaf_of(c, leaf[0])->typid == VARCHAROID ? AGG_GORD_MEM_TEXT : 1.0) : 0.0;
 		/* totals read every unit: no zone leaves one out */
 		c->topn_frac = s->naggs > 0 ? 1.0 :
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),
 						  leaf[0], input_rel->rows, (int64) rows);
 		/* the walk of a filter fetches the heap row of each entry it takes (3,400 instructions, 127 for 20 rows of a tenant out of 40, 785 when the sort has a second key), where the units the
-		 * zones leave are read a row in about 30: when the zones leave a quarter of the units or less and those hold fewer rows than TOPN_ROWS_PER_FETCH times the fetches the statistics
-		 * price, the units are read (the executor tries the walk of its own accord for a sort of more keys, so the plan says no to it) */
+		 * zones leave are read a row in about 35 (the units hold every row of their range, not the rows the filters pass): when the zones leave a quarter of the units or less and those hold fewer rows
+		 * than TOPN_ROWS_PER_FETCH times the fetches the statistics price, the units are read (the executor tries the walk of its own accord for a sort of more keys, so the plan says no to it) */
 		if (s->npred > 0 && leaf[0] >= 0 && !(c->topn_array && walked == 0))
 		{
 			int			nkeys;
 			double		share,
-						fetches = c->topn_array ? walked : topn_walk_fetches(c, leaf[0], -1, rows),
+						fetches = c->topn_array ? walked : topn_walk_fetches(c, leaf[0], topn_pinned_group(c, s, leaf[0]), rows),
 						kept = zone_kept(c, s, &nkeys, &share);
 
-			if (kept <= TOPN_ZONE_FRAC && kept * input_rel->rows <= TOPN_ROWS_PER_FETCH * fetches)
+			if (kept <= TOPN_ZONE_FRAC && kept * c->rel->tuples <= TOPN_ROWS_PER_FETCH * fetches)
 			{
 				c->topn_array = false;
 				c->topn_walk = 0.0;
@@ -474,6 +483,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 									s->naggs > 0 ? "the totals of the workers of a top-N are not merged" :
 									c->topn_xserial ? "a sort expression has a parameter of the statement or a function that is not parallel safe" :
 									nlead < nkey ? "the sort has keys the scan does not hold" :
+									with_ties ? "the workers of a top-N would each need the rows that tie with the last" :
 									!input_rel->consider_parallel || !output_rel->consider_parallel ? "PostgreSQL plans no workers for the statement or its table: a function that is not parallel safe, a write, a cursor" : NULL);
 		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0, nlead, count + offset);
 		if (nworkers > 0)

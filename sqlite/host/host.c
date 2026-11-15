@@ -12,7 +12,6 @@
 #define SQ_BLOCK		(64 * 1024)
 #define SQ_SMALL		1024
 #define SQ_F_LARGE		1
-#define SQ_F_ALIGNED	2
 
 typedef struct SqChunk
 {

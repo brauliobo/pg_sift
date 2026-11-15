@@ -6,8 +6,6 @@
 #ifndef SIFT_COL_SETSUM_H
 #define SIFT_COL_SETSUM_H
 
-#include "core/host.h"
-
 #include "col/preagg.h"
 
 #define SIFT_CSET_EXACT			1		/* the sorted distinct keys, as offsets from the smallest in 1, 2, 4 or 8 bytes each */
@@ -75,6 +73,9 @@ extern bool sift_cset_open(const uint8 *blob, uint32 len, SiftCSet *s);
 
 /* false only when no key of [lo, hi] can be in the unit */
 extern bool sift_cset_may_hold(const SiftCSet *s, int64 lo, int64 hi);
+
+/* the smallest and the largest key a summary can hold (a bitmap: its words), false for a bloom filter, which has no range */
+extern bool sift_cset_span(const SiftCSet *s, int64 *lo, int64 *hi);
 
 /* the ascending distinct keys of an exact summary (n of them) */
 extern void sift_cset_members(const SiftCSet *s, int64 *out);

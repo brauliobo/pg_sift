@@ -1,6 +1,7 @@
 /*
  * table/gscan_cache.c - the group scan's cache of a superblock, the rows of a block, and the TID fetches (locate, fetch)
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "gscan_int.h"
 
 /* The TIDs of every unit of superblock sb (ascending, one array per unit) */
@@ -111,10 +112,7 @@ unit_load(SiftTblGroupScan *g, int k, uint32 sb)
 	sift_col_begin(src, NULL, 0, sb, sb + 1);
 	for (uint32 j = 0; j <= u->ordinal; j++)
 		if (!sift_col_next(src, &g->unit))
-			ereport(ERROR,
-				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-				 errmsg("sift_table: the unit %u of superblock %u is gone", u->ordinal, sb),
-				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
+			SIFT_TBL_RETRY("sift_table: the unit %u of superblock %u is gone", u->ordinal, sb);
 	MemoryContextReset(g->unitcxt);
 	for (int c = 0; c < g->s[g->cur].schema->ncols; c++)
 		g->vec[c].n = PG_UINT32_MAX;

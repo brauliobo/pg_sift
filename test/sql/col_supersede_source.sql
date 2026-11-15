@@ -1,7 +1,6 @@
 -- The entries a new row version replaces get a tombstone when the UPDATE writes it (track_changes). The addresses of the key come from the table's unique index (a b-tree probe), or from a scan
 -- of the sift index when the table has none, and the statement trigger of track_changes does not look at the rows of an UPDATE that leaves the key alone, since the replacement has
--- covered them. The same operations on three tables, one for each way (the scan of the index, the unique index with the trigger looking at every UPDATE, the unique index with the trigger
--- skipping the UPDATEs that leave the key), must leave the same tombstones and the same answers as the heap.
+-- covered them. The same operations on two tables, one for each way (the scan of the index, the unique index), must leave the same tombstones and the same answers as the heap.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
@@ -48,24 +47,21 @@ BEGIN
 	EXECUTE format('UPDATE %I SET counter_a = counter_a + 1 WHERE id %% 17 = 0', t);
 END $$;
 
-SELECT mk('events_scan'), mk('events_both'), mk('events_skip');
-VACUUM events_scan, events_both, events_skip;
+SELECT mk('events_scan'), mk('events_skip');
+VACUUM events_scan, events_skip;
 SET sift.test_supersede_scan = on;
-SET sift.eval_methods = '-skip_trigger_lookup';
 SELECT ops('events_scan');
 SET sift.test_supersede_scan = off;
-SELECT ops('events_both');
-RESET sift.eval_methods;
 SELECT ops('events_skip');
 
--- the tombstones: the same addresses on all three (the transactions differ, and the trigger writes a second tombstone for an address a replacement covered in an earlier transaction)
+-- the tombstones: the same addresses on both (the transactions differ, and the trigger writes a second tombstone for an address a replacement covered in an earlier transaction)
 CREATE FUNCTION log_of(t text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
 	EXECUTE format('SELECT string_agg(DISTINCT tid::text, '' '' ORDER BY tid::text) FROM sift._test_col_log_entries(%L)', t || '_c') INTO r;
 	RETURN md5(r);
 END $$;
-SELECT log_of('events_scan') = log_of('events_both') AS scan_equals_unique, log_of('events_both') = log_of('events_skip') AS trigger_skip_equals_every_update;
+SELECT log_of('events_scan') = log_of('events_skip') AS scan_equals_unique;
 SELECT (SELECT count(*) FROM sift._test_col_log_entries('events_skip_c')) > 200 AS the_log_has_tombstones;
 
 -- the answers: the heap-free read, the heap-checked read and no sift plan agree on every table
@@ -84,8 +80,8 @@ BEGIN
 	RETURN r;
 END $$;
 SELECT t, answer(t, 0) = answer(t, 1) AS free_equals_checked, answer(t, 0) = answer(t, 2) AS free_equals_no_sift
-FROM (VALUES ('events_scan'), ('events_both'), ('events_skip')) v(t) ORDER BY t;
-SELECT answer('events_scan', 2) = answer('events_both', 2) AND answer('events_both', 2) = answer('events_skip', 2) AS same_rows_on_all_three;
+FROM (VALUES ('events_scan'), ('events_skip')) v(t) ORDER BY t;
+SELECT answer('events_scan', 2) = answer('events_skip', 2) AS same_rows_on_both;
 
 -- the rows themselves, through the index and through the heap, for the keys that changed
 CREATE FUNCTION rows_of(t text, via_sift bool) RETURNS text LANGUAGE plpgsql AS $$
@@ -98,10 +94,9 @@ BEGIN
 	EXECUTE format('SELECT md5(string_agg(id || '':'' || counter_a || '':'' || label, '','' ORDER BY id)) FROM %I WHERE tenant_id = 3 OR id > 99999', t) INTO r;
 	RETURN r;
 END $$;
-SELECT t, rows_of(t, true) = rows_of(t, false) AS through_the_index_equals_the_heap FROM (VALUES ('events_scan'), ('events_both'), ('events_skip')) v(t) ORDER BY t;
+SELECT t, rows_of(t, true) = rows_of(t, false) AS through_the_index_equals_the_heap FROM (VALUES ('events_scan'), ('events_skip')) v(t) ORDER BY t;
 
 -- an UPDATE that gives the key a new value is looked at by the trigger whatever the other rows did; so is one with a BEFORE trigger that may change it
-RESET sift.eval_methods;
 CREATE FUNCTION touch_key() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.id := NEW.id + 500000; RETURN NEW; END $$;
 CREATE TRIGGER events_skip_before BEFORE UPDATE ON events_skip FOR EACH ROW WHEN (NEW.counter_a = -1) EXECUTE FUNCTION touch_key();
 UPDATE events_skip SET counter_a = -1 WHERE id IN (1, 2, 3);
@@ -110,8 +105,8 @@ SELECT count(*) AS moved FROM events_skip WHERE id > 500000;
 DROP TRIGGER events_skip_before ON events_skip;
 
 -- the same, when the heap has the rows to vacuum
-VACUUM events_scan, events_both, events_skip;
-SELECT t, answer(t, 0) = answer(t, 2) AS after_vacuum FROM (VALUES ('events_scan'), ('events_both'), ('events_skip')) v(t) ORDER BY t;
+VACUUM events_scan, events_skip;
+SELECT t, answer(t, 0) = answer(t, 2) AS after_vacuum FROM (VALUES ('events_scan'), ('events_skip')) v(t) ORDER BY t;
 SELECT sift.col_verify('events_skip_c', true) IS NOT NULL AS verified;
 
 DROP FUNCTION touch_key();
@@ -120,6 +115,6 @@ DROP FUNCTION answer(text, int);
 DROP FUNCTION log_of(text);
 DROP FUNCTION ops(text);
 DROP FUNCTION mk(text);
-DROP TABLE events_scan, events_both, events_skip;
+DROP TABLE events_scan, events_skip;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

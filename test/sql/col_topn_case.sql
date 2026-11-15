@@ -28,7 +28,7 @@ CREATE INDEX tb_col ON tb USING sift_col (id, g, a, b, c, f, n, m, d, t, s, v);
 RESET sift.test_limits;
 VACUUM (ANALYZE) tb;
 
-CREATE FUNCTION tb_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers_all_scans(pushed, workers) $$;
+CREATE FUNCTION tb_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
 CREATE FUNCTION tb_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$

@@ -3,9 +3,9 @@
 
 import os
 
-from .db import REF, create_db, data_sql, psql
+from .db import create_db, data_sql, psql
 from .registry import base_of
-from .run import diverged, query_script, render_query, run_script
+from .run import diverged, query_script, render_query, run_script, split_pre
 
 # ---------- shrinking ----------
 def shrink_parts(db, qid, fam, parts, vs, nl, base):
@@ -59,8 +59,10 @@ def shrink_dml(base_db, work, hist, check):
     return hist
 
 
-def repro_sql(seed, rows, parts_n, hist, sql, base, ref_spec, var):
+def repro_sql(seed, rows, parts_n, hist, sql, base, var):
     name, spec = var
+    pre, sql = split_pre(sql)
+    hist = hist + ([pre] if pre else [])
     return f"""-- pg_sift differential fuzz reproducer: seed {seed}, rows {rows}, partitions {parts_n}; the query returns other rows under the settings of
 -- "{name}" than under the reference (sift.enable_agg off). Run it on a database with the extension, psql -f this file.
 {data_sql(seed, rows, parts_n)}
@@ -107,7 +109,7 @@ def handle(seed, rows, parts_n, qid, fam, parts, vs, nl, hist, res, out_dir, tag
     bad3 = diverged(r3.get(qid, {}))
     name = next(iter(bad3), vs_bad[0][0]) if bad3 else vs_bad[0][0]
     spec = dict(vs)[name]
-    text = repro_sql(seed, rows, parts_n, h2, sql, base, REF, (name, spec))
+    text = repro_sql(seed, rows, parts_n, h2, sql, base, (name, spec))
     detail = bad3.get(name, bad.get(name, ('', '', '')))[2] if bad3 else list(bad.values())[0][2]
     path = None
     if out_dir:

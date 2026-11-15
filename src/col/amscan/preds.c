@@ -3,6 +3,7 @@
  * keys, times, operators, LIKE, numerics
  * what the segments are asked for
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 #include <math.h>
 #include "utils/date.h"

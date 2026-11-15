@@ -243,11 +243,6 @@ def check_homogeneous(entries, fp):
                               'they are not used; measure them here (--remeasure-all)')
 
 
-def provenance(entries):
-    """{name: {date, key, fp}} for the meta of a merged result file: what is printed next to a column that was read from the cache"""
-    return {e['name']: dict(date=e['date'], key=e['key'], fp=e['fp'], kind=e['kind']) for e in entries}
-
-
 def replace_rows(rows, fresh, cell=lambda r: (r['tier'], r['engine'], r['class'])):
     """rows without the cells that `fresh` re-measured, plus `fresh` (a NOISY cell measured again replaces the first measurement, never sits beside it)"""
     gone = {cell(r) for r in fresh}

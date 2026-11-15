@@ -16,14 +16,11 @@
 #include "catalog/pg_type_d.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
-#include "optimizer/tlist.h"
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/fmgroids.h"
-#include "utils/lsyscache.h"
 #include "utils/typcache.h"
 
 #include "agg/agg.h"
@@ -215,15 +212,9 @@ outside_walker(Node *n, Eager *e)
 }
 
 /* a sum of a product: the cheap test that the statements that cannot be moved fail first */
-static bool
-product_sum_walker(Node *n, void *context)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(product_sum_walker, void *, context,
 	if (IsA(n, Aggref))
-		return ((Aggref *) n)->aggfnoid == F_SUM_NUMERIC && list_length(((Aggref *) n)->args) == 1 && IsA(linitial_node(TargetEntry, ((Aggref *) n)->args)->expr, OpExpr);
-	return expression_tree_walker(n, product_sum_walker, context);
-}
+		return ((Aggref *) n)->aggfnoid == F_SUM_NUMERIC && list_length(((Aggref *) n)->args) == 1 && IsA(linitial_node(TargetEntry, ((Aggref *) n)->args)->expr, OpExpr);)
 
 /* the position of the aggregate among the ones the sub-select computes, which it is added to if it is new */
 static int

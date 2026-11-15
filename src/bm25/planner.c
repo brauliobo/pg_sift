@@ -5,43 +5,23 @@
  */
 #include "postgres.h"
 
-#include <math.h>
-
-#include "access/genam.h"
-#include "access/stratnum.h"
-#include "access/sysattr.h"
 #include "catalog/pg_aggregate.h"
-#include "catalog/pg_am.h"
-#include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
-#include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/appendinfo.h"
-#include "optimizer/clauses.h"
-#include "optimizer/cost.h"
-#include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/planner.h"
-#include "optimizer/prep.h"
-#include "optimizer/restrictinfo.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
-#include "utils/array.h"
-#include "utils/float.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
-#include "utils/selfuncs.h"
-#include "utils/spccache.h"
 
 #include "agg/agg.h"
 #include "agg/plan_int.h"
 #include "core/compat.h"
 #include "core/visibility.h"
 #include "bm25/am.h"
-#include "bm25/estimate.h"
-#include "bm25/eval.h"
 #include "bm25/planner.h"
 #include "bm25/planner_int.h"
 #include "bm25/pushdown.h"
@@ -401,7 +381,7 @@ consider_index(PathSearch *ps, IndexOptInfo *ii, Index rti)
 	{
 		CustomPath *cp = keyed_path(root, rel, &c, &est, &ps->ko, query_limit(root));
 
-		if (cheaper(cp, ps->best_keyed))
+		if (cp && cheaper(cp, ps->best_keyed))
 			ps->best_keyed = cp;
 	}
 	if (mode == SIFT_MODE_RANKED && !est.sc.idx.known && sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
@@ -634,8 +614,7 @@ sift_score_planner(SIFT_PLANNER_PARAMS)
 		sift_vis_scope(false);
 	}
 	PG_END_TRY();
-	if (sift_enable_scan)
-		sift_tie_scans(stmt);
+	sift_finish_plan(stmt, sift_enable_scan);
 	return stmt;
 }
 

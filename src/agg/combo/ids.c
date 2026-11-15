@@ -3,12 +3,14 @@
  * The ids of the dictionary and the 64-bit values a combo reads, the prior ids, and the
  * binding of the leaves a combo is computed from.
  */
+/* check-memory: allow-allocs the cache of combinations stops at COMBO_MAX_ENTRIES (16 million) and its hash slots follow them */
 #include "postgres.h"
 
 #include "common/hashfn.h"
 #include "utils/fmgrprotos.h"
 #include "utils/numeric.h"
 
+#include "agg/agg.h"
 #include "agg/combo/int.h"
 
 /* the id (1..) of a value among the distinct values of a dictionary leaf; the bytes are copied when new */
@@ -47,18 +49,7 @@ intern_id(AggExec *ex, Intern *t, const char *b, uint32 len)
 	t->hv[t->n] = hv;
 	t->slot[h] = ++t->n;
 	if (t->n * 2 > t->nslot)
-	{
-		pfree(t->slot);
-		t->nslot *= 2;
-		t->slot = MemoryContextAllocZero(ex->cxt, t->nslot * sizeof(uint32));
-		for (uint32 id = 1; id <= t->n; id++)
-		{
-			h = t->hv[id - 1] & (t->nslot - 1);
-			while (t->slot[h])
-				h = (h + 1) & (t->nslot - 1);
-			t->slot[h] = id;
-		}
-	}
+		SIFT_SLOT_REHASH(id, t->slot, t->nslot, MemoryContextAllocZero(ex->cxt, t->nslot * sizeof(uint32)), t->n, t->hv[id - 1]);
 	return t->n;
 }
 
@@ -81,23 +72,17 @@ dict_cmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ci, int p)
 void
 id64_init(Id64 *m)
 {
-	m->cxt = CurrentMemoryContext;
-	m->nslot = 4096;
+	intids_init(&m->ix);
 	m->n = 0;
 	m->cap = 2048;
 	m->nan_id = 0;
-	m->tab = palloc0(m->nslot * sizeof(Id64Ent));
 	m->val = palloc(m->cap * sizeof(int64));
 }
 
 static uint32
 id64_new(Id64 *m, int64 k)
 {
-	if (m->n == m->cap)
-	{
-		m->cap *= 2;
-		m->val = repalloc(m->val, m->cap * sizeof(int64));
-	}
+	SIFT_GROW(m->val, m->n, m->cap);
 	m->val[m->n] = k;
 	return ++m->n;
 }
@@ -105,32 +90,11 @@ id64_new(Id64 *m, int64 k)
 uint32
 id64_id(Id64 *m, int64 k)
 {
-	uint32		mask = m->nslot - 1,
-				h = id64_hash(k) & mask;
+	uint32		id = intids_id(&m->ix, k, m->n + 1);
 
-	for (; m->tab[h].id; h = (h + 1) & mask)
-		if (m->tab[h].key == k)
-			return m->tab[h].id;
-	m->tab[h] = (Id64Ent) {k, id64_new(m, k)};
-	if (m->n * 2 > m->nslot)
-	{
-		Id64Ent    *old = m->tab;
-
-		m->nslot *= 4;
-		m->tab = MemoryContextAllocZero(m->cxt, m->nslot * sizeof(Id64Ent));
-		mask = m->nslot - 1;
-		for (uint32 id = 1; id <= m->n; id++)
-		{
-			if (id == m->nan_id)
-				continue;
-			for (h = id64_hash(m->val[id - 1]) & mask; m->tab[h].id; h = (h + 1) & mask)
-				;
-			m->tab[h] = (Id64Ent) {m->val[id - 1], id};
-		}
-		pfree(old);
-		return m->n;
-	}
-	return m->tab[h].id;
+	if (id > m->n)
+		id64_new(m, k);
+	return id;
 }
 
 uint32
@@ -173,7 +137,7 @@ prior_vid_new(AggExec *ex, int ci, int p, uint32 out)
 	{
 		uint32		cap = Max(Max(pv->nmemo * 2, out + 1), 256);
 
-		pv->memo = pv->memo ? repalloc(pv->memo, cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, cap * sizeof(uint32));
+		SIFT_REGROW_IN(cs->cxt, pv->memo, cap * sizeof(uint32));
 		memset(pv->memo + pv->nmemo, 0xFF, (cap - pv->nmemo) * sizeof(uint32));
 		pv->nmemo = cap;
 	}
@@ -192,7 +156,7 @@ prior_vid_new(AggExec *ex, int ci, int p, uint32 out)
 			{
 				MemoryContext old = MemoryContextSwitchTo(cs->cxt);
 
-				if (cs->id64[p].tab == NULL)
+				if (cs->id64[p].val == NULL)
 					id64_init(&cs->id64[p]);
 				MemoryContextSwitchTo(old);
 				id = id64_id(&cs->id64[p], (int64) d);
@@ -203,7 +167,7 @@ prior_vid_new(AggExec *ex, int ci, int p, uint32 out)
 	{
 		uint32		cap = Max(Max(pv->nrep * 2, id), 64);
 
-		pv->rep = pv->rep ? repalloc(pv->rep, cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, cap * sizeof(uint32));
+		SIFT_REGROW_IN(cs->cxt, pv->rep, cap * sizeof(uint32));
 		memset(pv->rep + pv->nrep, 0xFF, (cap - pv->nrep) * sizeof(uint32));
 		pv->nrep = cap;
 	}
@@ -265,6 +229,6 @@ combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
 
 bool		sift_child_warm_test = false;	/* sift.test_child_warm */
 #ifdef SIFT_TESTING
-uint64		sift_test_warm_calls = 0;		/* the advice calls child_warm made (sift._test_segment_reads) */
+uint64		sift_test_warm_calls = 0;		/* the blocks the probe of a child asked ahead of their fetch (sift._test_segment_reads) */
 #endif
 

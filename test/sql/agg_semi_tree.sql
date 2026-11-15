@@ -2,6 +2,7 @@
 -- looks up its keys. The tree is an inner join, or a LEFT JOIN whose result only gives the key set (coalesce of columns of both tables). Every query runs
 -- with and without the scan: the rows must be the same, and the scan answers the query. The key sets have NULL keys, duplicate keys and no key at all.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
@@ -20,22 +21,7 @@ CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, amount);
 VACUUM (FREEZE, ANALYZE) items, links, dim_b, events;
 
 -- whether the scan answers the query, and the rows it differs by from the plan without it
-CREATE FUNCTION check_same(q text) RETURNS TABLE (pushed bool, rows bigint, differences bigint) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-  SET LOCAL sift.enable_agg = off;
-  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
-  SET LOCAL sift.enable_agg = on;
-  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
-  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
-  SELECT count(*) INTO rows FROM r_on;
-  pushed := false;
-  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
-  END LOOP;
-  DROP TABLE r_off, r_on;
-  RETURN NEXT;
-END $$;
+CREATE FUNCTION check_same(q text) RETURNS TABLE (pushed bool, rows bigint, differences bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_pushed_and_differences(q) $$;
 
 -- an inner join on the right of IN: duplicate keys (a link has several members), a NULL key
 SELECT * FROM check_same($q$SELECT count(*), sum(amount) FROM events e
@@ -70,4 +56,5 @@ SELECT * FROM check_same($q$SELECT i.kind, count(*), sum(amount) FROM events e J
 
 DROP TABLE events, items, links, dim_b;
 DROP FUNCTION check_same(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

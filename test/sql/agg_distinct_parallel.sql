@@ -55,15 +55,7 @@ INSERT INTO shapes (name, q) VALUES
 	('leaf filter',       'SELECT kind, count(DISTINCT f) FILTER (WHERE qty > 100), count(DISTINCT ts) FILTER (WHERE grp < 3) FROM facts GROUP BY kind'),
 	('leaf mixed',        'SELECT kind, count(DISTINCT f), sum(DISTINCT amount), count(DISTINCT qty), count(DISTINCT ts) FROM facts GROUP BY kind');
 
-CREATE FUNCTION rows_of(q text, push bool, workers int, leader bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
-	PERFORM set_config('parallel_leader_participation', leader::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION rows_of(q text, push bool, workers int, leader bool DEFAULT true) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_with_workers_and_leader(q, push, workers, leader) $$;
 
 CREATE FUNCTION mode_of(q text, workers int) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_mode_workers(q, workers) $$;
 

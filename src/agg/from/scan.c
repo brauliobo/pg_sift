@@ -7,6 +7,7 @@
 
 #include "optimizer/optimizer.h"
 #include "rewrite/rewriteManip.h"
+#include "utils/lsyscache.h"
 
 #include "agg/part.h"
 #include "agg/from/int.h"
@@ -42,15 +43,48 @@ right_only(Node *q, Index rti)
 }
 
 /*
+ * The test that tells a row of an anti join's preserved side that nothing matched from one that matched: a column of the table on the right that a strict
+ * condition of the ON clause equates to a column of another table is NULL in the row nothing matched and is not in a matched one. NULL: no such column.
+ */
+static Node *
+anti_witness(JoinExpr *j, Index rti)
+{
+	foreach_ptr(Node, q, j->quals == NULL ? NIL : IsA(j->quals, List) ? (List *) j->quals : list_make1(j->quals))
+	{
+		OpExpr	   *op = IsA(q, OpExpr) ? (OpExpr *) q : NULL;
+
+		if (op != NULL && list_length(op->args) == 2 && op_strict(op->opno))
+			foreach_ptr(Node, a, op->args)
+				if (IsA(a, Var) && ((Var *) a)->varno == rti && ((Var *) a)->varlevelsup == 0 && ((Var *) a)->varnullingrels == NULL)
+				{
+					NullTest   *nt = makeNode(NullTest);
+
+					nt->arg = (Expr *) copyObject(a);
+					nt->nulltesttype = IS_NULL;
+					nt->argisrow = false;
+					nt->location = -1;
+					return (Node *) nt;
+				}
+	}
+	return NULL;
+}
+
+/*
  * A LEFT JOIN with the scanned table on its right (the left side is preserved: flip), or a FULL JOIN of two tables: the table that is
  * not scanned is the join, with all of its rows kept. The ON clause is the join's; whatever the WHERE says of the scanned table is not.
+ * An anti join of two tables is the same with the rows nothing matched kept: PostgreSQL 19 hands it over as the anti join that a LEFT JOIN with a WHERE on a column of
+ * the right side being NULL is (18 hands the LEFT JOIN and its WHERE), so the flip of it keeps the WHERE of that column.
  */
 static bool
 scan_preserved(JoinExpr *j, FromScan *f)
 {
-	bool		full = j->jointype == JOIN_FULL;
-	RangeTblRef *l = IsA(j->larg, RangeTblRef) ? (RangeTblRef *) j->larg : NULL,
+	bool		full = j->jointype == JOIN_FULL,
+				anti = j->jointype == JOIN_ANTI;
+	/* the preserved side of an anti join is a table, or the FROM of the statement that holds only it (a FromExpr 18 leaves around the table of a NOT EXISTS) */
+	Node	   *lside = anti && IsA(j->larg, FromExpr) && list_length(((FromExpr *) j->larg)->fromlist) == 1 ? linitial(((FromExpr *) j->larg)->fromlist) : j->larg;
+	RangeTblRef *l = IsA(lside, RangeTblRef) ? (RangeTblRef *) lside : NULL,
 			   *r = right_table(j->rarg);
+	Node	   *witness = anti && r != NULL ? anti_witness(j, r->rtindex) : NULL;
 	FromScan	right = {.ok = true},
 				left = {.ok = true};
 	LeftJoin   *lj;
@@ -58,7 +92,7 @@ scan_preserved(JoinExpr *j, FromScan *f)
 				dim;
 
 	/* a FULL JOIN of a join of tables to a table: the join is the scanned side (its tables are joined to the first) */
-	if ((!full && j->jointype != JOIN_LEFT) || (full && r == NULL) || (l == NULL && (!full || f->flip)))
+	if ((!full && !anti && j->jointype != JOIN_LEFT) || (anti && witness == NULL) || (full && r == NULL) || (l == NULL && (!full || f->flip)))
 		return false;
 	f->flippable = true;
 	if (!full && !f->flip)
@@ -104,6 +138,12 @@ scan_preserved(JoinExpr *j, FromScan *f)
 	f->rtis = lappend_int(f->rtis, dim);
 	f->lefts = lappend(f->lefts, lj);
 	f->ojrels = bms_add_member(f->ojrels, j->rtindex);
+	if (anti)
+	{
+		f->quals = lappend(f->quals, witness);
+		if (lside != j->larg && ((FromExpr *) j->larg)->quals)
+			f->quals = list_concat(f->quals, list_copy((List *) ((FromExpr *) j->larg)->quals));
+	}
 	return true;
 }
 

@@ -26,7 +26,7 @@ BEGIN
 	EXECUTE format('CREATE INDEX pk_i ON pk_t USING sift_col (k, id) WITH (key_cut = ''off'', %s)', opt);
 	PERFORM set_config('sift.test_col_point_unpacked', 'off', true);
 	PERFORM set_config('sift.test_col_point_unrooted', 'off', true);
-	SELECT sum(s.bytes) INTO b FROM sift.col_sections('pk_i') s WHERE s.section = 'dict_other';
+	SELECT sum(s.bytes) INTO b FROM sift.col_sections('pk_i') s WHERE s.section IN ('dict_other', 'point_dir', 'order_arrays');
 	SELECT min(c.format) INTO fmt FROM sift.col_segments('pk_i') c WHERE c.kind = 'immutable';
 	SELECT count(*) INTO lost FROM generate_series(1, n, step) g
 		WHERE EXISTS (SELECT 1 FROM pk_t h WHERE h.id = g AND NOT EXISTS (SELECT 1 FROM sift._test_col_tids('pk_i', '0:eq:' || h.k, 24) t WHERE t.tid = h.ctid));

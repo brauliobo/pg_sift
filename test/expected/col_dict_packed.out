@@ -91,8 +91,9 @@ SELECT 'dp_old' AS idx, format, count(*) AS segments FROM sift.col_segments('dp_
   idx   | format | segments 
 --------+--------+----------
  dp_new |     39 |        3
- dp_old |     37 |        3
-(2 rows)
+ dp_old |     25 |        2
+ dp_old |     37 |        1
+(3 rows)
 
 INSERT INTO dp_q (preds, heapwhere) VALUES (format('0:eq:k%s', md5('22222')), format('s = %L', 'k' || md5('22222'))), (format('1:eq:%s', md5('24999')::uuid), format('u = %L', md5('24999')::uuid)), ('0:prefix:k5', 's LIKE ''k5%''');
 SELECT n, dp_cmp(preds, heapwhere) FROM dp_q ORDER BY n;

@@ -13,11 +13,10 @@
  * its smallest and largest, or that has fewer than two, has no EXACT or BLOOM (its zone says as much).
  */
 
-#include "core/host.h"
-
 #include "col/point.h"
 #include "col/setsum.h"
 #include "core/cmp.h"
+#include "core/hash.h"
 #include "core/popcount.h"
 
 static inline uint32
@@ -97,9 +96,9 @@ sift_cset_keys(const SiftCPaggCol *c, int64 *out)
 
 	for (uint32 i = 0; i < c->n; i++)
 	{
-		if (c->nulls && (c->nulls[i / 64] >> (i % 64) & 1))
+		if (sift_col_bit_test(c->nulls, i))
 			continue;
-		if (c->ovf && (c->ovf[i / 64] >> (i % 64) & 1))
+		if (sift_col_bit_test(c->ovf, i))
 			continue;
 		out[m++] = c->key[i];
 	}
@@ -235,10 +234,10 @@ distinct_offsets(const SiftCPaggCol *c, int64 lo, uint64 cap, uint32 *nd)
 		uint64		d;
 		uint32		h;
 
-		if ((c->nulls && (c->nulls[i / 64] >> (i % 64) & 1)) || (c->ovf && (c->ovf[i / 64] >> (i % 64) & 1)))
+		if (sift_col_bit_test(c->nulls, i) || sift_col_bit_test(c->ovf, i))
 			continue;
 		d = (uint64) c->key[i] - (uint64) lo + 1;
-		for (h = (uint32) ((d * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & (size - 1); slot[h] != 0 && slot[h] != d; h = (h + 1) & (size - 1))
+		for (h = (uint32) (sift_fib64(d) >> 32) & (size - 1); slot[h] != 0 && slot[h] != d; h = (h + 1) & (size - 1))
 			;
 		if (slot[h] == 0)
 		{
@@ -392,7 +391,7 @@ sift_cset_build_pres(const SiftCPaggCol *c, Size max_bytes, StringInfo out)
 	{
 		int64		k = c->key[i];
 
-		if ((c->nulls && (c->nulls[i / 64] >> (i % 64) & 1)) || (c->ovf && (c->ovf[i / 64] >> (i % 64) & 1)))
+		if (sift_col_bit_test(c->nulls, i) || sift_col_bit_test(c->ovf, i))
 			continue;
 		lo = Min(lo, k);
 		hi = Max(hi, k);
@@ -427,7 +426,7 @@ sift_cset_build_pres(const SiftCPaggCol *c, Size max_bytes, StringInfo out)
 	{
 		uint64		d;
 
-		if ((c->nulls && (c->nulls[i / 64] >> (i % 64) & 1)) || (c->ovf && (c->ovf[i / 64] >> (i % 64) & 1)))
+		if (sift_col_bit_test(c->nulls, i) || sift_col_bit_test(c->ovf, i))
 			continue;
 		d = (uint64) c->key[i] - (uint64) base;
 		bits[d / 64] |= UINT64CONST(1) << (d % 64);
@@ -651,6 +650,29 @@ sift_cset_may_hold(const SiftCSet *s, int64 lo, int64 hi)
 		if (bloom_has(s, k))
 			return true;
 		if (k == hi)
+			return false;
+	}
+}
+
+bool
+sift_cset_span(const SiftCSet *s, int64 *lo, int64 *hi)
+{
+	switch (s->kind)
+	{
+		case SIFT_CSET_PRES:
+			*lo = s->base;
+			*hi = (int64) ((uint64) s->base + s->nbits - 1);
+			return true;
+		case SIFT_CSET_RUNS:
+			*lo = (int64) ((uint64) s->base + runs_start(s, 0));
+			*hi = (int64) ((uint64) s->base + runs_last(s, runs_nr(s) - 1));
+			return true;
+		case SIFT_CSET_EXACT:
+		case SIFT_CSET_PLIST:
+			*lo = (int64) ((uint64) s->base + exact_at(s, 0));
+			*hi = (int64) ((uint64) s->base + exact_at(s, s->n - 1));
+			return true;
+		default:
 			return false;
 	}
 }

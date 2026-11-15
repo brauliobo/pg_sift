@@ -1,45 +1,27 @@
 /*
  * table/wide.c - the wide leaves of the column source of a sift_table: the dictionary of exact datum images and the conjuncts decided by the type's own comparison
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
-#include <math.h>
-
-#include "access/heapam.h"
 #include "access/htup_details.h"
-#include "catalog/pg_statistic.h"
-#include "catalog/pg_type.h"
-#include "commands/defrem.h"
-#include "nodes/makefuncs.h"
 #include "common/hashfn.h"
-#include "nodes/bitmapset.h"
-#include "pgstat.h"
-#include "optimizer/optimizer.h"
-#include "optimizer/planner.h"
-#include "rewrite/rewriteHandler.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
-#include "utils/syscache.h"
 #include "utils/typcache.h"
 
 #include "agg/kern.h"
-#include "agg/pre.h"
 #include "agg/sel.h"
-#include "agg/wide.h"
 #include "col/col.h"
-#include "col/am.h"
-#include "col/pagg.h"
-#include "col/seg.h"
-#include "agg/colsrc.h"
+#include "core/limits.h"
 #include "table/table.h"
-#include "core/visibility.h"
 #include "table/src_int.h"
 
 /* ---- a wide leaf: the dictionary of the exact datum images of the rows read, an entry the datum itself (agg/wide.h) ---- */
 
 typedef struct WideBuild
 {
+	const char *col;			/* for the error of a dictionary that outgrows its limit */
 	uint32		nd;
 	uint32		dcap;
 	uint32	   *off;			/* nd + 1: the entries start on 8 bytes */
@@ -63,6 +45,12 @@ wide_entry(WideBuild *w, const char *img, uint32 len)
 		if (w->len[e - 1] == len && memcmp(w->bytes + w->off[e - 1], img, len) == 0)
 			return e - 1;
 	end = (size_t) w->off[w->nd] + MAXALIGN(Max(len, 1));
+	if (end > (size_t) sift_limit(wide_dict_bytes, MaxAllocSize))
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						errmsg("the distinct values of column \"%s\" in the rows of one unit take more than %zu bytes", w->col,
+							   (size_t) sift_limit(wide_dict_bytes, MaxAllocSize)),
+						errhint("A unit holds up to %d rows: values of a wide column that are that large and distinct cannot be read together.",
+								SIFT_COL_UNIT_MAX_ROWS)));
 	if (w->nd == w->dcap)
 	{
 		w->dcap *= 2;
@@ -106,7 +94,7 @@ wide_read(TblSource *t, int leaf, const TblPart *p, const SiftColVec *v, size_t 
 	int16		typlen = TupleDescAttr(RelationGetDescr(t->rel), l->attno - 1)->attlen;
 	SiftSrcLeafBuf *b = &t->buf[leaf];
 	MemoryContext old;
-	WideBuild	w = {0};
+	WideBuild	w = {.col = NameStr(TupleDescAttr(RelationGetDescr(t->rel), l->attno - 1)->attname)};
 	bool		has_null = false;
 
 	sift_aggsel_leaf_buf(t->cxt, b, n);
@@ -174,25 +162,25 @@ wide_pass(const TblWide *w, bool isnull, Datum d)
 {
 	bool		found = false;
 
-	if (w->op == SWT_ISNULL || w->op == SWT_NOTNULL)
-		return isnull == (w->op == SWT_ISNULL);
-	if (w->op == SWT_NOTIN && w->nvals == 0)
+	if (w->op == SIFT_COLW_ISNULL || w->op == SIFT_COLW_NOTNULL)
+		return isnull == (w->op == SIFT_COLW_ISNULL);
+	if (w->op == SIFT_COLW_NOTIN && w->nvals == 0)
 		return true;
 	if (isnull)
 		return false;
-	if (w->op < SWT_IN)
+	if (w->op < SIFT_COLW_IN)
 		return !w->isnull[0] && cmp_holds(w->op, DatumGetInt32(FunctionCall2Coll(w->cmp, InvalidOid, d, w->vals[0])));
 	for (int k = 0; k < w->nvals; k++)
 	{
 		if (w->isnull[k])
 		{
-			if (w->op == SWT_NOTIN)
+			if (w->op == SIFT_COLW_NOTIN)
 				return false;
 			continue;
 		}
 		found |= DatumGetInt32(FunctionCall2Coll(w->cmp, InvalidOid, d, w->vals[k])) == 0;
 	}
-	return w->op == SWT_IN ? found : !found;
+	return w->op == SIFT_COLW_IN ? found : !found;
 }
 
 bool

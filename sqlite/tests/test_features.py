@@ -454,6 +454,34 @@ class Facets(TmpDb):
         with self.assertRaises(sqlite3.Error):
             db.execute("SELECT * FROM sift_facets('nope', 'nope2', 'x')").fetchall()
 
+    def test_facets_stay_within_work_mem(self):
+        """The values counted, the pages with a match and the rows of the answer are held in all: up to sift_work_mem() kB, or the call fails naming it.
+        A value shared by the rows of several superblocks is counted from the batches of its postings."""
+        db = connect(self.path)
+        db.execute('CREATE VIRTUAL TABLE t USING sift(body, stemmer=none)')
+        db.execute("CREATE VIRTUAL TABLE uniq USING sift(c, analyzer='keyword', stemmer=none, positions=0)")
+        db.execute("CREATE VIRTUAL TABLE same USING sift(c, analyzer='keyword', stemmer=none, positions=0)")
+        db.execute('BEGIN')
+        for i in range(1, 20001):
+            db.execute('INSERT INTO t(rowid, body) VALUES (?, ?)', (i, 'common'))
+            db.execute('INSERT INTO uniq(rowid, c) VALUES (?, ?)', (i, 'value-%06d' % i))
+            db.execute('INSERT INTO same(rowid, c) VALUES (?, ?)', (i, 'shared'))
+        db.execute('COMMIT')
+        self.assertEqual(db.execute('SELECT sift_work_mem()').fetchone()[0], 1048576)
+        self.assertEqual(db.execute("SELECT value, n FROM sift_facets('t', 'same', 'common')").fetchall(), [('shared', 20000)])
+        self.assertEqual(db.execute("SELECT count(*), sum(n) FROM sift_facets('t', 'uniq', 'common')").fetchone(), (20000, 20000))
+        try:
+            db.execute('SELECT sift_work_mem(1024)')
+            with self.assertRaisesRegex(sqlite3.Error, r'sift_facets needs \d+ kB, more than sift_work_mem\(\) \(1024 kB\)'):
+                db.execute("SELECT count(*) FROM sift_facets('t', 'uniq', 'common')").fetchall()
+            self.assertEqual(db.execute("SELECT value, n FROM sift_facets('t', 'same', 'common')").fetchall(), [('shared', 20000)])
+            db.execute('SELECT sift_work_mem(4096)')
+            self.assertEqual(db.execute("SELECT count(*), sum(n) FROM sift_facets('t', 'uniq', 'common')").fetchone(), (20000, 20000))
+        finally:
+            db.execute('SELECT sift_work_mem(1048576)')
+        with self.assertRaises(sqlite3.Error):
+            db.execute('SELECT sift_work_mem(1)').fetchall()
+
 
 class Commands(TmpDb):
     def test_unknown_command(self):

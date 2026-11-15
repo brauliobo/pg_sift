@@ -67,13 +67,12 @@ tie_scan(Plan *plan, int64 rows)
 	set_private(cs, SIFT_PRIV_TIES, makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(1), false, true));
 }
 
-static void
-tie_walk(Plan *plan)
+/* One node of the finished plan (sift_finish_plan visits them all) */
+void
+sift_tie_node(Plan *plan)
 {
 	int64		rows;
 
-	if (plan == NULL)
-		return;
 	if (IsA(plan, Limit) && limit_rows((Limit *) plan, &rows))
 	{
 		Plan	   *sort = rows_below(plan->lefttree);
@@ -81,25 +80,4 @@ tie_walk(Plan *plan)
 		if (sort != NULL && IsA(sort, IncrementalSort))
 			tie_scan(rows_below(sort->lefttree), rows);
 	}
-	tie_walk(plan->lefttree);
-	tie_walk(plan->righttree);
-	if (IsA(plan, Append))
-		foreach_ptr(Plan, p, ((Append *) plan)->appendplans)
-			tie_walk(p);
-	else if (IsA(plan, MergeAppend))
-		foreach_ptr(Plan, p, ((MergeAppend *) plan)->mergeplans)
-			tie_walk(p);
-	else if (IsA(plan, SubqueryScan))
-		tie_walk(((SubqueryScan *) plan)->subplan);
-	else if (IsA(plan, CustomScan))
-		foreach_ptr(Plan, p, ((CustomScan *) plan)->custom_plans)
-			tie_walk(p);
-}
-
-void
-sift_tie_scans(PlannedStmt *stmt)
-{
-	tie_walk(stmt->planTree);
-	foreach_ptr(Plan, p, stmt->subplans)
-		tie_walk(p);
 }

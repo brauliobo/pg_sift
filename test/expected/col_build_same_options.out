@@ -20,11 +20,11 @@ END $$;
 CREATE TABLE sc_runs AS SELECT w AS asked, b.* FROM unnest(ARRAY[0, 2, 4]) w, LATERAL sc_build(w) b;
 -- the participants did write segments of their own, and the choice is the same
 SELECT asked, launched, segments > 1 AS several_segments, options FROM sc_runs ORDER BY asked;
- asked | launched | several_segments |                                                       options                                                        
--------+----------+------------------+----------------------------------------------------------------------------------------------------------------------
-     0 |        0 | f                | {"rollup_dims=auto: grp, note","order_array_columns=auto: amount, ts",track_changes=id,"point_tid_columns=auto: id"}
-     2 |        2 | t                | {"rollup_dims=auto: grp, note","order_array_columns=auto: amount, ts",track_changes=id,"point_tid_columns=auto: id"}
-     4 |        3 | t                | {"rollup_dims=auto: grp, note","order_array_columns=auto: amount, ts",track_changes=id,"point_tid_columns=auto: id"}
+ asked | launched | several_segments |                                                         options                                                         
+-------+----------+------------------+-------------------------------------------------------------------------------------------------------------------------
+     0 |        0 | f                | {"rollup_columns=auto: grp, note","order_array_columns=auto: amount, ts",track_changes=id,"point_tid_columns=auto: id"}
+     2 |        2 | t                | {"rollup_columns=auto: grp, note","order_array_columns=auto: amount, ts",track_changes=id,"point_tid_columns=auto: id"}
+     4 |        3 | t                | {"rollup_columns=auto: grp, note","order_array_columns=auto: amount, ts",track_changes=id,"point_tid_columns=auto: id"}
 (3 rows)
 
 SELECT count(DISTINCT options) AS choices FROM sc_runs;

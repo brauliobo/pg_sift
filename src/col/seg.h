@@ -10,6 +10,7 @@
 #define SIFT_COL_SEG_H
 
 #include "core/host.h"
+#include "core/live.h"
 
 #include "col/enc.h"
 #include "col/gorder.h"
@@ -56,15 +57,37 @@ extern SiftColSegWriter *sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const 
 extern void sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec);
 /* The rows of the whole index the segment belongs to (a build: the heap's estimate; a merge or promotion: the directory's): the writer signs the dictionaries when those of the index overflow the cache of parsed dictionaries. 0: unknown */
 extern void sift_colw_set_index_rows(SiftColSegWriter *w, uint64 rows);
+/* The rows the segment will hold, from the table's estimate or the partition the merge cuts: the arrays of the entries of the point directories and orders are allocated at that size, not grown by doubling */
 /* The units added from now on are key-cut (SiftColBatch.keyed); after set_preagg, before the first unit */
 extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol);
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
 extern void sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b);
+/* A segment of a connected index: the found flags of the units added from now on are filled by fill (a host fill, col/conn.h) and its stamps are written with the segment; without it the leaves are what the batches hold and the stamps are empty */
+typedef struct SiftColFill
+{
+	void		(*batch) (struct SiftColFill *f, SiftColBatch *view);			/* fills the found flags of the rows of the view */
+	SiftConnStamp (*stamp) (const struct SiftColFill *f, int i);			/* the stamp connection i was filled under (lineage 0: none) */
+	void		(*end) (struct SiftColFill *f);									/* the owner is done with it (sift_conn_fill_end) */
+} SiftColFill;
+extern void sift_colw_set_fill(SiftColSegWriter *w, SiftColFill *fill);
 extern uint64 sift_colw_rows(const SiftColSegWriter *w);
 /* Bytes of units written to the stream so far (the rest of the segment, dictionaries, zones and the like, comes at sift_colw_finish): where a merge cuts its output into partitions */
 extern uint64 sift_colw_bytes(const SiftColSegWriter *w);
-/* Memory the writer holds until the segment ends (zones, unit directory, dictionaries): the caller cuts a segment when it passes its budget */
+/* Memory the writer holds until the segment ends (zones, unit directory, dictionaries, and the keys and addresses of the point directories and order arrays with the arrays their end builds) */
 extern Size sift_colw_memory(const SiftColSegWriter *w);
+/* The segment is done: it holds a budget of memory or SIFT_CPOINT_BUILD_ROWS rows; the caller cuts it */
+extern bool sift_colw_full(const SiftColSegWriter *w, Size budget);
+/* An upper bound of the bytes of memory a writer with this spec holds for each row of a segment: its accumulators for the point directories and order arrays and the arrays the end of the segment builds from them (what sift_colw_memory counts) */
+extern Size sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols);
+extern Size sift_colw_leaves_memory(int leaves, int ords, bool grouped);	/* ... of a table that has that many leaves, of them ords order arrays */
+extern Size sift_colw_budget(Size mem, int resident_pct, Size base);
+#define SIFT_COLW_BUILD_PCT 140
+#define SIFT_COLW_BUILD_BASE ((Size) 30 * 1024 * 1024)
+#define SIFT_COLW_MERGE_PCT 100
+#define SIFT_COLW_MERGE_BASE ((Size) 36 * 1024 * 1024)
+#define SIFT_COLW_MIN_BUDGET ((Size) 16 * 1024 * 1024)
+/* The budget the segments still to come need: the rows left over the segments left, at the rows per budget the last segment reached; never less than budget */
+extern Size sift_colw_fit_budget(Size budget, uint64 seg_rows, uint64 rows_left, int segs_left);
 /* Writes DICTS, ZONES, SBDIR, SCHEMA, the all-live LIVE pages and the header; fills the directory entry (kind IMMUTABLE, format, header_blk, sb_lo/hi, ndocs = rows, bytes) */
 extern void sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry);
 
@@ -79,6 +102,8 @@ typedef struct SiftColSegment
 	uint32		nsb;			/* units */
 	const SiftColSBRef *sbdir;
 	void	   *priv;			/* zone arrays, dictionaries, liveness: loaded on demand */
+	int			nconn;			/* connections of the schema (col/conn.h) and the stamp of each (lineage 0: the segment holds no value of the parent for it) */
+	SiftConnStamp conn[SIFT_CONN_MAX_CONNECTIONS];
 } SiftColSegment;
 
 /* Reads the header, SCHEMA and SBDIR; ERRCODE_INDEX_CORRUPTED on inconsistencies (type/gen checks included). Everything lives in mcxt. */
@@ -212,6 +237,13 @@ extern bool sift_cseg_kinds_exact(SiftColSegment *seg);
 extern void sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc);
 /* The leaf statistics block of the segment, when it has one, is what the zones of its units add up to (corruption error otherwise) */
 extern void sift_cseg_verify_lst(SiftColSegment *seg);
+/* The mirror of the header page, when the segment has one, is what the stream holds (corruption error otherwise) */
+extern void sift_cseg_verify_mirror(SiftColSegment *seg);
+#ifdef SIFT_TESTING
+extern bool sift_cseg_mirror_range(const SiftColSegment *seg, uint32 i, uint64 *off, uint32 *len, uint32 *block);
+#endif
+/* The mirror a header page that lists nextents extents keeps for the segment (the stream does not change when its header page is written again), NULL with *len 0: none */
+extern const void *sift_cseg_mirror_for(const SiftColSegment *seg, uint32 nextents, uint32 *len);
 /* The zones of the segment's units (INT scalar leaves) into the sample, thinned to keep SIFT_COL_ZONE_SAMPLE units over the segments added; the caller allocates the arrays of the leaves that are sampled (lo[col] not NULL) */
 extern void sift_cseg_zone_sample(SiftColSegment *seg, SiftColZones *zs);
 
@@ -272,6 +304,7 @@ extern uint32 sift_cseg_preagg_units(SiftColSegment *seg);
 /* What the sidecar of the segment holds against the spec an index writes now, and whether a rewrite can give it what it lacks (sift_col_refresh); setting: sift.col_format_minor */
 /* sample 0: every unit; else that many of them, evenly spread (c->units says how many were counted) */
 extern void sift_cseg_pre_census(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting, uint32 sample, SiftCPaggCensus *c);
+extern double sift_cseg_gorder_chunks(SiftColSegment *seg, int col, uint32 flags, bool complete_only);	/* the chunks of the order blocks of leaf col (complete ones only, with a compact header: for the compact flag) with a flag of flags in the pad word, read from their directories */
 extern bool sift_cseg_pre_stale(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting, const SiftCPaggCensus *c);
 
 /* Clears the bits (one per unit, nsb bits) of the units whose zone cannot satisfy the test, with the zone kernels */
@@ -322,6 +355,8 @@ extern void sift_cseg_verify_points(SiftColSegment *seg);
 extern uint32 sift_cseg_gorder_collation(SiftColSegment *seg, int col);	/* the collation of the strings of a text block, 0 for any other */
 extern const char *sift_cseg_gorder_str(SiftColSegment *seg, int col, uint32 rank, uint32 *len);	/* the string of a key of a text block, valid until the next call for the leaf */
 extern uint32 sift_cseg_gorder_strrank(SiftColSegment *seg, int col, const char *s, uint32 len, bool after);	/* the strings of a text block that come before s (after: before or equal), which is the rank of the first one that does not */
+/* Does the segment keep an order block of leaf col at all (plain or grouped)? A segment that does not is read as a memory source by a scan of the global order */
+extern bool sift_cseg_gorder_has(SiftColSegment *seg, int col);
 extern int	sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped);	/* the slot of the block of a leaf, sorted by group or plain, to pass as col to the others; -1: none */
 extern bool sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values);
 extern bool sift_cseg_gorder_compact(SiftColSegment *seg, int col);
@@ -333,7 +368,6 @@ extern uint32 sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint
 extern int	sift_cseg_gorder_group(SiftColSegment *seg, int col);	/* the leaf the block is grouped by, -1 when it is not */
 extern void sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the entries of a group (all of a block that is not grouped) */
 extern uint32 sift_cseg_gorder_ngroups(SiftColSegment *seg, int col);	/* the groups of a grouped block */
-extern void sift_cseg_gorder_group_table(SiftColSegment *seg, int col);	/* the group table of the block of col in memory, whatever its size (a scan of every group looks each up) */
 extern void sift_cseg_gorder_group_at(SiftColSegment *seg, int col, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the group at place gi and its entries */
 extern bool sift_cseg_gorder_strkeys(SiftColSegment *seg, int col, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl, int64 *klo, int64 *khi);	/* the keys of the entries of a text block between two bounds (a NULL one: none) */
 extern uint32 sift_cseg_gorder_count(SiftColSegment *seg, int col, bool str, bool group, int64 lo, int64 hi);
@@ -352,6 +386,9 @@ extern bool sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uin
 extern void sift_cseg_probe_init(void);
 extern uint32 sift_cseg_gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep);	/* the first entry of [vs, ve) with key >= key (after: > key); ve when none; the chunk it ends in is left in keep */
 extern void sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut);
+/* The bytes the point directories and the global order arrays of the segment take in its DICT section */
+extern uint64 sift_cseg_point_bytes(SiftColSegment *seg);
+extern uint64 sift_cseg_gorder_bytes(SiftColSegment *seg);
 /* The bytes the summaries of the segment take */
 extern uint64 sift_cseg_set_bytes(SiftColSegment *seg);
 /* The bytes the sorted runs of the segment take */
@@ -429,10 +466,13 @@ extern bool sift_cseg_net_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *
 extern StringInfo sift_cseg_net_build(SiftColSegment *seg);
 extern void sift_cseg_net_finish(StringInfo net, uint64 at);
 extern uint32 sift_cseg_net_pages(SiftColSegment *seg, uint64 *at);
+extern uint64 sift_col_net_write(SiftWriteTarget *wt, SiftColSegment *seg, const SiftSegEntry *entry, int *nextents);
 extern void sift_cseg_net_verify(SiftColSegment *seg);
 extern void sift_cseg_live(SiftColSegment *seg, uint32 u, uint64 *bits);
 extern bool sift_cseg_unit_dead(SiftColSegment *seg, uint32 u, MemoryContext mcxt, SiftKey **dead, uint32 *ndead, uint32 *room);
 extern uint64 sift_cseg_live_rows(SiftColSegment *seg);
+/* Do the addresses of every dead row of the segment, listed for the scans of its global order (8 bytes a row), fit work_mem? A segment with more has none listed: its scans read the units and the heap */
+extern bool sift_cseg_dead_fits(SiftColSegment *seg);
 
 /* Replaces the contents of dst with the live rows of unit u (dst: a batch of the segment's schema); the rows keep their versions */
 extern void sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst);
@@ -442,6 +482,8 @@ extern void sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *d
  */
 typedef bool (*SiftColFreezeFn) (void *arg, uint32 xmin, uint32 cmin);
 extern void sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, SiftColFreezeFn freeze, void *arg);
+/* The live rows of unit u with only the scalar leaves want names (their keys, nulls and overflow flags, dictionaries of strings): the keys of the rows are complete, no version is read */
+extern void sift_cseg_decode_unit_leaves(SiftColSegment *seg, uint32 u, const bool *want, SiftColBatch *dst);
 
 /*
  * Does a unit flag the overflow of a leaf while no live row holds an overflow value in it (the rows that did are dead)? The flag stays with the
@@ -470,6 +512,10 @@ extern int64 sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback c
  * ndead. ERRCODE_INDEX_CORRUPTED. Returns the number of live rows.
  */
 extern uint64 sift_cseg_verify(SiftColSegment *seg);
+/* The liveness run against what sift_live_clear keeps true of it (col/seg/live.c): the audit reads it, the repair restores it, the verify raises on what the audit finds */
+extern void sift_cseg_live_audit(SiftColSegment *seg, SiftLiveAudit *a);
+extern void sift_cseg_live_repair(SiftColSegment *seg, SiftLiveAudit *a);
+extern void sift_cseg_live_verify(SiftColSegment *seg);
 
 /*
  * The source over the column segments of a sift_table (docs/COL-TAM.md section 6; col/scan/scan.c): dir is the caller's directory copy (no snapshot is
@@ -505,6 +551,20 @@ static inline bool
 sift_cseg_keyed(const SiftSegEntry *e)
 {
 	return (e->flags & SIFT_SEG_KEYED) != 0 || e->format == SIFT_COL_FORMAT_KEYED;
+}
+
+/* Do the units of the segment follow each other in the order of the TIDs, as a merge by superblock reads them? Not the units of a segment cut by a key */
+static inline bool
+sift_cseg_tid_ordered(const SiftSegEntry *e)
+{
+	return (e->flags & SIFT_SEG_BYKEY) == 0;
+}
+
+/* Do they follow each other in the order of a key, as a merge of a key_cut index reads them? Not those of a segment cut by TID range; which key, only the cut of the index tells */
+static inline bool
+sift_cseg_key_ordered(const SiftSegEntry *e)
+{
+	return sift_cseg_keyed(e) && (e->flags & SIFT_SEG_BYTID) == 0;
 }
 
 #ifdef SIFT_TESTING

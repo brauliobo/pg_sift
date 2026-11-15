@@ -8,7 +8,7 @@
 CREATE FUNCTION fz.apply(spec text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE kv text; g text;
 BEGIN
-	FOREACH g IN ARRAY ARRAY['sift.enable_agg', 'sift.agg_preagg', 'sift.agg_two_level', 'sift.agg_fuse', 'sift.agg_lookup_pushdown',
+	FOREACH g IN ARRAY ARRAY['plan_cache_mode', 'sift.enable_agg', 'sift.agg_preagg', 'sift.agg_two_level', 'sift.agg_fuse', 'sift.agg_lookup_pushdown',
 							 'sift.agg_share_lookups', 'sift.agg_dense', 'sift.enable_topn', 'sift.simd', 'sift.agg_rows', 'sift.agg_semi_lut',
 							 'sift.agg_join_filter', 'max_parallel_workers_per_gather', 'parallel_setup_cost', 'parallel_tuple_cost',
 							 'min_parallel_table_scan_size', 'min_parallel_index_scan_size', 'parallel_leader_participation', 'seq_page_cost',
@@ -16,6 +16,7 @@ BEGIN
 							 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan'] LOOP
 		EXECUTE 'RESET ' || g;
 	END LOOP;
+	DISCARD PLANS;		-- a prepared statement is planned again under the settings that follow
 	FOREACH kv IN ARRAY string_to_array(spec, ';') LOOP
 		IF kv <> '' THEN PERFORM set_config(split_part(kv, '=', 1), substr(kv, strpos(kv, '=') + 1), false); END IF;
 	END LOOP;

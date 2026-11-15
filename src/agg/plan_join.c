@@ -3,64 +3,23 @@
  */
 #include "postgres.h"
 
-#include <math.h>
-
-#include "access/htup_details.h"
 #include "access/sysattr.h"
-#include "access/stratnum.h"
-#include "access/table.h"
-#include "access/stratnum.h"
-#include "catalog/pg_aggregate.h"
-#include "catalog/pg_am.h"
 #include "catalog/pg_class.h"
-#include "catalog/pg_collation.h"
-#include "commands/defrem.h"
-#include "catalog/pg_index.h"
-#include "miscadmin.h"
-#include "catalog/pg_operator.h"
-#include "catalog/pg_opfamily.h"
-#include "catalog/pg_proc.h"
-#include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
-#include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
-#include "optimizer/restrictinfo.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
-#include "optimizer/plancat.h"
 #include "optimizer/pathnode.h"
-#include "optimizer/paramassign.h"
-#include "optimizer/paths.h"
-#include "optimizer/planmain.h"
-#include "optimizer/planner.h"
 #include "optimizer/tlist.h"
-#include "parser/parse_relation.h"
 #include "parser/parsetree.h"
-#include "port/pg_bitutils.h"
 #include "rewrite/rewriteManip.h"
-#include "utils/array.h"
-#include "utils/builtins.h"
 #include "utils/fmgroids.h"
-#include "utils/fmgrprotos.h"
-#include "utils/jsonb.h"
-#include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
-#include "utils/numeric.h"
-#include "utils/rel.h"
-#include "utils/ruleutils.h"
-#include "utils/selfuncs.h"
-#include "utils/syscache.h"
 #include "utils/typcache.h"
 
 #include "agg/agg.h"
-#include "agg/part.h"
-#include "agg/topn.h"
-#include "agg/spec.h"
-#include "agg/colsrc.h"
-#include "agg/search.h"
 #include "agg/plan_int.h"
 #include "agg/plan_join_int.h"
 
@@ -70,9 +29,12 @@ unsupported_clause(AggCtx *c, Node *n)
 	return n != NULL && (contain_volatile_functions(n) || has_exec_param_walker(n, c));
 }
 
-/* does the right side read a column (or aggregate, or CTE) of the query, or above it when skip is 1? */
+/*
+ * does the right side read a column (or aggregate, or CTE) of the query, or above it when skip is 1? PostgreSQL pushes a condition on the columns of
+ * a sub-select into the copy of it that it plans (rel->subroot), as a parameter of the query above: the sub-select of the RTE does not hold it.
+ */
 bool
-reads_outer(AggCtx *c, RangeTblEntry *e, int skip)
+reads_outer(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, int skip)
 {
 	/* the expressions of a function or VALUES list are in the query itself, the body of a sub-select one level below it */
 	OuterRef	oref = {c->root, e->rtekind == RTE_SUBQUERY ? 0 : -1, skip};
@@ -90,7 +52,8 @@ reads_outer(AggCtx *c, RangeTblEntry *e, int skip)
 	sift_agg_outer_walks++;
 #endif
 	if (e->rtekind == RTE_SUBQUERY)
-		r = query_tree_walker(e->subquery, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
+		r = query_tree_walker(e->subquery, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE) ||
+			(skip && rel->subroot != NULL && ancestor_param_walker((Node *) rel->subroot->parse, c->root));
 	else
 		r = outer_ref_walker(expr, &oref) || (skip && ancestor_param_walker(expr, c->root));
 	walk_memo_put(e, c->root, skip, r);
@@ -144,10 +107,11 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 	 * A column of a query above the aggregate's own reaches the child as a parameter of that query's plan, which changes per row of it; the
 	 * scan replays its groups when rescanned (agg_rescan) and never sees it. Only the query's own tables are an input of the child.
 	 */
-	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || reads_outer(c, e, 1))
+	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || reads_outer(c, e, rel, 1))
 		return agg_refuse_on(JOIN_CHILD, "the child is not a base relation of this query level, or reads the queries around it");
-	if (reads_outer(c, e, 0) || !bms_is_empty(rel->lateral_relids))
-		return (e->rtekind == RTE_SUBQUERY || e->rtekind == RTE_FUNCTION) && planned_correlated_child(c, e, rel, jc);
+	if (reads_outer(c, e, rel, 0) || !bms_is_empty(rel->lateral_relids))
+		return e->rtekind == RTE_SUBQUERY || e->rtekind == RTE_FUNCTION ? planned_correlated_child(c, e, rel, jc) :
+			agg_refuse_f(JOIN_CHILD, "%s (%s) reads the query's other tables, which only a sub-select or a function can do as a child", e->eref->aliasname, *what);
 	if ((jc->cpath = child_path(rel, false)) == NULL)
 		return agg_refuse_on(JOIN_CHILD, "the child has no plan the scan can run once");
 	if (!agg_lookup_fits(jc->cpath->rows, jc->cpath->pathtarget->width))
@@ -268,83 +232,6 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 	return true;
 }
 
-/*
- * `column = value` or `column = ANY (array)` (IN (list)) among the table's own conditions (the value reads no column, is not volatile and takes no
- * executor parameter): the rows of the table that can match are those of an index scan on the column, when the table has a btree on it (the executor
- * looks, map_load). The conjunct stays in the filter; this only narrows what is read. A condition that keeps a large share of the table is read faster
- * by the heap scan than through the index (a random heap fetch for each row), so it is only for a condition the statistics of the table expect to keep
- * a small share.
- */
-static bool
-index_qual(AggCtx *c, JoinCtx *jc, Node *q, Oid *opno, Oid *coll, Node **col, Node **val, bool *any)
-{
-	Node	   *l,
-			   *r;
-
-	if (IsA(q, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) q)->useOr)
-	{
-		ScalarArrayOpExpr *sa = (ScalarArrayOpExpr *) q;
-
-		*opno = sa->opno;
-		*coll = sa->inputcollid;
-		l = strip_relabel(linitial(sa->args));
-		r = lsecond(sa->args);
-		*any = true;
-		if (join_of_var(c, l) != jc || clause_selectivity(c->root, q, jc->rti, JOIN_INNER, NULL) * AGG_IDX_ROW >= AGG_JOIN_ROW)
-			return false;
-	}
-	else if (IsA(q, OpExpr) && list_length(((OpExpr *) q)->args) == 2)
-	{
-		OpExpr	   *op = (OpExpr *) q;
-
-		*opno = op->opno;
-		*coll = op->inputcollid;
-		l = strip_relabel(linitial(op->args));
-		r = strip_relabel(lsecond(op->args));
-		*any = false;
-		if (join_of_var(c, l) != jc)
-		{
-			if (join_of_var(c, r) != jc)
-				return false;
-			*opno = get_commutator(*opno);
-			l = r;
-			r = strip_relabel(linitial(op->args));
-		}
-		if (clause_selectivity(c->root, q, jc->rti, JOIN_INNER, NULL) * AGG_IDX_ROW >= AGG_JOIN_ROW)
-			return false;
-	}
-	else
-		return false;
-	*col = l;
-	*val = r;
-	return OidIsValid(*opno) && op_mergejoinable(*opno, exprType(l)) && !unsupported_clause(c, r) && !contain_var_clause(r);
-}
-
-static void
-join_index_quals(AggCtx *c, JoinCtx *jc, List *conds)
-{
-	SiftAggJoin *j = &jc->j;
-
-	if (jc->cpath != NULL || sift_aggjoin_preserves(jc->kind))
-		return;
-	foreach_ptr(Node, q, conds)
-	{
-		Node	   *col,
-				   *val;
-		Oid			opno,
-					coll;
-		bool		any;
-
-		if (j->nidx == SIFT_AGG_MAX_JIDX || !index_qual(c, jc, q, &opno, &coll, &col, &val, &any))
-			continue;
-		j->idxatt[j->nidx] = ((Var *) col)->varattno;
-		j->idxop[j->nidx] = opno;
-		j->idxcoll[j->nidx] = coll;
-		j->idxany[j->nidx] = any;
-		j->idxval[j->nidx++] = val;
-	}
-}
-
 /* the rest of the ON clause of a joined table: a boolean slot of its combo, over the leaves and the columns of a candidate row */
 static bool
 join_filter(AggCtx *c, JoinCtx *jc, List *conds)
@@ -352,9 +239,15 @@ join_filter(AggCtx *c, JoinCtx *jc, List *conds)
 	int			ci,
 				si;
 
+	bool		ok;
+
 	join_index_quals(c, jc, conds);
 
-	if (!combo_slot_in(c, jc, normalize_expr(c, (Node *) make_ands_explicit(conds)), false, false, &ci, &si) || ci != jc->combo)
+	/* the tests of the table's own columns stay in the filter: the load matches them to its index (map_index) and holds them on the leaves (collect_tests) */
+	c->own_filter = true;
+	ok = combo_slot_in(c, jc, normalize_expr(c, (Node *) make_ands_explicit(conds)), false, false, &ci, &si) && ci == jc->combo;
+	c->own_filter = false;
+	if (!ok)
 		return agg_refuse_on(JOIN_CONDITION, "the join filter is not an expression of the scanned table's leaves and the joined columns");
 	jc->j.fslot = si;
 	return true;
@@ -413,7 +306,15 @@ order_inner_lookups(AggCtx *c, List *pending, List *quals, List **ordered, Relid
 				break;
 			}
 		if (next == NULL)
+		{
+			char	   *waiting = "";
+
+			if (sift_explain_refusals)
+				foreach_ptr(JoinCtx, jc, pending)
+					waiting = psprintf("%s%s%s", waiting, *waiting ? ", " : "", planner_rt_fetch(jc->rti, c->root)->eref->aliasname);
+			agg_refused_f(JOIN_CONDITION, "no inner join can be looked up first: each of %s needs a table that no earlier lookup reaches, or a key the scan cannot evaluate", waiting);
 			return false;
+		}
 		*ordered = lappend(*ordered, next);
 		*done = bms_add_member(*done, next->rti);
 		pending = list_delete_ptr(pending, next);
@@ -642,6 +543,58 @@ scanned_key(AggCtx *c, List *quals, Var *v, Oid opno)
 }
 
 /*
+ * A column of an inner lookup that the scan's own column equals in its ON clause: in a tuple that passes the join they are one value, so a query that reads the lookup's
+ * key (count(DISTINCT t.id), a group by t.id) reads the scanned column, a leaf of the scan, in place of a column of a table it would look up. An integer or date key only: an
+ * equal value of another type may have another image.
+ */
+typedef struct KeySub
+{
+	AggCtx	   *c;
+} KeySub;
+
+static Node *
+inner_key_mutator(Node *n, KeySub *ks)
+{
+	AggCtx	   *c = ks->c;
+	JoinCtx    *jc;
+	Var		   *v;
+
+	if (n == NULL)
+		return NULL;
+	/* a test or indexed expression of one table is a column of its lookup table (join_of_node): it keeps the key it reads */
+	if (!IsA(n, Var) && join_of_node(c, n) != NULL)
+		return n;
+	if (IsA(n, Var) && (jc = join_of_var(c, n)) != NULL && jc->kind == SJ_INNER && jc->cpath == NULL)
+	{
+		v = (Var *) n;
+		foreach_ptr(Node, q, jc->clauses)
+		{
+			Var		   *a,
+					   *b;
+			Oid			opno;
+
+			if (!column_equality(q, &a, &b, &opno) || (type_class(a->vartype) != TC_INT && type_class(a->vartype) != TC_DATE))
+				continue;
+			if (a->varno == v->varno && a->varattno == v->varattno && b->varno == c->relid && match_leaf(c, (Node *) b) >= 0)
+				return (Node *) copyObject(b);
+			if (b->varno == v->varno && b->varattno == v->varattno && a->varno == c->relid && match_leaf(c, (Node *) a) >= 0)
+				return (Node *) copyObject(a);
+		}
+	}
+	return expression_tree_mutator(n, inner_key_mutator, ks);
+}
+
+Node *
+inner_key_sub(AggCtx *c, Node *n)
+{
+	KeySub		ks = {c};
+
+	if (c->joins == NIL || c->nulling != NULL || preserved_join(c))
+		return n;
+	return inner_key_mutator(n, &ks);
+}
+
+/*
  * `scanned.k = A.id AND A.id = B.id` (A an inner lookup, B an inner, semi or anti one: an IN or NOT EXISTS over a plan, on the column of A) holds the same rows as
  * `scanned.k = A.id AND scanned.k = B.id`: B is then probed with a column of the scanned row, where its chain through A needs A resolved first. The keys of B become a conjunct of the scan (join_filters), as
  * when B is joined to the table itself: the units they miss are not read.
@@ -824,8 +777,8 @@ setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan
 					return agg_refuse_limit(SHAPE_WIDTH, combo_leaves, SIFT_AGG_MAX_CLEAVES, "no room in a value combination for a leaf of the key expression (it holds at most that many, or has the leaf with another type)");
 				use_matched_leaf(c, w.leaf[p]);
 			}
-			foreach_ptr(Var, v, w.vars)
-				if (combo_reference(c, cb, join_of_var(c, (Node *) v), v) < 0)
+			foreach_ptr(Node, v, w.vars)
+				if (combo_reference(c, cb, join_of_node(c, v), v) < 0)
 					return agg_refuse_on(JOIN_CONDITION, "a key expression reads a column of another joined table that cannot be looked up first");
 			jc->j.args = lappend(jc->j.args, expr);
 		}

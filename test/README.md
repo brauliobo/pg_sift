@@ -10,6 +10,7 @@ Layout (run with `scripts/pgtest.sh regress [test...]`, which starts a throwaway
 | `col/` | the column index differential harness: the same statements with the index on and off, rows compared |
 | `fuzz/` | the differential fuzzer |
 | `plan/` | planning and execution budgets per statement family |
+| `corpus/` | the corpus gate: 174 statements in a new backend each, sift off against on, the plan slug of each pinned (`scripts/corpus.sh`) |
 | `matrix/` | data-type matrix |
 | `fixtures/` | binary fixtures of old on-disk formats |
 

@@ -21,21 +21,7 @@ VACUUM (FREEZE, ANALYZE) ents;
 -- the tables the node of an EXPLAIN ANALYZE took from an earlier query
 CREATE FUNCTION cached(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_nodes_cached_tables(q) $$;
 
-CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_uncached bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.agg_lookup_cache_kb = 0;
-	EXECUTE format('CREATE TEMP TABLE r_gen ON COMMIT DROP AS %s', q);
-	RESET sift.agg_lookup_cache_kb;
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	RESET sift.enable_agg;
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_uncached := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_gen) UNION ALL (TABLE r_gen EXCEPT TABLE r_on)) d);
-	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
-	DROP TABLE r_on, r_gen, r_off;
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_uncached bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_lookup_cache_differences(q) $$;
 
 \set tier_label_lt10 'SELECT e.tier, e.label, count(*) AS n, sum(amount)::bigint AS total FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 10 GROUP BY 1, 2'
 \set tier_lt5 'SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 5 GROUP BY 1'

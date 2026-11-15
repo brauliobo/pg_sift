@@ -79,8 +79,7 @@ SELECT * FROM first_n_of_tie($q$ SELECT grp, id, tie, rn FROM (SELECT id, grp, t
 SELECT * FROM first_n_of_tie($q$ SELECT grp, id, tie, rn FROM (SELECT id, grp, tie, row_number() OVER (PARTITION BY grp ORDER BY tie) rn FROM events) t WHERE rn <= 40 $q$, 40);
 SELECT runs_in_scan($q$ SELECT grp, id, tie, rn FROM (SELECT id, grp, tie, row_number() OVER (PARTITION BY grp ORDER BY tie) rn FROM events) t WHERE rn <= 3 $q$);
 
--- as written: rank(), another window function, nothing to cut but the partition and rn, a column that is an array, a table with no column index, a grouped sub-select
-SELECT * FROM check_query('rank', $q$ SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
+-- as written: another window function, nothing to cut but the partition and rn, a column that is an array, a table with no column index, a grouped sub-select
 SELECT * FROM check_query('another window function', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn, count(*) OVER (PARTITION BY grp) n FROM events) t WHERE rn <= 3 $q$);
 SELECT * FROM check_query('only the partition and rn', $q$ SELECT * FROM (SELECT grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
 SELECT window_why($q$ SELECT * FROM (SELECT grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
@@ -91,8 +90,8 @@ SELECT * FROM check_query('a grouped sub-select', $q$
  SELECT * FROM (SELECT grp, c, row_number() OVER (PARTITION BY c % 3 ORDER BY c DESC, grp) rn FROM (SELECT grp, count(*) c FROM events GROUP BY grp) g) t WHERE rn <= 3 $q$);
 SELECT * FROM check_query('the second row only', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 2 $q$);
 
--- the cost decides it: PostgreSQL prices the unnest of a group at the rows it returns and the executor spends more on each group, so the scan that wins for 37
--- groups of 135 rows loses to the window for 1,000 groups of 5
+-- the memory decides it: the scan keeps the first rows of every group in memory, which a sort of the window spills to disk, so the scan that runs for 37 groups
+-- of 135 rows is refused for 1,000 groups of 5 when the memory of a hash aggregate is 128 kB
 CREATE TABLE ranked (id int PRIMARY KEY, k37 int NOT NULL, k1000 int NOT NULL, ts int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO ranked SELECT i, i % 37, i % 1000, (i * 31) % 1000, i % 11 FROM generate_series(1, 5000) i;
 CREATE INDEX ranked_col ON ranked USING sift_col (id, k37, k1000, ts, amount);
@@ -104,6 +103,7 @@ BEGIN
 	RETURN found;
 END $$;
 SET seq_page_cost = 64;
+SET work_mem = '64kB';
 SELECT k AS "partition key", plan_in_scan(format($q$ SELECT * FROM (SELECT id, amount, row_number() OVER (PARTITION BY %s ORDER BY ts DESC, id) rn FROM ranked) t WHERE rn <= 3 $q$, k)) AS in_scan
 FROM unnest(ARRAY['k37', 'k1000']) k;
 DROP FUNCTION plan_in_scan(text);

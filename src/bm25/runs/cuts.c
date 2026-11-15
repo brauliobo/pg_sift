@@ -97,7 +97,7 @@ sift_runs_cuts(SiftRun **runs, int nruns, Size budget, uint64 min_bytes, int tar
 		int			n;
 		RunSample  *smp = run_samples(&rd[i], runs[i], &n);
 
-		all = all ? repalloc(all, (nall + n) * sizeof(RunSample)) : palloc((nall + n) * sizeof(RunSample));
+		SIFT_REGROW(all, (nall + n) * sizeof(RunSample));
 		memcpy(all + nall, smp, n * sizeof(RunSample));
 		nall += n;
 	}

@@ -1,15 +1,9 @@
 /*
  * bm25/count.c - count(*) of the visible matches and their pages.
  */
-#include "core/host.h"
-
-#include <math.h>
 
 #include "bm25/eval.h"
 #include "bm25/eval_int.h"
-#include "bm25/kernels.h"
-#include "bm25/wbuf.h"
-#include "bm25/prefix.h"
 #include "bm25/segment.h"
 
 typedef struct CountCtx
@@ -206,7 +200,7 @@ count_visible(SiftPlan *plan, SiftVis *vis, SiftNextRangeFn next, void *next_arg
 	bool		delta;
 	uint32		sb;
 
-	SIFT_TEST_GATE(sift_test_count_gate, 1);
+	SIFT_TEST_GATE_INVAL(sift_test_count_gate, 1);
 	n = next ? -1 : count_by_df(plan);
 	delta = n >= 0;
 retry:

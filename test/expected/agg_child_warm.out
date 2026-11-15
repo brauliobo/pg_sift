@@ -1,7 +1,7 @@
--- A correlated child (a LEFT JOIN LATERAL .. LIMIT 1 into a mapping table) runs for each distinct input, a probe at a random place of the table's index; when the runs read a
--- good share of a relation from the OS and take long, the scan asks the OS for the rest of it in block order (combo.c child_warm). The test lowers that to a few runs
--- (sift.test_child_warm), so that the path runs on a small table in memory: the rows are those of the normal plan, before and after updates and deletes of the table and
--- of the facts.
+-- A correlated child (a LEFT JOIN LATERAL .. LIMIT 1 into a mapping table) runs for each distinct input, a probe at a random place of the table's index; once the probes read
+-- their heap pages from the OS, the scan asks for the pages of the entries it has found before it fetches them (combo/probe_bt.c dp_prefetch), and for no others: a few keys
+-- of a large table ask for a few pages, not for the table. The test makes the scan ask from the first probe (sift.test_child_warm), so that the path runs on a small table
+-- in memory: the rows are those of the normal plan, before and after updates and deletes of the table and of the facts.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -35,14 +35,15 @@ CREATE FUNCTION wq() RETURNS text LANGUAGE sql AS $$ SELECT $q$
  WHERE e.day >= '2025-03-01' AND e.day < '2025-11-01' AND e.dim_b_id <= 50
  GROUP BY 1, 2
 $q$ $$;
-CREATE FUNCTION prefetched() RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE l text; n bigint := 0;
+CREATE FUNCTION lookup_line(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text;
 BEGIN
-  FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || wq() LOOP
-    IF l LIKE '%child blocks prefetched%' THEN n := (regexp_match(l, '(\d+) child blocks prefetched'))[1]::bigint; END IF;
+  FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+    IF l LIKE '%Lookup:%' THEN RETURN l; END IF;
   END LOOP;
-  RETURN n;
+  RETURN '';
 END $$;
+CREATE FUNCTION prefetched() RETURNS bigint LANGUAGE sql AS $$ SELECT coalesce((regexp_match(lookup_line(wq()), '(\d+) child blocks prefetched'))[1]::bigint, 0) $$;
 SELECT * FROM check_query(wq());
  pushed | differences 
 --------+-------------
@@ -92,6 +93,27 @@ SELECT * FROM check_query(wq());
  t      |           0
 (1 row)
 
-DROP FUNCTION wq(), prefetched(), check_query(text);
+-- a few keys of a large lookup table: the blocks asked are those of the entries of the keys probed (one entry for each key of the unique index), not the table's
+INSERT INTO tag_map SELECT NULL, 'z', 'tag' || t, 'sub' || s, 'n', 'n' FROM generate_series(0, 2999) t, generate_series(0, 9) s;
+VACUUM (ANALYZE) tag_map;
+CREATE FUNCTION few_keys() RETURNS text LANGUAGE sql AS $$ SELECT replace(wq(), 'e.dim_b_id <= 50', 'e.dim_b_id <= 50 AND e.id BETWEEN 100 AND 130') $$;
+SET sift.agg_lookup_cache_kb = 0;
+SET sift.agg_lookup_shared_kb = 0;
+CREATE TEMP TABLE few AS SELECT lookup_line(few_keys()) AS l;
+SELECT (regexp_match(l, '(\d+) child blocks prefetched'))[1]::bigint BETWEEN 1 AND (regexp_match(l, '(\d+) child direct probes'))[1]::bigint AS asked_for_the_keys_probed,
+       (regexp_match(l, '(\d+) child blocks prefetched'))[1]::bigint * 4 < (pg_relation_size('tag_map') + pg_relation_size('tag_map_unique')) / 8192 AS not_the_table FROM few;
+ asked_for_the_keys_probed | not_the_table 
+---------------------------+---------------
+ t                         | t
+(1 row)
+
+SELECT * FROM check_query(few_keys());
+ pushed | differences 
+--------+-------------
+ t      |           0
+(1 row)
+
+DROP TABLE few;
+DROP FUNCTION few_keys(), wq(), prefetched(), lookup_line(text), check_query(text);
 DROP TABLE entries, tag_map, dim_b;
 DROP EXTENSION pg_sift;

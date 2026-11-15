@@ -39,6 +39,45 @@ typedef struct MapCol
 } MapCol;
 
 /* the rows of a joined table, hashed by the ids of their key values; the columns the expressions read are kept once per distinct value */
+/*
+ * The keys of a semi or anti join as a membership test of the scan (semi_lut_build): a byte for each value of [lo, lo + n), or, where the keys span more than
+ * sift.agg_semi_lut_size, an open-addressing set of them (PG_INT64_MIN marks a free slot; that key is has_min).
+ */
+typedef struct SemiSet
+{
+	uint8	   *tab;
+	int64		lo;
+	uint32		n;
+	int64	   *key;
+	uint32		mask;
+	bool		has_min;
+} SemiSet;
+
+static inline bool
+semi_set_ready(const SemiSet *s)
+{
+	return s->tab != NULL || s->key != NULL;
+}
+
+static inline Size
+semi_set_bytes(const SemiSet *s)
+{
+	return s->tab ? s->n : (Size) (s->mask + 1) * sizeof(int64);
+}
+
+static inline bool
+semi_set_has(const SemiSet *s, int64 k)
+{
+	if (s->tab)
+		return (uint64) k - (uint64) s->lo < s->n && s->tab[(uint64) k - (uint64) s->lo];
+	if (k == PG_INT64_MIN)
+		return s->has_min;
+	for (uint32 h = (uint32) (((uint64) k * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & s->mask; s->key[h] != PG_INT64_MIN; h = (h + 1) & s->mask)
+		if (s->key[h] == k)
+			return true;
+	return false;
+}
+
 typedef struct MapTab
 {
 	int			nkey;
@@ -59,10 +98,9 @@ typedef struct MapTab
 	bool		filtered;		/* only rows that hold the ON clause's own conditions were loaded (map_load) */
 	bool		keep;			/* the side is preserved: the rows no tuple matched are output rows of NULL leaves; a row with a NULL key is in no chain */
 	bool	   *hit;			/* keep: the rows some tuple matched */
-	uint8	   *slut;			/* the byte table of semi_lut_build over [slo, slo + snlut) of the keys, kept with the rows for the next statement (slut_kind: the join kind it answers) */
-	int32		slo;
-	uint32		snlut;
+	SemiSet		sset;			/* the membership test of semi_lut_build over the keys, kept with the rows for the next statement (slut_kind: the join kind it answers) */
 	int			slut_kind;
+	bool		slut_wide;		/* ... and whether the leaf it was made for is an int64 one: an int32 leaf drops the keys outside its range */
 	int64	   *fvals;			/* the keys of the rows that join_filter_pred makes a filter of (fn of them within [flo, fhi]; fi32: those outside int32 were left out), kept for the next statement */
 	int			fn;
 	int64		flo;
@@ -70,7 +108,21 @@ typedef struct MapTab
 	bool		fi32;
 	ExprState  *kx[SIFT_AGG_MAX_JKEYS];	/* while the rows are loaded: the key expressions of the table's columns (SiftAggJoin.tkey), evaluated in kcx for each row */
 	ExprContext *kcx;
+	ExprState  *cx[SIFT_AGG_MAX_JCOLS];	/* the same for the columns that are expressions (SiftAggJoin.colexpr): while the rows are loaded, their values are in xv and xn, evaluated or, with xfed, put there by a load from the leaves of an index */
+	Datum		xv[SIFT_AGG_MAX_JCOLS];
+	bool		xn[SIFT_AGG_MAX_JCOLS];
+	bool		xfed;
+	uint16	   *dcls;			/* a dense table (map_load_dense): the class of each key in [0, dn), 0 none; the rows are one for each class, the row of class c is c - 1 */
+	uint32		dn;
+	bool		proof;			/* no table: the flag of a connected index answers the join (agg/found.c), nothing reads the rows */
 } MapTab;
+
+/* the class of a key of a dense table, 0: no row has it */
+static inline uint32
+map_dense_class(const MapTab *m, int64 key)
+{
+	return key >= 0 && key < (int64) m->dn ? m->dcls[key] : 0;
+}
 
 /* does a NULL key of the row equal nothing, so that it is in no chain? */
 static inline bool
@@ -118,6 +170,8 @@ typedef struct MapShared
 	bool		ktext[SIFT_AGG_MAX_JKEYS];
 	bool		knull[SIFT_AGG_MAX_JKEYS];
 	bool		filtered;
+	uint32		dn;				/* a dense table: the keys it spans, and its classes (Size dcls) */
+	Size		dcls;
 	bool		keep;			/* the side is preserved: each participant keeps its own hit[] */
 	bool		lazy;
 	Size		rkey;			/* a table that is only its keys (MapTab.rkey): the one array, and 0 in the others */
@@ -149,6 +203,21 @@ typedef struct MapShared
 	Size		size;
 } MapShared;
 
+#define DENSE_MAX_CLASSES	4096	/* the tuples of column values a dense table (map_load_dense) tells apart */
+/* may a table whose largest key is span - 1 and that has `rows` rows be kept as an array of classes over its keys (map_load_dense, and the planner that prices it as one)? */
+static inline bool
+dense_span_ok(double span, double rows, double limit)
+{
+	return span <= limit && span <= 8.0 * rows + 65536;
+}
+
+typedef enum LookPool
+{
+	LOOK_ROWS,
+	LOOK_DIM,
+	LOOK_POOLS
+} LookPool;
+
 /* the columns of a joined table that a MapTab holds, by column number and type */
 typedef struct LookCols
 {
@@ -163,6 +232,7 @@ typedef struct LookFinger
 	RelFileLocator rel;
 	BlockNumber nblocks;
 	XLogRecPtr *lsn;
+	bool		stamp;			/* not pages: the stamp of a derivation the journal of a parent index vouches for (lookvalid.c), lsn = {lineage, horizon} */
 } LookFinger;
 
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
@@ -175,7 +245,11 @@ int map_find(const MapTab *m, const char **ptr, const uint32 *len, const int64 *
 void map_bind(AggExec *ex, int param, const MapTab *m, uint32 row, int c);
 void map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own);
 bool map_load_cols_possible(Relation rel, const SiftAggJoin *j, int *nnumeric);
+char *map_cols_why(Relation rel, const SiftAggJoin *j);
 bool map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own, Relation rel);
+bool map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *cb, Relation rel);
+bool map_load_dense_possible(Relation rel, const SiftAggJoin *j, double *bound);
+bool sift_agg_dense_join(const SiftAggSpec *s, int ci, const SiftSrcLayout *lay);
 void map_loaded(AggExec *ex, int nrows, instr_time t0);
 MapTab *map_load(AggExec *ex, int ci);
 MapTab *map_load_first(AggExec *ex, int ci);
@@ -184,6 +258,7 @@ int map_first_row(AggExec *ex, int ci, EState *estate);
 bool map_unique(const MapTab *m);
 void map_ensure(MapTab *m);
 bool semi_lut_possible(const SiftAggSpec *s, int ci, int nbase);
+bool semi_lut_leaf(const SiftSrcLayout *lay, int leaf);
 bool lookup_keys_only(const SiftAggSpec *s, const SiftSrcLayout *lay, int ci, int nbase);
 bool slot_reads_leaf(const SiftAggCombo *cb, int sl);
 
@@ -193,20 +268,34 @@ void map_share_write(const MapTab *m, const SiftAggJoin *j, const MapShared *l, 
 MapTab *map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cxt);
 
 /* lookcache.c */
-LookFinger *lookcache_finger(Relation rel);
+LookFinger *look_finger(Relation rel, Size budget);
+bool look_finger_same(const LookFinger *a, const LookFinger *b);
+Size lookcache_budget(void);
 bool lookcache_refused(const char *key, Relation rel);
 bool lookcache_known(const char *key);
 MapTab *lookcache_find(const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt);
-bool lookcache_keep(const char *key, const LookFinger *before, const LookFinger *after, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt);
+bool lookcache_keep(const char *key, const LookFinger *before, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt);
 bool cols_cover(const LookCols *have, const LookCols *need);
 
-/* lookshm.c */
-bool lookshm_known(const char *key);
-MapTab *lookshm_find(const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt);
-bool lookshm_keep(const char *key, const LookFinger *f, MapTab *m, const LookCols *cols, bool *large);
-bool lookshm_claim(const char *key, MemoryContext mcxt);
-void lookshm_unclaim(const char *key);
-Size lookshm_bytes(void);
+/* lookvalid.c: what a kept copy of a table stands for, and lookdim.c: the dimension map */
+typedef struct LookValid LookValid;
+LookValid *lookvalid_take(Relation rel, Relation index, AttrNumber keyatt, Snapshot snap, Size budget);
+bool lookvalid_holds(Relation rel, Relation index, AttrNumber keyatt, Snapshot snap, const LookValid *st);
+const LookFinger *lookvalid_finger(const LookValid *st);
+bool lookvalid_stamped(const LookValid *st);
+bool lookvalid_journal(Relation index, AttrNumber keyatt);
+bool lookvalid_readable(Relation rel, Relation index, Snapshot snap, const LookFinger *stored);
+Relation map_dense_index(Relation rel, const SiftAggJoin *j, double *bound, Relation *ix2);
+MapTab *lookdim_load(AggExec *ex, int ci, Relation rel, MemoryContext cxt);
+
+/* lookshm.c: the rows of the joined tables, and the dimension maps (lookdim.c), each with a directory and a budget of its own */
+bool lookshm_known(LookPool pool, const char *key);
+MapTab *lookshm_find(LookPool pool, const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt);
+bool lookshm_keep(LookPool pool, const char *key, const LookFinger *f, MapTab *m, const LookCols *cols, bool *large);
+bool lookshm_stored_stamp(LookPool pool, const char *key, LookFinger *out);
+bool lookshm_claim(LookPool pool, const char *key, MemoryContext mcxt);
+void lookshm_unclaim(LookPool pool, const char *key);
+Size lookshm_bytes(LookPool pool);
 
 #pragma GCC visibility pop
 

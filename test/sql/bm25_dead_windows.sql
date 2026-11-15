@@ -1,0 +1,33 @@
+-- The table of dead postings of a segment (the dead postings of each term with a slot) is counted again by VACUUM once 5% of the docs were cleared since it was
+-- counted. The dead rows of the dirty superblocks (5 to 20 kB each) are held a window of them at a time, within maintenance_work_mem: each window reads the
+-- dictionary again and looks for the postings of every term from its first superblock. At the smallest budget (64 kB, half of it for the rows) the superblocks of
+-- this table are counted in several windows; sift.verify, which counts again in one window at the default budget, finds the stored table equal to the postings.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+
+CREATE TABLE dw (id int, v text);
+INSERT INTO dw SELECT g, 'common w' || (g % 1000) || ' x' || (g % 37) FROM generate_series(1, 400000) g;
+CREATE INDEX dw_v ON dw USING sift (v);
+
+-- a third of the docs, in every superblock
+DELETE FROM dw WHERE id % 3 = 0;
+SET maintenance_work_mem = '64kB';
+SET sift.test_dead_windows = 0;
+VACUUM dw;
+SELECT current_setting('sift.test_dead_windows')::int > 2 AS counted_in_several_windows;
+SELECT dead_docs > 0 AS has_dead, dirty FROM sift.segments('dw_v') WHERE kind = 'immutable';
+-- the same table counted again, windowed and in one window
+SELECT sift.verify('dw_v', true) IS NOT NULL AS verified_in_windows;
+RESET maintenance_work_mem;
+SET sift.test_dead_windows = 0;
+SELECT sift.verify('dw_v', true) IS NOT NULL AS verified_in_one_window;
+SELECT current_setting('sift.test_dead_windows')::int AS windows_at_the_default_budget;
+
+-- the scores follow the table: a search by a term of every doc, the live ones only
+SELECT count(*) AS live_hits FROM dw WHERE v @@> 'common';
+SELECT count(*) AS live_rows FROM dw;
+
+DROP TABLE dw;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

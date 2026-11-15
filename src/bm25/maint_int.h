@@ -1,5 +1,5 @@
 /*
- * bm25/maint_int.h - shared between the maintenance files (maint.c, step.c, space.c).
+ * bm25/maint_int.h - shared between the maintenance files (maint.c, maint_cut.c, step.c, space.c).
  */
 #ifndef SIFT_MAINT_INT_H
 #define SIFT_MAINT_INT_H
@@ -23,6 +23,10 @@ extern void unclaim(Relation index, uint64 gen);
 extern SiftStepResult run_step(Relation index, bool propagate, StepFn fn, const void *arg);
 extern int64 backoff_ms(const SiftMetaPageData *meta);
 extern bool in_backoff(const SiftMetaPageData *meta);
+extern int promote_locked(const SiftMaintOps *ops, Relation index, bool seal_active, bool propagate);
+extern uint64 online_shrink(const SiftMaintOps *ops, Relation index, int elevel);
+extern void online_fallback(const SiftMaintOps *ops, Relation index, int elevel);
+extern void cut_free_end(const SiftMaintOps *ops, Relation index, bool released);
 extern SiftStepResult promote_next(Relation index, bool propagate, uint64 *busy);
 extern SiftStepResult merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy);
 

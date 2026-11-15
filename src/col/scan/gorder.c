@@ -4,10 +4,8 @@
  * the reads of its strings, ranges and heads
  */
 #include "postgres.h"
-#include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
 #include "col/point.h"
-#include "col/wbuf.h"
 #include "core/cmp.h"
 #include "col/scan_int.h"
 
@@ -216,16 +214,16 @@ gord_mem_text(SiftColSource *src, int leaf, uint32 collid, int v, MemoryContext 
 	ent = MemoryContextAlloc(mc, (n + 1) * sizeof(GOrdText));
 	pv = palloc((n + 1) * sizeof(GOrdPair));
 	pn = palloc((n + 1) * sizeof(uint64));
-	for (int i = 0; i < src->nmem; i++)
+	for (int i = 0; i < src->nmem + src->ngb; i++)
 	{
-		const SiftColBatch *b = src->mem[i].b;
+		const SiftColBatch *b = gord_mem_batch(src, i);
 		const SiftCVals *v = &b->col[leaf];
 
 		for (uint32 r = 0; r < b->nrows; r++)
 		{
-			if ((v->ovf && (v->ovf[r / 64] >> (r % 64) & 1)) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
+			if (sift_col_bit_test(v->ovf, r) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
 				return false;
-			if (v->nulls && (v->nulls[r / 64] >> (r % 64) & 1))
+			if (sift_col_bit_test(v->nulls, r))
 				pn[nn++] = (uint64) b->keys[r];
 			else
 			{
@@ -356,12 +354,14 @@ gorder_all(SiftColSource *src, int col, bool grouped, int npin, const int *pinle
 	{
 		uint32		entries,
 					values;
-		int			slot = sift_cseg_gorder_slot(src->seg[i].seg, col, grouped),
-					gc;
-
 		uint32		head,
 					vtotal;
+		int			slot,
+					gc;
 
+		if (src->seg[i].gfree)
+			continue;
+		slot = sift_cseg_gorder_slot(src->seg[i].seg, col, grouped);
 		if (slot < 0 || !(sift_cseg_gorder(src->seg[i].seg, slot, &entries, &values) || (!grouped && sift_cseg_gorder_ends(src->seg[i].seg, slot, &entries, &values, &head, &vtotal))) ||
 			sift_cseg_gorder_collation(src->seg[i].seg, slot) != collid)
 			return false;
@@ -429,12 +429,22 @@ int
 sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid, const SiftCGOrdWant *want)
 {
 	int			gleaf = -1,
-				nv = 0;
+				nv = 0,
+				nfree = 0;
 	int64		vals[SIFT_GORD_PIN_MAX];
 
 	src->galeaf1 = 0;
 	if ((src->flags & (COLO_TABLE | SIFT_COLO_NOWBUF)) || src->schema->cols[col].kind != SIFT_COLK_SCALAR)
 		return -1;
+	for (int i = 0; i < src->nseg; i++)
+		nfree += src->seg[i].gfree = !sift_cseg_gorder_has(src->seg[i].seg, col);
+	/* the segments that lack the order are the lean overlays of one that has it: when none has it the leaf has no order of its own (gorder_by_group may read another's) */
+	if (nfree == src->nseg)
+	{
+		nfree = 0;
+		for (int i = 0; i < src->nseg; i++)
+			src->seg[i].gfree = false;
+	}
 	if (!(npin > 0 && gorder_all(src, col, true, npin, pinleaf, pinval, &gleaf, vals, &nv, collid)) && !gorder_all(src, col, false, npin, pinleaf, pinval, &gleaf, vals, &nv, collid))
 	{
 		int			a = npin == 0 && collid == 0 && want != NULL && want->bygroup && !(want->has_lo || want->has_hi) ? gorder_by_group(src, col) : -1;
@@ -451,15 +461,19 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int 
 	*grouped = gleaf;
 	for (int i = 0; i < src->nseg; i++)
 	{
-		if (!gorder_view(&src->seg[i], gorder_slot(src, i, col), want))
+		if (!src->seg[i].gfree && !gorder_view(&src->seg[i], gorder_slot(src, i, col), want))
 			return -1;
 	}
 	if (!src->mem_loaded)
 		scan_load_wbuf(src);
-	src->gper = src->nseg + (src->nmem > 0);
-	if (src->nmem > 0)
+	if (nfree == 0)
+		src->ngb = src->gdrows = 0;
+	else if (!gord_mem_load(src, col, gleaf, rows, collid))
+		return -1;
+	src->gper = src->nseg + (gord_mem_rows(src) > 0 || src->nmem > 0);
+	if (gord_mem_rows(src) > 0 || src->nmem > 0)
 		for (int v = 0; v < src->gpin_n; v++)
-			if (!gord_mem(src, col, Max(SIFT_CGORD_MEM_ROWS, 8 * (uint64) rows), gleaf, src->gpin_vals[v], v, collid))
+			if (!gord_mem(src, col, rows, gleaf, src->gpin_vals[v], v, collid))
 				return -1;
 	return src->gper * src->gpin_n;
 }
@@ -537,6 +551,11 @@ sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32
 	int			v,
 				j = gorder_src(src, i, &v);
 
+	if (j < src->nseg && src->seg[j].gfree)
+	{
+		*entries = *values = 0;
+		return true;
+	}
 	if (j < src->nseg && src->seg[j].gends)
 	{
 		uint32		head,
@@ -662,6 +681,8 @@ sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, str
 	buf->compact = false;
 	buf->kfrom = 0;
 	buf->kn = buf->cm;
+	buf->afrom = 0;
+	buf->an = buf->cm;
 	memcpy(buf->key, g->key + buf->at, buf->cm * sizeof(int64));
 	for (uint32 k = 0; k < buf->cm; k++)
 		buf->addr[k] = g->tid[buf->at + k];
@@ -791,12 +812,14 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 
 		x->state = 2;
 		if (!keyed)
-			col_sb_mask(src, seg, sb, x->av);
+			src->visibility.sb_mask(src->visibility.arg, sb, x->av);
 		if (segments_current(src))
 		{
 			SIFT_COL_JITTER();
 			if (!keyed)
 				ok = sift_cseg_unit_dead(seg, u, gexact_cx(src), &x->dead, &x->ndead, &room);
+			else if (!sift_cseg_dead_fits(seg))
+				ok = false;
 			else
 			{
 				uint64	   *dirty = palloc(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
@@ -840,6 +863,9 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 	{
 		memcpy(av, x->av, sizeof(av));
 		pg = sift_key_block(tid) - sb * SIFT_SB_PAGES;
+		/* the map holds x->av; a page it does not hold is asked of the log alone: the entries of a walk are spread over the superblocks, whose masks would read the whole log */
+		if (!(av[pg / 64] >> (pg % 64) & 1) && col_hf_page_clear(src, seg, sift_key_block(tid)))
+			return 1;
 	}
 	return av[pg / 64] >> (pg % 64) & 1 ? 1 : 0;
 }

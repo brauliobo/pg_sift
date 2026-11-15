@@ -21,6 +21,7 @@
 #include "tcop/tcopprot.h"
 
 #include "agg/agg.h"
+#include "bm25/planner.h"
 #include "core/sql.h"
 #include "agg/cte/int.h"
 #include "col/am.h"
@@ -34,6 +35,9 @@
 
 planner_hook_type prev_planner_hook;
 static ExecutorStart_hook_type prev_executor_start;
+#ifdef SIFT_TESTING
+static ExecutorEnd_hook_type prev_executor_end;
+#endif
 
 /* sift_planner has planned a statement of this backend */
 static bool hook_ran;
@@ -242,15 +246,9 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 
 static bool reads_column_index(Query *q);
 
-static bool
-sublink_reads_index(Node *n, void *context)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(sublink_reads_index, void *, context,
 	if (IsA(n, Query))
-		return reads_column_index((Query *) n);
-	return expression_tree_walker(n, sublink_reads_index, context);
-}
+		return reads_column_index((Query *) n);)
 
 /* does the query, or one it holds (a sub-select, a CTE, a sublink), read a table that has a column index? */
 static bool
@@ -343,12 +341,31 @@ remember_form(CteVerdict *fv, bool shared_cte, bool won, PlannedStmt *stmt)
 	verdict_remember(fv, won, 0, 0, cte_size(stmt), cte_size(stmt));
 }
 
+/* is the query one that is planned as it is and pulled up (plan_flat_pair)? */
+static bool
+flat_pair_wanted(Query *parse)
+{
+	return sift_enable_agg && parse->commandType == CMD_SELECT && (query_nests(parse) || sift_agg_probe_joins(parse, false) || sift_agg_eager_candidate(parse) || sift_agg_distinct_split_candidate(parse) || sift_agg_partial_candidate(parse) || sift_agg_pct_array_candidate(parse) || sift_agg_having_candidate(parse) || sift_agg_invert_parents(parse, false)) && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse);
+}
+
+/* does the plan, its cost scaled by margin and charged extra, beat the other as PostgreSQL ranks plans: fewer disabled nodes first, then the cost (the same on every major) */
+static bool
+plan_beats(const Plan *plan, double margin, double extra, const Plan *other)
+{
+	double		cost,
+				other_cost;
+	int			nodes = sift_plan_disabled(plan, &cost),
+				other_nodes = sift_plan_disabled(other, &other_cost);
+
+	return nodes != other_nodes ? nodes < other_nodes : cost * margin + extra < other_cost;
+}
+
 /*
  * The query planned as it is, and with its lateral sub-selects pulled up when that is possible (agg/flat/): the flat plan wins if it
  * runs in the scan and costs less. Both are plans of the same query.
  */
 static PlannedStmt *
-plan_flat(SIFT_PLANNER_PARAMS)
+plan_flat_pair(SIFT_PLANNER_PARAMS)
 {
 	Query	   *flat = NULL;
 	PlannedStmt *plain,
@@ -365,7 +382,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 				shared_cte = false;
 
 	first_plan.set = planning_second = false;
-	if (sift_enable_agg && parse->commandType == CMD_SELECT && (query_nests(parse) || sift_agg_probe_joins(parse, false) || sift_agg_eager_candidate(parse)) && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
+	if (flat_pair_wanted(parse))
 	{
 		/* the two forms are both planned where the flat plan is no better in every scan (a statement with no aggregate to push down plans twice for a plan that is the first one's): their choice is kept as the one between the CTE and its inline plan is (verdict.c), and a hit plans the form that won */
 		shared_cte = has_shared_cte(parse);
@@ -448,7 +465,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	plain = plan_grouped(SIFT_PLANNER_ARGS(parse), &plain_cx, quiet);
 	planning_second = false;
 	/* keys looked up before the groups are made win by what they leave unread, in the scan or out of it: the margin is the one the estimate of the keys' groups is trusted for */
-	if (flatplan != NULL && sift_agg_flat_any && flatplan->planTree->total_cost * FLAT_KEYS_MARGIN < plain->planTree->total_cost)
+	if (flatplan != NULL && sift_agg_flat_any && plan_beats(flatplan->planTree, sift_agg_flat_margin > 0 ? sift_agg_flat_margin : FLAT_KEYS_MARGIN, 0, plain->planTree))
 	{
 		discard_plan(plain_cx);
 		if (quiet)
@@ -474,7 +491,8 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	 */
 	if ((uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) &&
 		((flat_inlined && !uses_sift_agg(plain->planTree) && !any_sift_agg(plain->subplans)) ||
-		 flatplan->planTree->total_cost * (sift_agg_probe_applied && !sift_agg_probe_mixed ? FLAT_PROBE_MARGIN : 1.0) + function_rescans(flatplan->planTree) * FLAT_RESCAN_OPS * cpu_operator_cost < plain->planTree->total_cost))
+		 plan_beats(flatplan->planTree, sift_agg_probe_applied && !sift_agg_probe_mixed ? FLAT_PROBE_MARGIN : 1.0,
+					function_rescans(flatplan->planTree) * FLAT_RESCAN_OPS * cpu_operator_cost, plain->planTree)))
 	{
 		discard_plan(plain_cx);
 		if (quiet)
@@ -490,6 +508,33 @@ plan_flat(SIFT_PLANNER_PARAMS)
 }
 
 /*
+ * The plan of the query with its correlated min() and max() sub-selects as first rows (agg/flat/minmax.c) is a third plan of it: an ordinary one, priced as any, kept
+ * where it runs in the scan and costs less than the one of the pair. The loser's context is deleted with the statement's.
+ */
+static PlannedStmt *
+plan_flat(SIFT_PLANNER_PARAMS)
+{
+	Query	   *first = NULL;
+	PlannedStmt *stmt,
+			   *top;
+	MemoryContext cx;
+
+	if (sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse) && sift_agg_minmax_sublinks(parse, false))
+	{
+		first = copyObject(parse);
+		sift_agg_minmax_sublinks(first, true);
+	}
+	stmt = plan_flat_pair(SIFT_PLANNER_ARGS(parse));
+	if (first == NULL)
+		return stmt;
+	top = plan_grouped(SIFT_PLANNER_ARGS(first), &cx, true);
+	if ((uses_sift_agg(top->planTree) || any_sift_agg(top->subplans)) && plan_beats(top->planTree, 1.0, 0, stmt->planTree))
+		return top;
+	discard_plan(cx);
+	return stmt;
+}
+
+/*
  * The cost of a SiftAgg plan turns on JIT (jit_above_cost) for work that does not use it: the node reads columns, and the nodes
  * above it handle its groups. Compiling their projections takes 3 to 5 ms of a 15 to 40 ms query.
  */
@@ -501,7 +546,9 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	bool		reads,
 				nests,
 				swap,
+				casef,
 				split_exists;
+	Query	   *written = NULL;
 	PlannedStmt *stmt;
 
 	hook_ran = true;
@@ -510,20 +557,27 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	/*
 	 * The planner changes the tree it is given, with nodes and strings of the context it plans in, which is deleted when its plan loses.
 	 * The statement that called us keeps its tree (CREATE TABLE AS plans one and copies it for the event triggers afterwards). A statement that
-	 * reads no table with a column index and has no shared CTE is planned once, in place, as without the extension: no plan loses, no copy.
+	 * reads no table with a column index and has no shared CTE is planned once, in place, as without the extension: no plan loses, no copy. A statement
+ * planned as it is and pulled up has a plan that loses, and the tree it was planned in is left with nodes of the context that is deleted.
 	 */
 	reads = sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse);
 	split_exists = sift_enable_agg && parse->commandType == CMD_SELECT && parse->hasSubLinks && parse->rowMarks == NIL && sift_agg_exists_or_candidate(parse);
 	nests = reads && (query_nests(parse) || sift_agg_probe_joins(parse, false));
 	swap = reads && sift_json_build_object_calls(parse);
-	if (nests || swap || split_exists || (sift_enable_agg && has_shared_cte(parse)))
+	casef = reads && sift_agg_case_filter_calls(parse);
+	if (nests || swap || casef || split_exists || (sift_enable_agg && has_shared_cte(parse)) || flat_pair_wanted(parse))
 		parse = copyObject(parse);
+	/* the statement as written is planned when the rewritten one does not run in the scan: its plan is the one PostgreSQL makes of what the user wrote */
+	if (casef)
+		written = copyObject(parse);
 	if (split_exists)
 		sift_agg_split_exists_or(parse);
 	if (reads)
 	{
 		if (swap)
 			sift_json_build_object_swap(parse);
+		if (casef)
+			sift_agg_case_filter(parse);
 		if (nests && parse->rowMarks == NIL)
 		{
 			sift_agg_preinline(parse);
@@ -534,6 +588,8 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	PG_TRY();
 	{
 		stmt = plan_flat(SIFT_PLANNER_ARGS(parse));
+		if (written != NULL && !uses_sift_agg(stmt->planTree) && !any_sift_agg(stmt->subplans))
+			stmt = plan_flat(SIFT_PLANNER_ARGS(written));
 	}
 	PG_FINALLY();
 	{
@@ -559,6 +615,23 @@ reads_indexed_plan(PlannedStmt *ps)
 		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid))
 			return true;
 	return false;
+}
+
+/* does the plan run the aggregate scan? A query the scan takes whole (a lateral aggregate under an outer one) leaves no table in the range table: the scan holds it */
+static bool
+runs_agg_scan(Plan *p)
+{
+	if (p == NULL)
+		return false;
+	if (IsA(p, CustomScan) && ((CustomScan *) p)->methods == &sift_agg_plan_methods)
+		return true;
+	if (IsA(p, SubqueryScan) && runs_agg_scan(((SubqueryScan *) p)->subplan))
+		return true;
+	if (IsA(p, Append))
+		foreach_ptr(Plan, child, ((Append *) p)->appendplans)
+			if (runs_agg_scan(child))
+				return true;
+	return runs_agg_scan(p->lefttree) || runs_agg_scan(p->righttree);
 }
 
 /*
@@ -638,7 +711,7 @@ replan(QueryDesc *qd)
 		return NULL;
 	fresh = linitial_node(PlannedStmt, plans);
 	/* an EXPLAIN's plan has the location of its query inside the string, which another statement of the string may share: it must read what that one reads */
-	return reads_indexed_plan(fresh) ? fresh : NULL;
+	return reads_indexed_plan(fresh) || runs_agg_scan(fresh->planTree) ? fresh : NULL;
 }
 
 static void
@@ -647,12 +720,15 @@ sift_executor_start(QueryDesc *queryDesc, int eflags)
 	if (!late_checked)
 	{
 		late_checked = true;
-		if (!hook_ran)
+		/* a plan made again from the text has no cursor options: a scrollable cursor (backward) or a plan that is marked and restored needs the Materialize the planner added for it */
+		if (!hook_ran && !(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)))
 		{
 			PlannedStmt *fresh = replan(queryDesc);
 
 			if (fresh != NULL)
 				queryDesc->plannedstmt = fresh;
+			else
+				sift_finish_plan(queryDesc->plannedstmt, false);
 			/* a prepared statement keeps no plan made without the hook */
 			ResetPlanCache();
 		}
@@ -668,6 +744,52 @@ sift_executor_start(QueryDesc *queryDesc, int eflags)
 	}
 }
 
+#ifdef SIFT_TESTING
+/*
+ * ExecutorEnd resets the executor state's slot table after the nodes' contexts are deleted: every slot of it must live in the
+ * query context, the one that outlives them (a slot in a node's context is read freed, which a release build does silently:
+ * the cold-backend crash of a table slot made in the wrong context).
+ */
+static bool
+slots_in_query_cxt(EState *estate)
+{
+	foreach_ptr(TupleTableSlot, slot, estate->es_tupleTable)
+		if (GetMemoryChunkContext(slot) != estate->es_query_cxt)
+			return false;
+	return true;
+}
+
+static void
+sift_executor_end(QueryDesc *queryDesc)
+{
+	SIFT_INVARIANT(queryDesc->estate == NULL || slots_in_query_cxt(queryDesc->estate), "a slot of the executor state's table is not in the query memory context");
+	if (prev_executor_end)
+		prev_executor_end(queryDesc);
+	else
+		standard_ExecutorEnd(queryDesc);
+}
+
+PG_FUNCTION_INFO_V1(sift_test_slot_owner);
+
+/* Whether the check above accepts an executor state whose table holds a slot made in the query context (wrong = false) or in a context of a node (wrong = true) */
+Datum
+sift_test_slot_owner(PG_FUNCTION_ARGS)
+{
+	EState	   *estate = CreateExecutorState();
+	MemoryContext node = AllocSetContextCreate(estate->es_query_cxt, "slot owner test", ALLOCSET_SMALL_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(PG_GETARG_BOOL(0) ? node : estate->es_query_cxt);
+	TupleTableSlot *slot = MakeSingleTupleTableSlot(NULL, &TTSOpsVirtual);
+	bool		ok;
+
+	MemoryContextSwitchTo(estate->es_query_cxt);
+	estate->es_tupleTable = lappend(estate->es_tupleTable, slot);
+	MemoryContextSwitchTo(old);
+	ok = slots_in_query_cxt(estate);
+	FreeExecutorState(estate);
+	PG_RETURN_BOOL(ok);
+}
+#endif
+
 void
 sift_aggcte_init(void)
 {
@@ -675,5 +797,9 @@ sift_aggcte_init(void)
 	planner_hook = sift_planner;
 	prev_executor_start = ExecutorStart_hook;
 	ExecutorStart_hook = sift_executor_start;
+#ifdef SIFT_TESTING
+	prev_executor_end = ExecutorEnd_hook;
+	ExecutorEnd_hook = sift_executor_end;
+#endif
 	sift_key_first_init();
 }

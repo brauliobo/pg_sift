@@ -3,7 +3,7 @@
 # (test/sql/reference.sql) and seq-scan sift.match; harness in test/diff/diff.sql.
 #
 #   scripts/difftest.sh [--seed N] [--docs N] [--vocab N] [--queries N] [--rounds N]
-#                       [--k N] [--engine sift|mutant:NAME|mutants] [--mutants "NAME..."] [--mutant-slice K/N] [--minimize N] [--min-trials N]
+#                       [--k N] [--engine sift|mutant:NAME|mutants] [--mutants "NAME..."] [--mutant-slice K/N] [--query-slice K/N] [--minimize N] [--min-trials N]
 #                       [--jobs N]
 #   scripts/difftest.sh --repro FILE
 #   INDEX_OPTS="WITH (positions = off)" scripts/difftest.sh ...   build the index with options
@@ -34,11 +34,14 @@ while (( $# )); do
 	case $1 in
 		--seed) SEED=$2 ;; --docs) DOCS=$2 ;; --vocab) VOCAB=$2 ;; --queries) QUERIES=$2 ;;
 		--rounds) ROUNDS=$2 ;; --k) K=$2 ;; --engine) ENGINE=$2 ;; --repro) REPRO=$2 ;;
-		--min-trials) MIN_TRIALS=$2 ;; --minimize) MAXMIN=$2 ;; --mutants) MUTANTS=$2 ;; --mutant-slice) MSLICE=$2 ;; --jobs) JOBS=$2 ;;
+		--min-trials) MIN_TRIALS=$2 ;; --minimize) MAXMIN=$2 ;; --mutants) MUTANTS=$2 ;; --mutant-slice) MSLICE=$2 ;; --query-slice) QSLICE=$2 ;; --jobs) JOBS=$2 ;;
 		*) sed -n '2,21p' "$0"; exit 1 ;;
 	esac
 	shift 2
 done
+# --query-slice K/N: the K-th of N disjoint slices of the queries of each round (the corpus and its changes are those of the whole run, the checks of the round itself are the first slice's), so that
+# N jobs split a run that is too long for one
+QS=${QSLICE:-1/1}
 # --mutant-slice K/N: every N-th mutant from the K-th, so that N jobs split the list (the deep tier runs two)
 if [[ -n ${MSLICE:-} ]]; then
 	i=0 sel=
@@ -62,22 +65,22 @@ fresh_db() {
 # from the query's), so the run does not depend on the number of workers.
 check_worker() {
 	sql -v round="$1" -v clean="$2" -v idx="$3" -v engine="$4" -v worker="$5" -v workers="$6" -v k="$K" \
-		-v seed="$(fseed $((SEED * 1000 + $1)))" -v nq="$QUERIES" -v rseed="$((SEED * 1000 + $1))" <<-'SQL'
+		-v seed="$(fseed $((SEED * 1000 + $1)))" -v nq="$QUERIES" -v rseed="$((SEED * 1000 + $1))" -v slices="${QS#*/}" -v slice0="$(( ${QS%/*} - 1 ))" <<-'SQL'
 		SELECT set_config('sift_diff.idx', :'idx', false), set_config('sift_diff.engine', :'engine', false) \gset
-		SELECT :worker = 0 AS first \gset
+		SELECT :worker = 0 AND :slice0 = 0 AS first \gset
 		SET statement_timeout = '300s';
 		SELECT sift_ref.load('diff_docs', 'body') \gset
 		CREATE TEMP TABLE q AS SELECT row_number() OVER () AS qno, q FROM sift_diff.gen_queries(:seed, :nq) q;
 		\set ON_ERROR_STOP 0
 		SELECT format('SELECT setseed(hashint8(%s::bigint * 1000003 + %s)::float8 / 2147483648.0);
 			INSERT INTO diff_results SELECT %L, %s, %s, %L, c.* FROM sift_diff.check(%L, %s, %L) c',
-			:rseed, qno, :'engine', :round, qno, q, q, :k, :clean) FROM q WHERE qno % :workers = :worker ORDER BY qno \gexec
+			:rseed, qno, :'engine', :round, qno, q, q, :k, :clean) FROM q WHERE qno % (:workers * :slices) = :worker + :workers * :slice0 ORDER BY qno \gexec
 		\if :first
 			INSERT INTO diff_results SELECT :'engine', :round, 0, NULL, c.*
 			FROM sift_diff.check_round(:clean, array(SELECT q FROM q ORDER BY qno)) c;
 		\endif
 		INSERT INTO diff_results SELECT :'engine', :round, qno, q, 'harness', 'fail', 'no result: crash, timeout or harness error'
-		FROM q WHERE qno % :workers = :worker AND qno NOT IN (SELECT qno FROM diff_results WHERE engine = :'engine' AND round = :round);
+		FROM q WHERE qno % (:workers * :slices) = :worker + :workers * :slice0 AND qno NOT IN (SELECT qno FROM diff_results WHERE engine = :'engine' AND round = :round);
 	SQL
 }
 

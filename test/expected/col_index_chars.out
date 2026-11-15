@@ -13,8 +13,8 @@ INSERT INTO ch SELECT i, i % 4,
 	'v' || i % 3
 FROM generate_series(1, 3000) i;
 CREATE INDEX ch_col ON ch USING sift_col (id, g, c5, cu, nm, t) WITH (write_buffer_limit = 1024);
-NOTICE:  sift_col index "ch_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = c5, t
+NOTICE:  sift_col index "ch_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = c5, t
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ch_col');
 -- the values of every leaf against the heap, as the bytes the heap holds (char(n) keeps its blank padding, bpchar its blanks as given)
 SELECT count(*) AS c5_differing FROM (SELECT tid, val FROM sift._test_col_read('ch_col', 2, '') EXCEPT SELECT ctid, convert_from(bpcharsend(c5), 'UTF8') FROM ch) z;

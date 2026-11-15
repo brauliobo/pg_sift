@@ -7,12 +7,16 @@
 
 #include <sys/statvfs.h>
 #include "common/hashfn.h"
+#include "funcapi.h"
 #include "lib/ilist.h"
 #include "storage/bufmgr.h"
+#include "storage/dsm_registry.h"
 #include "storage/dsm_impl.h"
 #include "storage/ipc.h"
 #include "storage/spin.h"
+#include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/tuplestore.h"
 #include "agg/stats.h"
 #include "col/dictshm_int.h"
 #include "col/dictshm.h"
@@ -155,6 +159,55 @@ sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
 	if (got == NULL)
 		PG_RETURN_NULL();
 	PG_RETURN_TEXT_P(cstring_to_text(res));
+}
+
+PG_FUNCTION_INFO_V1(sift_test_dsm_deferred);
+
+/* sift._test_dsm_deferred(): the shared tables this backend went without because a statement was writing, and how many times it asked (col/dsmreg.c) */
+Datum
+sift_test_dsm_deferred(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	InitMaterializedSRF(fcinfo, 0);
+	for (int i = 0; i < SIFT_DSM_DEFERRED_MAX && sift_dsm_deferred[i].n > 0; i++)
+	{
+		Datum		v[2] = {CStringGetTextDatum(sift_dsm_deferred[i].name), Int64GetDatum(sift_dsm_deferred[i].n)};
+		bool		nulls[2] = {false, false};
+
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(sift_test_dsm_register);
+PG_FUNCTION_INFO_V1(sift_test_dsm_join);
+
+static void
+dsm_test_init(SIFT_DSM_INIT_ARGS)
+{
+}
+
+/* sift._test_dsm_register(name, size): a registry entry exactly as an older release left it (its own name and size, none added by sift_dsm_join) */
+Datum
+sift_test_dsm_register(PG_FUNCTION_ARGS)
+{
+	bool		found;
+
+#if PG_VERSION_NUM >= 190000
+	GetNamedDSMSegment(text_to_cstring(PG_GETARG_TEXT_PP(0)), PG_GETARG_INT64(1), dsm_test_init, &found, NULL);
+#else
+	GetNamedDSMSegment(text_to_cstring(PG_GETARG_TEXT_PP(0)), PG_GETARG_INT64(1), dsm_test_init, &found);
+#endif
+	PG_RETURN_VOID();
+}
+
+/* sift._test_dsm_join(name, size): the table of the code of this release (col/dsmreg.c) */
+Datum
+sift_test_dsm_join(PG_FUNCTION_ARGS)
+{
+	sift_dsm_join(text_to_cstring(PG_GETARG_TEXT_PP(0)), PG_GETARG_INT64(1), dsm_test_init);
+	PG_RETURN_VOID();
 }
 
 #endif							/* SIFT_TESTING */

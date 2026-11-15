@@ -41,7 +41,7 @@ run_sample(RunIO *io, const char *term, int len)
 	if (io->smp_len + len + 2 * 10 > io->smp_cap)
 	{
 		io->smp_cap = Max(4096, io->smp_cap * 2);
-		io->smp = io->smp ? repalloc(io->smp, io->smp_cap) : palloc(io->smp_cap);
+		SIFT_REGROW(io->smp, io->smp_cap);
 	}
 	p = sift_put_varint(io->smp + io->smp_len, len);
 	memcpy(p, term, len);
@@ -139,7 +139,7 @@ record_put(RunReader *rd, uint8 c)
 	if (rd->prlen == rd->prcap)
 	{
 		rd->prcap = Max(256, rd->prcap * 2);
-		rd->prec = rd->prec ? repalloc_huge(rd->prec, rd->prcap) : MemoryContextAllocHuge(CurrentMemoryContext, rd->prcap);
+		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, rd->prec, rd->prcap);
 	}
 	rd->prec[rd->prlen++] = c;
 }

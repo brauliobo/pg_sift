@@ -8,8 +8,6 @@
 #ifndef SIFT_AGGSEL_H
 #define SIFT_AGGSEL_H
 
-#include "core/host.h"
-
 #include "col/col.h"
 #include "core/filter.h"
 #include "agg/colsrc.h"
@@ -21,7 +19,6 @@ typedef struct SiftAggSel
 	SiftColSel	sel;			/* the kept rows, in the numbering of the unit as stored */
 	uint32		nrow;			/* rows of the unit as stored */
 	int64		units_skipped;	/* units without a kept row */
-	int64		units_compact;
 	MemoryContext mcxt;
 	uint32	   *idx;			/* compact: the ordinal, in the unit as stored, of each kept row */
 	uint32		idxcap;

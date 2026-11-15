@@ -2,6 +2,7 @@
 -- when the table did not change. Each statement runs twice in a row (the second reads the kept table), after the rows of the table change (the table is made again), and with a key
 -- that repeats in the table (an inner join repeats a tuple, so only a semi join may use the table): the rows must be those of the normal plan, and the table is used or not as the join needs it.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -14,13 +15,7 @@ INSERT INTO dim_b SELECT 1, 1 + i * 3, NULL FROM generate_series(0, 999) i;
 INSERT INTO dim_b SELECT 2, 2 + i * 5, CASE WHEN i % 4 = 0 THEN now() END FROM generate_series(0, 599) i;
 VACUUM (FREEZE, ANALYZE) ev, dim_b;
 
-CREATE FUNCTION run(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION run(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 CREATE FUNCTION tables_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0; kept int := 0;
 BEGIN
@@ -63,4 +58,5 @@ SELECT * FROM check_all('unique again');
 
 DROP FUNCTION check_all(text), run(text, bool), tables_of(text);
 DROP TABLE q, ev, dim_b;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

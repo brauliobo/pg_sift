@@ -8,8 +8,7 @@
  * The other sections are in schema.c, dict.c, batch.c, chunk.c, ctest.c and unit.c; what they share is in enc_int.h.
  */
 
-#include "core/host.h"
-
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "col/enc.h"
 #include "col/enc_int.h"
 

@@ -4,7 +4,6 @@
 #ifndef SIFT_BM25_DICT_INT_H
 #define SIFT_BM25_DICT_INT_H
 
-#include "core/host.h"
 
 #include "core/cmp.h"
 #include "bm25/dict.h"

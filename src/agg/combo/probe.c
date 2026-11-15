@@ -17,17 +17,19 @@
 #include "access/genam.h"
 #include "access/nbtree.h"
 #include "access/tableam.h"
-#include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "catalog/pg_am.h"
+#include "catalog/pg_opfamily.h"
+#include "catalog/pg_type.h"
 #include "executor/nodeIndexscan.h"
 #include "nodes/nodeFuncs.h"
 #include "portability/instr_time.h"
-#include "storage/bufmgr.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
+#include "utils/uuid.h"
 
+#include "agg/agg.h"
 #include "agg/lookup/int.h"
 #include "agg/combo/probe.h"
 
@@ -49,15 +51,9 @@
  * The parameters of the child hold the values of the key evaluated last when the batch is probed: a filter or a projection of the child that reads one (or runs a
  * sub-plan, which may) would see the wrong key's value, so such a child runs for each key.
  */
-static bool
-dp_reads_params(Node *n, void *context)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(dp_reads_params, void *, context,
 	if (IsA(n, Param) || IsA(n, SubPlan) || IsA(n, AlternativeSubPlan))
-		return true;
-	return expression_tree_walker(n, dp_reads_params, context);
-}
+		return true;)
 
 /*
  * Can the child be probed directly? The shape and the index conditions are examined once; false ends it for the combo.
@@ -180,7 +176,7 @@ dp_shape(AggExec *ex, int ci, DProbe *dp)
 		int			i = sk->sk_attno - 1;
 
 		if (sk->sk_strategy != BTEqualStrategyNumber || (sk->sk_flags & ~SK_ISNULL) != 0 || i < 0 || i >= dp->nk || seen[i] ||
-			sk->sk_subtype != irel->rd_opcintype[i])
+			(sk->sk_subtype != irel->rd_opcintype[i] && !(sift_int_type(sk->sk_subtype) && sift_int_type(irel->rd_opcintype[i]))))
 			return false;
 		seen[i] = true;
 		dp->keyat[i] = s;
@@ -194,6 +190,7 @@ dp_shape(AggExec *ex, int ci, DProbe *dp)
 		c->len = att->attlen;
 		c->byval = att->attbyval;
 		c->align = att->attalign;
+		c->alignb = att->attalign == TYPALIGN_CHAR ? 1 : att->attalign == TYPALIGN_SHORT ? 2 : att->attalign == TYPALIGN_INT ? 4 : 8;
 		c->desc = (opt & INDOPTION_DESC) != 0;
 		c->nullsfirst = (opt & INDOPTION_NULLS_FIRST) != 0;
 		c->coll = irel->rd_indcollation[i];
@@ -210,8 +207,18 @@ dp_shape(AggExec *ex, int ci, DProbe *dp)
 			case F_BTINT8CMP:
 				c->kind = c->len == 8 && c->byval ? DC_INT : DC_GENERIC;
 				break;
+			case F_DATE_CMP:
+				c->kind = c->len == 4 && c->byval ? DC_INT : DC_GENERIC;
+				break;
+			case F_TIMESTAMP_CMP:
+			case F_TIMESTAMPTZ_CMP:
+				c->kind = c->len == 8 && c->byval ? DC_INT : DC_GENERIC;
+				break;
+			case F_UUID_CMP:
+				c->kind = c->len == UUID_LEN && !c->byval ? DC_UUID : DC_GENERIC;
+				break;
 			case F_BTTEXTCMP:
-				c->kind = c->len == -1 && OidIsValid(c->coll) && sift_collate_is_c(c->coll) ? DC_TEXT : DC_GENERIC;
+				c->kind = c->len != -1 ? DC_GENERIC : OidIsValid(c->coll) && sift_collate_is_c(c->coll) ? DC_TEXT : DC_TEXTC;
 				break;
 			case F_BTTEXT_PATTERN_CMP:
 				c->kind = c->len == -1 ? DC_TEXT : DC_GENERIC;
@@ -222,6 +229,9 @@ dp_shape(AggExec *ex, int ci, DProbe *dp)
 			default:
 				break;
 		}
+		/* an integer column compared with the key of another integer type (a smallint column and a literal): the integers themselves are compared (dp_key) */
+		if (dp->skeys[dp->keyat[i]].sk_subtype != irel->rd_opcintype[i] && (c->kind != DC_INT || irel->rd_opfamily[i] != INTEGER_BTREE_FAM_OID))
+			return false;
 	}
 	dp->snap = dp->estate->es_snapshot;
 	if (dp->snap == NULL || dp->ec1 == NULL || (dp->nrkeys > 0 && dp->rctx == NULL))
@@ -247,10 +257,17 @@ combo_probe_on(AggExec *ex, int ci)
 		dp->state = sift_agg_probe_direct && dp_shape(ex, ci, dp) ? 1 : -1;
 		if (dp->state > 0)
 		{
+			map_note_table(ex, dp->hrel);
 			dp->bcxt = AllocSetContextCreate(ex->cxt, "sift direct probe", ALLOCSET_DEFAULT_SIZES);
 			if (dp->ioss)
+			{
+				/* ExecutorEnd resets the executor state's slot table after this node's context is deleted */
+				MemoryContextSwitchTo(dp->estate->es_query_cxt);
 				dp->tslot = ExecAllocTableSlot(&dp->estate->es_tupleTable, RelationGetDescr(dp->hrel), table_slot_callbacks(dp->hrel) PG19_SLOT_FLAGS);
+				MemoryContextSwitchTo(ex->cxt);
+			}
 			dp->ignore_dead = !TransactionStartedDuringRecovery();
+			dp->reads0 = dp_reads(dp->hrel);
 			for (int i = 0; i < DP_MAX_LEVELS; i++)
 				dp->lv[i].hik = palloc(BLCKSZ / 2);
 		}
@@ -272,8 +289,8 @@ combo_probe_defer(AggExec *ex, int ci, uint32 e)
 		MemoryContext old = MemoryContextSwitchTo(dp->bcxt);
 
 		dp->cap = Max(dp->cap * 2, 256);
-		dp->pend = dp->pend ? repalloc(dp->pend, dp->cap * sizeof(uint32)) : palloc(dp->cap * sizeof(uint32));
-		dp->keys = dp->keys ? repalloc(dp->keys, dp->cap * sizeof(DKey)) : palloc(dp->cap * sizeof(DKey));
+		SIFT_REGROW(dp->pend, dp->cap * sizeof(uint32));
+		SIFT_REGROW(dp->keys, dp->cap * sizeof(DKey));
 		MemoryContextSwitchTo(old);
 	}
 	dp->pend[dp->npend++] = e;
@@ -352,9 +369,21 @@ dp_key(AggExec *ex, int ci, DProbe *dp, DKey *k, uint32 e)
 		{
 			a->d = datumCopy(sk->sk_argument, c->byval, c->len);
 			if (c->kind == DC_INT)
-				a->i = c->len == 2 ? DatumGetInt16(a->d) : c->len == 4 ? DatumGetInt32(a->d) : DatumGetInt64(a->d);
+			{
+				/* a key of another integer type is read at its own width (the column's is the width of date, timestamp and the integer types alike) */
+				int			w = sk->sk_subtype == INT2OID ? 2 : sk->sk_subtype == INT4OID ? 4 : sk->sk_subtype == INT8OID ? 8 : c->len;
+
+				a->i = w == 2 ? DatumGetInt16(a->d) : w == 4 ? DatumGetInt32(a->d) : DatumGetInt64(a->d);
+			}
+			else if (c->kind == DC_UUID)
+				a->p = DatumGetPointer(a->d);
 		}
 		MemoryContextSwitchTo(old);
+		if (c->kind == DC_INT && c->len < 8 && (a->i < -(INT64CONST(1) << (c->len * 8 - 1)) || a->i >= (INT64CONST(1) << (c->len * 8 - 1))))
+		{
+			k->state = DKS_ROWS;	/* the key is beyond the range of the column: no entry equals it */
+			return;
+		}
 	}
 	dp_abbrev(dp, k);
 }
@@ -376,6 +405,17 @@ combo_sink_begin(DSink *s, DKey *k)
 	k->start = cs->ex->cs[cs->ci].map->nrow;
 }
 
+/* an index-only entry the child's filter rejects needs no visibility check */
+static bool
+combo_sink_keep(DSink *s)
+{
+	DProbe	   *dp = ((ComboSink *) s)->dp;
+
+	ResetExprContext(dp->ec1);
+	dp->ec1->ecxt_scantuple = dp->scan;
+	return ExecQual(dp->qual, dp->ec1);
+}
+
 static bool
 combo_sink_row(DSink *s)
 {
@@ -388,10 +428,13 @@ combo_sink_row(DSink *s)
 	TupleTableSlot *slot = dp->scan;
 	MemoryContext old;
 
-	ResetExprContext(dp->ec1);
-	dp->ec1->ecxt_scantuple = dp->scan;
-	if (!ExecQual(dp->qual, dp->ec1))
-		return false;
+	if (!dp->ioss)
+	{
+		ResetExprContext(dp->ec1);
+		dp->ec1->ecxt_scantuple = dp->scan;
+		if (!ExecQual(dp->qual, dp->ec1))
+			return false;
+	}
 	if (dp->p1)
 		slot = ExecProject(dp->p1);
 	if (dp->p2)
@@ -438,7 +481,7 @@ combo_probe_flush(AggExec *ex, int ci)
 			ord[nprobe++] = &dp->keys[p];
 	if (nprobe > 0)
 	{
-		ComboSink	sink = {{combo_sink_begin, combo_sink_row}, ex, ci, dp};
+		ComboSink	sink = {{combo_sink_begin, combo_sink_keep, combo_sink_row}, ex, ci, dp};
 
 		dp->fetch = sift_table_index_fetch_begin(dp->hrel);
 		ex->probe_direct += dp_batch(dp, ord, nprobe, &sink.s);
@@ -449,7 +492,13 @@ combo_probe_flush(AggExec *ex, int ci)
 		table_index_fetch_end(dp->fetch);
 		dp->fetch = NULL;
 	}
-	child_warm_runs(ex, cs, dp->child, n, t0);
+	ex->child_warmed += dp->asked;
+	dp->asked = 0;
+	ex->probe_leaves += dp->leaves;
+	ex->probe_pins += dp->pins;
+	ex->probe_heap += dp->heap;
+	ex->probe_vm += dp->vm;
+	dp->leaves = dp->pins = dp->heap = dp->vm = 0;
 	map_loaded(ex, 0, t0);
 	for (int p = 0; p < n; p++)
 	{

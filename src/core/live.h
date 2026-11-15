@@ -6,8 +6,6 @@
 #ifndef SIFT_LIVE_H
 #define SIFT_LIVE_H
 
-#include "core/host.h"
-
 #include "core/store.h"
 
 /* Offset of the first liveness bit in the LIVE run of a segment spanning nsb superblocks */
@@ -25,6 +23,8 @@ typedef struct SiftLive
 
 /* A palloc'd copy of the SEGHEADER page of a segment, its size checked against the extents it lists */
 extern SiftSegHeaderData *sift_seg_read_header(Relation index, const SiftSegEntry *entry);
+/* ... and the bytes of the page it copied: those after the extents are the mirror of a column segment (col/seg_int.h) */
+extern SiftSegHeaderData *sift_seg_read_header_used(Relation index, const SiftSegEntry *entry, uint32 *used);
 
 /* Sets the directory's dirty flag of the segment, and that of the entry, unless set: rows may be cleared from then on */
 extern void sift_seg_mark_dirty(Relation index, SiftSegEntry *entry);
@@ -37,6 +37,9 @@ extern void sift_live_check(const SiftLive *l);
 
 /* Byte b of the run (logical offset over the page payloads); *buf is the share-locked page kept between calls (release it with UnlockReleaseBuffer when valid) */
 extern uint8 sift_live_byte(const SiftLive *l, uint64 b, Buffer *buf);
+
+/* The same byte, read under a share lock taken for the read: *pin is the page kept pinned (not locked) between calls, which the caller releases with ReleaseBuffer when valid */
+extern uint8 sift_live_byte_kept(const SiftLive *l, uint64 b, Buffer *pin);
 
 /* len bytes of the run from logical byte b, a page at a time */
 extern void sift_live_copy(const SiftLive *l, uint64 b, uint64 len, uint8 *out);
@@ -51,11 +54,42 @@ extern uint32 sift_live_ndead(const SiftLive *l);
 extern void sift_live_bits(const SiftLive *l, uint64 rank, uint32 n, uint64 *out, uint32 nwords);
 
 /*
- * Clears the bits of the ranks dead[0..nd) (ascending, within one superblock: at most two bit pages) and sets the SB's dirty bit
- * (sbidx = sb - sb_lo) and counts them dead, in one generic WAL record. The caller marks the directory entry SIFT_SEG_DIRTY first
- * (bits cleared under a clean flag would be ignored by readers).
+ * Sets the SB's dirty bit (sbidx = sb - sb_lo; a record of its own, the bitmap may span pages), then clears the bits of the ranks
+ * dead[0..nd) (ascending, within one superblock: at most two bit pages) and counts them dead, in one generic WAL record. The caller
+ * marks the directory entry SIFT_SEG_DIRTY first (bits cleared under a clean flag would be ignored by readers).
  */
 extern void sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd);
+
+/* A unit of a segment: its rows are the liveness bits rank_base .. rank_base + nrows - 1, and the dirty bit sbidx says that one of them may be clear */
+typedef struct SiftLiveUnit
+{
+	uint32		sbidx;
+	uint32		nrows;
+	uint64		rank_base;
+} SiftLiveUnit;
+
+/* What a LIVE run holds against what sift_live_clear keeps true of it (sift_live_audit) */
+typedef struct SiftLiveAudit
+{
+	uint32		pages_damaged;	/* pages whose type, flags, reserved or generation are not those of a LIVE page of the segment */
+	BlockNumber first_damaged;
+	uint32		units_lost;		/* units with a cleared liveness bit and no dirty bit: scans read their rows as live */
+	uint64		cleared;		/* the cleared liveness bits */
+	uint64		ndead_header;	/* the dead rows the header counts */
+	uint32		pages_written;	/* sift_live_repair: the pages it wrote */
+} SiftLiveAudit;
+
+/*
+ * Reads the whole run without checking the special spaces and fills *a. ERRCODE_INDEX_CORRUPTED when a page has an invalid layout or a size that is not its
+ * share of the run (what no repair restores).
+ */
+extern void sift_live_audit(const SiftLive *l, const SiftLiveUnit *units, uint32 nunits, SiftLiveAudit *a);
+
+/*
+ * Makes the run what sift_live_clear keeps it: the special space of every page, the dirty bit of every unit that has a cleared bit, the header's count of the cleared bits.
+ * One generic WAL record a page that differs, the first page first; running it again finds nothing to write. The caller holds the maintenance lock. *a is what the audit found.
+ */
+extern void sift_live_repair(const SiftLive *l, const SiftLiveUnit *units, uint32 nunits, SiftLiveAudit *a);
 
 /*
  * Writes the LIVE run of a new segment of format 2, all docs live and no SB dirty: reg[nsb + 1] are the region starts and the end

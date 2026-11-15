@@ -47,7 +47,7 @@ typedef struct DictEnt
 typedef struct Unpin
 {
 	MemoryContextCallback cb;
-	DictKey		key;
+	DictEnt    *ent;			/* stays where it is while it is pinned: only an entry nobody pins is dropped */
 } Unpin;
 
 static HTAB *cache;
@@ -75,11 +75,7 @@ dict_drop(DictEnt *e)
 static void
 dict_unpin(void *arg)
 {
-	Unpin	   *u = arg;
-	DictEnt    *e = hash_search(cache, &u->key, HASH_FIND, NULL);
-
-	if (e)
-		e->pins--;
+	((Unpin *) arg)->ent->pins--;
 }
 
 /* Drops the least recently used entries nobody pins until need more bytes fit; false when they do not */
@@ -117,7 +113,7 @@ dict_pin(DictEnt *e, MemoryContext mcxt)
 	e->pins++;
 	dlist_move_tail(&lru, &e->node);
 	u->cb = (MemoryContextCallback) {dict_unpin, u, NULL};
-	u->key = e->key;
+	u->ent = e;
 	MemoryContextRegisterResetCallback(mcxt, &u->cb);
 }
 
@@ -219,11 +215,14 @@ sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx,
 
 /*
  * What a scan keeps of a leaf of a segment whatever few units it reads is the entry of the leaf at a unit number past the last unit: the zone arrays (min, max, sums,
- * counts, flags, filters of every unit) at UINT32_MAX - 1, the small-set summaries of the units (sets.c) at UINT32_MAX - 3 (UINT32_MAX - 2 is the bisect table's). They are found without the header: a scan has
+ * counts, flags, filters of every unit) at UINT32_MAX - 1, the small-set summaries of the units (sets.c) at UINT32_MAX - 3, the bisect table at UINT32_MAX - 2. They are found without the header: a scan has
  * opened the segment, whose head was checked against it.
  */
 #define ZONES_UNIT	(UINT32_MAX - 1)
+#define BISECT_UNIT	(UINT32_MAX - 2)
 #define SETS_UNIT	(UINT32_MAX - 3)
+#define PTS_UNIT	(UINT32_MAX - 4)
+#define GORDH_UNIT	(UINT32_MAX - 5)
 
 static void *
 leaf_find(SiftColSegment *seg, int col, uint32 unit)
@@ -264,6 +263,47 @@ sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays 
 {
 	CDICT_STAT(zone_loads);
 	leaf_keep(seg, col, ZONES_UNIT, cx, z);
+}
+
+SegPts *
+sift_cseg_pts_find(SiftColSegment *seg)
+{
+	return leaf_find(seg, HEAD_COL, PTS_UNIT);
+}
+
+void
+sift_cseg_pts_keep(SiftColSegment *seg, MemoryContext cx, SegPts *p)
+{
+	leaf_keep(seg, HEAD_COL, PTS_UNIT, cx, p);
+}
+
+SegGOrdHead *
+sift_cseg_gordh_find(SiftColSegment *seg, int col)
+{
+	return leaf_find(seg, col, GORDH_UNIT);
+}
+
+void
+sift_cseg_gordh_keep(SiftColSegment *seg, int col, MemoryContext cx, SegGOrdHead *h)
+{
+	leaf_keep(seg, col, GORDH_UNIT, cx, h);
+}
+
+/* The header's entry holds bytes more than it was kept with (they were allocated in its context since): the cache counts them */
+void
+sift_cseg_gordh_grew(SiftColSegment *seg, int col, Size bytes)
+{
+	DictKey		k;
+	DictEnt    *e;
+
+	if (cache == NULL)
+		return;
+	dict_key(&k, seg, col, GORDH_UNIT);
+	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) != NULL)
+	{
+		e->size += bytes;
+		cache_bytes += bytes;
+	}
 }
 
 void *
@@ -479,21 +519,10 @@ sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 	return dict_keep(seg, col, &k, cx, d);
 }
 
-#define BISECT_UNIT		(UINT32_MAX - 2)
-
 SiftCBisect *
 sift_cseg_bisect_find(SiftColSegment *seg, int col)
 {
-	DictKey		k;
-	DictEnt    *e;
-
-	if (cache == NULL)
-		return NULL;
-	dict_key(&k, seg, col, BISECT_UNIT);
-	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) == NULL)
-		return NULL;
-	dict_pin(e, seg->mcxt);
-	return e->obj;
+	return leaf_find(seg, col, BISECT_UNIT);
 }
 
 SiftCBisect *

@@ -26,8 +26,18 @@
 
 #define PEND_HEAD		(sizeof(ItemPointerData) + sizeof(uint32))
 
-/* the top bit of the stored length: the payload starts with the inserter's xid (SIFT_COLR_XMIN). The head keeps its size, so a buffer flushes at the same rows with or without track_changes */
+/* the top bits of the stored length: the payload starts with the inserter's xid (SIFT_COLR_XMIN), and is that alone (SIFT_COLR_REF). The head keeps its size, so a buffer flushes at the same rows with or without track_changes */
 #define PEND_XMIN		0x80000000u
+
+#define PEND_REF		0x40000000u
+
+#define PEND_FLAGS		(PEND_XMIN | PEND_REF)
+
+static inline uint16
+pend_flags(uint32 stored)
+{
+	return ((stored & PEND_XMIN) ? SIFT_COLR_XMIN : 0) | ((stored & PEND_REF) ? SIFT_COLR_REF : 0);
+}
 
 typedef struct PendIndex
 {
@@ -36,7 +46,8 @@ typedef struct PendIndex
 	RelFileLocator loc;
 	uint32		ovf;
 	uint32		jnull;
-	StringInfoData buf;			/* per row: tid, payload length (with PEND_XMIN), payload */
+	bool		ref;			/* some row is a REF record: the buffer it goes to is marked before it is written */
+	StringInfoData buf;			/* per row: tid, payload length (with PEND_FLAGS), payload */
 } PendIndex;
 
 static PendIndex pend[PEND_SLOTS];
@@ -50,6 +61,7 @@ pend_clear(PendIndex *p)
 {
 	p->index = InvalidOid;
 	p->ovf = p->jnull = 0;
+	p->ref = false;
 	resetStringInfo(&p->buf);
 	pend_used--;
 }
@@ -140,7 +152,7 @@ check_slots_in_use(Relation index, const char *rows, Size total)
 
 		memcpy(&tid, cur, sizeof(tid));
 		memcpy(&len, cur + sizeof(tid), sizeof(len));
-		len &= ~PEND_XMIN;
+		len &= ~PEND_FLAGS;
 		if (!BufferIsValid(buf) || BufferGetBlockNumber(buf) != ItemPointerGetBlockNumber(&tid))
 		{
 			if (BufferIsValid(buf))
@@ -157,6 +169,33 @@ check_slots_in_use(Relation index, const char *rows, Size total)
 }
 #endif
 
+/* A pending row as the record it is written as: its values go to the arena of the buffer the row is written to (a row the arena has no room for loses REF) */
+typedef struct PendRec
+{
+	ItemPointerData tid;
+	uint16		flags;
+	Size		stored;			/* bytes the row takes in the pending buffer after its head */
+	Size		len;			/* bytes of the payload of its record */
+	const char *payload;
+} PendRec;
+
+/* The record of the pending row at cur. Puts to the arena, which may make a segment of shared memory: never inside the critical section of a page edit */
+static PendRec
+pend_rec(Relation index, const SiftCWbufHint *h, const char *cur, bool *crossed)
+{
+	PendRec		r = {.payload = cur + PEND_HEAD};
+	uint32		stored;
+
+	memcpy(&r.tid, cur, sizeof(r.tid));
+	memcpy(&stored, cur + sizeof(r.tid), sizeof(stored));
+	r.flags = pend_flags(stored);
+	r.stored = r.len = stored & ~PEND_FLAGS;
+	*crossed |= wbuf_ref_to_arena(index, h->gen, &r.tid, r.payload, &r.len, &r.flags);
+	return r;
+}
+
+#define PEND_BATCH	(BLCKSZ / sizeof(SiftColRecHead))	/* records of a page at most */
+
 /* Writes the rows of a slot to the lanes of the index and frees the slot; true when a row crossed write_buffer_limit */
 static bool
 pend_flush(Relation index, PendIndex *p)
@@ -167,6 +206,10 @@ pend_flush(Relation index, PendIndex *p)
 	char	   *rows = palloc(total);
 	const char *cur = rows;
 	bool		crossed = false;
+	bool		ref = p->ref;
+	PendRec    *batch = palloc(PEND_BATCH * sizeof(PendRec));
+	PendRec		next;
+	uint64		next_gen = 0;
 
 	memcpy(rows, p->buf.data, total);
 #ifdef USE_ASSERT_CHECKING
@@ -178,57 +221,64 @@ pend_flush(Relation index, PendIndex *p)
 	{
 		Buffer		tailbuf;
 		int			lane;
-		ItemPointerData tid;
-		uint32		len;
-		uint16		flags;
 		Size		room;
+		int			n = 1;
 
 		for (;;)
 		{
 			if (h.gen == 0)
-				sift_lane_refresh(index, hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, sift_col_maint_make_room, &h.gen, &h.hdr, h.tail);
+				sift_lane_refresh(index, hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, sift_col_maint_make_room, &h.gen, &h.hdr, h.tail);
+			if (ref)
+				wbuf_flag_ref(index, &h);
 			if (BufferIsValid(tailbuf = sift_lane_lock_tail(index, h.gen, h.tail, SIFT_LANES, &lane)))
 				break;
 			h.gen = 0;
 		}
-		memcpy(&tid, cur, sizeof(tid));
-		memcpy(&len, cur + sizeof(tid), sizeof(len));
-		flags = (len & PEND_XMIN) ? SIFT_COLR_XMIN : 0;
-		len &= ~PEND_XMIN;
+		batch[0] = next_gen == h.gen ? next : pend_rec(index, &h, cur, &crossed);
+		next_gen = 0;
 		room = TYPEALIGN_DOWN(4, SiftLaneRoom(BufferGetPage(tailbuf)));
-		if (RECSIZE(len) > room)
+		if (RECSIZE(batch[0].len) > room)
 		{
 			BlockNumber tail;
 
 			/* a record that does not fit what is left of the tail page: as a row that goes in at once (a new page, pieces) */
-			crossed |= wbuf_write_row(index, &h, lane, tailbuf, &tid, flags, cur + PEND_HEAD, len, &tail);
+			crossed |= wbuf_write_row(index, &h, lane, tailbuf, &batch[0].tid, batch[0].flags, batch[0].payload, batch[0].len, &tail);
 			h.tail[lane] = tail;
-			cur += PEND_HEAD + len;
+			cur += PEND_HEAD + batch[0].stored;
 		}
 		else
 		{
 			SiftPageEdit ed;
+			const char *end = cur + PEND_HEAD + batch[0].stored;
 
-			sift_page_edit_begin(&ed, tailbuf, SIFT_PAGE_DATA_OFFSET + HDRSIZE);
-			do
+			room -= RECSIZE(batch[0].len);
+			/* the records that fit the page are made before the edit, whose critical section allows no allocation */
+			while (end < rows + total)
 			{
-				wbuf_put_piece(ed.page, &tid, flags, cur + PEND_HEAD, len);
-				room -= RECSIZE(len);
-				cur += PEND_HEAD + len;
-				if (cur >= rows + total)
+				PendRec		r = pend_rec(index, &h, end, &crossed);
+
+				if (RECSIZE(r.len) > room)
+				{
+					next = r;
+					next_gen = h.gen;
 					break;
-				memcpy(&tid, cur, sizeof(tid));
-				memcpy(&len, cur + sizeof(tid), sizeof(len));
-				flags = (len & PEND_XMIN) ? SIFT_COLR_XMIN : 0;
-				len &= ~PEND_XMIN;
-			} while (RECSIZE(len) <= room);
+				}
+				batch[n++] = r;
+				room -= RECSIZE(r.len);
+				end += PEND_HEAD + r.stored;
+			}
+			sift_page_edit_begin(&ed, tailbuf, SIFT_PAGE_DATA_OFFSET + HDRSIZE);
+			for (int i = 0; i < n; i++)
+				wbuf_put_piece(ed.page, &batch[i].tid, batch[i].flags, batch[i].payload, batch[i].len);
 			sift_page_edit_end(index, &ed, 1);
 			h.tail[lane] = BufferGetBlockNumber(tailbuf);
 			UnlockReleaseBuffer(tailbuf);
+			cur = end;
 		}
 	}
 	/* the reads above can reload the relcache entry: keep the hint in the entry as it is now */
 	sift_col_rel(index)->hint = h;
+	pfree(batch);
 	pfree(rows);
 	return crossed;
 }
@@ -253,13 +303,13 @@ wbuf_flush_for_read(Relation index)
  * (a page of rows is buffered) crossed write_buffer_limit; the hint is the caller's, as for sift_cwbuf_append.
  */
 bool
-sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool *crossed)
+sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool ref, bool *crossed)
 {
 	PendIndex  *p;
 	uint32		ovf,
 				jnull,
 				len;
-	uint16		flags = TransactionIdIsValid(xmin) ? SIFT_COLR_XMIN : 0;
+	uint16		flags = wbuf_rec_flags(xmin, ref);
 	uint32		stored;
 
 	*crossed = false;
@@ -274,7 +324,7 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 		MemoryContextSwitchTo(old);
 	}
 	resetStringInfo(&pend_enc);
-	if (flags)
+	if (flags & SIFT_COLR_XMIN)
 		appendBinaryStringInfo(&pend_enc, (const char *) &xmin, sizeof(xmin));
 	ovf = wbuf_encode_row(&pend_enc, schema, row, &jnull);
 	len = pend_enc.len;
@@ -300,17 +350,18 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 		pend_used++;
 	}
 	if (h->gen == 0)
-		sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
+		sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
 	wbuf_flag_overflow(index, h, ovf, jnull);
 	enlargeStringInfo(&p->buf, PEND_HEAD + len);
 	memcpy(p->buf.data + p->buf.len, &row->tid, sizeof(ItemPointerData));
-	stored = len | (flags ? PEND_XMIN : 0);
+	stored = len | ((flags & SIFT_COLR_XMIN) ? PEND_XMIN : 0) | ((flags & SIFT_COLR_REF) ? PEND_REF : 0);
 	memcpy(p->buf.data + p->buf.len + sizeof(ItemPointerData), &stored, sizeof(stored));
 	memcpy(p->buf.data + p->buf.len + PEND_HEAD, pend_enc.data, len);
 	p->buf.len += PEND_HEAD + len;
 	p->buf.data[p->buf.len] = '\0';
 	p->ovf |= ovf;
 	p->jnull |= jnull;
+	p->ref |= (flags & SIFT_COLR_REF) != 0;
 	if (p->buf.len >= EMPTY_ROOM)
 	{
 		sift_col_rel(index)->hint = *h;
@@ -340,18 +391,33 @@ has_rows(Relation index, const SiftSegEntry *entry)
 	return wbuf_count_rows(index, entry, true) > 0;
 }
 
+/* A buffer of REF records is sealed by the bytes of its rows in the arena (its pages hold 16 bytes a row), the limit of one of values by its pages */
+static uint32
+seal_limit(Relation index)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	uint32		limit = wbuf_limit_pages(index);
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN && wbuf_arena_full(index, snap->segs[i].gen, (Size) limit * BLCKSZ))
+			limit = 0;
+	pfree(snap);
+	return limit;
+}
+
 uint64
 sift_cwbuf_seal(Relation index, bool force)
 {
 	wbuf_flush_for_read(index);
-	return sift_lane_seal(index, force, HDRSIZE, SIFT_COL_FORMAT_KINDS, wbuf_limit_pages(index), has_rows);
+	return sift_lane_seal(index, force, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, seal_limit(index), has_rows);
 }
 
 uint64
 sift_cwbuf_rotate(Relation index)
 {
 	wbuf_flush_for_read(index);
-	return sift_lane_rotate(index, HDRSIZE, SIFT_COL_FORMAT_KINDS);
+	return sift_lane_rotate(index, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW);
 }
 
 /* A quarter of a unit: rows this few are not worth a segment of their own for a reader of the units, but a buffer that holds them is read row by row by every probe */
@@ -371,8 +437,8 @@ sift_cwbuf_seal_vacuum(Relation index)
 	uint64		gen;
 
 	wbuf_flush_for_read(index);
-	gen = sift_lane_seal(index, false, HDRSIZE, SIFT_COL_FORMAT_KINDS, Max(wbuf_limit_pages(index) / 4, 2 * SIFT_LANES), has_rows);
-	return gen ? gen : sift_lane_seal(index, true, HDRSIZE, SIFT_COL_FORMAT_KINDS, 0, quarter_unit);
+	gen = sift_lane_seal(index, false, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, Max(wbuf_limit_pages(index) / 4, 2 * SIFT_LANES), has_rows);
+	return gen ? gen : sift_lane_seal(index, true, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, 0, quarter_unit);
 }
 
 void

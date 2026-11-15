@@ -28,10 +28,12 @@ def main(doc):
     ap.add_argument('--stop-after', type=int, default=0, help='stop after the seed in which this many queries crashed, diverged or failed to generate (0: all seeds); the full tier uses it so that a red job does not run the rest of its seeds')
     ap.add_argument('--dml', type=int, default=4, help='most DML statements before a group of queries')
     ap.add_argument('--leader-on', action='store_true', help='parallel_leader_participation stays on (a worker crash of leaderless parallel scans hides other findings)')
+    ap.add_argument('--having-weight', type=int, default=0, help='the share of the HAVING family in the default mix (0: only with --families having)')
     ap.add_argument('--show', action='store_true', help='print every query')
     ap.add_argument('--table', action='store_true', help='the fact tables are sift_tables (see above)')
     ap.add_argument('--selftest', action='store_true', help='no server: every family generates and renders queries for seeds 0-19, with and without --table (the lint job)')
     a = ap.parse_args()
+    FAMILIES['having'] = FAMILIES['having'][:2] + (a.having_weight,)
     tablemode.TABLE = a.table
     if a.selftest:
         for tablemode.TABLE in (False, True):
@@ -117,9 +119,9 @@ def main(doc):
                     continue
                 if q['ref'][0] == 'CRASH':
                     continue
-                if q['ref'][0] == 'GENERR':
+                if q['ref'][0] == 'GENERR' or (fam == 'having' and q['ref'][0].startswith('ERR') and not q['ref'][0].startswith('ERR 22')):    # the HAVING family raises only a data error of its WHERE (a cast of a jsonb value), with the same SQLSTATE everywhere
                     total['GENERR'] += 1
-                    print(f'GENERATOR ERROR {qid} {fam}: {sql}\n  {err.strip()[:300]}')
+                    print(f'GENERATOR ERROR {qid} {fam} (reference: {q["ref"][0]}): {sql}\n  {err.strip()[:300]}')
                     continue
                 vars_ = [n for n, _ in vs]
                 for n in vars_:

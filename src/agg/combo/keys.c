@@ -91,7 +91,7 @@ combo_key_id(AggExec *ex, int ci, int k, const uint64 *v, const char *ptr, uint3
 	{
 		uint32		cap = Max(Max(cs->nmemo[k] * 2, (uint32) in), 256);
 
-		cs->kmemo[k] = cs->kmemo[k] ? repalloc(cs->kmemo[k], cap * sizeof(uint32)) : MemoryContextAlloc(ex->cxt, cap * sizeof(uint32));
+		SIFT_REGROW_IN(ex->cxt, cs->kmemo[k], cap * sizeof(uint32));
 		memset(cs->kmemo[k] + cs->nmemo[k], 0xFF, (cap - cs->nmemo[k]) * sizeof(uint32));
 		cs->nmemo[k] = cap;
 	}

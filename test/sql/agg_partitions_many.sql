@@ -14,7 +14,9 @@ BEGIN
 END $$;
 CREATE TABLE pm_rest PARTITION OF pm DEFAULT WITH (autovacuum_enabled = false);
 INSERT INTO pm SELECT i, i % 7, DATE '2019-12-25' + i % 1300, i % 100 FROM generate_series(1, 9000) i;
+SET client_min_messages = warning;
 CREATE INDEX pm_col ON pm USING sift_col (id, g, d, v);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) pm;
 
 CREATE FUNCTION many_scan(stmt text) RETURNS TABLE (scan text, partitions_listed int, partitions_removed int, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
@@ -78,7 +80,9 @@ BEGIN
 	END LOOP;
 END $$;
 INSERT INTO pc SELECT i, i % 7, DATE '2020-01-01' + i % 100, i % 100 FROM generate_series(1, 3000) i;
+SET client_min_messages = warning;
 CREATE INDEX pc_col ON pc USING sift_col (id, g, d, v);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) pc;
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g');
 SET sift.test_limits = 'partitions=100';

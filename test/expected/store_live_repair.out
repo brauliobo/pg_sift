@@ -1,0 +1,77 @@
+-- The LIVE run of a segment of more than 65151 superblocks that sift_live_clear of 4.2.1 to 4.3.5 damaged (the dirty bit of a superblock written on the first
+-- page whatever its number, so in the special space of that page from superblock 65152 on): the audit finds what changed, the repair restores the special
+-- space, sets the dirty bits that were lost and counts the dead rows by their bits, and a second repair writes nothing.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+CREATE TABLE t (v int);
+CREATE INDEX t_idx ON t USING sift_store_test (v);
+SELECT what, stage, damaged_pages, lost_units, ndead, cleared, written, dirty_read
+FROM (VALUES ('first page', 70000, ARRAY[0, 65151]),
+			 ('type, a bit already set', 70000, ARRAY[65152]),
+			 ('type', 70000, ARRAY[65160]),
+			 ('flags', 70000, ARRAY[65170]),
+			 ('reserved', 70000, ARRAY[65200]),
+			 ('generation', 70000, ARRAY[65261]),
+			 ('header of the next page, lsn', 70000, ARRAY[65290]),
+			 ('header of the next page, upper', 70000, ARRAY[65405]),
+			 ('header of the next page, special', 70000, ARRAY[65410, 65440]),
+			 ('counted twice', 70000, ARRAY[65170, 65170, 65261]),
+			 ('every field', 70000, ARRAY[0, 65151, 65152, 65160, 65170, 65200, 65216, 65261, 65279]),
+			 ('a run of 600,000', 600000, ARRAY[65261, 65270, 300000])) AS c (what, nsb, sbs),
+	 LATERAL sift._test_live_repair('t_idx', nsb, sbs)
+ORDER BY c.nsb, c.what, array_position(ARRAY['damaged', 'repaired', 'audit', 'again'], stage);
+               what               |  stage   | damaged_pages | lost_units | ndead | cleared | written | dirty_read 
+----------------------------------+----------+---------------+------------+-------+---------+---------+------------
+ counted twice                    | damaged  |             1 |          2 |     3 |       2 |       0 |           
+ counted twice                    | repaired |             1 |          2 |     3 |       2 |       2 |           
+ counted twice                    | audit    |             0 |          0 |     2 |       2 |       0 |           
+ counted twice                    | again    |             0 |          0 |     2 |       2 |       0 |          3
+ every field                      | damaged  |             1 |          7 |     9 |       9 |       0 |           
+ every field                      | repaired |             1 |          7 |     9 |       9 |       2 |           
+ every field                      | audit    |             0 |          0 |     9 |       9 |       0 |           
+ every field                      | again    |             0 |          0 |     9 |       9 |       0 |          9
+ first page                       | damaged  |             0 |          0 |     2 |       2 |       0 |           
+ first page                       | repaired |             0 |          0 |     2 |       2 |       0 |           
+ first page                       | audit    |             0 |          0 |     2 |       2 |       0 |           
+ first page                       | again    |             0 |          0 |     2 |       2 |       0 |          2
+ flags                            | damaged  |             1 |          1 |     1 |       1 |       0 |           
+ flags                            | repaired |             1 |          1 |     1 |       1 |       2 |           
+ flags                            | audit    |             0 |          0 |     1 |       1 |       0 |           
+ flags                            | again    |             0 |          0 |     1 |       1 |       0 |          1
+ generation                       | damaged  |             1 |          1 |     1 |       1 |       0 |           
+ generation                       | repaired |             1 |          1 |     1 |       1 |       2 |           
+ generation                       | audit    |             0 |          0 |     1 |       1 |       0 |           
+ generation                       | again    |             0 |          0 |     1 |       1 |       0 |          1
+ header of the next page, lsn     | damaged  |             0 |          1 |     1 |       1 |       0 |           
+ header of the next page, lsn     | repaired |             0 |          1 |     1 |       1 |       1 |           
+ header of the next page, lsn     | audit    |             0 |          0 |     1 |       1 |       0 |           
+ header of the next page, lsn     | again    |             0 |          0 |     1 |       1 |       0 |          1
+ header of the next page, special | damaged  |             1 |          2 |     2 |       2 |       0 |           
+ header of the next page, special | repaired |             1 |          2 |     2 |       2 |       2 |           
+ header of the next page, special | audit    |             0 |          0 |     2 |       2 |       0 |           
+ header of the next page, special | again    |             0 |          0 |     2 |       2 |       0 |          2
+ header of the next page, upper   | damaged  |             1 |          1 |     1 |       1 |       0 |           
+ header of the next page, upper   | repaired |             1 |          1 |     1 |       1 |       2 |           
+ header of the next page, upper   | audit    |             0 |          0 |     1 |       1 |       0 |           
+ header of the next page, upper   | again    |             0 |          0 |     1 |       1 |       0 |          1
+ reserved                         | damaged  |             1 |          1 |     1 |       1 |       0 |           
+ reserved                         | repaired |             1 |          1 |     1 |       1 |       2 |           
+ reserved                         | audit    |             0 |          0 |     1 |       1 |       0 |           
+ reserved                         | again    |             0 |          0 |     1 |       1 |       0 |          1
+ type                             | damaged  |             1 |          1 |     1 |       1 |       0 |           
+ type                             | repaired |             1 |          1 |     1 |       1 |       2 |           
+ type                             | audit    |             0 |          0 |     1 |       1 |       0 |           
+ type                             | again    |             0 |          0 |     1 |       1 |       0 |          1
+ type, a bit already set          | damaged  |             0 |          1 |     1 |       1 |       0 |           
+ type, a bit already set          | repaired |             0 |          1 |     1 |       1 |       1 |           
+ type, a bit already set          | audit    |             0 |          0 |     1 |       1 |       0 |           
+ type, a bit already set          | again    |             0 |          0 |     1 |       1 |       0 |          1
+ a run of 600,000                 | damaged  |             1 |          2 |     3 |       3 |       0 |           
+ a run of 600,000                 | repaired |             1 |          2 |     3 |       3 |       2 |           
+ a run of 600,000                 | audit    |             0 |          0 |     3 |       3 |       0 |           
+ a run of 600,000                 | again    |             0 |          0 |     3 |       3 |       0 |          3
+(48 rows)
+
+DROP TABLE t;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

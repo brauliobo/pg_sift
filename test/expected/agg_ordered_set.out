@@ -24,8 +24,8 @@ INSERT INTO os (id, g, small, f, f4, d, n, i8, ts, tz, nm) VALUES (100001, 9001,
 	(100003, 9002, 2, 2.5, 3.5, '2024-01-03', 2, 9223372036854775807, '2024-01-03', '2024-01-03+00', 2.5),
 	(100004, 9003, 3, '-0', 0.5, '2024-01-04', 0, 0, '2024-01-04', '2024-01-04+00', 0), (100005, 9003, 3, '-0', 0.5, '2024-01-04', 0, 0, '2024-01-04', '2024-01-04+00', 0);
 CREATE INDEX os_col ON os USING sift_col (g, small, f, f4, d, n, i8, ts, tz, nm);
-NOTICE:  sift_col index "os_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = g, small
+NOTICE:  sift_col index "os_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, small
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('os_col');
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) os;
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_or_normal(q) $$;

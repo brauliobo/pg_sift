@@ -25,7 +25,7 @@ typedef struct BlobHdr
 #pragma GCC visibility push(hidden)
 
 /* agg/blob/ */
-void blob_dump(AggExec *ex, int lane, StringInfo b);
+void blob_dump_chunks(AggExec *ex, MemoryContext tmp, void (*put) (void *arg, int p, StringInfo b), void *arg);
 void blob_dump_list(AggExec *ex, int lane, const uint32 *gl, uint32 ng, StringInfo b);
 bool blob_splittable(const AggExec *ex);
 void blob_dump_parts(AggExec *ex, int nparts, const uint32 *order, const uint32 *start, const uint32 *fill, MemoryContext tmp,

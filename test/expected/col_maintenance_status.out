@@ -6,8 +6,8 @@ SET sift.async_maintenance = on;
 CREATE TABLE ms_facts (id int, key int, kind text, amount numeric(10,2)) WITH (autovacuum_enabled = false);
 INSERT INTO ms_facts SELECT g, g % 100, 'cat_' || (g % 8), g % 997 FROM generate_series(1, 20000) g;
 CREATE INDEX ms_idx ON ms_facts USING sift_col (id, key, kind, amount);
-NOTICE:  sift_col index "ms_idx": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = key, kind
+NOTICE:  sift_col index "ms_idx": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = key, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ms_idx');
 VACUUM ms_facts;
 CREATE FUNCTION ms_status() RETURNS TABLE (heap regclass, rewrite_due text, blocked_by text[]) LANGUAGE sql AS

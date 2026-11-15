@@ -3,6 +3,7 @@
 -- hash memory (work_mem times hash_mem_multiplier) the slots' arrays are those of the hash table, which holds the groups there are. The result
 -- is the same whichever table holds them.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE wd_facts (id int, k1 int, k2 int, k3 int, k4 int, k5 int, k6 int, k7 int, k8 int, k9 int, k10 int, a float8, b float8, c int) WITH (autovacuum_enabled = false);
@@ -11,21 +12,7 @@ FROM (SELECT i, i % 40 AS g FROM generate_series(1, 30000) i) s;
 CREATE INDEX wd_facts_col ON wd_facts USING sift_col (id, k1, k2, k3, k4, k5, k6, k7, k8, k9, k10, a, b, c);
 VACUUM (FREEZE, ANALYZE) wd_facts;
 
-CREATE FUNCTION same_rows(q text) RETURNS TABLE (scan text, rows_pushed bigint, differences bigint) LANGUAGE plpgsql AS $$
-DECLARE
-	j jsonb;
-BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO j;
-	scan := CASE WHEN jsonb_path_exists(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")') THEN 'SiftAgg' ELSE 'normal' END;
-	EXECUTE format('CREATE TEMP TABLE on_rows ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE off_rows ON COMMIT DROP AS %s', q);
-	RESET sift.enable_agg;
-	rows_pushed := (SELECT count(*) FROM on_rows);
-	differences := (SELECT count(*) FROM ((TABLE on_rows EXCEPT TABLE off_rows) UNION ALL (TABLE off_rows EXCEPT TABLE on_rows)) d);
-	DROP TABLE on_rows, off_rows;
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same_rows(q text) RETURNS TABLE (scan text, rows_pushed bigint, differences bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_scan_kind_rows_and_differences(q) $$;
 
 \set q 'SELECT k1, k2, k3, k4, k5, k6, k7, k8, k9, k10, count(*) AS n, sum(a) AS sa, avg(a) AS aa, sum(b) AS sb, avg(b) AS ab, sum(c) AS sc, min(a) AS lo, max(b) AS hi, count(DISTINCT id) AS di, count(c) AS cc, sum(a * b) AS sab FROM wd_facts GROUP BY k1, k2, k3, k4, k5, k6, k7, k8, k9, k10'
 
@@ -41,4 +28,5 @@ RESET work_mem;
 
 DROP FUNCTION same_rows(text);
 DROP TABLE wd_facts;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

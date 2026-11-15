@@ -13,8 +13,6 @@
 #ifndef SIFT_AGGSPEC_H
 #define SIFT_AGGSPEC_H
 
-#include "agg/spec/expr.h"
-#include "agg/spec/join.h"
 #include "agg/spec/spec.h"
 
 #endif							/* SIFT_AGGSPEC_H */

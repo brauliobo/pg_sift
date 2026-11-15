@@ -9,34 +9,20 @@
 
 #if __has_include("col/col.h")
 
-#include "access/genam.h"
-#include "access/relation.h"
 #include "access/table.h"
-#include "access/tableam.h"
-#include "catalog/index.h"
-#include "catalog/pg_type.h"
-#include "executor/executor.h"
-#include "nodes/execnodes.h"
-#include "utils/lsyscache.h"
-#include "utils/memutils.h"
+#include "pgstat.h"
 #include "utils/rel.h"
 
-#include "agg/kern.h"
 #include "agg/pre.h"
 #include "agg/sel.h"
 #include "agg/wide.h"
-#include "core/popcount.h"
 #include "core/store.h"
 #include "core/visibility.h"
 #include "col/col.h"
 #include "col/gpu.h"
 #include "col/pagg.h"
-#include "col/am.h"
-#include "col/enc.h"
 #include "col/pg.h"
 #include "col/runs.h"
-#include "agg/colsrc.h"
-#include "col/shred_pg.h"
 
 #include "agg/col_int.h"
 
@@ -81,14 +67,11 @@ leaf_vtype(const SiftColDef *def)
 	return SCV_I32;
 }
 
-/*
- * A leaf the aggregate scan does not read: a lane of a wide value and the heads that are not one machine word;
- * with no SQL type no expression matches it. money is one int64 and is read as such.
- */
+/* A leaf the aggregate scan does not read: a lane of a wide value and the heads that are not one machine word; with no SQL type no expression matches it. money is one int64, read as such. */
 static bool
 leaf_hidden(const SiftColDef *def)
 {
-	return def->lane > 0 && !sift_col_def_arrlen_lane(def);
+	return (def->lane > 0 && !sift_col_def_arrlen_lane(def)) || (def->flags & SIFT_COLD_FOUND);
 }
 
 /* "a.b" below the index attribute `att` of a leaf path "att.a.b" / "att->a->b" / "att.a[]" / "att.*": the keys, as String nodes */
@@ -125,7 +108,7 @@ path_below(const char *path, const char *att)
 	return keys;
 }
 
-/* the field name of a child of a group: after "[]." (list) or the member / value of a map */
+/* the field name of a child of a group: after "[]." (list) or the member / value of a map; "#present" for the leaf of the document itself */
 static void
 child_name(const char *path, bool is_map, bool is_key, char *name)
 {
@@ -136,7 +119,7 @@ child_name(const char *path, bool is_map, bool is_key, char *name)
 	else if (f)
 		strlcpy(name, f + 3, NAMEDATALEN);
 	else
-		name[0] = '\0';
+		strlcpy(name, strstr(path, "#present") ? "#present" : "", NAMEDATALEN);	/* the leaf of a jsonb document, true or NULL */
 }
 
 /* The leaf of column def i of a shredded attribute: its place in the group tree, its path below the attribute, its kind and vector type, its SQL type in desc */
@@ -169,12 +152,11 @@ sift_colsrc_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf 
 	else
 	{
 		l->kind = SCL_SCALAR;
-		l->vtype = def->store == SIFT_COLS_VAR ? SCV_I64 : leaf_vtype(def);
+		l->vtype = def->store == SIFT_COLS_VAR || (def->lane > 0 && i >= def->lane && sift_col_def_shape(&cols[i - def->lane])) ? SCV_I64 : leaf_vtype(def);	/* the lanes of a range or network are 64-bit positions whatever the head's type */
 		l->lossy |= def->store == SIFT_COLS_VAR;
-		if (def->parent < 0)
+		if (def->parent < 0 && !(def->flags & SIFT_COLD_FOUND))
 			l->path = path_below(def->path, att);
-		else
-			child_name(def->path, is_map, strstr(def->path, "#key") != NULL, l->name);
+		child_name(def->path, is_map, strstr(def->path, "#key") != NULL, l->name);
 	}
 }
 
@@ -219,6 +201,7 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 		st->ovf_units[i] = st->ovf[i] ? Max(ls[i].novf, 1.0) / Max(ls[i].nunits, 1.0) : 0;
 		st->ovf_frac[i] = ls[i].ovf_vals > 0 ? ls[i].ovf_slots / ls[i].ovf_vals : -1;
 		st->nokinds[i] = ls[i].nokinds;
+		st->rootless[i] = ls[i].nvals > 0 ? ls[i].rootless * ls[i].nnull / ls[i].nvals : ls[i].rootless;
 		st->jnull[i] = ls[i].has_jnull || ls[i].nokinds || wjnull[i];
 		if (def->kind == SIFT_COLK_GROUP)
 		{
@@ -233,7 +216,8 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 			st->set_keys[i] = ls[i].set_keys / ls[i].set_units;
 		}
 		st->head_cover[i] = ls[i].nunits > 0 ? Min(ls[i].head_units / ls[i].nunits, 1.0) : 0;
-		st->gord_cover[i] = ls[i].nvals > 0 ? Min((ls[i].gord_rows - ls[i].gord_grp_rows + ls[i].gord_ends_rows) / ls[i].nvals, 1.0) : 0;
+		st->gord_free[i] = ls[i].gord_rows + ls[i].gord_ends_rows > 0 ? ls[i].gord_free_rows : 0;
+		st->gord_cover[i] = ls[i].nvals > 0 ? Min((ls[i].gord_rows - ls[i].gord_grp_rows + ls[i].gord_ends_rows + st->gord_free[i]) / ls[i].nvals, 1.0) : 0;
 		st->gord_coll[i] = ls[i].gord_coll;
 		st->gord_group[i] = ls[i].nvals > 0 && ls[i].gord_grp_rows >= 0.9 * ls[i].nvals ? ls[i].gord_gcol : -1;
 		st->ndistinct[i] = nonnull;
@@ -296,13 +280,7 @@ col_stats(Relation index, SiftSrcStats *st)
 	}
 	sift_colsrc_leaf_stats(meta->cols, meta->ncols, memo.leaves, wovf, wjnull, st);
 	st->zones = col_zones(memo.zones, meta);
-	st->rows_miss = memo.pre->units > 0 ? 1.0 - Min(memo.pre->rows / memo.pre->units, 1.0) : 0.0;
-	for (int i = 0; memo.pre->units > 0 && i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
-	{
-		st->dim_miss[i] = 1.0 - Min(memo.pre->dim[i] / memo.pre->units, 1.0);
-		st->mm_miss[i] = 1.0 - Min(memo.pre->mm[i] / memo.pre->units, 1.0);
-		st->roll_miss[i] = 1.0 - Min(memo.pre->roll[i] / memo.pre->units, 1.0);
-	}
+	st->miss_pending = true;
 }
 
 static void
@@ -319,7 +297,7 @@ col_stamp(Relation index, SiftSrcStamp *st)
 }
 
 static void *
-col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags)
+col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	ColSource  *src = palloc0(sizeof(ColSource));
@@ -328,7 +306,8 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 	src->heap = heap;
 	src->index = index;
 	src->snapshot = snapshot;
-	src->cs = sift_col_open(heap, index, snapshot, mcxt, flags);
+	src->cs = sift_col_open(heap, index, snapshot, mcxt, flags, view);
+	pgstat_count_index_scan(index);	/* idx_scan counts the aggregate scans too: maint/rewrite.c overlay_worth reads it */
 	src->lay = col_layout(index);
 	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
 	src->buf = palloc0(sizeof(SiftSrcLeafBuf) * src->lay->nleaves);
@@ -345,20 +324,32 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 }
 
 static void *
-col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
 {
-	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS);
+	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, view);
 }
 
 /* a partition read through its partitioned table: the privileges and row security of the table were checked, not those of the partition */
 static void *
-col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
 {
-	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS);
+	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, view);
 
 	/* the open left the header page of each segment pinned, and a scan of thousands of partitions opens them all before it reads one */
 	sift_col_unpin(src->cs);
 	return src;
+}
+
+static Size
+col_view_size(void *impl)
+{
+	return sift_col_view_size(((ColSource *) impl)->cs);
+}
+
+static void
+col_view_export(void *impl, void *buf)
+{
+	sift_col_view_export(((ColSource *) impl)->cs, buf);
 }
 
 static void
@@ -516,15 +507,13 @@ col_whole(void *impl, int leaf, const int *meas, int nmeas)
 }
 
 static void
-col_count_range(void *impl, int leaf, SiftSrcStrOp op, const char *s, uint32 len)
+col_count_range(void *impl, int leaf, SiftColOp op, const char *s, uint32 len)
 {
 	ColSource  *src = impl;
-	static const SiftColOp ops[] = {[SSTR_EQ] = SIFT_COLOP_EQ, [SSTR_LT] = SIFT_COLOP_LT, [SSTR_LE] = SIFT_COLOP_LE, [SSTR_GT] = SIFT_COLOP_GT,
-	[SSTR_GE] = SIFT_COLOP_GE, [SSTR_PREFIX] = SIFT_COLOP_PREFIX};
 
 	/* a selection of heap addresses (a semi-join's) is the rows of units, not of a segment */
-	if (src->sel.keep == NULL && ops[op] != 0)
-		sift_col_count_range(src->cs, leaf, ops[op], s, len);
+	if (src->sel.keep == NULL && (op == SIFT_COLOP_EQ || (op >= SIFT_COLOP_LT && op <= SIFT_COLOP_GE) || op == SIFT_COLOP_PREFIX))
+		sift_col_count_range(src->cs, leaf, op, s, len);
 }
 
 static void
@@ -892,9 +881,13 @@ static const SiftSrcProvider col_provider = {
 	.owns_table = col_owns_table,
 	.layout = col_layout,
 	.stats = col_stats,
+	.miss = sift_col_miss,
 	.stamp = col_stamp,
 	.open = col_open,
 	.open_part = col_open_part,
+	.view_size = col_view_size,
+	.view_export = col_view_export,
+	.conn_proof = sift_col_conn_proof,
 	.close = col_close,
 	.unpin = col_unpin,
 	.source_layout = col_source_layout,
@@ -942,7 +935,8 @@ static const SiftSrcProvider col_provider = {
 	.gorder_before = col_gorder_before,
 	.gorder_exact = col_gorder_exact,
 	.gorder_clean = col_gorder_clean,
-	.gorder_group_values = col_gorder_group_values,
+	.gorder_groups_open = col_gorder_groups_open,
+	.gorder_groups_next = col_gorder_groups_next,
 	.gorder_head = col_gorder_head,
 	.gorder_values = col_gorder_values,
 	.gorder_range = col_gorder_range,

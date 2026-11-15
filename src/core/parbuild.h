@@ -12,7 +12,6 @@
 #include "executor/instrument.h"
 #include "nodes/execnodes.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
 
 typedef struct SiftParCommon
 {

@@ -1,29 +1,18 @@
 /*
  * bm25/cscan_exec.c - executor side of SiftScan and SiftCount: the LIMIT hint, begin, exec, end, rescan, EXPLAIN and the parallel (DSM) hooks.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include <math.h>
 
-#include "access/relation.h"
-#include "access/sysattr.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
-#include "catalog/pg_am_d.h"
-#include "commands/explain.h"
 #include "executor/executor.h"
-#include "lib/binaryheap.h"
-#include "miscadmin.h"
 #include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
-#include "nodes/tidbitmap.h"
-#include "port/pg_bitutils.h"
-#include "storage/bufmgr.h"
 #include "storage/predicate.h"
-#include "utils/array.h"
-#include "utils/builtins.h"
-#include "utils/datum.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/ruleutils.h"
@@ -32,6 +21,7 @@
 #include "bm25/eval.h"
 #include "bm25/planner.h"
 #include "bm25/cscan_int.h"
+#include "core/cmp.h"
 #include "core/compat.h"
 #include "core/explain.h"
 
@@ -91,15 +81,6 @@ init_attrs(SiftScanState *ss, List *flat)
 
 /* The most keys of a table the scan tests the join column against: more is left to the join */
 
-static int
-cmp_i64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return x < y ? -1 : x > y;
-}
-
 /*
  * The keys of the rows that pass the quals of each table the planner offered (SIFT_PRIV_SEMI), as one more IN test on the column they are joined
  * to: the rows the join keeps of the scan are among them, whatever else it does. A table that holds more keys than SIFT_SEMI_MAX_SET adds none.
@@ -113,7 +94,7 @@ load_semi(SiftScanState *ss)
 	if (ss->semi_done || n == 0)
 		return;
 	ss->semi_done = true;
-	ss->attr = ss->attr ? repalloc(ss->attr, (ss->nattr + n) * sizeof(SiftAttrTest)) : palloc((ss->nattr + n) * sizeof(SiftAttrTest));
+	SIFT_REGROW(ss->attr, (ss->nattr + n) * sizeof(SiftAttrTest));
 	for (int i = 0; i < n; i++)
 	{
 		Oid			reloid = DatumGetObjectId(((Const *) list_nth(ss->semi, 4 * i))->constvalue);
@@ -161,7 +142,7 @@ load_semi(SiftScanState *ss)
 		table_close(dim, AccessShareLock);
 		if (over)
 			continue;
-		qsort(set, nset, sizeof(int64), cmp_i64);
+		qsort(set, nset, sizeof(int64), sift_cmp_i64);
 		{
 			int			m = 0;
 
@@ -237,7 +218,8 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 	ss->iinfo = BuildIndexInfo(ss->index);
 	ss->heapslot = table_slot_create(ss->heap, &estate->es_tupleTable);
 	ss->cxt = AllocSetContextCreate(estate->es_query_cxt, "sift scan", ALLOCSET_DEFAULT_SIZES);
-	ss->tmpcx = AllocSetContextCreate(ss->cxt, "sift recheck", ALLOCSET_DEFAULT_SIZES);
+	/* beside ss->cxt, not in it: close_scan resets that one at every rescan, which deletes its children and leaves this pointer at a context that the next one created takes the place of */
+	ss->tmpcx = AllocSetContextCreate(estate->es_query_cxt, "sift recheck", ALLOCSET_DEFAULT_SIZES);
 	ss->wd = SIFT_OFFMASK_WORDS;
 	ss->vm_sb = UINT32_MAX;
 	init_cols(ss, cs);
@@ -266,6 +248,7 @@ sift_end(CustomScanState *node)
 	index_close(ss->index, NoLock);
 	if (ss->heap_opened)
 		table_close(ss->heap, NoLock);
+	MemoryContextDelete(ss->tmpcx);
 	MemoryContextDelete(ss->cxt);
 }
 
@@ -430,6 +413,17 @@ export_bind(SiftScanState *ss)
 	MemoryContextDelete(tmp);
 }
 
+/* Unranked: the directory alone, the heap superblocks the ranges are of are the leader's too, and each participant binds its own query on it */
+static void
+export_dir(SiftScanState *ss)
+{
+	SiftDirSnapshot dir;
+
+	sift_dir_read(ss->index, &dir);
+	sift_par_set_bind(ss->par.sh, ss->par.area, &dir, sizeof(dir));
+	SIFT_TEST_GATE(sift_test_export_gate, 5);
+}
+
 static void
 prepare_shared(SiftScanState *ss, int nworkers, bool rescan)
 {
@@ -439,6 +433,8 @@ prepare_shared(SiftScanState *ss, int nworkers, bool rescan)
 		sift_par_init(ss->par.sh, nworkers, heap_superblocks(ss));
 	if (ss->mode == SIFT_MODE_RANKED)
 		export_bind(ss);
+	else
+		export_dir(ss);
 }
 
 static Size

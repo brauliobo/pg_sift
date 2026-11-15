@@ -1,0 +1,17 @@
+-- A key-cut index built at a small maintenance_work_mem is several segments, the last one shorter than the others (a writer is cut at its memory, not at equal
+-- shares). They hold disjoint key ranges: each is a partition of the key, nothing is due, and a pass of the rewrite finds nothing to do instead of being asked
+-- again and again (the rows are string-heavy: the memory of a writer is mostly dictionary).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE ms (id int, a text, b text, c text) WITH (autovacuum_enabled = false);
+INSERT INTO ms SELECT g, md5(g::text) || md5((g * 3)::text), md5((g * 5)::text) || md5((g * 7)::text), md5((g * 11)::text) FROM generate_series(1, 400000) g;
+VACUUM (FREEZE, ANALYZE) ms;
+SET maintenance_work_mem = '4MB';
+CREATE INDEX ms_i ON ms USING sift_col (id, a, b, c) WITH (key_cut = 'id');
+SELECT count(*) > 1 AS several_segments FROM sift.col_segments('ms_i') WHERE kind = 'immutable';
+SELECT sift.col_maintenance_due('ms_i', false) IS NULL AS nothing_due;
+SELECT sift.col_verify('ms_i', true);
+
+DROP TABLE ms;
+DROP EXTENSION pg_sift;

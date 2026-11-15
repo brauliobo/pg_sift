@@ -10,8 +10,8 @@ CREATE TABLE ul_map (id serial PRIMARY KEY, kind int NOT NULL, label text NOT NU
 INSERT INTO ul_map (kind, label) SELECT k, 'label ' || k || '/' || n FROM generate_series(1, 30) k, generate_series(1, 2) n;
 CREATE INDEX ul_map_kind ON ul_map (kind);
 CREATE INDEX ul_fact_col ON ul_fact USING sift_col (id, dim_a_id, kind, v);
-NOTICE:  sift_col index "ul_fact_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = dim_a_id, kind; track_changes = id
+NOTICE:  sift_col index "ul_fact_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = dim_a_id, kind; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ul_fact_col');
 ANALYZE ul_fact;
 ANALYZE ul_map;

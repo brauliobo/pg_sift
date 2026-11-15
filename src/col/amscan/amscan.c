@@ -4,7 +4,6 @@
  * and the batches a tuple scan returns
  */
 #include "postgres.h"
-#include <math.h>
 #include "access/table.h"
 #include "access/visibilitymap.h"
 #include "utils/datum.h"
@@ -280,7 +279,7 @@ col_scan_source(ColScanOpaque *so, IndexScanDesc scan, uint32 flags)
 	}
 	if (so->src == NULL)
 	{
-		so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->scx, flags);
+		so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->scx, flags, NULL);
 		so->sflags = flags;
 		so->ssnap = scan->xs_snapshot;
 	}
@@ -307,7 +306,7 @@ col_tomb_open(IndexScanDesc scan, ColScanOpaque *so, bool rowkey)
 	if (!rowkey || scan->xs_snapshot == NULL || scan->xs_snapshot->snapshot_type != SNAPSHOT_MVCC)
 		return;
 	log = sift_col_log(scan->indexRelation);
-	if (log != NULL && log->nents + log->nrecent > 0)
+	if (log != NULL && log->nents + log->nrecent > 0 && !sift_col_track_own(log))
 		so->log = log;
 }
 
@@ -359,7 +358,7 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	so->first = palloc((r->natts + 1) * sizeof(int));
 	memcpy(so->first, r->first, (r->natts + 1) * sizeof(int));
 	so->natts = r->natts;
-	rowkey = r->rowkey;	/* r is the cache's: opening the heap below reloads the entry */
+	rowkey = r->track;	/* r is the cache's: opening the heap below reloads the entry */
 	so->defs = palloc(r->meta.ncols * sizeof(SiftColDef));
 	memcpy(so->defs, r->meta.cols, r->meta.ncols * sizeof(SiftColDef));
 	so->preds = palloc(Max(scan->numberOfKeys, 1) * sizeof(SiftColPred));
@@ -463,7 +462,7 @@ sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		if (sel.count > so->cap)
 		{
 			so->cap = Max(sel.count, 2 * so->cap);
-			so->tids = so->tids ? repalloc(so->tids, so->cap * sizeof(ItemPointerData)) : palloc(so->cap * sizeof(ItemPointerData));
+			SIFT_REGROW(so->tids, so->cap * sizeof(ItemPointerData));
 		}
 		sift_col_tids(&unit, &sel, so->tids);
 		sel.count = col_tomb_keep(so, scan->xs_snapshot, so->tids, sel.count);

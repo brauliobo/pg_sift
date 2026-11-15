@@ -11,26 +11,18 @@
 #include "catalog/pg_aggregate_d.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/fmgroids.h"
 
 #include "agg/agg.h"
-#include "agg/flat/int.h"
 
 /* a sub-select or a parameter of the statement: a value the statement asks once, not a constant the planner folds */
-static bool
-asked_once_walker(Node *n, void *context)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(asked_once_walker, void *, context,
 	if (IsA(n, SubLink) && ((SubLink *) n)->subLinkType == EXPR_SUBLINK)
 		return true;
 	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXTERN)
-		return true;
-	return expression_tree_walker(n, asked_once_walker, context);
-}
+		return true;)
 
 /* the same for every row of the query: no column, no aggregate, nothing volatile, no sub-select that reads a column of the query */
 static bool
@@ -92,15 +84,9 @@ factor_mutator(Node *n, Factor *f)
 }
 
 /* a sum of numerics: the read-only test that the statements with no such sum (nearly all) pass before the mutator copies their trees */
-static bool
-sum_numeric_walker(Node *n, void *context)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(sum_numeric_walker, void *, context,
 	if (IsA(n, Aggref))
-		return ((Aggref *) n)->aggfnoid == F_SUM_NUMERIC;
-	return expression_tree_walker(n, sum_numeric_walker, context);
-}
+		return ((Aggref *) n)->aggfnoid == F_SUM_NUMERIC;)
 
 bool
 sift_agg_factor_constants(Query *q, bool apply)

@@ -21,7 +21,6 @@
 
 #include "common/hashfn.h"
 #include "lib/ilist.h"
-#include "storage/bufmgr.h"
 #include "storage/dsm_impl.h"
 #include "storage/ipc.h"
 #include "storage/spin.h"

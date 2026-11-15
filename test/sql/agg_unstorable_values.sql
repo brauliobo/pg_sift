@@ -25,6 +25,11 @@ SELECT i, 'cat_' || chr(97 + i % 3), i / 10, jsonb_build_object('score', i % 11,
 FROM generate_series(1, 6000) i;
 UPDATE events SET payload = jsonb_set(payload, '{catg_a}', '"9"') WHERE id IN (100, 6000);
 UPDATE events SET payload = jsonb_set(payload, '{score}', '"n/a"') WHERE id = 3001;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE events_rows AS SELECT * FROM events ORDER BY ctid;
+TRUNCATE events;
+INSERT INTO events SELECT * FROM events_rows;
+DROP TABLE events_rows;
 CREATE INDEX events_col ON events USING sift_col (id, kind, day, payload) WITH (paths = 'payload.* float8');
 VACUUM ANALYZE events;
 
@@ -78,6 +83,11 @@ INSERT INTO facts SELECT i, 'cat_' || chr(97 + i % 3), i / 10,
 FROM generate_series(1, 2000) i;
 UPDATE facts SET payload = jsonb_set(payload, '{parts,0,score}', '"-0"') WHERE id IN (100, 1500);
 UPDATE facts SET payload = jsonb_set(payload, '{parts,1,score}', '"-0"') WHERE id = 7;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE facts_rows AS SELECT * FROM facts ORDER BY ctid;
+TRUNCATE facts;
+INSERT INTO facts SELECT * FROM facts_rows;
+DROP TABLE facts_rows;
 CREATE INDEX facts_col ON facts USING sift_col (id, kind, day, payload) WITH (paths = 'payload.parts[]{kind text, score float8}');
 VACUUM ANALYZE facts;
 SELECT pushed('SELECT r.kind, avg(r.score) FROM facts t JOIN LATERAL jsonb_to_recordset(t.payload -> $$parts$$) r(kind text, score float8) ON true GROUP BY 1') AS recordset_pushed;

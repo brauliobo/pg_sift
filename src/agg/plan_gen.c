@@ -3,63 +3,20 @@
  */
 #include "postgres.h"
 
-#include <math.h>
-
 #include "access/htup_details.h"
-#include "access/sysattr.h"
-#include "access/stratnum.h"
-#include "access/table.h"
-#include "access/stratnum.h"
 #include "catalog/pg_aggregate.h"
-#include "catalog/pg_am.h"
-#include "catalog/pg_class.h"
-#include "catalog/pg_collation.h"
-#include "commands/defrem.h"
-#include "catalog/pg_index.h"
-#include "miscadmin.h"
-#include "catalog/pg_operator.h"
-#include "catalog/pg_opfamily.h"
 #include "catalog/pg_proc.h"
-#include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
-#include "nodes/extensible.h"
-#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/appendinfo.h"
-#include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/plancat.h"
-#include "optimizer/pathnode.h"
-#include "optimizer/paramassign.h"
-#include "optimizer/paths.h"
 #include "optimizer/planmain.h"
-#include "optimizer/planner.h"
-#include "optimizer/tlist.h"
-#include "parser/parse_relation.h"
-#include "parser/parsetree.h"
-#include "port/pg_bitutils.h"
-#include "rewrite/rewriteManip.h"
-#include "utils/array.h"
-#include "utils/builtins.h"
 #include "utils/fmgroids.h"
-#include "utils/fmgrprotos.h"
-#include "utils/jsonb.h"
-#include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
-#include "utils/numeric.h"
-#include "utils/rel.h"
-#include "utils/ruleutils.h"
-#include "utils/selfuncs.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
-#include "agg/agg.h"
-#include "agg/part.h"
-#include "agg/topn.h"
-#include "agg/spec.h"
-#include "agg/colsrc.h"
-#include "agg/search.h"
 #include "agg/plan_int.h"
 
 /* a leaf the executor can turn into a Datum of its type */
@@ -225,6 +182,12 @@ compile_gen_arg(AggCtx *c, Node *arg, SiftAggGenArg *out, double *cost, bool *ma
 	return true;
 }
 
+static const SiftSrcLeaf *
+plan_leaf_of(void *c, int id)
+{
+	return leaf_of((AggCtx *) c, id);
+}
+
 /* the function's own cost in operator costs (its procost, or the planner support function's estimate) */
 static double
 fn_cost(AggCtx *c, Oid fn)
@@ -344,6 +307,85 @@ gen_desc(AggCtx *c, Aggref *a, SiftAggGen *g, const char *txt)
 	return psprintf("%s(%s%s%s)", get_func_name(a->aggfnoid), g->distinct ? "DISTINCT " : "", txt, s.data);
 }
 
+/* a slice a[1:n] or an element a[n] of a constant n: how many of the first elements the expression reads, else 0 */
+static int64
+slice_reads(SubscriptingRef *r)
+{
+	Const	   *up,
+			   *lo;
+
+	if (r->refassgnexpr != NULL || list_length(r->refupperindexpr) != 1 || list_length(r->reflowerindexpr) > 1 ||
+		!IsA(linitial(r->refupperindexpr), Const) || ((Const *) linitial(r->refupperindexpr))->constisnull)
+		return 0;
+	up = linitial(r->refupperindexpr);
+	if (up->consttype != INT4OID || DatumGetInt32(up->constvalue) < 1)
+		return 0;
+	if (r->reflowerindexpr == NIL)
+		return DatumGetInt32(up->constvalue);
+	lo = linitial(r->reflowerindexpr) ? (Const *) linitial(r->reflowerindexpr) : NULL;
+	return lo != NULL && IsA(lo, Const) && !lo->constisnull && lo->consttype == INT4OID && DatumGetInt32(lo->constvalue) == 1 ? DatumGetInt32(up->constvalue) : 0;
+}
+
+typedef struct SliceWalk
+{
+	const Aggref *agg;
+	int64		reads;			/* the most elements any slice of the aggregate reads */
+	bool		whole;			/* the aggregate is read as a whole somewhere */
+} SliceWalk;
+
+static bool
+slice_walker(Node *n, SliceWalk *w)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, SubscriptingRef) && ((SubscriptingRef *) n)->refexpr != NULL && equal(((SubscriptingRef *) n)->refexpr, w->agg))
+	{
+		int64		k = slice_reads((SubscriptingRef *) n);
+
+		if (k > 0)
+		{
+			w->reads = Max(w->reads, k);
+			return false;
+		}
+	}
+	if (IsA(n, Aggref) && equal(n, w->agg))
+	{
+		w->whole = true;
+		return true;
+	}
+	return expression_tree_walker(n, slice_walker, w);
+}
+
+/* the rows of each group an array_agg(x ORDER BY ..) is read for by the query that holds it: only its first elements (a[1:n]) in the select list, the sort and the HAVING, else 0 */
+static int
+agg_first_rows(AggCtx *c, const Aggref *a, int *ties)
+{
+	SliceWalk	w = {a, 0, false};
+
+	*ties = SIFT_TOPN_ROWS;
+	if (a->aggfnoid != F_ARRAY_AGG_ANYNONARRAY || a->aggorder == NIL || a->aggdistinct != NIL)
+		return 0;
+	if (a->location < -1)
+	{
+		*ties = (-a->location - 2) & 3;
+		return Min((-a->location - 2) >> 2, SIFT_AGG_TOPN_MAX);
+	}
+	if (slice_walker((Node *) c->root->processed_tlist, &w) || slice_walker(c->root->parse->havingQual, &w) || w.reads > SIFT_AGG_TOPN_MAX)
+		return 0;
+	return (int) w.reads;
+}
+
+/* the ORDER BY of a DISTINCT aggregate is the order its set of distinct values comes out in: ascending by the btree order of the argument that varies, NULLs last (array_agg(DISTINCT x ORDER BY x)) */
+static bool
+distinct_in_set_order(Aggref *a, int darg)
+{
+	SortGroupClause *sgc = list_length(a->aggorder) == 1 ? linitial_node(SortGroupClause, a->aggorder) : NULL;
+	TargetEntry *te = list_nth_node(TargetEntry, a->args, darg);
+
+	return sgc != NULL && te->ressortgroupref == sgc->tleSortGroupRef && !sgc->nulls_first &&
+		sgc->sortop == lookup_type_cache(exprType((Node *) te->expr), TYPECACHE_LT_OPR)->lt_opr;
+}
+
 bool
 compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 {
@@ -386,7 +428,7 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 				g->darg = k;
 				nvar++;
 			}
-		hash = nvar == 1 && a->aggorder == NIL && !mapped;
+		hash = nvar == 1 && !mapped && (a->aggorder == NIL || distinct_in_set_order(a, g->darg));
 	}
 	if (hash || (ordered && !hyp))
 	{
@@ -420,6 +462,13 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	g->sorted = !ordered && !hash && (a->aggorder != NIL || a->aggdistinct != NIL);
 	g->cost = AGG_GEN_ROW + fn_cost(c, fns.transfn) + cost + (g->distinct ? AGG_GEN_DISTINCT : 0) + (ordered ? AGG_GEN_ORDERED : 0) +
 		(g->sorted ? AGG_GEN_SORTED : 0) + (hyp ? AGG_GEN_HYP : 0);
+	if (gen_stat_eligible(fns.transfn, g, plan_leaf_of, c, NULL, NULL))
+		g->cost = AGG_STAT_ROW * g->nargs;
+	if (g->sorted && !g->distinct && (g->topn = agg_first_rows(c, a, &g->ties)) > 0)
+	{
+		g->sorted = false;
+		g->cost = cost + AGG_GEN_TOPN + list_length(a->aggorder) * AGG_GEN_FIRST_KEY;
+	}
 	g->hll = -1;
 	/* a nondeterministic collation hashes the sort key of a string, which a unit does not hold */
 	if (g->serial == NULL && g->nargs == 1 && (!OidIsValid(a->inputcollid) || get_collation_isdeterministic(a->inputcollid)) && g->arg[0].nleaves == 1 && g->arg[0].expr == NULL && out->filter == NULL)
@@ -435,6 +484,8 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	out->restype = a->aggtype;
 	out->collid = a->inputcollid;
 	out->desc = gen_desc(c, a, g, txt.data);
+	if (g->topn)
+		out->desc = psprintf(g->ties == SIFT_TOPN_ROWS ? "%s[1:%d]" : g->ties == SIFT_TOPN_RANK ? "%s[rank <= %d]" : "%s[dense_rank <= %d]", out->desc, g->topn);
 	record_plan_function_dependency(c->root, a->aggfnoid);
 	foreach_node(TargetEntry, te, a->args)
 		record_deps(c->root, (Node *) te->expr);

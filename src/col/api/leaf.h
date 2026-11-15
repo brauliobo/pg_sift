@@ -37,6 +37,7 @@ typedef enum SiftColStore
 #define SIFT_COLD_NOIMAGE	0x0008	/* the image of an array that keeps its lengths is not stored: the head is NULL in every row (and lossy), the lanes and the elements hold the array; set in the index definition (option array_images) */
 #define SIFT_COLD_SHAPE		0x0004	/* a range or network head and its lanes: told from the lengths of an array, which has as many VARLENA lanes */
 #define SIFT_COLD_NET		0x0010	/* with SIFT_COLD_SHAPE: the head of a network (inet, cidr): the node of its block and the host bits inside it, a range has the start and the end */
+#define SIFT_COLD_FOUND	0x0020	/* the flag of a connection (col/conn.h, leaf "<fk>#found"): the parent row of the key was found; not a column of the table, its attno is the attribute that holds the key */
 #define SIFT_COLD_LOSSY		0x0001	/* values that may not fit the declared type, or whose bytes are not the type's equality (char without a length): predicates on it must not be pushed down */
 
 /*
@@ -103,7 +104,7 @@ typedef struct SiftColDef
 static inline bool
 sift_col_def_has_kinds(const SiftColDef *d)
 {
-	return d->store != SIFT_COLS_VAR && d->path != NULL && d->path[0] != 0 && d->lane == 0;	/* a lane after the head of a wide leaf has a path of its own (name#k) */
+	return d->store != SIFT_COLS_VAR && d->path != NULL && d->path[0] != 0 && d->lane == 0 && !(d->flags & SIFT_COLD_FOUND);	/* a lane after the head of a wide leaf has a path of its own (name#k) */
 }
 
 static inline bool
@@ -118,6 +119,15 @@ sift_col_def_is_image(const SiftColDef *d)
 {
 	return d->type == SIFT_COLT_VARLENA || d->type == SIFT_COLT_MACADDR || d->type == SIFT_COLT_MACADDR8 || d->type == SIFT_COLT_TIMETZ ||
 		(d->store == SIFT_COLS_STR && (d->type == SIFT_COLT_UUID || d->type == SIFT_COLT_BYTEA));
+}
+
+/* the leaf "<column>#present" of a jsonb document (true, NULL where the document is SQL NULL): a flag of the column, no dimension or measure of the pre-aggregates */
+static inline bool
+sift_col_def_is_present(const SiftColDef *d)
+{
+	size_t		n = strlen(d->path);
+
+	return n > 8 && strcmp(d->path + n - 8, "#present") == 0;
 }
 
 /* a leaf that only a 3.2 segment holds: a lane of a wide value, money, interval, time, enum or an image */

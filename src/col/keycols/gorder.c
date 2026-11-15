@@ -5,6 +5,8 @@
 
 #include <math.h>
 
+#include "miscadmin.h"
+#include "utils/lsyscache.h"
 #include "utils/varlena.h"
 #include "col/am.h"
 #include "col/keycols/keycols_int.h"
@@ -19,12 +21,31 @@ typedef struct GordCand
 	bool		ties;			/* fewer than GORD_AUTO_DISTINCT values: weighed like a text column, by the OFFSET that ends in a group of equal keys */
 	bool		nofit;			/* a date or timestamp in heap order (correlation over GORD_AUTO_CORR) or one the units are cut by: no array of its own, but one for the group */
 	bool		grouped;		/* an integer, date or timestamp: the second order sorted by the entity column can be written for it (a numeric or text array has none) */
+	bool		point;			/* a nearly unique integer in heap order (a serial id): its array is runs of consecutive addresses, 0.4 bytes a row, and answers the equality that the point directory (3.3) would */
 	double		corr;
 	double		bytes;			/* a text column: the bytes a row of its array, the share of the build it adds, and its collation */
 	double		write;
 	double		benefit;		/* B and C of the choice of a text column, said by the NOTICE */
 	double		cost;
+	double		nullfrac;		/* the share of the rows with no value: the table of groups of its array is packed only where a segment has no NULL key */
 } GordCand;
+
+/*
+ * The bytes a row of the table of groups of an array grouped by ndist values in a table of rows rows. Every segment holds a table of the groups it has (about seg rows of the table: a segment
+ * of 227,000 rows has 85,000 of 93,000 values), 24 bytes a group, or from SIFT_CGORD_GRP_PACK_MIN groups on, with no NULL key in the segment, the bits of the distance of a group from
+ * the first (those of its values) and of the start of its entries (those of the rows of the segment), as sift_cgord_grp_pack writes it. seg: the rows of a segment, from the memory a build
+ * has (sift_colw_budget) and the bytes a row takes in the writer of narrays order arrays
+ */
+static double
+gord_table_row_bytes(double rows, double ndist, double nullfrac, int narrays)
+{
+	double		seg = Max(Min(rows, (double) sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_BUILD_PCT, SIFT_COLW_BUILD_BASE) /
+							  Max(sift_colw_leaves_memory(narrays, narrays, true), 1)), 1.0),
+				groups = ndist * (1.0 - exp(-seg / Max(ndist, 1.0)));
+	bool		packed = groups >= SIFT_CGORD_GRP_PACK_MIN && nullfrac * seg < 1.0;
+
+	return groups * (packed ? (ceil(log2(Max(ndist, 2.0))) + ceil(log2(seg + 1.0))) / 8.0 : SIFT_CGORD_GRPENT) / seg;
+}
 
 static int
 gord_cand_cmp(const void *a, const void *b)
@@ -41,6 +62,43 @@ gord_cand_cmp(const void *a, const void *b)
 	if ((int) (x->corr * 10) != (int) (y->corr * 10))
 		return (int) (x->corr * 10) < (int) (y->corr * 10) ? -1 : 1;	/* tenths: the correlations of columns of random values differ run to run */
 	return x->leaf - y->leaf;
+}
+
+/* order_array_group is 'auto: col...' (one the build wrote, or the user's hint): the column it names first stays a candidate for the group, entity or not */
+static bool
+group_named(const char *gopt, const char *name)
+{
+	bool		autolist;
+	const char *p = sift_cpagg_auto_list(gopt, &autolist);
+	size_t		n;
+
+	p += strspn(p, " ");
+	n = strcspn(p, ",;");
+	while (n > 0 && p[n - 1] == ' ')
+		n--;
+	return autolist && n == strlen(name) && strncmp(p, name, n) == 0;
+}
+
+/* what chose the group column that order_array_group names (the NOTICE of the build and sift.index_choices say it): the b-tree that runs the shape, the entity, or the hint */
+const char *
+sift_col_group_reason(Relation heap, Relation index, const char *name)
+{
+	const SiftColRel *rel = sift_col_rel_private(index, CurrentMemoryContext);
+
+	for (int c = 0; c < rel->schema->ncols; c++)
+	{
+		const SiftColDef *d = &rel->schema->cols[c];
+		AttrNumber	hatt = keycols_heap_attno(index, d);
+		Oid			btree;
+
+		if (hatt == 0 || strcmp(keycols_leaf_name(index, d), name) != 0)
+			continue;
+		btree = keycols_group_btree(heap, index, hatt);
+		if (OidIsValid(btree))
+			return psprintf("b-tree %s", get_rel_name(btree));
+		return keycols_is_entity(heap, hatt, name) ? "entity" : "hint";
+	}
+	return "hint";
 }
 
 static int
@@ -119,7 +177,8 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 
 		bool		text = sift_cgord_leaf_text(d);
 		bool		ties,
-					nofit;
+					nofit,
+					point;
 
 		if (d->parent >= 0 || hatt == 0 || !(text || sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_numeric(rel->schema, d)))
 			continue;
@@ -128,11 +187,12 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 		cut = cut && sift_col_key_cut(rel);
 		if (!keycols_col_stats(heap, hatt, &ndistinct, &cr, &width) || (text && width > GORD_TEXT_WIDTH))
 			continue;
-		nofit = cut || cr >= GORD_AUTO_CORR;
+		point = !cut && cr >= GORD_AUTO_CORR && keycols_point_key(heap, index, rel->schema, d, &cr);
+		nofit = (cut || cr >= GORD_AUTO_CORR) && !point;
 		ties = !nofit && ndistinct < GORD_AUTO_DISTINCT;
 		if (((ties || nofit) && (text || !sift_cgord_leaf_time(d) || ndistinct < 2)) || (nofit && !sift_cgord_leaf_ok(rel->schema, d)))
 			continue;
-		cand[ncand] = (GordCand) {c, sift_cgord_leaf_time(d), text, ties, nofit, sift_cgord_leaf_ok(rel->schema, d), cr, 0, 0, 0, 0};
+		cand[ncand] = (GordCand) {c, sift_cgord_leaf_time(d), text, ties, nofit, sift_cgord_leaf_ok(rel->schema, d) && !point, point, cr, 0, 0, 0, 0, keycols_col_nullfrac(heap, hatt)};
 		if (ties)
 		{
 			double		rows = keycols_heap_rows(heap),
@@ -196,7 +256,7 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 		timepick |= cand[i].grouped && (fit[i] || cand[i].time);
 	}
 	/*
-	 * the arrays of a date, timestamp or integer column are grouped by the entity column that has the most values: WHERE g = x ORDER BY ts LIMIT n then reads n entries of x in each segment, where the plain
+	 * the arrays of a date, timestamp or integer column are grouped by the column the table is read by: the one a non-unique b-tree runs the shape of (it and a date or timestamp of the index are its first two key columns) or the user's hint, else the entity column that has the most values (a foreign key or a column named *_id: an integer with none of these is a guess at what a query filters by, 3.5 bytes a row of it): WHERE g = x ORDER BY ts LIMIT n then reads n entries of x in each segment, where the plain
 	 * order has the units read (3.3 to 12.2 M instructions against 0.27 M for a b-tree, 500,000 to 3,000,000 rows). The entity column is not an array of its own then. A date or timestamp that
 	 * no formula above gives an array (in heap order, or of few values and too little OFFSET to pay) gets one for the group
 	 */
@@ -209,6 +269,7 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 		int32		width;
 		bool		cut = false;
 		double		depth;
+		bool		asked;
 
 		if (d->parent >= 0 || hatt == 0 || !sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_time(d))
 			continue;
@@ -216,9 +277,12 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 			cut |= rel->cut[k] == c;
 		if (cut || !keycols_col_stats(heap, hatt, &ndistinct, &cr, &width) || cr >= GORD_AUTO_CORR || ndistinct < GORD_GROUP_DISTINCT || keycols_heap_rows(heap) / ndistinct < GORD_GROUP_DEPTH)
 			continue;
+		/* the option's hint or a b-tree that runs the shape is what the table is read by, an entity is a guess at it: they win over the entity of more values */
+		asked = group_named(gopt, keycols_leaf_name(index, d)) || OidIsValid(keycols_group_btree(heap, index, hatt));
+		if (!asked && !keycols_is_entity(heap, hatt, keycols_leaf_name(index, d)))
+			continue;
 		depth = keycols_heap_rows(heap) / ndistinct;
-		/* a foreign key or a column named *_id is the entity the rows belong to; among those, or among the rest, the one of most values */
-		if (keycols_is_fk_column(heap, hatt) || keycols_ends_in_id(keycols_leaf_name(index, d)))
+		if (asked)
 			ndistinct += keycols_heap_rows(heap);
 		if (ndistinct > gdist)
 		{
@@ -229,21 +293,25 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 	}
 	/*
 	 * the second order against the build and the size it adds, as for a text array: B = log2(S) / log2(1.05), C = G / 3 + W / 5. G is what it writes: GORD_GROUP_BYTES an entry of each grouped array and the
-	 * directory of the groups (SIFT_CGORD_GRPENT bytes for each of them, so a few rows an entity cost it), less the array the entity does not get any more
+	 * table of the groups of each segment (gord_table_row_bytes: a few rows an entity cost it), less the array the entity does not get any more
 	 */
 	if (grp >= 0)
 	{
 		double		bytes = 0;
-		int			ngrouped = 0;
+		int			ngrouped = 0,
+					narrays = 0;
 
 		for (int i = 0; i < ncand; i++)
+		{
+			narrays += fit[i] || cand[i].time;
 			if (cand[i].leaf == grp && fit[i])
 				bytes -= GORD_ENDS_BYTES;
+		}
 		/* one array at a time, the dates and timestamps first: an array has a second order while the whole still pays (a narrow index can afford one where it cannot afford all) */
 		for (int pass = 0; pass < 2; pass++)
 			for (int i = 0; i < ncand; i++)
 			{
-				double		more = bytes + GORD_GROUP_BYTES + SIFT_CGORD_GRPENT / Max(gdepth, 1.0);
+				double		more = bytes + GORD_GROUP_BYTES + gord_table_row_bytes(keycols_heap_rows(heap), keycols_heap_rows(heap) / Max(gdepth, 1.0), cand[i].nullfrac, narrays);
 
 				if (cand[i].leaf == grp || !cand[i].grouped || !(fit[i] || cand[i].time) || cand[i].time != (pass == 0) || ngrouped >= SIFT_CGORD_ENDS_LEAVES)
 					continue;
@@ -297,7 +365,7 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 				if (!keycols_col_stats(heap, hatt, &cnd, &ccr, &cwidth))
 					cnd = 0;
 			}
-			if (sift_cgord_leaf_time(d) || !(keycols_is_fk_column(heap, hatt) || keycols_ends_in_id(keycols_leaf_name(index, d))) || !keycols_col_stats(heap, hatt, &nd, &cr, &width) ||
+			if (sift_cgord_leaf_time(d) || !keycols_is_entity(heap, hatt, keycols_leaf_name(index, d)) || !keycols_col_stats(heap, hatt, &nd, &cr, &width) ||
 				nd < GORD_KEYORDER_ENTITIES || keycols_heap_rows(heap) / nd < GORD_GROUP_DEPTH)
 				continue;
 			/* the entity is the key the cut chose, else the foreign key or *_id column of most values, in the order of the heap or not */
@@ -335,11 +403,19 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 		 */
 		if (tkey >= 0 && egrp >= 0)
 		{
-			double		bytes = GORD_GROUP_BYTES + SIFT_CGORD_GRPENT / Max(gdepth, 1.0);
+			double		bytes = GORD_GROUP_BYTES;
+			double		knull = 0;
+			int			narrays = 0;
 
 			for (int i = 0; i < ncand; i++)
-				if (fit[i] && !cand[i].text)
+			{
+				narrays += fit[i] || cand[i].time;
+				if (cand[i].leaf == tkey)
+					knull = cand[i].nullfrac;
+				if (fit[i] && !cand[i].text && !cand[i].point)
 					bytes -= GORD_ENDS_BYTES;
+			}
+			bytes += gord_table_row_bytes(keycols_heap_rows(heap), keycols_heap_rows(heap) / Max(gdepth, 1.0), knull, narrays);
 			if (log2(GORD_GROUP_SPEEDUP) / log2(1.05) <= bytes / index_bytes * 100.0 / 3.0 + GORD_GROUP_WRITE / 5.0)
 				tkey = -1;
 		}

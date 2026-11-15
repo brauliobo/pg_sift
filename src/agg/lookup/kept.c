@@ -5,7 +5,6 @@
  */
 #include "postgres.h"
 
-#include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 
@@ -22,16 +21,23 @@ typedef struct KeptWalk
 	int			last;
 } KeptWalk;
 
-static bool
-kept_cond_bad(Node *n, KeptWalk *w)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(kept_cond_bad, KeptWalk *, w,
 	if (IsA(n, Param))
 		return ((Param *) n)->paramkind != PARAM_EXEC || ((Param *) n)->paramid < w->first || ((Param *) n)->paramid >= w->last;
 	if (IsA(n, SubPlan) || IsA(n, SubLink))
-		return true;
-	return expression_tree_walker(n, kept_cond_bad, w);
+		return true;)
+
+/* what names column c of the join in an entry: its column of the table, or, for an expression, a negative number by its place among the expressions (its text is in the key) */
+int
+look_col_att(const SiftAggJoin *j, int c)
+{
+	int			x = 0;
+
+	if (j->colexpr[c] == NULL)
+		return j->colatt[c];
+	for (int i = 0; i < c; i++)
+		x += j->colexpr[i] != NULL;
+	return -1 - x;
 }
 
 static bool
@@ -57,7 +63,7 @@ map_view(MapTab *m, const LookCols *have, const SiftAggJoin *j, MemoryContext mc
 	bool		same = have->n == j->ncol;
 
 	for (int c = 0; c < j->ncol && same; c++)
-		same = have->att[c] == j->colatt[c] && have->type[c] == j->coltype[c];
+		same = have->att[c] == look_col_att(j, c) && have->type[c] == j->coltype[c];
 	if (same)
 		return m;
 	v = MemoryContextAlloc(mcxt, sizeof(MapTab));
@@ -69,7 +75,7 @@ map_view(MapTab *m, const LookCols *have, const SiftAggJoin *j, MemoryContext mc
 		int			p;
 
 		for (p = 0; p < have->n; p++)
-			if (have->att[p] == j->colatt[c] && have->type[p] == j->coltype[c])
+			if (have->att[p] == look_col_att(j, c) && have->type[p] == j->coltype[c])
 				break;
 		Assert(p < have->n);
 		v->mcol[c] = m->mcol[p];
@@ -94,27 +100,28 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 	t->cx = cxt;
 	if (!map_kept_conds(cb, j, own))
 		return NULL;
-	t->key = psprintf("%u|%s", GetUserId(), shared_map_key(ex, ci, own));
+	t->key = look_key(ex, ci, own, true);
 	/* the peek of a first-row lookup asks for a table only a cache holds: without an entry the finger would read every page of the table for nothing */
 	if (ex->first_peek && !lookcache_known(t->key))
 		return NULL;
 	/* a table whose rows did not fit is not read page by page for nothing every time */
-	if (lookcache_refused(t->key, rel) || (t->before = lookcache_finger(rel)) == NULL)
+	if (lookcache_refused(t->key, rel) || (t->before = lookvalid_take(rel, NULL, 0, ex->snap, lookcache_budget())) == NULL)
 		return NULL;
 	for (int c = 0; c < j->ncol; c++)
 	{
-		need.att[c] = j->colatt[c];
+		need.att[c] = look_col_att(j, c);
 		need.type[c] = j->coltype[c];
 	}
-	if ((m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
+	if ((m = lookcache_find(t->key, lookvalid_finger(t->before), &need, &have, cxt)) != NULL)
 	{
 		ex->ncached++;
 		sift_stat_add(SIFT_STAT_LOOKUP_HITS, 1);
 		return map_view(m, &have, j, cxt);
 	}
 	/* sessions that run the same query at once: one loads the rows, the others wait for them */
-	if (!ex->first_peek && lookshm_claim(t->key, cxt) && (m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
+	if (!ex->first_peek && lookshm_claim(LOOK_ROWS, t->key, cxt) && (m = lookcache_find(t->key, lookvalid_finger(t->before), &need, &have, cxt)) != NULL)
 	{
+		lookshm_unclaim(LOOK_ROWS, t->key);
 		ex->ncached++;
 		sift_stat_add(SIFT_STAT_LOOKUP_HITS, 1);
 		return map_view(m, &have, j, cxt);
@@ -141,19 +148,18 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 
 /* keeps the rows just loaded for the next query, when the table was not written to meanwhile */
 void
-map_kept_keep(Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt)
+map_kept_keep(AggExec *ex, Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt)
 {
-	LookFinger *after;
-
-	if (t->before != NULL && (after = lookcache_finger(rel)) != NULL)
-		lookcache_keep(t->key, t->before, after, m, &t->cols, t->cx, cxt);
+	if (t->before != NULL && lookvalid_holds(rel, NULL, 0, ex->snap, t->before))
+		lookcache_keep(t->key, lookvalid_finger(t->before), m, &t->cols, t->cx, cxt);
 	if (t->before != NULL)
-		lookshm_unclaim(t->key);
+		lookshm_unclaim(LOOK_ROWS, t->key);
 }
 
 /*
  * A lookup table whose rows make a tuple only with the keys of another lookup: a later inner or semi join keyed by a column of the table alone (the ids of the
- * request joined to the table of their rows), or a child plan (a CTE or sub-select of ids) inner or semi joined on the same leaf of the scan as the table is.
+ * request joined to the table of their rows), or a child plan (a CTE or sub-select of ids), or a table read by conditions of its own (an index), inner or semi joined on
+ * the same leaf of the scan as the table is (the rows of the scan whose leaf that join does not keep make no tuple: the table is read for its keys alone).
  * The dependent of the fewest keys, with the column of the table that holds them (att, of the integer type typ): -1 when there is none.
  */
 int
@@ -189,7 +195,7 @@ map_keyed_dependent(AggExec *ex, int ci, int *att, Oid *typ)
 				t = j->coltype[c];
 			}
 		}
-		else if (dj->child >= 0 && j->nkey == 1 && !j->keynull[0] && j->tkey[0] == NULL && j->keypos[0] >= 0 && dj->keypos[0] >= 0 &&
+		else if ((dj->child >= 0 || dj->nidx > 0) && j->nkey == 1 && !j->keynull[0] && j->tkey[0] == NULL && j->keypos[0] >= 0 && dj->keypos[0] >= 0 &&
 				 cc->leaf[dj->keypos[0]] == cb->leaf[j->keypos[0]] && cb->leaf[j->keypos[0]] >= 0)
 		{
 			a = j->keyatt[0];

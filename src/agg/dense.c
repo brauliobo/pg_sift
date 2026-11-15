@@ -1,11 +1,10 @@
 /*
  * agg/dense.c - the dense chunks of the aggregate scan: counts, sums and averages taken from the bitmap of a chunk, with no list of tuples (agg/update.c).
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include <float.h>
-
-#include "utils/float.h"
 
 #include "col/kern.h"
 #include "agg/dense_int.h"

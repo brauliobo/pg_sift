@@ -17,6 +17,7 @@ open_sift(Oid relid)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a sift index", RelationGetRelationName(index))));
+	sift_store_require_ready(index);
 	sift_check_maintain(index);
 	return index;
 }

@@ -122,6 +122,13 @@ RESET ROLE;
 REVOKE ALL ON ev FROM probe_reader;
 DROP ROLE probe_reader;
 
+-- a refusal of a join's child names the child and the numbers behind it (the numbers are the planner's estimates, so only their places are tested): the probe form is
+-- refused when the rows its plan returns for each of the distinct keys the scan meets do not fit the budget of a lookup table, and the statement as written is the arm that runs
+SET sift.agg_lookup_max_kb = 1;
+SELECT w.used, w.slug, regexp_replace(w.reason, '[0-9]+', 'N', 'g') AS reason
+FROM sift.explain_why(probe_q('0 AND 2999', 'inner')) w WHERE w.arm = 'single' AND NOT w.used;
+RESET sift.agg_lookup_max_kb;
+
 DROP FUNCTION bitmap_child(text), compare_all(), answers(text, text, text, int), denied(text), probes(text), probe_q(text, text);
 DROP TABLE ev, lk, dm;
 DROP EXTENSION pg_sift;

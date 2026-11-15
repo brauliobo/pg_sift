@@ -6,8 +6,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, code text, payload text);
 INSERT INTO facts SELECT i, i % 40, CASE WHEN i % 40 = 0 THEN 'none' ELSE (i % 9)::text END, repeat('payload', 50) FROM generate_series(1, 40000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, code);
-NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = dim_a_id, code
+NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, code
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 CREATE TABLE dims (id int, ok bool);
 INSERT INTO dims SELECT i, i % 3 <> 0 FROM generate_series(1, 39) i;

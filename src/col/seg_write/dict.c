@@ -3,7 +3,6 @@
  * which dictionaries are written, cached or built
  * the layout of the blobs in the file
  */
-#include "core/host.h"
 #include "core/limits.h"
 #include "col/seg_write/seg_write_int.h"
 
@@ -187,8 +186,8 @@ segw_write_blobs(SiftColSegWriter *w, const SetAcc *acc, uint32 magic, SetsLeaf 
 	SetsHeader	sh = {magic, 1, n, w->nsb};
 
 	segw_sw_pad8(w->sw);
-	sift_sw_write(w->sw, &sh, sizeof(sh));
-	sift_sw_write(w->sw, sl, n * sizeof(SetsLeaf));
+	segw_write_mirrored(w, MIR_SETS, &sh, sizeof(sh));
+	segw_write_mirrored(w, MIR_SETS, sl, n * sizeof(SetsLeaf));
 	for (int i = 0; i < n; i++)
 	{
 		const SetAcc *a = &acc[sl[i].leaf];

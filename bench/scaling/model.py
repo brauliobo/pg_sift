@@ -5,8 +5,10 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable
 
-TARGETS = {'flat': 0.50, 'linear': 1.15, 'plan': 0.20}      # largest log-log slope that still passes (margin over the measured 0.1-0.4 and 0.8-1.05); None = information only. plan: the buffers of a first plan, a
-# floor of catalogs and the census (about 1,000 for 31 leaves) with a part that grows with the units: 0.14 to 0.15 with the leaf statistics block, 0.27 to 0.35 when the plan reads the zones of every unit
+TARGETS = {'flat': 0.50, 'linear': 1.15, 'plan': 0.12}      # flat, linear: the largest log-log slope that still passes (margin over the measured 0.1-0.4 and 0.8-1.05); None = information only.
+# plan: the most buffers a first plan may add for each unit of the table, not a slope: its buffers are a floor (catalogs and the census) with a part that grows with the units, and the floor fell by 57 %
+# (1,056 to 453 buffers at 512 units) when the plan began to read the leaf statistics block of the segments (519785ad8), so the same growth (0.07 to 0.09 buffers a unit; 1,582 to 1,154 buffers at
+# 8,192 units) is a steeper log-log line (0.15 to 0.34) over a lower floor. The bound is 1.3 times the largest growth measured (0.09).
 FLOOR_MS = 0.5                                # below this at every size the slope is noise: PASS
 
 
@@ -46,9 +48,18 @@ def fit(points):
     return slope, last
 
 
+def growth(points):
+    """points [(size, buffers)] -> (least-squares buffers added for each unit of size, the same over the last two points)"""
+    n = len(points)
+    mx, my = sum(s for s, _ in points) / n, sum(b for _, b in points) / n
+    den = sum((s - mx) ** 2 for s, _ in points)
+    last = (points[-1][1] - points[-2][1]) / (points[-1][0] - points[-2][0]) if n > 1 and points[-1][0] != points[-2][0] else 0.0
+    return (sum((s - mx) * (b - my) for s, b in points) / den if den else 0.0), last
+
+
 def verdict(points, target):
-    """-> (slope, last, 'PASS'|'FAIL'|'INFO')"""
-    slope, last = fit(points)
+    """-> (slope, last, 'PASS'|'FAIL'|'INFO'); for the target plan the two numbers are buffers added for each unit (growth)"""
+    slope, last = growth(points) if target == 'plan' else fit(points)
     if target is None:
         return slope, last, 'INFO'
     if max(t for _, t in points) < FLOOR_MS:

@@ -25,8 +25,8 @@ INSERT INTO s (g, k, x) VALUES
  (26, 0, -170141183460469231731687303715884105727), (27, 0, 170141183460469231731687303715884105725.5), (27, 1, 1.5),
  (28, 0, 5), (28, 1, 170141183460469231731687303715884105727);
 CREATE INDEX s_col ON s USING sift_col (g, k, x, w);
-NOTICE:  sift_col index "s_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = g, k
+NOTICE:  sift_col index "s_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('s_col');
 VACUUM (FREEZE, ANALYZE) s;
 CREATE FUNCTION answer(q text, scan bool) RETURNS text LANGUAGE plpgsql AS $$

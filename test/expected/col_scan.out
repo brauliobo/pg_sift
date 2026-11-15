@@ -36,8 +36,8 @@ INSERT INTO sc_b SELECT * FROM sc;
 CREATE INDEX sc_col ON sc USING sift_col (id sift.col_int4_ops, v sift.col_int4_ops, k2 sift.col_int2_ops, k8 sift.col_int8_ops, d sift.col_date_ops,
 	ts sift.col_timestamp_ops, tz sift.col_timestamptz_ops, s sift.col_text_ops, u sift.col_uuid_ops, g sift.col_int4_ops,
 	f4 sift.col_float4_ops, f8 sift.col_float8_ops, b sift.col_bool_ops, nm sift.col_numeric_ops, c sift.col_bpchar_ops, vc sift.col_text_ops) WITH (write_buffer_limit = 256, return_columns = 's, u, vc', key_cut = 'off', point_tid_columns = 'off');
-NOTICE:  sift_col index "sc_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = g, b
+NOTICE:  sift_col index "sc_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, b
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sc_col');
 CREATE INDEX sc_b_id ON sc_b (id);
 CREATE INDEX sc_b_v ON sc_b (v);

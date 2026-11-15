@@ -1,6 +1,7 @@
 /*
  * col/batch.c - L1 of the column engine: batches, the decoded rows of one superblock, and the decoding of a unit into one.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "core/host.h"
 
 #include "core/limits.h"
@@ -60,6 +61,144 @@ sift_cbatch_reset(SiftColBatch *b, uint32 sb)
 	}
 }
 
+/*
+ * The found flags of a connected index (SIFT_COLD_FOUND, the leaves from first on) are filled by the writer of a segment from the parent tables (col/conn.h), not by the rows
+ * that come to it: a view of a batch has storage of its own for them, empty, and shares the rest, so that the batch a caller keeps (the write buffer's) is not changed.
+ */
+static void put_value(SiftColBatch *b, int id, const SiftColValue *v);
+
+struct SiftColFoundView
+{
+	int			first;
+	SiftColBatch *own;			/* the storage of the flags */
+	SiftColBatch view;
+	SiftCVals  *vcol;
+	SiftCDict **vdict;
+};
+
+SiftColFoundView *
+sift_cfound_create(MemoryContext mcxt, const SiftColSchema *schema)
+{
+	SiftColFoundView *c;
+	int			first = schema->ncols;
+
+	for (int i = 0; i < schema->ncols && first == schema->ncols; i++)
+		if (schema->cols[i].flags & SIFT_COLD_FOUND)
+			first = i;
+	if (first == schema->ncols)
+		return NULL;
+	c = MemoryContextAllocZero(mcxt, sizeof(SiftColFoundView));
+	c->first = first;
+	c->own = sift_cbatch_create(mcxt, schema);
+	c->vcol = MemoryContextAlloc(mcxt, schema->ncols * sizeof(SiftCVals));
+	c->vdict = MemoryContextAlloc(mcxt, schema->ncols * sizeof(SiftCDict *));
+	return c;
+}
+
+SiftColBatch *
+sift_cfound_view(SiftColFoundView *c, const SiftColBatch *src)
+{
+	int			ncols = src->schema->ncols;
+
+	c->view = *src;
+	c->view.mcxt = c->own->mcxt;
+	c->view.image = NULL;
+	memcpy(c->vcol, src->col, ncols * sizeof(SiftCVals));
+	memcpy(c->vdict, src->dict, ncols * sizeof(SiftCDict *));
+	c->view.col = c->vcol;
+	c->view.dict = c->vdict;
+	for (int i = c->first; i < ncols; i++)
+	{
+		SiftCVals  *v = &c->own->col[i];
+
+		if (v->nulls)
+			memset(v->nulls, 0, words_of(v->cap) * sizeof(uint64));
+		if (v->ovf)
+			memset(v->ovf, 0, words_of(v->cap) * sizeof(uint64));
+		if (v->otag)
+			memset(v->otag, 0, v->cap);
+		v->n = 0;
+		v->noted = false;
+		if (v->voff)
+			v->voff[0] = 0;
+		if (c->own->dict[i])
+			cdict_reset(c->own->dict[i]);
+		c->vcol[i] = *v;
+		c->vdict[i] = c->own->dict[i];
+	}
+	return &c->view;
+}
+
+void
+sift_cfound_put(SiftColBatch *view, int leaf, const SiftColValue *v)
+{
+	put_value(view, leaf, v);
+}
+
+void
+sift_cfound_done(SiftColFoundView *c)
+{
+	for (int i = c->first; i < c->view.schema->ncols; i++)
+		c->own->col[i] = c->vcol[i];
+}
+
+/* Empties the batch and gives back the arrays that grew past the first slots of a unit: one that is not used for a while holds the memory of its largest unit */
+void
+sift_cbatch_release(SiftColBatch *b)
+{
+	sift_cbatch_reset(b, b->sb);
+	if (b->rowcap > 256)
+	{
+		b->rowcap = 256;
+		b->keys = repalloc_huge(b->keys, b->rowcap * sizeof(SiftKey));
+		if (b->xmin)
+		{
+			b->xmin = repalloc_huge(b->xmin, b->rowcap * sizeof(uint32));
+			b->cmin = repalloc_huge(b->cmin, b->rowcap * sizeof(uint32));
+		}
+		for (int i = 0; i < b->schema->ncols; i++)
+			if (b->col[i].eoff)
+				b->col[i].eoff = repalloc_huge(b->col[i].eoff, ((Size) b->rowcap + 1) * sizeof(uint32));
+	}
+	for (int i = 0; i < b->schema->ncols; i++)
+	{
+		SiftCVals  *v = &b->col[i];
+
+		if (v->key == NULL || v->cap <= 64)
+			continue;
+		v->cap = 64;
+		v->key = repalloc_huge(v->key, v->cap * sizeof(int64));
+		if (v->nulls)
+			v->nulls = repalloc_huge(v->nulls, words_of(v->cap) * sizeof(uint64));
+		if (v->ovf)
+			v->ovf = repalloc_huge(v->ovf, words_of(v->cap) * sizeof(uint64));
+		if (v->otag)
+			v->otag = repalloc_huge(v->otag, v->cap);
+		if (v->voff)
+		{
+			v->voff = repalloc_huge(v->voff, ((Size) v->cap + 1) * sizeof(uint32));
+			v->vcap = 1024;
+			v->vb = repalloc_huge(v->vb, v->vcap);
+		}
+	}
+}
+
+/* The bytes the arrays of the batch hold, at the capacity they grew to (the dictionaries of its string leaves are not counted) */
+Size
+sift_cbatch_bytes(const SiftColBatch *b)
+{
+	Size		m = (Size) b->rowcap * (sizeof(SiftKey) + (b->xmin ? 2 * sizeof(uint32) : 0));
+
+	for (int i = 0; i < b->schema->ncols; i++)
+	{
+		const SiftCVals *v = &b->col[i];
+
+		m += (Size) v->cap * (sizeof(int64) + (v->otag ? 1 : 0)) + (Size) (v->nulls ? 1 : 0) * words_of(v->cap) * sizeof(uint64) +
+			(Size) (v->ovf ? 1 : 0) * words_of(v->cap) * sizeof(uint64) + (v->eoff ? ((Size) b->rowcap + 1) * sizeof(uint32) : 0) + (v->voff ? v->vcap + ((Size) v->cap + 1) * sizeof(uint32) : 0);
+	}
+	return m;
+}
+
 /* A batch that is complete, at the rows it holds: the arrays grew by doubling, and a batch of 43,008 rows holds 65,536 slots of each (a third of its memory) */
 void
 sift_cbatch_trim(SiftColBatch *b)
@@ -68,15 +207,15 @@ sift_cbatch_trim(SiftColBatch *b)
 		return;
 	if (b->rowcap > b->nrows)
 	{
-		b->keys = repalloc(b->keys, b->nrows * sizeof(SiftKey));
+		b->keys = repalloc_huge(b->keys, b->nrows * sizeof(SiftKey));
 		if (b->xmin)
 		{
-			b->xmin = repalloc(b->xmin, b->nrows * sizeof(uint32));
-			b->cmin = repalloc(b->cmin, b->nrows * sizeof(uint32));
+			b->xmin = repalloc_huge(b->xmin, b->nrows * sizeof(uint32));
+			b->cmin = repalloc_huge(b->cmin, b->nrows * sizeof(uint32));
 		}
 		for (int i = 0; i < b->schema->ncols; i++)
 			if (b->col[i].eoff)
-				b->col[i].eoff = repalloc(b->col[i].eoff, ((Size) b->nrows + 1) * sizeof(uint32));
+				b->col[i].eoff = repalloc_huge(b->col[i].eoff, ((Size) b->nrows + 1) * sizeof(uint32));
 		b->rowcap = b->nrows;
 	}
 	for (int i = 0; i < b->schema->ncols; i++)
@@ -85,18 +224,18 @@ sift_cbatch_trim(SiftColBatch *b)
 
 		if (v->n == 0 || v->cap <= v->n)
 			continue;
-		v->key = repalloc(v->key, v->n * sizeof(int64));
+		v->key = repalloc_huge(v->key, v->n * sizeof(int64));
 		if (v->nulls)
-			v->nulls = repalloc(v->nulls, words_of(v->n) * sizeof(uint64));
+			v->nulls = repalloc_huge(v->nulls, words_of(v->n) * sizeof(uint64));
 		if (v->ovf)
-			v->ovf = repalloc(v->ovf, words_of(v->n) * sizeof(uint64));
+			v->ovf = repalloc_huge(v->ovf, words_of(v->n) * sizeof(uint64));
 		if (v->otag)
-			v->otag = repalloc(v->otag, v->n);
+			v->otag = repalloc_huge(v->otag, v->n);
 		if (v->voff)
 		{
-			v->voff = repalloc(v->voff, ((Size) v->n + 1) * sizeof(uint32));
+			v->voff = repalloc_huge(v->voff, ((Size) v->n + 1) * sizeof(uint32));
 			v->vcap = Max(v->voff[v->n], 1);
-			v->vb = repalloc(v->vb, v->vcap);
+			v->vb = repalloc_huge(v->vb, v->vcap);
 		}
 		v->cap = v->n;
 	}
@@ -121,20 +260,20 @@ vals_reserve(MemoryContext mcxt, SiftCVals *v, uint32 extra)
 		return;
 	while (v->n + extra > cap)
 		cap = Max(64, cap * 2);
-	v->key = v->key ? repalloc(v->key, cap * sizeof(int64)) : MemoryContextAlloc(mcxt, cap * sizeof(int64));
+	SIFT_REGROW_HUGE_IN(mcxt, v->key, cap * sizeof(int64));
 	if (v->nulls)
 	{
-		v->nulls = repalloc(v->nulls, words_of(cap) * sizeof(uint64));
+		v->nulls = repalloc_huge(v->nulls, words_of(cap) * sizeof(uint64));
 		memset(v->nulls + words_of(v->cap), 0, (words_of(cap) - words_of(v->cap)) * sizeof(uint64));
 	}
 	if (v->ovf)
 	{
-		v->ovf = repalloc(v->ovf, words_of(cap) * sizeof(uint64));
+		v->ovf = repalloc_huge(v->ovf, words_of(cap) * sizeof(uint64));
 		memset(v->ovf + words_of(v->cap), 0, (words_of(cap) - words_of(v->cap)) * sizeof(uint64));
 	}
 	if (v->otag)
 	{
-		v->otag = repalloc(v->otag, cap);
+		v->otag = repalloc_huge(v->otag, cap);
 		memset(v->otag + v->cap, 0, cap - v->cap);
 	}
 	v->cap = cap;
@@ -177,12 +316,12 @@ vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool i
 		v->voff[0] = 0;
 	}
 	if (v->n == v->cap)
-		v->voff = repalloc(v->voff, ((Size) Max(64, v->cap * 2) + 1) * sizeof(uint32));
+		v->voff = repalloc_huge(v->voff, ((Size) Max(64, v->cap * 2) + 1) * sizeof(uint32));
 	vals_put(mcxt, v, len, isnull, ovf, tag);
 	if (v->vb == NULL || start + len > v->vcap)
 	{
 		v->vcap = Max(Max(1024, v->vcap * 2), (Size) start + len);
-		v->vb = v->vb ? repalloc(v->vb, v->vcap) : MemoryContextAlloc(mcxt, v->vcap);
+		SIFT_REGROW_HUGE_IN(mcxt, v->vb, v->vcap);
 	}
 	if (len > 0)
 		memcpy(v->vb + start, s, len);
@@ -208,15 +347,15 @@ batch_reserve_rows(SiftColBatch *b, uint32 extra)
 		return;
 	while (b->nrows + extra > b->rowcap)
 		b->rowcap *= 2;
-	b->keys = repalloc(b->keys, b->rowcap * sizeof(SiftKey));
+	b->keys = repalloc_huge(b->keys, b->rowcap * sizeof(SiftKey));
 	if (b->xmin)
 	{
-		b->xmin = repalloc(b->xmin, b->rowcap * sizeof(uint32));
-		b->cmin = repalloc(b->cmin, b->rowcap * sizeof(uint32));
+		b->xmin = repalloc_huge(b->xmin, b->rowcap * sizeof(uint32));
+		b->cmin = repalloc_huge(b->cmin, b->rowcap * sizeof(uint32));
 	}
 	for (int i = 0; i < b->schema->ncols; i++)
 		if (b->col[i].eoff)
-			b->col[i].eoff = repalloc(b->col[i].eoff, ((Size) b->rowcap + 1) * sizeof(uint32));
+			b->col[i].eoff = repalloc_huge(b->col[i].eoff, ((Size) b->rowcap + 1) * sizeof(uint32));
 }
 
 /* Validates the key against the batch and makes room for the row; the row is counted by batch_row_end */
@@ -684,7 +823,7 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 }
 
 void
-sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint64 *live, SiftColBatch *dst)
+sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint64 *live, const bool *want, SiftColBatch *dst)
 {
 	const SiftColSchema *s = v->schema;
 	SiftKey    *keys = palloc(Max(v->nrows, 1) * sizeof(SiftKey));
@@ -696,6 +835,8 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 	{
 		UnitLeaf   *l = &lf[col];
 
+		if (want != NULL && !want[col])
+			continue;
 		l->present = sift_cunit_chunk(v, col, &l->c);
 		if (!l->present)
 			continue;
@@ -704,7 +845,10 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 		l->inl = l->c.enc == SIFT_COLENC_ISTR;
 		l->tag = palloc(Max(l->c.n, 1));
 		if (!sift_cchunk_tags(&l->c, l->tag))
+		{
+			pfree(l->tag);
 			l->tag = NULL;
+		}
 		if (s->cols[col].store == SIFT_COLS_VAR || l->inl)
 			sift_cchunk_strs(&l->c, CurrentMemoryContext, &l->voff, &l->vb);
 		if (leaf_is_str(&s->cols[col]) && !l->inl)
@@ -738,7 +882,7 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 		batch_row_begin(dst, keys[r]);
 		for (int col = 0; col < s->ncols; col++)
 		{
-			if (s->cols[col].parent >= 0)
+			if (s->cols[col].parent >= 0 || (want != NULL && !want[col]))
 				continue;
 			unit_emit(dst, dicts, &lf[col], col, r);
 			if (s->cols[col].kind != SIFT_COLK_GROUP)

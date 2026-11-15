@@ -4,9 +4,6 @@
 #ifndef SIFT_AGG_AGG_FWD_INT_H
 #define SIFT_AGG_AGG_FWD_INT_H
 
-#include "executor/nodeAgg.h"
-#include "agg/colsrc.h"
-#include "agg/search.h"
 #include "agg/spec.h"
 #include "agg/topn.h"
 

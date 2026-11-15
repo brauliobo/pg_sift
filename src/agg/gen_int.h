@@ -19,6 +19,9 @@
 #define GEN_INIT	1				/* the group's state is made */
 #define GEN_NULL	2				/* transValueIsNull */
 #define GEN_NOVAL	4				/* noTransValue: a strict transition function without initial value takes its first input as the state */
+#define GEN_STAT_NONE	0
+#define GEN_STAT_F64	1				/* a float8 leaf */
+#define GEN_STAT_I32	2				/* an int2 or int4 leaf converted to float8 */
 #define GEN_DONE	8				/* acc->r is the result */
 #define GEN_RNULL	16				/* ... and it is NULL */
 
@@ -80,14 +83,22 @@ typedef struct GenSt
 	bool		iskey[SIFT_AGG_MAX_GARGS];
 	int16		alen[SIFT_AGG_MAX_GARGS];	/* the arguments' types, to copy the values of the best row */
 	bool		abyval[SIFT_AGG_MAX_GARGS];
+	int			stat;			/* a statistics aggregate of float8 or int inputs the chunk kernel runs (gen_stat.c): the number of arguments, else 0 */
+	Oid			sint;			/* the state is that of int2_accum / int4_accum (the argument type), and whether the layout was checked on a state the function made */
+	bool		sint_ok;
+	int			fma;			/* the float steps are the fused ones (1) or the plain ones (0), as the server's transition function does them */
+	int			smode[2];		/* ... and how each is read (GEN_STAT_*) */
+	struct GenMode *mode;		/* mode() WITHIN GROUP counts its values (gen_mode.c) until the counts outgrow work_mem */
 	bool		inplace;		/* every argument the best row holds is by-value: a better row overwrites it */
 	/* DISTINCT ON by one key of a plain column: the best row of each group within a chunk, found before any value of it is copied (gen_first_chunk) */
 	uint32		ccap;			/* groups the three arrays cover */
+	uint32		cstamp;			/* topn: the chunks read so far; cwin[g] is the stamp of the chunk whose edge ckey[g] holds */
 	uint32	   *cwin;			/* per group: the chunk's best tuple + 1, 0 none */
 	Datum	   *ckey;
 	bool	   *cnull;
 	uint32	   *ctouch;			/* the groups that have a best tuple in this chunk, and how many tuples the list holds room for */
 	uint32		ntcap;
+	MemoryContext tcx;			/* topn: the rows the groups keep */
 } GenSt;
 
 /* the best row of a group of a DISTINCT ON aggregate (the group's state until the scan ends): the values of the arguments, then their NULL flags */
@@ -111,11 +122,24 @@ typedef struct GenIn
 /* gen.c */
 void gen_sort_begin(GenSt *st);
 void gen_sort_put(GenSt *st, AggAcc *acc, uint32 gid, const Datum *args, const bool *nulls);
+void gen_sort_put_sid(GenSt *st, uint32 sid, const Datum *args, const bool *nulls);
 void gen_open(AggExec *ex);
 void gen_close(AggExec *ex);
 void gen_merge_hll(AggExec *ex, int ai, const uint8 *blob);
 void gen_arg(AggExec *ex, GenSt *st, const GenIn *in, int j, int k, Datum *arg, bool *isnull);
 void gen_advance(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, const Datum *args, const bool *nulls);
+void gen_state_init(GenSt *st, AggAcc *acc, uint32 g);
+
+/* gen_stat.c */
+void gen_stat_pick(AggExec *ex, GenSt *st);
+bool gen_stat_eligible(Oid fn, const SiftAggGen *g, const SiftSrcLeaf *(*leaf) (void *arg, int id), void *arg, int *smode, Oid *sint);
+void gen_stat_chunk(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, const uint64 *ok, int nsel);
+/* gen_mode.c */
+bool gen_mode_pick(AggExec *ex, GenSt *st);
+void gen_mode_put(AggExec *ex, GenSt *st, AggAcc *acc, uint32 gid, Datum v);
+bool gen_mode_spill_due(const GenSt *st);
+void gen_mode_spill(AggExec *ex, GenSt *st);
+void gen_mode_flush(AggExec *ex, int ai);
 void gen_state_put(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, StringInfo vb);
 void gen_state_merge(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, const char **cur);
 void gen_final(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g);

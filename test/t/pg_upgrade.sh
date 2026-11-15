@@ -11,36 +11,7 @@
 . "$(dirname "$0")/lib.bash"
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
-q() { local n=$1 db=$2; shift 2; PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir "$n")/sock" -p "$(port "$n")" -U postgres -d "$db" "${@/#/--command=}"; }
-# qs NODE DB: the script on stdin, one statement at a time (CREATE TABLESPACE cannot share a transaction)
-qs() { PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir "$1")/sock" -p "$(port "$1")" -U postgres -d "$2" -f -; }
-quiet() { "$@" >/dev/null; }
-PG_BINS="postgres initdb pg_ctl pg_upgrade vacuumdb pg_resetwal pg_controldata pg_dump pg_dumpall pg_restore pg_checksums pg_config psql"
-
-# overlay PG_CONFIG DEST ROOT: the server of PG_CONFIG at its absolute paths under DEST, pg_sift of the install ROOT in it
-overlay() {
-	local bin lib share f
-	bin=$("$1" --bindir); lib=$("$1" --pkglibdir); share=$("$1" --sharedir)
-	mkdir -p "$2$bin" "$2$lib" "$2$share/extension"
-	for f in $PG_BINS; do cp "$bin/$f" "$2$bin/"; done
-	for f in "$lib"/*; do ln -s "$f" "$2$lib/"; done
-	for f in "$share"/*; do [[ $f == */extension ]] || ln -s "$f" "$2$share/"; done
-	for f in "$share"/extension/*; do ln -s "$f" "$2$share/extension/"; done
-	[[ -f $3$lib/pg_sift$DLSUFFIX ]] || return 0   # PostgreSQL 17 has no staged root: sift is in the server's own directories
-	rm -f "$2$lib/pg_sift$DLSUFFIX" "$2$share"/extension/pg_sift*
-	cp "$3$lib/pg_sift$DLSUFFIX" "$2$lib/"
-	cp "$3$share"/extension/pg_sift* "$2$share/extension/"
-}
-
-# build_old PG_CONFIG ROOT: pg_sift for another major, built in a copy of this tree (the tree under test keeps its objects)
-build_old() {
-	local src=$TAPDIR/old-src
-	mkdir -p "$src"
-	if [[ -n $OLD_REF ]]; then git -C "$REPO" archive "$OLD_REF" | tar -x -C "$src"
-	else tar -C "$REPO" --exclude=.git --exclude='*.o' --exclude='*.d' --exclude='*.so' --exclude='*.dylib' --exclude='*.bc' --exclude=.build-flavor --exclude=bench/out -cf - . | tar -x -C "$src"; fi
-	{ nice make -C "$src" -j4 USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING= && make -C "$src" USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING= DESTDIR="$2" install; } \
-		>"$TAPDIR/old-build.log" 2>&1
-}
+. "$(dirname "$0")/lib_upgrade.bash"
 
 NEWCFG=$(command -v pg_config)
 OLDBIN=${SIFT_PG_OLD_BIN:-}
@@ -65,7 +36,6 @@ if ((OLD_MAJOR < $(sed -n 's/^PG_MIN_MAJOR *= *\([0-9]*\).*/\1/p' "$REPO/Makefil
 TS=$TAPDIR/tablespace
 OV=$TAPDIR/overlay
 trap 'pg_ctl -D "$(dir old)/data" -m immediate stop >/dev/null 2>&1; cleanup; ((NFAIL)) || rm -rf "$(dir old)" "$OV" "$TS" "$TAPDIR/old-src"' EXIT
-plan $((25 + (${#OLD_REF} ? 3 : 0)))
 rm -rf "$TS" "$OV"
 mkdir -p "$TS" "$OV"
 diag "pg_upgrade from PostgreSQL $OLD_MAJOR to $PG_MAJOR"
@@ -75,27 +45,14 @@ overlay "$NEWCFG" "$OV/new" "$ROOT"
 if ((OLD_MAJOR == PG_MAJOR)) && [[ -z $OLD_REF ]]; then
 	overlay "$OLDCFG" "$OV/old" "$ROOT"
 else
-	build_old "$OLDCFG" "$OV/oldroot" || { tail -n 20 "$TAPDIR/old-build.log"; bail "pg_sift does not build for PostgreSQL $OLD_MAJOR"; }
+	build_old "$OLDCFG" "$OV/oldroot" || { (($? == 77)) && exit 0; tail -n 20 "$TAPDIR/old-build.log"; bail "pg_sift does not build for PostgreSQL $OLD_MAJOR"; }
 	overlay "$OLDCFG" "$OV/old" "$OV/oldroot"
 fi
+plan $((28 + (${#OLD_REF} ? 3 : 0)))
 OLDB=$OV/old$("$OLDCFG" --bindir)
 NEWB=$OV/new$("$NEWCFG" --bindir)
 PATH=$NEWB:$PATH
 
-# initdb_node NAME OFFSET BINDIR: the cluster every test starts from, with data checksums on both sides
-initdb_node() {
-	local d
-	d=$(dir "$1")
-	mkdir -p "$d/sock"
-	echo "$2" >"$d/offset"
-	"$3/initdb" -k --no-sync -D "$d/data" -A trust -U postgres -E UTF8 --no-locale --no-instructions --wal-segsize=1 >"$d/initdb.log" 2>&1 || bail "initdb $1 failed"
-	node_conf "$1" "port = $(port "$1")
-listen_addresses = ''
-unix_socket_directories = '$d/sock'
-fsync = off
-shared_buffers = 32MB
-max_connections = 30"
-}
 initdb_node old 30 "$OLDB"
 initdb_node new 31 "$NEWB"
 NODES+=(new)
@@ -106,14 +63,27 @@ LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/
 TSDDL=; TSC=
 if ((OLD_MAJOR != PG_MAJOR)); then TSDDL="CREATE TABLESPACE ts1 LOCATION '$TS';"; TSC="TABLESPACE ts1"; fi
 
-# the options of this tree's column index; a released library has none of them (cube_minmax, order_columns and key_columns are 3.3's, hll_columns 3.4's)
-FACTS_OPTS="WITH (cube_minmax = true, order_columns = 'g, n', key_columns = 'g', hll_columns = 'id')"
+# the options of this tree's column index; a released library has none of them (cube_minmax and key_columns are 3.3's, hll_columns 3.4's)
+FACTS_OPTS="WITH (cube_minmax = true, key_columns = 'g', hll_columns = 'id')"
 [[ -z $OLD_REF ]] || FACTS_OPTS=
 # the wide leaves (an enum, an interval, a uuid) are 3.2's: the index of the older releases covers the numbers
 FACTS_COLS='id, g, n, t, w, u, ts'
 [[ ! ${OLD_REF#v} =~ ^3\.[01]\. ]] || FACTS_COLS='id, g, n'
 # an index of a release before 4.0 has no track_changes option and no triggers; this tree's builds the default (a primary key, two statement triggers)
 TRKOPT=
+# a connected pair of column indexes (the option connect is 4.3's): the child index depends on the parent index, which keeps a journal of the keys that changed
+CONNSQL=
+[[ -n $OLD_REF ]] || CONNSQL="CREATE TABLE cdim (id int PRIMARY KEY, cat int NOT NULL, label text) WITH (autovacuum_enabled = false);
+INSERT INTO cdim SELECT g, g % 10, 'l' || g FROM generate_series(1, 500) g;
+CREATE TABLE cdim2 (id int PRIMARY KEY, zone text NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO cdim2 SELECT g, 'r' || g % 5 FROM generate_series(1, 50) g;
+CREATE TABLE cfact (id int PRIMARY KEY, dim_id int NOT NULL, dim2_id int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO cfact SELECT g, 1 + g % 500, 1 + g % 50, g FROM generate_series(1, 2000) g;
+CREATE INDEX cdim_c ON cdim USING sift_col (id, cat, label);
+CREATE INDEX cdim2_c ON cdim2 USING sift_col (id, zone);
+CREATE INDEX cfact_c ON cfact USING sift_col (id, dim_id, dim2_id, v)
+  WITH (connect = 'dim_id -> cdim(id); dim2_id -> cdim2(id)');
+UPDATE cdim SET cat = cat + 1 WHERE id % 50 = 0;"
 # the objects: the three access methods, the types of the wide leaves and JSON paths, open write buffers and promoted segments, a tablespace
 SETUP=$(cat <<SQL
 CREATE EXTENSION pg_sift;
@@ -149,6 +119,7 @@ DELETE FROM trk WHERE id % 13 = 0;
 CREATE TABLE trk_late (id int PRIMARY KEY, g int NOT NULL);
 INSERT INTO trk_late SELECT g, g % 3 FROM generate_series(1, 300) g;
 CREATE INDEX trk_late_z ON trk_late USING sift_col (id, g);
+$CONNSQL
 CREATE FUNCTION trkq() RETURNS text LANGUAGE sql RETURN (SELECT string_agg(g || ':' || c || ':' || s, ',' ORDER BY g) FROM (SELECT g, count(*) c, sum(v) s FROM trk GROUP BY g) x);
 CREATE FUNCTION trkq_on() RETURNS text LANGUAGE sql SET sift.enable_agg = on SET cpu_tuple_cost = 0.5 RETURN trkq();
 CREATE FUNCTION trkq_off() RETURNS text LANGUAGE sql SET sift.enable_agg = off RETURN trkq();
@@ -199,6 +170,8 @@ VERSIONS=$(q old postgres "SELECT extversion || ' ' || sift.version() FROM pg_ex
 BEFORE=$(fingerprint old)
 TRK_BEFORE=$(q old postgres "SELECT trkq_off()")
 check "the old cluster agrees with itself: the scans equal the normal plans" test "$(grep -c '^t$' <<<"$BEFORE")" == 3
+CONNECTION="SELECT child || ' ' || parent || ' ' || declaration || ' ' || (lineage IS NOT NULL) || ' ' || records || ' ' || stamp FROM sift.col_connections ORDER BY ordinal"
+[[ -n $OLD_REF ]] || { CONN_BEFORE=$(q old postgres "$CONNECTION"); RECS_BEFORE=$(q old postgres "SELECT sum(records) FROM sift.col_connections"); }
 FILES_BEFORE=$(q old postgres "SELECT string_agg(relname || '=' || pg_relation_filepath(oid), ',' ORDER BY relname) FROM pg_class WHERE relname IN ('docs_ts_idx', 'facts_json', 'tbl_ts')")
 if [[ -n $TSC ]]; then
 	check "the tablespace holds an index of each access method and a table" test "$(grep -o 'pg_tblspc' <<<"$FILES_BEFORE" | wc -l | tr -d ' ')" == 3
@@ -218,12 +191,13 @@ if [[ $upgraded -ne 0 ]]; then
 	diag "$(tail -n 20 "$(dir new)/pg_upgrade.log"; tail -n 8 "$(dir new)"/data/pg_upgrade_output.d/*/log/pg_upgrade_server.log 2>/dev/null; tail -n 12 "$(dir new)"/data/pg_upgrade_output.d/*/log/pg_upgrade_dump_*.log 2>/dev/null)"
 	bail "pg_upgrade failed"
 fi
+sed_i "/^sift\\.test_col_legacy_options = /d" "$(dir new)/data/postgresql.conf"   # a setting of the test build the preflight below would report
 node_start new || bail "the upgraded cluster does not start"
 
 if [[ -z $OLD_REF ]]; then
 	check "the extension and the library are the ones of before" test "$(q new postgres "SELECT extversion || ' ' || sift.version() FROM pg_extension WHERE extname = 'pg_sift'")" == "$VERSIONS"
 else
-	# the catalog still says the release (pg_upgrade carries the extension as it was), the library is this tree's: the update is the user's next step
+	# the catalog still says the release (pg_upgrade's: the update is the user's next step
 	check "the extension is the release's" test "$(q new postgres "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == "$(cut -d' ' -f1 <<<"$VERSIONS")"
 	check "the library is this tree's" test "$(q new postgres "SELECT sift.version()")" != "$(cut -d' ' -f2 <<<"$VERSIONS")"
 	check "the answers are the same before the extension is updated" test "$(fingerprint new)" == "$BEFORE"
@@ -259,6 +233,18 @@ q new postgres "UPDATE trk SET id = id + 20000 WHERE id % 7 = 3" "DELETE FROM tr
 check "the tracked index agrees with the normal plan after UPDATE, DELETE and INSERT" test "$(q new postgres "SELECT trkq_on() = trkq_off()")" == t
 q new postgres "REINDEX INDEX trk_c" >/dev/null
 check "REINDEX gives the tracked index its baseline: complete, heap-free, the answer unchanged" test "$(q new postgres "SELECT trkq_on() = trkq_off()" "SELECT track_changes AND triggers AND complete AND heap_free FROM sift.col_tracking('trk_c')" | tr '\n' ' ')" == "t t "
+
+# the connection: the option, the dependency and the journal (its lineage and records came with the files); the triggers of the tracked parent index are made again, so its log is
+# not complete and nothing is vouched until the index is rebuilt
+if [[ -z $OLD_REF ]]; then
+	check "the connected pair is as before and nothing is vouched while the log is not complete" test "$(q new postgres "$CONNECTION")" == "$(sed 's/ ok$/ log not complete/' <<<"$CONN_BEFORE")"
+	q new postgres "UPDATE cdim SET cat = cat + 1 WHERE id = 7" >/dev/null
+	check "the journal of the parent index hears the upgraded cluster and the parent index stays under the child" test "$(q new postgres "SELECT sum(records) > $RECS_BEFORE FROM sift.col_connections" 2>&1 | head -n 1)" == t \
+		-a "$(q new postgres "DROP INDEX cdim_c" 2>&1 | grep -c 'cannot drop index')$(q new postgres "DROP INDEX cdim2_c" 2>&1 | grep -c 'cannot drop index')" == 11
+	q new postgres "REINDEX INDEX cdim_c" "REINDEX INDEX cdim2_c" >/dev/null
+	check "REINDEX of the parent indexes makes their journals again: both stamps vouch and the indexes verify" test "$(q new postgres "SELECT string_agg(stamp, ',' ORDER BY ordinal) FROM sift.col_connections")" == ok,ok \
+		-a "$(q new postgres "SELECT count(*) FROM (SELECT sift.col_verify('cdim_c', true), sift.col_verify('cdim2_c', true), sift.col_verify('cfact_c', true)) v")" == 1
+else skip 3 "an index of a release has no connection"; fi
 
 # writes, VACUUM, promotion and merges on what the old cluster wrote
 q new postgres "INSERT INTO docs SELECT g, 'alpha3 postupgrade ' || g FROM generate_series(7001, 7300) g" "UPDATE docs SET body = 'beta5 again' WHERE id % 101 = 0" \

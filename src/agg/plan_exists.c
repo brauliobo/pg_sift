@@ -14,6 +14,7 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
+#include "agg/agg.h"
 #include "agg/plan_exists_int.h"
 
 /*
@@ -171,12 +172,6 @@ leaf_lit_cmp(AggCtx *c, int leaf, int op, const Lit *lit)
 static SiftAggPred *or_of(AggCtx *c, SiftAggPred *a, SiftAggPred *b);
 static SiftAggPred *null_pred(AggCtx *c, int leaf, int op);
 
-static bool
-int_elem_type(Oid typid)
-{
-	return typid == INT2OID || typid == INT4OID || typid == INT8OID;
-}
-
 /* the element of a list of integers is one of the literals (outside: none of them, or NULL): one IN test of the integer leaf, as `x IN (..)` is */
 static SiftAggPred *
 build_int_in(AggCtx *c, int leaf, const LitSet *set)
@@ -227,7 +222,7 @@ build_elem_in(AggCtx *c, int grp, void *arg)
 	SiftAggPred *p;
 	StringInfoData desc;
 
-	if (leaf >= 0 && int_elem_type(leaf_of(c, leaf)->typid) && leaf_of(c, leaf)->kind == SCL_SCALAR)
+	if (leaf >= 0 && sift_int_type(leaf_of(c, leaf)->typid) && leaf_of(c, leaf)->kind == SCL_SCALAR)
 		return build_int_in(c, leaf, set);
 	if (leaf < 0 || leaf_of(c, leaf)->typid != TEXTOID || !lut_leaf_ok(c, leaf))
 		return NULL;
@@ -614,10 +609,10 @@ scoped_join(AggCtx *c, ExistsScan *x, Index offset)
 				return NULL;
 			use_matched_leaf(c, w.leaf[p]);
 		}
-		foreach_ptr(Var, v, w.vars)
-			if (combo_reference(c, cb, join_of_var(c, (Node *) v), v) < 0)
+		foreach_ptr(Node, v, w.vars)
+			if (combo_reference(c, cb, join_of_node(c, v), v) < 0)
 				return NULL;
-		jc->j.args = lappend(jc->j.args, lower_scoped(c, jc->combo, expr));
+		jc->j.args = lappend(jc->j.args, lower_scoped(c, jc->combo, expr, false));
 	}
 	return jc;
 }
@@ -719,7 +714,7 @@ compile_exists_post(AggCtx *c, SubPlan *sp)
 
 			p->leaf = ci;
 			p->op = si;
-			rq->expr = lower_scoped(c, ci, rq->expr);
+			rq->expr = lower_scoped(c, ci, rq->expr, rq->key_leaf);
 			rq->lowered = true;
 			p->desc = psprintf("EXISTS %s[] (%s)", leaf_name(c, grp), combo_text(c, ci, expr));
 			c->elem_work += (p->nchild + 1) * elems_of(c, grp);
@@ -837,7 +832,7 @@ out_walker(Node *n, OutWalk *w)
 			w->aggs = lappend(w->aggs, n);
 		return false;
 	}
-	if (IsA(n, Var) || IsA(n, PlaceHolderVar) || IsA(n, WindowFunc) || IsA(n, SubPlan) || IsA(n, SubLink))
+	if (IsA(n, Var) || IsA(n, PlaceHolderVar) || IsA(n, WindowFunc) || IsA(n, SubLink))
 	{
 		w->bad = true;
 		return false;

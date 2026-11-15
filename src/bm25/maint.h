@@ -31,6 +31,8 @@ extern PGDLLIMPORT int64 sift_maint_wait_max_us;
 /* The maintenance lock (LockPage on SIFT_MAINT_LOCK_BLKNO), shared by the BM25 and the column maintenance: wait = false returns false when busy */
 extern bool sift_maint_lock(Relation index, bool wait);
 extern void sift_maint_unlock(Relation index);
+/* The transaction wrote an option of index (a catalog update that others see at its commit): it keeps the maintenance lock to its end, and whoever takes the lock next reads the options again */
+extern void sift_maint_options_written(Relation index);
 
 /*
  * SiftDirMutator that replaces segments in the directory: the generations old[0..nold) are dropped (their totals leave the metapage) and neu, if any,
@@ -88,6 +90,7 @@ extern bool sift_maint_wait_quiet(int max_active);
 
 /* The common start of a worker: context of its errors, signals, connection to the database of the request; returns the index OID */
 extern Oid	sift_maint_worker_connect(Datum main_arg, ErrorContextCallback *errctx);
+extern Relation sift_try_open_index(Oid indexoid, LOCKMODE lock);
 
 /* The outcome of one maintenance step */
 typedef enum SiftStepResult
@@ -96,6 +99,10 @@ typedef enum SiftStepResult
 	SIFT_STEP_DONE,
 	SIFT_STEP_FAILED			/* rolled back, its blocks returned, reported and counted */
 } SiftStepResult;
+
+/* One step of a worker in a transaction of its own; last: the look after the window of the request ended */
+typedef SiftStepResult (*SiftWorkerStep) (Oid indexoid, TimestampTz start, bool last);
+extern void sift_maint_worker_stay(Oid indexoid, TimestampTz start, SiftWorkerStep step);
 
 /* Who asks for a merge: any (explicit, or for room in a full directory), the background (worker), VACUUM */
 typedef enum SiftMergeGoal
@@ -133,6 +140,7 @@ typedef struct SiftMaintOps
 	uint64		(*vacuum_seal) (Relation index);	/* NULL: VACUUM promotes sealed write buffers only; else it first seals an open one this worth sealing */
 	void		(*vacuum_refresh) (Relation index);	/* NULL: nothing to refresh after VACUUM's merges (the maintenance lock is held) */
 	void		(*vacuum_net) (Relation index);	/* NULL: nothing; VACUUM, before its merges: the segments with dead rows get the pre-aggregates net of them (the maintenance lock is held) */
+	void		(*vacuum_heap) (Relation index, Relation heap);	/* NULL: nothing; every VACUUM's cleanup, before the merges: what only the heap tells about the segments (the maintenance lock is held) */
 	void		(*vacuum_log) (Relation index);	/* NULL: nothing; every VACUUM's cleanup, after the seal (the maintenance lock is held) */
 	void		(*vacuum_skipped) (Relation index, Relation heap);	/* NULL: nothing; VACUUM skipped the vacuuming of the indexes (no ambulkdelete), so rows the heap dropped may be live in the index (the maintenance lock is held) */
 	const char *(*rewrite_due) (Relation index, bool automatic);	/* NULL: the kind has no rewrite rule; else why the index is worth a rewrite of all its segments now, or NULL (the maintenance lock is held) */
@@ -159,14 +167,14 @@ extern bool sift_maint_make_room(Relation index);
 extern bool sift_mops_merge_step(const SiftMaintOps *ops, Relation index, bool wait);
 extern void sift_mops_cut_free_end(const SiftMaintOps *ops, Relation index);
 
-/* The VACUUM callbacks, and the SQL functions promote and merge (the lock and the index are the caller's: sift_mops_open_maintain) */
+/* The VACUUM callbacks, and the bodies of the SQL functions promote and merge */
 extern IndexBulkDeleteResult *sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 												   IndexBulkDeleteCallback callback, void *callback_state);
 extern IndexBulkDeleteResult *sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDeleteResult *stats);
 extern Relation sift_mops_open(const SiftMaintOps *ops, Oid indexoid, LOCKMODE lock);
 extern Relation sift_mops_open_maintain(const SiftMaintOps *ops, Oid indexoid);
-extern int	sift_mops_sql_promote(const SiftMaintOps *ops, Relation index);
-extern int	sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force);
+extern Datum sift_mops_sql_promote(const SiftMaintOps *ops, PG_FUNCTION_ARGS);
+extern Datum sift_mops_sql_merge(const SiftMaintOps *ops, PG_FUNCTION_ARGS);
 
 /*
  * The rewrite of an index that churn left scattered (ops->rewrite_due): seals the open write buffer, promotes, and merges what the kind's
@@ -174,10 +182,13 @@ extern int	sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool for
  * The lock is not waited for to begin with (when a VACUUM, a merge or the worker holds it, nothing is done), but between steps. automatic: the call is the
  * server's own (the limit on the bytes rewritten applies). Returns the merges made, -1 when nothing was due or the lock was busy.
  */
-extern int	sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic);
+extern int	sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic);
+extern PGDLLIMPORT bool sift_maint_own_xacts;
+extern Relation sift_maint_step_boundary(Relation index);
 
 /* Like sift_maint_request_worker, but a request is not dropped for coming within the naptime of another: the worker itself leaves when it has nothing to do */
 extern bool sift_maint_register_worker(Relation index, const char *function);
+extern bool sift_maint_register_worker_oid(Oid indexoid, const char *function);
 
 /* Returns blocks returned to the free list */
 extern int64 sift_maint_orphan_sweep(Relation index);
@@ -201,6 +212,10 @@ extern void sift_maint_space(Relation rel, SiftRelocatePage relocate_page, int e
 /* The same with a cap on the bytes copied under the lock (0: only the free tail is cut), and its screen for a run of free blocks */
 extern uint64 sift_maint_shrink(Relation rel, int elevel);
 extern bool sift_maint_buffer_above_shrink(Relation rel);
+extern bool sift_maint_cut_lock_busy(void);
+extern void sift_maint_online_fallback(bool on);
+extern void sift_maint_cut_nowait(bool on);
+extern void sift_maint_report_fallback(Relation index, int elevel, uint64 moved, BlockNumber freed);
 extern BlockNumber sift_maint_shrink_target(Relation rel, int64 *movable);
 extern BlockNumber sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);
 extern void sift_maint_space_rounds(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);
@@ -209,5 +224,10 @@ extern bool sift_maint_space_worth(int64 blocks, BlockNumber nblocks);
 
 /* Worker entry point, resolved by name from pg_sift.so; main_arg = index OID */
 extern PGDLLEXPORT void sift_maint_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_read_promote_worker_main(Datum main_arg);
+
+/* A search walked docs documents of the open write buffer of generation gen (bm25/maint.c): what the promotion of the buffer is weighed against */
+extern void sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs);
+extern bool sift_maint_wbuf_read_due(Relation index);
 
 #endif							/* SIFT_MAINT_H */

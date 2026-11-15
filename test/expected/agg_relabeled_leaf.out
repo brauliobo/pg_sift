@@ -6,8 +6,8 @@ INSERT INTO countries VALUES ('US', 'United States'), ('BR', 'Brazil');
 CREATE TABLE facts (id int, kind text, country_code varchar(2));
 INSERT INTO facts SELECT i, CASE i % 3 WHEN 0 THEN 'a' WHEN 1 THEN 'b' END, CASE i % 4 WHEN 0 THEN 'US' WHEN 1 THEN 'BR' WHEN 2 THEN 'XX' END FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, kind, country_code);
-NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, country_code
+NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = kind, country_code
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE countries;

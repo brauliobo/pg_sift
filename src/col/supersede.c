@@ -17,68 +17,23 @@
 #include "access/stratnum.h"
 #include "access/tableam.h"
 #include "access/xact.h"
-#include "storage/lmgr.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/syscache.h"
 #include "executor/tuptable.h"
 #include "utils/lsyscache.h"
-#include "utils/inval.h"
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
 
 #include "col/am.h"
+#include "col/conn.h"
 #include "core/compat.h"
 #include "core/tomb.h"
-#include "core/eval.h"
 
 #ifdef SIFT_TESTING
 bool sift_test_no_supersede = false;
 bool sift_test_tombs_at_once = false;
 bool sift_test_supersede_scan = false;
 #endif
-
-/* Transaction-local hints cannot outlive the horizon that prevents reuse of their heap addresses. */
-typedef struct LatestHint
-{
-	Oid index;
-	uint32 hash;
-	ItemPointerData tid;
-} LatestHint;
-
-#define LATEST_HINT_SLOTS 1024
-static LatestHint latest[LATEST_HINT_SLOTS];
-static bool latest_registered;
-StaticAssertDecl(sizeof(latest) <= 16384, "latest candidate hints use at most 16 KiB per backend");
-
-static void
-latest_invalidate(Datum arg, Oid relid)
-{
-	memset(latest, 0, sizeof(latest));
-}
-
-static void
-latest_xact(XactEvent event, void *arg)
-{
-	memset(latest, 0, sizeof(latest));
-}
-
-static LatestHint *
-latest_slot(Relation index, TypeCacheEntry *tc, Oid coll, Datum key)
-{
-	uint32 hash;
-
-	if (!sift_eval_on(SIFT_EVAL_LATEST_HINT) || !OidIsValid(tc->hash_proc_finfo.fn_oid))
-		return NULL;
-	if (!latest_registered)
-	{
-		CacheRegisterRelcacheCallback(latest_invalidate, (Datum)0);
-		RegisterXactCallback(latest_xact, NULL);
-		latest_registered = true;
-	}
-	hash = DatumGetUInt32(FunctionCall1Coll(&tc->hash_proc_finfo, coll, key));
-	return &latest[(hash ^ RelationGetRelid(index)) % LATEST_HINT_SLOTS];
-}
 
 /*
  * Is the version at newtid a speculative insertion (INSERT .. ON CONFLICT before it is confirmed)? It may be killed when the conflict is found, and the row it
@@ -185,6 +140,24 @@ tomb_hold(Relation index, const SiftTomb *ent)
 		flush_slot(h);
 }
 
+/* The key journal of a connected parent (col/conn.h): the key whose entry an update ended by writing a new version of the same key, held with the tombstones */
+static void
+journal_hold(Relation index, Oid keytype, Datum key)
+{
+	SiftTomb	rec;
+
+	if (sift_conn_record(index, keytype, key, true, &rec))
+		tomb_hold(index, &rec);
+}
+
+/* A row trigger (track_changes = ctid): the entry at the address of a version a statement ended, held with the others of the transaction */
+void
+sift_col_tomb_hold_tid(Relation index, ItemPointer tid)
+{
+	sift_col_batch_hook();
+	tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(tid), .xid = GetCurrentTransactionId(), .cid = sift_col_stmt_cid(), .kind = SIFT_TOMB_DELETE});
+}
+
 /*
  * The entry a new version replaces is the same for every sift index of the table that has the key column: the first one finds it with the probe of the unique index, the others
  * of the same row version take it from here (the new address, the transaction and the command say which row version it is).
@@ -212,7 +185,8 @@ tomb_replaced(Relation index, TupleTableSlot *slot, AttrNumber hatt, Form_pg_att
 
 	if (isnull || !DatumGetBool(FunctionCall2Coll(&tc->eq_opr_finfo, att->attcollation, old, key)))
 		return false;
-	tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(entry), .xid = GetCurrentTransactionId(), .cid = GetCurrentCommandId(true), .succ = succ, .kind = SIFT_TOMB_UPDATE});
+	tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(entry), .xid = GetCurrentTransactionId(), .cid = sift_col_stmt_cid(), .succ = succ, .kind = SIFT_TOMB_UPDATE});
+	journal_hold(index, att->atttypid, key);
 	probed_found = true;
 	probed_old = *entry;
 	return true;
@@ -270,7 +244,7 @@ supersede_by_scan(Relation index, Relation heap, Snapshot snap, int attno, AttrN
 		if (ncand == capcand)
 		{
 			capcand = Max(8, 2 * capcand);
-			cand = cand ? repalloc(cand, capcand * sizeof(ItemPointerData)) : palloc(capcand * sizeof(ItemPointerData));
+			SIFT_REGROW(cand, capcand * sizeof(ItemPointerData));
 		}
 		cand[ncand++] = *t;
 	}
@@ -299,12 +273,10 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 	AttrNumber hatt = index->rd_index->indkey.values[attno - 1];
 	Datum key = values[attno - 1];
 	Form_pg_attribute att = TupleDescAttr(RelationGetDescr(heap), hatt - 1);
-	TypeCacheEntry *tc = lookup_type_cache(att->atttypid, TYPECACHE_EQ_OPR_FINFO | (sift_eval_on(SIFT_EVAL_LATEST_HINT) ? TYPECACHE_HASH_PROC_FINFO : 0));
+	TypeCacheEntry *tc = lookup_type_cache(att->atttypid, TYPECACHE_EQ_OPR_FINFO);
 	Snapshot snap;
 	Oid uoid;
 	uint64 succ = sift_key_from_tid(newtid);
-	LatestHint *hint;
-	uint32 hash = 0;
 
 #ifdef SIFT_TESTING
 	if (sift_test_no_supersede)
@@ -313,7 +285,7 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 	if (speculative_stmt && is_speculative(heap, newtid))
 		return;
 	if (probed.heap == RelationGetRelid(heap) && probed.att == hatt && ItemPointerEquals(&probed.newtid, newtid) && probed.xid == GetCurrentTransactionId() &&
-		probed.cid == GetCurrentCommandId(true))
+		probed.cid == sift_col_stmt_cid())
 	{
 		if (probed.found)
 			tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(&probed.old), .xid = probed.xid, .cid = probed.cid, .succ = succ, .kind = SIFT_TOMB_UPDATE});
@@ -322,24 +294,7 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 	probed_found = false;
 	uoid = sift_col_row_key_unique(heap, hatt);
 	snap = RegisterSnapshot(GetLatestSnapshot());
-	hint = OidIsValid(uoid) ? latest_slot(index, tc, att->attcollation, key) : NULL;
-	if (hint != NULL)
-	{
-		hash = DatumGetUInt32(FunctionCall1Coll(&tc->hash_proc_finfo, att->attcollation, key));
-		if (hint->index == RelationGetRelid(index) && hint->hash == hash && !ItemPointerEquals(&hint->tid, newtid))
-		{
-			IndexFetchTableData *fetch = sift_table_index_fetch_begin(heap);
-			TupleTableSlot *slot = table_slot_create(heap, NULL);
-			ItemPointerData tid = hint->tid;
-			bool again = false, dead = false, found;
-
-			found = table_index_fetch_tuple(fetch, &tid, snap, slot, &again, &dead) && tomb_replaced(index, slot, hatt, att, tc, key, &hint->tid, succ);
-			table_index_fetch_end(fetch);
-			ExecDropSingleTupleTableSlot(slot);
-			if (found)
-				goto done;
-		}
-	}
+	snap->curcid = sift_col_stmt_cid();
 #ifdef SIFT_TESTING
 	if (sift_test_supersede_scan)
 		uoid = InvalidOid;
@@ -349,15 +304,12 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 		supersede_by_unique(index, heap, uoid, snap, hatt, att, tc, key, newtid, succ);
 	else
 		supersede_by_scan(index, heap, snap, attno, hatt, att, tc, key, newtid, succ);
-done:
-	if (hint != NULL)
-		*hint = (LatestHint){RelationGetRelid(index), hash, *newtid};
 	UnregisterSnapshot(snap);
 	probed.heap = RelationGetRelid(heap);
 	probed.att = hatt;
 	probed.newtid = *newtid;
 	probed.xid = GetCurrentTransactionId();
-	probed.cid = GetCurrentCommandId(true);
+	probed.cid = sift_col_stmt_cid();
 	probed.found = probed_found;
 	probed.old = probed_old;
 }

@@ -3,9 +3,7 @@
  */
 #include "core/host.h"
 
-#include "bm25/kernels.h"
 #include "core/live.h"
-#include "core/popcount.h"
 #include "bm25/segment.h"
 
 #include "bm25/segment_int.h"
@@ -535,7 +533,7 @@ sift_segw_adopt_range(SiftSegmentWriter *w, BufFile *post, uint64 post_len, BufF
 				if (info.pos_len > poscap)
 				{
 					poscap = Max(info.pos_len, 256);
-					pos = pos ? repalloc(pos, poscap) : palloc(poscap);
+					SIFT_REGROW(pos, poscap);
 				}
 				BufFileReadExact(ent, pos, info.pos_len);
 			}
@@ -552,8 +550,6 @@ sift_segw_adopt_range(SiftSegmentWriter *w, BufFile *post, uint64 post_len, BufF
 void
 sift_segw_finish(SiftSegmentWriter *w, SiftSegEntry *entry)
 {
-	PGIOAlignedBlock page;
-	SiftSegHeaderData *hdr = (SiftSegHeaderData *) SiftPageGetData(page.data);
 	SiftExtent *ext;
 	int			n;
 	uint64		blocks;
@@ -578,10 +574,6 @@ sift_segw_finish(SiftSegmentWriter *w, SiftSegEntry *entry)
 	w->hdr.sum_dl = w->sum_dl;
 	w->hdr.avgdl_ref = w->ref.avgdl;
 	w->hdr.nextents = n;
-	sift_page_init(page.data, SIFT_PT_SEGHEADER, w->gen);
-	memcpy(hdr, &w->hdr, offsetof(SiftSegHeaderData, extents));
-	memcpy(hdr->extents, ext, n * sizeof(SiftExtent));
-	SiftPageSetUsed(page.data, offsetof(SiftSegHeaderData, extents) + n * sizeof(SiftExtent));
 	blocks = 1 + w->hdr.live_npages;
 	for (int i = 0; i < n; i++)
 		blocks += ext[i].nblocks;
@@ -590,7 +582,7 @@ sift_segw_finish(SiftSegmentWriter *w, SiftSegEntry *entry)
 	entry->kind = SIFT_SEG_IMMUTABLE;
 	entry->format = w->fmt;
 	entry->flags = w->positions ? SIFT_SEG_POSITIONS : 0;
-	entry->header_blk = sift_wt_write_page(w->wt, page.data);
+	entry->header_blk = sift_wt_write_seghdr(w->wt, &w->hdr, ext, n, NULL, 0);
 	entry->sb_lo = w->hdr.sb_lo;
 	entry->sb_hi = w->hdr.sb_hi;
 	entry->ndocs = w->ndocs;

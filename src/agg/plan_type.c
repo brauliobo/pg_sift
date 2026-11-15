@@ -3,66 +3,20 @@
  */
 #include "postgres.h"
 
-#include <math.h>
-
-#include "access/htup_details.h"
 #include "access/sysattr.h"
-#include "access/stratnum.h"
-#include "access/table.h"
-#include "access/stratnum.h"
-#include "catalog/pg_aggregate.h"
-#include "catalog/pg_am.h"
-#include "catalog/pg_class.h"
 #include "catalog/pg_collation.h"
-#include "commands/defrem.h"
-#include "catalog/pg_index.h"
-#include "miscadmin.h"
 #include "catalog/pg_operator.h"
-#include "catalog/pg_opfamily.h"
-#include "catalog/pg_proc.h"
-#include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
-#include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/appendinfo.h"
-#include "optimizer/clauses.h"
-#include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
-#include "optimizer/plancat.h"
-#include "optimizer/pathnode.h"
-#include "optimizer/paramassign.h"
-#include "optimizer/paths.h"
 #if __has_include("col/col.h")
 #include "col/am.h"
 #endif
-#include "optimizer/planmain.h"
-#include "optimizer/planner.h"
-#include "optimizer/tlist.h"
-#include "parser/parse_relation.h"
-#include "parser/parsetree.h"
-#include "port/pg_bitutils.h"
-#include "rewrite/rewriteManip.h"
-#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
-#include "utils/fmgrprotos.h"
-#include "utils/jsonb.h"
-#include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
-#include "utils/numeric.h"
-#include "utils/rel.h"
-#include "utils/ruleutils.h"
-#include "utils/selfuncs.h"
-#include "utils/syscache.h"
-#include "utils/typcache.h"
 
-#include "agg/agg.h"
-#include "agg/part.h"
-#include "agg/topn.h"
-#include "agg/spec.h"
-#include "agg/colsrc.h"
-#include "agg/search.h"
 #include "agg/plan_int.h"
 
 /* the SIFT_SRC_JT_* bits of the type names jsonb_typeof gives (a JSON null is 'null'); another string has none */
@@ -196,6 +150,26 @@ types_need_kinds(uint32 types, bool astext)
 		(astext && vals != 0 && vals != (SIFT_SRC_JT_STRING | SIFT_SRC_JT_NUMBER | SIFT_SRC_JT_BOOLEAN));
 }
 
+/* the test of the JSON types (SIFT_SRC_JT_*) of a leaf, which nothing else of the query may read as a value unless it is a conjunct (typeof_reads) */
+static SiftAggPred *
+type_pred(AggCtx *c, int leaf, uint32 types, bool key)
+{
+	SiftAggPred *p = new_pred(c, SAP_TYPE);
+
+	p->leaf = leaf;
+	p->level = leaf_level(c, leaf);
+	p->op = types;
+	c->used = bms_add_member(c->used, leaf);
+	/* the rows of a key test whose value the leaf cannot store are read again (SRK_HASKEY), as the text of the key is */
+	if (!key)
+	{
+		c->rec_bad = bms_add_member(c->rec_bad, leaf);
+		c->txt_bad = bms_add_member(c->txt_bad, leaf);
+	}
+	c->types = lappend(c->types, p);
+	return p;
+}
+
 /*
  * A test of the JSON type of a leaf's path as a conjunct of the query (typeof_test): the source keeps the rows whose type is one of the types,
  * a stored value by the type of the leaf and the values it could not hold by the type the chunk kept for them (SAP_TYPE). Not as a branch of OR:
@@ -213,15 +187,153 @@ compile_typeof(AggCtx *c, Node *n)
 	if (!typeof_test(n, &call, &types) || func_of(call) != F_JSONB_TYPEOF || (leaf = typeof_leaf(c, linitial(func_args(call)))) < 0 ||
 		!source_can_types(c) || (c->stats.nokinds[leaf] && types_need_kinds(types, leaf_of(c, leaf)->astext)))
 		return NULL;
-	p = new_pred(c, SAP_TYPE);
-	p->leaf = leaf;
-	p->level = leaf_level(c, leaf);
-	c->used = bms_add_member(c->used, leaf);
-	c->rec_bad = bms_add_member(c->rec_bad, leaf);
-	c->txt_bad = bms_add_member(c->txt_bad, leaf);
-	p->op = types;
+	p = type_pred(c, leaf, types, false);
 	p->desc = expr_text(c, n);
 	return p;
+}
+
+/* the constant keys of doc ? 'k', doc ?| array['a', 'b'] or doc ?& array['a', 'b'] */
+static List *
+exists_keys(Node *n)
+{
+	Node	   *k = strip_relabel(lsecond(func_args(n)));
+	List	   *keys = NIL;
+
+	if (func_of(n) == F_JSONB_EXISTS_ALL || func_of(n) == F_JSONB_EXISTS_ANY)
+		return path_keys(k, &keys) ? keys : NIL;
+	if (IsA(k, Const) && !((Const *) k)->constisnull)
+		keys = list_make1(makeString(TextDatumGetCString(((Const *) k)->constvalue)));
+	return keys;
+}
+
+static bool
+is_key_test(Node *n)
+{
+	return func_of(n) == F_JSONB_EXISTS || func_of(n) == F_JSONB_EXISTS_ANY || func_of(n) == F_JSONB_EXISTS_ALL;
+}
+
+/* the leaf of the key k of the document of attribute att: the one compile_typeof tests, -1 when there is none */
+static int
+haskey_leaf(AggCtx *c, int att, const char *key)
+{
+	List	   *path = list_make1(makeString(pstrdup(key)));
+
+	for (int i = 0; i < c->lay->nleaves - c->nvleaf; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+
+		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && l->name[0] != '#' && paths_equal(l->path, path) && typeof_type(l->typid))
+			return i;
+	}
+	return -1;
+}
+
+/* is n the test `doc ? 'k'` of the key whose leaf is `leaf`? */
+bool
+key_test_of_leaf(AggCtx *c, Node *n, int leaf)
+{
+	JsonRef		r = {0};
+	List	   *keys;
+
+	n = strip_relabel(n);
+	return func_of(n) == F_JSONB_EXISTS && json_access(c, linitial(func_args(n)), &r) && r.att > 0 && r.path == NIL && (keys = exists_keys(n)) != NIL &&
+		haskey_leaf(c, r.att, strVal(linitial(keys))) == leaf;
+}
+
+typedef struct HasKeyReads
+{
+	AggCtx	   *c;
+	int			att;
+	List	   *keys;			/* the keys of the test */
+	bool		other;			/* the document, or something below one of the keys, read */
+} HasKeyReads;
+
+static bool
+haskey_reads(Node *n, HasKeyReads *w)
+{
+	JsonRef		r = {0};
+
+	if (n == NULL)
+		return false;
+	if (IsA(n, Query))
+		return query_tree_walker((Query *) n, haskey_reads, w, 0);
+	if (is_key_test(n) && json_access(w->c, linitial(func_args(n)), &r) && r.att == w->att && r.path == NIL)
+		return false;
+	r = (JsonRef) {0};
+	if (json_access(w->c, n, &r) && r.att == w->att)
+	{
+		w->other |= r.path == NIL;
+		if (r.path != NIL)
+			foreach_ptr(String, k, w->keys)
+				w->other |= list_length(r.path) > 1 && strcmp(strVal(k), strVal(linitial(r.path))) == 0;
+		return false;
+	}
+	return expression_tree_walker(n, haskey_reads, w);
+}
+
+/*
+ * A test `doc ? 'k'`, `doc ?| array[..]` or `doc ?& array[..]` on the document of an index that declares each path as a leaf, in the WHERE or in any place of a
+ * predicate (a FILTER, an OR, a CASE): the key exists where the leaf holds a value of any JSON type (a JSON null too), which is the type test of compile_typeof, and
+ * in a document that is no object where it is an array holding the string or the string itself, which the leaf does not store (it is the overflow of the array or the
+ * string, whose reads are NULL): the source reads those rows again from the heap (SRK_HASKEY), where a read of the key gives NULL too. The query may read the value of
+ * the key (`doc ->> 'k'`) if the source can read the rows with a value the leaf cannot store again as well (spec_recheck); the document itself or a path below the key stays
+ * with the normal plan.
+ */
+SiftAggPred *
+compile_haskey(AggCtx *c, Node *n)
+{
+	JsonRef		r = {0};
+	HasKeyReads w = {c};
+	Oid			fid;
+	SiftAggPred *p;
+
+	n = strip_relabel(n);
+	fid = func_of(n);
+	if (!is_key_test(n) || !json_access(c, linitial(func_args(n)), &r) || r.as_text || r.att <= 0 || r.path != NIL || !source_can_types(c) || c->search ||
+		!OidIsValid(c->indexoid) || !sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true) || (w.keys = exists_keys(n)) == NIL)
+		return NULL;
+	w.att = r.att;
+	haskey_reads((Node *) c->root->parse, &w);
+	if (w.other)
+		return NULL;
+	p = list_length(w.keys) > 1 ? new_junction(c, fid == F_JSONB_EXISTS_ALL ? SAP_AND : SAP_OR, list_length(w.keys)) : NULL;
+	for (int i = 0; i < list_length(w.keys); i++)
+	{
+		int			leaf = haskey_leaf(c, r.att, strVal(list_nth(w.keys, i)));
+		SiftAggPred *t;
+
+		if (leaf < 0 || c->stats.nokinds[leaf])
+			return NULL;
+		t = type_pred(c, leaf, SIFT_SRC_JT_ALL & ~SIFT_SRC_JT_NONE, true);
+		t->desc = p == NULL ? expr_text(c, n) : psprintf("%s ? '%s'", leaf_name(c, leaf), strVal(list_nth(w.keys, i)));
+		c->haskey = bms_add_member(c->haskey, leaf);
+		if (p == NULL)
+			return t;
+		p->child[i] = t;
+	}
+	junction_done(p);
+	return p;
+}
+
+/* doc ?& array['a', 'b'] of keys that are all leaves of the index is doc ? 'a' AND doc ? 'b' (NIL: it is not, and stays as it is) */
+List *
+haskey_conjuncts(AggCtx *c, Node *q)
+{
+	Node	   *n = strip_relabel(q);
+	JsonRef		r = {0};
+	List	   *keys,
+			   *conj = NIL;
+
+	if (func_of(n) != F_JSONB_EXISTS_ALL || !json_access(c, linitial(func_args(n)), &r) || r.as_text || r.att <= 0 || r.path != NIL || (keys = exists_keys(n)) == NIL)
+		return NIL;
+	foreach_ptr(String, k, keys)
+		if (haskey_leaf(c, r.att, strVal(k)) < 0)
+			return NIL;
+	foreach_ptr(String, k, keys)
+		conj = lappend(conj, makeFuncExpr(F_JSONB_EXISTS, BOOLOID,
+										  list_make2(linitial(func_args(n)), makeConst(TEXTOID, -1, DEFAULT_COLLATION_OID, -1, CStringGetTextDatum(strVal(k)), false, false)),
+										  InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL));
+	return conj;
 }
 
 /* the types a wide leaf keeps as lanes (all the comparisons run on the lanes), and those it keeps as an image that is the same bytes exactly when the values are equal (= <> IN NOT IN run on it) */
@@ -266,7 +378,7 @@ wide_leaf(AggCtx *c, Node *e)
 
 /*
  * The operators on a range or a network column whose lanes the source tests (SiftSrcLeaf.shape): the operator with the column as its left
- * operand and as its right one, as the operator of SWT_* the column is on the left of (0: not offered that way, the column is read as a value).
+ * operand and as its right one, as the operator of SIFT_COLW_* the column is on the left of (0: not offered that way, the column is read as a value).
  */
 static const struct
 {
@@ -274,23 +386,23 @@ static const struct
 	int			left;
 	int			right;
 }			shape_ops[] = {
-	{F_RANGE_CONTAINS, SWT_R_CONTAINS, SWT_R_CONTAINED},
-	{F_RANGE_CONTAINED_BY, SWT_R_CONTAINED, SWT_R_CONTAINS},
-	{F_RANGE_OVERLAPS, SWT_R_OVERLAPS, SWT_R_OVERLAPS},
-	{F_RANGE_BEFORE, SWT_R_BEFORE, SWT_R_AFTER},
-	{F_RANGE_AFTER, SWT_R_AFTER, SWT_R_BEFORE},
-	{F_RANGE_OVERLEFT, SWT_R_OVERLEFT, 0},
-	{F_RANGE_OVERRIGHT, SWT_R_OVERRIGHT, 0},
-	{F_RANGE_ADJACENT, SWT_R_ADJACENT, SWT_R_ADJACENT},
-	{F_RANGE_CONTAINS_ELEM, SWT_R_ELEM, 0},
-	{F_ELEM_CONTAINED_BY_RANGE, 0, SWT_R_ELEM},
-	{F_NETWORK_SUB, SWT_N_SUB, SWT_N_SUP},
-	{F_NETWORK_SUBEQ, SWT_N_SUBEQ, SWT_N_SUPEQ},
-	{F_NETWORK_SUP, SWT_N_SUP, SWT_N_SUB},
-	{F_NETWORK_SUPEQ, SWT_N_SUPEQ, SWT_N_SUBEQ},
-	{F_NETWORK_OVERLAP, SWT_N_OVERLAP, SWT_N_OVERLAP},
-	{F_RANGE_EQ, SWT_R_EQ, SWT_R_EQ},
-	{F_NETWORK_EQ, SWT_N_EQ, SWT_N_EQ}
+	{F_RANGE_CONTAINS, SIFT_COLW_R_CONTAINS, SIFT_COLW_R_CONTAINED},
+	{F_RANGE_CONTAINED_BY, SIFT_COLW_R_CONTAINED, SIFT_COLW_R_CONTAINS},
+	{F_RANGE_OVERLAPS, SIFT_COLW_R_OVERLAPS, SIFT_COLW_R_OVERLAPS},
+	{F_RANGE_BEFORE, SIFT_COLW_R_BEFORE, SIFT_COLW_R_AFTER},
+	{F_RANGE_AFTER, SIFT_COLW_R_AFTER, SIFT_COLW_R_BEFORE},
+	{F_RANGE_OVERLEFT, SIFT_COLW_R_OVERLEFT, 0},
+	{F_RANGE_OVERRIGHT, SIFT_COLW_R_OVERRIGHT, 0},
+	{F_RANGE_ADJACENT, SIFT_COLW_R_ADJACENT, SIFT_COLW_R_ADJACENT},
+	{F_RANGE_CONTAINS_ELEM, SIFT_COLW_R_ELEM, 0},
+	{F_ELEM_CONTAINED_BY_RANGE, 0, SIFT_COLW_R_ELEM},
+	{F_NETWORK_SUB, SIFT_COLW_N_SUB, SIFT_COLW_N_SUP},
+	{F_NETWORK_SUBEQ, SIFT_COLW_N_SUBEQ, SIFT_COLW_N_SUPEQ},
+	{F_NETWORK_SUP, SIFT_COLW_N_SUP, SIFT_COLW_N_SUB},
+	{F_NETWORK_SUPEQ, SIFT_COLW_N_SUPEQ, SIFT_COLW_N_SUBEQ},
+	{F_NETWORK_OVERLAP, SIFT_COLW_N_OVERLAP, SIFT_COLW_N_OVERLAP},
+	{F_RANGE_EQ, SIFT_COLW_R_EQ, SIFT_COLW_R_EQ},
+	{F_NETWORK_EQ, SIFT_COLW_N_EQ, SIFT_COLW_N_EQ}
 };
 
 static int
@@ -306,6 +418,52 @@ shape_leaf(AggCtx *c, Node *e)
 			return i;
 	}
 	return -1;
+}
+
+/*
+ * isempty(r), lower_inf(r), upper_inf(r), lower_inc(r) and upper_inc(r) of a range column, as a conjunct or its NOT,
+ * or `.. IS TRUE` / `.. IS FALSE` (a NULL range passes neither, as it passes neither the function nor its NOT): the operator of SIFT_COLW_R_UNARY and up, the leaf its lanes are of
+ */
+static bool
+range_unary_test(AggCtx *c, Node *n, int *leaf, int *op)
+{
+	bool		neg = false;
+	int			base;
+
+	if (IsA(n, BoolExpr) && ((BoolExpr *) n)->boolop == NOT_EXPR)
+	{
+		neg = true;
+		n = strip_relabel(linitial(((BoolExpr *) n)->args));
+	}
+	else if (IsA(n, BooleanTest) && (((BooleanTest *) n)->booltesttype == IS_TRUE || ((BooleanTest *) n)->booltesttype == IS_FALSE))
+	{
+		neg = ((BooleanTest *) n)->booltesttype == IS_FALSE;
+		n = strip_relabel((Node *) ((BooleanTest *) n)->arg);
+	}
+	if (!IsA(n, FuncExpr) || list_length(func_args(n)) != 1)
+		return false;
+	switch (func_of(n))
+	{
+		case F_ISEMPTY_ANYRANGE:
+			base = SIFT_COLW_R_EMPTY;
+			break;
+		case F_LOWER_INF_ANYRANGE:
+			base = SIFT_COLW_R_LOWER_INF;
+			break;
+		case F_UPPER_INF_ANYRANGE:
+			base = SIFT_COLW_R_UPPER_INF;
+			break;
+		case F_LOWER_INC_ANYRANGE:
+			base = SIFT_COLW_R_LOWER_INC;
+			break;
+		case F_UPPER_INC_ANYRANGE:
+			base = SIFT_COLW_R_UPPER_INC;
+			break;
+		default:
+			return false;
+	}
+	*op = base + neg;
+	return (*leaf = shape_leaf(c, strip_relabel(linitial(func_args(n))))) >= 0 && leaf_of(c, *leaf)->shape == 1;
 }
 
 /* `column op operand` (or the commuted form) of an operator in shape_ops, the operand a constant, parameter or stable expression */
@@ -328,7 +486,7 @@ shape_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
 			else
 				return false;
 			side = leaf_of(c, *leaf)->shape;
-			at = *op >= SWT_N_SUB && *op != SWT_R_EQ;
+			at = *op >= SIFT_COLW_N_SUB && *op != SIFT_COLW_R_EQ;
 			*argtype = exprType(*operand);
 			return (side == 2) == at;
 		}
@@ -354,9 +512,11 @@ wide_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
 	*argtype = InvalidOid;
 	if (IsA(n, OpExpr) && list_length(((OpExpr *) n)->args) == 2 && shape_test(c, n, leaf, op, operand, argtype))
 		return true;
+	if (range_unary_test(c, n, leaf, op))
+		return true;
 	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow)
 	{
-		*op = ((NullTest *) n)->nulltesttype == IS_NOT_NULL ? SWT_NOTNULL : SWT_ISNULL;
+		*op = ((NullTest *) n)->nulltesttype == IS_NOT_NULL ? SIFT_COLW_NOTNULL : SIFT_COLW_ISNULL;
 		return (*leaf = wide_leaf(c, strip_relabel((Node *) ((NullTest *) n)->arg))) >= 0 && lane_type(leaf_of(c, *leaf)->wtypid);
 	}
 	if (IsA(n, OpExpr) && list_length(((OpExpr *) n)->args) == 2 && (*op = builtin_cmp(((OpExpr *) n)->opno, &lt, &rt)) >= 0)
@@ -384,7 +544,7 @@ wide_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
 			return false;
 		l = strip_relabel(linitial(sa->args));
 		r = strip_relabel(lsecond(sa->args));
-		*op = sa->useOr ? SWT_IN : SWT_NOTIN;
+		*op = sa->useOr ? SIFT_COLW_IN : SIFT_COLW_NOTIN;
 		*operand = r;
 		*argtype = rt;
 		return (*leaf = wide_leaf(c, l)) >= 0 && pseudo_const(r) && wide_type_is(lt, leaf_of(c, *leaf)->wtypid) && rt == lt;
@@ -446,8 +606,8 @@ or_equalities_as_any(Node *n)
 }
 
 /*
- * A test of a wide leaf as a conjunct of the query: the source keeps the rows that pass (SAP_WIDE) and the executor never reads the values, which
- * is why it is only a conjunct: an OR, a CASE, a FILTER or a key would have to read them.
+ * A test of a wide leaf (SAP_WIDE): the source keeps the rows that pass, as a conjunct of the query, or hands them over as the bitmap of the unit where the test is a
+ * branch of an OR, a FILTER or a CASE; the executor never reads the values. Only that: a key or a value reads them.
  */
 SiftAggPred *
 compile_wide(AggCtx *c, Node *n)
@@ -463,8 +623,9 @@ compile_wide(AggCtx *c, Node *n)
 	test = or_equalities_as_any(n);
 	if (c->nwide >= SIFT_AGG_MAX_WIDE || !wide_test(c, test, &leaf, &op, &operand, &argtype) || !source_can_wide(c))
 		return NULL;
-	c->nwide++;
 	p = new_pred(c, SAP_WIDE);
+	p->wslot = c->nwide++;
+	c->wide = lappend(c->wide, p);
 	p->leaf = leaf;
 	p->level = 0;
 	p->op = op;
@@ -576,11 +737,11 @@ typeof_keeps_unstorable(AggCtx *c, const SiftAggPred *p)
 	return (p->op & SIFT_SRC_JT_READ) && (p->op & SIFT_SRC_JT_ALL & ~(stored | SIFT_SRC_JT_NULL)) != 0;
 }
 
-/* a SAP_TYPE conjunct whose leaf the query reads elsewhere says so: a row it keeps with a value the leaf cannot hold is then an error */
+/* a SAP_TYPE conjunct whose leaf the query reads elsewhere says so: a row it keeps with a value the leaf cannot hold is then an error, but for the key test, whose rows with such a value the source reads again */
 void
-typeof_reads(AggCtx *c, SiftAggSpec *s)
+typeof_reads(AggCtx *c)
 {
-	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->kind == SAP_TYPE && bms_is_member(s->pred[i]->leaf, c->read))
-			s->pred[i]->op |= SIFT_SRC_JT_READ;
+	foreach_ptr(SiftAggPred, p, c->types)
+		if (bms_is_member(p->leaf, c->read) && !bms_is_member(p->leaf, c->haskey))
+			p->op |= SIFT_SRC_JT_READ;
 }

@@ -5,9 +5,10 @@
  *
  *   dimension  at most DIM_GROUPS distinct values (NULL counts as one) in AGREE_PCT of the sampled units: a column the cube holds a histogram of
  *   pair       two dimensions whose combinations fit a rollup of the rows of the unit (min(rows / 10, SIFT_PAGG_ROWS_CELLS) cells) in AGREE_PCT of the
- *              units and whose cells take at most GROWTH_PCT of the index: rollup_dims would answer a GROUP BY of both from cells
+ *              units and whose cells take at most GROWTH_PCT of the index: rollup_columns would answer a GROUP BY of both from cells
  *   key        an int2, int4, int8 or date foreign key or column named *_id that is not unique: key_columns keeps a key list or bitmap of it (col/keycols/keycols.c)
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include "access/genam.h"
@@ -194,7 +195,7 @@ Datum
 sift_col_index_advice(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_index(PG_GETARG_OID(0), AccessShareLock);
 	Relation	heap;
 	const SiftColRel *rel;
 	const SiftColSchema *sc;
@@ -213,9 +214,8 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 	bool	   *nulls;
 	uint32		histo[SIFT_COL_MAX_COLS] = {0};
 
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
 	InitMaterializedSRF(fcinfo, 0);
+	SIFT_COL_OPEN_GATE();
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	rel = sift_col_rel_private(index, CurrentMemoryContext);
 	sc = rel->schema;
@@ -394,7 +394,7 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 		v[3] = Int32GetDatum(pairs[p].seen);
 		v[4] = Int32GetDatum(share(pairs[p].fit, pairs[p].seen));
 		if (pass)
-			v[5] = CStringGetTextDatum(psprintf("rollup_dims = '%s, %s: <measure>' would answer %d%% of the units from cells, within %d%% more index (rollup_dims = 'auto' writes the cheapest pair)", na, nb,
+			v[5] = CStringGetTextDatum(psprintf("rollup_columns = '%s, %s: <measure>' would answer %d%% of the units from cells, within %d%% more index (rollup_columns = 'auto' writes the cheapest pair)", na, nb,
 												share(pairs[p].fit, pairs[p].seen), GROWTH_PCT));
 		else
 			isnull[5] = true;

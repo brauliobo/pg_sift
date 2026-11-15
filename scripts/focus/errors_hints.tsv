@@ -1,0 +1,1 @@
+errors_hints	src/agg/refuse.c:sift_agg_explain_why src/bm25/funcs.c:scan_only src/bm25/funcs.c:sift_score src/bm25/planner.c:reads_max_score src/bm25/planner_match.c:param_limits src/bm25/planner_match.c:query_limit src/table/wbuf.c:write_overflow

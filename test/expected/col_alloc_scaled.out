@@ -1,0 +1,125 @@
+-- A table of a few hundred thousand rows behaves as one of hundreds of millions: sift.test_limits lowers array_bytes, the limit of the helper every array that follows
+-- the rows of a segment goes through (core/rowmem.h), and sift.test_col_segment_kb the memory budget of a writer, so that every pass that writes a segment (CREATE INDEX,
+-- the merge of segments, REINDEX CONCURRENTLY, the rewrite that VACUUM makes, the promotion of a write buffer) holds in memory what the budget allows and no more. An index with
+-- key_order (not cut by a key) and one with key_cut, each verified after every pass and answering as the heap does.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+CREATE TABLE sc (id bigint PRIMARY KEY, tenant_id int, event_date date, updated_at timestamptz, deleted_at timestamptz, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO sc SELECT g, (g * 7919 % 400)::int, date '2020-01-01' + (g % 2000)::int, timestamptz '2020-01-01' + g * interval '7 seconds',
+	CASE WHEN g % 50 = 0 THEN timestamptz '2021-01-01' END, md5(g::text) FROM generate_series(1::bigint, 300000) g;
+VACUUM (FREEZE, ANALYZE) sc;
+SET sift.test_col_segment_kb = 2000;
+-- no array of a pass may pass 4 MB: 300,000 rows of 24 bytes are 7.2 MB, the segments the budget cuts hold at most 125,000 rows
+SET sift.test_limits = 'array_bytes=4194304';
+CREATE INDEX sc_order ON sc USING sift_col (id, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date');
+CREATE INDEX sc_cut ON sc USING sift_col (id, tenant_id, event_date) WITH (key_cut = 'tenant_id');
+CREATE FUNCTION sc_state(idx regclass) RETURNS bool LANGUAGE sql AS $$
+	SELECT max(rows) * 24 < 4194304 FROM sift.col_segments(idx) WHERE kind = 'immutable' $$;
+SELECT (SELECT count(*) FROM sift.col_segments('sc_order') WHERE kind = 'immutable') > 2 AS order_cut_by_budget,
+	(SELECT count(*) FROM sift.col_segments('sc_cut') WHERE kind = 'immutable') > 2 AS cut_cut_by_budget;
+ order_cut_by_budget | cut_cut_by_budget 
+---------------------+-------------------
+ t                   | t
+(1 row)
+
+SELECT sc_state('sc_order') AS order_arrays_under_limit, sc_state('sc_cut') AS cut_arrays_under_limit;
+ order_arrays_under_limit | cut_arrays_under_limit 
+--------------------------+------------------------
+ t                        | t
+(1 row)
+
+SELECT sift.col_verify('sc_order', true), sift.col_verify('sc_cut', true);
+ col_verify | col_verify 
+------------+------------
+            | 
+(1 row)
+
+-- the merge of every segment into the partitions maintenance_work_mem allows: a row of this index is a few bytes of segment and some hundred bytes in the writer
+SET maintenance_work_mem = '12MB';
+SELECT sift.col_merge('sc_order', true) >= 0 AS merged_order, sift.col_merge('sc_cut', true) >= 0 AS merged_cut;
+ merged_order | merged_cut 
+--------------+------------
+ t            | t
+(1 row)
+
+SELECT sc_state('sc_order') AS order_arrays_under_limit, sc_state('sc_cut') AS cut_arrays_under_limit;
+ order_arrays_under_limit | cut_arrays_under_limit 
+--------------------------+------------------------
+ t                        | t
+(1 row)
+
+SELECT sift.col_verify('sc_order', true), sift.col_verify('sc_cut', true);
+ col_verify | col_verify 
+------------+------------
+            | 
+(1 row)
+
+-- the rows are the heap's, in the index and by the heap
+CREATE FUNCTION sc_answers() RETURNS TABLE (n bigint, s numeric, d date) LANGUAGE sql AS $$
+	SELECT count(*), sum(id), min(event_date) FROM sc WHERE tenant_id BETWEEN 17 AND 90 $$;
+SET sift.enable_agg = on;
+SET enable_seqscan = off;
+CREATE TEMP TABLE sc_on AS SELECT * FROM sc_answers();
+SET sift.enable_agg = off;
+SET enable_seqscan = on;
+CREATE TEMP TABLE sc_off AS SELECT * FROM sc_answers();
+SELECT (SELECT count(*) FROM (SELECT * FROM sc_on EXCEPT SELECT * FROM sc_off) x) = 0 AS same_answers;
+ same_answers 
+--------------
+ t
+(1 row)
+
+-- churn, then the rewrite that VACUUM makes
+UPDATE sc SET updated_at = updated_at + interval '1 day' WHERE id % 7 = 0;
+DELETE FROM sc WHERE id % 11 = 0;
+INSERT INTO sc SELECT g, (g * 7919 % 400)::int, date '2020-01-01' + (g % 2000)::int, timestamptz '2021-06-01' + g * interval '7 seconds', NULL, md5(g::text)
+	FROM generate_series(300001::bigint, 330000) g;
+VACUUM (INDEX_CLEANUP ON) sc;
+SELECT sc_state('sc_order') AS order_arrays_under_limit, sc_state('sc_cut') AS cut_arrays_under_limit;
+ order_arrays_under_limit | cut_arrays_under_limit 
+--------------------------+------------------------
+ t                        | t
+(1 row)
+
+SELECT sift.col_verify('sc_order', true), sift.col_verify('sc_cut', true);
+ col_verify | col_verify 
+------------+------------
+            | 
+(1 row)
+
+-- the promotion of a write buffer and REINDEX CONCURRENTLY
+REINDEX INDEX CONCURRENTLY sc_order;
+REINDEX INDEX CONCURRENTLY sc_cut;
+SELECT sc_state('sc_order') AS order_arrays_under_limit, sc_state('sc_cut') AS cut_arrays_under_limit;
+ order_arrays_under_limit | cut_arrays_under_limit 
+--------------------------+------------------------
+ t                        | t
+(1 row)
+
+SELECT sift.col_verify('sc_order', true), sift.col_verify('sc_cut', true);
+ col_verify | col_verify 
+------------+------------
+            | 
+(1 row)
+
+SET sift.enable_agg = on;
+SET enable_seqscan = off;
+TRUNCATE sc_on;
+INSERT INTO sc_on SELECT * FROM sc_answers();
+SET sift.enable_agg = off;
+SET enable_seqscan = on;
+TRUNCATE sc_off;
+INSERT INTO sc_off SELECT * FROM sc_answers();
+SELECT (SELECT count(*) FROM (SELECT * FROM sc_on EXCEPT SELECT * FROM sc_off) x) = 0 AS same_answers_after;
+ same_answers_after 
+--------------------
+ t
+(1 row)
+
+RESET sift.test_limits;
+RESET sift.test_col_segment_kb;
+DROP FUNCTION sc_state(regclass), sc_answers();
+DROP TABLE sc;
+DROP EXTENSION pg_sift;

@@ -28,6 +28,7 @@ struct ColBuild
 	MemoryContext heldcxt;		/* the batches in held */
 	List	   *held;			/* an index with the option key_cut: the batches of the superblocks since the last run, written sorted by the key as a segment when they pass the budget, and at the end (col/order.c) */
 	SiftColSegWriter *w;
+	SiftColFill *fill;				/* an index with connections: the found flags of every segment are filled from the parent tables (col/conn.h) */
 	MemoryContext wcxt;			/* the writer of the current segment: freed with it */
 	SiftColRow *rows;			/* the current page, deep copies */
 	int			nrows;
@@ -37,7 +38,7 @@ struct ColBuild
 	uint8	   *lvl;			/* key_cut: how many times the rows of segs[i] were merged (a run is level 0) */
 	uint32		aim;			/* key_cut: the aim of the units of the runs, which the merges of them keep */
 	ColSpill   *spill;			/* key_cut: the rows go to a file for each range of the key (col/build/spill.c) */
-	uint64		spill_run_rows;	/* the rows the first run held: the rows of the runs of the ranges */
+	uint64		spill_run_rows;	/* the rows of a run of the ranges: those the first run held, or what fits SPILL_RUN_BYTES of them */
 	uint32		spill_aim;		/* the aim of the units of the runs of the ranges: the first run's, whose batches held a superblock's rows */
 	int64	   *ksample;		/* key_cut: the sorted keys of the rows of superblocks spread over the table, taken before the scan (col/build/spill.c) */
 	uint32		nksample;
@@ -54,6 +55,7 @@ struct ColBuild
 
 extern uint64	colb_next_gen(ColBuild *b);
 extern Size colb_run_budget(ColBuild *b, Size held);
+extern Size colb_writer_budget(int nslots);
 extern void colb_flush_batch(ColBuild *b);
 extern void colb_add_row(ColBuild *b, const SiftColRow *row);
 extern void colb_write_run(ColBuild *b, bool last);

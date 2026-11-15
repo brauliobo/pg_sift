@@ -14,16 +14,15 @@ Every setting and option has its full row in [docs/OPTIONS.md](OPTIONS.md); the 
 
 An equality, an `IN` list or a short range on a column of many distinct values.
 
-- **`point_columns`** (opt-in).
-  - **What**: an equality, `IN` list or short range on a column of many distinct keys reads only the units that hold the rows, which the heap then checks again.
-  - **Default**: off. An equality on a unique id reads 1.58 M instructions with the key filter and 0.78 M with the directory (2.03x), for +58% of the index and +3.4% of the build; that growth, over a quarter of the index, is more than the gain.
-  - **Off**: `ALTER INDEX .. RESET (point_columns)`; new segments get no directory, older ones keep theirs until a merge or `REINDEX`.
-  - **Measured**: integer equality 0.119 to 0.020 ms on 200,000 rows (a b-tree 0.006 ms), case `point_in_100`.
-  - **Message**: `point-tid-key-cut`.
+- **`point_columns`** (deprecated in 4.3, removed in 4.4).
+  - **What**: the directory of the rows of a key, which an equality, `IN` list or short range reads to find the units that hold the rows. A build now lists the columns it names in the directory of heap addresses (`point_tid_columns`), which reads no unit; the segments already written are read as before.
+  - **Why**: the directory of addresses is within 3% of its size and reads fewer instructions in every shape measured (integer equality 0.119 to 0.020 ms on 200,000 rows with the rows form, 0.013 ms with addresses; a b-tree 0.006 ms), case `point_in_100`.
+  - **Off**: `ALTER INDEX .. RESET (point_columns)`, and name the columns in `point_tid_columns`. `CREATE INDEX` and `REINDEX` say so once (`point-columns-deprecated`).
+  - **Message**: `point-columns-deprecated`, `point-tid-key-cut`.
 - **`point_tid_columns`** (opt-in; chosen by the default formula, below).
   - **What**: the same lookup, with the directory listing the heap addresses of the rows, so no unit is read.
   - **Default**: off. An equality on a unique id reads 1.67 M instructions with the key filter and 0.66 M with the addresses (2.51x), for +57.6% of the index and +3.6% of the build. Its segments are column format minor 37 or more, which only 3.7 and later read.
-  - **Off**: `ALTER INDEX .. RESET (point_tid_columns)`; a column kept in `point_columns` then has the rows form. `sift.col_format_minor <= 14` writes no addresses.
+  - **Off**: `ALTER INDEX .. RESET (point_tid_columns)`; `sift.col_format_minor <= 14` writes no addresses, and the directory has the rows form.
   - **Measured**: integer equality 0.013 ms, flat from 26,700 to 1,000,000 rows (a b-tree 0.006 ms); a 100-id `IN` 45.7 to 0.25 ms on 1,000,000 rows; case `point_in_100`.
   - **Message**: `point-directory-auto`, `point-tid-explicit`, `point-tid-key-cut`.
 - **Point directory by the default formula** (automatic).
@@ -42,23 +41,22 @@ An equality, an `IN` list or a short range on a column of many distinct values.
 
 `ORDER BY .. LIMIT n`, with or without a filter, an offset or a range.
 
-- **`order_columns`** (opt-in).
-  - **What**: each unit keeps a sorted run of the column, so `ORDER BY col LIMIT n` reads the first rows of each unit only, and a `LIMIT` of up to 32 over clean, all-visible units reads no unit.
-  - **Default**: off. An `ORDER BY` a date `LIMIT 100` reads 18.3 M instructions without the runs and 16.9 M with them (1.08x), for +8.3% of the index and +2.5% of the build.
-  - **Off**: `ALTER INDEX .. RESET (order_columns)`; new units get no run. `sift.col_format_minor <= 12` writes no runs, 13 to 14 writes runs without heads.
-  - **Measured**: `ORDER BY` an integer `LIMIT 100` on 1,000,000 rows, 37.9 ms by the normal plan, 3.5 ms without runs, 1.4 ms with them; case `topn_sorted_runs`.
+- **`order_columns`** (deprecated in 4.3, removed in 4.4).
+  - **What**: each unit kept a sorted run of the column, so `ORDER BY col LIMIT n` read the first rows of each unit only. It is accepted and ignored: a build writes no run, and the order arrays (`order_array_columns`) answer a top-N, a range and an `OFFSET` over any number of units. The runs already written, and their heads, are read as before.
+  - **Why**: the runs hold the same bytes as the order array of the column (2.08 against 2.27 bytes a row for a timestamp at 5,000,000 rows) and read 4 to 6 times the instructions beyond a top-N of 32 (`OFFSET` 4.42 M, a range 16.0 M, an `IN` list of two groups 47.8 M against 0.4 to 1.4 M with the array); a top-N of 32 or fewer reads 0.38 M with the heads and 0.46 M with the array.
+  - **Off**: `ALTER INDEX .. RESET (order_columns)`. `CREATE INDEX` and `REINDEX` say so once (`order-columns-deprecated`).
 - **`sift.topn_runs`** (setting, on).
   - **What**: lets the top-N scan read the stored runs.
-  - **Default**: on; it costs nothing without `order_columns`.
+  - **Default**: on; it reads the runs that segments written before 4.3 hold, and costs nothing without them.
   - **Off**: `SET sift.topn_runs = off` (session, role, database or `postgresql.conf`): whole units are read, the stored runs stay.
   - **Measured**: `ORDER BY k LIMIT 100` with `order_columns`, 1,000,000 rows, 3.5 ms off and 1.4 ms on; case `topn_sorted_runs`.
-- **Heads of the runs** (automatic with `order_columns`, column format minor 18).
+- **Heads of the runs** (written with the deprecated `order_columns`, column format minor 18).
   - **What**: the first and last keys of a run (up to 32 at each end, with the heap addresses of their rows) answer `ORDER BY .. LIMIT n` (n at most 32, one sort key, no condition, join or aggregate) without reading the unit.
-  - **Default**: on with `order_columns`: 2 to 3 times faster on an unfiltered `LIMIT` up to 32, for 0.6% to 2.4% of the index and write cost inside noise.
+  - **Default**: on with `order_columns`, which a build ignores since 4.3: 2 to 3 times faster on an unfiltered `LIMIT` up to 32, for 0.6% to 2.4% of the index and write cost inside noise.
   - **Off**: `sift.col_format_minor = 14` writes runs without heads, or `sift.topn_runs = off` / `sift.enable_topn = off`.
   - **Measured**: `ORDER BY k LIMIT 10` 0.128 to 0.051 ms on 800,000 rows (a b-tree 0.010 ms).
 - **Top-N run probes** (automatic).
-  - **What**: a top-N over a table with `order_columns` reads the sort key of a unit's rows only for the rows it keeps, and sizes its candidate buffers by the unit.
+  - **What**: a top-N over a table with sorted runs (`order_columns` of 4.2 and older) reads the sort key of a unit's rows only for the rows it keeps, and sizes its candidate buffers by the unit.
   - **Default**: on; the same rows and units are read with less work a scan. No format change, no growth.
   - **Off**: `SET sift.topn_runs = off`, or `SET sift.enable_topn = off`.
   - **Measured**: 40 scans `ORDER BY` a key column `LIMIT 10..49` on 1,000,000 orders, 48 to 24.8 ms; case `topn_run_probes`.
@@ -117,11 +115,10 @@ Units that follow a declared key, so a lookup or a range of the key reads the un
   - **Off**: `ALTER INDEX .. SET (key_cut = 'off')` and `REINDEX` (or `CREATE INDEX .. WITH (key_cut = 'off')`).
   - **Measured**: `count/sum` of one key 5.06 to 0.35 ms on 1,500,000 rows, 419 units; case `keycut_customer_agg`.
   - **Message**: `key-cut-chosen`, `key-cut-advised`, `key-order`.
-- **`key_cut_rows`** (a size, default 0).
-  - **What**: the rows a key-cut unit aims at; 0 is the rows of an average superblock.
-  - **Default**: 0, which keeps the number of units and the planner's per-unit costs; at 100,000 rows 256 rows is +69.0% of the index and 4,096 is -9.4%, with no query gain.
-  - **Off**: not a switch; `RESET (key_cut_rows)` returns to superblock-sized units.
-  - **Measured**: a key range of 40 values 0.20 ms with 256 rows and with the default, 100,000 rows; case `keycut_customer_agg`.
+- **`key_cut_rows`** (deprecated in 4.3, removed in 4.4).
+  - **What**: the rows a key-cut unit aims at. It is accepted and ignored: the units aim at the rows of an average superblock, which keeps the number of units and the planner's per-unit costs.
+  - **Why**: at 100,000 rows 256 rows is +69.0% of the index and 4,096 is -9.4%, with no query gain; case `keycut_customer_agg`.
+  - **Off**: `RESET (key_cut_rows)`. `CREATE INDEX` and `REINDEX` say so once (`key-cut-rows-deprecated`).
 - **Second key of the cut** (automatic).
   - **What**: when the cut is chosen by default and the index has a date or timestamp leaf, the rows of a key are sorted by that leaf too, so a window of dates on the key skips the units outside it.
   - **Default**: on; the index shrinks by 20.9% and the build pays 11% more.

@@ -115,7 +115,9 @@ dir_pressure(const SiftTblRel *st)
 static inline bool
 dir_backpressure(const SiftTblRel *st)
 {
-	return sift_tbl_backpressure > 0 && st->dir.nsegs * 100 > sift_tbl_backpressure * sift_tbl_max_segments;
+	int			bp = sift_tbl_opt_int(st, SIFT_TBLOPT_BACKPRESSURE);
+
+	return bp > 0 && st->dir.nsegs * 100 > bp * sift_tbl_max_segments;
 }
 
 #endif							/* SIFT_SEG_INT_H */

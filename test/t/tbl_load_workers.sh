@@ -35,9 +35,14 @@ answers() { sql "$1" "SELECT count(*) || ':' || sum(amount) FROM lt WHERE grp = 
 twin() { sql primary "SELECT count(*) || ':' || sum(amount) FROM src WHERE grp = 7" | tr '\n' ' '; }
 used() { sql primary "SELECT relation_blocks - free_blocks FROM sift.table_space('lt')"; }
 workers() { sql primary "SELECT current_setting('sift.test_par_workers')"; }
-verified() { [[ -z $(sql "$1" "SELECT sift.verify('lt_bm', true)" 2>&1) ]]; }
+verified() { out=$(sql "$1" "SELECT sift.verify('lt_bm', true)" 2>&1); [[ -z $out ]]; }
 reset() { sql primary "TRUNCATE lt" >/dev/null && sql primary "VACUUM lt" >/dev/null; }
-same_on_standby() { catchup primary standby && [[ $(digest standby) == "$(digest primary)" ]] && verified standby; }
+same_on_standby() {
+	local p s
+	catchup primary standby && p=$(digest primary) && s=$(digest standby) || return
+	out="digest primary $p, standby $s"
+	[[ $s == "$p" ]] && verified standby
+}
 
 # the first load: with workers, then without
 used0=$(used)

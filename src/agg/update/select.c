@@ -10,7 +10,6 @@
 #include "utils/float.h"
 
 #include "agg/dense_int.h"
-#include "col/am.h"
 
 /* the id (1..) over all dictionaries of entry c of d, for the values count(DISTINCT) of aggregate ai counts */
 uint32

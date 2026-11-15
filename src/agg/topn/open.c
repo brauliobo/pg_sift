@@ -3,6 +3,7 @@
  * Which leaves can be a key or an output, the spec the planner hands over, the bounds, and
  * the heap, the sort and the fetch a reader opens with, and its close.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "access/stratnum.h"
@@ -12,7 +13,6 @@
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
-#include "port/pg_bitutils.h"
 #include "utils/catcache.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -21,9 +21,9 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/tuplesort.h"
-#include "utils/varlena.h"
 
 #include "col/am.h"
+#include "agg/agg.h"
 #include "agg/topn/int.h"
 
 bool		sift_topn_zone_keys = true;
@@ -314,7 +314,7 @@ sift_topn_bool_attno(const SiftSrcLayout *lay, int leaf)
 bool
 sift_topn_same_scale(Oid a, Oid b)
 {
-	return a == b || ((a == INT2OID || a == INT4OID || a == INT8OID) && (b == INT2OID || b == INT4OID || b == INT8OID));
+	return a == b || (sift_int_type(a) && sift_int_type(b));
 }
 
 /* The key of a numeric heap value as the arrays hold it; a NaN or an infinity (the array has none: a segment with one has no array) is a key no entry has */

@@ -3,7 +3,6 @@
  * the cells a dimension of a cube takes from a date or a timestamp
  * a pure function of the value
  */
-#include "core/host.h"
 #include "col/preagg/pagg_build_int.h"
 
 #define PAGG_USECS_DAY		INT64CONST(86400000000)

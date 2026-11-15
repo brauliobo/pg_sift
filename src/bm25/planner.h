@@ -19,10 +19,17 @@
 #define SIFT_PLANNER_H
 
 #include "nodes/extensible.h"
-#include "nodes/pathnodes.h"
 
 typedef /* Rows of a table whose keys a ranked scan tests an INCLUDE column against (SIFT_PRIV_SEMI) */
 #define SIFT_SEMI_MAX_SET	65536
+
+/*
+ * What a keyed scan (ORDER BY leading keys, score) holds for a row it keeps (the heap node, the KeyRow with its keys and null flags, twice for the
+ * chunk sizes, the entry in the sorted array and the row of its filter) and for one it keeps only for a tie with the last key: the planner offers
+ * the scan when the rows of a round fit work_mem, and the scan fails naming it when the ties or a longer round do not
+ */
+#define SIFT_KEYED_ROW_BYTES(nkeys)	(2 * (32 + (nkeys) * 9) + 2 * 8 + 64)
+#define SIFT_KEYED_TIE_BYTES		(6 + 32 + 8 + 64)
 
 enum SiftScanMode
 {
@@ -72,6 +79,9 @@ extern bool sift_match_clause(Node *clause, IndexOptInfo *index, Expr **query);
 
 /* Does the index answer queries as the analyzer of index `analyzer` (InvalidOid: the default one) does? */
 extern bool sift_index_serves(Oid indexoid, Oid analyzer);
+
+/* bm25/planner_post.c: the finished plan, node by node (scans: the ones of the planner hook too; a plan made without the hook only has the first kind of fix) */
+extern void sift_finish_plan(PlannedStmt *stmt, bool scans);
 
 /* true if expr is sift.score(ctid) / sift.max_score(ctid) of rel relid */
 extern bool sift_is_score_expr(Node *expr, Index relid, bool *is_max);

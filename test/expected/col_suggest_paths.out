@@ -52,16 +52,7 @@ SELECT sift.col_verify('sp_col', true);
 (1 row)
 
 CREATE FUNCTION sp_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_or_no_rows(q, push) $$;
-CREATE FUNCTION sp_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%SiftAgg%' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+CREATE FUNCTION sp_pushed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_has_siftagg_with_scans_off(q) $$;
 SELECT n, sp_rows(q, true) = sp_rows(q, false) AS same, sp_pushed(q) AS pushed FROM (VALUES
 	(1, 'SELECT doc->''meta''->>''lang'', count(*) FROM sp GROUP BY 1'),
 	(2, 'SELECT (doc->>''count'')::int, count(*) FROM sp WHERE doc->>''name'' > ''n5'' GROUP BY 1'),

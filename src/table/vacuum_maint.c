@@ -21,7 +21,7 @@ sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)
 	sift_tbl_refresh(rel, st);
 	if (!st->initialized)
 		return;
-	if (!sift_maint_lock(rel, false))
+	if (!sift_tbl_maint_lock(rel, st, false))
 	{
 		r->busy = true;
 		return;
@@ -42,11 +42,13 @@ sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)
 		r->merged = merge_steps(rel, st, oldest);
 		(void) sift_recycle(rel);
 		(void) sift_maint_orphan_sweep(rel);
+		sift_maint_cut_nowait(true);
 		if (tbl_truncates(rel))
 			sift_maint_space_budget(rel, relocate_page, DEBUG2, background ? Min(budget, DEFRAG_RELOCATE_BYTES) : budget);
 	}
 	PG_FINALLY();
 	{
+		sift_maint_cut_nowait(false);
 		maintaining = false;
 		sift_maint_unlock(rel);
 	}
@@ -67,12 +69,15 @@ sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)
  * has been through the indexes, so what the backend saw when it asked last decides whether they grew since; likewise the free blocks.
  */
 static uint64
-removable_tombs(Relation rel, SiftTblRel *st)
+removable_tombs(Relation rel, SiftTblRel *st, bool all)
 {
 	TransactionId horizon = GetOldestNonRemovableTransactionId(rel);
 	uint64		n = 0;
 
-	sift_tomb_sync(rel, &st->tomb);
+	if (all)
+		sift_tomb_sync_all(rel, &st->tomb);
+	else
+		sift_tomb_sync(rel, &st->tomb);
 	/* (the frozen entries are the roots of chains that go on: a pass keeps them) */
 	for (uint32 i = 0; i < st->tomb.nents; i++)
 		n += st->tomb.ents[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->tomb.ents[i].xid, horizon);
@@ -117,10 +122,11 @@ dead_over(const SiftTblRel *st, uint64 tombs, uint64 reads)
 	return tombs > 0 && reads * dirty_share(st, tombs) >= PASS_READS;
 }
 
+/* A log of a quarter of what a backend keeps (sift_tomb_pressure) asks for the pass whatever the reads: the log is memory in every backend that reads the table */
 static bool
-dead_wanted(const SiftTblRel *st, uint64 tombs, uint64 seen, uint64 reads)
+dead_wanted(const SiftTblRel *st, uint64 entries, uint64 tombs, uint64 seen, uint64 reads)
 {
-	return tombs > seen && dead_over(st, tombs, reads);
+	return tombs > seen && (sift_tomb_pressure(entries) || dead_over(st, tombs, reads));
 }
 
 /*
@@ -148,16 +154,18 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 				space,
 				writing;
 
-	if (!sift_tbl_auto_defrag || !sift_async_maintenance || maintaining || !IsUnderPostmaster || RecoveryInProgress())
+	if (!sift_tbl_opt_bool(st, SIFT_TBLOPT_AUTO_DEFRAG) || !sift_async_maintenance || maintaining || !IsUnderPostmaster || RecoveryInProgress())
 		return;
 	sift_tbl_refresh(rel, st);
 	if (!st->initialized)
 		return;
 	scans = table_scans(rel);
 	entries = sift_tomb_entries(rel, &st->dir);
-	/* the log is read, by this backend, only when its length could pay for a pass: a ticking backend that does nothing else does not sync it */
-	if (dead_over(st, entries, scans - Min(scans, st->defrag_scans)))
-		tombs = removable_tombs(rel, st);
+	/* the log is read, by this backend, only when its length could pay for a pass: a ticking backend that does nothing else does not sync it; one too long for a backend is the worker's to count */
+	if (sift_tomb_over(entries))
+		tombs = entries;
+	else if (sift_tomb_pressure(entries) || dead_over(st, entries, scans - Min(scans, st->defrag_scans)))
+		tombs = removable_tombs(rel, st, false);
 	else
 	{
 		tombs = st->defrag_tombs = 0;
@@ -176,8 +184,8 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	/* a VACUUM rewrote the log, or a pass or a truncation used the free blocks: what is asked next is relative to what is left */
 	st->defrag_tombs = Min(st->defrag_tombs, tombs);
 	st->defrag_free = Min(st->defrag_free, fs.blocks);
-	dead = dead_wanted(st, tombs, st->defrag_tombs, scans - Min(scans, st->defrag_scans));
-	space = !writing && fs.blocks * 100 >= (int64) nblocks * sift_tbl_auto_defrag_free_pct && sift_maint_space_worth(fs.blocks, nblocks) &&
+	dead = dead_wanted(st, entries, tombs, st->defrag_tombs, scans - Min(scans, st->defrag_scans));
+	space = !writing && fs.blocks * 100 >= (int64) nblocks * sift_tbl_opt_int(st, SIFT_TBLOPT_AUTO_DEFRAG_FREE_PCT) && sift_maint_space_worth(fs.blocks, nblocks) &&
 		fs.blocks >= st->defrag_free + (int64) nblocks / 32;
 	if (!dead && !space)
 	{
@@ -200,7 +208,7 @@ sift_tbl_auto_defrag_tick(Relation rel, SiftTblRel *st)
 {
 	int64		now;
 
-	if (!sift_tbl_auto_defrag || IsInParallelMode())
+	if (!sift_tbl_opt_bool(st, SIFT_TBLOPT_AUTO_DEFRAG) || IsInParallelMode())
 		return;
 	now = GetCurrentTimestamp();
 	if (now - st->defrag_at < (int64) sift_maintenance_naptime * 1000)
@@ -261,30 +269,33 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 
 	*r = (SiftTblMaintain) {.busy = true};
 	pass_cleared = false;
-	merge_cap = sift_tbl_auto_defrag_budget > 0 ? (uint64) sift_tbl_auto_defrag_budget << 20 : PG_UINT64_MAX;
 	StartTransactionCommand();
 	if (ConditionalLockRelationOid(relid, ShareUpdateExclusiveLock) && (rel = try_table_open(relid, NoLock)) != NULL)
 	{
 		if (sift_tbl_is_table(rel) && ConditionalLockPage(rel, SIFT_WORKER_LOCK_BLKNO, ExclusiveLock))
 		{
 			SiftTblRel *st = sift_tbl_rel(rel);
+			int			budget = sift_tbl_opt_int(st, SIFT_TBLOPT_AUTO_DEFRAG_BUDGET);
 
+			merge_cap = budget > 0 ? (uint64) budget << 20 : PG_UINT64_MAX;
+			if (pass != PASS_SETTLE)
+				sift_tbl_coalesce = sift_tbl_opt_bool(st, SIFT_TBLOPT_AUTO_DEFRAG_COALESCE);
 			sift_tbl_refresh(rel, st);
 			if (pass == PASS_SETTLE)
 			{
 				r->promoted = sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 				r->blocks_after = RelationGetNumberOfBlocks(rel);
 			}
-			else if (dead_wanted(st, removable_tombs(rel, st), worker_tombs, table_scans(rel) - Min(table_scans(rel), worker_scans)))
+			else if (dead_wanted(st, sift_tomb_entries(rel, &st->dir), removable_tombs(rel, st, true), worker_tombs,
+								 table_scans(rel) - Min(table_scans(rel), worker_scans)))
 			{
-				if (sift_tbl_auto_defrag_indexes)
+				if (sift_tbl_opt_bool(st, SIFT_TBLOPT_AUTO_DEFRAG_INDEXES))
 					background_vacuum(rel, r);
 				else
 					sift_tbl_maintain(rel, true, true, r);
 				pass_cleared = true;
 				sift_tbl_refresh(rel, st);	/* the pass moved the log: the directory read before it points past the cut */
-				sift_tomb_sync(rel, &st->tomb);
-				worker_tombs = removable_tombs(rel, st);
+				worker_tombs = removable_tombs(rel, st, true);
 				worker_scans = table_scans(rel);
 			}
 			else
@@ -325,7 +336,6 @@ maint_worker(Datum main_arg, WorkerPass first)
 	{
 		pass_max_active = sift_tbl_auto_defrag_max_active;
 		pass_wal_rate = (uint64) sift_tbl_auto_defrag_wal_rate << 10;
-		sift_tbl_coalesce = sift_tbl_auto_defrag_coalesce;
 	}
 
 	if (!sift_maint_wait_quiet(pass_max_active))
@@ -379,7 +389,7 @@ bool
 sift_tbl_settle_async(Relation rel, SiftTblRel *st)
 {
 	/* under pressure the writer settles itself: it never depends on the worker to stay inside the directory */
-	if (!sift_tbl_async_promote || !sift_async_maintenance || maintaining || !IsUnderPostmaster || RecoveryInProgress() || dir_pressure(st))
+	if (!sift_tbl_opt_bool(st, SIFT_TBLOPT_ASYNC_PROMOTE) || !sift_async_maintenance || maintaining || !IsUnderPostmaster || RecoveryInProgress() || dir_pressure(st))
 		return false;
 	if (sift_maint_request_worker(rel, "sift_tbl_settle_worker_main"))
 		st->settle_horizon = GetOldestNonRemovableTransactionId(rel);

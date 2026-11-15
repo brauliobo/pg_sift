@@ -10,13 +10,11 @@
 #ifndef SIFT_TOPN_H
 #define SIFT_TOPN_H
 
-#include "access/tableam.h"
 #include "lib/stringinfo.h"
 #include "port/atomics.h"
 #include "executor/tuptable.h"
 #include "nodes/execnodes.h"
 #include "nodes/pg_list.h"
-#include "nodes/pathnodes.h"
 
 #include "agg/colsrc.h"
 #include "core/limits.h"
@@ -131,7 +129,7 @@ typedef struct SiftTopGPred
 	int			attno;			/* STG_CMP: the heap column and its type */
 	Oid			typid;
 	int64		val;
-	int			sop;			/* STG_STR: SiftSrcStrOp (EQ, LT, LE, GT, GE or PREFIX) */
+	int			sop;			/* STG_STR: SiftColOp (EQ, LT, LE, GT, GE or PREFIX) */
 	const char *str;
 	uint32		slen;
 	Oid			collid;			/* ... and the collation it compares under */

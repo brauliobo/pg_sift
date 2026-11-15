@@ -1,0 +1,265 @@
+-- sift.col_verify finds, and sift.col_repair restores, the liveness pages of a sift_col index that a VACUUM of 4.2.1 to 4.3.5 damaged in a segment of more than 65,152
+-- superblocks: the special space of its first page overwritten (an error on every read), a dirty bit lost (the rows of the unit read as live, no error) or the count of dead
+-- rows wrong. The damage is made by hand here, in the bytes of the page.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	d text;
+	h text;
+BEGIN
+	EXECUTE q;
+	RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN
+	GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL, h = PG_EXCEPTION_HINT;
+	RETURN SQLSTATE || ': ' || regexp_replace(SQLERRM || coalesce(' | ' || nullif(d, ''), '') || coalesce(' | ' || nullif(h, ''), ''), '[Bb]lock [0-9]+', 'block N', 'g');
+END $$;
+CREATE TABLE r (id int, v int, pad text) WITH (autovacuum_enabled = false);
+ALTER TABLE r ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO r SELECT i, i % 10, repeat('x', 1000) FROM generate_series(1, 6000) i;
+SET sift.test_col_max_segments = 1;
+CREATE INDEX r_idx ON r USING sift_col (id, v);
+NOTICE:  sift_col index "r_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('r_idx');
+RESET sift.test_col_max_segments;
+SELECT segments, units > 2 AS several_units FROM sift.col_index_info('r_idx');
+ segments | several_units 
+----------+---------------
+        1 | t
+(1 row)
+
+DELETE FROM r WHERE id % 7 = 0;
+VACUUM (INDEX_CLEANUP ON) r;
+SELECT first_block AS live FROM sift.col_extents('r_idx') WHERE what = 'liveness run' \gset
+SELECT gen + (1::int8 << 45) AS bad_gen FROM sift.col_segments('r_idx') \gset
+SELECT dirty, dead_rows FROM sift.col_segments('r_idx');
+ dirty | dead_rows 
+-------+-----------
+ t     |       857
+(1 row)
+
+SELECT expect($$ SELECT sift.col_verify('r_idx') $$);
+ expect 
+--------
+ ok
+(1 row)
+
+SELECT count(*) AS heap_rows FROM r;
+ heap_rows 
+-----------
+      5143
+(1 row)
+
+SELECT count(*) AS index_rows FROM sift._test_col_tids('r_idx', '', 2);
+ index_rows 
+------------
+       5143
+(1 row)
+
+SELECT count(*) AS segments_repaired FROM sift.col_repair('r_idx');
+ segments_repaired 
+-------------------
+                 0
+(1 row)
+
+-- a lost dirty bit (no error): the dead rows of three units read as live
+SELECT sift._test_poke('r_idx', :live, 32, 8, 1);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT expect($$ SELECT sift.col_verify('r_idx') $$);
+                                                                                                                                                                     expect                                                                                                                                                                     
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "r_idx" segment 1 is corrupted | 3 units have a cleared liveness bit and no dirty bit: a scan reads their rows as live. | A VACUUM of pg_sift 4.2.1 to 4.3.5 could damage the liveness pages of a segment of more than 65,152 superblocks: SELECT * FROM sift.col_repair('r_idx') restores them, REINDEX rebuilds the index.
+(1 row)
+
+SELECT count(*) AS index_rows FROM sift._test_col_tids('r_idx', '', 2);
+ index_rows 
+------------
+       5911
+(1 row)
+
+SELECT damaged_pages, units_fixed, ndead_before, ndead_after FROM sift.col_repair('r_idx', true);
+ damaged_pages | units_fixed | ndead_before | ndead_after 
+---------------+-------------+--------------+-------------
+             0 |           3 |          857 |         857
+(1 row)
+
+SELECT count(*) AS index_rows_after_dry_run FROM sift._test_col_tids('r_idx', '', 2);
+ index_rows_after_dry_run 
+--------------------------
+                     5911
+(1 row)
+
+SELECT damaged_pages, units_fixed, ndead_before, ndead_after FROM sift.col_repair('r_idx');
+ damaged_pages | units_fixed | ndead_before | ndead_after 
+---------------+-------------+--------------+-------------
+             0 |           3 |          857 |         857
+(1 row)
+
+SELECT expect($$ SELECT sift.col_verify('r_idx') $$);
+ expect 
+--------
+ ok
+(1 row)
+
+SELECT count(*) AS index_rows FROM sift._test_col_tids('r_idx', '', 2);
+ index_rows 
+------------
+       5143
+(1 row)
+
+SELECT count(*) AS segments_repaired FROM sift.col_repair('r_idx');
+ segments_repaired 
+-------------------
+                 0
+(1 row)
+
+-- the generation, the flags and the reserved field of the first page: an error on every read
+SELECT sift._test_poke('r_idx', :live, 8184, :bad_gen, 8);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT expect($$ SELECT sift.col_verify('r_idx') $$);
+                                                                                                                                                                                                        expect                                                                                                                                                                                                         
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "r_idx" segment 1 is corrupted | 1 liveness pages, the first block N, have a header or a special space (type, flags, reserved, generation) that is not that of a liveness page of the segment. | A VACUUM of pg_sift 4.2.1 to 4.3.5 could damage the liveness pages of a segment of more than 65,152 superblocks: SELECT * FROM sift.col_repair('r_idx') restores them, REINDEX rebuilds the index.
+(1 row)
+
+SELECT expect($$ SELECT count(*) FROM sift._test_col_tids('r_idx', '', 2) $$);
+                                                                                                                                expect                                                                                                                                
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "r_idx" is corrupted | block N: expected page type 5 generation 1, found type 5 generation 35184372088833. | A sift_col index that a VACUUM of pg_sift 4.2.1 to 4.3.5 damaged is restored in place by sift.col_repair; REINDEX rebuilds any index.
+(1 row)
+
+SELECT sift._test_poke('r_idx', :live, 8178, 4, 2);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT sift._test_poke('r_idx', :live, 8180, 65536, 4);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT damaged_pages, units_fixed, ndead_before, ndead_after FROM sift.col_repair('r_idx');
+ damaged_pages | units_fixed | ndead_before | ndead_after 
+---------------+-------------+--------------+-------------
+             1 |           0 |          857 |         857
+(1 row)
+
+SELECT expect($$ SELECT sift.col_verify('r_idx') $$);
+ expect 
+--------
+ ok
+(1 row)
+
+SELECT count(*) AS index_rows FROM sift._test_col_tids('r_idx', '', 2);
+ index_rows 
+------------
+       5143
+(1 row)
+
+SELECT sift._test_poke('r_idx', :live, 8178, 4, 2);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT expect($$ SELECT sift.col_verify('r_idx') $$);
+                                                                                                                                                                                                        expect                                                                                                                                                                                                         
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "r_idx" segment 1 is corrupted | 1 liveness pages, the first block N, have a header or a special space (type, flags, reserved, generation) that is not that of a liveness page of the segment. | A VACUUM of pg_sift 4.2.1 to 4.3.5 could damage the liveness pages of a segment of more than 65,152 superblocks: SELECT * FROM sift.col_repair('r_idx') restores them, REINDEX rebuilds the index.
+(1 row)
+
+SELECT damaged_pages, units_fixed, ndead_before, ndead_after FROM sift.col_repair('r_idx');
+ damaged_pages | units_fixed | ndead_before | ndead_after 
+---------------+-------------+--------------+-------------
+             1 |           0 |          857 |         857
+(1 row)
+
+-- the header of the page
+SELECT sift._test_poke('r_idx', :live, 14, 8000, 2);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT expect($$ SELECT sift.col_verify('r_idx') $$);
+                                                                                                                                                                                                        expect                                                                                                                                                                                                         
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "r_idx" segment 1 is corrupted | 1 liveness pages, the first block N, have a header or a special space (type, flags, reserved, generation) that is not that of a liveness page of the segment. | A VACUUM of pg_sift 4.2.1 to 4.3.5 could damage the liveness pages of a segment of more than 65,152 superblocks: SELECT * FROM sift.col_repair('r_idx') restores them, REINDEX rebuilds the index.
+(1 row)
+
+SELECT expect($$ SELECT count(*) FROM sift._test_col_tids('r_idx', '', 2) $$);
+                                                                                                                           expect                                                                                                                           
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "r_idx" is corrupted | block N has an invalid page layout (lower 790, upper 8000, special 8176). | A sift_col index that a VACUUM of pg_sift 4.2.1 to 4.3.5 damaged is restored in place by sift.col_repair; REINDEX rebuilds any index.
+(1 row)
+
+SELECT damaged_pages, units_fixed, ndead_before, ndead_after FROM sift.col_repair('r_idx');
+ damaged_pages | units_fixed | ndead_before | ndead_after 
+---------------+-------------+--------------+-------------
+             1 |           0 |          857 |         857
+(1 row)
+
+SELECT expect($$ SELECT sift.col_verify('r_idx') $$);
+ expect 
+--------
+ ok
+(1 row)
+
+-- a count of dead rows that is not that of the bits (a unit whose dirty bit was lost is cleared again by the next VACUUM)
+SELECT sift._test_poke('r_idx', :live, 28, 99, 4);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT expect($$ SELECT sift.col_verify('r_idx') $$);
+                                                                                                                                                         expect                                                                                                                                                          
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "r_idx" segment 1 is corrupted | The liveness header counts 99 dead rows, the liveness bits 857. | A VACUUM of pg_sift 4.2.1 to 4.3.5 could damage the liveness pages of a segment of more than 65,152 superblocks: SELECT * FROM sift.col_repair('r_idx') restores them, REINDEX rebuilds the index.
+(1 row)
+
+SELECT damaged_pages, units_fixed, ndead_before, ndead_after FROM sift.col_repair('r_idx');
+ damaged_pages | units_fixed | ndead_before | ndead_after 
+---------------+-------------+--------------+-------------
+             0 |           0 |           99 |         857
+(1 row)
+
+SELECT expect($$ SELECT sift.col_verify('r_idx') $$);
+ expect 
+--------
+ ok
+(1 row)
+
+-- who may repair, and what
+CREATE ROLE regress_live_repair;
+SET ROLE regress_live_repair;
+SELECT expect($$ SELECT sift.col_repair('r_idx') $$);
+                                                              expect                                                               
+-----------------------------------------------------------------------------------------------------------------------------------
+ 42501: permission denied for index "r_idx" | Only the owner of table "r" or a role with the MAINTAIN privilege on it can do this.
+(1 row)
+
+RESET ROLE;
+CREATE INDEX b_idx ON r USING sift (pad);
+SELECT expect($$ SELECT sift.col_repair('b_idx') $$);
+                 expect                 
+----------------------------------------
+ 42809: "b_idx" is not a sift_col index
+(1 row)
+
+DROP TABLE r;
+DROP ROLE regress_live_repair;
+DROP FUNCTION expect(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -30,7 +30,7 @@ INSERT INTO wide SELECT 'k' || i % 5, i % 2, i % 3, i % 5, i % 7, i % 11, i % 13
 CREATE INDEX wide_col ON wide USING sift_col (kind, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17);
 NOTICE:  sift_col index "wide_col": 1 automatic choice, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: cube = "c16", "c17";
-rollup_dims = kind, c3
+rollup_columns = kind, c3
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('wide_col');
 VACUUM (FREEZE, ANALYZE) events, dd, wide;
 SET join_collapse_limit = 64;
