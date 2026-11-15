@@ -192,44 +192,48 @@ GRANT SELECT ON sift.projection_status TO PUBLIC;
 
 -- The status of the sift_col indexes is read by the same rule as the inspectors (sql/5.0/20-index-format.sql has the columns).
 CREATE OR REPLACE VIEW sift.col_index_status AS
-	SELECT c.oid::regclass AS index, m.heap AS "table",
+	SELECT c.oid::regclass AS index, i.indrelid::regclass AS "table",
 		   pg_relation_size(c.oid) AS index_bytes, x.bytes AS segment_bytes,
 		   x.free_blocks * bs.n AS free_bytes, x.reusable_blocks * bs.n AS reusable_bytes,
 		   x.rows AS segment_rows, x.segments, x.max_segments, s.largest_segment_bytes, x.units, s.listed_units,
 		   s.dirty_segments, s.dead_rows, round(100.0 * s.dead_rows / NULLIF(x.rows, 0), 2) AS dead_pct,
 		   s.buffer_rows, w.sealed AS sealed_buffers, w.running, w.failures, w.next_retry,
 		   m.last_vacuum, m.changed_rows, m.vacuum_at, m.rewrite_due AS due, m.last_request, m.blocked_by,
-		   f.major || '.' || f.minor AS format, s.min_segment_format, s.max_segment_format, f.reads AS library_reads
+		   f.major || '.' || f.minor AS format, s.min_segment_format, s.max_segment_format, f.reads AS library_reads,
+		   qs.quarantined, qs.since AS quarantined_since, qs.reason AS quarantine_reason
 	FROM pg_class c
 	JOIN pg_am a ON a.oid = c.relam AND a.amname = 'sift_col'
 	JOIN pg_index i ON i.indexrelid = c.oid AND i.indisready
 	CROSS JOIN (SELECT current_setting('block_size')::int8 AS n) bs
-	CROSS JOIN LATERAL sift.col_index_info(c.oid) x
-	CROSS JOIN LATERAL sift.worker_state(c.oid) w
-	CROSS JOIN LATERAL sift.col_maintenance_status(c.oid) m
-	CROSS JOIN LATERAL sift.index_format(c.oid) f
-	CROSS JOIN LATERAL (SELECT max(bytes) FILTER (WHERE kind = 'immutable') AS largest_segment_bytes,
+	CROSS JOIN LATERAL sift._quarantine_state(c.oid) qs
+	LEFT JOIN LATERAL (SELECT c.oid WHERE NOT qs.quarantined) r ON true
+	LEFT JOIN LATERAL sift.col_index_info(r.oid) x ON true
+	LEFT JOIN LATERAL sift.worker_state(r.oid) w ON true
+	LEFT JOIN LATERAL sift.col_maintenance_status(r.oid) m ON true
+	LEFT JOIN LATERAL sift.index_format(r.oid) f ON true
+	LEFT JOIN LATERAL (SELECT max(bytes) FILTER (WHERE kind = 'immutable') AS largest_segment_bytes,
 							   sum(units) AS listed_units, count(*) FILTER (WHERE dirty) AS dirty_segments,
 							   coalesce(sum(dead_rows), 0) AS dead_rows,
 							   coalesce(sum(rows) FILTER (WHERE kind <> 'immutable'), 0) AS buffer_rows,
 							   min(format) AS min_segment_format, max(format) AS max_segment_format
-						FROM sift.col_segments(c.oid)) s
-	WHERE sift._may_inspect(i.indrelid) AND w.segments IS NOT NULL;
-COMMENT ON VIEW sift.col_index_status IS 'One row per sift_col index the caller can read, for the DBA of a large table: sizes, segments against the limit, rows, dirty segments and dead rows, write buffers, the maintenance state and what blocks a rewrite (sift.col_maintenance_status), and the format: the metapage, the oldest and newest column format of its segments, and the range this library reads.';
+						FROM sift.col_segments(r.oid)) s ON r.oid IS NOT NULL
+	WHERE sift._may_inspect(i.indrelid) AND (w.segments IS NOT NULL OR qs.quarantined);
+COMMENT ON VIEW sift.col_index_status IS 'One row per sift_col index the caller can read, for the DBA of a large table: sizes, segments against the limit, rows, dirty segments and dead rows, write buffers, the maintenance state and what blocks a rewrite, the format, and whether the index is out of service (quarantined, since when and why).';
 GRANT SELECT ON sift.col_index_status TO PUBLIC;
 
 -- One row per sift object of the database the caller may look at, whatever its access method and state: the BM25 and the sift_col indexes (an index that CREATE INDEX CONCURRENTLY is still
--- building, or a failed one, is listed as invalid), and the sift_tables. state: invalid (not valid: still building, or a build that failed), locked (a REINDEX or another session holds the object), failing
--- (the last step of its maintenance failed), maintaining (a step runs now) or ready.
+-- building, or a failed one, is listed as invalid), and the sift_tables. state: invalid (not valid: still building, or a build that failed), locked (a REINDEX or another session holds the object), quarantined
+-- (out of service: it found its own damage), failing (the last step of its maintenance failed), maintaining (a step runs now) or ready.
 CREATE VIEW sift.indexes AS
 	SELECT c.oid::regclass AS relation, a.amname::text AS kind, i.indrelid::regclass AS "table", pg_relation_size(c.oid) AS bytes, w.segments, f.major || '.' || f.minor AS format,
-		   CASE WHEN NOT i.indisvalid OR NOT i.indisready THEN 'invalid' WHEN w.segments IS NULL THEN 'locked'
+		   CASE WHEN NOT i.indisvalid OR NOT i.indisready THEN 'invalid' WHEN qs.quarantined THEN 'quarantined' WHEN w.segments IS NULL THEN 'locked'
 				WHEN w.failures > 0 THEN 'failing' WHEN w.running THEN 'maintaining' ELSE 'ready' END AS state
 	FROM pg_class c
 	JOIN pg_am a ON a.oid = c.relam AND a.amname IN ('sift', 'sift_col')
 	JOIN pg_index i ON i.indexrelid = c.oid
-	LEFT JOIN LATERAL sift.worker_state(CASE WHEN i.indisvalid AND i.indisready THEN c.oid END) w ON true
-	LEFT JOIN LATERAL sift.index_format(CASE WHEN i.indisvalid AND i.indisready THEN c.oid END) f ON true
+	LEFT JOIN LATERAL sift._quarantine_state(CASE WHEN i.indisvalid AND i.indisready THEN c.oid END) qs ON true
+	LEFT JOIN LATERAL sift.worker_state(CASE WHEN i.indisvalid AND i.indisready AND NOT qs.quarantined THEN c.oid END) w ON true
+	LEFT JOIN LATERAL sift.index_format(CASE WHEN i.indisvalid AND i.indisready AND NOT qs.quarantined THEN c.oid END) f ON true
 	WHERE c.relkind = 'i' AND sift._may_inspect(i.indrelid)
 	UNION ALL
 	SELECT c.oid::regclass, a.amname::text, c.oid::regclass, pg_relation_size(c.oid), w.segments, f.major || '.' || f.minor,
@@ -239,7 +243,7 @@ CREATE VIEW sift.indexes AS
 	CROSS JOIN LATERAL sift.worker_state(c.oid) w
 	CROSS JOIN LATERAL sift.index_format(c.oid) f
 	WHERE c.relkind IN ('r', 'm') AND sift._may_inspect(c.oid);
-COMMENT ON VIEW sift.indexes IS 'One row per sift object of the database the caller can read, whatever its access method: sift and sift_col indexes and sift_tables, with their table, size, segments, format and state (invalid, locked, failing, maintaining or ready).';
+COMMENT ON VIEW sift.indexes IS 'One row per sift object of the database the caller can read, whatever its access method: sift and sift_col indexes and sift_tables, with their table, size, segments, format and state (invalid, locked, quarantined, failing, maintaining or ready).';
 GRANT SELECT ON sift.indexes TO PUBLIC;
 
 -- The event triggers of the extension, for the operator who has to see what runs on every DDL statement of the database and to switch it off in an emergency (a library that does not match the
