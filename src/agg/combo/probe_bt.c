@@ -17,6 +17,7 @@
 #include "utils/uuid.h"
 
 #include "agg/combo/probe.h"
+#include "core/damage.h"
 
 static inline int
 dp_sort_cmp(DKey *x, DKey *y)
@@ -800,9 +801,9 @@ dp_walk(DProbe *dp, DKey *k, Buffer buf, OffsetNumber off, DSink *sink)
 				break;
 		}
 		if (buf == InvalidBuffer)
-			ereport(ERROR, (errcode(ERRCODE_INDEX_CORRUPTED), errmsg("index \"%s\" ends in a page that cannot be read", RelationGetRelationName(dp->irel))));
+			SIFT_DAMAGE_OTHER_INDEX(errmsg("index \"%s\" ends in a page that cannot be read", RelationGetRelationName(dp->irel)));
 		if (!P_ISLEAF(op))
-			ereport(ERROR, (errcode(ERRCODE_INDEX_CORRUPTED), errmsg("index \"%s\" has a non-leaf page to the right of a leaf page", RelationGetRelationName(dp->irel))));
+			SIFT_DAMAGE_OTHER_INDEX(errmsg("index \"%s\" has a non-leaf page to the right of a leaf page", RelationGetRelationName(dp->irel)));
 		off = P_FIRSTDATAKEY(op);
 		first_c = DP_NOCMP;
 	}

@@ -7,6 +7,7 @@
 #include "bm25/posting.h"
 #include "bm25/posting_int.h"
 #include "bm25/segment.h"
+#include "core/damage.h"
 
 /* the L1 bit and nibble bytes of a term, from counts the dictionary stores as uint32: the sums wrap in 32 bits when a count is near 2^32 */
 #define L1_BYTES(info)	(((uint64) (info)->df + 7) / 8)
@@ -28,18 +29,14 @@ sift_bound_u8(const SiftScoreRef *ref, uint32 tf, uint32 dl)
 void
 sift_codec_corrupt(const char *what)
 {
-	ereport(ERROR,
-			(errcode(ERRCODE_DATA_CORRUPTED),
-			 errmsg("sift: corrupt posting data: %s", what)));
+	SIFT_DAMAGE_DATA(NULL, errmsg("sift: corrupt posting data: %s", what));
 }
 
 static void
 corrupt_blob(const SiftTermInfo *info)
 {
-	ereport(ERROR,
-			(errcode(ERRCODE_INDEX_CORRUPTED),
-			 errmsg("sift: term blob at %llu does not match its dictionary entry",
-					(unsigned long long) info->post_off)));
+	SIFT_DAMAGE_INDEX(NULL, errmsg("sift: term blob at %llu does not match its dictionary entry",
+					(unsigned long long) info->post_off));
 }
 
 /* The length of the blob without its position stream */
@@ -119,10 +116,8 @@ post_attach(const SiftTermInfo *info, MemoryContext mcxt, const uint8 *blob, Sif
 		corrupt_blob(info);
 	/* the codec follows the blob's own lengths, so verify checks them before any cursor does */
 	if (verify && (detail = sift_blob_check(blob, info->codec_len)) != NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("sift: term blob at %llu is malformed", (unsigned long long) info->post_off),
-				 errdetail_internal("%s.", detail)));
+		SIFT_DAMAGE_INDEX(NULL, errmsg("sift: term blob at %llu is malformed", (unsigned long long) info->post_off),
+				 errdetail_internal("%s.", detail));
 	if (c->bloblen > info->codec_len)
 	{
 		const uint8 *p = blob + ALIGN4(info->codec_len);

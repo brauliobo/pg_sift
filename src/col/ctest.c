@@ -8,6 +8,7 @@
 #include "core/i64set.h"
 #include "col/enc.h"
 #include "col/enc_int.h"
+#include "core/damage.h"
 
 /* ---------------------------------------------------------------------------
  * 7. Chunk tests
@@ -585,7 +586,7 @@ void
 sift_ccodes_below(const uint32 *codes, uint32 n, uint32 limit)
 {
 	if (sift_cck->max32(codes, n) >= limit)
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: a code is past the table it indexes (%u entries)", limit)));
+		SIFT_DAMAGE_DATA(NULL, errmsg("invalid column chunk: a code is past the table it indexes (%u entries)", limit));
 }
 
 /* chunk_lut of a CC chunk: the codec hands the codes as offsets from its minimum */

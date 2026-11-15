@@ -12,6 +12,7 @@
 #include "core/varint.h"
 #include "common/pg_prng.h"
 #include "core/sql.h"
+#include "core/damage.h"
 
 PG_FUNCTION_INFO_V1(sift_test_postings);
 
@@ -371,9 +372,7 @@ sift_test_blob_read(PG_FUNCTION_ARGS)
 
 		/* a cursor ends after at most one group per posting and per group number: a damaged blob must not keep it running */
 		if (n > SIFT_GRP_MAXTIDS || ++groups > Min(info.df, 1 << 24))
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("cursor does not end: group of %llu postings, group number %llu", (unsigned long long) n, (unsigned long long) groups)));
+			SIFT_DAMAGE_DATA(NULL, errmsg("cursor does not end: group of %llu postings, group number %llu", (unsigned long long) n, (unsigned long long) groups));
 		CHECK_FOR_INTERRUPTS();
 		sift_post_group_tf(pc, tf);
 		for (uint64 i = 0; i < n; i++)

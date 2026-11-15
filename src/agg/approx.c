@@ -11,6 +11,7 @@
 #include "utils/typcache.h"
 
 #include "col/hll.h"
+#include "core/damage.h"
 
 PG_FUNCTION_INFO_V1(sift_approx_trans);
 PG_FUNCTION_INFO_V1(sift_approx_combine);
@@ -123,7 +124,7 @@ sift_approx_deserial(PG_FUNCTION_ARGS)
 	{
 		if (!sift_hll_check((const uint8 *) VARDATA_ANY(b), VARSIZE_ANY_EXHDR(b)))
 			/* check-errors: allow a state value given to the function, not the data of an index */
-			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("malformed sift.approx_count_distinct state")));
+			SIFT_DAMAGE_OTHER_DATA(errmsg("malformed sift.approx_count_distinct state"));
 		sift_hll_merge_blob(h, (const uint8 *) VARDATA_ANY(b));
 	}
 	PG_RETURN_POINTER(h);

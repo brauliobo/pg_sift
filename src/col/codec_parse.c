@@ -5,6 +5,7 @@
 #include "bm25/analyze.h"
 #include "col/codec_int.h"
 #include "col/compress.h"
+#include "core/damage.h"
 
 #define CC_TRAILER			8
 
@@ -328,7 +329,7 @@ sift_cc_open(MemoryContext mcxt, const uint8 *blob, Size len, bool verify)
 	size_t		used;
 
 	if (len < SIFT_CC_HDRLEN + CC_NHDR + CC_TRAILER || (len & 7) || ((uintptr_t) blob & 7) || blob[0] != SIFT_CC_MAGIC)
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: bad header or misaligned blob")));
+		SIFT_DAMAGE_DATA(NULL, errmsg("invalid column chunk: bad header or misaligned blob"));
 	if (blob[1] != SIFT_CC_VERSION)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("column chunk has format version %d, this build reads %d", blob[1], SIFT_CC_VERSION),
 						errhint("Install, on every node that reads the index, the pg_sift release that wrote it (built with lz4 and zstd when a compression algorithm is missing).")));
@@ -362,7 +363,7 @@ SiftCc *
 sift_cc_open_rows(MemoryContext mcxt, const uint8 *blob, Size len, bool verify, uint32 nrows)
 {
 	if (len >= SIFT_CC_HDRLEN && get32(blob + 4) != nrows)
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: the blob has %u values, the chunk %u", get32(blob + 4), nrows)));
+		SIFT_DAMAGE_DATA(NULL, errmsg("invalid column chunk: the blob has %u values, the chunk %u", get32(blob + 4), nrows));
 	return sift_cc_open(mcxt, blob, len, verify);
 }
 

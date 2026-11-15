@@ -9,12 +9,9 @@
 #include "col/seg.h"
 #include "core/tomb.h"
 #include "core/visibility.h"
+#include "core/damage.h"
 
-#define corrupt(...) \
-	ereport(ERROR, \
-			(errcode(ERRCODE_INDEX_CORRUPTED), \
-			 errmsg("sift_col unit is corrupted"), \
-			 errdetail(__VA_ARGS__)))
+#define corrupt(...) SIFT_DAMAGE_INDEX(NULL, errmsg("sift_col unit is corrupted"), errdetail(__VA_ARGS__))
 
 #define COLO_TABLE		0x8000		/* internal flag: a source over a sift_table (sift_col_open_table) */
 #define MEM_ID_FLAG		(UINT64CONST(1) << 63)

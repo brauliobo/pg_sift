@@ -11,6 +11,7 @@
 #include "core/store.h"
 #include "core/store_int.h"
 #include "core/visibility.h"
+#include "core/damage.h"
 
 /* the shortest free run a piece of a data run is moved into (fewer, longer extents in the header) */
 #define SPACE_MIN_RUN_BLOCKS	16
@@ -371,7 +372,7 @@ sift_store_shift(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, u
 	memcpy(hdrcopy.data, BufferGetPage(buf), BLCKSZ);
 	UnlockReleaseBuffer(buf);
 	if (h->nextents > SIFT_MAX_EXTENTS)
-		ereport(ERROR, (errcode(ERRCODE_INDEX_CORRUPTED), errmsg("index \"%s\": segment header block %u lists %u extents", RelationGetRelationName(rel), entry->header_blk, h->nextents)));
+		SIFT_DAMAGE_INDEX(rel, errmsg("index \"%s\": segment header block %u lists %u extents", RelationGetRelationName(rel), entry->header_blk, h->nextents));
 	piece = palloc((h->nextents + 1) * sizeof(ShiftPiece));
 	part = palloc((SIFT_MAX_EXTENTS + 2) * sizeof(ShiftPart));
 	for (int i = 0; i < (int) h->nextents; i++)
@@ -507,7 +508,7 @@ sift_store_shrink(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, 
 	memcpy(hdrcopy.data, BufferGetPage(buf), BLCKSZ);
 	UnlockReleaseBuffer(buf);
 	if (h->nextents > SIFT_MAX_EXTENTS)
-		ereport(ERROR, (errcode(ERRCODE_INDEX_CORRUPTED), errmsg("index \"%s\": segment header block %u lists %u extents", RelationGetRelationName(rel), entry->header_blk, h->nextents)));
+		SIFT_DAMAGE_INDEX(rel, errmsg("index \"%s\": segment header block %u lists %u extents", RelationGetRelationName(rel), entry->header_blk, h->nextents));
 	piece = palloc((h->nextents + 1) * sizeof(ShiftPiece));
 	part = palloc((SIFT_MAX_EXTENTS + 2) * sizeof(ShiftPart));
 	for (int i = 0; i < (int) h->nextents; i++)

@@ -18,6 +18,7 @@
 #include "col/am.h"
 #include "col/ktab.h"
 #include "col/pagg.h"
+#include "core/damage.h"
 
 PG_FUNCTION_INFO_V1(sift_col_unit_aggs_sql);
 PG_FUNCTION_INFO_V1(sift_col_unit_hists_sql);
@@ -111,10 +112,8 @@ sift_col_unit_hll(const SiftColUnit *unit, int col, const uint8 **blob)
 static void
 corrupt_cube(SiftColSegment *seg, uint32 u)
 {
-	ereport(ERROR,
-			(errcode(ERRCODE_INDEX_CORRUPTED),
-			 errmsg("sift index \"%s\" segment %llu: the cube of unit %u does not decode", RelationGetRelationName(seg->index),
-					(unsigned long long) seg->entry.gen, u)));
+	SIFT_DAMAGE_INDEX(seg->index, errmsg("sift index \"%s\" segment %llu: the cube of unit %u does not decode", RelationGetRelationName(seg->index),
+					(unsigned long long) seg->entry.gen, u));
 }
 
 /* ---------- exceptions (docs/COL-PREAGG.md 11) ---------- */

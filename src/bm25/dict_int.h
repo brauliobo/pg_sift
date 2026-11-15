@@ -8,16 +8,13 @@
 #include "core/cmp.h"
 #include "bm25/dict.h"
 #include "core/varint.h"
+#include "core/damage.h"
 
 
 #define ALIGN4(x)		(((x) + 3) & ~(uint64) 3)
 #define BLOCK_HDR_MAX	(2 + 1 + 10)
 
-#define corrupt(...) \
-	ereport(ERROR, \
-			(errcode(ERRCODE_INDEX_CORRUPTED), \
-			 errmsg("sift dictionary is corrupted"), \
-			 errdetail(__VA_ARGS__)))
+#define corrupt(...) SIFT_DAMAGE_INDEX(NULL, errmsg("sift dictionary is corrupted"), errdetail(__VA_ARGS__))
 
 struct SiftDictWriter
 {

@@ -25,6 +25,7 @@
 #include "col/pg.h"
 #include "col/seg.h"
 #include "core/cmp.h"
+#include "core/damage.h"
 
 #define SAMPLE			32		/* units looked at */
 #define AGREE_PCT		90		/* the share of them that must satisfy a rule */
@@ -272,7 +273,7 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 					break;
 				rec = sift_cseg_unit(seg, (uint32) (g - base), &len);
 				if (!sift_cunit_parse(rec, len, sc, &uv))
-					ereport(ERROR, (errcode(ERRCODE_INDEX_CORRUPTED), errmsg("index \"%s\" has a unit that does not parse", RelationGetRelationName(index))));
+					SIFT_DAMAGE_INDEX(index, errmsg("index \"%s\" has a unit that does not parse", RelationGetRelationName(index)));
 				vals = palloc((uv.nrows + SIFT_COL_PAD) * sizeof(int64));
 				scratch = palloc((uv.nrows + SIFT_COL_PAD) * sizeof(int64));
 				nulls = palloc(uv.nrows + SIFT_COL_PAD);

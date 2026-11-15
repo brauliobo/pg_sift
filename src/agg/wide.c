@@ -16,6 +16,7 @@
 #include "col/am.h"
 #include "col/wide.h"
 #include "core/hash.h"
+#include "core/damage.h"
 
 static uint32
 key_hash(const uint64 *k)
@@ -241,7 +242,7 @@ numeric_entry(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lanes, ui
 		if ((len = image_numeric((const uint8 *) img, ilen, (int32) lanes[1].i[i], b)) == 0)
 		{
 			if (sift_col_numimg_to_text((const uint8 *) img, ilen, (int32) lanes[1].i[i], w->txt, SIFT_NIMG_TEXT_MAX) == 0)
-				ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_col: a numeric image is damaged")));
+				SIFT_DAMAGE_DATA(NULL, errmsg("sift_col: a numeric image is damaged"));
 			len = text_numeric(w->txt, b);
 		}
 		return len;

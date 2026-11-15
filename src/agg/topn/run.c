@@ -9,6 +9,7 @@
 #include "utils/memutils.h"
 
 #include "agg/topn/int.h"
+#include "core/damage.h"
 
 /* Entries of a sorted run are read in windows that double up to this many */
 #define RUN_WIN_MIN		32
@@ -61,10 +62,8 @@ typedef struct RunWalk
 static void
 run_corrupt(RunWalk *w, const char *what)
 {
-	ereport(ERROR,
-			(errcode(ERRCODE_INDEX_CORRUPTED),
-			 errmsg("sift_col sorted run is corrupted"),
-			 errdetail("The sorted run of the first sort column of a unit of %u rows %s.", w->n, what)));
+	SIFT_DAMAGE_INDEX(NULL, errmsg("sift_col sorted run is corrupted"),
+			 errdetail("The sorted run of the first sort column of a unit of %u rows %s.", w->n, what));
 }
 
 static inline bool
