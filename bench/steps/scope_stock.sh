@@ -4,7 +4,7 @@
 # copies of the events by tenant kept by triggers, rollups, pg_ivm incremental views, the entity index, the scope index), every result md5-equal to the plain statement, and the write cost of each arm.
 #   --size        quick (240,000 events, tenants 1, 4 and 8, five arms: minutes; the quick release profile runs it) or standard (2.4 million events, eight tenants, every arm; the release pass)
 #   --docs        standard size only: also write the results file and rewrite the generated blocks of README.md and docs/COL-SCOPE.md (scripts/gen-docs.py)
-#   --arms LIST   some arms only (stock_default is the oracle of every md5 and must be in the list); with --docs their rows replace those of the arms in docs/results/scope-stock.tsv (merge)
+#   --arms LIST   some arms only (stock_default is the oracle of every md5 and must be in the list); with --docs their rows replace those of the arms in the results file (merge)
 #   --resume      after an interrupted --keep run: the arms already saved in its raw directory are not measured again (needs --keep both times)
 #   --out FILE    the results file (default bench/out/scope-stock-DATE.tsv); --keep keeps the raw per-arm tables next to it
 #   --build DIR   the checkout whose sift is measured (default: this one; its scripts/pgtest.sh stages the release library); --root DIR a staged install of it
