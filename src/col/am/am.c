@@ -8,8 +8,13 @@
 #include "parser/parsetree.h"
 #include "catalog/partition.h"
 #include "tcop/pquery.h"
+#include "access/genam.h"
+#include "access/table.h"
+#include "catalog/indexing.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_trigger.h"
 #include "nodes/parsenodes.h"
+#include "utils/fmgroids.h"
 #include "utils/rel.h"
 #include "catalog/pg_am_d.h"
 #include "bm25/am.h"
@@ -337,6 +342,32 @@ stmt_note(QueryDesc *queryDesc, bool late)
 }
 
 /*
+ * Does the table have a BEFORE STATEMENT trigger on INSERT? Read from the catalog, not from the relcache entry: the library loads while the entry of a table of a sift
+ * access method is being built (its handler is in the library), and opening that table again from here would load the library a second time.
+ */
+static bool
+has_before_statement_insert_trigger(Oid relid)
+{
+	Relation	triggers = table_open(TriggerRelationId, AccessShareLock);
+	ScanKeyData key;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	bool		found = false;
+
+	ScanKeyInit(&key, Anum_pg_trigger_tgrelid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(relid));
+	scan = systable_beginscan(triggers, TriggerRelidNameIndexId, true, NULL, 1, &key);
+	while (!found && HeapTupleIsValid(tuple = systable_getnext(scan)))
+	{
+		int16		tgtype = ((Form_pg_trigger) GETSTRUCT(tuple))->tgtype;
+
+		found = TRIGGER_FOR_BEFORE(tgtype) && !TRIGGER_FOR_ROW(tgtype) && TRIGGER_FOR_INSERT(tgtype);
+	}
+	systable_endscan(scan);
+	table_close(triggers, AccessShareLock);
+	return found;
+}
+
+/*
  * Does the library load inside a COPY .. FROM that runs nothing nested yet? A COPY makes no speculative insertion, and a statement that a trigger or a function of it starts after the library
  * loaded is heard. What would be missed is one that started before: only a BEFORE STATEMENT trigger of the table runs before the first row (a frame of its own on the error context stack
  * is all that a statement it runs shows, besides the one of the COPY, which is pushed after that trigger), so the table has none, and the frames on the stack are the COPY's alone.
@@ -347,8 +378,6 @@ load_in_copy(void)
 	PlannedStmt *ps;
 	CopyStmt   *cs;
 	Oid			relid;
-	Relation	rel;
-	bool		plain;
 
 	if (ActivePortal == NULL || list_length(ActivePortal->stmts) != 1 || (error_context_stack != NULL && error_context_stack->previous != NULL))
 		return false;
@@ -356,11 +385,7 @@ load_in_copy(void)
 	if (ps->utilityStmt == NULL || !IsA(ps->utilityStmt, CopyStmt) || !(cs = (CopyStmt *) ps->utilityStmt)->is_from)
 		return false;
 	relid = RangeVarGetRelid(cs->relation, NoLock, true);
-	if (!OidIsValid(relid) || (rel = RelationIdGetRelation(relid)) == NULL)
-		return false;
-	plain = rel->trigdesc == NULL || !rel->trigdesc->trig_insert_before_statement;
-	RelationClose(rel);
-	return plain;
+	return OidIsValid(relid) && !has_before_statement_insert_trigger(relid);
 }
 
 /*
