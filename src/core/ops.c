@@ -86,20 +86,6 @@ sift_log_stall(Relation index, TimestampTz start)
 			 errhint("The maintenance worker is behind: it promotes and merges the segments, and a seal waits for it when the directory is nearly full.")));
 }
 
-void
-sift_log_refused(Relation index)
-{
-	static TimestampTz last;
-	TimestampTz now = GetCurrentTimestamp();
-
-	if (now - last < USECS_PER_MINUTE)
-		return;
-	last = now;
-	ereport(LOG,
-			(errmsg("sift: could not start the maintenance worker of index \"%s\"", RelationGetRelationName(index)),
-			 errhint("All max_worker_processes (%d) are in use; the inserting sessions promote and merge instead.", max_worker_processes)));
-}
-
 static void
 maint_errcontext(void *arg)
 {

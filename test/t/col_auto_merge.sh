@@ -88,8 +88,8 @@ check "the VACUUM ended well and the rewrite is still due" test "$(grep -c ERROR
 sql am "SELECT sift.col_maintain('facts_idx')" >/dev/null
 check "afterwards the call rewrites it and the answers are the heap's" test "$(state)|$(groups on)" == "1 segments, 0 dirty, 0 buffered|$(groups off)"
 
-# 5. sift.col_auto_merge_max_active: with that many other backends running a statement the worker waits (it looks again after the naptime, twice as late
-# each time) and rewrites once they are done
+# 5. sift.col_auto_merge_max_active: with that many other backends running a statement the worker ends without waiting (it would hold its connection and a slot), and
+# the next VACUUM asks again and rewrites once they are done
 sql am "ALTER DATABASE postgres SET sift.col_auto_merge_max_active = 1" >/dev/null
 churn 5
 for i in 1 2; do sql am "SELECT pg_sleep(3)" >/dev/null & done
@@ -98,6 +98,8 @@ sql am "VACUUM facts" >/dev/null
 sleep 1
 check "busy (3 backends running a statement over 1): the worker waits" scattered
 check "the rewrite is still due" test "$(due)" == "dirty units"
+wait
+sql am "VACUUM facts" >/dev/null
 check "quiet again: the worker rewrote it, one clean segment" await_rewrite
 check "and the answers are the heap's" test "$(groups on)" == "$(groups off)"
 wait

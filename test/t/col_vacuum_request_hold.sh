@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The VACUUM that a build or a bulk write asks the worker for at its commit (col/vacreq.c) while a snapshot older than the rows holds the horizon back: the VACUUM cannot mark the pages
-# all-visible then, and the table stays due. The worker looks again after a nap and vacuums at most once per five naptimes, never in a loop, and the first VACUUM after the snapshot
+# all-visible then, and the table stays due. The worker ends after its VACUUM (it does not hold its connection napping); a scan that has to check the rows in the heap, or a write, asks again, at most once per five naptimes, never in a loop, and the first VACUUM after the snapshot
 # ends marks the pages.
 . "$(dirname "$0")/lib.bash"
 
@@ -33,6 +33,8 @@ for _ in $(seq 100); do [[ $(sql p "SELECT count(*) FROM pg_stat_activity WHERE 
 sql p "UPDATE vh SET w = w + 1 WHERE id % 5 = 1" >/dev/null
 all=f
 for _ in $(seq 150); do
+	# the worker ends after its VACUUM: a scan that has to check the rows in the heap asks again
+	sql p "SELECT sum(w) FROM vh WHERE g >= 0" >/dev/null
 	[[ $(sql p "SELECT relallvisible > 0 AND relallvisible = relpages FROM pg_class WHERE relname = 'vh'") == t ]] && { all=t; break; }
 	sleep 0.2
 done

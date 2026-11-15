@@ -250,21 +250,6 @@ sift_nap(long ms)
 	CHECK_FOR_INTERRUPTS();
 }
 
-bool
-sift_nap_until(bool (*ready) (void *arg), void *arg)
-{
-	long		delay = sift_maintenance_naptime;
-
-	for (int tries = 0; !ready(arg); tries++)
-	{
-		if (tries == 8)
-			return false;
-		sift_nap(delay);
-		delay *= 2;
-	}
-	return true;
-}
-
 /* Sleeps until the WAL the backend wrote since the target was limited is within what its rate allows for the time that went by */
 static void
 wt_wal_wait(SiftWriteTarget *wt)

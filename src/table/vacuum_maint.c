@@ -6,6 +6,8 @@
 #include "pgstat.h"
 #include "utils/timestamp.h"
 
+#include "core/worker.h"
+
 void
 sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)
 {
@@ -338,7 +340,8 @@ maint_worker(Datum main_arg, WorkerPass first)
 		pass_wal_rate = (uint64) sift_tbl_auto_defrag_wal_rate << 10;
 	}
 
-	if (!sift_maint_wait_quiet(pass_max_active))
+	/* a busy server: the worker ends and the next write asks again, it does not hold its connection until it is quiet */
+	if (sift_maint_busy(pass_max_active))
 		return;
 	/* the rate counts from here: the time spent waiting for a quiet moment is no credit */
 	pass_start = GetCurrentTimestamp();
@@ -351,8 +354,8 @@ maint_worker(Datum main_arg, WorkerPass first)
 	{
 		BlockNumber before = r.blocks_after;
 
-		sift_nap(Max(sift_maintenance_naptime / 4, 100));
-		if (!sift_maint_wait_quiet(pass_max_active))
+		sift_worker_nap(Max(sift_maintenance_naptime / 4, 100));
+		if (sift_maint_busy(pass_max_active))
 			break;
 		if (!worker_pass(relid, first == PASS_SETTLE ? PASS_SETTLE : PASS_SPACE, &r))
 			break;

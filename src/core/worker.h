@@ -32,7 +32,8 @@ extern char *sift_worker_subject_db(void);
 
 /*
  * Registers the dynamic worker that runs function (of pg_sift) for subject: its job is the one the function serves. main_arg is the argument the function gets;
- * the database of the caller is the one the worker connects to. False when the server has no slot for it.
+ * the database of the caller is the one the worker connects to. False when fewer than max(2, max_worker_processes / 4) slots would stay free for parallel
+ * queries and the workers of others, or the server has no slot: one LOG line a minute for every job says so (sift: no background worker for ...).
  */
 extern bool sift_worker_register(const char *function, const char *subject, Datum main_arg);
 

@@ -454,7 +454,7 @@ sift_col_read_promote_worker_main(Datum main_arg)
  * indexes they are for.
  */
 static bool
-take_slot(void *arg)
+take_slot(void)
 {
 	for (int s = 0; s < sift_col_auto_merge_max_workers; s++)
 	{
@@ -477,8 +477,8 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	const char *volatile name = psprintf("%u", indexoid);
 
 	sift_maint_own_xacts = true;
-	/* sift.col_auto_merge_max_active, then a slot of sift.col_auto_merge_max_workers; False: it stayed busy, and the next VACUUM asks again */
-	if (!sift_maint_wait_quiet(sift_col_auto_merge_max_active) || !sift_nap_until(take_slot, NULL))
+	/* sift.col_auto_merge_max_active, then a slot of sift.col_auto_merge_max_workers; a worker that has to wait ends and does not hold its connection: the next VACUUM, read or write asks again */
+	if (sift_maint_busy(sift_col_auto_merge_max_active) || !take_slot())
 		return;
 	PG_TRY();
 	{
