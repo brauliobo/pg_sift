@@ -6,6 +6,7 @@
 #include "postgres.h"
 #include "access/relation.h"
 #include "parser/parsetree.h"
+#include "catalog/partition.h"
 #include "catalog/pg_am_d.h"
 #include "bm25/am.h"
 #include "col/am/am_int.h"
@@ -73,13 +74,15 @@ sift_col_make_row(SiftColRel *r, ItemPointer tid, const Datum *values, const boo
  * The rows of a transaction after its first go to the write buffer in runs (wbuf.c, sift_cwbuf_pend). They are written before the commit record and before
  * a savepoint starts, dropped when the transaction or the savepoint aborts: the heap rows of an aborted savepoint are dead at once and VACUUM may free their
  * slots while the transaction goes on, so an index entry written for them later would point at whatever takes the slot. An ON CONFLICT statement kills
- * the heap row of a conflict after the index entries went in, with no abort to drop them: its rows go in at once (batch_stmts).
+ * the heap row of a conflict after the index entries went in, with no abort to drop them: its rows go in at once (batch_stmts, or the row itself while no statement was heard).
  */
 static bool batch_hooked;
 
 static bool batch_seen;
 
 static int	batch_stmts;
+
+static bool batch_started;	/* the backend has heard a statement start: until then a statement that writes may be one whose start was missed (batch_stmts is 0 for an ON CONFLICT it runs) */
 
 static int	batch_writes;		/* statements running that modify data (sift_col_writing) */
 
@@ -161,17 +164,20 @@ typedef struct StmtState
 	int			what;
 	CommandId	prev_cid;
 	bool		prev_set;
-	struct StmtState *next;		/* the statements that may end row versions, in batch_ending (STMT_ENDING) */
+	struct StmtState *next;		/* the statements running that write, in batch_open */
+	EState	   *estate;
 	int			nrels;
-	Oid			rels[FLEXIBLE_ARRAY_MEMBER];	/* the tables it changes */
+	int			nroots;
+	Oid			rels[FLEXIBLE_ARRAY_MEMBER];	/* the tables it changes (nrels), then those whose partitions it changes without naming them (nroots) */
 } StmtState;
 
 /*
- * The statements running that may end row versions (DELETE, UPDATE, MERGE and a CTE that does) and the tables they change. An index with track_changes hears the versions a statement
- * ends from its statement trigger, which fires after the statement has run: until the statement is over (its AFTER triggers included) the log lacks them, and a read of the
- * transaction that goes through the log alone (a function the statement calls, an AFTER ROW trigger, a trigger of the table that fires before the one of the index) would count them.
+ * The statements running that write. Those that may end row versions (STMT_ENDING: DELETE, UPDATE, MERGE, ON CONFLICT DO UPDATE and a CTE that does) name the tables they change. An index
+ * with track_changes hears the versions a statement ends from its statement trigger, which fires after the statement has run: until the statement is over (its AFTER triggers included)
+ * the log lacks them, and a read of the transaction that goes through the log alone (a function the statement calls, an AFTER ROW trigger, a trigger of the table that fires before the
+ * one of the index) would count them.
  */
-static StmtState *batch_ending;
+static StmtState *batch_open;
 
 static void
 batch_stmt_done(void *arg)
@@ -181,13 +187,12 @@ batch_stmt_done(void *arg)
 
 	batch_cid = st->prev_cid;
 	batch_cid_set = st->prev_set;
-	if (what & STMT_ENDING)
-		for (StmtState **p = &batch_ending; *p != NULL; p = &(*p)->next)
-			if (*p == st)
-			{
-				*p = st->next;
-				break;
-			}
+	for (StmtState **p = &batch_open; *p != NULL; p = &(*p)->next)
+		if (*p == st)
+		{
+			*p = st->next;
+			break;
+		}
 
 	batch_stmts -= (what & STMT_SPECULATIVE) != 0;
 	batch_updates -= (what & STMT_UPDATING) != 0;
@@ -203,6 +208,15 @@ plan_updates(Plan *plan)
 		((ModifyTable *) plan)->onConflictAction == ONCONFLICT_UPDATE;
 }
 
+/* The table an INSERT .. ON CONFLICT DO UPDATE names: the rows it updates are in any partition below it, and the plan lists none of them (a row is routed when it is inserted) */
+static Oid
+conflict_root(Plan *plan, PlannedStmt *ps)
+{
+	ModifyTable *mt = (plan != NULL && IsA(plan, ModifyTable)) ? (ModifyTable *) plan : NULL;
+
+	return mt != NULL && mt->operation == CMD_INSERT && mt->onConflictAction == ONCONFLICT_UPDATE ? rt_fetch(mt->nominalRelation, ps->rtable)->relid : InvalidOid;
+}
+
 /* The tables the statement changes: the range table entries of its result relations (a list before PostgreSQL 19, a set of them from it) */
 static int
 stmt_result_count(PlannedStmt *ps)
@@ -214,10 +228,13 @@ stmt_result_count(PlannedStmt *ps)
 #endif
 }
 
-static void
+/* The tables it changes, then the roots of the partitions it changes without naming them; the number of the roots */
+static int
 stmt_result_rels(PlannedStmt *ps, Oid *rels)
 {
 	int			n = 0;
+	int			nroots = 0;
+	Oid			root = conflict_root(ps->planTree, ps);
 
 #if PG_VERSION_NUM >= 190000
 	for (int rti = -1; (rti = bms_next_member(ps->resultRelationRelids, rti)) >= 0;)
@@ -226,14 +243,33 @@ stmt_result_rels(PlannedStmt *ps, Oid *rels)
 	foreach_int(rti, ps->resultRelations)
 		rels[n++] = rt_fetch(rti, ps->rtable)->relid;
 #endif
+	if (OidIsValid(root))
+		rels[n + nroots++] = root;
+	foreach_ptr(Plan, sub, ps->subplans)
+		if (OidIsValid(root = conflict_root(sub, ps)))
+			rels[n + nroots++] = root;
+	return nroots;
 }
 
-void
-sift_col_stmt_start(QueryDesc *queryDesc)
+static bool
+stmt_open(EState *estate)
+{
+	for (StmtState *st = batch_open; st != NULL; st = st->next)
+		if (st->estate == estate)
+			return true;
+	return false;
+}
+
+/*
+ * Note the statement that is starting: what it does decides what the writes of its rows may rely on. late: its start was missed (the library loaded while it ran, when the first row of an
+ * INSERT was routed to a partition, whose index it opened), so it is noted when it finishes, before its triggers fire: its rows were written without knowing that it replaced rows
+ * (updating) or inserted speculatively, so the triggers must not take its entries for superseded.
+ */
+static void
+stmt_note(QueryDesc *queryDesc, bool late)
 {
 	PlannedStmt *ps = queryDesc->plannedstmt;
 	bool		speculative = IsA(ps->planTree, ModifyTable) && ((ModifyTable *) ps->planTree)->onConflictAction != ONCONFLICT_NONE;
-
 	bool		updating = plan_updates(ps->planTree);
 	bool		writing = ps->commandType != CMD_SELECT || ps->hasModifyingCTE;
 	bool		ending = updating || ps->commandType == CMD_DELETE || ps->hasModifyingCTE;
@@ -245,20 +281,21 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 		speculative |= sub != NULL && IsA(sub, ModifyTable) && ((ModifyTable *) sub)->onConflictAction != ONCONFLICT_NONE;
 		updating |= plan_updates(sub);
 	}
-	if (speculative || updating || writing)
+	if (late)
+		speculative = updating = false;
+	if (speculative || updating || writing || ending)
 	{
 		MemoryContextCallback *cb = MemoryContextAlloc(queryDesc->estate->es_query_cxt, sizeof(MemoryContextCallback));
 		int			nrels = ending ? stmt_result_count(ps) : 0;
-		StmtState  *st = MemoryContextAlloc(queryDesc->estate->es_query_cxt, offsetof(StmtState, rels) + nrels * sizeof(Oid));
+		int			nroots = ending ? 1 + list_length(ps->subplans) : 0;
+		StmtState  *st = MemoryContextAlloc(queryDesc->estate->es_query_cxt, offsetof(StmtState, rels) + (nrels + nroots) * sizeof(Oid));
 
 		st->what = (speculative ? STMT_SPECULATIVE : 0) | (updating ? STMT_UPDATING : 0) | (writing ? STMT_WRITING : 0) | (ending ? STMT_ENDING : 0);
+		st->estate = queryDesc->estate;
 		st->nrels = nrels;
-		if (ending)
-		{
-			stmt_result_rels(ps, st->rels);
-			st->next = batch_ending;
-			batch_ending = st;
-		}
+		st->nroots = ending ? stmt_result_rels(ps, st->rels) : 0;
+		st->next = batch_open;
+		batch_open = st;
 		st->prev_cid = batch_cid;
 		st->prev_set = batch_cid_set;
 		cb->func = batch_stmt_done;
@@ -275,6 +312,23 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 	}
 }
 
+void
+sift_col_stmt_start(QueryDesc *queryDesc)
+{
+	batch_started = true;
+	stmt_note(queryDesc, false);
+}
+
+/* A statement that writes and was not noted when it started: the library was loaded by the statement itself */
+void
+sift_col_stmt_finish(QueryDesc *queryDesc)
+{
+	PlannedStmt *ps = queryDesc->plannedstmt;
+
+	if ((ps->commandType != CMD_SELECT || ps->hasModifyingCTE) && !stmt_open(queryDesc->estate))
+		stmt_note(queryDesc, true);
+}
+
 /*
  * The command id of the statement that writes: the one its tuples carry. A function that runs SQL (SPI) inside the statement advances the command id, and a tombstone or a
  * probe that took the current one would no longer see the versions the statement ended (a snapshot of the command sees them, the next command's does not).
@@ -289,10 +343,20 @@ sift_col_stmt_cid(void)
 bool
 sift_col_ends_rows(Oid heapoid)
 {
-	for (StmtState *st = batch_ending; st != NULL; st = st->next)
+	List	   *above = NIL;
+
+	for (StmtState *st = batch_open; st != NULL; st = st->next)
+	{
 		for (int i = 0; i < st->nrels; i++)
 			if (st->rels[i] == heapoid)
 				return true;
+		for (int i = st->nrels; i < st->nrels + st->nroots; i++)
+		{
+			above = above != NIL ? above : lcons_oid(heapoid, get_partition_ancestors(heapoid));
+			if (list_member_oid(above, st->rels[i]))
+				return true;
+		}
+	}
 	return false;
 }
 
@@ -324,12 +388,13 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	SiftColRow	row;
 	bool		crossed;
 	bool		supersede = r->rowkey && batch_updates > 0;
+	bool		speculative = batch_stmts > 0 || (!batch_started && heap->rd_rel->relam == HEAP_TABLE_AM_OID && sift_col_is_speculative(heap, heap_tid));
 	/*
 	 * The transaction that inserted the heap tuple (a subtransaction's id inside a savepoint), kept in the record for the reads that decide visibility from the index.
 	 * Not for a speculative insertion: the tuple may be killed when its conflict is found, and no one is told. A tuple that CREATE INDEX
 	 * CONCURRENTLY adds after the build is of an older transaction, which the id of the one that adds it follows.
 	 */
-	TransactionId xmin = r->track && batch_stmts == 0 ? GetCurrentTransactionId() : InvalidTransactionId;
+	TransactionId xmin = r->track && !speculative ? GetCurrentTransactionId() : InvalidTransactionId;
 	/* the heap tuple is the record's values only where its xmin is the kept one: not for the tuples a concurrent build validates (an index not valid yet), nor a table that is not a heap */
 	bool		ref = sift_col_wbuf_ref && TransactionIdIsValid(xmin) && index->rd_index->indisvalid && heap->rd_rel->relam == HEAP_TABLE_AM_OID;
 
@@ -337,7 +402,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	sift_col_make_row(r, heap_tid, values, isnull, &row, rowcxt);
 	sift_col_batch_hook();
 	/* the first row of a transaction goes in at once: a statement of one row pays nothing for the buffer */
-	if (!(batch_seen && batch_stmts == 0 && sift_cwbuf_pend(index, &hint, r->schema, &row, xmin, ref, &crossed)))
+	if (!(batch_seen && !speculative && sift_cwbuf_pend(index, &hint, r->schema, &row, xmin, ref, &crossed)))
 		crossed = sift_cwbuf_append(index, &hint, r->schema, &row, xmin, ref);
 	batch_seen = true;
 	MemoryContextReset(rowcxt);

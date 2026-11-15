@@ -39,8 +39,8 @@ bool sift_test_supersede_scan = false;
  * Is the version at newtid a speculative insertion (INSERT .. ON CONFLICT before it is confirmed)? It may be killed when the conflict is found, and the row it
  * would replace then stays: no entry is superseded for it. The confirmed insertion of an upsert that finds no conflict replaces nothing either.
  */
-static bool
-is_speculative(Relation heap, ItemPointer newtid)
+bool
+sift_col_is_speculative(Relation heap, ItemPointer newtid)
 {
 	Buffer buf = ReadBuffer(heap, ItemPointerGetBlockNumber(newtid));
 	Page page;
@@ -289,7 +289,7 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 	if (sift_test_no_supersede)
 		return;
 #endif
-	if (speculative_stmt && is_speculative(heap, newtid))
+	if (speculative_stmt && sift_col_is_speculative(heap, newtid))
 		return;
 	if (probed.heap == RelationGetRelid(heap) && probed.att == hatt && ItemPointerEquals(&probed.newtid, newtid) && probed.xid == GetCurrentTransactionId() &&
 		probed.cid == sift_col_stmt_cid())
