@@ -1,5 +1,5 @@
--- The invariant behind col_dsm_write_statements and col_wbuf_reads_write_path, for every table the backends share (the reads of the write buffers, the dictionaries, the choices of the
--- planner): sift_dsm_attach (col/dsmreg.c) does not start the subtransaction of the registry while a statement that modifies data runs, because its commit advances the command id under
+-- The invariant behind col_dsm_write_statements and col_wbuf_reads_write_path, for every table the backends share (the dictionaries, the choices of the
+-- planner; the reads of the write buffers are in the metapage of the index, not shared): sift_dsm_attach (col/dsmreg.c) does not start the subtransaction of the registry while a statement that modifies data runs, because its commit advances the command id under
 -- the statement. Every case is a backend whose first statements write and reach an attach point: sift._test_dsm_deferred says which tables it went without, and the aggregate through
 -- the index (heap-free and checked) gives the rows of the heap (the oracle).
 CREATE EXTENSION pg_sift;
@@ -42,8 +42,8 @@ BEGIN
 	checked_equals_heap := answer(qt, 1) = answer(qt, 2) AND answer(qo, 1) = answer(qo, 2);
 END $$;
 -- which tables this backend went without under a write
-CREATE FUNCTION deferred(OUT dictionary bool, OUT reads bool, OUT planner_choices bool) LANGUAGE sql AS $$
-	SELECT coalesce(bool_or(name LIKE '%dict%'), false), coalesce(bool_or(name LIKE '%reads%'), false), coalesce(bool_or(name LIKE '%verdict%'), false) FROM sift._test_dsm_deferred()
+CREATE FUNCTION deferred(OUT dictionary bool, OUT planner_choices bool) LANGUAGE sql AS $$
+	SELECT coalesce(bool_or(name LIKE '%dict%'), false), coalesce(bool_or(name LIKE '%verdict%'), false) FROM sift._test_dsm_deferred()
 $$;
 -- the dictionary of a text key, read by the supersede of the first UPDATE
 \c -
@@ -55,9 +55,9 @@ UPDATE tk SET amount = amount + 500 WHERE code IN (SELECT 'c' || i FROM generate
 UPDATE tk SET amount = amount + 5 WHERE code IN (SELECT 'c' || i FROM generate_series(5, 20000, 5) i);
 COMMIT;
 SELECT * FROM deferred();
- dictionary | reads | planner_choices 
-------------+-------+-----------------
- t          | f     | f
+ dictionary | planner_choices 
+------------+-----------------
+ t          | f
 (1 row)
 
 SELECT * FROM chk('text key, three updates');
@@ -90,9 +90,9 @@ UPDATE tk SET amount = amount + 1 + ot_total() % 2 WHERE code IN (SELECT 'c' || 
 UPDATE tk SET amount = amount + 5 + ot_total() % 2 WHERE code IN (SELECT 'c' || i FROM generate_series(5, 20000, 5) i);
 COMMIT;
 SELECT * FROM deferred();
- dictionary | reads | planner_choices 
-------------+-------+-----------------
- t          | t     | t
+ dictionary | planner_choices 
+------------+-----------------
+ t          | t
 (1 row)
 
 SELECT * FROM chk('planned inside the UPDATE');
@@ -112,9 +112,9 @@ SELECT * FROM chk('reads only');
 (1 row)
 
 SELECT * FROM deferred();
- dictionary | reads | planner_choices 
-------------+-------+-----------------
- f          | f     | f
+ dictionary | planner_choices 
+------------+-----------------
+ f          | f
 (1 row)
 
 DROP FUNCTION chk(text), answer(text, int), deferred(), ot_total();

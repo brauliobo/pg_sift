@@ -50,6 +50,6 @@ ERROR:  "mo_pkey" is not a sift index
 SELECT sift.col_merge('mo_bm');
 ERROR:  "mo_bm" is not a sift_col index
 SELECT sift.verify('mo');
-ERROR:  "mo" is not an index
+ERROR:  "mo" is not a sift index
 DROP TABLE mo;
 DROP EXTENSION pg_sift;
