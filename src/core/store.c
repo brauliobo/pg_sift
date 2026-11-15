@@ -136,6 +136,20 @@ dir_has_gen(Relation index, uint64 gen)
 	return false;
 }
 
+#define LIVE_CORRUPT(index, ...) \
+	SIFT_DAMAGE_INDEX(index, \
+					  errmsg("sift index \"%s\" is corrupted", RelationGetRelationName(index)), \
+					  errdetail(__VA_ARGS__), \
+					  errhint("A sift_col index that a VACUUM of pg_sift 4.2.1 to 4.3.5 damaged is restored in place by sift.col_repair; REINDEX rebuilds any index."))
+
+#define PAGE_CORRUPT(index, type, ...) \
+	do { \
+		if ((type) == SIFT_PT_LIVE) \
+			LIVE_CORRUPT(index, __VA_ARGS__); \
+		else \
+			corrupt(index, __VA_ARGS__); \
+	} while (0)
+
 void
 sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 {
@@ -145,13 +159,13 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 	SiftPageOpaqueData found;
 
 	if (!sift_page_layout_ok(page))
-		corrupt(index, "Block %u has an invalid page layout (lower %u, upper %u, special %u).",
-				blkno, ph->pd_lower, ph->pd_upper, ph->pd_special);
+		PAGE_CORRUPT(index, type, "Block %u has an invalid page layout (lower %u, upper %u, special %u).",
+					 blkno, ph->pd_lower, ph->pd_upper, ph->pd_special);
 	found = *SiftPageGetOpaque(page);
 	if (likely(found.type == type && found.gen == gen && found.flags == 0 && found.reserved == 0))
 		return;
 	if (found.type == type && found.gen == gen)
-		corrupt(index, "Block %u: the page flags (%u) or reserved word (%u) of the special space are not zero.", blkno, found.flags, found.reserved);
+		PAGE_CORRUPT(index, type, "Block %u: the page flags (%u) or reserved word (%u) of the special space are not zero.", blkno, found.flags, found.reserved);
 	if (RecoveryInProgress() && gen != 0)
 	{
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
@@ -163,8 +177,8 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 							   RelationGetRelationName(index), ULL(gen), blkno),
 					 errhint("Set hot_standby_feedback = on on the standby to avoid this.")));
 	}
-	corrupt(index, "Block %u: expected page type %d generation %llu, found type %d generation %llu.",
-			blkno, type, ULL(gen), found.type, ULL(found.gen));
+	PAGE_CORRUPT(index, type, "Block %u: expected page type %d generation %llu, found type %d generation %llu.",
+				 blkno, type, ULL(gen), found.type, ULL(found.gen));
 }
 
 /*
