@@ -220,7 +220,7 @@ SELECT count(*) AS rows FROM sift.cluster_advice(NULL, 10000, 'grp');
 
 \set VERBOSITY terse
 SELECT * FROM sift.cluster_advice('evs_col', 10000, ' , ');
-ERROR:  key must be a list of leaf names, such as 'a, b'
+ERROR:  cluster_advice: key must be a list of leaf names, such as 'a, b'
 \set VERBOSITY default
 -- the visibility map: a table that VACUUM has not seen says so
 CREATE TABLE evv (id int PRIMARY KEY, grp int, pad text) WITH (autovacuum_enabled = false);

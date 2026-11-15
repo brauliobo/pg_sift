@@ -33,7 +33,7 @@ BEGIN
 	IF key IS NOT NULL THEN
 		kl := ARRAY(SELECT btrim(k) FROM unnest(string_to_array(key, ',')) k);
 		IF array_length(kl, 1) IS NULL OR '' = ANY(kl) THEN
-			RAISE EXCEPTION 'key must be a list of leaf names, such as ''a, b''' USING ERRCODE = 'invalid_parameter_value';
+			RAISE EXCEPTION 'cluster_advice: key must be a list of leaf names, such as ''a, b''' USING ERRCODE = 'invalid_parameter_value';
 		END IF;
 	END IF;
 	FOR ix IN

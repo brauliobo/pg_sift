@@ -273,9 +273,9 @@ SELECT * FROM fc_stage('sift_table', 'fct');
 -- what the callers get wrong
 \set VERBOSITY terse
 SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '[]');
-ERROR:  facets must be a non-empty JSON array
+ERROR:  facet_sql: facets must be a non-empty JSON array
 SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '{"expr": "brand"}');
-ERROR:  facets must be a non-empty JSON array
+ERROR:  facet_sql: facets must be a non-empty JSON array
 SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '[{"type": "nope", "expr": "brand"}]');
 ERROR:  facet 1: unknown type "nope" (terms, range, histogram, date_histogram)
 SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '[{"type": "histogram", "expr": "qty"}]');
@@ -291,7 +291,7 @@ ERROR:  facet 1: "array" is for terms facets
 SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '[{"size": 3}]');
 ERROR:  facet 1: "expr" or "name" is required
 SELECT * FROM sift.facet_counts('fc', NULL, 'wireless', '["brand"]');
-ERROR:  key: the indexed expression of the search is required with a query
+ERROR:  facet_sql: key, the indexed expression of the search, is required with a query
 SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '["nope"]');
 ERROR:  column "nope" does not exist at character 34
 SELECT * FROM sift.facet_counts('fc', 'title', 'wireless', '[{"expr": "qty", "interval": 0.0001, "fill": true}]');
