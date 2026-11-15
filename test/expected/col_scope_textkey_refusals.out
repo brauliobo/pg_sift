@@ -36,8 +36,6 @@ CREATE INDEX pairs_member_text_j ON pairs_member_text USING sift_col (member_tex
 CREATE INDEX pairs_member_char_j ON pairs_member_char USING sift_col (member_char, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX pairs_member_ci_j ON pairs_member_ci USING sift_col (member_ci, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX pairs_member_dom_j ON pairs_member_dom USING sift_col (member_dom, tenant_id) WITH (track_changes = 'ctid');
-ERROR:  sift_col does not support the type public.dom_text of column "member_dom"
-HINT:  Supported: smallint, integer, bigint, boolean, date, time, timetz, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, inet, cidr, macaddr, macaddr8, bit, varbit, enums, arrays, ranges and jsonb with paths.
 -- two paths with a text key: a grant on a member and on a group, the members of a group
 CREATE TABLE grants_direct (dim_a_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));
 CREATE TABLE grants_group (group_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (group_id, tenant_id));
