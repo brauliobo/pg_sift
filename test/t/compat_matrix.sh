@@ -130,7 +130,7 @@ sift.async_maintenance = off'
 		"$(grep -c 'REINDEX INDEX CONCURRENTLY public.docs_idx;' <<<"$upd")/$(grep -c 'REINDEX INDEX CONCURRENTLY public' <<<"$upd")" == "1/4"
 	check "$ref: the update names the VACUUM FULL of the timestamp sift_table when the release has one" test "$(grep -c 'VACUUM FULL public.tbl_ts;' <<<"$upd")/$(grep -c 'VACUUM FULL public' <<<"$upd")" == "$([[ $hastbl == yes ]] && echo 1/1 || echo 0/0)"
 	check "$ref: the extension is at the version of this tree" test "$(q "SELECT extversion = default_version FROM pg_extension, pg_available_extensions WHERE extname = 'pg_sift' AND name = 'pg_sift'")" == t
-	check "$ref: the functions added in 3.3 exist after the update" test "$(q "SELECT count(*) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace
+	check "$ref: the functions added in 3.3 exist after the update" test "$(q "SELECT count(DISTINCT proname) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace
 		AND proname IN ('col_refresh', 'col_clustering', 'stats', 'stats_reset', 'col_rollup_misses', 'explain_why', 'upgrade_commands')")" == 7
 	agree "$ref: answers after the update equal what $ref answered" "$(ans IDX "" "${what}b")" "$a"
 	agree "$ref: answers after the update equal the plain plan" "$(ans IDX "" "${what}b")" "$(ans PLAIN_NEW "" "${what}b")"
