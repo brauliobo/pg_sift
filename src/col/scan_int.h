@@ -7,6 +7,7 @@
 #include "col/am.h"
 #include "col/gorder.h"
 #include "col/seg.h"
+#include "core/ring.h"
 #include "core/tomb.h"
 #include "core/visibility.h"
 #include "core/damage.h"
@@ -341,7 +342,8 @@ struct SiftColSource
 	const SiftColPrune *sigzone;	/* the zone trees of the last begin: made once for the entries of a scan, so a pointer tells them */
 	uint32		sig_gen;
 	uint32		counted;		/* the sig_gen whose pruned units sift_col_kept_map counted for the whole scan: a cursor counts none of them (0: none) */
-	int			ntests;			/* made so far; the slot of the next is ntests % COL_TEST_CACHE */
+	int			ntests;			/* the slots of tests that hold a test, at most COL_TEST_CACHE */
+	SiftRing	test_ring;		/* the slot of the next test */
 	SiftColCounters cnt;
 	SiftKey    *ptid;			/* the heap addresses the point directories answered since the last begin, in sift_col_begin's memory (SIFT_COLO_POINT_TIDS) */
 	bool		ptid_unsorted;	/* a segment's run of addresses started below the last address of the segments before it: sorted at the end of the begin */

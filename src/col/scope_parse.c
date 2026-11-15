@@ -8,6 +8,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "core/ring.h"
 #include "col/am.h"
 #include "col/scope.h"
 
@@ -222,7 +223,7 @@ static struct
 	SiftScopeSpecs *specs;
 	MemoryContext cx;
 } specs_memo[SPECS_MEMO_N];
-static int	specs_memo_next;
+static SiftRing specs_memo_ring;
 
 SiftScopeSpecs *
 sift_scope_specs(Relation index)
@@ -238,7 +239,7 @@ sift_scope_specs(Relation index)
 	for (int i = 0; i < SPECS_MEMO_N; i++)
 		if (specs_memo[i].index == RelationGetRelid(index) && strcmp(specs_memo[i].text, text) == 0)
 			return specs_memo[i].specs;
-	slot = specs_memo_next++ % SPECS_MEMO_N;
+	slot = SIFT_RING_SLOT(specs_memo_ring, SPECS_MEMO_N);
 	if (specs_memo[slot].cx != NULL)
 		MemoryContextDelete(specs_memo[slot].cx);
 	specs_memo[slot] = (typeof(specs_memo[0])) {0};

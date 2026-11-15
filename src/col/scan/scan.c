@@ -344,10 +344,12 @@ test_drop(ColTest *e)
 static ColTest *
 test_copy(SiftColSource *src, const SiftColSegment *seg, const SiftColPred *p)
 {
-	ColTest    *e = &src->tests[src->ntests++ % COL_TEST_CACHE];
+	ColTest    *e = &src->tests[SIFT_RING_SLOT(src->test_ring, COL_TEST_CACHE)];
 
-	if (src->ntests > COL_TEST_CACHE)	/* the slot held a test: the slots are not zeroed (col_source) */
+	if (src->ntests == COL_TEST_CACHE)	/* the slot held a test: the slots are not zeroed (col_source) */
 		test_drop(e);
+	else
+		src->ntests++;
 	e->seg = seg;
 	e->pred = *p;
 	e->vals = MemoryContextAlloc(src->mcxt, Max(p->nvals, 1) * sizeof(SiftColValue));
@@ -373,7 +375,7 @@ seg_test(SiftColSource *src, SiftColSegment *seg, const SiftColDef *def, const S
 
 	if (p->nvals < 1)
 		return make_test(src, def, sift_cseg_dict_search(seg, p->col, p->op), p, t);
-	for (int i = 0; i < Min(src->ntests, COL_TEST_CACHE) && e == NULL; i++)
+	for (int i = 0; i < src->ntests && e == NULL; i++)
 		if (src->tests[i].seg == seg && same_pred(&src->tests[i].pred, p))
 			e = &src->tests[i];
 	if (e == NULL)

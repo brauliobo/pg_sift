@@ -13,6 +13,7 @@
 #include "utils/snapshot.h"
 
 #include "core/lane.h"
+#include "core/ring.h"
 #include "core/store.h"
 
 #define SIFT_TOMB_MAGIC			0x544F4D42	/* "TOMB" */
@@ -238,11 +239,12 @@ typedef enum SiftTombVerdict
 extern SiftTombVerdict sift_tomb_verdict(Snapshot snapshot, const SiftTomb *e);
 
 /* The verdicts of a few transactions for one MVCC snapshot, which a walk over many pages reuses: the tombstones of a page come from few transactions, and the clog is read for each otherwise */
+#define SIFT_TOMB_MEMO 4
 typedef struct SiftTombMemo
 {
-	TransactionId xid[4];
-	uint8		verdict[4];		/* SiftTombVerdict */
-	uint8		next;
+	TransactionId xid[SIFT_TOMB_MEMO];
+	uint8		verdict[SIFT_TOMB_MEMO];		/* SiftTombVerdict */
+	SiftRing	ring;
 } SiftTombMemo;
 /*
  * Do tombstones delete rows of the blocks [first, first + nblocks) for the snapshot (an MVCC one): sets the bit (block - first) of mask (nblocks / 64 rounded up words, zeroed

@@ -92,6 +92,7 @@ core/neon.h
 core/simd_isa.h
 col/text_vec.h
 core/popcount.h
+core/ring.h
 bm25/posting.h
 bm25/posting_int.h
 bm25/prefix.h

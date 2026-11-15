@@ -11,6 +11,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "core/ring.h"
 #include "core/errctx.h"
 #include "core/sift.h"
 #include "bm25/estimate.h"
@@ -34,7 +35,7 @@ typedef struct EstimateMemo
 } EstimateMemo;
 
 static EstimateMemo estimate_memo[ESTIMATE_MEMO];
-static int	estimate_memo_next;
+static SiftRing estimate_memo_ring;
 
 static char *
 estimate_key(Relation index, const SiftQuerySrc *srcs, int nqueries, Size *len)
@@ -100,7 +101,7 @@ sift_estimate_cached_src(Relation index, const SiftQuerySrc *srcs, int nqueries,
 	sift_errctx_pop(&ctx);
 	if (len <= ESTIMATE_MEMO_MAX_KEY)
 	{
-		m = &estimate_memo[estimate_memo_next++ % ESTIMATE_MEMO];
+		m = &estimate_memo[SIFT_RING_SLOT(estimate_memo_ring, ESTIMATE_MEMO)];
 		if (m->key)
 			pfree(m->key);
 		m->key = MemoryContextAlloc(TopMemoryContext, len);

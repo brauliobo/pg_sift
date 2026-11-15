@@ -20,6 +20,7 @@
 #include "utils/resowner.h"
 #include "utils/snapmgr.h"
 
+#include "core/ring.h"
 #include "col/am.h"
 #include "col/scope.h"
 
@@ -56,7 +57,7 @@ static struct JournalMemo
 	AttrNumber	member;
 	AttrNumber	skey[SIFT_SCOPE_JOURNALS];
 } journal_memo[JOURNAL_MEMO_N];
-static int	journal_memo_next;
+static SiftRing journal_memo_ring;
 
 #ifdef SIFT_TESTING
 /* sift._test_scope_journals_open: the ERROR raised before the journal_fail_at-th open of a relation or journal index of a journals_open, to see what an error leaves behind */
@@ -166,7 +167,7 @@ journals_open(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 	table_close(heap, NoLock);
 	if (!TransactionIdIsValid(GetTopTransactionIdIfAny()))
 	{
-		struct JournalMemo *m = &journal_memo[journal_memo_next++ % JOURNAL_MEMO_N];
+		struct JournalMemo *m = &journal_memo[SIFT_RING_SLOT(journal_memo_ring, JOURNAL_MEMO_N)];
 
 		*m = (struct JournalMemo) {RelationGetRelid(index), scope, gen, J->n};
 		m->via_btree = J->via_btree;
@@ -367,7 +368,7 @@ static struct GroupsMemo
 	int64	   *groups;
 	MemoryContext cx;
 } groups_memo[GROUPS_MEMO_N];
-static int	groups_memo_next;
+static SiftRing groups_memo_ring;
 
 static const struct GroupsMemo *
 groups_memo_find(const GroupTags *g)
@@ -396,7 +397,7 @@ groups_memo_keep(const GroupTags *g, const int64 *now, uint32 n)
 
 	if (TransactionIdIsValid(GetTopTransactionIdIfAny()) || g->nkeys > GROUPS_MEMO_KEYS || n + g->changed->n > GROUPS_MEMO_GROUPS)
 		return;
-	m = &groups_memo[groups_memo_next++ % GROUPS_MEMO_N];
+	m = &groups_memo[SIFT_RING_SLOT(groups_memo_ring, GROUPS_MEMO_N)];
 	if (m->cx == NULL)
 		m->cx = AllocSetContextCreate(TopMemoryContext, "sift cache scope groups", ALLOCSET_SMALL_SIZES);
 	MemoryContextReset(m->cx);
