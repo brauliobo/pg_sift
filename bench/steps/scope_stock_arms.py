@@ -474,8 +474,8 @@ def cmd_run(a):
 
 
 def cpu_model():
-    with open('/proc/cpuinfo') as f:
-        return next((l.split(':', 1)[1].strip() for l in f if l.startswith('model name')), 'unknown cpu')
+    import benchlib
+    return benchlib.host_fingerprint()['cpu']
 
 
 def cmd_collect(a):

@@ -52,7 +52,7 @@ selftest() {
 	out=$(check "$t/s" || true); grep -q 'core/new.c: not classified' <<<"$out" || { echo "selftest: an unclassified file passed"; return 1; }
 	echo core/new.c >>"$t/s/portable.list"; echo core/new.c >>"$t/s/pg-only.list"
 	out=$(check "$t/s" || true); grep -q 'in a portable list and in pg-only.list' <<<"$out" || { echo "selftest: a file in both lists passed"; return 1; }
-	sed -i '/core\/new.c/d' "$t/s/pg-only.list"; echo col/gone.c >>"$t/s/pg-only.list"
+	grep -v 'core/new.c' "$t/s/pg-only.list" >"$t/s/pg-only.new"; mv "$t/s/pg-only.new" "$t/s/pg-only.list"; echo col/gone.c >>"$t/s/pg-only.list"
 	out=$(check "$t/s" || true); grep -q 'col/gone.c matches no file' <<<"$out" || { echo "selftest: a stale entry passed"; return 1; }
 	echo "check-classified selftest: ok"
 }
