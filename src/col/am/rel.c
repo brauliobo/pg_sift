@@ -383,8 +383,9 @@ segments_have_leaves(Relation index, const SiftColSchema *s)
 /*
  * A column of the index was renamed and the options and attribute of the index say so (col/names.c). The leaves that are kept under the name of the column (the paths of a jsonb column,
  * the lengths of an array, the flag of a connection) are named after it in the schema the options give now, and the metapage has the hash of the schema the segments were written for.
- * The leaves are the same: when every segment has the leaves of the schema the options give, the metapage takes its hash and the segments keep the names they were written with. False
- * when the index has no segment that fixes a layout, or its layout is not the one of the options (it stays as stale as it was: a read says so and asks for the REINDEX).
+ * The leaves are the same: when every segment has the leaves of the schema the options give, the metapage takes its hash and the segments keep the names they were written with. True
+ * when the metapage names the leaves of the options now (it did, or it was written), false when the segments lack them: the index stays as stale as it was, a read says so and asks
+ * for the REINDEX.
  */
 bool
 sift_col_rekey(Relation index)
@@ -394,22 +395,26 @@ sift_col_rekey(Relation index)
 	const SiftColSchema *schema[3];
 	uint32		hash,
 				flags;
-	bool		found = false;
+	bool		rekeyed = true;
 
-	if (!sift_store_meta_peek(index, &hash, &flags) || !(flags & SIFT_COL_META_FLAG))
-		return false;
-	for (int i = 0; i < 3; i++)
-		schema[i] = build_rel_with(index, cx, layout[i])->schema;
-	if (schema[0]->hash != hash && schema[1]->hash != hash && schema[2]->hash != hash)
-		for (int i = 0; i < 3 && !found; i++)
-			if (segments_have_leaves(index, schema[i]))
-			{
-				sift_store_rekey_layout(index, schema[i]->hash);
-				found = true;
-			}
+	if (sift_store_meta_peek(index, &hash, &flags) && (flags & SIFT_COL_META_FLAG))
+	{
+		for (int i = 0; i < 3; i++)
+			schema[i] = build_rel_with(index, cx, layout[i])->schema;
+		if (schema[0]->hash != hash && schema[1]->hash != hash && schema[2]->hash != hash)
+		{
+			rekeyed = false;
+			for (int i = 0; i < 3 && !rekeyed; i++)
+				if (segments_have_leaves(index, schema[i]))
+				{
+					sift_store_rekey_layout(index, schema[i]->hash);
+					rekeyed = true;
+				}
+		}
+	}
 	MemoryContextDelete(cx);
 	CacheInvalidateRelcache(index);
-	return found;
+	return rekeyed;
 }
 
 /* Are the units of the sift_col index cut by the order key? (the planner keeps a ctid range, which selects units by heap superblock, on the normal plan for such an index) */

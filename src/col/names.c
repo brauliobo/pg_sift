@@ -121,8 +121,13 @@ follow_attribute(Oid indexoid, int pos, const SiftNameChange *c)
 	rename_attribute(indexoid, pos, c->to);
 	index = index_open(indexoid, NoLock);
 	sift_col_set_options(index, renamed);
-	if (built && sift_col_rekey(index))
-		CommandCounterIncrement();
+	if (built && !sift_col_rekey(index))
+		ereport(NOTICE,
+				(errmsg("sift_col index \"%s\": its segments cannot follow the rename of column \"%s\" to \"%s\"", sift_col_final_name(index), c->from, c->to),
+				 errdetail("They do not hold the leaves the index names now, so it stays stale: reads refuse it until it is built again."),
+				 errhint("CREATE INDEX CONCURRENTLY a new index like this one, then DROP INDEX %s: no scan is lost.",
+						 quote_qualified_identifier(get_namespace_name(RelationGetNamespace(index)), RelationGetRelationName(index)))));
+	CommandCounterIncrement();
 	index_close(index, NoLock);
 }
 

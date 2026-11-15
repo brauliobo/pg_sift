@@ -171,6 +171,27 @@ DROP TABLE rn_owned;
 REVOKE CREATE ON SCHEMA public FROM rn_owner;
 DROP ROLE rn_owner;
 
+-- a rename the segments cannot follow says so and names the replacement. DROP NOT NULL on one of two jsonb columns leaves the index with no layout that matches its segments (a read already
+-- asks for the REINDEX); a rename of a healthy index says nothing
+CREATE TABLE rn_stale (id int PRIMARY KEY, a jsonb, b jsonb NOT NULL) WITH (autovacuum_enabled = off);
+INSERT INTO rn_stale SELECT g, jsonb_build_object('k', g), jsonb_build_object('k', g) FROM generate_series(1, 200) g;
+CREATE INDEX rn_stale_col ON rn_stale USING sift_col (id, a, b);
+SET client_min_messages = notice;
+ALTER TABLE rn_stale RENAME COLUMN b TO b2;
+SET client_min_messages = warning;
+ALTER TABLE rn_stale ALTER COLUMN b2 DROP NOT NULL;
+SET client_min_messages = notice;
+ALTER TABLE rn_stale RENAME COLUMN a TO a2;
+SET client_min_messages = warning;
+CREATE INDEX CONCURRENTLY rn_stale_new ON rn_stale USING sift_col (id, a2, b2);
+DROP INDEX rn_stale_col;
+SELECT * FROM rn_state('rn_stale_new');
+SET client_min_messages = notice;
+ALTER TABLE rn_stale RENAME COLUMN a2 TO a3;
+SET client_min_messages = warning;
+SELECT * FROM rn_state('rn_stale_new');
+DROP TABLE rn_stale;
+
 DROP TABLE fl_pairs2, rp, rn;
 DROP VIEW fl_view;
 DROP TABLE fl_s.fl_src2;
