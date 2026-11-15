@@ -136,7 +136,7 @@ NOTICE:  sift_col index "ag_i" is column format minor 41, which a library before
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                                             reloptions                                             
 ---------------------------------------------------------------------------------------------------
- {key_cut=off,"key_columns=auto: ent_id",order_array_group=off,"order_array_columns=auto: id, ts"}
+ {key_cut=off,"key_columns=auto: ent_id","order_array_columns=auto: id, ts",order_array_group=off}
 (1 row)
 
 SELECT ag_chk('SELECT id, ts FROM ag WHERE ent_id = 7 ORDER BY ts, id LIMIT 20') AS off_pinned, ag_chk('SELECT id, ts FROM ag ORDER BY ts DESC, id LIMIT 20') AS off_plain;

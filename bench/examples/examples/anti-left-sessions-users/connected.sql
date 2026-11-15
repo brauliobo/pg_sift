@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: session -> users (N:1, optional: NULL and dangling keys); the same join read as anti / left / right / full

@@ -1,0 +1,1 @@
+-- slot for the connected variant (designs/README.md); links.tsv lists the join; the queries read tier, opened, region of the parent through it

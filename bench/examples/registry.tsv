@@ -1,0 +1,54 @@
+id	class	nd_div	nd_min	corr	skew	hot	null_pct	card	cardinality	size_relation	key_type	write_pattern	clustering	storage	notes
+star-orders	star	20	10		1	0	5	20	N:1	mid_dim	int	append_only			fact with customer, item and store dimensions
+snowflake-item-category	snowflake	50	20		2	0	0	20	N:1	mid_dim	int	dim_attr_churn			sale -> item -> category -> department
+dashboard-child-parent-source	dashboard	20	10		1.5	0	15	20	N:1,1:N	mid_dim	bigint,composite,text				child->parent->source, EXISTS scope, non-blank presence, 24 duplicate pairs
+tags-many-to-many	tags	10	20		2	30	0	20	M:N,N:1	mid_dim	int				event->item<->tag through item_tag; any/all/none, count distinct
+anti-left-sessions-users	anti_left	10	10		1	0	10	20	N:1	mid_dim	int				anti, left, right, full joins; NULL and dangling keys; users without sessions
+iot-readings-devices-sites	iot	100	20	clustered	1	0	0	20	N:1	mid_dim	int		clustered		time series; latest per device, top-N, chain reading->device->site
+extreme-tiny-dim	extreme	0	3		1	0	5	3	N:1	tiny_dim	int				dimension of 3 rows: every group holds a third of the facts
+extreme-hot-key	extreme	100	20		1	30	0	20	N:1	mid_dim	int				one dimension row holds 30% of the facts
+extreme-dim-eq-fact	extreme	1	10		1	0	0	20	1:1	dim_eq_fact	int				dimension as large as the fact table, one fact per dimension row (the last 10% unmatched)
+extreme-fanout-1000	extreme	1000	10		1	0	0	20	N:1,1:N	fanout_1000	int				1000 facts per dimension row
+dim-update-storm	storm	0	50		1	0	0	5	N:1	small_dim	int				a few hot dimension rows flip attributes all the time while facts append
+ledger-versioned-accounts	ledger	50	20		1	0	0	20	N:1	mid_dim	date,composite				entries against account versions valid_from/valid_to (range join), numeric sums
+hierarchy-employees-manager	hierarchy	20	20		1	0	0	6	N:1	mid_dim	int				self join employee->manager (tree of fan-out 5), timesheets as the fact
+category-tree-3-level	hierarchy	50	30		1	0	0	20	N:1	mid_dim	int				3-level tree in one table (listing -> leaf -> branch -> root), self join chain
+graph-follows	graph	20	20		2	0	0	20	M:N,N:1	mid_dim	int				user->user edges, mutual follows, two links to one dimension
+multi-tenant-usage	saas	50	100		2	0	0	4	N:1,1:N	mid_dim	int,composite				tenant scoped composite keys, grants as scope rows, tenant 1 is big
+logs-services-teams	logs	200	20		1	20	0	8	N:1	small_dim	uuid,text				uuid and text keys, wide message text, log->service->team
+partitioned-fact-month	partition	100	20		1	0	0	20	N:1	mid_dim	int				monthly partitioned fact with an unpartitioned dim, partition pruning with a dim filter
+composite-order-lines-shipments	composite	4	10		1	0	0	20	1:1,1:N,N:1	dim_eq_fact	composite,bigint		clustered		composite (order_id, line_no) 1:1 with optional shipments, header 1:N
+expression-join-lower-email	expression	10	20		1	0	0	20	N:1	mid_dim	expression,text				join on lower(email) = email_lc, unmatched emails
+jsonb-attrs-catalog	jsonb	20	20		1	0	0	20	N:1	mid_dim	int,expression				jsonb attributes (attrs->>sku) joined to a catalog
+zone-bucket-lookup	zone	500	20		1	0	0	8	N:1	small_dim	text				text key buckets, exact-key and short IN-list lookups through the join
+documents-authors-bm25	bm25	20	20		3	0	0	12	N:1	mid_dim	int				BM25 filter on the body, then the join to authors (native: GIN tsvector)
+cluster-heap-clustered	clustering	100	20	clustered	1	0	0	20	N:1	mid_dim	int		clustered		join key grows with heap order (facts of one dim row are contiguous)
+cluster-heap-anti	clustering	100	20	anti	1	0	0	20	N:1	mid_dim	int		anti		join key falls with heap order
+cluster-heap-random-zipf	clustering	100	20	random	3	0	0	20	N:1	mid_dim	int		random		join key independent of heap order, zipf skew 3
+null-join-keys	nulls	20	20		1	0	30	20	N:1	mid_dim	int				30% NULL join keys: NOT IN, NOT EXISTS, count(*) vs count(key)
+bulk-reload-snapshot	bulk	20	20		1	0	0	20	N:1	mid_dim	int				the dimension and a tenth of the fact are reloaded in one transaction
+key-churn-merge	key_churn	20	20		1	0	0	20	N:1	mid_dim	int				dimension rows merged and split: heavy fact key churn
+soft-delete-both-sides	soft_delete	20	20	anti	1	0	0	20	N:1	mid_dim	int				deleted_at flags on the fact and on the dim, partial b-tree indexes
+late-orphan-keys	late_orphan	20	20		1	25	0	20	N:1	mid_dim	int				15% of the dim keys arrive late in waves, 5% of the facts name keys that never arrive
+duplicate-keys-unique-side	duplicates	20	20		1	0	0	20	N:1	mid_dim	int				dim key meant to be unique has 2% duplicates: joined rows multiply
+calendar-date-dim	calendar	0	731		1.5	0	0	20	N:1	small_dim	date				date key into a 731-row calendar, calendar as the preserved side, days beyond the calendar
+big-text-dims	bigtext	20	20		1	0	0	20	N:1	mid_dim	int				dimension with large text attributes carried through the join
+fanout-1000-clustered	extreme	1000	10	clustered	1	0	0	20	N:1,1:N	fanout_1000	int		clustered		1000 facts per dim row, heap order follows the join key
+tiny-text-status-dim	lookup	0	5		2	0	0	5	N:1	tiny_dim	text				a 5-row text-key status lookup referenced by every fact
+uuid-keys-accounts	uuid	20	20		1	0	0	10	N:1	mid_dim	uuid				uuid join key and uuid primary keys, no key order or locality
+partitioned-fact-hash	partition	100	20		1	0	0	20	N:1	mid_dim	int				fact hash-partitioned by the join key, key lists prune partitions
+mn-enrollment-courses	mn	10	20		2	0	0	12	M:N,N:1	mid_dim	int				link table with attributes between students and courses, co-enrollment self join
+one-to-one-profile	one_to_one	10	20		1	0	0	20	1:1,N:1	mid_dim	int				account 1:1 profile (90% present), activity chain
+bm25-notes-groups	bm25	20	20		3	0	0	12	N:1	mid_dim	int				two BM25 text indexes (title, body) on the fact, filter then join, exists and anti on a match
+jsonb-items-array-catalog	jsonb	20	20		2	0	0	20	1:N,N:1	mid_dim	int,expression				jsonb array elements joined to a catalog (jsonb_to_recordset), one document joins several rows
+table-sift-append-fact	table	20	20		1	0	0	20	N:1	mid_dim	int			sift_table	append-only sift_table fact joined to a heap dimension that churns
+table-sift-update-delete	table	20	20		1	0	0	20	N:1	mid_dim	int			sift_table	sift_table fact with updates, key changes, deletes and resurrects
+table-sift-partitioned	table	100	20		1	0	0	20	N:1	mid_dim	int			sift_table	monthly partitions that are sift_table, joined to a heap dimension
+parent-child-exists-shapes	parent_child	20	10		1	0	0	20	1:N	mid_dim	int				parent seen from the child side: EXISTS, NOT EXISTS, IN with a child filter, LEFT JOIN count/sum/distinct, latest child; parent update, key change, delete, reinsert
+parent-child-zipf-shapes	parent_child	100	10		2	20	5	20	1:N	mid_dim	int				the same shapes with a power-law child count, a hot parent and NULL keys
+parent-read-int-tier	parent_read	50	10		1	0	5	10	N:1	small_dim	int				an int parent column (tier) read through the connection, with parent updates, key changes, deletes and reinserts
+parent-read-date-opened	parent_read	50	10		1	0	5	20	N:1	small_dim	int				a date parent column (opened) read through the connection
+parent-read-text-region	parent_read	50	10		1	0	5	20	N:1	small_dim	int				a text parent column (region) read through the connection
+parent-read-stale-churn	parent_read	50	10		1.5	0	5	20	N:1	small_dim	int				int, date and text parent columns; parent updates between appends change what the connection saw at build
+parent-child-topn-per-parent	parent_child	20	10		1.5	0	0	20	1:N	mid_dim	int				top-N children of each parent (LATERAL), children with a kind per parent, aggregates of a child subquery per parent, child count histogram
+parent-child-left-both-indexed	parent_child	20	10		1	0	5	20	1:N	mid_dim	int				LEFT, RIGHT and FULL joins from the parent with conditions on both sides, both as sift_col leaves
