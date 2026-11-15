@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+## 4.3.7 - 2026-11-15
+
 - Added: pg_sift: `sift.col_repair(index, dry_run)` restores in place the liveness pages of a `sift_col` index that the dirty-bit bounds error of 4.2.1 to 4.3.5 damaged (the special space and header of a page, the dirty bit of each unit that has a cleared bit, the count of dead rows): one row for each segment it changed, none when the index is sound, and with `dry_run` it only reports. It takes the lock of `VACUUM` and the merges and writes one WAL record a page, so a standby replays it (run it on the primary). No format change.
 - Changed: pg_sift: `sift.col_verify` checks the liveness pages of every column segment (the type, flags, reserved field and generation of each page, a dirty bit for every unit with a cleared bit, the count of dead rows against the cleared bits), where it compared a count with itself, and each finding carries the hint to run `sift.col_repair`; a read of a liveness page whose flags or reserved field are set raises like a wrong type or generation.
 - Fixed: pg_sift: the caches of a few entries (the BM25 estimate memo, the tests of a column scan, the order codes of a top-N and the refused lookups of the aggregate scan) took the slot of the entry they replace from a signed counter that was reduced by hand: after 2^31 uses the counter was undefined behavior and then an index before the array. They now take the slot from one helper with an unsigned count that is continuous across 2^32, and a lint check refuses a counter that is incremented and reduced by hand.
