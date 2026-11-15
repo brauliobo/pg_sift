@@ -7,7 +7,7 @@
 # planner inlines it and no statement starts), the other session inserts the key and the first one goes on when the lock is released.
 . "$(dirname "$0")/lib.bash"
 
-plan 6
+plan 10
 node_init sr 84 "autovacuum = off
 max_parallel_workers_per_gather = 0"
 node_start sr || bail "start failed"
@@ -17,6 +17,9 @@ sql sr "CREATE EXTENSION pg_sift" \
 	"CREATE FUNCTION slow(v int) RETURNS int IMMUTABLE LANGUAGE sql AS \$\$ SELECT v + length(CASE WHEN v = 4242 THEN pg_advisory_xact_lock(20984, 1)::text ELSE '' END) \$\$" \
 	"CREATE FUNCTION look() RETURNS trigger LANGUAGE plpgsql AS \$\$ BEGIN PERFORM count(*) FROM pg_class; RETURN NEW; END \$\$" >/dev/null || bail "setup failed"
 
+for n in 5 6; do
+	sql sr "CREATE FUNCTION up$n() RETURNS trigger LANGUAGE plpgsql AS \$\$ BEGIN INSERT INTO c$n VALUES (5002, 1, 4242) ON CONFLICT (id) DO UPDATE SET v = c$n.v + 1; RETURN NEW; END \$\$" >/dev/null
+done
 # table NAME [STATEMENT...]: two partitions, the lock index, the sift_col indexes and, last, the unique index (REINDEX CONCURRENTLY gives it a later OID); then the statements
 table() {
 	local t=$1
@@ -31,7 +34,7 @@ table() {
 }
 trigger() { echo "CREATE TRIGGER t BEFORE INSERT ON $1 FOR EACH ROW EXECUTE FUNCTION look()"; }
 
-# race TABLE ACTION: the upsert of the key 5002 in a new session loses to the insertion of the key by another session
+# race TABLE STATEMENT: the statement, in a new session, upserts the key 5002 of TABLE and loses to the insertion of the key by another session
 race() {
 	rm -f "$D"/{locked,release}
 	{
@@ -41,7 +44,7 @@ race() {
 	} | sql sr >/dev/null &
 	local hp=$!
 	until [[ -e $D/locked ]]; do sleep 0.05; done
-	sql sr "INSERT INTO $1 VALUES (5002, 1, 4242) ON CONFLICT (id) $2" >/dev/null &
+	sql sr "$2" >/dev/null &
 	local up=$!
 	for _ in $(seq 400); do [[ $(sql sr "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted") -ge 1 ]] && break; sleep 0.05; done
 	sql sr "INSERT INTO $1 VALUES (5002, 2, 7)" >/dev/null
@@ -57,12 +60,22 @@ table c1
 table c2 "$(trigger c20)" "$(trigger c21)"
 table c3 "$(trigger c3)"
 table c4 "$(trigger c40)" "$(trigger c41)"
+table k5 "CREATE TRIGGER t BEFORE INSERT ON k50 FOR EACH ROW EXECUTE FUNCTION up5()" "CREATE TRIGGER t BEFORE INSERT ON k51 FOR EACH ROW EXECUTE FUNCTION up5()"
+table k6 "CREATE TRIGGER t BEFORE INSERT ON k6 FOR EACH STATEMENT EXECUTE FUNCTION up6()"
+table c5
+table c6
 sql sr "ALTER FUNCTION slow(int) VOLATILE" >/dev/null
-race c1 "DO UPDATE SET v = c1.v + 1"
-race c2 "DO UPDATE SET v = c2.v + 1"
-race c3 "DO UPDATE SET v = c3.v + 1"
-race c4 "DO NOTHING"
-for c in c1 c2 c3 c4; do
+upsert() { echo "INSERT INTO $1 VALUES (5002, 1, 4242) ON CONFLICT (id) $2"; }
+race c1 "$(upsert c1 "DO UPDATE SET v = c1.v + 1")"
+race c2 "$(upsert c2 "DO UPDATE SET v = c2.v + 1")"
+race c3 "$(upsert c3 "DO UPDATE SET v = c3.v + 1")"
+race c4 "$(upsert c4 "DO NOTHING")"
+# a COPY whose trigger upserts: the upsert is nested in a statement that the library did not hear start (BEFORE ROW: the library loaded when the COPY routed its row, so the upsert is heard;
+# BEFORE STATEMENT: it loaded in the upsert, which started before it)
+printf '6000\t1\t1\n' >"$D/copy.dat"
+race c5 "COPY k5 FROM '$D/copy.dat'"
+race c6 "COPY k6 FROM '$D/copy.dat'"
+for c in c1 c2 c3 c4 c5 c6 k5 k6; do
 	a=$(heap "$c")
 	check "$c: the count of the sift_col read is the heap's ($a)" test "$(sift "$c")" == "$a"
 done

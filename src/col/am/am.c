@@ -8,6 +8,9 @@
 #include "parser/parsetree.h"
 #include "catalog/partition.h"
 #include "tcop/pquery.h"
+#include "catalog/namespace.h"
+#include "nodes/parsenodes.h"
+#include "utils/rel.h"
 #include "catalog/pg_am_d.h"
 #include "bm25/am.h"
 #include "col/am/am_int.h"
@@ -85,6 +88,8 @@ static int	batch_stmts;
 
 static bool batch_blind;	/* the library loaded while a statement ran, so that statements in flight were not heard (sift_col_stmt_loaded): until the transaction ends */
 
+static bool batch_blind_copy;	/* ... and the statement was a COPY with nothing nested in it, which makes no speculative insertion (load_in_copy) */
+
 static bool batch_blind_wrote;	/* a row went into an index while batch_blind: a statement that writes and was not heard is running or ran (sift_col_ends_rows) */
 
 static int	batch_writes;		/* statements running that modify data (sift_col_writing) */
@@ -144,6 +149,7 @@ batch_xact(XactEvent event, void *arg)
 	{
 		batch_seen = false;
 		batch_blind = false;
+		batch_blind_copy = false;
 		batch_blind_wrote = false;
 	}
 }
@@ -320,6 +326,33 @@ stmt_note(QueryDesc *queryDesc, bool late)
 }
 
 /*
+ * Does the library load inside a COPY .. FROM that runs nothing nested yet? A COPY makes no speculative insertion, and a statement that a trigger or a function of it starts after the library
+ * loaded is heard. What would be missed is one that started before: only a BEFORE STATEMENT trigger of the table runs before the first row (a frame of its own on the error context stack
+ * is all that a statement it runs shows, besides the one of the COPY, which is pushed after that trigger), so the table has none, and the frames on the stack are the COPY's alone.
+ */
+static bool
+load_in_copy(void)
+{
+	PlannedStmt *ps;
+	CopyStmt   *cs;
+	Oid			relid;
+	Relation	rel;
+	bool		plain;
+
+	if (ActivePortal == NULL || list_length(ActivePortal->stmts) != 1 || (error_context_stack != NULL && error_context_stack->previous != NULL))
+		return false;
+	ps = linitial_node(PlannedStmt, ActivePortal->stmts);
+	if (ps->utilityStmt == NULL || !IsA(ps->utilityStmt, CopyStmt) || !(cs = (CopyStmt *) ps->utilityStmt)->is_from)
+		return false;
+	relid = RangeVarGetRelid(cs->relation, NoLock, true);
+	if (!OidIsValid(relid) || (rel = RelationIdGetRelation(relid)) == NULL)
+		return false;
+	plain = rel->trigdesc == NULL || !rel->trigdesc->trig_insert_before_statement;
+	RelationClose(rel);
+	return plain;
+}
+
+/*
  * Called when the library loads. A statement that is executing then (its executor start went by before the hooks were set: an INSERT, a COPY or a MERGE reaches a partition, and its
  * index, only when it routes a row) is not noted, nor are the statements around it. Until the transaction ends an insertion is looked at in the heap to tell a speculative one, which a
  * conflict may kill without telling the index, whatever statements run in between (a trigger, a function); and once a row went into an index no table is known not to have its
@@ -331,6 +364,7 @@ sift_col_stmt_loaded(void)
 	if (IsTransactionState() && ActivePortal != NULL)
 	{
 		batch_blind = true;
+		batch_blind_copy = load_in_copy();
 		sift_col_batch_hook();
 	}
 }
@@ -413,7 +447,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	SiftColRow	row;
 	bool		crossed;
 	bool		supersede = r->rowkey && batch_updates > 0;
-	bool		speculative = batch_stmts > 0 || (batch_blind && heap->rd_rel->relam == HEAP_TABLE_AM_OID && sift_col_is_speculative(heap, heap_tid));
+	bool		speculative = batch_stmts > 0 || (batch_blind && !batch_blind_copy && heap->rd_rel->relam == HEAP_TABLE_AM_OID && sift_col_is_speculative(heap, heap_tid));
 	/*
 	 * The transaction that inserted the heap tuple (a subtransaction's id inside a savepoint), kept in the record for the reads that decide visibility from the index.
 	 * Not for a speculative insertion: the tuple may be killed when its conflict is found, and no one is told. A tuple that CREATE INDEX
