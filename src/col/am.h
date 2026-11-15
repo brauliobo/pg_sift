@@ -122,6 +122,7 @@ extern PGDLLIMPORT bool sift_test_no_supersede;
 extern PGDLLIMPORT bool sift_test_tombs_at_once;
 extern PGDLLIMPORT bool sift_test_supersede_scan;
 extern PGDLLIMPORT bool sift_test_no_track;
+extern PGDLLIMPORT int sift_test_col_track_decided_gate;
 extern PGDLLIMPORT int sift_test_col_track_gate;	/* sift.test_col_track_gate: the install of the triggers of a log waits for the advisory lock of this number, before it asks for anything of the table */
 extern PGDLLIMPORT bool sift_test_no_chain_root;
 extern PGDLLIMPORT bool sift_test_no_log_reap;

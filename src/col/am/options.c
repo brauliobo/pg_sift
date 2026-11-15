@@ -444,6 +444,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_track_gate",
 							"Testing: the install of the change-tracking triggers of a log waits for the advisory lock of this number before it asks for anything of the table (0 = no gate).",
 							NULL, &sift_test_col_track_gate, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_track_decided_gate",
+							"Testing: the install of the change-tracking triggers of a log waits for the advisory lock of this number after it decided whether the table may be asked for the stronger lock, and before it acts on that (0 = no gate).",
+							NULL, &sift_test_col_track_decided_gate, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_gkept_fail",
 							 "Testing: extending the kept order of the write buffer's rows fails after its new arrays are made and before the order takes them.",
 							 NULL, &sift_test_col_gkept_fail, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

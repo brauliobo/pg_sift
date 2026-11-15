@@ -64,6 +64,7 @@ PG_FUNCTION_INFO_V1(sift_col_stamps);
 bool		sift_test_no_track = false;
 bool		sift_test_no_chain_root = false;
 int			sift_test_col_track_gate = 0;
+int			sift_test_col_track_decided_gate = 0;
 #endif
 
 /* By the schema oid, not LookupFuncName: a qualified name asks for USAGE on the schema, which an owner of the table creating the index need not have. */
@@ -346,7 +347,12 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 	 */
 	if (!(ok[0] && ok[1]) && (!concurrent || !OidIsValid(sift_col_swap_origin(heap, index, true))))
 	{
-		if (!may_make_triggers(heap, index, concurrent))
+		bool		may = may_make_triggers(heap, index, concurrent);
+
+#ifdef SIFT_TESTING
+		sift_test_hold(sift_test_col_track_decided_gate);
+#endif
+		if (!may)
 		{
 			ereport(NOTICE, (errmsg("sift_col index \"%s\": its track_changes triggers were not made, so its log is not complete", sift_col_final_name(index)),
 							 errdetail("Another statement holds the table, or a table above it, and a REINDEX does not wait for it. The maintenance worker makes missing triggers; ALTER INDEX makes any other."),
