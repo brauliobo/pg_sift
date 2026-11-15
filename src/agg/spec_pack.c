@@ -371,6 +371,7 @@ codec_agg(Codec *c, SiftAggAgg *a)
 	PKS(c, a->desc);
 	pk_dbl(c, &a->frac);
 	PK(c, a->desc_order);
+	PK(c, a->pct_array);
 	PK(c, a->share);
 	codec_gen(c, &a->gen);
 	PK(c, a->aggfn);
