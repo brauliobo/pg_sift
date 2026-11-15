@@ -120,6 +120,43 @@ SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
  XX002: sift index "t_idx" is corrupted | Block 5: expected page type 3 generation 1, found type 4 generation 1. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
+-- Flags and reserved word of the special space
+SELECT fresh();
+ fresh 
+-------
+ 
+(1 row)
+
+SELECT sift._test_poke('t_idx', 4, 8178, 1, 2);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
+                                                                                        expect                                                                                         
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Block 4: the page flags (1) or reserved word (0) of the special space are not zero. | REINDEX INDEX public.t_idx rebuilds it from the table.
+(1 row)
+
+SELECT fresh();
+ fresh 
+-------
+ 
+(1 row)
+
+SELECT sift._test_poke('t_idx', 4, 8180, 65535, 4);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
+                                                                                          expect                                                                                           
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Block 4: the page flags (0) or reserved word (65535) of the special space are not zero. | REINDEX INDEX public.t_idx rebuilds it from the table.
+(1 row)
+
 -- Metapage magic, format version, high-water mark
 SELECT fresh();
  fresh 
