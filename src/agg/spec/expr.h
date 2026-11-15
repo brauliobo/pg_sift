@@ -312,6 +312,9 @@ typedef struct SiftAggGen
 	double		cost;			/* planner only, not packed: a tuple's cost in units of cpu_operator_cost */
 } SiftAggGen;
 
+/* the typmod of the fraction of a percentile that stands for an element of an array (a float8 has none): the server's function for arrays may round otherwise than the scalar one, so the aggregates of the elements and the scalar ones are not equal() */
+#define SIFT_PCT_ARRAY_TYPMOD	1
+
 typedef struct SiftAggAgg
 {
 	SiftAggKind kind;
@@ -336,6 +339,7 @@ typedef struct SiftAggAgg
 	char	   *desc;
 	double		frac;			/* SAA_PCT_*: the fraction (a constant in [0, 1]) */
 	bool		desc_order;		/* SAA_PCT_*: ORDER BY ... DESC */
+	bool		pct_array;		/* SAA_PCT_CONT: a fraction of an array, which PostgreSQL's function for arrays rounds as the scalar one may not */
 	int			share;			/* SAA_PCT_*: the aggregate whose sorted values this one reads (itself, or an earlier one on the same argument) */
 	SiftAggGen *gen;			/* SAA_GEN */
 	Oid			aggfn;			/* SAA_M_PG: the aggregate function */

@@ -231,6 +231,7 @@ compile_ordered(AggCtx *c, Aggref *a, SiftAggAgg *out)
 		if (!IsA(frac, Const) || frac->constisnull || frac->consttype != FLOAT8OID)
 			return false;
 		out->frac = DatumGetFloat8(frac->constvalue);
+		out->pct_array = frac->consttypmod == SIFT_PCT_ARRAY_TYPMOD;
 		if (!(out->frac >= 0 && out->frac <= 1))
 			return false;
 	}

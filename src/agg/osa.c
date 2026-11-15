@@ -379,6 +379,7 @@ typedef struct OsaPick
 	int64		pos[2];
 	uint64		key[2];
 	double		prop;
+	bool		lerp_fused;
 } OsaPick;
 
 static void
@@ -393,22 +394,26 @@ osa_pick(const SiftAggAgg *a, int64 n, OsaPick *p)
 		p->pos[0] = p->pos[1] = -1;
 		p->key[0] = p->key[1] = 0;
 		p->prop = 0;
+		p->lerp_fused = false;
 		return;
 	}
 	if (a->kind == SAA_PCT_DISC)
 	{
 		lo = hi = Max((int64) ceil(a->frac * n), 1) - 1;
 		p->prop = 0;
+		p->lerp_fused = false;
 		if (a->desc_order)
 			lo = hi = n - 1 - lo;
 	}
 	else
 	{
 		double		at = a->frac * (n - 1);
+		const OsaRound *rd = osa_round(a->pct_array);
 
 		lo = (int64) floor(at);
 		hi = (int64) ceil(at);
-		p->prop = at - lo;
+		p->prop = osa_prop(a->frac, n, lo, rd->prop);
+		p->lerp_fused = rd->lerp;
 		if (a->desc_order)
 		{
 			lo = n - 1 - lo;
@@ -433,7 +438,7 @@ osa_result(const SiftAggAgg *a, const OsaPick *p)
 	}
 	first = key_f8(p->key[0]);
 	second = key_f8(p->key[1]);
-	r.d = a->kind == SAA_PCT_DISC || p->pos[0] == p->pos[1] ? first : first + (p->prop * (second - first));
+	r.d = a->kind == SAA_PCT_DISC || p->pos[0] == p->pos[1] ? first : osa_lerp(first, second, p->prop, p->lerp_fused);
 	return r;
 }
 

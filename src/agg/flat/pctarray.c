@@ -17,6 +17,7 @@
 #include "utils/lsyscache.h"
 
 #include "agg/agg.h"
+#include "agg/spec.h"
 
 #define MAX_FRACTIONS 64
 
@@ -90,6 +91,9 @@ static Aggref *
 scalar_aggregate(Aggref *a, Const *frac, Oid elemtype)
 {
 	Aggref	   *s = copyObject(a);
+
+	frac = copyObject(frac);
+	frac->consttypmod = SIFT_PCT_ARRAY_TYPMOD;
 
 	s->aggfnoid = a->aggfnoid == F_PERCENTILE_CONT__FLOAT8_FLOAT8 ? F_PERCENTILE_CONT_FLOAT8_FLOAT8 : F_PERCENTILE_DISC_FLOAT8_ANYELEMENT;
 	s->aggtype = elemtype;

@@ -64,6 +64,17 @@ void osa_sort(Osa *o);
 bool osa_next(Osa *o, OsaRun *r);
 void osa_finish_all(AggExec *ex);
 
+/* osa_round.c: whether this server's percentile_cont fuses the multiply-add of its proportion and of its interpolation (probed on first use) */
+typedef struct OsaRound
+{
+	bool		prop;
+	bool		lerp;
+} OsaRound;
+
+const OsaRound *osa_round(bool array);
+double osa_prop(double frac, int64 n, int64 first, bool fused);
+double osa_lerp(double lo, double hi, double prop, bool fused);
+
 /* osa_runs.c */
 void osa_runs_begin(AggExec *ex, Osa *o);
 void osa_runs_put(Osa *o, uint32 sid, uint64 key, uint32 cnt);
