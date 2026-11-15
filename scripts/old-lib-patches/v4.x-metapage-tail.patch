@@ -1,0 +1,31 @@
+A 4.x release reads the metapage of a newer build as it reads its own, and refuses by format what it cannot read
+
+Every 4.x release (4.0.0 to 4.3.5) validates the length of the metapage (pd_lower) against the struct it knows (400 bytes) before it looks at the
+format, so the metapage of 5.0 (up to 704 bytes: the floor and the paid reads of a scope, what the reads paid, what the workers did last) reads
+"sift index is corrupted: Bad metapage" where the format error with its hint belongs, for an index with a scope and for every index that has served a read.
+The bytes past the struct are the extension of a newer build (core/page.h): this build keeps them as they are, and pd_lower is never lowered over them.
+
+Apply to a 4.x source tree with `patch -p1 < v4.x-metapage-tail.patch` (src/core/store.c is the same in 4.0.5 to 4.3.5). Not committed to a release branch: it is
+the patch a 4.3.6 would carry (scripts/old-lib-check.sh meta builds the releases with and without it).
+
+--- a/src/core/store.c
++++ b/src/core/store.c
+@@ -185,7 +185,8 @@
+ 	SiftMetaPageData *meta = META(page);
+ 
+ 	sift_store_check_page(index, buf, SIFT_PT_META, 0);
+-	if (meta->magic != SIFT_MAGIC || SiftPageGetUsed(page) < SIFT_META_BASE_SIZE || SiftPageGetUsed(page) > sizeof(SiftMetaPageData))
++	/* bytes past the struct of this build are the extension of a newer one: this build keeps them as they are (and refuses by format what it cannot read) */
++	if (meta->magic != SIFT_MAGIC || SiftPageGetUsed(page) < SIFT_META_BASE_SIZE)
+ 		corrupt(index, "Bad metapage (magic 0x%08x, %u bytes).", meta->magic, SiftPageGetUsed(page));
+ 	if (meta->format_major != SIFT_FORMAT_MAJOR || meta->format_minor > SIFT_FORMAT_MINOR)
+ 		ereport(ERROR,
+@@ -413,7 +414,7 @@
+ 		if (chg->fn)
+ 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
+ 		/* the page ends where the base does until a failure note is written: pd_lower covers the bytes of a note once it has one */
+-		if (META(mp)->maint_failed_at != 0 || META(mp)->analyzer_config[0])
++		if ((META(mp)->maint_failed_at != 0 || META(mp)->analyzer_config[0]) && SiftPageGetUsed(mp) < sizeof(SiftMetaPageData))
+ 			SiftPageSetUsed(mp, sizeof(SiftMetaPageData));
+ 		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (col/col.h), its unfrozen rows raise the minor */
+ 		for (int i = 0; i < DIR(dp)->nsegs; i++)
