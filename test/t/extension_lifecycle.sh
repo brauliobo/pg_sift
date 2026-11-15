@@ -179,9 +179,9 @@ if (( PG_MAJOR >= 18 )); then
 	cp "$UPD"/extension/pg_sift--*.sql "$PAT/extension/" && rm -f "$PAT"/extension/pg_sift--4.2*.sql && cp "$PAT"/tree/sql/*.sql "$PAT/extension/"
 	sed "s/^default_version.*/default_version = '4.2.3'/" "$UPD/extension/pg_sift.control" >"$PAT/extension/pg_sift.control"
 	cp "$PAT"/extension/* "$PAT/next/extension/" && printf '\\echo Use "ALTER EXTENSION pg_sift UPDATE TO '"'4.3'"'" to load this file. \\quit\n' >"$PAT/next/extension/pg_sift--4.2--4.3.sql"
-	sed -i "s/^default_version.*/default_version = '4.3'/" "$PAT/next/extension/pg_sift.control"
+	sed_i "s/^default_version.*/default_version = '4.3'/" "$PAT/next/extension/pg_sift.control"
 	PATHPAT="SET extension_control_path = '$PAT:\$system'" PATHNEXT="SET extension_control_path = '$PAT/next:\$system'"
-	check "the release command writes a step and a script back to 4.2 for each of three patch releases" test "$(ls "$PAT/tree/sql" | wc -l)" == 6
+	check "the release command writes a step and a script back to 4.2 for each of three patch releases" test "$(ls "$PAT/tree/sql" | wc -l | tr -d " ")" == 6
 	q life postgres "CREATE DATABASE pat" "CREATE DATABASE pat1" "CREATE DATABASE pat2" >/dev/null
 	check "a database is created at the extension version of 4.2.3 through the chain" test "$(q life pat "$PATHPAT" "CREATE EXTENSION pg_sift" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'" | tail -n 1)" == 4.2.3
 	check "a database is created at 4.2.1 through the chain" test "$(q life pat1 "$PATHPAT" "CREATE EXTENSION pg_sift VERSION '4.2.1'" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'" | tail -n 1)" == 4.2.1
