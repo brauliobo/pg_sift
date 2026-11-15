@@ -1,0 +1,113 @@
+-- An index that tracks changes of its table with triggers leaves service like any other: the writes that fire the triggers go on, the rows are exact, and the rebuild
+-- brings the index back with the rows written while it was out
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE q;
+	RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLSTATE || ': ' || SQLERRM;
+END $$;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	r text;
+	p text := '';
+BEGIN
+	FOR r IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		p := p || r || E'\n';
+	END LOOP;
+	RETURN CASE WHEN p ~ 'Sift|t_idx' THEN 'sift' ELSE 'heap' END;
+END $$;
+SET client_min_messages = error;
+SET sift.on_corruption = quarantine;
+CREATE TABLE t (id int PRIMARY KEY, v int);
+INSERT INTO t SELECT i, i % 7 FROM generate_series(1, 20000) i;
+CREATE INDEX t_idx ON t USING sift_col (id, v);
+ANALYZE t;
+SELECT count(*) AS triggers FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift%';
+ triggers 
+----------
+        2
+(1 row)
+
+SELECT sift._test_poke('t_idx', 2, 8176, 9, 2);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS detecting_statement;
+          detecting_statement           
+----------------------------------------
+ XX002: sift index "t_idx" is corrupted
+(1 row)
+
+SELECT expect($$ UPDATE t SET v = 9 WHERE id <= 100 $$) AS update;
+ update 
+--------
+ ok
+(1 row)
+
+SELECT expect($$ DELETE FROM t WHERE id BETWEEN 200 AND 300 $$) AS delete;
+ delete 
+--------
+ ok
+(1 row)
+
+SELECT expect($$ INSERT INTO t VALUES (30000, 1) $$) AS insert;
+ insert 
+--------
+ ok
+(1 row)
+
+SELECT expect($$ UPDATE t SET v = 8 WHERE id = 30000 $$) AS update_the_new_row;
+ update_the_new_row 
+--------------------
+ ok
+(1 row)
+
+VACUUM t;
+SELECT count(*) AS rows_now, count(*) FILTER (WHERE v = 9) AS nines, count(*) FILTER (WHERE v = 8) AS eights FROM t;
+ rows_now | nines | eights 
+----------+-------+--------
+    19900 |   100 |      1
+(1 row)
+
+SELECT plan_of('SELECT count(*) FROM t WHERE v = 3') AS plan_while_out;
+ plan_while_out 
+----------------
+ heap
+(1 row)
+
+REINDEX INDEX t_idx;
+ANALYZE t;
+SELECT count(*) AS listed_after_reindex FROM sift.quarantine;
+ listed_after_reindex 
+----------------------
+                    0
+(1 row)
+
+SELECT count(*) AS rows_now, count(*) FILTER (WHERE v = 9) AS nines, count(*) FILTER (WHERE v = 8) AS eights FROM t;
+ rows_now | nines | eights 
+----------+-------+--------
+    19900 |   100 |      1
+(1 row)
+
+SET sift.on_corruption = error;
+SELECT count(*) AS threes FROM t WHERE v = 3;
+ threes 
+--------
+   2829
+(1 row)
+
+SELECT count(*) AS check_problems FROM sift.check('t_idx', heapallindexed => true);
+ check_problems 
+----------------
+              0
+(1 row)
+
+DROP TABLE t;
+DROP FUNCTION expect(text), plan_of(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
