@@ -85,6 +85,7 @@
 #include "core/host.h"
 
 #include "core/page.h"
+#include "core/xlog.h"
 
 /* The index as REINDEX INDEX takes it: schema-qualified and quoted where PostgreSQL has a schema (core/errctx.c) */
 extern const char *sift_index_ident(Relation index);

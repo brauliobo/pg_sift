@@ -99,6 +99,8 @@ log_pages(Relation index, Buffer *bufs, Page *srcs, int n)
 	bool		wal = RelationNeedsWAL(index);
 
 	Assert(n > 0 && n <= XLR_MAX_BLOCK_ID);
+	for (int i = 0; i < n; i++)
+		SIFT_INVARIANT(sift_page_layout_ok(srcs[i]), "sift: block %u is logged as a page that is not laid out as one of the index", BufferGetBlockNumber(bufs[i]));
 	if (wal)
 	{
 		XLogEnsureRecordSpace(n - 1, 0);
@@ -142,7 +144,7 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 	BlockNumber blkno = BufferGetBlockNumber(buf);
 	SiftPageOpaqueData found;
 
-	if (!layout_ok(page))
+	if (!sift_page_layout_ok(page))
 		corrupt(index, "Block %u has an invalid page layout (lower %u, upper %u, special %u).",
 				blkno, ph->pd_lower, ph->pd_upper, ph->pd_special);
 	found = *SiftPageGetOpaque(page);
@@ -330,10 +332,10 @@ uint64
 sift_store_new_gen(Relation index)
 {
 	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
-	GenericXLogState *state = GenericXLogStart(index);
-	uint64		gen = META(GenericXLogRegisterBuffer(state, metabuf, 0))->next_gen++;
+	SiftXlog state = sift_xlog_start(index);
+	uint64		gen = META(sift_xlog_register(&state, metabuf, 0))->next_gen++;
 
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(metabuf);
 	return gen;
 }
@@ -342,26 +344,26 @@ void
 sift_meta_update(Relation index, SiftMetaMutator fn, void *arg)
 {
 	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
-	GenericXLogState *state = GenericXLogStart(index);
-	Page		mp = GenericXLogRegisterBuffer(state, metabuf, 0);
+	SiftXlog state = sift_xlog_start(index);
+	Page		mp = sift_xlog_register(&state, metabuf, 0);
 
 	if (SiftPageGetUsed(mp) < sizeof(SiftMetaPageData))
 		memset((char *) META(mp) + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
 	if (!fn(META(mp), arg))
 	{
-		GenericXLogAbort(state);
+		sift_xlog_abort(&state);
 		UnlockReleaseBuffer(metabuf);
 		return;
 	}
 	if (sift_meta_extended(META(mp)))
 		SiftPageSetUsed(mp, sizeof(SiftMetaPageData));
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(metabuf);
 }
 
 /* Validates the mutator's result inside the record; aborts it on failure */
 static void
-finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *before, const SiftMetaPageData *meta,
+finish_dir(Relation index, SiftXlog *state, const SiftMetaPageData *before, const SiftMetaPageData *meta,
 		   Page dirpage)
 {
 	SiftDirectoryData *dir = DIR(dirpage);
@@ -372,7 +374,7 @@ finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *befo
 		err = "allocation state changed";
 	else if (dir->nsegs > SIFT_MAX_SEGMENTS)
 	{
-		GenericXLogAbort(state);
+		sift_xlog_abort(state);
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("sift index \"%s\" cannot hold more than %d segments", RelationGetRelationName(index), SIFT_MAX_SEGMENTS),
@@ -394,7 +396,7 @@ finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *befo
 	}
 	if (err)
 	{
-		GenericXLogAbort(state);
+		sift_xlog_abort(state);
 		SIFT_INVARIANT(false, "sift: invalid directory update: %s", err);
 	}
 	dir->version++;
@@ -443,7 +445,7 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	Buffer		metabuf;
 	Buffer		dirbuf;
 	FreePlan	plan = {.flbuf = InvalidBuffer, .newhead = InvalidBlockNumber};
-	GenericXLogState *state;
+	SiftXlog state;
 	SiftMetaPageData before;
 	Page		mp;
 	Page		dp = NULL;
@@ -459,14 +461,14 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 		safexid = ReadNextFullTransactionId();
 	if (chg->nrelease > 0)
 		prepare_free(index, metabuf, chg->release, chg->nrelease, safexid, &plan);
-	state = GenericXLogStart(index);
-	mp = GenericXLogRegisterBuffer(state, metabuf, 0);
+	state = sift_xlog_start(index);
+	mp = sift_xlog_register(&state, metabuf, 0);
 	if (publish)
-		dp = GenericXLogRegisterBuffer(state, dirbuf, 0);
+		dp = sift_xlog_register(&state, dirbuf, 0);
 	if (BufferIsValid(plan.flbuf))
-		fp = GenericXLogRegisterBuffer(state, plan.flbuf, 0);
+		fp = sift_xlog_register(&state, plan.flbuf, 0);
 	if (BufferIsValid(chg->extra))
-		xp = GenericXLogRegisterBuffer(state, chg->extra, 0);
+		xp = sift_xlog_register(&state, chg->extra, 0);
 	if (SiftPageGetUsed(mp) < sizeof(SiftMetaPageData))
 		memset((char *) META(mp) + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
 	before = *META(mp);
@@ -480,13 +482,13 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (col/col.h), its unfrozen rows raise the minor */
 		for (int i = 0; i < DIR(dp)->nsegs; i++)
 			META(mp)->format_minor = Max(META(mp)->format_minor, seg_minor(index, &DIR(dp)->segs[i]));
-		finish_dir(index, state, &before, META(mp), dp);
+		finish_dir(index, &state, &before, META(mp), dp);
 	}
 	apply_free(META(mp), fp, &plan);
 	/* Do not accept cancellation between a durable physical mapping change and its immediate invalidation. */
 	if (publish && space_exclusive && chg->nrelease > 0)
 		HOLD_INTERRUPTS();
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	SIFT_DIR_TEST_POINT(true);
 	/* These allocations now belong to the directory, even if the caller subsequently errors. */
 	if (published)

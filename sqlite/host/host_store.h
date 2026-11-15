@@ -73,6 +73,7 @@ extern BlockNumber BufferGetBlockNumber(Buffer buf);
 
 /* generic WAL: the page is edited in place, there is no log */
 typedef struct GenericXLogState GenericXLogState;
+#define GENERIC_XLOG_FULL_IMAGE	0x0001
 extern GenericXLogState *GenericXLogStart(Relation rel);
 extern Page GenericXLogRegisterBuffer(GenericXLogState *state, Buffer buf, int flags);
 extern void GenericXLogFinish(GenericXLogState *state);

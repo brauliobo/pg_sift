@@ -327,7 +327,7 @@ sift_wt_put_page(SiftWriteTarget *wt, BlockNumber blkno, Page page)
 {
 	Page		dst = wt_page(wt, (PGIOAlignedBlock *) page);
 
-	Assert(layout_ok(page));
+	SIFT_INVARIANT(sift_page_layout_ok(page), "sift: block %u is written with a page that is not laid out as one of the index", blkno);
 	if (dst != page)
 		memcpy(dst, page, BLCKSZ);
 	wt_put(wt, blkno, dst);

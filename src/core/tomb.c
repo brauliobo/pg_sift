@@ -843,14 +843,14 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 	for (uint32 i = 0; i < t->nents;)
 	{
 		Buffer		nb = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
-		GenericXLogState *state = GenericXLogStart(rel);
+		SiftXlog state = sift_xlog_start(rel);
 		Page		np,
 					pp = NULL;
 		SiftTombPage *tp;
 
 		if (BufferIsValid(prev))
-			pp = GenericXLogRegisterBuffer(state, prev, 0);
-		np = GenericXLogRegisterBuffer(state, nb, 0);
+			pp = sift_xlog_register(&state, prev, 0);
+		np = sift_xlog_register(&state, nb, 0);
 		sift_lane_init_page(np, SIFT_TOMB_PAGE_INIT);
 		tp = SIFT_TOMB_PAGE(np);
 		for (; i < t->nents && tp->nent < SIFT_TOMB_CAP; i++)
@@ -862,7 +862,7 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 		SiftPageSetUsed(np, SIFT_TOMB_PAGE_INIT + tp->nent * sizeof(SiftTomb));
 		if (pp)
 			SIFT_TOMB_PAGE(pp)->next = BufferGetBlockNumber(nb);
-		GenericXLogFinish(state);
+		sift_xlog_finish(&state);
 		if (BufferIsValid(prev))
 			UnlockReleaseBuffer(prev);
 		else
@@ -875,19 +875,19 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 		prev = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
 		head = BufferGetBlockNumber(prev);
 		{
-			GenericXLogState *state = GenericXLogStart(rel);
-			Page		np = GenericXLogRegisterBuffer(state, prev, 0);
+			SiftXlog state = sift_xlog_start(rel);
+			Page		np = sift_xlog_register(&state, prev, 0);
 
 			sift_lane_init_page(np, SIFT_TOMB_PAGE_INIT);
-			GenericXLogFinish(state);
+			sift_xlog_finish(&state);
 		}
 		npages = 1;
 	}
 	last = BufferGetBlockNumber(prev);
 	UnlockReleaseBuffer(prev);
 	{
-		GenericXLogState *state = GenericXLogStart(rel);
-		Page		hp = GenericXLogRegisterBuffer(state, hbuf, 0);
+		SiftXlog state = sift_xlog_start(rel);
+		Page		hp = sift_xlog_register(&state, hbuf, 0);
 
 		sift_lane_init_header(hp, gen, head, 1);
 		SiftLaneHdr(hp)->lanes[0].tail = last;
@@ -897,7 +897,7 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 		SIFT_TOMB_HDR(hp)->chan = t->chan;
 		SIFT_TOMB_HDR(hp)->keys = t->keys;
 		SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr));
-		GenericXLogFinish(state);
+		sift_xlog_finish(&state);
 	}
 	sw.fresh = (SiftSegEntry) {.gen = gen,.kind = old->kind,.flags = old->flags,.format = old->format,
 	.header_blk = BufferGetBlockNumber(hbuf)};
@@ -945,16 +945,16 @@ sift_tomb_new_segment(Relation rel, SiftSegKind kind, uint8 format)
 	uint64		gen = sift_store_new_gen(rel);
 	Buffer		hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
 	Buffer		dbuf = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
-	GenericXLogState *state = GenericXLogStart(rel);
-	Page		hp = GenericXLogRegisterBuffer(state, hbuf, 0);
-	Page		dp = GenericXLogRegisterBuffer(state, dbuf, 0);
+	SiftXlog state = sift_xlog_start(rel);
+	Page		hp = sift_xlog_register(&state, hbuf, 0);
+	Page		dp = sift_xlog_register(&state, dbuf, 0);
 	SiftSegEntry e = {.gen = gen,.kind = kind,.flags = SIFT_TBL_SEG_TOMB,.format = format,.header_blk = BufferGetBlockNumber(hbuf)};
 
 	sift_lane_init_header(hp, gen, BufferGetBlockNumber(dbuf), 1);
 	SIFT_TOMB_HDR(hp)->magic = SIFT_TOMB_MAGIC;
 	SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr));
 	sift_lane_init_page(dp, SIFT_TOMB_PAGE_INIT);
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(hbuf);
 	UnlockReleaseBuffer(dbuf);
 	return e;

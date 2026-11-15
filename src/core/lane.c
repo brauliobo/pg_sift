@@ -92,18 +92,18 @@ new_segment(Relation index, Size hdrsize, uint16 format, uint16 flags)
 	for (int i = 0; i <= SIFT_LANES; i += MAX_GENERIC_XLOG_PAGES)
 	{
 		int			n = Min(MAX_GENERIC_XLOG_PAGES, SIFT_LANES + 1 - i);
-		GenericXLogState *state = GenericXLogStart(index);
+		SiftXlog state = sift_xlog_start(index);
 
 		for (int j = 0; j < n; j++)
 		{
-			Page		page = GenericXLogRegisterBuffer(state, bufs[i + j], 0);
+			Page		page = sift_xlog_register(&state, bufs[i + j], 0);
 
 			if (i + j == 0)
 				sift_lane_init_header(page, gen, first, SIFT_LANES);
 			else
 				sift_lane_init_page(page, hdrsize);
 		}
-		GenericXLogFinish(state);
+		sift_xlog_finish(&state);
 	}
 	for (int i = 0; i <= SIFT_LANES; i++)
 		UnlockReleaseBuffer(bufs[i]);
@@ -203,10 +203,10 @@ flag_chains(Relation index, const SiftSegEntry *entry, bool whole)
 			blk = SiftLaneHead(page)->next;
 			if ((whole || !BlockNumberIsValid(blk)) && !(SiftLaneHead(page)->flags & SIFT_WBUFPAGE_SEALED))
 			{
-				GenericXLogState *state = GenericXLogStart(index);
+				SiftXlog state = sift_xlog_start(index);
 
-				SiftLaneHead(GenericXLogRegisterBuffer(state, buf, 0))->flags |= SIFT_WBUFPAGE_SEALED;
-				GenericXLogFinish(state);
+				SiftLaneHead(sift_xlog_register(&state, buf, 0))->flags |= SIFT_WBUFPAGE_SEALED;
+				sift_xlog_finish(&state);
 			}
 			UnlockReleaseBuffer(buf);
 		}
@@ -389,6 +389,7 @@ sift_page_edit_begin(SiftPageEdit *e, Buffer buf, Size headlen)
 	e->headlen = headlen;
 	e->lower = ((PageHeader) page)->pd_lower;
 	e->extra_len = 0;
+	e->special = *SiftPageGetOpaque(page);
 	memcpy(e->head, page, headlen);
 #ifdef USE_ASSERTION_CHECKING
 	memcpy(e->image, page, BLCKSZ);
@@ -444,6 +445,25 @@ edit_regions(const SiftPageEdit *e, uint16 (*frag)[2])
 	return nf;
 }
 
+/* The rule of sift_xlog_finish for an edit; the pages are in a critical section, so a break of it is a PANIC: the server restarts from the log, which has none of the change */
+static void
+edit_check(Relation index, const SiftPageEdit *e)
+{
+	const char *why = NULL;
+
+	if (!sift_page_layout_ok(e->page))
+		why = "the page is not laid out as a page of the index";
+	else if (memcmp(&e->special, SiftPageGetOpaque(e->page), sizeof(e->special)) != 0)
+		why = "a byte of the special space changed";
+	else if (e->extra_len > 0 && e->extra_off + e->extra_len > BLCKSZ)
+		why = "the logged region lies past the page";
+	if (why != NULL)
+		ereport(ERROR,	/* check-errors: allow */
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("sift index \"%s\": a change of block %u was refused", RelationGetRelationName(index), BufferGetBlockNumber(e->buf)),
+				 errdetail("%s.", why)));
+}
+
 void
 sift_page_edit_end(Relation index, SiftPageEdit *e, int n)
 {
@@ -454,6 +474,7 @@ sift_page_edit_end(Relation index, SiftPageEdit *e, int n)
 	Assert(n <= SIFT_EDIT_PAGES);
 	for (int i = 0; i < n; i++)
 	{
+		edit_check(index, &e[i]);
 		nf[i] = edit_regions(&e[i], frag[i]);
 #ifdef USE_ASSERTION_CHECKING
 		for (int k = 0; k < nf[i]; k++)
@@ -488,10 +509,10 @@ sift_lane_grow(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer
 {
 	Buffer		nb = sift_alloc_page(index, SIFT_PT_WBUFDATA, gen);
 	Buffer		hb = sift_lane_read_locked(index, hdr_blk, BUFFER_LOCK_EXCLUSIVE);
-	GenericXLogState *state = GenericXLogStart(index);
-	Page		cp = GenericXLogRegisterBuffer(state, cur, 0);
-	Page		np = GenericXLogRegisterBuffer(state, nb, 0);
-	Page		hp = GenericXLogRegisterBuffer(state, hb, 0);
+	SiftXlog state = sift_xlog_start(index);
+	Page		cp = sift_xlog_register(&state, cur, 0);
+	Page		np = sift_xlog_register(&state, nb, 0);
+	Page		hp = sift_xlog_register(&state, hb, 0);
 	SiftWbufHeaderData *hd = SiftLaneHdr(hp);
 
 	SiftLaneHead(cp)->next = BufferGetBlockNumber(nb);
@@ -501,7 +522,7 @@ sift_lane_grow(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer
 	*crossed = sift_lane_npages(hd) >= limit;
 	if (fill)
 		fill(cp, np, hp, arg);
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(hb);
 	UnlockReleaseBuffer(cur);
 	return nb;
@@ -591,12 +612,12 @@ sift_lane_bulkdelete(Relation index, const SiftSegEntry *entry, Size hdrsize, Si
 		if (ndead > 0)
 		{
 			Buffer		buf = sift_lane_read_locked(index, blks[i], BUFFER_LOCK_EXCLUSIVE);
-			GenericXLogState *state = GenericXLogStart(index);
-			Page		page = GenericXLogRegisterBuffer(state, buf, 0);
+			SiftXlog state = sift_xlog_start(index);
+			Page		page = sift_xlog_register(&state, buf, 0);
 
 			for (int k = 0; k < ndead; k++)
 				flag(page, offs[k]);
-			GenericXLogFinish(state);
+			sift_xlog_finish(&state);
 			UnlockReleaseBuffer(buf);
 			removed += ndead;
 		}

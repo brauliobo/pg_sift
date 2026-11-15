@@ -96,6 +96,7 @@ typedef struct SiftPageEdit
 	uint16		lower;
 	Size		extra_off;
 	Size		extra_len;
+	SiftPageOpaqueData special;	/* the special space before: a change does not touch it */
 	char		head[SIFT_EDIT_HEAD];
 #ifdef USE_ASSERTION_CHECKING
 	char		image[BLCKSZ];		/* the page before: the logged regions must rebuild the page from it */
