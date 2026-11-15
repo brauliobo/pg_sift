@@ -53,6 +53,33 @@ check_schema(TCtx *t, const Case *c)
 		CHECK(t, a->hash != b->hash, "path left the schema hash alone");
 	}
 
+	/* the stamps after the schema of a segment are read into arrays of SIFT_CONN_MAX_CONNECTIONS connections and SIFT_SCOPE_MAX scopes: a leaf list with more of either does not parse */
+	{
+		static const struct
+		{
+			uint16		flag;
+			int			most;
+		}			kinds[] = {{SIFT_COLD_FOUND, SIFT_CONN_MAX_CONNECTIONS}, {SIFT_COLD_SCOPE, SIFT_SCOPE_MAX}};
+		SiftColDef	many[SIFT_CONN_MAX_CONNECTIONS + 4];
+		SiftColSchema *m;
+
+		for (int i = 0; i < lengthof(many); i++)
+			many[i] = (SiftColDef) {i, -1, SIFT_COLK_SCALAR, SIFT_COLS_INT, 0, 1, SIFT_COLT_INT8, psprintf("k%02d", i)};
+		m = sift_cschema_create(CurrentMemoryContext, many, lengthof(many));
+		for (int k = 0; k < lengthof(kinds); k++)
+			for (int flagged = kinds[k].most; flagged <= kinds[k].most + 1; flagged++)
+			{
+				StringInfoData ser;
+
+				initStringInfo(&ser);
+				sift_cschema_serialize(m, &ser);
+				for (int i = 0; i < flagged; i++)
+					memcpy(ser.data + 3 * sizeof(uint32) + i * (16 + 3) + 6, &kinds[k].flag, sizeof(uint16));
+				CHECK(t, (sift_cschema_parse(CurrentMemoryContext, ser.data, ser.len) != NULL) == (flagged == kinds[k].most), "%d leaves of flag 0x%x parsed or refused wrongly", flagged,
+					  kinds[k].flag);
+			}
+	}
+
 	/* invalid leaf lists */
 	defs[0].parent = 0;
 	CHECK(t, ERRCODE_OF(sift_cschema_create(CurrentMemoryContext, defs, 1)) == ERRCODE_INVALID_PARAMETER_VALUE, "self parent accepted");

@@ -30,11 +30,17 @@ typedef struct SiftColDefDisk
 static const char *
 schema_check(const SiftColDef *defs, int n)
 {
+	int			nconn = 0,
+				nscope = 0;
+
 	if (n < 1 || n > SIFT_COL_MAX_COLS)
 		return "the number of leaves is out of range";
 	for (int i = 0; i < n; i++)
 	{
 		const SiftColDef *d = &defs[i];
+
+		nconn += (d->flags & SIFT_COLD_FOUND) != 0;
+		nscope += (d->flags & SIFT_COLD_SCOPE) != 0;
 
 		if (d->id != i)
 			return "leaf ids must be 0..n-1 in order";
@@ -69,6 +75,8 @@ schema_check(const SiftColDef *defs, int n)
 			(d->parent < 0 || d->parent >= i || defs[d->parent].kind != SIFT_COLK_GROUP))
 			return "the parent of a child must be an earlier group";
 	}
+	if (nconn > SIFT_CONN_MAX_CONNECTIONS || nscope > SIFT_SCOPE_MAX)
+		return "more connection or scope leaves than an index holds";
 	return NULL;
 }
 
