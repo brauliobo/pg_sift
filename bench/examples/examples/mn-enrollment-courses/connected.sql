@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: enrollment links student and course (two N:1 joins from the link table); queries read attributes of both sides at once

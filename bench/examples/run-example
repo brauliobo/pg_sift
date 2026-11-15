@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Typified examples for the connected-index prototypes (bench/examples/README.md).
+
+    run-example ID SCALE ENGINE[,ENGINE..] [--phases load,queries,writes,concurrency] [--knob k=v ..] [--no-instr] [--keep] [--validate]
+    run-example --list | --check | --coverage [--ready]
+
+SCALE is S, M, L (100k, 1M, 10M fact rows) or a row count for development. ENGINE: native, sift-unconnected, sift-off, connected:<design>.
+Needs PGHOST and PGPORT of a scratch cluster (eval "$(bench/examples/cluster.sh start)"); never the system server.
+"""
+import argparse
+import binascii
+import json
+import os
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
+import exlib  # noqa: E402
+
+PHASES = 'load,queries,writes'
+OUT = os.environ.get('EX_OUT', os.path.join(exlib.ROOT, '..', 'out', 'examples'))
+
+
+def tip():
+    try:
+        return subprocess.run(['git', '-C', exlib.ROOT, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'nogit'
+    except OSError:
+        return 'nogit'
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('id', nargs='?')
+    ap.add_argument('scale', nargs='?')
+    ap.add_argument('engine', nargs='?')
+    ap.add_argument('--phases', default=PHASES)
+    ap.add_argument('--knob', action='append', default=[])
+    ap.add_argument('--no-instr', action='store_true')
+    ap.add_argument('--keep', action='store_true')
+    ap.add_argument('--validate', action='store_true', help='native and sift-unconnected, load+queries+writes, oracle must hold: marks the example ready')
+    ap.add_argument('--seconds', type=int, default=20)
+    ap.add_argument('--set', action='append', default=[], help='a SET statement for the measured (not the oracle) sessions, e.g. --set "SET max_parallel_workers_per_gather = 0"')
+    ap.add_argument('--patterns', default='', help='writes: only the first batch of each of these write patterns (scale runs)')
+    ap.add_argument('--only', default='', help='the query ids to run (bisecting a mismatch)')
+    ap.add_argument('--txnmix', action='store_true', help='concurrency: one more reader that inserts rows in a transaction and reads its own rows (parallel plans see them)')
+    ap.add_argument('--skip', default='', help='concurrency: batch ids left out (bisecting a mismatch)')
+    ap.add_argument('--exact-oracle', action='store_true', help='the oracle runs the main query text, ignoring `-- oracle:` rewrites (small scales only: those plans can be quadratic)')
+    ap.add_argument('--out', default=OUT)
+    ap.add_argument('--list', action='store_true')
+    ap.add_argument('--check', action='store_true')
+    ap.add_argument('--coverage', action='store_true')
+    ap.add_argument('--ready', action='store_true')
+    a = ap.parse_args()
+
+    if a.list:
+        rd = exlib.ready_ids()
+        for i in exlib.example_ids():
+            ex = exlib.Example(i)
+            print('%-28s %-7s %s' % (i, 'ready' if exlib.is_ready(ex, rd) else 'draft', ex.meta['class']))
+        return 0
+    if a.check:
+        problems = exlib.check_registry()
+        print('\n'.join(problems) or 'registry ok: %d examples' % len(exlib.example_ids()))
+        return 1 if problems else 0
+    if a.coverage:
+        print(exlib.coverage(a.ready))
+        return 0
+    if not (a.id and a.scale and (a.engine or a.validate)):
+        ap.error('ID SCALE ENGINE are required')
+    if not os.environ.get('PGHOST') or not os.environ.get('PGPORT'):
+        sys.exit('run-example: PGHOST and PGPORT of a scratch cluster are required (eval "$(bench/examples/cluster.sh start)")')
+
+    os.environ['EX_ONLY'] = a.only
+    os.environ['EX_PATTERNS'] = a.patterns
+    os.environ['EX_EXACT_ORACLE'] = '1' if a.exact_oracle else ''
+    os.environ['EX_SETTINGS'] = ';'.join(a.set)
+    ex = exlib.Example(a.id)
+    engines = ['native', 'sift-unconnected'] if a.validate else a.engine.split(',')
+    phases = ('load,queries,writes' if a.validate else a.phases).split(',')
+    knobs = dict(k.split('=', 1) for k in a.knob)
+    run_id = '%s-%s-%s' % (tip(), time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()), binascii.hexlify(os.urandom(2)).decode())
+    out = os.path.join(a.out, run_id)
+    os.makedirs(out, exist_ok=True)
+    tables = {n: [] for n in ('queries', 'writes', 'load', 'concurrency')}
+    failed = []
+    for name in engines:
+        eng = exlib.engine_of(name)
+        r = exlib.Run(ex, a.scale, eng, knobs, out, a.keep)
+        lead = dict(example=ex.id, scale=a.scale, engine=name)
+        try:
+            r.load()
+            if 'queries' in phases:
+                r.run_queries(instr=not a.no_instr)
+            if 'writes' in phases:
+                r.run_writes()
+            if 'concurrency' in phases:
+                r.run_concurrency(a.seconds, skip=a.skip.split(','), txnmix=a.txnmix)
+        finally:
+            r.drop()
+        for t, rows in (('queries', r.queryrows), ('writes', r.writerows), ('load', r.loadrows), ('concurrency', r.concrows)):
+            tables[t] += [dict(lead, **row) for row in rows]
+        failed += ['%s %s: queries %s' % (name, ex.id, row['query']) for row in r.queryrows if not row['rows_equal']]
+        failed += ['%s %s: connection %s was not filled (sift.col_connections fill is not `filled`)' % (name, ex.id, d) for d in r.refused]
+        failed += ['%s %s: queries %s was not answered by the found flag (header `-- found: yes`)' % (name, ex.id, row['query']) for row in r.queryrows if not row['found_ok']]
+        failed += ['%s %s: queries %s lost its plan node (header `-- plan:`)' % (name, ex.id, row['query']) for row in r.queryrows if not row['plan_ok']]
+        failed += ['%s %s: queries %s has a trivial oracle (no rows or zeros): fix the filter or add `-- empty: ok`' % (name, ex.id, row['query']) for row in r.queryrows if row['trivial']]
+        failed += ['%s %s: writes %s mismatches %s %s' % (name, ex.id, row['batch'], row['mismatches'], row['error']) for row in r.writerows if not row['oracle_ok']]
+        failed += ['%s %s: concurrency %s' % (name, ex.id, row['detail'] or row['final_mismatches']) for row in r.concrows if not row['ok']]
+    for t, rows in tables.items():
+        exlib.write_tsv(os.path.join(out, t + '.tsv'), rows, {})
+    json.dump(dict(run_id=run_id, example=ex.id, digest=ex.digest(), scale=a.scale, engines=engines, knobs=r.k, phases=phases, maintenance=os.environ.get('EX_MAINTENANCE', 'off'),
+                   failed=failed), open(os.path.join(out, 'run.json'), 'w'), indent=1)
+    print('%s %s %s: %s  %s' % (ex.id, a.scale, ','.join(engines), 'FAIL' if failed else 'oracle ok', out))
+    for f in failed:
+        print('  ' + f)
+    if a.validate and not failed:
+        exlib.mark_ready(ex, run_id, engines)
+    return 1 if failed else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

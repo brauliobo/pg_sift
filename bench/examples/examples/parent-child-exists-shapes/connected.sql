@@ -1,0 +1,1 @@
+-- slot for the connected variant (designs/README.md); links.tsv lists the join: child -> parent (N:1, 1:N from the parent side)
