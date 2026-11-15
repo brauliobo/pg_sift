@@ -85,6 +85,9 @@ CREATE FUNCTION sift._test_live2_clear(index regclass, nsb int4, sbidx int4, OUT
 -- sets len bytes of a page at offset to 0xFF in a generic WAL record, or as an append edit (a change of the special space, of the bytes past pd_lower or of the header is refused)
 CREATE FUNCTION sift._test_write(index regclass, blkno int8, "offset" int4, len int4, edit bool DEFAULT false) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_write' LANGUAGE C STRICT;
+-- the header page of a segment with SIFT_MAX_EXTENTS + over extents and extralen bytes after them: the bytes it uses and SIFT_MAX_EXTENTS
+CREATE FUNCTION sift._test_seghdr(index regclass, over int4, extralen int4, OUT used int4, OUT max_extents int4)
+	AS 'MODULE_PATHNAME', 'sift_test_seghdr' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_churn(index regclass, seed int8, maxbytes int8) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_churn' LANGUAGE C STRICT;
 
