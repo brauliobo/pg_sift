@@ -5,6 +5,7 @@
 #define SIFT_COL_SEG_INT_H
 
 #include "core/host.h"
+#include "core/ring.h"
 
 #include "col/gorder.h"
 #include "col/point.h"
@@ -331,7 +332,7 @@ typedef struct DictLook
 	SiftCBisect *bc;			/* the backend's cache of the positions bisected (NULL: none yet, or too few strings) */
 	bool		bc_tried;
 	LookKept   *kept;			/* the last LOOK_KEEP compressed blocks read for a string by code, oldest replaced first (NULL: none yet) */
-	uint32		kept_next;
+	SiftRing	kept_ring;
 	/* written before they are read, so not cleared with the rest (look_alloc) */
 	uint16		blkoff[DICT_BLOCK + 1];	/* where its strings start in blkraw */
 	uint8		blkraw[DICT_BLOCK_RAW_MAX];

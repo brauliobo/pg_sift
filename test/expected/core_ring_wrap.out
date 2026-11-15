@@ -1,0 +1,329 @@
+-- The caches of a few entries that replace the oldest entry in turn (core/ring.h) count their slots in 32 unsigned bits: a signed count passed INT_MAX into undefined behavior and then
+-- indexed the array of a memo before its start. sift._test_ring_walk takes slots of a ring across 2^31 and 2^32 for each size in use; sift._test_ring_start puts the count of every ring three slots
+-- from the wrap of 32 bits, and the statements that fill each cache past its size follow: the answers are those of the plain statements, and every ring that took slots crossed the wrap.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+SELECT slots, sift._test_ring_walk(slots, 100) AS walks_across_the_wraps FROM unnest(ARRAY[1, 2, 4, 8, 16, 32]) slots;
+ slots | walks_across_the_wraps 
+-------+------------------------
+     1 | t
+     2 | t
+     4 | t
+     8 | t
+    16 | t
+    32 | t
+(6 rows)
+
+SELECT sift._test_ring_start(4294967293);
+ _test_ring_start 
+------------------
+ 
+(1 row)
+
+CREATE FUNCTION scope_same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE
+	a text;
+	b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	SET LOCAL sift.agg_force = on;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO b;
+	RETURN a = b;
+END $$;
+-- the estimates of a BM25 index for twelve queries
+CREATE TABLE bm (id int PRIMARY KEY, tenant int, body text);
+INSERT INTO bm SELECT i, i % 40, 'word' || (i % 30) || ' filler' || i FROM generate_series(1, 3000) i;
+CREATE INDEX bm_body ON bm USING sift (body);
+ANALYZE bm;
+SELECT format('EXPLAIN (COSTS OFF) SELECT count(*) FROM bm WHERE body @@> ''word%s'' AND tenant < 20', g) FROM generate_series(1, 12) g \gexec
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bm WHERE body @@> 'word1' AND tenant < 20
+             QUERY PLAN             
+------------------------------------
+ Aggregate
+   ->  Custom Scan (SiftScan) on bm
+         Index: bm_body
+         Query: 'word1'::text
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bm WHERE body @@> 'word2' AND tenant < 20
+             QUERY PLAN             
+------------------------------------
+ Aggregate
+   ->  Custom Scan (SiftScan) on bm
+         Index: bm_body
+         Query: 'word2'::text
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bm WHERE body @@> 'word3' AND tenant < 20
+             QUERY PLAN             
+------------------------------------
+ Aggregate
+   ->  Custom Scan (SiftScan) on bm
+         Index: bm_body
+         Query: 'word3'::text
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bm WHERE body @@> 'word4' AND tenant < 20
+             QUERY PLAN             
+------------------------------------
+ Aggregate
+   ->  Custom Scan (SiftScan) on bm
+         Index: bm_body
+         Query: 'word4'::text
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bm WHERE body @@> 'word5' AND tenant < 20
+             QUERY PLAN             
+------------------------------------
+ Aggregate
+   ->  Custom Scan (SiftScan) on bm
+         Index: bm_body
+         Query: 'word5'::text
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bm WHERE body @@> 'word6' AND tenant < 20
+             QUERY PLAN             
+------------------------------------
+ Aggregate
+   ->  Custom Scan (SiftScan) on bm
+         Index: bm_body
+         Query: 'word6'::text
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bm WHERE body @@> 'word7' AND tenant < 20
+             QUERY PLAN             
+------------------------------------
+ Aggregate
+   ->  Custom Scan (SiftScan) on bm
+         Index: bm_body
+         Query: 'word7'::text
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bm WHERE body @@> 'word8' AND tenant < 20
+             QUERY PLAN             
+------------------------------------
+ Aggregate
+   ->  Custom Scan (SiftScan) on bm
+         Index: bm_body
+         Query: 'word8'::text
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bm WHERE body @@> 'word9' AND tenant < 20
+             QUERY PLAN             
+------------------------------------
+ Aggregate
+   ->  Custom Scan (SiftScan) on bm
+         Index: bm_body
+         Query: 'word9'::text
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bm WHERE body @@> 'word10' AND tenant < 20
+             QUERY PLAN             
+------------------------------------
+ Aggregate
+   ->  Custom Scan (SiftScan) on bm
+         Index: bm_body
+         Query: 'word10'::text
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bm WHERE body @@> 'word11' AND tenant < 20
+             QUERY PLAN             
+------------------------------------
+ Aggregate
+   ->  Custom Scan (SiftScan) on bm
+         Index: bm_body
+         Query: 'word11'::text
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bm WHERE body @@> 'word12' AND tenant < 20
+             QUERY PLAN             
+------------------------------------
+ Aggregate
+   ->  Custom Scan (SiftScan) on bm
+         Index: bm_body
+         Query: 'word12'::text
+(4 rows)
+
+-- the tests of a scan over twenty segments, and the order codes of their dictionaries
+CREATE TABLE s (id int PRIMARY KEY, name text, v int) WITH (autovacuum_enabled = false);
+CREATE INDEX s_c ON s USING sift_col (id, name, v);
+SELECT q FROM generate_series(1, 20) g, LATERAL (VALUES
+ (1, format('INSERT INTO s SELECT %1$s * 1000 + i, ''name'' || (i %% 50) || ''-'' || %1$s, i %% 7 FROM generate_series(1, 600) i', g)),
+ (2, 'SELECT sift.col_promote(''s_c'')')) v(o, q) ORDER BY g, o \gexec
+INSERT INTO s SELECT 1 * 1000 + i, 'name' || (i % 50) || '-' || 1, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 2 * 1000 + i, 'name' || (i % 50) || '-' || 2, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 3 * 1000 + i, 'name' || (i % 50) || '-' || 3, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 4 * 1000 + i, 'name' || (i % 50) || '-' || 4, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 5 * 1000 + i, 'name' || (i % 50) || '-' || 5, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 6 * 1000 + i, 'name' || (i % 50) || '-' || 6, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 7 * 1000 + i, 'name' || (i % 50) || '-' || 7, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 8 * 1000 + i, 'name' || (i % 50) || '-' || 8, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 9 * 1000 + i, 'name' || (i % 50) || '-' || 9, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 10 * 1000 + i, 'name' || (i % 50) || '-' || 10, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 11 * 1000 + i, 'name' || (i % 50) || '-' || 11, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 12 * 1000 + i, 'name' || (i % 50) || '-' || 12, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 13 * 1000 + i, 'name' || (i % 50) || '-' || 13, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 14 * 1000 + i, 'name' || (i % 50) || '-' || 14, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 15 * 1000 + i, 'name' || (i % 50) || '-' || 15, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 16 * 1000 + i, 'name' || (i % 50) || '-' || 16, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 17 * 1000 + i, 'name' || (i % 50) || '-' || 17, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 18 * 1000 + i, 'name' || (i % 50) || '-' || 18, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 19 * 1000 + i, 'name' || (i % 50) || '-' || 19, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+INSERT INTO s SELECT 20 * 1000 + i, 'name' || (i % 50) || '-' || 20, i % 7 FROM generate_series(1, 600) i
+SELECT sift.col_promote('s_c')
+ col_promote 
+-------------
+           1
+(1 row)
+
+SELECT scope_same($$SELECT count(*), sum(v) FROM s WHERE name IN ('name1-3', 'name2-4', 'name5-5', 'name7-6', 'name9-7', 'name11-8', 'name13-9', 'name15-10', 'name17-11', 'name19-12', 'name21-13', 'name23-14', 'name25-15', 'name27-16', 'name29-17', 'name31-18', 'name33-19', 'name35-20')$$)
+	AS scan_tests_equal_the_heap;
+ scan_tests_equal_the_heap 
+---------------------------
+ t
+(1 row)
+
+SELECT scope_same('SELECT name, v FROM s ORDER BY name, v, id LIMIT 5') AS order_codes_equal_the_heap;
+ order_codes_equal_the_heap 
+----------------------------
+ t
+(1 row)
+
+-- every ring that handed out slots crossed the wrap of its count
+SELECT site, wraps >= 1 AS crossed_the_wrap FROM sift._test_ring_sites() ORDER BY site;
+        site        | crossed_the_wrap 
+--------------------+------------------
+ estimate_memo_ring | t
+ src->test_ring     | t
+ t->oc_ring         | t
+(3 rows)
+
+SELECT sift._test_ring_start(0);
+ _test_ring_start 
+------------------
+ 
+(1 row)
+
+DROP FUNCTION scope_same(text);
+DROP TABLE s, bm;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

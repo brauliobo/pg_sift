@@ -111,6 +111,7 @@ EXTENSION += pg_sift_test
 DATA += sql/pg_sift_test--1.0.sql
 PG_CPPFLAGS += -DSIFT_TESTING
 else
+TESTING_REGRESS += core_ring_wrap
 REGRESS := $(filter-out $(TESTING_REGRESS),$(REGRESS))
 endif
 # The SQL helpers of the regression tests (sql/pg_sift_helpers--1.0.sql, SQL only): the test build installs them, and so does scripts/release-library-check.sh, which runs the

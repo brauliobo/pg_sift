@@ -163,6 +163,15 @@ CREATE FUNCTION sift._test_filter(tids tid[], lossy_blocks int8[], maxbytes int8
 CREATE FUNCTION sift._test_radix_sort(n int4, bits1 int4, bits2 int4, offset1 int8, offset2 int8, seed int8) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_radix_sort' LANGUAGE C STRICT;
 
+-- The rings of core/ring.h (src/core/ring_test.c): _test_ring_start puts the count of every ring that many slots from the wrap of 32 bits (and empties the table of _test_ring_sites),
+-- _test_ring_sites lists the rings that took slots since, with the times their count wrapped; _test_ring_walk takes slots of a ring of its own across 2^31 and 2^32.
+CREATE FUNCTION sift._test_ring_start(start int8) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_ring_start' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_ring_sites(OUT site text, OUT takes int8, OUT wraps int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_ring_sites' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_ring_walk(slots int4, steps int4) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_ring_walk' LANGUAGE C STRICT;
+
 -- Leak detection (src/core/leak_test.c): leaves a resource behind on purpose so that scripts/leakcheck.sh is shown to fail.
 -- kind: buffer, relcache, tupledesc, snapshot, lock, context, malloc
 CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETURNS void
