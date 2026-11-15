@@ -254,6 +254,22 @@ sift_store_meta_flags(Relation index)
 	return flags;
 }
 
+bool
+sift_store_meta_has_flag(Relation index, uint32 flag)
+{
+	Buffer		buf;
+	SiftMetaPageData *meta;
+	bool		on;
+
+	if (RelationGetNumberOfBlocks(index) == 0)
+		return false;
+	buf = read_locked(index, SIFT_METAPAGE_BLKNO, BUFFER_LOCK_SHARE);
+	meta = META(BufferGetPage(buf));
+	on = meta->magic == SIFT_MAGIC && (meta->flags & flag) != 0;
+	UnlockReleaseBuffer(buf);
+	return on;
+}
+
 void
 sift_dir_read(Relation index, SiftDirSnapshot *snap)
 {

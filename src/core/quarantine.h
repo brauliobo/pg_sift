@@ -64,4 +64,7 @@ extern bool sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded
  */
 extern void sift_quarantine_net(Relation index, uint32 meta_flags);
 
+/* The worker that flags the metapage of an index the registry holds out of service (main_arg: the oid of the index) */
+extern PGDLLEXPORT void sift_quarantine_main(Datum main_arg);
+
 #endif							/* SIFT_QUARANTINE_H */

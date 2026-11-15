@@ -38,6 +38,7 @@ static const struct
 	{"sift_col_track_orphans_main", SIFT_JOB_ORPHANS},
 	{"sift_tbl_maint_worker_main", SIFT_JOB_TABLE},
 	{"sift_tbl_settle_worker_main", SIFT_JOB_TABLE},
+	{"sift_quarantine_main", SIFT_JOB_QUARANTINE},
 };
 
 static const char *const job_names[SIFT_NJOBS] = {
@@ -49,6 +50,7 @@ static const char *const job_names[SIFT_NJOBS] = {
 	[SIFT_JOB_ROLLUP] = "rollup",
 	[SIFT_JOB_ORPHANS] = "orphans",
 	[SIFT_JOB_TABLE] = "table",
+	[SIFT_JOB_QUARANTINE] = "quarantine",
 };
 
 const char *
@@ -96,6 +98,7 @@ static const char *const job_hints[SIFT_NJOBS] = {
 	[SIFT_JOB_ROLLUP] = "The requests stay queued; sift.col_rollup_refresh(index) refreshes them in a session.",
 	[SIFT_JOB_ORPHANS] = "The triggers do nothing; the next statement of their table that fires one asks again.",
 	[SIFT_JOB_TABLE] = "The next write asks for it again, and VACUUM does the same work.",
+	[SIFT_JOB_QUARANTINE] = "The index stays out of service in the registry of the server only (persisted = false in sift.quarantine); a restart forgets it, and the next read of the damage records it again.",
 };
 
 /* Rollup and orphans work for the database, the others for an index */
