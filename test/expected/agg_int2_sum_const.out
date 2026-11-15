@@ -88,6 +88,7 @@ SET sift.enable_agg = on;
 SET sift.agg_force = on;
 SELECT sum(x + 2147483647) FROM w WHERE id IN (6);
 ERROR:  integer out of range
+CONTEXT:  sift index "public.w_col"
 DROP FUNCTION differences(text), rows_scanned(text);
 DROP TABLE w, w2;
 DROP EXTENSION pg_sift;

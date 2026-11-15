@@ -1,6 +1,6 @@
 -- A scan that an enclosing query starts over for each of its rows (a LATERAL top-1 per entity, a correlated sub-select) finds the entries of its group in the order array by searching the group table
 -- of the segment. The first probe searches it where it is; a segment probed again holds the table in memory, and the dead rows and all-visible pages of its units it checked the entries against, so the 200 probes
--- of one statement pin two buffers each, not one for every step of a search over 250 groups and the pages of the checks. The count is the extra over the same statement on an index of 2 groups
+-- of one statement pin two buffers each, not one for every step of a search over 250 groups and the pages of the checks. The count is the extra over the same statement on an index of 2 groups, at most 2 (the reader keeps its 8 most recent pages: 2 groups cost 0.2 lookups a probe, 250 groups 1.3)
 -- (a build with CATCACHE_FORCE_RELEASE reads the catalog again at every lookup: some 6 buffers a probe more than a release build, for 2 groups as for 250). The answers are those of the heap (a scan without the engine) through the same changes between probes as agg_topn_rescan: deleted and updated rows, rows in the write
 -- buffer, VACUUM, a promotion in the middle of the statement, a cursor read both ways, a generic plan.
 CREATE EXTENSION pg_sift;
@@ -43,9 +43,9 @@ SET enable_sort = off;
 -- warm: the first statement reads the segment
 SELECT count(*) FROM rk_o v LEFT JOIN LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true;
 SELECT count(*) FROM rk2_o v LEFT JOIN LATERAL (SELECT ts FROM rk2 WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true;
-SELECT p.probes, p.global_order, p.extra <= 1 AS few_buffers FROM probe_extra('SELECT v.i, x.ts FROM @_o v LEFT JOIN LATERAL (SELECT ts FROM @ WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true') p;
-SELECT p.probes, p.global_order, p.extra <= 1 AS few_buffers FROM probe_extra('SELECT v.i, (SELECT id FROM @ WHERE g = v.g ORDER BY ts DESC LIMIT 1) FROM @_o v') p;
-SELECT p.probes, p.global_order, p.extra <= 1 AS few_buffers FROM probe_extra('SELECT v.i, x.ts FROM @_o v, LATERAL (SELECT ts FROM @ WHERE g = v.g ORDER BY ts LIMIT 3) x') p;
+SELECT p.probes, p.global_order, p.extra <= 2 AS few_buffers FROM probe_extra('SELECT v.i, x.ts FROM @_o v LEFT JOIN LATERAL (SELECT ts FROM @ WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true') p;
+SELECT p.probes, p.global_order, p.extra <= 2 AS few_buffers FROM probe_extra('SELECT v.i, (SELECT id FROM @ WHERE g = v.g ORDER BY ts DESC LIMIT 1) FROM @_o v') p;
+SELECT p.probes, p.global_order, p.extra <= 2 AS few_buffers FROM probe_extra('SELECT v.i, x.ts FROM @_o v, LATERAL (SELECT ts FROM @ WHERE g = v.g ORDER BY ts LIMIT 3) x') p;
 RESET enable_sort; RESET enable_seqscan; RESET sift.agg_force;
 
 -- the rows are the heap's: the same statements with the engine off, before and after each change between probes

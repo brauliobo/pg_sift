@@ -304,6 +304,7 @@ SELECT sift.stats_reset();
 
 SELECT grp, sum(amount / (amount - amount)) FROM ev GROUP BY grp;
 ERROR:  division by zero
+CONTEXT:  sift index "public.ev_col"
 SELECT stat('scans') AS scans_after_error;
  scans_after_error 
 -------------------
