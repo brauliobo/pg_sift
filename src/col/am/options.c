@@ -461,6 +461,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_cut_record",
 							"Testing: a segment cut by a key is written without the record of its cut (1: with the flag of the cut, as before SIFT_SEG_CUTREC; 2: without it, as 4.3 and older).",
 							NULL, &sift_test_col_cut_record, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_loose_inputs",
+							 "Testing: a merge reads every keyed input as cut another way: its rows are loaded and sorted, or sorted by the sort that spills, and none is a stream.",
+							 NULL, &sift_test_col_loose_inputs, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_gorder_strings",
 							 "Testing: the global order of a text leaf keeps a copy of its strings (as before column format minor 42), not the dictionary codes of them.",
 							 NULL, &sift_test_col_gorder_strings, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

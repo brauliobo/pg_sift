@@ -12,10 +12,12 @@
 #include "core/cmp.h"
 #include "col/am.h"
 #include "col/enc.h"
+#include "col/order_sort.h"
 #include "col/runs.h"
 #include "col/seg.h"
 
 #define ORDER_DEFAULT_ROWS	1024
+#define SORT_CHUNK_ROWS		4096		/* the rows of the sort that one read of the merge takes */
 #define ORDER_MAX_ROWS		32768		/* the most rows of a unit; the directory of a unit is read with the head of its record (seg.c sift_cseg_unit_head) */
 
 typedef struct RowRef
@@ -511,7 +513,7 @@ sift_colk_row_cmp(const SiftColSchema *schema, const int *leaf, int nleaf, const
 	return ref_cmp(&x, &y, &ctx);
 }
 
-/* One input of a merge: a key-cut segment, whose units follow each other in the order of the key, or an older one, which is loaded and sorted whole */
+/* One input of a merge: a key-cut segment, whose units follow each other in the order of the key, one cut another way, whose rows are loaded and sorted whole, or the sort of those when they do not fit */
 typedef struct MergeIn
 {
 	SiftColSegment *seg;
@@ -525,6 +527,7 @@ typedef struct MergeIn
 	uint32		pos;
 	bool		done;
 	bool		bounded;		/* the lo and hi of the merge cut its rows */
+	bool		sorted;			/* the rows come from the sort of the inputs that are not streams (MergeSrc.sorter): the last input of the merge, whose rows the sort has ordered */
 } MergeIn;
 
 /* The rows of a chunk stay where they were decoded until the window of the cut has copied them into a unit: a chunk is reused when no row of it is pinned by the window and its input has loaded another */
@@ -554,7 +557,7 @@ typedef struct MergeSrc
 	void	   *freeze_arg;
 	MemoryContext scratch;
 	uint64		budget;
-	uint64		loaded;			/* the rows of the older segments loaded whole */
+	SiftColSorter *sorter;		/* the rows of the inputs that are not streams, when they do not fit the budget loaded whole: a sort that spills (order_sort.c) */
 	MemoryContext cx;
 	MergeIn   **heap;			/* the inputs with rows left, the one whose next row comes first at 0 */
 	int			nheap;
@@ -732,7 +735,7 @@ static void
 load_chunk(MergeSrc *m, MergeIn *in)
 {
 	SiftColSegment *seg = in->seg;
-	const SiftColSchema *schema = seg->schema;
+	const SiftColSchema *schema = m->ctx->schema;
 	MemoryContext old;
 	int			prev = in->chunk;
 	int			cur = chunk_get(m, schema);
@@ -740,7 +743,19 @@ load_chunk(MergeSrc *m, MergeIn *in)
 
 	sift_cbatch_reset(b, 0);
 	old = MemoryContextSwitchTo(m->scratch);
-	if (in->keyed)
+	if (in->sorted)
+	{
+		b->keyed = true;
+		b->unsorted = true;
+		while (b->nrows < SORT_CHUNK_ROWS && sift_colsort_next(m->sorter, b))
+			;
+		if (b->nrows == 0)
+		{
+			sift_colsort_end(m->sorter);
+			m->sorter = NULL;
+		}
+	}
+	else if (in->keyed)
 	{
 		if (m->lo && in->bounded && prev < 0)
 			in->next_unit = first_unit(m, seg, m->lo);
@@ -753,11 +768,6 @@ load_chunk(MergeSrc *m, MergeIn *in)
 
 		b->keyed = true;		/* the rows of many superblocks */
 		b->unsorted = true;		/* the units of a segment cut by another key each span the heap; the rows are sorted by reference below */
-		if (in->next_unit < seg->nsb)	/* the call that finds the segment read is not a second load */
-			m->loaded += sift_cseg_live_rows(seg);
-		if (m->loaded * sift_colk_row_bytes(schema) > m->budget)
-			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col merge of an index with key_cut holds the rows of the segments written before the option in memory and needs more than maintenance_work_mem"),
-							errhint("Raise maintenance_work_mem, or REINDEX the index.")));
 		for (; in->next_unit < seg->nsb; in->next_unit++)
 		{
 			sift_cseg_decode_unit_freeze(seg, in->next_unit, one, m->freeze, m->freeze_arg);
@@ -783,7 +793,8 @@ load_chunk(MergeSrc *m, MergeIn *in)
 		}
 		for (uint32 r = 0; r < in->n; r++)
 			in->ord[r] = (RowRef) {b, r, cur};
-		sort_refs(in->ord, in->n, m->ctx);
+		if (!in->sorted)
+			sort_refs(in->ord, in->n, m->ctx);
 		if (in->keyed && prev >= 0 && m->chunk[prev].b->nrows > 0)
 		{
 			RowRef		last = {m->chunk[prev].b, m->chunk[prev].b->nrows - 1};
@@ -804,6 +815,46 @@ load_chunk(MergeSrc *m, MergeIn *in)
 		if (in->pos == in->n)
 			load_chunk(m, in);
 	}
+}
+
+/* Is row r of b inside the window of the merge (the slice or the window of the rewrite): from lo up to hi, not including it? */
+static bool
+in_window(const MergeSrc *m, const SiftColBatch *b, uint32 r)
+{
+	return (m->lo == NULL || bound_cmp(m, b, r, m->lo) >= 0) && (m->hi == NULL || bound_cmp(m, b, r, m->hi) < 0);
+}
+
+/* The rows of the inputs that are not streams go to the sort, but for the ones of an input the window cuts that are outside it (another merge writes them) */
+static void
+sort_fill(MergeSrc *m)
+{
+	for (int i = 0; i < m->n; i++)
+	{
+		MergeIn    *in = &m->in[i];
+		SiftColBatch *one;
+
+		if (in->keyed || in->sorted)
+			continue;
+		one = sift_cbatch_create(m->cx, m->ctx->schema);
+		for (; in->next_unit < in->seg->nsb; in->next_unit++)
+		{
+			MemoryContext old = MemoryContextSwitchTo(m->scratch);
+
+			sift_cseg_decode_unit_freeze(in->seg, in->next_unit, one, m->freeze, m->freeze_arg);
+			for (uint32 r = 0; r < one->nrows; r++)
+				if (!in->bounded || in_window(m, one, r))
+					sift_colsort_put(m->sorter, one, r);
+#ifdef SIFT_TESTING
+				else
+					sift_test_cut_sort_cut++;
+#endif
+			MemoryContextSwitchTo(old);
+			MemoryContextReset(m->scratch);
+		}
+		in->done = true;
+		pfree(one);
+	}
+	sift_colsort_done(m->sorter);
 }
 
 /* Does the next row of input a come before that of b? Equal rows (one row of two inputs) go in the order of the inputs */
@@ -840,9 +891,12 @@ merge_next(void *state, RowRef *r)
 	if (m->heap == NULL)
 	{
 		m->heap = MemoryContextAlloc(m->cx, m->n * sizeof(MergeIn *));
+		if (m->sorter)
+			sort_fill(m);
 		for (int i = 0; i < m->n; i++)
 		{
-			load_chunk(m, &m->in[i]);
+			if (!m->in[i].done)
+				load_chunk(m, &m->in[i]);
 			if (!m->in[i].done)
 				m->heap[m->nheap++] = &m->in[i];
 		}
@@ -885,18 +939,20 @@ merge_done(void *state, const RowRef *refs, uint64 n)
 
 /*
  * The merge of segments of an index with key_cut: the live rows of the inputs, in the order of the key, cut again into units. The units of a key-cut
- * segment follow each other in the order of the key, so each input holds one unit (a segment written before the option is loaded whole and sorted, up
- * to memory_kb; so is every input that stream does not take as one: it is cut another way) and the cut holds a window of rows: the memory does not depend on the number of rows. Returns the number of units.
+ * segment follow each other in the order of the key, so each input holds one unit and the cut holds a window of rows: the memory does not depend on the number of rows.
+ * An input that stream does not take as one is cut another way (a segment written before the option, or by another key): its rows are loaded whole and sorted when they fit
+ * memory_kb, else sorted together by a sort that spills to temporary files (order_sort.c), which is read as one more input. Returns the number of units.
  */
 int
 sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
 				 const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg, int slice, int nslices, uint32 unit_base, const bool *stream, const SiftColWindow *win)
 {
 	OrderCtx	ctx = {schema, leaf, nleaf};
-	MergeSrc	m = {.in = palloc0_array(MergeIn, n), .n = n, .ctx = &ctx, .freeze = freeze, .freeze_arg = freeze_arg, .cx = cx,
+	MergeSrc	m = {.in = palloc0_array(MergeIn, n + 1), .n = n, .ctx = &ctx, .freeze = freeze, .freeze_arg = freeze_arg, .cx = cx,
 					 .scratch = AllocSetContextCreate(cx, "sift_col merge unit", ALLOCSET_DEFAULT_SIZES), .budget = memory_kb * 1024};
 	BoundKey	wlo = {{0, PG_INT64_MIN}},
 				whi = {{0, PG_INT64_MIN}};
+	uint64		loose = 0;
 	int			units;
 
 	for (int i = 0; i < n; i++)
@@ -927,6 +983,15 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 			return 0;
 		m.lo = slice > 0 ? slice_bound(bk, nb, slice, nslices) : NULL;
 		m.hi = slice < nslices - 1 ? slice_bound(bk, nb, slice + 1, nslices) : NULL;
+	}
+	/* the rows of the inputs that are not streams are loaded whole and sorted when they fit the budget, else sorted by a sort that spills to temporary files */
+	for (int i = 0; i < n; i++)
+		if (!stream[i])
+			loose += sift_cseg_live_rows(seg[i]);
+	if (loose * sift_colk_row_bytes(schema) > m.budget)
+	{
+		m.sorter = sift_colsort_begin(schema, leaf, nleaf, (int) Min(memory_kb / 2, (uint64) INT_MAX));
+		m.in[m.n++] = (MergeIn) {.sorted = true, .chunk = -1};
 	}
 	units = cut_rows(w, NULL, 0, merge_next, merge_done, &m, schema, &ctx, unit_rows, cx, cutfn, cutarg, unit_base);
 	MemoryContextDelete(m.scratch);

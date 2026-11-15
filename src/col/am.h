@@ -315,7 +315,7 @@ typedef struct SiftColWindow
 extern int	sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
 							const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg,
 							int slice, int nslices, uint32 unit_base, const bool *stream, const SiftColWindow *win);
-/* stream[i]: whether a merge that reads the order of the leaves leaf[nleaf] (the TIDs for none) takes input seg[i] as a stream; an input that is not is loaded whole and sorted. An input cut like the merge reads is; one cut another way is not; one that does not record its cut (SIFT_SEG_CUTREC) is checked unit by unit (cut unknown), unless resort says the cut changed since it was written. Returns whether some keyed input is not a stream */
+/* stream[i]: whether a merge that reads the order of the leaves leaf[nleaf] (the TIDs for none) takes input seg[i] as a stream; the rows of an input that is not are sorted again, loaded whole when they fit memory_kb and else by a sort that spills (col/order_sort.c). An input cut like the merge reads is; one cut another way is not; one that does not record its cut (SIFT_SEG_CUTREC) is checked unit by unit (cut unknown), unless resort says the cut changed since it was written. Returns whether some keyed input is not a stream */
 /* Is every one of the n segments cut by the key_cut of the index, as its record says? */
 extern bool sift_colk_recorded(Relation index, const SiftSegEntry *sel, int n);
 /* The order of row ra of batch a and row rb of batch b by the leaves, then by address, as the cut sorts the rows */

@@ -263,6 +263,15 @@ CREATE FUNCTION sift._test_col_cuts(index regclass, OUT gen int8, OUT bykey bool
 -- the segments of unrecorded cut that merges of this backend have checked unit by unit (src/col/order.c)
 CREATE FUNCTION sift._test_col_cut_probes() RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_cut_probes' LANGUAGE C STRICT;
+-- the rows the merges of this backend sorted by a sort that spills (the rows of an input that did not fit maintenance_work_mem), and the kB of temporary files it used (src/col/order_sort.c)
+CREATE FUNCTION sift._test_col_cut_sort_rows() RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_cut_sort_rows' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_cut_sort_disk_kb() RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_cut_sort_disk_kb' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_cut_sort_cut() RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_cut_sort_cut' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_cut_sorts_reset() RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_col_cut_sorts_reset' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_mirror(index regclass, OUT gen int8, OUT range int4, OUT off int8, OUT len int4, OUT block int4)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_mirror' LANGUAGE C STRICT;
