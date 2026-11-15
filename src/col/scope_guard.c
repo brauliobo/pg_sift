@@ -15,6 +15,7 @@
 #include "catalog/pg_depend.h"
 #include "catalog/pg_index.h"
 #include "optimizer/optimizer.h"
+#include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -131,5 +132,5 @@ sift_scope_journal_alter(Relation index)
 		return;
 	foreach_oid(user, sift_scope_users(RelationGetRelid(index)))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("index \"%s\" is the journal of a scope of index \"%s\"", RelationGetRelationName(index), get_rel_name(user)),
-						errhint("The journal keeps track_changes = 'ctid': a read of the scope index learns from it which pairs changed. DROP INDEX %s first to give the scope up.", get_rel_name(user))));
+						errhint("The journal keeps track_changes = 'ctid': a read of the scope index learns from it which pairs changed. DROP INDEX %s first to give the scope up.", quote_identifier(get_rel_name(user)))));
 }

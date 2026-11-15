@@ -6,6 +6,9 @@
 #   - a corruption error (ERRCODE_INDEX_CORRUPTED, ERRCODE_DATA_CORRUPTED) whose message does not name the index (the SIFT_CORRUPT macros do; a decoder gets bytes and
 #     cannot) is raised under a context scope of the index (core/errctx.h): its file is listed in scripts/errctx.tsv with the files whose entry points push the
 #     scope, each of which must call sift_errctx_push. A file with such a message that is not listed is an error; "-" lists a known gap.
+#   - no message, detail, hint or context names a relation by its OID (`index %u`): a name, or sift_rel_label(oid) when it may be gone (core/sift.h);
+#   - a hint that writes DDL for a relation (`ALTER INDEX %s`, `REINDEX INDEX %s`, `DROP INDEX %s`) passes the name through sift_col_index_ref(), sift_index_ident() or quote_identifier(): a name that
+#     needs quotes pastes as written.
 #   An `errcode(ERRCODE_INTERNAL_ERROR)` is XX000 too. The test-only files (*_test.c, test.c, and the files of a directory test/, compiled only with SIFT_TESTING) are
 #   not checked; any other site may say `check-errors: allow` in a comment on the line of the call or one of the two above it.
 #
@@ -20,6 +23,10 @@ src = sys.argv[1]
 registry = sys.argv[2]
 NEEDS_HELP = {"ERRCODE_PROGRAM_LIMIT_EXCEEDED", "ERRCODE_FEATURE_NOT_SUPPORTED", "ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE"}
 call = re.compile(r"\b(ereport|elog)\s*\(")
+detail_call = re.compile(r"\b(errmsg|errmsg_plural|errdetail|errhint|errcontext)\s*\(")
+oid_name = re.compile(r'"[^"]*\b(?:relation|index|table)\s+%u')
+ddl_hint = re.compile(r'"[^"]*\b(?:ALTER|REINDEX|DROP)\s+(?:INDEX|TABLE)\b[^"]*%s')
+quoted = re.compile(r"\b(?:sift_col_index_ref|sift_index_ident|quote_identifier|quote_qualified_identifier)\s*\(")
 
 
 def blank(text):
@@ -74,6 +81,17 @@ for root, _, names in os.walk(src):
             continue
         text, notes = blank(raw)
         files += 1
+        for m in detail_call.finditer(text):
+            end = balanced(text, m.end() - 1)
+            body = raw[m.end():end - 1]
+            n = text.count("\n", 0, m.start()) + 1
+            if any("check-errors: allow" in notes.get(k, "") for k in (n - 2, n - 1, n)):
+                continue
+            where = f"{os.path.relpath(path, os.path.dirname(src))}:{n}"
+            if oid_name.search(body):
+                bad.append(f"{where}: a relation named by its OID (%u): use its name, or sift_rel_label(oid)")
+            if m.group(1) == "errhint" and ddl_hint.search(body) and not quoted.search(body):
+                bad.append(f"{where}: a hint with DDL for a relation: pass the name through sift_col_index_ref() or quote_identifier()")
         for m in call.finditer(text):
             end = balanced(text, m.end() - 1)
             body = text[m.end():end - 1]

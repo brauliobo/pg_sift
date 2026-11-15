@@ -75,10 +75,12 @@ sift_log_maint(Relation index, const char *what, TimestampTz start, int64 docs, 
 void
 sift_log_stall(Relation index, TimestampTz start)
 {
+	static TimestampTz last;
 	long		ms = elapsed_ms(start);
 
-	if (sift_log_min_duration < 0 || ms < sift_log_min_duration)
+	if (sift_log_min_duration < 0 || ms < sift_log_min_duration || GetCurrentTimestamp() - last < USECS_PER_MINUTE)
 		return;
+	last = GetCurrentTimestamp();
 	ereport(LOG,
 			(errmsg("sift: an insert waited %ld ms for room in the directory of index \"%s\"", ms, RelationGetRelationName(index)),
 			 errhint("The maintenance worker is behind: it promotes and merges the segments, and a seal waits for it when the directory is nearly full.")));
