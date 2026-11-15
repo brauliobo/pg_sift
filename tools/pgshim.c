@@ -12,6 +12,7 @@
 #include "mb/pg_wchar.h"
 
 #include "bm25/analyze.h"
+#include "core/damage.h"
 #include "core/sift.h"
 #include "pgshim.h"
 
@@ -416,4 +417,15 @@ const char *
 sift_options_fields(const SiftOptions *opts)
 {
 	pgshim_unreached("sift_options_fields");
+}
+
+void
+sift_damage_prepare(void)
+{
+}
+
+int
+sift_damage_report(Relation index)
+{
+	return 0;
 }
