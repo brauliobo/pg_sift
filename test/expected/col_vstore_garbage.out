@@ -76,7 +76,11 @@ SET ROLE vg_nobody;
 SELECT * FROM sift.col_value_store_usage('vg_url_sift_values');
 ERROR:  permission denied for the table of the shared value store "vg_url_sift_values"
 SELECT store, total_codes, live_codes, garbage_pct FROM sift.col_value_store_status;
-ERROR:  permission denied for view col_value_store_status
+       store        | total_codes | live_codes | garbage_pct 
+--------------------+-------------+------------+-------------
+ vg_url_sift_values |             |            |            
+(1 row)
+
 RESET ROLE;
 DROP ROLE vg_nobody;
 DROP TABLE vg;
