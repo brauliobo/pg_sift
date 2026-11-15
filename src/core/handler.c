@@ -304,6 +304,7 @@ _PG_init(void)
 	sift_shred_init();
 	sift_cc_kernels_init();
 	define_gucs();
+	sift_quarantine_plan_init();
 	define_reloptions();
 	sift_planner_init();
 	sift_agg_init();

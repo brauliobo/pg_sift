@@ -26,6 +26,8 @@ typedef enum SiftOnCorruption
 extern PGDLLIMPORT int sift_on_corruption;
 
 extern void sift_quarantine_define_gucs(void);
+/* The planner hook that leaves a quarantined index out of the index list of its relation (core/quarantine_plan.c); first of the planner hooks of sift to be installed */
+extern void sift_quarantine_plan_init(void);
 
 /* The index is out of service: recorded in this backend or in the registry, or flagged in its metapage. False under sift.on_corruption = error */
 extern bool sift_index_quarantined(Relation index);
