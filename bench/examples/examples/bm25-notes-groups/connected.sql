@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: note -> grp after a BM25 filter on note.title or note.body: two text indexes and the key index on one table, the dimension on the other
