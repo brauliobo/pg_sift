@@ -79,7 +79,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: 0.0% (8.78 MB with and without; 100,000 documents, a quarter in capitals); build, merge and writes: build +9.0% (446 to 486 ms), insert of 20,000 documents -2.1%: within noise; other: REINDEX to change
 - **When:** Every text index: terms and queries are lower-cased the same way. Turn it off only when 'Word' and 'word' must be different terms; the keyword analyzer indexes whole values.
 - **Default:** true — On since 1.0 so that case does not decide a match. Measured: 0.0% size, insert -2.1% (noise), build +9.0% (446 to 486 ms, 100,000 documents).
-- **Turn off:** CREATE INDEX .. WITH (case_folding = false). On an existing index ALTER INDEX .. SET (case_folding = false) then REINDEX; queries and inserts fail until then. Prefer CREATE INDEX CONCURRENTLY and swap.
+- **Turn off:** CREATE INDEX .. WITH (case_folding = false). On an index that holds documents ALTER INDEX is refused: CREATE INDEX CONCURRENTLY a new index with the option, then DROP INDEX the old one.
 - **Upgrade from 4.3:** unchanged
 - **Advice:** Leave on. Turn it off only when 'Word' and 'word' must be different terms. Needs REINDEX.
 - **Sources:** [SIZING](SIZING.md#features-and-their-costs)
@@ -93,7 +93,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: 0.0% (8.78 MB with and without; 100,000 documents, a fifth with an accent); build, merge and writes: build -3.8%, insert of 20,000 documents -5.6%: within noise; other: REINDEX to change
 - **When:** Every text index: accents are stripped from terms and queries (resume = resume). Turn it off only when accented and plain letters must differ.
 - **Default:** true — On since 1.0 so that accents do not decide a match. Measured: 0.0% size, build -3.8% and insert -5.6% (noise, 100,000 documents).
-- **Turn off:** CREATE INDEX .. WITH (accent_folding = false). On an existing index ALTER INDEX .. SET (accent_folding = false) then REINDEX; queries and inserts fail until then. Prefer CREATE INDEX CONCURRENTLY and swap.
+- **Turn off:** CREATE INDEX .. WITH (accent_folding = false). On an index that holds documents ALTER INDEX is refused: CREATE INDEX CONCURRENTLY a new index with the option, then DROP INDEX the old one.
 - **Upgrade from 4.3:** unchanged
 - **Advice:** Leave on. Turn it off only when accented and plain letters must be different terms. Needs REINDEX.
 - **Sources:** [SIZING](SIZING.md#features-and-their-costs)
@@ -331,7 +331,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **What it does:** cardinality(x), array_length(x, 1) and x IS [NOT] NULL of an array column are read from two integer columns kept next to the arrays, without decoding them
 - **Gain:** presence and length tests of arrays, 1,000,000 rows, six array columns (instructions of one backend): count with IS NOT NULL AND cardinality(x) > 0 1,047 M to 10.8 M (135.9 to 0.91 ms; the sift_col plan before was 4,088 M, 538.9 ms); three arrays at once 1,214 M to 23 M; Inventory QA with count(DISTINCT id) FILTER over five arrays grouped by two columns 21,676 M to 256 M (2,049 to 25 ms); avg(cardinality(x)), max(array_length(x, 1)) grouped 1,867 M to 134 M (374 to 7.9 ms)
 - **Gain and cost:** 97.00x fewer instructions (1036500k saved a query), index +10.2%, build +12.0%, automatic
-- **Impact:** index size: +10.2% of the index (73,015,296 to 80,486,400 bytes; six array columns, 1,000,000 rows, 2 lanes each: 0.4 to 0.8 MB a lane); +9.8% at 300,000 rows (22.8 to 25.1 MB); build, merge and writes: CREATE INDEX +12.0% instructions (8,114 M to 9,090 M; 300,000 rows), REINDEX +12.5%, insert of 20,000 rows +9.0% (388 M to 423 M), update of 20,000 rows +3.5%, promotion +17%, merge +15%; delete and VACUUM unchanged; other: about 1 byte a row for each array column and lane (+10% of the index on six array columns, 1,000,000 rows); a build, merge or promotion writes two more columns for each array column; after a change the table takes no write until the REINDEX
+- **Impact:** index size: +10.2% of the index (73,015,296 to 80,486,400 bytes; six array columns, 1,000,000 rows, 2 lanes each: 0.4 to 0.8 MB a lane); +9.8% at 300,000 rows (22.8 to 25.1 MB); build, merge and writes: CREATE INDEX +12.0% instructions (8,114 M to 9,090 M; 300,000 rows), REINDEX +12.5%, insert of 20,000 rows +9.0% (388 M to 423 M), update of 20,000 rows +3.5%, promotion +17%, merge +15%; delete and VACUUM unchanged; other: about 1 byte a row for each array column and lane (+10% of the index on six array columns, 1,000,000 rows); a build, merge or promotion writes two more columns for each array column; ALTER INDEX of the option is refused once the index holds a segment: build the replacement beside it (CREATE INDEX CONCURRENTLY, then DROP INDEX)
 - **When:** cardinality(x), array_length(x, 1), x IS [NOT] NULL and the same in FILTER, CASE, GROUP BY and aggregates, for int[], text[], numeric[] and any other array column of the index. Not array_length(x, 2) or higher, array_ndims, @>, &&, <@, = ANY or unnest: those still read the arrays. A range, inet or other image has no lengths.
 - **Default:** auto — Automatic: The presence and length tests read 97 times fewer instructions for 10.2% more index and 12.0% more build, which pays for every array column, so no sample is needed; the NOTICE at CREATE INDEX names the columns and the off switch. The images cost a hash, an interning and a decompression for every row of an almost unique array column (4,100 instructions a row for 30-element arrays against 11 for the lane).
 - **Turn off:** ALTER INDEX .. SET (array_lengths = off), then REINDEX (or array_lengths = off on CREATE INDEX): the index keeps the images alone, as before 3.6. No column format minor: the leaves are ordinary integer leaves of the schema.
@@ -1569,7 +1569,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Prefix queries (ab*) of up to n characters; longer prefixes, wildcard, regex and fuzzy leaves still expand terms. n up to 15. Pairs with fields for autocomplete.
 - **Default:** 0 — 0 (off): grows the index 1.4 to 2.8 times (8.78 MB to 12.03 MB at n = 3 and 24.62 MB at n = 15 on 100,000 documents), more growth than a default may cost, build 2 to 4 times and insert 3.7 to 8 times; broad prefixes already work from the per-backend cache (sift.prefix_cache_size).
 - **Why not the default:** the index grows over 25%, the gain does not pay for the growth and the build
-- **Turn off:** Default 0. ALTER INDEX .. RESET (prefix_index) or SET (prefix_index = 0) then REINDEX; queries and inserts fail until then, so prefer CREATE INDEX CONCURRENTLY without it and drop the old index.
+- **Turn off:** Default 0. ALTER INDEX .. RESET (prefix_index) or SET (prefix_index = 0) is refused on an index that holds documents: CREATE INDEX CONCURRENTLY without it, then drop the old index.
 - **Upgrade from 4.3:** unchanged
 - **Advice:** Leave 0: broad prefixes work without it (cached per backend). Set n to the longest prefix that must be sub-millisecond on first use; it grows the index. Needs REINDEX.
 - **Sources:** benchmark `options-evidence`; [USAGE](USAGE.md#queries)
@@ -1584,7 +1584,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Text built with sift.sections() whose leading sections are named; queries name:word, sift.field_query. At most 14 names. Phrases, regex and NOT are not scoped to a field; one analyzer for all.
 - **Default:** '' — Unset: named sections add 54.5% to the index (8.92 to 13.79 MB on 100,000 documents) and the insert of 20,000 documents takes 107 to 340 ms with three fields, and a colon is plain text without it.
 - **Why not the default:** changes results or semantics, the index grows over 25%
-- **Turn off:** Default '' (no sections). ALTER INDEX .. RESET (fields) then REINDEX; queries and inserts fail until then. Prefer CREATE INDEX CONCURRENTLY without fields and drop the old index.
+- **Turn off:** Default '' (no sections). ALTER INDEX .. RESET (fields) is refused on an index that holds documents: CREATE INDEX CONCURRENTLY without fields, then drop the old index.
 - **Upgrade from 4.3:** unchanged
 - **Advice:** Leave unset. Set it with sift.sections() to weight or restrict a query to named leading sections (name:word, name^3); pair with prefix_index for autocomplete. Needs REINDEX.
 - **Sources:** benchmark `options-evidence`; [FIELDS-FACETS](FIELDS-FACETS.md#fields-siftsections-and-siftfield_query)
