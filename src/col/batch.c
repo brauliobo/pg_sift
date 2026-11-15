@@ -828,7 +828,8 @@ batch_copy_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32
 			}
 			dv->n += n;
 		}
-		else if ((kept == NULL || kept[id]) && store == SIFT_COLS_STR && s->cols[id].kind != SIFT_COLK_GROUP)
+		/* the code map of a dictionary costs an entry for each code: it pays for several rows, a single row looks its string up */
+		else if (n > 1 && (kept == NULL || kept[id]) && store == SIFT_COLS_STR && s->cols[id].kind != SIFT_COLK_GROUP)
 			copy_str_rows(dst, ref, stride, n, id);
 		else
 			for (uint32 i = 0; i < n; i++)
