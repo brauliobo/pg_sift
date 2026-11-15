@@ -1,5 +1,5 @@
 /*
- * bm25/maint_int.h - shared between the maintenance files (maint.c, maint_cut.c, step.c, space.c).
+ * bm25/maint_int.h - shared between the maintenance files (maint.c, maint_cut.c, maint_vacuum.c, step.c, space.c).
  */
 #ifndef SIFT_MAINT_INT_H
 #define SIFT_MAINT_INT_H
@@ -18,6 +18,7 @@
 typedef void (*StepFn) (Relation index, SiftWriteTarget *wt, const void *arg);
 
 /* the claims, steps and backoff of step.c and maint.c that space.c and the worker also use */
+extern uint64 maint_written_bytes(void);
 extern bool claim(Relation index, uint64 gen, bool wait);
 extern void unclaim(Relation index, uint64 gen);
 extern SiftStepResult run_step(Relation index, bool propagate, StepFn fn, const void *arg);
