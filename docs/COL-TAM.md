@@ -166,7 +166,7 @@ Planner: no custom path is needed for a plain scan (AM costs through `relation_e
 **PostgreSQL facts this rests on** (PostgreSQL 17 and 18 sources: `access/xlog_internal.h`, `replication/logical/decode.c`; docs "Generic WAL Records" and "Custom WAL Resource Managers"):
 
 1. Generic WAL records (`RM_GENERIC_ID`) are replayed by every server but *not* decoded: rows written only through generic WAL are invisible to logical replication.
-2. A custom resource manager (`RegisterCustomRmgr`, id 128..255 reserved for development or registered on the PostgreSQL wiki) must be registered from `_PG_init` during `shared_preload_libraries` processing, on the primary **and on every server that replays its WAL** (a standby without it stops recovery with "resource manager not registered"). `RmgrData.rm_decode` (present in 17 and 18) is called by `LogicalDecodingProcessRecord` for the rmgr's records and may call `ReorderBufferQueueChange` with `REORDER_BUFFER_CHANGE_INSERT/UPDATE/DELETE`, a `RelFileLocator` and a heap-format tuple; the built-in `pgoutput` then publishes it like a heap change (maps the locator to the relation, `heap_deform_tuple`, applies the row filter and column list).
+2. A custom resource manager (`RegisterCustomRmgr`, id 128 for development, 129..255 registered on the PostgreSQL wiki) must be registered from `_PG_init` during `shared_preload_libraries` processing, on the primary **and on every server that replays its WAL** (a standby without it stops recovery with "resource manager not registered"). `RmgrData.rm_decode` (present in 17 and 18) is called by `LogicalDecodingProcessRecord` for the rmgr's records and may call `ReorderBufferQueueChange` with `REORDER_BUFFER_CHANGE_INSERT/UPDATE/DELETE`, a `RelFileLocator` and a heap-format tuple; the built-in `pgoutput` then publishes it like a heap change (maps the locator to the relation, `heap_deform_tuple`, applies the row filter and column list).
 3. `pgoutput` takes UPDATE/DELETE keys from the old-tuple image; the executor checks replica identity (`CheckCmdReplicaIdentity`) for every AM, so a published `sift_table` needs one for UPDATE/DELETE like a heap table.
 
 **Options compared.**
@@ -185,7 +185,7 @@ Planner: no custom path is needed for a plain scan (AM costs through `relation_e
 
 - Every page change is a generic WAL record (the existing store protocol P1-P6, so crash recovery needs nothing new).
 - When `RelationBuildPublicationDesc` says the relation publishes an action and `XLogLogicalInfoActive()`, the DML also writes **one custom-rmgr
-  record per change** (`RM_SIFT_TBL`, a *development* rmgr id until one is registered): `{op, relfilelocator, tuple image (heap tuple format,
+  record per change** (custom rmgr id 152, `src/table/rmgr_id.h`; 4.x wrote id 128, the experimental one, which 5.0 still registers to replay as `sift_table_legacy`): `{op, relfilelocator, tuple image (heap tuple format,
   every TOAST value expanded), old key image for UPDATE/DELETE}`. `rm_redo` is a no-op (the page changes are in the generic records, so
   a standby needs the rmgr only to *skip* the record), `rm_decode` turns it into a reorder-buffer change, subtransaction and
   transaction ordering come from the record's xid. Old key image: the replica identity columns (`RelationGetIndexAttrBitmap`), all
