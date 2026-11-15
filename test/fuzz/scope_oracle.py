@@ -16,6 +16,7 @@ while the others read, roll back with savepoints, and read inside the transactio
   - on the STOCK node (once its subscription has caught up), on the STANDBY (once it replayed) and on the RESTORE node: each must equal the primary's plain answer, row for row.
 A seed in LATE mode (about a third of them) builds the scope index on facts whose pair relations are empty (the facts came before the grants: no scope segment, the stamp is the index's floor) and loads the
 pairs after the battery of the build; at the middle of its steps the rows whose member has a pair are deleted, VACUUM and a merge drain the scope segments, and the member of each row that stays is granted afterwards.
+A step may also switch the cut of the units with ALTER INDEX .. SET (key_cut), check that ALTER INDEX .. SET/RESET (scope) of an index with segments is refused, or rename the tables and the index on every node while a merge and sift.col_scope_verify run and rename them back (its own random stream: the other draws of a seed stay).
 Windows of concurrent writers (pgbench) run with REPEATABLE READ and SERIALIZABLE readers on the primary and the standby that each compare the scope read with the plain plan inside their snapshot and with the answer
 of the first read of that snapshot; a CREATE INDEX CONCURRENTLY runs inside one of them. At the end of a seed sift.col_scope_verify must find no differing key on the primary and the standby, and the dump of the primary is
 restored and read. The first wrong answer stops the run (exit 1) with the query, the arms and the first differing rows in OUT/FAIL-*.txt. Statistics (reads compared, reads that used the scope units) end the run.
@@ -665,6 +666,35 @@ def run_seed(a, seed):
         edit(W, f"INSERT INTO facts SELECT {state['next']} + i, 1 + i % {shape.M}, timestamptz '2026-03-01' + (i % 3000) * interval '1 minute', i % 7, i % 1000, 'n' FROM generate_series(1, {n}) i;")
         state['next'] += n
 
+    lr = random.Random(seed * 104729 + 5)   # its own stream: the draws of the other steps stay
+
+    def lifecycle(step):
+        """Changes of the index and of its relations that must not change an answer: the cut of the units switched with ALTER INDEX (a merge reads segments cut the old way), the scope option
+        refused on an index that holds segments, and the tables and the index renamed while a merge and the verify run (the scope follows the oids), then renamed back."""
+        kind = lr.choice(['key_cut', 'refuse', 'rename'])
+        if kind == 'key_cut':
+            M2.run(f"ALTER INDEX facts_col SET (key_cut = '{lr.choice(['off', 'dim_a_id'])}');")
+            edit(W, fact_edit(lr, shape.M, state))
+            M2.run("SELECT sift.col_promote('facts_col'); SELECT sift.col_merge('facts_col', true);")
+        elif kind == 'refuse':
+            for stmt in ("ALTER INDEX facts_col SET (scope = 'off')", "ALTER INDEX facts_col RESET (scope)"):
+                if 'ERROR' not in M2.run(stmt, allow=r'.'):
+                    gate.fail(seed, step, 'ALTER INDEX of the scope of an index with segments was not refused', 'alter-refused', stmt, '')
+        else:
+            pt = shape.tables()[2]
+            wait_stock(A, SK, LP)
+            for pg in (SK, LP, A):
+                pg.run(f"ALTER TABLE facts RENAME TO facts_r; ALTER TABLE {pt} RENAME TO {pt}_r;")
+            M2.run("ALTER INDEX facts_col RENAME TO facts_col_r; VACUUM facts_r; SELECT sift.col_promote('facts_col_r'); SELECT sift.col_merge('facts_col_r', true);")
+            for who, pg in (('primary', A), ('logical subscriber', LP)):
+                o = pg.run("SELECT scope_key, problem, detail FROM sift.col_scope_verify(" + ("'facts_col_r'" if pg is A else "'facts_col'") + ", 50);")
+                if 'differs' in o:
+                    gate.fail(seed, step, f'sift.col_scope_verify on the {who} reports a differing key while the tables are renamed', 'col_scope_verify', '', o)
+            for pg in (A, SK, LP):
+                pg.run(f"ALTER TABLE facts_r RENAME TO facts; ALTER TABLE {pt}_r RENAME TO {pt};")
+            M2.run("ALTER INDEX facts_col_r RENAME TO facts_col;")
+        quiesce(step, f'after the {kind} step')
+
     steps = a.steps
     quiesce(0, 'after the build')
     if late:
@@ -681,6 +711,8 @@ def run_seed(a, seed):
         if r.random() < 0.15:
             M2.run(r.choice(["REINDEX INDEX facts_col;", "REINDEX INDEX CONCURRENTLY facts_col;", f"REINDEX INDEX {r.choice(shape.journals())};"]), allow=r'.')
         quiesce(step, f'step {step}')
+        if lr.random() < 0.3:
+            lifecycle(step)
         if r.random() < 0.6:
             own_command(step)
         if r.random() < 0.5:
