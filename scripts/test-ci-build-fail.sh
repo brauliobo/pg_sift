@@ -5,6 +5,7 @@
 set -uo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 bad=0
+TM=(); for tm in timeout gtimeout; do command -v $tm >/dev/null && { TM=($tm 30); break; }; done   # macOS has neither without coreutils: a hang then ends at the lint job limit
 fail() { echo "FAIL: $*"; bad=1; }
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -25,7 +26,7 @@ chmod +x "$R/scripts/pgtest.sh" "$R/scripts/lint.sh" "$T/bin/initdb"
 build_fails() {
 	local name=$1 t0=$SECONDS rc
 	shift
-	( cd "$R" && env CI=1 PATH="$T/bin:$PATH" SIFT_CI_TMP="$T/run-$name" "$@" timeout 30 scripts/ci.sh quick >"$T/$name.log" 2>&1 )
+	( cd "$R" && env CI=1 PATH="$T/bin:$PATH" SIFT_CI_TMP="$T/run-$name" "$@" "${TM[@]}" scripts/ci.sh quick >"$T/$name.log" 2>&1 )
 	rc=$?
 	(( rc != 124 )) || fail "$name: the run was still going after 30 s"
 	(( rc != 0 )) || fail "$name: the run exited 0 after a failed build"
