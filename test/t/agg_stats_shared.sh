@@ -27,7 +27,7 @@ check "another session sees them in the totals and has none of its own" test "$(
 check "that session adds its 2 to the 3 of the first: its list 2, the totals 5" test "$(session 2)" == "2 5 "
 
 # the refusals are counted the same way: a query that kept the normal plan in one session is in the totals and in no other session's list
-sql ss "SET sift.count_refusals = on" "SELECT g, count(*) FROM plain GROUP BY g" >/dev/null
+sql ss "LOAD 'pg_sift'" "SET sift.count_refusals = on" "SELECT g, count(*) FROM plain GROUP BY g" >/dev/null
 REFUSED="SELECT string_agg(name, ',' ORDER BY name) FROM sift.stats(local => %s) WHERE name LIKE 'refused.%%'"
 check "a refusal counted by one session is in the totals" test -n "$(sql ss "$(printf "$REFUSED" false)")"
 check "and not in the list of another session" test -z "$(sql ss "$(printf "$REFUSED" true)")"
