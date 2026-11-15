@@ -63,6 +63,12 @@ extern bool sift_damage_caught(const ErrorData *e);
 /* The work on the index ended because it is out of service: counted for sift.quarantine, and said once a minute with a WARNING */
 extern void sift_quarantine_stopped(Relation index, SiftSkipKind kind);
 extern bool sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded fn, void *arg);
+/*
+ * Runs fn(arg) in a state that cannot take the subtransaction of a guard: the start of a subtransaction (its callbacks run in a state that refuses a second one) and the commit of a transaction block
+ * (PostgreSQL accepts a subtransaction there, but asserts against rolling one back). The guards inside it run their work as it is: damage fails the statement once, as under
+ * sift.on_corruption = error, and an index that is out of service is skipped.
+ */
+extern void sift_quarantine_unprotected(SiftGuarded fn, void *arg);
 /* The guard's own subtransaction is starting, running or ending: the callbacks that write the rows a transaction holds do not take it for one of the user (it is the flush that started it) */
 extern bool sift_quarantine_guarding(void);
 

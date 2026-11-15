@@ -148,9 +148,17 @@ sift_col_flush_held(void)
 }
 
 static void
+flush_held_arg(void *arg)
+{
+	sift_col_flush_held();
+}
+
+static void
 batch_xact(XactEvent event, void *arg)
 {
-	if (event == XACT_EVENT_PRE_COMMIT || event == XACT_EVENT_PRE_PREPARE)
+	if (event == XACT_EVENT_PRE_PREPARE || (event == XACT_EVENT_PRE_COMMIT && IsTransactionBlock()))
+		sift_quarantine_unprotected(flush_held_arg, NULL);
+	else if (event == XACT_EVENT_PRE_COMMIT)
 		sift_col_flush_held();
 	else if (event == XACT_EVENT_ABORT)
 	{
@@ -174,7 +182,7 @@ batch_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId par
 	if (sift_quarantine_guarding())
 		return;
 	if (event == SUBXACT_EVENT_START_SUB)
-		sift_col_flush_held();
+		sift_quarantine_unprotected(flush_held_arg, NULL);
 	else if (event == SUBXACT_EVENT_ABORT_SUB)
 	{
 		sift_cwbuf_discard(InvalidOid);

@@ -269,13 +269,18 @@ ask_due(const QuarKey *key)
 
 /* inside sift_quarantine_guard: its subtransaction is the caller's own, not a user's */
 static bool guarding;
+/* inside sift_quarantine_unprotected: the caller runs in a state in which no subtransaction can start */
+static int	unprotected;
 
 /* What a transaction ended with is handed to the registry, and the workers asked for are started: a session that skips an index and ends (an autovacuum worker) leaves nothing behind in its own memory */
 static void
 quarantine_xact(XactEvent event, void *arg)
 {
 	if (event == XACT_EVENT_ABORT)
+	{
 		guarding = false;
+		unprotected = 0;
+	}
 	if (event != XACT_EVENT_COMMIT && event != XACT_EVENT_ABORT)
 		return;
 	publish(shared);
@@ -628,6 +633,34 @@ sift_quarantine_guarding(void)
 	return guarding;
 }
 
+/* Where the guard cannot run its subtransaction the work runs as it is: damage it finds fails the statement once, as under sift.on_corruption = error, and an index out of service is skipped */
+static bool
+run_plain(Relation index, SiftSkipKind kind, SiftGuarded fn, void *arg)
+{
+	if (sift_index_quarantined(index))
+	{
+		sift_quarantine_stopped(index, kind);
+		return false;
+	}
+	fn(arg);
+	return true;
+}
+
+void
+sift_quarantine_unprotected(SiftGuarded fn, void *arg)
+{
+	unprotected++;
+	PG_TRY();
+	{
+		fn(arg);
+	}
+	PG_FINALLY();
+	{
+		unprotected--;
+	}
+	PG_END_TRY();
+}
+
 bool
 sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded fn, void *arg)
 {
@@ -640,6 +673,8 @@ sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded fn, void *a
 		fn(arg);
 		return true;
 	}
+	if (unprotected > 0)
+		return run_plain(index, kind, fn, arg);
 	damage_unseen = false;
 	hook_xact();
 	guarding = true;
