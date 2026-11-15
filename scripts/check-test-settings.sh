@@ -35,7 +35,7 @@ if [[ ${1:-} == --selftest ]]; then
 	printf '%s\n' '#ifndef SIFT_TESTING' '#else' 'DefineCustomBoolVariable("sift.test_a", 1);' '#endif' 'DefineCustomIntVariable("sift.test_c",' >"$d/out.c"
 	printf '%s\n' 'DefineCustomIntVariable("sift.test_shipped", 1);' 'DefineCustomIntVariable("sift.plain", 1);' >"$d/allowed.c"
 	[[ -z $(outside "" "$d/in.c") ]] || { echo "check-test-settings: selftest: a setting inside #ifdef SIFT_TESTING was reported"; exit 1; }
-	[[ $(outside "" "$d/else.c" | wc -l) == 1 ]] || { echo "check-test-settings: selftest: the #else of #ifdef SIFT_TESTING is not testing"; exit 1; }
+	(( $(outside "" "$d/else.c" | wc -l) == 1 )) || { echo "check-test-settings: selftest: the #else of #ifdef SIFT_TESTING is not testing"; exit 1; }
 	[[ -z $(outside "" "$d/out.c" | grep -v sift.test_c) ]] || { echo "check-test-settings: selftest: the #else of #ifndef SIFT_TESTING was reported"; exit 1; }
 	[[ -n $(outside "" "$d/allowed.c") && -z $(outside "sift.test_shipped" "$d/allowed.c") ]] || { echo "check-test-settings: selftest: the allow list does not work"; exit 1; }
 	echo "check-test-settings: selftest ok"

@@ -324,8 +324,9 @@ if [[ $MODE == --selftest ]]; then
 	! kill -0 "$pm" 2>/dev/null || { echo "FAIL: the postmaster in the directory of a dead run is not stopped"; bad=1; kill -KILL "$pm"; }
 	[[ -d $t/sift-ci-$$ && -d $t/sift-ci-1$dead ]] || { echo "FAIL: the directory of a live run or a kept one is reaped"; bad=1; }
 	# -h and --help of every subcommand print the header and exit 0 before anything starts (the timeout is for a run that would start)
+	TM=(); for tm in timeout gtimeout; do command -v $tm >/dev/null && { TM=($tm 10); break; }; done   # macOS has neither without coreutils
 	for m in quick full affected stop --times --plan --shards --areas-regex; do for h in -h --help; do
-		out=$(SIFT_CI_TMP=$ST/help timeout 10 "$0" $m $h 2>&1)
+		out=$(SIFT_CI_TMP=$ST/help "${TM[@]}" "$0" $m $h 2>&1)
 		[[ $? == 0 && $out == '# Single entry point'* ]] || { echo "FAIL: ci.sh $m $h does not print the usage and exit 0"; bad=1; }
 	done; done
 	[[ ! -e $ST/help ]] || { echo "FAIL: ci.sh --help made a scratch directory"; bad=1; }
