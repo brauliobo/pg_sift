@@ -403,6 +403,39 @@ REVOKE USAGE ON SCHEMA sift FROM rn_owner;
 DROP TABLE rn_owned;
 REVOKE CREATE ON SCHEMA public FROM rn_owner;
 DROP ROLE rn_owner;
+-- a rename the segments cannot follow says so and names the replacement. DROP NOT NULL on one of two jsonb columns leaves the index with no layout that matches its segments (a read already
+-- asks for the REINDEX); a rename of a healthy index says nothing
+CREATE TABLE rn_stale (id int PRIMARY KEY, a jsonb, b jsonb NOT NULL) WITH (autovacuum_enabled = off);
+INSERT INTO rn_stale SELECT g, jsonb_build_object('k', g), jsonb_build_object('k', g) FROM generate_series(1, 200) g;
+CREATE INDEX rn_stale_col ON rn_stale USING sift_col (id, a, b);
+SET client_min_messages = notice;
+ALTER TABLE rn_stale RENAME COLUMN b TO b2;
+SET client_min_messages = warning;
+ALTER TABLE rn_stale ALTER COLUMN b2 DROP NOT NULL;
+SET client_min_messages = notice;
+ALTER TABLE rn_stale RENAME COLUMN a TO a2;
+NOTICE:  sift_col index "rn_stale_col": its segments cannot follow the rename of column "a" to "a2"
+DETAIL:  They do not hold the leaves the index names now, so it stays stale: reads refuse it until it is built again.
+HINT:  CREATE INDEX CONCURRENTLY a new index like this one, then DROP INDEX public.rn_stale_col: no scan is lost.
+SET client_min_messages = warning;
+CREATE INDEX CONCURRENTLY rn_stale_new ON rn_stale USING sift_col (id, a2, b2);
+DROP INDEX rn_stale_col;
+SELECT * FROM rn_state('rn_stale_new');
+                                   options                                    | attributes | verified 
+------------------------------------------------------------------------------+------------+----------
+ paths=auto: a2.k int4, b2.k int4 point_tid_columns=auto: id track_changes=id | id,a2,b2   | t
+(1 row)
+
+SET client_min_messages = notice;
+ALTER TABLE rn_stale RENAME COLUMN a2 TO a3;
+SET client_min_messages = warning;
+SELECT * FROM rn_state('rn_stale_new');
+                                   options                                    | attributes | verified 
+------------------------------------------------------------------------------+------------+----------
+ paths=auto: a3.k int4, b2.k int4 point_tid_columns=auto: id track_changes=id | id,a3,b2   | t
+(1 row)
+
+DROP TABLE rn_stale;
 DROP TABLE fl_pairs2, rp, rn;
 DROP VIEW fl_view;
 DROP TABLE fl_s.fl_src2;
