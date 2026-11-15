@@ -315,6 +315,13 @@ sift_dir_read(Relation index, SiftDirSnapshot *snap)
 }
 
 void
+sift_dir_read_segs(Relation index, SiftDirSnapshot *snap)
+{
+	sift_dir_read(index, snap);
+	memset(&snap->meta, 0, sizeof(snap->meta));
+}
+
+void
 sift_dir_update(Relation index, const SiftDirChange *chg)
 {
 	SqStore    *st = index->store;

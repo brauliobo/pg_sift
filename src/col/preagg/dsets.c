@@ -10,9 +10,7 @@
  * The rows without a date are in no month (a group answers only for a histogram without that group). A value is set by the rows of a month that are not NULL in the leaf.
  */
 /* check-memory: allow-allocs the rows of a key group, at most SIFT_SUPER_KEY_ROWS */
-#include "postgres.h"
-
-#include "lib/stringinfo.h"
+#include "core/host.h"
 
 #include "col/preagg.h"
 

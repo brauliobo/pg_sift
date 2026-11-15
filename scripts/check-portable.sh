@@ -41,10 +41,10 @@ if command -v "${CC:-cc}" >/dev/null; then
 	done
 	if ((bad)); then exit 1; fi
 	# the link: a shared object links with undefined symbols, so a portable file that calls into a PostgreSQL-only one (sift_wt_write_seghdr of core/writer.c, called from bm25/writer.c)
-	# builds and fails only when SQLite loads it; the build of sqlite/ links with --no-undefined (GNU ld: the other linkers refuse an undefined symbol by default)
+	# builds and fails only when SQLite loads it; the build of sqlite/ links with --no-undefined, the sift.so and the col-smoke executable of portable-col.list (GNU ld: the other linkers refuse an undefined symbol by default)
 	if [[ $(uname -s) == Linux ]] && command -v make >/dev/null; then
 		b=$(mktemp -d) && trap 'rm -rf "$b"' EXIT
-		LC_ALL=C make -s -j4 -C "$ROOT/sqlite" B="$b" EXTRA=-Wl,--no-undefined all >"$b/make.log" 2>&1 \
+		LC_ALL=C make -s -j4 -C "$ROOT/sqlite" B="$b" EXTRA=-Wl,--no-undefined all "$b/col-smoke" >"$b/make.log" 2>&1 \
 			|| { grep -E "undefined|error" "$b/make.log" | head -n 10; echo "the SQLite build does not link without undefined symbols: a portable file needs a function the SQLite host does not have"; exit 1; }
 	fi
 fi
