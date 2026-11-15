@@ -778,7 +778,7 @@ sift_aggspec_spillable(const SiftAggSpec *s)
 		return false;
 	/* the values of an ordered-set aggregate are one sort for all the groups, which a blob of some of them cannot take */
 	for (int i = 0; i < s->naggs; i++)
-		if (is_ordered_agg(&s->agg[i]) || s->agg[i].kind == SAA_GEN || s->agg[i].kind == SAA_M_DISTINCT)
+		if (is_ordered_agg(&s->agg[i]) || s->agg[i].kind == SAA_M_DISTINCT)
 			return false;
 	return true;
 }

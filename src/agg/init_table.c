@@ -15,6 +15,7 @@
 #include "agg/part.h"
 #include "agg/wide.h"
 #include "agg/agg_int.h"
+#include "agg/gen_int.h"
 #include "core/cmp.h"
 
 /*
@@ -660,6 +661,7 @@ table_reset(AggExec *ex)
 		if (ex->dslot[i].kmap)
 			memset(ex->dslot[i].kmap, 0, nk * sizeof(uint32 *));
 	dist_end_all(ex);
+	gen_table_reset(ex);
 	MemoryContextReset(ex->tcxt);
 	/* the output rows of a combo hold ids of the key tables just forgotten */
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)

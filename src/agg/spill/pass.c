@@ -20,6 +20,7 @@
 #include "agg/spill_int.h"
 #include "agg/spill/int.h"
 #include "agg/exec/int.h"
+#include "agg/gen_run_int.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_agg_pass_w = 0;
@@ -285,6 +286,7 @@ pass_more(AggExec *ex)
 	if (ex->glist)
 		pfree(ex->glist);
 	list_groups(ex);
+	gen_finish(ex);
 	if (ex->spec->gtopn_k > 0)
 		groups_topn(ex);
 	return true;
