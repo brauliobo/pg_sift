@@ -32,6 +32,8 @@ CREATE FUNCTION vr_vacuumed_over(tbl regclass, n bigint) RETURNS bool LANGUAGE p
 BEGIN
 	FOR i IN 1..300 LOOP
 		PERFORM pg_stat_clear_snapshot();
+		-- a worker that had to wait for the gap between two VACUUMs ended: the next scan of the table asks for it again
+		EXECUTE format('SELECT s, count(*), sum(amt) FROM %s GROUP BY s', tbl);
 		IF (SELECT vacuum_count > n FROM pg_stat_user_tables WHERE relid = tbl) THEN RETURN true; END IF;
 		PERFORM pg_sleep(0.1);
 	END LOOP;
