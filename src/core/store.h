@@ -651,6 +651,7 @@ extern void sift_store_verify(Relation index);
 #ifdef SIFT_TESTING
 /* The index of a test function's argument, opened with mode; ERRCODE_WRONG_OBJECT_TYPE for another relation */
 extern Relation sift_test_open_index(Oid relid, LOCKMODE mode);
+extern Relation sift_test_open_store(Oid relid, LOCKMODE mode);
 #endif
 
 #endif							/* SIFT_STORE_H */

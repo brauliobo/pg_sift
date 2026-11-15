@@ -108,6 +108,34 @@ SELECT unnamed_context('ck_bm', $$ SELECT count(*) FROM ck WHERE b @@> 'v3' $$) 
 RESET sift.enable_agg;
 RESET enable_indexscan;
 RESET enable_seqscan;
+
+-- a damaged page of a sift_table: every way to read the table names it, once (the page holds the first row at a misaligned offset)
+CREATE TABLE cw (id int PRIMARY KEY, a int) USING sift_table;
+INSERT INTO cw SELECT i, i FROM generate_series(1, 100) i;
+SELECT sift._test_poke('cw', max(b), 40, 1, 2) FROM generate_series(0, pg_relation_size('cw') / 8192 - 1) b WHERE (sift._test_page('cw', b)).type = 7;
+CREATE FUNCTION table_error(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	c text;
+BEGIN
+	EXECUTE q;
+	RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN
+	GET STACKED DIAGNOSTICS c = PG_EXCEPTION_CONTEXT;
+	RETURN SQLERRM || ' | ' || split_part(c, E'\n', 1) || ' | lines: ' || regexp_count(c, 'sift table');
+END $$;
+SELECT table_error($$ SELECT count(*) FROM cw $$) AS seq_scan;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT table_error($$ SELECT a FROM cw WHERE id = 1 $$) AS index_scan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SELECT table_error($$ SELECT count(*) FROM cw WHERE id < 50 $$) AS bitmap_scan;
+RESET enable_indexscan;
+RESET enable_seqscan;
+SELECT table_error($$ ANALYZE cw $$) AS analyze_scan;
+SELECT table_error($$ SELECT count(*) FROM cw TABLESAMPLE SYSTEM (100) $$) AS sample_scan;
+DROP TABLE cw;
+DROP FUNCTION table_error(text);
 RESET client_min_messages;
 
 REVOKE ALL ON ck, ct FROM ck_user;

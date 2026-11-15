@@ -20,6 +20,7 @@
 
 #include "optimizer/optimizer.h"
 #include "col/kern.h"
+#include "core/errctx.h"
 #include "table/table.h"
 #include "core/hash.h"
 #include "table/scan_int.h"
@@ -169,9 +170,8 @@ sift_tbl_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream)
 	return true;
 }
 
-bool
-sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN double *liverows, double *deadrows,
-								 TupleTableSlot *slot)
+static bool
+analyze_next_tuple(TableScanDesc scan, double *liverows, double *deadrows, TupleTableSlot *slot)
 {
 	SiftTblScan *s = (SiftTblScan *) scan;
 	Relation	rel = scan->rs_rd;
@@ -220,6 +220,19 @@ sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN doubl
 		return true;
 	}
 	return false;
+}
+
+bool
+sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN double *liverows, double *deadrows,
+								 TupleTableSlot *slot)
+{
+	SiftErrCtx	ctx;
+	bool		found;
+
+	sift_errctx_push(&ctx, RelationGetRelid(scan->rs_rd));
+	found = analyze_next_tuple(scan, liverows, deadrows, slot);
+	sift_errctx_pop(&ctx);
+	return found;
 }
 
 /*
