@@ -34,7 +34,7 @@ DECLARE
 	dpl boolean;
 BEGIN
 	IF target IS NOT NULL AND target !~ '^[0-9]+\.[0-9]+' THEN
-		RAISE EXCEPTION 'target must be a release such as 3.1, not "%"', target;
+		RAISE EXCEPTION 'upgrade_check: target must be a release such as 3.1, not "%"', target USING ERRCODE = 'invalid_parameter_value';
 	END IF;
 	-- the library is loaded by its first call, which defines its settings
 	lib := sift.version();
