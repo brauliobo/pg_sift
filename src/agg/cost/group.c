@@ -12,6 +12,7 @@
 #include "utils/lsyscache.h"
 
 #include "agg/acc_layout.h"
+#include "agg/agg.h"
 #include "agg/cost/int.h"
 
 /* what the cost of a parallel scan is divided by: the workers and the leader, which scans as one of them (it passes no tuples: 3 participants run 1.5 times faster than 2, with the leader out of the scan 2 workers took 13.6 ms against 8.9) */
@@ -159,6 +160,13 @@ tuple_group_count(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
 	return Max(Min(sqrt(rows * scan), nd), 1.0);
 }
 
+/* the rows of the source the scan reads (an unnest makes one for each element) */
+double
+source_rows(AggCtx *c, const SiftAggSpec *s)
+{
+	return Max(Max(c->stats.nrows, Max(c->rel->tuples, 1.0)) * (s->group >= 0 ? elems_of(c, s->group) : 1.0), 1.0);
+}
+
 /*
  * The groups the table of the scan can hold: the estimate, and no more than the elements the index has (the normal plan expects 100 rows of
  * every call of an unnesting function, and the groups of a scan of 12,000 rows are not a million)
@@ -166,9 +174,48 @@ tuple_group_count(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
 double
 group_count(AggCtx *c, const SiftAggSpec *s)
 {
-	double		rows = Max(c->stats.nrows, Max(c->rel->tuples, 1.0)) * (s->group >= 0 ? elems_of(c, s->group) : 1.0);
+	return Min(Max(s->est_groups, 1.0), source_rows(c, s));
+}
 
-	return Min(Max(s->est_groups, 1.0), Max(rows, 1.0));
+/*
+ * A scan that cannot spill holds every group it makes. The planner leaves it to the normal plan when its table would not fit what it may take: the
+ * estimate of the groups against group_nospill_factor times hash memory when the statement can run again as PostgreSQL plans it (the scan that outgrows
+ * that ends and the normal plan runs, agg/cte/rerun.c); else the most groups the source can make (its rows, for each set) against hash memory itself, since
+ * nothing runs that statement again and statistics that predate a bulk load are not to be trusted.
+ */
+static bool
+nospill_by_estimate(const SiftAggSpec *s, bool reruns)
+{
+	return reruns || !sift_aggspec_holds_groups(s);
+}
+
+/* does a spec that cannot spill fit what it may take? A spec that can always does. *why: the refusal's detail */
+bool
+nospill_fits(const SiftAggSpec *s, bool reruns, const char **why)
+{
+	double		state,
+				mem = (double) get_hash_memory_limit(),
+				floor_bytes = mem,
+				limit = mem,
+				bound = s->bound_groups > 0 ? s->bound_groups : s->est_groups,
+				groups = Min(Max(s->est_groups, 1.0), Max(bound, 1.0)),
+				table;
+	int			factor = 1;
+
+	if (sift_aggspec_spillable(s))
+		return true;
+	if (nospill_by_estimate(s, reruns))
+		limit = sift_agg_nospill_bytes(&factor, &floor_bytes);
+	else
+		groups = Max(bound, 1.0);
+	table = group_table_bytes(s, groups, &state);
+	if (table <= limit)
+		return true;
+	if (why)
+		*why = psprintf("%s %.0f groups need %.0f kB, a hash aggregate gets %.0f kB, and this scan cannot spill them past %d times %.0f kB%s",
+						nospill_by_estimate(s, reruns) ? "about" : "up to", groups, table / 1024.0, mem / 1024.0, factor, floor_bytes / 1024.0,
+						nospill_by_estimate(s, reruns) ? "" : " (its statement cannot run again as PostgreSQL plans it, so the rows of the source are the groups it may have)");
+	return false;
 }
 
 /* The bytes of the group table of the scan for the groups it is expected to hold. *state: of a group, what its partial state carries */

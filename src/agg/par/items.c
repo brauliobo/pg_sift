@@ -4,6 +4,7 @@
  */
 #include "postgres.h"
 
+#include "agg/agg.h"
 #include "agg/part.h"
 #include "agg/par/int.h"
 
@@ -80,6 +81,7 @@ shared_init(ScanShared *sh, AggExec *ex, uint32 nsb)
 		sh->nitems = ex->spec->nparts;
 	sh->gpart_n = 0;
 	pg_atomic_init_u32(&sh->next, 0);
+	pg_atomic_init_u32(&sh->overflow, 0);
 	pg_atomic_init_flag(&sh->kept_counted);
 	if (ex->skip != NULL)			/* the leader's map, made to decide on workers, counted */
 		pg_atomic_test_set_flag(&sh->kept_counted);
@@ -339,4 +341,20 @@ scan_delta(AggExec *ex)
 		scan_units(ex, nsb - ex->delta_units, nsb);
 		item_done(ex, ex->shared->nitems);
 	}
+}
+
+/* the table of this participant passed the bound of a node that cannot spill: the leader, who gets the error of a worker, runs the statement again */
+void
+par_note_overflow(AggExec *ex)
+{
+	sift_agg_overflow = true;
+	if (ex->shared != NULL)
+		pg_atomic_write_u32(&ex->shared->overflow, 1);
+}
+
+/* did a participant of the scan pass the bound? */
+bool
+par_overflowed(const AggExec *ex)
+{
+	return ex->shared != NULL && pg_atomic_read_u32(&ex->shared->overflow) != 0;
 }

@@ -46,7 +46,6 @@
 
 #define SPILL_MIN_PARTS		8
 #define SPILL_MAX_PARTS		128		/* one BufFile (8 kB) each */
-#define SPILL_MAX_DEPTH		8
 #define SPILL_SAMPLE		8192	/* values of the first order key of the groups written, for the points that cut the ranges */
 
 typedef struct SpillWork

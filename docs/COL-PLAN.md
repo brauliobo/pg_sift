@@ -223,7 +223,7 @@ Memory and time (customers-per-month, `count(DISTINCT customer_id)` per month, 1
 | `Pre-aggregate Rollup: rows; dims: key; measures: value` | `SiftAgg` | `Pre-aggregate Rollup` (`rows`), `Pre-aggregate Dims` and `Pre-aggregate Measures` as three fields |
 | `Scan: 1 index searches, 40 superblocks, 12 blocks scored (3 skipped), 80 candidates` | `SiftScan` | `Index Searches`, `Key Passes`, `Superblocks`, `Blocks Scored` with `Blocks Skipped` in parentheses, `Candidates`, `Heap Checks`, `Heap Pages` |
 | `Filter Mask: 3 superblocks, 10 exact pages, 2 lossy pages` | `SiftScan` | `Filter Superblocks`, `Filter Pages Exact`, `Filter Pages Lossy` |
-| `Rows: 100 read, 7 groups, 3 distinct pairs` | `SiftAggRows` | `Rows Read`, `Groups`, `Distinct Pairs`, `Distinct Sets Spilled` |
+| `Rows: 100 read, 7 groups, 3 distinct pairs` | `SiftAggRows` | `Rows Read`, `Groups`, `Distinct Pairs`, `Group Partitions`, `Distinct Sets Spilled` |
 
 The JSON and the text carry the same figures: a counter the structured formats leave out when it does not apply (`Lookup Rows Shared` at zero) is left out of both.
 

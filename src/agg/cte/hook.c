@@ -609,8 +609,10 @@ sift_planner(SIFT_PLANNER_PARAMS)
 				split_exists,
 				owned;
 	QueryShape	shape = {0};
-	Query	   *written = NULL;
+	Query	   *written = NULL,
+			   *rerun = NULL;
 	PlannedStmt *stmt;
+	bool		plan_reruns_was;
 
 	hook_ran = true;
 	verdict_new_planning();
@@ -623,6 +625,9 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	reads = sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse);
 	if (sift_enable_agg && parse->commandType == CMD_SELECT && (reads || query_nests(parse)))
 		shape = sift_agg_shape(parse);
+	/* the query as it was, for the statement to run again as PostgreSQL plans it if a node of its plan cannot spill (agg/cte/rerun.c) */
+	if (reads)
+		rerun = sift_agg_rerun_query(parse);
 	statement_ctes = shape.ctes;
 	split_exists = shape.exists && parse->hasSubLinks && parse->rowMarks == NIL && sift_agg_exists_or_candidate(parse);
 	nests = reads && (query_nests(parse) || sift_agg_probe_joins(parse, false));
@@ -653,6 +658,8 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	}
 	if (inlines || swap || casef || split_exists)
 		shape = sift_agg_shape(parse);
+	plan_reruns_was = sift_agg_plan_reruns;
+	sift_agg_plan_reruns = rerun != NULL;
 	PG_TRY();
 	{
 		stmt = plan_flat(SIFT_PLANNER_ARGS(parse), owned, &shape);
@@ -664,6 +671,7 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	}
 	PG_FINALLY();
 	{
+		sift_agg_plan_reruns = plan_reruns_was;
 		statement_ctes = outer_ctes;
 		sift_agg_memo_end(memo);
 		sift_col_plan_end(col_plan);
@@ -673,8 +681,10 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	if (uses_sift_agg(stmt->planTree) || any_sift_agg(stmt->subplans))
 	{
 		stmt->jitFlags = PGJIT_NONE;
-		sift_agg_drop_sorts(stmt);
+		sift_agg_drop_sorts(stmt, rerun != NULL);
 		sift_agg_rank_sorts(stmt);
+		if (rerun != NULL)
+			sift_agg_stash_rerun(stmt, rerun, cursorOptions);
 	}
 	return stmt;
 }
@@ -733,9 +743,9 @@ replan_query(Node *stmt)
 		}
 }
 
-/* the statement of qd planned again from its text; executed: it has run already, so its volatile functions must not run again */
+/* the statement of qd planned again from its text */
 PlannedStmt *
-sift_replan_text(QueryDesc *qd, bool executed)
+sift_replan_text(QueryDesc *qd)
 {
 	PlannedStmt *ps = qd->plannedstmt;
 	ParamListInfo params = qd->params;
@@ -775,7 +785,7 @@ sift_replan_text(QueryDesc *qd, bool executed)
 	if (raw == NULL || !IsA(raw->stmt, SelectStmt) || castNode(SelectStmt, raw->stmt)->intoClause != NULL)
 		return NULL;
 	trees = pg_analyze_and_rewrite_fixedparams(raw, qd->sourceText, ptypes, params ? params->numParams : 0, qd->queryEnv);
-	if (list_length(trees) != 1 || linitial_node(Query, trees)->commandType != CMD_SELECT || (executed && contain_volatile_functions((Node *) trees)))
+	if (list_length(trees) != 1 || linitial_node(Query, trees)->commandType != CMD_SELECT)
 		return NULL;
 	plans = pg_plan_queries(trees, qd->sourceText, CURSOR_OPT_PARALLEL_OK, params);
 	if (list_length(plans) != 1 || !IsA(linitial(plans), PlannedStmt))
@@ -788,7 +798,7 @@ replan(QueryDesc *qd)
 {
 	PlannedStmt *fresh;
 
-	if (!sift_enable_agg || !reads_indexed_plan(qd->plannedstmt) || (fresh = sift_replan_text(qd, false)) == NULL)
+	if (!sift_enable_agg || !reads_indexed_plan(qd->plannedstmt) || (fresh = sift_replan_text(qd)) == NULL)
 		return NULL;
 	/* an EXPLAIN's plan has the location of its query inside the string, which another statement of the string may share: it must read what that one reads */
 	return reads_indexed_plan(fresh) || runs_agg_scan(fresh->planTree) ? fresh : NULL;

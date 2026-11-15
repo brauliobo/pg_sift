@@ -52,12 +52,12 @@ END $$;
 RESET sift.test_limits;
 RESET sift.test_agg_pass_w;
 
--- a table that cannot spill (a generic aggregate, bit_or): 20,000 groups are under the 8 MB the factor applies to; with a factor of 0 the scan gives way
+-- a table that cannot spill (an aggregate that sorts its input, string_agg): 20,000 groups are under the 8 MB the factor applies to; with a factor of 0 the scan gives way
 RESET work_mem;
 RESET hash_mem_multiplier;
-SELECT arm, used, slug FROM sift.explain_why('SELECT k1, bit_or(val) FROM events GROUP BY k1');
+SELECT arm, used, slug FROM sift.explain_why('SELECT k1, string_agg(val::text, '','' ORDER BY val) FROM events GROUP BY k1');
 SET sift.test_limits = 'group_nospill_factor=0';
-SELECT arm, used, slug, reason ~ 'cannot spill them past 0 times' AS names_factor FROM sift.explain_why('SELECT k1, bit_or(val) FROM events GROUP BY k1');
+SELECT arm, used, slug, reason ~ 'cannot spill them past 0 times' AS names_factor FROM sift.explain_why('SELECT k1, string_agg(val::text, '','' ORDER BY val) FROM events GROUP BY k1');
 RESET sift.test_limits;
 
 DROP FUNCTION spilled_rows(text);

@@ -105,6 +105,7 @@ TESTING_REGRESS += agg_scope_union_group
 TESTING_REGRESS += agg_scope_virtual_leaf
 TESTING_REGRESS += agg_scope_walk_kept
 TESTING_REGRESS += agg_spec_pack
+TESTING_REGRESS += agg_spill_contexts
 TESTING_REGRESS += agg_topn_key_only
 TESTING_REGRESS += agg_topn_offset_bulk
 TESTING_REGRESS += agg_topn_offset_dirty

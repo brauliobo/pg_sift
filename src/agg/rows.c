@@ -32,8 +32,11 @@
 #include "agg/dist_int.h"
 #include "agg/agg.h"
 #include "agg/rows.h"
+#include "agg/spill_int.h"
+#include "agg/stats.h"
 #include "agg/spec/spec.h"
 #include "core/explain.h"
+#include "core/limits.h"
 #include "core/hash.h"
 
 bool		sift_agg_rows = true;
@@ -72,6 +75,13 @@ sift_agg_rows_pack(const SiftRowsSpec *s)
 	return list_make5(dims, eq, coll, ints, oids);
 }
 
+/* the pack with the statement's query as its sixth item */
+List *
+sift_agg_rows_with_rerun(List *pack, const char *rerun)
+{
+	return lappend(list_truncate(list_copy(pack), 5), makeString((char *) rerun));
+}
+
 SiftRowsSpec *
 sift_agg_rows_unpack(List *pack)
 {
@@ -102,6 +112,7 @@ sift_agg_rows_unpack(List *pack)
 		a->argtype = list_nth_oid(oids, 4 * i + 2);
 		a->collid = list_nth_oid(oids, 4 * i + 3);
 	}
+	s->rerun = list_length(pack) > 5 ? strVal(list_nth(pack, 5)) : NULL;
 	return s;
 }
 
@@ -127,6 +138,15 @@ typedef struct RowsSet
 	TupleTableSlot *put;
 	TupleTableSlot *get;
 } RowsSet;
+
+#define ROWS_PARTS		16
+#define ROWS_DIVERT		UINT32_MAX
+
+typedef struct RowsPart
+{
+	Tuplestorestate *rows;
+	int			level;
+} RowsPart;
 
 typedef struct RowsExec
 {
@@ -159,11 +179,25 @@ typedef struct RowsExec
 	int			nsets;
 	int		   *setof;			/* per aggregate: its set, -1 */
 	size_t		budget;			/* bytes a set may take before it moves to a sort */
+	/* the groups outgrew hash memory: a row of a group the table does not hold is set aside in a partition, and the partitions are grouped one after the other */
+	bool		diverting;
+	int			level;			/* depth of the partition the table holds (0: the child's rows) */
+	uint32		rowhash;		/* the hash of the key of the row rows_group looked up last */
+	Tuplestorestate *part[ROWS_PARTS];	/* the partitions the table writes */
+	List	   *pending;		/* RowsPart: the partitions to group, the next first */
+	int			nparts;			/* partitions written */
 	uint64		nrows;
 	uint64		npairs;
 	int			nspilled;
 	uint32		gpos;
 } RowsExec;
+
+const char *
+sift_agg_rows_rerun(CustomScanState *node)
+{
+	return ((RowsExec *) node)->spec->rerun;
+}
+
 
 double
 sift_agg_rows_group_bytes(const SiftRowsSpec *s)
@@ -218,15 +252,24 @@ rows_reset(RowsExec *ex)
 		rows_rehash(ex);
 }
 
-/* the groups are held to the end: past what the planner leaves the node (group_nospill_factor times hash memory) it ends with an error that says what to raise */
-static void
-rows_groups_check(RowsExec *ex)
+/* the bytes the groups of the table hold */
+static double
+rows_held(RowsExec *ex)
 {
-	double		held = ex->gcap * sift_agg_rows_group_bytes(ex->spec) + (double) MemoryContextMemAllocated(ex->kcxt, true),
-				limit = sift_agg_nospill_bytes(NULL, NULL);
+	double		held = ex->gcap * sift_agg_rows_group_bytes(ex->spec) + (double) MemoryContextMemAllocated(ex->kcxt, true);
 
 	if (ex->pgstate)
 		held += (double) MemoryContextMemAllocated(ex->pgstate->curaggcontext->ecxt_per_tuple_memory, true);
+	return held;
+}
+
+/* the groups are held past hash memory and the partitions are as deep as they go: the node ends with an error that says what to raise */
+static void
+rows_groups_check(RowsExec *ex)
+{
+	double		held = rows_held(ex),
+				limit = sift_agg_nospill_bytes(NULL, NULL);
+
 	if (held > limit)
 	{
 		sift_agg_overflow = true;
@@ -317,11 +360,18 @@ rows_group(RowsExec *ex, const Datum *values, const bool *isnull)
 
 	for (int j = 0; j < s->nkeys; j++)
 		h = hash_combine(h, isnull[j] ? 0x9e3779b9 : DatumGetUInt32(FunctionCall1Coll(&ex->hash[j], s->collid[j], values[j])));
+	ex->rowhash = h;
 	for (i = h & (ex->tabcap - 1); ex->tab[i]; i = (i + 1) & (ex->tabcap - 1))
 	{
 		g = ex->tab[i] - 1;
 		if (ex->ghash[g] == h && rows_keys_equal(ex, g, values, isnull))
 			return g;
+	}
+	/* a group the table is full for goes to a partition, as a hash aggregate's spill does: the rows of the groups it holds are still grouped here */
+	if (ex->diverting || (ex->ng == ex->gcap && ex->level < (int) sift_limit(group_spill_depth, SPILL_MAX_DEPTH) && rows_held(ex) > (double) get_hash_memory_limit()))
+	{
+		ex->diverting = true;
+		return ROWS_DIVERT;
 	}
 	if (ex->ng == ex->gcap)
 		rows_groups_grow(ex);
@@ -494,66 +544,136 @@ rows_takes(const SiftRowsAgg *a, const Datum *values, const bool *isnull)
 	return a->filtercol < 0 || (!isnull[a->filtercol] && DatumGetBool(values[a->filtercol]));
 }
 
+/* the row of a group the table does not hold goes to one of the partitions of the next level, by the hash of its key (another hash at each level) */
 static void
-rows_run(RowsExec *ex)
+rows_divert(RowsExec *ex, TupleTableSlot *row)
+{
+	int			p = (((ex->rowhash ^ ((uint32) ex->level * 0x9E3779B9u)) * 0x9E3779B1u) >> 24) % ROWS_PARTS;
+
+	if (ex->part[p] == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+		ex->part[p] = tuplestore_begin_heap(false, false, work_mem);
+		MemoryContextSwitchTo(old);
+		ex->nparts++;
+	}
+	tuplestore_puttupleslot(ex->part[p], row);
+}
+
+/* the partitions the table wrote wait to be grouped */
+static void
+rows_parts_queue(RowsExec *ex)
+{
+	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+	for (int p = 0; p < ROWS_PARTS; p++)
+		if (ex->part[p] != NULL)
+		{
+			RowsPart   *rp = palloc(sizeof(RowsPart));
+
+			rp->rows = ex->part[p];
+			rp->level = ex->level + 1;
+			ex->pending = lappend(ex->pending, rp);
+			ex->part[p] = NULL;
+		}
+	MemoryContextSwitchTo(old);
+}
+
+static void
+rows_parts_end(RowsExec *ex)
+{
+	foreach_ptr(RowsPart, rp, ex->pending)
+		tuplestore_end(rp->rows);
+	list_free_deep(ex->pending);
+	ex->pending = NIL;
+	for (int p = 0; p < ROWS_PARTS; p++)
+		if (ex->part[p] != NULL)
+		{
+			tuplestore_end(ex->part[p]);
+			ex->part[p] = NULL;
+		}
+}
+
+/* a row of the child, or of a partition, joins its group */
+static void
+rows_consume(RowsExec *ex, TupleTableSlot *row)
 {
 	const SiftRowsSpec *s = ex->spec;
+	Datum	   *values;
+	bool	   *isnull;
+	uint32		g;
+
+	slot_getallattrs(row);
+	values = row->tts_values;
+	isnull = row->tts_isnull;
+	g = rows_group(ex, values, isnull);
+	if (g == ROWS_DIVERT)
+	{
+		rows_divert(ex, row);
+		return;
+	}
+	ex->nrows++;
+	for (int i = 0; i < s->naggs; i++)
+	{
+		const SiftRowsAgg *a = &s->agg[i];
+
+		if (a->kind == SRA_DISTINCT || !rows_takes(a, values, isnull))
+			continue;
+		switch (a->kind)
+		{
+			case SRA_COUNT_STAR:
+				ex->cnt[i][g]++;
+				break;
+			case SRA_COUNT:
+				ex->cnt[i][g] += !isnull[a->argcol];
+				break;
+			default:
+				if (!isnull[a->argcol])
+				{
+					bool		has = ex->has[i][g];
+
+					pgagg_step(ex->pg[i], ex->pgstate, a->collid, ex->call, &ex->val[i][g], &has, values[a->argcol]);
+					ex->has[i][g] = has;
+				}
+		}
+	}
+	for (int k = 0; k < ex->nsets; k++)
+	{
+		RowsSet    *st = &ex->set[k];
+		uint32		mask = 0;
+
+		if (isnull[st->argcol])
+			continue;
+		for (int b = 0; b < st->nagg; b++)
+			if (rows_takes(&s->agg[st->agg[b]], values, isnull))
+				mask |= (uint32) 1 << b;
+		if (mask == 0)
+			continue;
+		ex->npairs++;
+		set_add(ex, st, g, rows_int(st->argtype, values[st->argcol]), mask);
+	}
+}
+
+/* every row of the child (part NULL) or of a partition is grouped; then the sets are counted and the states of PostgreSQL's aggregates finished */
+static void
+rows_run(RowsExec *ex, Tuplestorestate *part)
+{
+	const SiftRowsSpec *s = ex->spec;
+	TupleTableSlot *pslot = part ? MakeSingleTupleTableSlot(ExecGetResultType(ex->child), &TTSOpsMinimalTuple) : NULL;
 
 	for (;;)
 	{
-		TupleTableSlot *row = ExecProcNode(ex->child);
-		Datum	   *values;
-		bool	   *isnull;
-		uint32		g;
+		TupleTableSlot *row = part ? (tuplestore_gettupleslot(part, true, false, pslot) ? pslot : NULL) : ExecProcNode(ex->child);
 
-		if (TupIsNull(row))
+		if (row == NULL || TupIsNull(row))
 			break;
 		CHECK_FOR_INTERRUPTS();
-		slot_getallattrs(row);
-		values = row->tts_values;
-		isnull = row->tts_isnull;
-		ex->nrows++;
-		g = rows_group(ex, values, isnull);
-		for (int i = 0; i < s->naggs; i++)
-		{
-			const SiftRowsAgg *a = &s->agg[i];
-
-			if (a->kind == SRA_DISTINCT || !rows_takes(a, values, isnull))
-				continue;
-			switch (a->kind)
-			{
-				case SRA_COUNT_STAR:
-					ex->cnt[i][g]++;
-					break;
-				case SRA_COUNT:
-					ex->cnt[i][g] += !isnull[a->argcol];
-					break;
-				default:
-					if (!isnull[a->argcol])
-					{
-						bool		has = ex->has[i][g];
-
-						pgagg_step(ex->pg[i], ex->pgstate, a->collid, ex->call, &ex->val[i][g], &has, values[a->argcol]);
-						ex->has[i][g] = has;
-					}
-			}
-		}
-		for (int k = 0; k < ex->nsets; k++)
-		{
-			RowsSet    *st = &ex->set[k];
-			uint32		mask = 0;
-
-			if (isnull[st->argcol])
-				continue;
-			for (int b = 0; b < st->nagg; b++)
-				if (rows_takes(&s->agg[st->agg[b]], values, isnull))
-					mask |= (uint32) 1 << b;
-			if (mask == 0)
-				continue;
-			ex->npairs++;
-			set_add(ex, st, g, rows_int(st->argtype, values[st->argcol]), mask);
-		}
+		rows_consume(ex, row);
 	}
+	if (pslot)
+		ExecDropSingleTupleTableSlot(pslot);
+	rows_parts_queue(ex);
 	for (int k = 0; k < ex->nsets; k++)
 		set_finish(ex, &ex->set[k]);
 	for (int i = 0; i < s->naggs; i++)
@@ -568,6 +688,31 @@ rows_run(RowsExec *ex)
 	ex->started = true;
 }
 
+/* the groups of the table were all returned: the next partition becomes the table. False when there is none */
+static bool
+rows_next_part(RowsExec *ex)
+{
+	RowsPart   *rp;
+	uint64		nrows = ex->nrows,
+				npairs = ex->npairs;
+	int			nspilled = ex->nspilled;
+
+	if (ex->pending == NIL)
+		return false;
+	rp = linitial(ex->pending);
+	ex->pending = list_delete_first(ex->pending);
+	rows_reset(ex);
+	ex->nrows = nrows;
+	ex->npairs = npairs;
+	ex->nspilled += nspilled;
+	ex->level = rp->level;
+	ex->diverting = false;
+	tuplestore_rescan(rp->rows);
+	rows_run(ex, rp->rows);
+	tuplestore_end(rp->rows);
+	return true;
+}
+
 static TupleTableSlot *
 rows_next(ScanState *node)
 {
@@ -577,9 +722,10 @@ rows_next(ScanState *node)
 	uint32		g;
 
 	if (!ex->started)
-		rows_run(ex);
-	if (ex->gpos >= ex->ng)
-		return NULL;
+		rows_run(ex, NULL);
+	while (ex->gpos >= ex->ng)
+		if (!rows_next_part(ex))
+			return NULL;
 	g = ex->gpos++;
 	ExecClearTuple(slot);
 	for (int j = 0; j < s->nkeys; j++)
@@ -688,6 +834,8 @@ rows_end(CustomScanState *node)
 	for (int k = 0; k < ex->nsets; k++)
 		if (ex->set[k].sort)
 			tuplesort_end(ex->set[k].sort);
+	rows_parts_end(ex);
+	sift_stat_add(SIFT_STAT_GROUP_SPILLS, ex->nparts > 0);
 	foreach_ptr(PlanState, child, node->custom_ps)
 		ExecEndNode(child);
 	if (ex->cxt)
@@ -703,6 +851,10 @@ rows_rescan(CustomScanState *node)
 		UpdateChangedParamSet(ex->child, node->ss.ps.chgParam);
 	if (ex->child->chgParam == NULL)
 		ExecReScan(ex->child);
+	rows_parts_end(ex);
+	ex->level = 0;
+	ex->diverting = false;
+	ex->nparts = 0;
 	rows_reset(ex);
 }
 
@@ -725,6 +877,7 @@ rows_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		sift_explain_int(&ln, "Rows Read", NULL, "read", ex->nrows, SIFT_XI_KEEP);
 		sift_explain_int(&ln, "Groups", NULL, "groups", ex->ng, SIFT_XI_KEEP);
 		sift_explain_int(&ln, "Distinct Pairs", NULL, "distinct pairs", ex->npairs, 0);
+		sift_explain_int(&ln, "Group Partitions", NULL, "group partitions", ex->nparts, SIFT_XI_OPT);
 		sift_explain_int(&ln, "Distinct Sets Spilled", NULL, "distinct sets spilled", ex->nspilled, SIFT_XI_KEEP);
 		sift_explain_end(&ln);
 	}

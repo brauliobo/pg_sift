@@ -460,11 +460,10 @@ split_join_of(AggCtx *c, SiftAggSpec *s)
 void
 agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *keys, List *scan_tlist)
 {
-	int			nworkers,
-				nospill;
+	int			nworkers;
 	double		state,
-				table,
-				floor_bytes;
+				table;
+	const char *why;
 
 	if (!spec_finish(c, s, root, input_rel, keys))
 		return;
@@ -479,10 +478,10 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	}
 	table = group_table_bytes(s, group_count(c, s), &state);
 	/* a scan that cannot spill holds all its groups: the estimate may go far past hash memory (an OOM kill is the other end of it) but not to the sizes of a table of millions of groups */
-	if (table > sift_agg_nospill_bytes(&nospill, &floor_bytes) && !sift_aggspec_spillable(s))
+	s->bound_groups = source_rows(c, s) * Max(s->nsets, 1);
+	if (!nospill_fits(s, sift_agg_plan_reruns, &why))
 	{
-		agg_refused_on(GROUP_MEMORY, psprintf("about %.0f groups need %.0f kB, a hash aggregate gets %.0f kB, and this scan cannot spill them past %d times %.0f kB",
-											  group_count(c, s), table / 1024.0, (double) get_hash_memory_limit() / 1024.0, nospill, floor_bytes / 1024.0));
+		agg_refused_on(GROUP_MEMORY, why);
 		return;
 	}
 	if (!child_paths(c, s))
@@ -517,5 +516,6 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 			s->jpart = 0;
 		}
 	}
-	agg_ordered_paths(c, s, root, input_rel, output_rel, target, scan_tlist, keys, table, nworkers);
+	/* an ordered scan that cannot spill holds its groups: the table it may need is the one nospill_fits prices for the statement */
+	agg_ordered_paths(c, s, root, input_rel, output_rel, target, scan_tlist, keys, sift_agg_plan_reruns ? table : group_table_bytes(s, s->bound_groups, &state), nworkers);
 }

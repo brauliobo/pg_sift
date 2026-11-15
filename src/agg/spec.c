@@ -783,6 +783,13 @@ sift_aggspec_spillable(const SiftAggSpec *s)
 	return true;
 }
 
+/* does the node hold its groups to the end and cannot spill them? (A node of the rows of a top-N has no groups.) */
+bool
+sift_aggspec_holds_groups(const SiftAggSpec *s)
+{
+	return s->nkeys > 0 && !s->topn && !sift_aggspec_spillable(s);
+}
+
 /*
  * The bytes a group table that cannot spill may take: the factor (group_nospill_factor) times the hash memory, or times the base when that is more. The planner leaves a
  * scan whose estimated table passes it to the normal plan, and the scan raises an error when its table does. *factor and *floor_bytes: the two terms, for the message.

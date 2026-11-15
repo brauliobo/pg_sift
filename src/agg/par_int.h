@@ -10,6 +10,7 @@ typedef struct ScanShared
 {
 	pg_atomic_uint64 topn_bound;	/* a top-N: the first-key rank of the n-th row of any participant (agg/topn.h) */
 	pg_atomic_uint32 next;		/* the next item to take */
+	pg_atomic_uint32 overflow;	/* a participant's group table passed what a node that cannot spill may hold: the leader runs the statement again (agg/cte/rerun.c) */
 	pg_atomic_flag kept_counted;	/* a participant has counted the units the kept map prunes (all of them build one, and each would count them again) */
 	uint32		nitems;
 	uint32		gpart_n;		/* the participants split the groups by a key (SiftAggSpec.gpart), this many shares; 0: they take items of rows */
@@ -54,6 +55,9 @@ void scan_delta(AggExec *ex);
 bool take_item(AggExec *ex, uint32 *item);
 void par_launch(AggExec *ex);
 void par_finish(AggExec *ex);
+void par_abort(AggExec *ex);
+void par_note_overflow(AggExec *ex);
+bool par_overflowed(const AggExec *ex);
 
 /* par/stats.c, testing (sift.test_par_stats): what a participant cost, one LOG line each; no-ops in a release build */
 typedef struct ParStats ParStats;
