@@ -8,6 +8,7 @@
 
 #include "bm25/build.h"
 #include "bm25/prefix.h"
+#include "core/progress.h"
 #include "core/tomb.h"
 #include "core/worker.h"
 #include "core/visibility.h"
@@ -180,6 +181,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_fail_who",
 							"Testing: sift.test_fail_merge in the leader or a serial build (1), the workers (2), any (0).",
 							NULL, &sift_test_fail_who, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_progress_gate",
+							"Testing: a maintenance worker waits for the advisory lock 12 when it enters the nth phase of its job (sift.progress); 0 = never.",
+							NULL, &sift_test_progress_gate, 0, 0, 10, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomStringVariable("sift.test_worker_error",
 							   "Testing: the background worker of this job (promote, merge, rewrite, vacuum, track, rollup, orphans) fails with an error where it starts its work.",
 							   NULL, &sift_test_worker_error, "", PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

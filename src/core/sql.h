@@ -43,6 +43,7 @@ extern PGDLLEXPORT Datum sift_build_info(PG_FUNCTION_ARGS);	/* () setof (name te
 extern PGDLLEXPORT Datum sift_index_info(PG_FUNCTION_ARGS);		/* (regclass) record */
 extern PGDLLEXPORT Datum sift_index_format(PG_FUNCTION_ARGS);	/* (regclass) record */
 extern PGDLLEXPORT Datum sift_worker_state(PG_FUNCTION_ARGS);	/* (regclass) record */
+extern PGDLLEXPORT Datum sift_progress_rows(PG_FUNCTION_ARGS);	/* () setof record: the maintenance jobs that run now (sift.progress) */
 extern PGDLLEXPORT Datum sift_worker_history(PG_FUNCTION_ARGS);	/* (regclass) record: when the last step ended well, its job and time, the failures noted */
 
 /* core/jsonbuild.c */

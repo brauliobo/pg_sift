@@ -36,6 +36,7 @@
 #include "bm25/merge.h"
 #include "bm25/wbuf.h"
 #include "core/ops.h"
+#include "core/progress.h"
 #include "core/worker.h"
 #include "col/wbuf.h"
 #include "core/sql.h"
@@ -203,6 +204,7 @@ sift_maint_replace_n(Relation index, const uint64 *old, int nold, const SiftSegE
 	for (int i = 0; i < nneu; i++)
 		bytes += neu[i].bytes;
 	maint_written += bytes;
+	sift_progress_step(nold, bytes);
 
 	sift_dir_update(index, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = release,
 			.nrelease = nrelease,.extra = InvalidBuffer});
@@ -294,11 +296,15 @@ sift_mops_promote(const SiftMaintOps *ops, Relation index, bool wait)
 {
 	SiftErrCtx	ctx;
 	int			n;
+	bool		began;
 
 	if (!maint_lock_mode(index, wait, ops->step_lock))
 		return 0;
 	sift_errctx_push(&ctx, RelationGetRelid(index));
+	began = sift_progress_begin(index, SIFT_JOB_PROMOTE);
+	sift_progress_phase(index, "promote");
 	n = promote_locked(ops, index, false, false);
+	sift_progress_end(began);
 	sift_errctx_pop(&ctx);
 	maint_unlock_mode(index, ops->step_lock);
 	return n;
@@ -334,11 +340,15 @@ sift_mops_merge_step(const SiftMaintOps *ops, Relation index, bool wait)
 	SiftStepResult	r;
 	SiftErrCtx	ctx;
 	uint64		busy = 0;
+	bool		began;
 
 	if (!maint_lock_mode(index, wait, ops->step_lock))
 		return false;
 	sift_errctx_push(&ctx, RelationGetRelid(index));
+	began = sift_progress_begin(index, SIFT_JOB_MERGE);
+	sift_progress_phase(index, "merge");
 	r = ops->merge_next(index, false, SIFT_GOAL_BACKGROUND, false, &busy);
+	sift_progress_end(began);
 	sift_errctx_pop(&ctx);
 	maint_unlock_mode(index, ops->step_lock);
 	return r == SIFT_STEP_DONE;
@@ -433,6 +443,7 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftErrCtx	ctx;
 	bool		skipped = stats == NULL;
+	bool		began;
 
 	if (info->analyze_only)
 		return stats;
@@ -440,6 +451,8 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
 	sift_maint_lock(index, true);
 	sift_errctx_push(&ctx, RelationGetRelid(index));
+	began = sift_progress_begin(index, SIFT_JOB_VACUUM);
+	sift_progress_phase(index, "promote");
 	if (ops->vacuum_seal)
 		ops->vacuum_seal(index);
 	promote_locked(ops, index, false, false);
@@ -451,12 +464,14 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 		ops->vacuum_heap(index, info->heaprel);
 	if (ops->vacuum_net)
 		ops->vacuum_net(index);
+	sift_progress_phase(index, "merge");
 	vacuum_merge(ops, index);
 	SIFT_TEST_GATE(sift_test_cleanup_gate, 2);
 	if (ops->vacuum_refresh)
 		ops->vacuum_refresh(index);
 	sift_recycle(index);
 	sift_maint_orphan_sweep(index);
+	sift_progress_phase(index, "space");
 	if (ops->vacuum_truncate && ops->vacuum_truncate(index))
 	{
 		uint64		keep = ops->vacuum_space_keep ? ops->vacuum_space_keep(index) : 0;
@@ -482,6 +497,7 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 		if (!leave)
 			online_fallback(ops, index, info->message_level);
 	}
+	sift_progress_end(began);
 	sift_errctx_pop(&ctx);
 	sift_maint_unlock(index);
 	if (ops->vacuum_done)
@@ -593,7 +609,8 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic)
 	const char *why;
 	TimestampTz start = GetCurrentTimestamp();
 	SiftErrCtx	ctx;
-	bool		all;
+	bool		all,
+				began;
 	int			n = 0;
 
 	if (!maint_lock_mode(index, false, ops->step_lock))
@@ -606,7 +623,10 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic)
 		return -1;
 	}
 	all = ops->rewrite_all == NULL || ops->rewrite_all(why);
+	began = sift_progress_begin(index, SIFT_JOB_REWRITE);
+	sift_progress_phase(index, "promote");
 	promote_locked(ops, index, true, true);
+	sift_progress_phase(index, "merge");
 	/* the lock is let go between the steps, so that VACUUM and the writers wait for one partition of the rewrite and not for all of it; the rewrite waits for it in turn */
 	for (;;)
 	{
@@ -624,12 +644,19 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic)
 			break;
 		*indexp = index = sift_maint_step_boundary(index);
 		if (index == NULL)
+		{
+			sift_progress_end(began);
 			return n;
+		}
 		maint_lock_mode(index, true, ops->step_lock);
 		sift_errctx_push(&ctx, RelationGetRelid(index));
 	}
 	if (n > 0)
+	{
+		sift_progress_phase(index, "space");
 		cut_free_end(ops, index, true);
+	}
+	sift_progress_end(began);
 	sift_log_maint(index, psprintf(all ? "rewrote (%s) the segments of" : "promoted (%s) the write buffer of", why), start, -1, -1);
 	return n;
 }

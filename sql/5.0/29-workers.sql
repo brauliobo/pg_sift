@@ -26,3 +26,16 @@ CREATE OR REPLACE VIEW sift.workers AS
 	CROSS JOIN LATERAL sift.worker_state(c.oid) w
 	WHERE c.relkind IN ('r', 'm') AND sift._may_inspect(c.oid) AND w.segments IS NOT NULL;
 COMMENT ON VIEW sift.workers IS 'One row per sift and sift_col index and per sift_table the caller can look at: segments, write buffers, whether maintenance runs, the failures in a row, the next retry, the last error (kept after a later success), why a sift_col index would be rewritten, the last step that ended well and the failures noted so far.';
+
+-- The maintenance jobs that run now, one row each: a rewrite, a merge, a promotion, the merges of a VACUUM, whether a worker or a session runs them. The slots are in shared memory (nothing on disk) and a job is listed while it runs.
+CREATE FUNCTION sift._progress(OUT pid int4, OUT index oid, OUT job text, OUT phase text, OUT segments_done int8, OUT segments_total int8, OUT bytes_written int8, OUT started timestamptz)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_progress_rows' LANGUAGE C STABLE;
+
+CREATE VIEW sift.progress AS
+	SELECT p.pid, p.index::regclass AS index, p.job, p.phase, p.segments_done, p.segments_total, p.bytes_written, p.started
+	FROM sift._progress() p
+	JOIN pg_index i ON i.indexrelid = p.index
+	WHERE sift._may_inspect(i.indrelid);
+COMMENT ON VIEW sift.progress IS 'The maintenance jobs of the database that run now on an index the caller can look at: the process (pid), the job (promote, merge, rewrite or vacuum), its phase, the segments it has replaced of those the phase found, the bytes it wrote and when it started.';
+GRANT SELECT ON sift.progress TO PUBLIC;
