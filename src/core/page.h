@@ -49,6 +49,15 @@ typedef SiftPageOpaqueData *SiftPageOpaque;
 #define SIFT_PAGE_DATA_OFFSET	MAXALIGN(SizeOfPageHeaderData)
 #define SIFT_PAGE_PAYLOAD \
 	(BLCKSZ - SIFT_PAGE_DATA_OFFSET - MAXALIGN(sizeof(SiftPageOpaqueData)))
+/*
+ * A byte array that spans pages (a bitmap, a table of fixed-width slots) keeps SIFT_PAGE_PAYLOAD bytes of it on each page: its logical byte b is the
+ * byte SIFT_PAYLOAD_OFF(b) of the page SIFT_PAYLOAD_PAGE(b) of the run, and n bytes take SIFT_PAYLOAD_PAGES(n) pages. This is the one place that splits an
+ * offset over pages; an offset that is used inside a page without it ends in the special space or past the page (core/xlog.h refuses the write).
+ */
+#define SIFT_PAYLOAD_PAGE(b)	((b) / SIFT_PAGE_PAYLOAD)
+#define SIFT_PAYLOAD_OFF(b)		((b) % SIFT_PAGE_PAYLOAD)
+#define SIFT_PAYLOAD_PAGES(n)	(((n) + SIFT_PAGE_PAYLOAD - 1) / SIFT_PAGE_PAYLOAD)
+#define SIFT_PAYLOAD_BYTES(np)	((uint64) (np) * SIFT_PAGE_PAYLOAD)
 #define SiftPageGetData(page)	((char *) (page) + SIFT_PAGE_DATA_OFFSET)
 #define SiftPageGetUsed(page)	((uint32) (((PageHeader) (page))->pd_lower - SIFT_PAGE_DATA_OFFSET))
 #define SiftPageSetUsed(page, n) (((PageHeader) (page))->pd_lower = SIFT_PAGE_DATA_OFFSET + (n))
