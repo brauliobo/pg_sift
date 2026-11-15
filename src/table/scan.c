@@ -187,6 +187,7 @@ sift_tbl_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyDa
 	s->copy = palloc(BLCKSZ);
 	s->rowcxt = AllocSetContextCreate(CurrentMemoryContext, "sift_table scan row", ALLOCSET_DEFAULT_SIZES);
 	scan_open_state(rel, s);
+	sift_tbl_scan_note(rel, s->st);
 	return &s->base;
 }
 

@@ -3,9 +3,9 @@
  */
 #include "vacuum_int.h"
 #include <math.h>
-#include "pgstat.h"
 #include "utils/timestamp.h"
 
+#include "col/wbuf.h"
 #include "core/worker.h"
 
 void
@@ -108,13 +108,17 @@ dirty_share(const SiftTblRel *st, uint64 tombs)
 	return 1.0 - exp(-(double) tombs / nsb);
 }
 
-/* the reads (scans) of the table the statistics hold; the aggregate scan and the sequential scan count one each */
-static uint64
-table_scans(Relation rel)
+/*
+ * A scan of the table begins (the aggregate scan and the sequential scan count one each): it goes to the count in the metapage that the pass is weighed
+ * against (col/wbuf/reads.c), which neither pg_stat_reset() nor a restart takes. A table nobody wrote has no metapage to write it to.
+ */
+void
+sift_tbl_scan_note(Relation rel, SiftTblRel *st)
 {
-	const PgStat_StatTabEntry *tab = pgstat_fetch_stat_tabentry(RelationGetRelid(rel));
-
-	return tab ? (uint64) tab->numscans : 0;
+	if (!st->initialized)
+		return;
+	sift_scans_note(rel, &st->dir.meta);
+	sift_reads_flush(rel, NULL, NULL);
 }
 
 /* Could that many tombstones, with that many reads since the last pass, be enough? The header counts every entry, the removable ones are fewer, and counting them reads the log */
@@ -161,7 +165,7 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	sift_tbl_refresh(rel, st);
 	if (!st->initialized)
 		return;
-	scans = table_scans(rel);
+	scans = sift_scans_paid(rel, &st->dir.meta);
 	entries = sift_tomb_entries(rel, &st->dir);
 	/* the log is read, by this backend, only when its length could pay for a pass: a ticking backend that does nothing else does not sync it; one too long for a backend is the worker's to count */
 	if (sift_tomb_over(entries))
@@ -278,18 +282,20 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 		{
 			SiftTblRel *st = sift_tbl_rel(rel);
 			int			budget = sift_tbl_opt_int(st, SIFT_TBLOPT_AUTO_DEFRAG_BUDGET);
+			uint64		scans;
 
 			merge_cap = budget > 0 ? (uint64) budget << 20 : PG_UINT64_MAX;
 			if (pass != PASS_SETTLE)
 				sift_tbl_coalesce = sift_tbl_opt_bool(st, SIFT_TBLOPT_AUTO_DEFRAG_COALESCE);
 			sift_tbl_refresh(rel, st);
+			scans = sift_scans_paid(rel, &st->dir.meta);
 			if (pass == PASS_SETTLE)
 			{
 				r->promoted = sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 				r->blocks_after = RelationGetNumberOfBlocks(rel);
 			}
 			else if (dead_wanted(st, sift_tomb_entries(rel, &st->dir), removable_tombs(rel, st, true), worker_tombs,
-								 table_scans(rel) - Min(table_scans(rel), worker_scans)))
+								 scans - Min(scans, worker_scans)))
 			{
 				if (sift_tbl_opt_bool(st, SIFT_TBLOPT_AUTO_DEFRAG_INDEXES))
 					background_vacuum(rel, r);
@@ -298,7 +304,7 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 				pass_cleared = true;
 				sift_tbl_refresh(rel, st);	/* the pass moved the log: the directory read before it points past the cut */
 				worker_tombs = removable_tombs(rel, st, true);
-				worker_scans = table_scans(rel);
+				worker_scans = sift_scans_paid(rel, &st->dir.meta);
 			}
 			else
 				sift_tbl_maintain(rel, true, false, r);
