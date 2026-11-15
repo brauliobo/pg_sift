@@ -160,11 +160,11 @@ check "pg_restore --disable-triggers leaves the triggers enabled for sessions th
 churn 6 8
 q new postgres "SET sift.enable_agg = on" "$(QS t)" >/dev/null
 check "a read asks the worker: the triggers are enabled for all, the log is re-baselined, the answers are the heap's" wait_for 'is t A,A t_c "3 true"' 600
-# a table that was a partition (a statement on its parent fires none of its triggers)
+# a table that was a partition (its triggers were made on its parent too, and went with the DETACH: the log was complete all along)
 q new postgres "CREATE TABLE pp (code text, tenant int NOT NULL, amount int NOT NULL, pad text) PARTITION BY RANGE (tenant)" "CREATE TABLE pp1 (code text PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL, pad text)" \
 	"INSERT INTO pp1 SELECT 'c' || i, 1, i, repeat('x', 80) FROM generate_series(1, 20000) i" "CREATE INDEX pp1_c ON pp1 USING sift_col (code, tenant, amount)" "VACUUM (FREEZE, ANALYZE) pp1" \
 	"ALTER TABLE pp ATTACH PARTITION pp1 FOR VALUES FROM (0) TO (5)" "DELETE FROM pp WHERE code IN (SELECT 'c' || i FROM generate_series(5, 20000, 9) i)" "ALTER TABLE pp DETACH PARTITION pp1" >/dev/null
-check "a table that was a partition has a log that is not complete (flags 0), and the reads answer as the heap" is pp1 A,A pp1_c "0 false"
+check "a table that was a partition has a complete log (flags 3), heap-free, and the reads answer as the heap" is pp1 A,A pp1_c "3 true"
 q new postgres "VACUUM pp1" >/dev/null
-check "the next VACUUM re-baselines it, and the answers are the heap's" is pp1 A,A pp1_c "3 true"
+check "the next VACUUM leaves it complete, and the answers are the heap's" is pp1 A,A pp1_c "3 true"
 finish

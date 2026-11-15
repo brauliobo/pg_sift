@@ -878,7 +878,7 @@ BEGIN
   RESET seq_page_cost;
   EXECUTE format('CREATE TEMP TABLE by_heap ON COMMIT DROP AS SELECT g, count(*) AS c, sum(v) AS s FROM %s GROUP BY g', t);
   SELECT count(*) INTO n FROM ((TABLE by_sift EXCEPT TABLE by_heap) UNION ALL (TABLE by_heap EXCEPT TABLE by_sift)) d;
-  RETURN n;
+  DROP TABLE by_sift, by_heap; RETURN n;
 END $$;
 
 -- plan_siftagg_with_workers_label: normal or SiftAgg of the plan of q, plus ' with workers' when it plans workers
@@ -995,3 +995,5 @@ BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ '^\s*Index: ' THEN RETURN btrim(l); END IF; END LOOP;
 	RETURN 'native';
 END $$;
+-- grouped_read_heap_pages: the heap pages the SiftAgg read of g, count(*) and sum(v) over t visits, -1 when the plan is not a SiftAgg plan (tests col_track_attach, col_track_partitions)
+CREATE FUNCTION sift_helpers.grouped_read_heap_pages(t regclass) RETURNS bigint LANGUAGE plpgsql SET sift.enable_agg = on SET seq_page_cost = 10000 AS $$ DECLARE j jsonb; BEGIN EXECUTE format('EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT g, count(*), sum(v) FROM %s GROUP BY g', t) INTO j; RETURN CASE WHEN jsonb_path_exists(j, 'strict $.**."Custom Plan Provider" ? (@ == "SiftAgg")') THEN coalesce((SELECT sum((x #>> '{}')::int) FROM jsonb_path_query(j, 'strict $.**."Heap Pages"') x), 0) ELSE -1 END; END $$;

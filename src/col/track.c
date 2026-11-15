@@ -25,6 +25,7 @@
 #include "catalog/pg_depend.h"
 #include "catalog/pg_index.h"
 #include "catalog/pg_inherits.h"
+#include "common/hashfn.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_subscription_rel.h"
 #include "catalog/pg_trigger.h"
@@ -50,6 +51,7 @@
 #include "agg/stats.h"
 #include "bm25/maint.h"
 #include "col/am.h"
+#include "col/track_hear.h"
 #include "core/tomb.h"
 #include "core/restrict.h"
 #include "core/visibility.h"
@@ -57,31 +59,11 @@
 PG_FUNCTION_INFO_V1(sift_col_tracking);
 PG_FUNCTION_INFO_V1(sift_col_stamps);
 
-#define HEAR_FUNCTION	"col_track_old_rows"
-
 #ifdef SIFT_TESTING
 bool		sift_test_no_track = false;
 bool		sift_test_no_chain_root = false;
 int			sift_test_col_track_gate = 0;
 #endif
-
-/*
- * The two triggers of an index are the rows of pg_trigger that it depends on (NORMAL): [0] AFTER DELETE, [1] AFTER UPDATE (an internal trigger gets its oid appended to its name,
- * so they are found by what the index depends on). The index depends on them, and not they on it, because DROP INDEX CONCURRENTLY refuses to start once a transaction id is
- * assigned and deletes what depends on the index first: an index nothing depends on drops, and sift_col_track_hook removes the triggers in the transaction that deletes the
- * index (or a worker a moment later, when the table is in use: track_drop.c). REINDEX CONCURRENTLY swaps the dependencies of the old and the new index, so the triggers follow the index that stays. Each is checked to be what the option
- * created: on the table, calling the function, a statement trigger, always enabled. witness is its identity: the xmin of its catalog row, which any change to the row
- * (disabling and enabling it again, a rename) makes another.
- */
-typedef struct HearTrig
-{
-	Oid			oid;
-	NameData	name;
-	bool		ok;
-	bool		origin;			/* what ok says, but enabled for the origin only (ENABLE TRIGGER) */
-	uint32		witness;
-	int			n;
-} HearTrig;
 
 /* By the schema oid, not LookupFuncName: a qualified name asks for USAGE on the schema, which an owner of the table creating the index need not have. */
 Oid
@@ -101,91 +83,18 @@ sift_col_track_function(bool missing_ok)
 	return sift_col_track_lookup(HEAR_FUNCTION, missing_ok);
 }
 
-static void
-read_trigger(Oid heapoid, Oid funcoid, Oid toid, HearTrig t[2], bool row)
-{
-	Relation	trel = table_open(TriggerRelationId, AccessShareLock);
-	ScanKeyData key;
-	SysScanDesc scan;
-	HeapTuple	tp;
-
-	ScanKeyInit(&key, Anum_pg_trigger_oid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(toid));
-	scan = systable_beginscan(trel, TriggerOidIndexId, true, NULL, 1, &key);
-	if (HeapTupleIsValid(tp = systable_getnext(scan)))
-	{
-		Form_pg_trigger tg = (Form_pg_trigger) GETSTRUCT(tp);
-		HearTrig   *h = (tg->tgtype & TRIGGER_TYPE_DELETE) ? &t[0] : (tg->tgtype & TRIGGER_TYPE_UPDATE) ? &t[1] : NULL;
-
-		if (h != NULL)
-		{
-			bool		shape = tg->tgrelid == heapoid && tg->tgfoid == funcoid && !tg->tgdeferrable &&
-				(tg->tgtype & (TRIGGER_TYPE_BEFORE | TRIGGER_TYPE_INSTEAD)) == 0 && ((tg->tgtype & TRIGGER_TYPE_ROW) != 0) == row && tg->tgattr.dim1 == 0;
-
-			h->oid = toid;
-			h->name = tg->tgname;
-			h->n++;
-			h->witness = HeapTupleHeaderGetRawXmin(tp->t_data);
-			h->ok = shape && tg->tgenabled == TRIGGER_FIRES_ALWAYS;
-			h->origin = shape && tg->tgenabled == TRIGGER_FIRES_ON_ORIGIN;
-		}
-	}
-	systable_endscan(scan);
-	table_close(trel, AccessShareLock);
-}
-
-static void
-find_triggers(Oid heapoid, Relation index, HearTrig t[2], bool row)
-{
-	Relation	drel;
-	ScanKeyData key[2];
-	SysScanDesc scan;
-	HeapTuple	tup;
-	Oid			funcoid = sift_col_track_function(true);
-
-	memset(t, 0, 2 * sizeof(HearTrig));
-	/* the extension is not updated to the release that has the function yet (the library is: ALTER INDEX of any option asks): no trigger can be its own */
-	if (!OidIsValid(funcoid))
-		return;
-	drel = table_open(DependRelationId, AccessShareLock);
-	/* this release: the index depends on its triggers */
-	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
-	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(index)));
-	scan = systable_beginscan(drel, DependDependerIndexId, true, NULL, 2, key);
-	while (HeapTupleIsValid(tup = systable_getnext(scan)))
-	{
-		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
-
-		if (d->refclassid == TriggerRelationId && d->deptype == DEPENDENCY_NORMAL && d->refobjsubid == 0)
-			read_trigger(heapoid, funcoid, d->refobjid, t, row);
-	}
-	systable_endscan(scan);
-	/* an earlier release (until ALTER EXTENSION UPDATE converts them): the triggers depend on the index */
-	ScanKeyInit(&key[0], Anum_pg_depend_refclassid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
-	ScanKeyInit(&key[1], Anum_pg_depend_refobjid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(index)));
-	scan = systable_beginscan(drel, DependReferenceIndexId, true, NULL, 2, key);
-	while (HeapTupleIsValid(tup = systable_getnext(scan)))
-	{
-		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
-
-		if (d->classid == TriggerRelationId && d->deptype == DEPENDENCY_AUTO && d->refobjsubid == 0)
-			read_trigger(heapoid, funcoid, d->objid, t, row);
-	}
-	systable_endscan(scan);
-	table_close(drel, AccessShareLock);
-}
-
-/* The triggers installed: present[i] at all, ok[i] once and as the option made it, and their identities in witness */
+/* The triggers installed: present[i] at all, ok[i] once on each table and as the option made it, and their identities in witness */
 static void
 channel_read(Relation heap, Relation index, bool present[2], bool ok[2], uint32 witness[2])
 {
-	HearTrig	t[2];
+	Hear		h[2];
 
-	find_triggers(RelationGetRelid(heap), index, t, sift_col_track_ctid(index));
+	sift_col_hear_read(RelationGetRelid(heap), index, sift_col_hear_find(index, sift_col_track_ctid(index)), h);
 	for (int i = 0; i < 2; i++)
 	{
-		present[i] = t[i].n > 0;
-		ok[i] = t[i].ok && t[i].n == 1;
-		witness[i] = t[i].witness;
+		present[i] = h[i].n > 0;
+		ok[i] = h[i].ok;
+		witness[i] = h[i].witness;
 	}
 }
 
@@ -193,18 +102,17 @@ static bool subscribed(Oid heapoid);
 static bool trackable(Relation heap, Relation index);
 
 /*
- * Why a statement trigger of the table cannot hear what happens to its rows, NULL when it can (a statement on the parent fires no trigger of a child; the apply worker of a
- * subscription fires none; pg_upgrade restores the indexes of an older release into an extension that is not updated yet, which has no function for the trigger).
+ * Why a statement trigger cannot hear what happens to the rows of a table, NULL when it can (the apply worker of a subscription fires none, and a subscription of a parent applies its rows to
+ * the partitions; pg_upgrade restores the indexes of an older release into an extension that is not updated yet, which has no function for the trigger).
  */
 const char *
 sift_col_track_deaf(Relation heap)
 {
 	if (!OidIsValid(sift_col_track_function(true)))
 		return "the extension is not updated to the release that has sift.col_track_old_rows(): run ALTER EXTENSION pg_sift UPDATE";
-	if (heap->rd_rel->relispartition || has_superclass(RelationGetRelid(heap)) || find_inheritance_children(RelationGetRelid(heap), NoLock) != NIL)
-		return "the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent";
-	if (subscribed(RelationGetRelid(heap)))
-		return "the table is the target of a logical replication subscription, and the apply worker fires no statement trigger";
+	foreach_oid(tbl, sift_col_hear_tables(RelationGetRelid(heap), false))
+		if (subscribed(tbl))
+			return "the table is the target of a logical replication subscription, or its parent is, and the apply worker fires no statement trigger";
 	return NULL;
 }
 
@@ -225,48 +133,6 @@ static bool
 channel_as_asked(Relation heap, Relation index, SiftTombLog *log)
 {
 	return channel_vouched(heap, index, log) && log->chan.flags == SIFT_TOMB_CURRENT;
-}
-
-static void
-create_trigger(Relation heap, Relation index, bool update)
-{
-	CreateTrigStmt *stmt = makeNode(CreateTrigStmt);
-	TriggerTransition *tt = makeNode(TriggerTransition);
-	Oid			funcoid = sift_col_track_function(false);
-	bool		row = sift_col_track_ctid(index);
-	ObjectAddress trig,
-				idx;
-
-	tt->name = "old_rows";
-	tt->isNew = false;
-	tt->isTable = true;
-	stmt->trigname = psprintf(update ? "sift_track_update_%s" : "sift_track_delete_%s", RelationGetRelationName(index));
-	stmt->relation = makeRangeVar(get_namespace_name(RelationGetNamespace(heap)), pstrdup(RelationGetRelationName(heap)), -1);
-	stmt->funcname = list_make2(makeString("sift"), makeString(HEAR_FUNCTION));
-	stmt->args = list_make1(makeString(psprintf("%u", RelationGetRelid(index))));
-	stmt->row = row;
-	stmt->timing = TRIGGER_TYPE_AFTER;
-	stmt->events = update ? TRIGGER_TYPE_UPDATE : TRIGGER_TYPE_DELETE;
-	stmt->transitionRels = row ? NIL : list_make1(tt);
-	trig = sift_create_trigger(stmt, RelationGetRelid(heap), funcoid);
-	ObjectAddressSet(idx, RelationRelationId, RelationGetRelid(index));
-	sift_depend(&idx, &trig, DEPENDENCY_NORMAL);
-}
-
-static void
-drop_triggers(Relation heap, Relation index)
-{
-	HearTrig	t[2];
-
-	find_triggers(RelationGetRelid(heap), index, t, false);
-	for (int i = 0; i < 2; i++)
-		if (OidIsValid(t[i].oid))
-		{
-			sift_undepend(RelationRelationId, RelationGetRelid(index), DEPENDENCY_NORMAL, TriggerRelationId, t[i].oid);
-			CommandCounterIncrement();
-			sift_col_track_delete_trigger(t[i].oid);
-		}
-	CommandCounterIncrement();
 }
 
 /*
@@ -366,17 +232,17 @@ repack_witness(Relation heap, Relation index, uint32 witness[2])
 	Oid			oheap = sift_col_repack_origin(heap),
 				oindex = sift_col_repack_origin(index);
 	Relation	orig;
-	HearTrig	t[2];
+	Hear		h[2];
 
 	if (!OidIsValid(oheap) || !OidIsValid(oindex) || (orig = try_relation_open(oindex, AccessShareLock)) == NULL)
 		return;
 	if (orig->rd_rel->relkind == RELKIND_INDEX && orig->rd_rel->relam == index->rd_rel->relam && orig->rd_index->indrelid == oheap)
 	{
-		find_triggers(oheap, orig, t, sift_col_track_ctid(orig));
-		if (t[0].ok && t[0].n == 1 && t[1].ok && t[1].n == 1)
+		sift_col_hear_read(oheap, orig, sift_col_hear_find(orig, sift_col_track_ctid(orig)), h);
+		if (h[0].ok && h[1].ok)
 		{
-			witness[0] = t[0].witness;
-			witness[1] = t[1].witness;
+			witness[0] = h[0].witness;
+			witness[1] = h[1].witness;
 		}
 	}
 	relation_close(orig, AccessShareLock);
@@ -394,7 +260,7 @@ sift_col_swap_origin(Relation heap, Relation index, bool triggered)
 	const char *p = strstr(name, "_ccnew");
 	Oid			origin;
 	Relation	orig;
-	HearTrig	t[2];
+	Hear		h[2];
 
 	if (p != NULL && !index->rd_index->indisvalid)
 	{
@@ -419,8 +285,8 @@ sift_col_swap_origin(Relation heap, Relation index, bool triggered)
 		orig->rd_index->indnkeyatts == index->rd_index->indnkeyatts &&
 		memcmp(orig->rd_index->indkey.values, index->rd_index->indkey.values, orig->rd_index->indnkeyatts * sizeof(int16)) == 0)
 	{
-		find_triggers(RelationGetRelid(heap), orig, t, sift_col_track_ctid(orig));
-		if (!triggered || (t[0].n == 1 && t[1].n == 1))
+		sift_col_hear_read(RelationGetRelid(heap), orig, sift_col_hear_find(orig, sift_col_track_ctid(orig)), h);
+		if (!triggered || (h[0].whole && h[1].whole))
 			origin = RelationGetRelid(orig);
 	}
 	relation_close(orig, AccessShareLock);
@@ -433,7 +299,7 @@ sift_col_swap_origin(Relation heap, Relation index, bool triggered)
  * loaded on first use: REINDEX fires no event trigger, and the statement that touches the first sift_col index of a session loads the library (and its hooks) after it holds its locks. So a
  * REINDEX asks only when no other session holds a lock that conflicts with it: one that finds another holder of ShareLock does not wait for it (that one may be waiting for this one) and leaves
  * the triggers to the maintenance worker (sift_col_track_rearmable); both of two that must make them find the other and wait for nothing. CREATE INDEX takes the lock first (the event trigger of sql/5.0/05-index-build-lock.sql) and an index that this transaction made has no other REINDEX; ALTER INDEX
- * holds it; a concurrent build holds ShareUpdateExclusiveLock, which two of them cannot hold.
+ * holds it; a concurrent build holds ShareUpdateExclusiveLock, which two of them cannot hold. The other tables take the lock briefly (sift_col_hear_lock_all).
  */
 static bool
 may_make_triggers(Relation heap, Relation index, bool concurrent)
@@ -441,6 +307,8 @@ may_make_triggers(Relation heap, Relation index, bool concurrent)
 	LOCKTAG		tag;
 	int			holders;
 
+	if (!sift_col_hear_lock_all(heap, index))
+		return false;
 	if (concurrent || index->rd_createSubid != InvalidSubTransactionId || CheckRelationLockedByMe(heap, ShareRowExclusiveLock, true))
 		return true;
 	SET_LOCKTAG_RELATION(tag, MyDatabaseId, RelationGetRelid(heap));
@@ -480,13 +348,12 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 		if (!may_make_triggers(heap, index, concurrent))
 		{
 			ereport(NOTICE, (errmsg("sift_col index \"%s\": its track_changes triggers were not made, so its log is not complete", sift_col_final_name(index)),
-							 errdetail("Another statement holds the table and a REINDEX does not wait for it. The maintenance worker makes missing triggers; ALTER INDEX makes any other."),
+							 errdetail("Another statement holds the table, or a table above it, and a REINDEX does not wait for it. The maintenance worker makes missing triggers; ALTER INDEX makes any other."),
 							 errhint("ALTER INDEX %s SET (track_changes = 'off'), then SET (track_changes = '%s')", sift_col_final_name(index), sift_col_options_row_key(index))));
 			return;
 		}
-		drop_triggers(heap, index);
-		create_trigger(heap, index, false);
-		create_trigger(heap, index, true);
+		sift_col_hear_drop_all(index);
+		sift_col_hear_create(heap, index);
 		CommandCounterIncrement();
 	}
 	/* writers run beside a concurrent build: what they ended before the triggers is not known, so the log is not complete */
@@ -558,12 +425,12 @@ sift_col_track_rebaseline(Relation index, Relation heap)
 bool
 sift_col_track_rearmable(Relation index, Relation heap)
 {
-	HearTrig	t[2];
+	List	   *trigs = sift_col_hear_find(index, sift_col_track_ctid(index));
+	HearPlan	plan = sift_col_hear_plan(heap, index, trigs);
 
-	find_triggers(RelationGetRelid(heap), index, t, sift_col_track_ctid(index));
-	if (t[0].n == 0 && t[1].n == 0)
+	if (trigs == NIL)
 		return sift_index_ready(index) && trackable(heap, index);
-	return t[0].n == 1 && t[1].n == 1 && (t[0].ok || t[0].origin) && (t[1].ok || t[1].origin) && (t[0].origin || t[1].origin);
+	return !plan.bad && !sift_col_hear_plan_empty(&plan);
 }
 
 /*
@@ -573,22 +440,13 @@ sift_col_track_rearmable(Relation index, Relation heap)
 bool
 sift_col_track_rearm(Relation index, Relation heap)
 {
-	HearTrig	t[2];
+	HearPlan	plan;
 
 	Assert(CheckRelationLockedByMe(heap, ShareRowExclusiveLock, true));
 	if (RecoveryInProgress() || !trackable(heap, index) || !sift_col_track_rearmable(index, heap))
 		return false;
-	find_triggers(RelationGetRelid(heap), index, t, sift_col_track_ctid(index));
-	if (t[0].n == 0 && t[1].n == 0)
-	{
-		create_trigger(heap, index, false);
-		create_trigger(heap, index, true);
-	}
-	for (int i = 0; i < 2; i++)
-		if (t[i].origin)
-			EnableDisableTrigger(heap, NameStr(t[i].name), InvalidOid, TRIGGER_FIRES_ALWAYS, false, false, ShareRowExclusiveLock);
-	CommandCounterIncrement();
-	return true;
+	plan = sift_col_hear_plan(heap, index, sift_col_hear_find(index, sift_col_track_ctid(index)));
+	return sift_col_hear_apply(heap, index, &plan);
 }
 
 /*
@@ -618,31 +476,58 @@ sift_col_track_ask(Relation index, Relation heap)
 }
 
 /*
- * The table became a partition (ATTACH PARTITION) or an inheritance child (INHERIT): a statement on its parent fires none of its statement triggers, so what the parent's statements delete or
- * re-key is not in the log of its indexes, and stays missing once the table is a plain table again (DETACH, NO INHERIT): the log is not complete until a new baseline (REINDEX). Called by the
- * event trigger of ALTER TABLE, which runs in every session whether the library was loaded before or not, and in the transaction that holds the lock of the table.
+ * The tables whose statements the triggers of an index must hear changed: the table became a partition or an inheritance child (ATTACH PARTITION, INHERIT), or left its parent (DETACH PARTITION,
+ * NO INHERIT), or the tree it is a partition of did. The triggers of the new parents are made and those of the old ones dropped; the log stays complete when it was (the triggers it names heard
+ * every statement until now, and the new ones hear them from the commit of this statement on, which holds the lock of the table), with the identities of the triggers it has now. Triggers that
+ * cannot be made now (a table above is busy, a trigger is disabled, a subscription feeds a parent) end the completeness: the maintenance worker makes them and the log is baselined again.
+ * Called by the event trigger of ALTER TABLE, which runs in every session whether the library was loaded before or not, and in the transaction that holds the lock of the table.
  */
-void
-sift_col_track_deafened(Oid relid)
+static void
+rechain_index(Relation heap, Relation index)
 {
-	Relation	heap;
+	SiftTombLog *log = sift_col_log(index);
+	List	   *trigs = sift_col_hear_find(index, sift_col_track_ctid(index));
+	uint32		witness[2];
+	bool		vouched = log != NULL && log->chan.flags == SIFT_TOMB_CURRENT && sift_col_hear_all_ok(trigs, 0, &witness[0]) && sift_col_hear_all_ok(trigs, 1, &witness[1]) &&
+		witness[0] == log->chan.witness[0] && witness[1] == log->chan.witness[1];
+	HearPlan	plan = sift_col_hear_plan(heap, index, trigs);
+	bool		heard = sift_col_track_deaf(heap) == NULL && !plan.bad && sift_col_hear_apply(heap, index, &plan);
+	SiftTombChan chan = {0};
 
-	if (!OidIsValid(relid) || (heap = try_relation_open(relid, NoLock)) == NULL)
+	if (!vouched)
 		return;
-	foreach_oid(ioid, RelationGetIndexList(heap))
+	if (heard)
 	{
-		Relation	index = index_open(ioid, RowExclusiveLock);
-
-		if (sift_col_is_index(index) && sift_col_track_on(index))
-		{
-			SiftTombLog *log = sift_col_log(index);
-
-			if (log != NULL && log->chan.flags != 0)
-				sift_tomb_set_chan(index, log, &(SiftTombChan) {0});
-		}
-		index_close(index, NoLock);
+		trigs = sift_col_hear_find(index, sift_col_track_ctid(index));
+		chan = log->chan;
+		chan.witness[0] = sift_col_hear_witness(trigs, 0);
+		chan.witness[1] = sift_col_hear_witness(trigs, 1);
 	}
-	relation_close(heap, NoLock);
+	sift_tomb_set_chan(index, log, &chan);
+}
+
+void
+sift_col_track_rechain(Oid relid)
+{
+	if (!OidIsValid(relid))
+		return;
+	foreach_oid(tbl, find_all_inheritors(relid, NoLock, NULL))
+	{
+		Relation	heap = try_relation_open(tbl, NoLock);
+
+		if (heap == NULL)
+			continue;
+		if (heap->rd_rel->relkind == RELKIND_RELATION)
+			foreach_oid(ioid, RelationGetIndexList(heap))
+			{
+				Relation	index = index_open(ioid, RowExclusiveLock);
+
+				if (index->rd_rel->relkind == RELKIND_INDEX && sift_col_is_index(index) && sift_col_track_on(index))
+					rechain_index(heap, index);
+				index_close(index, NoLock);
+			}
+		relation_close(heap, NoLock);
+	}
 }
 
 /* The option is off: no trigger and no completeness */
@@ -651,7 +536,12 @@ sift_col_track_remove(Relation heap, Relation index)
 {
 	SiftTombLog *log = sift_col_log(index);
 
-	drop_triggers(heap, index);
+	foreach_ptr(HearTrig, t, sift_col_hear_find(index, false))
+		if (!sift_col_hear_lock_briefly(t->relid, AccessExclusiveLock))
+			ereport(ERROR, (errcode(ERRCODE_LOCK_NOT_AVAILABLE), errmsg("could not lock table \"%s\" to remove the track_changes triggers of index \"%s\"", get_rel_name(t->relid), RelationGetRelationName(index)),
+							errdetail("A statement holds it, and this one holds the table of the index, which that statement may be waiting for."),
+							errhint("Run the statement again.")));
+	sift_col_hear_drop_all(index);
 	if (log != NULL && log->chan.flags != 0)
 		sift_tomb_set_chan(index, log, &(SiftTombChan) {0});
 }

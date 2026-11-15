@@ -293,11 +293,11 @@ sift_table_ddl_check(PG_FUNCTION_ARGS)
 		{
 			if (cmd->subtype == AT_AddColumn || cmd->subtype == AT_AlterColumnType)
 				rv = ((AlterTableStmt *) stmt)->relation;
-			/* a table that becomes a child hears no statement of its parent: the log of its sift_col indexes is no longer complete */
-			else if (cmd->subtype == AT_AttachPartition)
-				sift_col_track_deafened(RangeVarGetRelid(((PartitionCmd *) cmd->def)->name, NoLock, true));
-			else if (cmd->subtype == AT_AddInherit)
-				sift_col_track_deafened(RangeVarGetRelid(((AlterTableStmt *) stmt)->relation, NoLock, true));
+			/* a table that becomes a child, or leaves its parent, changes the tables whose statements the triggers of its sift_col indexes must hear */
+			else if (cmd->subtype == AT_AttachPartition || cmd->subtype == AT_DetachPartition || cmd->subtype == AT_DetachPartitionFinalize)
+				sift_col_track_rechain(RangeVarGetRelid(((PartitionCmd *) cmd->def)->name, NoLock, true));
+			else if (cmd->subtype == AT_AddInherit || cmd->subtype == AT_DropInherit)
+				sift_col_track_rechain(RangeVarGetRelid(((AlterTableStmt *) stmt)->relation, NoLock, true));
 		}
 	}
 	else if (IsA(stmt, RenameStmt) && ((RenameStmt *) stmt)->renameType == OBJECT_COLUMN)

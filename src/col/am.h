@@ -77,7 +77,8 @@ extern void sift_col_row_key_check(Relation index);
 extern void sift_col_row_key_prepare(Relation heap, Relation index);
 extern Oid sift_col_row_key_unique(Relation heap, AttrNumber att);
 /* Tombstones for the addresses the unique index lists for key that no version is live for (col/rowkey.c) */
-extern void sift_col_tomb_dead_keys(Relation index, Relation heap, struct Tuplestorestate *old_rows);
+extern void sift_col_tomb_dead_keys(Relation index, Relation heap, Relation old_rel, struct Tuplestorestate *old_rows);
+extern AttrNumber sift_col_row_key_attno(Relation index, Relation rel);
 /* The option track_changes (col/track.c): why the table is one a statement trigger cannot hear, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
 extern const char *sift_col_track_deaf(Relation heap);
 extern void sift_col_track_init(void);
@@ -94,7 +95,7 @@ extern void sift_col_track_check(Relation heap, Relation index);
 extern void sift_col_track_install(Relation heap, Relation index, bool concurrent);
 extern Oid sift_col_swap_origin(Relation heap, Relation index, bool triggered);
 extern void sift_col_track_remove(Relation heap, Relation index);
-extern void sift_col_track_deafened(Oid relid);
+extern void sift_col_track_rechain(Oid relid);
 extern void sift_col_track_reconcile(Relation index);
 extern bool sift_col_track_ok(Relation index, Relation heap, Snapshot snap);
 extern uint64 sift_catalog_memo_hits;

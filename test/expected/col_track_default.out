@@ -152,21 +152,17 @@ NOTICE:  sift_col index "p2_a_b_idx": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('p2_a_b_idx');
 DROP TABLE p;
--- a table a statement trigger cannot hear (a partition: a statement on the parent fires no trigger of a child): the default is off with a NOTICE, a column named is an error
+-- a partition: the default chooses the key, and the triggers are on the partition and on its parent (a statement on the parent fires the triggers of the parent alone)
 CREATE TABLE pk (id int PRIMARY KEY, g int NOT NULL) PARTITION BY RANGE (id);
 CREATE TABLE pk0 PARTITION OF pk FOR VALUES FROM (0) TO (100);
 CREATE INDEX pk_auto ON pk USING sift_col (id, g);
-NOTICE:  sift_col index "pk0_id_g_idx": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table is a partition or a parent
+NOTICE:  sift_col index "pk0_id_g_idx": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pk0_id_g_idx');
-CREATE INDEX pk_named ON pk USING sift_col (id, g) WITH (track_changes = 'id');
-ERROR:  track_changes: table "pk0" cannot be tracked
-DETAIL:  the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent.
-HINT:  WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.
-SELECT triggers_of('pk0') AS partition_triggers;
- partition_triggers 
---------------------
- none
+SELECT triggers_of('pk0') AS partition_triggers, triggers_of('pk') AS parent_triggers;
+                      partition_triggers                       |                        parent_triggers                        
+---------------------------------------------------------------+---------------------------------------------------------------
+ sift_track_delete_pk0_id_g_idx sift_track_update_pk0_id_g_idx | sift_track_delete_pk0_id_g_idx sift_track_update_pk0_id_g_idx
 (1 row)
 
 DROP TABLE pk;

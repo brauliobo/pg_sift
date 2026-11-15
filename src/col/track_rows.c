@@ -22,7 +22,11 @@
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_subscription_rel.h"
+#include "catalog/index.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_trigger.h"
+#include "partitioning/partdesc.h"
+#include "utils/partcache.h"
 #include "commands/trigger.h"
 #include "funcapi.h"
 #include "nodes/makefuncs.h"
@@ -178,26 +182,59 @@ track_row(TriggerData *td)
 	return PointerGetDatum(NULL);
 }
 
-/* sift.col_track_old_rows(): the trigger of the option; its argument is the oid of the index it was made for (trigger_index says which one it serves now). For a key column it is a statement trigger with the old rows, for track_changes = ctid a row trigger */
+/*
+ * May an UPDATE of these columns of rel move a row to another partition (the delete of the old version is then in no replacement of the entry): a column of the partition key is among them
+ * (an expression of the key: any column), or a partition is partitioned itself and its own key is not looked at.
+ */
+static bool
+update_may_move_rows(Relation rel, const Bitmapset *updated)
+{
+	PartitionKey key;
+	PartitionDesc desc;
+
+	if (rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+		return false;
+	key = RelationGetPartitionKey(rel);
+	for (int i = 0; i < key->partnatts; i++)
+		if (get_partition_col_attnum(key, i) == 0 || bms_is_member(get_partition_col_attnum(key, i) - FirstLowInvalidHeapAttributeNumber, updated))
+			return true;
+	desc = RelationGetPartitionDesc(rel, true);
+	for (int i = 0; i < desc->nparts; i++)
+		if (!desc->is_leaf[i])
+			return true;
+	return false;
+}
+
+/*
+ * sift.col_track_old_rows(): the trigger of the option; its argument is the oid of the index it was made for (trigger_index says which one it serves now). For a key column it is a statement
+ * trigger with the old rows, on the table of the index and on every table above it (a statement on a parent fires the triggers of the parent alone, and its transition table holds the old rows of
+ * all its children), for track_changes = ctid a row trigger on the table of the index.
+ */
 Datum
 sift_col_track_old_rows(PG_FUNCTION_ARGS)
 {
 	TriggerData *td = (TriggerData *) fcinfo->context;
 	Relation	index,
-				heap;
-	AttrNumber	hatt;
-	Oid			indexoid;
+				heap,
+				old_rel;
+	AttrNumber	oatt;
+	Oid			indexoid,
+				heapoid;
 
 	if (CALLED_AS_TRIGGER(fcinfo) && TRIGGER_FIRED_AFTER(td->tg_event) && TRIGGER_FIRED_FOR_ROW(td->tg_event) && !TRIGGER_FIRED_BY_INSERT(td->tg_event))
 		return track_row(td);
 	if (!CALLED_AS_TRIGGER(fcinfo) || !TRIGGER_FIRED_AFTER(td->tg_event) || TRIGGER_FIRED_FOR_ROW(td->tg_event) || td->tg_oldtable == NULL)
 		ereport(ERROR, (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
 						errmsg("sift.col_track_old_rows is the trigger of an index option: AFTER UPDATE or DELETE, FOR EACH STATEMENT with an old table, or FOR EACH ROW")));
-	heap = td->tg_relation;
+	old_rel = td->tg_relation;
 	indexoid = trigger_index(td->tg_trigger);
 	if (!OidIsValid(indexoid))
 		sift_col_track_orphan_fired();
 	if (!index_live(indexoid))
+		return PointerGetDatum(NULL);
+	/* the old rows of a table above that of the index are in it only if the statement changes it: a partition it pruned is not locked for nothing */
+	heapoid = IndexGetRelation(indexoid, false);
+	if (heapoid != RelationGetRelid(old_rel) && !sift_col_ends_rows(heapoid))
 		return PointerGetDatum(NULL);
 	index = index_open(indexoid, RowExclusiveLock);
 #ifdef SIFT_TESTING
@@ -207,23 +244,30 @@ sift_col_track_old_rows(PG_FUNCTION_ARGS)
 		return PointerGetDatum(NULL);
 	}
 #endif
-	hatt = index->rd_index->indkey.values[sift_col_rel(index)->rowkey_attno - 1];
+	oatt = sift_col_row_key_attno(index, old_rel);
+	heap = heapoid == RelationGetRelid(old_rel) ? old_rel : table_open(heapoid, RowExclusiveLock);
 	/*
 	 * An UPDATE that does not assign the key column (and no BEFORE ROW trigger that could) leaves every row its key: the version it ends has its entry tombstoned by the
 	 * replacement (sift_col_supersede, which runs for every row of an UPDATE that writes a new entry), and one a HOT update left is live. Nothing is left to find, unless the
-	 * index is partial: a version outside its predicate gets no entry, so no replacement, and the entry of the version before it is the trigger's to tombstone.
+	 * index is partial: a version outside its predicate gets no entry, so no replacement, and the entry of the version before it is the trigger's to tombstone; or the row moved
+	 * to another partition, which the replacement of the new partition's index does not see.
 	 */
-	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event) && td->tg_updatedcols != NULL && !bms_is_member(hatt - FirstLowInvalidHeapAttributeNumber, td->tg_updatedcols) &&
-		(heap->trigdesc == NULL || !heap->trigdesc->trig_update_before_row) && RelationGetIndexPredicate(index) == NIL && sift_col_updates_supersede()
+	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event) && td->tg_updatedcols != NULL && !bms_is_member(oatt - FirstLowInvalidHeapAttributeNumber, td->tg_updatedcols) &&
+		(heap->trigdesc == NULL || !heap->trigdesc->trig_update_before_row) && RelationGetIndexPredicate(index) == NIL && sift_col_updates_supersede() &&
+		!update_may_move_rows(old_rel, td->tg_updatedcols)
 #ifdef SIFT_TESTING
 		&& !sift_test_no_supersede
 #endif
 		)
 	{
+		if (heap != old_rel)
+			table_close(heap, NoLock);
 		index_close(index, NoLock);
 		return PointerGetDatum(NULL);
 	}
-	sift_col_tomb_dead_keys(index, heap, td->tg_oldtable);
+	sift_col_tomb_dead_keys(index, heap, old_rel, td->tg_oldtable);
+	if (heap != old_rel)
+		table_close(heap, NoLock);
 	index_close(index, NoLock);
 	return PointerGetDatum(NULL);
 }

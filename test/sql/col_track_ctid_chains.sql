@@ -140,10 +140,11 @@ DELETE FROM chains WHERE id % 29 = 0;
 SELECT * FROM chk('the key index by key again');
 DROP INDEX chains_k;
 
--- a partition: a statement on the parent fires no row trigger of the child that the log could take for complete
+-- a partition: the row triggers fire on the child for a statement on the parent (col_track_partitions has the reads)
 CREATE TABLE parted (id int NOT NULL, g int) PARTITION BY RANGE (id);
 CREATE TABLE parted_1 PARTITION OF parted FOR VALUES FROM (0) TO (1000);
 CREATE INDEX parted_1_c ON parted_1 USING sift_col (g) WITH (track_changes = 'ctid');
+SELECT triggers, complete FROM sift.col_tracking('parted_1_c');
 DROP TABLE parted;
 
 -- the option off: the rows written while it was off are not in the log, and the reads check the heap

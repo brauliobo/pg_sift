@@ -231,13 +231,16 @@ SELECT * FROM chk('the key index by key again');
 (1 row)
 
 DROP INDEX chains_k;
--- a partition: a statement on the parent fires no row trigger of the child that the log could take for complete
+-- a partition: the row triggers fire on the child for a statement on the parent (col_track_partitions has the reads)
 CREATE TABLE parted (id int NOT NULL, g int) PARTITION BY RANGE (id);
 CREATE TABLE parted_1 PARTITION OF parted FOR VALUES FROM (0) TO (1000);
 CREATE INDEX parted_1_c ON parted_1 USING sift_col (g) WITH (track_changes = 'ctid');
-ERROR:  track_changes: table "parted_1" cannot be tracked
-DETAIL:  the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent.
-HINT:  WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.
+SELECT triggers, complete FROM sift.col_tracking('parted_1_c');
+ triggers | complete 
+----------+----------
+ t        | t
+(1 row)
+
 DROP TABLE parted;
 -- the option off: the rows written while it was off are not in the log, and the reads check the heap
 ALTER INDEX chains_c SET (track_changes = 'off');
