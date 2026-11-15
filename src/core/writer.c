@@ -540,7 +540,7 @@ sw_flush(SiftStreamWriter *sw)
 static uint32
 run_cap(const SiftStreamWriter *sw)
 {
-	uint32		share = sw->pos / SIFT_PAGE_PAYLOAD / 16;
+	uint32		share = SIFT_PAYLOAD_PAGE(sw->pos) / 16;
 
 	/*
 	 * A shared stream of unknown size (a parallel build's) gives back the unused end of its last run as a hole in the file, and

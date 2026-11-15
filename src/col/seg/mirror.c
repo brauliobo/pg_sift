@@ -60,7 +60,7 @@ seg_mirror_attach(SiftColSegment *seg, Size used)
 	const uint8 *blk = (const uint8 *) seg->hdr + SEG_HDRLEN(seg->hdr);
 	Size		room = used > SEG_HDRLEN(seg->hdr) ? used - SEG_HDRLEN(seg->hdr) : 0;
 	MirrorHeader h;
-	uint64		size = (uint64) seg->sr.npages * SIFT_PAGE_PAYLOAD;
+	uint64		size = SIFT_PAYLOAD_BYTES(seg->sr.npages);
 
 	if (room < sizeof(h))
 		return;
