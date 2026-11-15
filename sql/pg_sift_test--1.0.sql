@@ -79,6 +79,9 @@ CREATE FUNCTION sift._test_poke(index regclass, blkno int8, "offset" int4, value
 -- a LIVE run of nsb superblocks with row 5 of superblock sbidx killed: pages whose special space changed, dirty bit read back
 CREATE FUNCTION sift._test_live_clear(index regclass, nsb int4, sbidx int4, OUT damaged int4, OUT dirty bool)
 	AS 'MODULE_PATHNAME', 'sift_test_live_clear' LANGUAGE C STRICT;
+-- sets len bytes of a page at offset to 0xFF in a generic WAL record, or as an append edit (a change of the special space, of the bytes past pd_lower or of the header is refused)
+CREATE FUNCTION sift._test_write(index regclass, blkno int8, "offset" int4, len int4, edit bool DEFAULT false) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_write' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_churn(index regclass, seed int8, maxbytes int8) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_churn' LANGUAGE C STRICT;
 

@@ -60,8 +60,8 @@ static BlockNumber
 take_free(Relation index, BlockNumber blk, int idx, uint32 n)
 {
 	Buffer		buf = read_locked(index, blk, BUFFER_LOCK_EXCLUSIVE);
-	GenericXLogState *state = GenericXLogStart(index);
-	Page		page = GenericXLogRegisterBuffer(state, buf, 0);
+	SiftXlog state = sift_xlog_start(index);
+	Page		page = sift_xlog_register(&state, buf, 0);
 	SiftFreeListData *fl = FL(page);
 	SiftFreeExtent *e = &fl->ext[idx];
 	BlockNumber start = e->start;
@@ -74,7 +74,7 @@ take_free(Relation index, BlockNumber blk, int idx, uint32 n)
 		e->nblocks -= n;
 	}
 	SiftPageSetUsed(page, FL_USED(fl->n));
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(buf);
 	return start;
 }
@@ -84,7 +84,7 @@ static BlockNumber
 extend(Relation index, Buffer metabuf, uint32 n)
 {
 	BlockNumber first = META(BufferGetPage(metabuf))->high_water;
-	GenericXLogState *state;
+	SiftXlog state;
 	Buffer		buf;
 
 	if ((uint64) first + n > MaxBlockNumber)
@@ -94,10 +94,10 @@ extend(Relation index, Buffer metabuf, uint32 n)
 						RelationGetRelationName(index), MaxBlockNumber),
 				 errhint("A relation holds at most 32 TB with 8 kB blocks: partition the table so that each index stays below it.")));
 	buf = ExtendBufferedRelTo(BMR_REL(index), MAIN_FORKNUM, NULL, 0, first + n, RBM_ZERO_AND_LOCK);
-	state = GenericXLogStart(index);
-	META(GenericXLogRegisterBuffer(state, metabuf, 0))->high_water = first + n;
-	sift_page_init(GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE), SIFT_PT_FREE, 0);
-	GenericXLogFinish(state);
+	state = sift_xlog_start(index);
+	META(sift_xlog_register(&state, metabuf, 0))->high_water = first + n;
+	sift_page_init(sift_xlog_register(&state, buf, GENERIC_XLOG_FULL_IMAGE), SIFT_PT_FREE, 0);
+	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(buf);
 	return first;
 }
@@ -486,7 +486,7 @@ rewrite_chain(Relation index, Buffer metabuf, FreeChain *c, bool trim)
 	BlockNumber newhwm = hwm;
 	SiftMetaPageData *meta;
 	BlockNumber *blks;
-	GenericXLogState *state;
+	SiftXlog state;
 	int			k;
 
 	coalesce_chain(c);
@@ -517,12 +517,12 @@ rewrite_chain(Relation index, Buffer metabuf, FreeChain *c, bool trim)
 	if (c->cleared > 0 && !space_exclusive)
 		log_reuse(index, InvalidBlockNumber, c->newest);
 	write_chain(index, blks, k, c->ext, c->n, InvalidBlockNumber);
-	state = GenericXLogStart(index);
-	meta = META(GenericXLogRegisterBuffer(state, metabuf, 0));
+	state = sift_xlog_start(index);
+	meta = META(sift_xlog_register(&state, metabuf, 0));
 	meta->freelist_head = blks[0];
 	if (trim)
 		meta->high_water = newhwm;
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	return newhwm;
 }
 

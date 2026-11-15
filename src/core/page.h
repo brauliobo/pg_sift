@@ -53,6 +53,16 @@ typedef SiftPageOpaqueData *SiftPageOpaque;
 #define SiftPageGetUsed(page)	((uint32) (((PageHeader) (page))->pd_lower - SIFT_PAGE_DATA_OFFSET))
 #define SiftPageSetUsed(page, n) (((PageHeader) (page))->pd_lower = SIFT_PAGE_DATA_OFFSET + (n))
 
+/* A page as the index lays it out: pd_upper == pd_special in front of the special space, and the bytes in use inside the payload */
+static inline bool
+sift_page_layout_ok(const char *page)
+{
+	const PageHeaderData *ph = (const PageHeaderData *) page;
+
+	return ph->pd_special == BLCKSZ - MAXALIGN(sizeof(SiftPageOpaqueData)) && ph->pd_upper == ph->pd_special &&
+		ph->pd_lower >= SIFT_PAGE_DATA_OFFSET && ph->pd_lower <= ph->pd_upper;
+}
+
 /*
  * Metapage (block 0). The failure note and the analyzer configuration at its end need no format minor: a build that does not know it keeps the page as it is (pd_lower
  * stops short of it, so the note reads as zeros), one that knows it extends pd_lower when it first writes the note.

@@ -195,7 +195,7 @@ in_flight(Page page, const SiftDirSnapshot *snap)
 {
 	SiftPageOpaque op;
 
-	if (!layout_ok(page))
+	if (!sift_page_layout_ok(page))
 		return false;
 	op = SiftPageGetOpaque(page);
 	if (op->type < SIFT_PT_SEGHEADER || op->type > SIFT_PT_WBUFDATA)

@@ -86,6 +86,7 @@ bm25/kernels.h
 bm25/kernels_int.h
 bm25/wbuf.h
 core/page.h
+core/xlog.h
 bm25/parallel.h
 core/neon.h
 core/simd_isa.h

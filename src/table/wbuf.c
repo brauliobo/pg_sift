@@ -75,7 +75,7 @@ again:
 					vbase = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, Max(SIFT_TBL_NEXT_VBLOCK(&st->dir.meta), (uint64) sift_tbl_vblock_floor));
 		Buffer		hbuf,
 					dbuf;
-		GenericXLogState *state;
+		SiftXlog state;
 		Page		hp,
 					dp;
 
@@ -109,9 +109,9 @@ again:
 		hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
 		dbuf = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
 		first = BufferGetBlockNumber(dbuf);
-		state = GenericXLogStart(rel);
-		hp = GenericXLogRegisterBuffer(state, hbuf, 0);
-		dp = GenericXLogRegisterBuffer(state, dbuf, 0);
+		state = sift_xlog_start(rel);
+		hp = sift_xlog_register(&state, hbuf, 0);
+		dp = sift_xlog_register(&state, dbuf, 0);
 		sift_lane_init_header(hp, gen, first, 1);
 		TBL_WBUF_HDR(hp)->magic = SIFT_TBL_WBUF_MAGIC;
 		TBL_WBUF_HDR(hp)->vbase = vbase;
@@ -122,7 +122,7 @@ again:
 		init_data_page(dp, vbase, flags);
 		*vblock = vbase;
 		*newgen = gen;
-		GenericXLogFinish(state);
+		sift_xlog_finish(&state);
 		arg.sealed = act ? act->gen : 0;
 		arg.next_vblock = vbase + vcap;
 		arg.fresh = (SiftSegEntry) {.gen = gen,.kind = SIFT_SEG_WBUF_OPEN,.flags = SIFT_TBL_SEG_WBUF,
@@ -378,14 +378,14 @@ write_overflow(Relation rel, SiftTblRel *st, uint64 gen, MinimalTuple mtup)
 	for (uint32 i = 0; i < npg; i++)
 	{
 		Buffer		buf = sift_lane_read_locked(rel, blks[i], BUFFER_LOCK_EXCLUSIVE);
-		GenericXLogState *state = GenericXLogStart(rel);
-		Page		p = GenericXLogRegisterBuffer(state, buf, 0);
+		SiftXlog state = sift_xlog_start(rel);
+		Page		p = sift_xlog_register(&state, buf, 0);
 		uint32		n = Min(OVF_PAYLOAD, mtup->t_len - i * OVF_PAYLOAD);
 
 		memcpy((char *) TBL_PAGE(p) + TBL_PAGE_INIT, (char *) mtup + i * OVF_PAYLOAD, n);
 		TBL_PAGE(p)->ovf_next = i + 1 < npg ? blks[i + 1] : InvalidBlockNumber;
 		SiftPageSetUsed(p, TBL_PAGE_INIT + n);
-		GenericXLogFinish(state);
+		sift_xlog_finish(&state);
 		UnlockReleaseBuffer(buf);
 	}
 	first = blks[0];
@@ -610,7 +610,7 @@ sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set, uin
 		SiftTblSeg *seg = &st->wbuf[i];
 		BlockNumber blk;
 		Buffer		buf;
-		GenericXLogState *state;
+		SiftXlog state;
 		Page		page;
 		SiftTblRec *rec;
 
@@ -623,11 +623,11 @@ sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set, uin
 		sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, seg->gen);
 		if (sift_tbl_page_rec(BufferGetPage(buf), seg->gen, ItemPointerGetOffsetNumberNoCheck(tid)) != NULL)
 		{
-			state = GenericXLogStart(rel);
-			page = GenericXLogRegisterBuffer(state, buf, 0);
+			state = sift_xlog_start(rel);
+			page = sift_xlog_register(&state, buf, 0);
 			rec = (SiftTblRec *) (SiftPageGetData(page) + TBL_PAGE(page)->slot[ItemPointerGetOffsetNumberNoCheck(tid) - 1]);
 			rec->flags = (rec->flags | set) & ~clear;
-			GenericXLogFinish(state);
+			sift_xlog_finish(&state);
 		}
 		UnlockReleaseBuffer(buf);
 		return;

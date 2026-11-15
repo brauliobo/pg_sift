@@ -6,6 +6,7 @@
 #include "utils/timestamp.h"
 
 #include "core/live.h"
+#include "core/lane.h"
 
 #ifdef SIFT_TESTING
 
@@ -24,6 +25,7 @@ PG_FUNCTION_INFO_V1(sift_test_freelist);
 PG_FUNCTION_INFO_V1(sift_test_page);
 PG_FUNCTION_INFO_V1(sift_test_poke);
 PG_FUNCTION_INFO_V1(sift_test_live_clear);
+PG_FUNCTION_INFO_V1(sift_test_write);
 PG_FUNCTION_INFO_V1(sift_test_churn);
 PG_FUNCTION_INFO_V1(sift_test_dir_updates_count);
 PG_FUNCTION_INFO_V1(sift_test_flush_wal);
@@ -373,6 +375,41 @@ sift_test_live_clear(PG_FUNCTION_ARGS)
 	values[1] = BoolGetDatum(dirty[sbidx / 8] >> (sbidx % 8) & 1);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
+}
+
+/*
+ * sift._test_write(index, blkno, offset, len, edit): sets len bytes of the page at offset to 0xFF as a writer of the index does, in a
+ * generic WAL record (sift_xlog) or, with edit, as sift_page_edit_* logs an append: a change that breaks the rule of core/xlog.h is refused
+ */
+Datum
+sift_test_write(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_store(PG_GETARG_OID(0), RowExclusiveLock);
+	Buffer		buf = ReadBuffer(index, (BlockNumber) PG_GETARG_INT64(1));
+	int32		off = PG_GETARG_INT32(2),
+				len = PG_GETARG_INT32(3);
+
+	if (off < 0 || len < 1 || off + len > BLCKSZ)
+		elog(ERROR, "invalid write");
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	if (PG_GETARG_BOOL(4))
+	{
+		SiftPageEdit ed;
+
+		sift_page_edit_begin(&ed, buf, SIFT_EDIT_HEAD);
+		memset((char *) ed.page + off, 0xFF, len);
+		sift_page_edit_end(index, &ed, 1);
+	}
+	else
+	{
+		SiftXlog	x = sift_xlog_start(index);
+
+		memset((char *) sift_xlog_register(&x, buf, 0) + off, 0xFF, len);
+		sift_xlog_finish(&x);
+	}
+	UnlockReleaseBuffer(buf);
+	relation_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
 }
 
 /*

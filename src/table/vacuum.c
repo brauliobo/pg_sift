@@ -143,8 +143,8 @@ static void
 vacuum_page(Relation rel, SiftTblRel *st, const SiftTblSeg *seg, uint32 idx, VacState *v)
 {
 	Buffer		buf = sift_tbl_lock_page(rel, seg, idx);
-	GenericXLogState *state = GenericXLogStart(rel);
-	Page		page = GenericXLogRegisterBuffer(state, buf, 0);
+	SiftXlog state = sift_xlog_start(rel);
+	Page		page = sift_xlog_register(&state, buf, 0);
 	SiftTblPageHdr *ph = TBL_PAGE(page);
 	bool		changed = false;
 
@@ -195,9 +195,9 @@ vacuum_page(Relation rel, SiftTblRel *st, const SiftTblSeg *seg, uint32 idx, Vac
 			note_xid(v, rec->xmin);
 		}
 	if (changed)
-		GenericXLogFinish(state);
+		sift_xlog_finish(&state);
 	else
-		GenericXLogAbort(state);
+		sift_xlog_abort(&state);
 	UnlockReleaseBuffer(buf);
 }
 
