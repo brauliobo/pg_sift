@@ -26,6 +26,7 @@
 #include "core/store.h"
 
 #define SIFT_DICT_BLOCK			32
+#define SIFT_DICT_BLOCK_MAX_BYTES	PG_UINT16_MAX	/* the length of a block is the first two bytes of it */
 #define SIFT_DICT_ROOT_FANOUT	256
 #define SIFT_INLINE_MAX			2	/* df <= this: postings inline in the entry */
 #define SIFT_INLINE_POS_MAX		256	/* longer position records are dropped: a dictionary block stays under 64 KB */

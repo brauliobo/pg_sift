@@ -3,6 +3,7 @@
  * (layout in bm25/dict.h).
  */
 #include "dict_int.h"
+#include "core/limits.h"
 
 SiftDictWriter *
 sift_dict_writer_begin(SiftStreamWriter *sw, bool packed, bool pos2)
@@ -31,6 +32,10 @@ flush_block(SiftDictWriter *w)
 
 	if (w->nblk == 0)
 		return;
+	if (len > (uint32) sift_limit(dict_block_bytes, SIFT_DICT_BLOCK_MAX_BYTES))
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: a dictionary block takes %u bytes, over the %u that its header holds", len,
+																			(uint32) sift_limit(dict_block_bytes, SIFT_DICT_BLOCK_MAX_BYTES)),
+						errdetail("The block holds %d terms.", w->nblk)));
 	hdr[0] = len & 0xff;
 	hdr[1] = len >> 8;
 	hdr[2] = w->nblk | (w->packed ? SIFT_DICT_PACKED : 0) | (w->pos2 ? SIFT_DICT_POS2 : 0);

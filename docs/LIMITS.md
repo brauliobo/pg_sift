@@ -126,6 +126,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `any_list_rows` | rows a query list (= ANY(array)) may match in one scan | 100,000 | rows | normal plan |  | `bm25/planner_path.c` `ANY_LIST_MAX_ROWS` |  |
 | `maint_backoff_ms` | longest wait before a failing background maintenance retries | 3,600,000 | ms | retried once an hour |  | `bm25/maint.c` `BACKOFF_MAX_MS` |  |
 | `semi_set` | rows of a table whose joined keys a ranked scan tests the INCLUDE column against (the planner offers a table of at most this many rows, the scan stops at this many keys) | 65,536 | rows | the join keeps every row the scan returns (the rows of the table are checked after it, as without INCLUDE columns) |  | `bm25/planner.h` `SIFT_SEMI_MAX_SET` |  |
+| `dict_block_bytes` | one block of 32 terms of the dictionary of a BM25 segment, header included (a block takes about 22 kB at most: terms of 255 bytes with their inline postings and positions) | 65,535 (~63.999 KiB) | bytes | ERROR 54000 at build or merge |  | `bm25/dict.h` `SIFT_DICT_BLOCK_MAX_BYTES` | yes |
 
 ## `sift_table` (`src/table`)
 

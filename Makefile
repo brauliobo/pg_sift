@@ -117,6 +117,7 @@ TESTING_REGRESS += aggkern_%
 TESTING_REGRESS += aggstub_%
 TESTING_REGRESS += analyzer_version
 TESTING_REGRESS += bm25_dead_windows
+TESTING_REGRESS += bm25_dict_block_limit
 TESTING_REGRESS += bm25_wbuf_read_promote
 TESTING_REGRESS += bm25_wbuf_wide_bloom
 TESTING_REGRESS += build_limits

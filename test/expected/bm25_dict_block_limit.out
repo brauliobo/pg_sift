@@ -1,0 +1,56 @@
+-- A block of 32 terms of the dictionary of a BM25 segment keeps its length in two bytes (docs/LIMITS.md, dict_block_bytes). A block over the bound is an error at
+-- the build, never a length cut to 16 bits: the bound is lowered until the build passes, and the longest block passes while one byte less does not.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+CREATE TABLE dl (id int PRIMARY KEY, body text);
+INSERT INTO dl SELECT i, string_agg('term' || ((i * 7 + k * 13) % 400), ' ') FROM generate_series(1, 300) i, generate_series(1, 6) k GROUP BY i;
+SET sift.test_limits = 'dict_block_bytes=100';
+CREATE INDEX dl_idx ON dl USING sift (body);
+ERROR:  sift: a dictionary block takes 233 bytes, over the 100 that its header holds
+DETAIL:  The block holds 32 terms.
+CREATE FUNCTION longest_block() RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+	lim int := 100;
+	got int;
+BEGIN
+	LOOP
+		PERFORM set_config('sift.test_limits', 'dict_block_bytes=' || lim, true);
+		BEGIN
+			EXECUTE 'CREATE INDEX dl_try ON dl USING sift (body)';
+			EXECUTE 'DROP INDEX dl_try';
+			RETURN lim;
+		EXCEPTION WHEN program_limit_exceeded THEN
+			got := (regexp_match(SQLERRM, 'block takes (\d+) bytes'))[1]::int;
+			IF got <= lim THEN RAISE 'the block of % bytes is not over the bound %', got, lim; END IF;
+			lim := got;
+		END;
+	END LOOP;
+END $$;
+SELECT longest_block() BETWEEN 100 AND 65535 AS found;
+ found 
+-------
+ t
+(1 row)
+
+CREATE FUNCTION one_byte_under() RETURNS boolean LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.test_limits', 'dict_block_bytes=' || (longest_block() - 1), true);
+	EXECUTE 'CREATE INDEX dl_try ON dl USING sift (body)';
+	RETURN false;
+EXCEPTION WHEN program_limit_exceeded THEN
+	RETURN true;
+END $$;
+SELECT one_byte_under() AS refused_one_byte_under_the_longest_block;
+ refused_one_byte_under_the_longest_block 
+------------------------------------------
+ t
+(1 row)
+
+RESET sift.test_limits;
+CREATE INDEX dl_idx ON dl USING sift (body);
+DROP TABLE dl;
+DROP FUNCTION one_byte_under();
+DROP FUNCTION longest_block();
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
