@@ -736,6 +736,8 @@ CREATE FUNCTION sift._test_vstore_info(store regclass, OUT runs int4, OUT blocks
 	AS 'MODULE_PATHNAME', 'sift_test_vstore_info' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_vstore_value(store regclass, code int8) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_vstore_value' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_vstore_string_at(store regclass, code int8) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_vstore_string_at' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_vstore_forget() RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_vstore_forget' LANGUAGE C STRICT;
 

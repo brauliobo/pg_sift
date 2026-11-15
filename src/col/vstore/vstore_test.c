@@ -19,6 +19,7 @@ PG_FUNCTION_INFO_V1(sift_test_vstore_intern);
 PG_FUNCTION_INFO_V1(sift_test_vstore_info);
 PG_FUNCTION_INFO_V1(sift_test_vstore_value);
 PG_FUNCTION_INFO_V1(sift_test_vstore_forget);
+PG_FUNCTION_INFO_V1(sift_test_vstore_string_at);
 
 /* sift._test_vstore_intern(store, vals text[]): the code of each value (a new one is appended; all the new ones of the call are one run) */
 Datum
@@ -105,6 +106,19 @@ sift_test_vstore_value(PG_FUNCTION_ARGS)
 	}
 	s = sift_vstore_string(vs, (uint32) code, &len);
 	res = cstring_to_text_with_len(s, len);
+	sift_vstore_close(vs);
+	PG_RETURN_TEXT_P(res);
+}
+
+/* sift._test_vstore_string_at(store, code): the string of a code as a reader of a segment asks for it, whatever the code (a code the store does not hold is an error) */
+Datum
+sift_test_vstore_string_at(PG_FUNCTION_ARGS)
+{
+	SiftVStore *vs = sift_vstore_open(PG_GETARG_OID(0), AccessShareLock);
+	uint32		len;
+	const char *s = sift_vstore_string(vs, (uint32) PG_GETARG_INT64(1), &len);
+	text	   *res = cstring_to_text_with_len(s, len);
+
 	sift_vstore_close(vs);
 	PG_RETURN_TEXT_P(res);
 }

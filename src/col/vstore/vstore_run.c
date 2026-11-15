@@ -30,6 +30,7 @@
 #include "col/seg.h"
 #include "col/seg_int.h"
 #include "col/vstore/vstore.h"
+#include "core/limits.h"
 #include "core/page.h"
 #include "core/sift.h"
 #include "core/store.h"
@@ -394,6 +395,10 @@ sift_vstore_dir_codes(Relation rel, uint64 *epoch)
 const char *
 sift_vstore_string(SiftVStore *vs, uint32 code, uint32 *len)
 {
+	if (code >= vs->view->total)
+		pfree(view_refresh(vs));
+	if (code >= vs->view->total)
+		vs_corrupt(vs->rel, "a code is past the codes of the store");
 	return view_string(vs->view, code, len);
 }
 
@@ -768,6 +773,12 @@ retry:
 				s = sift_cdict_str(batch, i, &len);
 				map[i] = lo + sift_cdict_intern(fresh, s, len);
 			}
+			if ((uint64) lo + fresh->n > (uint64) sift_limit(value_store_codes, SIFT_VSTORE_MAX_CODES))
+				ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+								errmsg("shared value store \"%s\" cannot hold more than " UINT64_FORMAT " codes in one epoch", RelationGetRelationName(vs->rel),
+									   (uint64) sift_limit(value_store_codes, SIFT_VSTORE_MAX_CODES)),
+								errdetail("It has %u and the batch needs %u more.", lo, fresh->n),
+								errhint("sift.col_value_store_compact() begins a new epoch when codes are named by no segment.")));
 			if (fresh->n > 0)
 			{
 				write_run(vs, fresh, 0, lo, fresh->n, pol, NULL, 0);

@@ -260,6 +260,9 @@
 	  "longest wait before a failing background maintenance retries", "retried once an hour", "-", 0) \
 	X(semi_set, "SIFT_SEMI_MAX_SET", "bm25/planner.h", 65536, "rows", \
 	  "rows of a table whose joined keys a ranked scan tests the INCLUDE column against (the planner offers a table of at most this many rows, the scan stops at this many keys)", "the join keeps every row the scan returns (the rows of the table are checked after it, as without INCLUDE columns)", "-", 0) \
+	X(value_store_codes, "SIFT_VSTORE_MAX_CODES", "col/vstore/vstore.h", SIFT_VSTORE_MAX_CODES, "codes", \
+	  "codes of one epoch of a shared value store (the distinct strings of a column that its sift_col indexes share)", \
+	  "ERROR 54000 before the strings are appended; sift.col_value_store_compact() begins a new epoch when codes are named by no segment", "-", 1) \
 	X(dict_block_bytes, "SIFT_DICT_BLOCK_MAX_BYTES", "bm25/dict.h", SIFT_DICT_BLOCK_MAX_BYTES, "bytes", \
 	  "one block of 32 terms of the dictionary of a BM25 segment, header included (a block takes about 22 kB at most: terms of 255 bytes with their inline postings and positions)", \
 	  "ERROR 54000 at build or merge", "-", 1)

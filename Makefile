@@ -406,6 +406,7 @@ TESTING_REGRESS += col_vstore_epochs
 TESTING_REGRESS += col_vstore_garbage
 TESTING_REGRESS += col_vstore_left
 TESTING_REGRESS += col_vstore_lifecycle
+TESTING_REGRESS += col_vstore_limit
 TESTING_REGRESS += col_vstore_names
 TESTING_REGRESS += col_vstore_off
 TESTING_REGRESS += col_vstore_runs

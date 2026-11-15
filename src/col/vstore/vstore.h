@@ -18,6 +18,7 @@
 #define SIFT_VSTORE_AM_NAME		"sift_values"
 #define SIFT_VSTORE_LABEL		"sift_values"
 #define SIFT_VSTORE_META_FLAG	0x00040000	/* SiftMetaPageData.flags: this relation is a shared value store */
+#define SIFT_VSTORE_MAX_CODES	(UINT64CONST(1) << 30)	/* codes of one epoch: a code is 32 bits (all ones: no code) and the table of a view holds two slots for each */
 
 /* The store of the column of the table: found by its dependency on the table, else adopted by its name (a restored dump has no dependency), else made; the index depends on it */
 extern bool sift_vstore_exists(Relation heap, AttrNumber attno);
