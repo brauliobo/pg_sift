@@ -64,7 +64,7 @@ static BlockNumber
 sr_stream_cb(ReadStream *stream, void *arg, void *per_buffer_data)
 {
 	SiftStreamReader *sr = arg;
-	uint64		size = (uint64) sr->npages * SIFT_PAGE_PAYLOAD;
+	uint64		size = SIFT_PAYLOAD_BYTES(sr->npages);
 
 	while (sr->pf_page >= sr->pf_end)
 	{
@@ -77,8 +77,8 @@ sr_stream_cb(ReadStream *stream, void *arg, void *per_buffer_data)
 			continue;
 		len = Min(len, size - off);
 		/* the pages before pf_page were yielded already (ranges may overlap) */
-		sr->pf_end = Max((uint32) ((off + len - 1) / SIFT_PAGE_PAYLOAD + 1), sr->pf_page);
-		sr->pf_page = Max((uint32) (off / SIFT_PAGE_PAYLOAD), sr->pf_page);
+		sr->pf_end = Max((uint32) (SIFT_PAYLOAD_PAGE(off + len - 1) + 1), sr->pf_page);
+		sr->pf_page = Max((uint32) SIFT_PAYLOAD_PAGE(off), sr->pf_page);
 	}
 	*(uint32 *) per_buffer_data = sr->pf_page;
 	return page_block(sr, sr->pf_page++, &sr->pf_cur);
@@ -178,7 +178,7 @@ static BlockNumber
 sr_plan_cb(ReadStream *stream, void *arg, void *per_buffer_data)
 {
 	SrPlan	   *p = arg;
-	uint64		size = (uint64) p->sr->npages * SIFT_PAGE_PAYLOAD;
+	uint64		size = SIFT_PAYLOAD_BYTES(p->sr->npages);
 
 	while (p->page >= p->end)
 	{
@@ -192,8 +192,8 @@ sr_plan_cb(ReadStream *stream, void *arg, void *per_buffer_data)
 		if (len == 0 || off >= size)
 			continue;
 		len = Min(len, size - off);
-		p->page = Max((uint32) (off / SIFT_PAGE_PAYLOAD), p->end);
-		p->end = Max((uint32) ((off + len - 1) / SIFT_PAGE_PAYLOAD + 1), p->end);
+		p->page = Max((uint32) SIFT_PAYLOAD_PAGE(off), p->end);
+		p->end = Max((uint32) (SIFT_PAYLOAD_PAGE(off + len - 1) + 1), p->end);
 	}
 	return page_block(p->sr, p->page++, &p->cur);
 }
@@ -355,11 +355,11 @@ sift_sr_point(SiftStreamReader *sr)
 const void *
 sift_sr_get(SiftStreamReader *sr, uint64 off, size_t len, void *scratch)
 {
-	uint64		size = (uint64) sr->npages * SIFT_PAGE_PAYLOAD;
-	uint32		lpage = off / SIFT_PAGE_PAYLOAD;
-	size_t		in = off % SIFT_PAGE_PAYLOAD;
+	uint64		size = SIFT_PAYLOAD_BYTES(sr->npages);
+	uint32		lpage = SIFT_PAYLOAD_PAGE(off);
+	size_t		in = SIFT_PAYLOAD_OFF(off);
 	char	   *dst = scratch;
-	uint32		last = (off + len - 1) / SIFT_PAGE_PAYLOAD + 1;	/* the page past the range */
+	uint32		last = SIFT_PAYLOAD_PAGE(off + len - 1) + 1;	/* the page past the range */
 	bool		ranged = true;
 
 	if (len == 0)
@@ -415,23 +415,23 @@ sift_sr_ahead(SiftStreamReader *sr, SiftSrAheadFn next, void *arg, uint64 upto)
 	sr_stream_end(sr);
 	sr->ahead = effective_io_concurrency > 0 ? next : NULL;
 	sr->ahead_arg = arg;
-	sr->pf_limit = Min(upto / SIFT_PAGE_PAYLOAD + 1, sr->npages);
+	sr->pf_limit = Min(SIFT_PAYLOAD_PAGE(upto) + 1, sr->npages);
 }
 
 void
 sift_sr_prefetch(SiftStreamReader *sr, uint64 off, uint64 len)
 {
-	uint64		size = (uint64) sr->npages * SIFT_PAGE_PAYLOAD;
+	uint64		size = SIFT_PAYLOAD_BYTES(sr->npages);
 
 	sift_sr_ahead(sr, NULL, NULL, 0);
 	if (len == 0 || off >= size)
 		return;
 	len = Min(len, size - off);
-	if ((off + len - 1) / SIFT_PAGE_PAYLOAD == off / SIFT_PAGE_PAYLOAD)
+	if (SIFT_PAYLOAD_PAGE(off + len - 1) == SIFT_PAYLOAD_PAGE(off))
 		return;
 	sr->ahead = sr_no_more;
 	sr->pf_limit = sr->npages;
-	sr_stream_begin(sr, off / SIFT_PAGE_PAYLOAD, (off + len - 1) / SIFT_PAGE_PAYLOAD + 1, READ_STREAM_FULL);
+	sr_stream_begin(sr, SIFT_PAYLOAD_PAGE(off), SIFT_PAYLOAD_PAGE(off + len - 1) + 1, READ_STREAM_FULL);
 }
 
 void

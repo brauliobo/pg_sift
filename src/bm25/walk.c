@@ -98,7 +98,7 @@ verify_live(Walk *w)
 
 	for (int i = 0; i < (int) sizeof(lh); i++)
 		((uint8 *) &lh)[i] = sift_live_byte(&l, i, &buf);
-	if (lh.nsb != nsb || (start + (seg->hdr->ndocs + 7) / 8 + SIFT_PAGE_PAYLOAD - 1) / SIFT_PAGE_PAYLOAD != seg->hdr->live_npages)
+	if (lh.nsb != nsb || SIFT_PAYLOAD_PAGES(start + (seg->hdr->ndocs + 7) / 8) != seg->hdr->live_npages)
 		corrupt(seg, "Liveness header lists %u SBs in %u pages, expected %u.", lh.nsb, seg->hdr->live_npages, nsb);
 	for (uint32 i = 0; i < (nsb + 7) / 8; i++)
 		dirty |= sift_live_byte(&l, sizeof(lh) + i, &buf) != 0;

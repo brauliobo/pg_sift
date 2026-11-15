@@ -46,7 +46,7 @@ sift_sw_align(SiftStreamWriter *sw, size_t align)
 	SIFT_INVARIANT(align != 0 && (align & (align - 1)) == 0 && align <= SIFT_SIMD_ALIGN, "sift: invalid stream alignment %zu", align);
 	for (;;)
 	{
-		size_t		used = sift_sw_tell(sw) % SIFT_PAGE_PAYLOAD;
+		size_t		used = SIFT_PAYLOAD_OFF(sift_sw_tell(sw));
 		size_t		room = SIFT_PAGE_PAYLOAD - used;
 		size_t		pad = (size_t) -(SIFT_PAGE_DATA_OFFSET + used) & (align - 1);
 

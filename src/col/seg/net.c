@@ -69,7 +69,7 @@ seg_net(SiftColSegment *seg)
 
 	if (!pv->net_read)
 	{
-		uint64		size = (uint64) seg->sr.npages * SIFT_PAGE_PAYLOAD,
+		uint64		size = SIFT_PAYLOAD_BYTES(seg->sr.npages),
 					trailer[2];
 
 		pv->net_read = true;
@@ -82,7 +82,7 @@ seg_net(SiftColSegment *seg)
 			seg_read(seg, size - NET_TRAILER, NET_TRAILER, trailer);
 			n = MemoryContextAllocZero(seg->mcxt, sizeof(SegNet));
 			n->at = trailer[1];
-			if (trailer[0] != NET_MAGIC || n->at % SIFT_PAGE_PAYLOAD != 0 || n->at + sizeof(NetHeader) > size - NET_TRAILER)
+			if (trailer[0] != NET_MAGIC || SIFT_PAYLOAD_OFF(n->at) != 0 || n->at + sizeof(NetHeader) > size - NET_TRAILER)
 				corrupt(seg, "The trailer of the net pre-aggregates (0x%llx, at %llu) does not fit the stream of %llu bytes.", ULL(trailer[0]), ULL(trailer[1]), ULL(size));
 			seg_read(seg, n->at, sizeof(NetHeader), &n->h);
 			if (n->h.magic != NET_MAGIC || n->h.nsb != seg->nsb || n->h.ncols != (uint32) seg->schema->ncols || n->at + n->h.len > size - NET_TRAILER ||
@@ -454,7 +454,7 @@ void
 sift_cseg_net_finish(StringInfo net, uint64 at)
 {
 	uint64		trailer[2] = {NET_MAGIC, at};
-	Size		total = ((net->len + NET_TRAILER + SIFT_PAGE_PAYLOAD - 1) / SIFT_PAGE_PAYLOAD) * SIFT_PAGE_PAYLOAD;
+	Size		total = SIFT_PAYLOAD_BYTES(SIFT_PAYLOAD_PAGES(net->len + NET_TRAILER));
 
 	while ((Size) net->len + NET_TRAILER < total)
 		appendStringInfoChar(net, '\0');
@@ -469,11 +469,11 @@ sift_cseg_net_pages(SiftColSegment *seg, uint64 *at)
 
 	if (n == NULL)
 	{
-		*at = (uint64) seg->sr.npages * SIFT_PAGE_PAYLOAD;
+		*at = SIFT_PAYLOAD_BYTES(seg->sr.npages);
 		return 0;
 	}
 	*at = n->at;
-	return seg->sr.npages - (uint32) (n->at / SIFT_PAGE_PAYLOAD);
+	return seg->sr.npages - (uint32) SIFT_PAYLOAD_PAGE(n->at);
 }
 
 /* Every net unit is what its live rows make of it (sift.col_verify); a unit that has more dead rows than the sidecar knows was read as before and is not checked */

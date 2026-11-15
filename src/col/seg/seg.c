@@ -228,7 +228,7 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 		corrupt(seg, "Header (gen %llu, %llu rows, SBs %u-%u, %u units) does not match its directory entry.",
 				ULL(h->gen), ULL(h->ndocs), h->sb_lo, h->sb_hi, h->dictroot_n);
 	sift_sr_init(&seg->sr, index, h->extents, h->nextents, entry->gen);
-	size = (uint64) seg->sr.npages * SIFT_PAGE_PAYLOAD;
+	size = SIFT_PAYLOAD_BYTES(seg->sr.npages);
 	s = h->sections;
 	if (s[SIFT_SEC_POSTINGS].off != 0 || s[SIFT_SEC_DICT].off != s[SIFT_SEC_POSTINGS].len ||
 		s[SIFT_SEC_DICTIDX].off != s[SIFT_SEC_DICT].off + s[SIFT_SEC_DICT].len ||

@@ -43,7 +43,7 @@ sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	sift_sr_init(&seg->sr, index, h->extents, h->nextents, entry->gen);
 	{
 		const SiftSectionRef *s = h->sections;
-		uint64		size = (uint64) seg->sr.npages * SIFT_PAGE_PAYLOAD;
+		uint64		size = SIFT_PAYLOAD_BYTES(seg->sr.npages);
 
 		if (s[SIFT_SEC_DOCMAP].off != 0 || s[SIFT_SEC_DOCMAP].len < sizeof(uint32) ||
 			s[SIFT_SEC_POSTINGS].off != s[SIFT_SEC_DOCMAP].len ||

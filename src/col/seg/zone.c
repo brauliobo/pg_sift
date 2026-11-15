@@ -310,7 +310,7 @@ lst_block(SiftColSegment *seg)
 	{
 		const SiftSectionRef *d = seg_sec(seg, SIFT_SEC_DOCMAP);
 		uint64		at = ALIGN8(d->off + d->len),
-					size = (uint64) seg->sr.npages * SIFT_PAGE_PAYLOAD;
+					size = SIFT_PAYLOAD_BYTES(seg->sr.npages);
 		LstHeader	h;
 
 		pv->lst_read = true;
