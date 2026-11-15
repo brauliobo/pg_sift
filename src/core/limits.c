@@ -21,6 +21,7 @@
 #include "col/col.h"
 #include "col/gorder.h"
 #include "col/preagg.h"
+#include "col/scope.h"
 #include "col/setsum.h"
 #include "col/shred.h"
 #include "col/vstore/vstore.h"

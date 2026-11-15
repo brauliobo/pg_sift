@@ -265,7 +265,10 @@
 	  "ERROR 54000 before the strings are appended; sift.col_value_store_compact() begins a new epoch when codes are named by no segment", "-", 1) \
 	X(dict_block_bytes, "SIFT_DICT_BLOCK_MAX_BYTES", "bm25/dict.h", SIFT_DICT_BLOCK_MAX_BYTES, "bytes", \
 	  "one block of 32 terms of the dictionary of a BM25 segment, header included (a block takes about 22 kB at most: terms of 255 bytes with their inline postings and positions)", \
-	  "ERROR 54000 at build or merge", "-", 1)
+	  "ERROR 54000 at build or merge", "-", 1) \
+	X(scope_batch_entries, "SIFT_SCOPE_BATCH_MAX_ENTRIES", "col/scope.h", SIFT_SCOPE_BATCH_MAX_ENTRIES, "entries", \
+	  "entries (a row of the batch and a scope key) that the rows of one batch expand to when a scope index is built, promoted or refilled: each row has an entry for every key of its member, 12 bytes each", \
+	  "ERROR 54000 naming max_multiplicity", "-", 1)
 
 typedef enum SiftLimitId
 {

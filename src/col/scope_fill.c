@@ -21,6 +21,7 @@
 
 #include "col/am.h"
 #include "col/scope.h"
+#include "core/limits.h"
 
 typedef struct SiftScopeFill SiftScopeFill;
 
@@ -543,6 +544,20 @@ seen_of(const ScopeProbe *p, int64 val)
 	return hash_search(p->seen, &val, HASH_FIND, NULL);
 }
 
+static uint32
+batch_entries_max(void)
+{
+	return (uint32) sift_limit(scope_batch_entries, SIFT_SCOPE_BATCH_MAX_ENTRIES);
+}
+
+static void
+entries_refuse(void)
+{
+	ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the rows of a batch expand to more than %u scope entries", batch_entries_max()),
+					errdetail("Each row has an entry for every scope key of its member."),
+					errhint("Declare the scope with fewer keys for each member, or build the index on partitions of the table.")));
+}
+
 /* Appends k values to the array a of *n, grown as it needs (*cap) */
 static void
 append_i64(int64 **a, uint64 *cap, uint64 *n, const int64 *src, uint64 k)
@@ -574,7 +589,11 @@ probe_groups(ScopeMap *m, const int64 *fk, const uint64 *nulls, uint32 nrows)
 				append_i64(&vias, &cap, &n, &m->v.pool[e->start + j].key, 1);
 		}
 	if (n > 0)
+	{
+		if (n > batch_entries_max())
+			entries_refuse();
 		probe_values(&m->g, vias, NULL, (uint32) n);
+	}
 	if (vias != NULL)
 		pfree(vias);
 }
@@ -584,7 +603,9 @@ put(uint32 *n, uint32 **row, int64 **key, uint32 *cap, uint32 r, int64 k)
 {
 	if (*n == *cap)
 	{
-		*cap = Max(*cap * 2, 1024);
+		if (*cap >= batch_entries_max())
+			entries_refuse();
+		*cap = Min(Max(*cap * 2, 1024), batch_entries_max());
 		*row = *row == NULL ? palloc_extended(*cap * sizeof(uint32), MCXT_ALLOC_HUGE) : repalloc_huge(*row, *cap * sizeof(uint32));
 		*key = *key == NULL ? palloc_extended(*cap * sizeof(int64), MCXT_ALLOC_HUGE) : repalloc_huge(*key, *cap * sizeof(int64));
 	}
