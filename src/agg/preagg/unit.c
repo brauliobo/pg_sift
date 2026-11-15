@@ -264,6 +264,7 @@ void
 preagg_init(AggExec *ex)
 {
 	SiftSrcPreagg pa;
+	bool		supers;
 
 	ex->pa_on = ex->pa_dead = ex->pa_dead_sub = ex->whole_on = false;
 	ex->pa_dead_miss = 0;
@@ -276,8 +277,9 @@ preagg_init(AggExec *ex)
 	ex->pa_on = ex->pa_why == SPW_OK;
 	ex->pa_dead_sub = ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex, false);
 	ex->pa_dead = ex->pa_dead_sub || (ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex, true));
+	supers = ex->pa_on && (!PA_ROLLUP(ex->pa) || ex->pa.rows) && sift_agg_super && ex->search == NULL && !ex->pa.ktab;
 	/* a superunit holds no calendar cells: a scan that needs them would try its groups and split each */
-	ex->super_on = ex->pa_on && (!PA_ROLLUP(ex->pa) || ex->pa.rows) && (!ex->pa.cal || ex->pa.dset) && !ex->pa.hcal && sift_agg_super && ex->search == NULL && !ex->pa.ktab && sift_colsrc_super(ex->src, true);
+	ex->super_on = supers && (!ex->pa.cal || ex->pa.dset) && !ex->pa.hcal && sift_colsrc_super(ex->src, true);
 	if (ex->pa_on && PA_ROLLUP(ex->pa))
 	{
 		rollup_need(ex);
@@ -311,7 +313,7 @@ preagg_init(AggExec *ex)
 	}
 	/* a count(*) of one text test (equality, range or prefix): the source may count a segment from its dictionary (option count_columns) */
 	ex->pcount = ex->pcount_cmp = false;
-	if ((ex->super_on || (sift_agg_super && ex->search == NULL)) && ex->spec->nkeys == 0 && ex->spec->group < 0 && ex->spec->npred >= 1 && !ex->spec->left_lateral && ex->ntype == 0 && ex->nwide == 0)
+	if (sift_agg_super && ex->search == NULL && ex->spec->nkeys == 0 && ex->spec->group < 0 && ex->spec->npred >= 1 && !ex->spec->left_lateral && ex->ntype == 0 && ex->nwide == 0)
 	{
 		const SiftSrcStrTest *t = ex->spec->npred == 1 && ex->nfilter == 0 ? ex->ps[ex->spec->pred[0]->id].str : NULL;
 		bool		only = true,
@@ -321,7 +323,7 @@ preagg_init(AggExec *ex)
 			only = ex->spec->agg[ai].kind == SAA_COUNT_STAR && ex->spec->agg[ai].filter == NULL;
 		for (int i = 0; only && ex->pushed && t != NULL && i < ex->spec->npred; i++)
 			only = !ex->pushed[i];
-		text = ex->super_on && only && t != NULL && t->nvals == 1 && (t->op == SIFT_COLOP_EQ || (t->op >= SIFT_COLOP_LT && t->op <= SIFT_COLOP_GE) || t->op == SIFT_COLOP_PREFIX);
+		text = supers && only && t != NULL && t->nvals == 1 && (t->op == SIFT_COLOP_EQ || (t->op >= SIFT_COLOP_LT && t->op <= SIFT_COLOP_GE) || t->op == SIFT_COLOP_PREFIX);
 		if (text)
 		{
 			sift_colsrc_count_range(ex->src, t->leaf, t->op, t->vals[0].v.s, t->vals[0].len);
@@ -335,7 +337,7 @@ preagg_init(AggExec *ex)
 			ex->pcount = true;
 		}
 		/* ... or of comparisons of one integer leaf (the source applies them to the units it reads): a segment with the global order of it counts the rows between the bounds */
-		else if (ex->super_on && only && t == NULL)
+		else if (supers && only && t == NULL)
 		{
 			int			leaf = sift_agg_cmp_only_leaf(ex);
 			const SiftSrcStrTest *lo,
