@@ -103,6 +103,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `wbuf_set_bytes` | bytes in use of the batches a backend keeps of one write buffer for its next scan | 16,777,216 (16 MiB) | bytes | a set over it and over wbuf_set_amplify times its records is built for its scan and not kept: a read decodes the buffer again |  | `col/wbuf/batches.c` `BATCH_SET_BYTES` | yes |
 | `wbuf_set_amplify` | bytes of a kept set of a write buffer as a multiple of the record bytes it was made from, when it is over wbuf_set_bytes | 8 | times | the set is built for its scan and not kept: a read decodes the buffer again |  | `col/wbuf/batches.c` `BATCH_AMPLIFY` | yes |
 | `value_store_codes` | codes of one epoch of a shared value store (the distinct strings of a column that its sift_col indexes share) | 1,073,741,824 | codes | ERROR 54000 before the strings are appended; sift.col_value_store_compact() begins a new epoch when codes are named by no segment |  | `col/vstore/vstore.h` `SIFT_VSTORE_MAX_CODES` | yes |
+| `scope_batch_entries` | entries (a row of the batch and a scope key) that the rows of one batch expand to when a scope index is built, promoted or refilled: each row has an entry for every key of its member, 12 bytes each | 2,147,483,648 | entries | ERROR 54000 naming max_multiplicity |  | `col/scope.h` `SIFT_SCOPE_BATCH_MAX_ENTRIES` | yes |
 
 ## Search index, storage and queries (`src/core`, `src/bm25`)
 

@@ -328,6 +328,7 @@ typedef struct SiftScopeRead
  * for the build of 4.4 and for this one alike, 3,000 to 8,000 up to 300 units and 18,000 beyond), where 43,000 had been fitted to reads of 10 units.
  * The entity path reads a unit as a unit of the scope does (36,700), and the entity rows, the pairs and the rows kept at the figures of an earlier table (the one of col/conn.h).
  */
+#define SIFT_SCOPE_BATCH_MAX_ENTRIES	(UINT64CONST(1) << 31)	/* entries (a row and a key each) that one batch of rows expands to: the counts are 32 bits and the arrays double */
 #define SIFT_SCOPE_SETUP_INSTR		450000
 #define SIFT_SCOPE_UNIT_INSTR		36700
 #define SIFT_SCOPE_PREAGG_UNIT_INSTR	13300
