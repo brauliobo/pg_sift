@@ -41,6 +41,14 @@ SELECT fresh();
 SELECT sift._test_poke('t_idx', 5, 8176, 4, 2);
 SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
 
+-- Flags and reserved word of the special space
+SELECT fresh();
+SELECT sift._test_poke('t_idx', 4, 8178, 1, 2);
+SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
+SELECT fresh();
+SELECT sift._test_poke('t_idx', 4, 8180, 65535, 4);
+SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
+
 -- Metapage magic, format version, high-water mark
 SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 24, 0, 4);

@@ -148,8 +148,10 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 		corrupt(index, "Block %u has an invalid page layout (lower %u, upper %u, special %u).",
 				blkno, ph->pd_lower, ph->pd_upper, ph->pd_special);
 	found = *SiftPageGetOpaque(page);
-	if (likely(found.type == type && found.gen == gen))
+	if (likely(found.type == type && found.gen == gen && found.flags == 0 && found.reserved == 0))
 		return;
+	if (found.type == type && found.gen == gen)
+		corrupt(index, "Block %u: the page flags (%u) or reserved word (%u) of the special space are not zero.", blkno, found.flags, found.reserved);
 	if (RecoveryInProgress() && gen != 0)
 	{
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
