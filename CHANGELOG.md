@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: a library of an older release that reads an index a newer release has written (the metapage of a newer release is longer than the one it knows) refused it with `sift index "<name>" is corrupted` and the detail `Bad metapage (magic 0x53494654, N bytes)`, because it checked the length of the metapage before the format. It now reads the bytes past its own struct as the extension of a newer build, keeps them on every write (`pd_lower` is never lowered over them) and refuses what it cannot read with the format message and its hint (`sift index "<name>" has on-disk format M.N, this build (pg_sift X) reads formats ...`). The index is sound; install 4.3.6 on every node (standbys first) before moving any node to a newer release. No format change.
+
 ## 4.3.5 - 2026-11-14
 
 - Fixed: pg_sift: a session that ran `DROP EXTENSION pg_sift` and `CREATE EXTENSION pg_sift` kept the object id of the `sift_col` access method that it had looked up before, so the new indexes were not recognized there until the session reconnected: no aggregate pushdown, no index read by the column scan, `CREATE INDEX .. WITH (scope = ..)` refused and `EXPLAIN (SIFT)` / `sift.explain_why` reporting `no_source` for a table that had the index. The access method ids are now read with the other catalog ids of the extension, which a change of `pg_am` resets. Session-local; no data is affected.
