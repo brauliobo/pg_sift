@@ -24,8 +24,8 @@ TAPDIR=${SIFT_TMP:?}/tap
 ROOT=${SIFT_ROOT:-}
 [[ -n $ROOT || ${SIFT_NODES:-} == docker ]] || { echo "run through scripts/pgtest.sh tap" >&2; exit 1; }
 SHAREDIR=$ROOT$(pg_config --sharedir 2>/dev/null)
-PKGLIBDIR=$ROOT$(pg_config --pkglibdir 2>/dev/null)
 PG_MAJOR=$(pg_config --version 2>/dev/null | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
+PKGLIBDIR=$( (( PG_MAJOR < 18 )) || printf %s "$ROOT")$(pg_config --pkglibdir 2>/dev/null)
 DLSUFFIX=.so; [[ $(uname) != Darwin ]] || DLSUFFIX=.dylib   # the suffix of a PostgreSQL module
 NTEST=0
 NFAIL=0
