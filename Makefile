@@ -450,6 +450,7 @@ TESTING_REGRESS += merge_heal
 TESTING_REGRESS += merge_parts
 TESTING_REGRESS += position_blocks
 TESTING_REGRESS += quarantine_bm25
+TESTING_REGRESS += quarantine_build
 TESTING_REGRESS += quarantine_col
 TESTING_REGRESS += quarantine_errors
 TESTING_REGRESS += quarantine_hints
