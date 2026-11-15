@@ -35,6 +35,14 @@ SELECT plan_of('SELECT count(*) FROM t WHERE v = 3') AS plan_before;
  sift
 (1 row)
 
+SET plan_cache_mode = force_generic_plan;
+PREPARE by_v AS SELECT count(*) FROM t WHERE v = 3;
+EXECUTE by_v;
+ count 
+-------
+  2857
+(1 row)
+
 SELECT sift._test_poke('t_idx', 2, 8176, 9, 2);
  _test_poke 
 ------------
@@ -73,6 +81,25 @@ SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS next_statement;
  ok
 (1 row)
 
+-- the plan made before the index left service is refused once, and the retry is planned without it
+SELECT expect($$ EXECUTE by_v $$) AS stale_plan;
+                                    stale_plan                                    
+----------------------------------------------------------------------------------
+ 40001: sift index "t_idx" is out of service; the statement must be planned again
+(1 row)
+
+SELECT expect($$ EXECUTE by_v $$) AS replanned;
+ replanned 
+-----------
+ ok
+(1 row)
+
+EXECUTE by_v;
+ count 
+-------
+  2857
+(1 row)
+
 SELECT expect($$ SELECT * FROM t WHERE id = 5 $$) AS point_lookup;
  point_lookup 
 --------------
@@ -101,12 +128,19 @@ SELECT plan_of('SELECT count(*) FROM t WHERE v = 3') AS plan_after_reindex;
  sift
 (1 row)
 
+SELECT plan_of('EXECUTE by_v') AS prepared_plan_after_reindex;
+ prepared_plan_after_reindex 
+-----------------------------
+ sift
+(1 row)
+
 SELECT count(*) FROM t WHERE v = 3;
  count 
 -------
   2857
 (1 row)
 
+DEALLOCATE by_v;
 DROP TABLE answers, t;
 DROP FUNCTION plan_of(text), expect(text);
 DROP EXTENSION pg_sift_test;

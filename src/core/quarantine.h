@@ -42,4 +42,10 @@ typedef enum SiftSkipKind
 
 extern void sift_quarantine_skip(Relation index, SiftSkipKind kind);
 
+/*
+ * Where a scan opens, after it read the directory (meta_flags: the flags of its metapage): a plan made before the index left service is refused with SQLSTATE 40001, the one a
+ * client retries, and the plans of this backend that name the index and its table are dropped, so the retry is planned without it.
+ */
+extern void sift_quarantine_net(Relation index, uint32 meta_flags);
+
 #endif							/* SIFT_QUARANTINE_H */

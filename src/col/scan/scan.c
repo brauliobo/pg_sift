@@ -11,6 +11,7 @@
 #include "utils/acl.h"
 #include "core/cmp.h"
 #include "core/lane.h"
+#include "core/quarantine.h"
 #include "col/gorder.h"
 #include "col/scan_int.h"
 
@@ -137,6 +138,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	src->snap = (flags & SIFT_COLO_SNAP_HELD) ? snapshot : RegisterSnapshot(snapshot);
 	leader_end = scan_view_load(src, heap, view);
 	segments_pin(src, flags);
+	sift_quarantine_net(index, src->dir.meta.flags);
 	col_hf_open(src);
 	SIFT_COL_OPEN_GATE();
 	if (!(src->dir.meta.flags & SIFT_COL_META_FLAG) || sift_dir_layout_differs(&src->dir, src->schema->hash))
