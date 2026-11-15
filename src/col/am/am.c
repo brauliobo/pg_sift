@@ -14,6 +14,7 @@
 #include "catalog/pg_am_d.h"
 #include "bm25/am.h"
 #include "col/am/am_int.h"
+#include "core/quarantine.h"
 
 int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
 #ifdef SIFT_TESTING
@@ -117,6 +118,14 @@ sift_col_batch_hook(void)
 	}
 }
 
+static void
+flush_index(void *arg)
+{
+	if (sift_cwbuf_flush(arg))
+		sift_col_maint_after_seal(arg);
+}
+
+/* The rows a transaction held for an index that damage took out of service are not written: the heap has them, and the rebuild reads them there */
 void
 sift_col_flush_held(void)
 {
@@ -127,8 +136,8 @@ sift_col_flush_held(void)
 	{
 		Relation	index = relation_open(oid, RowExclusiveLock);
 
-		if (sift_cwbuf_flush(index))
-			sift_col_maint_after_seal(index);
+		if (!sift_quarantine_guard(index, SIFT_SKIP_WRITE, flush_index, index))
+			sift_cwbuf_discard(oid);
 		relation_close(index, NoLock);
 	}
 }
@@ -436,26 +445,45 @@ sift_col_updates_supersede(void)
 	return batch_updates > 0;
 }
 
+static bool
+skip_insert(Relation index)
+{
+	sift_quarantine_stopped(index, SIFT_SKIP_WRITE);
+	return false;
+}
+
 bool
 sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap,
 				  IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo)
 {
 	/* check-memory: allow copies the hint and the row context, and fetches the entry again to store the hint  */
-	SiftColRel *r = sift_col_rel(index);
-	SiftCWbufHint hint = r->hint;
-	MemoryContext rowcxt = r->rowcxt;
+	SiftColRel *r;
+	SiftCWbufHint hint;
+	MemoryContext rowcxt;
 	SiftColRow	row;
 	bool		crossed;
-	bool		supersede = r->rowkey && batch_updates > 0;
-	bool		speculative = batch_stmts > 0 || (batch_blind && !batch_blind_copy && heap->rd_rel->relam == HEAP_TABLE_AM_OID && sift_col_is_speculative(heap, heap_tid));
+	bool		supersede;
+	bool		speculative;
+	TransactionId xmin;
+	bool		ref;
+
+	if (sift_index_known_out(index))
+		return skip_insert(index);
+	r = sift_col_rel(index);
+	if (r->out)
+		return skip_insert(index);
+	hint = r->hint;
+	rowcxt = r->rowcxt;
+	supersede = r->rowkey && batch_updates > 0;
+	speculative = batch_stmts > 0 || (batch_blind && !batch_blind_copy && heap->rd_rel->relam == HEAP_TABLE_AM_OID && sift_col_is_speculative(heap, heap_tid));
 	/*
 	 * The transaction that inserted the heap tuple (a subtransaction's id inside a savepoint), kept in the record for the reads that decide visibility from the index.
 	 * Not for a speculative insertion: the tuple may be killed when its conflict is found, and no one is told. A tuple that CREATE INDEX
 	 * CONCURRENTLY adds after the build is of an older transaction, which the id of the one that adds it follows.
 	 */
-	TransactionId xmin = r->track && !speculative ? GetCurrentTransactionId() : InvalidTransactionId;
+	xmin = r->track && !speculative ? GetCurrentTransactionId() : InvalidTransactionId;
 	/* the heap tuple is the record's values only where its xmin is the kept one: not for the tuples a concurrent build validates (an index not valid yet), nor a table that is not a heap */
-	bool		ref = sift_col_wbuf_ref && TransactionIdIsValid(xmin) && index->rd_index->indisvalid && heap->rd_rel->relam == HEAP_TABLE_AM_OID;
+	ref = sift_col_wbuf_ref && TransactionIdIsValid(xmin) && index->rd_index->indisvalid && heap->rd_rel->relam == HEAP_TABLE_AM_OID;
 
 	batch_inserting = true;
 	batch_blind_wrote |= batch_blind;

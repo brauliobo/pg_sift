@@ -14,6 +14,7 @@
 #include "col/am.h"
 #include "col/amscan/amscan_int.h"
 #include "core/errctx.h"
+#include "core/quarantine.h"
 #include "core/tomb.h"
 
 
@@ -498,9 +499,13 @@ bool
 sift_col_amcanreturn(Relation index, int attno)
 {
 	/* check-memory: allow reads the definitions only, no call that locks */
-	SiftColRel *r = sift_col_rel(index);
-	const SiftColDef *d = &r->meta.cols[r->first[attno]];
+	SiftColRel *r;
+	const SiftColDef *d;
 
+	if (sift_index_known_out(index))
+		return false;
+	r = sift_col_rel(index);
+	d = &r->meta.cols[r->first[attno]];
 	if (r->nleaves[attno] != 1 || r->name[attno] || (d->path && d->path[0]) || (d->flags & SIFT_COLD_LOSSY))
 		return false;
 	switch (d->type)

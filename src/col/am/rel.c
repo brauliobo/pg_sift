@@ -324,6 +324,7 @@ build_rel(Relation index, MemoryContext mcxt)
 			}
 		}
 	r->stale = stored && r->schema->hash != hash;
+	r->out = stored && (flags & SIFT_META_QUARANTINED);
 	return r;
 }
 
