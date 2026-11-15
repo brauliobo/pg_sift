@@ -151,13 +151,14 @@ conninfo() { echo "host=$(dir "$1")/sock port=$(port "$1") user=postgres dbname=
 
 node_conf() { printf '%s\n' "$2" >>"$(dir "$1")/data/postgresql.conf"; }
 # use_root NODE ROOT: NODE loads the sift installed under ROOT (a released library built by scripts/old-lib-check.sh, or $newroot, the one of this
-# tree). Only this tree defines the settings scripts/pgtest.sh conf sets (sift.table_auto_defrag, sift.col_auto_merge, sift.col_auto_merge_wal_pct, sift.test_scope_patch): a released
-# library warns that "sift" is a reserved prefix in the first statement of a session, and the test compares what the statements print.
+# tree). Only this tree defines the sift. settings scripts/pgtest.sh conf sets: a released library warns that "sift" is a reserved prefix in the first statement of a session, and the test
+# compares what the statements print.
 use_root() {
-	local conf=$(dir "$1")/data/postgresql.conf k
+	local conf=$(dir "$1")/data/postgresql.conf tree k
 	ROOT=$2
-	for k in table_auto_defrag col_auto_merge col_auto_merge_wal_pct test_scope_patch; do sed_i "/^sift\.$k = /d" "$conf"; done
-	[[ $ROOT != "$newroot" ]] || "$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf | grep -E '^sift\.(table_auto_defrag|col_auto_merge|col_auto_merge_wal_pct|test_scope_patch) = ' >>"$conf"
+	tree=$("$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf | grep -E '^sift\.[a-z_]+ = ')
+	while IFS=' ' read -r k _; do sed_i "/^${k//./\\.} = /d" "$conf"; done <<<"$tree"
+	[[ $ROOT != "$newroot" ]] || printf '%s\n' "$tree" >>"$conf"
 	node_conf "$1" "extension_control_path = '$ROOT$(pg_config --sharedir):\$system'
 dynamic_library_path = '$ROOT$(pg_config --pkglibdir):\$libdir'"
 }
