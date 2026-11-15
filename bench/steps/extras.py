@@ -35,7 +35,7 @@ def host_load():
         pressure = ' cpu_pressure %s%%' % re.search(r'some avg10=([0-9.]+)', open('/proc/pressure/cpu').read()).group(1)
     except (OSError, AttributeError):
         pass
-    return 'load %s%s' % (' '.join(open('/proc/loadavg').read().split()[:3]), pressure)
+    return 'load %s%s' % (' '.join('%.2f' % x for x in os.getloadavg()), pressure)
 
 
 def write(path, title, meta, rows):
