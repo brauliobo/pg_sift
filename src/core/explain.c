@@ -202,7 +202,7 @@ sift_explain_init(void)
 #if PG_VERSION_NUM >= 180000
 	explain_ext_id = GetExplainExtensionId("pg_sift");
 #if PG_VERSION_NUM >= 190000
-	RegisterExtensionExplainOption("sift", option_sift, NULL);
+	RegisterExtensionExplainOption("sift", option_sift, GUCCheckBooleanExplainOption);
 #else
 	RegisterExtensionExplainOption("sift", option_sift);
 #endif
