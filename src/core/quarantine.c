@@ -232,17 +232,29 @@ typedef struct PersistAsk
 
 static PersistAsk asks[QUAR_ASKS];
 static int	nasks;
-static bool asks_hooked;
+static bool xact_hooked;
 static bool persisting;
 
+/* What a transaction ended with is handed to the registry, and the workers asked for are started: a session that skips an index and ends (an autovacuum worker) leaves nothing behind in its own memory */
 static void
-persist_xact(XactEvent event, void *arg)
+quarantine_xact(XactEvent event, void *arg)
 {
 	if (event != XACT_EVENT_COMMIT && event != XACT_EVENT_ABORT)
 		return;
+	publish(shared);
 	for (int i = 0; i < nasks; i++)
 		(void) sift_maint_register_worker_oid(asks[i].index, "sift_quarantine_main", asks[i].subject);
 	nasks = 0;
+}
+
+static void
+hook_xact(void)
+{
+	if (!xact_hooked)
+	{
+		RegisterXactCallback(quarantine_xact, NULL);
+		xact_hooked = true;
+	}
 }
 
 static void
@@ -257,11 +269,7 @@ ask_persist(Relation index)
 			return;
 	if (nasks == QUAR_ASKS)
 		return;
-	if (!asks_hooked)
-	{
-		RegisterXactCallback(persist_xact, NULL);
-		asks_hooked = true;
-	}
+	hook_xact();
 	a = &asks[nasks++];
 	a->index = RelationGetRelid(index);
 	snprintf(a->subject, sizeof(a->subject), "%s", sift_worker_subject(index));
@@ -455,6 +463,7 @@ sift_quarantine_skip(Relation index, SiftSkipKind kind)
 	e->skipped_vacuums += kind == SIFT_SKIP_VACUUM;
 	e->refused_scans += kind == SIFT_SKIP_SCAN;
 	unpublished = true;
+	hook_xact();
 }
 
 /* One notice for each index and a minute, whatever the writes and VACUUMs that skip it: the count is in sift.quarantine */
