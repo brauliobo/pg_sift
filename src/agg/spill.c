@@ -41,6 +41,7 @@
 #include "core/limits.h"
 #include "agg/agg_int.h"
 #include "agg/spill/int.h"
+#include "agg/gen_run_int.h"
 #include "agg/update_int.h"
 
 #define SPILL_MIN_PARTS		8
@@ -648,6 +649,8 @@ spill_more(AggExec *ex)
 		dist_finish_all(ex);
 		dist_end_all(ex);
 		list_groups(ex);
+		/* the final function of a generic aggregate runs per table, as the partitions are the result */
+		gen_finish(ex);
 		if (ex->spec->gtopn_k > 0)
 			groups_topn(ex);
 		if (ex->spec->nord > 0)

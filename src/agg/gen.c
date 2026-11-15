@@ -325,6 +325,17 @@ gen_open(AggExec *ex)
 	MemoryContextSwitchTo(old);
 }
 
+/* the table starts over (a spill, the next partition): the states of its groups, and the results made of them, go */
+void
+gen_table_reset(AggExec *ex)
+{
+	if (ex->gres)
+		MemoryContextReset(ex->gres);
+	for (int ai = 0; ex->gst && ai < ex->spec->naggs; ai++)
+		if (ex->gst[ai])
+			ReScanExprContext(ex->gst[ai]->cx);
+}
+
 void
 gen_close(AggExec *ex)
 {

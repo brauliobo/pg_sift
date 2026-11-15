@@ -125,6 +125,7 @@ void gen_sort_put(GenSt *st, AggAcc *acc, uint32 gid, const Datum *args, const b
 void gen_sort_put_sid(GenSt *st, uint32 sid, const Datum *args, const bool *nulls);
 void gen_open(AggExec *ex);
 void gen_close(AggExec *ex);
+void gen_table_reset(AggExec *ex);
 void gen_merge_hll(AggExec *ex, int ai, const uint8 *blob);
 void gen_arg(AggExec *ex, GenSt *st, const GenIn *in, int j, int k, Datum *arg, bool *isnull);
 void gen_advance(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, const Datum *args, const bool *nulls);
