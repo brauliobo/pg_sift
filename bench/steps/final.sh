@@ -10,7 +10,7 @@
 #   cases        the cases of bench/cases.tsv at the size of the pass, on pg_sift, PostgreSQL and pg_duckdb: tables shared by the cases that read the same one, a lane stops repeating after 20 s
 #   duckdb       the ten questions of the store on pg_duckdb at 1M orders
 #   generic      the generic suites (TPC-H-like, ClickBench-like, time series) on pg_duckdb and ClickHouse at 1M rows; pg_sift and PostgreSQL are in the cases stage
-#   scope        (named only in the release pass, whose plan is 120 minutes: `--stages scope`, 37 min measured) the scope index against tuned stock PostgreSQL (steps/scope_stock.sh, docs/results/scope-stock.tsv,
+#   scope        (named only in the release pass, whose plan is 120 minutes: `--stages scope`, 37 min measured) the scope index against tuned stock PostgreSQL (steps/scope_stock.sh,
 #                the blocks of README.md and docs/COL-SCOPE.md); in the quick profile (`release-quick`) its quick size, 8 min
 #   sets the set-filter benchmark (synthetic, steps/sets.sh) on the release REF (the release of SIFT_SRC=ref:REF, else this checkout)
 #   scale        (named only, never in the default pass) the cases of bench/cases.tsv at 1x, 10x and 100x of 200,000 orders: bench/results/cases-scale.tsv, the block "Benchmark cases, by size"; 20 million orders at the largest point, for a host with the memory and the hours (`--budget 0`)

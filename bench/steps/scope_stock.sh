@@ -3,7 +3,7 @@
 # The scope index against tuned stock PostgreSQL (steps/scope_stock_arms.py): nine read classes, eight tenants, warm and cold, eight arms (the b-tree and semi join as written, the tuned semi join,
 # copies of the events by tenant kept by triggers, rollups, pg_ivm incremental views, the entity index, the scope index), every result md5-equal to the plain statement, and the write cost of each arm.
 #   --size        quick (240,000 events, tenants 1, 4 and 8, five arms: minutes; the quick release profile runs it) or standard (2.4 million events, eight tenants, every arm; the release pass)
-#   --docs        standard size only: also write docs/results/scope-stock.tsv and rewrite the generated blocks of README.md and docs/COL-SCOPE.md (scripts/gen-docs.py)
+#   --docs        standard size only: also write the results file and rewrite the generated blocks of README.md and docs/COL-SCOPE.md (scripts/gen-docs.py)
 #   --arms LIST   some arms only (stock_default is the oracle of every md5 and must be in the list); with --docs their rows replace those of the arms in docs/results/scope-stock.tsv (merge)
 #   --resume      after an interrupted --keep run: the arms already saved in its raw directory are not measured again (needs --keep both times)
 #   --out FILE    the results file (default bench/out/scope-stock-DATE.tsv); --keep keeps the raw per-arm tables next to it
