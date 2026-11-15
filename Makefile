@@ -463,6 +463,7 @@ TESTING_REGRESS += quarantine_random
 TESTING_REGRESS += quarantine_registry
 TESTING_REGRESS += quarantine_silent
 TESTING_REGRESS += quarantine_track
+TESTING_REGRESS += quarantine_txstate
 TESTING_REGRESS += quarantine_vacuum
 TESTING_REGRESS += quarantine_views
 TESTING_REGRESS += read_%
