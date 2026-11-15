@@ -350,6 +350,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, c
 	pgstat_count_heap_scan(heap);
 	sift_tbl_auto_defrag_tick(heap, st);
 	sift_tbl_refresh(heap, st);
+	sift_tbl_scan_note(heap, st);
 	tbl_load_state(t, st, view);
 	t->lay = tbl_layout(heap);
 	t->dict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);

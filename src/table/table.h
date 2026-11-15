@@ -149,7 +149,7 @@ typedef struct SiftTblRel
 	bool		fresh;			/* the new table of a rewrite: nobody else reads it, its released extents are reusable at once */
 	/* what this backend saw when it last asked for the background pass (auto_defrag_check), and when it last looked (sift_tbl_auto_defrag_tick) */
 	uint64		defrag_tombs;
-	uint64		defrag_scans;	/* the reads of the table then (pgstat numscans) */
+	uint64		defrag_scans;	/* the reads of the table then (the scan count of the metapage) */
 	int64		defrag_free;
 	int64		defrag_at;
 	uint64		defrag_vblock;	/* the next virtual block then: a write buffer opened since is a writer that reuses the free blocks */
@@ -665,6 +665,7 @@ typedef struct SiftTblMaintain
 extern void sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r);
 /* Asks for the pass when the table is worth it; at most once per sift.maintenance_naptime of a backend. Called where rows are deleted and read as well as where a write buffer closes: a table of small writes may close none */
 extern void sift_tbl_auto_defrag_tick(Relation rel, SiftTblRel *st);
+extern void sift_tbl_scan_note(Relation rel, SiftTblRel *st);
 extern PGDLLEXPORT void sift_tbl_maint_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_tbl_settle_worker_main(Datum main_arg);
 /* sift.table_async_promote: a writer that closed a write buffer asks the worker to settle it instead of doing it; false when it has to settle itself */
