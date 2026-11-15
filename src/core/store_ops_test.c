@@ -21,6 +21,7 @@ PG_FUNCTION_INFO_V1(sift_test_space);
 PG_FUNCTION_INFO_V1(sift_test_info);
 PG_FUNCTION_INFO_V1(sift_test_maint_failures);
 PG_FUNCTION_INFO_V1(sift_test_meta_note);
+PG_FUNCTION_INFO_V1(sift_test_meta_stamp);
 PG_FUNCTION_INFO_V1(sift_test_meta_size);
 PG_FUNCTION_INFO_V1(sift_test_maint_wait_us);
 PG_FUNCTION_INFO_V1(sift_test_freelist);
@@ -166,6 +167,24 @@ sift_test_meta_note(PG_FUNCTION_ARGS)
 		elog(ERROR, "sift test: unknown mode \"%s\"", mode);
 	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(buf);
+	relation_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
+}
+
+static bool
+put_floor_xmin(SiftMetaPageData *meta, void *arg)
+{
+	meta->scope_floor[0].xmin = 7;
+	return true;
+}
+
+/* sift._test_meta_stamp(index): a stamp of no lineage but a horizon, through the update every writer of the metapage uses (sift_meta_update) */
+Datum
+sift_test_meta_stamp(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
+
+	sift_meta_update(index, put_floor_xmin, NULL);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
 }

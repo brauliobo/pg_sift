@@ -151,6 +151,24 @@ SELECT failures, failed_at, error_code, last_error, next_retry IS NOT NULL AS ha
         1 |           |            |            | t         | f
 (1 row)
 
+SELECT sift._test_meta_note('mf_idx', 'old');
+ _test_meta_note 
+-----------------
+ 
+(1 row)
+
+SELECT sift._test_meta_stamp('mf_idx');
+ _test_meta_stamp 
+------------------
+ 
+(1 row)
+
+SELECT lower = 24 + sift._test_meta_size() AS stamp_covered FROM sift._test_page('mf_idx', 0);
+ stamp_covered 
+---------------
+ t
+(1 row)
+
 SELECT sift._test_meta_note('mf_idx', 'junk');
  _test_meta_note 
 -----------------
