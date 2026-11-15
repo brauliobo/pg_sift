@@ -38,6 +38,7 @@
 
 planner_hook_type prev_planner_hook;
 static ExecutorStart_hook_type prev_executor_start;
+static ExecutorFinish_hook_type prev_executor_finish;
 #ifdef SIFT_TESTING
 static ExecutorEnd_hook_type prev_executor_end;
 #endif
@@ -835,6 +836,17 @@ sift_executor_start(QueryDesc *queryDesc, int eflags)
 	}
 }
 
+/* The statement that loaded the library while it ran was not noted by sift_executor_start: its AFTER triggers (the ones of track_changes) fire in ExecutorFinish */
+static void
+sift_executor_finish(QueryDesc *queryDesc)
+{
+	sift_col_stmt_finish(queryDesc);
+	if (prev_executor_finish)
+		prev_executor_finish(queryDesc);
+	else
+		standard_ExecutorFinish(queryDesc);
+}
+
 #ifdef SIFT_TESTING
 /*
  * ExecutorEnd resets the executor state's slot table after the nodes' contexts are deleted: every slot of it must live in the
@@ -888,6 +900,8 @@ sift_aggcte_init(void)
 	planner_hook = sift_planner;
 	prev_executor_start = ExecutorStart_hook;
 	ExecutorStart_hook = sift_executor_start;
+	prev_executor_finish = ExecutorFinish_hook;
+	ExecutorFinish_hook = sift_executor_finish;
 	sift_agg_rerun_init();
 #ifdef SIFT_TESTING
 	prev_executor_end = ExecutorEnd_hook;

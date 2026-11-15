@@ -132,6 +132,235 @@ UPDATE pk SET g = (g + 1) % 7 WHERE id % 5 = 0;
 DELETE FROM pk WHERE id % 13 = 0;
 SELECT * FROM partitions_read('pk');
 
+-- the first statement of a backend that loads the library: INSERT, INSERT ON CONFLICT, COPY and MERGE reach a partition only when they route a row to it, so the library is loaded
+-- while the statement runs, after its start was missed; the statement still ends the old rows of the partitions, and each case below runs as the first statement of a new backend
+CREATE FUNCTION fresh_read(t regclass) RETURNS TABLE (leaves bigint, heap_free bool, differing numeric) LANGUAGE sql AS $$
+	SELECT count(*), bool_and(heap_free), sum(differing) FROM partitions_read(t) $$;
+CREATE TABLE fh (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) PARTITION BY HASH (id);
+CREATE TABLE fh0 PARTITION OF fh FOR VALUES WITH (MODULUS 3, REMAINDER 0) WITH (autovacuum_enabled = false);
+CREATE TABLE fh1 PARTITION OF fh FOR VALUES WITH (MODULUS 3, REMAINDER 1) WITH (autovacuum_enabled = false);
+CREATE TABLE fh2 PARTITION OF fh FOR VALUES WITH (MODULUS 3, REMAINDER 2) WITH (autovacuum_enabled = false);
+CREATE TABLE fr (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) PARTITION BY RANGE (id);
+CREATE TABLE fr0 PARTITION OF fr FOR VALUES FROM (0) TO (2400) WITH (autovacuum_enabled = false);
+CREATE TABLE fr1 PARTITION OF fr FOR VALUES FROM (2400) TO (4800) WITH (autovacuum_enabled = false);
+CREATE TABLE fr2 PARTITION OF fr FOR VALUES FROM (4800) TO (100000) WITH (autovacuum_enabled = false);
+CREATE TABLE fl (id int NOT NULL, g int NOT NULL, v int NOT NULL, PRIMARY KEY (id, g)) PARTITION BY LIST (g);
+CREATE TABLE fl0 PARTITION OF fl FOR VALUES IN (0, 1, 2) WITH (autovacuum_enabled = false);
+CREATE TABLE fl1 PARTITION OF fl FOR VALUES IN (3, 4) WITH (autovacuum_enabled = false);
+CREATE TABLE fl2 PARTITION OF fl FOR VALUES IN (5, 6) WITH (autovacuum_enabled = false);
+ALTER TABLE fl0 ADD UNIQUE (id);
+ALTER TABLE fl1 ADD UNIQUE (id);
+ALTER TABLE fl2 ADD UNIQUE (id);
+CREATE TABLE fm (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) PARTITION BY RANGE (id);
+CREATE TABLE fm0 PARTITION OF fm FOR VALUES FROM (0) TO (4500) PARTITION BY HASH (id);
+CREATE TABLE fm00 PARTITION OF fm0 FOR VALUES WITH (MODULUS 2, REMAINDER 0) WITH (autovacuum_enabled = false);
+CREATE TABLE fm01 PARTITION OF fm0 FOR VALUES WITH (MODULUS 2, REMAINDER 1) WITH (autovacuum_enabled = false);
+CREATE TABLE fm1 PARTITION OF fm FOR VALUES FROM (4500) TO (100000) PARTITION BY HASH (id);
+CREATE TABLE fm10 PARTITION OF fm1 FOR VALUES WITH (MODULUS 2, REMAINDER 0) WITH (autovacuum_enabled = false);
+CREATE TABLE fm11 PARTITION OF fm1 FOR VALUES WITH (MODULUS 2, REMAINDER 1) WITH (autovacuum_enabled = false);
+INSERT INTO fh SELECT i * 3, i % 7, i FROM generate_series(0, 2399) i;
+INSERT INTO fr SELECT i * 3, i % 7, i FROM generate_series(0, 2399) i;
+INSERT INTO fl SELECT i * 3, i % 7, i FROM generate_series(0, 2399) i;
+INSERT INTO fm SELECT i * 3, i % 7, i FROM generate_series(0, 2399) i;
+CREATE INDEX fh0_c ON fh0 USING sift_col (id, g, v);
+CREATE INDEX fh1_c ON fh1 USING sift_col (id, g, v);
+CREATE INDEX fh2_c ON fh2 USING sift_col (id, g, v);
+CREATE INDEX fr_c ON fr USING sift_col (id, g, v);
+CREATE INDEX fl0_c ON fl0 USING sift_col (id, g, v) WITH (track_changes = 'id');
+CREATE INDEX fl1_c ON fl1 USING sift_col (id, g, v) WITH (track_changes = 'id');
+CREATE INDEX fl2_c ON fl2 USING sift_col (id, g, v) WITH (track_changes = 'id');
+CREATE INDEX fm00_c ON fm00 USING sift_col (id, g, v);
+CREATE INDEX fm01_c ON fm01 USING sift_col (id, g, v);
+CREATE INDEX fm10_c ON fm10 USING sift_col (id, g, v);
+CREATE INDEX fm11_c ON fm11 USING sift_col (id, g, v);
+VACUUM fh, fr, fl, fm;
+SELECT 'start' AS "case", * FROM fresh_read('fh') UNION ALL SELECT 'start', * FROM fresh_read('fr') UNION ALL SELECT 'start', * FROM fresh_read('fl') UNION ALL SELECT 'start', * FROM fresh_read('fm');
+
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO fh SELECT i * 3, i % 7, i FROM generate_series(0, 2699) i ON CONFLICT (id) DO UPDATE SET v = fh.v + 1;
+SELECT 'hash upsert' AS "case", * FROM fresh_read('fh');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO fh SELECT i * 3, i % 7, i FROM generate_series(0, 2399) i
+	ON CONFLICT (id) DO UPDATE SET id = (SELECT x FROM generate_series(fh.id * 1000 + 100000, fh.id * 1000 + 100900) x
+		WHERE satisfies_hash_partition('fh'::regclass, 3, right(fh.tableoid::regclass::text, 1)::int, x) LIMIT 1);
+SELECT 'hash upsert key' AS "case", * FROM fresh_read('fh');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO fh SELECT i * 3 + 1, i % 7, i FROM generate_series(0, 2699) i ON CONFLICT (id) DO NOTHING;
+SELECT 'hash upsert nothing' AS "case", * FROM fresh_read('fh');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+COPY fh FROM STDIN;
+900001	1	1
+900002	2	2
+900003	3	3
+\.
+SELECT 'hash copy' AS "case", * FROM fresh_read('fh');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+UPDATE fh SET v = v + 1 WHERE id % 2 = 0;
+SELECT 'hash update' AS "case", * FROM fresh_read('fh');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+DELETE FROM fh WHERE v % 5 = 0;
+SELECT 'hash delete' AS "case", * FROM fresh_read('fh');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+MERGE INTO fh USING (SELECT CASE WHEN i % 2 = 0 THEN i * 3 + 1 ELSE i * 3 + 2 END AS id, i % 7 AS g, i AS v FROM generate_series(0, 2699) i) s ON fh.id = s.id
+	WHEN MATCHED AND s.v % 4 = 0 THEN DELETE WHEN MATCHED THEN UPDATE SET v = fh.v + 5 WHEN NOT MATCHED THEN INSERT VALUES (s.id + 30000, s.g, s.v);
+SELECT 'hash merge' AS "case", * FROM fresh_read('fh');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO fr SELECT i * 3, i % 7, i FROM generate_series(0, 2699) i ON CONFLICT (id) DO UPDATE SET v = fr.v + 1;
+SELECT 'range upsert' AS "case", * FROM fresh_read('fr');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO fr SELECT i * 3, i % 7, i FROM generate_series(0, 2399) i ON CONFLICT (id) DO UPDATE SET id = fr.id + 1;
+SELECT 'range upsert key' AS "case", * FROM fresh_read('fr');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO fr SELECT i * 3 + 1, i % 7, i FROM generate_series(0, 2699) i ON CONFLICT (id) DO NOTHING;
+SELECT 'range upsert nothing' AS "case", * FROM fresh_read('fr');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+COPY fr FROM STDIN;
+19001	1	1
+19002	2	2
+\.
+SELECT 'range copy' AS "case", * FROM fresh_read('fr');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+UPDATE fr SET id = id + 2401 WHERE id % 3 = 1 AND id % 2 = 0 AND id < 4800;
+SELECT 'range update moving' AS "case", * FROM fresh_read('fr');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+DELETE FROM fr WHERE v % 5 = 0;
+SELECT 'range delete' AS "case", * FROM fresh_read('fr');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+MERGE INTO fr USING (SELECT CASE WHEN i % 2 = 0 THEN i * 3 + 1 ELSE i * 3 + 2 END AS id, i % 7 AS g, i AS v FROM generate_series(0, 2699) i) s ON fr.id = s.id
+	WHEN MATCHED AND s.v % 4 = 0 THEN DELETE WHEN MATCHED THEN UPDATE SET v = fr.v + 5 WHEN NOT MATCHED THEN INSERT VALUES (s.id + 30000, s.g, s.v);
+SELECT 'range merge' AS "case", * FROM fresh_read('fr');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO fl SELECT i * 3, i % 7, i FROM generate_series(0, 2699) i ON CONFLICT (id, g) DO UPDATE SET v = fl.v + 1;
+SELECT 'list upsert' AS "case", * FROM fresh_read('fl');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO fl SELECT i * 3, i % 7, i FROM generate_series(0, 2399) i ON CONFLICT (id, g) DO UPDATE SET id = fl.id + 1;
+SELECT 'list upsert key' AS "case", * FROM fresh_read('fl');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO fl SELECT i * 3 + 1, i % 7, i FROM generate_series(0, 2699) i ON CONFLICT (id, g) DO NOTHING;
+SELECT 'list upsert nothing' AS "case", * FROM fresh_read('fl');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+UPDATE fl SET g = (g + 3) % 7 WHERE id % 2 = 0;
+SELECT 'list update moving' AS "case", * FROM fresh_read('fl');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+DELETE FROM fl WHERE v % 5 = 0;
+SELECT 'list delete' AS "case", * FROM fresh_read('fl');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+MERGE INTO fl USING (SELECT CASE WHEN i % 2 = 0 THEN i * 3 + 1 ELSE i * 3 + 2 END AS id, i % 7 AS g, i AS v FROM generate_series(0, 2699) i) s ON fl.id = s.id
+	WHEN MATCHED AND s.v % 4 = 0 THEN DELETE WHEN MATCHED THEN UPDATE SET v = fl.v + 5 WHEN NOT MATCHED THEN INSERT VALUES (s.id + 30000, s.g, s.v);
+SELECT 'list merge' AS "case", * FROM fresh_read('fl');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO fm SELECT i * 3, i % 7, i FROM generate_series(0, 2699) i ON CONFLICT (id) DO UPDATE SET v = fm.v + 1;
+SELECT 'two levels upsert' AS "case", * FROM fresh_read('fm');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO fm SELECT 300, 1, 1
+	ON CONFLICT (id) DO UPDATE SET id = (SELECT x FROM generate_series(1000, 2000) x WHERE x % 3 = 1 AND
+		satisfies_hash_partition('fm0'::regclass, 2, right(fm.tableoid::regclass::text, 1)::int, x) LIMIT 1);
+SELECT 'two levels upsert key' AS "case", * FROM fresh_read('fm');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+UPDATE fm SET id = id + 4502 WHERE id % 3 = 0 AND id % 2 = 0 AND id < 4500;
+SELECT 'two levels update moving' AS "case", * FROM fresh_read('fm');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+DELETE FROM fm WHERE v % 5 = 0;
+SELECT 'two levels delete' AS "case", * FROM fresh_read('fm');
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+MERGE INTO fm USING (SELECT CASE WHEN i % 2 = 0 THEN i * 3 + 1 ELSE i * 3 + 2 END AS id, i % 7 AS g, i AS v FROM generate_series(0, 2699) i) s ON fm.id = s.id
+	WHEN MATCHED AND s.v % 4 = 0 THEN DELETE WHEN MATCHED THEN UPDATE SET v = fm.v + 5 WHEN NOT MATCHED THEN INSERT VALUES (s.id + 30000, s.g, s.v);
+SELECT 'two levels merge' AS "case", * FROM fresh_read('fm');
+-- a speculative insertion keeps no transaction id in its entry (the row may be killed when its conflict is found), so a read of it visits the heap, in the first statement of a backend as in any other
+CREATE TABLE fs (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) PARTITION BY RANGE (id);
+CREATE TABLE fs0 PARTITION OF fs FOR VALUES FROM (0) TO (5000) WITH (autovacuum_enabled = false);
+CREATE TABLE fs1 PARTITION OF fs FOR VALUES FROM (5000) TO (10000) WITH (autovacuum_enabled = false);
+CREATE TABLE fv (LIKE fs INCLUDING ALL) PARTITION BY RANGE (id);
+CREATE TABLE fv0 PARTITION OF fv FOR VALUES FROM (0) TO (5000) WITH (autovacuum_enabled = false);
+CREATE TABLE fv1 PARTITION OF fv FOR VALUES FROM (5000) TO (10000) WITH (autovacuum_enabled = false);
+INSERT INTO fs SELECT i, i % 7, i FROM generate_series(0, 5099) i;
+INSERT INTO fv SELECT i, i % 7, i FROM generate_series(0, 5099) i;
+CREATE INDEX fs1_c ON fs1 USING sift_col (id, g, v);
+CREATE INDEX fv1_c ON fv1 USING sift_col (id, g, v);
+VACUUM fs, fv;
+SELECT sift_helpers.grouped_read_heap_pages('fs1') AS before_fresh, sift_helpers.grouped_read_heap_pages('fv1') AS before_warm;
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO fs SELECT i, i % 7, i FROM generate_series(5000, 5300) i ON CONFLICT (id) DO NOTHING;
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SELECT count(*) FROM fv1;
+INSERT INTO fv SELECT i, i % 7, i FROM generate_series(5000, 5300) i ON CONFLICT (id) DO NOTHING;
+SELECT sift_helpers.grouped_read_heap_pages('fs1') > 0 AS fresh_reads_heap, sift_helpers.grouped_read_heap_pages('fv1') > 0 AS warm_reads_heap;
+DROP TABLE fs, fv;
+
+-- the same upserts that change the key, in a backend that has the library
+CREATE TABLE fw (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) PARTITION BY RANGE (id);
+CREATE TABLE fw0 PARTITION OF fw FOR VALUES FROM (0) TO (4500) PARTITION BY HASH (id);
+CREATE TABLE fw00 PARTITION OF fw0 FOR VALUES WITH (MODULUS 2, REMAINDER 0) WITH (autovacuum_enabled = false);
+CREATE TABLE fw01 PARTITION OF fw0 FOR VALUES WITH (MODULUS 2, REMAINDER 1) WITH (autovacuum_enabled = false);
+CREATE TABLE fw1 PARTITION OF fw FOR VALUES FROM (4500) TO (100000) WITH (autovacuum_enabled = false);
+INSERT INTO fw SELECT i * 3, i % 7, i FROM generate_series(0, 2399) i;
+CREATE INDEX fw00_c ON fw00 USING sift_col (id, g, v);
+CREATE INDEX fw01_c ON fw01 USING sift_col (id, g, v);
+CREATE INDEX fw1_c ON fw1 USING sift_col (id, g, v);
+VACUUM fw;
+INSERT INTO fw SELECT i * 3, i % 7, i FROM generate_series(1500, 2399) i ON CONFLICT (id) DO UPDATE SET id = fw.id + 1;
+INSERT INTO fw SELECT 300, 1, 1
+	ON CONFLICT (id) DO UPDATE SET id = (SELECT x FROM generate_series(1000, 2000) x WHERE x % 3 = 1 AND
+		satisfies_hash_partition('fw0'::regclass, 2, right(fw.tableoid::regclass::text, 1)::int, x) LIMIT 1);
+SELECT 'warm upsert key' AS "case", * FROM fresh_read('fw');
+DROP TABLE fw;
+DROP TABLE fh, fr, fl, fm CASCADE;
+DROP FUNCTION fresh_read(regclass);
+
 -- what goes with the index, the partition and the parent
 SELECT * FROM heard;
 DROP INDEX pt_c;

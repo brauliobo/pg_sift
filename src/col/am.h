@@ -114,6 +114,7 @@ extern bool sift_col_updates_supersede(void);
 extern bool sift_col_writing(void);
 extern bool sift_col_ends_rows(Oid heapoid);
 extern CommandId sift_col_stmt_cid(void);
+extern bool sift_col_is_speculative(Relation heap, ItemPointer newtid);
 extern void sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPointer newtid, bool speculative_stmt);
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT bool sift_test_no_supersede;
@@ -388,6 +389,7 @@ extern void sift_col_amrestrpos(IndexScanDesc scan);
 /* After ExecutorStart: the index-only scans of sift_col indexes in the plan form their tuples from the columns the plan reads */
 extern void sift_col_ioss_want(QueryDesc *queryDesc);
 extern void sift_col_stmt_start(QueryDesc *queryDesc);
+extern void sift_col_stmt_finish(QueryDesc *queryDesc);
 /* The rows and tombstones the transaction holds back (they reach the pages when it reads the index): before a worker, which has none of its own, reads them */
 extern void sift_col_flush_held(void);
 extern bool sift_col_amcanreturn(Relation index, int attno);
