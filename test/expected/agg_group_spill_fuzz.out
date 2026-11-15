@@ -1,5 +1,5 @@
 -- A seeded fuzz of the scan that spills: per seed a group key, a mix of count(DISTINCT) aggregates (integer, text and numeric values, with and without a
--- FILTER) and a hash memory of 64kB to 256kB; the scan is forced (the hash and the sort of the normal plan off) and its rows must be the normal plan's,
+-- FILTER) and a hash memory of 64kB to 128kB; the scan is forced (the hash and the sort of the normal plan off) and its rows must be the normal plan's,
 -- whether the group table spilled, its sets went through the sort in a merged partition, or not. The seeds include ones whose sets outgrew hash memory in the
 -- partitions (a partition returned before the counts of those sets were taken gave short counts).
 -- The later seeds count the narrow sets (columns of 5 and 200 values, one that widens late, one past the widest window), the last ones also dictionary
@@ -40,7 +40,7 @@ DECLARE
 		'count(DISTINCT vt5) AS m1, count(DISTINCT v5) AS m2, count(DISTINCT vneg) AS m3',
 		'count(DISTINCT vtg) FILTER (WHERE id % 3 = 0) AS m1, count(DISTINCT vl) AS m2, count(*) AS m3',
 		'count(DISTINCT vneg) AS m1, count(DISTINCT vtg) AS m2, min(val) AS m3'];
-	mems text[] := ARRAY['64kB', '128kB', '256kB'];
+	mems text[] := ARRAY['64kB', '64kB', '128kB'];
 	s int; kx text; q text; l text; sp boolean; n bigint;
 BEGIN
 	FOR s IN 1 .. 112 LOOP
