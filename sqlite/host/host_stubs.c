@@ -71,6 +71,13 @@ sift_docdir_ready(void *handle)
 {
 }
 
+/* ---------- the liveness run of a column segment (col/seg/live.c): an index file of PostgreSQL; the embedded hosts keep no run to audit ---------- */
+
+void
+sift_cseg_live_verify(SiftColSegment *seg)
+{
+}
+
 /* ---------- parsed column dictionaries (col/dictcache.c): not kept between queries ---------- */
 
 SiftCDict *
