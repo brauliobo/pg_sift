@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Changed: pg_sift: the LOG line of an insert that waited for room in the directory of a `sift` index (`sift.log_min_duration`) is written at most once a minute in a session, as the one for a maintenance worker that could not start; the context of an error in the maintenance worker names the index, not its OID; the hint of the error for the journal of a scope quotes the index to drop.
 - Fixed: pg_sift: a `sift` index given `write_buffer_limit` with its default value and `mutable_limit` besides took the older name; the new name wins when both are given, whatever its value.
 - Changed: pg_sift: the options of a `sift_col` index that list columns (`key_cut`, `key_columns`, `rollup_columns`, `calendar_columns`, `order_array_columns`, `order_array_group`, `order_layout`, `hll_columns`, `count_columns`, `point_tid_columns`, `return_columns`, `key_order`, `track_changes`) read a name in double quotes as written (`'"Order Date", "Cust Id"'`), with blanks, tabs and newlines around a name; `key_cut` split names at a space, and a tab broke a name in the others. An unquoted name is still read as written, case included. The error for a name that is not a column says which name, and every option error says the value it read.
 - Changed: pg_sift: the deprecated options `key_cut_rows`, `point_columns` and `order_columns` accept every value of their type (`key_cut_rows` was range checked, the others were not), as an index of an older release may store one.
