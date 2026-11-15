@@ -55,6 +55,6 @@ for tag in $tags; do
 	check "the $tag answer is the same after ALTER EXTENSION UPDATE in the session that used the old objects" test -n "$b" -a "$b" != false -a "$a" == "$b"
 done
 out=$session
-check "the extension was updated" test "$(sed -n 's/^version|//p' <<<"$session" | tr '\n' ' ')" == "4.3 4.3.6 "
+check "the extension was updated" test "$(sed -n 's/^version|//p' <<<"$session" | tr '\n' ' ')" == "4.3 4.3.7 "
 
 finish
