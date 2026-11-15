@@ -33,6 +33,7 @@ CHECKS=(
 	'docs-steps	scripts/check-docs-steps.sh --selftest && scripts/check-docs-steps.sh'
 	'messages	scripts/gen-messages.sh --check && scripts/gen-messages.sh --selftest'
 	'errors		scripts/check-errors.sh'
+	'focus		scripts/check-focus.sh --selftest && scripts/check-focus.sh'
 	'guards		scripts/check-guards.sh && scripts/check-guards.sh --selftest'
 	'refusals	scripts/gen-refusals.sh --check'
 	'approx		scripts/check-approx.sh'
