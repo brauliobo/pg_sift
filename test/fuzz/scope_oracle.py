@@ -492,6 +492,8 @@ def run_seed(a, seed):
         gate.compare(seed, step, f'{label} scope vs plain', qs, by['scope'], by['plain'], A, 'scope', A, 'plain')
         gate.compare(seed, step, f'{label} planned vs plain', qs, by['planned'], by['plain'], A, 'planned', A, 'plain')
         wait_stock(A, SK, LP)
+        SK.run("ANALYZE;")   # autovacuum is off: a node that only applies changes has no statistics, and at 1,000,000 rows the plain arm plans a nested loop over the facts
+        LP.run("ANALYZE;")
         lsn = A.val("SELECT pg_current_wal_lsn()")
         stock = answers(SK, 'stock', qs)
         gate.compare(seed, step, f'{label} plain vs the stock node', qs, by['plain'], stock, A, 'plain', SK, 'stock')

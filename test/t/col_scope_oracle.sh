@@ -55,6 +55,6 @@ check "every read of the scope index is the answer of stock PostgreSQL, row for 
 out=$(SIFT_ORACLE_SET="SET sift.test_no_track = on;" python3 -I "$REPO/test/fuzz/scope_oracle.py" --primary "$(S ora_a)" --standby "$(S ora_s)" --stock "$(S ora_b)" --restore "$(S ora_r)" \
 	--out "$(dir ora_a)/oracle-mutant" --seeds 13 --rows 20000 --steps 6 2>&1)
 diag "$(grep -E '^FAIL' <<<"$out" | cut -c1-300)"
-check "the gate catches the mutant sift.test_no_track (a wrong answer or a key sift.col_scope_verify reports)" test "$(grep -cE 'FAIL.*(WRONG ANSWER|col_scope_verify)' <<<"$out")" -ge 1
+check "the gate catches the mutant sift.test_no_track (a wrong answer, a key sift.col_scope_verify reports, or the integrity error of a stored row the heap no longer has)" test "$(grep -cE 'FAIL.*(WRONG ANSWER|col_scope_verify|is not in the heap)' <<<"$out")" -ge 1
 check "the stock node never loaded pg_sift while it was the oracle" test "$(grep -c 'pg_sift' "$(dir ora_b)/postgres.log")" == 0
 finish
