@@ -174,8 +174,8 @@ subtest 'a pass that could remove nothing is not asked for until the old transac
 	is($node->safe_psql('postgres', 'SELECT count(*) FROM n'), $rows * 6 / 10 - 1, 'the live rows are all there');
 };
 
-# sift.table_auto_defrag_max_active: the worker leaves the load alone while more clients than that run a statement
-subtest 'the pass waits while the clients are busy' => sub {
+# sift.table_auto_defrag_max_active: the worker ends without a pass while more clients than that run a statement, and a later request asks again
+subtest 'the pass is left while the clients are busy' => sub {
 	fill('m');
 	$node->safe_psql('postgres', 'SET sift.table_auto_defrag = off; DELETE FROM m WHERE id % 10 < 4');
 	readers('m');
@@ -190,8 +190,11 @@ subtest 'the pass waits while the clients are busy' => sub {
 	$node->safe_psql('postgres', 'SELECT count(*) FROM m');
 	ok(quiet_for($offset, 3), 'no pass while two other clients run a statement');
 	$holder->query_safe('SELECT pg_advisory_unlock(17)');
-	ok(fired($offset), 'the pass ran when they were done');
 	$_->quit for @busy, $holder;
+	# the worker that found them busy ended: it does not hold its connection, the next read asks again
+	Time::HiRes::sleep(0.5);
+	$node->safe_psql('postgres', 'SELECT count(*) FROM m');
+	ok(fired($offset), 'the pass ran when a read asked after they were done');
 	$node->safe_psql('postgres', 'ALTER SYSTEM RESET sift.table_auto_defrag_max_active; SELECT pg_reload_conf()');
 	is($node->safe_psql('postgres', 'SELECT count(*) FROM m'), $rows * 6 / 10, 'the live rows are all there');
 };
