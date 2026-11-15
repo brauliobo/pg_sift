@@ -69,3 +69,14 @@ approx_count_distinct	col
 help	diag		
 tblref_in	-		
 tblref_out	-		
+check	diag		
+build_info	diag		
+indexes	diag		
+shared_memory	diag		
+locks	diag		
+ddl_hooks	diag		
+upgrade_check	diag		
+index_format	diag		
+ddl_hooks_enable	maint		
+progress	maint		
+worker_history	maint		
