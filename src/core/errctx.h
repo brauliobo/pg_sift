@@ -21,6 +21,12 @@ typedef struct SiftErrCtx
 extern void sift_errctx_push(SiftErrCtx *ctx, Oid relid);
 extern void sift_errctx_pop(SiftErrCtx *ctx);
 
+/* The scope of a function that reports what is wrong with an index (sift.check, col_verify, ...): the damage it finds is its answer, and does not take the index out of service */
+extern void sift_errctx_push_diagnostic(SiftErrCtx *ctx, Oid relid);
+
+/* The relation of the innermost scope on the error stack (false: none); *diagnostic: a diagnostic scope is on the stack */
+extern bool sift_errctx_scope(Oid *relid, bool *diagnostic);
+
 /* The segment (generation) the errors from now on belong to */
 static inline void
 sift_errctx_segment(SiftErrCtx *ctx, uint64 gen)

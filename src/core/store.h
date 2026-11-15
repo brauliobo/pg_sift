@@ -168,6 +168,8 @@ sift_dir_bytes(const SiftDirSnapshot *dir)
 }
 
 /* The caller holds no buffer lock: the metapage comes first in lock order */
+/* The flags of the metapage, read alone (the index must be ready): what the planner asks of each index it may use */
+extern uint32 sift_store_meta_flags(Relation index);
 extern void sift_dir_read(Relation index, SiftDirSnapshot *snap);
 extern void sift_dir_read_segs(Relation index, SiftDirSnapshot *snap);
 extern bool sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags);

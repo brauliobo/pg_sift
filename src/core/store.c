@@ -244,6 +244,16 @@ lock_dir(Relation index, int mode)
 	return buf;
 }
 
+uint32
+sift_store_meta_flags(Relation index)
+{
+	Buffer		buf = lock_meta(index, BUFFER_LOCK_SHARE);
+	uint32		flags = META(BufferGetPage(buf))->flags;
+
+	UnlockReleaseBuffer(buf);
+	return flags;
+}
+
 void
 sift_dir_read(Relation index, SiftDirSnapshot *snap)
 {

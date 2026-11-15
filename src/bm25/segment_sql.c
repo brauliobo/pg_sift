@@ -651,7 +651,7 @@ bm25_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 	bv->cxt = AllocSetContextCreate(old, "sift verify", ALLOCSET_DEFAULT_SIZES);
 	bv->walk = AllocSetContextCreate(bv->cxt, "sift verify walk", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(bv->cxt);
-	sift_errctx_push(&bv->errctx, RelationGetRelid(index));
+	sift_errctx_push_diagnostic(&bv->errctx, RelationGetRelid(index));
 	/* registered before the directory is read, and kept: the segments of the copy stay readable while they are verified one at a time */
 	sound = listed = sift_check_step(ck, SIFT_CHECK_WHOLE, step_store, bv);
 	for (int i = 0; listed && i < bv->snap->nsegs; i++)

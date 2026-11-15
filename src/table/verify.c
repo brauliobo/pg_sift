@@ -62,7 +62,7 @@ tbl_verify(SiftCheck *ck, Relation rel)
 	bool		sound;
 
 	tv->rel = rel;
-	sift_errctx_push(&tv->errctx, RelationGetRelid(rel));
+	sift_errctx_push_diagnostic(&tv->errctx, RelationGetRelid(rel));
 	sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_directory, tv);
 	for (int i = 0; sound && i < tv->nsegs; i++)
 	{
