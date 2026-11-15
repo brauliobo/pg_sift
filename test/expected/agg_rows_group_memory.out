@@ -96,6 +96,38 @@ BEGIN
 	RAISE WARNING 'fetched % rows', n;
 END $$;
 WARNING:  fetched 10 rows
+-- the groups are counted in 32 bits and the arrays double in 32 bits (docs/LIMITS.md, rows_groups): a node at the bound ends as one past hash memory does
+DROP TABLE got;
+RESET work_mem;
+RESET hash_mem_multiplier;
+SET client_min_messages = notice;
+SET sift.test_limits = 'rows_groups=5000';
+CREATE TEMP TABLE got AS EXECUTE r;
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
+ groups | differ 
+--------+--------
+  47273 |      0
+(1 row)
+
+DROP TABLE got;
+SET sift.test_limits = 'rows_groups=100000';
+SELECT plan_has('EXECUTE r', 'SiftAggRows') AS node_below_the_bound;
+ node_below_the_bound 
+----------------------
+ t
+(1 row)
+
+CREATE TEMP TABLE got AS EXECUTE r;
+SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
+ groups | differ 
+--------+--------
+  47273 |      0
+(1 row)
+
+DROP TABLE got;
+RESET client_min_messages;
 DEALLOCATE r;
 RESET plan_cache_mode;
 RESET sift.test_limits;

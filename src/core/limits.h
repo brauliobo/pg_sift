@@ -268,7 +268,10 @@
 	  "ERROR 54000 at build or merge", "-", 1) \
 	X(scope_batch_entries, "SIFT_SCOPE_BATCH_MAX_ENTRIES", "col/scope.h", SIFT_SCOPE_BATCH_MAX_ENTRIES, "entries", \
 	  "entries (a row of the batch and a scope key) that the rows of one batch expand to when a scope index is built, promoted or refilled: each row has an entry for every key of its member, 12 bytes each", \
-	  "ERROR 54000 naming max_multiplicity", "-", 1)
+	  "ERROR 54000 naming max_multiplicity", "-", 1) \
+	X(rows_groups, "SIFT_ROWS_MAX_GROUPS", "agg/rows.h", SIFT_ROWS_MAX_GROUPS, "groups", \
+	  "groups the node that groups rows (SiftAggRows) holds: their count and the arrays of their keys and aggregates are 32 bits", \
+	  "normal plan (NOTICE), ERROR 54000 once rows were sent", "-", 1)
 
 typedef enum SiftLimitId
 {
