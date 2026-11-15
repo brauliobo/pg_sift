@@ -68,7 +68,7 @@ comment on the call.
 it needs something from the host, adds it to that vocabulary and to every host (`sqlite/host/host.h`), not a `#include`. `scripts/check-portable.sh` fails
 a file that breaks the rule; it is a stage of `scripts/ci.sh` (so of `make check`) and the first step of `sqlite/test.sh` (the SQLite job). A change to a portable file
 that uses another host API or a global mutable variable needs the host or the Makefile to follow, so run `sqlite/test.sh` as well as `make check` when you touch
-them. Code shared by two hosts goes into the portable core, not into both. `make check` and `scripts/ci.sh` never
+them. Code shared by two hosts goes into the portable core, not into both. Every file of `src/` is in `src/portable.list`, `src/portable-col.list` or `src/pg-only.list` (`scripts/check-classified.sh`, in lint): a new file is classified when it is added. `make check` and `scripts/ci.sh` never
 build or run `sqlite/`. Its changes are listed in [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md); its version is `sqlite/VERSION`, which must equal the
 release tag.
 
