@@ -50,6 +50,7 @@ script:instr-budget-ungrouped.sh	600	1000	-
 script:instr-budget-vet.sh	600	1000	-
 script:instr-budget-wbuf.sh	600	1000	-
 script:instr-budget-zone.sh	600	1000	-
+script:stability.sh	2700	3072	see gate:stability
 script:bm25-size.sh	600	1000	-
 script:merge-bytes.sh	600	1000	-
 script:plan-margin.sh	600	1000	-
