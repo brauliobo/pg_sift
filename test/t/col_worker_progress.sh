@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# sift.progress: one row for each maintenance job that runs now. A rewrite worker held at the start of its merge phase (sift.test_progress_gate, a testing build) is listed with its process,
+# index, job and phase and the segments it will replace; the merges of a VACUUM held at its cleanup gate are listed with the process of the session; both are gone when the job ends.
+. "$(dirname "$0")/lib.bash"
+
+plan 7
+node_init wp 66 "autovacuum = off
+sift.test_col_net = off
+sift.maintenance_naptime = 200"
+node_start wp || bail "start failed"
+D=$(dir wp)
+sql wp "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2), pad text, h1 bigint DEFAULT (random() * 1e12)::bigint, h2 bigint DEFAULT (random() * 1e12)::bigint, h3 bigint DEFAULT (random() * 1e12)::bigint) WITH (autovacuum_enabled = false)" \
+	"INSERT INTO facts SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 20000) g" \
+	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount, h1, h2, h3)" "VACUUM facts" >/dev/null || bail "setup failed"
+churn() { sql wp "UPDATE facts SET amount = amount + 1 WHERE id % 100 = $1" "DELETE FROM facts WHERE id % 100 = $1 + 50" \
+	"INSERT INTO facts SELECT $1 * 100000 + g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 600) g" >/dev/null; }
+rows() { sql wp "SELECT count(*) FROM sift.progress"; }
+hold() { # KEY: a session that holds the advisory lock of the gate until $D/release exists
+	rm -f "$D/locked" "$D/release"
+	{ echo "SELECT pg_advisory_lock(20983, $1);"; echo "\\! touch '$D/locked'"; echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"; } | sql wp >/dev/null &
+	HOLDER=$!
+	until [[ -e $D/locked ]]; do sleep 0.05; done
+}
+let_go() { touch "$D/release"; wait "$HOLDER"; }
+
+# 1. a rewrite worker held when it enters its merge phase (the second of its phases)
+hold 12
+sql wp "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 2" >/dev/null
+churn 1
+sql wp "VACUUM facts" >/dev/null
+waiting() { [[ $(sql wp "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted") -ge 1 ]]; }
+check "the rewrite worker waits at its merge phase" wait_for waiting 60
+out=$(sql wp "SELECT p.job, p.phase, p.index = 'facts_idx'::regclass, p.segments_done, p.segments_total >= 1, p.bytes_written > 0, p.started IS NOT NULL, a.backend_type FROM sift.progress p JOIN pg_stat_activity a ON a.pid = p.pid")
+check "sift.progress lists it: job, phase, index, no segment of the merge replaced yet, the bytes of its first phase written" test "$out" == "rewrite|merge|t|0|t|t|t|sift rewrite"
+let_go
+gone() { [[ $(rows) == 0 ]]; }
+check "the row is gone when the rewrite ends" wait_for gone 60
+check "the rewrite did its work" bash -c "[[ \$(psql -X -At -h '$D/sock' -p $(port wp) -U postgres -d postgres -c \"SELECT count(*) FROM sift.col_segments('facts_idx') WHERE kind = 'immutable'\") == 1 ]]"
+sql wp "ALTER DATABASE postgres RESET sift.test_progress_gate" "ALTER DATABASE postgres SET sift.col_auto_merge = off" >/dev/null
+
+# 2. the merges of a VACUUM, held at its cleanup gate
+churn 2
+hold 2
+sql wp "LOAD 'pg_sift'" "SET sift.test_cleanup_gate = on" "SET sift.async_maintenance = off" "VACUUM facts" >"$D/vacuum.out" 2>&1 &
+VP=$!
+check "the VACUUM waits at its cleanup gate" wait_for waiting 60
+out=$(sql wp "SELECT p.job, p.index = 'facts_idx'::regclass, a.backend_type, a.query LIKE 'VACUUM%' FROM sift.progress p JOIN pg_stat_activity a ON a.pid = p.pid")
+check "sift.progress lists the VACUUM of the session" test "$out" == "vacuum|t|client backend|t"
+let_go
+wait "$VP"
+check "nothing is listed when the VACUUM ends" gone
+finish
