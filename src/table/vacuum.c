@@ -156,10 +156,8 @@ vacuum_page(Relation rel, SiftTblRel *st, const SiftTblSeg *seg, uint32 idx, Vac
 			uint64		key = ((uint64) ph->vblock << 16) | off;
 			bool		dead = false;
 
-			if (ph->slot[off - 1] == 0)
-				continue;
-			rec = (SiftTblRec *) (SiftPageGetData(page) + ph->slot[off - 1]);
-			if (rec->flags & SIFT_TBL_REC_DEAD)
+			rec = (SiftTblRec *) sift_tbl_page_rec(page, SiftPageGetOpaque(page)->gen, off);
+			if (rec == NULL || (rec->flags & SIFT_TBL_REC_DEAD))
 				continue;
 			if (TransactionIdIsNormal(rec->xmin) && sift_tbl_xid_aborted(rec->xmin))
 				dead = true;

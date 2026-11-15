@@ -462,6 +462,7 @@ TESTING_REGRESS += tbl_preagg_calendar
 TESTING_REGRESS += tbl_tomb_legacy_header
 TESTING_REGRESS += tbl_tomb_log_limit
 TESTING_REGRESS += tbl_vacuum_batches
+TESTING_REGRESS += tbl_vacuum_page_rows
 TESTING_REGRESS += tbl_wide_dict_limit
 TESTING_REGRESS += tbl_wide_rows
 TESTING_REGRESS += tbl_writepath
