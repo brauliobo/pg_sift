@@ -471,6 +471,8 @@ One results file comes out of a run (`collect`, the format of `steps/extras.py`:
 ```sh
 bench/bench scope-stock --size quick            # minutes; prints every table, writes bench/out/scope-stock-quick-DATE.tsv
 bench/bench scope-stock --docs                  # the release size: rewrites docs/results/scope-stock.tsv and the generated blocks
+bench/bench scope-stock --docs --arms stock_default,sift_reuse,sift_scope   # some arms only: their rows replace those of the same arms in the results file (merge; the fixture must be equal)
+bench/bench scope-stock --docs --keep --arms stock_default,sift_reuse,sift_scope --resume   # after an interrupted --keep run: the arms already saved are not measured again
 python3 -I bench/steps/scope_stock_tables.py render   # the blocks again from the checked-in results file (no measurement; also scripts/gen-docs.py)
 ```
 

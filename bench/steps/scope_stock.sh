@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Usage: bench/bench scope-stock [--size quick|standard] [--docs] [--arms LIST] [--tenants LIST] [--facts N] [--build DIR] [--root DIR] [--out FILE] [--keep]   (steps/scope_stock.sh)
+# Usage: bench/bench scope-stock [--size quick|standard] [--docs] [--arms LIST] [--tenants LIST] [--facts N] [--build DIR] [--root DIR] [--out FILE] [--keep] [--resume]   (steps/scope_stock.sh)
 # The scope index against tuned stock PostgreSQL (steps/scope_stock_arms.py): nine read classes, eight tenants, warm and cold, eight arms (the b-tree and semi join as written, the tuned semi join,
 # copies of the events by tenant kept by triggers, rollups, pg_ivm incremental views, the entity index, the scope index), every result md5-equal to the plain statement, and the write cost of each arm.
 #   --size        quick (240,000 events, tenants 1, 4 and 8, five arms: minutes; the quick release profile runs it) or standard (2.4 million events, eight tenants, every arm; the release pass)
 #   --docs        standard size only: also write docs/results/scope-stock.tsv and rewrite the generated blocks of README.md and docs/COL-SCOPE.md (scripts/gen-docs.py)
+#   --arms LIST   some arms only (stock_default is the oracle of every md5 and must be in the list); with --docs their rows replace those of the arms in docs/results/scope-stock.tsv (merge)
+#   --resume      after an interrupted --keep run: the arms already saved in its raw directory are not measured again (needs --keep both times)
 #   --out FILE    the results file (default bench/out/scope-stock-DATE.tsv); --keep keeps the raw per-arm tables next to it
 #   --build DIR   the checkout whose sift is measured (default: this one; its scripts/pgtest.sh stages the release library); --root DIR a staged install of it
 # pg_ivm is the pinned release of bench/versions.env, built once by steps/fetch.sh into the engines directory of the work directory (BENCH_WORK); when it cannot be built the arm is skipped with a
@@ -18,7 +20,7 @@ REPO=$(dirname "$BENCH")
 . "$BENCH/versions.env"
 
 ORIG=("$@")
-SIZE=standard DOCS='' OUT='' KEEP=${KEEP:-} ARGS=()
+SIZE=standard DOCS='' RESUME='' OUT='' KEEP=${KEEP:-} ARGS=()
 while (( $# )); do
 	case $1 in
 		--size) SIZE=$2; shift ;;
@@ -28,7 +30,8 @@ while (( $# )); do
 		--root) export SIFT_ROOT=$2; shift ;;
 		--out) OUT=$2; shift ;;
 		--keep) KEEP=1 ;;
-		*) sed -n '2,13p' "$0"; exit 1 ;;
+		--resume) ARGS+=("$1"); RESUME=1 ;;
+		*) sed -n '2,15p' "$0"; exit 1 ;;
 	esac
 	shift
 done
@@ -48,7 +51,8 @@ if [[ ! -d $IVM ]] && ! "$HERE/fetch.sh" pg_ivm >&2; then
 fi
 roots=(--root "$SIFT_ROOT"); [[ ! -d $IVM ]] || roots+=(--root "$IVM")
 
-rm -rf "$SIFT_TMP/data" "$RAW"; mkdir -p "$RAW"
+[[ -n $RESUME ]] || rm -rf "$SIFT_TMP/data" "$RAW"
+mkdir -p "$RAW"
 build=$(git -C "$SIFT_BUILD" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 python3 -I "$HERE/scope_stock_arms.py" run "${roots[@]}" --dir "$SIFT_TMP" --port "$SIFT_PORT" --out "$RAW" --size "$SIZE" --build-id "$build" "${ARGS[@]}"
 python3 -I "$HERE/scope_stock_arms.py" collect "$RAW" --out "$OUT"
@@ -56,6 +60,11 @@ python3 -I "$HERE/scope_stock_arms.py" collect "$RAW" --out "$OUT"
 echo "scope-stock: $OUT" >&2
 python3 -I "$HERE/scope_stock_arms.py" report "$OUT"
 if [[ -n $DOCS ]]; then
-	cp "$OUT" "$REPO/docs/results/scope-stock.tsv"
+	RESULTS=$REPO/docs/results/scope-stock.tsv
+	if [[ " ${ARGS[*]} " == *" --arms "* ]]; then
+		python3 -I "$HERE/scope_stock_arms.py" merge "$RESULTS" "$OUT" --out "$OUT.merged"
+		mv "$OUT.merged" "$OUT"
+	fi
+	cp "$OUT" "$RESULTS"
 	python3 -I "$REPO/scripts/gen-docs.py"
 fi

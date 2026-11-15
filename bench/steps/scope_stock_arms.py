@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """The scope index against tuned stock PostgreSQL on a real-shaped fixture: nine read classes, eight tenants, one arm at a time.
 
-    python3 -I bench/steps/scope_stock_arms.py run --root PREFIX [--root PREFIX2] --dir SCRATCH --port N --out RAWDIR [--size quick|standard] [--arms a,b] [--facts N] [--tenants 1,4,8]
+    python3 -I bench/steps/scope_stock_arms.py run --root PREFIX [--root PREFIX2] --dir SCRATCH --port N --out RAWDIR [--size quick|standard] [--arms a,b] [--facts N] [--tenants 1,4,8] [--resume]
     python3 -I bench/steps/scope_stock_arms.py collect RAWDIR --out docs/results/scope-stock.tsv     # the one results file, in the format of steps/extras.py
-    python3 -I bench/steps/scope_stock_arms.py report [RESULTS]                                      # every table of the results file (steps/scope_stock_tables.py)
+    python3 -I bench/steps/scope_stock_arms.py merge BASE NEW --out BASE                             # the arms of a partial run (--arms stock_default,sift_scope) replace theirs in BASE
+    python3 -I bench/steps/scope_stock_arms.py report [RESULTS]                                    # every table of the results file (steps/scope_stock_tables.py)
 
 `bench/bench scope-stock` runs the three (it builds pg_sift and pg_ivm, makes the cluster, and with --docs rewrites the generated blocks of README.md and docs/COL-SCOPE.md).
 The classes are bench/sql/scope_stock/queries/SLUG.sql, one file each (`--@ events` is the statement over a table of events and its predicate, `--@ lateral`, `--@ rollup` and `--@ ivm`
@@ -463,6 +464,8 @@ def cmd_run(a):
     meta = dict(fixture_stats(cl, a), **versions(cl, a), size=a.size, date=datetime.date.today().isoformat(), arms=','.join(arms), skipped='; '.join(skipped) or 'none',
                 tenants=','.join(map(str, a.tenants)), classes=','.join(QUERIES))
     for name in arms:
+        if a.resume and os.path.exists(os.path.join(a.out, f'{name}.cells.tsv')):
+            continue
         r = run_arm(cl, a, name, load_oracle(a.out) if name != 'stock_default' else None, a.out)
         save(a.out, r)
     cl.stop()
@@ -521,6 +524,24 @@ def cmd_collect(a):
     extras.write(a.out, 'The scope index against tuned stock PostgreSQL (bench/bench scope-stock)', head, rows)
 
 
+def cmd_merge(a):
+    """the arms of a partial run (NEW, from collect) replace those arms in a complete results file (BASE); every other row stays as it is, the fixture must be the same"""
+    import extras
+    (base_meta, base), (new_meta, new) = extras.read(a.base), extras.read(a.new)
+    fixture = lambda rows: [r for r in rows if r['arm'] == 'fixture']
+    key = lambda r: (r['case'], r['metric'], r['value'])
+    if sorted(map(key, fixture(base))) != sorted(map(key, fixture(new))):
+        raise SystemExit('merge: the fixtures differ (events and member keys of each tenant): the arms are not comparable')
+    taken = new_meta['arms'].split(',')
+    arms = [x for x in ORDER if x in base_meta['arms'].split(',') + taken]
+    rows = fixture(base) + [r for x in arms for r in (new if x in taken else base) if r['arm'] == x]
+    meta = dict(new_meta, arms=','.join(arms), skipped=base_meta['skipped'])
+    if any(base_meta[k] != new_meta[k] for k in ('date', 'pg_sift', 'postgresql', 'cpu')):
+        meta['note'] = 'measured %s at %s on %s: %s; the other arms %s at %s on %s' % (
+            new_meta['date'], new_meta['pg_sift'], new_meta['postgresql'], ', '.join(taken), base_meta['date'], base_meta['pg_sift'], base_meta['postgresql'])
+    extras.write(a.out, base_meta['title'], {k: v for k, v in meta.items() if k != 'title'}, rows)
+
+
 def cmd_report(a):
     import scope_stock_tables
     print('\n'.join(scope_stock_tables.report(scope_stock_tables.Results(a.results))))
@@ -539,15 +560,20 @@ def main():
     r.add_argument('--arms', help='default: every arm (quick: stock_default, semijoin, denorm_flat, ivm, sift_scope)')
     r.add_argument('--facts', type=int, help='events (default: those of --size)')
     r.add_argument('--member-total', type=int, default=2648)
+    r.add_argument('--resume', action='store_true', help='an interrupted run: the arms with a saved table in --out are not measured again, the fixture database of --dir is kept')
     r.add_argument('--base', default='base', help='name of the fixture database (built once, the template of every arm)')
     r.add_argument('--tenants', type=lambda v: [int(x) for x in v.split(',')], help='default: those of --size')
     c = sub.add_parser('collect')
     c.add_argument('raw')
     c.add_argument('--out', required=True)
+    m = sub.add_parser('merge')
+    m.add_argument('base', help='the complete results file')
+    m.add_argument('new', help='the results file of a partial run (collect); its arms replace those of BASE')
+    m.add_argument('--out', required=True)
     p = sub.add_parser('report')
     p.add_argument('results', nargs='?', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'scope-stock.tsv'))
     a = ap.parse_args()
-    {'run': cmd_run, 'collect': cmd_collect, 'report': cmd_report}[a.cmd](a)
+    {'run': cmd_run, 'collect': cmd_collect, 'merge': cmd_merge, 'report': cmd_report}[a.cmd](a)
 
 
 if __name__ == '__main__':

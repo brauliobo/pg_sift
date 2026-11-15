@@ -29,13 +29,13 @@ def tsv(path, head, rows):
         f.write(head + ''.join('\t'.join(map(str, r)) + '\n' for r in rows))
 
 
-def raw_run(d):
+def raw_run(d, reads=READS, **meta):
     with open(os.path.join(d, 'run.meta'), 'w') as f:
         f.write(''.join('%s\t%s\n' % kv for kv in dict(
-            facts=240000, member_total=2648, pairs=3600, tenant_total=32, postgresql='18.6', pg_sift='5.0 (abc)', pg_ivm='1.17', size='quick', date='2026-11-13',
-            arms=','.join(READS), skipped='none', tenants='1,4', classes=','.join(CLASSES)).items()))
+            dict(facts=240000, member_total=2648, pairs=3600, tenant_total=32, postgresql='18.6', pg_sift='5.0 (abc)', pg_ivm='1.17', size='quick', date='2026-11-13',
+                 arms=','.join(reads), skipped='none', tenants='1,4', classes=','.join(CLASSES)), **meta).items()))
     tsv(os.path.join(d, 'fixture.tsv'), 'tenant\tmember_total\tevents\tevents_pct\n', [(1, 1149, 120000, 49.5), (4, 268, 14000, 6.0)])
-    for arm, (t1, t4) in READS.items():
+    for arm, (t1, t4) in reads.items():
         cells = [(arm, t, c, ms * 10, ms, 40, 3, ms * 12, ms * 2, 4, 30, 'md5' + c, 'ok', 'Scope Index')
                  for t, vals in ((1, t1), (4, t4)) for c, ms in zip(CLASSES, vals) if ms is not None]
         tsv(os.path.join(d, arm + '.cells.tsv'), CELL_HEAD, cells)
@@ -45,8 +45,8 @@ def raw_run(d):
         tsv(os.path.join(d, arm + '.dirty.tsv'), 'arm\ttenant\tclass\twarm_minstr\twarm_ms\tmd5\n', [(arm, 1, 'sum_by_month', 5.0, 3.0, 'x')])
 
 
-def collected(d):
-    raw_run(d)
+def collected(d, reads=READS, **meta):
+    raw_run(d, reads, **meta)
     out = os.path.join(d, 'scope-stock.tsv')
     arms.cmd_collect(argparse.Namespace(raw=d, out=out))
     return out
@@ -103,6 +103,46 @@ class Collect(unittest.TestCase):
         self.assertEqual(R.v[('write:insert 10k events', 'sift_scope', 'minstr')], 150.5)
         self.assertEqual(R.meta['pg_ivm'], '1.17')
         self.assertEqual(R.v[('t1', 'fixture', 'events_pct')], 49.5)
+
+
+class Merge(unittest.TestCase):
+    NEWER = {'stock_default': ((310.0, 240.0), (21.0, 17.0)), 'sift_scope': ((1.5, 0.4), (0.4, 0.2))}
+
+    def merged(self, d, base_meta, new_meta, new=NEWER):
+        os.makedirs(os.path.join(d, 'base')), os.makedirs(os.path.join(d, 'new'))
+        out = os.path.join(d, 'merged.tsv')
+        arms.cmd_merge(argparse.Namespace(base=collected(os.path.join(d, 'base'), **base_meta), new=collected(os.path.join(d, 'new'), new, **new_meta), out=out))
+        return out
+
+    def test_the_merge_of_a_partial_run_equals_the_complete_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            merged = self.merged(d, {}, {})
+            os.makedirs(os.path.join(d, 'single'))
+            complete = dict(READS, **self.NEWER)
+            single = collected(os.path.join(d, 'single'), {a: complete[a] for a in arms.ORDER if a in complete})
+            self.assertEqual(open(merged).read(), open(single).read())
+
+    def test_the_other_arms_stay_byte_for_byte_and_the_header_says_what_was_measured_when(self):
+        with tempfile.TemporaryDirectory() as d:
+            merged = self.merged(d, {}, dict(date='2026-11-15', pg_sift='5.0 (def)', postgresql='18.7'))
+            os.makedirs(os.path.join(d, 'old'))
+            old = open(collected(os.path.join(d, 'old'))).read().splitlines()
+            lines = open(merged).read().splitlines()
+        self.assertEqual([l for l in lines if '\tivm\t' in l], [l for l in old if '\tivm\t' in l])
+        self.assertIn('# note: measured 2026-11-15 at 5.0 (def) on PostgreSQL 18.7: stock_default, sift_scope; the other arms 2026-11-13 at 5.0 (abc) on PostgreSQL 18.6', lines)
+        self.assertIn('# pg_sift: 5.0 (def)', lines)
+        self.assertTrue(any(l.startswith('5.0 (def)\tt1:sum_by_month\tsift_scope\twarm_ms\t1.5') for l in lines))
+
+    def test_a_different_fixture_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, 'base')), os.makedirs(os.path.join(d, 'new'))
+            base = collected(os.path.join(d, 'base'))
+            raw_run(os.path.join(d, 'new'), self.NEWER)
+            tsv(os.path.join(d, 'new', 'fixture.tsv'), 'tenant\tmember_total\tevents\tevents_pct\n', [(1, 1149, 99, 49.5), (4, 268, 14000, 6.0)])
+            new = os.path.join(d, 'new.tsv')
+            arms.cmd_collect(argparse.Namespace(raw=os.path.join(d, 'new'), out=new))
+            with self.assertRaises(SystemExit):
+                arms.cmd_merge(argparse.Namespace(base=base, new=new, out=os.path.join(d, 'x.tsv')))
 
 
 class Render(unittest.TestCase):
