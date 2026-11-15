@@ -6,6 +6,8 @@
  * identity key of the old row}. Redo ignores it; rm_decode turns it into a reorder-buffer change. A custom resource manager can
  * only be registered while shared_preload_libraries is processed, so that is the one thing pg_sift must be preloaded for (primary
  * and every server replaying this WAL). Without it a DML on a published table fails with 0A000 instead of leaving a gap.
+ * Before 5.0 the records carried the experimental id; it stays registered as a replay and decode alias (SIFT_TBL_LEGACY_RMGR_ID) so
+ * that a standby or a crash recovery reads the WAL of 4.x, and nothing is written under it.
  */
 #include "postgres.h"
 
@@ -22,10 +24,8 @@
 #include "replication/snapbuild.h"
 #include "utils/rel.h"
 
+#include "table/rmgr_id.h"
 #include "table/table.h"
-
-/* A development resource manager id; a permanent one is requested from the PostgreSQL custom rmgr list before a release */
-#define SIFT_TBL_RMGR_ID	RM_EXPERIMENTAL_ID
 
 #define XLOG_SIFT_TBL_INSERT	0x00
 #define XLOG_SIFT_TBL_UPDATE	0x10
@@ -207,23 +207,31 @@ tbl_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	ReorderBufferQueueChange(ctx->reorder, xid, buf->origptr, change, false);
 }
 
-static const RmgrData tbl_rmgr = {
-	.rm_name = "sift_table",
-	.rm_redo = tbl_redo,
-	.rm_desc = tbl_desc,
-	.rm_identify = tbl_identify,
-	.rm_decode = tbl_decode,
-};
+static RmgrData
+tbl_rmgr(const char *name)
+{
+	return (RmgrData) {
+		.rm_name = name,
+		.rm_redo = tbl_redo,
+		.rm_desc = tbl_desc,
+		.rm_identify = tbl_identify,
+		.rm_decode = tbl_decode,
+	};
+}
 
-/* Called from _PG_init: only a preloading server can register the resource manager */
+/* Called from _PG_init: only a preloading server can register the resource managers */
 void
 sift_tbl_init(void)
 {
+	RmgrData	current = tbl_rmgr(SIFT_TBL_RMGR_NAME);
+	RmgrData	legacy = tbl_rmgr(SIFT_TBL_LEGACY_RMGR_NAME);
+
 	sift_tbl_define_gucs();
 	sift_tbl_slot_init();
 	sift_tbl_src_register();
 	if (!process_shared_preload_libraries_in_progress)
 		return;
-	RegisterCustomRmgr(SIFT_TBL_RMGR_ID, &tbl_rmgr);
+	RegisterCustomRmgr(SIFT_TBL_RMGR_ID, &current);
+	RegisterCustomRmgr(SIFT_TBL_LEGACY_RMGR_ID, &legacy);
 	rmgr_registered = true;
 }
