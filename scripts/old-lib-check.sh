@@ -27,6 +27,9 @@
 #   scripts/old-lib-check.sh scope                      the scope index of 5.0 (column format minor 45; SIFT_OLD_REF, default v4.3.0): this tree writes one index with a scope and one without; the older library refuses the first
 #                                                       with the format error and the standard hint (use a newer pg_sift), reads the second and the heap, and reads a plain index made in its place of the scope index
 #   scripts/old-lib-check.sh twohop                     the same for a scope of two paths (column format minor 49): the older library refuses it, an index with a scope of one path stays at 45
+#   scripts/old-lib-check.sh meta                       the metapage of 5.0 is longer (704 bytes) than any 4.x release accepts (400): what each release in SIFT_META_REFS (default v4.3.0 v4.3.5 v4.3.5+patch; a +patch
+#                                                       release is built with scripts/old-lib-patches/v4.x-metapage-tail.patch, what a 4.3.6 would carry) says for an index with a scope and for a plain
+#                                                       index that has served a read: as released it says "corrupted", with the patch it refuses by format or reads
 #   scripts/old-lib-check.sh upgrade                    the other way: the older library writes a table with the groups it tags under pressure (a
 #                                                       committed load and a rolled back one), this tree reads them as it reads its own and VACUUM
 #                                                       freezes and drops them
@@ -35,7 +38,7 @@
 # to run (no older release in the repository, an older release than 3.2.0 on a CPU other than x86-64, PostgreSQL 17, which has no extension_control_path to hold two builds, PostgreSQL 19, which no release builds on, or no testing build).
 #
 # SIFT_OLD_REF (default v3.0.1; the library of the tree with the 3.1 write path is the one under test), SIFT_OLD_SRC (a source tree of
-# the older release instead of the archive), SIFT_OLD_DIR (where it is built, default ~/.cache/sift/old-lib/<commit>), SIFT_TMP (scratch, default under /dev/shm) and SIFT_PORT as
+# the older release instead of the archive), SIFT_OLD_PATCH (a patch applied to the archive, built and cached apart), SIFT_OLD_DIR (where it is built, default ~/.cache/sift/old-lib/<commit>), SIFT_TMP (scratch, default under /dev/shm) and SIFT_PORT as
 # for scripts/pgtest.sh (`run`), ROWS (rows of a table, default 40000), KEEP=1 (keep the cluster of `run`).
 set -uo pipefail
 
@@ -63,6 +66,7 @@ build() {
 	else
 		rev=$(git -C "$REPO" rev-parse --verify -q --short "$OLD_REF^{commit}") || skip "no $OLD_REF in this repository"
 	fi
+	[[ -z ${SIFT_OLD_PATCH:-} ]] || rev=$rev-$("$REPO/scripts/sha256.sh" "$SIFT_OLD_PATCH" | cut -c1-8)
 	dir=${SIFT_OLD_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib/$rev}
 	if [[ ! -f $dir/root/.flavor ]]; then
 		mkdir -p "$dir/src"
@@ -70,7 +74,8 @@ build() {
 		exec 9>"$dir.lock"
 		! command -v flock >/dev/null || flock 9
 		if [[ ! -f $dir/root/.flavor ]]; then
-			if [[ -n ${SIFT_OLD_SRC:-} ]]; then cp -a "$SIFT_OLD_SRC/." "$dir/src/"; else git -C "$REPO" archive "$rev" | tar -x -C "$dir/src"; fi
+			if [[ -n ${SIFT_OLD_SRC:-} ]]; then cp -a "$SIFT_OLD_SRC/." "$dir/src/"; else git -C "$REPO" archive "${rev%%-*}" | tar -x -C "$dir/src"; fi
+			[[ -z ${SIFT_OLD_PATCH:-} ]] || patch -s -p1 -d "$dir/src" <"$SIFT_OLD_PATCH" || { echo "FAIL applying $SIFT_OLD_PATCH to $OLD_REF" >&2; exit 1; }
 			# the release flavor, the library users get (not the ASan one of a sanitized run: the older server does not preload the runtime); its own
 			# scratch and port (the port is only checked, the cluster is not started)
 			# CPATH and LIBRARY_PATH carry the directories of pg_config's flags to a release whose Makefile does not (lz4 and zstd of Homebrew): else it is built
@@ -416,6 +421,74 @@ scope() {
 	if grep -qE 'TRAP|terminated by signal|PANIC' "$log"; then fail "no crash in the log of the older server"; else pass "no crash in the log of the older server"; fi
 }
 
+# What a 4.x release says of a metapage written by this tree. 5.0 keeps what the reads paid, what the workers did last and the floor of a scope in the metapage (704 bytes, covered by pd_lower so that
+# WAL and full-page images keep them); every 4.x release checks pd_lower against its own 400 bytes before the format, so it called the index corrupted. The patch is what a 4.3.6 carries.
+meta() {
+	local item ref patched root data dcopy log want wantp q qp used file files n plain scope
+	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-meta}
+	export SIFT_PORT=${SIFT_PORT:-56146}
+	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
+	[[ -n ${KEEP:-} ]] || trap '"$PG" destroy >/dev/null 2>&1' EXIT
+	log=$SIFT_TMP/old-lib-meta.log
+	data=$SIFT_TMP/data
+	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
+	q="SELECT count(*) || ':' || sum(v) FROM events" qp="SELECT count(*) || ':' || sum(v) FROM events_plain"
+	"$PG" start >/dev/null || { echo "FAIL starting the cluster" >&2; exit 1; }
+	psql_new -c "CREATE EXTENSION pg_sift" \
+		-c "CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id))" \
+		-c "INSERT INTO tenant_scope SELECT m, 1 + (m * 7 + j) % 9 FROM generate_series(1, 200) m, generate_series(0, 2) j WHERE j < m % 4" \
+		-c "CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')" \
+		-c "CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int)" \
+		-c "INSERT INTO events SELECT i, 1 + i % 210, timestamptz '2026-01-01' + i * interval '1 minute', i % 10 FROM generate_series(1, 20000) i" \
+		-c "CREATE TABLE events_plain AS SELECT * FROM events" \
+		-c "CREATE INDEX scope_ix ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" \
+		-c "CREATE INDEX plain_ix ON events_plain USING sift_col (id, dim_a_id, created_at, v)" -c "VACUUM (FREEZE, ANALYZE) events, events_plain" >/dev/null ||
+		{ fail "this tree writes the indexes"; "$PG" stop >/dev/null; return; }
+	# rows in the write buffer, and reads that pay for decoding them: what makes the metapage of a plain index longer
+	psql_new -c "INSERT INTO events_plain SELECT i, 1 + i % 210, timestamptz '2026-01-01' + i * interval '1 minute', i % 10 FROM generate_series(20001, 23000) i" >/dev/null
+	want=$(psql_new -c "SET sift.enable_agg = off" -c "$q" | tail -1)
+	wantp=$(psql_new -c "SET sift.enable_agg = off" -c "$qp" | tail -1)
+	for n in 1 2 3; do psql_new -c "SET sift.agg_force = on" -c "SELECT count(*) FROM events_plain WHERE v = $n" -c "SELECT count(*) FROM events WHERE v = $n" >/dev/null; done
+	psql_new -c "SELECT pg_sleep(1)" >/dev/null
+	files=("$data/$(psql_new -c "SELECT pg_relation_filepath('plain_ix')")" "$data/$(psql_new -c "SELECT pg_relation_filepath('scope_ix')")")
+	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
+	for file in "${files[@]}"; do
+		used=$(($(od -An -tu2 -j12 -N2 "$file" | tr -d ' ') - 24))	# pd_lower less the page header
+		((used > 400)) && pass "the metapage of $(basename "$file") holds $used bytes, past the 400 that every 4.x release accepts" || fail "the metapage of $(basename "$file") holds $used bytes, past the 400 that every 4.x release accepts"
+	done
+	for item in ${SIFT_META_REFS:-v4.3.0 v4.3.5 v4.3.5+patch}; do
+		ref=${item%+patch}; patched=
+		[[ $item == *+patch ]] && patched=$REPO/scripts/old-lib-patches/v4.x-metapage-tail.patch
+		OLD_REF=$ref
+		root=$(SIFT_OLD_DIR= SIFT_OLD_PATCH=$patched build) || { echo "SKIP $item: not built" >&2; continue; }
+		dcopy=$SIFT_TMP/data-$item
+		rm -rf "$dcopy" && cp -a "$data" "$dcopy"
+		old_start "$root" "$dcopy" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "$item: the server with the older library starts"; continue; }
+		query "SET sift.agg_force = on; $qp"
+		plain=$(meta_class "$RC" "$OUT" "$ERR" "$wantp")
+		query "SET sift.agg_force = on; $q"
+		scope=$(meta_class "$RC" "$OUT" "$ERR" "$want")
+		echo "$item: a plain index that has served a read: $plain; an index with a scope: $scope" >&2
+		if [[ -n $patched ]]; then
+			[[ $plain == read ]] && pass "$item reads the plain index that this tree has read" || fail "$item reads the plain index that this tree has read ($plain)"
+			[[ $scope == refused ]] && pass "$item refuses the index with a scope with the format error and the standard hint" || fail "$item refuses the index with a scope with the format error and the standard hint ($scope)"
+		else
+			[[ $plain == "corrupted (704 bytes)" ]] && pass "$item, as released, calls the plain index corrupted (704 bytes)" || fail "$item, as released, calls the plain index corrupted (704 bytes) ($plain)"
+			[[ $scope == "corrupted (704 bytes)" ]] && pass "$item, as released, calls the index with a scope corrupted (704 bytes)" || fail "$item, as released, calls the index with a scope corrupted (704 bytes) ($scope)"
+		fi
+		pg_ctl -D "$dcopy" -m fast -w stop >/dev/null 2>&1
+		rm -rf "$dcopy"
+	done
+}
+
+# read, refused (the format error with the standard hint), corrupted (N bytes), or the error, from the status, the rows and the error of a query
+meta_class() { # RC OUT ERR WANT
+	if (($1 == 0)); then [[ $2 == "$4" ]] && echo read || echo "wrong rows [$2]"
+	elif [[ $3 == *'is corrupted'* ]]; then echo "corrupted ($(sed -n 's/.*Bad metapage (magic 0x[0-9a-f]*, \([0-9]*\) bytes).*/\1/p' <<<"$3") bytes)"
+	elif [[ -z $2 && $3 =~ column\ format\ 1\.[0-9]+ && $3 == *'Use a newer pg_sift'* ]]; then echo refused
+	else echo "error [${3//$'\n'/ }]"; fi
+}
+
 # 4.0.0 to 4.1.1 left row versions without a tombstone when the command id moved inside an UPDATE; the repair is the library's alone (docs/releases/v4.1.2.md)
 track() {
 	local root log t
@@ -548,5 +621,6 @@ case ${1:-} in
 	present) present; exit $FAILED ;;
 	scope) scope; exit $FAILED ;;
 	twohop) scope twohop; exit $FAILED ;;
+	meta) meta; exit $FAILED ;;
 	*) sed -n '2,12p' "$0"; exit 2 ;;
 esac
