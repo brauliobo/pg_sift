@@ -43,7 +43,7 @@ if ((rc != 77)); then # and the other way: the groups the older library tags und
 	# and the logs of 4.0.0 to 4.1.1, which may count row versions that were updated: this tree re-baselines them, and the older library reads the result as the heap
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v4.1.0 SIFT_TMP="$TAPDIR/old-lib-track" SIFT_PORT=$((SIFT_PORT + 21)) "$REPO/scripts/old-lib-check.sh" track 2>&1)
 	# and the presence leaf of 4.2 (a jsonb column that may hold a NULL document): every release family refuses the index, and REINDEX under the release is the way back
-	for ref in v3.2.3 v4.0.5 v4.1.4; do
+	for ref in v3.2.3 v4.0.4 v4.1.4; do
 		out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=$ref SIFT_TMP="$TAPDIR/old-lib-pr-$ref" SIFT_PORT=$((SIFT_PORT + 22)) "$REPO/scripts/old-lib-check.sh" present 2>&1 | sed "s/^\(PASS\|FAIL\) /\1 $ref: /")
 	done
 	# and the scope index of 5.0 (column format 45): the 4.3 release with the metapage patch (what a 4.3.6 carries) refuses it with the format error and the standard hint, and reads an index without a scope
@@ -51,8 +51,8 @@ if ((rc != 77)); then # and the other way: the groups the older library tags und
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_PATCH=$patch SIFT_OLD_REF=v4.3.0 SIFT_TMP="$TAPDIR/old-lib-scope" SIFT_PORT=$((SIFT_PORT + 23)) "$REPO/scripts/old-lib-check.sh" scope 2>&1)
 	# and a scope of two paths (column format 49): the same release refuses it, and the index with a scope of one path stays at 45
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_PATCH=$patch SIFT_OLD_REF=v4.3.0 SIFT_TMP="$TAPDIR/old-lib-twohop" SIFT_PORT=$((SIFT_PORT + 24)) "$REPO/scripts/old-lib-check.sh" twohop 2>&1)
-	# and what the 4.x releases as released say of the 704-byte metapage of 5.0 (corrupted, until a release carries the patch), beside the patched ones
-	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_META_REFS="v4.0.5 v4.1.4 v4.3.0 v4.3.5 v4.3.0+patch v4.3.5+patch" SIFT_TMP="$TAPDIR/old-lib-meta" SIFT_PORT=$((SIFT_PORT + 25)) "$REPO/scripts/old-lib-check.sh" meta 2>&1)
+	# and what the releases as released say of the 704-byte metapage of 5.0: the format error up to 3.2, corrupted from 3.3 to 4.3.5, the format error or a read from 4.3.6 (and for 4.3.0 with the patch of 4.3.6)
+	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_META_REFS="v3.2.3 v3.6.0 v4.1.4 v4.3.0 v4.3.5 v4.3.6 v4.3.0+patch" SIFT_TMP="$TAPDIR/old-lib-meta" SIFT_PORT=$((SIFT_PORT + 25)) "$REPO/scripts/old-lib-check.sh" meta 2>&1)
 fi
 if ((rc == 77)); then
 	echo "1..0 # SKIP $(grep -h '^SKIP ' <<<"$out" | head -1 | sed 's/^SKIP //')"
