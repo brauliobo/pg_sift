@@ -205,7 +205,7 @@ update_with(const char *sql, int nargs, Oid *argtypes, Datum *values)
 /*
  * The names a column renamed has in the catalog tables of the extension: sift.scope_follows (the column of the source that names the members or the keys, the column that expires pairs,
  * the columns of the pairs), the definitions of sift.projections (the columns, the filter and the rollups, written with the new name by the functions below) and the options of a
- * sift_table (the paths declared for a jsonb column and the order of its keys).
+ * sift_table (the paths declared for a jsonb column, the order of its keys and the compression of a column).
  */
 static void
 follow_catalogs_column(Oid heapoid, const SiftNameChange *c)
@@ -230,7 +230,8 @@ follow_catalogs_column(Oid heapoid, const SiftNameChange *c)
 	if (catalog_exists("sift.table_paths"))
 		update_with("UPDATE sift.table_paths SET spec = sift._names_option('paths', spec, $2, $3), attname = $3 WHERE relid::pg_catalog.oid = $1 AND attname = $2", 3, argtypes, values);
 	if (catalog_exists("sift.table_option_values"))
-		update_with("UPDATE sift.table_option_values SET value = sift._names_option('key_order', value, $2, $3) WHERE rel::pg_catalog.oid = $1 AND name = 'key_order'", 3, argtypes, values);
+		update_with("UPDATE sift.table_option_values SET value = sift._names_option(name, value, $2, $3) "
+					"WHERE rel::pg_catalog.oid = $1 AND name IN ('key_order', 'compression')", 3, argtypes, values);
 }
 
 /* The definitions of sift.projections of a table that was renamed or moved name it as schema.name */

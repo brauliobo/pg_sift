@@ -31,7 +31,12 @@ CREATE VIEW nm_view AS SELECT DISTINCT member, grp FROM nm_src;
 CREATE TABLE nm_fpairs (member int NOT NULL, grp int NOT NULL, PRIMARY KEY (grp, member)) WITH (autovacuum_enabled = false);
 INSERT INTO nm_src (grp, member) SELECT 1 + g % 4, g FROM generate_series(1, 40) g;
 SELECT sift.scope_follow_pairs('nm_fpairs', 'nm_view', 'nm_src', 'key', 'grp');
-VACUUM (ANALYZE) nm_dim, nm_fact, nm_pairs, nm_ev, nm_p;
+CREATE TABLE nm_tbl (id int, g int, doc jsonb) USING sift_table;
+INSERT INTO nm_tbl SELECT g, g % 9, jsonb_build_object('k', g % 5, 's', 'v' || g % 3) FROM generate_series(1, 2000) g;
+SELECT sift.table_set_paths('nm_tbl', 'doc', 'doc->k int4, doc->s text');
+SELECT sift.table_set_option('nm_tbl', 'key_order', 'g, id');
+SELECT sift.table_set_option('nm_tbl', 'compression', 'auto; g=zstd:3');
+VACUUM (ANALYZE) nm_dim, nm_fact, nm_pairs, nm_ev, nm_p, nm_tbl;
 CREATE SCHEMA nm_s;
 ALTER TABLE nm_fact RENAME COLUMN dim_id TO dim_ref;
 ALTER TABLE nm_fact RENAME COLUMN created TO created_on;
@@ -53,6 +58,8 @@ ALTER TABLE nm_p RENAME COLUMN region TO area;
 ALTER TABLE nm_p RENAME TO nm_q;
 ALTER TABLE nm_fpairs RENAME COLUMN member TO who;
 ALTER TABLE nm_src RENAME COLUMN grp TO grp_id;
+ALTER TABLE nm_tbl RENAME COLUMN doc TO document;
+ALTER TABLE nm_tbl RENAME COLUMN g TO grp;
 INSERT INTO nm_fact SELECT g, 1 + g % 300, date '2025-04-01' + g % 20, ARRAY[g % 3], jsonb_build_object('k', g % 9), g FROM generate_series(3001, 3400) g;
 SELECT sift.col_promote('nm_fact_c');
 INSERT INTO nm_src (grp_id, member) VALUES (9, 90), (9, 91);
@@ -65,7 +72,8 @@ BEGIN
 		'SELECT string_agg(d || '':'' || c, '','' ORDER BY d) FROM (SELECT created_on d, count(*) c FROM nm_fact WHERE dim_ref < 50 GROUP BY 1) z',
 		'SELECT string_agg(g || '':'' || c || '':'' || s, '','' ORDER BY g) FROM (SELECT d.grp g, count(*) c, sum(f.amount) s FROM nm_fact f JOIN nm_s.nm_dims d ON d.dim_pk = f.dim_ref GROUP BY 1) j',
 		'SELECT count(*) || '':'' || sum(v) FROM nm_ev WHERE who_ref IN (SELECT who FROM nm_s.nm_grants WHERE grp_id = 3)',
-		'SELECT string_agg(c || '':'' || n || '':'' || s, '','' ORDER BY c) FROM (SELECT customer c, count(*) n, sum(amount) s FROM nm_q WHERE area <> ''r0'' GROUP BY 1) p'] LOOP
+		'SELECT string_agg(c || '':'' || n || '':'' || s, '','' ORDER BY c) FROM (SELECT customer c, count(*) n, sum(amount) s FROM nm_q WHERE area <> ''r0'' GROUP BY 1) p',
+		'SELECT string_agg(k || '':'' || g || '':'' || c, '','' ORDER BY k, g) FROM (SELECT document ->> ''k'' k, grp g, count(*) c FROM nm_tbl GROUP BY 1, 2) t'] LOOP
 		EXECUTE q INTO r;
 		o := o || r || '/';
 	END LOOP;
@@ -80,7 +88,9 @@ NAMES_STATE="SELECT (SELECT string_agg(c.relname || ' ' || o, ' | ' ORDER BY c.r
 		AND split_part(o, '=', 1) IN ('connect', 'scope', 'paths', 'key_cut', 'rollup_columns', 'order_array_columns', 'projection', 'track_changes'))
 	|| ' || ' || (SELECT string_agg(source || ' ' || leaves::text || ' ' || coalesce(rollups, '-') || ' ' || filter, ' ; ') FROM sift.projections)
 	|| ' || ' || (SELECT string_agg(projection || ':' || state, ',') FROM sift.projection_status)
-	|| ' || ' || (SELECT string_agg(source || ':' || source_column || ':' || member_column || ':' || key_column, ',') FROM sift.scope_follows)"
+	|| ' || ' || (SELECT string_agg(source || ':' || source_column || ':' || member_column || ':' || key_column, ',') FROM sift.scope_follows)
+	|| ' || ' || (SELECT string_agg(relid::text || ' ' || attname || ' ' || spec, ',') FROM sift.table_paths)
+	|| ' || ' || (SELECT string_agg(rel::text || ' ' || name || '=' || value, ',' ORDER BY name) FROM sift.table_option_values)"
 NAMES_VERIFY="SELECT sift.col_verify('nm_s.nm_dim_c', true), sift.col_verify('nm_fact_c', true), sift.col_verify('nm_s.nm_pairs_j', true), sift.col_verify('nm_ev_c', true), sift.col_verify('nm_p_c', true)"
 NAMES_ANSWERS="SELECT nm_answers_on() = nm_answers_off(), nm_answers_off()"
 NAMES_WRITES="INSERT INTO nm_fact SELECT g, 1 + g % 300, date '2025-05-01' + g % 20, ARRAY[1, g % 2], jsonb_build_object('k', 4, 's', 'new'), g FROM generate_series(4001, 4200) g;
@@ -89,4 +99,5 @@ DELETE FROM nm_fact WHERE id % 11 = 0;
 INSERT INTO nm_ev SELECT g, 1 + g % 300, g % 7, g FROM generate_series(4001, 4100) g;
 INSERT INTO nm_s.nm_grants SELECT g, 1 + g % 5 FROM generate_series(301, 340) g;
 INSERT INTO nm_src (grp_id, member) VALUES (5, 50), (5, 51);
+INSERT INTO nm_tbl SELECT 2000 + g, g % 9, jsonb_build_object('k', 7) FROM generate_series(1, 300) g;
 UPDATE nm_q SET amount = amount + 1 WHERE id % 13 = 0"

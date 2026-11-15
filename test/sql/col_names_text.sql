@@ -200,6 +200,29 @@ INSERT INTO nt_t SELECT 2000 + g, g % 9, jsonb_build_object('k', 7) FROM generat
 SELECT sift_helpers.agg_equals_normal_all('SELECT payload -> ''k'' AS k, grp, count(*) FROM nt_t GROUP BY 1, 2') AS same_table_read_after_insert;
 DROP TABLE nt_t;
 
+-- the arrow spelling of a path, in a sift_col index and in a sift_table, and every option of a sift_table that names a column (paths, key_order, compression)
+CREATE TABLE nt_c (id int, doc jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO nt_c SELECT g, jsonb_build_object('k', g % 5) FROM generate_series(1, 2000) g;
+CREATE INDEX nt_c_col ON nt_c USING sift_col (id, doc) WITH (paths = 'doc->k int4');
+ALTER TABLE nt_c RENAME COLUMN doc TO body;
+SELECT nt_opt('nt_c_col', 'paths') AS arrow_paths_renamed;
+SELECT nt_redo('nt_c_col') AS arrow_restored_alike;
+CREATE TABLE nt_a (id int, g int, doc jsonb) USING sift_table;
+INSERT INTO nt_a SELECT g, g % 9, jsonb_build_object('k', g % 5, 's', 'v' || g % 3) FROM generate_series(1, 2000) g;
+SELECT sift.table_set_paths('nt_a', 'doc', 'doc->k int4, doc->s text');
+SELECT sift.table_set_option('nt_a', 'key_order', 'g, id');
+SELECT sift.table_set_option('nt_a', 'compression', 'auto; g=zstd:3; id=none');
+VACUUM nt_a;
+ALTER TABLE nt_a RENAME COLUMN doc TO payload;
+ALTER TABLE nt_a RENAME COLUMN g TO grp;
+ALTER TABLE nt_a RENAME COLUMN id TO ident;
+SELECT attname, spec FROM sift.table_paths WHERE relid = 'nt_a'::regclass;
+SELECT name, value FROM sift.table_option_values WHERE rel::oid = 'nt_a'::regclass::oid ORDER BY name;
+SELECT sift_helpers.agg_equals_normal_all('SELECT payload -> ''k'' AS k, grp, count(*) FROM nt_a GROUP BY 1, 2') AS same_arrow_table_read;
+INSERT INTO nt_a SELECT 2000 + g, g % 9, jsonb_build_object('k', 7) FROM generate_series(1, 300) g;
+SELECT sift_helpers.agg_equals_normal_all('SELECT payload -> ''k'' AS k, grp, count(*) FROM nt_a GROUP BY 1, 2') AS same_arrow_table_after_insert;
+DROP TABLE nt_c, nt_a;
+
 DROP SCHEMA nt_s CASCADE;
 DROP FUNCTION nt_opt(regclass, text), nt_redo(regclass);
 DROP EXTENSION pg_sift_helpers;

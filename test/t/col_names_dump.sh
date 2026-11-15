@@ -25,7 +25,8 @@ STATE=$(dbq src "$NAMES_STATE")
 ANSWER=$(dbq src "SELECT nm_answers_off()")
 check "the source: the indexes verify, the answers with the pushdown are the plain plans', and the options name what the tables are called now" \
 	test "$(verified src && echo ok)" == ok -a "$(dbq src "$NAMES_ANSWERS")" == "t|$ANSWER" -a "$(grep -c 'nm_fact_c connect=dim_ref -> nm_s.nm_dims(dim_pk)' <<<"$STATE")" == 1 \
-	-a "$(grep -c 'nm_ev_c scope=g: who_ref -> nm_s.nm_grants(who, grp_id) using nm_grants_btree cols(category, v)' <<<"$STATE")" == 1 -a "$(grep -c 'paths=document.k int4, document.s text' <<<"$STATE")" == 1
+	-a "$(grep -c 'nm_ev_c scope=g: who_ref -> nm_s.nm_grants(who, grp_id) using nm_grants_btree cols(category, v)' <<<"$STATE")" == 1 -a "$(grep -c 'paths=document.k int4, document.s text' <<<"$STATE")" == 1 \
+	-a "$(grep -c 'nm_tbl document document->k int4, document->s text' <<<"$STATE")" == 1 -a "$(grep -c 'nm_tbl compression=auto; grp=zstd:3,nm_tbl key_order=grp, id' <<<"$STATE")" == 1
 diag "$STATE"
 pg_dump "${S[@]}" -Fc -f "$D/src.custom" src
 pg_dump "${S[@]}" -Fp -f "$D/src.sql" src
