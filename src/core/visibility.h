@@ -80,6 +80,8 @@ extern void sift_vis_blocks_allvisible(SiftVis *v, const BlockNumber *blocks, ui
 /* sift.test_vis_pause = N: the Nth mask of a scan waits for advisory lock (0x51F7, 1) before it reads the map; sift.test_vis_jitter_us sleeps up to that long */
 extern PGDLLIMPORT int sift_test_vis_pause;
 extern PGDLLIMPORT int sift_test_vis_jitter_us;
+/* sift.test_bulkdelete_gate = N: the VACUUM of an index waits for the advisory lock of number N before it reads each segment (0 = no gate) */
+extern PGDLLIMPORT int sift_test_bulkdelete_gate;
 /* sift.test_count_gate: a count waits for lock (0x51F7, 1) once its plan is made; sift.test_cleanup_gate: a VACUUM waits for lock (0x51F7, 2) before its cleanup refreshes the dead-posting tables; sift.test_merge_gate: a merge of the maintenance worker waits for lock (0x51F7, 4), its segments claimed; sift.test_release_gate: a directory change that releases extents waits for lock (0x51F7, 6) once its xid is taken, before it locks the directory; sift.test_export_gate: the leader of a parallel SiftScan waits for lock (0x51F7, 5) once it exported the directory its participants bind on, before the workers start; sift.test_drop_gate: the transaction that deletes a tracked index waits for lock (0x51F7, 9) just before it removes the index's triggers; sift.test_build_gate: a bulk build waits for lock (0x51F7, 8) before it writes its metapage, the last page; sift.test_par_gate: a worker of a parallel aggregate waits for lock (0x51F7, 10) before it opens anything of the leader's statement */
 extern PGDLLIMPORT bool sift_test_count_gate;
 extern PGDLLIMPORT bool sift_test_cleanup_gate;
@@ -96,10 +98,12 @@ extern void sift_test_wait(int key);
 extern void sift_test_wait_inval(int key);
 extern void sift_test_hold(int64 key);
 #define SIFT_TEST_GATE(flag, key) do { if (flag) sift_test_wait(key); } while (0)
+#define SIFT_BULKDELETE_GATE() sift_test_hold(sift_test_bulkdelete_gate)
 /* the same, then what the next lock of a statement does: the cache entry of a table that was vacuumed meanwhile is replaced */
 #define SIFT_TEST_GATE_INVAL(flag, key) do { if (flag) sift_test_wait_inval(key); } while (0)
 #else
 #define SIFT_TEST_GATE(flag, key) ((void) 0)
+#define SIFT_BULKDELETE_GATE() ((void) 0)
 #define SIFT_TEST_GATE_INVAL(flag, key) ((void) 0)
 #endif
 

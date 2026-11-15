@@ -1,0 +1,74 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s2lock s1vacuum s2poke s2meet s2unlock s2listed s1rows s2heap s1plan s2reindex s2listed_after s1rows s1plan
+step s2lock: SELECT pg_advisory_lock(7102);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1vacuum: VACUUM iso_qv; <waiting ...>
+step s2poke: SELECT sift._test_poke('iso_qv_idx', 2, 8176, 9, 2);
+_test_poke
+----------
+          
+(1 row)
+
+step s2meet: SELECT result FROM iso_qv_try();
+result
+------
+XX002 
+(1 row)
+
+step s2unlock: SELECT pg_advisory_unlock(7102);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+s1: WARNING:  sift index "iso_qv_idx" is quarantined; VACUUM skipped it
+HINT:  Queries and maintenance run without it. REINDEX INDEX public.iso_qv_idx puts it back in service.
+step s1vacuum: <... completed>
+step s2listed: SELECT index, error_code, skipped_vacuums >= 1 AS vacuum_skipped FROM sift.quarantine;
+index     |error_code|vacuum_skipped
+----------+----------+--------------
+iso_qv_idx|XX002     |t             
+(1 row)
+
+step s1rows: SELECT result FROM iso_qv_try();
+result   
+---------
+rows=2571
+(1 row)
+
+step s2heap: SELECT count(*) AS heap_rows FROM iso_qv WHERE v = 3;
+heap_rows
+---------
+     2571
+(1 row)
+
+step s1plan: SELECT iso_qv_plan() AS plan;
+plan
+----
+heap
+(1 row)
+
+step s2reindex: REINDEX INDEX iso_qv_idx;
+step s2listed_after: SELECT count(*) AS listed FROM sift.quarantine;
+listed
+------
+     0
+(1 row)
+
+step s1rows: SELECT result FROM iso_qv_try();
+result   
+---------
+rows=2571
+(1 row)
+
+step s1plan: SELECT iso_qv_plan() AS plan;
+plan
+----
+sift
+(1 row)
+

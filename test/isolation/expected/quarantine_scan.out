@@ -1,0 +1,97 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s2lock s1scan s2poke s2meet s2unlock s2listed s1next s1plan
+step s2lock: SELECT pg_advisory_lock(7101);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1scan: SELECT result, coalesce(hint ~ '^REINDEX INDEX', false) AS reindex_hint FROM iso_q_try(7101); <waiting ...>
+step s2poke: SELECT sift._test_poke('iso_q_idx', 2, 8176, 9, 2);
+_test_poke
+----------
+          
+(1 row)
+
+step s2meet: SELECT result, coalesce(hint ~ '^REINDEX INDEX', false) AS reindex_hint FROM iso_q_try(0);
+result|reindex_hint
+------+------------
+XX002 |t           
+(1 row)
+
+step s2unlock: SELECT pg_advisory_unlock(7101);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1scan: <... completed>
+result|reindex_hint
+------+------------
+XX002 |t           
+(1 row)
+
+step s2listed: SELECT index, error_code, detections FROM sift.quarantine;
+index    |error_code|detections
+---------+----------+----------
+iso_q_idx|XX002     |         2
+(1 row)
+
+step s1next: SELECT result, coalesce(hint ~ '^REINDEX INDEX', false) AS reindex_hint FROM iso_q_try(0);
+result   |reindex_hint
+---------+------------
+rows=2857|f           
+(1 row)
+
+step s1plan: SELECT iso_q_plan() AS plan;
+plan
+----
+heap
+(1 row)
+
+
+starting permutation: s2lock s1scan s2cancel s2unlock s2none s1next s1plan
+step s2lock: SELECT pg_advisory_lock(7101);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1scan: SELECT result, coalesce(hint ~ '^REINDEX INDEX', false) AS reindex_hint FROM iso_q_try(7101); <waiting ...>
+step s2cancel: SELECT pg_cancel_backend(pid) AS cancelled FROM pg_stat_activity WHERE query LIKE '%iso_q_try(7101)%' AND pid <> pg_backend_pid();
+cancelled
+---------
+t        
+(1 row)
+
+step s1scan: <... completed>
+result|reindex_hint
+------+------------
+ 57014|f           
+(1 row)
+
+step s2unlock: SELECT pg_advisory_unlock(7101);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s2none: SELECT count(*) AS listed FROM sift.quarantine;
+listed
+------
+     0
+(1 row)
+
+step s1next: SELECT result, coalesce(hint ~ '^REINDEX INDEX', false) AS reindex_hint FROM iso_q_try(0);
+result   |reindex_hint
+---------+------------
+rows=2857|f           
+(1 row)
+
+step s1plan: SELECT iso_q_plan() AS plan;
+plan
+----
+sift
+(1 row)
+

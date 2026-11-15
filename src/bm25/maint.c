@@ -469,6 +469,11 @@ sift_maint_step_boundary(Relation index)
 	StartTransactionCommand();
 	PushActiveSnapshot(GetTransactionSnapshot());
 	index = sift_try_open_index(indexoid, RowExclusiveLock);
+	if (index != NULL && sift_index_known_out(index))
+	{
+		index_close(index, RowExclusiveLock);
+		return NULL;
+	}
 	/* a read that began while the step ran ends within moments; one that outlasts the wait holds the blocks of every step of the pass, which then writes where it can */
 	for (int i = 0; index != NULL && i < FREED_WAIT_TRIES && sift_store_held_blocks(index) > 0; i++)
 		sift_nap(FREED_WAIT_MS);
