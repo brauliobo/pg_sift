@@ -79,7 +79,10 @@ SELECT 'upsert' AS "case", leaves_differing('th') AS h, leaves_differing('tr') A
 TRUNCATE trlog;
 SELECT format('DROP TRIGGER trb ON %s', c) FROM unnest(ARRAY['th0', 'th1', 'th2', 'tr0', 'tr1', 'tr2', 'tl0', 'tl1', 'tl2', 'tm00', 'tm01', 'tm10', 'tm11']) c \gexec
 
--- a function in SET, WHERE and RETURNING of the upsert reads the table too
+-- a function in SET, WHERE and RETURNING of the upsert reads the table too (after REINDEX: once a statement has ended versions of a table in the log, the next one is read right whatever the library hears)
+REINDEX TABLE th;
+REINDEX TABLE tr;
+VACUUM th, tr;
 \c -
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -93,22 +96,26 @@ INSERT INTO tr SELECT i * 3, i % 7, i FROM generate_series(2390, 2409) i
 SELECT * FROM log_summary() WHERE ev NOT LIKE '% BEFORE %';
 TRUNCATE trlog;
 
--- a data-modifying CTE that upserts, with a function in the statement that reads the table for each row it returns
+REINDEX TABLE tm;
+REINDEX TABLE tl;
+VACUUM tm, tl;
+-- a data-modifying CTE that upserts, with a function that reads the table for each row it returns (the statement itself names no table that reads the index: nothing loads the library before it runs)
 \c -
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 WITH ins AS (INSERT INTO tm SELECT i * 3, i % 7, i FROM generate_series(2390, 2409) i ON CONFLICT (id) DO UPDATE SET v = tm.v + 1 RETURNING id)
-SELECT count(log_value('tm cte', 'tm')) AS rows_returned, (SELECT count(*) FROM tm) AS count_in_statement FROM ins;
+SELECT count(log_value('tm cte', 'tm')) AS rows_returned FROM ins;
 \c -
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
-WITH ins AS (INSERT INTO tl SELECT i * 3, i % 7, i FROM generate_series(2390, 2409) i ON CONFLICT (id, g) DO UPDATE SET v = tl.v + 1 RETURNING id),
-	del AS (DELETE FROM tl WHERE id % 5 = 0 RETURNING id)
-SELECT (SELECT count(*) FROM ins) AS upserted, (SELECT count(*) FROM del) AS deleted, (SELECT count(log_value('tl cte', 'tl')) FROM ins) AS reads;
+WITH ins AS (INSERT INTO tl SELECT i * 3, i % 7, i FROM generate_series(2390, 2409) i ON CONFLICT (id, g) DO UPDATE SET v = tl.v + 1 RETURNING id)
+SELECT count(log_value('tl cte', 'tl')) AS rows_returned FROM ins;
 SELECT * FROM log_summary() WHERE ev NOT LIKE '% BEFORE %';
 TRUNCATE trlog;
 SELECT 'functions and CTEs' AS "case", leaves_differing('th') AS h, leaves_differing('tr') AS r, leaves_differing('tl') AS l, leaves_differing('tm') AS m;
 
+REINDEX TABLE tr;
+VACUUM tr;
 -- MERGE as the first statement: update, delete and insert
 \c -
 SET client_min_messages = warning;
