@@ -232,7 +232,33 @@ sift_live_bits(const SiftLive *l, uint64 rank, uint32 n, uint64 *out, uint32 nwo
 
 StaticAssertDecl(SIFT_SB_PAGES * MaxHeapTuplesPerPage / 8 + 1 <= 2 * SIFT_PAGE_PAYLOAD, "the liveness bits of a unit of the most rows lie on at most three pages, which sift_live_clear clears with the header page in one GenericXLog record");
 
-/* the header page and the pages of the bits of the dead rows of a unit: GenericXLog holds MAX_GENERIC_XLOG_PAGES, which a unit of the most rows (SIFT_COL_UNIT_MAX_ROWS bits) fills */
+/* The dirty bitmap follows the header over as many pages as its nsb bits take: the bit of an SB lies on page 0 only for the first 65151 */
+static void
+set_dirty_bit(const SiftLive *l, uint32 sbidx)
+{
+	uint64		b = sizeof(SiftLiveHeaderData) + sbidx / 8;
+	uint8		mask = 1 << (sbidx % 8);
+	Buffer		buf = ReadBuffer(l->index, l->first + b / SIFT_PAGE_PAYLOAD);
+	GenericXLogState *state;
+	Page		page;
+
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	sift_store_check_page(l->index, buf, SIFT_PT_LIVE, l->gen);
+	if (!(SiftPageGetData(BufferGetPage(buf))[b % SIFT_PAGE_PAYLOAD] & mask))
+	{
+		state = GenericXLogStart(l->index);
+		page = GenericXLogRegisterBuffer(state, buf, 0);
+		SiftPageGetData(page)[b % SIFT_PAGE_PAYLOAD] |= mask;
+		GenericXLogFinish(state);
+	}
+	UnlockReleaseBuffer(buf);
+}
+
+/*
+ * The SB's dirty bit goes first, in a record of its own: a crash leaves a bit set over rows that are still live, which readers take as a
+ * hint to look at the liveness bits. Then the header page and the pages of the bits of the dead rows of a unit: GenericXLog holds
+ * MAX_GENERIC_XLOG_PAGES, which a unit of the most rows (SIFT_COL_UNIT_MAX_ROWS bits) fills
+ */
 void
 sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd)
 {
@@ -244,6 +270,7 @@ sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd)
 	GenericXLogState *state;
 	SiftLiveHeaderData *lh;
 
+	set_dirty_bit(l, sbidx);
 	pg[0] = 0;
 	for (int i = 0; i < nd; i++)
 	{
@@ -273,7 +300,6 @@ sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd)
 	}
 	lh = (SiftLiveHeaderData *) SiftPageGetData(page[0]);
 	lh->ndead += nd;
-	SiftPageGetData(page[0])[sizeof(SiftLiveHeaderData) + sbidx / 8] |= 1 << (sbidx % 8);
 	GenericXLogFinish(state);
 	for (int i = 0; i < n; i++)
 		UnlockReleaseBuffer(buf[i]);
