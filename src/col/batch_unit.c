@@ -37,7 +37,7 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 		if (lf->inl)
 			vals_put(dst->mcxt, &dst->col[col], isnull ? 0 : sift_cdict_intern(dst->dict[col], lf->vb + lf->voff[slot], (uint32) key), isnull, ovf, tag);
 		else
-			vals_put_var(dst->mcxt, &dst->col[col], lf->vb + lf->voff[slot], (uint32) key, isnull, ovf, tag);
+			vals_put_var(dst->mcxt, &dst->col[col], &dst->schema->cols[col], lf->vb + lf->voff[slot], (uint32) key, isnull, ovf, tag);
 		return;
 	}
 	if (!isnull && lf->remap != NULL)

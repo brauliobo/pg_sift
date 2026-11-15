@@ -26,7 +26,7 @@ EXCEPTION WHEN OTHERS THEN
 	RETURN format('error %s %s [%s]', st, m, h);
 END $$;
 CREATE FUNCTION jb_same(args text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE a text := jb_run('json_build_object', args); b text := jb_run('sift.json_build_object', args);
+DECLARE a text := jb_run('json_build_object', args); b text := replace(jb_run('sift.json_build_object', args), 'sift.json_build_object: ', '');
 BEGIN
 	RETURN CASE WHEN a = b THEN 'same ' || a ELSE format('DIFFERENT core %s sift %s', a, b) END;
 END $$;
@@ -144,6 +144,9 @@ SET search_path = sift, pg_catalog, public;
 SELECT json_build_object('a', 1, 'b', ARRAY['x']) AS result;
 SELECT to_regprocedure('json_build_object("any")') = to_regprocedure('sift.json_build_object("any")') AS takes_the_name;
 RESET search_path;
+
+-- its errors say which function raised them: a query that calls json_build_object runs it in place of the core function
+SELECT jb_run('sift.json_build_object', a) AS error FROM unnest(ARRAY[$$'a'$$, $$NULL, 1$$, $$ARRAY[1], 'v'$$]) a;
 
 DROP TABLE jb_rows;
 DROP FUNCTION jb_poly(anyelement), jb_same(text), jb_run(text, text);

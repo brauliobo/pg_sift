@@ -332,7 +332,7 @@ ALTER TABLE ro ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ro SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE 'o' || i || repeat('z', 20) END, CASE WHEN i % 31 = 0 THEN NULL ELSE md5(i::text)::uuid END FROM generate_series(1, 3000) i;
 CREATE INDEX ro_i ON ro USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops) WITH (count_columns = 'off', return_columns = 's, u', write_buffer_limit = 256);
 CREATE INDEX ro_x ON ro USING sift_col (id sift.col_int4_ops, lower(s) sift.col_text_ops) WITH (count_columns = 'off', return_columns = 'lower');
-ERROR:  invalid return_columns option: "lower" is an expression, not a column
+ERROR:  invalid return_columns option "lower": "lower" is an expression, not a column
 DROP INDEX ro_i;
 CREATE INDEX ro_i ON ro USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops) WITH (count_columns = 'off', return_columns = 's, u', write_buffer_limit = 256);
 VACUUM (ANALYZE) ro;

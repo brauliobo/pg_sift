@@ -26,7 +26,10 @@ sift_cbatch_create(MemoryContext mcxt, const SiftColSchema *schema)
 	for (int i = 0; i < schema->ncols; i++)
 	{
 		if (leaf_is_str(&schema->cols[i]))
+		{
 			b->dict[i] = sift_cdict_create(mcxt);
+			b->dict[i]->leaf = &schema->cols[i];
+		}
 		if (schema->cols[i].kind == SIFT_COLK_GROUP)
 			b->col[i].eoff = MemoryContextAllocZero(mcxt, (b->rowcap + 1) * sizeof(uint32));
 	}
@@ -325,7 +328,7 @@ vals_put(MemoryContext mcxt, SiftCVals *v, int64 key, bool isnull, bool ovf, uin
 
 /* Appends one slot of a VAR leaf: the bytes of the value (none for a NULL) */
 void
-vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool isnull, bool ovf, uint8 tag)
+vals_put_var(MemoryContext mcxt, SiftCVals *v, const SiftColDef *leaf, const char *s, uint32 len, bool isnull, bool ovf, uint8 tag)
 {
 	uint32		start = v->n == 0 ? 0 : v->voff[v->n];
 
@@ -333,7 +336,7 @@ vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool i
 		len = 0;
 	if ((uint64) start + len > (uint64) PG_INT32_MAX)
 		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col: the variable-length values of a unit exceed 2 GB"),
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the variable-length values of one unit of %s exceed 2 GB", sift_cleaf_label(leaf)),
 				 errhint("Leave the column out of the index, or index left(column, N) or a hash of it.")));
 	if (v->voff == NULL)
 	{
@@ -491,7 +494,7 @@ put_value(SiftColBatch *b, int id, const SiftColValue *v)
 	}
 	if (b->schema->cols[id].store == SIFT_COLS_VAR)
 	{
-		vals_put_var(b->mcxt, &b->col[id], v->v.s, v->len, isnull, v->overflow, v->tag);
+		vals_put_var(b->mcxt, &b->col[id], &b->schema->cols[id], v->v.s, v->len, isnull, v->overflow, v->tag);
 		return;
 	}
 	if (!isnull)

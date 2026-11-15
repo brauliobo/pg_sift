@@ -96,6 +96,14 @@ schema_hash(const SiftColDef *defs, int n)
 	return h;
 }
 
+static char *
+text_copy(MemoryContext mcxt, const char *s)
+{
+	size_t		len = strlen(s);
+
+	return memcpy(MemoryContextAlloc(mcxt, len + 1), s, len + 1);
+}
+
 static SiftColSchema *
 schema_build(MemoryContext mcxt, const SiftColDef *defs, int n)
 {
@@ -105,13 +113,9 @@ schema_build(MemoryContext mcxt, const SiftColDef *defs, int n)
 	s->cols = MemoryContextAlloc(mcxt, n * sizeof(SiftColDef));
 	for (int i = 0; i < n; i++)
 	{
-		const char *path = defs[i].path ? defs[i].path : "";
-		size_t		len = strlen(path);
-		char	   *copy = MemoryContextAlloc(mcxt, len + 1);
-
-		memcpy(copy, path, len + 1);
 		s->cols[i] = defs[i];
-		s->cols[i].path = copy;
+		s->cols[i].path = text_copy(mcxt, defs[i].path ? defs[i].path : "");
+		s->cols[i].name = defs[i].name ? text_copy(mcxt, defs[i].name) : NULL;
 		s->ngroups += defs[i].kind == SIFT_COLK_GROUP;
 		s->wide |= sift_col_def_needs_wide(&defs[i]);
 		s->contain |= sift_col_def_shape(&defs[i]) != 0;

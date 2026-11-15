@@ -106,6 +106,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 				*d = lanes[i];
 			d->id = n + i;
 			d->attno = a;
+			d->name = NameStr(att->attname);
 			d->parent = d->parent < 0 ? -1 : n + d->parent;
 		}
 		n += k;
@@ -122,7 +123,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 			sift_col_option_error("return_columns", sift_col_options_return_columns(index), err);
 		for (int a = 1; a <= natts; a++)
 			if (r->ret[a] && index->rd_index->indkey.values[a - 1] == 0)
-				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid return_columns option: \"%s\" is an expression, not a column", NameStr(TupleDescAttr(desc, a - 1)->attname))));
+				sift_col_option_error("return_columns", sift_col_options_return_columns(index), psprintf("\"%s\" is an expression, not a column", NameStr(TupleDescAttr(desc, a - 1)->attname)));
 	}
 	r->schema = sift_cschema_create(mcxt, defs, n);
 	r->policy = palloc(n * sizeof(SiftCcPolicy));
@@ -163,7 +164,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 			while (i < n && strcmp(names[i], c) != 0)
 				i++;
 			if (i == n)
-				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_order option: column \"%s\" is not a column of the index", c)));
+				sift_col_option_error("key_order", sift_col_options_key_order(index), psprintf("column \"%s\" is not a column of the index", c));
 		}
 		if ((err = sift_cpagg_leaf_list(sift_cpagg_auto_list(sift_col_options_order_array_columns(index), &r->pagg.gorderauto), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_array_ok,
 										"not an integer, date, timestamp, numeric or text column")) != NULL)
@@ -205,12 +206,12 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 				if (grp[i])
 				{
 					if (r->pagg.gorder[i])
-						ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: column \"%s\" is in order_array_columns", names[i])));
+						sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), psprintf("column \"%s\" is in order_array_columns", names[i]));
 					r->pagg.gorder_group = i + 1;
 					ng++;
 				}
 			if (ng != 1)
-				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: one column, not %d", ng)));
+				sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), psprintf("one column, not %d", ng));
 		}
 		/* the second order of the second key column grouped by the first is what an ordered index-only scan of (g, k) reads group after group, and it gives exact keys (amscan/ordered.c): whole chunks unless order_layout says otherwise */
 		if (r->pagg.gorder_group > 0 && defs[r->pagg.gorder_group - 1].attno == 1)
@@ -225,14 +226,14 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 				Oid			t = TupleDescAttr(desc, defs[i].attno - 1)->atttypid;
 
 				if (t != INT2OID && t != INT4OID && t != INT8OID && t != DATEOID && t != TIMESTAMPOID && t != TIMESTAMPTZOID && t != TEXTOID && t != VARCHAROID && t != UUIDOID)
-					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: \"%s\" is a %s column, whose hash a unit cannot compute (char(n) and name hash differently from text)", names[i], format_type_be(t))));
+					sift_col_option_error("hll_columns", sift_col_options_hll_columns(index), psprintf("\"%s\" is a %s column, whose hash a unit cannot compute (char(n) and name hash differently from text)", names[i], format_type_be(t)));
 				if ((t == TEXTOID || t == VARCHAROID) && !get_collation_isdeterministic(TupleDescAttr(desc, defs[i].attno - 1)->attcollation))
-					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: \"%s\" has a nondeterministic collation, whose hash is not that of its bytes", names[i])));
+					sift_col_option_error("hll_columns", sift_col_options_hll_columns(index), psprintf("\"%s\" has a nondeterministic collation, whose hash is not that of its bytes", names[i]));
 				/* a column the build chose for its key list (key_columns 'auto') gives it up: a leaf has one blob a unit in the set section, and the user asked for the sketch */
 				if (r->pagg.set[i] && r->pagg.keyauto)
 					r->pagg.set[i] = r->pagg.pres[i] = false;
 				else if (r->pagg.set[i])
-					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: \"%s\" is in key_columns, which keeps its distinct keys exactly", names[i])));
+					sift_col_option_error("hll_columns", sift_col_options_hll_columns(index), psprintf("\"%s\" is in key_columns, which keeps its distinct keys exactly", names[i]));
 			}
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_tid_columns(index), r->schema, (const char *const *) names, r->pagg.point_tid)) != NULL)
 			sift_col_option_error("point_tid_columns", sift_col_options_point_tid_columns(index), err);
@@ -240,7 +241,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 			sift_col_option_error("count_columns", sift_col_options_count_columns(index), err);
 		for (int i = 0; i < n; i++)
 			if (r->pagg.count[i] && r->schema->cols[i].store != SIFT_COLS_STR)
-				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid count_columns option: \"%s\" is not a text column", names[i])));
+				sift_col_option_error("count_columns", sift_col_options_count_columns(index), psprintf("\"%s\" is not a text column", names[i]));
 		r->pagg.dict_hash = sift_col_options(index)->dict_lookup != SIFT_COL_DICT_OFF;
 		for (int i = 0; i < n; i++)
 			r->pagg.lookup[i] = sift_col_options(index)->dict_lookup == SIFT_COL_DICT_ON || r->pagg.count[i] ||

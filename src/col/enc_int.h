@@ -18,7 +18,7 @@ extern void put_packed(StringInfo out, const uint32 *v, uint32 n, int bits);
 extern void bitmap_set(MemoryContext mcxt, uint64 **bits, uint32 cap, uint32 i);
 extern void vals_reserve(MemoryContext mcxt, SiftCVals *v, uint32 extra);
 extern void vals_put(MemoryContext mcxt, SiftCVals *v, int64 key, bool isnull, bool ovf, uint8 tag);
-extern void vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool isnull, bool ovf, uint8 tag);
+extern void vals_put_var(MemoryContext mcxt, SiftCVals *v, const SiftColDef *leaf, const char *s, uint32 len, bool isnull, bool ovf, uint8 tag);
 extern bool leaf_fits(SiftColBatch *b, int id, const char *s, uint32 len);
 extern void batch_check_keys(const SiftColBatch *b, uint32 n, bool checked);
 extern void batch_reserve_rows(SiftColBatch *b, uint32 extra);

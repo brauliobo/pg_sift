@@ -16,7 +16,7 @@ ERROR:  invalid key_order option "ent,": at most two columns, 'group, key'
 CREATE INDEX ko_bad ON ko USING sift_col (id, ent, ts, v) WITH (key_order = '"ts');
 ERROR:  invalid list of column names: the quote that opens at ""ts" is not closed
 CREATE INDEX ko_bad ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'nope');
-ERROR:  invalid key_order option: column "nope" is not a column of the index
+ERROR:  invalid key_order option "nope": column "nope" is not a column of the index
 SET client_min_messages = notice;
 CREATE INDEX ko_one ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ts');
 NOTICE:  sift_col index "ko_one": 2 automatic choices, 1 advice
