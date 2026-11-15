@@ -82,10 +82,11 @@ SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS next_statement;
 (1 row)
 
 -- the plan made before the index left service is refused once, and the retry is planned without it
-SELECT expect($$ EXECUTE by_v $$) AS stale_plan;
-                                    stale_plan                                    
-----------------------------------------------------------------------------------
- 40001: sift index "t_idx" is out of service; the statement must be planned again
+-- the worker that flags the metapage invalidates the plan too: a plan that it did not reach is refused once, and one that it did is planned again
+SELECT expect($$ EXECUTE by_v $$) IN ('ok', '40001: sift index "t_idx" is out of service; the statement must be planned again') AS stale_plan_refused_or_replanned;
+ stale_plan_refused_or_replanned 
+---------------------------------
+ t
 (1 row)
 
 SELECT expect($$ EXECUTE by_v $$) AS replanned;

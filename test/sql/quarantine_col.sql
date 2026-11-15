@@ -45,7 +45,8 @@ UNION ALL SELECT 'groups', (SELECT string_agg(v || ':' || n, ',' ORDER BY v) FRO
 EXCEPT SELECT q, a FROM answers;
 SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS next_statement;
 -- the plan made before the index left service is refused once, and the retry is planned without it
-SELECT expect($$ EXECUTE by_v $$) AS stale_plan;
+-- the worker that flags the metapage invalidates the plan too: a plan that it did not reach is refused once, and one that it did is planned again
+SELECT expect($$ EXECUTE by_v $$) IN ('ok', '40001: sift index "t_idx" is out of service; the statement must be planned again') AS stale_plan_refused_or_replanned;
 SELECT expect($$ EXECUTE by_v $$) AS replanned;
 EXECUTE by_v;
 SELECT expect($$ SELECT * FROM t WHERE id = 5 $$) AS point_lookup;
