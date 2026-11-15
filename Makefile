@@ -72,6 +72,7 @@ TESTING_REGRESS += agg_key_cube_fallback
 TESTING_REGRESS += agg_key_list_once
 TESTING_REGRESS += agg_limit_refusals
 TESTING_REGRESS += agg_lookup_chain
+TESTING_REGRESS += agg_mem_spill
 TESTING_REGRESS += agg_outer_walks_once
 TESTING_REGRESS += agg_par_blob_chunks
 TESTING_REGRESS += agg_par_join_split

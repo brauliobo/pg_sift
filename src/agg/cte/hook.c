@@ -12,6 +12,7 @@
  */
 #include "postgres.h"
 
+#include "access/xact.h"
 #include "executor/executor.h"
 #include "jit/jit.h"
 #include "nodes/nodeFuncs.h"
@@ -19,6 +20,8 @@
 #include "optimizer/planner.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
+#include "utils/plancache.h"
+#include "utils/portal.h"
 
 #include "agg/agg.h"
 #include "bm25/planner.h"
@@ -730,8 +733,9 @@ replan_query(Node *stmt)
 		}
 }
 
-static PlannedStmt *
-replan(QueryDesc *qd)
+/* the statement of qd planned again from its text; executed: it has run already, so its volatile functions must not run again */
+PlannedStmt *
+sift_replan_text(QueryDesc *qd, bool executed)
 {
 	PlannedStmt *ps = qd->plannedstmt;
 	ParamListInfo params = qd->params;
@@ -739,11 +743,9 @@ replan(QueryDesc *qd)
 	Oid		   *ptypes = NULL;
 	List	   *trees,
 			   *plans;
-	PlannedStmt *fresh;
 	int			loc = ps->stmt_location;
 
-	if (ps->commandType != CMD_SELECT || ps->utilityStmt != NULL || ps->hasModifyingCTE || qd->sourceText == NULL ||
-		IsParallelWorker() || !sift_enable_agg || !reads_indexed_plan(ps))
+	if (ps->commandType != CMD_SELECT || ps->utilityStmt != NULL || ps->hasModifyingCTE || qd->sourceText == NULL || IsParallelWorker())
 		return NULL;
 	/* the parameters of a function's query are named by parser hooks, which the text alone does not give back: that statement keeps its plan */
 	if (params != NULL && (ActivePortal == NULL || qd->sourceText != ActivePortal->sourceText))
@@ -773,17 +775,26 @@ replan(QueryDesc *qd)
 	if (raw == NULL || !IsA(raw->stmt, SelectStmt) || castNode(SelectStmt, raw->stmt)->intoClause != NULL)
 		return NULL;
 	trees = pg_analyze_and_rewrite_fixedparams(raw, qd->sourceText, ptypes, params ? params->numParams : 0, qd->queryEnv);
-	if (list_length(trees) != 1 || linitial_node(Query, trees)->commandType != CMD_SELECT)
+	if (list_length(trees) != 1 || linitial_node(Query, trees)->commandType != CMD_SELECT || (executed && contain_volatile_functions((Node *) trees)))
 		return NULL;
 	plans = pg_plan_queries(trees, qd->sourceText, CURSOR_OPT_PARALLEL_OK, params);
 	if (list_length(plans) != 1 || !IsA(linitial(plans), PlannedStmt))
 		return NULL;
-	fresh = linitial_node(PlannedStmt, plans);
+	return linitial_node(PlannedStmt, plans);
+}
+
+static PlannedStmt *
+replan(QueryDesc *qd)
+{
+	PlannedStmt *fresh;
+
+	if (!sift_enable_agg || !reads_indexed_plan(qd->plannedstmt) || (fresh = sift_replan_text(qd, false)) == NULL)
+		return NULL;
 	/* an EXPLAIN's plan has the location of its query inside the string, which another statement of the string may share: it must read what that one reads */
 	return reads_indexed_plan(fresh) || runs_agg_scan(fresh->planTree) ? fresh : NULL;
 }
 
-static void
+void
 sift_executor_start(QueryDesc *queryDesc, int eflags)
 {
 	if (!late_checked)
@@ -867,6 +878,7 @@ sift_aggcte_init(void)
 	planner_hook = sift_planner;
 	prev_executor_start = ExecutorStart_hook;
 	ExecutorStart_hook = sift_executor_start;
+	sift_agg_rerun_init();
 #ifdef SIFT_TESTING
 	prev_executor_end = ExecutorEnd_hook;
 	ExecutorEnd_hook = sift_executor_end;

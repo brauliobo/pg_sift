@@ -1,6 +1,6 @@
--- The node that groups the rows of a plan (Custom Scan (SiftAggRows)) holds its groups to the end, and ends with an error that says what to raise when the
--- groups it holds pass group_nospill_factor times hash memory, the bytes a scan that cannot spill may take (its estimate of the groups of a join is a guess:
--- 845 for 47,000 here). The factor is lowered so that a few thousand groups reach it (group_nospill_base: the 8 MB floor of the hash memory).
+-- The node that groups the rows of a plan (Custom Scan (SiftAggRows)) holds its groups to the end. When the groups it holds pass group_nospill_factor times hash memory, the bytes a scan that cannot spill may take (its estimate
+-- of the groups of a join is a guess: 845 for 47,000 here), the statement is run again as PostgreSQL plans it, and a cursor that fetches rows ends with an error that
+-- says what to raise. The factor is lowered so that a few thousand groups reach it (group_nospill_base: the 8 MB floor of the hash memory).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 -- the node under test: a LEFT JOIN of the arms to the spine is a two-level aggregate by default (agg_two_level_spine), which has no rows to group
@@ -78,10 +78,22 @@ DROP TABLE got;
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
 SET sift.test_limits = 'group_nospill_factor=1,group_nospill_base=1638400';
+-- the statement is run again as PostgreSQL plans it
+CREATE TEMP TABLE got AS EXECUTE r;
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
+ groups | differ 
+--------+--------
+  47273 |      0
+(1 row)
+
+-- a cursor that fetches some rows cannot run again
 DO $$
 DECLARE msg text; hint text;
 BEGIN
-	EXECUTE 'EXECUTE r';
+	EXECUTE 'DECLARE c CURSOR FOR ' || many_groups();
+	EXECUTE 'FETCH 10 FROM c';
 	RAISE NOTICE 'no error';
 EXCEPTION WHEN program_limit_exceeded THEN
 	GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, hint = PG_EXCEPTION_HINT;

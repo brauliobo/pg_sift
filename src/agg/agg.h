@@ -14,6 +14,9 @@
 
 extern PGDLLIMPORT bool sift_enable_agg;
 extern PGDLLIMPORT bool sift_agg_force;
+/* set just before the error of a node that holds its groups and cannot spill them: the statement is run again as PostgreSQL plans it (cte/hook.c) */
+extern bool sift_agg_overflow;
+extern bool sift_agg_nospill_planned(struct PlanState *ps);
 
 /*
  * The passes that rewrite a query before it is planned (agg/flat/, agg/preinline.c, agg/cte/rewrite.c, core/jsonbuild.c) look for sub-selects, CTE

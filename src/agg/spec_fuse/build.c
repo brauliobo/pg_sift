@@ -354,6 +354,7 @@ sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap, int ***aggmap)
 	spec->key = palloc0((nk + 1) * sizeof(SiftAggKey));
 	spec->setmask = palloc0(n * sizeof(uint32));
 	spec->nsets = n;
+	spec->fused = true;
 	spec->est_groups = 0;
 	spec->est_rows = 0;
 	spec->nworkers = 0;
