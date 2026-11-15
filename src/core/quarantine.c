@@ -267,10 +267,15 @@ ask_due(const QuarKey *key)
 	return due;
 }
 
+/* inside sift_quarantine_guard: its subtransaction is the caller's own, not a user's */
+static bool guarding;
+
 /* What a transaction ended with is handed to the registry, and the workers asked for are started: a session that skips an index and ends (an autovacuum worker) leaves nothing behind in its own memory */
 static void
 quarantine_xact(XactEvent event, void *arg)
 {
+	if (event == XACT_EVENT_ABORT)
+		guarding = false;
 	if (event != XACT_EVENT_COMMIT && event != XACT_EVENT_ABORT)
 		return;
 	publish(shared);
@@ -618,6 +623,12 @@ warn_skipped(Relation index, SiftSkipKind kind)
 }
 
 bool
+sift_quarantine_guarding(void)
+{
+	return guarding;
+}
+
+bool
 sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded fn, void *arg)
 {
 	MemoryContext cx = CurrentMemoryContext;
@@ -630,6 +641,8 @@ sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded fn, void *a
 		return true;
 	}
 	damage_unseen = false;
+	hook_xact();
+	guarding = true;
 	BeginInternalSubTransaction(NULL);
 	MemoryContextSwitchTo(cx);
 	PG_TRY();
@@ -640,6 +653,7 @@ sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded fn, void *a
 			ran = true;
 		}
 		ReleaseCurrentSubTransaction();
+		guarding = false;
 		MemoryContextSwitchTo(cx);
 		CurrentResourceOwner = owner;
 	}
@@ -651,6 +665,7 @@ sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded fn, void *a
 		e = CopyErrorData();
 		FlushErrorState();
 		RollbackAndReleaseCurrentSubTransaction();
+		guarding = false;
 		MemoryContextSwitchTo(cx);
 		CurrentResourceOwner = owner;
 		if (!sift_damage_caught(e))
