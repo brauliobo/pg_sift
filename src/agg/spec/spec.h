@@ -103,6 +103,7 @@ typedef struct SiftAggSpec
 	SiftAggArm *arm;
 	SiftAggSpine *spine;		/* the arms are joined to a spine; NULL: they are not */
 	int			nsets;			/* > 0: grouping sets, as PostgreSQL expanded them; the last key is the number of the set */
+	bool		fused;			/* the sets are arms that share one pass (sift_aggspec_fuse, made at execution): their groups go to the arms, not to partitions */
 	int			nhidden;		/* keys after the outer ones (and before the set's): group expressions of the arms that are no outer key. A cell is an inner group, so these are part of its identity; no group has them */
 	uint32	   *setmask;		/* per set: the keys it groups by (bit j), and the bit of the set key */
 	int			npreds_total;	/* number of SiftAggPred nodes (ids 0..n-1) */

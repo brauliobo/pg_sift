@@ -647,6 +647,7 @@ codec_spec(Codec *c, SiftAggSpec *s)
 	PK_COUNT(c, s->nsets, s->setmask);
 	for (int i = 0; i < s->nsets; i++)
 		PK(c, s->setmask[i]);
+	PK(c, s->fused);
 	{
 		int			has = !c->rd && s->setaggs != NULL;
 

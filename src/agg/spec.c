@@ -774,11 +774,8 @@ bool
 sift_aggspec_spillable(const SiftAggSpec *s)
 {
 	/* an ordered scan holds its groups to the end, unless the partitions of a spilled one are ranges of its first key */
-	if (s->topn || (s->nord > 0 && !sift_aggspec_ord_range(s)) || s->nsets > 0 || s->narms > 0 || s->nkeys == 0 || !sift_aggspec_parallel_ok(s))
+	if (s->topn || (s->nord > 0 && !sift_aggspec_ord_range(s)) || s->fused || s->narms > 0 || s->nkeys == 0 || !sift_aggspec_parallel_ok(s))
 		return false;
-	for (int j = 0; j < s->nkeys; j++)
-		if (s->key[j].kind == SAK_SET)
-			return false;
 	/* the values of an ordered-set aggregate are one sort for all the groups, which a blob of some of them cannot take */
 	for (int i = 0; i < s->naggs; i++)
 		if (is_ordered_agg(&s->agg[i]) || s->agg[i].kind == SAA_GEN || s->agg[i].kind == SAA_M_DISTINCT)
@@ -815,7 +812,7 @@ sift_aggspec_gstream(const SiftAggSpec *s)
 	const SiftAggKey *k;
 
 	if (!sift_aggspec_spillable(s) || !sift_aggspec_ord_range(s) || sift_aggspec_float_sums(s) || s->search || s->spine || s->njoin > 0 || s->ncombo > 0 ||
-		s->nparts > 0 || s->group >= 0 || s->nvleaf > 0)
+		s->nparts > 0 || s->group >= 0 || s->nvleaf > 0 || s->nsets > 0)
 		return false;
 	for (int j = 0; j < s->nkeys; j++)
 		if (!plain_key(&s->key[j]) || s->key[j].kind == SAK_COMBO)

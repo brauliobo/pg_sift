@@ -6,6 +6,7 @@
 #include "postgres.h"
 
 #include "access/table.h"
+#include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "storage/lock.h"
 #include "storage/predicate.h"
@@ -13,6 +14,7 @@
 
 #include "agg/agg.h"
 #include "agg/part.h"
+#include "agg/rows.h"
 #include "agg/stats.h"
 #include "col/am.h"
 #include "col/scope.h"
@@ -399,7 +401,8 @@ agg_test_wait(void)
 void
 finish_groups(AggExec *ex)
 {
-	empty_set_groups(ex);
+	if (!spill_written(ex))
+		empty_set_groups(ex);
 	dist_finish_all(ex);
 	dist_end_all(ex);
 	mapped_finish(ex);
@@ -956,6 +959,33 @@ agg_rescan(CustomScanState *node)
 	ex->gpos = 0;
 	if (ex->topn)
 		sift_topn_rewind(ex->topn);
+}
+
+bool		sift_agg_overflow;
+
+static bool
+nospill_walk(PlanState *ps, void *context)
+{
+	if (IsA(ps, CustomScanState))
+	{
+		if (((CustomScanState *) ps)->methods == &agg_exec_methods)
+		{
+			const SiftAggSpec *s = ((AggExec *) ps)->spec;
+
+			if (s->nkeys > 0 && !s->topn && !sift_aggspec_spillable(s))
+				return true;
+		}
+		else if (((CustomScan *) ps->plan)->methods == &sift_agg_rows_plan_methods)
+			return true;
+	}
+	return planstate_tree_walker(ps, nospill_walk, context);
+}
+
+/* does the statement run a node that holds its groups to the end and cannot spill them? */
+bool
+sift_agg_nospill_planned(PlanState *ps)
+{
+	return nospill_walk(ps, NULL);
 }
 
 const CustomExecMethods agg_exec_methods = {

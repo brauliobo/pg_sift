@@ -1,6 +1,7 @@
 -- The group table of a scan that cannot spill is held in memory: the planner leaves it to the normal plan when the estimate passes
--- group_nospill_factor times hash memory, and the scan ends with an error when the table it holds passes the same bytes (the estimate
--- of a plan made on old statistics, or of a prepared plan, is not the table). The factor is lowered so that a few thousand groups reach it.
+-- group_nospill_factor times hash memory, and the scan raises an error when the table it holds passes the same bytes (the estimate
+-- of a plan made on old statistics, or of a prepared plan, is not the table): the statement then runs again as PostgreSQL plans it, unless it
+-- is a cursor that fetches some rows. The factor is lowered so that a few thousand groups reach it.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
@@ -22,11 +23,19 @@ CREATE TEMP TABLE got AS EXECUTE q;
 SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
 DROP TABLE got;
 
+-- the table the scan holds passes the bound: the statement is run again as PostgreSQL plans it, with the rows the heap gives
 SET sift.test_limits = 'group_nospill_factor=0';
+CREATE TEMP TABLE got AS EXECUTE q;
+SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
+
+-- a cursor that fetches some of its rows cannot run again: the error names the table
 DO $$
 DECLARE msg text; hint text;
 BEGIN
-	EXECUTE 'EXECUTE q';
+	RESET sift.test_limits;
+	EXECUTE 'DECLARE c CURSOR FOR SELECT k1, bit_or(val) AS b FROM events GROUP BY k1';
+	SET sift.test_limits = 'group_nospill_factor=0';
+	EXECUTE 'FETCH 10 FROM c';
 	RAISE NOTICE 'no error';
 EXCEPTION WHEN program_limit_exceeded THEN
 	GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, hint = PG_EXCEPTION_HINT;

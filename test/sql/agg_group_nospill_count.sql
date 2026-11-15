@@ -25,12 +25,17 @@ SET sift.test_limits = 'group_nospill_factor=1,group_nospill_base=65536';
 CREATE TEMP TABLE got AS EXECUTE q;
 SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
 
--- the bound under the groups the table holds
+-- the bound under the groups the table holds: the statement runs again as PostgreSQL plans it, and a cursor that fetches some rows ends with the error
 SET sift.test_limits = 'group_nospill_factor=0';
+CREATE TEMP TABLE again AS EXECUTE q;
+SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE again) d) AS differ FROM again;
 DO $$
 DECLARE msg text; hint text;
 BEGIN
-	EXECUTE 'EXECUTE q';
+	SET sift.test_limits = 'group_nospill_factor=1,group_nospill_base=65536';
+	EXECUTE 'DECLARE c CURSOR FOR SELECT k, bit_or(v) AS b, count(DISTINCT w) AS c FROM events GROUP BY k';
+	SET sift.test_limits = 'group_nospill_factor=0';
+	EXECUTE 'FETCH 10 FROM c';
 	RAISE NOTICE 'no error';
 EXCEPTION WHEN program_limit_exceeded THEN
 	GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, hint = PG_EXCEPTION_HINT;

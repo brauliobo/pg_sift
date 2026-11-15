@@ -6,6 +6,8 @@
 #ifndef SIFT_AGG_CTE_INT_H
 #define SIFT_AGG_CTE_INT_H
 
+#include "executor/execdesc.h"
+
 #include "agg/plan_int.h"
 
 /*
@@ -49,6 +51,9 @@ extern bool shared_cte_walker(Node *n, SharedCteWalk *w);
 extern bool has_shared_cte(Query *parse);
 extern bool query_nests(Query *q);
 extern void sift_key_first_init(void);
+extern void sift_agg_rerun_init(void);
+extern PlannedStmt *sift_replan_text(QueryDesc *qd, bool executed);
+extern void sift_executor_start(QueryDesc *queryDesc, int eflags);
 
 typedef struct ScanArms
 {

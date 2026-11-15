@@ -30,6 +30,7 @@
 
 #include "agg/accum_int.h"
 #include "agg/dist_int.h"
+#include "agg/agg.h"
 #include "agg/rows.h"
 #include "agg/spec/spec.h"
 #include "core/explain.h"
@@ -227,10 +228,13 @@ rows_groups_check(RowsExec *ex)
 	if (ex->pgstate)
 		held += (double) MemoryContextMemAllocated(ex->pgstate->curaggcontext->ecxt_per_tuple_memory, true);
 	if (held > limit)
+	{
+		sift_agg_overflow = true;
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("sift: the groups of the aggregate hold %.0f kB, past the %.0f kB the node that groups rows may take", held / 1024.0, limit / 1024.0),
 				 errhint("Raise work_mem or hash_mem_multiplier, or set sift.agg_rows to off.")));
+	}
 }
 
 static void

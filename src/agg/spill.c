@@ -41,6 +41,7 @@
 #include "core/limits.h"
 #include "agg/agg_int.h"
 #include "agg/spill/int.h"
+#include "agg/update_int.h"
 
 #define SPILL_MIN_PARTS		8
 #define SPILL_MAX_PARTS		128		/* one BufFile (8 kB) each */
@@ -110,6 +111,13 @@ bool
 spill_started(const AggExec *ex)
 {
 	return ex->spill != NULL && (ex->spill->spilled || ex->gs != NULL || ex->pass_lazy);
+}
+
+/* some table of the scan went to the partitions: they are the result, the table that is left holds none of it */
+bool
+spill_written(const AggExec *ex)
+{
+	return ex->spill != NULL && ex->spill->spilled;
 }
 
 bool
@@ -403,6 +411,7 @@ spill_table(AggExec *ex)
 		sp->nparts = want;
 		sp->set = set_new(0, want);
 	}
+	sets_fold(ex);
 	table_write(ex, sp->set);
 	dist_note_spill(ex);
 	sp->spilled = true;
@@ -546,6 +555,7 @@ spill_finish(AggExec *ex)
 	if (sp == NULL || !sp->spilled)
 		return;
 	old = MemoryContextSwitchTo(ex->cxt);
+	sets_fold(ex);
 	table_write(ex, sp->set);
 	sp->keep = 0;
 	table_reset(ex);

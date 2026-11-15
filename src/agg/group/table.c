@@ -6,6 +6,7 @@
 #include "postgres.h"
 
 #include "agg/acc_layout.h"
+#include "agg/agg.h"
 #include "agg/group/int.h"
 #include "agg/plan_int.h"
 
@@ -77,6 +78,7 @@ table_nospill_check(const AggExec *ex)
 	held = Min((double) MemoryContextMemAllocated(ex->tcxt, true), ex->gcap * group_table_bytes(ex->spec, 1.0, &state));
 	if (held <= limit)
 		return;
+	sift_agg_overflow = true;
 	ereport(ERROR,
 			(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 			 errmsg("sift: the group table of the aggregate holds %.0f kB and cannot spill, past the %.0f kB it may take", held / 1024.0, limit / 1024.0),
