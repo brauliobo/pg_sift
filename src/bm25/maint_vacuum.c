@@ -41,12 +41,16 @@ bulkdelete_index(void *arg)
 	SiftErrCtx	ctx;
 	int			order[SIFT_MAX_SEGMENTS];
 	double		removed = stats->tuples_removed;
+	bool		out = false;
 
 	sift_maint_lock(index, true);
 	sift_errctx_push(&ctx, RelationGetRelid(index));
 	sift_dir_read(index, snap);
 	for (int k = 0, n = sift_dir_clear_order(snap, order); k < n; k++)
 	{
+		SIFT_BULKDELETE_GATE();
+		if ((out = sift_index_known_out(index)))
+			break;
 		if (snap->segs[order[k]].kind == SIFT_SEG_IMMUTABLE)
 			ops->bulkdelete_immutable(index, &snap->segs[order[k]], bd->callback, bd->callback_state, stats);
 		else
@@ -55,17 +59,19 @@ bulkdelete_index(void *arg)
 	}
 	/*
 	 * The tombstones of the entries removed go last, whatever the order of the directory: a reader that took the log and then the liveness of an entry that is now
-	 * cleared sees the tombstone or the clear bit, never neither.
+	 * cleared sees the tombstone or the clear bit, never neither. An index that left service while the segments were walked is not read again before its rebuild: the walk ends there.
 	 */
-	for (int i = 0; i < snap->nsegs; i++)
+	for (int i = 0; i < snap->nsegs && !out; i++)
 		if (snap->segs[i].kind == SIFT_SEG_TOMB && ops->bulkdelete_tomb)
 			ops->bulkdelete_tomb(index, &snap->segs[i], bd->callback, bd->callback_state, stats);
 	/* The heap marks pages all-visible only after this returns: a scan that reads the map after that finds the version moved (sift_vis_begin) */
-	if (stats->tuples_removed > removed)
+	if (stats->tuples_removed > removed && !out)
 		sift_dir_update(index, &(SiftDirChange) {.extra = InvalidBuffer});
 	sift_errctx_pop(&ctx);
 	sift_maint_unlock(index);
 	pfree(snap);
+	if (out)
+		sift_quarantine_stopped(index, SIFT_SKIP_VACUUM);
 }
 
 IndexBulkDeleteResult *
