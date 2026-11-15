@@ -46,7 +46,7 @@ check "ALTER INDEX of another option on an index that holds the removed ones" \
 	test "$(sql us "ALTER INDEX ev_all SET (cube_minmax = true)" "ALTER INDEX ev_kcr SET (cube_minmax = true)" 2>&1 | grep -c ERROR)" == 0
 out=$(for ix in $IXS; do sql us "SET client_min_messages = notice" "REINDEX INDEX $ix" 2>&1; done)
 check "REINDEX of each index: no error, no NOTICE, the options stay kept" \
-	test "$(grep -c -E 'ERROR|is deprecated and ignored' <<<"$out")|$(kept | grep -o -E 'key_cut_rows|point_columns|order_columns' | wc -l)" == "0|6"
+	test "$(grep -c -E 'ERROR|is deprecated and ignored' <<<"$out")|$(kept | grep -o -E 'key_cut_rows|point_columns|order_columns' | wc -l | tr -d ' ')" == "0|6"
 check "REINDEX INDEX CONCURRENTLY of an index that holds them" test "$(sql us "REINDEX INDEX CONCURRENTLY ev_pc" 2>&1 | grep -c ERROR)" == 0
 check "each index answers as the heap after the REINDEX" test "$(for ix in $IXS; do ans_ix "$ix"; done | sort -u | tr '\n' ' ')" == "$want "
 dump=$TAPDIR/dump.sql
