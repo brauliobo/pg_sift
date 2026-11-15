@@ -144,7 +144,7 @@ layout_build_for(Relation rel, MemoryContext cxt, const char *paths)
 		l->leaf[a] = n;
 		/* the tags of the index's own leaves (lanes, money, interval, time, enum, arrays, ranges) mean nothing to the table's layout, which
 		 * stores these types by size and stays a minor 3 or 4 group */
-		defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = store,.attno = a,.type = type,.path = "",.scale = scale};
+		defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = store,.attno = a,.type = type,.path = "",.name = NameStr(att->attname),.scale = scale};
 		if (sift_col_def_needs_wide(&defs[n]))
 			defs[n].type = SIFT_COLT_OTHER;
 		n++;
@@ -161,6 +161,7 @@ layout_build_for(Relation rel, MemoryContext cxt, const char *paths)
 			sift_col_shred_leaf(l->shred, a, i, d);
 			d->id = n + i;
 			d->attno = a;
+			d->name = NameStr(TupleDescAttr(desc, a - 1)->attname);
 			d->parent = d->parent < 0 ? -1 : n + d->parent;
 		}
 		n += k;
@@ -198,7 +199,7 @@ layout_policy(Relation rel, const SiftTblLayout *l)
 		const char *err = sift_cc_policy_for_column(spec, name, &pol[i]);
 
 		if (err)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid compression option: %s", err)));
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid compression option \"%s\": %s", spec, err)));
 	}
 	return pol;
 }

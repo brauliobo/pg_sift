@@ -94,6 +94,7 @@ typedef struct SiftCDict
 	bool		hashed;			/* writer only: serialize the hash of the strings after the order (DICT_HASHED) */
 	bool		packperm;		/* writer only: serialize the order packed (DICT_PERM_PACKED) */
 	int			leaf1;			/* writer only: 1 + the leaf of the dictionary (0: unknown), for the hook of the formula */
+	const struct SiftColDef *leaf;	/* the leaf of a batch dictionary, named by the errors (NULL: unknown) */
 	bool		scan;			/* writer only: the parsed dictionary does not fit the cache, every test that reads it unwraps the strings again (wrap_choose_scan) */
 	bool		lz4_blocks;		/* writer only: set by the serializer when a block of the blocks form took LZ4 (the segment is then of minor SIFT_COL_FORMAT_TSIG) */
 	bool		tsig;			/* writer only: a blocks form is followed by the trigram signature of each block (DICT_TSIG_MAGIC) */
@@ -109,6 +110,8 @@ typedef struct SiftCDictLook
 extern SiftCDict *sift_cdict_create(MemoryContext mcxt);
 /* The code of the value, adding it when new; len <= SIFT_COL_MAX_VALUE (ERRCODE_PROGRAM_LIMIT_EXCEEDED otherwise) */
 extern uint32 sift_cdict_intern(SiftCDict *d, const char *s, uint32 len);
+/* "the sift_col column "name", path p" of a leaf, for the messages of the limits; "a sift_col column" when the leaf has no name */
+extern const char *sift_cleaf_label(const struct SiftColDef *leaf);
 /* The code, or -1 */
 extern int64 sift_cdict_find(SiftCDict *d, const char *s, uint32 len);
 /* Whether a string passes a LT, LE, GT, GE (byte order) or PREFIX predicate on the string c */

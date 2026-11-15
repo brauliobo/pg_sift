@@ -101,6 +101,7 @@ typedef struct SiftColDef
 	 */
 	uint8		lanes;
 	uint8		lane;
+	const char *name;			/* the name of the attribute of the index, for the messages of the limits; NULL when the host did not give it (a schema read from a segment) */
 } SiftColDef;
 
 /* a leaf the shredder fills from a jsonb value (a path is declared): its NULL slots are JSON nulls or missing keys, and an astext leaf holds numbers and booleans as text */

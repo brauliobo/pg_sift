@@ -297,13 +297,13 @@ SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(u) FROM ap_exc');
 -- the option checks: a column that cannot be hashed the way PostgreSQL does, a name that is not a column, a key_columns leaf
 CREATE TABLE ap_bad (id int, c char(5), nm name, f float8, j jsonb);
 CREATE INDEX ap_bad_c ON ap_bad USING sift_col (id, c) WITH (hll_columns = 'c');
-ERROR:  invalid hll_columns option: "c" is a character column, whose hash a unit cannot compute (char(n) and name hash differently from text)
+ERROR:  invalid hll_columns option "c": "c" is a character column, whose hash a unit cannot compute (char(n) and name hash differently from text)
 CREATE INDEX ap_bad_n ON ap_bad USING sift_col (id, nm) WITH (hll_columns = 'nm');
-ERROR:  invalid hll_columns option: "nm" is a name column, whose hash a unit cannot compute (char(n) and name hash differently from text)
+ERROR:  invalid hll_columns option "nm": "nm" is a name column, whose hash a unit cannot compute (char(n) and name hash differently from text)
 CREATE INDEX ap_bad_x ON ap_bad USING sift_col (id, f) WITH (hll_columns = 'zz');
 ERROR:  invalid hll_columns option "zz": "zz" is not a column of the index
 CREATE INDEX ap_bad_k ON ap_bad USING sift_col (id, f) WITH (hll_columns = 'id', key_columns = 'id');
-ERROR:  invalid hll_columns option: "id" is in key_columns, which keeps its distinct keys exactly
+ERROR:  invalid hll_columns option "id": "id" is in key_columns, which keeps its distinct keys exactly
 CREATE INDEX ap_bad_s ON ap_bad USING sift_col (id, f) WITH (hll_columns = 'id,');
 ERROR:  invalid hll_columns option "id,": empty column name
 CREATE INDEX ap_ok_f ON ap_bad USING sift_col (id, f) WITH (hll_columns = 'f');

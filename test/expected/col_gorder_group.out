@@ -276,9 +276,9 @@ SELECT gg_chk('SELECT id, k FROM gg WHERE g = 3 ORDER BY k, id LIMIT 10') AS pla
 DROP INDEX gg_p;
 -- the option is validated: one column, an integer, date or timestamp, not an array column
 CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops) WITH (order_array_columns = 'k', order_array_group = 'k');
-ERROR:  invalid order_array_group option: column "k" is in order_array_columns
+ERROR:  invalid order_array_group option "k": column "k" is in order_array_columns
 CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops) WITH (order_array_columns = 'k', order_array_group = 'g, id');
-ERROR:  invalid order_array_group option: one column, not 2
+ERROR:  invalid order_array_group option "g, id": one column, not 2
 CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, pad sift.col_text_ops, k sift.col_int4_ops) WITH (order_array_columns = 'k', order_array_group = 'pad');
 ERROR:  invalid order_array_group option "pad": not an integer, date or timestamp column
 DROP TABLE gg CASCADE;

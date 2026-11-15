@@ -660,8 +660,8 @@ gpu_totals(const GpuScan *g, const GpuUnit *u, const uint32 *res, uint32 groups,
 		}
 }
 
-/* a unit's groups into the group table: exact counts and sums, as the pre-aggregates of a unit give them */
-static void
+/* a unit's groups into the group table: exact counts and sums, as the pre-aggregates of a unit give them; false: the device counted a group the chunk lacks */
+static bool
 gpu_fold(GpuScan *g, const GpuUnit *u, const uint32 *res)
 {
 	const int	naggs = g->sc.spec->naggs;
@@ -672,14 +672,18 @@ gpu_fold(GpuScan *g, const GpuUnit *u, const uint32 *res)
 	sift_i128 **sum = palloc(Max(naggs, 1) * sizeof(sift_i128 *));
 	SiftSrcHist h = {.ngroups = u->ngroups, .key = u->key, .dict = g->shape.key_code ? &u->dict : NULL};
 	SiftAggUnitSums r = {.keys = g->shape.key >= 0 ? &h : NULL, .kept = kept, .rows = rows, .sum = sum};
+	bool		ok = true;
 
 	gpu_totals(g, u, res, g->groups, t);
-	for (uint32 k = 0; k < (g->shape.key >= 0 ? g->groups : 1); k++)
+	for (uint32 k = 0; ok && k < (g->shape.key >= 0 ? g->groups : 1); k++)
 	{
 		if (t->cnt[k] == 0)
 			continue;
 		if (g->shape.key >= 0 && (k >= u->ngroups || !(u->kvalid >> k & 1)))
-			ereport(ERROR, (errcode(ERRCODE_INDEX_CORRUPTED), errmsg("sift: the device counted rows of a group the chunk does not have")));
+		{
+			ok = false;
+			break;
+		}
 		for (int ai = 0; ai < naggs; ai++)
 		{
 			int			s = g->shape.asum[ai];
@@ -693,12 +697,14 @@ gpu_fold(GpuScan *g, const GpuUnit *u, const uint32 *res)
 	}
 	for (int ai = 0; ai < naggs; ai++)
 		sum[ai] = g->shape.asum[ai] >= 0 ? &sums[ai * SIFT_VK_MAX_GROUPS] : NULL;
-	sift_agg_fold_sums(g->sc.host, &r);
+	if (ok)
+		sift_agg_fold_sums(g->sc.host, &r);
 	pfree(t);
 	pfree(kept);
 	pfree(rows);
 	pfree(sums);
 	pfree(sum);
+	return ok;
 }
 
 static void
@@ -730,7 +736,11 @@ gpu_flush(GpuScan *g)
 	g->t.readback_ms += t.readback_ms;
 	g->t.wall_ms += t.wall_ms;
 	for (uint32 i = 0; i < g->nunit; i++)
-		gpu_fold(g, &g->unit[i], res);
+		if (!gpu_fold(g, &g->unit[i], res))
+		{
+			gpu_fail(g, "the device counted rows of a group the chunk does not have");
+			return;
+		}
 	g->n_gpu_units += g->nunit;
 	g->nunit = g->nwg = 0;
 	g->groups = 0;

@@ -9,6 +9,7 @@
 #   - no message, detail, hint or context names a relation by its OID (`index %u`): a name, or sift_rel_label(oid) when it may be gone (core/sift.h);
 #   - a hint that writes DDL for a relation (`ALTER INDEX %s`, `REINDEX INDEX %s`, `DROP INDEX %s`) passes the name through sift_col_index_ref(), sift_index_ident() or quote_identifier(): a name that
 #     needs quotes pastes as written.
+#   - an option error says which value it refused: `invalid NAME option "VALUE": why` (sift_col_option_error), never `invalid NAME option: why`.
 #   An `errcode(ERRCODE_INTERNAL_ERROR)` is XX000 too. The test-only files (*_test.c, test.c, and the files of a directory test/, compiled only with SIFT_TESTING) are
 #   not checked; any other site may say `check-errors: allow` in a comment on the line of the call or one of the two above it.
 #
@@ -26,6 +27,7 @@ call = re.compile(r"\b(ereport|elog)\s*\(")
 detail_call = re.compile(r"\b(errmsg|errmsg_plural|errdetail|errhint|errcontext)\s*\(")
 oid_name = re.compile(r'"[^"]*\b(?:relation|index|table)\s+%u')
 ddl_hint = re.compile(r'"[^"]*\b(?:ALTER|REINDEX|DROP)\s+(?:INDEX|TABLE)\b[^"]*%s')
+option_no_value = re.compile(r'"invalid \w+ option:')
 quoted = re.compile(r"\b(?:sift_col_index_ref|sift_index_ident|quote_identifier|quote_qualified_identifier)\s*\(")
 
 
@@ -90,6 +92,8 @@ for root, _, names in os.walk(src):
             where = f"{os.path.relpath(path, os.path.dirname(src))}:{n}"
             if oid_name.search(body):
                 bad.append(f"{where}: a relation named by its OID (%u): use its name, or sift_rel_label(oid)")
+            if m.group(1) == "errmsg" and option_no_value.search(body):
+                bad.append(f"{where}: an option error without the value of the option: use sift_col_option_error(option, value, why)")
             if m.group(1) == "errhint" and ddl_hint.search(body) and not quoted.search(body):
                 bad.append(f"{where}: a hint with DDL for a relation: pass the name through sift_col_index_ref() or quote_identifier()")
         for m in call.finditer(text):

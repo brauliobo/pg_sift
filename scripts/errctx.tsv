@@ -2,7 +2,6 @@
 # FILE <TAB> the files that push the context scope (sift_errctx_push, core/errctx.h) its errors are raised under; scripts/check-errors.sh checks that each calls it
 # and that no file with such a message is missing here. "-" is a gap: the entry points that read it push no scope yet.
 # A file whose message does name the index (SIFT_CORRUPT, SIFT_SEG_CORRUPT) is not listed.
-src/agg/gpu.c	src/agg/exec/run.c src/agg/par/worker.c
 src/agg/topn/next.c	src/agg/exec/run.c src/agg/par/worker.c
 src/agg/topn/run.c	src/agg/exec/run.c src/agg/par/worker.c
 src/agg/wide.c	src/agg/exec/run.c src/agg/par/worker.c

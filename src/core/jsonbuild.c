@@ -80,7 +80,7 @@ jb_fill(JbCache *c, MemoryContext cx, int n, const Oid *types)
 		JbSlot	   *s = &c->slot[i];
 
 		if (types[i] == InvalidOid)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("could not determine input data type")));
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift.json_build_object: could not determine input data type")));
 		json_categorize_type(types[i], false, &s->cat, &s->outf);
 		if (OidIsValid(s->outf))
 			fmgr_info_cxt(s->outf, &s->out, cx);
@@ -176,7 +176,7 @@ jb_value(StringInfo out, JbSlot *s, Datum v, bool isnull, bool key)
 			break;
 	}
 	if (key && (s->cat == JSONTYPE_ARRAY || s->cat == JSONTYPE_COMPOSITE || s->cat == JSONTYPE_JSON || s->cat == JSONTYPE_JSONB || s->cat == JSONTYPE_CAST))
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("key value must be scalar, not array, composite, or json")));
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift.json_build_object: key value must be scalar, not array, composite, or json")));
 	{
 		text	   *t = DatumGetTextPP(datum_to_json(v, s->cat, s->outf));
 
@@ -216,7 +216,7 @@ sift_json_build_object(PG_FUNCTION_ARGS)
 		if (nargs % 2 != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("argument list must have even number of elements"),
+					 errmsg("sift.json_build_object: argument list must have even number of elements"),
 			/* translator: %s is a SQL function name */
 					 errhint("The arguments of %s must consist of alternating keys and values.", "json_build_object()")));
 		if (c->gen != jb_gen || c->n != nargs || (nargs > 0 && memcmp(c->types, types, nargs * sizeof(Oid)) != 0))
@@ -273,7 +273,7 @@ sift_json_build_object(PG_FUNCTION_ARGS)
 			if (i > 0)
 				appendStringInfoString(out, ", ");
 			if (nulls[i])
-				ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("null value not allowed for object key")));
+				ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("sift.json_build_object: null value not allowed for object key")));
 			jb_value(out, k, args[i], false, true);
 			appendStringInfoString(out, " : ");
 			if (k->stable)

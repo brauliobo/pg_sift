@@ -427,7 +427,7 @@ DROP FUNCTION dk_check();
 DROP TABLE dk;
 -- the option takes text columns only
 CREATE INDEX dc_bad ON dc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (count_columns = 'id');
-ERROR:  invalid count_columns option: "id" is not a text column
+ERROR:  invalid count_columns option "id": "id" is not a text column
 CREATE INDEX dc_bad2 ON dc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (count_columns = 'nope');
 ERROR:  invalid count_columns option "nope": "nope" is not a column of the index
 DROP FUNCTION dc_check(text);

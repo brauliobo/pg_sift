@@ -121,6 +121,17 @@ cdict_ready(SiftCDict *d)
 		d->built(d, d->built_arg);
 }
 
+const char *
+sift_cleaf_label(const SiftColDef *leaf)
+{
+	static char label[256];
+
+	if (leaf == NULL || leaf->name == NULL)
+		return "a sift_col column";
+	snprintf(label, sizeof(label), "the sift_col column \"%s\"%s%s", leaf->name, leaf->path[0] ? ", path " : "", leaf->path);
+	return label;
+}
+
 uint32
 sift_cdict_intern(SiftCDict *d, const char *s, uint32 len)
 {
@@ -131,12 +142,12 @@ sift_cdict_intern(SiftCDict *d, const char *s, uint32 len)
 	if (len > max_value)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("a value of %u bytes does not fit a sift_col column (at most %lld bytes)", len, (long long) max_value),
+				 errmsg("a value of %u bytes does not fit %s (at most %lld bytes)", len, sift_cleaf_label(d->leaf), (long long) max_value),
 				 errhint("Leave the column out of the index, or index left(column, N) or a hash of it.")));
 	if (d->nbytes + len > max_value)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("the strings of one unit of a sift_col column exceed %lld bytes", (long long) max_value),
+				 errmsg("the strings of one unit of %s exceed %lld bytes", sift_cleaf_label(d->leaf), (long long) max_value),
 				 errhint("Leave the column out of the index, or index left(column, N) or a hash of it.")));
 	cdict_ready(d);
 	hash = cdict_hash(s, len);
