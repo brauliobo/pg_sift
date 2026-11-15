@@ -3,6 +3,7 @@
  * The output table of a combo, the decoding of a numeric, the evaluation of a slot and the
  * emit of the rows of a combination.
  */
+/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which sift.agg_lookup_max_kb bounds at plan time */
 #include "postgres.h"
 
 #include "executor/executor.h"
@@ -35,10 +36,8 @@ combo_grow_out(AggExec *ex, ComboSt *cs, int nslots, uint32 add)
 	if (cs->nout + add > cs->outcap)
 	{
 		cs->outcap = Max(Max(cs->outcap * 2, cs->nout + add), 64);
-		cs->val = cs->val ? repalloc(cs->val, (size_t) cs->outcap * Max(nslots, 1) * sizeof(uint32)) :
-			MemoryContextAlloc(cs->cxt, (size_t) cs->outcap * Max(nslots, 1) * sizeof(uint32));
-		cs->maprow = cs->maprow ? repalloc(cs->maprow, cs->outcap * sizeof(uint32)) :
-			MemoryContextAlloc(cs->cxt, cs->outcap * sizeof(uint32));
+		SIFT_REGROW_IN(cs->cxt, cs->val, (size_t) cs->outcap * Max(nslots, 1) * sizeof(uint32));
+		SIFT_REGROW_IN(cs->cxt, cs->maprow, cs->outcap * sizeof(uint32));
 	}
 }
 
@@ -124,9 +123,9 @@ dat_put(AggExec *ex, ComboSt *cs, int sl, Datum d)
 		MemoryContext old = MemoryContextSwitchTo(cs->cxt);
 
 		cs->datcap = Max(cs->datcap * 2, 64);
-		cs->dat = cs->dat ? repalloc(cs->dat, cs->datcap * sizeof(Datum)) : palloc(cs->datcap * sizeof(Datum));
+		SIFT_REGROW(cs->dat, cs->datcap * sizeof(Datum));
 		if (cs->decode)
-			cs->dnum = cs->dnum ? repalloc(cs->dnum, cs->datcap * sizeof(DNum)) : palloc(cs->datcap * sizeof(DNum));
+			SIFT_REGROW(cs->dnum, cs->datcap * sizeof(DNum));
 		MemoryContextSwitchTo(old);
 	}
 	if (!cs->tbyval[sl])

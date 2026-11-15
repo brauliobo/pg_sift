@@ -1,7 +1,8 @@
 -- A text key is read as dictionary codes, and the table of its ids is given every entry of the dictionary of each unit the scan reads, not only
 -- the values of the rows that pass the filters, unless few rows pass (0.04 to 0.2 microseconds an entry as the table grows, and a walk of the table of ids each time it outgrows the memory of a
--- hash aggregate, work_mem times hash_mem_multiplier). A near-unique key under a filter that keeps most rows costs the scan its units' entries, so the normal plan
--- is kept (a filter that keeps a few rows in a unit maps those only: agg_group_key_cost); a key of a few values has few entries and costs what an integer key does.
+-- hash aggregate, work_mem times hash_mem_multiplier). A near-unique key under a filter that keeps most rows costs the scan its units' entries (5 times the integer key
+-- of the same groups), which the estimate counts, and the scan is still the plan taken where it is faster (18 ms against 30 ms of the normal plan for 100,000 rows; a filter that keeps
+-- a few rows in a unit maps those only: agg_group_key_cost); a key of a few values has few entries and costs what an integer key does.
 -- The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
@@ -14,11 +15,11 @@ SELECT setseed(0.42);
 (1 row)
 
 INSERT INTO items SELECT g, md5(g::text), 'c' || (g % 17), g % 100, random() * 100, 'k' || (g % 20000), g % 20000 FROM generate_series(1, 100000) g;
-CREATE INDEX items_col ON items USING sift_col (id, tag, cat, part, amount, grp, gi) WITH (rollup_dims = 'off');
+CREATE INDEX items_col ON items USING sift_col (id, tag, cat, part, amount, grp, gi) WITH (rollup_columns = 'off');
 NOTICE:  sift_col index "items_col": 2 automatic choices (order_array_columns, track_changes)
 DETAIL:  order_array_columns = tag, grp, gi; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('items_col');
-NOTICE:  sift_col index "items_col" is column format minor 42, which a library before 4.0 cannot read
+NOTICE:  sift_col index "items_col" is column format minor 44, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM (FREEZE, ANALYZE) items;
 CREATE FUNCTION scan_cost(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT scan_cost::numeric FROM sift.explain_why(q) WHERE scan_cost IS NOT NULL $$;
@@ -46,13 +47,13 @@ SELECT scan_cost('SELECT grp, count(*) AS n, max(amount) AS s FROM items GROUP B
  t                  |           0
 (1 row)
 
--- the near-unique key keeps the normal plan, the 17 values take the scan
+-- both take the scan: the near-unique key is 1.6 times faster in it than in the normal plan, the 17 values far more
 SELECT key, scan_used(format('SELECT %s, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY %s', g, g)) AS scan
 FROM (VALUES ('near-unique text key', 'tag'), ('17 text values', 'cat')) v(key, g) ORDER BY key;
          key          | scan 
 ----------------------+------
  17 text values       | t
- near-unique text key | f
+ near-unique text key | t
 (2 rows)
 
 DROP FUNCTION scan_cost(text), scan_used(text), differences(text);

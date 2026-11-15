@@ -2,18 +2,16 @@
  * col/order.c - key-cut units: the rows of a build, a promotion or a merge are sorted by the declared order key (the option key_cut) and cut
  * into units of a range of the key, whatever their heap pages. Each unit lists its TIDs (enc.c, unit.c).
  */
+#include "core/rowmem.h"
 #include "postgres.h"
 
-#include "access/relation.h"
 #include "catalog/pg_class.h"
-#include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
 #include "core/cmp.h"
 #include "col/am.h"
 #include "col/enc.h"
-#include "col/pg.h"
 #include "col/runs.h"
 #include "col/seg.h"
 
@@ -201,7 +199,7 @@ ent_cmp(const OrderCtx *c, const SortEnt *x, const SortEnt *y)
 static void
 sort_refs(RowRef *refs, uint64 n, const OrderCtx *ctx)
 {
-	SortEnt    *e = palloc_array(SortEnt, n);
+	SortEnt    *e = sift_rows_alloc((Size) n * sizeof(SortEnt));
 
 	for (uint64 i = 0; i < n; i++)
 	{
@@ -432,7 +430,7 @@ sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const Sif
 		total += in[i]->nrows;
 	if (total == 0)
 		return 0;
-	refs = palloc_array(RowRef, total);
+	refs = sift_rows_alloc((Size) total * sizeof(RowRef));
 	for (int i = 0; i < nin; i++)
 		for (uint32 r = 0; r < in[i]->nrows; r++)
 			refs[k++] = (RowRef) {in[i], r};
@@ -709,7 +707,7 @@ load_chunk(MergeSrc *m, MergeIn *in)
 		if (in->ordcap < in->n)
 		{
 			in->ordcap = Max(in->n, 2 * in->ordcap);
-			in->ord = in->ord ? repalloc(in->ord, in->ordcap * sizeof(RowRef)) : MemoryContextAlloc(m->cx, in->ordcap * sizeof(RowRef));
+			SIFT_REGROW_HUGE_IN(m->cx, in->ord, in->ordcap * sizeof(RowRef));
 		}
 		for (uint32 r = 0; r < in->n; r++)
 			in->ord[r] = (RowRef) {b, r, cur};
@@ -828,7 +826,7 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 	int			units;
 
 	for (int i = 0; i < n; i++)
-		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = !resort && (nleaf == 0 || sift_cseg_keyed(&ent[i])), .chunk = -1};
+		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = !resort && (nleaf == 0 ? sift_cseg_tid_ordered(&ent[i]) : sift_cseg_key_ordered(&ent[i])), .chunk = -1};
 	if (nslices > 1)
 	{
 		uint64		nb;

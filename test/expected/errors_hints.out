@@ -77,9 +77,9 @@ RESET sift.table_wide_rows;
 RESET sift.table_write_buffer_limit;
 -- sift.explain_why takes one statement; a score outside a sift scan says where it exists
 SELECT expect($$SELECT * FROM sift.explain_why('select 1; select 2')$$);
-                                expect                                 
------------------------------------------------------------------------
- 0A000 sift.explain_why takes one SELECT statement                    +
+                                       expect                                       
+------------------------------------------------------------------------------------
+ 0A000 sift.explain_why takes one SELECT statement or the EXECUTE of a prepared one+
    hint: Pass the text of a single SELECT, without a second statement.
 (1 row)
 

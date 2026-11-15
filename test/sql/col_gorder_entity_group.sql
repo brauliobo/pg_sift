@@ -1,0 +1,114 @@
+-- The second order of the arrays (order_array_group 'auto') is built for a column the table is read by: an entity the rows belong to (a foreign key or a column named *_id) or the column of a
+-- b-tree that runs the shape (its first two key columns are the column and a date or timestamp of the index). An integer of 100 or more values with neither (a measure, a code) is a guess at
+-- the column a query filters by, and the second order is 3.5 bytes a row of it (a third of the index at 5,000,000 rows) for a shape the table may never ask: it is the user's to name
+-- (order_array_group = 'auto: col', which the weighted formula still weighs).
+CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+
+CREATE FUNCTION opt(regclass, text) RETURNS text LANGUAGE sql AS $$ SELECT coalesce((SELECT split_part(o, '=', 2) FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = $1 AND o LIKE $2 || '=%'), '-') $$;
+
+-- a measure of 100 values and a column of 50 are no entity, nor is the table's own id; the timestamp is scattered, so it has an array
+CREATE TABLE gm (id int, g int, ts timestamp, amount int, pad text);
+ALTER TABLE gm ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO gm SELECT i, i % 50, timestamp '2024-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second', i % 100, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y')
+FROM generate_series(1, 150000) i;
+VACUUM (FREEZE, ANALYZE) gm;
+CREATE FUNCTION gm_shapes() RETURNS TABLE (top text, in_list text, measure text) LANGUAGE sql AS $$
+	SELECT sift_helpers.topn_check_ordered_rows('SELECT id, ts FROM gm ORDER BY ts DESC, id LIMIT 20'),
+		   sift_helpers.topn_check_ordered_rows('SELECT id, ts FROM gm WHERE g IN (3, 5) ORDER BY ts DESC, id LIMIT 20'),
+		   sift_helpers.topn_check_ordered_rows('SELECT id, ts FROM gm WHERE amount = 7 ORDER BY ts DESC, id LIMIT 20') $$;
+
+-- by default: no second order, and WHERE measure = x ORDER BY ts LIMIT n reads the units
+CREATE INDEX gm_i ON gm USING sift_col (id, g, ts, amount, pad) WITH (key_cut = 'off', key_order = 'off');
+SELECT opt('gm_i', 'order_array_columns') AS order_arrays, opt('gm_i', 'order_array_group') AS second_order;
+SELECT sift.col_verify('gm_i');
+SELECT * FROM gm_shapes();
+-- the hint: order_array_group = 'auto: amount' keeps the column a candidate (the weighted formula still decides), and the second order is beside the plain one
+ALTER INDEX gm_i SET (order_array_group = 'auto: amount');
+REINDEX INDEX gm_i;
+SELECT opt('gm_i', 'order_array_columns') AS order_arrays, opt('gm_i', 'order_array_group') AS second_order;
+SELECT * FROM gm_shapes();
+-- what the build wrote is the hint of the next REINDEX (an index of an older release keeps its second order)
+REINDEX INDEX gm_i;
+SELECT opt('gm_i', 'order_array_group') AS second_order_after_reindex;
+ALTER INDEX gm_i RESET (order_array_group);
+REINDEX INDEX gm_i;
+SELECT opt('gm_i', 'order_array_group') AS second_order_reset;
+DROP INDEX gm_i;
+-- a column named outright groups every array and keeps no plain order: the top-N of the others reads the units (the measure is read from the second order, which the label does not tell)
+CREATE INDEX gm_i ON gm USING sift_col (id, g, ts, amount, pad) WITH (key_cut = 'off', key_order = 'off', order_array_group = 'amount');
+SELECT opt('gm_i', 'order_array_columns') AS order_arrays, opt('gm_i', 'order_array_group') AS second_order;
+SELECT * FROM gm_shapes();
+DROP INDEX gm_i;
+DROP FUNCTION gm_shapes();
+
+-- an entity of the same 100 values (a column named *_id) is grouped, with the same rows
+CREATE TABLE ge (id int, g int, ts timestamp, set_id int, pad text);
+ALTER TABLE ge ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ge SELECT id, g, ts, amount, pad FROM gm;
+VACUUM (FREEZE, ANALYZE) ge;
+CREATE INDEX ge_auto ON ge USING sift_col (id, g, ts, set_id, pad) WITH (key_cut = 'off', key_order = 'off');
+SELECT opt('ge_auto', 'order_array_columns') AS order_arrays, opt('ge_auto', 'order_array_group') AS second_order;
+SELECT sift_helpers.topn_check_ordered_rows('SELECT id, ts FROM ge WHERE set_id = 7 ORDER BY ts DESC, id LIMIT 20') AS entity;
+SELECT regexp_replace(value, '^.*\(second order by ', '(second order by ') AS chosen_by FROM sift.index_choices('ge_auto') WHERE choice = 'order_array_columns';
+DROP INDEX ge_auto;
+
+-- a foreign key is an entity whatever its name
+CREATE TABLE key_sets (k int PRIMARY KEY);
+INSERT INTO key_sets SELECT g FROM generate_series(0, 99) g;
+CREATE TABLE gf (id int, g int, ts timestamp, owner int REFERENCES key_sets (k), pad text);
+ALTER TABLE gf ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO gf SELECT id, g, ts, amount, pad FROM gm;
+VACUUM (FREEZE, ANALYZE) gf;
+CREATE INDEX gf_auto ON gf USING sift_col (id, g, ts, owner, pad) WITH (key_cut = 'off', key_order = 'off');
+SELECT opt('gf_auto', 'order_array_columns') AS order_arrays, opt('gf_auto', 'order_array_group') AS second_order;
+DROP INDEX gf_auto;
+
+-- a b-tree that runs the shape is the workload: non-unique, its first two key columns are the measure and the timestamp, in either order (a partial one too)
+CREATE FUNCTION second_order_with(stmt text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	IF stmt <> '' THEN EXECUTE stmt; END IF;
+	EXECUTE 'CREATE INDEX gm_i ON gm USING sift_col (id, g, ts, amount, pad) WITH (key_cut = ''off'', key_order = ''off'')';
+	r := opt('gm_i', 'order_array_group');
+	DROP INDEX gm_i;
+	DROP INDEX IF EXISTS gm_bt;
+	RETURN r;
+END $$;
+SELECT stmt, second_order_with(stmt) AS second_order FROM unnest(ARRAY[
+	'',
+	'CREATE INDEX gm_bt ON gm (amount, ts)',
+	'CREATE INDEX gm_bt ON gm (ts DESC, amount)',
+	'CREATE INDEX gm_bt ON gm (amount, ts) WHERE g < 25',
+	'CREATE INDEX gm_bt ON gm (amount)',
+	'CREATE INDEX gm_bt ON gm (amount) INCLUDE (ts)',
+	'CREATE INDEX gm_bt ON gm (amount, id)',
+	'CREATE INDEX gm_bt ON gm (ts, id, amount)',
+	'CREATE INDEX gm_bt ON gm (g, ts)',
+	'CREATE INDEX gm_bt ON gm (lower(pad), ts)',
+	'CREATE UNIQUE INDEX gm_bt ON gm (amount, ts, id)'
+]) AS stmt;
+-- the group is the b-tree's, the plan reads n entries of it, and the choices say which b-tree chose it; the build's own hint keeps it when the b-tree is dropped for the sift index
+CREATE INDEX gm_bt ON gm (amount, ts);
+CREATE INDEX gm_i ON gm USING sift_col (id, g, ts, amount, pad) WITH (key_cut = 'off', key_order = 'off');
+SELECT opt('gm_i', 'order_array_group') AS second_order;
+SELECT regexp_replace(value, '^.*\(second order by ', '(second order by ') AS chosen_by FROM sift.index_choices('gm_i') WHERE choice = 'order_array_columns';
+CREATE FUNCTION gm_shapes() RETURNS TABLE (measure text) LANGUAGE sql AS $$
+	SELECT sift_helpers.topn_check_ordered_rows('SELECT id, ts FROM gm WHERE amount = 7 ORDER BY ts DESC, id LIMIT 20') $$;
+SELECT * FROM gm_shapes();
+DROP INDEX gm_bt;
+REINDEX INDEX gm_i;
+SELECT opt('gm_i', 'order_array_group') AS second_order_after_the_btree_is_gone;
+SELECT regexp_replace(value, '^.*\(second order by ', '(second order by ') AS chosen_by FROM sift.index_choices('gm_i') WHERE choice = 'order_array_columns';
+DROP INDEX gm_i;
+DROP FUNCTION gm_shapes();
+DROP FUNCTION second_order_with(text);
+
+DROP FUNCTION opt(regclass, text);
+DROP TABLE gm, ge, gf, key_sets;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

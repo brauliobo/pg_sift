@@ -3,9 +3,15 @@
  * how scattered a leaf is, whether a b-tree already serves it, what a cut saves
  * measured on the sampled superblocks
  */
+/* check-memory: allow-allocs the sample of the autocut is capped at AUTOCUT_ROWS rows and AUTOCUT_SBS superblocks */
 #include "postgres.h"
 #include <math.h>
+#include "access/htup_details.h"
+#include "catalog/pg_statistic.h"
+#include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "col/point.h"
+#include "core/limits.h"
 #include "core/cmp.h"
 #include "col/autocut/autocut_int.h"
 
@@ -77,14 +83,36 @@ acut_unique_btree(Relation heap, AttrNumber att)
 	return found;
 }
 
-/* whether the zones of the sampled superblocks of a leaf leave most of them out of an equality (the verdict "scattered" of sift.col_clustering) */
+/* the column a CLUSTER of the table leads with (0: none): the order the table was given on purpose */
+AttrNumber
+acut_cluster_att(Relation heap)
+{
+	AttrNumber	att = 0;
+
+	foreach_oid(ioid, RelationGetIndexList(heap))
+	{
+		HeapTuple	tp = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(ioid));
+
+		if (!HeapTupleIsValid(tp))
+			continue;
+		if (((Form_pg_index) GETSTRUCT(tp))->indisclustered)
+			att = ((Form_pg_index) GETSTRUCT(tp))->indkey.values[0];
+		ReleaseSysCache(tp);
+	}
+	return att;
+}
+
+/*
+ * whether the zones of the sampled superblocks of a leaf leave most of them out of an equality (the verdict "scattered" of sift.col_clustering). A leaf with
+ * values in fewer than two of the sampled superblocks (all NULL) has no zones that a cut could widen.
+ */
 bool
 acut_scattered(const Track *t, int n)
 {
 	int			m;
 	double		share = acut_zone_share(t, n, &m);
 
-	return m >= 2 && !(share * m <= 2 || share <= 0.25);
+	return m < 2 || !(share * m <= 2 || share <= 0.25);
 }
 
 /* the instructions of a lookup that reads `reads` units over those of one that reads the `ideal` units its rows fill */
@@ -233,4 +261,68 @@ acut_ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double 
 	*ideal = fills[AUTOCUT_KEYS / 2];
 	*fired = cut_pays_a_lookup(reads[AUTOCUT_KEYS / 2], *ideal, rows_per_unit);
 	return reads[AUTOCUT_KEYS / 2];
+}
+
+/*
+ * What the cut takes from the lookups of a leaf whose zones it would widen: an equality or a window on the leaf reads the units that hold its values (`held`, the
+ * units with a row that has one) and not the `kept` (a share of them, at least one) it reads now. The loss is that speedup priced like a benefit and weighed by the share of the rows that have a value,
+ * the rows a lookup of the leaf is about: a leaf that follows the table and is filled loses all it has, one filled in 0.2% of the rows almost nothing, one all NULL nothing.
+ */
+double
+acut_zone_loss(const Track *t, uint32 nrows, double nsb, double rows_per_unit, double kept_share)
+{
+	double		filled = 0,
+				held,
+				kept;
+
+	for (uint32 i = 0; i < nrows; i++)
+		filled += !t->nl[i];
+	filled /= Max(nrows, 1);
+	held = Min(nsb, filled * nsb * rows_per_unit);
+	kept = Min(held, Max(1.0, kept_share * held));
+	return filled * acut_cut_benefit(acut_cut_speedup(held, kept, rows_per_unit), 1.0);
+}
+
+/* The rows a segment may hold: those whose arrays (24 bytes a row, 48 at the end of the segment) fit array_bytes, and the writer's SIFT_CPOINT_BUILD_ROWS */
+double
+acut_segment_rows(void)
+{
+	return Min((double) SIFT_CPOINT_BUILD_ROWS, (double) sift_limit(array_bytes, SIFT_ARRAY_UNLIMITED) / 48);
+}
+
+/*
+ * The share of the rows that the most common value of the leaf holds: the first of the most common values of the statistics of the column when it has them
+ * (none: no value holds more than the rarest of the list), else the most common value of the sample.
+ */
+double
+acut_hot_share(Relation heap, const Track *t, uint32 nsampled)
+{
+	HeapTuple	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(t->hatt), BoolGetDatum(false));
+	AttStatsSlot sslot;
+	Cell	   *cells;
+	uint32		top = 0,
+				run = 0;
+
+	if (HeapTupleIsValid(tup))
+	{
+		double		share = 0.0;
+
+		if (get_attstatsslot(&sslot, tup, STATISTIC_KIND_MCV, InvalidOid, ATTSTATSSLOT_NUMBERS))
+		{
+			share = sslot.numbers[0];
+			free_attstatsslot(&sslot);
+		}
+		ReleaseSysCache(tup);
+		return share;
+	}
+	cells = palloc_array(Cell, Max(t->ncells, 1));
+	memcpy(cells, t->cells, t->ncells * sizeof(Cell));
+	qsort(cells, t->ncells, sizeof(Cell), acut_cell_cmp);
+	for (int64 i = 0; i < t->ncells; i++)
+	{
+		run = (i > 0 && cells[i].key == cells[i - 1].key ? run : 0) + cells[i].n;
+		top = Max(top, run);
+	}
+	pfree(cells);
+	return (double) top / Max(nsampled, 1);
 }

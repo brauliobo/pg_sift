@@ -1,0 +1,43 @@
+# name	shape	profiles	statement  (the named shapes of the join matrix; tables of schema.sql: f fact, ds small / dl large dimension, cal, fx 1:1, link M:N, fp partitioned, tenants)
+chain_dim_tenant	chain	fact,both	SELECT t.name, count(*), sum(f.val) FROM f JOIN ds d ON d.id = f.ds_id JOIN tenants t ON t.id = d.tenant_id GROUP BY 1
+chain_filter_dim	chain	fact,both	SELECT t.name, count(DISTINCT f.qty) FROM f JOIN ds d ON d.id = f.ds_id JOIN tenants t ON t.id = d.tenant_id WHERE d.attr = 'a' AND f.status < 3 GROUP BY 1
+star_three_dims	star	fact,both	SELECT c.g_low, s.attr, l.attr, count(*), count(DISTINCT f.qty) FROM f JOIN ds s ON s.id = f.ds_id JOIN dl l ON l.id = f.dl_id JOIN cal c ON c.d = f.event_date WHERE c.pct < 50 GROUP BY 1, 2, 3
+star_filter_aggs	star	fact,both	SELECT s.g_low, count(*) FILTER (WHERE l.pct < 10), sum(f.val) FILTER (WHERE c.attr = 'b'), count(DISTINCT s.g_high) FROM f JOIN ds s ON s.id = f.ds_id JOIN dl l ON l.id = f.dl_id JOIN cal c ON c.d = f.event_date WHERE f.tenant_id <= 10 GROUP BY 1
+snowflake_dl_ds	snowflake	fact,both	SELECT s.g_low, count(*), count(DISTINCT l.g_high) FROM f JOIN dl l ON l.id = f.dl_id JOIN ds s ON s.id = l.ds_id WHERE l.pct < 20 GROUP BY 1
+snowflake_filter_tail	snowflake	fact,both	SELECT l.attr, sum(f.val) FROM f JOIN dl l ON l.id = f.dl_id JOIN ds s ON s.id = l.ds_id JOIN tenants t ON t.id = s.tenant_id WHERE t.id = 3 GROUP BY 1
+self_parent_group	self	fact,both	SELECT p.kind, count(*) FROM f c JOIN f p ON p.id = c.parent_id WHERE c.tenant_id = 3 GROUP BY 1
+self_parent_distinct	self	fact,both	SELECT c.kind, count(DISTINCT p.tenant_id), count(DISTINCT p.qty) FROM f c JOIN f p ON p.id = c.parent_id WHERE p.status = 1 GROUP BY 1
+two_subqueries	two_subq	fact,both	SELECT count(*), sum(a.n * b.m) FROM (SELECT ds_id, count(*) AS n FROM f WHERE status = 1 GROUP BY 1) a JOIN (SELECT ds_id, count(*) AS m FROM dl GROUP BY 1) b ON b.ds_id = a.ds_id
+two_filtered_subqueries	two_subq	fact,both	SELECT count(*) FROM (SELECT DISTINCT ds_id FROM f WHERE pct < 5) a JOIN (SELECT id FROM ds WHERE attr = 'c') b ON b.id = a.ds_id
+topn_join_filter	topn	fact,both	SELECT f.id, d.attr FROM f JOIN dl d ON d.id = f.dl_id WHERE d.pct < 5 ORDER BY f.event_date DESC, f.id LIMIT 20
+topn_join_scope	topn	fact,both	SELECT f.id, d.g_low FROM f JOIN ds d ON d.id = f.ds_id WHERE f.tenant_id = 3 AND d.attr = 'a' ORDER BY f.event_date DESC, f.id LIMIT 20
+topn_group_dim	topn	fact,both	SELECT d.id, count(*) AS c FROM f JOIN ds d ON d.id = f.ds_id GROUP BY 1 ORDER BY c DESC, d.id LIMIT 10
+topn_fanout_dim	topn	fact,both	SELECT d.id, count(f.id) AS c FROM ds d LEFT JOIN f ON f.ds_id = d.id AND f.status = 2 GROUP BY 1 ORDER BY c DESC, d.id LIMIT 10
+distinct_on_latest	distinct_on	fact,both	SELECT DISTINCT ON (d.id) d.id, f.id, f.val FROM ds d JOIN f ON f.ds_id = d.id WHERE f.tenant_id = 3 ORDER BY d.id, f.event_date DESC, f.id
+distinct_on_parent	distinct_on	fact,both	SELECT DISTINCT ON (f.ds_id) f.ds_id, p.id, p.qty FROM f JOIN f p ON p.id = f.parent_id WHERE f.lookup_id = 2 ORDER BY f.ds_id, p.qty DESC, p.id
+lateral_top1	lateral	fact,both	SELECT d.id, x.event_date FROM ds d LEFT JOIN LATERAL (SELECT event_date FROM f WHERE f.ds_id = d.id ORDER BY event_date DESC, id LIMIT 1) x ON true WHERE d.id <= 200
+lateral_sum	lateral	fact,both	SELECT d.attr, count(*), sum(x.s) FROM ds d, LATERAL (SELECT sum(val) AS s FROM f WHERE f.ds_id = d.id AND f.status = 2) x WHERE d.pct < 10 GROUP BY 1
+corr_exists_or	corr_exists_or	fact,both	SELECT count(*) FROM f WHERE f.status = 1 OR EXISTS (SELECT 1 FROM dl d WHERE d.id = f.dl_id AND d.pct < 5)
+corr_exists_or_group	corr_exists_or	fact,both	SELECT f.kind, count(DISTINCT f.qty) FROM f WHERE f.tenant_id <= 5 AND (f.status = 1 OR EXISTS (SELECT 1 FROM ds d WHERE d.id = f.ds_id AND d.attr = 'a')) GROUP BY 1
+cte_materialized	cte	fact,both	WITH x AS MATERIALIZED (SELECT ds_id, count(*) AS n FROM f GROUP BY 1) SELECT d.attr, sum(x.n) FROM x JOIN ds d ON d.id = x.ds_id GROUP BY 1
+cte_inline_join	cte	fact,both	WITH x AS (SELECT f.ds_id, f.val FROM f WHERE f.status = 3) SELECT d.g_low, count(*), sum(x.val) FROM x JOIN ds d ON d.id = x.ds_id GROUP BY 1
+subquery_in_from	cte	fact,both	SELECT g, count(*) FROM (SELECT d.g_low AS g FROM f JOIN ds d ON d.id = f.ds_id WHERE f.pct < 10) s GROUP BY g
+partitioned_fact_dim	partitioned	fact,both	SELECT d.attr, count(*), count(DISTINCT p.qty) FROM fp p JOIN ds d ON d.id = p.ds_id WHERE p.event_date >= DATE '2024-04-01' GROUP BY 1
+partitioned_fact_scope	partitioned	fact,both	SELECT d.g_low, sum(p.val) FROM fp p JOIN ds d ON d.id = p.ds_id WHERE p.tenant_id = 3 AND p.event_date < DATE '2024-07-01' GROUP BY 1
+dashboard_distinct_filter	dashboard	fact,both	SELECT d.attr, count(DISTINCT f.qty), count(*) FILTER (WHERE d.pct < 10), count(DISTINCT f.dl_id) FROM f JOIN dl d ON d.id = f.dl_id WHERE f.tenant_id = 3 AND EXISTS (SELECT 1 FROM link l WHERE l.f_id = f.id) GROUP BY 1
+dashboard_source_scope	dashboard	fact,both	SELECT s.attr, count(DISTINCT f.dl_id), count(*) FILTER (WHERE s.pct < 50) FROM f JOIN ds s ON s.id = f.ds_id WHERE f.lookup_id = 2 AND f.tenant_id = 3 GROUP BY 1
+not_in_nullable	anti	fact,both	SELECT count(*) FROM f WHERE f.nul_id NOT IN (SELECT id FROM ds WHERE pct < 50)
+anti_orphans	anti	fact,both	SELECT count(*) FROM f WHERE NOT EXISTS (SELECT 1 FROM ds WHERE ds.id = f.ds_id)
+two_semi_filters	semi	fact,both	SELECT count(*), sum(val) FROM f WHERE f.ds_id IN (SELECT id FROM ds WHERE pct < 10) AND f.dl_id IN (SELECT id FROM dl WHERE pct < 5)
+left_join_dim_rows	left	fact,both	SELECT d.attr, count(f.id) FROM ds d LEFT JOIN f ON f.ds_id = d.id AND f.status = 4 GROUP BY 1
+or_across_tables	or_join	fact,both	SELECT count(*) FROM f JOIN ds d ON d.id = f.ds_id WHERE f.status = 1 OR d.pct < 3
+union_of_joins	union	fact,both	SELECT k, count(*) FROM (SELECT d.attr AS k FROM f JOIN ds d ON d.id = f.ds_id WHERE f.status = 0 UNION ALL SELECT d.attr FROM f JOIN dl d ON d.id = f.dl_id WHERE f.status = 1) u GROUP BY k
+parent_group_low	parent_attr	fact,both	SELECT d.g_low, count(*), sum(f.val) FROM f JOIN dl d ON d.id = f.dl_id GROUP BY 1
+parent_group_high	parent_attr	fact,both	SELECT d.g_high, count(*) FROM f JOIN dl d ON d.id = f.dl_id GROUP BY 1
+parent_count_distinct	parent_attr	fact,both	SELECT d.attr, count(DISTINCT f.dl_id), count(DISTINCT d.g_high) FROM f JOIN dl d ON d.id = f.dl_id GROUP BY 1
+parent_filter_aggs	parent_attr	fact,both	SELECT count(*) FILTER (WHERE d.attr = 'a'), count(*) FILTER (WHERE d.g_low = 3), sum(f.val) FILTER (WHERE d.pct < 10), count(*) FILTER (WHERE d.g_high < 50), count(*) FROM f JOIN dl d ON d.id = f.dl_id
+parent_chain_group	parent_attr	fact,both	SELECT s.attr, count(*) FROM f JOIN dl d ON d.id = f.dl_id JOIN ds s ON s.id = d.ds_id GROUP BY 1
+set_semi_1000	set_scope	fact,both	SELECT count(*), sum(f.val) FROM f WHERE EXISTS (SELECT 1 FROM key_sets m WHERE m.set_id = 3 AND m.dl_id = f.dl_id)
+set_anti_1000	set_scope	fact,both	SELECT count(*), sum(f.val) FROM f WHERE NOT EXISTS (SELECT 1 FROM key_sets m WHERE m.set_id = 3 AND m.dl_id = f.dl_id)
+set_anti_not_in_1000	set_scope	fact,both	SELECT count(*) FROM f WHERE f.dl_id NOT IN (SELECT dl_id FROM key_sets WHERE set_id = 3)
+set_scope_group_parent	set_scope	fact,both	SELECT d.attr, count(*) FROM f JOIN dl d ON d.id = f.dl_id WHERE f.dl_id IN (SELECT dl_id FROM key_sets WHERE set_id = 3) GROUP BY 1

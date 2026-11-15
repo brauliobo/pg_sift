@@ -1,0 +1,225 @@
+-- HAVING on the RESULT OF AN AGGREGATE: a condition that applies AFTER the GROUP BY, to the groups, and so can not be tested before the rows are grouped (a WHERE
+-- condition can; agg_having_vs_where sets the two side by side). Each statement runs with the scan on and off (having_run, test/agg_having_helpers.sql): `served` is the
+-- plan with the scan node, `having_on_groups` that the node tests the condition on the aggregated groups, `where_in_scan` that a condition of the rows went to the scan
+-- (a key condition of a HAVING does: PostgreSQL moves it to the WHERE), `rows_same` that the rows are those of sift off. A group whose aggregate is NULL is dropped
+-- (NULL is not true), count is never NULL, and a group with no row is no group.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+\ir test/agg_having_helpers.sql
+\set ECHO none
+CREATE FUNCTION hv_big(x bigint) RETURNS bool LANGUAGE sql IMMUTABLE AS 'SELECT x > 2000';
+CREATE FUNCTION hv_big_vol(x bigint) RETURNS bool LANGUAGE sql VOLATILE AS 'SELECT x > 2000';
+CREATE TABLE q (ord serial, idea text, name text, sql text);
+INSERT INTO q (idea, name, sql) VALUES
+  -- count: never NULL, counts rows (count(*)) or the non-NULL values of a column
+  ('count', 'greater than',          $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING count(*) > 2000$q$),
+  ('count', 'equal, the boundary',   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING count(*) = 5$q$),
+  ('count', 'small groups',          $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING count(*) <= 3$q$),
+  ('count', 'between',               $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING count(*) BETWEEN 900 AND 3000$q$),
+  ('count', 'in a list',             $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING count(*) IN (1, 3, 5, 990)$q$),
+  ('count', 'ties are kept together',$q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING count(*) = 990$q$),
+  ('count', 'not equal',             $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING count(*) <> 990$q$),
+  ('count', 'NOT of a comparison',   $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING NOT (count(*) > 2000)$q$),
+  ('count', 'a group has a row',     $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING count(*) = 0$q$),
+  ('count', 'of a column, all NULL', $q$SELECT tenant_id, count(counter_a) AS c FROM hv_events GROUP BY 1 HAVING count(counter_a) = 0$q$),
+  ('count', 'column below the rows', $q$SELECT tenant_id, count(counter_a) AS c, count(*) AS n FROM hv_events GROUP BY 1 HAVING count(counter_a) < count(*)$q$),
+  ('count', 'ANY of an array',       $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING count(*) = ANY (ARRAY[5, 1, 3])$q$),
+  -- sum: NULL when no row has a value, and then the group is dropped by any comparison
+  ('sum', 'integer, greater',        $q$SELECT tenant_id, sum(counter_a) AS s FROM hv_events GROUP BY 1 HAVING sum(counter_a) >= 5000$q$),
+  ('sum', 'is NULL',                 $q$SELECT tenant_id, sum(counter_a) AS s FROM hv_events GROUP BY 1 HAVING sum(counter_a) IS NULL$q$),
+  ('sum', 'different from, NULL dropped', $q$SELECT tenant_id, sum(counter_a) AS s FROM hv_events GROUP BY 1 HAVING sum(counter_a) <> 12$q$),
+  ('sum', 'is distinct from, NULL kept',  $q$SELECT tenant_id, sum(counter_a) AS s FROM hv_events GROUP BY 1 HAVING sum(counter_a) IS DISTINCT FROM 12$q$),
+  ('sum', 'NOT of a comparison, NULL dropped', $q$SELECT tenant_id, sum(counter_a) AS s FROM hv_events GROUP BY 1 HAVING NOT (sum(counter_a) > 5000)$q$),
+  ('sum', 'coalesce to zero',        $q$SELECT tenant_id, sum(counter_a) AS s FROM hv_events GROUP BY 1 HAVING coalesce(sum(counter_a), 0) = 0$q$),
+  ('sum', 'numeric',                 $q$SELECT tenant_id, sum(value_num) AS s FROM hv_events GROUP BY 1 HAVING sum(value_num) > 50000$q$),
+  ('sum', 'float8',                  $q$SELECT tenant_id, sum(amount) AS s FROM hv_events GROUP BY 1 HAVING sum(amount) > 12000$q$),
+  ('sum', 'bigint, a product',       $q$SELECT tenant_id, sum(id::bigint * 1000000) AS s FROM hv_events GROUP BY 1 HAVING sum(id::bigint * 1000000) > 12000000000$q$),
+  ('sum', 'of an expression',        $q$SELECT tenant_id, sum(amount * 2) AS s FROM hv_events GROUP BY 1 HAVING sum(amount * 2) > 24000$q$),
+  ('sum', 'of a CASE',               $q$SELECT tenant_id, sum(CASE WHEN status = 1 THEN 1 ELSE 0 END) AS s FROM hv_events GROUP BY 1 HAVING sum(CASE WHEN status = 1 THEN 1 ELSE 0 END) > 700$q$),
+  ('sum', 'cast to text',            $q$SELECT tenant_id, sum(counter_a) AS s FROM hv_events GROUP BY 1 HAVING sum(counter_a)::text = '16943'$q$),
+  ('sum', 'numeric, equal',          $q$SELECT tenant_id, sum(value_num) AS s FROM hv_events GROUP BY 1 HAVING sum(value_num) = 7$q$),
+  -- avg
+  ('avg', 'integer',                 $q$SELECT tenant_id, avg(counter_a) AS a FROM hv_events GROUP BY 1 HAVING avg(counter_a) < 2$q$),
+  ('avg', 'float8',                  $q$SELECT tenant_id, avg(amount) AS a FROM hv_events GROUP BY 1 HAVING avg(amount) > 4.9$q$),
+  ('avg', 'numeric between',         $q$SELECT category_id, avg(value_num) AS a FROM hv_events GROUP BY 1 HAVING avg(value_num) BETWEEN 49.5 AND 50.5$q$),
+  ('avg', 'of a date difference',    $q$SELECT tenant_id, avg(event_date - DATE '2026-01-01') AS a FROM hv_events GROUP BY 1 HAVING avg(event_date - DATE '2026-01-01') > 14.6$q$),
+  -- min and max: of numbers, text and dates; the group where every value is NULL has a NULL min and max
+  ('min/max', 'max equals min',      $q$SELECT tenant_id, max(counter_a) AS mx, min(counter_a) AS mn FROM hv_events GROUP BY 1 HAVING max(counter_a) = min(counter_a)$q$),
+  ('min/max', 'range below a bound', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING max(counter_b) - min(counter_b) < 8$q$),
+  ('min/max', 'date min',            $q$SELECT tenant_id, min(event_date) AS d FROM hv_events GROUP BY 1 HAVING min(event_date) > DATE '2026-01-01'$q$),
+  ('min/max', 'date max',            $q$SELECT tenant_id, max(event_date) AS d FROM hv_events GROUP BY 1 HAVING max(event_date) = DATE '2026-02-03'$q$),
+  ('min/max', 'text max',            $q$SELECT tenant_id, max(kind) AS k FROM hv_events GROUP BY 1 HAVING max(kind) = 'k5'$q$),
+  ('min/max', 'text min and max',    $q$SELECT category_id FROM hv_events GROUP BY 1 HAVING min(label) = 'l0' AND max(label) = 'l9'$q$),
+  ('min/max', 'numeric min and max and avg', $q$SELECT category_id FROM hv_events GROUP BY 1 HAVING min(value_num) < 1 AND max(value_num) > 99 AND avg(value_num) BETWEEN 40 AND 60$q$),
+  ('min/max', 'length of a max',     $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING length(max(label)) = 3$q$),
+  -- count(DISTINCT) and the other DISTINCT aggregates
+  ('distinct', 'count distinct int', $q$SELECT tenant_id, count(DISTINCT counter_a) AS d FROM hv_events GROUP BY 1 HAVING count(DISTINCT counter_a) > 3$q$),
+  ('distinct', 'count distinct date, none passes', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING count(DISTINCT event_date) >= 31$q$),
+  ('distinct', 'count distinct date', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING count(DISTINCT event_date) > 10$q$),
+  ('distinct', 'count distinct text', $q$SELECT category_id FROM hv_events GROUP BY 1 HAVING count(DISTINCT kind) = 5$q$),
+  ('distinct', 'two distinct counts', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING count(DISTINCT counter_a) > 3 AND count(DISTINCT kind) > 3$q$),
+  ('distinct', 'distinct with FILTER', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING count(DISTINCT counter_a) FILTER (WHERE status > 1) >= 4$q$),
+  ('distinct', 'sum distinct',       $q$SELECT category_id, sum(DISTINCT counter_b) AS s FROM hv_events GROUP BY 1 HAVING sum(DISTINCT counter_b) > 30$q$),
+  ('distinct', 'avg distinct',       $q$SELECT category_id, avg(DISTINCT counter_b) AS a FROM hv_events GROUP BY 1 HAVING avg(DISTINCT counter_b) = 4$q$),
+  -- ordered-set and hypothetical-set aggregates
+  ('ordered-set', 'percentile_cont', $q$SELECT category_id FROM hv_events GROUP BY 1 HAVING percentile_cont(0.5) WITHIN GROUP (ORDER BY counter_b) > 3.9$q$),
+  ('ordered-set', 'percentile_disc with FILTER', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING percentile_disc(0.9) WITHIN GROUP (ORDER BY counter_b) FILTER (WHERE flag_a) >= 8$q$),
+  ('ordered-set', 'mode',            $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING mode() WITHIN GROUP (ORDER BY counter_a) = 0$q$),
+  ('ordered-set', 'hypothetical rank', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING rank(4) WITHIN GROUP (ORDER BY counter_b) < 4000$q$),
+  -- the results of aggregates that build a value
+  ('array/string', 'length of array_agg', $q$SELECT tenant_id FROM hv_events WHERE tenant_id > 14 GROUP BY 1 HAVING cardinality(array_agg(id)) > 2$q$),
+  ('array/string', 'first of an ordered array_agg', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING (array_agg(id ORDER BY id))[1] < 3$q$),
+  ('array/string', 'distinct array_agg', $q$SELECT tenant_id FROM hv_events WHERE tenant_id > 14 GROUP BY 1 HAVING array_length(array_agg(DISTINCT counter_a), 1) = 1$q$),
+  ('array/string', 'string_agg LIKE', $q$SELECT category_id, string_agg(DISTINCT kind, ',' ORDER BY kind) AS ks FROM hv_events GROUP BY 1 HAVING string_agg(DISTINCT kind, ',' ORDER BY kind) LIKE 'k1%'$q$),
+  ('array/string', 'string_agg ordered', $q$SELECT tenant_id FROM hv_events WHERE tenant_id > 14 GROUP BY 1 HAVING string_agg(label, ',' ORDER BY id) LIKE 'l0,l0%'$q$),
+  ('array/string', 'jsonb_agg length', $q$SELECT tenant_id FROM hv_events WHERE tenant_id > 14 GROUP BY 1 HAVING jsonb_array_length(jsonb_agg(id)) > 2$q$),
+  ('array/string', 'jsonb_object_agg key', $q$SELECT tenant_id FROM hv_events WHERE tenant_id > 14 GROUP BY 1 HAVING jsonb_object_agg(id, counter_a) ? '30001'$q$),
+  ('array/string', 'bool_and',       $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING bool_and(flag_a) IS NOT TRUE$q$),
+  ('array/string', 'bool_or',        $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING bool_or(flag_a)$q$),
+  ('array/string', 'every',          $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING every(counter_b < 9)$q$),
+  ('array/string', 'bit_or',         $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING bit_or(counter_b) = 15$q$),
+  ('array/string', 'any_value',      $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING any_value(kind) IS NOT NULL AND count(*) > 2000$q$),
+  -- statistics
+  ('statistics', 'stddev',           $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING stddev(counter_b) > 2.55$q$),
+  ('statistics', 'var_pop',          $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING var_pop(counter_b) > 6$q$),
+  ('statistics', 'corr',             $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING corr(counter_a, counter_b) > 0.01$q$),
+  ('statistics', 'regr_slope',       $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING regr_slope(amount, counter_b) > 0$q$),
+  -- a FILTER on the aggregate of the condition
+  ('filter', 'in the select list too', $q$SELECT tenant_id, count(*) FILTER (WHERE status = 1) AS c FROM hv_events GROUP BY 1 HAVING count(*) FILTER (WHERE status = 1) > 700$q$),
+  ('filter', 'not in the select list', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING sum(counter_b) FILTER (WHERE flag_a) > 500$q$),
+  ('filter', 'on a NULL test',       $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING count(*) FILTER (WHERE counter_a IS NULL) > 100$q$),
+  ('filter', 'a sub-select in the FILTER', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING count(*) FILTER (WHERE category_id IN (SELECT id FROM hv_tenants WHERE tier = 1)) > 200$q$),
+  -- several aggregates in one condition
+  ('several aggregates', 'a ratio of two sums', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING sum(counter_a)::float / nullif(count(*), 0) > 1.2$q$),
+  ('several aggregates', 'AND and OR', $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING (count(*) > 2500 AND avg(counter_a) > 2) OR count(*) < 4$q$),
+  ('several aggregates', 'sum against avg', $q$SELECT kind, sum(counter_a) AS s FROM hv_events GROUP BY 1 HAVING sum(counter_a) > avg(counter_a) * 100$q$),
+  ('several aggregates', 'greatest of two', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING greatest(count(*), sum(counter_a)) > 5000$q$),
+  ('several aggregates', 'arithmetic', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING sum(counter_a) * 2 + count(*) > 10000$q$),
+  ('several aggregates', 'CASE choosing the aggregate', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING CASE WHEN count(*) > 1000 THEN avg(counter_a) > 2 ELSE max(counter_b) = 8 END$q$),
+  ('several aggregates', 'four aggregates', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING count(*) > 900 AND sum(counter_a) > 3000 AND min(id) < 20 AND max(counter_b) = 8$q$),
+  ('several aggregates', 'a key and an aggregate', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING count(*) = tenant_id * 165$q$),
+  ('several aggregates', 'a key plus an aggregate', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING count(*) + tenant_id > 2975$q$),
+  ('several aggregates', 'of a text and a date key', $q$SELECT kind, event_date, count(*) AS c FROM hv_events GROUP BY 1, 2 HAVING kind IS NOT NULL AND event_date > DATE '2026-01-20' AND count(*) > 100$q$),
+  -- functions of an aggregate
+  ('function', 'immutable SQL function', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING hv_big(count(*))$q$),
+  ('function', 'volatile SQL function', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING hv_big_vol(count(*))$q$),
+  ('function', 'random() beside a count', $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING count(*) > 1 AND random() < 2$q$),
+  ('function', 'a stable function',  $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING max(event_date) < now() AND count(*) > 2000$q$),
+  ('function', 'a cast of a max',    $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING max(event_date)::timestamp > '2026-01-29 12:00' AND count(*) > 100$q$),
+  -- the aggregates of the condition are not in the select list
+  ('not selected', 'only the keys',  $q$SELECT tenant_id FROM hv_events GROUP BY 1 HAVING count(*) >= 990$q$),
+  ('not selected', 'a constant',     $q$SELECT 1 AS one FROM hv_events GROUP BY tenant_id HAVING count(*) >= 990$q$),
+  ('not selected', 'a min and a max', $q$SELECT kind FROM hv_events GROUP BY 1 HAVING max(event_date) > DATE '2026-01-29' AND min(value_num) < 1$q$),
+  ('not selected', 'another aggregate selected', $q$SELECT tenant_id, sum(counter_b) AS s FROM hv_events GROUP BY 1 HAVING count(DISTINCT kind) >= 5$q$),
+  -- constants and the keys of a group
+  ('constant', 'HAVING true',        $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING true$q$),
+  ('constant', 'HAVING false',       $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING false$q$),
+  ('constant', 'HAVING NULL',        $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING NULL$q$),
+  ('constant', 'a constant beside an aggregate', $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING count(*) > 1 AND 1 = 1$q$),
+  ('key', 'the NULL group and a count', $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id IS NULL AND count(*) > 100$q$),
+  ('key', 'a key and a count',       $q$SELECT tenant_id, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id > 8 AND count(*) > 2000$q$),
+  ('key', 'a key expression and a count', $q$SELECT tenant_id % 3 AS m, count(*) AS c FROM hv_events GROUP BY 1 HAVING tenant_id % 3 = 1 AND count(*) > 10$q$);
+SELECT q.idea, q.name, c.* FROM q, LATERAL having_run(q.sql) c ORDER BY q.ord;
+        idea        |               name                | served |   verdict   | where_in_scan | having_on_groups | rows_same | n  
+--------------------+-----------------------------------+--------+-------------+---------------+------------------+-----------+----
+ count              | greater than                      | t      | sift        | f             | t                | t         |  5
+ count              | equal, the boundary               | t      | sift        | f             | t                | t         |  1
+ count              | small groups                      | t      | sift        | f             | t                | t         |  2
+ count              | between                           | t      | sift        | f             | t                | t         |  8
+ count              | in a list                         | t      | sift        | f             | t                | t         |  5
+ count              | ties are kept together            | t      | sift        | f             | t                | t         |  2
+ count              | not equal                         | t      | sift        | f             | t                | t         | 11
+ count              | NOT of a comparison               | t      | sift        | f             | t                | t         |  8
+ count              | a group has a row                 | t      | sift        | f             | t                | t         |  0
+ count              | of a column, all NULL             | t      | sift        | f             | t                | t         |  1
+ count              | column below the rows             | t      | sift        | f             | t                | t         | 11
+ count              | ANY of an array                   | t      | sift        | f             | t                | t         |  3
+ sum                | integer, greater                  | t      | sift        | f             | t                | t         |  4
+ sum                | is NULL                           | t      | sift        | f             | t                | t         |  1
+ sum                | different from, NULL dropped      | t      | sift        | f             | t                | t         | 11
+ sum                | is distinct from, NULL kept       | t      | sift        | f             | t                | t         | 12
+ sum                | NOT of a comparison, NULL dropped | t      | sift        | f             | t                | t         |  8
+ sum                | coalesce to zero                  | t      | sift        | f             | t                | t         |  1
+ sum                | numeric                           | t      | sift        | f             | t                | t         |  7
+ sum                | float8                            | t      | sift        | f             | t                | t         |  5
+ sum                | bigint, a product                 | t      | sift        | f             | t                | t         | 13
+ sum                | of an expression                  | t      | sift        | f             | t                | t         |  5
+ sum                | of a CASE                         | t      | sift        | f             | t                | t         |  3
+ sum                | cast to text                      | t      | sift        | f             | t                | t         |  1
+ sum                | numeric, equal                    | t      | sift        | f             | t                | t         |  1
+ avg                | integer                           | t      | sift        | f             | t                | t         |  4
+ avg                | float8                            | t      | sift        | f             | t                | t         |  8
+ avg                | numeric between                   | t      | sift        | f             | t                | t         |  7
+ avg                | of a date difference              | t      | sift        | f             | t                | t         | 10
+ min/max            | max equals min                    | t      | sift        | f             | t                | t         |  4
+ min/max            | range below a bound               | t      | sift        | f             | t                | t         |  6
+ min/max            | date min                          | t      | sift        | f             | t                | t         | 12
+ min/max            | date max                          | t      | sift        | f             | t                | t         |  1
+ min/max            | text max                          | t      | sift        | f             | t                | t         |  7
+ min/max            | text min and max                  | t      | sift        | f             | t                | t         |  1
+ min/max            | numeric min and max and avg       | t      | sift        | f             | t                | t         |  7
+ min/max            | length of a max                   | t      | sift        | f             | t                | t         |  1
+ distinct           | count distinct int                | t      | sift        | f             | t                | t         |  2
+ distinct           | count distinct date, none passes  | t      | sift        | f             | t                | t         |  0
+ distinct           | count distinct date               | t      | sift        | f             | t                | t         |  2
+ distinct           | count distinct text               | t      | sift        | f             | t                | t         |  7
+ distinct           | two distinct counts               | t      | sift        | f             | t                | t         |  2
+ distinct           | distinct with FILTER              | t      | sift        | f             | t                | t         |  2
+ distinct           | sum distinct                      | t      | sift        | f             | t                | t         |  1
+ distinct           | avg distinct                      | t      | sift        | f             | t                | t         |  3
+ ordered-set        | percentile_cont                   | t      | sift        | f             | t                | t         |  5
+ ordered-set        | percentile_disc with FILTER       | t      | sift        | f             | t                | t         |  7
+ ordered-set        | mode                              | t      | sift        | f             | t                | t         |  3
+ ordered-set        | hypothetical rank                 | t      | sift        | f             | t                | t         | 12
+ array/string       | length of array_agg               | t      | sift        | t             | t                | t         |  2
+ array/string       | first of an ordered array_agg     | t      | sift        | f             | t                | t         |  1
+ array/string       | distinct array_agg                | t      | sift        | t             | t                | t         |  3
+ array/string       | string_agg LIKE                   | t      | sift        | f             | t                | t         |  7
+ array/string       | string_agg ordered                | t      | sift        | t             | t                | t         |  1
+ array/string       | jsonb_agg length                  | t      | sift        | t             | t                | t         |  2
+ array/string       | jsonb_object_agg key              | t      | sift        | t             | t                | t         |  1
+ array/string       | bool_and                          | t      | sift        | f             | t                | t         | 12
+ array/string       | bool_or                           | t      | sift        | f             | t                | t         | 11
+ array/string       | every                             | t      | sift        | f             | t                | t         | 12
+ array/string       | bit_or                            | t      | sift        | f             | t                | t         |  8
+ array/string       | any_value                         | t      | sift        | f             | t                | t         |  5
+ statistics         | stddev                            | t      | sift        | f             | t                | t         |  6
+ statistics         | var_pop                           | t      | sift        | f             | t                | t         |  9
+ statistics         | corr                              | t      | sift        | f             | t                | t         |  2
+ statistics         | regr_slope                        | t      | sift        | f             | t                | t         |  5
+ filter             | in the select list too            | t      | sift        | f             | t                | t         |  3
+ filter             | not in the select list            | t      | sift        | f             | t                | t         |  8
+ filter             | on a NULL test                    | t      | sift        | f             | t                | t         |  7
+ filter             | a sub-select in the FILTER        | t      | sift        | f             | t                | t         |  7
+ several aggregates | a ratio of two sums               | t      | sift        | f             | t                | t         | 11
+ several aggregates | AND and OR                        | t      | sift        | f             | t                | t         |  3
+ several aggregates | sum against avg                   | t      | sift        | f             | t                | t         |  5
+ several aggregates | greatest of two                   | t      | sift        | f             | t                | t         |  4
+ several aggregates | arithmetic                        | t      | sift        | f             | t                | t         |  5
+ several aggregates | CASE choosing the aggregate       | t      | sift        | f             | t                | t         |  4
+ several aggregates | four aggregates                   | t      | sift        | f             | t                | t         |  5
+ several aggregates | a key and an aggregate            | t      | sift        | f             | t                | t         |  1
+ several aggregates | a key plus an aggregate           | t      | sift        | f             | t                | t         |  5
+ several aggregates | of a text and a date key          | t      | sift        | t             | t                | t         | 10
+ function           | immutable SQL function            | t      | sift        | f             | t                | t         |  5
+ function           | volatile SQL function             | t      | sift        | f             | t                | t         |  5
+ function           | random() beside a count           | t      | sift        | f             | t                | t         | 12
+ function           | a stable function                 | t      | sift        | f             | t                | t         |  5
+ function           | a cast of a max                   | t      | sift        | f             | t                | t         |  2
+ not selected       | only the keys                     | t      | sift        | f             | t                | t         |  9
+ not selected       | a constant                        | t      | sift        | f             | t                | t         |  9
+ not selected       | a min and a max                   | t      | sift        | f             | t                | t         |  5
+ not selected       | another aggregate selected        | t      | sift        | f             | t                | t         |  1
+ constant           | HAVING true                       | t      | sift        | f             | f                | t         | 13
+ constant           | HAVING false                      | f      | single:cost |               |                  | t         |  0
+ constant           | HAVING NULL                       | f      | single:cost |               |                  | t         |  0
+ constant           | a constant beside an aggregate    | t      | sift        | f             | t                | t         | 12
+ key                | the NULL group and a count        | t      | sift        | t             | t                | t         |  1
+ key                | a key and a count                 | t      | sift        | t             | t                | t         |  3
+ key                | a key expression and a count      | t      | sift        | t             | t                | t         |  1
+(95 rows)
+
+DROP TABLE q, hv_events, hv_tenants, hv_empty;
+DROP FUNCTION having_plan(text), having_rows(text, bool, bool), having_run(text, bool), having_same(text, text, text), hv_big(bigint), hv_big_vol(bigint);
+DROP EXTENSION pg_sift;

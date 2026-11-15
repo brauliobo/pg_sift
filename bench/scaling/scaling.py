@@ -175,7 +175,7 @@ def summary(rows, failed):
             continue
         slope, last, v = verdict(pts, target)
         v = 'NOSIFT' if eng == 'sift' and (name, qn) in nosift else v
-        extra = pts[-1][1] * (64 ** max(last, 0))
+        extra = pts[-1][1] + slope * pts[-1][0] * 63 if target == 'plan' else pts[-1][1] * (64 ** max(last, 0))
         if '[first-plan buffers' in qn:
             print(f'POINTS {name}/{qn} ' + ' '.join(f'{n}={int(b)}' for n, b in pts), flush=True)
         unit = "units" if qn.endswith("[units]") else "buffers" if "[first-plan buffers" in qn else "ms"

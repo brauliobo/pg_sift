@@ -3,17 +3,7 @@
  */
 #include "postgres.h"
 
-#include "nodes/makefuncs.h"
-#include "catalog/pg_operator_d.h"
-#include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
-#include "nodes/nodeFuncs.h"
-#include "utils/array.h"
-#include "utils/fmgroids.h"
-#include "utils/lsyscache.h"
-#include "utils/date.h"
-#include "nodes/value.h"
-#include "storage/itemptr.h"
 
 #include "agg/spec.h"
 
@@ -316,7 +306,7 @@ cube_agg_ok(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, const Sift
 		return a->kind == SAA_COUNT ? SPW_OK : SPW_AGG_KIND;	/* the rows of the groups that are not NULL */
 	for (int m = 0; m < pa->dim[d].nmeas; m++)
 		if (pa->dim[d].meas[m] == leaf)
-			return (a->kind == SAA_MIN || a->kind == SAA_MAX) && !pa->dim[d].minmax ? SPW_AGG_KIND : SPW_OK;
+			return saa_minmax(a->kind) && !pa->dim[d].minmax ? SPW_AGG_KIND : SPW_OK;
 	return SPW_MEAS_NOT_STORED;
 }
 
@@ -829,7 +819,7 @@ agg_elem_instr(const SiftAggAgg *a, const SiftSrcLayout *lay)
 {
 	double		c = a->kind == SAA_COUNT_STAR ? 0.0 : 8.5;
 
-	if (a->kind == SAA_MIN || a->kind == SAA_MAX)
+	if (saa_minmax(a->kind))
 		c = a->leaf >= 0 && lay->leaf[a->leaf].vtype == SCV_F64 ? 57.0 : 25.0;
 	return c + (a->filter ? 10.0 : 0.0);
 }
@@ -856,7 +846,7 @@ sift_aggspec_unit_costs(const SiftAggSpec *s, const SiftSrcLayout *lay, double *
 	for (int i = 0; i < s->naggs; i++)
 	{
 		const SiftAggAgg *a = &s->agg[i];
-		bool		mm = a->kind == SAA_MIN || a->kind == SAA_MAX,
+		bool		mm = saa_minmax(a->kind),
 					seen = false;
 
 		e += agg_elem_instr(a, lay);

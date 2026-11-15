@@ -1,0 +1,310 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1set s2set s2fill s1rr s1join s1anti s2write s2fill s1join s1anti s1commit s2join s2anti s2state
+step s1set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s2set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s2fill: SELECT sift.col_maintain('iso_d_ev_c') IS NOT NULL AS maintained;
+maintained
+----------
+t         
+(1 row)
+
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s1anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_d_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s2write: INSERT INTO iso_d_dim VALUES (900, 'new'); DELETE FROM iso_d_dim WHERE id = 7; UPDATE iso_d_dim SET label = 'changed' WHERE id <= 5; DELETE FROM iso_d_ev WHERE id % 13 = 0;
+step s2fill: SELECT sift.col_maintain('iso_d_ev_c') IS NOT NULL AS maintained;
+maintained
+----------
+t         
+(1 row)
+
+step s1join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why                                 
+----+------+----+------------------------------------
+t   |     0|   0|parent rows inserted since the stamp
+(1 row)
+
+step s1anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_d_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why                                 
+----+------+----+------------------------------------
+t   |     0|   0|parent rows inserted since the stamp
+(1 row)
+
+step s1commit: COMMIT;
+step s2join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why                                 
+----+------+----+------------------------------------
+t   |     0|   0|parent rows inserted since the stamp
+(1 row)
+
+step s2anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_d_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why                                 
+----+------+----+------------------------------------
+t   |     0|   0|parent rows inserted since the stamp
+(1 row)
+
+step s2state: SELECT child, fill FROM sift.col_connections ORDER BY child::text;
+child     |fill  
+----------+------
+iso_d_ev_c|filled
+(1 row)
+
+
+starting permutation: s1set s2set s2fill s1rr s1join s2reind_child s1join s1anti s1commit s2join s2anti s2state
+step s1set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s2set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s2fill: SELECT sift.col_maintain('iso_d_ev_c') IS NOT NULL AS maintained;
+maintained
+----------
+t         
+(1 row)
+
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s2reind_child: REINDEX INDEX CONCURRENTLY iso_d_ev_c; <waiting ...>
+step s1join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s1anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_d_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s1commit: COMMIT;
+step s2reind_child: <... completed>
+step s2join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s2anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_d_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s2state: SELECT child, fill FROM sift.col_connections ORDER BY child::text;
+child     |fill  
+----------+------
+iso_d_ev_c|filled
+(1 row)
+
+
+starting permutation: s1set s2set s2fill s1rr s1join s2dropc s1join s1commit s2join s2anti s2state
+step s1set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s2set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s2fill: SELECT sift.col_maintain('iso_d_ev_c') IS NOT NULL AS maintained;
+maintained
+----------
+t         
+(1 row)
+
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s2dropc: DROP INDEX CONCURRENTLY iso_d_ev_c; <waiting ...>
+step s1join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     0|   0|   
+(1 row)
+
+step s1commit: COMMIT;
+step s2dropc: <... completed>
+step s2join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     0|   0|   
+(1 row)
+
+step s2anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_d_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why
+----+------+----+---
+t   |     0|   0|   
+(1 row)
+
+step s2state: SELECT child, fill FROM sift.col_connections ORDER BY child::text;
+child|fill
+-----+----
+(0 rows)
+
+
+starting permutation: s1set s2set s2fill s1rr s1join s2cic s1join s1commit s2join s2anti s2state
+step s1set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s2set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s2fill: SELECT sift.col_maintain('iso_d_ev_c') IS NOT NULL AS maintained;
+maintained
+----------
+t         
+(1 row)
+
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s2cic: CREATE INDEX CONCURRENTLY iso_d_ev2_c ON iso_d_ev2 USING sift_col (id, dim_id, v) WITH (connect = 'dim_id -> iso_d_dim(id)'); <waiting ...>
+step s1join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s1commit: COMMIT;
+step s2cic: <... completed>
+step s2join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s2anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_d_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s2state: SELECT child, fill FROM sift.col_connections ORDER BY child::text;
+child      |fill  
+-----------+------
+iso_d_ev2_c|filled
+iso_d_ev_c |filled
+(2 rows)
+
+
+starting permutation: s1set s2set s2fill s1rr s1join s2write s2reind_parent s1join s1anti s1commit s2join s2anti s2state s2vac s2fill s2join s2anti s2state
+step s1set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s2set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s2fill: SELECT sift.col_maintain('iso_d_ev_c') IS NOT NULL AS maintained;
+maintained
+----------
+t         
+(1 row)
+
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s2write: INSERT INTO iso_d_dim VALUES (900, 'new'); DELETE FROM iso_d_dim WHERE id = 7; UPDATE iso_d_dim SET label = 'changed' WHERE id <= 5; DELETE FROM iso_d_ev WHERE id % 13 = 0;
+step s2reind_parent: REINDEX INDEX CONCURRENTLY iso_d_dim_c; <waiting ...>
+step s1join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why                                 
+----+------+----+------------------------------------
+t   |     0|   0|parent rows inserted since the stamp
+(1 row)
+
+step s1anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_d_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why                                 
+----+------+----+------------------------------------
+t   |     0|   0|parent rows inserted since the stamp
+(1 row)
+
+step s1commit: COMMIT;
+step s2reind_parent: <... completed>
+step s2join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why             
+----+------+----+----------------
+t   |     0|   0|log not complete
+(1 row)
+
+step s2anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_d_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why             
+----+------+----+----------------
+t   |     0|   0|log not complete
+(1 row)
+
+step s2state: SELECT child, fill FROM sift.col_connections ORDER BY child::text;
+child     |fill  
+----------+------
+iso_d_ev_c|filled
+(1 row)
+
+step s2vac: VACUUM iso_d_dim;
+step s2fill: SELECT sift.col_maintain('iso_d_ev_c') IS NOT NULL AS maintained;
+maintained
+----------
+t         
+(1 row)
+
+step s2join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why                                 
+----+------+----+------------------------------------
+t   |     0|   0|parent rows inserted since the stamp
+(1 row)
+
+step s2anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_d_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why                                 
+----+------+----+------------------------------------
+t   |     0|   0|parent rows inserted since the stamp
+(1 row)
+
+step s2state: SELECT child, fill FROM sift.col_connections ORDER BY child::text;
+child     |fill  
+----------+------
+iso_d_ev_c|filled
+(1 row)
+
+
+starting permutation: s1set s2set s2fill s2dropp s2droppc s2tbl s2join s2anti s2state
+step s1set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s2set: SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0;
+step s2fill: SELECT sift.col_maintain('iso_d_ev_c') IS NOT NULL AS maintained;
+maintained
+----------
+t         
+(1 row)
+
+step s2dropp: DROP INDEX iso_d_dim_c;
+ERROR:  cannot drop index iso_d_dim_c because other objects depend on it
+step s2droppc: DROP INDEX CONCURRENTLY iso_d_dim_c;
+ERROR:  cannot drop index iso_d_dim_c because other objects depend on it
+step s2tbl: CREATE INDEX iso_d_te_c ON iso_d_te USING sift_col (id, tp_id) WITH (connect = 'tp_id -> iso_d_tp(id)');
+ERROR:  connect: "iso_d_tp" is not a heap table
+step s2join: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s2anti: SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_d_dim d WHERE d.id = e.dim_id)');
+same|proofs|keys|why
+----+------+----+---
+t   |     1|   0|   
+(1 row)
+
+step s2state: SELECT child, fill FROM sift.col_connections ORDER BY child::text;
+child     |fill  
+----------+------
+iso_d_ev_c|filled
+(1 row)
+

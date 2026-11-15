@@ -2,8 +2,8 @@
  * core/store_int.h - shared between the files of the page and extent store (store.c, freelist.c, writer.c, reader.c,
  * relocate.c, verify.c).
  */
-#ifndef SIFT_STORE_INT_H
-#define SIFT_STORE_INT_H
+#ifndef SIFT_CORE_STORE_INT_H
+#define SIFT_CORE_STORE_INT_H
 
 #include "access/transam.h"
 #include "datatype/timestamp.h"
@@ -12,7 +12,6 @@
 
 #include "core/store.h"
 
-#define SPECIAL_SIZE		MAXALIGN(sizeof(SiftPageOpaqueData))
 #define FIRST_DATA_BLKNO	(SIFT_DIRECTORY_BLKNO + 1)
 
 #define META(page)	((SiftMetaPageData *) SiftPageGetData(page))
@@ -71,15 +70,6 @@ typedef struct FreeChain
 	Relation	index;
 	FullTransactionId horizon;
 } FreeChain;
-
-static inline bool
-layout_ok(Page page)
-{
-	PageHeader	ph = (PageHeader) page;
-
-	return ph->pd_special == BLCKSZ - SPECIAL_SIZE && ph->pd_upper == ph->pd_special &&
-		ph->pd_lower >= SIFT_PAGE_DATA_OFFSET && ph->pd_lower <= ph->pd_upper;
-}
 
 static inline Buffer
 read_locked(Relation index, BlockNumber blkno, int mode)

@@ -12,8 +12,8 @@ INSERT INTO si SELECT x, x % 7, ((x::bigint * 7919) % 65536 - 32768)::smallint, 
 FROM generate_series(1, 150000) x;
 INSERT INTO si VALUES (200001, 0, -32768, 2147483647, -32768), (200002, 0, 32767, -2147483648, 32767), (200003, 1, NULL, NULL, NULL), (200004, 1, 0, 0, 0);
 CREATE INDEX si_col ON si USING sift_col (id, g, s, i, n) WITH (point_tid_columns = 'off', order_array_columns = 'off');
-NOTICE:  sift_col index "si_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = g, n
+NOTICE:  sift_col index "si_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, n
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('si_col');
 VACUUM (FREEZE, ANALYZE) si;
 CREATE TABLE sx AS SELECT * FROM si WHERE id > 200000;

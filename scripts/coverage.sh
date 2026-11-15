@@ -12,7 +12,7 @@
 # Each row of docs/coverage.tsv that has a sample query runs with EXPLAIN on a private fixture database (test/col/fixture.sql,
 # test/col/coverage_data.sql): the plan must have the node it claims (Custom Scan (SiftAgg), SiftScan, SiftCount, a bitmap scan on the
 # sift index) or none (the normal plan), and the result must equal the one of the same query with every sift plan off
-# (sift.enable_agg, enable_scan, enable_count and enable_col off, no btree or bitmap scans). A row claiming an error runs its statement and
+# (sift.enable_agg, enable_scan and enable_count off, no btree or bitmap scans). A row claiming an error runs its statement and
 # expects that SQLSTATE, and, when the row names a setting that avoids it, the statement without the error under that setting. Rows
 # without a query are "doc only" (none left: a claim about a setting, a catalog or a replica has a query that observes it, `true`, or an
 # `external:` proof on a second cluster). --check exits 1 when a claim is wrong, a sample query returns another result than the normal plan, the
@@ -289,10 +289,11 @@ ext_logical_run() {
 # D07: a hot standby (pg_basebackup of this cluster, then WAL replay of later changes) serves the primary's result from a SiftAgg plan on a
 # sift_col index and on a sift_table, and a BM25 match from a SiftScan / SiftCount plan
 ext_standby_run() {
-	local lsn q want got bm="SELECT count(*) FROM orders WHERE memo @@> 'clean'"
+	local lsn q want got bm="SELECT count(*) FROM orders WHERE memo @@> 'damaged'"
 	local aggs=('SELECT grp, count(*), sum(v) FROM cv_dml GROUP BY grp' 'SELECT grp, count(*), sum(i4) FROM cv_tt GROUP BY grp')
 	pg_basebackup -h "$SIFT_TMP/sock" -p "${SIFT_PORT:-56100}" -U postgres -D "$SIFT_TMP/side-standby/data" -X stream -c fast -R || return 1
-	side_conf standby || return 1
+	# pgtest.sh start empties postgresql.auto.conf, where -R wrote primary_conninfo: the standby would stay at the state of the base backup
+	side_conf standby "primary_conninfo = 'host=$SIFT_TMP/sock port=${SIFT_PORT:-56100} user=postgres'" || return 1
 	side standby start || return 1
 	sql -c "INSERT INTO cv_dml SELECT 9000 + i, i % 5, i, i, 'r' FROM generate_series(1, 300) i" -c "INSERT INTO cv_tt SELECT * FROM cv_types WHERE id <= 60" || return 1
 	lsn=$(sql -c "SELECT pg_current_wal_lsn()")

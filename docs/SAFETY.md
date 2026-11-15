@@ -65,6 +65,10 @@ SIMD=none), `fuzz` (scripts/fuzz.sh). Opt-in lanes on a PostgreSQL built from so
 pins 18.6 and 17.11 with cassert, debug, `-DRANDOMIZE_ALLOCATED_MEMORY`, `-DCATCACHE_FORCE_RELEASE` (every syscache lookup builds a fresh entry and frees it at release, so a `HeapTuple`
 kept past its `ReleaseSysCache` is garbage; found F-MCX-1), plus `-DUSE_VALGRIND` for the valgrind prefix; cached in `$SIFT_PG_CACHE`, default `~/.cache/sift/pg`):
 - `SIFT_CI_JOBS=assert scripts/ci.sh quick` (scripts/assert.sh): 13 regression tests and 2 quick-tier TAP tests; fails on a TRAP or a memory-context warning in any server log; passes on 18.6 and 17.11.
+  The server of the lane is built with `--enable-injection-points` (`scripts/pg-assert.sh --inject`, the prefix `<version>-assert-inject`), so a shell TAP test can stop a backend at a named point of the code without a sleep:
+  `maint_lock_order` stops a maintenance worker before and after it locks the table of its index and runs DROP TABLE beside it (no deadlock, no error, the index gone is not an error). Ownership asserts of the testing
+  build: every slot of an executor state's table is in the query memory context (checked at ExecutorEnd, self-test `slot_owner`: a table slot made in a node's context is the crash of a cold backend), and a worker holds the
+  table before the index it opens (`sift_try_open_index`: lock order of the statements, Assert on `CheckRelationOidLockedByMe`).
 - `SIFT_CI_JOBS=valgrind` (scripts/valgrind.sh): 4 tests under memcheck with the server's valgrind.supp and `--error-exitcode`, bounded by `SIFT_VALGRIND_TIMEOUT`; a host whose glibc has
   no debug symbols runs it in a pinned Debian bookworm container (see the script header); skips when neither works.
 - Weekly and non-blocking on GitHub: .github/workflows/assert.yml. The quick tier of `ci.yml` has one assertions entry ("PostgreSQL 18 (assertions)", the 30 `installcheck-agg_*` regress
@@ -130,7 +134,7 @@ P1 out-of-bounds from stored data, P2 unbounded loop or allocation, P3 correct h
 | P3-6 | bm25/dict.c:block_begin, block_next, find_block | correct; `pos_len` points into the shared buffer: take/read_varint |
 | P3-7 | bm25/pos.c:pos_next, pos_window, pos_ckpt; bm25/posting.c:BLOB_NG/BLOB_KEYS; bm25/segment.c:docmap; core/store.c:check_dir; bm25/wbuf.c:rec_at | correct; macros become `sift_span_u32le_at`, rest for uniformity |
 | P3-8 | real range checks: nd_get DICT, unit_emit, sift_cc_decode_bits, sparse_valid | plain bound or `max32`, not Span |
-| P4-1 | core/varint.h:sift_get_varint (bm25/bitmap.c 86,470,504,608,909) | unbounded, safe only by 64 pad bytes (F-BM25-1): no caller of the unbounded `sift_get_varint` is left since 2.0.2 (463951f, 0ddff29); Span `read_varint` for the bounded ones |
+| P4-1 | core/varint.h:sift_get_varint (bm25/bitmap.c 86,470,504,608,909) | unbounded, safe only by 64 pad bytes (F-BM25-1): no caller of the unbounded `sift_get_varint` was left since 2.0.2 (463951f, 0ddff29), and the function is deleted; Span `read_varint` for the bounded ones |
 | P4-2 | core/varint.h:sift_get_varint64_n, bm25/pos.c:get_v32, sift_post_positions | last-byte overflow bits dropped, `want*=2` wraps above 2 GB: reject |
 | P4-3 | col/unit.c:sift_cunit_chunk; col/seg/seg.c:sift_cseg_unit_fill; col/scan/scan.c 584, 621, 871 | XX000 to DATA_CORRUPTED (F-COL-2: done for `sift_cunit_chunk`); `off+len` Assert only; scattered `c.n` checks into sift_cunit_chunk |
 

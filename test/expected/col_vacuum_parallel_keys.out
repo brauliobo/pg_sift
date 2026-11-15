@@ -58,7 +58,7 @@ SELECT sift.col_merge('pv_idx', true) >= 0 AS merged;
 SELECT pv_opt('pv_idx') AS after_merge;
                              after_merge                              
 ----------------------------------------------------------------------
- track_changes=id,key_columns=auto: set_id,point_tid_columns=auto: id
+ track_changes=id,point_tid_columns=auto: id,key_columns=auto: set_id
 (1 row)
 
 DROP TABLE pv;

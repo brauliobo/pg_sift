@@ -12,13 +12,16 @@
 #include "storage/fd.h"
 #include "col/build/build_int.h"
 #include "col/runs.h"
+#include "core/cmp.h"
 
 bool		sift_col_build_key_ranges = true;
 
 #ifdef SIFT_TESTING
 int			sift_test_col_temp_free_kb = -1;
+int			sift_test_col_spill_run_kb = 0;
 #endif
 
+#define SPILL_RUN_BYTES	((Size) 768 << 20)	/* the rows of a run of the ranges are read into one batch, whose dictionary of a column of strings holds at most 1 GB */
 #define SAMPLE_KEYS		100000
 #define SAMPLE_SBS		512			/* superblocks the keys are taken from */
 #define CHUNKS_PER_RUN	4			/* a run is the chunks of the key that fit its memory, cut at a chunk end: its size is within a quarter of the budget */
@@ -33,15 +36,6 @@ struct ColSpill
 	BufFile   **file;
 	uint64	   *rows;
 };
-
-static int
-cmp_i64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return x < y ? -1 : x > y;
-}
 
 /* the values of a leaf that are bytes (v.s, len), not a number */
 static bool
@@ -243,7 +237,7 @@ sample_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool ali
 /*
  * The runs of a build by ranges are cut at quantiles of the key of the whole table, not of its first rows (a table is often written in the order of
  * its key, and the first run holds the lowest keys): before the scan, the rows of superblocks spread over the table are read for their keys. Not for a table
- * that fits a run or two.
+ * that fits a run.
  */
 void
 colb_spill_sample(ColBuild *b, Relation heap, IndexInfo *info)
@@ -256,7 +250,7 @@ colb_spill_sample(ColBuild *b, Relation heap, IndexInfo *info)
 
 	if (!sift_col_build_key_ranges)
 		return;
-	if (leaf < 0 || b->total_rows == 0 || (uint64) nblocks * BLCKSZ < 3 * (uint64) b->budget)
+	if (leaf < 0 || b->total_rows == 0 || (uint64) nblocks * BLCKSZ < (uint64) b->budget / 2)
 		return;
 	take = Min(nsb, SAMPLE_SBS);
 	sm.b = b;
@@ -275,7 +269,7 @@ colb_spill_sample(ColBuild *b, Relation heap, IndexInfo *info)
 		(void) table_index_build_range_scan(heap, b->index, info, false, false, false, start, Min(SIFT_SB_PAGES, nblocks - start), sample_cb, &sm, NULL);
 	}
 	MemoryContextDelete(sm.cx);
-	qsort(sm.keys, sm.n, sizeof(int64), cmp_i64);
+	qsort(sm.keys, sm.n, sizeof(int64), sift_cmp_i64);
 	b->ksample = sm.keys;
 	b->nksample = sm.n;
 }
@@ -335,9 +329,22 @@ temp_space_fits(double need)
 	return need <= room * Max(n, 1) / 2;
 }
 
+/* The rows of a run of the ranges: those the first run held, or the share of them that fits SPILL_RUN_BYTES when a large maintenance_work_mem made that run larger */
+static uint64
+spill_run_rows(const ColBuild *b, Size held_bytes)
+{
+	Size		cap = SPILL_RUN_BYTES;
+
+#ifdef SIFT_TESTING
+	if (sift_test_col_spill_run_kb > 0)
+		cap = (Size) sift_test_col_spill_run_kb * 1024;
+#endif
+	return Max((uint64) ((double) b->held_rows * Min(1.0, (double) cap / held_bytes)), 1);
+}
+
 /*
  * The rows held when the first run is full give the ranges: as many as runs the estimate of the rows of the table makes, cut at the quantiles of the key
- * of those rows. False (the rows stay to be written as a run) for a table that fits about two runs, a key that is not a number, a parallel participant
+ * of those rows. False (the rows stay to be written as a run) for a key that is not a number, a parallel participant
  * or a key of a few values.
  */
 bool
@@ -345,6 +352,8 @@ colb_spill_start(ColBuild *b)
 {
 	int			leaf = range_leaf(b);
 	int			nr;
+	Size		held_bytes;
+	uint64		run_rows;
 	double		need;
 	ColSpill   *s;
 	SiftColBatch **in;
@@ -353,15 +362,16 @@ colb_spill_start(ColBuild *b)
 
 	if (!sift_col_build_key_ranges)
 		return false;
-	/* a run is one batch, whose dictionary of a column of strings holds at most 1 GB */
-	if (leaf < 0 || b->ksample == NULL || b->total_rows == 0 || b->held_rows == 0 || b->budget > ((Size) 768 << 20))
+	if (leaf < 0 || b->ksample == NULL || b->total_rows == 0 || b->held_rows == 0)
 		return false;
-	nr = (int) ceil((double) CHUNKS_PER_RUN * b->total_rows / (double) b->held_rows);
+	held_bytes = MemoryContextMemAllocated(b->heldcxt, true);
+	run_rows = spill_run_rows(b, held_bytes);
+	nr = (int) ceil((double) CHUNKS_PER_RUN * b->total_rows / (double) run_rows);
 	if (nr < 3 || b->nksample < (uint32) nr * 8)
 		return false;
 	nr = Min(nr, MAX_RANGES);
 	/* the rows go to temporary files, about the memory of the first run for each of its rows: neither temp_file_limit nor the disk may refuse them */
-	need = (double) MemoryContextMemAllocated(b->heldcxt, true) / b->held_rows * (double) b->total_rows;
+	need = (double) held_bytes / b->held_rows * (double) b->total_rows;
 	if ((temp_file_limit >= 0 && need > (double) temp_file_limit * 1024.0) || !temp_space_fits(need))
 		return false;
 
@@ -382,7 +392,7 @@ colb_spill_start(ColBuild *b)
 	in = palloc_array(SiftColBatch *, list_length(b->held));
 	foreach(lc, b->held)
 		in[nin++] = lfirst(lc);
-	b->spill_run_rows = b->held_rows;
+	b->spill_run_rows = run_rows;
 	b->spill_aim = sift_colk_run_rows(b->index, in, nin);
 	s->file = MemoryContextAlloc(b->cxt, s->n * sizeof(BufFile *));
 	s->rows = MemoryContextAllocZero(b->cxt, s->n * sizeof(uint64));
@@ -401,10 +411,25 @@ colb_spill_start(ColBuild *b)
 	return true;
 }
 
+/* The rows read back are sorted and written as a run, and the next run starts from a batch that has none of them */
+static void
+spill_run(ColBuild *b)
+{
+	if (b->batch->nrows == 0)
+		return;
+	sift_cbatch_trim(b->batch);
+	b->held = list_make1(b->batch);
+	b->held_rows = b->batch->nrows;
+	colb_write_run(b, false);
+	b->batch = sift_cbatch_create(b->heldcxt, b->r->schema);	/* the batch lived in the memory the run released */
+	b->batch->keyed = b->batch->unsorted = true;
+}
+
 /*
  * The scan is over. The chunks, in the order of the key, are packed into runs of as many rows as the first run held (about the memory of a run), and the rows
  * of a run are read back into one batch (the rows of any superblock, in any order: a keyed batch), which is sorted and written as a run is. A run ends at the end
- * of a chunk, so the runs do not overlap in the key.
+ * of a chunk, so the runs do not overlap in the key. A chunk of more rows than a run (one value of the key holds them, or a few) is read back in pieces of a run,
+ * in the order of the scan, each sorted and written as a run: they overlap, as the runs of a build without ranges do, and the rewrite orders them.
  */
 void
 colb_spill_finish(ColBuild *b)
@@ -448,19 +473,13 @@ colb_spill_finish(ColBuild *b)
 				SIFT_INVARIANT(more, "sift_col build: the file of a key range ends before its rows");
 				sift_cbatch_add(b->batch, &row);
 				MemoryContextReset(rcx);
+				if (b->batch->nrows >= target)
+					spill_run(b);
 			}
 			BufFileClose(f);
 		}
 		elog(DEBUG1, "sift_col build: chunks %d..%d, %llu rows", i, j - 1, (unsigned long long) rows);
-		if (b->batch->nrows > 0)
-		{
-			sift_cbatch_trim(b->batch);
-			b->held = list_make1(b->batch);
-			b->held_rows = b->batch->nrows;
-			colb_write_run(b, false);
-			b->batch = sift_cbatch_create(b->heldcxt, sc);	/* the batch lived in the memory the run released */
-			b->batch->keyed = b->batch->unsorted = true;
-		}
+		spill_run(b);
 		i = j;
 	}
 	MemoryContextDelete(rcx);

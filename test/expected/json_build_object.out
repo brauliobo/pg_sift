@@ -302,6 +302,56 @@ SELECT count(*) AS rows, bool_and(json_build_object('id', id, 't', t)::text = si
 (1 row)
 
 RESET max_parallel_workers_per_gather; RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size;
+-- one call site, many rows: integers, float8 at every extra_float_digits (NaN, the infinities, -0 and an exponent among them), NULLs, json values and constant keys, written as the core writes them
+CREATE TABLE jb_num AS SELECT g, CASE g % 7 WHEN 0 THEN 'NaN'::float8 WHEN 1 THEN 'Infinity' WHEN 2 THEN '-Infinity' WHEN 3 THEN -0.0 WHEN 4 THEN 1e100 ELSE g / 7.0 END AS f,
+	CASE WHEN g = 5 THEN -9223372036854775808 ELSE g::int8 * 40000000000000 END AS b, (g - 100)::int2 AS s, g / 3.0 AS n, CASE WHEN g % 11 = 0 THEN NULL ELSE json_build_object('x', g)::json END AS j
+FROM generate_series(1, 200) g;
+SET extra_float_digits = 0;
+SELECT count(*) AS rows, bool_and(json_build_object('g', g, 'f', f, 'b', b, 's', s, 'n', n, 'j', j, 'z', NULL::int, 'l', g::text)::text = sift.json_build_object('g', g, 'f', f, 'b', b, 's', s, 'n', n, 'j', j, 'z', NULL::int, 'l', g::text)::text) AS same FROM jb_num;
+ rows | same 
+------+------
+  200 | t
+(1 row)
+
+SET extra_float_digits = 1;
+SELECT count(*) AS rows, bool_and(json_build_object('g', g, 'f', f, 'b', b, 's', s, 'n', n, 'j', j, 'z', NULL::int, 'l', g::text)::text = sift.json_build_object('g', g, 'f', f, 'b', b, 's', s, 'n', n, 'j', j, 'z', NULL::int, 'l', g::text)::text) AS same FROM jb_num;
+ rows | same 
+------+------
+  200 | t
+(1 row)
+
+SET extra_float_digits = 3;
+SELECT count(*) AS rows, bool_and(json_build_object('g', g, 'f', f, 'b', b, 's', s, 'n', n, 'j', j, 'z', NULL::int, 'l', g::text)::text = sift.json_build_object('g', g, 'f', f, 'b', b, 's', s, 'n', n, 'j', j, 'z', NULL::int, 'l', g::text)::text) AS same FROM jb_num;
+ rows | same 
+------+------
+  200 | t
+(1 row)
+
+SET extra_float_digits = 1;
+-- a key that is a parameter is the same for the executions of one plan and not for the next: the key of a call is written again, and a NULL key is an error after good calls
+PREPARE jb_k(text, int) AS SELECT sift.json_build_object($1, $2, 'b', $2)::text = json_build_object($1, $2, 'b', $2)::text AS same, sift.json_build_object($1, $2, 'b', $2) AS result;
+EXECUTE jb_k('a', 1);
+ same |       result       
+------+--------------------
+ t    | {"a" : 1, "b" : 1}
+(1 row)
+
+EXECUTE jb_k('quo"te', 2);
+ same |          result          
+------+--------------------------
+ t    | {"quo\"te" : 2, "b" : 2}
+(1 row)
+
+EXECUTE jb_k('a', 3);
+ same |       result       
+------+--------------------
+ t    | {"a" : 3, "b" : 3}
+(1 row)
+
+EXECUTE jb_k(NULL, 4);
+ERROR:  null value not allowed for object key
+DEALLOCATE jb_k;
+DROP TABLE jb_num;
 -- sift before pg_catalog in the search_path takes the name for every call
 SET search_path = sift, pg_catalog, public;
 SELECT json_build_object('a', 1, 'b', ARRAY['x']) AS result;

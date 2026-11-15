@@ -20,6 +20,7 @@ typedef struct SiftCWbufHint
 	uint64		ovf_gen;		/* the write buffer whose overflow leaves ovf_known describes */
 	uint32		ovf_known;
 	uint32		jnull_known;	/* the same for the leaves with a JSON null */
+	uint64		ref_gen;		/* the write buffer whose directory entry is marked as one that holds references (SIFT_COL_FORMAT_REFBUF) */
 } SiftCWbufHint;
 
 /*
@@ -43,7 +44,13 @@ extern uint32 sift_cwbuf_jnull(const SiftDirSnapshot *dir);
  * A row whose record exceeds a page is split in pieces (SIFT_COLR_CONT). xmin: the transaction that inserted the heap tuple of the row, kept in the record
  * (InvalidTransactionId: none, as for the rows of an index without track_changes and of a speculative insertion).
  */
-extern bool sift_cwbuf_append(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin);
+extern bool sift_cwbuf_append(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool ref);
+
+/*
+ * ref (sift.col_wbuf_ref, needs an xmin): the record keeps the xmin alone, 16 bytes with its head, and the reader fetches the values from the heap tuple at the TID
+ * (col/wbuf/ref.c: a tuple that is gone or is another one's is skipped). The heap is durable by its own WAL, which precedes the record of the index.
+ */
+extern PGDLLIMPORT bool sift_col_wbuf_ref;
 
 /*
  * A row of a transaction that already wrote one is buffered in the backend (false: the index has no slot, append it) and reaches the lane with
@@ -51,7 +58,7 @@ extern bool sift_cwbuf_append(Relation index, SiftCWbufHint *hint, const SiftCol
  * append), sift_cwbuf_pending names the index that has the file of a slot that holds some (a swap of files moves rows to the other index), sift_cwbuf_discard drops those of an index (all when InvalidOid): the transaction
  * aborted, or the index was rebuilt from the heap that holds them. Every reader of this file flushes first.
  */
-extern bool sift_cwbuf_pend(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool *crossed);
+extern bool sift_cwbuf_pend(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool ref, bool *crossed);
 extern bool sift_cwbuf_flush(Relation index);
 extern bool sift_cwbuf_pending(Oid *index);
 extern void sift_cwbuf_discard(Oid index);
@@ -61,6 +68,13 @@ extern void sift_cwbuf_discard(Oid index);
  * directory has room for the active segment; false when it cannot get any. Called without index locks held.
  */
 extern bool sift_col_maint_make_room(Relation index);
+
+/* The slots of the write buffer arena (col/wbuf/arena.c): given back when no row finds one; called after a row is written, with no lock held */
+extern bool sift_cwbuf_arena_gc_wanted(void);
+extern bool sift_cwbuf_arena_asked_back(Relation index);
+extern void sift_cwbuf_arena_gc(void);
+/* The buffer of generation gen is promoted: its arena slot is free */
+extern void sift_cwbuf_arena_drop(Relation index, uint64 gen);
 
 /* Seals the active segment (only above write_buffer_limit unless force) and opens a fresh one; returns the sealed gen or 0 (sift_wbuf_seal) */
 extern uint64 sift_cwbuf_seal(Relation index, bool force);
@@ -79,6 +93,8 @@ extern void sift_cwbuf_close(SiftCWbufReader *r);
  * All live rows of the segment, sorted by key (a repeated TID keeps its first record), as batches, one per superblock, ascending, in
  * mcxt. *n = the number of batches (0 for none).
  */
+/* Does a live record of the write buffer entry come from a transaction at or after x that did not abort (or from one that says nothing of itself)? Reads the headers of the records */
+extern bool sift_cwbuf_inserted_since(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, TransactionId x);
 extern SiftColBatch **sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n, TransactionId *stamp);
 
 /*
@@ -107,6 +123,12 @@ extern ItemPointerData *sift_cwbuf_lookup(Relation index, const SiftSegEntry *en
 /* VACUUM: calls cb for every live record and flags the ones it reports dead; returns the rows removed (maintenance lock held) */
 extern int64 sift_cwbuf_bulkdelete(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, IndexBulkDeleteCallback cb,
 								  void *cbstate, IndexBulkDeleteResult *stats);
+
+/* The rows the backends of the server decoded from the buffer of generation gen to read it, since it was opened (col/wbuf/reads.c): what its promotion is weighed against (maint_wbuf_read_due) */
+extern void sift_cwbuf_decoded_note(Relation index, uint64 gen, uint64 rows);
+extern uint64 sift_cwbuf_decoded(Relation index, uint64 gen);
+/* whether this backend decoded rows since the last call (the scan that did looks for the promotion, sift_col_vacuum_tick) */
+extern bool sift_cwbuf_decoded_take(void);
 
 /* Extents (header and data pages) for release after promotion; records, rows (deleted included) and pages */
 extern SiftExtent *sift_cwbuf_pages(Relation index, const SiftSegEntry *entry, int *n);

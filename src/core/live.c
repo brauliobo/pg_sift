@@ -8,7 +8,7 @@
 #define corrupt(l, ...) SIFT_SEG_CORRUPT((l)->index, (l)->gen, __VA_ARGS__)
 
 SiftSegHeaderData *
-sift_seg_read_header(Relation index, const SiftSegEntry *entry)
+sift_seg_read_header_used(Relation index, const SiftSegEntry *entry, uint32 *usedp)
 {
 	Buffer		buf = ReadBuffer(index, entry->header_blk);
 	Page		page;
@@ -30,7 +30,16 @@ sift_seg_read_header(Relation index, const SiftSegEntry *entry)
 	copy = palloc(used);
 	memcpy(copy, h, used);
 	UnlockReleaseBuffer(buf);
+	*usedp = used;
 	return copy;
+}
+
+SiftSegHeaderData *
+sift_seg_read_header(Relation index, const SiftSegEntry *entry)
+{
+	uint32		used;
+
+	return sift_seg_read_header_used(index, entry, &used);
 }
 
 static void
@@ -112,6 +121,31 @@ sift_live_byte(const SiftLive *l, uint64 b, Buffer *buf)
 	return SiftPageGetData(page)[b % SIFT_PAGE_PAYLOAD];
 }
 
+uint8
+sift_live_byte_kept(const SiftLive *l, uint64 b, Buffer *pin)
+{
+	BlockNumber blk = l->first + b / SIFT_PAGE_PAYLOAD;
+	Page		page;
+	uint8		v;
+
+	if (b / SIFT_PAGE_PAYLOAD >= l->npages)
+		corrupt(l, "Liveness byte %llu lies past %u LIVE pages.", (unsigned long long) b, l->npages);
+	if (!BufferIsValid(*pin) || BufferGetBlockNumber(*pin) != blk)
+	{
+		if (BufferIsValid(*pin))
+			ReleaseBuffer(*pin);
+		*pin = ReadBuffer(l->index, blk);
+	}
+	LockBuffer(*pin, BUFFER_LOCK_SHARE);
+	sift_store_check_page(l->index, *pin, SIFT_PT_LIVE, l->gen);
+	page = BufferGetPage(*pin);
+	if (b % SIFT_PAGE_PAYLOAD >= SiftPageGetUsed(page))
+		corrupt(l, "Liveness byte %llu lies past the written bytes of block %u.", (unsigned long long) b, blk);
+	v = SiftPageGetData(page)[b % SIFT_PAGE_PAYLOAD];
+	LockBuffer(*pin, BUFFER_LOCK_UNLOCK);
+	return v;
+}
+
 void
 sift_live_copy(const SiftLive *l, uint64 b, uint64 len, uint8 *out)
 {
@@ -180,13 +214,35 @@ sift_live_bits(const SiftLive *l, uint64 rank, uint32 n, uint64 *out, uint32 nwo
 	pfree(raw);
 }
 
-#ifndef MAX_GENERIC_XLOG_PAGES
-#define MAX_GENERIC_XLOG_PAGES	4
-#endif
-
 StaticAssertDecl(SIFT_SB_PAGES * MaxHeapTuplesPerPage / 8 + 1 <= 2 * SIFT_PAGE_PAYLOAD, "the liveness bits of a unit of the most rows lie on at most three pages, which sift_live_clear clears with the header page in one GenericXLog record");
 
-/* the header page and the pages of the bits of the dead rows of a unit: GenericXLog holds MAX_GENERIC_XLOG_PAGES, which a unit of the most rows (SIFT_COL_UNIT_MAX_ROWS bits) fills */
+/* The dirty bitmap follows the header over as many pages as its nsb bits take: the bit of an SB lies on page 0 only for the first 65151 */
+static void
+set_dirty_bit(const SiftLive *l, uint32 sbidx)
+{
+	uint64		b = sizeof(SiftLiveHeaderData) + sbidx / 8;
+	uint8		mask = 1 << (sbidx % 8);
+	Buffer		buf = ReadBuffer(l->index, l->first + b / SIFT_PAGE_PAYLOAD);
+	SiftXlog state;
+	Page		page;
+
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	sift_store_check_page(l->index, buf, SIFT_PT_LIVE, l->gen);
+	if (!(SiftPageGetData(BufferGetPage(buf))[b % SIFT_PAGE_PAYLOAD] & mask))
+	{
+		state = sift_xlog_start(l->index);
+		page = sift_xlog_register(&state, buf, 0);
+		SiftPageGetData(page)[b % SIFT_PAGE_PAYLOAD] |= mask;
+		sift_xlog_finish(&state);
+	}
+	UnlockReleaseBuffer(buf);
+}
+
+/*
+ * The SB's dirty bit goes first, in a record of its own: a crash leaves a bit set over rows that are still live, which readers take as a
+ * hint to look at the liveness bits. Then the header page and the pages of the bits of the dead rows of a unit: GenericXLog holds
+ * MAX_GENERIC_XLOG_PAGES, which a unit of the most rows (SIFT_COL_UNIT_MAX_ROWS bits) fills
+ */
 void
 sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd)
 {
@@ -195,9 +251,10 @@ sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd)
 	Buffer		buf[MAX_GENERIC_XLOG_PAGES];
 	Page		page[MAX_GENERIC_XLOG_PAGES];
 	int			n = 1;
-	GenericXLogState *state;
+	SiftXlog state;
 	SiftLiveHeaderData *lh;
 
+	set_dirty_bit(l, sbidx);
 	pg[0] = 0;
 	for (int i = 0; i < nd; i++)
 	{
@@ -213,9 +270,9 @@ sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd)
 		LockBuffer(buf[i], BUFFER_LOCK_EXCLUSIVE);
 		sift_store_check_page(l->index, buf[i], SIFT_PT_LIVE, l->gen);
 	}
-	state = GenericXLogStart(l->index);
+	state = sift_xlog_start(l->index);
 	for (int i = 0; i < n; i++)
-		page[i] = GenericXLogRegisterBuffer(state, buf[i], 0);
+		page[i] = sift_xlog_register(&state, buf[i], 0);
 	for (int i = 0; i < nd; i++)
 	{
 		uint64		b = start + dead[i] / 8;
@@ -227,8 +284,7 @@ sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd)
 	}
 	lh = (SiftLiveHeaderData *) SiftPageGetData(page[0]);
 	lh->ndead += nd;
-	SiftPageGetData(page[0])[sizeof(SiftLiveHeaderData) + sbidx / 8] |= 1 << (sbidx % 8);
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	for (int i = 0; i < n; i++)
 		UnlockReleaseBuffer(buf[i]);
 }
@@ -358,7 +414,7 @@ sift_live2_clear(const SiftLive *l, uint32 sbidx, const uint64 *bits, int nd, ui
 	Page		page[MAX_GENERIC_XLOG_PAGES];
 	uint64		dirty = sizeof(SiftLive2HeaderData) + sbidx / 8;
 	int			n = 1;
-	GenericXLogState *state;
+	SiftXlog state;
 	SiftLive2HeaderData *h;
 
 	pg[0] = 0;
@@ -385,9 +441,9 @@ sift_live2_clear(const SiftLive *l, uint32 sbidx, const uint64 *bits, int nd, ui
 		LockBuffer(buf[i], BUFFER_LOCK_EXCLUSIVE);
 		sift_store_check_page(l->index, buf[i], SIFT_PT_LIVE, l->gen);
 	}
-	state = GenericXLogStart(l->index);
+	state = sift_xlog_start(l->index);
 	for (int i = 0; i < n; i++)
-		page[i] = GenericXLogRegisterBuffer(state, buf[i], 0);
+		page[i] = sift_xlog_register(&state, buf[i], 0);
 	for (int i = -1; i < nd; i++)
 	{
 		uint64		b = i < 0 ? dirty : bits[i] / 8;
@@ -403,7 +459,7 @@ sift_live2_clear(const SiftLive *l, uint32 sbidx, const uint64 *bits, int nd, ui
 	h = (SiftLive2HeaderData *) SiftPageGetData(page[0]);
 	h->ndead += nd;
 	h->dead_dl += dead_dl;
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	for (int i = 0; i < n; i++)
 		UnlockReleaseBuffer(buf[i]);
 }
@@ -434,7 +490,7 @@ sift_live2_set_dead(const SiftLive *l, const SiftLive2HeaderData *h, const uint3
 	SiftLive2HeaderData *cur;
 	Buffer		buf;
 	Page		page;
-	GenericXLogState *state;
+	SiftXlog state;
 
 	for (uint64 b = lo; b < hi;)
 	{
@@ -446,10 +502,10 @@ sift_live2_set_dead(const SiftLive *l, const SiftLive2HeaderData *h, const uint3
 		sift_store_check_page(l->index, buf, SIFT_PT_LIVE, l->gen);
 		if (memcmp(SiftPageGetData(BufferGetPage(buf)) + off, src + (b - lo), n) != 0)
 		{
-			state = GenericXLogStart(l->index);
-			page = GenericXLogRegisterBuffer(state, buf, 0);
+			state = sift_xlog_start(l->index);
+			page = sift_xlog_register(&state, buf, 0);
 			memcpy(SiftPageGetData(page) + off, src + (b - lo), n);
-			GenericXLogFinish(state);
+			sift_xlog_finish(&state);
 		}
 		UnlockReleaseBuffer(buf);
 		b += n;
@@ -457,10 +513,10 @@ sift_live2_set_dead(const SiftLive *l, const SiftLive2HeaderData *h, const uint3
 	buf = ReadBuffer(l->index, l->first);
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 	sift_store_check_page(l->index, buf, SIFT_PT_LIVE, l->gen);
-	state = GenericXLogStart(l->index);
-	page = GenericXLogRegisterBuffer(state, buf, 0);
+	state = sift_xlog_start(l->index);
+	page = sift_xlog_register(&state, buf, 0);
 	cur = (SiftLive2HeaderData *) SiftPageGetData(page);
 	cur->tbl_ndead = cur->ndead;
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(buf);
 }

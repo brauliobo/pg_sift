@@ -6,10 +6,8 @@
 
 #include "nodes/extensible.h"
 
-#include "agg/colsrc.h"
 #include "agg/cost/model.h"
 #include "agg/refuse.h"
-#include "core/limits.h"
 #include "agg/search.h"
 #include "agg/spec.h"
 
@@ -42,7 +40,11 @@ typedef struct JoinCtx
 	PlannerInfo *subroot;		/* the query level its native plan was made in */
 	List	   *cvars;			/* its columns the spec reads (Var, one per column): what the path outputs */
 	double		frows;			/* a child that j.first reads as a lookup table: the rows of its table */
+	int			dense;			/* the executor keeps the table as classes of its keys (map_load_dense): 0 not asked, 1 yes, 2 no (join_dense) */
+	double		classes;		/* ... the most classes the statistics allow */
 	bool		tree;			/* the child is PostgreSQL's plan of the tree of tables on the right of a semi or anti join (rti is the table its ON clause reads) */
+	List	   *iexprs;			/* the expressions of the sift_col indexes of the table (join_of_expr); read once */
+	bool		iexprs_done;
 } JoinCtx;
 
 typedef struct SlotReq
@@ -54,6 +56,8 @@ typedef struct SlotReq
 	bool		direct;			/* the value itself (SiftAggSlot.direct) */
 	bool		late;			/* a boolean slot whose expression may raise an error (SiftAggPred.late) */
 	bool		lowered;		/* expr is over Params already (lower_scoped): finish_combos leaves it */
+	bool		key_leaf;		/* a join's key column in expr is read as the leaf it equals (ComboWalk.key_leaf) */
+	bool		own_filter;		/* the ON clause of a joined table (AggCtx.own_filter) */
 } SlotReq;
 
 typedef struct ComboCtx
@@ -126,6 +130,7 @@ typedef struct AggCtx
 	double		part_tuples;	/* ... and their rows (rel->tuples counts every partition of the table, the ones pruning left out too) */
 	List	   *attexpr;		/* per attribute of the source: its expression with varno = relid (NULL: none) */
 	List	   *attalias;		/* per attribute: another expression that denotes it (NULL: none or no list) */
+	bool		own_filter;		/* the ON clause of a joined table is being lowered (join_filter) */
 	Index		func_rti;
 	FuncKind	func_kind;
 	RangeTblFunction *func;
@@ -149,6 +154,8 @@ typedef struct AggCtx
 	int			rec_pending;	/* 1 + the leaf func_var_leaf just resolved from a column of jsonb_to_recordset (0: none), which the use_leaf that follows takes */
 	Bitmapset  *rec_ok;			/* leaves read as a column of jsonb_to_recordset ... */
 	Bitmapset  *rec_bad;		/* ... and the leaves read in any other way */
+	Bitmapset  *haskey;			/* the leaves of a test doc ? 'k' (compile_haskey): the source reads again the documents that are no object */
+	List	   *types;			/* SiftAggPred: every SAP_TYPE test of the spec, wherever it is in the predicates */
 	List	   *rec_funcs;		/* RecFunc: the jsonb_to_recordset calls of the EXISTS tests over a list, which read its columns as the call of the FROM does */
 	int			cast_pending;	/* 1 + the leaf match_leaf just resolved from the cast of a jsonb_each member's jsonb value to a number (0: none), which the use_leaf that follows takes */
 	Bitmapset  *cast_ok;		/* leaves read through such a cast ... */
@@ -191,12 +198,14 @@ typedef struct AggCtx
 	bool		topn_array;		/* ... the executor reads the order array of the first key (sift_topn_gorder): no unit is read */
 	bool		topn_sorted;	/* ... it keeps no heap: every row that passes goes to a sort (the whole table is read) */
 	double		topn_fetch;		/* ... the rows it reads from the heap */
+	double		topn_free;		/* ... and the rows of the segments without an order of the key that it sorts in memory (SiftSrcStats.gord_free; 0: none) */
 	double		topn_walk;		/* ... the heap rows a walk of the order array fetches to test a condition on another column (topn_array_ok; 0: none) */
 	double		topn_cmpx;		/* ... the operators a compare of two entries of a key of byte strings costs more than one of integers (0: no such key) */
 	double		topn_xcost;		/* ... PostgreSQL's cost of its sort expressions for a row that passes, and of the row they are evaluated over */
 	bool		topn_xserial;	/* a sort expression the workers cannot evaluate: a parameter of the statement, a function that is not parallel safe */
 	double		topn_keybytes;	/* ... the bytes the entries of those keys take in a row of the heap or the sort */
-	int			nwide;			/* the conjuncts on wide leaves (SAP_WIDE) of the spec */
+	int			nwide;			/* the tests on wide leaves (SAP_WIDE) of the spec, in wide */
+	List	   *wide;			/* SiftAggPred of them */
 	int			nsubplan;		/* the hashed sub-plans its lookup tables evaluate (once each, at the start of the scan) */
 	bool		sub_serial;		/* one of them cannot run in a worker: a sub-plan that is not parallel safe, or the output of an ARRAY sub-select (a parameter the leader sets) */
 	Cost		subplan_cost;	/* their start-up: the sub-selects run once, as in the normal plan */
@@ -266,6 +275,7 @@ typedef struct ComboWalk
 	Oid			pcoll[SIFT_AGG_MAX_CLEAVES];
 	bool		null_input;
 	bool		bad;
+	bool		key_leaf;		/* a join's key column is read as the leaf it equals (in a slot; a join key keeps its chain) */
 	List	   *subparams;		/* the output Params of the hashed sub-plans met (as LeafWalk) */
 } ComboWalk;
 
@@ -310,6 +320,8 @@ extern int	agg_index_pick;		/* the column index of the scanned table the stage p
 extern int	agg_index_usable;	/* ... and how many of them the stage has met (a table with several is scanned through the first that gives a plan) */
 
 extern SiftSrcLeaf *leaf_of(AggCtx *c, int id);
+/* gen_stat.c: does the chunk kernel run the aggregate (the planner prices it by it) */
+extern bool gen_stat_eligible(Oid fn, const SiftAggGen *g, const SiftSrcLeaf *(*leaf) (void *arg, int id), void *arg, int *smode, Oid *sint);
 extern int leaf_level(AggCtx *c, int id);
 extern const char *leaf_name(AggCtx *c, int id);
 extern int	agg_child_planning;
@@ -331,14 +343,17 @@ extern bool path_keys(Node *n, List **keys);
 extern bool json_access(AggCtx *c, Node *e, JsonRef *r);
 extern Oid json_cast_target(Oid fid);
 extern int match_leaf(AggCtx *c, Node *e);
+extern int present_leaf(AggCtx *c, Node *e);	/* the leaf that is NULL where a jsonb document is SQL NULL, -1 if the index has none */
 extern Node *typed_member(AggCtx *c, Node *arg);
+extern Node *negated_cond(Node *n);
+extern bool is_cond(Node *n);
 extern double leaf_correlation(AggCtx *c, int leaf);
 extern Node *normalize_expr(AggCtx *c, Node *n);
 extern Node *placeholder_expr(AggCtx *c, PlaceHolderVar *ph);
 extern Node *strict_placeholders(AggCtx *c, Node *n);
 
 extern bool outer_ref_walker(Node *n, OuterRef *o);
-extern bool reads_outer(AggCtx *c, RangeTblEntry *e, int skip);
+extern bool reads_outer(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, int skip);
 extern bool cte_owner_correlated(PlannerInfo *owner);
 extern bool walk_memo_get(const void *a, const void *b, int skip, double *r);
 extern void walk_memo_put(const void *a, const void *b, int skip, double r);
@@ -358,6 +373,7 @@ extern bool leaf_stats_range(AggCtx *c, int leaf, int64 *lo, int64 *hi);
 extern bool leaf_span(AggCtx *c, int leaf, int64 *lo, int64 *hi);
 extern bool lut_expr_ok(AggCtx *c, int leaf, Node *expr);
 extern double key_groups(AggCtx *c, const SiftAggKey *k);
+extern double key_dense_groups(AggCtx *c, const SiftAggSpec *s, const SiftAggKey *k, Bitmapset **seen);
 extern const char *bucket_text(int secs);
 typedef struct BucketUnit
 {
@@ -389,32 +405,52 @@ extern void use_matched_leaf(AggCtx *c, int leaf);
 extern SiftAggPred *make_leaf_pred(AggCtx *c, SiftAggPredKind kind, int leaf);
 extern SiftAggPred *new_junction(AggCtx *c, SiftAggPredKind kind, int nchild);
 extern void junction_done(SiftAggPred *p);
+
+/* the child i of the junction *p, or the child itself as *p while *p is NULL (one child needs no junction) */
+static inline void
+junction_child(SiftAggPred **p, int i, SiftAggPred *e)
+{
+	if (*p)
+		(*p)->child[i] = e;
+	else
+		*p = e;
+}
 extern SiftAggPred *compile_junction(AggCtx *c, SiftAggPredKind kind, List *args);
 extern SiftAggPred *compile_pred(AggCtx *c, Node *n);
+/* the condition n as tests of a column (plan_prednorm.c), or NULL */
+extern Node *pred_normalize(AggCtx *c, Node *n);
+/* the conjuncts a containment on a jsonb column is in the WHERE (plan_contains.c), and the path of one that no leaf holds, or NULL */
+extern List *contains_conjuncts(AggCtx *c, Node *q);
+extern char *undeclared_path(AggCtx *c, Node *q);
 extern SiftAggPred *compile_calendar_cmp(AggCtx *c, OpExpr *op);
 extern void compile_periodic(AggCtx *c, Node *n, SiftAggPred *p);
 
 extern int typeof_leaf(AggCtx *c, Node *e);
 extern bool source_can_types(AggCtx *c);
 extern SiftAggPred *compile_typeof(AggCtx *c, Node *n);
+extern SiftAggPred *compile_haskey(AggCtx *c, Node *n);
+extern List *haskey_conjuncts(AggCtx *c, Node *q);
 extern SiftAggPred *compile_wide(AggCtx *c, Node *n);
 extern SiftAggPred *compile_tid(AggCtx *c, Node *n);
 extern bool types_guard_reads(AggCtx *c);
 extern bool typeof_keeps_unstorable(AggCtx *c, const SiftAggPred *p);
-extern void typeof_reads(AggCtx *c, SiftAggSpec *s);
+extern bool key_test_of_leaf(AggCtx *c, Node *n, int leaf);
+extern void typeof_reads(AggCtx *c);
 
 extern JoinCtx *join_of_var(AggCtx *c, Node *n);
 extern int combo_leaf(ComboCtx *cb, int id, bool typed, Oid ptype, int32 ptypmod, Oid pcoll);
 extern ComboCtx *new_combo(AggCtx *c, int join);
 extern int combo_index(AggCtx *c, ComboCtx *cb);
-extern int combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Var *v);
-extern int join_col(JoinCtx *jc, Var *v);
+extern int combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Node *v);
+extern int join_col(JoinCtx *jc, Node *v);
+extern JoinCtx *join_of_node(AggCtx *c, Node *n);
+extern JoinCtx *join_held_of_node(AggCtx *c, Node *n);
 extern bool join_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
 extern bool combo_walker(Node *n, ComboWalk *w);
 extern bool join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
 extern bool combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joins, int *ci, int *si);
 extern bool combo_slot(AggCtx *c, Node *expr, bool is_key, int *ci, int *si);
-extern Node *lower_scoped(AggCtx *c, int ci, Node *expr);
+extern Node *lower_scoped(AggCtx *c, int ci, Node *expr, bool key_leaf);
 extern void finish_combos(AggCtx *c, SiftAggSpec *s);
 extern char *combo_text(AggCtx *c, int ci, Node *expr);
 extern SiftAggPred *compile_combo_pred_at(AggCtx *c, Node *n, bool after_joins);
@@ -443,6 +479,12 @@ extern int	vleaf_source(AggCtx *c, int j);
 extern SiftSrcRecheck spec_recheck(AggCtx *c, const SiftAggSpec *s, int m);
 
 extern SiftAggPred *compile_existential(AggCtx *c, Node *n, Node **target);
+extern bool negate_existential(SiftAggPred *p);	/* agg/plan_not.c: NOT, IS FALSE and IS NOT TRUE of existential tests */
+extern SiftAggPred *compile_not_array(AggCtx *c, BoolExpr *b, SiftAggPred *p, Node *target);
+extern SiftAggPred *compile_not_true(AggCtx *c, SiftAggPred *p);
+extern SiftAggPred *compile_not_haskey(AggCtx *c, BoolExpr *b);
+extern bool source_tests_only(const SiftAggPred *p);
+extern void complement_tests(SiftAggPred *p);
 extern List *array_eq_conjuncts(AggCtx *c, Node *e, bool *complete);
 extern SiftAggPred *compile_exists_post(AggCtx *c, SubPlan *sp);
 extern bool scoped_child(AggCtx *c, Query *sub, Index offset, JoinCtx *jc, List **args);
@@ -483,7 +525,7 @@ extern bool agg_stock_rows;
 extern bool agg_rows_lifted;
 extern bool has_column_source(Oid relid);
 extern bool column_source_reads(Oid relid, Bitmapset *attnos);
-extern double column_distinct(AggCtx *c, Var *v);
+extern double column_distinct(AggCtx *c, Var *v, bool conditions);
 extern void agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out);
 extern double group_count(AggCtx *c, const SiftAggSpec *s);
 extern double group_table_bytes(const SiftAggSpec *s, double groups, double *state);
@@ -492,6 +534,7 @@ extern double agg_share_rows(AggCtx *c, SiftAggSpec *s);
 extern bool unsupported_clause(AggCtx *c, Node *n);
 extern bool add_join(AggCtx *c, FromScan *fs, Index rti);
 extern bool preserved_join(AggCtx *c);
+extern Node *inner_key_sub(AggCtx *c, Node *n);
 extern bool setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post);
 extern int	parallel_verdict(AggCtx *c, SiftAggSpec *s, const char *refused);
 extern SiftAggSpec *agg_spec_keep(const SiftAggSpec *s);

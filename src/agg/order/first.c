@@ -96,20 +96,21 @@ first_mode(SiftAggAgg *out, int nsort, bool leader)
 	out->desc = psprintf("first_row%s", out->desc + strlen("array_agg"));
 }
 
-/* do the best rows of the groups fit the memory a hash aggregate gets? */
+/* do the best rows of the groups (the first rows of an array_agg read through a slice: up to its slice) fit the memory a hash aggregate gets? */
 bool
 first_fits(SiftAggSpec *s)
 {
 	double		bytes = 0;
 
 	for (int i = 0; i < s->naggs; i++)
-		if (s->agg[i].kind == SAA_GEN && s->agg[i].gen->first)
+		if (s->agg[i].kind == SAA_GEN && (s->agg[i].gen->first || s->agg[i].gen->topn))
 		{
 			const SiftAggGen *g = s->agg[i].gen;
+			double		row = sizeof(void *);
 
-			bytes += FIRST_GROUP_BYTES;
 			for (int k = 0; k < g->nargs; k++)
-				bytes += sizeof(Datum) + 1 + get_typavgwidth(g->arg[k].typid, -1);
+				row += sizeof(Datum) + 1 + get_typavgwidth(g->arg[k].typid, -1);
+			bytes += FIRST_GROUP_BYTES + (g->topn ? Min((double) g->topn, Max(s->est_rows / Max(s->est_groups, 1.0), 1.0)) : 1.0) * row;
 		}
 	return bytes == 0 || s->est_groups * bytes <= (double) get_hash_memory_limit();
 }

@@ -72,6 +72,14 @@ sift_agg_init(void)
 							 "Answers a semi or anti join (IN, EXISTS, NOT EXISTS) on an integer leaf from a byte table over the keys of the joined table.",
 							 NULL, &sift_agg_semi_lut, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_connect_found",
+							 "Answers a semi, anti or inner join to the parent of a connected sift_col index that reads no column of the parent from the flag the index keeps that the parent row was found, less the keys that changed in the parent since.",
+							 NULL, &sift_agg_connect_found, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_child_first",
+							 "Plans the count of the rows of a table that have (or have no) row in another by a unique key, and the aggregates of a table left-joined to a table by its key, from the other table first: its rows counted by their keys or grouped by them, and keeps that plan where it costs less.",
+							 NULL, &sift_agg_child_first, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_two_level",
 							 "Aggregates an aggregate over per-row aggregates (UNION ALL arms grouped by a row id) in one scan of the index: the cells of a row are kept in the scan.",
 							 NULL, &sift_agg_two_level_on, true,
@@ -83,6 +91,10 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.agg_probe_rewrite",
 							 "Plans a join to a large table, or an EXISTS, NOT EXISTS or IN over one, with a btree on its key also as a lateral probe of the btree for each key the scan meets, and keeps that plan where it runs in the scan and costs less.",
 							 NULL, &sift_agg_probe_rewrite, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_case_filter",
+							 "Plans agg(CASE WHEN p THEN x [ELSE NULL | 0] END) of sum, avg, min, max and count as agg(x) FILTER (WHERE p), which the scan computes on the kernels of x under a test of p.",
+							 NULL, &sift_agg_case_filter_enabled, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_lookup_columns",
 							 "Loads the rows of a lookup table from the leaves of a sift_col index of it that holds the columns the join reads, not from the heap.",
@@ -114,6 +126,12 @@ sift_agg_init(void)
 							"Backends that run the same query at once wait for the one that loads the rows (30 s at most); a segment the system has no room for gives a notice and the backend loads its own tables.",
 							&sift_agg_lookup_shared_kb, -1, -1, MAX_KILOBYTES,
 							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.agg_dimmap_kb",
+							"Shared memory, for all backends together, that keeps the dimension maps (the class of each key of a joined table, read from its sift_col index) for the queries of every backend, while the table does not change (0: off).",
+							"Dynamic shared memory, taken as maps are kept and returned as they go, so it needs no restart; with posix shared memory it comes from /dev/shm, which it must stay below. "
+							"A map is 2 bytes a key of the table and a row for each class of its columns; one that does not fit is not kept and the query reads the classes itself.",
+							&sift_agg_dimmap_kb, 64 * 1024, 0, MAX_KILOBYTES,
+							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.verdict_cache_kb",
 							"Shared memory, for all backends together, that keeps the choice between a shared CTE and its inline plan, and between the flattened form of a statement and the one as written, so that a new backend plans the form that won only (0: off).",
 							"The table is allocated, at the size of this setting, by the first backend that plans such a statement after the server starts; a later change turns the use of it on and off (0), not its size. An entry is 56 bytes and a statement keeps up to three; the largest table is about 1 MB.",
@@ -124,7 +142,7 @@ sift_agg_init(void)
 							 NULL, &sift_agg_verdict_cache, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_semi_lut_size",
-							"Memory of the byte table of a semi or anti join, per scan and per worker; keys that span more keep the generic join.",
+							"Memory of the byte table (or hash set) of the keys of a semi or anti join, per scan and per worker; keys that do not fit keep the generic join.",
 							NULL, &sift_agg_semi_lut_size, 4096, 0, 1024 * 1024,
 							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.enable_topn",
@@ -149,7 +167,7 @@ sift_agg_init(void)
 							   NULL, &sift_test_probe_hook, "",
 							   PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, sift_test_probe_hook_assign, NULL);
 	DefineCustomBoolVariable("sift.test_child_warm",
-							 "Testing: a correlated child asks the OS for the relations it reads after a few runs, whatever they read and however long they took.",
+							 "Testing: the direct probe of a correlated child asks for the heap blocks of the entries it found from the first, whatever the statement has read from the OS.",
 							 NULL, &sift_child_warm_test, false,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_topn_gorder",
@@ -162,7 +180,7 @@ sift_agg_init(void)
 							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 #endif
 	DefineCustomBoolVariable("sift.topn_runs",
-							 "Lets a top-N scan read a unit through the sorted run of its first sort column (an index with the option order_columns) instead of testing every row of the unit.",
+							 "Lets a top-N scan read a unit through the sorted run of its first sort column (segments written with the deprecated option order_columns) instead of testing every row of the unit.",
 							 NULL, &sift_topn_runs, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_param_set_size",

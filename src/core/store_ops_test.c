@@ -5,6 +5,9 @@
 #include "store_test_int.h"
 #include "utils/timestamp.h"
 
+#include "core/live.h"
+#include "core/lane.h"
+
 #ifdef SIFT_TESTING
 
 PG_FUNCTION_INFO_V1(sift_test_alloc);
@@ -20,6 +23,9 @@ PG_FUNCTION_INFO_V1(sift_test_maint_wait_us);
 PG_FUNCTION_INFO_V1(sift_test_freelist);
 PG_FUNCTION_INFO_V1(sift_test_page);
 PG_FUNCTION_INFO_V1(sift_test_poke);
+PG_FUNCTION_INFO_V1(sift_test_peek);
+PG_FUNCTION_INFO_V1(sift_test_live_clear);
+PG_FUNCTION_INFO_V1(sift_test_write);
 PG_FUNCTION_INFO_V1(sift_test_churn);
 PG_FUNCTION_INFO_V1(sift_test_dir_updates_count);
 PG_FUNCTION_INFO_V1(sift_test_flush_wal);
@@ -122,12 +128,12 @@ sift_test_meta_note(PG_FUNCTION_ARGS)
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	char	   *mode = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	Buffer		buf = ReadBuffer(index, SIFT_METAPAGE_BLKNO);
-	GenericXLogState *state;
+	SiftXlog state;
 	Page		page;
 
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-	state = GenericXLogStart(index);
-	page = GenericXLogRegisterBuffer(state, buf, 0);
+	state = sift_xlog_start(index);
+	page = sift_xlog_register(&state, buf, 0);
 	if (strcmp(mode, "old") == 0)
 	{
 		SiftMetaPageData *meta = (SiftMetaPageData *) SiftPageGetData(page);
@@ -146,7 +152,7 @@ sift_test_meta_note(PG_FUNCTION_ARGS)
 	}
 	else
 		elog(ERROR, "sift test: unknown mode \"%s\"", mode);
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(buf);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
@@ -316,6 +322,103 @@ sift_test_poke(PG_FUNCTION_ARGS)
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 	memcpy(BufferGetPage(buf) + off, &value, width);
 	MarkBufferDirty(buf);
+	UnlockReleaseBuffer(buf);
+	relation_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
+}
+
+/* Reads width bytes at offset as a little-endian value */
+Datum
+sift_test_peek(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
+	Buffer		buf = ReadBuffer(index, (BlockNumber) PG_GETARG_INT64(1));
+	int32		off = PG_GETARG_INT32(2);
+	int32		width = PG_GETARG_INT32(3);
+	int64		value = 0;
+
+	if (off < 0 || width < 1 || width > 8 || off + width > BLCKSZ)
+		elog(ERROR, "invalid peek");
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	memcpy(&value, BufferGetPage(buf) + off, width);
+	UnlockReleaseBuffer(buf);
+	relation_close(index, AccessShareLock);
+	PG_RETURN_INT64(value);
+}
+
+/*
+ * sift._test_live_clear(index, nsb, sbidx): writes the LIVE run of a segment of nsb superblocks (64 rows, none in the directory),
+ * kills row 5 of superblock sbidx and returns the pages whose special space changed and whether the dirty bit reads back
+ */
+Datum
+sift_test_live_clear(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	uint32		nsb = PG_GETARG_INT32(1),
+				sbidx = PG_GETARG_INT32(2);
+	uint64		dead = 5,
+				gen;
+	uint8	   *dirty = palloc0((nsb + 7) / 8);
+	SiftLive	l = {.index = index, .nsb = nsb, .nbits = 64};
+	SiftWriteTarget *wt;
+	int32		damaged = 0;
+	Datum		values[2];
+	bool		nulls[2] = {0};
+
+	MAINT_LOCK(index, ShareLock);
+	l.gen = gen = sift_store_new_gen(index);
+	wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
+	sift_live_write(wt, gen, nsb, l.nbits, &l.first, &l.npages);
+	sift_wt_finish(wt);
+	sift_live_clear(&l, sbidx, &dead, 1);
+	for (uint32 i = 0; i < l.npages; i++)
+	{
+		Buffer		buf = ReadBuffer(index, l.first + i);
+		SiftPageOpaque o;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		o = SiftPageGetOpaque(BufferGetPage(buf));
+		damaged += o->type != SIFT_PT_LIVE || o->flags != 0 || o->reserved != 0 || o->gen != gen;
+		UnlockReleaseBuffer(buf);
+	}
+	sift_live_dirty(&l, dirty);
+	MAINT_UNLOCK(index, ShareLock);
+	values[0] = Int32GetDatum(damaged);
+	values[1] = BoolGetDatum(dirty[sbidx / 8] >> (sbidx % 8) & 1);
+	relation_close(index, RowExclusiveLock);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
+}
+
+/*
+ * sift._test_write(index, blkno, offset, len, edit): sets len bytes of the page at offset to 0xFF as a writer of the index does, in a
+ * generic WAL record (sift_xlog) or, with edit, as sift_page_edit_* logs an append: a change that breaks the rule of core/xlog.h is refused
+ */
+Datum
+sift_test_write(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	Buffer		buf = ReadBuffer(index, (BlockNumber) PG_GETARG_INT64(1));
+	int32		off = PG_GETARG_INT32(2),
+				len = PG_GETARG_INT32(3);
+
+	if (off < 0 || len < 1 || off + len > BLCKSZ)
+		elog(ERROR, "invalid write");
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	if (PG_GETARG_BOOL(4))
+	{
+		SiftPageEdit ed;
+
+		sift_page_edit_begin(&ed, buf, SIFT_EDIT_HEAD);
+		memset((char *) ed.page + off, 0xFF, len);
+		sift_page_edit_end(index, &ed, 1);
+	}
+	else
+	{
+		SiftXlog	x = sift_xlog_start(index);
+
+		memset((char *) sift_xlog_register(&x, buf, 0) + off, 0xFF, len);
+		sift_xlog_finish(&x);
+	}
 	UnlockReleaseBuffer(buf);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();

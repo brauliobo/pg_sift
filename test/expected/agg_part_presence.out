@@ -11,14 +11,14 @@ CREATE TABLE pk_b PARTITION OF pk FOR VALUES FROM (20000) TO (40000) WITH (autov
 CREATE TABLE pk_c PARTITION OF pk FOR VALUES FROM (40000) TO (60000) WITH (autovacuum_enabled = false);
 INSERT INTO pk SELECT i, ((i::bigint * 7919) % 300)::int, ((i::bigint * 104729) % 40)::int, i % 17, i % 1000 / 10.0, date '2025-01-01' + i % 300 FROM generate_series(0, 59999) i;
 CREATE INDEX pk_col ON pk USING sift_col (id, g, h, v, m, d) WITH (key_columns = 'g, h');
-NOTICE:  sift_col index "pk_a_id_g_h_v_m_d_idx": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = h, v
+NOTICE:  sift_col index "pk_a_id_g_h_v_m_d_idx": 1 automatic choice, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = h, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pk_a_id_g_h_v_m_d_idx');
-NOTICE:  sift_col index "pk_b_id_g_h_v_m_d_idx": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = h, v
+NOTICE:  sift_col index "pk_b_id_g_h_v_m_d_idx": 1 automatic choice, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = h, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pk_b_id_g_h_v_m_d_idx');
-NOTICE:  sift_col index "pk_c_id_g_h_v_m_d_idx": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = h, v
+NOTICE:  sift_col index "pk_c_id_g_h_v_m_d_idx": 1 automatic choice, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = h, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pk_c_id_g_h_v_m_d_idx');
 VACUUM (FREEZE, ANALYZE) pk;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg(q) $$;
@@ -46,8 +46,8 @@ BEGIN
 	EXECUTE format('ALTER INDEX %s SET (key_columns = ''off'')', ix);
 	EXECUTE format('REINDEX INDEX %s', ix);
 END $$;
-NOTICE:  sift_col index "pk_b_id_g_h_v_m_d_idx": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = h, v
+NOTICE:  sift_col index "pk_b_id_g_h_v_m_d_idx": 1 automatic choice, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = h, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pk_b_id_g_h_v_m_d_idx');
 VACUUM (FREEZE, ANALYZE) pk;
 SELECT name, why(q) AS plan, differences(q) AS differences FROM queries ORDER BY name;
@@ -67,8 +67,8 @@ BEGIN
 	EXECUTE format('ALTER INDEX %s SET (key_columns = ''g'')', ix);
 	EXECUTE format('REINDEX INDEX %s', ix);
 END $$;
-NOTICE:  sift_col index "pk_c_id_g_h_v_m_d_idx": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = h, v
+NOTICE:  sift_col index "pk_c_id_g_h_v_m_d_idx": 1 automatic choice, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = h, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pk_c_id_g_h_v_m_d_idx');
 VACUUM (FREEZE, ANALYZE) pk;
 SELECT name, why(q) AS plan, differences(q) AS differences FROM queries ORDER BY name;

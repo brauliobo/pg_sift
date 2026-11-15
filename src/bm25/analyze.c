@@ -4,13 +4,11 @@
  * token stream, the streaming cursor and the document bag, so index and query
  * analysis cannot diverge (the scanner is bm25/analyze_scan.h, included where it stood).
  */
-#include "core/host.h"
+#include "core/hash.h"
 
 #ifdef __SSE2__
 #include <emmintrin.h>
 #endif
-
-#include <ctype.h>
 
 #include "bm25/analyze.h"
 #include "bm25/analyze_memo.h"
@@ -94,8 +92,8 @@ struct SiftAnalyzer
 /* Hashing */
 
 #define K1	UINT64CONST(0x9E3779B185EBCA87)
-#define K2	UINT64CONST(0xC2B2AE3D27D4EB4F)
-#define K3	UINT64CONST(0x27D4EB2F165667C5)
+#define K2	SIFT_XXP64_2
+#define K3	SIFT_XXP64_5
 
 static inline uint64
 load_le(const char *p, int n)
@@ -145,11 +143,7 @@ hash64(const char *term, int len)
 		h = mix(h, load_le(term, 8));
 	if (len > 0)
 		h = mix(h, load_tail(term, len));
-	h ^= h >> 33;
-	h *= UINT64CONST(0xFF51AFD7ED558CCD);
-	h ^= h >> 33;
-	h *= UINT64CONST(0xC4CEB9FE1A85EC53);
-	return h ^ (h >> 33);
+	return sift_fmix64(h);
 }
 
 uint64

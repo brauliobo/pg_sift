@@ -45,7 +45,7 @@ func_leaf_kind(FuncKind k)
 	return k == FK_EACH || k == FK_EACH_TEXT ? SCL_OBJECT : SCL_ARRAY;
 }
 
-/* the group leaf of the given kind the keys below an expression lead to: the jsonb array (object) leaf an unnested function reads */
+/* the group leaf of the given kind the keys below an expression lead to: the jsonb array (object) leaf an unnested function reads; a group leaf is never lossy and has no name, and the virtual leaves are scalars (agg_group_leaf_lossy) */
 int
 group_leaf_below(AggCtx *c, Node *arg, List *keys, SiftSrcLeafKind kind)
 {

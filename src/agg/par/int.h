@@ -36,6 +36,7 @@ typedef struct SkipMap
 #define KEY_DICTSHM	UINT64CONST(0x53494654A007)	/* present when the leader has the table of shared dictionaries (col/dictshm.c): the workers join it */
 #define KEY_CHILD	UINT64CONST(0x53494654C000)	/* + the join: the statement whose plan is its correlated child */
 #define KEY_SUB	UINT64CONST(0x53494654E000)	/* the statement whose sub-plans the expressions of the spec start */
+#define KEY_VIEW	UINT64CONST(0x53494654A009)	/* the directory the leader's source read: every participant's source opens on it (sift_colsrc_view_export) */
 #define KEY_INITVALS	UINT64CONST(0x53494654A008)	/* the values of the InitPlan outputs the scan reads as constants (init_values) */
 #define KEY_FMAP	UINT64CONST(0x53494654F000)	/* + the combo: the table of a hybrid first-row lookup (agg/first.c) */
 #define KEY_MEMO	UINT64CONST(0x53494654D000)	/* + the join: the rows of its child by parameter values (agg/memo.c) */

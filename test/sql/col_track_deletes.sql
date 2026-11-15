@@ -144,8 +144,11 @@ SELECT sift_triggers();
 ALTER INDEX t_c SET (track_changes = 'off');
 ALTER INDEX t_c SET (track_changes = 'id');
 SELECT 'new baseline' AS step, * FROM sift.col_tracking('t_c');
-DO $$ DECLARE n text; BEGIN SELECT tgname INTO n FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift_track_delete%'; EXECUTE format('DROP TRIGGER %I ON t', n); END $$;
-SELECT 'trigger dropped' AS step, triggers, heap_free FROM sift.col_tracking('t_c');
+DO $$ DECLARE n text; BEGIN SELECT tgname INTO n FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift_track_delete%'; EXECUTE format('DROP TRIGGER %I ON t', n);
+	RAISE EXCEPTION 'the trigger was dropped';
+EXCEPTION WHEN dependent_objects_still_exist THEN NULL; END $$;
+-- the index depends on its triggers: one cannot be dropped alone
+SELECT 'trigger drop refused' AS step, triggers, heap_free FROM sift.col_tracking('t_c');
 REINDEX INDEX t_c;
 SELECT 'reindex' AS step, * FROM sift.col_tracking('t_c');
 -- the unique index the key is found by

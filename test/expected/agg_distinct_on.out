@@ -2,6 +2,7 @@
 -- Rows of a group that tie in the ORDER BY have no order: SQL leaves the row DISTINCT ON keeps unspecified, so the scan keeps one of them (same_tied below compares the ON and sort
 -- columns with the normal plan and checks that the row is a row of the table). Every other statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same, after every kind of write.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 -- the table is small: page costs that keep the sort and the btree plans from looking cheap as well
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -11,34 +12,15 @@ SELECT i, 1 + (i * 7919) % 60, (ARRAY['a', 'b', 'c', NULL])[1 + i % 4], date '20
        CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 1000) / 10.0 END, left(md5(i::text), 5)
 FROM generate_series(1, 6000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, tenant_id, kind, day, ts, amount, note);
-NOTICE:  sift_col index "ev_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = tenant_id, kind; track_changes = id
+NOTICE:  sift_col index "ev_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = tenant_id, kind; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE TABLE tenants (id int PRIMARY KEY, kind text);
 INSERT INTO tenants SELECT i, (ARRAY['outlet', 'popup', 'flagship'])[1 + i % 3] FROM generate_series(1, 60) i;
 ANALYZE tenants;
-CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'normal';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
-		IF l LIKE '%Workers Planned: _%' AND l NOT LIKE '%Workers Planned: 0%' THEN r := r || ' with workers'; END IF;
-	END LOOP;
-	RETURN r;
-END $$;
-CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	plan := plan_of(q);
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	RESET sift.enable_agg;
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
-	DROP TABLE r_on, r_off;
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_with_workers_label(q) $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_plan_and_differences(plan_of(q), q) $$;
 -- a statement whose ORDER BY leaves ties (its select list holds the id): the pairs (ON and sort columns) are those of the normal plan, whatever row of a tie each plan keeps, and the row is a row of the table
 CREATE FUNCTION same_tied(q text, pairs text, tbl regclass) RETURNS TABLE (plan text, result_rows bigint, pairs_vs_normal_plan bigint, rows_not_in_table bigint) LANGUAGE plpgsql AS $$
 BEGIN
@@ -290,8 +272,8 @@ SELECT * FROM same($$SELECT DISTINCT ON (tenant_id) tenant_id, id, 0 * random() 
 CREATE TABLE tn (id int NOT NULL, g int, v int, w int, u int) WITH (autovacuum_enabled = false);
 INSERT INTO tn SELECT i, i % 20, (i * 31) % 97, i % 13, CASE WHEN i % 7 = 1 THEN NULL ELSE i % 400 END FROM generate_series(1, 4000) i;
 CREATE INDEX tn_col ON tn USING sift_col (id, g, v, w, u);
-NOTICE:  sift_col index "tn_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = g, w
+NOTICE:  sift_col index "tn_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, w
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tn_col');
 VACUUM (FREEZE, ANALYZE) tn;
 -- a total order by the id, and a sort that ties (v repeats in every group), a NULL sort value that repeats, a condition on the sort column
@@ -522,4 +504,5 @@ DROP FUNCTION same_tied(text, text, regclass);
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
 DROP TABLE tt, tp, tn, tenants, ev;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

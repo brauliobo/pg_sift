@@ -5,6 +5,7 @@
 #define SIFT_AGG_DIST_INT_H
 
 #include "agg/agg_fwd_int.h"
+#include "core/hash.h"
 
 /* open addressing set of (group, value id) pairs; a slot holds the pair with bit 63 set, 0 is empty */
 typedef struct Dist Dist;
@@ -92,16 +93,24 @@ struct Dist
 	/* DD_SORT */
 	PairSort   *sort;			/* the number of the group above the value id, as int8 */
 	uint32		nsid;
-	uint32		nsidcap;
 	uint32	   *sid;			/* per group: its sort id + 1 */
 	uint32		sidgroups;
 	uint64	   *cnt;			/* per sort id: distinct values, once sorted */
 };
 
+/* pairs a hash set holds at most (a table of 8 MB at half full): past the cache every pair is a miss, which the radix sort of the pairs of a set that big does in a third of the time */
+#define DIST_HASH_PAIRS		((uint64) 1 << 18)
+
+static inline uint64
+dist_hash_cap(const Dist *d)
+{
+	return Max(Min(d->budget / (4 * sizeof(uint64)), DIST_HASH_PAIRS), 256);
+}
+
 static inline uint64
 dset_hash(uint64 x)
 {
-	x *= UINT64CONST(0x9E3779B97F4A7C15);
+	x = sift_fib64(x);
 	return x ^ (x >> 32);
 }
 

@@ -3,6 +3,8 @@
 -- of both is verified, queried, vacuumed and merged into one segment of format 3.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- the write buffers of format 0: a buffer of format 6 raises the metapage to 1.6, which these formats are not about
+SET sift.test_wbuf_narrow = on;
 -- 30000 rows on about 300 heap pages: a term in every row (GROUPED), mid-sized lists, a term twice in some rows, terms in one row (inline), in two rows (inline),
 -- rows of 5 to 45 tokens
 CREATE TABLE src AS

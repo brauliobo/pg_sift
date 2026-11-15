@@ -7,8 +7,6 @@
 #define SIFT_AGG_SPEC_EXPR_H
 
 #include "catalog/pg_type_d.h"
-#include "nodes/pg_list.h"
-#include "nodes/primnodes.h"
 
 #include "agg/kern.h"
 #include "agg/colsrc.h"
@@ -100,13 +98,14 @@ typedef enum SiftAggPredKind
 	SAP_NCMP,					/* numeric expression op operand: the program's values against the operand scaled to the program's scale */
 	SAP_GATE,					/* boolean expression without columns (stable functions, parameters), evaluated once per scan: true for every row or for none */
 	SAP_TYPE,					/* jsonb_typeof(leaf's path) in the types op (SIFT_SRC_JT_* bits); a conjunct of the query only: the source keeps the rows (sift_colsrc_filter_types), the executor does not evaluate it */
-	SAP_WIDE,					/* leaf op operand (SWT_* op, SiftCmpOp or IN / NOT IN / IS [NOT] NULL) on a wide leaf: numeric of more than 18 digits, money, interval; a conjunct of the query only, tested by the source (sift_colsrc_filter_wide), the executor does not evaluate it */
+	SAP_WIDE,					/* leaf op operand (SIFT_COLW_* op, SiftCmpOp or IN / NOT IN / IS [NOT] NULL) on a wide leaf: numeric of more than 18 digits, money, interval; a conjunct of the query only, tested by the source (sift_colsrc_filter_wide): a conjunct keeps the rows that pass, any other place (a branch of OR, a FILTER, a CASE) gets the rows that pass as a bitmap of the unit, the executor does not evaluate it */
 	SAP_LEAFCMP,				/* leaf op leaf2: two scalar leaves of one row (int2/int4, int8, date, timestamp or float columns of one type class and width); NULL on either side is not true */
 	SAP_ELEM_ROW,				/* element level, inside SAP_ANY_ELEM: the element leaf `leaf` op the row leaf `leaf2` of the element's row (SiftCmpOp); NULL on either side is not true */
 	SAP_TID,					/* ctid op constant tid (op: SiftCmpOp but SCMP_NE) at the top level of the WHERE: the scan reads the superblocks of the range, the executor tests the rows of the edge ones (sift_aggspec_tid_range) */
 	SAP_ELEM_EXISTS,			/* after the joins: some element of the array leaf `leaf2` of the tuple's row passes child[0] (element level conjuncts of the leaves, if any) and boolean slot `op` of the scoped combo `leaf`, which reads the element's leaves, the row's and the tuple's lookup outputs */
 	SAP_STEP,					/* boolean expression of one timestamp leaf that changes only on a boundary of a second, minute, hour or day (`step` seconds, on the session zone's clock with `zoned`): the executor evaluates it once for each such step of the data, not for each distinct timestamp */
-	SAP_MATCHED					/* the tuple has a row of the join of combo `leaf` (a conjunct over the joined rows, of the arms of a fused pass that have an inner join where the pass has a left one) */
+	SAP_MATCHED,				/* the tuple has a row of the join of combo `leaf` (a conjunct over the joined rows, of the arms of a fused pass that have an inner join where the pass has a left one) */
+	SAP_NOT_TRUE				/* row level: the rows child[0] does not keep (a NULL result too), the complement of its bitmap; no zone, summary or key test reads through it, so it prunes no unit */
 } SiftAggPredKind;
 
 typedef struct SiftAggPred
@@ -115,7 +114,8 @@ typedef struct SiftAggPred
 	int			id;				/* preorder number, the index of the node's executor state */
 	int			leaf;			/* SAP_CMP, SAP_IN, SAP_NULL, SAP_LUT, SAP_TYPE, SAP_WIDE; SAP_ANY_ELEM: the array leaf; SAP_ELEM_ROW: the element leaf */
 	int			leaf2;			/* SAP_ELEM_ROW: the leaf of the row, -1 otherwise */
-	int			op;				/* SAP_CMP, SAP_ELEM_ROW: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT, 2 = in order; SAP_TYPE: the types; SAP_WIDE: SWT_* (agg/colsrc.h) */
+	int			wslot;			/* SAP_WIDE: its place in SiftAggSpec.wide, the number of its test at the source */
+	int			op;				/* SAP_CMP, SAP_ELEM_ROW: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT, 2 = in order; SAP_TYPE: the types; SAP_WIDE: SIFT_COLW_* (agg/colsrc.h) */
 	Node	   *expr;			/* SAP_CMP, SAP_NCMP, SAP_WIDE: operand (no Vars); SAP_IN, SAP_WIDE IN / NOT IN: array operand; SAP_LUT: bool expression of Param 0 (PARAM_EXEC); SAP_GATE: the condition */
 	Oid			argtype;		/* SAP_CMP, SAP_IN, SAP_NCMP, SAP_WIDE: type of the operand (element type for IN) */
 	Node	   *cal;			/* SAP_LUT of an equality of a periodic calendar step (extract(hour FROM ts) = 14, to_char(ts, 'MM') = '03'): List (f(placeholder), operand), whose ranges the source tests first (init_filter.c); SAP_CMP of a calendar step (agg/pred_cal.c): f(placeholder) of the calendar step `f(x) op C` (agg/pred_cal.c); the operand C of `expr` is turned into the least x with f(x) >= C (calmode 1) or the greatest x with f(x) <= C (2) when the scan starts */
@@ -125,6 +125,7 @@ typedef struct SiftAggPred
 	SiftAggNum	num;			/* SAP_NCMP */
 	int			level;			/* 0 row, 1 element: of the leaves the node uses (AND/OR: the highest of the children) */
 	bool		late;			/* SAP_COMBO whose expression may raise an error, and the AND/OR above one: evaluated only on the rows that reach it (after the snapshot check for a conjunct of the query) */
+	bool		negated;		/* SAP_WIDE: IS NOT TRUE of the test, the rows the source does not keep (a NULL one too): never a conjunct the source filters by */
 	bool		pass_poison;	/* over a list unnested by jsonb_to_recordset: SAP_ANY_ELEM passes a row whose list raises when it is read again from the heap, and the error is raised where the rows reach the aggregates; SAP_ELEM_EXISTS raises it itself, for the tuples that reach it */
 	int			nchild;
 	struct SiftAggPred **child;
@@ -208,6 +209,25 @@ typedef enum SiftAggKind
 	SAA_O_COUNT_KEY				/* count(DISTINCT x) of a column the arms group by: the distinct ids of key `slot` in the cells of a group */
 } SiftAggKind;
 
+/* the kinds several places single out: min and max of the plain form, its float sum and average, the aggregates of a joined table's column (M, M_PG) and of an expression PostgreSQL evaluates (X) */
+static inline bool saa_minmax(SiftAggKind k) { return k == SAA_MIN || k == SAA_MAX; }
+static inline bool saa_sumavg_f64(SiftAggKind k) { return k == SAA_SUM_F64 || k == SAA_AVG_F64; }
+static inline bool saa_joined(SiftAggKind k) { return (k >= SAA_M_COUNT && k <= SAA_M_AVG) || k == SAA_M_PG; }
+/* min and max of a joined column of a type a word holds and compares as a number: the value of each tuple is compared as it comes, with no set of the distinct values of its group */
+static inline bool saa_m_minmax_direct(SiftAggKind k, Oid typ)
+{
+	if (k != SAA_M_MIN && k != SAA_M_MAX)
+		return false;
+	return typ == INT2OID || typ == INT4OID || typ == INT8OID || typ == DATEOID || typ == TIMESTAMPOID || typ == TIMESTAMPTZOID || typ == FLOAT8OID;
+}
+/* sum and avg of a joined float8 column, and the aggregates PostgreSQL's own transition functions run (M_PG): added tuple by tuple, as the normal plan does, with no set of the distinct values of the group */
+static inline bool saa_m_sumavg_direct(SiftAggKind k, Oid restype)
+{
+	return k == SAA_M_PG || ((k == SAA_M_SUM || k == SAA_M_AVG) && restype == FLOAT8OID);
+}
+static inline bool saa_x(SiftAggKind k) { return k >= SAA_X_COUNT && k <= SAA_X_AVG; }
+static inline bool saa_x_sumavg(SiftAggKind k) { return k == SAA_X_SUM || k == SAA_X_AVG; }
+
 /* the number of kinds: spec.c keeps a row of facts for each (kind_info); not an enumerator, so that a switch over the kinds does not ask for it */
 #define SAA_NKINDS	(SAA_O_COUNT_KEY + 1)
 
@@ -248,6 +268,18 @@ typedef struct SiftAggVx
 #define SIFT_AGG_MAX_GARGS		FUNC_MAX_ARGS	/* arguments of a generic aggregate: as many as PostgreSQL allows */
 #define SIFT_AGG_MAX_GLEAVES	4		/* leaves one argument expression reads */
 
+#define SIFT_AGG_TOPN_MAX		1000	/* rows of a group that SiftAggGen.topn keeps: the binary search and the shift of a row's place are for a few */
+
+/*
+ * What an array_agg(.. ORDER BY ..) of the window rewrite (agg/latest.c) is read for, when it is not a slice a[1:n] of the query: the rows of rank <= n (the n best
+ * and every row that ties with the n-th) or of dense_rank <= n (the rows of the n best values of the sort keys). The call carries it in its parse location, which
+ * the planner and the executor of PostgreSQL leave alone (no other call has a location below -1): the aggregate stays the one PostgreSQL runs, only the scan reads the mark.
+ */
+#define SIFT_TOPN_ROWS			0
+#define SIFT_TOPN_RANK			1
+#define SIFT_TOPN_DENSE			2
+#define SIFT_TOPN_MARK(kind, n)	(-2 - (int) (((n) << 2) | (kind)))
+
 typedef struct SiftAggGenArg
 {
 	Oid			typid;
@@ -272,6 +304,8 @@ typedef struct SiftAggGen
 	const char *serial;			/* why no workers keep partial states for the leader to merge with the aggregate's combine function (through its serial and deserial functions when the state is internal); NULL: they can */
 	bool		hyp;			/* hypothetical-set (ordered): the arguments are the sort columns and every row counts, NULLs included */
 	bool		sorted;			/* ORDER BY in the call: the arguments of a group go through a tuplesort on the sort keys, then through the transition function */
+	int			ties;			/* topn: SIFT_TOPN_ROWS, _RANK or _DENSE */
+	int			topn;			/* array_agg(x ORDER BY ..) that the query reads only through a slice [1:topn]: a group keeps its first topn rows as the rows pass, in memory (no tuplesort; sorted is false) */
 	bool		first;			/* DISTINCT ON: only the first row of a group by the ORDER BY of the call goes through the transition function, kept as the rows pass (no sort) */
 	int			hll;			/* sift.approx_count_distinct of a plain leaf: the leaf whose units' stored sketches the aggregate merges (agg/approx.c), else -1 */
 	double		cost;			/* planner only, not packed: a tuple's cost in units of cpu_operator_cost */
@@ -321,13 +355,21 @@ typedef struct SiftAggVLeaf
 	bool		types;			/* the JSON type of the value of the scalar leaf obj (jsonb_typeof), as the name text, NULL where the path has no value; key is unused */
 	uint8		recheck;		/* a member read only through the cast of its jsonb value (SiftSrcRecheck, SRK_NONE: not): a row whose member of this key holds a value the leaf cannot store is read again from the heap, and raises the error of the cast */
 	Oid			cast;			/* ... to this type (float8, int4 or int8): the name of the type is in the message */
+	uint8		bound;			/* the lower (1) or upper (2) bound of the range leaf obj, as the value of the subtype (lower(r), upper(r)): read from its lane leaf obj + bound; key is unused */
 } SiftAggVLeaf;
 
 /* a leaf of a member of an object by key: its element columns are its object's children "key" and "value" */
 static inline bool
 sift_aggvleaf_member(const SiftAggVLeaf *v)
 {
-	return !v->count && !v->types;
+	return !v->count && !v->types && !v->bound;
+}
+
+/* the vector type of the bound of a range of this subtype: the values the lanes hold are those of the subtype's datum (shape.c element_key) */
+static inline bool
+sift_aggbound_i32(Oid subtype)
+{
+	return subtype == INT4OID || subtype == DATEOID;
 }
 
 typedef struct SiftAggArm

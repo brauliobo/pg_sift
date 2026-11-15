@@ -4,15 +4,10 @@
 #include "postgres.h"
 
 #include "access/generic_xlog.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
-#include "storage/ipc.h"
 #include "storage/procarray.h"
-#include "utils/hsearch.h"
-#include "utils/inval.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
 
 #include "core/lane.h"
@@ -48,9 +43,9 @@ swap_wbuf(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 }
 
 static uint32
-wbuf_vcap(void)
+wbuf_vcap(const SiftTblRel *st)
 {
-	uint32		pages = Min((uint64) sift_tbl_write_buffer_limit * 1024 / BLCKSZ, SIFT_TBL_MAX_WBUF_PAGES);
+	uint32		pages = Min((uint64) sift_tbl_opt_int(st, SIFT_TBLOPT_WRITE_BUFFER_LIMIT) * 1024 / BLCKSZ, SIFT_TBL_MAX_WBUF_PAGES);
 
 	return Max(1, pages / SIFT_TBL_VBLOCKS_SB) * SIFT_TBL_VBLOCKS_SB;
 }
@@ -75,12 +70,12 @@ again:
 	if ((act ? act->gen : 0) == seen)
 	{
 		SwapArg		arg = {0};
-		uint32		vcap = wbuf_vcap();
+		uint32		vcap = wbuf_vcap(st);
 		uint64		gen,
 					vbase = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, Max(SIFT_TBL_NEXT_VBLOCK(&st->dir.meta), (uint64) sift_tbl_vblock_floor));
 		Buffer		hbuf,
 					dbuf;
-		GenericXLogState *state;
+		SiftXlog state;
 		Page		hp,
 					dp;
 
@@ -93,7 +88,7 @@ again:
 			UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 			waited = true;
 			(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), true,
-								   sift_tbl_backpressure ? SIFT_TBL_ROOM_STEPS : SIFT_TBL_SETTLE_STEPS);
+								   sift_tbl_opt_int(st, SIFT_TBLOPT_BACKPRESSURE) ? SIFT_TBL_ROOM_STEPS : SIFT_TBL_SETTLE_STEPS);
 			goto again;
 		}
 		if (st->dir.nsegs >= sift_tbl_max_segments - 2)
@@ -101,7 +96,7 @@ again:
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir.nsegs),
 					 errdetail("Too many write buffers waiting for promotion: a write buffer that holds a deleted row VACUUM has not seen, or a speculative insertion, is promoted only after that is settled, and about %d MB of rows are in write buffers like that.",
-							   (int) ((uint64) (sift_tbl_max_segments - 2) * sift_tbl_write_buffer_limit / 1024)),
+							   (int) ((uint64) (sift_tbl_max_segments - 2) * sift_tbl_opt_int(st, SIFT_TBLOPT_WRITE_BUFFER_LIMIT) / 1024)),
 					 errhint("Run VACUUM on the table, or end the transaction that wrote them.")));
 		if (act)
 			old = *act;
@@ -114,9 +109,9 @@ again:
 		hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
 		dbuf = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
 		first = BufferGetBlockNumber(dbuf);
-		state = GenericXLogStart(rel);
-		hp = GenericXLogRegisterBuffer(state, hbuf, 0);
-		dp = GenericXLogRegisterBuffer(state, dbuf, 0);
+		state = sift_xlog_start(rel);
+		hp = sift_xlog_register(&state, hbuf, 0);
+		dp = sift_xlog_register(&state, dbuf, 0);
 		sift_lane_init_header(hp, gen, first, 1);
 		TBL_WBUF_HDR(hp)->magic = SIFT_TBL_WBUF_MAGIC;
 		TBL_WBUF_HDR(hp)->vbase = vbase;
@@ -127,7 +122,7 @@ again:
 		init_data_page(dp, vbase, flags);
 		*vblock = vbase;
 		*newgen = gen;
-		GenericXLogFinish(state);
+		sift_xlog_finish(&state);
 		arg.sealed = act ? act->gen : 0;
 		arg.next_vblock = vbase + vcap;
 		arg.fresh = (SiftSegEntry) {.gen = gen,.kind = SIFT_SEG_WBUF_OPEN,.flags = SIFT_TBL_SEG_WBUF,
@@ -144,7 +139,7 @@ again:
 		sift_lane_flag_sealed_pages(rel, &old);
 	}
 	sift_tbl_refresh(rel, st);
-	if (old.gen && sift_tbl_inline_promote && !sift_tbl_settle_async(rel, st))
+	if (old.gen && sift_tbl_opt_bool(st, SIFT_TBLOPT_INLINE_PROMOTE) && !sift_tbl_settle_async(rel, st))
 		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 	if (old.gen)
 		sift_tbl_auto_defrag_tick(rel, st);
@@ -364,15 +359,15 @@ static BlockNumber
 write_overflow(Relation rel, SiftTblRel *st, uint64 gen, MinimalTuple mtup)
 {
 	uint32		npg = (mtup->t_len + OVF_PAYLOAD - 1) / OVF_PAYLOAD;
-	bool		wide = npg >= wbuf_vcap();	/* the page table of a buffer cannot list its pages: they are tail pages */
+	bool		wide = npg >= wbuf_vcap(st);	/* the page table of a buffer cannot list its pages: they are tail pages */
 	BlockNumber *blks;
 	BlockNumber first = InvalidBlockNumber;
 
-	if (wide && !sift_tbl_wide_rows)
+	if (wide && !sift_tbl_opt_bool(st, SIFT_TBLOPT_WIDE_ROWS))
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("row of sift_table \"%s\" is too large: %u bytes", RelationGetRelationName(rel), mtup->t_len),
-				 errdetail("A row has to fit one write buffer of %u kB.", sift_tbl_write_buffer_limit),
+				 errdetail("A row has to fit one write buffer of %d kB.", sift_tbl_opt_int(st, SIFT_TBLOPT_WRITE_BUFFER_LIMIT)),
 				 errhint("Set sift.table_wide_rows = on to accept it (up to 1 GB), raise sift.table_write_buffer_limit (up to 8192 kB), or keep the document outside the row.")));
 	blks = palloc(npg * sizeof(BlockNumber));
 	if (wide && !mark_wide(rel, st, gen))
@@ -383,14 +378,14 @@ write_overflow(Relation rel, SiftTblRel *st, uint64 gen, MinimalTuple mtup)
 	for (uint32 i = 0; i < npg; i++)
 	{
 		Buffer		buf = sift_lane_read_locked(rel, blks[i], BUFFER_LOCK_EXCLUSIVE);
-		GenericXLogState *state = GenericXLogStart(rel);
-		Page		p = GenericXLogRegisterBuffer(state, buf, 0);
+		SiftXlog state = sift_xlog_start(rel);
+		Page		p = sift_xlog_register(&state, buf, 0);
 		uint32		n = Min(OVF_PAYLOAD, mtup->t_len - i * OVF_PAYLOAD);
 
 		memcpy((char *) TBL_PAGE(p) + TBL_PAGE_INIT, (char *) mtup + i * OVF_PAYLOAD, n);
 		TBL_PAGE(p)->ovf_next = i + 1 < npg ? blks[i + 1] : InvalidBlockNumber;
 		SiftPageSetUsed(p, TBL_PAGE_INIT + n);
-		GenericXLogFinish(state);
+		sift_xlog_finish(&state);
 		UnlockReleaseBuffer(buf);
 	}
 	first = blks[0];
@@ -436,7 +431,7 @@ sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId x
 				continue;
 			}
 			ovf_gen = st->tgt_gen;
-			wide = (mtup->t_len + OVF_PAYLOAD - 1) / OVF_PAYLOAD >= wbuf_vcap();
+			wide = (mtup->t_len + OVF_PAYLOAD - 1) / OVF_PAYLOAD >= wbuf_vcap(st);
 		}
 		buf = sift_lane_read_locked(rel, st->tgt_blk, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buf);
@@ -601,11 +596,8 @@ void
 sift_tbl_fetch_tuple(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv)
 {
 	if (rv->tuple == NULL && !fetch_row(rel, st, tid, rv, false))
-		ereport(ERROR,
-				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-				 errmsg("could not read the row (%u,%u) of \"%s\"", ItemPointerGetBlockNumberNoCheck(tid),
-					ItemPointerGetOffsetNumberNoCheck(tid), RelationGetRelationName(rel)),
-				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
+		SIFT_TBL_RETRY("could not read the row (%u,%u) of \"%s\"", ItemPointerGetBlockNumberNoCheck(tid),
+				ItemPointerGetOffsetNumberNoCheck(tid), RelationGetRelationName(rel));
 }
 
 void
@@ -618,7 +610,7 @@ sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set, uin
 		SiftTblSeg *seg = &st->wbuf[i];
 		BlockNumber blk;
 		Buffer		buf;
-		GenericXLogState *state;
+		SiftXlog state;
 		Page		page;
 		SiftTblRec *rec;
 
@@ -631,11 +623,11 @@ sift_tbl_rec_flag(Relation rel, SiftTblRel *st, ItemPointer tid, uint16 set, uin
 		sift_store_check_page(rel, buf, SIFT_PT_WBUFDATA, seg->gen);
 		if (sift_tbl_page_rec(BufferGetPage(buf), seg->gen, ItemPointerGetOffsetNumberNoCheck(tid)) != NULL)
 		{
-			state = GenericXLogStart(rel);
-			page = GenericXLogRegisterBuffer(state, buf, 0);
+			state = sift_xlog_start(rel);
+			page = sift_xlog_register(&state, buf, 0);
 			rec = (SiftTblRec *) (SiftPageGetData(page) + TBL_PAGE(page)->slot[ItemPointerGetOffsetNumberNoCheck(tid) - 1]);
 			rec->flags = (rec->flags | set) & ~clear;
-			GenericXLogFinish(state);
+			sift_xlog_finish(&state);
 		}
 		UnlockReleaseBuffer(buf);
 		return;

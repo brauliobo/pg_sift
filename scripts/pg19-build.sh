@@ -16,6 +16,9 @@ git -C "$SRC" init -q
 git -C "$SRC" fetch -q --depth 1 https://github.com/postgres/postgres.git "$COMMIT"
 git -C "$SRC" checkout -q FETCH_HEAD
 cd "$SRC"
+# The PGDG minors since 17.12 and 18.7 dump pg_attver column options, which a PostgreSQL 19 without attribute versioning rejects when pg_upgrade restores them
+# (tests pg_upgrade*): a build without it is never cached. The recipe hash keys the cache, so this check also retires the builds made before it.
+[[ -f src/backend/catalog/README.attver.md ]] || { echo "pg19-build: $COMMIT lacks attribute versioning (README.attver.md)" >&2; exit 1; }
 # ccache through its compiler links, not CC: the compiler named in the installed pgxs tree is the one that builds the extension against it later
 [[ ! -d /usr/lib/ccache ]] || export PATH=/usr/lib/ccache:$PATH
 ./configure --prefix="$PREFIX" --enable-cassert --enable-tap-tests --with-icu --with-libxml --without-readline --without-zlib CFLAGS="-O1" >/dev/null

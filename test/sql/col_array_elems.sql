@@ -132,13 +132,7 @@ REINDEX INDEX ad_col;
 SELECT * FROM shapes('reindex', 'ae') UNION ALL SELECT * FROM shapes('reindex', 'ad');
 
 -- a value no row owns is answered by the directory: no unit is read and no heap row vetted
-CREATE FUNCTION reads(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF, ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '^ *(Units|Rows):' THEN RETURN NEXT trim(l); END IF;
-	END LOOP;
-END $$;
+CREATE FUNCTION reads(q text) RETURNS SETOF text LANGUAGE sql AS $$ SELECT * FROM sift_helpers.plan_units_and_rows_lines(q) $$;
 SELECT * FROM reads($q$SELECT count(*) FROM ae WHERE tags @> ARRAY['zz']$q$);
 -- a value in a few thousand rows is listed as well: of a pair, the list of the one that is listed gives the rows to test (1001 is in too many rows to be listed)
 CREATE TABLE ar (id int, ids int[]) WITH (autovacuum_enabled = false);

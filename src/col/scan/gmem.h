@@ -54,9 +54,18 @@ extern void gord_pairs_sort(GOrdPair *a, uint32 n);
 extern void gmem_ranges(ColGOrdMem *g, MemoryContext mcxt, GOrdPair *pv, uint32 nv);
 /* The rows of the write buffers of a text leaf sorted by string, in mc (gorder.c); false as gord_mem */
 extern bool gord_mem_text(SiftColSource *src, int leaf, uint32 collid, int v, MemoryContext mc);
-/* The rows of the write buffers' batches */
+/* The batches whose rows the memory source sorts: those of the write buffers, then those of the units of the segments without an order block (src->gb) */
+static inline const SiftColBatch *
+gord_mem_batch(const SiftColSource *src, int i)
+{
+	return i < src->nmem ? src->mem[i].b : src->gb[i - src->nmem];
+}
+
+/* The rows of those batches */
 extern uint64 gord_mem_rows(const SiftColSource *src);
-/* Makes the sorted rows of the write buffers for value v of the scan, or finds them kept by the backend (gmem.c) */
-extern bool gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, int v, uint32 collid);
+/* Reads the live rows of the segments that keep no order block of leaf (and of gleaf, when >= 0) into src->gb; false when they are more than the memory source may hold */
+extern bool gord_mem_load(SiftColSource *src, int leaf, int gleaf, uint64 rows, uint32 collid);
+/* Makes the sorted rows of the write buffers and the unordered segments for value v of the scan, or finds them kept by the backend (gmem.c): false when they are more than the cap of a read of `rows` rows */
+extern bool gord_mem(SiftColSource *src, int leaf, uint64 rows, int gleaf, int64 gval, int v, uint32 collid);
 
 #endif

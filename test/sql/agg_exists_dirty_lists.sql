@@ -55,6 +55,11 @@ UPDATE facts SET metrics = '{}' WHERE id = 1300;
 UPDATE facts SET doc = '{"parts": "str"}', metrics = '{"m_a": 3}' WHERE id = 1400;
 UPDATE facts SET doc = '{"parts": "str"}', metrics = '{"m_a": 1}' WHERE id = 1410;
 UPDATE facts SET doc = '{"parts": "str"}', metrics = '{"m_a": 1e12}' WHERE id = 1420;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE facts_rows AS SELECT * FROM facts ORDER BY ctid;
+TRUNCATE facts;
+INSERT INTO facts SELECT * FROM facts_rows;
+DROP TABLE facts_rows;
 CREATE INDEX facts_col ON facts USING sift_col (id, parent_id, day, doc, metrics, jsonb_exists(doc, 'flag_a'))
  WITH (paths = 'doc.parts[]{category astext, val astext, kind astext, score float8}, metrics.* float8');
 VACUUM ANALYZE facts;

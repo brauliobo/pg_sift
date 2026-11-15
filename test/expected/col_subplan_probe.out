@@ -3,6 +3,7 @@
 -- the estimate 1,000 times too low: the probe (0.3 ms) then ran 5,000 times against one pass of 90 ms. The probe is priced at 90% of the sequential scan of the table at
 -- the least, so the hashed subplan wins where it fits in memory and the probe is still the plan of each row where it does not (docs/COL-SCAN.md).
 CREATE EXTENSION pg_sift;
+SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 -- o: 20,000 rows with four perfectly correlated columns (the estimate of the rows left by o.a = 3 AND .. AND o.e = 3 is 5, the rows are 1,818)
 CREATE TABLE sp_o AS SELECT g id, g % 11 a, g % 11 b, g % 11 c, g % 11 e FROM generate_series(1, 20000) g;

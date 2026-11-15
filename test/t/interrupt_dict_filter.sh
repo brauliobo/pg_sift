@@ -18,7 +18,7 @@ Q="SELECT g, count(*) FROM lv WHERE levenshtein(name, repeat('abcdefghij', 25)) 
 check "the filter is a pushed one" test "$(sql idf "EXPLAIN (COSTS OFF) $Q" | grep -c 'Filters: name')" == 1
 
 start=$(date +%s%N)
-out=$(sql idf "SET statement_timeout = 100" "$Q" 2>&1)
+out=$(sql idf "SET statement_timeout = 100" "$Q" 2>&1)  # timeout-ok: the statement timeout is the interrupt the evaluation must honour
 ms=$(( ($(date +%s%N) - start) / 1000000 ))
 check "the statement timeout ends it" test "$(grep -c 'canceling statement due to statement timeout' <<<"$out")" == 1
 check "within a second (took $ms ms)" test "$ms" -lt 1000

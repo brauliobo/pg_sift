@@ -1,0 +1,123 @@
+-- The invariant behind col_dsm_write_statements and col_wbuf_reads_write_path, for every table the backends share (the reads of the write buffers, the dictionaries, the choices of the
+-- planner): sift_dsm_attach (col/dsmreg.c) does not start the subtransaction of the registry while a statement that modifies data runs, because its commit advances the command id under
+-- the statement. Every case is a backend whose first statements write and reach an attach point: sift._test_dsm_deferred says which tables it went without, and the aggregate through
+-- the index (heap-free and checked) gives the rows of the heap (the oracle).
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE tk (code text PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false, fillfactor = 100);
+CREATE TABLE ot (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false, fillfactor = 100);
+INSERT INTO tk SELECT 'c' || i, i % 10, i FROM generate_series(1, 20000) i;
+INSERT INTO ot SELECT i, i % 7, i FROM generate_series(1, 20000) i;
+CREATE INDEX tk_c ON tk USING sift_col (code, tenant, amount) WITH (track_changes = 'code');
+CREATE INDEX ot_c ON ot USING sift_col (id, g, v) WITH (track_changes = 'id');
+VACUUM (FREEZE, ANALYZE) tk, ot;
+-- rows in the write buffer, for the supersede of the updates to read
+INSERT INTO ot SELECT i, i % 7, i FROM generate_series(20001, 23000) i;
+-- a statement that plans a shared CTE inside the UPDATE that calls it
+CREATE FUNCTION ot_total() RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE r bigint;
+BEGIN
+	EXECUTE 'WITH c AS (SELECT g, count(*) AS n, sum(v) AS s FROM ot GROUP BY g) SELECT sum(a.s + b.n) FROM c a JOIN c b ON a.g = b.g' INTO r;
+	RETURN r;
+END $$;
+-- dynamic SQL: a cached plan would keep the plan of the first call whatever the settings are
+CREATE FUNCTION answer(q text, mode int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', (mode < 2)::text, true);
+	PERFORM set_config('sift.test_no_heapfree', (mode = 1)::text, true);
+	EXECUTE 'SELECT coalesce(string_agg(format(''%s:%s:%s'', k, n, s), '' '' ORDER BY k), ''none'') FROM (' || q || ') q' INTO r;
+	RETURN r;
+END $$;
+-- the aggregates of both tables give the heap's rows with the heap-free read and with the heap checked
+CREATE FUNCTION chk(what text, OUT test text, OUT free_equals_heap bool, OUT checked_equals_heap bool) LANGUAGE plpgsql AS $$
+DECLARE
+	qt text := 'SELECT tenant AS k, count(*) AS n, sum(amount) AS s FROM tk GROUP BY tenant';
+	qo text := 'SELECT g AS k, count(*) AS n, sum(v) AS s FROM ot GROUP BY g';
+BEGIN
+	test := what;
+	free_equals_heap := answer(qt, 0) = answer(qt, 2) AND answer(qo, 0) = answer(qo, 2);
+	checked_equals_heap := answer(qt, 1) = answer(qt, 2) AND answer(qo, 1) = answer(qo, 2);
+END $$;
+-- which tables this backend went without under a write
+CREATE FUNCTION deferred(OUT dictionary bool, OUT reads bool, OUT planner_choices bool) LANGUAGE sql AS $$
+	SELECT coalesce(bool_or(name LIKE '%dict%'), false), coalesce(bool_or(name LIKE '%reads%'), false), coalesce(bool_or(name LIKE '%verdict%'), false) FROM sift._test_dsm_deferred()
+$$;
+-- the dictionary of a text key, read by the supersede of the first UPDATE
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+BEGIN;
+UPDATE tk SET amount = amount + 1 WHERE code IN (SELECT 'c' || i FROM generate_series(7, 20000, 7) i);
+UPDATE tk SET amount = amount + 500 WHERE code IN (SELECT 'c' || i FROM generate_series(21, 20000, 21) i);
+UPDATE tk SET amount = amount + 5 WHERE code IN (SELECT 'c' || i FROM generate_series(5, 20000, 5) i);
+COMMIT;
+SELECT * FROM deferred();
+ dictionary | reads | planner_choices 
+------------+-------+-----------------
+ t          | f     | f
+(1 row)
+
+SELECT * FROM chk('text key, three updates');
+          test           | free_equals_heap | checked_equals_heap 
+-------------------------+------------------+---------------------
+ text key, three updates | t                | t
+(1 row)
+
+-- the rows of the write buffer, updated three times
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+BEGIN;
+UPDATE ot SET v = v + 1 WHERE id % 7 = 0;
+UPDATE ot SET v = v + 500 WHERE id % 21 = 0;
+UPDATE ot SET v = v + 5 WHERE id % 5 = 0;
+COMMIT;
+SELECT * FROM chk('write buffer, three updates');
+            test             | free_equals_heap | checked_equals_heap 
+-----------------------------+------------------+---------------------
+ write buffer, three updates | t                | t
+(1 row)
+
+-- a statement planned inside an UPDATE: it reads the write buffer of the other table and plans a shared CTE
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+BEGIN;
+UPDATE tk SET amount = amount + 1 + ot_total() % 2 WHERE code IN (SELECT 'c' || i FROM generate_series(7, 20000, 7) i);
+UPDATE tk SET amount = amount + 5 + ot_total() % 2 WHERE code IN (SELECT 'c' || i FROM generate_series(5, 20000, 5) i);
+COMMIT;
+SELECT * FROM deferred();
+ dictionary | reads | planner_choices 
+------------+-------+-----------------
+ t          | t     | t
+(1 row)
+
+SELECT * FROM chk('planned inside the UPDATE');
+           test            | free_equals_heap | checked_equals_heap 
+---------------------------+------------------+---------------------
+ planned inside the UPDATE | t                | t
+(1 row)
+
+-- the next statement that reads attaches them: nothing is deferred by a read
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SELECT * FROM chk('reads only');
+    test    | free_equals_heap | checked_equals_heap 
+------------+------------------+---------------------
+ reads only | t                | t
+(1 row)
+
+SELECT * FROM deferred();
+ dictionary | reads | planner_choices 
+------------+-------+-----------------
+ f          | f     | f
+(1 row)
+
+DROP FUNCTION chk(text), answer(text, int), deferred(), ot_total();
+DROP TABLE tk, ot;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

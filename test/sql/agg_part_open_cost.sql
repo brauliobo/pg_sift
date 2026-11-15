@@ -11,7 +11,9 @@ SELECT format('CREATE TABLE pp_few_%s PARTITION OF pp_few FOR VALUES FROM (%L) T
 SELECT format('CREATE TABLE pp_many_%s PARTITION OF pp_many FOR VALUES FROM (%L) TO (%L)', i, date '2020-01-01' + (i - 1) * 5, date '2020-01-01' + i * 5) FROM generate_series(1, 64) i \gexec
 INSERT INTO pp_few SELECT i, (ARRAY['a', 'b', 'c'])[1 + i % 3], date '2020-01-01' + i % 400, i % 97 FROM generate_series(1, 200000) i;
 INSERT INTO pp_many SELECT i, (ARRAY['a', 'b', 'c'])[1 + i % 3], date '2020-01-01' + i % 320, i % 97 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 SELECT format('CREATE INDEX %s_col ON %s USING sift_col (id, kind, ts, amount)', c.relname, c.relname) FROM pg_class c WHERE c.relname ~ '^pp_(few|many)_[0-9]+$' ORDER BY 1 \gexec
+RESET client_min_messages;
 VACUUM ANALYZE pp_few, pp_many;
 
 CREATE FUNCTION pp_plan(q text) RETURNS text LANGUAGE plpgsql AS $$

@@ -8,8 +8,8 @@ SET random_page_cost = 1000;
 CREATE TABLE hot (id int PRIMARY KEY, parent_id int, amount int) WITH (autovacuum_enabled = false, fillfactor = 75);
 INSERT INTO hot SELECT i, CASE WHEN i % 5 = 0 THEN NULL ELSE i % 50 END, i % 10 FROM generate_series(1, 6000) i;
 CREATE INDEX hot_col ON hot USING sift_col (id, parent_id, amount);
-NOTICE:  sift_col index "hot_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = parent_id, amount; track_changes = id
+NOTICE:  sift_col index "hot_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = parent_id, amount; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('hot_col');
 VACUUM (FREEZE, ANALYZE) hot;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows

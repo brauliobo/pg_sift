@@ -1,0 +1,1 @@
+scan_prefetch	src/bm25/analyze.c:fold_chars src/bm25/analyze_scan.h:keyword_long src/bm25/analyze_scan.h:long_word src/bm25/bitmap.c:sift_offmask_popcount src/bm25/cscan_exec.c:and_text src/bm25/cscan_exec.c:sift_explain src/bm25/liveness.c:sift_seg_live_stable src/bm25/phrase.c:sift_plan_recheck_needed

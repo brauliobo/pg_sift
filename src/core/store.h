@@ -82,6 +82,7 @@
 #include "core/host.h"
 
 #include "core/page.h"
+#include "core/xlog.h"
 
 /* ERRCODE_INDEX_CORRUPTED: a page, record or directory of the index that the format does not allow (index: the Relation) */
 #define SIFT_CORRUPT(index, ...) \
@@ -121,6 +122,7 @@ extern void sift_page_init(Page page, SiftPageType type, uint64 gen);
  * on a standby the mismatch path unlocks it to consult the directory.
  */
 extern void sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen);
+extern void sift_store_require_ready(Relation index);
 
 /* Directory snapshot: plain copy of metapage + directory (invariant I3) */
 typedef struct SiftDirSnapshot
@@ -131,8 +133,16 @@ typedef struct SiftDirSnapshot
 	SiftSegEntry segs[SIFT_MAX_SEGMENTS];
 } SiftDirSnapshot;
 
+/* The bytes of a directory copy that matter: the segments it lists, not the room for the most the directory holds */
+static inline Size
+sift_dir_bytes(const SiftDirSnapshot *dir)
+{
+	return offsetof(SiftDirSnapshot, segs) + dir->nsegs * sizeof(SiftSegEntry);
+}
+
 /* The caller holds no buffer lock: the metapage comes first in lock order */
 extern void sift_dir_read(Relation index, SiftDirSnapshot *snap);
+extern bool sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags);
 
 /*
  * The directory's version through a pinned directory buffer, without its content lock: for a reader that compares it with a version it
@@ -303,6 +313,8 @@ extern BlockNumber sift_store_truncate(Relation index);
  *   BULK   ambuild into a new relfilenode: smgr_bulk_*, single writer, WAL
  *          skipped when not needed; blocks 0-1 are written at finish.
  *   INIT   ambuildempty: BULK on the init fork, always WAL-logged.
+ *   LAYOUT the metapage and the empty directory of an empty relation that exists already (the first writer
+ *          of a table): the pages reach the file only after their WAL is flushed.
  *   SHARED promotion/merge: shared buffers, each page logged as a full image
  *          when written; unused allocated blocks go back to the free list at
  *          finish.
@@ -313,7 +325,8 @@ typedef enum SiftWriteMode
 {
 	SIFT_WRITE_BULK,
 	SIFT_WRITE_SHARED,
-	SIFT_WRITE_INIT
+	SIFT_WRITE_INIT,
+	SIFT_WRITE_LAYOUT
 } SiftWriteMode;
 
 extern SiftWriteTarget *sift_wt_begin(Relation index, SiftWriteMode mode);
@@ -374,6 +387,16 @@ sift_extlist_init(SiftExtentList *l)
 	l->cap = 8;
 	l->max = SIFT_MAX_EXTENTS;
 	l->ext = palloc(l->cap * sizeof(SiftExtent));
+}
+
+/* Appends the run of nblocks from start to ext[0..*n), joining the last run when it ends at start (ext has room for one more) */
+static inline void
+sift_extent_push(SiftExtent *ext, int *n, BlockNumber start, uint32 nblocks)
+{
+	if (*n > 0 && ext[*n - 1].start + ext[*n - 1].nblocks == start)
+		ext[*n - 1].nblocks += nblocks;
+	else
+		ext[(*n)++] = (SiftExtent) {start, nblocks};
 }
 
 /* The next page of the stream is block blk: it extends the last extent when it follows it */
@@ -473,6 +496,8 @@ extern SiftExtent *sift_sw_finish(SiftStreamWriter *sw, int *nextents);
  * them must then be written with sift_wt_put_page.
  */
 extern BlockNumber sift_wt_write_page(SiftWriteTarget *wt, Page page);
+/* extra, extralen: bytes the header page keeps after its extents (the mirror of a column segment); NULL, 0 for none. They must fit the page with the extents */
+extern BlockNumber sift_wt_write_seghdr(SiftWriteTarget *wt, const SiftSegHeaderData *h, const SiftExtent *ext, uint32 n, const void *extra, uint32 extralen);
 extern BlockNumber sift_wt_reserve(SiftWriteTarget *wt, uint32 nblocks);
 /* The lowest reusable run below limit (up to want blocks, at least min), InvalidBlockNumber when none: a SHARED target only, the file is never extended */
 extern BlockNumber sift_wt_reserve_below(SiftWriteTarget *wt, uint32 want, uint32 min, BlockNumber limit, uint32 *got);
@@ -556,6 +581,7 @@ extern void sift_sr_release(SiftStreamReader *sr);
 
 /* Drops the share lock the last read left on its page (a pointer it returned is invalid): the caller may then serve interrupts */
 extern void sift_sr_unlock(SiftStreamReader *sr);
+extern void sift_sr_point(SiftStreamReader *sr);
 
 /*
  * Blocks referenced by any directory entry, the free list or the metapage
@@ -575,6 +601,7 @@ extern SiftExtent *sift_store_immutable_extents(Relation index, const SiftSegEnt
  * writers are write buffer appenders of published segments.
  */
 extern struct Bitmapset *sift_store_orphans(Relation index);
+extern SiftExtent *sift_store_block_extents(const struct Bitmapset *set, int *n);
 
 /*
  * Checks metapage, directory, free list (bounds, overlap, chain, reference

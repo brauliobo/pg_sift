@@ -21,6 +21,11 @@ SELECT n,
        ARRAY[md5((n % 5)::text)::uuid]
 FROM generate_series(1, 4000) n;
 UPDATE im SET u = md5('late')::uuid WHERE id = 3999;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE im_rows AS SELECT * FROM im ORDER BY ctid;
+TRUNCATE im;
+INSERT INTO im SELECT * FROM im_rows;
+DROP TABLE im_rows;
 CREATE INDEX im_col ON im USING sift_col (id, u, b, i, c, m, m8, bt, vb, ar);
 VACUUM (FREEZE, ANALYZE) im;
 INSERT INTO im SELECT 5000 + n, md5((n % 3)::text)::uuid, '\x01'::bytea, '203.0.113.1'::inet, NULL, NULL, NULL, NULL, NULL, NULL FROM generate_series(1, 20) n;
@@ -54,7 +59,7 @@ INSERT INTO im_q VALUES
 -- each statement returns the rows of the normal plan
 SELECT count(*) AS statements, count(*) FILTER (WHERE outcome(q, true) = outcome(q, false)) AS same FROM im_q;
 SELECT name FROM im_q WHERE outcome(q, true) <> outcome(q, false) ORDER BY name;
--- the conjuncts are tests of the source ("Wide Filters In Source"); an OR, a NOT, an ordering operator, an array column and a cast stay with the executor
+-- the conjuncts are tests of the source ("Wide Filters In Source"), and so are the branches of an OR (the source gives the rows each passes); a test of a NULL, an ordering operator, an array column and a cast stay with the executor
 CREATE FUNCTION source_tests(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
 BEGIN
@@ -68,7 +73,8 @@ END $$;
 SELECT name FROM im_q WHERE name ~ ' (eq|ne|commuted|and|in one|not in one|in null|not in null)$' AND source_tests(q) <> 1
    OR name IN ('u in list', 'u not in list', 'u in array', 'u absent', 'b empty', 'b in empty and zero', 'i family 6', 'i mask', 'bt wrong length') AND source_tests(q) <> 1
    OR name = 'two images' AND source_tests(q) <> 2 ORDER BY name;
-SELECT name FROM im_q WHERE (name ~ '^[a-z0-9]+ (or|null)$' OR name IN ('uuid array column', 'ordering', 'timetz-free text compare')) AND source_tests(q) <> 0 ORDER BY name;
+SELECT name FROM im_q WHERE name ~ '^[a-z0-9]+ or$' AND source_tests(q) <> 1 ORDER BY name;
+SELECT name FROM im_q WHERE (name ~ '^[a-z0-9]+ null$' OR name IN ('uuid array column', 'ordering', 'timetz-free text compare')) AND source_tests(q) <> 0 ORDER BY name;
 
 DROP FUNCTION source_tests(text);
 DROP FUNCTION outcome(text, bool), pushed(text), runq(text, bool), runs_in_scan(text);

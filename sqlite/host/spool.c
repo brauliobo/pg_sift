@@ -76,6 +76,7 @@ BufFileDeleteFileSet(FileSet *fileset, const char *name, bool missing_ok)
 }
 
 int			maintenance_work_mem = 64 * 1024;
+int			work_mem = 1024 * 1024;
 
 int
 BufFileSeek(BufFile *file, int fileno, long offset, int whence)

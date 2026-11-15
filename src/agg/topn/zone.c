@@ -5,7 +5,6 @@
  */
 #include "postgres.h"
 
-#include "port/pg_bitutils.h"
 #include "utils/memutils.h"
 #include "utils/tuplesort.h"
 

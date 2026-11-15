@@ -11,7 +11,7 @@ ALTER TABLE ad ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ad SELECT i, i / 600, i % 4, (hashint4(i) & 2147483647) % 300, (hashint4(i + 1) & 2147483647) % 900, (hashint4(i + 2) & 2147483647) % 100000,
                       date '2024-01-01' + i / 200, 'l' || i % 20, repeat('x', 200) FROM generate_series(1, 60000) i;
 VACUUM (FREEZE, ANALYZE) ad;
-CREATE INDEX ad_col ON ad USING sift_col (id, dim_a_id, source, region, parent_id, val, d, label) WITH (rollup_dims = 'off');
+CREATE INDEX ad_col ON ad USING sift_col (id, dim_a_id, source, region, parent_id, val, d, label) WITH (rollup_columns = 'off');
 
 SELECT * FROM sift.index_advice('ad_col');
 
@@ -22,24 +22,24 @@ SELECT (SELECT count(*) FROM (TABLE ad_before EXCEPT SELECT * FROM sift.index_ad
        (SELECT count(*) FROM (SELECT * FROM sift.index_advice('ad_col') EXCEPT TABLE ad_before) y) AS rows_that_differ;
 
 -- a rollup that holds a pair is not advised again; key_columns = 'off' leaves the foreign key column to the advice
-CREATE INDEX ad_roll ON ad USING sift_col (id, dim_a_id, source, region, parent_id, val, d, label) WITH (rollup_dims = 'dim_a_id, source', key_columns = 'off');
+CREATE INDEX ad_roll ON ad USING sift_col (id, dim_a_id, source, region, parent_id, val, d, label) WITH (rollup_columns = 'dim_a_id, source', key_columns = 'off');
 SELECT leaf, kind, held, share, advice FROM sift.index_advice('ad_roll') WHERE kind = 'pair' OR leaf = 'parent_id' ORDER BY leaf;
 
 -- the advice is what the build then finds: the advised pair is written in every unit, a pair with a column the advice leaves out (300 values in a unit) is not
 SET client_min_messages = notice;
-CREATE INDEX ad_pair ON ad USING sift_col (id, source, label, val) WITH (rollup_dims = 'source, label: val', key_columns = 'off', point_tid_columns = 'off');
-CREATE INDEX ad_over ON ad USING sift_col (id, source, region, val) WITH (rollup_dims = 'source, region: val', key_columns = 'off', point_tid_columns = 'off');
+CREATE INDEX ad_pair ON ad USING sift_col (id, source, label, val) WITH (rollup_columns = 'source, label: val', key_columns = 'off', point_tid_columns = 'off');
+CREATE INDEX ad_over ON ad USING sift_col (id, source, region, val) WITH (rollup_columns = 'source, region: val', key_columns = 'off', point_tid_columns = 'off');
 SET client_min_messages = warning;
 
 -- a covered column that looks rewritten often: its UPDATEs are not HOT
 CREATE TABLE ad_vol (id int, set_id int, updated_at timestamptz, a_count int, val int) WITH (autovacuum_enabled = off);
 INSERT INTO ad_vol SELECT i, i % 7, now(), i % 5, i FROM generate_series(1, 2000) i;
-CREATE INDEX ad_vol_col ON ad_vol USING sift_col (id, set_id, updated_at, a_count, val) WITH (rollup_dims = 'off');
+CREATE INDEX ad_vol_col ON ad_vol USING sift_col (id, set_id, updated_at, a_count, val) WITH (rollup_columns = 'off');
 SELECT leaf, kind, advice FROM sift.index_advice('ad_vol_col') WHERE advice LIKE '%HOT%' ORDER BY leaf;
 
 -- no unit yet, a wrong object
 CREATE TABLE ad_empty (id int, k int) WITH (autovacuum_enabled = off);
-CREATE INDEX ad_empty_col ON ad_empty USING sift_col (id, k) WITH (rollup_dims = 'off');
+CREATE INDEX ad_empty_col ON ad_empty USING sift_col (id, k) WITH (rollup_columns = 'off');
 SELECT leaf, kind, held, sampled, share, advice FROM sift.index_advice('ad_empty_col');
 SELECT * FROM sift.index_advice('ad_pkey');
 

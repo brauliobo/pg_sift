@@ -4,6 +4,7 @@
  * and the hash a plan is keyed by
  */
 #include "postgres.h"
+#include "utils/memutils.h"
 #include "nodes/makefuncs.h"
 #include "utils/lsyscache.h"
 #include "col/point.h"
@@ -12,6 +13,7 @@
 #include "col/setsum.h"
 #include "core/limits.h"
 #include "col/am/am_int.h"
+#include "col/conn.h"
 
 COL_OPT_STR_KO(sift_col_options_order_columns, order_columns, ko_last)
 
@@ -32,15 +34,15 @@ COL_OPT_STR(sift_col_options_hll_columns, hll_columns, "")
 
 COL_OPT_STR(sift_col_options_return_columns, return_columns, "")
 
-COL_OPT_STR(sift_col_options_rollup, rollup, "")
+COL_OPT_STR(sift_col_options_rollup_leaves, rollup_leaves, "")
 
-COL_OPT_STR(sift_col_options_rollup_dims, rollup_dims, "")
+COL_OPT_STR(sift_col_options_rollup_columns, rollup_columns, "")
 
 COL_OPT_STR(sift_col_options_calendar_columns, calendar_columns, "")
 
 /* The cached state of the index, in mcxt (the relcache entry's own in rd_indexcxt, a copy of a caller's in its context) */
 static SiftColRel *
-build_rel(Relation index, MemoryContext mcxt)
+build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftColRel *r = palloc0(sizeof(SiftColRel));
@@ -58,7 +60,7 @@ build_rel(Relation index, MemoryContext mcxt)
 	r->nleaves = palloc((natts + 1) * sizeof(int));
 	r->json = palloc0((natts + 1) * sizeof(bool));
 	r->name = palloc0((natts + 1) * sizeof(bool));
-	r->shred = sift_col_shred_create(mcxt, index);
+	r->shred = sift_col_shred_create(mcxt, index, present);
 	for (int a = 1; a <= natts; a++)
 	{
 		Form_pg_attribute att = TupleDescAttr(desc, a - 1);
@@ -81,6 +83,8 @@ build_rel(Relation index, MemoryContext mcxt)
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("the jsonb column \"%s\" of a sift_col index needs paths", NameStr(att->attname)),
 					 errhint("Declare them with the paths option: WITH (paths = '%s.* float4'), or REINDEX to read them from the documents.", NameStr(att->attname))));
+		if (n + k > sift_limit(col_leaves, SIFT_COL_MAX_COLS) && r->shred && sift_col_shred_drop_present(r->shred, a))
+			k--;
 		if (n + k > sift_limit(col_leaves, SIFT_COL_MAX_COLS))
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 							errmsg("a sift_col index holds at most %d columns", (int) sift_limit(col_leaves, SIFT_COL_MAX_COLS)),
@@ -104,6 +108,8 @@ build_rel(Relation index, MemoryContext mcxt)
 		}
 		n += k;
 	}
+	r->conn_first = n;
+	n = sift_conn_leaves(index, defs, n, r->conn_found, &r->nconn);
 	r->ret = palloc0((natts + 1) * sizeof(bool));
 	{
 		const char *err = am_return_walk(sift_col_options_return_columns(index), r, desc);
@@ -131,10 +137,10 @@ build_rel(Relation index, MemoryContext mcxt)
 
 		if (err)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid preagg option: %s", err)));
-		if ((err = sift_cpagg_rollup_apply(sift_col_options_rollup(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup option: %s", err)));
-		if ((err = sift_cpagg_rows_apply(sift_col_options_rollup_dims(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_dims option: %s", err)));
+		if ((err = sift_cpagg_rollup_apply(sift_col_options_rollup_leaves(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_leaves option: %s", err)));
+		if ((err = sift_cpagg_rows_apply(sift_col_options_rollup_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_columns option: %s", err)));
 		if ((err = sift_cpagg_calendar_apply(sift_col_options_calendar_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid calendar_columns option: %s", err)));
 		r->pagg.minmax = sift_col_options(index)->cube_minmax;
@@ -153,7 +159,9 @@ build_rel(Relation index, MemoryContext mcxt)
 			if (i == n)
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_order option: column \"%s\" is not a column of the index", c)));
 		}
-		if ((err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
+		/* the sorted runs of order_columns are deprecated: the order arrays answer what they did */
+		if (sift_col_legacy_options &&
+			(err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
 		if ((err = sift_cpagg_leaf_list(sift_cpagg_auto_list(sift_col_options_order_array_columns(index), &r->pagg.gorderauto), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_array_ok,
 										"not an integer, date, timestamp, numeric or text column")) != NULL)
@@ -210,9 +218,9 @@ build_rel(Relation index, MemoryContext mcxt)
 		for (int i = 0; i < n; i++)
 			if (r->pagg.gorder[i] && !r->pagg.run[i] && r->pagg.gorderauto)
 				;
-			else if (r->pagg.gorder[i] && !r->pagg.run[i] && !sift_cgord_leaf_text(&r->schema->cols[i]))
+			else if (sift_col_legacy_options && r->pagg.gorder[i] && !r->pagg.run[i] && !sift_cgord_leaf_text(&r->schema->cols[i]))
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: column \"%s\" is not in order_columns", names[i]),
-								errhint("The global order extends the sorted run of a column: add it to order_columns.")));
+								errhint("The global order extends the sorted run of a column: add it to order_columns (deprecated).")));
 		if ((err = sift_hll_spec_parse(sift_col_options_hll_columns(index), r->schema, (const char *const *) names, r->pagg.hll)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: %s", err)));
 		for (int i = 0; i < n; i++)
@@ -232,6 +240,13 @@ build_rel(Relation index, MemoryContext mcxt)
 			}
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_columns(index), r->schema, (const char *const *) names, r->pagg.point)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option: %s", err)));
+		/* point_columns is deprecated: its leaves get the directory of heap addresses, which answers the same lookups with no unit read */
+		for (int i = 0; i < n && !sift_col_legacy_options; i++)
+			if (r->pagg.point[i])
+			{
+				r->pagg.point_tid[i] = true;
+				r->pagg.point[i] = false;
+			}
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_tid_columns(index), r->schema, (const char *const *) names, r->pagg.point_tid)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_tid_columns option: %s", err)));
 		if ((err = sift_cpoint_spec_parse(sift_col_options_count_columns(index), r->schema, (const char *const *) names, r->pagg.count)) != NULL)
@@ -266,7 +281,7 @@ build_rel(Relation index, MemoryContext mcxt)
 					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_cut option: \"%s\" is not an integer, date, timestamp, numeric or float column of the index (at most %d)", tok, SIFT_COL_CUT_MAX)));
 				r->cut[r->ncut++] = id;
 			}
-			r->cut_rows = sift_col_options(index)->key_cut_rows;
+			r->cut_rows = sift_col_legacy_options ? sift_col_options(index)->key_cut_rows : 0;
 		}
 	}
 	if (sift_col_row_key_on(index))
@@ -284,10 +299,41 @@ build_rel(Relation index, MemoryContext mcxt)
 				r->rowkey_attno = a;
 		r->rowkey = true;
 	}
+	r->track = r->rowkey || sift_col_track_ctid(index);
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};
 	r->rowcxt = AllocSetContextCreate(mcxt, "sift cache col insert", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(old);
+	return r;
+}
+
+/*
+ * The jsonb columns of an index with paths whose column of the table may be NULL have a presence leaf ("<column>#present"). CREATE INDEX and REINDEX write it for
+ * those columns; an index that exists has the layout its metapage hash says, whatever the table says now: one built before the leaf has none, and ALTER TABLE ..
+ * SET NOT NULL or DROP NOT NULL does not change it. So the layout is the first of the nullable columns, none and every jsonb column whose schema hash is the stored one
+ * (a metapage that has none yet, the index being built, takes the first); no match is left to the check that refuses the index with the REINDEX hint.
+ */
+static SiftColRel *
+build_rel(Relation index, MemoryContext mcxt)
+{
+	uint32		layout[3] = {sift_col_present_attrs(index, SIFT_COL_PRESENT_NULLABLE), 0, sift_col_present_attrs(index, SIFT_COL_PRESENT_ALL)};
+	SiftColRel *r = build_rel_with(index, mcxt, layout[0]);
+	uint32		hash,
+				flags;
+
+	if (layout[0] == layout[1] && layout[0] == layout[2])
+		return r;
+	if (sift_store_meta_peek(index, &hash, &flags) && (flags & SIFT_COL_META_FLAG) && r->schema->hash != hash)
+		for (int i = 1; i < 3; i++)
+		{
+			SiftColRel *o;
+
+			if (layout[i] == layout[0] || (i == 2 && layout[2] == layout[1]))
+				continue;
+			o = build_rel_with(index, mcxt, layout[i]);
+			if (o->schema->hash == hash)
+				return o;
+		}
 	return r;
 }
 
@@ -313,7 +359,12 @@ sift_col_rel(Relation index)
 SiftColRel *
 sift_col_rel_private(Relation index, MemoryContext mcxt)
 {
-	return build_rel(index, mcxt);
+	SiftColRel *r = build_rel(index, mcxt);
+
+#ifdef SIFT_TESTING
+	sift_col_test_inval(index);	/* building the state looks up the catalogs: what the caller took from the options before it is then freed */
+#endif
+	return r;
 }
 #ifdef SIFT_TESTING
 void
@@ -321,8 +372,17 @@ sift_col_test_inval(Relation index)
 {
 	if (!sift_test_col_rel_inval)
 		return;
-	/* the reload of the entry that a lock taken during the scan may cause frees the cached state: first overwrite what it holds */
+	/* the reload of the entry that a lock taken during the scan may cause frees the cached state and the options: first overwrite what they hold */
 	memset(sift_col_rel(index), 0x7f, sizeof(SiftColRel));
+	if (index->rd_options)
+	{
+		Size		sz = VARSIZE(index->rd_options);
+
+		pfree(index->rd_options);
+		index->rd_options = NULL;
+		/* takes the chunk just freed, so the options the reload parses cannot reuse it under the string a caller kept */
+		memset(MemoryContextAlloc(CacheMemoryContext, sz), 0x7f, sz);
+	}
 	RelationCacheInvalidateEntry(RelationGetRelid(index));
 }
 #endif
@@ -414,8 +474,8 @@ uint32
 sift_col_pagg_hash(Relation index)
 {
 	const char *a = sift_col_options_preagg(index),
-			   *b = sift_col_options_rollup(index),
-			   *c = sift_col_options_rollup_dims(index),
+			   *b = sift_col_options_rollup_leaves(index),
+			   *c = sift_col_options_rollup_columns(index),
 			   *d = sift_col_options_calendar_columns(index);
 
 	return hash_bytes((const unsigned char *) a, strlen(a)) ^ (hash_bytes((const unsigned char *) b, strlen(b)) * 31) ^

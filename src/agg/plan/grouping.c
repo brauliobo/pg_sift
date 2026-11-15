@@ -31,6 +31,7 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 				   *rest = NIL;
 		double		bucketed = 1.0,
 					g = 1.0;
+		Bitmapset  *dense = NULL;
 
 		for (int j = 0; j < list_length(keys); j++)
 		{
@@ -38,6 +39,8 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 
 			if (s->nsets != 0 && !(s->setmask[set] >> j & 1))
 				continue;
+			if (b <= 0)
+				b = key_dense_groups(c, s, &s->key[j], &dense);
 			if (b > 0)
 				bucketed *= b;
 			else
@@ -47,7 +50,7 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 		{
 			double		nd;
 
-			if (distinct && IsA(e, Var) && ((Var *) e)->varno == c->relid && (nd = column_distinct(c, (Var *) e)) > 0)
+			if (distinct && IsA(e, Var) && ((Var *) e)->varno == c->relid && (nd = column_distinct(c, (Var *) e, true)) > 0)
 				g *= nd;
 			else
 				rest = lappend(rest, e);

@@ -2,10 +2,9 @@
  * col/seg/gorder_group.c - the rows of one group of a second order (a global order grouped by another leaf) between two keys: the group's run
  * in the table of groups, the two bounds as seeks among its entries
  */
-#include "core/host.h"
+/* check-memory: allow-allocs the keys of a lookup are at most SIFT_CORDER_MAX_KEYS (512), a probe finds few slots and a stream marks one bit for each slot of a segment of at most 16M rows */
 #include "core/cmp.h"
 #include "col/seg_int.h"
-#include "col/gquant.h"
 
 /*
  * Is the second order of leaf col (a complete block grouped by leaf gcol) there to read: the slot to read it through, -1 when the segment has none
@@ -17,6 +16,12 @@ gorder_group_view(SiftColSegment *seg, int col, int gcol)
 	GOrdLeaf   *g = slot < 0 ? NULL : seg_gord_leaf(seg, slot);
 
 	return g != NULL && g->hdr.gcol == gcol && g->hdr.vtotal == 0 && seg_gord_probe_ok(seg, g, slot) ? slot : -1;
+}
+
+bool
+sift_cseg_gorder_has(SiftColSegment *seg, int col)
+{
+	return seg_gord_present(seg, col) || seg_gord_present(seg, seg->schema->ncols + col);
 }
 
 /* Does leaf col have a second order grouped by leaf gcol (sift_cseg_gorder_tids_group) */

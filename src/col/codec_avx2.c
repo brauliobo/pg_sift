@@ -2,7 +2,6 @@
  * col/codec_avx2.c - AVX2 kernels of the chunk codec (x86-64-v3 function-level target, safe to link on any x86-64), the width and the compare-to-bits primitive of col/codec_vec.h.
  */
 #if defined(__x86_64__)
-#include "core/host.h"
 
 #include "col/codec_int.h"
 

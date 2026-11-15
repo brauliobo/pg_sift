@@ -5,7 +5,6 @@
 
 #include "core/host.h"
 #include "col/hll.h"
-#include "col/runs.h"
 #include "core/cmp.h"
 
 #define ENT(reg, rank)	((uint32) (reg) << 6 | (rank))
@@ -81,7 +80,7 @@ put(SiftHll *h, uint32 reg, uint32 rank)
 		if (h->n >= h->cap / 2)
 		{
 			h->cap = h->cap ? Min(h->cap * 2, 2 * SIFT_HLL_SPARSE) : 32;
-			h->e = h->e ? repalloc(h->e, h->cap * sizeof(uint32)) : MemoryContextAlloc(h->cxt, h->cap * sizeof(uint32));
+			SIFT_REGROW_IN(h->cxt, h->e, h->cap * sizeof(uint32));
 		}
 	}
 	h->e[h->n++] = ENT(reg, rank);
@@ -303,7 +302,7 @@ sift_hll_build(const SiftColDef *def, const SiftCPaggCol *c, const SiftCDict *di
 	{
 		int64		k = c->key[i];
 
-		if (c->nulls && (c->nulls[i / 64] >> (i % 64) & 1))
+		if (sift_col_bit_test(c->nulls, i))
 			continue;
 		if (def->store == SIFT_COLS_STR)
 			sift_hll_add(&h, sift_hll_hash_bytes(dict->bytes + dict->off[k], dict->off[k + 1] - dict->off[k]));

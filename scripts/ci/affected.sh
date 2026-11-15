@@ -9,9 +9,9 @@ if [[ $MODE == --areas-regex ]]; then
 	areas_regex "${@:3}"
 	exit
 fi
-# --github prints the outputs of the workflow: jobs (the regex), the flags of its other jobs, nshards (a long queue is cut in two), full (it is all of it)
+# --github prints the outputs of the workflow: jobs (the regex), the flags of its other jobs, nshards (a long queue is cut in three), full (it is all of it)
 # focus_regex TOKEN...: the jobs of `affected --focus`. A token is FILE or FILE:FUNCTION (FUNCTION * : a change outside any function); the regression tests that
-# execute the function (scripts/focus.tsv, made by scripts/focus-gen.sh), the tests of the area for a function every test executes (the =hot row) and for a
+# execute the function (scripts/focus/NAME.tsv, made by scripts/focus-gen.sh), the tests of the area for a function every test executes (the =hot row) and for a
 # change outside functions, scripts/areas.tsv as ever for the other files. A function no row has is new or run by no test: its callers are the other tokens.
 focus_regex() {
 	local t f rest=() star=() sel names extra
@@ -29,8 +29,7 @@ focus_regex() {
 	done
 	sel=$(awk -F'\t' -v toks="$*" 'BEGIN { n = split(toks, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
 		$1 == "=hot" { n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { split(h[i], p, ":"); print "H " p[1] }; next }
-		/^#/ { next }
-		{ n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { print "T " $1; break } }' "$REPO/scripts/focus.tsv")
+		{ n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { print "T " $1; break } }' "$REPO"/scripts/focus/*.tsv)
 	# the tests pinned to a file (scripts/focus-pins.tsv): they print numbers of its functions, which a function every test executes (the =hot row) does not name
 	sel+=$'\n'$(awk -F'\t' -v toks="$*" 'BEGIN { n = split(toks, a, " "); for (i = 1; i <= n; i++) { split(a[i], p, ":"); want[p[1]] = 1 } }
 		/^#/ { next }
@@ -59,7 +58,7 @@ focus_tokens() {
 # Measured (run 40164658605, 27 tests, 4 lanes): the job 8.0 min (cache 1 s, extension build 34 s, tests 7.2 min wall, scratch 435 MB); the slowest tests agg_preagg_elem_parallel 266 s,
 # agg_two_level_spine 220 s. It found an open assertion on its first run. The tests are not in the weights below: they are not sharded (one runner).
 ASSERT_MARK='RestoreSnapshot|PushActiveSnapshot|GetActiveSnapshot|ParallelWorkerMain|InitializeParallelDSM|shm_toc_|CreateQueryDesc|ExecutorStart_hook'
-ASSERT_JOBS='^installcheck-(agg_(par_|subplan|two_level|lookup_shared|.*parallel)|aggstub_parallel|col_.*parallel|parallel_)'
+ASSERT_JOBS='^installcheck-(agg_(par_|subplan|two_level|lookup_shared|.*parallel)|aggstub_parallel|col_.*parallel|col_topn_rescan_keep|parallel_)'
 # the tests the assertions build leaves to the other builds: they load 130,000 documents into a sift_col index and compare cost ratios, 557 to 729 s each there (run 40193282663),
 # 18 to 26 s everywhere else, and the planner paths they reach (agg_cte_inline_upper, _nested, agg_cte_hoist...) stay in the family
 ASSERT_SKIP='^installcheck-agg_cte_inline_(horizon|band|rows)$'
@@ -111,6 +110,8 @@ if [[ $MODE == affected ]]; then
 		elif [[ $f == bench/scaling/* || $f == scripts/scaling-gate.sh ]]; then FAST+='|^tap-shell-scaling_slope$'
 		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$'
 		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl)?(-[12])?$'
+		elif [[ $f == test/fuzz/txn_fuzz* ]]; then FAST+='|^difftest-txn(-shapes)?$'
+		elif [[ $f == test/fuzz/bm25_fuzz* ]]; then FAST+='|^difftest-bm25$'
 		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$'; fi
 	done
 	# a pull request builds its fast tier only when a job it can run is picked: scripts/areas.tsv may pick one of the rest, and no job selected is an error of the run
@@ -127,7 +128,7 @@ if [[ $MODE == affected ]]; then
 			echo "cassertjobs=$ASSERT_JOBS"
 			echo "pg=$( (( ${#PICK[@]} )) && echo true || echo false)"
 			for f in sqlite mariadb replication macos; do echo "$f=$(flag $f)"; done
-			echo "nshards=$( (( ${#PICK[@]} >= ${SIFT_CI_SHARD_MIN:-40} )) && echo 2 || echo 1)"
+			echo "nshards=$( (( ${#PICK[@]} >= ${SIFT_CI_SHARD_MIN:-40} )) && echo 3 || echo 1)"
 			echo "full=$( (( ${#PICK[@]} == ${#JOBS_ALL[@]} )) && [[ $(flag sqlite)$(flag mariadb)$(flag replication) == truetruetrue ]] && echo true || echo false)" ;;
 		pick) "$REPO/scripts/check-neutral.sh" || exit 1   # a change of any file: the wording guard is not a job of the map
 			(( ${#PICK[@]} )) || { echo "nothing to run: the diff touches no job"; exit 0; }

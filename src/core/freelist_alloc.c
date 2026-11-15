@@ -3,6 +3,8 @@
  * (P2-P4 and P7 in core/store.h).
  */
 #include "freelist_int.h"
+#include "core/rowmem.h"
+#include "core/restrict.h"
 
 /*
  * Generic WAL has no recovery conflicts, so a standby's snapshot is only protected by
@@ -45,8 +47,8 @@ static BlockNumber
 take_free(Relation index, BlockNumber blk, int idx, uint32 n)
 {
 	Buffer		buf = read_locked(index, blk, BUFFER_LOCK_EXCLUSIVE);
-	GenericXLogState *state = GenericXLogStart(index);
-	Page		page = GenericXLogRegisterBuffer(state, buf, 0);
+	SiftXlog state = sift_xlog_start(index);
+	Page		page = sift_xlog_register(&state, buf, 0);
 	SiftFreeListData *fl = FL(page);
 	SiftFreeExtent *e = &fl->ext[idx];
 	BlockNumber start = e->start;
@@ -59,7 +61,7 @@ take_free(Relation index, BlockNumber blk, int idx, uint32 n)
 		e->nblocks -= n;
 	}
 	SiftPageSetUsed(page, FL_USED(fl->n));
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(buf);
 	return start;
 }
@@ -69,7 +71,7 @@ static BlockNumber
 extend(Relation index, Buffer metabuf, uint32 n)
 {
 	BlockNumber first = META(BufferGetPage(metabuf))->high_water;
-	GenericXLogState *state;
+	SiftXlog state;
 	Buffer		buf;
 
 	if ((uint64) first + n > MaxBlockNumber)
@@ -79,10 +81,10 @@ extend(Relation index, Buffer metabuf, uint32 n)
 						RelationGetRelationName(index), MaxBlockNumber),
 				 errhint("A relation holds at most 32 TB with 8 kB blocks: partition the table so that each index stays below it.")));
 	buf = ExtendBufferedRelTo(BMR_REL(index), MAIN_FORKNUM, NULL, 0, first + n, RBM_ZERO_AND_LOCK);
-	state = GenericXLogStart(index);
-	META(GenericXLogRegisterBuffer(state, metabuf, 0))->high_water = first + n;
-	sift_page_init(GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE), SIFT_PT_FREE, 0);
-	GenericXLogFinish(state);
+	state = sift_xlog_start(index);
+	META(sift_xlog_register(&state, metabuf, 0))->high_water = first + n;
+	sift_page_init(sift_xlog_register(&state, buf, GENERIC_XLOG_FULL_IMAGE), SIFT_PT_FREE, 0);
+	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(buf);
 	return first;
 }
@@ -294,8 +296,7 @@ scan_free(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 	if (s->nhave + fl->n + 1 > s->maxhave)
 	{
 		s->maxhave = Max(64, 2 * (s->nhave + fl->n + 1));
-		s->have = s->have ? repalloc(s->have, s->maxhave * sizeof(SiftFreeExtent)) :
-			palloc(s->maxhave * sizeof(SiftFreeExtent));
+		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, s->have, s->maxhave * sizeof(SiftFreeExtent));
 	}
 	memcpy(s->have + s->nhave, fl->ext, fl->n * sizeof(SiftFreeExtent));
 	s->nhave += fl->n;
@@ -313,13 +314,13 @@ prepare_free(Relation index, Buffer metabuf, const SiftExtent *release, int nrel
 			 FullTransactionId safexid, FreePlan *plan)
 {
 	SiftMetaPageData *meta = META(BufferGetPage(metabuf));
-	SiftExtent *rel = palloc(nrelease * sizeof(SiftExtent));
+	SiftExtent *rel = sift_rows_alloc(nrelease * sizeof(SiftExtent));
 	FreeScan	scan = {.room = InvalidBlockNumber};
 	int			n = 0;
 
 	memcpy(rel, release, nrelease * sizeof(SiftExtent));
 	qsort(rel, nrelease, sizeof(SiftExtent), cmp_extent);
-	plan->ext = palloc(nrelease * sizeof(SiftFreeExtent));
+	plan->ext = sift_rows_alloc(nrelease * sizeof(SiftFreeExtent));
 	for (int i = 0; i < nrelease; i++)
 	{
 		SiftFreeExtent *last = n > 0 ? &plan->ext[n - 1] : NULL;
@@ -400,12 +401,12 @@ collect_chain(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 	if (c->n + fl->n + c->npages + 1 > c->maxext)
 	{
 		c->maxext = Max(64, 2 * (c->n + (int) fl->n + c->npages + 1));
-		c->ext = c->ext ? repalloc(c->ext, c->maxext * sizeof(SiftFreeExtent)) : palloc(c->maxext * sizeof(SiftFreeExtent));
+		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, c->ext, c->maxext * sizeof(SiftFreeExtent));
 	}
 	if (c->npages + 1 > c->maxpage)
 	{
 		c->maxpage = Max(8, 2 * c->maxpage);
-		c->page = c->page ? repalloc(c->page, c->maxpage * sizeof(BlockNumber)) : palloc(c->maxpage * sizeof(BlockNumber));
+		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, c->page, c->maxpage * sizeof(BlockNumber));
 	}
 	for (uint32 i = 0; i < fl->n; i++)
 	{
@@ -472,7 +473,7 @@ rewrite_chain(Relation index, Buffer metabuf, FreeChain *c, bool trim)
 	BlockNumber newhwm = hwm;
 	SiftMetaPageData *meta;
 	BlockNumber *blks;
-	GenericXLogState *state;
+	SiftXlog state;
 	int			k;
 
 	coalesce_chain(c);
@@ -503,12 +504,12 @@ rewrite_chain(Relation index, Buffer metabuf, FreeChain *c, bool trim)
 	if (c->cleared > 0 && !space_exclusive)
 		log_reuse(index, InvalidBlockNumber, c->newest);
 	write_chain(index, blks, k, c->ext, c->n, InvalidBlockNumber);
-	state = GenericXLogStart(index);
-	meta = META(GenericXLogRegisterBuffer(state, metabuf, 0));
+	state = sift_xlog_start(index);
+	meta = META(sift_xlog_register(&state, metabuf, 0));
 	meta->freelist_head = blks[0];
 	if (trim)
 		meta->high_water = newhwm;
-	GenericXLogFinish(state);
+	sift_xlog_finish(&state);
 	return newhwm;
 }
 
@@ -536,7 +537,7 @@ cut_horizon(void)
 {
 	if (cut_online)
 		return InvalidFullTransactionId;
-	return (MyProc->statusFlags & PROC_IN_VACUUM) ? FullTransactionIdFromU64(PG_UINT64_MAX) : InvalidFullTransactionId;
+	return sift_in_vacuum() ? FullTransactionIdFromU64(PG_UINT64_MAX) : InvalidFullTransactionId;
 }
 
 /* Clears the safexid of free-list records past the horizon and coalesces adjacent reusable records */

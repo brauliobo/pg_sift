@@ -3,6 +3,7 @@
  * and the selections of a unit
  * the pruning and the point and order lists are in the files next to it
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 #include "utils/rls.h"
 #include "executor/instrument.h"
@@ -11,8 +12,6 @@
 #include "core/cmp.h"
 #include "col/gorder.h"
 #include "col/scan_int.h"
-#include "fmgr.h"
-#include "utils/fmgrprotos.h"
 
 #ifdef SIFT_TESTING
 /*
@@ -31,19 +30,6 @@ sift_col_jitter(void)
 {
 	if (sift_test_col_jitter_us > 0)
 		pg_usleep(pg_prng_uint64_range(&pg_global_prng_state, 0, sift_test_col_jitter_us));
-}
-
-/* Holds a scan, with the directory version it read, until the test releases the lock: what runs meanwhile (VACUUM, DML) is after the open for the scan */
-void
-sift_col_open_gate(void)
-{
-	if (sift_test_col_open_gate > 0)
-	{
-		Datum		key = Int64GetDatum(sift_test_col_open_gate);
-
-		DirectFunctionCall1(pg_advisory_lock_int8, key);
-		DirectFunctionCall1(pg_advisory_unlock_int8, key);
-	}
 }
 #endif
 
@@ -136,18 +122,17 @@ sift_col_open_table(Relation rel, const SiftColSchema *schema, const SiftDirSnap
 }
 
 SiftColSource *
-sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags)
+sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftColSource *src = col_source(heap, index, sift_col_rel(index)->schema, mcxt, flags);
-	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
 
 	if (!(flags & SIFT_COLO_NOCHECKS))
 		check_access(heap, flags);
 	if (IsolationIsSerializable())
 		PredicateLockRelation(heap, snapshot);
 	src->snap = (flags & SIFT_COLO_SNAP_HELD) ? snapshot : RegisterSnapshot(snapshot);
-	sift_dir_read(index, &src->dir);
+	scan_view_load(src, heap, view);
 	src->dir_checked = src->dir.version;
 	src->dir_current = true;
 	col_hf_open(src);
@@ -165,9 +150,8 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	sift_vis_begin(&src->vis, heap, snapshot, NULL, 0);
 	SIFT_COL_JITTER();
 	src->visibility = (SiftColVisibility) {vis_sb_mask, vis_filter_page, vis_counters, &src->vis, vis_stream};
-	src->heap_sbs = nblocks == 0 ? 0 : sift_block_sb(nblocks - 1) + 1;
-	/* the units of a key-cut segment are numbered 0.. in key order, and a parallel scan hands out the numbers up to this one */
-	for (int i = 0; i < src->nseg; i++)
+	/* the units of a key-cut segment are numbered 0.. in key order, and a parallel scan hands out the numbers up to this one (a view has them) */
+	for (int i = 0; i < src->nseg && view == NULL; i++)
 		if (sift_cseg_keyed(&src->seg[i].seg->entry))
 			src->heap_sbs = Max(src->heap_sbs, src->seg[i].seg->sbdir[src->seg[i].seg->nsb - 1].id + 1);
 	src->cnt.segments = src->nseg;
@@ -202,6 +186,10 @@ sift_col_rescan(SiftColSource *src)
 	if (src->gcx)
 		MemoryContextReset(src->gcx);
 	memset(src->gmem, 0, sizeof(src->gmem));
+	src->gb = NULL;
+	src->ngb = 0;
+	src->gd = NULL;
+	src->gdrows = 0;
 	src->gpin_leaf = -1;
 	src->galeaf1 = 0;
 	src->gpin_n = src->gper = 0;
@@ -256,16 +244,16 @@ sift_col_counters(const SiftColSource *src)
 }
 
 static void
-add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstamp)
+add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstamp, bool roots)
 {
 	if (src->nmem == src->capmem)
 	{
 		src->capmem = Max(16, src->capmem * 2);
-		src->mem = src->mem ? repalloc(src->mem, src->capmem * sizeof(ColMem)) : MemoryContextAlloc(src->mcxt, src->capmem * sizeof(ColMem));
+		SIFT_REGROW_IN(src->mcxt, src->mem, src->capmem * sizeof(ColMem));
 	}
 	uint32		id = ++src->nmem;
 
-	src->mem[id - 1] = (ColMem) {b, id, lane, xstamp};
+	src->mem[id - 1] = (ColMem) {b, id, lane, xstamp, roots};
 }
 
 void
@@ -274,7 +262,7 @@ sift_col_add_batches(SiftColSource *src, SiftColBatch *const *batches, int nbatc
 	src->wtok = NULL;
 	src->nwtok = -1;
 	for (int i = 0; i < nbatches; i++)
-		add_mem(src, batches[i], false, InvalidTransactionId);
+		add_mem(src, batches[i], false, InvalidTransactionId, !sift_test_no_roots);
 }
 
 void
@@ -304,7 +292,7 @@ scan_load_wbuf(SiftColSource *src)
 		 */
 		bs = sift_cwbuf_batches_shared(src->index, &src->dir.segs[i], src->schema, src->dir.version, src->mcxt, &n, own ? &src->wtok[src->nwtok++] : NULL, &stamp);
 		for (int j = 0; j < n; j++)
-			add_mem(src, bs[j], true, stamp);
+			add_mem(src, bs[j], true, stamp, (src->dir.segs[i].flags & SIFT_SEG_ROOTS) != 0);
 	}
 	src->mem_loaded = true;
 }
@@ -636,7 +624,6 @@ load_stored(ColUnit *cu, ColCursor *c, uint32 u)
 	}
 	src->units_loaded++;
 	cu->loaded = MemoryContextAllocZero(src->arena, seg->schema->ncols);
-	cu->istr = MemoryContextAllocZero(src->arena, seg->schema->ncols * sizeof(ColInline));
 }
 
 static void
@@ -669,7 +656,59 @@ load_memory(ColUnit *cu, const ColMem *m)
 	cu->memid = m->id;
 	cu->lane = m->lane;
 	cu->xstamp = m->xstamp;
+	cu->roots = m->roots;
 	cu->clean = cu->clean_ready = true;
+}
+
+/*
+ * The cursors with a unit left, in the order of the superblock of their next one (and the cursor on a tie): the units of the segments of a key-cut table are numbered from 0, so
+ * the segments take turns, and a pass over every cursor for each unit costs more than the unit's own bookkeeping.
+ */
+static void
+heap_down(uint64 *h, int n, int i)
+{
+	uint64		x = h[i];
+
+	for (int c; (c = 2 * i + 1) < n; i = c)
+	{
+		if (c + 1 < n && h[c + 1] < h[c])
+			c++;
+		if (h[c] >= x)
+			break;
+		h[i] = h[c];
+	}
+	h[i] = x;
+}
+
+/* The heap with the next head of the cursor that gave the last unit, or made again after a cursor moved otherwise */
+static void
+cursor_heap_top(SiftColSource *src)
+{
+	uint32		sb;
+
+	if (src->chead == NULL)
+		src->chead = MemoryContextAlloc(GetMemoryChunkContext(src->seg), Max(src->nseg, 1) * sizeof(uint64));
+	if (!src->hvalid)
+	{
+		src->nchead = 0;
+		for (int i = 0; i < src->nseg; i++)
+			if (cursor_head(src, &src->seg[i], &sb))
+				src->chead[src->nchead++] = (uint64) sb << 32 | (uint32) i;
+		for (int i = src->nchead / 2 - 1; i >= 0; i--)
+			heap_down(src->chead, src->nchead, i);
+		src->hvalid = true;
+	}
+	else if (src->hstale)
+	{
+		int			i = (uint32) src->chead[0];
+
+		if (cursor_head(src, &src->seg[i], &sb))
+			src->chead[0] = (uint64) sb << 32 | (uint32) i;
+		else
+			src->chead[0] = src->chead[--src->nchead];
+		heap_down(src->chead, src->nchead, 0);
+	}
+	src->hstale = false;
 }
 
 bool
@@ -677,19 +716,18 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 {
 	ColUnit    *cu = &src->cu;
 	ColCursor  *best = NULL;
-	uint32		sb,
-				bsb = PG_UINT32_MAX;
+	uint32		bsb = PG_UINT32_MAX;
 	bool		mem = false;
 	MemoryContext old;
 
 	MemoryContextReset(src->arena);
 	old = MemoryContextSwitchTo(src->arena);
-	for (int i = 0; i < src->nseg; i++)
-		if (cursor_head(src, &src->seg[i], &sb) && sb < bsb)
-		{
-			best = &src->seg[i];
-			bsb = sb;
-		}
+	cursor_heap_top(src);
+	if (src->nchead > 0)
+	{
+		best = &src->seg[(uint32) src->chead[0]];
+		bsb = src->chead[0] >> 32;
+	}
 	if (src->ocur < src->norder && src->order[src->ocur]->b->sb < bsb)
 	{
 		mem = true;
@@ -743,7 +781,10 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 		best->cur++;
 	}
 	if (!mem)
+	{
 		best->full = false;
+		src->hstale = true;
+	}
 	SIFT_COL_JITTER();
 	if (cu->nsu == 0)
 	{
@@ -893,6 +934,7 @@ sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit)
 		if (src->seg[i].seg == cu->seg)
 		{
 			src->seg[i].cur = cu->u;
+			COL_HEAD_RESET(src);
 			src->seg[i].full = false;
 			src->seg[i].nosuper_to = cu->whole ? 0 : cu->u + cu->nsu;
 		}

@@ -3,32 +3,10 @@
  */
 #include "postgres.h"
 
-#include "access/generic_xlog.h"
-#include "access/nbtxlog.h"
-#include "access/parallel.h"
 #include "access/transam.h"
-#include "access/xact.h"
-#include "access/xlog.h"
-#include "access/xloginsert.h"
-#include "catalog/pg_class.h"
-#include "catalog/storage.h"
-#include "storage/procarray.h"
-#include "storage/sinval.h"
-#include "catalog/pg_control.h"
 #include "common/int.h"
 #include "miscadmin.h"
-#include "nodes/bitmapset.h"
-#include "storage/bulk_write.h"
-#include "storage/latch.h"
-#include "storage/proc.h"
-#include "storage/read_stream.h"
-#include "storage/smgr.h"
-#include "utils/memutils.h"
-#include "utils/snapmgr.h"
-#include "utils/wait_event.h"
 
-#include "col/col.h"
-#include "bm25/estimate.h"
 #include "core/lane.h"
 #include "core/store.h"
 #include "core/store_int.h"
@@ -116,7 +94,12 @@ relocation_reserve(FreeChain *free, const SiftSegEntry *entry, const SiftExtent 
 	return !immutable || plan->parts - plan->data_at <= SIFT_MAX_EXTENTS;
 }
 
-/* Whether the free blocks left after the plan, and the given back, cover publication's worst-case free-list page count. */
+/*
+ * Whether the free blocks left after the plan, and the given back, cover publication's worst-case free-list page count: ceil(n / SIFT_FREELIST_CAP) blocks for the n
+ * extents it frees, so that no accepted move extends the file. A move that uses up every free block is refused: a segment of N blocks above one free extent of exactly N
+ * and no other free block is not moved whole, one above a free extent of N + 1 is. The plan passes given_back = 0: the extents the move frees are not reusable until their transaction
+ * is past the horizon, so they cannot hold the pages that publish them.
+ */
 static bool
 relocation_leaves_spare(const FreeChain *free, int n, uint32 given_back)
 {
@@ -288,6 +271,8 @@ shift_finish(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, PGIOA
 	uint64		moved = 0;
 	int			nlist = 0;
 	uint64		gen = entry->gen;
+	uint32		tail_len;
+	char		tail[SIFT_PAGE_PAYLOAD];
 
 	for (int i = 0; i < nparts; i++)
 		for (uint32 j = 0; j < part[i].src.nblocks; j++)
@@ -319,19 +304,22 @@ shift_finish(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, PGIOA
 			list[nlist++] = (SiftExtent) {old.start, stays};
 		for (int i = 0; i < nparts; i++)
 			if (part[i].ext == e)
-			{
-				if (nlist > 0 && list[nlist - 1].start + list[nlist - 1].nblocks == part[i].dst)
-					list[nlist - 1].nblocks += part[i].src.nblocks;
-				else
-					list[nlist++] = (SiftExtent) {part[i].dst, part[i].src.nblocks};
-			}
+				sift_extent_push(list, &nlist, part[i].dst, part[i].src.nblocks);
 	}
 	for (int i = 0; i < nparts; i++)
 		if (part[i].ext < 0)
 			h->live_first = part[i].dst;
+	/* what follows the extents of the header page (the mirror of a column segment: the stream is the same, so is it) moves after the new ones, or goes when they leave it no room */
+	tail_len = SiftPageGetUsed(hdrcopy->data) - (offsetof(SiftSegHeaderData, extents) + h->nextents * sizeof(SiftExtent));
+	if (offsetof(SiftSegHeaderData, extents) + nlist * sizeof(SiftExtent) + tail_len > SIFT_PAGE_PAYLOAD)
+		tail_len = 0;
+	if (tail_len > 0)
+		memcpy(tail, (char *) h->extents + h->nextents * sizeof(SiftExtent), tail_len);
 	h->nextents = nlist;
 	memcpy(h->extents, list, nlist * sizeof(SiftExtent));
-	SiftPageSetUsed(hdrcopy->data, offsetof(SiftSegHeaderData, extents) + nlist * sizeof(SiftExtent));
+	if (tail_len > 0)
+		memcpy((char *) h->extents + nlist * sizeof(SiftExtent), tail, tail_len);
+	SiftPageSetUsed(hdrcopy->data, offsetof(SiftSegHeaderData, extents) + nlist * sizeof(SiftExtent) + tail_len);
 	sift_wt_put_page(wt, newhdr, hdrcopy->data);
 	sift_wt_finish(wt);
 

@@ -144,6 +144,11 @@ def check(opts, notes, errors, released, srcs=None):
     for n in range(int(re.search(r'#define SIFT_COL_FORMAT_MIN_READ\s+(\d+)', colh).group(1)), minor_max + 1):
         if str(n) not in first:
             errors.append('scripts/upgrade_check.sql: col_first has no entry for column format minor %d (the release that first reads it)' % n)
+    # the snapshot of the defaults of the last release must be the newest release before this tree's version (4.2 -> 4.1): the version bump after a release replaces it (scripts/gen-options.sh --snapshot, run in the tree of the tag)
+    vkey = lambda t: tuple(int(x) for x in t.split('.'))
+    older = [vkey(m.group(1) + '.' + m.group(2)) for f in os.listdir(os.path.join(ROOT, 'docs/releases')) for m in [re.fullmatch(r'v(\d+)\.(\d+)\.\d+\.md', f)] if m and vkey(m.group(1) + '.' + m.group(2)) < vkey(release_label())]
+    if older and released_label() != '.'.join(map(str, max(older))):
+        errors.append('scripts/options-released.tsv is the snapshot of %s, and the newest release before %s is %s: replace it with scripts/gen-options.sh --snapshot run in the tree of that release' % (released_label(), release_label(), '.'.join(map(str, max(older)))))
     for o in docs:
         if o['key'] not in notes:
             errors.append('%s: %s has no row in docs/options.tsv (applies, buys, cost, link: what it is for, what it costs; `-` in applies hides an alias)' % (o['where'], o['key']))

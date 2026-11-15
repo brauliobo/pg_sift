@@ -1,4 +1,4 @@
--- The rollup option and the on-demand refresh of the rollups (docs/COL-PREAGG.md section 7). `rollup = 'leaf, leaf'` names the dims of the rollups of
+-- The rollup option and the on-demand refresh of the rollups (docs/COL-PREAGG.md section 7). `rollup_leaves = 'leaf, leaf'` names the dims of the rollups of
 -- an index; a SELECT that scans exact units for lack of their rollup (none, other dims, a measure it lacks) queues the segment of each and does not write; the
 -- queue is served by a background worker, here by sift.col_rollup_refresh (sift.col_rollup_worker off), and the next SELECT answers from the rollups.
 CREATE EXTENSION pg_sift;
@@ -56,25 +56,25 @@ INSERT INTO rr_q VALUES
 	(4, 'SELECT e.q, e.a, count(*) FROM rr d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8) GROUP BY 1, 2');
 
 -- the names of the option: leaves of array elements or map values declared in paths, low cardinality, at most 6 per list
-CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup = 'lines[].nosuch');
-CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup = 'id');
-CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup = 'lines[].w');
-CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup = 'lines[].a, lines[].a');
-CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup = 'lines[].a, , lines[].b');
-CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup = 'lines[].a: lines[].q');
-CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, d int2, e int2, f int2, g int2, h int2}', rollup = 'lines[].a, lines[].b, lines[].c, lines[].d, lines[].e, lines[].f, lines[].g');
+CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup_leaves = 'lines[].nosuch');
+CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup_leaves = 'id');
+CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup_leaves = 'lines[].w');
+CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup_leaves = 'lines[].a, lines[].a');
+CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup_leaves = 'lines[].a, , lines[].b');
+CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', rollup_leaves = 'lines[].a: lines[].q');
+CREATE INDEX rr_bad ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, d int2, e int2, f int2, g int2, h int2}', rollup_leaves = 'lines[].a, lines[].b, lines[].c, lines[].d, lines[].e, lines[].f, lines[].g');
 SELECT count(*) AS indexes FROM pg_class WHERE relname = 'rr_bad';
 
 -- no rollup at all: nothing to answer from, nothing to ask for
-CREATE INDEX rr_i ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', write_buffer_limit = 4096, rollup = 'off');
+CREATE INDEX rr_i ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8}', write_buffer_limit = 4096, rollup_leaves = 'off');
 VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) rr;
 SELECT units > 2 AS units FROM rr_plan((SELECT q FROM rr_q WHERE n = 1));
 SELECT (SELECT requested FROM rr_state) AS requested, (SELECT count(*) FROM rr_requests) AS queued;
 
 -- the units are clean but have no rollup: a SELECT scans them and queues their segments; its rows are those of the plain plan
-ALTER INDEX rr_i SET (rollup = 'lines[].a, lines[].b');
-ALTER INDEX rr_i SET (rollup = 'lines[].nosuch');
-ALTER INDEX rr_i SET (rollup = 'lines[].w');
+ALTER INDEX rr_i SET (rollup_leaves = 'lines[].a, lines[].b');
+ALTER INDEX rr_i SET (rollup_leaves = 'lines[].nosuch');
+ALTER INDEX rr_i SET (rollup_leaves = 'lines[].w');
 SELECT reloptions FROM pg_class WHERE relname = 'rr_i';
 SELECT pre = 0 AS none_from_rollups, miss = units AS all_missing, queued = units AS all_queued, dims FROM rr_plan((SELECT q FROM rr_q WHERE n = 1));
 SELECT rr_same(q) AS same FROM rr_q WHERE n = 1;
@@ -96,7 +96,7 @@ SELECT sift.col_rollup_refresh('rr_i') AS refreshed_again;
 
 -- a subset of the dims of the units is answered; a dim they lack is asked for
 SELECT pre = units AS all_from_rollups, dims FROM rr_plan((SELECT q FROM rr_q WHERE n = 3));
-ALTER INDEX rr_i SET (rollup = 'lines[].a, lines[].b, lines[].c');
+ALTER INDEX rr_i SET (rollup_leaves = 'lines[].a, lines[].b, lines[].c');
 SELECT pre = 0 AS none_from_rollups, miss = units AS all_missing, queued = units AS all_queued, dims FROM rr_plan((SELECT q FROM rr_q WHERE n = 2));
 SELECT pre = units AS all_from_rollups, dims FROM rr_plan((SELECT q FROM rr_q WHERE n = 1));
 SELECT rr_same(q) AS same FROM rr_q WHERE n = 2;
@@ -105,7 +105,7 @@ SELECT pre = units AS all_from_rollups, miss AS missing, dims FROM rr_plan((SELE
 SELECT rr_same(q) AS same FROM rr_q ORDER BY n;
 
 -- the switches: the setting, the option of the index
-ALTER INDEX rr_i SET (rollup = 'lines[].a, lines[].b, lines[].c, lines[].q');
+ALTER INDEX rr_i SET (rollup_leaves = 'lines[].a, lines[].b, lines[].c, lines[].q');
 SET sift.col_rollup_on_demand = off;
 SELECT miss = units AS all_missing, queued FROM rr_plan((SELECT q FROM rr_q WHERE n = 4));
 RESET sift.col_rollup_on_demand;

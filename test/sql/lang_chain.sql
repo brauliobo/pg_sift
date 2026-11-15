@@ -2,6 +2,8 @@
 -- the next, an answer flagged as a filter is the next one's input (sift._test_syn, a synonym dictionary without a file)
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test CASCADE;
+-- the write buffers of format 0: a buffer of format 6 raises the metapage to 1.6, and this reads the minor the configuration needs
+SET sift.test_wbuf_narrow = on;
 SET client_min_messages = warning;
 CREATE TEXT SEARCH DICTIONARY lang_syn (TEMPLATE = sift._test_syn, MAP = 'kater=katze,hunde=hund');
 CREATE TEXT SEARCH DICTIONARY lang_synf (TEMPLATE = sift._test_syn, MAP = 'kater=katzen', FILTER = true);

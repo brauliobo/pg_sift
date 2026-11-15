@@ -2,6 +2,7 @@
 -- the bounds instead of reading its units. The strings repeat, share prefixes, end in 0xFF bytes, are empty or NULL, and the segment is under the C collation (the bytes are the order); a column under a
 -- locale reads the units. The answers are the heap's after deleted, updated and rolled back rows, VACUUM, a write buffer and a promotion.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -19,17 +20,7 @@ CREATE INDEX tc_i ON tc USING sift_col (id sift.col_int4_ops, c sift.col_text_op
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) tc;
 
 -- the count is the heap's; 'counted' says the scan read no unit but the rows of a write buffer (fewer than 5,000)
-CREATE FUNCTION tc_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; counted bool := false; ra text; rb text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
-	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP counted := counted OR coalesce(substring(pl from 'Rows: ([0-9]+) scanned')::int < 5000, false); END LOOP;
-	EXECUTE q INTO ra;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
-	EXECUTE q INTO rb;
-	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN counted THEN 'counted' ELSE 'units' END;
-END $$;
+CREATE FUNCTION tc_chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.count_check_rows_scanned_under_5000(q) $$;
 CREATE FUNCTION tc_all() RETURNS TABLE (col text, result text, n bigint) LANGUAGE sql AS
 $$ SELECT c, tc_chk(format('SELECT count(*) FROM tc WHERE %s', replace(w, '@', c))), 1::bigint
    FROM unnest(ARRAY['c', 'l']) c,
@@ -61,4 +52,5 @@ SELECT sift.col_verify('tc_i');
 DROP FUNCTION tc_all(), tc_chk(text), tc_str(int);
 DROP TABLE tc;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

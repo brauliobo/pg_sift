@@ -1,0 +1,130 @@
+-- A HAVING `column IN (sub-select)` that does not read the query, or EXISTS of a sub-select the planner pulls up as a semi join, reading no aggregate of the query, is a condition of the rows of a plain
+-- GROUP BY (PostgreSQL moves the ones without a sub-select to WHERE itself): the rows it drops are not grouped, and the sub-select is a semi join the scan answers (the planner makes one of every
+-- uncorrelated IN in WHERE, a sub-plan of the groups in HAVING), always, without a comparison with the condition on the groups.
+-- `outcome` says whether the aggregate is in the scan and that the rows are those of sift off (a float sum is rounded: the scan adds in another order), `subplan` that a sub-select is a sub-plan of the
+-- plan (tested for each group, or for each row) and not a semi join. What must stay (NOT IN, NOT EXISTS, a cast or an expression of the key, an EXISTS with an aggregate or a limit, a correlated IN,
+-- an aggregate in the condition, a volatile function, grouping sets, no GROUP BY) keeps its HAVING and gives the same rows; a HAVING of several conditions moves the ones of the rows only.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE hv_kinds (id int PRIMARY KEY, enabled bool, grp int);
+CREATE TABLE hv_events (id int PRIMARY KEY, kind_id int, region text, qty int, amount float8, ts timestamptz) WITH (autovacuum_enabled = false);
+CREATE TABLE hv_empty (id int PRIMARY KEY, kind_id int, qty int) WITH (autovacuum_enabled = false);
+INSERT INTO hv_kinds SELECT i, i % 3 <> 0, i % 4 FROM generate_series(1, 12) i;
+INSERT INTO hv_kinds VALUES (20, NULL, NULL), (21, true, 1), (22, true, 1);
+INSERT INTO hv_events SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE 1 + i % 14 END, CASE WHEN i % 53 = 0 THEN NULL ELSE 'r' || (1 + i % 5) END, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 50 END,
+  (i % 90) / 9.0, timestamptz '2024-01-01 00:00+00' + (i % 700) * interval '9 hours' FROM generate_series(1, 40000) i;
+CREATE INDEX hv_events_col ON hv_events USING sift_col (id, kind_id, region, qty, amount, ts);
+CREATE INDEX hv_empty_col ON hv_empty USING sift_col (id, kind_id, qty);
+CREATE TABLE hv_part (LIKE hv_events) PARTITION BY HASH (id);
+CREATE TABLE hv_part_0 PARTITION OF hv_part FOR VALUES WITH (MODULUS 4, REMAINDER 0) WITH (autovacuum_enabled = false);
+CREATE TABLE hv_part_1 PARTITION OF hv_part FOR VALUES WITH (MODULUS 4, REMAINDER 1) WITH (autovacuum_enabled = false);
+CREATE TABLE hv_part_2 PARTITION OF hv_part FOR VALUES WITH (MODULUS 4, REMAINDER 2) WITH (autovacuum_enabled = false);
+CREATE TABLE hv_part_3 PARTITION OF hv_part FOR VALUES WITH (MODULUS 4, REMAINDER 3) WITH (autovacuum_enabled = false);
+INSERT INTO hv_part SELECT * FROM hv_events;
+CREATE INDEX hv_part_col ON hv_part USING sift_col (id, kind_id, region, qty, amount, ts);
+VACUUM (FREEZE, ANALYZE) hv_kinds, hv_events, hv_empty, hv_part;
+
+CREATE TABLE hv_q (n serial, label text, q text);
+INSERT INTO hv_q (label, q) VALUES
+  ('IN list',                  $q$SELECT kind_id, count(*), sum(qty) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled)$q$),
+  ('NOT IN list',              $q$SELECT kind_id, count(*), sum(qty) FROM hv_events GROUP BY 1 HAVING kind_id NOT IN (SELECT id FROM hv_kinds WHERE grp = 1)$q$),
+  ('NOT IN with a NULL',       $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id NOT IN (SELECT grp FROM hv_kinds)$q$),
+  ('EXISTS',                   $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING EXISTS (SELECT 1 FROM hv_kinds k WHERE k.id = hv_events.kind_id AND k.enabled)$q$),
+  ('NOT EXISTS',               $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING NOT EXISTS (SELECT 1 FROM hv_kinds k WHERE k.id = hv_events.kind_id AND k.enabled)$q$),
+  ('scalar sub-select',        $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id > (SELECT avg(id) FROM hv_kinds)$q$),
+  ('scalar of the key',        $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING (SELECT count(*) FROM hv_kinds k WHERE k.id = hv_events.kind_id) = 0 OR kind_id = 1$q$),
+  ('a key and an aggregate',   $q$SELECT kind_id, count(*), sum(qty) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled) AND sum(qty) > 10000$q$),
+  ('two conditions of rows',   $q$SELECT kind_id, region, count(*) FROM hv_events GROUP BY 1, 2 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE grp = 2) AND region IN (SELECT 'r' || id FROM hv_kinds WHERE id < 4)$q$),
+  ('a key expression',         $q$SELECT kind_id % 3, count(*) FROM hv_events GROUP BY 1 HAVING kind_id % 3 IN (SELECT grp FROM hv_kinds WHERE grp IS NOT NULL)$q$),
+  ('NULL keys',                $q$SELECT region, count(*) FROM hv_events GROUP BY 1 HAVING region IS NULL OR region IN (SELECT 'r' || id FROM hv_kinds WHERE id < 3)$q$),
+  ('with a WHERE',             $q$SELECT kind_id, round(sum(amount)::numeric, 4) FROM hv_events WHERE qty > 10 GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled)$q$),
+  ('ORDER BY and LIMIT',       $q$SELECT kind_id, count(*) c FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled) ORDER BY c DESC, 1 LIMIT 3$q$),
+  ('a window over the groups', $q$SELECT kind_id, count(*), rank() OVER (ORDER BY count(*)) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled)$q$),
+  ('over a join',              $q$SELECT k.grp, count(*), sum(e.qty) FROM hv_events e JOIN hv_kinds k ON k.id = e.kind_id GROUP BY 1 HAVING k.grp IN (SELECT grp FROM hv_kinds WHERE id > 8)$q$),
+  ('empty table',              $q$SELECT kind_id, count(*) FROM hv_empty GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds)$q$),
+  ('an aggregate in the sub-select', $q$SELECT kind_id, sum(qty) FROM hv_events GROUP BY 1 HAVING (SELECT count(*) FROM hv_kinds WHERE id <= sum(qty) / 100) > 2$q$),
+  ('an aggregate of the query',      $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING count(*) > (SELECT count(*) / 14 FROM hv_events)$q$),
+  ('a volatile function',      $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE random() < 2)$q$),
+  ('grouping sets',            $q$SELECT kind_id, region, count(*) FROM hv_events GROUP BY ROLLUP (kind_id, region) HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled)$q$),
+  ('grouping sets, NULL keys', $q$SELECT kind_id, region, count(*) FROM hv_events GROUP BY GROUPING SETS ((kind_id), (region), ()) HAVING kind_id IS NULL OR kind_id IN (SELECT id FROM hv_kinds WHERE enabled)$q$),
+  ('no GROUP BY',              $q$SELECT count(*), sum(qty) FROM hv_events HAVING 1 IN (SELECT id FROM hv_kinds WHERE id > 100)$q$),
+  ('no GROUP BY, true',        $q$SELECT count(*), sum(qty) FROM hv_events HAVING 1 IN (SELECT id FROM hv_kinds WHERE id < 100)$q$),
+  ('IN, duplicates and NULLs in the list', $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT grp + 2 FROM hv_kinds UNION ALL SELECT NULL)$q$),
+  ('IN, duplicates and NULLs, flat',   $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT CASE WHEN id % 2 = 0 THEN NULL ELSE grp + 3 END FROM hv_kinds)$q$),
+  ('IN, an empty list',        $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE id < 0)$q$),
+  ('IN, a list of NULLs',      $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT grp FROM hv_kinds WHERE grp IS NULL)$q$),
+  ('EXISTS, not correlated',   $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING EXISTS (SELECT 1 FROM hv_kinds WHERE id = 5)$q$),
+  ('EXISTS, not correlated, false', $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING EXISTS (SELECT 1 FROM hv_kinds WHERE id < 0)$q$),
+  ('IN, an aggregate in the list', $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT max(grp) + 5 FROM hv_kinds)$q$),
+  ('IN, a limit in the list',  $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds ORDER BY id DESC LIMIT 4)$q$),
+  ('IN, an order in the list', $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled ORDER BY id DESC)$q$),
+  ('IN, a CTE in the list',   $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (WITH c AS (SELECT id FROM hv_kinds WHERE enabled) SELECT id FROM c)$q$),
+  ('IN, a limit and an offset', $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds ORDER BY id LIMIT 5 OFFSET 2)$q$),
+  ('IN, a set-returning list', $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT generate_series(1, 5))$q$),
+  ('IN, a grouped list',       $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT grp + 4 FROM hv_kinds GROUP BY grp)$q$),
+  ('IN, a correlated list',    $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds k WHERE k.grp = hv_events.kind_id % 4)$q$),
+  ('EXISTS, a limit',          $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING EXISTS (SELECT 1 FROM hv_kinds k WHERE k.id = hv_events.kind_id LIMIT 1)$q$),
+  ('IN and an aggregate or',   $q$SELECT kind_id, count(*), sum(qty) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled) OR sum(qty) > 24000$q$),
+  ('IN, a float key cast to int',    $q$SELECT amount, count(*) FROM hv_events GROUP BY 1 HAVING amount::int IN (SELECT id FROM hv_kinds WHERE id < 6)$q$),
+  ('IN, a text key cut to a char',   $q$SELECT region, count(*) FROM hv_events GROUP BY 1 HAVING region::varchar(1) IN (SELECT 'r' FROM hv_kinds WHERE id < 3)$q$),
+  ('IN, a timestamp cut to a date',  $q$SELECT ts, count(*) FROM hv_events GROUP BY 1 HAVING ts::date IN (SELECT date '2024-01-01' + id FROM hv_kinds)$q$),
+  ('IN, an int key against a bigint list', $q$SELECT kind_id, count(*) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id::bigint FROM hv_kinds WHERE enabled)$q$),
+  ('IN, a text key against a varchar list', $q$SELECT region, count(*) FROM hv_events GROUP BY 1 HAVING region IN (SELECT ('r' || id)::varchar FROM hv_kinds WHERE id < 4)$q$),
+  ('IN, a varchar key',        $q$SELECT region::varchar, count(*) FROM hv_events GROUP BY region::varchar HAVING region::varchar IN (SELECT 'r' || id FROM hv_kinds WHERE id < 4)$q$),
+  ('IN and WHERE and HAVING aggregate', $q$SELECT kind_id, round(sum(amount)::numeric, 4) FROM hv_events WHERE qty > 5 GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE grp = 1) AND count(*) > 100$q$),
+  ('grouping sets, cube',      $q$SELECT kind_id, region, count(*) FROM hv_events GROUP BY CUBE (kind_id, region) HAVING region IN (SELECT 'r' || id FROM hv_kinds WHERE id < 4)$q$),
+  ('grouping sets, a distinct key', $q$SELECT kind_id, count(DISTINCT qty) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled)$q$),
+  ('a sub-query of the form',  $q$SELECT t.kind_id, t.c FROM (SELECT kind_id, count(*) c FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled)) t WHERE t.c > 100$q$);
+-- a HAVING sub-select moved to WHERE next to a WHERE that PostgreSQL cannot pull up (an OR over a correlated NOT EXISTS or EXISTS, which the scan decorrelates into a join of its own: the
+-- grouping entry is no longer the last of the range table), on a plain and on a partitioned table, the sub-selects correlated with the key or not
+INSERT INTO hv_q (label, q)
+SELECT t.name || ': ' || v.label, replace(v.q, '@T@', t.name)
+FROM (VALUES ('hv_events'), ('hv_part')) t(name),
+(VALUES
+  ('NOT EXISTS or a test, HAVING EXISTS', $q$SELECT kind_id FROM @T@ WHERE (NOT EXISTS (SELECT 1 FROM hv_kinds k WHERE k.id = @T@.kind_id AND k.grp = 2) OR qty > 25) GROUP BY kind_id HAVING EXISTS (SELECT 1 FROM hv_kinds s WHERE s.id = @T@.kind_id AND s.enabled)$q$),
+  ('NOT EXISTS or IN, HAVING EXISTS', $q$SELECT kind_id FROM @T@ WHERE (NOT EXISTS (SELECT 1 FROM hv_kinds k WHERE k.id = @T@.kind_id AND k.grp = 2) OR kind_id IN (SELECT id FROM hv_kinds WHERE grp = 1)) GROUP BY kind_id HAVING EXISTS (SELECT 1 FROM hv_kinds s WHERE s.id = @T@.kind_id AND s.enabled)$q$),
+  ('NOT EXISTS or a test, HAVING IN', $q$SELECT kind_id, count(*) FROM @T@ WHERE (NOT EXISTS (SELECT 1 FROM hv_kinds k WHERE k.id = @T@.kind_id AND k.grp = 2) OR qty > 25) GROUP BY kind_id HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled)$q$),
+  ('EXISTS or a test, HAVING EXISTS', $q$SELECT kind_id, sum(qty) FROM @T@ WHERE (EXISTS (SELECT 1 FROM hv_kinds k WHERE k.id = @T@.kind_id AND k.grp = 2) OR qty > 25) GROUP BY kind_id HAVING EXISTS (SELECT 1 FROM hv_kinds s WHERE s.id = @T@.kind_id AND s.enabled)$q$),
+  ('IN or IN, HAVING IN', $q$SELECT kind_id, count(*) FROM @T@ WHERE (kind_id IN (SELECT id FROM hv_kinds WHERE grp = 1) OR kind_id IN (SELECT id FROM hv_kinds WHERE grp = 2)) GROUP BY kind_id HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled)$q$),
+  ('NOT EXISTS or a test, HAVING NOT EXISTS', $q$SELECT kind_id, count(*) FROM @T@ WHERE (NOT EXISTS (SELECT 1 FROM hv_kinds k WHERE k.id = @T@.kind_id AND k.grp = 2) OR qty > 25) GROUP BY kind_id HAVING NOT EXISTS (SELECT 1 FROM hv_kinds s WHERE s.id = @T@.kind_id AND s.enabled)$q$),
+  ('NOT EXISTS or a test, HAVING correlated IN', $q$SELECT kind_id, count(*) FROM @T@ WHERE (NOT EXISTS (SELECT 1 FROM hv_kinds k WHERE k.id = @T@.kind_id AND k.grp = 2) OR qty > 25) GROUP BY kind_id HAVING kind_id IN (SELECT s.id FROM hv_kinds s WHERE s.id = @T@.kind_id)$q$),
+  ('two keys, NOT EXISTS on one, HAVING EXISTS on the other', $q$SELECT kind_id, region, count(*) FROM @T@ WHERE NOT EXISTS (SELECT 1 FROM hv_kinds k WHERE k.id = @T@.kind_id AND k.grp = 2) GROUP BY kind_id, region HAVING EXISTS (SELECT 1 FROM hv_kinds s WHERE s.grp = 1 AND s.id::text = right(@T@.region, 1))$q$)
+) v(label, q);
+SELECT n, label, sift_helpers.agg_check_outcome(q) AS outcome, sift_helpers.plan_text(q) LIKE '%SubPlan%' AS subplan FROM hv_q ORDER BY n;
+
+-- the same rows with parallel workers (the scan and the plan underneath); the prepared statements are in agg_having_modes
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SELECT count(*) AS queries, count(*) FILTER (WHERE sift_helpers.agg_check_outcome(q) NOT LIKE '% same') AS differ FROM hv_q;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+SET max_parallel_workers_per_gather = 0;
+
+
+-- The rows form is the plan even where the groups form would be cheaper by the estimates: a table of 300,000 rows in 200,000 groups with a sub-select that keeps 1% of the keys reads the rows form
+-- (the groups form reads and groups all of them: 27.7 ms against 2.4; with the memory of a hash aggregate for the 200,000 groups and the lookup caches off)
+CREATE TABLE hv_big AS SELECT i AS id, 1 + (i::bigint * 7919 % 100) AS g100, 1 + (i::bigint * 7919 % 1000) AS g1k, 1 + (i::bigint * 7919 % 10000) AS g10k, 1 + (i::bigint * 7919 % 50000) AS g50k,
+  1 + (i::bigint * 7919 % 200000) AS k, ((i * 37) % 1000) / 10.0 AS amount, i % 50 AS qty FROM generate_series(1, 300000) i;
+CREATE TABLE hv_ids AS SELECT i AS id FROM generate_series(1, 200000) i;
+ALTER TABLE hv_big ADD PRIMARY KEY (id);
+ALTER TABLE hv_ids ADD PRIMARY KEY (id);
+CREATE INDEX hv_big_col ON hv_big USING sift_col (id, g100, g1k, g10k, g50k, k, amount, qty);
+VACUUM (FREEZE, ANALYZE) hv_big, hv_ids;
+SET work_mem = '256MB';
+SET sift.agg_lookup_cache_kb = 0;
+SET sift.agg_lookup_shared_kb = 0;
+SET sift.agg_share_lookups = off;
+SELECT sift_helpers.agg_check_outcome(q) AS outcome, sift_helpers.plan_text(q) LIKE '%SubPlan%' AS subplan FROM (SELECT 'SELECT k, count(*), round(sum(amount)::numeric, 4) FROM hv_big GROUP BY 1 HAVING k IN (SELECT id FROM hv_ids WHERE id <= 2000)'::text AS q) b;
+RESET work_mem;
+RESET sift.agg_lookup_cache_kb;
+RESET sift.agg_lookup_shared_kb;
+RESET sift.agg_share_lookups;
+DROP TABLE hv_big, hv_ids;
+DROP TABLE hv_q, hv_kinds, hv_events, hv_empty, hv_part;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

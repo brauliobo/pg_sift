@@ -2,6 +2,7 @@
 -- that reads each unit through its sorted run is priced for what it reads (a seek of each unit), so it wins over the aggregate that reads every unit whose zone holds the bound
 -- (a key whose values are in no order of the heap holds the bound in every unit). The answers are the plain plan's, over NULLs, empty ranges, ties and both directions.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

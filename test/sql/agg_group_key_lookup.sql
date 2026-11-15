@@ -3,6 +3,7 @@
 -- is set by cost; the rows must be the same as with the scan off, for keys that are NULL, that repeat in the filtered table and that have no row in it, with no worker and
 -- with three.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE tenants (id int PRIMARY KEY, name text NOT NULL, set_id int);
@@ -46,19 +47,11 @@ BEGIN
 	END LOOP;
 	RETURN CASE WHEN scans > 0 THEN 'scan x' || scans WHEN probes > 0 THEN 'index lookups' ELSE 'normal' END;
 END $$;
-CREATE FUNCTION lookup_rows(q text, scan bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', scan::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
-	EXECUTE format('SELECT coalesce(string_agg(t::text, E''\n'' ORDER BY t::text), '''') FROM (%s) t', q) INTO r;
-	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	RETURN r;
-END $$;
+CREATE FUNCTION lookup_rows(q text, scan bool, workers int) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_with_workers_reset(q, scan, workers) $$;
 SELECT n, label, lookup_plan(q) AS plan, lookup_rows(q, false, 0) <> '' AS has_rows, lookup_rows(q, true, 0) = lookup_rows(q, false, 0) AS same, lookup_rows(q, true, 3) = lookup_rows(q, false, 0) AS same_workers FROM lookup_q ORDER BY n;
 
 DROP FUNCTION lookup_plan(text);
 DROP FUNCTION lookup_rows(text, bool, int);
 DROP TABLE lookup_q, events, marks, tenants;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

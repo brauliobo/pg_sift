@@ -48,11 +48,13 @@ sift_aggpart_pack_stats(const SiftSrcStats *s, int nleaves)
 		p->leaf[i].min = s->min[i];
 		p->leaf[i].max = s->max[i];
 		p->leaf[i].gord_cover = s->gord_cover[i];
+		p->leaf[i].gord_free = s->gord_free[i];
 		p->leaf[i].gord_coll = s->gord_coll[i];
 		p->leaf[i].gord_group = s->gord_group[i];
 		p->leaf[i].gord_bygroup = s->gord_bygroup[i];
 		p->leaf[i].ovf = s->ovf[i];
 		p->leaf[i].nokinds = s->nokinds[i];
+		p->leaf[i].rootless = s->rootless[i];
 		p->leaf[i].jnull = s->jnull[i];
 	}
 	return p;
@@ -95,6 +97,7 @@ sift_aggpart_add_stats(SiftSrcStats *tot, const SiftPartStats *s)
 		if (s->nrows > 0)
 		{
 			tot->gord_cover[i] = (tot->gord_cover[i] * tot->nrows + s->leaf[i].gord_cover * s->nrows) / w;
+			tot->gord_free[i] += s->leaf[i].gord_free;
 			tot->gord_coll[i] = first || tot->gord_coll[i] == s->leaf[i].gord_coll ? s->leaf[i].gord_coll : UINT32_MAX;
 			tot->gord_group[i] = first || tot->gord_group[i] == s->leaf[i].gord_group ? s->leaf[i].gord_group : -1;
 			tot->gord_bygroup[i] = (first || tot->gord_bygroup[i]) && s->leaf[i].gord_bygroup;
@@ -102,6 +105,7 @@ sift_aggpart_add_stats(SiftSrcStats *tot, const SiftPartStats *s)
 		tot->ndistinct[i] = Max(tot->ndistinct[i], s->leaf[i].ndistinct);
 		tot->ovf[i] |= s->leaf[i].ovf;
 		tot->nokinds[i] |= s->leaf[i].nokinds;
+		tot->rootless[i] = Max(tot->rootless[i], s->leaf[i].rootless);
 		tot->jnull[i] |= s->leaf[i].jnull;
 	}
 	tot->nrows += s->nrows;

@@ -255,7 +255,7 @@ subtest 'a reader holding the table makes the worker give up the tail without wa
 	my $bg = $node->background_psql('postgres');
 	$bg->query_safe('SET sift.table_auto_defrag = off; BEGIN; SET sift.enable_agg = off; DECLARE cur CURSOR FOR SELECT * FROM d; FETCH 1 FROM cur');
 	my $blocks = $node->safe_psql('postgres', "SELECT relation_blocks FROM sift.table_space('d')");
-	my $res = $node->safe_psql('postgres', "SET statement_timeout = '5s'; SELECT busy FROM sift.table_maintain('d')");
+	my $res = $node->safe_psql('postgres', "SET statement_timeout = '5s'; SELECT busy FROM sift.table_maintain('d')");  # timeout-ok: the call must return without waiting for the cursor's table lock; a statement over 5 s means it waited
 	is($res, 'f', 'the call returned while the cursor was open');
 	$bg->query_safe('COMMIT');
 	$bg->quit;

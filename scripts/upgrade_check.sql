@@ -19,19 +19,25 @@ RETURNS TABLE (object text, kind text, detected text, status text, advice text)
 LANGUAGE plpgsql AS $fn$
 DECLARE
 	-- the first release that reads each column format minor (docs/FORMATS.md section 4), and the sift.col_format_minor that writes what a release reads
-	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4", "22": "3.5", "23": "3.5", "24": "3.5", "25": "3.6", "26": "3.6", "27": "3.6", "28": "3.6", "29": "3.6", "30": "3.6", "31": "3.6", "32": "3.6", "33": "3.7", "34": "3.7", "35": "3.7", "36": "3.7", "37": "3.7", "38": "3.7", "39": "3.7", "40": "4.0", "41": "4.0", "42": "4.0", "43": "4.0"}';
+	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4", "22": "3.5", "23": "3.5", "24": "3.5", "25": "3.6", "26": "3.6", "27": "3.6", "28": "3.6", "29": "3.6", "30": "3.6", "31": "3.6", "32": "3.6", "33": "3.7", "34": "3.7", "35": "3.7", "36": "3.7", "37": "3.7", "38": "3.7", "39": "3.7", "40": "4.0", "41": "4.0", "42": "4.0", "43": "4.0", "44": "4.3"}';
 	col_setting CONSTANT jsonb := '{"3.0": 3, "3.1": 4, "3.2": 6, "3.3": 15}';
+	-- the settings the 4.2 library removed, each with the value that is refused (a regular expression; null: any value) and what to say. sift.eval_methods lost only some of its methods
+	removed CONSTANT jsonb := '{"sift.eval_methods": ["(^|[^a-z_])(latest_hint|snapshot_masks|unit_rewrite|skip_trigger_lookup)([^a-z_]|$)", "the 4.2 library has removed that method (skip_trigger_lookup is always on) and refuses it in a SET"],
+		"sift.enable_col": [null, "the 4.2 library has removed this setting (it never changed a plan; sift.enable_col_scan and sift.enable_agg are the switches) and refuses it in a SET"],
+		"sift.table_auto_defrag_dead_pct": [null, "the 4.2 library has removed this setting (it has had no effect since 4.0; the background pass of a sift_table is asked for by the reads of the table) and refuses it in a SET"]}';
 	tgt text := regexp_replace(target, '^([0-9]+\.[0-9]+).*$', '\1');
 	ext text;
 	lib text;
 	avail text;
 	r record;
+	dep record;
 	maj int;
 	mnr int;
 	lo int;
 	hi int;
 	need text;
 	adv text;
+	dpl boolean;
 BEGIN
 	IF target IS NOT NULL AND target !~ '^[0-9]+\.[0-9]+' THEN
 		RAISE EXCEPTION 'target must be a release such as 3.1, not "%"', target;
@@ -66,9 +72,10 @@ BEGIN
 		END IF;
 		BEGIN
 			EXECUTE 'SELECT major, minor FROM sift.index_format($1)' INTO maj, mnr USING r.relid;
-			lo := NULL; hi := NULL;
+			lo := NULL; hi := NULL; dpl := false;
 			IF r.amname = 'sift_col' THEN
 				SELECT min((to_jsonb(s)->>'format')::int), max((to_jsonb(s)->>'format')::int) INTO lo, hi FROM sift.col_segments(r.relid) s;
+				SELECT coalesce(bool_or(l.path LIKE '%#present'), false) INTO dpl FROM sift.col_leaves(r.relid) l;
 			ELSIF r.amname = 'sift_table' THEN
 				SELECT min((to_jsonb(s)->>'format')::int), max((to_jsonb(s)->>'format')::int) INTO lo, hi FROM sift.table_segments(r.relid) s;
 			END IF;
@@ -85,14 +92,18 @@ BEGIN
 				CONTINUE;
 		END;
 		-- the first release that reads it
-		need := CASE WHEN r.amname = 'sift' THEN CASE WHEN mnr >= 5 THEN '4.0' WHEN mnr >= 4 THEN '3.7' WHEN mnr >= 3 THEN '3.1' ELSE '3.0' END
+		need := CASE WHEN r.amname = 'sift' THEN CASE WHEN mnr >= 6 THEN '4.2' WHEN mnr >= 5 THEN '4.0' WHEN mnr >= 4 THEN '3.7' WHEN mnr >= 3 THEN '3.1' ELSE '3.0' END
 					 ELSE coalesce(col_first->>greatest(hi, 3)::text, '3.0') END;
+		-- 4.2: the presence leaf of a jsonb column that may hold a NULL document ("<column>#present"): a release before 4.2 refuses the index
+		IF dpl AND string_to_array(need, '.')::int[] < ARRAY[4, 2] THEN need := '4.2'; END IF;
 		detected := format('format %s.%s', maj, mnr) ||
 				 CASE WHEN hi IS NULL THEN '' WHEN lo = hi THEN ', column format ' || hi ELSE format(', column format %s to %s', lo, hi) END;
 		status := 'ok'; advice := NULL;
 		IF tgt IS NOT NULL AND string_to_array(need, '.')::int[] > string_to_array(tgt, '.')::int[] THEN
 			status := 'blocker';
-			IF r.amname = 'sift' THEN
+			IF dpl THEN
+				adv := format('REINDEX INDEX %s with %s writes the layout that %s reads; there is no setting (the forms NOT, IS FALSE and IS NULL of its jsonb columns read the table again)', r.rel, tgt, tgt);
+			ELSIF r.amname = 'sift' THEN
 				adv := format('%s cannot read this format: drop the index and CREATE INDEX it again with that release, or keep this library', tgt);
 			ELSIF hi = 5 THEN
 				adv := format('a schema with wide leaves is written for 3.2 and later at every setting: drop the index before going back to %s', tgt);
@@ -100,7 +111,7 @@ BEGIN
 				adv := format('ALTER INDEX %s SET (key_cut = ''off''), then REINDEX INDEX %s writes units by superblock, which 3.3 reads', r.rel, r.rel);
 			ELSIF hi = 20 AND tgt = '3.3' THEN
 				adv := format('ALTER INDEX %s RESET (hll_columns), then REINDEX INDEX %s writes units without sketches, which 3.3 reads', r.rel, r.rel);
-			ELSIF hi IN (33, 34, 35, 36, 37, 38, 39, 40, 41, 42) THEN
+			ELSIF hi >= 33 THEN
 				adv := format('SET sift.col_format_minor = 14, then %s writes the point directories with a power of two of slots, the units of a key_cut index by superblock (and without the sections of minors 15 to 32), which %s reads',
 							  CASE r.amname WHEN 'sift_table' THEN 'VACUUM FULL ' || r.rel || ' (ACCESS EXCLUSIVE lock)' ELSE 'REINDEX INDEX ' || r.rel END, tgt);
 			ELSIF hi IN (30, 31, 32) THEN
@@ -136,6 +147,17 @@ BEGIN
 			advice := format('the deprecated name of write_buffer_limit: ALTER INDEX %s RESET (mutable_limit), then SET (write_buffer_limit = N)', r.rel);
 			RETURN NEXT;
 		END IF;
+
+		-- 4.3 accepts these and ignores them (point_columns lists heap addresses); 4.4 removes them
+		FOR dep IN SELECT * FROM (VALUES ('key_cut_rows', 'the units aim at the rows of an average superblock'),
+									   ('point_columns', 'its columns are listed as heap addresses, as point_tid_columns does'),
+									   ('order_columns', 'no sorted run is written; the order arrays, order_array_columns, answer what it did')) v(opt, what)
+		LOOP
+			CONTINUE WHEN NOT EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE dep.opt || '=%');
+			kind := 'option'; detected := dep.opt; status := 'warn';
+			advice := format('deprecated in 4.3 and removed in 4.4 (%s): ALTER INDEX %s RESET (%s)', dep.what, r.rel, dep.opt);
+			RETURN NEXT;
+		END LOOP;
 	END LOOP;
 
 	-- the two event triggers of 3.3 call table_ddl_check, a function that only the 3.3 library has (sift_table_paths_drop is 3.2's): with an older library every ALTER TABLE
@@ -183,6 +205,8 @@ BEGIN
 		object := r.name; kind := 'setting'; detected := format('%s = %s, set by %s', r.name, r.value, r.scope); status := 'warn'; advice := NULL;
 		IF r.name LIKE 'sift.test\_%' THEN
 			kind := 'test'; advice := 'a setting of the test build only: remove it';
+		ELSIF removed ? r.name THEN
+			CONTINUE;		-- the removed names are the blockers below
 		ELSIF r.unknown THEN
 			advice := 'the loaded library does not define it (removed, renamed or from another build): remove it, or PostgreSQL ignores it with a warning';
 		ELSIF r.vartype = 'bool' AND r.boot_val = 'on' AND lower(r.value) IN ('off', 'false', 'no', '0', 'f', 'n') THEN
@@ -192,6 +216,33 @@ BEGIN
 		ELSE
 			CONTINUE;
 		END IF;
+		RETURN NEXT;
+	END LOOP;
+
+	-- 4.2 removed the settings of `removed` (and latest_hint, snapshot_masks, unit_rewrite and skip_trigger_lookup, also with a leading -, from sift.eval_methods): a SET, ALTER ROLE, ALTER DATABASE and ALTER SYSTEM that
+	-- names one fails once the 4.2 library is loaded, and where the server reads one (postgresql.conf, postgresql.auto.conf, a role or database setting) it is ignored with a warning in every session
+	FOR r IN SELECT x.name, x.scope, x.value, x.cmd, k.spec->>1 AS note FROM (
+				SELECT s.name, 'server (' || s.source || ')' AS scope, s.setting AS value,
+					   'remove it from postgresql.conf, or ALTER SYSTEM RESET ' || s.name || ' when it is in postgresql.auto.conf, then SELECT pg_reload_conf()' AS cmd
+				FROM pg_settings s WHERE removed ? s.name AND s.source NOT IN ('default', 'override', 'database', 'user', 'database user', 'session', 'client')
+				UNION ALL
+				SELECT f.name, 'file ' || f.sourcefile || ':' || f.sourceline, f.setting,
+					   'remove the line (ALTER SYSTEM RESET ' || f.name || ' when the file is postgresql.auto.conf), then SELECT pg_reload_conf()'
+				FROM pg_file_settings f WHERE removed ? f.name
+				UNION ALL
+				SELECT split_part(c, '=', 1), concat_ws(' ', CASE WHEN d.setrole <> 0 THEN 'ALTER ROLE ' || quote_ident(ro.rolname) END, CASE WHEN d.setdatabase <> 0 THEN 'IN DATABASE ' || quote_ident(db.datname) END),
+					   substr(c, strpos(c, '=') + 1),
+					   'ALTER ' || CASE WHEN d.setrole <> 0 THEN 'ROLE ' || quote_ident(ro.rolname) || CASE WHEN d.setdatabase <> 0 THEN ' IN DATABASE ' || quote_ident(db.datname) ELSE '' END
+									    WHEN d.setdatabase <> 0 THEN 'DATABASE ' || quote_ident(db.datname) ELSE 'ROLE ALL' END || ' RESET ' || split_part(c, '=', 1)
+				FROM pg_db_role_setting d LEFT JOIN pg_roles ro ON ro.oid = d.setrole LEFT JOIN pg_database db ON db.oid = d.setdatabase, unnest(d.setconfig) c
+				WHERE removed ? split_part(c, '=', 1)
+			 ) x
+			 JOIN jsonb_each(removed) k(name, spec) ON k.name = x.name
+			 WHERE k.spec->>0 IS NULL OR x.value ~* (k.spec->>0)
+			 ORDER BY x.name, x.scope
+	LOOP
+		object := r.name; kind := 'setting'; detected := format('%s = %s, set by %s', r.name, r.value, r.scope); status := 'blocker';
+		advice := r.note || ': ' || r.cmd;
 		RETURN NEXT;
 	END LOOP;
 

@@ -10,7 +10,7 @@ SELECT setseed(0.42);
 
 CREATE TABLE vl (id int PRIMARY KEY, dim_a_id int NOT NULL, foreign_id_b int NOT NULL, d date NOT NULL, score int NOT NULL, body text) WITH (autovacuum_enabled = false);
 INSERT INTO vl SELECT g, 1 + (power(random(), 2) * 99)::int, (random() * 50)::int, DATE '2022-01-01' + (random() * 1000)::int, (random() * 5)::int, md5(g::text) FROM generate_series(1, 200000) g;
-CREATE INDEX vl_col ON vl USING sift_col (dim_a_id, foreign_id_b, d, score) WITH (key_cut = 'dim_a_id', rollup_dims = 'off');
+CREATE INDEX vl_col ON vl USING sift_col (dim_a_id, foreign_id_b, d, score) WITH (key_cut = 'dim_a_id', rollup_columns = 'off');
 ANALYZE vl;
 SELECT relallvisible FROM pg_class WHERE relname = 'vl';
 

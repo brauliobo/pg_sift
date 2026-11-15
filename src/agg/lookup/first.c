@@ -3,6 +3,7 @@
  * The order that picks the first row of each key, the keep of agreeing rows, the count of the
  * first rows of a table and the load and peek of a first map.
  */
+/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which sift.agg_lookup_max_kb bounds at plan time */
 #include "postgres.h"
 
 #include "nodes/nodeFuncs.h"
@@ -48,8 +49,8 @@ first_order_row(const MapTab *m, const SiftAggFirst *f, FirstOrd *o, TupleTableS
 	if (m->nrow > o->cap)
 	{
 		o->cap = Max(o->cap * 2, 1024);
-		o->val = o->val ? repalloc(o->val, o->cap * f->nord * sizeof(int64)) : MemoryContextAlloc(o->cx, o->cap * f->nord * sizeof(int64));
-		o->isnull = o->isnull ? repalloc(o->isnull, o->cap * f->nord) : MemoryContextAlloc(o->cx, o->cap * f->nord);
+		SIFT_REGROW_IN(o->cx, o->val, o->cap * f->nord * sizeof(int64));
+		SIFT_REGROW_IN(o->cx, o->isnull, o->cap * f->nord);
 	}
 	for (int i = 0; i < f->nord; i++)
 	{
@@ -237,7 +238,7 @@ map_first_peek(AggExec *ex, int ci)
 	ex->first_peek = true;
 	PG_TRY();
 	{
-		ex->cs[ci].fruns = first_count(ex, shared_map_key(ex, ci, true));
+		ex->cs[ci].fruns = first_count(ex, look_key(ex, ci, true, false));
 		m = map_load_table(ex, ci, ex->cxt);
 	}
 	PG_FINALLY();

@@ -3,42 +3,13 @@
  */
 #include "postgres.h"
 
-#include "access/genam.h"
-#include "access/heapam.h"
-#include "access/table.h"
 #include "access/htup_details.h"
-#include "access/tupmacs.h"
-#include "access/xact.h"
-#include "catalog/namespace.h"
-#include "catalog/objectaddress.h"
-#include "catalog/pg_class.h"
-#include "utils/acl.h"
-#include "utils/fmgroids.h"
-#include "utils/inval.h"
-#include "catalog/pg_type.h"
-#include "funcapi.h"
-#include "miscadmin.h"
-#include "access/skey.h"
-#include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
-#include "storage/procarray.h"
-#include "utils/builtins.h"
-#include "utils/datum.h"
-#include "utils/lsyscache.h"
 #include "utils/memutils.h"
-#include "utils/numeric.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
-#include "utils/timestamp.h"
-#include "utils/tuplestore.h"
 
-#include "col/am.h"
-#include "col/pg.h"
 #include "col/seg.h"
 #include "core/lane.h"
-#include "bm25/maint.h"
-#include "bm25/merge.h"
-#include "core/ops.h"
 #include "table/table.h"
 #include "table/seg_int.h"
 
@@ -174,7 +145,7 @@ path_wbuf(SiftTblRel *st, const SiftTblSeg *seg)
 		if (c->pwb[i].gen == seg->gen)
 			return &c->pwb[i];
 	old = MemoryContextSwitchTo(st->cxt);
-	c->pwb = c->pwb ? repalloc(c->pwb, (c->npwb + 1) * sizeof(PathWbuf)) : palloc((c->npwb + 1) * sizeof(PathWbuf));
+	SIFT_REGROW(c->pwb, (c->npwb + 1) * sizeof(PathWbuf));
 	c->pwb[c->npwb] = (PathWbuf) {.gen = seg->gen,.seen = palloc(SIFT_TBL_MAX_WBUF_PAGES * sizeof(uint16))};
 	memset(c->pwb[c->npwb].seen, 0xFF, SIFT_TBL_MAX_WBUF_PAGES * sizeof(uint16));
 	MemoryContextSwitchTo(old);

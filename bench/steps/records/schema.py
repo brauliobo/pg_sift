@@ -5,7 +5,7 @@ when check.py finds one dataset, one table state and one set of settings in it. 
 
     ARM         the structure that answered, chosen by forcing it on the same data (heap: sequential scan, btree, gin, sift), with its option (`default`, `key_order=ts`, ...)
     DEFAULT     the plan the planner chooses with no setting forced (mode `default`); a forced arm has `picked` = 1 when it ran the default plan (the same `plan_hash`; before schema 7: the same structure and option), and the default row's `arm_option` is that arm's
-    STRUCTURE   the structure the EXPLAIN of the run names (heap, btree, gin, sift, mixed): the arm must equal it
+    STRUCTURE   the structure the EXPLAIN of the run names (heap, btree, gin, sift, mixed): the arm must equal it, except the arm `native` (the normal plan, sift.enable_agg off), which has the structure its plan names
     TEMP        warm: the statement ran before in this session; cold: the shared buffers of its relations were evicted first (`os_cache_dropped` says whether the OS cache was too)
 """
 import hashlib
@@ -14,6 +14,7 @@ import re
 import time
 
 STRUCTURES = ('heap', 'btree', 'gin', 'sift')
+NATIVE = 'native'   # the arm of the normal plan (sift.enable_agg off), whatever structure its plan names: it is not a structure to force, and it is never the picked arm
 STATES = ('fresh_vacuumed', 'fresh_unvacuumed', 'churned_vacuumed', 'churned_unvacuumed')
 ORDERS = ('arrival', 'sorted', 'hash', 'other')
 KINDS = ('read', 'maintenance', 'load', 'build')
@@ -54,7 +55,7 @@ FIELDS = [
     ('kind', 's', True, 'read, maintenance (VACUUM, merge), load or build (CREATE INDEX of a sift index: the instructions of the leader and of the workers, the segments it wrote, the options it was built with)'),
     ('protocol', 's', True, 'what one repetition is: single, or the rounds it averages (rounds=12): a figure of one round is not the average of twelve'),
     ('mode', 's', True, 'forced (the arm was selected with settings), default (the planner chose) or unavailable (no setting makes the plan of this arm: one row without times, `structure` names what the plans were)'),
-    ('arm', 's', True, 'heap, btree, gin or sift; `default` rows carry the structure the plan named'),
+    ('arm', 's', True, 'heap, btree, gin, sift or native (the normal plan, sift.enable_agg off: its structure is whatever the plan names, and it is never picked); `default` rows carry the structure the plan named'),
     ('arm_option', 's', True, 'the option of the structure: default, key_order=ts, key_cut, ...; a default row names the option of the forced arm that ran the plan the planner chose (default when none did)'),
     ('picked', 'b', True, '1 when this arm ran the plan the planner chooses by default: the same plan_hash (schema 7 on), before it the same structure and option'),
     ('structure', 's', True, 'the structure the EXPLAIN of this run names: heap, btree, gin, sift or mixed'),

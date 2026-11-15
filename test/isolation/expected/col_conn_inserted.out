@@ -1,0 +1,52 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1stamp s1ask s2b s2i s2flush s1ask s2abort s1ask
+step s1stamp: INSERT INTO iso_conn_stamp SELECT lineage, horizon FROM sift._test_conn_take('iso_conn_dim_c');
+step s1ask: SELECT sift._test_conn_inserted_since('iso_conn_dim_c', lin, hor) AS inserted_since FROM iso_conn_stamp;
+inserted_since
+--------------
+f             
+(1 row)
+
+step s2b: BEGIN;
+step s2i: INSERT INTO iso_conn_dim VALUES (1001, 1);
+step s2flush: SAVEPOINT x;
+step s1ask: SELECT sift._test_conn_inserted_since('iso_conn_dim_c', lin, hor) AS inserted_since FROM iso_conn_stamp;
+inserted_since
+--------------
+t             
+(1 row)
+
+step s2abort: ROLLBACK;
+step s1ask: SELECT sift._test_conn_inserted_since('iso_conn_dim_c', lin, hor) AS inserted_since FROM iso_conn_stamp;
+inserted_since
+--------------
+f             
+(1 row)
+
+
+starting permutation: s1stamp s2b s2i s2flush s1ask s2commit s1ask s1restamp s1ask
+step s1stamp: INSERT INTO iso_conn_stamp SELECT lineage, horizon FROM sift._test_conn_take('iso_conn_dim_c');
+step s2b: BEGIN;
+step s2i: INSERT INTO iso_conn_dim VALUES (1001, 1);
+step s2flush: SAVEPOINT x;
+step s1ask: SELECT sift._test_conn_inserted_since('iso_conn_dim_c', lin, hor) AS inserted_since FROM iso_conn_stamp;
+inserted_since
+--------------
+t             
+(1 row)
+
+step s2commit: COMMIT;
+step s1ask: SELECT sift._test_conn_inserted_since('iso_conn_dim_c', lin, hor) AS inserted_since FROM iso_conn_stamp;
+inserted_since
+--------------
+t             
+(1 row)
+
+step s1restamp: DELETE FROM iso_conn_stamp; INSERT INTO iso_conn_stamp SELECT lineage, horizon FROM sift._test_conn_take('iso_conn_dim_c');
+step s1ask: SELECT sift._test_conn_inserted_since('iso_conn_dim_c', lin, hor) AS inserted_since FROM iso_conn_stamp;
+inserted_since
+--------------
+f             
+(1 row)
+

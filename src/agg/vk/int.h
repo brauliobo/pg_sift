@@ -114,7 +114,6 @@ struct SiftVk
 	uint64_t	up;				/* bytes of the staging area in use */
 	SiftVkKey  *pend;
 	uint32_t	npend;
-	uint32_t	cappend;
 };
 
 #define CK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) return fail(vk, #x, r_); } while (0)

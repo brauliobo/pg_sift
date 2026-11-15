@@ -3,10 +3,9 @@
  */
 #include "postgres.h"
 
-#include "nodes/makefuncs.h"
-#include "catalog/pg_operator_d.h"
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
+#include "executor/nodeHash.h"
 #include "mb/pg_wchar.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
@@ -15,10 +14,16 @@
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/date.h"
-#include "nodes/value.h"
 #include "storage/itemptr.h"
 
-#include "agg/spec.h"
+#include "agg/agg.h"
+#include "agg/plan_int.h"
+#include "core/limits.h"
+
+/* what a group table that cannot spill may be, as a multiple of hash memory, before the scan gives way to the normal plan (which spills) */
+#define GROUP_NOSPILL_FACTOR	32
+/* ... of the hash memory, or of the memory the defaults give (work_mem 4MB, hash_mem_multiplier 2) when that is more: a small work_mem is a choice for sorts */
+#define GROUP_NOSPILL_BASE		(8 * 1024 * 1024)
 
 sift_i128
 sift_pow10(int e)
@@ -181,20 +186,6 @@ sift_aggspec_tid_range(const SiftAggSpec *s, uint64 *lo, uint64 *hi)
 	return any;
 }
 
-static Node *
-strip_relabel(Node *n)
-{
-	while (n && IsA(n, RelabelType))
-		n = (Node *) ((RelabelType *) n)->arg;
-	return n;
-}
-
-static bool
-text_type(Oid t)
-{
-	return t == TEXTOID || t == VARCHAROID;
-}
-
 /* a text constant that is not NULL */
 static bool
 str_const(Node *n, const char **s, uint32 *len)
@@ -202,7 +193,7 @@ str_const(Node *n, const char **s, uint32 *len)
 	Const	   *k = (Const *) strip_relabel(n);
 	text	   *t;
 
-	if (!IsA(k, Const) || k->constisnull || !text_type(k->consttype))
+	if (!IsA(k, Const) || k->constisnull || !sift_str_type(k->consttype))
 		return false;
 	t = DatumGetTextPP(k->constvalue);
 	*s = VARDATA_ANY(t);
@@ -210,30 +201,30 @@ str_const(Node *n, const char **s, uint32 *len)
 	return true;
 }
 
-static SiftSrcStrOp
-str_commute(SiftSrcStrOp op)
+static SiftColOp
+str_commute(SiftColOp op)
 {
-	return op == SSTR_LT ? SSTR_GT : op == SSTR_LE ? SSTR_GE : op == SSTR_GT ? SSTR_LT : op == SSTR_GE ? SSTR_LE : op;
+	return op == SIFT_COLOP_LT ? SIFT_COLOP_GT : op == SIFT_COLOP_LE ? SIFT_COLOP_GE : op == SIFT_COLOP_GT ? SIFT_COLOP_LT : op == SIFT_COLOP_GE ? SIFT_COLOP_LE : op;
 }
 
 /* the comparison a text function is, or 0; the range operators only compare bytes in the C collation */
-static SiftSrcStrOp
+static SiftColOp
 str_func_op(Oid funcid)
 {
 	switch (funcid)
 	{
 		case F_TEXTEQ:
-			return SSTR_EQ;
+			return SIFT_COLOP_EQ;
 		case F_TEXTNE:
-			return SSTR_NE;
+			return SIFT_COLOP_NE;
 		case F_TEXT_LT:
-			return SSTR_LT;
+			return SIFT_COLOP_LT;
 		case F_TEXT_LE:
-			return SSTR_LE;
+			return SIFT_COLOP_LE;
 		case F_TEXT_GT:
-			return SSTR_GT;
+			return SIFT_COLOP_GT;
 		case F_TEXT_GE:
-			return SSTR_GE;
+			return SIFT_COLOP_GE;
 	}
 	return 0;
 }
@@ -250,7 +241,7 @@ str_pattern_func(Oid funcid)
  * characters in UTF-8 and the single byte encodings only (a trail byte of SJIS or GBK is also an ASCII one). On true the literal is in *s, *len.
  */
 static bool
-like_test(const char **s, uint32 *len, SiftSrcStrOp *op)
+like_test(const char **s, uint32 *len, SiftColOp *op)
 {
 	bool		head = *len > 0 && **s == '%',
 				tail = *len > 1 && (*s)[*len - 1] == '%';
@@ -262,7 +253,7 @@ like_test(const char **s, uint32 *len, SiftSrcStrOp *op)
 		return false;
 	*s = lit;
 	*len = n;
-	*op = head ? (tail ? SSTR_CONTAINS : SSTR_SUFFIX) : SSTR_PREFIX;
+	*op = head ? (tail ? SIFT_COLOP_CONTAINS : SIFT_COLOP_SUFFIX) : SIFT_COLOP_PREFIX;
 	return true;
 }
 
@@ -272,7 +263,7 @@ like_test(const char **s, uint32 *len, SiftSrcStrOp *op)
  * only, in a collation that lowers A-Z to a-z).
  */
 static bool
-regex_literal(const char **s, uint32 *len, bool icase, SiftSrcStrOp *op)
+regex_literal(const char **s, uint32 *len, bool icase, SiftColOp *op)
 {
 	const char *re = *s;
 	uint32		n = *len,
@@ -310,7 +301,7 @@ regex_literal(const char **s, uint32 *len, bool icase, SiftSrcStrOp *op)
 		return false;
 	*s = lit;
 	*len = k;
-	*op = head ? (tail ? SSTR_EQ : SSTR_PREFIX) : tail ? SSTR_SUFFIX : SSTR_CONTAINS;
+	*op = head ? (tail ? SIFT_COLOP_EQ : SIFT_COLOP_PREFIX) : tail ? SIFT_COLOP_SUFFIX : SIFT_COLOP_CONTAINS;
 	return true;
 }
 
@@ -338,14 +329,24 @@ sift_aggspec_ascii_fold(Oid collid)
 	return n == sizeof(lowers) - 1 && memcmp(az, lowers, n) == 0;
 }
 
+/* the one constant of a test */
+static SiftColValue *
+one_str(const char *s, uint32 len)
+{
+	SiftColValue *v = palloc(sizeof(SiftColValue));
+
+	*v = (SiftColValue) {.v.s = s,.len = len};
+	return v;
+}
+
 /*
  * ILIKE '%part%' is lower(value) LIKE lower(part), and for a part of ASCII bytes the strings are compared as bytes with their ASCII letters in lower case,
  * if the collation lowers A-Z to a-z (not tr_TR's I) in a UTF-8 database: the lower case of any other character is not ASCII, but for U+0130 and U+212A,
  * which a part with an i or a k meets as what lower() makes of them (*vals[1], *vals[2], when that is not themselves; subst false for ~*, which does not
- * equate them). On true vals/lens hold the lower case part and perhaps those two.
+ * equate them). On true vals hold the lower case part and perhaps those two.
  */
 static bool
-ilike_test(Oid collid, const char *s, uint32 len, bool subst, const char ***vals, uint32 **lens, int *nvals)
+ilike_test(Oid collid, const char *s, uint32 len, bool subst, SiftColValue **vals, int *nvals)
 {
 	char	   *low = palloc(len);
 	bool		ik = false;
@@ -360,10 +361,8 @@ ilike_test(Oid collid, const char *s, uint32 len, bool subst, const char ***vals
 		ik |= low[i] == 'i' || low[i] == 'k';
 	}
 	*nvals = 1;
-	*vals = palloc(3 * sizeof(char *));
-	*lens = palloc(3 * sizeof(uint32));
-	(*vals)[0] = low;
-	(*lens)[0] = len;
+	*vals = palloc(3 * sizeof(SiftColValue));
+	(*vals)[0] = (SiftColValue) {.v.s = low,.len = len};
 	if (ik && subst)
 	{
 		uint32		l1 = 2,
@@ -373,10 +372,8 @@ ilike_test(Oid collid, const char *s, uint32 len, bool subst, const char ***vals
 
 		if (!(l1 == 2 && memcmp(i1, "\xC4\xB0", 2) == 0 && l2 == 3 && memcmp(i2, "\xE2\x84\xAA", 3) == 0))
 		{
-			(*vals)[1] = i1;
-			(*lens)[1] = l1;
-			(*vals)[2] = i2;
-			(*lens)[2] = l2;
+			(*vals)[1] = (SiftColValue) {.v.s = i1,.len = l1};
+			(*vals)[2] = (SiftColValue) {.v.s = i2,.len = l2};
 			*nvals = 3;
 		}
 	}
@@ -388,9 +385,9 @@ ilike_test(Oid collid, const char *s, uint32 len, bool subst, const char ***vals
  * is a literal. On true *op, and *s, *len the literal (ICONTAINS: spelled by ilike_test, where *subst says whether U+0130 and U+212A count).
  */
 static bool
-pattern_test(Oid funcid, const char **s, uint32 *len, SiftSrcStrOp *op, bool *subst)
+pattern_test(Oid funcid, const char **s, uint32 *len, SiftColOp *op, bool *subst)
 {
-	SiftSrcStrOp lop;
+	SiftColOp lop;
 
 	*subst = true;
 	switch (funcid)
@@ -402,24 +399,24 @@ pattern_test(Oid funcid, const char **s, uint32 *len, SiftSrcStrOp *op, bool *su
 			return true;
 		case F_TEXTNLIKE:
 		case F_TEXTICLIKE:
-			if (!like_test(s, len, &lop) || lop != SSTR_CONTAINS)
+			if (!like_test(s, len, &lop) || lop != SIFT_COLOP_CONTAINS)
 				return false;
-			*op = funcid == F_TEXTNLIKE ? SSTR_NOTCONTAINS : SSTR_ICONTAINS;
+			*op = funcid == F_TEXTNLIKE ? SIFT_COLOP_NOTCONTAINS : SIFT_COLOP_ICONTAINS;
 			return true;
 		case F_STARTS_WITH:
-			*op = SSTR_PREFIX;
+			*op = SIFT_COLOP_PREFIX;
 			return *len > 0;
 		case F_TEXTREGEXEQ:
 			return regex_literal(s, len, false, op);
 		case F_TEXTREGEXNE:
-			if (!regex_literal(s, len, false, op) || *op != SSTR_CONTAINS)
+			if (!regex_literal(s, len, false, op) || *op != SIFT_COLOP_CONTAINS)
 				return false;
-			*op = SSTR_NOTCONTAINS;
+			*op = SIFT_COLOP_NOTCONTAINS;
 			return true;
 		case F_TEXTICREGEXEQ:
 			if (!regex_literal(s, len, true, op))
 				return false;
-			*op = SSTR_ICONTAINS;
+			*op = SIFT_COLOP_ICONTAINS;
 			*subst = false;
 			return true;
 	}
@@ -432,7 +429,7 @@ str_call_test(Oid funcid, Oid collid, List *args, SiftSrcStrTest *out, bool rang
 {
 	Node	   *a,
 			   *b;
-	SiftSrcStrOp sop = 0;
+	SiftColOp sop = 0;
 	const char *s;
 	uint32		len;
 	bool		pattern = str_pattern_func(funcid),
@@ -454,26 +451,21 @@ str_call_test(Oid funcid, Oid collid, List *args, SiftSrcStrTest *out, bool rang
 		return false;
 	if (pattern && !pattern_test(funcid, &s, &len, &sop, &subst))
 		return false;
-	if (sop >= SSTR_LT && sop <= SSTR_GE && !ranges ? collid != C_COLLATION_OID : !get_collation_isdeterministic(collid))
+	if (sop >= SIFT_COLOP_LT && sop <= SIFT_COLOP_GE && !ranges ? collid != C_COLLATION_OID : !get_collation_isdeterministic(collid))
 		return false;
 	out->op = sop;
 	out->collid = collid;
-	if (sop == SSTR_ICONTAINS)
+	if (sop == SIFT_COLOP_ICONTAINS)
 	{
-		const char **vals;
-		uint32	   *lens;
+		SiftColValue *vals;
 
-		if (!ilike_test(collid, s, len, subst, &vals, &lens, &out->nvals))
+		if (!ilike_test(collid, s, len, subst, &vals, &out->nvals))
 			return false;
 		out->vals = vals;
-		out->lens = lens;
 		return true;
 	}
 	out->nvals = 1;
-	out->vals = palloc(sizeof(char *));
-	out->lens = palloc(sizeof(uint32));
-	((const char **) out->vals)[0] = s;
-	((uint32 *) out->lens)[0] = len;
+	out->vals = one_str(s, len);
 	return true;
 }
 
@@ -537,12 +529,9 @@ strpos_test(OpExpr *op, SiftSrcStrTest *out)
 	if (absent == found || list_length(f->args) != 2 || !IsA(strip_relabel(linitial(f->args)), Param) || !str_const(strip_relabel(lsecond(f->args)), &s, &len) ||
 		len == 0 || !get_collation_isdeterministic(f->inputcollid) || (GetDatabaseEncoding() != PG_UTF8 && pg_database_encoding_max_length() != 1))
 		return false;
-	out->op = found ? SSTR_CONTAINS : SSTR_NOTCONTAINS;
+	out->op = found ? SIFT_COLOP_CONTAINS : SIFT_COLOP_NOTCONTAINS;
 	out->nvals = 1;
-	out->vals = palloc(sizeof(char *));
-	out->lens = palloc(sizeof(uint32));
-	((const char **) out->vals)[0] = s;
-	((uint32 *) out->lens)[0] = len;
+	out->vals = one_str(s, len);
 	return true;
 }
 
@@ -555,8 +544,7 @@ str_in_test(ScalarArrayOpExpr *sa, SiftSrcStrTest *out)
 	bool	   *nl;
 	int			ne,
 				n = 0;
-	const char **vals;
-	uint32	   *lens;
+	SiftColValue *vals;
 
 	set_sa_opfuncid(sa);
 	if (list_length(sa->args) != 2 || !IsA(strip_relabel(linitial(sa->args)), Param) ||
@@ -564,11 +552,10 @@ str_in_test(ScalarArrayOpExpr *sa, SiftSrcStrTest *out)
 		!get_collation_isdeterministic(sa->inputcollid))
 		return false;
 	k = (Const *) lsecond(sa->args);
-	if (!IsA(k, Const) || k->constisnull || !text_type(get_element_type(k->consttype)))
+	if (!IsA(k, Const) || k->constisnull || !sift_str_type(get_element_type(k->consttype)))
 		return false;
 	deconstruct_array(DatumGetArrayTypeP(k->constvalue), get_element_type(k->consttype), -1, false, TYPALIGN_INT, &el, &nl, &ne);
-	vals = palloc(Max(ne, 1) * sizeof(char *));
-	lens = palloc(Max(ne, 1) * sizeof(uint32));
+	vals = palloc(Max(ne, 1) * sizeof(SiftColValue));
 	for (int i = 0; i < ne; i++)
 	{
 		if (nl[i])
@@ -577,15 +564,13 @@ str_in_test(ScalarArrayOpExpr *sa, SiftSrcStrTest *out)
 				continue;
 			return false;
 		}
-		vals[n] = VARDATA_ANY(DatumGetPointer(el[i]));
-		lens[n++] = VARSIZE_ANY_EXHDR(DatumGetPointer(el[i]));
+		vals[n++] = (SiftColValue) {.v.s = VARDATA_ANY(DatumGetPointer(el[i])),.len = VARSIZE_ANY_EXHDR(DatumGetPointer(el[i]))};
 	}
 	if (n == 0)
 		return false;
-	out->op = sa->useOr ? SSTR_IN : SSTR_NOTIN;
+	out->op = sa->useOr ? SIFT_COLOP_IN : SIFT_COLOP_NOTIN;
 	out->nvals = n;
 	out->vals = vals;
-	out->lens = lens;
 	return true;
 }
 
@@ -614,10 +599,9 @@ str_leaf_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrc
 	if (p->kind != SAP_LUT || p->level != 0 || p->leaf >= nbase)	/* a virtual leaf (a member by key, a count) is not stored */
 		return false;
 	lf = &lay->leaf[p->leaf];
-	if (lf->kind != SCL_SCALAR || lf->vtype != SCV_CODE || lf->parent >= 0 || lf->lossy || !text_type(lf->typid))
+	if (lf->kind != SCL_SCALAR || lf->vtype != SCV_CODE || lf->parent >= 0 || lf->lossy || !sift_str_type(lf->typid))
 		return false;
 	out->leaf = p->leaf;
-	out->ints = NULL;
 	return str_expr_test(p, out, ranges);
 }
 
@@ -631,7 +615,7 @@ sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase,
 bool
 sift_aggspec_text_bound(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out)
 {
-	return str_leaf_test(p, lay, nbase, out, true) && (out->op == SSTR_PREFIX ? sift_collate_is_c(out->collid) : (out->op == SSTR_EQ || (out->op >= SSTR_LT && out->op <= SSTR_GE)));
+	return str_leaf_test(p, lay, nbase, out, true) && (out->op == SIFT_COLOP_PREFIX ? sift_collate_is_c(out->collid) : (out->op == SIFT_COLOP_EQ || (out->op >= SIFT_COLOP_LT && out->op <= SIFT_COLOP_GE)));
 }
 
 /* EXISTS element = a string, or in a set, of a list of text: the element leaf's test, for the units and rows that own such an element (a source prunes by it; the executor tests the elements) */
@@ -650,19 +634,18 @@ sift_aggspec_elem_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase
 	if (lf->kind != SCL_SCALAR || lf->parent < 0 || lf->lossy)
 		return false;
 	out->leaf = t->leaf;
-	out->ints = NULL;
-	if (t->kind == SAP_CMP && t->op == SCMP_EQ && (lf->typid == INT2OID || lf->typid == INT4OID || lf->typid == INT8OID) && IsA(t->expr, Const) &&
+	if (t->kind == SAP_CMP && t->op == SCMP_EQ && sift_int_type(lf->typid) && IsA(t->expr, Const) &&
 		!((Const *) t->expr)->constisnull && ((Const *) t->expr)->consttype == INT8OID)
 	{
-		int64	   *v = palloc(sizeof(int64));
+		SiftColValue *v = palloc(sizeof(SiftColValue));
 
-		*v = DatumGetInt64(((Const *) t->expr)->constvalue);
-		*out = (SiftSrcStrTest) {.leaf = t->leaf,.op = SSTR_EQ,.nvals = 1,.ints = v};
+		v->v.i = DatumGetInt64(((Const *) t->expr)->constvalue);
+		*out = (SiftSrcStrTest) {.leaf = t->leaf,.op = SIFT_COLOP_EQ,.nvals = 1,.vals = v};
 		return true;
 	}
-	if (t->kind != SAP_LUT || lf->vtype != SCV_CODE || !text_type(lf->typid))
+	if (t->kind != SAP_LUT || lf->vtype != SCV_CODE || !sift_str_type(lf->typid))
 		return false;
-	return str_expr_test(t, out, false) && (out->op == SSTR_EQ || out->op == SSTR_IN);
+	return str_expr_test(t, out, false) && (out->op == SIFT_COLOP_EQ || out->op == SIFT_COLOP_IN);
 }
 
 static bool
@@ -804,6 +787,23 @@ sift_aggspec_spillable(const SiftAggSpec *s)
 }
 
 /*
+ * The bytes a group table that cannot spill may take: the factor (group_nospill_factor) times the hash memory, or times the base when that is more. The planner leaves a
+ * scan whose estimated table passes it to the normal plan, and the scan raises an error when its table does. *factor and *floor_bytes: the two terms, for the message.
+ */
+double
+sift_agg_nospill_bytes(int *factor, double *floor_bytes)
+{
+	int			f = (int) sift_limit(group_nospill_factor, GROUP_NOSPILL_FACTOR);
+	double		base = Max((double) get_hash_memory_limit(), (double) sift_limit(group_nospill_base, GROUP_NOSPILL_BASE));
+
+	if (factor)
+		*factor = f;
+	if (floor_bytes)
+		*floor_bytes = base;
+	return f * base;
+}
+
+/*
  * Can a scan give its groups in the order of the ORDER BY as the superblocks it reads are done (agg/spill.c gstream_begin)? The groups of a spilled scan, with the
  * superblocks read in the order of the zones of the first order key, which is the leaf's value or the calendar step date_trunc of a timestamp (a key that grows with
  * the leaf: the groups below the zone of the next superblock are final). The rows are read in an order of their own, so what a join, an arm, a match set, a
@@ -885,7 +885,7 @@ sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg)
 	for (int i = 0; i < s->naggs; i++)
 		if (s->agg[i].kind == SAA_GEN)
 			for (int j = 0; j < s->naggs; j++)
-				if (s->agg[j].kind == SAA_SUM_F64 || s->agg[j].kind == SAA_AVG_F64)
+				if (saa_sumavg_f64(s->agg[j].kind))
 				{
 					*agg = i;
 					return "a float sum is merged in lane order, a generic state as the workers finish";

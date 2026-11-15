@@ -6,6 +6,7 @@
 -- write buffer, deletes and updates, workers. About 12 s: the first sweep runs 10 columns in 3 limits and 3 plans; the states after writes, VACUUM, promotion and merge
 -- run 5 columns in the limit 300 (the buffer state also in 1), which is what their rows change.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

@@ -9,9 +9,9 @@ bad=0
 fail() { echo "FAIL: $*"; bad=1; }
 # its own work tree of HEAD: the probe file must not be seen by the other checks of scripts/lint.sh that read the tree while this one runs (plan counts test/sql)
 T=$(mktemp -d "${TMPDIR:-/tmp}/untracked-scratch.XXXXXX")
-trap 'git -C "$SRC" worktree remove --force "$T/wt" >/dev/null 2>&1; rm -rf "$T"' EXIT
-git -C "$SRC" worktree add -q --detach "$T/wt" HEAD || { echo "FAIL: no work tree of HEAD"; exit 1; }
-REPO=$T/wt
+trap 'git -C "$SRC" worktree remove --force "$T/wt-untracked" >/dev/null 2>&1; rm -rf "$T"' EXIT
+git -C "$SRC" worktree add -q --detach "$T/wt-untracked" HEAD || { echo "FAIL: no work tree of HEAD"; exit 1; }
+REPO=$T/wt-untracked
 pick() { "$REPO/scripts/ci.sh" affected --list HEAD 2>&1; }
 scratch=$(mktemp -d "$REPO/untracked-scratch.XXXXXX")
 want=$(pick)

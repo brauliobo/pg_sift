@@ -1,0 +1,52 @@
+-- The parents that have no child (a LEFT JOIN with a WHERE on a column of the child being NULL, or NOT EXISTS: an anti join) are counted from the child's scan with the
+-- parents as its lookup, as the LEFT JOIN is, where the child is much larger than the parents: the scan reads the keys that have children once and the parents that
+-- none of them names are the rows left. PostgreSQL 19 hands the planner the anti join for the LEFT JOIN as well; 17 and 18 hand the LEFT JOIN and its WHERE. The
+-- answers are those of the normal plan for every form, with NULL keys, children of no parent, an ON condition on both tables and a filter of the parents.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+
+CREATE TABLE af_parent (id int PRIMARY KEY, alt int, grp int, rank int) WITH (autovacuum_enabled = off);
+INSERT INTO af_parent SELECT g, CASE WHEN g % 7 = 0 THEN NULL ELSE g END, g % 25, g % 100 FROM generate_series(1, 20000) g;
+CREATE TABLE af_child (id int PRIMARY KEY, parent_id int, kind text, amount int) WITH (autovacuum_enabled = off);
+INSERT INTO af_child
+SELECT g, CASE WHEN g % 97 = 0 THEN NULL WHEN g % 53 = 0 THEN 30000 + g % 100 ELSE 1 + (g::bigint * 7919) % 15000 END, (ARRAY['a', 'b', 'c', 'd'])[1 + g % 4], g % 1000
+FROM generate_series(1, 400000) g;
+CREATE INDEX af_parent_col ON af_parent USING sift_col (id, alt, grp, rank);
+CREATE INDEX af_child_col ON af_child USING sift_col (id, parent_id, kind, amount);
+VACUUM (FREEZE, ANALYZE) af_parent, af_child;
+
+CREATE TABLE shapes (slug text, sql text);
+INSERT INTO shapes VALUES
+ ('left_join_childless_by_group', 'SELECT p.grp, count(*) AS parents FROM af_parent p LEFT JOIN af_child c ON c.parent_id = p.id AND c.kind = ''d'' WHERE c.id IS NULL GROUP BY 1'),
+ ('not_exists_childless_by_group', 'SELECT p.grp, count(*) AS parents FROM af_parent p WHERE NOT EXISTS (SELECT 1 FROM af_child c WHERE c.parent_id = p.id AND c.kind = ''d'') GROUP BY 1'),
+ ('not_exists_childless_count', 'SELECT count(*) AS parents FROM af_parent p WHERE NOT EXISTS (SELECT 1 FROM af_child c WHERE c.parent_id = p.id)'),
+ ('not_exists_childless_filtered_parents', 'SELECT p.grp, count(*) AS parents, sum(p.rank) AS ranks FROM af_parent p WHERE p.rank < 40 AND NOT EXISTS (SELECT 1 FROM af_child c WHERE c.parent_id = p.id AND c.amount > 500) GROUP BY 1'),
+ ('not_exists_on_both_tables', 'SELECT p.grp, count(*) AS parents FROM af_parent p WHERE NOT EXISTS (SELECT 1 FROM af_child c WHERE c.parent_id = p.id AND c.amount > p.rank * 8) GROUP BY 1'),
+ ('not_exists_null_parent_key', 'SELECT p.grp, count(*) AS parents FROM af_parent p WHERE NOT EXISTS (SELECT 1 FROM af_child c WHERE c.parent_id = p.alt) GROUP BY 1');
+
+CREATE FUNCTION plan_of(sql text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal plan';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	PERFORM set_config('sift.agg_force', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		IF l ~ 'Index: af_parent_col' THEN r := 'parents scanned'; END IF;
+		IF l ~ 'Index: af_child_col' THEN r := 'children scanned'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	PERFORM set_config('sift.agg_force', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+
+SELECT slug, plan_of(sql) AS plan, answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY slug;
+
+DROP FUNCTION plan_of(text), answer(text, bool);
+DROP TABLE shapes, af_child, af_parent;
+DROP EXTENSION pg_sift;

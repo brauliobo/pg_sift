@@ -8,6 +8,7 @@
 
 plan 16
 node_init mc 22 "autovacuum = off
+maintenance_work_mem = 1GB
 sift.col_build_key_ranges = off
 max_worker_processes = 16
 max_parallel_workers = 8"

@@ -12,7 +12,8 @@ node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
 autovacuum = off
-sift.test_col_gorder_ends = 64"
+sift.test_col_gorder_ends = 64
+sift.test_limits = 'gord_seek_pct=0'"
 node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"SELECT setseed(0.42)" \
@@ -35,7 +36,7 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 		END LOOP;
 		RETURN true;
 	END \$\$" >/dev/null || bail "setup failed"
-check "the segments of the index are compact" test "$(sql primary "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable' AND format = 41")" -gt 0
+check "the segments of the index are compact" test "$(sql primary "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable' AND format >= 41")" -gt 0
 
 node_clone primary standby 3 "hot_standby_feedback = on
 wal_receiver_status_interval = 1s"
@@ -75,7 +76,8 @@ catchup primary standby
 ORD="SELECT string_agg(ts::text, ',') FROM (SELECT ts FROM orders ORDER BY ts DESC LIMIT 60 OFFSET 2500) s"
 check "the ordered reads of the standby return its heap's" test "$(sql standby "SELECT ordered_same()")" == t
 check "and the primary's" test "$(sql standby "$ORD")" == "$(sql primary "$ORD")"
-sleep 2   # the standby's feedback no longer holds the horizon of its finished readers
+# the primary's walsender reports no xmin of the standby once its readers are done (it is sent every wal_receiver_status_interval, which a loaded host stretches)
+wait_for 'test "$(sql primary "SELECT count(*) FROM pg_stat_replication WHERE backend_xmin IS NOT NULL")" == 0' 120 || bail "the standby still holds the horizon"
 sql primary "VACUUM (disable_page_skipping) orders" "SELECT sift.col_merge('o_col', true)" >/dev/null
 catchup primary standby
 check "after a VACUUM and a merge the standby's ordered reads return its heap's" test "$(sql standby "SELECT ordered_same()")" == t

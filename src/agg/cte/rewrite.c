@@ -14,6 +14,7 @@
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/inval.h"
+#include "utils/syscache.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -43,8 +44,9 @@ int64		sift_prepass_nodes;	/* the nodes the rewrite passes visited (sift._test_p
 int64		sift_source_lookups;	/* the asks the cache could not answer (sift._test_source_lookups) */
 #endif
 
+/* a syscache callback, not a relcache one: a backend has ten relcache callback slots for all its libraries (scripts/check-relcache-slots.sh) */
 static void
-source_cache_inval(Datum arg, Oid relid)
+source_cache_inval(Datum arg, int cacheid, uint32 hashvalue)
 {
 	if (source_cache != NULL)
 	{
@@ -79,7 +81,7 @@ has_column_source(Oid relid)
 
 		if (!registered)
 		{
-			CacheRegisterRelcacheCallback(source_cache_inval, (Datum) 0);
+			CacheRegisterSyscacheCallback(RELOID, source_cache_inval, (Datum) 0);
 			registered = true;
 		}
 		source_cx = AllocSetContextCreate(TopMemoryContext, "sift cache column sources", ALLOCSET_SMALL_SIZES);
@@ -118,7 +120,8 @@ column_source_reads(Oid relid, Bitmapset *attnos)
 			if (!sift_colsrc_is_index(get_rel_relam(ix)))
 				continue;
 			idx = index_open(ix, AccessShareLock);
-			pull_varattnos((Node *) sift_colsrc_layout(idx)->attexprs, 1, &e->reads);
+			if (sift_index_ready(idx))	/* the cache is dropped by the relcache invalidation that makes a built index ready */
+				pull_varattnos((Node *) sift_colsrc_layout(idx)->attexprs, 1, &e->reads);
 			index_close(idx, AccessShareLock);
 		}
 		MemoryContextSwitchTo(old);
@@ -305,17 +308,11 @@ exact_key_type(Oid t)
 }
 
 /* does the query, or a sub-select of it, read a CTE? */
-static bool
-cte_ref_walker(Node *n, void *context)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(cte_ref_walker, void *, context,
 	if (IsA(n, RangeTblEntry))
 		return ((RangeTblEntry *) n)->rtekind == RTE_CTE;
 	if (IsA(n, Query))
-		return query_tree_walker((Query *) n, cte_ref_walker, context, QTW_EXAMINE_RTES_BEFORE);
-	return expression_tree_walker(n, cte_ref_walker, context);
-}
+		return query_tree_walker((Query *) n, cte_ref_walker, context, QTW_EXAMINE_RTES_BEFORE);)
 
 /* a filter of rows, nothing more: the output rows are rows of the FROM kept by the WHERE (a plain DISTINCT drops duplicates only) */
 static bool

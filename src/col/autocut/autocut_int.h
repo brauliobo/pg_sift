@@ -55,11 +55,19 @@ extern bool	acut_unique_btree(Relation heap, AttrNumber att);
 
 extern bool	acut_scattered(const Track *t, int n);
 
+extern AttrNumber	acut_cluster_att(Relation heap);
+
 extern double	acut_cut_speedup(double reads, double ideal, double rows_per_unit);
 
 extern double	acut_cut_benefit(double speedup, double relevance);
 
 extern double	acut_cut_cost(double growth_pct, int nleaves);
+
+extern double	acut_segment_rows(void);
+
+extern double	acut_hot_share(Relation heap, const Track *t, uint32 nsampled);
+
+extern double	acut_zone_loss(const Track *t, uint32 nrows, double nsb, double rows_per_unit, double kept_share);
 
 extern double	acut_units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed, bool kept, double *ideal, bool *fired);
 

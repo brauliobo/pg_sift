@@ -25,6 +25,12 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_split",
 							"Testing: the groups of a scan with workers (0 = by cost, 1 = the participants split the rows, 2 = they split the groups by a key where the scan can).",
 							NULL, &sift_test_split, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_par_leader_wait",
+							 "Testing: the leader of a scan with workers holds the first item it takes until the workers have taken the others.",
+							 NULL, &sift_test_par_leader_wait, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_item_gate",
+							"Testing: the participants of a parallel aggregate wait for the advisory lock of this number before each item (0 = none).",
+							NULL, &sift_test_item_gate, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_segfmt",
 							"Testing: segment format a build, promotion or merge writes (0 = the newest, 1 to 3).",
 							NULL, &sift_test_segfmt, 0, 0, SIFT_SEGFMT_POSBLK, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -64,6 +70,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_load_segment_kb",
 							"Testing: kB of memory the writer of a segment of a serial COPY into a sift_table holds before the segment ends (0 = half of maintenance_work_mem, at least 64 MB).",
 							NULL, &sift_test_load_segment_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_vacuum_batch_bytes",
+							"Testing: bytes of dead rows a VACUUM of a sift_table holds before it tells the indexes (0 = half of maintenance_work_mem).",
+							NULL, &sift_test_vacuum_batch_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_merge_fanin",
 							"Testing: runs one CREATE INDEX merge reads at a time (0 = by memory).",
 							NULL, &sift_test_fanin, 0, 0, 256, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -104,24 +113,42 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_no_track",
 							 "Testing: the statement triggers of track_changes write no tombstone (a mutant of the tracking).",
 							 NULL, &sift_test_no_track, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_wbuf_narrow",
+							 "Testing: the write buffers of a BM25 index are opened in format 0, with the 256-bit bloom in the page header, as before SIFT_WBUF_FORMAT_WIDE.",
+							 NULL, &sift_test_wbuf_narrow, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_no_roots",
+							 "Testing: sift_col writes as before the string roots were flagged: a document that is a string is a missing key in every column and no segment says otherwise (SIFT_SEG_ROOTS).",
+							 NULL, &sift_test_no_roots, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_no_chain_root",
+							 "Testing: the row triggers of track_changes = ctid write the address of the version a HOT update chain ends in, not the one of its root (a mutant of the tracking).",
+							 NULL, &sift_test_no_chain_root, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_count_gate",
 							 "Testing: a count waits for advisory lock (0x51F7, 1) once its plan is made.",
 							 NULL, &sift_test_count_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_cleanup_gate",
 							 "Testing: a VACUUM waits for advisory lock (0x51F7, 2) before its cleanup refreshes the dead-posting tables.",
 							 NULL, &sift_test_cleanup_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.test_col_unit_gate",
-							 "Testing: a unit rewrite waits for advisory lock (0x51F7, 5) after publication, before VACUUM returns to the heap.",
-							 NULL, &sift_test_col_unit_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_shrink_gate",
 							 "Testing: the online shrink waits for advisory lock (0x51F7, 3) once it reserved the header page of a segment, before it reserves the runs of its data.",
 							 NULL, &sift_test_shrink_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_merge_gate",
 							 "Testing: a merge of the maintenance worker waits for advisory lock (0x51F7, 4) once its segments are claimed.",
 							 NULL, &sift_test_merge_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_worker_gate",
+							 "Testing: a merge of the maintenance worker waits for advisory lock (0x51F7, 7) before it opens the table for the text of the documents.",
+							 NULL, &sift_test_worker_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_release_gate",
 							 "Testing: a directory change that releases extents waits for advisory lock (0x51F7, 6) once its xid is taken, before it locks the directory.",
 							 NULL, &sift_test_release_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_export_gate",
+							 "Testing: the leader of a parallel SiftScan waits for advisory lock (0x51F7, 5) once it exported the directory its participants bind on, before the workers start.",
+							 NULL, &sift_test_export_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_drop_gate",
+							 "Testing: the transaction that deletes a tracked index waits for advisory lock (0x51F7, 9) just before it removes the triggers of the index.",
+							 NULL, &sift_test_drop_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_build_gate",
+							 "Testing: a bulk build waits for advisory lock (0x51F7, 8) before it writes its metapage, the last page of the file.",
+							 NULL, &sift_test_build_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_ahead_cold",
 							 "Testing: a segment reader reads ahead from its first read, as one whose pages are not in shared buffers does.",
 							 NULL, &sift_test_ahead_cold, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -155,6 +182,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_phase_gate",
 							"Testing: a CREATE INDEX waits to enter each phase for the advisory lock this number plus the phase (0 = no gate).",
 							NULL, &sift_test_phase_gate, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_dead_windows",
+							"Testing: windows of superblocks the dead postings of the segments of this session were counted in (set 0 before).",
+							NULL, &sift_test_dead_windows, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_build_peak",
 							"Testing: kB of memory the CREATE INDEX of this session allocated at most (set 0 before).",
 							NULL, &sift_test_build_peak, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);

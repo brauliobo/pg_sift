@@ -20,7 +20,7 @@ BEGIN
 	EXECUTE 'CREATE INDEX pe_i ON pe_t USING sift_col (k) WITH (key_cut = ''off'', point_tid_columns = ''k'')';
 	PERFORM set_config('sift.col_format_minor', '15', true);
 	slots := CASE WHEN minor >= 33 OR minor = 15 THEN greatest(16, ceil(n * 4 / 3.0)::int) ELSE greatest(16, (2 ^ ceil(log(2, n * 4 / 3.0)))::int) END;
-	SELECT sum(s.bytes) INTO b FROM sift.col_sections('pe_i') s WHERE s.section = 'dict_other';
+	SELECT sum(s.bytes) INTO b FROM sift.col_sections('pe_i') s WHERE s.section IN ('dict_other', 'point_dir', 'order_arrays');
 	SELECT count(*) INTO lost FROM generate_series(1, n, step) g
 		WHERE NOT EXISTS (SELECT 1 FROM sift._test_col_tids('pe_i', '0:eq:' || g * 7919, 24) t JOIN pe_t ON pe_t.ctid = t.tid WHERE pe_t.id = g);
 	SELECT count(*) INTO extra FROM generate_series(1, 400) g, sift._test_col_tids('pe_i', '0:eq:' || (-g), 24);

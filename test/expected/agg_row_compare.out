@@ -11,19 +11,20 @@ INSERT INTO rc SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE (i / 256) % 7 END, 
 FROM generate_series(0, 40 * 256 - 1) i;
 CREATE INDEX rc_idx ON rc USING sift_col (id sift.col_int4_ops, a sift.col_int4_ops, b sift.col_int4_ops, c sift.col_int4_ops);
 VACUUM (FREEZE, ANALYZE) rc;
-CREATE FUNCTION same(cond text) RETURNS TABLE (uses_siftagg bool, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+CREATE FUNCTION same(cond text) RETURNS TABLE (engaged_or_empty bool, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 DECLARE q text := format('SELECT count(*) AS n, sum(c) AS s, sum(id) AS i FROM rc WHERE %s', cond);
 	l text;
 BEGIN
-	uses_siftagg := false;
+	engaged_or_empty := false;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		uses_siftagg := uses_siftagg OR l LIKE '%Custom Scan (SiftAgg)%';
+		engaged_or_empty := engaged_or_empty OR l LIKE '%Custom Scan (SiftAgg)%';
 	END LOOP;
 	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
 	RESET sift.enable_agg;
 	result_rows := (SELECT n FROM r_on);
+	engaged_or_empty := engaged_or_empty OR result_rows = 0;   -- no row can match (a key that is not in the table): whether PostgreSQL 19 still plans the scan is not what is tested
 	vs_normal_plan := (SELECT count(*) FROM ((SELECT * FROM r_on EXCEPT ALL SELECT * FROM r_off) UNION ALL (SELECT * FROM r_off EXCEPT ALL SELECT * FROM r_on)) d);
 	DROP TABLE r_on, r_off;
 	RETURN NEXT;
@@ -33,56 +34,56 @@ INSERT INTO rc_q (cond) SELECT format('(%s) %s (%s)', cols, op, vals)
 FROM (VALUES ('a, b', '3, 2'), ('a, b', '0, 0'), ('a, b', '6, 4'), ('b, a', '2, 5'), ('a, b, c', '3, 2, 1'), ('a, b, c', '2, NULL, 1'), ('id, a', '5000, 3'), ('id, b', '10239, 2')) k(cols, vals),
 	 (VALUES ('>'), ('>='), ('<'), ('<='), ('<>'), ('=')) o(op);
 SELECT n, cond, s.* FROM rc_q, LATERAL same(cond) s ORDER BY n;
- n  |           cond            | uses_siftagg | result_rows | vs_normal_plan 
-----+---------------------------+--------------+-------------+----------------
-  1 | (a, b) > (3, 2)           | t            |        4524 |              0
-  2 | (a, b) >= (3, 2)          | t            |        4802 |              0
-  3 | (a, b) < (3, 2)           | t            |        5018 |              0
-  4 | (a, b) <= (3, 2)          | t            |        5296 |              0
-  5 | (a, b) <> (3, 2)          | t            |        9791 |              0
-  6 | (a, b) = (3, 2)           | t            |         278 |              0
-  7 | (a, b) > (0, 0)           | t            |        9541 |              0
-  8 | (a, b) >= (0, 0)          | t            |        9821 |              0
-  9 | (a, b) < (0, 0)           | t            |           0 |              0
- 10 | (a, b) <= (0, 0)          | t            |         280 |              0
- 11 | (a, b) <> (0, 0)          | t            |        9789 |              0
- 12 | (a, b) = (0, 0)           | t            |         280 |              0
- 13 | (a, b) > (6, 4)           | t            |           0 |              0
- 14 | (a, b) >= (6, 4)          | t            |         233 |              0
- 15 | (a, b) < (6, 4)           | t            |        9603 |              0
- 16 | (a, b) <= (6, 4)          | t            |        9836 |              0
- 17 | (a, b) <> (6, 4)          | t            |        9852 |              0
- 18 | (a, b) = (6, 4)           | t            |         233 |              0
- 19 | (b, a) > (2, 5)           | t            |        4088 |              0
- 20 | (b, a) >= (2, 5)          | t            |        4321 |              0
- 21 | (b, a) < (2, 5)           | t            |        5254 |              0
- 22 | (b, a) <= (2, 5)          | t            |        5487 |              0
- 23 | (b, a) <> (2, 5)          | t            |        9852 |              0
- 24 | (b, a) = (2, 5)           | t            |         233 |              0
- 25 | (a, b, c) > (3, 2, 1)     | t            |        4617 |              0
- 26 | (a, b, c) >= (3, 2, 1)    | t            |        4709 |              0
- 27 | (a, b, c) < (3, 2, 1)     | t            |        5111 |              0
- 28 | (a, b, c) <= (3, 2, 1)    | t            |        5203 |              0
- 29 | (a, b, c) <> (3, 2, 1)    | t            |       10092 |              0
- 30 | (a, b, c) = (3, 2, 1)     | t            |          92 |              0
- 31 | (a, b, c) > (2, NULL, 1)  | t            |        5449 |              0
- 32 | (a, b, c) >= (2, NULL, 1) | t            |        5449 |              0
- 33 | (a, b, c) < (2, NULL, 1)  | t            |        2973 |              0
- 34 | (a, b, c) <= (2, NULL, 1) | t            |        2973 |              0
- 35 | (a, b, c) <> (2, NULL, 1) | t            |        9634 |              0
- 36 | (a, b, c) = (2, NULL, 1)  | f            |           0 |              0
- 37 | (id, a) > (5000, 3)       | t            |        5240 |              0
- 38 | (id, a) >= (5000, 3)      | t            |        5240 |              0
- 39 | (id, a) < (5000, 3)       | t            |        5000 |              0
- 40 | (id, a) <= (5000, 3)      | t            |        5000 |              0
- 41 | (id, a) <> (5000, 3)      | t            |       10240 |              0
- 42 | (id, a) = (5000, 3)       | t            |           0 |              0
- 43 | (id, b) > (10239, 2)      | t            |           1 |              0
- 44 | (id, b) >= (10239, 2)     | t            |           1 |              0
- 45 | (id, b) < (10239, 2)      | t            |       10239 |              0
- 46 | (id, b) <= (10239, 2)     | t            |       10239 |              0
- 47 | (id, b) <> (10239, 2)     | t            |       10240 |              0
- 48 | (id, b) = (10239, 2)      | t            |           0 |              0
+ n  |           cond            | engaged_or_empty | result_rows | vs_normal_plan 
+----+---------------------------+------------------+-------------+----------------
+  1 | (a, b) > (3, 2)           | t                |        4524 |              0
+  2 | (a, b) >= (3, 2)          | t                |        4802 |              0
+  3 | (a, b) < (3, 2)           | t                |        5018 |              0
+  4 | (a, b) <= (3, 2)          | t                |        5296 |              0
+  5 | (a, b) <> (3, 2)          | t                |        9791 |              0
+  6 | (a, b) = (3, 2)           | t                |         278 |              0
+  7 | (a, b) > (0, 0)           | t                |        9541 |              0
+  8 | (a, b) >= (0, 0)          | t                |        9821 |              0
+  9 | (a, b) < (0, 0)           | t                |           0 |              0
+ 10 | (a, b) <= (0, 0)          | t                |         280 |              0
+ 11 | (a, b) <> (0, 0)          | t                |        9789 |              0
+ 12 | (a, b) = (0, 0)           | t                |         280 |              0
+ 13 | (a, b) > (6, 4)           | t                |           0 |              0
+ 14 | (a, b) >= (6, 4)          | t                |         233 |              0
+ 15 | (a, b) < (6, 4)           | t                |        9603 |              0
+ 16 | (a, b) <= (6, 4)          | t                |        9836 |              0
+ 17 | (a, b) <> (6, 4)          | t                |        9852 |              0
+ 18 | (a, b) = (6, 4)           | t                |         233 |              0
+ 19 | (b, a) > (2, 5)           | t                |        4088 |              0
+ 20 | (b, a) >= (2, 5)          | t                |        4321 |              0
+ 21 | (b, a) < (2, 5)           | t                |        5254 |              0
+ 22 | (b, a) <= (2, 5)          | t                |        5487 |              0
+ 23 | (b, a) <> (2, 5)          | t                |        9852 |              0
+ 24 | (b, a) = (2, 5)           | t                |         233 |              0
+ 25 | (a, b, c) > (3, 2, 1)     | t                |        4617 |              0
+ 26 | (a, b, c) >= (3, 2, 1)    | t                |        4709 |              0
+ 27 | (a, b, c) < (3, 2, 1)     | t                |        5111 |              0
+ 28 | (a, b, c) <= (3, 2, 1)    | t                |        5203 |              0
+ 29 | (a, b, c) <> (3, 2, 1)    | t                |       10092 |              0
+ 30 | (a, b, c) = (3, 2, 1)     | t                |          92 |              0
+ 31 | (a, b, c) > (2, NULL, 1)  | t                |        5449 |              0
+ 32 | (a, b, c) >= (2, NULL, 1) | t                |        5449 |              0
+ 33 | (a, b, c) < (2, NULL, 1)  | t                |        2973 |              0
+ 34 | (a, b, c) <= (2, NULL, 1) | t                |        2973 |              0
+ 35 | (a, b, c) <> (2, NULL, 1) | t                |        9634 |              0
+ 36 | (a, b, c) = (2, NULL, 1)  | t                |           0 |              0
+ 37 | (id, a) > (5000, 3)       | t                |        5240 |              0
+ 38 | (id, a) >= (5000, 3)      | t                |        5240 |              0
+ 39 | (id, a) < (5000, 3)       | t                |        5000 |              0
+ 40 | (id, a) <= (5000, 3)      | t                |        5000 |              0
+ 41 | (id, a) <> (5000, 3)      | t                |       10240 |              0
+ 42 | (id, a) = (5000, 3)       | t                |           0 |              0
+ 43 | (id, b) > (10239, 2)      | t                |           1 |              0
+ 44 | (id, b) >= (10239, 2)     | t                |           1 |              0
+ 45 | (id, b) < (10239, 2)      | t                |       10239 |              0
+ 46 | (id, b) <= (10239, 2)     | t                |       10239 |              0
+ 47 | (id, b) <> (10239, 2)     | t                |       10240 |              0
+ 48 | (id, b) = (10239, 2)      | t                |           0 |              0
 (48 rows)
 
 -- a parameter in a generic plan

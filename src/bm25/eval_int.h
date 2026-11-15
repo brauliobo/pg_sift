@@ -8,6 +8,7 @@
 #include "bm25/kernels.h"
 #include "bm25/wbuf.h"
 #include "bm25/segment.h"
+#include "core/cmp.h"
 
 typedef struct LeafTerm
 {
@@ -345,9 +346,8 @@ leaf_term_cmp(const void *a, const void *b)
 {
 	const LeafTerm *x = *(LeafTerm *const *) a,
 			   *y = *(LeafTerm *const *) b;
-	int			c = memcmp(x->term, y->term, Min(x->len, y->len));
 
-	return c ? c : x->len - y->len;
+	return sift_term_cmp(x->term, x->len, y->term, y->len);
 }
 
 /* Statistics count the live docs of the write buffers too: those of the immutable ones are in p->seg_ndocs and p->seg_sum_dl */

@@ -18,12 +18,14 @@
 #include "agg/topn.h"
 #include "bm25/query.h"
 #include "col/col.h"
+#include "col/gorder.h"
 #include "col/preagg.h"
 #include "col/setsum.h"
 #include "col/shred.h"
 #include "col/wide.h"
 #include "core/limits.h"
 #include "core/sift.h"
+#include "core/tomb.h"
 
 const int64_t sift_limit_default[SIFT_LIM_COUNT] = {
 #define X(id, macro, file, value, unit, what, behaviour, setting, hooked) [SIFT_LIM_##id] = (value),

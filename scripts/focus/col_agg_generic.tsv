@@ -1,0 +1,1 @@
+col_agg_generic	src/agg/dense.c:dense_float_guard src/agg/from/reads.c:pred_reads_any src/agg/kern_avx2.c:absmax_f64_avx2 src/agg/preagg/rollup.c:rollup_need src/agg/spec_preagg.c:add_leaf src/agg/spec_preagg.c:agg_elem_instr src/agg/spec_preagg.c:sift_aggspec_unit_costs src/agg/update/upd.c:upd_count_rows

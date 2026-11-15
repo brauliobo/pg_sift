@@ -16,27 +16,21 @@
 
 #include "access/genam.h"
 #include "access/xact.h"
-#include "catalog/index.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
-#include "storage/dsm_registry.h"
 #include "storage/ipc.h"
 #include "storage/spin.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
-#include "utils/guc.h"
-#include "utils/hsearch.h"
-#include "port/pg_bitutils.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 #include "utils/tuplestore.h"
 
 #include "col/am.h"
-#include "col/pagg.h"
+#include "col/dsmreg.h"
 #include "col/seg.h"
 #include "col/setsum.h"
 #include "bm25/maint.h"
@@ -91,14 +85,8 @@ typedef struct RollupShared
 
 static RollupShared *rollup_shared;
 
-/* PostgreSQL 19 passes the argument of GetNamedDSMSegment to the init callback */
-#if PG_VERSION_NUM >= 190000
 static void
-rollup_init(void *ptr, void *arg)
-#else
-static void
-rollup_init(void *ptr)
-#endif
+rollup_init(SIFT_DSM_INIT_ARGS)
 {
 	RollupShared *sh = ptr;
 
@@ -109,14 +97,8 @@ rollup_init(void *ptr)
 static RollupShared *
 shared(void)
 {
-	bool		found;
-
 	if (rollup_shared == NULL)
-#if PG_VERSION_NUM >= 190000
-		rollup_shared = GetNamedDSMSegment("pg_sift_col_rollup", sizeof(RollupShared), rollup_init, &found, NULL);
-#else
-		rollup_shared = GetNamedDSMSegment("pg_sift_col_rollup", sizeof(RollupShared), rollup_init, &found);
-#endif
+		rollup_shared = sift_dsm_join("pg_sift_col_rollup", sizeof(RollupShared), rollup_init);
 	return rollup_shared;
 }
 
@@ -321,7 +303,7 @@ process(const RollupReq *r)
 
 	StartTransactionCommand();
 	PushActiveSnapshot(GetTransactionSnapshot());
-	index = try_index_open(r->index, RowExclusiveLock);
+	index = sift_try_open_index(r->index, RowExclusiveLock);
 	if (index != NULL && sift_col_is_index(index) && !RecoveryInProgress() && options_hash(index) == r->hash && sift_col_format_minor >= SIFT_COL_FORMAT_TAGS)
 	{
 		gen = refresh_segment(index, r->gen);
@@ -355,12 +337,10 @@ PG_FUNCTION_INFO_V1(sift_col_rollup_refresh);
 Datum
 sift_col_rollup_refresh(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = sift_col_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	RollupReq	r;
 	int			n = 0;
 
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
 	sift_check_maintain(index);
 	if (RecoveryInProgress())
 		ereport(ERROR, (errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION), errmsg("recovery is in progress"),
@@ -490,7 +470,7 @@ cube_left_out(Relation index, const SiftColRel *rel, const char *left, int nleft
  * After a build or a refresh: where the caps of the options leave units without what was asked, which the queries on it then scan. A dim of cube(...)
  * has no histogram in a unit with more groups than max_groups, a key_columns leaf the user named keeps a bloom filter instead of its keys where a unit
  * holds more than SIFT_CSET_LIMIT of them and nothing where its keys are one value or fill their range, and no key list or bitmap where that would take
- * more than a few percent of the unit, a rollup_dims rollup is not written in a unit with more cells than it may keep, and calendar_columns = 'all'
+ * more than a few percent of the unit, a rollup_columns rollup is not written in a unit with more cells than it may keep, and calendar_columns = 'all'
  * leaves out the date columns past the 16 dimensions of the cube. The leaves the build chose for key_columns are reported by it (col/keycols/keycols.c). Read from
  * the headers of the stored sidecar, like the census of a refresh; sift.col_rollup_misses counts the scans that paid.
  */
@@ -644,9 +624,7 @@ sift_col_refresh(PG_FUNCTION_ARGS)
 	limit = PG_ARGISNULL(1) ? PG_INT32_MAX : PG_GETARG_INT32(1);
 	if (limit < 0)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("max_segments must not be negative")));
-	index = index_open(PG_GETARG_OID(0), RowExclusiveLock);
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
+	index = sift_col_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	sift_check_maintain(index);
 	if (RecoveryInProgress())
 		ereport(ERROR, (errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION), errmsg("recovery is in progress"),

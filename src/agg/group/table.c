@@ -7,6 +7,7 @@
 
 #include "agg/acc_layout.h"
 #include "agg/group/int.h"
+#include "agg/plan_int.h"
 
 AggAcc *
 acc_alloc(AggExec *ex, uint32 cap)
@@ -60,12 +61,38 @@ acc_free(AggAcc *a, int naggs)
 	pfree(a);
 }
 
+/*
+ * A table that cannot spill grows with its groups: past what the planner leaves it, it ends the scan and names what to raise. The memory of the context also holds the
+ * sets and values the aggregates keep beside the table, which the bound does not name: the table is held at the bytes the planner prices its groups, and no more than the context.
+ */
+void
+table_nospill_check(const AggExec *ex)
+{
+	double		state,
+				limit = sift_agg_nospill_bytes(NULL, NULL),
+				held;
+
+	if (sift_aggspec_spillable(ex->spec))
+		return;
+	held = Min((double) MemoryContextMemAllocated(ex->tcxt, true), ex->gcap * group_table_bytes(ex->spec, 1.0, &state));
+	if (held <= limit)
+		return;
+	ereport(ERROR,
+			(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+			 errmsg("sift: the group table of the aggregate holds %.0f kB and cannot spill, past the %.0f kB it may take", held / 1024.0, limit / 1024.0),
+			 errhint("Raise work_mem or hash_mem_multiplier, or set sift.enable_agg to off.")));
+}
+
 /* every per-group array to newcap groups; remap[old] = new index (UINT32_MAX: drop), NULL: identity */
 void
 groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 {
-	AggAcc	   *na = acc_alloc(ex, newcap);
-	int64	   *nseen = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(int64));
+	AggAcc	   *na;
+	int64	   *nseen;
+
+	table_nospill_check(ex);
+	na = acc_alloc(ex, newcap);
+	nseen = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(int64));
 
 	/* the groups keep their numbers: copy the arrays whole, an unseen slot holds what a new one does */
 	if (remap == NULL)
@@ -181,8 +208,7 @@ hash_add(AggExec *ex, const uint32 *ids, uint32 pos)
 	if (g >= ex->hkcap)
 	{
 		ex->hkcap = Max(ex->hkcap * 2, 1024);
-		ex->hkey = ex->hkey ? repalloc(ex->hkey, (Size) ex->hkcap * nk * sizeof(uint32)) :
-			MemoryContextAlloc(ex->tcxt, (Size) ex->hkcap * nk * sizeof(uint32));
+		SIFT_REGROW_IN(ex->tcxt, ex->hkey, (Size) ex->hkcap * nk * sizeof(uint32));
 	}
 	memcpy(&ex->hkey[(Size) g * nk], ids, nk * sizeof(uint32));
 	ex->hslot[pos] = g + 1;
@@ -230,9 +256,6 @@ HASH_GROUP_FN(16)
 static uint32 (*const hash_group_fns[]) (AggExec *, const uint32 *) =
 {hash_group_1, hash_group_2, hash_group_3, hash_group_4, hash_group_5, hash_group_6, hash_group_7, hash_group_8,
  hash_group_9, hash_group_10, hash_group_11, hash_group_12, hash_group_13, hash_group_14, hash_group_15, hash_group_16};
-static uint32 (*const hash_group_hfns[]) (AggExec *, const uint32 *, uint32) =
-{hash_group_h1, hash_group_h2, hash_group_h3, hash_group_h4, hash_group_h5, hash_group_h6, hash_group_h7, hash_group_h8,
- hash_group_h9, hash_group_h10, hash_group_h11, hash_group_h12, hash_group_h13, hash_group_h14, hash_group_h15, hash_group_h16};
 
 /* Wider tuples use the same hash and equality with the plan's actual width. */
 static uint32
@@ -254,7 +277,6 @@ hash_init(AggExec *ex, uint32 groups)
 
 	ex->hash = true;
 	ex->hashg = nk <= lengthof(hash_group_fns) ? hash_group_fns[nk - 1] : hash_group_generic;
-	ex->hashgh = nk <= lengthof(hash_group_hfns) ? hash_group_hfns[nk - 1] : hash_group_generic_h;
 	ex->nhslot = groups > 1024 ? pg_nextpower2_32(groups * 2) : 1024;
 	ex->hslot = MemoryContextAllocZero(ex->tcxt, ex->nhslot * sizeof(uint32));
 	ex->ngroups = 0;

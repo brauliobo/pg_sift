@@ -6,7 +6,6 @@
 # sources
 bm25/bitmap.c
 bm25/blob.c
-bm25/topk.c
 bm25/bitmap_scalar.c
 bm25/bitmap_avx2.c
 bm25/bitmap_avx512.c
@@ -73,8 +72,10 @@ bm25/bitmap.h
 bm25/bitmap_int.h
 bm25/bitmap_kern.h
 core/cmp.h
+core/hash.h
 core/i64set.h
 core/limits.h
+core/rowmem.h
 core/cpu.h
 bm25/dict.h
 bm25/dict_int.h
@@ -85,6 +86,7 @@ bm25/kernels.h
 bm25/kernels_int.h
 bm25/wbuf.h
 core/page.h
+core/xlog.h
 bm25/parallel.h
 core/neon.h
 core/simd_isa.h

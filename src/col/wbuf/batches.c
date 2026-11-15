@@ -4,8 +4,6 @@
  */
 #include "postgres.h"
 #include "storage/bufmgr.h"
-#include "storage/procarray.h"
-#include "col/am.h"
 #include "core/tomb.h"
 #include "col/wbuf/wbuf_int.h"
 
@@ -191,7 +189,7 @@ stamp_page(void *arg, BlockNumber blk, Page page, Size used)
 	if (sl->n == sl->cap)
 	{
 		sl->cap = sl->cap ? 2 * sl->cap : 16;
-		sl->p = sl->p ? repalloc(sl->p, sl->cap * sizeof(PageStamp)) : MemoryContextAlloc(sl->cx, sl->cap * sizeof(PageStamp));
+		SIFT_REGROW_IN(sl->cx, sl->p, sl->cap * sizeof(PageStamp));
 	}
 	sl->p[sl->n++] = (PageStamp) {blk, PageGetLSN(page), used, wbuf_page_dead(sl->index, page, 0, used)};
 }
@@ -257,7 +255,15 @@ set_find(const BatchSet *s, uint32 sb, bool *found)
 static void
 set_note(BatchSet *s, const Held *h)
 {
-	if (s->xbad || h->xmin == s->xlast)
+	if (s->xbad)
+		return;
+	/* before the xlast shortcut: xlast starts as InvalidTransactionId, which the first record without an inserter would match */
+	if (h->xst == XST_NONE)
+	{
+		s->xbad = true;
+		return;
+	}
+	if (h->xmin == s->xlast)
 		return;
 	s->xlast = h->xmin;
 	if (h->xst == XST_COMMITTED)
@@ -387,6 +393,25 @@ fresh_stamp(const Fresh *f)
 	if (TransactionIdIsValid(top))
 		TransactionIdAdvance(top);
 	return top;
+}
+
+bool
+sift_cwbuf_inserted_since(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, TransactionId x)
+{
+	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer inserters", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(tmp);
+	SiftCWbufReader *r = sift_cwbuf_open(index, entry, schema, tmp);
+	WbufLane	lane[SIFT_LANES];
+	Fresh		f;
+	bool		since = false;
+
+	lanes_unread(lane);
+	fresh_read(r, lane, NULL, &f);
+	for (int i = 0; !since && i < f.nheld; i++)
+		since = f.held[i].xst == XST_NONE || !TransactionIdIsValid(f.held[i].xmin) || TransactionIdFollowsOrEquals(f.held[i].xmin, x);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(tmp);
+	return since;
 }
 
 SiftColBatch **
@@ -529,6 +554,7 @@ set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *sche
 		{
 			memcpy(s->lane, lane, sizeof(lane));
 			s->fills++;
+			sift_cwbuf_decoded_note(index, entry->gen, f.nheld);
 			return s;
 		}
 rebuild:
@@ -538,6 +564,7 @@ rebuild:
 	fresh_read(r, s->lane, s->stamp, &f);
 	if (!set_fill(s, r, &f))
 		SIFT_CORRUPT(index, "A write buffer record of segment %llu repeats an address.", (unsigned long long) entry->gen);
+	sift_cwbuf_decoded_note(index, entry->gen, f.nheld);
 	return s;
 }
 

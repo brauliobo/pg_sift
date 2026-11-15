@@ -9,7 +9,8 @@
 # domain names, home directories of a person and the hidden local directories of the user. scripts/neutral.allow lists the generic uses of those that stay
 # (path and text patterns, with the reason). Loopback and unspecified addresses are not hits.
 #
-#   scripts/check-neutral.sh              the tracked files of the work tree, the commits of origin/main..HEAD (a branch without origin/main skips them) and,
+#   scripts/check-neutral.sh              the tracked files of the work tree, the commits of origin/main..HEAD (a branch without origin/main skips them; NEUTRAL_BASE=<ref> says where
+#                                         the branch starts instead, as a landing does) and,
 #                                         when NEUTRAL_PR_TITLE or NEUTRAL_PR_BODY is set, the pull request text (the CI passes them through the environment)
 #   scripts/check-neutral.sh --selftest   the structural rules and the machinery, on a vocabulary made for the test
 #
@@ -142,8 +143,14 @@ check_repo() {
 	fi
 	# the naming vocabulary: no file holds a name it replaced (it needs the rows of the [rename] section)
 	if [[ $(wc -l <"$REN") -gt 1 ]]; then "$REPO/scripts/apply-rename.sh" --map "$REN" --check . || bad=1; fi
-	# the commits of the branch only: the history before it is not judged
-	if base=$(git merge-base origin/main HEAD 2>/dev/null); then
+	# the commits of the branch only: the history before it is not judged. NEUTRAL_BASE (a landing sets it to the tip it lands on) names where the branch starts, where
+	# origin/main would be the merge base: the same rule, on the commits that are new
+	if [[ -n ${NEUTRAL_BASE:-} ]]; then
+		base=$(git rev-parse --verify -q "$NEUTRAL_BASE^{commit}") || { echo "neutral: NEUTRAL_BASE=$NEUTRAL_BASE is not a commit"; return 1; }
+	else
+		base=$(git merge-base origin/main HEAD 2>/dev/null) || base=
+	fi
+	if [[ -n $base ]]; then
 		while read -r sha; do
 			git log -1 --format=%B "$sha" | check_text '<commit>' "commit ${sha:0:9}" || bad=1
 		done < <(git log --format=%H "$base..HEAD")
@@ -156,7 +163,7 @@ check_repo() {
 
 selftest() {
 	local w bad=0 n=0 nw=0 ip home host i
-	unset NEUTRAL_PR_TITLE NEUTRAL_PR_BODY NEUTRAL_VOCAB_FILE SIFT_NEUTRAL_REQUIRED
+	unset NEUTRAL_PR_TITLE NEUTRAL_PR_BODY NEUTRAL_VOCAB_FILE SIFT_NEUTRAL_REQUIRED NEUTRAL_BASE
 	# a vocabulary made for the test: the machinery does not depend on the real one
 	NEUTRAL_VOCAB=$({
 		echo '[denylist]'; for i in $(seq 1 10); do echo "zzbrand${i}x"; done
@@ -232,6 +239,12 @@ selftest() {
 	nc >/dev/null 2>&1 || { echo "FAIL: a tree that differs from the cached one only by a deleted file is flagged"; bad=1; }
 	printf '%s\n' "$w" >"$d/a.txt"
 	nc >/dev/null 2>&1 && { echo "FAIL: a changed file with a domain word passes with the cache"; bad=1; }
+	# NEUTRAL_BASE: the commit messages after it are judged, the ones before it are not, and a base that is no commit is an error
+	printf 'one\n' >"$d/a.txt"; g add a.txt; g commit -q -m y
+	g commit -q --allow-empty -m "ci: neutral: a $w"
+	NEUTRAL_BASE=HEAD~1 nc >/dev/null 2>&1 && { echo "FAIL: a commit message with a domain word after NEUTRAL_BASE passes"; bad=1; }
+	NEUTRAL_BASE=HEAD nc >/dev/null 2>&1 || { echo "FAIL: a commit message before NEUTRAL_BASE is judged"; bad=1; }
+	NEUTRAL_BASE=no-such-ref nc >/dev/null 2>&1 && { echo "FAIL: a NEUTRAL_BASE that is no commit passes"; bad=1; }
 	rm -rf "$d"
 	(( bad )) || echo "neutral-selftest: $n names and $nw words flagged, the allowlist, the addresses, the commit and pull request text, no vocabulary"
 	return $bad

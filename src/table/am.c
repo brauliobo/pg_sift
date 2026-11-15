@@ -11,43 +11,32 @@
 #include <math.h>
 
 
-#include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/tableam.h"
-#include "access/toast_internals.h"
 #include "access/detoast.h"
 #include "access/xact.h"
-#include "access/xlog.h"
-#include "catalog/index.h"
-#include "catalog/pg_publication.h"
 #include "catalog/storage.h"
 #include "catalog/storage_xlog.h"
-#include "commands/vacuum.h"
-#include "executor/executor.h"
-#include "miscadmin.h"
 #include "optimizer/plancat.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
-#include "storage/procarray.h"
 #include "storage/smgr.h"
-#include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/guc.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
-#include "bm25/merge.h"
 #include "table/table.h"
 
 PG_FUNCTION_INFO_V1(sift_table_handler);
 
 bool		sift_tbl_inline_promote = true;
-static bool sift_tbl_hot_update = true;
+bool		sift_tbl_hot_update = true;
 int			sift_tbl_backpressure = 0;
 char	   *sift_tbl_compression_spec = NULL;
 
@@ -77,12 +66,14 @@ compression_check_hook(char **newval, void **extra, GucSource source)
 	return true;
 }
 
-/* sift.table_auto_defrag_dead_pct, released in 3.3, only keeps a configuration that sets it loading */
-static int	auto_defrag_dead_pct_unused = 5;
-
 void
 sift_tbl_define_gucs(void)
 {
+	DefineCustomIntVariable("sift.tomb_log_limit",
+							"Memory a backend keeps of the tombstone log of a sift_table (64 bytes an entry) before a read or a statement fails.",
+							"The log holds an entry for each row deleted or updated since the last VACUUM, those of the running statement included; VACUUM is not bound by it, and the maintenance worker is asked for when the log reaches a quarter of it.",
+							&sift_tomb_log_limit_kb, SIFT_TOMB_LOG_KB, 16, INT_MAX,
+							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_write_buffer_limit",
 							"Size of a sift_table write buffer (row format) before it is closed, to be promoted into columns.",
 							"Rounded down to whole superblocks of 2 MB; a row has to fit one segment.",
@@ -133,9 +124,6 @@ sift_tbl_define_gucs(void)
 							"Cost delay of the background pass of a sift_table, in milliseconds: it sleeps this long (at most four times) each time its page accesses add up to vacuum_cost_limit, and after each segment it rewrites.",
 							"0 never waits; at most 100, the most vacuum_cost_delay allows.", &sift_tbl_auto_defrag_delay, 10, 0, 100,
 							PGC_USERSET, GUC_UNIT_MS, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.table_auto_defrag_dead_pct",
-							"Deprecated, no effect: the background pass is asked for when the reads of the table have cost as much as the pass would.",
-							NULL, &auto_defrag_dead_pct_unused, 5, 1, 100, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_budget",
 							"Megabytes of column segments one background pass of a sift_table rewrites by merging at most.",
 							"The worker passes again while the budget stopped the last one. 0 is no limit.",
@@ -256,9 +244,11 @@ insert_bulk(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions op
 	SiftTblRel *st;
 	Datum	   *values;
 
-	if (bistate == NULL || !sift_tbl_bulk_groups)
+	if (bistate == NULL)
 		return false;
 	st = sift_tbl_rel(rel);
+	if (!sift_tbl_opt_bool(st, SIFT_TBLOPT_BULK_GROUPS))
+		return false;
 	sift_tbl_ensure_init(rel);
 	sift_tbl_layout_ready(rel, st);
 	if (!sift_tbl_load_wanted(rel, st, (options & TABLE_INSERT_FROZEN) != 0))
@@ -394,10 +384,7 @@ log_old_row(Relation rel, SiftTblRel *st, SiftTblOp op, ItemPointer otid, Minima
 	SiftTblRowVer rv;
 
 	if (!sift_tbl_fetch_row(rel, st, otid, &rv))
-		ereport(ERROR,
-				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-				 errmsg("could not read the old row of \"%s\" for logical decoding", RelationGetRelationName(rel)),
-				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
+		SIFT_TBL_RETRY("could not read the old row of \"%s\" for logical decoding", RelationGetRelationName(rel));
 	sift_tbl_log_change(rel, op, newrow, rv.tuple);
 	heap_freetuple(rv.tuple);
 }
@@ -459,7 +446,7 @@ index_columns_kept(Relation rel, SiftTblRel *st, ItemPointer otid, MinimalTuple 
 	SiftTblRowVer rv;
 	bool		same = true;
 
-	if (!sift_tbl_hot_update || bms_is_empty(attrs) || !bms_is_empty(RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_SUMMARIZED)) ||
+	if (!sift_tbl_opt_bool(st, SIFT_TBLOPT_HOT_UPDATE) || bms_is_empty(attrs) || !bms_is_empty(RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_SUMMARIZED)) ||
 		!sift_tbl_fetch_row(rel, st, otid, &rv))
 		return false;
 	for (int attr = -1; same && (attr = bms_next_member(attrs, attr)) >= 0;)
@@ -494,17 +481,19 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 	SiftTblDel	del;
 	TM_Result	result;
 	bool		logical = sift_tbl_check_publication(rel);
+	/* the caller may pass the address of the slot's tid, which the append of the new version rewrites: the claim, its unlock and the tombstone name the old one */
+	ItemPointerData old = *otid;
 
 	*lockmode = LockTupleExclusive;
 	*update_indexes = TU_All;
-	result = tomb_claim(rel, st, otid, cid, wait, LockWaitBlock, false, tmfd, &del);
+	result = tomb_claim(rel, st, &old, cid, wait, LockWaitBlock, false, tmfd, &del);
 	if (result != TM_Ok)
 		return result;
 	if (crosscheck != InvalidSnapshot)
 	{
 		SiftTblRowVer rv;
 
-		if (sift_tbl_fetch_lazy(rel, st, otid, &rv))
+		if (sift_tbl_fetch_lazy(rel, st, &old, &rv))
 		{
 			if (!sift_tbl_visible(rel, st, crosscheck, &rv))
 				result = TM_Updated;
@@ -514,21 +503,21 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 	if (result == TM_Ok)
 	{
 		MinimalTuple mtup = form_mtuple(rel, slot);
-		bool		hot = index_columns_kept(rel, st, otid, mtup);
+		bool		hot = index_columns_kept(rel, st, &old, mtup);
 
 		CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 		sift_tbl_append(rel, st, mtup, GetCurrentTransactionId(), cid, 0, &slot->tts_tid);
 		slot->tts_tableOid = RelationGetRelid(rel);
 		if (logical)
-			log_old_row(rel, st, SIFT_TBL_OP_UPDATE, otid, mtup);
+			log_old_row(rel, st, SIFT_TBL_OP_UPDATE, &old, mtup);
 		heap_free_minimal_tuple(mtup);
-		sift_tomb_append(rel, &st->tomb, sift_key_from_tid(otid), GetCurrentTransactionId(), cid, SIFT_TOMB_UPDATE,
+		sift_tomb_append(rel, &st->tomb, sift_key_from_tid(&old), GetCurrentTransactionId(), cid, SIFT_TOMB_UPDATE,
 							 hot ? SIFT_TOMB_HOT : 0, sift_key_from_tid(&slot->tts_tid));
 		if (hot)
 			*update_indexes = TU_None;
 		pgstat_count_heap_update(rel, hot, false);
 	}
-	UnlockTuple(rel, otid, ExclusiveLock);
+	UnlockTuple(rel, &old, ExclusiveLock);
 	return result;
 }
 
@@ -568,10 +557,7 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 			sift_tomb_append(rel, &st->tomb, sift_key_from_tid(tid), GetCurrentTransactionId(), cid, SIFT_TOMB_LOCK, 0, 0);
 		UnlockTuple(rel, tid, ExclusiveLock);
 		if (!sift_tbl_fetch_row(rel, st, tid, &rv))
-			ereport(ERROR,
-				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-				 errmsg("could not read the locked tuple of \"%s\"", RelationGetRelationName(rel)),
-				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
+			SIFT_TBL_RETRY("could not read the locked tuple of \"%s\"", RelationGetRelationName(rel));
 		sift_tbl_store(slot, rv.tuple);
 		return TM_Ok;
 	}
@@ -677,7 +663,7 @@ static const TableAmRoutine sift_tbl_methods = {
 	.scan_rescan = sift_tbl_scan_rescan,
 	.scan_getnextslot = sift_tbl_scan_getnextslot,
 	.scan_set_tidrange = sift_tbl_scan_set_tidrange,
-	.scan_getnextslot_tidrange = sift_tbl_scan_getnextslot_tidrange,
+	.scan_getnextslot_tidrange = sift_tbl_scan_getnextslot,
 	.parallelscan_estimate = sift_tbl_parallelscan_estimate,
 	.parallelscan_initialize = sift_tbl_parallelscan_initialize,
 	.parallelscan_reinitialize = sift_tbl_parallelscan_reinitialize,

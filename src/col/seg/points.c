@@ -3,6 +3,7 @@
  * address, the probes and lookups of a key, the addresses a unit holds
  * and the stream that hands them to a scan in order
  */
+/* check-memory: allow-allocs the keys of a lookup are at most SIFT_CORDER_MAX_KEYS (512), a probe finds few slots and a stream marks one bit for each slot of a segment of at most 16M rows */
 #include "core/host.h"
 #include "core/cmp.h"
 #include "col/seg_int.h"
@@ -859,7 +860,7 @@ sift_cseg_point_check_tids(SiftColSegment *seg, int col, const int64 *key, const
 
 	Assert(pl != NULL && pl[col].tids);
 	for (uint32 i = 0; i < n; i++)
-		if (!(nulls && (nulls[i / 64] >> (i % 64) & 1)))
+		if (!sift_col_bit_test(nulls, i))
 			e[m++] = (TidKey) {key[i], tid[i]};
 	qsort(e, m, sizeof(TidKey), tid_key_cmp);
 	for (uint32 i = 0, j; i < m && ok; i = j)

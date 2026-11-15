@@ -1,6 +1,6 @@
 -- The caps of the options, told at CREATE INDEX: a cube(...) dim has no histogram in a unit with more groups than its cap, a key_columns leaf keeps a
 -- bloom filter, not its keys, in a unit with more than 32 distinct ones and nothing where its keys are one value or fill their range, and no key list or
--- bitmap over 3% of the unit, a rollup_dims rollup is not written in a unit with too many cells, and calendar_columns = 'all' leaves out the
+-- bitmap over 3% of the unit, a rollup_columns rollup is not written in a unit with too many cells, and calendar_columns = 'all' leaves out the
 -- date columns past the 16 dimensions of the cube; a query on them scans those units, so the build says how many, and what to set.
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -21,11 +21,11 @@ CREATE INDEX caps_c ON caps USING sift_col (id, few, many, mid) WITH (preagg = '
 -- the default spec asks for no dim by name, and no set: silent
 CREATE INDEX caps_d ON caps USING sift_col (id, few, many, mid) WITH (point_tid_columns = 'off', order_array_columns = 'off');
 -- no key list or bitmap of many (over 3% of the unit: a bloom filter instead), a rollup of more cells than a tenth of the rows
-CREATE INDEX caps_e ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few, many', rollup_dims = 'few, many', point_tid_columns = 'off', order_array_columns = 'off');
+CREATE INDEX caps_e ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few, many', rollup_columns = 'few, many', point_tid_columns = 'off', order_array_columns = 'off');
 -- what is written is silent: a bitmap that fits (few); the 2,800 combinations of a rollup fit two units and not the third, which holds fewer rows (34%)
-CREATE INDEX caps_f ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few', rollup_dims = 'few, mid', point_tid_columns = 'off', order_array_columns = 'off');
+CREATE INDEX caps_f ON caps USING sift_col (id, few, many, mid) WITH (key_columns = 'few', rollup_columns = 'few, mid', point_tid_columns = 'off', order_array_columns = 'off');
 -- two columns hit by one kind of cap are one NOTICE, with the share of the units of each in the DETAIL
-CREATE INDEX caps_g ON caps USING sift_col (id, few, many, many2) WITH (preagg = 'cube(few: id; many: id; many2: id)', rollup_dims = 'off', point_tid_columns = 'off', order_array_columns = 'off');
+CREATE INDEX caps_g ON caps USING sift_col (id, few, many, many2) WITH (preagg = 'cube(few: id; many: id; many2: id)', rollup_columns = 'off', point_tid_columns = 'off', order_array_columns = 'off');
 -- the cube holds 16 dimensions: the cells of the dates come first and the plain columns give way (the NOTICE names them); 'all' leaves date columns out only when the dates alone are more than 16
 CREATE TABLE caps_cal (c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, d1 date, d2 date) WITH (autovacuum_enabled = off);
 INSERT INTO caps_cal SELECT g, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, g % 2, date '2024-01-01' + g % 30, date '2024-01-01' + g % 20 FROM generate_series(1, 5000) g;

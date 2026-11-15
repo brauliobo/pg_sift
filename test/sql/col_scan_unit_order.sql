@@ -1,0 +1,39 @@
+-- The units of a scan come in the order of their superblocks whatever segment holds them. The segments of a table cut by key number their units from 0, so the units of different
+-- segments take turns, and the next unit is the lowest head of all the segments (the lowest segment on a tie).
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET sift.col_auto_merge = off;
+SET max_parallel_maintenance_workers = 0;
+
+CREATE TABLE uo (id int, k int, v int, pad text DEFAULT repeat('x', 100));
+CREATE INDEX uo_i ON uo USING sift_col (k, v, id) WITH (key_cut = 'k', write_buffer_limit = 64);
+-- ten batches, each of them a segment of its own with units for every key
+DO $$
+BEGIN
+	FOR b IN 0..9 LOOP
+		INSERT INTO uo (id, k, v) SELECT i, i % 60, i % 7 FROM generate_series(b * 6000 + 1, b * 6000 + 6000) i;
+		PERFORM sift.col_promote('uo_i');
+	END LOOP;
+END $$;
+VACUUM (ANALYZE, INDEX_CLEANUP OFF) uo;
+
+SELECT count(*) >= 8 AS segments, sum(units) > count(*) AS several_units FROM sift.col_segments('uo_i') WHERE kind = 'immutable';
+
+-- the superblock of each unit the scan returns, in the order it returns them: never lower than the one before, and the same number in more than one segment
+WITH s AS (
+	SELECT sb, ord, lag(sb) OVER (ORDER BY ord) AS prev FROM sift._test_col_tids('uo_i', '') WITH ORDINALITY AS t(tid, sb, ord)
+), u AS (
+	SELECT sb, count(*) AS n FROM s GROUP BY sb
+)
+SELECT (SELECT count(*) FROM s WHERE sb < prev) AS out_of_order, (SELECT count(*) FROM s) AS rows, (SELECT count(*) FROM u) AS superblocks;
+-- a predicate that prunes units: the same order
+WITH s AS (
+	SELECT sb, ord, lag(sb) OVER (ORDER BY ord) AS prev FROM sift._test_col_tids('uo_i', '0:in:3|11|27') WITH ORDINALITY AS t(tid, sb, ord)
+)
+SELECT (SELECT count(*) FROM s WHERE sb < prev) AS out_of_order, (SELECT count(*) FROM s) AS rows;
+-- the rows are the heap's
+SELECT (SELECT count(*) FROM sift._test_col_tids('uo_i', '')) = (SELECT count(*) FROM uo) AS all_rows;
+
+DROP TABLE uo;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

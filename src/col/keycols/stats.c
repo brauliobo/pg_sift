@@ -14,6 +14,8 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "col/keycols/keycols_int.h"
+#include "core/store.h"
+#include "core/restrict.h"
 
 
 /* the live rows per page of a table that no VACUUM or ANALYZE has counted: those of up to 32 pages spread over it. The planner's guess from the widths of the columns is 16 times too many for a table of 1,000-byte strings,
@@ -138,7 +140,7 @@ keycols_analyze_if_unknown(Relation heap, Relation index)
 	StringInfoData cmd;
 	const char *sep = "";
 
-	if (hatt == 0 || (MyProc->statusFlags & PROC_IN_VACUUM) || ReindexIsProcessingIndex(RelationGetRelid(index)) || ReindexIsProcessingHeap(RelationGetRelid(heap)) || SearchSysCacheExists3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(hatt), BoolGetDatum(false)))
+	if (hatt == 0 || !sift_catalog_write_ok() || ReindexIsProcessingIndex(RelationGetRelid(index)) || ReindexIsProcessingHeap(RelationGetRelid(heap)) || SearchSysCacheExists3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(hatt), BoolGetDatum(false)))
 		return;
 	if (keycols_heap_rows(heap) < GORD_AUTO_ROWS)
 		return;

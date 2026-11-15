@@ -35,7 +35,7 @@ topn_big_offset	with `n + m` past 100,000	orders	default	Top-N: amount	native,pg
 topn_many_keys	up to 8 sort columns in the heap of the top-N scan	orders	default	Top-N: customer_id, country, category, status, quantity	native,pg_duckdb	-	ms	faster33	no	-
 count_distinct_hist	`count(DISTINCT col)` of a 32-bit or text column the cube tenants a histogram of	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no	-
 group_numeric_key	a group key that is an `int8` or a `numeric(p,s)` column	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no	-
-rollup_dims	`rollup_dims` (`sift_col` reloption, default off	orders	default WITH (rollup_dims = 'country, category: amount')	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no	-
+rollup_dims	`rollup_dims` (`sift_col` reloption, default off	orders	default WITH (rollup_columns = 'country, category: amount')	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no	-
 dict_equality	finds its dictionary codes without testing every string	orders	default+title	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no	-
 dict_prefix	a byte-order permutation of the dictionary	orders	default+title	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no	-
 partitions_scan	the planner prices the opening of the partitions of a partitioned table, which grows faster than their number	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
@@ -403,6 +403,7 @@ lookup_in_keyed	the keys of the scan's IN list that a joined btree table is keye
 group_order_many_keys	takes less work for each group	orders	default	\([1-9][0-9]* order keys\)	native	-	ms,minstr	faster33	no	-
 group_join_dim_filter_keys	looked up in the filtered table before the groups are made	events	-	Index (Only )?Scan (using|on) gk_fact_grp	native	-	ms	faster33	no	-
 lookup_index_only	the rows of a table joined by the scan's IN list are taken from the entries of a btree that holds their columns	events	-	Lookup: .* index scans	native	whole:sift.agg_lookup_pushdown = off	ms	faster33	no	-
+lookup_dense_classes	is kept as classes of its keys	events	-	Lookup: .* rows classed	native	rows:sift.agg_lookup_columns = off	ms	faster33	no	-
 group_lookup_scalar_key	a row of the table looked up by its unique key	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 group_filter_exists_key	its `FILTER` of a grouped query	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 group_two_keys_hash	probes the table with the comparison unrolled	orders	default	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
@@ -417,3 +418,60 @@ lookup_probe_not_in	a NOT IN over a large btree table (neither side NULL) is a p
 agg_sum_scalar_factor	a sum of a numeric column times a value asked once	events	-	Custom Scan \(SiftAgg\)[\s\S]*InitPlan	native	-	ms	faster33	no	-
 group_passes_upfront	chooses the number of passes from the planner's estimate of the groups and reads the table once for each pass	orders	default	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
 agg_sum_lookup_product	a sum of a numeric column times a value of a table joined by its unique key	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+fresh_request_lookup	-	events	-	child direct probes	native	warm_backend:sift.enable_agg = on	ms,minstr	faster33	no	-
+entity_list_btree_plan	the heap fetch of a top-N is priced at a page of the b-tree plan with a LIMIT, so a list of rows of one entity that a b-tree on the entity and the key gives in order keeps that plan	events	-	fallback:Index Scan using el_bt|Incremental Sort	native	warm_forced:sift.agg_force = on	ms	faster33	no	-
+agg_case_filter	`sum`, `avg`, `min`, `max` and `count` over `CASE WHEN p THEN x`	events	-	Pushed Aggregates: count\(\*\), sum\(amount\)	native	whole:sift.agg_case_filter = off	ms,minstr	faster33	no	-
+col_units_per_key	the merge of the small overlay segments also serves an index that is not cut into partitions	orders	default	Custom Scan \(SiftAgg	native	layered:search_path = c_col_units_per_key__layered	ms,minstr	faster33	no	-
+agg_pred_normalize	a condition that wraps a column in `coalesce(col, c)`	events	-	Filters: amount > 	native	-	ms,minstr	faster33	no	-
+col_overlay_wide_units	the merge of the small overlay segments counts the rows of the units a request scans	orders	default	Custom Scan \(SiftAgg	native	layered:search_path = c_col_overlay_wide_units__layered	ms,minstr	faster33	no	-
+col_wbuf_read_priced	backends that read it have paid for its promotion	orders	default	Custom Scan \(SiftAgg	native	buffered:search_path = c_col_wbuf_read_priced__buffered	ms,minstr	faster33	no	-
+col_wbuf_read_priced_set	backends that read it have paid for its promotion	orders	default	Custom Scan \(SiftAgg	native	buffered:search_path = c_col_wbuf_read_priced_set__buffered	ms,minstr	faster33	no	-
+col_wbuf_read_priced_all	backends that read it have paid for its promotion	orders	default	Custom Scan \(SiftAgg	native	buffered:search_path = c_col_wbuf_read_priced_all__buffered	ms,minstr	faster33	no	-
+col_log_block_cache	the tombstone log is asked once for a heap block	orders	default	Custom Scan \(SiftAgg	native	-	ms,minstr	faster33	no	-
+agg_jsonb_contain_object	a containment `doc @> '{...}'` with a boolean or JSON null member on an object document	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+set_key_skew_dimension	multiplied by the skew of the column	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+group_int_expr_halves	`GROUP BY id / 2`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+group_bigint_key_dense	an `int`, `bigint`, `date`, `timestamp` or `timestamptz` column	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+agg_window_topn	`row_number() OVER (PARTITION BY key ORDER BY ..) <= N` keeps only the first N rows of each group in the scan	events	-	array_agg\(wn_fact\.id ORDER BY.*\[1:3\]	native	-	ms,minstr	faster33	no	-
+point_pk	a lookup of one row by its primary key	events	-	Index Scan using pk_fact_pkey	native	-	ms,minstr	faster33	no	-
+agg_stat_variance_groups	`stddev`, `variance`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+agg_stat_corr_groups	`corr`, `regr_slope`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+agg_mode_text_groups	`mode() WITHIN GROUP`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+percentile_distinct_values	`percentile_disc`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+agg_window_rank	keeps in the scan the rows of rank <= N of each group	events	-	array_agg\(rk_fact\.id ORDER BY.*\[rank <= 3\]	native	-	ms,minstr	faster33	no	-
+agg_probe_anti	the child's rows are loaded once instead of a probe of its table for each outer row	events	-	Lookup Joins: pa_items \(anti\)	native	-	ms,minstr	faster33	no	-
+set_list_unit_span	`IN` list of 75 keys	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+agg_left_partial	the groups of the table by the keys of the join are made in the scan and joined to the pairs	events	-	Subquery Scan on e	native	-	ms,minstr	faster33	no	-
+topn_with_ties	`FETCH FIRST n ROWS WITH TIES` by an integer column	events	-	Top-N: dim_a_id DESC	native	-	ms	faster33	no	-
+agg_percentile_array	the percentiles of an array of fractions are picked from the one set of values the scan keeps	events	-	Pushed Aggregates: percentile_cont\(0.25\)	native	-	ms,minstr	faster33	no	-
+agg_topn_chunk	a tuple of a topn that comes after the last kept one of its group is dropped on the first sort key alone	events	-	array_agg\(tk_events\.id ORDER BY.*\[1:5\]	native	-	ms,minstr	faster33	no	-
+agg_distinct_ordered	the distinct values of a group ordered by the argument itself are a set that is sorted once	events	-	array_agg\(DISTINCT do_events\.kind_id ORDER BY	native	-	ms,minstr	faster33	no	-
+jsonb_key_exists	`doc ? 'k'` of a document column that declares the path k	events	-	Pushed Aggregates: count\(\*\)	native	-	ms	faster33	no	-
+agg_having_where	a HAVING condition with a sub-select that reads no aggregate is a condition of the rows	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+search_bitmap_recheck	checks the match again only on the rows of a lossy page	docs	-	Recheck Cond: .*match_idx	native	-	ms,minstr	faster33	no	-
+agg_output_subplan	a sub-select in the select list or the HAVING of a grouped query is evaluated by the scan node once for each group	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+agg_lookup_range_bounds	the table of a lookup join that has its own bounds	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+jsonb_key_forms	answered by the index in a FILTER, an OR or a CASE	events	-	Pushed Aggregates: count\(\*\), sum	native	-	ms	faster33	no	-
+jsonb_key_read	the value of a key read beside the test of the key	events	-	Pushed Aggregates: sum\(attrs\.a\)	native	-	ms	faster33	no	-
+agg_case_else	an average, a minimum or a count of a CASE with an ELSE that is a value	events	-	Pushed Aggregates: .*sum\(qty\)	native	-	ms	faster33	no	-
+subselect_max_per_entity	a correlated `min()` or `max()` sub-select of a table is the first row of its entity	orders	default	Global Order: true	native	btree:search_path = c_subselect_max_per_entity__btree	ms,minstr	faster33	no	-
+dimmap_shared_classes	once a backend has read them from the leaves	events	-	Lookup: .*[1-9][0-9]* maps (built|shared)	native	nomap:sift.agg_dimmap_kb = 0	ms,minstr	faster33	no	-
+count_distinct_big_set	gets its pairs sorted once the hash set outgrows the cache	events	-	Pushed Aggregates	native	-	ms	faster33	no	-
+lookup_expr_column	is read from the leaf of the index that holds it	events	-	Lookup: .* column loads	native	rows:sift.agg_lookup_columns = off	ms	faster33	no	-
+semi_lut_bigint	by an `int8` key is answered from a byte table	events	-	[1-9][0-9]* semi tables	native	generic_join:sift.agg_semi_lut = off	ms	faster33	no	-
+lookup_bool_filters	are columns of the lookup table read from its index	events	-	Lookup: .* column loads	native	rows:sift.agg_lookup_columns = off	ms	faster33	no	-
+lookup_dense_kept	is read from the cache of an earlier statement as classes of its keys	events	-	Lookup: .*cached tables	native	rows:sift.agg_lookup_columns = off	ms	faster33	no	-
+lookup_scoped_keys	is read for the keys of the list alone	events	-	Lookup: [0-9]+ rows read	native	rows:sift.agg_lookup_pushdown = off	ms	faster33	no	-
+lookup_dense_tests	are columns of the lookup table computed once for each of its rows	events	-	Lookup: .*(rows classed|cached tables)	native	rows:sift.agg_lookup_columns = off	ms	faster33	no	-
+join_count_per_parent	`count(x)` of a column of a joined table keeps a flag for each joined tuple	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+distinct_split	share one set of ids: the scan groups by the outcome of each filter	events	-	Group Keys: .*lookup_id: \(NULLIF	native	-	ms	faster33	no	-
+found_path_exists	is answered from the flag the segments keep that the parent row was found	events	-	[1-9][0-9]* found proofs	native	join:sift.agg_connect_found = off	ms,minstr	faster33	no	-
+found_path_under_parent_updates_1pct	is answered from the flag the segments keep that the parent row was found	events	-	[1-9][0-9]* found proofs	native	join:sift.agg_connect_found = off	ms,minstr	faster33	no	-
+found_path_under_parent_updates_10pct	is answered from the flag the segments keep that the parent row was found	events	-	[1-9][0-9]* found proofs	native	join:sift.agg_connect_found = off	ms,minstr	faster33	no	-
+invert_exists_child_filter	is planned also as the count of the distinct keys of the child's rows that have a parent	events	-	count\(DISTINCT dim_id\)	native	join:sift.agg_child_first = off	ms,minstr	faster33	no	-
+invert_not_exists_child_filter	is planned also as the count of the distinct keys of the child's rows that have a parent	events	-	count\(DISTINCT dim_id\)	native	join:sift.agg_child_first = off	ms,minstr	faster33	no	-
+child_first_left_join_groups	made for each key of the child first and added up over the parents	events	-	sum\(iv_events\.a1\)	native	join:sift.agg_child_first = off	ms,minstr	faster33	no	-
+parent_filter_child_sum	-	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+parent_child_distinct	-	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+parent_child_id_list	-	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+parent_lateral_top1	-	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-

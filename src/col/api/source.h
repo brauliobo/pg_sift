@@ -201,9 +201,15 @@ extern uint32 sift_col_super_span(SiftColSource *src);
  * Opens the source: copies the directory (registered snapshot held until close), starts the visibility state (sift_vis) for snapshot, takes
  * PredicateLockRelation under SERIALIZABLE, checks SELECT on the table and refuses row-level security (ERRCODE_FEATURE_NOT_SUPPORTED) unless
  * SIFT_COLO_NOCHECKS. mcxt owns everything the source allocates (close releases buffers and pins, never memory). The caller holds
- * at least AccessShareLock on the heap and the index.
+ * at least AccessShareLock on the heap and the index. view: the copy of the directory another source exported (sift_col_view_export), NULL to read it.
  */
-extern SiftColSource *sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags);
+extern SiftColSource *sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view);
+/*
+ * The directory the source read, as bytes: what the participants of a parallel scan open their sources on, so that all of them number the units and the
+ * batches of the write buffer by the same segments (a promotion between two opens moves rows from one range of superblocks to another).
+ */
+extern Size sift_col_view_size(const SiftColSource *src);
+extern void sift_col_view_export(const SiftColSource *src, void *buf);
 extern void sift_col_close(SiftColSource *src);
 /* Makes a source that has begun no scan, counted no rows and set no count or super mode ready for another scan of the statement (the counters at zero, what the global order made forgotten); false when it has, or its directory changed: open again */
 extern bool sift_col_rescan(SiftColSource *src);
@@ -314,8 +320,10 @@ extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *ent
 /* What is known of the entry of stored segment i at heap address tid: 1 the row is live and visible to every snapshot, 0 the unit holds it live and the heap says whether this snapshot sees it, -1 the unit has cleared it, -2 not known */
 extern int	sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid);
 extern bool sift_col_gorder_clean(SiftColSource *src, int i);
-/* The values of the leaf gcol over the rows of the scan, ascending, once each, when the second order of leaf kcol grouped by it is in every segment (palloc'ed) */
-extern bool sift_col_gorder_group_values(SiftColSource *src, int gcol, int kcol, const int64 *only, int64 **vals, uint32 *nvals);
+/* The values of the leaf gcol over the rows of the scan, once each in the direction of the scan, when the second order of leaf kcol grouped by it is in every segment: a cursor, NULL if it is not (in cxt) */
+typedef struct SiftColGroups SiftColGroups;
+extern SiftColGroups *sift_col_gorder_groups_open(SiftColSource *src, int gcol, int kcol, const int64 *only, bool desc, MemoryContext cxt);
+extern bool sift_col_gorder_groups_next(SiftColGroups *c, int64 *group);
 extern void sift_col_gorder_values(SiftColSource *src, int col, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st);
 extern void sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
 extern bool sift_col_gorder_groups(SiftColSource *src, int i, int col, uint32 *ngroups);
@@ -370,7 +378,7 @@ typedef enum SiftColWVerdict
 
 /*
  * The operators on the head of a range or a network (col/shape.c) as ops of sift_colw_test, with the head on the left and the operand (a range, an
- * element of its subtype, a network) on the right; the same numbers as SWT_* of agg/colsrc.h.
+ * element of its subtype, a network) on the right.
  */
 #define SIFT_COLW_SHAPE_FIRST	16
 #define SIFT_COLW_R_CONTAINS	16		/* @> a range */
@@ -389,6 +397,18 @@ typedef enum SiftColWVerdict
 #define SIFT_COLW_N_OVERLAP		29		/* && */
 #define SIFT_COLW_R_EQ			30		/* = a range (only the access method scan asks for it) */
 #define SIFT_COLW_N_EQ			31		/* = a network: the node and the host bits of an IPv4 value, the rows of the node of an IPv6 one are decided by PostgreSQL's operator */
+/* tests of a range with no operand (isempty, lower_inf, upper_inf, lower_inc, upper_inc and the NOT of each), on the same lanes */
+#define SIFT_COLW_R_UNARY		32
+#define SIFT_COLW_R_EMPTY		32
+#define SIFT_COLW_R_NONEMPTY	33
+#define SIFT_COLW_R_LOWER_INF	34
+#define SIFT_COLW_R_LOWER_FIN	35		/* NOT lower_inf: an empty range has no infinite bound */
+#define SIFT_COLW_R_UPPER_INF	36
+#define SIFT_COLW_R_UPPER_FIN	37
+#define SIFT_COLW_R_LOWER_INC	38
+#define SIFT_COLW_R_LOWER_EXC	39		/* NOT lower_inc: true of an empty range and of an infinite bound */
+#define SIFT_COLW_R_UPPER_INC	40
+#define SIFT_COLW_R_UPPER_EXC	41
 #define SIFT_COL_SHAPE_PREDS	4		/* the lane tests of one alternative of a shape test */
 
 typedef struct SiftColShape SiftColShape;
@@ -443,6 +463,9 @@ extern bool sift_col_ovf_bits(const SiftColUnit *unit, int col, uint64 *bits);
 
 /* The overflow bits of the chunk of leaf col, *n slots (the rows of a top level leaf, the elements of the unit for a child leaf); NULL when the leaf holds no overflow value. Valid until the next unit */
 extern const uint64 *sift_col_ovf_slots(const SiftColUnit *unit, int col, uint32 *n);
+extern bool sift_col_unit_roots(const SiftColUnit *unit);
+extern bool sift_col_ovf_none_slots(const SiftColUnit *unit, int col, uint64 *bits);
+extern const uint64 *sift_col_null_slots(const SiftColUnit *unit, int col, uint32 *n);
 
 /* Array-element predicates with same-element semantics: keeps the rows with a satisfying element (or none, negate) */
 extern bool sift_col_filter_group(const SiftColUnit *unit, const SiftColGroupPred *gp, SiftColSel *sel);

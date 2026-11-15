@@ -1,0 +1,1 @@
+col_zone_jnull	src/col/chunk.c:kinds_parse src/col/test.c:parse_query src/col/test.c:scan_close src/col/test.c:scan_open src/col/test.c:sift_test_col_formats src/col/test.c:sift_test_col_zone_flags src/col/test.c:test_next

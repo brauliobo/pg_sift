@@ -9,18 +9,16 @@
 #include "catalog/pg_am_d.h"
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
-#include "catalog/pg_opfamily_d.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
-#include "optimizer/paths.h"
 #include "catalog/pg_class_d.h"
 #include "utils/array.h"
-#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 
 #include "bm25/planner_int.h"
 #include "bm25/segment.h"
+#include "core/cmp.h"
 
 #define MAX_IN_LIST		1024
 
@@ -128,15 +126,6 @@ add_test(List *tests, int col, int op, int64 v, const int64 *set, int nset)
 	return tests;
 }
 
-static int
-cmp_int64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return x < y ? -1 : x > y;
-}
-
 /* The test of one qual, appended to tests; false when the qual is not one the ranker can test */
 static bool
 qual_test(IndexOptInfo *ii, Node *clause, List **tests)
@@ -220,7 +209,7 @@ qual_test(IndexOptInfo *ii, Node *clause, List **tests)
 				set[m++] = sift_attr_datum(ARR_ELEMTYPE(arr), elems[i]);
 		if (m == 0)
 			return false;
-		qsort(set, m, sizeof(int64), cmp_int64);
+		qsort(set, m, sizeof(int64), sift_cmp_i64);
 		*tests = add_test(*tests, col, SIFT_AT_IN, 0, set, m);
 		return true;
 	}

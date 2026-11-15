@@ -6,14 +6,13 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/tableam.h"
-#include "access/visibilitymapdefs.h"
-#include "access/transam.h"
 #include "access/xact.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "utils/hsearch.h"
+#include "utils/inval.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -37,7 +36,11 @@ bool		sift_test_count_gate = false;
 bool		sift_test_cleanup_gate = false;
 bool		sift_test_shrink_gate = false;
 bool		sift_test_merge_gate = false;
+bool		sift_test_worker_gate = false;
 bool		sift_test_release_gate = false;
+bool		sift_test_export_gate = false;
+bool		sift_test_drop_gate = false;
+bool		sift_test_build_gate = false;
 static int	test_masks = 0;
 
 /* Waits until the test lets go of advisory lock (0x51F7, key) */
@@ -49,6 +52,24 @@ sift_test_wait(int key)
 	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, 0x51F7, key, 2);
 	(void) LockAcquire(&tag, ShareLock, false, false);
 	LockRelease(&tag, ShareLock, false);
+}
+
+void
+sift_test_wait_inval(int key)
+{
+	sift_test_wait(key);
+	AcceptInvalidationMessages();
+}
+
+/* Waits until the test lets go of the advisory lock of this number (the one-argument int8 form; 0 or less: no gate) */
+void
+sift_test_hold(int64 key)
+{
+	if (key > 0)
+	{
+		DirectFunctionCall1(pg_advisory_lock_int8, Int64GetDatum(key));
+		DirectFunctionCall1(pg_advisory_unlock_int8, Int64GetDatum(key));
+	}
 }
 
 /* Widens the window between the liveness a scan has read and the map it reads: a test holds the lock, runs the VACUUM, and lets go */
@@ -595,7 +616,7 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 		return 0;
 	}
 	if (sift_tbl_is_table(v->heap))
-		return sift_tbl_filter_page(v->heap, v->snapshot, blk, offmask);
+		return sift_tbl_filter_page(v->fetch, v->snapshot, blk, offmask);
 	if (sift_vis_page_cache)
 	{
 		e = page_cache_entry(v, blk, &found);

@@ -36,14 +36,20 @@
 #include "col/seg.h"
 #include "core/store.h"
 #include "core/tomb.h"
+#include "core/visibility.h"
+
+/* A merge or a defrag replaced the rows the statement was reading: it fails with a serialization failure and is retried (the arguments are errmsg's) */
+#define SIFT_TBL_RETRY(...) \
+	ereport(ERROR, \
+			(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE), \
+			 errmsg(__VA_ARGS__), \
+			 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")))
 
 /* PostgreSQL 18 gave the minimal tuple constructors an `extra` size */
 #if PG_VERSION_NUM >= 180000
 #define sift_tbl_form_minimal_tuple(desc, values, isnull)	heap_form_minimal_tuple(desc, values, isnull, 0)
-#define sift_tbl_minimal_from_heap_tuple(tup)				minimal_tuple_from_heap_tuple(tup, 0)
 #else
 #define sift_tbl_form_minimal_tuple(desc, values, isnull)	heap_form_minimal_tuple(desc, values, isnull)
-#define sift_tbl_minimal_from_heap_tuple(tup)				minimal_tuple_from_heap_tuple(tup)
 #endif
 
 #define SIFT_TBL_META_FLAG		0x00020000	/* SiftMetaPageData.flags: this relation is a sift_table */
@@ -140,10 +146,6 @@ typedef struct SiftTblRel
 	/* column groups (table/seg.c) */
 	struct SiftTblLayout *layout;
 	struct SiftTblGroupCache *gcache;
-	struct SiftTblVers *curvers;	/* the unfrozen groups of dir, for readers that go by the directory the cache holds (sift_tbl_filter_page) */
-	uint32		curvers_version;
-	Relation	curvers_rel;
-	MemoryContext curvers_cxt;
 	bool		fresh;			/* the new table of a rewrite: nobody else reads it, its released extents are reusable at once */
 	/* what this backend saw when it last asked for the background pass (auto_defrag_check), and when it last looked (sift_tbl_auto_defrag_tick) */
 	uint64		defrag_tombs;
@@ -152,13 +154,30 @@ typedef struct SiftTblRel
 	int64		defrag_at;
 	uint64		defrag_vblock;	/* the next virtual block then: a write buffer opened since is a writer that reuses the free blocks */
 	TransactionId settle_horizon;	/* the oldest xmin when this backend last asked for the settling of closed write buffers: they wait for it to move */
+	struct SiftTblOpts *opts;	/* the options set on this table (sift.table_set_option), read with the cache entry */
 } SiftTblRel;
+
+/*
+ * What a scan judges the pages of its directory with: its own copies, taken when it opened, so that another scan of the backend that refreshes the cache entry
+ * (SiftTblRel) or an invalidation that replaces it changes nothing under it. st gives the tombstone log, which only grows while a scan may read it
+ * (SiftTombLog.keep).
+ */
+typedef struct SiftTblScanState
+{
+	SiftTblRel *st;
+	SiftTblSeg *wbuf;			/* [nwbuf] the write buffers of the scan's directory */
+	int			nwbuf;
+	struct SiftTblVers *vers;	/* the groups with unfrozen rows of the same directory */
+	Snapshot	snapshot;
+} SiftTblScanState;
 
 /* The cache of rel (created on first use); ReadBuffer-level state is not held */
 extern SiftTblRel *sift_tbl_rel(Relation rel);
 /* Re-reads the directory unless its version is the cached one (_full: always); write buffer page tables are extended lazily by sift_tbl_wbuf_page */
 extern void sift_tbl_refresh(Relation rel, SiftTblRel *st);
 extern void sift_tbl_refresh_full(Relation rel, SiftTblRel *st);
+extern SiftTblSeg *sift_tbl_wbuf_copy(const SiftTblSeg *wbuf, int n, MemoryContext cxt);
+extern bool sift_tbl_maint_lock(Relation rel, SiftTblRel *st, bool wait);
 /* Lays the relation out when it is empty (idempotent, any backend); a writer calls it before its first access */
 extern void sift_tbl_ensure_init(Relation rel);
 extern bool sift_tbl_is_table(Relation rel);
@@ -232,7 +251,6 @@ extern HeapTuple sift_tbl_rec_tuple(Relation rel, const SiftTblRec *rec, uint64 
 extern BlockNumber sift_tbl_wbuf_page(Relation rel, SiftTblSeg *seg, uint32 idx);
 extern void sift_tbl_seg_load(Relation rel, SiftTblSeg *seg);
 extern bool sift_tbl_load_vblock_in(Relation rel, SiftTblSeg *segs, int nsegs, BlockNumber vblock, Page copy, uint64 *gen, bool *held);
-extern bool sift_tbl_load_vblock(Relation rel, SiftTblRel *st, BlockNumber vblock, Page copy, uint64 *gen);
 /* The version header of a write buffer record at tid; sift_tbl_rowver_tuple then materializes its row (t_self, t_tableOid set) */
 extern void sift_tbl_rowver(SiftTblRowVer *rv, ItemPointer tid, const SiftTblRec *rec);
 extern void sift_tbl_rowver_tuple(Relation rel, SiftTblRowVer *rv, const SiftTblRec *rec, uint64 gen, ItemPointer tid);
@@ -242,9 +260,9 @@ extern bool sift_tbl_has_chains(Relation rel);
 typedef void (*SiftTblKeyFn) (void *arg, uint64 key);
 /* Calls fn with the key of every member of the HOT chain of each row of vblock that offmask names: a search match is the root's, the table's own scans see the members. pos: as sift_tomb_hot_offsets, for the vblocks of a search in ascending order */
 extern void sift_tbl_chain_members(Relation rel, uint32 *pos, BlockNumber blk, const uint64 *offmask, SiftTblKeyFn fn, void *arg);
-extern int	sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask);
+extern int	sift_tbl_filter_page(IndexFetchTableData *fetch, Snapshot snapshot, BlockNumber vblock, uint64 *offmask);
 /* The same for a reader that has its own copy of the directory: vers are the unfrozen groups of that copy */
-extern int	sift_tbl_filter_page_vers(Relation rel, Snapshot snapshot, SiftTblVers *vers, BlockNumber vblock, uint64 *offmask, bool chain);
+extern int	sift_tbl_filter_page_vers(Relation rel, const SiftTblScanState *ss, BlockNumber vblock, uint64 *offmask, bool chain);
 extern void sift_tbl_store(TupleTableSlot *slot, HeapTuple tup);
 extern bool sift_tbl_fetch_row(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv);
 /* As sift_tbl_fetch_row, but a row of a column group comes without its tuple (rv->tuple NULL) and costs no decoding: for callers that
@@ -309,7 +327,6 @@ extern bool sift_tbl_scan_getnextslot(TableScanDesc scan, ScanDirection directio
 /* The next stored row version of a scan, visible to its snapshot or not (VACUUM FULL): rv->tuple is palloc'd, rv->xmin unset for a row of a column group */
 extern bool sift_tbl_scan_next_stored(TableScanDesc scan, SiftTblRowVer *rv);
 extern void sift_tbl_scan_set_tidrange(TableScanDesc scan, ItemPointer mintid, ItemPointer maxtid);
-extern bool sift_tbl_scan_getnextslot_tidrange(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot);
 extern Size sift_tbl_parallelscan_estimate(Relation rel);
 extern Size sift_tbl_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan);
 extern void sift_tbl_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan);
@@ -484,11 +501,20 @@ typedef struct SiftTblKeyRuns
 	SiftKey	   (*run)[2];
 } SiftTblKeyRuns;
 
+/* Where sift_tbl_aborted_runs stopped: the group and the unit it goes on at */
+typedef struct SiftTblAbortScan
+{
+	int			seg;
+	uint32		unit;
+} SiftTblAbortScan;
+
 /*
  * The live rows of the unfrozen groups whose inserter aborted, as runs of keys appended to runs (the rows are dead: VACUUM clears their liveness
- * once the indexes know, and a merge drops them); [*sb_lo, *sb_hi] widened to their superblocks. The maintenance lock held.
+ * once the indexes know, and a merge drops them); [*sb_lo, *sb_hi] widened to their superblocks. It stops at the end of the unit that takes
+ * runs to max_runs, so that VACUUM holds them a batch at a time: false when it stopped there, to be called again with the same scan after the
+ * runs were used; true when every group was read. The maintenance lock held.
  */
-extern void sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, uint32 *sb_lo, uint32 *sb_hi);
+extern bool sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, SiftTblAbortScan *scan, int max_runs, uint32 *sb_lo, uint32 *sb_hi);
 /* Drops the unfrozen groups that have no live row left (every row aborted, VACUUM cleared them after the indexes forgot them); the maintenance lock held. The groups dropped. */
 extern int	sift_tbl_drop_dead_groups(Relation rel, SiftTblRel *st);
 /* The rows of the groups that count as live for the statistics: not those of a writer that is still running or aborted */
@@ -505,7 +531,7 @@ extern PGDLLIMPORT int sift_tbl_init_gate;
 extern PGDLLIMPORT int sift_tbl_seal_gate;
 #ifdef SIFT_TESTING
 /* Test only: waits for the advisory lock of this number to be free (0 = no gate), so that a test holds a window open */
-extern void sift_tbl_gate(int number);
+#define sift_tbl_gate(number)	sift_test_hold(number)
 #else
 #define sift_tbl_gate(number)	((void) 0)
 #endif
@@ -528,12 +554,46 @@ extern PGDLLIMPORT int sift_test_load_publish;
 extern PGDLLIMPORT bool sift_test_load_reap_late;
 extern PGDLLIMPORT int sift_test_load_unit_bytes;
 extern PGDLLIMPORT int sift_test_load_segment_kb;
+extern PGDLLIMPORT int sift_test_vacuum_batch_bytes;
 extern PGDLLIMPORT bool sift_test_bitmap_no_visible;
 extern PGDLLIMPORT int sift_test_bitmap_bulk_rows;
 #endif
 extern bool sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen);
 extern void sift_tbl_load_row(Relation rel, SiftTblRel *st, const Datum *values, const bool *isnull, CommandId cid, ItemPointer tid);
 extern void sift_tbl_load_finish(Relation rel);
+
+/*
+ * The per-table options (table/options.c, docs/COL-TAM.md section 8): the sift.table_* settings that one table can override with sift.table_set_option. The
+ * rows live in sift.table_option_values and are read with the cache entry of the table (sift_tbl_rel), so a use is a bit test and an array read; the setting
+ * answers where the table sets nothing. Every id is the setting of the same name without the prefix.
+ */
+typedef enum SiftTblOptId
+{
+	SIFT_TBLOPT_WRITE_BUFFER_LIMIT,
+	SIFT_TBLOPT_WIDE_ROWS,
+	SIFT_TBLOPT_INLINE_PROMOTE,
+	SIFT_TBLOPT_ASYNC_PROMOTE,
+	SIFT_TBLOPT_BACKPRESSURE,
+	SIFT_TBLOPT_HOT_UPDATE,
+	SIFT_TBLOPT_BULK_GROUPS,
+	SIFT_TBLOPT_DICT_LOOKUP,
+	SIFT_TBLOPT_KEY_TABLE,
+	SIFT_TBLOPT_COMPRESSION,
+	SIFT_TBLOPT_DEAD_REWRITE_PCT,
+	SIFT_TBLOPT_AUTO_DEFRAG,
+	SIFT_TBLOPT_AUTO_DEFRAG_FREE_PCT,
+	SIFT_TBLOPT_AUTO_DEFRAG_BUDGET,
+	SIFT_TBLOPT_AUTO_DEFRAG_COALESCE,
+	SIFT_TBLOPT_AUTO_DEFRAG_INDEXES,
+	SIFT_TBLOPT_N
+} SiftTblOptId;
+
+extern bool sift_tbl_opt_bool(const SiftTblRel *st, SiftTblOptId id);
+extern int	sift_tbl_opt_int(const SiftTblRel *st, SiftTblOptId id);
+extern const char *sift_tbl_opt_str(const SiftTblRel *st, SiftTblOptId id);
+/* Reads the options of the table into its new cache entry (from sift_tbl_rel) */
+extern void sift_tbl_opts_load(SiftTblRel *st);
+extern PGDLLIMPORT bool sift_tbl_hot_update;
 
 /* Registers sift.table_write_buffer_limit, sift.table_inline_promote and sift.table_compression (from sift_tbl_init) */
 extern void sift_tbl_define_gucs(void);

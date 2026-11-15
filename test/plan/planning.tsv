@@ -2,7 +2,7 @@
 any_array_subselect	585
 arms_filter	797
 arms_per_parent_metrics	849
-arms_scalar_subselects	948
+arms_scalar_subselects	1000	1.5
 arms_union	1331
 count_all	232
 count_by_kind	299

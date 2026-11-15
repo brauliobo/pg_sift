@@ -1,6 +1,6 @@
 -- A lookup table that a later inner join keys by one of its columns alone (the ids of a request, a CTE of them, joined to the table of their rows) is read by a
 -- btree probe for each key while the probes cost less than its pages, where it was read whole: the rows loaded are the keys', the answers the same, and a request
--- of many keys reads the table whole as before.
+-- of keys that are most of the table takes the two reads at about the same time.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -48,10 +48,10 @@ END $$;
 
 -- three keys of two thousand: the three rows (and the few rows of the other lookups), one index scan
 SELECT loaded(request(1));
--- fourteen hundred keys: the table is read whole
+-- fourteen hundred keys, 70% of the rows of the table: by the index still (the two reads take the same, 2.6 to 3.9 ms against 2.8 to 4.4 for the table of a hundred pages read whole; the crossover with narrow rows is pinned by agg_lookup_keyed_crossover)
 SELECT loaded(request(2));
 
--- three keys of twenty-five rows: seventy-five rows by probes; three hundred keys (seven thousand five hundred rows, the pages of the table): read whole
+-- three keys of twenty-five rows: seventy-five rows by probes; three hundred keys (seven thousand five hundred rows, the pages of the table): by the index too, a little faster than read whole (5.3 to 6.3 ms against 5.7 to 7.4)
 SELECT loaded(grequest(1));
 SELECT loaded(grequest(2));
 

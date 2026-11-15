@@ -5,6 +5,8 @@
  */
 #include "postgres.h"
 #include "access/relation.h"
+#include "parser/parsetree.h"
+#include "catalog/pg_am_d.h"
 #include "bm25/am.h"
 #include "col/am/am_int.h"
 
@@ -35,6 +37,7 @@ sift_col_make_row_rc(SiftColRel *r, ItemPointer tid, const Datum *values, const 
 			   *name = r->name;
 	SiftColShredAdapter *shred = r->shred;
 	int			natts = r->natts,
+				conn_first = r->conn_first,
 				ncols = schema->ncols;
 
 	row->tid = *tid;
@@ -55,6 +58,8 @@ sift_col_make_row_rc(SiftColRel *r, ItemPointer tid, const Datum *values, const 
 	}
 	if (shred)
 		sift_col_shred_row_rc(shred, values, isnull, row, first, mcxt, rc);
+	for (int k = conn_first; k < ncols; k++)	/* a row has no flag of its connections until a segment resolves them (col/conn.h) */
+		row->val[k].isnull = true;
 	MemoryContextSwitchTo(old);
 }
 
@@ -76,10 +81,33 @@ static bool batch_seen;
 
 static int	batch_stmts;
 
+static int	batch_writes;		/* statements running that modify data (sift_col_writing) */
+
+static CommandId batch_cid;	/* the command id the innermost statement that modifies data runs with, valid while batch_cid_set (sift_col_stmt_cid) */
+
+static bool batch_cid_set;
+
+static bool batch_inserting;	/* inside sift_col_aminsert; an error leaves it set until the (sub)transaction aborts */
+
 static int	batch_updates;		/* statements running that replace row versions (UPDATE, MERGE, ON CONFLICT DO UPDATE): an index with track_changes supersedes the entries of the old versions */
 
-static void
-batch_flush_all(void)
+static void batch_xact(XactEvent event, void *arg);
+static void batch_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId parentSubid, void *arg);
+
+/* The callbacks that write the held rows and tombstones at the commit: made by the first row of the backend, or by the first tombstone a row trigger holds */
+void
+sift_col_batch_hook(void)
+{
+	if (!batch_hooked)
+	{
+		RegisterXactCallback(batch_xact, NULL);
+		RegisterSubXactCallback(batch_subxact, NULL);
+		batch_hooked = true;
+	}
+}
+
+void
+sift_col_flush_held(void)
 {
 	Oid			oid;
 
@@ -98,11 +126,13 @@ static void
 batch_xact(XactEvent event, void *arg)
 {
 	if (event == XACT_EVENT_PRE_COMMIT || event == XACT_EVENT_PRE_PREPARE)
-		batch_flush_all();
+		sift_col_flush_held();
 	else if (event == XACT_EVENT_ABORT)
 	{
 		sift_cwbuf_discard(InvalidOid);
 		sift_col_tombs_discard();
+		batch_inserting = false;
+		batch_cid_set = false;
 	}
 	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT)
 		batch_seen = false;
@@ -112,24 +142,56 @@ static void
 batch_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId parentSubid, void *arg)
 {
 	if (event == SUBXACT_EVENT_START_SUB)
-		batch_flush_all();
+		sift_col_flush_held();
 	else if (event == SUBXACT_EVENT_ABORT_SUB)
 	{
 		sift_cwbuf_discard(InvalidOid);
 		sift_col_tombs_discard();
+		batch_inserting = false;
 	}
 }
 
 #define STMT_SPECULATIVE	1
 #define STMT_UPDATING		2
+#define STMT_WRITING		4
+#define STMT_ENDING			8
+
+typedef struct StmtState
+{
+	int			what;
+	CommandId	prev_cid;
+	bool		prev_set;
+	struct StmtState *next;		/* the statements that may end row versions, in batch_ending (STMT_ENDING) */
+	int			nrels;
+	Oid			rels[FLEXIBLE_ARRAY_MEMBER];	/* the tables it changes */
+} StmtState;
+
+/*
+ * The statements running that may end row versions (DELETE, UPDATE, MERGE and a CTE that does) and the tables they change. An index with track_changes hears the versions a statement
+ * ends from its statement trigger, which fires after the statement has run: until the statement is over (its AFTER triggers included) the log lacks them, and a read of the
+ * transaction that goes through the log alone (a function the statement calls, an AFTER ROW trigger, a trigger of the table that fires before the one of the index) would count them.
+ */
+static StmtState *batch_ending;
 
 static void
 batch_stmt_done(void *arg)
 {
-	uintptr_t	what = (uintptr_t) arg;
+	StmtState  *st = arg;
+	int			what = st->what;
+
+	batch_cid = st->prev_cid;
+	batch_cid_set = st->prev_set;
+	if (what & STMT_ENDING)
+		for (StmtState **p = &batch_ending; *p != NULL; p = &(*p)->next)
+			if (*p == st)
+			{
+				*p = st->next;
+				break;
+			}
 
 	batch_stmts -= (what & STMT_SPECULATIVE) != 0;
 	batch_updates -= (what & STMT_UPDATING) != 0;
+	batch_writes -= (what & STMT_WRITING) != 0;
 }
 
 static bool
@@ -141,6 +203,31 @@ plan_updates(Plan *plan)
 		((ModifyTable *) plan)->onConflictAction == ONCONFLICT_UPDATE;
 }
 
+/* The tables the statement changes: the range table entries of its result relations (a list before PostgreSQL 19, a set of them from it) */
+static int
+stmt_result_count(PlannedStmt *ps)
+{
+#if PG_VERSION_NUM >= 190000
+	return bms_num_members(ps->resultRelationRelids);
+#else
+	return list_length(ps->resultRelations);
+#endif
+}
+
+static void
+stmt_result_rels(PlannedStmt *ps, Oid *rels)
+{
+	int			n = 0;
+
+#if PG_VERSION_NUM >= 190000
+	for (int rti = -1; (rti = bms_next_member(ps->resultRelationRelids, rti)) >= 0;)
+		rels[n++] = rt_fetch(rti, ps->rtable)->relid;
+#else
+	foreach_int(rti, ps->resultRelations)
+		rels[n++] = rt_fetch(rti, ps->rtable)->relid;
+#endif
+}
+
 void
 sift_col_stmt_start(QueryDesc *queryDesc)
 {
@@ -148,22 +235,75 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 	bool		speculative = IsA(ps->planTree, ModifyTable) && ((ModifyTable *) ps->planTree)->onConflictAction != ONCONFLICT_NONE;
 
 	bool		updating = plan_updates(ps->planTree);
+	bool		writing = ps->commandType != CMD_SELECT || ps->hasModifyingCTE;
+	bool		ending = updating || ps->commandType == CMD_DELETE || ps->hasModifyingCTE;
 
+	if (ps->parallelModeNeeded)
+		sift_col_flush_held();
 	foreach_ptr(Plan, sub, ps->subplans)
 	{
 		speculative |= sub != NULL && IsA(sub, ModifyTable) && ((ModifyTable *) sub)->onConflictAction != ONCONFLICT_NONE;
 		updating |= plan_updates(sub);
 	}
-	if (speculative || updating)
+	if (speculative || updating || writing)
 	{
 		MemoryContextCallback *cb = MemoryContextAlloc(queryDesc->estate->es_query_cxt, sizeof(MemoryContextCallback));
+		int			nrels = ending ? stmt_result_count(ps) : 0;
+		StmtState  *st = MemoryContextAlloc(queryDesc->estate->es_query_cxt, offsetof(StmtState, rels) + nrels * sizeof(Oid));
 
+		st->what = (speculative ? STMT_SPECULATIVE : 0) | (updating ? STMT_UPDATING : 0) | (writing ? STMT_WRITING : 0) | (ending ? STMT_ENDING : 0);
+		st->nrels = nrels;
+		if (ending)
+		{
+			stmt_result_rels(ps, st->rels);
+			st->next = batch_ending;
+			batch_ending = st;
+		}
+		st->prev_cid = batch_cid;
+		st->prev_set = batch_cid_set;
 		cb->func = batch_stmt_done;
-		cb->arg = (void *) (uintptr_t) ((speculative ? STMT_SPECULATIVE : 0) | (updating ? STMT_UPDATING : 0));
+		cb->arg = st;
 		MemoryContextRegisterResetCallback(queryDesc->estate->es_query_cxt, cb);
+		if (writing)
+		{
+			batch_cid = GetCurrentCommandId(true);
+			batch_cid_set = true;
+		}
 		batch_stmts += speculative;
 		batch_updates += updating;
+		batch_writes += writing;
 	}
+}
+
+/*
+ * The command id of the statement that writes: the one its tuples carry. A function that runs SQL (SPI) inside the statement advances the command id, and a tombstone or a
+ * probe that took the current one would no longer see the versions the statement ended (a snapshot of the command sees them, the next command's does not).
+ */
+CommandId
+sift_col_stmt_cid(void)
+{
+	return batch_cid_set ? batch_cid : GetCurrentCommandId(true);
+}
+
+/* Does a statement that is running (in this backend) end row versions of the table, whose index with track_changes has not heard them yet? */
+bool
+sift_col_ends_rows(Oid heapoid)
+{
+	for (StmtState *st = batch_ending; st != NULL; st = st->next)
+		for (int i = 0; i < st->nrels; i++)
+			if (st->rels[i] == heapoid)
+				return true;
+	return false;
+}
+
+/*
+ * Is a statement writing, or an aminsert running? The registry of the dynamic shared memory attaches in a subtransaction, whose commit advances the command id: that must not
+ * happen under a write (a row updated by two statements of one transaction would keep its middle version in the index), so the shared tables attach in the next statement that reads.
+ */
+bool
+sift_col_writing(void)
+{
+	return batch_inserting || batch_writes > 0 || batch_updates > 0 || batch_stmts > 0;
 }
 
 /* Is an UPDATE running that tombstones the entries its new versions replace (sift_col_aminsert, track_changes)? */
@@ -189,28 +329,30 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	 * Not for a speculative insertion: the tuple may be killed when its conflict is found, and no one is told. A tuple that CREATE INDEX
 	 * CONCURRENTLY adds after the build is of an older transaction, which the id of the one that adds it follows.
 	 */
-	TransactionId xmin = r->rowkey && batch_stmts == 0 ? GetCurrentTransactionId() : InvalidTransactionId;
+	TransactionId xmin = r->track && batch_stmts == 0 ? GetCurrentTransactionId() : InvalidTransactionId;
+	/* the heap tuple is the record's values only where its xmin is the kept one: not for the tuples a concurrent build validates (an index not valid yet), nor a table that is not a heap */
+	bool		ref = sift_col_wbuf_ref && TransactionIdIsValid(xmin) && index->rd_index->indisvalid && heap->rd_rel->relam == HEAP_TABLE_AM_OID;
 
+	batch_inserting = true;
 	sift_col_make_row(r, heap_tid, values, isnull, &row, rowcxt);
-	if (!batch_hooked)
-	{
-		RegisterXactCallback(batch_xact, NULL);
-		RegisterSubXactCallback(batch_subxact, NULL);
-		batch_hooked = true;
-	}
+	sift_col_batch_hook();
 	/* the first row of a transaction goes in at once: a statement of one row pays nothing for the buffer */
-	if (!(batch_seen && batch_stmts == 0 && sift_cwbuf_pend(index, &hint, r->schema, &row, xmin, &crossed)))
-		crossed = sift_cwbuf_append(index, &hint, r->schema, &row, xmin);
+	if (!(batch_seen && batch_stmts == 0 && sift_cwbuf_pend(index, &hint, r->schema, &row, xmin, ref, &crossed)))
+		crossed = sift_cwbuf_append(index, &hint, r->schema, &row, xmin, ref);
 	batch_seen = true;
 	MemoryContextReset(rowcxt);
 	/* the append reads the catalog, which can reload the relcache entry and free r: keep the hint in the entry as it is now */
 	sift_col_rel(index)->hint = hint;
 	if (crossed)
 		sift_col_maint_after_seal(index);
+	if (sift_cwbuf_arena_gc_wanted())
+		sift_cwbuf_arena_gc();
 	/* after the append: the scan of the candidates reads the catalog, which can reload the relcache entry and free r */
 	if (supersede)
 		sift_col_supersede(index, heap, values, heap_tid, batch_stmts > 0);
+	sift_col_vacuum_note_insert(index, heap);
 	sift_col_vacuum_tick(RelationGetRelid(index), RelationGetRelid(heap), 0, 0);
+	batch_inserting = false;
 	return false;
 }
 

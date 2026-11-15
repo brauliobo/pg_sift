@@ -5,6 +5,7 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 CREATE EXTENSION pg_sift_helpers;
+SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 CREATE TABLE ta (id int PRIMARY KEY, g int, a int, b bigint, c smallint, k int, f float8, r float4, n numeric(12,2), m numeric(18,0), d date, t timestamp, s text);
 INSERT INTO ta
@@ -24,12 +25,12 @@ SELECT i, i % 7,
 FROM generate_series(1, 30000) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX ta_col ON ta USING sift_col (id, g, a, b, c, k, f, r, n, m, d, t, s);
-NOTICE:  sift_col index "ta_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = g, k; track_changes = id
+NOTICE:  sift_col index "ta_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = g, k; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ta_col');
 RESET sift.test_limits;
 VACUUM (ANALYZE) ta;
-CREATE FUNCTION ta_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers_all_scans(pushed, workers) $$;
+CREATE FUNCTION ta_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
 CREATE FUNCTION ta_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE n bigint; plan text := ''; line text;

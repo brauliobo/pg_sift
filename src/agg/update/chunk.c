@@ -6,7 +6,6 @@
 #include "postgres.h"
 
 #include "agg/dense_int.h"
-#include "col/am.h"
 #include "agg/update/int.h"
 
 /* the stage's tuples: the outputs of the earlier joins are copied only by a stage that repeats or drops tuples, so a chain of one-row lookups holds one array per stage */
@@ -27,16 +26,18 @@ semi_stage(AggExec *ex, int s, Tup *in)
 	int			ci = ex->jcombo[s];
 	ComboSt    *cs = &ex->cs[ci];
 	SiftAggCombo *cb = &ex->spec->combo[ci];
-	const bool	want = ex->spec->join[cb->join].kind != SJ_ANTI;
+	/* the conjunct of a join answered from a flag (join_found) kept the rows of an anti join already */
+	const bool	want = ex->spec->join[cb->join].kind != SJ_ANTI || cs->map->proof;
 	const bool	pass = cs->spass;
 	const SiftSrcVec *v = pass ? NULL : get_vec(ex, cb->leaf[0]);
 	const uint32 *idx = leaf_lvl(ex, cb->leaf[0]) == ex->qlevel ? in->tidx : in->ridx;
-	const int32 *x = pass ? NULL : (const int32 *) v->data;
+	const SiftSrcVecType vtype = ex->lay->leaf[cb->leaf[0]].vtype;
 	Tup		   *own = stage_tuples(ex, s);
 	int			k = 0;
 	int			i;
 
-#define SEMI_HIT(i) (pass || (!(v->isnull && v->isnull[idx[i]]) && (uint64) ((int64) x[idx[i]] - cs->slo) < cs->snlut && cs->slut[(int64) x[idx[i]] - cs->slo]))
+#define SEMI_KEY(i) sift_src_int(v->data, vtype, idx[i])
+#define SEMI_HIT(i) (pass || (!(v->isnull && v->isnull[idx[i]]) && semi_set_has(&cs->sset, SEMI_KEY(i))))
 	/* a request that names every key of the table (a wide request) keeps every tuple: they go on as they are, nothing is copied */
 	for (i = 0; i < in->n && SEMI_HIT(i) == want; i++)
 		;
@@ -64,6 +65,7 @@ semi_stage(AggExec *ex, int s, Tup *in)
 	}
 	own->n = k;
 #undef SEMI_HIT
+#undef SEMI_KEY
 	if (k > 0)
 		join_stage(ex, s + 1, own);
 }
@@ -92,7 +94,7 @@ join_stage(AggExec *ex, int s, Tup *in)
 		if (n == 0)
 			return;
 	}
-	if (cs->slut || cs->spass)
+	if (semi_set_ready(&cs->sset) || cs->spass)
 	{
 		semi_stage(ex, s, in);
 		return;

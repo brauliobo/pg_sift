@@ -29,15 +29,7 @@ VACUUM (FREEZE, ANALYZE) pi;
 
 CREATE FUNCTION count_of(q text, scan bool) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.count_agg_pushdown_set(q, scan) $$;
 -- does the scan narrow by the ranges of the step?
-CREATE FUNCTION narrowed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text; s bool := false;
-BEGIN
-	SET LOCAL sift.enable_agg = on;
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		s := s OR l LIKE '%filters in source%';
-	END LOOP;
-	RETURN s;
-END $$;
+CREATE FUNCTION narrowed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_filters_in_source(q) $$;
 
 CREATE TABLE pc_case (f text, o text);
 INSERT INTO pc_case VALUES

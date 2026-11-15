@@ -17,6 +17,13 @@
 #                                                       reads it as it reads its own and writes beside it; an index of this tree that names INCLUDE columns is refused by the older library
 #                                                       with the format error and reported by sift.upgrade_check('3.7') as a blocker, and an index without them is read again after
 #                                                       DROP INDEX and CREATE INDEX
+#   scripts/old-lib-check.sh track                      the logs of 4.0.0 to 4.1.1 (SIFT_OLD_REF, default v4.1.0): the older library counts row versions that statements with a moved command id left without a tombstone (three
+#                                                       tables: the first UPDATE of a session, a volatile function, a second index), this tree checks the heap for those logs and answers as the heap, and
+#                                                       re-baselines each of them, by VACUUM, by the first read of an idle table and by the maintenance worker of a write, with no other step; the older library
+#                                                       then reads the repaired logs as the heap
+#   scripts/old-lib-check.sh present                    the presence leaf of a jsonb column that may hold a NULL document (4.2; SIFT_OLD_REF, default v4.1.4): this tree writes one index with the leaf and one over a
+#                                                       NOT NULL column without it; the older library refuses the first with the layout error and reads the second, REINDEX under the older library
+#                                                       writes the layout it reads, and this tree then reads that index as it reads its own (answers, verify) and writes the leaf again at the next REINDEX
 #   scripts/old-lib-check.sh upgrade                    the other way: the older library writes a table with the groups it tags under pressure (a
 #                                                       committed load and a rolled back one), this tree reads them as it reads its own and VACUUM
 #                                                       freezes and drops them
@@ -321,17 +328,22 @@ include() {
 	"$PG" start >/dev/null || { fail "the cluster of this tree starts on the files of the older library"; return; }
 	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
 	[[ $(psql_new -c "$ids ($(printf "$want" inc)) x") == "$OLD_MD5" ]] && pass "this tree reads the index of the older library with its answers" || fail "this tree reads the index of the older library with its answers"
-	psql_new -c "INSERT INTO inc SELECT g, 'common dim_a' || g % 7 || ' w' || g % 30, g % 97, DATE '2026-01-01' + g % 300 FROM generate_series(30001, 40000) g" -c "SELECT sift.promote('inc_i')" >/dev/null
-	psql_new -c "CREATE INDEX inc2_i ON inc2 USING sift (body) INCLUDE (category_id, created_at)" >/dev/null
+	# these two check the segment formats the older library reads: the write buffers they open are format 0 (a buffer of format 6, 4.2, makes the index 1.6, checked with w6_i below)
+	PGOPTIONS='-c sift.test_wbuf_narrow=on' psql_new -c "INSERT INTO inc SELECT g, 'common dim_a' || g % 7 || ' w' || g % 30, g % 97, DATE '2026-01-01' + g % 300 FROM generate_series(30001, 40000) g" -c "SELECT sift.promote('inc_i')" >/dev/null
+	PGOPTIONS='-c sift.test_wbuf_narrow=on' psql_new -c "CREATE INDEX inc2_i ON inc2 USING sift (body) INCLUDE (category_id, created_at)" >/dev/null
+	psql_new -c "CREATE TABLE w6 AS SELECT g AS id, 'common dim_a' || g % 7 AS body FROM generate_series(1, 2000) g" -c "CREATE INDEX w6_i ON w6 USING sift (body)" -c "INSERT INTO w6 SELECT g, 'common w6' FROM generate_series(2001, 2100) g" >/dev/null
 	uc=$(PGHOST=$SIFT_TMP/sock PGPORT=$SIFT_PORT PGUSER=postgres "$REPO/scripts/upgrade-check.sh" --to 3.7 postgres 2>&1)
 	grep -qE '^blocker +inc2_i +index +format 1\.5' <<<"$uc" && pass "scripts/upgrade-check.sh --to 3.7 reports the index with INCLUDE columns (format 1.5) as a blocker" || fail "scripts/upgrade-check.sh --to 3.7 reports the index with INCLUDE columns as a blocker ($uc)"
 	grep -qE '^ok +inc_i +index +format 1\.4' <<<"$uc" && pass "... and the index without them, written to by this tree, as ok (format 1.4)" || fail "... and the index without them, written to by this tree, as ok ($uc)"
+	grep -qE '^blocker +w6_i +index +format 1\.6' <<<"$uc" && pass "... and an index that took an insert, whose write buffer is format 6 (1.6), as a blocker" || fail "... and an index that took an insert, whose write buffer is format 6 (1.6), as a blocker ($uc)"
 	[[ $(psql_new -c "$ids ($(printf "$want" inc2)) x") == "$OLD_MD5" ]] && pass "the index with INCLUDE columns answers as the older library's" || fail "the index with INCLUDE columns answers as the older library's"
 	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts again"; return; }
 	FORMAT_ERROR='on-disk format 1\.5'
 	expect_refused "the older library refuses an index with INCLUDE columns with the format error" "SET enable_seqscan = off; SELECT count(*) FROM inc2 WHERE body @@> 'dim_a3'"
 	expect_rows "... and reads the index it wrote, with the rows of this tree, as the heap" "$ids (SELECT id FROM inc WHERE id <= 30000 AND body ~ 'dim_a3' AND body ~ 'w7' AND category_id < 60) x" "$OLD_MD5"
+	FORMAT_ERROR='on-disk format 1\.6'
+	expect_refused "the older library refuses an index whose write buffer is format 6 with the format error" "SET enable_seqscan = off; SELECT count(*) FROM w6 WHERE body @@> 'dim_a3'"
 	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
 	"$PG" start >/dev/null || { fail "the cluster of this tree starts again"; return; }
 	psql_new -c "DROP INDEX inc2_i" -c "CREATE INDEX inc2_i ON inc2 USING sift (body)" >/dev/null
@@ -339,6 +351,125 @@ include() {
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts after the new index"; return; }
 	expect_rows "the older library reads the index without INCLUDE columns that DROP INDEX and CREATE INDEX wrote" "$ids ($(printf "$want" inc2)) x" "$OLD_MD5"
 	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
+}
+
+# 4.0.0 to 4.1.1 left row versions without a tombstone when the command id moved inside an UPDATE; the repair is the library's alone (docs/releases/v4.1.2.md)
+track() {
+	local root log t
+	OLD_REF=${SIFT_OLD_REF:-v4.1.0}
+	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-track}
+	export SIFT_PORT=${SIFT_PORT:-56143}
+	root=$(build) || exit $?
+	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
+	[[ -n ${KEEP:-} ]] || trap '"$PG" destroy >/dev/null 2>&1' EXIT
+	"$PG" start >/dev/null && "$PG" stop >/dev/null || { echo "FAIL starting the cluster" >&2; exit 1; }
+	log=$SIFT_TMP/old-lib-track.log
+	# the answer of table $1 by the sift scan (on) or by the heap (off)
+	q() { echo "SET sift.enable_agg = $2; SELECT string_agg(tenant || ':' || n || ':' || s, ' ' ORDER BY tenant) FROM (SELECT tenant, count(*) n, sum(amount) s FROM $1 GROUP BY tenant) q"; }
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts"; return; }
+	for t in ta tb tc; do
+		"${OLD_PSQL[@]}" -c "CREATE EXTENSION IF NOT EXISTS pg_sift" -c "CREATE TABLE $t (code text PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false, fillfactor = 100)" \
+			-c "INSERT INTO $t SELECT 'c' || i, i % 10, i FROM generate_series(1, 20000) i" -c "CREATE INDEX ${t}_c ON $t USING sift_col (code, tenant, amount)$([[ $t == tc ]] && echo ' WITH (write_buffer_limit = 64)')" \
+			-c "VACUUM (FREEZE, ANALYZE) $t" >/dev/null || { fail "the older library writes the index of $t"; pg_ctl -D "$SIFT_TMP/data" -m immediate stop >/dev/null 2>&1; return; }
+	done
+	"${OLD_PSQL[@]}" -c "CREATE FUNCTION one() RETURNS int LANGUAGE plpgsql AS \$\$ BEGIN PERFORM 1; RETURN 0; END \$\$" >/dev/null
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1 && old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the older server restarts"; return; }
+	# a new server: the first statement of the session is the UPDATE (the attach of the shared tables inside it), then a function that runs SQL, and a table that is written many times
+	"${OLD_PSQL[@]}" -c "BEGIN" -c "UPDATE ta SET amount = amount + 1 WHERE code IN (SELECT 'c' || i FROM generate_series(7, 20000, 7) i)" \
+		-c "UPDATE ta SET amount = amount + 5 WHERE code IN (SELECT 'c' || i FROM generate_series(5, 20000, 5) i)" -c "COMMIT" >/dev/null
+	"${OLD_PSQL[@]}" -c "BEGIN" -c "UPDATE tb SET amount = amount + 1 + one() WHERE code IN (SELECT 'c' || i FROM generate_series(7, 20000, 7) i)" \
+		-c "UPDATE tb SET amount = amount + 5 + one() WHERE code IN (SELECT 'c' || i FROM generate_series(5, 20000, 5) i)" -c "COMMIT" >/dev/null
+	"${OLD_PSQL[@]}" -c "BEGIN" -c "UPDATE tc SET amount = amount + 1 + one() WHERE code IN (SELECT 'c' || i FROM generate_series(7, 20000, 7) i)" -c "COMMIT" >/dev/null
+	for t in ta tb tc; do
+		if [[ $("${OLD_PSQL[@]}" -c "$(q $t on)" | tail -1) != $("${OLD_PSQL[@]}" -c "$(q $t off)" | tail -1) ]]; then pass "the older library counts row versions of $t that were updated (the repro)"
+		else fail "the older library counts row versions of $t that were updated (the repro)"; fi
+	done
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1 || { fail "the older server stops cleanly"; return; }
+	"$PG" start >/dev/null || { fail "the cluster of this tree starts on the files of the older library"; return; }
+	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
+	psql_new -c "CREATE EXTENSION IF NOT EXISTS pg_sift_test" >/dev/null
+	hf() { psql_new -c "SELECT heap_free FROM sift.col_tracking('$1')" | tail -1; }
+	right() { [[ $(psql_new -c "$(q $1 on)" | tail -1) == $(psql_new -c "$(q $1 off)" | tail -1) ]]; }
+	# only the heap-free read goes wrong: the checked read (sift.test_no_heapfree) and the heap are the reference
+	for t in ta tb tc; do
+		right $t && [[ $(hf ${t}_c) == f ]] && pass "$t: this tree takes the log of the older library for incomplete, checks the heap and answers as the heap" ||
+			fail "$t: this tree takes the log of the older library for incomplete, checks the heap and answers as the heap"
+	done
+	[[ $(psql_new -c "SELECT cur_flags FROM sift._test_log_chan('ta_c')") == 1 ]] && pass "the log of the older library has the flags 1" || fail "the log of the older library has the flags 1"
+	# 1. the next VACUUM (sift.col_auto_merge is off in this cluster)
+	psql_new -c "VACUUM tb" >/dev/null
+	[[ $(hf tb_c) == t ]] && right tb && [[ $(psql_new -c "SELECT cur_flags FROM sift._test_log_chan('tb_c')") == 3 ]] && pass "tb: the next VACUUM re-baselines the log (flags 3), and the heap-free read is the heap's" || fail "tb: the next VACUUM re-baselines the log (flags 3), and the heap-free read is the heap's"
+	# 2. a read of a table nobody writes or vacuums, with the worker on
+	psql_new -c "ALTER SYSTEM SET sift.col_auto_merge = on" -c "SELECT pg_reload_conf()" >/dev/null
+	psql_new -c "$(q ta on)" >/dev/null
+	for _ in $(seq 1 60); do [[ $(hf ta_c) == t ]] && break; sleep 0.5; done
+	[[ $(hf ta_c) == t ]] && right ta && pass "ta: the first read of an idle table queues the re-baseline, and the heap-free read is the heap's" || fail "ta: the first read of an idle table queues the re-baseline, and the heap-free read is the heap's"
+	# 3. the maintenance worker that the writes of a table ask for
+	# the requests of an index are one naptime (2 s) apart, and the older library made the last one a moment ago
+	sleep 3
+	psql_new -c "INSERT INTO tc SELECT 'n' || i, i % 10, i FROM generate_series(1, 30000) i" >/dev/null
+	for _ in $(seq 1 60); do [[ $(psql_new -c "SELECT cur_flags FROM sift._test_log_chan('tc_c')") == 3 ]] && break; sleep 0.5; done
+	[[ $(psql_new -c "SELECT cur_flags FROM sift._test_log_chan('tc_c')") == 3 ]] && right tc && pass "tc: the writes of a table ask for the worker, which re-baselines the log, and the heap-free read is the heap's" ||
+		fail "tc: the writes of a table ask for the worker, which re-baselines the log, and the heap-free read is the heap's"
+	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
+	# and back: a log with the flags 3 is incomplete to the older library, which checks the heap
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts again"; return; }
+	for t in ta tb; do
+		[[ $("${OLD_PSQL[@]}" -c "$(q $t on)" | tail -1) == $("${OLD_PSQL[@]}" -c "$(q $t off)" | tail -1) ]] && pass "the older library reads the repaired $t as the heap (the flags 3 are an incomplete log to it)" ||
+			fail "the older library reads the repaired $t as the heap (the flags 3 are an incomplete log to it)"
+	done
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
+}
+
+# the presence leaf of 4.2: refused by the older library, REINDEX under it as the way back
+present() {
+	local root log
+	OLD_REF=${SIFT_OLD_REF:-v4.1.4}
+	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-present}
+	export SIFT_PORT=${SIFT_PORT:-56144}
+	root=$(build) || exit $?
+	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
+	[[ -n ${KEEP:-} ]] || trap '"$PG" destroy >/dev/null 2>&1' EXIT
+	log=$SIFT_TMP/old-lib-present.log
+	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
+	local heap="SELECT count(*) || ':' || coalesce(sum(id), 0) FROM pn WHERE NOT (doc @> '{\"b\": \"x\"}')"
+	"$PG" start >/dev/null || { echo "FAIL starting the cluster" >&2; exit 1; }
+	local minor="SELECT 1"; [[ $OLD_REF == v3.* ]] && minor="SET sift.col_format_minor = 6"	# 3.2 reads column minors up to 6
+	psql_new -c "$minor" -c "CREATE EXTENSION pg_sift" -c "CREATE TABLE pn (id int, g int, doc jsonb)" -c "CREATE TABLE pk (id int, g int, doc jsonb NOT NULL)" \
+		-c "INSERT INTO pn SELECT i, i % 5, CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '{\"b\": \"x\"}' ELSE '{\"b\": \"y\"}' END FROM generate_series(1, 8000) i" \
+		-c "INSERT INTO pk SELECT i, i % 5, '{\"b\": \"x\"}' FROM generate_series(1, 8000) i" \
+		-c "CREATE INDEX pn_c ON pn USING sift_col (id, g, doc) WITH (paths = 'doc.b astext')" -c "CREATE INDEX pk_c ON pk USING sift_col (id, g, doc) WITH (paths = 'doc.b astext')" \
+		-c "VACUUM (FREEZE, ANALYZE) pn, pk" >/dev/null || { fail "this tree writes the indexes"; "$PG" stop >/dev/null; return; }
+	local want leaves
+	want=$(psql_new -c "SET sift.enable_agg = off" -c "$heap" | tail -1)
+	[[ $(psql_new -c "SELECT (SELECT count(*) FROM sift.col_leaves('pn_c') WHERE path LIKE '%#present')::text || (SELECT count(*) FROM sift.col_leaves('pk_c') WHERE path LIKE '%#present')::text") == 10 ]] &&
+		pass "this tree writes the leaf for the nullable column and none for the NOT NULL column" || fail "this tree writes the leaf for the nullable column and none for the NOT NULL column"
+	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts"; return; }
+	FORMAT_ERROR='column layout'
+	expect_refused "the older library refuses the index with the presence leaf with the layout error" "SELECT sift.col_verify('pn_c', true)"
+	query "SELECT sift.col_verify('pk_c', true)"
+	((RC == 0)) && pass "the older library reads the index of the NOT NULL column" || fail "the older library reads the index of the NOT NULL column ($ERR)"
+	"${OLD_PSQL[@]}" -c "REINDEX INDEX pn_c" >/dev/null && pass "REINDEX under the older library writes the layout it reads" || fail "REINDEX under the older library writes the layout it reads"
+	query "SELECT sift.col_verify('pn_c', true)"
+	((RC == 0)) && pass "the older library verifies the rewritten index" || fail "the older library verifies the rewritten index ($ERR)"
+	expect_rows "... and the index answers as the heap" "SET sift.enable_agg = on; $heap" "$want"
+	"${OLD_PSQL[@]}" -c "INSERT INTO pn SELECT 8000 + i, i % 5, '{\"b\": \"x\"}' FROM generate_series(1, 500) i" -c "SELECT sift.col_promote('pn_c')" >/dev/null &&
+		pass "the older library writes and promotes beside it" || fail "the older library writes and promotes beside it"
+	want=$("${OLD_PSQL[@]}" -c "SET sift.enable_agg = off" -c "$heap" | tail -1)
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1 || { fail "the older server stops cleanly"; return; }
+	"$PG" start >/dev/null || { fail "the cluster of this tree starts on the files of the older library"; return; }
+	verified() { [[ $(psql_new -c "SELECT sift.col_verify('pn_c', true)::text = ''") == t ]]; }
+	verified && pass "this tree verifies the index the older library wrote" || fail "this tree verifies the index the older library wrote"
+	[[ $(psql_new -c "SELECT count(*) FROM sift.col_leaves('pn_c') WHERE path LIKE '%#present'") == 0 ]] && pass "... which has no leaf" || fail "... which has no leaf"
+	[[ $(psql_new -c "SET sift.enable_agg = on" -c "$heap" | tail -1) == "$want" ]] && pass "... and answers as the heap" || fail "... and answers as the heap"
+	psql_new -c "INSERT INTO pn SELECT 9000 + i, i % 5, NULL FROM generate_series(1, 300) i" -c "SELECT sift.col_promote('pn_c')" >/dev/null &&
+		verified && pass "this tree writes and promotes beside it, and the index verifies" || fail "this tree writes and promotes beside it, and the index verifies"
+	want=$(psql_new -c "SET sift.enable_agg = off" -c "$heap" | tail -1)
+	[[ $(psql_new -c "SET sift.enable_agg = on" -c "$heap" | tail -1) == "$want" ]] && pass "both layouts answer as the heap" || fail "both layouts answer as the heap"
+	psql_new -c "REINDEX INDEX pn_c" >/dev/null
+	[[ $(psql_new -c "SELECT count(*) FROM sift.col_leaves('pn_c') WHERE path LIKE '%#present'") == 1 ]] && pass "REINDEX with this tree writes the leaf again" || fail "REINDEX with this tree writes the leaf again"
+	"$PG" stop >/dev/null || fail "the cluster of this tree stops cleanly"
 }
 
 case ${1:-} in
@@ -350,5 +481,7 @@ case ${1:-} in
 	keyed) keyed; exit $FAILED ;;
 	gorder) gorder; exit $FAILED ;;
 	include) include; exit $FAILED ;;
+	track) track; exit $FAILED ;;
+	present) present; exit $FAILED ;;
 	*) sed -n '2,12p' "$0"; exit 2 ;;
 esac

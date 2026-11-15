@@ -27,7 +27,9 @@
 #include "utils/rel.h"
 
 #include "col/am.h"
+#include "col/maint/maint_int.h"
 #include "col/wbuf.h"
+#include "col/wbuf/wbuf_int.h"
 #include "core/lane.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_prepare);
@@ -38,12 +40,18 @@ PG_FUNCTION_INFO_V1(sift_test_col_wbuf_rows);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_batches);
 PG_FUNCTION_INFO_V1(sift_test_col_dir_version);
 PG_FUNCTION_INFO_V1(sift_test_col_gkept_stats);
+extern PGDLLIMPORT uint64 sift_cseg_dict_blocks;	/* declared in col/seg_int.h, which cannot be included next to maint_int.h */
 uint64		sift_cseg_dict_blocks;
 
 PG_FUNCTION_INFO_V1(sift_test_col_gdead_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_delete);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_seal);
+PG_FUNCTION_INFO_V1(sift_test_col_hold_maint);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_segments);
+PG_FUNCTION_INFO_V1(sift_test_col_wbuf_reads);
+PG_FUNCTION_INFO_V1(sift_test_arena_slots);
+PG_FUNCTION_INFO_V1(sift_test_arena_gc);
+PG_FUNCTION_INFO_V1(sift_test_wbuf_format);
 
 #define NCOLS		10
 #define ID_BITS		24
@@ -400,7 +408,7 @@ sift_test_col_wbuf_append(PG_FUNCTION_ARGS)
 		gen_row(seed, id, t);
 		if (busy)
 			nbusy = lock_busy(index, &hint, pg_prng_uint64(&pg_global_prng_state), bufs);
-		crossed += sift_cwbuf_append(index, &hint, test_schema(), &t->row, InvalidTransactionId);
+		crossed += sift_cwbuf_append(index, &hint, test_schema(), &t->row, InvalidTransactionId, false);
 		for (int k = 0; k < nbusy; k++)
 			UnlockReleaseBuffer(bufs[k]);
 		MemoryContextSwitchTo(old);
@@ -424,7 +432,7 @@ sift_test_col_wbuf_torn(PG_FUNCTION_ARGS)
 		elog(ERROR, "only the rows with id %% 1000 = 999 are big enough to be torn");
 	gen_row(PG_GETARG_INT64(1), id, t);
 	sift_cwbuf_fail_grow = PG_GETARG_INT32(3);
-	sift_cwbuf_append(index, &hint, test_schema(), &t->row, InvalidTransactionId);
+	sift_cwbuf_append(index, &hint, test_schema(), &t->row, InvalidTransactionId, false);
 	sift_cwbuf_fail_grow = 0;
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
@@ -440,7 +448,7 @@ sift_test_col_wbuf_long(PG_FUNCTION_ARGS)
 
 	gen_row(1, 1, t);
 	t->val[2] = (SiftColValue) {.v.s = palloc0(300000),.len = 300000};
-	sift_cwbuf_append(index, &hint, test_schema(), &t->row, InvalidTransactionId);
+	sift_cwbuf_append(index, &hint, test_schema(), &t->row, InvalidTransactionId, false);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
 }
@@ -605,6 +613,19 @@ sift_test_col_wbuf_delete(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(removed);
 }
 
+/* (index regclass, key int4): holds the maintenance lock as an inserter does while it promotes, until the test lets go of advisory lock (0x51F7, key) */
+Datum
+sift_test_col_hold_maint(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
+
+	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
+	sift_test_wait(PG_GETARG_INT32(1));
+	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
+	relation_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
+}
+
 /* (index regclass, force bool): sift_cwbuf_seal; the sealed generation or 0 */
 Datum
 sift_test_col_wbuf_seal(PG_FUNCTION_ARGS)
@@ -682,6 +703,67 @@ sift_test_col_wbuf_segments(PG_FUNCTION_ARGS)
 	}
 	relation_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+/*
+ * (index regclass) -> (decoded, nrows, due): for a sift_col index, the rows the backends of the server decoded from its open write buffer, the rows the buffer holds
+ * and whether maint_wbuf_read_due asks for its promotion
+ */
+Datum
+sift_test_col_wbuf_reads(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = read_dir(index);
+	TupleDesc	tupdesc;
+	Datum		values[3] = {0, 0, 0};
+	bool		nulls[3] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN)
+		{
+			uint64		nrows,
+						npages;
+
+			sift_cwbuf_summary(index, &snap->segs[i], &nrows, &npages);
+			values[0] = Int64GetDatum(sift_cwbuf_decoded(index, snap->segs[i].gen));
+			values[1] = Int64GetDatum(nrows);
+		}
+	values[2] = BoolGetDatum(maint_wbuf_read_due(index));
+	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
+/* (n int): the arena slots that can be taken, from the next row on */
+Datum
+sift_test_arena_slots(PG_FUNCTION_ARGS)
+{
+	wbuf_arena_test_slots(PG_GETARG_INT32(0));
+	PG_RETURN_VOID();
+}
+
+/* (): gives back the arena slots of this database whose buffer is gone, as the next row that finds no slot does (and asks the oldest buffer back when there are none) */
+Datum
+sift_test_arena_gc(PG_FUNCTION_ARGS)
+{
+	sift_cwbuf_arena_gc();
+	PG_RETURN_VOID();
+}
+
+/* (index regclass): the format of the directory entry of the open write buffer, 0 when there is none */
+Datum
+sift_test_wbuf_format(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = read_dir(index);
+	int			format = 0;
+
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN)
+			format = snap->segs[i].format;
+	index_close(index, AccessShareLock);
+	PG_RETURN_INT32(format);
 }
 
 #endif							/* SIFT_TESTING */

@@ -9,8 +9,6 @@
 #ifndef SIFT_LANE_H
 #define SIFT_LANE_H
 
-#include "core/host.h"
-
 #include "core/store.h"
 
 typedef struct SiftLanePageHead
@@ -39,19 +37,19 @@ extern void sift_lane_read_header(Relation index, const SiftSegEntry *e, SiftWbu
 
 /*
  * The active segment's header block, generation and lane tails, creating the segment when there is none (make_room: called when the
- * directory is full; false when nothing can be merged). format is the owner's directory format for a fresh buffer. hash is checked against meta->analyzer_hash; what names it in the error.
+ * directory is full; false when nothing can be merged). format and flags are the owner's directory format and entry flags for a fresh buffer. hash is checked against meta->analyzer_hash; what names it in the error.
  */
-extern void sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, uint16 format, bool (*make_room) (Relation),
+extern void sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, uint16 format, uint16 flags, bool (*make_room) (Relation),
 							  uint64 *gen, BlockNumber *hdr_blk, BlockNumber *tail);
 
 /*
  * Seals the active segment, when it has records (has_records) and, unless force, has limit pages; opens a fresh one. Returns the sealed
  * gen or 0.
  */
-extern uint64 sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *));
+extern uint64 sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint16 flags, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *));
 
 /* Seals the active segment whatever it holds, so that a promotion frees its pages: a buffer in the way of a shrink */
-extern uint64 sift_lane_rotate(Relation index, Size hdrsize, uint16 format);
+extern uint64 sift_lane_rotate(Relation index, Size hdrsize, uint16 format, uint16 flags);
 
 /* Sets the sealed flag on the true tail of every lane */
 extern void sift_lane_flag_sealed(Relation index, const SiftSegEntry *entry);
@@ -95,6 +93,7 @@ typedef struct SiftPageEdit
 	uint16		lower;
 	Size		extra_off;
 	Size		extra_len;
+	SiftPageOpaqueData special;	/* the special space before: a change does not touch it */
 	char		head[SIFT_EDIT_HEAD];
 #ifdef USE_ASSERTION_CHECKING
 	char		image[BLCKSZ];		/* the page before: the logged regions must rebuild the page from it */
@@ -118,10 +117,13 @@ typedef struct SiftLaneIter
 	int			lane;			/* next lane to start */
 	BlockNumber nextblk;		/* next page of the current lane */
 	BlockNumber blk;			/* the page last copied */
+	bool		(*skip) (void *arg, Page src);	/* judged on the page in the buffer: true copies only its head (skipped is set) */
+	void	   *skip_arg;
+	bool		skipped;
 } SiftLaneIter;
 
 extern void sift_lane_iter_init(SiftLaneIter *it, Relation index, const SiftSegEntry *entry);
-/* Copies the next page of the segment to dst; false at the end */
+/* Copies the next page of the segment to dst (only the head of one that it->skip refuses); false at the end */
 extern bool sift_lane_iter_next(SiftLaneIter *it, Page dst, Size hdrsize);
 
 /*

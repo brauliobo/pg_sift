@@ -3,35 +3,12 @@
  */
 #include "postgres.h"
 
-#include "agg/agg.h"
-
 #if __has_include("col/col.h")
 
-#include "access/genam.h"
-#include "access/relation.h"
-#include "access/table.h"
-#include "access/tableam.h"
-#include "catalog/index.h"
-#include "catalog/pg_type.h"
-#include "executor/executor.h"
-#include "nodes/execnodes.h"
-#include "utils/lsyscache.h"
 #include "utils/memutils.h"
-#include "utils/rel.h"
 
-#include "agg/kern.h"
-#include "agg/pre.h"
 #include "agg/sel.h"
-#include "agg/wide.h"
-#include "core/popcount.h"
 #include "col/col.h"
-#include "col/gpu.h"
-#include "col/pagg.h"
-#include "col/am.h"
-#include "col/enc.h"
-#include "col/pg.h"
-#include "agg/colsrc.h"
-#include "col/shred_pg.h"
 
 #include "agg/col_int.h"
 
@@ -47,7 +24,7 @@ col_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
 		if (!src->lay->leaf[t[i].leaf].lossy)
 		{
 			src->spmap[src->nspred] = i;
-			src->spred[src->nspred++] = sift_aggfilt_str_pred(&t[i], MemoryContextAlloc(src->cxt, t[i].nvals * sizeof(SiftColValue)), t[i].leaf);
+			src->spred[src->nspred++] = (SiftColPred) {t[i].leaf, t[i].op, t[i].nvals, t[i].vals};
 		}
 }
 
@@ -75,12 +52,7 @@ col_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 
 	if (src->lay->leaf[t->leaf].lossy)
 		return false;
-	if (t->nvals > src->fcap)
-	{
-		src->fcap = Max(t->nvals, 2 * src->fcap);
-		src->fvals = src->fvals ? repalloc(src->fvals, src->fcap * sizeof(SiftColValue)) : MemoryContextAlloc(src->cxt, src->fcap * sizeof(SiftColValue));
-	}
-	pred = sift_aggfilt_str_pred(t, src->fvals, t->leaf);
+	pred = (SiftColPred) {t->leaf, t->op, t->nvals, t->vals};
 	if (src->lay->leaf[t->leaf].parent >= 0)
 	{
 		SiftColGroupPred gp = {.group = src->lay->leaf[t->leaf].parent,.npreds = 1,.preds = &pred};
@@ -113,6 +85,8 @@ col_set_wide(void *impl, const SiftSrcWideTest *t, int nt)
 
 		sift_colw_test(sift_col_def(src->cs, t[i].leaf), src->lay->leaf[t[i].leaf].typid, t[i].op, t[i].nvals, t[i].vals, t[i].isnull, src->cxt, &src->wtest[i]);
 		v->v.s = (const char *) &src->wtest[i];
+		if (t[i].rows)
+			continue;
 		if (src->wtest[i].verdict == SIFT_COLW_PRED)
 			src->wpred[src->nwpred++] = src->wtest[i].pred;
 		else if (sift_colw_alts(&src->wtest[i], alt, npred) > 0)
@@ -136,8 +110,6 @@ col_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows)
 	sift_aggsel_stored(&src->sel, src->cs, &src->unit, rows, wide_op, &src->wtest[i]);
 	return rows_left(unit, rows);
 }
-
-/* ---- integer filters in the source: the conjuncts run on the encoded chunks (docs/COL-PLAN.md, "Filters in the source") ---- */
 
 /* ---- integer filters in the source: the conjuncts run on the encoded chunks (docs/COL-PLAN.md, "Filters in the source") ---- */
 

@@ -6,25 +6,13 @@
 
 #include "port/pg_bitutils.h"
 
-#include "common/pg_prng.h"
-
-#include "access/htup_details.h"
 #include "access/xact.h"
-#include "miscadmin.h"
-#include "utils/rls.h"
-#include "storage/bufmgr.h"
-#include "storage/predicate.h"
-#include "utils/acl.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
 
 #include "col/am.h"
 #include "core/cmp.h"
-#include "core/popcount.h"
 #include "col/gpu.h"
 #include "col/pagg.h"
-#include "bm25/estimate.h"
 #include "col/seg.h"
 #include "core/tomb.h"
 #include "core/visibility.h"
@@ -57,7 +45,12 @@ unit_chunk_sel(ColUnit *cu, int col, const uint32 *idx, uint32 m, SiftCChunk *c)
 		return false;
 	if (c->enc == SIFT_COLENC_ISTR)
 	{
-		ColInline  *in = &cu->istr[col];
+		ColInline  *in;
+
+		/* only a unit with an inline string chunk needs the table: it is not zeroed for every unit of every scan */
+		if (cu->istr == NULL)
+			cu->istr = MemoryContextAllocZero(cu->src->arena, cu->src->schema->ncols * sizeof(ColInline));
+		in = &cu->istr[col];
 
 		if (in->dict != NULL && in->have != NULL)
 		{
@@ -115,7 +108,7 @@ unit_dict(ColUnit *cu, int col)
 	if (!unit_inline(cu, col))
 		return sift_cseg_dict(cu->seg, col);
 	unit_chunk(cu, col, &c);
-	return cu->istr[col].dict;
+	return cu->istr != NULL ? cu->istr[col].dict : NULL;
 }
 
 /*
@@ -158,6 +151,9 @@ bool		sift_test_hf_ignore_stamp = false;
 /* The masks, ranges and blocks the log made all-visible where the map said no (tests, sift._test_hf_taken) */
 int64		sift_col_hf_taken;
 
+/* The heap pages the scans asked the log about (tests, sift._test_hf_pages_asked) */
+int64		sift_col_hf_asked;
+
 /*
  * Opens the log before the first segment or liveness page is read: a tombstone is dropped by the VACUUM that cleared the entry it names, after it cleared it, so a
  * source that took the log first and the liveness after sees the tombstone or the clear bit. Only an index that tracks deletes and a snapshot of the usual kind: the
@@ -174,7 +170,7 @@ col_hf_open(SiftColSource *src)
 		return;
 #endif
 	if ((src->flags & COLO_TABLE) || IsolationIsSerializable() || src->snap->snapshot_type != SNAPSHOT_MVCC || !TransactionIdIsNormal(src->snap->xmin) ||
-		!sift_col_row_key_on(src->index))
+		!sift_col_track_on(src->index))
 		return;
 	src->hflog = sift_col_log(src->index);
 	if (src->hflog != NULL)
@@ -182,13 +178,14 @@ col_hf_open(SiftColSource *src)
 }
 
 /* Do tombstones delete rows of the blocks for the snapshot (a block of them to be checked in the heap) */
-static bool
-hf_deleted(SiftColSource *src, BlockNumber first, uint32 nblocks, uint64 *mask)
+bool
+col_hf_deleted(SiftColSource *src, BlockNumber first, uint32 nblocks, uint64 *mask)
 {
 #ifdef SIFT_TESTING
 	if (sift_test_hf_ignore_tombs)
 		return false;
 #endif
+	sift_col_hf_asked += nblocks;
 	return sift_tomb_deleted_blocks(src->hflog, src->snap, first, nblocks, mask, &src->hfmemo);
 }
 
@@ -199,7 +196,12 @@ hf_on(SiftColSource *src)
 	if (src->hflog == NULL)
 		return false;
 	if (src->hf == 0)
+	{
 		src->hf = sift_col_track_ok(src->index, src->heap, src->snap) ? 1 : -1;
+		/* the heap is checked for a log that the worker may re-baseline (it asks only for such a log) */
+		if (src->hf < 0)
+			sift_col_track_ask(src->index, src->heap);
+	}
 	return src->hf > 0 && src->hflog->gen == src->hfgen;
 }
 
@@ -244,7 +246,7 @@ col_hf_filter_page(SiftColSource *src, BlockNumber blk, uint64 *offmask, int *le
 	uint64		gone[SIFT_OFFMASK_WORDS] = {0};
 	int			n = 0;
 
-	if (!sift_tomb_deleted_offsets(src->hflog, src->snap, blk, 4096, gone, &src->hfmemo))
+	if (!col_hf_block_gone(src, blk, gone))
 		return false;
 	for (int w = 0; w < SIFT_OFFMASK_WORDS; w++)
 	{
@@ -263,23 +265,26 @@ sb_add_log(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av)
 	{
 		uint64		bad[SIFT_PAGEMASK_WORDS] = {0};
 
-		hf_deleted(src, sb * SIFT_SB_PAGES, SIFT_SB_PAGES, bad);
+		col_hf_deleted(src, sb * SIFT_SB_PAGES, SIFT_SB_PAGES, bad);
 		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
 			av[w] |= ~bad[w];
 		sift_col_hf_taken++;
 	}
 }
 
-void
-col_sb_mask(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av)
+/* Does no tombstone delete a row of page blk for the snapshot, in a stored segment that is stamped: the one page of sb_add_log, for a read that takes a few pages of many superblocks */
+bool
+col_hf_page_clear(SiftColSource *src, const SiftColSegment *seg, BlockNumber blk)
 {
-	src->visibility.sb_mask(src->visibility.arg, sb, av);
-	sb_add_log(src, seg, sb, av);
+	if (!hf_seg(src, seg) || col_hf_block_any(src, blk))
+		return false;
+	sift_col_hf_taken++;
+	return true;
 }
 
 /*
  * Is every page of pm all-visible for the snapshot: by the visibility map, or by the log for the pages it does not hold (none of them has a tombstone). The tombstones of the
- * superblock are walked once and the first on one of those pages ends it, where col_sb_mask reads every tombstone of the superblock. vm: the map as an earlier read of the caller has it, NULL to
+ * superblock are walked once and the first on one of those pages ends it, where sb_add_log reads every tombstone of the superblock. vm: the map as an earlier read of the caller has it, NULL to
  * read it now.
  */
 bool
@@ -317,7 +322,7 @@ col_range_allvisible(SiftColSource *src, const SiftColSegment *seg, BlockNumber 
 {
 	if (sift_vis_range_allvisible(&src->vis, lo, hi))
 		return true;
-	if (!hf_seg(src, seg) || hf_deleted(src, lo, hi - lo + 1, NULL))
+	if (!hf_seg(src, seg) || col_hf_deleted(src, lo, hi - lo + 1, NULL))
 		return false;
 	sift_col_hf_taken++;
 	return true;
@@ -329,7 +334,7 @@ col_blocks_allvisible(SiftColSource *src, const SiftColSegment *seg, const Block
 	sift_vis_blocks_allvisible(&src->vis, blocks, n, bits);
 	if (hf_seg(src, seg))
 		for (uint32 i = 0; i < n; i++)
-			if (!(bits[i / 64] >> (i % 64) & 1) && !hf_deleted(src, blocks[i], 1, NULL))
+			if (!(bits[i / 64] >> (i % 64) & 1) && !col_hf_block_any(src, blocks[i]))
 			{
 				bits[i / 64] |= UINT64CONST(1) << (i % 64);
 				sift_col_hf_taken++;

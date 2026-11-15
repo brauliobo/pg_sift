@@ -3,6 +3,7 @@
 -- hold accents (bytes past 0x7f), repeat, are empty or NULL. The answers are the heap's, in both directions, NULLS FIRST and LAST, with OFFSET and bounds, after rows of the buffer are deleted,
 -- updated and rolled back, and after a promotion. A column under a locale (en-x-icu) sorts its buffer whole up to 16,384 rows (more reads the units): its answers are the heap's too.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
@@ -19,17 +20,7 @@ INSERT INTO tx SELECT 8000 + i, CASE WHEN i % 41 = 0 THEN NULL ELSE tx_str(i * 5
 SELECT sum(rows) > 4096 AS buffer_over_the_old_limit FROM sift.col_segments('tx_i') WHERE kind = 'buffer';
 ANALYZE tx;
 
-CREATE FUNCTION tx_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; used bool := false; ra text; rb text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
-	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
-	EXECUTE 'SELECT string_agg(coalesce(x::text, ''null''), '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
-	EXECUTE 'SELECT string_agg(coalesce(x::text, ''null''), '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
-	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
-END $$;
+CREATE FUNCTION tx_chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_ordered_rows_with_nulls(q) $$;
 CREATE FUNCTION tx_all() RETURNS TABLE (col text, result text, n bigint) LANGUAGE sql AS
 $$ SELECT c, tx_chk(format('SELECT %1$s FROM tx %6$s ORDER BY %1$s %2$s %3$s LIMIT %4$s OFFSET %5$s', c, d, nl, lim, o, w)), 1::bigint
    FROM unnest(ARRAY['c', 'l']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 100, 2000]) lim, unnest(ARRAY[0, 7]) o,
@@ -61,4 +52,5 @@ SELECT sift.col_verify('tx_i');
 DROP FUNCTION tx_all(), tx_chk(text), tx_str(int);
 DROP TABLE tx;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

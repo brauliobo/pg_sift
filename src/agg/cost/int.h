@@ -17,8 +17,13 @@ typedef struct CostAcc
 	double		units;
 	double		open_cost;
 	double		scan_cost;
+	double		recheck;		/* of the scan, the rows read again from the heap (recheck_cost): PostgreSQL's executor, in the operators of AGG_SCAN_SPEED but not of ms */
+	double		ms;				/* the operators of the scan in the units of the normal plan it is compared with (agg_cost): 1 where a lookup join or a search keeps the fitted prices */
+	double		ms_ops;			/* operators measured in time (a hashed subplan's call, the cache misses of a table of many values): priced at AGG_NORMAL_UNITS_MS a millisecond whatever the shape, after ms */
 	double		load_cost;		/* of scan_cost, the reads of the lookup tables (the leader's alone) and their rows */
 	double		load_rows;
+	double		entry_ops;		/* the entries of the lookup joins at AGG_ENTRY_ROW, which each process that takes rows of a key makes again, ... */
+	double		entry_all;		/* ... and those of every tuple: the most that the processes make between them */
 	double		cold_ops;		/* operators of the image leaves whose dictionaries a worker inflates for itself (AGG_WIDE_COLD) */
 	double		gen_cost;
 	double		child_cost;
@@ -53,12 +58,13 @@ extern void workers_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path
 extern double num_cost(const SiftAggNum *o);
 extern double pred_num_cost(const SiftAggPred *p);
 extern double joined_distinct(AggCtx *c, JoinCtx *jc, int col);
+extern bool join_dense(AggCtx *c, const SiftAggSpec *s, JoinCtx *jc);
 extern double combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tuples, bool counted);
 extern double child_rows(Path *p);
 extern int join_extra_leaves(const SiftAggCombo *cb, const SiftAggJoin *j);
 extern bool on_tests_tuple(const SiftAggSpec *s, int ci);
 extern bool join_lut(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc);
-extern double combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, double scan_rows, double kept_rows, double alive, double *entry_cost);
+extern double combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, double scan_rows, double kept_rows, double alive, double *entry_cost, CostAcc *k);
 extern double bucket_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows);
 extern double plain_credit(AggCtx *c, const SiftAggSpec *s, double agg_rows);
 extern double direct_agg_cost(const SiftAggAgg *a);
@@ -69,6 +75,7 @@ extern double scan_bytes(AggCtx *c, SiftAggSpec *s, double rows);
 extern double recheck_cost(AggCtx *c, SiftAggSpec *s, CostAcc *k);
 extern double key_entries(AggCtx *c, const SiftAggSpec *s, const CostAcc *k, double *ids, double *ops);
 extern void cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k);
+extern double array_image_width(AggCtx *c, int leaf);
 extern double distinct_chunks(AggCtx *c, SiftAggAgg *a, CostAcc *k);
 extern double distinct_id_ops(AggCtx *c, const SiftAggSpec *s, const CostAcc *k);
 

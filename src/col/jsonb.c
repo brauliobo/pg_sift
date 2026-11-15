@@ -10,10 +10,10 @@
 #include "catalog/pg_type.h"
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 
-#include "col/am.h"
+#include "col/build.h"
 #include "col/shred_pg.h"
 
 typedef enum LeafKind
@@ -21,7 +21,8 @@ typedef enum LeafKind
 	LEAF_ROOT_COL,				/* a column of the root group */
 	LEAF_GROUP,					/* a list or map */
 	LEAF_CHILD_COL,				/* a column of a group */
-	LEAF_MAP_KEY				/* the member name of a map */
+	LEAF_MAP_KEY,				/* the member name of a map */
+	LEAF_PRESENT				/* the document itself: true, NULL where it is SQL NULL */
 } LeafKind;
 
 typedef struct ShredLeaf
@@ -233,7 +234,7 @@ sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const c
 	spec = a->spec;
 	SIFT_INVARIANT(spec->ngroups >= 1 && spec->groups[0].kind == SIFT_SHRED_ROOT, "sift_col: the shredder spec has no root group");
 	for (int i = 1; i <= a->natts; i++)
-		a->attr[i].leaf = palloc0((spec->ncols + spec->ngroups * 2 + 1) * sizeof(ShredLeaf));
+		a->attr[i].leaf = palloc0((spec->ncols + spec->ngroups * 2 + 2) * sizeof(ShredLeaf));
 	for (int c = 0; c < spec->ncols; c++)
 		if (spec->cols[c].group == 0)
 			add_column(a, &a->attr[attr_of(a, spec->cols[c].name)], c, -1, LEAF_ROOT_COL, 0);
@@ -246,13 +247,79 @@ sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const c
 }
 
 SiftColShredAdapter *
-sift_col_shred_create(MemoryContext mcxt, Relation index)
+sift_col_shred_create(MemoryContext mcxt, Relation index, uint32 present)
 {
-	const char *paths = sift_col_options_paths(index);
+	const char *paths = pstrdup(sift_col_options_paths(index));
+	SiftColShredAdapter *a;
 
 	if (paths[0] == '\0')
 		return NULL;
-	return sift_col_shred_create_for(mcxt, RelationGetDescr(index), IndexRelationGetNumberOfKeyAttributes(index), paths);
+	a = sift_col_shred_create_for(mcxt, RelationGetDescr(index), IndexRelationGetNumberOfKeyAttributes(index), paths);
+	for (int i = 1; i <= a->natts; i++)
+		if (a->attr[i].n > 0 && !a->attr[i].array && (present >> i & 1))
+		{
+			ShredLeaf  *l = add_leaf(&a->attr[i], LEAF_PRESENT, -1, SIFT_COLK_SCALAR, MemoryContextStrdup(mcxt, psprintf("%s#present", a->attr[i].name)), -1, -1);
+
+			l->def.store = SIFT_COLS_INT;
+			l->def.type = SIFT_COLT_BOOL;
+		}
+	return a;
+}
+
+#ifdef SIFT_TESTING
+bool		sift_test_col_no_present = false;
+#endif
+
+/* An index at the limit of leaves goes without the presence leaf of a column rather than fail: the leaf is the last one of its attribute */
+bool
+sift_col_shred_drop_present(SiftColShredAdapter *a, int attno)
+{
+	ShredAttr  *at = &a->attr[attno];
+
+	if (at->n == 0 || at->leaf[at->n - 1].kind != LEAF_PRESENT)
+		return false;
+	at->n--;
+	return true;
+}
+
+/*
+ * The attributes (bit a, 1-based) that have a presence leaf: the jsonb columns of the index with paths whose column of the table may hold a NULL (no NOT NULL
+ * constraint; an index expression counts as nullable), which is what CREATE INDEX and REINDEX write; SIFT_COL_PRESENT_ALL is every jsonb column. The layout of an index
+ * that exists is the one its metapage hash says (col/am/rel.c tries the three of them), so ALTER TABLE .. SET NOT NULL and an index built before the leaf change
+ * nothing. A CHECK or a domain that forbids NULL is not seen.
+ */
+uint32
+sift_col_present_attrs(Relation index, SiftColPresent which)
+{
+	uint32		mask = 0;
+
+	if (which == SIFT_COL_PRESENT_NONE)
+		return 0;
+#ifdef SIFT_TESTING
+	if (which == SIFT_COL_PRESENT_NULLABLE && sift_test_col_no_present)
+		return 0;
+#endif
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index) && i < 31; i++)
+	{
+		AttrNumber	col = index->rd_index->indkey.values[i];
+		bool		nullable = true;
+
+		if (TupleDescAttr(RelationGetDescr(index), i)->atttypid != JSONBOID)
+			continue;
+		if (which == SIFT_COL_PRESENT_NULLABLE && col != 0)
+		{
+			HeapTuple	tp = SearchSysCache2(ATTNUM, ObjectIdGetDatum(index->rd_index->indrelid), Int16GetDatum(col));
+
+			if (HeapTupleIsValid(tp))
+			{
+				nullable = !((Form_pg_attribute) GETSTRUCT(tp))->attnotnull;
+				ReleaseSysCache(tp);
+			}
+		}
+		if (nullable)
+			mask |= 1U << (i + 1);
+	}
+	return mask;
 }
 
 int
@@ -374,6 +441,7 @@ shred_row_fill(SiftColShredAdapter *a, const Datum *values, const bool *isnull, 
 		sift_shred_recheck_begin(rc);
 	sift_shred_begin(sh);
 	sift_shred_enter(sh, false);
+	sift_shred_in_row(sh);
 	for (int i = 1; i <= a->natts; i++)
 	{
 		SiftShredKey k;
@@ -429,6 +497,14 @@ sift_col_shred_row_rc(SiftColShredAdapter *a, const Datum *values, const bool *i
 				set_value(&row->val[first[i] + at->base + l], &sh->doc, &sh->doc.col[lf->col], a->spec->cols[lf->col].type, 0);
 			else if (lf->kind == LEAF_GROUP)
 				fill_group(a, at, l, row, first[i] + at->base, mcxt);
+			else if (lf->kind == LEAF_PRESENT)
+			{
+				SiftColValue *v = &row->val[first[i] + at->base + l];
+
+				memset(v, 0, sizeof(*v));
+				v->isnull = isnull[i - 1];
+				v->v.i = 1;
+			}
 		}
 	}
 	MemoryContextSwitchTo(old);
@@ -454,8 +530,14 @@ sift_col_shred_recheck_set(SiftShredRecheck *rc, const SiftColShredAdapter *a, i
 
 	if (l->kind == LEAF_GROUP)
 		rc->grp[l->group] = mode;
-	else if (l->kind != LEAF_MAP_KEY)
+	else if (l->kind != LEAF_MAP_KEY && l->kind != LEAF_PRESENT)
 		rc->col[l->col] = mode;
+}
+
+void
+sift_col_shred_recheck_haskey(SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, const char *key)
+{
+	sift_shred_recheck_haskey(rc, a->attr[attno].leaf[i - a->attr[attno].base].col, key);
 }
 
 void

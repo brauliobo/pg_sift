@@ -3,7 +3,6 @@
  * and its view; every section of a segment is read by the file
  * next to it that names it
  */
-#include "core/host.h"
 #include "core/cmp.h"
 #include "col/seg_int.h"
 
@@ -23,7 +22,7 @@ uint8		sift_test_seg_flip_mask;
 #endif
 
 void
-seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst)
+seg_read_stream(SiftColSegment *seg, uint64 off, Size len, void *dst)
 {
 	char	   *p = dst;
 #ifdef SIFT_TESTING
@@ -51,6 +50,15 @@ seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst)
 #endif
 }
 
+/* The bytes of the stream: from the mirror of the header page when the range lies in it (not in a build that flips a byte of what it reads), else from the pages */
+void
+seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst)
+{
+	if (HEAD_CACHED() && seg_mirror_copy(seg, off, len, dst))
+		return;
+	seg_read_stream(seg, off, len, dst);
+}
+
 const SiftSectionRef *
 seg_sec(const SiftColSegment *seg, SiftSection s)
 {
@@ -63,7 +71,7 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 {
 	const SiftSegHeaderData *h = seg->hdr;
 	const SiftSectionRef *s = h->sections;
-	SegHead    *hd = MemoryContextAlloc(cx, sizeof(SegHead));
+	SegHead    *hd = MemoryContextAllocZero(cx, sizeof(SegHead));
 	char	   *schema = palloc(h->dictroot_off);
 	SiftColSBRef *dir = MemoryContextAlloc(cx, (Size) h->dictroot_n * sizeof(SiftColSBRef));
 	uint64		rank = 0;
@@ -77,8 +85,23 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 		corrupt(seg, "The schema section is not a schema of %llu leaves.", ULL(h->nterms));
 	if (hd->schema->wide && seg->entry.format < SIFT_COL_FORMAT_WIDE)
 		corrupt(seg, "The schema has wide leaves, a segment of column format 1.%d cannot.", seg->entry.format);
+	if (hd->schema->connected && seg->entry.format < SIFT_COL_FORMAT_CONN)
+		corrupt(seg, "The schema has connection flags, a segment of column format 1.%d cannot.", seg->entry.format);
 	if (hd->schema->contain && seg->entry.format < SIFT_COL_FORMAT_CONTAIN)
 		corrupt(seg, "The schema has containment lanes, a segment of column format 1.%d cannot.", seg->entry.format);
+	if (hd->schema->connected)
+	{
+		uint32		tail[2];
+		int			nconn = sift_cschema_nconn(hd->schema);
+
+		if (h->dictroot_off < sizeof(tail))
+			corrupt(seg, "The schema section of a segment with connection flags has no stamps.");
+		memcpy(tail, schema + h->dictroot_off - sizeof(tail), sizeof(tail));
+		if (tail[1] != SEG_STAMPS_MAGIC || tail[0] != (uint32) nconn || h->dictroot_off < sizeof(tail) + nconn * sizeof(SiftConnStamp))
+			corrupt(seg, "The stamps of the %d connections of the schema are not there.", nconn);
+		hd->nconn = nconn;
+		memcpy(hd->conn, schema + h->dictroot_off - sizeof(tail) - nconn * sizeof(SiftConnStamp), nconn * sizeof(SiftConnStamp));
+	}
 	pfree(schema);
 	seg_read(seg, s[SIFT_SEC_DOCMAP].off + ALIGN8(h->dictroot_off), (Size) h->dictroot_n * sizeof(SiftColSBRef), dir);
 	for (uint32 i = 0; i < h->dictroot_n; i++)
@@ -105,6 +128,7 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	SiftColSegment *seg = palloc0(sizeof(SiftColSegment));
 	SegPriv    *pv = palloc0(sizeof(SegPriv));
 	SiftSegHeaderData *h;
+	uint32		used;
 	uint64		size;
 	const SegHead *head;
 	const SiftSectionRef *s;
@@ -121,7 +145,7 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 				 errmsg("index \"%s\" has a segment of column format 1.%d, this build reads 1.%d to 1.%d",
 						RelationGetRelationName(index), entry->format, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MAX_READ),
 				 errhint(entry->format > SIFT_COL_FORMAT_MAX_READ ? "Use a newer pg_sift, or REINDEX." : "REINDEX; segments of a pre-release column format are not read.")));
-	seg->hdr = sift_seg_read_header(index, entry);
+	seg->hdr = sift_seg_read_header_used(index, entry, &used);
 	h = seg->hdr;
 	if (h->gen != entry->gen || h->ndocs != entry->ndocs || h->ndocs == 0 || h->sb_lo != entry->sb_lo ||
 		h->sb_hi != entry->sb_hi || h->sb_lo > h->sb_hi || h->live_npages == 0 || h->dictroot_n == 0 ||
@@ -137,6 +161,7 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 		s[SIFT_SEC_DOCMAP].off + s[SIFT_SEC_DOCMAP].len > size ||
 		h->dictroot_off + (uint64) h->dictroot_n * sizeof(SiftColSBRef) > s[SIFT_SEC_DOCMAP].len)
 		corrupt(seg, "Sections do not tile the %llu-byte stream.", ULL(size));
+	seg_mirror_attach(seg, used);
 	head = HEAD_CACHED() ? sift_cseg_head_find(index, entry, h, mcxt) : NULL;
 	if (head == NULL)
 	{
@@ -144,10 +169,15 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 		MemoryContext cx = AllocSetContextCreate(mcxt, "sift cache segment head", ALLOCSET_SMALL_SIZES);
 
 		head = head_read(seg, cx);
+		((SegHead *) head)->mirror_sound = pv->mirror_sound;
 		if (HEAD_CACHED())
 			sift_cseg_head_keep(index, entry, cx, (SegHead *) head, mcxt);
 	}
+	pv->head = (SegHead *) head;
+	pv->mirror_sound |= head->mirror_sound;
 	seg->schema = head->schema;
+	seg->nconn = head->nconn;
+	memcpy(seg->conn, head->conn, sizeof(seg->conn));
 	seg->nsb = h->dictroot_n;
 	seg->sbdir = head->sbdir;
 	pv->vers_at = ALIGN8(h->dictroot_off) + (Size) seg->nsb * sizeof(SiftColSBRef);
@@ -172,6 +202,11 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 void
 sift_cseg_close(SiftColSegment *seg)
 {
+	SegPriv    *pv = PRIV(seg);
+
+	if (BufferIsValid(pv->live_pin))
+		ReleaseBuffer(pv->live_pin);
+	pv->live_pin = InvalidBuffer;
 	sift_sr_release(&seg->sr);
 }
 
@@ -430,6 +465,7 @@ seg_points_read(SiftColSegment *seg)
 				ipk = 0;
 	char	   *recs;
 	SiftCPackPar *pars = NULL;
+	SegPts	   *cached;
 
 	if (pv->pt_checked)
 		return pv->pt;
@@ -437,6 +473,21 @@ seg_points_read(SiftColSegment *seg)
 	pv->dict_end = s->len;
 	if (seg->entry.format < SIFT_COL_FORMAT_DICTIDX || s->len < sizeof(foot) + sizeof(hdr))
 		return NULL;
+	if (HEAD_CACHED() && (cached = sift_cseg_pts_find(seg)) != NULL)
+	{
+		/* the leaves a scan adds state to are copied: the cache keeps what the records said */
+		pv->dict_end = cached->dict_end;
+		pv->point_bytes = cached->point_bytes;
+		pv->gorder_bytes = cached->gorder_bytes;
+		pv->pt = MemoryContextAlloc(seg->mcxt, seg->schema->ncols * sizeof(PointLeaf));
+		memcpy(pv->pt, cached->pt, seg->schema->ncols * sizeof(PointLeaf));
+		if (cached->go != NULL)
+		{
+			pv->go = MemoryContextAlloc(seg->mcxt, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
+			memcpy(pv->go, cached->go, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
+		}
+		return pv->pt;
+	}
 	seg_read(seg, s->off + s->len - sizeof(foot), sizeof(foot), foot);
 	memcpy(tail, &foot[1], sizeof(tail));
 	if (tail[0] != SIFT_CPOINT_MAGIC || !point_version_ok(tail[1]))
@@ -461,7 +512,8 @@ seg_points_read(SiftColSegment *seg)
 		corrupt(seg, "The point directories of the DICT section have the header 0x%08x, version %u, %u leaves.", hdr[0], hdr[1], hdr[2]);
 	rat = rooted ? hat - (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN : hat + sizeof(hdr);
 	pv->pt = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(PointLeaf));
-	pv->go = MemoryContextAllocZero(seg->mcxt, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
+	/* the global order blocks are the records past the leaves' (version ORD): without them no table of 2 * ncols blocks of 200 bytes is made for every segment of every statement */
+	pv->go = hdr[3] > 0 ? MemoryContextAllocZero(seg->mcxt, 2 * seg->schema->ncols * sizeof(GOrdLeaf)) : NULL;
 	recs = palloc((hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN);
 	seg_read(seg, s->off + rat, (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN, recs);
 	/* the parameters of the packed tables are next to the records, one for each, in the order of the leaves */
@@ -549,7 +601,40 @@ seg_points_read(SiftColSegment *seg)
 	if (next != end)
 		corrupt(seg, "The point directories of the DICT section end at %llu of %llu.", (unsigned long long) next, (unsigned long long) end);
 	pv->dict_end = foot[0];
+	if (pv->go)
+		for (int c = 0; c < 2 * seg->schema->ncols; c++)
+			pv->gorder_bytes += pv->go[c].bytes;
+	pv->point_bytes = end - first - pv->gorder_bytes;
+	if (HEAD_CACHED())
+	{
+		MemoryContext cx = AllocSetContextCreate(seg->mcxt, "sift cache segment points", ALLOCSET_SMALL_SIZES);
+		SegPts	   *p = MemoryContextAlloc(cx, sizeof(SegPts));
+
+		p->dict_end = pv->dict_end;
+		p->point_bytes = pv->point_bytes;
+		p->gorder_bytes = pv->gorder_bytes;
+		p->pt = MemoryContextAlloc(cx, seg->schema->ncols * sizeof(PointLeaf));
+		memcpy(p->pt, pv->pt, seg->schema->ncols * sizeof(PointLeaf));
+		p->go = pv->go == NULL ? NULL : MemoryContextAlloc(cx, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
+		if (p->go != NULL)
+			memcpy(p->go, pv->go, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
+		sift_cseg_pts_keep(seg, cx, p);
+	}
 	return pv->pt;
+}
+
+uint64
+sift_cseg_point_bytes(SiftColSegment *seg)
+{
+	(void) seg_points_read(seg);
+	return PRIV(seg)->point_bytes;
+}
+
+uint64
+sift_cseg_gorder_bytes(SiftColSegment *seg)
+{
+	(void) seg_points_read(seg);
+	return PRIV(seg)->gorder_bytes;
 }
 
 /* The superblocks the immutable segments of dir cover: the ranges of the segments of a parallel build interleave, so they are not summed */
@@ -590,15 +675,12 @@ bool
 unit_dirty(SiftColSegment *seg, uint32 u)
 {
 	uint32		i;
-	Buffer		buf = InvalidBuffer;
 	uint8		b;
 
 	if (u >= seg->nsb || seg->sbdir[u].id < seg->hdr->sb_lo)
 		corrupt(seg, "Unit %u of %u (SB %u, the segment's SBs start at %u) is not a unit of this segment.", u, seg->nsb, u < seg->nsb ? seg->sbdir[u].id : 0, seg->hdr->sb_lo);
 	i = seg->sbdir[u].id - seg->hdr->sb_lo;
-	b = sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf);
-
-	UnlockReleaseBuffer(buf);
+	b = sift_live_byte_kept(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &PRIV(seg)->live_pin);
 	return (b >> (i % 8)) & 1;
 }
 

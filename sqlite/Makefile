@@ -10,8 +10,7 @@
 #                                make SIMD=none B=build-scalar span-test with the vector-free flags
 #   make cross-aarch64           compiles everything for aarch64 with clang (no execution)
 # The sources of ../src listed in portable.list are compiled unmodified, against the host implementation in host/ (they include
-# only src/core/host.h, which selects it with -DSIFT_HOST_SQLITE), except two mechanical changes: bm25/bitmap.c gets its scan-limit global made thread-local (copied and patched with sed into
-# $(B)/gen, src/ is untouched) and bm25/prefix.c's one entry point is renamed so that init.c can serialize it.
+# only src/core/host.h, which selects it with -DSIFT_HOST_SQLITE), except one mechanical change: bm25/prefix.c's one entry point is renamed so that init.c can serialize it.
 SRC := ../src
 include $(SRC)/areas.mk
 B ?= build
@@ -42,7 +41,7 @@ LDLIBS := -lm -lpthread
 
 # the portable core, one list for every host and for the check (scripts/check-portable.sh); the vector files only when there are vector kernels
 PORTABLE := $(filter-out $(if $(filter none,$(SIMD)),$(SIMD_SRC)),$(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list))))
-OWN := host container mb spool host_regex host_stubs store dir stream stubs build merge vtab content cursor write auxfn auxfn_facets pscan init
+OWN := host container mb spool regex regex_parse regex_exec host_stubs store dir stream stubs build merge vtab content cursor write auxfn auxfn_facets pscan init
 OBJS := $(addprefix $(B)/,$(addsuffix .o,$(PORTABLE) $(OWN)))
 
 all: $(B)/sift.so
@@ -50,12 +49,7 @@ all: $(B)/sift.so
 $(B)/sift.so: $(OBJS)
 	$(CC) -shared $(EXTRA) -o $@ $(OBJS) $(LDLIBS)
 
-# bm25/bitmap.c: the scan limit of sift_seek_eq is a global written during scans; one per thread
-$(B)/gen/bitmap.c: $(SRC)/bm25/bitmap.c | $(B)/gen
-	sed 's/^static uint32_t seek_limit = /static _Thread_local uint32_t seek_limit = /' $< > $@
-	grep -q '_Thread_local uint32_t seek_limit' $@
-
-$(B)/bm25/bitmap.o: $(B)/gen/bitmap.c | $(B)
+$(B)/bm25/bitmap.o: $(SRC)/bm25/bitmap.c | $(B)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(ALIASES) -c -o $@ $<
 
@@ -124,6 +118,13 @@ $(B)/span_test: tests/span_test.c $(SRC)/core/span.h $(SRC)/core/varint.h | $(B)
 span-test: $(B)/span_test
 	$(B)/span_test
 
+# the multiply-fold mixers: their outputs are pinned (group output order depends on them)
+$(B)/hash_test: tests/hash_test.c $(SRC)/core/hash.h | $(B)
+	$(CC) $(CFLAGS) -Wextra -o $@ tests/hash_test.c
+
+hash-test: $(B)/hash_test
+	$(B)/hash_test
+
 span-test-asan:
 	$(MAKE) B=$(B)-asan EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" OPT=-O1 $(B)-asan/span_test
 	$(B)-asan/span_test
@@ -154,4 +155,4 @@ clean:
 
 -include $(wildcard $(B)/*.d $(B)/*/*.d)
 
-.PHONY: FORCE all check test col-smoke isa-check clean asan tsan tsan-run cross-aarch64 cross-objs span-test span-test-asan
+.PHONY: FORCE all check test col-smoke isa-check clean asan tsan tsan-run cross-aarch64 cross-objs span-test span-test-asan hash-test

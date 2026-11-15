@@ -74,7 +74,7 @@ BEGIN
 END $$;
 
 -- IN, EXISTS and NOT EXISTS over a membership table (its own conditions: the group, the soft delete), a NULL key and a duplicate; the whole table
--- (the last two) spans more than the byte table holds (group 9: keys from -3 to 2147483640): the generic join
+-- (the last two) spans more than the byte table holds (group 9: keys from -3 to 2147483640): a hash set of the keys
 SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 3 AND deleted_at IS NULL) GROUP BY kind$$);
 SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE EXISTS (SELECT 1 FROM dim_b m WHERE m.dim_a_id = ev.dim_a_id AND m.group_id = 5) GROUP BY kind$$);
 SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE NOT EXISTS (SELECT 1 FROM dim_b m WHERE m.dim_a_id = ev.dim_a_id AND m.group_id = 3) GROUP BY kind$$);
@@ -108,7 +108,7 @@ SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FRO
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE EXISTS (SELECT 1 FROM dims d WHERE d.id = ev.dim_a_id AND d.tier = ev.small_id % 5) GROUP BY kind$$);
 SELECT * FROM same($$SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE ev.dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 4) GROUP BY d.country$$);
 
--- the span of the keys is bounded by sift.agg_semi_lut_size: wider keys keep the generic join, the answer is the same
+-- the span of the keys is bounded by sift.agg_semi_lut_size: wider keys are a hash set of them while that fits the same memory, else the generic join; the answer is the same
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse)$$) AS span_3m_default;
 SET sift.agg_semi_lut_size = 1024;
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse)$$) AS span_3m_1mb;

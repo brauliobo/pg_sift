@@ -154,7 +154,10 @@ SELECT sift.col_verify('ka_idx', true);
 ALTER INDEX ka_idx SET (key_table = off);
 INSERT INTO ka SELECT g, (hashint4(g) & 2147483647) % 300, g % 1000, timestamp '2026-01-01' + g * interval '1 minute', md5(g::text) || md5(g::text || 'a') FROM generate_series(120001, 180000) g;
 SELECT sift.col_promote('ka_idx') >= 0 AS promoted;
+-- the rows of the three segments, with the dictionary of the pad, are over what a merge may hold in memory at the default 64 MB: it would cut a short second segment
+SET maintenance_work_mem = '128MB';
 SELECT sift.col_merge('ka_idx', true) >= 0 AS merged;
+RESET maintenance_work_mem;
 SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors, count(*) AS segments FROM sift._test_col_formats('ka_idx');
 SELECT (SELECT scanned FROM kt_units('SELECT count(*), sum(amt) FROM ka WHERE grp_id = 7')) > 0 AS no_table_scans,
        kt_rows('SELECT count(*), sum(amt), min(ts), max(ts) FROM ka WHERE grp_id = 7', true) = kt_rows('SELECT count(*), sum(amt), min(ts), max(ts) FROM ka WHERE grp_id = 7', false) AS same_as_heap;

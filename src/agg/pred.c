@@ -1,6 +1,7 @@
 /*
  * agg/pred.c - row and element predicates evaluated to bitmaps
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include "utils/float.h"
@@ -358,12 +359,6 @@ eval_ncmp(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *
 			out[i >> 6] |= UINT64CONST(1) << (i & 63);
 }
 
-static inline int64
-vec_int(const void *data, SiftSrcVecType t, int64 i)
-{
-	return t == SCV_I32 ? ((const int32 *) data)[i] : ((const int64 *) data)[i];
-}
-
 /* PostgreSQL's order of float8: NaN equals NaN and is greater than every number, -0 equals 0 */
 static inline int
 float_order(double a, double b)
@@ -415,8 +410,8 @@ eval_elem_row(AggExec *ex, SiftAggPred *p, int start, int n, uint64 *out)
 			c = float_order(((const double *) ev->data)[start + i], ((const double *) rv->data)[par[i]]);
 		else
 		{
-			int64		a = vec_int(ev->data, el->vtype, start + i),
-						b = vec_int(rv->data, rl->vtype, par[i]);
+			int64		a = sift_src_int(ev->data, el->vtype, start + i),
+						b = sift_src_int(rv->data, rl->vtype, par[i]);
 
 			c = (a > b) - (a < b);
 		}
@@ -793,6 +788,20 @@ row_bitmap(AggExec *ex, SiftAggPred *p)
 		st->rowmask = MemoryContextAlloc(ex->ucxt, ((nrow + 63) / 64 + PADW) * sizeof(uint64));
 		if (p->kind == SAP_ANY_ELEM)
 			(p->op == 2 ? elem_seq_rows : any_elem_rows) (ex, p, st->rowmask);
+		else if (p->kind == SAP_WIDE || p->kind == SAP_TYPE)
+		{
+			memset(st->rowmask, 0, ((nrow + 63) / 64 + PADW) * sizeof(uint64));	/* the source reads the words past the rows */
+			fill_ones(st->rowmask, nrow);
+			if (!(p->kind == SAP_WIDE ? sift_colsrc_filter_wide(ex->src, &ex->unit, p->wslot, st->rowmask) : sift_colsrc_filter_types(ex->src, &ex->unit, p->leaf, p->op, st->rowmask)))
+				clear_words(st->rowmask, nrow);
+			if (p->negated)
+			{
+				for (int w = 0; w < (nrow + 63) / 64; w++)
+					st->rowmask[w] = ~st->rowmask[w];
+				if (nrow & 63)
+					st->rowmask[nrow / 64] &= (UINT64CONST(1) << (nrow & 63)) - 1;
+			}
+		}
 		else
 			for (int s = 0; s < nrow; s += VEC)
 				eval_pred(ex, p, 0, s, Min(VEC, nrow - s), st->rowmask + s / 64);
@@ -883,6 +892,8 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 			eval_combo(ex, p, qlevel, start, n, out);
 			break;
 		case SAP_ANY_ELEM:
+		case SAP_WIDE:
+		case SAP_TYPE:
 			memcpy(out, row_bitmap(ex, p) + start / 64, nw * sizeof(uint64));
 			break;
 		case SAP_LEAFCMP:
@@ -894,11 +905,16 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 		case SAP_TID:
 			eval_tid(ex, p, start, n, out);
 			break;
+		case SAP_NOT_TRUE:
+			eval_pred(ex, p->child[0], qlevel, start, n, out);
+			for (int w = 0; w < nw; w++)
+				out[w] = ~out[w];
+			if (n & 63)
+				out[nw - 1] &= (UINT64CONST(1) << (n & 63)) - 1;
+			break;
 		case SAP_MATCHED:
-		case SAP_TYPE:
-		case SAP_WIDE:
 		case SAP_ELEM_EXISTS:
-			SIFT_INVARIANT(false, "sift: the types and the wide values of a leaf are tested by the source, an element existence test by the joined tuples");
+			SIFT_INVARIANT(false, "sift: an element existence test is made by the joined tuples");
 	}
 	if (p->pass_poison && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NULL || p->kind == SAP_LUT || p->kind == SAP_STEP))
 		or_poison(ex, p, start, n, out);

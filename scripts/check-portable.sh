@@ -3,7 +3,7 @@
 # the C library, a compiler intrinsics header, the optional lz4/zstd headers, src/core/host.h or another file of the list. A PostgreSQL, SQLite or other
 # host header there means the core is no longer portable (CONTRIBUTING.md). Then every listed file is compiled (syntax only) against the SQLite host header
 # (sqlite/host/host.h, which the MariaDB host includes): a PostgreSQL-only type, macro or function that core/host.h gets from the server headers and the portable
-# hosts do not provide fails here, where the SQLite and MariaDB builds would fail only in the CI jobs of those ports. Needs a C compiler; no PostgreSQL, no SQLite library.
+# hosts do not provide fails here, where the SQLite and MariaDB builds would fail only in the CI jobs of those ports. Then the SQLite build (sqlite/) is linked with --no-undefined (Linux), where a function that only the PostgreSQL files define fails. Needs a C compiler and make; no PostgreSQL, no SQLite library.
 #
 #   scripts/check-portable.sh
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
@@ -40,5 +40,12 @@ if command -v "${CC:-cc}" >/dev/null; then
 			|| { echo "$f: does not compile against the portable host (sqlite/host/host.h): a PostgreSQL-only symbol, or one the host must provide"; bad=1; }
 	done
 	if ((bad)); then exit 1; fi
+	# the link: a shared object links with undefined symbols, so a portable file that calls into a PostgreSQL-only one (sift_wt_write_seghdr of core/writer.c, called from bm25/writer.c)
+	# builds and fails only when SQLite loads it; the build of sqlite/ links with --no-undefined (GNU ld: the other linkers refuse an undefined symbol by default)
+	if [[ $(uname -s) == Linux ]] && command -v make >/dev/null; then
+		b=$(mktemp -d) && trap 'rm -rf "$b"' EXIT
+		LC_ALL=C make -s -j4 -C "$ROOT/sqlite" B="$b" EXTRA=-Wl,--no-undefined all >"$b/make.log" 2>&1 \
+			|| { grep -E "undefined|error" "$b/make.log" | head -n 10; echo "the SQLite build does not link without undefined symbols: a portable file needs a function the SQLite host does not have"; exit 1; }
+	fi
 fi
-echo "check-portable: ok, ${#files[@]} files include only core/host.h, the C library and each other"
+echo "check-portable: ok, ${#files[@]} files include only core/host.h, the C library and each other, and the SQLite build links without undefined symbols"

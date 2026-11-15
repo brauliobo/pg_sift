@@ -12,10 +12,15 @@
 #include "optimizer/optimizer.h"
 #include "utils/selfuncs.h"
 #include "catalog/pg_type.h"
+#include "utils/fmgroids.h"
+#include "utils/lsyscache.h"
 
 #include "agg/cost/int.h"
 
 static bool real_cost_walker(Node *n, double *excess);
+static bool hashed_subplan_walker(Node *n, double *ops);
+static double combo_subplan_ops(const SiftAggCombo *cb);
+static bool calendar_cost_walker(Node *n, double *ops);
 
 double
 num_cost(const SiftAggNum *o)
@@ -71,12 +76,16 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 	List	   *exprs = NIL;
 	double		entries = 1.0,
 				elem_nd = 1.0;
+	bool		tested = false;
 	Bitmapset  *lookups = NULL;
 	bool		scoped = cb->join >= 0 && ((JoinCtx *) list_nth(c->joins, cb->join))->j.scoped;
 	int			parents[SIFT_AGG_MAX_CLEAVES],
 				nparents = 0;
 	double		parent_nd[SIFT_AGG_MAX_CLEAVES] = {0};
 
+	/* the entries of a filter of the table are made for the values it rejects too; the groups of a count are those it keeps */
+	for (int sl = 0; sl < cb->nslots && cb->join < 0; sl++)
+		tested |= !cb->slot[sl].is_key;
 	for (int p = 0; p < cb->nleaves; p++)
 	{
 		SiftSrcLeaf *lf;
@@ -126,7 +135,7 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 		}
 		if (lf->attno > list_length(c->attexpr) || (e = list_nth(c->attexpr, lf->attno - 1)) == NULL)
 			return tuples;
-		if (IsA(e, Var) && (nd = column_distinct(c, (Var *) e)) > 0)
+		if (IsA(e, Var) && (nd = column_distinct(c, (Var *) e, counted || !tested)) > 0)
 			entries *= nd;
 		else
 			exprs = lappend(exprs, e);
@@ -135,6 +144,9 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 		entries *= parent_nd[i];
 	if (exprs != NIL)
 		entries *= estimate_num_groups(c->root, exprs, tuples, NULL, NULL);
+	/* the keys of a dense table share the entry of their class, and the keys it has no row for one */
+	if (cb->join >= 0 && join_dense(c, s, list_nth(c->joins, cb->join)))
+		entries = ((JoinCtx *) list_nth(c->joins, cb->join))->classes + 1;
 	return Max(Min(entries * elem_nd, tuples), 1.0);
 }
 
@@ -173,7 +185,7 @@ combo_wsum_only(const SiftAggSpec *s, int ci)
 
 		only &= cb->slot[sl].direct;
 		for (int ai = 0; ai < s->naggs; ai++)
-			if ((s->agg[ai].kind >= SAA_X_COUNT && s->agg[ai].kind <= SAA_X_AVG) && s->agg[ai].combo == ci && s->agg[ai].slot == sl)
+			if (saa_x(s->agg[ai].kind) && s->agg[ai].combo == ci && s->agg[ai].slot == sl)
 			{
 				only &= s->agg[ai].wsum != 0;
 				used = true;
@@ -183,13 +195,40 @@ combo_wsum_only(const SiftAggSpec *s, int ci)
 	return only;
 }
 
+/* does a slot of the combo test the elements of an array: &&, @>, <@ or = ANY? */
+static bool
+elements_walker(Node *n, void *ctx)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, OpExpr))
+	{
+		Oid			fn = get_opcode(((OpExpr *) n)->opno);
+
+		if (fn == F_ARRAYOVERLAP || fn == F_ARRAYCONTAINS || fn == F_ARRAYCONTAINED)
+			return true;
+	}
+	if (IsA(n, ScalarArrayOpExpr))
+		return true;
+	return expression_tree_walker(n, elements_walker, ctx);
+}
+
+static bool
+combo_tests_elements(const SiftAggCombo *cb)
+{
+	for (int sl = 0; sl < cb->nslots; sl++)
+		if (elements_walker((Node *) cb->slot[sl].expr, NULL))
+			return true;
+	return false;
+}
+
 /*
  * The evaluation PostgreSQL does for the combos with a 64-bit leaf or a direct slot: a hash probe per tuple for the id of each wide
  * leaf, and the expressions once per distinct combination of the leaves (every tuple when the column has as many values). Combos of
  * dictionary and small integer leaves have few combinations and keep the price they had.
  */
 double
-combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, double scan_rows, double kept_rows, double alive, double *entry_cost)
+combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, double scan_rows, double kept_rows, double alive, double *entry_cost, CostAcc *k)
 {
 	double		cost = 0;
 
@@ -198,7 +237,8 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 	for (int ci = 0; ci < s->ncombo; ci++)
 	{
 		const SiftAggCombo *cb = &s->combo[ci];
-		int			wide = 0;
+		int			wide = 0,
+					arrays = 0;
 		bool		direct = false,
 					filter = false,
 					lookup_ref = false;
@@ -221,7 +261,17 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 				for (int p = 0; p < cb->nleaves; p++)
 					if (cb->leaf[p] < 0)
 						probes = Min(alive, sqrt(alive * Max(agg_rows, 1.0)));
-				cost += probes * (join_lut(c, s, jc) ? AGG_JOIN_LUT : AGG_JOIN_PROBE * sqrt(Max(c->root->simple_rel_array[jc->rti]->rows, 1.0) / 250000.0));
+				if (join_lut(c, s, jc) || join_dense(c, s, jc))
+					cost += probes * AGG_JOIN_LUT;
+				else
+				{
+					double		probe = probes * AGG_JOIN_PROBE * sqrt(Max(c->root->simple_rel_array[jc->rti]->rows, 1.0) / 250000.0);
+
+					/* what of the probes the entries are: each process that takes rows of a key makes its entry (cost_work) */
+					k->entry_ops += combo_entries(c, s, cb, probes, false) * AGG_ENTRY_ROW / AGG_SCAN_SPEED;
+					k->entry_all += probes * AGG_ENTRY_ROW / AGG_SCAN_SPEED;
+					cost += probe;
+				}
 				/* the rest of the ON clause is PostgreSQL's expression, for each entry; the executor's evaluation does not get AGG_SCAN_SPEED's share (110 ns an entry measured, 36 counted) */
 				if (on_tests_tuple(s, ci) && !combo_wsum_only(s, ci))
 				{
@@ -239,17 +289,26 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 				double		candidates = jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->rows,
 							built = 0;
 
-				/* agg_cost scales the scan by AGG_SCAN_SPEED, which the executor's jsonb builds do not get */
+				/* agg_cost scales the scan by AGG_SCAN_SPEED, which the executor's evaluation of the clause for a pair (PostgreSQL's expression: jsonb builds, calendar functions) does not get; a semi join stops at the first match: half the candidates for a key that has one (in_expr_key measured 105 ns a pair at that count) */
 				if (j->fslot >= 0)
-					json_build_walker((Node *) cb->slot[j->fslot].expr, &built);
-				cost += combo_entries(c, s, cb, alive, false) * Max(candidates, 1.0) * (AGG_EVAL_SLOT + built / AGG_SCAN_SPEED);
+				{
+					Node	   *on = (Node *) cb->slot[j->fslot].expr;
+
+					json_build_walker(on, &built);
+					real_cost_walker(on, &built);
+					calendar_cost_walker(on, &built);
+				}
+				cost += combo_entries(c, s, cb, alive, false) * Max(candidates, 1.0) * (j->kind == SJ_SEMI ? 0.5 : 1.0) * (AGG_PAIR_OPS + built) / AGG_SCAN_SPEED;
 			}
 			continue;
 		}
 		for (int p = 0; p < cb->nleaves; p++)
 		{
 			if (cb->leaf[p] >= 0)
+			{
 				wide += leaf_of(c, cb->leaf[p])->vtype == SCV_I64 || leaf_of(c, cb->leaf[p])->vtype == SCV_F64;
+				arrays += array_image_width(c, cb->leaf[p]) > 0;
+			}
 			else
 				lookup_ref = true;
 		}
@@ -259,6 +318,9 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 			filter |= !cb->slot[sl].is_key && !cb->slot[sl].direct;
 		}
 		tuples = filter ? rows : agg_rows;
+		/* a test of the elements of a leaf that holds whole arrays only: each tuple looks its image up and resolves its entry, whatever the number of distinct arrays (a length or a null test reads lanes) */
+		if (arrays > 0 && combo_tests_elements(cb))
+			cost += tuples * arrays * AGG_ARR_ROW;
 		/*
 		 * A test between leaves (a column compared with a column) is evaluated by PostgreSQL once per distinct combination of the leaves: a few for
 		 * dictionary and small integer leaves, which keep the price they had, one per row for two dates that vary (545 instructions a row measured,
@@ -274,7 +336,11 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 		}
 		if (combo_wsum_only(s, ci))
 			continue;
-		cost += tuples * wide * AGG_WIDE_LEAF + combo_entries(c, s, cb, tuples, false) * cb->nslots * AGG_EVAL_SLOT;
+		double		entries = combo_entries(c, s, cb, tuples, false);
+
+		cost += tuples * (wide * AGG_WIDE_LEAF + (direct ? AGG_DIRECT_ROW : 0.0)) + entries * cb->nslots * (direct ? AGG_EVAL_DIRECT : AGG_EVAL_SLOT);
+		k->ms_ops += entries * combo_subplan_ops(cb) +
+			wide * Max(tuples - entries, 0.0) * AGG_WIDE_MISS * entries * entries / (entries * entries + AGG_WIDE_MISS_HALF * AGG_WIDE_MISS_HALF);
 	}
 	return cost + *entry_cost;
 }
@@ -299,6 +365,57 @@ bucket_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows)
 		if (s->key[i].bucket > 0)
 			cost += rows * AGG_BUCKET_ROW + bucket_count(c, &s->key[i], rows) * AGG_EVAL_SLOT;
 	return cost;
+}
+
+/* what a function that breaks a timestamp into its calendar fields spends beyond the call, in operators PostgreSQL's executor runs (a cast or a comparison of dates and timestamps does not: 20 to 70 ns) */
+static bool
+calendar_cost_walker(Node *n, double *ops)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, FuncExpr))
+		switch (((FuncExpr *) n)->funcid)
+		{
+			case F_DATE_TRUNC_TEXT_TIMESTAMP:
+			case F_DATE_TRUNC_TEXT_TIMESTAMPTZ:
+			case F_DATE_TRUNC_TEXT_TIMESTAMPTZ_TEXT:
+			case F_TIMESTAMPTZ_DATE:
+			case F_DATE_PART_TEXT_DATE:
+			case F_DATE_PART_TEXT_TIMESTAMP:
+			case F_DATE_PART_TEXT_TIMESTAMPTZ:
+			case F_EXTRACT_TEXT_DATE:
+			case F_EXTRACT_TEXT_TIMESTAMP:
+			case F_EXTRACT_TEXT_TIMESTAMPTZ:
+			case F_TO_CHAR_TIMESTAMP_TEXT:
+			case F_TO_CHAR_TIMESTAMPTZ_TEXT:
+				*ops += AGG_REAL_CALENDAR;
+				break;
+			default:
+				break;
+		}
+	return expression_tree_walker(n, calendar_cost_walker, ops);
+}
+
+/* a hashed SubPlan is looked up by the executor for each value combination: its call and the probe of the hash of the subplan's rows, which PostgreSQL prices as one operator */
+static bool
+hashed_subplan_walker(Node *n, double *ops)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, SubPlan) && ((SubPlan *) n)->useHashTable)
+		*ops += AGG_REAL_SUBPLAN;
+	return expression_tree_walker(n, hashed_subplan_walker, ops);
+}
+
+/* what the hashed subplans of the slots of a combo cost for each value combination it has not seen, beyond the evaluation of the slot */
+static double
+combo_subplan_ops(const SiftAggCombo *cb)
+{
+	double		ops = 0;
+
+	for (int sl = 0; sl < cb->nslots; sl++)
+		hashed_subplan_walker((Node *) cb->slot[sl].expr, &ops);
+	return ops;
 }
 
 /*
@@ -370,8 +487,8 @@ plain_credit(AggCtx *c, const SiftAggSpec *s, double agg_rows)
 	{
 		const SiftAggAgg *a = &s->agg[ai];
 
-		if (a->restype == NUMERICOID && (a->kind == SAA_SUM_NUM || a->kind == SAA_AVG_NUM || a->kind == SAA_MIN || a->kind == SAA_MAX ||
-										 a->kind == SAA_X_SUM || a->kind == SAA_X_AVG || a->kind == SAA_X_MIN || a->kind == SAA_X_MAX))
+		if (a->restype == NUMERICOID && (a->kind == SAA_SUM_NUM || a->kind == SAA_AVG_NUM || saa_minmax(a->kind) ||
+										 saa_x_sumavg(a->kind) || a->kind == SAA_X_MIN || a->kind == SAA_X_MAX))
 			excess += AGG_REAL_NUMERIC - 2.0;
 	}
 	return excess * agg_rows * AGG_PLAIN_CREDIT;

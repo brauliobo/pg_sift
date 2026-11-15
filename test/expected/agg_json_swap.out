@@ -6,8 +6,8 @@ CREATE EXTENSION pg_sift_helpers;
 CREATE TABLE jt (id int PRIMARY KEY, g int, label text, price numeric, day date);
 INSERT INTO jt SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE 'l"' || i % 5 || E'\n' END, i / 4.0, '2026-01-01'::date + i % 30 FROM generate_series(1, 3000) i;
 CREATE INDEX jt_col ON jt USING sift_col (id, g, label, price, day);
-NOTICE:  sift_col index "jt_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = g, label; track_changes = id
+NOTICE:  sift_col index "jt_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = g, label; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('jt_col');
 CREATE TABLE jp AS SELECT * FROM jt;
 VACUUM ANALYZE jt;

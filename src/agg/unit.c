@@ -1,81 +1,21 @@
 /*
  * agg/unit.c - answering one unit: late conjuncts, overflow checks, filters, process_unit (its pre-aggregates are agg/preagg/)
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include <float.h>
-#include <math.h>
 
-#include "access/genam.h"
-#include "access/heapam.h"
-#include "access/htup_details.h"
-#include "access/parallel.h"
-#include "access/relation.h"
-#include "access/table.h"
-#include "access/tableam.h"
-#include "catalog/pg_aggregate.h"
-#include "catalog/pg_operator.h"
-#include "catalog/pg_proc.h"
-#include "access/skey.h"
-#include "access/stratnum.h"
-#include "access/xact.h"
-#include "catalog/pg_am.h"
-#include "catalog/pg_index.h"
 #include "catalog/pg_type.h"
-#include "commands/explain.h"
-#include "common/hashfn.h"
-#include "common/int.h"
-#include "executor/executor.h"
-#include "executor/nodeAgg.h"
-#include "executor/nodeHash.h"
-#include "executor/nodeSubplan.h"
 #include "miscadmin.h"
-#include "nodes/extensible.h"
-#include "nodes/makefuncs.h"
-#include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
-#include "optimizer/optimizer.h"
-#include "portability/instr_time.h"
-#include "parser/parse_agg.h"
-#include "storage/predicate.h"
-#include "storage/proc.h"
-#include "storage/shm_mq.h"
-#include "storage/shm_toc.h"
-#include "utils/acl.h"
-#include "utils/array.h"
-#include "utils/builtins.h"
-#include "utils/date.h"
-#include "utils/datum.h"
-#include "utils/fmgroids.h"
-#include "utils/fmgrprotos.h"
-#include "utils/expandeddatum.h"
-#include "utils/float.h"
-#include "utils/guc.h"
-#include "utils/numeric.h"
-#include "utils/lsyscache.h"
-#include "utils/numeric.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
-#include "utils/syscache.h"
-#include "utils/timestamp.h"
-#include "utils/tuplesort.h"
-#include "utils/wait_event.h"
-#include "utils/typcache.h"
 
-#include "agg/agg.h"
-#include "agg/wide.h"
 #include "agg/back.h"
 #include "agg/kern.h"
-#include "agg/part.h"
 #include "agg/sel.h"
-#include "agg/spec.h"
 #include "col/kern.h"
-#include "agg/colsrc.h"
 #include "agg/chunkfilter.h"
-#include "agg/search.h"
 #include "agg/topn.h"
-#include "core/visibility.h"
-#include "core/popcount.h"
 #include "agg/agg_int.h"
 
 /* bits [lo, hi) of a bit vector cleared */
@@ -290,6 +230,12 @@ overflow_rows(AggExec *ex, bool rechecked, bool lists_only)
 	{
 		if (s->vleaf[j].types)
 			continue;
+		if (s->vleaf[j].bound)
+		{
+			if (!rechecked)
+				leaf_overflow_rows(ex, s->vleaf[j].obj + s->vleaf[j].bound, &rows);
+			continue;
+		}
 		if (s->vleaf[j].count)
 		{
 			if (!rechecked)
@@ -365,7 +311,7 @@ check_overflow_elems(AggExec *ex, const uint64 *em)
 /* ... and the unit goes on as them alone only when they are fewer than a NARROW_RATIOth: above about 6% it costs what it saves (a 90-day window of 15 years, 3%: 157 against 113 million instructions; an eighth of the rows costs 1.5% more than a sixteenth) */
 #define NARROW_RATIO	16
 
-/* the rows whose value has one of the JSON types of each SAP_TYPE conjunct; false when none is left */
+/* the rows whose value has one of the JSON types of each SAP_TYPE conjunct (the others are row_bitmap's); false when none is left */
 static bool
 type_filters(AggExec *ex, uint64 *rmask)
 {
@@ -379,14 +325,12 @@ type_filters(AggExec *ex, uint64 *rmask)
 	return true;
 }
 
-/* the rows that pass each SAP_WIDE conjunct, in the order wide_init gave them to the source; false when none is left */
+/* the rows that pass each SAP_WIDE conjunct; false when none is left */
 static bool
 wide_filters(AggExec *ex, uint64 *rmask)
 {
-	int			k = 0;
-
 	for (int i = 0; i < ex->spec->npred; i++)
-		if (ex->spec->pred[i]->kind == SAP_WIDE && !sift_colsrc_filter_wide(ex->src, &ex->unit, k++, rmask))
+		if (ex->spec->pred[i]->kind == SAP_WIDE && !ex->spec->pred[i]->negated && !sift_colsrc_filter_wide(ex->src, &ex->unit, ex->spec->pred[i]->wslot, rmask))
 			return false;
 	return true;
 }

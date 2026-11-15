@@ -9,7 +9,6 @@ declared in `churn` and the state in `variant`. Warm only: a RAM disk shows no d
 """
 import argparse
 import os
-import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -21,17 +20,12 @@ import records.collect as collect  # noqa: E402
 import records.schema as schema  # noqa: E402
 from duckdb import Session  # noqa: E402
 
-REPO = os.path.dirname(os.path.dirname(HERE))
 PATTERNS = {'recent': 'ts > {rows} - {rows} * {share} / 100', 'random': '(hashint4(id) & 2147483647) % 10000 < {share} * 100'}
 STATEMENTS = (('group_all_tenants', 'SELECT tenant_id, count(*), sum(counter_a) FROM {t} GROUP BY tenant_id'),
               ('one_tenant', 'SELECT count(*), sum(counter_a) FROM {t} WHERE tenant_id = 7'))
 BASE = ['SET max_parallel_workers_per_gather = 0', 'SET sift.enable_agg = on']
 LOAD = """CREATE TABLE {t} (id int PRIMARY KEY, ts int NOT NULL, tenant_id int NOT NULL, counter_a int, label text) WITH (autovacuum_enabled = false, fillfactor = 100)"""
 FILL = "INSERT INTO {t} SELECT i, i, i % 10, i % 1000, md5(i::text) FROM generate_series(1, {rows}) i"
-
-
-def tip(a):
-    return a.tip or subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'unknown'
 
 
 def main():
@@ -52,7 +46,7 @@ def main():
     admin.run('CREATE DATABASE %s' % a.db)
     s = Session(a.port, 600, None, db=a.db, host=a.host)
     s.run('CREATE EXTENSION pg_sift')
-    t = tip(a)
+    t = collect.git_tip(a.tip)
     env = collect.Env(t, 'heapfree lookup cost' + (' (%s)' % a.note if a.note else ''), schema.run_id(t), collect.host_cpus(collect.postmaster_pid(collect.backend_pid(s))), reps=a.reps, cool=iolib.cool, maintenance='disabled')
     out = []
 

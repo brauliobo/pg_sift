@@ -24,15 +24,7 @@ CREATE INDEX cs_col ON cs USING sift_col (store, status, amount, placed) WITH (w
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) cs;
 
 -- the plans that are not SiftAgg are disabled for the pushed run; the reference has the planner's own choice with sift.enable_agg off
-CREATE FUNCTION cs_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('sift.enable_scan', (NOT pushed)::text, true);
-	PERFORM set_config('sift.enable_count', (NOT pushed)::text, true);
-END $$;
+CREATE FUNCTION cs_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_scan_and_count_off(pushed) $$;
 
 -- 'same' / 'DIFFERENT', and whether the pushed plan read the match set ('+search') or any column index at all ('+agg') or neither
 CREATE FUNCTION cs_check(q text, arg text DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$

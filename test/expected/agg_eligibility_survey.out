@@ -276,8 +276,8 @@ INSERT INTO survey_q (slug, family, q) VALUES
 	('rows_only_columns', 'rows', $q$SELECT status, category_id FROM events WHERE tenant_id = 3 LIMIT 5$q$),
 	('rows_only_keyword', 'rows', $q$SELECT status, count(*) FROM ONLY events GROUP BY 1$q$);
 SELECT slug, family, (survey(q)).* FROM survey_q ORDER BY n;
-                 slug                 |   family    | pushed | differences | order_differs |    why     
---------------------------------------+-------------+--------+-------------+---------------+------------
+                 slug                 |   family    | pushed | differences | order_differs |           why           
+--------------------------------------+-------------+--------+-------------+---------------+-------------------------
  key_ordinal                          | group-key   | t      |           0 | f             | 
  key_alias                            | group-key   | t      |           0 | f             | 
  key_alias_expr                       | group-key   | t      |           0 | f             | 
@@ -392,9 +392,9 @@ SELECT slug, family, (survey(q)).* FROM survey_q ORDER BY n;
  where_func_col                       | filter      | t      |           0 | f             | 
  where_extract                        | filter      | t      |           0 | f             | 
  where_date_trunc_eq                  | filter      | t      |           0 | f             | 
- where_jsonb_exists                   | filter      | f      |           0 | f             | where
+ where_jsonb_exists                   | filter      | f      |           0 | f             | jsonb_path_not_declared
  where_jsonb_member_cmp               | filter      | t      |           0 | f             | 
- where_jsonb_contains                 | filter      | f      |           0 | f             | where
+ where_jsonb_contains                 | filter      | f      |           0 | f             | jsonb_path_not_declared
  where_bool_col                       | filter      | t      |           0 | f             | 
  where_not_bool_col                   | filter      | t      |           0 | f             | 
  where_coalesce                       | filter      | t      |           0 | f             | 

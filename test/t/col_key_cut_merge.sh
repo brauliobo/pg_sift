@@ -11,7 +11,8 @@ sql km "CREATE EXTENSION pg_sift CASCADE" >/dev/null || bail "pg_sift"
 sql km "CREATE TABLE km (id int, cust int, d date, amount int, pad text) WITH (autovacuum_enabled = false, parallel_workers = 2)" \
 	"INSERT INTO km SELECT g, (g * 7919) % 600, date '2026-01-01' + (g * 31) % 300, g % 100, repeat('x', 100) FROM generate_series(1, 100000) g" \
 	"VACUUM (FREEZE, ANALYZE) km" >/dev/null || bail "setup failed"
-DDL="ON km USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d', point_tid_columns = 'off')"
+# no order array: a serial id gets one by default (column format 38) and the format below names the key-cut units alone
+DDL="ON km USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d', point_tid_columns = 'off', order_array_columns = 'off')"
 small() { sql km "SET sift.test_col_segment_kb = 16" "SET sift.test_col_max_segments = 6" "SET max_parallel_maintenance_workers = 0" "$@"; }
 good() { test "$(sql km "SELECT indisvalid FROM pg_index WHERE indexrelid = 'km_idx'::regclass")" == t &&
 	test -z "$(sql km "SELECT sift.col_verify('km_idx', true)" 2>&1)" &&

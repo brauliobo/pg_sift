@@ -3,33 +3,10 @@
  */
 #include "postgres.h"
 
-#include "access/generic_xlog.h"
-#include "access/nbtxlog.h"
-#include "access/parallel.h"
 #include "access/transam.h"
-#include "access/xact.h"
-#include "access/xlog.h"
-#include "access/xloginsert.h"
-#include "catalog/pg_class.h"
-#include "catalog/storage.h"
-#include "storage/procarray.h"
-#include "storage/sinval.h"
-#include "catalog/pg_control.h"
-#include "common/int.h"
-#include "miscadmin.h"
 #include "nodes/bitmapset.h"
-#include "storage/bulk_write.h"
-#include "storage/latch.h"
-#include "storage/proc.h"
-#include "storage/read_stream.h"
-#include "storage/smgr.h"
-#include "utils/memutils.h"
-#include "utils/snapmgr.h"
-#include "utils/wait_event.h"
 
-#include "col/col.h"
-#include "bm25/estimate.h"
-#include "core/lane.h"
+#include "core/rowmem.h"
 #include "core/store.h"
 #include "core/store_int.h"
 
@@ -218,7 +195,7 @@ in_flight(Page page, const SiftDirSnapshot *snap)
 {
 	SiftPageOpaque op;
 
-	if (!layout_ok(page))
+	if (!sift_page_layout_ok(page))
 		return false;
 	op = SiftPageGetOpaque(page);
 	if (op->type < SIFT_PT_SEGHEADER || op->type > SIFT_PT_WBUFDATA)
@@ -258,6 +235,28 @@ sift_store_orphans(Relation index)
 	bms_free(ref);
 	pfree(snap);
 	return orphans;
+}
+
+/* The runs of the blocks of the set, one extent each: the orphans of a killed write are whole extents, so the array follows the runs and not the blocks */
+SiftExtent *
+sift_store_block_extents(const Bitmapset *set, int *n)
+{
+	SiftExtent *ext;
+	int			x = -1,
+				prev = -2,
+				runs = 0;
+
+	while ((x = bms_next_member(set, x)) >= 0)
+	{
+		runs += x != prev + 1;
+		prev = x;
+	}
+	ext = sift_rows_alloc((runs + 1) * sizeof(SiftExtent));
+	x = -1;
+	*n = 0;
+	while ((x = bms_next_member(set, x)) >= 0)
+		sift_extent_push(ext, n, x, 1);
+	return ext;
 }
 
 void

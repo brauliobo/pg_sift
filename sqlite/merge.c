@@ -56,13 +56,15 @@ sq_seg_live_docs(SqStore *st, const SiftSegEntry *e, void (*fn) (void *arg, Sift
 	sift_seg_close(seg);
 }
 
-/* ---------- the live postings of every term, for readers other than the merge: the engine's own dump ---------- */
+/* ---------- the live postings of every term, for readers other than the merge: the engine's own stream ---------- */
 
 typedef struct TermWalk
 {
 	void		(*fn) (void *arg, const char *term, int len, const SiftKey *keys, uint32 n);
 	void	   *arg;
 	MemoryContext caller;				/* fn allocates in the caller's context, the walk's goes away */
+	char		term[SIFT_MAX_TERM_BYTES];
+	int			len;
 } TermWalk;
 
 static void
@@ -70,30 +72,35 @@ no_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
 {
 }
 
-static bool
-walk_term(void *arg, const char *term, int len, const SiftTermInfo *info, const SiftKey *keys, const uint8 *tf,
-		  const uint16 *dl, const uint8 *pos, const uint32 *poslen)
+static void
+walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
+{
+	TermWalk   *w = arg;
+
+	memcpy(w->term, term, len);
+	w->len = len;
+}
+
+static void
+walk_postings(void *arg, const SiftKey *keys, const uint8 *tf, const uint16 *dl, const uint8 *pos, const uint32 *poslen, int n)
 {
 	TermWalk   *w = arg;
 	MemoryContext old = MemoryContextSwitchTo(w->caller);
 
-	w->fn(w->arg, term, len, keys, info->df);
+	w->fn(w->arg, w->term, w->len, keys, n);
 	MemoryContextSwitchTo(old);
-	return true;
 }
 
 void
 sq_seg_walk_terms(SqStore *st, const SiftSegEntry *e,
 				  void (*fn) (void *arg, const char *term, int len, const SiftKey *keys, uint32 n), void *arg)
 {
-	const SqOptions *opt = sq_store_options(st);
-	SiftScoreRef ref = {(float4) opt->base.k1, (float4) opt->base.b, 0};
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift walk", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	TermWalk	w = {.fn = fn,.arg = arg,.caller = old};
 	SiftSegment *seg = sift_seg_open(sq_store_rel(st), e, cx);
 
-	sift_seg_dump(seg, &ref, no_docs, walk_term, &w);
+	sift_seg_stream(seg, (Size) maintenance_work_mem * 1024 / 2, &(SiftSegSink) {no_docs, walk_term, walk_postings}, &w);
 	sift_seg_close(seg);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);

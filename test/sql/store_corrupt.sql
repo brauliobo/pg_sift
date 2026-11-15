@@ -44,13 +44,35 @@ SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
 SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 24, 0, 4);
 SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
--- the used bytes of the metapage (pd_lower at offset 12, the data at 24): the 64 of a build without the failure note, the 272 with it and the 400 with the analyzer configuration are read, others are not
+-- the used bytes of the metapage (pd_lower at offset 12, the data at 24): the 64 of a build without the failure note, the 272 with it and the 400 with the analyzer configuration are read, a shorter one is not
 SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 12, 24 + 40, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
+-- a metapage longer than the struct of this build is the extension of a newer one: it is read as it is, and a format this build cannot read is refused by format with its hint
 SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 12, 24 + 500, 2);
+SELECT sift._test_check('t_idx') >= 0 AS longer_metapage_is_read;
+SELECT sift._test_poke('t_idx', 0, 30, 7, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
+-- a write keeps the bytes past the struct and never lowers pd_lower over them (a failure note, at offset 64, makes it set pd_lower to the struct); the base of the page is written as always
+SELECT fresh();
+SELECT sift._test_poke('t_idx', 0, 12, 24 + 500, 2);
+SELECT sift._test_poke('t_idx', 0, 24 + 492, 123456789, 8);
+SELECT sift._test_poke('t_idx', 0, 24 + 64, 1, 8);
+SELECT sift._test_peek('t_idx', 0, 24 + 24, 8) AS next_gen \gset
+SELECT sift._test_seg_write('t_idx', 100, 1) > 0 AS written;
+SELECT lower = 24 + 500 AS lower_kept, sift._test_peek('t_idx', 0, 24 + 492, 8) = 123456789 AS tail_kept,
+	sift._test_peek('t_idx', 0, 24 + 24, 8) > :next_gen AS base_written
+FROM sift._test_page('t_idx', 0);
+-- the same for an index of the BM25 access method
+CREATE TABLE r (d text);
+INSERT INTO r VALUES ('a b c'), ('b c d');
+CREATE INDEX r_idx ON r USING sift (d);
+SELECT sift._test_poke('r_idx', 0, 12, 24 + 700, 2);
+SELECT sift._test_check('r_idx') >= 0 AS bm25_longer_metapage_is_read;
+SELECT sift._test_poke('r_idx', 0, 30, 99, 2);
+SELECT expect($$ SELECT sift._test_check('r_idx') $$);
+DROP TABLE r;
 SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 12, 24 + 272, 2);
 SELECT sift._test_check('t_idx') >= 0 AS note_size_is_read;
@@ -61,7 +83,7 @@ SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 28, 2, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
 SELECT fresh();
-SELECT sift._test_poke('t_idx', 0, 30, 6, 2);
+SELECT sift._test_poke('t_idx', 0, 30, 7, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
 SELECT fresh();
 SELECT sift._test_poke('t_idx', 0, 30, 0, 2);

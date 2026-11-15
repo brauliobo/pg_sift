@@ -14,6 +14,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
+#include "optimizer/plancat.h"
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
@@ -85,7 +86,7 @@ join_lut(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc)
 	const SiftAggJoin *j = &s->join[cb->join];
 	double		rpk;
 
-	if (!semi_lut_possible(s, jc->combo, c->lay->nleaves - c->nvleaf) || c->lay->leaf[cb->leaf[0]].vtype != SCV_I32)
+	if (!semi_lut_possible(s, jc->combo, c->lay->nleaves - c->nvleaf) || !semi_lut_leaf(c->lay, cb->leaf[0]))
 		return false;
 	if (j->kind != SJ_INNER)
 		return true;
@@ -319,9 +320,9 @@ joins_counted(AggCtx *c)
 
 /* the operators a row of a keyed load costs, the page visits apart; `entries_only`: the share of them taken from the entries of the btree */
 double
-sift_agg_entry_ops(double entries_only)
+sift_agg_entry_ops(double entries_only, bool heap)
 {
-	return AGG_PROBE_ROW - entries_only * AGG_PROBE_IOS;
+	return heap ? AGG_PROBE_ROW - entries_only * AGG_PROBE_IOS : AGG_PROBE_ROW_AM;
 }
 
 /*
@@ -330,11 +331,12 @@ sift_agg_entry_ops(double entries_only)
  * whose rows come from the entries of a btree that holds the columns (all-visible pages of a covering index): no heap fetch, no page visit.
  */
 double
-sift_agg_keyed_ops(double keys, double entries, double pages, double entries_only)
+sift_agg_keyed_ops(double keys, double entries, double pages, double entries_only, bool heap)
 {
 	double		visited = pages * (1.0 - exp(-entries / Max(pages, 1.0)));
 
-	return keys * AGG_PROBE_KEY + entries * sift_agg_entry_ops(entries_only) + visited * (1.0 - entries_only) * heap_visit_ops(pages);
+	entries_only = heap ? entries_only : 0;
+	return keys * AGG_PROBE_KEY + entries * sift_agg_entry_ops(entries_only, heap) + visited * (1.0 - entries_only) * heap_visit_ops(pages);
 }
 
 /*
@@ -352,9 +354,26 @@ sift_agg_whole_ops(double tuples, double pages, bool cols, int nnum, bool keys_o
 
 /* a keyed load pays while it costs less than the table read whole (`whole`, from sift_agg_whole_ops) */
 bool
-sift_agg_probe_pays(double keys, double entries, double pages, double entries_only, double whole)
+sift_agg_probe_pays(double keys, double entries, double pages, double entries_only, bool heap, double whole)
 {
-	return sift_agg_keyed_ops(keys, entries, pages, entries_only) < whole;
+	return sift_agg_keyed_ops(keys, entries, pages, entries_only, heap) < whole;
+}
+
+/*
+ * The rows the planner expects of a table: pg_class.reltuples is -1 until a VACUUM or an ANALYZE has run (a table just loaded), which a decision on the size of a
+ * lookup table read as none. The planner's own estimate takes the density of the pages from the row width then, and a known density times the pages now.
+ */
+double
+sift_agg_table_rows(Oid relid)
+{
+	Relation	rel = relation_open(relid, NoLock);
+	BlockNumber pages;
+	double		tuples,
+				allvis;
+
+	estimate_rel_size(rel, NULL, &pages, &tuples, &allvis);
+	relation_close(rel, NoLock);
+	return tuples;
 }
 
 /* the rows a value of column att has: the rows of the table over the distinct values its statistics say; 0 when they say nothing */
@@ -408,17 +427,102 @@ sift_agg_key_rows(unsigned int relid, int att, const int *tatt, int ntrail, doub
 	return Max(rpk, 1.0);
 }
 
+/* the rows the table has for a key of the join, by the statistics (0: unknown); a unique index says 1 */
+static double
+join_rows_per_key(const JoinCtx *jc, double tuples)
+{
+	const SiftAggJoin *j = &jc->j;
+
+	if (!OidIsValid(j->relid) || j->tkey[0] != NULL)
+		return 0;
+	return j->nkey == 1 && sift_agg_unique_key(j->relid, 1, 0, &j->keyatt[0], NULL) ? 1.0 : sift_agg_rows_per_key(j->relid, j->keyatt[0], tuples);
+}
+
+/*
+ * Will the executor keep the table of the join as classes of its keys (map_load_dense)? The join is one it takes (sift_agg_dense_join), an index holds the key
+ * and the columns as integer leaves, and the tuples of their values, by the statistics, are at most half the classes it tells apart. jc->classes: how many.
+ */
+bool
+join_dense(AggCtx *c, const SiftAggSpec *s, JoinCtx *jc)
+{
+	if (jc->dense == 0)
+	{
+		jc->dense = 2;
+		if (jc->cpath == NULL && sift_agg_dense_join(s, jc->combo, c->lay))
+		{
+			Relation	rel = relation_open(planner_rt_fetch(jc->rti, c->root)->relid, NoLock);
+			double		bound[SIFT_AGG_MAX_JCOLS] = {0};
+			bool		ok = map_load_dense_possible(rel, &jc->j, bound);
+
+			relation_close(rel, NoLock);
+			jc->classes = 1.0;
+			for (int col = 0; col < jc->j.ncol; col++)
+				jc->classes *= bound[col] > 0 ? Min(bound[col], joined_distinct(c, jc, col)) : joined_distinct(c, jc, col);
+			/* a key the table repeats is refused by the load (a class is the key's): such a table is read as rows */
+			ok = ok && jc->classes <= DENSE_MAX_CLASSES / 2 && join_rows_per_key(jc, Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0)) <= DENSE_KEY_REPEAT;
+			jc->dense = ok ? 1 : 2;
+		}
+	}
+	return jc->dense == 1;
+}
+
+/*
+ * the values the group keys computed from the columns of one dense lookup table can take together: no more than its classes, the first key of the table takes them all
+ * (0: the key is not one; `seen`: the tables whose classes an earlier key took)
+ */
+double
+key_dense_groups(AggCtx *c, const SiftAggSpec *s, const SiftAggKey *k, Bitmapset **seen)
+{
+	JoinCtx    *jc;
+	int			join;
+
+	if (k->kind != SAK_COMBO || (join = s->combo[k->leaf].join) < 0)
+		return 0;
+	jc = list_nth(c->joins, join);
+	if (!join_dense(c, s, jc))
+		return 0;
+	if (bms_is_member(join, *seen))
+		return 1.0;
+	*seen = bms_add_member(*seen, join);
+	return jc->classes;
+}
+
+/*
+ * What the directory of the keys adds to the load of a table of rows: each row finds its key in a table of the table's distinct keys, a cache miss once the keys outgrow the cache (98 ns
+ * a row for 400,000 keys of 4,000,000 rows, 543 ns for 4,000,000 keys; 111 against 473 ns for 100,000 and 1,000,000 keys of 1,000,000 rows). A key without statistics is taken as unique.
+ */
+static double
+load_keys_ops(const JoinCtx *jc, double tuples)
+{
+	double		keys = Max(tuples, 1.0) / Max(join_rows_per_key(jc, tuples), 1.0);
+
+	return Max(tuples, 1.0) * AGG_LOAD_KEYS * keys * keys / (keys * keys + AGG_LOAD_KEYS_HALF * AGG_LOAD_KEYS_HALF);
+}
+
 /* the price, in operators, of the table of a join read whole */
 static double
 join_whole_ops(AggCtx *c, SiftAggSpec *s, JoinCtx *jc)
 {
 	RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
-	Relation	rel = relation_open(c->root->simple_rte_array[jc->rti]->relid, NoLock);
+	Relation	rel;
 	int			nnum = 0;
-	bool		cols = map_load_cols_possible(rel, &jc->j, &nnum);
+	bool		cols,
+				keys_only;
 
+	if (join_dense(c, s, jc))
+	{
+		int			ntests = 0;
+
+		for (int col = 0; col < jc->j.ncol; col++)
+			ntests += jc->j.colexpr[col] != NULL;
+		return Max(jrel->tuples, 1.0) * (AGG_LOAD_DENSE + ntests * AGG_LOAD_TEST);
+	}
+	rel = relation_open(c->root->simple_rte_array[jc->rti]->relid, NoLock);
+	cols = map_load_cols_possible(rel, &jc->j, &nnum);
 	relation_close(rel, NoLock);
-	return sift_agg_whole_ops(Max(jrel->tuples, 1.0), jrel->pages, cols, nnum, !cols && join_keys_only(c, s, jc));
+	keys_only = join_keys_only(c, s, jc);
+	/* a table loaded as keys alone has no directory of its keys */
+	return sift_agg_whole_ops(Max(jrel->tuples, 1.0), jrel->pages, cols, nnum, !cols && keys_only) + (keys_only ? 0 : load_keys_ops(jc, jrel->tuples));
 }
 
 /* does the btree hold, and return, every column a load of the join reads (map_index_covers) */
@@ -430,7 +534,7 @@ index_covers(const IndexOptInfo *ii, const SiftAggJoin *j)
 		int			att = n < j->nkey ? j->keyatt[n] : j->colatt[n - j->nkey],
 					i;
 
-		if (n < j->nkey && j->tkey[n])
+		if (n < j->nkey ? j->tkey[n] != NULL : j->colexpr[n - j->nkey] != NULL)
 			return false;
 		for (i = 0; i < ii->ncolumns; i++)
 			if (ii->indexkeys[i] == att && ii->canreturn[i])
@@ -451,6 +555,7 @@ join_keys_pay(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, int att, double keys, doub
 	RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
 	const SiftAggJoin *j = &jc->j;
 	Oid			relid = planner_rt_fetch(jc->rti, c->root)->relid;
+	bool		heap = get_rel_relam(relid) == HEAP_TABLE_AM_OID;
 	double		tuples = Max(jrel->tuples, 1.0),
 				rpk = 0,
 				best = HUGE_VAL;
@@ -470,7 +575,7 @@ join_keys_pay(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, int att, double keys, doub
 			ta[n++] = ii->indexkeys[col];
 		cov = index_covers(ii, j);
 		r = sift_agg_key_rows(relid, att, ta, n, tuples, ii->unique && ii->nkeycolumns == 1);
-		price = r * sift_agg_entry_ops(cov ? jrel->allvisfrac : 0);
+		price = r * sift_agg_entry_ops(cov ? jrel->allvisfrac : 0, heap);
 		if (r > 0 && price < best)
 		{
 			best = price;
@@ -481,7 +586,7 @@ join_keys_pay(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, int att, double keys, doub
 	if (rpk <= 0)
 		return false;
 	keys = Min(keys, tuples);
-	if (!sift_agg_probe_pays(keys, keys * rpk, jrel->pages, *entries_only, join_whole_ops(c, s, jc)))
+	if (!sift_agg_probe_pays(keys, keys * rpk, jrel->pages, *entries_only, heap, join_whole_ops(c, s, jc)))
 		return false;
 	*rows = keys * rpk;
 	return true;
@@ -535,7 +640,7 @@ join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *rows, double *en
 		foreach_ptr(JoinCtx, dj, c->joins)
 		{
 			const SiftAggCombo *cc = &s->combo[dj->combo];
-			const SiftAggJoin *d = &dj->j;
+			const SiftAggJoin *d = &s->join[cc->join];
 			int			att = 0,
 						dkey;
 			Oid			typ = InvalidOid;
@@ -663,7 +768,7 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 	}
 	if ((probes = join_probe_keys(c, s, jc, &prows, &only)) > 0)
 	{
-		*row_cost = sift_agg_keyed_ops(probes, prows, jrel->pages, only) / Max(prows, 1.0);
+		*row_cost = sift_agg_keyed_ops(probes, prows, jrel->pages, only, get_rel_relam(planner_rt_fetch(jc->rti, c->root)->relid) == HEAP_TABLE_AM_OID) / Max(prows, 1.0);
 		return Max(prows, 1.0);
 	}
 	*row_cost = join_whole_ops(c, s, jc) / tuples;
@@ -681,7 +786,7 @@ agg_share_rows(AggCtx *c, SiftAggSpec *s)
 		double		row_cost;
 
 		if (jc->j.params == NIL)
-			rows += join_load_rows(c, s, jc, &row_cost);
+			rows += join_load_rows(c, s, jc, &row_cost) / (join_dense(c, s, jc) ? AGG_SHARE_DENSE : 1.0);
 	}
 	return rows;
 }
@@ -701,8 +806,12 @@ child_probe_ops(const JoinCtx *jc)
 	IndexPath  *ip;
 	RelOptInfo *rel;
 	bool		first = false;
+	int			nfilter;
+	Oid			relid;
 	double		entries = 1.0,
-				rpk;
+				run = AGG_PROBE_RUN,
+				rpk,
+				corr;
 
 	for (;;)
 	{
@@ -729,11 +838,13 @@ child_probe_ops(const JoinCtx *jc)
 	rel = ip->path.parent;
 	if (ip->indexinfo->relam != BTREE_AM_OID || ip->indexorderbys != NIL || ip->indexscandir != ForwardScanDirection || jc->subroot == NULL)
 		return 0;
-	rpk = sift_agg_rows_per_key(planner_rt_fetch(rel->relid, jc->subroot)->relid, ip->indexinfo->indexkeys[0], rel->tuples);
+	relid = planner_rt_fetch(rel->relid, jc->subroot)->relid;
+	rpk = sift_agg_rows_per_key(relid, ip->indexinfo->indexkeys[0], rel->tuples);
+	nfilter = Max(list_length(rel->baserestrictinfo) + (ip->path.param_info ? list_length(ip->path.param_info->ppi_clauses) : 0) - list_length(ip->indexclauses), 0);
 	if (first)
 	{
 		/* the first match: as many entries as the key has where a condition the index does not take decides it */
-		if (list_length(rel->baserestrictinfo) + (ip->path.param_info ? list_length(ip->path.param_info->ppi_clauses) : 0) > list_length(ip->indexclauses))
+		if (nfilter > 0)
 			entries = Max(rpk > 0 ? rpk : ip->path.rows, 1.0);
 	}
 	else
@@ -747,7 +858,24 @@ child_probe_ops(const JoinCtx *jc)
 		entries = Max(rpk > 0 ? rpk : ip->path.rows, 1.0) * clauselist_selectivity(jc->subroot, own, 0, JOIN_INNER, NULL);
 		entries = Max(entries, 1.0);
 	}
-	return AGG_PROBE_RUN + entries * (ip->path.pathtype == T_IndexOnlyScan ? AGG_PROBE_SCAN : AGG_PROBE_FETCH);
+	/* the page search of a probe compares a key column that is not text under the C collation inline; any other collation is a call of its compare */
+	foreach_node(IndexClause, ic, ip->indexclauses)
+	{
+		Oid			coll = ip->indexinfo->indexcollations[ic->indexcol];
+
+		if (OidIsValid(coll) && !sift_collate_is_c(coll))
+		{
+			run = AGG_PROBE_RUN * AGG_PROBE_COLL;
+			break;
+		}
+	}
+	/* a table of another access method has no visibility map: every entry is a row through the access method, an Index Only Scan too */
+	if (get_rel_relam(relid) != HEAP_TABLE_AM_OID)
+		return run + entries * AGG_PROBE_ENTRY_AM;
+	if (ip->path.pathtype == T_IndexOnlyScan)
+		return run + entries * AGG_PROBE_SCAN;
+	corr = column_correlation(relid, ip->indexinfo->indexkeys[0]);
+	return run + entries * (AGG_PROBE_FETCH + nfilter * AGG_PROBE_QUAL + (1.0 - corr * corr) * AGG_PROBE_VISIT * heap_visit_ops(rel->pages));
 }
 
 /* is the child a lateral probe that the planner hook made of a sublink (agg/flat/probe.c)? */
@@ -767,14 +895,14 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		double		rows,
 					row_cost;
 
-		/* Correlated children run once per distinct input, with their native path's cost. */
+		/* Correlated children run once per distinct input, with their native path's cost: for the tuples that reach the join, not the rows that are aggregated (a condition on what the child gives, NOT EXISTS, drops most of them after it ran) */
 		if (jc->j.params != NIL)
 		{
 			const SiftAggCombo *cb = &s->combo[jc->combo];
 			SiftAggFirst *f = &s->join[foreach_current_index(jc)].first;
 			double		probe = child_probe_ops(jc),
 						run = probe > 0 ? probe * cpu_operator_cost : AGG_CHILD_RUN * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
-			double		native = combo_entries(c, s, cb, k->agg_rows, false) * run;
+			double		native = combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), false) * run;
 
 			/*
 			 * the child that is a lookup of one row by unique key: the table's rows read once, if that costs less than the child for each input; the
@@ -782,11 +910,11 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 			 * (a few for a filter it knows nothing of) are not what the child runs for
 			 */
 			/* a lateral probe the planner made (agg/flat/probe.c) is priced by what a probe takes: the rows of its table are not loaded for it */
-			f->use = f->ok && !probe_made(c, jc) && jc->frows * AGG_FIRST_ROW < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * run;
+			f->use = f->ok && !probe_made(c, jc) && jc->frows * AGG_LOAD_ROW * cpu_operator_cost < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * run;
 			if (f->use)
 			{
 				k->load_rows += jc->frows;
-				k->load_cost += jc->frows * AGG_FIRST_ROW;
+				k->load_cost += jc->frows * AGG_LOAD_ROW;
 			}
 			else
 				k->child_cost += native;

@@ -12,9 +12,7 @@
 
 #include <math.h>
 
-#include "access/amapi.h"
 #include "access/genam.h"
-#include "access/htup_details.h"
 #include "access/nbtree.h"
 #include "access/skey.h"
 #include "access/stratnum.h"
@@ -29,7 +27,6 @@
 #include "nodes/tidbitmap.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
-#include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "parser/parsetree.h"
 #include "utils/array.h"

@@ -125,7 +125,7 @@ SELECT n, plan_of(q) AS plan, outcome(q) FROM f_q ORDER BY n;
  argument, filtered         | scan   | same rows
  argument, int4             | scan   | same ERR 22P02 invalid input syntax for type integer: "3.5"
  argument, kept             | scan   | same ERR 22P02 invalid input syntax for type double precision: "abc"
- case in the argument       | normal | same rows
+ case in the argument       | scan   | same rows
  filter may raise           | normal | same ERR 22P02 invalid input syntax for type double precision: "abc"
  filter of a bad leaf       | normal | same ERR 22P02 invalid input syntax for type integer: "3.5"
  filter of a leaf           | scan   | same ERR 22P02 invalid input syntax for type double precision: "abc"
@@ -141,6 +141,7 @@ SET sift.explain_refusals = on;
 EXPLAIN (COSTS OFF) SELECT grp, count(*) FILTER (WHERE grp > 1 AND (doc ->> 'v')::float8 > 3) AS c FROM f_t GROUP BY grp;
 NOTICE:  SiftAgg not used: dirty_units: some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does (doc.v: the FILTER of an aggregate tests the cast in a way that is none of a comparison with a constant, an IN list of integers and a NULL test)
 DETAIL:  arm: single
+HINT:  Find the leaf with values it cannot store in sift.col_leaves, fix the data or the type of its path, and REINDEX.
          QUERY PLAN          
 -----------------------------
  GroupAggregate
@@ -178,15 +179,7 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET seq_page_cost = 10000;
-CREATE FUNCTION workers(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Workers Planned' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+CREATE FUNCTION workers(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_plan_has_workers(q) $$;
 SELECT n, workers(q) AS parallel, outcome(q) FROM (VALUES
 	('where, dropped',    'SELECT grp, count(*) FROM f_p WHERE (doc ->> ''v'')::float8 > 3 AND id <> 15001 GROUP BY grp'),
 	('where, raises',     'SELECT grp, count(*) FROM f_p WHERE (doc ->> ''v'')::float8 > 3 GROUP BY grp'),

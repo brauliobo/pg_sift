@@ -12,7 +12,7 @@ node_start primary || bail "primary start failed"
 {
 	echo "CREATE EXTENSION pg_sift;"
 	echo "CREATE TABLE t1 AS SELECT g AS id, 'k' || md5(g::text) AS s FROM generate_series(1, 20000) g;"
-	echo "CREATE INDEX t1_col ON t1 USING sift_col (id, s) WITH (rollup_dims = 'off');"
+	echo "CREATE INDEX t1_col ON t1 USING sift_col (id, s) WITH (rollup_columns = 'off');"
 	echo "VACUUM (FREEZE, ANALYZE) t1;"
 } | sql primary >/dev/null || bail "setup failed"
 [[ $(sql primary "SHOW dynamic_shared_memory_type") == posix ]] || { echo "1..0 # SKIP the segments are not files of /dev/shm"; exit 0; }
