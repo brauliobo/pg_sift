@@ -454,6 +454,7 @@ TESTING_REGRESS += quarantine_join
 TESTING_REGRESS += quarantine_meta
 TESTING_REGRESS += quarantine_partitions
 TESTING_REGRESS += quarantine_persist
+TESTING_REGRESS += quarantine_random
 TESTING_REGRESS += quarantine_registry
 TESTING_REGRESS += quarantine_track
 TESTING_REGRESS += quarantine_vacuum

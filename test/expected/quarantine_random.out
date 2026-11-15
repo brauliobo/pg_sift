@@ -1,0 +1,202 @@
+-- Random damage of the pages of an index: every statement either gives the rows of the heap or fails with the damage error once, and the one after it, planned without the index,
+-- gives the rows of the heap. No other error is raised; damage that no read meets and that changes a result is one that sift.check reports
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET client_min_messages = error;
+SET sift.on_corruption = quarantine;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
+CREATE TABLE t (id int PRIMARY KEY, v int, g int, s text, body text);
+INSERT INTO t SELECT i, i % 13, i % 5, 'w' || (i % 17), 'alpha beta ' || (i % 10) || ' gamma' || (i % 3) FROM generate_series(1, 6000) i;
+CREATE TABLE queries (kind text, n int, sql text);
+INSERT INTO queries VALUES
+ ('col', 1, 'SELECT count(*) FROM t WHERE v = 3'),
+ ('col', 2, 'SELECT g, count(*), sum(v) FROM t GROUP BY g ORDER BY g'),
+ ('col', 3, 'SELECT id FROM t WHERE v = 5 AND g = 2 ORDER BY id LIMIT 20'),
+ ('col', 4, 'SELECT count(*) FROM t WHERE s = ''w4'' AND id > 3000'),
+ ('col', 5, 'SELECT sum(id) FROM t WHERE id BETWEEN 100 AND 4000'),
+ ('bm25', 1, 'SELECT count(*) FROM t WHERE body @@> ''alpha 3'''),
+ ('bm25', 2, 'SELECT id FROM t WHERE body @@> ''alpha 3 gamma1'' ORDER BY id LIMIT 30'),
+ ('bm25', 3, 'SELECT count(*) FROM t WHERE body @@> ''gamma2'' AND v = 4');
+CREATE FUNCTION answer(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	EXECUTE 'SELECT coalesce(string_agg(x::text, '';'' ORDER BY x::text), '''') FROM (' || q || ') x' INTO r;
+	RETURN r;
+END $$;
+CREATE TABLE heap_answers AS SELECT kind, n, answer(sql) AS a FROM queries;
+CREATE TABLE outcome (kind text, round int, n int, state text);
+CREATE FUNCTION damage_round(kind text, round int) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+	idx text := 't_' || kind;
+	blocks int;
+	q record;
+	got text;
+	again text;
+BEGIN
+	EXECUTE format('DROP INDEX IF EXISTS %I', idx);
+	IF kind = 'col' THEN EXECUTE format('CREATE INDEX %I ON t USING sift_col (id, v, g)', idx);
+	ELSE EXECUTE format('CREATE INDEX %I ON t USING sift (body)', idx);
+	END IF;
+	ANALYZE t;
+	blocks := pg_relation_size(idx::regclass) / 8192;
+	PERFORM sift._test_poke(idx, (1 + floor(random() * (blocks - 1)))::int,
+		(CASE floor(random() * 3) WHEN 0 THEN floor(random() * 24) WHEN 1 THEN 8176 + floor(random() * 13) ELSE floor(random() * 8189) END)::int,
+		floor(random() * 4294967296)::int8, 4);
+	FOR q IN SELECT * FROM queries WHERE queries.kind = damage_round.kind ORDER BY n LOOP
+		BEGIN
+			got := answer(q.sql);
+			INSERT INTO outcome VALUES (kind, round, q.n, CASE WHEN got = (SELECT a FROM heap_answers h WHERE h.kind = q.kind AND h.n = q.n) THEN 'same'
+				WHEN (SELECT count(*) FROM sift.check(idx::regclass)) > 0 THEN 'differs, sift.check reports it' ELSE 'differs, silent' END);
+		EXCEPTION WHEN SQLSTATE 'XX002' OR SQLSTATE 'XX001' THEN
+			again := answer(q.sql);
+			INSERT INTO outcome VALUES (kind, round, q.n, CASE WHEN again = (SELECT a FROM heap_answers h WHERE h.kind = q.kind AND h.n = q.n) THEN 'failed once, then same' ELSE 'failed once, then differs' END);
+		WHEN OTHERS THEN
+			INSERT INTO outcome VALUES (kind, round, q.n, 'other error ' || SQLSTATE);
+		END;
+	END LOOP;
+END $$;
+SELECT setseed(0.42);
+ setseed 
+---------
+ 
+(1 row)
+
+SELECT damage_round(k, r) FROM generate_series(1, 60) r, unnest(ARRAY['col', 'bm25']) k;
+ damage_round 
+--------------
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+(120 rows)
+
+SELECT kind, state, count(*) FROM outcome GROUP BY 1, 2 ORDER BY 1, 2;
+ kind |             state              | count 
+------+--------------------------------+-------
+ bm25 | differs, sift.check reports it |     1
+ bm25 | failed once, then same         |    31
+ bm25 | same                           |   148
+ col  | failed once, then same         |    26
+ col  | same                           |   274
+(5 rows)
+
+DROP TABLE t, queries, heap_answers, outcome;
+DROP FUNCTION answer(text), damage_round(text, int);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
