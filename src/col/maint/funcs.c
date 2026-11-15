@@ -311,6 +311,24 @@ sift_col_space(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
+/* sift.col_shrink_history(index): why the last cut of the file left free blocks, and when the file was last cut */
+Datum
+sift_col_shrink_history(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	Datum		v[2];
+	bool		nulls[2] = {0};
+
+	sift_dir_read(index, snap);
+	nulls[0] = snap->meta.shrink_blocked == SIFT_SHRINK_OPEN;
+	v[0] = CStringGetTextDatum(sift_shrink_block_name(snap->meta.shrink_blocked));
+	nulls[1] = snap->meta.last_shrink == 0;
+	v[1] = TimestampTzGetDatum(snap->meta.last_shrink);
+	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+}
+
 Datum
 sift_col_segments(PG_FUNCTION_ARGS)
 {

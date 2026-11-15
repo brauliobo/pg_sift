@@ -89,6 +89,7 @@ extern uint64 sift_vstore_epoch(SiftVStore *vs);
 extern void sift_vstore_bump_epoch(SiftVStore *vs);
 extern bool sift_vstore_old_epochs(SiftVStore *vs);
 extern uint32 sift_vstore_current_epoch(uint32 store);
+extern void sift_vstore_compact(Relation index);
 extern void sift_vstore_vacuum(Relation index);
 extern void sift_vstore_release_left(Relation index);
 extern PGDLLIMPORT int sift_vstore_gc_kb;
