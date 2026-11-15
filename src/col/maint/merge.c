@@ -582,7 +582,7 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 			return SIFT_STEP_IDLE;
 		}
 		maint_redecided = true;
-		decided = sift_col_auto_redecide(index, all, nall);
+		decided = sift_col_auto_redecide(index);
 		if ((decided & SIFT_REDECIDED_CUT) || decide_only)
 		{
 			memcpy(sel, all, nall * sizeof(SiftSegEntry));
@@ -599,7 +599,7 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 		 * build has just chosen from the same data, and choosing again took 40% of a build of 1,000,000 rows */
 		bool		keyed = rs.on ? rs.first && sift_col_auto_keys_merge(index, all, nall) : n == nimm && sift_col_auto_keys_merge(index, sel, n);
 
-		decided |= goal != SIFT_GOAL_REWRITE && n == nimm && !maint_after_build ? sift_col_auto_redecide(index, sel, n) : 0;
+		decided |= goal != SIFT_GOAL_REWRITE && n == nimm && !maint_after_build ? sift_col_auto_redecide(index) : 0;
 		/* the choice a VACUUM could not write (it holds a transaction id the other sessions do not see): the worker it asks for makes it (maint_rewrite_request) */
 		maint_decide_wanted |= n == nimm && !maint_after_build && !sift_catalog_write_ok();
 		/* a step that only chooses again leaves the segments as they are when nothing changed */

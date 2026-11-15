@@ -182,7 +182,7 @@ extern bool sift_col_options_key_order_user(Relation index);
 extern bool sift_col_options_key_order_auto(Relation index);
 extern SiftAutoCut sift_col_auto_cut(Relation heap, Relation index);
 /* The NOTICE that a key is worth a key_cut the build did not write, from the sample of the build (autocut.c) or from the units it wrote (cluster.c); detail: why, and what it costs */
-extern bool sift_col_auto_cut_again(Relation heap, Relation index, bool fits);
+extern bool sift_col_auto_cut_again(Relation heap, Relation index);
 extern bool sift_col_options_key_cut_auto(Relation index);
 extern const char *sift_col_options_key_order_group(Relation index);
 /* a column name that looks rewritten often (a timestamp of the last change, a counter, a version): an UPDATE of it is not a HOT update while the index covers it (col/build/build.c) */
@@ -193,7 +193,7 @@ extern bool sift_col_redecide_busy(Relation index);
 /* What sift_col_auto_redecide changed: an option (ANY), key_cut among them (CUT: the merge then sorts the rows of its inputs again) */
 #define SIFT_REDECIDED_ANY	1
 #define SIFT_REDECIDED_CUT	2
-extern int	sift_col_auto_redecide(Relation index, const SiftSegEntry *in, int n);
+extern int	sift_col_auto_redecide(Relation index);
 extern void sift_col_pagg_rewrite(Relation index, const SiftSegEntry *in, int n, SiftCPaggSpec *spec);
 /* paths = 'auto' (col/keycols/keycols.c, col/suggest.c): before a build, the paths read from a sample of the jsonb documents and written to the option as 'auto: spec' */
 #define SIFT_COL_AUTO_PATHS_SAMPLE	2000
