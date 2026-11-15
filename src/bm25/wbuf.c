@@ -18,6 +18,7 @@
 
 #include "bm25/am.h"
 #include "core/lane.h"
+#include "core/quarantine.h"
 #include "bm25/maint.h"
 #include "bm25/wbuf.h"
 
@@ -307,11 +308,13 @@ sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int
 	return crossed;
 }
 
+static char out_of_service;		/* the cache of an index that is out of service for the rest of the statement: its address only */
+
 bool
 sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap,
 			  IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo)
 {
-	SiftAnalyzer *an = indexInfo->ii_AmCache;
+	SiftAnalyzer *an;
 	SiftTermFreq *terms;
 	uint32		dl;
 	int			n;
@@ -319,7 +322,13 @@ sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 
 	if (isnull[0])
 		return false;
-	if (an == NULL)
+	if (indexInfo->ii_AmCache == &out_of_service || sift_index_known_out(index))
+	{
+		indexInfo->ii_AmCache = &out_of_service;
+		sift_quarantine_stopped(index, SIFT_SKIP_WRITE);
+		return false;
+	}
+	if ((an = indexInfo->ii_AmCache) == NULL)
 	{
 		SiftAnalyzerConfig cfg;
 

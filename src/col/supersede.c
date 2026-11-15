@@ -27,6 +27,7 @@
 #include "col/am.h"
 #include "col/conn.h"
 #include "core/compat.h"
+#include "core/quarantine.h"
 #include "core/tomb.h"
 
 #ifdef SIFT_TESTING
@@ -75,21 +76,35 @@ typedef struct HeldTombs
 
 static HeldTombs held[TOMB_SLOTS];
 
+typedef struct TombFlush
+{
+	Relation	index;
+	SiftTomb   *ents;
+	int			n;
+} TombFlush;
+
+static void
+append_held(void *arg)
+{
+	TombFlush  *f = arg;
+
+	sift_tomb_append_many(f->index, sift_col_log_appender(f->index), f->ents, f->n);
+}
+
 static void
 flush_slot(HeldTombs *h)
 {
-	int			n = h->n;
-	Relation	index;
+	TombFlush	f = {NULL, h->ents, h->n};
 
-	if (n == 0)
+	if (f.n == 0)
 		return;
 	h->n = 0;
-	if ((index = try_relation_open(h->index, RowExclusiveLock)) != NULL)
+	if ((f.index = try_relation_open(h->index, RowExclusiveLock)) != NULL)
 	{
-		/* a rebuilt index is another file with a log of its own, which holds nothing of these */
-		if (index->rd_locator.relNumber == h->relnumber)
-			sift_tomb_append_many(index, sift_col_log_appender(index), h->ents, n);
-		relation_close(index, NoLock);
+		/* a rebuilt index is another file with a log of its own, which holds nothing of these; one that is out of service keeps no log up to date: a rebuild takes it from the heap */
+		if (f.index->rd_locator.relNumber == h->relnumber)
+			sift_quarantine_guard(f.index, SIFT_SKIP_WRITE, append_held, &f);
+		relation_close(f.index, NoLock);
 	}
 }
 
@@ -111,6 +126,9 @@ static void
 tomb_hold(Relation index, const SiftTomb *ent)
 {
 	HeldTombs  *h = NULL;
+
+	if (sift_index_known_out(index))
+		return;
 
 	for (int i = 0; i < TOMB_SLOTS && h == NULL; i++)
 		if (held[i].n > 0 && held[i].index == RelationGetRelid(index) && held[i].relnumber == index->rd_locator.relNumber)

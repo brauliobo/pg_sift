@@ -26,6 +26,7 @@ typedef struct SiftColRel
 {
 	SiftColSchema *schema;
 	SiftColIndexMeta meta;		/* cols point into schema->cols; stats zero */
+	bool		out;			/* the metapage said the index is out of service when this state was made (core/quarantine.h); the invalidation of the worker that sets the flag makes it again */
 	int			natts;
 	int			conn_first;	/* the leaves from this id on are the found flags of the connections (SIFT_COLD_FOUND); none when it is ncols */
 	int			nconn;			/* connections of the index (col/conn.h) and the leaves of each */
