@@ -41,7 +41,8 @@ NOTICE:  sift_col index "fact_col": 4 automatic choices
 DETAIL:  key_columns = dim_id; key_cut = dim_id; order_array_columns = v; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('fact_col');
 NOTICE:  sift_col index "fact_col" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('fact_col') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 VACUUM (FREEZE, ANALYZE) dim, fact;
 -- the first child of a parent is built before the journal of the parent starts: its segments are filled by the next rewrite
 SELECT sift.col_maintain('fact_col') AS rewritten;

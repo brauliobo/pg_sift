@@ -37,7 +37,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; rollup
 order_array_columns = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 NOTICE:  sift_col index "ev_col" is column format minor 44, which a library before 4.3 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ev_col') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 INSERT INTO price SELECT 'after reindex', scan_price();
 SELECT (SELECT p FROM price WHERE step = 'start') = (SELECT p FROM price WHERE step = 'same') AS same_state_same_price,
        (SELECT p FROM price WHERE step = 'after growth') > (SELECT p FROM price WHERE step = 'start') AS grows_with_the_index,

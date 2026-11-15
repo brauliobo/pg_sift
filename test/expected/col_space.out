@@ -13,7 +13,8 @@ NOTICE:  sift_col index "cs_col": 1 automatic choice (order_array_columns), 1 ad
 DETAIL:  advice: track_changes = the index lacks the primary key column; order_array_columns = amount
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cs_col');
 NOTICE:  sift_col index "cs_col" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('cs_col') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 SELECT blocks('cs_col') AS built \gset
 SELECT count(*), sum(amount) FROM cs WHERE grp = 7;
  count |    sum     
