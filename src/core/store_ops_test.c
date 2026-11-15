@@ -28,6 +28,7 @@ PG_FUNCTION_INFO_V1(sift_test_poke);
 PG_FUNCTION_INFO_V1(sift_test_live_clear);
 PG_FUNCTION_INFO_V1(sift_test_live2_clear);
 PG_FUNCTION_INFO_V1(sift_test_write);
+PG_FUNCTION_INFO_V1(sift_test_seghdr);
 PG_FUNCTION_INFO_V1(sift_test_churn);
 PG_FUNCTION_INFO_V1(sift_test_dir_updates_count);
 PG_FUNCTION_INFO_V1(sift_test_flush_wal);
@@ -465,6 +466,38 @@ sift_test_write(PG_FUNCTION_ARGS)
 	UnlockReleaseBuffer(buf);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
+}
+
+/*
+ * sift._test_seghdr(index, over, extralen): writes the header page of a segment with SIFT_MAX_EXTENTS + over extents and extralen bytes after them;
+ * returns the bytes the page uses and SIFT_MAX_EXTENTS (an error when they do not fit the page)
+ */
+Datum
+sift_test_seghdr(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	uint32		n = SIFT_MAX_EXTENTS + PG_GETARG_INT32(1),
+				extralen = PG_GETARG_INT32(2);
+	SiftExtent *ext = palloc0(Max(n, 1) * sizeof(SiftExtent));
+	char	   *extra = palloc0(Max(extralen, 1));
+	SiftSegHeaderData h = {0};
+	SiftWriteTarget *wt;
+	Buffer		buf;
+	Datum		values[2];
+	bool		nulls[2] = {0};
+
+	MAINT_LOCK(index, ShareLock);
+	h.gen = sift_store_new_gen(index);
+	wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
+	buf = ReadBuffer(index, sift_wt_write_seghdr(wt, &h, ext, n, extra, extralen));
+	sift_wt_finish(wt);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	values[0] = Int32GetDatum(SiftPageGetUsed(BufferGetPage(buf)));
+	UnlockReleaseBuffer(buf);
+	values[1] = Int32GetDatum(SIFT_MAX_EXTENTS);
+	MAINT_UNLOCK(index, ShareLock);
+	relation_close(index, RowExclusiveLock);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
 }
 
 /*

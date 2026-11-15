@@ -20,15 +20,18 @@ sift_wt_write_seghdr(SiftWriteTarget *wt, const SiftSegHeaderData *h, const Sift
 {
 	PGIOAlignedBlock page;
 	SiftSegHeaderData *hdr = (SiftSegHeaderData *) SiftPageGetData(page.data);
+	uint64		used = offsetof(SiftSegHeaderData, extents) + (uint64) n * sizeof(SiftExtent) + extralen;
 
+	if (used > SIFT_PAGE_PAYLOAD)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: the header page of a segment would take %llu bytes, its page holds %zu", (unsigned long long) used, (size_t) SIFT_PAGE_PAYLOAD),
+						errdetail("%u extents and %u bytes after them.", n, extralen)));
 	sift_page_init(page.data, SIFT_PT_SEGHEADER, h->gen);
 	memcpy(hdr, h, offsetof(SiftSegHeaderData, extents));
 	hdr->nextents = n;
 	memcpy(hdr->extents, ext, n * sizeof(SiftExtent));
-	SIFT_INVARIANT(offsetof(SiftSegHeaderData, extents) + n * sizeof(SiftExtent) + extralen <= SIFT_PAGE_PAYLOAD, "sift: the header page of a segment is over its page");
 	if (extralen > 0)
 		memcpy((char *) hdr->extents + n * sizeof(SiftExtent), extra, extralen);
-	SiftPageSetUsed(page.data, offsetof(SiftSegHeaderData, extents) + n * sizeof(SiftExtent) + extralen);
+	SiftPageSetUsed(page.data, used);
 	return sift_wt_write_page(wt, page.data);
 }
 

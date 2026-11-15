@@ -459,8 +459,6 @@ write_run(SiftVStore *vs, const SiftCDict *src, uint32 from, uint32 lo, uint32 n
 	SiftExtent *ext;
 	int			next;
 	uint64		gen;
-	PGIOAlignedBlock page;
-	SiftSegHeaderData *hdr = (SiftSegHeaderData *) SiftPageGetData(page.data);
 	DirEdit		ed = {0};
 	SiftDirChange chg = {0};
 	SiftExtent *rel_ext = NULL;
@@ -483,15 +481,9 @@ write_run(SiftVStore *vs, const SiftCDict *src, uint32 from, uint32 lo, uint32 n
 	sw = sift_sw_begin(wt, gen);
 	sift_sw_write(sw, out.data, out.len);
 	ext = sift_sw_finish(sw, &next);
-	sift_page_init(page.data, SIFT_PT_SEGHEADER, gen);
-	hdr->gen = gen;
-	hdr->ndocs = hi - lo;
-	hdr->nextents = next;
-	memcpy(hdr->extents, ext, next * sizeof(SiftExtent));
-	SiftPageSetUsed(page.data, offsetof(SiftSegHeaderData, extents) + next * sizeof(SiftExtent));
 	ed.neu = (SiftSegEntry) {.gen = gen, .kind = SIFT_SEG_VALRUN, .format = SIFT_COL_FORMAT_VSTORE, .reserved = (uint32) vs->view->epoch,
 							 .ndocs = hi - lo, .sum_dl = lo, .bytes = out.len};
-	ed.neu.header_blk = sift_wt_write_page(wt, page.data);
+	ed.neu.header_blk = sift_wt_write_seghdr(wt, &(SiftSegHeaderData) {.gen = gen, .ndocs = hi - lo}, ext, next, NULL, 0);
 	sift_wt_finish(wt);
 	ed.nold = nold;
 	if (nold > 0)
