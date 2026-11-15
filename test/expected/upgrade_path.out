@@ -79,6 +79,59 @@ WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e' AND objid = 'sift.
  function sift.upgrade_check(text)
 (1 row)
 
+-- an extension older than 4.3.6 (the first 4.x release whose library refuses a 5.0 metapage with the format message) gets a warning that is no blocker;
+-- 4.3.6 and later do not (the update to 5.0 sets the version, so this release never has the row)
+SELECT count(*) AS rollback_rows_now FROM sift.upgrade_check() WHERE advice ~ '4\.3\.6';
+ rollback_rows_now 
+-------------------
+                 0
+(1 row)
+
+BEGIN;
+SELECT s.stmt FROM unnest(ARRAY['3.1', '4.3', '4.3.5', '4.3.6', '4.3.7', '4.4']) WITH ORDINALITY v(ver, n),
+	LATERAL (VALUES (1, format('UPDATE pg_extension SET extversion = %L WHERE extname = ''pg_sift''', v.ver)),
+					(2, format('SELECT %L AS extversion, object, kind, status, advice ~ ''every node \(standbys first\) before moving to 5\.0'' AS says_install FROM sift.upgrade_check() WHERE advice ~ ''4\.3\.6''', v.ver))) s(step, stmt)
+ORDER BY v.n, s.step \gexec
+UPDATE pg_extension SET extversion = '3.1' WHERE extname = 'pg_sift'
+SELECT '3.1' AS extversion, object, kind, status, advice ~ 'every node \(standbys first\) before moving to 5\.0' AS says_install FROM sift.upgrade_check() WHERE advice ~ '4\.3\.6'
+ extversion | object  |  kind   | status | says_install 
+------------+---------+---------+--------+--------------
+ 3.1        | pg_sift | version | warn   | t
+(1 row)
+
+UPDATE pg_extension SET extversion = '4.3' WHERE extname = 'pg_sift'
+SELECT '4.3' AS extversion, object, kind, status, advice ~ 'every node \(standbys first\) before moving to 5\.0' AS says_install FROM sift.upgrade_check() WHERE advice ~ '4\.3\.6'
+ extversion | object  |  kind   | status | says_install 
+------------+---------+---------+--------+--------------
+ 4.3        | pg_sift | version | warn   | t
+(1 row)
+
+UPDATE pg_extension SET extversion = '4.3.5' WHERE extname = 'pg_sift'
+SELECT '4.3.5' AS extversion, object, kind, status, advice ~ 'every node \(standbys first\) before moving to 5\.0' AS says_install FROM sift.upgrade_check() WHERE advice ~ '4\.3\.6'
+ extversion | object  |  kind   | status | says_install 
+------------+---------+---------+--------+--------------
+ 4.3.5      | pg_sift | version | warn   | t
+(1 row)
+
+UPDATE pg_extension SET extversion = '4.3.6' WHERE extname = 'pg_sift'
+SELECT '4.3.6' AS extversion, object, kind, status, advice ~ 'every node \(standbys first\) before moving to 5\.0' AS says_install FROM sift.upgrade_check() WHERE advice ~ '4\.3\.6'
+ extversion | object | kind | status | says_install 
+------------+--------+------+--------+--------------
+(0 rows)
+
+UPDATE pg_extension SET extversion = '4.3.7' WHERE extname = 'pg_sift'
+SELECT '4.3.7' AS extversion, object, kind, status, advice ~ 'every node \(standbys first\) before moving to 5\.0' AS says_install FROM sift.upgrade_check() WHERE advice ~ '4\.3\.6'
+ extversion | object | kind | status | says_install 
+------------+--------+------+--------+--------------
+(0 rows)
+
+UPDATE pg_extension SET extversion = '4.4' WHERE extname = 'pg_sift'
+SELECT '4.4' AS extversion, object, kind, status, advice ~ 'every node \(standbys first\) before moving to 5\.0' AS says_install FROM sift.upgrade_check() WHERE advice ~ '4\.3\.6'
+ extversion | object | kind | status | says_install 
+------------+--------+------+--------+--------------
+(0 rows)
+
+ROLLBACK;
 -- an index built by this release has no word cut at 255 bytes: nothing is left to REINDEX
 SELECT kind, object, required FROM sift.upgrade_commands() WHERE object::text ~ '^up_';
  kind | object | required 

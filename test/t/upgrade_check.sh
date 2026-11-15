@@ -12,7 +12,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 132
+plan 138
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -241,8 +241,16 @@ out=$(uc old); rc=$?
 check "an extension older than the library warns with the update, and that the library writes its formats before it" grep -q -E '^warn +pg_sift +version +extension 3\.1, library [0-9.]+ +ALTER EXTENSION pg_sift UPDATE\. The library writes its formats before the update runs' <<<"$out"
 check "the indexes of the older SQL are read" test "$(grep -c -E '^ok +docs_(idx|col) ' <<<"$out")" == 2
 check "an older extension exits 0, and 1 with --strict" test "$rc$(uc --strict old >/dev/null; echo $?)" == 01
+check "an extension older than 4.3.6 warns (no blocker) to install 4.3.6 on every node first, so that a 4.x library refuses a 5.0 index by format" grep -q -E '^warn +pg_sift +version +extension 3\.1 is older than 4\.3\.6 +install 4\.3\.6 on every node \(standbys first\) before moving to 5\.0, .*refuses a 5\.0 index with the format message instead of reporting the index as corrupted' <<<"$out"
 q old "ALTER EXTENSION pg_sift UPDATE" >/dev/null
 check "after the update the version is ok" grep -q -E '^ok +pg_sift +version +extension [0-9.]+, library [0-9.]+ *$' <<<"$(uc old)"
+current=$(q old "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")
+for v in 4.3 4.3.5 4.3.6 4.3.7; do
+	q old "UPDATE pg_extension SET extversion = '$v' WHERE extname = 'pg_sift'" >/dev/null
+	check "extension $v: the 4.3.6 row is $([[ $v < 4.3.6 ]] && echo present || echo absent)" test "$(uc old | grep -c 'older than 4\.3\.6')" == "$([[ $v < 4.3.6 ]] && echo 1 || echo 0)"
+done
+q old "UPDATE pg_extension SET extversion = '$current' WHERE extname = 'pg_sift'" >/dev/null
+check "extension $current (this release): no 4.3.6 row" test "$(uc old | grep -c '4\.3\.6')" == 0
 check "a database without pg_sift is skipped" grep -q 'no pg_sift, skipped' <<<"$(uc postgres)"
 check "--all checks every database that has pg_sift" test "$(uc --all | grep -c '^== ')" == 4
 

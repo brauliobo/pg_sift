@@ -53,6 +53,12 @@ BEGIN
 		status := 'ok'; advice := NULL;
 	END IF;
 	RETURN NEXT;
+	-- 4.3.6 is the first 4.x release that refuses what 5.0 wrote in a metapage with the format message; an older one calls the sound index corrupted
+	IF string_to_array(ext, '.')::int[] < ARRAY[4, 3, 6] THEN
+		detected := format('extension %s is older than 4.3.6', ext); status := 'warn';
+		advice := 'install 4.3.6 on every node (standbys first) before moving to 5.0, so that a rollback or a standby that is not upgraded yet refuses a 5.0 index with the format message instead of reporting the index as corrupted';
+		RETURN NEXT;
+	END IF;
 
 	FOR r IN SELECT c.oid::regclass::text AS rel, c.oid AS relid, am.amname, c.reloptions AS opts
 			 FROM pg_class c JOIN pg_am am ON am.oid = c.relam
