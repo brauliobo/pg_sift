@@ -163,11 +163,12 @@ BEGIN
 
 	-- an event trigger calls a function that only the library of the release that added it has (sift_table_paths_drop is 3.2's): with an older library the statement it
 	-- fires on fails in every session of the database. 3.3: ALTER TABLE and CREATE TRIGGER (table_ddl_check); 5.0: CREATE INDEX (col_build_lock) and every DROP of an index
-	-- (_col_value_store_sql_drop calls the 5.0 function that drops an unused value store) and every ALTER TABLE (col_names_follow, the names that follow a rename)
+	-- (_col_value_store_sql_drop calls the 5.0 function that drops an unused value store) and every ALTER TABLE (col_names_follow and col_names_before, the names that follow a rename; _col_names_sql_drop, the rows of the tables that went)
 	IF tgt IS NOT NULL THEN
 		FOR r IN SELECT e.evtname::text AS name, v.since, v.fails FROM pg_event_trigger e JOIN pg_proc p ON p.oid = e.evtfoid
 				 JOIN (VALUES ('table_ddl_check', '3.3', 'ALTER TABLE and CREATE TRIGGER'), ('col_build_lock', '5.0', 'CREATE INDEX'),
-							  ('_col_value_store_sql_drop', '5.0', 'DROP INDEX'), ('col_names_follow', '5.0', 'ALTER TABLE')) v(fn, since, fails) ON v.fn = p.proname
+							  ('_col_value_store_sql_drop', '5.0', 'DROP INDEX'), ('_col_names_sql_drop', '5.0', 'DROP'), ('col_names_follow', '5.0', 'ALTER TABLE'),
+							  ('col_names_before', '5.0', 'ALTER TABLE')) v(fn, since, fails) ON v.fn = p.proname
 				 WHERE e.evtenabled <> 'D' AND p.pronamespace = 'sift'::regnamespace AND string_to_array(tgt, '.')::int[] < string_to_array(v.since, '.')::int[] ORDER BY 1
 		LOOP
 			object := r.name; kind := 'trigger'; detected := format('enabled, its function is in the %s library only', r.since); status := 'blocker';

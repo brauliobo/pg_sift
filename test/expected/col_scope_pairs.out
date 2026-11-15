@@ -23,13 +23,13 @@ CREATE TABLE other_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL);
 CREATE TABLE text_source (id int, label text, at timestamptz);
 SELECT sift.scope_refresh_pairs('scope_pairs', 'three_columns', 'key');
 ERROR:  scope_refresh_pairs: "three_columns" must have two columns, the member and the scope key
-CONTEXT:  PL/pgSQL function sift.scope_refresh_pairs(regclass,regclass,text,bigint[],bigint[]) line 8 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_refresh_pairs(regclass,regclass,text,bigint[],bigint[]) line 9 at RAISE
 SELECT sift.scope_refresh_pairs('other_pairs', 'visible_dim_a', 'key');
 ERROR:  scope_refresh_pairs: table public.other_pairs has no columns dim_a_id, tenant_id
-CONTEXT:  PL/pgSQL function sift.scope_refresh_pairs(regclass,regclass,text,bigint[],bigint[]) line 17 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_refresh_pairs(regclass,regclass,text,bigint[],bigint[]) line 18 at RAISE
 SELECT sift.scope_refresh_pairs('scope_pairs', 'visible_dim_a', 'group');
 ERROR:  scope_refresh_pairs: by is "group", it must be 'member', 'key' or 'pair'
-CONTEXT:  PL/pgSQL function sift.scope_refresh_pairs(regclass,regclass,text,bigint[],bigint[]) line 11 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_refresh_pairs(regclass,regclass,text,bigint[],bigint[]) line 12 at RAISE
 SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'visible_dim_a', 'key', 'tenant_id');
 ERROR:  scope_follow_pairs: "public.visible_dim_a" is not a table
 CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 8 at RAISE

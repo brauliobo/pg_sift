@@ -277,6 +277,19 @@ sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags)
 	return written;
 }
 
+static void
+set_layout_hash(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	meta->analyzer_hash = *(uint32 *) arg;
+}
+
+/* The hash the segments of the index are written for, once the layout has been given other names (a renamed column): the leaves are the same, so no segment is written again */
+void
+sift_store_rekey_layout(Relation index, uint32 hash)
+{
+	sift_dir_update(index, &(SiftDirChange) {.fn = set_layout_hash,.arg = &hash,.extra = InvalidBuffer});
+}
+
 Buffer
 sift_dir_pin(Relation index)
 {

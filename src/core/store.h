@@ -168,6 +168,7 @@ sift_dir_bytes(const SiftDirSnapshot *dir)
 extern void sift_dir_read(Relation index, SiftDirSnapshot *snap);
 extern void sift_dir_read_segs(Relation index, SiftDirSnapshot *snap);
 extern bool sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags);
+extern void sift_store_rekey_layout(Relation index, uint32 hash);
 
 /*
  * The directory's version through a pinned directory buffer, without its content lock: for a reader that compares it with a version it

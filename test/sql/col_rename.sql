@@ -64,12 +64,30 @@ ALTER TABLE rn RENAME COLUMN id TO rn_id;
 SELECT * FROM rn_state('rn_col');
 ALTER TABLE rn RENAME COLUMN rn_id TO id;
 
--- the leaves of these are kept under the name of their column
+-- the leaves of these are kept under the name of their column (the lengths of an array, the paths of a document): the metapage takes the names the index has now and the segments keep the
+-- ones they were written with, so the rename needs no rebuild, and a segment written after it merges with the older ones
+CREATE FUNCTION rn_leaves(idx regclass) RETURNS text LANGUAGE sql AS $$ SELECT string_agg(path, ',' ORDER BY leaf) FROM sift.col_leaves(idx) WHERE path <> '' $$;
+SELECT rn_leaves('rn_arr') AS arr_leaves, rn_leaves('rn_json') AS json_leaves;
 ALTER TABLE rn RENAME COLUMN tags TO labels;
 ALTER TABLE rn RENAME COLUMN doc TO document;
 SELECT attname FROM pg_attribute WHERE attrelid = 'rn'::regclass AND attnum > 0 AND NOT attisdropped ORDER BY attnum;
+SELECT rn_leaves('rn_arr') AS arr_leaves, rn_leaves('rn_json') AS json_leaves;
 SELECT * FROM rn_state('rn_arr');
-SELECT count(*) FROM rn WHERE tags = ARRAY[1];
+SELECT * FROM rn_state('rn_json');
+SELECT count(*) FROM rn WHERE labels = ARRAY[1];
+SELECT sift_helpers.agg_equals_normal_all('SELECT document -> ''k'' AS k, count(*) FROM rn GROUP BY 1') AS same_paths_read;
+INSERT INTO rn SELECT 4000 + g, 'r2', g % 20, date '2025-12-01', g, ARRAY[2], jsonb_build_object('k', 7) FROM generate_series(1, 100) g;
+SELECT sift.col_promote('rn_arr') >= 0 AS arr_promoted, sift.col_promote('rn_json') >= 0 AS json_promoted;
+SELECT count(*) AS arr_segments FROM sift.col_segments('rn_arr') WHERE kind = 'immutable';
+SELECT sift.col_merge('rn_arr', true) >= 0 AS arr_merged, sift.col_merge('rn_json', true) >= 0 AS json_merged;
+SELECT count(*) AS arr_segments FROM sift.col_segments('rn_arr') WHERE kind = 'immutable';
+SELECT * FROM rn_state('rn_arr');
+SELECT * FROM rn_state('rn_json');
+SELECT sift_helpers.agg_equals_normal_all('SELECT document -> ''k'' AS k, count(*) FROM rn GROUP BY 1') AS same_paths_read_after_merge;
+SELECT count(*) FROM rn WHERE labels = ARRAY[2];
+SELECT rn_leaves('rn_arr') AS arr_leaves, rn_leaves('rn_json') AS json_leaves;
+REINDEX INDEX rn_arr;
+SELECT * FROM rn_state('rn_arr');
 
 -- a column of a partitioned table: the index of the partition follows too
 CREATE TABLE rp (id int, grp int, created date, v int) PARTITION BY RANGE (id);
@@ -157,6 +175,6 @@ DROP TABLE fl_pairs2, rp, rn;
 DROP VIEW fl_view;
 DROP TABLE fl_s.fl_src2;
 DROP SCHEMA fl_s;
-DROP FUNCTION fl_equal(regclass, regclass), rn_state(regclass), rn_reads_as(text, text, text);
+DROP FUNCTION fl_equal(regclass, regclass), rn_state(regclass), rn_reads_as(text, text, text), rn_leaves(regclass);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

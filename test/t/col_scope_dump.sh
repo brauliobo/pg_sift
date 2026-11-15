@@ -8,7 +8,7 @@
 . "$(dirname "$0")/lib.bash"
 . "$(dirname "$0")/lib_twohop.bash"
 
-plan 25
+plan 26
 node_init scd 51 "$TWOHOP_CONF"
 node_start scd || bail "start failed"
 D=$(dir scd)
@@ -171,5 +171,12 @@ for run in serial parallel; do
 	check "pg_restore, $run: no error, the index with the options of the source, equal reads, and its first write" test "$(errors <<<"$out")" == 0 -a "$(dbq rn1 "$RN")" == "$RN_WANT" -a \
 		"$(dbq rn1 "INSERT INTO rn VALUES (5000, 'r1', 3, '2025-07-01', 5)" "SELECT sift.col_verify('rn_col')" "SELECT count(*) FROM rn WHERE customer_id = 3 AND created_at > '2025-06-01'" | tr '\n' ' ')" == " 45 "
 done
-check "a column of an array, which the segments keep under its name, is not renamed under the index" test "$(dbq rsrc "ALTER TABLE rn ADD COLUMN tags int[]" "CREATE INDEX rn_arr ON rn USING sift_col (rn_id, tags)" "ALTER TABLE rn RENAME COLUMN tags TO labels" 2>&1 | grep -c 'cannot rename column "tags"')" == 1
+# a column whose leaves the segments keep under its name (an array with lengths) is renamed under a live index, which then restores from the dump like the others
+dbq rsrc "ALTER TABLE rn ADD COLUMN tags int[]" "UPDATE rn SET tags = ARRAY[rn_id % 3, rn_id % 5]" "CREATE INDEX rn_arr ON rn USING sift_col (rn_id, tags)" "ALTER TABLE rn RENAME COLUMN tags TO labels" >/dev/null
+ARR="SELECT (SELECT count(*) FROM rn WHERE labels = ARRAY[1, 1]) || ' ' || (SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute WHERE attrelid = 'rn_arr'::regclass)"
+check "a column of an array, which the segments keep under its name, is renamed under the index: it verifies and reads as the table does" test "$(dbq rsrc "SELECT sift.col_verify('rn_arr', true)" 2>&1)" == "" \
+	-a "$(dbq rsrc "$ARR")" == "$(dbq rsrc "SELECT count(*) FROM rn WHERE rn_id % 3 = 1 AND rn_id % 5 = 1") rn_id,labels"
+pg_dump "${S[@]}" -Fc -f "$D/arr.custom" rsrc
+fresh rn2
+check "... and its dump restores the index under the new name" test "$(pg_restore "${S[@]}" -d rn2 "$D/arr.custom" 2>&1 | errors)" == 0 -a "$(dbq rn2 "$ARR")" == "$(dbq rsrc "$ARR")" -a "$(dbq rn2 "SELECT sift.col_verify('rn_arr', true)" 2>&1)" == ""
 finish

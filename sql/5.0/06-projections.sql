@@ -139,7 +139,7 @@ DECLARE
 	n  text;
 	ix text;
 BEGIN
-	IF TG_OP = 'UPDATE' AND ROW(OLD.name, OLD.source, OLD.leaves, OLD.filter) IS NOT DISTINCT FROM ROW(NEW.name, NEW.source, NEW.leaves, NEW.filter) THEN RETURN NEW; END IF;
+	IF TG_OP = 'UPDATE' AND (sift._names_following() OR ROW(OLD.name, OLD.source, OLD.leaves, OLD.filter) IS NOT DISTINCT FROM ROW(NEW.name, NEW.source, NEW.leaves, NEW.filter)) THEN RETURN NEW; END IF;
 	FOR n IN SELECT p.name FROM sift.projections p WHERE TG_OP = 'TRUNCATE' OR p.name = OLD.name LOOP
 		SELECT string_agg(i::regclass::text, ', ') INTO ix FROM sift.projection_indexes(n) i;
 		IF ix IS NOT NULL THEN

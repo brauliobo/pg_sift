@@ -1,0 +1,206 @@
+-- What a sift_col index keeps as text under the name of another table or column follows the name when it changes (src/col/names.c): the options connect and scope (the column of the
+-- index, the parent or pairs table, its columns, the btree they use), the paths of a document column, order_layout, and the definitions of sift.projections. pg_dump writes these
+-- options and a restore resolves them again, so a name left behind loses the index. Each rename here is checked as the dump and the restore see it: the definition of the index
+-- (pg_get_indexdef, with its options) is run again on the tables as they are, and the answers are those of the plan without the index.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+
+CREATE FUNCTION nt_opt(idx regclass, key text) RETURNS text LANGUAGE sql STABLE AS
+$$ SELECT substr(o, length(key) + 2) FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = idx AND starts_with(o, key || '=') $$;
+-- a dump and a restore of the index: its definition run again; true when the same options come back
+CREATE FUNCTION nt_redo(idx regclass) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE
+	def    text   := pg_get_indexdef(idx);
+	name   text   := idx::text;
+	before text[] := (SELECT reloptions FROM pg_class WHERE oid = idx);
+BEGIN
+	EXECUTE format('DROP INDEX %s', idx);
+	EXECUTE def;
+	RETURN before = (SELECT reloptions FROM pg_class WHERE oid = name::regclass);
+END $$;
+
+-- connect: the column of the child index, the key of the parent, the parent table and its schema
+CREATE TABLE nt_dim (id int PRIMARY KEY, grp int NOT NULL, label text) WITH (autovacuum_enabled = off);
+INSERT INTO nt_dim SELECT i, i % 7, 'l' || i FROM generate_series(1, 300) i;
+CREATE INDEX nt_dim_col ON nt_dim USING sift_col (id, grp, label);
+CREATE TABLE nt_fact (id int PRIMARY KEY, dim_id int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = off);
+INSERT INTO nt_fact SELECT i, 1 + i % 300, i FROM generate_series(1, 3000) i;
+CREATE INDEX nt_fact_col ON nt_fact USING sift_col (id, dim_id, amount) WITH (connect = 'dim_id -> nt_dim(id)');
+ANALYZE nt_dim, nt_fact;
+SELECT nt_opt('nt_fact_col', 'connect') AS connect;
+ALTER TABLE nt_fact RENAME COLUMN dim_id TO dim_ref;
+SELECT nt_opt('nt_fact_col', 'connect') AS child_column_renamed;
+ALTER TABLE nt_dim RENAME COLUMN id TO dim_pk;
+SELECT nt_opt('nt_fact_col', 'connect') AS parent_key_renamed;
+ALTER TABLE nt_dim RENAME TO nt_dims;
+SELECT nt_opt('nt_fact_col', 'connect') AS parent_renamed;
+CREATE SCHEMA nt_s;
+ALTER TABLE nt_dims SET SCHEMA nt_s;
+SELECT nt_opt('nt_fact_col', 'connect') AS parent_moved;
+SELECT sift.col_verify('nt_fact_col');
+SELECT nt_redo('nt_fact_col') AS restored_alike;
+SELECT sift_helpers.agg_equals_normal_all('SELECT d.grp, count(*), sum(f.amount) FROM nt_fact f JOIN nt_s.nt_dims d ON d.dim_pk = f.dim_ref GROUP BY d.grp') AS same_join;
+-- the parent comes back to the schema of the child, then the child moves away: the name that was unqualified keeps the schema it had
+ALTER TABLE nt_s.nt_dims SET SCHEMA public;
+SELECT nt_opt('nt_fact_col', 'connect') AS parent_back;
+ALTER TABLE nt_fact SET SCHEMA nt_s;
+SELECT nt_opt('nt_s.nt_fact_col', 'connect') AS child_moved;
+SELECT sift.col_verify('nt_s.nt_fact_col');
+SELECT nt_redo('nt_s.nt_fact_col') AS moved_restored_alike;
+DROP TABLE nt_s.nt_fact;
+DROP TABLE nt_dims;
+
+-- scope: the column of the index, the pairs relation and its columns, the btree it uses, the columns it keeps
+CREATE TABLE nt_pairs (dim_b_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_b_id, tenant_id)) WITH (autovacuum_enabled = off);
+INSERT INTO nt_pairs SELECT i, 1 + i % 5 FROM generate_series(1, 400) i;
+CREATE INDEX nt_pairs_journal ON nt_pairs USING sift_col (dim_b_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE TABLE nt_events (id int PRIMARY KEY, dim_b_id int NOT NULL, created_at timestamptz NOT NULL, kind int NOT NULL, value_num int NOT NULL)
+	WITH (autovacuum_enabled = off);
+INSERT INTO nt_events SELECT i, 1 + i % 400, timestamptz '2026-01-01' + i * interval '1 minute', i % 7, i FROM generate_series(1, 3000) i;
+CREATE INDEX nt_events_scope ON nt_events USING sift_col (id, dim_b_id, created_at, kind, value_num)
+	WITH (scope = 'tenant_id: dim_b_id -> nt_pairs(dim_b_id, tenant_id) using nt_pairs_pkey cols(kind, value_num)');
+ANALYZE nt_pairs, nt_events;
+SELECT nt_opt('nt_events_scope', 'scope') AS scope;
+ALTER TABLE nt_events RENAME COLUMN dim_b_id TO member_ref;
+ALTER TABLE nt_events RENAME COLUMN kind TO category;
+SELECT nt_opt('nt_events_scope', 'scope') AS fact_columns_renamed;
+ALTER TABLE nt_pairs RENAME COLUMN dim_b_id TO pair_member;
+ALTER TABLE nt_pairs RENAME COLUMN tenant_id TO pair_scope;
+SELECT nt_opt('nt_events_scope', 'scope') AS pair_columns_renamed;
+ALTER TABLE nt_pairs RENAME TO nt_grants;
+ALTER INDEX nt_pairs_pkey RENAME TO nt_grants_btree;
+SELECT nt_opt('nt_events_scope', 'scope') AS pairs_and_btree_renamed;
+ALTER TABLE nt_grants SET SCHEMA nt_s;
+SELECT nt_opt('nt_events_scope', 'scope') AS pairs_moved;
+SELECT sift.col_verify('nt_events_scope');
+SELECT nt_redo('nt_events_scope') AS restored_alike;
+SELECT sift_helpers.agg_equals_normal_all('SELECT category, count(*), sum(value_num) FROM nt_events WHERE member_ref IN (SELECT pair_member FROM nt_s.nt_grants WHERE pair_scope = 2) GROUP BY category')
+	AS same_scope_read;
+DROP TABLE nt_events;
+DROP TABLE nt_s.nt_grants;
+
+-- the options that list the columns of the index: paths (the column heads each path), rollup_leaves, order_layout, compression
+CREATE TABLE nt_doc (id int PRIMARY KEY, region text, created date, tags int[], doc jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO nt_doc SELECT i, 'r' || i % 4, date '2025-01-01' + i % 200, ARRAY[i % 3, i % 5],
+	jsonb_build_object('k', i % 9, 's', 'v' || i % 3, 'items', jsonb_build_array(jsonb_build_object('kind', 'a' || i % 3), jsonb_build_object('kind', 'b'))) FROM generate_series(1, 2000) i;
+CREATE INDEX nt_doc_col ON nt_doc USING sift_col (id, region, created, tags, doc)
+	WITH (paths = 'doc.k int4, doc.s text, doc.items[]{kind text}', order_layout = 'compact: created; whole: id', compression = 'auto; region=zstd:3', rollup_leaves = 'doc.items[].kind');
+ANALYZE nt_doc;
+SELECT nt_opt('nt_doc_col', k) AS value, k AS option FROM unnest(ARRAY['paths', 'order_layout', 'compression', 'rollup_leaves']) k;
+ALTER TABLE nt_doc RENAME COLUMN doc TO document;
+ALTER TABLE nt_doc RENAME COLUMN created TO created_on;
+ALTER TABLE nt_doc RENAME COLUMN region TO area;
+SELECT nt_opt('nt_doc_col', k) AS value, k AS option FROM unnest(ARRAY['paths', 'order_layout', 'compression', 'rollup_leaves']) k;
+SELECT sift.col_verify('nt_doc_col');
+SELECT nt_redo('nt_doc_col') AS restored_alike;
+SELECT sift_helpers.agg_equals_normal_all('SELECT document -> ''k'' AS k, count(*) FROM nt_doc GROUP BY 1') AS same_paths_read;
+DROP TABLE nt_doc;
+
+-- projections: the table is kept by identity, the columns and the filter by name
+CREATE TABLE nt_p (id int PRIMARY KEY, region text, cust int, created date, amount int) WITH (autovacuum_enabled = off);
+INSERT INTO nt_p SELECT i, 'r' || i % 4, i % 20, date '2025-01-01' + i % 200, i FROM generate_series(1, 1000) i;
+SELECT sift.projection_create('nt_by_cust', 'nt_p', ARRAY['cust', 'region', 'lower(region)', 'amount'], rollups => 'cust, region',
+							  filter => $$region <> 'r0' AND created > date '2025-02-01'$$);
+SELECT sift.projection_index('nt_p_col', ARRAY['nt_by_cust']);
+SELECT name, source, leaves, rollups, filter, canonical, canonical_filter FROM sift.projections WHERE name = 'nt_by_cust';
+ALTER TABLE nt_p RENAME COLUMN cust TO customer;
+ALTER TABLE nt_p RENAME COLUMN region TO area;
+ALTER TABLE nt_p RENAME COLUMN created TO created_on;
+SELECT name, source, leaves, rollups, filter, canonical, canonical_filter FROM sift.projections WHERE name = 'nt_by_cust';
+SELECT projection, state, reason FROM sift.projection_status WHERE projection = 'nt_by_cust';
+ALTER TABLE nt_p RENAME TO nt_q;
+ALTER TABLE nt_q SET SCHEMA nt_s;
+SELECT name, source FROM sift.projections WHERE name = 'nt_by_cust';
+SELECT projection, state, reason FROM sift.projection_status WHERE projection = 'nt_by_cust';
+DROP TABLE nt_s.nt_q;
+SELECT count(*) AS projections_of_dropped_table FROM sift.projections WHERE name = 'nt_by_cust';
+
+-- the rows of sift.scope_follows and sift.projections for a table that is dropped go with it
+CREATE TABLE nt_src (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int NOT NULL) WITH (autovacuum_enabled = off);
+CREATE VIEW nt_view AS SELECT DISTINCT dim_a_id, tenant_id FROM nt_src;
+CREATE TABLE nt_prs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id)) WITH (autovacuum_enabled = off);
+INSERT INTO nt_src (tenant_id, dim_a_id) SELECT 1 + g % 4, g FROM generate_series(1, 40) g;
+SELECT inserted FROM sift.scope_follow_pairs('nt_prs', 'nt_view', 'nt_src', 'key', 'tenant_id');
+SELECT count(*) AS follows FROM sift.scope_follows;
+DROP VIEW nt_view;
+SELECT count(*) AS follows_after_view_dropped, (SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'sift\_scope\_%') AS triggers FROM sift.scope_follows;
+INSERT INTO nt_src (tenant_id, dim_a_id) VALUES (9, 90);
+CREATE VIEW nt_view AS SELECT DISTINCT dim_a_id, tenant_id FROM nt_src;
+SELECT inserted FROM sift.scope_follow_pairs('nt_prs', 'nt_view', 'nt_src', 'key', 'tenant_id');
+DROP TABLE nt_src CASCADE;
+SELECT count(*) AS follows_after_source_dropped FROM sift.scope_follows;
+CREATE SCHEMA nt_d;
+CREATE TABLE nt_d.src (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int NOT NULL);
+CREATE VIEW nt_d.v AS SELECT DISTINCT dim_a_id, tenant_id FROM nt_d.src;
+CREATE TABLE nt_d.prs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id));
+SELECT inserted FROM sift.scope_follow_pairs('nt_d.prs', 'nt_d.v', 'nt_d.src', 'key', 'tenant_id');
+CREATE TABLE nt_d.pt (id int PRIMARY KEY, a int);
+SELECT sift.projection_create('nt_d_proj', 'nt_d.pt', ARRAY['a']);
+SELECT (SELECT count(*) FROM sift.scope_follows) AS follows, (SELECT count(*) FROM sift.projections) AS projections;
+DROP SCHEMA nt_d CASCADE;
+SELECT (SELECT count(*) FROM sift.scope_follows) AS follows, (SELECT count(*) FROM sift.projections) AS projections;
+DROP TABLE nt_prs;
+
+-- the pair table and the view of a follow are renamed in their columns: the refresh finds the columns by what the follow recorded
+CREATE TABLE nt_src (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int NOT NULL) WITH (autovacuum_enabled = off);
+CREATE VIEW nt_view AS SELECT DISTINCT dim_a_id, tenant_id FROM nt_src;
+CREATE TABLE nt_prs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id)) WITH (autovacuum_enabled = off);
+INSERT INTO nt_src (tenant_id, dim_a_id) SELECT 1 + g % 4, g FROM generate_series(1, 40) g;
+SELECT inserted FROM sift.scope_follow_pairs('nt_prs', 'nt_view', 'nt_src', 'key', 'tenant_id');
+ALTER TABLE nt_prs RENAME COLUMN dim_a_id TO member;
+ALTER TABLE nt_prs RENAME COLUMN tenant_id TO scope_key;
+INSERT INTO nt_src (tenant_id, dim_a_id) VALUES (7, 70), (7, 71);
+DELETE FROM nt_src WHERE dim_a_id = 3;
+SELECT count(*) AS pairs, count(*) FILTER (WHERE scope_key = 7) AS new_scope FROM nt_prs;
+ALTER VIEW nt_view RENAME COLUMN dim_a_id TO mem;
+ALTER VIEW nt_view RENAME COLUMN tenant_id TO sk;
+INSERT INTO nt_src (tenant_id, dim_a_id) VALUES (8, 80);
+UPDATE nt_src SET tenant_id = 9 WHERE dim_a_id = 70;
+SELECT count(*) AS pairs, count(*) FILTER (WHERE scope_key = 8) AS scope_8, count(*) FILTER (WHERE scope_key = 9) AS scope_9 FROM nt_prs;
+SELECT (SELECT count(*) FROM (SELECT DISTINCT mem, sk FROM nt_view) v) = (SELECT count(*) FROM nt_prs) AS same_count;
+SELECT count(*) AS refreshed_all FROM sift.scope_refresh_pairs('nt_prs', 'nt_view', 'key');
+SELECT sift.scope_unfollow_pairs('nt_prs');
+DROP VIEW nt_view;
+DROP TABLE nt_prs, nt_src;
+
+-- by pair: the source table names the members too, and both of its columns are renamed
+CREATE TABLE nt_gs (id serial PRIMARY KEY, member int NOT NULL, grp int NOT NULL) WITH (autovacuum_enabled = off);
+CREATE VIEW nt_gv AS SELECT DISTINCT member, grp FROM nt_gs;
+CREATE TABLE nt_gp (member int NOT NULL, grp int NOT NULL, PRIMARY KEY (grp, member)) WITH (autovacuum_enabled = off);
+INSERT INTO nt_gs (member, grp) SELECT g, 1 + g % 3 FROM generate_series(1, 30) g;
+SELECT inserted FROM sift.scope_follow_pairs('nt_gp', 'nt_gv', 'nt_gs', 'pair', 'grp');
+ALTER TABLE nt_gs RENAME COLUMN member TO who;
+ALTER TABLE nt_gs RENAME COLUMN grp TO grp_id;
+ALTER TABLE nt_gp RENAME COLUMN member TO who_pair;
+INSERT INTO nt_gs (who, grp_id) VALUES (100, 1), (101, 2);
+DELETE FROM nt_gs WHERE who = 5;
+UPDATE nt_gs SET grp_id = 3 WHERE who = 6;
+SELECT source_member, source_column, member_column, key_column FROM sift.scope_follows;
+SELECT (SELECT count(*) FROM nt_gp) AS pairs, (SELECT count(*) FROM nt_gv) AS view_pairs, (SELECT count(*) FROM nt_gp WHERE who_pair = 6 AND grp = 3) AS moved;
+SELECT sift.scope_unfollow_pairs('nt_gp');
+DROP VIEW nt_gv;
+DROP TABLE nt_gp, nt_gs;
+
+-- a sift_table: the paths declared for a jsonb column and the order of its keys name columns too
+CREATE TABLE nt_t (id int, g int, doc jsonb) USING sift_table;
+INSERT INTO nt_t SELECT g, g % 9, jsonb_build_object('k', g % 5) FROM generate_series(1, 2000) g;
+SELECT sift.table_set_paths('nt_t', 'doc', 'doc.k int4');
+SELECT sift.table_set_option('nt_t', 'key_order', 'g, id');
+VACUUM nt_t;
+SELECT attname, spec FROM sift.table_paths WHERE relid = 'nt_t'::regclass;
+SELECT name, value FROM sift.table_option_values WHERE rel::oid = 'nt_t'::regclass::oid;
+ALTER TABLE nt_t RENAME COLUMN doc TO payload;
+ALTER TABLE nt_t RENAME COLUMN g TO grp;
+SELECT attname, spec FROM sift.table_paths WHERE relid = 'nt_t'::regclass;
+SELECT name, value FROM sift.table_option_values WHERE rel::oid = 'nt_t'::regclass::oid;
+SELECT sift_helpers.agg_equals_normal_all('SELECT payload -> ''k'' AS k, grp, count(*) FROM nt_t GROUP BY 1, 2') AS same_table_read;
+INSERT INTO nt_t SELECT 2000 + g, g % 9, jsonb_build_object('k', 7) FROM generate_series(1, 300) g;
+SELECT sift_helpers.agg_equals_normal_all('SELECT payload -> ''k'' AS k, grp, count(*) FROM nt_t GROUP BY 1, 2') AS same_table_read_after_insert;
+DROP TABLE nt_t;
+
+DROP SCHEMA nt_s CASCADE;
+DROP FUNCTION nt_opt(regclass, text), nt_redo(regclass);
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

@@ -187,9 +187,9 @@ $fn$;
 -- the UPDATE of swept_at, after the refresh.
 CREATE FUNCTION sift._require_follow(f sift.scope_follows) RETURNS void LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-	PERFORM sift._require_owner(to_regclass(f.source));
-	PERFORM sift._require_owner(to_regclass(f.pairs));
-	PERFORM sift._require_select(to_regclass(f.definition));
+	PERFORM sift._require_owner(f.source);
+	PERFORM sift._require_owner(f.pairs);
+	PERFORM sift._require_select(f.definition);
 END $$;
 COMMENT ON FUNCTION sift._require_follow(sift.scope_follows) IS 'Internal: errors unless the role that called the outermost function owns the source and the pairs of a followed table and may read its view';
 
@@ -197,8 +197,14 @@ CREATE OR REPLACE FUNCTION sift._config_guard() RETURNS trigger LANGUAGE plpgsql
 DECLARE
 	r jsonb;
 BEGIN
+	-- the event trigger that follows a rename writes the rows of the table that was renamed, which its owner was let rename
+	IF sift._names_following() THEN
+		RETURN CASE TG_OP WHEN 'DELETE' THEN OLD ELSE NEW END;
+	END IF;
 	FOREACH r IN ARRAY CASE TG_OP WHEN 'INSERT' THEN ARRAY[to_jsonb(NEW)] WHEN 'DELETE' THEN ARRAY[to_jsonb(OLD)] ELSE ARRAY[to_jsonb(OLD), to_jsonb(NEW)] END LOOP
-		IF TG_OP = 'DELETE' AND to_regclass(r ->> 'source') IS NULL THEN
+		-- (the name of a table that is gone prints as its number, which to_regclass reads as the oid)
+		IF TG_OP = 'DELETE' AND (NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = to_regclass(r ->> 'source')) OR (TG_TABLE_NAME = 'scope_follows' AND
+			(NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = to_regclass(r ->> 'pairs')) OR NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = to_regclass(r ->> 'definition'))))) THEN
 			CONTINUE;
 		END IF;
 		IF TG_TABLE_NAME = 'scope_follows' THEN
@@ -219,9 +225,9 @@ DECLARE
 	typ    text;
 BEGIN
 	inserted := 0; deleted := 0;
-	FOR f IN SELECT * FROM sift.scope_follows s WHERE s.pairs = sift.scope_qualified(scope_expire_pairs.pairs) AND s.expires IS NOT NULL ORDER BY s.source FOR UPDATE LOOP
+	FOR f IN SELECT * FROM sift.scope_follows s WHERE s.pairs = scope_expire_pairs.pairs AND s.expires IS NOT NULL ORDER BY s.source FOR UPDATE LOOP
 		PERFORM sift._require_follow(f);
-		SELECT format_type(a.atttypid, NULL) INTO typ FROM pg_attribute a WHERE a.attrelid = f.source::regclass AND a.attname = f.expires;
+		SELECT format_type(a.atttypid, NULL) INTO typ FROM pg_attribute a WHERE a.attrelid = f.source AND a.attname = f.expires;
 		EXECUTE sift.scope_names_sql(f, format('SELECT * FROM %s WHERE %I BETWEEN %L::%s AND %L::%s', f.source, f.expires, f.swept_at - overlap, typ, now(), typ)) INTO ids, keys;
 		SELECT * INTO r FROM sift.scope_refresh_named(f, ids, keys);
 		inserted := inserted + r.inserted; deleted := deleted + r.deleted;
