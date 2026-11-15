@@ -32,8 +32,10 @@ CREATE TABLE answers AS
 SELECT plan_of('SELECT count(*) FROM t WHERE v = 3') AS plan_before;
 
 CREATE TABLE healthy (id int, v int);
-CREATE INDEX healthy_idx ON healthy USING sift_col (id, v);
+CREATE INDEX healthy_idx ON healthy USING sift_col (id, v) WITH (track_changes = ctid);
 INSERT INTO healthy SELECT i, i % 7 FROM generate_series(1, 3000) i;
+UPDATE healthy SET v = v + 1 WHERE id <= 100;
+DELETE FROM healthy WHERE id > 2900;
 SELECT count(*) AS rows_written, (SELECT count(*) FROM sift.check('healthy_idx')) AS problems FROM healthy;
 DROP TABLE healthy;
 

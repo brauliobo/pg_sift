@@ -63,6 +63,8 @@ extern bool sift_damage_caught(const ErrorData *e);
 /* The work on the index ended because it is out of service: counted for sift.quarantine, and said once a minute with a WARNING */
 extern void sift_quarantine_stopped(Relation index, SiftSkipKind kind);
 extern bool sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded fn, void *arg);
+/* The guard's own subtransaction is starting, running or ending: the callbacks that write the rows a transaction holds do not take it for one of the user (it is the flush that started it) */
+extern bool sift_quarantine_guarding(void);
 
 /*
  * Where a scan opens, after it read the directory (meta_flags: the flags of its metapage): a plan made before the index left service is refused with SQLSTATE 40001, the one a
