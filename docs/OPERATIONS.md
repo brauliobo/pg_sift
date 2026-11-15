@@ -192,6 +192,15 @@ A session that already holds one file of pg_sift and meets another (a package up
 
 The steps, the order for standbys and the way back are in [UPGRADING.md](UPGRADING.md). `SELECT * FROM sift.build_info()` lists what the loaded library was built with (the version, PostgreSQL, the `lz4` and `zstd` it links, assertions): compare it across servers before moving a file-level backup, since a build without a codec cannot open chunks another server wrote with it.
 
+### After a rollback
+
+Install 4.3.6 on every node (standbys first) before moving to 5.0; `sift.upgrade_check()` warns while the extension is older. A 4.x library reading an index that a 5.0 server has touched answers by release:
+
+- **4.0.0 to 4.3.5** (as released): `sift index "x" is corrupted`, detail `Bad metapage (magic 0x53494654, 704 bytes)`. This means the metapage is longer than the library knows, not that the index is damaged: `sift.check()` and `amcheck` of the old node find nothing wrong. Do not repair it with `pg_surgery` or by editing the catalogs, which would damage a sound index. `REINDEX INDEX CONCURRENTLY <index>` with the old files rebuilds it from the table.
+- **4.3.6 and later**: the library keeps the bytes it does not know and reads the index, or refuses a segment in a format from 5.0 (a scope, strings in the shared store) with `index "x" has a segment of column format 1.45, this build reads 1.3 to 1.44`, hint `Use a newer pg_sift, or REINDEX.` The same `REINDEX` with the old files applies.
+
+The steps back are in [UPGRADING.md](UPGRADING.md#going-back-to-43).
+
 ## 7. Disk
 
 A merge or a rewrite writes its output before it frees its inputs, so plan the free space of the volume at about twice the index. `sift.col_space(index)` shows the blocks used, reusable and the point the file can be cut to (`shrink_to`); `sift.col_shrink_history(index)` says why the last cut left free blocks (`shrink_blocked_by`: `standby`, `lock` or `snapshot`, NULL when nothing blocks it) and when the file was last cut. The shared value stores (`<table>_<column>_sift_values`) grow with the strings they hold and are compacted by `VACUUM` or the maintenance worker when most of their codes are named by no segment ([COL-VSTORE.md](COL-VSTORE.md)); `SELECT * FROM sift.col_value_store_status` shows `garbage_pct`.

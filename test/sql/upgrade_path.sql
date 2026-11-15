@@ -34,6 +34,16 @@ SELECT object, kind, status, advice ~ '^ALTER EVENT TRIGGER .* DISABLE' AS says_
 SELECT pg_describe_object(classid, objid, objsubid) FROM pg_depend
 WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e' AND objid = 'sift.upgrade_check(text)'::regprocedure;
 
+-- an extension older than 4.3.6 (the first 4.x release whose library refuses a 5.0 metapage with the format message) gets a warning that is no blocker;
+-- 4.3.6 and later do not (the update to 5.0 sets the version, so this release never has the row)
+SELECT count(*) AS rollback_rows_now FROM sift.upgrade_check() WHERE advice ~ '4\.3\.6';
+BEGIN;
+SELECT s.stmt FROM unnest(ARRAY['3.1', '4.3', '4.3.5', '4.3.6', '4.3.7', '4.4']) WITH ORDINALITY v(ver, n),
+	LATERAL (VALUES (1, format('UPDATE pg_extension SET extversion = %L WHERE extname = ''pg_sift''', v.ver)),
+					(2, format('SELECT %L AS extversion, object, kind, status, advice ~ ''every node \(standbys first\) before moving to 5\.0'' AS says_install FROM sift.upgrade_check() WHERE advice ~ ''4\.3\.6''', v.ver))) s(step, stmt)
+ORDER BY v.n, s.step \gexec
+ROLLBACK;
+
 -- an index built by this release has no word cut at 255 bytes: nothing is left to REINDEX
 SELECT kind, object, required FROM sift.upgrade_commands() WHERE object::text ~ '^up_';
 
