@@ -735,10 +735,7 @@ sift_maint_register_worker_oid(Oid indexoid, const char *function, const char *s
 bool
 sift_maint_register_worker(Relation index, const char *function)
 {
-	if (sift_maint_register_worker_oid(RelationGetRelid(index), function, sift_worker_subject(index)))
-		return true;
-	sift_log_refused(index);
-	return false;
+	return sift_maint_register_worker_oid(RelationGetRelid(index), function, sift_worker_subject(index));
 }
 
 bool
@@ -772,18 +769,6 @@ sift_maint_busy(int max_active)
 		n += s->st_backendType == B_BACKEND && s->st_databaseid == MyDatabaseId && s->st_state == STATE_RUNNING;
 	}
 	return n > max_active;
-}
-
-static bool
-not_busy(void *max_active)
-{
-	return !sift_maint_busy(*(int *) max_active);
-}
-
-bool
-sift_maint_wait_quiet(int max_active)
-{
-	return sift_nap_until(not_busy, &max_active);
 }
 
 Oid

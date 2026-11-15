@@ -195,11 +195,9 @@ sift_col_track_dropping(Oid relid)
  * The libraries' background worker (sift_col_track_orphans_main) removes what the transaction could not: DROP TRIGGER takes the ACCESS EXCLUSIVE lock of the table, which waits for every
  * statement that holds it and keeps every new one waiting behind it, so a DROP INDEX CONCURRENTLY that took it would stop the table for as long as its longest reader (it waited for
  * those that began before it marked the index dead, and no longer). The transaction takes the lock only if it is free this instant (the table is often idle, that drop has just waited for it);
- * otherwise the triggers stay, with no index behind them (they do nothing, trigger_index), and the worker takes the lock for no longer than a moment at a time, until it has it.
+ * otherwise the triggers stay, with no index behind them (they do nothing, trigger_index), and the worker takes the lock for no longer than a moment, once: if it does not get it, the next statement that fires one of the triggers asks again (sift_col_track_orphan_fired).
  */
 #define ORPHAN_LOCK_TIMEOUT_MS	"20"
-#define ORPHAN_ROUNDS			300
-#define ORPHAN_NAP_MS			1000
 
 static void
 ask_orphans(TransactionId xid)
@@ -374,11 +372,9 @@ sift_col_track_orphans_main(Datum main_arg)
 	funcoid = sift_col_track_function(true);
 	CommitTransactionCommand();
 	MemoryContextSwitchTo(cx);
-	for (int round = 0; OidIsValid(funcoid) && round < ORPHAN_ROUNDS && !drop_orphans(funcoid, cx); round++)
-	{
-		sift_worker_nap(ORPHAN_NAP_MS);
-		CHECK_FOR_INTERRUPTS();
-	}
+	/* a table that stays busy is left to the next statement that fires one of its triggers (sift_col_track_orphan_fired): the worker does not wait connected for it */
+	if (OidIsValid(funcoid))
+		(void) drop_orphans(funcoid, cx);
 }
 
 /*

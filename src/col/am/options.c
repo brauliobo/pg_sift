@@ -349,8 +349,8 @@ sift_col_init(void)
 							"so the automatic rewrite waits for them once they reach this much (or half the index, when that is less): the file stands at the live bytes plus one pass meanwhile. 0: one pass does all of it.",
 							&sift_col_auto_merge_pass_mb, 1024, 0, MAX_KILOBYTES / 1024, PGC_SUSET, GUC_UNIT_MB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_active",
-							"Client backends of the database running a statement above which the automatic rewrite of a sift_col index waits for a quieter moment.",
-							"The worker looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again. 0: never waits.",
+							"Client backends of the database running a statement above which the automatic rewrite of a sift_col index is left for a quieter moment.",
+							"The worker ends at once, without holding its connection; the next VACUUM, read or write asks again. 0: never waits.",
 							&sift_col_auto_merge_max_active, 0, 0, 10000, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_partition_kb",
 							"Size of the segments the automatic rewrite of a sift_col index writes, which then rewrites only the ones the churn touched; 0 rewrites the whole index into one.",

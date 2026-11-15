@@ -9,8 +9,8 @@
  * A backend that inserts a row version into the index (an INSERT, or an UPDATE) looks at the statistics of the table once per naptime, and so does
  * a scan that checked many rows in the heap: when the rows changed since the last VACUUM (dead, or new) are CHURN_PCT
  * percent of the table, a worker is started. It vacuums as autovacuum's does (cost delay, SKIP_LOCKED), at most once per five
- * naptimes, or ten times the average VACUUM of the table where PostgreSQL keeps it, and stays until the table is clean, so that the end of a burst of
- * changes is vacuumed too. The VACUUM calls the index back: the dead rows are marked and the index rewritten.
+ * naptimes, or ten times the average VACUUM of the table where PostgreSQL keeps it, and ends after it: a worker that has to wait does not hold its connection
+ * (it would keep DROP DATABASE waiting and a slot of max_worker_processes), the next insert or scan that finds the table changed asks again. The VACUUM calls the index back: the dead rows are marked and the index rewritten.
  * A DELETE alone calls nothing and waits for a scan or the next insert.
  *
  * A table that was just loaded has no statistics to read and no scan yet: the transaction that builds the index (CREATE INDEX, REINDEX) over pages the map does not hold, or that writes
@@ -58,9 +58,6 @@
 /* The least time between two VACUUMs of a table on this account, in naptimes, and in times the average one where it is known */
 #define NAPTIMES		5
 #define DURATIONS		10
-/* A worker looks once per naptime, leaves after this many looks at a clean table, or this many in all */
-#define CLEAN_LOOKS		3
-#define MAX_LOOKS		60
 /* The advisory lock (in the space of col/maint/maint.c's, 0x51F7) a worker holds for the table it is at */
 #define TABLE_LOCK_KEY	0x51F8
 
@@ -544,12 +541,13 @@ vacuum_ok(Oid indexoid, TimestampTz start)
 	index_close(index, RowExclusiveLock);
 }
 
+/* The one VACUUM of the worker, when the table is due for it (the worker leaves otherwise: it does not wait for the table to change again) */
 static void
-vacuum_looks(Oid indexoid, bool asked, bool once)
+vacuum_once(Oid indexoid, bool asked)
 {
 	Oid			heapoid;
 	LOCKTAG		tag;
-	int			clean = 0;
+	TimestampTz start = GetCurrentTimestamp();
 
 	StartTransactionCommand();
 	heapoid = vacuum_heap_of(indexoid);
@@ -559,34 +557,21 @@ vacuum_looks(Oid indexoid, bool asked, bool once)
 		return;
 	before_shmem_exit(vacuum_cx_free, (Datum) 0);
 	SetConfigOption("vacuum_cost_delay", psprintf("%d", Max(sift_maintenance_cost_delay, 2)), PGC_SUSET, PGC_S_OVERRIDE);
-	for (int looks = 0; looks < MAX_LOOKS && clean < CLEAN_LOOKS; looks++)
+	/* vacuum() ends the transaction it is called in and starts the next */
+	StartTransactionCommand();
+	if (!RecoveryInProgress() && table_state(heapoid, asked, true) == TABLE_DUE)
 	{
-		TableState	state;
-
-		/* vacuum() ends the transaction it is called in and starts the next */
-		StartTransactionCommand();
-		state = RecoveryInProgress() ? TABLE_CLEAN : table_state(heapoid, asked && looks == 0, true);
-		clean = state == TABLE_CLEAN ? clean + 1 : 0;
-		if (state == TABLE_DUE)
-		{
-			TimestampTz start = GetCurrentTimestamp();
-
-			SIFT_TEST_WORKER_FAIL(SIFT_JOB_VACUUM);
-			VacuumUpdateCosts();
-			vacuum_heap(heapoid);
-			vacuum_ok(indexoid, start);
-		}
-		CommitTransactionCommand();
-		if (once)
-			break;
-		/* a VACUUM that skipped the table for a lock someone holds (a CREATE INDEX CONCURRENTLY) leaves it due: look again after a nap, not at once */
-		sift_worker_nap(sift_maintenance_naptime);
+		SIFT_TEST_WORKER_FAIL(SIFT_JOB_VACUUM);
+		VacuumUpdateCosts();
+		vacuum_heap(heapoid);
+		vacuum_ok(indexoid, start);
 	}
+	CommitTransactionCommand();
 }
 
-/* asked: a scan started the worker, which takes its first look as a scan would (table_state); once: it leaves after the first VACUUM. A failure is recorded for the index like any worker's */
+/* asked: a scan started the worker, which takes its look as a scan would (table_state). A failure is recorded for the index like any worker's */
 static void
-vacuum_worker(Datum main_arg, bool asked, bool once)
+vacuum_worker(Datum main_arg, bool asked)
 {
 	ErrorContextCallback errctx;
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
@@ -594,7 +579,7 @@ vacuum_worker(Datum main_arg, bool asked, bool once)
 
 	PG_TRY();
 	{
-		vacuum_looks(indexoid, asked, once);
+		vacuum_once(indexoid, asked);
 	}
 	PG_CATCH();
 	{
@@ -606,18 +591,18 @@ vacuum_worker(Datum main_arg, bool asked, bool once)
 void
 sift_col_vacuum_worker_main(Datum main_arg)
 {
-	vacuum_worker(main_arg, false, false);
+	vacuum_worker(main_arg, false);
 }
 
 void
 sift_col_vacuum_scan_worker_main(Datum main_arg)
 {
-	vacuum_worker(main_arg, true, false);
+	vacuum_worker(main_arg, true);
 }
 
 /* The VACUUM a request of penalty_maintenance asks for: one, then the worker leaves */
 void
 sift_col_vacuum_once_worker_main(Datum main_arg)
 {
-	vacuum_worker(main_arg, true, true);
+	vacuum_worker(main_arg, true);
 }

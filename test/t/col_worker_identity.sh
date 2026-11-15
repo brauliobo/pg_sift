@@ -5,7 +5,7 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 11
-node_init wi 70 "autovacuum = off
+node_init wi 64 "autovacuum = off
 sift.test_col_net = off
 sift.maintenance_naptime = 200"
 node_start wi || bail "start failed"
@@ -44,6 +44,11 @@ check "no failure was counted" test "$(workers failures_total)" == "0"
 # 3. a VACUUM worker that fails: the error reaches sift.workers
 sql wi "ALTER DATABASE postgres SET sift.test_worker_error = 'vacuum'" >/dev/null
 sql wi "UPDATE facts SET amount = amount + 1 WHERE id % 5 = 0" >/dev/null
+for _ in $(seq 20); do
+	sleep 0.5
+	sql wi "UPDATE facts SET amount = amount + 1 WHERE id % 5 = 1" >/dev/null
+	[[ -n $(workers last_error) ]] && break
+done
 for _ in $(seq 200); do [[ -n $(workers last_error) ]] && break; sleep 0.1; done
 check "the error of the VACUUM worker is in sift.workers" bash -c "[[ '$(workers last_error)' == *'test: the vacuum worker fails'* ]]"
 
@@ -54,5 +59,5 @@ churn 2
 sql wi "VACUUM facts" >/dev/null
 await_rewrite
 for _ in $(seq 100); do [[ $(workers "last_ok > failed_at") == t ]] && break; sleep 0.1; done
-check "the error stays after a later success, which is newer" test "$(workers "last_error IS NOT NULL AND last_ok > failed_at AND failures_total = 1")" == "t"
+check "the error stays after a later success, which is newer" test "$(workers "last_error IS NOT NULL AND last_ok > failed_at AND failures_total >= 1")" == "t"
 finish

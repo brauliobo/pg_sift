@@ -23,9 +23,6 @@ extern void sift_log_maint(Relation index, const char *what, TimestampTz start, 
 /* LOG line for an insert that spent that long making room in the directory of the index (it merges when the maintenance worker lags) */
 extern void sift_log_stall(Relation index, TimestampTz start);
 
-/* LOG line (at most one a minute) for a maintenance worker that could not be registered */
-extern void sift_log_refused(Relation index);
-
 /* Adds the index of a maintenance worker to the context of the errors it raises */
 extern void sift_maint_context(ErrorContextCallback *cb, Oid indexoid);
 

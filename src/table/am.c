@@ -129,8 +129,8 @@ sift_tbl_define_gucs(void)
 							"The worker passes again while the budget stopped the last one. 0 is no limit.",
 							&sift_tbl_auto_defrag_budget, 128, 0, 1048576, PGC_USERSET, GUC_UNIT_MB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_max_active",
-							"Client backends of the database running a statement above which the background pass of a sift_table waits for a quieter moment.",
-							"The worker looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all, and between the merges of a pass; a later request asks again. 0: never waits.",
+							"Client backends of the database running a statement above which the background pass of a sift_table is left for a quieter moment.",
+							"The worker ends at once, also between the merges of a pass, without holding its connection; a later request asks again. 0: never waits.",
 							&sift_tbl_auto_defrag_max_active, 0, 0, 10000, PGC_SIGHUP, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_wal_rate",
 							"Kilobytes of WAL per second the background pass of a sift_table may write on average.",
