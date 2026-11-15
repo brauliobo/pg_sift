@@ -242,7 +242,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		uint64		units = 0;
 
 		seg[i] = sift_cseg_open(index, &in[i], cx);
-		if (seg[i]->schema->hash != schema->hash)
+		if (!sift_cschema_same_leaves(seg[i]->schema, schema, RelationGetDescr(index)))
 			corrupt(index, "Segment %llu was written for another column layout.", (unsigned long long) in[i].gen);
 		part[i] = sift_cbatch_create(cx, schema);
 		exact &= sift_cseg_kinds_exact(seg[i]);

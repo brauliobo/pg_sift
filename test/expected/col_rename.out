@@ -114,13 +114,17 @@ SELECT * FROM rn_state('rn_col');
 (1 row)
 
 ALTER TABLE rn RENAME COLUMN rn_id TO id;
--- the leaves of these are kept under the name of their column
+-- the leaves of these are kept under the name of their column (the lengths of an array, the paths of a document): the metapage takes the names the index has now and the segments keep the
+-- ones they were written with, so the rename needs no rebuild, and a segment written after it merges with the older ones
+CREATE FUNCTION rn_leaves(idx regclass) RETURNS text LANGUAGE sql AS $$ SELECT string_agg(path, ',' ORDER BY leaf) FROM sift.col_leaves(idx) WHERE path <> '' $$;
+SELECT rn_leaves('rn_arr') AS arr_leaves, rn_leaves('rn_json') AS json_leaves;
+      arr_leaves       |     json_leaves      
+-----------------------+----------------------
+ id,tags,tags#1,tags#2 | id,doc.k,doc#present
+(1 row)
+
 ALTER TABLE rn RENAME COLUMN tags TO labels;
-ERROR:  cannot rename column "tags": the segments of sift_col index "rn_arr" keep leaves under that name
-HINT:  CREATE INDEX CONCURRENTLY the index again after the rename, then DROP INDEX rn_arr.
 ALTER TABLE rn RENAME COLUMN doc TO document;
-ERROR:  cannot rename column "doc": sift_col index "rn_json" keeps the paths of its documents under that name
-HINT:  CREATE INDEX CONCURRENTLY the index again after the rename, then DROP INDEX rn_json.
 SELECT attname FROM pg_attribute WHERE attrelid = 'rn'::regclass AND attnum > 0 AND NOT attisdropped ORDER BY attnum;
   attname   
 ------------
@@ -129,20 +133,100 @@ SELECT attname FROM pg_attribute WHERE attrelid = 'rn'::regclass AND attnum > 0 
  cust
  created_at
  total
- tags
- doc
+ labels
+ document
 (7 rows)
+
+SELECT rn_leaves('rn_arr') AS arr_leaves, rn_leaves('rn_json') AS json_leaves;
+         arr_leaves          |          json_leaves           
+-----------------------------+--------------------------------
+ id,labels,labels#1,labels#2 | id,document.k,document#present
+(1 row)
 
 SELECT * FROM rn_state('rn_arr');
                    options                   | attributes | verified 
 ---------------------------------------------+------------+----------
- point_tid_columns=auto: id track_changes=id | id,tags    | t
+ point_tid_columns=auto: id track_changes=id | id,labels  | t
 (1 row)
 
-SELECT count(*) FROM rn WHERE tags = ARRAY[1];
+SELECT * FROM rn_state('rn_json');
+                              options                              | attributes  | verified 
+-------------------------------------------------------------------+-------------+----------
+ paths=document.k int4 point_tid_columns=auto: id track_changes=id | id,document | t
+(1 row)
+
+SELECT count(*) FROM rn WHERE labels = ARRAY[1];
  count 
 -------
   1091
+(1 row)
+
+SELECT sift_helpers.agg_equals_normal_all('SELECT document -> ''k'' AS k, count(*) FROM rn GROUP BY 1') AS same_paths_read;
+ same_paths_read 
+-----------------
+ t
+(1 row)
+
+INSERT INTO rn SELECT 4000 + g, 'r2', g % 20, date '2025-12-01', g, ARRAY[2], jsonb_build_object('k', 7) FROM generate_series(1, 100) g;
+SELECT sift.col_promote('rn_arr') >= 0 AS arr_promoted, sift.col_promote('rn_json') >= 0 AS json_promoted;
+ arr_promoted | json_promoted 
+--------------+---------------
+ t            | t
+(1 row)
+
+SELECT count(*) AS arr_segments FROM sift.col_segments('rn_arr') WHERE kind = 'immutable';
+ arr_segments 
+--------------
+            2
+(1 row)
+
+SELECT sift.col_merge('rn_arr', true) >= 0 AS arr_merged, sift.col_merge('rn_json', true) >= 0 AS json_merged;
+ arr_merged | json_merged 
+------------+-------------
+ t          | t
+(1 row)
+
+SELECT count(*) AS arr_segments FROM sift.col_segments('rn_arr') WHERE kind = 'immutable';
+ arr_segments 
+--------------
+            1
+(1 row)
+
+SELECT * FROM rn_state('rn_arr');
+                   options                   | attributes | verified 
+---------------------------------------------+------------+----------
+ point_tid_columns=auto: id track_changes=id | id,labels  | t
+(1 row)
+
+SELECT * FROM rn_state('rn_json');
+                              options                              | attributes  | verified 
+-------------------------------------------------------------------+-------------+----------
+ paths=document.k int4 point_tid_columns=auto: id track_changes=id | id,document | t
+(1 row)
+
+SELECT sift_helpers.agg_equals_normal_all('SELECT document -> ''k'' AS k, count(*) FROM rn GROUP BY 1') AS same_paths_read_after_merge;
+ same_paths_read_after_merge 
+-----------------------------
+ t
+(1 row)
+
+SELECT count(*) FROM rn WHERE labels = ARRAY[2];
+ count 
+-------
+  1009
+(1 row)
+
+SELECT rn_leaves('rn_arr') AS arr_leaves, rn_leaves('rn_json') AS json_leaves;
+         arr_leaves          |          json_leaves           
+-----------------------------+--------------------------------
+ id,labels,labels#1,labels#2 | id,document.k,document#present
+(1 row)
+
+REINDEX INDEX rn_arr;
+SELECT * FROM rn_state('rn_arr');
+                   options                   | attributes | verified 
+---------------------------------------------+------------+----------
+ point_tid_columns=auto: id track_changes=id | id,labels  | t
 (1 row)
 
 -- a column of a partitioned table: the index of the partition follows too
@@ -323,6 +407,6 @@ DROP TABLE fl_pairs2, rp, rn;
 DROP VIEW fl_view;
 DROP TABLE fl_s.fl_src2;
 DROP SCHEMA fl_s;
-DROP FUNCTION fl_equal(regclass, regclass), rn_state(regclass), rn_reads_as(text, text, text);
+DROP FUNCTION fl_equal(regclass, regclass), rn_state(regclass), rn_reads_as(text, text, text), rn_leaves(regclass);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

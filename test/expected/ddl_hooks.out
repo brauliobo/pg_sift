@@ -3,17 +3,19 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SELECT name, event, tags, enabled, effect IS NOT NULL AS described FROM sift.ddl_hooks;
-             name              |       event       |                    tags                    | enabled | described 
--------------------------------+-------------------+--------------------------------------------+---------+-----------
- sift_col_build_lock           | ddl_command_start | {"CREATE INDEX"}                           | t       | t
- sift_col_names_follow         | ddl_command_end   | {"ALTER TABLE","ALTER MATERIALIZED VIEW"}  | t       | t
- sift_col_value_store_sql_drop | sql_drop          |                                            | t       | t
- sift_publication_check        | ddl_command_end   | {"CREATE PUBLICATION","ALTER PUBLICATION"} | t       | t
- sift_table_ddl_check          | ddl_command_end   | {"ALTER TABLE"}                            | t       | t
- sift_table_option_values_drop | sql_drop          |                                            | t       | t
- sift_table_paths_drop         | sql_drop          |                                            | t       | t
- sift_table_repack_guard       | ddl_command_start | {"CREATE TRIGGER"}                         | t       | t
-(8 rows)
+             name              |       event       |                          tags                           | enabled | described 
+-------------------------------+-------------------+---------------------------------------------------------+---------+-----------
+ sift_col_build_lock           | ddl_command_start | {"CREATE INDEX"}                                        | t       | t
+ sift_col_names_before         | ddl_command_start | {"ALTER TABLE","ALTER MATERIALIZED VIEW"}               | t       | t
+ sift_col_names_follow         | ddl_command_end   | {"ALTER TABLE","ALTER MATERIALIZED VIEW","ALTER INDEX"} | t       | t
+ sift_col_names_sql_drop       | sql_drop          |                                                         | t       | t
+ sift_col_value_store_sql_drop | sql_drop          |                                                         | t       | t
+ sift_publication_check        | ddl_command_end   | {"CREATE PUBLICATION","ALTER PUBLICATION"}              | t       | t
+ sift_table_ddl_check          | ddl_command_end   | {"ALTER TABLE"}                                         | t       | t
+ sift_table_option_values_drop | sql_drop          |                                                         | t       | t
+ sift_table_paths_drop         | sql_drop          |                                                         | t       | t
+ sift_table_repack_guard       | ddl_command_start | {"CREATE TRIGGER"}                                      | t       | t
+(10 rows)
 
 CREATE TABLE dh_t (id int, doc jsonb) USING sift_table;
 SELECT sift.table_set_paths('dh_t', 'doc', 'doc.k int4');
@@ -47,13 +49,13 @@ DETAIL:  Table "dh_wide" has 128.
 SELECT sift.ddl_hooks_enable(false) AS changed;
  changed 
 ---------
-       8
+      10
 (1 row)
 
 SELECT count(*) FILTER (WHERE enabled) AS enabled, count(*) AS hooks FROM sift.ddl_hooks;
  enabled | hooks 
 ---------+-------
-       0 |     8
+       0 |    10
 (1 row)
 
 CREATE TRIGGER dh_repack AFTER INSERT ON dh_t FOR EACH ROW EXECUTE FUNCTION dh_repack.repack_trigger();
@@ -78,7 +80,7 @@ SELECT count(*) AS options_left FROM sift.table_option_values WHERE rel::oid NOT
 SELECT sift.ddl_hooks_enable(true) AS changed;
  changed 
 ---------
-       8
+      10
 (1 row)
 
 SELECT count(*) FILTER (WHERE NOT enabled) AS disabled FROM sift.ddl_hooks;
@@ -110,7 +112,7 @@ ERROR:  permission denied for function ddl_hooks_enable
 SELECT count(*) AS hooks_seen FROM sift.ddl_hooks;
  hooks_seen 
 ------------
-          8
+         10
 (1 row)
 
 RESET SESSION AUTHORIZATION;

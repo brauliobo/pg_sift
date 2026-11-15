@@ -13,6 +13,7 @@
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 . "$(dirname "$0")/lib_upgrade.bash"
 . "$(dirname "$0")/lib_twohop.bash"
+. "$(dirname "$0")/lib_names.bash"
 
 NEWCFG=$(command -v pg_config)
 OLDBIN=${SIFT_PG_OLD_BIN:-}
@@ -49,7 +50,7 @@ else
 	build_old "$OLDCFG" "$OV/oldroot" || { (($? == 77)) && exit 0; tail -n 20 "$TAPDIR/old-build.log"; bail "pg_sift does not build for PostgreSQL $OLD_MAJOR"; }
 	overlay "$OLDCFG" "$OV/old" "$OV/oldroot"
 fi
-plan $((37 + (${#OLD_REF} ? 3 : 0)))
+plan $((40 + (${#OLD_REF} ? 3 : 0)))
 OLDB=$OV/old$("$OLDCFG" --bindir)
 NEWB=$OV/new$("$NEWCFG" --bindir)
 PATH=$NEWB:$PATH
@@ -95,6 +96,9 @@ SELECT sift.projection_create('pwide', 'pev', ARRAY['a', 'k', '(q / 10)', 's'], 
 SELECT sift.projection_create('pnarrow', 'pev', ARRAY['a', 'k']);
 SELECT sift.projection_index('pev_wide', ARRAY['pwide'], '{\"track_changes\": \"off\"}');
 SELECT sift.projection_index('pev_again', ARRAY['pnarrow'], '{\"track_changes\": \"off\"}');"
+# tables and columns renamed after the indexes were built (lib_names.bash; 5.0's): their files come through pg_upgrade with the leaves named as they were written
+NAMESSQL=
+[[ -n $OLD_REF ]] || NAMESSQL=$NAMES_SETUP
 # two indexes of one table that share the value vstores of their string columns (5.0's; the sharing is forced: the table is small)
 VSSQL=
 [[ -n $OLD_REF ]] || VSSQL="SET sift.test_vstore_columns = 'uid,url';
@@ -144,6 +148,7 @@ INSERT INTO trk_late SELECT g, g % 3 FROM generate_series(1, 300) g;
 CREATE INDEX trk_late_z ON trk_late USING sift_col (id, g);
 $CONNSQL
 $PROJSQL
+$NAMESSQL
 $VSSQL
 CREATE FUNCTION trkq() RETURNS text LANGUAGE sql RETURN (SELECT string_agg(g || ':' || c || ':' || s, ',' ORDER BY g) FROM (SELECT g, count(*) c, sum(v) s FROM trk GROUP BY g) x);
 CREATE FUNCTION trkq_on() RETURNS text LANGUAGE sql SET sift.enable_agg = on SET cpu_tuple_cost = 0.5 RETURN trkq();
@@ -202,12 +207,13 @@ q old postgres "ALTER DATABASE postgres SET sift.simd = 'scalar'" "ALTER ROLE po
 VERIFY_SQL="SELECT sift.verify('docs_idx', true), sift.verify('docs_ts_idx', true), sift.col_verify('facts_col', true), sift.col_verify('facts_json', true), sift.col_verify('trk_c', true), sift.col_verify('trk_late_z', true)"
 fingerprint() { q "$1" postgres "SELECT bm25q()" "SELECT colq_on() = colq_off()" "SELECT colq_off()" "SELECT tblq_off('tbl')" "SELECT tblq_on('tbl') = tblq_off('tbl')" \
 	"SELECT tblq_off('tbl_ts')" "SELECT tblq_on('tbl_ts') = tblq_off('tbl_ts')"; }
+[[ -n $OLD_REF ]] || { NAMES_BEFORE=$(q old postgres "$NAMES_STATE"); NAMES_ANSWERS_BEFORE=$(q old postgres "$NAMES_ANSWERS"); }
 VERSIONS=$(q old postgres "SELECT extversion || ' ' || sift.version() FROM pg_extension WHERE extname = 'pg_sift'")
 BEFORE=$(fingerprint old)
 TRK_BEFORE=$(q old postgres "SELECT trkq_off()")
 check "the old cluster agrees with itself: the scans equal the normal plans" test "$(grep -c '^t$' <<<"$BEFORE")" == 3
-CONNECTION="SELECT child || ' ' || parent || ' ' || declaration || ' ' || (lineage IS NOT NULL) || ' ' || records || ' ' || stamp FROM sift.col_connections ORDER BY ordinal"
-[[ -n $OLD_REF ]] || { CONN_BEFORE=$(q old postgres "$CONNECTION"); RECS_BEFORE=$(q old postgres "SELECT sum(records) FROM sift.col_connections"); }
+CONNECTION="SELECT child || ' ' || parent || ' ' || declaration || ' ' || (lineage IS NOT NULL) || ' ' || records || ' ' || stamp FROM sift.col_connections WHERE child::text = 'cfact_c' ORDER BY ordinal"
+[[ -n $OLD_REF ]] || { CONN_BEFORE=$(q old postgres "$CONNECTION"); RECS_BEFORE=$(q old postgres "SELECT sum(records) FROM sift.col_connections WHERE child::text = 'cfact_c'"); }
 FILES_BEFORE=$(q old postgres "SELECT string_agg(relname || '=' || pg_relation_filepath(oid), ',' ORDER BY relname) FROM pg_class WHERE relname IN ('docs_ts_idx', 'facts_json', 'tbl_ts')")
 if [[ -n $TSC ]]; then
 	check "the tablespace holds an index of each access method and a table" test "$(grep -o 'pg_tblspc' <<<"$FILES_BEFORE" | wc -l | tr -d ' ')" == 3
@@ -275,18 +281,28 @@ check "REINDEX gives the tracked index its baseline: complete, heap-free, the an
 if [[ -z $OLD_REF ]]; then
 	check "the connected pair is as before and nothing is vouched while the log is not complete" test "$(q new postgres "$CONNECTION")" == "$(sed 's/ ok$/ log not complete/' <<<"$CONN_BEFORE")"
 	q new postgres "UPDATE cdim SET cat = cat + 1 WHERE id = 7" >/dev/null
-	check "the journal of the parent index hears the upgraded cluster and the parent index stays under the child" test "$(q new postgres "SELECT sum(records) > $RECS_BEFORE FROM sift.col_connections" 2>&1 | head -n 1)" == t \
+	check "the journal of the parent index hears the upgraded cluster and the parent index stays under the child" test "$(q new postgres "SELECT sum(records) > $RECS_BEFORE FROM sift.col_connections WHERE child::text = 'cfact_c'" 2>&1 | head -n 1)" == t \
 		-a "$(q new postgres "DROP INDEX cdim_c" 2>&1 | grep -c 'cannot drop index')$(q new postgres "DROP INDEX cdim2_c" 2>&1 | grep -c 'cannot drop index')" == 11
 	q new postgres "REINDEX INDEX cdim_c" "REINDEX INDEX cdim2_c" >/dev/null
-	check "REINDEX of the parent indexes makes their journals again: both stamps vouch and the indexes verify" test "$(q new postgres "SELECT string_agg(stamp, ',' ORDER BY ordinal) FROM sift.col_connections")" == ok,ok \
+	check "REINDEX of the parent indexes makes their journals again: both stamps vouch and the indexes verify" test "$(q new postgres "SELECT string_agg(stamp, ',' ORDER BY ordinal) FROM sift.col_connections WHERE child::text = 'cfact_c'")" == ok,ok \
 		-a "$(q new postgres "SELECT count(*) FROM (SELECT sift.col_verify('cdim_c', true), sift.col_verify('cdim2_c', true), sift.col_verify('cfact_c', true)) v")" == 1
 else skip 3 "an index of a release has no connection"; fi
 
 # the projections: the definitions came with the files, the indexes with the option that names them
 if [[ -z $OLD_REF ]]; then
-	check "the projections are as before: both listed by the one index, every status ok" test "$(q new postgres "SELECT string_agg(projection || ':' || index || ':' || state, ',' ORDER BY projection) FROM sift.projection_status")" == "pnarrow:pev_wide:ok,pwide:pev_wide:ok"
+	check "the projections are as before: both listed by the one index, every status ok" test "$(q new postgres "SELECT string_agg(projection || ':' || index || ':' || state, ',' ORDER BY projection) FROM sift.projection_status WHERE index = 'pev_wide'")" == "pnarrow:pev_wide:ok,pwide:pev_wide:ok"
 	check "the guard and the one call work after pg_upgrade" test "$(q new postgres "DELETE FROM sift.projections WHERE name = 'pwide'" 2>&1 | grep -c 'is held by pev_wide')$(q new postgres "SELECT sift.projection_index('pev_other', ARRAY['pnarrow'], '{\"track_changes\": \"off\"}')")" == 1pev_wide
 else skip 2 "a release has no projections"; fi
+
+# the renamed tables and columns: the options name what the tables are called, the files of the indexes keep the leaves they were written with, and the first writes and merges need no REINDEX
+if [[ -z $OLD_REF ]]; then
+	check "the renamed workload is as before: the options, the projection, the follow, and answers that equal the normal plans" test "$(q new postgres "$NAMES_STATE")" == "$NAMES_BEFORE" \
+		-a "$(q new postgres "$NAMES_ANSWERS")" == "$NAMES_ANSWERS_BEFORE" -a "$(q new postgres "$NAMES_ANSWERS" | cut -d'|' -f1)" == t
+	check "its indexes verify" quiet q new postgres "$NAMES_VERIFY"
+	q new postgres "$NAMES_WRITES" "SELECT sift.col_promote('nm_fact_c')" >/dev/null && q new postgres "SELECT sift.col_merge('nm_fact_c', true)" "SELECT sift.col_merge('nm_ev_c', true)" >/dev/null
+	check "writes, a promotion and merges follow with no REINDEX: the indexes verify and the answers equal the normal plans" test "$(q new postgres "$NAMES_VERIFY" >/dev/null 2>&1 && echo ok)" == ok \
+		-a "$(q new postgres "$NAMES_ANSWERS" | cut -d'|' -f1)" == t
+else skip 3 "an index of a release has no renamed workload"; fi
 
 # the value vstores: relations with their own access method, restored by pg_upgrade with their files, and the dependencies of the indexes on them
 if [[ -z $OLD_REF ]]; then
@@ -300,7 +316,7 @@ else skip 3 "a release has no value vstores"; fi
 q new postgres "SET sift.test_vstore_columns = 'uid,url'" "CREATE TABLE vs2 (id int PRIMARY KEY, uid uuid, url text)" "INSERT INTO vs2 SELECT g, md5((g % 70)::text)::uuid, 'https://example.com/' || md5((g % 90)::text) FROM generate_series(1, 3000) g" \
 	"ANALYZE vs2" "CREATE INDEX vs2_a ON vs2 USING sift_col (id, uid, url)" "CREATE INDEX vs2_b ON vs2 USING sift_col (uid, id, url)" >/dev/null
 check "indexes built after the upgrade share their strings and answer as the normal plan" test "$(q new postgres "SELECT string_agg(column_name || '=' || indexes_using, ',' ORDER BY column_name) FROM sift.col_value_store_status WHERE table_name = 'vs2'::regclass")" == "uid=2,url=2" \
-	-a "$(q new postgres "SELECT count(*) || sum(id) FROM vs2 WHERE url = 'https://example.com/' || md5('5')")" == "$(q new postgres "SET sift.enable_agg = off" "SELECT count(*) || sum(id) FROM vs2 WHERE url = 'https://example.com/' || md5('5')")"
+	-a "$(q new postgres "SELECT count(*) || ':' || sum(id) FROM vs2 WHERE url = 'https://example.com/' || md5('5')")" == "$(q new postgres "SET sift.enable_agg = off" "SELECT count(*) || ':' || sum(id) FROM vs2 WHERE url = 'https://example.com/' || md5('5')")"
 # the scope of two paths: the option and the edges to the three btrees and the three journals came with the dump, the reads are the join, the logs of the journals are not complete (their triggers are made
 # again, as for the connected pair) so nothing is vouched until the journals and then the scope index are rebuilt, and after that the units are read again
 if [[ -z $OLD_REF ]]; then

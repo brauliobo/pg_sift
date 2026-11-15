@@ -4,6 +4,7 @@
  * and the hash a plan is keyed by
  */
 #include "postgres.h"
+#include "utils/inval.h"
 #include "utils/memutils.h"
 #include "nodes/makefuncs.h"
 #include "utils/lsyscache.h"
@@ -324,6 +325,92 @@ build_rel(Relation index, MemoryContext mcxt)
 		}
 	r->stale = stored && r->schema->hash != hash;
 	return r;
+}
+
+/*
+ * Do the schemas have the same leaves? The path of a leaf that is kept under the name of a column (a jsonb path, the lengths of an array, the flag of a connection) begins with the name
+ * of the attribute of the leaf in desc (the index), and a column that is renamed keeps its leaves: the segments written before keep the name they had, so the path of old must end as the
+ * path of cur does after that name (col/names.c).
+ */
+bool
+sift_cschema_same_leaves(const SiftColSchema *old, const SiftColSchema *cur, TupleDesc desc)
+{
+	if (old->ncols != cur->ncols)
+		return false;
+	for (int i = 0; i < cur->ncols; i++)
+	{
+		const SiftColDef *a = &old->cols[i],
+				   *b = &cur->cols[i];
+
+		if (a->id != b->id || a->parent != b->parent || a->kind != b->kind || a->store != b->store || a->flags != b->flags || a->attno != b->attno || a->type != b->type ||
+			a->scale != b->scale || a->lanes != b->lanes || a->lane != b->lane)
+			return false;
+		if (strcmp(a->path, b->path) != 0)
+		{
+			const char *name = b->attno > 0 ? NameStr(TupleDescAttr(desc, b->attno - 1)->attname) : "";
+			size_t		nlen = strlen(name),
+						tail = strlen(b->path) - nlen;
+
+			if (strncmp(b->path, name, nlen) != 0 || strlen(a->path) <= tail || strcmp(a->path + strlen(a->path) - tail, b->path + nlen) != 0)
+				return false;
+		}
+	}
+	return true;
+}
+
+/*
+ * Do all the immutable segments of the index have the leaves of the schema s, whatever the columns were called when they were written (sift_cschema_same_leaves)? The schema of a
+ * segment is its own, in its header.
+ */
+static bool
+segments_have_leaves(Relation index, const SiftColSchema *s)
+{
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	bool		same = true;
+
+	sift_dir_read(index, dir);
+	for (int i = 0; i < dir->nsegs && same; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			SiftColSegment *seg = sift_cseg_open(index, &dir->segs[i], CurrentMemoryContext);
+
+			same = sift_cschema_same_leaves(seg->schema, s, RelationGetDescr(index));
+			sift_cseg_close(seg);
+		}
+	pfree(dir);
+	return same;
+}
+
+/*
+ * A column of the index was renamed and the options and attribute of the index say so (col/names.c). The leaves that are kept under the name of the column (the paths of a jsonb column,
+ * the lengths of an array, the flag of a connection) are named after it in the schema the options give now, and the metapage has the hash of the schema the segments were written for.
+ * The leaves are the same: when every segment has the leaves of the schema the options give, the metapage takes its hash and the segments keep the names they were written with. False
+ * when the index has no segment that fixes a layout, or its layout is not the one of the options (it stays as stale as it was: a read says so and asks for the REINDEX).
+ */
+bool
+sift_col_rekey(Relation index)
+{
+	uint32		layout[3] = {sift_col_present_attrs(index, SIFT_COL_PRESENT_NULLABLE), 0, sift_col_present_attrs(index, SIFT_COL_PRESENT_ALL)};
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift col rekey", ALLOCSET_SMALL_SIZES);
+	const SiftColSchema *schema[3];
+	uint32		hash,
+				flags;
+	bool		found = false;
+
+	if (!sift_store_meta_peek(index, &hash, &flags) || !(flags & SIFT_COL_META_FLAG))
+		return false;
+	for (int i = 0; i < 3; i++)
+		schema[i] = build_rel_with(index, cx, layout[i])->schema;
+	if (schema[0]->hash != hash && schema[1]->hash != hash && schema[2]->hash != hash)
+		for (int i = 0; i < 3 && !found; i++)
+			if (segments_have_leaves(index, schema[i]))
+			{
+				sift_store_rekey_layout(index, schema[i]->hash);
+				found = true;
+			}
+	MemoryContextDelete(cx);
+	CacheInvalidateRelcache(index);
+	return found;
 }
 
 /* Are the units of the sift_col index cut by the order key? (the planner keeps a ctid range, which selects units by heap superblock, on the normal plan for such an index) */

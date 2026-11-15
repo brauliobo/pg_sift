@@ -66,8 +66,11 @@ SELECT object, kind, status, advice ~ '^ALTER EVENT TRIGGER .* DISABLE' AS says_
             object             |  kind   | status  | says_disable 
 -------------------------------+---------+---------+--------------
  sift_col_build_lock           | trigger | blocker | t
+ sift_col_names_before         | trigger | blocker | t
+ sift_col_names_follow         | trigger | blocker | t
+ sift_col_names_sql_drop       | trigger | blocker | t
  sift_col_value_store_sql_drop | trigger | blocker | t
-(2 rows)
+(5 rows)
 
 SELECT pg_describe_object(classid, objid, objsubid) FROM pg_depend
 WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e' AND objid = 'sift.upgrade_check(text)'::regprocedure;

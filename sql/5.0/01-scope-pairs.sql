@@ -8,8 +8,9 @@ CREATE FUNCTION sift.scope_qualified(rel regclass) RETURNS text LANGUAGE sql STA
 COMMENT ON FUNCTION sift.scope_qualified(regclass) IS 'Internal: the schema-qualified, quoted name of a relation';
 
 -- The tables are kept by identity: a regclass is the oid of the table, so a rename or a move to another schema leaves it as it was (it dumps and restores as the name the table has then; the
--- columns of the source are names, which the event trigger sift.col_names_follow keeps when one is renamed). The triggers of a follow are found by the name they carry, trigger_base
--- with a suffix, which the dump keeps: a trigger has no arguments that a restore would leave naming oids.
+-- columns are names, which the event trigger sift.col_names_follow keeps when one is renamed: the column of the source that names the members or the keys (and, by pair, the members),
+-- the column that expires pairs, and the columns of the pair table that hold the member and the scope key (the columns of the view are found by position). The triggers of a follow are
+-- found by the name they carry, trigger_base with a suffix, which the dump keeps: a trigger has no arguments that a restore would leave naming oids.
 CREATE TABLE sift.scope_follows (
 	pairs         regclass NOT NULL,
 	definition    regclass NOT NULL,
@@ -17,14 +18,18 @@ CREATE TABLE sift.scope_follows (
 	trigger_base  name     NOT NULL,
 	refresh_by    text     NOT NULL CHECK (refresh_by IN ('member', 'key', 'pair')),
 	source_column name     NOT NULL,
+	source_member name,
+	member_column name     NOT NULL,
+	key_column    name     NOT NULL,
 	expires       name,
 	swept_at      timestamptz NOT NULL,
 	PRIMARY KEY (pairs, source, source_column),
 	UNIQUE (source, trigger_base)
 );
-SELECT pg_catalog.pg_extension_config_dump('sift.scope_follows', '');
+-- a row of a table that is gone (a stale oid prints as a number) is never written
+SELECT pg_catalog.pg_extension_config_dump('sift.scope_follows', 'WHERE source::pg_catalog.oid IN (SELECT oid FROM pg_catalog.pg_class) AND pairs::pg_catalog.oid IN (SELECT oid FROM pg_catalog.pg_class) AND definition::pg_catalog.oid IN (SELECT oid FROM pg_catalog.pg_class)');
 
-COMMENT ON TABLE sift.scope_follows IS 'The tables that sift.scope_follow_pairs follows: for each pair table, its defining view, a source table of the view, the base of the names of its triggers, the column that names the member ids or scope keys a change touches, and the column of the source that expires pairs';
+COMMENT ON TABLE sift.scope_follows IS 'The tables that sift.scope_follow_pairs follows: for each pair table, its defining view, a source table of the view, the base of the names of its triggers, the column that names the member ids or scope keys a change touches (by pair, the one that names the members too), the columns of the pair table that hold the member and the scope key, and the column of the source that expires pairs';
 
 -- The condition on the columns of a view or of the pair table (qualified by q) that names the rows of a refresh: $1 are the member ids or the scope keys, $2 the scope keys of a pair mode
 CREATE FUNCTION sift.scope_pairs_where(by text, cols name[], everything boolean, q text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
@@ -34,6 +39,13 @@ CREATE FUNCTION sift.scope_pairs_where(by text, cols name[], everything boolean,
 		ELSE format('%1$s%2$I = ANY ($1) AND %1$s%3$I = ANY ($2) AND EXISTS (SELECT 1 FROM unnest($1, $2) u(m, k) WHERE u.m = %1$s%2$I AND u.k = %1$s%3$I)', q, cols[1], cols[2]) END
 $$;
 
+-- The columns of a pair table that hold the member and the scope key: the ones the follow of the pair table recorded (they follow the rename of a column), else the columns of the view
+CREATE FUNCTION sift._pair_columns(pairs regclass, definition regclass) RETURNS name[] LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+	SELECT COALESCE((SELECT ARRAY[f.member_column, f.key_column] FROM sift.scope_follows f WHERE f.pairs = $1 AND f.definition = $2 ORDER BY f.source LIMIT 1),
+					(SELECT array_agg(a.attname ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = $2 AND a.attnum > 0 AND NOT a.attisdropped))
+$$;
+COMMENT ON FUNCTION sift._pair_columns(regclass, regclass) IS 'Internal: the columns of the pair table that hold the member and the scope key';
+
 -- The pairs of the named member ids, scope keys or (member, key) pairs (by = 'member', 'key' or 'pair': ids are the members and keys the scope keys, element by element; ids NULL: all)
 -- as the view gives them: the pairs the table has for them are read once and compared with the view's, the missing ones are inserted and the extra ones deleted, in one statement.
 -- The first column of the view is the member, the second the scope key; the pair table has columns of those names. One refresh of a pair table at a time: a later
@@ -42,6 +54,7 @@ CREATE FUNCTION sift.scope_refresh_pairs(pairs regclass, definition regclass, by
 	LANGUAGE plpgsql AS $$
 DECLARE
 	cols   name[];
+	pcols  name[] := sift._pair_columns(pairs, definition);
 	target text := sift.scope_qualified(pairs);
 BEGIN
 	SELECT array_agg(a.attname ORDER BY a.attnum) INTO cols FROM pg_attribute a WHERE a.attrelid = definition AND a.attnum > 0 AND NOT a.attisdropped;
@@ -54,19 +67,19 @@ BEGIN
 	IF by = 'pair' AND ids IS NOT NULL AND cardinality(ids) IS DISTINCT FROM cardinality(keys) THEN
 		RAISE EXCEPTION 'scope_refresh_pairs: by pair takes as many keys as ids' USING ERRCODE = 'invalid_parameter_value';
 	END IF;
-	IF (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = pairs AND a.attname = ANY (cols) AND NOT a.attisdropped) <> 2 THEN
-		RAISE EXCEPTION 'scope_refresh_pairs: table % has no columns %, %', target, cols[1], cols[2] USING ERRCODE = 'undefined_column';
+	IF (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = pairs AND a.attname = ANY (pcols) AND NOT a.attisdropped) <> 2 THEN
+		RAISE EXCEPTION 'scope_refresh_pairs: table % has no columns %, %', target, pcols[1], pcols[2] USING ERRCODE = 'undefined_column';
 	END IF;
 	PERFORM pg_advisory_xact_lock(hashtext('sift.scope_pairs'), pairs::oid::int);
 	RETURN QUERY EXECUTE format($q$
-		WITH want AS MATERIALIZED (SELECT DISTINCT %1$I, %2$I FROM %3$s WHERE %5$s),
-		     have AS MATERIALIZED (SELECT ctid AS tid, %1$I, %2$I FROM %4$s p WHERE %6$s),
-		     gone AS (DELETE FROM %4$s WHERE ctid = ANY (ARRAY(SELECT h.tid FROM have h WHERE NOT EXISTS (SELECT 1 FROM want w WHERE w.%1$I = h.%1$I AND w.%2$I = h.%2$I))) RETURNING 1),
-		     ins  AS (INSERT INTO %4$s (%1$I, %2$I) SELECT w.%1$I, w.%2$I FROM want w
-		              WHERE NOT EXISTS (SELECT 1 FROM have h WHERE h.%1$I = w.%1$I AND h.%2$I = w.%2$I) ON CONFLICT DO NOTHING RETURNING 1)
+		WITH want AS MATERIALIZED (SELECT DISTINCT %1$I AS m, %2$I AS k FROM %3$s WHERE %5$s),
+		     have AS MATERIALIZED (SELECT ctid AS tid, %7$I AS m, %8$I AS k FROM %4$s p WHERE %6$s),
+		     gone AS (DELETE FROM %4$s WHERE ctid = ANY (ARRAY(SELECT h.tid FROM have h WHERE NOT EXISTS (SELECT 1 FROM want w WHERE w.m = h.m AND w.k = h.k))) RETURNING 1),
+		     ins  AS (INSERT INTO %4$s (%7$I, %8$I) SELECT w.m, w.k FROM want w
+		              WHERE NOT EXISTS (SELECT 1 FROM have h WHERE h.m = w.m AND h.k = w.k) ON CONFLICT DO NOTHING RETURNING 1)
 		SELECT (SELECT count(*) FROM ins), (SELECT count(*) FROM gone)$q$,
 		cols[1], cols[2], sift.scope_qualified(definition), target,
-		sift.scope_pairs_where(by, cols, ids IS NULL, ''), sift.scope_pairs_where(by, cols, ids IS NULL, 'p.')) USING ids, keys;
+		sift.scope_pairs_where(by, cols, ids IS NULL, ''), sift.scope_pairs_where(by, pcols, ids IS NULL, 'p.'), pcols[1], pcols[2]) USING ids, keys;
 	-- a refresh of all the pairs fills a new or emptied table: the statements that join it are planned from its statistics, which autovacuum would only make later
 	IF ids IS NULL THEN
 		EXECUTE format('ANALYZE %s', target);
@@ -78,9 +91,7 @@ END $$;
 CREATE FUNCTION sift.scope_names_sql(f sift.scope_follows, changed text) RETURNS text LANGUAGE sql AS $$
 	SELECT CASE WHEN f.refresh_by <> 'pair'
 		THEN format('SELECT COALESCE(array_agg(DISTINCT %1$I::bigint), ''{}''), NULL::bigint[] FROM (%2$s) t WHERE %1$I IS NOT NULL', f.source_column, changed)
-		ELSE format('SELECT COALESCE(array_agg(m), ''{}''), COALESCE(array_agg(k), ''{}'') FROM (SELECT DISTINCT %1$I::bigint m, %2$I::bigint k FROM (%3$s) t) s', v.m, v.k, changed) END
-	FROM (SELECT (array_agg(a.attname ORDER BY a.attnum))[1] m, (array_agg(a.attname ORDER BY a.attnum))[2] k FROM pg_attribute a
-		  WHERE a.attrelid = f.definition AND a.attnum > 0 AND NOT a.attisdropped) v
+		ELSE format('SELECT COALESCE(array_agg(m), ''{}''), COALESCE(array_agg(k), ''{}'') FROM (SELECT DISTINCT %1$I::bigint m, %2$I::bigint k FROM (%3$s) t) s', f.source_member, f.source_column, changed) END
 $$;
 
 -- Refreshes what scope_names_sql named: the member ids or scope keys, or in pair mode the (member, key) pairs of the rows that name both; a row that names only its key or only its
@@ -157,7 +168,9 @@ BEGIN
 		RAISE EXCEPTION 'scope_follow_pairs: a table is the target of a logical replication subscription'
 			USING DETAIL = 'The apply worker changes rows without firing statement triggers, so the pairs would miss the changes.', ERRCODE = 'feature_not_supported';
 	END IF;
-	INSERT INTO sift.scope_follows VALUES (pairs, definition, source, base, by, source_column, expires, now());
+	INSERT INTO sift.scope_follows SELECT pairs, definition, source, base, by, source_column, CASE WHEN by = 'pair' THEN v.m END, v.m, v.k, expires, now()
+		FROM (SELECT (array_agg(a.attname ORDER BY a.attnum))[1] m, (array_agg(a.attname ORDER BY a.attnum))[2] k FROM pg_attribute a
+			  WHERE a.attrelid = definition AND a.attnum > 0 AND NOT a.attisdropped) v;
 	FOR tr IN SELECT unnest(ARRAY['ins', 'upd', 'del']) LOOP
 		EXECUTE format('CREATE TRIGGER %I AFTER %s ON %s REFERENCING %s AS %s FOR EACH STATEMENT EXECUTE FUNCTION sift.scope_follow_trg()',
 					   base || '_s' || tr, CASE tr WHEN 'ins' THEN 'INSERT' WHEN 'upd' THEN 'UPDATE' ELSE 'DELETE' END, src,
