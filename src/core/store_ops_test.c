@@ -5,6 +5,8 @@
 #include "store_test_int.h"
 #include "utils/timestamp.h"
 
+#include "core/live.h"
+
 #ifdef SIFT_TESTING
 
 PG_FUNCTION_INFO_V1(sift_test_alloc);
@@ -21,6 +23,7 @@ PG_FUNCTION_INFO_V1(sift_test_freelist);
 PG_FUNCTION_INFO_V1(sift_test_page);
 PG_FUNCTION_INFO_V1(sift_test_poke);
 PG_FUNCTION_INFO_V1(sift_test_peek);
+PG_FUNCTION_INFO_V1(sift_test_live_clear);
 PG_FUNCTION_INFO_V1(sift_test_churn);
 PG_FUNCTION_INFO_V1(sift_test_dir_updates_count);
 PG_FUNCTION_INFO_V1(sift_test_flush_wal);
@@ -339,6 +342,49 @@ sift_test_peek(PG_FUNCTION_ARGS)
 	UnlockReleaseBuffer(buf);
 	relation_close(index, AccessShareLock);
 	PG_RETURN_INT64(value);
+}
+
+/*
+ * sift._test_live_clear(index, nsb, sbidx): writes the LIVE run of a segment of nsb superblocks (64 rows, none in the directory),
+ * kills row 5 of superblock sbidx and returns the pages whose special space changed and whether the dirty bit reads back
+ */
+Datum
+sift_test_live_clear(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	uint32		nsb = PG_GETARG_INT32(1),
+				sbidx = PG_GETARG_INT32(2);
+	uint64		dead = 5,
+				gen;
+	uint8	   *dirty = palloc0((nsb + 7) / 8);
+	SiftLive	l = {.index = index, .nsb = nsb, .nbits = 64};
+	SiftWriteTarget *wt;
+	int32		damaged = 0;
+	Datum		values[2];
+	bool		nulls[2] = {0};
+
+	MAINT_LOCK(index, ShareLock);
+	l.gen = gen = sift_store_new_gen(index);
+	wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
+	sift_live_write(wt, gen, nsb, l.nbits, &l.first, &l.npages);
+	sift_wt_finish(wt);
+	sift_live_clear(&l, sbidx, &dead, 1);
+	for (uint32 i = 0; i < l.npages; i++)
+	{
+		Buffer		buf = ReadBuffer(index, l.first + i);
+		SiftPageOpaque o;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		o = SiftPageGetOpaque(BufferGetPage(buf));
+		damaged += o->type != SIFT_PT_LIVE || o->flags != 0 || o->reserved != 0 || o->gen != gen;
+		UnlockReleaseBuffer(buf);
+	}
+	sift_live_dirty(&l, dirty);
+	MAINT_UNLOCK(index, ShareLock);
+	values[0] = Int32GetDatum(damaged);
+	values[1] = BoolGetDatum(dirty[sbidx / 8] >> (sbidx % 8) & 1);
+	relation_close(index, RowExclusiveLock);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
 }
 
 /*

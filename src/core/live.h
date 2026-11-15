@@ -54,9 +54,9 @@ extern uint32 sift_live_ndead(const SiftLive *l);
 extern void sift_live_bits(const SiftLive *l, uint64 rank, uint32 n, uint64 *out, uint32 nwords);
 
 /*
- * Clears the bits of the ranks dead[0..nd) (ascending, within one superblock: at most two bit pages) and sets the SB's dirty bit
- * (sbidx = sb - sb_lo) and counts them dead, in one generic WAL record. The caller marks the directory entry SIFT_SEG_DIRTY first
- * (bits cleared under a clean flag would be ignored by readers).
+ * Sets the SB's dirty bit (sbidx = sb - sb_lo; a record of its own, the bitmap may span pages), then clears the bits of the ranks
+ * dead[0..nd) (ascending, within one superblock: at most two bit pages) and counts them dead, in one generic WAL record. The caller
+ * marks the directory entry SIFT_SEG_DIRTY first (bits cleared under a clean flag would be ignored by readers).
  */
 extern void sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd);
 
