@@ -12,6 +12,7 @@
 #include "utils/fmgroids.h"
 #include "catalog/pg_type.h"
 
+#include "agg/agg.h"
 #include "agg/two/int.h"
 
 
@@ -127,15 +128,9 @@ arm_having_expr(AggCtx *c, ArmIn *in, List *quals)
 	return !h.bad;
 }
 
-static bool
-count_aggs_walker(Node *n, int *count)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(count_aggs_walker, int *, count,
 	if (IsA(n, Aggref))
-		(*count)++;
-	return expression_tree_walker(n, count_aggs_walker, count);
-}
+		(*count)++;)
 
 /* the key of the scan that group expression x of the arm is; -1 if it is none */
 int

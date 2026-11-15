@@ -9,8 +9,8 @@ CREATE TABLE events (id int PRIMARY KEY, grp int NOT NULL, sub int, ts int, amou
 INSERT INTO events SELECT i, i % 37, CASE WHEN i % 5 = 0 THEN NULL ELSE i % 3 END, CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 31) % 1000 END, i % 11, i % 4
 FROM generate_series(1, 5000) i;
 CREATE INDEX events_col ON events USING sift_col (id, grp, sub, ts, amount, tie);
-NOTICE:  sift_col index "events_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = sub, tie; track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = sub, tie; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 CREATE TABLE groups (grp int PRIMARY KEY, name text) WITH (autovacuum_enabled = false);
 INSERT INTO groups SELECT i, 'g' || i FROM generate_series(0, 36) i;
@@ -166,20 +166,8 @@ SELECT runq($q$ SELECT id, grp, rn FROM (SELECT id, grp, row_number() OVER (PART
  t
 (1 row)
 
--- the window stays as written: rank(), a window function besides it, no PARTITION BY or ORDER BY, a sub-select that limits, a CTE read twice, the first row
+-- the window stays as written: a window function besides it, no PARTITION BY or ORDER BY, a sub-select that limits, a CTE read twice, the first row
 -- in a condition that is not a conjunct, the second row (the first N rows are agg_topn_rownumber)
-SELECT * FROM check_query('rank', $q$ SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
- label | in_scan | same | rows 
--------+---------+------+------
- rank  | f       | t    |   37
-(1 row)
-
-SELECT window_why($q$ SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
-       window_why       
-------------------------
- rank is not row_number
-(1 row)
-
 SELECT * FROM check_query('another window function', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn, count(*) OVER (PARTITION BY grp) n FROM events) t WHERE rn = 1 $q$);
           label          | in_scan | same | rows 
 -------------------------+---------+------+------

@@ -138,7 +138,7 @@ SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
  XX002: sift index "t_idx" is corrupted | Bad metapage (magic 0x00000000, 64 bytes).
 (1 row)
 
--- the used bytes of the metapage (pd_lower at offset 12, the data at 24): the 64 of a build without the failure note, the 272 with it and the 400 with the analyzer configuration are read, others are not
+-- the used bytes of the metapage (pd_lower at offset 12, the data at 24): the 64 of a build without the failure note, the 272 with it and the 400 with the analyzer configuration are read, a shorter one is not
 SELECT fresh();
  fresh 
 -------
@@ -157,6 +157,7 @@ SELECT expect($$ SELECT sift._test_check('t_idx') $$);
  XX002: sift index "t_idx" is corrupted | Bad metapage (magic 0x53494654, 40 bytes).
 (1 row)
 
+-- a metapage longer than the struct of this build is the extension of a newer one: it is read as it is, and a format this build cannot read is refused by format with its hint
 SELECT fresh();
  fresh 
 -------
@@ -169,12 +170,93 @@ SELECT sift._test_poke('t_idx', 0, 12, 24 + 500, 2);
  
 (1 row)
 
-SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                        expect                                        
---------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Bad metapage (magic 0x53494654, 500 bytes).
+SELECT sift._test_check('t_idx') >= 0 AS longer_metapage_is_read;
+ longer_metapage_is_read 
+-------------------------
+ t
 (1 row)
 
+SELECT sift._test_poke('t_idx', 0, 30, 7, 2);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT expect($$ SELECT sift._test_check('t_idx') $$);
+                                                                                                  expect                                                                                                  
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 55000: sift index "t_idx" has on-disk format 1.7, this build (pg_sift <version>) reads formats 1.0 to 1.6 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
+(1 row)
+
+-- a write keeps the bytes past the struct and never lowers pd_lower over them (a failure note, at offset 64, makes it set pd_lower to the struct); the base of the page is written as always
+SELECT fresh();
+ fresh 
+-------
+ 
+(1 row)
+
+SELECT sift._test_poke('t_idx', 0, 12, 24 + 500, 2);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT sift._test_poke('t_idx', 0, 24 + 492, 123456789, 8);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT sift._test_poke('t_idx', 0, 24 + 64, 1, 8);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT sift._test_peek('t_idx', 0, 24 + 24, 8) AS next_gen \gset
+SELECT sift._test_seg_write('t_idx', 100, 1) > 0 AS written;
+ written 
+---------
+ t
+(1 row)
+
+SELECT lower = 24 + 500 AS lower_kept, sift._test_peek('t_idx', 0, 24 + 492, 8) = 123456789 AS tail_kept,
+	sift._test_peek('t_idx', 0, 24 + 24, 8) > :next_gen AS base_written
+FROM sift._test_page('t_idx', 0);
+ lower_kept | tail_kept | base_written 
+------------+-----------+--------------
+ t          | t         | t
+(1 row)
+
+-- the same for an index of the BM25 access method
+CREATE TABLE r (d text);
+INSERT INTO r VALUES ('a b c'), ('b c d');
+CREATE INDEX r_idx ON r USING sift (d);
+SELECT sift._test_poke('r_idx', 0, 12, 24 + 700, 2);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT sift._test_check('r_idx') >= 0 AS bm25_longer_metapage_is_read;
+ bm25_longer_metapage_is_read 
+------------------------------
+ t
+(1 row)
+
+SELECT sift._test_poke('r_idx', 0, 30, 99, 2);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT expect($$ SELECT sift._test_check('r_idx') $$);
+                                                                                                  expect                                                                                                   
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 55000: sift index "r_idx" has on-disk format 1.99, this build (pg_sift <version>) reads formats 1.0 to 1.6 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
+(1 row)
+
+DROP TABLE r;
 SELECT fresh();
  fresh 
 -------
@@ -226,7 +308,7 @@ SELECT sift._test_poke('t_idx', 0, 28, 2, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
                                                                                                   expect                                                                                                  
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- 55000: sift index "t_idx" has on-disk format 2.2, this build (pg_sift <version>) reads formats 1.0 to 1.5 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
+ 55000: sift index "t_idx" has on-disk format 2.2, this build (pg_sift <version>) reads formats 1.0 to 1.6 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
 (1 row)
 
 SELECT fresh();
@@ -235,7 +317,7 @@ SELECT fresh();
  
 (1 row)
 
-SELECT sift._test_poke('t_idx', 0, 30, 6, 2);
+SELECT sift._test_poke('t_idx', 0, 30, 7, 2);
  _test_poke 
 ------------
  
@@ -244,7 +326,7 @@ SELECT sift._test_poke('t_idx', 0, 30, 6, 2);
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
                                                                                                   expect                                                                                                  
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- 55000: sift index "t_idx" has on-disk format 1.6, this build (pg_sift <version>) reads formats 1.0 to 1.5 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
+ 55000: sift index "t_idx" has on-disk format 1.7, this build (pg_sift <version>) reads formats 1.0 to 1.6 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
 (1 row)
 
 SELECT fresh();

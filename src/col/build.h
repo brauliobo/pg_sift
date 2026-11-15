@@ -23,7 +23,7 @@
 /* The segments a build may write: the directory keeps room for the write buffer and a merge */
 #define SIFT_COL_BUILD_SEGMENTS	(SIFT_MAX_SEGMENTS - 7)
 
-/* The writer of a segment of a participant holds up to half of maintenance_work_mem shared by nslots participants, at least this much (the serial build 64 MB) */
+/* The writer of a segment of a participant holds up to half of maintenance_work_mem shared by nslots participants (the segments of a key_cut build), at least this much (the serial build 64 MB) */
 #define SIFT_COL_BUILD_MIN_BUDGET	((Size) 16 * 1024 * 1024)
 #define SIFT_COL_BUILD_SERIAL_BUDGET ((Size) 64 * 1024 * 1024)
 
@@ -78,7 +78,9 @@ extern bool sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int n
 extern PGDLLIMPORT int sift_test_col_workers;
 extern PGDLLIMPORT int sift_test_col_fail_sb;
 extern PGDLLIMPORT int sift_test_col_segment_kb;
+extern PGDLLIMPORT int sift_test_col_spill_run_kb;	/* kB of memory a run of the ranges of a build by key ranges may take (0 = the fixed cap) */
 extern PGDLLIMPORT int sift_test_col_max_segments;
+extern PGDLLIMPORT bool sift_test_col_no_present;	/* a build writes no presence leaf: the layout of an index made before it */
 extern PGDLLIMPORT int sift_test_col_merge_slices;	/* slices the participants of the last parallel build merged in (0 = one process merged) */
 extern PGDLLIMPORT bool sift_test_col_parallel_always;	/* a parallel build with key_cut is made whatever its merge (on: the tests of the participants run on small tables; off: build_pays decides) */
 extern PGDLLIMPORT int sift_test_col_merge_par_kb;	/* the input of a merge outside a build from which the workers make it, in kB (the gate MERGE_PAR_BYTES) */

@@ -6,7 +6,7 @@ CREATE TABLE nullp (id int, parent_id int NOT NULL, kind int NOT NULL, deleted_a
 INSERT INTO nullp SELECT i, 1 + ((((i * 7919) % 200000)::float8 / 200000) ^ 2 * 99)::int, i % 10,
 	CASE WHEN i % 500 = 0 OR ((((i * 7919) % 200000)::float8 / 200000) ^ 2 * 99)::int = 6 AND i % 4 = 0 THEN now() END FROM generate_series(1, 200000) i;
 CREATE INDEX nullp_parent ON nullp (parent_id);
-CREATE INDEX nullp_col ON nullp USING sift_col (parent_id, deleted_at, kind) WITH (rollup_dims = 'off', key_cut = 'off');
+CREATE INDEX nullp_col ON nullp USING sift_col (parent_id, deleted_at, kind) WITH (rollup_columns = 'off', key_cut = 'off');
 ANALYZE nullp;
 
 CREATE FUNCTION nullp_plan_index(q text) RETURNS text LANGUAGE plpgsql AS $$

@@ -2,6 +2,7 @@
 -- cost one probe for each row of the outer table. They become a left join of the table (of the keys of the table that EXISTS asks), which the scan reads in its pass: a row with no match
 -- is NULL, as the sub-select is. The rows must be the same as with the scan off, for outer keys that are NULL, that repeat and that have no row in the table, with no worker and with three.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE tenants (id int PRIMARY KEY, region int, name text NOT NULL, UNIQUE (region, id));
@@ -44,19 +45,11 @@ BEGIN
 	END LOOP;
 	RETURN CASE WHEN scans > 0 THEN 'scan x' || scans WHEN subs > 0 THEN 'probes' ELSE 'normal' END;
 END $$;
-CREATE FUNCTION decor_rows(q text, scan bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', scan::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
-	EXECUTE format('SELECT coalesce(string_agg(t::text, E''\n'' ORDER BY t::text), '''') FROM (%s) t', q) INTO r;
-	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	RETURN r;
-END $$;
+CREATE FUNCTION decor_rows(q text, scan bool, workers int) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_with_workers_reset(q, scan, workers) $$;
 SELECT n, label, decor_plan(q) AS plan, decor_rows(q, false, 0) <> '' AS has_rows, decor_rows(q, true, 0) = decor_rows(q, false, 0) AS same, decor_rows(q, true, 3) = decor_rows(q, false, 0) AS same_workers FROM decor_q ORDER BY n;
 
 DROP FUNCTION decor_plan(text);
 DROP FUNCTION decor_rows(text, bool, int);
 DROP TABLE decor_q, events, marks, codes, tenants;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -4,27 +4,25 @@
  * Two values that are equal but spelled differently (1.0 and 1.00, 1 month and 30 days) are two entries; the executor decides what
  * equal values mean with the type's own equality.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
-#include "catalog/pg_type_d.h"
-#include "common/hashfn.h"
 #include "fmgr.h"
-#include "utils/builtins.h"
 #include "utils/memutils.h"
-#include "utils/timestamp.h"
 
 #include "agg/agg_int.h"
 #include "agg/combo_int.h"
 #include "agg/wide.h"
 #include "col/am.h"
 #include "col/wide.h"
+#include "core/hash.h"
 
 static uint32
 key_hash(const uint64 *k)
 {
-	uint64		h = (k[0] * UINT64CONST(0x9E3779B97F4A7C15)) ^ (k[1] * UINT64CONST(0xC2B2AE3D27D4EB4F)) ^ (k[2] * UINT64CONST(0x165667B19E3779F9));
+	uint64		h = sift_fib64(k[0]) ^ (k[1] * SIFT_XXP64_2) ^ (k[2] * SIFT_XXP64_3);
 
-	return (uint32) ((h ^ (h >> 31)) * UINT64CONST(0xD6E8FEB86659FD93) >> 32);
+	return (uint32) (sift_fold64(h, h >> 31) >> 32);
 }
 
 static void

@@ -1,0 +1,88 @@
+-- The rows an ordered index-only scan sorts itself (an order with compact chunks, or the ends only), the rows it keeps for a merge join's restore and the groups
+-- of an ordered pair are bounded by work_mem: the sort moves from arrays to a tuplesort that spills, the kept rows from an array to a temporary file, and the
+-- groups are merged as they are read. The rows are the heap's, in the order of the heap's sort, under the default work_mem and under 64 kB.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE oc (id int, k int4);
+INSERT INTO oc SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE ((i::int8 * 2654435761) % 1000003)::int END FROM generate_series(1, 36000) i;
+CREATE INDEX oc_i ON oc USING sift_col (k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_layout = 'compact');
+-- 3 values of 4,000 rows each: the run of equal keys a merge join keeps to restore
+CREATE TABLE od (id int, k int4);
+INSERT INTO od SELECT i, i % 3 FROM generate_series(1, 12000) i;
+CREATE INDEX od_i ON od USING sift_col (k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_layout = 'compact');
+CREATE TABLE oe (k int4);
+INSERT INTO oe VALUES (0), (1), (2);
+-- the pair: g with 36,000 rows in compact chunks (sorted here), and 3,000 small groups read group after group
+CREATE TABLE pc (id int, g int4 NOT NULL, k int4);
+INSERT INTO pc SELECT i, i % 40, CASE WHEN i % 29 = 0 THEN NULL ELSE ((i::int8 * 2654435761) % 1000000007)::int END FROM generate_series(1, 36000) i;
+CREATE INDEX pc_i ON pc USING sift_col (g, k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'compact');
+CREATE TABLE pb (id int, g int8 NOT NULL, k int8);
+INSERT INTO pb SELECT i, (i % 3000) - 1000, CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 104729::int8) % 5003 - 2500 END FROM generate_series(1, 9000) i;
+CREATE INDEX pb_i ON pb USING sift_col (g, k, id) WITH (count_columns = 'off', write_buffer_limit = 512, order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+VACUUM (ANALYZE) oc;
+VACUUM (ANALYZE) od;
+VACUUM (ANALYZE) oe;
+VACUUM (ANALYZE) pc;
+VACUUM (ANALYZE) pb;
+-- rows in the write buffer, in groups the segments have and in new ones, and rows deleted
+INSERT INTO pb SELECT 20000 + i, (i % 3300) - 1100, (i * 31) % 997 FROM generate_series(1, 400) i;
+DELETE FROM pb WHERE id % 11 = 3;
+
+-- the digest of the rows of q in the order the plan gives them, with the ordered scan (ios) or with the heap and a Sort; scans: the ordered scans of the plan, merges: its merge joins,
+-- spills: whether the plan wrote temporary blocks (the sort of the scan or the rows it keeps for a restore)
+CREATE FUNCTION run(q text, ios bool, OUT n bigint, OUT digest text, OUT scans int, OUT merges int, OUT spills bool) LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	PERFORM set_config('sift.enable_col_scan', ios::text, true);
+	PERFORM set_config('enable_seqscan', (NOT ios)::text, true);
+	PERFORM set_config('enable_sort', (NOT ios)::text, true);
+	PERFORM set_config('enable_bitmapscan', 'false', true);
+	PERFORM set_config('enable_hashjoin', 'false', true);
+	PERFORM set_config('enable_nestloop', 'false', true);
+	PERFORM set_config('enable_hashagg', 'false', true);
+	PERFORM set_config('enable_material', 'false', true);
+	scans := 0;
+	merges := 0;
+	spills := false;
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF line ~ 'Index Only Scan (Backward )?using (oc|od|pc|pb)_i' THEN scans := scans + 1; END IF;
+		IF line ~ 'Merge Join' THEN merges := merges + 1; END IF;
+		IF line ~ 'temp (read=[0-9]+ )?written=[1-9]' THEN spills := true; END IF;
+	END LOOP;
+	EXECUTE 'SELECT count(*), md5(string_agg(r::text, ''|'')) FROM (' || q || ') r' INTO n, digest;
+END $$;
+
+CREATE TABLE queries (n int, q text);
+INSERT INTO queries VALUES
+ (1, 'SELECT k FROM oc ORDER BY k'),
+ (2, 'SELECT k FROM oc ORDER BY k DESC'),
+ (3, 'SELECT count(*) FROM oe a JOIN od b ON a.k = b.k'),
+ (4, 'SELECT a.k, b.k FROM oe a JOIN od b ON a.k = b.k'),
+ (5, 'SELECT g, k FROM pc ORDER BY g, k'),
+ (6, 'SELECT g, k FROM pc ORDER BY g DESC, k DESC'),
+ (7, 'SELECT g, k FROM pb ORDER BY g, k'),
+ (8, 'SELECT g, k FROM pb ORDER BY g DESC, k DESC'),
+ (9, 'SELECT k FROM pb WHERE g = 17 ORDER BY k');
+
+CREATE FUNCTION check_all() RETURNS TABLE (n int, ordered_scan bool, merge_join bool, spills bool, same_rows bool) LANGUAGE sql AS $$
+	SELECT n, (a).scans > 0, (a).merges > 0, (a).spills, (a).n = (h).n AND (a).digest = (h).digest
+	FROM (SELECT n, run(q, true) AS a, run(q, false) AS h FROM queries) s ORDER BY n
+$$;
+
+SELECT * FROM check_all();
+SET work_mem = '64kB';
+SELECT * FROM check_all();
+RESET work_mem;
+
+-- the order block of pb has 3,000 groups: verified in three windows
+SELECT sift.col_verify('pb_i', true);
+SELECT sift.col_verify('pc_i', true);
+
+DROP FUNCTION check_all();
+DROP FUNCTION run(text, bool);
+DROP TABLE queries, oc, od, oe, pc, pb;
+DROP EXTENSION pg_sift;

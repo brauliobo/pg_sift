@@ -10,8 +10,8 @@ One comparison is the rows of one statement on one dataset and size (`statement`
   a true heap     a declared heap order is the one measured (sorted: correlation above 0.9, hash: under 0.1); one table (variant) has one heap order
   same settings   one settings_hash (every setting that is not the default) and one maintenance label; a switch that turns the maintenance off (autovacuum, sift.col_auto_merge,
                   sift.async_maintenance, sift.test_*) is refused unless the set is labelled `maintenance disabled`, and the label without a switch is refused
-  true arms       a forced arm is the structure its EXPLAIN names, and a heap, b-tree, gin or sift arm is never a mix
-  a picked flag   the default plan is in the set for each variant (mode default), and each forced arm says whether it is that plan (same structure and option); a maintenance or a load has no plan to pick: forced, picked 0
+  true arms       a forced arm is the structure its EXPLAIN names, and a heap, b-tree, gin or sift arm is never a mix; the arm `native` (the normal plan) has the structure its plan names
+  a picked flag   the default plan is in the set for each variant (mode default), and each forced arm says whether it is that plan (same structure and option); a maintenance or a load has no plan to pick: forced, picked 0; the arm `native` is never picked, whatever its plan
   true plans      (schema 7 on) a read has the shape of its plan and the hash of it; the repetitions of an arm ran one plan; a forced arm is picked when it ran the plan the planner chose (the same hash), and the default row names an arm that ran it
   instructions    every warm row has a count
   a true churn    a churned read says what was applied; 'settled' needs a VACUUM or a pass on record
@@ -64,8 +64,8 @@ def one_record(r):
         out.append('%s: TEST SETTINGS NOT LABELLED: %s turns the maintenance off, so the state measured may not exist with the defaults; label the set maintenance disabled' % (where(r), ', '.join(switches)))
     if not switches and r.get('maintenance') == 'disabled':
         out.append('%s: LABELLED DISABLED WITHOUT A SWITCH: no setting turns the maintenance off' % where(r))
-    if r.get('arm') not in schema.STRUCTURES + (('mixed',) if r.get('mode') == 'default' else ()):
-        out.append('%s: arm "%s" is none of %s' % (where(r), r.get('arm'), '/'.join(schema.STRUCTURES)))
+    if r.get('arm') not in schema.STRUCTURES + (schema.NATIVE,) + (('mixed',) if r.get('mode') == 'default' else ()):
+        out.append('%s: arm "%s" is none of %s' % (where(r), r.get('arm'), '/'.join(schema.STRUCTURES + (schema.NATIVE,))))
     churned = (r.get('table_state') or '').startswith('churned')
     if churned and r.get('kind') == 'read' and not r.get('churn_history'):
         out.append('%s: CHURN HISTORY MISSING: table state %s with no churn_history (what was applied, or the tuples the statistics counted)' % (where(r), r.get('table_state')))
@@ -186,7 +186,10 @@ def comparison_problems(key, rs, min_reps):
             if r.get('picked') != 1:
                 out.append('%s: DEFAULT ROW %s has picked = %s, not 1' % (label, where(r), r.get('picked')))
         for r in vs:
-            if r['mode'] == 'forced':
+            if r['mode'] == 'forced' and r['arm'] == schema.NATIVE:
+                if r.get('picked') != 0:
+                    out.append('%s: PICKED FLAG of %s is %s but the native arm is never picked' % (label, where(r), r.get('picked')))
+            elif r['mode'] == 'forced':
                 if r.get('plan_hash') and d.get('plan_hash'):
                     want = int(r['plan_hash'] == d['plan_hash'])
                     if r.get('picked') != want:
@@ -203,7 +206,7 @@ def comparison_problems(key, rs, min_reps):
         corr = r.get('heap_corr')
         if corr is not None and ((r['heap_order'] == 'sorted' and abs(corr) < 0.9) or (r['heap_order'] == 'hash' and abs(corr) > 0.1)):
             out.append('%s: HEAP ORDER NOT AS DECLARED at %s: %s, measured correlation %.2f' % (name, where(r), r['heap_order'], corr))
-        if r['mode'] == 'forced' and r['arm'] != r['structure']:
+        if r['mode'] == 'forced' and r['arm'] != r['structure'] and r['arm'] != schema.NATIVE:
             out.append('%s: WRONG ARM at %s: arm %s but the EXPLAIN names %s' % (name, where(r), r['arm'], r['structure']))
         if r['temp'] == 'warm' and r.get('instr_m') is None:
             out.append('%s: INSTRUCTIONS MISSING at %s: a warm row has no instruction count (perf counters unavailable: the collector raises PerfUnavailable and writes no such row; a harness of its own or an older library left it)' % (name, where(r)))

@@ -9,6 +9,7 @@
 
 #include "col/ktab.h"
 #include "core/cmp.h"
+#include "core/hash.h"
 
 #define KT_MEAS		SIFT_KTAB_MEAS
 #define KT_NONE		UINT32_MAX
@@ -105,7 +106,7 @@ sift_ktab_spec(const SiftColSchema *s, SiftCPaggSpec *spec)
 static inline uint32
 slot_of(int64 k, uint32 mask)
 {
-	return (uint32) (((uint64) k * UINT64CONST(0x9E3779B97F4A7C15)) >> 40) & mask;
+	return (uint32) (sift_fib64((uint64) k) >> 40) & mask;
 }
 
 /* Doubles the groups and the hash table */
@@ -115,7 +116,7 @@ grow(SiftCKtab *t, KtLeaf *l)
 	MemoryContext old = MemoryContextSwitchTo(t->cx);
 	uint32		cap = l->cap ? l->cap * 2 : 256;
 
-	l->grp = l->grp ? repalloc(l->grp, cap * sizeof(KtGroup)) : palloc(cap * sizeof(KtGroup));
+	SIFT_REGROW(l->grp, cap * sizeof(KtGroup));
 	memset(l->grp + l->cap, 0, (cap - l->cap) * sizeof(KtGroup));
 	l->cap = cap;
 	if (l->hg)

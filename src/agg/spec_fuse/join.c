@@ -3,6 +3,7 @@
  * Which join and which combo slot of the pass each join and slot of an arm is, and the
  * slot that holds the rest of an ON clause.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "nodes/nodeFuncs.h"
@@ -134,7 +135,7 @@ fuse_join(Fuse *f, FuseArm *arm, int j)
 		int			at = 0;
 
 		while (at < u->ncol && !(u->colatt[at] == mj->colatt[c] && u->coltype[at] == mj->coltype[c] && u->coltypmod[at] == mj->coltypmod[c] &&
-								 u->colcoll[at] == mj->colcoll[c]))
+								 u->colcoll[at] == mj->colcoll[c] && equal(u->colexpr[at], mj->colexpr[c])))
 			at++;
 		if (at == u->ncol)
 		{
@@ -144,6 +145,7 @@ fuse_join(Fuse *f, FuseArm *arm, int j)
 			u->coltype[at] = mj->coltype[c];
 			u->coltypmod[at] = mj->coltypmod[c];
 			u->colcoll[at] = mj->colcoll[c];
+			u->colexpr[at] = mj->colexpr[c];
 			u->ncol++;
 		}
 		arm->col[j][c] = at;

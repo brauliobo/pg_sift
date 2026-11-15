@@ -122,7 +122,7 @@ subtest 'a worker killed in the middle of a pass' => sub {
 		'a worker is in its pass, waiting for the cost delay');
 	my $pid = $primary->safe_psql('postgres', "SELECT pid FROM pg_stat_activity WHERE backend_type = 'sift maintenance' AND wait_event = 'VacuumDelay' LIMIT 1");
 	# a write appends a tombstone and the pass holds the table's worker lock for its whole length: the two must not wait for each other
-	both('k', "SET lock_timeout = '1s'; UPDATE TBL SET v = v + 5 WHERE id = 3; DELETE FROM TBL WHERE id = 5");
+	both('k', "SET lock_timeout = '1s'; UPDATE TBL SET v = v + 5 WHERE id = 3; DELETE FROM TBL WHERE id = 5");  # timeout-ok: a write must not wait for the pass: the lock_timeout makes a wait an error
 	$before = digest($primary, 'k');
 	same('k', 'with the writes made during the pass');
 	kill_expected($pid);

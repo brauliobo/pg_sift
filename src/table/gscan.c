@@ -1,6 +1,7 @@
 /*
  * table/gscan.c - the group scan: its creation, its units and the iteration forward and backward
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "gscan_int.h"
 
 static void
@@ -25,8 +26,8 @@ static void
 vis_sb_mask(void *arg, uint32 sb, uint64 *pagemask)
 {
 	VisArg	   *v = arg;
-	bool		plain = !sift_tomb_any(&v->st->tomb, sb * SB_KEYS, (sb + 1) * SB_KEYS - 1) &&
-		sift_tbl_vers_sb(v->rel, v->snapshot, v->vers, sb) == SIFT_TBL_VER_ALL;
+	bool		plain = !sift_tomb_any(&v->ss.st->tomb, sb * SB_KEYS, (sb + 1) * SB_KEYS - 1) &&
+		sift_tbl_vers_sb(v->rel, v->ss.snapshot, v->ss.vers, sb) == SIFT_TBL_VER_ALL;
 
 	memset(pagemask, plain ? 0xFF : 0, SIFT_PAGEMASK_WORDS * sizeof(uint64));
 }
@@ -36,7 +37,7 @@ vis_filter_page(void *arg, BlockNumber blk, uint64 *offmask)
 {
 	VisArg	   *v = arg;
 
-	return sift_tbl_filter_page_vers(v->rel, v->snapshot, v->vers, blk, offmask, false);
+	return sift_tbl_filter_page_vers(v->rel, &v->ss, blk, offmask, false);
 }
 
 SiftTblGroupScan *
@@ -52,7 +53,7 @@ sift_tbl_gscan_begin(Relation rel, TupleDesc desc, SiftTblRel *st, const SiftDir
 	uint32		sbs = SIFT_TBL_NEXT_VBLOCK(&dir->meta) / SIFT_SB_PAGES + 1;
 
 	g->vers = sift_tbl_vers_build(rel, st, dir, cxt);
-	*va = (VisArg) {rel, st, snapshot, g->vers};
+	*va = (VisArg) {rel, {.st = st,.vers = g->vers,.snapshot = snapshot}};
 	g->snapshot = snapshot;
 	g->rel = rel;
 	g->st = st;
@@ -209,10 +210,7 @@ unit_goto(SiftTblGroupScan *g, int64 k)
 	sift_col_begin(g->s[u->src].src, NULL, 0, u->sb, u->sb + 1);
 	for (uint32 j = 0; j <= u->ordinal; j++)
 		if (!sift_col_next(g->s[u->src].src, &g->unit))
-			ereport(ERROR,
-				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-				 errmsg("sift_table: the unit %u of superblock %u is gone", u->ordinal, u->sb),
-				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
+			SIFT_TBL_RETRY("sift_table: the unit %u of superblock %u is gone", u->ordinal, u->sb);
 	unit_start(g);
 	g->uidx = k;
 }

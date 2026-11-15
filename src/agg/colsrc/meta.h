@@ -6,9 +6,6 @@
 #ifndef SIFT_AGG_COLSRC_META_H
 #define SIFT_AGG_COLSRC_META_H
 
-#include "core/host.h"
-
-#include "core/sift.h"
 #include "core/filter.h"
 
 struct SiftCGOrdBuf;
@@ -35,6 +32,13 @@ typedef enum SiftSrcVecType
 	SCV_CODE					/* uint32 code into the unit's dictionary of the leaf: text, varchar, char(n), name */
 } SiftSrcVecType;
 
+/* the value i of an integer vector (SCV_I32 or SCV_I64) */
+static inline int64
+sift_src_int(const void *data, SiftSrcVecType t, int64 i)
+{
+	return t == SCV_I32 ? ((const int32 *) data)[i] : ((const int64 *) data)[i];
+}
+
 typedef enum SiftSrcLeafKind
 {
 	SCL_SCALAR,					/* a value per row (or per element, for a child leaf) */
@@ -51,8 +55,8 @@ typedef struct SiftSrcLeaf
 	SiftSrcVecType vtype;		/* of the values; of the counts (SCV_I32) for a group leaf */
 	Oid			typid;			/* SQL type of the values: what the query's expression has to produce for a match. InvalidOid for a wide leaf: no
 								 * expression reads its values (wtypid) */
-	int			shape;			/* the head of a range (1) or a network (2) that also keeps the lanes its containment operators test (SWT_R_*, SWT_N_*; col/shape.c); else 0 */
-	Oid			wtypid;			/* a wide leaf: its SQL type, which only a conjunct of the query tests (SAP_WIDE); else InvalidOid */
+	int			shape;			/* the head of a range (1) or a network (2) that also keeps the lanes its containment operators test (SIFT_COLW_R_*, SIFT_COLW_N_*; col/shape.c); else 0 */
+	Oid			wtypid;			/* a wide leaf: its SQL type, which only the source tests (SAP_WIDE); else InvalidOid */
 	bool		wide;			/* numeric of more than 18 digits or any other shape, interval: an SCV_CODE leaf whose dictionary entries are
 								 * not text (src/agg/wide.h): only an expression PostgreSQL evaluates reads it, no kernel, native aggregate, histogram or text test */
 	bool		arrhead;		/* the image of an array that keeps its lengths: the leaves id + 1 and id + 2 are its arrlen lanes */
@@ -105,6 +109,7 @@ typedef struct SiftSrcStats
 	double		mm_miss[SIFT_COLSRC_MAX_LEAVES];
 	double		roll_miss[SIFT_COLSRC_MAX_LEAVES];
 	double		rows_miss;		/* the same for the rollup of the rows */
+	bool		miss_pending;	/* the four above are not read yet: counting the sections of the units costs reads, sift_colsrc_miss does it for the plan that prices a pre-aggregate answer */
 	double		ndistinct[SIFT_COLSRC_MAX_LEAVES];	/* distinct values of a scalar leaf (0: unknown) */
 	double		min[SIFT_COLSRC_MAX_LEAVES];		/* numeric leaves: smallest and largest value as double (0, 0 unknown) */
 	double		max[SIFT_COLSRC_MAX_LEAVES];
@@ -113,6 +118,7 @@ typedef struct SiftSrcStats
 	double		set_keys[SIFT_COLSRC_MAX_LEAVES];	/* ... and the distinct keys such a unit holds on average */
 	double		head_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the units whose sorted run of the leaf holds a head, the best 32 keys at each end with their heap addresses (order_columns): ORDER BY .. LIMIT 32 or less reads the head of a few units (0: none does) */
 	double		gord_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the values of a leaf that the segments keep in a plain global order (order_array_columns): ORDER BY .. LIMIT reads n entries of it, not the units (0: none does) */
+	double		gord_free[SIFT_COLSRC_MAX_LEAVES];	/* ... of which the rows of the segments that keep no order of the leaf (written lean): a walk of the order sorts them in memory, a few instructions a row (AGG_GORD_MEM_ROW), and counts them as covered */
 	uint32		gord_coll[SIFT_COLSRC_MAX_LEAVES];	/* the collation of the text order arrays of a leaf (UINT32_MAX: they differ), 0: the leaf's are not text */
 	bool		gord_bygroup[SIFT_COLSRC_MAX_LEAVES];	/* the leaf, with a value in every row, is the group of the second order of a leaf that holds every row: ORDER BY it reads those orders group after group (gord_open) */
 	int			gord_group[SIFT_COLSRC_MAX_LEAVES];	/* the leaf by which most of the values are also (or only) kept in an order sorted by group (order_array_group): a scan that pins that leaf reads n entries of its group, -1: none */
@@ -123,6 +129,7 @@ typedef struct SiftSrcStats
 	double		ovf_frac[SIFT_COLSRC_MAX_LEAVES];	/* of the rows of a unit flagged with an overflow value of the leaf, the share a scan reads again from the heap, from a sample of the flagged units (negative: none could be sampled); of the rows, for an element leaf: its share times the elements of a row */
 	bool		ovf[SIFT_COLSRC_MAX_LEAVES];	/* some unit holds values the leaf cannot store (overflow): reading it raises an error, a numeric leaf's NaNs apart */
 	bool		jnull[SIFT_COLSRC_MAX_LEAVES];	/* some unit may hold a JSON null in the leaf (a write buffer, or a segment that cannot tell it from a missing key, may): its cast to a number raises before PostgreSQL 18 */
+	double		rootless[SIFT_COLSRC_MAX_LEAVES];	/* the share of the rows that lie where a document that is a string cannot be told from a missing key (doc ? 'k' reads them again from the heap) */
 	bool		nokinds[SIFT_COLSRC_MAX_LEAVES];	/* some segment may not tell a JSON null from a missing key in the leaf, or the type of an astext value: a test that needs it raises the REINDEX error */
 } SiftSrcStats;
 

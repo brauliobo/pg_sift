@@ -89,7 +89,8 @@ SELECT * FROM same($$SELECT 'a' AS arm, g.tier::text AS k, g.grade AS g, count(*
 (1 row)
 
 -- no condition reads the leaves: the arms load the same rows whatever number of leaves their join keys read
-SELECT * FROM same($$SELECT 'a' AS arm, e.tier::text AS k, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id GROUP BY 2
+-- (keys by an expression of one leaf and of two: neither arm takes the table as classes of its keys, which is an entry of its own)
+SELECT * FROM same($$SELECT 'a' AS arm, e.tier::text AS k, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id + 0 GROUP BY 2
 	UNION ALL SELECT 'b', e.tier::text, count(*) FROM ev JOIN ents e ON e.id = ev.dim_a_id + (ev.foreign_id - ev.foreign_id) GROUP BY 2$$);
                plan               | result_rows | vs_unshared | vs_normal_plan 
 ----------------------------------+-------------+-------------+----------------

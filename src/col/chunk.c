@@ -1,7 +1,6 @@
 /*
  * col/chunk.c - L1 of the column engine: reading a column chunk, its validation, tags and decoding.
  */
-#include "core/host.h"
 
 #include "col/enc.h"
 #include "col/enc_int.h"

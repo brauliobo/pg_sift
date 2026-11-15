@@ -3,7 +3,6 @@
  * the unit aggregates, the super units
  * written after the units they summarize
  */
-#include "core/host.h"
 #include "core/limits.h"
 #include "col/seg_write/seg_write_int.h"
 
@@ -203,7 +202,7 @@ write_pagg(SiftColSegWriter *w)
 		PAGG_KTAB(h) = ALIGN8(at);
 		PAGG_KTAB_BYTES(h) = w->ktab.len;
 	}
-	sift_sw_write(w->sw, h, hsz);
+	segw_write_mirrored(w, MIR_PAGG, h, hsz);
 	for (int c = 0; c < ncols; c++)
 	{
 		uint64	   *blk;
@@ -310,7 +309,7 @@ segw_write_zones(SiftColSegWriter *w, SiftSectionRef *sec)
 	}
 	segw_sw_pad8(w->sw);
 	sec->off = sift_sw_tell(w->sw);
-	sift_sw_write(w->sw, dir, ALIGN8(dirsz));
+	segw_write_mirrored(w, MIR_ZONES, dir, ALIGN8(dirsz));
 	for (int c = 0; c < ncols; c++)
 	{
 		const SiftColDef *def = &w->schema->cols[c];
@@ -363,7 +362,7 @@ segw_write_zones(SiftColSegWriter *w, SiftSectionRef *sec)
 			if (lo != NULL)
 				rec->sample_off = (uint8 *) lo - w->lst;
 		}
-		sift_sw_write(w->sw, blk, sz);
+		segw_write_mirrored(w, MIR_ZONEARR, blk, sz);
 		pfree(blk);
 	}
 	segw_sw_pad8(w->sw);

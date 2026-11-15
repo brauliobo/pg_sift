@@ -13,6 +13,9 @@
 #   scripts/pgtest.sh regress [t...]  make installcheck against the cluster; with test names, pg_regress runs just those,
 #                                in one database per call (contrib_regression_<first>) and an output directory $SIFT_TMP/regress/<t> per test (parallel
 #                                runs); a test that leaves objects behind fails (scripts/leftovers.sql, exceptions in scripts/leftovers.allow)
+#                                Run the tests that compare heap-free reads (col_heapfree_*, col_track_*, col_tomb_*, col_stmt_cid*) one at a time on a quiet cluster: a session
+#                                of another test holds back the xmin horizon, and what a read may take from the log without the heap (free_reads_heap) changes by design
+#   scripts/pgtest.sh fresh [t...]    regress with a NEW backend for every statement outside a transaction (scripts/fresh-psql.py, test/fresh/README.md)
 #   scripts/pgtest.sh leftovers [t...]  each test alone in a database of its own; lists what it left behind (scripts/leftovers.sql)
 #   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters
 #   scripts/pgtest.sh ready      wait until the cluster accepts connections (recovery after a crashed backend)
@@ -60,9 +63,11 @@ PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 unset PGDATABASE PGSERVICE PGSERVICEFILE
 export PGHOST=$SOCK PGPORT=$PORT
 export SIFT_TESTING=${SIFT_TESTING-1}
-FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing }${SIFT_HARDEN:+harden$SIFT_HARDEN${SIFT_UBSAN_SET:+(${SIFT_UBSAN_SET// /,})}${SIFT_POINTER_OVERFLOW:++ptr} }$([[ -n ${SIFT_LTO:-} ]] && echo lto || echo nolto)${VULKAN:+ vulkan}"
+FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing }${SIFT_HARDEN:+harden$SIFT_HARDEN${SIFT_UBSAN_SET:+(${SIFT_UBSAN_SET// /,})}${SIFT_POINTER_OVERFLOW:++ptr} }$([[ -n ${SIFT_LTO:-} ]] && echo lto || echo nolto)${VULKAN:+ vulkan} pg$PG_MAJOR"
 
 (( PORT >= 56100 && PORT <= 56299 )) || { echo "SIFT_PORT must be in 56100-56299" >&2; exit 1; }
+
+DLSUFFIX=.so; [[ $(uname) != Darwin ]] || DLSUFFIX=.dylib   # the suffix of a PostgreSQL module
 
 install() {
 	echo "pgtest: install: $([[ -n $SIFT_TESTING ]] && echo 'test library' || echo 'release library') (flavor ${FLAVOR% })" >&2   # SIFT_TESTING set and empty is the release library: an inherited empty value builds it
@@ -70,6 +75,7 @@ install() {
 	# on the make command line: sudo resets the environment, which would install another flavor
 	local flavor=(USE_PGXS=1 SIFT_TESTING="$SIFT_TESTING" SANITIZE="${SANITIZE:-}" SIFT_LTO="${SIFT_LTO:-}" SIFT_HARDEN="${SIFT_HARDEN:-}" ${SIFT_UBSAN_SET:+"SIFT_UBSAN_SET=$SIFT_UBSAN_SET"} ${SIFT_POINTER_OVERFLOW:+SIFT_POINTER_OVERFLOW=1} ${VULKAN:+VULKAN=1})
 	nice make -C "$REPO" -j4 "${flavor[@]}"
+	"$REPO/scripts/check-undefined.sh" "$REPO/pg_sift$DLSUFFIX"
 	echo "$FLAVOR" >"$REPO/.build-flavor"
 	if (( PG_MAJOR >= 18 )); then
 		make -C "$REPO" "${flavor[@]}" DESTDIR="$ROOT" install >/dev/null
@@ -90,6 +96,8 @@ conf() {
 	echo "sift.col_auto_merge = off"
 	# and a test that switches it on wants its rewrite when the rule says so, not when the cluster has written enough (the test of the budget sets its own)
 	echo "sift.col_auto_merge_wal_pct = 0"
+	# the tests of the options that 4.3 deprecated build with them until 4.4 removes them; the tests of the default say SET sift.test_col_legacy_options = off
+	echo "sift.test_col_legacy_options = on"
 	# a server with LLVM compiles every plan above jit_above_cost, and the tests that force a plan with page costs of 10000 reach it: the normal plan of 1,200
 	# partitions took 5.6 s to compile and 11 ms to run (PostgreSQL 17 of the CI runners has the library in its package, 18 in another one)
 	echo "jit = off"
@@ -122,6 +130,15 @@ new_data() {
 # max_wal_size 512MB: with 48MB a test that writes 30 MB of WAL in 14 s (col_sorted_run) checkpointed all the time, and on a runner disk that wrote
 # 0.1 MB/s a backend waited 100 to 250 s for a dirty buffer (33 to 255 "checkpoints are occurring too frequently" per lane in a PostgreSQL 19 quick shard).
 # The WAL a lane keeps is at most this, 1 MB segments, no recycling.
+# reset_auto_conf DIR: the settings an ALTER SYSTEM of an earlier session left (max_parallel_workers_per_gather = 0, a small shared_buffers, work_mem) change the plans of
+# the tests: 18 of them failed on a clean tree for it. The cluster starts from the conf above alone.
+reset_auto_conf() {
+	if grep -qv '^#' "$1/postgresql.auto.conf" 2>/dev/null; then
+		echo "pgtest: $1/postgresql.auto.conf held settings from ALTER SYSTEM; emptied" >&2
+		: >"$1/postgresql.auto.conf"
+	fi
+}
+
 start() {
 	mkdir -p "$SOCK"
 	if [[ ! -f $DATA/PG_VERSION ]]; then
@@ -138,9 +155,11 @@ start() {
 			shared_buffers = 64MB
 			max_worker_processes = 16
 			max_locks_per_transaction = 256
+			max_prepared_transactions = 8
 			autovacuum = off
 		EOF
 	fi
+	reset_auto_conf "$DATA"
 	( sanitizer_env; pg_ctl -D "$DATA" -l "$TMP/postgres.log" -w start >/dev/null )
 	createdb -U postgres "$DB" 2>/dev/null || true
 	leak_baseline "$DATA"
@@ -211,7 +230,16 @@ pg_regress() {
 	local out=$1 db=$2
 	shift 2
 	rm -rf "$out" && mkdir -p "$out"
-	PGUSER=postgres "$(dirname "$(pg_config --pgxs)")/../test/regress/pg_regress" --inputdir="$REPO/test" --outputdir="$out" --bindir= --dbname="$db" "$@"
+	# SIFT_FRESH: a psql that connects anew before every statement outside a transaction (scripts/fresh-psql.py) stands first in PATH, in this subshell only
+	# (FRESH_PSQL is the real psql, found before PATH changes: the shim refuses to run as its own psql or inside itself)
+	(
+		if [[ -n ${SIFT_FRESH:-} ]]; then
+			mkdir -p "$TMP/fresh-bin" && ln -sf "$REPO/scripts/fresh-psql.py" "$TMP/fresh-bin/psql"
+			FRESH_PSQL=$(command -v psql)
+			export FRESH_PSQL FRESH_STATS=$out/fresh-stats PATH=$TMP/fresh-bin:$PATH
+		fi
+		PGUSER=postgres "$(dirname "$(pg_config --pgxs)")/../test/regress/pg_regress" --inputdir="$REPO/test" --outputdir="$out" --bindir= --dbname="$db" "$@"
+	)
 }
 
 # leftovers [TEST...]: each test alone in a database of its own (all of test/sql without names); prints "TEST: object" for what it left behind
@@ -254,7 +282,19 @@ case ${1:-} in
 		[[ -z ${ASAN_OPTIONS:-} ]] || echo "export SIFT_SANITIZER='LD_PRELOAD=$LD_PRELOAD ASAN_OPTIONS=$ASAN_OPTIONS LSAN_OPTIONS=$LSAN_OPTIONS UBSAN_OPTIONS=$UBSAN_OPTIONS'"
 		;;
 	regress) shift; regress "$@" ;;
+	fresh)
+		shift
+		# at most SIFT_FRESH_RUNS (default 1, at most 4) fresh runs on a host (every statement is a connection), and never inside one (the shim stands first in PATH of the pg_regress subshell only)
+		[[ -z ${FRESH_PSQL:-}${FRESH_ACTIVE:-} ]] || { echo "pgtest: fresh runs do not nest" >&2; exit 1; }
+		slot=0 got=
+		for ((slot = 0; slot < ${SIFT_FRESH_RUNS:-1} && slot < 4; slot++)); do
+			exec 9>"${XDG_RUNTIME_DIR:-/tmp}/sift-fresh.$slot.lock"
+			if flock -n 9; then got=1; break; fi
+		done
+		[[ -n $got ]] || { echo "pgtest: ${SIFT_FRESH_RUNS:-1} fresh run(s) are at work (SIFT_FRESH_RUNS, at most 4)" >&2; exit 1; }
+		SIFT_FRESH=1 regress "$@" ;;
 	leftovers) shift; leftovers "$@" ;;
+	reset-auto-conf) reset_auto_conf "$2" ;;
 	initdb-template) initdb_template "$2" ;;
 	new-data) new_data "$2" "${3:-}" ;;
 	tap) tap "${2:-}" ;;
@@ -262,5 +302,5 @@ case ${1:-} in
 	clean) clean ;;
 	destroy) stop || true; rm -rf "$TMP" ;;
 	sanitizer-report) leak_scan "$SANDIR" ;;
-	*) sed -n '2,31p' "$0"; exit 1 ;;
+	*) sed -n "2,32p" "$0"; exit 1 ;;
 esac

@@ -1,0 +1,40 @@
+-- The plan of the statements the b-tree plan answers faster. A list of 20 to 1,000 rows of one entity (ORDER BY .. LIMIT over WHERE entity = k) read the rows from
+-- the heap in the order of the key, and the b-tree on (entity, key) reads the same pages without the sorted runs: measured, the top-N scan took 1.9 to 2.4 times its
+-- instructions and 2.0 to 2.5 times its cycles (pgbench -c 4: 8,300 against 15,500 statements a second), while the cost model priced the fetch at half a page
+-- (a fifth of the b-tree plan's cost with sorted runs); where a b-tree gives the first key of the order the price now has the pages of its plan as a floor.
+-- `plan` is where the rows come from: the b-tree ("native") or the extension ("sift"). The lists a b-tree cannot give in order (another key, a filter on a column it does not hold, the whole table) stay with the extension: they take 4 to 80 times fewer instructions.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+CREATE TABLE events (id int PRIMARY KEY, entity int NOT NULL, d date NOT NULL, kind int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
+-- 500 entities of 160 to 20,000 rows: the number of an entity is the cube of a uniform value
+INSERT INTO events SELECT g, 1 + (500 * power((hashint4(g) & 2147483647) / 2147483648.0, 3))::int, date '2020-01-01' + (hashint4(g + 1) & 2147483647) % 2000, (hashint4(g + 2) & 2147483647) % 20, g % 1000
+FROM generate_series(1, 200000) g;
+CREATE INDEX events_entity_d ON events (entity, d);
+CREATE INDEX events_col ON events USING sift_col (id, entity, d, kind, amount) WITH (key_columns = 'entity', key_order = 'entity, d');
+VACUUM (FREEZE, ANALYZE) events;
+
+CREATE FUNCTION plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF line ~ 'Custom Scan \(SiftAgg\)' THEN RETURN 'sift'; END IF;
+	END LOOP;
+	RETURN 'native';
+END $$;
+
+SELECT entity, size, lim, plan(format('SELECT id, d, amount FROM events WHERE entity = %s ORDER BY d DESC, id LIMIT %s', entity, lim)) AS plan
+FROM (SELECT entity, count(*) AS size FROM events WHERE entity IN (1, 2, 10, 40, 120, 300) GROUP BY entity) e, (VALUES (20), (200), (1000)) l(lim)
+ORDER BY entity, lim;
+
+SELECT q, plan(q) AS plan FROM (VALUES
+	('SELECT id, d, amount FROM events ORDER BY amount DESC, id LIMIT 10'),
+	('SELECT id, d, amount FROM events ORDER BY d DESC, id LIMIT 200'),
+	('SELECT id, d, amount FROM events WHERE kind = 3 ORDER BY amount DESC, id LIMIT 50'),
+	('SELECT id, d, amount FROM events WHERE entity < 50 ORDER BY amount DESC, id LIMIT 100'),
+	('SELECT id, d, amount FROM events ORDER BY amount DESC, id LIMIT 100 OFFSET 5000')) s(q);
+
+DROP FUNCTION plan(text);
+DROP TABLE events;
+DROP EXTENSION pg_sift;

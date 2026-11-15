@@ -12,7 +12,8 @@
 #                 0.109, 0.061 and 0.051), so the bands hold at 30000 only (40 of 106 shapes leave them at 50000). Another size has bands of its own, the rows `LANE@N` of test/plan/bands.tsv
 #                 (`--update --rows N` records them, as `stock@250000`, `table@250000` ...); a size with none is checked for the results and the loses only
 #   --runs N      median of N warm runs of the native and the scan path (default 3; 0: no timings; a shape tagged `-- runs: K` takes at least K)
-#   --shapes RE   only the shapes whose name matches
+#   --shapes RE   only the shapes whose name matches the regular expression (anywhere in the name: `^top_rows` and `unindexed_column$` too). A filtered --update rewrites the rows of the
+#                 shapes that ran and keeps the others, and writes nothing when none ran
 #   --lane tuned   the planner settings of a tuned profile (seq_page_cost 100, random_page_cost 4, workers 8, hash_mem_multiplier 2, work_mem 4GB): the results must agree and a
 #                 lose still fails, but the plan and the cost band are those of the lane in test/plan/bands.tsv, so a different plan or a ratio outside its band fails on PostgreSQL 18, as in the stock lane
 #   --table       the tables as sift_table (test/plan/table.sql): the results must agree as ever; the plan and the cost band are those of the lane in
@@ -34,17 +35,44 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
-ROWS=30000 SEED=1 RUNS=3 ONLY= WARN= UPDATE= KEEP= LANE=stock TABLE= CAL= PLAN=
+ROWS=30000 SEED=1 RUNS=3 ONLY= WARN= UPDATE= KEEP= LANE=stock TABLE= CAL= PLAN= SELFTEST=
 DB=${PLANGATE_DB:-sift_plangate}
 
 while (( $# )); do
 	case $1 in
 		--warn-time) WARN=1 ;; --calibrate) CAL=1 ;; --planning) CAL=1 PLAN=1 ;; --update) UPDATE=1 ;; --keep) KEEP=1 ;; --table) TABLE=1 ;;
 		--rows) ROWS=$2; shift ;; --seed) SEED=$2; shift ;; --runs) RUNS=$2; shift ;; --shapes) ONLY=$2; shift ;; --lane) LANE=$2; shift ;;
+		--selftest) SELFTEST=1 ;;
 		*) sed -n 2,27p "$0"; exit 1 ;;
 	esac
 	shift
 done
+
+# the rows of this run (NEW: lane, shape, plan, lo, hi) replace the rows of the same lane and shape in the bands file OLD, whatever else the file holds; nothing is written when the
+# run has no rows (a filter that matched no shape): an awk that reads an empty first file takes the second for it and drops every row
+merge_bands() {
+	local new=$1 old=$2 out
+	[[ -s $new ]] || { echo "plangate: no row to update: the shapes filter matched none" >&2; return 1; }
+	out=$(mktemp)
+	{ awk -F'\t' -v newfile="$new" 'FILENAME == newfile { k[$1 FS $2] = 1; next } !(($1 FS $2) in k)' "$new" "$old"; cat "$new"; } | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 >"$out"
+	cat "$out" >"$old"
+	rm -f "$out"
+}
+
+if [[ -n $SELFTEST ]]; then
+	d=$(mktemp -d)
+	trap 'rm -rf "$d"' EXIT
+	printf 'stock@250000\ta\teither\t1\t2\nstock@250000\tb\tscan\t3\t4\ntable\ta\tnormal\t5\t6\n' >"$d/old"
+	printf 'stock@250000\tb\tscan\t7\t8\n' >"$d/new"
+	merge_bands "$d/new" "$d/old"
+	[[ $(cat "$d/old") == $'stock@250000\ta\teither\t1\t2\nstock@250000\tb\tscan\t7\t8\ntable\ta\tnormal\t5\t6' ]] || { echo "plangate selftest: a filtered update changed more than its rows" >&2; exit 1; }
+	: >"$d/new"
+	cp "$d/old" "$d/keep"
+	merge_bands "$d/new" "$d/old" 2>/dev/null && { echo "plangate selftest: an update with no row went through" >&2; exit 1; }
+	cmp -s "$d/old" "$d/keep" || { echo "plangate selftest: an update with no row changed the file" >&2; exit 1; }
+	echo "plangate selftest: ok"
+	exit 0
+fi
 
 sql() { PGOPTIONS='-c client_min_messages=warning' SIFT_DB=${DBNOW:-$DB} "$REPO/scripts/pgtest.sh" psql -v ON_ERROR_STOP=1 "$@"; }
 log() { printf '[plangate %s] %s\n' "$(date +%T)" "$*" >&2; }
@@ -205,9 +233,8 @@ if [[ -n $UPDATE && -n $LK ]]; then
 	sql -qAt -F $'\t' -c "SELECT '$LK', name, CASE WHEN plan = 'either' THEN plan ELSE chosen END,
 		coalesce(round(ratio::numeric / 2, 1 - floor(log(ratio::numeric / 2))::int)::text, '-'), coalesce(round(ratio::numeric * 2, 1 - floor(log(ratio::numeric * 2))::int)::text, '-')
 		FROM plangate.results" >"${SIFT_TMP}/plangate-bands.tsv"
-	{ awk -F'\t' 'NR == FNR { new[$1 FS $2] = 1; next } !(($1 FS $2) in new)' "${SIFT_TMP}/plangate-bands.tsv" "$REPO/test/plan/bands.tsv"; cat "${SIFT_TMP}/plangate-bands.tsv"; } | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 >"${SIFT_TMP}/plangate-all.tsv"
-	cat "${SIFT_TMP}/plangate-all.tsv" >"$REPO/test/plan/bands.tsv"
-	rm -f "${SIFT_TMP}/plangate-bands.tsv" "${SIFT_TMP}/plangate-all.tsv"
+	merge_bands "${SIFT_TMP}/plangate-bands.tsv" "$REPO/test/plan/bands.tsv" || { rm -f "${SIFT_TMP}/plangate-bands.tsv"; exit 1; }
+	rm -f "${SIFT_TMP}/plangate-bands.tsv"
 	log "updated the $LK rows of test/plan/bands.tsv"
 elif [[ -n $UPDATE ]]; then
 	sql -qAt -F $'\t' -c "SELECT name, expect FROM plangate.suggestions" >"${SIFT_TMP}/plangate-expect.tsv"

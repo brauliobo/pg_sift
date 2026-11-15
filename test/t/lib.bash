@@ -53,8 +53,29 @@ not_ok() {
 	for n in "${NODES[@]}"; do [[ -f $(dir "$n")/postgres.log ]] && diag "log of node $n:"$'\n'"$(tail -25 "$(dir "$n")/postgres.log" | cut -c1-240)"; done
 	return 0
 }
+# wait_for COND SECONDS: 0 as soon as the shell condition COND holds, 1 when it still does not after SECONDS; polls every 0.1 s and does not sleep after success.
+# A wait on an observable condition with a large cap, not a fixed budget: a loaded host only makes it longer. A short timeout literal needs a note (scripts/check-tap-timeouts.sh)
+wait_for() {
+	local i
+	for ((i = 0; i < $2 * 10; i++)); do eval "$1" && return 0; sleep 0.1; done
+	eval "$1"
+}
+# wait_stable NODE SQL SECONDS: the background work has stopped changing what the query SQL returns: no 'sift maintenance' backend and the same value for 10 polls
+# in a row (progress stops; the target is checked by the test). SECONDS is a safety cap that a loaded host does not reach
+wait_stable() {
+	local node=$1 query=$2 last= same=0
+	stable_poll() {
+		local v
+		v=$(sql "$node" "SELECT ($query), EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type = 'sift maintenance')")
+		[[ $v == *'|f' && $v == "$last" ]] && same=$((same + 1)) || same=0
+		last=$v
+		((same >= 10))
+	}
+	wait_for stable_poll "$3"
+}
 diag() { sed 's/^/# /' <<<"$*"; }
-check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; fi; }
+# a failed check shows what the test had captured in $out: a hosted run lost the cause of one failure because its log said only which check failed
+check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; [[ -z ${out:-} ]] || diag "what the check read (out):"$'\n'"$(head -n 40 <<<"$out" | cut -c1-240)"; fi; }
 skip() { local n=$1; shift; for _ in $(seq "$n"); do NTEST=$((NTEST + 1)); echo "ok $NTEST # skip $*"; done; }
 bail() { NFAIL=$((NFAIL + 1)); echo "Bail out! $*"; exit 1; }   # a bail keeps the node logs
 # sed -i in place on GNU and BSD sed (BSD's takes the next word as the suffix)
@@ -130,13 +151,13 @@ conninfo() { echo "host=$(dir "$1")/sock port=$(port "$1") user=postgres dbname=
 
 node_conf() { printf '%s\n' "$2" >>"$(dir "$1")/data/postgresql.conf"; }
 # use_root NODE ROOT: NODE loads the sift installed under ROOT (a released library built by scripts/old-lib-check.sh, or $newroot, the one of this
-# tree). Only this tree defines the settings scripts/pgtest.sh conf sets (sift.table_auto_defrag, sift.col_auto_merge, sift.col_auto_merge_wal_pct): a released
+# tree). Only this tree defines the settings scripts/pgtest.sh conf sets (sift.table_auto_defrag, sift.col_auto_merge, sift.col_auto_merge_wal_pct, sift.test_col_legacy_options): a released
 # library warns that "sift" is a reserved prefix in the first statement of a session, and the test compares what the statements print.
 use_root() {
 	local conf=$(dir "$1")/data/postgresql.conf k
 	ROOT=$2
-	for k in table_auto_defrag col_auto_merge col_auto_merge_wal_pct; do sed_i "/^sift\.$k = /d" "$conf"; done
-	[[ $ROOT != "$newroot" ]] || "$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf | grep -E '^sift\.(table_auto_defrag|col_auto_merge|col_auto_merge_wal_pct) = ' >>"$conf"
+	for k in table_auto_defrag col_auto_merge col_auto_merge_wal_pct test_col_legacy_options; do sed_i "/^sift\.$k = /d" "$conf"; done
+	[[ $ROOT != "$newroot" ]] || "$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf | grep -E '^sift\.(table_auto_defrag|col_auto_merge|col_auto_merge_wal_pct|test_col_legacy_options) = ' >>"$conf"
 	node_conf "$1" "extension_control_path = '$ROOT$(pg_config --sharedir):\$system'
 dynamic_library_path = '$ROOT$(pg_config --pkglibdir):\$libdir'"
 }
@@ -252,6 +273,21 @@ crash_cycle() {
 	return 1
 }
 
+# node_stop_fast DATA: the fast shutdown the leak gate asks for. One that does not end in 120 s is a finding of its own, with what each
+# process of the cluster waits for (the immediate stop that follows leaves temporary files that are not the finding)
+node_stop_fast() {
+	local pid
+	pg_ctl -D "$1" -m fast -w -t 120 stop >/dev/null 2>&1 && return 0
+	pid=$(head -1 "$1/postmaster.pid" 2>/dev/null)
+	leak_finding "fast shutdown did not end in 120 s; the processes left:"
+	ps -o pid,ppid,stat,wchan:30,args --ppid "${pid:-0}" 2>&1 | sed 's/^/# /' >&2
+	for pid in $(pgrep -P "${pid:-0}"); do
+		command -v gdb >/dev/null && { echo "# backtrace of $pid:"; gdb -p "$pid" -batch -ex bt 2>&1 | tail -n 30; } >&2
+	done
+	pg_ctl -D "$1" -m immediate stop >/dev/null 2>&1
+	return 1
+}
+
 # node_leakcheck NAME: the cluster invariants while it runs, a clean shutdown (LeakSanitizer reports as the processes exit)
 # and the scan of its log
 node_leakcheck() {
@@ -259,7 +295,7 @@ node_leakcheck() {
 	d=$(dir "$1")
 	if [[ -f $d/data/postmaster.pid ]]; then
 		PGHOST=$d/sock PGPORT=$(port "$1") PGUSER=postgres leak_cluster "$d/data" || rc=1
-		pg_ctl -D "$d/data" -m fast -w -t 120 stop >/dev/null 2>&1 || pg_ctl -D "$d/data" -m immediate stop >/dev/null 2>&1
+		node_stop_fast "$d/data" || rc=1
 		leak_after_stop "$d/data" || rc=1
 	fi
 	leak_scan "$d" || rc=1

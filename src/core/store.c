@@ -5,33 +5,19 @@
 #include "postgres.h"
 
 #include "access/generic_xlog.h"
-#include "access/nbtxlog.h"
 #include "access/parallel.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_class.h"
-#include "catalog/storage.h"
-#include "storage/procarray.h"
 #include "storage/sinval.h"
 #include "catalog/pg_control.h"
-#include "common/int.h"
 #include "miscadmin.h"
-#include "nodes/bitmapset.h"
-#include "storage/bulk_write.h"
-#include "storage/latch.h"
-#include "storage/proc.h"
-#include "storage/read_stream.h"
-#include "storage/smgr.h"
-#include "utils/memutils.h"
-#include "utils/snapmgr.h"
-#include "utils/wait_event.h"
 
 #include "col/col.h"
-#include "bm25/estimate.h"
-#include "core/lane.h"
 #include "core/ops.h"
+#include "core/restrict.h"
 #include "core/store.h"
 #include "core/store_int.h"
 #include "core/visibility.h"
@@ -165,6 +151,22 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 }
 
 /*
+ * The SQL functions and views that look inside an index read its metapage, which an index of CREATE INDEX CONCURRENTLY or REINDEX CONCURRENTLY has not got until its
+ * build ends (the file is empty, or written past shared buffers with the metapage last, and a standby replays the build from the same WAL): while it is not ready, or when the
+ * build failed and left it so, the read is no corruption but a question the index cannot answer yet.
+ */
+void
+sift_store_require_ready(Relation index)
+{
+	if (!index->rd_index->indisready)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("sift index \"%s\" is not ready to be read", RelationGetRelationName(index)),
+				 errdetail("Its CREATE INDEX CONCURRENTLY or REINDEX CONCURRENTLY has not finished building it."),
+				 errhint("Wait for the build to finish, or DROP INDEX the one a failed build left.")));
+}
+
+/*
  * The metapage minor a build must read to understand the segment: the segment format of a BM25 segment, 1.3 for a column segment with unfrozen
  * rows (which an older build would show as final); the other column segments need no more than the base, their format is the column engine's own
  */
@@ -183,7 +185,8 @@ check_meta(Relation index, Buffer buf)
 	SiftMetaPageData *meta = META(page);
 
 	sift_store_check_page(index, buf, SIFT_PT_META, 0);
-	if (meta->magic != SIFT_MAGIC || SiftPageGetUsed(page) < SIFT_META_BASE_SIZE || SiftPageGetUsed(page) > sizeof(SiftMetaPageData))
+	/* bytes past the struct of this build are the extension of a newer one: this build keeps them as they are (and refuses by format what it cannot read) */
+	if (meta->magic != SIFT_MAGIC || SiftPageGetUsed(page) < SIFT_META_BASE_SIZE)
 		corrupt(index, "Bad metapage (magic 0x%08x, %u bytes).", meta->magic, SiftPageGetUsed(page));
 	if (meta->format_major != SIFT_FORMAT_MAJOR || meta->format_minor > SIFT_FORMAT_MINOR)
 		ereport(ERROR,
@@ -240,6 +243,24 @@ sift_dir_read(Relation index, SiftDirSnapshot *snap)
 	memcpy(snap->segs, dir->segs, dir->nsegs * sizeof(SiftSegEntry));
 	UnlockReleaseBuffer(dirbuf);
 	UnlockReleaseBuffer(metabuf);
+}
+
+/* The schema hash and the flags the metapage of a column index was written with; false while the index has no page yet (CREATE INDEX has not started to write) and for a partitioned
+ * index, which has no storage (PostgreSQL 19 asks it for amcanreturn while it plans a query on the partitioned table) */
+bool
+sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags)
+{
+	Buffer		metabuf;
+	SiftMetaPageData *meta;
+
+	if (index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX || RelationGetNumberOfBlocks(index) <= SIFT_DIRECTORY_BLKNO)
+		return false;
+	metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
+	meta = META(BufferGetPage(metabuf));
+	*hash = meta->analyzer_hash;
+	*flags = meta->flags;
+	UnlockReleaseBuffer(metabuf);
+	return true;
 }
 
 Buffer
@@ -338,7 +359,7 @@ finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *befo
 static bool
 xid_safexid(void)
 {
-	return !(MyProc->statusFlags & PROC_IN_VACUUM) &&
+	return !sift_in_vacuum() &&
 		(FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()) || !(IsInParallelMode() || IsParallelWorker()));
 }
 
@@ -393,7 +414,7 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 		if (chg->fn)
 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
 		/* the page ends where the base does until a failure note is written: pd_lower covers the bytes of a note once it has one */
-		if (META(mp)->maint_failed_at != 0 || META(mp)->analyzer_config[0])
+		if ((META(mp)->maint_failed_at != 0 || META(mp)->analyzer_config[0]) && SiftPageGetUsed(mp) < sizeof(SiftMetaPageData))
 			SiftPageSetUsed(mp, sizeof(SiftMetaPageData));
 		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (col/col.h), its unfrozen rows raise the minor */
 		for (int i = 0; i < DIR(dp)->nsegs; i++)

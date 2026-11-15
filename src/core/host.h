@@ -43,39 +43,22 @@
 
 #include "access/genam.h"
 #include "access/generic_xlog.h"
-#include "access/htup_details.h"
 #include "access/parallel.h"
-#include "access/transam.h"
 #include "catalog/pg_collation_d.h"
 #include "common/hashfn.h"
 #include "common/int.h"
 #include "common/shortest_dec.h"
-#include "datatype/timestamp.h"
-#include "executor/tuptable.h"
 #include "lib/binaryheap.h"
-#include "lib/stringinfo.h"
-#include "mb/pg_wchar.h"
 #include "miscadmin.h"
-#include "nodes/pg_list.h"
-#include "nodes/tidbitmap.h"
 #include "port/atomics.h"
 #include "port/pg_bitutils.h"
-#include "port/pg_bswap.h"
 #include "regex/regex.h"
 #include "storage/buffile.h"
-#include "storage/bufmgr.h"
-#include "storage/bufpage.h"
-#include "storage/itemptr.h"
 #include "storage/s_lock.h"
 #include "storage/sharedfileset.h"
 #include "utils/builtins.h"
-#include "utils/dsa.h"
 #include "utils/guc.h"
-#include "utils/hsearch.h"
 #include "utils/memutils.h"
-#include "utils/rel.h"
-#include "utils/relcache.h"
-#include "utils/snapshot.h"
 
 /* the PostgreSQL 17..19 differences (and the planner and executor headers only the PostgreSQL host needs) */
 #include "core/compat.h"
@@ -102,5 +85,19 @@ typedef struct config_enum_entry SiftEnumEntry;
 			elog(ERROR, __VA_ARGS__);	/* check-errors: allow */ \
 	} while (0)
 #endif
+
+/*
+ * The grow of an array that is allocated on its first use: p = p ? repalloc(p, n) : palloc(n), with n written once.
+ * _IN allocates in the given context, _HUGE_IN is the allocation above 1 GB. Macros: a hot append keeps its compare and branch.
+ */
+#define SIFT_REGROW(p, n)				((p) = (p) ? repalloc((p), (n)) : palloc(n))
+#define SIFT_REGROW_IN(cx, p, n)		((p) = (p) ? repalloc((p), (n)) : MemoryContextAlloc((cx), (n)))
+#define SIFT_REGROW_HUGE_IN(cx, p, n)	((p) = (p) ? repalloc_huge((p), (n)) : MemoryContextAllocHuge((cx), (n)))
+
+/*
+ * The arrays a segment writer builds are freed with the segment, and the host should give that memory back to the system when they are: the writer asks (once for each
+ * segment) before its first one. PostgreSQL on glibc: handler.c. The other hosts do nothing.
+ */
+extern void sift_host_pin_heap(void);
 
 #endif							/* SIFT_HOST_H */

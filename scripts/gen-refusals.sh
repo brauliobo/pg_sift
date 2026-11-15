@@ -21,28 +21,25 @@ import glob
 import os
 import re
 import sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, 'scripts')
+from genlib import errors, exit_on_errors, read
 
 mode = sys.argv[1]
-errors = []
-
-
-def read(path):
-    with open(path, encoding='utf-8') as f:
-        return f.read()
 
 
 # ---- the table ----
-slugs = []     # (ID, slug, sentence, limit, by_design)
-for m in re.finditer(r'^\tX\((\w+), "([a-z_]+)", "((?:[^"\\]|\\.)*)", ([01]), ([01])\)', read('src/agg/refuse.h'), re.M):
-    slugs.append((m.group(1), m.group(2), m.group(3), m.group(4) == '1', m.group(5) == '1'))
+slugs = []     # (ID, slug, sentence, limit, by_design, action)
+for m in re.finditer(r'^\tX\((\w+), "([a-z_]+)", "((?:[^"\\]|\\.)*)", ([01]), ([01]), "((?:[^"\\]|\\.)*)"\)', read('src/agg/refuse.h'), re.M):
+    slugs.append((m.group(1), m.group(2), m.group(3), m.group(4) == '1', m.group(5) == '1', m.group(6)))
 if not slugs:
     sys.exit('gen-refusals: no row found in the SIFT_AGG_REFUSALS table of src/agg/refuse.h')
 
 
 def block():
-    rows = ['| slug | class | by design | the query kept the normal plan because |', '|---|---|---|---|']
-    for _, slug, text, limit, by_design in slugs:
-        rows.append('| `%s` | %s | %s | %s |' % (slug, 'limit' if limit else 'semantic', 'yes' if by_design else '', text.replace('\\"', '"')))
+    rows = ['| slug | class | by design | the query kept the normal plan because | what to do |', '|---|---|---|---|---|']
+    for _, slug, text, limit, by_design, action in slugs:
+        rows.append('| `%s` | %s | %s | %s | %s |' % (slug, 'limit' if limit else 'semantic', 'yes' if by_design else '', text.replace('\\"', '"'), action.replace('\\"', '"')))
     return '\n'.join(rows)
 
 
@@ -63,7 +60,7 @@ for n, line in enumerate(read('scripts/refusals.allow').split('\n'), 1):
 
 seen = set()
 # the folders of src/agg/ hold the planner files that were split (cost, from, expr, plan ...); NO_REFUSAL_DIRS hold the code of the scan itself and the passes that rewrite a query before it is planned (flat), which name no refusal
-NO_REFUSAL_DIRS = {'blob', 'cte', 'dist', 'exec', 'flat', 'combo', 'group', 'lookup', 'part', 'preagg', 'topn', 'update'}
+NO_REFUSAL_DIRS = {'blob', 'cte', 'dist', 'exec', 'flat', 'combo', 'group', 'lookup', 'part', 'preagg', 'topn', 'update', 'expr', 'gord', 'leaf', 'par', 'spill', 'vk'}
 folders = [d for d in glob.glob('src/agg/*/') if os.path.basename(d.rstrip('/')) not in NO_REFUSAL_DIRS]
 for path in sorted(glob.glob('src/agg/plan*.c') + glob.glob('src/agg/spec*.c') + [f for d in folders for f in glob.glob(d + '*.c')]):
     lines = read(path).split('\n')
@@ -91,7 +88,7 @@ used = set()
 for path in glob.glob('src/agg/**/*.c', recursive=True):
     used.update(re.findall(r'\bagg_(?:refuse|refused|refuse_note|report)\w*\(\s*(?:"[^"]*",\s*)?(?:AGG_REFUSE_)?([A-Z_]+)', read(path)))
     used.update(re.findall(r'\bAGG_REFUSE_([A-Z_]+)', read(path)))
-for id_, slug, _, _, _ in slugs:
+for id_, slug, _, _, _, _ in slugs:
     if id_ != 'OTHER' and id_ not in used:
         errors.append('src/agg/refuse.h: the slug %s has no site in src/agg' % slug)
 
@@ -130,8 +127,6 @@ for doc in DOCS:
             with open(doc, 'w', encoding='utf-8') as f:
                 f.write(new)
 
-if errors:
-    print('\n'.join(errors), file=sys.stderr)
-    sys.exit(1)
+exit_on_errors()
 print('refusals: ok, %d slugs (%d limits), %d functions that name none' % (len(slugs), sum(1 for s in slugs if s[3]), len(allow)))
 PY

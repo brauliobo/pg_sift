@@ -5,7 +5,6 @@
  * into slot lanes with PSHUFB from the AVX2 expand table. Register-form compress/expand only
  * (the memory forms are microcoded on Zen 4).
  */
-#include "core/host.h"
 
 #include "bm25/kernels_int.h"
 

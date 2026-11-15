@@ -10,6 +10,7 @@
 #include "col/am.h"
 #include "col/keycols/keycols_int.h"
 #include "col/shred_pg.h"
+#include "core/hash.h"
 
 /*
  * Which plain columns take the dimensions of the cube. It holds SIFT_PAGG_MAX_DIMS of them (the calendar cells of the dates among them) and the default gives
@@ -52,7 +53,7 @@ cube_key(Datum d, bool isnull, const Form_pg_attribute att)
 	if (isnull)
 		return 1;
 	if (att->attbyval)
-		k = (uint64) DatumGetInt64(d) * UINT64CONST(0x9E3779B97F4A7C15);
+		k = sift_fib64((uint64) DatumGetInt64(d));
 	else if (att->attlen == -1)
 	{
 		struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
@@ -161,7 +162,9 @@ cube_cands(Relation index, const SiftColSchema *schema, CubeCand *cand)
 #define ARR_SAMPLE_ROWS		4096
 #define ARR_SAMPLE_ELEMS	200000
 #define ARR_SET_BITS		19
-#define ARR_DIR_BYTES		1.5
+#define ARR_MAX_CANDS		16		/* array columns looked at: two sets of 4 MB each, 128 MB at most (the other arrays keep their image) */
+#define ARR_INT_BYTES		0.1		/* bytes an element of an integer array costs beyond log2(distinct elements) / 8 (measured: 0.09 at 20, 500 and 20,000 distinct elements) */
+#define ARR_TEXT_BYTES		1.0		/* the same for text, where the point directory lists the rows of a value (measured 0.1 for common values, 1.0 for values of ten rows) */
 
 typedef struct ArrSet
 {
@@ -174,6 +177,7 @@ typedef struct ArrCand
 	int			idx;			/* its place in the index */
 	AttrNumber	hatt;
 	Oid			elem;
+	uint64		seen;			/* rows read */
 	uint64		rows;			/* arrays read (not NULL) */
 	uint64		elems;			/* elements read, NULL ones too */
 	uint64		bytes;			/* bytes of the arrays read */
@@ -223,35 +227,34 @@ arr_stretch(Relation heap, BlockNumber start, BlockNumber len, ArrCand *cand, in
 			bool		isnull;
 			Datum		d = slot_getattr(slot, c->hatt, &isnull);
 			ArrayType  *a;
-			int16		elen;
-			bool		byval;
-			char		align;
-			Datum	   *vals;
-			bool	   *nulls;
-			int			ne;
+			bool		byval = get_typbyval(c->elem);
+			ArrayIterator it;
+			Datum		val;
 
+			c->seen++;
 			if (isnull)
 				continue;
 			a = DatumGetArrayTypeP(d);
 			c->rows++;
 			c->bytes += VARSIZE(a);
 			arr_set_add(&c->arrs, DatumGetUInt64(hash_any_extended((unsigned char *) a, VARSIZE(a), 0)));
-			get_typlenbyvalalign(c->elem, &elen, &byval, &align);
-			deconstruct_array(a, c->elem, elen, byval, align, &vals, &nulls, &ne);
-			for (int i = 0; i < ne && c->els.n < ARR_SAMPLE_ELEMS; i++)
+			/* the elements one at a time: an array of a gigabyte holds more of them than a Datum array may */
+			it = array_create_iterator(a, 0, NULL);
+			while (c->els.n < ARR_SAMPLE_ELEMS && array_iterate(it, &val, &isnull))
 			{
 				c->elems++;
-				if (nulls[i])
+				if (isnull)
 					continue;
 				if (byval)
-					arr_set_add(&c->els, (uint64) DatumGetInt64(vals[i]) * UINT64CONST(0x9E3779B97F4A7C15));
+					arr_set_add(&c->els, sift_fib64((uint64) DatumGetInt64(val)));
 				else
 				{
-					text	   *t = DatumGetTextPP(vals[i]);
+					text	   *t = DatumGetTextPP(val);
 
 					arr_set_add(&c->els, DatumGetUInt64(hash_any_extended((unsigned char *) VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), 0)));
 				}
 			}
+			array_free_iterator(it);
 		}
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(row_cx);
@@ -268,33 +271,23 @@ arr_elem_type(Oid elem)
 }
 
 /*
- * An array column whose arrays repeat keeps its image (GROUP BY, DISTINCT and = read one code a row). An element test over the image decodes, hashes and
- * interns each distinct array of the dictionary, ARR_IMAGE_INSTR instructions an array (311.6 M instructions for 196,999 distinct arrays of 1,000,000 rows, 8.0 M
- * with the directory of the elements), where the elements cost about ARR_ELEM_ROW_INSTR a row. The elements are kept beside the image when the default formula
- * says so: speedup S, benefit R log2(S) / log2(1.05) with R = 1 (a common class) against G / 3 + W / 5, W
- * the build's write cost, taken as G (the same bytes are written), G at most ARR_AUTO_GROWTH_PCT% and the saving at least 100,000 instructions. The distinct arrays
- * are the statistics' when the table has them (a sample of a few thousand rows sees few repeats), else the sample's.
+ * An array column whose arrays repeat keeps its image (GROUP BY, DISTINCT and = read one code a row). An element test over the image goes through the generic
+ * row-wise path, ARR_IMAGE_ROW_INSTR instructions a row (measured 175 to 247 with 441 distinct arrays in 100,000 to 300,000 rows, int and text, and about 310 with 197,000 distinct
+ * in 1,000,000), where the elements cost about ARR_ELEM_ROW_INSTR a row. The elements are kept beside the image when the default formula says so: speedup S, benefit R
+ * log2(S) / log2(1.05) with R = 1 (a common class) against G / 3 + W / 5, W the build's write cost, taken as G (the same bytes are written), G at most
+ * ARR_AUTO_GROWTH_PCT% and the saving at least 100,000 instructions. The cost is per row, not per distinct array, so the number of distinct arrays does not enter.
  */
-#define ARR_IMAGE_INSTR		1500
+#define ARR_IMAGE_ROW_INSTR	150
 #define ARR_ELEM_ROW_INSTR	5
 
 static bool
 arr_both_pays(Relation heap, const ArrCand *c, double growth)
 {
 	double		total = keycols_heap_rows(heap),
-				ndistinct,
-				corr,
-				distinct = (double) c->arrs.n / c->rows * total,
-				saved,
-				base,
-				speedup;
-	int32		width;
+				saved = total * c->rows / c->seen * ARR_IMAGE_ROW_INSTR,
+				base = total * ARR_ELEM_ROW_INSTR,
+				speedup = (base + saved) / base;
 
-	if (keycols_col_stats(heap, c->hatt, &ndistinct, &corr, &width))
-		distinct = Max(distinct, ndistinct < 0 ? -ndistinct * total : ndistinct);
-	saved = distinct * ARR_IMAGE_INSTR;
-	base = total * ARR_ELEM_ROW_INSTR;
-	speedup = (base + saved) / base;
 	return growth <= ARR_AUTO_GROWTH_PCT && saved >= 100000 && speedup >= 1.05 &&
 		log2(speedup) / log2(1.05) >= growth / 3 + growth / 5;
 }
@@ -305,7 +298,7 @@ arr_both_pays(Relation heap, const ArrCand *c, double growth)
 void
 keycols_auto_array_specs(Relation heap, Relation index, StringInfo spec, StringInfo only, StringInfo both)
 {
-	ArrCand		cand[SIFT_COL_MAX_COLS];
+	ArrCand		cand[ARR_MAX_CANDS];
 	int			n = 0;
 	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
 	int			nst = (int) Min(CUBE_STRETCHES, (nblocks + CUBE_STRETCH_BLOCKS - 1) / CUBE_STRETCH_BLOCKS);
@@ -314,7 +307,7 @@ keycols_auto_array_specs(Relation heap, Relation index, StringInfo spec, StringI
 
 	if (sift_col_options(index)->array_lengths != SIFT_COL_ARRLEN_ON || keycols_heap_rows(heap) < ARR_AUTO_ROWS || nst == 0)
 		return;
-	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index) && n < SIFT_COL_MAX_COLS; i++)
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index) && n < ARR_MAX_CANDS; i++)
 	{
 		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), i);
 		Oid			elem = sift_col_is_array_type(att->atttypid) ? get_element_type(att->atttypid) : InvalidOid;
@@ -345,13 +338,15 @@ keycols_auto_array_specs(Relation heap, Relation index, StringInfo spec, StringI
 		const ArrCand *c = &cand[k];
 		const char *name = NameStr(TupleDescAttr(RelationGetDescr(index), c->idx)->attname);
 		double		elem_row,
-					image_row;
+					image_row,
+					nonnull;
 		bool		alone = c->arrs.n * 100 > c->rows * ARR_DISTINCT_PCT;
 
 		if (c->rows < 100 || c->elems == 0)
 			continue;
-		elem_row = (double) c->elems / c->rows * (log2(Max(c->els.n, 2)) / 8 + ARR_DIR_BYTES);
-		image_row = (double) c->bytes / c->rows * Min(1.0, (double) c->arrs.n / c->rows);
+		nonnull = (double) c->rows / c->seen;
+		elem_row = nonnull * c->elems / c->rows * (log2(Max(c->els.n, 2)) / 8 + (c->elem == INT2OID || c->elem == INT4OID || c->elem == INT8OID ? ARR_INT_BYTES : ARR_TEXT_BYTES));
+		image_row = nonnull * c->bytes / c->rows * Min(1.0, (double) c->arrs.n / c->rows);
 		if (alone)
 		{
 			/* nearly every array different: the image shares nothing and the elements, far smaller, stand in its place */
@@ -426,7 +421,7 @@ sift_col_auto_cube(Relation heap, Relation index)
 }
 
 /*
- * The rows rollup of rollup_dims = 'auto' (docs/COL-PREAGG.md): the pair advice of sift.index_advice, chosen before the build. Of the columns that fit the cube's
+ * The rows rollup of rollup_columns = 'auto' (docs/COL-PREAGG.md): the pair advice of sift.index_advice, chosen before the build. Of the columns that fit the cube's
  * histograms in ROWS_AGREE_PCT of the sampled stretches (the SIFT_PAGG_MAX_RDIMS with the fewest values), the pair whose combinations fit the cells a unit may
  * keep (a tenth of its rows, at most SIFT_PAGG_ROWS_CELLS) in as many stretches, and has the fewest of them (the cheapest rollup, far from the limit of a unit),
  * is written to the option as 'auto: a, b'; none fits, nothing. It is the default (an empty option): the cells pay by the default formula (docs/OPTIONS.md); 'off' writes none.
@@ -450,7 +445,7 @@ rows_cells(const uint64 *a, const uint64 *b, uint32 rows, uint32 limit, uint64 *
 	memset(tab, 0, ROWS_SLOTS * sizeof(uint64));
 	for (uint32 r = 0; r < rows && cells <= limit; r++)
 	{
-		uint64		h = ((a[r] ^ (b[r] * UINT64CONST(0xC2B2AE3D27D4EB4F))) * UINT64CONST(0x9E3779B97F4A7C15)) | 1;
+		uint64		h = sift_fib64(a[r] ^ (b[r] * SIFT_XXP64_2)) | 1;
 
 		for (uint32 at = (uint32) (h >> 40) & (ROWS_SLOTS - 1);; at = (at + 1) & (ROWS_SLOTS - 1))
 		{
@@ -553,7 +548,7 @@ sift_col_auto_arrlen(Relation index)
 void
 sift_col_auto_rows(Relation heap, Relation index)
 {
-	const char *opt = sift_col_options_rollup_dims(index);
+	const char *opt = sift_col_options_rollup_columns(index);
 	const SiftColRel *rel;
 	CubeCand	cand[SIFT_COL_MAX_COLS];
 	RowsPair	pr[SIFT_PAGG_MAX_RDIMS * SIFT_PAGG_MAX_RDIMS] = {{0}};
@@ -602,5 +597,5 @@ sift_col_auto_rows(Relation heap, Relation index)
 		appendStringInfo(&v, "auto: %s, %s", keycols_leaf_name(index, &rel->schema->cols[cand[bx].leaf]), keycols_leaf_name(index, &rel->schema->cols[cand[by].leaf]));
 	else
 		appendStringInfo(&v, "auto: %s, %s", keycols_leaf_name(index, &rel->schema->cols[cand[by].leaf]), keycols_leaf_name(index, &rel->schema->cols[cand[bx].leaf]));
-	sift_col_set_option(index, "rollup_dims", v.data);
+	sift_col_set_option(index, "rollup_columns", v.data);
 }

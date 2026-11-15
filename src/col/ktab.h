@@ -6,8 +6,6 @@
 #ifndef SIFT_COL_KTAB_H
 #define SIFT_COL_KTAB_H
 
-#include "core/host.h"
-
 #include "col/preagg.h"
 
 #define SIFT_KTAB_HEADER_BYTES 16

@@ -1,7 +1,8 @@
 -- Two EXISTS (or IN) over one table, on the same unique key and with different conditions. PostgreSQL 18 merges them into one scan of the table
 -- (self-join elimination) that has both conditions, and moves them off the FROM tree the scan reads, so the scan used to apply one of them
 -- (`kind = 'k1'` and `kind = 'k4'` on a table that holds one kind per id counted the rows of the first). Such a query keeps the normal plan on
--- PostgreSQL 18 (PostgreSQL 19 keeps the relation and the scan reads both conditions: the rows are the same, pushed or not); one EXISTS, an anti join and a semi join of two tables are pushed down as before. Every query runs with and without the scan:
+-- PostgreSQL 18.0 to 18.6 (18.7 and PostgreSQL 19 keep the relation as an inner join and the scan reads both conditions: the rows are the same, pushed or not,
+-- and agg_semi_same_table_1.out is the output of 18.7); one EXISTS, an anti join and a semi join of two tables are pushed down as before. Every query runs with and without the scan:
 -- the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -59,6 +60,10 @@ SELECT * FROM check_same($q$
 SELECT * FROM check_same($q$
   SELECT count(amount) FROM events e WHERE EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind = 'k1')
     AND EXISTS (SELECT 1 FROM others o WHERE o.id = e.parent_id AND o.kind = 'k2')$q$);
+
+-- a table merged into the scan of the same table as the OUTER side (IN over the table by its own unique key): the refusal names the merge (from_shape), never an outer join
+SELECT bool_or(used OR slug = 'from_shape') AS pushed_or_merged, count(*) FILTER (WHERE slug = 'outer_join') AS outer_join_named
+FROM sift.explain_why('SELECT kind, count(*) FROM events WHERE id IN (SELECT id FROM events WHERE amount > 500) GROUP BY kind') WHERE arm = 'single';
 
 DROP TABLE events, items, others;
 DROP FUNCTION check_same(text);

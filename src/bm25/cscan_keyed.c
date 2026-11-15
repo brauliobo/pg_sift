@@ -1,37 +1,19 @@
 /*
  * bm25/cscan_keyed.c - SiftScan ordered by leading sort keys, then score: the rounds of a keyed scan.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
+#include "core/rowmem.h"
 
-#include <math.h>
-
-#include "access/relation.h"
-#include "access/sysattr.h"
-#include "access/table.h"
-#include "access/tableam.h"
-#include "catalog/index.h"
-#include "catalog/pg_am_d.h"
-#include "commands/explain.h"
 #include "executor/executor.h"
 #include "lib/binaryheap.h"
 #include "miscadmin.h"
-#include "nodes/extensible.h"
-#include "nodes/nodeFuncs.h"
-#include "nodes/tidbitmap.h"
-#include "port/pg_bitutils.h"
-#include "storage/bufmgr.h"
-#include "storage/predicate.h"
-#include "utils/array.h"
-#include "utils/builtins.h"
 #include "utils/datum.h"
-#include "utils/lsyscache.h"
-#include "utils/rel.h"
-#include "utils/ruleutils.h"
 #include "utils/sortsupport.h"
 
 #include "bm25/eval.h"
-#include "bm25/planner.h"
 #include "bm25/cscan_int.h"
+#include "bm25/planner.h"
 
 /*
  * ORDER BY keys, score DESC: the score only breaks the ties of the keys, so the matches to score are those of
@@ -97,14 +79,22 @@ free_keyrow(SiftScanState *ss, KeyRow *r)
 	pfree(r);
 }
 
+/* The rows of a round (the heap, the ties) must fit work_mem: a tie of the last key can be every match */
+static void
+keytop_budget(const KeyTop *t, int64 heap, int64 ties)
+{
+	sift_budget_check(heap * SIFT_KEYED_ROW_BYTES(t->ss->nkeys) + ties * SIFT_KEYED_TIE_BYTES, work_mem,
+					  "a search ordered by keys and score", "work_mem", "add a LIMIT, or order by fewer matches");
+}
+
 static void
 add_tie(KeyTop *t, const ItemPointerData *entry)
 {
 	if (t->ntie == t->captie)
 	{
 		t->captie = Max(64, 2 * t->captie);
-		t->tie = t->tie ? repalloc_huge(t->tie, t->captie * sizeof(ItemPointerData)) :
-			MemoryContextAllocHuge(CurrentMemoryContext, t->captie * sizeof(ItemPointerData));
+		keytop_budget(t, binaryheap_size(t->heap), t->captie);
+		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, t->tie, t->captie * sizeof(ItemPointerData));
 	}
 	t->tie[t->ntie++] = *entry;
 }
@@ -176,8 +166,8 @@ static KeyRow **
 keytop_rows(KeyTop *t, int64 *nrows)
 {
 	int64		nheap = binaryheap_size(t->heap);
-	KeyRow	  **rows = palloc((nheap + t->ntie) * sizeof(KeyRow *));
-	KeyRow	   *tied = palloc(t->ntie * sizeof(KeyRow));
+	KeyRow	  **rows = sift_rows_alloc((nheap + t->ntie) * sizeof(KeyRow *));
+	KeyRow	   *tied = sift_rows_alloc(t->ntie * sizeof(KeyRow));
 
 	for (int64 i = 0; i < nheap; i++)
 		rows[i] = (KeyRow *) DatumGetPointer(binaryheap_get_node(t->heap, i));
@@ -263,6 +253,7 @@ keyed_search(SiftScanState *ss)
 		MemoryContextDelete(ss->kcx);
 	ss->kcx = AllocSetContextCreate(ss->cxt, "sift keyed", ALLOCSET_DEFAULT_SIZES);
 	old = MemoryContextSwitchTo(ss->kcx);
+	keytop_budget(&t, ss->kheld, 0);
 	t.heap = binaryheap_allocate(ss->kheld, keyrow_worse, ss);
 	keyed_collect(ss, &t);
 	ss->krows = keytop_rows(&t, &ss->nkrows);

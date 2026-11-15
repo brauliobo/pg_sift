@@ -3,6 +3,7 @@
  * promote, merge, index info, segments and leaves
  * what an operator calls to see or drive a sift_col index
  */
+/* check-memory: allow-allocs a diagnostic list of the extents of one index (40 bytes each) */
 #include "postgres.h"
 #include "access/relation.h"
 #include "common/int.h"
@@ -89,7 +90,7 @@ sift_col_maintain(PG_FUNCTION_ARGS)
 	PreventCommandIfReadOnly("sift.col_maintain()");
 	PreventCommandDuringRecovery("sift.col_maintain()");
 	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
-	n = sift_mops_rewrite(&maint_col_ops, index, false);
+	n = sift_mops_rewrite(&maint_col_ops, &index, false);
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_BOOL(n >= 0);
 }
@@ -97,21 +98,13 @@ sift_col_maintain(PG_FUNCTION_ARGS)
 Datum
 sift_col_promote(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
-	int			n = sift_mops_sql_promote(&maint_col_ops, index);
-
-	index_close(index, RowExclusiveLock);
-	PG_RETURN_INT32(n);
+	return sift_mops_sql_promote(&maint_col_ops, fcinfo);
 }
 
 Datum
 sift_col_merge(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
-	int			n = sift_mops_sql_merge(&maint_col_ops, index, PG_NARGS() > 1 && PG_GETARG_BOOL(1));
-
-	index_close(index, RowExclusiveLock);
-	PG_RETURN_INT32(n);
+	return sift_mops_sql_merge(&maint_col_ops, fcinfo);
 }
 
 Datum

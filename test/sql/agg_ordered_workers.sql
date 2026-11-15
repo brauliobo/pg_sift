@@ -33,7 +33,7 @@ INSERT INTO ow_q VALUES
 SELECT tag, ow_plan(q) FROM ow_q ORDER BY tag;
 
 -- the answer is the same with and without the scan
-CREATE FUNCTION ow_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_pushdown_text(q, push) $$;
+CREATE FUNCTION ow_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 SELECT tag, md5(ow_rows(q, true)) = md5(ow_rows(q, false)) AS same FROM ow_q ORDER BY tag;
 
 DROP FUNCTION ow_rows(text, bool);

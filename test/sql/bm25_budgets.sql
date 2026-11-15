@@ -1,0 +1,73 @@
+-- What a statement holds in memory for the matches of a search follows the data, so each such structure has a budget (work_mem) and a statement past
+-- it fails naming the setting, or the planner leaves the scan out when it can already tell: the values of sift.facets, the hits of a ranked search
+-- without a limit, and the rows and ties of a search ordered by keys and then by score. A lowered work_mem reaches each of them on a few thousand rows.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+
+-- the message of a statement past its budget, with the sizes taken out
+CREATE FUNCTION over_budget(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	n bigint;
+	hint text;
+BEGIN
+	EXECUTE 'SELECT count(*) FROM (' || q || ') s' INTO n;
+	RETURN 'ok ' || n;
+EXCEPTION WHEN program_limit_exceeded THEN
+	GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT;
+	RETURN regexp_replace(SQLERRM, '[0-9]+ kB', 'N kB', 'g') || ' / ' || hint;
+END $$;
+
+-- 20000 items: 'honey' in 2 of 5 names (8000 matches), kind has two values so that the leading key of a keyed search ties on half of the matches
+CREATE TABLE items (id int PRIMARY KEY, name text, kind int, label text, tag text) WITH (autovacuum_enabled = off);
+INSERT INTO items SELECT i, CASE WHEN i % 5 < 2 THEN repeat('honey ', 1 + i % 3) ELSE '' END || 'w' || lpad((i / 2)::text, 5, '0'),
+	i % 2, 'v' || i, 't' || i % 10 FROM generate_series(1, 20000) i;
+CREATE INDEX items_sift ON items USING sift (name);
+CREATE INDEX items_label ON items USING sift (label) WITH (analyzer = keyword);
+CREATE INDEX items_tag ON items USING sift (tag) WITH (analyzer = keyword);
+VACUUM ANALYZE items;
+
+-- sift.facets: 20000 distinct values of a keyword index do not fit 64 kB; 10 do
+SET work_mem = '64kB';
+SELECT over_budget($$SELECT * FROM sift.facets('items_sift', 'items_label', 'honey', 10)$$) AS many_values;
+SELECT over_budget($$SELECT * FROM sift.facets('items_sift', 'items_tag', 'honey', 10)$$) AS few_values;
+RESET work_mem;
+SELECT value, count FROM sift.facets('items_sift', 'items_label', 'honey', 3) ORDER BY count DESC, value;
+SELECT value, count FROM sift.facets('items_sift', 'items_tag', 'honey', 3) ORDER BY count DESC, value;
+
+-- a ranked search without a limit holds a hit for every match (16 bytes): 8000 matches are 128 kB
+SET work_mem = '64kB';
+SELECT over_budget($$SELECT id FROM items WHERE name @@> 'honey' ORDER BY sift.score(ctid) DESC$$) AS no_limit;
+SELECT over_budget($$SELECT id FROM items WHERE name @@> 'honey' ORDER BY sift.score(ctid) DESC LIMIT 100$$) AS limit_100;
+SET work_mem = '256kB';
+SELECT over_budget($$SELECT id FROM items WHERE name @@> 'honey' ORDER BY sift.score(ctid) DESC$$) AS no_limit_256kb;
+RESET work_mem;
+
+-- ORDER BY kind, score LIMIT 5: the rows tied with the fifth by kind are half of the matches, 4000 of them; they do not fit 64 kB
+SET work_mem = '64kB';
+SELECT over_budget($$SELECT id FROM items WHERE name @@> 'honey' ORDER BY kind, sift.score(ctid) DESC, id LIMIT 5$$) AS ties;
+RESET work_mem;
+SELECT id FROM items WHERE name @@> 'honey' ORDER BY kind, sift.score(ctid) DESC, id LIMIT 5;
+
+-- ... and 1000 rows held (162 kB) are not offered to the planner at 140 kB, where the ranked search of the 8000 matches (128 kB) serves the query: the
+-- keyed scan is under an Incremental Sort, the ranked one under a Sort, and the rows are the same
+CREATE FUNCTION plan_sort(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Sort$' THEN RETURN trim(l, ' ->'); END IF;
+	END LOOP;
+	RETURN NULL;
+END $$;
+SELECT plan_sort($$SELECT id FROM items WHERE name @@> 'honey' ORDER BY kind, sift.score(ctid) DESC, id LIMIT 1000$$) AS offered_plan;
+SET work_mem = '140kB';
+SELECT plan_sort($$SELECT id FROM items WHERE name @@> 'honey' ORDER BY kind, sift.score(ctid) DESC, id LIMIT 1000$$) AS refused_plan;
+CREATE TABLE refused AS SELECT id FROM items WHERE name @@> 'honey' ORDER BY kind, sift.score(ctid) DESC, id LIMIT 1000;
+RESET work_mem;
+CREATE TABLE offered AS SELECT id FROM items WHERE name @@> 'honey' ORDER BY kind, sift.score(ctid) DESC, id LIMIT 1000;
+SELECT count(*) AS rows, (SELECT count(*) FROM (SELECT * FROM refused EXCEPT SELECT * FROM offered) d) AS only_refused,
+	(SELECT count(*) FROM (SELECT * FROM offered EXCEPT SELECT * FROM refused) d) AS only_offered FROM refused;
+
+DROP TABLE refused, offered, items;
+DROP FUNCTION over_budget(text), plan_sort(text);
+DROP EXTENSION pg_sift;

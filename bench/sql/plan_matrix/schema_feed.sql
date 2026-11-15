@@ -38,3 +38,19 @@ CREATE INDEX feed_col ON feed USING sift_col (id, ts, kind, active, deleted_at, 
 VACUUM (FREEZE, ANALYZE) feed;
 SELECT pg_temp.fill(:n + 1, :n + :wbuf) WHERE :wbuf > 0;
 ANALYZE feed;
+
+-- the latest row of each entity (a sub-select that is the first row of its entity in the order of ts): a hundred rows an entity, ts unique, the order array of ts grouped by the entity
+-- (order_array_group), a b-tree on (entity, ts) as the twin; status is 7 for one row in 400
+CREATE TABLE dim_a (id int PRIMARY KEY, tier smallint NOT NULL);
+INSERT INTO dim_a SELECT g, g % 10 FROM generate_series(1, greatest(:n / 100, 1)) g;
+CREATE TABLE pings (id bigint PRIMARY KEY, entity int NOT NULL, ts timestamptz NOT NULL, status smallint NOT NULL);
+CREATE FUNCTION pg_temp.fill_pings(lo bigint, hi bigint, ents int) RETURNS void LANGUAGE sql AS $$
+  INSERT INTO pings SELECT g, 1 + floor(pg_temp.u(g, 11) * ents)::int, timestamptz '2024-01-01' + interval '1 second' * (g % 100003) * 600 + interval '1 microsecond' * g, (g % 400)::smallint
+  FROM generate_series(lo, hi) g
+$$;
+SELECT pg_temp.fill_pings(1, :n, greatest(:n / 100, 1));
+CREATE INDEX pings_ent_ts ON pings (entity, ts);
+CREATE INDEX pings_col ON pings USING sift_col (id, entity, ts, status) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'entity');
+VACUUM (FREEZE, ANALYZE) dim_a, pings;
+SELECT pg_temp.fill_pings(:n + 1, :n + :wbuf, greatest(:n / 100, 1)) WHERE :wbuf > 0;
+ANALYZE pings;

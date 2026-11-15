@@ -3,63 +3,17 @@
  */
 #include "postgres.h"
 
-#include <math.h>
-
 #include "access/htup_details.h"
-#include "access/sysattr.h"
-#include "access/stratnum.h"
-#include "access/table.h"
-#include "access/stratnum.h"
 #include "catalog/pg_aggregate.h"
-#include "catalog/pg_am.h"
-#include "catalog/pg_class.h"
-#include "catalog/pg_collation.h"
-#include "commands/defrem.h"
-#include "catalog/pg_index.h"
-#include "miscadmin.h"
-#include "catalog/pg_operator.h"
-#include "catalog/pg_opfamily.h"
-#include "catalog/pg_proc.h"
-#include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
-#include "nodes/extensible.h"
-#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/appendinfo.h"
-#include "optimizer/clauses.h"
-#include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
-#include "optimizer/plancat.h"
-#include "optimizer/pathnode.h"
-#include "optimizer/paramassign.h"
-#include "optimizer/paths.h"
-#include "optimizer/planmain.h"
-#include "optimizer/planner.h"
-#include "optimizer/tlist.h"
-#include "parser/parse_relation.h"
-#include "parser/parsetree.h"
-#include "port/pg_bitutils.h"
-#include "rewrite/rewriteManip.h"
-#include "utils/array.h"
-#include "utils/builtins.h"
 #include "utils/fmgroids.h"
-#include "utils/fmgrprotos.h"
-#include "utils/jsonb.h"
-#include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
-#include "utils/numeric.h"
-#include "utils/rel.h"
-#include "utils/ruleutils.h"
 #include "utils/selfuncs.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
-#include "agg/agg.h"
-#include "agg/part.h"
-#include "agg/topn.h"
-#include "agg/spec.h"
-#include "agg/colsrc.h"
-#include "agg/search.h"
 #include "agg/plan_int.h"
 
 SlotReq *
@@ -104,7 +58,7 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 
 	if (!get_op_hash_functions(sgc->eqop, &lhs, &rhs) && get_opcode(sgc->eqop) != F_CASH_EQ && !SIFT_EQ_BY_IMAGE(get_opcode(sgc->eqop)))
 		return false;
-	expr = normalize_expr(c, expr);
+	expr = normalize_expr(c, inner_key_sub(c, expr));
 	/* groups by the image of the value: only a column, whose images are the ones the leaf stores */
 	if (SIFT_EQ_BY_IMAGE(get_opcode(sgc->eqop)) && match_leaf(c, expr) < 0)
 		return false;
@@ -406,8 +360,10 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	TypeCacheEntry *tc = lookup_type_cache(typ, TYPECACHE_EQ_OPR);
 	RegProcedure lhs,
 				rhs;
+	Node	   *arg2 = arg;
 	bool		joined = false,
-				direct;
+				direct,
+				flag;
 	int			kind,
 				ci,
 				si;
@@ -435,9 +391,20 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 		return false;
 	else if (direct)
 		kind = kind == SAA_M_MIN ? SAA_X_MIN : SAA_X_MAX;
-	if (!combo_slot(c, normalize_expr(c, arg), !direct, &ci, &si))
+	/* count(x) needs whether x is NULL, not the id of its value: a flag, with no table of the values */
+	flag = kind == SAA_M_COUNT;
+	if (flag)
+	{
+		NullTest   *nt = makeNode(NullTest);
+
+		nt->arg = (Expr *) arg;
+		nt->nulltesttype = IS_NOT_NULL;
+		nt->location = -1;
+		arg2 = (Node *) nt;
+	}
+	if (!combo_slot(c, normalize_expr(c, arg2), !direct && !flag, &ci, &si))
 		return false;
-	slot_req(c, ci, si)->agg = direct ? -1 : ai;
+	slot_req(c, ci, si)->agg = direct || flag ? -1 : ai;
 	slot_req(c, ci, si)->direct = direct;
 	out->kind = kind;
 	out->aggfn = fid;
@@ -447,7 +414,7 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	out->combo = ci;
 	out->slot = si;
 	out->wsum = 0;
-	if (direct && (kind == SAA_X_SUM || kind == SAA_X_AVG) && typ == NUMERICOID && (out->wsum = match_leaf(c, arg) + 1) > 0)
+	if (direct && saa_x_sumavg(kind) && typ == NUMERICOID && (out->wsum = match_leaf(c, arg) + 1) > 0)
 	{
 		const SiftSrcLeaf *lf = leaf_of(c, out->wsum - 1);
 
@@ -462,17 +429,20 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	return true;
 }
 
-/* a column of the scanned table that the table declares NOT NULL, and no outer join nulls or preserves rows without it (every row the scan counts has it) */
+/*
+ * A column of the scanned table that the table declares NOT NULL, or its whole row (e, e.*: the row datum of a tuple is never NULL, even when every field is),
+ * and no outer join nulls or preserves rows without it (every row the scan counts has it)
+ */
 static bool
 not_null_column(AggCtx *c, Node *arg)
 {
 	Var		   *v = (Var *) strip_relabel(arg);
 
-	return IsA(v, Var) && v->varno == c->relid && v->varlevelsup == 0 && v->varattno > 0 && bms_is_empty(c->nulling) && !preserved_join(c) &&
-		bms_is_member(v->varattno, c->rel->notnullattnums);
+	return IsA(v, Var) && v->varno == c->relid && v->varlevelsup == 0 && v->varattno >= 0 && bms_is_empty(c->nulling) && !preserved_join(c) &&
+		(v->varattno == 0 || bms_is_member(v->varattno, c->rel->notnullattnums));
 }
 
-/* count(*), and count of a constant, of a NOT NULL column or of a unique row id: the kinds that read no column */
+/* count(*), and count of a constant, of a NOT NULL column, of the whole row or of a unique row id: the kinds that read no column */
 static bool
 count_rows_kind(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out)
 {
@@ -715,7 +685,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 
 	if (a->agglevelsup != 0 || contain_volatile_functions((Node *) a))
 		return false;
-	a = (Aggref *) scalar_initplans(c, strict_placeholders(c, (Node *) a));
+	a = (Aggref *) inner_key_sub(c, scalar_initplans(c, strict_placeholders(c, (Node *) a)));
 	out->leaf = -1;
 	out->restype = a->aggtype;
 	out->collid = a->inputcollid;

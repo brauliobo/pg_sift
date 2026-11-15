@@ -1,0 +1,91 @@
+-- A sub-select in the select list or the HAVING of a grouped query, correlated to the group keys or the aggregates (`SELECT kind_id, count(*), (SELECT name FROM kinds k WHERE k.id = e.kind_id)
+-- .. GROUP BY kind_id`, `HAVING count(*) > (SELECT count(*) FROM members m WHERE m.kind_id = e.kind_id)`), is evaluated by the node that gives the groups, once for each group, as it is
+-- above PostgreSQL's aggregate: the scan keeps the grouping, which was out of reach of any statement that had one. `scan` says the aggregate is in the scan, `same` that the rows are those
+-- of sift off (the error of a sub-select that returns two rows too), `par_same` the same with workers asked for. The sub-select of a group key that is NULL in a super-aggregate row sees the NULL.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE os_kinds (id int PRIMARY KEY, name text, enabled bool);
+CREATE TABLE os_members (kind_id int, tag int, gone timestamptz);
+CREATE TABLE os_events (id int PRIMARY KEY, kind_id int, region text, qty int, amount float8) WITH (autovacuum_enabled = false);
+INSERT INTO os_kinds SELECT i, 'kind_' || i, i % 3 <> 0 FROM generate_series(1, 12) i;
+INSERT INTO os_members SELECT 1 + i % 10, i, CASE WHEN i % 7 = 0 THEN now() END FROM generate_series(1, 60) i;
+INSERT INTO os_events SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE 1 + i % 14 END, CASE WHEN i % 53 = 0 THEN NULL ELSE 'r' || (1 + i % 5) END, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 50 END,
+  (i % 90) / 9.0 FROM generate_series(1, 40000) i;
+CREATE INDEX os_events_col ON os_events USING sift_col (id, kind_id, region, qty, amount);
+VACUUM (FREEZE, ANALYZE) os_kinds, os_members, os_events;
+CREATE TABLE q (ord serial, name text, sql text);
+INSERT INTO q (name, sql) VALUES
+  ('a lookup by the key',        $q$SELECT kind_id, count(*), sum(amount), (SELECT name FROM os_kinds k WHERE k.id = os_events.kind_id) FROM os_events GROUP BY 1$q$),
+  ('a count by the key',         $q$SELECT kind_id, count(*), (SELECT count(*) FROM os_members m WHERE m.kind_id = os_events.kind_id) FROM os_events GROUP BY 1$q$),
+  ('EXISTS',                     $q$SELECT kind_id, count(*), EXISTS (SELECT 1 FROM os_members m WHERE m.kind_id = os_events.kind_id AND m.gone IS NULL) FROM os_events GROUP BY 1$q$),
+  ('NOT EXISTS',                 $q$SELECT kind_id, count(*), NOT EXISTS (SELECT 1 FROM os_members m WHERE m.kind_id = os_events.kind_id AND m.gone IS NOT NULL) FROM os_events GROUP BY 1$q$),
+  ('two sub-selects',            $q$SELECT kind_id, count(*), (SELECT min(tag) FROM os_members m WHERE m.kind_id = os_events.kind_id), (SELECT enabled FROM os_kinds k WHERE k.id = os_events.kind_id) FROM os_events GROUP BY 1$q$),
+  ('an expression of the key',   $q$SELECT kind_id, kind_id % 3, count(*), (SELECT count(*) FROM os_kinds k WHERE k.id % 3 = os_events.kind_id % 3) FROM os_events GROUP BY 1$q$),
+  ('two keys',                   $q$SELECT kind_id, region, count(*), (SELECT count(*) FROM os_members m WHERE m.kind_id = os_events.kind_id AND 'r' || (m.tag % 5 + 1) = os_events.region) FROM os_events GROUP BY 1, 2$q$),
+  ('an aggregate in it',         $q$SELECT kind_id, sum(qty), (SELECT count(*) FROM os_kinds k WHERE k.id <= sum(os_events.qty) / 1000) FROM os_events GROUP BY 1$q$),
+  ('HAVING, correlated count',   $q$SELECT kind_id, count(*) FROM os_events GROUP BY 1 HAVING count(*) > (SELECT count(*) * 500 FROM os_members m WHERE m.kind_id = os_events.kind_id)$q$),
+  ('HAVING, aggregate in it',    $q$SELECT kind_id, sum(qty) FROM os_events GROUP BY 1 HAVING (SELECT count(*) FROM os_kinds WHERE id <= sum(os_events.qty) / 1000) > 2$q$),
+  ('HAVING, IN of an aggregate', $q$SELECT kind_id, count(*) FROM os_events GROUP BY 1 HAVING count(*) IN (SELECT count(*) FROM os_events e2 GROUP BY e2.region)$q$),
+  ('HAVING, NOT IN with NULLs',  $q$SELECT region, count(*) FROM os_events GROUP BY 1 HAVING count(*) NOT IN (SELECT qty FROM os_events WHERE id < 100)$q$),
+  ('HAVING, the key and counts', $q$SELECT kind_id, count(*) FROM os_events GROUP BY 1 HAVING (SELECT count(*) FROM os_members m WHERE m.kind_id = os_events.kind_id) > 3 AND count(*) > 2000$q$),
+  ('ROLLUP, NULL key rows',      $q$SELECT kind_id, region, count(*), (SELECT count(*) FROM os_members m WHERE m.kind_id = os_events.kind_id) FROM os_events WHERE kind_id < 5 GROUP BY ROLLUP (kind_id, region)$q$),
+  ('ORDER BY the sub-select',    $q$SELECT kind_id, count(*), (SELECT count(*) FROM os_members m WHERE m.kind_id = os_events.kind_id) c FROM os_events GROUP BY 1 ORDER BY c DESC, 1 LIMIT 3$q$),
+  ('a sub-select of a table',    $q$SELECT t.kind_id, t.n, t.m FROM (SELECT kind_id, count(*) n, (SELECT count(*) FROM os_members m WHERE m.kind_id = os_events.kind_id) m FROM os_events GROUP BY 1) t WHERE t.m > 4$q$),
+  ('uncorrelated, a value',      $q$SELECT kind_id, count(*), (SELECT max(id) FROM os_kinds) FROM os_events GROUP BY 1$q$),
+  ('two rows for a group',       $q$SELECT kind_id, count(*), (SELECT tag FROM os_members m WHERE m.kind_id = os_events.kind_id) FROM os_events GROUP BY 1$q$),
+  ('no rows',                    $q$SELECT kind_id, count(*), (SELECT count(*) FROM os_members m WHERE m.kind_id = os_events.kind_id) FROM os_events WHERE id < 0 GROUP BY 1$q$),
+  ('no GROUP BY',                $q$SELECT count(*), (SELECT count(*) FROM os_kinds) FROM os_events$q$);
+CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS
+$$ DECLARE r text;
+BEGIN
+  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO r;
+  RETURN r;
+EXCEPTION WHEN OTHERS THEN RETURN SQLERRM;
+END $$;
+CREATE FUNCTION subplan_check(q text) RETURNS TABLE (scan bool, same bool, par_same bool) LANGUAGE plpgsql AS
+$$ DECLARE l text; plan text := ''; off text;
+BEGIN
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
+  scan := plan LIKE '%Custom Scan (SiftAgg)%';
+  PERFORM set_config('sift.enable_agg', 'off', true);
+  off := rows_md5(q);
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  same := rows_md5(q) IS NOT DISTINCT FROM off;
+  PERFORM set_config('max_parallel_workers_per_gather', '2', true);
+  PERFORM set_config('parallel_setup_cost', '0', true);
+  PERFORM set_config('parallel_tuple_cost', '0', true);
+  PERFORM set_config('min_parallel_table_scan_size', '0', true);
+  PERFORM set_config('min_parallel_index_scan_size', '0', true);
+  par_same := rows_md5(q) IS NOT DISTINCT FROM off;
+  PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+  RETURN NEXT;
+END $$;
+SELECT q.name, c.* FROM q, LATERAL subplan_check(q.sql) c ORDER BY q.ord;
+            name            | scan | same | par_same 
+----------------------------+------+------+----------
+ a lookup by the key        | t    | t    | t
+ a count by the key         | t    | t    | t
+ EXISTS                     | t    | t    | t
+ NOT EXISTS                 | t    | t    | t
+ two sub-selects            | t    | t    | t
+ an expression of the key   | t    | t    | t
+ two keys                   | t    | t    | t
+ an aggregate in it         | t    | t    | t
+ HAVING, correlated count   | t    | t    | t
+ HAVING, aggregate in it    | t    | t    | t
+ HAVING, IN of an aggregate | t    | t    | t
+ HAVING, NOT IN with NULLs  | t    | t    | t
+ HAVING, the key and counts | t    | t    | t
+ ROLLUP, NULL key rows      | t    | t    | t
+ ORDER BY the sub-select    | t    | t    | t
+ a sub-select of a table    | t    | t    | t
+ uncorrelated, a value      | t    | t    | t
+ two rows for a group       | t    | t    | t
+ no rows                    | f    | t    | t
+ no GROUP BY                | t    | t    | t
+(20 rows)
+
+DROP FUNCTION subplan_check(text), rows_md5(text);
+DROP TABLE q, os_kinds, os_members, os_events;
+DROP EXTENSION pg_sift;

@@ -20,6 +20,7 @@ PG_FUNCTION_INFO_V1(sift_test_maint_wait_us);
 PG_FUNCTION_INFO_V1(sift_test_freelist);
 PG_FUNCTION_INFO_V1(sift_test_page);
 PG_FUNCTION_INFO_V1(sift_test_poke);
+PG_FUNCTION_INFO_V1(sift_test_peek);
 PG_FUNCTION_INFO_V1(sift_test_churn);
 PG_FUNCTION_INFO_V1(sift_test_dir_updates_count);
 PG_FUNCTION_INFO_V1(sift_test_flush_wal);
@@ -319,6 +320,25 @@ sift_test_poke(PG_FUNCTION_ARGS)
 	UnlockReleaseBuffer(buf);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_VOID();
+}
+
+/* Reads width bytes at offset as a little-endian value */
+Datum
+sift_test_peek(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
+	Buffer		buf = ReadBuffer(index, (BlockNumber) PG_GETARG_INT64(1));
+	int32		off = PG_GETARG_INT32(2);
+	int32		width = PG_GETARG_INT32(3);
+	int64		value = 0;
+
+	if (off < 0 || width < 1 || width > 8 || off + width > BLCKSZ)
+		elog(ERROR, "invalid peek");
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	memcpy(&value, BufferGetPage(buf) + off, width);
+	UnlockReleaseBuffer(buf);
+	relation_close(index, AccessShareLock);
+	PG_RETURN_INT64(value);
 }
 
 /*

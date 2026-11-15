@@ -7,9 +7,7 @@
 #include "executor/nodeAgg.h"
 #include "utils/sortsupport.h"
 #include "agg/back.h"
-#include "agg/colsrc.h"
 #include "agg/search.h"
-#include "agg/spec.h"
 #include "agg/topn.h"
 #include "core/visibility.h"
 
@@ -20,7 +18,6 @@
 #include "agg/group_int.h"
 #include "agg/dist_int.h"
 #include "agg/osa_int.h"
-#include "agg/lookup_int.h"
 #include "agg/combo_int.h"
 #include "agg/two_int.h"
 #include "agg/gen_int.h"
@@ -158,7 +155,6 @@ typedef struct AggExec
 	AggAcc	   *acc;
 	uint32	   *hkey;			/* hash mode: nkeys ids per group */
 	uint32		(*hashg) (struct AggExec *, const uint32 *);	/* hash mode: the probe for nkeys ids */
-	uint32		(*hashgh) (struct AggExec *, const uint32 *, uint32);	/* ... for ids whose hash (ids_hash32) the caller has */
 	uint32		hkcap;
 	uint32	   *hslot;
 	uint32		nhslot;
@@ -170,6 +166,7 @@ typedef struct AggExec
 	Osa		  **osa;			/* ordered-set aggregates: the values of the aggregate (shared by those on one argument) */
 	OsaVal	  **oval;			/* ... and their results by sorted-values id */
 	int			n_osa_spilled;
+	int			n_osa_flat;
 	uint32		n_gpruned;		/* groups dropped by the top-N of the aggregate (agg/gtopn.c) */
 	struct GKey *gtop;			/* the n best sort keys of the groups so far (a spilled scan returns its partitions one by one) */
 	int			ngtop;
@@ -196,6 +193,7 @@ typedef struct AggExec
 	bool	   *total_null;
 	/* items of work, lanes and workers (run_scan) */
 	struct ScanShared *shared;
+	const void *view;			/* a worker: the directory its leader read, which its source opens on (sift_colsrc_view_export) */
 	bool		lanes;			/* a process of a parallel scan with float sums: each lane keeps its own sums (AggAcc.lv) */
 	bool		lane_serial;	/* the lanes are scanned in turn into this table: the float sums of a lane are added to dt when it is done */
 	uint32		gp_n;			/* a scan whose participants split the groups by a key (SiftAggSpec.gpart): the shares, one for each participant; 0: they split the rows */
@@ -229,16 +227,15 @@ typedef struct AggExec
 	int			nprune;
 	struct SkipMap *skip;		/* the superblocks the zones keep, made at the first unit range of the scan (par/items.c range_skipped) */
 	int			nzone;
-	List	   *jprune;			/* ... and of the join key filters too sparse for a test of the rows: SiftSrcPrune */
 	bool	   *pushed;			/* per spec->pred: the source applies it (filter_init) */
 	SiftSrcFilter *pflt;		/* ... and the filter it applies */
 	int			nfilter;		/* how many */
 	int			npoint_elem;	/* the element tests the source may answer exactly (str_init) */
-	int			ntype;			/* the SAP_TYPE conjuncts: the source keeps the rows of their types (type_init) */
+	int			ntype;			/* the SAP_TYPE tests: the source keeps the rows of the types of a conjunct, and gives those of the others as a bitmap (type_init) */
 	bool		recheck;		/* the source reads again the rows that hold a value a leaf cannot store (spec->recheck, recheck_init) */
 	bool		recheck_late;	/* ... and a row that holds one raises where it reaches the aggregate, after the lookups (SRK_CAST), not after its own conjuncts */
 	bool		recheck_after_late;	/* ... a row whose list SQL cannot read (SRK_RECORDSET) raises after the conjuncts that may raise, which drop or fail it first (check_overflow_after_late) */
-	int			nwide;			/* the SAP_WIDE conjuncts: the source keeps the rows that pass (wide_init) */
+	int			nwide;			/* the SAP_WIDE tests: the source keeps the rows a conjunct passes, and gives those of the others as a bitmap (wide_init) */
 	bool		sb_heap;		/* the unit numbers are heap superblocks (sift_colsrc_sb_heap): a range of them is a range of the heap, for a TID range and for a match set */
 	const SiftFilter *search_all;	/* the match set of every unit (not sb_heap), made on first use */
 	int			tid_pred;		/* the first SAP_TID conjunct, which tests the range of all of them (tid_init); -1: none */
@@ -257,8 +254,14 @@ typedef struct AggExec
 	JstrTrial  *jtrial;			/* what each of them kept of the rows it saw, until it is dropped (unit_conjuncts) */
 	int			njstr;
 	int			njpass;			/* the joins that pass the tuples the key filter let through (semi_pass) */
+	int			nfound;			/* the joins answered from the flag of a connected index (join_found) */
+	uint64		found_keys;		/* the keys the journal of the parent names for them: the rows of those are outside the proof of the flag */
+	const char *found_why;		/* why a join of a connected index was not (the first of them) */
+	uint64		lookup_hscan;	/* the rows of the lookup tables read from the heap of the table (a scan or an index fetch), not from the leaves of an index */
 	int			nshared;		/* the lookup tables another node of the statement had loaded (map_load_shared) */
 	int			ncached;		/* the lookup tables an earlier query had loaded (lookcache_find) */
+	int			ndim_shared;	/* the dimension maps another statement had kept in shared memory (lookdim_load), and those this one read and kept */
+	int			ndim_built;
 	int			nfirst;			/* the correlated children read as lookup tables (join_first_rows) */
 	struct SiftAggJoin **fjoin;	/* per join: the lookup table a hybrid first-row lookup loads (first_table_join), NULL for the others */
 	char	  **pfmaps;			/* worker: the leader's table of each hybrid first-row lookup, by combo */
@@ -272,9 +275,18 @@ typedef struct AggExec
 	int			lookup_index;
 	uint64		lookup_heap;	/* the entries of an index-only load whose page is not all-visible: their rows were fetched from the heap */
 	int			lookup_cols;	/* the loads from the leaves of an index of the table (map_load_cols) */
+	char	   *lookup_why;		/* the first table read from the heap though it has a sift_col index: the column that index does not serve (map_cols_why) */
+	uint64		lookup_dense;	/* ... and the rows of those that became classes of their keys (map_load_dense) */
+	int			lookup_class_workers;	/* ... made by this many workers together (lookclassp.c) */
 	uint64		lookup_us;
 	uint64		probe_direct;	/* the keys of correlated children probed in the index directly (combo/probe.c) */
-	uint64		child_warmed;	/* blocks of the relations of correlated children that were asked of the OS ahead of their probes (combo/child.c child_warm) */
+	uint64		probe_leaves;	/* ... the leaf pages those probes moved to (a probe on the leaf of the one before does not count), the pages above the leaves they pinned, */
+	uint64		probe_pins;
+	uint64		probe_heap;		/* ... the heap fetches they made, and the index-only entries answered by the visibility map without one */
+	uint64		probe_vm;
+	uint64		lookup_pages;	/* the heap pages of the lookup tables a run loaded or probed, and how many of them the visibility map holds all-visible (map_note_table) */
+	uint64		lookup_allvis;
+	uint64		child_warmed;	/* heap blocks of the entries a correlated child probe found, asked of the pool and the OS ahead of their fetch (combo/probe_bt.c dp_prefetch) */
 	int64		dict_shared0[2];	/* sift.stats dict_shared_hits and misses when the run began: EXPLAIN (VERBOSE) shows the difference */
 	uint64		lookup_shared;	/* the rows of the tables the leader put in the shared memory of its workers (par_launch) */
 	const char **pmaps;			/* in a worker: per combo, the table of its join in the shared memory, NULL when it has none (map_load) */
@@ -398,6 +410,8 @@ typedef struct AggExec
 
 extern bool		sift_agg_dense;
 extern bool		sift_agg_semi_lut;
+extern bool		sift_agg_connect_found;
+extern bool sift_agg_connected(const AggExec *ex);
 extern int		sift_agg_semi_lut_size;
 extern bool		sift_agg_lookup_pushdown;
 extern bool		sift_agg_lookup_columns;
@@ -405,6 +419,7 @@ extern bool		sift_agg_share_lookups;
 extern bool		sift_agg_fuse;
 extern int		sift_agg_lookup_cache_kb;
 extern int		sift_agg_lookup_shared_kb;
+extern int		sift_agg_dimmap_kb;
 extern int		sift_verdict_cache_kb;
 extern bool		sift_agg_verdict_cache;
 #ifdef SIFT_TESTING

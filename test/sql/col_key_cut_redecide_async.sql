@@ -1,0 +1,51 @@
+-- With the maintenance worker on (sift.async_maintenance, the default) the VACUUM asks it to promote the write buffer while the session calls the rewrite: whichever of the two
+-- gets the maintenance lock first, the segments the rewrite takes first (the overlays alone, the dirty ones) are not what decides whether the key is chosen again from the data
+-- (col_key_cut_redecide is the same rewrite with the worker off). The call is repeated until the lock is the session's; the test waits for the option, not for the clock.
+CREATE EXTENSION pg_sift;
+SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.col_auto_merge = off;
+
+CREATE TABLE rc (id int PRIMARY KEY, tenant_id int, foreign_id int, counter_a int, updated_at timestamp, pad text);
+INSERT INTO rc SELECT i, i / 150, 1 + i % 12, hashint4(i) & 1048575, TIMESTAMP '2026-01-01' + (hashint4(i + 7) & 16777215) * INTERVAL '1 second', repeat('x', 100)
+FROM generate_series(1, 120000) i;
+VACUUM ANALYZE rc;
+CREATE INDEX rc_ix ON rc USING sift_col (id, tenant_id, foreign_id, counter_a, updated_at) WITH (dead_rewrite_pct = 50);
+-- the same columns with the key the user wrote
+CREATE INDEX rc_off ON rc USING sift_col (id, tenant_id, foreign_id, counter_a, updated_at) WITH (key_cut = 'off');
+-- built on rows in the order of the tenants: no cut
+SELECT reloptions::text ~ 'key_cut' AS cut_at_build FROM pg_class WHERE relname = 'rc_ix';
+
+-- rows of every tenant appended at the end of the heap, a tenth of the rows deleted
+INSERT INTO rc SELECT i, (hashint4(i) & 2147483647) % 800, 1 + i % 12, hashint4(i) & 1048575, TIMESTAMP '2026-01-01' + (hashint4(i + 7) & 16777215) * INTERVAL '1 second', repeat('x', 100)
+FROM generate_series(120001, 240000) i;
+DELETE FROM rc WHERE id % 10 = 3;
+-- the workers of the writes above hold the horizon of the rows the VACUUM removes while they run (the units of a rewrite are dirty by the rows it removes)
+DO $$ BEGIN
+	FOR i IN 1..600 LOOP
+		EXIT WHEN NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
+		PERFORM pg_sleep(0.1);
+		COMMIT;
+	END LOOP;
+END $$;
+VACUUM ANALYZE rc;
+DO $$ BEGIN
+	FOR i IN 1..600 LOOP
+		PERFORM sift.col_maintain('rc_ix');
+		COMMIT;
+		EXIT WHEN (SELECT reloptions::text ~ 'key_cut=auto: foreign_id' FROM pg_class WHERE relname = 'rc_ix');
+		PERFORM pg_sleep(0.1);
+	END LOOP;
+END $$;
+SELECT reloptions::text ~ 'key_cut=auto: foreign_id' AS cut_after_rewrite FROM pg_class WHERE relname = 'rc_ix';
+SELECT sift.col_verify('rc_ix');
+
+SELECT count(*) AS n, sum(counter_a) AS s, count(DISTINCT tenant_id) AS t FROM rc WHERE foreign_id = 5 \gset maint_
+SET sift.enable_agg = off;
+SELECT count(*) = :maint_n AND sum(counter_a) = :maint_s AND count(DISTINCT tenant_id) = :maint_t AS same_answers FROM rc WHERE foreign_id = 5;
+RESET sift.enable_agg;
+
+DROP TABLE rc;
+DROP EXTENSION pg_sift;

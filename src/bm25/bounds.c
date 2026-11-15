@@ -3,13 +3,9 @@
  */
 #include "core/host.h"
 
-#include <math.h>
-
 #include "bm25/eval.h"
 #include "bm25/eval_int.h"
 #include "bm25/kernels.h"
-#include "bm25/wbuf.h"
-#include "bm25/prefix.h"
 #include "bm25/segment.h"
 #include "core/cmp.h"
 
@@ -32,7 +28,7 @@ leaf_bounds(SiftPlan *p, RankSeg *rs, int leaf, MemoryContext cx)
 		sift_post_bounds(rs->cs.leafpc[leaf][i], &n);
 		total += n;
 	}
-	all = MemoryContextAlloc(cx, Max(total, 1) * sizeof(GidUB));
+	all = MemoryContextAllocHuge(cx, Max(total, 1) * sizeof(GidUB));
 	total = 0;
 	for (int i = 0; i < nt; i++)
 	{
@@ -48,12 +44,12 @@ leaf_bounds(SiftPlan *p, RankSeg *rs, int leaf, MemoryContext cx)
 		}
 	}
 	/* sorts (gid, index) keys instead of the 68-byte entries */
-	key = MemoryContextAlloc(cx, Max(total, 1) * sizeof(uint64));
+	key = MemoryContextAllocHuge(cx, Max(total, 1) * sizeof(uint64));
 	for (int i = 0; i < total; i++)
 		key[i] = (uint64) all[i].gid << 32 | i;
 	if (nt > 1)
 		sift_sort_u64(key, total);
-	out->list = MemoryContextAlloc(cx, Max(total, 1) * sizeof(GidUB));
+	out->list = MemoryContextAllocHuge(cx, Max(total, 1) * sizeof(GidUB));
 	for (int i = 0; i < total; i++)
 	{
 		const GidUB *in = &all[(uint32) key[i]];
@@ -133,8 +129,7 @@ seg_units(SiftRanker *r, RankSeg *rs, Unit **units, int *nunits, int *cap)
 			if (*nunits == *cap)
 			{
 				*cap = Max(64, 2 * *cap);
-				*units = *units ? repalloc_huge(*units, *cap * sizeof(Unit)) :
-					MemoryContextAllocHuge(p->mcxt, *cap * sizeof(Unit));
+				SIFT_REGROW_HUGE_IN(p->mcxt, *units, *cap * sizeof(Unit));
 			}
 			(*units)[(*nunits)++] = u;
 		}

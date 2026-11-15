@@ -15,34 +15,19 @@
 
 #include <math.h>
 
-#include "access/relation.h"
-#include "access/sysattr.h"
-#include "access/table.h"
-#include "access/tableam.h"
 #include "catalog/index.h"
 #include "catalog/pg_am_d.h"
-#include "commands/explain.h"
 #include "executor/executor.h"
-#include "lib/binaryheap.h"
 #include "miscadmin.h"
-#include "nodes/extensible.h"
-#include "nodes/nodeFuncs.h"
 #include "nodes/tidbitmap.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
-#include "storage/predicate.h"
 #include "utils/array.h"
-#include "utils/builtins.h"
-#include "utils/datum.h"
-#include "utils/lsyscache.h"
 #include "utils/rel.h"
-#include "utils/ruleutils.h"
-#include "utils/sortsupport.h"
 
 #include "bm25/eval.h"
 #include "bm25/planner.h"
 #include "bm25/cscan_int.h"
-#include "core/explain.h"
 
 #include "cscan_int.h"
 
@@ -204,6 +189,8 @@ close_scan(SiftScanState *ss)
 	ss->filter = NULL;
 	ss->vis_open = false;
 	MemoryContextReset(ss->cxt);
+	/* what a rescan must keep is not a child of what it resets (a recheck after it works in a context that is gone) */
+	SIFT_INVARIANT(MemoryContextGetParent(ss->tmpcx) == ss->css.ss.ps.state->es_query_cxt, "the recheck context of a scan does not outlive its rescan");
 	ss->started = ss->done = ss->empty = false;
 	ss->kcx = NULL;
 	ss->krows = NULL;
@@ -258,23 +245,15 @@ bind_queries(SiftScanState *ss, SiftIndexState *st, const void *shared)
 	return shared ? sift_plan_bind_shared(st, queries, n, flags, shared) : sift_plan_bind(st, queries, n, flags);
 }
 
-/* Parallel ranked scans score from the one bind the leader made, whoever runs them */
-static const void *
-shared_bind(SiftScanState *ss)
-{
-	Size		len;
-
-	return ss->par.sh && ss->mode == SIFT_MODE_RANKED ? sift_par_get_bind(&ss->par, &len) : NULL;
-}
-
+/* Parallel scans read the directory the leader exported, and ranked ones score from the bind it made, whoever runs them */
 static void
 bind_scan(SiftScanState *ss)
 {
-	const void *shared = shared_bind(ss);
+	Size		len;
+	const void *shared = ss->par.sh ? sift_par_get_bind(&ss->par, &len) : NULL;
 
-	ss->st = shared ? sift_state_open_dir(ss->index, ss->cxt, sift_shared_dir(shared)) :
-		sift_state_open(ss->index, ss->cxt);
-	ss->plan = bind_queries(ss, ss->st, shared);
+	ss->st = sift_state_open_dir(ss->index, ss->cxt, shared ? sift_shared_dir(shared) : NULL);
+	ss->plan = bind_queries(ss, ss->st, ss->mode == SIFT_MODE_RANKED ? shared : NULL);
 	ss->empty = ss->plan == NULL;
 }
 

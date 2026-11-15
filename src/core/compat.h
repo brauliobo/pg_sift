@@ -11,12 +11,15 @@
 #include "access/tableam.h"
 #include "nodes/miscnodes.h"
 #include "nodes/pathnodes.h"
+#include "nodes/plannodes.h"
 #include "nodes/tidbitmap.h"
 #include "pgtime.h"
 #include "storage/spin.h"
 #include "utils/guc.h"
+#include "utils/injection_point.h"
 #include "utils/numeric.h"
 #include "utils/pg_locale.h"
+#include "utils/rel.h"
 #include "utils/tuplestore.h"
 
 #if PG_VERSION_NUM >= 180000
@@ -24,6 +27,24 @@
 #include "commands/explain_state.h"
 #else
 #include "optimizer/cost.h"
+#endif
+
+/*
+ * Is the file of this index finished, so that a page of it may be read? An index that CREATE INDEX CONCURRENTLY, REINDEX CONCURRENTLY or pg_repack --only-indexes is still building
+ * is in the catalog and not ready for inserts. Its build writes the file past shared buffers, data pages first and the metapage last, so a page read before the end (the layout of the index
+ * a statement asks for, its log) stays cached as the hole it was, and the build and every later reader fail with a corrupted index. Only the owner of the build reads it until it is ready.
+ */
+static inline bool
+sift_index_ready(Relation index)
+{
+	return index->rd_index->indisready;
+}
+
+/* A named point of the code where a test of an injection-points build stops a backend (test/t/maint_lock_order.sh); nothing in a server built without them */
+#if PG_VERSION_NUM >= 180000
+#define SIFT_POINT(name)	INJECTION_POINT(name, NULL)
+#else
+#define SIFT_POINT(name)	INJECTION_POINT(name)
 #endif
 
 /*
@@ -52,11 +73,103 @@ sift_path_disable(Path *p, int nodes)
 }
 #endif
 
+/*
+ * The nodes of a plan that an enable_ setting disabled, and its cost, so that plans are ranked alike on every major: 18 counts the nodes apart from the cost. 17 has
+ * disable_cost in the cost of each, which a nested loop multiplies by the rows of its outer side, so the nodes are counted in the tree: a leaf that carries the penalty in
+ * its startup cost (a scan whose enable_ is off, or a path made to lose), a bitmap heap scan (it has the index scan below), a join or a sort whose enable_ is off. The cost of 17 is the plan's own, as PostgreSQL ranks it.
+ */
+#if PG_VERSION_NUM >= 180000
+static inline int
+sift_plan_disabled(const Plan *plan, double *cost)
+{
+	*cost = plan->total_cost;
+	return plan->disabled_nodes;
+}
+#else
+static inline bool
+sift_node_disabled(const Plan *plan)
+{
+	switch (nodeTag(plan))
+	{
+		case T_NestLoop:
+			return !enable_nestloop;
+		case T_MergeJoin:
+			return !enable_mergejoin;
+		case T_HashJoin:
+			return !enable_hashjoin;
+		case T_Sort:
+		case T_IncrementalSort:
+			return !enable_sort && plan->startup_cost >= disable_cost;
+		case T_BitmapHeapScan:
+			return !enable_bitmapscan;
+		default:
+			return plan->lefttree == NULL && plan->righttree == NULL && plan->startup_cost >= disable_cost;
+	}
+}
+
+static inline int
+sift_nodes_disabled(const Plan *plan)
+{
+	int			nodes = sift_node_disabled(plan);
+	ListCell   *lc;
+	List	   *kids = NIL;
+
+	if (plan->lefttree)
+		nodes += sift_nodes_disabled(plan->lefttree);
+	if (plan->righttree)
+		nodes += sift_nodes_disabled(plan->righttree);
+	switch (nodeTag(plan))
+	{
+		case T_Append:
+			kids = ((const Append *) plan)->appendplans;
+			break;
+		case T_MergeAppend:
+			kids = ((const MergeAppend *) plan)->mergeplans;
+			break;
+		case T_BitmapAnd:
+			kids = ((const BitmapAnd *) plan)->bitmapplans;
+			break;
+		case T_BitmapOr:
+			kids = ((const BitmapOr *) plan)->bitmapplans;
+			break;
+		case T_CustomScan:
+			kids = ((const CustomScan *) plan)->custom_plans;
+			break;
+		default:
+			break;
+	}
+	foreach(lc, kids)
+		nodes += sift_nodes_disabled((const Plan *) lfirst(lc));
+	return nodes;
+}
+
+static inline int
+sift_plan_disabled(const Plan *plan, double *cost)
+{
+	*cost = plan->total_cost;
+	return sift_nodes_disabled(plan);
+}
+#endif
+
 /* A deliberate case fall-through: 19 builds with -Wimplicit-fallthrough=5, which ignores the comment form (its own is pg_fallthrough, absent in 17 and 18) */
 #if PG_VERSION_NUM >= 190000
 #define sift_fallthrough	pg_fallthrough
 #else
 #define sift_fallthrough	__attribute__((fallthrough))
+#endif
+
+/* The checksum of a page about to be written to the file (19 renamed the in-place form) */
+#if PG_VERSION_NUM >= 190000
+#define sift_page_set_checksum	PageSetChecksum
+#else
+#define sift_page_set_checksum	PageSetChecksumInplace
+#endif
+
+/* The cost delay point of a VACUUM pass (18 tells it from the one of ANALYZE) */
+#if PG_VERSION_NUM >= 180000
+#define sift_vacuum_delay_point()	vacuum_delay_point(false)
+#else
+#define sift_vacuum_delay_point()	vacuum_delay_point()
 #endif
 
 /* Table AM scan flags (19): the plain heap scan options */

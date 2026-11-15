@@ -16,8 +16,8 @@ SELECT i, i % 97, CASE WHEN i % 31 = 0 THEN NULL ELSE 'k' || (i * 7 % 83) END, (
        (ARRAY['a', 'A', 'b', 'B', 'é', 'e', '', 'z', 'Z', '10', '9', '_', 'ab', 'aB', 'Ab'])[1 + i % 15] || (i % 7)
 FROM generate_series(1, 40000) i;
 CREATE INDEX r_col ON r USING sift_col (id, a, b, c, d, f, t);
-NOTICE:  sift_col index "r_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = c, d
+NOTICE:  sift_col index "r_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = c, d
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('r_col');
 VACUUM ANALYZE r;
 -- the rows of the statement as a checksum, in the order it gives them, with the pushdown and the workers as given

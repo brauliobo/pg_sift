@@ -145,7 +145,7 @@ def rollup_not_written(s):
     for cols, state in (('few, mid', 'rollup written (2,800 combinations)'), ('few, many', 'no rollup (350,000 combinations)')):
         a, b = cols.split(', ')
         drop(s, 'm_r')
-        s.run("CREATE INDEX m_r ON caps USING sift_col (id, %s, %s) WITH (rollup_dims = '%s', key_columns = 'off', %s)" % (a, b, cols, OPTS))
+        s.run("CREATE INDEX m_r ON caps USING sift_col (id, %s, %s) WITH (rollup_columns = '%s', key_columns = 'off', %s)" % (a, b, cols, OPTS))
         o.stmt('sift ' + state, "SELECT %s, %s, count(*) FROM caps GROUP BY %s, %s" % (a, b, a, b), 'm_r')
         drop(s, 'm_r')
         s.run('CREATE INDEX m_bt ON caps (%s, %s)' % (a, b))
@@ -161,7 +161,7 @@ def cube_columns_left_out(s):
     for q in PRE + ["DROP TABLE IF EXISTS wide20 CASCADE", "CREATE TABLE wide20 (" + ', '.join('c%d int' % i for i in range(1, 21)) + ") WITH (autovacuum_enabled = off)",
                     "INSERT INTO wide20 SELECT " + ', '.join('g %% %d' % (i + 2) for i in range(20)) + " FROM generate_series(1, 100000) g", "VACUUM (FREEZE, ANALYZE) wide20"]:
         s.run(q)
-    s.run("CREATE INDEX m_w ON wide20 USING sift_col (" + ', '.join('c%d' % i for i in range(1, 21)) + ") WITH (key_columns = 'off', point_tid_columns = 'off', order_array_columns = 'off', rollup_dims = 'off')")
+    s.run("CREATE INDEX m_w ON wide20 USING sift_col (" + ', '.join('c%d' % i for i in range(1, 21)) + ") WITH (key_columns = 'off', point_tid_columns = 'off', order_array_columns = 'off', rollup_columns = 'off')")
     for col, state in (('c3', 'inside the 16 dimensions'), ('c19', 'left out of the cube')):
         o.stmt('sift, GROUP BY %s %s' % (col, state), "SELECT %s, count(*) FROM wide20 GROUP BY %s" % (col, col), 'm_w')
     drop(s, 'm_w')

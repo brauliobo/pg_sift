@@ -8,15 +8,14 @@
  * Reads go through the engine's column source (sift_col_open_table); a segment written for another column layout (after ALTER TABLE)
  * is read with its own schema, the columns being matched by attribute number.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "access/genam.h"
-#include "access/heapam.h"
 #include "access/table.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "access/tupmacs.h"
-#include "access/xact.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaddress.h"
 #include "catalog/pg_class.h"
@@ -27,33 +26,22 @@
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "catalog/pg_type.h"
-#include "funcapi.h"
 #include "miscadmin.h"
 #include "access/skey.h"
-#include "port/pg_bitutils.h"
-#include "storage/bufmgr.h"
-#include "storage/procarray.h"
 #include "utils/builtins.h"
-#include "utils/datum.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/numeric.h"
 #include "utils/rel.h"
 #include "utils/uuid.h"
 #include "utils/snapmgr.h"
-#include "utils/timestamp.h"
-#include "utils/tuplestore.h"
 
 #include "col/am.h"
 #include "col/pg.h"
 #include "col/runs.h"
 #include "col/am.h"
 #include "col/seg.h"
-#include "core/lane.h"
 #include "core/limits.h"
-#include "bm25/maint.h"
-#include "bm25/merge.h"
-#include "core/ops.h"
 #include "table/table.h"
 #include "table/seg_int.h"
 
@@ -196,17 +184,18 @@ layout_build(Relation rel, MemoryContext cxt)
 	return layout_build_for(rel, cxt, declared_paths(rel, 0, NULL));
 }
 
-/* The compression policy of each leaf under sift.table_compression now (a setting of the backend that writes the segment) */
+/* The compression policy of each leaf under the compression option of the table (sift.table_compression where the table sets none) now, as the backend that writes the segment has it */
 SiftCcPolicy *
 layout_policy(Relation rel, const SiftTblLayout *l)
 {
 	SiftCcPolicy *pol = palloc(l->schema->ncols * sizeof(SiftCcPolicy));
+	const char *spec = sift_tbl_opt_str(sift_tbl_rel(rel), SIFT_TBLOPT_COMPRESSION);
 
 	for (int i = 0; i < l->schema->ncols; i++)
 	{
 		const SiftColDef *def = &l->schema->cols[i];
 		const char *name = i == l->exc ? "exceptions" : def->path[0] ? def->path : NameStr(TupleDescAttr(RelationGetDescr(rel), def->attno - 1)->attname);
-		const char *err = sift_cc_policy_for_column(sift_tbl_compression_spec, name, &pol[i]);
+		const char *err = sift_cc_policy_for_column(spec, name, &pol[i]);
 
 		if (err)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid compression option: %s", err)));
@@ -222,12 +211,14 @@ layout_policy(Relation rel, const SiftTblLayout *l)
 void
 sift_tbl_pagg_spec(Relation rel, const SiftColSchema *schema, SiftCPaggSpec *spec)
 {
+	const SiftTblRel *st = sift_tbl_rel(rel);
+
 	sift_cpagg_spec_default(schema, spec);
 	spec->table = true;
 	spec->minmax = true;
 	/* a sift_table has no option for its dictionaries: its leaves have the order to search stored where it adds at most SIFT_TBL_LOOKUP_PCT of the segment, unless sift.table_dict_lookup is off */
 	for (int c = 0; c < schema->ncols; c++)
-		spec->lookup[c] = sift_col_table_lookup;
+		spec->lookup[c] = sift_tbl_opt_bool(st, SIFT_TBLOPT_DICT_LOOKUP);
 	spec->lookup_pct = SIFT_TBL_LOOKUP_PCT;
 	if (sift_col_format_minor >= SIFT_COL_FORMAT_CALENDAR && !schema->kinds)
 		sift_cpagg_spec_calendar(schema, spec);
@@ -236,7 +227,7 @@ sift_tbl_pagg_spec(Relation rel, const SiftColSchema *schema, SiftCPaggSpec *spe
 	if (schema->kinds)
 		return;
 	spec->keyauto = true;
-	spec->key_table = sift_col_table_key_table;
+	spec->key_table = sift_tbl_opt_bool(st, SIFT_TBLOPT_KEY_TABLE);
 	for (int c = 0; c < schema->ncols; c++)
 	{
 		const SiftColDef *d = &schema->cols[c];
@@ -582,7 +573,7 @@ schema_of(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 	if (c->n == c->cap)
 	{
 		c->cap = Max(8, c->cap * 2);
-		c->ent = c->ent ? repalloc(c->ent, c->cap * sizeof(SchemaEnt)) : MemoryContextAlloc(st->cxt, c->cap * sizeof(SchemaEnt));
+		SIFT_REGROW_IN(st->cxt, c->ent, c->cap * sizeof(SchemaEnt));
 	}
 	c->ent[c->n++] = (SchemaEnt) {e->gen, schema};
 	return schema;

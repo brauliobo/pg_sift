@@ -32,15 +32,7 @@ ANALYZE b_t;
 CREATE FUNCTION b_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
 
 -- the key lines of the SiftAgg plan of a query ('' when it is not one)
-CREATE FUNCTION b_keys(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := '';
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Group Keys:%' THEN r := r || trim(l); END IF;
-	END LOOP;
-	RETURN r;
-END $$;
+CREATE FUNCTION b_keys(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_group_keys_text(q) $$;
 
 CREATE TABLE b_q (q text);
 INSERT INTO b_q VALUES

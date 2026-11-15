@@ -1,6 +1,7 @@
 -- A containment of an array of objects with two keys, and an EXISTS over its elements with two tests, are an element predicate whose child is an AND: it has no stored leaf
 -- (leaf -1), and the element test of the scan must decline it before it looks up the leaf of the layout (a read before the array of leaves, found by the sanitizer lane).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE eo (id int, tenant_id int, items jsonb) WITH (autovacuum_enabled = off);
@@ -9,13 +10,7 @@ INSERT INTO eo SELECT g, g % 10, (SELECT jsonb_agg(jsonb_build_object('category'
 VACUUM (FREEZE, ANALYZE) eo;
 CREATE INDEX eo_col ON eo USING sift_col (id, tenant_id, items) WITH (paths = 'items[]{category text, kind text, price float8}');
 
-CREATE FUNCTION eo_rows(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', agg::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION eo_rows(q text, agg bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, agg) $$;
 
 SELECT n, eo_rows(q, true) IS NOT DISTINCT FROM eo_rows(q, false) AS same, eo_rows(q, true) <> '' AS not_empty
 FROM (VALUES
@@ -27,4 +22,5 @@ FROM (VALUES
 
 DROP TABLE eo;
 DROP FUNCTION eo_rows(text, bool);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

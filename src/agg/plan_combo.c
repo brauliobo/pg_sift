@@ -1,65 +1,23 @@
 /*
  * agg/plan_combo.c - lookup joins and combos: expressions PostgreSQL evaluates over value combinations
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
-#include <math.h>
-
-#include "access/htup_details.h"
-#include "access/sysattr.h"
-#include "access/stratnum.h"
+#include "access/genam.h"
 #include "access/table.h"
-#include "access/stratnum.h"
-#include "catalog/pg_aggregate.h"
-#include "catalog/pg_am.h"
-#include "catalog/pg_class.h"
 #include "catalog/pg_collation.h"
-#include "commands/defrem.h"
-#include "catalog/pg_index.h"
-#include "miscadmin.h"
-#include "catalog/pg_operator.h"
-#include "catalog/pg_opfamily.h"
-#include "catalog/pg_proc.h"
-#include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
-#include "nodes/extensible.h"
-#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
-#include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
-#include "optimizer/plancat.h"
-#include "optimizer/pathnode.h"
-#include "optimizer/paramassign.h"
-#include "optimizer/paths.h"
-#include "optimizer/planmain.h"
-#include "optimizer/planner.h"
-#include "optimizer/tlist.h"
-#include "parser/parse_relation.h"
-#include "parser/parsetree.h"
-#include "port/pg_bitutils.h"
 #include "rewrite/rewriteManip.h"
-#include "utils/array.h"
-#include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
-#include "utils/jsonb.h"
-#include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 #include "utils/rel.h"
-#include "utils/ruleutils.h"
-#include "utils/selfuncs.h"
-#include "utils/syscache.h"
-#include "utils/typcache.h"
 
-#include "agg/agg.h"
-#include "agg/part.h"
-#include "agg/topn.h"
-#include "agg/spec.h"
-#include "agg/colsrc.h"
-#include "agg/search.h"
 #include "agg/plan_int.h"
 
 JoinCtx *
@@ -87,23 +45,178 @@ join_var(JoinCtx *jc, Var *v)
 	jc->cvars = lappend(jc->cvars, copyObject(v));
 }
 
-/* the index of column v of the joined table among the columns the expressions read; -1 when there are too many */
+/* an expression an index can hold as a column, other than a column: a call, an operator, a test, a condition */
+static bool
+join_expr_node(Node *n)
+{
+	return IsA(n, FuncExpr) || IsA(n, OpExpr) || IsA(n, NullTest) || IsA(n, BooleanTest) || IsA(n, BoolExpr) || IsA(n, CaseExpr) ||
+		IsA(n, CoalesceExpr) || IsA(n, NullIfExpr) || IsA(n, DistinctExpr) || IsA(n, CoerceViaIO);
+}
+
+/* the expressions of the sift_col indexes of the table, over its columns as varno 1 */
+static List *
+join_index_exprs(JoinCtx *jc)
+{
+	if (!jc->iexprs_done)
+	{
+		Relation	rel = table_open(jc->j.relid, AccessShareLock);
+
+		foreach_oid(ixoid, RelationGetIndexList(rel))
+		{
+			Relation	ix = index_open(ixoid, AccessShareLock);
+
+			if (sift_colsrc_is_index(ix->rd_rel->relam))
+				foreach_ptr(Node, e, RelationGetIndexExpressions(ix))
+					if (join_expr_node(e))
+						jc->iexprs = lappend(jc->iexprs, copyObject(e));
+			index_close(ix, AccessShareLock);
+		}
+		table_close(rel, AccessShareLock);
+		jc->iexprs_done = true;
+	}
+	return jc->iexprs;
+}
+
+/* n over the columns of the table as varno 1, as an index and the columns of the spec hold it */
+static Node *
+join_table_expr(JoinCtx *jc, Node *n)
+{
+	Node	   *x = copyObject(n);
+
+	ChangeVarNodes(x, jc->rti, 1, 0);
+	return x;
+}
+
+static bool may_raise_walker(Node *n, AggCtx *c);
+
+/* does the expression have a part that is one of the expressions the index holds? */
+static bool
+join_holds_walker(Node *n, void *ctx)
+{
+	List	   *held = ctx;
+
+	if (n == NULL)
+		return false;
+	foreach_ptr(Node, e, held)
+		if (equal(e, n))
+			return true;
+	return expression_tree_walker(n, join_holds_walker, held);
+}
+
+/* a column of a table an outer join nulls is NULL on the rows it preserves: a test that is not strict would give its value for a NULL, the load of the table does not */
+static bool
+join_test_walker(Node *n, void *ctx)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Var))
+		return !bms_is_empty(((Var *) n)->varnullingrels);
+	if (IsA(n, Param) || IsA(n, SubPlan) || IsA(n, SubLink) || IsA(n, Aggref) || IsA(n, WindowFunc) || IsA(n, PlaceHolderVar))
+		return true;
+	return expression_tree_walker(n, join_test_walker, ctx);
+}
+
+/*
+ * A test of the columns of one table (a comparison, a NULL test, a condition): true, false or NULL for each row, so the table tells its rows apart by the three
+ * outcomes however many values the columns have. The load computes it for each row of the table, where the combos computed it for the rows the scan reaches: a test
+ * that may raise an error (a division) is left to them.
+ */
+static bool
+join_test_expr(AggCtx *c, Node *n)
+{
+	/* the rows a preserving join keeps without a match have NULL in the columns of the other tables: a test of those is not the test of a NULL (IS NULL, COALESCE) */
+	if (c->own_filter || preserved_join(c))
+		return false;
+	return exprType(n) == BOOLOID && !contain_mutable_functions(n) && !join_test_walker(n, NULL) && !may_raise_walker(n, c);
+}
+
+/*
+ * The inner lookup join whose table has a sift_col index on the expression n (a call or an operator on the columns of that table alone), or the expression is a
+ * test (join_test_expr): the expression is one column of the table, which the load reads from the leaf of the index or computes, where it was a combination of the
+ * values of the columns it reads. Not a left join: the
+ * expression of the columns of a row nothing matched is not NULL (a function that is not strict), the column is
+ */
+static JoinCtx *
+join_of_expr(AggCtx *c, Node *n, bool held_only)
+{
+	Relids		v = pull_varnos(c->root, n);
+
+	if (bms_membership(v) != BMS_SINGLETON)
+		return NULL;
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (bms_is_member(jc->rti, v) && jc->cpath == NULL && jc->j.child < 0 && jc->j.subplan == 0 && OidIsValid(jc->j.relid) &&
+			jc->kind == SJ_INNER)
+		{
+			Node	   *x = join_table_expr(jc, n);
+
+			foreach_ptr(Node, e, join_index_exprs(jc))
+				if (equal(e, x))
+					return jc;
+			/* a test that has an expression the index holds in it is read through that one: the walker goes on into it */
+			if (!held_only && join_test_expr(c, n) && !join_holds_walker(x, join_index_exprs(jc)))
+				return jc;
+		}
+	return NULL;
+}
+
+/* the join whose table has a sift_col index on the expression n (join_of_node also takes a test the load computes) */
+JoinCtx *
+join_held_of_node(AggCtx *c, Node *n)
+{
+	return join_expr_node(n) ? join_of_expr(c, n, true) : NULL;
+}
+
+/* the join a column, an indexed expression or a test of a table belongs to */
+JoinCtx *
+join_of_node(AggCtx *c, Node *n)
+{
+	return IsA(n, Var) ? join_of_var(c, n) : join_expr_node(n) ? join_of_expr(c, n, false) : NULL;
+}
+
+/* the index of column v (a Var, or an expression the table has an index on) of the joined table among the columns the expressions read; -1 when there are too many */
 int
-join_col(JoinCtx *jc, Var *v)
+join_col(JoinCtx *jc, Node *v)
 {
 	SiftAggJoin *j = &jc->j;
+	Node	   *x = IsA(v, Var) ? NULL : join_table_expr(jc, v);
+	int			att = x ? 0 : ((Var *) v)->varattno;
 
-	join_var(jc, v);
+	if (x)
+		foreach_ptr(Var, u, pull_var_clause(v, 0))
+			join_var(jc, u);
+	else
+		join_var(jc, (Var *) v);
 	for (int i = 0; i < j->ncol; i++)
-		if (j->colatt[i] == v->varattno)
+		if (j->colatt[i] == att && (x ? j->colexpr[i] != NULL && equal(j->colexpr[i], x) : j->colexpr[i] == NULL))
 			return i;
 	if (agg_width_hit(j->ncol, join_cols, sift_limit(join_cols, SIFT_AGG_MAX_JCOLS), "columns of a joined table read by expressions"))
 		return -1;
-	j->colatt[j->ncol] = v->varattno;
-	j->coltype[j->ncol] = v->vartype;
-	j->coltypmod[j->ncol] = v->vartypmod;
-	j->colcoll[j->ncol] = v->varcollid;
+	j->colatt[j->ncol] = att;
+	j->coltype[j->ncol] = exprType(v);
+	j->coltypmod[j->ncol] = exprTypmod(v);
+	j->colcoll[j->ncol] = exprCollation(v);
+	j->colexpr[j->ncol] = x;
 	return j->ncol++;
+}
+
+/*
+ * The leaf an inner join's key column stands for: the rows that join have the key equal to the leaf (p.id of `p.id = c.parent_id`), so the column is not one to look up
+ * (-1: v is not the key of such a join)
+ */
+static int
+join_key_leaf(AggCtx *c, Var *v)
+{
+	JoinCtx    *jc = join_of_var(c, (Node *) v);
+	int			id;
+
+	if (jc == NULL || jc->kind != SJ_INNER || jc->cpath != NULL || jc->j.child >= 0 || jc->j.params != NIL || jc->j.nkey != 1 || jc->j.keynull[0] ||
+		jc->j.keypos[0] < 0 || jc->j.keyexpr[0] != NULL || jc->j.tkey[0] != NULL || jc->j.keyatt[0] != v->varattno)
+		return -1;
+	id = ((ComboCtx *) list_nth(c->combos, jc->combo))->leaf[jc->j.keypos[0]];
+	/* equal values of these types are the same value (a numeric 1.0 and 1.00, a text of another collation are not) */
+	if (type_class(v->vartype) != TC_INT && type_class(v->vartype) != TC_DATE && type_class(v->vartype) != TC_TS && type_class(v->vartype) != TC_TSTZ)
+		return -1;
+	return id >= 0 && leaf_of(c, id)->typid == v->vartype ? id : -1;
 }
 
 /* the position of leaf `id` in the combo (added if new), its type fixed by the first reference that has one; -1 when it does not fit */
@@ -166,7 +279,7 @@ combo_level(AggCtx *c, ComboCtx *cb)
 
 /* An input from an earlier lookup is identified by that output row, including its NULL extension. */
 int
-combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Var *v)
+combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Node *v)
 {
 	int			col = join_col(jc, v),
 				p = 0;
@@ -182,9 +295,9 @@ combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Var *v)
 		cb->leaf[p] = -1;
 		cb->refcombo[p] = jc->combo;
 		cb->refcol[p] = col;
-		cb->ptype[p] = v->vartype;
-		cb->ptypmod[p] = v->vartypmod;
-		cb->pcoll[p] = v->varcollid;
+		cb->ptype[p] = exprType(v);
+		cb->ptypmod[p] = exprTypmod(v);
+		cb->pcoll[p] = exprCollation(v);
 		cb->typed[p] = true;
 		cb->nl++;
 	}
@@ -320,16 +433,17 @@ combo_walker(Node *n, ComboWalk *w)
 	/* a relabel keeps the representation: the leaf is read as what it is, and the relabel stays around the parameter */
 	if (IsA(n, RelabelType))
 		return combo_walker((Node *) ((RelabelType *) n)->arg, w);
-	if (IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr))
+	if (IsA(n, Var) || join_expr_node(n))
 	{
-		if ((jc = join_of_var(w->c, n)) != NULL)
+		id = w->key_leaf && IsA(n, Var) ? join_key_leaf(w->c, (Var *) n) : -1;
+		if (id < 0 && (jc = join_of_node(w->c, n)) != NULL)
 		{
 			if (w->jc == NULL || jc->combo > w->jc->combo)
 				w->jc = jc;
 			w->vars = lappend(w->vars, n);
 			return false;
 		}
-		if ((id = match_leaf(w->c, n)) >= 0)
+		if (id >= 0 || (id = match_leaf(w->c, n)) >= 0)
 		{
 			int			p = 0;
 
@@ -515,8 +629,8 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe)
 			return false;
 	for (int p = 0; p < w.nl; p++)
 		use_matched_leaf(c, w.leaf[p]);
-	foreach_ptr(Var, v, w.vars)
-		if (combo_reference(c, cb, join_of_var(c, (Node *) v), v) < 0)
+	foreach_ptr(Node, v, w.vars)
+		if (combo_reference(c, cb, join_of_node(c, v), v) < 0)
 			return false;
 	join_key(jc, m, nullsafe);
 	j->keypos[j->nkey] = -1;
@@ -533,7 +647,7 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe)
 bool
 combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joins, int *ci, int *si)
 {
-	ComboWalk	w = {c};
+	ComboWalk	w = {c, .key_leaf = force == NULL};
 	ComboCtx   *cb = NULL;
 	SlotReq    *rq;
 
@@ -572,9 +686,9 @@ combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joi
 	for (int p = 0; p < w.nl; p++)
 		if (combo_leaf(cb, w.leaf[p], true, w.ptype[p], w.ptypmod[p], w.pcoll[p]) < 0)
 			return false;
-	foreach_ptr(Var, v, w.vars)
+	foreach_ptr(Node, v, w.vars)
 	{
-		JoinCtx    *jc = join_of_var(c, (Node *) v);
+		JoinCtx    *jc = join_of_node(c, v);
 
 		if ((jc == w.jc ? join_col(jc, v) : combo_reference(c, cb, jc, v)) < 0)
 			return false;
@@ -582,10 +696,12 @@ combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joi
 	for (int p = 0; p < w.nl; p++)
 		use_matched_leaf(c, w.leaf[p]);
 	rq = palloc0(sizeof(SlotReq));
+	rq->own_filter = c->own_filter;
 	rq->expr = expr;
 	rq->is_key = is_key;
 	rq->agg = -1;
 	rq->late = !is_key && w.jc == NULL && may_raise_walker(expr, c);
+	rq->key_leaf = w.key_leaf;
 	cb->slots = lappend(cb->slots, rq);
 	*ci = combo_index(c, cb);
 	*si = list_length(cb->slots) - 1;
@@ -603,6 +719,7 @@ typedef struct ComboSub
 	AggCtx	   *c;
 	ComboCtx   *cb;
 	JoinCtx    *jc;
+	bool		key_leaf;		/* as ComboWalk */
 } ComboSub;
 
 static Node *
@@ -619,23 +736,19 @@ combo_sub_mutator(Node *n, ComboSub *s)
 		hash_param_saop((ScalarArrayOpExpr *) r);
 		return r;
 	}
-	if (IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr))
+	if (IsA(n, Var) || join_expr_node(n))
 	{
-		if (s->jc != NULL && join_of_var(s->c, n) == s->jc)
-		{
-			Var		   *v = (Var *) n;
+		JoinCtx    *jc;
 
-			return (Node *) exec_param(s->cb->nl + join_col(s->jc, v), v->vartype, v->vartypmod, v->varcollid);
-		}
-		if (join_of_var(s->c, n) != NULL)
+		id = s->key_leaf && IsA(n, Var) ? join_key_leaf(s->c, (Var *) n) : -1;
+		if (id < 0 && (jc = join_of_node(s->c, n)) != NULL)
 		{
-			Var		   *v = (Var *) n;
-			int			paramid = combo_reference(s->c, s->cb, join_of_var(s->c, n), v);
+			int			paramid = jc == s->jc ? s->cb->nl + join_col(jc, n) : combo_reference(s->c, s->cb, jc, n);
 
 			Assert(paramid >= 0);
-			return (Node *) exec_param(paramid, v->vartype, v->vartypmod, v->varcollid);
+			return (Node *) exec_param(paramid, exprType(n), exprTypmod(n), exprCollation(n));
 		}
-		if ((id = match_leaf(s->c, n)) >= 0)
+		if (id >= 0 || (id = match_leaf(s->c, n)) >= 0)
 		{
 			int			pos = combo_leaf(s->cb, id, false, 0, 0, 0);
 
@@ -647,10 +760,10 @@ combo_sub_mutator(Node *n, ComboSub *s)
 
 /* the expression of an argument or slot of combo ci over Params, now: the scope that resolves its columns is the one the caller is in */
 Node *
-lower_scoped(AggCtx *c, int ci, Node *expr)
+lower_scoped(AggCtx *c, int ci, Node *expr, bool key_leaf)
 {
 	ComboCtx   *cb = list_nth(c->combos, ci);
-	ComboSub	sub = {c, cb, cb->join >= 0 ? list_nth(c->joins, cb->join) : NULL};
+	ComboSub	sub = {c, cb, cb->join >= 0 ? list_nth(c->joins, cb->join) : NULL, key_leaf};
 
 	return combo_sub_mutator(expr, &sub);
 }
@@ -668,7 +781,7 @@ finish_combos(AggCtx *c, SiftAggSpec *s)
 	foreach_ptr(ComboCtx, cb, c->combos)
 	{
 		SiftAggCombo *o = &s->combo[foreach_current_index(cb)];
-		ComboSub	sub = {c, cb, cb->join >= 0 ? list_nth(c->joins, cb->join) : NULL};
+		ComboSub	sub = {c, cb, cb->join >= 0 ? list_nth(c->joins, cb->join) : NULL, false};
 
 		o->nleaves = cb->nl;
 		o->join = cb->join;
@@ -701,8 +814,11 @@ finish_combos(AggCtx *c, SiftAggSpec *s)
 			sl->key = rq->key;
 			sl->agg = rq->agg;
 			sl->direct = rq->direct;
+			sub.key_leaf = rq->key_leaf;
+			c->own_filter = rq->own_filter;
 			sl->expr = rq->lowered ? rq->expr : combo_sub_mutator(rq->expr, &sub);
 		}
+		c->own_filter = false;
 	}
 }
 

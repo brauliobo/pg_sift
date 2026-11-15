@@ -3,6 +3,7 @@
  * Which rollup answers the scan, whether it is cheaper than the rows, and its cells folded
  * into the groups.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include "agg/agg_int.h"
@@ -91,8 +92,8 @@ rollup_need(AggExec *ex)
 			}
 			n->meas[n->nmeas++].leaf = leaf;
 		}
-		n->meas[m].sums |= a->kind != SAA_COUNT && a->kind != SAA_MIN && a->kind != SAA_MAX;
-		n->meas[m].minmax |= a->kind == SAA_MIN || a->kind == SAA_MAX;
+		n->meas[m].sums |= a->kind != SAA_COUNT && !saa_minmax(a->kind);
+		n->meas[m].minmax |= saa_minmax(a->kind);
 	}
 }
 
@@ -237,7 +238,7 @@ preagg_rollup(AggExec *ex)
 		const SiftAggAgg *a = &s->agg[ai];
 		int			leaf = pa_leaf(a),
 					m = 0;
-		bool		mm = a->kind == SAA_MIN || a->kind == SAA_MAX;
+		bool		mm = saa_minmax(a->kind);
 
 		if (leaf < 0)
 		{

@@ -38,6 +38,10 @@ typedef struct SiftAggSpec
 	uint64	   *gate;			/* per entry of leaves: the aggregates (bit j: agg[j]) that read the leaf, all of them with a FILTER; a row of a value the leaf cannot store raises only if the FILTER of one holds (0: it raises for every row) */
 	int			npred;			/* conjuncts, ANDed */
 	SiftAggPred **pred;
+	int			nwide;			/* the tests the source runs (SAP_WIDE), wherever they are in the predicates, by wslot */
+	SiftAggPred **wide;
+	int			ntype;			/* the leaves of the SAP_TYPE tests, wherever they are in the predicates */
+	int		   *type_leaf;
 	int			nkeys;
 	SiftAggKey *key;
 	int			naggs;
@@ -64,6 +68,7 @@ typedef struct SiftAggSpec
 	double		est_groups;
 	double		est_rows;		/* the rows the planner expects to aggregate: with est_groups, what a group of a count(DISTINCT) can hold */
 	int			nworkers;		/* parallel workers the plan asks for (0: the leader scans alone) */
+	int			jpart;			/* > 0 with workers: the lookup join (jpart - 1) whose key the participants split the rows by, each reading every row and aggregating those of its share of the key, so that each key is resolved by one of them (agg/par/split.c); 0: they split the rows or the groups */
 	int			gpart;			/* > 0 with workers: the key (gpart - 1) the participants split the groups by, each reading every row and aggregating those of its share of the key (agg/par/part.c); 0: they split the rows */
 	double		wide_unit_rows;	/* the workers are priced for the rows the scan reads, not for the tuples PostgreSQL expects of the joins (workers_ratio): the rows of a unit, > 0 where they are, and then par_launch keeps one process for a scan of few rows; 0 where they are not */
 	const char *serial;			/* why the plan asks for none whatever the cost, for EXPLAIN VERBOSE (the planner's reasons; sift_aggspec_serial_reason has those of the spec); else NULL */
@@ -107,6 +112,9 @@ extern bool sift_gorder_call_free(const SiftAggOrd *o);
 extern bool sift_aggspec_ord_range(const SiftAggSpec *s);
 extern bool sift_aggspec_spillable(const SiftAggSpec *s);
 
+/* the group table of a scan that cannot spill (and of the node that groups rows) may take this much: the planner leaves the scan to the normal plan, which spills, past it, and the scan raises an error */
+extern double sift_agg_nospill_bytes(int *factor, double *floor_bytes);
+
 /* the count(DISTINCT x) a scan may stream in the order of the zone minimum of x (agg/dist/), -1: none */
 extern int sift_aggspec_dstream(const SiftAggSpec *s);
 extern bool sift_aggspec_gstream(const SiftAggSpec *s);
@@ -115,8 +123,8 @@ extern bool sift_aggspec_gstream(const SiftAggSpec *s);
 static inline bool
 sift_aggkind_float_sum(const SiftAggAgg *a)
 {
-	return a->kind == SAA_SUM_F64 || a->kind == SAA_AVG_F64 || a->kind == SAA_O_SUM_F64 || a->kind == SAA_O_AVG_F64 ||
-		((a->kind == SAA_X_SUM || a->kind == SAA_X_AVG) && a->restype == FLOAT8OID);
+	return saa_sumavg_f64(a->kind) || a->kind == SAA_O_SUM_F64 || a->kind == SAA_O_AVG_F64 ||
+		(saa_x_sumavg(a->kind) && a->restype == FLOAT8OID);
 }
 
 /* a scan with a spine or a correlated child plan: workers were added for them after the release that scanned the others in lanes */
@@ -202,7 +210,7 @@ typedef struct SiftAggPaShape
  * rollup (low-cardinality scalars of the elements), and count, sum, avg (integer, numeric and float8), min and max of its measures; the conjuncts
  * of the rows must be zone comparisons. The unit answers when its rollup holds these dims and measures, else it is scanned.
  * Over the rows, when that fails (two or more keys, a key and a conjunct on another column) and the index has the rollup of its rows (reloption
- * rollup_dims): the same, with the columns of the rollup as dims, the conjuncts all on dims and the aggregates of integer and numeric measures.
+ * rollup_columns): the same, with the columns of the rollup as dims, the conjuncts all on dims and the aggregates of integer and numeric measures.
  */
 /*
  * Calendar expressions (agg/expr/cal.c): sift_aggexpr_cal classifies a key or a test of a date, timestamp or timestamptz leaf (Param 0) and gives in mask the

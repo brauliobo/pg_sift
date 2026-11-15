@@ -2,6 +2,7 @@
 -- Rows of a group that tie in the ORDER BY have no order: SQL leaves the row DISTINCT ON keeps unspecified, so the scan keeps one of them (same_tied below compares the ON and sort
 -- columns with the normal plan and checks that the row is a row of the table). Every other statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same, after every kind of write.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 -- the table is small: page costs that keep the sort and the btree plans from looking cheap as well
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -17,28 +18,9 @@ CREATE TABLE tenants (id int PRIMARY KEY, kind text);
 INSERT INTO tenants SELECT i, (ARRAY['outlet', 'popup', 'flagship'])[1 + i % 3] FROM generate_series(1, 60) i;
 ANALYZE tenants;
 
-CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'normal';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
-		IF l LIKE '%Workers Planned: _%' AND l NOT LIKE '%Workers Planned: 0%' THEN r := r || ' with workers'; END IF;
-	END LOOP;
-	RETURN r;
-END $$;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_with_workers_label(q) $$;
 
-CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	plan := plan_of(q);
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	RESET sift.enable_agg;
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
-	DROP TABLE r_on, r_off;
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_plan_and_differences(plan_of(q), q) $$;
 
 -- a statement whose ORDER BY leaves ties (its select list holds the id): the pairs (ON and sort columns) are those of the normal plan, whatever row of a tie each plan keeps, and the row is a row of the table
 CREATE FUNCTION same_tied(q text, pairs text, tbl regclass) RETURNS TABLE (plan text, result_rows bigint, pairs_vs_normal_plan bigint, rows_not_in_table bigint) LANGUAGE plpgsql AS $$
@@ -213,4 +195,5 @@ DROP FUNCTION same_tied(text, text, regclass);
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
 DROP TABLE tt, tp, tn, tenants, ev;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -19,6 +19,8 @@
 #include "utils/typcache.h"
 
 #include "agg/agg.h"
+#include "agg/flat/int.h"
+#include "agg/plan_int.h"
 
 /* one arm of the OR: the outer expression its key is tested against, the key column of the table, and for an array of a group the sub-select that gives the group */
 typedef struct Arm
@@ -67,8 +69,8 @@ levels_walker(Node *n, Outer *c)
 }
 
 /* does the expression read a variable of the query around it (any level up)? */
-static bool
-reads_outside(Node *n)
+bool
+flat_reads_outside(Node *n)
 {
 	Outer		c = {0, false};
 
@@ -127,8 +129,8 @@ only_reaches(Node *n, int up)
 	return c.hit && !c.same && !c.other;
 }
 
-static List *
-and_list(Node *quals)
+List *
+flat_and_list(Node *quals)
 {
 	if (quals == NULL)
 		return NIL;
@@ -137,28 +139,29 @@ and_list(Node *quals)
 	return list_make1(quals);
 }
 
-static Node *
-strip(Node *n)
-{
-	while (n != NULL && IsA(n, RelabelType))
-		n = (Node *) ((RelabelType *) n)->arg;
-	return n;
-}
-
-/* a plain table in the FROM of a query that is nothing else: its range table index, or 0 */
-static Index
-only_table(Query *q)
+/* the FROM of a query is one plain table: its range table index, or 0 */
+Index
+flat_from_table(Query *q)
 {
 	RangeTblEntry *rte;
 	Index		rti;
 
-	if (q->commandType != CMD_SELECT || q->setOperations != NULL || q->rowMarks != NIL || q->hasAggs || q->hasWindowFuncs || q->hasTargetSRFs || q->hasModifyingCTE ||
-		q->cteList != NIL || q->groupClause != NIL || q->groupingSets != NIL || q->havingQual != NULL || q->limitCount != NULL || q->limitOffset != NULL ||
-		q->distinctClause != NIL || q->jointree == NULL || list_length(q->jointree->fromlist) != 1 || !IsA(linitial(q->jointree->fromlist), RangeTblRef))
+	if (q->jointree == NULL || list_length(q->jointree->fromlist) != 1 || !IsA(linitial(q->jointree->fromlist), RangeTblRef))
 		return 0;
 	rti = ((RangeTblRef *) linitial(q->jointree->fromlist))->rtindex;
 	rte = rt_fetch(rti, q->rtable);
 	return rte->rtekind == RTE_RELATION && (rte->relkind == RELKIND_RELATION || rte->relkind == RELKIND_PARTITIONED_TABLE) && rte->tablesample == NULL ? rti : 0;
+}
+
+/* a plain table in the FROM of a query that is nothing else: its range table index, or 0 */
+Index
+flat_only_table(Query *q)
+{
+	if (q->commandType != CMD_SELECT || q->setOperations != NULL || q->rowMarks != NIL || q->hasAggs || q->hasWindowFuncs || q->hasTargetSRFs || q->hasModifyingCTE ||
+		q->cteList != NIL || q->groupClause != NIL || q->groupingSets != NIL || q->havingQual != NULL || q->limitCount != NULL || q->limitOffset != NULL ||
+		q->distinctClause != NIL)
+		return 0;
+	return flat_from_table(q);
 }
 
 /* the default equality of the type: the arm's test is the one a hash of the keys answers */
@@ -169,8 +172,8 @@ default_equality(Oid opno, Oid type)
 }
 
 /* `tbl.col = expr` with expr reading only the level `up` above: the column and the expression */
-static bool
-key_test(Node *n, Index rti, int up, Var **col, Node **expr, OpExpr **eq)
+bool
+flat_key_test(Node *n, Index rti, int up, Var **col, Node **expr, OpExpr **eq)
 {
 	OpExpr	   *op;
 	Node	   *sides[2];
@@ -178,8 +181,8 @@ key_test(Node *n, Index rti, int up, Var **col, Node **expr, OpExpr **eq)
 	if (!IsA(n, OpExpr) || list_length(((OpExpr *) n)->args) != 2)
 		return false;
 	op = (OpExpr *) n;
-	sides[0] = strip(linitial(op->args));
-	sides[1] = strip(lsecond(op->args));
+	sides[0] = strip_relabel(linitial(op->args));
+	sides[1] = strip_relabel(lsecond(op->args));
 	for (int i = 0; i < 2; i++)
 	{
 		Var		   *v = IsA(sides[i], Var) ? (Var *) sides[i] : NULL;
@@ -210,8 +213,8 @@ or_arms(Node *n, List **arms)
 static bool
 group_arm(ScalarArrayOpExpr *any, Index rti, Arm *arm)
 {
-	Node	   *l = strip(linitial(any->args)),
-			   *r = strip(lsecond(any->args));
+	Node	   *l = strip_relabel(linitial(any->args)),
+			   *r = strip_relabel(lsecond(any->args));
 	SubLink    *sl;
 	Query	   *g;
 	Index		grti;
@@ -225,25 +228,25 @@ group_arm(ScalarArrayOpExpr *any, Index rti, Arm *arm)
 		return false;
 	sl = (SubLink *) r;
 	g = castNode(Query, sl->subselect);
-	if ((grti = only_table(g)) == 0 || list_length(g->targetList) != 1 || g->hasSubLinks || g->sortClause != NIL)
+	if ((grti = flat_only_table(g)) == 0 || list_length(g->targetList) != 1 || g->hasSubLinks || g->sortClause != NIL)
 		return false;
 	te = linitial_node(TargetEntry, g->targetList);
 	if (!IsA(te->expr, Var) || ((Var *) te->expr)->varno != grti || ((Var *) te->expr)->varlevelsup != 0 || ((Var *) te->expr)->vartype != ((Var *) l)->vartype ||
 		!default_equality(any->opno, ((Var *) l)->vartype))
 		return false;
-	foreach_ptr(Node, c, and_list(g->jointree->quals))
+	foreach_ptr(Node, c, flat_and_list(g->jointree->quals))
 	{
 		Var		   *k;
 		Node	   *e;
 		OpExpr	   *o;
 
-		if (key == NULL && key_test(c, grti, 2, &k, &e, &o))
+		if (key == NULL && flat_key_test(c, grti, 2, &k, &e, &o))
 		{
 			key = k;
 			outer = e;
 			eq = o;
 		}
-		else if (reads_outside(c) || checkExprHasSubLink(c))
+		else if (flat_reads_outside(c) || checkExprHasSubLink(c))
 			return false;
 		else
 			rest = lappend(rest, c);
@@ -265,17 +268,17 @@ group_arm(ScalarArrayOpExpr *any, Index rti, Arm *arm)
 static bool
 exists_arms(Query *sq, List **arms, List **conds, Index *rti_out)
 {
-	Index		rti = only_table(sq);
+	Index		rti = flat_only_table(sq);
 	Node	   *orq = NULL;
 	List	   *parts = NIL;
 
 	if (rti == 0 || sq->jointree->quals == NULL)
 		return false;
-	foreach_ptr(Node, c, and_list(sq->jointree->quals))
+	foreach_ptr(Node, c, flat_and_list(sq->jointree->quals))
 	{
 		if (orq == NULL && IsA(c, BoolExpr) && ((BoolExpr *) c)->boolop == OR_EXPR)
 			orq = c;
-		else if (reads_outside(c) || checkExprHasSubLink(c) || contain_volatile_functions(c))
+		else if (flat_reads_outside(c) || checkExprHasSubLink(c) || contain_volatile_functions(c))
 			return false;
 		else
 			*conds = lappend(*conds, c);
@@ -290,8 +293,8 @@ exists_arms(Query *sq, List **arms, List **conds, Index *rti_out)
 		Node	   *e;
 		OpExpr	   *o;
 
-		a = strip(a);
-		if (key_test(a, rti, 1, &col, &e, &o))
+		a = strip_relabel(a);
+		if (flat_key_test(a, rti, 1, &col, &e, &o))
 		{
 			arm->col = col;
 			arm->outer = e;

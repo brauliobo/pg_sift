@@ -5,6 +5,7 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 CREATE EXTENSION pg_sift_helpers;
+SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 
 CREATE TABLE ta (id int PRIMARY KEY, g int, a int, b bigint, c smallint, k int, f float8, r float4, n numeric(12,2), m numeric(18,0), d date, t timestamp, s text);
@@ -28,7 +29,7 @@ CREATE INDEX ta_col ON ta USING sift_col (id, g, a, b, c, k, f, r, n, m, d, t, s
 RESET sift.test_limits;
 VACUUM (ANALYZE) ta;
 
-CREATE FUNCTION ta_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers_all_scans(pushed, workers) $$;
+CREATE FUNCTION ta_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
 CREATE FUNCTION ta_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$

@@ -124,6 +124,7 @@ extern void sift_colk_for_sel_u16_scalar(const void *a, const uint32 *idx, uint3
 extern void sift_colk_for_sel_u32_scalar(const void *a, const uint32 *idx, uint32 n, int64 base, int64 *dst);
 extern void sift_colk_for_sel_u64_scalar(const void *a, const uint32 *idx, uint32 n, int64 base, int64 *dst);
 extern void sift_colk_gather_u32_scalar(const uint32 *a, const uint32 *idx, uint32 n, uint32 *dst);
+extern void sift_colk_for_sel_u64_avx2(const void *a, const uint32 *idx, uint32 n, int64 base, int64 *dst);
 extern void sift_colk_int_stats_avx2(const int64 *a, uint32 n, int64 *mn, int64 *mx, int64 *sum, uint64 *sq);
 extern void sift_colk_int_stats_scalar(const int64 *a, uint32 n, int64 *mn, int64 *mx, int64 *sum, uint64 *sq);
 extern void sift_colk_gather_stats_avx2(const int64 *a, const uint32 *idx, uint32 n, int64 *sum, int64 *mn, int64 *mx);

@@ -241,8 +241,8 @@ preagg_sums(AggExec *ex)
 				return false;
 			continue;
 		}
-		if (!sift_colsrc_unit_agg(ex->src, &ex->unit, leaf, &ua) || (a->kind != SAA_COUNT && a->kind != SAA_MIN && a->kind != SAA_MAX && !ua.has_sums) ||
-			(ua.loose && (a->kind == SAA_MIN || a->kind == SAA_MAX)))
+		if (!sift_colsrc_unit_agg(ex->src, &ex->unit, leaf, &ua) || (a->kind != SAA_COUNT && !saa_minmax(a->kind) && !ua.has_sums) ||
+			(ua.loose && saa_minmax(a->kind)))
 			return false;
 		v[ai] = (PaVal) {nrow, ua.nvals - ua.nnull, ua.sum, ua.has_minmax, ua.min, ua.max};
 	}

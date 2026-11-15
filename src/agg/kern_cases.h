@@ -10,6 +10,7 @@
 #define SIFT_AGGKERN_CASES_H
 
 #include "agg/kern_int.h"
+#include "core/hash.h"
 #include "core/testrng.h"
 
 #define AGK_MAXMEM		64
@@ -420,7 +421,7 @@ agk_hash(AgkRes *res, const void *p, size_t len)
 		uint64		x;
 
 		memcpy(&x, b + i, 8);
-		h = (h ^ x) * UINT64CONST(0x9E3779B97F4A7C15);
+		h = (h ^ x) * SIFT_FIB64;
 		h ^= h >> 29;
 	}
 	for (; i < len; i++)

@@ -9,6 +9,9 @@
 #include "col/wbuf/wbuf_int.h"
 
 StaticAssertDecl(sizeof(SiftColRecHead) == 12, "the record head is 12 bytes");
+
+bool		sift_col_wbuf_ref = false;
+
 #ifdef SIFT_TESTING
 int			sift_cwbuf_fail_grow = 0;
 #endif
@@ -135,6 +138,28 @@ wbuf_encode_row(StringInfo buf, const SiftColSchema *schema, const SiftColRow *r
 	}
 	buf->data[buf->len] = '\0';
 	return ovf;
+}
+
+/*
+ * The record of a row with its payload (the xid of the inserter, then the values) for the buffer of generation gen. A REF record keeps the xid alone, 16 bytes with its head, and its values go
+ * to the arena of the buffer (col/wbuf/arena.c): *len becomes the payload the record holds. A row the arena has no room for keeps its values, as a row without the setting (*flags loses
+ * SIFT_COLR_REF). True when the buffer is to be sealed.
+ */
+bool
+wbuf_ref_to_arena(Relation index, uint64 gen, const ItemPointerData *tid, const char *payload, Size *len, uint16 *flags)
+{
+	TransactionId xmin;
+	ArenaPut	put;
+
+	if (!(*flags & SIFT_COLR_REF))
+		return false;
+	memcpy(&xmin, payload, sizeof(xmin));
+	put = wbuf_arena_put(index, gen, tid, xmin, payload + sizeof(xmin), *len - sizeof(xmin), (Size) wbuf_limit_pages(index) * BLCKSZ);
+	if (put == ARENA_NOT_STORED)
+		*flags &= ~SIFT_COLR_REF;
+	else
+		*len = sizeof(xmin);
+	return put == ARENA_FULL;
 }
 
 void
@@ -313,31 +338,62 @@ wbuf_flag_overflow(Relation index, SiftCWbufHint *h, uint32 mask, uint32 jmask)
 	pfree(snap);
 }
 
+static void
+set_ref_format(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].gen == *(uint64 *) arg)
+			dir->segs[i].format = Max(dir->segs[i].format, SIFT_COL_FORMAT_REFBUF);
+}
+
+/* Marks the entry of the write buffer as one that holds references, before the first one goes in: a release that does not know the records refuses the index (the format of the entry) */
+void
+wbuf_flag_ref(Relation index, SiftCWbufHint *h)
+{
+	SiftDirSnapshot *snap;
+
+	if (h->ref_gen == h->gen)
+		return;
+	snap = palloc(sizeof(SiftDirSnapshot));
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].gen == h->gen && snap->segs[i].format < SIFT_COL_FORMAT_REFBUF)
+			sift_dir_update(index, &(SiftDirChange) {.fn = set_ref_format,.arg = &h->gen,.extra = InvalidBuffer});
+	h->ref_gen = h->gen;
+	pfree(snap);
+}
+
 bool
-sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin)
+sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool ref)
 {
 	StringInfoData buf;
 	Buffer		tailbuf;
 	int			lane;
 	BlockNumber tail;
-	bool		crossed;
+	bool		crossed = false;
 	uint32		ovf,
 				jnull;
+	Size		len;
+	uint16		flags = wbuf_rec_flags(xmin, ref);
 
 	initStringInfo(&buf);
 	if (TransactionIdIsValid(xmin))
 		appendBinaryStringInfo(&buf, (const char *) &xmin, sizeof(xmin));
 	ovf = wbuf_encode_row(&buf, schema, row, &jnull);
+	len = buf.len;
 	for (;;)
 	{
 		if (h->gen == 0)
-			sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
+			sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
 		wbuf_flag_overflow(index, h, ovf, jnull);
+		if (flags & SIFT_COLR_REF)
+			wbuf_flag_ref(index, h);
 		if (BufferIsValid(tailbuf = sift_lane_lock_tail(index, h->gen, h->tail, SIFT_LANES, &lane)))
 			break;
 		h->gen = 0;
 	}
-	crossed = wbuf_write_row(index, h, lane, tailbuf, &row->tid, TransactionIdIsValid(xmin) ? SIFT_COLR_XMIN : 0, buf.data, buf.len, &tail);
+	crossed = wbuf_ref_to_arena(index, h->gen, &row->tid, buf.data, &len, &flags);
+	crossed |= wbuf_write_row(index, h, lane, tailbuf, &row->tid, flags, buf.data, len, &tail);
 	h->tail[lane] = tail;
 	pfree(buf.data);
 	return crossed;

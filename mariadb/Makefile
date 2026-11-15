@@ -18,27 +18,27 @@ SIFT_VERSION ?= $(shell cat $(HERE)/VERSION)
 MDB_VER := $(shell sed -n 's/^\#define MYSQL_SERVER_VERSION[[:space:]]*"\(.*\)"/\1/p' $(MDB_INC)/mysql_version.h)
 CC      ?= gcc
 
-# -Dsift_count/-Dsift_topk: the codec's names are those of two UDFs
+# -Dsift_count: the codec's name is that of a UDF
 CFLAGS  = -O2 -g -std=gnu11 -fPIC -ffp-contract=off -fwrapv -fno-strict-aliasing -D_GNU_SOURCE -MMD -MP -Wall \
           -Wno-declaration-after-statement -Wno-unused-function -Wno-misleading-indentation $(SIFT_BASE_ISA) \
           -fvisibility=hidden -DSIFT_HOST_MARIADB -I$(HERE)/host -I$(HERE) $(SIFT_INC) -DSIFT_MDB_SERVER_VERSION='"$(MDB_VER)"' \
           -DSIFT_MDB_RELEASE='"$(SIFT_VERSION)"' \
-          -Dsift_count=codec_count -Dsift_topk=codec_topk
+          -Dsift_count=codec_count
 LIBS    = -lm -lpthread -ldl
 # what the UDFs take from the server process (isa-check: nothing else may stay undefined)
 SERVER_SYMBOLS = my_printf_error mysql_real_data_home sql_service_handler
 
 # the portable core, one list for every host and for scripts/check-portable.sh
 PORTABLE := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list)))
-HOSTC    := host container mb spool host_stubs
-OWN      := regex regex_parse regex_exec store stubs
+HOSTC    := host container mb spool regex regex_parse regex_exec host_stubs
+OWN      := store stubs
 GLUE     := engine docs persist query feed merge
 UDFOBJS  := $(addprefix $(OUT)/,udf.o udf_host.o udf_query.o udf_drain.o)
 OBJS     := $(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE) $(HOSTC) $(OWN) $(GLUE)))
 
 all: $(OUT)/sift_cli $(OUT)/libsift_udf.so $(OUT)/mdbq $(OUT)/stress
 
-PORTOBJS := $(filter-out $(OUT)/bm25/bitmap.o,$(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE))))
+PORTOBJS := $(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE)))
 $(PORTOBJS): $(OUT)/%.o: $(SRC)/%.c | $(OUT)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -46,23 +46,15 @@ $(PORTOBJS): $(OUT)/%.o: $(SRC)/%.c | $(OUT)
 $(OUT)/%.o: $(HERE)/host/%.c | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# the memory, error and string vocabulary of the SQLite host and its stubs, as they are (its host_regex.c, a POSIX ERE, is not used: host/regex.c is)
-SQHOSTOBJS := $(addprefix $(OUT)/,host container mb spool host_stubs)
+# the memory, error and string vocabulary of the SQLite host, its regular expression engine and its stubs, as they are
+SQHOSTOBJS := $(addprefix $(OUT)/,host container mb spool regex regex_parse regex_exec host_stubs)
 $(addsuffix .o,$(SQHOSTOBJS)): $(OUT)/%.o: $(SQHOST)/%.c | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(OUT)/%.o: $(HERE)/%.c $(HERE)/ix.h $(HERE)/engine.h | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# the seek limit of the bitmap cursors is a global of src/bm25/bitmap.c that a query sets while it seeks: per thread here
-$(OUT)/gen/bitmap.c: $(SRC)/bm25/bitmap.c | $(OUT)/gen
-	sed 's/^static uint32_t seek_limit = /static _Thread_local uint32_t seek_limit = /' $< >$@
-	grep -q '_Thread_local uint32_t seek_limit' $@
-$(OUT)/bm25/bitmap.o: $(OUT)/gen/bitmap.c | $(OUT)
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-$(OUT) $(OUT)/gen:
+$(OUT):
 	mkdir -p $@
 
 $(OUT)/sift_cli: $(OUT)/cli.o $(OBJS)

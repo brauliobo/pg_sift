@@ -37,6 +37,8 @@ match_leaf_node(AggCtx *c, Node *e)
 		return array_lane_leaf(c, e, fid);
 	if (fid == F_JSONB_TYPEOF)
 		return types_leaf(c, e);
+	if (fid == F_LOWER_ANYRANGE || fid == F_UPPER_ANYRANGE)
+		return bound_leaf(c, e, fid == F_LOWER_ANYRANGE ? 1 : 2);
 	inner = e;
 	if (IsA(e, CoerceViaIO))
 	{

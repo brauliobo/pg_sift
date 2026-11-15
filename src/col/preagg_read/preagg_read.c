@@ -3,7 +3,6 @@
  * the varints, the directory, the decoded dimension, the cheap looks (peek, mirror, census)
  * the other files read rollups and verify
  */
-#include "core/host.h"
 #include "col/preagg_read/preagg_read_int.h"
 
 uint64

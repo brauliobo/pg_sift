@@ -3,6 +3,7 @@
  * the tids, the rows, the zones and the types of a scan
  * what a test asks a segment
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #ifdef SIFT_TESTING
@@ -205,12 +206,10 @@ have:	;
 void
 ctest_scan_open(TestScan *ts, Oid indexoid, const char *preds, int flags)
 {
-	ts->index = index_open(indexoid, AccessShareLock);
-	if (!sift_col_is_index(ts->index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(ts->index))));
+	ts->index = sift_col_open_index(indexoid, AccessShareLock);
 	ts->heap = table_open(ts->index->rd_index->indrelid, AccessShareLock);
 	ts->src = sift_col_open(ts->heap, ts->index, GetActiveSnapshot(), CurrentMemoryContext,
-							((flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0) | ((flags & TEST_POINTS) ? SIFT_COLO_POINTS : 0) | ((flags & TEST_POINT_TIDS) ? SIFT_COLO_POINT_TIDS : 0) | ((flags & TEST_POINT_LAZY) ? SIFT_COLO_POINT_LAZY : 0));
+							((flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0) | ((flags & TEST_POINTS) ? SIFT_COLO_POINTS : 0) | ((flags & TEST_POINT_TIDS) ? SIFT_COLO_POINT_TIDS : 0) | ((flags & TEST_POINT_LAZY) ? SIFT_COLO_POINT_LAZY : 0), NULL);
 	parse_query(sift_col_rel(ts->index)->schema, preds, &ts->q);
 	sift_col_begin(ts->src, ts->q.top, ts->q.ntop, 0, PG_UINT32_MAX);
 	if (flags & TEST_WAIT)
@@ -338,7 +337,7 @@ append_wide(StringInfo buf, const SiftColDef *def, const SiftColVec *vecs, uint3
 static void
 append_value(StringInfo buf, const SiftColVec *vec, uint32 k)
 {
-	if (vec->nulls && (vec->nulls[k / 64] >> (k % 64) & 1))
+	if (sift_col_bit_test(vec->nulls, k))
 	{
 		appendStringInfoString(buf, "NULL");
 		return;
@@ -411,7 +410,7 @@ sift_test_col_read(PG_FUNCTION_ARGS)
 			StringInfoData buf;
 
 			initStringInfo(&buf);
-			if (sift_col_def_value_lanes(def) > 1 && !(vec.nulls && (vec.nulls[r / 64] >> (r % 64) & 1)))
+			if (sift_col_def_value_lanes(def) > 1 && !sift_col_bit_test(vec.nulls, r))
 				append_wide(&buf, def, lanes, r);
 			else if (vec.offsets)
 			{
@@ -424,7 +423,7 @@ sift_test_col_read(PG_FUNCTION_ARGS)
 				}
 				appendStringInfoChar(&buf, '}');
 			}
-			else if (vec.nulls && (vec.nulls[r / 64] >> (r % 64) & 1))
+			else if (sift_col_bit_test(vec.nulls, r))
 				nulls[1] = true;
 			else
 				append_value(&buf, &vec, r);

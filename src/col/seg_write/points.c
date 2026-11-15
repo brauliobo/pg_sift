@@ -3,7 +3,7 @@
  * from the keys of the units to the blobs of the file
  * build, then write
  */
-#include "core/host.h"
+#include "core/rowmem.h"
 #include "core/limits.h"
 #include "col/seg_write/seg_write_int.h"
 
@@ -30,6 +30,16 @@ gord_dense_ok(const SiftColSegWriter *w)
 	return w->setting >= SIFT_COL_FORMAT_PRESENCE && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE && segw_rooted_ok(w);
 }
 
+/* The keys never fall while the heap addresses rise (a serial id): the entries of its order are runs of consecutive addresses, 0.4 bytes a row, and a lookup of the key reads 3 blocks of them where the unit holding it reads 15 */
+static bool
+gord_follows_heap(const PointAcc *a)
+{
+	for (uint32 i = 1; i < a->n; i++)
+		if (a->key[i] < a->key[i - 1] || a->tid[i] < a->tid[i - 1])
+			return false;
+	return true;
+}
+
 /*
  * Does the order of leaf c keep the ends of the segment only (column format minor 40): the leaf is of the build's own choice ('auto: a, b'), not text, the segment has more values than the two
  * ends hold, and a bound in the middle of its values would not read many units: sift_cgord_pay over the zones of the units, whatever key they are cut by (a range across the keys
@@ -53,6 +63,8 @@ gord_ends_ok(const SiftColSegWriter *w, const PointAcc *a, int c)
 	if (sift_test_col_gorder_choice != 0)
 		return sift_test_col_gorder_choice == 1;
 #endif
+	if (gord_follows_heap(a))
+		return false;
 	mn = palloc((Size) nsb * 2 * sizeof(int64));
 	mx = mn + nsb;
 	nv = palloc((Size) nsb * sizeof(uint32));
@@ -69,6 +81,15 @@ gord_ends_ok(const SiftColSegWriter *w, const PointAcc *a, int c)
 	return !pay.complete;
 }
 
+/* Whether the plain block built for a leaf holds every row and has no compact chunk: the entries of a grouped block may then be positions in it (SIFT_CGORD_POS) */
+static bool
+gord_plain_whole(const OrdBlock *ob)
+{
+	SiftCGOrdHdr h;
+
+	return ob->nch > 0 && sift_cgord_head((const uint8 *) ob->tab.data, ob->tab.len, &h) && h.vtotal == 0 && h.quant == 0 && h.gcol < 0 && h.strbytes == 0;
+}
+
 /* The block of the rows kept for the global order of a leaf, sorted by key or (grouped) by group and then key; the rows with no group are not in the second */
 static void
 build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, int c)
@@ -80,43 +101,25 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 	MemoryContextSwitchTo(old);
 	if (grouped)
 	{
-		/* the arrays of the entries are the point directory's too, so the others are copied */
 		uint32		nv = 0,
 					nl = 0;
-		int64	   *key = palloc((a->n + 1) * sizeof(int64)),
-				   *grp = palloc((a->n + 1) * sizeof(int64)),
-				   *ngrp = palloc((a->nn + 1) * sizeof(int64));
-		uint64	   *tid = palloc((a->n + 1) * sizeof(uint64)),
-				   *ntid = palloc((a->nn + 1) * sizeof(uint64));
 
 		for (uint32 i = 0; i < a->n; i++)
-			if (a->gok[i])
-			{
-				key[nv] = a->key[i];
-				tid[nv] = a->tid[i];
-				grp[nv++] = a->gk[i];
-			}
+			nv += a->gok[i] != 0;
 		for (uint32 i = 0; i < a->nn; i++)
-			if (a->ngok[i])
-			{
-				ntid[nl] = a->ntid[i];
-				ngrp[nl++] = a->ngk[i];
-			}
+			nl += a->ngok[i] != 0;
 		ob->nent = nv + nl;
 		ob->nvals = nv;
 		if (ob->nent > 0)
 			{
 				SiftCGOrdHdr h;
+				SiftCGOrdPlain pl = {a->key, a->tid, a->n, a->ntid, a->nn};
 
-				sift_cgord_build_grouped(key, tid, grp, nv, ntid, ngrp, nl, w->pagg.gorder_group - 1, dense,
-										 w->schema->cols[c].type == SIFT_COLT_NUMERIC ? SIFT_CGORD_L_WHOLE : sift_cgord_layout_pick(w->pagg.glayout[c], nv), &ob->tab);
+				sift_cgord_build_grouped(a->key, a->tid, a->gk, a->gok, a->n, nv, a->ntid, a->ngk, a->ngok, a->nn, nl, w->pagg.gorder_group - 1, dense,
+										 w->schema->cols[c].type == SIFT_COLT_NUMERIC ? SIFT_CGORD_L_WHOLE : sift_cgord_layout_pick(w->pagg.glayout[c], nv),
+										 segw_gorder_plain(w, c) && gord_plain_whole(&a->ob[0]) ? &pl : NULL, &ob->tab);
 				w->anycompact = (sift_cgord_head((const uint8 *) ob->tab.data, ob->tab.len, &h) && h.quant != 0) || w->anycompact;
 			}
-		pfree(key);
-		pfree(grp);
-		pfree(ngrp);
-		pfree(tid);
-		pfree(ntid);
 	}
 	else
 	{
@@ -181,6 +184,11 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 				w->anycompact = h.quant != 0 || w->anycompact;
 			}
 		}
+	}
+	{
+		SiftCGOrdHdr h;
+
+		w->anyseek = (sift_cgord_head((const uint8 *) ob->tab.data, ob->tab.len, &h) && sift_cgord_has_seek((const uint8 *) ob->tab.data, &h)) || w->anyseek;
 	}
 	ob->nch = (ob->nent + sift_cgord_rows() - 1) / sift_cgord_rows();
 	w->anyord = ob->nch > 0 || w->anyord;
@@ -266,7 +274,8 @@ segw_build_points(SiftColSegWriter *w)
 		if (a->key)
 		{
 			pfree(a->key);
-			pfree(a->row);
+			if (a->row)
+				pfree(a->row);
 			if (a->tid)
 				pfree(a->tid);
 			a->key = NULL;
@@ -355,25 +364,28 @@ segw_write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 			appendBinaryStringInfo(&pars, (char *) &w->pt[c].par, SIFT_CPOINT_PK_PAR);
 	if (!rooted)
 	{
-		sift_sw_write(w->sw, hdr, sizeof(hdr));
-		sift_sw_write(w->sw, recs.data, recs.len);
-		sift_sw_write(w->sw, pars.data, pars.len);
+		segw_write_mirrored(w, MIR_POINTS, hdr, sizeof(hdr));
+		segw_write_mirrored(w, MIR_POINTS, recs.data, recs.len);
+		segw_write_mirrored(w, MIR_POINTS, pars.data, pars.len);
 	}
 	for (int c = 0; c < ncols; c++)
 		if (w->pt[c].nslots > 0)
 			sift_sw_write(w->sw, w->pt[c].tab.data, w->pt[c].tab.len);
 	for (int k = 0; k < 2 * ncols; k++)
 		if (w->pt[k % ncols].ob[k / ncols].nch > 0)
+		{
+			segw_mirror(w, MIR_ORDER, sift_sw_tell(w->sw), w->pt[k % ncols].ob[k / ncols].tab.data, SIFT_CGORD_HDR);
 			sift_sw_write(w->sw, w->pt[k % ncols].ob[k / ncols].tab.data, w->pt[k % ncols].ob[k / ncols].tab.len);
+		}
 	if (rooted)
 	{
-		sift_sw_write(w->sw, pars.data, pars.len);
-		sift_sw_write(w->sw, recs.data, recs.len);
-		sift_sw_write(w->sw, hdr, sizeof(hdr));
+		segw_write_mirrored(w, MIR_POINTS, pars.data, pars.len);
+		segw_write_mirrored(w, MIR_POINTS, recs.data, recs.len);
+		segw_write_mirrored(w, MIR_POINTS, hdr, sizeof(hdr));
 	}
 	pfree(recs.data);
 	pfree(pars.data);
 	foot[0] = block;
 	memcpy(&foot[1], ftail, sizeof(ftail));
-	sift_sw_write(w->sw, foot, sizeof(foot));
+	segw_write_mirrored(w, MIR_POINTS, foot, sizeof(foot));
 }

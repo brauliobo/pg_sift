@@ -11,11 +11,9 @@
  * What the Sort does that the node does not do, it leaves to the Sort: a Sort under a Limit stays (the bounded heapsort), so does one under a Gather. A node that finds
  * its input too small, its keys too varied or its rows more than work_mem hands what it read to a tuplesort (the Sort's own) and goes on with that.
  */
+/* check-memory: allow-allocs a rank sort takes at most RANK_MAX_ROWS rows (40 million) and hands over to a tuplesort */
 #include "postgres.h"
 
-#include "access/htup_details.h"
-#include "catalog/pg_type_d.h"
-#include "commands/explain.h"
 #include "common/hashfn.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
@@ -24,7 +22,6 @@
 #include "nodes/nodeFuncs.h"
 #include "nodes/plannodes.h"
 #include "parser/parsetree.h"
-#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/ruleutils.h"
@@ -174,8 +171,8 @@ rank_key_grow(RankExec *ex, RankKey *k)
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 	uint32	   *nslot = palloc0((Size) (nmask + 1) * sizeof(uint32));
 
-	k->val = k->val ? repalloc(k->val, ncap * sizeof(Datum)) : palloc(ncap * sizeof(Datum));
-	k->hash = k->hash ? repalloc(k->hash, ncap * sizeof(uint32)) : palloc(ncap * sizeof(uint32));
+	SIFT_REGROW(k->val, ncap * sizeof(Datum));
+	SIFT_REGROW(k->hash, ncap * sizeof(uint32));
 	for (uint32 i = 0; i < k->nd; i++)
 	{
 		uint32		at = k->hash[i] & nmask;
@@ -334,8 +331,8 @@ rank_fill(RankExec *ex)
 		{
 			uint64		ncap = ex->cap ? ex->cap * 2 : 1024;
 
-			ex->tup = ex->tup ? repalloc(ex->tup, ncap * sizeof(MinimalTuple)) : palloc(ncap * sizeof(MinimalTuple));
-			ex->ids = ex->ids ? repalloc(ex->ids, ncap * ex->nkeys * sizeof(uint32)) : palloc(ncap * ex->nkeys * sizeof(uint32));
+			SIFT_REGROW(ex->tup, ncap * sizeof(MinimalTuple));
+			SIFT_REGROW(ex->ids, ncap * ex->nkeys * sizeof(uint32));
 			ex->cap = ncap;
 		}
 		ex->tup[ex->nrows] = ExecCopySlotMinimalTuple(in);

@@ -1,9 +1,9 @@
 # The update and delete lanes: their rows, losses and sentences, and the README and BENCHMARKS blocks of them.
 # The labels and the documentation links of those lanes are here.
 from store_charts import picture
-from store_lib import LANES, LOAD_QUERIES, LOAD_QUERY, MODES, UPDATE_ENGINES
-from .results import best_bold, md_table, ms, seconds, size
-from .tables import QUERY_TITLES, col_cell, parts_cell, size_cells, upd_split
+from store_lib import LANES, LOAD_QUERY, MODES, UPDATE_ENGINES
+from .results import best_bold, md_table, ms, size
+from .tables import col_cell, parts_cell, size_cells, upd_split
 from .notes import cache_note, cpu_name, dagger, ratio
 from .blocks import host_noise
 
@@ -86,17 +86,6 @@ def upd_rows(R, tier, engines, detail):
         parts = [col_cell(split, engines) if e == 'sift' and s[0] else parts_cell(s[1]) for e, s in zip(engines, split)]
         out += size_cells([f'{label}: heap and primary key', f'{label}: index or columnar data', f'{label}, total'], split, vals,
                           [size(x, g(e, v, 'free_mib')) for e, x in zip(engines, vals)], parts)
-    return out
-
-
-def upd_read_rows(R, tier, engines):
-    out = []
-    for qid in LOAD_QUERIES:
-        for v in ('baseline', 'after churn', 'after maintenance'):
-            vals = [R.num(tier, e, qid, v, 'latency_ms') for e in engines]
-            out.append([f'{QUERY_TITLES[qid]}, {v}'] + best_bold(vals, [ms(x) for x in vals]))
-    vals = [R.num(tier, e, '-', 'maintenance', 'maintain_s') for e in engines]
-    out.append(['time of the maintenance step'] + [seconds(x) for x in vals])
     return out
 
 

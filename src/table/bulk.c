@@ -3,42 +3,12 @@
  */
 #include "postgres.h"
 
-#include "access/genam.h"
-#include "access/heapam.h"
-#include "access/table.h"
 #include "access/htup_details.h"
-#include "access/tupmacs.h"
-#include "access/xact.h"
-#include "catalog/namespace.h"
-#include "catalog/objectaddress.h"
-#include "catalog/pg_class.h"
-#include "utils/acl.h"
-#include "utils/fmgroids.h"
-#include "utils/inval.h"
-#include "catalog/pg_type.h"
-#include "funcapi.h"
 #include "miscadmin.h"
-#include "access/skey.h"
-#include "port/pg_bitutils.h"
-#include "storage/bufmgr.h"
-#include "storage/procarray.h"
-#include "utils/builtins.h"
-#include "utils/datum.h"
-#include "utils/lsyscache.h"
 #include "utils/memutils.h"
-#include "utils/numeric.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
-#include "utils/timestamp.h"
-#include "utils/tuplestore.h"
 
-#include "col/am.h"
-#include "col/pg.h"
 #include "col/seg.h"
-#include "core/lane.h"
-#include "bm25/maint.h"
-#include "bm25/merge.h"
-#include "core/ops.h"
 #include "table/table.h"
 #include "table/seg_int.h"
 
@@ -117,7 +87,7 @@ static void
 bulk_flush(SiftTblBulk *b)
 {
 	seal_flush(&b->sw);
-	if (b->sw.w && sift_colw_memory(b->sw.w) > b->budget && b->nsegs < SIFT_MAX_SEGMENTS - 8)
+	if (b->sw.w && sift_colw_full(b->sw.w, b->budget) && b->nsegs < SIFT_MAX_SEGMENTS - 8)
 		bulk_end_segment(b);
 }
 

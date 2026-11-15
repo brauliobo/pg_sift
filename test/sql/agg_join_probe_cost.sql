@@ -14,11 +14,22 @@ RESET client_min_messages;
 CREATE INDEX jp_sales_item ON jp_sales (item);
 VACUUM ANALYZE jp_items, jp_sales;
 
+-- the plan the statement runs (explain_why also lists the arms of rewrites the planner did not keep: the form of an OR of conditions on the two tables as a join of the lookup
+-- table's rows is priced, and not run, against the normal plan's 249,302)
+CREATE FUNCTION scanned(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF line LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
 SELECT q, used FROM (VALUES
 	(1, $$SELECT sum(amount) FROM jp_sales s, jp_items i WHERE i.id = s.item AND ((i.kind = 'k3' AND s.qty >= 1 AND s.qty <= 11 AND i.size IN (1, 2, 3)) OR (i.kind = 'k7' AND s.qty >= 10 AND s.qty <= 20 AND i.size IN (4, 5, 6))) AND s.channel IN ('AIR', 'REG AIR')$$),
 	(2, $$SELECT sum(amount) FROM jp_sales s, jp_items i WHERE i.id = s.item AND i.kind = 'k3'$$),
 	(3, $$SELECT i.kind, sum(amount) FROM jp_sales s, jp_items i WHERE i.id = s.item GROUP BY 1$$)
-) v(q, sql), LATERAL (SELECT bool_or(used) AS used FROM sift.explain_why(v.sql)) w ORDER BY q;
+) v(q, sql), LATERAL (SELECT scanned(v.sql) AS used) w ORDER BY q;
 
+DROP FUNCTION scanned(text);
 DROP TABLE jp_sales, jp_items;
 DROP EXTENSION pg_sift;

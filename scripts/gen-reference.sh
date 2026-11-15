@@ -28,11 +28,10 @@ import subprocess
 import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, 'scripts')
-from genlib import esc, norm
+from genlib import err, errors, esc, exit_on_errors, norm, read
 
 mode = sys.argv[1]
 ROOT = os.getcwd()
-errors = []
 
 GROUPS = [
     ('search', 'Search and ranking', 'The `sift` index (BM25): the operator, ranking, query helpers, facets and the inspection of the index.'),
@@ -45,15 +44,6 @@ GROUP_KEYS = [g[0] for g in GROUPS]
 KINDS = {'function': ('function', 'functions'), 'view': ('view', 'views'), 'table': ('table', 'tables'), 'opclass': ('operator class', 'operator classes'),
          'operator': ('operator', 'operators')}
 USAGE_SETTINGS = 'maintenance-and-operations'
-
-
-def err(msg):
-    errors.append(msg)
-
-
-def read(path):
-    with open(os.path.join(ROOT, path), encoding='utf-8') as f:
-        return f.read()
 
 
 # ---- SQL: statements with the comments gone and every dollar-quoted body a plain string ----
@@ -189,6 +179,10 @@ def scan(*paths):
     """-> objects {(kind, name): dict}, comments {(kind, name): text}, of the statements of the scripts in order"""
     objs, comments = {}, {}
     for s in [s for path in paths for s in statements(read(path))]:
+        m = re.match(r'DROP\s+FUNCTION\s+sift\.(\w+)\s*\(', s, re.I)
+        if m:
+            objs.pop(('function', m.group(1)), None)    # dropped to be created again with another result
+            continue
         m = re.match(r'CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+sift\.(\w+)\s*\(', s, re.I)
         if m:
             o = function(s, m.group(1), m.end() - 1)
@@ -302,7 +296,7 @@ for k, o in sorted(objs.items(), key=lambda kv: kv[0][1]):
     kind, name = k
     note = notes.get(name if kind != 'operator' else name)
     g = note[0] if note and note[0] else ('col' if name.startswith('col_') else 'table' if name.startswith('table_') else 'search')
-    if o['internal'] or (note and note[0] == '-'):
+    if o['internal'] or name.startswith('_') or (note and note[0] == '-'):
         internal.append(name)
         continue
     desc = comments.get(k)
@@ -452,9 +446,6 @@ elif not errors:
         f.write(ref + '\n')
     with open(os.path.join(ROOT, 'README.md'), 'w', encoding='utf-8') as f:
         f.write(new_readme)
-if errors:
-    for e in errors:
-        print('reference: ' + e, file=sys.stderr)
-    sys.exit(1)
+exit_on_errors('reference: ')
 print('reference: ok, %d objects listed, %d internal' % (len(rows), len(internal)))
 PY

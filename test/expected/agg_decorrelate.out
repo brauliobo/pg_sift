@@ -136,7 +136,7 @@ SELECT * FROM check_query('comma lateral of the second item, read by a later lat
  WHERE p.id = o.id + 1 $q$);
                            label                           | in_scan | same | rows 
 -----------------------------------------------------------+---------+------+------
- comma lateral of the second item, read by a later lateral | f       | t    | 1999
+ comma lateral of the second item, read by a later lateral | t       | t    | 1999
 (1 row)
 
 SELECT * FROM check_query('comma lateral beside a join lateral: the first is in a join, not in the list', $q$
@@ -150,7 +150,7 @@ SELECT * FROM check_query('a lateral that reads the columns of another lateral',
  SELECT o.id, x.s, y.m FROM key_sets o LEFT JOIN LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.set_id = o.k) x ON true LEFT JOIN LATERAL (SELECT max(i.amt) m FROM items i WHERE i.set_id = x.s) y ON true $q$);
                         label                        | in_scan | same | rows 
 -----------------------------------------------------+---------+------+------
- a lateral that reads the columns of another lateral | f       | t    | 2000
+ a lateral that reads the columns of another lateral | t       | t    | 2000
 (1 row)
 
 -- LATERAL with GROUP BY: a row for each group of an outer row (an inner join gives none for a key without rows, a left join a row of NULLs, a count included)

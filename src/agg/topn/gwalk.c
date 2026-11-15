@@ -2,15 +2,13 @@
  * agg/topn/gwalk.c - the walk of a top-N over the global order: the groups of ties, the entries read ahead for a
  * condition on another column, the queue of the rows before the first goes out
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
-#include "access/visibilitymap.h"
-#include "miscadmin.h"
-
-#include "port/pg_bitutils.h"
 #include "lib/stringinfo.h"
 #include "utils/memutils.h"
 
+#include "agg/agg.h"
 #include "agg/gord.h"
 #include "agg/topn/int.h"
 
@@ -166,11 +164,7 @@ gord_group(SiftTopN *t, GGroup *g, int64 gkey, bool gnull)
 		ItemPointerData tid = g->tid[i],
 					entry = tid;	/* the fetch leaves the address of the version it found in tid: the entry is the root of its chain, which a second fetch starts from */
 
-		if (t->gqn == t->gqroom)
-		{
-			t->gqroom *= 2;
-			t->gq = repalloc(t->gq, t->gqroom * sizeof(GRow));
-		}
+		SIFT_GROW(t->gq, t->gqn, t->gqroom);
 		r = &t->gq[t->gqn];
 		/* the entries the units decided are tried too, so that the pass rate the budget extrapolates is the walk's, not that of the dirty pages the heap was asked about */
 		if (t->gbudget > 0 && gord_giveup(t))

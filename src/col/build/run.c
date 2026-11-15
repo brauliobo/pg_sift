@@ -3,14 +3,15 @@
  * the memory budget of a run and the compaction of the rows
  * the end of a segment
  */
+/* check-memory: allow-allocs the rows of one page of the heap (maxrows doubles to the rows of a block) */
 #include "postgres.h"
-#include <math.h>
 #include "access/heapam.h"
 #include "commands/progress.h"
 #include "pgstat.h"
 #ifdef SIFT_TESTING
 #endif
 #include "col/build/build_int.h"
+#include "col/point.h"
 
 /*
  * col/build/build.c - CREATE INDEX / REINDEX of a sift_col index: the heap scan forms the rows of one superblock at a time (a batch)
@@ -56,6 +57,13 @@ sift_colb_budget(int nslots)
 		return (Size) sift_test_col_segment_kb * 1024;
 #endif
 	return Max(b, nslots == 1 ? SIFT_COL_BUILD_SERIAL_BUDGET : SIFT_COL_BUILD_MIN_BUDGET);
+}
+
+/* The segment a participant writes without key_cut: its writer within its share of maintenance_work_mem */
+Size
+colb_writer_budget(int nslots)
+{
+	return sift_colw_budget((Size) maintenance_work_mem * 1024 / nslots, SIFT_COLW_BUILD_PCT, SIFT_COLW_BUILD_BASE);
 }
 
 /* The most memory the rows of a run may take: the references the sort makes of them are a third of their bytes, the writer and the rest are what a participant keeps besides */
@@ -149,11 +157,13 @@ compact(ColBuild *b)
 		in[i] = b->segs[pick[i]];
 		seg[i] = sift_cseg_open(b->index, &in[i], cx);
 		e = sift_store_immutable_extents(b->index, &in[i], &next);
-		rel = rel ? repalloc(rel, (nrel + next) * sizeof(SiftExtent)) : palloc((nrel + next) * sizeof(SiftExtent));
+		SIFT_REGROW(rel, (nrel + next) * sizeof(SiftExtent));
 		memcpy(rel + nrel, e, next * sizeof(SiftExtent));
 		nrel += next;
 	}
 	w = sift_colw_begin(b->wt, colb_next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, cx);
+	if (b->fill != NULL)
+		sift_colw_set_fill(w, b->fill);
 	sift_colw_set_preagg(w, &b->r->pagg);
 	sift_colw_set_index_rows(w, b->total_rows);
 	sift_colw_set_keyed(w, b->aim, b->r->ncut > 0 ? b->r->cut[0] : -1);
@@ -192,6 +202,8 @@ colb_write_run(ColBuild *b, bool last)
 		in[i++] = lfirst(lc);
 	b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
 	b->w = sift_colw_begin(b->wt, colb_next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
+	if (b->fill != NULL)
+		sift_colw_set_fill(b->w, b->fill);
 	sift_colw_set_index_rows(b->w, b->total_rows);
 	sift_colw_set_preagg(b->w, &b->r->pagg);
 	b->aim = b->spill_aim > 0 ? b->spill_aim : sift_colk_run_rows(b->index, in, n);
@@ -209,6 +221,18 @@ colb_write_run(ColBuild *b, bool last)
 	/* room for the last run, which the end of the scan writes whatever is left */
 	while (!last && b->nsegs + 1 >= b->maxsegs)
 		compact(b);
+}
+
+/*
+ * The directory holds maxsegs segments, the last of them whatever is left: the rest of the table (the heap's estimate, a quarter over) must fit the segments
+ * that remain, so a budget that would overrun them grows to what they need, instead of the last segment holding the rows no budget cut.
+ */
+static void
+fit_budget(ColBuild *b, uint64 seg_rows)
+{
+	double		left = (double) b->share * 5 / 4 - b->indexed;
+
+	b->budget = sift_colw_fit_budget(b->budget, seg_rows, left > 0 ? (uint64) left : 0, b->maxsegs - b->nsegs);
 }
 
 void
@@ -245,12 +269,19 @@ colb_flush_batch(ColBuild *b)
 	{
 		b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
 		b->w = sift_colw_begin(b->wt, colb_next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
+		if (b->fill != NULL)
+			sift_colw_set_fill(b->w, b->fill);
 		sift_colw_set_index_rows(b->w, b->total_rows);
-		sift_colw_set_preagg(b->w, &b->r->pagg);
+			sift_colw_set_preagg(b->w, &b->r->pagg);
 	}
 	sift_colw_add(b->w, b->batch);
-	if (sift_colw_memory(b->w) > b->budget && b->nsegs + 1 < b->maxsegs)
+	if (sift_colw_full(b->w, b->budget) && b->nsegs + 1 < b->maxsegs)
+	{
+		uint64		rows = sift_colw_rows(b->w);
+
 		end_segment(b);
+		fit_budget(b, rows);
+	}
 	sift_cbatch_reset(b->batch, 0);
 }
 
@@ -381,7 +412,7 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 	b->pagecxt = AllocSetContextCreate(cxt, "sift_col build page", ALLOCSET_DEFAULT_SIZES);
 	b->tmpcxt = AllocSetContextCreate(cxt, "sift_col build tuple", ALLOCSET_DEFAULT_SIZES);
 	b->wt = wt;
-	b->budget = budget;
+	b->budget = sift_col_key_cut(b->r) ? budget : colb_writer_budget(nslots);
 	b->run_cap = Max(budget, run_cap(nslots));
 #ifdef SIFT_TESTING
 	if (sift_test_col_segment_kb > 0)
@@ -408,10 +439,15 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 					allvisfrac;
 
 		table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
-		b->total_rows = (uint64) tuples;
+		b->total_rows = tuples >= (double) PG_UINT64_MAX ? PG_UINT64_MAX : (uint64) tuples;
 		b->share = b->total_rows / nslots;
 		table_close(heap, NoLock);
 	}
+	b->fill = sift_conn_fill_begin(index, cxt, b->share);
+	if (!sift_col_key_cut(b->r) && b->share > (uint64) maxsegs * SIFT_CPOINT_BUILD_ROWS)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the heap has about " UINT64_FORMAT " rows for each process of the build: its %d segments hold " UINT64_FORMAT,
+							   b->share, maxsegs, (uint64) maxsegs * SIFT_CPOINT_BUILD_ROWS),
+						errhint("Set key_cut on a column to build by runs, or build on a partition of the table.")));
 	return b;
 }
 
@@ -461,6 +497,7 @@ sift_colb_end(ColBuild *b)
 	else if (b->held != NIL)
 		colb_write_run(b, true);
 	end_segment(b);
+	sift_conn_fill_end(b->fill);
 	report_rows(b);
 	return b->nsegs;
 }

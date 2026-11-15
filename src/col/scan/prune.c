@@ -3,6 +3,7 @@
  * zones, preds, the cache of kept units, the pruning of a segment
  * what the scan keeps is a bitmap of units
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 #include "col/scan_int.h"
 
@@ -483,6 +484,7 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 	PruneRange	zr = pr;
 
 	c->nosuper_to = 0;
+	COL_HEAD_RESET(src);
 	c->cur = pr.ulo;
 	c->end = pr.uhi;
 	c->full = pr.ulo == 0 && pr.uhi == seg->nsb;

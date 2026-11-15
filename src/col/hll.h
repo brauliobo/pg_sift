@@ -7,8 +7,6 @@
 #ifndef SIFT_COL_HLL_H
 #define SIFT_COL_HLL_H
 
-#include "core/host.h"
-
 #include "col/enc.h"
 #include "col/preagg.h"
 

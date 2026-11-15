@@ -4,6 +4,7 @@
 -- the temp_file_limit does not allow, or with the setting off, writes the runs of the table's order.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -56,7 +57,7 @@ DROP INDEX kr_idx;
 -- a key of floats is cut as well (the order of a float is that of its key: -0 and +0 are the same, NaN last)
 UPDATE kr SET score = CASE WHEN id % 89 = 0 THEN 'NaN' WHEN id % 83 = 0 THEN -0.0 WHEN id % 79 = 0 THEN 0.0 ELSE score END;
 SET sift.col_build_key_ranges = off;
-CREATE INDEX kr_runs ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'score', key_cut_rows = 1200);
+CREATE INDEX kr_runs ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'score', key_cut_rows = 1200, point_tid_columns = 'id');
 SELECT sift.col_maintenance_due('kr_runs') AS float_runs_due;
 DROP INDEX kr_runs;
 SET sift.col_build_key_ranges = on;
@@ -80,6 +81,22 @@ CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, fla
 SELECT kr_units('kr_idx') > 3 AS runs_of_the_table_order;
 SELECT kr_same() AS same_rows_without_room;
 RESET sift.test_col_temp_free_kb;
+DROP INDEX kr_idx;
+
+-- a first run larger than the memory a run of the ranges may take (a large maintenance_work_mem) is cut into runs of that size, still without overlap
+SET sift.test_col_segment_kb = 6000;
+CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 1200);
+CREATE TEMP TABLE kr_first AS SELECT count(*) AS runs FROM sift.col_segments('kr_idx') WHERE kind = 'immutable';
+DROP INDEX kr_idx;
+SET sift.test_col_spill_run_kb = 1500;
+CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 1200);
+SELECT count(*) > 2 * (SELECT runs FROM kr_first) AS smaller_runs FROM sift.col_segments('kr_idx') WHERE kind = 'immutable';
+DROP TABLE kr_first;
+SELECT kr_units('kr_idx') AS units_for_a_key, sift.col_maintenance_due('kr_idx') AS capped_ranges_due;
+SELECT sift.col_verify('kr_idx', true);
+SELECT kr_same() AS same_rows_capped;
+RESET sift.test_col_spill_run_kb;
+SET sift.test_col_segment_kb = 1500;
 DROP INDEX kr_idx;
 
 -- changes after the build are kept

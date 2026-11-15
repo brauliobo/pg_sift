@@ -9,19 +9,13 @@
 #include <math.h>
 
 #include "access/parallel.h"
-#include "access/table.h"
 #include "access/tableam.h"
-#include "catalog/index.h"
 #include "commands/progress.h"
 #include "datatype/timestamp.h"
-#include "executor/instrument.h"
-#include "miscadmin.h"
 #include "optimizer/paths.h"
 #include "pgstat.h"
 #include "storage/condition_variable.h"
-#include "tcop/tcopprot.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
 #include "utils/wait_event.h"
 
 #ifdef SIFT_TESTING
@@ -378,7 +372,7 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 	gapn = sh->gapn;
 	nmerge = info->ii_Concurrent ? 0 : sh->nlaunched;
 	sift_par_end(ldr);
-	sift_colb_publish(index, segs, nsegs, !info->ii_Concurrent && sift_col_row_key_on(index));
+	sift_colb_publish(index, segs, nsegs, !info->ii_Concurrent && sift_col_track_on(index));
 	sift_col_build_merge(index, gap, gapn, nmerge);
 	return res;
 }

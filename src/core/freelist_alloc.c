@@ -3,6 +3,8 @@
  * (P2-P4 and P7 in core/store.h).
  */
 #include "freelist_int.h"
+#include "core/rowmem.h"
+#include "core/restrict.h"
 
 /*
  * Generic WAL has no recovery conflicts, so a standby's snapshot is only protected by
@@ -294,8 +296,7 @@ scan_free(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 	if (s->nhave + fl->n + 1 > s->maxhave)
 	{
 		s->maxhave = Max(64, 2 * (s->nhave + fl->n + 1));
-		s->have = s->have ? repalloc(s->have, s->maxhave * sizeof(SiftFreeExtent)) :
-			palloc(s->maxhave * sizeof(SiftFreeExtent));
+		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, s->have, s->maxhave * sizeof(SiftFreeExtent));
 	}
 	memcpy(s->have + s->nhave, fl->ext, fl->n * sizeof(SiftFreeExtent));
 	s->nhave += fl->n;
@@ -313,13 +314,13 @@ prepare_free(Relation index, Buffer metabuf, const SiftExtent *release, int nrel
 			 FullTransactionId safexid, FreePlan *plan)
 {
 	SiftMetaPageData *meta = META(BufferGetPage(metabuf));
-	SiftExtent *rel = palloc(nrelease * sizeof(SiftExtent));
+	SiftExtent *rel = sift_rows_alloc(nrelease * sizeof(SiftExtent));
 	FreeScan	scan = {.room = InvalidBlockNumber};
 	int			n = 0;
 
 	memcpy(rel, release, nrelease * sizeof(SiftExtent));
 	qsort(rel, nrelease, sizeof(SiftExtent), cmp_extent);
-	plan->ext = palloc(nrelease * sizeof(SiftFreeExtent));
+	plan->ext = sift_rows_alloc(nrelease * sizeof(SiftFreeExtent));
 	for (int i = 0; i < nrelease; i++)
 	{
 		SiftFreeExtent *last = n > 0 ? &plan->ext[n - 1] : NULL;
@@ -400,12 +401,12 @@ collect_chain(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 	if (c->n + fl->n + c->npages + 1 > c->maxext)
 	{
 		c->maxext = Max(64, 2 * (c->n + (int) fl->n + c->npages + 1));
-		c->ext = c->ext ? repalloc(c->ext, c->maxext * sizeof(SiftFreeExtent)) : palloc(c->maxext * sizeof(SiftFreeExtent));
+		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, c->ext, c->maxext * sizeof(SiftFreeExtent));
 	}
 	if (c->npages + 1 > c->maxpage)
 	{
 		c->maxpage = Max(8, 2 * c->maxpage);
-		c->page = c->page ? repalloc(c->page, c->maxpage * sizeof(BlockNumber)) : palloc(c->maxpage * sizeof(BlockNumber));
+		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, c->page, c->maxpage * sizeof(BlockNumber));
 	}
 	for (uint32 i = 0; i < fl->n; i++)
 	{
@@ -536,7 +537,7 @@ cut_horizon(void)
 {
 	if (cut_online)
 		return InvalidFullTransactionId;
-	return (MyProc->statusFlags & PROC_IN_VACUUM) ? FullTransactionIdFromU64(PG_UINT64_MAX) : InvalidFullTransactionId;
+	return sift_in_vacuum() ? FullTransactionIdFromU64(PG_UINT64_MAX) : InvalidFullTransactionId;
 }
 
 /* Clears the safexid of free-list records past the horizon and coalesces adjacent reusable records */

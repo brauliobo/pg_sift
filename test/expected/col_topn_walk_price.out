@@ -1,0 +1,42 @@
+-- A list page of one group under a test of another column: the order array of the group is walked (a heap fetch for each entry it takes) or the units the zones
+-- leave are read (a row in about 35 instructions, every row of the units, not those the filters pass). The units hold 60,000 of 1,000,000 rows here: a test that
+-- most rows pass finds the page in tens of fetches and walks; one that few pass walks a thousand and reads the units.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+CREATE TABLE wp (id bigint PRIMARY KEY, g int, d date, st int) WITH (autovacuum_enabled = false);
+INSERT INTO wp SELECT i, (i::bigint * 7919 % 40)::int, date '2020-01-01' + (i * 13 % 2000), (hashint4(i) & 2147483647) % 200 FROM generate_series(1, 1000000) i;
+VACUUM (FREEZE, ANALYZE) wp;
+CREATE INDEX wp_i ON wp USING sift_col (id, g, d, st) WITH (key_cut = 'g', key_order = 'g, d');
+SET sift.enable_agg = on;
+SET sift.agg_force = on;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = off;
+SET max_parallel_workers_per_gather = 0;
+CREATE FUNCTION wp_walks(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE pl text; walk bool := false;
+BEGIN
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
+		walk := walk OR pl ~ 'Global Order: true';
+	END LOOP;
+	RETURN walk;
+END $$;
+SELECT k, o, wp_walks(format('SELECT id, d FROM wp WHERE g = 17 AND st < %s ORDER BY %s LIMIT 20', k, o)) AS walks
+FROM unnest(ARRAY[100, 20, 4, 1]) k, unnest(ARRAY['d DESC', 'd DESC, id DESC']) o ORDER BY o, k DESC;
+  k  |        o        | walks 
+-----+-----------------+-------
+ 100 | d DESC          | t
+  20 | d DESC          | t
+   4 | d DESC          | f
+   1 | d DESC          | f
+ 100 | d DESC, id DESC | t
+  20 | d DESC, id DESC | t
+   4 | d DESC, id DESC | f
+   1 | d DESC, id DESC | f
+(8 rows)
+
+DROP TABLE wp;
+DROP FUNCTION wp_walks(text);
+DROP EXTENSION pg_sift CASCADE;

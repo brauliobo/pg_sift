@@ -6,8 +6,6 @@
 #ifndef SIFT_LIVE_H
 #define SIFT_LIVE_H
 
-#include "core/host.h"
-
 #include "core/store.h"
 
 /* Offset of the first liveness bit in the LIVE run of a segment spanning nsb superblocks */
@@ -25,6 +23,8 @@ typedef struct SiftLive
 
 /* A palloc'd copy of the SEGHEADER page of a segment, its size checked against the extents it lists */
 extern SiftSegHeaderData *sift_seg_read_header(Relation index, const SiftSegEntry *entry);
+/* ... and the bytes of the page it copied: those after the extents are the mirror of a column segment (col/seg_int.h) */
+extern SiftSegHeaderData *sift_seg_read_header_used(Relation index, const SiftSegEntry *entry, uint32 *used);
 
 /* Sets the directory's dirty flag of the segment, and that of the entry, unless set: rows may be cleared from then on */
 extern void sift_seg_mark_dirty(Relation index, SiftSegEntry *entry);
@@ -37,6 +37,9 @@ extern void sift_live_check(const SiftLive *l);
 
 /* Byte b of the run (logical offset over the page payloads); *buf is the share-locked page kept between calls (release it with UnlockReleaseBuffer when valid) */
 extern uint8 sift_live_byte(const SiftLive *l, uint64 b, Buffer *buf);
+
+/* The same byte, read under a share lock taken for the read: *pin is the page kept pinned (not locked) between calls, which the caller releases with ReleaseBuffer when valid */
+extern uint8 sift_live_byte_kept(const SiftLive *l, uint64 b, Buffer *pin);
 
 /* len bytes of the run from logical byte b, a page at a time */
 extern void sift_live_copy(const SiftLive *l, uint64 b, uint64 len, uint8 *out);

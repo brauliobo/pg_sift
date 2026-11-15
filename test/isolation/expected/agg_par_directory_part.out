@@ -1,0 +1,36 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1b s2l s1q s3p s3i s2u s1c
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pp;
+count
+-----
+46000
+(1 row)
+
+step s2l: SELECT pg_advisory_lock(7003);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1q: SELECT agree, parallel FROM iso_pp_q(7003); <waiting ...>
+step s3p: SELECT sift.col_promote(indexrelid) >= 0 AS promoted FROM pg_index WHERE indrelid = 'iso_pp_a'::regclass;
+promoted
+--------
+t       
+(1 row)
+
+step s3i: INSERT INTO iso_pp SELECT g, (g * 7919) % 1000, g % 100, repeat('x', 200) FROM generate_series(30001, 31000) g;
+step s2u: SELECT pg_advisory_unlock(7003);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1q: <... completed>
+agree|parallel
+-----+--------
+t    |t       
+(1 row)
+
+step s1c: COMMIT;

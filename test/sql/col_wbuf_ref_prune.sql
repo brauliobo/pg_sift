@@ -1,0 +1,71 @@
+-- sift.col_wbuf_ref: a buffered row is a 16 byte reference to its heap tuple, and the reader fetches the values from the heap. A tuple that was deleted and pruned before
+-- the buffer was promoted (its line pointer dead, the index not vacuumed so the record is not flagged; or vacuumed, the record flagged dead) is no row of the buffer or of
+-- the segment it is promoted to, and every answer of the sift engine is the heap's, before and after the promotion.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET sift.col_auto_merge = off;
+SET max_parallel_workers_per_gather = 0;
+SET check_function_bodies = off;
+
+CREATE FUNCTION answers() RETURNS text LANGUAGE sql AS $$
+  SELECT md5(concat_ws('|',
+    (SELECT count(*) || ',' || sum(v) FROM p),
+    (SELECT count(*) || ',' || sum(v) FROM p WHERE g = 3),
+    (SELECT string_agg(id::text, ',' ORDER BY v DESC, id) FROM (SELECT id, v FROM p ORDER BY v DESC, id LIMIT 30) x),
+    (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT g, count(*), sum(v) FROM p GROUP BY g) x))) $$;
+
+CREATE FUNCTION same_as_heap() RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE native text; sift text;
+BEGIN
+  PERFORM set_config('sift.enable_agg', 'off', true);
+  native := answers();
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  sift := answers();
+  RETURN native = sift;
+END $$;
+
+CREATE TABLE p (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false);
+CREATE TABLE p_values (LIKE p);
+CREATE INDEX p_ix ON p USING sift_col (id, g, v);
+CREATE INDEX p_values_ix ON p_values USING sift_col (id, g, v);
+SET sift.col_wbuf_ref = on;
+INSERT INTO p SELECT i, i % 10, i, 'x' FROM generate_series(1, 3000) i;
+SET sift.col_wbuf_ref = off;
+INSERT INTO p_values SELECT i, i % 10, i, 'x' FROM generate_series(1, 3000) i;
+SET sift.col_wbuf_ref = on;
+SELECT rows AS buffered FROM sift.col_segments('p_ix') WHERE kind = 'buffer';
+SELECT (SELECT bytes FROM sift.col_segments('p_ix') WHERE kind = 'buffer') < (SELECT bytes FROM sift.col_segments('p_values_ix') WHERE kind = 'buffer') AS references_are_smaller;
+SELECT same_as_heap() AS same_buffered;
+SELECT sift.col_verify('p_ix', true);
+
+-- deleted and pruned, the index not vacuumed: the records are not flagged, the line pointers are dead
+DELETE FROM p WHERE id % 3 = 0;
+VACUUM (INDEX_CLEANUP off) p;
+SELECT same_as_heap() AS same_pruned;
+SELECT sift.col_verify('p_ix', true);
+SELECT sift.col_promote('p_ix') >= 0 AS promoted;
+SELECT sum(rows) AS promoted_rows FROM sift.col_segments('p_ix') WHERE kind = 'immutable';
+SELECT same_as_heap() AS same_promoted;
+SELECT sift.col_verify('p_ix', true);
+
+-- deleted, then vacuumed with the index: the records are flagged dead, in the buffer the promotion left behind
+INSERT INTO p SELECT 3000 + i, i % 10, i, 'y' FROM generate_series(1, 1500) i;
+DELETE FROM p WHERE id > 3000 AND id % 2 = 0;
+VACUUM p;
+SELECT same_as_heap() AS same_vacuumed;
+SELECT sift.col_verify('p_ix', true);
+SELECT sift.col_promote('p_ix') >= 0 AS promoted_again;
+SELECT same_as_heap() AS same_promoted_again;
+SELECT sift.col_verify('p_ix', true);
+
+-- a rewrite of the table gives every row a new address and rebuilds the index from the new tuples
+INSERT INTO p SELECT 6000 + i, i % 10, i, 'z' FROM generate_series(1, 500) i;
+VACUUM FULL p;
+SELECT same_as_heap() AS same_rewritten;
+SELECT sift.col_verify('p_ix', true);
+
+DROP FUNCTION same_as_heap();
+DROP FUNCTION answers();
+DROP TABLE p, p_values;
+DROP EXTENSION pg_sift CASCADE;

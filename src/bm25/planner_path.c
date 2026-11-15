@@ -7,34 +7,22 @@
 #include <math.h>
 
 #include "access/genam.h"
-#include "access/stratnum.h"
-#include "access/sysattr.h"
-#include "catalog/pg_aggregate.h"
-#include "catalog/pg_am.h"
-#include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
-#include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/appendinfo.h"
-#include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/planner.h"
 #include "optimizer/prep.h"
-#include "optimizer/restrictinfo.h"
 #include "optimizer/tlist.h"
-#include "parser/parsetree.h"
 #include "utils/array.h"
 #include "utils/float.h"
-#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
 
-#include "agg/agg.h"
 #include "bm25/am.h"
 #include "bm25/estimate.h"
 #include "bm25/eval.h"
@@ -557,12 +545,12 @@ keyed_rank_cost(RelOptInfo *rel, const ScanCost *sc, int nkeys, double rows)
  * ORDER BY keys, score DESC LIMIT k: a pass over the matches in heap order keeps the rows of the k best keys and
  * those tied with the k-th, and the ranker scores only them. A consumer that drops rows and asks for more makes
  * it pass again for 16 times as many (the total cost, which a consumer that stops early interpolates away).
+ * NULL when the k rows do not fit work_mem.
  */
 CustomPath *
 keyed_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, const KeyedOrder *ko, int64 k)
 {
-	CustomPath *cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, c, SIFT_MODE_RANKED, k,
-							   CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods, ko);
+	CustomPath *cp;
 	const ScanCost *sc = &est->sc;
 	int			nkeys = list_length(ko->exprs);
 	double		held = keyed_rows(root, sc, k),
@@ -570,6 +558,11 @@ keyed_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, 
 	Cost		pass = sc->idx.cost + sc->docs * (sc->tuple + nkeys * cpu_operator_cost) +
 		held * log(sc->docs / held + 1) * log2(held + 2) * nkeys * cpu_operator_cost;
 
+	/* the rows of a round are held in memory: past work_mem the ranked scan and the sort above it serve the query */
+	if (held * SIFT_KEYED_ROW_BYTES(nkeys) > (double) work_mem * 1024)
+		return NULL;
+	cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, c, SIFT_MODE_RANKED, k, CUSTOMPATH_SUPPORT_PROJECTION,
+				   &sift_scan_path_methods, ko);
 	cp->path.pathkeys = ko->pathkeys;
 	cp->path.rows = rel->rows;
 	cp->path.parallel_safe = false;

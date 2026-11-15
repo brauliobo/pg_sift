@@ -11,25 +11,24 @@
  * shared memory of all backends too (sift.agg_lookup_shared_kb, agg/lookshm.c), under the same key and pages, and a query that finds none of its
  * own reads them there.
  */
+/* check-memory: allow-allocs the cache of block LSNs stops at LOOK_FINGER_BLOCKS (at most MaxAllocSize / 8 blocks) */
 #include "postgres.h"
 
 #include "access/parallel.h"
 #include "access/tableam.h"
-#include "access/xact.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "agg/agg.h"
 #include "agg/agg_int.h"
 
 int			sift_agg_lookup_cache_kb = 256 * 1024;
+/* the pages of a table are fingerprinted at about 0.4 microseconds each, a twentieth of what loading their rows costs: what bounds a table is the memory of its rows, and the fingerprint itself may take half the budget of the store it is for */
+#define LOOK_FINGER_BLOCKS(budget)	(Min((budget) / 2, MaxAllocSize) / sizeof(XLogRecPtr))
 #define LOOKCACHE_BYTES		((Size) sift_agg_lookup_cache_kb * 1024)
 /* what the pages of a table are weighed against: the larger of the caches that are on */
-#define LOOKCACHE_BUDGET	Max(LOOKCACHE_BYTES, lookshm_bytes())
-/* the pages of a table are fingerprinted at about 0.4 microseconds each, a twentieth of what loading their rows costs: what bounds a table is the memory of its rows, and the fingerprint itself may take half the budget */
-#define LOOKCACHE_MAX_BLOCKS	(Min(LOOKCACHE_BUDGET / 2, MaxAllocSize) / sizeof(XLogRecPtr))
+#define LOOKCACHE_BUDGET	Max(LOOKCACHE_BYTES, lookshm_bytes(LOOK_ROWS))
 /* tables whose rows did not fit, by key: they are not fingerprinted again while the file is no smaller and the budget no larger */
 #define LOOKCACHE_REFUSED		16
 
@@ -73,21 +72,22 @@ page_seen(Page page)
 	return PageIsNew(page) || PageIsAllVisible(page);
 }
 
-/* the LSNs of the pages of a table whose pages all show their rows to every transaction; NULL for a table the cache cannot vouch for */
+/* the LSNs of the pages of a table whose pages all show their rows to every transaction, for a store of budget bytes; NULL for a table it cannot vouch for */
 LookFinger *
-lookcache_finger(Relation rel)
+look_finger(Relation rel, Size budget)
 {
 	LookFinger *f;
 	BufferAccessStrategy bas;
 	bool		seen = true;
 
-	if (LOOKCACHE_BUDGET == 0 || IsParallelWorker() || rel->rd_tableam != GetHeapamTableAmRoutine() || !RelationNeedsWAL(rel) ||
+	if (budget == 0 || IsParallelWorker() || rel->rd_tableam != GetHeapamTableAmRoutine() || !RelationNeedsWAL(rel) ||
 		rel->rd_createSubid != InvalidSubTransactionId || rel->rd_firstRelfilelocatorSubid != InvalidSubTransactionId)
 		return NULL;
 	f = palloc(sizeof(LookFinger));
 	f->rel = rel->rd_locator;
 	f->nblocks = RelationGetNumberOfBlocks(rel);
-	if (f->nblocks > LOOKCACHE_MAX_BLOCKS)
+	f->stamp = false;
+	if (f->nblocks > LOOK_FINGER_BLOCKS(budget))
 		return NULL;
 	f->lsn = palloc(Max(f->nblocks, 1) * sizeof(XLogRecPtr));
 	bas = GetAccessStrategy(BAS_BULKREAD);
@@ -102,6 +102,13 @@ lookcache_finger(Relation rel)
 	}
 	FreeAccessStrategy(bas);
 	return seen ? f : NULL;
+}
+
+/* the bytes of the stores of the rows of joined tables, the backend's and the shared one: the table whose pages the finger would cover must fit the larger */
+Size
+lookcache_budget(void)
+{
+	return LOOKCACHE_BUDGET;
 }
 
 /* did the rows of this table under key not fit the cache the last time they were loaded, and is the table no smaller? */
@@ -143,8 +150,8 @@ look_refuse(const char *key, const LookFinger *f)
 	MemoryContextSwitchTo(old);
 }
 
-static bool
-finger_same(const LookFinger *a, const LookFinger *b)
+bool
+look_finger_same(const LookFinger *a, const LookFinger *b)
 {
 	return RelFileLocatorEquals(a->rel, b->rel) && a->nblocks == b->nblocks && memcmp(a->lsn, b->lsn, a->nblocks * sizeof(XLogRecPtr)) == 0;
 }
@@ -236,7 +243,7 @@ lookcache_find(const char *key, const LookFinger *f, const LookCols *need, LookC
 {
 	have->n = 0;
 	foreach_ptr(LookEnt, e, entries)
-		if (strcmp(e->key, key) == 0 && finger_same(e->finger, f))
+		if (strcmp(e->key, key) == 0 && look_finger_same(e->finger, f))
 		{
 			LookEnt    *other;
 
@@ -253,10 +260,10 @@ lookcache_find(const char *key, const LookFinger *f, const LookCols *need, LookC
 				look_drop(other);
 			return e->map;
 		}
-	if (lookshm_bytes() > 0)
+	if (lookshm_bytes(LOOK_ROWS) > 0)
 	{
 		LookCols	shared;
-		MapTab	   *m = lookshm_find(key, f, need, &shared, mcxt);
+		MapTab	   *m = lookshm_find(LOOK_ROWS, key, f, need, &shared, mcxt);
 
 		if (m != NULL || shared.n > have->n)
 			*have = shared;
@@ -272,24 +279,22 @@ lookcache_known(const char *key)
 	foreach_ptr(LookEnt, e, entries)
 		if (strcmp(e->key, key) == 0)
 			return true;
-	return lookshm_bytes() > 0 && lookshm_known(key);
+	return lookshm_bytes(LOOK_ROWS) > 0 && lookshm_known(LOOK_ROWS, key);
 }
 
 /*
- * Keeps the rows m, loaded into cx between the fingers before and after, for the next query, which owns cx from here. False when they
- * are not kept (the table was written to during the load, or the rows do not fit): cx stays with the caller.
+ * Keeps the rows m, loaded into cx from the table in the state before (which the caller found it still in after the load), for the next query, which owns cx from here.
+ * False when they are not kept (the rows do not fit): cx stays with the caller.
  */
 bool
-lookcache_keep(const char *key, const LookFinger *before, const LookFinger *after, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt)
+lookcache_keep(const char *key, const LookFinger *before, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt)
 {
 	LookEnt    *e;
 	MemoryContext old;
 	Size		size;
 	bool		shared_large;
 
-	if (!finger_same(before, after))
-		return false;
-	lookshm_keep(key, before, m, cols, &shared_large);
+	lookshm_keep(LOOK_ROWS, key, before, m, cols, &shared_large);
 	/* the rows of an older state of the table go; dropping changes the list, so it is searched again */
 	while ((e = look_unpinned(key)) != NULL)
 		look_drop(e);

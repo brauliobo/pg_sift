@@ -2,82 +2,30 @@
  * agg/leaf.c - reading the leaves of a unit and mapping their values: conversions, dictionaries, unit vectors, id tables, numeric
  * programs
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include <float.h>
-#include <math.h>
 
-#include "access/genam.h"
-#include "access/heapam.h"
-#include "access/htup_details.h"
-#include "access/parallel.h"
-#include "access/relation.h"
-#include "access/table.h"
-#include "access/tableam.h"
-#include "catalog/pg_aggregate.h"
-#include "catalog/pg_operator.h"
-#include "catalog/pg_proc.h"
-#include "access/skey.h"
-#include "access/stratnum.h"
-#include "access/xact.h"
-#include "catalog/pg_am.h"
-#include "catalog/pg_index.h"
 #include "catalog/pg_type.h"
-#include "commands/explain.h"
 #include "common/hashfn.h"
-#include "common/int.h"
 #include "executor/executor.h"
-#include "executor/nodeAgg.h"
-#include "executor/nodeHash.h"
-#include "executor/nodeSubplan.h"
 #include "miscadmin.h"
-#include "nodes/extensible.h"
-#include "nodes/makefuncs.h"
-#include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
-#include "optimizer/optimizer.h"
-#include "portability/instr_time.h"
-#include "parser/parse_agg.h"
-#include "storage/predicate.h"
-#include "storage/proc.h"
-#include "storage/shm_mq.h"
-#include "storage/shm_toc.h"
-#include "utils/acl.h"
 #include "utils/pg_locale.h"
-#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
-#include "utils/expandeddatum.h"
-#include "utils/float.h"
-#include "utils/guc.h"
-#include "utils/numeric.h"
 #include "utils/lsyscache.h"
-#include "utils/numeric.h"
-#include "utils/rel.h"
-#include "utils/snapmgr.h"
-#include "utils/syscache.h"
-#include "utils/timestamp.h"
-#include "utils/tuplesort.h"
-#include "utils/wait_event.h"
-#include "utils/typcache.h"
 
 #include "agg/agg.h"
 #include "agg/wide.h"
-#include "agg/back.h"
 #include "agg/kern.h"
-#include "agg/part.h"
-#include "agg/spec.h"
 #include "col/kern.h"
-#include "agg/colsrc.h"
-#include "agg/search.h"
-#include "agg/topn.h"
-#include "core/visibility.h"
-#include "core/popcount.h"
 #include "agg/agg_int.h"
 #include "col/am.h"
+#include "core/hash.h"
 
 static bool
 collation_deterministic(Oid collid)
@@ -115,6 +63,30 @@ ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid)
 	t->hv = palloc(t->cap * sizeof(uint32));
 }
 
+/* an output table of a key: one of an integer type looks its values up in an IntIds table, which is an array while they are dense */
+void
+ot_init_key(OutTable *t, Oid eqop, Oid typid, Oid collid)
+{
+	switch (get_opcode(eqop))
+	{
+		case F_INT2EQ:
+		case F_INT4EQ:
+		case F_INT8EQ:
+		case F_OIDEQ:
+		case F_DATE_EQ:
+		case F_TIMESTAMP_EQ:
+		case F_TIMESTAMPTZ_EQ:
+			get_typlenbyval(typid, &t->len, &t->byval);
+			t->ints = true;
+			intids_init(&t->ix);
+			t->cap = 16;
+			t->val = palloc(t->cap * sizeof(Datum));
+			break;
+		default:
+			ot_init(t, eqop, typid, collid);
+	}
+}
+
 /* a table of the distinct byte images of values of any type: the equal values of the type that differ (1.0 and 1.00) keep their ids */
 void
 ot_init_image(OutTable *t, Oid typid)
@@ -147,17 +119,7 @@ image_hash(const OutTable *t, Datum d)
 static void
 ot_rehash(OutTable *t)
 {
-	t->nslot *= 2;
-	pfree(t->slot);
-	t->slot = palloc0(t->nslot * sizeof(uint32));
-	for (uint32 id = 1; id <= t->n; id++)
-	{
-		uint32		h = t->hv[id - 1] & (t->nslot - 1);
-
-		while (t->slot[h])
-			h = (h + 1) & (t->nslot - 1);
-		t->slot[h] = id;
-	}
+	SIFT_SLOT_REHASH(id, t->slot, t->nslot, palloc0(t->nslot * sizeof(uint32)), t->n, t->hv[id - 1]);
 }
 
 /* the id (1..) of a non-null output value; the value is copied into the current context when new */
@@ -179,6 +141,17 @@ ot_id(OutTable *t, Datum d)
 	const unsigned char *b = NULL;
 	Size		len = 0;
 
+	if (t->ints)
+	{
+		uint32		id = intids_id(&t->ix, ot_int_key(t, d), t->n + 1);
+
+		if (id > t->n)
+		{
+			SIFT_GROW(t->val, t->n, t->cap);
+			t->val[t->n++] = d;
+		}
+		return id;
+	}
 	if (t->text)
 	{
 		b = text_bytes(d, &len);
@@ -582,6 +555,8 @@ read_vleaf(AggExec *ex, int leaf, SiftSrcVec *out)
 
 	if (vl->types)
 		read_types_leaf(ex, leaf, out);
+	else if (vl->bound)
+		read_bound_leaf(ex, leaf, out);
 	else if (vl->count)
 		*out = *get_vec(ex, vl->obj);
 	else
@@ -677,43 +652,63 @@ idmap_init(IdMap *m)
 	m->cxt = CurrentMemoryContext;
 	m->n = 0;
 	m->cap = 64;
+	m->nbig = 0;
 	m->nslot = 128;
 	m->val = palloc(m->cap * sizeof(sift_i128));
 	m->slot = palloc0(m->nslot * sizeof(uint32));
+	intids_init(&m->ix);
 }
 
 static inline uint32
 idmap_hash(sift_i128 v)
 {
-	uint64		x = (uint64) v * UINT64CONST(0x9E3779B97F4A7C15) ^ (uint64) (v >> 64) * UINT64CONST(0xC2B2AE3D27D4EB4F);
+	uint64		x = sift_fib64((uint64) v) ^ (uint64) (v >> 64) * SIFT_XXP64_2;
 
 	x ^= x >> 31;
-	return (uint32) ((x * UINT64CONST(0xD6E8FEB86659FD93)) >> 32);
+	return (uint32) ((x * SIFT_FOLD64) >> 32);
+}
+
+static inline bool
+idmap_small(sift_i128 v)
+{
+	return v == (sift_i128) (int64) v;
+}
+
+static uint32
+idmap_add(IdMap *m, sift_i128 v)
+{
+	SIFT_GROW(m->val, m->n, m->cap);
+	m->val[m->n] = v;
+	return ++m->n;
 }
 
 uint32
 idmap_id(IdMap *m, sift_i128 v)
 {
 	uint32		mask = m->nslot - 1,
-				h = idmap_hash(v) & mask;
+				h;
 
-	for (; m->slot[h]; h = (h + 1) & mask)
+	if (idmap_small(v))
+	{
+		uint32		id = intids_id(&m->ix, (int64) v, m->n + 1);
+
+		if (id > m->n)
+			idmap_add(m, v);
+		return id;
+	}
+	for (h = idmap_hash(v) & mask; m->slot[h]; h = (h + 1) & mask)
 		if (m->val[m->slot[h] - 1] == v)
 			return m->slot[h];
-	if (m->n == m->cap)
-	{
-		m->cap *= 2;
-		m->val = repalloc(m->val, m->cap * sizeof(sift_i128));
-	}
-	m->val[m->n] = v;
-	m->slot[h] = ++m->n;
-	if (m->n * 2 > m->nslot)
+	m->slot[h] = idmap_add(m, v);
+	if (++m->nbig * 2 > m->nslot)
 	{
 		pfree(m->slot);
 		m->nslot *= 2;
 		m->slot = MemoryContextAllocZero(m->cxt, m->nslot * sizeof(uint32));
 		for (uint32 id = 1; id <= m->n; id++)
 		{
+			if (idmap_small(m->val[id - 1]))
+				continue;
 			for (h = idmap_hash(m->val[id - 1]) & (m->nslot - 1); m->slot[h]; h = (h + 1) & (m->nslot - 1))
 				;
 			m->slot[h] = id;

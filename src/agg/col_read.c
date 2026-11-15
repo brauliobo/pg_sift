@@ -3,35 +3,12 @@
  */
 #include "postgres.h"
 
-#include "agg/agg.h"
-
 #if __has_include("col/col.h")
 
-#include "access/genam.h"
-#include "access/relation.h"
-#include "access/table.h"
-#include "access/tableam.h"
-#include "catalog/index.h"
-#include "catalog/pg_type.h"
-#include "executor/executor.h"
-#include "nodes/execnodes.h"
-#include "utils/lsyscache.h"
-#include "utils/memutils.h"
-#include "utils/rel.h"
-
 #include "agg/kern.h"
-#include "agg/pre.h"
 #include "agg/sel.h"
 #include "agg/wide.h"
-#include "core/popcount.h"
 #include "col/col.h"
-#include "col/gpu.h"
-#include "col/pagg.h"
-#include "col/am.h"
-#include "col/enc.h"
-#include "col/pg.h"
-#include "agg/colsrc.h"
-#include "col/shred_pg.h"
 
 #include "agg/col_int.h"
 
@@ -274,10 +251,16 @@ col_gorder_clean(void *impl, int i)
 	return sift_col_gorder_clean(((ColSource *) impl)->cs, i);
 }
 
-bool
-col_gorder_group_values(void *impl, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n)
+void *
+col_gorder_groups_open(void *impl, int gleaf, int kleaf, const int64 *only, bool desc, MemoryContext cxt)
 {
-	return sift_col_gorder_group_values(((ColSource *) impl)->cs, gleaf, kleaf, only, vals, n);
+	return sift_col_gorder_groups_open(((ColSource *) impl)->cs, gleaf, kleaf, only, desc, cxt);
+}
+
+bool
+col_gorder_groups_next(void *cursor, int64 *group)
+{
+	return sift_col_gorder_groups_next(cursor, group);
 }
 
 bool

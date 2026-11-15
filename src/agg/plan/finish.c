@@ -20,11 +20,6 @@
 #include "agg/par_int.h"
 #include "agg/plan/int.h"
 
-/* what a group table that cannot spill may be, as a multiple of hash memory, before the scan gives way to the normal plan (which spills) */
-#define GROUP_NOSPILL_FACTOR	32
-/* ... of the hash memory, or of the memory the defaults give (work_mem 4MB, hash_mem_multiplier 2) when that is more: a small work_mem is a choice for sorts */
-#define GROUP_NOSPILL_BASE		(8 * 1024 * 1024)
-
 /* the bytes of a row of a lookup table besides its columns: the hash entry and the row's header (about 48 in all for an integer key and a text column, measured) */
 #define AGG_LOOKUP_ROW_OVERHEAD	64
 
@@ -36,7 +31,18 @@ bool
 agg_lookup_fits(double rows, int width)
 {
 	if (sift_agg_lookup_max_rows >= 0)
+	{
+		static bool warned;
+
+		if (!warned)
+		{
+			warned = true;
+			ereport(WARNING,
+					(errmsg("sift.agg_lookup_max_rows is deprecated and will be removed in 5.0"),
+					 errhint("Use sift.agg_lookup_max_kb, the memory of the lookup tables, and RESET sift.agg_lookup_max_rows.")));
+		}
 		return rows <= sift_agg_lookup_max_rows;
+	}
 	return rows * (width + AGG_LOOKUP_ROW_OVERHEAD) <= (double) sift_agg_lookup_max_kb * 1024;
 }
 
@@ -174,9 +180,9 @@ reads_overflow(AggCtx *c, const SiftAggSpec *s)
 			   *leaves;
 	int			m = -1;
 
-	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->kind == SAP_TYPE && !typeof_keeps_unstorable(c, s->pred[i]))
-			typed = bms_add_member(typed, s->pred[i]->leaf);
+	foreach_ptr(SiftAggPred, p, c->types)
+		if (!typeof_keeps_unstorable(c, p))
+			typed = bms_add_member(typed, p->leaf);
 	leaves = bms_union(c->used, c->func_ovf);
 	for (int j = 0; j < c->nvleaf; j++)
 		if (bms_is_member(c->lay->nleaves - c->nvleaf + j, c->used) && vleaf_source(c, j) >= 0)
@@ -248,13 +254,25 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 		return agg_refuse_limit(SHAPE_WIDTH, combos, sift_limit(combos, SIFT_AGG_MAX_COMBOS), "%d value combinations", list_length(c->combos));
 	if (list_length(c->joins) > sift_limit(joins, SIFT_AGG_MAX_JOINS))
 		return agg_refuse_limit(SHAPE_WIDTH, joins, sift_limit(joins, SIFT_AGG_MAX_JOINS), "%d lookup-joined tables", list_length(c->joins));
-	typeof_reads(c, s);
+	typeof_reads(c);
 	s->npreds_total = c->npred;
+	s->nwide = c->nwide;
+	s->wide = palloc(Max(c->nwide, 1) * sizeof(SiftAggPred *));
+	for (int i = 0; i < c->nwide; i++)
+		s->wide[i] = list_nth(c->wide, i);
+	s->ntype = list_length(c->types);
+	s->type_leaf = palloc(Max(s->ntype, 1) * sizeof(int));
+	for (int i = 0; i < s->ntype; i++)
+		s->type_leaf[i] = ((SiftAggPred *) list_nth(c->types, i))->leaf;
 	s->nvleaf = c->nvleaf;
 	memcpy(s->vleaf, c->vleaf, sizeof(c->vleaf));
 	c->used = bms_union(c->used, c->elem_used);
 	/* the columns a recordset declares and the query does not read are leaves of the spec too: one the source cannot read again keeps the plan */
 	finish_leaves(c, s);
+	/* the leaf of a key test (doc ? 'k') the query reads too: the rows that are no object read as NULL, and a value the leaf cannot store is for the source to read again */
+	for (int i = 0; i < s->nleaves; i++)
+		if (bms_is_member(s->leaves[i], c->haskey) && bms_is_member(s->leaves[i], c->read) && s->recheck[i] == SRK_NONE)
+			return agg_refuse_on(ERROR_PARITY, "a key test (?) of a path whose value the query reads in a way the source cannot read again");
 	if (reads_overflow(c, s) || reads_json_null_cast(c))
 		return agg_refuse(DIRTY_UNITS);
 	finish_combos(c, s);
@@ -428,14 +446,34 @@ split_key_of(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, List *keys)
 	return top < AGG_SPLIT_GROUPS * (s->nworkers + 1) ? -1 : best;
 }
 
+/*
+ * The lookup join a scan with the spec's workers splits the rows by: the participants that each take the rows of a unit make the entry of a key of the join (its id and
+ * rows in the table) every one of them that meets the key, so the work of the keys grows with the participants; split by the key, each key is met by one. -1 for none.
+ */
+static int
+split_join_of(AggCtx *c, SiftAggSpec *s)
+{
+	if (!split_shape_ok(s) || !parallel_leader_participation || preagg_share(c, s) > 0)
+		return -1;
+	for (int ji = 0; ji < s->njoin; ji++)
+	{
+		int			leaf = split_join_leaf(s, ji);
+
+		if (leaf >= 0 && split_leaf_ok(leaf_of(c, leaf)))
+			return ji;
+	}
+	return -1;
+}
+
 /* the cost; adds the paths to output_rel */
 void
 agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *keys, List *scan_tlist)
 {
 	int			nworkers,
-				nospill = (int) sift_limit(group_nospill_factor, GROUP_NOSPILL_FACTOR);
+				nospill;
 	double		state,
-				table;
+				table,
+				floor_bytes;
 
 	if (!spec_finish(c, s, root, input_rel, keys))
 		return;
@@ -450,11 +488,10 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	}
 	table = group_table_bytes(s, group_count(c, s), &state);
 	/* a scan that cannot spill holds all its groups: the estimate may go far past hash memory (an OOM kill is the other end of it) but not to the sizes of a table of millions of groups */
-	if (table > (double) nospill * Max((double) get_hash_memory_limit(), (double) GROUP_NOSPILL_BASE) && !sift_aggspec_spillable(s))
+	if (table > sift_agg_nospill_bytes(&nospill, &floor_bytes) && !sift_aggspec_spillable(s))
 	{
 		agg_refused_on(GROUP_MEMORY, psprintf("about %.0f groups need %.0f kB, a hash aggregate gets %.0f kB, and this scan cannot spill them past %d times %.0f kB",
-											  group_count(c, s), table / 1024.0, (double) get_hash_memory_limit() / 1024.0, nospill,
-											  Max((double) get_hash_memory_limit(), (double) GROUP_NOSPILL_BASE) / 1024.0));
+											  group_count(c, s), table / 1024.0, (double) get_hash_memory_limit() / 1024.0, nospill, floor_bytes / 1024.0));
 		return;
 	}
 	if (!child_paths(c, s))
@@ -467,11 +504,13 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0, NIL);
 	if (nworkers > 0)
 	{
-		int			key;
+		int			key,
+					jkey;
 
 		s->nworkers = nworkers;
 		key = sift_test_split == 1 ? -1 : split_key_of(c, s, root, keys);
-		if (key < 0 || sift_test_split != 2)
+		jkey = sift_test_split == 1 ? -1 : split_join_of(c, s);
+		if ((key < 0 && jkey < 0) || sift_test_split != 2)
 			add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, NIL);
 		/* many groups: the participants split them by a key instead of the rows, which keeps each table small and the leader's merge short (agg/par/split.c) */
 		if (key >= 0)
@@ -479,6 +518,12 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 			s->gpart = key + 1;
 			add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, NIL);
 			s->gpart = 0;
+		}
+		if (jkey >= 0)
+		{
+			s->jpart = jkey + 1;
+			add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, NIL);
+			s->jpart = 0;
 		}
 	}
 	agg_ordered_paths(c, s, root, input_rel, output_rel, target, scan_tlist, keys, table, nworkers);

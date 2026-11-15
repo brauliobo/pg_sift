@@ -14,10 +14,14 @@ use Test::More;
 my $primary = sift_node('primary', allows_streaming => 1);
 $primary->start;
 install_sift($primary);
+# Each standby has a physical slot that reserves the WAL when it is created, before its backup: the fast checkpoint of the backup of the next
+# standby recycles the segments no slot holds, and a walsender that then finds the segment its standby asks for gone never serves it again
+# ("requested WAL segment ... has already been removed", the walreceiver retries until the test times out)
+$primary->safe_psql('postgres', "SELECT pg_create_physical_replication_slot('standby', true)");
 $primary->backup('base');
 my $standby = PostgreSQL::Test::Cluster->new('standby');
 $standby->init_from_backup($primary, 'base', has_streaming => 1);
-$standby->append_conf('postgresql.conf', "hot_standby_feedback = off\nmax_standby_streaming_delay = 2s");
+$standby->append_conf('postgresql.conf', "hot_standby_feedback = off\nmax_standby_streaming_delay = 2s\nprimary_slot_name = 'standby'");
 $standby->start;
 
 for my $am (ams())
@@ -92,10 +96,11 @@ subtest 'sift: hot_standby_feedback keeps a standby scan alive across merge and 
 	my ($t, $idx) = ('feedback', 'feedback_idx');
 	load_corpus($primary, $t, 20000);
 	$primary->safe_psql('postgres', "CREATE INDEX $idx ON $t USING sift (body) WITH (write_buffer_limit = 64, vacuum_truncate = false)");
+	$primary->safe_psql('postgres', "SELECT pg_create_physical_replication_slot('standby_feedback', true)");
 	$primary->backup('feedback_base');
 	my $fb = PostgreSQL::Test::Cluster->new('standby_feedback');
 	$fb->init_from_backup($primary, 'feedback_base', has_streaming => 1);
-	$fb->append_conf('postgresql.conf', "hot_standby_feedback = on\nmax_standby_streaming_delay = 2s");
+	$fb->append_conf('postgresql.conf', "hot_standby_feedback = on\nmax_standby_streaming_delay = 2s\nprimary_slot_name = 'standby_feedback'");
 	$fb->start;
 	$primary->wait_for_catchup($fb);
 
@@ -104,7 +109,8 @@ subtest 'sift: hot_standby_feedback keeps a standby scan alive across merge and 
 	my $expected = $bg->query_safe("SELECT count(*) FROM $t WHERE sift_ref.match(body, 'w1')");
 	$bg->query_safe("DECLARE c CURSOR FOR SELECT id FROM $t WHERE body @@> 'w1'");
 	$bg->query_safe('FETCH 10 FROM c');
-	$primary->poll_query_until('postgres', "SELECT backend_xmin IS NOT NULL FROM pg_stat_replication WHERE application_name = 'standby_feedback'", 't');
+	# a standby that streams through a slot has its feedback xmin on the slot, not on its walsender
+	$primary->poll_query_until('postgres', "SELECT xmin IS NOT NULL FROM pg_replication_slots WHERE slot_name = 'standby_feedback'", 't');
 
 	for my $round (1 .. 3)
 	{
@@ -121,6 +127,7 @@ subtest 'sift: hot_standby_feedback keeps a standby scan alive across merge and 
 	$bg->quit;
 	$fb->safe_psql('postgres', "SELECT sift.verify('$idx', true)");
 	$fb->stop;
+	$primary->safe_psql('postgres', "SELECT pg_drop_replication_slot('standby_feedback')");
 };
 
 # A backend keeps the blobs of the terms it reads (bm25/segcache.c, under the relation file and the generation of the segment): one

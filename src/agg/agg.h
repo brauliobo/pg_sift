@@ -8,6 +8,7 @@
 #ifndef SIFT_AGG_H
 #define SIFT_AGG_H
 
+#include "catalog/pg_type.h"
 #include "nodes/extensible.h"
 #include "nodes/pathnodes.h"
 
@@ -30,6 +31,74 @@ sift_const_list(Node *n)
 	return true;
 }
 
+/* the types the planner treats alike: the integers of any width, and the strings */
+static inline bool
+sift_int_type(Oid t)
+{
+	return t == INT2OID || t == INT4OID || t == INT8OID;
+}
+
+static inline bool
+sift_str_type(Oid t)
+{
+	return t == TEXTOID || t == VARCHAROID;
+}
+
+/*
+ * An open-addressing table of ids (1..n, 0 = empty) doubled when it fills: slot is allocated again by alloc (it sees the new nslot) and the ids go back in order,
+ * each from the slot start gives for id i, probing on by one.
+ */
+#define SIFT_SLOT_REHASH(i, slot, nslot, alloc, n, start) \
+	do { \
+		pfree(slot); \
+		(nslot) *= 2; \
+		(slot) = (alloc); \
+		for (uint32 i = 1; i <= (n); i++) \
+		{ \
+			uint32 h_ = (start) & ((nslot) - 1); \
+			while ((slot)[h_]) \
+				h_ = (h_ + 1) & ((nslot) - 1); \
+			(slot)[h_] = i; \
+		} \
+	} while (0)
+
+/* the array arr of cap elements, grown to twice that when its n elements fill it */
+#define SIFT_GROW(arr, n, cap) \
+	do { \
+		if ((n) == (cap)) \
+		{ \
+			(cap) *= 2; \
+			(arr) = repalloc((arr), (cap) * sizeof(*(arr))); \
+		} \
+	} while (0)
+
+/* a tree walker that tests each node n (not NULL) by the statements given, which return the answer for a node they decide, and recurses into the others; ctx is its context argument */
+#define SIFT_WALKER(name, CtxT, ctx, ...) \
+	static bool \
+	name(Node *n, CtxT ctx) \
+	{ \
+		if (n == NULL) \
+			return false; \
+		__VA_ARGS__ \
+		return expression_tree_walker(n, name, ctx); \
+	}
+
+/* the integer that sorts as a value of an integer, date or timestamp type does (a key of the global order, of a spilled group) */
+static inline int64
+sift_int_key(Oid typid, Datum d)
+{
+	switch (typid)
+	{
+		case INT2OID:
+			return DatumGetInt16(d);
+		case INT4OID:
+		case DATEOID:
+			return DatumGetInt32(d);
+		default:
+			return DatumGetInt64(d);
+	}
+}
+
 #ifdef SIFT_TESTING
 extern int64 sift_prepass_nodes;	/* the nodes the passes visited; sift._test_prepass_nodes */
 #define SIFT_SKIP_CONST_LIST(n, ret) \
@@ -49,13 +118,14 @@ extern int64 sift_agg_plan_passes;	/* SIFT_TESTING: the runs of the planner that
 extern int64 sift_agg_key_lists;	/* SIFT_TESTING: the selectivities of a key list the plan computed */
 extern int64 sift_agg_outer_walks;	/* SIFT_TESTING: the walks for references to a query above that the plan made */
 struct SiftAggJoin;
-extern double sift_agg_entry_ops(double entries_only);
-extern double sift_agg_keyed_ops(double keys, double entries, double pages, double entries_only);
+extern double sift_agg_entry_ops(double entries_only, bool heap);
+extern double sift_agg_keyed_ops(double keys, double entries, double pages, double entries_only, bool heap);
 extern double sift_agg_whole_ops(double tuples, double pages, bool cols, int nnum, bool keys_only);
-extern bool sift_agg_probe_pays(double keys, double entries, double pages, double entries_only, double whole);
+extern bool sift_agg_probe_pays(double keys, double entries, double pages, double entries_only, bool heap, double whole);
 extern int sift_agg_trail_cond(const struct SiftAggJoin *j, int att, Oid opfamily, Oid collation);
 extern double sift_agg_key_rows(unsigned int relid, int att, const int *tatt, int ntrail, double tuples, bool unique);
 extern double sift_agg_rows_per_key(unsigned int relid, int att, double tuples);
+extern double sift_agg_table_rows(Oid relid);
 extern PGDLLIMPORT double sift_plan_scale;
 extern PGDLLIMPORT double sift_agg_scale_horizon;
 extern PGDLLIMPORT bool sift_agg_two_level_on;
@@ -81,8 +151,12 @@ extern bool sift_agg_unique_key(Oid relid, int nkey, int nord, const int *atts, 
 extern void sift_agg_init(void);
 extern void sift_aggcte_init(void);
 extern MemoryContext sift_agg_memo_begin(void);
+extern MemoryContext sift_agg_memo_cx(void);
+extern uint64 sift_agg_memo_seq(void);
 extern void sift_agg_memo_end(MemoryContext cx);
 extern void sift_agg_preinline(Query *q);
+extern bool sift_agg_case_filter_calls(Query *q);	/* does a query tree hold agg(CASE WHEN p THEN x [ELSE NULL | 0] END) (a read-only walk) */
+extern void sift_agg_case_filter(Query *q);	/* those aggregates as agg(x) FILTER (WHERE p) (agg/expr/casefilter.c) */
 extern void sift_agg_drop_unused_laterals(Query *q);
 extern void sift_agg_defer_lookups(Query *q);
 extern bool sift_agg_exists_or_candidate(Query *q);
@@ -95,16 +169,29 @@ extern int64 sift_source_lookups;	/* the asks of has_column_source that went to 
 #endif
 extern bool sift_agg_has_flattenable_laterals(Query *q);
 extern bool sift_agg_flatten_laterals(Query *q);
+extern bool sift_agg_minmax_sublinks(Query *q, bool apply);
 extern bool sift_agg_probe_joins(Query *q, bool apply);
 extern void sift_agg_probe_init(void);
 extern bool sift_agg_push_dim_keys(Query *q, bool apply);
 extern bool sift_agg_factor_constants(Query *q, bool apply);
 extern bool sift_agg_eager_candidate(Query *q);
 extern bool sift_agg_eager_lookup(Query *q, bool apply);
+extern bool sift_agg_distinct_split_candidate(Query *q);
+extern bool sift_agg_distinct_split(Query *q, bool apply);
+extern bool sift_agg_partial_candidate(Query *q);
+extern bool sift_agg_pct_array_candidate(Query *q);
+extern bool sift_agg_having_candidate(Query *q);
+extern bool sift_agg_having_to_where(Query *q, bool apply);
+extern bool sift_agg_invert_parents(Query *q, bool apply);
+extern bool sift_agg_child_first;
+extern bool sift_agg_pct_arrays(Query *q, bool apply);
+extern bool sift_agg_partial_left(Query *q, bool apply);
 extern bool sift_agg_fence_alone;			/* the only rewrite of the flattening is a fenced sub-select (a scope sublink): no other plan of the query reads the scope differently unless a shared CTE does */
+extern double sift_agg_flat_margin;		/* the margin a rewrite whose plan wins by cost alone must win by (0: FLAT_KEYS_MARGIN) */
 extern bool sift_agg_flat_any;			/* the flattening made a rewrite whose plan wins by cost alone, with the scan or without it */
 #define SIFT_PROBE_ALIAS "sift_probe"	/* the alias of the lateral probe agg/flat/probe.c makes of a sublink or a join */
 extern PGDLLIMPORT bool sift_agg_probe_rewrite;
+extern PGDLLIMPORT bool sift_agg_case_filter_enabled;
 extern bool sift_agg_probe_mixed;		/* ... and another rewrite was made as well */
 extern bool sift_agg_probe_applied;		/* the flattening made a lateral probe of a sublink or a join (agg/flat/probe.c): the plan is set against the one as written whatever that reads */
 extern bool sift_agg_by_cost;			/* the flattening made a rewrite whose plan is chosen by cost, not taken for running in the scan */
@@ -128,6 +215,7 @@ extern void sift_aggcol_register(void);
 struct dsm_segment;
 struct shm_toc;
 extern PGDLLEXPORT void sift_agg_worker_main(struct dsm_segment *seg, struct shm_toc *toc);
+extern PGDLLEXPORT void sift_class_worker_main(struct dsm_segment *seg, struct shm_toc *toc);
 
 /* agg/agg.c: CreateCustomScanState callback */
 extern Node *sift_agg_create_state(CustomScan *cscan);

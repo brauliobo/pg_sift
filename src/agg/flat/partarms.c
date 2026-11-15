@@ -9,7 +9,6 @@
  */
 #include "postgres.h"
 
-#include "access/htup_details.h"
 #include "access/relation.h"
 #include "catalog/partition.h"
 #include "catalog/pg_class.h"
@@ -18,16 +17,13 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
-#include "parser/parse_clause.h"
 #include "partitioning/partdesc.h"
 #include "rewrite/rewriteManip.h"
 #include "miscadmin.h"
 #include "parser/parse_relation.h"
-#include "parser/parsetree.h"
 #include "utils/acl.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
-#include "utils/rel.h"
 
 #include "agg/agg.h"
 #include "agg/part.h"

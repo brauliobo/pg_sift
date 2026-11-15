@@ -99,10 +99,13 @@ $standby->reload;
 $primary->wait_for_catchup($standby);
 is(rows($standby), rows($primary), 'a standby a segment behind a crashed primary follows its recovery');
 
+$primary->safe_psql('postgres', 'CREATE EXTENSION pg_walinspect');
 my $start_lsn = $primary->lsn('insert');
+# the Generic records of the pgbench workload depend on how many statements a host runs in $secs seconds (199 in a quick run on a lab host, 96 on a loaded CI runner,
+# whose few promotions and merges write most of them): a fixed batch of writes and one promotion make the count independent of the speed of the host
+$primary->safe_psql('postgres', join('', map { "INSERT INTO $t VALUES (nextval('wc_ids'), 'w$_ w1 burst');\n" } 1 .. 200) . "SELECT sift.promote('$idx');");
 my $w = workload($primary, $secs);
 $w->{handle}->finish;
-$primary->safe_psql('postgres', 'CREATE EXTENSION pg_walinspect');
 cmp_ok($primary->safe_psql('postgres', "SELECT coalesce(sum(count), 0) FROM pg_get_wal_stats(greatest('$start_lsn'::pg_lsn, pg_current_wal_lsn() - 33554432), pg_current_wal_lsn())"
 	. q{ WHERE "resource_manager/record_type" LIKE 'Generic%'}), '>', 100, 'the workload wrote Generic WAL records');
 note("pgbench: " . (${ $w->{out} } =~ s/\n/ /gr) . " " . ${ $w->{err} });

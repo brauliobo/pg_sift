@@ -245,7 +245,7 @@ chunk_put(PosChunk *pc, uint8 c)
 	if (pc->len == pc->cap)
 	{
 		pc->cap = Max(4096, pc->cap * 2);
-		pc->buf = pc->buf ? repalloc_huge(pc->buf, pc->cap) : MemoryContextAllocHuge(CurrentMemoryContext, pc->cap);
+		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, pc->buf, pc->cap);
 	}
 	pc->buf[pc->len++] = c;
 }
@@ -365,8 +365,7 @@ sift_inv_add(SiftInvBuf *b, ItemPointer tid, const SiftTermFreq *terms, int nter
 	if (nterms > b->maxdoc_terms)
 	{
 		b->maxdoc_terms = Max(nterms, 2 * b->maxdoc_terms);
-		b->doc_terms = b->doc_terms ? repalloc(b->doc_terms, b->maxdoc_terms * sizeof(uint32)) :
-			MemoryContextAlloc(b->mcxt, b->maxdoc_terms * sizeof(uint32));
+		SIFT_REGROW_IN(b->mcxt, b->doc_terms, b->maxdoc_terms * sizeof(uint32));
 	}
 	/* three passes so the cache misses of the slots, terms and slices overlap */
 	for (int i = 0; i < nterms; i++)

@@ -3,7 +3,6 @@
  * the plain form read straight into the arrays, and the view the readers search
  * the inverse of serialize.c
  */
-#include "core/host.h"
 #include "col/compress.h"
 #include "col/dict/dict_int.h"
 

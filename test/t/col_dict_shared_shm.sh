@@ -14,7 +14,7 @@ TABLES=14
 	echo "CREATE EXTENSION pg_sift;"
 	for t in $(seq $TABLES); do
 		echo "CREATE TABLE t$t AS SELECT g AS id, 'k$t' || md5(g::text) AS s FROM generate_series(1, 150000) g;"
-		echo "CREATE INDEX t${t}_col ON t$t USING sift_col (id, s) WITH (rollup_dims = 'off');"
+		echo "CREATE INDEX t${t}_col ON t$t USING sift_col (id, s) WITH (rollup_columns = 'off');"
 		echo "VACUUM (FREEZE, ANALYZE) t$t;"
 	done
 } | sql primary >/dev/null || bail "setup failed"

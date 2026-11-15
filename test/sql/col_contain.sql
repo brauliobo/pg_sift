@@ -36,6 +36,11 @@ INSERT INTO nt (ip) VALUES (NULL);
 UPDATE nt SET cd = network(ip) WHERE ip IS NOT NULL;
 
 CREATE INDEX rt_col ON rt USING sift_col (id, a, d, t, z, w);
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE nt_rows AS SELECT * FROM nt ORDER BY ctid;
+TRUNCATE nt;
+INSERT INTO nt SELECT * FROM nt_rows;
+DROP TABLE nt_rows;
 CREATE INDEX nt_col ON nt USING sift_col (id, ip, cd);
 VACUUM (FREEZE, ANALYZE) rt, nt;
 SELECT sift.col_verify('rt_col', true), sift.col_verify('nt_col', true);

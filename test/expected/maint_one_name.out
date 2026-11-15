@@ -1,0 +1,55 @@
+-- sift.promote, sift.merge and sift.verify take a sift_col index and do what sift.col_promote, sift.col_merge and sift.col_verify do (the col_ names stay);
+-- any other index is refused as before
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+CREATE TABLE mo (id int PRIMARY KEY, g int, body text) WITH (autovacuum_enabled = off);
+CREATE INDEX mo_col ON mo USING sift_col (id, g) WITH (key_cut = g);
+CREATE INDEX mo_bm ON mo USING sift (body);
+SET sift.async_maintenance = off;
+INSERT INTO mo SELECT i, i % 7, 'alpha beta ' || i FROM generate_series(1, 2000) i;
+INSERT INTO mo SELECT i, i % 7, 'alpha beta ' || i FROM generate_series(2001, 4000) i;
+SELECT sift.verify('mo_col'), sift.col_verify('mo_col');
+ verify | col_verify 
+--------+------------
+        | 
+(1 row)
+
+SELECT sift.verify('mo_col', true), sift.col_verify('mo_col', true);
+ verify | col_verify 
+--------+------------
+        | 
+(1 row)
+
+SELECT sift.promote('mo_col') >= 0 AS promoted, sift.col_promote('mo_col') >= 0 AS promoted_col;
+ promoted | promoted_col 
+----------+--------------
+ t        | t
+(1 row)
+
+SELECT sift.merge('mo_col', true) >= 0 AS merged, sift.col_merge('mo_col', true) >= 0 AS merged_col;
+ merged | merged_col 
+--------+------------
+ t      | t
+(1 row)
+
+SELECT sift.verify('mo_col', true);
+ verify 
+--------
+ 
+(1 row)
+
+SELECT sift.verify('mo_bm', true), sift.promote('mo_bm') >= 0 AS promoted_bm, sift.merge('mo_bm', true) >= 0 AS merged_bm;
+ verify | promoted_bm | merged_bm 
+--------+-------------+-----------
+        | t           | t
+(1 row)
+
+-- an index of another kind, or a table, is still refused
+SELECT sift.merge('mo_pkey');
+ERROR:  "mo_pkey" is not a sift index
+SELECT sift.col_merge('mo_bm');
+ERROR:  "mo_bm" is not a sift_col index
+SELECT sift.verify('mo');
+ERROR:  "mo" is not an index
+DROP TABLE mo;
+DROP EXTENSION pg_sift;

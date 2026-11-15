@@ -2,7 +2,6 @@
  * col/codec_avx512.c - AVX-512 kernels of the chunk codec (F, BW, VL, DQ + the options of SIFT_TARGET_AVX512), the width and the compare-to-bits primitive of col/codec_vec.h.
  */
 #if defined(__x86_64__)
-#include "core/host.h"
 
 #include "col/codec_int.h"
 

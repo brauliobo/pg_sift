@@ -2,8 +2,6 @@
  * col/gorder_opt.c - the order_layout option: the layout of the order array of each column, and the one place that chooses it where the option does not say. Portable (core/host.h only).
  */
 
-#include "core/host.h"
-
 #include "col/gorder.h"
 #include "col/preagg.h"
 

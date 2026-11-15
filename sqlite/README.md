@@ -21,7 +21,7 @@ ship such a SQLite; RHEL 9 and Ubuntu 22.04 do not.
 [latest release](https://github.com/brauliobo/pg_sift/releases/latest):
 
 ```sh
-V=4.1.0
+V=4.3.5
 curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/sift-sqlite-$V-linux-x86_64.tar.gz
 curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS && tar xzf sift-sqlite-$V-linux-x86_64.tar.gz
@@ -69,7 +69,7 @@ The text after `MATCH` is SiftQL. Words are `AND`ed; operators are case sensitiv
 | `a b`, `a AND b`, `a OR b`, `NOT a` | boolean; precedence `NOT` > `AND` > `OR`, parentheses group; a `NOT` needs a positive term in its group |
 | `"quick brown"` | phrase (word positions are indexed unless the table has `positions=0`) |
 | `pre*`, `te?t` | prefix and wildcard (`?` one character) |
-| `/regex/` | regular expression over the indexed terms (the system's POSIX ERE, not PostgreSQL's engine) |
+| `/regex/` | regular expression over the indexed terms (PostgreSQL's advanced syntax, ASCII case and character classes) |
 | `word~1`, `word~2` | fuzzy: edit distance 1 or 2 |
 | `a^3` | boost the score of a term |
 | `{a b c}` | any of a set of words or patterns |
@@ -174,7 +174,7 @@ INSERT INTO t(t, rank) VALUES('integrity-check', 1); -- checks the index (1: als
 
 Functions: `sift_count(t, q)`, `sift_stat(t)` (segments, documents, bytes, cache hits, misses and evictions), `sift_drop_cache(t)`,
 `sift_isa()`, `sift_simd(level)` (`scalar`, `avx2`, `avx512`, `auto`; the environment variable `SIFT_SIMD` caps it at load),
-`sift_version()`, `sift_bm25`, `sift_highlight`, `sift_snippet`, `sift_highlight_text`, `sift_snippet_text`, `sift_facets`.
+`sift_work_mem([kB])` (the memory of a statement's search, 1 GiB by default; see [Limits](#limits)), `sift_version()`, `sift_bm25`, `sift_highlight`, `sift_snippet`, `sift_highlight_text`, `sift_snippet_text`, `sift_facets`.
 
 Writes go to an in-memory buffer; a commit, the posting threshold or a savepoint boundary stores it as an immutable segment in the same
 SQLite transaction, so rollback, a crash and WAL readers are consistent. After a flush, segments of the same size tier are merged (`automerge`) with
@@ -200,6 +200,10 @@ Measured on Simple English Wikipedia (218,058 articles), top 10 by BM25, warm ca
 
 ## Limits
 
+- **Memory** follows these settings and no row count: the page cache (`cache_size`, 64 MiB), the write buffer (`pending_postings`: a posting takes 16 bytes and a pending
+  document 11, so the default 64,000,000 postings are about 1 GiB; the buffer becomes a segment above it), a merge (`maintenance_work_mem`, fixed at 64 MiB:
+  the runs spill to a temporary file), and a statement's search (`sift_work_mem()`, 1 GiB by default: the hits of a ranked search without a `LIMIT` at 16 bytes each, and
+  the pages, the values and the rows of `sift_facets`; past it the statement fails naming it). The dead-posting recount of PostgreSQL's `VACUUM` does not exist here: a delete clears a liveness bit.
 - **One writer**, SQLite's. Another connection's commit is seen at its next statement. Each connection keeps its own page cache, so N connections
   cost N caches (`cache_size`).
 - **Parallel scans** (`parallel=N`, off by default) need the whole index resident in the cache and no document text, and pay only on heavy ranked
@@ -208,8 +212,9 @@ Measured on Simple English Wikipedia (218,058 articles), top 10 by BM25, warm ca
 - **Duplicates.** The `external` and contentless modes trust you not to index a rowid twice.
 - **Snippets** need the text; matching is token based, so a regex or fuzzy match is highlighted as the whole token and a phrase only where the stored
   occurrence is exact.
-- **Regular expressions** use the C library's POSIX ERE (glibc `regcomp`): the same syntax as PostgreSQL's for the common subset, with
-  different back-references and some bracket classes.
+- **Regular expressions** are PostgreSQL's advanced syntax (`\d`, `\w`, lookaround, back-references, lazy quantifiers) in the C collation: the character
+  classes and the case folding are ASCII only, a character above 127 is no letter and has no other case. `tests/regex_check.sh` of the MariaDB port
+  (the same engine) compares the matcher with PostgreSQL's on 227,040 pattern and word pairs.
 - **Analyzers** are the Snowball English stemmer and pg_sift's folding tables, not `unicode61` or ICU; on real text the matches differ from
   FTS5's by a few documents in 3 to 26 percent of queries, all through tokenization (script changes, stroke letters, soft hyphens, combining marks).
 - **Not available:** `phrase_index=pairs`, filter pushdown of other columns (SQLite applies them after the match), SQLite older than 3.38.

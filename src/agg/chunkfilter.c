@@ -1,62 +1,11 @@
 /*
  * agg/chunkfilter.c - the integer filters of a scan on the encoded chunks of a unit (agg/chunkfilter.h).
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
-#include "utils/memutils.h"
-
 #include "agg/chunkfilter.h"
-#include "agg/sel.h"
 
-static const SiftColOp filter_ops[] = {
-	[SSF_EQ] = SIFT_COLOP_EQ, [SSF_NE] = SIFT_COLOP_NE, [SSF_LT] = SIFT_COLOP_LT, [SSF_LE] = SIFT_COLOP_LE, [SSF_GT] = SIFT_COLOP_GT,
-	[SSF_GE] = SIFT_COLOP_GE, [SSF_IN] = SIFT_COLOP_IN, [SSF_NOTIN] = SIFT_COLOP_NOTIN, [SSF_NOTNULL] = SIFT_COLOP_NOTNULL
-};
-
-static SiftColOp
-str_op(SiftSrcStrOp op)
-{
-	switch (op)
-	{
-		case SSTR_EQ:
-			return SIFT_COLOP_EQ;
-		case SSTR_NE:
-			return SIFT_COLOP_NE;
-		case SSTR_LT:
-			return SIFT_COLOP_LT;
-		case SSTR_LE:
-			return SIFT_COLOP_LE;
-		case SSTR_GT:
-			return SIFT_COLOP_GT;
-		case SSTR_GE:
-			return SIFT_COLOP_GE;
-		case SSTR_IN:
-			return SIFT_COLOP_IN;
-		case SSTR_NOTIN:
-			return SIFT_COLOP_NOTIN;
-		case SSTR_PREFIX:
-			return SIFT_COLOP_PREFIX;
-		case SSTR_CONTAINS:
-			return SIFT_COLOP_CONTAINS;
-		case SSTR_NOTCONTAINS:
-			return SIFT_COLOP_NOTCONTAINS;
-		case SSTR_ICONTAINS:
-			return SIFT_COLOP_ICONTAINS;
-		case SSTR_SUFFIX:
-			return SIFT_COLOP_SUFFIX;
-	}
-	SIFT_INVARIANT(false, "sift: unknown text test %d", (int) op);
-	pg_unreachable();
-}
-
-/* a text test as a column predicate over the constants in vals (room for t->nvals) */
-SiftColPred
-sift_aggfilt_str_pred(const SiftSrcStrTest *t, SiftColValue *vals, int col)
-{
-	for (int i = 0; i < t->nvals; i++)
-		vals[i] = t->ints ? (SiftColValue) {.v.i = t->ints[i]} : (SiftColValue) {.v.s = t->vals[i], .len = t->lens[i]};
-	return (SiftColPred) {col, str_op(t->op), t->nvals, vals};
-}
 bool
 sift_aggfilt_int(const SiftColDef *def)
 {
@@ -66,8 +15,8 @@ sift_aggfilt_int(const SiftColDef *def)
 void
 sift_aggfilt_add(SiftAggFilters *fl, MemoryContext cxt, int col, const SiftSrcFilter *f)
 {
-	bool		set = f->op == SSF_IN || f->op == SSF_NOTIN;
-	int			nvals = f->op == SSF_NOTNULL ? 0 : set ? f->nset : 1;
+	bool		set = f->op == SIFT_COLOP_IN || f->op == SIFT_COLOP_NOTIN;
+	int			nvals = f->op == SIFT_COLOP_NOTNULL ? 0 : set ? f->nset : 1;
 	SiftColValue *vals;
 
 	if (f->op == SSF_RANGES || f->op == SSF_RANGES_HINT)
@@ -85,7 +34,7 @@ sift_aggfilt_add(SiftAggFilters *fl, MemoryContext cxt, int col, const SiftSrcFi
 	}
 	for (int i = 0; i < nvals; i++)
 		vals[i].v.i = set ? f->set[i] : f->val;
-	fl->pred[fl->n] = (SiftColPred) {col, filter_ops[f->op], nvals, vals};
+	fl->pred[fl->n] = (SiftColPred) {col, f->op, nvals, vals};
 	fl->leaf[fl->n++] = f->leaf;
 }
 

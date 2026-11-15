@@ -1,0 +1,1 @@
+col_merge_force	src/bm25/segment_sql.c:sift_maintenance_busy src/col/maint.c:sift_col_index_info src/col/maint.c:sift_col_segments src/col/seg.c:sift_cseg_preagg_units src/col/wbuf.c:sift_cwbuf_summary src/core/lane.c:sift_lane_npages

@@ -8,7 +8,6 @@
 #include "access/generic_xlog.h"
 #include "access/rmgr.h"
 #include "access/xloginsert.h"
-#include "common/int.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
@@ -78,12 +77,12 @@ find_kind(const SiftDirSnapshot *snap, SiftSegKind kind)
 
 /* Allocates and initializes (logged) the pages of an empty active segment; not yet reachable */
 static SiftSegEntry
-new_segment(Relation index, Size hdrsize, uint16 format)
+new_segment(Relation index, Size hdrsize, uint16 format, uint16 flags)
 {
 	uint64		gen = sift_store_new_gen(index);
 	Buffer		bufs[SIFT_LANES + 1];
 	BlockNumber first;
-	SiftSegEntry e = {.gen = gen, .kind = SIFT_SEG_WBUF_OPEN, .format = format};
+	SiftSegEntry e = {.gen = gen, .kind = SIFT_SEG_WBUF_OPEN, .format = format, .flags = flags};
 
 	bufs[0] = sift_alloc_page(index, SIFT_PT_WBUFHEADER, gen);
 	first = sift_alloc_extent(index, SIFT_LANES, SIFT_PT_WBUFDATA, gen, bufs + 1);
@@ -150,7 +149,7 @@ last_failure(const SiftDirSnapshot *snap)
 
 /* Creates the active segment unless another backend did meanwhile; false when the directory is full */
 static bool
-create_active(Relation index, Size hdrsize, uint16 format)
+create_active(Relation index, Size hdrsize, uint16 format, uint16 flags)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	bool		room = true;
@@ -161,7 +160,7 @@ create_active(Relation index, Size hdrsize, uint16 format)
 	{
 		SwapArg		arg = {0};
 
-		arg.fresh = new_segment(index, hdrsize, format);
+		arg.fresh = new_segment(index, hdrsize, format, flags);
 		sift_dir_update(index, &(SiftDirChange) {.fn = swap_active,.arg = &arg,.extra = InvalidBuffer});
 	}
 	UnlockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
@@ -214,7 +213,7 @@ sift_lane_flag_sealed_pages(Relation index, const SiftSegEntry *entry)
 }
 
 static uint64
-seal_open(Relation index, bool rotate, bool force, Size hdrsize, uint16 format, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *))
+seal_open(Relation index, bool rotate, bool force, Size hdrsize, uint16 format, uint16 flags, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *))
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	const SiftSegEntry *act;
@@ -235,7 +234,7 @@ seal_open(Relation index, bool rotate, bool force, Size hdrsize, uint16 format, 
 			{
 				sealed = *act;
 				arg.sealed = act->gen;
-				arg.fresh = new_segment(index, hdrsize, format);
+				arg.fresh = new_segment(index, hdrsize, format, flags);
 				sift_dir_update(index, &(SiftDirChange) {.fn = swap_active,.arg = &arg,.extra = InvalidBuffer});
 			}
 			else if (force)
@@ -258,19 +257,19 @@ seal_open(Relation index, bool rotate, bool force, Size hdrsize, uint16 format, 
 }
 
 uint64
-sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *))
+sift_lane_seal(Relation index, bool force, Size hdrsize, uint16 format, uint16 flags, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *))
 {
-	return seal_open(index, false, force, hdrsize, format, limit, has_records);
+	return seal_open(index, false, force, hdrsize, format, flags, limit, has_records);
 }
 
 uint64
-sift_lane_rotate(Relation index, Size hdrsize, uint16 format)
+sift_lane_rotate(Relation index, Size hdrsize, uint16 format, uint16 flags)
 {
-	return seal_open(index, true, true, hdrsize, format, 0, NULL);
+	return seal_open(index, true, true, hdrsize, format, flags, 0, NULL);
 }
 
 void
-sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, uint16 format, bool (*make_room) (Relation),
+sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, uint16 format, uint16 flags, bool (*make_room) (Relation),
 				  uint64 *gen, BlockNumber *hdr_blk, BlockNumber *tail)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
@@ -287,7 +286,7 @@ sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, u
 					 errhint("Use REINDEX to apply the new options.")));
 		if ((act = find_kind(snap, SIFT_SEG_WBUF_OPEN)) != NULL)
 			break;
-		if (!create_active(index, hdrsize, format) && !make_room(index))
+		if (!create_active(index, hdrsize, format, flags) && !make_room(index))
 		{
 			const char *why;
 
@@ -506,6 +505,8 @@ sift_lane_iter_init(SiftLaneIter *it, Relation index, const SiftSegEntry *entry)
 
 	it->index = index;
 	it->entry = entry;
+	it->skip = NULL;
+	it->skipped = false;
 	it->lane = 0;
 	it->nextblk = InvalidBlockNumber;
 	sift_lane_read_header(index, entry, &hdr);
@@ -522,7 +523,20 @@ sift_lane_iter_next(SiftLaneIter *it, Page dst, Size hdrsize)
 		blk = it->head[it->lane++];
 	if (!BlockNumberIsValid(blk))
 		return false;
-	sift_lane_copy_page(it->index, it->entry, blk, dst, hdrsize);
+	if (it->skip)
+	{
+		Buffer		buf = sift_lane_read_locked(it->index, blk, BUFFER_LOCK_SHARE);
+		Page		src = BufferGetPage(buf);
+
+		sift_store_check_page(it->index, buf, SIFT_PT_WBUFDATA, it->entry->gen);
+		it->skipped = it->skip(it->skip_arg, src);
+		memcpy(dst, src, it->skipped ? SIFT_PAGE_DATA_OFFSET + hdrsize : BLCKSZ);
+		UnlockReleaseBuffer(buf);
+		if (SiftPageGetUsed(dst) < hdrsize)
+			SIFT_CORRUPT(it->index, "Write buffer block %u of segment %llu is truncated.", blk, (unsigned long long) it->entry->gen);
+	}
+	else
+		sift_lane_copy_page(it->index, it->entry, blk, dst, hdrsize);
 	it->blk = blk;
 	it->nextblk = SiftLaneHead(dst)->next;
 	return true;
@@ -610,10 +624,7 @@ sift_lane_extents(Relation index, const SiftSegEntry *entry, int *n)
 	sift_sort_u32(blks, nb);
 	*n = 0;
 	for (int i = 0; i < nb; i++)
-		if (*n > 0 && ext[*n - 1].start + ext[*n - 1].nblocks == blks[i])
-			ext[*n - 1].nblocks++;
-		else
-			ext[(*n)++] = (SiftExtent) {blks[i], 1};
+		sift_extent_push(ext, n, blks[i], 1);
 	pfree(blks);
 	return ext;
 }

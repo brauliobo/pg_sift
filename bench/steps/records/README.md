@@ -28,9 +28,9 @@ page; its `note` column says where): it is checked against the records alone, an
 
 ## What one row is
 
-One statement, on one arm, warm or cold, one repetition. The **arm** is the structure that answered: `heap` (a sequential scan), `btree`, `gin` or `sift`, with its option (`default`,
+One statement, on one arm, warm or cold, one repetition. The **arm** is the structure that answered: `heap` (a sequential scan), `btree`, `gin`, `sift` or `native` (the normal plan), with its option (`default`,
 `key_order=ts`, ...). Arms are chosen by forcing (`enable_*`, the index in the search path or the setting of the structure) on the same data, so they are comparable; the
-plan the planner chooses with nothing forced is measured as well (`mode` = `default`) and each forced arm says whether it is that plan (`picked`). The structure is read from the
+plan the planner chooses with nothing forced is measured as well (`mode` = `default`) and each forced arm says whether it is that plan (`picked`). The arm `native` is the normal plan (`sift.enable_agg = off`): not a structure to force, so it has the structure its plan names, and it is never picked. The structure is read from the
 EXPLAIN of the run and the arm must be it. Time is three columns: planning, execution (EXPLAIN ANALYZE) and the whole statement from the client. Instructions are those of the
 postmaster tree, workers included, and say their scope. Blocks are split by the kind of relation: heap, b-tree, gin, sift. Cold means the shared buffers of the relations were evicted;
 `os_cache_dropped` says whether the OS cache was emptied as well.
@@ -63,7 +63,7 @@ postmaster tree, workers included, and say their scope. Blocks are split by the 
 | `kind` | text | yes | read, maintenance (VACUUM, merge), load or build (CREATE INDEX of a sift index: the instructions of the leader and of the workers, the segments it wrote, the options it was built with) |
 | `protocol` | text | yes | what one repetition is: single, or the rounds it averages (rounds=12): a figure of one round is not the average of twelve |
 | `mode` | text | yes | forced (the arm was selected with settings), default (the planner chose) or unavailable (no setting makes the plan of this arm: one row without times, `structure` names what the plans were) |
-| `arm` | text | yes | heap, btree, gin or sift; `default` rows carry the structure the plan named |
+| `arm` | text | yes | heap, btree, gin, sift or native (the normal plan, sift.enable_agg off: its structure is whatever the plan names, and it is never picked); `default` rows carry the structure the plan named |
 | `arm_option` | text | yes | the option of the structure: default, key_order=ts, key_cut, ...; a default row names the option of the forced arm that ran the plan the planner chose (default when none did) |
 | `picked` | 0 or 1 | yes | 1 when this arm ran the plan the planner chooses by default: the same plan_hash (schema 7 on), before it the same structure and option |
 | `structure` | text | yes | the structure the EXPLAIN of this run names: heap, btree, gin, sift or mixed |
@@ -146,7 +146,7 @@ A comparison is the rows of one statement on one dataset and size. Within it:
 | TWO STATEMENTS | one `sql_hash` for a statement name |
 | HEAP ORDER NOT AS DECLARED | `sorted` needs a measured correlation above 0.9, `hash` under 0.1 |
 | WRONG ARM | a forced arm is the structure its EXPLAIN names (a mixed plan is no arm) |
-| NO PICKED / PICKED FLAG | the default plan is in the set and each arm says whether it is that plan; a default plan that mixes structures is a row of its own (arm `mixed`) that no forced arm equals; a maintenance or a load has no plan to pick: forced, picked 0 |
+| NO PICKED / PICKED FLAG | the default plan is in the set and each arm says whether it is that plan; a default plan that mixes structures is a row of its own (arm `mixed`) that no forced arm equals; a maintenance or a load has no plan to pick: forced, picked 0 The arm `native` (the normal plan) is never picked, whatever its plan. |
 | CHURN HISTORY MISSING / SETTLED WITHOUT A VACUUM | a churned read says what was applied (`collect.apply_churn` returns it: percent of rows updated, inserted and deleted a round, rounds; else the tuples the statistics counted); `settled` needs a VACUUM, an autovacuum or a sift pass on record |
 | INSTRUCTIONS MISSING | a warm row has a count (perf failed or was not run: refused, not left empty) |
 | INSTRUCTIONS WITHOUT SCOPE / WITHOUT WORKERS | a count of the backend alone is refused when workers ran |

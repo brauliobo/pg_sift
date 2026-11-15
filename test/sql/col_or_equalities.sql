@@ -1,6 +1,7 @@
 -- `a = x OR a = y` on a network, a range or a numeric column is the test `a IN (x, y)` of the source: the same rows as the heap with or without the aggregate scan,
 -- after every kind of write, and the units that hold neither value are pruned.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -24,16 +25,7 @@ BEGIN
 	PERFORM set_config('enable_seqscan', 'on', true); PERFORM set_config('enable_indexscan', 'off', true); PERFORM set_config('enable_bitmapscan', 'off', true); EXECUTE q INTO b;
 	RETURN a = b AND c = b;
 END $$;
-CREATE FUNCTION kept_share(q text) RETURNS numeric LANGUAGE plpgsql AS $$
-DECLARE l text; kept numeric := 0; pruned numeric := 0;
-BEGIN
-	PERFORM set_config('sift.agg_force', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ '^ *Units: ' THEN kept := substring(l from '[0-9]+')::numeric; END IF;
-		IF l ~ '(\d+) pruned' THEN pruned := substring(l from '(\d+) pruned')::numeric; END IF;
-	END LOOP;
-	RETURN round(kept / nullif(kept + pruned, 0), 1);
-END $$;
+CREATE FUNCTION kept_share(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT sift_helpers.agg_units_kept_share(q) $$;
 
 CREATE TABLE oq_q (slug text, q text);
 INSERT INTO oq_q SELECT slug, replace(q, '@T@', 'oq') FROM (VALUES
@@ -76,4 +68,5 @@ SELECT kept_share('SELECT count(*) FROM oq6 WHERE ip = ''20.5.7.9'' OR ip = ''20
 
 DROP FUNCTION oq_all(), same(text), kept_share(text);
 DROP TABLE oq, oq6, oq_q;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

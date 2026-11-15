@@ -8,14 +8,14 @@ CREATE TABLE vo (id int, set_id int, updated_at timestamptz, a_count int, commen
 INSERT INTO vo SELECT i, i % 10, now(), i % 5, i % 3, 0, i, current_date FROM generate_series(1, 1000) i;
 -- one, several (in the order of the index), with the case of the name ignored
 CREATE INDEX vo_one ON vo USING sift_col (set_id, updated_at, amt);
-NOTICE:  sift_col index "vo_one": 1 automatic choice (rollup_dims), 2 advice (track_changes, hot_updates)
+NOTICE:  sift_col index "vo_one": 1 automatic choice (rollup_columns), 2 advice (track_changes, hot_updates)
 DETAIL:  advice: track_changes = the table has no one-column primary key; advice: hot_updates = updated_at;
-rollup_dims = set_id, updated_at
+rollup_columns = set_id, updated_at
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('vo_one');
 CREATE INDEX vo_many ON vo USING sift_col (a_count, set_id, comment_count, lock_version, "Updated_On");
-NOTICE:  sift_col index "vo_many": 1 automatic choice (rollup_dims), 2 advice (track_changes, hot_updates)
+NOTICE:  sift_col index "vo_many": 1 automatic choice, 2 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key;
-advice: hot_updates = a_count, comment_count, lock_version, Updated_On; rollup_dims = lock_version, Updated_On
+advice: hot_updates = a_count, comment_count, lock_version, Updated_On; and 1 more
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('vo_many');
 -- covered columns that are not volatile: silent
 CREATE INDEX vo_none ON vo USING sift_col (id, set_id, amt);
@@ -23,9 +23,9 @@ NOTICE:  sift_col index "vo_none": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('vo_none');
 REINDEX INDEX vo_one;
-NOTICE:  sift_col index "vo_one": 1 automatic choice (rollup_dims), 2 advice (track_changes, hot_updates)
+NOTICE:  sift_col index "vo_one": 1 automatic choice (rollup_columns), 2 advice (track_changes, hot_updates)
 DETAIL:  advice: track_changes = the table has no one-column primary key; advice: hot_updates = updated_at;
-rollup_dims = set_id, updated_at
+rollup_columns = set_id, updated_at
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('vo_one');
 SET client_min_messages = warning;
 DROP TABLE vo;

@@ -1,10 +1,10 @@
 /*
  * col/autocut/autocut.c - the default of the option key_cut: CREATE INDEX and REINDEX of an index without key_cut (or with key_cut = 'auto')
- * cut the units by a key when a sample of the heap says that zones cannot skip the units of that key. The key is the first leaf, in the order of the index,
- * that is key-shaped (sift_col_key_shaped); when none of those is cut by, the first date or timestamp leaf, for a range of its values (ranges_read). A leaf is
+ * cut the units by a key when a sample of the heap says that zones cannot skip the units of that key. The key is the key-shaped leaf (sift_col_key_shaped) whose
+ * lookups gain most, the leading column of a CLUSTER of the table counting one unit of the formula more; when none of those is cut by, the first date or timestamp leaf, for a range of its values (ranges_read). A leaf is
  * chosen when the default formula says the cut pays: the benefit of the lookups it saves (an equality on one of its values, or a range holding the rows of one unit,
- * reads the units its rows fill and not those whose zones hold the key) is at least the cost of the growth of the index and of the build; no other leaf of the index
- * follows the order of the table (key_cut would widen its zones) unless a unique b-tree of the table on that column alone answers its lookups (the primary key). The size is predicted from the sample: the integer leaves of the sampled rows are encoded by the codec of the index in the
+ * reads the units its rows fill and not those whose zones hold the key) is at least the cost of the growth of the index and of the build and of the zones the cut would
+ * widen (a leaf of the index that follows the order of the table, priced by the rows that have a value in it) unless a unique b-tree of the table on that column alone answers its lookups (the primary key). The size is predicted from the sample: the integer leaves of the sampled rows are encoded by the codec of the index in the
  * units of the superblock cut and in the units of the key cut, the addresses of the rows are priced by what they measured, and the other leaves are
  * priced as unchanged. When the key would be worth cutting by and the index would grow more, the build only says so, with the command. The choice is
  * written to the option as 'auto: col', so that a promotion, a merge and a REINDEX keep it; key_cut = 'off' keeps the units by superblock. An index with
@@ -33,6 +33,8 @@
 #define AUTOCUT_LEAVES		8		/* leaves read: the candidates and those that may compete with them */
 
 #define AUTOCUT_KEY_BYTES	2.0		/* what a key takes in the key list of a unit */
+
+#define AUTOCUT_CLUSTER_UNITS 1.0	/* units of the default formula (a gain of 5%) the leading column of a CLUSTER of the table adds to its benefit when the keys are ranked: the cut keeps the order the table was given */
 
 #define AUTOCUT_SECOND_SLACK 5		/* percent the prediction (with the units of 4,096 rows of a key of 8,192 rows or more, 7.9 KB each in measures of 3 leaves and of 4) may exceed the cut by the key alone for the date to be its second key: about 2 units of cost; the sample does not see the runs and addresses a date order shrinks */
 
@@ -106,6 +108,7 @@ typedef struct CutVerdict
 	bool		decided;		/* the options let a build decide */
 	bool		maybe;			/* the first look found a key that may be worth cutting by: the full sample decides */
 	const char *reason;
+	const char *hot;		/* a key that fires was left alone because a value of it holds more rows than a segment: what the NOTICE says */
 	char		leaf[NAMEDATALEN];
 	char		second[NAMEDATALEN];	/* the date or timestamp leaf the rows of a key are sorted by, or empty */
 	char		widened[NAMEDATALEN];	/* the leaf that follows the table and whose zones the cut widens, its lookups being a unique b-tree's, or empty */
@@ -148,13 +151,20 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				fills[AUTOCUT_LEAVES];
 	bool		blocked[AUTOCUT_LEAVES] = {false},
 				keys_kept;
+	double		zone_loss[AUTOCUT_LEAVES] = {0};
+	const char *zone_why[AUTOCUT_LEAVES] = {NULL};
 	int			widens[AUTOCUT_LEAVES] = {0};	/* 1 + the track of the leaf a cut widens, 0 for none */
 	int			first_open;
+	AttrNumber	cluster = acut_cluster_att(heap);
+	double		best = 0;
 	uint32		cap;
 	int64	   *tmp;
 	TupleTableSlot *slot;
 	const char *leaf = NULL;
+	const char *kgroup = sift_col_options_key_order_group(index);	/* key_order = 'group, key': the group is the only key to cut by */
 
+	if (kgroup != NULL)
+		kgroup = pstrdup(kgroup);
 	*v = (CutVerdict) {.res = SIFT_AUTOCUT_NONE, .units = nsb};
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
 		v->reason = "sift.col_format_minor is below 15";
@@ -162,7 +172,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		v->reason = "key_cut is set";
 	else if (point_tid_set(index))
 		v->reason = "point_tid_columns is set";
-	else if (sift_col_options_order_columns_set(index))
+	else if (sift_col_options_order_columns_set(index) && kgroup == NULL)
 		v->reason = "order_columns is set";
 	else if (!ActiveSnapshotSet())
 		v->reason = "no snapshot";
@@ -182,8 +192,9 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		if (ntr < AUTOCUT_LEAVES && d->kind == SIFT_COLK_SCALAR && d->store == SIFT_COLS_INT && d->lane == 0 && d->parent < 0 && (d->path == NULL || d->path[0] == '\0') &&
 			hatt != 0 && value_of(d->type, 0, &x))
 		{
-			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = d->type, .cand = cand_type(d->type) && sift_col_key_shaped(heap, index, sc, d)};
-			tr[ntr].time = !tr[ntr].cand && time_type(d->type);
+			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = d->type,
+				.cand = cand_type(d->type) && (kgroup != NULL ? strcmp(cut_name(index, sc, c), kgroup) == 0 : sift_col_key_shaped(heap, index, sc, d))};
+			tr[ntr].time = kgroup == NULL && !tr[ntr].cand && time_type(d->type);
 			tr[ntr].btree = acut_unique_btree(heap, hatt);
 			ncand += tr[ntr].cand || tr[ntr].time;
 			ntr++;
@@ -192,8 +203,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		{
 			/* the lanes of a range or a network are integer leaves of the index whose size the cut changes; the first (the start of the set, the node of a network) has values that
 			 * do not repeat, and a range of them is read like a range of dates */
-			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = SIFT_COLT_INT8, .time = d->lane == 1, .image = d->lane == 1, .shape = &sc->cols[c - d->lane], .lane = d->lane};
-			ncand += d->lane == 1;
+			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = SIFT_COLT_INT8, .time = d->lane == 1 && kgroup == NULL, .image = d->lane == 1, .shape = &sc->cols[c - d->lane], .lane = d->lane};
+			ncand += d->lane == 1 && kgroup == NULL;
 			untracked -= d->lane == 1;
 			untracked_bytes -= (d->lane == 1) * AUTOCUT_LEAF_BYTES;
 			ntr++;
@@ -358,17 +369,35 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		}
 	leaf = cut_name(index, sc, tr[nfire > 0 ? fire[0] : first].c);
 	strlcpy(v->leaf, leaf, sizeof(v->leaf));
+	if (nfire > 0)
+	{
+		/* the measures of the leaf the verdict names */
+		v->reads = reads[0];
+		v->ideal = fills[0];
+		v->range = tr[fire[0]].time;
+	}
 	if (nfire == 0)
 	{
 		v->reason = "an equality on the key reads few units, or not many times those its rows fill";
 		goto done;
 	}
-	/* a leaf that follows the order of the table would lose its zones to the cut: the first look says so as well as the sample does, and ends there. The cut of a lane serves
-	 * a test on the lane only, so any other leaf whose zones skip units (its equality keeps less than all of them) would keep all of them under it */
+	/*
+	 * A leaf that follows the order of the table would lose its zones to the cut, and so would any other leaf whose zones skip units (its equality keeps less than all of
+	 * them): the rows of a unit of the cut are those of a key (or of a lane, which serves a test on the lane only), not of a range of the heap. The loss is priced against the benefit of the cut (acut_zone_loss), by the
+	 * rows that have a value in the leaf: the first look ends where it alone is above the benefit, the rest of it is a cost of the cut.
+	 */
 	for (int i = 0; i < nfire; i++)
-		for (int t = 0; t < ntr && !blocked[i]; t++)
+	{
+		double		worst = 0,
+					hot,
+					benefit = acut_cut_benefit(acut_cut_speedup(reads[i], fills[i], rows_per_unit), tr[fire[i]].shape ? 0.5 : 1.0);
+
+		/* a key_order of the user's names the lookups the index is for, the group and the key: the zones of the other leaves are not weighed against them */
+		for (int t = 0; kgroup == NULL && t < ntr; t++)
 		{
 			int			m;
+			double		loss = 0,
+						share = acut_zone_share(&tr[t], samp->nsb, &m);
 			const char *what = NULL;
 
 			if (t == fire[i])
@@ -376,19 +405,42 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			if (!acut_scattered(&tr[t], samp->nsb))
 			{
 				/* its zones would widen (an equality 1 unit to 36, a list of 16 to all of 178 at 1,000,000 rows), but a unique b-tree answers those lookups alone */
-				if (!tr[t].btree)
-					what = "follows the order of the table, and the cut would widen its zones";
-				else if (widens[i] == 0)
+				if (tr[t].btree && widens[i] == 0)
 					widens[i] = t + 1;
+				else if (!tr[t].btree)
+				{
+					loss = acut_zone_loss(&tr[t], samp->n, nsb, rows_per_unit, 0);
+					what = "follows the order of the table, and the cut would widen its zones";
+				}
 			}
-			else if (tr[fire[i]].shape && acut_zone_share(&tr[t], samp->nsb, &m) * (100 + AUTOCUT_OTHER_PCT) < 100)
-				what = "has zones that skip units, and the cut by a lane would keep them all";
-			if (what == NULL)
-				continue;
+			else if (share * (100 + AUTOCUT_OTHER_PCT) < 100)
+			{
+				loss = acut_zone_loss(&tr[t], samp->n, nsb, rows_per_unit, share);
+				what = tr[fire[i]].shape ? "has zones that skip units, and the cut by a lane would keep them all" : "has zones that skip units, and the cut would keep most of them";
+			}
+			zone_loss[i] += loss;
+			if (loss > worst)
+			{
+				worst = loss;
+				zone_why[i] = psprintf("the leaf \"%s\" %s", cut_name(index, sc, tr[t].c), what);
+			}
+		}
+		if (zone_loss[i] >= benefit)
+		{
 			blocked[i] = true;
 			if (i == 0)
-				v->reason = psprintf("the leaf \"%s\" %s", cut_name(index, sc, tr[t].c), what);
+				v->reason = zone_why[i];
 		}
+		/* a value of the key that holds more rows than a segment makes the runs of a build the rewrite must order, not the units of a key */
+		else if (!tr[fire[i]].time && (hot = acut_hot_share(heap, &tr[fire[i]], samp->n) * rows_per_unit * nsb) > acut_segment_rows())
+		{
+			blocked[i] = true;
+			if (v->hot == NULL)
+				v->hot = psprintf("%s, one value of %.0f rows", cut_name(index, sc, tr[fire[i]].c), hot);
+			if (i == 0)
+				v->reason = psprintf("the key \"%s\" has a value of about %.0f rows, more than the %.0f a segment holds", cut_name(index, sc, tr[fire[i]].c), hot, acut_segment_rows());
+		}
+	}
 	for (first_open = 0; first_open < nfire && blocked[first_open];)
 		first_open++;
 	if (first_open == nfire)
@@ -401,7 +453,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			{
 				double		g = 100.0 * (acut_layout_bytes(tr, ntr, ntr + untracked, samp, fire[i], -1, false, NULL, nsb, nblocks, rows_per_unit) + untracked_bytes - def_row) / def_row;
 
-				if (acut_cut_benefit(acut_cut_speedup(reads[i], fills[i], rows_per_unit), tr[fire[i]].shape ? 0.5 : 1.0) + AUTOCUT_QUICK_SLACK < acut_cut_cost(g, ntr + untracked))
+				if (acut_cut_benefit(acut_cut_speedup(reads[i], fills[i], rows_per_unit), tr[fire[i]].shape ? 0.5 : 1.0) + AUTOCUT_QUICK_SLACK < acut_cut_cost(g, ntr + untracked) + zone_loss[i])
 				{
 					blocked[i] = true;
 					if (i == 0)
@@ -415,17 +467,21 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		v->maybe = true;
 		goto done;
 	}
-	/* the first that fires and whose benefit is at least its cost is cut by; when every one that fires costs more than it gains, the first is advised. The exception is a key
-	 * whose rows fit one unit: its key list and bloom filter let an equality read the few units that hold it, so a later candidate whose benefit exceeds its cost by more
-	 * (a scattered time leaf: a window reads every unit without the cut) is cut by instead */
-	for (int i = 0, small = false; i < nfire && (v->res != SIFT_AUTOCUT_CUT || small); i++)
+	/* of the keys whose benefit is at least their cost, the one whose lookups gain most is cut by, the leading column of a CLUSTER of the table counting one unit more, and not
+	 * the first in the order of the index (a column of three values listed before the entity would win): the predicted growth of an index of a few units is too rough to rank by;
+	 * when every one that fires costs more than it gains, the first is advised. A time leaf is cut by
+	 * after no key only, or after a key whose rows fit one unit: its key list and bloom filter let an equality read the few units that hold it, so a later candidate whose
+	 * benefit exceeds its cost by more (a scattered time leaf: a window reads every unit without the cut) is cut by instead */
+	for (int i = 0, small = false; i < nfire; i++)
 	{
 		int			pick = fire[i],
 					sec;
 		double		growth,
 					benefit,
-					cost;
-		bool		pays;
+					cost,
+					rank;
+		bool		pays,
+					tipped;
 
 		if (blocked[i])
 			continue;
@@ -454,18 +510,22 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		}
 		growth = 100.0 * (kc_row - def_row) / def_row;
 		benefit = acut_cut_benefit(acut_cut_speedup(reads[i], fills[i], rows_per_unit), tr[pick].shape ? 0.5 : 1.0);
-		cost = acut_cut_cost(growth, ntr + untracked);
+		cost = acut_cut_cost(growth, ntr + untracked) + zone_loss[i];
 		pays = benefit >= cost;
-		if (tr[pick].time && !pays)
+		rank = benefit + (tr[pick].hatt == cluster ? AUTOCUT_CLUSTER_UNITS : 0);
+		/* a cut that the loss of zones alone turns down is not advised: the command would widen them; a time leaf is cut by or left alone */
+		tipped = zone_loss[i] > 0 && benefit >= cost - zone_loss[i];
+		if (!pays && (tr[pick].time || tipped))
 		{
 			if (v->res == SIFT_AUTOCUT_NONE && i == first_open)
-				v->reason = "a range of the leaf reads many units, but the cost of the cut is above its benefit";
+				v->reason = tipped ? zone_why[i] : "a range of the leaf reads many units, but the cost of the cut is above its benefit";
 			continue;
 		}
-		if (v->res == SIFT_AUTOCUT_CUT && (!pays || benefit - cost <= v->benefit - v->cost))
+		if (v->res == SIFT_AUTOCUT_CUT && (!pays || (tr[pick].time ? !small || benefit - cost <= v->benefit - v->cost : rank <= best)))
 			continue;
 		if (pays || v->res == SIFT_AUTOCUT_NONE)
 		{
+			best = rank;
 			strlcpy(v->leaf, cut_name(index, sc, tr[pick].c), sizeof(v->leaf));
 			v->reads = reads[i];
 			v->ideal = fills[i];
@@ -490,23 +550,21 @@ done:
 	MemoryContextSwitchTo(old);
 	if (v->reason != NULL)
 		v->reason = pstrdup(v->reason);
+	if (v->hot != NULL)
+		v->hot = pstrdup(v->hot);
 	MemoryContextDelete(cx);
 }
 
 /*
  * The first look reads at most AUTOCUT_QUICK_SBS superblocks and ends at the usual answer, none, for a table whose keys sit in few of them; only a key that reads
- * a quarter of the units the rule asks for goes on to the sample of the rule. dry (sift.key_cut_decision) always reads the full sample, for its numbers.
+ * a quarter of the units the rule asks for goes on to the sample of the rule. sift.key_cut_decision takes the same two steps, so that it says what CREATE INDEX decides; its numbers are those of the step that decided (the sampled column).
  */
 static void
 decide(Relation heap, Relation index, bool dry, CutVerdict *v)
 {
-	if (!dry)
-	{
-		decide_stage(heap, index, dry, v, true);
-		if (!v->maybe)
-			return;
-	}
-	decide_stage(heap, index, dry, v, false);
+	decide_stage(heap, index, dry, v, true);
+	if (v->maybe)
+		decide_stage(heap, index, dry, v, false);
 }
 
 /* The keys CREATE INDEX advised for key_cut, kept for the summary the build ends with, which would otherwise decide again */
@@ -515,6 +573,13 @@ static struct
 	Oid			index;
 	char		keys[2 * NAMEDATALEN + 4];
 } advised;
+
+/* ... and the value that kept it from cutting by a key that fires */
+static struct
+{
+	Oid			index;
+	char		text[256];
+} hotnote;
 
 static void
 advise_keys(const CutVerdict *v, char *out)
@@ -527,6 +592,21 @@ const char *
 sift_col_key_cut_advised(Relation index)
 {
 	return advised.index == RelationGetRelid(index) ? advised.keys : NULL;
+}
+
+/* Why the build left a key alone that fires (a value of it holds more rows than a segment), or NULL; for an index that was built before, decided now from a sample */
+const char *
+sift_col_key_cut_hot(Relation heap, Relation index, bool build)
+{
+	CutVerdict	v;
+	const char *have = sift_col_options_key_cut(index);
+
+	if (build)
+		return hotnote.index == RelationGetRelid(index) ? hotnote.text : NULL;
+	if (have[0] != '\0' && strcmp(have, "auto") != 0)
+		return NULL;
+	decide(heap, index, true, &v);
+	return v.res == SIFT_AUTOCUT_NONE ? v.hot : NULL;
 }
 
 /* The same, decided now from a sample of the table (sift.key_cut_decision): for an index that was built before */
@@ -556,7 +636,13 @@ sift_col_auto_cut(Relation heap, Relation index)
 	CutVerdict	v;
 
 	advised.index = InvalidOid;
+	hotnote.index = InvalidOid;
 	decide(heap, index, false, &v);
+	if (v.res == SIFT_AUTOCUT_NONE && v.hot != NULL)
+	{
+		hotnote.index = RelationGetRelid(index);
+		strlcpy(hotnote.text, v.hot, sizeof(hotnote.text));
+	}
 	if (v.res == SIFT_AUTOCUT_CUT)
 	{
 		StringInfoData opt;
@@ -589,7 +675,7 @@ bool
 sift_col_auto_cut_again(Relation heap, Relation index, bool fits)
 {
 	CutVerdict	v;
-	const char *have = sift_col_options_key_cut(index);
+	const char *have = pstrdup(sift_col_options_key_cut(index));
 	char	   *want;
 
 	decide(heap, index, false, &v);
@@ -611,14 +697,12 @@ Datum
 sift_col_key_cut_decision(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
-	Relation	index = index_open(relid, AccessShareLock);
+	Relation	index = sift_col_open_index(relid, AccessShareLock);
 	Relation	heap;
 	CutVerdict	v;
 	Datum		vals[8];
 	bool		nulls[8] = {false};
 
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	decide(heap, index, true, &v);
 	vals[0] = v.leaf[0] ? CStringGetTextDatum(v.leaf) : (Datum) 0;

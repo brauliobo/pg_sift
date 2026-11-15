@@ -291,6 +291,8 @@ sift_aggpart_source(SiftSrcSource *src, int i)
  */
 const SiftSrcProvider part_provider = {
 	.close = part_close,
+	.view_size = part_view_size,
+	.view_export = part_view_export,
 	.source_layout = part_source_layout,
 	.nsb = part_nsb,
 	.sb_heap = part_sb_heap,

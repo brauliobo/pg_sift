@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 
+#include "access/table.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "storage/lwlock.h"
@@ -22,7 +23,8 @@
 typedef struct LogEnt
 {
 	Oid			relid;			/* hash key */
-	bool		stale;			/* a relcache invalidation named the index: has it been dropped? (reap_stale) */
+	uint32		hash;			/* of its pg_class row in the RELOID syscache, which a callback names it by */
+	bool		stale;			/* an invalidation of the index's pg_class row: has it been dropped? (reap_stale) */
 	RelFileNumber relnumber;
 	bool		has_seg;		/* the index has its tombstone segment (an index does not lose it: VACUUM replaces it, a rebuild is another file) */
 	MemoryContext cxt;
@@ -44,20 +46,14 @@ uint64		sift_test_col_log_hidden_count = 0;
  * since a caller holds the pointer of a log across calls that process invalidations (index_open of another relation), and frees nothing.
  */
 static void
-log_inval(Datum arg, Oid relid)
+log_inval(Datum arg, int cacheid, uint32 hashvalue)
 {
 	HASH_SEQ_STATUS seq;
 	LogEnt	   *e;
 
-	if (relid != InvalidOid)
-	{
-		if ((e = hash_search(log_tab, &relid, HASH_FIND, NULL)) != NULL)
-			e->stale = true;
-		return;
-	}
 	hash_seq_init(&seq, log_tab);
 	while ((e = hash_seq_search(&seq)) != NULL)
-		e->stale = true;
+		e->stale |= hashvalue == 0 || e->hash == hashvalue;
 }
 
 /* At the start of a use of the cache, where no log pointer of another index is being relied on across an invalidation of it: frees the marked entries whose index is gone */
@@ -99,7 +95,7 @@ log_ent(Relation index)
 		HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(LogEnt),.hcxt = CacheMemoryContext};
 
 		log_tab = hash_create("sift cache tombstone logs", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-		CacheRegisterRelcacheCallback(log_inval, (Datum) 0);
+		CacheRegisterSyscacheCallback(RELOID, log_inval, (Datum) 0);
 	}
 	reap_stale(relid);
 	e = hash_search(log_tab, &relid, HASH_ENTER, &found);
@@ -111,6 +107,7 @@ log_ent(Relation index)
 	if (!found)
 	{
 		e->relnumber = index->rd_locator.relNumber;
+		e->hash = GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(relid));
 		e->stale = false;
 		e->has_seg = false;
 		e->cxt = AllocSetContextCreate(CacheMemoryContext, "sift cache tombstone log", ALLOCSET_DEFAULT_SIZES);
@@ -120,6 +117,21 @@ log_ent(Relation index)
 	}
 	sift_dir_read(index, &e->dir);
 	return e;
+}
+
+#ifdef SIFT_TESTING
+int			sift_test_col_log_max_read = 0;
+#endif
+
+/* The newest column format whose tombstone log this build appends to: an older build would append tombstones without the records a newer one keeps in the log */
+static int
+log_max_read(void)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_col_log_max_read > 0)
+		return sift_test_col_log_max_read;
+#endif
+	return SIFT_COL_FORMAT_MAX_READ;
 }
 
 SiftTombLog *
@@ -135,6 +147,11 @@ sift_col_log(Relation index)
 
 	if (seg == NULL)
 		return NULL;
+	if (seg->format > log_max_read())
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("index \"%s\" has a tombstone log of column format 1.%d, this build reads up to 1.%d", RelationGetRelationName(index), seg->format, log_max_read()),
+				 errhint("Use a newer pg_sift, or REINDEX.")));
 	/*
 	 * A table follows a replaced log and keeps the entries it read (its addresses are never given to another row). A heap address is: VACUUM removes the entries of the
 	 * rows it frees and then the tombstones of those entries, and the heap hands the address to a new row, which an entry kept here would hide. So the cache is the log
@@ -191,6 +208,7 @@ typedef struct DropArg
 	IndexBulkDeleteCallback cb;	/* NULL: only the transactions are looked at */
 	void	   *state;
 	TransactionId frozen;		/* a tombstone of a transaction that committed before this one holds the same for every snapshot: it is written as frozen */
+	TransactionId aged;			/* a journal record of a transaction before this one is dropped (log_vacuum has raised the trim of the journal to it first) */
 	uint64		changed;
 } DropArg;
 
@@ -207,6 +225,17 @@ drop_keep(SiftTomb *t, void *arg)
 	DropArg    *d = arg;
 	ItemPointerData tid;
 
+	/*
+	 * A journal record (col/conn.h) names no heap address and is never frozen: a stamp older than the oldest transaction any snapshot can have still compares its horizon with
+	 * the record's transaction. It goes when its transaction aborted, and when it is so old that the comparison would wrap (the journal then vouches from the horizon on).
+	 */
+	if (t->kind == SIFT_TOMB_KEYCHG)
+	{
+		if (!TransactionIdPrecedes(t->xid, d->aged) && (!TransactionIdIsNormal(t->xid) || sift_xid_state(t->xid) != SIFT_XID_ABORTED))
+			return true;
+		d->changed++;
+		return false;
+	}
 	sift_key_to_tid(t->key, &tid);
 	if (d->cb != NULL && d->cb(&tid, d->state))
 		goto drop;
@@ -232,15 +261,35 @@ drop:
 	return false;
 }
 
+/* Records of the journal older than the age limit go with this VACUUM: the journal stops vouching for the horizons before the limit first, so that no reader takes the missing records for none */
+static void
+trim_journal(Relation index, SiftTombLog *log, TransactionId aged)
+{
+	int			n;
+	const SiftTomb *rec = log->keys_cover && log->keys.lineage != 0 ? sift_tomb_find(log, SIFT_TOMB_KEYS_KEY, &n) : NULL;
+
+	for (int i = 0; rec != NULL && i < n; i++)
+		if (rec[i].kind == SIFT_TOMB_KEYCHG && TransactionIdPrecedes(rec[i].xid, aged))
+		{
+			SiftTombKeys keys = log->keys;
+
+			if (!TransactionIdIsNormal(keys.trim) || TransactionIdPrecedes(keys.trim, aged))
+				keys.trim = aged;
+			sift_tomb_set_keys(index, log, &keys);
+			return;
+		}
+}
+
 static void
 log_vacuum(Relation index, IndexBulkDeleteCallback cb, void *cb_state)
 {
 	SiftTombLog *log = sift_col_log(index);
-	DropArg		d = {cb, cb_state, GetOldestNonRemovableTransactionId(NULL), 0};
+	DropArg		d = {.cb = cb,.state = cb_state,.frozen = GetOldestNonRemovableTransactionId(NULL),.aged = ReadNextTransactionId() - (1U << 30)};
 	SiftTombChan chan;
 
 	if (log == NULL)
 		return;
+	trim_journal(index, log, d.aged);
 	/* a log with nothing to drop or freeze is not rewritten (the rewrite copies it whole): the first change found says so. A changing scan rewrites the copy it made, so it works on one */
 	for (uint32 i = 0; i < log->nents && d.changed == 0; i++)
 	{
@@ -275,6 +324,15 @@ maint_bulkdelete_tomb(Relation index, const SiftSegEntry *e, IndexBulkDeleteCall
 void
 maint_vacuum_log(Relation index)
 {
+	Relation	heap = table_open(index->rd_index->indrelid, NoLock);	/* VACUUM holds ShareUpdateExclusiveLock on it */
+
+	/*
+	 * the addresses this VACUUM left dead (it skipped the indexes) get their tombstones here, and the entries it freed lose theirs below; a VACUUM with parallel workers for the b-trees
+	 * runs this in the leader under parallel mode, where no transaction id can be assigned: the baseline waits for a VACUUM without them, and the reads check the heap until then
+	 */
+	if (!IsInParallelMode())
+		(void) sift_col_track_rebaseline(index, heap);
+	table_close(heap, NoLock);
 	log_vacuum(index, NULL, NULL);
 }
 

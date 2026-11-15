@@ -1,7 +1,8 @@
 /*
  * col/point.c - the point directory of a leaf in a segment (col/point.h). Portable (core/host.h only).
  */
-#include "core/host.h"
+#include "core/rowmem.h"
+#include "core/hash.h"
 
 #include "col/point.h"
 #include "col/preagg.h"
@@ -34,14 +35,7 @@ sift_cpoint_syntax(const char *opt)
 uint64
 sift_cpoint_hash(int64 key)
 {
-	uint64		x = (uint64) key;
-
-	x ^= x >> 33;
-	x *= UINT64CONST(0xff51afd7ed558ccd);
-	x ^= x >> 33;
-	x *= UINT64CONST(0xc4ceb9fe1a85ec53);
-	x ^= x >> 33;
-	return x;
+	return sift_fmix64((uint64) key);
 }
 
 uint32
@@ -131,16 +125,15 @@ pk_maxrun(const PointEnt *e, uint32 n, uint32 rbits)
 
 /*
  * The packed table of the entries e (sorted by key and code; e[].val is the payload code, at most maxcode). Dense when the keys lie in a range that gives a
- * remainder of fewer bits than the hash does, else by the hash of the key (the entries are then sorted again by k). The entries' key is rewritten to k.
+ * remainder of fewer bits than the hash does, else by the hash of the key (the entries are then sorted again by k). The entries' key is rewritten to k: e is the caller's to drop.
  */
 static bool
-pk_build(const PointEnt *src, uint32 n, uint64 maxcode, uint64 pbase, uint32 pmul, uint64 limit, SiftCPackPar *par, StringInfo out, uint32 *nkeys)
+pk_build(PointEnt *e, uint32 n, uint64 maxcode, uint64 pbase, uint32 pmul, uint64 limit, SiftCPackPar *par, StringInfo out, uint32 *nkeys)
 {
 	uint32		pbits = log2_floor(maxcode | 1) + 1,
 				lg = 0;
-	uint64		span = (uint64) src[n - 1].key - (uint64) src[0].key,
+	uint64		span = (uint64) e[n - 1].key - (uint64) e[0].key,
 				range = span + 1;
-	PointEnt   *e;
 	uint8	   *buf;
 	uint32	   *dir;
 	uint64		bytes,
@@ -153,8 +146,6 @@ pk_build(const PointEnt *src, uint32 n, uint64 maxcode, uint64 pbase, uint32 pmu
 	*par = (SiftCPackPar) {.pbase = pbase,.pmul = pmul,.pbits = pbits};
 	if (pbits > 48)
 		return false;
-	e = palloc(n * sizeof(PointEnt));
-	memcpy(e, src, n * sizeof(PointEnt));
 	if (span < (UINT64CONST(1) << 56))
 	{
 		uint32		r = log2_floor(Max(1, range * SIFT_CPOINT_PK_BUCKET / n));
@@ -173,7 +164,8 @@ pk_build(const PointEnt *src, uint32 n, uint64 maxcode, uint64 pbase, uint32 pmu
 				par->nbuckets = (uint32) (((range - 1) >> r) + 1);
 			}
 			else
-				memcpy(e, src, n * sizeof(PointEnt));
+				for (uint32 i = 0; i < n; i++)
+					e[i].key = (int64) ((uint64) e[i].key + (uint64) kmin);
 		}
 	}
 	if (!par->dense)
@@ -191,7 +183,7 @@ pk_build(const PointEnt *src, uint32 n, uint64 maxcode, uint64 pbase, uint32 pmu
 	if (limit > 0 && bytes >= limit)
 		goto done;
 	dirbytes = ((uint64) (par->nbuckets + 1) * 4 + 7) & ~UINT64CONST(7);
-	buf = palloc0(bytes + 16);
+	buf = MemoryContextAllocExtended(CurrentMemoryContext, bytes + 16, MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 	dir = (uint32 *) buf;
 	for (uint32 i = 0; i < n; i++)
 	{
@@ -211,7 +203,6 @@ pk_build(const PointEnt *src, uint32 n, uint64 maxcode, uint64 pbase, uint32 pmu
 	*nkeys = keys;
 	ok = true;
 done:
-	pfree(e);
 	if (!ok)
 		*par = (SiftCPackPar) {0};
 	return ok;
@@ -275,7 +266,7 @@ pk_try(const PointEnt *e, uint32 n, uint32 nk, bool tid, SiftCPackPar *par, Stri
 				pbase = UINT64_MAX;
 	uint32		pmul = 1,
 				at = out->len;
-	PointEnt   *q = palloc(n * sizeof(PointEnt));
+	PointEnt   *q = sift_rows_alloc((Size) n * sizeof(PointEnt));
 	bool		ok;
 
 	for (uint32 i = 0, j; i < n; i = j)
@@ -327,7 +318,7 @@ pk_try(const PointEnt *e, uint32 n, uint32 nk, bool tid, SiftCPackPar *par, Stri
 static void
 point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, uint32 dense, bool exact, bool packed, SiftCPackPar *par, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words, uint32 *nrows)
 {
-	PointEnt   *e = palloc(n * sizeof(PointEnt));
+	PointEnt   *e = sift_rows_alloc((Size) n * sizeof(PointEnt));
 	uint32		nk = 0,
 				nr = 0;
 	uint64	   *t;
@@ -361,7 +352,7 @@ point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, ui
 	}
 	if (dense > 0)
 	{
-		uint32	   *fp = palloc(Max(nk, 1) * sizeof(uint32));
+		uint32	   *fp = sift_rows_alloc(Max(nk, 1) * sizeof(uint32));
 		uint32		m = 0;
 		bool		clash = false;
 
@@ -385,7 +376,7 @@ point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, ui
 	*nslots = sift_cpoint_slots(nk, exact);
 	*nkeys = nk;
 	*nrows = nr;
-	t = palloc(*nslots * sizeof(uint64));
+	t = sift_rows_alloc((Size) *nslots * sizeof(uint64));
 	memset(t, 0xFF, *nslots * sizeof(uint64));
 	initStringInfo(&lists);
 	for (uint32 i = 0, j; i < n; i = j)

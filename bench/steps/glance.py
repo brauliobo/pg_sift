@@ -182,7 +182,7 @@ def panel(x0, y0, w, h, name, series, lo, hi):
     return b
 
 
-def slope(reps, data, base_names):
+def slope(reps, data):
     vals = [data[c][n][a].get('ms') for c, base in reps.values() for n in data[c] for a in (base, 'sift') if data[c][n].get(a, {}).get('ms')]
     lo, hi = 10 ** math.floor(math.log10(min(vals))), 10 ** math.ceil(math.log10(max(vals)))
     cols, pw, ph = 3, 250, 190
@@ -290,7 +290,7 @@ def main():
     with open(os.path.join(a.out, 'img', 'cold-read.svg'), 'w') as f:
         f.write(bars(cold, 'Megabytes read by the first run after the caches were emptied', 'Paired horizontal bars on a log scale: megabytes read from storage by the baseline and by pg_sift for one case of each class.', 'megabytes', 'baseline'))
     with open(os.path.join(a.out, 'img', 'slope.svg'), 'w') as f:
-        f.write(slope(reps, data, None))
+        f.write(slope(reps, data))
     with open(os.path.join(a.out, 'README-glance.md'), 'w') as f:
         f.write(page(data, versions, table, reps, generic))
     print('glance: %d classes -> %s' % (len(reps), a.out))

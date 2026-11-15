@@ -203,6 +203,18 @@ fn_simd(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 		sqlite3_result_text(ctx, level_names[set_level(level)], -1, SQLITE_STATIC);
 }
 
+/* sift_work_mem([kB]): the memory a statement's search may hold (the hits of a ranked search without a LIMIT, a sift_facets call), for the whole process; returns it */
+static void
+fn_work_mem(sqlite3_context *ctx, int argc, sqlite3_value **argv)
+{
+	sqlite3_int64 kb = argc > 0 ? sqlite3_value_int64(argv[0]) : work_mem;
+
+	if (kb < 64 || kb > INT_MAX)
+		sqlite3_result_error(ctx, "sift_work_mem: the memory is 64 kB to 2147483647 kB", -1);
+	else
+		sqlite3_result_int64(ctx, work_mem = (int) kb);
+}
+
 static void
 fn_version(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 {
@@ -240,6 +252,7 @@ create_functions(sqlite3 *db, SqConn *conn)
 	}			fns[] = {
 		{"sift_count", 2, fn_count}, {"sift_stat", 1, fn_stat}, {"sift_drop_cache", 1, fn_drop_cache},
 		{"sift_isa", 0, fn_isa}, {"sift_simd", 1, fn_simd}, {"sift_version", 0, fn_version},
+		{"sift_work_mem", 0, fn_work_mem}, {"sift_work_mem", 1, fn_work_mem},
 	};
 	int			rc = SQLITE_OK;
 

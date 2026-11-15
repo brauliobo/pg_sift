@@ -15,20 +15,40 @@
 #define SIFT_AGG_COMBO_PROBE_H
 
 #include "access/relscan.h"
-#include "executor/executor.h"
 
 #include "agg/combo/int.h"
 
 #define DP_MAX_PEND		4096		/* keys of a batch: the memory of a batch is a few hundred kB */
 #define DP_MAX_LEVELS	16
 #define DP_ABBREV		24			/* bytes of the sort prefix of a key */
+#define DP_NOCMP		2			/* no compare to give (the compares are -1, 0 and 1) */
+
+/* test builds count what a batch does (sift._test_probe_stats): the work the probe saves is checked by counts, which do not move with the host */
+#ifdef SIFT_TESTING
+typedef struct DStats
+{
+	int64		probes;
+	int64		tuple_cmps;				/* key against an index tuple */
+	int64		col_cmps;				/* of those, the columns compared (the columns known equal are not) */
+	int64		generic_cmps;			/* of those, through the opclass's order function */
+	int64		slow_cmps;				/* of those, through index_getattr: a NULL among the columns compared */
+	int64		page_reads;				/* pages read from the buffer manager (a page kept pinned is not read again) */
+} DStats;
+
+extern DStats sift_probe_stats;
+#define DP_COUNT(f, n) (sift_probe_stats.f += (n))
+#else
+#define DP_COUNT(f, n) ((void) 0)
+#endif
 
 typedef enum DKind
 {
 	DC_GENERIC,						/* the opclass's order function, as the index AM calls it */
-	DC_INT,							/* int2, int4, int8 */
+	DC_INT,							/* int2, int4, int8, date, timestamp, timestamptz: the integers themselves */
+	DC_UUID,						/* the 16 bytes */
 	DC_TEXT,						/* memcmp order: text under the C collation, text_pattern_ops */
-	DC_ARRAY						/* equal bytes are equal, else the opclass's order function */
+	DC_TEXTC,						/* text under another collation: equal bytes are equal, else the order function; the bytes sort the batch */
+	DC_ARRAY						/* equal bytes are equal, else the order function */
 } DKind;
 
 typedef struct DCol
@@ -37,6 +57,7 @@ typedef struct DCol
 	int16		len;
 	bool		byval;
 	char		align;
+	uint8		alignb;				/* align in bytes */
 	bool		desc;
 	bool		nullsfirst;
 	Oid			coll;
@@ -68,10 +89,15 @@ typedef struct DKey
 	int			n;
 } DKey;
 
-/* what a probe does with the entries of a key: begin before the first, row for each visible heap tuple (in dp->scan), true when it counts as a match of the key */
+/*
+ * what a probe does with the entries of a key: begin before the first, row for each visible heap tuple (in dp->scan), true when it counts as a match of the key;
+ * keep (index-only probes, may be NULL) for each entry before the visibility map or the heap is asked about it, with the entry's columns in dp->scan: false when the
+ * child's filter rejects it, whatever the heap says (an entry's columns are those of its tuple version: a rejected one is no match visible or not)
+ */
 typedef struct DSink
 {
 	void		(*begin) (struct DSink *s, DKey *k);
+	bool		(*keep) (struct DSink *s);
 	bool		(*row) (struct DSink *s);
 } DSink;
 
@@ -123,12 +149,21 @@ typedef struct DProbe
 	DKey	   *keys;
 	ItemPointerData *tids;
 	int			captids;
+	int			first_c;			/* the descent's compare of the key with the entry it ended at, for the walk that follows (DP_NOCMP: none) */
 	/* the pages of the last probe, root to leaf, valid within one batch */
 	int			nlv;
 	DLevel		lv[DP_MAX_LEVELS];
+	Buffer		pin[DP_MAX_LEVELS];	/* the pages above the leaves the batch keeps pinned (dp_read) */
 	BlockNumber root;
 	bool		path_ok;
 	uint32		skipped;
+	int64		reads0;			/* the heap blocks the backend had read from the OS when the probe began (dp_reads) */
+	uint64		leaves;			/* what the batches did, for the Lookup line of EXPLAIN (combo_probe_flush adds them to the statement's): leaf pages moved to, pages above the leaves pinned, */
+	uint64		pins;
+	uint64		heap;			/* heap fetches, index-only entries the visibility map answered */
+	uint64		vm;
+	BlockNumber lastleaf;
+	uint64		asked;			/* heap blocks of the entries found that were asked of the pool and the OS ahead of their fetch (combo_probe_flush adds them to the statement's) */
 } DProbe;
 
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
@@ -136,6 +171,7 @@ typedef struct DProbe
 
 extern void dp_abbrev(DProbe *dp, DKey *k);
 extern int	dp_batch(DProbe *dp, DKey **ord, int n, DSink *sink);
+extern int64 dp_reads(Relation rel);
 
 #pragma GCC visibility pop
 

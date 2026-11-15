@@ -14,7 +14,7 @@ sift.col_build_key_ranges = off"
 node_start cr || bail "start failed"
 sql cr "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE kp (id int, tenant_id int, amount int, pad text) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO kp SELECT i, (i::bigint * 7919 % 400)::int, i % 100, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) FROM generate_series(1, 337920) i" \
-	"VACUUM (FREEZE, ANALYZE) kp" "SET sift.test_col_segment_kb = 7000" \
+	"VACUUM (FREEZE, ANALYZE) kp" "SET max_parallel_maintenance_workers = 0" "SET sift.test_col_segment_kb = 7000" \
 	"CREATE INDEX kp_idx ON kp USING sift_col (id, tenant_id, amount, pad) WITH (key_cut = 'tenant_id', dict_lookup = off)" >/dev/null || bail "setup failed"
 sql cr "CHECKPOINT" >/dev/null
 

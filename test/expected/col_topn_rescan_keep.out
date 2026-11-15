@@ -1,6 +1,7 @@
 -- A scan that an enclosing query starts over for each of its rows (a LATERAL top-1 per entity, a correlated sub-select) finds the entries of its group in the order array by searching the group table
 -- of the segment. The first probe searches it where it is; a segment probed again holds the table in memory, and the dead rows and all-visible pages of its units it checked the entries against, so the 200 probes
--- of one statement pin two buffers each, not one for every step of a search over 250 groups and the pages of the checks. The answers are those of the heap (a scan without the engine) through the same changes between probes as agg_topn_rescan: deleted and updated rows, rows in the write
+-- of one statement pin two buffers each, not one for every step of a search over 250 groups and the pages of the checks. The count is the extra over the same statement on an index of 2 groups
+-- (a build with CATCACHE_FORCE_RELEASE reads the catalog again at every lookup: some 6 buffers a probe more than a release build, for 2 groups as for 250). The answers are those of the heap (a scan without the engine) through the same changes between probes as agg_topn_rescan: deleted and updated rows, rows in the write
 -- buffer, VACUUM, a promotion in the middle of the statement, a cursor read both ways, a generic plan.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -10,6 +11,10 @@ CREATE TABLE rk AS SELECT i AS id, 1 + (i * 7919) % 250 AS g, timestamp '2024-01
 CREATE INDEX rk_i ON rk USING sift_col (id, g, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'g');
 CREATE TABLE rk_o AS SELECT n AS i, CASE WHEN n % 47 = 0 THEN NULL WHEN n % 41 = 0 THEN 5000 + n ELSE 1 + (n * 31) % 250 END AS g FROM generate_series(1, 200) n;
 VACUUM (FREEZE, ANALYZE) rk, rk_o;
+CREATE TABLE rk2 AS SELECT i AS id, 1 + (i * 7919) % 2 AS g, timestamp '2024-01-01' + i * interval '37 seconds' AS ts, repeat('x', 100) AS pad FROM generate_series(1, 20000) i;
+CREATE INDEX rk2_i ON rk2 USING sift_col (id, g, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'g');
+CREATE TABLE rk2_o AS SELECT n AS i, CASE WHEN n % 47 = 0 THEN NULL WHEN n % 41 = 0 THEN 5000 + n ELSE 1 + (n * 31) % 2 END AS g FROM generate_series(1, 200) n;
+VACUUM (FREEZE, ANALYZE) rk2, rk2_o;
 -- the buffers the SiftAgg node of a statement pins for each of its probes (shared hit and read of the node over its loops), and whether its last probe read the global order (a NULL group goes to the units)
 CREATE FUNCTION probe_buffers(q text, OUT per_probe numeric, OUT probes int, OUT global_order boolean) LANGUAGE plpgsql AS $$
 DECLARE l text; seen boolean := false; blocks bigint := 0;
@@ -25,6 +30,9 @@ BEGIN
 	END LOOP;
 	per_probe := round(blocks::numeric / greatest(probes, 1), 1);
 END $$;
+-- the buffers a probe pins beyond those of the same statement over 2 groups (@ is rk or rk2, @_o its outer table)
+CREATE FUNCTION probe_extra(q text, OUT probes int, OUT global_order boolean, OUT extra numeric) LANGUAGE sql AS $$
+	SELECT a.probes, a.global_order, a.per_probe - b.per_probe FROM probe_buffers(replace(q, '@', 'rk')) a, probe_buffers(replace(q, '@', 'rk2')) b $$;
 SET sift.agg_force = on;
 SET enable_seqscan = off;
 SET enable_sort = off;
@@ -35,19 +43,25 @@ SELECT count(*) FROM rk_o v LEFT JOIN LATERAL (SELECT ts FROM rk WHERE g = v.g O
    200
 (1 row)
 
-SELECT p.probes, p.global_order, p.per_probe <= 2.5 AS few_buffers FROM probe_buffers('SELECT v.i, x.ts FROM rk_o v LEFT JOIN LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true') p;
+SELECT count(*) FROM rk2_o v LEFT JOIN LATERAL (SELECT ts FROM rk2 WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true;
+ count 
+-------
+   200
+(1 row)
+
+SELECT p.probes, p.global_order, p.extra <= 1 AS few_buffers FROM probe_extra('SELECT v.i, x.ts FROM @_o v LEFT JOIN LATERAL (SELECT ts FROM @ WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true') p;
  probes | global_order | few_buffers 
 --------+--------------+-------------
     200 | t            | t
 (1 row)
 
-SELECT p.probes, p.global_order, p.per_probe <= 3 AS few_buffers FROM probe_buffers('SELECT v.i, (SELECT id FROM rk WHERE g = v.g ORDER BY ts DESC LIMIT 1) FROM rk_o v') p;
+SELECT p.probes, p.global_order, p.extra <= 1 AS few_buffers FROM probe_extra('SELECT v.i, (SELECT id FROM @ WHERE g = v.g ORDER BY ts DESC LIMIT 1) FROM @_o v') p;
  probes | global_order | few_buffers 
 --------+--------------+-------------
     200 | t            | t
 (1 row)
 
-SELECT p.probes, p.global_order, p.per_probe <= 2.5 AS few_buffers FROM probe_buffers('SELECT v.i, x.ts FROM rk_o v, LATERAL (SELECT ts FROM rk WHERE g = v.g ORDER BY ts LIMIT 3) x') p;
+SELECT p.probes, p.global_order, p.extra <= 1 AS few_buffers FROM probe_extra('SELECT v.i, x.ts FROM @_o v, LATERAL (SELECT ts FROM @ WHERE g = v.g ORDER BY ts LIMIT 3) x') p;
  probes | global_order | few_buffers 
 --------+--------------+-------------
     200 | t            | t
@@ -208,6 +222,6 @@ SELECT rkp_rows(true) = rkp_rows(false) AS same_rows_after_writes;
  t
 (1 row)
 
-DROP FUNCTION probe_buffers(text), rk_rows(bool), rk_check(text), rk_mut(int), rkp_q(bool), rkp_rows(bool), rkp_plan();
-DROP TABLE rk, rk_o, rk_step, rkp, rkp_o;
+DROP FUNCTION probe_buffers(text), probe_extra(text), rk_rows(bool), rk_check(text), rk_mut(int), rkp_q(bool), rkp_rows(bool), rkp_plan();
+DROP TABLE rk, rk_o, rk2, rk2_o, rk_step, rkp, rkp_o;
 DROP EXTENSION pg_sift;

@@ -28,6 +28,8 @@
 
 /* Per leaf (ncols entries, memoized per backend, valid until the index changes or the memo of 8192 indexes is dropped): what the zones and dictionaries of the immutable segments say, no chunk read */
 extern const SiftColLeafStats *sift_col_leaf_stats(Relation index);
+/* The chunks of the order blocks of leaf over the segments with a flag of flags in the pad word of the directory (SIFT_CGORD_*), read from the directories (the statistics only say which blocks have a compact one) */
+extern double sift_col_gorder_chunks(Relation index, int leaf, uint32 flags, bool complete_only);
 /* The sample of the unit zones of the integer leaves (same memo and validity as sift_col_leaf_stats) */
 extern const SiftColZones *sift_col_zones(Relation index);
 
@@ -44,12 +46,17 @@ typedef struct SiftColPreStats
 	double		rows;			/* the rollup of the rows */
 } SiftColPreStats;
 extern const SiftColPreStats *sift_col_pre_stats(Relation index);
-/* What the planner takes of an index with its meta (sift_col_index_meta): the memos of the three functions above for the directory it read */
+#ifdef SIFT_TESTING
+/* folds the statistics with the shared ring (*incremental: the segments opened) and without it (*full), and tells whether they are the same bytes */
+extern bool sift_col_leaf_fold_check(Relation index, int *incremental, int *full);
+/* the pre-aggregate counts this backend folded from the segments [0] and took from the shared ring [1] (sift._test_col_pre_folds) */
+extern int64 sift_col_pre_folds[2];
+#endif
+/* What the planner takes of an index with its meta (sift_col_index_meta): the memos of the two functions above for the directory it read */
 typedef struct SiftColLeafMemo
 {
 	const SiftColLeafStats *leaves;
 	const SiftColZones *zones;
-	const SiftColPreStats *pre;
 } SiftColLeafMemo;
 /*
  * The leaf list and statistics of a sift_col index (allocates in CurrentMemoryContext; the stats read the directory and the visibility map).
@@ -75,9 +82,15 @@ extern Oid	sift_col_def_typid(TupleDesc desc, const SiftColDef *def);
 
 /* Is relam the sift_col access method (the catalog lookup is cached) */
 extern bool sift_col_is_index(Relation index);
+extern bool sift_col_is_index_oid(Oid indexoid);
 extern Oid	sift_col_am_oid(void);
+/*
+ * The index of an SQL function that is given its oid, with its table locked first in the same mode (the lock order of the statements: DROP TABLE and
+ * ALTER TABLE lock the table and then its indexes, so a function that held the index and asked for the table would deadlock with them); an error where it
+ * is no sift_col index
+ */
+extern Relation sift_col_open_index(Oid indexoid, LOCKMODE lock);
 
-extern PGDLLIMPORT bool sift_enable_col;
 extern PGDLLIMPORT int sift_col_format_minor;	/* the minor of the segments written: 4, or 3 to stay readable by 3.0 */
 
 /* ---------------------------------------------------------------------------
@@ -87,7 +100,17 @@ extern PGDLLIMPORT int sift_col_format_minor;	/* the minor of the segments writt
 typedef struct SiftColShredAdapter SiftColShredAdapter;
 
 /* Parses the "paths" reloption against the index; NULL when it has none. ERROR for a specification the engine cannot hold (deeper nesting than one list level, ...) */
-extern SiftColShredAdapter *sift_col_shred_create(MemoryContext mcxt, Relation index);
+/* The presence leaf of a jsonb document ("<column>#present", true, NULL where the document is SQL NULL): which columns have one is the layout of the index (col/am/rel.c) */
+typedef enum SiftColPresent
+{
+	SIFT_COL_PRESENT_NULLABLE,	/* the jsonb columns whose column of the table may be NULL: what a build writes */
+	SIFT_COL_PRESENT_NONE,		/* an index built before the leaf */
+	SIFT_COL_PRESENT_ALL		/* every jsonb column of the index */
+} SiftColPresent;
+
+extern uint32 sift_col_present_attrs(Relation index, SiftColPresent which);
+extern bool sift_col_shred_drop_present(SiftColShredAdapter *a, int attno);
+extern SiftColShredAdapter *sift_col_shred_create(MemoryContext mcxt, Relation index, uint32 present);
 /* The same for a paths specification over the first natts attributes of a tuple descriptor (a sift_table's declared paths) */
 extern SiftColShredAdapter *sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const char *paths);
 /* Leaves the specification declares for index attribute attno, in the order sift_col_shred_row fills them (0: not shredded); parent is relative to the first */
@@ -105,6 +128,7 @@ extern struct SiftShredRecheck *sift_col_shred_recheck_create(MemoryContext mcxt
 extern void sift_col_shred_recheck_set(struct SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, uint8 mode);
 /* the value column i of a map is read as the cast of the member of one key to the type cast (an Oid) */
 extern void sift_col_shred_recheck_member(struct SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, const char *key, Oid cast);
+extern void sift_col_shred_recheck_haskey(struct SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, const char *key);
 
 /* ---------------------------------------------------------------------------
  * 5. Options and SQL entry points (PG_FUNCTION_INFO_V1 are in core/handler.c)
@@ -133,9 +157,11 @@ typedef struct SiftColOptions
 	int			paths;			/* offset of the shredder's "paths" string, 0 = none */
 	int			compression;	/* offset of the "compression" string, 0 = auto */
 	int			preagg;			/* offset of the "preagg" string (docs/COL-PREAGG.md), 0 = default */
-	int			rollup;			/* offset of the "rollup" string (the dims of the element rollups, docs/COL-PREAGG.md), 0 = automatic */
+	int			rollup;			/* the older name of rollup_leaves: am_col_amoptions copies its offset to rollup_leaves when that is empty */
+	int			rollup_leaves;	/* offset of the "rollup_leaves" string (the dims of the element rollups, docs/COL-PREAGG.md), 0 = automatic */
 	int			calendar_columns;	/* offset of the "calendar_columns" string (the date and timestamp columns that get calendar cells in every unit, docs/COL-PREAGG.md section 2; column format minor 8), 0 = none */
-	int			rollup_dims;	/* offset of the "rollup_dims" string (the columns of the rollup of the rows of a unit, docs/COL-PREAGG.md; column format minor 8), 0 = none */
+	int			rollup_dims;	/* the older name of rollup_columns, copied the same way */
+	int			rollup_columns;	/* offset of the "rollup_columns" string (the columns of the rollup of the rows of a unit, docs/COL-PREAGG.md; column format minor 8), 0 = none */
 	bool		rollup_on_demand;	/* a SELECT that scans a unit for lack of its rollup asks for a refresh (docs/COL-PREAGG.md section 7) */
 	int			return_columns;	/* offset of the "return_columns" string (the text, varchar and uuid columns an index-only scan returns), 0 = none */
 	int			key_columns;	/* offset of the "key_columns" string, 0 = not set */
@@ -147,6 +173,7 @@ typedef struct SiftColOptions
 	int			count_columns;	/* offset of the "count_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
 	int			track_changes;		/* offset of the "track_changes" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */
+	int			connect;		/* offset of the "connect" string (the parent index this one is connected to, col/conn.h), 0 = none */
 	int			array_lengths;	/* SIFT_COL_ARRLEN_*: the arrays of the index keep their cardinality and array_length(x, 1) as two integer lanes */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
 	int			order_layout;	/* offset of the "order_layout" string (the layout of the global orders, col/gorder.h), 0 = auto */
@@ -180,12 +207,13 @@ extern const SiftColOptions *sift_col_options(Relation index);
 extern const char *sift_col_options_paths(Relation index);	/* "" when none; the shredder parses it */
 extern const char *sift_col_options_compression(Relation index);	/* "" when none (auto) */
 extern const char *sift_col_options_preagg(Relation index);	/* "" when none (default) */
-extern const char *sift_col_options_rollup(Relation index);	/* "" when none (automatic) */
-extern const char *sift_col_options_rollup_dims(Relation index);	/* "" when none */
+extern const char *sift_col_options_rollup_leaves(Relation index);	/* "" when none (automatic) */
+extern const char *sift_col_options_rollup_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_key_columns(Relation index);	/* NULL when the option is not set (CREATE INDEX before its default is chosen, or an index written without it) */
 extern const char *sift_col_options_point_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_point_tid_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_connect(Relation index);	/* "" when none */
 extern const char *sift_col_options_row_key(Relation index);	/* "" when off, "auto" before the build has chosen the primary key */
 extern const char *sift_col_options_count_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_key_cut(Relation index);	/* "" when none */

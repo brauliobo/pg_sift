@@ -100,6 +100,10 @@ sift_col_wbuf_lookup(SiftColSource *src, const SiftColPred *p, MemoryContext mcx
 	uint32		nall = 0;
 	uint64		rows = 0;
 
+	/* a rescan reuses the source of an earlier lookup that found too many rows: its batches return the rows of the buffers, listing them again would return them twice */
+	*n = 0;
+	if (!(src->flags & SIFT_COLO_NOWBUF))
+		return NULL;
 	for (int i = 0; i < src->dir.nsegs; i++)
 	{
 		ItemPointerData *t;
@@ -122,6 +126,20 @@ sift_col_wbuf_lookup(SiftColSource *src, const SiftColPred *p, MemoryContext mcx
 		src->flags &= ~SIFT_COLO_NOWBUF;
 		nall = 0;
 		all = NULL;
+	}
+	/*
+	 * The cached leaf lists the records of rows VACUUM removed (it flags them dead in place and the cache keeps the entry), and VACUUM truncated the empty tail of the heap
+	 * under some of them: a heap check cannot read a block past the end of the file.
+	 */
+	if (nall > 0)
+	{
+		BlockNumber nblocks = RelationGetNumberOfBlocks(src->heap);
+		uint32		kept = 0;
+
+		for (uint32 i = 0; i < nall; i++)
+			if (ItemPointerGetBlockNumber(&all[i]) < nblocks)
+				all[kept++] = all[i];
+		nall = kept;
 	}
 	*n = nall;
 	return all;

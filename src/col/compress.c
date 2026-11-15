@@ -3,7 +3,6 @@
  * SIFT_HAVE_ZSTD from what the build machine provides; the PostgreSQL Makefile probes them, SIFT_NO_LZ4=1 / SIFT_NO_ZSTD=1 leave one out).
  * Without either it answers "not available" and the codec writes no wrapped chunk.
  */
-#include "core/host.h"
 
 #include "col/codec.h"
 #include "col/compress.h"

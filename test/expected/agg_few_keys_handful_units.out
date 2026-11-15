@@ -26,7 +26,7 @@ INSERT INTO hk_events (dim_a_id, foreign_id, day, metrics_a)
 INSERT INTO hk_events (dim_a_id, foreign_id, day, metrics_a)
 	SELECT 7, 1 + g % 20, date '2025-06-01' + (g * 400 / 30000), jsonb_build_object('mhead', 1 + g % 10, 'service_clean', 1 + (7 + g) % 10) FROM generate_series(1, 30000) g;
 CREATE INDEX hk_events_gen ON hk_events (dim_a_id, day, deleted_at);
-CREATE INDEX hk_events_col ON hk_events USING sift_col (id, dim_a_id, foreign_id, day, deleted_at, metrics_a) WITH (key_cut = dim_a_id, paths = 'metrics_a.* float8', rollup_dims = 'off');
+CREATE INDEX hk_events_col ON hk_events USING sift_col (id, dim_a_id, foreign_id, day, deleted_at, metrics_a) WITH (key_cut = dim_a_id, paths = 'metrics_a.* float8', rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) hk_events, hk_dim_c, hk_entities, hk_links;
 CREATE FUNCTION hk_q(sub int) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 WITH ids AS MATERIALIZED (SELECT DISTINCT id FROM hk_entities WHERE id IN (%s) AND id IN (SELECT dim_a_id FROM hk_links WHERE scope_id = %s)),

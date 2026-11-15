@@ -23,6 +23,11 @@ UPDATE m_t SET metrics = jsonb_set(metrics, '{catg_i}', '"9"') WHERE id = 6000;
 UPDATE m_t SET metrics = jsonb_set(metrics, '{catg_k}', 'true') WHERE id = 5990;
 UPDATE m_t SET metrics = jsonb_set(metrics, '{catg_k}', '{"a": 1}') WHERE id = 5980;
 UPDATE m_t SET metrics = jsonb_set(metrics, '{catg_k}', '[1]') WHERE id = 5970;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE m_t_rows AS SELECT * FROM m_t ORDER BY ctid;
+TRUNCATE m_t;
+INSERT INTO m_t SELECT * FROM m_t_rows;
+DROP TABLE m_t_rows;
 CREATE INDEX m_col ON m_t USING sift_col (id, src, day, metrics) WITH (paths = 'metrics.* float8');
 VACUUM ANALYZE m_t;
 

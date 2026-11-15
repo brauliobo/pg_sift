@@ -1,7 +1,6 @@
 /*
  * col/codec_blob.c - the string list and bit vector blobs of the chunk codec.
  */
-#include "core/host.h"
 
 #include "col/codec_int.h"
 #include "col/compress.h"

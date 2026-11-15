@@ -7,7 +7,7 @@ CREATE EXTENSION pg_sift_test;
 CREATE TABLE pc_fact (id int, k int, v int);
 INSERT INTO pc_fact SELECT i, i % 5000, i % 7 FROM generate_series(1, 20000) i;
 ANALYZE pc_fact;
-CREATE INDEX pc_fact_col ON pc_fact USING sift_col (id, k, v) WITH (rollup_dims = 'off');
+CREATE INDEX pc_fact_col ON pc_fact USING sift_col (id, k, v) WITH (rollup_columns = 'off');
 
 -- a statement with a single-reference CTE, a sub-select, a lateral and a json_build_object call: every pass has something to look at
 -- a statement with a single-reference CTE, a sub-select, a lateral and a json_build_object call: every pass has something to look at; tail is added to the list

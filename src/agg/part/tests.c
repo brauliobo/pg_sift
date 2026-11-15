@@ -7,6 +7,18 @@
 
 #include "agg/part/int.h"
 
+/* the call on every partition's source, the rest of them opened first; an assignment keeps the last partition's answer */
+#define PART_EACH(ps, call) \
+	do { \
+		open_rest(ps); \
+		for (int i_ = 0; i_ < (ps)->n; i_++) \
+			if ((ps)->src[i_]) \
+			{ \
+				SiftSrcSource *s = (ps)->src[i_]; \
+				call; \
+			} \
+	} while (0)
+
 void
 part_counters(const void *impl, SiftSrcCounters *c)
 {
@@ -48,10 +60,7 @@ part_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
 {
 	PartSource *ps = impl;
 
-	open_rest(ps);
-	for (int i = 0; i < ps->n; i++)
-		if (ps->src[i])
-			sift_colsrc_prune_str(ps->src[i], t, nt);
+	PART_EACH(ps, sift_colsrc_prune_str(s, t, nt));
 }
 
 bool
@@ -67,10 +76,7 @@ part_set_wide(void *impl, const SiftSrcWideTest *t, int nt)
 	PartSource *ps = impl;
 	int			n = 0;
 
-	open_rest(ps);
-	for (int i = 0; i < ps->n; i++)
-		if (ps->src[i])
-			n = sift_colsrc_set_wide(ps->src[i], t, nt);
+	PART_EACH(ps, n = sift_colsrc_set_wide(s, t, nt));
 	return n;
 }
 
@@ -86,10 +92,7 @@ part_set_filters(void *impl, const SiftSrcFilter *f, int nf)
 	PartSource *ps = impl;
 	uint64		applied = 0;
 
-	open_rest(ps);
-	for (int i = 0; i < ps->n; i++)
-		if (ps->src[i])
-			applied = sift_colsrc_set_filters(ps->src[i], f, nf);
+	PART_EACH(ps, applied = sift_colsrc_set_filters(s, f, nf));
 	return applied;
 }
 
@@ -122,10 +125,7 @@ part_tolerate_ovf(void *impl, int leaf)
 {
 	PartSource *ps = impl;
 
-	open_rest(ps);
-	for (int i = 0; i < ps->n; i++)
-		if (ps->src[i])
-			sift_colsrc_tolerate_ovf(ps->src[i], leaf);
+	PART_EACH(ps, sift_colsrc_tolerate_ovf(s, leaf));
 }
 
 void
@@ -133,10 +133,7 @@ part_set_raw(void *impl, int leaf)
 {
 	PartSource *ps = impl;
 
-	open_rest(ps);
-	for (int i = 0; i < ps->n; i++)
-		if (ps->src[i])
-			sift_colsrc_set_raw(ps->src[i], leaf);
+	PART_EACH(ps, sift_colsrc_set_raw(s, leaf));
 }
 
 void
@@ -144,10 +141,7 @@ part_set_numsum(void *impl, int leaf)
 {
 	PartSource *ps = impl;
 
-	open_rest(ps);
-	for (int i = 0; i < ps->n; i++)
-		if (ps->src[i])
-			sift_colsrc_set_numsum(ps->src[i], leaf);
+	PART_EACH(ps, sift_colsrc_set_numsum(s, leaf));
 }
 
 void
@@ -155,10 +149,7 @@ part_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast)
 {
 	PartSource *ps = impl;
 
-	open_rest(ps);
-	for (int i = 0; i < ps->n; i++)
-		if (ps->src[i])
-			sift_colsrc_set_recheck(ps->src[i], leaf, mode, key, cast);
+	PART_EACH(ps, sift_colsrc_set_recheck(s, leaf, mode, key, cast));
 }
 
 void

@@ -3,6 +3,7 @@
 -- cuts the front of those) and past the end, the order array and the heap, a partitioned table, sub-selects, CTEs, UNION ALL arms, parameters, a NULL and a negative OFFSET, a scroll
 -- cursor (a Material between the scan and the Limit keeps the OFFSET in the Limit), and a second pass of the same scan.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -102,16 +103,7 @@ DEALLOCATE sk_p;
 RESET sift.enable_agg; RESET sift.agg_force; RESET enable_seqscan; RESET enable_sort; RESET enable_indexscan; RESET enable_bitmapscan;
 
 -- the scan read again by the join that needs it twice, and a scroll cursor, read both ways
-CREATE FUNCTION sk_twice(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE a text; b text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off; SET LOCAL enable_material = off;
-	SET LOCAL enable_hashjoin = off; SET LOCAL enable_mergejoin = off;
-	EXECUTE format('SELECT string_agg(g || '':'' || id, '','' ORDER BY g, ord) FROM generate_series(1, 3) g, (SELECT row_number() OVER () AS ord, * FROM (%s) r) x', q) INTO a;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
-	EXECUTE format('SELECT string_agg(g || '':'' || id, '','' ORDER BY g, ord) FROM generate_series(1, 3) g, (SELECT row_number() OVER () AS ord, * FROM (%s) r) x', q) INTO b;
-	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same' ELSE 'DIFFERS ' || q END;
-END $$;
+CREATE FUNCTION sk_twice(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_offset_rows_twice_same(q) $$;
 SELECT sk_twice('SELECT id, k FROM sk ORDER BY k, id LIMIT 7 OFFSET 2100') AS global_order, sk_twice('SELECT id, k FROM sh ORDER BY k, id LIMIT 7 OFFSET 40') AS heap;
 DO $$
 DECLARE c refcursor; r record; fwd text := ''; bwd text := ''; want text;
@@ -140,4 +132,5 @@ SELECT * FROM sk_all();
 
 DROP FUNCTION sk_chk(text), sk_all(), sk_param(int, int), sk_generic(int, int, bool), sk_twice(text);
 DROP TABLE sk, sh, sp;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -3,65 +3,21 @@
  */
 #include "postgres.h"
 
-#include <math.h>
-
-#include "access/htup_details.h"
-#include "access/sysattr.h"
 #include "access/stratnum.h"
-#include "access/table.h"
 #include "access/stratnum.h"
-#include "catalog/pg_aggregate.h"
-#include "catalog/pg_am.h"
-#include "catalog/pg_class.h"
 #include "catalog/pg_collation.h"
-#include "commands/defrem.h"
-#include "catalog/pg_index.h"
-#include "miscadmin.h"
-#include "catalog/pg_operator.h"
-#include "catalog/pg_opfamily.h"
-#include "catalog/pg_proc.h"
-#include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
 #include "core/limits.h"
-#include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/appendinfo.h"
-#include "optimizer/clauses.h"
-#include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
-#include "optimizer/plancat.h"
-#include "optimizer/pathnode.h"
-#include "optimizer/paramassign.h"
-#include "optimizer/paths.h"
-#include "optimizer/planmain.h"
-#include "optimizer/planner.h"
-#include "optimizer/tlist.h"
-#include "parser/parse_relation.h"
-#include "parser/parsetree.h"
-#include "port/pg_bitutils.h"
-#include "rewrite/rewriteManip.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
-#include "utils/fmgroids.h"
-#include "utils/fmgrprotos.h"
-#include "utils/jsonb.h"
-#include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
-#include "utils/rel.h"
 #include "utils/ruleutils.h"
-#include "utils/selfuncs.h"
-#include "utils/syscache.h"
-#include "utils/typcache.h"
 
-#include "agg/agg.h"
-#include "agg/part.h"
-#include "agg/topn.h"
-#include "agg/spec.h"
 #include "agg/stats.h"
-#include "agg/colsrc.h"
-#include "agg/search.h"
 #include "agg/plan_int.h"
 
 TypeClass
@@ -669,26 +625,6 @@ compile_junction(AggCtx *c, SiftAggPredKind kind, List *args)
 	return p;
 }
 
-/* the negation of an existential test of a document that is not NULL: an element test and a NULL test flip, an AND of them is the OR of their negations (and the reverse); false: a test of the cardinality or of the elements in order has none */
-static bool
-negate_existential(SiftAggPred *p)
-{
-	if (p->kind == SAP_AND || p->kind == SAP_OR)
-	{
-		p->kind = p->kind == SAP_AND ? SAP_OR : SAP_AND;
-		for (int i = 0; i < p->nchild; i++)
-			if (!negate_existential(p->child[i]))
-				return false;
-	}
-	else if (p->kind == SAP_CMP || (p->kind == SAP_ANY_ELEM && p->op == 2))
-		return false;
-	else if (p->kind == SAP_ANY_ELEM || p->kind == SAP_NULL)
-		p->op ^= 1;
-	else
-		p->op = 1;
-	return true;
-}
-
 static SiftAggPred *
 compile_bool(AggCtx *c, BoolExpr *b)
 {
@@ -697,13 +633,37 @@ compile_bool(AggCtx *c, BoolExpr *b)
 
 	if (b->boolop != NOT_EXPR)
 		return compile_junction(c, b->boolop == AND_EXPR ? SAP_AND : SAP_OR, b->args);
+	if (IsA(strip_relabel(linitial(b->args)), NullTest) && !((NullTest *) strip_relabel(linitial(b->args)))->argisrow)	/* NOT (x IS NULL) is x IS NOT NULL */
+	{
+		NullTest   *nt = copyObject((NullTest *) strip_relabel(linitial(b->args)));
+
+		nt->nulltesttype = nt->nulltesttype == IS_NULL ? IS_NOT_NULL : IS_NULL;
+		return compile_pred(c, (Node *) nt);
+	}
+	/* NOT (a AND b) is NOT a OR NOT b, and NOT (a OR b) is NOT a AND NOT b, with NULLs too: each NOT meets the nullable document alone */
+	if (IsA(strip_relabel(linitial(b->args)), BoolExpr) && ((BoolExpr *) strip_relabel(linitial(b->args)))->boolop != NOT_EXPR)
+	{
+		BoolExpr   *j = (BoolExpr *) strip_relabel(linitial(b->args));
+		List	   *nots = NIL;
+
+		foreach_ptr(Node, a, j->args)
+			nots = lappend(nots, makeBoolExpr(NOT_EXPR, list_make1(a), -1));
+		return compile_pred(c, (Node *) makeBoolExpr(j->boolop == AND_EXPR ? OR_EXPR : AND_EXPR, nots, -1));
+	}
+	if ((p = compile_wide(c, (Node *) b)) != NULL)
+		return p;
 	/* NOT of an existential test is its negation unless the test can be NULL (a NULL document) */
 	if ((p = compile_existential(c, strip_relabel(linitial(b->args)), &target)) == NULL)
 		return compile_lut(c, (Node *) b);
 	if (target && !target_not_null(c, target))
-		return NULL;
+		return compile_not_array(c, b, p, target);
 	if (!negate_existential(p))
+	{
+		/* negate_existential left p half flipped: the test again, whose complement is the rows of NOT (it is never NULL here) */
+		if ((p = compile_not_true(c, compile_existential(c, strip_relabel(linitial(b->args)), &target))) != NULL)
+			return p;
 		return compile_lut(c, (Node *) b);
+	}
 	p->desc = psprintf("NOT %s", p->desc);
 	return p;
 }
@@ -799,11 +759,25 @@ expand_row_compare(RowCompareExpr *rc)
 	return out;
 }
 
+/* the condition whose negation the index holds as a boolean leaf (`x IS NULL` for `x IS NOT NULL`, the OR of such tests for their AND): NOT of the leaf */
+static SiftAggPred *
+compile_cond_negated(AggCtx *c, Node *n)
+{
+	Node	   *neg;
+
+	if (attr_of_expr(c, n) > 0)
+		return NULL;
+	neg = negated_cond(n);
+	return attr_of_expr(c, neg) > 0 ? compile_lut(c, (Node *) make_notclause((Expr *) neg)) : NULL;
+}
+
 SiftAggPred *
 compile_pred(AggCtx *c, Node *n)
 {
-	SiftAggPred *p;
-	Node	   *leaf_target;
+	SiftAggPred *p,
+			   *not_true = NULL;
+	Node	   *leaf_target,
+			   *norm;
 	int			leaf;
 
 	n = scalar_initplans(c, strip_relabel(n));
@@ -821,6 +795,13 @@ compile_pred(AggCtx *c, Node *n)
 		p->desc = psprintf("(%s)", expr_text(c, n));
 		return p;
 	}
+	if ((norm = pred_normalize(c, n)) != NULL && (p = compile_pred(c, norm)) != NULL)
+		return p;
+	if (IsA(n, BoolExpr) && ((BoolExpr *) n)->boolop == NOT_EXPR && (p = compile_not_haskey(c, (BoolExpr *) n)) != NULL)
+		return p;
+	/* a junction of tests the index holds whole as a boolean leaf (`lat IS NOT NULL AND lon IS NOT NULL`), or its negation */
+	if (IsA(n, BoolExpr) && is_cond(n) && (p = attr_of_expr(c, n) > 0 ? compile_lut(c, n) : compile_cond_negated(c, n)) != NULL)
+		return p;
 	if (IsA(n, BoolExpr))
 		return compile_bool(c, (BoolExpr *) n);
 	if (IsA(n, RowCompareExpr))
@@ -835,11 +816,32 @@ compile_pred(AggCtx *c, Node *n)
 	/* a predicate keeps the rows for which it is true: `x IS TRUE` selects the rows `x` does */
 	if (IsA(n, BooleanTest) && ((BooleanTest *) n)->booltesttype == IS_TRUE)
 		return compile_pred(c, (Node *) ((BooleanTest *) n)->arg);
-	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && (leaf = match_leaf(c, (Node *) ((NullTest *) n)->arg)) >= 0)
+	if (IsA(n, BooleanTest) && ((BooleanTest *) n)->booltesttype == IS_NOT_TRUE && (p = compile_pred(c, (Node *) ((BooleanTest *) n)->arg)) != NULL)
+	{
+		if (source_tests_only(p))
+		{
+			complement_tests(p);
+			p->desc = psprintf("(%s) IS NOT TRUE", p->desc);
+			return p;
+		}
+		not_true = p;
+	}
+	if (IsA(n, NullTest) && is_cond(n) && (p = compile_cond_negated(c, n)) != NULL)
+		return p;
+	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow &&
+		((leaf = match_leaf(c, (Node *) ((NullTest *) n)->arg)) >= 0 || (leaf = present_leaf(c, (Node *) ((NullTest *) n)->arg)) >= 0))
 	{
 		p = make_leaf_pred(c, SAP_NULL, leaf);
 		p->op = ((NullTest *) n)->nulltesttype == IS_NOT_NULL;
 		p->desc = psprintf("%s IS %sNULL", leaf_name(c, leaf), p->op ? "NOT " : "");
+		return p;
+	}
+	/* the document of a jsonb column with a NOT NULL constraint is never NULL: its index has no leaf for it */
+	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && exprType((Node *) ((NullTest *) n)->arg) == JSONBOID && attr_of_expr(c, strip_relabel((Node *) ((NullTest *) n)->arg)) > 0 &&
+		target_not_null(c, (Node *) ((NullTest *) n)->arg))
+	{
+		p = new_pred(c, ((NullTest *) n)->nulltesttype == IS_NOT_NULL ? SAP_TRUE : SAP_FALSE);
+		p->desc = psprintf("%s IS %sNULL", expr_text(c, (Node *) ((NullTest *) n)->arg), p->kind == SAP_TRUE ? "NOT " : "");
 		return p;
 	}
 	if (IsA(n, OpExpr) && (p = compile_cmp(c, (OpExpr *) n)) != NULL)
@@ -850,8 +852,16 @@ compile_pred(AggCtx *c, Node *n)
 		return p;
 	if ((p = compile_existential(c, n, &leaf_target)) != NULL)
 		return p;
+	if ((p = compile_haskey(c, n)) != NULL)
+		return p;
+	if ((p = compile_wide(c, n)) != NULL)
+		return p;
 	p = compile_lut(c, n);
 	if (p != NULL)
 		compile_periodic(c, n, p);
+	else if (not_true != NULL)
+		p = compile_not_true(c, not_true);
+	else if (IsA(n, BooleanTest) && ((BooleanTest *) n)->booltesttype == IS_FALSE)
+		p = compile_pred(c, (Node *) makeBoolExpr(NOT_EXPR, list_make1(((BooleanTest *) n)->arg), -1));	/* false is what NOT keeps */
 	return p;
 }

@@ -159,6 +159,7 @@ extern int	sq_merge_pick(SqStore *st, bool force, int fanin, uint64 *sel);
 
 /* Calls fn(arg, key, dl) for every live document of the segment, in key order */
 extern void sq_seg_live_docs(SqStore *st, const SiftSegEntry *e, void (*fn) (void *arg, SiftKey key, uint16 dl), void *arg);
+/* Calls fn(arg, term, len, keys, n) for the live postings of every term, in dictionary order: a term comes in batches of one group (a superblock) at most, in key order */
 extern void sq_seg_walk_terms(SqStore *st, const SiftSegEntry *e,
 								 void (*fn) (void *arg, const char *term, int len, const SiftKey *keys, uint32 n), void *arg);
 

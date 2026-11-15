@@ -11,11 +11,12 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 88
+plan 106
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
 sift.col_auto_merge = on"
+sed_i "/^sift\\.test_col_legacy_options = /d" "$(dir uc)/data/postgresql.conf"   # a setting of the test build the preflight would report: the clean database stays clean
 node_start uc || bail "start failed"
 q postgres "CREATE DATABASE clean" "CREATE DATABASE cfg" "CREATE DATABASE old" >/dev/null
 
@@ -37,6 +38,14 @@ q clean "CREATE EXTENSION pg_sift" \
 	"CREATE TABLE unwritten (id int) USING sift_table" >/dev/null || bail "setup failed"
 objects=$(q clean "SELECT count(*) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname LIKE 'sift%' AND c.relkind IN ('i', 'r')")
 procs=$(q clean "SELECT count(*) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace")
+# VACUUM promotes the rows of a sift_table that are older than the oldest snapshot of its database: the maintenance worker this node runs (it starts at the commit of a
+# CREATE INDEX) can hold one while the VACUUMs above run, and a table whose rows are still in the write buffer has no column format to report. Vacuum again until both report it.
+for _ in $(seq 120); do
+	out=$(uc clean)
+	grep -q -E '^ok +tbl +table +format 1\.[0-9]+, column format' <<<"$out" && grep -q -E '^ok +months +table +format 1\.[0-9]+, column format' <<<"$out" && break
+	q clean "VACUUM tbl" "VACUUM months" >/dev/null
+	sleep 0.5
+done
 
 out=$(uc clean); rc=$?
 check "a clean database exits 0" test $rc -eq 0
@@ -82,12 +91,12 @@ q clean "CREATE INDEX facts_late ON facts USING sift_col (id, g, n) WITH (cube_m
 out=$(uc clean)
 check "cube_minmax set after the build warns that the old units scan, with the REINDEX" grep -q -E '^warn +facts_late +option +cube_minmax with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late;' <<<"$out"
 check "key_columns set after the build warns that the old units have no summary, with the REINDEX" grep -q -E '^warn +facts_late_set +option +key_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_set;' <<<"$out"
-check "rollup_dims set after the build warns that the old units have no rollup of their rows, with the REINDEX" grep -q -E '^warn +facts_late_roll +option +rollup_dims with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_roll;' <<<"$out"
-check "order_columns set after the build warns that the old units have no sorted run, with the REINDEX" grep -q -E '^warn +facts_late_ord +option +order_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_ord;' <<<"$out"
+check "rollup_columns set after the build warns that the old units have no rollup of their rows, with the REINDEX" grep -q -E '^warn +facts_late_roll +option +rollup_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_roll;' <<<"$out"
+check "order_columns (deprecated in 4.3, ignored by a build) warns to reset it, and no REINDEX is asked for it" grep -q -E '^warn +facts_late_ord +option +order_columns +deprecated in 4\.3 and removed in 4\.4 .*ALTER INDEX facts_late_ord RESET \(order_columns\)' <<<"$out"
 check "an index built with key_columns and rollup_dims has no warning" test -z "$(grep -E '^(warn|blocker) +scat_new_opts ' <<<"$out")"
 check "sift.upgrade_commands gives the same indexes, one command each, after the text index that queries need" test "$(q clean \
 	"SELECT string_agg(kind || ' ' || required::text || ' ' || command, ' ' ORDER BY ord) FROM (SELECT *, row_number() OVER () ord FROM sift.upgrade_commands()) c WHERE kind = 'reindex'")" == \
-	"reindex true REINDEX INDEX CONCURRENTLY public.docs_idx; reindex true REINDEX INDEX CONCURRENTLY public.facts_old_opt; reindex false REINDEX INDEX CONCURRENTLY public.facts_late; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_ord; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_roll; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_set;"
+	"reindex true REINDEX INDEX CONCURRENTLY public.docs_idx; reindex true REINDEX INDEX CONCURRENTLY public.facts_old_opt; reindex false REINDEX INDEX CONCURRENTLY public.facts_late; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_roll; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_set;"
 # cube_minmax and superunit are on unless the index says otherwise: an index written before 3.3 lacks them, and a REINDEX gives them
 q clean "SET sift.col_format_minor = 6" "CREATE INDEX facts_legacy ON facts USING sift_col (id, g, n)" >/dev/null
 out=$(uc clean)
@@ -113,14 +122,15 @@ check "to 3.6: the same index is a blocker that says to write the setting 14 and
 check "to 3.7: the same index is ok" test -z "$(row "$(uc --to 3.7 clean)" blocker facts_gord)"
 q clean "SET sift.col_format_minor = 14" "REINDEX INDEX facts_gord" >/dev/null
 check "to 3.6: the advice makes the index readable" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_gord)"
-check "... and it is written without the arrays: column format 13, and the preflight says the option waits for a REINDEX" grep -q -E '^warn +facts_gord +option +order_array_columns with column format 13 ' <<<"$(uc clean)"
+check "... and it is written without the arrays: column format 12 (no sorted run is written for order_columns), and the preflight says the option waits for a REINDEX" grep -q -E '^warn +facts_gord +option +order_array_columns with column format 12 ' <<<"$(uc clean)"
 q clean "REINDEX INDEX facts_gord" >/dev/null
 check "a REINDEX at the normal setting writes the arrays again: column format 38" grep -q -E '^ok +facts_gord +index +format 1\.[0-9]+, column format 38' <<<"$(uc clean)"
 q clean "DROP INDEX facts_gord" >/dev/null
 # a compact global order (order_layout = 'compact') is column format 41, which 3.7 cannot read: the setting 14 and a REINDEX write what it reads; the whole order of the same index
 # is what 3.7 wrote. The compact order needs a segment of many rows (a testing build lowers the threshold)
 if [[ $(q clean "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_col_gorder_ends'") == 1 ]]; then
-	q clean "SET sift.test_col_gorder_ends = 64" "CREATE TABLE gord_rows AS SELECT i AS id, TIMESTAMP '2026-01-01' + (hashint8extended(i, 7) & 35184372088831) * INTERVAL '1 microsecond' AS ts FROM generate_series(1, 20000) i" \
+	# plain chunks: the column format minors below tell the layouts apart (a default build writes seekable chunks, minor 44, checked after them)
+	q clean "SET sift.test_limits = 'gord_seek_pct=0'" "SET sift.test_col_gorder_ends = 64" "CREATE TABLE gord_rows AS SELECT i AS id, TIMESTAMP '2026-01-01' + (hashint8extended(i, 7) & 35184372088831) * INTERVAL '1 microsecond' AS ts FROM generate_series(1, 20000) i" \
 		"CREATE INDEX gord_whole ON gord_rows USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_layout = 'whole')" \
 		"CREATE INDEX gord_compact ON gord_rows USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_layout = 'compact')" \
 		"CREATE INDEX gord_auto ON gord_rows USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts')" \
@@ -134,14 +144,17 @@ if [[ $(q clean "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_col_go
 	check "to 4.0: the compact order is ok" test -z "$(row "$(uc --to 4.0 clean)" blocker gord_compact)"
 	q clean "SET sift.col_format_minor = 14" "REINDEX INDEX gord_compact" >/dev/null
 	check "to 3.7: the advice makes the index readable" test -z "$(row "$(uc --to 3.7 clean)" blocker gord_compact)"
-	q clean "SET sift.test_col_gorder_ends = 64" "ALTER INDEX gord_whole SET (order_layout = 'compact')" "REINDEX INDEX gord_whole" >/dev/null
+	q clean "SET sift.test_limits = 'gord_seek_pct=0'" "SET sift.test_col_gorder_ends = 64" "ALTER INDEX gord_whole SET (order_layout = 'compact')" "REINDEX INDEX gord_whole" >/dev/null
 	check "order_layout = compact and a REINDEX write column format 41" grep -q -E '^ok +gord_whole +index +format 1\.[0-9]+, column format 41' <<<"$(uc clean)"
+	q clean "SET sift.test_col_gorder_ends = 64" "CREATE INDEX gord_seek ON gord_rows USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts')" >/dev/null
+	check "an index with seekable order chunks is column format 44" grep -q -E '^ok +gord_seek +index +format 1\.[0-9]+, column format 44' <<<"$(uc clean)"
+	check "to 3.7: seekable order chunks are a blocker that says to write the setting 14" grep -q -E "^blocker +gord_seek .*SET sift.col_format_minor = 14, then REINDEX INDEX gord_seek" <<<"$(uc --to 3.7 clean)"
 	q clean "DROP TABLE gord_rows, gord_ties" >/dev/null
-else skip 8 "a release build has no test settings: the threshold of the compact order cannot be lowered"; fi
-# the order array of a text column names its strings by their dictionary codes (column format 42); 3.7 reads the copy of the strings, so the setting 14 and a REINDEX write what it reads
+else skip 10 "a release build has no test settings: the threshold of the compact order cannot be lowered"; fi
+# the order array of a text column names its strings by their dictionary codes (column format 42, or 44 once its chunks are seekable); 3.7 reads the copy of the strings, so the setting 14 and a REINDEX write what it reads
 q clean "CREATE TABLE gord_text AS SELECT i AS id, md5(i::text) AS name FROM generate_series(1, 3000) i" \
 	"CREATE INDEX gord_text_i ON gord_text USING sift_col (id, name) WITH (order_array_columns = 'name')" >/dev/null
-check "an index with the order array of a text column is column format 42" grep -q -E '^ok +gord_text_i +index +format 1\.[0-9]+, column format 42' <<<"$(uc clean)"
+check "an index with the order array of a text column is column format 42 or 44 (seekable chunks)" grep -q -E '^ok +gord_text_i +index +format 1\.[0-9]+, column format (42|44)' <<<"$(uc clean)"
 check "to 3.7: it is a blocker that says to write the setting 14" grep -q -E "^blocker +gord_text_i .*SET sift.col_format_minor = 14, then REINDEX INDEX gord_text_i" <<<"$(uc --to 3.7 clean)"
 q clean "SET sift.col_format_minor = 14" "REINDEX INDEX gord_text_i" >/dev/null
 check "to 3.7: the advice makes the index readable" test -z "$(row "$(uc --to 3.7 clean)" blocker gord_text_i)"
@@ -242,4 +255,44 @@ node_start uc || bail "restart failed"
 out=$(uc clean); rc=$?
 check "an index in a newer format is unreadable and blocks" grep -q -E '^blocker +refused_idx +index +unreadable +sift index "refused_idx" has on-disk format 1\.9.*REINDEX' <<<"$out"
 check "the others are still checked, and the exit is 1" test $rc -eq 1 -a "$(grep -c '^ok' <<<"$out")" -ge "$objects"
+# 4.2 writes two things that every release before it refuses: the buffer of a BM25 index that took an insert (format 1.6) and the boolean leaf of a jsonb column that may hold a NULL
+# document; a release before 4.2 reads an index that has neither (a jsonb column with NOT NULL has no leaf)
+q postgres "CREATE DATABASE v42" >/dev/null
+q v42 "CREATE EXTENSION pg_sift" \
+	"CREATE TABLE bm (id int, body text)" "INSERT INTO bm SELECT g, 'alpha w' || g % 50 FROM generate_series(1, 2000) g" "CREATE INDEX bm_idx ON bm USING sift (body)" \
+	"INSERT INTO bm SELECT g, 'beta' FROM generate_series(2001, 2100) g" \
+	"CREATE TABLE dp (id int PRIMARY KEY, doc jsonb)" "INSERT INTO dp SELECT g, CASE WHEN g % 7 = 0 THEN NULL ELSE jsonb_build_object('b', 'x' || g % 3) END FROM generate_series(1, 3000) g" \
+	"CREATE INDEX dp_col ON dp USING sift_col (id, doc) WITH (paths = 'doc.b astext')" \
+	"CREATE TABLE dn (id int PRIMARY KEY, doc jsonb NOT NULL)" "INSERT INTO dn SELECT g, jsonb_build_object('b', 'x' || g % 3) FROM generate_series(1, 3000) g" \
+	"CREATE INDEX dn_col ON dn USING sift_col (id, doc) WITH (paths = 'doc.b astext')" >/dev/null || bail "setup of v42 failed"
+out=$(uc --to 4.1 v42)
+check "to 4.1: a BM25 index that took an insert (write buffer format 6, format 1.6) is a blocker" test -n "$(row "$out" blocker bm_idx)"
+check "to 4.1: an index with the presence leaf is a blocker that says to REINDEX with the older release" grep -q -E '^blocker +dp_col .*REINDEX INDEX dp_col with 4\.1 ' <<<"$out"
+check "to 4.1: the index of a NOT NULL jsonb column has no leaf and is ok" test -z "$(row "$out" blocker dn_col)"
+check "to 4.2 nothing about the leaf blocks" test -z "$(row "$(uc --to 4.2 v42)" blocker dp_col)"
+# 4.2 removed latest_hint, snapshot_masks, unit_rewrite and skip_trigger_lookup from sift.eval_methods: where a role, a database or the server file sets one, the check says so with the command that removes it
+# (each q is a session of its own: the library is not loaded when the ALTER runs, which is why the older value is stored)
+q postgres "CREATE ROLE ev_role" "CREATE DATABASE ev_db" >/dev/null
+q postgres "ALTER ROLE ev_role SET sift.eval_methods = 'unit_rewrite'" "ALTER DATABASE ev_db SET sift.eval_methods = 'penalty_maintenance, -snapshot_masks'" >/dev/null
+q postgres "ALTER ROLE ev_role IN DATABASE ev_db SET sift.eval_methods = 'skip_trigger_lookup'" "ALTER DATABASE v42 SET sift.eval_methods = 'penalty_maintenance'" >/dev/null
+q postgres "ALTER SYSTEM SET sift.eval_methods = 'latest_hint'" >/dev/null
+out=$(uc v42)
+check "a role that sets a removed method is a blocker with the ALTER ROLE .. RESET that removes it" grep -q -E '^blocker +sift\.eval_methods .*set by ALTER ROLE ev_role .*ALTER ROLE ev_role RESET sift\.eval_methods' <<<"$out"
+check "a database that sets one next to the method that stays is a blocker with the ALTER DATABASE .. RESET" grep -q -E '^blocker +sift\.eval_methods .*penalty_maintenance, -snapshot_masks, set by IN DATABASE ev_db .*ALTER DATABASE ev_db RESET sift\.eval_methods' <<<"$out"
+check "a role in a database is one with ALTER ROLE .. IN DATABASE .. RESET" grep -q -E '^blocker +sift\.eval_methods .*ALTER ROLE ev_role IN DATABASE ev_db RESET sift\.eval_methods' <<<"$out"
+check "a line of postgresql.auto.conf is one that says to ALTER SYSTEM RESET" grep -q -E '^blocker +sift\.eval_methods .*postgresql\.auto\.conf.*ALTER SYSTEM RESET sift\.eval_methods' <<<"$out"
+check "four findings, and the method that stays alone (penalty_maintenance) is none" test "$(grep -c -E '^blocker +sift\.eval_methods' <<<"$out")" == 4
+q postgres "ALTER SYSTEM RESET sift.eval_methods" "ALTER ROLE ev_role RESET sift.eval_methods" "ALTER DATABASE ev_db RESET sift.eval_methods" "ALTER ROLE ev_role IN DATABASE ev_db RESET sift.eval_methods" "ALTER DATABASE v42 RESET sift.eval_methods" >/dev/null
+check "after the commands nothing is left" test "$(uc v42 | grep -c 'sift\.eval_methods')" == 0
+# 4.2 removed sift.enable_col whole: the same list serves it, whatever the value, and the generic check of unknown settings does not repeat it as a warning
+q postgres "ALTER ROLE ev_role SET sift.enable_col = off" "ALTER DATABASE ev_db SET sift.enable_col = off" "ALTER SYSTEM SET sift.enable_col = off" >/dev/null
+q postgres "ALTER ROLE ev_role IN DATABASE ev_db SET sift.table_auto_defrag_dead_pct = 5" >/dev/null
+out=$(uc v42)
+check "a removed setting of a role is a blocker with the ALTER ROLE .. RESET that removes it" grep -q -E '^blocker +sift\.enable_col .*set by ALTER ROLE ev_role .*ALTER ROLE ev_role RESET sift\.enable_col' <<<"$out"
+check "a removed setting of a database is a blocker with the ALTER DATABASE .. RESET" grep -q -E '^blocker +sift\.enable_col .*set by IN DATABASE ev_db .*ALTER DATABASE ev_db RESET sift\.enable_col' <<<"$out"
+check "a removed setting in postgresql.auto.conf is a blocker that says to ALTER SYSTEM RESET" grep -q -E '^blocker +sift\.enable_col .*postgresql\.auto\.conf.*ALTER SYSTEM RESET sift\.enable_col' <<<"$out"
+check "the other removed setting is a blocker too, with its ALTER ROLE .. IN DATABASE .. RESET" grep -q -E '^blocker +sift\.table_auto_defrag_dead_pct .*ALTER ROLE ev_role IN DATABASE ev_db RESET sift\.table_auto_defrag_dead_pct' <<<"$out"
+check "the removed setting is no warning of the generic check" test "$(grep -c -E '^warn +sift\.enable_col' <<<"$out")" == 0
+q postgres "ALTER SYSTEM RESET sift.enable_col" "ALTER ROLE ev_role RESET sift.enable_col" "ALTER DATABASE ev_db RESET sift.enable_col" "ALTER ROLE ev_role IN DATABASE ev_db RESET sift.table_auto_defrag_dead_pct" >/dev/null
+check "after the commands nothing of it is left" test "$(uc v42 | grep -c 'sift\.enable_col')" == 0
 finish

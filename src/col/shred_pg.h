@@ -44,7 +44,7 @@ typedef struct SiftRecheckMember
 	int			col;			/* the value column of the map */
 	char	   *key;
 	int			keylen;
-	Oid			cast;			/* the type the cast gives (float8, int4 or int8): the error names it */
+	Oid			cast;			/* the type the cast gives (float8, int4 or int8): the error names it; InvalidOid: the key of doc ? 'key' (sift_shred_recheck_haskey), beside any mode the column has */
 } SiftRecheckMember;
 
 typedef struct SiftShredRecheck
@@ -68,6 +68,8 @@ extern void sift_shred_container_rc(SiftShred *sh, JsonbContainer *c, SiftShredR
 extern void sift_shred_recheck_begin(SiftShredRecheck *rc);
 /* column col is read as the cast of the member of key to the type cast */
 extern void sift_shred_recheck_member(SiftShredRecheck *rc, int col, const char *key, Oid cast);
+/* column col is the key of doc ? 'key': a document that is a string equal to the key or an array holding that string has the key, which the leaf says as a JSON null (the reads of it are NULL too); a missing key and every other document say none */
+extern void sift_shred_recheck_haskey(SiftShredRecheck *rc, int col, const char *key);
 
 /* The walk's hooks (col/shred_recheck.c): the value is consumed (true) or left to the plain walk (false); settle runs after either */
 extern bool sift_shred_recheck_value(SiftShred *sh, const JsonbValue *v, SiftShredRecheck *rc);

@@ -1,6 +1,7 @@
 /*
  * agg/plan_rows.c - the path of Custom Scan (SiftAggRows): count(DISTINCT) over the rows of a plan that reads SiftAgg nodes
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "catalog/pg_aggregate.h"
@@ -8,7 +9,6 @@
 #include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
@@ -17,9 +17,7 @@
 #include "utils/selfuncs.h"
 #include "utils/lsyscache.h"
 
-#include "agg/accum_int.h"
 #include "agg/rows.h"
-#include "agg/spec.h"
 #include "agg/plan_int.h"
 
 /* the Custom Scans (SiftAgg) a plan reads, in *arms; only a query the pushdown already reaches gets this node */

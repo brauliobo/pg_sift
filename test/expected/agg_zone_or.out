@@ -12,8 +12,8 @@ INSERT INTO ev
 SELECT i, 1 + (i - 1) / 25000, date '2020-01-01' + (i - 1) / 300, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], i % 100, repeat('x', 200)
 FROM generate_series(1, 300000) i;
 CREATE INDEX ev_col ON ev USING sift_col (set_id, day, kind, amount);
-NOTICE:  sift_col index "ev_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_dims = set_id, kind
+NOTICE:  sift_col index "ev_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = set_id, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (FREEZE, ANALYZE) ev;
 -- the units a statement reads, and those it prunes ('normal' when SiftAgg does not run it)

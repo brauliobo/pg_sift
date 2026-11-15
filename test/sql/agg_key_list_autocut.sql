@@ -4,6 +4,7 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
 CREATE TABLE kl_parents (id int PRIMARY KEY, label text NOT NULL);
 INSERT INTO kl_parents SELECT g, 'p' || g FROM generate_series(1, 400) g;
 CREATE TABLE kl_events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, amount float8 NOT NULL) WITH (autovacuum_enabled = false);

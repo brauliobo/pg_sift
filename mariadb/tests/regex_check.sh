@@ -1,5 +1,5 @@
 #!/bin/bash
-# Compares mariadb/host/regex.c with the regex engine of PostgreSQL 18: every (pattern, word) pair is answered by the real
+# Compares sqlite/host/regex.c (the matcher of the SQLite and MariaDB hosts) with the regex engine of PostgreSQL 18: every (pattern, word) pair is answered by the real
 # pg_regcomp/pg_regexec (flags and calls of src/bm25/query_analyze.c and query_match.c, through the throwaway extension tests/rx_oracle.c in a
 # private cluster under /tmp/sift-mdb-rx) and by regex_test.c linked with host/regex*.c; the answers (1, 0 or error) must
 # be identical, for REG_ADVANCED|REG_NOSUB (what the engine uses) and for REG_ADVANCED alone. The prefixes
@@ -642,7 +642,7 @@ awk -F'\n' 'NR == FNR {w[n++] = $0; next} {for (i = 0; i < n; i++) print $0 "\t"
 
 nice gcc -O2 -fPIC -shared -I"$PG_INC" -o "$W/rx_oracle.so" "$HERE/tests/rx_oracle.c"
 nice gcc -O2 -g -std=gnu11 -fwrapv -fno-strict-aliasing -D_GNU_SOURCE -Wall -Wno-declaration-after-statement \
-	-I"$HERE/host" -I"$HERE/../src" -o "$W/regex_test" "$HERE/host/regex.c" "$HERE/host/regex_parse.c" "$HERE/host/regex_exec.c" "$HERE/tests/regex_test.c" -lm
+	-I"$HERE/host" -I"$HERE/../src" -o "$W/regex_test" "$HERE/../sqlite/host/regex.c" "$HERE/../sqlite/host/regex_parse.c" "$HERE/../sqlite/host/regex_exec.c" "$HERE/tests/regex_test.c" -lm
 
 initdb -D "$W/pg" -A trust -E UTF8 --locale=C >/dev/null
 pg_ctl -D "$W/pg" -o "-k $W -p $PORT -c listen_addresses=''" -l "$W/pg.log" -w start >/dev/null

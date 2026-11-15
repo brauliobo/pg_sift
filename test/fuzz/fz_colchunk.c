@@ -341,7 +341,7 @@ unit_run(void *a)
 		SiftColBatch *b = sift_cbatch_create(CurrentMemoryContext, schema);
 
 		sift_cbatch_reset(b, 7);
-		sift_cunit_decode(&v, 7, dicts, NULL, b);
+		sift_cunit_decode(&v, 7, dicts, NULL, NULL, b);
 		j->digest = mix(j->digest, b->nrows);
 	}
 }

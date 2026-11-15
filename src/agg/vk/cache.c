@@ -7,16 +7,17 @@
 #include <string.h>
 
 #include "agg/vk/int.h"
+#include "core/hash.h"
 
 #ifdef SIFT_VULKAN
 
 static uint32_t
 key_hash(const SiftVkKey *k)
 {
-	uint64_t	h = k->rel * 0x9E3779B97F4A7C15ull;
+	uint64_t	h = sift_fib64(k->rel);
 
-	h ^= (k->gen + 0x7F4A7C15ull) * 0xC2B2AE3D27D4EB4Full;
-	h ^= ((uint64_t) k->unit << 20 | k->leaf) * 0x165667B19E3779F9ull;
+	h ^= (k->gen + 0x7F4A7C15ull) * SIFT_XXP64_2;
+	h ^= ((uint64_t) k->unit << 20 | k->leaf) * SIFT_XXP64_3;
 	h ^= h >> 29;
 	h *= 0xBF58476D1CE4E5B9ull;
 	return (uint32_t) (h >> 32);
@@ -173,7 +174,7 @@ sift_vk_stage(SiftVk *vk, const SiftVkKey *k, const void *words, uint32_t nwords
 			vk->pend = p;
 		if (!c || !p)
 			return false;
-		vk->capcopy = vk->cappend = n;
+		vk->capcopy = n;
 	}
 	s = slab_for(vk, nwords);
 	if (s < 0 || !ent_put(vk, k, (uint32_t) s, vk->slab[s].used))

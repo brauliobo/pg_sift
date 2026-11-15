@@ -9,7 +9,6 @@
 #include "core/host.h"
 
 #include "col/col.h"
-#include "col/kern.h"
 #include "col/codec.h"
 
 typedef struct SiftColSchema
@@ -19,6 +18,7 @@ typedef struct SiftColSchema
 	bool		contain;		/* some leaf is the head of a range or network with the lanes of its containment operators: column format minor 26 (SIFT_COL_FORMAT_CONTAIN) */
 	bool		wide;			/* some leaf is a lane, money or interval (sift_col_def_needs_wide): a segment of this schema is column format minor 5 */
 	bool		kinds;			/* some leaf is filled from a jsonb path (sift_col_def_has_kinds): a segment of this schema whose kinds are complete is column format minor 6 */
+	bool		connected;		/* some leaf is the found flag of a connection (SIFT_COLD_FOUND): a segment of this schema is column format minor 44 (SIFT_COL_FORMAT_CONN) */
 	SiftColDef *cols;			/* [ncols], paths copied */
 	uint32		hash;			/* of ids, kinds, stores, type OIDs, attnos, parents, paths (not flags) */
 } SiftColSchema;
@@ -35,6 +35,7 @@ extern void (*sift_cenc_scan_hook) (int leaf, int kind, const SiftCcScanSum *cho
 extern SiftColSchema *sift_cschema_create(MemoryContext mcxt, const SiftColDef *defs, int n);
 
 /* The SCHEMA section of a segment: magic 'COLS', ncols, hash, per leaf a fixed part and the path */
+extern int	sift_cschema_nconn(const SiftColSchema *s);
 extern void sift_cschema_serialize(const SiftColSchema *s, StringInfo out);
 /* NULL if the bytes are not a schema (the caller raises ERRCODE_INDEX_CORRUPTED) */
 extern SiftColSchema *sift_cschema_parse(MemoryContext mcxt, const void *data, Size len);
@@ -264,6 +265,15 @@ extern SiftColBatch *sift_cbatch_create(MemoryContext mcxt, const SiftColSchema 
 /* Empties the batch (memory kept) for superblock sb; the dictionaries restart */
 extern void sift_cbatch_reset(SiftColBatch *b, uint32 sb);
 extern void sift_cbatch_trim(SiftColBatch *b);
+extern void sift_cbatch_release(SiftColBatch *b);
+extern Size sift_cbatch_bytes(const SiftColBatch *b);
+
+/* The found flags of a connected index in a view of a batch (col/batch.c): the view shares the batch but for those leaves, which are empty and the view's own; put appends a value to a leaf (rows in order); done after the view was used */
+typedef struct SiftColFoundView SiftColFoundView;
+extern SiftColFoundView *sift_cfound_create(MemoryContext mcxt, const SiftColSchema *schema);
+extern SiftColBatch *sift_cfound_view(SiftColFoundView *c, const SiftColBatch *src);
+extern void sift_cfound_put(SiftColBatch *view, int leaf, const SiftColValue *v);
+extern void sift_cfound_done(SiftColFoundView *c);
 /* Sets the version of row r (< nrows or the row being added), makes the batch versioned on the first nonzero xmin */
 extern void sift_cbatch_set_ver(SiftColBatch *b, uint32 r, uint32 xmin, uint32 cmin);
 /* Appends a row; its TID's superblock must be b->sb and its key above the last one's. STR values are interned. */
@@ -604,9 +614,10 @@ extern uint32 sift_cunit_row_page(const SiftCUnitView *v, uint32 row);
 
 /*
  * Appends the live rows of the unit (live: bit vector over its rows, NULL = all) to dst, whose schema is the unit's and whose sb is sb.
- * dicts[col]: the segment's dictionary of each STR leaf (read), the rows' strings are re-interned in dst's own dictionaries.
+ * dicts[col]: the segment's dictionary of each STR leaf (read), the rows' strings are re-interned in dst's own dictionaries. want (NULL: every leaf) names the
+ * scalar leaves to decode: the others are left empty in dst (its keys and rows are complete), and need no dictionary.
  */
-extern void sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint64 *live, SiftColBatch *dst);
+extern void sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint64 *live, const bool *want, SiftColBatch *dst);
 
 /* The zone recomputed from a chunk (for verification: C4). set is meaningful for STR leaves only. */
 extern void sift_cchunk_zone(const SiftCChunk *c, SiftColStore store, SiftCZone *z);

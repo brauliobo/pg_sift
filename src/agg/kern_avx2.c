@@ -10,7 +10,6 @@
 #include "core/simd_isa.h"
 
 #include "agg/kern_int.h"
-#include "col/kern_int.h"
 
 #if defined(__x86_64__)
 
@@ -318,7 +317,6 @@ minmax_f64_avx2(double *mn, double *mx, const double *v, const uint64 *mask, int
 }
 
 SIFT_VEC_PUSH
-#define AKV_NO_MINMAX_I64
 #define AKV_NO_MINMAX_F64
 #define AKV_LANES64(k) ((akv_s) lanes64(k))
 #define AKV_FN(x) x##_avx2

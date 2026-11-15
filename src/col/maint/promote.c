@@ -86,7 +86,10 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	{
 		int			format = sift_col_format_minor;
 		uint32		unit = maint_floor_rows(index);
-		uint64		nbrows = 0;
+		SiftColFill *fill;
+		uint64		nbrows = 0,
+					largest = 0,
+					idx_rows;
 
 		/* the rows of a write buffer written before the kinds were kept may lack them: such a segment is not minor 6, 7 or 8 */
 		for (int i = 0; i < nb; i++)
@@ -97,16 +100,21 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		}
 		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, r->policy, format, cx);
+		fill = sift_conn_fill_begin(index, cx, nbrows);
+		sift_colw_set_fill(w, fill);
+		idx_rows = nbrows;
+		for (int i = 0; i < nin; i++)
 		{
-			uint64		idx_rows = nbrows;
-
-			for (int i = 0; i < nin; i++)
-				idx_rows += in[i].ndocs;
-			sift_colw_set_index_rows(w, idx_rows);
+			idx_rows += in[i].ndocs;
+			largest = Max(largest, in[i].ndocs);
 		}
+		sift_colw_set_index_rows(w, idx_rows);
 		/* the lists the segments hold, as a merge writes them: a promotion that wrote the option's would leave the new segment without */
 		if (sift_col_is_index(index))
 			sift_col_pagg_rewrite(index, in, nin, &rewrite);
+		/* the arrays of a point directory span the rows of the whole index, so that those of an overlay cost more than its rows */
+		rewrite.lean = sift_col_is_index(index) && maint_is_overlay(nbrows, largest);
+		maint_set_unordered(&rewrite, schema, nbrows + maint_overlay_rows(in, nin, NULL, 0), idx_rows);
 		sift_colw_set_preagg(w, &rewrite);
 		if (sift_col_key_cut(r))
 		{
@@ -124,13 +132,15 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 				sift_colw_add(w, batches[i]);
 		rows = sift_colw_rows(w);
 		sift_colw_finish(w, &neu);
-		if (r->rowkey)
+		sift_conn_fill_end(fill);
+		neu.flags |= sealed->flags & SIFT_SEG_ROOTS;
+		if (r->track)
 			sift_seg_set_xstamp(&neu, xstamp);
 		sift_wt_finish(wt);
 	}
 	pages = sift_cwbuf_pages(index, sealed, &npages);
 	sift_maint_replace(index, &sealed->gen, 1, nb > 0 ? &neu : NULL, pages, npages, "promoted a sealed column segment of", start, rows);
-	maint_unit_layout(index, false);
+	sift_cwbuf_arena_drop(index, sealed->gen);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }

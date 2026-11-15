@@ -65,6 +65,8 @@ typedef struct SiftSegmentWriter SiftSegmentWriter;
 #ifdef SIFT_TESTING
 /* sift.test_segfmt: the segment format a build, promotion or merge writes (0 = the build's own, SIFT_WRITE_SEGFMT) */
 extern PGDLLIMPORT int sift_test_segfmt;
+/* sift.test_dead_windows: the windows the dead postings of the segments were counted in (set 0 before) */
+extern PGDLLIMPORT int sift_test_dead_windows;
 #endif
 
 extern SiftSegmentWriter *sift_segw_begin(SiftWriteTarget *wt, uint64 gen,
@@ -348,36 +350,26 @@ typedef struct SiftSegStats
 extern const uint32 sift_df_class_lo[SIFT_DF_CLASSES];
 extern const char *const sift_df_class_name[SIFT_DF_CLASSES];
 
-/*
- * One decoded term: postings in key order with tf and the doc's dl; pos / poslen (NULL without
- * positions, SIFT_TERM_POS) are the postings' position records back to back and their lengths
- */
-typedef bool (*SiftTermVisit) (void *arg, const char *term, int len, const SiftTermInfo *info,
-							   const SiftKey *keys, const uint8 *tf, const uint16 *dl,
-							   const uint8 *pos, const uint32 *poslen);
+/* The postings of one group of a term, in key order, with their tf and the dl of their docs (a term comes in several groups) */
+typedef void (*SiftWalkVisit) (void *arg, const char *term, int len, const SiftTermInfo *info,
+							   const SiftKey *keys, const uint8 *tf, const uint16 *dl, int n);
 
 /*
  * Walks every term of the segment (dictionary order) and decodes its
  * postings. With verify, checks the docmap, liveness, dictionary order and
  * counts, postings (subset of the docmap, count == df, tf stream lengths,
  * group and block bounds >= the true maximum computed with ref's k1 and b
- * and the segment's avgdl_ref) and raises ERRCODE_INDEX_CORRUPTED. visit
- * may be NULL. Memory: O(segment docs) for the dl map.
+ * and the segment's avgdl_ref, position records against tf and dl) and
+ * raises ERRCODE_INDEX_CORRUPTED. visit may be NULL. Memory: the dl of the SBs a
+ * term touches within maintenance_work_mem / 2 (as sift_seg_stream), a group and
+ * a window of the position records, whatever the segment.
  */
 extern void sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify,
-						  SiftSegStats *st, SiftTermVisit visit, void *arg);
+						  SiftSegStats *st, SiftWalkVisit visit, void *arg);
 
 /*
- * Dumps the live part of the segment: docs first (ascending key, dl), then every term with a live posting in dictionary
- * order (info->df is the live count). Memory: O(segment docs) plus the largest term. ref supplies k1 and b.
- */
-typedef void (*SiftDocVisit) (void *arg, const SiftKey *keys, const uint16 *dl, int n);
-
-extern void sift_seg_dump(SiftSegment *seg, const SiftScoreRef *ref, SiftDocVisit docs,
-						  SiftTermVisit terms, void *arg);
-
-/*
- * The same for a merge (the runs of sift_run_from_segment), in memory that does not grow with the segment. term() comes first
+ * Streams the live part of the segment: docs first (ascending key, dl), then every term with a live posting in dictionary order (info->df is the live count).
+ * The segment is delivered to a merge (the runs of sift_run_from_segment) or a reader of its terms, in memory that does not grow with the segment. term() comes first
  * with info->df the number of live postings, then postings() until they are delivered: key order, tf, the dl of the doc, and with
  * SIFT_TERM_POS in info->flags the records back to back and their lengths. A term comes in batches of one group (a superblock)
  * at most, except a small term of a vacuumed segment, which is counted first and then comes in one. The memory is the dl of

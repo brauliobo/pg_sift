@@ -2,22 +2,13 @@
 -- reads the entries of x, where the units were read before. The second order is built where the weighted formula pays (B = log2(3.5) / log2(1.05) against C = G / 3 + W / 5); a
 -- table with no other array to group, or an index so narrow that the second order would double it, has none.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 \set VERBOSITY terse
 
-CREATE FUNCTION ak_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; used bool := false; ra text; rb text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
-	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
-	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
-	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
-	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
-END $$;
+CREATE FUNCTION ak_chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_ordered_rows(q) $$;
 
 -- a date of 365 values, a timestamp in heap order, an integer of 5,000 values, a decimal (it keeps its own array, never a grouped one) and an entity of 400 values
 CREATE TABLE ak (id int, ent_id int, d date, created timestamp, score int, amt numeric(12,2), pad text);
@@ -61,7 +52,7 @@ ANALYZE ak2;
 CREATE INDEX ak2_i ON ak2 USING sift_col (ent_id, d) WITH (key_cut = 'off', key_order = 'off');
 SELECT reloptions FROM pg_class WHERE relname = 'ak2_i';
 
--- an entity of 20 rows is grouped (the formula counts the real bytes of the group, not a depth); one of 2 rows has nothing to order, the group falls on the next entity (score)
+-- an entity of 20 rows is grouped (the formula counts the real bytes of the group, not a depth); one of 2 rows has nothing to order, and score names no entity (no foreign key, no *_id), so there is no group
 CREATE TABLE ak3 (id int, ent_id int, created timestamp, score int, pad text);
 INSERT INTO ak3 SELECT i, abs(hashint4(i)) % 6000, timestamp '2024-01-01' + i * interval '30 seconds', abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
 ANALYZE ak3;
@@ -94,4 +85,5 @@ SELECT ak_chk('SELECT id, created FROM ak6 WHERE tenant_id = 5 ORDER BY created 
 
 DROP TABLE ak, ak1, ak2, ak3, ak4, ak5, ak6;
 DROP FUNCTION ak_chk(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

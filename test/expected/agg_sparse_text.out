@@ -13,8 +13,8 @@ SELECT i,
        i % 97, 'ph' || (i % 13)
 FROM generate_series(1, 30000) i;
 CREATE INDEX pg_col ON pg USING sift_col (id, title, url, kind, uid, phrase);
-NOTICE:  sift_col index "pg_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = kind, phrase; track_changes = id
+NOTICE:  sift_col index "pg_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = kind, phrase; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pg_col');
 VACUUM ANALYZE pg;
 SET max_parallel_workers_per_gather = 0;

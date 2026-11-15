@@ -4,42 +4,15 @@
 #include "postgres.h"
 
 #include "access/genam.h"
-#include "access/heapam.h"
-#include "access/table.h"
-#include "access/htup_details.h"
-#include "access/tupmacs.h"
 #include "access/xact.h"
-#include "catalog/namespace.h"
-#include "catalog/objectaddress.h"
-#include "catalog/pg_class.h"
-#include "utils/acl.h"
-#include "utils/fmgroids.h"
-#include "utils/inval.h"
-#include "catalog/pg_type.h"
-#include "funcapi.h"
 #include "miscadmin.h"
-#include "access/skey.h"
-#include "port/pg_bitutils.h"
-#include "storage/bufmgr.h"
-#include "storage/procarray.h"
-#include "utils/builtins.h"
-#include "utils/datum.h"
-#include "utils/lsyscache.h"
 #include "utils/memutils.h"
-#include "utils/numeric.h"
-#include "utils/rel.h"
-#include "utils/snapmgr.h"
 #include "utils/timestamp.h"
-#include "utils/tuplestore.h"
 
 #include "col/am.h"
-#include "col/pg.h"
 #include "col/seg.h"
-#include "core/cmp.h"
-#include "core/lane.h"
 #include "bm25/maint.h"
 #include "bm25/merge.h"
-#include "core/ops.h"
 #include "table/table.h"
 #include "table/seg_int.h"
 
@@ -226,8 +199,8 @@ unit_aborted_runs(SiftColSegment *seg, uint32 u, SiftTblKeyRuns *runs, uint32 *x
 	return any;
 }
 
-void
-sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, uint32 *sb_lo, uint32 *sb_hi)
+bool
+sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, SiftTblAbortScan *scan, int max_runs, uint32 *sb_lo, uint32 *sb_hi)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table aborted rows", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
@@ -235,33 +208,41 @@ sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, uint32
 			   *cm = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(uint32));
 	uint64	   *live = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
 	SiftKey    *keys = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(SiftKey));
+	bool		done = true;
 
-	for (int i = 0; i < st->dir.nsegs; i++)
+	for (; done && scan->seg < st->dir.nsegs; scan->seg++, scan->unit = 0)
 	{
-		const SiftSegEntry *e = &st->dir.segs[i];
+		const SiftSegEntry *e = &st->dir.segs[scan->seg];
 		SiftColSegment *seg;
 
 		if (!sift_tbl_seg_unfrozen(e))
 			continue;
 		seg = sift_cseg_open(rel, e, cx);
-		for (uint32 u = 0; u < seg->nsb; u++)
+		while (scan->unit < seg->nsb)
 		{
+			uint32		u = scan->unit++;
 			SiftColVerSum sum;
 
 			sift_cseg_ver_sum(seg, u, &sum);
-			if (!sum.any)
-				continue;
-			if (unit_aborted_runs(seg, u, runs, xm, cm, live, keys))
+			if (sum.any && unit_aborted_runs(seg, u, runs, xm, cm, live, keys))
 			{
 				*sb_lo = Min(*sb_lo, sift_cseg_unit_sb(seg, u));
 				*sb_hi = Max(*sb_hi, sift_cseg_unit_sb(seg, u));
 			}
 			CHECK_FOR_INTERRUPTS();
+			if (runs->n >= max_runs)
+			{
+				done = false;
+				break;
+			}
 		}
 		sift_cseg_close(seg);
+		if (!done)
+			break;
 	}
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
+	return done;
 }
 
 int
@@ -430,7 +411,7 @@ merge_most_dead(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 		seg = sift_cseg_open(rel, e, CurrentMemoryContext);
 		dead = e->ndocs - sift_cseg_live_rows(seg);
 		sift_cseg_close(seg);
-		if (dead * 100 > (uint64) e->ndocs * sift_tbl_dead_rewrite_pct && dead * best_docs > best_dead * e->ndocs)
+		if (dead * 100 > (uint64) e->ndocs * sift_tbl_opt_int(st, SIFT_TBLOPT_DEAD_REWRITE_PCT) && dead * best_docs > best_dead * e->ndocs)
 		{
 			sel[0] = *e;
 			best_dead = dead;
@@ -456,7 +437,7 @@ static int
 merge_adjacent(Relation rel, SiftTblRel *st, SiftSegEntry *sel, int n)
 {
 	const SiftTblLayout *l = layout_of(rel, st);
-	uint64		small = (uint64) sift_tbl_write_buffer_limit * 1024 / 2,
+	uint64		small = (uint64) sift_tbl_opt_int(st, SIFT_TBLOPT_WRITE_BUFFER_LIMIT) * 1024 / 2,
 				room = 2 * small;
 	SiftSegEntry *all = palloc(Max(st->dir.nsegs, 1) * sizeof(SiftSegEntry));
 	int			na = 0,
@@ -495,7 +476,7 @@ bool		sift_tbl_coalesce = false;
 static int
 merge_pick(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 {
-	SiftMergePolicy pol = {(uint64) sift_tbl_write_buffer_limit * 1024, SIFT_MERGE_FANIN, no_dead};
+	SiftMergePolicy pol = {(uint64) sift_tbl_opt_int(st, SIFT_TBLOPT_WRITE_BUFFER_LIMIT) * 1024, SIFT_MERGE_FANIN, no_dead};
 	int			n = sift_merge_pick(rel, &pol, &st->dir, false, sel);
 
 	if (n == 0)

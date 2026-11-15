@@ -4,9 +4,9 @@
  * groups of a dump.
  */
 #include "postgres.h"
+#include "core/rowmem.h"
 
 #include "executor/executor.h"
-#include "utils/tuplesort.h"
 
 #include "agg/blob/int.h"
 
@@ -105,11 +105,11 @@ blob_set(AggExec *ex, int ai, const uint32 *gl, uint32 ng, const uint32 *cidx, c
 		for (uint32 g = 0; g < n; g++)
 			if (cidx[g] != UINT32_MAX)
 				total += ex->acc[ai].n[g];
-		pg = palloc(Max(total, 1) * sizeof(uint32));
-		pv = palloc(Max(total, 1) * sizeof(uint32));
-		cg = palloc(Max(total / DB_DENSE, 1) * sizeof(uint32));
-		cc = palloc(Max(total / DB_DENSE, 1) * sizeof(uint32));
-		bits = palloc(Max(total / DB_DENSE, 1) * sizeof(uint64 *));
+		pg = sift_rows_alloc(Max(total, 1) * sizeof(uint32));
+		pv = sift_rows_alloc(Max(total, 1) * sizeof(uint32));
+		cg = sift_rows_alloc(Max(total / DB_DENSE, 1) * sizeof(uint32));
+		cc = sift_rows_alloc(Max(total / DB_DENSE, 1) * sizeof(uint32));
+		bits = sift_rows_alloc(Max(total / DB_DENSE, 1) * sizeof(uint64 *));
 		np = 0;
 		for (uint32 g = 0; g < n; g++)
 			for (uint32 c = 0; d->gd[g] && cidx[g] != UINT32_MAX && c < d->ncd; c++)
@@ -188,7 +188,7 @@ blob_osa(AggExec *ex, int ai, const uint32 *cidx, uint32 n, StringInfo b)
 		if (own->i[g])
 			sid2g[own->i[g] - 1] = cidx[g];
 	initStringInfo(&rb);
-	if (o->sort)
+	if (o->runs)
 	{
 		osa_sort(o);
 		while (osa_next(o, &r))
@@ -198,11 +198,10 @@ blob_osa(AggExec *ex, int ai, const uint32 *cidx, uint32 n, StringInfo b)
 			appendBinaryStringInfo(&rb, (const char *) &rec, sizeof(rec));
 			hd[0]++;
 		}
-		tuplesort_end(o->sort);
-		o->sort = NULL;
+		osa_runs_end(o);
 	}
 	else
-		for (uint64 i = 0; i < o->cap; i++)
+		for (uint64 i = 0; i < OSA_SPAN(o); i++)
 			if (o->slot[i].sid1)
 			{
 				OsaRec		rec = {sid2g[o->slot[i].sid1 - 1], 0, o->slot[i].key, o->slot[i].cnt};

@@ -3,7 +3,6 @@
  * level matches bit for bit), dispatch, BM25 constants, bounds, tf stream
  * encoding and the top-k heap.
  */
-#include "core/host.h"
 
 #include <math.h>
 

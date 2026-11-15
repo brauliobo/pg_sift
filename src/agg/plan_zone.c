@@ -3,14 +3,11 @@
  */
 #include "postgres.h"
 
-#include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
 
 #include "agg/agg.h"
-#include "agg/colsrc.h"
-#include "agg/spec.h"
 #include "agg/plan_int.h"
 #include "core/cmp.h"
 

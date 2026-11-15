@@ -38,7 +38,7 @@ check "the index of the build that stopped does not exist" test "$(has_index)" =
 
 cancelled() {
 	local out
-	out=$(sql mc "SET sift.test_col_refresh_sleep_ms = 3000" "SET statement_timeout = 2000" "$OPTS" "$SMALL" "$PART" "$SEG" "$CREATE" 2>&1) || true
+	out=$(sql mc "SET sift.test_col_refresh_sleep_ms = 3000" "SET statement_timeout = 2000" "$OPTS" "$SMALL" "$PART" "$SEG" "$CREATE" 2>&1) || true  # timeout-ok: the cancel is the test; test_col_refresh_sleep_ms holds the merge past it
 	grep -q "canceling statement" <<<"$out"
 }
 check "a cancel in the middle of the merge ends the build" cancelled

@@ -2,19 +2,11 @@
 -- element (the same element), exactly as EXISTS over jsonb_array_elements. Maps (key.*) have the member name as a text column. Values that the
 -- declared type cannot hold overflow: the row stays a candidate and the heap decides.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
 
-CREATE FUNCTION col_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE tbl regclass; a bigint; b bigint; ex bigint; mi bigint;
-BEGIN
-	SELECT indrelid::regclass INTO tbl FROM pg_index WHERE indexrelid = idx;
-	SELECT count(*) INTO a FROM sift._test_col_tids(idx, preds);
-	EXECUTE format('SELECT count(*) FROM %s WHERE %s', tbl, heapwhere) INTO b;
-	EXECUTE format('SELECT count(*) FROM (SELECT tid FROM sift._test_col_tids(%L, %L) EXCEPT SELECT ctid FROM %s WHERE %s) z', idx, preds, tbl, heapwhere) INTO ex;
-	EXECUTE format('SELECT count(*) FROM (SELECT ctid FROM %s WHERE %s EXCEPT SELECT tid FROM sift._test_col_tids(%L, %L)) z', tbl, heapwhere, idx, preds) INTO mi;
-	RETURN CASE WHEN a = b AND ex = 0 AND mi = 0 THEN 'ok' ELSE format('MISMATCH index=%s heap=%s extra=%s missing=%s', a, b, ex, mi) END;
-END $$;
+CREATE FUNCTION col_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.col_index_matches_heap(idx, preds, heapwhere) $$;
 
 CREATE FUNCTION jarr(j jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$ SELECT CASE WHEN jsonb_typeof(j) = 'array' THEN j ELSE '[]' END $$;
 CREATE FUNCTION items_has(doc jsonb, cat text, kind text, minqty int) RETURNS bool LANGUAGE sql IMMUTABLE AS $$
@@ -38,8 +30,10 @@ SELECT i % 20, (ARRAY['new', 'paid', 'void'])[1 + i % 3],
 				'notes', (SELECT coalesce(jsonb_agg('n' || (i + k) % 5), '[]') FROM generate_series(1, i % 4) k)) END
 FROM generate_series(1, 5000) i;
 
+SET sift.test_col_no_present = on;
 CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, metrics, doc)
 	WITH (paths = 'metrics.* float8, doc.items[]{category text, kind text, qty int4, price float4}, doc.notes[] text', write_buffer_limit = 64);
+RESET sift.test_col_no_present;
 -- leaves: 0 tenant_id, 1 status, 2 metrics.* (group), 3 its member name, 4 its value, 5 doc.items[] (group), 6 category, 7 kind, 8 qty, 9 price,
 -- 10 doc.notes[] (group), 11 its value
 SELECT leaves, rows = (SELECT count(*) FROM orders) AS rows_match FROM sift.col_index_info('o_col');
@@ -162,4 +156,5 @@ DROP FUNCTION items_has(jsonb, text, text, int);
 DROP FUNCTION jarr(jsonb);
 DROP FUNCTION col_cmp(regclass, text, text);
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

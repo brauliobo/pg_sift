@@ -148,7 +148,7 @@ term_decode(MemoryContext cx, RkTerm *t)
 	if (n + SIFT_KERN_PAD > t->tfcap)
 	{
 		t->tfcap = Max(n + SIFT_KERN_PAD, 2 * t->tfcap);
-		t->tf = t->tf ? repalloc(t->tf, t->tfcap) : MemoryContextAlloc(cx, t->tfcap);
+		SIFT_REGROW_IN(cx, t->tf, t->tfcap);
 	}
 	sift_post_group_tf(t->gc, t->tf);
 	t->decoded = true;

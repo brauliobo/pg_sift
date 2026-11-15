@@ -111,7 +111,7 @@ dist_convert(AggExec *ex, Dist *d, DistMode to)
 	if (to == DD_SORT)
 	{
 		d->sort = psort_begin(ex->cxt, d->budget);
-		d->nsid = d->nsidcap = d->sidgroups = 0;
+		d->nsid = d->sidgroups = 0;
 		d->sid = NULL;
 		ex->n_dist_spilled++;
 	}
@@ -124,7 +124,7 @@ dist_convert(AggExec *ex, Dist *d, DistMode to)
 	d->arena = NULL;
 	d->arena_left = 0;
 	d->bytes = 0;
-	d->maxn = Max(d->budget / (4 * sizeof(uint64)), 256);	/* the table is at most half full, and a power of 2 */
+	d->maxn = dist_hash_cap(d);
 	/* a window is aligned to 64 values: its words go into the chunks as words, not a bit at a time */
 	if (old.mode == DD_WORDS && to == DD_BITS)
 		for (uint32 g = 0; g < old.nng; g++)

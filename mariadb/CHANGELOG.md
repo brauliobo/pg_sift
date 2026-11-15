@@ -4,6 +4,22 @@
 (`v1.4.0` is `sift-mariadb` 1.4.0) and `mariadb/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md), those of the SQLite extension in [../sqlite/CHANGELOG.md](../sqlite/CHANGELOG.md).
 
+## 4.1.4
+
+- Rebuilt with the PostgreSQL release 4.1.4.
+
+## 4.1.3
+
+- Rebuilt with the PostgreSQL release 4.1.3.
+
+## 4.1.2
+
+- Rebuilt with the PostgreSQL release 4.1.2.
+
+## 4.1.1
+
+- Rebuilt with the PostgreSQL release 4.1.1.
+
 ## 4.1.0
 
 - Rebuilt with the PostgreSQL release 4.1.0.

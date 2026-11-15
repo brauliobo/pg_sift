@@ -10,18 +10,17 @@
 
 #include "catalog/pg_class.h"
 #include "nodes/makefuncs.h"
-#include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
-#include "utils/lsyscache.h"
 #include "utils/typcache.h"
 
 #include "agg/agg.h"
 #include "agg/flat/int.h"
 
 bool		sift_agg_flat_any;
+double		sift_agg_flat_margin;
 
 /* the entries of the inner joins of a level (their ON conditions and its WHERE are conditions of the same rows) and the conditions */
 void

@@ -5,14 +5,11 @@
  */
 #include "postgres.h"
 
-#include "access/relation.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
 #include "common/hashfn.h"
-#include "funcapi.h"
 #include "storage/lmgr.h"
-#include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/relcache.h"
@@ -89,6 +86,8 @@ row_hash(const SiftColSchema *sc, const SiftColRow *row, SiftKey key)
 	{
 		const SiftColDef *def = &sc->cols[c];
 
+		if (def->flags & SIFT_COLD_FOUND)	/* as of the stamp of the segment, not of the heap row */
+			continue;
 		if (def->parent < 0)
 			value_hashes(&rh, def, &row->val[c]);
 		else
@@ -238,7 +237,7 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 Datum
 sift_col_verify(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_col_open_index(PG_GETARG_OID(0), AccessShareLock);
 	bool		heapallindexed = PG_GETARG_BOOL(1);
 	SiftColRel *r;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
@@ -249,8 +248,6 @@ sift_col_verify(PG_FUNCTION_ARGS)
 	SiftColBatch *batch;
 	uint64		ndocs = 0;
 
-	if (!sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
 	r = sift_col_rel_private(index, cxt);
 	batch = sift_cbatch_create(cxt, r->schema);
 	/* Keeps promotion, merges and the sweep from releasing what the directory snapshot references */

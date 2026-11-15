@@ -8,6 +8,7 @@
 -- empty or equalities (an arm with one bound is a plain comparison, tested row by row); an OR of ranges of two leaves, or of more than an eighth of the values of the index, is tested row by row (the executor).
 -- The point directories are not under test (the rewrite after the ANALYZE would choose them): off.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_legacy_options = on;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;

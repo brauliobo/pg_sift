@@ -34,7 +34,8 @@ sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
 		END LOOP;
 		RETURN true;
 	END \$\$" >/dev/null || bail "setup failed"
-check "the segments of the index are compact" test "$(sql crash "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable' AND format = 41")" -gt 0
+# 41 is the minor of the compact chunks; a segment with a seekable chunk (47, col_gorder_seek) is stamped the newer one
+check "the segments of the index are compact" test "$(sql crash "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable' AND format >= 41")" -gt 0
 
 D=$(dir crash)
 cat >"$D/ins.sql" <<'SQL'
@@ -72,5 +73,5 @@ done
 sql crash "VACUUM (index_cleanup on, disable_page_skipping) orders" "SELECT sift.col_promote('o_col')" "SELECT sift.col_merge('o_col', true)" >/dev/null
 check "a final merge verifies" test -z "$(sql crash "SELECT sift.col_verify('o_col', true)" 2>&1)"
 check "and its ordered reads return the heap's" test "$(sql crash "SELECT ordered_same()")" == t
-check "the merged segment is compact" test "$(sql crash "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable' AND format = 41")" -gt 0
+check "the merged segment is compact" test "$(sql crash "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable' AND format >= 41")" -gt 0
 finish
