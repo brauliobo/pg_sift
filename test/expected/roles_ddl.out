@@ -593,8 +593,8 @@ $$);
  SELECT major FROM sift.index_format('rrd.ins_col')                                         | ERROR: permission denied for index "ins_col" | rrd_none
  SELECT major FROM sift.index_format('rrd.ins_bm')                                          | ok: (1)                                      | rrd_owner, rrd_reader, rrd_monitor
  SELECT major FROM sift.index_format('rrd.ins_bm')                                          | ERROR: permission denied for index "ins_bm"  | rrd_none
- SELECT count(*) >= 0 FROM sift.col_verify('rrd.ins_col')                                   | ok: (t)                                      | rrd_owner, rrd_reader, rrd_monitor
- SELECT count(*) >= 0 FROM sift.col_verify('rrd.ins_col')                                   | ERROR: permission denied for index "ins_col" | rrd_none
+ SELECT count(*) >= 0 FROM sift.col_verify('rrd.ins_col')                                   | ok: (t)                                      | rrd_owner
+ SELECT count(*) >= 0 FROM sift.col_verify('rrd.ins_col')                                   | ERROR: permission denied for index "ins_col" | rrd_reader, rrd_monitor, rrd_none
  SELECT count(*) FROM sift.workers WHERE "table" = 'rrd.ins'::regclass AND relation = index | ok: (2)                                      | rrd_owner, rrd_reader, rrd_monitor
  SELECT count(*) FROM sift.workers WHERE "table" = 'rrd.ins'::regclass AND relation = index | ok: (0)                                      | rrd_none
 (24 rows)
