@@ -47,7 +47,7 @@ Output: one row per bucket; `kind` is `value`, `bucket`, `other` (the values pas
 - **Scans.** Each key facet is a `MATERIALIZED` `GROUP BY` scan of its own; all range facets with the same `WHERE` share one scan of `count(*) FILTER (WHERE ...)`. An array facet unnests in a lateral `SELECT DISTINCT`, so a repeated element counts once per row.
 - **Plan.** With a `sift_col` index on the columns, each scan is a `Custom Scan (SiftAgg)` with the search as the row selection, visible in `EXPLAIN` of `sift.facet_sql(...)`. Without one it is the ordinary plan, same result.
 
-Why a scan per facet and not one `GROUPING SETS`: with four expression keys the planner chose a `SiftScan` and a `HashAgg` (54-163 ms on a million rows, a 3.1 development build), and a single set is not pushed down. A scan per facet with `FILTER` aggregates for the ranges was 7-13 times faster on the same build.
+Why a scan per facet and not one `GROUPING SETS`: with four expression keys the planner chose a `SiftScan` and a `HashAgg` (54-163 ms on a million rows, 3.1), and a single set is not pushed down. A scan per facet with `FILTER` aggregates for the ranges was 7-13 times faster on the same build.
 
 The planner's choice between the aggregate pushdown and a `SiftScan` with a normal aggregate flips with a cold or warm term-statistics cache (`sift_estimate_cached`); results are the same.
 

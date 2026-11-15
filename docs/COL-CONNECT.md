@@ -138,7 +138,7 @@ The fill has two ways to know whether a key has one visible row in the parent un
   relation, its index and the snapshot stay open until the writer calls `sift_conn_fill_end` (the build, the promotion and the merge's partition do).
 
 The price is `rows * 3.5 us` against `parent rows * 130 ns`, with the rows the writer is to write (a promotion's buffer, a merge's share of its partition, a build's share of the table) and the parent's estimated rows: the probe is taken below about 4% of
-the parent's rows, and always when the key set does not fit. There is no setting for it (`sift.test_conn_fill` is for the tests: 1 reads, 2 probes). Both give the same flags: `col_conn_probe` runs every case in the three modes
+the parent's rows, and always when the key set does not fit. There is no setting for it. Both give the same flags: `col_conn_probe` runs every case in the three modes
 and compares the number of flags and the rows of the join and the anti join with the normal plan, for an `int4` and an `int8` parent with deleted, re-keyed and NULL keys, a refill under a new stamp, and a parent whose keys do not fit.
 
 Measured, 500,000 child rows, a write buffer of 12,000 random rows promoted into them (a test-flavour build, one host, `perf stat` of the backend, blocks from `pg_stat_database`).
