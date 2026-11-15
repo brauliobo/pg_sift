@@ -70,6 +70,7 @@ typedef enum AggRefusal
 	AGG_REFUSE_COUNT
 } AggRefusal;
 
+extern const char *sift_agg_limit_name(int lim);
 extern bool sift_explain_refusals;
 extern const char *agg_variant;
 

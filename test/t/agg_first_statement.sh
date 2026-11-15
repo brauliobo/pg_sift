@@ -2,7 +2,7 @@
 # The first statement of a session that has not preloaded the library loads it while the planner opens the column index, after planner() went
 # without sift_planner: its CTE is not planned inline and the aggregates over it run the ordinary plan. The executor start plans that statement
 # again through the hook (agg/cte/hook.c), so it runs in the scan like the statements after it. A fresh psql is a fresh backend: nothing
-# is loaded before the statement under test, and sift.stats() reads the scans that backend ran.
+# is loaded before the statement under test, and sift.stats(local => true) reads the scans that backend ran.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
@@ -29,7 +29,7 @@ Q="SELECT * FROM (
 
 # session STATEMENT...: one fresh backend runs the statements; the last two lines are the scans it ran and the checksum of the first statement's rows
 session() {
-	{ for s in "$@"; do echo "$s;"; done; echo "SELECT 'scans', value FROM sift.stats() WHERE name = 'scans';"; } | sql af
+	{ for s in "$@"; do echo "$s;"; done; echo "SELECT 'scans', value FROM sift.stats(local => true) WHERE name = 'scans';"; } | sql af
 }
 scans() { sed -n 's/^scans|//p' <<<"$1"; }
 
@@ -50,7 +50,7 @@ check "a prepared statement with a parameter returns the rows of the literal one
 
 # the same statement with a parameter, as the extended protocol (psql \bind) and EXECUTE send it: planned with the parameters' types and values
 QP="${Q/IS NULL)/IS NULL AND f.day >= \$1::date)}"
-bound=$({ printf '%s \\bind %s \\g\n' "$QP" "'2026-01-05'"; echo "SELECT 'scans', value FROM sift.stats() WHERE name = 'scans';"; } | sql af)
+bound=$({ printf '%s \\bind %s \\g\n' "$QP" "'2026-01-05'"; echo "SELECT 'scans', value FROM sift.stats(local => true) WHERE name = 'scans';"; } | sql af)
 check "the first statement of a session with a bound parameter runs in the scan" test "$(scans "$bound")" -ge 1
 boundoff=$({ echo "SET sift.enable_agg = off;"; printf '%s \\bind %s \\g\n' "$QP" "'2026-01-05'"; } | sql af | grep -v '^SET$')
 check "its rows are those of the normal plan" test "$(grep -v '^scans|' <<<"$bound" | "$REPO/scripts/sha256.sh")" == "$("$REPO/scripts/sha256.sh" <<<"$boundoff")"
@@ -68,7 +68,7 @@ check "and creates the rows of the normal plan" test "$(grep -v '^scans|' <<<"$c
 # an EXPLAIN that follows other statements of its query string (psql \;) is planned again from its own text, not from the first statement of the string
 expm=$({ echo "SELECT 1 \\; EXPLAIN (COSTS OFF) $Q;"; } | sql af)
 check "EXPLAIN after another statement of the same query string shows the scan" test "$(grep -c SiftAgg <<<"$expm")" -ge 1
-expset=$({ echo "SET enable_seqscan = on \\; EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $Q;"; echo "SELECT 'scans', value FROM sift.stats() WHERE name = 'scans';"; } | sql af)
+expset=$({ echo "SET enable_seqscan = on \\; EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $Q;"; echo "SELECT 'scans', value FROM sift.stats(local => true) WHERE name = 'scans';"; } | sql af)
 check "EXPLAIN ANALYZE after a SET of the same query string runs the scan" test "$(grep -c SiftAgg <<<"$expset")" -ge 1 -a "$(scans "$expset")" -ge 1
 # a query the scan takes whole (a lateral aggregate of the elements under an outer one, over a table that holds each key once) leaves no table in its plan: the plan made again is the scan
 sql af "CREATE TABLE lfacts (id int PRIMARY KEY, g int, items jsonb)" \

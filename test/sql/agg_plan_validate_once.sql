@@ -15,7 +15,7 @@ DECLARE line text;
 BEGIN
 	PERFORM sift.stats_reset();
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP NULL; END LOOP;
-	RETURN (SELECT value FROM sift.stats() WHERE name = 'leaf_stats_checked');
+	RETURN (SELECT value FROM sift.stats(local => true) WHERE name = 'leaf_stats_checked');
 END $$;
 
 -- the first plan builds the statistics

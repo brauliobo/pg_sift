@@ -69,10 +69,14 @@ typedef struct SiftMetaStamp
 	uint32		reserved;
 } SiftMetaStamp;
 
-/* The reads of the server that maintenance weighs against a step of its own: one sum for the write buffer open now and one for the tombstone log, each for the generation of the segment it was paid to */
-#define SIFT_META_READS			2
+/*
+ * The reads of the server that maintenance weighs against a step of its own: one sum for the write buffer open now, one for the tombstone log, each for the generation of the segment it was paid to,
+ * and the scans of a key-cut index, for the weighing of the merge of its overlays (generation 1: the count lasts as long as the index)
+ */
+#define SIFT_META_READS			3
 #define SIFT_READ_WBUF			0
 #define SIFT_READ_MARKS			1
+#define SIFT_READ_SCANS			2
 
 typedef struct SiftMetaReads
 {
@@ -105,7 +109,7 @@ typedef struct SiftMetaPageData
 	SiftMetaStamp scope_floor[SIFT_META_STAMPS];
 	/* What the reads of the server paid, for each scope, on top of the filled read, for the pairs changed since its floor, in instructions (col/scope_paid.c); zero again in the switch that moves the floor */
 	uint64		scope_paid[SIFT_META_SCOPES];
-	/* What the reads of the server paid for what maintenance would spare them, for the segment generation each was paid under (col/wbuf/reads.c): the open write buffer's rows decoded, the instructions of the tombstone log's marks */
+	/* What the reads of the server paid for what maintenance would spare them, for the segment generation each was paid under (col/wbuf/reads.c): the open write buffer's rows decoded, the instructions of the tombstone log's marks, and the scans of the index */
 	SiftMetaReads reads[SIFT_META_READS];
 	/* What the workers did last (sift.workers, sift.col_space): when and how long the last background step that ended well ran and which job it was (core/worker.h), the failures counted for good (the backoff counts the ones in a row), and the last shrink of the file with why the next one is blocked */
 	TimestampTz maint_ok_at;	/* 0: none */

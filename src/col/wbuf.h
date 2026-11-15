@@ -148,6 +148,12 @@ extern bool sift_cwbuf_decoded_take(void);
  */
 extern void sift_col_marks_note(Relation index, uint64 loggen, uint64 instr);
 extern uint64 sift_col_marks_paid(Relation index, const SiftMetaPageData *meta, uint64 loggen);
+/*
+ * A scan of the index begins (the metapage as the scan read it): counted in the sum of the scans that the merge of the overlays is weighed against (col/wbuf/reads.c says how a scan counts), and what the metapage has
+ * for them plus what this backend has not written yet
+ */
+extern void sift_scans_note(Relation index, const SiftMetaPageData *meta);
+extern uint64 sift_scans_paid(Relation index, const SiftMetaPageData *meta);
 /* Does this backend hold sums not written to the metapage of the index; write them, except those whose rule is met already (the callers' due functions, NULL for a sum the index has none of): the end of a statement (col/wbuf/reads.c) */
 extern bool sift_reads_pending(Oid index);
 extern void sift_reads_flush(Relation index, bool (*wbuf_met) (Relation), bool (*marks_met) (Relation));

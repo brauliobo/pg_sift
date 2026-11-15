@@ -267,7 +267,7 @@ if (( PG_MAJOR >= 18 )); then
 	check "REINDEX after the upgrade writes complete kinds (minor 12 or later, with the sections that are on by default)" test "$(q life upg31 "SELECT min(format) >= 12 FROM sift.col_segments('kinds31_col') WHERE kind = 'immutable'")" == t
 	check "3.1 updated to 3.2 has the objects of a fresh 3.2 install" test "$(q life upg31 "$MEMBERS")" == "$(q life fresh32 "$MEMBERS")"
 	# the 3.2 scripts are the released ones: the functions of 3.3 come with 3.2--3.3.sql and pg_sift--3.3.sql only
-	NEWFN="SELECT string_agg(proname, ',' ORDER BY proname) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace
+	NEWFN="SELECT string_agg(DISTINCT proname, ',' ORDER BY proname) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace
 		AND proname IN ('col_refresh', 'col_clustering', 'stats', 'stats_reset', 'col_rollup_misses', 'explain_why', 'upgrade_commands')"
 	check "a fresh 3.2 install has none of the functions added in 3.3" test "$(q life fresh32 "$NEWFN")" == ""
 	# the last step of the chain names the index of minor 4 that nothing rewrote, not the one the REINDEX above rewrote
@@ -311,7 +311,7 @@ if (( PG_MAJOR >= 18 )); then
 	check "the functions added in 3.3 exist after a fresh $EXT install and after each update path" test "$(for d in freshext upg upg31 upg32 upg33 upg34 upg35 upg36 upg37 upg40 upg403 upg41; do q life $d "$NEWFN"; done | sort -u)" == "col_clustering,col_refresh,col_rollup_misses,explain_why,stats,stats_reset,upgrade_commands"
 	check "the functions added in 3.3 run on an index written before the update" test "$(q life upg32 "SELECT sift.stats_reset()" \
 		"SELECT remaining FROM sift.col_refresh('items_col', 0)" "SELECT count(*) > 0 FROM sift.col_clustering('items_col')" \
-		"SELECT count(*) >= 0 FROM sift.stats()" "SELECT count(*) >= 0 FROM sift.col_rollup_misses()" \
+		"SELECT count(*) >= 0 FROM sift.stats(local => true)" "SELECT count(*) >= 0 FROM sift.col_rollup_misses()" \
 		"SELECT count(*) > 0 FROM sift.explain_why('SELECT kind, count(*) FROM items GROUP BY 1')" | tr -d '\n')" == "1tttt"   # remaining 1: the segment of an index written before the update lacks the sections that are on by default
 	# 22 indexes: the first 20 commands and the count of the rest; an index that another session holds is never waited for
 	q life postgres "CREATE DATABASE cap32" "CREATE DATABASE lock32" >/dev/null

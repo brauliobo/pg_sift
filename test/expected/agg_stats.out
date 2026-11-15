@@ -1,4 +1,4 @@
--- sift.stats() holds what the Custom Scan (SiftAgg) scans of the session did, folded in when a scan ends from the counters EXPLAIN ANALYZE shows:
+-- sift.stats(local => true) holds what the Custom Scan (SiftAgg) scans of the session did, folded in when a scan ends from the counters EXPLAIN ANALYZE shows:
 -- each figure is compared with the one of the statement that made it. sift.col_rollup_misses() lists the scans the pre-aggregates did not answer.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -11,7 +11,7 @@ NOTICE:  sift_col index "ev_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (FREEZE, ANALYZE) ev;
-CREATE FUNCTION stat(n text) RETURNS bigint LANGUAGE sql AS $$ SELECT coalesce((SELECT value FROM sift.stats() WHERE name = n), 0) $$;
+CREATE FUNCTION stat(n text) RETURNS bigint LANGUAGE sql AS $$ SELECT coalesce((SELECT value FROM sift.stats(local => true) WHERE name = n), 0) $$;
 -- the statement's EXPLAIN ANALYZE figures against the counters of a session that ran nothing else
 CREATE FUNCTION compare(q text) RETURNS TABLE (what text, same bool) LANGUAGE plpgsql AS $$
 DECLARE e jsonb;
@@ -114,7 +114,7 @@ SELECT sift.stats_reset();
  
 (1 row)
 
-SELECT count(*) FILTER (WHERE value <> 0) AS nonzero, count(*) AS counters FROM sift.stats();
+SELECT count(*) FILTER (WHERE value <> 0) AS nonzero, count(*) AS counters FROM sift.stats(local => true);
  nonzero | counters 
 ---------+----------
        0 |       32
@@ -276,7 +276,7 @@ SELECT d.country, count(*) FROM dims d GROUP BY 1 ORDER BY 1 LIMIT 1;
        0 |     2
 (1 row)
 
-SELECT name, value FROM sift.stats() WHERE name LIKE 'refused.%' ORDER BY name;
+SELECT name, value FROM sift.stats(local => true) WHERE name LIKE 'refused.%' ORDER BY name;
  name | value 
 ------+-------
 (0 rows)
@@ -288,7 +288,7 @@ SELECT d.country, count(*) FROM dims d GROUP BY 1 ORDER BY 1 LIMIT 1;
        0 |     2
 (1 row)
 
-SELECT name, value FROM sift.stats() WHERE name LIKE 'refused.%' ORDER BY name;
+SELECT name, value FROM sift.stats(local => true) WHERE name LIKE 'refused.%' ORDER BY name;
        name        | value 
 -------------------+-------
  refused.no_source |     1

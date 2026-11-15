@@ -19,9 +19,9 @@ DECLARE line text;
 BEGIN
 	PERFORM sift.stats_reset();
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP NULL; END LOOP;
-	SELECT value INTO checked FROM sift.stats() WHERE name = 'leaf_stats_checked';
-	SELECT value INTO dir_read FROM sift.stats() WHERE name = 'leaf_stats_dir_read';
-	SELECT value INTO built FROM sift.stats() WHERE name = 'leaf_stats_built';
+	SELECT value INTO checked FROM sift.stats(local => true) WHERE name = 'leaf_stats_checked';
+	SELECT value INTO dir_read FROM sift.stats(local => true) WHERE name = 'leaf_stats_dir_read';
+	SELECT value INTO built FROM sift.stats(local => true) WHERE name = 'leaf_stats_built';
 END $$;
 
 \set q 'SELECT a, count(*), sum(amount) FROM pd WHERE id > 100 GROUP BY a'

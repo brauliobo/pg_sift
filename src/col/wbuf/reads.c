@@ -11,15 +11,23 @@
  * A read adds to a small list of its backend, and the end of its statement writes the list in one record of the metapage alone (sift_meta_update: the directory is not touched, so no scan that holds a copy of it is told of a change).
  * A sum that already meets the rule (the caller's `met`, computed without the list) is not written again: more would be written for nothing, and a rule that cannot run (no worker) would otherwise make every read write.
  * A standby cannot write: its reads count nowhere. What the reads of a scope paid for its changed pairs is kept the same way (col/scope_paid.c).
+ *
+ * The scans of a key-cut index are counted the same way (SIFT_READ_SCANS), for the weighing of the merge of its overlays (maint/rewrite.c): a count of every scan would write the metapage, which every scan reads,
+ * once for each of them, so a scan is counted as many as the count says (SCANS_EXACT scans each, then a scan is sampled with the probability 1/k and counts k, k being 1 and one more for every SCANS_EXACT counted):
+ * the count is the number of scans on average and exact while it is small, a session that reads once adds to it as much as one that reads a million times, and the index is written about
+ * SCANS_EXACT times for each e-fold of its scans (a million scans: 700 records), where pg_stat's numscans, which this count replaces, is lost by pg_stat_reset() and by a crash.
  */
 #include "postgres.h"
 
 #include "access/xlog.h"
+#include "common/pg_prng.h"
 #include "utils/memutils.h"
 
 #include "col/wbuf.h"
 #include "core/restrict.h"
 #include "core/store.h"
+
+#define SCANS_EXACT		64
 
 typedef struct Pending
 {
@@ -54,6 +62,15 @@ reads_add(Relation index, int kind, uint64 gen, uint64 paid)
 		pending = pending ? repalloc(pending, cap * sizeof(Pending)) : MemoryContextAlloc(TopMemoryContext, cap * sizeof(Pending));
 	}
 	pending[npending++] = (Pending) {.index = oid,.kind = kind,.gen = gen,.paid = paid};
+}
+
+void
+sift_scans_note(Relation index, const SiftMetaPageData *meta)
+{
+	uint64		k = 1 + meta->reads[SIFT_READ_SCANS].paid / SCANS_EXACT;
+
+	if (k == 1 || pg_prng_uint64_range(&pg_global_prng_state, 0, k - 1) == 0)
+		reads_add(index, SIFT_READ_SCANS, 1, k);
 }
 
 void
@@ -110,6 +127,12 @@ uint64
 sift_col_marks_paid(Relation index, const SiftMetaPageData *meta, uint64 loggen)
 {
 	return reads_paid(index, meta, SIFT_READ_MARKS, loggen);
+}
+
+uint64
+sift_scans_paid(Relation index, const SiftMetaPageData *meta)
+{
+	return reads_paid(index, meta, SIFT_READ_SCANS, 1);
 }
 
 bool
@@ -172,7 +195,7 @@ sift_reads_flush(Relation index, bool (*wbuf_met) (Relation), bool (*marks_met) 
 		return;
 	for (int i = 0; i < n; i++)
 	{
-		bool		(*fn) (Relation) = mine[i].kind == SIFT_READ_WBUF ? wbuf_met : marks_met;
+		bool		(*fn) (Relation) = mine[i].kind == SIFT_READ_WBUF ? wbuf_met : mine[i].kind == SIFT_READ_MARKS ? marks_met : NULL;
 
 		if (fn != NULL && !met[mine[i].kind] && fn(index))
 			met[mine[i].kind] = true;

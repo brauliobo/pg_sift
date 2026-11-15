@@ -5,7 +5,6 @@
  */
 #include "postgres.h"
 #include "col/maint/maint_int.h"
-#include "pgstat.h"
 
 #define WHY_BUFFER	"write buffer rows"
 #define WHY_DECIDE	"options chosen again"
@@ -37,31 +36,32 @@ bool		maint_read_asked = false;
 /* What a segment costs a read that lists it, in instructions, even when every unit of it is pruned (15,600 measured) */
 #define SEG_PRICE	15600.0
 
-static double
-index_scans(Relation index)
+/* A scan of a key-cut index begins: only its overlays are weighed against the scans */
+void
+sift_col_scan_note(Relation index, const struct SiftColSource *src)
 {
-	const PgStat_StatTabEntry *tab = pgstat_fetch_stat_tabentry(RelationGetRelid(index));
-
-	return tab ? (double) tab->numscans : 0.0;
+	if (sift_col_key_cut(sift_col_rel(index)))
+		sift_scans_note(index, sift_col_source_meta(src));
 }
 
 /*
  * Is the merge of the small overlays of a key-cut index worth its rows? A request for a key reads, in each overlay whose units cover it, a unit that the merged overlay would hold in one
  * with the others: the units spared for a request of a key the overlays hold are the widths of their key ranges added, less the width of them together, over the width of them together.
- * The requests of an index follow its data: the keys that get new rows (the overlays) are the ones asked for, so that a key outside them is not counted as one that is. The requests are the scans the statistics count
- * for the index (the aggregate scan counts one too) since they were reset, and the merge is due when what they paid comes to half of what the rewrite of the overlays costs (as
+ * The requests of an index follow its data: the keys that get new rows (the overlays) are the ones asked for, so that a key outside them is not counted as one that is. The requests are the scans of the index (the aggregate scan counts one too) that its metapage counts
+ * (col/wbuf/reads.c), which neither pg_stat_reset() nor a restart takes, and the merge is due when what they paid comes to half of what the rewrite of the overlays costs (as
  * the reads of sift_col_vacuum_tick do). A unit costs a read to open and, when it holds more rows than the key has, to scan them: the overlays of a promotion are as wide as the units of the index, so that
  * a unit spared is worth its rows (7,400 of them: 0.15 M instructions, not 46,000): an index no one reads, or overlays that hold few keys, are left alone.
  */
 static bool
-overlay_worth(Relation index, const OverlayEv *ev)
+overlay_worth(Relation index, const SiftMetaPageData *meta, const OverlayEv *ev)
 {
-	double		spared = (ev->sum - ev->cover) / Max(ev->cover, 1.0),
+	double		scans = (double) sift_scans_paid(index, meta),
+				spared = (ev->sum - ev->cover) / Max(ev->cover, 1.0),
 				unit = UNIT_PRICE + UNIT_ROW_PRICE * (double) ev->rows / Max(ev->units, 1);
 
 	if (ev->forced)
-		return index_scans(index) > 0;
-	return spared > 0 && index_scans(index) * (spared * unit + (ev->n - 1) * SEG_PRICE) >= MAINT_HALF * ROW_PRICE * (double) ev->rows;
+		return scans > 0;
+	return spared > 0 && scans * (spared * unit + (ev->n - 1) * SEG_PRICE) >= MAINT_HALF * ROW_PRICE * (double) ev->rows;
 }
 
 /*
@@ -275,7 +275,7 @@ rewrite_why(Relation index, bool automatic, int *gates)
 	conn_stale = v->conn_stale;
 	key_overlap = v->nkover;
 	build_peers = peers_overlap(v) || key_runs(v);
-	overlay_due = maint_overlay_set(index, v, take, &ev) && overlay_worth(index, &ev);
+	overlay_due = maint_overlay_set(index, v, take, &ev) && overlay_worth(index, &snap->meta, &ev);
 	for (int i = 0; i < v->n; i++)
 	{
 		const SiftSegEntry *e = &v->imm[i];
@@ -442,7 +442,7 @@ overlay_maybe(Relation index, const SiftDirSnapshot *snap)
 			rows += snap->segs[i].ndocs;
 			units += (uint64) snap->segs[i].sb_hi + 1 - snap->segs[i].sb_lo;
 		}
-	return n >= 2 && index_scans(index) * ((double) units * UNIT_PRICE + n * SEG_PRICE) >= MAINT_HALF * ROW_PRICE * (double) rows;
+	return n >= 2 && (double) sift_scans_paid(index, &snap->meta) * ((double) units * UNIT_PRICE + n * SEG_PRICE) >= MAINT_HALF * ROW_PRICE * (double) rows;
 }
 
 /*

@@ -38,7 +38,7 @@ BEGIN
 	RETURN format('shared: %s; scans: %s', coalesce(nullif(array_to_string(ctes, ' '), ''), 'none'), scans);
 END $f$;
 CREATE FUNCTION counts() RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(replace(name, 'verdict_cache_', '') || '=' || value, ' ' ORDER BY name) FROM sift.stats() WHERE name IN ('verdict_cache_hits', 'verdict_cache_misses') $$;
+$$ SELECT string_agg(replace(name, 'verdict_cache_', '') || '=' || value, ' ' ORDER BY name) FROM sift.stats(local => true) WHERE name IN ('verdict_cache_hits', 'verdict_cache_misses') $$;
 -- planned in full (the cache has nothing), then from the verdict twice: the same plan, lb shared
 SELECT sift.stats_reset();
  stats_reset 

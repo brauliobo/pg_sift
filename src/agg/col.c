@@ -18,6 +18,7 @@
 #include "agg/wide.h"
 #include "core/store.h"
 #include "core/visibility.h"
+#include "col/am.h"
 #include "col/col.h"
 #include "col/gpu.h"
 #include "col/pagg.h"
@@ -309,7 +310,8 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 	src->index = index;
 	src->snapshot = snapshot;
 	src->cs = sift_col_open(heap, index, snapshot, mcxt, flags, view);
-	pgstat_count_index_scan(index);	/* idx_scan counts the aggregate scans too: maint/rewrite.c overlay_worth reads it */
+	pgstat_count_index_scan(index);	/* idx_scan counts the aggregate scans too */
+	sift_col_scan_note(index, src->cs);
 	src->lay = col_layout(index);
 	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
 	src->buf = palloc0(sizeof(SiftSrcLeafBuf) * src->lay->nleaves);

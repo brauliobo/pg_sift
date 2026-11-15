@@ -40,5 +40,5 @@ sql rd "ALTER DATABASE postgres SET sift.eval_methods = ''" >/dev/null
 base=$(vacuums)
 churn 1
 check "with the list empty the same few reads ask for it, by the rule of a thousand rows" asked_by_reads "$base"
-check "the counters of the read penalty are in sift.stats" test "$(sql rd "SELECT count(*) FROM sift.stats() WHERE name IN ('rows_dirty_units', 'read_penalty_kinstr', 'maintenance_asks')")" == 3
+check "the counters of the read penalty are in sift.stats" test "$(sql rd "SELECT count(*) FROM sift.stats(local => true) WHERE name IN ('rows_dirty_units', 'read_penalty_kinstr', 'maintenance_asks')")" == 3
 finish

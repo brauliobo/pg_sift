@@ -32,13 +32,13 @@ DECLARE l text; t text := '';
 BEGIN FOR l IN EXECUTE 'EXPLAIN ' || q LOOP t := t || l || E'\n'; END LOOP; RETURN md5(t); END $$;
 SQL
 
-sql primary "LOAD 'pg_sift'" "SELECT count(*) FROM sift.stats()" >/dev/null || bail "sift is not installed in the node"
+sql primary "LOAD 'pg_sift'" "SELECT count(*) FROM sift.stats(local => true)" >/dev/null || bail "sift is not installed in the node"
 
 # a new backend: the plan of the statement as an md5, then hits,misses,shared hits of the session
 backend() {
 	local node=$1 pre=${2:-SET sift.enable_agg = on}
 	sql "$node" "LOAD 'pg_sift'" "SET max_parallel_workers_per_gather = 0" "$pre" "SELECT plan_md5(series_query(10))" \
-		"SELECT string_agg(value::text, ',' ORDER BY name) FROM sift.stats() WHERE name IN ('verdict_cache_hits', 'verdict_cache_misses', 'verdict_cache_shared_hits')" | tr '\n' ' ' | sed 's/ $//'
+		"SELECT string_agg(value::text, ',' ORDER BY name) FROM sift.stats(local => true) WHERE name IN ('verdict_cache_hits', 'verdict_cache_misses', 'verdict_cache_shared_hits')" | tr '\n' ' ' | sed 's/ $//'
 }
 n_locks() { [[ $(sql primary "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND $1") == "$2" ]]; }
 victim() { sql primary "SELECT pid FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(600)%' AND pid <> pg_backend_pid()"; }

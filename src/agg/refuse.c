@@ -76,7 +76,7 @@ typedef struct ArmNote
 	const char *name;
 	AggRefusal	why;
 	const char *detail;
-	const char *limit;			/* the id of the limit of core/limits.h the refusal is for */
+	int			lim;			/* the limit of core/limits.h the refusal is for (SIFT_LIM_*), -1: none */
 	bool		candidate;
 	bool		claim;			/* the statement has to show the arm's shape (agg_arm_candidate) before a refusal is reported: the sites of the arm see statements that have none */
 	bool		used;
@@ -149,7 +149,7 @@ bool
 agg_refuse_limit_note(AggRefusal why, int lim, const char *detail)
 {
 	if (arm != NULL && arm->why == AGG_REFUSE_NONE)
-		arm->limit = limit_names[lim];
+		arm->lim = lim;
 	return agg_refuse_note(why, detail);
 }
 
@@ -177,6 +177,7 @@ agg_arm_begin(const char *name, bool candidate)
 	if (!sift_explain_refusals)
 		return;
 	arm = palloc0(sizeof(ArmNote));
+	arm->lim = -1;
 	arm->name = arm_name(name);
 	arm->limited = strcmp(name, "topn") == 0;
 	arm->candidate = candidate;
@@ -379,7 +380,7 @@ report(const ArmNote *a)
 	if (quiet_reports)
 		return;
 	if (!a->used && a->why != AGG_REFUSE_NONE)
-		sift_stats_refusal(refusals[a->why].slug, a->limit);
+		sift_stats_refusal(a->why, a->lim);
 	if (hold_cx != NULL && a->used && agg_variant != NULL && why_store != NULL)
 	{
 		ArmNote    *h = MemoryContextAlloc(hold_cx, sizeof(ArmNote));
@@ -427,7 +428,7 @@ agg_variant_settle(bool kept, const char *detail)
 void
 agg_report(const char *name, AggRefusal why, const char *detail, bool used, double scan, double normal)
 {
-	ArmNote		a = {.why = why, .detail = detail, .used = used, .paths = NIL, .scan = scan, .normal = normal};
+	ArmNote		a = {.why = why, .detail = detail, .lim = -1, .used = used, .paths = NIL, .scan = scan, .normal = normal};
 
 	if (!sift_explain_refusals)
 		return;
@@ -942,6 +943,12 @@ sift_agg_refuse_init(void)
 							 "Counts in sift.stats() why queries kept the normal plan (refused.<slug>, limit.<id>), without the notice of sift.explain_refusals.",
 							 NULL, &count_refusals, false,
 							 PGC_USERSET, 0, NULL, assign_count, NULL);
+}
+
+const char *
+sift_agg_limit_name(int lim)
+{
+	return limit_names[lim];
 }
 
 /* The row i (from 1) of the registry for sift.help(); false past the last */

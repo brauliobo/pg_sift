@@ -236,6 +236,12 @@ sift_col_heap_sbs(const SiftColSource *src)
 	return src->heap_sbs;
 }
 
+const struct SiftMetaPageData *
+sift_col_source_meta(const SiftColSource *src)
+{
+	return &src->dir.meta;
+}
+
 const SiftColCounters *
 sift_col_counters(const SiftColSource *src)
 {

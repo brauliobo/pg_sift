@@ -24,7 +24,7 @@ backend() {
 	local node=$1 pre=${2:-SET sift.enable_agg = on}
 	sql "$node" "LOAD 'pg_sift'" "SET max_parallel_workers_per_gather = 0" "$pre" \
 		"SELECT plan_md5('SELECT kind_id, sum(amount), count(*) FROM events WHERE set_id IN (3, 4) AND ts >= date ''2025-06-01'' GROUP BY kind_id')" \
-		"SELECT string_agg(value::text, ',' ORDER BY name) FROM sift.stats() WHERE name IN ('leaf_stats_built', 'leaf_stats_shared')" | tr '\n' ' ' | sed 's/ $//'
+		"SELECT string_agg(value::text, ',' ORDER BY name) FROM sift.stats(local => true) WHERE name IN ('leaf_stats_built', 'leaf_stats_shared')" | tr '\n' ' ' | sed 's/ $//'
 }
 BUILT='1,0'
 SHARED='0,1'
@@ -62,7 +62,7 @@ node_start primary || bail "restart failed"
 parts() {
 	sql primary "LOAD 'pg_sift'" "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = on" \
 		"EXPLAIN SELECT set_id, count(*), sum(amount) FROM spread GROUP BY set_id" \
-		"SELECT string_agg(value::text, ',' ORDER BY name) FROM sift.stats() WHERE name IN ('leaf_stats_built', 'leaf_stats_shared')" | tail -1
+		"SELECT string_agg(value::text, ',' ORDER BY name) FROM sift.stats(local => true) WHERE name IN ('leaf_stats_built', 'leaf_stats_shared')" | tail -1
 }
 check "the first backend folds the statistics of 1,100 partitions" test "$(parts)" == "1100,0"
 check "and the next takes all of them, as many as the 1,024 places the table once had and more" test "$(parts)" == "0,1100"

@@ -1,6 +1,6 @@
 -- The choice between a shared CTE and its inline plan (cte.c) is kept for the statements of a backend under the statement without its constants, the size
 -- class of each table it reads and the settings that move a plan, and a hit plans the chosen variant only. A stale verdict is the plan of the other variant,
--- never other rows. The counters are sift.stats().
+-- never other rows. The counters are sift.stats(local => true).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE kinds (id int PRIMARY KEY, enabled bool NOT NULL);
@@ -34,9 +34,9 @@ CREATE FUNCTION plan_it(q text) RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUT
 CREATE FUNCTION arms(q text) RETURNS text LANGUAGE sql AS
 $$ SELECT string_agg(arm || ':' || used, ' ' ORDER BY arm) FROM sift.explain_why(q) WHERE arm IN ('cte_inline', 'verdict_cached') $$;
 CREATE FUNCTION counts() RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(replace(name, 'verdict_cache_', '') || '=' || value, ' ' ORDER BY name) FROM sift.stats() WHERE name LIKE 'verdict_cache_%' AND name <> 'verdict_cache_shared_hits' $$;
+$$ SELECT string_agg(replace(name, 'verdict_cache_', '') || '=' || value, ' ' ORDER BY name) FROM sift.stats(local => true) WHERE name LIKE 'verdict_cache_%' AND name <> 'verdict_cache_shared_hits' $$;
 CREATE FUNCTION shared_hits() RETURNS bigint LANGUAGE sql AS
-$$ SELECT value FROM sift.stats() WHERE name = 'verdict_cache_shared_hits' $$;
+$$ SELECT value FROM sift.stats(local => true) WHERE name = 'verdict_cache_shared_hits' $$;
 -- the first statement is planned in full, the next with other constants from its verdict while its request is of about the same size (agg_cte_verdict_sizes
 -- has the others)
 SELECT sift.stats_reset();

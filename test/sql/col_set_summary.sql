@@ -120,7 +120,7 @@ SELECT (SELECT by_set FROM ss_units('SELECT count(*) FROM ss WHERE parent_id = '
        (SELECT by_set FROM ss_units('SELECT count(*) FROM ss_b WHERE parent_id = ' || :p1)) = 0 AS no_summary_no_skip;
 SELECT sift.col_verify('ss_on', true);
 
--- sift.stats() splits the units a scan skipped: the ones only a summary cleared are units_pruned_set, the figure EXPLAIN gives, and the sum is Units Pruned
+-- sift.stats(local => true) splits the units a scan skipped: the ones only a summary cleared are units_pruned_set, the figure EXPLAIN gives, and the sum is Units Pruned
 CREATE FUNCTION ss_split(q text, OUT set_is_explain bool, OUT parts_add_up bool, OUT set_skips bool, OUT zone_skips bool) LANGUAGE plpgsql AS $$
 DECLARE u record;
 BEGIN
@@ -130,7 +130,7 @@ BEGIN
 		   sum(value) FILTER (WHERE name LIKE 'units_pruned_%') = u.pruned,
 		   sum(value) FILTER (WHERE name = 'units_pruned_set') > 0,
 		   sum(value) FILTER (WHERE name = 'units_pruned_zone') > 0
-	INTO set_is_explain, parts_add_up, set_skips, zone_skips FROM sift.stats();
+	INTO set_is_explain, parts_add_up, set_skips, zone_skips FROM sift.stats(local => true);
 END $$;
 SELECT 'point' AS shape, * FROM ss_split('SELECT count(*) FROM ss WHERE parent_id = ' || :p1)
 UNION ALL SELECT 'zone and set', * FROM ss_split('SELECT count(*) FROM ss WHERE id < 3000 AND kind = ' || :k1)

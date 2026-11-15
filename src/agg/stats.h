@@ -1,8 +1,9 @@
 /*
- * agg/stats.h - sift.stats(): the counters of this backend (docs/USAGE.md "Session statistics").
+ * agg/stats.h - sift.stats(): the counters of the server and of this backend (docs/USAGE.md "Session statistics").
  *
- * Plain memory of the process, no shared memory and no shared_preload_libraries: a scan folds its own counters (the ones EXPLAIN ANALYZE shows)
- * into these once, when it ends, so no loop of a scan pays for them.
+ * A scan folds its own counters (the ones EXPLAIN ANALYZE shows) into these once, when it ends, so no loop of a scan pays for them. Each count goes to the
+ * counters of the backend (sift.stats(local => true)) and to a table of the directory of the shared memory (col/dsmreg.c; no shared_preload_libraries),
+ * which is the total of every backend since the server started (sift.stats()).
  */
 #ifndef SIFT_AGG_STATS_H
 #define SIFT_AGG_STATS_H
@@ -54,16 +55,19 @@ typedef enum SiftStat
 
 extern int64 sift_stat_v[SIFT_STAT_COUNT];
 
+extern void sift_stats_share(SiftStat s, int64 n);
+
 static inline void
 sift_stat_add(SiftStat s, int64 n)
 {
 	sift_stat_v[s] += n;
+	sift_stats_share(s, n);
 }
 
 /* a scan of the relation (index, else table) could not use its pre-aggregates for the reason (a static string), and `units` of it were scanned for it */
 extern void sift_stats_preagg_miss(Oid rel, const char *slug, bool fixable, int64 units);
 
-/* a query kept the normal plan for the refusal named by slug (a static string; agg/refuse.h) */
-extern void sift_stats_refusal(const char *slug, const char *limit);
+/* a query kept the normal plan for the refusal why (AggRefusal, agg/refuse.h), for the limit lim (SIFT_LIM_*) when it is -1 or more */
+extern void sift_stats_refusal(int why, int lim);
 
 #endif

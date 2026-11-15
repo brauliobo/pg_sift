@@ -1,27 +1,41 @@
 /*
- * agg/stats.c - sift.stats, sift.stats_reset and sift.col_rollup_misses: what the scans of this backend did (agg/stats.h).
+ * agg/stats.c - sift.stats, sift.stats_reset and sift.col_rollup_misses: what the scans did (agg/stats.h).
  *
- * The counters live in the process and are lost with it; nothing here is shared, so there is no cluster-wide figure. A statement that
- * fails does not fold its scan in, and a worker's counters reach the leader's scan before it is folded in.
+ * The counters of the server are a table of the directory of the shared memory (col/dsmreg.c), made by the first backend that counts: a counter for each statistic, for each refusal of the
+ * registry and for each fixed limit, so that the table has no limit of its own and a backend adds to it with one atomic increment. They are lost when the server stops or crashes: nothing
+ * decides on them (the merge of the overlays is weighed on a count of the metapage of the index). The counters of the backend are plain memory, the figures of the session, lost with it.
+ * A statement that fails does not fold its scan in, and a worker's counters reach the leader's scan before it is folded in. The pairs of sift.col_rollup_misses are the session's.
  */
 #include "postgres.h"
 
 #include "fmgr.h"
 #include "funcapi.h"
+#include "port/atomics.h"
 #include "utils/builtins.h"
 #include "utils/tuplestore.h"
 
+#include "agg/refuse.h"
 #include "agg/stats.h"
+#include "col/dsmreg.h"
 
 PG_FUNCTION_INFO_V1(sift_stats);
+PG_FUNCTION_INFO_V1(sift_stats_read);
 PG_FUNCTION_INFO_V1(sift_stats_reset);
 PG_FUNCTION_INFO_V1(sift_col_rollup_misses);
 
-/* (relation, reason) pairs and refusals kept; a pair that finds the table full is not counted */
+/* (relation, reason) pairs kept; a pair that finds the table full is not counted */
 #define STATS_MISSES	256
-#define STATS_REFUSALS	128
+
+#define STATS_NAME		"sift_stats_1"
 
 int64		sift_stat_v[SIFT_STAT_COUNT];
+
+typedef struct SharedStats
+{
+	pg_atomic_uint64 stat[SIFT_STAT_COUNT];
+	pg_atomic_uint64 refused[AGG_REFUSE_COUNT];
+	pg_atomic_uint64 limit[SIFT_LIM_COUNT];
+} SharedStats;
 
 typedef struct Miss
 {
@@ -32,17 +46,39 @@ typedef struct Miss
 	int64		units;
 } Miss;
 
-typedef struct Refusal
-{
-	const char *slug;			/* or the id of a limit */
-	bool		limit;
-	int64		n;
-} Refusal;
-
 static Miss misses[STATS_MISSES];
 static int	nmisses;
-static Refusal refusals[STATS_REFUSALS];
-static int	nrefusals;
+static int64 refused_v[AGG_REFUSE_COUNT];
+static int64 limit_v[SIFT_LIM_COUNT];
+
+static SharedStats *shared;
+static bool unavailable;
+static char unavailable_why[256];
+
+static void
+stats_init(SIFT_DSM_INIT_ARGS)
+{
+	SharedStats *t = ptr;
+
+	for (int i = 0; i < SIFT_STAT_COUNT; i++)
+		pg_atomic_init_u64(&t->stat[i], 0);
+	for (int i = 0; i < AGG_REFUSE_COUNT; i++)
+		pg_atomic_init_u64(&t->refused[i], 0);
+	for (int i = 0; i < SIFT_LIM_COUNT; i++)
+		pg_atomic_init_u64(&t->limit[i], 0);
+}
+
+/* The table, NULL where the system has no room for it (the counts of this backend are then its own alone) */
+static SharedStats *
+table(void)
+{
+	if (shared == NULL && !unavailable && (shared = sift_dsm_try(STATS_NAME, sizeof(SharedStats), stats_init)) == NULL)
+	{
+		unavailable = true;
+		strlcpy(unavailable_why, sift_dsm_why(), sizeof(unavailable_why));
+	}
+	return shared;
+}
 
 static const char *const stat_name[] = {
 #define SIFT_STAT_NAME(id, name, text) name,
@@ -70,60 +106,101 @@ sift_stats_preagg_miss(Oid rel, const char *slug, bool fixable, int64 units)
 	}
 }
 
-static void
-count_refusal(const char *name, bool limit)
-{
-	Refusal    *r = NULL;
-
-	for (int i = 0; i < nrefusals && r == NULL; i++)
-		if (refusals[i].limit == limit && strcmp(refusals[i].slug, name) == 0)
-			r = &refusals[i];
-	if (r == NULL && nrefusals < STATS_REFUSALS)
-	{
-		r = &refusals[nrefusals++];
-		*r = (Refusal) {name, limit, 0};
-	}
-	if (r != NULL)
-		r->n++;
-}
-
-/* both names are static strings: the slug of the registry (agg/refuse.h) and, for a refusal by a fixed limit, its id in core/limits.h */
 void
-sift_stats_refusal(const char *slug, const char *limit)
+sift_stats_share(SiftStat s, int64 n)
 {
-	count_refusal(slug, false);
-	if (limit != NULL)
-		count_refusal(limit, true);
+	SharedStats *t = n != 0 ? table() : NULL;
+
+	if (t != NULL)
+		pg_atomic_fetch_add_u64(&t->stat[s], n);
 }
 
+void
+sift_stats_refusal(int why, int lim)
+{
+	SharedStats *t = table();
+
+	refused_v[why]++;
+	if (lim >= 0)
+		limit_v[lim]++;
+	if (t == NULL)
+		return;
+	pg_atomic_fetch_add_u64(&t->refused[why], 1);
+	if (lim >= 0)
+		pg_atomic_fetch_add_u64(&t->limit[lim], 1);
+}
+
+static void
+put_row(ReturnSetInfo *rsi, const char *name, int64 value)
+{
+	Datum		v[2] = {CStringGetTextDatum(name), Int64GetDatum(value)};
+	bool		nulls[2] = {false, false};
+
+	tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+}
+
+static const char *
+refusal_slug(int why)
+{
+	const char *slug,
+			   *text,
+			   *action;
+	bool		limit;
+
+	return sift_agg_refusal_row(why, &slug, &text, &action, &limit) ? slug : NULL;
+}
+
+/* the counters of the server, or of this session; a refusal or a limit that was never met has no row */
+static Datum
+stats_rows(FunctionCallInfo fcinfo, bool local)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	SharedStats *t = local ? NULL : table();
+
+	if (!local && t == NULL)
+		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("sift.stats: the counters of the server need shared memory"),
+						errdetail("%s", unavailable_why), errhint("sift.stats(local => true) returns the counters of this session.")));
+	InitMaterializedSRF(fcinfo, 0);
+	for (int i = 0; i < SIFT_STAT_COUNT; i++)
+		put_row(rsi, stat_name[i], local ? sift_stat_v[i] : (int64) pg_atomic_read_u64(&t->stat[i]));
+	for (int i = 1; i < AGG_REFUSE_COUNT; i++)
+	{
+		int64		n = local ? refused_v[i] : (int64) pg_atomic_read_u64(&t->refused[i]);
+
+		if (n > 0)
+			put_row(rsi, psprintf("refused.%s", refusal_slug(i)), n);
+	}
+	for (int i = 0; i < SIFT_LIM_COUNT; i++)
+	{
+		int64		n = local ? limit_v[i] : (int64) pg_atomic_read_u64(&t->limit[i]);
+
+		if (n > 0)
+			put_row(rsi, psprintf("limit.%s", sift_agg_limit_name(i)), n);
+	}
+	return (Datum) 0;
+}
+
+/* sift.stats(): the totals of the server */
 Datum
 sift_stats(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	return stats_rows(fcinfo, false);
+}
 
-	InitMaterializedSRF(fcinfo, 0);
-	for (int i = 0; i < SIFT_STAT_COUNT; i++)
-	{
-		Datum		v[2] = {CStringGetTextDatum(stat_name[i]), Int64GetDatum(sift_stat_v[i])};
-		bool		nulls[2] = {false, false};
-
-		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
-	}
-	for (int i = 0; i < nrefusals; i++)
-	{
-		Datum		v[2] = {CStringGetTextDatum(psprintf(refusals[i].limit ? "limit.%s" : "refused.%s", refusals[i].slug)), Int64GetDatum(refusals[i].n)};
-		bool		nulls[2] = {false, false};
-
-		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
-	}
-	return (Datum) 0;
+/* sift.stats(local) */
+Datum
+sift_stats_read(PG_FUNCTION_ARGS)
+{
+	return stats_rows(fcinfo, PG_GETARG_BOOL(0));
 }
 
 Datum
 sift_stats_reset(PG_FUNCTION_ARGS)
 {
 	memset(sift_stat_v, 0, sizeof(sift_stat_v));
-	nmisses = nrefusals = 0;
+	memset(refused_v, 0, sizeof(refused_v));
+	memset(limit_v, 0, sizeof(limit_v));
+	nmisses = 0;
 	PG_RETURN_VOID();
 }
 
