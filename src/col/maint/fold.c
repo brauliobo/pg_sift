@@ -10,6 +10,7 @@
 #include "miscadmin.h"
 #include "storage/procarray.h"
 #include "col/maint/maint_int.h"
+#include "core/live.h"
 #include "core/ops.h"
 #include "col/wbuf.h"
 #include "core/tomb.h"
@@ -131,6 +132,7 @@ sift_col_fold_marks(Relation index)
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	IndexBulkDeleteResult stats = {0};
 	Fold		f = {0};
+	int			order[SIFT_MAX_SEGMENTS];
 	uint64		removed = 0;
 
 	if (RecoveryInProgress())
@@ -164,11 +166,14 @@ sift_col_fold_marks(Relation index)
 		/* a standby without feedback may hold a snapshot that does not see these deletes: it is cancelled before the bits clear, as the prune record of a VACUUM does for the heap */
 		if (TransactionIdIsValid(f.newest))
 			(void) sift_wal_snapshot_conflict(index, InvalidBlockNumber, FullTransactionIdFromAllowableAt(ReadNextFullTransactionId(), f.newest));
-		for (int i = 0; i < snap->nsegs; i++)
-			if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
-				removed += sift_cseg_clear_keys(sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext), f.keys, f.n);
-			else if (snap->segs[i].kind != SIFT_SEG_TOMB)
-				maint_bulkdelete_wbuf(index, &snap->segs[i], fold_dead, &f, &stats);
+		for (int k = 0, n = sift_dir_clear_order(snap, order); k < n; k++)
+		{
+			if (snap->segs[order[k]].kind == SIFT_SEG_IMMUTABLE)
+				removed += sift_cseg_clear_keys(sift_cseg_open(index, &snap->segs[order[k]], CurrentMemoryContext), f.keys, f.n);
+			else
+				maint_bulkdelete_wbuf(index, &snap->segs[order[k]], fold_dead, &f, &stats);
+			SIFT_CLEAR_TEST_POINT();
+		}
 		for (int i = 0; i < snap->nsegs; i++)
 			if (snap->segs[i].kind == SIFT_SEG_TOMB)
 				maint_bulkdelete_tomb(index, &snap->segs[i], fold_dead, &f, &stats);

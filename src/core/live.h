@@ -26,6 +26,13 @@ extern SiftSegHeaderData *sift_seg_read_header(Relation index, const SiftSegEntr
 /* ... and the bytes of the page it copied: those after the extents are the mirror of a column segment (col/seg_int.h) */
 extern SiftSegHeaderData *sift_seg_read_header_used(Relation index, const SiftSegEntry *entry, uint32 *used);
 
+/*
+ * The order in which a pass that clears liveness bits visits the segments of a directory: the entries of the log (SIFT_SEG_TOMB) are left out, the scope segments come first, the
+ * others follow in the order of the directory. Each unit is cleared by a record of its own, so a crash keeps a prefix of the pass (P8): a scope segment holds copies of rows of
+ * the others, and the prefix may end a copy before its row (never the reverse). Returns the number of indexes written to order, which has room for snap->nsegs.
+ */
+extern int sift_dir_clear_order(const SiftDirSnapshot *snap, int *order);
+
 /* Sets the directory's dirty flag of the segment, and that of the entry, unless set: rows may be cleared from then on */
 extern void sift_seg_mark_dirty(Relation index, SiftSegEntry *entry);
 

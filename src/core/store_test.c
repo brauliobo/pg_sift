@@ -37,6 +37,12 @@ crash_dir_assign(int newval, void *extra)
 	sift_test_dir_updates = 0;
 }
 
+static void
+crash_clear_assign(int newval, void *extra)
+{
+	sift_test_clears = 0;
+}
+
 void
 sift_store_test_init(void)
 {
@@ -58,6 +64,9 @@ sift_store_test_init(void)
 	DefineCustomIntVariable("sift.test_crash_dir",
 							"Testing: SIGKILL before (n) or after (-n) the nth directory update since this setting (0 = never).",
 							NULL, &sift_test_crash_dir, 0, INT_MIN, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, crash_dir_assign, NULL);
+	DefineCustomIntVariable("sift.test_crash_clear",
+							"Testing: SIGKILL after the nth segment a pass that clears liveness bits (VACUUM, the fold of the marks) has visited since this setting (0 = never).",
+							NULL, &sift_test_crash_clear, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, crash_clear_assign, NULL);
 	DefineCustomBoolVariable("sift.test_crash_worker",
 							 "Testing: sift.test_crash_dir applies to background workers (on) or to the other processes (off).",
 							 NULL, &sift_test_crash_worker, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
