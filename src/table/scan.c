@@ -18,6 +18,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
+#include "core/errctx.h"
 #include "table/table.h"
 #include "table/scan_int.h"
 
@@ -478,8 +479,8 @@ scan_next_slot(Relation rel, SiftTblScan *s, TupleTableSlot *slot, bool forward)
 	return false;
 }
 
-bool
-sift_tbl_scan_next_stored(TableScanDesc scan, SiftTblRowVer *rv)
+static bool
+next_stored(TableScanDesc scan, SiftTblRowVer *rv)
 {
 	SiftTblScan *s = (SiftTblScan *) scan;
 
@@ -490,7 +491,19 @@ sift_tbl_scan_next_stored(TableScanDesc scan, SiftTblRowVer *rv)
 }
 
 bool
-sift_tbl_scan_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
+sift_tbl_scan_next_stored(TableScanDesc scan, SiftTblRowVer *rv)
+{
+	SiftErrCtx	ctx;
+	bool		found;
+
+	sift_errctx_push(&ctx, RelationGetRelid(scan->rs_rd));
+	found = next_stored(scan, rv);
+	sift_errctx_pop(&ctx);
+	return found;
+}
+
+static bool
+getnextslot(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
 {
 	SiftTblScan *s = (SiftTblScan *) scan;
 
@@ -505,6 +518,18 @@ sift_tbl_scan_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTabl
 	ExecClearTuple(slot);
 	scan_rewind(s);
 	return false;
+}
+
+bool
+sift_tbl_scan_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
+{
+	SiftErrCtx	ctx;
+	bool		found;
+
+	sift_errctx_push(&ctx, RelationGetRelid(scan->rs_rd));
+	found = getnextslot(scan, direction, slot);
+	sift_errctx_pop(&ctx);
+	return found;
 }
 
 void

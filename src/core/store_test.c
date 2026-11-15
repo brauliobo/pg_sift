@@ -123,6 +123,18 @@ sift_test_open_index(Oid relid, LOCKMODE mode)
 	return index;
 }
 
+/* The pages of a sift_table are a store like those of an index: the page helpers take either */
+Relation
+sift_test_open_store(Oid relid, LOCKMODE mode)
+{
+	Relation	rel = relation_open(relid, mode);
+
+	if (rel->rd_rel->relkind != RELKIND_INDEX && rel->rd_rel->relkind != RELKIND_RELATION)
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE),
+						errmsg("\"%s\" is not an index or a table", RelationGetRelationName(rel))));
+	return rel;
+}
+
 void
 sleep_ms(int ms)
 {

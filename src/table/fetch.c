@@ -15,6 +15,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/kern.h"
+#include "core/errctx.h"
 #include "table/table.h"
 #include "core/visibility.h"
 #include "table/scan_int.h"
@@ -139,12 +140,16 @@ sift_tbl_index_fetch_tuple(IndexFetchTableData *scan, ItemPointer tid, Snapshot 
 						   bool *call_again, bool *all_dead)
 {
 	SiftTblFetch *f = (SiftTblFetch *) scan;
-
 	bool		sync = !f->fresh;
+	SiftErrCtx	ctx;
+	bool		found;
 
 	f->fresh = false;
 	*call_again = false;
-	return fetch_visible(scan->rel, f->st, tid, snapshot, slot, all_dead, sync, true);
+	sift_errctx_push(&ctx, RelationGetRelid(scan->rel));
+	found = fetch_visible(scan->rel, f->st, tid, snapshot, slot, all_dead, sync, true);
+	sift_errctx_pop(&ctx);
+	return found;
 }
 
 /* The rows a page is asked for from which its tombstones are read at once (sift_tbl_filter_page_vers) */
@@ -335,10 +340,15 @@ bool
 sift_tbl_tuple_fetch_row_version(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot)
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
+	SiftErrCtx	ctx;
+	bool		found;
 
+	sift_errctx_push(&ctx, RelationGetRelid(rel));
 	sift_tbl_refresh(rel, st);
 	sift_tomb_sync(rel, &st->tomb);
-	return fetch_visible(rel, st, tid, snapshot, slot, NULL, true, false);
+	found = fetch_visible(rel, st, tid, snapshot, slot, NULL, true, false);
+	sift_errctx_pop(&ctx);
+	return found;
 }
 
 bool
@@ -629,7 +639,7 @@ bitmap_group_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const Offset
 
 /* Collects the visible rows of vblock at the given offsets (n < 0: every slot) */
 static void
-bitmap_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber *offsets, int n, bool chain)
+page_rows(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber *offsets, int n, bool chain)
 {
 	uint64		gen;
 	bool		held;
@@ -665,8 +675,18 @@ bitmap_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber
 		bitmap_chains(rel, s, vblock, offsets, n, emitted);
 }
 
+static void
+bitmap_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber *offsets, int n, bool chain)
+{
+	SiftErrCtx	ctx;
+
+	sift_errctx_push(&ctx, RelationGetRelid(rel));
+	page_rows(rel, s, vblock, offsets, n, chain);
+	sift_errctx_pop(&ctx);
+}
+
 static bool
-bitmap_emit(Relation rel, SiftTblScan *s, TupleTableSlot *slot)
+next_row(Relation rel, SiftTblScan *s, TupleTableSlot *slot)
 {
 	if (s->bri < s->nbrows)
 	{
@@ -690,6 +710,18 @@ bitmap_emit(Relation rel, SiftTblScan *s, TupleTableSlot *slot)
 		if (fetch_visible(rel, s->st, &s->ltids[s->lti++], BITMAP_NO_VISIBLE ? SnapshotAny : s->base.rs_snapshot, slot, NULL, false, true))
 			return true;
 	return false;
+}
+
+static bool
+bitmap_emit(Relation rel, SiftTblScan *s, TupleTableSlot *slot)
+{
+	SiftErrCtx	ctx;
+	bool		found;
+
+	sift_errctx_push(&ctx, RelationGetRelid(rel));
+	found = next_row(rel, s, slot);
+	sift_errctx_pop(&ctx);
+	return found;
 }
 
 static int

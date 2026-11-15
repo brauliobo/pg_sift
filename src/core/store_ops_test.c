@@ -292,7 +292,7 @@ sift_test_freelist(PG_FUNCTION_ARGS)
 Datum
 sift_test_page(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_store(PG_GETARG_OID(0), AccessShareLock);
 	Buffer		buf = ReadBuffer(index, (BlockNumber) PG_GETARG_INT64(1));
 	Page		page;
 	Datum		values[4];
@@ -313,7 +313,7 @@ sift_test_page(PG_FUNCTION_ARGS)
 Datum
 sift_test_poke(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = sift_test_open_store(PG_GETARG_OID(0), RowExclusiveLock);
 	Buffer		buf = ReadBuffer(index, (BlockNumber) PG_GETARG_INT64(1));
 	int32		off = PG_GETARG_INT32(2);
 	int64		value = PG_GETARG_INT64(3);

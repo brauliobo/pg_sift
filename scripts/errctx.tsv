@@ -1,6 +1,6 @@
 # The files of src/ that raise a corruption error (ERRCODE_INDEX_CORRUPTED, ERRCODE_DATA_CORRUPTED) with a message that names no index: a decoder is given bytes.
 # FILE <TAB> the files that push the context scope (sift_errctx_push, core/errctx.h) its errors are raised under; scripts/check-errors.sh checks that each calls it
-# and that no file with such a message is missing here. "-" is a gap: the entry points that read it push no scope yet (sift_table scans).
+# and that no file with such a message is missing here. "-" is a gap: the entry points that read it push no scope yet.
 # A file whose message does name the index (SIFT_CORRUPT, SIFT_SEG_CORRUPT) is not listed.
 src/agg/gpu.c	src/agg/exec/run.c src/agg/par/worker.c
 src/agg/topn/next.c	src/agg/exec/run.c src/agg/par/worker.c
@@ -22,4 +22,4 @@ src/col/types.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c
 src/col/unit.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
 src/col/vstore/vstore_run.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
 src/core/span.c	src/col/amscan/amscan.c src/bm25/amscan.c src/agg/exec/run.c
-src/table/wbuf.c	-
+src/table/wbuf.c	src/table/analyze.c src/table/fetch.c src/table/scan.c
