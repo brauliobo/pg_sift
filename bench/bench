@@ -63,7 +63,7 @@ Commands
   sets       the set-filter benchmark: a fact table filtered by 1k / 2k / 5k entity ids, 10k and 100k as headroom (array
              parameter, literal list, normal plan, IN (SELECT ...) of a membership table, ClickHouse); `sets [--docs] [--ref TAG] [--reps N] [--no-clickhouse] [--keep]`
   scope-stock  the scope index against tuned stock PostgreSQL arms (the semi join, covering b-trees, copies kept by triggers, rollups, pg_ivm views, the entity index): nine classes, eight tenants,
-             warm and cold, every answer md5-equal, the write cost of each arm, and the per-rival tally of cells won, tied and lost: `scope-stock [--size quick|standard] [--docs] [--arms LIST] [--keep]` (steps/scope_stock.sh)
+             warm and cold, every answer md5-equal, the write cost of each arm, and the per-rival tally of cells won, tied and lost: `scope-stock [--size quick|standard] [--docs] [--arms LIST] [--keep] [--resume]` (steps/scope_stock.sh)
   scaling    the aggregates of the store orders by number of partitions (1 to 4096) and parallel workers, pg_sift against the normal plan; `scaling [--docs] [--ref TAG] [--partitions N,N] [--workers N,N] [--rows N]`
   duckdb     pg_duckdb against pg_sift and PostgreSQL on the orders of the orders benchmark, in two containers with equal limits, warm and cold, the heap and a Parquet file
              as the pg_duckdb data: `duckdb [--docs] [--rows N] [--runs N] [--cpus N] [--questions LIST] [--keep]` (steps/duckdb.sh)

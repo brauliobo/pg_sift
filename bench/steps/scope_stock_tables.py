@@ -174,6 +174,7 @@ def fixture_line(R):
 def readme_block(R):
     out = ['%s; %d classes, %d tenants, warm and cold, one backend of %s on tmpfs, %s. Measured %s (`bench/bench scope-stock`).' %
            (fixture_line(R).capitalize(), len(R.classes), len(R.tenants), R.meta.get('postgresql', '?'), R.meta.get('cpu', '?'), R.meta.get('date', '?')), '',
+           *([R.meta['note'][0].upper() + R.meta['note'][1:] + '.', ''] if 'note' in R.meta else []),
            'Per rival, over the cells both answer:', ''] + tally(R) + ['', tally_note(R), '']
     out += ['Each cell is warm ms / cold ms · warm M instructions · blocks hit warm / blocks read cold; `n/a`: the arm cannot answer the class.', '']
     for t in (t for t in README_TENANTS if t in R.tenants):
