@@ -97,6 +97,20 @@ def check(root, tables, pins, moved):
         for line in open(pin, encoding="utf-8"):
             if line.strip() and not line.startswith("#") and parse(line.split("\t")[0]) is None and line.split("\t")[0] not in [r[1] for r in splits]:
                 bad.setdefault((os.path.basename(pin), line.split("\t")[0], "is not a file of src/"), set()).add("")
+    ctx = set()
+    for f in glob.glob("test/expected/*.out"):
+        name = os.path.basename(f)[:-4]
+        if "CONTEXT:  sift " in open(f, encoding="utf-8").read():
+            ctx.add(name if os.path.exists("test/sql/%s.sql" % name) else re.sub(r"_\d+$", "", name))
+    if ctx:
+        scope = {f for l in open("scripts/errctx.tsv") if not l.startswith("#") for f in l.split("\t")[1].split() if f.startswith("src/")}
+        pinned = {}
+        for l in open(pins[0], encoding="utf-8"):
+            if l.strip() and not l.startswith("#"):
+                pinned.setdefault(l.split("\t")[0], set()).update(l.split("\t")[1].split())
+        for f in sorted({"src/core/errctx.c", "src/core/errctx.h"} | scope):
+            for t in sorted(ctx - pinned.get(f, set())):
+                bad.setdefault((os.path.basename(pins[0]), f, "does not name a test whose expected output has a sift CONTEXT line"), set()).add(t)
     return bad
 
 
