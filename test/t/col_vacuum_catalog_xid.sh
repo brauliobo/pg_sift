@@ -27,7 +27,7 @@ damaged_rows() {
 	sql vc "SELECT i.lp, i.t_xmin, i.t_xmax, to_hex(i.t_infomask) AS infomask, to_hex(i.t_infomask2) AS infomask2, i.t_ctid FROM generate_series(0, pg_relation_size('pg_class') / 8192 - 1) n, LATERAL heap_page_items(get_raw_page('pg_class', n)) i
 		WHERE i.t_xmax <> 0 AND (i.t_infomask & 2048) <> 0 AND (i.t_infomask & 128) = 0 AND (i.t_infomask & 4096) = 0 AND pg_xact_status(i.t_xmax::text::xid8) = 'committed'"
 }
-damaged() { damaged_rows | wc -l; }
+damaged() { damaged_rows | awk 'END { print NR }'; }
 rows_of_index() { sql vc "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*) FROM pg_class WHERE relname = 'rc_ix'" | tail -1; }
 vacuum_xids() { sql vc "SELECT count(*) FROM pg_stat_activity WHERE query = 'VACUUM rc' AND backend_xid IS NOT NULL"; }
 errors() { grep -cE 'ERROR|TRAP|dead heap-only' "$D/postgres.log"; }
