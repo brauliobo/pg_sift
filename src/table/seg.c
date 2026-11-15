@@ -91,7 +91,7 @@ declared_paths(Relation rel, AttrNumber skip, const char *extra)
 			bool		isnull;
 			Name		name = DatumGetName(heap_getattr(tup, 2, RelationGetDescr(pr), &isnull));
 
-			/* a column renamed, dropped or no longer jsonb since the declaration has no paths */
+			/* a column dropped or no longer jsonb since the declaration has no paths (a rename rewrites the declaration, col/names.c) */
 			for (int a = 1; a <= Min(desc->natts, SIFT_COL_MAX_COLS); a++)
 			{
 				Form_pg_attribute att = TupleDescAttr(desc, a - 1);

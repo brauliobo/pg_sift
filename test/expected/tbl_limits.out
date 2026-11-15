@@ -35,7 +35,7 @@ SELECT count(*), sum(c1), sum(extra) FROM wide127;
      3 |   6 |   3
 (1 row)
 
--- declared paths count again when their column is jsonb and has their name
+-- declared paths follow a renamed column and count while it is jsonb: they are refused when added and come back when the column does
 CREATE TABLE wide_doc (doc jsonb) USING sift_table;
 SELECT sift.table_set_paths('wide_doc', 'doc', 'doc->a text, doc->b text');
  table_set_paths 
@@ -45,19 +45,21 @@ SELECT sift.table_set_paths('wide_doc', 'doc', 'doc->a text, doc->b text');
 
 ALTER TABLE wide_doc RENAME COLUMN doc TO moved;
 SELECT add_cols('wide_doc', 126);
+ERROR:  a sift_table holds at most 127 columns
+SELECT add_cols('wide_doc', 124);
  add_cols 
 ----------
  
 (1 row)
 
-ALTER TABLE wide_doc RENAME COLUMN moved TO doc;
+ALTER TABLE wide_doc ADD COLUMN extra int;
 ERROR:  a sift_table holds at most 127 columns
 ALTER TABLE wide_doc ALTER COLUMN moved TYPE text;
-ALTER TABLE wide_doc RENAME COLUMN moved TO doc;
-ALTER TABLE wide_doc ALTER COLUMN doc TYPE jsonb USING doc::jsonb;
+ALTER TABLE wide_doc ADD COLUMN extra int;
+ALTER TABLE wide_doc ALTER COLUMN moved TYPE jsonb USING moved::jsonb;
 ERROR:  a sift_table holds at most 127 columns
-ALTER TABLE wide_doc DROP COLUMN c1, DROP COLUMN c2;
-ALTER TABLE wide_doc ALTER COLUMN doc TYPE jsonb USING doc::jsonb;
+ALTER TABLE wide_doc DROP COLUMN c1, DROP COLUMN c2, DROP COLUMN extra;
+ALTER TABLE wide_doc ALTER COLUMN moved TYPE jsonb USING moved::jsonb;
 INSERT INTO wide_doc (c3) VALUES (3);
 -- a partition is checked with its parent
 CREATE TABLE wide_part (id int) PARTITION BY RANGE (id);

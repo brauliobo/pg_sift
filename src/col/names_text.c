@@ -3,7 +3,7 @@
  *
  * pg_dump writes the options as they are and a restore resolves them again, so a name left behind loses the index. Four kinds of text name a column of the table of the index:
  *   - the lists (key_cut, key_columns, rollup_columns, ..): a name between separators; a few of them have words of their own (order_layout: compact, whole; compression: the codecs);
- *   - the heads of paths (paths, rollup_leaves): the column that a path or the leaf of an array starts with (doc.k, items[].kind, tags#1);
+ *   - the heads of paths (paths, rollup_leaves): the column that a path or the leaf of an array starts with (doc.k, doc->k, items[].kind, tags#1);
  *   - connect and scope: the column of the index that holds the key, the columns of the other table, the table with its schema, the btree a scope uses. They are parsed by the parsers
  *     of the options (col/conn_decl.c, col/scope_parse.c), changed as specs and written again, so no name is ever found by looking at text.
  * An unqualified table of connect or scope is in the schema of the table of the index: the table of the index that moves to another schema keeps the schema its names had.
@@ -126,7 +126,7 @@ rewrite_names(const char *text, NamesMode mode, const char *from, const char *to
 static char *
 rewrite_heads(const char *text, NamesMode mode, const char *from, const char *to)
 {
-	const char *stops = mode == NAMES_PATHS ? ".[ ,;{}:" : ".[# ,;{}:";
+	const char *stops = mode == NAMES_PATHS ? ".-[ ,;{}:" : ".-[# ,;{}:";
 	StringInfoData out;
 	int			depth = 0;
 	bool		start = true,

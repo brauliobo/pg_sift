@@ -22,17 +22,18 @@ ALTER TABLE wide127 ADD COLUMN extra2 int;
 INSERT INTO wide127 (c1, extra) VALUES (3, 3);
 SELECT count(*), sum(c1), sum(extra) FROM wide127;
 
--- declared paths count again when their column is jsonb and has their name
+-- declared paths follow a renamed column and count while it is jsonb: they are refused when added and come back when the column does
 CREATE TABLE wide_doc (doc jsonb) USING sift_table;
 SELECT sift.table_set_paths('wide_doc', 'doc', 'doc->a text, doc->b text');
 ALTER TABLE wide_doc RENAME COLUMN doc TO moved;
 SELECT add_cols('wide_doc', 126);
-ALTER TABLE wide_doc RENAME COLUMN moved TO doc;
+SELECT add_cols('wide_doc', 124);
+ALTER TABLE wide_doc ADD COLUMN extra int;
 ALTER TABLE wide_doc ALTER COLUMN moved TYPE text;
-ALTER TABLE wide_doc RENAME COLUMN moved TO doc;
-ALTER TABLE wide_doc ALTER COLUMN doc TYPE jsonb USING doc::jsonb;
-ALTER TABLE wide_doc DROP COLUMN c1, DROP COLUMN c2;
-ALTER TABLE wide_doc ALTER COLUMN doc TYPE jsonb USING doc::jsonb;
+ALTER TABLE wide_doc ADD COLUMN extra int;
+ALTER TABLE wide_doc ALTER COLUMN moved TYPE jsonb USING moved::jsonb;
+ALTER TABLE wide_doc DROP COLUMN c1, DROP COLUMN c2, DROP COLUMN extra;
+ALTER TABLE wide_doc ALTER COLUMN moved TYPE jsonb USING moved::jsonb;
 INSERT INTO wide_doc (c3) VALUES (3);
 
 -- a partition is checked with its parent
