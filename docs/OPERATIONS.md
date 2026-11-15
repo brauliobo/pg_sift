@@ -153,6 +153,16 @@ SELECT * FROM sift.check(heapallindexed => true);             -- also compares e
 
 then `REINDEX INDEX CONCURRENTLY <index>` for each index that has a row (`sift.check` names it in the `index` column and the damaged segment in `segment`). An interrupted `CREATE INDEX CONCURRENTLY` or `REINDEX CONCURRENTLY` leaves an invalid index (`sift.indexes.state = 'invalid'`): drop it and build it again. A `sift_table` cannot be reindexed; `sift.check` and `sift.table_verify(table)` name its damaged segment, and the table is restored from a backup. `sift.check` works on a standby, so a replica can be verified without promoting it.
 
+**Damaged liveness pages (4.2.1 to 4.3.5).** A `VACUUM` or a delete that marked rows dead in a column segment of more than 65,151 superblocks set the dirty bit of a superblock on the wrong page of the liveness bitmap: it overwrote the type, flags or generation of a page (every later read of the index failed with `sift index "<name>" is corrupted`), or the bit was lost and the deleted rows of that unit read as live, with no error. 4.3.6 and 5.0 no longer write it. An index that an older release touched is checked and restored in place, no `REINDEX` needed:
+
+```
+SELECT * FROM sift.col_verify('orders_col');            -- also sift.check(): the liveness pages of every segment, one row for each finding
+SELECT * FROM sift.col_repair('orders_col', true);      -- dry run: one row for each segment it would change, none when the index is sound
+SELECT * FROM sift.col_repair('orders_col');            -- restores them: one row for each segment changed (damaged_pages, units_fixed, ndead_before, ndead_after)
+```
+
+`sift.col_repair` takes the maintenance lock (a `VACUUM`, a merge or a rewrite of the index waits for it), writes one WAL record for each page it restores, and runs on the primary; a standby replays it. It sets the dirty bit of each unit that has a cleared liveness bit and the count of dead rows to the number of cleared bits. When it says that a page cannot be restored, `REINDEX INDEX CONCURRENTLY <index>` is the way. Run the check once on every index of a server that ran 4.2.1 to 4.3.5 with a large table.
+
 The shared memory (statistics, caches, the progress table) starts empty after a restart or a crash, and is rebuilt by use. What a scope index's reads paid for changed pairs, and the reads of the write buffer and the tombstone log, are kept in the metapage and survive a crash; a standby's reads of a scope index are not counted ([COL-SCOPE.md](COL-SCOPE.md#what-it-costs)).
 
 ## 4. Locks and waits
@@ -215,9 +225,11 @@ The steps, the order for standbys and the way back are in [UPGRADING.md](UPGRADI
 
 Install 4.3.6 on every node (standbys first) before moving to 5.0; `sift.upgrade_check()` warns while the extension is older. A 5.0 server keeps up to 704 bytes in the metapage of an index it has read or maintained (what the reads paid, the last background step, the floor of a scope), past the 400 that 3.3 to 4.3.5 know. An older library reading such an index answers by release:
 
-- **3.0 to 3.2**: the library accepts the longer metapage and refuses a column format it does not know with the format error and the hint `Use a newer pg_sift, or REINDEX.`
-- **3.3 to 4.3.5** (as released): `sift index "x" is corrupted`, detail `Bad metapage (magic 0x53494654, 704 bytes)`. This means the metapage is longer than the library knows, not that the index is damaged: `sift.check()` and `amcheck` of the old node find nothing wrong. Do not repair it with `pg_surgery` or by editing the catalogs, which would damage a sound index. `REINDEX INDEX CONCURRENTLY <index>` with the old files rebuilds it from the table. These releases check the length when they open the metapage, before any change: a read or a `VACUUM` is refused and the index file is byte for byte as it was, so the counters of 5.0 are not lost by the attempt.
-- **4.3.6 and later**: the library keeps the bytes it does not know and reads the index, or refuses a segment in a format from 5.0 (a scope, strings in the shared store) with `index "x" has a segment of column format 1.45, this build reads 1.3 to 1.44`, hint `Use a newer pg_sift, or REINDEX.` The same `REINDEX` with the old files applies.
+| Library that reads it | What it answers | Is the index damaged | What to do |
+|---|---|---|---|
+| 3.0 to 3.2 | accepts the longer metapage and refuses a column format it does not know with the format error and the hint `Use a newer pg_sift, or REINDEX.` | no | `REINDEX` with the old files |
+| 3.3 to 4.3.5 (as released) | `sift index "x" is corrupted`, detail `Bad metapage (magic 0x53494654, 704 bytes)`: the metapage is longer than the library knows | no: `sift.check()` and `amcheck` of the old node find nothing wrong | `REINDEX INDEX CONCURRENTLY <index>` with the old files rebuilds it from the table. Do not repair it with `pg_surgery` or by editing the catalogs, which would damage a sound index. These releases check the length when they open the metapage, before any change: a read or a `VACUUM` is refused and the index file is byte for byte as it was, so the counters of 5.0 are not lost by the attempt |
+| 4.3.6 and later | keeps the bytes it does not know and reads the index, or refuses a segment in a format from 5.0 (a scope, strings in the shared store) with `index "x" has a segment of column format 1.45, this build reads 1.3 to 1.44`, hint `Use a newer pg_sift, or REINDEX.` | no | the same `REINDEX` with the old files |
 
 An index created by 5.0 stores options under the names of 5.0. 4.2 and later know them; 3.3 to 4.1 call `rollup_columns` `rollup_dims`, so their `REINDEX` stops at `unrecognized parameter "rollup_columns"`: with the event triggers of 5.0 disabled ([UPGRADING.md](UPGRADING.md#going-back-to-43)), run `ALTER INDEX <index> RESET (rollup_columns)` first, or drop the index and create it again.
 
