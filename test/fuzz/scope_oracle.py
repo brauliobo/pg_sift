@@ -760,6 +760,10 @@ def run_seed(a, seed):
         p.close()
     os.remove(dump)
     shutil_rm(f'{out}/bench{seed}_*')
+    for node, name in ((P, db), (B, db), (R, db), (R, dbl)):
+        admin = Pg('admin', node, 'postgres', log, sift=False)
+        admin.run(f"DROP DATABASE {name} WITH (FORCE);")
+        admin.close()
 
 
 def shutil_rm(pat):
