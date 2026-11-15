@@ -15,6 +15,7 @@
 #include "agg/cost/model.h"
 #include "col/am.h"
 #include "col/gorder.h"
+#include "col/order_sort.h"
 #include "col/pagg.h"
 #include "core/sql.h"
 #include "core/visibility.h"
@@ -32,6 +33,10 @@ PG_FUNCTION_INFO_V1(sift_test_col_mirror);
 
 PG_FUNCTION_INFO_V1(sift_test_col_cuts);
 PG_FUNCTION_INFO_V1(sift_test_col_cut_probes);
+PG_FUNCTION_INFO_V1(sift_test_col_cut_sort_rows);
+PG_FUNCTION_INFO_V1(sift_test_col_cut_sort_disk_kb);
+PG_FUNCTION_INFO_V1(sift_test_col_cut_sort_cut);
+PG_FUNCTION_INFO_V1(sift_test_col_cut_sorts_reset);
 
 PG_FUNCTION_INFO_V1(sift_test_seg_flip);
 
@@ -120,6 +125,32 @@ Datum
 sift_test_col_cut_probes(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT64(sift_test_cut_probes);
+}
+
+/* sift._test_col_cut_sort_rows() and _disk_kb(): the rows the merges of this backend sorted by the sort of col/order_sort.c (the rows of an input that did not fit maintenance_work_mem) and the kB of temporary files it used */
+Datum
+sift_test_col_cut_sort_rows(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(sift_test_cut_sort_rows);
+}
+
+Datum
+sift_test_col_cut_sort_disk_kb(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(sift_test_cut_sort_disk_kb);
+}
+
+Datum
+sift_test_col_cut_sort_cut(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(sift_test_cut_sort_cut);
+}
+
+Datum
+sift_test_col_cut_sorts_reset(PG_FUNCTION_ARGS)
+{
+	sift_test_cut_sort_rows = sift_test_cut_sort_disk_kb = sift_test_cut_sort_cut = 0;
+	PG_RETURN_VOID();
 }
 
 /* sift._test_col_mirror(index): the ranges of the stream that the mirror in the header page of each immutable segment keeps, and the bytes of the whole block */

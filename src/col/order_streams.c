@@ -73,6 +73,7 @@ probe_key_order(SiftColSegment *seg, const int *leaf, int nleaf, MemoryContext c
 #define PROBE_CACHE 32
 #ifdef SIFT_TESTING
 int64		sift_test_cut_probes = 0;
+bool		sift_test_col_loose_inputs = false;
 #endif
 static struct
 {
@@ -134,6 +135,9 @@ sift_colk_streams(bool *stream, SiftColSegment *const *seg, int n, const int *le
 		}
 		else
 			stream[i] = known == SIFT_CUT_YES;
+#ifdef SIFT_TESTING
+		stream[i] &= !sift_test_col_loose_inputs || !sift_cseg_keyed(&seg[i]->entry);
+#endif
 		sorted |= sift_cseg_keyed(&seg[i]->entry) && !stream[i];
 	}
 	MemoryContextDelete(probe);
