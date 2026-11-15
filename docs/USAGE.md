@@ -4,7 +4,7 @@ Reference for everything beyond the [README](../README.md) quick start. The exam
 
 ## Install
 
-Requires PostgreSQL 17, 18 or 19, server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 (whole suite), Linux arm64 (PostgreSQL 18; fast tier of a pull request in CI) and macOS arm64 (Homebrew build and test plus a few regression tests, in CI). The column engine's chunk codec links `liblz4` and `libzstd` when their headers are installed (`liblz4-dev`, `libzstd-dev`); `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one; the packages depend on both.
+Requires PostgreSQL 17, 18 or 19, server headers with `pg_config` on `PATH`, and a C compiler; the platforms and ports that are tested are in the [compatibility table](SUPPORT.md#compatibility). The column engine's chunk codec links `liblz4` and `libzstd` when their headers are installed (`liblz4-dev`, `libzstd-dev`); `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one; the packages depend on both.
 
 ```sh
 make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_config picks another installation
@@ -1049,7 +1049,7 @@ CREATE SUBSCRIPTION docs_sub CONNECTION 'host=primary dbname=app' PUBLICATION do
 
 Every fixed limit of the code, with its value, what happens at it and the setting that changes it, is in the generated table [LIMITS.md](LIMITS.md); the list below adds context.
 
-- PostgreSQL 17, 18 and 19; x86-64 tested, arm64 tested with PostgreSQL 18 (Linux in CI, macOS by the formula's test), other architectures untested; heap and sift_table tables; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
+- Platforms, PostgreSQL versions, `BLCKSZ` and encodings: [SUPPORT.md](SUPPORT.md#compatibility).
 - `sift_table` (full list in [docs/COL-TAM.md](COL-TAM.md), section 9):
   - at most 127 columns (`CREATE TABLE`, and an `ALTER TABLE` that adds a column or brings declared paths back past it, fail with `54000`; `DROP COLUMN` is not checked), 128 directory entries, `BLCKSZ` 8192;
   - a single `COPY` or `INSERT ... SELECT` writes any number of rows in one transaction (its write buffers become column groups that carry their writer while it runs; `VACUUM` freezes them once committed or drops them if aborted; a 10,000,000-row `COPY` takes about 180 MB in the backend). A transaction of many commands (a loop of single-row `INSERT`s, savepoints, several sessions into the same write buffers) is not bounded either: once the directory is half full every write buffer it closes becomes such a group, and only a write buffer holding a row deleted since the last `VACUUM` or a speculative insertion in progress waits (the insert that cannot open another write buffer then fails with `54000`, saying to `VACUUM` or end the transaction); writers merge the column segments as they go;
