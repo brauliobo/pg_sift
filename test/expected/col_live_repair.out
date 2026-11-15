@@ -3,6 +3,7 @@
 -- rows wrong. The damage is made by hand here, in the bytes of the page.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+SET sift.on_corruption = error;
 CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	d text;
