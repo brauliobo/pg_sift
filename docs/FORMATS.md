@@ -155,6 +155,7 @@ a JSON null; informational, a segment written before the flag does not have it a
 | the releases 3.0.2, 3.1.0 and 3.2.0 write, this tree takes over (update, verify, REINDEX, writes), and the release reads what this tree writes at the lowest minor, its newest and 4, and with the default options off, and refuses every minor above (7 to 15, and an index at the defaults) and the calendar `sift_table`; 3.2.0 gets the downgrade of UPGRADING.md section 4 end to end | `test/t/compat_matrix.sh` |
 | the stored unit, chunk (flags, tags, kinds) and leaf list (wide lanes, type tags) of a segment cut and damaged byte by byte are refused with a corruption error or still sound; the cube with min and max (minor 7) | `test/sql/col_damage.sql`, `test/sql/col_preagg_minmax.sql` |
 | a kill before and after each directory update of a build, promotion, merge, VACUUM, table sealing and the promotion worker, with minor 7 and generic WAL page checks | `test/t/col_crash_matrix.sh` |
+| a kill after each segment of the pass of a VACUUM that clears liveness bits (scope segments first) | `test/t/col_clear_crash.sh` |
 | mixed minors 3/4/5/6, partition parents, table rewrite and JSON kinds | `test/sql/agg_jsonpath_kinds.sql` |
 | a 3.2 index with wide leaves (minor 5) beside the older minors, merges and `REINDEX` | `test/sql/col_format5.sql` |
 | `scripts/upgrade-check.sh` reports the formats of every index and table, and what a given release could not read (`--to`) | `test/t/upgrade_check.sh` |

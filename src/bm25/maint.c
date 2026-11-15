@@ -31,6 +31,7 @@
 #include "col/pg.h"
 #include "core/errctx.h"
 #include "core/limits.h"
+#include "core/live.h"
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
 #include "bm25/merge.h"
@@ -391,6 +392,7 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 	Relation	index = info->index;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftErrCtx	ctx;
+	int			order[SIFT_MAX_SEGMENTS];
 	double		removed;
 
 	if (stats == NULL)
@@ -399,11 +401,14 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 	sift_maint_lock(index, true);
 	sift_errctx_push(&ctx, RelationGetRelid(index));
 	sift_dir_read(index, snap);
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
-			ops->bulkdelete_immutable(index, &snap->segs[i], callback, callback_state, stats);
-		else if (snap->segs[i].kind != SIFT_SEG_TOMB)
-			ops->bulkdelete_wbuf(index, &snap->segs[i], callback, callback_state, stats);
+	for (int k = 0, n = sift_dir_clear_order(snap, order); k < n; k++)
+	{
+		if (snap->segs[order[k]].kind == SIFT_SEG_IMMUTABLE)
+			ops->bulkdelete_immutable(index, &snap->segs[order[k]], callback, callback_state, stats);
+		else
+			ops->bulkdelete_wbuf(index, &snap->segs[order[k]], callback, callback_state, stats);
+		SIFT_CLEAR_TEST_POINT();
+	}
 	/*
 	 * The tombstones of the entries removed go last, whatever the order of the directory: a reader that took the log and then the liveness of an entry that is now
 	 * cleared sees the tombstone or the clear bit, never neither.

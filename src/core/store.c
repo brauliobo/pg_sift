@@ -41,6 +41,8 @@ int			sift_test_crash_dir = 0;
 bool		sift_test_crash_worker = false;
 bool		sift_test_cut_with_standby = false;
 int			sift_test_dir_updates = 0;
+int			sift_test_crash_clear = 0;
+int			sift_test_clears = 0;
 #endif
 
 #ifdef SIFT_TESTING
@@ -71,6 +73,17 @@ sift_store_dir_test_point(bool after)
 	ereport(LOG, (errmsg("sift test: crash %s directory update %d", after ? "after" : "before", sift_test_dir_updates)));
 	if (!XLogRecPtrIsInvalid(XactLastRecEnd))
 		XLogFlush(XactLastRecEnd);
+	kill(MyProcPid, SIGKILL);
+}
+
+/* sift.test_crash_clear = n kills the process with SIGKILL, its WAL flushed, when a pass that clears liveness bits (P8) has visited its nth segment */
+void
+sift_store_clear_test_point(void)
+{
+	if (sift_test_crash_clear == 0 || (MyBackendType == B_BG_WORKER) != sift_test_crash_worker || ++sift_test_clears != sift_test_crash_clear)
+		return;
+	ereport(LOG, (errmsg("sift test: crash after the segment %d of a pass that clears liveness bits", sift_test_clears)));
+	sift_wal_flush_inserted();
 	kill(MyProcPid, SIGKILL);
 }
 #endif

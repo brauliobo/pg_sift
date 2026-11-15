@@ -6,6 +6,7 @@
 #include "postgres.h"
 #include "access/parallel.h"
 #include "col/maint/maint_int.h"
+#include "core/live.h"
 #include "col/vstore/vstore.h"
 
 double		sift_col_auto_merge_wal_pct = 5.0;
@@ -65,6 +66,7 @@ maint_reap_overflow(Relation index, Relation heap)
 	const SiftColLeafStats *ls = sift_col_leaf_stats(index, false);
 	SiftDirSnapshot *snap;
 	HeapDead	h;
+	int			order[SIFT_MAX_SEGMENTS];
 	bool		flagged = false;
 
 	for (int c = 0; c < sift_col_index_defs(index)->ncols; c++)
@@ -74,10 +76,10 @@ maint_reap_overflow(Relation index, Relation heap)
 	snap = palloc(sizeof(SiftDirSnapshot));
 	h = (HeapDead) {.scan = sift_table_index_fetch_begin(heap),.slot = table_slot_create(heap, NULL),.nblocks = RelationGetNumberOfBlocks(heap)};
 	sift_dir_read(index, snap);
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+	for (int k = 0, n = sift_dir_clear_order(snap, order); k < n; k++)
+		if (snap->segs[order[k]].kind == SIFT_SEG_IMMUTABLE)
 		{
-			SiftColSegment *seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+			SiftColSegment *seg = sift_cseg_open(index, &snap->segs[order[k]], CurrentMemoryContext);
 
 			sift_cseg_reap_overflow(seg, heap_row_dead, &h);
 			sift_cseg_close(seg);

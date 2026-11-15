@@ -42,6 +42,18 @@ sift_seg_read_header(Relation index, const SiftSegEntry *entry)
 	return sift_seg_read_header_used(index, entry, &used);
 }
 
+int
+sift_dir_clear_order(const SiftDirSnapshot *snap, int *order)
+{
+	int			n = 0;
+
+	for (int scope = 1; scope >= 0; scope--)
+		for (int i = 0; i < snap->nsegs; i++)
+			if (snap->segs[i].kind != SIFT_SEG_TOMB && ((snap->segs[i].flags & SIFT_SEG_SCOPE) != 0) == scope)
+				order[n++] = i;
+	return n;
+}
+
 static void
 set_dirty(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {

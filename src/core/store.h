@@ -75,6 +75,9 @@
  * waits for. Unlogged and temporary indexes skip WAL; under wal_level=minimal
  * a relfilenode created in the current transaction skips WAL and is synced at
  * commit.
+ * P8 Liveness. A pass that clears the liveness bits of a directory (VACUUM, the fold of the tombstone marks) clears a unit with a record of its own, so a crash keeps a
+ *    prefix of the pass. It visits the scope segments of a column index, which hold copies of rows of the other segments, before those (sift_dir_clear_order): the prefix
+ *    may end a copy and keep its row, never keep a copy whose row is ended.
  */
 #ifndef SIFT_STORE_H
 #define SIFT_STORE_H
@@ -244,9 +247,14 @@ extern PGDLLIMPORT bool sift_test_cut_with_standby;
 extern PGDLLIMPORT int sift_test_dir_updates;
 extern void sift_store_dir_test_point(bool after);
 #define SIFT_DIR_TEST_POINT(after) sift_store_dir_test_point(after)
+extern PGDLLIMPORT int sift_test_crash_clear;
+extern PGDLLIMPORT int sift_test_clears;
+extern void sift_store_clear_test_point(void);
+#define SIFT_CLEAR_TEST_POINT() sift_store_clear_test_point()
 #else
 #define SIFT_SPACE_TEST_POINT(phase) ((void) 0)
 #define SIFT_DIR_TEST_POINT(after) ((void) 0)
+#define SIFT_CLEAR_TEST_POINT() ((void) 0)
 #endif
 extern uint64 sift_store_space_written(void);
 
