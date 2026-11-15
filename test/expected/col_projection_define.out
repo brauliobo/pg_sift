@@ -80,7 +80,7 @@ SELECT t.label, sift_helpers.statement_outcome(t.stmt) AS outcome FROM (VALUES
  differ         | 22023 projection_index: the projections {by_dim,by_status} differ in table, filter, rollups or options
  layout rollups | 22023 projection_index: the layout cannot set projection or rollup_columns
  layout name    | 22023 projection_index: the layout cannot set projection or rollup_columns
- bad layout     | 22023 invalid key_order option: column "status" is not a column of the index
+ bad layout     | 22023 invalid key_order option "status": column "status" is not a column of the index
 (6 rows)
 
 -- the index of a projection lists it, in the order of the names; its columns are the union of the projections' columns without repeats; a second call is the same index
