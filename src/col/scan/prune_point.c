@@ -7,6 +7,7 @@
 #include "postgres.h"
 #include "col/point.h"
 #include "col/scan_int.h"
+#include "core/damage.h"
 
 /* No unit of the range is kept: the tests that follow cannot change what a begin reads, and its other columns' zones are not touched */
 bool
@@ -145,8 +146,8 @@ listed_unit(SiftColSegment *seg, SiftKey key)
 
 	SIFT_INVARIANT(u != SIFT_CUNIT_UNKNOWN, "sift_col: the addresses of a segment cut by key name no unit");
 	if (u >= seg->nsb)
-		ereport(ERROR, (errcode(ERRCODE_INDEX_CORRUPTED), errmsg("sift_col index \"%s\" lists the address %llx, which is in no unit of its segment",
-																   RelationGetRelationName(seg->index), (unsigned long long) key)));
+		SIFT_DAMAGE_INDEX(seg->index, errmsg("sift_col index \"%s\" lists the address %llx, which is in no unit of its segment",
+																   RelationGetRelationName(seg->index), (unsigned long long) key));
 	return u;
 }
 

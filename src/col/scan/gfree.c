@@ -8,6 +8,7 @@
 #include "core/cmp.h"
 #include "core/hash.h"
 #include "col/scan/gmem.h"
+#include "core/damage.h"
 
 /* The chunk of leaf col of the unit of view v, its slots decoded (the NULL ones 0); NULL when the unit has none (every row is NULL) */
 static int64 *
@@ -107,7 +108,7 @@ gord_load_unit(SiftColSegment *seg, uint32 u, GOrdFree *f)
 	bool		ok = true;
 
 	if (!sift_cseg_unit_view(seg, u, &view))
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column unit: unit %u of a segment does not parse", u)));
+		SIFT_DAMAGE_DATA(NULL, errmsg("invalid column unit: unit %u of a segment does not parse", u));
 	for (int col = 0; col < seg->schema->ncols; col++)
 		if ((col == f->leaf || col == f->gleaf) && view.chunk_len[col] > 0)
 			sift_cseg_unit_fill(seg, u, view.chunk_off[col], view.chunk_len[col]);
@@ -173,7 +174,7 @@ gord_free_group_values(SiftColSegment *seg, int gcol, int64 *vals, uint64 *n)
 		bool		ok = true;
 
 		if (!sift_cseg_unit_view(seg, u, &view))
-			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column unit: unit %u of a segment does not parse", u)));
+			SIFT_DAMAGE_DATA(NULL, errmsg("invalid column unit: unit %u of a segment does not parse", u));
 		if (view.chunk_len[gcol] > 0)
 			sift_cseg_unit_fill(seg, u, view.chunk_off[gcol], view.chunk_len[gcol]);
 		val = unit_leaf(&view, gcol, &c);

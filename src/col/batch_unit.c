@@ -7,6 +7,7 @@
 #include "core/limits.h"
 #include "col/enc.h"
 #include "col/enc_int.h"
+#include "core/damage.h"
 
 typedef struct UnitLeaf
 {
@@ -45,8 +46,7 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 		uint32	   *to;
 
 		if (key < 0 || key >= dicts[col]->n)
-			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
-							errmsg("invalid column unit: dictionary code %lld is outside the dictionary of %u values", (long long) key, dicts[col]->n)));
+			SIFT_DAMAGE_DATA(NULL, errmsg("invalid column unit: dictionary code %lld is outside the dictionary of %u values", (long long) key, dicts[col]->n));
 		to = &lf->remap[key];
 		if (*to == PG_UINT32_MAX)
 		{
@@ -184,17 +184,15 @@ unit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const ui
 			for (uint32 r = 0; r < v->nrows; r++)
 			{
 				if ((uint64) l->key[r] > PG_UINT32_MAX || (uint64) l->eoff[r] + (uint64) l->key[r] > PG_UINT32_MAX)
-					ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
-									errmsg("invalid column unit: the group counts of leaf %d add up to more than %u elements", col, PG_UINT32_MAX)));
+					SIFT_DAMAGE_DATA(NULL, errmsg("invalid column unit: the group counts of leaf %d add up to more than %u elements", col, PG_UINT32_MAX));
 				l->eoff[r + 1] = l->eoff[r] + (uint32) l->key[r];
 			}
 		}
 	}
 	for (int col = 0; col < s->ncols; col++)
 		if (s->cols[col].parent >= 0 && lf[col].present && lf[col].c.n != (lf[s->cols[col].parent].eoff ? lf[s->cols[col].parent].eoff[v->nrows] : 0))
-			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED),
-							errmsg("invalid column unit: group leaf %d has %u values for %u elements", col, lf[col].c.n,
-								   lf[s->cols[col].parent].eoff ? lf[s->cols[col].parent].eoff[v->nrows] : 0)));
+			SIFT_DAMAGE_DATA(NULL, errmsg("invalid column unit: group leaf %d has %u values for %u elements", col, lf[col].c.n,
+								   lf[s->cols[col].parent].eoff ? lf[s->cols[col].parent].eoff[v->nrows] : 0));
 
 	if (rows != NULL && unit_columns_plain(s, lf, want))
 	{

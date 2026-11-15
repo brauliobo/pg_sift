@@ -3,7 +3,7 @@
 #   - an ERROR with SQLSTATE 54000 (limit), 0A000 (unsupported) or 55000 (wrong state) names what to do: errhint or errdetail;
 #   - no ERROR has SQLSTATE XX000: a condition the code rules out is SIFT_INVARIANT(cond, "text") (core/host.h), anything else
 #     a reachable condition with its own errcode (54000, 0A000, 55000, 40001, XX001/XX002 for corruption, ...).
-#   - a corruption error (ERRCODE_INDEX_CORRUPTED, ERRCODE_DATA_CORRUPTED) whose message does not name the index (the SIFT_CORRUPT macros do; a decoder gets bytes and
+#   - a corruption error (SIFT_DAMAGE_*, core/damage.h) whose message does not name the index (the SIFT_CORRUPT macros do; a decoder gets bytes and
 #     cannot) is raised under a context scope of the index (core/errctx.h): its file is listed in scripts/errctx.tsv with the files whose entry points push the
 #     scope, each of which must call sift_errctx_push. A file with such a message that is not listed is an error; "-" lists a known gap.
 #   - no message, detail, hint or context names a relation by its OID (`index %u`): a name, or sift_rel_label(oid) when it may be gone (core/sift.h);
@@ -24,6 +24,7 @@ src = sys.argv[1]
 registry = sys.argv[2]
 NEEDS_HELP = {"ERRCODE_PROGRAM_LIMIT_EXCEEDED", "ERRCODE_FEATURE_NOT_SUPPORTED", "ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE"}
 call = re.compile(r"\b(ereport|elog)\s*\(")
+damage_call = re.compile(r"\bSIFT_DAMAGE_(?:INDEX|DATA|OTHER_INDEX|OTHER_DATA)\s*\(")
 detail_call = re.compile(r"\b(errmsg|errmsg_plural|errdetail|errhint|errcontext)\s*\(")
 oid_name = re.compile(r'"[^"]*\b(?:relation|index|table)\s+%u')
 ddl_hint = re.compile(r'"[^"]*\b(?:ALTER|REINDEX|DROP)\s+(?:INDEX|TABLE)\b[^"]*%s')
@@ -114,6 +115,12 @@ for root, _, names in os.walk(src):
                 bad.append(f"{where}: XX000 ({m.group(1)}): use SIFT_INVARIANT(cond, \"text\") for a condition the code rules out, or an errcode")
             elif codes[0] in NEEDS_HELP and not re.search(r"\berr(hint|detail)\w*\s*\(", body):
                 bad.append(f"{where}: {codes[0]} without errhint or errdetail: say what to do")
+
+        for m in damage_call.finditer(text):
+            n = text.count("\n", 0, m.start()) + 1
+            body = text[m.end():balanced(text, m.end() - 1) - 1]
+            if name != "damage.h" and "RelationGetRelationName" not in body and not any("check-errors: allow" in notes.get(k, "") for k in (n - 2, n - 1, n)):
+                unnamed.add(os.path.relpath(path, os.path.dirname(src)))
 
 # the registry: FILE <TAB> files that push the context scope its errors are raised under (or "-": a known gap)
 scopes, gaps = {}, 0

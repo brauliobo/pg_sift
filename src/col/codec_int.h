@@ -6,6 +6,7 @@
 #define SIFT_COLCODEC_INT_H
 
 #include "col/codec.h"
+#include "core/damage.h"
 
 extern const SiftCcKernels sift_cc_kernels_scalar;
 extern const SiftCcKernels sift_cc_kernels_avx2;
@@ -60,7 +61,7 @@ extern const float sift_cc_p10f[11];
 #define SIFT_CC_ALP_EMAX_F4	10
 
 #define CC_CORRUPT(...) \
-	ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: " __VA_ARGS__)))
+	SIFT_DAMAGE_DATA(NULL, errmsg("invalid column chunk: " __VA_ARGS__))
 
 #define CC_BIT(tag)			(1 << (tag))
 #define CC_NHDR				16

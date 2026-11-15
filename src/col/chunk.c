@@ -5,6 +5,7 @@
 #include "col/enc.h"
 #include "col/enc_int.h"
 #include "core/popcount.h"
+#include "core/damage.h"
 
 /* ---------------------------------------------------------------------------
  * 5. Codec seam: the plain FOR and PACK encodings of the design notes. col-compress replaces this section (what a chunk of a given span
@@ -48,14 +49,14 @@ sift_cchunk_strs(const SiftCChunk *c, MemoryContext mcxt, uint32 **off, char **b
 	uint32		len = c->paylen;
 
 	if (c->enc != SIFT_COLENC_STRS && c->enc != SIFT_COLENC_ISTR)
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: encoding %d holds no strings", c->enc)));
+		SIFT_DAMAGE_DATA(NULL, errmsg("invalid column chunk: encoding %d holds no strings", c->enc));
 	if (c->enc == SIFT_COLENC_ISTR)
 	{
 		const uint8 *pre;
 		uint32		prelen;
 
 		if (!istr_split(c, &pre, &prelen, &pl, &len))
-			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column chunk: the inline text payload is malformed")));
+			SIFT_DAMAGE_DATA(NULL, errmsg("invalid column chunk: the inline text payload is malformed"));
 	}
 	sift_cc_decode_strs(mcxt, pl, len, c->n, off, bytes);
 }

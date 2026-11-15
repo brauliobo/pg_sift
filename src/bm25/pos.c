@@ -5,14 +5,13 @@
 
 #include "bm25/posting.h"
 #include "bm25/posting_int.h"
+#include "core/damage.h"
 
 static void
 corrupt_pos(const SiftPostingCursor *c)
 {
-	ereport(ERROR,
-			(errcode(ERRCODE_INDEX_CORRUPTED),
-			 errmsg("sift: position stream of the term blob at %llu is malformed",
-					(unsigned long long) c->info.post_off)));
+	SIFT_DAMAGE_INDEX(NULL, errmsg("sift: position stream of the term blob at %llu is malformed",
+					(unsigned long long) c->info.post_off));
 }
 
 /* End of the record at p and what it holds; NULL when it is cut off by end */
@@ -49,9 +48,7 @@ sift_pos_skip(const uint8 *p, const uint8 *end, uint32 *n, uint32 *last)
 	const uint8 *q = pos_next(p, end, n, last);
 
 	if (q == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("sift: truncated position record")));
+		SIFT_DAMAGE_INDEX(NULL, errmsg("sift: truncated position record"));
 	return q;
 }
 

@@ -15,6 +15,7 @@
 
 #include "bm25/kernels.h"
 #include "bm25/prefix.h"
+#include "core/damage.h"
 
 int			sift_prefix_cache_size = 8192;
 
@@ -73,10 +74,8 @@ SiftPrefixStats sift_prefix_stats;
 static void
 corrupt_union(const SiftSegment *seg, const char *what)
 {
-	ereport(ERROR,
-			(errcode(ERRCODE_INDEX_CORRUPTED),
-			 errmsg("index \"%s\" is corrupted: segment %llu: %s", RelationGetRelationName(seg->index),
-					(unsigned long long) seg->entry.gen, what)));
+	SIFT_DAMAGE_INDEX(seg->index, errmsg("index \"%s\" is corrupted: segment %llu: %s", RelationGetRelationName(seg->index),
+					(unsigned long long) seg->entry.gen, what));
 }
 
 static inline void

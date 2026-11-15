@@ -15,6 +15,7 @@
 #include "col/order_sort.h"
 #include "col/runs.h"
 #include "col/seg.h"
+#include "core/damage.h"
 
 #define ORDER_DEFAULT_ROWS	1024
 #define SORT_CHUNK_ROWS		4096		/* the rows of the sort that one read of the merge takes */
@@ -801,8 +802,8 @@ load_chunk(MergeSrc *m, MergeIn *in)
 
 			/* the units of a segment follow each other in the order of the key it was cut by: another key (the option was changed) cannot be merged as a stream */
 			if (ref_cmp(&last, &in->ord[0], (void *) m->ctx) > 0)
-				ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("segment %llu of a key_cut index is not in the order of the key", (unsigned long long) in->gen),
-								errhint("REINDEX the index.")));
+				SIFT_DAMAGE_DATA(NULL, errmsg("segment %llu of a key_cut index is not in the order of the key", (unsigned long long) in->gen),
+								errhint("REINDEX the index."));
 		}
 	}
 	m->chunk[cur].held = !in->done;

@@ -337,15 +337,15 @@ sift_tbl_page_rec(Page page, uint64 gen, uint32 off)
 		(ph->flags & SIFT_TBL_PAGE_OVFDATA) || off < 1 || off > ph->nrows)
 		return NULL;
 	if (off > SIFT_TBL_MAX_OFF)
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_table write buffer page counts %u rows, at most %d fit", ph->nrows, SIFT_TBL_MAX_OFF)));
+		SIFT_DAMAGE_OTHER_DATA(errmsg("sift_table write buffer page counts %u rows, at most %d fit", ph->nrows, SIFT_TBL_MAX_OFF));
 	if (ph->slot[off - 1] == 0)
 		return NULL;
 	if (ph->slot[off - 1] % _Alignof(SiftTblRec))
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_table write buffer page holds a record at a misaligned offset")));
+		SIFT_DAMAGE_OTHER_DATA(errmsg("sift_table write buffer page holds a record at a misaligned offset"));
 	rec = (const SiftTblRec *) (SiftPageGetData(page) + ph->slot[off - 1]);
 	end = (const char *) PageGetSpecialPointer(page);
 	if ((const char *) (rec + 1) > end || rec->inline_len > end - (const char *) (rec + 1))
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_table write buffer page holds a record that reaches past the page")));
+		SIFT_DAMAGE_OTHER_DATA(errmsg("sift_table write buffer page holds a record that reaches past the page"));
 	return rec;
 }
 
@@ -473,10 +473,10 @@ sift_tbl_ovf_piece(Page page, uint64 gen)
 
 	if (PageIsNew(page) || SiftPageGetOpaque(page)->type != SIFT_PT_WBUFDATA || SiftPageGetOpaque(page)->gen != gen ||
 		!(TBL_PAGE(page)->flags & SIFT_TBL_PAGE_OVFDATA))
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_table write buffer page is not a continuation page of an overflow row")));
+		SIFT_DAMAGE_OTHER_DATA(errmsg("sift_table write buffer page is not a continuation page of an overflow row"));
 	used = SiftPageGetUsed(page);
 	if (used <= TBL_PAGE_INIT || used > SIFT_PAGE_PAYLOAD)
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_table write buffer continuation page holds %u bytes", used)));
+		SIFT_DAMAGE_OTHER_DATA(errmsg("sift_table write buffer continuation page holds %u bytes", used));
 	return used - TBL_PAGE_INIT;
 }
 

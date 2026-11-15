@@ -14,6 +14,7 @@
 #include "col/scan/scope_pairs.h"
 #include "col/scope.h"
 #include "col/wbuf.h"
+#include "core/damage.h"
 
 static int
 cmp_member(const void *a, const void *b)
@@ -116,7 +117,7 @@ listing_unit(UnitListing *l, SiftColSegment *seg, uint32 u, uint32 **cand, uint3
 		SiftCUnitView v;
 
 		if (!sift_cseg_unit_view(seg, u, &v))
-			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_col: unit %u of segment %llu does not parse", u, (unsigned long long) seg->entry.gen)));
+			SIFT_DAMAGE_DATA(seg->index, errmsg("sift_col: unit %u of segment %llu does not parse", u, (unsigned long long) seg->entry.gen));
 		*cand = palloc((l->next - first) * sizeof(uint32));
 		*ncand = sift_cunit_find_rows(&v, ur->id, l->addr + first, l->next - first, *cand);
 	}
@@ -405,7 +406,7 @@ unit_rows_of(SegMembers *sm, SiftColSegment *seg, uint32 u, int fk, const uint32
 		uint32		n;
 
 		if (!sift_cseg_unit_view(seg, u, &v))
-			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_col: unit %u of segment %llu does not parse", u, (unsigned long long) seg->entry.gen)));
+			SIFT_DAMAGE_DATA(seg->index, errmsg("sift_col: unit %u of segment %llu does not parse", u, (unsigned long long) seg->entry.gen));
 		sift_cseg_zone(seg, fk, u, &z);
 		own = sm->mm != NULL && (z.flags & SIFT_COLZ_INLINE);
 		mem = own ? sm->ids_mem : &sm->mem;

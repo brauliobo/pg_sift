@@ -33,6 +33,7 @@
 #include "core/page.h"
 #include "core/sift.h"
 #include "core/store.h"
+#include "core/damage.h"
 
 #define VRUN_MAGIC			0x4e555256	/* 'VRUN' */
 #define VRUN_MERGE_ABOVE	12			/* runs of an epoch above which the appender merges the smallest adjacent ones */
@@ -87,7 +88,7 @@ static HTAB *views;
 static void
 vs_corrupt(Relation rel, const char *what)
 {
-	ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("shared value store \"%s\": %s", RelationGetRelationName(rel), what)));
+	SIFT_DAMAGE_OTHER_DATA(errmsg("shared value store \"%s\": %s", RelationGetRelationName(rel), what));
 }
 
 static VStoreView *
@@ -815,7 +816,7 @@ sift_vstore_read_open(Relation index, uint32 store, uint32 epoch, MemoryContext 
 	uint64		ep = epoch;
 
 	if (!sift_vstore_is_store(store))
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("a segment names relation %s as its shared value store, which is none", sift_rel_label(store))));
+		SIFT_DAMAGE_DATA(NULL, errmsg("a segment names relation %s as its shared value store, which is none", sift_rel_label(store)));
 	LockRelationOid(store, AccessShareLock);
 	rel = RelationIdGetRelation(store);
 	sift_dir_read(rel, snap);

@@ -17,12 +17,10 @@
 #include "core/cmp.h"
 #include "core/tomb.h"
 #include "core/rowmem.h"
+#include "core/damage.h"
 
 #define corrupt(rel, ...) \
-	ereport(ERROR, \
-			(errcode(ERRCODE_DATA_CORRUPTED), \
-			 errmsg("relation \"%s\" has a corrupted tombstone log", RelationGetRelationName(rel)), \
-			 errdetail(__VA_ARGS__)))
+	SIFT_DAMAGE_DATA(rel, errmsg("relation \"%s\" has a corrupted tombstone log", RelationGetRelationName(rel)), errdetail(__VA_ARGS__))
 
 bool
 sift_tomb_is_seg(const SiftSegEntry *e)

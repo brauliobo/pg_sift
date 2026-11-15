@@ -21,6 +21,7 @@
  */
 #include "store_test_int.h"
 #include "agg/agg_int.h"
+#include "core/damage.h"
 #include "executor/instrument.h"
 
 #ifdef SIFT_TESTING
@@ -239,9 +240,8 @@ find_segment(Relation index, uint64 gen, SiftDirSnapshot *snap, TestSeg *seg)
 static void
 mismatch(Relation index, const TestSeg *seg, uint64 off)
 {
-	ereport(ERROR, (errcode(ERRCODE_INDEX_CORRUPTED),
-					errmsg("sift test segment %llu of \"%s\" differs at offset %llu",
-						   ULL(seg->gen), RelationGetRelationName(index), ULL(off))));
+	SIFT_DAMAGE_INDEX(index, errmsg("sift test segment %llu of \"%s\" differs at offset %llu",
+						   ULL(seg->gen), RelationGetRelationName(index), ULL(off)));
 }
 
 /* Replays the writer: pieces, padding, content and pointer alignment */

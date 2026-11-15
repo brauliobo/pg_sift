@@ -10,12 +10,10 @@
 #include "utils/rel.h"
 
 #include "core/tomb.h"
+#include "core/damage.h"
 
 #define corrupt(rel, ...) \
-	ereport(ERROR, \
-			(errcode(ERRCODE_DATA_CORRUPTED), \
-			 errmsg("relation \"%s\" has a corrupted tombstone log", RelationGetRelationName(rel)), \
-			 errdetail(__VA_ARGS__)))
+	SIFT_DAMAGE_DATA(rel, errmsg("relation \"%s\" has a corrupted tombstone log", RelationGetRelationName(rel)), errdetail(__VA_ARGS__))
 
 /* The completeness the record says is the same; VACUUM freezing the transaction that made the log complete says nothing new */
 static bool

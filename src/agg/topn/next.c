@@ -11,6 +11,7 @@
 #include "agg/leaf_int.h"
 #include "agg/gord.h"
 #include "agg/topn/int.h"
+#include "core/damage.h"
 
 #define TOPN_MAGIC	0x544F5031
 
@@ -192,10 +193,8 @@ sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 		fetch_begin(t, part);
 	/* the TID is the root of a HOT chain when the row was updated without a new index entry: the fetch follows the chain to the visible version */
 	if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("sift: top-N row (%u,%u) is not in the heap", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid)),
-				 errhint("REINDEX the index.")));
+		SIFT_DAMAGE_INDEX(NULL, errmsg("sift: top-N row (%u,%u) is not in the heap", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid)),
+				 errhint("REINDEX the index."));
 	t->fetched++;
 	ExecClearTuple(slot);
 	for (int c = 0; c < t->nout; c++)

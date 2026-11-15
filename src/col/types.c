@@ -18,6 +18,7 @@
 #include "utils/uuid.h"
 
 #include "col/am.h"
+#include "core/damage.h"
 
 /* The storage class of a type the table AM holds as one leaf of a single lane (the index adds the wide types in sift_col_att_leaves) */
 bool
@@ -437,7 +438,7 @@ sift_col_image_numeric(const uint8 *img, uint32 len, int32 dscale)
 	char	   *txt = palloc(SIFT_NIMG_TEXT_MAX);
 
 	if (sift_col_numimg_to_text(img, len, dscale, txt, SIFT_NIMG_TEXT_MAX) == 0)
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_col: a numeric image of %u bytes is damaged", len)));
+		SIFT_DAMAGE_DATA(NULL, errmsg("sift_col: a numeric image of %u bytes is damaged", len));
 	return DirectFunctionCall3(numeric_in, CStringGetDatum(txt), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 }
 

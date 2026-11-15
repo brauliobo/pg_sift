@@ -4,11 +4,10 @@
 #ifndef SIFT_TBL_STORE_INT_H
 #define SIFT_TBL_STORE_INT_H
 
+#include "core/damage.h"
+
 #define corrupt(rel, ...) \
-	ereport(ERROR, \
-			(errcode(ERRCODE_DATA_CORRUPTED), \
-			 errmsg("sift_table relation \"%s\" is corrupted", RelationGetRelationName(rel)), \
-			 errdetail(__VA_ARGS__)))
+	SIFT_DAMAGE_OTHER_DATA(errmsg("sift_table relation \"%s\" is corrupted", RelationGetRelationName(rel)), errdetail(__VA_ARGS__))
 
 static inline bool
 is_wbuf(const SiftSegEntry *e)
