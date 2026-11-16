@@ -589,12 +589,19 @@ PG_FUNCTION_INFO_V1(sift_table_paths_check);
 Datum
 sift_table_paths_check(PG_FUNCTION_ARGS)
 {
-	Relation	rel = table_open(PG_GETARG_OID(0), AccessExclusiveLock);
-	const char *col = NameStr(*PG_GETARG_NAME(1));
-	char	   *spec = PG_ARGISNULL(2) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(2));
-	AttrNumber	attno = get_attnum(RelationGetRelid(rel), col);
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table paths check", ALLOCSET_SMALL_SIZES);
+	Relation	rel;
+	const char *col;
+	char	   *spec;
+	AttrNumber	attno;
+	MemoryContext cx;
 
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
+		PG_RETURN_NULL();
+	rel = table_open(PG_GETARG_OID(0), AccessExclusiveLock);
+	col = NameStr(*PG_GETARG_NAME(1));
+	spec = PG_ARGISNULL(2) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(2));
+	attno = get_attnum(RelationGetRelid(rel), col);
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table paths check", ALLOCSET_SMALL_SIZES);
 	if (!object_ownercheck(RelationRelationId, RelationGetRelid(rel), GetOuterUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
 	sift_tbl_require(rel);

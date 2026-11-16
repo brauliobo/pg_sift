@@ -23,6 +23,7 @@
 #include "col/conn.h"
 #include "col/names.h"
 #include "col/scope.h"
+#include "core/catname.h"
 
 typedef enum NamesMode
 {
@@ -198,7 +199,7 @@ follow_ref(const SiftNameChange *c, Oid host, char **schema, char **name, char *
 
 	if (c->kind == SIFT_NAME_TABLE)
 	{
-		const char *now = get_namespace_name(get_rel_namespace(host));
+		const char *now = sift_namespace_name(get_rel_namespace(host));
 		const char *was = host == c->relid ? c->from_schema : now;
 
 		if (strcmp(*schema ? *schema : was, c->from_schema) == 0 && strcmp(*name, c->from) == 0)
@@ -351,9 +352,12 @@ sift_names_renamed_options(Relation index, const SiftNameChange *c)
 	Oid			host = index->rd_index->indrelid;
 	HeapTuple	tp = SearchSysCache1(RELOID, ObjectIdGetDatum(RelationGetRelid(index)));
 	bool		isnull;
-	Datum		d = SysCacheGetAttr(RELOID, tp, Anum_pg_class_reloptions, &isnull);
+	Datum		d;
 	List	   *out = NIL;
 
+	if (!HeapTupleIsValid(tp))
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("relation with OID %u does not exist", RelationGetRelid(index))));
+	d = SysCacheGetAttr(RELOID, tp, Anum_pg_class_reloptions, &isnull);
 	if (!isnull)
 		foreach_node(DefElem, opt, untransformRelOptions(d))
 		{

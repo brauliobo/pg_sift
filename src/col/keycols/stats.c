@@ -16,6 +16,7 @@
 #include "col/keycols/keycols_int.h"
 #include "core/store.h"
 #include "core/restrict.h"
+#include "core/catname.h"
 
 
 /* the live rows per page of a table that no VACUUM or ANALYZE has counted: those of up to 32 pages spread over it. The planner's guess from the widths of the columns is 16 times too many for a table of 1,000-byte strings,
@@ -145,7 +146,7 @@ keycols_analyze_if_unknown(Relation heap, Relation index)
 	if (keycols_heap_rows(heap) < GORD_AUTO_ROWS)
 		return;
 	initStringInfo(&cmd);
-	appendStringInfo(&cmd, "ANALYZE %s.%s (", quote_identifier(get_namespace_name(RelationGetNamespace(heap))), quote_identifier(RelationGetRelationName(heap)));
+	appendStringInfo(&cmd, "ANALYZE %s.%s (", quote_identifier(sift_namespace_name(RelationGetNamespace(heap))), quote_identifier(RelationGetRelationName(heap)));
 	for (int i = 0; i < index->rd_index->indnatts; i++)
 	{
 		AttrNumber	att = index->rd_index->indkey.values[i];

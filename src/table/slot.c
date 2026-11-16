@@ -19,6 +19,7 @@
 #include "utils/relcache.h"
 
 #include "table/table.h"
+#include "core/catname.h"
 
 typedef struct SiftTblSlot
 {
@@ -152,7 +153,7 @@ sift_slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 	*isnull = false;
 	if (!ItemPointerIsValid(&slot->tts_tid))
 		return (Datum) 0;
-	rel = RelationIdGetRelation(slot->tts_tableOid);
+	rel = sift_relation_get(slot->tts_tableOid);
 	st = sift_tbl_rel(rel);
 	if (!sift_tbl_fetch_lazy(rel, st, &slot->tts_tid, &rv))
 		SIFT_TBL_RETRY("sift_table: the row (%u,%u) of \"%s\" is gone", ItemPointerGetBlockNumberNoCheck(&slot->tts_tid),

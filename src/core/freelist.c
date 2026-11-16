@@ -3,6 +3,7 @@
  * (P2-P4 and P7 in core/store.h).
  */
 #include "freelist_int.h"
+#include "core/catname.h"
 
 static SiftFreeListData *
 check_freelist(Relation index, Buffer buf, BlockNumber hwm)
@@ -156,7 +157,7 @@ sift_store_removable(Relation index, FullTransactionId xid)
 		return true;
 	if (index->rd_rel->relkind != RELKIND_INDEX)
 		return GlobalVisCheckRemovableFullXid(index, xid);
-	heap = RelationIdGetRelation(index->rd_index->indrelid);
+	heap = sift_relation_get(index->rd_index->indrelid);
 	removable = GlobalVisCheckRemovableFullXid(heap, xid);
 	RelationClose(heap);
 	return removable;
@@ -170,7 +171,7 @@ sift_store_removable(Relation index, FullTransactionId xid)
 FullTransactionId
 sift_store_horizon(Relation index)
 {
-	Relation	heap = index->rd_rel->relkind == RELKIND_INDEX ? RelationIdGetRelation(index->rd_index->indrelid) : index;
+	Relation	heap = index->rd_rel->relkind == RELKIND_INDEX ? sift_relation_get(index->rd_index->indrelid) : index;
 	TransactionId oldest = GetOldestNonRemovableTransactionId(heap);
 
 	if (heap != index)

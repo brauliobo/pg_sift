@@ -15,6 +15,7 @@
 #include "catalog/pg_type.h"
 
 #include "agg/expr/int.h"
+#include "core/catname.h"
 
 /*
  * Calendar expressions of a date, timestamp or timestamptz leaf (Param 0), and the cells of a unit's calendar dim (days, months or years; docs/COL-PREAGG.md
@@ -125,7 +126,7 @@ is_num_cast(Node *e)
 	f = (FuncExpr *) e;
 	if (list_length(f->args) != 1 || get_func_namespace(f->funcid) != PG_CATALOG_NAMESPACE || contain_volatile_functions(e))
 		return false;
-	name = get_func_name(f->funcid);
+	name = sift_func_name(f->funcid);
 	for (int i = 0; i < lengthof(names); i++)
 		ok |= strcmp(name, names[i]) == 0;
 	return ok;
@@ -202,7 +203,7 @@ cal_part(Node *e, Oid ptype, CalPart *out)
 	nargs = list_length(f->args);
 	if (get_func_namespace(f->funcid) != PG_CATALOG_NAMESPACE)
 		return false;
-	name = get_func_name(f->funcid);
+	name = sift_func_name(f->funcid);
 	trunc = strcmp(name, "date_trunc") == 0;
 	cast = strcmp(name, "date") == 0 || strcmp(name, "timestamp") == 0 || strcmp(name, "timestamptz") == 0 || strcmp(name, "timezone") == 0;
 	if (trunc || strcmp(name, "extract") == 0 || strcmp(name, "date_part") == 0)
@@ -369,7 +370,7 @@ calendar_units_walker(Node *n, CalUnits *cu)
 	if (IsA(n, FuncExpr) && get_func_namespace(((FuncExpr *) n)->funcid) == PG_CATALOG_NAMESPACE)
 	{
 		FuncExpr   *f = (FuncExpr *) n;
-		char	   *fname = get_func_name(f->funcid);
+		char	   *fname = sift_func_name(f->funcid);
 		bool		trunc = strcmp(fname, "date_trunc") == 0;
 
 		if ((trunc || strcmp(fname, "extract") == 0 || strcmp(fname, "date_part") == 0) && list_length(f->args) >= 2 && IsA(linitial(f->args), Const) &&

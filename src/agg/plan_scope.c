@@ -54,6 +54,7 @@
 #include "col/am.h"
 #include "col/scope.h"
 #include "core/cmp.h"
+#include "core/catname.h"
 
 #define NOT_SCOPE	((const char *) 1)	/* take_item: the item is not the scope relation of the index */
 
@@ -141,7 +142,7 @@ static bool
 is_func(Node *q, const char *name, int nargs)
 {
 	return IsA(q, FuncExpr) && list_length(((FuncExpr *) q)->args) == nargs && get_func_namespace(((FuncExpr *) q)->funcid) == get_namespace_oid("sift", true) &&
-		strcmp(get_func_name(((FuncExpr *) q)->funcid), name) == 0;
+		strcmp(sift_func_name(((FuncExpr *) q)->funcid), name) == 0;
 }
 
 static bool
@@ -186,7 +187,7 @@ marker_scope(AggCtx *c, Node *q, const char **why)
 		return no_scope(why, "a scope key is NULL");
 	proto.key_name = TextDatumGetCString(name->constvalue);
 	proto.keys = sift_agg_scope_keys(key->consttype, key->constvalue, false, &proto.nkeys, NULL);
-	proto.once = strcmp(get_func_name(f->funcid), "in_scope") == 0;
+	proto.once = strcmp(sift_func_name(f->funcid), "in_scope") == 0;
 	if (!proto.once && scope_multiset(c->indexoid, proto.key_name))
 		return no_scope(why, SCOPE_MULTISET);
 	return scope_make(c, &proto, leaf);

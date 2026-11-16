@@ -17,6 +17,7 @@
 #include "utils/typcache.h"
 
 #include "agg/plan_int.h"
+#include "core/catname.h"
 
 SlotReq *
 slot_req(AggCtx *c, int combo, int slot)
@@ -656,7 +657,7 @@ compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	}
 	if (count_rows_kind(c, a, arg, out))
 	{
-		out->desc = pstrdup(get_func_name(fid));
+		out->desc = pstrdup(sift_func_name(fid));
 		return true;
 	}
 	/* the set of the values of each group stays: x is not proven unique per row, so the rows cannot be counted in its place */

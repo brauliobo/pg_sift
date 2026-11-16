@@ -22,6 +22,7 @@
 
 #include "col/am.h"
 #include "col/scope.h"
+#include "core/catname.h"
 
 /* The predicate of an index as an implicit-AND list over Vars of varno 1 (a copy), NIL for a plain one */
 List *
@@ -132,5 +133,5 @@ sift_scope_journal_alter(Relation index)
 		return;
 	foreach_oid(user, sift_scope_users(RelationGetRelid(index)))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("index \"%s\" is the journal of a scope of index \"%s\"", RelationGetRelationName(index), get_rel_name(user)),
-						errhint("The journal keeps track_changes = 'ctid': a read of the scope index learns from it which pairs changed. DROP INDEX %s first to give the scope up.", quote_identifier(get_rel_name(user)))));
+						errhint("The journal keeps track_changes = 'ctid': a read of the scope index learns from it which pairs changed. DROP INDEX %s first to give the scope up.", quote_identifier(sift_rel_name(user)))));
 }

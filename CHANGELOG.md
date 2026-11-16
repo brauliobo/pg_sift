@@ -4,6 +4,9 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: `sift.suggest_paths()` with a NULL table or column name, `sift.table_paths_check()` with a NULL table or column, and the internal `sift._names_expr()`, `sift._names_exprs()` and `sift._names_option()` with a NULL argument crashed the backend with a segmentation fault; each now returns NULL, as a function of NULL arguments does.
+- Fixed: pg_sift: a relation, function or namespace that another session dropped while a statement read it could end the statement with a segmentation fault in a few places (the value store, the free-space check, the row fetch of a `sift_table`, the column renames); it ends with the error of a missing object (`relation with OID ... does not exist`).
+
 ## 5.0.0 - 2026-11-16
 
 - Changed: sift_table: the change records that a published table writes under `wal_level = logical` carry the custom WAL resource manager id 152 and the name `sift_table`, no longer the experimental id 128 that 4.x used. 5.0 registers 128 too, as `sift_table_legacy`, for replay and decoding only (a standby of a 4.x primary, crash recovery of a data directory that 4.x wrote, a logical slot made under 4.x); a 4.x server stops at a record of id 152 (`resource manager with ID 152 not registered`), so the standbys are updated first and a rollback starts from a clean shutdown (`docs/UPGRADING.md`, `docs/OPERATIONS.md`). Test `table_rmgr_id`.

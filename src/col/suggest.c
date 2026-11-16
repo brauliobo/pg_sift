@@ -463,15 +463,20 @@ sift_col_suggest_spec(Relation rel, AttrNumber attno, const char *col, int sampl
 Datum
 sift_col_suggest_paths(PG_FUNCTION_ARGS)
 {
-	Oid			relid = PG_GETARG_OID(0);
-	int			sample = PG_ARGISNULL(2) ? 2000 : PG_GETARG_INT32(2);
-	char	   *col = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	Oid			relid;
+	int			sample;
+	char	   *col;
 	Relation	rel;
 	AttrNumber	attno;
 	int			ncols = 0,
 				ngroups = 0;
 	char	   *result;
 
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
+		PG_RETURN_NULL();
+	relid = PG_GETARG_OID(0);
+	sample = PG_ARGISNULL(2) ? 2000 : PG_GETARG_INT32(2);
+	col = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	if (sample < 1 || sample > 100000)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sample must be between 1 and 100000")));
 	rel = table_open(relid, AccessShareLock);

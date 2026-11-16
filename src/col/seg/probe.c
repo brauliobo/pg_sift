@@ -10,6 +10,7 @@
 #include "core/cmp.h"
 #include "col/am.h"
 #include "col/seg_int.h"
+#include "core/catname.h"
 
 int64		sift_col_probe_dead;
 
@@ -76,7 +77,7 @@ probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col)
 	}
 	g->hatt = ix->indkey.values[d->attno - 1];
 	g->hrel = ix->indrelid;
-	heap = RelationIdGetRelation(g->hrel);
+	heap = sift_relation_get(g->hrel);
 	if (!RelationIsValid(heap))
 		return false;
 	if (heap->rd_rel->relkind == RELKIND_RELATION && heap->rd_rel->relam == HEAP_TABLE_AM_OID && g->hatt <= RelationGetDescr(heap)->natts &&
@@ -122,7 +123,7 @@ probe_open(SiftColSegment *seg, GOrdLeaf *g, int col)
 	HeapProbe  *pr = palloc(sizeof(HeapProbe));
 	const SiftColDef *d;
 
-	pr->rel = RelationIdGetRelation(g->hrel);
+	pr->rel = sift_relation_get(g->hrel);
 	if (!RelationIsValid(pr->rel))
 	{
 		pfree(pr);

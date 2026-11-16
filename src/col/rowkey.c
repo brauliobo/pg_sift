@@ -25,6 +25,7 @@
 #include "col/conn.h"
 #include "core/compat.h"
 #include "core/tomb.h"
+#include "core/catname.h"
 
 bool
 sift_col_row_key_on(Relation index)
@@ -105,7 +106,7 @@ repack_copy(Relation heap)
 	char	   *end;
 	unsigned long oid;
 
-	if (strcmp(get_namespace_name(RelationGetNamespace(heap)), "repack") == 0 && strncmp(name, "table_", 6) == 0)
+	if (strcmp(sift_namespace_name(RelationGetNamespace(heap)), "repack") == 0 && strncmp(name, "table_", 6) == 0)
 		return true;
 	if (strncmp(name, "tmp_", 4) != 0)
 		return false;
@@ -122,7 +123,7 @@ sift_col_repack_origin(Relation rel)
 	char	   *end;
 	unsigned long oid;
 
-	if (strcmp(get_namespace_name(RelationGetNamespace(rel)), "repack") != 0 || strncmp(name, prefix, strlen(prefix)) != 0)
+	if (strcmp(sift_namespace_name(RelationGetNamespace(rel)), "repack") != 0 || strncmp(name, prefix, strlen(prefix)) != 0)
 		return InvalidOid;
 	oid = strtoul(name + strlen(prefix), &end, 10);
 	return *end == '\0' && oid != 0 ? (Oid) oid : InvalidOid;

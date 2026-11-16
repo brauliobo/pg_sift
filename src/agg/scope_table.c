@@ -60,6 +60,8 @@ table_why(PlannerInfo *root, RangeTblEntry *rte)
 	if (rte->tablesample != NULL || (rte->inh && rte->relkind == RELKIND_RELATION))
 		return "the table of keys is sampled, or an inheritance parent whose rows depend on its children";
 	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(rte->relid));
+	if (!HeapTupleIsValid(tup))
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("relation with OID %u does not exist", rte->relid)));
 	rls = ((Form_pg_class) GETSTRUCT(tup))->relrowsecurity;
 	ReleaseSysCache(tup);
 	if (rls || rte->securityQuals != NIL)

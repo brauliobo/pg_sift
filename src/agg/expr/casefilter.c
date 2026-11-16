@@ -41,6 +41,7 @@
 #include "utils/numeric.h"
 
 #include "agg/agg.h"
+#include "core/catname.h"
 
 bool		sift_agg_case_filter_enabled = true;
 
@@ -390,8 +391,8 @@ rewrite_aggref(Aggref *a)
 		return NULL;
 	if (other == CF_COUNT)
 		return rewrite_count_else(a, cond, value);
-	if (other == CF_VALUE && strcmp(get_func_name(a->aggfnoid), "sum") != 0)
-		return rewrite_zero_stat(a, get_func_name(a->aggfnoid), cond, value, dc);
+	if (other == CF_VALUE && strcmp(sift_func_name(a->aggfnoid), "sum") != 0)
+		return rewrite_zero_stat(a, sift_func_name(a->aggfnoid), cond, value, dc);
 	if (count_of_constant(a, value))
 		return (Node *) count_rows(a, with_filter(a, cond));
 	f = copyObject(a);

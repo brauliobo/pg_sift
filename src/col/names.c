@@ -46,6 +46,7 @@
 #include "col/vstore/vstore.h"
 #include "core/restrict.h"
 #include "core/store.h"
+#include "core/catname.h"
 
 /* The table that ALTER TABLE .. SET SCHEMA is about to move, with the schema and the name it has until then: the event after the command does not tell */
 static struct
@@ -76,8 +77,8 @@ sift_col_names_before(PG_FUNCTION_ARGS)
 	{
 		MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
 
-		before.schema = get_namespace_name(get_rel_namespace(before.relid));
-		before.name = get_rel_name(before.relid);
+		before.schema = sift_namespace_name(get_rel_namespace(before.relid));
+		before.name = sift_rel_name(before.relid);
 		MemoryContextSwitchTo(old);
 	}
 	PG_RETURN_NULL();
@@ -98,6 +99,8 @@ rename_attribute(Oid indexoid, int pos, const char *to)
 	Relation	attrel = table_open(AttributeRelationId, RowExclusiveLock);
 	HeapTuple	tp = SearchSysCacheCopy2(ATTNUM, ObjectIdGetDatum(indexoid), Int16GetDatum(pos + 1));
 
+	if (!HeapTupleIsValid(tp))
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("column %d of relation with OID %u does not exist", pos + 1, indexoid)));
 	namestrcpy(&((Form_pg_attribute) GETSTRUCT(tp))->attname, to);
 	sift_cat_update(attrel, tp);
 	heap_freetuple(tp);
@@ -252,7 +255,7 @@ change_of(Node *stmt, Oid relid, SiftNameChange *c)
 {
 	RenameStmt *rs = IsA(stmt, RenameStmt) ? (RenameStmt *) stmt : NULL;
 	AlterObjectSchemaStmt *as = IsA(stmt, AlterObjectSchemaStmt) ? (AlterObjectSchemaStmt *) stmt : NULL;
-	char	   *schema = get_namespace_name(get_rel_namespace(relid));
+	char	   *schema = sift_namespace_name(get_rel_namespace(relid));
 
 	*c = (SiftNameChange) {.relid = relid,.from_schema = schema,.to_schema = schema};
 	if (rs != NULL && rs->renameType == OBJECT_COLUMN)
@@ -430,11 +433,11 @@ rewrite_expr(const char *text, const char *from, const char *to)
 
 PG_FUNCTION_INFO_V1(sift_names_expr);
 
-/* sift._names_expr(expression text, from name, to name): the expression with the column from named to; NULL for NULL */
+/* sift._names_expr(expression text, from name, to name): the expression with the column from named to; NULL for a NULL argument */
 Datum
 sift_names_expr(PG_FUNCTION_ARGS)
 {
-	if (PG_ARGISNULL(0))
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1) || PG_ARGISNULL(2))
 		PG_RETURN_NULL();
 	PG_RETURN_TEXT_P(cstring_to_text(rewrite_expr(text_to_cstring(PG_GETARG_TEXT_PP(0)), text_to_cstring(PG_GETARG_TEXT_PP(1)), text_to_cstring(PG_GETARG_TEXT_PP(2)))));
 }
@@ -445,12 +448,17 @@ PG_FUNCTION_INFO_V1(sift_names_exprs);
 Datum
 sift_names_exprs(PG_FUNCTION_ARGS)
 {
-	ArrayType  *a = PG_GETARG_ARRAYTYPE_P(0);
+	ArrayType  *a;
 	Datum	   *elems;
 	int			n;
-	char	   *from = text_to_cstring(PG_GETARG_TEXT_PP(1)),
-			   *to = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	char	   *from,
+			   *to;
 
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1) || PG_ARGISNULL(2))
+		PG_RETURN_NULL();
+	a = PG_GETARG_ARRAYTYPE_P(0);
+	from = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	to = text_to_cstring(PG_GETARG_TEXT_PP(2));
 	deconstruct_array_builtin(a, TEXTOID, &elems, NULL, &n);
 	for (int i = 0; i < n; i++)
 		elems[i] = CStringGetTextDatum(rewrite_expr(TextDatumGetCString(elems[i]), from, to));
@@ -459,14 +467,14 @@ sift_names_exprs(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_names_option);
 
-/* sift._names_option(option text, value text, from name, to name): the value of the sift_col option with the column from named to; NULL for NULL */
+/* sift._names_option(option text, value text, from name, to name): the value of the sift_col option with the column from named to; NULL for a NULL argument */
 Datum
 sift_names_option(PG_FUNCTION_ARGS)
 {
 	char	   *value,
 			   *written;
 
-	if (PG_ARGISNULL(1))
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1) || PG_ARGISNULL(2) || PG_ARGISNULL(3))
 		PG_RETURN_NULL();
 	value = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	written = sift_names_list_option(text_to_cstring(PG_GETARG_TEXT_PP(0)), value, text_to_cstring(PG_GETARG_TEXT_PP(2)), text_to_cstring(PG_GETARG_TEXT_PP(3)));

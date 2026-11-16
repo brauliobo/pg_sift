@@ -49,6 +49,7 @@
 #include "col/vstore/vstore.h"
 #include "core/restrict.h"
 #include "core/store.h"
+#include "core/catname.h"
 
 #define VSTORE_LOCK_CLASS	0x5D1C
 
@@ -724,12 +725,12 @@ names_visit(Oid store, void *arg)
 	{
 		char	   *cand = store_name(heap, col, pass);
 
-		if (was == nsp && strcmp(cand, get_rel_name(store)) == 0)
+		if (was == nsp && strcmp(cand, sift_rel_name(store)) == 0)
 			return false;
 		if (!OidIsValid(get_relname_relid(cand, nsp)))
 			name = cand;
 	}
-	if (strcmp(name, get_rel_name(store)) != 0)
+	if (strcmp(name, sift_rel_name(store)) != 0)
 	{
 		RenameRelationInternal(store, name, true, false);
 		CommandCounterIncrement();

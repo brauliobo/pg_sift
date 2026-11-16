@@ -36,6 +36,7 @@
 #include "core/sift.h"
 #include "core/store.h"
 #include "core/damage.h"
+#include "core/catname.h"
 
 #define VRUN_MAGIC			0x4e555256	/* 'VRUN' */
 #define VRUN_MERGE_ABOVE	12			/* runs of an epoch above which the appender merges the smallest adjacent ones */
@@ -363,7 +364,7 @@ sift_vstore_forget_views(void)
 uint32
 sift_vstore_current_epoch(uint32 store)
 {
-	Relation	rel = RelationIdGetRelation(store);
+	Relation	rel = sift_relation_get(store);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	uint32		epoch;
 
@@ -821,7 +822,7 @@ sift_vstore_read_open(Relation index, uint32 store, uint32 epoch, MemoryContext 
 	if (!sift_vstore_is_store(store))
 		SIFT_DAMAGE_DATA(NULL, errmsg("a segment names relation %s as its shared value store, which is none", sift_rel_label(store)));
 	LockRelationOid(store, AccessShareLock);
-	rel = RelationIdGetRelation(store);
+	rel = sift_relation_get(store);
 	sift_dir_read(rel, snap);
 	/* the epoch is the segment's: the store keeps those it names until no segment does (vstore_gc) */
 	r->nruns = dir_runs(snap, runs, &ep);
@@ -870,7 +871,7 @@ sift_vstore_read_str(void *handle, uint32 code, uint32 *len, char *buf)
 {
 	StoreRead  *r = handle;
 	RunRead    *run = NULL;
-	Relation	rel = RelationIdGetRelation(r->store);
+	Relation	rel = sift_relation_get(r->store);
 	const char *str;
 
 	for (int i = 0; i < r->nruns; i++)
@@ -893,7 +894,7 @@ void
 sift_vstore_read_strs(void *handle, const uint32 *codes, uint32 n, StringInfo all, uint32 *off)
 {
 	StoreRead  *r = handle;
-	Relation	rel = RelationIdGetRelation(r->store);
+	Relation	rel = sift_relation_get(r->store);
 	RunRead    *run = NULL;
 
 	for (uint32 i = 0; i < n; i++)
@@ -936,7 +937,7 @@ void
 sift_vstore_read_match(void *handle, SiftColOp op, const SiftColValue *c, int nvals, uint64 *bits)
 {
 	StoreRead  *r = handle;
-	Relation	rel = RelationIdGetRelation(r->store);
+	Relation	rel = sift_relation_get(r->store);
 
 	for (int i = 0; i < r->nruns; i++)
 	{
