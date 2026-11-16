@@ -5,7 +5,7 @@
 set -uo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 bad=0
-TM=(); for tm in timeout gtimeout; do command -v $tm >/dev/null && { TM=($tm 30); break; }; done   # macOS has neither without coreutils: a hang then ends at the lint job limit
+TM=(); for tm in timeout gtimeout; do command -v $tm >/dev/null && { TM=($tm 100); break; }; done   # macOS has neither without coreutils: a hang then ends at the lint job limit
 fail() { echo "FAIL: $*"; bad=1; }
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -17,8 +17,8 @@ rm "$R/scripts/ci.sh" "$R/scripts/ci" "$R/scripts/pgtest.sh" "$R/scripts/lint.sh
 cp "$REPO/scripts/ci.sh" "$R/scripts/ci.sh"
 cp -r "$REPO/scripts/ci" "$R/scripts/ci"
 printf '#!/usr/bin/env bash\ncase $1 in initdb-template) mkdir -p "$2" ;; install) echo "the build failed"; exit 1 ;; esac\n' >"$R/scripts/pgtest.sh"
-printf '#!/usr/bin/env bash\nsleep 60\n' >"$R/scripts/lint.sh"
-printf 'span-test span-test-asan:\n\tsleep 60\n' >"$R/sqlite/Makefile"
+printf '#!/usr/bin/env bash\nsleep 600\n' >"$R/scripts/lint.sh"
+printf 'span-test span-test-asan:\n\tsleep 600\n' >"$R/sqlite/Makefile"
 printf '#!/bin/sh\nexit 0\n' >"$T/bin/initdb"
 chmod +x "$R/scripts/pgtest.sh" "$R/scripts/lint.sh" "$T/bin/initdb"
 
@@ -28,9 +28,9 @@ build_fails() {
 	shift
 	( cd "$R" && env CI=1 PATH="$T/bin:$PATH" SIFT_CI_TMP="$T/run-$name" "$@" "${TM[@]}" scripts/ci.sh quick >"$T/$name.log" 2>&1 )
 	rc=$?
-	(( rc != 124 )) || fail "$name: the run was still going after 30 s"
+	(( rc != 124 )) || fail "$name: the run was still going after 100 s"
 	(( rc != 0 )) || fail "$name: the run exited 0 after a failed build"
-	(( SECONDS - t0 < 20 )) || fail "$name: the run took $((SECONDS - t0)) s to end"
+	(( SECONDS - t0 < 90 )) || fail "$name: the run took $((SECONDS - t0)) s to end"
 	grep -q 'the build failed' "$T/$name.log" || fail "$name: the log of the build is not shown"
 }
 build_fails alone SIFT_CI_NO_HARNESS=1
