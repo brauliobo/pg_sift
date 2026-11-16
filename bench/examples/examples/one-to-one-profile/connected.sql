@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: account <-> profile is 1:1 (profile.account_id = account.id); activity -> account -> profile is a chain of N:1 then 1:1

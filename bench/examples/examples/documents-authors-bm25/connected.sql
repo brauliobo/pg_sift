@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: document -> author after a BM25 filter on document.body: the text filter and the join key live in different sift indexes of the same table

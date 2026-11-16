@@ -4,7 +4,6 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
-
 ## 5.0.0 - 2026-11-16
 
 - Changed: sift_table: the change records that a published table writes under `wal_level = logical` carry the custom WAL resource manager id 152 and the name `sift_table`, no longer the experimental id 128 that 4.x used. 5.0 registers 128 too, as `sift_table_legacy`, for replay and decoding only (a standby of a 4.x primary, crash recovery of a data directory that 4.x wrote, a logical slot made under 4.x); a 4.x server stops at a record of id 152 (`resource manager with ID 152 not registered`), so the standbys are updated first and a rollback starts from a clean shutdown (`docs/UPGRADING.md`, `docs/OPERATIONS.md`). Test `table_rmgr_id`.

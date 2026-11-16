@@ -1,0 +1,3 @@
+child_table	child_col	parent_table	parent_col	relation	reads
+order_line	order_id,line_no	shipment	order_id,line_no	1:1	carrier,shipped_on
+order_line	order_id	header	id	n:1	customer_id,status,placed_on

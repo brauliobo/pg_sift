@@ -1,0 +1,2 @@
+child_table	child_col	parent_table	parent_col	relation	reads
+event	(attrs->>'sku')::int	catalog	sku	n:1	category,brand,price

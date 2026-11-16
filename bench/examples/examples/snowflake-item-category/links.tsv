@@ -1,0 +1,4 @@
+child_table	child_col	parent_table	parent_col	relation	reads
+sale	item_id	item	id	n:1	category_id,brand,price
+item	category_id	category	id	n:1	department_id,kind
+category	department_id	department	id	n:1	division,name

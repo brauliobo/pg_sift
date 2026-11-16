@@ -1,0 +1,2 @@
+child_table	child_col	parent_table	parent_col	relation	reads
+reading	zone_id	zone	id	n:1	region,kind,capacity

@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: follows.follower -> person.id and follows.followee -> person.id: two links to the same dimension, plus the edge table joined to itself (mutual)
