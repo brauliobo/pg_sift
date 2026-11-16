@@ -1,0 +1,31 @@
+-- The transaction ids a sift_table holds (the versions of its rows, its tombstones, the xids of its groups) are what PostgreSQL's anti-wraparound VACUUM reads as relfrozenxid: VACUUM freezes
+-- what is committed and older than the horizon and moves relfrozenxid past every id the table wrote, so that the table never holds an id a wrap of the counter would turn into the future
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE t (id int, v text) USING sift_table;
+SELECT txid_current() AS x0 \gset
+INSERT INTO t SELECT g, 'a' || g FROM generate_series(1, 5000) g;
+BEGIN;
+INSERT INTO t SELECT g, 'b' || g FROM generate_series(5001, 6000) g;
+COMMIT;
+DELETE FROM t WHERE id % 11 = 0;
+UPDATE t SET v = v || 'x' WHERE id % 13 = 0;
+
+-- the table still holds the ids of its writes: relfrozenxid has not passed them
+SELECT relfrozenxid::text::bigint <= :x0 + 1 AS holds_its_ids FROM pg_class WHERE oid = 't'::regclass;
+
+VACUUM t;
+SELECT relfrozenxid::text::bigint > :x0 + 4 AS passed_the_writes FROM pg_class WHERE oid = 't'::regclass;
+SELECT count(*) AS rows, sum(id) AS ids FROM t;
+
+-- more writes, then VACUUM (FREEZE): the same, for the ids of the later writes
+SELECT txid_current() AS x1 \gset
+INSERT INTO t SELECT g, 'c' FROM generate_series(7001, 7100) g;
+DELETE FROM t WHERE id > 7050;
+VACUUM (FREEZE) t;
+SELECT relfrozenxid::text::bigint > :x1 + 2 AS passed_the_later_writes FROM pg_class WHERE oid = 't'::regclass;
+SELECT count(*) AS rows, sum(id) AS ids FROM t;
+
+DROP TABLE t;
+DROP EXTENSION pg_sift;
