@@ -12,6 +12,10 @@
 #include "utils/timestamp.h"
 #include "core/ops.h"
 #include "bm25/merge.h"
+#ifdef SIFT_TESTING
+#include "bm25/build.h"
+#endif
+#include "col/build.h"
 #include "col/maint/maint_int.h"
 #include "col/scope.h"
 
@@ -237,6 +241,9 @@ maint_scope_refill(Relation index)
 void
 sift_scope_stamp_concurrent(Relation index)
 {
+#ifdef SIFT_TESTING
+	sift_test_phase_wait(SIFT_COL_GATE_FILL);
+#endif
 	if (maint_scope_refill(index))
 		while (maint_scope_merge_step(index, true))
 			;

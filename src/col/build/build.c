@@ -72,6 +72,9 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 		if (heap->rd_rel->reltuples > 0)
 			pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) heap->rd_rel->reltuples);
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_SCAN);
+#ifdef SIFT_TESTING
+		sift_test_phase_wait(SIFT_COL_PHASE_SCAN);
+#endif
 		res->heap_tuples = sift_colb_scan(b, heap, info);
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_WRITE);
 #ifdef SIFT_TESTING
@@ -156,6 +159,9 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 		res = serial_build(heap, index, info);
 	if (scoped)
 		PopActiveSnapshot();
+#ifdef SIFT_TESTING
+	sift_test_phase_wait(SIFT_COL_GATE_TAIL);
+#endif
 	if (sift_col_track_on(index))
 	{
 		sift_col_log_create(index);

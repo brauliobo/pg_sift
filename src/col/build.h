@@ -19,6 +19,11 @@
 
 #define SIFT_COL_PHASE_SCAN		2
 #define SIFT_COL_PHASE_WRITE	3
+#ifdef SIFT_TESTING
+/* gates of sift.test_phase_gate that are no progress phase: before the locks of the end of the build are taken, and in the fill of the scope segments of a concurrent build */
+#define SIFT_COL_GATE_TAIL		4
+#define SIFT_COL_GATE_FILL		5
+#endif
 
 /* The segments a build may write: the directory keeps room for the write buffer and a merge */
 #define SIFT_COL_BUILD_SEGMENTS	(SIFT_MAX_SEGMENTS - 7)
