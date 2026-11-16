@@ -441,7 +441,10 @@ jobs:
           fetch-depth: 0
 
       - name: Install bash 5 and PostgreSQL 17 and 18
-        run: brew install bash postgresql@17 postgresql@18 lz4 zstd
+        run: |
+          brew install bash postgresql@17 postgresql@18 lz4 zstd coreutils
+          mkdir -p "$RUNNER_TEMP/gnu-timeout"
+          ln -s "$(brew --prefix coreutils)/bin/gtimeout" "$RUNNER_TEMP/gnu-timeout/timeout"
 
       # the README install (a tap, brew install, brew test) on this checkout: the formula is copied into a tap of its own, in the runner's prefix. The stable formula is
       # installed from the real archive of its tag (the url and sha256 of the file are what a user gets), the HEAD one from this checkout; style and audit read the formula
@@ -486,7 +489,7 @@ jobs:
           SIFT_CI_JOBS: '^(installcheck-(facets|filter_pushdown)|tap-shell-(col_auto_merge_concurrent|col_refresh_crash|col_rollup_ondemand|col_wbuf_batch|leakcheck_gate|pg_upgrade|pg_upgrade_32|replica_mixed|scaling_slope))$'
           SIFT_CI_NO_HARNESS: 1
         run: |
-          PATH="$(brew --prefix)/bin:$(brew --prefix postgresql@18)/bin:$PATH"; export PATH
+          PATH="$RUNNER_TEMP/gnu-timeout:$(brew --prefix)/bin:$(brew --prefix postgresql@18)/bin:$PATH"; export PATH
           bash --version | head -1
           make check
 
@@ -498,7 +501,7 @@ jobs:
           SIFT_CI_JOBS: '^(installcheck-(facets|filter_pushdown)|tap-shell-(col_auto_merge_concurrent|col_refresh_crash|col_rollup_ondemand|col_wbuf_batch|leakcheck_gate|pg_upgrade|pg_upgrade_32|replica_mixed|scaling_slope))$'
           SIFT_CI_NO_HARNESS: 1
         run: |
-          PATH="$(brew --prefix)/bin:$(brew --prefix postgresql@17)/bin:$PATH"; export PATH
+          PATH="$RUNNER_TEMP/gnu-timeout:$(brew --prefix)/bin:$(brew --prefix postgresql@17)/bin:$PATH"; export PATH
           make check
 
       - name: Keep the logs of a failed run

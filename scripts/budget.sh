@@ -11,6 +11,7 @@
 #   scripts/budget.sh list              the table
 # BUDGET_RESULTS=FILE appends "label rc wall_s limit_s peak_mb limit_mb" per run (the label is BUDGET_LABEL, else the name). The budget is the owner's: raise a row only with the measurement that justifies it.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
+command -v timeout >/dev/null || { echo 'needs timeout (macOS: brew install coreutils, then put gtimeout on PATH as timeout)' >&2; exit 1; }
 set -uo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
