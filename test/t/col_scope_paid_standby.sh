@@ -38,10 +38,9 @@ paid() { sql "$1" "SELECT paid FROM sift._test_scope_balance('ce_col')" | tail -
 half() { sql pp "SELECT half::int8 FROM sift._test_scope_balance('ce_col')" | tail -n 1; }
 gens() { sql "$1" "SELECT string_agg(gen::text, ',' ORDER BY gen) FROM sift.col_segments('ce_col') WHERE kind = 'immutable'" | tail -n 1; }
 changed() { sql ps "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $JOIN" | grep -c 'Scope Changed Keys'; }
-caught_up() { [[ $(sql ps "SELECT pg_last_wal_replay_lsn() >= '$(sql pp "SELECT pg_current_wal_lsn()")'") == t ]]; }
 same() { [[ $(sql ps "SET sift.agg_force = on" "$JOIN" | tail -n 1) == $(sql pp "SET sift.enable_agg = off" "$JOIN" | tail -n 1) ]]; }
 
-wait_for caught_up 60
+catchup pp ps
 G0=$(gens pp)
 check "the standby reads the stale index and answers as the primary's join does" same
 reads ps 300
@@ -50,13 +49,17 @@ HALF=$(half)
 reads pp 20
 PP=$(paid pp)
 sql pp "SELECT sift._test_scope_paid_flush('ce_col')" >/dev/null
-wait_for caught_up 60
-check "the primary's sum is replayed: the standby has it" test "$(paid ps)" -eq "$PP" -a "$PP" -gt 0
-check "and the standby's own reads are not added to it" test "$(paid ps)" -lt "$HALF"
+catchup pp ps
+PS=$(paid ps)
+out="primary sum $PP, standby sum $PS, half $HALF; primary balance $(sql pp "SELECT * FROM sift._test_scope_balance('ce_col')" | tail -n 1), standby balance $(sql ps "SELECT * FROM sift._test_scope_balance('ce_col')" | tail -n 1)"
+check "the primary's sum is replayed: the standby has it" test "$PS" -eq "$PP" -a "$PP" -gt 0
+check "and the standby's own reads are not added to it" test "$PS" -lt "$HALF"
+out=''
+
 for _ in 1 2 3 4 5 6 7 8; do reads pp 100; done
 refilled() { [[ $(gens pp) != "$G0" ]]; }
 check "the primary's reads ask for the rewrite and it is written (the standby's 300 did not)" wait_for refilled 60
 wait_stable pp "SELECT string_agg(gen::text, ',' ORDER BY gen) FROM sift.col_segments('ce_col') WHERE kind = 'immutable'" 60
-wait_for caught_up 60
+catchup pp ps
 check "the standby replays the rewrite: its reads are the filled read, no changed member" test "$(changed)" -eq 0
 finish
