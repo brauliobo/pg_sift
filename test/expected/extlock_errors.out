@@ -54,6 +54,47 @@ ORDER BY m DESC, i, k;
  error         | t_col  | warning     | ok
 (32 rows)
 
+-- the same with a write that extends the relation under the lock
+SELECT m AS on_corruption, i AS index, k AS kind, expect(format('SET sift.on_corruption = %L; SELECT sift._test_raise_extending(%L::regclass, %L, true)', m, i, k)) AS raised
+FROM unnest(ARRAY['error', 'quarantine']) m, unnest(ARRAY['t_col', 't_bm25']) i,
+	 unnest(ARRAY['index', 'data', 'scope', 'other_data', 'other_index', 'error', 'warning', 'log']) k
+ORDER BY m DESC, i, k;
+ on_corruption | index  |    kind     | raised 
+---------------+--------+-------------+--------
+ quarantine    | t_bm25 | data        | XX001
+ quarantine    | t_bm25 | error       | 54000
+ quarantine    | t_bm25 | index       | XX002
+ quarantine    | t_bm25 | log         | ok
+ quarantine    | t_bm25 | other_data  | XX001
+ quarantine    | t_bm25 | other_index | XX002
+ quarantine    | t_bm25 | scope       | XX001
+ quarantine    | t_bm25 | warning     | ok
+ quarantine    | t_col  | data        | XX001
+ quarantine    | t_col  | error       | 54000
+ quarantine    | t_col  | index       | XX002
+ quarantine    | t_col  | log         | ok
+ quarantine    | t_col  | other_data  | XX001
+ quarantine    | t_col  | other_index | XX002
+ quarantine    | t_col  | scope       | XX001
+ quarantine    | t_col  | warning     | ok
+ error         | t_bm25 | data        | XX001
+ error         | t_bm25 | error       | 54000
+ error         | t_bm25 | index       | XX002
+ error         | t_bm25 | log         | ok
+ error         | t_bm25 | other_data  | XX001
+ error         | t_bm25 | other_index | XX002
+ error         | t_bm25 | scope       | XX001
+ error         | t_bm25 | warning     | ok
+ error         | t_col  | data        | XX001
+ error         | t_col  | error       | 54000
+ error         | t_col  | index       | XX002
+ error         | t_col  | log         | ok
+ error         | t_col  | other_data  | XX001
+ error         | t_col  | other_index | XX002
+ error         | t_col  | scope       | XX001
+ error         | t_col  | warning     | ok
+(32 rows)
+
 SELECT index, detections > 0 AS recorded FROM sift.quarantine ORDER BY index;
  index  | recorded 
 --------+----------

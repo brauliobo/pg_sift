@@ -503,7 +503,7 @@ write_run(SiftVStore *vs, const SiftCDict *src, uint32 from, uint32 lo, uint32 n
 	pfree(out.data);
 }
 
-/* Under the extension lock nothing may take a heavyweight lock: the xid is assigned first (the catalog the directory update reads is warmed by the lock, core/extlock.h) */
+/* Under the extension lock nothing may take a heavyweight lock: the xid is assigned first (the catalog the directory update reads is read by the lock, core/extlock.h) */
 static void
 lock_extend(SiftVStore *vs)
 {

@@ -19,6 +19,11 @@ SELECT m AS on_corruption, i AS index, k AS kind, expect(format('SET sift.on_cor
 FROM unnest(ARRAY['error', 'quarantine']) m, unnest(ARRAY['t_col', 't_bm25']) i,
 	 unnest(ARRAY['index', 'data', 'scope', 'other_data', 'other_index', 'error', 'warning', 'log']) k
 ORDER BY m DESC, i, k;
+-- the same with a write that extends the relation under the lock
+SELECT m AS on_corruption, i AS index, k AS kind, expect(format('SET sift.on_corruption = %L; SELECT sift._test_raise_extending(%L::regclass, %L, true)', m, i, k)) AS raised
+FROM unnest(ARRAY['error', 'quarantine']) m, unnest(ARRAY['t_col', 't_bm25']) i,
+	 unnest(ARRAY['index', 'data', 'scope', 'other_data', 'other_index', 'error', 'warning', 'log']) k
+ORDER BY m DESC, i, k;
 SELECT index, detections > 0 AS recorded FROM sift.quarantine ORDER BY index;
 
 DROP TABLE t;

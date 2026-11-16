@@ -9,18 +9,13 @@
 #include "core/extlock.h"
 #include "core/sift.h"
 
-static void
-warm_reports(Relation rel)
-{
-	(void) sift_catalog();
-	sift_errctx_warm();
-	pfree(sift_errctx_name(RelationGetRelid(rel)));
-}
+static const char extend_owner;
 
 void
 sift_extension_lock(Relation rel)
 {
-	warm_reports(rel);
+	sift_errctx_freeze(rel);
+	(void) sift_catalog();
 	LockRelationForExtension(rel, ExclusiveLock);
 }
 
@@ -28,11 +23,16 @@ void
 sift_extension_unlock(Relation rel)
 {
 	UnlockRelationForExtension(rel, ExclusiveLock);
+	sift_errctx_thaw(rel);
 }
 
 Buffer
 sift_extend_zeroed_to(Relation rel, BlockNumber nblocks)
 {
-	warm_reports(rel);
-	return ExtendBufferedRelTo(BMR_REL(rel), MAIN_FORKNUM, NULL, 0, nblocks, RBM_ZERO_AND_LOCK);
+	Buffer		buf;
+
+	sift_errctx_freeze(&extend_owner);
+	buf = ExtendBufferedRelTo(BMR_REL(rel), MAIN_FORKNUM, NULL, 0, nblocks, RBM_ZERO_AND_LOCK);
+	sift_errctx_thaw(&extend_owner);
+	return buf;
 }
