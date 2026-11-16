@@ -519,9 +519,9 @@ def main():
     ap.add_argument('--seconds', type=float, default=80)
     ap.add_argument('--hold', type=float)
     a = ap.parse_args()
-    lo, _, hi = a.seeds.partition('-')
+    seeds = [n for part in a.seeds.split(',') for n in range(int(part.partition('-')[0]), int(part.rpartition('-')[2]) + 1)]
     bad = 0
-    for seed in range(int(lo), int(hi or lo) + 1):
+    for seed in seeds:
         rc, ctx = run_seed('twin', seed, a.seconds, a.hold)
         print(f'seed={seed} {("OK", "FAIL", "HARNESS")[rc]} {time.time() - ctx.t0:.0f}s log={ctx.path}', flush=True)
         bad += rc != 0

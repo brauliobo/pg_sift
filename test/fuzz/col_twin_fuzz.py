@@ -384,9 +384,9 @@ def main():
     ap.add_argument('--rows', type=int, default=30000)
     ap.add_argument('--steps', type=int, default=10)
     o = ap.parse_args()
-    lo, _, hi = o.seeds.partition('-')
+    seeds = [n for part in o.seeds.split(',') for n in range(int(part.partition('-')[0]), int(part.rpartition('-')[2]) + 1)]
     bad = 0
-    for seed in range(int(lo), int(hi or lo) + 1):
+    for seed in seeds:
         t0 = time.time()
         rc, path = run_seed(seed, o.rows, o.steps)
         print(f'seed={seed} {"OK" if rc == 0 else "FAIL"} {time.time() - t0:.0f}s log={path}', flush=True)
