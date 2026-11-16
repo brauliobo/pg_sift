@@ -1,0 +1,120 @@
+# RULE	FILE	THE LINE	WHAT BOUNDS IT -- 'bounded:' was read at the site, 'open:' is a growth that nothing bounds by a setting (the 5.0.1 memory audit lists it).
+double	agg/combo/ents.c	cs->dir = cs->dir ? repalloc(cs->dir, (size_t) cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, (size_t) cap * sizeof(uint32));	open: the directory of the combinations of one statement: one per distinct combination, no limit but the group table check
+double	agg/combo/ids.c	t->hv = repalloc(t->hv, t->cap * sizeof(uint32));	open: ids of the strings of one combination: one per distinct string, no limit but the group table check
+double	agg/combo/ids.c	t->len = repalloc(t->len, t->cap * sizeof(uint32));	open: ids of the strings of one combination: one per distinct string, no limit but the group table check
+double	agg/combo/ids.c	t->ptr = repalloc(t->ptr, t->cap * sizeof(char *));	open: ids of the strings of one combination: one per distinct string, no limit but the group table check
+double	agg/gpu.c	g->desc = repalloc(g->desc, (Size) g->capunit * g->nslots * 4 * sizeof(uint32));	bounded: capunit/capwg follow the number of units and workgroups of one plan, GPU_PLAN_BYTES
+double	agg/gpu.c	g->unit = repalloc(g->unit, g->capunit * sizeof(GpuUnit));	bounded: capunit/capwg follow the number of units and workgroups of one plan, GPU_PLAN_BYTES
+double	agg/gpu.c	g->wg = repalloc(g->wg, (Size) g->capwg * 4 * sizeof(uint32));	bounded: capunit/capwg follow the number of units and workgroups of one plan, GPU_PLAN_BYTES
+double	agg/leaf.c	t->hv = repalloc(t->hv, t->cap * sizeof(uint32));	open: OutTable: one entry per distinct value a statement sees (about 90 bytes with a short text), doubling with a plain repalloc; work_mem does not bound it (count(DISTINCT text), a text key) and 1 GB ends it with an allocation error
+double	agg/leaf.c	t->val = repalloc(t->val, t->cap * sizeof(Datum));	open: OutTable: one entry per distinct value a statement sees (about 90 bytes with a short text), doubling with a plain repalloc; work_mem does not bound it (count(DISTINCT text), a text key) and 1 GB ends it with an allocation error
+double	agg/lookclass.c	s->buf = s->buf ? repalloc(s->buf, s->cap) : MemoryContextAlloc(s->cxt, s->cap);	bounded: the bytes of the classes of one lookup table, under sift.agg_lookup_kb
+double	agg/lookcol.c	kp->pair = kp->pair ? repalloc(kp->pair, (kp->cap *= 2) * sizeof(SiftScopePair)) : palloc((kp->cap = 1024) * sizeof(SiftScopePair));	bounded: pairs of one lookup, under sift.agg_lookup_kb
+double	agg/lookup/map.c	mc->hv = repalloc(mc->hv, mc->cap * sizeof(uint32));	bounded: the values of one lookup table, under sift.agg_lookup_kb
+double	agg/lookup/map.c	mc->val = repalloc(mc->val, mc->cap * sizeof(Datum));	bounded: the values of one lookup table, under sift.agg_lookup_kb
+double	agg/pred_cal.c	out = repalloc(out, (cap *= 2) * sizeof(int64));	bounded: values of one IN list or predicate of the statement
+double	agg/stub_dec.c	d->bytes = repalloc(d->bytes, d->bcap *= 2);	open: the decoded dictionary of one source leaf, with the distinct values of the leaf: no limit but the segment's own size
+double	agg/stub_dec.c	d->off = repalloc(d->off, sizeof(uint32) * ((d->cap *= 2) + 1));	open: the decoded dictionary of one source leaf, with the distinct values of the leaf: no limit but the segment's own size
+double	agg/stub_src.c	src->rowkey = repalloc(src->rowkey, sizeof(SiftKey) * src->cap);	bounded: the rows of one unit of the source (a unit is at most SIFT_COL_UNIT_ROWS rows)
+double	agg/stub_src.c	u->nulls = repalloc(u->nulls, sizeof(bool) * natts * src->cap);	bounded: the rows of one unit of the source (a unit is at most SIFT_COL_UNIT_ROWS rows)
+double	agg/stub_src.c	u->vals = repalloc(u->vals, sizeof(Datum) * natts * src->cap);	bounded: the rows of one unit of the source (a unit is at most SIFT_COL_UNIT_ROWS rows)
+double	agg/topn/unit.c	t->mem = repalloc(t->mem, t->capmem * t->stride * sizeof(int64));	bounded: at most topn_rows (100,000) rows of stride int64 words
+double	agg/two.c	a->cid = repalloc(a->cid, (Size) a->ccap * a->nlk * sizeof(uint32));	open: cells of a two-level aggregate: one per distinct inner key tuple, no limit but the group table check
+double	agg/wide.c	w->bytes = repalloc(w->bytes, w->bcap);	open: wide values (numeric, text over 8 bytes) of one aggregate, one per distinct value: no limit but the group table check
+double	agg/wide.c	w->key = repalloc(w->key, w->dcap * 3 * sizeof(uint64));	open: wide values (numeric, text over 8 bytes) of one aggregate, one per distinct value: no limit but the group table check
+double	agg/wide.c	w->off = repalloc(w->off, (w->dcap + 1) * sizeof(uint32));	open: wide values (numeric, text over 8 bytes) of one aggregate, one per distinct value: no limit but the group table check
+double	bm25/step.c	pk->buf = repalloc(pk->buf, pk->cap = size * 2);	bounded: the size of one posting block of a cursor
+double	col/autocut/autocut.c	k->cells = k->cells ? repalloc(k->cells, k->cap * sizeof(Cell)) : palloc(k->cap * sizeof(Cell));	bounded: cells of the size sample of one segment cut
+double	col/dict/dict.c	d->off = repalloc(d->off, (d->cap + 1) * sizeof(uint32));	open: the entries of a dictionary under construction: segment writer, owned by the lane build-memory
+double	col/maint/scope.c	held = repalloc(held, (heldcap *= 2) * sizeof(SiftColBatch *));	bounded: batches of one scope maintenance pass
+double	col/scan/scope.c	ps->p = ps->p ? repalloc(ps->p, ps->cap * sizeof(SiftScopePair)) : palloc(ps->cap * sizeof(SiftScopePair));	bounded: pairs of one scope read, under work_mem (sift_budget_check) in the caller
+double	col/scan/scope_delta.c	o->row = repalloc(o->row, o->cap * sizeof(DeltaRow));	bounded: rows of the changed keys of one scope delta, under sift.col_scope_refresh_pct
+double	col/scan/scope_segrows.c	bids = bids ? repalloc(bids, cap * sizeof(int64 *)) : palloc(cap * sizeof(int64 *));	bounded: batches of one scope segment read
+double	col/scan/scope_segrows.c	bs = bs ? repalloc(bs, cap * sizeof(SiftColBatch *)) : palloc(cap * sizeof(SiftColBatch *));	bounded: batches of one scope segment read
+double	col/scope_paid.c	pending = pending ? repalloc(pending, cap * sizeof(Pending)) : MemoryContextAlloc(TopMemoryContext, cap * sizeof(Pending));	open: the same array as the lifetime row of this file
+double	col/seg_write/groups.c	g->gfirst = repalloc(g->gfirst, g->cap * sizeof(uint32));	open: the group arrays of the segment writer: the lane build-memory (src/col/build, seg_write) owns them
+double	col/seg_write/groups.c	g->gn = repalloc(g->gn, g->cap * sizeof(uint32));	open: the group arrays of the segment writer: the lane build-memory (src/col/build, seg_write) owns them
+double	col/seg_write/groups.c	g->xsplit = repalloc(g->xsplit, g->cap * sizeof(uint64));	open: the group arrays of the segment writer: the lane build-memory (src/col/build, seg_write) owns them
+double	col/wbuf/batches.c	f->held = repalloc(f->held, (f->cap *= 2) * sizeof(Held));	bounded: the batches of one write buffer, which sift.wbuf_max_kb bounds
+double	col/wbuf/batches.c	s->b = s->b ? repalloc(s->b, (s->cap *= 2) * sizeof(SiftColBatch *)) :	bounded: the batches of one write buffer, which sift.wbuf_max_kb bounds
+double	col/wbuf/lookup.c	out = repalloc(out, (cap *= 2) * sizeof(ItemPointerData));	bounded: the addresses of one lookup of the write buffer
+double	col/wbuf/reads.c	pending = pending ? repalloc(pending, cap * sizeof(Pending)) : MemoryContextAlloc(TopMemoryContext, cap * sizeof(Pending));	open: the same array as the lifetime row of this file
+double	core/lane.c	blks = repalloc(blks, (cap *= 2) * sizeof(BlockNumber));	bounded: the blocks of one lane, at most the pages of the relation
+double	table/gscan_cache.c	g->cu = repalloc(g->cu, (cap *= 2) * sizeof(UnitTids));	bounded: units of one group scan of a sift_table, the memory of its fetch contexts
+int	agg/gord.c	char *cand = palloc(g->ncur * SIFT_CGORD_STR_MAX);	bounded: ncur sources (the segments of one scan, a few) times a constant string length
+int	agg/leaf.c	char *data = (char *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAlloc(ex->ucxt, nrow * esz + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));	bounded: nrow is a unit's rows (SIFT_COL_UNIT_ROWS at most) times esz of 4 or 8: far below 4 GB
+int	agg/leaf.c	v->data = (char *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAllocZero(ex->ucxt, n * esz + SIFT_AGG_PAD * esz + SIFT_SIMD_ALIGN));	bounded: nrow is a unit's rows (SIFT_COL_UNIT_ROWS at most) times esz of 4 or 8: far below 4 GB
+int	agg/sel.c	b->data = MemoryContextAlloc(cxt, b->cap * 8);	bounded: cap is a size_t of the rows of a unit
+int	bm25/facet.c	rows = MemoryContextAlloc(f->mcxt, n * ROW_BYTES);	bounded: n is the pages of a superblock (SIFT_PAGEMASK_WORDS * 64) times ROW_BYTES
+int	bm25/livestream.c	dc->dead = MemoryContextAlloc(mcxt, (SIFT_SB_PAGES * MAXOFF + 7) / 8);	bounded: constants of a superblock
+int	bm25/step.c	pk->buf = repalloc(pk->buf, pk->cap = size * 2);	bounded: size is the length of one posting block
+lifetime	agg/cost/cte.c	priced = MemoryContextAlloc(TopMemoryContext, PRICED_MAX * sizeof(PricedList));	bounded: PRICED_MAX entries
+lifetime	agg/cte/rewrite.c	source_cx = AllocSetContextCreate(TopMemoryContext, "sift cache column sources", ALLOCSET_SMALL_SIZES);	bounded: one entry per column source (relation) the backend planned over, flushed by the relcache callback
+lifetime	agg/expr/walk.c	walk_memo = MemoryContextAlloc(TopMemoryContext, WALK_MEMO_MAX * sizeof(WalkMemo));	bounded: WALK_MEMO_MAX entries
+lifetime	agg/from/facts.c	facts_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache partition facts", ALLOCSET_DEFAULT_SIZES);	open: facts of up to FACTS_CACHE = SIFT_AGG_MAX_PARTS indexes, each with copies of its zone arrays (units x leaves x 16 bytes): a count limit, no byte limit; emptied whole when passed
+lifetime	agg/fuse.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: one registration per executor state of the statement in flight, removed with it
+lifetime	agg/fuse.c	old = MemoryContextSwitchTo(TopMemoryContext);	bounded: one registration per executor state of the statement in flight, removed with it
+lifetime	agg/gord.c	gbuf_cx = AllocSetContextCreate(TopMemoryContext, "sift cache cursors", ALLOCSET_DEFAULT_SIZES);	bounded: spare cursor buffers, a fixed number kept (ngbuf_spare)
+lifetime	agg/gpu.c	gpu.plan_cxt = AllocSetContextCreate(TopMemoryContext, "sift gpu plans", ALLOCSET_DEFAULT_SIZES);	bounded: GPU_PLAN_MAX plans and GPU_PLAN_BYTES, and one device name
+lifetime	agg/gpu.c	gpu.vk_dev = MemoryContextStrdup(TopMemoryContext, sift_gpu_device);	bounded: GPU_PLAN_MAX plans and GPU_PLAN_BYTES, and one device name
+lifetime	agg/lookcache.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: sift.agg_lookup_cache_kb per backend, least recently used evicted, a pinned entry never
+lifetime	agg/lookcache.c	cache_cx = AllocSetContextCreate(TopMemoryContext, "sift cache lookup tables", ALLOCSET_DEFAULT_SIZES);	bounded: sift.agg_lookup_cache_kb per backend, least recently used evicted, a pinned entry never
+lifetime	agg/lookcache.c	old = MemoryContextSwitchTo(TopMemoryContext);	bounded: sift.agg_lookup_cache_kb per backend, least recently used evicted, a pinned entry never
+lifetime	agg/lookshm.c	old = MemoryContextSwitchTo(TopMemoryContext);	bounded: one attach record per shared lookup table in use (sift.agg_lookup_shared_kb)
+lifetime	agg/lookup/first.c	old = MemoryContextSwitchTo(TopMemoryContext);	bounded: one counter per first-row lookup of the statement in flight, forgotten by the callback of its query context
+lifetime	agg/lookup/load.c	old = MemoryContextSwitchTo(TopMemoryContext);	bounded: the lookup tables kept for the backend are those of lookcache.c, under its byte limit
+lifetime	agg/par/stats.c	s = MemoryContextAllocZero(TopMemoryContext, sizeof(ParStats));	bounded: one struct per backend
+lifetime	agg/part/prune.c	bound_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache partition bounds", ALLOCSET_DEFAULT_SIZES);	open: one bound per partition read, emptied only by a catalog invalidation: about 2 kB a partition, no byte limit (SIFT_AGG_MAX_PARTS partitions)
+lifetime	agg/refuse.c	vet_cx = AllocSetContextCreate(TopMemoryContext, "sift cache path vets", ALLOCSET_SMALL_SIZES);	bounded: vets of one statement's paths, dropped at its end
+lifetime	agg/topn/zone.c	walk_cx = AllocSetContextCreate(TopMemoryContext, "sift cache topn walks", ALLOCSET_DEFAULT_SIZES);	bounded: WALK_KEEP_BYTES for an entry and a fixed count of entries (walk_keep)
+lifetime	agg/verdict.c	HASHCTL ctl = {.keysize = sizeof(uint64), .entrysize = sizeof(VerdictEntry), .hcxt = TopMemoryContext};	bounded: VERDICT_MAX entries, least recently used evicted (a few hundred bytes each)
+lifetime	agg/verdict.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: VERDICT_MAX entries, least recently used evicted (a few hundred bytes each)
+lifetime	bm25/analyze_ts.c	memo_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache stem memos", ALLOCSET_DEFAULT_SIZES);	bounded: TS_MEMOS memos of MEMO_MAX/TS_MEMOS entries
+lifetime	bm25/estimate.c	m->key = MemoryContextAlloc(TopMemoryContext, len);	bounded: ESTIMATE_MEMO slots of at most ESTIMATE_MEMO_MAX_KEY bytes
+lifetime	bm25/prefix.c	cache_cx = AllocSetContextCreate(TopMemoryContext, "sift cache prefix", ALLOCSET_DEFAULT_SIZES);	bounded: sift.prefix_cache_size, least recently used evicted
+lifetime	bm25/segcache.c	cache_cx = AllocSetContextCreate(TopMemoryContext, "sift cache segments", ALLOCSET_DEFAULT_SIZES);	bounded: sift.segment_cache_kb, least recently used evicted
+lifetime	col/am/cache.c	HASHCTL ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(LeafEntry), .hcxt = TopMemoryContext};	bounded: one entry per sift_col index the backend planned over (leaf statistics of ncols leaves; the zone sample is SIFT_COL_ZONE_SAMPLE values a column), dropped with the relcache entry
+lifetime	col/am/cache.c	SiftColPreStats *pre = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColPreStats));	bounded: one entry per sift_col index the backend planned over (leaf statistics of ncols leaves; the zone sample is SIFT_COL_ZONE_SAMPLE values a column), dropped with the relcache entry
+lifetime	col/am/cache.c	SiftColZones *zs = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColZones));	bounded: one entry per sift_col index the backend planned over (leaf statistics of ncols leaves; the zone sample is SIFT_COL_ZONE_SAMPLE values a column), dropped with the relcache entry
+lifetime	col/am/cache.c	e->cls[k].st = MemoryContextAllocZero(TopMemoryContext, ncols * sizeof(SiftColLeafStats));	bounded: one entry per sift_col index the backend planned over (leaf statistics of ncols leaves; the zone sample is SIFT_COL_ZONE_SAMPLE values a column), dropped with the relcache entry
+lifetime	col/am/cache.c	pre[k] = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColPreStats));	bounded: one entry per sift_col index the backend planned over (leaf statistics of ncols leaves; the zone sample is SIFT_COL_ZONE_SAMPLE values a column), dropped with the relcache entry
+lifetime	col/am/cache.c	st[k] = MemoryContextAllocZero(TopMemoryContext, d->ncols * sizeof(SiftColLeafStats));	bounded: one entry per sift_col index the backend planned over (leaf statistics of ncols leaves; the zone sample is SIFT_COL_ZONE_SAMPLE values a column), dropped with the relcache entry
+lifetime	col/am/cache.c	zs->hi[c] = MemoryContextAlloc(TopMemoryContext, SIFT_COL_ZONE_SAMPLE * sizeof(int64));	bounded: one entry per sift_col index the backend planned over (leaf statistics of ncols leaves; the zone sample is SIFT_COL_ZONE_SAMPLE values a column), dropped with the relcache entry
+lifetime	col/am/cache.c	zs->lo = MemoryContextAllocZero(TopMemoryContext, 2 * d->ncols * sizeof(int64 *));	bounded: one entry per sift_col index the backend planned over (leaf statistics of ncols leaves; the zone sample is SIFT_COL_ZONE_SAMPLE values a column), dropped with the relcache entry
+lifetime	col/am/cache.c	zs->lo[c] = MemoryContextAlloc(TopMemoryContext, SIFT_COL_ZONE_SAMPLE * sizeof(int64));	bounded: one entry per sift_col index the backend planned over (leaf statistics of ncols leaves; the zone sample is SIFT_COL_ZONE_SAMPLE values a column), dropped with the relcache entry
+lifetime	col/am/rel.c	memset(MemoryContextAlloc(CacheMemoryContext, sz), 0x7f, sz);	bounded: one planning memo per backend, reset when the catalog changes; the 0x7f fill is a leak canary of a test
+lifetime	col/am/rel.c	plan_memo = AllocSetContextCreate(TopMemoryContext, "sift planning memo", ALLOCSET_DEFAULT_SIZES);	bounded: one planning memo per backend, reset when the catalog changes; the 0x7f fill is a leak canary of a test
+lifetime	col/amscan/amscan.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: emptied at the end of the transaction (ioss_pending)
+lifetime	col/dictcache.c	cache_cx = AllocSetContextCreate(TopMemoryContext, "sift cache dictionaries", ALLOCSET_DEFAULT_SIZES);	bounded: sift.dict_cache_kb, least recently used evicted, a pinned entry never
+lifetime	col/dsmreg.c	cx = MemoryContextSwitchTo(TopMemoryContext);	bounded: one record per attached dynamic shared memory segment, with its settings
+lifetime	col/names.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: one name per index the statement or the backend asked about, flushed by the relcache callback
+lifetime	col/rowkey.c	dead_share.cxt = AllocSetContextCreate(TopMemoryContext, "sift dead share", ALLOCSET_DEFAULT_SIZES);	bounded: reset at the end of every transaction (dead_share_reset)
+lifetime	col/scan/gmem.c	gkept_cxt = AllocSetContextCreate(TopMemoryContext, "sift cache write buffer orders", ALLOCSET_DEFAULT_SIZES);	bounded: gord_mem_rows rows (2 million) and a fixed number of slots (gkept)
+lifetime	col/scope_journal.c	m->cx = AllocSetContextCreate(TopMemoryContext, "sift cache scope groups", ALLOCSET_SMALL_SIZES);	bounded: SIFT_SCOPE_MAX slots, replaced in turn
+lifetime	col/scope_legs.c	m->cx = AllocSetContextCreate(TopMemoryContext, "sift cache scope legs", ALLOCSET_SMALL_SIZES);	bounded: a fixed ring of slots, replaced in turn
+lifetime	col/scope_paid.c	pending = pending ? repalloc(pending, cap * sizeof(Pending)) : MemoryContextAlloc(TopMemoryContext, cap * sizeof(Pending));	open: an array of indexes with pending scope work, doubling, in the backend's memory: the number of scope indexes written; the release at transaction end is not proved
+lifetime	col/scope_parse.c	specs_memo[slot].cx = AllocSetContextCreate(TopMemoryContext, "sift cache scope specs", ALLOCSET_SMALL_SIZES);	bounded: a fixed array of slots (specs_memo), replaced in turn
+lifetime	col/seg/dead.c	dead_cxt = AllocSetContextCreate(TopMemoryContext, "sift cache dead rows", ALLOCSET_DEFAULT_SIZES);	bounded: least recently used evicted when the bytes pass the bound (work_mem for a list)
+lifetime	col/seg/seg.c	unit_spare_cx = AllocSetContextCreate(TopMemoryContext, "sift cache unit buffers", ALLOCSET_DEFAULT_SIZES);	bounded: UNIT_KEEP spare buffers of at most UNIT_KEEP_BYTES each; the others belong to open segments
+lifetime	col/supersede.c	h->ents = MemoryContextAlloc(TopMemoryContext, TOMB_HOLD * sizeof(SiftTomb));	bounded: TOMB_HOLD entries
+lifetime	col/tomblog.c	HASHCTL ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(LogEnt),.hcxt = CacheMemoryContext};	bounded: sift.tomb_log_limit per relation (tomb_log_kb, 8 GiB by default: see the findings)
+lifetime	col/tomblog.c	e->cxt = AllocSetContextCreate(CacheMemoryContext, "sift cache tombstone log", ALLOCSET_DEFAULT_SIZES);	bounded: sift.tomb_log_limit per relation (tomb_log_kb, 8 GiB by default: see the findings)
+lifetime	col/track_drop.c	gone = gone ? repalloc(gone, gone_cap * sizeof(Oid)) : MemoryContextAlloc(TopMemoryContext, gone_cap * sizeof(Oid));	open: an array of dropped index oids, doubling: one per index dropped in a transaction; the release at transaction end is not proved
+lifetime	col/types.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: the type cache of the extension's own types, a fixed set
+lifetime	col/vacreq.c	MemoryContext cx = AllocSetContextCreate(TopMemoryContext, "sift_col vacuum", ALLOCSET_DEFAULT_SIZES);	bounded: the context of one requested vacuum, deleted after it
+lifetime	col/vstore/vstore_rel.c	gone = gone ? repalloc(gone, gone_cap * sizeof(Gone)) : MemoryContextAlloc(TopMemoryContext, gone_cap * sizeof(Gone));	open: an array of dropped value stores, doubling: one per store dropped in a transaction; the release at transaction end is not proved
+lifetime	col/vstore/vstore_run.c	HASHCTL ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(VStoreView), .hcxt = TopMemoryContext};	bounded: one view per value store the backend read, rebuilt at a new epoch (view_reset)
+lifetime	col/vstore/vstore_run.c	v->cx = AllocSetContextCreate(TopMemoryContext, "sift cache value store view", ALLOCSET_DEFAULT_SIZES);	bounded: one view per value store the backend read, rebuilt at a new epoch (view_reset)
+lifetime	col/wbuf/batches.c	sets_cxt = AllocSetContextCreate(TopMemoryContext, "sift cache write buffer batches", ALLOCSET_DEFAULT_SIZES);	open: one batch set per write buffer segment read, evicted by count (the sets of a write buffer follow its size, itself bounded by the write buffer limit)
+lifetime	col/wbuf/lookup.c	wbuf_cxt = AllocSetContextCreate(TopMemoryContext, "sift cache write buffer keys", ALLOCSET_DEFAULT_SIZES);	bounded: wbuf_leaves slots, least used replaced (leaf_free)
+lifetime	col/wbuf/pending.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: pending rows of the transaction, flushed at its end
+lifetime	col/wbuf/reads.c	pending = pending ? repalloc(pending, cap * sizeof(Pending)) : MemoryContextAlloc(TopMemoryContext, cap * sizeof(Pending));	open: an array of write-buffer reads pending in the transaction, doubling; the release at transaction end is not proved
+lifetime	table/load/load.c	MemoryContextSwitchTo(TopMemoryContext);	bounded: the context of one bulk load, deleted when the load ends
+lifetime	table/load/load.c	cxt = AllocSetContextCreate(TopMemoryContext, "sift_table bulk load", ALLOCSET_DEFAULT_SIZES);	bounded: the context of one bulk load, deleted when the load ends
+lifetime	table/store.c	HASHCTL ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(CacheEnt),.hcxt = CacheMemoryContext};	bounded: one entry per sift_table relation the backend opened, dropped with the relcache entry
+lifetime	table/store.c	MemoryContext cxt = AllocSetContextCreate(CacheMemoryContext, "sift cache table", ALLOCSET_DEFAULT_SIZES);	bounded: one entry per sift_table relation the backend opened, dropped with the relcache entry
+lifetime	table/store.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: one entry per sift_table relation the backend opened, dropped with the relcache entry
+lifetime	table/store.c	rel->rd_amcache = MemoryContextAlloc(CacheMemoryContext, 1);	bounded: one entry per sift_table relation the backend opened, dropped with the relcache entry
+loop	agg/lookcol.c	for (uint64 bits = rows[w]; bits != 0; bits &= bits - 1)	bounded: walks the set bits of a member bitmap into pairs under sift.agg_lookup_kb
+loop	bm25/cscan_exec.c	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))	bounded: the dimension set is capped at SIFT_SEMI_MAX_SET and the scan stops at it
+loop	bm25/liveness.c	for (; i < dm->nsb && used < rows; i++)	bounded: used < rows bounds the loop by the rows asked for

@@ -60,6 +60,8 @@ picks the trap checks and `SIFT_POINTER_OVERFLOW=1` adds the pointer-wrap trap; 
 `scripts/check-memory.sh` (lint, with a selftest; `check-memory: allow <why>` on a site) flags what a grep can decide: `rd_amcache` outside the files that own an accessor of it, and an
 inclusive `for` loop over a 64-bit counter (it never ends when the bound is the largest value, the key loop of the point directory).
 
+`scripts/check-mem-growth.sh` (lint, allowlist `scripts/mem-growth.allow` with what bounds each site) flags memory that grows with the data: an allocation in a loop over rows with no reset, an array grown by doubling with no limit, a size computed in a narrow integer, and every context that lives as long as the backend. The TAP test `mem_slope` (`scripts/mem-slope.py`, `test/mem-slope.tsv`) measures the peak memory of reads, maintenance and writes at three table sizes under a 1 MB `work_mem` and `maintenance_work_mem`; the cases marked `open` are the operations that still hold memory per row.
+
 CI (scripts/ci.sh): `hardened` (scripts/hardened.sh: private copy built with `SIFT_HARDEN=1`, 16 decoder regress tests), `static`, `span-test` (sqlite/tests/span_test.c, ASan/UBSan,
 SIMD=none), `fuzz` (scripts/fuzz.sh). Opt-in lanes on a PostgreSQL built from source (`make pg-assert`, `make pg-valgrind`, `PG_ASSERT_MAJOR=17` for the 17 branch; scripts/pg-assert.sh
 pins 18.6 and 17.11 with cassert, debug, `-DRANDOMIZE_ALLOCATED_MEMORY`, `-DCATCACHE_FORCE_RELEASE` (every syscache lookup builds a fresh entry and frees it at release, so a `HeapTuple`
