@@ -55,6 +55,8 @@ check "the first index still has its sum" test "$(decoded)" -eq "$D1"
 due() { sql rd "SELECT due FROM sift._test_col_wbuf_reads('wr_idx')" | tail -n 1; }
 for i in 1 2 3; do read_wr; done
 check "three more sessions decoded the buffer: its promotion is due" test "$(due)" == t
+# the first use of the LSN subtraction after a checkpoint hints its catalog row (a full-page record): the measuring query runs once before the window
+sql rd "SELECT pg_current_wal_insert_lsn() - '0/0'::pg_lsn" >/dev/null
 L0=$(sql rd "SELECT pg_current_wal_insert_lsn()" | tail -n 1)
 for i in $(seq 1 30); do read_wr; done
 W=$(sql rd "SELECT pg_current_wal_insert_lsn() - '$L0'::pg_lsn" | tail -n 1)
