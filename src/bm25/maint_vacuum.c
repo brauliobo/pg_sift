@@ -28,7 +28,22 @@ typedef struct BulkDelete
 	IndexBulkDeleteResult *stats;
 	IndexBulkDeleteCallback callback;
 	void	   *callback_state;
+	ResourceOwner caller;
 } BulkDelete;
+
+/* The callback is the caller's (CREATE INDEX CONCURRENTLY feeds a sort that spills): what it opens belongs to the caller's resource owner, not to the subtransaction of the guard */
+static bool
+caller_callback(ItemPointer tid, void *state)
+{
+	BulkDelete *bd = state;
+	ResourceOwner guarded = CurrentResourceOwner;
+	bool		dead;
+
+	CurrentResourceOwner = bd->caller;
+	dead = bd->callback(tid, bd->callback_state);
+	CurrentResourceOwner = guarded;
+	return dead;
+}
 
 static void
 bulkdelete_index(void *arg)
@@ -52,9 +67,9 @@ bulkdelete_index(void *arg)
 		if ((out = sift_index_known_out(index)))
 			break;
 		if (snap->segs[order[k]].kind == SIFT_SEG_IMMUTABLE)
-			ops->bulkdelete_immutable(index, &snap->segs[order[k]], bd->callback, bd->callback_state, stats);
+			ops->bulkdelete_immutable(index, &snap->segs[order[k]], caller_callback, bd, stats);
 		else
-			ops->bulkdelete_wbuf(index, &snap->segs[order[k]], bd->callback, bd->callback_state, stats);
+			ops->bulkdelete_wbuf(index, &snap->segs[order[k]], caller_callback, bd, stats);
 		SIFT_CLEAR_TEST_POINT();
 	}
 	/*
@@ -63,7 +78,7 @@ bulkdelete_index(void *arg)
 	 */
 	for (int i = 0; i < snap->nsegs && !out; i++)
 		if (snap->segs[i].kind == SIFT_SEG_TOMB && ops->bulkdelete_tomb)
-			ops->bulkdelete_tomb(index, &snap->segs[i], bd->callback, bd->callback_state, stats);
+			ops->bulkdelete_tomb(index, &snap->segs[i], caller_callback, bd, stats);
 	/* The heap marks pages all-visible only after this returns: a scan that reads the map after that finds the version moved (sift_vis_begin) */
 	if (stats->tuples_removed > removed && !out)
 		sift_dir_update(index, &(SiftDirChange) {.extra = InvalidBuffer});
@@ -78,7 +93,7 @@ IndexBulkDeleteResult *
 sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulkDeleteCallback callback,
 					 void *callback_state)
 {
-	BulkDelete	bd = {ops, info, stats ? stats : palloc0(sizeof(IndexBulkDeleteResult)), callback, callback_state};
+	BulkDelete	bd = {ops, info, stats ? stats : palloc0(sizeof(IndexBulkDeleteResult)), callback, callback_state, CurrentResourceOwner};
 
 	sift_quarantine_guard(info->index, SIFT_SKIP_VACUUM, bulkdelete_index, &bd);
 	return bd.stats;
