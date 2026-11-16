@@ -111,6 +111,7 @@ compact(ColBuild *b)
 	bool		stream[32];
 	SiftExtent *rel = NULL;
 	SiftColSegWriter *w;
+	MemoryContext old;
 
 	for (int i = 0; i < b->nsegs; i++)
 		count[Min(b->lvl[i], 15)]++;
@@ -152,6 +153,8 @@ compact(ColBuild *b)
 			pick[1] = t;
 		}
 	}
+	/* the inputs, their extents and the merge allocate in the context of the merge: a scan holds its own context for the whole build */
+	old = MemoryContextSwitchTo(cx);
 	for (int i = 0; i < n; i++)
 	{
 		int			next;
@@ -173,6 +176,7 @@ compact(ColBuild *b)
 	sift_colk_streams(stream, seg, n, b->r->cut, b->r->ncut, false, cx);
 	sift_colk_merge(w, in, seg, n, NULL, NULL, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->budget / 1024, cx, NULL, NULL, 0, 1, 0, stream, NULL);
 	sift_colw_finish(w, &neu);
+	MemoryContextSwitchTo(old);
 	for (int i = 0; i < n; i++)
 		sift_cseg_close(seg[i]);
 	sift_wt_release(b->wt, rel, nrel);
@@ -201,6 +205,7 @@ colb_write_run(ColBuild *b, bool last)
 	SiftColBatch **in = palloc_array(SiftColBatch *, n);
 	int			i = 0;
 	ListCell   *lc;
+	MemoryContext old;
 
 	foreach(lc, b->held)
 		in[i++] = lfirst(lc);
@@ -212,8 +217,11 @@ colb_write_run(ColBuild *b, bool last)
 	sift_colw_set_preagg(b->w, &b->r->pagg);
 	b->aim = b->spill_aim > 0 ? b->spill_aim : sift_colk_run_rows(b->index, in, n);
 	sift_colw_set_keyed(b->w, b->aim, b->r->cut, b->r->ncut);
+	/* the sort and the cut of the run allocate in the context of the segment, which goes with it: a scan holds its own context for the whole build */
+	old = MemoryContextSwitchTo(b->wcxt);
 	/* the runs of a build by ranges follow each other in the key as the partitions of a rewrite do: their units are numbered on from the last run's */
 	b->unit_base += sift_colk_write(b->w, in, n, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->wcxt, b->spill_final ? b->unit_base : 0) * (b->spill_final ? 1 : 0);
+	MemoryContextSwitchTo(old);
 	sift_colb_peak_note();
 	end_segment(b);
 	b->lvl[b->nsegs - 1] = 0;
@@ -412,6 +420,7 @@ colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSe
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col build", ALLOCSET_DEFAULT_SIZES);
 	ColBuild   *b = MemoryContextAllocZero(cxt, sizeof(ColBuild));
+	int			parts;
 
 	b->index = index;
 	/* the index's own state is freed when its relcache entry is reloaded, which any lock taken during the scan may do: the build keeps a copy */
@@ -427,8 +436,10 @@ colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSe
 	b->pagecxt = AllocSetContextCreate(cxt, "sift_col build page", ALLOCSET_DEFAULT_SIZES);
 	b->tmpcxt = AllocSetContextCreate(cxt, "sift_col build tuple", ALLOCSET_DEFAULT_SIZES);
 	b->wt = wt;
-	b->budget = sift_col_key_cut(b->r) ? budget : colb_writer_budget(nslots);
-	b->run_cap = Max(budget, run_cap(nslots));
+	/* the builds of the entities and of each scope hold their rows at the same time: they share what one participant may hold */
+	parts = nslots * (1 + b->r->nscope);
+	b->budget = sift_col_key_cut(b->r) ? budget : colb_writer_budget(parts);
+	b->run_cap = Max(budget, run_cap(parts));
 #ifdef SIFT_TESTING
 	if (sift_test_col_segment_kb > 0)
 		b->run_cap = b->budget = (Size) sift_test_col_segment_kb * 1024;
