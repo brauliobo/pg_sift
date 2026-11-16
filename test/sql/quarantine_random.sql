@@ -1,5 +1,8 @@
--- Random damage of the pages of an index: every statement either gives the rows of the heap or fails with the damage error once, and the one after it, planned without the index,
--- gives the rows of the heap. No other error is raised; damage that no read meets and that changes a result is one that sift.check reports
+-- Random damage of the pages of an index (seed 0.42; 60 rounds of one 4-byte poke each, for sift_col and for the bm25 sift index). The counts at the end are the assertion: no statement
+-- raises an error other than the damage error, a statement that failed with the damage error gives the rows of the heap when it runs again (planned without the quarantined index), and
+-- a result that differs from the heap's is one that sift.check(index) reports ('differs, silent' does not appear). It does not assert that sift.check(index), which checks structure only,
+-- reports every damage that changes a result: a changed payload byte inside a still well formed bm25 posting list decodes to other rows and only sift.check(index, heapallindexed => true)
+-- finds it (docs/OPERATIONS.md); other seeds give 'differs, silent' for it, so the seed belongs to the expectation
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = error;
 SET sift.on_corruption = quarantine;
