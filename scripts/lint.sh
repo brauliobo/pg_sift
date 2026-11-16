@@ -74,6 +74,7 @@ CHECKS=(
 	'extlock	scripts/check-extlock.sh'
 	'damage	scripts/check-damage.sh --selftest && scripts/check-damage.sh'
 	'ring-counter	scripts/check-ring-counter.sh --selftest && scripts/check-ring-counter.sh'
+	'capacity	scripts/check-capacity.sh --selftest && scripts/check-capacity.sh'
 	'no-pattern-kill	! git grep -nE "\\b(pkil[l]|killal[l])\\b" -- scripts test bench packaging .github Makefile ":!scripts/land-selftest.sh"'
 	'compat-calls	scripts/check-compat-calls.sh && scripts/check-compat-calls.sh --selftest'
 	'package-text	scripts/check-package-text.sh --selftest && scripts/check-package-text.sh'
