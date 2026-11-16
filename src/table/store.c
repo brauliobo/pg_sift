@@ -14,6 +14,7 @@
 #include "storage/lmgr.h"
 #include "storage/ipc.h"
 #include "bm25/maint.h"
+#include "core/extlock.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -166,7 +167,7 @@ sift_tbl_ensure_init(Relation rel)
 	{
 		static const SiftOptions none = {0};
 
-		LockRelationForExtension(rel, ExclusiveLock);
+		sift_extension_lock(rel);
 		if (RelationGetNumberOfBlocks(rel) == 0)
 		{
 			SiftWriteTarget *wt = sift_wt_begin(rel, SIFT_WRITE_LAYOUT);
@@ -174,7 +175,7 @@ sift_tbl_ensure_init(Relation rel)
 			sift_store_init_meta(wt, &none, 0, "");
 			sift_wt_finish(wt);
 		}
-		UnlockRelationForExtension(rel, ExclusiveLock);
+		sift_extension_unlock(rel);
 	}
 	sift_tbl_refresh(rel, st);
 	if (sift_tomb_find_seg(&st->dir) == NULL)

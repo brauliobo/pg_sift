@@ -30,6 +30,7 @@
 #include "col/seg.h"
 #include "col/seg_int.h"
 #include "col/vstore/vstore.h"
+#include "core/extlock.h"
 #include "core/limits.h"
 #include "core/page.h"
 #include "core/sift.h"
@@ -502,13 +503,12 @@ write_run(SiftVStore *vs, const SiftCDict *src, uint32 from, uint32 lo, uint32 n
 	pfree(out.data);
 }
 
-/* Under the extension lock nothing may take a heavyweight lock: the catalog is warmed (the directory update reads the format minor of the segments) and the xid assigned first */
+/* Under the extension lock nothing may take a heavyweight lock: the xid is assigned first (the catalog the directory update reads is warmed by the lock, core/extlock.h) */
 static void
 lock_extend(SiftVStore *vs)
 {
-	(void) sift_catalog();
 	(void) GetCurrentTransactionId();
-	LockRelationForExtension(vs->rel, ExclusiveLock);
+	sift_extension_lock(vs->rel);
 }
 
 static void
@@ -530,7 +530,7 @@ sift_vstore_bump_epoch(SiftVStore *vs)
 	pfree(view_refresh(vs));
 	if (vs->view->total > 0)
 		sift_dir_update(vs->rel, &chg);
-	UnlockRelationForExtension(vs->rel, ExclusiveLock);
+	sift_extension_unlock(vs->rel);
 	pfree(view_refresh(vs));
 }
 
@@ -746,7 +746,7 @@ retry:
 		snap = view_refresh(vs);
 		if (vs->view->epoch != *epoch)	/* a new epoch began since: the codes found are the old one's */
 		{
-			UnlockRelationForExtension(vs->rel, ExclusiveLock);
+			sift_extension_unlock(vs->rel);
 			pfree(snap);
 			goto retry;
 		}
@@ -782,7 +782,7 @@ retry:
 			}
 		}
 		merge_runs(vs, pol, snap);
-		UnlockRelationForExtension(vs->rel, ExclusiveLock);
+		sift_extension_unlock(vs->rel);
 	}
 	*ncodes = vs->view->total;
 	return appended;

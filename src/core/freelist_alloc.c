@@ -4,6 +4,7 @@
  */
 #include "freelist_int.h"
 #include "core/rowmem.h"
+#include "core/extlock.h"
 #include "core/restrict.h"
 
 /*
@@ -93,7 +94,7 @@ extend(Relation index, Buffer metabuf, uint32 n)
 				 errmsg("sift index \"%s\" cannot grow past %u blocks",
 						RelationGetRelationName(index), MaxBlockNumber),
 				 errhint("A relation holds at most 32 TB with 8 kB blocks: partition the table so that each index stays below it.")));
-	buf = ExtendBufferedRelTo(BMR_REL(index), MAIN_FORKNUM, NULL, 0, first + n, RBM_ZERO_AND_LOCK);
+	buf = sift_extend_zeroed_to(index, first + n);
 	state = sift_xlog_start(index);
 	META(sift_xlog_register(&state, metabuf, 0))->high_water = first + n;
 	sift_page_init(sift_xlog_register(&state, buf, GENERIC_XLOG_FULL_IMAGE), SIFT_PT_FREE, 0);

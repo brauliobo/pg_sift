@@ -30,13 +30,22 @@ sift_index_ident(Relation index)
 	return quote_qualified_identifier(get_namespace_name(RelationGetNamespace(index)), RelationGetRelationName(index));
 }
 
+/* "index" or "table" for the line of a scope, and its name: the lookups of a report, which sift_errctx_warm() makes ahead of a section that cannot take a lock */
+static char *
+errctx_describe(Oid relid, const char **what)
+{
+	char		kind = IsTransactionState() ? get_rel_relkind(relid) : '\0';
+
+	*what = kind == RELKIND_INDEX || kind == '\0' ? "index" : "table";
+	return sift_errctx_name(relid);
+}
+
 static void
 errctx_callback(void *arg)
 {
 	SiftErrCtx *ctx = arg;
-	char	   *name = sift_errctx_name(ctx->relid);
-	char		kind = IsTransactionState() ? get_rel_relkind(ctx->relid) : '\0';
-	const char *what = kind == RELKIND_INDEX || kind == '\0' ? "index" : "table";
+	const char *what;
+	char	   *name = errctx_describe(ctx->relid, &what);
 
 	if (ctx->segmented)
 		errcontext("sift %s \"%s\", segment %llu", what, name, (unsigned long long) ctx->segment);
@@ -83,6 +92,16 @@ sift_errctx_scope(Oid *relid, bool *diagnostic)
 		*diagnostic |= cb->callback == errctx_diagnostic_callback;
 	}
 	return found;
+}
+
+void
+sift_errctx_warm(void)
+{
+	const char *what;
+
+	for (ErrorContextCallback *cb = error_context_stack; cb != NULL; cb = cb->previous)
+		if (cb->callback == errctx_callback || cb->callback == errctx_diagnostic_callback)
+			pfree(errctx_describe(((SiftErrCtx *) cb->arg)->relid, &what));
 }
 
 void
