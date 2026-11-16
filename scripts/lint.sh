@@ -36,6 +36,7 @@ CHECKS=(
 	'errors		scripts/check-errors.sh'
 	'paging		scripts/check-paging.sh --selftest && scripts/check-paging.sh'
 	'null-results	scripts/check-null.sh --selftest && scripts/check-null.sh'
+	'locks		scripts/check-locks.sh --selftest && scripts/check-locks.sh'
 	'focus		scripts/check-focus.sh --selftest && scripts/check-focus.sh'
 	'guards		scripts/check-guards.sh && scripts/check-guards.sh --selftest'
 	'refusals	scripts/gen-refusals.sh --check'
