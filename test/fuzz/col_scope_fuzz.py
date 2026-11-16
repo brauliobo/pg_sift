@@ -74,6 +74,17 @@ BEGIN
 	RETURN a = d AND b = d AND c = d;
 END $$;
 
+-- whether the planner answers q by a lookup join of the pairs index into the facts: the other sift plan, which it prices below the scope units where the pairs are few and the facts many
+CREATE OR REPLACE FUNCTION sf_lookup_read(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE p jsonb;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	SET LOCAL sift.agg_force = on;
+	SET LOCAL sift.agg_scope = on;
+	EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO p;
+	RETURN jsonb_path_exists(p, '$.**."Lookup Joins"');
+END $$;
+
 -- the statements of sf_q through the scope path, the planned plan and the plain plan, and the verdict of the reader
 DROP FUNCTION IF EXISTS sf_run(text, bool, bool);
 CREATE OR REPLACE FUNCTION sf_run(stage text, strict bool, planner bool, ok_why text DEFAULT NULL, no_stored bool DEFAULT false) RETURNS void LANGUAGE plpgsql AS $$
@@ -98,7 +109,7 @@ BEGIN
 			ELSIF no_stored AND r.stored THEN ok := false; det := 'the units were read though a journal is missing';
 			ELSIF NOT d.sql_form AND NOT (r.path_ok OR coalesce(r.why ~ ok_why, false)) THEN ok := false; det := 'the scope path is neither read nor accounted for';
 			ELSIF d.sql_form AND planner AND d.engage_wanted AND NOT r.engaged THEN ok := false; det := 'the planner did not recognise the form';
-			ELSIF strict AND d.stored_wanted AND NOT r.stored THEN ok := false; det := 'not stored right after a build';
+			ELSIF strict AND d.stored_wanted AND NOT r.stored AND NOT sf_lookup_read(d.q) THEN ok := false; det := 'not stored right after a build';
 			ELSIF d.want_why IS NOT NULL AND r.engaged AND (r.why IS NULL OR r.why !~ d.want_why) THEN ok := false; det := 'fallback reason is not ' || d.want_why;
 			END IF;
 		EXCEPTION WHEN OTHERS THEN
