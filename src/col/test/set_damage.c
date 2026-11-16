@@ -7,6 +7,7 @@
 #ifdef SIFT_TESTING
 #include "col/am.h"
 #include "col/pagg.h"
+#include "core/errctx.h"
 #include "core/sql.h"
 #endif							/* SIFT_TESTING */
 #include "col/test/test_int.h"
@@ -195,6 +196,57 @@ sift_test_col_set_damage(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
+static void
+verify_whole(SiftColSegment *seg)
+{
+	(void) sift_cseg_verify(seg);
+}
+
+/*
+ * Whether the reader or the check refuses the segment with the byte at `at` of its stream read as itself xor `mask`. The bytes of the index are sound, so the refusal is no damage of it:
+ * the read runs in a diagnostic scope, where nothing is recorded and the index stays in service.
+ */
+static bool
+flip_refused(Relation index, const SiftSegEntry *entry, uint64 at, uint8 mask, void (*check) (SiftColSegment *))
+{
+	MemoryContext old = CurrentMemoryContext;
+	ResourceOwner owner = CurrentResourceOwner;
+	MemoryContext cx = AllocSetContextCreate(old, "segment damage", ALLOCSET_DEFAULT_SIZES);
+	SiftErrCtx	errctx;
+	volatile bool refused = false;
+
+	sift_errctx_push_diagnostic(&errctx, RelationGetRelid(index));
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(cx);
+	PG_TRY();
+	{
+		SiftColSegment *seg;
+
+		sift_test_seg_flip_at = at;
+		sift_test_seg_flip_mask = mask;
+		seg = sift_cseg_open(index, entry, cx);
+		check(seg);
+		sift_test_seg_flip_at = UINT64_MAX;
+		sift_cseg_close(seg);
+		MemoryContextSwitchTo(old);
+		ReleaseCurrentSubTransaction();
+		CurrentResourceOwner = owner;
+	}
+	PG_CATCH();
+	{
+		sift_test_seg_flip_at = UINT64_MAX;
+		MemoryContextSwitchTo(old);
+		FlushErrorState();
+		RollbackAndReleaseCurrentSubTransaction();
+		CurrentResourceOwner = owner;
+		refused = true;
+	}
+	PG_END_TRY();
+	sift_errctx_pop(&errctx);
+	MemoryContextDelete(cx);
+	return refused;
+}
+
 /*
  * sift._test_col_super_damage(index): every byte of the superunit block of every segment of the index, read as itself with a bit flipped (two flips), one
  * damage at a time, through a fresh open of the segment and the check of sift.col_verify. A damage must never read outside the block (meaningful under
@@ -211,8 +263,6 @@ sift_test_col_super_damage(PG_FUNCTION_ARGS)
 				refused = 0;
 	Datum		v[4];
 	bool		nulls[4] = {false};
-	MemoryContext old = CurrentMemoryContext;
-	ResourceOwner owner = CurrentResourceOwner;
 
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
@@ -234,36 +284,8 @@ sift_test_col_super_damage(PG_FUNCTION_ARGS)
 		for (uint64 b = 0; b < len; b++)
 			for (int m = 0; m < lengthof(masks); m++)
 			{
-				MemoryContext cx = AllocSetContextCreate(old, "super damage", ALLOCSET_DEFAULT_SIZES);
-
 				damaged++;
-				BeginInternalSubTransaction(NULL);
-				MemoryContextSwitchTo(cx);
-				PG_TRY();
-				{
-					SiftColSegment *s2;
-
-					sift_test_seg_flip_at = off + b;
-					sift_test_seg_flip_mask = masks[m];
-					s2 = sift_cseg_open(index, &snap->segs[i], cx);
-					sift_cseg_verify_super(s2);
-					sift_test_seg_flip_at = UINT64_MAX;
-					sift_cseg_close(s2);
-					MemoryContextSwitchTo(old);
-					ReleaseCurrentSubTransaction();
-					CurrentResourceOwner = owner;
-				}
-				PG_CATCH();
-				{
-					sift_test_seg_flip_at = UINT64_MAX;
-					MemoryContextSwitchTo(old);
-					FlushErrorState();
-					RollbackAndReleaseCurrentSubTransaction();
-					CurrentResourceOwner = owner;
-					refused++;
-				}
-				PG_END_TRY();
-				MemoryContextDelete(cx);
+				refused += flip_refused(index, &snap->segs[i], off + b, masks[m], sift_cseg_verify_super);
 			}
 	}
 	index_close(index, AccessShareLock);
@@ -293,8 +315,6 @@ section_file_damage(PG_FUNCTION_ARGS, bool (*span) (SiftColSegment *, uint64 *, 
 				unnoticed = 0;
 	Datum		v[4];
 	bool		nulls[4] = {false};
-	MemoryContext old = CurrentMemoryContext;
-	ResourceOwner owner = CurrentResourceOwner;
 
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
@@ -317,37 +337,11 @@ section_file_damage(PG_FUNCTION_ARGS, bool (*span) (SiftColSegment *, uint64 *, 
 		for (uint64 b = 0; b < len; b++)
 			for (int m = 0; m < lengthof(masks) && (used[b] == 2 || (used[b] == 1 && b % stride == 0)); m++)
 			{
-				MemoryContext cx = AllocSetContextCreate(old, "run file damage", ALLOCSET_DEFAULT_SIZES);
-
 				damaged++;
-				BeginInternalSubTransaction(NULL);
-				MemoryContextSwitchTo(cx);
-				PG_TRY();
-				{
-					SiftColSegment *s2;
-
-					sift_test_seg_flip_at = off + b;
-					sift_test_seg_flip_mask = masks[m];
-					s2 = sift_cseg_open(index, &snap->segs[i], cx);
-					sift_cseg_verify(s2);
-					sift_test_seg_flip_at = UINT64_MAX;
-					sift_cseg_close(s2);
-					unnoticed += used[b] != 0;
-					MemoryContextSwitchTo(old);
-					ReleaseCurrentSubTransaction();
-					CurrentResourceOwner = owner;
-				}
-				PG_CATCH();
-				{
-					sift_test_seg_flip_at = UINT64_MAX;
-					MemoryContextSwitchTo(old);
-					FlushErrorState();
-					RollbackAndReleaseCurrentSubTransaction();
-					CurrentResourceOwner = owner;
+				if (flip_refused(index, &snap->segs[i], off + b, masks[m], verify_whole))
 					refused++;
-				}
-				PG_END_TRY();
-				MemoryContextDelete(cx);
+				else
+					unnoticed += used[b] != 0;
 			}
 	}
 	index_close(index, AccessShareLock);
