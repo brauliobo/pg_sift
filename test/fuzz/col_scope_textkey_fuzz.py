@@ -361,9 +361,9 @@ def main():
     TWO = o.two_paths
     if o.hash_bits:
         FUZZ_SETUP += f' SET sift.test_member_hash_bits = {o.hash_bits};'
-    lo, _, hi = o.seeds.partition('-')
+    seeds = [n for part in o.seeds.split(',') for n in range(int(part.partition('-')[0]), int(part.rpartition('-')[2]) + 1)]
     bad = 0
-    for seed in range(int(lo), int(hi or lo) + 1):
+    for seed in seeds:
         t0 = time.time()
         rc, path, note = run_seed(seed, o.rows, o.steps, OUT)
         print(f'seed={seed} {"OK" if rc == 0 else "FAIL"} {time.time() - t0:.0f}s {note} log={path}', flush=True)

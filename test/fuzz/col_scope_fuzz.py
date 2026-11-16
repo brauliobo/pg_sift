@@ -813,9 +813,9 @@ def main():
     ap.add_argument('--twohop-strict', action='store_true', help='the reads of one key right after a build are stored in a union seed, and the fallback reason of --twohop-reason is not accepted')
     ap.add_argument('--twohop-reason', default=TWOHOP_REASON, help='a fallback reason accepted in a union seed besides the documented ones')
     o = ap.parse_args()
-    lo, _, hi = o.seeds.partition('-')
+    seeds = [n for part in o.seeds.split(',') for n in range(int(part.partition('-')[0]), int(part.rpartition('-')[2]) + 1)]
     bad = 0
-    for seed in range(int(lo), int(hi or lo) + 1):
+    for seed in seeds:
         t0 = time.time()
         rc, path, note = run_seed(seed, o.rows, o.steps, OUT, o.family, o.twohop_strict, o.twohop_reason)
         print(f'seed={seed} {"OK" if rc == 0 else "FAIL"} {time.time() - t0:.0f}s {note} log={path}', flush=True)
