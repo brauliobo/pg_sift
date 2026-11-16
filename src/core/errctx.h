@@ -41,6 +41,9 @@ sift_errctx_whole(SiftErrCtx *ctx)
 	ctx->segmented = false;
 }
 
+/* Makes the lookups that reporting an error from here costs, for every scope on the stack, so that a report raised where no lock may be taken (core/extlock.h) reads only the cache */
+extern void sift_errctx_warm(void);
+
 /* "schema.name" of the relation, "OID n" when it is gone */
 extern char *sift_errctx_name(Oid relid);
 

@@ -82,6 +82,9 @@ CREATE FUNCTION sift._test_poke(index regclass, blkno int8, "offset" int4, value
 -- raises the SQLSTATE under the error context of the index, as a sift path does when it fails for a reason that is no damage
 CREATE FUNCTION sift._test_raise(index regclass, sqlstate text) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_raise' LANGUAGE C STRICT;
+-- reports the kind (index, data, scope, other_data, other_index, error, warning, log) under the error context of the index while the extension lock of the index is held and the catalog cache is cold
+CREATE FUNCTION sift._test_raise_extending(index regclass, kind text) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_raise_extending' LANGUAGE C STRICT;
 -- a LIVE run of nsb superblocks with row 5 of superblock sbidx killed: pages whose special space changed, dirty bit read back
 CREATE FUNCTION sift._test_live_clear(index regclass, nsb int4, sbidx int4, OUT damaged int4, OUT dirty bool)
 	AS 'MODULE_PATHNAME', 'sift_test_live_clear' LANGUAGE C STRICT;

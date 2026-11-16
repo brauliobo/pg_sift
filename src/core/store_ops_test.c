@@ -3,10 +3,16 @@
  * the free list, pages and churn.
  */
 #include "store_test_int.h"
+#include "catalog/pg_class.h"
+#include "catalog/pg_namespace.h"
 #include "storage/buffile.h"
+#include "storage/lmgr.h"
+#include "utils/catcache.h"
 #include "utils/timestamp.h"
 
+#include "core/damage.h"
 #include "core/errctx.h"
+#include "core/extlock.h"
 #include "core/live.h"
 #include "core/lane.h"
 
@@ -28,6 +34,7 @@ PG_FUNCTION_INFO_V1(sift_test_freelist);
 PG_FUNCTION_INFO_V1(sift_test_page);
 PG_FUNCTION_INFO_V1(sift_test_poke);
 PG_FUNCTION_INFO_V1(sift_test_raise);
+PG_FUNCTION_INFO_V1(sift_test_raise_extending);
 PG_FUNCTION_INFO_V1(sift_test_live_clear);
 PG_FUNCTION_INFO_V1(sift_test_live2_clear);
 PG_FUNCTION_INFO_V1(sift_test_write);
@@ -369,6 +376,46 @@ sift_test_raise(PG_FUNCTION_ARGS)
 		elog(ERROR, "invalid SQLSTATE");
 	sift_errctx_push(&ctx, PG_GETARG_OID(0));
 	ereport(ERROR, (errcode(MAKE_SQLSTATE(state[0], state[1], state[2], state[3], state[4])), errmsg("raised by sift._test_raise")));
+	PG_RETURN_VOID();
+}
+
+/*
+ * sift._test_raise_extending(index, kind): reports `kind` (index, data, scope, other_data, other_index: the classes of core/damage.h; error, warning, log: what is no damage)
+ * under the error context of the index while the relation extension lock of the index is held and the catalog cache of pg_class and pg_namespace is cold. PostgreSQL
+ * forbids a heavyweight lock under that lock (an assertion with cassert), and every report runs the error context and the damage record.
+ */
+Datum
+sift_test_raise_extending(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
+	char	   *kind = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	SiftErrCtx	ctx;
+
+	sift_errctx_push(&ctx, RelationGetRelid(index));
+	CatalogCacheFlushCatalog(RelationRelationId);
+	CatalogCacheFlushCatalog(NamespaceRelationId);
+	sift_extension_lock(index);
+	if (strcmp(kind, "index") == 0)
+		SIFT_DAMAGE_INDEX(index, errmsg("raised under the extension lock"));
+	else if (strcmp(kind, "data") == 0)
+		SIFT_DAMAGE_DATA(index, errmsg("raised under the extension lock"));
+	else if (strcmp(kind, "scope") == 0)
+		SIFT_DAMAGE_DATA(NULL, errmsg("raised under the extension lock"));
+	else if (strcmp(kind, "other_data") == 0)
+		SIFT_DAMAGE_OTHER_DATA(errmsg("raised under the extension lock"));
+	else if (strcmp(kind, "other_index") == 0)
+		SIFT_DAMAGE_OTHER_INDEX(errmsg("raised under the extension lock"));
+	else if (strcmp(kind, "error") == 0)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("raised under the extension lock")));
+	else if (strcmp(kind, "warning") == 0)
+		ereport(WARNING, (errmsg("raised under the extension lock")));
+	else if (strcmp(kind, "log") == 0)
+		ereport(LOG, (errmsg("raised under the extension lock")));
+	else
+		elog(ERROR, "invalid kind");
+	sift_extension_unlock(index);
+	sift_errctx_pop(&ctx);
+	relation_close(index, AccessShareLock);
 	PG_RETURN_VOID();
 }
 

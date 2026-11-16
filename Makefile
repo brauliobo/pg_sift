@@ -435,6 +435,7 @@ TESTING_REGRESS += core_radix_sort
 TESTING_REGRESS += core_ring_wrap
 TESTING_REGRESS += errors_hints
 TESTING_REGRESS += ext_recreate
+TESTING_REGRESS += extlock_errors
 TESTING_REGRESS += fuzzy_seek
 TESTING_REGRESS += include_filter
 TESTING_REGRESS += include_store

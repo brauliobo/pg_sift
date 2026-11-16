@@ -346,6 +346,8 @@ core/errctx.c
 core/errctx.h
 core/eval.c
 core/eval.h
+core/extlock.c
+core/extlock.h
 core/explain.c
 core/explain.h
 core/extver.c
