@@ -35,7 +35,9 @@ end_segment(ColBuild *b)
 	if (b->nsegs == b->maxsegs)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col build needs more than %d segments", b->maxsegs),
 						errhint("Raise maintenance_work_mem: each segment holds up to half of it.")));
+	sift_colb_peak_note();
 	sift_colw_finish(b->w, &b->segs[b->nsegs++]);
+	sift_colb_peak_note();
 	b->w = NULL;
 	MemoryContextDelete(b->wcxt);
 }
@@ -212,6 +214,7 @@ colb_write_run(ColBuild *b, bool last)
 	sift_colw_set_keyed(b->w, b->aim, b->r->cut, b->r->ncut);
 	/* the runs of a build by ranges follow each other in the key as the partitions of a rewrite do: their units are numbered on from the last run's */
 	b->unit_base += sift_colk_write(b->w, in, n, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->wcxt, b->spill_final ? b->unit_base : 0) * (b->spill_final ? 1 : 0);
+	sift_colb_peak_note();
 	end_segment(b);
 	b->lvl[b->nsegs - 1] = 0;
 	pfree(in);
@@ -242,6 +245,7 @@ colb_flush_batch(ColBuild *b)
 {
 	if (b->batch == NULL || b->batch->nrows == 0)
 		return;
+	sift_colb_peak_note();
 	colb_scope_feed(b, b->batch);
 	if (b->spill != NULL)
 	{

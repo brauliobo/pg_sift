@@ -11,6 +11,7 @@
 
 #include "core/cmp.h"
 #include "col/am.h"
+#include "col/build.h"
 #include "col/enc.h"
 #include "col/order_sort.h"
 #include "col/runs.h"
@@ -449,6 +450,7 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 			num = Max(num + (seq > 0), sift_key_block(u[0].b->keys[u[0].r]) / SIFT_SB_PAGES);
 		else
 			num = seq;
+		sift_colb_peak_note();
 		sift_cbatch_reset(out, num);
 		seq++;
 		out->keyed = true;

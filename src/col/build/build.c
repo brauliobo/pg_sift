@@ -31,6 +31,30 @@ bool		sift_test_col_parallel_always = true;
 int			sift_test_col_merge_par_kb = 12288;
 
 int			sift_test_col_merge_slices = 0;
+
+int			sift_test_col_build_peak_kb = 0;
+
+static Size peak_base;
+static Size peak_max;
+
+void
+sift_colb_peak_begin(void)
+{
+	peak_base = peak_max = MemoryContextMemAllocated(TopMemoryContext, true);
+	sift_test_col_build_peak_kb = 0;
+}
+
+void
+sift_colb_peak_note(void)
+{
+	Size		now = MemoryContextMemAllocated(TopMemoryContext, true);
+
+	if (now > peak_max)
+	{
+		peak_max = now;
+		sift_test_col_build_peak_kb = (int) ((peak_max - peak_base) / 1024);
+	}
+}
 #endif
 
 char *
@@ -134,6 +158,7 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 #ifdef SIFT_TESTING
 	sift_test_col_workers = 0;
 	sift_test_col_merge_slices = 0;
+	sift_colb_peak_begin();
 #endif
 	sift_col_auto_arrlen(index);
 	sift_col_auto_paths(heap, index);

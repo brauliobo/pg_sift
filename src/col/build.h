@@ -76,12 +76,21 @@ extern IndexBuildResult *sift_colp_build(Relation heap, Relation index, IndexInf
 /* The merge of the segments of a parallel build by the participants, each a slice of the key range (col/build_par.c); false: no worker could be launched, the caller merges alone */
 extern bool sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int nslices, TimestampTz start);
 
+/* The peak of the memory the build holds is noted where it grows (a batch, a run, a unit); a release library does not look */
+#ifdef SIFT_TESTING
+extern void sift_colb_peak_note(void);
+#else
+#define sift_colb_peak_note() ((void) 0)
+#endif
+
 #ifdef SIFT_TESTING
 /*
  * Parallel workers the last sift_col build of this session launched; the superblock (1 = the first) whose participant fails (0 = none);
  * kB the writer of a segment holds before the segment is cut (0 = by maintenance_work_mem); the segments a participant may hold (0 = the directory's room)
  */
 extern PGDLLIMPORT int sift_test_col_workers;
+extern PGDLLIMPORT int sift_test_col_build_peak_kb;	/* kB of memory (contexts of the backend) the last sift_col build of this session held above what it started with, at its peak */
+extern void sift_colb_peak_begin(void);
 extern PGDLLIMPORT char *sift_test_vstore_columns;
 extern PGDLLIMPORT int sift_test_col_fail_sb;
 extern PGDLLIMPORT int sift_test_col_segment_kb;
