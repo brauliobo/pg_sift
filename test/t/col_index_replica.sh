@@ -73,7 +73,8 @@ UPDATE orders SET gone = id WHERE id = :id;
 DELETE FROM orders WHERE id BETWEEN :id + 1000 AND :id + 1020;
 EOF
 echo "VACUUM orders;" >"$P/vac.sql"
-# sift.check holds the maintenance lock of one segment at a time: the promotions and merges of the churn run between its segments, and it finds nothing wrong all the while
+# sift.check holds the maintenance lock of one segment at a time: the promotions and merges of the churn run between its segments, and it finds nothing wrong all the while.
+# It runs in a client of its own: pgbench draws the script of each transaction by weight, and a short churn can finish without drawing this one
 echo "INSERT INTO check_found (index, segment, problem, detail) SELECT * FROM sift.check('o_col');" >"$P/check.sql"
 cat >"$P/maint.sql" <<'EOF'
 SELECT sift.col_promote('o_col');
@@ -86,16 +87,19 @@ SELECT typeof_same();
 SELECT gone_same();
 COMMIT;
 EOF
-pgbench_bg primary 6 "$SECS" -f "$P/ins.sql@40" -f "$P/upd.sql@10" -f "$P/vac.sql@1" -f "$P/maint.sql@2" -f "$P/check.sql@2"
+pgbench_bg primary 6 "$SECS" -f "$P/ins.sql@40" -f "$P/upd.sql@10" -f "$P/vac.sql@1" -f "$P/maint.sql@2"
 PRIMARY_PID=$PGBENCH_PID
+pgbench -n -h "$(dir primary)/sock" -p "$(port primary)" -U postgres -c 1 -T "$SECS" -f "$P/check.sql" postgres >"$P/check.log" 2>&1 &
+CHECKER=$!
 pgbench -n -h "$(dir standby)/sock" -p "$(port standby)" -U postgres -c 2 -j 2 -T "$SECS" -f "$P/read.sql" postgres >"$P/reader.log" 2>&1 &
 READER=$!
 wait "$PRIMARY_PID"
 wait "$READER"
-check "churn on the primary had no failed transaction" grep -q "number of failed transactions: 0 " "$P/pgbench.log"
+wait "$CHECKER"
+check "churn on the primary had no failed transaction" test "$(cat "$P/pgbench.log" "$P/check.log" | grep -c "^number of failed transactions: 0 ")" -eq 2
 check "readers on the standby had no failed transaction" grep -q "number of failed transactions: 0 " "$P/reader.log"
 catchup primary standby
-check "sift.check ran during the churn" test "$(awk '/check\.sql/ {f = 1} f && / transactions \(/ {print $2; exit}' "$P/pgbench.log")" -gt 0
+check "sift.check ran during the churn" grep -qE "number of transactions actually processed: [1-9]" "$P/check.log"
 check "sift.check found nothing wrong on the primary while the churn went on" test "$(sql primary "SELECT count(*) FROM check_found")" == 0
 
 CHECKS="SELECT (SELECT count(*) FROM sift._test_col_tids('o_col', '')) || ' ' || (SELECT count(*) FROM sift._test_col_tids('o_col', '0:lt:10;1:eq:paid'))
