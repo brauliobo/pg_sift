@@ -855,14 +855,14 @@ Warm milliseconds, geometric mean over the 8 classes every arm answers (`sum_by_
 
 | tenant (share of the events) | stock_default | semijoin | denorm_flat | denorm_part | rollup | ivm | sift_reuse | sift_scope |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 (49.5%) | 317 | 119 | 81.7 | 147 | 34.8 | 5.59 | 10.8 | 1.42 |
-| 2 (19.6%) | 263 | 65.0 | 38.3 | 90.1 | 17.7 | 3.50 | 6.87 | 0.95 |
-| 3 (17.4%) | 258 | 77.4 | 47.6 | 65.8 | 18.4 | 2.32 | 8.47 | 0.82 |
-| 4 (6%) | 230 | 24.9 | 10.6 | 12.3 | 15.2 | 1.33 | 7.66 | 0.63 |
-| 5 (6.2%) | 154 | 25.1 | 10.7 | 13.0 | 3.96 | 0.57 | 2.70 | 0.67 |
-| 6 (3.9%) | 115 | 11.6 | 6.24 | 10.8 | 3.55 | 0.73 | 3.62 | 0.77 |
-| 7 (1.1%) | 90.7 | 4.93 | 2.79 | 4.00 | 5.47 | 0.76 | 2.80 | 0.62 |
-| 8 (0.1%) | 1.99 | 1.05 | 0.43 | 0.65 | 1.22 | 0.40 | 1.37 | 0.39 |
+| 1 (49.5%) | 301 | 119 | 81.7 | 147 | 34.8 | 5.59 | 10.1 | 1.19 |
+| 2 (19.6%) | 217 | 65.0 | 38.3 | 90.1 | 17.7 | 3.50 | 7.23 | 1.28 |
+| 3 (17.4%) | 197 | 77.4 | 47.6 | 65.8 | 18.4 | 2.32 | 6.78 | 1.51 |
+| 4 (6%) | 150 | 24.9 | 10.6 | 12.3 | 15.2 | 1.33 | 5.76 | 1.57 |
+| 5 (6.2%) | 126 | 25.1 | 10.7 | 13.0 | 3.96 | 0.57 | 2.37 | 1.01 |
+| 6 (3.9%) | 165 | 11.6 | 6.24 | 10.8 | 3.55 | 0.73 | 3.02 | 0.72 |
+| 7 (1.1%) | 99.0 | 4.93 | 2.79 | 4.00 | 5.47 | 0.76 | 4.09 | 1.05 |
+| 8 (0.1%) | 3.02 | 1.05 | 0.43 | 0.65 | 1.22 | 0.40 | 2.25 | 0.64 |
 <!-- bench:scope-stock-geomean:end -->
 
 Per rival, over the cells both answer (a cell is a tenant and a class):
@@ -871,12 +871,12 @@ Per rival, over the cells both answer (a cell is a tenant and a class):
 | rival | cells | warm: sift_scope faster / tie / rival faster | cold: sift_scope faster / tie / rival faster | where the rival is faster (warm) |
 |---|---:|---:|---:|---|
 | `stock_default` | 72 | 72 / 0 / 0 | 71 / 0 / 1 | - |
-| `semijoin` | 72 | 67 / 3 / 2 | 65 / 1 / 6 | `filtered_count` 1, `latest_20_rows` 1 |
-| `denorm_flat` | 72 | 54 / 2 / 16 | 48 / 3 / 21 | `latest_20_rows` 8, `filtered_count` 8 |
-| `denorm_part` | 72 | 59 / 3 / 10 | 55 / 1 / 16 | `latest_20_rows` 8, `filtered_count` 2 |
-| `rollup` | 64 | 60 / 2 / 2 | 57 / 3 / 4 | `distinct_members_by_month` 2 |
-| `ivm` | 64 | 36 / 4 / 24 | 36 / 1 / 27 | `count_by_score` 8, `filtered_count` 8, `count_by_kind` 5, `distinct_members_by_month` 3 |
-| `sift_reuse` | 72 | 72 / 0 / 0 | 68 / 3 / 1 | - |
+| `semijoin` | 72 | 63 / 2 / 7 | 62 / 1 / 9 | `filtered_count` 5, `latest_20_rows` 2 |
+| `denorm_flat` | 72 | 51 / 2 / 19 | 48 / 1 / 23 | `latest_20_rows` 8, `filtered_count` 8, `date_range_count` 2, `by_member` 1 |
+| `denorm_part` | 72 | 54 / 4 / 14 | 54 / 0 / 18 | `latest_20_rows` 8, `filtered_count` 4, `date_range_count` 2 |
+| `rollup` | 64 | 54 / 5 / 5 | 52 / 3 / 9 | `filtered_count` 3, `distinct_members_by_month` 2 |
+| `ivm` | 64 | 32 / 2 / 30 | 34 / 3 / 27 | `count_by_score` 8, `filtered_count` 8, `count_by_kind` 6, `distinct_members_by_month` 4, `date_range_count` 3, `sum_by_month` 1 |
+| `sift_reuse` | 72 | 70 / 1 / 1 | 68 / 3 / 1 | `filtered_count` 1 |
 
 Cells are a tenant and a class (72 of them for `sift_scope`, in warm and in cold milliseconds); a rival is faster in a cell when it is faster by more than 0.1 ms and by more than 10%, and the cell is a tie within either margin. Every answer is md5-equal to the plain statement (700 of 700 cells). Milliseconds are the executor time of `EXPLAIN (ANALYZE, TIMING OFF)`.
 <!-- bench:scope-stock-tally:end -->
@@ -905,16 +905,19 @@ Where tuned stock PostgreSQL matches or beats the scope index, in the cells of t
   day of a unit that holds more rows than days.
 - **Tenant 1's selective filter is read by the scope units in 4.8 ms, slower than the tuned semi join (2.3 ms) and the copy (0.69)**: at 49% of the events the scope read has no advantage for it, as the break-even above says.
 - Four parallel workers did not make the tuned semi join faster in this fixture (tenant 1: 100 ms serial, 116 ms with four).
-- **What got worse since the tables of 2026-11-13, and what the tables mix.** The arms `stock_default`, `sift_reuse` and `sift_scope` were measured again on 2026-11-15 (PostgreSQL 18.7), the other five arms keep their rows of 2026-11-13 (PostgreSQL 18.6): their
-  instructions and blocks do not move with the server minor or the host (`stock_default` repeats within 10% in 72 of 72 cells, geometric mean 1.002), their milliseconds do (the CPU pressure recorded with the first run was 28%, with this one 0.8%; `stock_default` tenant 2 changed from 181 to 263 ms
-  geometric mean with equal instructions), so the tally compares milliseconds of two runs and a margin of 10% is inside that noise for the larger cells. Worse in this refresh: the entity index alone reads *latest 20* with 10 to 13% more instructions at tenants 2 to 8 (tenant 4: 43.1 to 49.2 million, tenant 2: 31.0 to 34.9, same
-  plan, 5% fewer blocks hit; it does not show on the 240,000-event fixture, 11.0 million before and after at tenant 4); building the scope index takes 15.9 s where it took 9.9 (WAL 66 to 70 MB, size 65 to 68 MB); the selective filter of tenant 1 reads 986 blocks cold where it read 786 (814 hit warm where 862, 17.9 million instructions where 35.6);
-  the promotion of 10,000 events costs 194 million instructions where it cost 182. The cold figure of `sift_reuse` by member at tenant 4 was 0 blocks read in the first run (the eviction missed) and is 709 now.
+- **What changed since the tables of 2026-11-13, and what the tables mix.** The arms `stock_default`, `sift_reuse` and `sift_scope` were measured again on 2026-11-15 (PostgreSQL 18.7), the other five arms keep their rows of 2026-11-13 (PostgreSQL 18.6): their
+  instructions and blocks do not move with the server minor or the host (`stock_default` repeats within 10% in 72 of 72 cells, geometric mean 1.002), their milliseconds do (the CPU pressure recorded with the first run was 28%, with this one about 1%; `stock_default` tenant 2 changed from 181 to 263 ms
+  geometric mean with equal instructions), so the tally compares milliseconds of two runs and a margin of 10% is inside that noise for the larger cells. The first measurement of the day found four things worse, each followed to the commit that moved it. *Latest 20* of the entity index alone read 10 to 13% more instructions at tenants 2 to 8
+  (tenant 4: 43.1 to 49.2 million): a unit with a heap page for each row was walked page by page to find the page of every selected row; the pages are now found by search, and the read is back at 43.3 million at tenant 4 and 31.0 at tenant 2 (same plan, same blocks). The build and the promotion of 10,000 events cost 3.4 G and 14 million
+  instructions more, because the copy of a single row into a batch built a map of the whole dictionary of each string leaf; a map pays for several rows only, and the build of the entity index alone is now 47.5 G instructions (49.6 before), the promotion 187 million with the scope index (182 before, 194 in the first measurement) and 77.4 without it (74.9 before).
+  What stays is paid for: building the scope index takes 72.5 G instructions where it took 71.3 (+1.7%), the index is 3.1 MB larger (65 to 68 MB) and its WAL 3.4 MB larger (66 to 70 MB): the superunit summaries of the key groups (+2.2 MB, +1.4 G instructions) and the id sets of the distinct members by month (+0.9 MB, +1.0 G); the rest of the WAL
+  (0.4 MB) came in steps of 0.1 to 0.2 MB over the later commits of the scope maintenance. The seconds in the table are those of a host shared with other jobs (13.2 s with the CPU pressure at 1%, 7.6 to 8.0 s on a quiet one for both builds). The selective filter of tenant 1 reads 986 blocks cold where it read 786, with 17.9 million instructions where
+  it read 35.6 and 25.7 ms cold where it read 30.7: since the price of the entries a statement leaves out was corrected the planner takes the scope units (events_col 985 blocks, the filter columns of the 1,149 keys) instead of the join (773 blocks). The cold figure of `sift_reuse` by member at tenant 4 was 0 blocks read in the first run (the eviction missed) and is 709 now.
 
 What the scope read does now that it did not: the scope segments carry the superunit summaries of the entity segments (the merged histogram of 16 units answers an aggregate over a whole key from one read), so a count by score of
 tenant 1 reads 77 blocks where it read 1,092 (1.9 million instructions where it was 8.6), and an aggregate decodes only the measures it uses; a latest N over the units cut by time reads each unit from its end on several sort keys
 (the rows tied with the last on the first key are read as well); the plans below the scope node start when the statement runs them (36,000 instructions of 0.24 million of a read of a small tenant); an expression group key over a wide range (a
-month of a date) evaluates the values the unit holds, not every value of its range (tenant 8 sum by month 2.5 to 0.66 million instructions at 300,000 events, 4.6 to 3.7 at 2.4 million where the unit holds more rows than days). The distinct members by month of tenant 1 come from per-month id sets kept in the key groups: 83.4 to 8.5 million instructions (the top 20 members 50.4 to 6.0, the total for every member 62.9 to 8.8); the index is 3.1 MB larger (65 to 68 MB) and its build 6 s longer (9.9 to 15.9 s). Each read pays 6 more blocks than before (the header pages of the superunits).
+month of a date) evaluates the values the unit holds, not every value of its range (tenant 8 sum by month 2.5 to 0.66 million instructions at 300,000 events, 4.6 to 3.7 at 2.4 million where the unit holds more rows than days). The distinct members by month of tenant 1 come from per-month id sets kept in the key groups: 83.4 to 8.5 million instructions (the top 20 members 50.4 to 6.0, the total for every member 62.9 to 8.8); the index is 3.1 MB larger (65 to 68 MB) and its build 1.7% longer in instructions. Each read pays 6 more blocks than before (the header pages of the superunits).
 
 What each arm costs (added bytes, and 10,000 inserted events as one statement; a pair edit is the mean of 10 members of about 400 events, and the largest member apart):
 
@@ -923,14 +926,14 @@ What each arm costs, as milliseconds · M instructions · WAL written of one sta
 
 | arm | build · size added | 10,000 inserts | promotion of those | pair grant | pair revoke | pair grant, largest | pair revoke, largest |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `stock_default` | 1.5 s · 17 MB | 33.7 · 188 · 2.2 MB | - | 1.86 · 0.14 · 323 B | 0.58 · 0.19 · 184 B | 22.4 · 0.12 · 312 B | 0.41 · 0.18 · 184 B |
+| `stock_default` | 1.6 s · 17 MB | 48.4 · 188 · 2.2 MB | - | 0.93 · 0.14 · 323 B | 1.34 · 0.19 · 184 B | 2.81 · 0.12 · 312 B | 1.41 · 0.18 · 184 B |
 | `semijoin` | 2.9 s · 97 MB | 64.1 · 211 · 2.6 MB | - | 1.72 · 0.13 · 323 B | 1.09 · 0.19 · 186 B | 1.02 · 0.12 · 312 B | 0.74 · 0.18 · 184 B |
 | `denorm_flat` | 18.2 s · 453 MB | 120 · 573 · 6.3 MB | - | 6.75 · 11.8 · 105 kB | 1.55 · 1.95 · 23 kB | 135 · 603 · 7.3 MB | 11.8 · 61.0 · 1.2 MB |
 | `denorm_part` | 23.2 s · 425 MB | 257 · 510 · 6.0 MB | - | 13.4 · 9.68 · 101 kB | 4.21 · 2.48 · 23 kB | 151 · 507 · 6.7 MB | 10.2 · 66.5 · 1.2 MB |
 | `rollup` | 14.8 s · 128 MB | 311 · 1,046 · 7.7 MB | - | 0.67 · 0.13 · 323 B | 0.70 · 0.19 · 186 B | 0.70 · 0.12 · 312 B | 1.67 · 0.18 · 184 B |
 | `ivm` | 19.7 s · 55 MB | 2,714 · 11,766 · 3.9 MB | - | 105 · 510 · 77 kB | 93.6 · 494 · 62 kB | 335 · 1,263 · 99 kB | 302 · 1,159 · 103 kB |
-| `sift_reuse` | 9.0 s · 33 MB | 22.3 · 150 · 1.7 MB | 9.71 · 79.4 · 104 kB | 0.64 · 0.14 · 333 B | 0.82 · 0.20 · 186 B | 0.94 · 0.12 · 312 B | 0.56 · 0.19 · 240 B |
-| `sift_scope` | 15.9 s · 68 MB | 28.9 · 150 · 1.7 MB | 26.3 · 194 · 315 kB | 0.66 · 0.20 · 897 B | 0.88 · 0.34 · 642 B | 0.46 · 0.15 · 584 B | 0.54 · 0.32 · 632 B |
+| `sift_reuse` | 7.0 s · 33 MB | 47.5 · 150 · 1.7 MB | 26.1 · 77.4 · 105 kB | 1.18 · 0.14 · 335 B | 1.41 · 0.20 · 184 B | 0.61 · 0.12 · 312 B | 1.03 · 0.19 · 184 B |
+| `sift_scope` | 13.2 s · 68 MB | 31.9 · 150 · 1.7 MB | 32.5 · 187 · 315 kB | 1.00 · 0.20 · 899 B | 1.05 · 0.34 · 646 B | 0.94 · 0.15 · 584 B | 1.39 · 0.32 · 632 B |
 <!-- bench:scope-stock-costs:end -->
 
 The scope index adds 68 MB (the entity index alone 33 MB) and its writes cost a promotion and a few hundred bytes of WAL for a pair edit; the copies add 425 to 454 MB and write 6 to 7 MB of WAL for a pair grant of
