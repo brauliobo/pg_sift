@@ -8,10 +8,12 @@
 #   - a build killed (terminate or cancel) leaves an INVALID index that a plain DROP INDEX CONCURRENTLY IF EXISTS removes.
 # A writer that stays open while the build runs holds the build at the points where it waits for the writers; the build asks for no lock then (nothing queues behind a request that new writers would
 # wait for), and the new writers complete. After the build the answer of the index is the heap's, for the rows written before, during and after each phase.
+# A scope over a relation of pairs that has no journal yet is built too: the build makes the journal at its end, and the writers of the pairs wait only while that index is built.
 # SIFT_CL_KINDS: the kinds to run (default all).
 . "$(dirname "$0")/lib.bash"
 
-KINDS=${SIFT_CL_KINDS:-btree gin sift_plain sift_track sift_scope reindex_btree reindex_gin reindex_sift_scope}
+KINDS=${SIFT_CL_KINDS:-btree gin sift_plain sift_track sift_scope sift_scope_new_journal reindex_btree reindex_gin reindex_sift_scope}
+PT=pairs
 node_init cl 71 "autovacuum = off
 sift.col_auto_merge = off
 sift.scope_max_multiplicity = 8
@@ -27,9 +29,10 @@ sql cl "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE pairs (m int NOT NULL, t int NOT NULL, PRIMARY KEY (m, t))" \
 	"INSERT INTO pairs SELECT m, 1 + (m * 7 + j * 5) % 12 FROM generate_series(1, 400) m, generate_series(0, 2) j WHERE j < 1 + m % 3 ON CONFLICT DO NOTHING" \
 	"CREATE INDEX CONCURRENTLY pairs_j ON pairs USING sift_col (m, t) WITH (track_changes = 'ctid')" \
+	"CREATE TABLE pairs2 AS SELECT * FROM pairs" "ALTER TABLE pairs2 ADD PRIMARY KEY (m, t)" \
 	"CREATE TABLE t (id int PRIMARY KEY, m int, d timestamptz, v int, a int[], pad text)" \
 	"INSERT INTO t SELECT i, 1 + i % 400, timestamptz '2026-01-01' + i * interval '1 minute', i % 10, ARRAY[i % 7, i % 11], 'x' FROM generate_series(1, 20000) i" \
-	"VACUUM (FREEZE, ANALYZE) t, pairs" >/dev/null || bail "setup failed"
+	"VACUUM (FREEZE, ANALYZE) t, pairs, pairs2" >/dev/null || bail "setup failed"
 
 declare -A GATEPID
 gate_hold() { # KEY: a session holds the advisory lock KEY until gate_open KEY
@@ -59,11 +62,11 @@ writers() { # the three statements of a writer on the table, with ids no other r
 		"UPDATE t SET v = v + 1, m = 1 + (m + $SEQ) % 400 WHERE id % 211 = $SEQ AND id < 20000" "DELETE FROM t WHERE id = 1000 + $SEQ * 7"
 }
 pair_writers() {
-	wr "INSERT INTO pairs VALUES (1 + $SEQ, 5) ON CONFLICT DO NOTHING" "DELETE FROM pairs WHERE m = 10 + $SEQ AND t = 5" \
-		"UPDATE pairs SET t = 13 + $SEQ WHERE m = 30 + $SEQ AND t = (SELECT min(t) FROM pairs WHERE m = 30 + $SEQ)"
+	wr "INSERT INTO $PT VALUES (1 + $SEQ, 5) ON CONFLICT DO NOTHING" "DELETE FROM $PT WHERE m = 10 + $SEQ AND t = 5" \
+		"UPDATE $PT SET t = 13 + $SEQ WHERE m = 30 + $SEQ AND t = (SELECT min(t) FROM $PT WHERE m = 30 + $SEQ)"
 }
-held_modes() { sql cl "SELECT coalesce(string_agg(DISTINCT mode, ',' ORDER BY mode), '-') FROM pg_locks WHERE pid = $BPID AND locktype = 'relation' AND granted AND relation IN ('t'::regclass, 'pairs'::regclass)"; }
-strong_held() { sql cl "SELECT string_agg(DISTINCT mode, ',') FROM pg_locks WHERE pid = $BPID AND locktype = 'relation' AND granted AND mode IN ($STRONG) AND relation IN ('t'::regclass, 'pairs'::regclass)"; }
+held_modes() { sql cl "SELECT coalesce(string_agg(DISTINCT mode, ',' ORDER BY mode), '-') FROM pg_locks WHERE pid = $BPID AND locktype = 'relation' AND granted AND relation IN ('t'::regclass, 'pairs'::regclass, 'pairs2'::regclass)"; }
+strong_held() { sql cl "SELECT string_agg(DISTINCT mode, ',') FROM pg_locks WHERE pid = $BPID AND locktype = 'relation' AND granted AND mode IN ($STRONG) AND relation IN ('t'::regclass, 'pairs'::regclass, 'pairs2'::regclass)"; }
 asking() { sql cl "SELECT count(*) FROM pg_locks WHERE pid = $BPID AND locktype = 'relation' AND NOT granted"; }
 vacuum_waits() { [[ $(sql cl "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'vacuumer' AND wait_event_type = 'Lock'") == 1 ]]; }
 invalid_left() { [[ $(sql cl "SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass('$1')") == f ]]; }
@@ -71,23 +74,27 @@ dropped() { sql cl "DROP INDEX CONCURRENTLY IF EXISTS $1" >/dev/null && [[ -z $(
 
 ANSWER="SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) FROM (SELECT m % 13 g, count(*) c, sum(v) s FROM t GROUP BY 1) x"
 SCOPE_READ="SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) FROM (SELECT %s FROM t e WHERE sift.in_scope('%s'::regclass, 'tenant', e.m, 5)) x"
-JOIN_READ="SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) FROM (SELECT count(*), sum(v), sum(id) FROM t e WHERE e.m IN (SELECT m FROM pairs WHERE t = 5)) x"
+join_read() { echo "SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) FROM (SELECT count(*), sum(v), sum(id) FROM t e WHERE e.m IN (SELECT m FROM $PT WHERE t = 5)) x"; }
 same_answer() { # INDEX KIND: the index answers as the heap does
 	local idx=$1 q a b
 	q=$(printf "$SCOPE_READ" "count(*), sum(v), sum(id)" "$idx")
 	if [[ $2 == sift_scope ]]; then
 		a=$(sql cl "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "$q")
-		b=$(sql cl "SET sift.enable_agg = off" "$JOIN_READ")
+		b=$(sql cl "SET sift.enable_agg = off" "$(join_read)")
 		[[ $a == "$b" ]] || return 1
 	fi
 	[[ $2 == btree || $2 == gin ]] && return 0
 	[[ $(sql cl "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "$ANSWER") == "$(sql cl "SET sift.enable_agg = off" "$ANSWER")" ]]
 }
+stored() { # INDEX: the scope is read from the scope units (the segments are filled and stamped), not from the join
+	sift_explain=$(sql cl "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*) FROM t e WHERE sift.in_scope('$1'::regclass, 'tenant', e.m, 5)")
+	grep -q 'Scope Units' <<<"$sift_explain"
+}
 verifies() { [[ -z $(sql cl "SELECT sift.col_verify('$1', true)" 2>&1) ]]; }
 
 # run_kind KIND INDEX CREATE-SQL MODE(create|reindex) GATE(fn|sift) PHASES...: one build held at each phase in turn (the asserts), then to the end
 run_kind() {
-	local kind=$1 idx=$2 create=$3 mode=$4 gate=$5 ph key stmt shape=${1#reindex_}
+	local kind=$1 idx=$2 create=$3 mode=$4 gate=$5 ph key stmt shape=${1#reindex_}; [[ $shape != sift_scope_new_journal ]] || shape=sift_scope
 	shift 5
 	local phases=("$@")
 	[[ $mode == reindex ]] && stmt="REINDEX INDEX CONCURRENTLY $idx" || stmt=$create
@@ -121,8 +128,11 @@ run_kind() {
 	check "$kind: the index is valid" test "$(sql cl "SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid = '$idx'::regclass")" == t
 	writers
 	check "$kind: writers complete after the build" test $? == 0
+	pair_writers
+	check "$kind: the writers of the pairs table complete after the build" test $? == 0
 	check "$kind: the index answers as the heap does, for the rows written before, during and after each phase" same_answer "$idx" "$shape"
 	[[ $shape != sift* ]] || check "$kind: the index verifies" verifies "$idx"
+	[[ $shape != sift_scope ]] || check "$kind: the scope is read from its units as soon as the build ends" stored "$idx"
 }
 
 # kill_kind KIND INDEX CREATE-SQL GATE HOW(terminate|cancel) PHASE: the build is killed in a phase; the INVALID index is dropped by a plain DROP INDEX CONCURRENTLY IF EXISTS
@@ -141,7 +151,12 @@ kill_kind() {
 	writers
 	check "$kind $how in phase $ph: writers complete" test $? == 0
 	check "$kind $how in phase $ph: DROP INDEX CONCURRENTLY IF EXISTS removes it" dropped "$idx"
-	check "$kind $how in phase $ph: no lock is left on the tables" test "$(sql cl "SELECT count(*) FROM pg_locks WHERE locktype = 'relation' AND relation IN ('t'::regclass, 'pairs'::regclass) AND mode IN ($STRONG) AND granted")" == 0
+	[[ $gate != sift ]] || { sql cl "VACUUM t, pairs" >/dev/null
+		check "$kind $how in phase $ph: the other sift index of the tables verifies and no relation of the dropped index is left" \
+			test -z "$(sql cl "SELECT sift.col_verify('pairs_j', true)" 2>&1)" -a "$(sql cl "SELECT count(*) FROM pg_class WHERE relname LIKE '$idx%'")" == 0; }
+	[[ $PT != pairs2 ]] || check "$kind $how in phase $ph: the journal the build made is dropped with its index" \
+		test "$(sql cl "SELECT count(*) FROM pg_class WHERE relname LIKE 'pairs2%sift_journal'")" == 0
+	check "$kind $how in phase $ph: no lock is left on the tables" test "$(sql cl "SELECT count(*) FROM pg_locks WHERE locktype = 'relation' AND relation IN ('t'::regclass, 'pairs'::regclass, 'pairs2'::regclass) AND mode IN ($STRONG) AND granted")" == 0
 }
 
 # open_writer KIND INDEX CREATE-SQL GATE: a writer of both tables stays open from the first phase; the build waits for it where it waits for writers, asks for no lock, and the new writers complete
@@ -152,7 +167,7 @@ open_writer() {
 	build_bg "$gate" "$create"
 	wait_for "at_gate $key" 120 || bail "$kind: the build did not reach phase $ph"
 	SEQ=$((SEQ + 1)); rm -f "$D/w.open" "$D/w.held"
-	{ echo "BEGIN;"; echo "INSERT INTO t VALUES ($((900000000 + SEQ)), 1, now(), 1, ARRAY[1], 'open');"; echo "INSERT INTO pairs VALUES (399, 99);"; echo "\\! touch '$D/w.held'"
+	{ echo "BEGIN;"; echo "INSERT INTO t VALUES ($((900000000 + SEQ)), 1, now(), 1, ARRAY[1], 'open');"; echo "INSERT INTO $PT VALUES (399, 99);"; echo "\\! touch '$D/w.held'"
 		echo "\\! while [ ! -e '$D/w.open' ]; do sleep 0.05; done"; echo "COMMIT;"; } | PGAPPNAME=openwriter sql cl >"$D/open.out" 2>&1 &
 	OPEN=$!
 	wait_for "[[ -e $D/w.held ]]" 60 || bail "$kind: the open writer did not start"
@@ -170,10 +185,11 @@ open_writer() {
 	wait "$BUILD"; local rc=$?
 	check "$kind: the build ends once the writer commits" test "$rc" == 0
 	check "$kind: the index is valid" test "$(sql cl "SELECT indisvalid FROM pg_index WHERE indexrelid = '$idx'::regclass")" == t
-	sql cl "DELETE FROM pairs WHERE t = 99" >/dev/null
+	sql cl "DELETE FROM $PT WHERE t = 99" >/dev/null
 }
 
 for kind in $KINDS; do
+	PT=pairs
 	case $kind in
 		btree)
 			C="CREATE INDEX CONCURRENTLY k_ix ON t (gate_i(v))" ; G=fn ; P=(1) ;;
@@ -185,6 +201,8 @@ for kind in $KINDS; do
 			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v)" ; G=sift ; P=(2 3 4) ;;
 		sift_scope)
 			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs(m, t)')" ; G=sift ; P=(2 3 4 5) ;;
+		sift_scope_new_journal)
+			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs2(m, t)')" ; G=sift ; P=(2 3 4 5) ; PT=pairs2 ;;
 		reindex_btree)
 			C="CREATE INDEX k_ix ON t (gate_i(v))" ; G=fn ; P=(1) ;;
 		reindex_gin)

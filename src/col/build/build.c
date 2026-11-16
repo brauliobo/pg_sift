@@ -129,7 +129,7 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 	}
 	sift_conn_auto(heap, index);
 	sift_conn_resolve(heap, index);
-	sift_scope_resolve(heap, index, false);
+	sift_scope_resolve(heap, index, false, info->ii_Concurrent);
 	sift_scope_precheck(heap, index);
 #ifdef SIFT_TESTING
 	sift_test_col_workers = 0;
@@ -146,7 +146,7 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 	sift_col_track_check(heap, index);
 	sift_col_auto_point(heap, index);
 	sift_vstore_auto(heap, index);
-	/* the first scope index of a relation makes its journal before it reads anything and stamps its segments with it; a concurrent build does not hold the writers out for its whole length */
+	/* the first scope index of a relation makes its journal before it reads anything and stamps its segments with it; a concurrent build does not hold the writers out for its whole length: its journal begins at the end, and its validation fills the segments */
 	scoped = !info->ii_Concurrent && sift_scope_specs(index) != NULL;
 	if (scoped)
 	{
@@ -162,6 +162,9 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 #ifdef SIFT_TESTING
 	sift_test_phase_wait(SIFT_COL_GATE_TAIL);
 #endif
+	/* the journal of a relation of pairs that has none is made here: it holds the writers of that relation out only while it is built, not for the scan of the table */
+	if (info->ii_Concurrent && sift_scope_specs(index) != NULL)
+		sift_scope_resolve(heap, index, true, false);
 	if (sift_col_track_on(index))
 	{
 		sift_col_log_create(index);
@@ -174,8 +177,6 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 	sift_scope_start(heap, index, info->ii_Concurrent);
 	if (sift_scope_specs(index) != NULL)
 		sift_scope_floor_after_build(index);
-	if (info->ii_Concurrent && sift_scope_specs(index) != NULL)
-		sift_scope_stamp_concurrent(index);
 	if (chosen)
 		sift_col_auto_keys_report(index);
 	sift_col_vacuum_notice(heap, index);

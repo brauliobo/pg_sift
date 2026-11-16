@@ -235,8 +235,9 @@ maint_scope_refill(Relation index)
 }
 
 /*
- * The end of a CREATE INDEX CONCURRENTLY of a scope index: its segments were written before the journal of the first scope index of the relation existed, so they carry no stamp and the reads
- * would say unfilled until the maintenance fills them. They are filled here as the rewrite fills a stale set, and merged as the rewrite after a build does.
+ * The validation of a CREATE INDEX CONCURRENTLY (or REINDEX CONCURRENTLY) of a scope index, which holds ShareUpdateExclusiveLock only: the segments of the build were written before the
+ * journal of the first scope index of the relation began, so they carry no stamp. The journal began at the end of the build, which committed, and every writer that could not see it was waited
+ * for: the stamp taken now is vouched for, and the writers of the tables go on while the segments are filled as the rewrite fills a stale set and merged as the rewrite after a build does.
  */
 void
 sift_scope_stamp_concurrent(Relation index)

@@ -11,9 +11,25 @@
 #include "commands/tablecmds.h"
 #include "fmgr.h"
 #include "nodes/parsenodes.h"
+#include "storage/lmgr.h"
 #include "storage/lockdefs.h"
+#include "col/am.h"
 
 PG_FUNCTION_INFO_V1(sift_col_build_lock);
+
+/*
+ * The transactions that hold a lock of the table that conflicts with mode are waited for before the build asks for mode: a request that waits for a long writer queues every writer that comes
+ * after it, and a request after the wait waits only for those that began since. It is what PostgreSQL does between the transactions of CREATE INDEX CONCURRENTLY (WaitForLockers): nothing
+ * is held and nothing queues while the old writers finish.
+ */
+void
+sift_col_drain_writers(Oid relid, LOCKMODE mode)
+{
+	LOCKTAG		tag;
+
+	SET_LOCKTAG_RELATION(tag, MyDatabaseId, relid);
+	WaitForLockers(tag, mode, false);
+}
 
 Datum
 sift_col_build_lock(PG_FUNCTION_ARGS)

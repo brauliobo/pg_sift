@@ -75,6 +75,7 @@ sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumbe
 		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE), errmsg("scope \"%s\": \"%s\" has no sift_col index that journals its changes, and this role cannot make one: it does not own the table",
 																		 s->key_name, RelationGetRelationName(rel)),
 						errhint("The owner of the table makes it: %s.", journal_statement(rel, mname, kname, false))));
+	sift_col_drain_writers(relid, ShareRowExclusiveLock);
 	LockRelationOid(relid, ShareRowExclusiveLock);
 	journal = sift_scope_hop_journal(rel, hop, hop == 2 ? key : member, hop == 2 ? member : key, btree);
 	if (OidIsValid(journal))

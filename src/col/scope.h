@@ -67,7 +67,7 @@ extern Oid	sift_scope_hop_index(Relation heap, Relation index, const SiftScopeSp
  * CREATE INDEX, REINDEX (sticky false: chooses the btree by the rule and records it) and ALTER INDEX (sticky true: leaves the recorded one): resolves the declaration, writes the dependency, or removes it.
  * A relation of pairs without a journal index gets one
  */
-extern void sift_scope_resolve(Relation heap, Relation index, bool sticky);
+extern void sift_scope_resolve(Relation heap, Relation index, bool sticky, bool concurrent);
 /* Is the value store the one of the scope key of an index (the codes of a text or uuid key): no epoch of it begins */
 extern bool sift_scope_key_store_pinned(Oid store);
 /* After ALTER INDEX of any option of a sift_col index: resolves again, so that scope = 'off' or RESET (scope) of an index with no segment removes the dependency */

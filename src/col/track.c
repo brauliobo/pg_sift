@@ -359,6 +359,9 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 							 errhint("ALTER INDEX %s SET (track_changes = 'off'), then SET (track_changes = %s)", sift_col_index_ref(index), quote_literal_cstr(sift_col_options_row_key(index)))));
 			return;
 		}
+		if (concurrent)
+			foreach_oid(tbl, sift_col_hear_tables(RelationGetRelid(heap), sift_col_track_ctid(index)))
+				sift_col_drain_writers(tbl, ShareRowExclusiveLock);
 		sift_col_hear_drop_all(index);
 		sift_col_hear_create(heap, index);
 		CommandCounterIncrement();

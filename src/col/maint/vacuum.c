@@ -6,6 +6,7 @@
 #include "postgres.h"
 #include "access/parallel.h"
 #include "col/maint/maint_int.h"
+#include "col/scope.h"
 #include "core/live.h"
 #include "core/quarantine.h"
 #include "col/vstore/vstore.h"
@@ -182,6 +183,9 @@ maint_wal_budget_spent(const XLogRecPtr *lsn, const uint64 *sbytes, int n, uint6
 IndexBulkDeleteResult *
 sift_col_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulkDeleteCallback callback, void *callback_state)
 {
+	/* the validation pass of a concurrent build is the only caller that asks for progress reports: VACUUM does not */
+	if (info->report_progress && sift_col_rel(info->index)->nscope > 0)
+		sift_scope_stamp_concurrent(info->index);
 	return sift_mops_bulkdelete(&maint_col_ops, info, stats, callback, callback_state);
 }
 

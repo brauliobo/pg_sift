@@ -259,6 +259,7 @@ sift_conn_enable(Relation heap, Relation index, bool read_after, AttrNumber tag_
 	 * Writers of the table are held out until the transaction ends: every transaction that wrote it before is finished, so the journal is complete from here. The log need not be
 	 * complete yet (a parallel restore connects before the primary key of the table exists): nothing is vouched while it is not, and the trim of the journal moves when it becomes so.
 	 */
+	sift_col_drain_writers(RelationGetRelid(heap), ShareLock);
 	LockRelationOid(RelationGetRelid(heap), ShareLock);
 	/*
 	 * A snapshot taken now sees every write before the lock, and the transactions that write after it have ids from its xmin on (the older ones are over): the journal is complete from that id for
