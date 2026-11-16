@@ -60,7 +60,7 @@ sift_indexes() { sql "$1" "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.
 sub_ready() { for _ in $(seq 600); do [[ $(sql subscriber "SELECT count(*) FROM pg_subscription_rel WHERE srsubstate <> 'r'") == 0 ]] && return 0; sleep 0.1; done; return 1; }
 sub_catchup() {
 	local lsn
-	lsn=$(sql primary "SELECT pg_current_wal_lsn()")
+	lsn=$(sql primary "SELECT pg_current_wal_insert_lsn()")
 	for _ in $(seq 600); do
 		[[ $(sql primary "SELECT coalesce(bool_and(replay_lsn >= '$lsn'), false) FROM pg_stat_replication WHERE application_name = 'sub'") == t ]] && return 0
 		sleep 0.1
