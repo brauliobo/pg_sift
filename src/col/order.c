@@ -10,7 +10,6 @@
 #include "utils/syscache.h"
 
 #include "core/cmp.h"
-#include "col/am.h"
 #include "col/build.h"
 #include "col/enc.h"
 #include "col/order_sort.h"
@@ -410,12 +409,9 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 	RowRef	   *win = refs ? NULL : palloc_array(RowRef, want);
 	TidPos	   *tidpos = palloc_array(TidPos, want);
 	RowRef	   *tidtmp = palloc_array(RowRef, want);
-	uint64		n = 0,
-				pos = 0;
-	uint32		seq = seq0,
-				num = 0;
-	bool		eof = false,
-				split = false;
+	uint64		n = 0, pos = 0;
+	uint32		seq = seq0, num = 0;
+	bool		eof = false, split = false;
 
 	for (;;)
 	{
