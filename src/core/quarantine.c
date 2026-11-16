@@ -463,10 +463,20 @@ reason_of(QuarEntry *e)
 	FreeErrorData(ed);
 }
 
+/* The error that raised the damage may be caught (a guard, an EXCEPTION block) and never reach the log: the first cause of an index leaving service is logged here */
+static void
+log_first_cause(Relation index, const QuarEntry *rec)
+{
+	ereport(LOG,
+			(errmsg("sift index \"%s\" is out of service after damage", RelationGetRelationName(index)),
+			 errdetail("First cause, SQLSTATE %s: %s", unpack_sql_state(rec->sqlerrcode), rec->reason)));
+}
+
 static void
 record(Relation index)
 {
 	QuarEntry	rec;
+	bool		was_out;
 
 	rec = (QuarEntry) {.used = true,.indexoid = RelationGetRelid(index),.detected_at = GetCurrentTimestamp()};
 	key_of(index, &rec.file);
@@ -476,9 +486,12 @@ record(Relation index)
 	damage_code = rec.sqlerrcode;
 	if (persisting)
 		return;
+	was_out = overlay_has(index);
 	take(local, QUAR_LOCAL, &rec, RecoveryInProgress());
 	unpublished = true;
 	publish(shared);
+	if (!was_out && overlay_has(index))
+		log_first_cause(index, &rec);
 	ask_persist(index);
 }
 
