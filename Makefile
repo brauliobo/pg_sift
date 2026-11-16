@@ -455,6 +455,7 @@ TESTING_REGRESS += quarantine_build
 TESTING_REGRESS += quarantine_col
 TESTING_REGRESS += quarantine_errors
 TESTING_REGRESS += quarantine_hints
+TESTING_REGRESS += quarantine_inject
 TESTING_REGRESS += quarantine_join
 TESTING_REGRESS += quarantine_meta
 TESTING_REGRESS += quarantine_parallel
