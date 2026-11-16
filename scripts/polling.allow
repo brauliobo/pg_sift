@@ -1,0 +1,17 @@
+# FILE	text of the line	why the wait is a timer (a new row needs a reason that an event cannot do the work)
+src/col/wbuf/arena.c	WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT	1 ms poll while another backend rebuilds the arena slot; the rebuilder should set the latch of its waiters
+src/col/track_hear.c	pg_usleep(PARENT_LOCK_NAP_US)	at most 20 tries of 10 ms for a lock that a deadlock would otherwise cancel
+src/bm25/space.c	pg_usleep(CUT_LOCK_NAP_MS	bounded retries for the lock of the cut of the file
+src/bm25/maint.c	sift_nap(FREED_WAIT_MS)	waits for the extents a merge freed to be reusable (a horizon, not an event of ours)
+src/bm25/maint.c	sift_worker_nap(Min(left	the stay window of the maintenance worker: it looks again every sift.maintenance_naptime/20 until the window ends
+src/core/visibility.c	pg_usleep(pg_prng_uint64_range	test jitter, SIFT_TESTING only
+src/core/writer.c	WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT	sift_nap, the one sleep of the cost delay and the WAL rate
+src/core/writer.c	sift_nap(Min(ahead, 1000))	sleeps until the WAL rate allows the next page
+src/core/writer.c	sift_nap(wt->delay_ms)	the cost delay of a throttled write
+src/core/worker.c	sift_nap(ms)	sift_worker_nap, the sleep of a worker between two looks
+src/table/vacuum_maint.c	sift_worker_nap(Max(sift_maintenance_naptime / 4	the pause between the passes of a table worker (at most 20, ends after 3 idle passes)
+src/table/vacuum.c	sift_nap(Min(ahead, 1000))	sleeps until the WAL rate allows the next page
+src/agg/par/items.c	pg_usleep(1000)	test hook sift_test_par_leader_wait only
+src/agg/lookshm.c	sift_nap(LOOKSHM_POLL_MS)	waits for the claim of a shared lookup that another backend builds, bounded by LOOKSHM_WAIT_MS
+src/col/scan/scan.c	pg_usleep(pg_prng_uint64_range	test jitter, SIFT_TESTING only
+src/col/maint/merge.c	pg_usleep(sift_test_col_refresh	test hook, SIFT_TESTING only

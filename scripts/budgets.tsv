@@ -79,3 +79,4 @@ script:simd_level.sh	-	-	a helper of the entry points above, no run of its own
 script:test-ci-ready.sh	-	-	a helper of the entry points above, no run of its own
 script:test-perf-select.py	-	-	a helper of the entry points above, no run of its own
 regress:shard	1800	2000	one of 4 shards of the 1,265 regression tests (every fourth name) on a cluster of its own; serial: 2,459 s release / 5,556 s cassert, so a shard is ~620 s / ~1,400 s
+script:instr-budget-cost.sh	600	1000	callgrind of one backend: planning, INSERT and an unchanged VACUUM on a table with a sift_col index; -
