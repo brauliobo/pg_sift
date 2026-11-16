@@ -18,7 +18,8 @@
 #   bump       CHANGELOG, sqlite/mariadb CHANGELOG and VERSION, PKGBUILD, README badge, install lines, and the figure waivers of Unreleased in scripts/bench-cases.allow (they go
 #              with the section): one commit, after a check that every place agrees
 #   lint       scripts/lint.sh on the bumped tree, what the push CI of main runs on the release commit, with the vocabulary required (SIFT_NEUTRAL_REQUIRED=1,
-#              which the push CI cannot do: a name it lets pass stops the release here): a red one stops the release before the tag
+#              which the push CI cannot do: a name it lets pass stops the release here) and SIFT_PUBLIC_TREE=true, as the hosted run of the public repository
+#              (its results files stay private): a red one stops the release before the tag
 #   publish    push main and the tag, watch the workflow `release`, verify the assets (names, SHA256SUMS)
 #   formula    the stable stanza of Formula/pg_sift.rb points at the tag tarball (scripts/formula-sha.sh; its hash exists only once the tag does): one more commit on main
 #   aur        packaging/PKGBUILD and pg_sift.install go to the AUR
@@ -80,7 +81,7 @@ ext_bump() {
 	git -C "$REPO" add pg_sift.control src/core/ops.h "sql/pg_sift--$from--$to.sql" "sql/pg_sift--$to--$MM.sql"
 	git -C "$REPO" commit -q -m "release: $to: the extension version" && echo "release: the extension version is $to: sql/pg_sift--$from--$to.sql and sql/pg_sift--$to--$MM.sql, committed"
 }
-lint_tree() { ( cd "$1" && GITHUB_BASE_REF=main SIFT_NEUTRAL_REQUIRED=1 scripts/lint.sh ); }
+lint_tree() { ( cd "$1" && GITHUB_BASE_REF=main SIFT_NEUTRAL_REQUIRED=1 SIFT_PUBLIC_TREE=true scripts/lint.sh ); }
 # The waivers of the figure lines of Unreleased (`figure LINE<TAB>reason` in scripts/bench-cases.allow) go with the section: the bump moves those lines into history, which the claims check does not
 # read, so a waiver left would fail the lint of the release commit ("matches no line that states a figure"). Other lines of the allow list stay.
 drop_figure_waivers() { awk '!/^figure /' "$1" >"$1.new" && mv "$1.new" "$1"; }   # not sed -i: BSD sed reads the expression as the backup suffix
@@ -151,8 +152,8 @@ selftest() {
 	chk pass "a dry run without a vocabulary exits 1 and says why" bash -c '[[ $1 == 1 && $2 == *vocabulary* && ! -e $3/state ]]' _ "$rc" "$v" "$t"
 	# the lint of the release commit runs with the vocabulary required, and the vocabulary reaches it
 	mkdir -p "$t/tree/scripts"
-	printf '#!/usr/bin/env bash\n[[ ${SIFT_NEUTRAL_REQUIRED:-} == 1 && ${GITHUB_BASE_REF:-} == main && -n ${NEUTRAL_VOCAB_FILE:-} ]]\n' >"$t/tree/scripts/lint.sh"; chmod +x "$t/tree/scripts/lint.sh"
-	chk pass "the lint of the release commit requires the vocabulary" env NEUTRAL_VOCAB_FILE="$t/voc" bash -c "$(declare -f lint_tree); lint_tree '$t/tree'"
+	printf '#!/usr/bin/env bash\n[[ ${SIFT_NEUTRAL_REQUIRED:-} == 1 && ${GITHUB_BASE_REF:-} == main && ${SIFT_PUBLIC_TREE:-} == true && -n ${NEUTRAL_VOCAB_FILE:-} ]]\n' >"$t/tree/scripts/lint.sh"; chmod +x "$t/tree/scripts/lint.sh"
+	chk pass "the lint of the release commit requires the vocabulary and checks the public tree" env NEUTRAL_VOCAB_FILE="$t/voc" bash -c "$(declare -f lint_tree); lint_tree '$t/tree'"
 	# the bump edits the figure waivers: a run of the tree before it is still evidence for the tree after it, and a change of a build input is not
 	local r=$t/guarded
 	mkdir -p "$r/src" "$r/scripts" && ( cd "$r" && git init -q && echo a >src/a.c && echo a >scripts/bench-cases.allow && git add -A && env "${gid[@]}" git commit -q -m base )
