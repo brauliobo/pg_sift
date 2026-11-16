@@ -260,18 +260,22 @@ sift_maint_online_fallback(bool on)
 		cut_busy = false;
 }
 
-/* The lock of a cut of the file, only if it is free right now (any scan, insert or step of the worker holds a lock on it) and no standby would stall on it */
-static bool
+/*
+ * The lock of a cut of the file, only if it is free right now (any scan, insert or step of the worker holds a lock on it) and no standby would stall on it: the mode taken, which the
+ * caller releases (the state cut_lock reads can change while the cut runs); NoLock when it is not taken
+ */
+static LOCKMODE
 lock_for_cut(Relation rel, const char *what, int elevel)
 {
+	LOCKMODE	mode = cut_lock(rel);
 	int			waited;
 
-	if (cut_lock(rel) == AccessExclusiveLock && !sift_maint_file_is_new(rel) && sift_maint_standby_streams())
+	if (mode == AccessExclusiveLock && !sift_maint_file_is_new(rel) && sift_maint_standby_streams())
 	{
 		cut_skipped(rel, what, elevel, SKIP_STANDBY, sift_store_free_stats(rel).blocks, 0, 0);
-		return false;
+		return NoLock;
 	}
-	if (!cut_lock_try(rel, cut_lock(rel), &waited))
+	if (!cut_lock_try(rel, mode, &waited))
 	{
 		/* the cut that needs no lock beyond the ExclusiveLock of the online cut is the next thing the VACUUM tries (sift_maint_online_fallback), and says what it finds */
 		if (online_fallback_possible(rel))
@@ -282,9 +286,9 @@ lock_for_cut(Relation rel, const char *what, int elevel)
 		}
 		else
 			cut_skipped(rel, what, elevel, SKIP_LOCK, sift_store_free_stats(rel).blocks, waited, 0);
-		return false;
+		return NoLock;
 	}
-	return true;
+	return mode;
 }
 
 /*
@@ -353,6 +357,7 @@ sift_maint_truncate(Relation index, int elevel)
 {
 	BlockNumber tail;
 	BlockNumber freed;
+	LOCKMODE	held;
 
 	/* The lock is WAL-logged for a standby, which takes a transaction id */
 	if (sift_xid_unassignable())
@@ -365,10 +370,10 @@ sift_maint_truncate(Relation index, int elevel)
 	tail = sift_store_tail_blocks(index);
 	if (tail == 0 || (tail < TRUNCATE_MIN_BLOCKS && tail < RelationGetNumberOfBlocks(index) / TRUNCATE_FRACTION))
 		return;
-	if (!lock_for_cut(index, "index", elevel))
+	if ((held = lock_for_cut(index, "index", elevel)) == NoLock)
 		return;
 	freed = sift_store_truncate(index);
-	UnlockRelation(index, cut_lock(index));
+	UnlockRelation(index, held);
 	if (freed > 0)
 		ereport(elevel, (errmsg("index \"%s\": truncated %u to %u pages", RelationGetRelationName(index),
 								RelationGetNumberOfBlocks(index) + freed, RelationGetNumberOfBlocks(index))));
@@ -901,9 +906,10 @@ cut_locked(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budg
 {
 	const char *what = rel->rd_rel->relkind == RELKIND_INDEX ? "index" : "table";
 	BlockNumber freed = 0;
+	LOCKMODE	held;
 
 	cut_why = SIFT_SHRINK_OPEN;
-	if (!lock_for_cut(rel, what, elevel))
+	if ((held = lock_for_cut(rel, what, elevel)) == NoLock)
 	{
 		sift_maint_note_shrink(rel, cut_why, false);
 		return 0;
@@ -924,7 +930,7 @@ cut_locked(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budg
 		sift_store_space_exclusive(rel, false);
 	}
 	PG_END_TRY();
-	UnlockRelation(rel, cut_lock(rel));
+	UnlockRelation(rel, held);
 	sift_maint_note_shrink(rel, SIFT_SHRINK_OPEN, freed > 0);
 	if (freed > 0)
 		ereport(elevel, (errmsg("%s \"%s\": truncated %u to %u pages", what, RelationGetRelationName(rel),
