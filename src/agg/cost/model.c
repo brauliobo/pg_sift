@@ -248,7 +248,8 @@ double		agg_ops;
 
 /*
  * the units the normal plan reads the table with through a path: the cost of a parameterized path is one probe, paid for each row of the biggest relation that drives it (the one row of
- * the CTE of a key: 82 units; the rows of the table a semi join reads whole: a probe each), so a join query's scan is in the units of a plan that reads a few rows only when it does
+ * the CTE of a key: 82 units; the rows of the table a semi join reads whole: a probe each), so a join query's scan is in the units of a plan that reads a few rows only when it does.
+ * The relids that drive a path include those of the outer joins its clauses wait for, which are no relation and have no estimate
  */
 static Cost
 read_units(AggCtx *c, Path *p)
@@ -258,7 +259,8 @@ read_units(AggCtx *c, Path *p)
 
 	if (p->param_info != NULL)
 		while ((x = bms_next_member(p->param_info->ppi_req_outer, x)) >= 0)
-			probes = Max(probes, c->root->simple_rel_array[x]->rows);
+			if (c->root->simple_rel_array[x] != NULL)
+				probes = Max(probes, c->root->simple_rel_array[x]->rows);
 	return p->total_cost * probes;
 }
 
