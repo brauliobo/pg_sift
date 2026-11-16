@@ -16,6 +16,16 @@ REINDEX INDEX CONCURRENTLY big_idx2;
 SELECT count(*) AS quarantined FROM sift.quarantine;
 DROP INDEX big_idx2;
 
+-- the validation of a concurrent build sorts the tids of the index in a sort of the caller that spills to temporary files: they belong to the statement, not to the subtransaction of the guard
+SET maintenance_work_mem = '1MB';
+CREATE INDEX CONCURRENTLY big_idx3 ON big USING sift_col (id, v);
+REINDEX INDEX CONCURRENTLY big_idx3;
+SELECT count(*) FILTER (WHERE v = 3) AS v3_spilled_validation FROM big;
+CREATE INDEX CONCURRENTLY big_idx4 ON big USING sift_col (id, v, g) WITH (key_order = 'g, v', key_cut = 'off');
+SELECT count(*) FILTER (WHERE v = 3) AS v3_ordered_validation FROM big;
+DROP INDEX big_idx3, big_idx4;
+RESET maintenance_work_mem;
+
 CREATE TABLE bigp (id int, v int, g int) PARTITION BY RANGE (id);
 CREATE TABLE bigp1 PARTITION OF bigp FOR VALUES FROM (0) TO (60000);
 CREATE TABLE bigp2 PARTITION OF bigp FOR VALUES FROM (60000) TO (200000);
@@ -28,6 +38,12 @@ INSERT INTO doc SELECT i, 'alpha beta ' || (i % 10) FROM generate_series(1, 2000
 CREATE INDEX doc_idx ON doc USING sift (body);
 REINDEX INDEX doc_idx;
 SELECT count(*) AS alpha3 FROM doc WHERE body @@> 'alpha 3';
+INSERT INTO doc SELECT i, 'alpha beta ' || (i % 10) FROM generate_series(20001, 100000) i;
+SET maintenance_work_mem = '1MB';
+CREATE INDEX CONCURRENTLY doc_idx2 ON doc USING sift (body);
+REINDEX INDEX CONCURRENTLY doc_idx2;
+RESET maintenance_work_mem;
+SELECT count(*) AS alpha3_spilled_validation FROM doc WHERE body @@> 'alpha 3';
 SELECT count(*) AS quarantined FROM sift.quarantine;
 
 DROP TABLE big, bigp, doc;
