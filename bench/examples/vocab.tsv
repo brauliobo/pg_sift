@@ -1,0 +1,73 @@
+dimension	value	meaning
+join_type	inner	JOIN
+join_type	left	LEFT JOIN (NULL-extended rows are counted)
+join_type	right	RIGHT JOIN
+join_type	full	FULL JOIN
+join_type	semi	IN / EXISTS
+join_type	anti	NOT EXISTS / NOT IN / LEFT JOIN .. IS NULL
+cardinality	1:1	one row on each side per key
+cardinality	N:1	many fact rows per dimension row (the common lookup)
+cardinality	1:N	a parent with many children, queried from the parent side
+cardinality	M:N	through a link table
+size_relation	tiny_dim	a dimension of 3 rows
+size_relation	small_dim	a dimension of about 1/1000 of the fact rows or less
+size_relation	mid_dim	a dimension of about 1/10 to 1/100 of the fact rows
+size_relation	dim_eq_fact	a dimension as large as the fact table
+size_relation	fanout_1000	about 1000 fact rows per dimension row
+key_type	int	int4 join key
+key_type	bigint	int8 join key
+key_type	text	text join key
+key_type	uuid	uuid join key
+key_type	date	date join key
+key_type	composite	two or more columns
+key_type	expression	an expression of columns (lower(email), a cast, a date_trunc)
+query_kind	group_by_dim_attr	GROUP BY a column of the joined table
+query_kind	filter_dim_attr	a condition on a column of the joined table
+query_kind	count_distinct_across_join	count(DISTINCT x) over a join
+query_kind	sum_avg	sum / avg of a fact measure through the join
+query_kind	filter_agg_dim_attrs	aggregate FILTER (WHERE) over dimension attributes
+query_kind	top_n_across_join	ORDER BY .. LIMIT over a join
+query_kind	latest_per_group	the latest row of each group (DISTINCT ON, row_number, LATERAL)
+query_kind	exists_scope	EXISTS over an assignment table that scopes the rows
+query_kind	anti_join_count	rows with no match
+query_kind	chain	a chain of 3 or more tables (child -> parent -> grandparent)
+query_kind	star	a fact with 3 or more dimensions
+query_kind	snowflake	dimensions that have dimensions
+query_kind	self_join	a table joined to itself
+query_kind	range_join_versioned	a range (valid_from, valid_to) or inequality join to a versioned table
+query_kind	missing_field_count	counts of rows whose attribute is NULL or blank
+query_kind	lookup_exact_key	point lookup by an exact key through the join
+query_kind	bm25_then_join	a BM25 text filter, then the join
+query_kind	jsonb_attr	a jsonb attribute joined to a catalog
+query_kind	partition_prune	a partitioned fact pruned by a dimension condition
+query_kind	set_algebra	any / all / none of a set (tags)
+query_kind	graph_edges	edges between targets of one table (follows, mutual)
+write_pattern	append_only	insert batches only
+write_pattern	dim_attr_churn	updates that change a dimension attribute, so the derived class of many facts changes
+write_pattern	key_churn	join keys change on the fact or the dimension side
+write_pattern	delete_heavy	large deletes
+write_pattern	delete_resurrect	deleted rows come back
+write_pattern	late_arriving_dim	a dimension row arrives after the facts that name it
+write_pattern	orphan_fact	facts whose key has no dimension row
+write_pattern	bulk_reload	a large load or reload in one statement
+write_pattern	soft_delete	a flag or timestamp marks rows deleted, rows stay
+write_pattern	maintenance	VACUUM / REINDEX CONCURRENTLY in the middle of the workload
+scale	S	100,000 fact rows
+scale	M	1,000,000 fact rows
+scale	L	10,000,000 fact rows
+skew	uniform	keys drawn uniformly
+skew	zipf	power-law key frequencies (skew knob > 1)
+skew	hot_key	one key holds a fixed share of the facts (hot knob)
+clustering	random	join key independent of heap order
+clustering	clustered	heap order follows the join key
+clustering	anti	heap order falls as the join key grows
+storage	heap	heap tables (the default)
+storage	sift_table	the fact is a sift_table (column store access method); the native engine uses a heap table
+query_kind	parent_exists_child	EXISTS / IN over the children of a parent with a condition on the child, seen from the parent
+query_kind	parent_not_exists_child	NOT EXISTS / LEFT JOIN .. IS NULL: parents with no child that matches a condition
+query_kind	parent_left_agg	parent LEFT JOIN child with count / sum / count(DISTINCT) grouped by a parent column
+query_kind	child_count_per_parent	number of children of each parent, grouped by a parent column
+query_kind	top_n_per_parent	the best N children of each parent (LATERAL .. LIMIT, row_number), aggregated by a parent column
+query_kind	parent_child_count	a condition on the number of children of a parent (count(*) >= n)
+query_kind	child_agg_per_parent	an aggregate of the children of each parent (max, sum, count) joined back to the parent
+query_kind	semi_join_count	rows with a match counted (EXISTS, IN, a join that only counts), no column of the matched table read
