@@ -27,7 +27,7 @@ fuzz:scope_oracle.py	1200	2500	run through tap:col_scope_oracle
 gate:stability	2700	3072	scripts/stability.sh, 4 lanes; the steps of scripts/stability.tsv sum to about 4,400 s of one lane
 gate:release	2700	3072	preflight of the release: 33 steps on one box = 44 min 40 s (4 jobs at a time)
 script:ci.sh	2700	3072	quick: about 1 min on 8 free cores (hosted quick lane 15 min); full is a hosted tier
-script:test-ci-build-fail.sh	60	50	a run with a stub build and a sleeping lint: 5 s, no server, scratch under 1 MB
+script:test-ci-build-fail.sh	120	50	a run with a stub build and a sleeping lint: 5 s idle, up to 90 s on a loaded runner, no server, scratch under 1 MB
 script:pgtest.sh	1800	3072	regress of the whole suite serially: 2,459 s release / 5,556 s cassert: run it sharded (scripts/ci.sh, SIFT_CI_JOBS=installcheck); one test or TAP is bounded by its own row
 script:soak.sh	900	1500	600 s of pgbench + setup (default --duration 600); 191-220 s in the quick tier (15 s soak hosted)
 script:colsoak.sh	600	1000	300 s default duration; 124 s in the full tier
