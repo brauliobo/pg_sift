@@ -380,9 +380,10 @@ sift_test_raise(PG_FUNCTION_ARGS)
 }
 
 /*
- * sift._test_raise_extending(index, kind): reports `kind` (index, data, scope, other_data, other_index: the classes of core/damage.h; error, warning, log: what is no damage)
+ * sift._test_raise_extending(index, kind, extend_first): reports `kind` (index, data, scope, other_data, other_index: the classes of core/damage.h; error, warning, log: what is no damage)
  * under the error context of the index while the relation extension lock of the index is held and the catalog cache of pg_class and pg_namespace is cold. PostgreSQL
- * forbids a heavyweight lock under that lock (an assertion with cassert), and every report runs the error context and the damage record.
+ * forbids a heavyweight lock under that lock (an assertion with cassert), and every report runs the error context and the damage record. With extend_first the relation is extended
+ * by one block under the lock before the report: the extension of a write that runs under the lock.
  */
 Datum
 sift_test_raise_extending(PG_FUNCTION_ARGS)
@@ -395,6 +396,8 @@ sift_test_raise_extending(PG_FUNCTION_ARGS)
 	CatalogCacheFlushCatalog(RelationRelationId);
 	CatalogCacheFlushCatalog(NamespaceRelationId);
 	sift_extension_lock(index);
+	if (PG_GETARG_BOOL(2))
+		UnlockReleaseBuffer(sift_extend_zeroed_to(index, RelationGetNumberOfBlocks(index) + 1));
 	if (strcmp(kind, "index") == 0)
 		SIFT_DAMAGE_INDEX(index, errmsg("raised under the extension lock"));
 	else if (strcmp(kind, "data") == 0)

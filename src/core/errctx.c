@@ -30,7 +30,7 @@ sift_index_ident(Relation index)
 	return quote_qualified_identifier(get_namespace_name(RelationGetNamespace(index)), RelationGetRelationName(index));
 }
 
-/* "index" or "table" for the line of a scope, and its name: the lookups of a report, which sift_errctx_warm() makes ahead of a section that cannot take a lock */
+/* "index" or "table" for the line of a scope, and its name: the lookups of a report, which sift_errctx_freeze() makes ahead of a section that cannot take a lock */
 static char *
 errctx_describe(Oid relid, const char **what)
 {
@@ -44,9 +44,11 @@ static void
 errctx_callback(void *arg)
 {
 	SiftErrCtx *ctx = arg;
-	const char *what;
-	char	   *name = errctx_describe(ctx->relid, &what);
+	const char *what = ctx->what;
+	char	   *name = ctx->name;
 
+	if (name == NULL)
+		name = errctx_describe(ctx->relid, &what);
 	if (ctx->segmented)
 		errcontext("sift %s \"%s\", segment %llu", what, name, (unsigned long long) ctx->segment);
 	else
@@ -66,6 +68,8 @@ sift_errctx_push(SiftErrCtx *ctx, Oid relid)
 	ctx->cb = (ErrorContextCallback) {.callback = errctx_callback,.arg = ctx,.previous = error_context_stack};
 	ctx->relid = relid;
 	ctx->segmented = false;
+	ctx->owner = NULL;
+	ctx->name = NULL;
 	error_context_stack = &ctx->cb;
 }
 
@@ -95,13 +99,45 @@ sift_errctx_scope(Oid *relid, bool *diagnostic)
 }
 
 void
-sift_errctx_warm(void)
+sift_errctx_freeze(const void *owner)
 {
-	const char *what;
-
 	for (ErrorContextCallback *cb = error_context_stack; cb != NULL; cb = cb->previous)
-		if (cb->callback == errctx_callback || cb->callback == errctx_diagnostic_callback)
-			pfree(errctx_describe(((SiftErrCtx *) cb->arg)->relid, &what));
+	{
+		SiftErrCtx *ctx = cb->arg;
+
+		if ((cb->callback != errctx_callback && cb->callback != errctx_diagnostic_callback) || ctx->name != NULL)
+			continue;
+		ctx->name = errctx_describe(ctx->relid, &ctx->what);
+		ctx->owner = owner;
+	}
+}
+
+const char *
+sift_errctx_frozen_name(Oid relid)
+{
+	for (ErrorContextCallback *cb = error_context_stack; cb != NULL; cb = cb->previous)
+	{
+		SiftErrCtx *ctx = cb->arg;
+
+		if ((cb->callback == errctx_callback || cb->callback == errctx_diagnostic_callback) && ctx->name != NULL && ctx->relid == relid)
+			return ctx->name;
+	}
+	return NULL;
+}
+
+void
+sift_errctx_thaw(const void *owner)
+{
+	for (ErrorContextCallback *cb = error_context_stack; cb != NULL; cb = cb->previous)
+	{
+		SiftErrCtx *ctx = cb->arg;
+
+		if ((cb->callback != errctx_callback && cb->callback != errctx_diagnostic_callback) || ctx->owner != owner)
+			continue;
+		pfree(ctx->name);
+		ctx->name = NULL;
+		ctx->owner = NULL;
+	}
 }
 
 void

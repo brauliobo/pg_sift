@@ -15,6 +15,9 @@ typedef struct SiftErrCtx
 	Oid			relid;
 	uint64		segment;
 	bool		segmented;
+	const void *owner;			/* who froze the line below (sift_errctx_freeze); NULL: nobody */
+	const char *what;			/* the frozen line: "index" or "table", and the name */
+	char	   *name;
 } SiftErrCtx;
 
 /* Four stores: nothing is looked up until an error is reported. Pop before the relation can go away, in the order of the pushes */
@@ -41,8 +44,15 @@ sift_errctx_whole(SiftErrCtx *ctx)
 	ctx->segmented = false;
 }
 
-/* Makes the lookups that reporting an error from here costs, for every scope on the stack, so that a report raised where no lock may be taken (core/extlock.h) reads only the cache */
-extern void sift_errctx_warm(void);
+/*
+ * Resolves the line of every scope on the stack that is not frozen yet and keeps it there until sift_errctx_thaw(owner), so that a report raised where no lock may be taken
+ * (core/extlock.h) reads no catalog and no cache. A scope pushed after the freeze is not frozen
+ */
+extern void sift_errctx_freeze(const void *owner);
+extern void sift_errctx_thaw(const void *owner);
+
+/* "schema.name" of the relation of a frozen scope, NULL when no frozen scope is of it */
+extern const char *sift_errctx_frozen_name(Oid relid);
 
 /* "schema.name" of the relation, "OID n" when it is gone */
 extern char *sift_errctx_name(Oid relid);

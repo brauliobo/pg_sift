@@ -13,6 +13,7 @@
 #include "utils/timestamp.h"
 
 #include "col/dsmreg.h"
+#include "core/errctx.h"
 #include "core/sift.h"
 #include "core/store.h"
 #include "core/worker.h"
@@ -62,6 +63,10 @@ sift_job_name(int job)
 char *
 sift_worker_subject(Relation index)
 {
+	const char *frozen = sift_errctx_frozen_name(RelationGetRelid(index));
+
+	if (frozen != NULL)
+		return pstrdup(frozen);
 	return psprintf("%s.%s", get_namespace_name(RelationGetNamespace(index)), RelationGetRelationName(index));
 }
 
