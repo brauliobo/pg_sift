@@ -204,9 +204,7 @@ ask_orphans(TransactionId xid)
 {
 	if (!IsUnderPostmaster)
 		return;
-	if (!sift_worker_register("sift_col_track_orphans_main", sift_worker_subject_db(), TransactionIdGetDatum(xid)))
-		ereport(LOG, (errmsg("sift: no background worker is free to remove the track_changes triggers of a dropped index"),
-					  errdetail("They do nothing; the next statement of their table that fires one asks again.")));
+	(void) sift_worker_register("sift_col_track_orphans_main", sift_worker_subject_db(), TransactionIdGetDatum(xid));
 }
 
 /* A trigger whose index is gone fired: the worker may not have run (or given up on a busy table), once for every nap of the maintenance worker */
