@@ -271,7 +271,28 @@
 	  "ERROR 54000 naming max_multiplicity", "-", 1) \
 	X(rows_groups, "SIFT_ROWS_MAX_GROUPS", "agg/rows.h", SIFT_ROWS_MAX_GROUPS, "groups", \
 	  "groups the node that groups rows (SiftAggRows) holds: their count and the arrays of their keys and aggregates are 32 bits", \
-	  "normal plan (NOTICE), ERROR 54000 once rows were sent", "-", 1)
+	  "normal plan (NOTICE), ERROR 54000 once rows were sent", "-", 1) \
+	X(quarantine_entries, "QUAR_ENTRIES", "core/quarantine.c", 256, "index files", \
+	  "index files the registry of the server holds out of service (sift.quarantine); the metapage of an index holds it out as well once a worker has flagged it (persisted)", \
+	  "the entry of the oldest index that is persisted is taken, else the oldest: an index whose entry was taken without a flag is in service again until its damage is read again", "-", 1) \
+	X(shared_tables, "DIR_ENTRIES", "col/dsmreg.c", 1024, "tables", \
+	  "named shared tables (caches and registries in dynamic shared memory) of the libraries loaded in the server at one time; a table lasts as long as a backend maps it", \
+	  "the table is not made and the backend goes without that cache (sift.shared_memory() says why)", "-", 0) \
+	X(arena_slots, "ARENA_SLOTS", "col/wbuf/arena.c", 256, "write buffers", \
+	  "write buffers of sift_col indexes that keep the values of their rows in the shared arena at one time (the test hook is sift._test_arena_slots)", \
+	  "a row that finds no slot is written as a record that holds its values; the buffer written longest ago is sealed to give its slot back", "-", 0) \
+	X(progress_slots, "PROGRESS_SLOTS", "core/progress.c", 64, "jobs", \
+	  "maintenance jobs that report their progress at one time (sift.progress)", \
+	  "the job runs and is not listed", "-", 0) \
+	X(rollup_queue, "ROLLUP_QUEUE", "col/rollup.c", 64, "segments", \
+	  "segments waiting for the rollup refresh worker, for all databases (sift.col_rollup_queue)", \
+	  "the request is dropped and counted (sift.col_rollup_counters); the scan reads the units and a later scan asks again", "-", 0) \
+	X(rollup_workers, "ROLLUP_WORKERS", "col/rollup.c", 8, "databases", \
+	  "databases with a rollup refresh worker running", \
+	  "no worker is started for the database; its requests wait in the queue, and sift.col_rollup_refresh(index) refreshes them in a session", "-", 0) \
+	X(par_build_workers, "MAX_WORKERS", "col/build_par.c", 15, "workers", \
+	  "workers of a parallel CREATE INDEX of a sift_col index besides the leader (the directory is shared by the participants and leaves 7 segments to each of 16)", \
+	  "fewer workers are launched than max_parallel_maintenance_workers allows", "max_parallel_maintenance_workers", 0)
 
 typedef enum SiftLimitId
 {

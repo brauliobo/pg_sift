@@ -23,6 +23,7 @@
 #include "bm25/maint.h"
 #include "col/dsmreg.h"
 #include "core/errctx.h"
+#include "core/limits.h"
 #include "core/progress.h"
 #include "core/quarantine.h"
 #include "core/sift.h"
@@ -138,12 +139,20 @@ same_file(const QuarEntry *e, const QuarKey *key)
 	return e->used && e->file.rel == key->rel && e->file.db == key->db && e->file.spc == key->spc;
 }
 
-/* The entry of the file in the n entries of list, or the one to take: a free one, else the oldest. No allocation and no error: it runs under a spinlock and inside an error */
+/* The entries of the registry in use: the flag in the metapage of a persisted index holds it out of service when its entry is taken, an unpersisted one has only the entry */
+static int
+entries(void)
+{
+	return (int) sift_limit(quarantine_entries, QUAR_ENTRIES);
+}
+
+/* The entry of the file in the n entries of list, or the one to take: a free one, else the oldest persisted, else the oldest. No allocation and no error: it runs under a spinlock and inside an error */
 static QuarEntry *
 slot(QuarEntry *list, int n, const QuarKey *key)
 {
 	QuarEntry  *free = NULL,
-			   *oldest = &list[0];
+			   *oldest = &list[0],
+			   *oldest_persisted = NULL;
 
 	for (int i = 0; i < n; i++)
 	{
@@ -153,8 +162,10 @@ slot(QuarEntry *list, int n, const QuarKey *key)
 			free = &list[i];
 		if (list[i].used && list[i].detected_at < oldest->detected_at)
 			oldest = &list[i];
+		if (list[i].used && list[i].persisted && (oldest_persisted == NULL || list[i].detected_at < oldest_persisted->detected_at))
+			oldest_persisted = &list[i];
 	}
-	return free ? free : oldest;
+	return free ? free : oldest_persisted ? oldest_persisted : oldest;
 }
 
 static bool
@@ -212,7 +223,7 @@ publish(QuarShm *q)
 		{
 			QuarEntry	copy = local[i];
 
-			if (take(q->entry, QUAR_ENTRIES, &copy, recovery))
+			if (take(q->entry, entries(), &copy, recovery))
 				pg_atomic_write_u32(&q->any, 1);
 			local[i].detections = 0;
 			local[i].skipped_writes = local[i].skipped_vacuums = local[i].refused_scans = 0;
@@ -259,7 +270,7 @@ ask_due(const QuarKey *key)
 	if (q == NULL)
 		return true;
 	SpinLockAcquire(&q->mutex);
-	e = slot(q->entry, QUAR_ENTRIES, key);
+	e = slot(q->entry, entries(), key);
 	due = same_file(e, key) && e->confirmed && !e->persisted && !e->unflaggable && now - e->asked_at >= QUAR_ASK_RETRY_US;
 	if (due)
 		e->asked_at = now;
@@ -328,7 +339,7 @@ shared_persisted(const QuarKey *key)
 	if (q == NULL)
 		return false;
 	SpinLockAcquire(&q->mutex);
-	done = same_file(slot(q->entry, QUAR_ENTRIES, key), key) && slot(q->entry, QUAR_ENTRIES, key)->persisted;
+	done = same_file(slot(q->entry, entries(), key), key) && slot(q->entry, entries(), key)->persisted;
 	SpinLockRelease(&q->mutex);
 	return done;
 }
@@ -344,7 +355,7 @@ mark_persisted(Relation index)
 		return;
 	key_of(index, &key);
 	SpinLockAcquire(&q->mutex);
-	e = slot(q->entry, QUAR_ENTRIES, &key);
+	e = slot(q->entry, entries(), &key);
 	if (!same_file(e, &key))
 		*e = (QuarEntry) {.used = true,.confirmed = true,.file = key,.indexoid = RelationGetRelid(index),.detected_at = GetCurrentTimestamp()};
 	e->persisted = true;
@@ -367,7 +378,7 @@ mark_unflaggable(const QuarKey *key)
 	if (q == NULL)
 		return;
 	SpinLockAcquire(&q->mutex);
-	e = slot(q->entry, QUAR_ENTRIES, key);
+	e = slot(q->entry, entries(), key);
 	if (same_file(e, key))
 		e->unflaggable = true;
 	SpinLockRelease(&q->mutex);
@@ -532,7 +543,7 @@ overlay_has(Relation index)
 	if (q == NULL || pg_atomic_read_u32(&q->any) == 0)
 		return false;
 	SpinLockAcquire(&q->mutex);
-	e = slot(q->entry, QUAR_ENTRIES, &key);
+	e = slot(q->entry, entries(), &key);
 	found = same_file(e, &key) && e->confirmed;
 	SpinLockRelease(&q->mutex);
 	return found;
@@ -551,7 +562,7 @@ sift_quarantine_planned(Relation index)
 		return;
 	key_of(index, &key);
 	SpinLockAcquire(&q->mutex);
-	e = slot(q->entry, QUAR_ENTRIES, &key);
+	e = slot(q->entry, entries(), &key);
 	unflagged = same_file(e, &key) && e->confirmed && !e->persisted && !e->unflaggable;
 	SpinLockRelease(&q->mutex);
 	if (unflagged)
@@ -766,7 +777,7 @@ sift_quarantine_names(void)
 	if (q == NULL || pg_atomic_read_u32(&q->any) == 0 || !IsTransactionState())
 		return NULL;
 	SpinLockAcquire(&q->mutex);
-	for (int i = 0; i < QUAR_ENTRIES; i++)
+	for (int i = 0; i < entries(); i++)
 		if (q->entry[i].used && q->entry[i].confirmed && q->entry[i].file.db == MyDatabaseId)
 			ids[n++] = q->entry[i].indexoid;
 	SpinLockRelease(&q->mutex);
@@ -815,7 +826,7 @@ sift_quarantine_rows(PG_FUNCTION_ARGS)
 	if ((q = table()) != NULL)
 	{
 		SpinLockAcquire(&q->mutex);
-		for (int i = 0; i < QUAR_ENTRIES; i++)
+		for (int i = 0; i < entries(); i++)
 			if (q->entry[i].used && q->entry[i].file.db == MyDatabaseId)
 				copy[n++] = q->entry[i];
 		SpinLockRelease(&q->mutex);

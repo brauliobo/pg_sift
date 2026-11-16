@@ -61,3 +61,17 @@ SIFT_CONN_MAX_CONNECTIONS	connections one connect option names: a syntax bound o
 FOUND_MAX_KEYS	keys the journal of a parent may name for a join answered from the found flag (agg/found.c): past it the join loads the parent, the rows are the same
 FOUND_MAX_PROBES	keys deleted or changed in a parent that a join answered from the found flag probes in its btree (agg/found.c): past it the join loads the parent, the rows are the same
 CONN_TAGS_MAX_KEYS	the keys of a read past which its journal records are not filtered by their key tag (the tags of that many keys leave few records out): a cost bound, the rows are the same
+BLK_SLOTS	layout: the offsets of one scoring block, SIFT_BLK_PAGES pages of SIFT_KERN_SLOTS
+SIFT_KERN_SLOTS	layout: the offsets of one heap page in the offset mask (SIFT_OFFMASK_WORDS words of 64 bits)
+CUBE_SET_SLOTS	size of the probe table of one histogram dimension, a power of two over twice its groups (col/keycols/cube.c); the table is local to the call
+ROWS_SLOTS	size of the probe table that counts the distinct pairs of a stretch, a power of two over the cells a unit may keep; it stops counting at its limit
+PAGG_SLOTS	size of the probe table of the histogram sizing of the autocut (col/autocut/size.c); the table is local to the call
+DENSE_SLOTS	size of the hash over the classes of a dense lookup table, four times DENSE_MAX_CLASSES; past DENSE_MAX_CLASSES the table is hashed row by row
+F_SLOTS	a flag bit of a shared dictionary (the slots form), not a size
+KEYS_DENSE_SLOTS	slots a key needs in a bitmap before a sorted array is used instead: a speed threshold, the keys are the same
+MEMO_SLOTS	slots of the memo of the rows of a child scan that a query shares between its workers (agg/memo.c): an entry is stored only while the table is half full and the 32 MB arena has room, the others are computed again
+NDICT_SLOTS	dictionaries an aggregate scan keeps open at one time (agg/leaf.c): the least recently used one is replaced
+PEND_SLOTS	indexes whose rows a backend buffers for one commit (col/wbuf/pending.c): the rows of another index are written to its lane at once
+PROBE_AHEAD_SLOTS	slots above which the group probe prefetches (agg/group/gids.c): a speed threshold, the groups are the same
+SET_MEMO_SLOTS	entries of the memo of the ranges of one probe, replaced in turn (col/amscan/ranges.c)
+TOMB_SLOTS	indexes whose tombstones a statement holds back for the page-wise append (col/supersede.c): when none is free every held buffer goes to the log and the first is reused
