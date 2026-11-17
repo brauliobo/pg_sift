@@ -24,7 +24,7 @@
 # The suites are cut into jobs (a regression test, a TAP file, a differential test...) that a pool of lanes takes from one
 # queue, longest first: SIFT_LANES lanes (default: the cores, at most 8), each with its own cluster (started when its first
 # job needs one) and one shared install, at nice 19. A lane starts a job when the scratch estimated for the jobs running (EST_MB,
-# JOB_MB) plus its own fits CI_BUDGET_MB (quick 2000, full 2000; the first job always runs), so the run stays under 3 GB
+# JOB_MB) plus its own fits CI_BUDGET_MB (quick 1800, full 2000; the first job always runs), so the run stays under 3 GB
 # however many lanes there are. The scratch directory is $SIFT_CI_TMP (default $TMPDIR/sift-ci-<pid>, /tmp when unset and on macOS), removed
 # when everything passed or the run was interrupted (INT, TERM; KEEP=1 keeps it; a failure keeps it for the logs, a day); a job that passed leaves it at once. On exit, and at the start of
 # the next run (the directories of dead pids), every postmaster under the directory is stopped and the directory removed: no run leaves a cluster behind. The ports are

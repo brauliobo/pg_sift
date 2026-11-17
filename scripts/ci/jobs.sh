@@ -35,7 +35,7 @@ declare -A EST_MB=([tap-013_tbl_bigtx]=820 [tap-014_tbl_writepath]=1130 [install
 	[tap-006_tbl]=380 [tap-002_standby]=380 [tap-shell-maint_memory]=330 [installcheck-batch5]=260 [installcheck-index_build_postings]=230
 	[tap-shell-replication]=200 [tap-shell-store_concurrency]=200 [tap-shell-index_build_crash]=180
 	[tap-shell-store_crash]=170 [tap-001_crash]=150 [installcheck-index_build_thresholds]=140
-	[tap-shell-mem_slope]=1250 [tap-shell-mem_slope-1]=1100 [tap-shell-mem_slope-2]=1200 [tap-shell-mem_slope-3]=1150 [tap-shell-mem_slope_order]=950
+	[tap-shell-mem_slope]=1250 [tap-shell-mem_slope-2]=1200 [tap-shell-mem_slope-3]=1150 [tap-shell-mem_slope_order]=950
 	[release-library-regress-1]=870 [release-library-regress-2]=870 [installcheck-agg_group_spill_fuzz]=800 [installcheck-tbl_cap]=480 [installcheck-col_approx]=350
 	[difftest-fuzz]=1060 [difftest-fuzz-vstore]=970 [difftest-fuzz-having]=880 [plan-gate-tuned]=860 [plan-gate-calibrate]=850
 	[plan-gate-calibrate-tuned]=850 [plan-gate]=840 [plan-gate-table]=830 [plan-gate-table-tuned]=830 [difftest-fuzz-tbl]=760
@@ -55,7 +55,10 @@ declare -A EST_MB=([tap-013_tbl_bigtx]=820 [tap-014_tbl_writepath]=1130 [install
 	[installcheck-agg_scope_exact_share]=340 [installcheck-agg_derived_correlation]=310 [installcheck-col_topn_walk_price]=290
 	[installcheck-col_merge_memory]=280 [installcheck-agg_lookup_dense_far]=280 [installcheck-col_build_merge_ends]=280 [tap-shell-pg_upgrade_33]=260
 	[installcheck-agg_preagg_rollup]=260 [installcheck-col_build_peers]=260 [installcheck-col_topn_parallel]=260 [installcheck-agg_cost_speed]=250
-	[installcheck-col_auto_merge_partition]=250 [tap-shell-pg_upgrade_32]=240)
+	[installcheck-col_auto_merge_partition]=250 [tap-shell-pg_upgrade_32]=240
+	[tap-shell-mem_slope-1]=1220 [installcheck-agg_par_cost]=440 [tap-shell-col_shrink]=400 [installcheck-agg_lookup_gang]=370
+	[installcheck-agg_par_join_split]=360 [installcheck-agg_distinct_split]=360 [tap-shell-col_vstore_drops]=300 [tap-shell-col_dict_shared_shm]=270
+	[tap-shell-col_build_peers]=240)
 JOB_MB=100
 
 tap_perl() { local f; for f in "$@"; do job "tap-$f" tap 0 "$S/tap.sh" "t/$f.pl"; done; }

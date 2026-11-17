@@ -23,7 +23,7 @@ runs only the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-00
 `scripts/coldiff.sh` is the differential test of the aggregate pushdown: plain SQL aggregates with `sift.enable_agg` off and on, results compared,
 with fixtures, scenarios and a self-test (also part of `make check`, docs/AGG.md).
 The scratch directory (`$TMPDIR/sift-ci-PID`, `SIFT_CI_TMP` picks another) of a quick shard stays under 3 GB: a lane starts a job when the estimated scratch of the running ones plus its own fits
-`CI_BUDGET_MB` (2000; `EST_MB` in `scripts/ci/jobs.sh`), a job's data (and its WAL) goes when it passes, and a shard over `CI_MAX_MB` (3072) fails. A run ends by listing the jobs that used more than their
+`CI_BUDGET_MB` (1800; `EST_MB` in `scripts/ci/jobs.sh`), a job's data (and its WAL) goes when it passes, and a shard over `CI_MAX_MB` (3072) fails. A run ends by listing the jobs that used more than their
 estimate: give them the measured number. `SIFT_CI_STATS=1 make check` prints the peak by component (WAL, tables, temp files), lane and job, and the memory of the servers; run it when
 you add a heavy test. The clusters are small (1 MB WAL segments, 512 MB `max_wal_size`, 64 MB buffers); the
 crash, recovery and replication tests (`WAL_CONF` in `test/t/lib.bash`, `tap.sh` for the Perl ones) keep the default WAL segments and
