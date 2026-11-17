@@ -267,6 +267,7 @@ gone_xact(XactEvent event, void *arg)
 	if (!deleted && orphan_triggers(funcoid) == NIL)
 		return;
 	SIFT_TEST_GATE(sift_test_drop_gate, 9);
+	SIFT_TEST_MUTANT(2, return);
 	remove_orphans(funcoid);
 	CommandCounterIncrement();
 }
