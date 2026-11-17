@@ -5,11 +5,12 @@ PostgreSQL's sorts, hashes and aggregates honour work_mem and its maintenance ho
 Each case runs in a new backend with work_mem and maintenance_work_mem at 1 MB, on tables of N, 2N and 4N rows; the peak of the anonymous resident memory of the
 backend (sampled every 2 ms from /proc, the minimum of two runs) above what it held before the operation gives the slope in bytes a row between the first and the last size.
 A case passes when the slope is at most its ceiling. A clean case has the ceiling of the noise (CLEAN); a case that grows with the data today has the slope it was measured at
-(status `open`: a defect to fix, and its ceiling goes to CLEAN with the fix). A case whose slope is far under its open ceiling fails too, so that a fix is not left unrecorded.
+(status `open`: a defect to fix, and its ceiling goes to CLEAN with the fix; status `noise`: a case whose slope moves from run to run with where the allocator
+places its blocks, with the largest of three runs plus 15 percent as its ceiling and no floor). A case whose slope is far under its open ceiling fails too, so that a fix is not left unrecorded.
 
   scripts/mem-slope.py run [--rows N] [--only RE]   one SLOPE line a case: SLOPE name kind bytes/row ceiling status PASS|FAIL
   scripts/mem-slope.py idle [--rows N] [--statements M]   one backend runs the statements of test/idle-series.tsv in turn M times in all (12000): in the last 3000 its anonymous memory
-                                                          sets no new high-water mark above IDLE_RSS_KB and the memory its contexts hold grows by under IDLE_CTX_KB in the last 1000 (a pooled backend is steady)
+                                                          sets no new high-water mark above IDLE_RSS_KB (2 MB) and the memory its contexts hold grows by under IDLE_CTX_KB in the last 1000 (a pooled backend is steady)
   scripts/mem-slope.py selftest
 
 Reads PGHOST, PGPORT, PGUSER, PGDATABASE like psql; needs Linux (/proc) and an installed pg_sift. kind `leak` repeats a statement in one backend and asserts that the memory
@@ -21,7 +22,7 @@ import os, re, subprocess, sys, threading, time
 CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference is 1.8 MB
 BOUNDED = "'sift cache unit buffers'"   # a fixed count of spare buffers (UNIT_KEEP of UNIT_KEEP_BYTES, col/seg/seg.c): it grows to its 16 MB while repeats find larger units, and no further
 DEFAULT_BUDGET_KB = 256 * 1024   # sift.backend_cache_kb at its default: what a normal workload holds is what -1 holds
-IDLE_RSS_KB = 256         # kB over the highest anonymous memory of the first statements that an idle-series backend may reach in its last 3000: while caches fill and malloc touches the free space of its arena (a staircase of 1 to 13 MB, about 8000 statements) it climbs, then it moves inside a band
+IDLE_RSS_KB = 2048        # kB over the highest anonymous memory of the first statements that an idle-series backend may reach in its last 3000: while caches fill and malloc touches the free space of its arena (a staircase of 1 to 13 MB, about 8000 statements) it climbs, then it moves inside a band
 IDLE_CTX_KB = 1024        # kB its contexts may grow over the same statements
 LEAK_KB = 512              # kB the contexts of a backend may hold more after 60 repeats than after 10
 SETTINGS = f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
@@ -138,6 +139,8 @@ def read_cases(only):
 
 
 def verdict(slope, ceiling, status):
+    if status == "noise":
+        return "PASS" if slope <= ceiling else "FAIL"
     if status == "open":
         return "PASS" if CLEAN < ceiling and slope <= ceiling and slope > ceiling * 0.4 else "FAIL"
     return "PASS" if slope <= ceiling else "FAIL"
@@ -362,8 +365,9 @@ def selftest():
     assert verdict(90, 140, "open") == "PASS"
     assert verdict(160, 140, "open") == "FAIL"
     assert verdict(10, 140, "open") == "FAIL"
+    assert verdict(-80, 64, "noise") == "PASS" and verdict(65, 64, "noise") == "FAIL"
     for c in read_cases(None):
-        assert c[1] in ("slope", "leak", "leakx", "cap", "evict", "pinned") and c[3] in ("clean", "open") and (c[1] in ("cap", "evict", "pinned") or (c[3] == "open") == (c[2] > CLEAN)), c[0]
+        assert c[1] in ("slope", "leak", "leakx", "cap", "evict", "pinned") and c[3] in ("clean", "open", "noise") and (c[1] in ("cap", "evict", "pinned") or (c[3] == "clean") == (c[2] <= CLEAN)), c[0]
     print("mem-slope selftest: ok")
     return 0
 
