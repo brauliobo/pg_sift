@@ -7,6 +7,7 @@
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "commands/dbcommands.h"
+#include "lib/stringinfo.h"
 #include "port/atomics.h"
 #include "utils/backend_status.h"
 #include "utils/lsyscache.h"
@@ -116,45 +117,64 @@ for_index(SiftJob job)
 static void
 refused_init(SIFT_DSM_INIT_ARGS)
 {
-	pg_atomic_init_u64(ptr, 0);
+	for (int j = 0; j < SIFT_NJOBS; j++)
+		pg_atomic_init_u64(&((pg_atomic_uint64 *) ptr)[j], 0);
 }
 
-/* The time of the last line, kept in shared memory: the sessions that ask for a worker are short, and one line a minute is for the server */
-static bool
-refused_due(void)
+/*
+ * The time of the last LOG line of each job, kept in shared memory: the sessions that ask for a worker are short, and a job that is refused again and again (the request comes with
+ * every VACUUM, read or write that finds the work due) says so once an hour, and at DEBUG1 in between
+ */
+#define REFUSED_LOG_INTERVAL	(60 * USECS_PER_MINUTE)
+
+static int
+refused_level(SiftJob job)
 {
-	static pg_atomic_uint64 own;
+	static pg_atomic_uint64 own[SIFT_NJOBS];
 	static pg_atomic_uint64 *last;
 	uint64		seen;
 	uint64		now = GetCurrentTimestamp();
 
-	if (last == NULL && (last = sift_dsm_try("sift_refused_1", sizeof(*last), refused_init)) == NULL)
-		last = &own;
-	seen = pg_atomic_read_u64(last);
-	return now - seen >= USECS_PER_MINUTE && pg_atomic_compare_exchange_u64(last, &seen, now);
+	if (last == NULL && (last = sift_dsm_try("sift_refused_2", sizeof(own), refused_init)) == NULL)
+		last = own;
+	seen = pg_atomic_read_u64(&last[job]);
+	return now - seen >= REFUSED_LOG_INTERVAL && pg_atomic_compare_exchange_u64(&last[job], &seen, now) ? LOG : DEBUG1;
 }
 
-/* One line a minute, for every kind of worker: the server has no slot to give it */
-static void
-refused(SiftJob job, const char *subject, int ours, int reserve)
+/* What the slots of the server are held by, for the line that says there is none for a job */
+typedef struct SlotsHeld
 {
-	if (!refused_due())
+	int			all;
+	int			ours;
+	int			job[SIFT_NJOBS];
+} SlotsHeld;
+
+/* One line for every kind of worker: the server has no slot to give it */
+static void
+refused(SiftJob job, const char *subject, const SlotsHeld *held, int reserve)
+{
+	StringInfoData by;
+	int			level = refused_level(job);
+
+	if (!message_level_is_interesting(level))
 		return;
-	ereport(LOG,
+	initStringInfo(&by);
+	for (int j = SIFT_JOB_NONE + 1; j < SIFT_NJOBS; j++)
+		if (held->job[j] > 0)
+			appendStringInfo(&by, "%s%d %s", by.len > 0 ? ", " : "", held->job[j], job_names[j]);
+	ereport(level,
 			(for_index(job) ? errmsg("sift: no background worker for %s of index \"%s\"", job_names[job], subject)
 			 : errmsg("sift: no background worker for %s of %s", job_names[job], subject),
-			 errdetail("max_worker_processes is %d; sift workers hold %d of the slots, and sift leaves %d of them for parallel queries and other workers.",
-					   max_worker_processes, ours, reserve),
+			 errdetail("max_worker_processes is %d; %d slots are held, %d of them by sift workers (%s), and sift leaves %d of them for parallel queries and other workers.",
+					   max_worker_processes, held->all, held->ours, by.len > 0 ? by.data : "none", reserve),
 			 errhint("%s Raise max_worker_processes to run more at a time.", job_hints[job])));
 }
 
-/* The slots that background workers hold, and how many of them are sift's: a worker with a database connection has a row in the activity of the server */
-static int
-slots_held(int *ours)
+/* The slots that background workers hold, and how many of them are sift's, by job: a worker with a database connection has a row in the activity of the server */
+static void
+slots_held(SlotsHeld *held)
 {
-	int			all = 0;
-
-	*ours = 0;
+	*held = (SlotsHeld) {0};
 	pgstat_clear_backend_activity_snapshot();
 	for (int i = 1, max = pgstat_fetch_stat_numbackends(); i <= max; i++)
 	{
@@ -163,11 +183,14 @@ slots_held(int *ours)
 
 		if (s->st_backendType != B_BG_WORKER)
 			continue;
-		all++;
+		held->all++;
 		type = GetBackgroundWorkerTypeByPid(s->st_procpid);
-		*ours += type != NULL && strncmp(type, "sift ", 5) == 0;
+		if (type == NULL || strncmp(type, "sift ", 5) != 0)
+			continue;
+		held->ours++;
+		for (int j = SIFT_JOB_NONE + 1; j < SIFT_NJOBS; j++)
+			held->job[j] += strcmp(type + 5, job_names[j]) == 0;
 	}
-	return all;
 }
 
 bool
@@ -176,7 +199,7 @@ sift_worker_register(const char *function, const char *subject, Datum main_arg)
 	BackgroundWorker bw = {0};
 	BackgroundWorkerHandle *handle;
 	SiftJob		job = job_of(function);
-	int			ours;
+	SlotsHeld	held;
 	int			reserve = Max(2, max_worker_processes / 4);
 
 	bw.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION | SIFT_BGW_INTERRUPTIBLE;
@@ -188,10 +211,11 @@ sift_worker_register(const char *function, const char *subject, Datum main_arg)
 	snprintf(bw.bgw_type, BGW_MAXLEN, "sift %s", job_names[job]);
 	bw.bgw_main_arg = main_arg;
 	memcpy(bw.bgw_extra, &MyDatabaseId, sizeof(Oid));
+	slots_held(&held);
 	/* the last slots are for parallel queries and the workers of others: sift leaves reserve of them free */
-	if (max_worker_processes - slots_held(&ours) <= reserve || !RegisterDynamicBackgroundWorker(&bw, &handle))
+	if (max_worker_processes - held.all <= reserve || !RegisterDynamicBackgroundWorker(&bw, &handle))
 	{
-		refused(job, subject, ours, reserve);
+		refused(job, subject, &held, reserve);
 		return false;
 	}
 	return true;

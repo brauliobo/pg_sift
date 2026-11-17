@@ -17,6 +17,7 @@ static bool merge_recut;
 int			sift_test_col_rollup_panic_armed = 0;
 
 bool		sift_test_col_merge_panic = false;
+int			sift_test_col_merge_error = 0;
 
 int			sift_test_col_refresh_sleep_armed = 0;
 #endif
@@ -411,6 +412,9 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 #ifdef SIFT_TESTING
 	if (sift_test_col_rollup_panic_armed || sift_test_col_merge_panic)
 		elog(PANIC, "sift test: the merge stops before the new segment replaces the old ones");
+	if (sift_test_col_merge_error)
+		ereport(ERROR, (errcode(sift_test_col_merge_error == 2 ? ERRCODE_ADMIN_SHUTDOWN : ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						errmsg("sift test: the merge stops before the new segment replaces the old ones")));
 	if (sift_test_col_refresh_sleep_armed > 0)
 		pg_usleep(sift_test_col_refresh_sleep_armed * 1000L);
 #endif

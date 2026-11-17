@@ -795,7 +795,7 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 			if (r == SIFT_STEP_DONE)
 				sift_worker_ok(index, job, began);
 		}
-		if (last || r == SIFT_STEP_FAILED)
+		if (r == SIFT_STEP_FAILED)
 			sift_log_maint(index, "maintenance worker finished", start, -1, -1);
 		index_close(index, RowExclusiveLock);
 	}
@@ -812,16 +812,26 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 void
 sift_maint_worker_stay(Oid indexoid, TimestampTz start, SiftWorkerStep step)
 {
+	long		look = 100;
+	int			idle = 0;
+
 	for (;;)
 	{
 		long		left = sift_maintenance_naptime - TimestampDifferenceMilliseconds(start, GetCurrentTimestamp());
+		bool		last = left <= 0 || idle >= 1;
+		bool		worked = false;
 		SiftStepResult	r;
 
-		while ((r = step(indexoid, start, left <= 0)) == SIFT_STEP_DONE)
+		while ((r = step(indexoid, start, last)) == SIFT_STEP_DONE)
+		{
+			worked = true;
 			CHECK_FOR_INTERRUPTS();
-		if (r == SIFT_STEP_FAILED || left <= 0)
+		}
+		idle = worked ? 0 : idle + 1;
+		if (r == SIFT_STEP_FAILED || last)
 			break;
-		sift_worker_nap(Min(left, Min(Max(sift_maintenance_naptime / 20, 100), 1000)));
+		sift_worker_nap(Min(left, look));
+		look = Min(2 * look, 1000);
 	}
 }
 

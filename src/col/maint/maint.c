@@ -286,6 +286,43 @@ rebaseline_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
 	return rearmed;
 }
 
+/*
+ * The blocks a step that was killed or failed took and no segment lists (the sweep of VACUUM, which a table that is never vacuumed, or whose VACUUM is skipped for a lock, does not run)
+ * go back to the free list in a transaction of their own, so that the next write reuses them; the free end they leave is cut in the next one, when a snapshot does not hold it.
+ * The maintenance lock is taken only if free: a step in progress has blocks in no directory yet.
+ */
+static int64
+sweep_step(Oid indexoid, bool cut)
+{
+	Relation	index;
+	volatile int64 freed = 0;
+
+	StartTransactionCommand();
+	PushActiveSnapshot(GetTransactionSnapshot());
+	index = sift_try_open_index(indexoid, RowExclusiveLock);
+	if (index != NULL)
+	{
+		if (sift_col_is_index(index) && !RecoveryInProgress() && cut)
+			sift_mops_cut_free_end(&maint_col_ops, index);
+		else if (sift_col_is_index(index) && !RecoveryInProgress() && sift_maint_lock(index, false))
+		{
+			freed = sift_maint_orphan_sweep(index);
+			sift_maint_unlock(index);
+		}
+		index_close(index, RowExclusiveLock);
+	}
+	PopActiveSnapshot();
+	CommitTransactionCommand();
+	return freed;
+}
+
+static void
+reclaim_orphans(Oid indexoid)
+{
+	if (sweep_step(indexoid, false) > 0)
+		sweep_step(indexoid, true);
+}
+
 /* The re-baseline that a read of a log asked for (sift_col_track_ask) */
 void
 sift_col_track_worker_main(Datum main_arg)
@@ -327,6 +364,9 @@ seal_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
 	CommitTransactionCommand();
 }
 
+/* This worker promoted or merged: a worker that found nothing to do in its whole stay reads and writes nothing more, and says nothing */
+static bool col_worker_worked = false;
+
 /*
  * One promotion or merge in a transaction of its own (sift_maint_worker_stay). The lock is busy when a VACUUM or a SQL merge is at it, which merge to the end,
  * and when an inserter promotes, which leaves the merges to the worker: the next look finds it free.
@@ -354,13 +394,13 @@ col_worker_step(Oid indexoid, TimestampTz start, bool last)
 			if (sift_col_maint_promote(index, false) > 0 || (job = SIFT_JOB_MERGE, sift_col_maint_merge_step(index, false)))
 			{
 				r = SIFT_STEP_DONE;
+				col_worker_worked = true;
 				sift_worker_ok(index, job, began);
 			}
-			else if (last)
+			else if (last && col_worker_worked)
 			{
 				sift_mops_cut_free_end(&maint_col_ops, index);
 				sift_vstore_compact(index);
-				sift_log_maint(index, "column maintenance worker finished", start, -1, -1);
 			}
 		}
 		if (index != NULL)
@@ -374,6 +414,8 @@ col_worker_step(Oid indexoid, TimestampTz start, bool last)
 		r = SIFT_STEP_FAILED;
 	}
 	PG_END_TRY();
+	if (r == SIFT_STEP_FAILED)
+		reclaim_orphans(indexoid);
 	return r;
 }
 
@@ -477,10 +519,13 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	MemoryContext cx = CurrentMemoryContext;
 	const char *volatile name = psprintf("%u", indexoid);
 
+	volatile bool failed = false;
+
 	sift_maint_own_xacts = true;
 	/* sift.col_auto_merge_max_active, then a slot of sift.col_auto_merge_max_workers; a worker that has to wait ends and does not hold its connection: the next VACUUM, read or write asks again */
 	if (sift_maint_busy(sift_col_auto_merge_max_active) || !take_slot())
 		return;
+	reclaim_orphans(indexoid);
 	PG_TRY();
 	{
 		Relation	index;
@@ -513,8 +558,11 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	PG_CATCH();
 	{
 		sift_maint_worker_failed("sift_col", indexoid, name, cx);
+		failed = true;
 	}
 	PG_END_TRY();
+	if (failed)
+		reclaim_orphans(indexoid);
 }
 
 /* The choice of the options that a VACUUM left (maint_decide_wanted): made here, in a transaction that other sessions see, and the rewrite it calls for */

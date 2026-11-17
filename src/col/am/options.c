@@ -411,6 +411,9 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_merge_panic",
 							 "Testing: a column merge (promotion excepted) PANICs after it wrote the new segment, before it replaces the old ones.",
 							 NULL, &sift_test_col_merge_panic, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_merge_error",
+							"Testing: a column merge (promotion excepted) fails after it wrote the new segment, before it replaces the old ones: 1 = with an error, 2 = as a worker that the operator shut down.",
+							NULL, &sift_test_col_merge_error, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_gorder_seek",
 							 "Testing: every chunk of an order array is written seekable (a fence key every 32 entries), whatever its bytes.",
 							 NULL, &sift_test_col_gorder_seek, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
