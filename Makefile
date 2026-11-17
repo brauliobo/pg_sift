@@ -139,6 +139,7 @@ TESTING_REGRESS += col_build_merge_ends
 TESTING_REGRESS += col_build_par_choice
 TESTING_REGRESS += col_build_par_rows
 TESTING_REGRESS += col_build_paths
+TESTING_REGRESS += col_build_row_estimate
 TESTING_REGRESS += col_build_same_options
 TESTING_REGRESS += col_calendar_columns
 TESTING_REGRESS += col_census_sample

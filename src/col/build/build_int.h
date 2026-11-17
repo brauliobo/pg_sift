@@ -50,6 +50,9 @@ struct ColBuild
 	int			maxsegs;
 	bool		shared;			/* a participant of a parallel build */
 	uint64		total_rows;		/* the heap's estimate of the rows of the index */
+	BlockNumber heap_pages;		/* the pages of the heap when the build began */
+	int			nslots;			/* the participants that share the scan */
+	uint64		pages_seen;		/* the heap pages this participant has read rows from */
 	double		indexed;
 	double		reported;
 	/* a scope index (col/build/scope.c): the build of the entities feeds the rows of each batch, replicated by the scope keys of their member, to a build of its own for each scope */
