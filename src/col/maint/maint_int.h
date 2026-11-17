@@ -144,6 +144,7 @@ extern SiftColBatch *maint_window_rows(MergeWindow *w, uint32 sb);
 extern void maint_window_written(MergeWindow *w);
 extern void maint_window_discard(MergeWindow *w, SiftColBatch *b);
 extern Size maint_window_peak(const MergeWindow *w);
+extern MemoryContext maint_window_context(const MergeWindow *w);
 
 /* The rolling rewrite of a key-cut index in partitions (roll.c) */
 typedef enum RollPick

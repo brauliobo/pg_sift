@@ -208,6 +208,10 @@ CREATE FUNCTION sift._test_errctx_report(rel regclass, n int) RETURNS void
 -- Memory budgets (src/core/membudget.c, test/mem-budgets.tsv): the scopes this backend ran and the most memory each held at a checkpoint; reset clears the marks.
 CREATE FUNCTION sift._test_mem_highwater(reset bool DEFAULT false, OUT scope text, OUT peak int8, OUT budget int8, OUT begins int8, OUT checks int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_mem_highwater' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_mem_kinds(OUT scope text, OUT kind text, OUT instances int8, OUT bytes int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_mem_kinds_fn' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_mem_trace(OUT scope text, OUT seq int8, OUT kind text, OUT bytes int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_mem_trace_fn' LANGUAGE C STRICT;
 
 -- Read side (src/bm25/read_test.c): what this backend's reads allocated and did; reset clears the counters.
 CREATE FUNCTION sift._test_read_stats(reset bool DEFAULT false, OUT key text, OUT value int8) RETURNS SETOF record

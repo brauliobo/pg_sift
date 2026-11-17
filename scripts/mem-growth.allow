@@ -118,3 +118,5 @@ lifetime	table/store.c	rel->rd_amcache = MemoryContextAlloc(CacheMemoryContext, 
 loop	agg/lookcol.c	for (uint64 bits = rows[w]; bits != 0; bits &= bits - 1)	bounded: walks the set bits of a member bitmap into pairs under sift.agg_lookup_kb
 loop	bm25/cscan_exec.c	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))	bounded: the dimension set is capped at SIFT_SEMI_MAX_SET and the scan stops at it
 loop	bm25/liveness.c	for (; i < dm->nsb && used < rows; i++)	bounded: used < rows bounds the loop by the rows asked for
+lifetime	core/membudget.c	t = f->mark->trace = MemoryContextAllocZero(TopMemoryContext, sizeof(MemTrace));	bounded: one trace for each memory scope name (SIFT_MEM_NAMES, 256), 256 samples each, and only in a SIFT_TESTING build with sift.test_mem_trace on
+lifetime	core/membudget.c	mark->tree_kinds = MemoryContextAllocZero(TopMemoryContext, sizeof(MemKinds));	bounded: one census for each memory scope name (SIFT_MEM_NAMES, 256), SIFT_MEM_KINDS kinds each, and only in a SIFT_TESTING build with sift.test_mem_kinds on
