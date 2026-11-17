@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A pooled backend is steady (scripts/mem-slope-legacy.py idle, test/idle-series.tsv): one backend runs 25 kinds of statements (aggregates, lookup joins, count distinct, search, partitions,
-# writes, VACUUM, merges, verify, index builds) in turn, and over its last 1000 statements its anonymous memory and the memory of its contexts do not grow.
+# writes, VACUUM, merges, verify, index builds) in turn, and over its last 1000 statements the memory of its contexts (exact bytes) does not grow.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 

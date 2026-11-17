@@ -1,39 +1,29 @@
 #!/usr/bin/env python3
-"""The legacy memory gate (the slope gate of scripts/mem-slope.py measures the kinds `slope` and `leak`; this one keeps the kinds it does not measure yet: leakx, flat, flatcut, cap, evict, pinned, and the idle series). The memory slope gate: what an operation holds against the rows of its table, measured on one backend at 3 sizes (test/mem-slope-legacy.tsv).
+"""The legacy memory gate: the kinds the slope gate of scripts/mem-slope.py does not measure, each in exact bytes of memory contexts, never a resident-memory peak (test/mem-slope-legacy.tsv): leakx, cap, evict, pinned, and the idle series.
+The memory of a merge against the rows is proven in exact bytes by test/t/col_merge_exact_memory.sh.
 
-PostgreSQL's sorts, hashes and aggregates honour work_mem and its maintenance honours maintenance_work_mem, so the memory of a statement does not follow the table.
-Each case runs in a new backend with work_mem and maintenance_work_mem at 1 MB, on tables of N, 2N and 4N rows; the peak of the anonymous resident memory of the
-backend above what it held before the operation gives the slope in bytes a row between the first and the last size. The cases that measure a peak (`slope`, `flat`) take it as scripts/mem-slope.py does:
-the setup runs in a session of its own that disconnects, the measured backend is new and gives back what malloc holds before its baseline, so what a setup left in the heap of its backend (26 MB of free chunks after an UPDATE of 20% of 1,600,000 rows, or none) never decides the peak. A statement of the operation sets its own maintenance_work_mem.
-A case of kind `flat` (`flatcut`: the index cut by a key; `flat`: key_cut off, which also leaves out the sample of the heap that decides the key at every rewrite: a phase of its own, up to 400,000 rows) runs at 8, 16 and 32 times the rows (400,000, 800,000 and 1,600,000 by default) on a table of its own (one sift_col index, no search index), one run each, and
-passes when the memory between the two largest sizes grows at most the ceiling in bytes a row and (a clean row) by at most 10%: the memory of an operation that is bounded by maintenance_work_mem is flat once the rows pass its budget.
-A case passes when the slope is at most its ceiling. A clean case has the ceiling of the noise (CLEAN); a case that grows with the data today has the slope it was measured at
-(status `open`: a defect to fix, and its ceiling goes to CLEAN with the fix; status `noise`: a case whose slope moves from run to run with where the allocator
-places its blocks, with the largest of three runs plus 15 percent as its ceiling and no floor). A case whose slope is far under its open ceiling fails too, so that a fix is not left unrecorded.
+Each case runs in a new backend with work_mem and maintenance_work_mem at 1 MB, on tables of N, 2N and 4N rows (50,000 by default). A clean leakx case has the ceiling 0 and may not grow
+the memory of the contexts of its backend by more than LEAK_KB over its repeats; an open one (a defect to fix, and its row goes to clean with the fix) keeps the ceiling in kB it was measured at, and a case far under it fails too,
+so that a fix is not left unrecorded.
 
-  scripts/mem-slope-legacy.py run [--rows N] [--only RE]   one SLOPE line a case: SLOPE name kind bytes/row ceiling status PASS|FAIL
-  scripts/mem-slope-legacy.py idle [--rows N] [--statements M] [--mode sift|off|plain] [--db NAME]   one backend runs the statements of test/idle-series.tsv in turn M times in all (12000): in the last 3000 its anonymous memory
-                                                          sets no new high-water mark above IDLE_RSS_KB (2 MB) and the memory its contexts hold grows by under IDLE_CTX_KB in the last 1000 (a pooled backend is steady)
+  scripts/mem-slope-legacy.py run [--rows N] [--only RE]   one SLOPE line a case: SLOPE name kind result PASS|FAIL
+  scripts/mem-slope-legacy.py idle [--rows N] [--statements M] [--mode sift|off|plain] [--db NAME]   one backend runs the statements of test/idle-series.tsv in turn M times in all (12000): the memory its contexts hold
+                                                          grows by under IDLE_CTX_KB in the last 1000 (a pooled backend is steady)
   scripts/mem-slope-legacy.py selftest
 
-Reads PGHOST, PGPORT, PGUSER, PGDATABASE like psql; needs Linux (/proc) and an installed pg_sift. kind `leak` repeats a statement in one backend and asserts that the memory
-its contexts hold (pg_backend_memory_contexts) does not follow the number of statements. Kind `cap` runs its statements in one backend with sift.backend_cache_kb at
+Reads PGHOST, PGPORT, PGUSER, PGDATABASE like psql; needs Linux (/proc) and an installed pg_sift. Kind `cap` runs its statements in one backend with sift.backend_cache_kb at
 the ceiling (kB) and asserts that the caches hold at most that; the same statements with the budget off must hold more, or the case measures nothing.
 """
-import importlib.util, os, re, subprocess, sys
+import os, re, subprocess, sys
 
 CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference is 1.8 MB
 BOUNDED = "'sift cache unit buffers'"   # a fixed count of spare buffers (UNIT_KEEP of UNIT_KEEP_BYTES, col/seg/seg.c): it grows to its 16 MB while repeats find larger units, and no further
 DEFAULT_BUDGET_KB = 256 * 1024   # sift.backend_cache_kb at its default: what a normal workload holds is what -1 holds
-IDLE_RSS_KB = 2048        # kB over the highest anonymous memory of the first statements that an idle-series backend may reach in its last 3000: while caches fill and malloc touches the free space of its arena (a staircase of 1 to 13 MB, about 8000 statements) it climbs, then it moves inside a band
 IDLE_CTX_KB = 1024        # kB its contexts may grow over the same statements
-LEAK_KB = 512              # kB the contexts of a backend may hold more after 60 repeats than after 10
+LEAK_KB = 512              # kB the contexts of a backend may hold more after 25 repeats than after 10
 SETTINGS = f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope-legacy.tsv")
 os.environ["LC_ALL"] = "C"
-_gate = importlib.util.spec_from_file_location("mem_slope", os.path.join(os.path.dirname(os.path.abspath(__file__)), "mem-slope.py"))
-slope_gate = importlib.util.module_from_spec(_gate)
-_gate.loader.exec_module(slope_gate)
 
 
 def psql():
@@ -55,11 +45,6 @@ def anon_kb(pid):
     except FileNotFoundError:
         pass
     return 0
-
-
-def peak_mb(setup, op):
-    """the slope gate's measurement (setup in a session of its own, a new backend that gives back what malloc holds, op): the peak anonymous memory above that baseline, in MB"""
-    return slope_gate.measure_mb(setup, "", op)
 
 
 def build_tables(n):
@@ -95,40 +80,6 @@ vacuum analyze m{n};
 """)
 
 
-def flat_table(n):
-    script(f"""
-set client_min_messages=warning;
-drop table if exists g{n} cascade;
-create table g{n} as
-select g as id, g as k_hi, g % 5000 as k_mid, g % 10 as k_lo, (array['DE','FR','US','BR','JP','AR','CL','PE'])[1 + g % 8] as cat,
-       'name' || (g::bigint * 7919) % 1000000 as txt, ((g::bigint * 7919) % 29500)::numeric / 100 as amount, (g::bigint * 7919 % 29500)::float8 / 100 as fl,
-       timestamp '2025-01-01' + (g::bigint * 311 % 31536000) * interval '1 second' as ts from generate_series(1, {n}) g;
-alter table g{n} add primary key (id);
-create index g{n}_col on g{n} using sift_col (k_hi, k_mid, k_lo, cat, txt, amount, fl, ts);
-vacuum analyze g{n};
-""")
-
-
-def flat_copy(n, cut):
-    script(f"""
-set client_min_messages=warning; set max_parallel_maintenance_workers = 0;
-drop table if exists m{n} cascade;
-create table m{n} as select * from g{n};
-alter table m{n} add primary key (id);
-create index m{n}_col on m{n} using sift_col (k_hi, k_mid, k_lo, cat, txt, amount, fl, ts) with (key_cut = '{cut}');
-vacuum analyze m{n};
-""")
-
-
-def flat_case(sizes, setup, op, cut):
-    peaks = []
-    for n in sizes:
-        flat_copy(n, cut)
-        fmt = dict(m=f"m{n}", n=n)
-        peaks.append(peak_mb(setup.format(**fmt), op.format(**fmt)))
-    return (peaks[-1] - peaks[-2]) * 1048576.0 / (sizes[-1] - sizes[-2]), peaks
-
-
 def read_cases(only):
     cases = []
     for l in open(TSV, encoding="utf-8").read().split("\n"):
@@ -139,39 +90,6 @@ def read_cases(only):
         if only is None or re.search(only, name):
             cases.append((name, kind, ceiling, status, setup, op))
     return cases
-
-
-def verdict(slope, ceiling, status):
-    if status == "noise":
-        return "PASS" if slope <= ceiling else "FAIL"
-    if status == "open":
-        return "PASS" if CLEAN < ceiling and slope <= ceiling and slope > ceiling * 0.4 else "FAIL"
-    return "PASS" if slope <= ceiling else "FAIL"
-
-
-def slope_case(sizes, name, setup, op):
-    peaks = []
-    for n in sizes:
-        fmt = dict(f=f"f{n}", d=f"d{n}", m=f"m{n}", s=f"s{n}", n=n)
-        runs = []
-        for _ in range(2):
-            if "{m}" in setup + op or "{s}" in setup + op:
-                copy_table(n)
-            runs.append(peak_mb(setup.format(**fmt), op.format(**fmt)))
-        peaks.append(min(runs))
-    return (peaks[-1] - peaks[0]) * 1048576.0 / (sizes[-1] - sizes[0]), peaks
-
-
-def leak_case(n, name, op):
-    fmt = dict(f=f"f{n}", d=f"d{n}", n=n)
-    sql = op.format(**fmt).rstrip(";")
-    out = script(SETTINGS + f"""create temp table leakres(i int, kb bigint);
-do $$ declare i int; begin for i in 1..60 loop execute $q${sql}$q$; if i in (10, 60) then insert into leakres select i, sum(total_bytes)/1024 from pg_backend_memory_contexts; end if; end loop; end $$;
-select string_agg(i || ':' || kb, ' ' order by i) from leakres;""")
-    m = re.search(r"10:(\d+) 60:(\d+)", out)
-    if not m:
-        raise RuntimeError("leak: " + out.strip()[-200:])
-    return int(m.group(2)) - int(m.group(1))
 
 
 CACHE_HELD = """with c as (select path[cardinality(path)] as id from pg_backend_memory_contexts
@@ -263,25 +181,16 @@ def pinned_case(n, budget_kb):
 
 def run(rows, only):
     sizes = [rows, rows * 2, rows * 4]
-    flat = [rows * 8, rows * 16, rows * 32]
     cases = read_cases(only)
     if not os.path.exists("/proc/self/status"):
         print("SKIP needs /proc")
         return 0
-    if any(not c[1].startswith("flat") for c in cases):
-        for n in sizes:
-            build_tables(n)
-    if any(c[1].startswith("flat") for c in cases):
-        for n in flat:
-            flat_table(n)
+    for n in sizes:
+        build_tables(n)
     bad = 0
     for name, kind, ceiling, status, setup, op in cases:
         try:
-            if kind.startswith("flat"):
-                slope, peaks = flat_case(flat, setup, op, "k_mid" if kind == "flatcut" else "off")
-                ok = verdict(slope, ceiling, status) == "PASS" and (status != "clean" or peaks[-1] <= peaks[-2] * 1.1)
-                print(f"SLOPE {name} flat {slope:.0f} B/row between the two largest sizes (peaks {'/'.join(f'{p:.1f}' for p in peaks)} MB at {'/'.join(str(s) for s in flat)} rows), ceiling {ceiling} {'PASS' if ok else 'FAIL'}", flush=True)
-            elif kind == "pinned":
+            if kind == "pinned":
                 got, want = pinned_case(sizes[1], ceiling)
                 ok = got == want > 0
                 print(f"SLOPE {name} pinned a cursor kept its segments in the cache at a budget of {ceiling} kB while other statements filled it: {got} of {want} rows {'PASS' if ok else 'FAIL'}", flush=True)
@@ -298,15 +207,6 @@ def run(rows, only):
                 limit = ceiling if status == "open" else LEAK_KB
                 ok = grown <= limit and (status != "open" or grown > limit * 0.4)
                 print(f"SLOPE {name} leak {grown} kB over 15 repeats, at most {limit} kB [{status}] {'PASS' if ok else 'FAIL'}", flush=True)
-            elif kind == "leak":
-                grown = leak_case(sizes[1], name, op)
-                ok = grown <= LEAK_KB
-                print(f"SLOPE {name} leak {grown} kB over 50 repeats, at most {LEAK_KB} kB {'PASS' if ok else 'FAIL'}", flush=True)
-            else:
-                slope, peaks = slope_case(sizes, name, setup, op)
-                v = verdict(slope, ceiling, status)
-                ok = v == "PASS"
-                print(f"SLOPE {name} slope {slope:.0f} B/row (peaks {'/'.join(f'{p:.1f}' for p in peaks)} MB at {'/'.join(str(s) for s in sizes)} rows), ceiling {ceiling} [{status}] {v}", flush=True)
         except RuntimeError as e:
             ok = False
             print(f"SLOPE {name} {kind} ERROR {e}", flush=True)
@@ -392,27 +292,18 @@ def idle_series(rows, total, mode, db):
     print(f"GROWERS 1000 -> {total - 1000} statements: {grow(1000, total - 1000, 8)}", flush=True)
     p.stdin.write("\\q\n")
     p.wait()
-    band = lambda lo, hi: max(v[0] for i, v in series.items() if lo < i <= hi)
-    early, late = band(0, total - 3000), band(total - 3000, total)
-    rss, ctx = late - early, series[b][1] - series[a][1]
-    ok = rss < IDLE_RSS_KB and ctx < IDLE_CTX_KB and not errors
-    print(f"SLOPE idle_series idle {mode} {total} statements of {len(stmts)} kinds: RSS band maximum of the last 3000 is {rss:+d} kB over the earlier maximum (under {IDLE_RSS_KB}), contexts {ctx:+d} kB over the last 1000 "
-          f"(under {IDLE_CTX_KB}); growers {growers}; {len(errors)} errors {errors[:2]} {'PASS' if ok else 'FAIL'}", flush=True)
+    ctx = series[b][1] - series[a][1]
+    ok = ctx < IDLE_CTX_KB and not errors
+    print(f"SLOPE idle_series idle {mode} {total} statements of {len(stmts)} kinds: contexts {ctx:+d} kB over the last 1000 (under {IDLE_CTX_KB}); growers {growers}; "
+          f"{len(errors)} errors {errors[:2]} {'PASS' if ok else 'FAIL'}", flush=True)
     return 0 if ok else 1
 
 
 def selftest():
     assert os.path.exists(IDLE_TSV)
-    assert verdict(5, CLEAN, "clean") == "PASS"
-    assert verdict(CLEAN + 1, CLEAN, "clean") == "FAIL"
-    assert verdict(90, 140, "open") == "PASS"
-    assert verdict(160, 140, "open") == "FAIL"
-    assert verdict(10, 140, "open") == "FAIL"
-    assert verdict(-80, 64, "noise") == "PASS" and verdict(65, 64, "noise") == "FAIL"
     for c in read_cases(None):
-        assert c[1] in ("slope", "leak", "leakx", "flat", "flatcut", "cap", "evict", "pinned") and c[3] in ("clean", "open", "noise"), c[0]
-        assert not (c[1] == "slope" or c[1].startswith("flat")) or not re.search(r"(?i)(^|;)\s*set\s", c[4]), f"{c[0]}: a setting of the setup is gone when the measured backend connects: put it in the operation"
-        assert c[1] in ("cap", "evict", "pinned") or c[1].startswith("flat") or (c[3] == "clean") == (c[2] <= CLEAN), c[0]
+        assert c[1] in ("leakx", "cap", "evict", "pinned") and c[3] in ("clean", "open"), c[0]
+        assert c[1] in ("cap", "evict", "pinned") or (c[3] == "clean") == (c[2] <= CLEAN), c[0]
     print("mem-slope selftest: ok")
     return 0
 

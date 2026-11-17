@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# The legacy memory slope gate (scripts/mem-slope-legacy.py, test/mem-slope-legacy.tsv): the kinds the slope gate (mem_slope.sh) does not measure yet:
-# leakx, flat, flatcut, cap, evict and pinned, at 50,000, 100,000 and 200,000 rows with work_mem and
-# maintenance_work_mem at 1 MB. An operation holds the memory its setting gives, not memory that follows the table: a clean case stays within the noise of a row
-# (12 bytes), an open one (a defect recorded with the slope it was measured at) may not grow faster than its ceiling, and a statement repeated in one backend
-# does not make its contexts grow. One SLOPE line a case; a fix of an open case turns its row to clean in the same commit.
+# The legacy memory gate (scripts/mem-slope-legacy.py, test/mem-slope-legacy.tsv): the kinds the slope gate (mem_slope.sh) does not measure yet:
+# leakx, cap, evict and pinned, in exact bytes of memory contexts at 50,000 rows with work_mem and maintenance_work_mem at 1 MB: a statement repeated in one backend
+# does not make its contexts grow, and the caches hold what their budget says. One SLOPE line a case; a fix of an open case turns its row to clean in the same commit.
+# The memory of a merge against the rows is col_merge_exact_memory.sh.
 # The shared dictionary ring and the maintenance worker are off: a dictionary a merge finds in the ring is not memory of its backend, and whether it finds it depends on what the
 # sessions before it parsed; the worker promotes and merges the churn the setup made while the measured backend starts, so what the merge finds left to do depends on who is first.
 . "$(dirname "$0")/lib.bash"
