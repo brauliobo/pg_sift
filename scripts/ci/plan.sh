@@ -200,3 +200,4 @@ fi
 # SIFT_CI_JOBS names them, e.g. `SIFT_CI_JOBS=assert scripts/ci.sh quick`
 [[ ${SIFT_CI_JOBS:-} != *assert* ]] || job assert assert 0 "$S/assert.sh"
 [[ ${SIFT_CI_JOBS:-} != *valgrind* ]] || job valgrind valgrind 0 "$S/valgrind.sh"
+[[ ${SIFT_CI_JOBS:-} != *massif* ]] || job massif massif 0 "$S/valgrind.sh" --massif

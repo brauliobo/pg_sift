@@ -152,8 +152,8 @@ def table(head, rows):
 def markdown(rep, regress, top):
     m = ["# Memory analysis report", "", f"{rep['statements']} statements over the census threshold, {len(rep['tests'])} tests/databases,"
          f" {rep['valgrind']['errors']} valgrind findings, {len(rep['growth'])} growth sites.", ""]
-    by_top = sorted(rep["paths"].items(), key=lambda kv: -kv[1]["d_top"])[:top]
-    m += ["## Statements by retained growth (memory the backend keeps across statements: long-lived contexts, kB summed over the run)", "",
+    by_top = [kv for kv in sorted(rep["paths"].items(), key=lambda kv: -kv[1]["d_top"]) if kv[1]["sift"] > 0][:top]
+    m += ["## Statements by retained growth (memory the backend keeps across statements: long-lived contexts, kB summed over the run; statements that touched a sift context)", "",
           table(["#", "statement", "runs", "retained kB", "peak anon kB", "sift ctx kB", "largest sift contexts", "tests"],
                 [(i + 1, f"`{k}`", p["n"], p["d_top"], p["max_anon"], p["sift"], p["top_ctx"], p["tests"]) for i, (k, p) in enumerate(by_top)]), ""]
     by_peak = sorted(rep["paths"].items(), key=lambda kv: -max(kv[1]["max_anon"], kv[1]["max_hwm"]))[:top]
