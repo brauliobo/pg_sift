@@ -8,6 +8,8 @@ A case passes when the slope is at most its ceiling. A clean case has the ceilin
 (status `open`: a defect to fix, and its ceiling goes to CLEAN with the fix). A case whose slope is far under its open ceiling fails too, so that a fix is not left unrecorded.
 
   scripts/mem-slope.py run [--rows N] [--only RE]   one SLOPE line a case: SLOPE name kind bytes/row ceiling status PASS|FAIL
+  scripts/mem-slope.py idle [--rows N] [--statements M]   one backend runs the statements of test/idle-series.tsv in turn M times in all (12000): in the last 3000 its anonymous memory
+                                                          sets no new high-water mark above IDLE_RSS_KB and the memory its contexts hold grows by under IDLE_CTX_KB in the last 1000 (a pooled backend is steady)
   scripts/mem-slope.py selftest
 
 Reads PGHOST, PGPORT, PGUSER, PGDATABASE like psql; needs Linux (/proc) and an installed pg_sift. kind `leak` repeats a statement in one backend and asserts that the memory
@@ -18,6 +20,9 @@ import os, re, subprocess, sys, threading, time
 
 CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference is 1.8 MB
 BOUNDED = "'sift cache unit buffers'"   # a fixed count of spare buffers (UNIT_KEEP of UNIT_KEEP_BYTES, col/seg/seg.c): it grows to its 16 MB while repeats find larger units, and no further
+DEFAULT_BUDGET_KB = 256 * 1024   # sift.backend_cache_kb at its default: what a normal workload holds is what -1 holds
+IDLE_RSS_KB = 256         # kB over the highest anonymous memory of the first statements that an idle-series backend may reach in its last 3000: while caches fill and malloc touches the free space of its arena (a staircase of 1 to 13 MB, about 8000 statements) it climbs, then it moves inside a band
+IDLE_CTX_KB = 1024        # kB its contexts may grow over the same statements
 LEAK_KB = 512              # kB the contexts of a backend may hold more after 60 repeats than after 10
 SETTINGS = f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope.tsv")
@@ -233,6 +238,23 @@ def evict_case(n, a, b):
     return False, "no budget made the segment cache take room from the lookup cache"
 
 
+PIN_PRESSURE = ["select d.label, count(*) from {f} f join {d} d on d.id = f.k_hi group by 1 order by 2 desc, 1 limit 1;",
+                "select count(distinct txt) from {f};", "select count(*) from {f} where title @@> 'portable speaker';"]
+
+
+def pinned_case(n, budget_kb):
+    """a cursor on a search holds the segment bytes it reads; with the budget far under what the caches would hold, statements that fill them do not take those bytes: the cursor returns all its rows"""
+    fmt = dict(f=f"f{n}", d=f"d{n}")
+    cur = "select id from {f} where title @@> 'wireless charger' order by id;".format(**fmt)
+    count = script(SETTINGS + "select count(*) from {f} where title @@> 'wireless charger';".format(**fmt)).strip().splitlines()[-1]
+    out = script(SETTINGS + f"set sift.backend_cache_kb = {budget_kb};\nbegin;\ndeclare c cursor for {cur[:-1]};\n\\echo FIRST\nfetch 10 from c;\n\\echo PRESSURE\n"
+                 + "\n".join(q.format(**fmt) for q in PIN_PRESSURE) + "\n\\set tag P\n" + HELD_BY + "\n\\echo REST\nfetch all from c;\n\\echo END\ncommit;\n")
+    first, rest = out.split("FIRST\n", 1)[1].split("PRESSURE")[0], out.split("REST\n", 1)[1].split("END")[0]
+    nrows = sum(1 for r in (first + rest).splitlines() if r.strip().isdigit())
+    held = re.search(r"HELD P .*sift cache segments=(\d+)", out)
+    return nrows if held and int(held.group(1)) > 0 else -1, int(count)
+
+
 def run(rows, only):
     sizes = [rows, rows * 2, rows * 4]
     cases = read_cases(only)
@@ -244,14 +266,18 @@ def run(rows, only):
     bad = 0
     for name, kind, ceiling, status, setup, op in cases:
         try:
-            if kind == "evict":
+            if kind == "pinned":
+                got, want = pinned_case(sizes[1], ceiling)
+                ok = got == want > 0
+                print(f"SLOPE {name} pinned a cursor kept its segments in the cache at a budget of {ceiling} kB while other statements filled it: {got} of {want} rows {'PASS' if ok else 'FAIL'}", flush=True)
+            elif kind == "evict":
                 ok, what = evict_case(sizes[1], setup, op)
                 print(f"SLOPE {name} evict {what} {'PASS' if ok else 'FAIL'}", flush=True)
             elif kind == "cap":
                 script(setup.format(f=f"f{sizes[1]}", d=f"d{sizes[1]}", n=sizes[1]))
-                held, free = cache_held_kb(sizes[1], op, ceiling), cache_held_kb(sizes[1], op, -1)
-                ok = held <= ceiling < free
-                print(f"SLOPE {name} cap {held} kB held at a budget of {ceiling} kB, {free} kB without one {'PASS' if ok else 'FAIL'}", flush=True)
+                held, free, default = (cache_held_kb(sizes[1], op, b) for b in (ceiling, -1, DEFAULT_BUDGET_KB))
+                ok = held <= ceiling < free and default == free
+                print(f"SLOPE {name} cap {held} kB held at a budget of {ceiling} kB, {free} kB with -1 and {default} kB at the default {'PASS' if ok else 'FAIL'}", flush=True)
             elif kind == "leakx":
                 grown = leakx_case(sizes[0], name, setup, op)
                 limit = ceiling if status == "open" else LEAK_KB
@@ -273,14 +299,71 @@ def run(rows, only):
     return 1 if bad else 0
 
 
+IDLE_TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "idle-series.tsv")
+PTC = """drop table if exists ptc cascade; create table ptc (id int, k int, cat text, amount numeric) partition by range (id);
+select format('create table ptc_%s partition of ptc for values from (%s) to (%s)', g, g*2, (g+1)*2) from generate_series(0, 999) g \\gexec
+insert into ptc select g, g % 100, 'c' || g % 7, g % 1000 from generate_series(0, 1999) g;
+create index ptc_col on ptc using sift_col (k, cat, amount); vacuum analyze ptc;"""
+
+
+def idle_series(rows, total=12000):
+    """one backend, the statements of test/idle-series.tsv in turn: its anonymous memory and the memory of its contexts every 250 statements"""
+    n = rows * 2
+    build_tables(n)
+    copy_table(n)
+    script("set client_min_messages=warning;\n" + PTC)
+    fmt = dict(f=f"f{n}", d=f"d{n}", m=f"m{n}", p="ptc")
+    lines = [l.rstrip("\n").split("\t") for l in open(IDLE_TSV, encoding="utf-8") if l.strip() and not l.startswith("#")]
+    setup = [l[1].format(**fmt) for l in lines if l[0] == "setup"]
+    stmts = [l[1].format(**fmt) for l in lines if l[0] != "setup"]
+    p = psql()
+    errors = []
+
+    def q(sql):
+        p.stdin.write(sql.rstrip().rstrip(";") + ";\n\\echo DONE\n")
+        out = []
+        for l in iter(p.stdout.readline, ""):
+            if "DONE" in l:
+                break
+            out.append(l)
+        r = "".join(out)
+        if "ERROR" in r:
+            errors.append(sql[:60] + ": " + r.strip()[:100])
+        return r
+
+    pid = int(q("select pg_backend_pid()").strip().splitlines()[-1])
+    q("set client_min_messages=warning; set max_parallel_workers_per_gather=0; set work_mem='4MB'")
+    for st in setup:
+        q(st)
+    series = {}
+    for i in range(1, total + 1):
+        q(stmts[(i - 1) % len(stmts)])
+        if i % 250 == 0:
+            series[i] = (anon_kb(pid), int(float(q("select sum(total_bytes) / 1024 from pg_backend_memory_contexts").strip().splitlines()[-1])))
+            q(f"insert into idle_snap select {i}, name, sum(total_bytes) / 1024 from pg_backend_memory_contexts group by 2")
+            print(f"IDLE {i} statements: RssAnon {series[i][0]} kB, contexts {series[i][1]} kB", flush=True)
+    a, b = total - 1000, total
+    growers = q(f"select string_agg(n || ' ' || d, '; ') from (select coalesce(y.name, x.name) n, coalesce(y.kb, 0) - coalesce(x.kb, 0) d from (select * from idle_snap where i = {a}) x "
+                f"full join (select * from idle_snap where i = {b}) y on x.name = y.name where coalesce(y.kb, 0) <> coalesce(x.kb, 0) order by 2 desc limit 5) z").strip()
+    p.stdin.write("\\q\n")
+    p.wait()
+    early, late = max(v[0] for i, v in series.items() if i <= total - 3000), max(v[0] for i, v in series.items() if i > total - 3000)
+    rss, ctx = late - early, series[b][1] - series[a][1]
+    ok = rss < IDLE_RSS_KB and ctx < IDLE_CTX_KB and not errors
+    print(f"SLOPE idle_series idle {total} statements of {len(stmts)} kinds: the highest RssAnon of the last 3000 is {rss:+d} kB over the earlier highest (under {IDLE_RSS_KB}), contexts {ctx:+d} kB over the last 1000 (under {IDLE_CTX_KB}); growers {growers}; "
+          f"{len(errors)} errors {errors[:2]} {'PASS' if ok else 'FAIL'}", flush=True)
+    return 0 if ok else 1
+
+
 def selftest():
+    assert os.path.exists(IDLE_TSV)
     assert verdict(5, CLEAN, "clean") == "PASS"
     assert verdict(CLEAN + 1, CLEAN, "clean") == "FAIL"
     assert verdict(90, 140, "open") == "PASS"
     assert verdict(160, 140, "open") == "FAIL"
     assert verdict(10, 140, "open") == "FAIL"
     for c in read_cases(None):
-        assert c[1] in ("slope", "leak", "leakx", "cap", "evict") and c[3] in ("clean", "open") and (c[1] in ("cap", "evict") or (c[3] == "open") == (c[2] > CLEAN)), c[0]
+        assert c[1] in ("slope", "leak", "leakx", "cap", "evict", "pinned") and c[3] in ("clean", "open") and (c[1] in ("cap", "evict", "pinned") or (c[3] == "open") == (c[2] > CLEAN)), c[0]
     print("mem-slope selftest: ok")
     return 0
 
@@ -290,4 +373,6 @@ if __name__ == "__main__":
         sys.exit(selftest())
     rows = int(sys.argv[sys.argv.index("--rows") + 1]) if "--rows" in sys.argv else 50000
     only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else None
+    if sys.argv[1:2] == ["idle"]:
+        sys.exit(idle_series(rows, int(sys.argv[sys.argv.index("--statements") + 1]) if "--statements" in sys.argv else 12000))
     sys.exit(run(rows, only))

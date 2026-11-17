@@ -78,3 +78,4 @@ script:test-ci-ready.sh	-	-	a helper of the entry points above, no run of its ow
 script:test-perf-select.py	-	-	a helper of the entry points above, no run of its own
 regress:shard	1800	2000	one of 4 shards of the 1,265 regression tests (every fourth name) on a cluster of its own; serial: 2,459 s release / 5,556 s cassert, so a shard is ~620 s / ~1,400 s
 tap:mem_slope	1500	1500	65 cases at 50,000 to 200,000 rows (work_mem 1 MB): 729 s measured, one cluster at shared_buffers 64 MB
+tap:mem_idle_series	1200	1500	12000 statements of 25 kinds in one backend at 100,000-row tables: 481 s measured, one cluster at shared_buffers 64 MB

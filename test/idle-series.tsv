@@ -1,0 +1,33 @@
+# KIND	STATEMENT -- scripts/mem-slope.py idle_series: setup rows run once, then the statement rows in turn, one backend, work_mem 4 MB. {f} {d} {m} the tables of the gate at the middle size, {p} a partitioned table of 1,000 partitions.
+setup	create temp table idle_snap(i int, name text, kb bigint)
+setup	drop table if exists im cascade
+setup	create table im as select * from {m} limit 20000
+setup	alter table im add primary key (id)
+setup	create index im_col on im using sift_col (k_hi, k_mid, k_lo, cat, txt, amount, fl, ts)
+setup	create index im_bm on im using sift (title)
+setup	vacuum analyze im
+agg_two_keys	select k_mid, cat, count(*), avg(amount) from {f} group by 1,2 limit 3
+lookup_join	select d.label, count(*) from {f} f join {d} d on d.id=f.k_hi group by 1 order by 2 desc limit 3
+count_distinct_text	select count(distinct txt) from {f}
+count_distinct_grouped	select k_lo, count(distinct txt) from {f} group by 1
+search_top	select id from {f} where title @@> 'wireless charger' order by sift.score(ctid) desc, id limit 10
+search_prefix	select count(*) from {f} where title @@> 'wire*'
+top_n	select k_hi, amount from {f} order by amount desc, k_hi limit 1000
+text_like	select count(*) from {f} where txt like '%99%'
+percentile	select percentile_cont(0.5) within group (order by amount) from {f}
+partition_group	select k, count(*) from {p} group by 1 limit 2
+update	update im set amount = amount + 1 where k_lo < 2
+insert	insert into im select g+(select coalesce(max(id),9000000) from im where id>=9000000), g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless w'||g from generate_series(1,200) g
+vacuum	vacuum im
+col_merge	select sift.col_merge('im_col'::regclass, true)
+bm_merge	select sift.merge('im_bm'::regclass, true)
+col_verify	select sift.col_verify('im_col'::regclass, false)
+bm_verify	select sift.verify('im_bm'::regclass, false)
+index_create	create index im_tmp on im using sift_col (k_lo, cat)
+index_drop	drop index im_tmp
+check	select count(*) from sift.check('im_col'::regclass, false)
+index_rollback	begin; create index im_t2 on im using sift_col (k_lo, txt); rollback
+partition_two_keys	select count(*) from (select k, cat, sum(amount) from {p} group by 1,2) x
+lookup_class	select * from (select d.cls, count(*) from {f} f join {d} d on d.id=f.k_hi group by 1) x
+filtered_sum	select sum(amount) from {f} where k_lo between 2 and 4 and cat = 'DE'
+search_two_terms	select count(*) from {f} where title @@> 'portable speaker'
