@@ -20,6 +20,7 @@
 #include "col/am.h"
 #include "col/seg.h"
 #include "col/vstore/vstore.h"
+#include "core/inspect.h"
 #include "core/page.h"
 #include "core/store.h"
 #include "core/membudget.h"
@@ -216,7 +217,7 @@ Datum
 sift_col_value_store_usage(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Oid			store = PG_GETARG_OID(0);
+	Oid			store = sift_rel_must_exist(PG_GETARG_OID(0));
 	Oid			heap;
 	Relation	rel;
 	uint64		epoch,

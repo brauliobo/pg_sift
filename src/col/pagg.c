@@ -674,6 +674,8 @@ sift_col_unit_aggs_sql(PG_FUNCTION_ARGS)
 	int			leaf;
 	SiftColUnit unit;
 
+	SIFT_ARG_REQUIRED(0, "sift.col_unit_agg", "index");
+	SIFT_ARG_REQUIRED(1, "sift.col_unit_agg", "leaf");
 	InitMaterializedSRF(fcinfo, 0);
 	pagg_open(&ps, PG_GETARG_OID(0));
 	leaf = find_leaf(ps.index, text_to_cstring(PG_GETARG_TEXT_PP(1)), false);

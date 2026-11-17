@@ -57,7 +57,11 @@ SELECT call, sna_state(call) FROM (VALUES
 	('SELECT sift._require_owner((SELECT gone FROM sna_oids)::regclass)'),
 	('SELECT count(*) FROM sift.col_unit_hist(''sna_idx''::regclass, NULL, ''id'')'),
 	('SELECT count(*) FROM sift.col_unit_hist(NULL, ''id'')'),
-	('SELECT count(*) FROM sift.col_unit_hist(''sna_idx''::regclass, ''g'', NULL)')
+	('SELECT count(*) FROM sift.col_unit_hist(''sna_idx''::regclass, ''g'', NULL)'),
+	('SELECT count(*) FROM sift.col_unit_agg(''sna_idx''::regclass, NULL)'),
+	('SELECT count(*) FROM sift.col_unit_agg(NULL, ''g'')'),
+	('SELECT count(*) FROM sift.col_value_store_usage((SELECT gone FROM sna_oids)::regclass)'),
+	('SELECT count(*) FROM sift.col_value_store_usage(0::oid::regclass)')
 ) v(call) ORDER BY call;
 
 DROP FUNCTION sna_state(text);
