@@ -37,7 +37,9 @@ INSERT INTO plan (kind, mwm_kb, nrows, per_member, scoped, how)
 				 ('concurrently plain', 0, false, 'concurrently'), ('concurrently scope 3', 3, true, 'concurrently')) k(kind, per_member, scoped, how),
 		 (VALUES (50000), (100000), (200000)) r(n)
 	UNION ALL
-	SELECT 'concurrently scope 3', 65536, r.n, 3, true, 'concurrently' FROM (VALUES (50000), (100000), (200000), (400000)) r(n)
+	SELECT 'concurrently scope 3', 65536, r.n, 3, true, 'concurrently' FROM (VALUES (100000), (200000), (400000), (800000)) r(n)
+	UNION ALL
+	SELECT 'concurrently scope 3', 4096, 400000, 3, true, 'concurrently'
 	ORDER BY 4, 2, 1;
 CREATE FUNCTION steps(p plan) RETURNS SETOF text LANGUAGE sql AS
 $$ SELECT format('SET maintenance_work_mem = %s', p.mwm_kb)
@@ -66,16 +68,6 @@ CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, cre
 INSERT INTO peaks VALUES ('concurrently plain', 4096, 50000, current_setting('sift.test_col_build_peak_kb')::int)
 SET maintenance_work_mem = 4096
 SET sift.test_col_segment_kb = 2048
-SELECT lab(100000, 0)
- lab 
------
- 
-(1 row)
-
-CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num, d2, region, status, name, amt, flag, doc) WITH (paths = 'doc->a text, doc->b int, doc->c text')
-INSERT INTO peaks VALUES ('concurrently plain', 4096, 100000, current_setting('sift.test_col_build_peak_kb')::int)
-SET maintenance_work_mem = 4096
-SET sift.test_col_segment_kb = 2048
 SELECT lab(200000, 0)
  lab 
 -----
@@ -84,6 +76,16 @@ SELECT lab(200000, 0)
 
 CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num, d2, region, status, name, amt, flag, doc) WITH (paths = 'doc->a text, doc->b int, doc->c text')
 INSERT INTO peaks VALUES ('concurrently plain', 4096, 200000, current_setting('sift.test_col_build_peak_kb')::int)
+SET maintenance_work_mem = 4096
+SET sift.test_col_segment_kb = 2048
+SELECT lab(100000, 0)
+ lab 
+-----
+ 
+(1 row)
+
+CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num, d2, region, status, name, amt, flag, doc) WITH (paths = 'doc->a text, doc->b int, doc->c text')
+INSERT INTO peaks VALUES ('concurrently plain', 4096, 100000, current_setting('sift.test_col_build_peak_kb')::int)
 SET maintenance_work_mem = 4096
 SET sift.test_col_segment_kb = 2048
 SELECT lab(50000, 0)
@@ -146,14 +148,24 @@ CREATE INDEX  events_col ON events USING sift_col (id, dim_a_id, created_at, kin
 INSERT INTO peaks VALUES ('scope 1 entry', 4096, 200000, current_setting('sift.test_col_build_peak_kb')::int)
 SET maintenance_work_mem = 4096
 SET sift.test_col_segment_kb = 2048
-SELECT lab(200000, 3)
+SELECT lab(400000, 3)
  lab 
 -----
  
 (1 row)
 
 CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num, d2, region, status, name, amt, flag, doc) WITH (paths = 'doc->a text, doc->b int, doc->c text', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')
-INSERT INTO peaks VALUES ('concurrently scope 3', 4096, 200000, current_setting('sift.test_col_build_peak_kb')::int)
+INSERT INTO peaks VALUES ('concurrently scope 3', 4096, 400000, current_setting('sift.test_col_build_peak_kb')::int)
+SET maintenance_work_mem = 4096
+SET sift.test_col_segment_kb = 2048
+SELECT lab(50000, 3)
+ lab 
+-----
+ 
+(1 row)
+
+CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num, d2, region, status, name, amt, flag, doc) WITH (paths = 'doc->a text, doc->b int, doc->c text', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')
+INSERT INTO peaks VALUES ('concurrently scope 3', 4096, 50000, current_setting('sift.test_col_build_peak_kb')::int)
 SET maintenance_work_mem = 4096
 SET sift.test_col_segment_kb = 2048
 SELECT lab(100000, 3)
@@ -166,14 +178,14 @@ CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, cre
 INSERT INTO peaks VALUES ('concurrently scope 3', 4096, 100000, current_setting('sift.test_col_build_peak_kb')::int)
 SET maintenance_work_mem = 4096
 SET sift.test_col_segment_kb = 2048
-SELECT lab(50000, 3)
+SELECT lab(200000, 3)
  lab 
 -----
  
 (1 row)
 
 CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num, d2, region, status, name, amt, flag, doc) WITH (paths = 'doc->a text, doc->b int, doc->c text', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')
-INSERT INTO peaks VALUES ('concurrently scope 3', 4096, 50000, current_setting('sift.test_col_build_peak_kb')::int)
+INSERT INTO peaks VALUES ('concurrently scope 3', 4096, 200000, current_setting('sift.test_col_build_peak_kb')::int)
 SET maintenance_work_mem = 4096
 SET sift.test_col_segment_kb = 2048
 SELECT lab(200000, 3)
@@ -239,14 +251,14 @@ CREATE INDEX  events_col ON events USING sift_col (id, dim_a_id, created_at, kin
 INSERT INTO peaks VALUES ('scope 3 entries', 4096, 50000, current_setting('sift.test_col_build_peak_kb')::int)
 SET maintenance_work_mem = 65536
 RESET sift.test_col_segment_kb
-SELECT lab(50000, 3)
+SELECT lab(200000, 3)
  lab 
 -----
  
 (1 row)
 
 CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num, d2, region, status, name, amt, flag, doc) WITH (paths = 'doc->a text, doc->b int, doc->c text', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')
-INSERT INTO peaks VALUES ('concurrently scope 3', 65536, 50000, current_setting('sift.test_col_build_peak_kb')::int)
+INSERT INTO peaks VALUES ('concurrently scope 3', 65536, 200000, current_setting('sift.test_col_build_peak_kb')::int)
 SET maintenance_work_mem = 65536
 RESET sift.test_col_segment_kb
 SELECT lab(100000, 3)
@@ -259,14 +271,14 @@ CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, cre
 INSERT INTO peaks VALUES ('concurrently scope 3', 65536, 100000, current_setting('sift.test_col_build_peak_kb')::int)
 SET maintenance_work_mem = 65536
 RESET sift.test_col_segment_kb
-SELECT lab(200000, 3)
+SELECT lab(800000, 3)
  lab 
 -----
  
 (1 row)
 
 CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num, d2, region, status, name, amt, flag, doc) WITH (paths = 'doc->a text, doc->b int, doc->c text', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')
-INSERT INTO peaks VALUES ('concurrently scope 3', 65536, 200000, current_setting('sift.test_col_build_peak_kb')::int)
+INSERT INTO peaks VALUES ('concurrently scope 3', 65536, 800000, current_setting('sift.test_col_build_peak_kb')::int)
 SET maintenance_work_mem = 65536
 RESET sift.test_col_segment_kb
 SELECT lab(400000, 3)

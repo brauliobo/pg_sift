@@ -40,7 +40,9 @@ INSERT INTO plan (kind, mwm_kb, nrows, per_member, scoped, how)
 				 ('concurrently plain', 0, false, 'concurrently'), ('concurrently scope 3', 3, true, 'concurrently')) k(kind, per_member, scoped, how),
 		 (VALUES (50000), (100000), (200000)) r(n)
 	UNION ALL
-	SELECT 'concurrently scope 3', 65536, r.n, 3, true, 'concurrently' FROM (VALUES (50000), (100000), (200000), (400000)) r(n)
+	SELECT 'concurrently scope 3', 65536, r.n, 3, true, 'concurrently' FROM (VALUES (100000), (200000), (400000), (800000)) r(n)
+	UNION ALL
+	SELECT 'concurrently scope 3', 4096, 400000, 3, true, 'concurrently'
 	ORDER BY 4, 2, 1;
 
 CREATE FUNCTION steps(p plan) RETURNS SETOF text LANGUAGE sql AS
