@@ -450,8 +450,7 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 		sift_cbatch_reset(out, num);
 		seq++;
 		out->keyed = true;
-		for (uint64 i = 0; i < end; i++)
-			sift_cbatch_add_from(out, u[i].b, u[i].r);
+		sift_cbatch_add_scoped_rows(out, (const SiftColRowRef *) u, sizeof(RowRef), (uint32) end, -1, 0, NULL);
 		if (w == NULL)
 			w = cutfn(cutarg, NULL);
 		sift_colw_add(w, out);
@@ -557,6 +556,7 @@ typedef struct MergeSrc
 	MemoryContext scratch;
 	uint64		budget;
 	SiftColSorter *sorter;		/* the rows of the inputs that are not streams, when they do not fit the budget loaded whole: a sort that spills (order_sort.c) */
+	bool		presorted;		/* the sort was given and is over: the merge only reads it */
 	MemoryContext cx;
 	MergeIn   **heap;			/* the inputs with rows left, the one whose next row comes first at 0 */
 	int			nheap;
@@ -890,7 +890,7 @@ merge_next(void *state, RowRef *r)
 	if (m->heap == NULL)
 	{
 		m->heap = MemoryContextAlloc(m->cx, m->n * sizeof(MergeIn *));
-		if (m->sorter)
+		if (m->sorter && !m->presorted)
 			sort_fill(m);
 		for (int i = 0; i < m->n; i++)
 		{
@@ -944,7 +944,7 @@ merge_done(void *state, const RowRef *refs, uint64 n)
  */
 int
 sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
-				 const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg, int slice, int nslices, uint32 unit_base, const bool *stream, const SiftColWindow *win)
+				 const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg, int slice, int nslices, uint32 unit_base, const bool *stream, const SiftColWindow *win, SiftColSorter *sorted)
 {
 	OrderCtx	ctx = {schema, leaf, nleaf};
 	MergeSrc	m = {.in = palloc0_array(MergeIn, n + 1), .n = n, .ctx = &ctx, .freeze = freeze, .freeze_arg = freeze_arg, .cx = cx,
@@ -987,9 +987,10 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 	for (int i = 0; i < n; i++)
 		if (!stream[i])
 			loose += sift_cseg_live_rows(seg[i]);
-	if (loose * sift_colk_row_bytes(schema) > m.budget)
+	if (sorted != NULL || loose * sift_colk_row_bytes(schema) > m.budget)
 	{
-		m.sorter = sift_colsort_begin(schema, leaf, nleaf, (int) Min(memory_kb / 2, (uint64) INT_MAX));
+		m.sorter = sorted != NULL ? sorted : sift_colsort_begin(schema, leaf, nleaf, (int) Min(memory_kb / 2, (uint64) INT_MAX));
+		m.presorted = sorted != NULL;
 		m.in[m.n++] = (MergeIn) {.sorted = true, .chunk = -1};
 	}
 	units = cut_rows(w, NULL, 0, merge_next, merge_done, &m, schema, &ctx, unit_rows, cx, cutfn, cutarg, unit_base);

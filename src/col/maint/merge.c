@@ -336,7 +336,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 							slice ? slice->i : 0, slice ? slice->nslices : 1,
 							/* the units of the slices are numbered one after the other, by the rows that come before: the directory counts the units a segment spans */
 							slice && slice->win ? slice->win->unit_base : slice && key_cut ? live_rows * slice->i / slice->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0, stream,
-							slice ? slice->win : NULL);
+							slice ? slice->win : NULL, NULL);
 		}
 		for (int i = 0; i < n; i++)
 			cur[i] = seg[i]->nsb;
@@ -635,7 +635,7 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 		return SIFT_STEP_DONE;
 	}
 	/* the entities have nothing more to do: the scope segments (a stale set is made again first) */
-	if (goal == SIFT_GOAL_REWRITE && maint_scope_refill_due(index) && maint_scope_refill(index))
+	if (goal == SIFT_GOAL_REWRITE && maint_scope_refill_due(index) && maint_scope_refill(index, false))
 		return SIFT_STEP_DONE;
 	return maint_scope_merge_step(index, force || maint_after_build) ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 }

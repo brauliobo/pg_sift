@@ -75,8 +75,9 @@ sift_colsort_begin(const SiftColSchema *schema, const int *leaf, int nleaf, int 
 	return s;
 }
 
-void
-sift_colsort_put(SiftColSorter *s, const SiftColBatch *b, uint32 r)
+/* Row r of b, or its copy for a scope key (scope_leaf >= 0: that leaf holds key in the copy, an integer leaf; kept: the leaves that are NULL in it when not set, as sift_cbatch_add_scoped) */
+static void
+put_row(SiftColSorter *s, const SiftColBatch *b, uint32 r, int scope_leaf, int64 key, const bool *kept)
 {
 	const SiftColSchema *sc = s->schema;
 	uint32		ver[2] = {b->hasver ? b->xmin[r] : 0, b->hasver ? b->cmin[r] : 0};
@@ -84,14 +85,32 @@ sift_colsort_put(SiftColSorter *s, const SiftColBatch *b, uint32 r)
 	ExecClearTuple(s->put);
 	for (int i = 0; i < s->nleaf; i++)
 	{
-		const SiftCVals *v = &b->col[s->leaf[i]];
+		int			leaf = s->leaf[i];
+		const SiftCVals *v = &b->col[leaf];
 
-		s->put->tts_isnull[i] = v->nulls != NULL && sift_col_bit_test(v->nulls, r);
-		s->put->tts_values[i] = Int64GetDatum(s->put->tts_isnull[i] ? 0 : sift_crun_key(&sc->cols[s->leaf[i]], v->key[r]));
+		s->put->tts_isnull[i] = leaf == scope_leaf ? false : (kept != NULL && !kept[leaf]) || (v->nulls != NULL && sift_col_bit_test(v->nulls, r));
+		s->put->tts_values[i] = Int64GetDatum(s->put->tts_isnull[i] ? 0 : sift_crun_key(&sc->cols[leaf], leaf == scope_leaf ? key : v->key[r]));
 	}
 	s->put->tts_isnull[s->nleaf] = false;
 	s->put->tts_values[s->nleaf] = Int64GetDatum((int64) b->keys[r]);
 	sift_cbatch_row(b, r, &s->row);
+	for (int id = 0; scope_leaf >= 0 && id < sc->ncols; id++)
+	{
+		if (sc->cols[id].parent >= 0)
+			continue;
+		if (id == scope_leaf)
+		{
+			memset(&s->row.val[id], 0, sizeof(SiftColValue));
+			s->row.val[id].tag = SIFT_COLTAG_UNKNOWN;
+			s->row.val[id].v.i = key;
+		}
+		else if (kept != NULL && !kept[id] && sc->cols[id].kind != SIFT_COLK_GROUP && sc->cols[id].store != SIFT_COLS_VAR)
+		{
+			memset(&s->row.val[id], 0, sizeof(SiftColValue));
+			s->row.val[id].tag = SIFT_COLTAG_UNKNOWN;
+			s->row.val[id].isnull = true;
+		}
+	}
 	resetStringInfo(&s->buf);
 	appendStringInfoSpaces(&s->buf, VARHDRSZ);
 	appendBinaryStringInfo(&s->buf, (char *) ver, sizeof(ver));
@@ -101,7 +120,20 @@ sift_colsort_put(SiftColSorter *s, const SiftColBatch *b, uint32 r)
 	s->put->tts_values[s->nleaf + 1] = PointerGetDatum(s->buf.data);
 	ExecStoreVirtualTuple(s->put);
 	tuplesort_puttupleslot(s->ts, s->put);
+	sift_cbatch_row_free(&s->row);	/* its arrays are in the context of the batch, which may be reset before the next row */
 	s->rows++;
+}
+
+void
+sift_colsort_put(SiftColSorter *s, const SiftColBatch *b, uint32 r)
+{
+	put_row(s, b, r, -1, 0, NULL);
+}
+
+void
+sift_colsort_put_scoped(SiftColSorter *s, const SiftColBatch *b, uint32 r, int scope_leaf, int64 key, const bool *kept)
+{
+	put_row(s, b, r, scope_leaf, key, kept);
 }
 
 void

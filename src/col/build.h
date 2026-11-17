@@ -56,7 +56,7 @@ typedef struct ColScanAcc
 /* The writes of this backend add to acc until it is watched with NULL; the leader reports the sums with one NOTICE at the end of the build */
 extern void sift_colb_scan_watch(ColScanAcc *acc);
 extern void sift_colb_scan_report(Relation index, ColScanAcc *acc);
-extern ColBuild *sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots);
+extern ColBuild *sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots, bool scopes);
 /* Scans the whole heap (serial build) or the superblock sb of nblocks heap blocks (parallel); both return the heap tuples scanned */
 extern double sift_colb_scan(ColBuild *b, Relation heap, IndexInfo *info);
 extern double sift_colb_scan_sb(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snapshot, uint32 sb, BlockNumber nblocks);

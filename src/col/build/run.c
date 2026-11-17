@@ -174,7 +174,7 @@ compact(ColBuild *b)
 	sift_colw_set_index_rows(w, b->total_rows);
 	sift_colw_set_keyed(w, b->aim, b->r->cut, b->r->ncut);
 	sift_colk_streams(stream, seg, n, b->r->cut, b->r->ncut, false, cx);
-	sift_colk_merge(w, in, seg, n, NULL, NULL, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->budget / 1024, cx, NULL, NULL, 0, 1, 0, stream, NULL);
+	sift_colk_merge(w, in, seg, n, NULL, NULL, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->budget / 1024, cx, NULL, NULL, 0, 1, 0, stream, NULL, NULL);
 	sift_colw_finish(w, &neu);
 	MemoryContextSwitchTo(old);
 	for (int i = 0; i < n; i++)
@@ -416,7 +416,7 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 
 /* A participant's build without its fills: the families of a scope index (col/build/scope.c) are begun like the build of the entities, with their own cut and share the fill of the entities */
 ColBuild *
-colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots, int scope)
+colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots, int scope, int nscope)
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col build", ALLOCSET_DEFAULT_SIZES);
 	ColBuild   *b = MemoryContextAllocZero(cxt, sizeof(ColBuild));
@@ -437,7 +437,7 @@ colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSe
 	b->tmpcxt = AllocSetContextCreate(cxt, "sift_col build tuple", ALLOCSET_DEFAULT_SIZES);
 	b->wt = wt;
 	/* the builds of the entities and of each scope hold their rows at the same time: they share what one participant may hold */
-	parts = nslots * (1 + b->r->nscope);
+	parts = nslots * (1 + nscope);
 	b->budget = sift_col_key_cut(b->r) ? budget : colb_writer_budget(parts);
 	b->run_cap = Max(budget, run_cap(parts));
 #ifdef SIFT_TESTING
@@ -473,10 +473,10 @@ colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSe
 }
 
 ColBuild *
-sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots)
+sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots, bool scopes)
 {
-	int			nscope = sift_col_rel(index)->nscope;
-	ColBuild   *b = colb_alloc(index, wt, nscope > 0 ? budget / (1 + nscope) : budget, maxsegs / (1 + nscope), segs, shared, nslots, -1);
+	int			nscope = scopes ? sift_col_rel(index)->nscope : 0;
+	ColBuild   *b = colb_alloc(index, wt, nscope > 0 ? budget / (1 + nscope) : budget, maxsegs / (1 + nscope), segs, shared, nslots, -1, nscope);
 
 	b->fill = sift_conn_fill_begin(index, b->cxt, b->share);
 	if (nscope > 0)

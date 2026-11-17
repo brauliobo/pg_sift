@@ -121,8 +121,8 @@ extern ScopeRun *maint_scope_run_begin(Relation index, struct SiftScopeFill *sf,
 extern void maint_scope_run_end(ScopeRun *run);
 extern void maint_scope_run_batch(ScopeRun *run, const SiftColBatch *b);
 extern void maint_scope_run_add(ScopeRun *run, const SiftColBatch *b, uint32 from, uint32 to);
-extern Size maint_scope_run_bytes(ScopeRun *run);
-extern int	maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill *fill, uint64 index_rows, int format, uint32 runs, SiftSegEntry *out);
+extern void maint_scope_run_sort(ScopeRun *run, const SiftColBatch *b, uint32 from, uint32 to, SiftColSorter **sorter, uint64 *count);
+extern int	maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill *fill, uint64 index_rows, int format, SiftSegEntry *out);
 
 /* One slice of the key range of a merge that the participants of a parallel build share: the rows of slice i of nslices go to one segment, which is not put in the directory (*out; ndocs 0: none) */
 typedef struct MergeSlice
@@ -165,7 +165,7 @@ extern uint64 maint_part_count(uint64 live_bytes, uint64 part_bytes, bool key_cu
 extern RollPick maint_roll_pick(const RewriteView *v, bool *take, RollStep *rs);
 extern void maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep *rs, int room);
 extern bool maint_scope_merge_step(Relation index, bool force);
-extern bool maint_scope_refill(Relation index);
+extern bool maint_scope_refill(Relation index, bool report);
 extern bool maint_scope_refill_due(Relation index);
 extern bool maint_scope_merge_due(Relation index, bool force);
 

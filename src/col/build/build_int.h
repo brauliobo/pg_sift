@@ -63,7 +63,7 @@ struct ColBuild
 	bool		metagen;		/* the generations of the segments are the metapage's, as a key-cut build's, though the units of the entities are not cut by key */
 };
 
-extern ColBuild *colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots, int scope);
+extern ColBuild *colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots, int scope, int nscope);
 extern uint64	colb_next_gen(ColBuild *b);
 extern void colb_scope_cut(SiftColRel *r, int scope);
 extern void colb_scope_begin(ColBuild *b, SiftSegEntry *segs, int room);

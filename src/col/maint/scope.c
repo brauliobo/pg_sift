@@ -17,6 +17,7 @@
 #endif
 #include "col/build.h"
 #include "col/maint/maint_int.h"
+#include "col/order_sort.h"
 #include "col/scope.h"
 
 /* The fill of the writers of a promotion: the found flags of the connections, and for an index with scopes the stamps of the fill that expands the rows (*sf; NULL for an index without) */
@@ -102,39 +103,30 @@ maint_scope_run_add(ScopeRun *run, const SiftColBatch *b, uint32 from, uint32 to
 	}
 }
 
-Size
-maint_scope_run_bytes(ScopeRun *run)
+/* Rows [from, to) of the batch of maint_scope_run_batch, from a multiple of SCOPE_RUN_SLICE, to the sort of each scope (sorter[s]; count[s] rows so far) with a copy of each for each key of their member */
+void
+maint_scope_run_sort(ScopeRun *run, const SiftColBatch *b, uint32 from, uint32 to, SiftColSorter **sorter, uint64 *count)
 {
-	return MemoryContextMemAllocated(run->cx, true);
-}
+	for (int s = 0; s < run->r->nscope; s++)
+	{
+		const SiftCVals *fk = &b->col[sift_scope_fill_fk_leaf(run->sf, s)];
+		MemoryContext old = MemoryContextSwitchTo(run->slice);
+		uint32		entries = sift_scope_fill_expand(run->sf, s, run->members[s] + from, fk->nulls ? fk->nulls + from / 64 : NULL, to - from,
+													 &run->row, &run->key, &run->cap);
 
-/* The least a run holds, as the writer of a merge holds at least SIFT_COLW_MIN_BUDGET: below it the runs of a table are too many for the directory and for the merge that joins them */
-#define SCOPE_RUN_MIN_BYTES	((Size) 16 << 20)
-
-/* The bytes of replicated rows a run holds: half of maintenance_work_mem, at least SCOPE_RUN_MIN_BYTES */
-static Size
-run_bytes(void)
-{
-	return Max((Size) maintenance_work_mem * 1024 / 2, SCOPE_RUN_MIN_BYTES);
-}
-
-/* The merge of the runs holds two units of each (the one it reads and the one before it), a quarter of maintenance_work_mem in all (at least a quarter of SCOPE_RUN_MIN_BYTES): a run is cut into units of the rows that make the runs there will be fit it, at least SCOPE_RUN_UNIT_MIN */
-#define SCOPE_RUN_UNIT_MIN	256
-
-static uint32
-run_unit_rows(const ScopeRun *run, uint32 aim, uint32 runs)
-{
-	uint64		fit = Max((Size) maintenance_work_mem * 1024, SCOPE_RUN_MIN_BYTES) / 4 / Max(runs, 1) / 2 / sift_colk_row_bytes(run->r->schema);
-
-	return (uint32) Min(sift_colk_unit_rows(aim), Max(fit, SCOPE_RUN_UNIT_MIN));
+		MemoryContextSwitchTo(old);
+		for (uint32 e = 0; e < entries; e++)
+			sift_colsort_put_scoped(sorter[s], b, from + run->row[e], run->r->scope_leaf[s], run->key[e], run->r->scope_cols[s]);
+		count[s] += entries;
+	}
 }
 
 /*
- * The run written: for each scope its rows sorted by the cut of the scope and cut into units of one key, with the fill of maint_scope_fill_begin. out has room for one segment of each
+ * The run written (a promotion's rows): for each scope its rows sorted by the cut of the scope and cut into units of one key, with the fill of maint_scope_fill_begin. out has room for one segment of each
  * scope; the number of them is returned (a scope none of whose rows has a pair has none). The run is empty after it.
  */
 int
-maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill *fill, uint64 index_rows, int format, uint32 runs, SiftSegEntry *out)
+maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill *fill, uint64 index_rows, int format, SiftSegEntry *out)
 {
 	const SiftColRel *r = run->r;
 	uint32		aim = sift_colk_aim_rows(run->index);
@@ -157,7 +149,7 @@ maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill *fill, uin
 		sift_colw_set_index_rows(w, index_rows);
 		sift_colw_set_preagg(w, &pagg);
 		sift_colw_set_keyed(w, aim, cut, ncut);
-		sift_colk_write(w, &run->rep[s], 1, r->schema, cut, ncut, run_unit_rows(run, aim, runs), run->cx, 0);
+		sift_colk_write(w, &run->rep[s], 1, r->schema, cut, ncut, sift_colk_unit_rows(aim), run->cx, 0);
 		sift_colw_finish(w, &out[n]);
 		out[n].flags |= SIFT_SEG_SCOPE;
 		out[n++].pad = s;
@@ -230,21 +222,92 @@ refill_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 /* The segments of the directory a refill leaves free for the merge that follows it */
 #define REFILL_ROOM	16
 
-/* The runs a refill writes for each scope: the rows of the table over the rows of the run in hand, as many as the directory has room for at the most */
-static uint32
-runs_of(uint64 rows, uint64 run_rows, int room)
+/* The least the sorts of a refill hold between them, as the writer of a merge holds at least SIFT_COLW_MIN_BUDGET */
+#define SCOPE_SORT_MIN_KB	16384
+
+/* The segments a refill writes of one scope: the rows come sorted, and a segment is done when its writer holds its budget of memory (and the directory has room for another) */
+typedef struct ScopeOut
 {
-	return (uint32) Min((rows + run_rows - 1) / run_rows, (uint64) room);
+	Relation	index;
+	const SiftColRel *r;
+	int			scope;
+	int			format;
+	uint64		index_rows;
+	Size		budget;
+	int			room;
+	SiftColFill *fill;
+	SiftCPaggSpec pagg;
+	int			cut[SIFT_COL_CUT_MAX];
+	int			ncut;
+	SiftWriteTarget *wt;
+	SiftColSegWriter *w;
+	MemoryContext cx;			/* the parent of the context of each segment */
+	MemoryContext pcx;
+	SiftSegEntry *out;
+	int			n;
+} ScopeOut;
+
+/* The bytes of the segments seg[n] of one scope (-1: all of them) */
+static uint64
+bytes_of(const SiftSegEntry *seg, int n, int scope)
+{
+	uint64		sum = 0;
+
+	for (int i = 0; i < n; i++)
+		sum += scope < 0 || seg[i].pad == scope ? seg[i].bytes : 0;
+	return sum;
+}
+
+static Size
+scope_out_budget(void)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_col_segment_kb > 0)
+		return (Size) sift_test_col_segment_kb * 1024;
+#endif
+	return sift_colw_budget((Size) Max(maintenance_work_mem / 2, SCOPE_SORT_MIN_KB) * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE);
+}
+
+static void
+scope_out_finish(ScopeOut *o)
+{
+	sift_colw_finish(o->w, &o->out[o->n]);
+	o->out[o->n].flags |= SIFT_SEG_SCOPE;
+	o->out[o->n++].pad = o->scope;
+	sift_wt_finish(o->wt);
+	o->w = NULL;
+	MemoryContextDelete(o->pcx);
+}
+
+static SiftColSegWriter *
+scope_out_next(void *arg, SiftColSegWriter *w)
+{
+	ScopeOut   *o = arg;
+
+	if (w == NULL)
+	{
+		o->pcx = AllocSetContextCreate(o->cx, "sift_col scope refill segment", ALLOCSET_DEFAULT_SIZES);
+		o->wt = sift_wt_begin(o->index, SIFT_WRITE_SHARED);
+		o->w = sift_colw_begin(o->wt, sift_store_new_gen(o->index), o->r->schema, o->r->policy, o->format, o->pcx);
+		sift_colw_set_fill(o->w, o->fill);
+		sift_colw_set_index_rows(o->w, o->index_rows);
+		sift_colw_set_preagg(o->w, &o->pagg);
+		sift_colw_set_keyed(o->w, sift_colk_aim_rows(o->index), o->cut, o->ncut);
+	}
+	else if (o->n + 1 < o->room && sift_colw_full(w, o->budget))
+		scope_out_finish(o);
+	return o->w;
 }
 
 /*
  * The scope segments again, from the live rows of the entity segments, under a stamp taken now: the rows of each entity segment are decoded unit by unit, replicated by the keys of
- * their member and written as runs of the scope's cut, which the merge of the scope segments joins. The old scope segments go and the floor of the stamps becomes this stamp in
+ * their member and sorted by the cut of the scope (a sort that holds half of maintenance_work_mem and writes the rest to temporary files), and the sorted rows are written as segments of the scope. The old scope segments go and the floor of the stamps becomes this stamp in
  * one switch of the directory, so a crash leaves the index as it was; with no pair left it writes no segment and still moves the floor. This is what the rewrite does when the floor is
- * stale (the relation changed since it). False: no entity segment.
+ * stale (the relation changed since it). False: no entity segment. report: the build of the index is not over (a concurrent one, whose first pass wrote no scope segment): each scope says what it costs, or is
+ * refused above its limit, as the end of a build does (sift_scope_report).
  */
 bool
-maint_scope_refill(Relation index)
+maint_scope_refill(Relation index, bool report)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col scope refill", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
@@ -254,10 +317,10 @@ maint_scope_refill(Relation index)
 	SiftSegEntry ents[SIFT_MAX_SEGMENTS],
 				scopes[SIFT_MAX_SEGMENTS],
 			   *out = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry));
+	SiftColSorter *sorter[SIFT_SCOPE_MAX];
 	uint64		egen[SIFT_MAX_SEGMENTS],
 				rows = 0,
-				held_rows = 0,
-				chunk;
+				count[SIFT_SCOPE_MAX] = {0};
 	int			nents = 0,
 				nscopes = 0,
 				nout = 0,
@@ -266,7 +329,6 @@ maint_scope_refill(Relation index)
 	struct SiftScopeFill *sf;
 	ScopeRun   *run;
 	SiftColFill *fill;
-	SiftWriteTarget *wt;
 	SiftMaintInputs mi;
 	SiftScopeStamps stamps;
 	Refill		rf;
@@ -289,15 +351,20 @@ maint_scope_refill(Relation index)
 		MemoryContextDelete(cx);
 		return false;
 	}
-	/* a run holds half of maintenance_work_mem of replicated rows (at least SCOPE_RUN_MIN_BYTES), and at least the share of the rows that makes as many runs for each scope as the directory has room for */
+	/* the rows of each scope are sorted by a sort that holds half of maintenance_work_mem between the scopes (at least SCOPE_SORT_MIN_KB) and writes the rest to temporary files, and come out in the order of the cut of the scope */
 	room = Max((SIFT_MAX_SEGMENTS - REFILL_ROOM - nents) / Max(r->nscope, 1), 1);
-	chunk = rows / room + 1;
 	fill = maint_scope_fill_begin(index, cx, rows, &sf);
 	run = maint_scope_run_begin(index, sf, cx);
-	wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
+	for (int s = 0; s < r->nscope; s++)
+	{
+		int			cut[SIFT_COL_CUT_MAX];
+
+		sorter[s] = sift_colsort_begin(r->schema, cut, sift_scope_cut(r, s, cut), Max(maintenance_work_mem / 2, SCOPE_SORT_MIN_KB) / r->nscope);
+	}
 	for (int i = 0; i < nents; i++)
 	{
-		SiftColSegment *seg = sift_cseg_open(index, &ents[i], cx);
+		MemoryContext scx = AllocSetContextCreate(cx, "sift_col scope refill input", ALLOCSET_DEFAULT_SIZES);
+		SiftColSegment *seg = sift_cseg_open(index, &ents[i], scx);
 
 		for (uint32 u = 0; u < seg->nsb; u++)
 		{
@@ -311,26 +378,41 @@ maint_scope_refill(Relation index)
 			maint_scope_run_batch(run, b);
 			for (uint32 from = 0; from < b->nrows; from += SCOPE_RUN_SLICE)
 			{
-				uint32		to = Min(from + SCOPE_RUN_SLICE, b->nrows);
-
-				maint_scope_run_add(run, b, from, to);
-				held_rows += to - from;
+				maint_scope_run_sort(run, b, from, Min(from + SCOPE_RUN_SLICE, b->nrows), sorter, count);
 				sift_colb_peak_note();
-				if (held_rows >= chunk && maint_scope_run_bytes(run) >= run_bytes())
-				{
-					nout += maint_scope_run_write(run, wt, fill, rows, sift_col_format_minor, runs_of(rows, held_rows, room), out + nout);
-					held_rows = 0;
-				}
 			}
 		}
 		sift_cseg_close(seg);
+		MemoryContextDelete(scx);
 	}
-	if (held_rows > 0)
-		nout += maint_scope_run_write(run, wt, fill, rows, sift_col_format_minor, runs_of(rows, held_rows, room), out + nout);
 	maint_scope_run_end(run);
+	for (int s = 0; s < r->nscope; s++)
+	{
+		MemoryContext mcx = AllocSetContextCreate(cx, "sift_col scope refill merge", ALLOCSET_DEFAULT_SIZES);
+		ScopeOut	o = {.index = index, .cx = mcx, .r = r, .scope = s, .format = sift_col_format_minor, .index_rows = rows, .room = room, .fill = fill, .pagg = r->pagg, .out = out + nout,
+					 .budget = scope_out_budget()};
+
+		if (count[s] == 0)
+		{
+			sift_colsort_end(sorter[s]);
+			MemoryContextDelete(mcx);
+			continue;
+		}
+		o.pagg.lean = true;
+		sift_cpagg_spec_keep(&o.pagg, r->schema, r->scope_cols[s]);
+		o.ncut = sift_scope_cut(r, s, o.cut);
+		sift_colsort_done(sorter[s]);
+		sift_colb_peak_note();
+		sift_colk_merge(NULL, NULL, NULL, 0, NULL, NULL, r->schema, o.cut, o.ncut, sift_colk_unit_rows(sift_colk_aim_rows(index)), maintenance_work_mem, mcx, scope_out_next, &o, 0, 1, 0, NULL, NULL, sorter[s]);
+		if (o.w != NULL)
+			scope_out_finish(&o);
+		nout += o.n;
+		MemoryContextDelete(mcx);
+	}
+	for (int s = 0; report && s < r->nscope; s++)
+		sift_scope_report(index, r, s, rows, count[s], bytes_of(ents, nents, -1), bytes_of(out, nout, s));
 	sift_scope_fill_stamps(sf, &stamps);
 	sift_conn_fill_end(fill);
-	sift_wt_finish(wt);
 	mi = sift_maint_inputs(index, scopes, nscopes);
 	rf = (Refill) {mi.gens, nscopes, out, nout, egen, nents, &stamps};
 	sift_dir_update(index, &(SiftDirChange) {.fn = refill_switch,.arg = &rf,.release = mi.release,.nrelease = mi.nrelease,.extra = InvalidBuffer});
@@ -351,7 +433,7 @@ sift_scope_stamp_concurrent(Relation index)
 #ifdef SIFT_TESTING
 	sift_test_phase_wait(SIFT_COL_GATE_FILL);
 #endif
-	if (maint_scope_refill(index))
+	if (maint_scope_refill(index, true))
 		while (maint_scope_merge_step(index, true))
 			;
 }

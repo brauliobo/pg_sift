@@ -33,7 +33,7 @@ colb_scope_begin(ColBuild *b, SiftSegEntry *segs, int room)
 	b->fill = sift_scope_fill_hook(b->sfill, b->fill, b->r->nconn);
 	for (int s = 0; s < b->nscope; s++)
 	{
-		ColBuild   *sb = colb_alloc(b->index, b->wt, b->budget, room, segs + (Size) s * room, false, 1, s);
+		ColBuild   *sb = colb_alloc(b->index, b->wt, b->budget, room, segs + (Size) s * room, false, 1, s, b->nscope);
 
 		sb->fill = b->fill;
 		/* the rows go to runs and merges only: the ranges of a spill are cut from a sample of the heap, which has no scope keys */
@@ -108,18 +108,13 @@ sift_scope_refuse(const char *what, double limit, uint64 entries, uint64 rows, b
  * average) and the growth of the index. A multiplicity above the limit of the scope (max_multiplicity in its declaration: 3, the break-even of the units, docs/COL-SCOPE.md, unless raised) is refused, with the growth it would have been. The sizes are said from 1 MB of entities: below, they are a few kB that the
  * compressors change from one library version to the next.
  */
-static void
-scope_report(const ColBuild *b, int s)
+void
+sift_scope_report(Relation index, const SiftColRel *r, int s, uint64 rows, uint64 entries, uint64 before, uint64 added)
 {
-	const ColBuild *sb = b->scope[s];
-	uint64		rows = segs_sum(b->segs, b->nsegs, false),
-				entries = segs_sum(sb->segs, sb->nsegs, false),
-				before = segs_sum(b->segs, b->nsegs, true),
-				added = segs_sum(sb->segs, sb->nsegs, true);
 	double		per_row = rows > 0 ? (double) entries / rows : 0;
-	const char *name = b->r->schema->cols[b->r->scope_leaf[s]].path;
+	const char *name = r->schema->cols[r->scope_leaf[s]].path;
 	char	   *what = pnstrdup(name, strlen(name) - strlen("#scope"));
-	double		limit = sift_scope_specs(b->index)->s[s]->max_multiplicity;
+	double		limit = sift_scope_specs(index)->s[s]->max_multiplicity;
 
 	if (per_row > limit)
 		sift_scope_refuse(what, limit, entries, rows, false, before, added);
@@ -128,6 +123,13 @@ scope_report(const ColBuild *b, int s)
 								per_row, before / 1e6, (before + added) / 1e6, 100.0 * added / before)));
 	else
 		ereport(NOTICE, (errmsg("scope \"%s\": %s entries for %s rows (%.2f per row)", what, count_text(entries), count_text(rows), per_row)));
+}
+
+static void
+scope_report(const ColBuild *b, int s)
+{
+	sift_scope_report(b->index, b->r, s, segs_sum(b->segs, b->nsegs, false), segs_sum(b->scope[s]->segs, b->scope[s]->nsegs, false), segs_sum(b->segs, b->nsegs, true),
+					  segs_sum(b->scope[s]->segs, b->scope[s]->nsegs, true));
 }
 
 /* The segments of the scopes follow those of the entities in b->segs, flagged */
