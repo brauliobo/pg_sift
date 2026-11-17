@@ -3,6 +3,7 @@
  * from the keys of the units to the blobs of the file
  * build, then write
  */
+#include "core/membudget.h"
 #include "core/rowmem.h"
 #include "core/limits.h"
 #include "col/seg_write/seg_write_int.h"
@@ -87,8 +88,8 @@ gord_plain_whole(const OrdBlock *ob)
 static void
 sets_from_arrays(SiftColSegWriter *w, const PointAcc *a, bool text, SiftEntSet *vals, SiftEntSet *nulls)
 {
-	sift_eset_init(vals, w->mcxt, !text);
-	sift_eset_init(nulls, w->mcxt, true);
+	sift_eset_init(vals, w->scxt, !text);
+	sift_eset_init(nulls, w->scxt, true);
 	for (uint32 i = 0; i < a->n; i++)
 		sift_eset_add(vals, a->key[i], sift_cpoint_tid_code(a->tid[i]));
 	for (uint32 i = 0; i < a->nn; i++)
@@ -101,7 +102,7 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, PointAcc *a, bool grouped, int c)
 {
 	bool		dense = gord_dense_ok(w);
 
-	sift_blob_init(&ob->tab, w->mcxt);
+	sift_blob_init(&ob->tab, w->scxt);
 	if (grouped)
 	{
 		uint32		nv = 0,
@@ -173,7 +174,7 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, PointAcc *a, bool grouped, int c)
 				Size		compact,
 							extra = w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN) ? sift_cdict_blocks_extra(w->dict[c], w->pol ? &w->pol[c] : NULL, &compact) : 0;
 
-				sift_blob_init(&codes, w->mcxt);
+				sift_blob_init(&codes, w->scxt);
 				sift_esrc_open(&src, vals, nulls);
 				sift_cgord_build_text(&src, a->n, a->nn, w->dict[c], w->pagg.gorder_coll[c], order, dense, true, &codes);
 				sift_esrc_close(&src);
@@ -259,6 +260,8 @@ packed_ok(void)
 void
 segw_build_points(SiftColSegWriter *w)
 {
+	SIFT_MEM_SCOPE(col_writer_order, w->scxt);
+
 	for (int c = 0; w->pt && c < w->schema->ncols; c++)
 		w->wantord |= w->pt[c].ord && !w->pt[c].bad && w->pt[c].n + w->pt[c].nn > 0 && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE;
 	for (int c = 0; w->pt && c < w->schema->ncols; c++)
@@ -277,6 +280,7 @@ segw_build_points(SiftColSegWriter *w)
 			if (segw_gorder_grouped(w, c))
 				build_order(w, &a->ob[segw_gorder_plain(w, c)], a, true, c);
 			w->anydual |= a->ob[1].nch > 0;
+			SIFT_MEM_CHECKPOINT();
 		}
 		if (a->want && !a->bad && a->n > 0)
 		{

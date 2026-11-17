@@ -4,6 +4,7 @@
 #include "col/spool.h"
 #include "core/cmp.h"
 #include "core/limits.h"
+#include "core/membudget.h"
 #include "core/store.h"
 
 static inline int
@@ -233,6 +234,7 @@ ecur_open_runs(SiftEntCur *c, MemoryContext cxt, const SiftEntRun *run, uint32 n
 			c->cnt[i] = (uint32) run[i].n;
 		}
 	}
+	SIFT_MEM_CHECKPOINT();
 	if (!c->seq && c->nheap > 0)
 		ecur_tree(c);
 }

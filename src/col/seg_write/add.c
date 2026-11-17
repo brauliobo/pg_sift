@@ -4,6 +4,7 @@
  * one function for each section the writer keeps in memory
  */
 #include "core/host.h"
+#include "core/membudget.h"
 #include "col/hll.h"
 #include "col/setsum.h"
 #include "col/gorder.h"
@@ -70,6 +71,7 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 {
 	const SiftKey *rowkeys = b->keys;
 
+	SIFT_MEM_SCOPE(col_writer_spool, w->scxt);
 	for (int c = 0; w->pt && c < w->schema->ncols; c++)
 	{
 		PointAcc   *a = &w->pt[c];
@@ -83,8 +85,8 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 		a->spool = a->ord && !a->want && gv == NULL;
 		if (a->spool && a->vals.cxt == NULL)
 		{
-			sift_eset_init(&a->vals, w->mcxt, !sift_cgord_leaf_text(&w->schema->cols[c]));
-			sift_eset_init(&a->nulls, w->mcxt, true);
+			sift_eset_init(&a->vals, w->scxt, !sift_cgord_leaf_text(&w->schema->cols[c]));
+			sift_eset_init(&a->nulls, w->scxt, true);
 		}
 		if (a->ord && w->inl[c])
 			a->bad = true;
@@ -195,6 +197,7 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 			a->n++;
 		}
 	}
+	SIFT_MEM_CHECKPOINT();
 }
 
 /*

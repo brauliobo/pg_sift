@@ -19,6 +19,8 @@ col_scope_refill	src/col/maint/scope.c	maint_scope_refill	scoped
 col_tomb_log	src/col/tomblog.c	sift_col_log	scoped
 col_verify	src/col/verify.c	col_verify	scoped
 col_write_buffer	src/col/wbuf/batches.c	sift_cwbuf_batches	scoped
+col_writer_order	src/col/seg_write/points.c	segw_build_points	scoped
+col_writer_spool	src/col/seg_write/add.c	add_points	scoped
 index_vacuum	src/bm25/maint_vacuum.c	bulkdelete_index	scoped
 maint_worker_step	src/bm25/maint.c	worker_step	scoped
 vstore_gc	src/col/vstore/vstore_live.c	index_refs	scoped

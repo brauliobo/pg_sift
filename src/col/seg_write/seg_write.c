@@ -138,6 +138,7 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->schema = schema;
 	w->pol = pol;
 	w->mcxt = mcxt;
+	w->scxt = AllocSetContextCreate(mcxt, "sift col order spool", ALLOCSET_DEFAULT_SIZES);
 	w->format = sift_col_write_minor(schema, format, true);
 	w->setting = format;
 	w->sw = sift_sw_begin(wt, gen);

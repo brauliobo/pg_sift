@@ -144,6 +144,7 @@ struct SiftColSegWriter
 	const SiftColSchema *schema;
 	const SiftCcPolicy *pol;	/* [ncols] compression policy per leaf, NULL: plain chunks */
 	MemoryContext mcxt;
+	MemoryContext scxt;			/* the entries of the order arrays the writer holds (col/spool.h): a context of their own, to measure them */
 	SiftStreamWriter *sw;
 	SiftCDict **dict;			/* [ncols], STR leaves */
 	uint32	   *vstore;			/* [ncols] the shared value store whose codes the dictionary of a STR leaf is written as (col/vstore/), 0: it holds its strings; NULL: none does */

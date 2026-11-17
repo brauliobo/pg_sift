@@ -437,6 +437,7 @@ TESTING_REGRESS += col_wbuf_ref_conn
 TESTING_REGRESS += col_wide_values
 TESTING_REGRESS += col_wildcard_keys
 TESTING_REGRESS += col_worker_failure
+TESTING_REGRESS += col_writer_spool_mem
 TESTING_REGRESS += col_zone_jnull
 TESTING_REGRESS += colcodec_%
 TESTING_REGRESS += core_radix_sort
