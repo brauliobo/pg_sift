@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sift.progress: one row for each maintenance job that runs now. A rewrite worker held at the start of its merge phase (sift.test_progress_gate, a testing build) is listed with its process,
+# sift.progress: one row for each maintenance job that runs now. A maintenance worker held at the start of its promotion (sift.test_progress_gate, a testing build) is listed with its process,
 # index, job and phase and the segments it will replace; the merges of a VACUUM held at its cleanup gate are listed with the process of the session; both are gone when the job ends.
 . "$(dirname "$0")/lib.bash"
 
@@ -23,19 +23,19 @@ hold() { # KEY: a session that holds the advisory lock of the gate until $D/rele
 }
 let_go() { touch "$D/release"; wait "$HOLDER"; }
 
-# 1. a rewrite worker held when it enters its merge phase (the second of its phases)
+# 1. a maintenance worker held when it enters its promote phase (the first of its phases)
 hold 12
-sql wp "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 2" >/dev/null
+sql wp "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 1" >/dev/null
 churn 1
 sql wp "VACUUM facts" >/dev/null
 waiting() { [[ $(sql wp "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted") -ge 1 ]]; }
-check "the rewrite worker waits at its merge phase" wait_for waiting 60
-out=$(sql wp "SELECT p.job, p.phase, p.index = 'facts_idx'::regclass, p.segments_done, p.segments_total >= 1, p.bytes_written > 0, p.started IS NOT NULL, a.backend_type FROM sift.progress p JOIN pg_stat_activity a ON a.pid = p.pid")
-check "sift.progress lists it: job, phase, index, no segment of the merge replaced yet, the bytes of its first phase written" test "$out" == "rewrite|merge|t|0|t|t|t|sift rewrite"
+check "the maintenance worker waits at its promote phase" wait_for waiting 60
+out=$(sql wp "SELECT p.job, p.phase, p.index = 'facts_idx'::regclass, p.segments_done, p.segments_total >= 1, p.started IS NOT NULL, a.backend_type FROM sift.progress p JOIN pg_stat_activity a ON a.pid = p.pid")
+check "sift.progress lists it: job, phase, index, no segment promoted yet" test "$out" == "promote|promote|t|0|t|t|sift promote"
 let_go
 gone() { [[ $(rows) == 0 ]]; }
-check "the row is gone when the rewrite ends" wait_for gone 60
-check "the rewrite did its work" bash -c "[[ \$(psql -X -At -h '$D/sock' -p $(port wp) -U postgres -d postgres -c \"SELECT count(*) FROM sift.col_segments('facts_idx') WHERE kind = 'immutable'\") == 1 ]]"
+check "the row is gone when the promotion ends" wait_for gone 60
+check "the promotion did its work: nothing is left in the write buffer" bash -c "[[ \$(psql -X -At -h '$D/sock' -p $(port wp) -U postgres -d postgres -c \"SELECT coalesce(sum(rows), 0) FROM sift.col_segments('facts_idx') WHERE kind <> 'immutable'\") == 0 ]]"
 sql wp "ALTER DATABASE postgres RESET sift.test_progress_gate" "ALTER DATABASE postgres SET sift.col_auto_merge = off" >/dev/null
 
 # 2. the merges of a VACUUM, held at its cleanup gate

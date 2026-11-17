@@ -1,6 +1,6 @@
 -- The segments that promotions and merges of new rows leave over the keys of a key_cut index in partitions are each as large as a partition once they hold half of one, and
 -- overlap every partition as the runs of a build do. They are the build's rewrite only when they are most of the index: until then the rewrite that takes them in writes all
--- the partitions they meet for the rows they hold, and is churn, which waits for the WAL budget however many of them there are.
+-- the partitions they meet for the rows they hold, and is churn, which sift.col_maintain rewrites on request however many of them there are.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -8,7 +8,6 @@ SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
 SET sift.vacuum_rewrite_limit = 1;
 SET sift.col_auto_merge_partition_kb = 512;
-SET sift.col_auto_merge_wal_pct = 5;
 SET sift.test_col_segment_kb = 7000;
 SET sift.col_build_key_ranges = off;
 
@@ -18,7 +17,7 @@ VACUUM (FREEZE, ANALYZE) om;
 CREATE INDEX om_idx ON om USING sift_col (id, tenant_id, d, amount, pad) WITH (key_cut = 'tenant_id', dict_lookup = off);
 SELECT sift.col_maintain('om_idx') AS partitioned;
 
--- overlays of 12,000 rows over all the tenants, each as large as half a partition: the share of the index that they hold, the rewrite due by the automatic rule, and by the manual one
+-- overlays of 12,000 rows over all the tenants, each as large as half a partition: the share of the index that they hold, the rewrite due
 CREATE FUNCTION om_promote(n int) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
 	FOR i IN 1..n LOOP
@@ -26,10 +25,10 @@ BEGIN
 		PERFORM sift.col_promote('om_idx');
 	END LOOP;
 END $$;
-CREATE FUNCTION om_state() RETURNS TABLE (overlays bigint, share_pct numeric, due_automatic text, due_manual text) LANGUAGE sql AS $$
+CREATE FUNCTION om_state() RETURNS TABLE (overlays bigint, share_pct numeric, due text) LANGUAGE sql AS $$
 	SELECT (SELECT count(*) FROM sift.col_segments('om_idx') WHERE kind = 'immutable' AND rows = 12000),
 		   (SELECT round(100.0 * sum(bytes) FILTER (WHERE rows = 12000) / sum(bytes)) FROM sift.col_segments('om_idx') WHERE kind = 'immutable'),
-		   coalesce(sift.col_maintenance_due('om_idx', true), '-'), coalesce(sift.col_maintenance_due('om_idx', false), '-') $$;
+		   coalesce(sift.col_maintenance_due('om_idx'), '-') $$;
 SELECT om_promote(1);
 SELECT * FROM om_state();
 SELECT om_promote(4);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # What the reads of a scope index paid for the pairs that changed since its floor is kept in the metapage of the index (col/scope_paid.c): a restart, a crash and a backend that ends keep it, a server with
-# more scope indexes than the table of the shared memory had slots counts each of them, and the rewrite is due after a burst of reads that a restart split in two, none of the halves enough alone.
+# more scope indexes than the table of the shared memory had slots counts each of them, and the rule says `stale scope` after a burst of reads that a restart split in two, none of the halves enough alone; no worker rewrites for it.
 . "$(dirname "$0")/lib.bash"
 plan 8
 
@@ -57,10 +57,9 @@ reads "$N"
 # the look weighs the rule once for each naptime in a backend: a burst that ended inside one is weighed by the next read
 sleep 0.3
 reads 1
-refilled() { [[ $(gens) != "$G0" ]]; }
-check "the second part, after the crash, completes it: the scope segments are written again within 60 s" wait_for refilled 60
-wait_stable pd "SELECT string_agg(gen::text, ',' ORDER BY gen) FROM sift.col_segments('ce_col') WHERE kind = 'immutable'" 60
-check "what the reads paid is not owed to the new segments" test "$(paid)" -eq 0
+check "the second part, after the crash, makes the rewrite due and starts none: stale scope, the segments as they were" test "$(due)" == "stale scope" -a "$(gens)" == "$G0"
+sql pd "SELECT sift.col_maintain('ce_col')" >/dev/null
+check "the explicit rewrite writes the scope segments again, and what the reads paid is not owed to the new segments" test "$(gens)" != "$G0" -a "$(paid)" -eq 0
 
 # more scope indexes than the 64 slots of the table of the shared memory: each one counts (a churn under sift.col_scope_refresh_pct: the rewrite is not due by the pairs alone)
 for i in $(seq 1 70); do

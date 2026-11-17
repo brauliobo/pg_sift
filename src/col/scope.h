@@ -598,12 +598,6 @@ extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot sn
 									   const int *leaves, int nleaves, uint32 max_changed, bool lazy);
 extern void sift_scope_read_pairs(SiftScopeRead *rd);
 /*
- * whether a stored read of this backend was refused by the stamps, the cover or the journal, or found members changed since the stamps (it patched them, or the join cost less for them), in this index since the last call:
- * the scan that was looks for the rewrite that fills the units again (sift_col_vacuum_tick), which the rule of `stale scope` decides
- */
-extern bool sift_scope_refused_take(Oid index);
-extern void sift_scope_changed_note(Relation index);
-/*
  * What the reads of the server paid, on top of the filled read, for the pairs changed since the floor of scope ord (col/scope_paid.c), in the instructions of the prices of this file. The sum is in the metapage
  * of the index (SiftMetaPageData.scope_paid: logged, so a restart or a crash keeps it, and a standby replays it), zero again in the switch that moves the floor; the epoch is the floor a read
  * paid under (sift_scope_epoch), so that a read that ends after the refill raised the floor adds nothing to the new one. A read notes in its backend (sift_scope_paid_note) and the look of the backend

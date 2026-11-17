@@ -1,7 +1,7 @@
 -- The rewrite of a sift_col index that churn left scattered (sift.col_auto_merge*, sift.col_maintain, sift.col_maintenance_due): a DELETE or UPDATE
 -- spread over the table puts a dead row in every unit while far fewer than dead_rewrite_pct percent of the rows are dead, so VACUUM rewrites nothing
 -- and no unit answers from its pre-aggregates. The rule is on what a rewrite changes: units with a dead row, units listed per superblock covered, rows
--- in the write buffer. The end state after the rewrite is the one of a REINDEX of the same table, and the answers never change.
+-- in the write buffer. Nothing starts the rewrite but sift.col_maintain; the end state after it is the one of a REINDEX of the same table, and the answers never change.
 CREATE EXTENSION pg_sift;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET sift.agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
@@ -71,7 +71,7 @@ SELECT sum(dead_rows) * 100 / sum(rows) < 10 AS under_dead_rewrite_pct, bool_and
 
 -- a unit with a dead row is a reason on its own, whatever the share of the units: there is no threshold to set
 SELECT 'dirty units' AS rule, fa_due('facts_a_col', 1000, 100) AS thresholds_off;
--- an index over sift.vacuum_rewrite_limit is due like any other (its rewrite goes by partitions of that size), for the server's own rule and the explicit one
+-- an index over sift.vacuum_rewrite_limit is due like any other (its rewrite goes by partitions of that size)
 SET sift.vacuum_rewrite_limit = 1;
 SELECT sift.col_maintenance_due('facts_a_col') AS automatic, sift.col_maintenance_due('facts_a_col', false) AS explicit;
 RESET sift.vacuum_rewrite_limit;
@@ -122,25 +122,22 @@ SELECT sift.col_maintain('facts_b_col');
 ROLLBACK;
 SELECT sift.col_maintain('facts_b_col') AS rewritten, sift.col_maintenance_due('facts_b_col') AS due_again;
 
--- sift.col_auto_merge_wal_pct: the rewrite of the server's own waits until the server has written 100 / that percent times the bytes of the index since the
--- index was written (here a thousandth of a percent: a hundred thousand times, which this cluster never writes); the call from a session does not wait,
--- and neither does the promotion of a write buffer
+-- nothing rewrites the index by itself: a reason that only a rewrite serves is a REINDEX that sift.col_maintenance_status recommends, with the reason, and the write buffer is the worker's promotion, not a REINDEX
 CREATE TABLE facts_d (LIKE facts_a) WITH (autovacuum_enabled = false);
 INSERT INTO facts_d SELECT * FROM facts_a ORDER BY id LIMIT 40000;
 CREATE INDEX facts_d_col ON facts_d USING sift_col (id, key, kind, amount);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_d;
 UPDATE facts_d SET amount = amount + 1 WHERE id % 100 = 1;
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_d;
-CREATE FUNCTION fa_churn_due(idx regclass, pct numeric, automatic bool) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.col_auto_merge_wal_pct', pct::text, true), set_config('sift.col_auto_merge_buffer_pct', '100', true);
-	RETURN coalesce(sift.col_maintenance_due(idx, automatic), 'not due');
-END $$;
-SELECT fa_churn_due('facts_d_col', 0, true) AS no_budget, fa_churn_due('facts_d_col', 0.001, true) AS over_budget,
-       fa_churn_due('facts_d_col', 0.001, false) AS over_budget_explicit;
--- and sift.col_maintenance_status says what it waits for
-SELECT set_config('sift.col_auto_merge_wal_pct', '0.001', true) IS NOT NULL AND EXISTS (SELECT 1 FROM sift.col_maintenance_status('facts_d_col') m, unnest(m.blocked_by) b WHERE b LIKE '%col_auto_merge_wal_pct%') AS status_names_the_budget;
-DROP FUNCTION fa_churn_due(regclass, numeric, bool);
+CREATE FUNCTION fa_reindex_advice(idx regclass) RETURNS TABLE (due text, advice text) LANGUAGE sql AS $$
+	SELECT m.rewrite_due, (SELECT b FROM unnest(m.blocked_by) b WHERE b LIKE 'REINDEX recommended%') FROM sift.col_maintenance_status(idx) m $$;
+SELECT * FROM fa_reindex_advice('facts_d_col');
+SELECT sift.col_maintenance_due('facts_d_col', true) AS automatic, sift.col_maintenance_due('facts_d_col', false) AS explicit;
+REINDEX INDEX facts_d_col;
+SELECT * FROM fa_reindex_advice('facts_d_col');
+INSERT INTO facts_d SELECT 2000000 + g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 3000) g;
+SELECT * FROM fa_reindex_advice('facts_d_col');
+DROP FUNCTION fa_reindex_advice(regclass);
 
 -- only the write buffer is large: promoting it is what the rewrite does, the segment the last rewrite made stays and the answers do not change
 CREATE TABLE facts_e (LIKE facts_a) WITH (autovacuum_enabled = false);

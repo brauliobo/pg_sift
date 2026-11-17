@@ -718,24 +718,6 @@ typedef struct ScopeStage
 	SiftKeyMap *mm;
 } ScopeStage;
 
-static Oid	refused_index = InvalidOid;	/* the scope index a stored read of this backend was refused by, or found changed members in, since the last sift_scope_refused_take */
-
-void
-sift_scope_changed_note(Relation index)
-{
-	refused_index = RelationGetRelid(index);
-}
-
-bool
-sift_scope_refused_take(Oid index)
-{
-	bool		was = refused_index == index;
-
-	if (was)
-		refused_index = InvalidOid;
-	return was;
-}
-
 /*
  * What the stored read of the scope needs besides the units of the keys, as the journal vouches (the rule above), first half: the members to leave out (changed since the stamp, of the pairs of the
  * keys read: the journal tags its records by the scope key), the write buffers, and what they are expected to cost, from the journal alone: the members whose last record inserted a pair are expected to
@@ -761,14 +743,12 @@ stored_changed(Relation heap, Relation index, Snapshot snap, int ord, SiftKeyMap
 	{
 		if (!sift_scope_has_journal(index, ord))
 			rd->why = sift_conn_why_name(SIFT_CONN_NO_JOURNAL);
-		sift_scope_changed_note(index);
 		return;
 	}
 	rd->epoch = sift_scope_epoch(stamp, ord);
 	if ((verdict = sift_scope_changed(index, ord, stamp, snap, cap, keys, nkeys, km, &changed)) != SIFT_CONN_OK)
 	{
 		rd->why = sift_conn_why_name(verdict);
-		sift_scope_changed_note(index);
 		return;
 	}
 	rd->nchanged = rd->nexcept = changed.n;

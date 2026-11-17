@@ -204,8 +204,7 @@ typedef struct Look
 {
 	Oid			index;
 	TimestampTz at;
-	double		owed_vacuum,
-				owed_rewrite;
+	double		owed_vacuum;
 } Look;
 
 #define LOOKS	4
@@ -241,15 +240,8 @@ flush_reads(Oid indexoid)
  * A backend looks at the table of the index: once per naptime for each index, whether it inserted a row version (everything 0) or read the rows of the
  * index in the heap (vetted, which must be many to be worth a look).
  *
- * The scans also report the rows of units with a dead row that they read as units, which a rewrite would have spared them (a unit with a dead row is not served from the
- * point directory, and a table that is not deleted from enough to hold 30% of the units dirty is not rewritten by the rule of VACUUM). The look adds them up for the index in this
- * backend, and the worker is asked when they come to half of what the rewrite costs (maint_read_due): the fixed 30% of the units and the WAL budget of the changes stand for reads no one made.
- *
  * With the method penalty_maintenance (sift.eval_methods, core/eval.h) the VACUUM is asked for the same way: when the rows the reads checked in the heap come to half of what that VACUUM costs, and not when a fixed share of the rows has changed or one scan checked a thousand rows.
  * The worker vacuums once for the request. A table that churns and is not read is left to autovacuum; the reads stay correct either way.
- *
- * A scan whose scope units were refused (the journal of the pairs rebuilt, units never filled), or that found members changed since the stamps (it patched them, or the join cost less for them),
- * looks at once, as one that decoded the write buffer does: the rewrite that fills them is asked for by the look (sift_col_rewrite_tick) when the rule of `stale scope` says so, whatever the table has changed.
  */
 void
 sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
@@ -261,8 +253,7 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	Relation	index;
 	bool		small,
 				decoded,
-				marked,
-				refused;
+				marked;
 
 	/* counted whether or not maintenance may run: this is how a stopped maintenance shows */
 	sift_stat_add(SIFT_STAT_ROWS_DIRTY, dirty_rows);
@@ -279,13 +270,11 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 		index_close(scoped, AccessShareLock);
 	}
 	lk = look_of(indexoid);
-	lk->owed_rewrite += (double) dirty_rows * PEN_DIRTY_ROW;
 	lk->owed_vacuum += (double) vetted * PEN_VET_ROW;
 	/* a scan that checked a few rows in the heap saved nothing worth a VACUUM, but if it decoded the write buffer the reads may have paid for its promotion */
 	decoded = sift_cwbuf_decoded_take();
 	marked = sift_col_marks_take();
-	refused = sift_scope_refused_take(indexoid);
-	small = !priced && vetted > 0 && vetted < MIN_VETTED && !refused;
+	small = !priced && vetted > 0 && vetted < MIN_VETTED;
 	if (small && !decoded)
 		return;
 	now = GetCurrentTimestamp();
@@ -326,11 +315,6 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	else if (sift_col_promote_tick(index) || (marked && sift_col_fold_tick(index)))
 	{
 		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
-	}
-	else if (OidIsValid(vacuum_heap_of(indexoid)) && sift_col_rewrite_tick(index, lk->owed_rewrite, refused))
-	{
-		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
-		lk->owed_rewrite = 0;
 	}
 	index_close(index, AccessShareLock);
 }

@@ -594,9 +594,6 @@ scope_decide(AggExec *ex, Snapshot snapshot, SiftScopeCounts *c, double *filled)
 	}
 	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, ex->scope_km, sc->all ? NULL : sc->keys, sc->nkeys, sc->once,
 										leaves, nleaves, max_changed, priced);
-	/* the pairs that changed since the stamps are paid for by every read until the rewrite; the maintenance sees no statement, so the read says it (the rule of `stale scope` decides) */
-	if (rd->nchanged > 0)
-		sift_scope_changed_note(ex->index);
 	if (priced && rd->why == NULL && rd->stage != NULL)
 	{
 		/* the journal alone says what the changed members cost: a join that costs less by more than the error of that is run without asking for their pairs */

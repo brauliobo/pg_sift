@@ -790,10 +790,6 @@ CREATE FUNCTION sift._test_col_set_stats(OUT rows int8, OUT allocated int8, OUT 
 CREATE FUNCTION sift._test_catalog_write(kind text, as_vacuum bool DEFAULT false, a regclass DEFAULT NULL, b regclass DEFAULT NULL) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_catalog_write' LANGUAGE C PARALLEL SAFE;
 
--- The rewrite worker of the index, started without a VACUUM asking for it
-CREATE FUNCTION sift._test_col_rewrite_worker(index regclass) RETURNS bool
-	AS 'MODULE_PATHNAME', 'sift_test_col_rewrite_worker' LANGUAGE C STRICT;
-
 -- src/core/leak_test.c: what the C library holds for this backend (arena, inuse, free, mmap), to tell memory a context keeps from memory malloc keeps back
 CREATE FUNCTION sift._test_malloc_stats(release bool DEFAULT false) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_malloc_stats' LANGUAGE C;

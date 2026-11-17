@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A crash in the middle of the rewrite of a sift_col index by range (sift.col_auto_merge_partition_kb): the one segment is cut into partitions, and the PANIC comes
 # once the first partition is written and before the directory switch that replaces the old segment with all of them. Crash recovery leaves the index consistent:
-# the segment is as it was, the answers are the heap's, the rewrite is still due, no block stays unaccounted for after the VACUUMs that sweep the orphan partition,
+# the segment is as it was, the answers are the heap's, the rewrite is still due (nothing else starts it), no block stays unaccounted for after the VACUUMs that sweep the orphan partition,
 # and the rewrite asked again completes into partitions. Then a second PANIC, in the rewrite of one dirty partition of those, leaves the others as they were.
 . "$(dirname "$0")/lib.bash"
 

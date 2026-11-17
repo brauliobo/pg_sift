@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DROP TABLE beside a maintenance worker (the race between the lock order of the statements, table first and then its indexes, and a worker that opens an index
 # for the table): an injection point (src/bm25/maint.c, PostgreSQL built with --enable-injection-points: scripts/pg-assert.sh --inject) stops the worker without a sleep,
-# (a) after it locked the table: DROP TABLE waits for the workers (the VACUUM worker and the rewrite worker it asked for stop at the same point), they go on and end,
+# (a) after it locked the table: DROP TABLE waits for the workers (the VACUUM worker and the maintenance worker it asked for stop at the same point), they go on and end,
 # DROP TABLE ends: no deadlock, no error; (b) before it locked the table: DROP TABLE ends first, the workers find the index gone and end without an error.
 # Both beside the assertions of the lock order (Assert in sift_try_open_index).
 . "$(dirname "$0")/lib.bash"
@@ -23,7 +23,7 @@ setup() {
 		"INSERT INTO facts SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 100) FROM generate_series(1, 100000) g" \
 		"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount)" "VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts" >/dev/null
 }
-# reads of the churned table make the worker VACUUM it, and the VACUUM asks for the rewrite worker
+# reads of the churned table make the worker VACUUM it, and the VACUUM asks for the maintenance worker
 waiting() { sql lo "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'InjectionPoint' AND wait_event = '$1'"; }
 await_worker() {
 	local n
@@ -35,7 +35,7 @@ await_worker() {
 	return 1
 }
 errors() { grep -cE 'deadlock detected|ERROR|TRAP|cache lookup failed|could not open relation' "$D/postgres.log"; }
-# injection_points_wakeup frees one waiter of a point, and the VACUUM worker and the rewrite worker it asked for both wait at the same point
+# injection_points_wakeup frees one waiter of a point, and the VACUUM worker and the maintenance worker it asked for both wait at the same point
 release() {
 	local n
 	sql lo "SELECT injection_points_detach('$1')" >/dev/null

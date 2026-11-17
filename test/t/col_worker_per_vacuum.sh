@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One VACUUM asks for one rewrite worker, whether a worker or a session runs it: the postmaster at debug1 logs every background worker it starts, by name.
+# One VACUUM asks for at most one maintenance worker and for no rewrite, whether a worker or a session runs it: the postmaster at debug1 logs every background worker it starts, by name.
 . "$(dirname "$0")/lib.bash"
 
 plan 2
@@ -16,14 +16,14 @@ started() { grep -c "starting background worker process \"sift $1" "$D/postgres.
 sql pv "UPDATE facts SET amount = amount + 1 WHERE id % 20 = 1" >/dev/null
 for _ in $(seq 100); do
 	sql pv "SET max_parallel_workers_per_gather = 0" "SELECT kind, count(*), sum(amount) FROM facts GROUP BY kind" >/dev/null 2>&1
-	[[ $(started rewrite) -ge 1 ]] && break
+	[[ $(started vacuum) -ge 1 ]] && break
 	sleep 0.2
 done
 sleep 3
 sql pv "SET max_parallel_workers_per_gather = 0" "SELECT kind, count(*), sum(amount) FROM facts GROUP BY kind" >/dev/null 2>&1
-check "the VACUUM of the vacuum worker asked for one rewrite worker" test "$(started rewrite)" == 1
-before=$(started rewrite)
+check "the VACUUM of the vacuum worker asked for at most one maintenance worker and no rewrite" test "$(started maintenance)" -le 1 -a "$(grep -c 'rewrote (' "$D/postgres.log")" == 0
+before=$(started maintenance)
 sql pv "UPDATE facts SET amount = amount + 1 WHERE id % 20 = 2" "VACUUM facts" >/dev/null
 sleep 3
-check "a VACUUM of a session asks for one rewrite worker" test "$(( $(started rewrite) - before ))" == 1
+check "a VACUUM of a session asks for at most one maintenance worker and no rewrite" test "$(( $(started maintenance) - before ))" -le 1 -a "$(grep -c 'rewrote (' "$D/postgres.log")" == 0
 finish

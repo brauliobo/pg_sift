@@ -27,7 +27,7 @@ span_cmp(const void *a, const void *b)
 #define OVERLAYS_ALIVE_MAX	4
 
 bool		maint_overlay_asked = false;
-int			maint_overlay_steps = 0;	/* the steps of the rewrite in hand left for the overlays: the automatic one takes a pass and the rule asks again for the next, an explicit col_maintain goes on until they are one */
+double		sift_col_auto_merge_wal_pct = 5.0;
 
 /*
  * The overlays of a key-cut index: the segments that promotions leave over the keys of the large ones (a large segment holds a key in one unit; each overlay holds it in another).

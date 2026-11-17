@@ -37,7 +37,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | [default](#default) | 104 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 41 | to measure, compare or explain a plan; not for a deployed configuration |
-| [safety](#safety) | 22 | a limit or guard on memory, locks, I/O or replicas |
+| [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 7 | an older spelling that is still accepted |
 
 ### default
@@ -205,7 +205,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: 4.05 MB (never rewritten) to 2.15 MB (10) (-46.8%, 100,000 rows after three rounds); build, merge and writes: VACUUM of the third round 61 ms (never rewritten), 56 ms (10): within noise (100,000 rows); other: a rewrite writes the whole segment and re-encodes every live row (4,200 instructions a row at 7 bytes, 35,400 at 75); 100 never rewrites
 - **When:** VACUUM rewrites a lone segment of a sift_col index when half of it is dead or, with 0, when 100 scans of its dirty units (about 430 instructions a dead row up to 45 a row of a unit a tenth dead) cost more than the rewrite of its live rows (900 + 463 * bytes of a row); with a percent, above that share of dead rows. The tier merge and sift.col_auto_merge handle the rest. A segment below it keeps its dirty units, which answer from their pre-aggregates net of the dead rows. The BM25 index keeps 50.
 - **Default:** 0 — 0, by cost: a rewrite re-encodes 900 + 463 * bytes instructions a live row, a query pays 430 a dead row of a dirty unit up to 45 a row, so 100 scans between two VACUUMs break even at about 9% dead rows in every unit of a 7 bytes a row segment and never below half for 75. 300,000 rows, 13% dead: VACUUM 1,356 against 1,354 Minstr at 7 bytes a row (unchanged), 292 against 9,528 at 75 bytes a row (6 array columns), where a grouped sum costs 17.2 against 0.5 Minstr until the rewrite.
-- **Turn off:** ALTER INDEX .. SET (dead_rewrite_pct = 100) never rewrites a segment for dead rows; a percent from 1 fixes it; RESET returns to 0; no REINDEX. sift.col_auto_merge can still rewrite the index.
+- **Turn off:** ALTER INDEX .. SET (dead_rewrite_pct = 100) never rewrites a segment for dead rows; a percent from 1 fixes it; RESET returns to 0; no REINDEX. A segment rewritten alone is the only rewrite VACUUM makes.
 - **Upgrade from 4.3:** unchanged
 - **Advice:** Leave at 0: a segment is rewritten when half of it is dead, or when the scans of its dirty units cost more than the rewrite (dead rows in every unit of a narrow segment from about 9%, a wide one not before half). Set a percent to rewrite earlier or later (WAL); 100 never rewrites. ALTER INDEX, no REINDEX.
 - **Sources:** benchmark `options-evidence`; [USAGE](USAGE.md#maintenance-and-operations)
@@ -619,42 +619,42 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · default · since 3.2 · default on
 
-- **What it does:** after churn a worker vacuums the table and merges the segments into one, so that scans stop checking rows in the heap and units answer from pre-aggregates again: 5% of 200k rows updated, a grouped sum 10.8 ms becomes 0.24 ms (2.6 ms after the VACUUM alone); 3% churn per round on 1M rows, the units answerable from the pre-aggregates 32% to 51% (wide rows) and 33% to 83% (a mix of hot and cold churn), 100% right after a rewrite
-- **Gain:** 5% of 200,000 rows updated: grouped sum 10.8 to 0.24 ms (2.6 VACUUM only); answerable units 32% to 51% (wide rows), 33% to 83% (mixed), 1,000,000 rows
-- **Impact:** index size: file up to twice its live size after a rewrite until later VACUUMs; live index +3% over VACUUM only after 10 cycles (200,000 rows); build, merge and writes: WAL +0.9% to +1.9% total with full-page images and a checkpoint per round, +0.0% without, against +12% to +28% rewriting at every VACUUM (1,000,000 rows); one rewrite 63 ms and 1.5 MB WAL at 200,000 rows; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the rewrites take at most sift.col_auto_merge_wal_pct (5) of the WAL the server writes: +0.9% to +1.9% total WAL at 1M rows with full-page images and a checkpoint per round, +0.0% without full-page images (it waits for the WAL), against +12% to +28% when it rewrites at every VACUUM; the file is up to twice its live size after a rewrite until later VACUUMs; no rewrite while a snapshot holds back the blocks the last one freed
+- **What it does:** after churn a worker vacuums the table, promotes the write buffer and merges the small segments the policy picks, so that scans stop checking rows in the heap and units answer from pre-aggregates again; it never rewrites an index (the rewrite of 5.0.0 and before is REINDEX INDEX CONCURRENTLY, or sift.col_maintain(index) in a quiet window), and sift.col_maintenance_status says when a reason asks for it
+- **Gain:** 5% of 200,000 rows updated: a grouped sum 10.8 ms before the VACUUM, 2.6 ms after it; the figures of 5.0.0 for the merge that rewrote the index (0.24 ms) are not measured since the rewrite left the worker (5.0.1)
+- **Impact:** index size: not measured since 5.0.1; build, merge and writes: not measured since 5.0.1; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the promotions and merges of its VACUUMs and worker write the segments they replace
 - **When:** A scan or insert on a table whose changed rows reach a thousandth of it (50 to 100,000 rows) asks the worker; so does a transaction that builds an index over at least 16 pages the visibility map does not hold (CREATE INDEX, REINDEX), or writes that many rows to an index (1,000 at least), when it commits. Needs sift.async_maintenance; not a DELETE alone, autovacuum_enabled = false, a standby.
-- **Default:** on — On since 3.3 (3.2: off): units answered from pre-aggregates 32% to 51% (wide rows) and 33% to 83% (mixed), a grouped sum 10.8 to 0.24 ms, for +0.9% to +1.9% total WAL, within the budget of col_auto_merge_wal_pct.
-- **Turn off:** Server or database only, the worker reads no session value: ALTER SYSTEM SET sift.col_auto_merge = off and reload, or ALTER DATABASE .. SET. sift.col_maintain(index) still applies the rule from a job.
+- **Default:** on — On since 3.3 (3.2: off). Since 5.0.1 it starts no rewrite: an index with a reason that only a rewrite serves (dirty units, fragmented units, a stale connection or scope) says REINDEX recommended in sift.col_maintenance_status and keeps its answers exact, reading the rows of those units from the heap or the join.
+- **Turn off:** Server or database only, the worker reads no session value: ALTER SYSTEM SET sift.col_auto_merge = off and reload, or ALTER DATABASE .. SET. sift.col_maintain(index) runs the rewrite from a job whatever it says.
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave on (set for the server or database). Off stops the background vacuums and rewrites. Tuning: _fragmentation, _buffer_pct, _wal_pct, _max_active, _partition_kb, _max_workers.
+- **Advice:** Leave on (set for the server or database). Off stops the background vacuums, promotions and merges. Tuning: _fragmentation, _buffer_pct, _wal_pct, _partition_kb (they set the reasons of sift.col_maintenance_due and what sift.col_maintain(index) takes).
 - **Sources:** benchmark `test:col_auto_merge`; [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift.col_auto_merge_fragmentation
 
 `sift_col` · default · since 3.2 · default 2
 
-- **What it does:** after churn a worker vacuums the table and merges the segments into one, so that scans stop checking rows in the heap and units answer from pre-aggregates again: 5% of 200k rows updated, a grouped sum 10.8 ms becomes 0.24 ms (2.6 ms after the VACUUM alone); 3% churn per round on 1M rows, the units answerable from the pre-aggregates 32% to 51% (wide rows) and 33% to 83% (a mix of hot and cold churn), 100% right after a rewrite
+- **What it does:** after churn a worker vacuums the table, promotes the write buffer and merges the small segments the policy picks, so that scans stop checking rows in the heap and units answer from pre-aggregates again; it never rewrites an index (the rewrite of 5.0.0 and before is REINDEX INDEX CONCURRENTLY, or sift.col_maintain(index) in a quiet window), and sift.col_maintenance_status says when a reason asks for it
 - **Gain:** as `sift.col_auto_merge`
-- **Impact:** index size: as `sift.col_auto_merge`; build, merge and writes: as `sift.col_auto_merge`; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the rewrites take at most sift.col_auto_merge_wal_pct (5) of the WAL the server writes: +0.9% to +1.9% total WAL at 1M rows with full-page images and a checkpoint per round, +0.0% without full-page images (it waits for the WAL), against +12% to +28% when it rewrites at every VACUUM; the file is up to twice its live size after a rewrite until later VACUUMs; no rewrite while a snapshot holds back the blocks the last one freed
+- **Impact:** index size: as `sift.col_auto_merge`; build, merge and writes: as `sift.col_auto_merge`; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the promotions and merges of its VACUUMs and worker write the segments they replace
 - **When:** One reason of the rewrite rule: units listed per superblock they cover; each promotion of the write buffer adds a segment over the superblocks the churn touched. 1.1 to 1000.
-- **Default:** 2 — 2.0, with the dirty and buffer reasons: promotions pile up overlay segments over the same superblocks and nothing was rewritten; the rule took 0 of 50 units to 25 of 25 from pre-aggregates.
-- **Turn off:** n/a: a threshold. Raise it (up to 1000) to rewrite later; sift.col_auto_merge = off stops the worker. Server or database level.
+- **Default:** 2 — 2.0, with the dirty and buffer reasons: promotions pile up overlay segments over the same superblocks and the status says so.
+- **Turn off:** n/a: a threshold. Raise it (up to 1000) to hear of it later. Server or database level.
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave at 2.0: the rewrite runs when the units listed reach this many times the superblocks they cover (each promotion adds a segment over the same superblocks). Lower it to rewrite sooner.
+- **Advice:** Leave at 2.0: sift.col_maintenance_due says fragmented units when the units listed reach this many times the superblocks they cover (each promotion adds a segment over the same superblocks), and the status asks for a REINDEX. Lower it to hear of it sooner.
 - **Sources:** benchmark as `sift.col_auto_merge`; [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift.col_auto_merge_buffer_pct
 
 `sift_col` · default · since 3.2 · default 1
 
-- **What it does:** after churn a worker vacuums the table and merges the segments into one, so that scans stop checking rows in the heap and units answer from pre-aggregates again: 5% of 200k rows updated, a grouped sum 10.8 ms becomes 0.24 ms (2.6 ms after the VACUUM alone); 3% churn per round on 1M rows, the units answerable from the pre-aggregates 32% to 51% (wide rows) and 33% to 83% (a mix of hot and cold churn), 100% right after a rewrite
+- **What it does:** after churn a worker vacuums the table, promotes the write buffer and merges the small segments the policy picks, so that scans stop checking rows in the heap and units answer from pre-aggregates again; it never rewrites an index (the rewrite of 5.0.0 and before is REINDEX INDEX CONCURRENTLY, or sift.col_maintain(index) in a quiet window), and sift.col_maintenance_status says when a reason asks for it
 - **Gain:** as `sift.col_auto_merge`
-- **Impact:** index size: as `sift.col_auto_merge`; build, merge and writes: as `sift.col_auto_merge`; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the rewrites take at most sift.col_auto_merge_wal_pct (5) of the WAL the server writes: +0.9% to +1.9% total WAL at 1M rows with full-page images and a checkpoint per round, +0.0% without full-page images (it waits for the WAL), against +12% to +28% when it rewrites at every VACUUM; the file is up to twice its live size after a rewrite until later VACUUMs; no rewrite while a snapshot holds back the blocks the last one freed
+- **Impact:** index size: as `sift.col_auto_merge`; build, merge and writes: as `sift.col_auto_merge`; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the promotions and merges of its VACUUMs and worker write the segments they replace
 - **When:** One reason of the rewrite rule: percent of the index's rows in the write buffer, read as one in-memory unit per superblock on every query until promoted. 0.01 to 100.
-- **Default:** 1 — 1.0: when the buffer is the only reason only the buffer is promoted (insert-only 2% per cycle, 12 cycles, 200,000 rows: 33.4 to 4.6 MB written, same query times), so firing early is cheap.
-- **Turn off:** n/a: a threshold. 100 never fires it; lower it to promote the buffer sooner. sift.col_auto_merge = off stops the worker. Server or database level.
+- **Default:** 1 — 1.0: a promotion alone is cheap (insert-only 2% per cycle, 12 cycles, 200,000 rows: 33.4 to 4.6 MB written, same query times), so firing early is cheap.
+- **Turn off:** n/a: a threshold. 100 never fires it; lower it to promote the buffer sooner. Server or database level.
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave at 1.0: the write buffer holding more than this percent of the rows is promoted (alone, without a whole-index rewrite when it is the only reason). Lower it to keep the buffer smaller.
+- **Advice:** Leave at 1.0: VACUUM seals and promotes the write buffer once it holds more than this percent of the rows of the index, as a promotion alone, and sift.col_maintenance_due says write buffer rows until it has. Lower it to keep the buffer smaller.
 - **Sources:** benchmark as `sift.col_auto_merge`; [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift.col_build_key_ranges
@@ -1502,28 +1502,28 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · default · since 4.3 · default 10
 
-- **What it does:** percent of the rows of a parent table whose keys changed since the stamp of a segment of a connected index from which the automatic rewrite fills the segment again
+- **What it does:** percent of the rows of a parent table whose keys changed since the stamp of a segment of a connected index from which sift.col_maintenance_due says stale connection and the status asks for a REINDEX
 - **Gain:** **not measured**
-- **Impact:** index size: **not measured**; build, merge and writes: n/a: not measured yet; other: a rewrite of the segments of the connected index (the fill reads the keys of the parent table once); the rewrite is within the WAL budget of sift.col_auto_merge
+- **Impact:** index size: **not measured**; build, merge and writes: n/a: not measured yet; other: a REINDEX of the connected index (the fill reads the keys of the parent table once); nothing rewrites it by itself
 - **When:** A connected index whose parent table changes keys: updates, deletes or inserts of parent rows.
-- **Default:** 10 — The flags age with the parent; the rewrite is their whole cost.
-- **Turn off:** connect = 'off' on the index and REINDEX; SET sift.col_auto_merge = off for the automatic rewrite
+- **Default:** 10 — The flags age with the parent; the REINDEX is their whole cost.
+- **Turn off:** connect = 'off' on the index and REINDEX
 - **Upgrade from 4.3:** New in 4.3.
-- **Advice:** Leave at 10: a read patches the rows of the changed keys from the join, so a few changed keys cost less than the rewrite. Lower it to rewrite sooner, at more WAL; a segment never filled or whose parent index was rebuilt is rewritten whatever the share.
+- **Advice:** Leave at 10: a read patches the rows of the changed keys from the join, so a few changed keys cost less than the rewrite. Lower it to hear of it sooner; a segment never filled or whose parent index was rebuilt is stale whatever the share, and REINDEX INDEX CONCURRENTLY fills it.
 - **Sources:** benchmark `test:col_conn_refresh`; [COL-CONNECT](COL-CONNECT.md#refresh)
 
 #### sift.col_scope_refresh_pct
 
 `sift_col` · default · since 5.0 · default 10
 
-- **What it does:** percent of the pairs of the scope relations that changed since the stamp of the scope segments of a sift_col index from which the automatic rewrite fills the scope segments again
+- **What it does:** percent of the pairs of the scope relations that changed since the stamp of the scope segments of a sift_col index from which sift.col_maintenance_due says stale scope and the status asks for a REINDEX
 - **Gain:** **not measured**
-- **Impact:** index size: **not measured**; build, merge and writes: n/a: not measured yet; other: a rewrite of the scope segments of the index (the fill reads the pairs of the scope relations once); the rewrite is within the WAL budget of sift.col_auto_merge
+- **Impact:** index size: **not measured**; build, merge and writes: n/a: not measured yet; other: a REINDEX of the scope index (the fill reads the pairs of the scope relations once); nothing rewrites it by itself
 - **When:** A scope index whose relations of pairs change: inserted, updated or deleted pairs.
-- **Default:** 10 — The scope entries age with the pairs; the rewrite is their whole cost.
-- **Turn off:** ALTER INDEX .. RESET (scope) for the index; SET sift.col_auto_merge = off for the automatic rewrite
+- **Default:** 10 — The scope entries age with the pairs; the REINDEX is their whole cost.
+- **Turn off:** ALTER INDEX .. RESET (scope) for the index
 - **Upgrade from 4.3:** New in 5.0.
-- **Advice:** Leave at 10: a read patches the members whose pairs changed from the join, so a few changed members cost less than the rewrite of the scope segments. Lower it to rewrite sooner, at more WAL; scope segments never filled, or stamped under a journal a relation has since lost, are rewritten whatever the share. sift.col_connect_refresh_pct is the same rule for connected indexes.
+- **Advice:** Leave at 10: a read patches the members whose pairs changed from the join, so a few changed members cost less than the rewrite of the scope segments. Lower it to hear of it sooner; scope segments never filled, or stamped under a journal a relation has since lost, are stale whatever the share. sift.col_connect_refresh_pct is the same rule for connected indexes.
 - **Sources:** benchmark `test:col_scope_journal`; [COL-SCOPE](COL-SCOPE.md#what-it-costs)
 
 ### opt-in
@@ -1685,15 +1685,15 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · opt-in · since 3.3 · default 0
 
-- **What it does:** after churn a worker vacuums the table and merges the segments into one, so that scans stop checking rows in the heap and units answer from pre-aggregates again: 5% of 200k rows updated, a grouped sum 10.8 ms becomes 0.24 ms (2.6 ms after the VACUUM alone); 3% churn per round on 1M rows, the units answerable from the pre-aggregates 32% to 51% (wide rows) and 33% to 83% (a mix of hot and cold churn), 100% right after a rewrite
+- **What it does:** after churn a worker vacuums the table, promotes the write buffer and merges the small segments the policy picks, so that scans stop checking rows in the heap and units answer from pre-aggregates again; it never rewrites an index (the rewrite of 5.0.0 and before is REINDEX INDEX CONCURRENTLY, or sift.col_maintain(index) in a quiet window), and sift.col_maintenance_status says when a reason asks for it
 - **Gain:** 1,000,000 rows, limit 8 MB: units answerable 42% to 100% (uniform churn, grouped sum 7.4 to 0.10 ms) and 71% to 100% (8.4 to 0.16 ms)
-- **Impact:** index size: -; build, merge and writes: VACUUM plus worker WAL equals the whole-index rewrite (15.3 against 15.05 MB uniform, 12.8 against 12.7 MB mixed hot and cold churn, a round); one step holds the lock for one partition; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the rewrites take at most sift.col_auto_merge_wal_pct (5) of the WAL the server writes: +0.9% to +1.9% total WAL at 1M rows with full-page images and a checkpoint per round, +0.0% without full-page images (it waits for the WAL), against +12% to +28% when it rewrites at every VACUUM; the file is up to twice its live size after a rewrite until later VACUUMs; no rewrite while a snapshot holds back the blocks the last one freed
-- **When:** Size of the segments the rewrite writes, so it rewrites only the ones churn touched, one step each under the lock. An index under half of it is rewritten whole; a segment under half is an overlay.
+- **Impact:** index size: -; build, merge and writes: VACUUM plus worker WAL equals the whole-index rewrite (15.3 against 15.05 MB uniform, 12.8 against 12.7 MB mixed hot and cold churn, a round); one step holds the lock for one partition; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the promotions and merges of its VACUUMs and worker write the segments they replace
+- **When:** Size of the segments the merges write, so that sift.col_maintain(index) rewrites only the ones churn touched, one step each under the lock. An index under half of it is rewritten whole; a segment under half is an overlay.
 - **Default:** 0 — Opt-in (gain): same WAL as the whole-index rewrite (15.3 against 15.05 MB uniform) and an index over sift.vacuum_rewrite_limit is already partitioned; it pays for churn in one place (a hot tail) of a large index.
 - **Why not the default:** the speedup is under 1.05, or saves under 100k instructions a query
 - **Turn off:** 0 (the default) rewrites the index whole, in partitions of the vacuum_rewrite_limit size above it or of a third of maintenance_work_mem where that is less (at least 4 MB, at most 48 for an index): SET sift.col_auto_merge_partition_kb = 0 or RESET at server or database level, and a size above the index puts back the one segment. Segments already cut stay.
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Default 0 rewrites the index whole (partitions of the vacuum_rewrite_limit size above it, or of a third of maintenance_work_mem where that is less). Set a size to keep the index as segments of that size and rewrite only the ones churn touched.
+- **Advice:** Default 0 rewrites the index whole (partitions of the vacuum_rewrite_limit size above it, or of a third of maintenance_work_mem where that is less). Set a size to keep the index as segments of that size, so that sift.col_maintain(index) rewrites only the ones churn touched.
 - **Sources:** benchmark `test:col_auto_merge_partition`; [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift.gpu
@@ -2459,11 +2459,11 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **What it does:** bounds the megabytes a column VACUUM rewrites to merge, and moves from the end of the file
 - **Gain:** -
 - **Impact:** index size: with vacuum_truncate: table and indexes after VACUUM 200.3 to 154.5 MiB (1,000,000 rows after churn); build, merge and writes: default 128 MB of segments rewritten by one VACUUM, plus an equal allowance to move the end of the file in each of up to 64 rounds, the lock let go between them (a rewritten index of 105 MB live: file 210 to 115 MiB after VACUUM, in 12 MB rounds; one segment of 75.3 MB above 76.9 MB of free blocks: 152.2 to 75.35 MB in 6 rounds); 0 keeps the one merge step and moves nothing; the move holds an exclusive lock; other: the VACUUM that moves the end of the file holds the table or index under an exclusive lock
-- **When:** VACUUM of sift_col and sift_table: merge work past the first step, and a separate allowance, for each of up to 64 rounds, to copy tail segments, or the highest runs of a segment larger than it, into free blocks before truncation. col_auto_merge rewrites an index over it in steps of that size.
+- **When:** VACUUM of sift_col and sift_table: merge work past the first step, and a separate allowance, for each of up to 64 rounds, to copy tail segments, or the highest runs of a segment larger than it, into free blocks before truncation. A rewrite you run (sift.col_maintain) goes in steps of that size.
 - **Default:** 128 MB — 128 MB (about 6 million rows of index) bounds the rewrite and the exclusive-lock copy of one VACUUM; the first merge always runs; with truncation, table and indexes 200.3 to 154.5 MiB after churn (1,000,000 rows).
 - **Turn off:** SET sift.vacuum_rewrite_limit = 0 (session, ALTER ROLE/DATABASE, postgresql.conf): one merge step and no file move; the free end is still truncated unless vacuum_truncate = false.
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave at 128. Raise it for a faster return of space after heavy churn; set 0 to forbid the file move and long locks. An index over it is rewritten in steps of that size by col_auto_merge. The trade: a rewrite leaves the file twice the index and the VACUUM after it copies the new segments down into the old holes to give the space back, a second write of the index (index pages written per inserted row, 100,000 rows, a rewrite every 7 batches of 2,000 inserts: 1,072 B with the copy, 636 B without, but the file 1.9 times the live bytes without it); the copy is once per rewrite and goes no faster than this limit a round.
+- **Advice:** Leave at 128. Raise it for a faster return of space after heavy churn; set 0 to forbid the file move and long locks. A rewrite you run (sift.col_maintain) goes in steps of that size. The trade: a rewrite leaves the file twice the index and the VACUUM after it copies the new segments down into the old holes to give the space back, a second write of the index (index pages written per inserted row, 100,000 rows, a rewrite every 7 batches of 2,000 inserts: 1,072 B with the copy, 636 B without, but the file 1.9 times the live bytes without it); the copy is once per rewrite and goes no faster than this limit a round.
 - **Sources:** [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift.on_corruption
@@ -2484,56 +2484,28 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · safety · since 3.3 · default 5
 
-- **What it does:** after churn a worker vacuums the table and merges the segments into one, so that scans stop checking rows in the heap and units answer from pre-aggregates again: 5% of 200k rows updated, a grouped sum 10.8 ms becomes 0.24 ms (2.6 ms after the VACUUM alone); 3% churn per round on 1M rows, the units answerable from the pre-aggregates 32% to 51% (wide rows) and 33% to 83% (a mix of hot and cold churn), 100% right after a rewrite
+- **What it does:** after churn a worker vacuums the table, promotes the write buffer and merges the small segments the policy picks, so that scans stop checking rows in the heap and units answer from pre-aggregates again; it never rewrites an index (the rewrite of 5.0.0 and before is REINDEX INDEX CONCURRENTLY, or sift.col_maintain(index) in a quiet window), and sift.col_maintenance_status says when a reason asks for it
 - **Gain:** -
-- **Impact:** index size: -; build, merge and writes: rewrites kept within 5% of the server WAL: total WAL per round equal to VACUUM only (299.0 / 304.7 MB with full-page images; 24.4 / 24.3 MB without, against 29.2 MB unbudgeted, 1,000,000 rows); other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the rewrites take at most sift.col_auto_merge_wal_pct (5) of the WAL the server writes: +0.9% to +1.9% total WAL at 1M rows with full-page images and a checkpoint per round, +0.0% without full-page images (it waits for the WAL), against +12% to +28% when it rewrites at every VACUUM; the file is up to twice its live size after a rewrite until later VACUUMs; no rewrite while a snapshot holds back the blocks the last one freed
-- **When:** Gate of the whole-index rewrite: it waits until the server wrote 100 / pct times the bytes of the index since it was last written. Not applied to promoting the buffer, to sift.col_maintain(index) or to the runs of a build that overlap each other in the key (half of the index or more); the segments that promotions and merges of new rows grew to half a partition of a key_cut index meet every partition too, but wait for it like other churn (24 inserts of 2,000 rows into a 1,000,000-row index: 4 whole-index rewrites and 21.7 KB of index pages written per inserted row, 0 rewrites and 4.3 KB). 0 to 100.
-- **Default:** 5 — 5 bounds the rewrites at a twentieth of the server WAL: +0.9% to +1.9% total WAL with full-page images, +0.0% without, against +12% to +28% rewriting at every VACUUM (1,000,000 rows).
-- **Turn off:** SET sift.col_auto_merge_wal_pct = 0 (ALTER SYSTEM or ALTER DATABASE) removes the wait: a rewrite at every VACUUM that finds the index due, +12% to +28% WAL. sift.col_maintain already ignores it.
+- **Impact:** index size: -; build, merge and writes: -; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the promotions and merges of its VACUUMs and worker write the segments they replace
+- **When:** Cap of one pass of the merge of the overlays of a key_cut index in partitions, which sift.col_maintain(index) makes: an eighth of max_wal_size at most and this percent of it. Until 5.0.0 it also made the automatic rewrite wait until the server wrote 100 / pct times the bytes of the index; no rewrite is automatic now.
+- **Default:** 5 — 5 keeps a pass of overlays from forcing a checkpoint of its own.
+- **Turn off:** SET sift.col_auto_merge_wal_pct = 0 (ALTER SYSTEM or ALTER DATABASE): a pass takes an eighth of max_wal_size.
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave at 5: the whole-index rewrite waits until the server wrote 100 / 5 times the bytes of the index since it was last written. Raise it for sooner rewrites; 0 does not wait. col_maintain ignores it.
+- **Advice:** Leave at 5: one pass of the merge of the overlays that sift.col_maintain(index) makes writes at most this percent of max_wal_size (an eighth at most), so that it forces no checkpoint of its own. 0 does not limit the pass to a share.
 - **Sources:** [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift.col_auto_merge_pass_mb
 
 `sift_col` · safety · since 4.1 · default 1024 MB
 
-- **What it does:** after churn a worker vacuums the table and merges the segments into one, so that scans stop checking rows in the heap and units answer from pre-aggregates again: 5% of 200k rows updated, a grouped sum 10.8 ms becomes 0.24 ms (2.6 ms after the VACUUM alone); 3% churn per round on 1M rows, the units answerable from the pre-aggregates 32% to 51% (wide rows) and 33% to 83% (a mix of hot and cold churn), 100% right after a rewrite
+- **What it does:** after churn a worker vacuums the table, promotes the write buffer and merges the small segments the policy picks, so that scans stop checking rows in the heap and units answer from pre-aggregates again; it never rewrites an index (the rewrite of 5.0.0 and before is REINDEX INDEX CONCURRENTLY, or sift.col_maintain(index) in a quiet window), and sift.col_maintenance_status says when a reason asks for it
 - **Gain:** -
-- **Impact:** index size: -; build, merge and writes: the rewrite of runs that overlap in the key is spread over passes: 33 runs of 5 MB (169 MB), 170 MB of WAL in one pass against passes of at most 45 MB (8 runs) in 7 passes, 293 MB in all (1.7x); rows equal to the heap after every pass; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the rewrites take at most sift.col_auto_merge_wal_pct (5) of the WAL the server writes: +0.9% to +1.9% total WAL at 1M rows with full-page images and a checkpoint per round, +0.0% without full-page images (it waits for the WAL), against +12% to +28% when it rewrites at every VACUUM; the file is up to twice its live size after a rewrite until later VACUUMs; no rewrite while a snapshot holds back the blocks the last one freed
-- **When:** Overlapping runs of a build that are as large as partitions are cut by key range a window at a time; a pass stops once it has rewritten this many MB (the window in hand finishes), and the next VACUUM, worker pass or sift.col_maintain(index) goes on from the directory it left. Each pass leaves the index valid; no pass holds more than the rewrite of one partition-sized step in memory. The blocks a pass frees are reusable only once the snapshots that may read them end (a standby with hot_standby_feedback, a long query, the transactions of REINDEX CONCURRENTLY), so the automatic rewrite waits for them when the blocks held back reach this many MB or half the index, whichever is less: the file stands at the live bytes plus one pass meanwhile (sift.col_maintenance_status names the snapshot). 0: one pass does all.
+- **Impact:** index size: -; build, merge and writes: the rewrite of runs that overlap in the key is spread over passes: 33 runs of 5 MB (169 MB), 170 MB of WAL in one pass against passes of at most 45 MB (8 runs) in 7 passes, 293 MB in all (1.7x); rows equal to the heap after every pass; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the promotions and merges of its VACUUMs and worker write the segments they replace
+- **When:** Overlapping runs of a build that are as large as partitions are cut by key range a window at a time; a pass stops once it has rewritten this many MB (the window in hand finishes), and the next sift.col_maintain(index) goes on from the directory it left. Each pass leaves the index valid; no pass holds more than the rewrite of one partition-sized step in memory.
 - **Default:** 1024 MB — WAL of the whole rewrite by runs a pass takes (33 runs, 169 MB, 170 MB in one pass): 2 runs 627 MB in 53 passes (3.7x), 4 runs 399 MB in 18 (2.3x), 8 runs 293 MB in 7 (1.7x), 16 runs 216 MB in 3 (1.27x); the largest pass 15 / 25 / 45 / 84 MB
 - **Turn off:** SET sift.col_auto_merge_pass_mb = 0 (ALTER SYSTEM or ALTER DATABASE) rewrites all the overlapping runs in one pass: the least total WAL (170 MB here) in one burst.
 - **Upgrade from 4.3:** unchanged
 - **Advice:** Leave at 1024 (about 8 runs of 120 MB a pass): a pass rewrites whole runs, never fewer than two. Lower it to cap the burst of one pass, at the price of more total WAL; raise it to finish in fewer passes.
-- **Sources:** [USAGE](USAGE.md#maintenance-and-operations)
-
-#### sift.col_auto_merge_max_active
-
-`sift_col` · safety · since 3.3 · default 0
-
-- **What it does:** after churn a worker vacuums the table and merges the segments into one, so that scans stop checking rows in the heap and units answer from pre-aggregates again: 5% of 200k rows updated, a grouped sum 10.8 ms becomes 0.24 ms (2.6 ms after the VACUUM alone); 3% churn per round on 1M rows, the units answerable from the pre-aggregates 32% to 51% (wide rows) and 33% to 83% (a mix of hot and cold churn), 100% right after a rewrite
-- **Gain:** -
-- **Impact:** index size: -; build, merge and writes: as `sift.col_auto_merge`; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the rewrites take at most sift.col_auto_merge_wal_pct (5) of the WAL the server writes: +0.9% to +1.9% total WAL at 1M rows with full-page images and a checkpoint per round, +0.0% without full-page images (it waits for the WAL), against +12% to +28% when it rewrites at every VACUUM; the file is up to twice its live size after a rewrite until later VACUUMs; no rewrite while a snapshot holds back the blocks the last one freed
-- **When:** The rewrite worker waits (naptime, doubling, 8 tries) while more than N client backends of the database run a statement; the next VACUUM asks again. 0 to 10000.
-- **Default:** 0 — 0: never waits, the earlier behavior. A bound for servers where rewrites must stay off busy moments; it has no measurement of its own.
-- **Turn off:** 0 (the default) never waits: SET sift.col_auto_merge_max_active = 0 or RESET at server or database level (ALTER SYSTEM, ALTER DATABASE).
-- **Upgrade from 4.3:** unchanged
-- **Advice:** Default 0 never waits. Set N to make the rewrite worker wait (with a backoff, 8 tries) while more than N client backends of the database run a statement, to keep rewrites off busy moments.
-- **Sources:** [USAGE](USAGE.md#maintenance-and-operations)
-
-#### sift.col_auto_merge_max_workers
-
-`sift_col` · safety · since 3.3 · default 0
-
-- **What it does:** after churn a worker vacuums the table and merges the segments into one, so that scans stop checking rows in the heap and units answer from pre-aggregates again: 5% of 200k rows updated, a grouped sum 10.8 ms becomes 0.24 ms (2.6 ms after the VACUUM alone); 3% churn per round on 1M rows, the units answerable from the pre-aggregates 32% to 51% (wide rows) and 33% to 83% (a mix of hot and cold churn), 100% right after a rewrite
-- **Gain:** -
-- **Impact:** index size: -; build, merge and writes: as `sift.col_auto_merge`; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the rewrites take at most sift.col_auto_merge_wal_pct (5) of the WAL the server writes: +0.9% to +1.9% total WAL at 1M rows with full-page images and a checkpoint per round, +0.0% without full-page images (it waits for the WAL), against +12% to +28% when it rewrites at every VACUUM; the file is up to twice its live size after a rewrite until later VACUUMs; no rewrite while a snapshot holds back the blocks the last one freed
-- **When:** Caps the rewrite workers of sift_col indexes running at once in a database; a worker above the cap looks again after sift.maintenance_naptime, doubling, 8 times; the next VACUUM asks again. 0 to 64.
-- **Default:** 0 — 0: no limit, the earlier behavior. A bound to cap the workers of a database that run at once; it has no measurement of its own.
-- **Turn off:** 0 (the default) is no limit: SET sift.col_auto_merge_max_workers = 0 or RESET at server or database level (ALTER SYSTEM, ALTER DATABASE).
-- **Upgrade from 4.3:** unchanged
-- **Advice:** Default 0 is no limit. Set N to cap the rewrite workers of a database that run at once; a worker above the cap looks again after the naptime, doubling, 8 times.
 - **Sources:** [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift.agg_lookup_cache_kb
@@ -2645,7 +2617,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Every backend that reads or writes a sift_table keeps the log in memory up to this setting: an entry for each row deleted or updated since the last VACUUM, the ones of its running statement included. Past it the older entries are written as sorted runs to temp files (a few are kept, merged two at a time as they double) and a lookup reads one 8 kB block of each run, so a read of a log of any length takes the memory of the setting and a block read for each run when the entry is not in memory. VACUUM rewrites the log through the same runs, and the maintenance worker is asked for at 33.5 million entries, as before.
 - **Default:** 65536 kB — 64 MB: 1 million entries in memory (DELETE of 400,000 rows held 1.8 MB at a limit of 1 MB and 14.3 MB with the log in memory; UPDATE 12.6 and 21.8 MB); a log in memory is probed as before, and a spilled one costs a block read for each run
 - **Turn off:** n/a: a limit (16 kB to 2 TB). SET sift.tomb_log_limit = '64GB' (any user) or RESET; postgresql.conf, ALTER SYSTEM, ALTER DATABASE / ROLE .. SET keep it.
-- **Upgrade from 4.3:** 5.0.1 keeps the setting as the memory of the log: the entries past it are kept in sorted runs on temp files, so a DELETE or UPDATE of any number of rows completes. The default is 64 MB, down from 8 GB: a backend that read a log of 16 million entries held 1 GB, and holds 64 MB now.
+- **Upgrade from 4.3:** 5.0.1 keeps the setting as the memory of the log: the entries past it are kept in sorted runs on temp files, so a DELETE or UPDATE of any number of rows completes (a first 5.0.1 candidate lowered the default to 1 GB with an error past it: reverted). The default is 64 MB, down from 8 GB: a backend that read a log of 16 million entries held 1 GB, and holds 64 MB now.
 - **Advice:** Leave 64 MB (1 million entries in memory). Raise it where a log of many millions of entries is read by many sessions and the temp-file reads show; lower it where a backend must hold less.
 - **Sources:** benchmark `test:tbl_tomb_log_limit`; [SIZING](SIZING.md#settings-that-matter)
 
@@ -2820,7 +2792,7 @@ Defaults changed: sift.tomb_log_limit since 4.3; new: `sift.search_chunk_sbs`, `
 | `sift.agg_child_first` | on | on |  | New in 4.3. |
 | `sift.col_unit_rows` | new | 0 |  | Named sift.test_col_unit_rows before 5.0; nothing to do, it was never in a release. |
 | `sift.search_chunk_sbs` | new | 32 |  | Named sift.test_search_chunk_sbs before 5.0; nothing to do, it was never in a release. |
-| `sift.tomb_log_limit` | 8388608 kB | 65536 kB |  | 5.0.1 keeps the setting as the memory of the log: the entries past it are kept in sorted runs on temp files, so a DELETE or UPDATE of any number of rows completes. The default is 64 MB, down from 8 GB: a backend that read a log of 16 million entries held 1 GB, and holds 64 MB now. |
+| `sift.tomb_log_limit` | 8388608 kB | 65536 kB |  | 5.0.1 keeps the setting as the memory of the log: the entries past it are kept in sorted runs on temp files, so a DELETE or UPDATE of any number of rows completes (a first 5.0.1 candidate lowered the default to 1 GB with an error past it: reverted). The default is 64 MB, down from 8 GB: a backend that read a log of 16 million entries held 1 GB, and holds 64 MB now. |
 | `sift.eval_methods` | '' | '' |  | 4.2 removed four names, so naming one is an error (the sign of -name is refused too): skip_trigger_lookup (always on: the statement trigger of track_changes leaves out the look at an UPDATE that kept the key), snapshot_masks (it had no code), latest_hint (it won nothing) and unit_rewrite (its writer is gone; segments an earlier release wrote with it stay readable and are vacuumed like the others, the automatic merge and rewrite leave them alone, and a forced sift.col_merge folds them): invalid value for parameter "sift.eval_methods": "snapshot_masks", DETAIL: Unknown evaluation method: snapshot_masks. Remove a removed name from ALTER DATABASE .. SET, ALTER SYSTEM and postgresql.conf before updating. Available after the extension library is loaded. Use the selection in the VACUUM session as well. |
 | `sift_col(connect)` | '' | '' | minor 44 | A new option: nothing changes for an index without it. The parent index of a connection is column format minor 44, which only 4.3 and later read. |
 | `sift_col(projection)` | new | '' |  | A new option: nothing changes for an index without it. ALTER EXTENSION UPDATE creates the definitions table and the status; an index that already lists a name is reported broken as not defined until the projection is created. No REINDEX. |

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# The free space of a sift_col index nothing changes goes back to the file system within a few VACUUMs, with a standby streaming and the automatic rewrite on.
-# VACUUM left the segments that end the file to the next rewrite whenever copying them down wrote more than half of the blocks it gives back, but an index with no
-# rewrite coming has nothing to fill the holes (the last pass of the runs of a build, a horizon that held the blocks of a rewrite and passed): the file stood
-# at its size for good. The deferral holds only while a rewrite is coming (col_auto_merge_space.sh); an index with none gets its holes back.
+# The free space of a sift_col index nothing changes goes back to the file system within a few VACUUMs, with a standby streaming and sift.col_auto_merge on.
+# An index with no rewrite coming (the last pass of the runs of a build, a horizon that held the blocks of a rewrite and passed) has nothing to fill the holes, and
+# the server starts no rewrite by itself: VACUUM moves the segments that end the file down and cuts the end.
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_VSI_ROWS 100000 100000)
@@ -25,7 +24,7 @@ catchup primary standby || bail "the standby did not catch up"
 size() { sql primary "SELECT pg_relation_size('t_idx')"; }
 live() { sql primary "SELECT bytes FROM sift.col_index_info('t_idx')"; }
 tight() { test "$(size)" -le "$(( $(live) * 120 / 100 ))"; }
-# the VACUUM of a table whose rewrite is automatic (the setting of the session is the one VACUUM reads)
+# the VACUUM of a table with sift.col_auto_merge on (the setting of the session is the one VACUUM reads)
 vacuum() { sql primary "SET sift.col_auto_merge = on" "VACUUM t" >/dev/null; }
 # the standby reports its horizon every second (hot_standby_feedback): a VACUUM moves what the horizon has passed
 past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; catchup primary standby; sleep 1.2; }
@@ -53,7 +52,7 @@ check "... and no rewrite is due" test "$(due)" == "-"
 size_loose=$(size)
 
 vacuum_until_tight
-check "VACUUM brings the file within 1.2 times the live bytes (standby streaming, automatic rewrite on)" tight
+check "VACUUM brings the file within 1.2 times the live bytes (standby streaming, sift.col_auto_merge on)" tight
 diag "file $size_loose -> $(size) in $vacuums VACUUMs, live $(live)"
 check "... within 6 VACUUMs" test "$vacuums" -le 6
 check "the primary verifies the index" test -z "$(sql primary "SELECT sift.col_verify('t_idx', true)" 2>&1)"

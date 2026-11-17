@@ -129,7 +129,7 @@ The same four questions have three sets of settings. They are different mechanis
 | Is it on? | `sift.col_auto_merge` (on) | `sift.table_auto_defrag` (on) | `sift.async_maintenance` (on) |
 | Limit the WAL | `sift.col_auto_merge_wal_pct`: percent of the server's WAL (5; 0 does not wait) | `sift.table_auto_defrag_wal_rate`: kB/s (0: no limit) | `sift.maintenance_wal_rate`: kB/s of the merges of the worker (0: no limit) |
 | Work in one pass | `sift.col_auto_merge_pass_mb` (1024 MB) | `sift.table_auto_defrag_budget` (128 MB) | `sift.vacuum_rewrite_limit` (128 MB a `VACUUM` of a column index or table) |
-| Wait while clients are busy | `sift.col_auto_merge_max_active` (0: never) | `sift.table_auto_defrag_max_active` (0: never) | none |
+| Wait while clients are busy | none | `sift.table_auto_defrag_max_active` (0: never) | none |
 | Slow down | none | `sift.table_auto_defrag_delay` (10 ms) | `sift.maintenance_cost_delay` (0 ms), `sift.maintenance_naptime` (2000 ms) |
 
 ### Why a VACUUM does not choose the options of an index

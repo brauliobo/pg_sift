@@ -58,7 +58,6 @@ installcheck-tbl_preagg_calendar	222	158
 tap-shell-old_lib_refusal	0	215
 tap-shell-index_build_crash	107	214
 tap-shell-pg_upgrade_32	214	205
-tap-shell-col_auto_merge_partition	189	211
 isolation	207	136
 tap-shell-col_dict_shared_shm	173	202
 installcheck-agg_group_spill_fuzz	196	105
@@ -219,7 +218,6 @@ installcheck-batch4	19	25
 installcheck-col_gorder_group	25	25
 installcheck-col_gorder_text	25	21
 installcheck-insert_backpressure	16	25
-tap-shell-col_build_peers	13	25
 installcheck-agg_join_key_types	9	24
 installcheck-agg_semi_lut	24	24
 installcheck-col_topn_deep	24	24

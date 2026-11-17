@@ -33,12 +33,12 @@ sift_col_open_inspect(Oid relid, const char *bm25_use)
 	return index;
 }
 
-/* sift.col_maintenance_due(index, automatic): why the rewrite is due now (dirty units, fragmented units, write buffer rows), NULL if it is not; automatic: as the server's own */
+/* sift.col_maintenance_due(index, automatic): why a rewrite of the index is due now (dirty units, fragmented units, write buffer rows, ..), NULL if it is not; automatic is kept for the SQL signature of 5.0 and changes nothing: no rewrite is the server's own */
 Datum
 sift_col_maintenance_due(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
-	const char *why = maint_rewrite_due(index, PG_GETARG_BOOL(1));
+	const char *why = maint_rewrite_due(index);
 
 	index_close(index, AccessShareLock);
 	if (why == NULL)
@@ -48,7 +48,8 @@ sift_col_maintenance_due(PG_FUNCTION_ARGS)
 
 /*
  * sift.col_maintenance_status(index): where the chain stands (the table is vacuumed when the rows changed since its last VACUUM reach vacuum_at, the
- * index is rewritten after that VACUUM), and blocked_by: what keeps a worker from vacuuming it or rewriting the index, empty when nothing does.
+ * promotions and merges follow), rewrite_due: why a rewrite of the index is due, and blocked_by: what keeps a worker from vacuuming the index or merging it, and
+ * the REINDEX that a reason asks for (nothing rewrites an index by itself), empty when nothing does.
  */
 Datum
 sift_col_maintenance_status(PG_FUNCTION_ARGS)
@@ -57,17 +58,16 @@ sift_col_maintenance_status(PG_FUNCTION_ARGS)
 	Relation	heap = relation_open(index->rd_index->indrelid, AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	Datum		v[7],
-				blocked[8];
+				blocked[6];
 	bool		nulls[7] = {0};
 	int64		changed = 0,
 				threshold = 0;
 	TimestampTz last = 0;
 	const char *why;
-	int			gates = 0,
-				nblocked = 0;
+	int			nblocked = 0;
 
 	sift_dir_read(index, snap);
-	why = maint_rewrite_check(index, true, &gates);
+	why = maint_rewrite_due(index);
 	if (!sift_col_auto_merge)
 		blocked[nblocked++] = CStringGetTextDatum("sift.col_auto_merge is off");
 	if (!sift_async_maintenance)
@@ -78,10 +78,9 @@ sift_col_maintenance_status(PG_FUNCTION_ARGS)
 		blocked[nblocked++] = CStringGetTextDatum("temporary table");
 	if (!sift_col_autovacuum_enabled(heap))
 		blocked[nblocked++] = CStringGetTextDatum("autovacuum_enabled is false");
-	if (gates & SIFT_COL_GATE_WAL)
-		blocked[nblocked++] = CStringGetTextDatum("the rewrite would take more than sift.col_auto_merge_wal_pct of the WAL written since the last");
-	if (gates & SIFT_COL_GATE_HELD)
-		blocked[nblocked++] = CStringGetTextDatum("a snapshot holds back the blocks of the last rewrite");
+	if (why != NULL && maint_reindex_wanted(why))
+		blocked[nblocked++] = CStringGetTextDatum(psprintf("REINDEX recommended (%s): the server does not rewrite an index by itself, REINDEX INDEX CONCURRENTLY %s does",
+														   why, sift_col_index_ref(index)));
 	v[0] = ObjectIdGetDatum(RelationGetRelid(heap));
 	nulls[1] = nulls[2] = nulls[3] = !sift_col_table_churn(RelationGetRelid(heap), &changed, &threshold, &last);
 	nulls[1] |= last == 0;
@@ -99,7 +98,11 @@ sift_col_maintenance_status(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
-/* sift.col_maintain(index): what the worker of sift.col_auto_merge does, now and in this session, whatever that setting says (the shared value stores the index left, and the rewrite); false when no rewrite is due or the maintenance lock is held */
+/*
+ * sift.col_maintain(index): the rewrite of the index that REINDEX would make over the old segments, now and in this session, whatever sift.col_auto_merge says (the shared value stores
+ * the index left, then the rewrite); false when no rewrite is due or the maintenance lock is held. It writes the whole index, in one transaction of the caller's: REINDEX INDEX CONCURRENTLY
+ * is the choice for a large index, and nothing but this call starts a rewrite.
+ */
 Datum
 sift_col_maintain(PG_FUNCTION_ARGS)
 {
@@ -110,7 +113,7 @@ sift_col_maintain(PG_FUNCTION_ARGS)
 	PreventCommandDuringRecovery("sift.col_maintain()");
 	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
 	sift_vstore_release_left(index);
-	n = sift_mops_rewrite(&maint_col_ops, &index, false);
+	n = sift_mops_rewrite(&maint_col_ops, index);
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_BOOL(n >= 0);
 }
@@ -540,18 +543,3 @@ sift_col_leaves(PG_FUNCTION_ARGS)
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
 }
-
-#ifdef SIFT_TESTING
-PG_FUNCTION_INFO_V1(sift_test_col_rewrite_worker);
-
-/* sift._test_col_rewrite_worker(index): the rewrite worker of the index that no VACUUM asked for, whether or not a rewrite is due */
-Datum
-sift_test_col_rewrite_worker(PG_FUNCTION_ARGS)
-{
-	Relation	index = sift_mops_open(&maint_col_ops, PG_GETARG_OID(0), AccessShareLock);
-	bool		started = sift_maint_register_worker(index, "sift_col_rewrite_worker_main");
-
-	relation_close(index, AccessShareLock);
-	PG_RETURN_BOOL(started);
-}
-#endif

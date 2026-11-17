@@ -195,12 +195,11 @@ fills the rows again under one new stamp. A connection whose journal does not vo
 
 ## Refresh
 
-The flags of a segment are as of its stamp, so they age with the parent. The rewrite of `sift.col_auto_merge` (the maintenance gate: the WAL budget, the held horizon, the maintenance lock,
-`sift.col_maintain`) takes a segment of a connected index when, for a connection whose journal vouches now, the segment was never filled (the first child of a parent, whose journal starts after its
+The flags of a segment are as of its stamp, so they age with the parent. A segment of a connected index is stale when, for a connection whose journal vouches now, it was never filled (the first child of a parent, whose journal starts after its
 scan), its stamp is of another journal (the parent index was rebuilt), the journal cannot tell what changed since the stamp (trimmed, too many keys), or the keys changed since the stamp are
 `sift.col_connect_refresh_pct` percent (10) of the rows of the parent index (for a segment with a row whose parent is missing, the rows inserted into the parent since the stamp count too: no
 journal records them, and no flag is read once one is inserted): below that a read patches those keys from the join, which costs less than the rewrite. The reason is `stale connection` in
-`sift.col_maintenance_due`. The rewrite fills the segment again under a new stamp, so the rule ends.
+`sift.col_maintenance_due`, and `sift.col_maintenance_status` says `REINDEX recommended (stale connection)`. The server does not rewrite the index for it: reads keep patching the keys from the join and answer as the normal plan does, and `REINDEX INDEX CONCURRENTLY` (or `sift.col_maintain`) fills the segment again under a new stamp, so the rule ends.
 
 A snapshot older than the journal (a transaction that began before the first child was built and still runs) is never vouched: its reads use the join path for every row, the answer is the same. The
 journal vouches for the snapshots taken after its start, so a long-running snapshot costs time and never changes an answer.
@@ -218,7 +217,7 @@ It holds for every row only when the flag is the whole story, so the statement u
 | reason | when |
 |---|---|
 | `write buffer` | a write buffer of the index holds rows (the reader's own too): their flag is not filled until the promotion |
-| `segment without stamp` | a segment was never filled (the first child of a parent, whose journal starts after its scan): the rewrite of the refresh fills it |
+| `segment without stamp` | a segment was never filled (the first child of a parent, whose journal starts after its scan): the REINDEX fills it |
 | `stamps of two journals` | the segments were stamped under different journals of the parent index |
 | `parent rows inserted since the stamp` | only for a segment that had a row with a key the parent lacked when it was filled (no foreign key keeps the child clean of them, `SIFT_CONN_STAMP_CLEAN`): a flag NULL is "not found then", the journal lists the keys that ended, not those that appeared, and a row inserted into the parent since (an update is an insert) may be the parent of such a row |
 | the verdict of the journal (`other lineage`, `trimmed`, `snapshot older than the stamp`, `too many changed keys` ..) | the journal cannot vouch for the stamp or names more than 16,384 keys |

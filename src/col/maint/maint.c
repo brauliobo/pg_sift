@@ -16,20 +16,14 @@
 #include "col/maint/maint_int.h"
 #include "col/vstore/vstore.h"
 
-/* The automatic rewrite (sift.col_auto_merge*, registered in col/am/am.c) */
+/* The automatic promotion and merge (sift.col_auto_merge*, registered in col/am/am.c) */
 bool		sift_col_auto_merge = true;
 
 double		sift_col_auto_merge_fragmentation = 2.0;
 
-int			sift_col_auto_merge_max_active = 0;
-
 int			sift_col_auto_merge_partition_kb = 0;
 
-int			sift_col_auto_merge_max_workers = 0;
-
 #define PART_MIN_KB		4096	/* a partition is never smaller, whatever maintenance_work_mem is */
-
-#define REWRITE_SLOT_KEY	0x53520000	/* with 0x51F7 in the advisory lock space: slot s of sift.col_auto_merge_max_workers is key + s */
 
 /*
  * The size of a partition in effect for the directory in hand: sift.col_auto_merge_partition_kb, else the smaller of sift.vacuum_rewrite_limit (for an index
@@ -131,9 +125,6 @@ maint_set_unordered(SiftCPaggSpec *spec, const SiftColSchema *schema, uint64 ove
 int	maint_merge_workers = 0;
 bool		maint_after_build = false;	/* the rewrite is the one right after the build: the choices of the build stand */
 bool		maint_redecided = false;	/* the rewrite in hand has chosen again from the data (col/maint/merge.c): once for all its steps */
-bool		maint_decide_wanted = false;	/* a merge of a VACUUM left the choice of its options to the worker VACUUM asks for (sift_catalog_write_ok) */
-bool		maint_decide_asked = false;	/* the worker was started to choose again, and rewrites only if the choice changes an option */
-bool		maint_decide_only = false;	/* the rule has nothing due: the rewrite in hand is the choice and, if it changes an option, the rewrite that applies it */
 
 const SiftMaintOps maint_col_ops = {
 	.name = "sift_col",
@@ -158,8 +149,7 @@ const SiftMaintOps maint_col_ops = {
 	.vacuum_skipped = maint_reap_overflow,
 	.rewrite_due = maint_rewrite_due,
 	.rewrite_all = maint_rewrite_all,
-	.vacuum_space_keep = maint_space_keep,
-	.vacuum_done = maint_rewrite_request,
+	.vacuum_done = maint_buffer_request,
 };
 
 Relation
@@ -195,7 +185,7 @@ sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers)
 	maint_after_build = true;
 	PG_TRY();
 	{
-		merged = sift_mops_rewrite(&maint_col_ops, &index, false) > 0;
+		merged = sift_mops_rewrite(&maint_col_ops, index) > 0;
 	}
 	PG_FINALLY();
 	{
@@ -347,7 +337,7 @@ sift_col_track_worker_main(Datum main_arg)
 	PG_END_TRY();
 }
 
-/* The open write buffer sealed first, as the reads that decoded it asked (maint_wbuf_read_due, judged again here: it may have been promoted since) */
+/* The open write buffer sealed first, as the reads that decoded it or the VACUUM that found it large asked (maint_wbuf_read_due, maint_wbuf_share_due, judged again here: it may have been promoted since) */
 static void
 seal_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
 {
@@ -359,7 +349,7 @@ seal_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
 	if (index != NULL)
 	{
 		*name = MemoryContextStrdup(cx, RelationGetRelationName(index));
-		if (sift_col_is_index(index) && maint_wbuf_read_due(index))
+		if (sift_col_is_index(index) && (maint_wbuf_read_due(index) || maint_wbuf_share_due(index)))
 			sift_cwbuf_seal(index, true);
 		index_close(index, RowExclusiveLock);
 	}
@@ -468,7 +458,6 @@ maint_worker(Datum main_arg, bool seal)
 	const char *volatile name = psprintf("%u", indexoid);
 	volatile bool failed = false;
 
-	sift_maint_own_xacts = true;
 	if (!sift_maint_stay_begin(indexoid))
 		return;
 
@@ -502,41 +491,23 @@ sift_col_read_promote_worker_main(Datum main_arg)
 	maint_worker(main_arg, true);
 }
 
-/*
- * sift.col_auto_merge_max_workers: a worker rewrites while it holds one of that many session locks of the database (advisory locks of the keys
- * REWRITE_SLOT_KEY + slot, which the server drops when the worker ends, whatever the way), so no more than that many rewrite at a time, whichever
- * indexes they are for.
- */
-static bool
-take_slot(void)
+/* The stores the index no longer names are released and the ones it holds compacted in a transaction that the other sessions see: a VACUUM's is not (sift_vstore_vacuum asks for this worker) */
+void
+sift_col_vstore_request(Relation index)
 {
-	for (int s = 0; s < sift_col_auto_merge_max_workers; s++)
-	{
-		LOCKTAG		tag;
-
-		SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, 0x51F7, REWRITE_SLOT_KEY + s, 2);
-		if (LockAcquire(&tag, ExclusiveLock, true, true) != LOCKACQUIRE_NOT_AVAIL)
-			return true;
-	}
-	return sift_col_auto_merge_max_workers == 0;
+	if (!sift_col_auto_merge || !sift_async_maintenance || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+		return;
+	sift_maint_register_worker(index, "sift_col_vstore_worker_main");
 }
 
-/* The rewrite VACUUM asked for: the rule is judged again (the index may have changed since), and a held maintenance lock leaves it for the next VACUUM */
 void
-sift_col_rewrite_worker_main(Datum main_arg)
+sift_col_vstore_worker_main(Datum main_arg)
 {
 	ErrorContextCallback errctx;
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
 	MemoryContext cx = CurrentMemoryContext;
 	const char *volatile name = psprintf("%u", indexoid);
 
-	volatile bool failed = false;
-
-	sift_maint_own_xacts = true;
-	/* sift.col_auto_merge_max_active, then a slot of sift.col_auto_merge_max_workers; a worker that has to wait ends and does not hold its connection: the next VACUUM, read or write asks again */
-	if (sift_maint_busy(sift_col_auto_merge_max_active) || !take_slot())
-		return;
-	reclaim_orphans(indexoid);
 	PG_TRY();
 	{
 		Relation	index;
@@ -549,19 +520,10 @@ sift_col_rewrite_worker_main(Datum main_arg)
 			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
 			if (sift_col_is_index(index) && sift_col_auto_merge && !RecoveryInProgress())
 			{
-				TimestampTz start = GetCurrentTimestamp();
-
-				if (maint_decide_asked)
-					sift_vstore_release_left(index);
-				if (sift_mops_rewrite(&maint_col_ops, &index, true) >= 0 && index != NULL)
-				{
-					sift_log_maint(index, "column rewrite worker finished", start, -1, -1);
-					sift_worker_ok(index, SIFT_JOB_REWRITE, start);
-					sift_vstore_compact(index);
-				}
+				sift_vstore_release_left(index);
+				sift_vstore_compact(index);
 			}
-			if (index != NULL)
-				index_close(index, RowExclusiveLock);
+			index_close(index, RowExclusiveLock);
 		}
 		PopActiveSnapshot();
 		CommitTransactionCommand();
@@ -569,25 +531,6 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	PG_CATCH();
 	{
 		sift_maint_worker_failed("sift_col", indexoid, name, cx);
-		failed = true;
 	}
 	PG_END_TRY();
-	if (failed)
-		reclaim_orphans(indexoid);
-}
-
-/* The choice of the options that a VACUUM left (maint_decide_wanted): made here, in a transaction that other sessions see, and the rewrite it calls for */
-void
-sift_col_decide_worker_main(Datum main_arg)
-{
-	maint_decide_asked = true;
-	sift_col_rewrite_worker_main(main_arg);
-}
-
-/* The rewrite that the reads of a backend priced (sift_col_vacuum_tick): the rule of VACUUM and the WAL budget of the changes do not hold what the reads owe */
-void
-sift_col_read_rewrite_worker_main(Datum main_arg)
-{
-	maint_read_asked = true;
-	sift_col_rewrite_worker_main(main_arg);
 }

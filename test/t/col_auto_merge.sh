@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# The automatic rewrite of a sift_col index the churn left scattered (sift.col_auto_merge, off by default): the end of a VACUUM that finds the rule satisfied
-# (units with a dead row, units listed per superblock, rows in the write buffer) starts a background worker that seals the write buffer and merges
-# every segment into one, the way sift.col_maintain does in a session. Here: the worker runs after the VACUUM; with it off it does
-# not, and the explicit call still does; it sleeps while it writes as sift.maintenance_cost_delay says (the time of its rewrite, in the log, has a
-# lower bound set by the pages it writes); and with the maintenance lock held (a VACUUM stopped at its cleanup gate, a testing build) it is skipped while queries and inserts go on.
+# What the churn of a sift_col index leaves to the user (sift.col_auto_merge, on by default): the end of a VACUUM starts a background worker that seals the write
+# buffer and promotes it, the incremental work, and never rewrites the index: the units with a dead row stay as they are, sift.col_maintenance_due names the reason, sift.col_maintenance_status
+# recommends REINDEX, and the explicit sift.col_maintain call (or REINDEX) rewrites every segment into one. With the setting off the worker does not run either; and with the maintenance lock
+# held (a VACUUM stopped at its cleanup gate, a testing build) the call is skipped while queries and inserts go on.
 . "$(dirname "$0")/lib.bash"
 
-plan 17
+plan 12
 node_init am 20 "autovacuum = off
 sift.test_col_net = off
 sift.log_min_duration = 0
@@ -23,48 +22,31 @@ churn() { sql am "UPDATE facts SET amount = amount + 1 WHERE id % 100 = $1" "DEL
 # state: segments of rows, those with a dead row, rows in the write buffer
 state() { sql am "SELECT count(*) FILTER (WHERE kind = 'immutable') || ' segments, ' || count(*) FILTER (WHERE dirty) || ' dirty, ' || coalesce(sum(rows) FILTER (WHERE kind <> 'immutable'), 0) || ' buffered' FROM sift.col_segments('facts_idx')"; }
 due() { sql am "SELECT coalesce(sift.col_maintenance_due('facts_idx'), 'not due')"; }
-scattered() { [[ $(state) != "1 segments, 0 dirty, 0 buffered" ]]; }
-await_rewrite() { # until the index is one clean segment
-	for _ in $(seq 400); do scattered || return 0; sleep 0.05; done
-	return 1
-}
+quiet() { [[ $(sql am "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'sift %'") == 0 ]]; }
+advice() { sql am "SELECT coalesce((SELECT b FROM unnest(blocked_by) b WHERE b LIKE 'REINDEX recommended%'), '') FROM sift.col_maintenance_status('facts_idx')"; }
 groups() { sql am "SET sift.enable_agg = $1" "SET max_parallel_workers_per_gather = 0" "SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT kind, count(*), sum(amount) FROM facts GROUP BY kind) x" | tail -1; }
 
-# 1. on (it is off by default): the VACUUM asks for it, the worker does it
+# 1. on: the VACUUM asks for the worker, which promotes the write buffer and leaves the dirty units for the user
 sql am "ALTER DATABASE postgres SET sift.col_auto_merge = on" >/dev/null
+BEFORE=$(grep -c 'rewrote (' "$D/postgres.log")
 churn 1
 sql am "VACUUM facts" >/dev/null
-check "the worker rewrites it after the VACUUM: one segment, no dead row, nothing in the buffer" await_rewrite
-check "the index verifies and the answers are the table's" test "$(sql am "SELECT sift.col_verify('facts_idx', true)" 2>&1 | grep -c ERROR)" == 0
+check "the worker promotes the write buffer after the VACUUM" wait_for '[[ $(state) == *" 0 buffered" ]]' 60
+check "and ends" wait_for quiet 60
+check "no segment was rewritten: units with a dead row are still there" test "$(state | grep -c ' 0 dirty')" == 0
+check "no rewrite is in the log" test "$(grep -c 'rewrote (' "$D/postgres.log")" == "$BEFORE"
+check "the rewrite is due, and the status recommends REINDEX with the reason" test "$(due)|$(advice)" == "dirty units|REINDEX recommended (dirty units): the server does not rewrite an index by itself, REINDEX INDEX CONCURRENTLY facts_idx does"
 check "the answers are the heap's" test "$(groups on)" == "$(groups off)"
-check "nothing is due after it" test "$(due)" == "not due"
 
-# 2. off (the default): the VACUUM leaves the index as its policy does, the call rewrites it
+# 2. off: the VACUUM leaves the index as its policy does, the call rewrites it
 sql am "ALTER DATABASE postgres SET sift.col_auto_merge = off" >/dev/null
 churn 2
 sql am "VACUUM facts" >/dev/null
-sleep 1
-check "off: no rewrite after the VACUUM" scattered
 check "off: it is due and sift.col_maintain rewrites it" test "$(due) $(sql am "SELECT sift.col_maintain('facts_idx')")" == "dirty units t"
-check "off: one clean segment after the call" test "$(state)" == "1 segments, 0 dirty, 0 buffered"
+check "off: one clean segment after the call, and nothing is due" test "$(state)|$(due)|$(advice)" == "1 segments, 0 dirty, 0 buffered|not due|"
 sql am "ALTER DATABASE postgres SET sift.col_auto_merge = on" >/dev/null
 
-# 3. the worker sleeps as sift.maintenance_cost_delay says while it writes: a rewrite of the pages it writes cannot take less than their delays
-sql am "ALTER DATABASE postgres SET sift.maintenance_cost_delay = 100" >/dev/null
-REWROTE='rewrote (.*) the segments of index "facts_idx" in [0-9]* ms'
-BEFORE=$(grep -c "$REWROTE" "$D/postgres.log")
-churn 3
-sql am "VACUUM facts" >/dev/null
-await_rewrite
-for _ in $(seq 400); do [[ $(grep -c "$REWROTE" "$D/postgres.log") -gt $BEFORE ]] && break; sleep 0.05; done
-MS=$(grep "$REWROTE" "$D/postgres.log" | tail -1 | grep -o '[0-9]* ms' | grep -o '[0-9]*')
-PAGES=$(sql am "SELECT (sum(bytes) / 8192)::int FROM sift.col_segments('facts_idx')")
-BOUND=$(( (PAGES / 16 - 2) * 100 ))
-diag "the last rewrite took ${MS:-?} ms for $PAGES pages at 100 ms for every 16 pages (at least $BOUND ms)"
-sql am "ALTER DATABASE postgres RESET sift.maintenance_cost_delay" >/dev/null
-check "the worker slept while it wrote" test "${MS:-0}" -ge "$BOUND" -a "$BOUND" -ge 200
-
-# 4. the maintenance lock held by a VACUUM stopped at its cleanup: the call is skipped, readers and writers go on
+# 3. the maintenance lock held by a VACUUM stopped at its cleanup: the call is skipped, readers and writers go on
 churn 4
 rm -f "$D/locked" "$D/release"
 {
@@ -87,35 +69,5 @@ check "maintenance lock held: a query, an insert and an update are served" test 
 check "the VACUUM ended well and the rewrite is still due" test "$(grep -c ERROR "$D/vacuum")|$(due)" == "0|dirty units"
 sql am "SELECT sift.col_maintain('facts_idx')" >/dev/null
 check "afterwards the call rewrites it and the answers are the heap's" test "$(state)|$(groups on)" == "1 segments, 0 dirty, 0 buffered|$(groups off)"
-
-# 5. sift.col_auto_merge_max_active: with that many other backends running a statement the worker ends without waiting (it would hold its connection and a slot), and
-# the next VACUUM asks again and rewrites once they are done
-sql am "ALTER DATABASE postgres SET sift.col_auto_merge_max_active = 1" >/dev/null
-churn 5
-for i in 1 2; do sql am "SELECT pg_sleep(3)" >/dev/null & done
-sleep 0.5
-sql am "VACUUM facts" >/dev/null
-sleep 1
-check "busy (3 backends running a statement over 1): the worker waits" scattered
-check "the rewrite is still due" test "$(due)" == "dirty units"
-wait
-sql am "VACUUM facts" >/dev/null
-check "quiet again: the worker rewrote it, one clean segment" await_rewrite
-check "and the answers are the heap's" test "$(groups on)" == "$(groups off)"
-wait
-sql am "ALTER DATABASE postgres RESET sift.col_auto_merge_max_active" >/dev/null
-# 6. the same with partitions: a rewrite by partitions opens a write target for each, and the pages under 16 of each must still add up to the delays
-sql am "ALTER DATABASE postgres SET sift.maintenance_cost_delay = 100" "ALTER DATABASE postgres SET sift.col_auto_merge_partition_kb = 64" >/dev/null
-LINES=$(wc -l <"$D/postgres.log")
-BEFORE=$(grep -c "$REWROTE" "$D/postgres.log")
-churn 6
-sql am "VACUUM facts" >/dev/null
-for _ in $(seq 400); do [[ $(grep -c "$REWROTE" "$D/postgres.log") -gt $BEFORE ]] && break; sleep 0.05; done
-MS=$(grep "$REWROTE" "$D/postgres.log" | tail -1 | grep -o '[0-9]* ms' | grep -o '[0-9]*')
-PAGES=$(tail -n +$((LINES + 1)) "$D/postgres.log" | sed -n 's/.*sift: merged .* of index "facts_idx" in [0-9]* ms, [0-9]* documents, \([0-9]*\) bytes.*/\1/p' | awk '{ s += $1 } END { print int(s / 8192) }')
-BOUND=$(( (PAGES / 16 - 2) * 100 ))
-diag "the last rewrite took ${MS:-?} ms for $PAGES pages at 100 ms for every 16 pages (at least $BOUND ms)"
-sql am "ALTER DATABASE postgres RESET sift.maintenance_cost_delay" "ALTER DATABASE postgres RESET sift.col_auto_merge_partition_kb" >/dev/null
-check "partitions: the worker slept while it wrote" test "${MS:-0}" -ge "$BOUND" -a "$BOUND" -ge 200
 
 finish

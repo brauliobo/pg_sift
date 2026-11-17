@@ -111,7 +111,7 @@ typedef enum SiftMergeGoal
 	SIFT_GOAL_ANY,
 	SIFT_GOAL_BACKGROUND,
 	SIFT_GOAL_VACUUM,
-	SIFT_GOAL_REWRITE			/* a step of sift_mops_rewrite whose reason is not the write buffer alone */
+	SIFT_GOAL_REWRITE			/* a step of sift_mops_rewrite (an explicit call) whose reason is not the write buffer alone */
 } SiftMergeGoal;
 
 /* Writes the immutable segment of a generation again as one segment, the bytes it wrote (0: nothing) */
@@ -144,10 +144,9 @@ typedef struct SiftMaintOps
 	void		(*vacuum_heap) (Relation index, Relation heap);	/* NULL: nothing; every VACUUM's cleanup, before the merges: what only the heap tells about the segments (the maintenance lock is held) */
 	void		(*vacuum_log) (Relation index);	/* NULL: nothing; every VACUUM's cleanup, after the seal (the maintenance lock is held) */
 	void		(*vacuum_skipped) (Relation index, Relation heap);	/* NULL: nothing; VACUUM skipped the vacuuming of the indexes (no ambulkdelete), so rows the heap dropped may be live in the index (the maintenance lock is held) */
-	const char *(*rewrite_due) (Relation index, bool automatic);	/* NULL: the kind has no rewrite rule; else why the index is worth a rewrite of all its segments now, or NULL (the maintenance lock is held) */
-	bool		(*rewrite_all) (const char *why);	/* NULL: every reason rewrites all the segments; else false when the reason is met by promoting the write buffer and the merges of the policy */
-	uint64		(*vacuum_space_keep) (Relation index);	/* NULL: the space step may move segments; else the free blocks below the end of the file that VACUUM leaves (PG_UINT64_MAX when a rewrite of the index is coming, which moves the segments: it then only cuts the free tail), and moves segments only past that many */
 	void		(*vacuum_done) (Relation index);	/* NULL: nothing; called at the end of VACUUM's cleanup, the maintenance lock released */
+	const char *(*rewrite_due) (Relation index);	/* NULL: the kind has no rewrite rule; else why the index is worth a rewrite of all its segments now, or NULL (the maintenance lock is held) */
+	bool		(*rewrite_all) (const char *why);	/* NULL: every reason rewrites all the segments; else false when the reason is met by promoting the write buffer and the merges of the policy */
 } SiftMaintOps;
 
 /* Called by aminsert after an append crossed write_buffer_limit */
@@ -180,12 +179,10 @@ extern Datum sift_mops_sql_merge(const SiftMaintOps *ops, PG_FUNCTION_ARGS);
 /*
  * The rewrite of an index that churn left scattered (ops->rewrite_due): seals the open write buffer, promotes, and merges what the kind's
  * SIFT_GOAL_REWRITE step picks (every segment, or the ones the churn touched) a step at a time, the maintenance lock held for one step only.
- * The lock is not waited for to begin with (when a VACUUM, a merge or the worker holds it, nothing is done), but between steps. automatic: the call is the
- * server's own (the limit on the bytes rewritten applies). Returns the merges made, -1 when nothing was due or the lock was busy.
+ * The lock is not waited for to begin with (when a VACUUM, a merge or the worker holds it, nothing is done), but between steps. Only an explicit call runs it
+ * (sift.col_maintain, the merge that ends a parallel build): no worker and no VACUUM does. Returns the merges made, -1 when nothing was due or the lock was busy.
  */
-extern int	sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic);
-extern PGDLLIMPORT bool sift_maint_own_xacts;
-extern Relation sift_maint_step_boundary(Relation index);
+extern int	sift_mops_rewrite(const SiftMaintOps *ops, Relation index);
 
 /* Like sift_maint_request_worker, but a request is not dropped for coming within the naptime of another: the worker itself leaves when it has nothing to do */
 extern bool sift_maint_register_worker(Relation index, const char *function);
@@ -231,8 +228,6 @@ extern void sift_maint_cut_nowait(bool on);
 extern void sift_maint_report_fallback(Relation index, int elevel, uint64 moved, BlockNumber freed);
 extern BlockNumber sift_maint_shrink_target(Relation rel, int64 *movable);
 extern BlockNumber sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);
-extern BlockNumber sift_maint_shrink_end(Relation rel, uint64 holes);
-extern void sift_maint_shrink_leaving(BlockNumber end);
 extern void sift_maint_space_rounds(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);
 extern BlockNumber sift_maint_cut_released(Relation rel, int elevel);
 extern bool sift_maint_space_worth(int64 blocks, BlockNumber nblocks);

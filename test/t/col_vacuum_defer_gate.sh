@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# A VACUUM leaves the moves of a loose sift_col file to a rewrite only when the automatic rewrite will start. A rewrite that is due but waits for its WAL budget
-# (sift.col_auto_merge_wal_pct) is no reason to leave the file loose: the VACUUM moves the segments down and cuts the free end itself.
+# A VACUUM of a loose sift_col file moves the segments down and cuts the free end itself, also when a rewrite is due: no rewrite comes by itself to write them into those
+# blocks, so the VACUUM does not leave the file loose for one (the rewrite is the user's REINDEX, and the status says so).
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_DG_ROWS 200000 100000)
@@ -23,16 +23,14 @@ live() { sql defer "SELECT bytes FROM sift.col_index_info('t_idx')"; }
 loose=$(size)
 check "the merge leaves the file over 1.6 times the live bytes" test "$loose" -gt "$(( $(live) * 16 / 10 ))"
 
-# dead rows in many units (a VACUUM that does not cut marks them) make a rewrite due; its WAL budget, a hundred times the segments, is far off: the automatic one does not start
+# dead rows in many units (a VACUUM that does not cut marks them) make a rewrite due, and nothing starts it
 sql defer "UPDATE t SET amount = amount + 1 WHERE id % 20 = 1" "ALTER INDEX t_idx SET (vacuum_truncate = false)" "VACUUM t" "ALTER INDEX t_idx RESET (vacuum_truncate)" "SELECT pg_current_xact_id()" >/dev/null
-SETS=("SET sift.col_auto_merge = on" "SET sift.col_auto_merge_wal_pct = 1")
-# the write buffer of the quick tier (a quarter of a unit is not reached, so VACUUM leaves its rows) is due for its promotion whatever the budget says, and a promotion moves no segment
-check "a rewrite is due and the automatic one waits (at most for the promotion of the write buffer)" test "$(sql defer "${SETS[@]}" "SELECT sift.col_maintenance_due('t_idx', false) IS NOT NULL, \
-	coalesce(sift.col_maintenance_due('t_idx', true), 'write buffer rows') = 'write buffer rows'")" == "t|t"
+SETS=("SET sift.col_auto_merge = on")
+check "a rewrite is due" test "$(sql defer "${SETS[@]}" "SELECT sift.col_maintenance_due('t_idx') IS NOT NULL")" == t
 sql defer "${SETS[@]}" "VACUUM t" >/dev/null
 sql defer "SELECT pg_current_xact_id()" >/dev/null
 sql defer "${SETS[@]}" "VACUUM t" >/dev/null
 diag "file $loose -> $(size), live $(live)"
-check "the VACUUM that a due rewrite does not follow gives the free blocks back: the file is within 1.3 times the live bytes" test "$(size)" -le "$(( $(live) * 13 / 10 ))"
+check "the VACUUM gives the free blocks back although a rewrite is due: the file is within 1.3 times the live bytes" test "$(size)" -le "$(( $(live) * 13 / 10 ))"
 check "intact" test -z "$(sql defer "SELECT sift.col_verify('t_idx', true)" 2>&1)"
 finish

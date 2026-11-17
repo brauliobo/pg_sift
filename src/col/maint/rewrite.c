@@ -1,22 +1,22 @@
 /*
- * col/maint/rewrite.c - the rewrite of segments that hold dead rows
- * when a rewrite is due, requested and done in the background
- * the tick of the rewrite worker
+ * col/maint/rewrite.c - why an index is worth a rewrite of its segments (sift.col_maintenance_due, sift.col_maintain, sift.col_maintenance_status)
+ * the price of the reads that ask for the promotion of the write buffer and the merge of the overlays
  */
 #include "postgres.h"
+#include <math.h>
+
 #include "col/maint/maint_int.h"
+#include "core/worker.h"
 #include "core/membudget.h"
 
 #define WHY_BUFFER	"write buffer rows"
-#define WHY_DECIDE	"options chosen again"
+#define WHY_OVERLAY	"overlay units"
+#define WHY_SCOPE	"scope segments"
 
 double		sift_col_auto_merge_buffer_pct = 1.0;
 int			sift_col_auto_merge_pass_mb = 1024;
 uint64		maint_pass_bytes = 0;	/* the bytes of overlapping runs the rewrite pass in hand has rewritten */
 uint64		maint_pass_gen = 0;		/* the newest generation the rolling rewrite pass in hand started from (0: not begun): the partitions of it are the ones still to rewrite */
-
-/* The worker was started because the reads of a backend owe the rewrite (maint_read_due) */
-bool		maint_read_asked = false;
 
 /*
  * The price of a row of the rewrite, instructions and WAL in instructions: 930 M instructions and 2.9 to 3.5 MB of WAL for 300,000 rows (3,100 a row), and a MB of WAL weighs
@@ -103,6 +103,53 @@ maint_wbuf_read_due(Relation index)
 	return due;
 }
 
+/*
+ * Does the write buffer hold more than sift.col_auto_merge_buffer_pct percent of the rows of the index (the reason 'write buffer rows' of sift.col_maintenance_due)? Its rows are read as one
+ * in-memory unit per superblock they touch on every query until a promotion, which costs the rows once: the VACUUM that ends asks for it (maint_buffer_request)
+ */
+static bool
+buffer_share_due(Relation index, const SiftDirSnapshot *snap, uint64 rows)
+{
+	uint64		buffered = 0;
+
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN || snap->segs[i].kind == SIFT_SEG_WBUF_SEALED)
+		{
+			uint64		nrows,
+						npages;
+
+			sift_cwbuf_summary(index, &snap->segs[i], &nrows, &npages);
+			buffered += nrows;
+		}
+	return buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered);
+}
+
+bool
+maint_wbuf_share_due(Relation index)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	uint64		rows = 0;
+	bool		due;
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			rows += snap->segs[i].ndocs;
+	due = buffer_share_due(index, snap, rows);
+	pfree(snap);
+	return due;
+}
+
+/* The end of a VACUUM: a write buffer that holds more than its share of the rows is sealed and promoted by the worker that stays for promotions (the rest of what it left is the merges' of the policy) */
+void
+maint_buffer_request(Relation index)
+{
+	if (!sift_col_auto_merge || !sift_async_maintenance || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+		return;
+	if (maint_wbuf_share_due(index))
+		sift_maint_register_worker(index, "sift_col_read_promote_worker_main");
+}
+
 /* The end of a statement: what it decoded of the buffer and paid for the marks of the log goes to the metapage, unless the sums meet the rules already */
 void
 sift_col_reads_flush(Relation index)
@@ -119,124 +166,20 @@ sift_col_promote_tick(Relation index)
 	return maint_wbuf_read_due(index) && sift_maint_request_worker(index, "sift_col_read_promote_worker_main");
 }
 
-/* Do the reads of this backend owe the rewrite of the index? The rows are the directory's: no unit is read */
-bool
-maint_read_due(Relation index, double owed)
-{
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	uint64		rows = 0;
-
-	sift_col_dir_read(index, snap, false);
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
-			rows += snap->segs[i].ndocs;
-	pfree(snap);
-	return owed >= MAINT_HALF * ROW_PRICE * (double) rows;
-}
-
-/*
- * Do the segments the budget counts from (those of at least half the bytes of the largest) overlap each other? A build in parallel, or one that
- * outgrew the memory of a segment writer, leaves peers that all cover the same superblocks, and the rewrite that merges them is the first, not
- * a repeat of the churn that the budget limits. A rewrite leaves peers that do not overlap, and the segments a promotion adds are small.
- */
-static bool
-peers_overlap(const RewriteView *v)
-{
-	SiftDirSnapshot *peers = palloc(sizeof(SiftDirSnapshot));
-	uint64		large = 0,
-				listed = 0;
-	bool		overlap;
-
-	for (int i = 0; i < v->n; i++)
-		large = Max(large, v->imm[i].bytes);
-	peers->nsegs = 0;
-	for (int i = 0; i < v->n; i++)
-		if (v->imm[i].bytes * 2 >= large)
-		{
-			peers->segs[peers->nsegs++] = v->imm[i];
-			listed += v->seg[i]->nsb;
-		}
-	overlap = peers->nsegs > 1 && (double) listed >= sift_col_auto_merge_fragmentation * (double) sift_cseg_dir_units(peers);
-	pfree(peers);
-	return overlap;
-}
-
-/*
- * Are the segments that overlap each other in the key the runs of a build? Runs overlap each other, and most of the index has to go for none to overlap another: their
- * rewrite is the build's, not churn. A promotion or merge of new rows that grew to the size of a partition overlaps every partition as well, but taking it out
- * leaves none overlapping, and it is part of the index: its rewrite takes the bytes of all the partitions it meets, KEY_RUNS_SHARE times what it absorbs or more,
- * so it waits for the WAL budget like any other churn and does not rewrite the index each time one grows, nor each time the merges of the overlays leave another.
- * Two runs of a build are each half of the index, as the segments that must go for none to overlap another are at least half of it. The segment taken out next is the one
- * that meets the most others for its bytes: pieces over one base partition are the cover (a third of the index), not the base that meets them all (two thirds of it).
- */
-#define KEY_RUNS_SHARE	2
-
-static bool
-key_runs(const RewriteView *v)
-{
-	bool		left[SIFT_MAX_SEGMENTS];
-	uint64		cover = 0,
-				all = 0;
-
-	memcpy(left, v->kover, sizeof(left));
-	for (int i = 0; i < v->n; i++)
-		all += v->imm[i].bytes;
-	for (;;)
-	{
-		int			worst = -1;
-		double		most = 0;
-
-		for (int i = 0; i < v->n; i++)
-		{
-			int			meets = 0;
-			double		per_byte;
-
-			for (int j = 0; j < v->n && left[i]; j++)
-				meets += left[j] && j != i && v->klo[i] < v->khi[j] && v->klo[j] < v->khi[i];
-			per_byte = (double) meets / v->imm[i].bytes;
-			if (per_byte > most)
-			{
-				worst = i;
-				most = per_byte;
-			}
-		}
-		if (worst < 0)
-			break;
-		left[worst] = false;
-		cover += v->imm[worst].bytes;
-	}
-	return cover * KEY_RUNS_SHARE >= all && cover > 0;
-}
-
-/*
- * A snapshot older than the last rewrite keeps the blocks it freed from being reused, and its rows out of the visibility map: another rewrite
- * answers no more units and leaves as much again behind (the file grew 1.6 times faster, for 5% more WAL, under a snapshot held through 16 rounds
- * of churn). A pass writes its output to new blocks and frees its input only for the horizon, so the file stands at the live bytes plus the blocks held:
- * the rewrite waits for the horizon when they reach what one pass leaves behind, sift.col_auto_merge_pass_mb, or half the index when that is less
- * (the rewrite of the whole index is one pass of the index). A paced rewrite of a large index stops after its first pass, not after half the index.
- */
-static bool
-rewrite_held(Relation index, uint64 bytes)
-{
-	uint64		held = sift_store_held_blocks(index) * BLCKSZ;
-
-	return held * 2 >= bytes || (sift_col_auto_merge_pass_mb > 0 && held >= (uint64) sift_col_auto_merge_pass_mb << 20);
-}
-
 /*
  * Is the index worth a rewrite of all its segments? A DELETE or UPDATE spread over the table puts a dead row in most units while
  * the share of dead rows stays under dead_rewrite_pct, and each promotion of the write buffer adds a segment over the same superblocks, so the
  * index slowly loses the units that answer from their pre-aggregates and gains units to read. The rule is on what a rewrite changes, measured on
- * the directory and the liveness (no heap page is read): a unit holds a dead row (under churn every unit does, so no share of them tells a rewrite that is
- * worth it from one that is not: the WAL budget and the price of the reads do), or the
+ * the directory and the liveness (no heap page is read): a unit holds a dead row, or the
  * units listed are sift.col_auto_merge_fragmentation times the superblocks they cover, or the write buffer holds more than
- * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. The automatic rewrite also stays within sift.col_auto_merge_wal_pct of the WAL the server writes (wal_budget_spent), which defers the rewrite of the segments and not the promotion of the write buffer. It waits too while the blocks the last rewrite freed are held back by a snapshot.
+ * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. Nothing starts a rewrite from it: sift.col_maintenance_status tells which reasons ask for a REINDEX,
+ * and sift.col_maintain(index) runs the rewrite when it is asked for.
  * With sift.col_auto_merge_partition_kb the rewrite is of one partition at a time: a partition with a dirty unit is due, whatever the
  * share of the whole index, units listed twice are those of the overlays over the partitions, the size of the index does not matter and the segments
  * a rewrite leaves are the partitions.
  */
-static const char *
-rewrite_why(Relation index, bool automatic, int *gates)
+const char *
+maint_rewrite_due(Relation index)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col rewrite due", ALLOCSET_SMALL_SIZES);
@@ -246,37 +189,30 @@ rewrite_why(Relation index, bool automatic, int *gates)
 	bool		partitioned,
 				overlay_due,
 				take[SIFT_MAX_SEGMENTS] = {false},
+				conn_stale,
 				buffer_due,
-				build_peers;
+				stale = false,
+				old_epoch = false;
 	uint64		listed = 0,
 				dirty = 0,
 				rows = 0,
-				bytes = 0,
-				buffered = 0,
 				over_listed = 0,
 				covered,
 				shared,
 				shared_listed;
-	XLogRecPtr	lsn[SIFT_MAX_SEGMENTS];
-	uint64		sbytes[SIFT_MAX_SEGMENTS];
-	int			nseg,
-				key_overlap;
+	int			key_overlap;
 	OverlayEv	ev;
-	bool		stale = false,
-				conn_stale,
-				old_epoch = false;
 
+	maint_pass_bytes = 0;
+	maint_pass_gen = 0;
 	maint_overlay_asked = false;
 	maint_redecided = false;
-	maint_overlay_steps = automatic ? 1 : SIFT_MAX_SEGMENTS;
 	sift_col_dir_read(index, snap, false);
 	maint_use_partitions(index, snap);
 	partitioned = maint_part_kb > 0;
 	v = maint_view_open(index, snap, cx);
-	nseg = v->n;
 	conn_stale = v->conn_stale;
 	key_overlap = v->nkover;
-	build_peers = peers_overlap(v) || key_runs(v);
 	overlay_due = maint_overlay_set(index, v, take, &ev) && overlay_worth(index, &snap->meta, &ev);
 	for (int i = 0; i < v->n; i++)
 	{
@@ -286,14 +222,9 @@ rewrite_why(Relation index, bool automatic, int *gates)
 		rows += e->ndocs;
 		if (e->flags & SIFT_SEG_UNIT)
 		{
-			sbytes[i] = 0;
-			lsn[i] = InvalidXLogRecPtr;
 			sift_cseg_close(seg);
 			continue;
 		}
-		bytes += e->bytes;
-		sbytes[i] = e->bytes;
-		lsn[i] = automatic ? maint_header_lsn(index, e) : InvalidXLogRecPtr;
 		listed += seg->nsb;
 		stale |= v->stale[i];
 		old_epoch |= v->old_epoch[i];
@@ -304,15 +235,7 @@ rewrite_why(Relation index, bool automatic, int *gates)
 			over_listed += seg->nsb;
 		sift_cseg_close(seg);
 	}
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN || snap->segs[i].kind == SIFT_SEG_WBUF_SEALED)
-		{
-			uint64		nrows,
-						npages;
-
-			sift_cwbuf_summary(index, &snap->segs[i], &nrows, &npages);
-			buffered += nrows;
-		}
+	buffer_due = buffer_share_due(index, snap, rows);
 	covered = sift_cseg_dir_units(snap);
 	shared = sift_cseg_dir_shared(snap, &shared_listed);
 	MemoryContextDelete(cx);
@@ -321,7 +244,7 @@ rewrite_why(Relation index, bool automatic, int *gates)
 		why = "dirty units";
 	/*
 	 * Runs of a build that are as large as partitions but each hold rows of every key (a lookup of one key reads a unit in each of them) are neither overlays nor dirty,
-	 * and the units listed twice may be too few to call them fragmented. The rewrite cuts them by key, once; it is the build's, not the churn the WAL budget limits.
+	 * and the units listed twice may be too few to call them fragmented. The rewrite cuts them by key, once.
 	 */
 	else if (key_overlap >= 2)
 		why = "key ranges overlap";
@@ -332,7 +255,7 @@ rewrite_why(Relation index, bool automatic, int *gates)
 		why = "fragmented units";
 	else if (overlay_due)
 	{
-		why = "overlay units";
+		why = WHY_OVERLAY;
 		maint_overlay_asked = true;
 	}
 	else if (old_epoch)
@@ -342,50 +265,11 @@ rewrite_why(Relation index, bool automatic, int *gates)
 	else if (stale || maint_scope_refill_due(index))
 		why = "stale scope";
 	else if (sift_col_rel(index)->nscope > 0 && maint_scope_merge_due(index, maint_after_build))
-		why = "scope segments";
-	buffer_due = buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered);
+		why = WHY_SCOPE;
 	if (why == NULL && buffer_due)
 		why = WHY_BUFFER;
-	/* the budget is of the rewrite of the segments that churn calls for, not of the first one, which the peers of a build call for; the promotion of a write buffer costs its rows */
-	if (why != NULL && automatic && build_peers && gates != NULL && maint_rewrite_all(why))
-		*gates |= SIFT_COL_PEERS;
-	/* the merge of the overlays is paced by the bytes of a pass (maint_overlay_set), not by the WAL others write: a quiet server is when it costs least */
-	if (why != NULL && automatic && maint_rewrite_all(why) && !build_peers && !maint_read_asked && !maint_overlay_asked && maint_wal_budget_spent(lsn, sbytes, nseg, bytes))
-	{
-		if (gates != NULL)
-			*gates |= SIFT_COL_GATE_WAL;
-		/* the budget defers the rewrite of the segments, not the promotion of the write buffer, which costs its rows: reads would walk them until the budget is back */
-		if (!buffer_due)
-			return NULL;
-		why = WHY_BUFFER;
-	}
-	if (why != NULL && automatic && rewrite_held(index, bytes))
-	{
-		maint_overlay_asked = false;
-		if (gates != NULL)
-			*gates |= SIFT_COL_GATE_HELD;
-		return NULL;
-	}
 	SIFT_MEM_CHECKPOINT();
 	return why;
-}
-
-/* A worker started for the choice a VACUUM left (maint_decide_asked) has it to make when the rule finds nothing due, or the budget defers the rewrite: no rewrite unless the choice changes an option */
-const char *
-maint_rewrite_check(Relation index, bool automatic, int *gates)
-{
-	const char *why = rewrite_why(index, automatic, gates);
-
-	maint_decide_only = why == NULL && maint_decide_asked;
-	return maint_decide_only ? WHY_DECIDE : why;
-}
-
-const char *
-maint_rewrite_due(Relation index, bool automatic)
-{
-	maint_pass_bytes = 0;
-	maint_pass_gen = 0;
-	return maint_rewrite_check(index, automatic, NULL);
 }
 
 /* Only the write buffer is large: promoting it is the cost of its rows, a rewrite is the cost of the index */
@@ -395,97 +279,9 @@ maint_rewrite_all(const char *why)
 	return strcmp(why, WHY_BUFFER) != 0;
 }
 
-/* The choices a VACUUM left (the options of the index, the stores it stopped using) go to a worker: a catalog write is not a VACUUM's */
-void
-sift_col_decide_request(Relation index)
-{
-	if (!sift_col_auto_merge || !sift_async_maintenance || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
-		return;
-	sift_maint_register_worker(index, "sift_col_decide_worker_main");
-}
-
-/*
- * VACUUM leaves the rewrite to a worker of its own: it is not VACUUM's to hold the table for, and the worker sleeps as sift.maintenance_cost_delay says. It leaves the choice of
- * the options of the index to it as well (maint_decide_wanted): the write of an option is a catalog update, and the transaction id of a VACUUM is left out of the snapshots of the
- * other sessions.
- */
-void
-maint_rewrite_request(Relation index)
-{
-	bool		decide = maint_decide_wanted;
-
-	maint_decide_wanted = false;
-	if (decide)
-		sift_col_decide_request(index);
-	else if (!sift_col_auto_merge || !sift_async_maintenance || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
-		return;
-	else if (maint_rewrite_due(index, true) != NULL)
-		sift_maint_register_worker(index, "sift_col_rewrite_worker_main");
-}
-
-/*
- * A look at the directory before the rule opens the segments: the segments under half the largest, as many as the requests of the index could pay for if every superblock
- * of them were a unit a request opens (the most the rule can find).
- */
-static bool
-overlay_maybe(Relation index, const SiftDirSnapshot *snap)
-{
-	uint64		large = 0,
-				rows = 0,
-				units = 0;
-	int			n = 0;
-
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
-			large = Max(large, snap->segs[i].bytes);
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && snap->segs[i].bytes * 2 < large)
-		{
-			n++;
-			rows += snap->segs[i].ndocs;
-			units += (uint64) snap->segs[i].sb_hi + 1 - snap->segs[i].sb_lo;
-		}
-	return n >= 2 && (double) sift_scans_paid(index, &snap->meta) * ((double) units * UNIT_PRICE + n * SEG_PRICE) >= MAINT_HALF * ROW_PRICE * (double) rows;
-}
-
-/*
- * The peers a build left are rewritten without a VACUUM to ask for it: a table nothing changes is never vacuumed, and its scans would walk the units of every
- * peer for good. A look at the directory (the ranges of the largest segments overlap) comes before the rule, which opens the segments; the request is
- * the one of VACUUM, so that its backoff and the stamp in the index keep the backends that look from starting a worker each.
- */
+/* The promotion of the write buffer and the merges of the overlays and of the scope segments are the incremental work of the workers and of VACUUM; the other reasons are met by writing the index again */
 bool
-sift_col_rewrite_tick(Relation index, double owed, bool scope_refused)
+maint_reindex_wanted(const char *why)
 {
-	SiftDirSnapshot *snap;
-	SiftDirSnapshot *peers;
-	uint64		large = 0,
-				ranges = 0;
-	int			gates = 0;
-	bool		asked = false;
-
-	if (!sift_col_auto_merge || !sift_async_maintenance || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
-		return false;
-	snap = palloc(sizeof(SiftDirSnapshot));
-	peers = palloc(sizeof(SiftDirSnapshot));
-	sift_col_dir_read(index, snap, false);
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
-			large = Max(large, snap->segs[i].bytes);
-	peers->nsegs = 0;
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && snap->segs[i].bytes * 2 >= large)
-		{
-			peers->segs[peers->nsegs++] = snap->segs[i];
-			ranges += (uint64) snap->segs[i].sb_hi + 1 - snap->segs[i].sb_lo;
-		}
-	if (peers->nsegs > 1 && sift_cseg_dir_units(peers) < ranges && maint_rewrite_check(index, true, &gates) != NULL && (gates & SIFT_COL_PEERS))
-		asked = sift_maint_request_worker(index, "sift_col_rewrite_worker_main");
-	if (!asked && overlay_maybe(index, snap) && maint_rewrite_check(index, true, NULL) != NULL && maint_overlay_asked)
-		asked = sift_maint_request_worker(index, "sift_col_rewrite_worker_main");
-	pfree(peers);
-	pfree(snap);
-	/* a read the scope units could not answer (a journal rebuilt, units never filled) or that paid for changed members: the reads owe the rewrite that fills them when the rule of `stale scope` says so, and a table nothing writes is never vacuumed to ask for it */
-	if (!asked && scope_refused && maint_scope_refill_due(index))
-		asked = sift_maint_request_worker(index, "sift_col_read_rewrite_worker_main");
-	return asked || (owed > 0 && maint_read_due(index, owed) && sift_maint_request_worker(index, "sift_col_read_rewrite_worker_main"));
+	return maint_rewrite_all(why) && strcmp(why, WHY_OVERLAY) != 0 && strcmp(why, WHY_SCOPE) != 0;
 }

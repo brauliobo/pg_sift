@@ -1,6 +1,7 @@
 -- Garbage in a shared value store goes by itself: rows replaced round after round leave codes that no segment names, VACUUM begins a new epoch when half of them
--- are such and the store is large enough, the maintenance worker rewrites the indexes that name the old epoch, and a later VACUUM removes it. The blocks of the removed
--- epoch are used again by the next rounds (the store does not grow for ever). The test clusters run with the worker off: this database turns it on.
+-- are such and the store is large enough, and a later VACUUM removes it once no index names it. The server does not rewrite the indexes that name the old epoch:
+-- sift.col_maintenance_status recommends REINDEX for them, and the REINDEX is what lets the VACUUM remove it. The blocks of the removed epoch are used again by the
+-- next rounds (the store does not grow for ever). The test clusters run with the worker off: this database turns it on.
 CREATE EXTENSION pg_sift;
 DO $$ BEGIN
 	EXECUTE format('ALTER DATABASE %I SET sift.async_maintenance = on', current_database());
@@ -31,7 +32,7 @@ END $$;
 CREATE FUNCTION ch_round(r int) RETURNS void LANGUAGE sql AS $$
 	UPDATE ch SET url = 'https://example.com/r' || r || '/' || md5(id::text) || md5((id * 11 + r)::text) $$;
 
--- true when the store has no codes that no segment names (the worker rewrote the members and VACUUM retired the epoch it left), within 30 s
+-- true when the store has no codes that no segment names (the REINDEX rewrote the members and VACUUM retired the epoch it left), within 30 s
 CREATE FUNCTION ch_compacted() RETURNS boolean LANGUAGE plpgsql AS $$
 BEGIN
 	FOR i IN 1..150 LOOP
@@ -44,15 +45,20 @@ BEGIN
 	RETURN false;
 END $$;
 
+-- the indexes that name the old epoch say so and are left as they are: the worker does not rewrite them
+CREATE FUNCTION ch_advice() RETURNS TABLE (idx regclass, advice text) LANGUAGE sql AS $$
+	SELECT i, (SELECT b FROM unnest(m.blocked_by) b WHERE b LIKE 'REINDEX recommended%')
+	FROM unnest(ARRAY['ch_a', 'ch_b']::regclass[]) i, sift.col_maintenance_status(i) m ORDER BY 1 $$;
 SELECT ch_round(1);
 VACUUM ch;
 SELECT garbage_pct >= 50 AS half_is_garbage FROM sift.col_value_store_status WHERE table_name = 'ch'::regclass;
 VACUUM ch;
-SELECT pg_sleep(1);
 VACUUM ch;
-SELECT pg_sleep(1);
+SELECT * FROM ch_advice();
+REINDEX INDEX ch_a;
+REINDEX INDEX ch_b;
 VACUUM ch;
-SELECT ch_compacted() AS compacted_by_the_worker;
+SELECT ch_compacted() AS compacted_by_the_reindex;
 VACUUM ch;
 SELECT pg_current_xact_id() IS NOT NULL AS a_transaction_later;
 VACUUM ch;
@@ -64,10 +70,9 @@ CREATE TABLE ch_size AS SELECT pg_relation_size(store) AS bytes FROM sift.col_va
 SELECT ch_round(2);
 VACUUM ch;
 VACUUM ch;
-VACUUM ch;
-SELECT pg_sleep(1);
-VACUUM ch;
-SELECT pg_sleep(1);
+SELECT * FROM ch_advice();
+REINDEX INDEX ch_a;
+REINDEX INDEX ch_b;
 VACUUM ch;
 SELECT ch_compacted() AS compacted_again;
 VACUUM ch;
@@ -78,7 +83,7 @@ SELECT pg_relation_size(store) <= 2 * (SELECT bytes FROM ch_size) AS store_reuse
   FROM sift.col_value_store_status WHERE table_name = 'ch'::regclass;
 SELECT sift.col_verify('ch_a', true), sift.col_verify('ch_b', true);
 
-DROP FUNCTION ch_check(), ch_round(int), ch_compacted();
+DROP FUNCTION ch_check(), ch_round(int), ch_compacted(), ch_advice();
 DROP TABLE ch, ch_size;
 DO $$ BEGIN
 	EXECUTE format('ALTER DATABASE %I RESET sift.async_maintenance', current_database());

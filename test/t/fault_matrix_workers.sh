@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-# The background workers of the maintenance, stopped in the middle of a step: a rewrite worker of a sift_col index held when it enters its merge phase (sift.test_progress_gate, a gate of the
+# The background workers of the maintenance, stopped in the middle of a step: a maintenance worker of a sift_col index held when it enters its promote phase (sift.test_progress_gate, a gate of the
 # worker only, no sleep) and the worker that promotes a sealed buffer of a BM25 index held in its step (sift.test_progress_gate), each ended by a terminate of the worker and by an immediate
 # shutdown of the server. Afterwards nobody holds a lock, no progress slot is left, the index verifies, the answers through it are the table's, and the maintenance resumes: the next request
-# starts a worker that finishes what is due (one immutable segment of the rewritten index, no sealed buffer left of the BM25 index).
+# starts a worker that finishes what is due (no write buffer rows left in the sift_col index, no sealed buffer left of the BM25 index).
 . "$(dirname "$0")/lib.bash"
 
 node_init wk 1 "autovacuum = off
@@ -34,7 +34,7 @@ trigger() { # KIND: makes the worker start
 configure() { # KIND on|off
 	if [[ $2 == on ]]; then
 		case $1 in
-			col) sql wk "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 2" >/dev/null ;;
+			col) sql wk "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 1" >/dev/null ;;
 			bm25) sql wk "ALTER DATABASE postgres SET sift.test_step_gate = on" >/dev/null ;;
 		esac
 	else
@@ -60,7 +60,7 @@ verified() { # KIND
 }
 settled() { # KIND: the maintenance has nothing left
 	case $1 in
-		col) [[ $(sql wk "SELECT count(*) FROM sift.col_segments('facts_idx') WHERE kind = 'immutable'") == 1 ]] ;;
+		col) [[ $(sql wk "SELECT coalesce(sum(rows), 0) FROM sift.col_segments('facts_idx') WHERE kind <> 'immutable'") == 0 ]] ;;
 		bm25) [[ $(sql wk "SELECT count(*) FROM sift.segments('docs_idx') WHERE kind LIKE 'wbuf%' OR kind LIKE 'sealed%'") == 0 ]] ;;
 	esac
 }
@@ -69,6 +69,7 @@ for kind in ${SIFT_WORKER_KINDS:-col bm25}; do
 	for fault in terminate immediate; do
 		id="$kind worker, $fault"
 		key=KEY_$kind
+		wait_for '[[ $(sql wk "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE '"'sift %'"'") == 0 ]]' 60 || bail "$id: a worker of the step before is still alive"
 		setup "$kind"
 		hold=
 		sql wk "SELECT pg_advisory_lock(20983, ${!key}), pg_sleep(600)" >/dev/null 2>&1 &

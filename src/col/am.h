@@ -439,20 +439,16 @@ extern void sift_col_scan_note(Relation index, const struct SiftColSource *src);
 extern bool sift_col_fold_tick(Relation index);
 extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
-extern PGDLLEXPORT void sift_col_rewrite_worker_main(Datum main_arg);
-extern PGDLLEXPORT void sift_col_read_rewrite_worker_main(Datum main_arg);
-extern PGDLLEXPORT void sift_col_decide_worker_main(Datum main_arg);
-extern void sift_col_decide_request(Relation index);
 extern PGDLLEXPORT void sift_col_read_promote_worker_main(Datum main_arg);
-/* sift.col_auto_merge* (col/am/am.c): the rewrite VACUUM asks the worker for when the churn has scattered the index (col/maint/maint.c) */
+extern PGDLLEXPORT void sift_col_vstore_worker_main(Datum main_arg);
+extern void sift_col_vstore_request(Relation index);
+/* sift.col_auto_merge* (col/am/am.c): the promotions and merges the worker makes when the churn has scattered the index (col/maint/maint.c) */
 extern PGDLLIMPORT bool sift_col_auto_merge;
 extern PGDLLIMPORT double sift_col_auto_merge_fragmentation;
 extern PGDLLIMPORT double sift_col_auto_merge_buffer_pct;
 extern PGDLLIMPORT double sift_col_auto_merge_wal_pct;
 extern PGDLLIMPORT int sift_col_auto_merge_pass_mb;
-extern PGDLLIMPORT int sift_col_auto_merge_max_active;
 extern PGDLLIMPORT int sift_col_auto_merge_partition_kb;
-extern PGDLLIMPORT int sift_col_auto_merge_max_workers;
 extern PGDLLIMPORT int sift_col_unit_floor;
 extern PGDLLIMPORT int sift_col_unit_rows;	/* sift.col_unit_rows */
 /* The VACUUM that churn, and scans that check many rows in the heap, ask a worker for under sift.col_auto_merge (col/vacreq.c) */
@@ -461,16 +457,10 @@ extern BlockNumber sift_col_build_gap(Relation heap, Relation index);
 extern void sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers);
 extern void sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int nslices, SiftSegEntry *out);
 extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start);
-/* what the automatic rewrite waits for (sift.col_maintenance_status) */
-#define SIFT_COL_GATE_HELD	1
-#define SIFT_COL_GATE_WAL	2
-/* not a gate: the rewrite is due for the peers a build left, which the WAL budget does not hold (sift_col_rewrite_tick starts it) */
-#define SIFT_COL_PEERS		4
 extern bool sift_col_autovacuum_enabled(Relation heap);
 extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, TimestampTz *last);
 extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows);
 extern void sift_col_vacuum_note_insert(Relation index, Relation heap);
-extern bool sift_col_rewrite_tick(Relation index, double owed, bool scope_refused);
 extern bool sift_col_promote_tick(Relation index);
 extern PGDLLEXPORT void sift_col_vacuum_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_vacuum_scan_worker_main(Datum main_arg);

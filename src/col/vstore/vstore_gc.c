@@ -211,7 +211,7 @@ sift_vstore_release_left(Relation index)
 	/* releasing a store deletes dependency rows (and drops the store with the transaction): not in a VACUUM, whose transaction id the other sessions do not see */
 	if (!sift_catalog_write_ok())
 	{
-		sift_col_decide_request(index);
+		sift_col_vstore_request(index);
 		return;
 	}
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);

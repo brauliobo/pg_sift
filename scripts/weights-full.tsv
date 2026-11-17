@@ -253,7 +253,6 @@ tap-shell-maint_p4	25	27
 installcheck-analyze_invariant	22	26
 installcheck-col_index_parallel	26	25
 installcheck-col_key_cut_growth	26	18
-tap-shell-col_build_peers	26	23
 tap-shell-col_pg_repack	19	26
 tap-shell-col_pg_squeeze	0	10
 tap-shell-maint_lock	21	26
@@ -275,7 +274,6 @@ installcheck-edge_documents	24	14
 installcheck-index_build_postings	19	24
 installcheck-maint_failure	24	18
 installcheck-tbl_analyze_thin	24	19
-tap-shell-col_auto_merge_partition	23	24
 tap-shell-col_vacuum_request_hold	24	24
 tap-shell-compat_2x_fixture	24	23
 tap-shell-vacuum_agg_snapshot	24	24

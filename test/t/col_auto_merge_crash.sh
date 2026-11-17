@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A crash in the middle of the rewrite of a sift_col index (sift.col_maintain, the work of sift.col_auto_merge): the rewrite promotes the write buffer, then
+# A crash in the middle of the rewrite of a sift_col index (sift.col_maintain, the explicit rewrite): the rewrite promotes the write buffer, then
 # merges, and the PANIC comes after the merge wrote its new segment and before it replaced the old ones. Crash recovery leaves the index consistent: every
 # step is a physical change the log replays, so the promotion may be there and the merge never is (the segments it was to replace are as they were, the answers
 # are the heap's), the rewrite is still due, no block stays unaccounted for after the VACUUMs that sweep the orphan segment, and the rewrite asked again completes.

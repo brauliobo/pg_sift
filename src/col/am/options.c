@@ -290,16 +290,16 @@ sift_col_init(void)
 							 "Off: only an index with connect = 'auto' or an explicit connect option is connected. The first child connected to a parent index holds the writers of the parent table out from the end of its scan to the end of the statement.",
 							 &sift_col_auto_connect, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_connect_refresh_pct",
-							"Percent of the rows of a parent table whose keys changed since the stamp of a segment of a connected sift_col index from which the automatic rewrite fills the segment again.",
+							"Percent of the rows of a parent table whose keys changed since the stamp of a segment of a connected sift_col index from which sift.col_maintenance_due says 'stale connection' and the status asks for a REINDEX.",
 							"A read patches the rows of the changed keys from the join, so a few changed keys cost less than the rewrite of the segment (the found flags it holds are as of its stamp). "
-							"A segment that was never filled (the first child of a parent, whose journal starts after its scan) or whose parent index was rebuilt is rewritten whatever the share, "
-							"within the rules of sift.col_auto_merge (the WAL budget included).",
+							"A segment that was never filled (the first child of a parent, whose journal starts after its scan) or whose parent index was rebuilt is stale whatever the share. "
+							"Nothing rewrites the index by itself: reads keep to the join, and REINDEX INDEX CONCURRENTLY fills the flags again.",
 							&sift_col_connect_refresh_pct, 10, 1, 100, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_scope_refresh_pct",
-							"Percent of the pairs of the scope relations that changed since the stamp of the scope segments of a sift_col index from which the automatic rewrite fills the scope segments again.",
+							"Percent of the pairs of the scope relations that changed since the stamp of the scope segments of a sift_col index from which sift.col_maintenance_due says 'stale scope' and the status asks for a REINDEX.",
 							"A read patches the members whose pairs changed from the join, so a few changed members cost less than the rewrite of the scope segments. "
-							"Scope segments never filled, or stamped under a journal a relation has since lost, are rewritten whatever the share, within the rules of sift.col_auto_merge (the WAL budget included). "
-							"The reason in sift.col_maintenance_due is 'stale scope'; sift.col_connect_refresh_pct is the same rule for the connected indexes.",
+							"Scope segments never filled, or stamped under a journal a relation has since lost, are stale whatever the share. "
+							"Reads patch the changed members from the join until a REINDEX INDEX CONCURRENTLY; sift.col_connect_refresh_pct is the same rule for the connected indexes.",
 							&sift_col_scope_refresh_pct, 10, 1, 100, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_scope",
 							 "A scan of an index with the option scope answers the rows of a scope key (a join to its scope relation, or IN, EXISTS over it, by that key) from the scope segments of the index.",
@@ -312,49 +312,43 @@ sift_col_init(void)
 							 "and the join answers it. CREATE INDEX writes the limit it accepted the scope under into the option scope (max_multiplicity(n)), so REINDEX, a restore and pg_upgrade check that one, not the setting of their session.",
 							 &sift_scope_max_multiplicity, 3.0, 1.0, 1000000.0, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_auto_merge",
-							 "Keeps the sift_col indexes answerable after churn: a background worker vacuums the heap table, and after a VACUUM that left an index scattered it seals the write buffer and merges all its segments into one.",
+							 "Keeps the sift_col indexes answerable after churn: a background worker vacuums the heap table, then seals the write buffer and merges the small segments the policy picks. It never rewrites an index: that is REINDEX INDEX CONCURRENTLY.",
 							 "Rows on a page the visibility map does not call all-visible (any page with an UPDATE or DELETE since the last VACUUM) are checked one by one in the heap, "
-							 "and a unit holding a dead row answers from its rows; the VACUUM sets the map, and the merge after it makes the units answer from their pre-aggregates again. "
+							 "and a unit holding a dead row answers from its rows; the VACUUM sets the map, and the merges after it make the units answer from their pre-aggregates again. "
 							 "A backend that inserts a row version, or reads many rows in the heap, looks at the statistics of the table once per sift.maintenance_naptime and starts the worker "
 							 "when the rows changed since the last VACUUM are a thousandth of the table (50 rows at least, 100,000 at most). It vacuums as autovacuum does (its reloptions, cost delay, skipped when the table is locked), "
 							 "at most once per five sift.maintenance_naptime (ten times the average VACUUM of the table on PostgreSQL 18), and not a table with autovacuum_enabled = false. "
-							 "The merge rule is a unit holding a dead row, sift.col_auto_merge_fragmentation and _buffer_pct, and it stays within sift.col_auto_merge_wal_pct of the WAL the server writes; the rewrite sleeps as sift.maintenance_cost_delay says and is skipped "
-							 "when the maintenance lock is held. An index over sift.vacuum_rewrite_limit is rewritten by partitions of that size (sift.col_auto_merge_partition_kb sets another), one step each, so that the lock is let go between them. Needs sift.async_maintenance; sift.col_maintain(index) applies the same rule from a job. "
+							 "Its merges sleep as sift.maintenance_cost_delay says and are skipped when the maintenance lock is held. Needs sift.async_maintenance. "
+							 "sift.col_maintenance_status says, for the reasons only a rewrite of the whole index serves (dirty units, fragmented units, a stale connection or scope), that a REINDEX is recommended; "
+							 "sift.col_maintain(index) is that rewrite, in the session that calls it. "
 							 "A DELETE alone calls nothing and waits for a scan or an insert; a scan of a partitioned table does not ask, an insert into a partition does. "
 							 "Set it for the server or the database: the worker reads no session setting.",
 							 &sift_col_auto_merge, true, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomRealVariable("sift.col_auto_merge_fragmentation",
-							 "Units listed per superblock they cover from which the automatic rewrite of a sift_col index runs.",
+							 "Units listed per superblock they cover from which sift.col_maintenance_due says 'fragmented units' for a sift_col index.",
 							 "Each promotion of the write buffer adds a segment over the superblocks the churn touched.",
 							 &sift_col_auto_merge_fragmentation, 2.0, 1.1, 1000.0, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomRealVariable("sift.col_auto_merge_buffer_pct",
-							 "Percent of its rows the write buffer of a sift_col index holds above which the automatic rewrite runs.",
+							 "Percent of its rows the write buffer of a sift_col index holds above which sift.col_maintenance_due says 'write buffer rows'.",
 							 "The rows of the buffer are read as one in-memory unit per superblock they touch, on every query, until a promotion.",
 							 &sift_col_auto_merge_buffer_pct, 1.0, 0.01, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomRealVariable("sift.col_auto_merge_wal_pct",
-							 "Percent of the WAL the server writes that the automatic rewrite of a sift_col index may add.",
-							 "The rewrite writes the whole index, so it waits until the server has written 100 / this percent times the bytes of the index since the index was last written "
-							 "(its build or its last rewrite): 5 bounds the rewrites at a twentieth of the WAL, and the churn that makes one worth it is the churn that wrote that WAL. "
-							 "The segments of a build that overlap each other (a parallel build leaves one set per worker) are not churn: their rewrite does not wait. "
-							 "0 does not wait. sift.col_maintain(index) ignores it.",
+							 "Percent of max_wal_size that one pass of the merge of the overlays of a sift_col index may write.",
+							 "A pass of sift.col_maintain(index) that merges the small segments left over the partitions of a key_cut index takes an eighth of max_wal_size at most, and this percent of it, "
+							 "so that it forces no checkpoint of its own; the next pass takes the rest. 0 does not limit the pass to a share.",
 							 &sift_col_auto_merge_wal_pct, 5.0, 0.0, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_build_key_ranges",
 							 "A serial sift_col build with key_cut of a large table writes runs that do not overlap in the key.",
 							 "The rows go to a temporary file for each stretch of the key (cut at quantiles of a sample of the table) while the table is scanned, and the stretches are written as runs in the order of the key, where the runs of the rows in table order each hold every key and wait for a rewrite. temp_file_limit and the free room of the temporary tablespaces bound it (a build that does not fit them writes the runs in table order). off: runs in table order.",
 							 &sift_col_build_key_ranges, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_pass_mb",
-							"Megabytes of overlapping runs one pass of the automatic rewrite of a sift_col index rewrites.",
+							"Megabytes of overlapping runs one pass of sift.col_maintain(index) rewrites in a sift_col index.",
 							"A build leaves runs of rows sorted by the key_cut key, each as large as a partition and overlapping its neighbours in the key; the rewrite cuts them by key, "
-							"a window of the runs that overlap at a time, and stops when a pass has written this much. The next VACUUM, worker pass or sift.col_maintain(index) goes on, "
-							"so the WAL and the I/O of the rewrite are spread over passes (the index stays valid and equal between them). The blocks a pass frees are reusable only when the snapshots that may read them end, "
-							"so the automatic rewrite waits for them once they reach this much (or half the index, when that is less): the file stands at the live bytes plus one pass meanwhile. 0: one pass does all of it.",
+							"a window of the runs that overlap at a time, and stops when a pass has written this much. The next sift.col_maintain(index) goes on, "
+							"so the WAL and the I/O of the rewrite are spread over passes (the index stays valid and equal between them). 0: one pass does all of it.",
 							&sift_col_auto_merge_pass_mb, 1024, 0, MAX_KILOBYTES / 1024, PGC_SUSET, GUC_UNIT_MB, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.col_auto_merge_max_active",
-							"Client backends of the database running a statement above which the automatic rewrite of a sift_col index is left for a quieter moment.",
-							"The worker ends at once, without holding its connection; the next VACUUM, read or write asks again. 0: never waits.",
-							&sift_col_auto_merge_max_active, 0, 0, 10000, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_partition_kb",
-							"Size of the segments the automatic rewrite of a sift_col index writes, which then rewrites only the ones the churn touched; 0 rewrites the whole index into one.",
+							"Size of the segments the merges of a sift_col index write, so that sift.col_maintain(index) rewrites only the ones the churn touched; 0 rewrites the whole index into one.",
 							"A step rewrites the partition with most dirty units, or the overlays the promotions left over the partitions, "
 							"and holds the maintenance lock and needs the free space of one partition, not of the index. A segment under half of this size is an overlay; "
 							"the merge tiers leave the partitions alone. An index under half of it is rewritten whole. 0: partitions of sift.vacuum_rewrite_limit for an index over it, or of a third of maintenance_work_mem where that is less, which is what the writer of a segment holds in memory.",
@@ -376,10 +370,6 @@ sift_col_init(void)
 							"The rows a key-cut unit aims at, 0 for the rows of 256 average heap pages.",
 							"A smaller unit prunes finer and costs more directory per row; it applies to the units written from now on. It also gets several units out of a small table.",
 							&sift_col_unit_rows, 0, 0, 32768, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
-							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
-							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
-							&sift_col_auto_merge_max_workers, 0, 0, 64, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_value_store",
 							 "CREATE INDEX and REINDEX of a sift_col index share the strings of a column with the other indexes of the table that hold it, in a shared value store.",
 							 "On: a text, varchar or uuid leaf that another sift_col index of the table holds with the same key order, and whose sharing spares at least 5 bytes a row and a quarter of the leaf, keeps its strings in the store "

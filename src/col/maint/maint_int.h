@@ -21,7 +21,8 @@
  * - a step is not run in a subtransaction: an ERROR goes on to the caller (a worker records it, sift_maint_worker_failed, for the backoff of the shared
  *   flow and sift.workers; the other callers see it) and there is no segment another step could have claimed (busy stays 0);
  * - the policy has no goals: background, VACUUM and explicit merges pick alike; VACUUM merges until the policy asks for none or the rewrite limit is reached;
- * - the worker runs in one transaction until nothing is left to do; VACUUM merges to a fixed point only up to sift.vacuum_rewrite_limit.
+ * - the worker runs in one transaction until nothing is left to do; VACUUM merges to a fixed point only up to sift.vacuum_rewrite_limit;
+ * - nothing starts a rewrite of the index (maint_rewrite_due, maint_pick_rewrite): sift.col_maintain and the merge after a parallel build are the explicit calls, and REINDEX the user's choice.
  */
 
 #define corrupt SIFT_CORRUPT
@@ -68,9 +69,6 @@ extern uint64 maint_pass_bytes;
 extern uint64 maint_pass_gen;
 extern bool maint_after_build;
 extern bool maint_redecided;
-extern bool maint_decide_wanted;
-extern bool maint_decide_asked;
-extern bool maint_decide_only;
 
 extern const SiftMaintOps maint_col_ops;
 
@@ -108,7 +106,6 @@ extern void maint_set_unordered(SiftCPaggSpec *spec, const SiftColSchema *schema
 extern uint64 maint_overlay_rows(const SiftSegEntry *seg, int n, const SiftSegEntry *skip, int nskip);
 /* set by a rule that found the overlays due: the rewrite then takes them alone */
 extern bool	maint_overlay_asked;
-extern int	maint_overlay_steps;
 
 extern void	maint_throttle(SiftWriteTarget *wt);
 
@@ -209,25 +206,15 @@ extern void	maint_roots_verify(Relation index, Relation heap);
 
 extern bool	maint_vacuum_truncates(Relation index);
 
-extern uint64	maint_space_keep(Relation index);
 
 
-extern XLogRecPtr	maint_header_lsn(Relation index, const SiftSegEntry *e);
-
-extern bool	maint_wal_budget_spent(const XLogRecPtr *lsn, const uint64 *sbytes, int n, uint64 bytes);
-
-extern const char *	maint_rewrite_check(Relation index, bool automatic, int *gates);
-
-extern const char *	maint_rewrite_due(Relation index, bool automatic);
-
+extern const char *	maint_rewrite_due(Relation index);
 extern bool	maint_rewrite_all(const char *why);
-
-/* the reads of a backend owe the rewrite (maint_read_due); the worker started for it takes the rewrite as due */
-extern bool	maint_read_asked;
-extern bool	maint_read_due(Relation index, double owed);
+/* the reasons that only a rewrite of the whole index serves: the status of the index asks for a REINDEX for them */
+extern bool	maint_reindex_wanted(const char *why);
 /* the backends that read the open write buffer decoded rows that cost more than its promotion (the worker started for it seals and promotes) */
 extern bool	maint_wbuf_read_due(Relation index);
-
-extern void	maint_rewrite_request(Relation index);
+extern bool	maint_wbuf_share_due(Relation index);
+extern void	maint_buffer_request(Relation index);
 
 #endif

@@ -102,9 +102,9 @@ conf() {
 	# CREATE EXTENSION ends with a notice that the library is not preloaded (sql/5.0/24-install-notices.sql); no expected output carries it. Not a sift. setting: any release accepts it
 	echo "pg_sift.install_notice = off"
 	echo "sift.table_auto_defrag = off"
-	# likewise the worker that vacuums the tables of sift_col indexes and rewrites the indexes (on by default)
+	# likewise the worker that vacuums the tables of sift_col indexes and merges their segments (on by default)
 	echo "sift.col_auto_merge = off"
-	# and a test that switches it on wants its rewrite when the rule says so, not when the cluster has written enough (the test of the budget sets its own)
+	# and the merge of the overlays that sift.col_maintain makes takes the share of max_wal_size it needs, not a twentieth of it
 	echo "sift.col_auto_merge_wal_pct = 0"
 	# the tests of the scope index patch the members that changed whatever the patch costs; the test of the price says SET sift.test_scope_patch = off
 	[[ ${1:-} == common || -z $TREE_CONF ]] || echo "$TREE_CONF"

@@ -425,7 +425,7 @@ sift_col_redecide_busy(Relation index)
  * at the end of a heap built in the order of its tenants make a cut pay, the cut makes the ends of an order array and a point directory the better choices, and the index
  * a merge kept at the choices of the day of its build was a third larger. The rewrite is due for its own reasons (dead or fragmented units, the buffer), so the decision
  * adds the sample of the cut (at most a quarter of the heap, the build's) and no rewrite. An option the user wrote is left as it is. Returns what changed
- * (SIFT_REDECIDED_*); the caller reads the schema again after it. It writes the catalog: a VACUUM leaves it to the maintenance worker (sift_catalog_write_ok).
+ * (SIFT_REDECIDED_*); the caller reads the schema again after it. It writes the catalog: a VACUUM does not (sift_catalog_write_ok), and only an explicit rewrite chooses again.
  */
 int
 sift_col_auto_redecide(Relation index)
@@ -499,7 +499,7 @@ sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n)
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
 		return false;
 	/*
-	 * A VACUUM does not write the catalog (sift_catalog_write_ok): the maintenance worker it asks for decides (maint_decide_wanted). The leader of a parallel index vacuum is in parallel mode,
+	 * A VACUUM does not write the catalog (sift_catalog_write_ok), and the leader of a parallel index vacuum is in parallel mode,
 	 * where the write of the option cannot assign a transaction id (nor increment the command counter): the next merge decides.
 	 */
 	if (!sift_catalog_write_ok())

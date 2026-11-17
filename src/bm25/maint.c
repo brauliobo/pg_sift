@@ -451,40 +451,6 @@ sift_mops_open_maintain(const SiftMaintOps *ops, Oid indexoid)
 	return index;
 }
 
-bool		sift_maint_own_xacts = false;
-
-#define FREED_WAIT_MS		10
-#define FREED_WAIT_TRIES	50
-
-/*
- * The end of a step of a background worker: its transaction commits and the next step runs in a new one. What a step frees carries its transaction's xid and the
- * worker's snapshot holds the horizon at that xid for as long as the transaction lasts, so a step could not reuse what the one before freed (the file grew by
- * the size of the output of every step of a rewrite, and the next VACUUM cut it back). NULL when the index is gone.
- */
-Relation
-sift_maint_step_boundary(Relation index)
-{
-	Oid			indexoid = RelationGetRelid(index);
-
-	if (!sift_maint_own_xacts)
-		return index;
-	index_close(index, RowExclusiveLock);
-	PopActiveSnapshot();
-	CommitTransactionCommand();
-	StartTransactionCommand();
-	PushActiveSnapshot(GetTransactionSnapshot());
-	index = sift_try_open_index(indexoid, RowExclusiveLock);
-	if (index != NULL && sift_index_known_out(index))
-	{
-		index_close(index, RowExclusiveLock);
-		return NULL;
-	}
-	/* a read that began while the step ran ends within moments; one that outlasts the wait holds the blocks of every step of the pass, which then writes where it can */
-	for (int i = 0; index != NULL && i < FREED_WAIT_TRIES && sift_store_held_blocks(index) > 0; i++)
-		sift_nap(FREED_WAIT_MS);
-	return index;
-}
-
 /* Seals the active segment and promotes every sealed one; returns the number promoted */
 void
 sift_mops_cut_free_end(const SiftMaintOps *ops, Relation index)
@@ -493,9 +459,8 @@ sift_mops_cut_free_end(const SiftMaintOps *ops, Relation index)
 }
 
 int
-sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic)
+sift_mops_rewrite(const SiftMaintOps *ops, Relation index)
 {
-	Relation	index = *indexp;
 	const char *why;
 	TimestampTz start = GetCurrentTimestamp();
 	SiftErrCtx	ctx;
@@ -506,7 +471,7 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic)
 	if (!maint_lock_mode(index, false, ops->step_lock))
 		return -1;
 	sift_errctx_push(&ctx, RelationGetRelid(index));
-	if ((why = ops->rewrite_due(index, automatic)) == NULL)
+	if ((why = ops->rewrite_due(index)) == NULL)
 	{
 		sift_errctx_pop(&ctx);
 		maint_unlock_mode(index, ops->step_lock);
@@ -532,12 +497,6 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic)
 		/* a step of the kind makes progress; this is the end of a kind that does not */
 		if (n >= SIFT_MAX_SEGMENTS)
 			break;
-		*indexp = index = sift_maint_step_boundary(index);
-		if (index == NULL)
-		{
-			sift_progress_end(began);
-			return n;
-		}
 		maint_lock_mode(index, true, ops->step_lock);
 		sift_errctx_push(&ctx, RelationGetRelid(index));
 	}
