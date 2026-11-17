@@ -11,14 +11,14 @@
 #   window  <= max(mwm / 4, window_min_bytes) + 2 * n * U * R      the units of a step and the batch they are folded into (col/maint/merge_window.c)
 #   chunks  <= (2 * k + 4) * U * R                                 key_cut: the loaded unit of each open input and the one before it (col/order.c MergeChunk), the unit the cut writes and its
 #                                                                  window of references (col/order.c cut_rows); 512 kB without a key (the merge's own state: its inputs' arrays, the cursors)
-#   writer  <= 6 * F                                               the partition in hand: the budget of the merge is the larger of F and the rows of a partition times sift_colw_row_memory
+#   writer  <= 6 * F                                               the partition in hand, with its dictionaries and point arrays (the kinds of the partition, col writer dict and col writer points): the budget of the merge is the larger of F and the rows of a partition times sift_colw_row_memory
 #                                                                  (col/maint/merge.c), up to 4 F for these rows (a partition is sized by its bytes, 12 to 42 for each row of the inputs), and the
 #                                                                  allocator holds up to 1.5 of the writer's estimate
 #   spool, order <= 4 * F                                          the order arrays: a buffer of eset_rows entries (16 bytes each) for each leaf and region, the rest spilled to files
 #   dicts   <= 3 * the bytes of the k largest inputs               the parsed dictionaries of the string leaves of the open inputs, each given back at its last unit: none is left at the end of the merge
 #   inputs  <= dicts + n * 32 kB                                   the scope col_merge_inputs: the dictionaries and the open segments (header, unit directory and zones) of the inputs
 #   tree    <= window + chunks + writer + dicts + n * 32 kB + 1 MB the whole tree of col_merge at its largest, the sum of the above and the state of the inputs
-# What the terms do not do is follow the rows merged: every kind but the dictionaries is flat once each input has a unit (the second part of the merge is not above the first), and the
+# What the terms do not do is follow the rows merged: every kind but the dictionaries is flat once each input has a unit (the second part of the merge is not above the first, from the first size at which each promoted input holds a unit of U rows: SATURATED), and the
 # dictionaries are those of the open inputs: k is 13 when every input holds the whole range of the key (the second mode), one when the inputs hold a key range each (the third: 13 inputs of
 # the same rows, each of a range of its own, of which a merge holds one at a time; sift.test_col_merge_eager, which opens every input at the first row, holds all 13 and fails the
 # bound, with the same segments). The per-row term fitted over the steps is that of the non-dictionary kinds only, which the budgets bound: it may not pass SLOPE_MAX; the bytes of the
@@ -122,14 +122,14 @@ for mode in plain cut disjoint; do
 		out=$(merge_run) || bail "merge of $n rows failed"
 		inputs=$(val "$out" inputs); inbytes=$(val "$out" bytes); open=$(val "$out" open)
 		win=$(val "$out" col_merge_window); tree=$(val "$out" tree); dict=$(val "$out" sift_col_stream_dictionary)
-		chunks=$(val "$out" sift_col_merge); part=$(val "$out" sift_col_merge_partition); spool=$(val "$out" col_writer_spool); order=$(val "$out" col_writer_order)
+		chunks=$(val "$out" sift_col_merge); part=$(($(val "$out" sift_col_merge_partition) + $(val "$out" sift_col_writer_dict) + $(val "$out" sift_col_writer_points))); wdict=$(val "$out" sift_col_writer_dict); spool=$(val "$out" col_writer_spool); order=$(val "$out" col_writer_order)
 		unit=$((inputs * U * RB))
 		win_max=$((MWM_KB * 1024 / 4 > WMIN ? MWM_KB * 1024 / 4 : WMIN)); win_max=$((win_max + 2 * unit))
 		chunk_max=$(((2 * open_max + 4) * U * RB)); [[ $mode != plain ]] || chunk_max=$((512 * 1024))
 		part_max=$((6 * F)); spool_max=$((4 * F)); dict_max=$((3 * $(top "$out" "$open_max")))
 		in_max=$((dict_max + inputs * 32768))
 		tree_max=$((win_max + chunk_max + part_max + dict_max + inputs * 32768 + 1048576))
-		diag "$mode $n rows, $inputs inputs of $inbytes bytes: tree $tree (window $win, chunks $chunks, writer $part, dictionaries $dict, spool $spool, order $order), scope col_merge_inputs $(val "$out" col_merge_inputs) of at most $in_max, segments after $(val "$out" segs)"
+		diag "$mode $n rows, $inputs inputs of $inbytes bytes: tree $tree (window $win, chunks $chunks, writer $part (its dictionaries $wdict), dictionaries $dict, spool $spool, order $order), scope col_merge_inputs $(val "$out" col_merge_inputs) of at most $in_max, segments after $(val "$out" segs)"
 		diag "$mode $n rows trace: flat part mid $(val "$out" mid_flat) end $(val "$out" end_flat), dictionaries mid $(val "$out" mid_dict) end $(val "$out" end_dict) last $(val "$out" last_dict); $open held at once (the most), $(val "$out" parsed) parsed, the $open_max largest inputs hold $(top "$out" "$open_max") bytes"
 		((tree <= tree_max)) || total_bad=$((total_bad + 1))
 		((win <= win_max)) || win_bad=$((win_bad + 1))
@@ -140,7 +140,7 @@ for mode in plain cut disjoint; do
 		((open <= open_max * STR_LEAVES)) || open_bad=$((open_bad + 1))
 		((inputs == INPUTS + 1)) || segs_bad=$((segs_bad + 1))
 		[[ $(val "$out" answers) == true ]] || segs_bad=$((segs_bad + 1))
-		[[ $mode == disjoint ]] || ((($(val "$out" end_flat)) <= $(val "$out" mid_flat) * 11 / 10 + 131072)) || mid_bad=$((mid_bad + 1))
+		((n < SATURATED[$mode])) || [[ $mode == disjoint ]] || ((($(val "$out" end_flat)) <= $(val "$out" mid_flat) * 11 / 10 + 131072)) || mid_bad=$((mid_bad + 1))
 		((($(val "$out" last_dict)) == 0)) || dlast_bad=$((dlast_bad + 1))
 		((n < SATURATED[$mode])) || flat+="$n $((tree - dict))"$'\n'
 		dictfit+="$n $(val "$out" max_dict)"$'\n'
