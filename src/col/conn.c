@@ -435,16 +435,42 @@ key_slot(KeyRec *tab, uint32 mask, int64 key)
 	return &tab[h];
 }
 
-uint64
-sift_conn_inserted_rows(Relation heap, Relation index, const SiftConnStamp *stamp)
+/* The index of the immutable segment with most documents (the base a merge or rewrite wrote), -1 when there is none */
+static int
+base_segment(const SiftDirSnapshot *dir)
+{
+	int			base = -1;
+
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_tomb_is_seg(&dir->segs[i]) && (base < 0 || dir->segs[i].ndocs > dir->segs[base].ndocs))
+			base = i;
+	return base;
+}
+
+/* A segment the merge or rewrite that wrote the base wrote as well: they all carry the stamp the merge took as the newest of its inputs */
+static bool
+written_with_base(const SiftDirSnapshot *dir, int base, int i)
+{
+	TransactionId xb,
+				xs;
+
+	return i == base || (base >= 0 && sift_seg_xstamp(&dir->segs[base], &xb) && sift_seg_xstamp(&dir->segs[i], &xs) && xs == xb);
+}
+
+static uint64
+inserted_since(Relation index, const SiftConnStamp *stamp, bool without_base, TransactionId *base_xstamp)
 {
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
 	const SiftColSchema *schema;
 	uint64		since = 0;
+	int			base;
 
 	sift_col_flush_held();
 	schema = sift_col_rel(index)->schema;
 	sift_dir_read(index, dir);
+	base = without_base ? base_segment(dir) : -1;
+	if (base_xstamp && (base < 0 || !sift_seg_xstamp(&dir->segs[base], base_xstamp)))
+		*base_xstamp = InvalidTransactionId;
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		const SiftSegEntry *e = &dir->segs[i];
@@ -453,7 +479,7 @@ sift_conn_inserted_rows(Relation heap, Relation index, const SiftConnStamp *stam
 		if (sift_tomb_is_seg(e))
 			continue;
 		if (e->kind == SIFT_SEG_IMMUTABLE)
-			since += !sift_seg_xstamp(e, &xs) || TransactionIdFollows(xs, stamp->xmin) ? e->ndocs : 0;
+			since += !written_with_base(dir, base, i) && (!sift_seg_xstamp(e, &xs) || TransactionIdFollows(xs, stamp->xmin)) ? e->ndocs : 0;
 		else if (sift_seg_is_wbuf(e))
 			since += sift_cwbuf_inserted_since(index, e, schema, stamp->xmin);
 	}
@@ -461,25 +487,39 @@ sift_conn_inserted_rows(Relation heap, Relation index, const SiftConnStamp *stam
 	return since;
 }
 
-static SiftConnWhy changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, bool moved, SiftConnTags *tags,
+uint64
+sift_conn_inserted_rows(Relation heap, Relation index, const SiftConnStamp *stamp)
+{
+	return inserted_since(index, stamp, false, NULL);
+}
+
+uint64
+sift_conn_inserted_estimate(Relation heap, Relation index, const SiftConnStamp *stamp, TransactionId *base_xstamp)
+{
+	return inserted_since(index, stamp, true, base_xstamp);
+}
+
+static SiftConnWhy changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, TransactionId kept_after, SiftConnTags *tags,
 							  SiftConnKeys *out);
 
 SiftConnWhy
 sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, SiftConnTags *tags, SiftConnKeys *out)
 {
-	return changed_by(heap, index, stamp, snap, cap, adds, false, tags, out);
+	return changed_by(heap, index, stamp, snap, cap, adds, InvalidTransactionId, tags, out);
 }
 
 SiftConnWhy
 sift_conn_changed(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out)
 {
-	return changed_by(heap, index, stamp, snap, cap, false, false, NULL, out);
+	return changed_by(heap, index, stamp, snap, cap, false, InvalidTransactionId, NULL, out);
 }
 
 SiftConnWhy
-sift_conn_moved(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out)
+sift_conn_moved(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, TransactionId base, SiftConnKeys *out)
 {
-	return changed_by(heap, index, stamp, snap, cap, false, true, NULL, out);
+	bool		after_stamp = TransactionIdIsNormal(base) && TransactionIdFollows(base, stamp->xmin);
+
+	return changed_by(heap, index, stamp, snap, cap, false, after_stamp ? base : stamp->xmin, NULL, out);
 }
 
 uint16
@@ -561,9 +601,9 @@ tag_wanted(SiftConnTags *tags, const SiftTombLog *log, uint16 flags)
 	return tags->all || (tags->map[tag / 8] & (1 << (tag % 8))) != 0;
 }
 
-/* adds: the keys of the records of inserted entries (KEYADD, a scope relation's journal) are in the set as well as those of ended ones; tags: only those of the pairs of the keys it names; moved: the records of updates that kept the key are left out */
+/* adds: the keys of the records of inserted entries (KEYADD, a scope relation's journal) are in the set as well as those of ended ones; tags: only those of the pairs of the keys it names; kept_after (not invalid): the records of updates that kept the key are left out, and nkept counts those from that xid on */
 static SiftConnWhy
-changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, bool moved, SiftConnTags *tags, SiftConnKeys *out)
+changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, TransactionId kept_after, SiftConnTags *tags, SiftConnKeys *out)
 {
 	SiftTombLog *log;
 	SiftConnWhy why = vouch(heap, index, stamp, snap, &log);
@@ -602,9 +642,9 @@ changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot s
 		}
 		if (last_void)
 			continue;
-		if (moved && keeps)
+		if (TransactionIdIsValid(kept_after) && keeps)
 		{
-			nkept++;
+			nkept += TransactionIdFollowsOrEquals(rec[i].xid, kept_after);
 			continue;
 		}
 		slot = key_slot(tab, mask, (int64) rec[i].succ);

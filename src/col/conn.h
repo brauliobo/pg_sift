@@ -71,7 +71,7 @@ typedef struct SiftConnKeys
 	bool	   *added;			/* [n] the last record of the key is of an entry inserted (changed_by with adds): the key probably has an entry now, which a read of a scope expects to patch */
 	uint32		n;
 	uint32		cap;
-	uint64		nkept;			/* sift_conn_moved: the records of updates that kept their key, which it leaves out (each wrote a row version the parent index holds) */
+	uint64		nkept;			/* sift_conn_moved: the records of updates that kept their key, which it leaves out, from the xid of its base on (each wrote a row version the parent index holds, outside the base when it is that new) */
 } SiftConnKeys;
 
 /* Is key in the set (binary search) */
@@ -122,9 +122,17 @@ extern bool sift_conn_gen_equal(const SiftConnGen *a, const SiftConnGen *b);
  * the horizon on; 0 only when there is none. An UPDATE writes the new version as a row too, so it answers true as well; the keys of an update are in changed(S, X). Only for a stamp the journal vouches for.
  */
 extern uint64 sift_conn_inserted_rows(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp);
+/*
+ * The same for the advice of a rewrite, which a user pays for: the segments of the base left out, the largest one and those that carry its stamp. A merge or rewrite of the parent
+ * index writes the rows it holds again under the newest xstamp of its inputs (no stamp says which rows are the old ones), so what the base holds says nothing of the rows inserted
+ * since the stamp (sift_conn_inserted_rows counts all of them, as a reader must). The rows of the write buffer, which it counts exactly, and of the segments written after the base
+ * are the ones that came since. Leaves out the rows inserted since that a merge put into the base (the readers still join for them): it never asks for a rewrite for what a merge did.
+ * base_xstamp: the stamp of the base (InvalidTransactionId when it has none), for sift_conn_moved.
+ */
+extern uint64 sift_conn_inserted_estimate(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, TransactionId *base_xstamp);
 extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
 /* The same without the keys that only updates which kept the key touched: the keys whose parent rows ended or whose key changed, which are the ones a flag filled before the stamp may no longer tell */
-extern SiftConnWhy sift_conn_moved(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
+extern SiftConnWhy sift_conn_moved(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, TransactionId base, SiftConnKeys *out);
 typedef struct SiftKeyMap SiftKeyMap;
 /*
  * The same, with the keys of the inserted entries (adds) of a scope relation's journal (col/scope.h) as well, and only of the records of the pairs of the scope keys in tags (NULL: of every key). A
