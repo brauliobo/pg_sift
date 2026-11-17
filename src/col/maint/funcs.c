@@ -143,12 +143,14 @@ sift_col_repair(PG_FUNCTION_ARGS)
 
 		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
 			continue;
+		SIFT_TEST_GATE(sift_test_repair_gate, 15);
 		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
 		if (dry_run)
 			sift_cseg_live_audit(seg, &a);
 		else
 			sift_cseg_live_repair(seg, &a);
 		sift_cseg_close(seg);
+		SIFT_TEST_GATE(sift_test_repair_gate, 16);
 		if (a.pages_damaged == 0 && a.units_lost == 0 && a.ndead_header == a.cleared)
 			continue;
 		v[0] = Int64GetDatum(snap->segs[i].gen);

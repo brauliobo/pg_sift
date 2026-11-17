@@ -441,6 +441,7 @@ sift_wt_finish(SiftWriteTarget *wt)
 					.extra = InvalidBuffer}, false, NULL);
 			wt->taken = extents_subtract(wt, wt->taken, &wt->ntaken, wt->spare, wt->nspare);
 			wt->maxtaken = wt->ntaken;
+			SIFT_DIR_TEST_BOOKS();
 		}
 		wt->nspare = 0;
 		return;
@@ -489,6 +490,7 @@ sift_wt_release(SiftWriteTarget *wt, SiftExtent *ext, int n)
 	store_update(wt->index, &(SiftDirChange) {.release = ext, .nrelease = n, .extra = InvalidBuffer}, false, NULL);
 	wt->taken = extents_subtract(wt, wt->taken, &wt->ntaken, ext, n);
 	wt->maxtaken = wt->ntaken;
+	SIFT_DIR_TEST_BOOKS();
 }
 
 SiftStreamWriter *

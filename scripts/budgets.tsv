@@ -12,7 +12,8 @@ tap:col_wbuf_arena_fuzz	600	1000	82 s
 tap:col_scope_kill_writes	600	1000	12 rounds = 92-98 s
 tap:col_crash_matrix	900	1500	170 s hosted
 tap:fault_matrix	1800	1500	quick tier 150 cases and full tier 349: run in two halves with SIFT_FAULT_ONLY (measured before the round-2 operations: quick 80 s + 144 s in two clusters, full 838 s + 883 s)
-tap:fault_matrix_standby	900	1500	one standby: 8 families + 2 at 4 cases each, 150 s measured; the full tier of fault_matrix.sh runs with it
+tap:fault_matrix_standby	900	1500	15 families of 4 cases and 5 gates of 2 cases, a promotion at the end: 70 s for the gate families, about 250 s in all
+tap:fault_matrix_workers	900	1000	col and BM25 workers, terminate and immediate: 4 cases of 8 checks, 150 s measured
 tap:col_scope_crash	600	1000	60 s hosted
 tap:col_index_crash	900	1500	300-366 s hosted
 tap:col_wbuf_crash	600	1000	150 s hosted

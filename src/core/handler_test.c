@@ -127,6 +127,15 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_mutant",
 							"Testing: a deliberate defect of the fault matrix: 1 a job keeps its progress slot, 2 the orphan triggers of a dropped index stay (0 = none).",
 							NULL, &sift_test_mutant, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_alter_gate",
+							 "Testing: the validation of the options of a sift_col index (ALTER INDEX .. SET) waits for advisory lock (0x51F7, 14).",
+							 NULL, &sift_test_alter_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_step_gate",
+							 "Testing: a background worker waits for advisory lock (0x51F7, 17) when it begins a step of a BM25 index (a promotion or a merge), inside the subtransaction of the step.",
+							 NULL, &sift_test_step_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_repair_gate",
+							 "Testing: sift.col_repair waits for advisory lock (0x51F7, 15) before it repairs a segment and (0x51F7, 16) after it did.",
+							 NULL, &sift_test_repair_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_count_gate",
 							 "Testing: a count waits for advisory lock (0x51F7, 1) once its plan is made.",
 							 NULL, &sift_test_count_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

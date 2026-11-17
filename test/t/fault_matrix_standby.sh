@@ -20,12 +20,8 @@ sql cm "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension fai
 node_clone cm sb 2 "sift.async_maintenance = off" || bail "standby failed"
 node_start sb || bail "standby start failed"
 
-FAMILIES=(bm25_promote bm25_merge col_promote col_merge scope_build scope_refill vacuum tbl_seal)
-SCENARIOS+=(
-	"scope_cic~$GP~CREATE INDEX CONCURRENTLY docs_sc ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, scope = 't: g -> gp(g, t)')"
-	"reindex_col~$COL~REINDEX INDEX docs_col"
-)
-FAMILIES+=(scope_cic reindex_col)
+FAMILIES=(bm25_promote bm25_merge col_promote col_merge scope_build scope_refill vacuum tbl_seal scope_cic reindex_col reindex_scope_c vs_intern vs_compact tbl_copy alter_refresh)
+GATE_FAMILIES=(tbl_tomb:tombwrite tbl_tomb:tombmerge tbl_seal:tombrewrite vs_intern:intern tbl_copy:load)
 declare -A SETUP OP
 for row in "${SCENARIOS[@]}"; do IFS='~' read -r name setup op <<<"$row"; SETUP[$name]=$setup; OP[$name]=$op; done
 
@@ -36,6 +32,8 @@ on_standby() { # the checks of a healthy node on the standby: indexes verify, st
 	[[ $plain == "$REF" ]] || { diag "the plain answers of the standby are not the primary's: $plain"; return 1; }
 	idx=$(sql sb "${IDX[@]}" "$QA" "$QB" 2>&1)
 	[[ $idx == "$plain" ]] || { diag "the answers through the indexes of the standby differ from its plain plan"; return 1; }
+	[[ $(sql sb "SELECT count(*) FROM pg_class WHERE relname = 'tbl'") == 0 ]] ||
+		[[ $(sql sb "$QT tbl") == "$(sql cm "$QT tbl_h")" ]] || { diag "the sift_table of the standby differs from the heap twin of the primary"; return 1; }
 }
 catch_up() { catchup cm sb; }
 restart_primary() { node_stop cm; pg_ctl -D "$D/data" -m immediate -w stop >/dev/null 2>&1; node_start cm; }
@@ -44,13 +42,13 @@ for name in "${FAMILIES[@]}"; do
 	[[ -z ${SIFT_FAULT_ONLY:-} || $name =~ $SIFT_FAULT_ONLY ]] || continue
 	fresh "${SETUP[$name]}" || bail "$name: setup"
 	REF=$(sql cm "${PLAIN[@]}" "$QA" "$QB" 2>&1)
-	k=$(sql cm "${OP[$name]}" "SELECT sift._test_dir_updates()" | tail -1) || bail "$name: the operation failed in a clean state"
+	k=$(op_stmts "$name"; sql cm "${OPS[@]}" "SELECT sift._test_dir_updates()" | tail -1) || bail "$name: the operation failed in a clean state"
 	(( k > 0 )) || continue
 	for n in $(( (k + 1) / 2 )) "-$k"; do
 		for kind in 1 0; do
 			fresh "${SETUP[$name]}" || bail "$name: setup"
 			REF=$(sql cm "${PLAIN[@]}" "$QA" "$QB" 2>&1)
-			sql cm "SET sift.test_crash_dir = $n" "SET sift.test_crash_kind = $kind" "${OP[$name]}" >/dev/null 2>&1
+			sql cm "SET sift.test_crash_dir = $n" "SET sift.test_crash_kind = $kind" "${OPS[@]}" >/dev/null 2>&1
 			if [[ $kind == 0 ]]; then
 				for _ in $(seq 100); do kill -0 "$(head -1 "$D/data/postmaster.pid" 2>/dev/null)" 2>/dev/null || break; sleep 0.1; done
 				node_start cm || { not_ok "$name, update $n, kind $kind: the primary did not restart"; diag "$(tail -20 "$D/postgres.log")"; continue; }
@@ -60,12 +58,46 @@ for name in "${FAMILIES[@]}"; do
 			done
 			catch_up
 			if on_standby; then
-				sql cm "${OP[$name]}" >/dev/null && catch_up && on_standby && ok "$name, update $n, $([[ $kind == 1 ]] && echo error || echo kill): the standby verifies, answers equal, and follows the operation run again" ||
+				op_stmts "$name"; sql cm "${OPS[@]}" >/dev/null && catch_up && on_standby && ok "$name, update $n, $([[ $kind == 1 ]] && echo error || echo kill): the standby verifies, answers equal, and follows the operation run again" ||
 					not_ok "$name, update $n, kind $kind: after the operation run again"
 			else
 				not_ok "$name, update $n, kind $kind: on the standby after the fault"
 			fi
 		done
+	done
+done
+
+# the operations with no directory update of their own, stopped at their gates (a cancel, an immediate shutdown of the primary)
+for row in "${GATE_FAMILIES[@]}"; do
+	name=${row%:*} gname=${row#*:}
+	[[ -z ${SIFT_FAULT_ONLY:-} || $name =~ $SIFT_FAULT_ONLY ]] || continue
+	for fault in cancel immediate; do
+		fresh "${SETUP[$name]}" || bail "$name: setup"
+		REF=$(sql cm "${PLAIN[@]}" "$QA" "$QB" 2>&1)
+		gate_spec "$gname"
+		sql cm "SELECT $GATE_LOCK, pg_sleep(600)" >/dev/null 2>&1 &
+		hold=$!
+		wait_for "[[ -n \$(sql cm \"SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND $GATE_COND AND granted\") ]]" 30 || bail "$name: the gate was not taken"
+		op_stmts "$name"
+		sql cm "${GATE_SET[@]}" "${OPS[@]}" >/dev/null 2>&1 &
+		op=$!
+		wait_for "[[ -n \$(sql cm \"SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND $GATE_COND AND NOT granted\") ]]" 60 || { not_ok "$name, gate $gname: not reached"; continue; }
+		if [[ $fault == cancel ]]; then
+			sql cm "SELECT pg_cancel_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND $GATE_COND AND NOT granted" >/dev/null
+			wait "$op" 2>/dev/null
+			sql cm "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND $GATE_COND AND granted" >/dev/null
+		else
+			pg_ctl -D "$D/data" -m immediate -w stop >/dev/null 2>&1
+			node_start cm || { not_ok "$name, gate $gname: the primary did not restart"; continue; }
+		fi
+		wait 2>/dev/null
+		catch_up
+		if on_standby; then
+			sql cm "${OPS[@]}" >/dev/null && catch_up && on_standby && ok "$name, gate $gname, $fault: the standby verifies, answers equal, and follows the operation run again" ||
+				not_ok "$name, gate $gname, $fault: after the operation run again"
+		else
+			not_ok "$name, gate $gname, $fault: on the standby after the fault"
+		fi
 	done
 done
 

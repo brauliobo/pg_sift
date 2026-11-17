@@ -164,6 +164,7 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
 	BeginInternalSubTransaction(NULL);
 	PG_TRY();
 	{
+		SIFT_TEST_GATE(sift_test_step_gate && MyBackendType == B_BG_WORKER, 17);
 		fn(index, wt, arg);
 		ReleaseCurrentSubTransaction();
 	}

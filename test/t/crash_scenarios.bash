@@ -84,3 +84,57 @@ await_exit() { # PID
 	return 1
 }
 
+
+# the gates: GATE_SET (statements of the session that runs the operation), GATE_LOCK (what the holder session takes) and GATE_COND (the row of pg_locks of that advisory lock)
+adv2() { GATE_LOCK="pg_advisory_lock(20983, $1)"; GATE_COND="classid = 20983 AND objid = $1 AND objsubid = 2"; }
+adv1() { GATE_LOCK="pg_advisory_lock($1)"; GATE_COND="classid = 0 AND objid = $1 AND objsubid = 1"; }
+gate_spec() { # GATE: the gate of the phase "gate:GATE"
+	GATE_SET=()
+	case $1 in
+		dir) adv2 13 ;;
+		build) adv2 8; GATE_SET=("SET sift.test_build_gate = on") ;;
+		drop) adv2 9; GATE_SET=("SET sift.test_drop_gate = on") ;;
+		cleanup) adv2 2; GATE_SET=("SET sift.test_cleanup_gate = on") ;;
+		rebuild) adv2 11; GATE_SET=("SET sift.test_rebuild_gate = on" "SET sift.agg_force = on" "SET sift.col_wbuf_ref = on" "SET max_parallel_workers_per_gather = 0") ;;
+		intern) adv2 12; GATE_SET=("SET sift.test_intern_gate = on") ;;
+		bulkdelete) adv1 100; GATE_SET=("SET sift.test_bulkdelete_gate = 100") ;;
+		tail) adv1 7004; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
+		fill) adv1 7005; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
+		journal) adv1 7006; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
+		load) adv1 7004; GATE_SET=("SET sift.test_phase_gate = 7000" "SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.test_load_unit_bytes = 128") ;;
+		tombrewrite) adv1 7007; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
+		tombwrite) adv1 7008; GATE_SET=("SET sift.test_phase_gate = 7000" "SET sift.tomb_log_limit = 16") ;;
+		tombmerge) adv1 7009; GATE_SET=("SET sift.test_phase_gate = 7000" "SET sift.tomb_log_limit = 16") ;;
+		alter) adv2 14; GATE_SET=("SET sift.test_alter_gate = on") ;;
+		repair_before) adv2 15; GATE_SET=("SET sift.test_repair_gate = on") ;;
+		repair_after) adv2 16; GATE_SET=("SET sift.test_repair_gate = on") ;;
+	esac
+}
+
+# the statements of an operation (split at @@) in OPS: statements that cannot share a transaction block (a VACUUM after a SET) are separate commands of one session
+op_stmts() { IFS=$'\x1f' read -ra OPS <<<"${OP[$1]//@@/$'\x1f'}"; }
+
+# the scenarios of the operations of the later rounds (they name "$D", the directory of the node)
+CIC_OPTS="WITH (write_buffer_limit = 4096)"
+VSTORE="SET sift.test_vstore_columns = 'body'@@CREATE INDEX docs_a ON docs USING sift_col (id, body)@@CREATE INDEX docs_b ON docs USING sift_col (body, id)"
+for i in $(seq 12); do VSTORE+="@@SELECT sift._test_vstore_intern('docs_body_sift_values', array['f$i', 'g$i'])"; done
+SCENARIOS+=(
+	"col_cic~~CREATE INDEX CONCURRENTLY docs_col ON docs USING sift_col (id, g, n) $CIC_OPTS"
+	"track_cic~~CREATE INDEX CONCURRENTLY docs_tr ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, track_changes = 'ctid')"
+	"scope_cic~$GP~CREATE INDEX CONCURRENTLY docs_sc ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, scope = 't: g -> gp(g, t)')"
+	"scope_cic_nj~${GP%%; CREATE INDEX gp_journal*}~CREATE INDEX CONCURRENTLY docs_sc ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, scope = 't: g -> gp(g, t)')"
+	"reindex_col~$COL~REINDEX INDEX docs_col"
+	"reindex_col_c~$COL~REINDEX INDEX CONCURRENTLY docs_col"
+	"drop_track~CREATE INDEX docs_tr ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, track_changes = 'ctid')~DROP INDEX IF EXISTS docs_tr"
+	"vs_intern~$VSTORE~LOAD 'pg_sift'; SELECT sift._test_vstore_intern('docs_body_sift_values', array['s1a', 's1b', 'shared'])"
+	"vs_compact~$VSTORE~LOAD 'pg_sift'; SELECT sift.col_value_store_compact('docs', 'body')"
+	"tbl_tomb~$TBL@@INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i@@INSERT INTO tbl_h SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i~UPDATE tbl SET n = n + 1; UPDATE tbl_h SET n = n + 1"
+	"reindex_scope_c~$SCOPE~REINDEX INDEX CONCURRENTLY docs_sc"
+	"vs_gc~SET sift.test_vstore_columns = 'body'@@UPDATE docs SET body = md5(id::text)@@CREATE INDEX docs_a ON docs USING sift_col (id, body)@@CREATE INDEX docs_b ON docs USING sift_col (body, id)@@DELETE FROM docs WHERE id % 10 <> 0~SET sift.test_vstore_gc_kb = 1@@VACUUM docs"
+	"alter_refresh~$COL@@ALTER INDEX docs_col SET (cube_minmax = false)~SELECT * FROM sift.col_refresh('docs_col')"
+	"alter_reloption~$COL~ALTER INDEX docs_col SET (write_buffer_limit = 8192)"
+	"col_repair~SET sift.test_col_max_segments = 1@@CREATE INDEX docs_col ON docs USING sift_col (id, g, n)@@DELETE FROM docs WHERE id % 7 = 0@@VACUUM (INDEX_CLEANUP ON) docs@@SELECT sift._test_poke('docs_col', first_block, 32, 8, 1) FROM sift.col_extents('docs_col') WHERE what = 'liveness run'@@SELECT sift._test_poke('docs_col', first_block, 8178, 4, 2) FROM sift.col_extents('docs_col') WHERE what = 'liveness run'@@CHECKPOINT~SELECT count(*) FROM sift.col_repair('docs_col')"
+	"tbl_copy~$TBL@@COPY (SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i) TO '$D/load.csv' CSV~COPY tbl FROM '$D/load.csv' CSV; COPY tbl_h FROM '$D/load.csv' CSV"
+)
+DATA_OPS=" tbl_tomb tbl_copy "
+DAMAGED=" col_repair "

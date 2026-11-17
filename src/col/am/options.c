@@ -754,6 +754,7 @@ am_col_amoptions(Datum reloptions, bool validate)
 {
 	SiftColOptions *o = build_reloptions(reloptions, validate, col_relopt_kind, sizeof(SiftColOptions), col_relopt_tab, lengthof(col_relopt_tab));
 
+	SIFT_TEST_GATE(validate && sift_test_alter_gate, 14);
 	if (o)
 	{
 		alias_string(o, o->rollup, &o->rollup_leaves);

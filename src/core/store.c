@@ -72,10 +72,13 @@ dir_fault_here(bool after)
 		sift_test_crash_dir == (after ? -sift_test_dir_updates : sift_test_dir_updates);
 }
 
+static bool dir_books_pending;
+
 void
 sift_store_dir_test_enter(void)
 {
 	sift_test_dir_updates++;
+	dir_books_pending = false;
 	if (sift_test_crash_kind == 2 && dir_fault_here(false))
 		sift_test_wait(13);
 }
@@ -86,15 +89,35 @@ dir_fault_error(bool after)
 	ereport(ERROR, (errcode(ERRCODE_OPERATOR_INTERVENTION), errmsg("sift test: error %s directory update %d", after ? "after" : "before", sift_test_dir_updates)));
 }
 
-void
-sift_store_dir_test_leave(bool publish)
+static void
+dir_fault_after(void)
 {
-	if (!publish || !dir_fault_here(true))
-		return;
 	if (sift_test_crash_kind == 2)
 		sift_test_wait(13);
 	else if (sift_test_crash_kind == 1)
 		dir_fault_error(true);
+}
+
+/* after an update that publishes the directory: its caller has nothing left to book; after one that does not, the fault waits for the caller's books (sift_store_dir_test_books) */
+void
+sift_store_dir_test_leave(bool publish)
+{
+	if (!dir_fault_here(true))
+		return;
+	if (publish)
+		dir_fault_after();
+	else
+		dir_books_pending = true;
+}
+
+/* the caller of an update that does not publish has updated its own books: the fault of "after update n" goes here */
+void
+sift_store_dir_test_books(void)
+{
+	if (!dir_books_pending)
+		return;
+	dir_books_pending = false;
+	dir_fault_after();
 }
 
 void
