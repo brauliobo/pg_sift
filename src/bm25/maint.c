@@ -44,6 +44,7 @@
 #include "col/wbuf.h"
 #include "core/sql.h"
 #include "core/visibility.h"
+#include "core/membudget.h"
 
 #define BACKOFF_MAX_MS		3600000
 
@@ -586,10 +587,12 @@ refresh_dead_tables(Relation index)
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && (snap->segs[i].flags & SIFT_SEG_DIRTY))
 		{
-			SiftSegment *seg = sift_seg_open(index, &snap->segs[i], CurrentMemoryContext);
+			MemoryContext segcx = AllocSetContextCreate(CurrentMemoryContext, "sift dead refresh segment", ALLOCSET_DEFAULT_SIZES);
+			SiftSegment *seg = sift_seg_open(index, &snap->segs[i], segcx);
 
 			sift_seg_refresh_dead(seg);
 			sift_seg_close(seg);
+			MemoryContextDelete(segcx);
 		}
 	pfree(snap);
 }
@@ -819,8 +822,13 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 {
 	Relation	index;
 	SiftStepResult	r = SIFT_STEP_IDLE;
+	MemoryContext cx;
+	MemoryContext old;
 
 	StartTransactionCommand();
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift maintenance step", ALLOCSET_DEFAULT_SIZES);
+	old = MemoryContextSwitchTo(cx);
+	SIFT_MEM_SCOPE(maint_worker_step, cx);
 	index = sift_try_open_index(indexoid, RowExclusiveLock);
 	if (index != NULL)
 	{
@@ -849,6 +857,9 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 			sift_log_maint(index, "maintenance worker finished", start, -1, -1);
 		index_close(index, RowExclusiveLock);
 	}
+	SIFT_MEM_CHECKPOINT();
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
 	CommitTransactionCommand();
 	return r;
 }

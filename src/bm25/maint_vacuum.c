@@ -20,6 +20,7 @@
 #include "core/quarantine.h"
 #include "core/sql.h"
 #include "core/visibility.h"
+#include "core/membudget.h"
 
 typedef struct BulkDelete
 {
@@ -52,9 +53,12 @@ bulkdelete_index(void *arg)
 	const SiftMaintOps *ops = bd->ops;
 	Relation	index = bd->info->index;
 	IndexBulkDeleteResult *stats = bd->stats;
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift index vacuum", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftErrCtx	ctx;
 	int			order[SIFT_MAX_SEGMENTS];
+	SIFT_MEM_SCOPE(index_vacuum, cx);
 	double		removed = stats->tuples_removed;
 	bool		out = false;
 
@@ -70,6 +74,7 @@ bulkdelete_index(void *arg)
 			ops->bulkdelete_immutable(index, &snap->segs[order[k]], caller_callback, bd, stats);
 		else
 			ops->bulkdelete_wbuf(index, &snap->segs[order[k]], caller_callback, bd, stats);
+		SIFT_MEM_CHECKPOINT();
 		SIFT_CLEAR_TEST_POINT();
 	}
 	/*
@@ -85,6 +90,8 @@ bulkdelete_index(void *arg)
 	sift_errctx_pop(&ctx);
 	sift_maint_unlock(index);
 	pfree(snap);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
 	if (out)
 		sift_quarantine_stopped(index, SIFT_SKIP_VACUUM);
 }
@@ -132,9 +139,12 @@ vacuumcleanup_index(void *arg)
 	IndexBulkDeleteResult *stats = vc->stats;
 	bool		skipped = vc->skipped;
 	Relation	index = info->index;
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift index vacuum", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftErrCtx	ctx;
 	bool		began;
+	SIFT_MEM_SCOPE(index_vacuum, cx);
 
 	sift_maint_lock(index, true);
 	sift_errctx_push(&ctx, RelationGetRelid(index));
@@ -153,6 +163,7 @@ vacuumcleanup_index(void *arg)
 		ops->vacuum_net(index);
 	sift_progress_phase(index, "merge");
 	vacuum_merge(ops, index);
+	SIFT_MEM_CHECKPOINT();
 	SIFT_TEST_GATE(sift_test_cleanup_gate, 2);
 	if (ops->vacuum_refresh)
 		ops->vacuum_refresh(index);
@@ -196,6 +207,8 @@ vacuumcleanup_index(void *arg)
 		for (int i = 0; i < snap->nsegs; i++)
 			stats->num_index_tuples += snap->segs[i].ndocs;
 	pfree(snap);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
 }
 
 IndexBulkDeleteResult *
