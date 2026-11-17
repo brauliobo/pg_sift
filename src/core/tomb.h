@@ -225,6 +225,21 @@ typedef struct SiftTombWalk
 extern void sift_tomb_walk_begin(SiftTombWalk *w, SiftTombLog *t);
 extern SiftTomb *sift_tomb_walk_next(SiftTombWalk *w);
 extern void sift_tomb_walk_end(SiftTombWalk *w);
+/*
+ * Every entry of the log in no order, as arrays: the main and the recent array of the log, then the blocks of each run. Each call gives the next array and its length, NULL at the end,
+ * so that a pass that needs no order (a count, a first match) is a loop over arrays: no call for each entry. A run is read through one block in cxt. The log is not changed between
+ * begin and end.
+ */
+typedef struct SiftTombEach
+{
+	const SiftTombLog *t;
+	uint32		arrays;			/* of the main and the recent array, those given */
+	uint32		run;
+	SiftSortRunCur cur;
+} SiftTombEach;
+extern void sift_tomb_each_begin(SiftTombEach *e, const SiftTombLog *t, MemoryContext cxt);
+extern const SiftTomb *sift_tomb_each_next(SiftTombEach *e, uint32 *n);
+extern void sift_tomb_each_end(SiftTombEach *e);
 /* Does the log hold no entry, in memory or in a run */
 extern bool sift_tomb_empty(const SiftTombLog *t);
 /* Does the log have a member of a HOT chain, in memory or in a run */

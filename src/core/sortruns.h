@@ -54,6 +54,10 @@ extern void sift_srun_reset(SiftSortRunSet *s);
 /* Adds to the array *out (*n of *cap records, in the context of the set) the records with lo <= key <= hi: those of the oldest run first, each run ascending */
 extern void sift_srun_range(const SiftSortRunSet *s, uint64 lo, uint64 hi, void **out, uint32 *n, uint32 *cap);
 extern void sift_srun_cur_init(SiftSortRunCur *c, const SiftSortRun *run, uint32 recsz, MemoryContext cxt);
+/* Points the cursor (made for any run, or none) at the start of the first block of run that can hold a key >= lo */
+extern void sift_srun_cur_seek(SiftSortRunCur *c, const SiftSortRun *run, uint64 lo);
+/* The records from the cursor to the end of its block or run, as one array: the first and how many (*n), the cursor past them; NULL past the last. Valid until the cursor reads another block */
+extern const void *sift_srun_cur_chunk(SiftSortRunCur *c, uint32 *n);
 /* The record the cursor is at, NULL past the last; valid until the cursor moves */
 extern const void *sift_srun_cur_peek(SiftSortRunCur *c);
 extern void sift_srun_cur_next(SiftSortRunCur *c);

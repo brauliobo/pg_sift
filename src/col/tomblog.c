@@ -306,21 +306,23 @@ trim_journal(Relation index, SiftTombLog *log, TransactionId aged)
 		}
 }
 
-/* Does the walk of the log find an entry drop_keep changes: it works on a copy of each, as the rewrite does on the entries it keeps */
+/* Does the log hold an entry drop_keep changes (in memory or in a run): it works on a copy of each, as the rewrite does on the entries it keeps */
 static void
 log_changes(SiftTombLog *log, DropArg *d)
 {
-	SiftTombWalk w;
-	SiftTomb   *e;
+	SiftTombEach each;
+	const SiftTomb *a;
+	uint32		n;
 
-	sift_tomb_walk_begin(&w, log);
-	while (d->changed == 0 && (e = sift_tomb_walk_next(&w)) != NULL)
-	{
-		SiftTomb	t = *e;
+	sift_tomb_each_begin(&each, log, CurrentMemoryContext);
+	while (d->changed == 0 && (a = sift_tomb_each_next(&each, &n)) != NULL)
+		for (uint32 i = 0; i < n && d->changed == 0; i++)
+		{
+			SiftTomb	t = a[i];
 
-		(void) drop_keep(&t, d);
-	}
-	sift_tomb_walk_end(&w);
+			(void) drop_keep(&t, d);
+		}
+	sift_tomb_each_end(&each);
 }
 
 static void

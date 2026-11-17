@@ -401,6 +401,7 @@ core/store_test_int.h
 core/tomb.c
 core/tomb.h
 core/tomb_hdr.c
+core/tomb_iter.c
 core/tomb_int.h
 core/tomb_write.c
 core/verify.c

@@ -120,6 +120,19 @@ sift_srun_cur_next(SiftSortRunCur *c)
 	c->pos++;
 }
 
+const void *
+sift_srun_cur_chunk(SiftSortRunCur *c, uint32 *n)
+{
+	const void *rec = sift_srun_cur_peek(c);
+	uint64		per = BLCKSZ / c->recsz;
+
+	if (rec == NULL)
+		return NULL;
+	*n = Min(per - c->pos % per, c->run->n - c->pos);
+	c->pos += *n;
+	return rec;
+}
+
 /* The two newest runs as one: a stable merge, the older one first for equal keys */
 static void
 merge_last(SiftSortRunSet *s)
@@ -231,10 +244,16 @@ run_start_block(const SiftSortRun *r, uint64 lo)
 }
 
 void
+sift_srun_cur_seek(SiftSortRunCur *c, const SiftSortRun *run, uint64 lo)
+{
+	c->run = run;
+	c->pos = (uint64) run_start_block(run, lo) * (BLCKSZ / c->recsz);
+	c->blkno = -1;
+}
+
+void
 sift_srun_range(const SiftSortRunSet *s, uint64 lo, uint64 hi, void **out, uint32 *n, uint32 *cap)
 {
-	uint32		per = BLCKSZ / s->recsz;
-
 	for (uint32 i = 0; i < s->nruns; i++)
 	{
 		const SiftSortRun *r = &s->runs[i];
@@ -244,7 +263,7 @@ sift_srun_range(const SiftSortRunSet *s, uint64 lo, uint64 hi, void **out, uint3
 		if (r->n == 0 || r->fence[0] > hi)
 			continue;
 		sift_srun_cur_init(&c, r, s->recsz, s->cxt);
-		c.pos = (uint64) run_start_block(r, lo) * per;
+		sift_srun_cur_seek(&c, r, lo);
 		for (rec = sift_srun_cur_peek(&c); rec != NULL && rec_key(rec) <= hi; rec = sift_srun_cur_peek(&c))
 		{
 			if (rec_key(rec) >= lo)

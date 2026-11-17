@@ -196,15 +196,17 @@ sift_col_fold_marks(Relation index)
 static uint64
 fold_ready(SiftTombLog *log, TransactionId horizon)
 {
-	SiftTombWalk w;
-	const SiftTomb *t;
+	SiftTombEach each;
+	const SiftTomb *a;
+	uint32		n;
 	uint64		ready = 0;
 
-	sift_tomb_walk_begin(&w, log);
-	while ((t = sift_tomb_walk_next(&w)) != NULL)
-		ready += (t->kind == SIFT_TOMB_DELETE || t->kind == SIFT_TOMB_UPDATE) &&
-			(t->xid == FrozenTransactionId || (TransactionIdIsNormal(t->xid) && TransactionIdPrecedes(t->xid, horizon)));
-	sift_tomb_walk_end(&w);
+	sift_tomb_each_begin(&each, log, CurrentMemoryContext);
+	while ((a = sift_tomb_each_next(&each, &n)) != NULL)
+		for (uint32 i = 0; i < n; i++)
+			ready += (a[i].kind == SIFT_TOMB_DELETE || a[i].kind == SIFT_TOMB_UPDATE) &&
+				(a[i].xid == FrozenTransactionId || (TransactionIdIsNormal(a[i].xid) && TransactionIdPrecedes(a[i].xid, horizon)));
+	sift_tomb_each_end(&each);
 	return ready;
 }
 
