@@ -19,6 +19,7 @@
 #include "col/ktab.h"
 #include "col/pagg.h"
 #include "core/damage.h"
+#include "core/host.h"
 
 PG_FUNCTION_INFO_V1(sift_col_unit_aggs_sql);
 PG_FUNCTION_INFO_V1(sift_col_unit_hists_sql);
@@ -738,6 +739,8 @@ sift_col_unit_hists_sql(PG_FUNCTION_ARGS)
 				meas = -1;
 	SiftColUnit unit;
 
+	SIFT_ARG_REQUIRED(0, "sift.col_unit_hist", "index");
+	SIFT_ARG_REQUIRED(1, "sift.col_unit_hist", "dim");
 	InitMaterializedSRF(fcinfo, 0);
 	pagg_open(&ps, PG_GETARG_OID(0));
 	dim = find_leaf(ps.index, text_to_cstring(PG_GETARG_TEXT_PP(1)), true);

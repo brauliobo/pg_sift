@@ -9,6 +9,11 @@ INSERT INTO sna_part SELECT i, i % 3 FROM generate_series(1, 30) i;
 SET client_min_messages = warning;
 CREATE INDEX sna_part_col ON sna_part USING sift_col (id, g);
 RESET client_min_messages;
+CREATE TABLE sna_idx_t (id int, g int);
+INSERT INTO sna_idx_t SELECT i, i % 3 FROM generate_series(1, 30) i;
+SET client_min_messages = warning;
+CREATE INDEX sna_idx ON sna_idx_t USING sift_col (id, g);
+RESET client_min_messages;
 CREATE TABLE sna_gone (id int);
 CREATE TABLE sna_oids AS SELECT 'sna_gone'::regclass::oid AS gone;
 DROP TABLE sna_gone;
@@ -47,13 +52,19 @@ SELECT call, sna_state(call) FROM (VALUES
 	('SELECT sift.table_set_paths(0::oid::regclass, ''doc'', NULL)'),
 	('SELECT sift.index_format((SELECT gone FROM sna_oids)::regclass)'),
 	('SELECT sift.index_format(''sna_heap''::regclass)'),
-	('SELECT sift._require_owner((SELECT gone FROM sna_oids)::regclass)')
+	('SELECT sift._require_owner((SELECT gone FROM sna_oids)::regclass)'),
+	('SELECT count(*) FROM sift.col_unit_hist(''sna_idx''::regclass, NULL, ''id'')'),
+	('SELECT count(*) FROM sift.col_unit_hist(NULL, ''id'')'),
+	('SELECT count(*) FROM sift.col_unit_hist(''sna_idx''::regclass, ''g'', NULL)')
 ) v(call) ORDER BY call;
                                     call                                    |                              sna_state                              
 ----------------------------------------------------------------------------+---------------------------------------------------------------------
  SELECT * FROM sift.index_choices('sna_part_col'::regclass)                 | 42809 "sna_part_col" is a partitioned index, which holds no data
  SELECT * FROM sift.segments((SELECT gone FROM sna_oids)::regclass)         | 42P01 relation with OID N does not exist
  SELECT * FROM sift.tokenize('x', 0::oid::regclass)                         | 42P01 relation with OID 0 does not exist
+ SELECT count(*) FROM sift.col_unit_hist('sna_idx'::regclass, 'g', NULL)    | ok
+ SELECT count(*) FROM sift.col_unit_hist('sna_idx'::regclass, NULL, 'id')   | 22004 sift.col_unit_hist: the argument dim must not be NULL
+ SELECT count(*) FROM sift.col_unit_hist(NULL, 'id')                        | 22004 sift.col_unit_hist: the argument index must not be NULL
  SELECT sift._names_expr('1; DROP TABLE sna_t', 'id', 'x')                  | 42601 sift._names_expr: the argument is not one expression
  SELECT sift._names_expr('id', 'id', NULL)                                  | 22004 sift._names_expr: the argument to_name must not be NULL
  SELECT sift._names_expr('id', NULL, 'x')                                   | 22004 sift._names_expr: the argument from_name must not be NULL
@@ -80,8 +91,8 @@ SELECT call, sna_state(call) FROM (VALUES
  SELECT sift.table_set_paths(0::oid::regclass, 'doc', NULL)                 | 42P01 relation with OID 0 does not exist
  SELECT sift.table_space(0::oid::regclass)                                  | 42P01 relation with OID 0 does not exist
  SELECT sift.table_verify(0::oid::regclass)                                 | 42P01 relation with OID 0 does not exist
-(29 rows)
+(32 rows)
 
 DROP FUNCTION sna_state(text);
-DROP TABLE sna_oids, sna_part, sna_heap, sna_t;
+DROP TABLE sna_oids, sna_part, sna_heap, sna_idx_t, sna_t;
 DROP EXTENSION pg_sift;

@@ -9,6 +9,11 @@ INSERT INTO sna_part SELECT i, i % 3 FROM generate_series(1, 30) i;
 SET client_min_messages = warning;
 CREATE INDEX sna_part_col ON sna_part USING sift_col (id, g);
 RESET client_min_messages;
+CREATE TABLE sna_idx_t (id int, g int);
+INSERT INTO sna_idx_t SELECT i, i % 3 FROM generate_series(1, 30) i;
+SET client_min_messages = warning;
+CREATE INDEX sna_idx ON sna_idx_t USING sift_col (id, g);
+RESET client_min_messages;
 CREATE TABLE sna_gone (id int);
 CREATE TABLE sna_oids AS SELECT 'sna_gone'::regclass::oid AS gone;
 DROP TABLE sna_gone;
@@ -49,9 +54,12 @@ SELECT call, sna_state(call) FROM (VALUES
 	('SELECT sift.table_set_paths(0::oid::regclass, ''doc'', NULL)'),
 	('SELECT sift.index_format((SELECT gone FROM sna_oids)::regclass)'),
 	('SELECT sift.index_format(''sna_heap''::regclass)'),
-	('SELECT sift._require_owner((SELECT gone FROM sna_oids)::regclass)')
+	('SELECT sift._require_owner((SELECT gone FROM sna_oids)::regclass)'),
+	('SELECT count(*) FROM sift.col_unit_hist(''sna_idx''::regclass, NULL, ''id'')'),
+	('SELECT count(*) FROM sift.col_unit_hist(NULL, ''id'')'),
+	('SELECT count(*) FROM sift.col_unit_hist(''sna_idx''::regclass, ''g'', NULL)')
 ) v(call) ORDER BY call;
 
 DROP FUNCTION sna_state(text);
-DROP TABLE sna_oids, sna_part, sna_heap, sna_t;
+DROP TABLE sna_oids, sna_part, sna_heap, sna_idx_t, sna_t;
 DROP EXTENSION pg_sift;
