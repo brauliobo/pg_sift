@@ -20,6 +20,7 @@
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
 #include "storage/lmgr.h"
+#include "storage/lock.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_status.h"
 #include "utils/inval.h"

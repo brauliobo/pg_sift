@@ -1,3 +1,5 @@
 # SYMBOLS (regular expression) TAB HEADERS that declare them (any one satisfies): see scripts/check-pg-includes.sh
 GetCurrentTimestamp|TimestampDifference|TimestampDifferenceMilliseconds|TimestampDifferenceExceeds|GetCurrentTransactionStartTimestamp	utils/timestamp.h
 TimestampTz	datatype/timestamp.h utils/timestamp.h core/host.h
+LockAcquire|LockRelease|LOCKACQUIRE_NOT_AVAIL	storage/lock.h
+get_database_name	commands/dbcommands.h utils/lsyscache.h

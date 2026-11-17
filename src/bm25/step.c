@@ -16,6 +16,7 @@
 #include "miscadmin.h"
 #include "port/pg_bswap.h"
 #include "storage/lmgr.h"
+#include "storage/lock.h"
 #include "storage/proc.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"

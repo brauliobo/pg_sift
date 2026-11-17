@@ -17,14 +17,6 @@
 #include "col/vstore/vstore.h"
 #include "col/vstore/vstore_int.h"
 
-/* released by sift_vstore_close, or by the memory context of the open when an error skipped it */
-typedef struct ViewPin
-{
-	MemoryContextCallback cb;
-	Oid			store;
-	bool		held;
-} ViewPin;
-
 static HTAB *views;
 static bool stores_changed;
 
