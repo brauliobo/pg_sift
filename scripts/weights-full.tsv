@@ -338,3 +338,5 @@ tap-shell-col_build_concurrent_locks	90	90
 tap-shell-col_scope_first_stamp	30	30
 tap-shell-mem_slope_order	21	21
 tap-shell-mem_slope_legacy	180	180
+tap-shell-upgrade_compat	0	600
+tap-shell-upgrade_compat_standby	0	330

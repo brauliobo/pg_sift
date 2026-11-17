@@ -254,3 +254,5 @@ tap-007_tbl_logical	20	15
 tap-shell-col_key_cut_merge	17	20
 tap-shell-mem_slope_order	21	21
 tap-shell-mem_slope_legacy	180	180
+tap-shell-upgrade_compat	0	600
+tap-shell-upgrade_compat_standby	0	330
