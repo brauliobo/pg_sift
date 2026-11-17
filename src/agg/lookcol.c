@@ -456,7 +456,8 @@ usable_index(Relation ix)
 Relation
 lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, bool wide, Relation *ix2, ColNeed *need, int *nneed, CompCol *comp, int *ncomp)
 {
-	List	   *ixs = NIL;
+	List	   *ixs = NIL,
+			   *oids;
 	Relation	found = NULL;
 
 	*nneed = *ncomp = 0;
@@ -468,7 +469,8 @@ lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, bool wide, Rela
 	for (int k = 0; k < j->nkey; k++)
 		if (j->tkey[k] != NULL)
 			return NULL;
-	foreach_oid(ixoid, RelationGetIndexList(rel))
+	oids = RelationGetIndexList(rel);
+	foreach_oid(ixoid, oids)
 	{
 		Relation	ix = index_open(ixoid, AccessShareLock);
 
@@ -477,6 +479,7 @@ lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, bool wide, Rela
 		else
 			index_close(ix, AccessShareLock);
 	}
+	list_free(oids);
 	foreach_ptr(RelationData, a, ixs)
 		if (found == NULL && index_needs(sift_colsrc_layout(a), NULL, RelationGetDescr(rel), j, need, nneed, comp, ncomp) && (wide || !needs_wide(need, *nneed)))
 			found = a;
