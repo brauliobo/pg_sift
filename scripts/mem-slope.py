@@ -46,13 +46,16 @@ def anon_kb(pid):
 
 
 def peak_mb(setup, op):
-    """a new backend: SETTINGS and setup, then op; the peak anonymous memory above what it held before op, in MB"""
+    """a new backend: SETTINGS and setup (run in a backend of its own when it starts with "@other ": what the operation reads is then a table another session made), then op; the peak anonymous memory above what it held before op, in MB"""
     p = psql()
     p.stdin.write("select 'PID', pg_backend_pid();\n")
     line = p.stdout.readline()
     while "PID" not in line:
         line = p.stdout.readline()
     pid = int(line.strip().split("|")[1])
+    if setup.startswith("@other "):
+        script(setup[7:])
+        setup = ""
     p.stdin.write(SETTINGS + setup + "\n\\echo SETUPDONE\n")
     for l in iter(p.stdout.readline, ""):
         if "SETUPDONE" in l:

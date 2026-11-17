@@ -14,6 +14,7 @@
 
 #ifdef SIFT_TESTING
 
+#include <malloc.h>
 #include <stdlib.h>
 
 #include "access/relation.h"
@@ -26,11 +27,10 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
-#include "core/errctx.h"
 #include "core/sift.h"
 
 PG_FUNCTION_INFO_V1(sift_test_leak);
-PG_FUNCTION_INFO_V1(sift_test_errctx_report);
+PG_FUNCTION_INFO_V1(sift_test_malloc_stats);
 
 static void *volatile sink;		/* keeps the compiler from dropping the leaked allocations */
 
@@ -107,21 +107,21 @@ sift_test_leak(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-/* sift._test_errctx_report(rel regclass, n int) returns void: n reports under the error context of rel, to the server log only */
+/* sift._test_malloc_stats(trim bool) returns text (release: the C library gives back what it can first): what the C library holds for this backend, in bytes: arena (taken from the system), inuse (given out and not freed), free (held in the arena), mmap (blocks of their own) */
 Datum
-sift_test_errctx_report(PG_FUNCTION_ARGS)
+sift_test_malloc_stats(PG_FUNCTION_ARGS)
 {
-	Oid			relid = PG_GETARG_OID(0);
+#ifdef __GLIBC__
+	struct mallinfo2 mi;
 
-	for (int i = PG_GETARG_INT32(1); i > 0; i--)
-	{
-		SiftErrCtx	ctx;
+	if (PG_GETARG_BOOL(0))
+		malloc_trim(0);
+	mi = mallinfo2();
 
-		sift_errctx_push(&ctx, relid);
-		ereport(LOG_SERVER_ONLY, (errhidestmt(true), errmsg_internal("sift test: a report under the error context of an index")));
-		sift_errctx_pop(&ctx);
-	}
-	PG_RETURN_VOID();
+	PG_RETURN_TEXT_P(cstring_to_text(psprintf("arena=%zu inuse=%zu free=%zu mmap=%zu", mi.arena, mi.uordblks, mi.fordblks, mi.hblkhd)));
+#else
+	PG_RETURN_NULL();
+#endif
 }
 
 #endif							/* SIFT_TESTING */
