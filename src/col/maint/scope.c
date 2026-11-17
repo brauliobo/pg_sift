@@ -19,6 +19,7 @@
 #include "col/maint/maint_int.h"
 #include "col/order_sort.h"
 #include "col/scope.h"
+#include "core/membudget.h"
 
 /* The fill of the writers of a promotion: the found flags of the connections, and for an index with scopes the stamps of the fill that expands the rows (*sf; NULL for an index without) */
 SiftColFill *
@@ -314,6 +315,7 @@ maint_scope_refill(Relation index, bool report)
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	const SiftColRel *r = sift_col_rel_private(index, cx);
 	MemoryContext ucx = AllocSetContextCreate(cx, "sift_col scope refill unit", ALLOCSET_DEFAULT_SIZES);	/* the rows of the unit decoded */
+	SIFT_MEM_SCOPE(col_scope_refill, cx);
 	SiftSegEntry ents[SIFT_MAX_SEGMENTS],
 				scopes[SIFT_MAX_SEGMENTS],
 			   *out = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry));
@@ -376,6 +378,7 @@ maint_scope_refill(Relation index, bool report)
 			sift_cseg_decode_unit(seg, u, b);
 			MemoryContextSwitchTo(cx);
 			maint_scope_run_batch(run, b);
+			SIFT_MEM_CHECKPOINT();
 			for (uint32 from = 0; from < b->nrows; from += SCOPE_RUN_SLICE)
 			{
 				maint_scope_run_sort(run, b, from, Min(from + SCOPE_RUN_SLICE, b->nrows), sorter, count);
