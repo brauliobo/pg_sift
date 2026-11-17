@@ -30,6 +30,7 @@ TOKENS = {
     "sift.tomb_log_limit": ("((Size) sift_tomb_log_limit_kb * 1024)", "core/tomb.h"),
     "sift.table_write_buffer_limit": ("((Size) sift_tbl_write_buffer_limit * 1024)", "table/table.h"),
     "sift.verdict_cache_kb": ("((Size) sift_verdict_cache_kb * 1024)", "agg/agg.h"),
+    "agg_nospill": ("((Size) sift_agg_nospill_bytes(NULL, NULL))", "agg/spec/spec.h"),
     "sift.agg_lookup_max_kb": ("((Size) sift_agg_lookup_max_kb * 1024)", "agg/agg.h"),
 }
 UNITS = {"B": 1, "kB": 1024, "MB": 1024 * 1024, "GB": 1024 * 1024 * 1024}

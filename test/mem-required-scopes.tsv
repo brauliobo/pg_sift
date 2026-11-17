@@ -1,6 +1,7 @@
 # scope	file	function	state -- the main paths that declare their memory (scripts/check-membudget.sh): state scoped = SIFT_MEM_SCOPE(scope, ...) is in the file (a missing one fails the lint),
 # todo = the path still needs its scope (listed by the lint, not a failure; flip it to scoped in the commit that adds the scope, one small commit a file).
-agg_group	src/agg/exec/run.c	agg_exec	scoped
+agg_group	src/agg/exec/run.c	agg_mem_checkpoint	scoped
+agg_group_nospill	src/agg/exec/run.c	agg_mem_checkpoint	scoped
 agg_lookup	src/agg/lookup/load.c	map_load_table	scoped
 bm25_build	src/bm25/build.c	sift_ambuild	scoped
 bm25_merge	src/bm25/step.c	merge_segments	scoped

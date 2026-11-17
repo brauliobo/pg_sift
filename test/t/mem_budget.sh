@@ -5,7 +5,7 @@
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-plan 15
+plan 19
 node_init mb 61 "autovacuum = off
 max_parallel_workers_per_gather = 0
 sift.col_auto_merge = off"
@@ -37,6 +37,16 @@ check "a search over 60 open segments holds under its 32 MB term" test "$out" -l
 sql mb "CREATE TABLE c AS SELECT g AS id, g % 7 AS k, g % 500 AS k2, 'n' || g % 300 AS txt, g::numeric AS amount FROM generate_series(1, 20000) g" \
 	"CREATE INDEX c_col ON c USING sift_col (id, k, k2, txt, amount)" >/dev/null || bail "column table failed"
 SCOPE=agg_group; check "an aggregate scan over its lowered budget fails naming agg_group" red "SELECT k2, count(*), sum(amount) FROM c GROUP BY 1"
+SCOPE=agg_group_nospill; check "a scan that cannot spill over its lowered budget fails naming agg_group_nospill" red "SELECT count(*), sum(amount) FROM c"
+sql mb "SET sift.table_inline_promote = off" "CREATE TABLE wb (id int, v text) USING sift_table" \
+	"INSERT INTO wb SELECT g, repeat('x', 1000) || g FROM generate_series(1, 40000) g" >/dev/null || bail "write buffer table failed"
+agg_peak() { sql mb "SET work_mem = '1MB'" "$1" "SELECT peak FROM sift._test_mem_highwater() WHERE scope = 'agg_group'" | tail -1; }
+check "an aggregate over 40 MB of unpromoted rows holds under 16 MB, flat in the rows (50 MB before one superblock at a time)" \
+	test "$(agg_peak "SELECT count(*) FROM wb")" -lt 16777216
+check "an expression over the text of 40 MB of unpromoted rows holds under 16 MB (96 MB before the cache of values was bounded)" \
+	test "$(agg_peak "SELECT count(*) FROM wb WHERE v <> repeat('x', 1000) || id")" -lt 16777216
+check "a scan that can spill holds twice hash memory and a constant at work_mem 1MB: under 20 MB" \
+	test "$(agg_peak "SELECT k2, count(*), sum(amount) FROM c GROUP BY 1")" -lt 20971520
 SCOPE=col_verify; check "a column verify over its lowered budget fails naming col_verify" red "SELECT sift.col_verify('c_col', true)"
 SCOPE=index_vacuum; check "a VACUUM over its lowered budget fails naming index_vacuum" red "UPDATE c SET amount = amount + 1 WHERE k < 2" "VACUUM c"
 check "the budget table, the generated header and the docs agree" bash -c "cd '$REPO' && python3 scripts/gen-membudget.py --check"

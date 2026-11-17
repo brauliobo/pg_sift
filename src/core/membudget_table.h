@@ -2,12 +2,19 @@
 #ifndef SIFT_MEMBUDGET_TABLE_H
 #define SIFT_MEMBUDGET_TABLE_H
 
+#include "agg/spec/spec.h"
 #include "miscadmin.h"
 
 static Size
 budget_agg_group(void)
 {
 	return (((Size) 536870912UL));
+}
+
+static Size
+budget_agg_group_nospill(void)
+{
+	return (((Size) sift_agg_nospill_bytes(NULL, NULL)) + ((Size) 16777216UL));
 }
 
 static Size
@@ -89,6 +96,7 @@ static const struct
 	const char *formula;
 }			budgets[] = {
 	{"agg_group", budget_agg_group, "512MB (open: ceiling measured today)"},
+	{"agg_group_nospill", budget_agg_group_nospill, "agg_nospill + 16MB"},
 	{"agg_lookup", budget_agg_lookup, "32MB (open: ceiling measured today)"},
 	{"bm25_build", budget_bm25_build, "maintenance_work_mem + 16MB"},
 	{"bm25_merge", budget_bm25_merge, "maintenance_work_mem + 8MB"},

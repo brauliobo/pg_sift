@@ -228,6 +228,7 @@ extern void sift_relopt_removed_notice(const char *name);
 
 #ifdef SIFT_TESTING
 extern void sift_leak_test_init(void);
+extern void sift_memcensus_init(void);
 extern void sift_membudget_init(void);
 extern void sift_handler_test_gucs(void);
 #endif

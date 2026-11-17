@@ -780,6 +780,21 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 	fuse_register(ex);
 }
 
+static void
+agg_mem_checkpoint(const AggExec *ex)
+{
+	if (sift_aggspec_spillable(ex->spec))
+	{
+		SIFT_MEM_SCOPE(agg_group, ex->cxt);
+		SIFT_MEM_CHECKPOINT();
+	}
+	else
+	{
+		SIFT_MEM_SCOPE(agg_group_nospill, ex->cxt);
+		SIFT_MEM_CHECKPOINT();
+	}
+}
+
 static TupleTableSlot *
 agg_exec(CustomScanState *node)
 {
@@ -791,10 +806,7 @@ agg_exec(CustomScanState *node)
 	slot = ExecScan(&node->ss, agg_next, agg_recheck);
 	sift_errctx_pop(&ctx);
 	if (TupIsNull(slot))
-	{
-		SIFT_MEM_SCOPE(agg_group, ex->cxt);
-		SIFT_MEM_CHECKPOINT();
-	}
+		agg_mem_checkpoint(ex);
 	return slot;
 }
 
@@ -861,9 +873,8 @@ static void
 agg_end(CustomScanState *node)
 {
 	AggExec    *ex = (AggExec *) node;
-	SIFT_MEM_SCOPE(agg_group, ex->cxt);
 
-	SIFT_MEM_CHECKPOINT();
+	agg_mem_checkpoint(ex);
 	for (int i = 0; ex->osa && i < ex->spec->naggs; i++)
 		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->runs)
 			osa_runs_end(ex->osa[i]);
