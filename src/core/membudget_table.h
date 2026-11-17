@@ -68,6 +68,12 @@ budget_col_conn_changed(void)
 }
 
 static Size
+budget_col_fold_keys(void)
+{
+	return (((Size) sift_tomb_log_limit_kb * 1024) + ((Size) 65536UL));
+}
+
+static Size
 budget_col_key_cut_cells(void)
 {
 	return (((Size) maintenance_work_mem * 1024) + ((Size) 8388608UL));
@@ -209,6 +215,7 @@ static const struct
 	{"bm25_verify", budget_bm25_verify, "maintenance_work_mem + 8MB"},
 	{"col_build", budget_col_build, "192MB (open: ceiling measured today)"},
 	{"col_conn_changed", budget_col_conn_changed, "32kB"},
+	{"col_fold_keys", budget_col_fold_keys, "sift.tomb_log_limit + 64kB"},
 	{"col_key_cut_cells", budget_col_key_cut_cells, "maintenance_work_mem + 8MB"},
 	{"col_key_cut_decision", budget_col_key_cut_decision, "maintenance_work_mem + 12MB"},
 	{"col_key_cut_layout", budget_col_key_cut_layout, "maintenance_work_mem + 64MB"},

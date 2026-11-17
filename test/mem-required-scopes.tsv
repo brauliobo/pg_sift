@@ -10,6 +10,7 @@ bm25_search	src/bm25/cscan_exec.c	sift_exec	scoped
 bm25_verify	src/bm25/segment_sql.c	bm25_verify	scoped
 col_build	src/col/build/build.c	serial_build	scoped
 col_conn_changed	src/col/conn.c	journal_keys	scoped
+col_fold_keys	src/col/maint/fold.c	sift_col_fold_marks	scoped
 col_key_cut_cells	src/col/autocut/model.c	acut_units_read	scoped
 col_key_cut_decision	src/col/autocut/autocut.c	decide_stage	scoped
 col_key_cut_layout	src/col/autocut/size.c	acut_layout_bytes	scoped
