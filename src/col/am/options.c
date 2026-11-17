@@ -158,7 +158,7 @@ row_key_syntax(const char *value)
 {
 	const char *p = value;
 
-	(void) sift_cpagg_name_take(&p, ",;");
+	pfree(sift_cpagg_name_take(&p, ",;"));
 	return *p == '\0' ? NULL : "a single column: a composite key is not supported";
 }
 
@@ -220,11 +220,14 @@ key_order_syntax(const char *value)
 	name = sift_cpagg_name_take(&p, ",");
 	if (*name == '\0')
 		return "a column name, or 'group, key'";
+	pfree(name);
 	if (*p == ',')
 	{
 		p++;
-		if (*sift_cpagg_name_take(&p, ",") == '\0' || *p != '\0')
+		name = sift_cpagg_name_take(&p, ",");
+		if (*name == '\0' || *p != '\0')
 			return "at most two columns, 'group, key'";
+		pfree(name);
 	}
 	return NULL;
 }
@@ -706,14 +709,16 @@ key_order_expand(SiftColOptions **op)
 	const char *spec = (const char *) o + o->key_order;
 	bool		autochosen = strncmp(spec, "auto:", 5) == 0;
 	const char *p = autochosen ? spec + 5 : spec;
-	char	   *first = sift_cpagg_name_take(&p, ","),
-			   *last = first;
-	bool		two = *p == ',';
+	char	   *first,
+			   *last;
+	bool		two;
 	size_t		base = VARSIZE(o);
 	char	   *dst;
 
 	if (strcmp(spec, "off") == 0)
 		return;
+	first = last = sift_cpagg_name_take(&p, ",");
+	two = *p == ',';
 	if (two)
 	{
 		p++;
@@ -735,6 +740,9 @@ key_order_expand(SiftColOptions **op)
 	o->ko_auto = autochosen;
 	SET_VARSIZE(o, dst - (char *) o);
 	*op = o;
+	if (two)
+		pfree(last);
+	pfree(first);
 }
 
 /* The older name counts when the new one is empty (the strings live in the same bytea, so the offset is shared) */
