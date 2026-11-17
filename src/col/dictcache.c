@@ -40,6 +40,13 @@ SiftCDictCacheStats sift_cdict_cache_stats;
 #define CDICT_STAT(f)		((void) 0)
 #endif
 
+/* The entries of one index, so that a directory read looks at its own and not at the entries of every index the backend has read */
+typedef struct RelEnts
+{
+	RelFileLocator rel;			/* first: the hash key */
+	dlist_head	ents;
+} RelEnts;
+
 typedef struct DictEnt
 {
 	DictKey		key;			/* first: the hash key */
@@ -49,6 +56,7 @@ typedef struct DictEnt
 	int			pins;
 	uint64		used;			/* sift_cache_tick() of the last pin */
 	dlist_node	node;			/* in lru: least recently used first */
+	dlist_node	rnode;			/* in the entries of its index */
 } DictEnt;
 
 typedef struct Unpin
@@ -58,6 +66,7 @@ typedef struct Unpin
 } Unpin;
 
 static HTAB *cache;
+static HTAB *by_rel;
 static MemoryContext cache_cx;
 static Size cache_bytes;
 static dlist_head lru = DLIST_STATIC_INIT(lru);
@@ -85,6 +94,7 @@ dict_drop(DictEnt *e)
 {
 	cache_bytes -= e->size;
 	dlist_delete(&e->node);
+	dlist_delete(&e->rnode);
 	MemoryContextDelete(e->cx);
 	hash_search(cache, &e->key, HASH_REMOVE, NULL);
 }
@@ -128,14 +138,26 @@ static void
 dict_drop_gone_relations(void)
 {
 	HASH_SEQ_STATUS seq;
-	DictEnt    *e;
+	RelEnts    *r;
 
 	relations_changed = false;
-	hash_seq_init(&seq, cache);
-	while ((e = hash_seq_search(&seq)) != NULL)
-		if (e->pins == 0 && !OidIsValid(RelidByRelfilenumber(e->key.rel.spcOid == MyDatabaseTableSpace ? InvalidOid : e->key.rel.spcOid,
-															  e->key.rel.relNumber)))
-			dict_drop(e);
+	hash_seq_init(&seq, by_rel);
+	while ((r = hash_seq_search(&seq)) != NULL)
+	{
+		dlist_mutable_iter it;
+
+		if (OidIsValid(RelidByRelfilenumber(r->rel.spcOid == MyDatabaseTableSpace ? InvalidOid : r->rel.spcOid, r->rel.relNumber)))
+			continue;
+		dlist_foreach_modify(it, &r->ents)
+		{
+			DictEnt    *e = dlist_container(DictEnt, rnode, it.cur);
+
+			if (e->pins == 0)
+				dict_drop(e);
+		}
+		if (dlist_is_empty(&r->ents))
+			hash_search(by_rel, &r->rel, HASH_REMOVE, NULL);
+	}
 }
 
 /*
@@ -145,8 +167,8 @@ dict_drop_gone_relations(void)
 void
 sift_cdict_retire(Relation index, const SiftDirSnapshot *snap)
 {
-	HASH_SEQ_STATUS seq;
-	DictEnt    *e;
+	dlist_mutable_iter it;
+	RelEnts    *r;
 	RetireMemo *m = NULL;
 
 	if (cache == NULL)
@@ -164,20 +186,28 @@ sift_cdict_retire(Relation index, const SiftDirSnapshot *snap)
 		m->rel = index->rd_locator;
 	}
 	m->version = snap->version;
-	hash_seq_init(&seq, cache);
-	while ((e = hash_seq_search(&seq)) != NULL)
+	if ((r = hash_search(by_rel, &index->rd_locator, HASH_FIND, NULL)) == NULL)
+		return;
+	dlist_foreach_modify(it, &r->ents)
 	{
-		const DictKey *k = &e->key;
+		DictEnt    *e = dlist_container(DictEnt, rnode, it.cur);
 
-		if (e->pins == 0 && RelFileLocatorEquals(k->rel, index->rd_locator) && !gen_in_dir(snap, k->gen))
+		if (e->pins == 0 && !gen_in_dir(snap, e->key.gen))
 			dict_drop(e);
 	}
 }
 
 
+/* A new entry: the least recently used last, and the first of the entries of its index to be looked for */
 static void
-dict_lru_push(DictEnt *e)
+dict_add(DictEnt *e)
 {
+	bool		found;
+	RelEnts    *r = hash_search(by_rel, &e->key.rel, HASH_ENTER, &found);
+
+	if (!found)
+		dlist_init(&r->ents);
+	dlist_push_tail(&r->ents, &e->rnode);
 	e->used = sift_cache_tick();
 	dlist_push_tail(&lru, &e->node);
 }
@@ -257,6 +287,9 @@ cache_init(void)
 	sift_cache_register(&dict_kind);
 	ctl.hcxt = cache_cx;
 	cache = hash_create("sift column dictionaries", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	ctl.keysize = sizeof(RelFileLocator);
+	ctl.entrysize = sizeof(RelEnts);
+	by_rel = hash_create("sift column dictionaries by index", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	CacheRegisterSyscacheCallback(RELOID, relcache_changed, (Datum) 0);
 }
 
@@ -331,7 +364,7 @@ obj_keep(const DictKey *k, MemoryContext cx, void *obj, MemoryContext mcxt)
 	e->obj = obj;
 	e->size = size;
 	e->pins = 0;
-	dict_lru_push(e);
+	dict_add(e);
 	cache_bytes += size;
 	dict_pin(e, mcxt);
 }
@@ -561,7 +594,7 @@ dict_keep(SiftColSegment *seg, int col, const DictKey *k, MemoryContext cx, Sift
 	e->obj = d;
 	e->size = size;
 	e->pins = 0;
-	dict_lru_push(e);
+	dict_add(e);
 	cache_bytes += size;
 	dict_pin(e, seg->mcxt);
 	return d;
@@ -731,7 +764,7 @@ sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const u
 	e->obj = l;
 	e->size = size;
 	e->pins = 0;
-	dict_lru_push(e);
+	dict_add(e);
 	cache_bytes += size;
 }
 
@@ -774,7 +807,7 @@ sift_cseg_sbhead(SiftColSegment *seg, uint32 u, int col, SiftCSbHead *out)
 	memcpy(e->obj, out, sizeof(*out));
 	e->size = sizeof(*out);
 	e->pins = 0;
-	dict_lru_push(e);
+	dict_add(e);
 	cache_bytes += sizeof(*out);
 	return true;
 }
