@@ -127,10 +127,10 @@ typedef struct SiftTomb
 StaticAssertDecl(sizeof(SiftTomb) == 32, "tombstone entries are 32 bytes");
 
 /*
- * What a backend keeps in memory of the log of a sift_table, in kB (sift.tomb_log_limit): each entry costs it 64 bytes (the entry, the sort and merge scratch
+ * What a backend keeps in memory of the log of a relation, in kB (sift.tomb_log_limit): each entry costs it 64 bytes (the entry, the sort and merge scratch
  * of a first look, and the hash entry of a chain member). The entries past it are kept in sorted runs on temp files (core/sortruns.h): a log of any length is read, a
  * statement of any number of rows appends to it, and the memory of a backend follows the setting, not the log. VACUUM reads and rewrites the log through the same runs.
- * The worker is asked for at SIFT_TOMB_PRESSURE_ENTRIES entries, whatever the setting; the log of a column index keeps its entries whole in memory.
+ * The worker is asked for at SIFT_TOMB_PRESSURE_ENTRIES entries, whatever the setting. The log of a column index is kept the same way.
  */
 #define SIFT_TOMB_LOG_KB		65536
 extern int	sift_tomb_log_limit_kb;
@@ -143,7 +143,7 @@ typedef struct SiftTombLog
 {
 	MemoryContext cxt;
 	SiftDirSnapshot *dir;
-	bool		spill;			/* the entries past sift.tomb_log_limit go to sorted runs on temp files (a sift_table; a column index keeps its log whole) */
+	bool		spill;			/* the entries past sift.tomb_log_limit go to sorted runs on temp files */
 	/* tombstones, sorted by (key, seq) */
 	uint64		gen;
 	BlockNumber hdr;
@@ -183,6 +183,8 @@ extern SiftSegEntry sift_tomb_new_segment(Relation rel, SiftSegKind kind, uint8 
 /* Forgets what was read (the cache of the log follows the log of the directory now) */
 extern void sift_tomb_forget(SiftTombLog *t);
 extern void sift_tomb_sync(Relation rel, SiftTombLog *t);
+/* ... the generation, completeness and key journal records of the header only: no entry is read, so the memory of the log stays what it was (for what asks what the log vouches for, not what it holds) */
+extern void sift_tomb_sync_header(Relation rel, SiftTombLog *t);
 extern void sift_tomb_sync_at(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir);
 /* ... for what consumes the log (VACUUM, its worker): bound by no limit */
 extern void sift_tomb_sync_all(Relation rel, SiftTombLog *t);
@@ -223,6 +225,8 @@ typedef struct SiftTombWalk
 extern void sift_tomb_walk_begin(SiftTombWalk *w, SiftTombLog *t);
 extern SiftTomb *sift_tomb_walk_next(SiftTombWalk *w);
 extern void sift_tomb_walk_end(SiftTombWalk *w);
+/* Does the log hold no entry, in memory or in a run */
+extern bool sift_tomb_empty(const SiftTombLog *t);
 /* Does the log have a member of a HOT chain, in memory or in a run */
 extern bool sift_tomb_has_hot(const SiftTombLog *t);
 

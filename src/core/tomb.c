@@ -342,10 +342,50 @@ sift_tomb_pressure(uint64 entries)
 	return entries >= SIFT_TOMB_PRESSURE_ENTRIES;
 }
 
+/*
+ * The generation of the log that dir names and what its header page says (the completeness and key journal records): the entries are not read. n: the entries appended so far,
+ * blk: the page the next read of the entries starts from. NULL when the relation has no log.
+ */
+static const SiftSegEntry *
+tomb_sync_header(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir, uint64 *n, BlockNumber *blk)
+{
+	const SiftSegEntry *e = sift_tomb_find_seg(dir);
+	Buffer		buf;
+
+	if (e == NULL)
+	{
+		tomb_reset(t, NULL);
+		return NULL;
+	}
+	if (e->gen != t->gen)
+	{
+		if (t->gen == 0)
+			tomb_reset(t, e);
+		else
+			tomb_follow(t, e);
+	}
+	buf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_SHARE);
+	sift_store_check_page(rel, buf, SIFT_PT_WBUFHEADER, e->gen);
+	*n = SIFT_TOMB_HDR(BufferGetPage(buf))->nentries;
+	/* a header written before the completeness record has fewer used bytes, and the bytes past them are whatever the page held: it says nothing. Likewise for the key journal record */
+	if (SiftPageGetUsed(BufferGetPage(buf)) >= MAXALIGN(sizeof(SiftWbufHeaderData)) + SIFT_TOMB_HDR_NOKEYS)
+		t->chan = SIFT_TOMB_HDR(BufferGetPage(buf))->chan;
+	else
+		memset(&t->chan, 0, sizeof(t->chan));
+	t->keys_cover = SiftPageGetUsed(BufferGetPage(buf)) >= MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr);
+	if (t->keys_cover)
+		t->keys = SIFT_TOMB_HDR(BufferGetPage(buf))->keys;
+	else
+		memset(&t->keys, 0, sizeof(t->keys));
+	*blk = BlockNumberIsValid(t->last) ? t->last : SiftLaneHdr(BufferGetPage(buf))->lanes[0].head;
+	UnlockReleaseBuffer(buf);
+	return e;
+}
+
 static void
 tomb_sync(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
 {
-	const SiftSegEntry *e = sift_tomb_find_seg(dir);
+	const SiftSegEntry *e;
 	Buffer		buf;
 	uint64		n;
 	BlockNumber blk;
@@ -358,33 +398,8 @@ tomb_sync(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
 	BlockNumber visited = 0,
 				last;
 
-	if (e == NULL)
-	{
-		tomb_reset(t, NULL);
+	if ((e = tomb_sync_header(rel, t, dir, &n, &blk)) == NULL)
 		return;
-	}
-	if (e->gen != t->gen)
-	{
-		if (t->gen == 0)
-			tomb_reset(t, e);
-		else
-			tomb_follow(t, e);
-	}
-	buf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_SHARE);
-	sift_store_check_page(rel, buf, SIFT_PT_WBUFHEADER, e->gen);
-	n = SIFT_TOMB_HDR(BufferGetPage(buf))->nentries;
-	/* a header written before the completeness record has fewer used bytes, and the bytes past them are whatever the page held: it says nothing. Likewise for the key journal record */
-	if (SiftPageGetUsed(BufferGetPage(buf)) >= MAXALIGN(sizeof(SiftWbufHeaderData)) + SIFT_TOMB_HDR_NOKEYS)
-		t->chan = SIFT_TOMB_HDR(BufferGetPage(buf))->chan;
-	else
-		memset(&t->chan, 0, sizeof(t->chan));
-	t->keys_cover = SiftPageGetUsed(BufferGetPage(buf)) >= MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr);
-	if (t->keys_cover)
-		t->keys = SIFT_TOMB_HDR(BufferGetPage(buf))->keys;
-	else
-		memset(&t->keys, 0, sizeof(t->keys));
-	blk = BlockNumberIsValid(t->last) ? t->last : SiftLaneHdr(BufferGetPage(buf))->lanes[0].head;
-	UnlockReleaseBuffer(buf);
 	if (n == t->synced)
 		return;
 	/* the header says how many entries are new: the batch holds them, or a chunk of them that the memory of the log allows (appenders may add more while it is read) */
@@ -444,6 +459,15 @@ void
 sift_tomb_sync(Relation rel, SiftTombLog *t)
 {
 	tomb_sync(rel, t, t->dir);
+}
+
+void
+sift_tomb_sync_header(Relation rel, SiftTombLog *t)
+{
+	uint64		n;
+	BlockNumber blk;
+
+	(void) tomb_sync_header(rel, t, t->dir, &n, &blk);
 }
 
 /*
@@ -919,6 +943,12 @@ sift_tomb_walk_end(SiftTombWalk *w)
 }
 
 bool
+sift_tomb_empty(const SiftTombLog *t)
+{
+	return t->nents + t->nrecent == 0 && t->spilled.nruns == 0;
+}
+
+bool
 sift_tomb_has_hot(const SiftTombLog *t)
 {
 	return t->hotm != NULL || t->hotspilled.nruns > 0;
@@ -952,27 +982,6 @@ sift_tomb_deletes(Snapshot snapshot, const SiftTomb *e)
 			SIFT_INVARIANT(false, "unsupported snapshot type %d", (int) snapshot->snapshot_type);
 	}
 	return false;
-}
-
-SiftSegEntry
-sift_tomb_new_segment(Relation rel, SiftSegKind kind, uint8 format)
-{
-	uint64		gen = sift_store_new_gen(rel);
-	Buffer		hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
-	Buffer		dbuf = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
-	SiftXlog state = sift_xlog_start(rel);
-	Page		hp = sift_xlog_register(&state, hbuf, 0);
-	Page		dp = sift_xlog_register(&state, dbuf, 0);
-	SiftSegEntry e = {.gen = gen,.kind = kind,.flags = SIFT_TBL_SEG_TOMB,.format = format,.header_blk = BufferGetBlockNumber(hbuf)};
-
-	sift_lane_init_header(hp, gen, BufferGetBlockNumber(dbuf), 1);
-	SIFT_TOMB_HDR(hp)->magic = SIFT_TOMB_MAGIC;
-	SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr));
-	sift_lane_init_page(dp, SIFT_TOMB_PAGE_INIT);
-	sift_xlog_finish(&state);
-	UnlockReleaseBuffer(hbuf);
-	UnlockReleaseBuffer(dbuf);
-	return e;
 }
 
 void

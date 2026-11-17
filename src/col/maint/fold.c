@@ -78,15 +78,20 @@ foldable(Fold *f, const SiftTomb *t, TransactionId horizon)
 }
 
 static void
-fold_add(Fold *f, const SiftTomb *ents, uint32 n, TransactionId horizon)
+fold_add(Fold *f, SiftTombLog *log, TransactionId horizon)
 {
-	for (uint32 i = 0; i < n; i++)
-		if (foldable(f, &ents[i], horizon))
+	SiftTombWalk w;
+	const SiftTomb *t;
+
+	sift_tomb_walk_begin(&w, log);
+	while ((t = sift_tomb_walk_next(&w)) != NULL)
+		if (foldable(f, t, horizon))
 		{
-			f->keys[f->n++] = ents[i].key;
-			if (TransactionIdIsNormal(ents[i].xid) && (!TransactionIdIsValid(f->newest) || TransactionIdFollows(ents[i].xid, f->newest)))
-				f->newest = ents[i].xid;
+			f->keys[f->n++] = t->key;
+			if (TransactionIdIsNormal(t->xid) && (!TransactionIdIsValid(f->newest) || TransactionIdFollows(t->xid, f->newest)))
+				f->newest = t->xid;
 		}
+	sift_tomb_walk_end(&w);
 }
 
 static int
@@ -151,11 +156,10 @@ sift_col_fold_marks(Relation index)
 	}
 	sift_tomb_sync_all(index, log);
 	horizon = GetOldestNonRemovableTransactionId(NULL);
-	f.keys = palloc((log->nents + log->nrecent + 1) * sizeof(SiftKey));
+	f.keys = palloc((log->synced + 1) * sizeof(SiftKey));
 	f.heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	f.nblocks = RelationGetNumberOfBlocks(f.heap);
-	fold_add(&f, log->ents, log->nents, horizon);
-	fold_add(&f, log->recent, log->nrecent, horizon);
+	fold_add(&f, log, horizon);
 	if (BufferIsValid(f.buf))
 		ReleaseBuffer(f.buf);
 	table_close(f.heap, AccessShareLock);
@@ -190,13 +194,17 @@ sift_col_fold_marks(Relation index)
 
 /* The marks a fold could clear now: those of a delete or update that is frozen or older than the horizon (the rest wait for the snapshots that hold it, and a fold of them clears nothing) */
 static uint64
-fold_ready(const SiftTomb *ents, uint32 n, TransactionId horizon)
+fold_ready(SiftTombLog *log, TransactionId horizon)
 {
+	SiftTombWalk w;
+	const SiftTomb *t;
 	uint64		ready = 0;
 
-	for (uint32 i = 0; i < n; i++)
-		ready += (ents[i].kind == SIFT_TOMB_DELETE || ents[i].kind == SIFT_TOMB_UPDATE) &&
-			(ents[i].xid == FrozenTransactionId || (TransactionIdIsNormal(ents[i].xid) && TransactionIdPrecedes(ents[i].xid, horizon)));
+	sift_tomb_walk_begin(&w, log);
+	while ((t = sift_tomb_walk_next(&w)) != NULL)
+		ready += (t->kind == SIFT_TOMB_DELETE || t->kind == SIFT_TOMB_UPDATE) &&
+			(t->xid == FrozenTransactionId || (TransactionIdIsNormal(t->xid) && TransactionIdPrecedes(t->xid, horizon)));
+	sift_tomb_walk_end(&w);
 	return ready;
 }
 
@@ -213,7 +221,7 @@ sift_col_fold_due(Relation index)
 
 	if (log == NULL)
 		return false;
-	ready = fold_ready(log->ents, log->nents, GetOldestNonRemovableTransactionId(NULL)) + fold_ready(log->recent, log->nrecent, GetOldestNonRemovableTransactionId(NULL));
+	ready = fold_ready(log, GetOldestNonRemovableTransactionId(NULL));
 	if (ready == 0)
 		return false;
 	sift_col_dir_read(index, snap, false);

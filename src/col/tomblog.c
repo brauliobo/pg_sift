@@ -115,6 +115,7 @@ log_ent(Relation index)
 		memset(&e->dir, 0, sizeof(e->dir));
 		memset(&e->log, 0, sizeof(e->log));
 		sift_tomb_init(&e->log, e->cxt, &e->dir);
+		e->log.spill = true;
 	}
 	sift_dir_read_segs(index, &e->dir);
 	return e;
@@ -135,8 +136,18 @@ log_max_read(void)
 	return SIFT_COL_FORMAT_MAX_READ;
 }
 
-SiftTombLog *
-sift_col_log(Relation index)
+static void
+check_format(Relation index, const SiftSegEntry *seg)
+{
+	if (seg->format > log_max_read())
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("index \"%s\" has a tombstone log of column format 1.%d, this build reads up to 1.%d", RelationGetRelationName(index), seg->format, log_max_read()),
+				 errhint("Use a newer pg_sift, or REINDEX.")));
+}
+
+static SiftTombLog *
+log_synced(Relation index, bool entries)
 {
 	LogEnt	   *e;
 	const SiftSegEntry *seg;
@@ -149,11 +160,7 @@ sift_col_log(Relation index)
 
 	if (seg == NULL)
 		return NULL;
-	if (seg->format > log_max_read())
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("index \"%s\" has a tombstone log of column format 1.%d, this build reads up to 1.%d", RelationGetRelationName(index), seg->format, log_max_read()),
-				 errhint("Use a newer pg_sift, or REINDEX.")));
+	check_format(index, seg);
 	/*
 	 * A table follows a replaced log and keeps the entries it read (its addresses are never given to another row). A heap address is: VACUUM removes the entries of the
 	 * rows it frees and then the tombstones of those entries, and the heap hands the address to a new row, which an entry kept here would hide. So the cache is the log
@@ -161,14 +168,29 @@ sift_col_log(Relation index)
 	 */
 	if (e->log.gen != 0 && e->log.gen != seg->gen)
 		sift_tomb_forget(&e->log);
-	sift_tomb_sync(index, &e->log);
+	if (entries)
+		sift_tomb_sync(index, &e->log);
+	else
+		sift_tomb_sync_header(index, &e->log);
 	SIFT_MEM_CHECKPOINT();
 	return &e->log;
 }
 
+SiftTombLog *
+sift_col_log(Relation index)
+{
+	return log_synced(index, true);
+}
+
+SiftTombLog *
+sift_col_log_header(Relation index)
+{
+	return log_synced(index, false);
+}
+
 /*
- * The log to append to: the cache entry of the index with no read of the directory, which the append makes again under the lock that keeps VACUUM from replacing the segment.
- * The segment is looked for (and made) once for the file of the index.
+ * The log to append to: the cache entry of the index, whose directory copy the append reads again under the lock that keeps VACUUM from replacing the segment. A writer reads
+ * no entry of the log, so it caches none: the segment is looked for (and made) once for the file of the index.
  */
 SiftTombLog *
 sift_col_log_appender(Relation index)
@@ -178,12 +200,13 @@ sift_col_log_appender(Relation index)
 
 	if (e != NULL && e->has_seg && !e->stale && e->relnumber == index->rd_locator.relNumber)
 		return &e->log;
-	if (sift_col_log(index) == NULL)
+	e = log_ent(index);
+	if (sift_tomb_find_seg(&e->dir) == NULL)
 	{
 		sift_col_log_create(index);
-		(void) sift_col_log(index);
+		e = log_ent(index);
 	}
-	e = hash_search(log_tab, &relid, HASH_FIND, NULL);
+	check_format(index, sift_tomb_find_seg(&e->dir));
 	e->has_seg = true;
 	return &e->log;
 }
@@ -283,6 +306,23 @@ trim_journal(Relation index, SiftTombLog *log, TransactionId aged)
 		}
 }
 
+/* Does the walk of the log find an entry drop_keep changes: it works on a copy of each, as the rewrite does on the entries it keeps */
+static void
+log_changes(SiftTombLog *log, DropArg *d)
+{
+	SiftTombWalk w;
+	SiftTomb   *e;
+
+	sift_tomb_walk_begin(&w, log);
+	while (d->changed == 0 && (e = sift_tomb_walk_next(&w)) != NULL)
+	{
+		SiftTomb	t = *e;
+
+		(void) drop_keep(&t, d);
+	}
+	sift_tomb_walk_end(&w);
+}
+
 static void
 log_vacuum(Relation index, IndexBulkDeleteCallback cb, void *cb_state)
 {
@@ -293,19 +333,8 @@ log_vacuum(Relation index, IndexBulkDeleteCallback cb, void *cb_state)
 	if (log == NULL)
 		return;
 	trim_journal(index, log, d.aged);
-	/* a log with nothing to drop or freeze is not rewritten (the rewrite copies it whole): the first change found says so. A changing scan rewrites the copy it made, so it works on one */
-	for (uint32 i = 0; i < log->nents && d.changed == 0; i++)
-	{
-		SiftTomb	t = log->ents[i];
-
-		(void) drop_keep(&t, &d);
-	}
-	for (uint32 i = 0; i < log->nrecent && d.changed == 0; i++)
-	{
-		SiftTomb	t = log->recent[i];
-
-		(void) drop_keep(&t, &d);
-	}
+	/* a log with nothing to drop or freeze is not rewritten (the rewrite copies it whole): the first change found says so */
+	log_changes(log, &d);
 	if (d.changed != 0)
 		(void) sift_tomb_rewrite(index, log, drop_keep, &d);
 	chan = log->chan;

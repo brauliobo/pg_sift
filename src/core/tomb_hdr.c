@@ -116,3 +116,25 @@ sift_tomb_peek_keys(Relation rel, const SiftDirSnapshot *dir, SiftTombKeys *k, u
 	UnlockReleaseBuffer(buf);
 	return cover;
 }
+
+/* A new empty log segment: its header page names the first data page */
+SiftSegEntry
+sift_tomb_new_segment(Relation rel, SiftSegKind kind, uint8 format)
+{
+	uint64		gen = sift_store_new_gen(rel);
+	Buffer		hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
+	Buffer		dbuf = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
+	SiftXlog state = sift_xlog_start(rel);
+	Page		hp = sift_xlog_register(&state, hbuf, 0);
+	Page		dp = sift_xlog_register(&state, dbuf, 0);
+	SiftSegEntry e = {.gen = gen,.kind = kind,.flags = SIFT_TBL_SEG_TOMB,.format = format,.header_blk = BufferGetBlockNumber(hbuf)};
+
+	sift_lane_init_header(hp, gen, BufferGetBlockNumber(dbuf), 1);
+	SIFT_TOMB_HDR(hp)->magic = SIFT_TOMB_MAGIC;
+	SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr));
+	sift_lane_init_page(dp, SIFT_TOMB_PAGE_INIT);
+	sift_xlog_finish(&state);
+	UnlockReleaseBuffer(hbuf);
+	UnlockReleaseBuffer(dbuf);
+	return e;
+}

@@ -70,7 +70,7 @@ void
 sift_tbl_define_gucs(void)
 {
 	DefineCustomIntVariable("sift.tomb_log_limit",
-							"Memory a backend keeps of the tombstone log of a sift_table (64 bytes an entry); the entries past it are kept in sorted runs on temp files.",
+							"Memory a backend keeps of the tombstone log of a sift_table or of a sift_col index with track_changes (64 bytes an entry); the entries past it are kept in sorted runs on temp files.",
 							"The log holds an entry for each row deleted or updated since the last VACUUM, those of the running statement included; a read or a statement of any length completes, and the maintenance worker is asked for at 33.5 million entries.",
 							&sift_tomb_log_limit_kb, SIFT_TOMB_LOG_KB, 16, INT_MAX,
 							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);

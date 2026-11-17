@@ -218,7 +218,7 @@
 	  "the largest array a build, merge or rewrite allocates in proportion to the rows of a segment or a run (a sort copy, the entries of a point directory or an order array)", \
 	  "none outside a test: a segment is cut at its memory budget, which counts these arrays, and one over 1 GB is allocated huge (a test lowers the limit: ERROR 54000 naming the size)", "maintenance_work_mem", 1) \
 	X(tomb_log_kb, "SIFT_TOMB_LOG_KB", "core/tomb.h", SIFT_TOMB_LOG_KB, "kB", \
-	  "the tombstone log of a sift_table that one backend keeps in memory (64 bytes an entry: the sorted entries, the scratch of a first look and the chain members), the entries of its own statement included; the entries past it are kept in sorted runs on temp files", \
+	  "the tombstone log of a sift_table or of a sift_col index with track_changes that one backend keeps in memory (64 bytes an entry: the sorted entries, the scratch of a first look and the chain members), the entries of its own statement included; the entries past it are kept in sorted runs on temp files", \
 	  "none: past it the entries go to temp files (an error only from temp_file_limit or a full disk); a worker VACUUM is asked for at 33.5 million entries", "sift.tomb_log_limit", 0) \
 	X(wide_dict_bytes, "-", "table/wide.c", 1073741823, "bytes", \
 	  "the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group", \

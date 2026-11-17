@@ -59,6 +59,8 @@ typedef struct SiftColRel
 /* The tombstone log of a heap index with track_changes, synced with what is appended (core/tomb.h); NULL when the index keeps none. sift_col_log_create adds the segment */
 struct SiftTombLog;
 extern struct SiftTombLog *sift_col_log(Relation index);
+/* ... with the header alone read (completeness, key journal): for what asks what the log vouches for, and holds none of its entries in memory */
+extern struct SiftTombLog *sift_col_log_header(Relation index);
 extern void sift_col_log_cache_stats(int64 *entries, int64 *bytes);
 extern void sift_col_log_create(Relation index);
 /* The log to append to (made when the index has none): no read of the directory, for the writer of many tombstones */

@@ -345,7 +345,7 @@ journal_for(Relation heap, Relation index, Snapshot snap, SiftTombLog **log)
 {
 	if (snap->snapshot_type != SNAPSHOT_MVCC || IsolationIsSerializable() || !TransactionIdIsNormal(snap->xmin))
 		return SIFT_CONN_SNAPSHOT;
-	if (!sift_col_track_on(index) || (*log = sift_col_log(index)) == NULL || !(*log)->keys_cover || (*log)->keys.lineage == 0)
+	if (!sift_col_track_on(index) || (*log = sift_col_log_header(index)) == NULL || !(*log)->keys_cover || (*log)->keys.lineage == 0)
 		return SIFT_CONN_NO_JOURNAL;
 	if (!sift_col_track_ok_log(index, heap, snap, *log))
 		return SIFT_CONN_NOT_COMPLETE;
@@ -627,6 +627,7 @@ changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot s
 	*out = (SiftConnKeys) {0};
 	if (why != SIFT_CONN_OK)
 		return why;
+	log = sift_col_log(index);
 	rec = sift_tomb_find(log, SIFT_TOMB_KEYS_KEY, &n);
 	/* the distinct keys are at most cap + 1 before the read refuses: the table of a log that overflows is no larger, and the records past the one that overflows it are not looked at */
 	mask = pg_nextpower2_32(2 * Max(Min((uint64) n, (uint64) cap + 1), 1)) - 1;

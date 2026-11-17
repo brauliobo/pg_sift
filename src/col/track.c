@@ -670,7 +670,7 @@ track_state(Relation heap, Relation index, bool ok[2], uint32 witness[2])
 bool
 sift_col_track_ok(Relation index, Relation heap, Snapshot snap)
 {
-	return sift_col_track_ok_log(index, heap, snap, sift_col_log(index));
+	return sift_col_track_ok_log(index, heap, snap, sift_col_log_header(index));
 }
 
 /* ... for the log of the index the caller has taken (sift_col_log) */
@@ -702,7 +702,7 @@ sift_col_track_ok_log(Relation index, Relation heap, Snapshot snap, SiftTombLog 
 bool
 sift_col_track_incomplete(Relation index)
 {
-	SiftTombLog *log = sift_col_track_on(index) ? sift_col_log(index) : NULL;
+	SiftTombLog *log = sift_col_track_on(index) ? sift_col_log_header(index) : NULL;
 
 	return log != NULL && !(log->chan.flags & SIFT_TOMB_COMPLETE);
 }
@@ -723,7 +723,7 @@ sift_col_tracking(PG_FUNCTION_ARGS)
 						errhint("Call it in the FROM clause: SELECT * FROM sift.col_tracking(index).")));
 	SIFT_COL_OPEN_GATE();
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-	log = sift_col_track_on(index) ? sift_col_log(index) : NULL;
+	log = sift_col_track_on(index) ? sift_col_log_header(index) : NULL;
 	v[0] = BoolGetDatum(sift_col_track_on(index));
 	v[1] = BoolGetDatum(log != NULL && channel_vouched(heap, index, log));
 	v[2] = BoolGetDatum(log != NULL && (log->chan.flags & SIFT_TOMB_COMPLETE));

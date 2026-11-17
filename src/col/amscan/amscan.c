@@ -308,7 +308,7 @@ col_tomb_open(IndexScanDesc scan, ColScanOpaque *so, bool rowkey)
 	if (!rowkey || scan->xs_snapshot == NULL || scan->xs_snapshot->snapshot_type != SNAPSHOT_MVCC)
 		return;
 	log = sift_col_log(scan->indexRelation);
-	if (log != NULL && log->nents + log->nrecent > 0 && !sift_col_track_own(log))
+	if (log != NULL && !sift_tomb_empty(log) && !sift_col_track_own(log))
 		so->log = log;
 }
 
