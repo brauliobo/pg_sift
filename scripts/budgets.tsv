@@ -2,6 +2,8 @@
 # Tab separated: name, wall seconds, peak tmpfs MB, what and the measurement it rests on. A single run is at most 1800 s (aim 600-1200), an aggregate gate at most 2700 s, tmpfs at most 3072 MB.
 # name	wall_s	tmpfs_mb	what
 tap:default	1200	2000	any test/t file without its own row; the slowest measured 1-seed/-round passes are 400 s (tbl_twin_fuzz) and 900 s only under 4 parallel loops (col_auto_merge_dirty_reads: 152 s alone)
+tap:mem_slope	600	1400	the memory slope gate: 125 s whole (41 cases at 50,000/100,000/200,000 rows), 29-51 s a shard of 3 (quick tier), 1.0-1.2 GB of tmpfs
+tap:mem_slope_order	300	1100	the gate does not depend on order: 3 cases forward, again and in reverse, 21 s
 tap:col_scope_oracle	1200	2500	4 nodes; one 20,000-row seed of 5 steps = 180-260 s (release), 350-490 s (cassert); the 10-seed chunks of 1400-2100 s are gone (scripts/stability.sh shards 1 seed a step)
 tap:col_auto_merge_dirty_reads	1200	2000	152 s alone, 760-907 s with three loops beside it
 tap:tbl_twin_fuzz	900	1500	3 seeds of 80 s = 330-400 s
@@ -84,5 +86,5 @@ script:test-ci-ready.sh	-	-	a helper of the entry points above, no run of its ow
 script:test-perf-select.py	-	-	a helper of the entry points above, no run of its own
 regress:shard	1800	2000	one of 4 shards of the 1,265 regression tests (every fourth name) on a cluster of its own; serial: 2,459 s release / 5,556 s cassert, so a shard is ~620 s / ~1,400 s
 script:instr-budget-cost.sh	600	1000	callgrind of one backend: planning, INSERT and an unchanged VACUUM on a table with a sift_col index; -
-tap:mem_slope	1500	1500	65 cases at 50,000 to 200,000 rows (work_mem 1 MB): 729 s measured, one cluster at shared_buffers 64 MB
+tap:mem_slope_legacy	1500	3000	the legacy memory slope gate (leakx, flat, flatcut, cap, evict, pinned): 180 s and 2.0 GB of tmpfs measured, one cluster at shared_buffers 64 MB
 tap:mem_idle_series	1200	1500	12000 statements of 25 kinds in one backend at 100,000-row tables: 481 s measured, one cluster at shared_buffers 64 MB

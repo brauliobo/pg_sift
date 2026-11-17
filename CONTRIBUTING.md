@@ -105,7 +105,7 @@ The options that a release deprecates (`order_columns`, `point_columns` and `key
 
 Every suite can write a census of the memory each statement keeps (`SIFT_MEMCENSUS=on`, test builds), the valgrind lane takes `SIFT_VALGRIND_LEAKS=1`, and `scripts/valgrind.sh --massif` names the allocation
 sites that grow with the rows of the slope cases; `scripts/mem-report.py` ranks the artifacts (`docs/MEMORY-ANALYSIS.md`). A memory slope that fails comes with the `growth_CASE.csv` of its case: fix the site at the top, then turn its
-row of `test/mem-slope.tsv` to `clean`.
+row of `test/mem-slope.tsv` (the kinds leakx, flat, flatcut, cap, evict and pinned: `test/mem-slope-legacy.tsv`) to `clean`.
 
 ## Memory budgets
 

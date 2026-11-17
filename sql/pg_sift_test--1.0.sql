@@ -205,6 +205,9 @@ CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETU
 -- n log lines, each reported under the error context of an index (test/mem-slope.tsv leak_errctx_report): the memory they leave in the backend
 CREATE FUNCTION sift._test_errctx_report(rel regclass, n int) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_errctx_report' LANGUAGE C STRICT;
+-- Memory budgets (src/core/membudget.c, test/mem-budgets.tsv): the scopes this backend ran and the most memory each held at a checkpoint; reset clears the marks.
+CREATE FUNCTION sift._test_mem_highwater(reset bool DEFAULT false, OUT scope text, OUT peak int8, OUT budget int8, OUT begins int8, OUT checks int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_mem_highwater' LANGUAGE C STRICT;
 
 -- Read side (src/bm25/read_test.c): what this backend's reads allocated and did; reset clears the counters.
 CREATE FUNCTION sift._test_read_stats(reset bool DEFAULT false, OUT key text, OUT value int8) RETURNS SETOF record

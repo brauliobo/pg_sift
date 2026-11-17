@@ -42,3 +42,18 @@ leak_search	leak	0	clean		select id from {f} where title @@> 'wireless charger' 
 leak_top	leak	0	clean		select k_hi, amount from {f} order by amount desc, k_hi limit 1000;		
 leak_errctx_report	leak	0	clean		select sift._test_errctx_report('{f}'::regclass, 1000);		
 scoped_cic	slope	355	open	drop table if exists p{n}; create table p{n} (member bigint not null, tenant int not null); insert into p{n} select g, t from generate_series(1, {n}) g, generate_series(1, 3) t; create index p{n}_j on p{n} (member, tenant);	create index concurrently {m}_sc on {m} using sift_col (id, k_mid, amount) with (scope = 'tenant: id -> p{n}(member, tenant)');		the build of a scoped index keeps the scope pairs (3 a row); TODO: stream the second pass within maintenance_work_mem; measured 308, 303, 302 B/row
+combo_text_filter	slope	12	clean		select count(*) from {f} where txt <> 'x' || k_hi;	=	
+wbuf_group	slope	12	clean	drop table if exists wb{n}; create table wb{n} (id int, k int, t text) using sift_table; insert into wb{n} select g, g % 5000, 'name' || g % 100000 from generate_series(1, {n}) g;	select k, count(*), sum(id) from wb{n} group by 1;	=	
+leak_merge	leak	0	clean		select sift.col_merge('{f}_col'::regclass, true);	=	
+promote_col	slope	64	noise	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;	select sift.col_promote('{m}_col'::regclass);	=	measured by the harness before the slope gate: noise at 64 B/row; re-measure with the fresh-backend harness
+promote_bm	slope	12	clean	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;	select sift.promote('{m}_bm'::regclass);	=	
+merge_bm	slope	22	noise	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;select sift.promote('{m}_bm'::regclass);	select sift.merge('{m}_bm'::regclass, true);	=	measured by the harness before the slope gate: noise at 22 B/row; re-measure with the fresh-backend harness
+maintain_col	slope	12	clean	update {m} set amount = amount + 1;	select sift.col_maintain('{m}_col'::regclass);	=	
+refresh_col	slope	12	clean		select * from sift.col_refresh('{m}_col'::regclass);	=	
+rollup_refresh	slope	12	clean		select sift.col_rollup_refresh('{m}_col'::regclass);	=	
+repair_col	slope	12	clean		select count(*) from sift.col_repair('{m}_col'::regclass);	=	
+vacuum_deleted	slope	12	clean	delete from {m} where k_lo < 6;	vacuum {m};	=	
+vacuum_inserted	slope	62	noise	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;	vacuum {m};	=	measured by the harness before the slope gate: noise at 62 B/row; re-measure with the fresh-backend harness
+table_maintain	slope	21	open	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	select sift.table_maintain('{s}'::regclass);	=	measured by the harness before the slope gate: open at 21 B/row; re-measure with the fresh-backend harness
+table_scan_fresh_numbers_and_codes	slope	12	clean	@other set client_min_messages=warning; drop table if exists {s}; create table {s} using sift_table as select * from {f} order by id;	select count(*), sum(k_hi), sum(length(cat)) from {s};	=	
+table_scan_fresh_text_one_per_row	slope	12	clean	@other set client_min_messages=warning; drop table if exists {s}; create table {s} using sift_table as select * from {f} order by id;	select sum(length(txt)) from {s};	=	

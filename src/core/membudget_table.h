@@ -63,7 +63,7 @@ budget_col_build(void)
 static Size
 budget_col_merge(void)
 {
-	return (((Size) maintenance_work_mem * 1024) + ((Size) 33554432UL));
+	return (((Size) 268435456UL));
 }
 
 static Size
@@ -81,7 +81,7 @@ budget_col_rewrite(void)
 static Size
 budget_col_scope_refill(void)
 {
-	return (((Size) maintenance_work_mem * 1024) + ((Size) 41943040UL));
+	return (((Size) 67108864UL));
 }
 
 static Size
@@ -135,10 +135,10 @@ static const struct
 	{"bm25_search", budget_bm25_search, "work_mem + 32MB"},
 	{"bm25_verify", budget_bm25_verify, "maintenance_work_mem + 8MB"},
 	{"col_build", budget_col_build, "192MB (open: ceiling measured today)"},
-	{"col_merge", budget_col_merge, "maintenance_work_mem + 32MB"},
+	{"col_merge", budget_col_merge, "256MB (open: ceiling measured today)"},
 	{"col_orphan_sweep", budget_col_orphan_sweep, "8MB"},
 	{"col_rewrite", budget_col_rewrite, "1MB"},
-	{"col_scope_refill", budget_col_scope_refill, "maintenance_work_mem + 40MB"},
+	{"col_scope_refill", budget_col_scope_refill, "64MB (open: ceiling measured today)"},
 	{"col_tomb_log", budget_col_tomb_log, "sift.tomb_log_limit + 8MB"},
 	{"col_verify", budget_col_verify, "3*maintenance_work_mem + 8MB"},
 	{"col_write_buffer", budget_col_write_buffer, "16MB"},

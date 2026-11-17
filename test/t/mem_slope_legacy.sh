@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The memory slope gate (scripts/mem-slope-legacy.py, test/mem-slope-legacy.tsv): the kinds the slope gate (mem_slope.sh) does not measure yet: leakx, flat, flatcut, cap, evict, pinned. Reads, maintenance and writes at 50,000, 100,000 and 200,000 rows with work_mem and: reads, maintenance and writes at 50,000, 100,000 and 200,000 rows with work_mem and
+# The legacy memory slope gate (scripts/mem-slope-legacy.py, test/mem-slope-legacy.tsv): the kinds the slope gate (mem_slope.sh) does not measure yet:
+# leakx, flat, flatcut, cap, evict and pinned, at 50,000, 100,000 and 200,000 rows with work_mem and
 # maintenance_work_mem at 1 MB. An operation holds the memory its setting gives, not memory that follows the table: a clean case stays within the noise of a row
 # (12 bytes), an open one (a defect recorded with the slope it was measured at) may not grow faster than its ceiling, and a statement repeated in one backend
 # does not make its contexts grow. One SLOPE line a case; a fix of an open case turns its row to clean in the same commit.

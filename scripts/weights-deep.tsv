@@ -252,3 +252,5 @@ installcheck-segfmt_mixed	20	17
 installcheck-tbl_agg_rewrites	12	20
 tap-007_tbl_logical	20	15
 tap-shell-col_key_cut_merge	17	20
+tap-shell-mem_slope_order	21	21
+tap-shell-mem_slope_legacy	180	180

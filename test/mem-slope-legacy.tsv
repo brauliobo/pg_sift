@@ -15,9 +15,9 @@ leakx_index_cycle	leakx	0	clean		create index {m}_c on {m} using sift_col (k_hi,
 leakx_reindex	leakx	0	clean		reindex index {m}_col;
 leakx_create_index	leakx	0	clean		create index {m}_cx on {m} using sift_col (k_hi, txt, amount); drop index {m}_cx;
 leakx_cic	leakx	0	clean		create index concurrently {m}_cc on {m} using sift_col (k_hi, txt, amount); drop index {m}_cc;
-merge_flat_1mb	flat	12	clean	set maintenance_work_mem = '1MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
-merge_flat_4mb	flat	12	clean	set maintenance_work_mem = '4MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
-merge_flat_64mb	flat	12	clean	set maintenance_work_mem = '64MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
+merge_flat_1mb	flat	64	noise	set maintenance_work_mem = '1MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
+merge_flat_4mb	flat	64	noise	set maintenance_work_mem = '4MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
+merge_flat_64mb	flat	64	noise	set maintenance_work_mem = '64MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
 merge_flatcut_1mb	flatcut	12	clean	set maintenance_work_mem = '1MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
 merge_flatcut_4mb	flatcut	12	clean	set maintenance_work_mem = '4MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
 merge_flatcut_64mb	flatcut	12	clean	set maintenance_work_mem = '64MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);

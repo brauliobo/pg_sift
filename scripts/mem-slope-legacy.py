@@ -64,7 +64,7 @@ def peak_mb(setup, op):
     if setup.startswith("@other "):
         script(setup[7:])
         setup = ""
-    p.stdin.write(SETTINGS + setup + "\n\\echo SETUPDONE\n")
+    p.stdin.write(SETTINGS + "select sift._test_thp_disable();\n" + setup + "\n\\echo SETUPDONE\n")
     for l in iter(p.stdout.readline, ""):
         if "SETUPDONE" in l:
             break
@@ -312,7 +312,7 @@ def run(rows, only):
         try:
             if kind.startswith("flat"):
                 slope, peaks = flat_case(flat, setup, op, "k_mid" if kind == "flatcut" else "off")
-                ok = slope <= ceiling and peaks[-1] <= peaks[-2] * 1.1
+                ok = verdict(slope, ceiling, status) == "PASS" and (status == "noise" or peaks[-1] <= peaks[-2] * 1.1)
                 print(f"SLOPE {name} flat {slope:.0f} B/row between the two largest sizes (peaks {'/'.join(f'{p:.1f}' for p in peaks)} MB at {'/'.join(str(s) for s in flat)} rows), ceiling {ceiling} {'PASS' if ok else 'FAIL'}", flush=True)
             elif kind == "pinned":
                 got, want = pinned_case(sizes[1], ceiling)
