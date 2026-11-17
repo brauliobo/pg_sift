@@ -79,6 +79,12 @@ budget_col_rewrite(void)
 }
 
 static Size
+budget_col_scope_probe(void)
+{
+	return (((Size) maintenance_work_mem * 1024) + ((Size) 4194304UL));
+}
+
+static Size
 budget_col_scope_refill(void)
 {
 	return (((Size) 134217728UL));
@@ -138,6 +144,7 @@ static const struct
 	{"col_merge", budget_col_merge, "256MB (open: ceiling measured today)"},
 	{"col_orphan_sweep", budget_col_orphan_sweep, "8MB"},
 	{"col_rewrite", budget_col_rewrite, "1MB"},
+	{"col_scope_probe", budget_col_scope_probe, "maintenance_work_mem + 4MB"},
 	{"col_scope_refill", budget_col_scope_refill, "128MB (open: ceiling measured today)"},
 	{"col_tomb_log", budget_col_tomb_log, "sift.tomb_log_limit + 8MB"},
 	{"col_verify", budget_col_verify, "3*maintenance_work_mem + 8MB"},

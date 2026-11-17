@@ -22,6 +22,7 @@
 #include "col/am.h"
 #include "col/scope.h"
 #include "core/limits.h"
+#include "core/membudget.h"
 
 typedef struct SiftScopeFill SiftScopeFill;
 
@@ -38,9 +39,9 @@ sift_scope_cut(const SiftColRel *r, int scope, int *cut)
 	return n;
 }
 
-/* The members asked are remembered up to this many (or this many of their keys), then forgotten at the next batch */
-#define SEEN_MAX	(1 << 18)
-#define POOL_MAX	((uint64) 1 << 22)
+/* The members asked and their keys are remembered up to a quarter of maintenance_work_mem, then forgotten at the next batch (a batch needs all of its own) */
+#define PROBE_CACHE_DIVISOR	4
+#define SEEN_ENTRY_BYTES	48
 
 /* A probe's answer for a member: its keys are pool[start, start + n), each once */
 typedef struct ScopeSeen
@@ -71,6 +72,7 @@ typedef struct ScopeList
 typedef struct ScopeProbe
 {
 	MemoryContext cx;
+	MemoryContext cache;		/* seen and pool */
 	SiftConnProbe *probe;
 	AttrNumber	out;			/* the column the probe reads of each row */
 	SiftKeyMap *km;				/* ... which is mapped to codes (NULL: an integer column) */
@@ -239,7 +241,8 @@ probe_begin(ScopeProbe *p, MemoryContext cx, const ScopeSrc *src, AttrNumber by,
 		sift_conn_probe_codec(p->probe, src->km);
 	if (by == src->a && src->kma != NULL)
 		sift_conn_probe_codec(p->probe, src->kma);
-	p->seen = seen_new(cx);
+	p->cache = AllocSetContextCreate(cx, "sift scope probe cache", ALLOCSET_DEFAULT_SIZES);
+	p->seen = seen_new(p->cache);
 }
 
 /*
@@ -491,7 +494,7 @@ collect_key(void *arg, TupleTableSlot *slot)
 	if (p->npool == p->poolcap)
 	{
 		p->poolcap = Max(p->poolcap * 2, 1024);
-		p->pool = p->pool == NULL ? MemoryContextAllocExtended(p->cx, p->poolcap * sizeof(SiftScopePair), MCXT_ALLOC_HUGE)
+		p->pool = p->pool == NULL ? MemoryContextAllocExtended(p->cache, p->poolcap * sizeof(SiftScopePair), MCXT_ALLOC_HUGE)
 			: repalloc_huge(p->pool, p->poolcap * sizeof(SiftScopePair));
 	}
 	p->pool[p->npool++] = (SiftScopePair) {pk->val, key};
@@ -499,17 +502,25 @@ collect_key(void *arg, TupleTableSlot *slot)
 	return true;
 }
 
+static bool
+probe_cache_full(const ScopeProbe *p)
+{
+	return hash_get_num_entries(p->seen) * SEEN_ENTRY_BYTES + p->npool * sizeof(SiftScopePair) > (uint64) maintenance_work_mem * 1024 / PROBE_CACHE_DIVISOR;
+}
+
 /* The answers for every value of the batch (nulls: bit set = NULL, NULL: none) are in the cache */
 static void
 probe_values(ScopeProbe *p, const int64 *vals, const uint64 *nulls, uint32 n)
 {
 	SiftConnProbeScan s;
+	SIFT_MEM_SCOPE(col_scope_probe, p->cache);
 
-	if (hash_get_num_entries(p->seen) > SEEN_MAX || p->npool > POOL_MAX)
+	if (probe_cache_full(p))
 	{
-		hash_destroy(p->seen);
-		p->seen = seen_new(p->cx);
-		p->npool = 0;
+		MemoryContextReset(p->cache);
+		p->seen = seen_new(p->cache);
+		p->pool = NULL;
+		p->npool = p->poolcap = 0;
 	}
 	sift_conn_probe_open(p->probe, &s);
 	if (p->km != NULL)
@@ -535,6 +546,7 @@ probe_values(ScopeProbe *p, const int64 *vals, const uint64 *nulls, uint32 n)
 	if (p->km != NULL)
 		sift_keymap_release(p->km);
 	sift_conn_probe_close(&s);
+	SIFT_MEM_CHECKPOINT();
 }
 
 /* The answer of the cache for a value it holds */
