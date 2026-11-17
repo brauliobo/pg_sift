@@ -64,6 +64,10 @@ typedef struct PartSource
 	bool		opened;			/* the partitions were counted or told what to test: they can no longer be pruned */
 	uint32	   *off;			/* n + 1: the first superblock of each partition, the total last */
 	bool		have_off;
+	int			nopen;			/* the sources open now */
+	int			keep;			/* the sources a scan keeps open when it leaves them: half of hash memory over the size of the first (the layout of all) */
+	bool		counted_heap;	/* count_sbs ran here and sb_heap_all says whether every counted partition's superblocks are heap pages */
+	bool		sb_heap_all;
 	bool	   *skip;			/* sift_aggpart_prune: the partitions the scan does not read (no superblocks), NULL: all are read */
 	int			cur;			/* the partition of the unit the source is at */
 	int			next;			/* the first partition begin has not started */

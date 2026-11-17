@@ -61,6 +61,7 @@ open_part(PartSource *ps, int i)
 	ps->pcx[i] = cx;
 	ps->src[i] = sift_colsrc_open_part(ps->heap[i], ps->index[i], ps->snapshot, cx, ps->view[i]);
 	ps->gen[i]++;
+	ps->nopen++;
 	for (int k = 0; k < ps->nop; k++)
 		(void) part_apply(&ps->op[k], ps->src[i]);
 }
@@ -79,6 +80,7 @@ close_part(PartSource *ps, int i)
 	ps->src[i] = NULL;
 	ps->index[i] = NULL;
 	ps->pcx[i] = NULL;
+	ps->nopen--;
 }
 
 /*
@@ -88,7 +90,7 @@ close_part(PartSource *ps, int i)
 void
 release_part(PartSource *ps, int i)
 {
-	if (ps->src[i] != NULL && i != 0 && i != ps->last && i != ps->cur && !ps->hold[i] && ps->vlen[i] > 0)
+	if (ps->src[i] != NULL && ps->nopen > ps->keep && i != 0 && i != ps->last && i != ps->cur && !ps->hold[i] && ps->vlen[i] > 0)
 		close_part(ps, i);
 }
 
@@ -181,6 +183,7 @@ part_new(Relation parent, int n, const Oid *heaps, const Oid *indexes, Snapshot 
 	ps->off = MemoryContextAllocZero(mcxt, (n + 1) * sizeof(uint32));
 	ps->last = -1;
 	open_part(ps, 0);
+	ps->keep = (int) Max(1, get_hash_memory_limit() / 2 / MemoryContextMemAllocated(ps->pcx[0], true));
 	ps->nleaves = sift_colsrc_source_layout(ps->src[0])->nleaves;
 	ps->cur = 0;
 	out->prov = &part_provider;
@@ -226,6 +229,7 @@ count_sbs(PartSource *ps)
 	if (ps->have_off)
 		return;
 	ps->opened = true;
+	ps->sb_heap_all = true;
 	for (int i = 0; i < ps->n; i++)
 	{
 		ps->off[i] = (uint32) total;
@@ -233,6 +237,7 @@ count_sbs(PartSource *ps)
 			continue;
 		open_part(ps, i);
 		total += sift_colsrc_nsb(ps->src[i]);
+		ps->sb_heap_all &= sift_colsrc_sb_heap(ps->src[i]);
 		keep_view(ps, i);
 		release_part(ps, i);
 	}
@@ -241,6 +246,7 @@ count_sbs(PartSource *ps)
 						errhint("Filter on the partition key so that the scan reads fewer partitions, or set sift.enable_agg to off for this query.")));
 	ps->off[ps->n] = (uint32) total;
 	ps->have_off = true;
+	ps->counted_heap = true;
 }
 
 bool
@@ -249,6 +255,8 @@ part_sb_heap(void *impl)
 	PartSource *ps = impl;
 
 	count_sbs(ps);
+	if (ps->counted_heap)
+		return ps->sb_heap_all;
 	for (int i = 0; i < ps->n; i++)
 	{
 		bool		heap;
