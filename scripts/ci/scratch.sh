@@ -18,6 +18,8 @@ rm -rf "$BASE" && mkdir -p "$LOG" "$LOG/peak" "$BASE/claims" "$BASE/running" "$P
 proc_id "$MAIN" >"$BASE/run.pid"   # scripts/ci.sh stop DIR ends this run by this pid, never by a name
 t0=$SECONDS
 
+# dir_mb DIR: the megabytes DIR holds (0 when it is not there yet)
+dir_mb() { local kb; kb=$(du -sk "$1" 2>/dev/null | cut -f1); echo $(( ${kb:-0} / 1024 )); }
 # job_peaks: the size of the scratch of each running job (its lane directory, with the lane's cluster, when it uses it; else its own directory) into logs/peak/ID: step() records it and
 # compares it with the estimate the scheduler trusts
 job_peaks() {
@@ -27,7 +29,7 @@ job_peaks() {
 		[[ -f $BASE/claims/$id/lane ]] || continue
 		dir=$BASE/$(<"$BASE/claims/$id/lane")
 		[[ ${J_CLUSTER[$id]:-0} == 1 ]] || dir=$dir/$id
-		mb=$(( $(du -sk "$dir" 2>/dev/null | cut -f1) / 1024 ))
+		mb=$(dir_mb "$dir")
 		(( mb > $(cat "$LOG/peak/$id" 2>/dev/null || echo 0) )) && echo "$mb" >"$LOG/peak/$id"
 	done
 }
@@ -35,7 +37,7 @@ watchdog() { # stops every postmaster under $BASE once the scratch directory pas
 	local peak=0 mb
 	while sleep 2 && kill -0 "$MAIN" 2>/dev/null; do   # the lanes and these loops end with the run, also when it was killed without a trap
 		job_peaks
-		mb=$(( $(du -sk "$BASE" 2>/dev/null | cut -f1) / 1024 ))
+		mb=$(dir_mb "$BASE")
 		(( mb > peak )) && { peak=$mb; echo "$peak" >"$LOG/peak_mb"; }
 		if (( mb > MAX_MB )); then
 			echo "disk cap exceeded: $mb MB > $MAX_MB MB (CI_MAX_MB)" >"$LOG/cap_exceeded"

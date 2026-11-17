@@ -36,6 +36,19 @@ out=$("$BASH" -c '
 	for _ in {1..50}; do kill -0 "$w" 2>/dev/null || { echo ended; break; }; sleep 0.2; done
 	kill "$w" 2>/dev/null; wait "$w" 2>/dev/null; rm -rf "$BASE"' _ "$REPO" 2>&1)
 [[ $out == ended ]] || fail "the watchdog of a dead run keeps running: $out"
+# the cap: the watchdog sees a scratch directory over MAX_MB and stops the run (logs/cap_exceeded), also while a running job has no directory of its own yet, and it records the peak of each job
+out=$("$BASH" -c '
+	set -uo pipefail
+	eval "$(sed -n "/^dir_mb() {/,/^}/p;/^job_peaks() {/,/^}/p;/^watchdog() {/,/^}/p" "$1/scripts/ci/scratch.sh")"
+	BASE=$(mktemp -d "$TMP/base.XXXXXX") MAX_MB=1; LOG=$BASE/logs
+	mkdir -p "$LOG/peak" "$BASE/running" "$BASE/claims/x" "$BASE/lane1"
+	echo lane1 >"$BASE/claims/x/lane"; echo 70 >"$BASE/running/x"; declare -A J_CLUSTER=([x]=0)
+	head -c 3000000 /dev/zero >"$BASE/lane1/big"
+	sleep 20 & MAIN=$!
+	watchdog & w=$!
+	for _ in {1..50}; do [[ -e $LOG/cap_exceeded ]] && { echo "capped $(cat "$LOG/peak_mb")"; break; }; sleep 0.2; done
+	kill "$w" "$MAIN" 2>/dev/null; wait "$w" "$MAIN" 2>/dev/null; rm -rf "$BASE"' _ "$REPO" 2>&1)
+[[ $out == 'capped 2' ]] || fail "the watchdog does not stop a run over its cap while a job has no directory yet: $out"
 # a script that sources ci.sh is the $0 of its calls: every `"$0" --plan` started that script again, and so on without end (a profiling harness did, with 41,665 processes
 # below one `bash /tmp/tmp.X quick`; bounded to 600 tasks the old ci.sh was still running after 12 s). ci.sh refuses to run outside a checkout, and stops at depth 8 inside one
 if command -v timeout >/dev/null; then
