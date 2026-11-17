@@ -92,6 +92,12 @@ budget_col_merge(void)
 }
 
 static Size
+budget_col_merge_inputs(void)
+{
+	return (((Size) 268435456UL));
+}
+
+static Size
 budget_col_merge_window(void)
 {
 	return (((Size) maintenance_work_mem * 1024) + ((Size) 25165824UL));
@@ -201,6 +207,7 @@ static const struct
 	{"col_key_cut_decision", budget_col_key_cut_decision, "maintenance_work_mem + 12MB"},
 	{"col_key_cut_layout", budget_col_key_cut_layout, "maintenance_work_mem + 64MB"},
 	{"col_merge", budget_col_merge, "256MB (open: ceiling measured today)"},
+	{"col_merge_inputs", budget_col_merge_inputs, "256MB (open: ceiling measured today)"},
 	{"col_merge_window", budget_col_merge_window, "maintenance_work_mem + 24MB"},
 	{"col_orphan_sweep", budget_col_orphan_sweep, "8MB"},
 	{"col_rewrite", budget_col_rewrite, "1MB"},

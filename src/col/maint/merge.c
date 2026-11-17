@@ -205,7 +205,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	TidIn	   *tin = palloc0(n * sizeof(TidIn));
 	uint32	   *at = palloc(n * sizeof(uint32));
 	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
-	MergeWindow *win = maint_window_begin(icx, schema, n);
+	MergeWindow *win = maint_window_begin(cx, schema, n);
 	int			nscope = sift_cschema_nscope(schema);
 	bool		scope = n > 0 && (in[0].flags & SIFT_SEG_SCOPE) != 0;	/* the segments are those of one scope: the rows of the entities are not merged with them */
 	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .xstamp = sift_col_is_index(index) ? sift_xstamp_inputs(in, n) : (SiftXStamp) {InvalidTransactionId, InvalidTransactionId, 0}, .roots = sift_col_is_index(index) && merge_roots(in, n),
@@ -252,7 +252,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		double		live;
 		uint64		units = 0;
 
-		seg[i] = sift_cseg_open(index, &in[i], icx);
+		seg[i] = sift_cseg_open(index, &in[i], AllocSetContextCreate(icx, "sift_col merge input", ALLOCSET_DEFAULT_SIZES));
 		if (!sift_cschema_same_leaves(seg[i]->schema, schema, RelationGetDescr(index)))
 			corrupt(index, "Segment %llu was written for another column layout.", (unsigned long long) in[i].gen);
 		exact &= sift_cseg_kinds_exact(seg[i]);
@@ -360,7 +360,8 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 			if (sift_cseg_keyed(&in[i]))
 				tin[i] = (TidIn) {.seg = seg[i], .win = win, .last = PG_UINT32_MAX};
 	{
-		SIFT_MEM_SCOPE(col_merge_window, icx);
+		SIFT_MEM_SCOPE(col_merge_inputs, icx);
+		SIFT_MEM_SCOPE(col_merge_window, maint_window_context(win));
 
 		for (;;)
 		{
@@ -393,6 +394,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 				else
 					maint_window_discard(win, b);
 			}
+			SIFT_MEM_CHECKPOINT_OF(col_merge_inputs);
 			if ((rows = maint_window_rows(win, sb)) == NULL)
 				continue;
 			o.held = maint_window_peak(win);
