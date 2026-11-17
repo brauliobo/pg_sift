@@ -507,7 +507,8 @@ step_store(void *arg)
 static void
 verify_immutable(ColVerify *cv, const SiftSegEntry *e)
 {
-	SiftColSegment *seg = sift_cseg_open(cv->index, e, cv->cxt);
+	MemoryContext segcx = AllocSetContextCreate(cv->cxt, "sift_col verify segment", ALLOCSET_DEFAULT_SIZES);
+	SiftColSegment *seg = sift_cseg_open(cv->index, e, segcx);
 	uint64		live = sift_cseg_verify(seg);
 	bool		scope = (e->flags & SIFT_SEG_SCOPE) != 0;
 
@@ -523,6 +524,7 @@ verify_immutable(ColVerify *cv, const SiftSegEntry *e)
 		collect_batch(cv, cv->batch, scope);
 	}
 	sift_cseg_close(seg);
+	MemoryContextDelete(segcx);
 }
 
 static void
@@ -530,11 +532,13 @@ verify_wbuf(ColVerify *cv, const SiftSegEntry *e)
 {
 	int			n;
 	SiftColBatch **bs;
+	MemoryContext segcx = AllocSetContextCreate(cv->cxt, "sift_col verify write buffer", ALLOCSET_DEFAULT_SIZES);
 
 	sift_cwbuf_verify(cv->index, e, cv->r->schema);
-	bs = sift_cwbuf_batches(cv->index, e, cv->r->schema, cv->cxt, &n, NULL);
+	bs = sift_cwbuf_batches(cv->index, e, cv->r->schema, segcx, &n, NULL);
 	for (int j = 0; j < n; j++)
 		collect_batch(cv, bs[j], false);
+	MemoryContextDelete(segcx);
 }
 
 /*
