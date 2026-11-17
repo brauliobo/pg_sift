@@ -178,9 +178,13 @@ out_next(void *arg, SiftColSegWriter *w)
 	return o->w;
 }
 
-static void
-merge_once(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
-		   int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts, const MergeSlice *slice, SiftSegEntry *outs, int *nouts)
+/*
+ * Merges the segments in[0..n) into one, or into partitions when part_bytes is set: the live bytes they hold are cut into as many segments of about
+ * part_bytes each as fit max_parts (the new ones take the place of the first of the old ones, in one switch of the directory).
+ */
+void
+maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
+			   int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts, const MergeSlice *slice)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col merge", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
@@ -423,65 +427,8 @@ merge_once(Relation index, const SiftColSchema *schema, const SiftCcPolicy *poli
 							 psprintf("merged %d column segments into %d of", n, o.nneu), start, docs);
 		maint_merge_settles(index, in, n, o.nneu);
 	}
-	if (nouts)
-	{
-		memcpy(outs, o.neu, o.nneu * sizeof(SiftSegEntry));
-		*nouts = o.nneu;
-	}
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
-}
-
-/* What an input of a merge holds besides its rows (its directory, the batch and the dictionaries it was begun with), and of each row of the unit it has decoded for the merge, a leaf's key and flags */
-#define MERGE_INPUT_BYTES	((Size) 512 * 1024)
-#define MERGE_LEAF_BYTES	12
-
-/*
- * The inputs a merge holds open at once: maintenance_work_mem over the memory of one input, a unit of rows decoded (its leaves) and its structures. A merge of more inputs is made in passes, as a sort
- * with more runs than it has tapes is (tuplesort_merge_order): F of them become segments that take the place of those in the directory, and join the rest for the next pass.
- */
-static int
-merge_fanin(const SiftColSchema *schema, const SiftSegEntry *in, int n)
-{
-	uint64		widest = 1;
-
-	for (int i = 0; i < n; i++)
-		widest = Max(widest, Min(in[i].ndocs, (uint64) SIFT_COL_UNIT_MAX_ROWS));
-	return (int) Max(2, Min((uint64) maintenance_work_mem * 1024 / (widest * MERGE_LEAF_BYTES * schema->ncols + MERGE_INPUT_BYTES), (uint64) SIFT_MAX_SEGMENTS));
-}
-
-/*
- * Merges the segments in[0..n) into one, or into partitions when part_bytes is set: the live bytes they hold are cut into as many segments of about
- * part_bytes each as fit max_parts (the new ones take the place of the first of the old ones, in one switch of the directory). The segments of a key-cut index or of a scope overlap in the key,
- * so every input has rows to give from the start: more of them than merge_fanin allows are merged in passes, while a pass leaves fewer segments than it took.
- */
-void
-maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
-			   int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts, const MergeSlice *slice)
-{
-	SiftSegEntry cur[SIFT_MAX_SEGMENTS + MAX_PARTS],
-				neu[MAX_PARTS];
-	bool		recut = merge_recut,
-				overlap = n > 0 && ((in[0].flags & SIFT_SEG_SCOPE) != 0 || (sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index))));
-	int			fan = n > 0 ? merge_fanin(schema, in, n) : 2,
-				nneu;
-
-	if (slice != NULL || !overlap || n <= fan)
-	{
-		merge_once(index, schema, policy, pagg, in, n, format, freeze, freeze_arg, part_bytes, max_parts, slice, NULL, NULL);
-		return;
-	}
-	memcpy(cur, in, n * sizeof(SiftSegEntry));
-	do
-	{
-		merge_recut = recut;
-		merge_once(index, schema, policy, pagg, cur, fan, format, freeze, freeze_arg, part_bytes, max_parts, NULL, neu, &nneu);
-		memmove(cur, cur + fan, (n - fan) * sizeof(SiftSegEntry));
-		memcpy(cur + n - fan, neu, nneu * sizeof(SiftSegEntry));
-		n += nneu - fan;
-	} while (n > fan && nneu < fan);
-	merge_recut = recut;
-	merge_once(index, schema, policy, pagg, cur, n, format, freeze, freeze_arg, part_bytes, max_parts, NULL, NULL, NULL);
 }
 
 void
