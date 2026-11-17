@@ -5,6 +5,7 @@
  */
 #include "core/host.h"
 #include "core/limits.h"
+#include "core/membudget.h"
 #include "col/seg_write/seg_write_int.h"
 
 #define LST_SHARE_DIV		33		/* the leaf statistics take at most 1/33 (3%) of the segment: units of a few rows and many leaves keep none */
@@ -139,6 +140,8 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->pol = pol;
 	w->mcxt = mcxt;
 	w->scxt = AllocSetContextCreate(mcxt, "sift col order spool", ALLOCSET_DEFAULT_SIZES);
+	w->dcxt = AllocSetContextCreate(mcxt, "sift col writer dict", ALLOCSET_DEFAULT_SIZES);
+	w->pcxt = AllocSetContextCreate(mcxt, "sift col writer points", ALLOCSET_DEFAULT_SIZES);
 	w->format = sift_col_write_minor(schema, format, true);
 	w->setting = format;
 	w->sw = sift_sw_begin(wt, gen);
@@ -148,7 +151,7 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->inl = palloc0(schema->ncols * sizeof(bool));
 	for (int c = 0; c < schema->ncols; c++)
 		if (schema->cols[c].store == SIFT_COLS_STR)
-			w->dict[c] = sift_cdict_create(mcxt);
+			w->dict[c] = sift_cdict_create(w->dcxt);
 	if (format >= SIFT_COL_FORMAT_PRESENCE && sift_cref_host != NULL)
 		w->vstore = sift_cref_host->leaf_stores(sift_wt_index(wt), schema);
 	w->capsb = 64;
@@ -209,7 +212,7 @@ count_rows(SiftColSegWriter *w, const SiftColBatch *b)
 		{
 			uint32		cap = Max(n, 2 * a->cap);
 
-			a->rows = a->rows ? repalloc_huge(a->rows, (Size) cap * sizeof(uint32)) : MemoryContextAllocHuge(w->mcxt, (Size) cap * sizeof(uint32));
+			a->rows = a->rows ? repalloc_huge(a->rows, (Size) cap * sizeof(uint32)) : MemoryContextAllocHuge(w->dcxt, (Size) cap * sizeof(uint32));
 			memset(a->rows + a->cap, 0, (Size) (cap - a->cap) * sizeof(uint32));
 			a->cap = cap;
 		}
@@ -479,6 +482,14 @@ colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	w->sb_hi = b->sb;
 	w->nsb++;
 	w->rows += b->nrows;
+	{
+		SIFT_MEM_SCOPE(col_writer_dict, w->dcxt);
+		SIFT_MEM_CHECKPOINT();
+	}
+	{
+		SIFT_MEM_SCOPE(col_writer_points, w->pcxt);
+		SIFT_MEM_CHECKPOINT();
+	}
 }
 
 uint64

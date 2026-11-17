@@ -111,7 +111,7 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 		}
 		if (a->n + v->n > a->cap)
 		{
-			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+			MemoryContext old = MemoryContextSwitchTo(w->pcxt);
 
 			a->cap = grow_cap(a->cap, a->n + v->n);
 			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->key, (Size) a->cap * sizeof(int64));
@@ -123,7 +123,7 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 		}
 		if (a->ord && v->nulls && a->nn + v->n > a->ncap)
 		{
-			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+			MemoryContext old = MemoryContextSwitchTo(w->pcxt);
 
 			a->ncap = grow_ncap(a->ncap, a->nn + v->n);
 			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->ntid, (Size) a->ncap * sizeof(uint64));
@@ -136,7 +136,7 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 		}
 		if (gv && a->n + v->n > a->gcap)
 		{
-			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+			MemoryContext old = MemoryContextSwitchTo(w->pcxt);
 
 			a->gcap = a->cap;
 			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->gk, (Size) a->gcap * sizeof(int64));

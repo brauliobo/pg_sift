@@ -301,6 +301,10 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	o.budget = sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE);
 	if (part_bytes > 0 || o.parts > 1)
 		o.budget = Max(o.budget, (Size) ((double) live_rows / o.parts * sift_colw_row_memory(pagg, schema->ncols)));
+#ifdef SIFT_TESTING
+	if (sift_test_col_segment_kb > 0)
+		o.budget = (Size) sift_test_col_segment_kb * 1024;
+#endif
 	o.units_left = live_units;
 	/* the NULL slots and astext values of a segment that did not keep their kinds come out of the merge without them: its minor says so */
 	if (!exact)

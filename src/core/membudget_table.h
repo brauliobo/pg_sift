@@ -128,9 +128,21 @@ budget_col_write_buffer(void)
 }
 
 static Size
+budget_col_writer_dict(void)
+{
+	return (((Size) 536870912UL));
+}
+
+static Size
 budget_col_writer_order(void)
 {
 	return (((Size) maintenance_work_mem * 1024) + ((Size) 16777216UL));
+}
+
+static Size
+budget_col_writer_points(void)
+{
+	return (((Size) 536870912UL));
 }
 
 static Size
@@ -183,7 +195,9 @@ static const struct
 	{"col_tomb_log", budget_col_tomb_log, "sift.tomb_log_limit + 8MB"},
 	{"col_verify", budget_col_verify, "3*maintenance_work_mem + 8MB"},
 	{"col_write_buffer", budget_col_write_buffer, "96MB (open: ceiling measured today)"},
+	{"col_writer_dict", budget_col_writer_dict, "512MB (open: ceiling measured today)"},
 	{"col_writer_order", budget_col_writer_order, "maintenance_work_mem + 16MB"},
+	{"col_writer_points", budget_col_writer_points, "512MB (open: ceiling measured today)"},
 	{"col_writer_spool", budget_col_writer_spool, "maintenance_work_mem + 16MB"},
 	{"index_vacuum", budget_index_vacuum, "maintenance_work_mem + 16MB"},
 	{"maint_worker_step", budget_maint_worker_step, "4MB"},
