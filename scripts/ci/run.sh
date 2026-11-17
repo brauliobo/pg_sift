@@ -1,6 +1,8 @@
 # The run itself: the build, the harness checks of shard 1, the lanes of the pool, the jobs after it, and the leak gate.
 # Sourced by scripts/ci.sh; not a script of its own.
 # ---------- build, the pool, the leak gate ----------
+# SIFT_MEMCENSUS (src/core/memcensus.c): the servers of every lane and TAP node write SIFTMEM lines, leakcheck.sh harvests them into SIFT_MEMCENSUS_DIR and the last step ranks them
+[[ -z ${SIFT_MEMCENSUS:-} ]] || export SIFT_MEMCENSUS_DIR=${SIFT_MEMCENSUS_DIR:-$BASE/memcensus} SIFT_MEMCENSUS_LABEL=${SIFT_MEMCENSUS_LABEL:-ci}
 LANE=main
 export SIFT_TMP=$BASE/main SIFT_PORT=$BASE_PORT
 mkdir -p "$SIFT_TMP"
@@ -26,3 +28,5 @@ wait "${pids[@]}" ${lint:-} ${spantest:-}
 # the jobs that install a flavor of the server's own library (flavor_job) run alone, now that no worker of a lane is left to load it
 for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && run_job "$id" && tidy "$id"; done
 step leakcheck leakcheck "$S/leakcheck.sh" scan "$BASE"
+# reports and uploads, never fails the run: the memory slope tests are the gates
+[[ -z ${SIFT_MEMCENSUS:-} ]] || step mem-report mem-report bash -c 'python3 -I "$0/mem-report.py" report "$1" ${SIFT_MEMREPORT_BASELINE:+--baseline "$SIFT_MEMREPORT_BASELINE"} --out "$1/report.md" --json "$1/report.json" || true' "$S" "$SIFT_MEMCENSUS_DIR"

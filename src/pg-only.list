@@ -366,6 +366,7 @@ core/jsonbuild.c
 core/lane.c
 core/lane.h
 core/leak_test.c
+core/memcensus.c
 core/limits.c
 core/live_repair.c
 core/live_repair_test.c

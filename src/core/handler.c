@@ -313,6 +313,7 @@ _PG_init(void)
 	sift_tbl_init();
 #ifdef SIFT_TESTING
 	sift_leak_test_init();
+	sift_memcensus_init();
 	sift_aggstub_init();
 	sift_limits_init();
 #endif

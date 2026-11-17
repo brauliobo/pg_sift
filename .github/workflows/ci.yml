@@ -316,6 +316,10 @@ jobs:
           SIFT_CI_STATS: ${{ matrix.tier == 'quick' && '1' || '' }}
           SIFT_CI_ASSERT: ${{ matrix.cassert && '1' || '' }}
           SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
+          # the memory census (docs/MEMORY-ANALYSIS.md) rides along in the full tier of PostgreSQL 18: the report of the shard ends its run and the files are uploaded below
+          SIFT_MEMCENSUS: ${{ matrix.tier == 'full' && matrix.pg == 18 && 'on' || '' }}
+          SIFT_MEMCENSUS_DIR: ${{ runner.temp }}/memcensus
+          SIFT_MEMCENSUS_LABEL: pg${{ matrix.pg }}-${{ matrix.tier }}-${{ matrix.shard }}
           SIFT_CI_DEEP: ${{ (github.event_name == 'schedule' || inputs.deep == true) && '1' || '' }}
           # a job that hangs is stopped with the end of its log after 30 minutes (15 in the quick tier, scripts/ci/config.sh): the limit of the workflow ends the whole shard, and its logs are lost
           CI_JOB_TIMEOUT: ${{ matrix.tier == 'full' && !(github.event_name == 'schedule' || inputs.deep == true) && '1800' || '' }}
@@ -338,6 +342,14 @@ jobs:
         with:
           path: ~/.cache/sift/old-lib/*/root
           key: ${{ steps.oldlib.outputs.key }}
+
+      - name: Keep the memory census
+        if: ${{ !cancelled() && matrix.tier == 'full' && matrix.pg == 18 }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: pg_sift-memcensus-pg${{ matrix.pg }}-${{ matrix.tier }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/memcensus
+          if-no-files-found: ignore
 
       - name: Keep the logs of a failed run
         if: failure() || cancelled()

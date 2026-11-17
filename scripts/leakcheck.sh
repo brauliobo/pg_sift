@@ -19,6 +19,7 @@
 # assertion failures, crashes) as log lines, and an ASan/UBSan/LeakSanitizer build reports memory errors and malloc leaks
 # when each server process exits (LeakSanitizer needs the clean exit of a fast shutdown, an immediate one reports nothing).
 # SIFT_TESTING builds also log the sift memory contexts that outlive a backend (src/core/leak_test.c). Exit 1 on a finding.
+# SIFT_MEMCENSUS=KB|on (pgtest.sh) makes the servers write SIFTMEM lines; SIFT_MEMCENSUS_DIR keeps them (leak_harvest) for scripts/mem-report.py.
 #
 # LEAK_PROC_MB (32): growth of a long-lived server process; LEAK_GROWTH_MB (8), LEAK_GROWTH_R2 (0.8): growth of a sampled
 # backend over the post-warmup samples that fails the soak (both plus LEAK_QUARANTINE_MB on an ASan server).
@@ -87,11 +88,27 @@ leak_logs() {
 # leak_expect COUNT REGEX: the test about to run crashes or leaks COUNT times on purpose; scans find the file by name
 leak_expect() { printf '%s\t%s\n' "$1" "$2" >>"${SIFT_TMP:-/tmp/sift-arch}/leakcheck.expect"; }
 
+# leak_harvest FILE...: with SIFT_MEMCENSUS_DIR set, keeps the SIFTMEM lines of the server logs (src/core/memcensus.c) in that directory, one file for each
+# log (named by SIFT_MEMCENSUS_LABEL and a checksum of its first line, so that a second scan of the same log replaces the first), for scripts/mem-report.py
+leak_harvest() {
+	[[ -n ${SIFT_MEMCENSUS_DIR:-} ]] || return 0
+	local f tmp key
+	mkdir -p "$SIFT_MEMCENSUS_DIR"
+	tmp=$(mktemp "$SIFT_MEMCENSUS_DIR/.harvest.XXXXXX")
+	for f in "$@"; do
+		grep -a 'SIFTMEM ' "$f" >"$tmp" 2>/dev/null || continue
+		key=$(head -1 "$tmp" | cksum | cut -d' ' -f1)
+		cp "$tmp" "$SIFT_MEMCENSUS_DIR/${SIFT_MEMCENSUS_LABEL:-run}.$key.siftmem"
+	done
+	rm -f "$tmp"
+}
+
 # leak_scan PATH...: prints the findings, minus the expected ones, and fails if any remain
 leak_scan() {
 	local files found
 	mapfile -t files < <(leak_logs "$@")
 	(( ${#files[@]} )) || return 0
+	leak_harvest "${files[@]}"
 	found=$({ grep -aHnE -e "$(leak_regex)" "${files[@]}" 2>/dev/null || [[ $? -eq 1 ]]; } | leak_unexpected "$@")
 	[[ -z $found ]] && return 0
 	echo "leakcheck: $(wc -l <<<"$found") finding(s):" >&2
