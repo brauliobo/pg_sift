@@ -312,6 +312,7 @@ extern SiftColBatch *sift_cbatch_create(MemoryContext mcxt, const SiftColSchema 
 extern void sift_cbatch_reset(SiftColBatch *b, uint32 sb);
 extern void sift_cbatch_trim(SiftColBatch *b);
 extern void sift_cbatch_release(SiftColBatch *b);
+extern void sift_cbatch_reserve(SiftColBatch *b, uint32 rows);
 extern Size sift_cbatch_bytes(const SiftColBatch *b);
 
 /* The found flags of a connected index in a view of a batch (col/batch.c): the view shares the batch but for those leaves, which are empty and the view's own; put appends a value to a leaf (rows in order); done after the view was used */

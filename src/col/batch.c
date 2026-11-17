@@ -282,14 +282,8 @@ bitmap_set_range(MemoryContext mcxt, uint64 **bits, uint32 cap, uint32 i, uint32
 /* Appends one slot of a leaf: the key (0 for a NULL), whether it is NULL, whether it overflowed (then also NULL) and its tag: the JSON type of an overflow value (0: not known), else its kind (0: the leaf's own) */
 /* Room for extra more slots of a leaf */
 void
-vals_reserve(MemoryContext mcxt, SiftCVals *v, uint32 extra)
+vals_resize(MemoryContext mcxt, SiftCVals *v, uint32 cap)
 {
-	uint32		cap = v->cap;
-
-	if (v->n + extra <= cap)
-		return;
-	while (v->n + extra > cap)
-		cap = Max(64, cap * 2);
 	SIFT_REGROW_HUGE_IN(mcxt, v->key, cap * sizeof(int64));
 	if (v->nulls)
 	{
@@ -306,7 +300,21 @@ vals_reserve(MemoryContext mcxt, SiftCVals *v, uint32 extra)
 		v->otag = repalloc_huge(v->otag, cap);
 		memset(v->otag + v->cap, 0, cap - v->cap);
 	}
+	if (v->voff)
+		v->voff = repalloc_huge(v->voff, ((Size) cap + 1) * sizeof(uint32));
 	v->cap = cap;
+}
+
+void
+vals_reserve(MemoryContext mcxt, SiftCVals *v, uint32 extra)
+{
+	uint32		cap = v->cap;
+
+	if (v->n + extra <= cap)
+		return;
+	while (v->n + extra > cap)
+		cap = Max(64, cap * 2);
+	vals_resize(mcxt, v, cap);
 }
 
 void
@@ -342,7 +350,7 @@ vals_put_var(MemoryContext mcxt, SiftCVals *v, const SiftColDef *leaf, const cha
 				 errhint("Leave the column out of the index, or index left(column, N) or a hash of it.")));
 	if (v->voff == NULL)
 	{
-		v->voff = MemoryContextAlloc(mcxt, sizeof(uint32));
+		v->voff = MemoryContextAlloc(mcxt, ((Size) v->cap + 1) * sizeof(uint32));
 		v->voff[0] = 0;
 	}
 	if (v->n == v->cap)

@@ -17,6 +17,7 @@ extern void put_packed(StringInfo out, const uint32 *v, uint32 n, int bits);
 /* The slots of the leaves of a batch (col/batch.c), which the decoding of a unit (col/batch_unit.c) fills too */
 extern void bitmap_set(MemoryContext mcxt, uint64 **bits, uint32 cap, uint32 i);
 extern void vals_reserve(MemoryContext mcxt, SiftCVals *v, uint32 extra);
+extern void vals_resize(MemoryContext mcxt, SiftCVals *v, uint32 cap);
 extern void vals_put(MemoryContext mcxt, SiftCVals *v, int64 key, bool isnull, bool ovf, uint8 tag);
 extern void vals_put_var(MemoryContext mcxt, SiftCVals *v, const SiftColDef *leaf, const char *s, uint32 len, bool isnull, bool ovf, uint8 tag);
 extern bool leaf_fits(SiftColBatch *b, int id, const char *s, uint32 len);

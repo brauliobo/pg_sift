@@ -65,6 +65,34 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 	vals_put(dst->mcxt, &dst->col[col], key, isnull, ovf, tag);
 }
 
+/* Room for rows more rows of a unit about to be decoded or merged into the batch, sized to them: doubling would give a unit of 20,000 rows 32,768 slots of every array */
+void
+sift_cbatch_reserve(SiftColBatch *b, uint32 rows)
+{
+	uint32		want = b->nrows + rows;
+
+	if (want > b->rowcap)
+	{
+		b->rowcap = want;
+		b->keys = repalloc_huge(b->keys, b->rowcap * sizeof(SiftKey));
+		if (b->xmin)
+		{
+			b->xmin = repalloc_huge(b->xmin, b->rowcap * sizeof(uint32));
+			b->cmin = repalloc_huge(b->cmin, b->rowcap * sizeof(uint32));
+		}
+		for (int i = 0; i < b->schema->ncols; i++)
+			if (b->col[i].eoff)
+				b->col[i].eoff = repalloc_huge(b->col[i].eoff, ((Size) b->rowcap + 1) * sizeof(uint32));
+	}
+	for (int i = 0; i < b->schema->ncols; i++)
+	{
+		SiftCVals  *v = &b->col[i];
+
+		if (b->schema->cols[i].parent < 0 && b->schema->cols[i].kind != SIFT_COLK_GROUP && v->n + rows > v->cap)
+			vals_resize(b->mcxt, v, v->n + rows);
+	}
+}
+
 /* do the leaves read have no group, and no string that is stored inline or in a dictionary of its own: a leaf of those is decoded a column at a time (unit_emit_columns) */
 static bool
 unit_columns_plain(const SiftColSchema *s, const UnitLeaf *lf, const bool *want)
