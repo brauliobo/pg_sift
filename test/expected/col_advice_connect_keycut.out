@@ -1,0 +1,212 @@
+-- sift.col_maintenance_status of a connected index whose parent index is cut by key (key_cut) recommends REINDEX for a stale connection only for parent keys that really changed (docs/COL-CONNECT.md):
+-- updates of other columns of the parent and the maintenance of its index never do. A key_cut merge rewrites only the partitions it touches, so the partitions of the parent carry different stamps
+-- and no stamp tells the rows a merge wrote again from the rows inserted since: the rule counts no inserted parent rows for such a parent. It does NOT cover parent rows inserted beyond the share:
+-- they are not advised for a key_cut parent (reads join for them and answer as the normal plan does); the proper count needs an on-disk change (5.0.2).
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off; SET sift.col_auto_merge_partition_kb = 64;
+CREATE TABLE dim_a (id int PRIMARY KEY, name text, updated_at timestamptz, score int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO dim_a SELECT i, 'p' || i, now(), i % 100, md5(i::text) FROM generate_series(1, 60000) i;
+CREATE INDEX dim_a_col ON dim_a USING sift_col (id, name, score, pad) WITH (track_changes = 'id', key_cut = 'id');
+NOTICE:  sift_col index "dim_a_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_a_col');
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, amount int, body text) WITH (autovacuum_enabled = false);
+-- one row in ten points at a parent row the table does not have yet
+INSERT INTO facts SELECT i, 1 + (i * 7919) % 66000, i % 5, 'c' || i FROM generate_series(1, 40000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, amount) WITH (track_changes = 'id', connect = 'dim_a_id -> dim_a(id)');
+NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
+VACUUM dim_a, facts;
+SELECT sift.col_maintain('facts_col') AS filled;
+ filled 
+--------
+ t
+(1 row)
+
+CREATE FUNCTION advice(idx regclass) RETURNS text LANGUAGE sql AS $$
+	SELECT coalesce((SELECT string_agg(b, '; ') FROM sift.col_maintenance_status(idx) s, unnest(s.blocked_by) b WHERE b LIKE 'REINDEX recommended%'), '-') $$;
+CREATE FUNCTION same_rows() RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE
+	q text := 'SELECT p.score, count(*), sum(r.amount), count(p.id) FROM facts r LEFT JOIN dim_a p ON p.id = r.dim_a_id GROUP BY 1 ORDER BY 1';
+	a text;
+	b text;
+BEGIN
+	SET LOCAL sift.agg_force = on;
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO b;
+	RETURN a = b;
+END $$;
+SELECT advice('facts_col') AS advice, sift.col_maintenance_due('facts_col', true) AS due, same_rows() AS same_rows;
+ advice | due | same_rows 
+--------+-----+-----------
+ -      |     | t
+(1 row)
+
+-- eight rounds of the application at 3% and at 8% of the parent rows: they change a column the index does not key, children come in and change, the tables are vacuumed and the
+-- parent index is maintained; the child is not stale in any round (the second share goes on from the first, no rewrite between)
+CREATE TABLE trail (pct int, round int, due text, advice text, same_rows boolean);
+\o /dev/null
+SELECT s FROM unnest(ARRAY[3, 8]) pct, generate_series(1, 8) r, LATERAL unnest(ARRAY[
+	format('UPDATE dim_a SET updated_at = now() WHERE (id + %s * 7) %% 100 < %s', r, pct),
+	format('INSERT INTO facts SELECT 100000 + %s * 1000 + i, 1 + (i * 13) %% 20000, i %% 5, ''n'' FROM generate_series(1, 200) i', pct * 10 + r),
+	format('UPDATE facts SET body = body || ''x'' WHERE id BETWEEN %s * 100 AND %s * 100 + 199', r, r),
+	'VACUUM dim_a, facts',
+	'SELECT sift.col_maintain(''dim_a_col'')',
+	format('INSERT INTO trail SELECT %s, %s, sift.col_maintenance_due(''facts_col'', true), advice(''facts_col''), same_rows()', pct, r)]) WITH ORDINALITY u(s, o)
+	ORDER BY pct, r, o \gexec
+UPDATE dim_a SET updated_at = now() WHERE (id + 1 * 7) % 100 < 3
+INSERT INTO facts SELECT 100000 + 31 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 1 * 100 AND 1 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 3, 1, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 2 * 7) % 100 < 3
+INSERT INTO facts SELECT 100000 + 32 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 2 * 100 AND 2 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 3, 2, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 3 * 7) % 100 < 3
+INSERT INTO facts SELECT 100000 + 33 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 3 * 100 AND 3 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 3, 3, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 4 * 7) % 100 < 3
+INSERT INTO facts SELECT 100000 + 34 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 4 * 100 AND 4 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 3, 4, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 5 * 7) % 100 < 3
+INSERT INTO facts SELECT 100000 + 35 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 5 * 100 AND 5 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 3, 5, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 6 * 7) % 100 < 3
+INSERT INTO facts SELECT 100000 + 36 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 6 * 100 AND 6 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 3, 6, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 7 * 7) % 100 < 3
+INSERT INTO facts SELECT 100000 + 37 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 7 * 100 AND 7 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 3, 7, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 8 * 7) % 100 < 3
+INSERT INTO facts SELECT 100000 + 38 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 8 * 100 AND 8 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 3, 8, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 1 * 7) % 100 < 8
+INSERT INTO facts SELECT 100000 + 81 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 1 * 100 AND 1 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 8, 1, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 2 * 7) % 100 < 8
+INSERT INTO facts SELECT 100000 + 82 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 2 * 100 AND 2 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 8, 2, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 3 * 7) % 100 < 8
+INSERT INTO facts SELECT 100000 + 83 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 3 * 100 AND 3 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 8, 3, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 4 * 7) % 100 < 8
+INSERT INTO facts SELECT 100000 + 84 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 4 * 100 AND 4 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 8, 4, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 5 * 7) % 100 < 8
+INSERT INTO facts SELECT 100000 + 85 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 5 * 100 AND 5 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 8, 5, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 6 * 7) % 100 < 8
+INSERT INTO facts SELECT 100000 + 86 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 6 * 100 AND 6 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 8, 6, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 7 * 7) % 100 < 8
+INSERT INTO facts SELECT 100000 + 87 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 7 * 100 AND 7 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 8, 7, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+UPDATE dim_a SET updated_at = now() WHERE (id + 8 * 7) % 100 < 8
+INSERT INTO facts SELECT 100000 + 88 * 1000 + i, 1 + (i * 13) % 20000, i % 5, 'n' FROM generate_series(1, 200) i
+UPDATE facts SET body = body || 'x' WHERE id BETWEEN 8 * 100 AND 8 * 100 + 199
+VACUUM dim_a, facts
+SELECT sift.col_maintain('dim_a_col')
+INSERT INTO trail SELECT 8, 8, sift.col_maintenance_due('facts_col', true), advice('facts_col'), same_rows()
+\o
+SELECT pct, count(*) AS rounds, count(*) FILTER (WHERE due = 'stale connection') AS rounds_stale, count(*) FILTER (WHERE advice <> '-') AS rounds_advised, bool_and(same_rows) AS same_rows
+	FROM trail GROUP BY pct ORDER BY pct;
+ pct | rounds | rounds_stale | rounds_advised | same_rows 
+-----+--------+--------------+----------------+-----------
+   3 |      8 |            0 |              0 | t
+   8 |      8 |            0 |              0 | t
+(2 rows)
+
+-- parent rows that came since, beyond the share (the parent rows the orphans wait for): NOT advised for a key_cut parent (the limit above), the answers stay those of the normal plan
+INSERT INTO dim_a SELECT i, 'p' || i, now(), i % 100, md5(i::text) FROM generate_series(60001, 69000) i;
+SELECT sift.col_maintenance_due('facts_col', true) AS due, advice('facts_col') <> '-' AS advised, same_rows() AS same_rows;
+        due        | advised | same_rows 
+-------------------+---------+-----------
+ write buffer rows | f       | t
+(1 row)
+
+VACUUM dim_a;
+SELECT sift.col_maintenance_due('facts_col', true) AS due, advice('facts_col') <> '-' AS advised, same_rows() AS same_rows;
+        due        | advised | same_rows 
+-------------------+---------+-----------
+ write buffer rows | f       | t
+(1 row)
+
+-- real changes of the parent keys beyond the share: the keys that went and the ones that came ask for the rewrite
+UPDATE dim_a SET id = id + 100000 WHERE id % 100 < 15;
+VACUUM dim_a, facts;
+SELECT sift.col_maintain('dim_a_col') AS parent_maintained;
+ parent_maintained 
+-------------------
+ t
+(1 row)
+
+SELECT sift.col_maintenance_due('facts_col', true) AS due, advice('facts_col') AS advice, same_rows() AS same_rows;
+       due        |                                                              advice                                                              | same_rows 
+------------------+----------------------------------------------------------------------------------------------------------------------------------+-----------
+ stale connection | REINDEX recommended (stale connection): the server does not rewrite an index by itself, REINDEX INDEX CONCURRENTLY facts_col does | t
+(1 row)
+
+SELECT sift.col_maintain('facts_col') AS rewritten;
+ rewritten 
+-----------
+ t
+(1 row)
+
+SELECT advice('facts_col') AS advice, sift.col_maintenance_due('facts_col', true) AS due, same_rows() AS same_rows;
+ advice | due | same_rows 
+--------+-----+-----------
+ -      |     | t
+(1 row)
+
+DROP TABLE trail, facts, dim_a CASCADE;
+DROP FUNCTION advice(regclass), same_rows();
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
