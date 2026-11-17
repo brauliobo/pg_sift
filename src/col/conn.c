@@ -435,16 +435,24 @@ key_slot(KeyRec *tab, uint32 mask, int64 key)
 	return &tab[h];
 }
 
-uint64
-sift_conn_inserted_rows(Relation heap, Relation index, const SiftConnStamp *stamp)
+static uint64
+inserted_since(Relation index, const SiftConnStamp *stamp, bool restamped_base)
 {
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
 	const SiftColSchema *schema;
-	uint64		since = 0;
+	uint64		since = 0,
+				largest = 0;
+	int			base = -1;
 
 	sift_col_flush_held();
 	schema = sift_col_rel(index)->schema;
 	sift_dir_read(index, dir);
+	for (int i = 0; restamped_base && i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_tomb_is_seg(&dir->segs[i]) && dir->segs[i].ndocs > largest)
+		{
+			largest = dir->segs[i].ndocs;
+			base = i;
+		}
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		const SiftSegEntry *e = &dir->segs[i];
@@ -453,12 +461,24 @@ sift_conn_inserted_rows(Relation heap, Relation index, const SiftConnStamp *stam
 		if (sift_tomb_is_seg(e))
 			continue;
 		if (e->kind == SIFT_SEG_IMMUTABLE)
-			since += !sift_seg_xstamp(e, &xs) || TransactionIdFollows(xs, stamp->xmin) ? e->ndocs : 0;
+			since += i != base && (!sift_seg_xstamp(e, &xs) || TransactionIdFollows(xs, stamp->xmin)) ? e->ndocs : 0;
 		else if (sift_seg_is_wbuf(e))
 			since += sift_cwbuf_inserted_since(index, e, schema, stamp->xmin);
 	}
 	pfree(dir);
 	return since;
+}
+
+uint64
+sift_conn_inserted_rows(Relation heap, Relation index, const SiftConnStamp *stamp)
+{
+	return inserted_since(index, stamp, false);
+}
+
+uint64
+sift_conn_inserted_estimate(Relation heap, Relation index, const SiftConnStamp *stamp)
+{
+	return inserted_since(index, stamp, true);
 }
 
 static SiftConnWhy changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, bool moved, SiftConnTags *tags,
