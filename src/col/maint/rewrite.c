@@ -6,7 +6,6 @@
 #include "postgres.h"
 #include <math.h>
 
-#include "utils/timestamp.h"
 #include "col/maint/maint_int.h"
 #include "core/worker.h"
 #include "core/membudget.h"
