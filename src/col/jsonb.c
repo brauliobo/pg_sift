@@ -249,11 +249,12 @@ sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const c
 SiftColShredAdapter *
 sift_col_shred_create(MemoryContext mcxt, Relation index, uint32 present)
 {
-	const char *paths = pstrdup(sift_col_options_paths(index));
+	const char *paths = sift_col_options_paths(index);
 	SiftColShredAdapter *a;
 
 	if (paths[0] == '\0')
 		return NULL;
+	paths = pstrdup(paths);
 	a = sift_col_shred_create_for(mcxt, RelationGetDescr(index), IndexRelationGetNumberOfKeyAttributes(index), paths);
 	for (int i = 1; i <= a->natts; i++)
 		if (a->attr[i].n > 0 && !a->attr[i].array && (present >> i & 1))
