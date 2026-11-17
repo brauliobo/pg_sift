@@ -52,8 +52,15 @@ CREATE SEQUENCE fx.sq;
 CREATE TEMP TABLE fx_temp (id int, g int);
 INSERT INTO fx_temp SELECT i, i FROM generate_series(1, 10) i;
 CREATE INDEX fx_temp_col ON fx_temp USING sift_col (id, g);
+CREATE EXTENSION IF NOT EXISTS file_fdw;
+DO $$ BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_foreign_server WHERE srvname = 'fx_srv') THEN CREATE SERVER fx_srv FOREIGN DATA WRAPPER file_fdw; END IF;
+END $$;
+CREATE FOREIGN TABLE fx.ft (id int, g int) SERVER fx_srv OPTIONS (filename '/dev/null', format 'csv');
+CREATE TYPE fx.ct AS (a int);
 CREATE TABLE fx.gone (id int);
-CREATE TEMP TABLE fx_oids AS SELECT 'fx.gone'::regclass::oid AS gone, 'fx.t_col'::regclass::oid AS col;
+CREATE TEMP TABLE fx_oids AS SELECT 'fx.gone'::regclass::oid AS gone, 'fx.t_col'::regclass::oid AS col,
+	(SELECT reltoastrelid FROM pg_class WHERE oid = 'fx.t'::regclass) AS toast, (SELECT typrelid FROM pg_type WHERE oid = 'fx.ct'::regtype) AS comp;
 DROP TABLE fx.gone;
 ANALYZE fx.t; ANALYZE fx.tbl;
 SET client_min_messages = notice;
@@ -61,7 +68,8 @@ SET client_min_messages = notice;
 
 OIDS = {'regclass': ["'fx.t'::regclass", "'fx.t_col'::regclass", "'fx.t_bm'::regclass", "'fx.t_bt'::regclass", "'fx.heap'::regclass", "'fx.tbl'::regclass",
                      "'fx.vw'::regclass", "'fx.mv'::regclass", "'fx.part'::regclass", "'fx.part_col'::regclass", "'fx.sq'::regclass", "'fx_temp'::regclass",
-                     "'fx2.other'::regclass", "(SELECT gone FROM fx_oids)::regclass", '0::oid::regclass', '4294967295::oid::regclass', "'pg_class'::regclass",
+                     "'fx2.other'::regclass", "'fx.ft'::regclass", "(SELECT toast FROM fx_oids)::regclass",
+                     "(SELECT comp FROM fx_oids)::regclass", "(SELECT gone FROM fx_oids)::regclass", '0::oid::regclass', '4294967295::oid::regclass', "'pg_class'::regclass",
                      "'fx.t_pkey'::regclass"]}
 BIG = "repeat('x', 1000000)"
 POOL = {
@@ -220,6 +228,9 @@ def main():
     subprocess.run(['psql', '-X', '-q', '-d', db, '-c', 'CREATE EXTENSION pg_sift'], env=ENV, check=True, capture_output=True)
     sess = Session(db)
     sess.run("SET client_min_messages = notice; SET statement_timeout = '15s'; SET lock_timeout = '2s';")
+    other = Session(db)
+    other.run('CREATE TEMP TABLE fx_other_temp (id int, g int);')
+    OIDS['regclass'].append("%s::oid::regclass" % other.run("SELECT 'fx_other_temp'::regclass::oid;")[0].strip())
     obs = [o for o in objects(sess) if not SKIP_NAME.search(o['name']) and re.search(a.only, o['name'])]
     cap = 60 if a.tier == 'quick' else 400
     t0 = time.time()
@@ -306,6 +317,7 @@ def main():
                 run_batch(ob, name, calls, 'as-unprivileged ', prelude='SET ROLE ps_nobody;\n', after='\nRESET ROLE;')
     if not a.no_ddl and not a.list:
         ddl_sweep(sess, a, stats, fails, reconnect, reset_fixture, states)
+    other.close()
     sess.close()
     up = wait_ready(db, 10)
     sig = log_scan(mark)
