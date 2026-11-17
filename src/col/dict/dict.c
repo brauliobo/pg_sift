@@ -31,6 +31,26 @@ cdict_reset(SiftCDict *d)
 		memset(d->slots, 0, d->nslots * sizeof(uint64));
 }
 
+/* Empties the dictionary of a batch and gives back what it grew to (its codes, strings and hash table): reset keeps them for the next unit */
+void
+cdict_release(SiftCDict *d)
+{
+	if (d->slots)
+		pfree(d->slots);
+	if (d->sorted)
+		pfree(d->sorted);
+	d->slots = NULL;
+	d->sorted = NULL;
+	d->nslots = d->finds = d->tests = 0;
+	d->n = 0;
+	d->nbytes = 0;
+	d->cap = DICT_MINCAP;
+	d->off = repalloc(d->off, (d->cap + 1) * sizeof(uint32));
+	d->off[0] = 0;
+	d->bytescap = 256;
+	d->bytes = repalloc(d->bytes, d->bytescap);
+}
+
 /*
  * The hash of the strings of a dictionary table, in memory only (never stored): PostgreSQL's hash_bytes for a short string, four lanes of eight bytes for a long one, which
  * costs a fifth of the instructions a byte (a unit of inline text of 385-byte strings interns every row: 2,280 instructions a row, 65% of them in hash_bytes)

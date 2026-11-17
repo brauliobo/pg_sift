@@ -27,6 +27,8 @@
 #define corrupt SIFT_CORRUPT
 
 #define MAX_PARTS		64		/* segments one merge cuts its output into */
+#define MERGE_INPUT_DIVISOR 4	/* the arrays of the inputs a merge decodes at a time are folded into one at a quarter of maintenance_work_mem ... */
+#define MERGE_INPUT_MIN	(4 * 1024 * 1024)	/* ... and at two units at least, whatever it is */
 
 #define PART_DIVISOR	48		/* the memory bound leaves a key-cut index (partitions of three quarters of the size) under MAX_PARTS of them */
 

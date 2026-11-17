@@ -176,6 +176,8 @@ sift_cbatch_release(SiftColBatch *b)
 	{
 		SiftCVals  *v = &b->col[i];
 
+		if (b->dict[i])
+			cdict_release(b->dict[i]);
 		if (v->key == NULL || v->cap <= 64)
 			continue;
 		v->cap = 64;

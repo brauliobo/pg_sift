@@ -95,6 +95,7 @@ tags_bytes(uint32 nov)
 
 /* dict.c */
 extern void cdict_reset(SiftCDict *d);
+extern void cdict_release(SiftCDict *d);
 
 /* chunk.c */
 extern SiftCc *cc_open(const SiftCChunk *c, bool verify);
