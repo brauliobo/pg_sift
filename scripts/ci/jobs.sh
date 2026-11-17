@@ -36,11 +36,11 @@ declare -A EST_MB=([tap-013_tbl_bigtx]=820 [tap-014_tbl_writepath]=1130 [install
 	[tap-shell-replication]=200 [tap-shell-store_concurrency]=200 [tap-shell-index_build_crash]=180
 	[tap-shell-store_crash]=170 [tap-001_crash]=150 [installcheck-index_build_thresholds]=140
 	[tap-shell-mem_slope]=1250 [tap-shell-mem_slope-1]=1100 [tap-shell-mem_slope-2]=1200 [tap-shell-mem_slope-3]=1150 [tap-shell-mem_slope_order]=950
-	[release-library-regress]=900 [installcheck-agg_group_spill_fuzz]=800 [installcheck-tbl_cap]=480 [installcheck-col_approx]=350
+	[release-library-regress-1]=870 [release-library-regress-2]=870 [installcheck-agg_group_spill_fuzz]=800 [installcheck-tbl_cap]=480 [installcheck-col_approx]=350
 	[difftest-fuzz]=1060 [difftest-fuzz-vstore]=970 [difftest-fuzz-having]=880 [plan-gate-tuned]=860 [plan-gate-calibrate]=850
 	[plan-gate-calibrate-tuned]=850 [plan-gate]=840 [plan-gate-table]=830 [plan-gate-table-tuned]=830 [difftest-fuzz-tbl]=760
 	[tap-shell-col_online_cut]=650 [tap-shell-col_build_standby_space]=580 [tap-015_space]=580 [tap-shell-col_cut_online_fallback]=580
-	[tap-shell-col_merge_memory]=450 [tap-shell-col_scope_oracle]=430 [tap-shell-mem_idle_series]=420 [tap-019_tbl_defrag]=390
+	[tap-shell-col_merge_memory]=450 [tap-019_tbl_defrag]=390
 	[tap-shell-col_build_slices_standby]=360 [hardened]=230 [tap-019_tbl_bulk_groups]=320 [tap-017_tbl_autodefrag]=310 [tap-shell-col_scope_replica]=300
 	[tap-shell-col_cic_temp_files]=280 [tap-shell-col_online_compact]=240 [installcheck-parallel_build]=230 [tap-shell-col_build_slices]=220
 	[tap-shell-col_build_pays]=220
@@ -48,7 +48,14 @@ declare -A EST_MB=([tap-013_tbl_bigtx]=820 [tap-014_tbl_writepath]=1130 [install
 	[installcheck-col_key_cut_second]=460 [installcheck-col_key_cut_advice]=460 [installcheck-col_key_cut_narrow]=430
 	[installcheck-col_maintain_settles]=370 [installcheck-col_key_cut_recut]=340 [installcheck-col_alloc_scaled]=330
 	[installcheck-col_key_order_cut]=310 [installcheck-col_key_cut_cluster]=290 [installcheck-agg_point_keys]=270
-	[installcheck-col_key_cut_unrecorded]=250)
+	[installcheck-col_key_cut_unrecorded]=250 [tap-shell-mem_slope_legacy]=1250 [tap-shell-col_index_replica]=280
+	[tap-shell-col_scope_oracle]=1430 [tap-shell-mem_idle_series]=1270 [tap-shell-col_unit_floor]=840 [installcheck-col_zone_keep]=750
+	[installcheck-agg_join_keys_only_price]=700 [installcheck-col_set_summary]=470 [installcheck-agg_index_pick]=470 [installcheck-batch18]=460
+	[tap-shell-col_track_revouch]=440 [installcheck-agg_probe_heap_price]=400 [installcheck-col_key_table]=360 [installcheck-col_key_cut_growth]=340
+	[installcheck-agg_scope_exact_share]=340 [installcheck-agg_derived_correlation]=310 [installcheck-col_topn_walk_price]=290
+	[installcheck-col_merge_memory]=280 [installcheck-agg_lookup_dense_far]=280 [installcheck-col_build_merge_ends]=280 [tap-shell-pg_upgrade_33]=260
+	[installcheck-agg_preagg_rollup]=260 [installcheck-col_build_peers]=260 [installcheck-col_topn_parallel]=260 [installcheck-agg_cost_speed]=250
+	[installcheck-col_auto_merge_partition]=250 [tap-shell-pg_upgrade_32]=240)
 JOB_MB=100
 
 tap_perl() { local f; for f in "$@"; do job "tap-$f" tap 0 "$S/tap.sh" "t/$f.pl"; done; }
