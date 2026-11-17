@@ -189,8 +189,8 @@ SELECT sift.col_maintain('dim_a_col') AS parent_maintained;
 (1 row)
 
 SELECT sift.col_maintenance_due('facts_col', true) AS due, advice('facts_col') AS advice, same_rows() AS same_rows;
-       due        |                                                              advice                                                              | same_rows 
-------------------+----------------------------------------------------------------------------------------------------------------------------------+-----------
+       due        |                                                              advice                                                               | same_rows 
+------------------+-----------------------------------------------------------------------------------------------------------------------------------+-----------
  stale connection | REINDEX recommended (stale connection): the server does not rewrite an index by itself, REINDEX INDEX CONCURRENTLY facts_col does | t
 (1 row)
 
