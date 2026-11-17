@@ -376,4 +376,4 @@ scope_cic.gate-build.terminate	scope_cic	gate:build	terminate	quick
 scope_cic.gate-build.immediate	scope_cic	gate:build	immediate	full
 reindex_col.gate-build.terminate	reindex_col	gate:build	terminate	quick
 reindex_col.gate-build.immediate	reindex_col	gate:build	immediate	full
-drop_scope.gate-drop.cancel	drop_scope	gate:drop	cancel	quick
+drop_track.gate-drop.cancel	drop_track	gate:drop	cancel	quick

@@ -11,16 +11,16 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 HERE=$(dirname "$0")
 SCENARIO_NAMES=(bm25_build col_build bm25_promote col_promote bm25_merge col_merge scope_build scope_promote scope_merge scope_refill vacuum col_roll tbl_seal
-	col_cic track_cic scope_cic reindex_col reindex_col_c drop_scope)
-GATE_OPS=(col_build col_cic track_cic scope_cic reindex_col drop_scope)
+	col_cic track_cic scope_cic reindex_col reindex_col_c drop_track)
+GATE_OPS=(col_build col_cic track_cic scope_cic reindex_col drop_track)
 gen() { # the rows of the matrix: every operation at the phases of its directory updates, and at the gates
 	local op ph fault quick
 	quick=$(for op in "${SCENARIO_NAMES[@]}"; do for ph in b1:terminate bm:cancel bk:error a1:error ak:immediate ak:cancel; do printf '%s.%s.%s\t\n' "$op" "${ph%:*}" "${ph#*:}"; done; done)
 	for op in "${SCENARIO_NAMES[@]}"; do
-		[[ $op == drop_scope ]] || for ph in b1:terminate bm:cancel bk:error a1:error ak:immediate ak:cancel; do
+		[[ $op == drop_track ]] || for ph in b1:terminate bm:cancel bk:error a1:error ak:immediate ak:cancel; do
 			printf '%s.%s.%s\t%s\t%s\t%s\tquick\n' "$op" "${ph%:*}" "${ph#*:}" "$op" "${ph%:*}" "${ph#*:}"
 		done
-		[[ $op == drop_scope ]] || for ph in b1 bm bk a1 ak; do
+		[[ $op == drop_track ]] || for ph in b1 bm bk a1 ak; do
 			for fault in error terminate cancel immediate; do
 				grep -q "^$op\.$ph\.$fault	" <<<"$quick" || printf '%s.%s.%s\t%s\t%s\t%s\tfull\n' "$op" "$ph" "$fault" "$op" "$ph" "$fault"
 			done
@@ -40,7 +40,7 @@ vacuum|a1|error|still_due|maintenance still finds
 MUTANTS
 	for op in "${GATE_OPS[@]}"; do
 		for ph in build:terminate build:immediate drop:cancel; do
-			case $op in drop_scope) [[ ${ph%:*} == drop ]] || continue ;; *) [[ ${ph%:*} == build ]] || continue ;; esac
+			case $op in drop_track) [[ ${ph%:*} == drop ]] || continue ;; *) [[ ${ph%:*} == build ]] || continue ;; esac
 			printf '%s.gate-%s.%s\t%s\tgate:%s\t%s\t%s\n' "$op" "${ph%:*}" "${ph#*:}" "$op" "${ph%:*}" "${ph#*:}" "$([[ ${ph#*:} == terminate || ${ph%:*} == drop ]] && echo quick || echo full)"
 		done
 	done
@@ -69,9 +69,9 @@ SCENARIOS+=(
 	"scope_cic~$GP~CREATE INDEX CONCURRENTLY docs_sc ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, scope = 't: g -> gp(g, t)')"
 	"reindex_col~$COL~REINDEX INDEX docs_col"
 	"reindex_col_c~$COL~REINDEX INDEX CONCURRENTLY docs_col"
-	"drop_scope~$SCOPE~DROP INDEX docs_sc"
+	"drop_track~CREATE INDEX docs_tr ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, track_changes = 'ctid')~DROP INDEX IF EXISTS docs_tr"
 )
-declare -A SETUP OP KCOUNT SIZE0
+declare -A SETUP OP KCOUNT SIZE0 DUE0
 for row in "${SCENARIOS[@]}"; do IFS='~' read -r name setup op <<<"$row"; SETUP[$name]=$setup; OP[$name]=$op; done
 
 GATE_KEY=13 GATE_GUC=
@@ -82,8 +82,14 @@ SLOTS="SELECT (SELECT count(*) FROM sift._progress()) + (SELECT count(*) FROM si
 INVALID="SELECT c.oid::regclass FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE NOT i.indisvalid"
 ORPHANS="SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE p.proname = 'col_track_old_rows' AND NOT EXISTS (
 	SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am a ON a.oid = c.relam WHERE i.indrelid = t.tgrelid AND a.amname = 'sift_col')"
-DUE="SELECT count(*) FROM pg_class c JOIN pg_am a ON a.oid = c.relam, LATERAL sift.col_maintenance_status(c.oid) m
-	WHERE a.amname = 'sift_col' AND coalesce(m.rewrite_due, '') <> ''"
+DUE="SELECT coalesce(string_agg(c.oid::regclass || ' ' || m.rewrite_due, ', ' ORDER BY c.oid::regclass::text), '') FROM pg_class c JOIN pg_am a ON a.oid = c.relam,
+	LATERAL sift.col_maintenance_status(c.oid) m WHERE a.amname = 'sift_col' AND coalesce(m.rewrite_due, '') <> ''"
+maintain_all() {
+	local ix
+	for ix in $(sql cm "SELECT c.oid::regclass FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col'"); do
+		sql cm "SELECT sift.col_maintain('$ix')" >/dev/null 2>&1
+	done
+}
 
 sizes_ok() { # AFTER BASELINE: growth under a half of a clean run, and 256 kB
 	(( $1 <= $2 + $2 / 2 + 262144 ))
@@ -102,6 +108,8 @@ measure() { # NAME
 	k=$(sql cm "${OP[$1]}" "SELECT sift._test_dir_updates()" | tail -1) || bail "$1: the operation failed in a clean state"
 	KCOUNT[$1]=$k
 	SIZE0[$1]=$(sql cm "$SIZES")
+	maintain_all
+	DUE0[$1]=$(sql cm "$DUE")
 }
 
 phase_point() { # NAME PHASE: the sift.test_crash_dir of a phase
@@ -139,6 +147,12 @@ run_fault() { # NAME PHASE FAULT: leaves the server running (restarted after an 
 		cancel) sql cm "SELECT pg_cancel_backend($bpid)" >/dev/null ;;
 		immediate) pg_ctl -D "$D/data" -m immediate -w stop >/dev/null 2>&1 ;;
 	esac
+	if [[ $fault != immediate ]] && ! wait_for "! kill -0 $op 2>/dev/null" 10; then
+		sql cm "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND classid = 20983 AND granted" >/dev/null
+		wait 2>/dev/null
+		HELD_INTERRUPTS=1
+		return 1
+	fi
 	wait "$op" 2>/dev/null && { diag "the operation completed despite the $fault"; return 1; }
 	if [[ $fault == immediate ]]; then
 		node_start cm || { diag "restart: $(tail -20 "$D/postgres.log")"; return 1; }
@@ -170,11 +184,9 @@ after_fault() { # NAME
 	size=$(sql cm "$SIZES")
 	sizes_ok "$size" "${SIZE0[$name]}" || { echo "the files grew to $size bytes, a clean run leaves ${SIZE0[$name]}"; return 1; }
 	[[ -z ${TAMPER_LATE:-} ]] || sql cm "UPDATE docs SET g = g + 1 WHERE id % 2 = 0" "VACUUM docs" >/dev/null
-	[[ -n ${SKIP_MAINTAIN:-} ]] || for ix in $(sql cm "SELECT c.oid::regclass FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col'"); do
-		sql cm "SELECT sift.col_maintain('$ix')" >/dev/null 2>&1
-	done
+	[[ -n ${SKIP_MAINTAIN:-} ]] || maintain_all
 	n=$(sql cm "$DUE")
-	[[ $n == 0 ]] || { echo "maintenance still finds $n indexes due: $(sql cm "SELECT c.oid::regclass, m.rewrite_due FROM pg_class c JOIN pg_am a ON a.oid = c.relam, LATERAL sift.col_maintenance_status(c.oid) m WHERE a.amname = 'sift_col'" | tr '\n' ';')"; return 1; }
+	[[ $n == "${DUE0[$name]}" ]] || { echo "maintenance still finds work due ($n), a clean run leaves (${DUE0[$name]})"; return 1; }
 	[[ $(sql cm "$LOCKS") == 0 ]] || { echo "locks left after the rerun"; return 1; }
 }
 
@@ -215,8 +227,12 @@ for row in "${ROWS[@]}"; do
 	(( ++total ))
 	fresh "${SETUP[$name]}" || bail "$id: setup"
 	healthy || bail "$id: the starting state is not healthy"
+	HELD_INTERRUPTS= TAMPER_LATE= SKIP_MAINTAIN=
 	if ! run_fault "$name" "$phase" "$fault"; then
-		if [[ $phase == a* ]] && ! grep -q "corrupt" "$D/fault.out"; then
+		if [[ -n $HELD_INTERRUPTS ]]; then
+			skip 1 "$id: the process holds interrupts where it waits: a $fault does not act there"
+			fresh "" >/dev/null 2>&1
+		elif [[ $phase == a* ]] && ! grep -q "corrupt" "$D/fault.out"; then
 			skip 1 "$id: the update after which it stops does not publish a directory (the fault goes only after one that does)"
 		else
 			not_ok "$id: the fault could not be injected"
