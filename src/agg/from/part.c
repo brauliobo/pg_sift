@@ -267,7 +267,7 @@ exec_param_walker(Node *node, void *context)
 static bool
 mentions_key(Node *clause, Oid relid, List *names)
 {
-	foreach_node(Var, v, pull_var_clause(clause, 0))
+	foreach_node(Var, v, pull_var_clause(clause, PVC_RECURSE_PLACEHOLDERS))
 		if (list_member(names, makeString(get_attname(relid, v->varattno, false))))
 			return true;
 	return false;

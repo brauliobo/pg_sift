@@ -1,0 +1,40 @@
+-- A partitioned table with a sift_col index, read through a subquery, whose rows a NOT IN or IN list of a VALUES query filters, grouped by GROUPING SETS, ROLLUP or
+-- CUBE: the restriction of the table holds a PlaceHolderVar, and the planner that reads which partition columns a condition mentions failed with XX000
+-- "PlaceHolderVar found where not expected". The rows are those of sift.enable_agg off.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE pph_events (id int, dim_a_id int, tenant_id int, flag bool, amount numeric(10,2)) PARTITION BY HASH (id);
+CREATE TABLE pph_events_0 PARTITION OF pph_events FOR VALUES WITH (MODULUS 2, REMAINDER 0);
+CREATE TABLE pph_events_1 PARTITION OF pph_events FOR VALUES WITH (MODULUS 2, REMAINDER 1);
+INSERT INTO pph_events SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE 1 + i % 60 END, 1 + i % 5, i % 4 = 0, i % 97 FROM generate_series(1, 300) i;
+SET client_min_messages = warning;
+CREATE INDEX pph_events_col ON pph_events USING sift_col (id, dim_a_id, tenant_id, flag, amount);
+RESET client_min_messages;
+VACUUM ANALYZE pph_events;
+CREATE FUNCTION pph_rows(shape int) RETURNS TABLE (tenant_id int, flag bool, n bigint, total numeric) LANGUAGE plpgsql AS $$ BEGIN
+	RETURN QUERY EXECUTE CASE shape
+		WHEN 1 THEN 'SELECT f.tenant_id, NULL::bool, count(*), sum(f.amount) FROM (SELECT * FROM pph_events) f
+			WHERE f.dim_a_id NOT IN (SELECT s.k FROM (VALUES (1), (5)) s(k)) GROUP BY CUBE (f.tenant_id)'
+		WHEN 2 THEN 'SELECT f.tenant_id, f.flag, count(*), sum(f.amount) FROM (SELECT * FROM pph_events) f
+			WHERE f.dim_a_id NOT IN (SELECT s.k FROM (VALUES (1, 2, 1), (5, NULL, 2)) s(k, k2, g)) GROUP BY CUBE (f.tenant_id, f.flag)'
+		WHEN 3 THEN 'SELECT f.tenant_id, NULL::bool, count(*), sum(f.amount) FROM (SELECT * FROM pph_events) f
+			WHERE f.dim_a_id IN (SELECT s.k FROM (VALUES (1), (5), (7)) s(k)) GROUP BY ROLLUP (f.tenant_id)'
+		WHEN 4 THEN 'SELECT f.tenant_id, f.flag, count(*), sum(f.amount) FROM (SELECT * FROM pph_events) f
+			WHERE f.dim_a_id NOT IN (SELECT s.k FROM (VALUES (1), (5)) s(k)) GROUP BY GROUPING SETS ((f.tenant_id, f.flag), ())'
+		ELSE 'SELECT f.tenant_id, NULL::bool, count(*), sum(f.amount) FROM (SELECT * FROM pph_events) f
+			WHERE f.dim_a_id NOT IN (SELECT s.k FROM (VALUES (1), (5)) s(k)) GROUP BY f.tenant_id' END;
+END $$;
+CREATE TABLE pph_with AS SELECT s, r.* FROM generate_series(1, 5) s, LATERAL pph_rows(s) r;
+SET sift.enable_agg = off;
+CREATE TABLE pph_without AS SELECT s, r.* FROM generate_series(1, 5) s, LATERAL pph_rows(s) r;
+RESET sift.enable_agg;
+SELECT count(*) > 0 AS has_rows, (SELECT count(*) FROM (SELECT * FROM pph_with EXCEPT SELECT * FROM pph_without) d) AS missing,
+	(SELECT count(*) FROM (SELECT * FROM pph_without EXCEPT SELECT * FROM pph_with) d) AS extra FROM pph_with;
+ has_rows | missing | extra 
+----------+---------+-------
+ t        |       0 |     0
+(1 row)
+
+DROP FUNCTION pph_rows(int);
+DROP TABLE pph_with, pph_without, pph_events;
+DROP EXTENSION pg_sift;

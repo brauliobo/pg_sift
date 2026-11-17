@@ -207,6 +207,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 - Changed: pg_sift: the node that groups the rows of a plan (`Custom Scan (SiftAggRows)`) writes the rows of the groups its table does not hold to partitions and groups them in passes when the table outgrows hash memory (`Group Partitions` in `EXPLAIN ANALYZE`), where it ended with `54000`.
 - Added: pg_sift: `sift.stats()` counts `group_table_spills` (group tables written to partitions) and `statements_rerun` (statements that ran again as PostgreSQL plans them).
 - Fixed: pg_sift: a grouped query over a table with a `sift_col` index, joined to a subquery or CTE whose join key is computed over an outer join (`coalesce(a.k, g.k)` of a `LEFT JOIN`), crashed the backend with a segmentation fault while it was planned, and every statement of that shape crashed it again (5.0.0 only; 4.3 releases are not affected). The planner priced the parameterized paths of the table by the rows of the relations that drive them and read the row estimate of the outer join itself, which has none; the outer join is now left out of that count.
+- Fixed: pg_sift: a grouped query over a partitioned table with a `sift_col` index, read through a subquery and filtered by `NOT IN` or `IN` of a subquery, with `GROUPING SETS`, `ROLLUP` or `CUBE`, failed with `XX000` "PlaceHolderVar found where not expected" while it was planned (5.0.0; with `sift.enable_agg = off` it ran). The planner now reads the columns a condition mentions through the placeholder.
 
 ## 4.3.7 - 2026-11-15
 
