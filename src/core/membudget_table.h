@@ -55,7 +55,7 @@ budget_col_orphan_sweep(void)
 static Size
 budget_col_verify(void)
 {
-	return (2 * ((Size) maintenance_work_mem * 1024) + ((Size) 8388608UL));
+	return (3 * ((Size) maintenance_work_mem * 1024) + ((Size) 8388608UL));
 }
 
 static Size
@@ -67,7 +67,7 @@ budget_col_write_buffer(void)
 static Size
 budget_index_vacuum(void)
 {
-	return (((Size) 4194304UL));
+	return (((Size) maintenance_work_mem * 1024) + ((Size) 16777216UL));
 }
 
 static Size
@@ -96,9 +96,9 @@ static const struct
 	{"bm25_search", budget_bm25_search, "work_mem + 32MB"},
 	{"bm25_verify", budget_bm25_verify, "maintenance_work_mem + 8MB"},
 	{"col_orphan_sweep", budget_col_orphan_sweep, "8MB"},
-	{"col_verify", budget_col_verify, "2*maintenance_work_mem + 8MB"},
+	{"col_verify", budget_col_verify, "3*maintenance_work_mem + 8MB"},
 	{"col_write_buffer", budget_col_write_buffer, "16MB"},
-	{"index_vacuum", budget_index_vacuum, "4MB"},
+	{"index_vacuum", budget_index_vacuum, "maintenance_work_mem + 16MB"},
 	{"maint_worker_step", budget_maint_worker_step, "2GB (open: ceiling measured today)"},
 	{"vstore_gc", budget_vstore_gc, "1MB"},
 };

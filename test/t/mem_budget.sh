@@ -5,7 +5,7 @@
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-plan 12
+plan 15
 node_init mb 61 "autovacuum = off
 max_parallel_workers_per_gather = 0
 sift.col_auto_merge = off"
@@ -34,6 +34,11 @@ out=$(sql mb "SELECT sift.verify('d_many', true) IS NOT NULL" "SELECT peak FROM 
 check "a verify of 60 segments holds under 4 MB, flat in the segments (115 MB before the per-segment contexts)" test "$out" -lt 4194304
 out=$(sql mb "SELECT count(*) FROM d WHERE body @@> 'wireless charger'" "SELECT peak FROM sift._test_mem_highwater() WHERE scope = 'bm25_search'" | tail -1)
 check "a search over 60 open segments holds under its 32 MB term" test "$out" -lt 33554432
+sql mb "CREATE TABLE c AS SELECT g AS id, g % 7 AS k, g % 500 AS k2, 'n' || g % 300 AS txt, g::numeric AS amount FROM generate_series(1, 20000) g" \
+	"CREATE INDEX c_col ON c USING sift_col (id, k, k2, txt, amount)" >/dev/null || bail "column table failed"
+SCOPE=agg_group; check "an aggregate scan over its lowered budget fails naming agg_group" red "SELECT k2, count(*), sum(amount) FROM c GROUP BY 1"
+SCOPE=col_verify; check "a column verify over its lowered budget fails naming col_verify" red "SELECT sift.col_verify('c_col', true)"
+SCOPE=index_vacuum; check "a VACUUM over its lowered budget fails naming index_vacuum" red "UPDATE c SET amount = amount + 1 WHERE k < 2" "VACUUM c"
 check "the budget table, the generated header and the docs agree" bash -c "cd '$REPO' && python3 scripts/gen-membudget.py --check"
 check "the open rows are listed for the CI report" bash -c "cd '$REPO' && python3 scripts/gen-membudget.py --open >/dev/null"
 out=$(sql mb "SET sift.test_mem_check = off" "SET sift.test_mem_budget_scale = 0.0001" "SELECT count(*) FROM d WHERE body @@> 'wireless charger'" 2>&1)

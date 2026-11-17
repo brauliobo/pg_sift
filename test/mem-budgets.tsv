@@ -7,8 +7,8 @@ bm25_promote	closed	maintenance_work_mem	8MB		the sort of the documents of a sea
 bm25_search	closed	work_mem	32MB		the state of a search scan: each open segment holds about 165 kB (a 64 kB dictionary block, its header and stream reader), up to 128 segments (24 MB), plus 8 MB of cursors, candidates and top-N; 0.5 MB at 2 segments, 9.8 MB at 60
 bm25_verify	closed	maintenance_work_mem	8MB		the walk of one segment and the heap check of sift.verify: a context for each segment, deleted at its end (before: 115 MB held for 60 segments, now 0.2 MB)
 col_orphan_sweep	closed		8MB		the decoded unit of the sweep of overflow records (4.7 MB)
-col_verify	closed	2*maintenance_work_mem	8MB		the two sorts and the hashes of sift.col_verify (23.9 MB at the default maintenance_work_mem)
+col_verify	closed	3*maintenance_work_mem	8MB		the two sorts and the window of row hashes of sift.col_verify, each held to maintenance_work_mem (24 MB at the default, 17.6 MB at 4 MB)
 col_write_buffer	closed		16MB		the reader of the write buffer of a column index (12.6 MB)
-index_vacuum	closed		4MB		the directory snapshot and the steps of the ambulkdelete and amvacuumcleanup of an index (0.5 MB)
+index_vacuum	closed	maintenance_work_mem	16MB		the directory snapshot and the steps of the ambulkdelete and amvacuumcleanup of an index, with the promotions and merges the cleanup runs inside it (8.6 MB at the default maintenance_work_mem)
 maint_worker_step	open		2GB	maintenance_work_mem	what one step of the maintenance worker holds besides its promotion or merge, once they end; not measured yet: the tests of this tree run no worker step to its end, so the ceiling is a placeholder until a worker test records a peak
 vstore_gc	closed		1MB		the segment read of a value store usage count, reset at each segment (88 kB)
