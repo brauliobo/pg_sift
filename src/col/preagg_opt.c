@@ -119,6 +119,7 @@ sift_cpagg_leaf_list(const char *opt, const SiftColSchema *s, const char *const 
 				return bad;
 			leaf[c] = true;
 		}
+		pfree(name);
 		if (*p == '\0')
 			return NULL;
 		p++;
