@@ -246,6 +246,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 			   int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts, const MergeSlice *slice)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col merge", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext icx = AllocSetContextCreate(cx, "sift_col merge inputs", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SIFT_MEM_SCOPE(col_merge, cx);
 	SiftColSegment **seg = palloc(n * sizeof(SiftColSegment *));
@@ -255,7 +256,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	TidIn	   *tin = palloc0(n * sizeof(TidIn));
 	uint32	   *at = palloc(n * sizeof(uint32));
 	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
-	SbFold		fold = {.use = use, .acc = sift_cbatch_create(cx, schema), .spare = sift_cbatch_create(cx, schema),
+	SbFold		fold = {.use = use, .acc = sift_cbatch_create(icx, schema), .spare = sift_cbatch_create(icx, schema),
 						.budget = Max((Size) maintenance_work_mem * 1024 / MERGE_INPUT_DIVISOR, MERGE_INPUT_MIN)};
 	int			nscope = sift_cschema_nscope(schema);
 	bool		scope = n > 0 && (in[0].flags & SIFT_SEG_SCOPE) != 0;	/* the segments are those of one scope: the rows of the entities are not merged with them */
@@ -303,10 +304,10 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		double		live;
 		uint64		units = 0;
 
-		seg[i] = sift_cseg_open(index, &in[i], cx);
+		seg[i] = sift_cseg_open(index, &in[i], icx);
 		if (!sift_cschema_same_leaves(seg[i]->schema, schema, RelationGetDescr(index)))
 			corrupt(index, "Segment %llu was written for another column layout.", (unsigned long long) in[i].gen);
-		part[i] = sift_cbatch_create(cx, schema);
+		part[i] = sift_cbatch_create(icx, schema);
 		exact &= sift_cseg_kinds_exact(seg[i]);
 		live = in[i].ndocs > 0 ? (double) sift_cseg_live_rows(seg[i]) / in[i].ndocs : 0;
 		for (uint32 u = 0; u < seg[i]->nsb; u++)
@@ -406,7 +407,10 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	else
 		for (int i = 0; i < n; i++)
 			if (sift_cseg_keyed(&in[i]))
-				tin[i] = (TidIn) {.seg = seg[i], .buf = sift_cbatch_create(cx, schema), .last = PG_UINT32_MAX};
+				tin[i] = (TidIn) {.seg = seg[i], .buf = sift_cbatch_create(icx, schema), .last = PG_UINT32_MAX};
+	{
+	SIFT_MEM_SCOPE(col_merge_window, icx);
+
 	for (;;)
 	{
 		uint32		sb = PG_UINT32_MAX;
@@ -442,8 +446,10 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		if (o.w == NULL)
 			out_begin(&o);
 		sift_colw_add(o.w, fold.acc);
+		SIFT_MEM_CHECKPOINT();
 		out_next(&o, o.w);
 		CHECK_FOR_INTERRUPTS();
+	}
 	}
 	for (int i = 0; i < n; i++)
 		sift_cseg_close(seg[i]);

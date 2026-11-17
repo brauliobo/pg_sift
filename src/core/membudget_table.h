@@ -73,6 +73,12 @@ budget_col_merge(void)
 }
 
 static Size
+budget_col_merge_window(void)
+{
+	return (((Size) maintenance_work_mem * 1024) + ((Size) 25165824UL));
+}
+
+static Size
 budget_col_orphan_sweep(void)
 {
 	return (((Size) 8388608UL));
@@ -149,6 +155,7 @@ static const struct
 	{"col_build", budget_col_build, "192MB (open: ceiling measured today)"},
 	{"col_conn_changed", budget_col_conn_changed, "32kB"},
 	{"col_merge", budget_col_merge, "256MB (open: ceiling measured today)"},
+	{"col_merge_window", budget_col_merge_window, "maintenance_work_mem + 24MB"},
 	{"col_orphan_sweep", budget_col_orphan_sweep, "8MB"},
 	{"col_rewrite", budget_col_rewrite, "1MB"},
 	{"col_scope_probe", budget_col_scope_probe, "maintenance_work_mem + 4MB"},
