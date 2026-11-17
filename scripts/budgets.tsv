@@ -18,6 +18,8 @@ tap:store_crash	900	1500	365-391 s hosted
 tap:index_build_crash	900	1500	225-300 s hosted
 fuzz:diff_fuzz.py	900	2500	4 seeds x 300 queries x 6,000 rows: 357 s, peak 1.6-1.9 GB (base database 609 MB, the copy of each seed, WAL) (table mode 496 s); cassert 3 seeds x 100 x 3,000 = 553-615 s
 fuzz:txn_fuzz.py	600	1000	60 seeds = 162 s; --shapes 60 seeds = 122-179 s; cassert 12 seeds = 108-123 s
+fuzz:shapes_matrix.py	600	300	quick tier 4,192 statements 11,505 runs = 36 s; full tier 6,731 statements 20,491 runs = 78 s (one cluster, tiny tables)
+fuzz:surface_sweep.py	600	300	quick tier 165 functions 9,423 calls = 12 s; the option sweep is added to it
 fuzz:bm25_fuzz.py	300	500	40 seeds = 30 s
 fuzz:col_scope_fuzz.py	900	1500	run through tap:col_scope_fuzz
 fuzz:col_scope_textkey_fuzz.py	900	1500	run through tap:col_scope_textkey_fuzz
@@ -41,7 +43,8 @@ script:isolation.sh	600	1000	-
 script:replication.sh	600	1000	-
 script:hardened.sh	900	2000	hosted hardened job 207 s
 script:assert.sh	1800	3000	regression subset + two TAP on the assert build; -
-script:valgrind.sh	1800	3000	memcheck over a regression subset; -
+script:valgrind.sh	1800	3000	memcheck over a regression subset, or massif over the 5 slope cases with --massif (2 sizes of 50000 rows); -
+script:massif-slope.py	1800	3000	the massif half of valgrind.sh --massif: 5 cases x 2 sizes, a native setup and one backend under massif each
 script:release.sh	2700	3072	the release from a green head; the gate is gate:release
 script:exec-budget.sh	600	1000	-
 script:perf-gate-maint.sh	1800	3000	two builds, interleaved cells; -
@@ -77,5 +80,6 @@ script:simd_level.sh	-	-	a helper of the entry points above, no run of its own
 script:test-ci-ready.sh	-	-	a helper of the entry points above, no run of its own
 script:test-perf-select.py	-	-	a helper of the entry points above, no run of its own
 regress:shard	1800	2000	one of 4 shards of the 1,265 regression tests (every fourth name) on a cluster of its own; serial: 2,459 s release / 5,556 s cassert, so a shard is ~620 s / ~1,400 s
+script:instr-budget-cost.sh	600	1000	callgrind of one backend: planning, INSERT and an unchanged VACUUM on a table with a sift_col index; -
 tap:mem_slope	1500	1500	65 cases at 50,000 to 200,000 rows (work_mem 1 MB): 729 s measured, one cluster at shared_buffers 64 MB
 tap:mem_idle_series	1200	1500	12000 statements of 25 kinds in one backend at 100,000-row tables: 481 s measured, one cluster at shared_buffers 64 MB

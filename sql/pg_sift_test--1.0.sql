@@ -143,6 +143,10 @@ CREATE FUNCTION sift._test_intids(seed int8, cases int4, OUT bad int8, OUT paged
 CREATE FUNCTION sift._test_spec_pack_bits(bits int8) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_spec_pack_bits' LANGUAGE C STRICT;
 
+-- The proof of a vector program of an aggregate argument (src/agg/vnum_test.c): whether it takes a postfix program given as the codes of its steps.
+CREATE FUNCTION sift._test_vnum_program_ok(steps int4[]) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_vnum_program_ok' LANGUAGE C STRICT;
+
 -- Index build (src/bm25/segment_sql.c): every posting decoded from the index.
 CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text, OUT tid tid,
 									OUT tf int4, OUT dl int4) RETURNS SETOF record
@@ -197,6 +201,10 @@ CREATE FUNCTION sift._test_ring_walk(slots int4, steps int4) RETURNS bool
 -- kind: buffer, relcache, tupledesc, snapshot, lock, context, malloc
 CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_leak' LANGUAGE C STRICT;
+
+-- n log lines, each reported under the error context of an index (test/mem-slope.tsv leak_errctx_report): the memory they leave in the backend
+CREATE FUNCTION sift._test_errctx_report(rel regclass, n int) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_errctx_report' LANGUAGE C STRICT;
 
 -- Read side (src/bm25/read_test.c): what this backend's reads allocated and did; reset clears the counters.
 CREATE FUNCTION sift._test_read_stats(reset bool DEFAULT false, OUT key text, OUT value int8) RETURNS SETOF record
@@ -779,6 +787,9 @@ CREATE FUNCTION sift._test_col_set_stats(OUT rows int8, OUT allocated int8, OUT 
 CREATE FUNCTION sift._test_catalog_write(kind text, as_vacuum bool DEFAULT false, a regclass DEFAULT NULL, b regclass DEFAULT NULL) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_catalog_write' LANGUAGE C PARALLEL SAFE;
 
+-- The rewrite worker of the index, started without a VACUUM asking for it
+CREATE FUNCTION sift._test_col_rewrite_worker(index regclass) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_col_rewrite_worker' LANGUAGE C STRICT;
 -- src/core/leak_test.c: what the C library holds for this backend (arena, inuse, free, mmap), to tell memory a context keeps from memory malloc keeps back
 CREATE FUNCTION sift._test_malloc_stats(release bool DEFAULT false) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_malloc_stats' LANGUAGE C;

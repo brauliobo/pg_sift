@@ -2637,16 +2637,16 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 #### sift.tomb_log_limit
 
-`sift_table` · safety · since 4.2 · default 8388608 kB
+`sift_table` · safety · since 4.2 · default 65536 kB
 
-- **What it does:** bounds the memory a backend keeps of the tombstone log of a sift_table (64 bytes an entry), the entries of its own statement included
+- **What it does:** bounds the memory a backend keeps of the tombstone log of a sift_table (64 bytes an entry), the entries of its own statement included; the entries past it are kept in sorted runs on temp files
 - **Gain:** -
-- **Impact:** index size: -; build, merge and writes: -; other: a read or a statement that would pass it fails with 54000 naming the setting
-- **When:** Every backend that reads or writes a sift_table keeps the whole log in memory: an entry for each row deleted or updated since the last VACUUM, the ones of its running statement included. Past the limit a read or a statement fails naming the setting; VACUUM is not bound by it and drops the entries of the rows it cleared, and the maintenance worker is asked for when the log reaches a quarter of it.
-- **Default:** 8388608 kB — 8 GB: a safety bound on the memory of one backend (134 million entries); a DELETE or UPDATE of more rows in one statement, or a log that VACUUM cannot shrink, needs a higher one. 4.2.0 had no bound and took the memory the log asked for.
+- **Impact:** index size: -; build, merge and writes: -; other: none: past it the log goes to temp files, and a read or a statement of any length completes (an error only from temp_file_limit or a full disk)
+- **When:** Every backend that reads or writes a sift_table keeps the log in memory up to this setting: an entry for each row deleted or updated since the last VACUUM, the ones of its running statement included. Past it the older entries are written as sorted runs to temp files (a few are kept, merged two at a time as they double) and a lookup reads one 8 kB block of each run, so a read of a log of any length takes the memory of the setting and a block read for each run when the entry is not in memory. VACUUM rewrites the log through the same runs, and the maintenance worker is asked for at 33.5 million entries, as before.
+- **Default:** 65536 kB — 64 MB: 1 million entries in memory (DELETE of 400,000 rows held 1.8 MB at a limit of 1 MB and 14.3 MB with the log in memory; UPDATE 12.6 and 21.8 MB); a log in memory is probed as before, and a spilled one costs a block read for each run
 - **Turn off:** n/a: a limit (16 kB to 2 TB). SET sift.tomb_log_limit = '64GB' (any user) or RESET; postgresql.conf, ALTER SYSTEM, ALTER DATABASE / ROLE .. SET keep it.
-- **Upgrade from 4.3:** A new setting: nothing to do. The limit was 2 GB in the 4.2.0 sources of this change and none before.
-- **Advice:** Leave 8 GB (134 million entries). Raise it for a single DELETE or UPDATE of more rows, or for a read while VACUUM cannot drop the log (a transaction open for long); lower it where a backend must not hold more.
+- **Upgrade from 4.3:** 5.0.1 keeps the setting as the memory of the log: the entries past it are kept in sorted runs on temp files, so a DELETE or UPDATE of any number of rows completes (a first 5.0.1 candidate lowered the default to 1 GB with an error past it: reverted). The default is 64 MB, down from 8 GB: a backend that read a log of 16 million entries held 1 GB, and holds 64 MB now.
+- **Advice:** Leave 64 MB (1 million entries in memory). Raise it where a log of many millions of entries is read by many sessions and the temp-file reads show; lower it where a backend must hold less.
 - **Sources:** benchmark `test:tbl_tomb_log_limit`; [SIZING](SIZING.md#settings-that-matter)
 
 #### sift.table_auto_defrag_delay
@@ -2805,7 +2805,7 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.3; new: `sift.search_chunk_sbs`, `sift.col_scope_refresh_pct`, `sift.agg_scope`, `sift.scope_max_multiplicity`, `sift.col_unit_rows`, `sift.col_value_store`, `sift_col(scope)`, `sift_col(projection)`, `sift.backend_cache_kb`, `sift.on_corruption`.
+Defaults changed: sift.tomb_log_limit since 4.3; new: `sift.search_chunk_sbs`, `sift.col_scope_refresh_pct`, `sift.agg_scope`, `sift.scope_max_multiplicity`, `sift.col_unit_rows`, `sift.col_value_store`, `sift_col(scope)`, `sift_col(projection)`, `sift.backend_cache_kb`, `sift.on_corruption`.
 
 | Option | 4.3 | 5.0 | Column format | What a 4.3 user gets after the update |
 |---|---|---|---|---|
@@ -2820,7 +2820,7 @@ No default changed since 4.3; new: `sift.search_chunk_sbs`, `sift.col_scope_refr
 | `sift.agg_child_first` | on | on |  | New in 4.3. |
 | `sift.col_unit_rows` | new | 0 |  | Named sift.test_col_unit_rows before 5.0; nothing to do, it was never in a release. |
 | `sift.search_chunk_sbs` | new | 32 |  | Named sift.test_search_chunk_sbs before 5.0; nothing to do, it was never in a release. |
-| `sift.tomb_log_limit` | 8388608 kB | 8388608 kB |  | A new setting: nothing to do. The limit was 2 GB in the 4.2.0 sources of this change and none before. |
+| `sift.tomb_log_limit` | 8388608 kB | 65536 kB |  | 5.0.1 keeps the setting as the memory of the log: the entries past it are kept in sorted runs on temp files, so a DELETE or UPDATE of any number of rows completes (a first 5.0.1 candidate lowered the default to 1 GB with an error past it: reverted). The default is 64 MB, down from 8 GB: a backend that read a log of 16 million entries held 1 GB, and holds 64 MB now. |
 | `sift.eval_methods` | '' | '' |  | 4.2 removed four names, so naming one is an error (the sign of -name is refused too): skip_trigger_lookup (always on: the statement trigger of track_changes leaves out the look at an UPDATE that kept the key), snapshot_masks (it had no code), latest_hint (it won nothing) and unit_rewrite (its writer is gone; segments an earlier release wrote with it stay readable and are vacuumed like the others, the automatic merge and rewrite leave them alone, and a forced sift.col_merge folds them): invalid value for parameter "sift.eval_methods": "snapshot_masks", DETAIL: Unknown evaluation method: snapshot_masks. Remove a removed name from ALTER DATABASE .. SET, ALTER SYSTEM and postgresql.conf before updating. Available after the extension library is loaded. Use the selection in the VACUUM session as well. |
 | `sift_col(connect)` | '' | '' | minor 44 | A new option: nothing changes for an index without it. The parent index of a connection is column format minor 44, which only 4.3 and later read. |
 | `sift_col(projection)` | new | '' |  | A new option: nothing changes for an index without it. ALTER EXTENSION UPDATE creates the definitions table and the status; an index that already lists a name is reported broken as not defined until the projection is created. No REINDEX. |

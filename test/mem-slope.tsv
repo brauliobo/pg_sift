@@ -1,5 +1,6 @@
 # NAME	KIND	CEILING	STATUS	SETUP	OPERATION -- scripts/mem-slope.py: work_mem and maintenance_work_mem at 1 MB; {f} {d} the tables of the case, {m} {s} a copy it may change, {n} its rows.
 # kind leakx: a statement of its own repeated 25 times in one backend, kB the contexts hold after the 25th over the 10th (open: the ceiling in kB).
+# kind flat (flatcut: key_cut by k_mid): {m} a table of 8, 16 and 32 times the rows, one run each; the ceiling is bytes of memory a row between the two largest, and they differ by 10% at most.
 # kind slope: the ceiling is bytes of memory a row of the table, between the smallest and the largest size; status open: the slope it was measured at (a defect to fix, then clean). status noise: the slope moves from run to run with where the allocator places its blocks; the ceiling is the largest of three runs plus 15 percent.
 group_low	slope	12	clean		select k_lo, count(*), sum(amount) from {f} group by 1;
 group_mid	slope	12	clean		select k_mid, count(*), sum(amount) from {f} group by 1;
@@ -7,8 +8,8 @@ group_unique_int	slope	50	open		select k_hi, count(*), sum(amount) from {f} grou
 group_unique_text	slope	12	clean		select txt, count(*), sum(amount) from {f} group by 1;
 group_two_keys	slope	12	clean		select k_mid, cat, count(*), avg(amount) from {f} group by 1,2;
 count_distinct_int	slope	12	clean		select count(distinct k_hi) from {f};
-count_distinct_text	slope	150	open		select count(distinct txt) from {f};
-count_distinct_text_grouped	slope	130	open		select k_lo, count(distinct txt) from {f} group by 1;
+count_distinct_text	slope	12	clean		select count(distinct txt) from {f};
+count_distinct_text_grouped	slope	12	clean		select k_lo, count(distinct txt) from {f} group by 1;
 percentile_grouped	slope	12	clean		select k_mid, percentile_cont(0.5) within group (order by amount) from {f} group by 1;
 mode_text	slope	12	clean		select mode() within group (order by txt) from {f};
 top_100k	slope	12	clean		select k_hi, amount from {f} order by amount desc, k_hi limit 100000;
@@ -22,23 +23,26 @@ search_prefix	slope	12	clean		select count(*) from {f} where title @@> 'wire*';
 vacuum_churned	slope	12	clean	update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	vacuum {m};
 merge	slope	220	open	update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;vacuum {m};	select sift.merge('{m}_col'::regclass, true);
 merge_col	slope	200	open	update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
-verify_heapallindexed	slope	200	open		select sift.col_verify('{m}_col'::regclass, true);
-check_heapallindexed	slope	200	open		select count(*) from sift.check('{m}_col'::regclass, true);
+verify_heapallindexed	slope	12	clean		select sift.col_verify('{m}_col'::regclass, true);
+check_heapallindexed	slope	12	clean		select count(*) from sift.check('{m}_col'::regclass, true);
 verify_search	slope	12	clean		select sift.verify('{m}_bm'::regclass, true);
 update_all	slope	12	clean		update {m} set amount = amount + 1;
 update_all_text	slope	12	clean		update {m} set txt = txt || 'x', title = title || ' extra';
 delete_all	slope	12	clean		delete from {m};
 insert_select	slope	12	clean		insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;
 table_create_as	slope	180	open		create table {s} using sift_table as select * from {f} order by id;
-table_update_all	slope	130	open	create table {s} using sift_table as select * from {f} order by id;	update {s} set amount = amount + 1;
-table_delete_part	slope	30	open	create table {s} using sift_table as select * from {f} order by id;	delete from {s} where k_lo < 5;
-table_vacuum	slope	30	open	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	vacuum {s};
+table_update_all	slope	80	open	create table {s} using sift_table as select * from {f} order by id;	set sift.tomb_log_limit = '1MB'; update {s} set amount = amount + 1;
+table_delete_part	slope	12	clean	create table {s} using sift_table as select * from {f} order by id;	set sift.tomb_log_limit = '1MB'; delete from {s} where k_lo < 5;
+table_vacuum	slope	12	clean	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	set sift.tomb_log_limit = '1MB'; vacuum {s};
 table_scan	slope	30	open	create table {s} using sift_table as select * from {f} order by id;	select count(*), sum(length(txt)) from {s};
 leak_aggregate	leak	0	clean		select k_mid, cat, count(*), avg(amount) from {f} group by 1,2;
 leak_distinct_text	leak	0	clean		select count(distinct txt) from {f};
 leak_lookup_join	leak	0	clean		select d.cls, count(*) from {f} f join {d} d on d.id = f.k_hi group by 1;
 leak_search	leak	0	clean		select id from {f} where title @@> 'wireless charger' order by sift.score(ctid) desc, id limit 10;
 leak_top	leak	0	clean		select k_hi, amount from {f} order by amount desc, k_hi limit 1000;
+leak_errctx_report	leak	0	clean		select sift._test_errctx_report('{f}'::regclass, 1000);
+scoped_cic	slope	350	open	drop table if exists p{n}; create table p{n} (member bigint not null, tenant int not null); insert into p{n} select g, t from generate_series(1, {n}) g, generate_series(1, 3) t; create index p{n}_j on p{n} (member, tenant);	create index concurrently {m}_sc on {m} using sift_col (id, k_mid, amount) with (scope = 'tenant: id -> p{n}(member, tenant)');
+leak_merge	leak	0	clean		select sift.col_merge('{f}_col'::regclass, true);
 cap_backend_caches	cap	4096	clean		select d.label, count(*) from {f} f join {d} d on d.id = f.k_hi group by 1 order by 2 desc, 1 limit 1;select txt, count(*) from {f} group by 1 order by 2 desc, 1 limit 1;select count(*) from {f} where txt like '%99%';select count(*) from {f} where title @@> 'wireless charger';
 promote_col	slope	64	noise	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;	select sift.col_promote('{m}_col'::regclass);
 promote_bm	slope	12	clean	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;	select sift.promote('{m}_bm'::regclass);
@@ -59,6 +63,15 @@ leakx_refresh	leakx	0	clean		select * from sift.col_refresh('{m}_col'::regclass)
 leakx_table_maintain	leakx	0	clean	create table {s} using sift_table as select * from {f} order by id;	update {s} set amount = amount + 1 where k_lo < 3; select sift.table_maintain('{s}'::regclass); vacuum {s};
 leakx_wbuf	leakx	0	clean	set sift.test_limits = 'dict_cache_kb=1024';	update {m} set amount = amount + 1 where k_lo < 2; select sift.col_promote('{m}_col'::regclass); select count(*) from {m} where id = 5; select sift.col_merge('{m}_col'::regclass, true);
 leakx_index_cycle	leakx	0	clean		create index {m}_c on {m} using sift_col (k_hi, txt, amount); select k_lo, count(distinct txt) from {m} group by 1; select txt, count(*) from {m} group by 1 limit 5; drop index {m}_c;
+leakx_reindex	leakx	0	clean		reindex index {m}_col;
+leakx_create_index	leakx	0	clean		create index {m}_cx on {m} using sift_col (k_hi, txt, amount); drop index {m}_cx;
+leakx_cic	leakx	0	clean		create index concurrently {m}_cc on {m} using sift_col (k_hi, txt, amount); drop index {m}_cc;
+merge_flat_1mb	flat	12	clean	set maintenance_work_mem = '1MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
+merge_flat_4mb	flat	12	clean	set maintenance_work_mem = '4MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
+merge_flat_64mb	flat	12	clean	set maintenance_work_mem = '64MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
+merge_flatcut_1mb	flatcut	12	clean	set maintenance_work_mem = '1MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
+merge_flatcut_4mb	flatcut	12	clean	set maintenance_work_mem = '4MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
+merge_flatcut_64mb	flatcut	12	clean	set maintenance_work_mem = '64MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
 cap_evict_across_caches	evict	0	clean	select d.label, count(*) from {f} f join {d} d on d.id = f.k_hi group by 1 order by 2 desc, 1 limit 1;	select count(*) from {f} where title @@> 'wireless charger';select count(*) from {f} where title @@> 'portable';select id from {f} where title @@> 'wireless charger' order by sift.score(ctid) desc, id limit 10;
 cap_partition_facts	cap	10240	clean	set client_min_messages=warning; drop table if exists ptc cascade; create table ptc (id int, k int, cat text, amount numeric) partition by range (id); select format('create table ptc_%s partition of ptc for values from (%s) to (%s)', g, g*2, (g+1)*2) from generate_series(0, 999) g \gexec\n insert into ptc select g, g % 100, 'c' || g % 7, g % 1000 from generate_series(0, 1999) g; create index ptc_col on ptc using sift_col (k, cat, amount); vacuum analyze ptc;	set sift.agg_force = on; select count(*) from (select k, sum(amount) from ptc group by 1) x; select count(*) from (select k, cat, sum(amount) from ptc group by 1,2) x; select count(*) from (select k, count(*) from ptc group by 1) x;
 leakx_index_txn	leakx	0	clean	set client_min_messages=warning; drop table if exists lx; create table lx as select g id, g % 10 k, 'n' || g t from generate_series(1, 200) g;	begin; create index lx_a on lx using sift_col (k, t); drop index lx_a; commit;
@@ -68,3 +81,4 @@ leakx_index_200_live_txn	leakx	0	clean	set client_min_messages=warning; drop tab
 cap_value_store_views	cap	4096	clean	set client_min_messages=warning; create extension if not exists pg_sift_test; set sift.test_vstore_columns = 'a,b'; drop table if exists vt cascade; create table vt as select g id, repeat(md5(g::text), 6) a, repeat(md5((g+1)::text), 6) b from generate_series(1, 20000) g; create index vt_x on vt using sift_col (id, a, b); create index vt_y on vt using sift_col (id, b, a);	select length(sift._test_vstore_value('vt_a_sift_values'::regclass, 5)); select length(sift._test_vstore_value('vt_b_sift_values'::regclass, 5)); select length(sift._test_vstore_value('vt_a_sift_values'::regclass, 6));
 cap_pinned_cursor	pinned	128	clean		
 table_scan_fresh_numbers_and_codes	slope	12	clean	@other set client_min_messages=warning; drop table if exists {s}; create table {s} using sift_table as select * from {f} order by id;	select count(*), sum(k_hi), sum(length(cat)) from {s};
+table_scan_fresh_text_one_per_row	slope	40	open	@other set client_min_messages=warning; drop table if exists {s}; create table {s} using sift_table as select * from {f} order by id;	select sum(length(txt)) from {s};

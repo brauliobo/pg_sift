@@ -179,6 +179,7 @@ agg/vk_min.h
 agg/vk_spv.h
 agg/vnum.c
 agg/vnum.h
+agg/vnum_test.c
 agg/wide.c
 agg/wide.h
 agg/zoneoff.c
@@ -338,6 +339,7 @@ col/wbuf_test.c
 col/widescan.c
 col/xstamp.c
 col/xstamp.h
+core/catname.h
 core/cachebudget.c
 core/cachebudget.h
 core/check.c
@@ -366,6 +368,7 @@ core/jsonbuild.c
 core/lane.c
 core/lane.h
 core/leak_test.c
+core/memcensus.c
 core/limits.c
 core/live_repair.c
 core/live_repair_test.c
@@ -384,6 +387,8 @@ core/restrict.c
 core/restrict.h
 core/restrict_test.c
 core/ring_test.c
+core/sortruns.c
+core/sortruns.h
 core/sql.h
 core/store.c
 core/store_int.h
@@ -394,6 +399,8 @@ core/store_test_int.h
 core/tomb.c
 core/tomb.h
 core/tomb_hdr.c
+core/tomb_int.h
+core/tomb_write.c
 core/verify.c
 core/visibility.c
 core/visibility_popcnt.c
