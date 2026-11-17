@@ -2,10 +2,10 @@
 # A lazy VACUUM runs with PROC_IN_VACUUM: every snapshot leaves its transaction id out, so another session that reads a catalog row the VACUUM updated judges the
 # VACUUM's xid aborted and writes HEAP_XMAX_INVALID on the old version (and XMIN_INVALID on a new one in another page) while the VACUUM is still to commit. The row is then
 # visible twice, or its update is lost, and pruning the page raises "dead heap-only tuple (N, M) is not linked to from any HOT chain". So a VACUUM of a table with a sift_col
-# index must not take a transaction id: the choices of the index that the VACUUM's merge makes (key_cut, key_columns, point_tid_columns, order columns: 'auto') are written
-# by the maintenance worker. A VACUUM stopped at its cleanup gate (sift.test_cleanup_gate, a testing build, right after its merge) while a second session reads the index's
+# index must not take a transaction id: the choices of the index that the VACUUM's merge makes (key_cut, key_columns, point_tid_columns, order columns: 'auto') are not written
+# by it, nor by a worker: the explicit rewrite chooses again and writes them. A VACUUM stopped at its cleanup gate (sift.test_cleanup_gate, a testing build, right after its merge) while a second session reads the index's
 # pg_class row: the VACUUM has no xid, no tuple of pg_class has a committed updater and XMAX_INVALID, the row is there once, VACUUM pg_class and a scan of pg_class end
-# without an error, and the choice the VACUUM saw is written by the worker.
+# without an error, and the choice the VACUUM saw is written by the explicit rewrite.
 . "$(dirname "$0")/lib.bash"
 
 plan 9
@@ -79,21 +79,24 @@ check "the index has one row in pg_class" test "$(rows_of_index)" == 1
 check "a scan of pg_class ends without an error" test "$(sql vc "SELECT count(*) > 0 FROM pg_class" 2>&1)" == t
 check "VACUUM pg_class ends without an error" test "$(sql vc "VACUUM pg_class" 2>&1 | grep -c ERROR)" == 0
 check "the log has no error" test "$(errors)" == 0
-# the worker the VACUUM asks for when sift.col_auto_merge is on chooses, in a transaction of its own
+# no worker writes the choices either, when sift.col_auto_merge is on: the explicit rewrite does, in a transaction of its own
 sql vc "ALTER DATABASE postgres SET sift.col_auto_merge = on" >/dev/null
+idle() { for _ in $(seq 200); do [[ $(sql vc "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'sift%'") == 0 ]] && return 0; sleep 0.1; done; return 1; }
 chosen() {
 	local it start
 	for it in $(seq 10 14); do
 		rechoose "$it"
 		start=$(options)
 		sql vc "VACUUM rc" >/dev/null
-		for _ in $(seq 100); do [[ $(options) != "$start" ]] && return 0; sleep 0.1; done
+		idle || return 1
+		[[ $(options) != "$start" ]] && return 1
+		sql vc "SELECT sift.col_merge('rc_ix', true)" >/dev/null
+		[[ $(options) != "$start" ]] && return 0
 	done
 	return 1
 }
-check "the choices of the index are written by the worker the VACUUM asks for" chosen
-# a choice the data repeats is not written again: the row of the index keeps its version
-idle() { for _ in $(seq 200); do [[ $(sql vc "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'sift%'") == 0 ]] && return 0; sleep 0.1; done; return 1; }
+check "a VACUUM and its workers write no choice of the index, the explicit rewrite does" chosen
+# a choice the data repeats is not written again
 version() { sql vc "SELECT xmin FROM pg_class WHERE relname = 'rc_ix'"; }
 repeated() {
 	local before

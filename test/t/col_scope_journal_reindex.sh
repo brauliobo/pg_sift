@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # A REINDEX of the journal index of the pairs is another lineage: the stamps of the scope segments are of the old one, so the reads say `other lineage` (the join answers, exactly) and the
-# maintenance sees the segments as stale. The reads ask for the rewrite that fills them again (a table nobody vacuums gets it too), so the units are read within seconds with no REINDEX of the
-# scope index, and the answers are the join's before, during and after.
+# maintenance sees the segments as stale. No read or worker rewrites for it: the reads go on answering from the join, and the rewrite the user runs (sift.col_maintain) fills them again with
+# no REINDEX of the scope index; the answers are the join's before, during and after.
 . "$(dirname "$0")/lib.bash"
-plan 7
+plan 8
 
 node_init jr 53 "autovacuum = off
 sift.col_auto_merge = on
@@ -18,7 +18,7 @@ sql jr "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"INSERT INTO ce SELECT i, 1 + (i * 7919) % 210, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, 'x' FROM generate_series(1, 30000) i" \
 	>/dev/null || bail "setup failed"
 # the VACUUM comes in a session of its own, after the load's counters are flushed: the table is then quiet (nothing changed since its VACUUM), as a table nobody writes is,
-# so nothing but the reads of the scope index can ask for the rewrite
+# so nothing but the reads of the scope index could have asked for a rewrite
 sql jr "VACUUM (FREEZE, ANALYZE) ce, cp" >/dev/null || bail "vacuum failed"
 sql jr "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (scope = 't: m -> cp(m, t)')" >/dev/null || bail "build failed"
 
@@ -31,8 +31,10 @@ check "the first build is filled: the read is from the scope units" test "$(why)
 sql jr "REINDEX INDEX cp_j" >/dev/null
 check "after a REINDEX of the journal the first read says other lineage" test "$(why)" == "other lineage"
 check "... and its answer is the join's" same
-filled() { why >/dev/null; [[ $(why) == stored ]]; }
-check "the reads ask for the rewrite and read the scope units again within 60 s, with no REINDEX of the scope index" wait_for filled 60
+for _ in $(seq 30); do why >/dev/null; done
+check "the reads start no rewrite: after 30 reads the first still says other lineage" test "$(why)" == "other lineage"
+sql jr "SELECT sift.col_maintain('ce_col')" >/dev/null
+check "the explicit rewrite fills the scope units again, with no REINDEX of the scope index" test "$(why)" == stored
 check "... with the same answer as the join" same
 sql jr "INSERT INTO cp SELECT 201 + i, 6 FROM generate_series(1, 5) i" >/dev/null
 check "a pair written after it is patched into the read, which is the join's" same

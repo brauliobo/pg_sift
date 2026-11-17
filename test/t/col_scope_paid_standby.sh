@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # A standby cannot write, and the only things it sends the primary are the positions of its replay and the horizon of its snapshots (the receiver's status and feedback messages): what its reads pay for the
 # pairs changed since the floor of a scope index reaches nobody. What it has is the primary's sum, replayed from the log (the metapage), and the benefit of the primary's rewrite, which it replays. So: the standby
-# answers as the primary's join does, its reads do not move the primary's sum, the primary's sum is the standby's after the replay, and the rewrite the primary's reads ask for is read on the standby from the units.
+# answers as the primary's join does, its reads do not move the primary's sum, the primary's sum is the standby's after the replay, the primary's reads make the rewrite due and start none, and the rewrite the user runs is read on the standby from the units.
 . "$(dirname "$0")/lib.bash"
-plan 6
+plan 7
 
 node_init pp 58 "autovacuum = off
 wal_level = replica
@@ -57,9 +57,10 @@ check "and the standby's own reads are not added to it" test "$PS" -lt "$HALF"
 out=''
 
 for _ in 1 2 3 4 5 6 7 8; do reads pp 100; done
-refilled() { [[ $(gens pp) != "$G0" ]]; }
-check "the primary's reads ask for the rewrite and it is written (the standby's 300 did not)" wait_for refilled 60
-wait_stable pp "SELECT string_agg(gen::text, ',' ORDER BY gen) FROM sift.col_segments('ce_col') WHERE kind = 'immutable'" 60
+due() { sql pp "SELECT coalesce(sift.col_maintenance_due('ce_col'), '-')" | tail -n 1; }
+check "the primary's reads make the rewrite due and start none: stale scope, the segments as they were" test "$(due)" == "stale scope" -a "$(gens pp)" == "$G0"
+sql pp "SELECT sift.col_maintain('ce_col')" >/dev/null
+check "the explicit rewrite writes the scope segments again" test "$(gens pp)" != "$G0"
 catchup pp ps
 check "the standby replays the rewrite: its reads are the filled read, no changed member" test "$(changed)" -eq 0
 finish
