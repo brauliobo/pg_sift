@@ -22,12 +22,14 @@ The local gate runs only the PostgreSQL of `pg_config` on `PATH`; GitHub CI also
 runs only the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-001' make check`).
 `scripts/coldiff.sh` is the differential test of the aggregate pushdown: plain SQL aggregates with `sift.enable_agg` off and on, results compared,
 with fixtures, scenarios and a self-test (also part of `make check`, docs/AGG.md).
-The scratch directory (`$TMPDIR/sift-ci-PID`, `SIFT_CI_TMP` picks another) peaks at about 1.1 GB (the same with `SANITIZE=1`; `CI_BUDGET_MB=900` brings it to 1 GB at the price of about a quarter more time, as the two big WAL tests then run one after the other). A lane starts a job when
-the estimated scratch of the running ones plus its own fits `CI_BUDGET_MB` (`EST_MB` in `scripts/ci/jobs.sh`), and a job's data goes when it passes.
-`SIFT_CI_STATS=1 make check` prints the peak by component (WAL, tables, temp files), lane and job, and the memory of the servers; run it when
-you add a heavy test, and give the job an estimate. The clusters are small (1 MB WAL segments, 48 MB `max_wal_size`, 32-64 MB buffers); the
+The scratch directory (`$TMPDIR/sift-ci-PID`, `SIFT_CI_TMP` picks another) of a quick shard stays under 3 GB: a lane starts a job when the estimated scratch of the running ones plus its own fits
+`CI_BUDGET_MB` (2000; `EST_MB` in `scripts/ci/jobs.sh`), a job's data (and its WAL) goes when it passes, and a shard over `CI_MAX_MB` (3072) fails. A run ends by listing the jobs that used more than their
+estimate: give them the measured number. `SIFT_CI_STATS=1 make check` prints the peak by component (WAL, tables, temp files), lane and job, and the memory of the servers; run it when
+you add a heavy test. The clusters are small (1 MB WAL segments, 512 MB `max_wal_size`, 64 MB buffers); the
 crash, recovery and replication tests (`WAL_CONF` in `test/t/lib.bash`, `tap.sh` for the Perl ones) keep the default WAL segments and
 settings, since the WAL is what they test.
+A run keeps one line per job (state, seconds, scratch peak, skips and their reasons) in `$TMPDIR/sift-ci-summary/` after the logs of the passing jobs are gone; `scripts/ci.sh summary` lists the skips.
+A test says why it skips (`1..0 # SKIP reason`, `ok N # skip reason`, `SKIP: reason`): a skip without a reason fails its job.
 `scripts/replication.sh` (also part of `make check`) tests physical and logical replication on temporary clusters;
 `scripts/replication.sh --container` runs it with every node in its own docker container (`PG_IMAGE`, default `postgres:18`).
 `SIFT_TESTING=1` (the default for `pgtest.sh` and `make check`) also builds the test-only `pg_sift_test` extension and the `sift._test_*` functions; a normal `make install` never installs them. Switching it needs `make clean`.

@@ -44,7 +44,7 @@ declare -A EST_MB=([tap-013_tbl_bigtx]=820 [tap-014_tbl_writepath]=1130 [install
 	[tap-shell-col_build_slices_standby]=360 [hardened]=230 [tap-019_tbl_bulk_groups]=320 [tap-017_tbl_autodefrag]=310 [tap-shell-col_scope_replica]=300
 	[tap-shell-col_cic_temp_files]=280 [tap-shell-col_online_compact]=240 [installcheck-parallel_build]=230 [tap-shell-col_build_slices]=220
 	[tap-shell-col_build_pays]=220)
-JOB_MB=70
+JOB_MB=100
 
 tap_perl() { local f; for f in "$@"; do job "tap-$f" tap 0 "$S/tap.sh" "t/$f.pl"; done; }
 tap_shell() { local f; for f in "$@"; do job "tap-shell-$f" tap-shell 0 "$S/pgtest.sh" tap "$f"; done; }
