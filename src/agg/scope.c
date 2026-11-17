@@ -261,7 +261,9 @@ unit_counts(AggExec *ex, Snapshot snapshot)
 	pair_counts(ex, &c);
 	if (sc->once && sc->nkeys > 1)
 	{
-		c.key_pairs = (c.pairs + c.scan_pairs) * c.entries / Max(scope_entries(ex), 1);	/* the pairs of the keys, as many of the relation's as the keys have of the entries: the reader counts them */
+		uint64		entries = scope_entries(ex);
+
+		c.key_pairs = (c.pairs + c.scan_pairs) * c.entries / Max(entries, 1);	/* the pairs of the keys, as many of the relation's as the keys have of the entries: the reader counts them */
 	}
 	return c;
 }
