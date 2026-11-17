@@ -108,12 +108,23 @@ maint_scope_run_bytes(ScopeRun *run)
 	return MemoryContextMemAllocated(run->cx, true);
 }
 
+/* The merge of the runs holds a unit of each: a run is cut into units of the rows that make the runs there will be fit half of maintenance_work_mem, at least SCOPE_RUN_UNIT_MIN */
+#define SCOPE_RUN_UNIT_MIN	256
+
+static uint32
+run_unit_rows(const ScopeRun *run, uint32 aim, uint32 runs)
+{
+	uint64		fit = (uint64) maintenance_work_mem * 1024 / 2 / Max(runs, 1) / sift_colk_row_bytes(run->r->schema);
+
+	return (uint32) Min(sift_colk_unit_rows(aim), Max(fit, SCOPE_RUN_UNIT_MIN));
+}
+
 /*
  * The run written: for each scope its rows sorted by the cut of the scope and cut into units of one key, with the fill of maint_scope_fill_begin. out has room for one segment of each
  * scope; the number of them is returned (a scope none of whose rows has a pair has none). The run is empty after it.
  */
 int
-maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill *fill, uint64 index_rows, int format, SiftSegEntry *out)
+maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill *fill, uint64 index_rows, int format, uint32 runs, SiftSegEntry *out)
 {
 	const SiftColRel *r = run->r;
 	uint32		aim = sift_colk_aim_rows(run->index);
@@ -136,7 +147,7 @@ maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill *fill, uin
 		sift_colw_set_index_rows(w, index_rows);
 		sift_colw_set_preagg(w, &pagg);
 		sift_colw_set_keyed(w, aim, cut, ncut);
-		sift_colk_write(w, &run->rep[s], 1, r->schema, cut, ncut, sift_colk_unit_rows(aim), run->cx, 0);
+		sift_colk_write(w, &run->rep[s], 1, r->schema, cut, ncut, run_unit_rows(run, aim, runs), run->cx, 0);
 		sift_colw_finish(w, &out[n]);
 		out[n].flags |= SIFT_SEG_SCOPE;
 		out[n++].pad = s;
@@ -209,6 +220,13 @@ refill_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 /* The segments of the directory a refill leaves free for the merge that follows it */
 #define REFILL_ROOM	16
 
+/* The runs a refill writes for each scope: the rows of the table over the rows of the run in hand, as many as the directory has room for at the most */
+static uint32
+runs_of(uint64 rows, uint64 run_rows, int room)
+{
+	return (uint32) Min((rows + run_rows - 1) / run_rows, (uint64) room);
+}
+
 /*
  * The scope segments again, from the live rows of the entity segments, under a stamp taken now: the rows of each entity segment are decoded unit by unit, replicated by the keys of
  * their member and written as runs of the scope's cut, which the merge of the scope segments joins. The old scope segments go and the floor of the stamps becomes this stamp in
@@ -232,7 +250,8 @@ maint_scope_refill(Relation index)
 				chunk;
 	int			nents = 0,
 				nscopes = 0,
-				nout = 0;
+				nout = 0,
+				room;
 	TimestampTz start = GetCurrentTimestamp();
 	struct SiftScopeFill *sf;
 	ScopeRun   *run;
@@ -261,7 +280,8 @@ maint_scope_refill(Relation index)
 		return false;
 	}
 	/* a run holds three quarters of maintenance_work_mem of replicated rows, and at least the share of the rows that makes as many runs for each scope as the directory has room for */
-	chunk = rows / Max((SIFT_MAX_SEGMENTS - REFILL_ROOM - nents) / Max(r->nscope, 1), 1) + 1;
+	room = Max((SIFT_MAX_SEGMENTS - REFILL_ROOM - nents) / Max(r->nscope, 1), 1);
+	chunk = rows / room + 1;
 	fill = maint_scope_fill_begin(index, cx, rows, &sf);
 	run = maint_scope_run_begin(index, sf, cx);
 	wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
@@ -288,7 +308,7 @@ maint_scope_refill(Relation index)
 				sift_colb_peak_note();
 				if (held_rows >= chunk && maint_scope_run_bytes(run) >= (Size) maintenance_work_mem * 1024 / 2)
 				{
-					nout += maint_scope_run_write(run, wt, fill, rows, sift_col_format_minor, out + nout);
+					nout += maint_scope_run_write(run, wt, fill, rows, sift_col_format_minor, runs_of(rows, held_rows, room), out + nout);
 					held_rows = 0;
 				}
 			}
@@ -296,7 +316,7 @@ maint_scope_refill(Relation index)
 		sift_cseg_close(seg);
 	}
 	if (held_rows > 0)
-		nout += maint_scope_run_write(run, wt, fill, rows, sift_col_format_minor, out + nout);
+		nout += maint_scope_run_write(run, wt, fill, rows, sift_col_format_minor, runs_of(rows, held_rows, room), out + nout);
 	maint_scope_run_end(run);
 	sift_scope_fill_stamps(sf, &stamps);
 	sift_conn_fill_end(fill);

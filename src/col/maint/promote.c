@@ -147,7 +147,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 				maint_scope_run_batch(run, batches[i]);
 				maint_scope_run_add(run, batches[i], 0, batches[i]->nrows);
 			}
-			nneu += maint_scope_run_write(run, wt, fill, idx_rows, format, neu + 1);
+			nneu += maint_scope_run_write(run, wt, fill, idx_rows, format, 1, neu + 1);
 			maint_scope_run_end(run);
 			for (int i = 1; i < nneu; i++)
 				neu[i].flags |= neu[0].flags & SIFT_SEG_ROOTS;

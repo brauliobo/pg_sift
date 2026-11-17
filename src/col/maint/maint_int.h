@@ -122,7 +122,7 @@ extern void maint_scope_run_end(ScopeRun *run);
 extern void maint_scope_run_batch(ScopeRun *run, const SiftColBatch *b);
 extern void maint_scope_run_add(ScopeRun *run, const SiftColBatch *b, uint32 from, uint32 to);
 extern Size maint_scope_run_bytes(ScopeRun *run);
-extern int	maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill *fill, uint64 index_rows, int format, SiftSegEntry *out);
+extern int	maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill *fill, uint64 index_rows, int format, uint32 runs, SiftSegEntry *out);
 
 /* One slice of the key range of a merge that the participants of a parallel build share: the rows of slice i of nslices go to one segment, which is not put in the directory (*out; ndocs 0: none) */
 typedef struct MergeSlice
