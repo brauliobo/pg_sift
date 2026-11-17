@@ -73,6 +73,51 @@ SELECT count(*) FROM kr WHERE r @> 12345678;
 (1 row)
 
 DROP TABLE kr;
+-- a superblock that holds no row (a deleted and vacuumed range of the heap, the empty pages a bulk load leaves at its end) is no sample: it gives its place to the next one that has
+-- rows, so that the first look and the sample of the rule still hold their superblocks and the table is decided, not left with "fewer superblocks than it needs"
+CREATE TABLE kd (id bigint, foreign_id int, d date, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO kd SELECT i, (i * 7919) % 2003, date '2020-01-01' + (i * 31 % 1500), repeat('x', 100) FROM generate_series(1, 60000) i;
+VACUUM (FREEZE, ANALYZE) kd;
+CREATE INDEX kd_i ON kd USING sift_col (foreign_id, d) WITH (key_cut = 'off');
+NOTICE:  sift_col index "kd_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('kd_i');
+SELECT sampled, decision FROM sift.key_cut_decision('kd_i');
+ sampled | decision 
+---------+----------
+      16 | cut
+(1 row)
+
+DELETE FROM kd WHERE id <= 30000;
+VACUUM kd;
+SELECT sampled, reason NOT LIKE 'the sample holds%' AS was_decided FROM sift.key_cut_decision('kd_i');
+ sampled | was_decided 
+---------+-------------
+      16 | t
+(1 row)
+
+DROP TABLE kd;
+CREATE TABLE kt (id bigint, foreign_id int, d date, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO kt SELECT i, (i * 7919) % 2003, date '2020-01-01' + (i * 31 % 1500), repeat('x', 100) FROM generate_series(1, 60000) i;
+DELETE FROM kt WHERE id > 52000;
+VACUUM (TRUNCATE false, ANALYZE) kt;
+SELECT pg_relation_size('kt') / 8192 / 256 AS units_with_pages, (SELECT count(DISTINCT (ctid::text::point)[0]::int / 256) FROM kt) AS units_with_rows;
+ units_with_pages | units_with_rows 
+------------------+-----------------
+               46 |              41
+(1 row)
+
+CREATE INDEX kt_i ON kt USING sift_col (foreign_id, d) WITH (key_cut = 'off');
+NOTICE:  sift_col index "kt_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('kt_i');
+SELECT sampled, reason NOT LIKE 'the sample holds%' AS was_decided FROM sift.key_cut_decision('kt_i');
+ sampled | was_decided 
+---------+-------------
+      16 | t
+(1 row)
+
+DROP TABLE kt;
 -- an empty table has nothing to sample
 CREATE TABLE ke (id int, d date);
 CREATE INDEX ke_i ON ke USING sift_col (id, d);

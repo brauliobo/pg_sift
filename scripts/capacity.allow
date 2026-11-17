@@ -27,7 +27,6 @@ array-append	src/col/am/am.c	rels[n++] = rt_fetch(rti, ps->rtable)->relid;	alloc
 array-append	src/col/am/am.c	rels[n++] = rt_fetch(rti, ps->rtable)->relid;	allocated for stmt_result_count() relations, the count of the same range table
 array-append	src/col/amscan/amscan.c	tids[m++] = tids[i];	a compaction in place of the TIDs read, m never passes i; an estimate of rows by a double ratio
 cast-after-product	src/col/amscan/amscan.c	int64 fetches = so->sampled > 0 ? (int64) (so->returned * ((double) so->unseen / so->sampled)) : 0;	a compaction in place of the TIDs read, m never passes i; an estimate of rows by a double ratio
-blocknumber-sum	src/col/autocut/autocut.c	BlockNumber start = (BlockNumber) ((s + ((uint32) s * 2654435761u % 1024) / 1024.0) * nsb / want) * SIFT_SB_PAGES;	the first heap block of a sampled superblock, below the blocks of the heap
 array-append	src/col/build/run.c	pick[n++] = low;	two picks, the loop runs twice
 array-append	src/col/gorder.c	anc[nan++] = kv[i];	the anchors are counted first and the writer returns when there are more than the array holds
 array-append	src/col/gquant.c	pos[n++] = (uint8) i;	the loop runs over SIFT_GQ_MB positions, the array holds that many

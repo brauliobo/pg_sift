@@ -122,6 +122,111 @@ typedef struct CutVerdict
 	bool		range;			/* the leaf is a time leaf: a range of its values is read, not an equality */
 } CutVerdict;
 
+/* the rows of the superblock that starts at block `start`, up to a unit's worth, appended to the sample as one more sampled superblock; false when it holds none */
+static bool
+sample_superblock(Relation heap, TupleTableSlot *slot, Track *tr, int ntr, Samp *samp, uint32 *sample_cap, uint32 max_rows, BlockNumber start, BlockNumber nblocks)
+{
+	TableScanDesc scan;
+	uint32		seen = 0;
+
+	samp->start[samp->nsb] = samp->n;
+	scan = table_beginscan_strat(heap, GetActiveSnapshot(), 0, NULL, true, false);
+	heap_setscanlimits(scan, start, Min(SIFT_SB_PAGES, nblocks - start));
+	while (seen++ < SIFT_COL_UNIT_MAX_ROWS && table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	{
+		if (samp->n == *sample_cap)
+		{
+			*sample_cap = Min(*sample_cap * 2, max_rows);
+			samp->tid = repalloc_array(samp->tid, SiftKey, *sample_cap);
+			for (int t = 0; t < ntr; t++)
+			{
+				tr[t].v = repalloc_array(tr[t].v, int64, *sample_cap);
+				tr[t].nl = repalloc_array(tr[t].nl, bool, *sample_cap);
+			}
+		}
+		samp->tid[samp->n] = ((SiftKey) (samp->nsb * SIFT_SB_PAGES + ItemPointerGetBlockNumber(&slot->tts_tid) - start) << 16) | ItemPointerGetOffsetNumber(&slot->tts_tid);
+		for (int t = 0; t < ntr; t++)
+		{
+			bool		isnull;
+			Datum		dat = slot_getattr(slot, tr[t].hatt, &isnull);
+
+			tr[t].v[samp->n] = 0;
+			tr[t].nl[samp->n] = isnull;
+			if (!isnull && tr[t].shape != NULL)
+			{
+				SiftColValue lane[SIFT_COL_MAX_LANES];
+
+				sift_col_datum_values(tr[t].shape, dat, false, lane);
+				tr[t].nl[samp->n] = lane[tr[t].lane].isnull;	/* a bound that does not fit a lane is a NULL there */
+				tr[t].v[samp->n] = lane[tr[t].lane].v.i;
+			}
+			else if (!isnull)
+				value_of(tr[t].type, dat, &tr[t].v[samp->n]);
+		}
+		samp->n++;
+	}
+	table_endscan(scan);
+	if (samp->n == samp->start[samp->nsb])
+		return false;
+	samp->start[++samp->nsb] = samp->n;
+	return true;
+}
+
+/* whether the superblock that starts at block `start` holds a row the snapshot sees */
+static bool
+superblock_has_rows(Relation heap, TupleTableSlot *slot, BlockNumber start, BlockNumber nblocks)
+{
+	TableScanDesc scan = table_beginscan_strat(heap, GetActiveSnapshot(), 0, NULL, true, false);
+	bool		found;
+
+	heap_setscanlimits(scan, start, Min(SIFT_SB_PAGES, nblocks - start));
+	found = table_scan_getnextslot(scan, ForwardScanDirection, slot);
+	table_endscan(scan);
+	return found;
+}
+
+static int
+uint32_cmp(const void *a, const void *b)
+{
+	return SIFT_CMP3(*(const uint32 *) a, *(const uint32 *) b);
+}
+
+/*
+ * The `want` superblocks of the sample, in the order of the heap: one from each stretch of the heap, at a place that varies with the stretch and not with the run, so that the same
+ * table gives the same sample. A superblock that holds no row (a deleted and vacuumed range, the pages a bulk load left at the end) is no sample: it gives its place to the next one
+ * that has rows, each read once (past the ones the sample has taken); the stretches that find none before the end of the heap take the last ones that have rows, so that a table with enough superblocks keeps its number.
+ */
+static int
+plan_superblocks(Relation heap, TupleTableSlot *slot, double nsb, int want, BlockNumber nblocks, uint32 *at)
+{
+	int			n = 0;
+	uint32		next = 0;
+
+	for (int s = 0; s < want; s++)
+	{
+		uint32		sb = (uint32) ((s + ((uint32) s * 2654435761u % 1024) / 1024.0) * nsb / want);
+
+		if (!superblock_has_rows(heap, slot, (BlockNumber) sb * SIFT_SB_PAGES, nblocks))
+			for (sb = Max(sb + 1, next); sb < nsb && !superblock_has_rows(heap, slot, (BlockNumber) sb * SIFT_SB_PAGES, nblocks);)
+				sb++;
+		if (sb >= nsb)
+			break;
+		at[n++] = sb;
+		next = Max(next, sb + 1);
+	}
+	for (int sb = (int) nsb - 1; n < want && sb >= 0; sb--)
+	{
+		uint32		key = sb;
+
+		if (bsearch(&key, at, n, sizeof(uint32), uint32_cmp) == NULL && superblock_has_rows(heap, slot, (BlockNumber) sb * SIFT_SB_PAGES, nblocks))
+		{
+			at[n++] = key;
+			qsort(at, n, sizeof(uint32), uint32_cmp);
+		}
+	}
+	return n;
+}
+
 /* The rule above for the index: no write, the verdict says what a build would do. dry: the options of the index do not stop it. */
 static void
 decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
@@ -160,6 +265,9 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	uint32		cap,
 				sample_cap;
 	int64	   *tmp;
+	uint32	   *at,
+				max_rows;
+	int			nat;
 	TupleTableSlot *slot;
 	const char *leaf = NULL;
 	const char *kgroup = sift_col_options_key_order_group(index);	/* key_order = 'group, key': the group is the only key to cut by */
@@ -236,70 +344,25 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	}
 	want = quick ? Min(full, AUTOCUT_QUICK_SBS) : full;
 	samp = palloc0(sizeof(Samp));
-	sample_cap = Min(cap + SIFT_COL_UNIT_MAX_ROWS, 4096);
+	slot = table_slot_create(heap, NULL);
+	at = palloc_array(uint32, want);
+	nat = plan_superblocks(heap, slot, nsb, want, nblocks, at);
+	max_rows = nat * SIFT_COL_UNIT_MAX_ROWS;
+	sample_cap = Min(max_rows, 4096);
 	samp->tid = palloc_array(SiftKey, sample_cap);
 	for (int t = 0; t < ntr; t++)
 	{
 		tr[t].v = palloc_array(int64, sample_cap);
 		tr[t].nl = palloc_array(bool, sample_cap);
 	}
-	slot = table_slot_create(heap, NULL);
-	for (int s = 0; s < want; s++)
-	{
-		/* one superblock from each stretch of the heap, at a place that varies with the stretch and not with the run: the same table gives the same sample */
-		BlockNumber start = (BlockNumber) ((s + ((uint32) s * 2654435761u % 1024) / 1024.0) * nsb / want) * SIFT_SB_PAGES;
-		TableScanDesc scan;
-		uint32		from = samp->n,
-					nrow = 0;
-
-		if (start >= nblocks || samp->n > cap)
-			continue;
-		scan = table_beginscan_strat(heap, GetActiveSnapshot(), 0, NULL, true, false);
-		heap_setscanlimits(scan, start, Min(SIFT_SB_PAGES, nblocks - start));
-		while (nrow++ < SIFT_COL_UNIT_MAX_ROWS && table_scan_getnextslot(scan, ForwardScanDirection, slot))
-		{
-			if (samp->n == sample_cap)
-			{
-				sample_cap = (uint32) Min((uint64) sample_cap * 2, (uint64) cap + SIFT_COL_UNIT_MAX_ROWS);
-				samp->tid = repalloc_array(samp->tid, SiftKey, sample_cap);
-				for (int t = 0; t < ntr; t++)
-				{
-					tr[t].v = repalloc_array(tr[t].v, int64, sample_cap);
-					tr[t].nl = repalloc_array(tr[t].nl, bool, sample_cap);
-				}
-			}
-			samp->tid[samp->n] = ((SiftKey) (samp->nsb * SIFT_SB_PAGES + ItemPointerGetBlockNumber(&slot->tts_tid) - start) << 16) | ItemPointerGetOffsetNumber(&slot->tts_tid);
-			for (int t = 0; t < ntr; t++)
-			{
-				bool		isnull;
-				Datum		dat = slot_getattr(slot, tr[t].hatt, &isnull);
-
-				tr[t].v[samp->n] = 0;
-				tr[t].nl[samp->n] = isnull;
-				if (!isnull && tr[t].shape != NULL)
-				{
-					SiftColValue lane[SIFT_COL_MAX_LANES];
-
-					sift_col_datum_values(tr[t].shape, dat, false, lane);
-					tr[t].nl[samp->n] = lane[tr[t].lane].isnull;	/* a bound that does not fit a lane is a NULL there */
-					tr[t].v[samp->n] = lane[tr[t].lane].v.i;
-				}
-				else if (!isnull)
-					value_of(tr[t].type, dat, &tr[t].v[samp->n]);
-			}
-			samp->n++;
-		}
-		table_endscan(scan);
-		if (samp->n == from)
-			continue;
-		samp->start[samp->nsb] = from;
-		samp->start[++samp->nsb] = samp->n;
-	}
+	/* the cap on rows is calibrated by the mean rows of a superblock: it ends the sample once the superblocks the rule asks for at least are in, whatever their rows */
+	for (int i = 0; i < nat && (samp->n <= cap || i < Min(AUTOCUT_MIN_SBS, want)); i++)
+		sample_superblock(heap, slot, tr, ntr, samp, &sample_cap, max_rows, (BlockNumber) at[i] * SIFT_SB_PAGES, nblocks);
 	ExecDropSingleTupleTableSlot(slot);
 	v->sampled = samp->nsb;
 	if (samp->nsb < Min(AUTOCUT_MIN_SBS, want))
 	{
-		v->reason = "the sample holds fewer than 16 superblocks";
+		v->reason = psprintf("the sample holds %d superblocks, fewer than the %d it needs", samp->nsb, Min(AUTOCUT_MIN_SBS, want));
 		goto done;
 	}
 	tmp = palloc_array(int64, SIFT_COL_UNIT_MAX_ROWS);
