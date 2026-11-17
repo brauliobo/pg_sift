@@ -510,6 +510,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_build_peak_kb",
 							"Testing: kB of memory the last sift_col build of this session held above what the backend started it with, at its peak.",
 							NULL, &sift_test_col_build_peak_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_build_peak_log",
+							 "Testing: a sift_col build logs its largest memory contexts each time its peak grows by a MB.",
+							 NULL, &sift_test_col_build_peak_log, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_fail_sb",
 							"Testing: the participant of a sift_col build that takes this superblock (1 = the first) fails (0 = none).",
 							NULL, &sift_test_col_fail_sb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

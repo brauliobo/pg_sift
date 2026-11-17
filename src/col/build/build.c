@@ -4,6 +4,7 @@
  * the runs, the publication and the NOTICEs are in the files next to it
  */
 #include "postgres.h"
+#include "access/xact.h"
 #include "commands/progress.h"
 #include "pgstat.h"
 #include "utils/lsyscache.h"
@@ -34,13 +35,59 @@ int			sift_test_col_merge_slices = 0;
 
 int			sift_test_col_build_peak_kb = 0;
 
+bool		sift_test_col_build_peak_log = false;
+
 static Size peak_base;
 static Size peak_max;
+static Size peak_logged;
+
+#define PEAK_TOP	8
+
+typedef struct PeakTop
+{
+	const char *name;
+	Size		self;
+} PeakTop;
+
+static void
+peak_walk(MemoryContext c, PeakTop *top)
+{
+	Size		self = MemoryContextMemAllocated(c, false);
+
+	for (int i = 0; i < PEAK_TOP; i++)
+		if (self > top[i].self)
+		{
+			memmove(top + i + 1, top + i, (PEAK_TOP - i - 1) * sizeof(PeakTop));
+			top[i] = (PeakTop) {c->name, self};
+			break;
+		}
+	for (MemoryContext k = c->firstchild; k != NULL; k = k->nextchild)
+		peak_walk(k, top);
+}
+
+static void
+peak_say(Size now)
+{
+	PeakTop		top[PEAK_TOP] = {{0}};
+	StringInfoData buf;
+
+	peak_walk(TopMemoryContext, top);
+	initStringInfo(&buf);
+	for (int i = 0; i < PEAK_TOP && top[i].name != NULL; i++)
+		appendStringInfo(&buf, "%s%s=%zu", i ? ", " : "", top[i].name, top[i].self / 1024);
+	elog(LOG, "sift_col build peak %zu kB: %s", (now - peak_base) / 1024, buf.data);
+	pfree(buf.data);
+}
 
 void
 sift_colb_peak_begin(void)
 {
-	peak_base = peak_max = MemoryContextMemAllocated(TopMemoryContext, true);
+	static TimestampTz statement;
+
+	if (statement == GetCurrentStatementStartTimestamp())
+		return;
+	statement = GetCurrentStatementStartTimestamp();
+	peak_base = peak_max = peak_logged = MemoryContextMemAllocated(TopMemoryContext, true);
 	sift_test_col_build_peak_kb = 0;
 }
 
@@ -53,6 +100,11 @@ sift_colb_peak_note(void)
 	{
 		peak_max = now;
 		sift_test_col_build_peak_kb = (int) ((peak_max - peak_base) / 1024);
+		if (sift_test_col_build_peak_log && now > peak_logged + 1024 * 1024)
+		{
+			peak_logged = now;
+			peak_say(now);
+		}
 	}
 }
 #endif

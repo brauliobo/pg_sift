@@ -89,8 +89,9 @@ extern void sift_colb_peak_note(void);
  * kB the writer of a segment holds before the segment is cut (0 = by maintenance_work_mem); the segments a participant may hold (0 = the directory's room)
  */
 extern PGDLLIMPORT int sift_test_col_workers;
-extern PGDLLIMPORT int sift_test_col_build_peak_kb;	/* kB of memory (contexts of the backend) the last sift_col build of this session held above what it started with, at its peak */
+extern PGDLLIMPORT int sift_test_col_build_peak_kb;	/* kB of memory (contexts of the backend) the builds of the last statement of this session held above what it started with, at their peak */
 extern void sift_colb_peak_begin(void);
+extern PGDLLIMPORT bool sift_test_col_build_peak_log;	/* the largest contexts are logged each time the peak grows by a MB */
 extern PGDLLIMPORT char *sift_test_vstore_columns;
 extern PGDLLIMPORT int sift_test_col_fail_sb;
 extern PGDLLIMPORT int sift_test_col_segment_kb;
