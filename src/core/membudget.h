@@ -13,24 +13,23 @@
 
 #ifdef SIFT_TESTING
 
-#include "utils/memutils.h"
+#include <stddef.h>
 
-#include "core/membudget_table.h"
+typedef struct MemoryContextData *MemoryContext;
 
 typedef struct SiftMemScope
 {
 	int			depth;
 } SiftMemScope;
 
-extern SiftMemScope sift_mem_scope_begin(const char *name, MemoryContext cx, Size budget, const char *formula);
+extern SiftMemScope sift_mem_scope_begin(const char *name, MemoryContext cx);
 extern void sift_mem_scope_end(SiftMemScope *scope);
 extern void sift_mem_checkpoint(void);
 
 #define SIFT_MEM_CAT_(a, b) a##b
 #define SIFT_MEM_CAT(a, b) SIFT_MEM_CAT_(a, b)
 #define SIFT_MEM_SCOPE(name, cx) \
-	SiftMemScope SIFT_MEM_CAT(sift_mem_scope_, __LINE__) __attribute__((cleanup(sift_mem_scope_end))) = \
-		sift_mem_scope_begin(#name, (cx), SIFT_MEMB_##name, SIFT_MEMF_##name)
+	SiftMemScope SIFT_MEM_CAT(sift_mem_scope_, __LINE__) __attribute__((cleanup(sift_mem_scope_end))) = sift_mem_scope_begin(#name, (cx))
 #define SIFT_MEM_CHECKPOINT() sift_mem_checkpoint()
 
 #else

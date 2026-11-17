@@ -19,6 +19,7 @@
 
 #include "core/host.h"
 #include "core/membudget.h"
+#include "core/membudget_table.h"
 #include "core/sift.h"
 
 PG_FUNCTION_INFO_V1(sift_test_mem_highwater);
@@ -31,6 +32,8 @@ typedef struct MemMark
 	const char *name;
 	Size		peak;
 	Size		budget;
+	const char *formula;
+	Size		(*bytes) (void);
 	uint64		begins;
 	uint64		checks;
 } MemMark;
@@ -40,7 +43,6 @@ typedef struct MemFrame
 	MemMark    *mark;
 	MemoryContext cx;
 	Size		budget;
-	const char *formula;
 	SubTransactionId subxid;
 } MemFrame;
 
@@ -59,8 +61,13 @@ mark_of(const char *name)
 		if (marks[i].name == name || strcmp(marks[i].name, name) == 0)
 			return &marks[i];
 	SIFT_INVARIANT(nmarks < SIFT_MEM_NAMES, "sift: more memory scopes than the %d of core/membudget.c", SIFT_MEM_NAMES);
-	marks[nmarks].name = name;
-	return &marks[nmarks++];
+	for (int i = 0; i < lengthof(budgets); i++)
+		if (strcmp(budgets[i].name, name) == 0)
+		{
+			marks[nmarks] = (MemMark) {.name = name, .bytes = budgets[i].bytes, .formula = budgets[i].formula};
+			return &marks[nmarks++];
+		}
+	ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("memory scope %s has no row in test/mem-budgets.tsv", name)));
 }
 
 static void
@@ -87,7 +94,7 @@ subxact_abort(SubXactEvent event, SubTransactionId mySubid, SubTransactionId par
 }
 
 SiftMemScope
-sift_mem_scope_begin(const char *name, MemoryContext cx, Size budget, const char *formula)
+sift_mem_scope_begin(const char *name, MemoryContext cx)
 {
 	MemMark    *mark = mark_of(name);
 	SiftMemScope scope = {depth};
@@ -101,8 +108,8 @@ sift_mem_scope_begin(const char *name, MemoryContext cx, Size budget, const char
 	}
 	SIFT_INVARIANT(depth < SIFT_MEM_DEPTH, "sift: memory scopes nest deeper than the %d of core/membudget.c", SIFT_MEM_DEPTH);
 	mark->begins++;
-	mark->budget = budget;
-	frames[depth++] = (MemFrame) {mark, cx, budget, formula, GetCurrentSubTransactionId()};
+	mark->budget = mark->bytes();
+	frames[depth++] = (MemFrame) {mark, cx, mark->budget, GetCurrentSubTransactionId()};
 	return scope;
 }
 
@@ -163,6 +170,8 @@ sift_mem_checkpoint(void)
 	if (depth == 0 || !sift_test_mem_check)
 		return;
 	f = &frames[depth - 1];
+	if (f->cx == NULL)
+		return;
 	used = MemoryContextMemAllocated(f->cx, true);
 	f->mark->checks++;
 	if (used > f->mark->peak)
@@ -171,7 +180,7 @@ sift_mem_checkpoint(void)
 	if (used > limit)
 		/* check-errors: allow XX000 is the code of a budget failure of the test build, which the CI reports by name */
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
-						errmsg("sift memory budget exceeded: %s: %zu > %zu bytes (%s)", f->mark->name, used, limit, f->formula),
+						errmsg("sift memory budget exceeded: %s: %zu > %zu bytes (%s)", f->mark->name, used, limit, f->mark->formula),
 						errdetail("The largest contexts of the scope, in bytes: %s.", top_text(f->cx))));
 }
 
