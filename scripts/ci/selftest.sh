@@ -328,13 +328,13 @@ if [[ $MODE == --selftest ]]; then
 	want=$("$REPO/scripts/budget.sh" limits script:ci.sh | cut -d' ' -f2)
 	[[ -n $want && $cap == "$want" ]] || { echo "FAIL: the scratch cap of the quick tier (CI_MAX_MB '$cap' in scripts/ci/config.sh) is not the tmpfs budget of script:ci.sh in scripts/budgets.tsv ('$want')"; bad=1; }
 	# the scratch table (scripts/scratch.tsv): a row is a job of a plan and a number of MB, and scratch_table keeps the row of a job no summary has, replaces a measured one (plus 5%, to ten) and drops one
-	# measured under 150 MB
+	# measured under 150 MB (a job that failed keeps its row)
 	known=$(for m in quick full; do for pg in 17 18; do for deep in '' 1; do plan_of $m $pg "$deep"; echo "$PLAN_OUT"; done; done; done | awk '{ print $1 }' | sort -u)
 	stale=$(grep -v '^#' "$REPO/scripts/scratch.tsv" | cut -f1 | sort | comm -23 - <(echo "$known") | paste -sd' ' -)
 	[[ -z $stale ]] || { echo "FAIL: scripts/scratch.tsv has rows for jobs that are in no plan: $stale (scripts/ci.sh --scratch FILE... updates the table)"; bad=1; }
 	grep -v '^#' "$REPO/scripts/scratch.tsv" | grep -qvE $'^[a-z0-9_-]+\t[0-9]+$' && { echo "FAIL: scripts/scratch.tsv has a row that is not job, tab, MB"; bad=1; }
 	printf '# header\nkept\t500\nreplaced\t900\nshrunk\t400\n' >"$ST/table.tsv"
-	printf 'replaced\tPASS\t5\t1000\t0\t\nshrunk\tPASS\t5\t120\t0\t\nnew\tPASS\t5\t200\t0\t\nsmall\tPASS\t5\t90\t0\t\nreplaced\tPASS\t5\t800\t0\t\n' >"$ST/runs.tsv"
+	printf 'replaced\tPASS\t5\t1000\t0\t\nshrunk\tPASS\t5\t120\t0\t\nnew\tPASS\t5\t200\t0\t\nsmall\tPASS\t5\t90\t0\t\nreplaced\tPASS\t5\t800\t0\t\nkept\tFAIL\t5\t10\t0\t\n' >"$ST/runs.tsv"
 	[[ $(scratch_table "$ST/table.tsv" "$ST/runs.tsv" | paste -sd'|' -) == '# header|replaced	1050|kept	500|new	210' ]] ||
 		{ echo "FAIL: scratch_table does not keep, replace and drop rows as measured: $(scratch_table "$ST/table.tsv" "$ST/runs.tsv" | paste -sd'|' -)"; bad=1; }
 	# the skips of a job: each form of skip line gives its reason, a line that is not a skip gives none, and a skip with no reason is named; the retained summary of a run lists the skips
