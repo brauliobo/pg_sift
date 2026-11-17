@@ -6,6 +6,8 @@
 #                                     (scripts/areas.tsv; --list prints them, --github the outputs of the workflow's `changes` job)
 #   scripts/ci.sh stop [DIR]          ends the run of the scratch directory DIR (default $SIFT_CI_TMP) by the pid it recorded in DIR/run.pid, never by a name
 #   scripts/ci.sh --times [RESULTS]   the per-job wall and CPU seconds of a kept run (KEEP=1), longest first
+#   scripts/ci.sh summary [FILE...]   the jobs of the last runs by state and every job that skipped with its reasons, from the one-line-per-job files a run retains in
+#                                     $TMPDIR/sift-ci-summary (default: all of them); fails when a skip gives no reason
 #   scripts/ci.sh --plan [quick|full] the jobs and whether each runs in the pool or after it; --selftest checks that on every PostgreSQL major
 #
 # quick (default, about a minute on 8 free cores): non-ASan build, small corpora and short runs. installcheck (also against the
@@ -81,10 +83,20 @@ if [[ $MODE == --times ]]; then
 		{ printf "%-44s %7d %7.1f  %-6s %s\n", $1, $4, $9, $6, $3; w += $4; c += $9 } END { printf "%-44s %7d %7.1f\n", "total", w, c }'
 	exit
 fi
+if [[ $MODE == summary ]]; then
+	source "$REPO/scripts/ci/skips.sh"
+	shift
+	files=("$@")
+	(( ${#files[@]} )) || files=("${TMPDIR:-/tmp}"/sift-ci-summary/*.tsv)
+	[[ -f ${files[0]} ]] || { echo "ci: summary: no retained summary (a run writes one to ${TMPDIR:-/tmp}/sift-ci-summary)" >&2; exit 2; }
+	summary_report "${files[@]}"
+	exit
+fi
 # the rest of the run, in the order it needs: each part is a piece of this script, sourced into this shell (scripts/ci/NAME.sh)
 source "$REPO/scripts/ci/affected.sh"
 source "$REPO/scripts/ci/weights.sh"
 source "$REPO/scripts/ci/procs.sh"
+source "$REPO/scripts/ci/skips.sh"
 source "$REPO/scripts/ci/selftest.sh"
 source "$REPO/scripts/ci/config.sh"
 source "$REPO/scripts/ci/jobs.sh"

@@ -323,9 +323,31 @@ if [[ $MODE == --selftest ]]; then
 	{ wait "$pm"; } 2>/dev/null   # the postmaster is a child of this shell: a stopped one is a zombie until it is waited for
 	! kill -0 "$pm" 2>/dev/null || { echo "FAIL: the postmaster in the directory of a dead run is not stopped"; bad=1; kill -KILL "$pm"; }
 	[[ -d $t/sift-ci-$$ && -d $t/sift-ci-1$dead ]] || { echo "FAIL: the directory of a live run or a kept one is reaped"; bad=1; }
+	# the skips of a job: each form of skip line gives its reason, a line that is not a skip gives none, and a skip with no reason is named; the retained summary of a run lists the skips
+	# of its jobs and fails when one has no reason. No test script says a skip without one
+	t=$ST/skips.log
+	printf '%s\n' 'ok 3 # skip needs PostgreSQL 18' '1..0 # SKIP no release tag' 'test/t/x.sh .. skipped: the seeds run in the full tier only' 'SKIP: server is not the ASan flavor' \
+		'coldiff: SKIP: no data directory' 'ok 4 - fine' '# NOTICE:  extension "x" already exists, skipping' 'isa_check: ok, 13 objects skipped' >"$t"
+	[[ $(job_skips "$t" | paste -sd'|' -) == 'needs PostgreSQL 18|no release tag|the seeds run in the full tier only|server is not the ASan flavor|no data directory' ]] ||
+		{ echo "FAIL: job_skips gives '$(job_skips "$t" | paste -sd'|' -)' for the log of five skips and three lines that are none"; bad=1; }
+	printf '%s\n' 'ok 5 # skip' '1..0 # SKIP' 'test/t/y.sh .. skipped' 'test/t/y.sh .. skipped: no reason given' 'SKIP' 'SKIP:' >"$t"
+	[[ $(job_skips "$t" | grep -cxF "$NO_REASON") == 6 ]] || { echo "FAIL: job_skips does not name the six skips that give no reason: $(job_skips "$t" | paste -sd'|' -)"; bad=1; }
+	printf '%s\n' 'ok 1 - fine' 'ok 2 # skip a reason' >"$t"
+	[[ $(job_state PASS "$t") == PASS ]] || { echo "FAIL: a job that ran tests and skipped one is not PASS"; bad=1; }
+	printf '%s\n' '1..0 # SKIP a reason' >"$t"
+	[[ $(job_state PASS "$t") == SKIP && $(job_state FAIL "$t") == FAIL ]] || { echo "FAIL: a job that only skipped is not SKIP, or a failed one is not FAIL"; bad=1; }
+	[[ $(job_row a PASS 3 40 "$t") == $'a\tSKIP\t3\t40\t1\ta reason' ]] || { echo "FAIL: job_row is not 'id state seconds peak skips reasons': $(job_row a PASS 3 40 "$t")"; bad=1; }
+	printf 'a\tSKIP\t3\t40\t1\ta reason\nb\tPASS\t4\t50\t0\t\n' >"$ST/jobs.tsv"
+	out=$(summary_report "$ST/jobs.tsv") || { echo "FAIL: summary_report fails for skips that all give a reason"; bad=1; }
+	[[ $out == *'  SKIP a: a reason'* && $out == *'2 jobs: 1 pass, 0 fail, 1 skip; 1 report skips'* ]] || { echo "FAIL: summary_report does not list the skips and count the states: $out"; bad=1; }
+	printf 'c\tPASS\t4\t50\t1\t%s\n' "$NO_REASON" >>"$ST/jobs.tsv"
+	summary_report "$ST/jobs.tsv" >/dev/null && { echo "FAIL: summary_report passes a skip with no reason"; bad=1; }
+	for f in $(git -C "$REPO" ls-files 'test/t/*.sh' 'test/t/*.bash'); do
+		! grep -qE "(# SKIP|^[[:space:]]*skip [0-9]+)[[:space:]'\"]*(;|\$)" "$REPO/$f" || { echo "FAIL: $f says a skip and gives no reason"; bad=1; }
+	done
 	# -h and --help of every subcommand print the header and exit 0 before anything starts (the timeout is for a run that would start)
 	TM=(); for tm in timeout gtimeout; do command -v $tm >/dev/null && { TM=($tm 10); break; }; done   # macOS has neither without coreutils
-	for m in quick full affected stop --times --plan --shards --areas-regex; do for h in -h --help; do
+	for m in quick full affected stop summary --times --plan --shards --areas-regex; do for h in -h --help; do
 		out=$(SIFT_CI_TMP=$ST/help "${TM[@]}" "$0" $m $h 2>&1)
 		[[ $? == 0 && $out == '# Single entry point'* ]] || { echo "FAIL: ci.sh $m $h does not print the usage and exit 0"; bad=1; }
 	done; done

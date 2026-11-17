@@ -7,19 +7,34 @@ TMPBASE=${TMPDIR:-/tmp}; [[ $(uname -s) != Darwin ]] || TMPBASE=/tmp
 [[ $(uname -s) != Darwin ]] || export LANG=${LANG:-en_US.UTF-8}
 BASE=${SIFT_CI_TMP:-$TMPBASE/sift-ci-$$}
 LOG=$BASE/logs
+SUMMARY_DIR=$TMPBASE/sift-ci-summary   # one line per job of the last run of each tier and shard: what passed, failed or skipped, and why, once the logs of the passing jobs are gone
 BASE_PORT=${SIFT_PORT:-56130}
 # one initdb per run: every cluster starts as a copy (the shell tests and lane clusters, with 1 MB WAL segments; the
 # PostgreSQL::Test::Cluster nodes, which are all WAL tests)
 export SIFT_ROOT=$BASE/root SIFT_INITDB_TEMPLATE=$BASE/initdb-shell INITDB_TEMPLATE=$BASE/initdb-perl PG_TEST_PORT_DIR=$BASE/ports
 reap_stale "$TMPBASE"
 [[ -n ${CI:-} ]] || "$S/pressure.sh" --wait || echo "ci: the box is still under pressure after the wait, starting anyway" >&2   # a shared box: the lanes would stall the others
-rm -rf "$BASE" && mkdir -p "$LOG" "$BASE/claims" "$BASE/running" "$PG_TEST_PORT_DIR"
+rm -rf "$BASE" && mkdir -p "$LOG" "$LOG/peak" "$BASE/claims" "$BASE/running" "$PG_TEST_PORT_DIR"
 proc_id "$MAIN" >"$BASE/run.pid"   # scripts/ci.sh stop DIR ends this run by this pid, never by a name
 t0=$SECONDS
 
+# job_peaks: the size of the scratch of each running job (its lane directory, with the lane's cluster, when it uses it; else its own directory) into logs/peak/ID: step() records it and
+# compares it with the estimate the scheduler trusts
+job_peaks() {
+	local f id dir mb
+	for f in "$BASE"/running/*; do
+		id=${f##*/}
+		[[ -f $BASE/claims/$id/lane ]] || continue
+		dir=$BASE/$(<"$BASE/claims/$id/lane")
+		[[ ${J_CLUSTER[$id]:-0} == 1 ]] || dir=$dir/$id
+		mb=$(( $(du -sk "$dir" 2>/dev/null | cut -f1) / 1024 ))
+		(( mb > $(cat "$LOG/peak/$id" 2>/dev/null || echo 0) )) && echo "$mb" >"$LOG/peak/$id"
+	done
+}
 watchdog() { # stops every postmaster under $BASE once the scratch directory passes the cap
 	local peak=0 mb
 	while sleep 2 && kill -0 "$MAIN" 2>/dev/null; do   # the lanes and these loops end with the run, also when it was killed without a trap
+		job_peaks
 		mb=$(( $(du -sk "$BASE" 2>/dev/null | cut -f1) / 1024 ))
 		(( mb > peak )) && { peak=$mb; echo "$peak" >"$LOG/peak_mb"; }
 		if (( mb > MAX_MB )); then
@@ -57,6 +72,7 @@ cleanup() {
 	local pids; pids=$(descendants $$)
 	[[ -z $pids ]] || kill $pids 2>/dev/null
 	stop_postmasters "$BASE"
+	[[ ! -s $LOG/jobs.tsv ]] || { mkdir -p "$SUMMARY_DIR" && cp "$LOG/jobs.tsv" "$SUMMARY_DIR/$MODE-${SHARD}of${NSHARDS:-1}.tsv"; }
 	if [[ -z ${KEEP:-} ]] && { [[ ${failed:-1} == 0 ]] || [[ -n ${interrupted:-} && -z ${SIFT_CI_TMP:-} ]]; }; then rm -rf "$BASE"; else touch "$BASE/kept" 2>/dev/null; echo "scratch kept: $BASE"; fi
 }
 trap cleanup EXIT
@@ -69,10 +85,10 @@ lane_cpu() {
 	[[ ${J_CLUSTER[$1]:-0} == 1 && -f $SIFT_TMP/data/postmaster.pid ]] || { echo 0; return; }
 	awk '{ print ($16 + $17) / 100 }' "/proc/$(head -1 "$SIFT_TMP/data/postmaster.pid")/stat" 2>/dev/null || echo 0
 }
-# step ID SUITE CMD...: runs one job or stage with its output in logs/ID.log; appends "id suite status seconds skips lane start end cpu_seconds"
-# to the results and returns its status
+# step ID SUITE CMD...: runs one job or stage with its output in logs/ID.log; appends "id suite status seconds skips lane start end cpu_seconds peak_mb"
+# to the results and the line of the job to the retained summary (jobs.tsv), and returns its status. A skip that gives no reason fails the job
 step() {
-	local id=$1 suite=$2 t=$SECONDS status=PASS skips c0 c1 rc=0
+	local id=$1 suite=$2 t=$SECONDS status=PASS skips c0 c1 rc=0 peak
 	shift 2
 	[[ -e $LOG/cap_exceeded ]] && return
 	c0=$(lane_cpu "$id")
@@ -81,10 +97,15 @@ step() {
 		{ echo "ci: $id stopped after $((SECONDS - t)) s (CI_JOB_TIMEOUT), the end of its log:"; tail -n 40 "$LOG/$id.log"; } | tee -a "$LOG/$id.log"
 	fi
 	c1=$(lane_cpu "$id")
-	skips=$(grep -ciE '\bskip' "$LOG/$id.log" || true)
+	skips=$(job_skips "$LOG/$id.log" | grep -c .)
+	[[ $status == FAIL ]] || ! job_skips "$LOG/$id.log" | grep -qxF "$NO_REASON" || { status=FAIL; echo "ci: $id skips without a reason: say why (SKIP: reason)" | tee -a "$LOG/$id.log"; }
+	peak=$(cat "$LOG/peak/$id" 2>/dev/null || echo 0)
 	echo "ci: $status $id $((SECONDS - t)) s ($LANE)"
-	printf '%s %s %s %s %s %s %s %s %s\n' "$id" "$suite" "$status" $((SECONDS - t)) "$skips" "$LANE" "$t" "$SECONDS" \
-		"$(awk -v a="$(cat "$LOG/$id.cpu" 2>/dev/null || echo 0)" -v c0="$c0" -v c1="$c1" 'BEGIN { printf "%.1f", a + c1 - c0 }')" >>"$LOG/results"
+	printf '%s %s %s %s %s %s %s %s %s %s\n' "$id" "$suite" "$status" $((SECONDS - t)) "$skips" "$LANE" "$t" "$SECONDS" \
+		"$(awk -v a="$(cat "$LOG/$id.cpu" 2>/dev/null || echo 0)" -v c0="$c0" -v c1="$c1" 'BEGIN { printf "%.1f", a + c1 - c0 }')" "$peak" >>"$LOG/results"
+	job_row "$id" "$status" $((SECONDS - t)) "$peak" "$LOG/$id.log" >>"$LOG/jobs.tsv"
+	# a job that outgrew the estimate the scheduler trusts is named in the summary: the budget holds only while EST_MB is true
+	(( peak > ${EST_MB[$id]:-$JOB_MB} * 5 / 4 + 100 )) && echo "$id $peak ${EST_MB[$id]:-$JOB_MB}" >>"$LOG/estimates"
 	# the log of a run that is cut (a timeout, a hang) names the jobs that had finished: the results are in the logs artifact of a failed run only
 	printf 'ci: %-44s %s %5ss lane %s\n' "$id" "$status" $((SECONDS - t)) "$LANE"
 	[[ $status == PASS ]]
