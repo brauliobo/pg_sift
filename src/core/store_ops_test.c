@@ -489,8 +489,8 @@ sift_test_live2_clear(PG_FUNCTION_ARGS)
 	Datum		values[4];
 	bool		nulls[4] = {0};
 
-	if (nsb == 0 || nsb > 100000 || sbidx >= nsb)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift._test_live2_clear: nsb must be 1 to 100000 and sbidx below it")));
+	if (nsb == 0 || nsb > 1000000 || sbidx >= nsb)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift._test_live2_clear: nsb must be 1 to 1000000 and sbidx below it")));
 	reg = palloc0((nsb + 1) * sizeof(uint64));
 	dirty = palloc0((nsb + 7) / 8);
 	rows = BufFileCreateTemp(false);
