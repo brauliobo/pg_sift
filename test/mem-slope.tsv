@@ -29,9 +29,9 @@ update_all_text	slope	12	clean		update {m} set txt = txt || 'x', title = title |
 delete_all	slope	12	clean		delete from {m};
 insert_select	slope	12	clean		insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;
 table_create_as	slope	180	open		create table {s} using sift_table as select * from {f} order by id;
-table_update_all	slope	130	open	create table {s} using sift_table as select * from {f} order by id;	update {s} set amount = amount + 1;
-table_delete_part	slope	30	open	create table {s} using sift_table as select * from {f} order by id;	delete from {s} where k_lo < 5;
-table_vacuum	slope	30	open	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	vacuum {s};
+table_update_all	slope	60	open	create table {s} using sift_table as select * from {f} order by id;	set sift.tomb_log_limit = '1MB'; update {s} set amount = amount + 1;
+table_delete_part	slope	12	clean	create table {s} using sift_table as select * from {f} order by id;	set sift.tomb_log_limit = '1MB'; delete from {s} where k_lo < 5;
+table_vacuum	slope	12	clean	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	set sift.tomb_log_limit = '1MB'; vacuum {s};
 table_scan	slope	30	open	create table {s} using sift_table as select * from {f} order by id;	select count(*), sum(length(txt)) from {s};
 leak_aggregate	leak	0	clean		select k_mid, cat, count(*), avg(amount) from {f} group by 1,2;
 leak_distinct_text	leak	0	clean		select count(distinct txt) from {f};

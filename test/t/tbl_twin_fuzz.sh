@@ -27,6 +27,7 @@ autovacuum_naptime = 2s
 sift.maintenance_naptime = 200
 sift.table_auto_defrag = on
 sift.async_maintenance = on
+sift.tomb_log_limit = ${SIFT_FUZZ_TOMB_LIMIT:-65536}
 max_wal_size = 512MB
 shared_buffers = 128MB
 max_locks_per_transaction = 256"
