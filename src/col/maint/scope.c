@@ -118,13 +118,13 @@ run_bytes(void)
 	return Max((Size) maintenance_work_mem * 1024 / 2, SCOPE_RUN_MIN_BYTES);
 }
 
-/* The merge of the runs holds two units of each (the one it reads and the one before it): a run is cut into units of the rows that make the runs there will be fit the bytes of a run, at least SCOPE_RUN_UNIT_MIN */
+/* The merge of the runs holds two units of each (the one it reads and the one before it), a quarter of maintenance_work_mem in all (at least a quarter of SCOPE_RUN_MIN_BYTES): a run is cut into units of the rows that make the runs there will be fit it, at least SCOPE_RUN_UNIT_MIN */
 #define SCOPE_RUN_UNIT_MIN	256
 
 static uint32
 run_unit_rows(const ScopeRun *run, uint32 aim, uint32 runs)
 {
-	uint64		fit = run_bytes() / Max(runs, 1) / 2 / sift_colk_row_bytes(run->r->schema);
+	uint64		fit = Max((Size) maintenance_work_mem * 1024, SCOPE_RUN_MIN_BYTES) / 4 / Max(runs, 1) / 2 / sift_colk_row_bytes(run->r->schema);
 
 	return (uint32) Min(sift_colk_unit_rows(aim), Max(fit, SCOPE_RUN_UNIT_MIN));
 }
