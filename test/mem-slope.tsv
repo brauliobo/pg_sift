@@ -57,3 +57,4 @@ leakx_maintain_col	leakx	0	clean		update {m} set amount = amount + 1 where k_lo 
 leakx_refresh	leakx	0	clean		select * from sift.col_refresh('{m}_col'::regclass); select sift.col_rollup_refresh('{m}_col'::regclass); select count(*) from sift.col_repair('{m}_col'::regclass);
 leakx_table_maintain	leakx	0	clean	create table {s} using sift_table as select * from {f} order by id;	update {s} set amount = amount + 1 where k_lo < 3; select sift.table_maintain('{s}'::regclass); vacuum {s};
 leakx_wbuf	leakx	0	clean	set sift.test_limits = 'dict_cache_kb=1024';	update {m} set amount = amount + 1 where k_lo < 2; select sift.col_promote('{m}_col'::regclass); select count(*) from {m} where id = 5; select sift.col_merge('{m}_col'::regclass, true);
+leakx_index_cycle	leakx	0	clean		create index {m}_c on {m} using sift_col (k_hi, txt, amount); select k_lo, count(distinct txt) from {m} group by 1; select txt, count(*) from {m} group by 1 limit 5; drop index {m}_c;

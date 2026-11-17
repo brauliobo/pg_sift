@@ -26,6 +26,7 @@
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 
 #include "col/codec.h"
 #include "col/enc.h"
@@ -90,6 +91,30 @@ struct SiftVStore
 };
 
 static HTAB *views;
+static bool stores_changed;
+
+static void
+stores_relcache_changed(Datum arg, Oid relid)
+{
+	stores_changed = true;
+}
+
+/* The views of the stores that were dropped: a store is one relation, and its view holds the strings of all its codes */
+static void
+views_drop_gone(Oid keep)
+{
+	HASH_SEQ_STATUS seq;
+	VStoreView *v;
+
+	stores_changed = false;
+	hash_seq_init(&seq, views);
+	while ((v = hash_seq_search(&seq)) != NULL)
+		if (v->store != keep && !SearchSysCacheExists1(RELOID, ObjectIdGetDatum(v->store)))
+		{
+			MemoryContextDelete(v->cx);
+			hash_search(views, &v->store, HASH_REMOVE, NULL);
+		}
+}
 
 static void
 vs_corrupt(Relation rel, const char *what)
@@ -108,7 +133,10 @@ view_get(Oid store)
 		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(VStoreView), .hcxt = TopMemoryContext};
 
 		views = hash_create("sift value store views", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		CacheRegisterRelcacheCallback(stores_relcache_changed, (Datum) 0);
 	}
+	if (stores_changed)
+		views_drop_gone(store);
 	v = hash_search(views, &store, HASH_ENTER, &found);
 	if (!found)
 	{
