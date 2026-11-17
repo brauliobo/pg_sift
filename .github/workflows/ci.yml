@@ -290,7 +290,7 @@ jobs:
         run: |
           prefix="old-lib-$RUNNER_OS-$RUNNER_ARCH-pg${{ matrix.pg }}-gcc$(gcc -dumpfullversion)-shard${{ matrix.shard }}-"
           echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
-          echo "key=$prefix$(git tag --list 'v*' | sha256sum | cut -c1-12)-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat_*.sh', 'test/t/old_lib_refusal.sh', 'test/t/pg_upgrade.sh') }}" >> "$GITHUB_OUTPUT"
+          echo "key=$prefix$(git tag --list 'v*' | sha256sum | cut -c1-12)-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat_*.sh', 'test/t/old_lib_refusal.sh', 'test/t/pg_upgrade.sh', 'test/t/upgrade_compat.sh', 'test/t/upgrade_compat_standby.sh', 'test/t/lib_compat.bash') }}" >> "$GITHUB_OUTPUT"
 
       - name: Cache the older releases
         id: oldlib-cache
