@@ -16,16 +16,16 @@ check() { # ROOT: prints a line for each wait without a row
 if [[ ${1:-} == --selftest ]]; then
 	t=$(mktemp -d "$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/check-polling.XXXXXX") || exit 1
 	trap 'rm -rf "$t"' EXIT
-	git -C "$t" init -q && mkdir -p "$t/scripts" "$t/src/col"
-	printf 'void f(void)\n{\n\tpg_usleep(1000);\n}\n' >"$t/src/col/a.c"
-	printf 'void f(void)\n{\n\tsift_nap(100);\n\tpg_usleep(10);\n}\n' >"$t/src/col/b.c"
-	printf 'void f(void)\n{\n\tWaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT, 1, 0);\n\tWaitLatch(MyLatch, WL_LATCH_SET, 0, 0);\n}\n' >"$t/src/col/c.c"
-	printf 'void f(void)\n{\n\t/* pg_usleep(5) is not taken */\n\tpg_usleep(7);\n}\n' >"$t/src/col/d_test.c"
-	printf 'src/col/b.c\tsift_nap(100)\tpolls a thing\n' >"$t/$allow"
+	git -C "$t" init -q && mkdir -p "$t/scripts" "$t/src/fixture"
+	printf 'void f(void)\n{\n\tpg_usleep(1000);\n}\n' >"$t/src/fixture/a.c"
+	printf 'void f(void)\n{\n\tsift_nap(100);\n\tpg_usleep(10);\n}\n' >"$t/src/fixture/b.c"
+	printf 'void f(void)\n{\n\tWaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT, 1, 0);\n\tWaitLatch(MyLatch, WL_LATCH_SET, 0, 0);\n}\n' >"$t/src/fixture/c.c"
+	printf 'void f(void)\n{\n\t/* pg_usleep(5) is not taken */\n\tpg_usleep(7);\n}\n' >"$t/src/fixture/d_test.c"
+	printf 'src/fixture/b.c\tsift_nap(100)\tpolls a thing\n' >"$t/$allow"
 	git -C "$t" add -A
 	out=$(check "$t")
-	for want in 'src/col/a.c:3' 'src/col/b.c:4' 'src/col/c.c:3'; do grep -q "$want" <<<"$out" || { echo "selftest: $want was not refused: $out"; exit 1; }; done
-	if grep -qE 'src/col/b.c:3|src/col/c.c:4|d_test' <<<"$out"; then echo "selftest: an allowed, untimed or test wait was refused: $out"; exit 1; fi
+	for want in 'src/fixture/a.c:3' 'src/fixture/b.c:4' 'src/fixture/c.c:3'; do grep -q "$want" <<<"$out" || { echo "selftest: $want was not refused: $out"; exit 1; }; done
+	if grep -qE 'src/fixture/b.c:3|src/fixture/c.c:4|d_test' <<<"$out"; then echo "selftest: an allowed, untimed or test wait was refused: $out"; exit 1; fi
 	echo "check-polling selftest ok"
 	exit 0
 fi
