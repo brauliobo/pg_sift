@@ -267,6 +267,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 					sift_col_option_error("key_cut", sift_col_options_key_cut(index),
 										  psprintf("\"%s\" is not an integer, date, timestamp, numeric or float column of the index (at most %d)", tok, SIFT_COL_CUT_MAX));
 				r->cut[r->ncut++] = id;
+				pfree(tok);
 			}
 		}
 	}
