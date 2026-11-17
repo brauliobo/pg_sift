@@ -126,7 +126,7 @@ vnum_program_ok(const SiftAggNum *p)
 			default:
 				return false;
 		}
-		if (sp > VN_STK)
+		if (sp < 1 || sp > VN_STK)
 			return false;
 	}
 	return sp == 1;

@@ -113,6 +113,7 @@ TESTING_REGRESS += agg_topn_offset_keyed
 TESTING_REGRESS += agg_topn_offset_ties
 TESTING_REGRESS += agg_topn_with_ties
 TESTING_REGRESS += agg_vis_counts
+TESTING_REGRESS += agg_vnum_program
 TESTING_REGRESS += aggkern_%
 TESTING_REGRESS += aggstub_%
 TESTING_REGRESS += analyzer_version

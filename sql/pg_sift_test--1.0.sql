@@ -143,6 +143,10 @@ CREATE FUNCTION sift._test_intids(seed int8, cases int4, OUT bad int8, OUT paged
 CREATE FUNCTION sift._test_spec_pack_bits(bits int8) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_spec_pack_bits' LANGUAGE C STRICT;
 
+-- The proof of a vector program of an aggregate argument (src/agg/vnum_test.c): whether it takes a postfix program given as the codes of its steps.
+CREATE FUNCTION sift._test_vnum_program_ok(steps int4[]) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_vnum_program_ok' LANGUAGE C STRICT;
+
 -- Index build (src/bm25/segment_sql.c): every posting decoded from the index.
 CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text, OUT tid tid,
 									OUT tf int4, OUT dl int4) RETURNS SETOF record
