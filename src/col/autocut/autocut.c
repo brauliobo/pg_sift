@@ -119,10 +119,13 @@ typedef struct CutVerdict
 
 /* the rows of the superblock that starts at block `start`, up to a unit's worth, appended to the sample as one more sampled superblock; false when it holds none */
 static bool
-sample_superblock(Relation heap, TupleTableSlot *slot, Track *tr, int ntr, Samp *samp, char **rows, uint32 *cap, BlockNumber start, BlockNumber nblocks)
+sample_superblock(Relation heap, TupleTableSlot *slot, Track *tr, int ntr, Samp *samp, BlockNumber start, BlockNumber nblocks)
 {
 	TableScanDesc scan;
-	uint32		n = 0;
+	uint32		n = 0,
+				have[AUTOCUT_LEAVES] = {0};
+	int64		lo[AUTOCUT_LEAVES],
+				hi[AUTOCUT_LEAVES];
 	int			u = samp->nsb;
 
 	samp->start[u] = samp->n;
@@ -130,15 +133,9 @@ sample_superblock(Relation heap, TupleTableSlot *slot, Track *tr, int ntr, Samp 
 	heap_setscanlimits(scan, start, Min(SIFT_SB_PAGES, nblocks - start));
 	while (n < SIFT_COL_UNIT_MAX_ROWS && table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
-		uint64	   *rec;
+		uint64	   *rec = acut_spool_slot(&samp->rows);
 		uint64		nulls = 0;
 
-		if (n == *cap)
-		{
-			*cap = Min(*cap * 2, SIFT_COL_UNIT_MAX_ROWS);
-			*rows = repalloc(*rows, (size_t) *cap * samp->recsz);
-		}
-		rec = (uint64 *) (*rows + (size_t) n++ * samp->recsz);
 		rec[0] = ((uint64) (ItemPointerGetBlockNumber(&slot->tts_tid) - start) << 16) | ItemPointerGetOffsetNumber(&slot->tts_tid);
 		for (int t = 0; t < ntr; t++)
 		{
@@ -158,42 +155,32 @@ sample_superblock(Relation heap, TupleTableSlot *slot, Track *tr, int ntr, Samp 
 				value_of(tr[t].type, dat, &x);
 			rec[1 + t] = x;
 			nulls |= (uint64) isnull << t;
+			if (isnull)
+				continue;
+			if (have[t]++ == 0)
+				lo[t] = hi[t] = x;
+			else
+			{
+				lo[t] = Min(lo[t], x);
+				hi[t] = Max(hi[t], x);
+			}
 		}
 		rec[1 + ntr] = nulls;
+		acut_spool_commit(&samp->rows);
+		n++;
 	}
 	table_endscan(scan);
 	if (n == 0)
 		return false;
 	for (int t = 0; t < ntr; t++)
 	{
-		int64		lo = 0,
-					hi = 0;
-		uint32		have = 0;
-
-		for (uint32 i = 0; i < n; i++)
-		{
-			const char *rec = *rows + (size_t) i * samp->recsz;
-			int64		x = ROW_V(rec, t);
-
-			if (ROW_NL(rec, ntr, t))
-				continue;
-			if (have++ == 0)
-				lo = hi = x;
-			else
-			{
-				lo = Min(lo, x);
-				hi = Max(hi, x);
-			}
-		}
-		if (have == 0)
+		if (have[t] == 0)
 			continue;
-		tr[t].nonnull += have;
+		tr[t].nonnull += have[t];
 		tr[t].has[u] = true;
-		tr[t].lo[u] = (double) lo;
-		tr[t].hi[u] = (double) hi;
+		tr[t].lo[u] = (double) lo[t];
+		tr[t].hi[u] = (double) hi[t];
 	}
-	for (uint32 i = 0; i < n; i++)
-		acut_spool_add(&samp->rows, *rows + (size_t) i * samp->recsz);
 	samp->n += n;
 	samp->start[++samp->nsb] = samp->n;
 	SIFT_MEM_CHECKPOINT();
@@ -292,10 +279,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	int			first_open;
 	AttrNumber	cluster = acut_cluster_att(heap);
 	double		best = 0;
-	uint32		cap,
-				sbcap = 1024;
+	uint32		cap;
 	uint32	   *at;
-	char	   *sbrows;
 	int			nat;
 	TupleTableSlot *slot;
 	const char *leaf = NULL;
@@ -380,11 +365,9 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	slot = table_slot_create(heap, NULL);
 	at = palloc_array(uint32, want);
 	nat = plan_superblocks(heap, slot, nsb, want, nblocks, at);
-	sbrows = palloc((size_t) sbcap * samp->recsz);
 	/* the cap on rows is calibrated by the mean rows of a superblock: it ends the sample once the superblocks the rule asks for at least are in, whatever their rows */
 	for (int i = 0; i < nat && (samp->n <= cap || i < Min(AUTOCUT_MIN_SBS, want)); i++)
-		sample_superblock(heap, slot, tr, ntr, samp, &sbrows, &sbcap, (BlockNumber) at[i] * SIFT_SB_PAGES, nblocks);
-	pfree(sbrows);
+		sample_superblock(heap, slot, tr, ntr, samp, (BlockNumber) at[i] * SIFT_SB_PAGES, nblocks);
 	ExecDropSingleTupleTableSlot(slot);
 	v->sampled = samp->nsb;
 	SIFT_MEM_CHECKPOINT();

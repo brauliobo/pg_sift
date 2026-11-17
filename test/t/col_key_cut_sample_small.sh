@@ -86,11 +86,11 @@ for sbs in 256 320 384 448 512; do
 	sql ks "SELECT kx($sbs, 0)" "VACUUM (FREEZE, ANALYZE) kx" "SELECT kxi(3)" "SELECT kd(3, '1MB', $sbs)" >/dev/null || bail "fixture $sbs failed"
 done
 # the code's bound for the stage (R = 2,328 rows of a superblock, recsz = 8 * (2 + leaves) bytes of a sampled row, mwm = 1MB):
-#   sample  mwm + R * recsz + 192 kB          (the superblock being read, the tracks, the state of the index)
+#   sample  mwm + 192 kB                       (the tracks, the state of the index)
 #   cells   mwm + 8 * R + 16,432 * sampled + 64 kB   (the sorted values of a superblock, a buffer for each run on the file)
 #   layout  mwm + R * (recsz + 64) + 4 * R * (recsz + 24) + 4 * R * 88 + 16,432 * nused + 64 kB (the superblock being sorted, the window of the merge, the columns of a unit, a buffer for each run)
 read -r sb_max cb_max lb_max s_spread c_spread l_spread s_slope c_slope l_slope s_flat c_flat l_flat <<<"$(sql ks "
-SELECT max(s_peak - (1048576 + 2328 * 40 + 196608)), max(c_peak - (1048576 + 8 * 2328 + 16432 * sampled + 65536)),
+SELECT max(s_peak - (1048576 + 196608)), max(c_peak - (1048576 + 8 * 2328 + 16432 * sampled + 65536)),
 	max(l_peak - (1048576 + 2328 * (40 + 64) + 4 * 2328 * (40 + 24) + 4 * 2328 * 88 + 16432 * nused + 65536)),
 	max(s_peak) - min(s_peak), max(c_peak - 16432 * sampled) - min(c_peak - 16432 * sampled), max(l_peak - 16432 * nused) - min(l_peak - 16432 * nused),
 	round(regr_slope(s_peak, sample_rows)::numeric, 3), round(regr_slope(c_peak - 16432 * sampled, sample_rows)::numeric, 3), round(regr_slope(l_peak - 16432 * nused, sample_rows)::numeric, 3),
@@ -114,7 +114,7 @@ t1=$(sql ks "SELECT temp_files FROM pg_stat_database WHERE datname = current_dat
 check "the decision wrote temporary files for the rows past maintenance_work_mem" test $((t1 - t0)) -ge 3
 # the bound follows maintenance_work_mem
 for mwm in 2MB 4MB; do sql ks "SELECT kd(3, '$mwm', 384)" >/dev/null || bail "mwm $mwm failed"; done
-out=$(sql ks "SELECT mwm, s_peak - CASE mwm WHEN '1MB' THEN 1048576 WHEN '2MB' THEN 2097152 ELSE 4194304 END <= 2328 * 40 + 196608 FROM kres WHERE sbs IN (384) ORDER BY 1" | tr '\n|' '  ')
+out=$(sql ks "SELECT mwm, s_peak - CASE mwm WHEN '1MB' THEN 1048576 WHEN '2MB' THEN 2097152 ELSE 4194304 END <= 196608 FROM kres WHERE sbs IN (384) ORDER BY 1" | tr '\n|' '  ')
 check "the sample stage held its bound at 1, 2 and 4 MB of maintenance_work_mem" test "$out" == "1MB t 2MB t 4MB t "
 out=$(sql ks "SELECT s_peak FROM kres WHERE sbs = 384 AND mwm = '4MB'")
 check "and at 4 MB it held more than at 1 MB: the bound is maintenance_work_mem" test "$out" -ge 4194304
