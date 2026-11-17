@@ -169,6 +169,8 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 {
 	ScopeTake  *t = c->scope_pass;
 	static const double counts[] = {1, 3, 10, 30, 100};
+
+	StaticAssertStmt(lengthof(counts) + 1 == SIFT_AGG_SCOPE_KNOTS, "a knot for each count and one for all the keys");
 	ScopeAlt   *a;
 	RelOptInfo *srel;
 	RangeTblEntry *rte;
