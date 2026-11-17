@@ -14,12 +14,12 @@ SELECT s FROM unnest(ARRAY[20000, 24000, 28000, 32000, 36000]) n, LATERAL unnest
 	format('CREATE TABLE ws WITH (autovacuum_enabled = off) AS SELECT i AS id, CASE WHEN i %% 31 = 0 THEN NULL ELSE i * 7919 %% 10007 END AS k,
 		TIMESTAMP ''2026-01-01'' + (i::bigint * 7919 %% 300011) * INTERVAL ''1 minute'' AS ts, ''s'' || lpad((i::bigint * 7919 %% 50)::text, 6, ''0'') AS sc, i %% 100 AS amount
 		FROM generate_series(1, %s) i', n),
-	'SELECT sift._test_mem_highwater(true)',
+	'SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)',
 	'CREATE INDEX ws_i ON ws USING sift_col (id, k, ts, sc, amount) WITH (key_cut = ''off'', key_columns = ''amount'', order_array_columns = ''id, k, ts, sc'')',
 	format('INSERT INTO peaks SELECT %s, ''build'', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE ''col_writer%%''', n),
 	'UPDATE ws SET amount = amount + 1 WHERE id % 3 = 0',
 	'VACUUM ws',
-	'SELECT sift._test_mem_highwater(true)',
+	'SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)',
 	'SELECT sift.col_merge(''ws_i'', true) > 0',
 	format('INSERT INTO peaks SELECT %s, ''merge'', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE ''col_writer%%''', n),
 	'DROP TABLE ws']) WITH ORDINALITY AS t(s, k) ORDER BY n, k
