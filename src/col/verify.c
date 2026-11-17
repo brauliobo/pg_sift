@@ -27,6 +27,7 @@
 #include "core/cmp.h"
 #include "core/errctx.h"
 #include "core/ops.h"
+#include "core/membudget.h"
 
 #define corrupt SIFT_CORRUPT
 
@@ -657,6 +658,7 @@ col_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 	cv->heapallindexed = heapallindexed;
 	cv->cxt = AllocSetContextCreate(old, "sift_col verify", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(cv->cxt);
+	SIFT_MEM_SCOPE(col_verify, cv->cxt);
 	cv->snap = palloc(sizeof(SiftDirSnapshot));
 	sift_errctx_push_diagnostic(&cv->errctx, RelationGetRelid(index));
 	/* the snapshot is registered before the directory is read, and kept: the segments of the copy stay readable while they are verified one at a time */
@@ -674,6 +676,7 @@ col_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 		cv->seg = &cv->snap->segs[i];
 		sift_errctx_segment(&cv->errctx, cv->seg->gen);
 		sound &= sift_check_step(ck, cv->seg->gen, step_segment, cv);
+		SIFT_MEM_CHECKPOINT();
 	}
 	sift_errctx_whole(&cv->errctx);
 	if (sound)
@@ -684,6 +687,7 @@ col_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_scope, cv);
 	if (sound && heapallindexed)
 		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_heap, cv);
+	SIFT_MEM_CHECKPOINT();
 	sift_errctx_pop(&cv->errctx);
 	if (cv->keys)
 		tuplesort_end(cv->keys);
