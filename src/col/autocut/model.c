@@ -152,15 +152,58 @@ typedef struct Cell
 	uint32		n;
 } Cell;
 
-/* the cells of a leaf in the order of the values, those of one value in the order of the superblocks: the runs of the superblocks merged */
+#define CELL_KEY(x) ((x)->key)
+#define CELL_KEY2(x) 0
+#define CELL_TIE(x) ((x)->sb)
+
+static inline int
+cell_cmp(const Cell *x, const Cell *y)
+{
+	if (x->key != y->key)
+		return x->key < y->key ? -1 : 1;
+	return SIFT_CMP3(x->sb, y->sb);
+}
+
+#define CELL_LESS(x, y) (cell_cmp(x, y) < 0)
+
+SIFT_DEFINE_SORT(sort_cells_cmp, Cell, CELL_LESS)
+
+/* a copy of the cells for the radix sort: none when it would pass the largest allocation (the comparison sort then) */
+static void *
+cell_copy(size_t bytes)
+{
+	void	   *copy = bytes <= MaxAllocSize ? palloc_extended(bytes, MCXT_ALLOC_NO_OOM) : NULL;
+
+	SIFT_MEM_CHECKPOINT();
+	return copy;
+}
+
+/* the rows are added in the order of the superblocks, so the radix sort applies */
+SIFT_DEFINE_RADIX_SORT(sort_cells, Cell, CELL_KEY, CELL_KEY2, CELL_TIE, cell_copy, pfree, sort_cells_cmp)
+
+/*
+ * The cells of a leaf in the order of the values, those of one value in the order of the superblocks. The non-NULL rows of the sample are put in a buffer as a cell each, and
+ * sorted: a buffer that holds them all is the order, read as it is; a smaller one is sorted a run at a time (a run ends at a superblock), each run written as cells (the rows of
+ * one value in one superblock counted) to a spool, and the runs are merged.
+ */
 typedef struct Cells
 {
-	AcutSpool		sp;
+	AcutSpool	sp;
 	uint64		bound[AUTOCUT_SBS + 1];
 	AcutMerge	merge;
+	Cell	   *buf;
+	uint32		fill,
+				at;
+	uint64		ncells;			/* the distinct (value, superblock) pairs */
+	Cell		cur;
 	const Cell *next;
 	uint64		groups;
+	uint32		cap;			/* the rows the buffer holds, taken from the budget while it is */
+	bool		runs;
+	AcutBudget *budget;
 } Cells;
+
+#define CELL_HELD	(2 * sizeof(Cell))	/* what a row in the buffer takes of the budget: its cell and the sort's copy */
 
 /* all the cells of one value */
 typedef struct CellGroup
@@ -172,52 +215,108 @@ typedef struct CellGroup
 	uint32		n[AUTOCUT_SBS];
 } CellGroup;
 
-/* the cells of the leaf: the values of each sampled superblock sorted once and written as a run, then read merged */
+/* the cell the rows of the sorted buffer from i on make: those of one value and superblock counted; i is left past them */
+static Cell
+cell_take(const Cell *buf, uint32 fill, uint32 *i)
+{
+	Cell		c = buf[(*i)++];
+
+	for (; *i < fill && buf[*i].key == c.key && buf[*i].sb == c.sb; (*i)++)
+		c.n++;
+	return c;
+}
+
+static void
+cells_write_run(Cells *c)
+{
+	sort_cells(c->buf, c->fill);
+	for (uint32 i = 0; i < c->fill;)
+	{
+		Cell		cell = cell_take(c->buf, c->fill, &i);
+
+		acut_spool_add(&c->sp, &cell);
+	}
+	c->fill = 0;
+	SIFT_MEM_CHECKPOINT();
+}
+
+static const Cell *cells_next(Cells *c);
+
 static void
 cells_begin(Samp *s, const Track *t, Cells *c)
 {
-	AcutCur	cur;
-	uint32		most = 0;
-	int64	   *vals;
+	AcutCur		cur;
+	uint32		most = 0,
+				nr = 0;
 
+	*c = (Cells) {.budget = &s->budget};
 	acut_spool_init(&c->sp, &s->budget, sizeof(Cell));
 	for (int u = 0; u < s->nsb; u++)
 		most = Max(most, s->start[u + 1] - s->start[u]);
-	vals = palloc_array(int64, most);
+	/* a run holds the rows of as many superblocks as half of what the budget has left takes, at least one */
+	c->cap = (uint32) Min((int64) t->nonnull, Max((int64) most, Max(s->budget.left, 0) / 2 / (int64) CELL_HELD));
+	s->budget.left -= c->cap * (int64) CELL_HELD;
+	c->buf = palloc_array(Cell, c->cap);
 	acut_cur_init(&cur, &s->rows, 0, s->n);
 	for (int u = 0; u < s->nsb; u++)
 	{
-		uint32		n = 0;
-
+		if (c->fill > 0 && c->fill + s->start[u + 1] - s->start[u] > c->cap)
+		{
+			c->bound[nr++] = c->sp.n;
+			cells_write_run(c);
+		}
 		for (uint32 i = s->start[u]; i < s->start[u + 1]; i++)
 		{
 			const void *rec = acut_cur_next(&cur);
 
 			if (!ROW_NL(rec, s->ntr, t->idx))
-				vals[n++] = ROW_V(rec, t->idx);
-		}
-		c->bound[u] = c->sp.n;
-		SIFT_MEM_CHECKPOINT();
-		sift_sort_i64(vals, n);
-		for (uint32 i = 0, j; i < n; i = j)
-		{
-			for (j = i; j < n && vals[j] == vals[i];)
-				j++;
-			acut_spool_add(&c->sp, &(Cell) {vals[i], u, j - i});
+				c->buf[c->fill++] = (Cell) {ROW_V(rec, t->idx), u, 1};
 		}
 	}
-	c->bound[s->nsb] = c->sp.n;
 	acut_cur_free(&cur);
-	pfree(vals);
-	acut_merge_begin(&c->merge, &c->sp, c->bound, s->nsb, 1);
-	c->next = acut_merge_next(&c->merge);
+	c->runs = nr > 0;
+	if (!c->runs)
+	{
+		sort_cells(c->buf, c->fill);
+		for (uint32 i = 0; i < c->fill; c->ncells++)
+			(void) cell_take(c->buf, c->fill, &i);
+	}
+	else
+	{
+		c->bound[nr++] = c->sp.n;
+		cells_write_run(c);
+		c->bound[nr] = c->sp.n;
+		pfree(c->buf);
+		c->buf = NULL;
+		s->budget.left += c->cap * (int64) CELL_HELD;
+		c->ncells = c->sp.n;
+		acut_merge_begin(&c->merge, &c->sp, c->bound, nr, 1);
+	}
+	c->next = cells_next(c);
 	SIFT_MEM_CHECKPOINT();
+}
+
+static const Cell *
+cells_next(Cells *c)
+{
+	if (c->runs)
+		return acut_merge_next(&c->merge);
+	if (c->at >= c->fill)
+		return NULL;
+	c->cur = cell_take(c->buf, c->fill, &c->at);
+	return &c->cur;
 }
 
 static void
 cells_end(Cells *c)
 {
-	acut_merge_end(&c->merge);
+	if (c->runs)
+		acut_merge_end(&c->merge);
+	else
+	{
+		pfree(c->buf);
+		c->budget->left += c->cap * (int64) CELL_HELD;
+	}
 	acut_spool_free(&c->sp);
 }
 
@@ -237,7 +336,7 @@ cells_group(Cells *c, CellGroup *g)
 		g->sb[g->ncell] = c->next->sb;
 		g->n[g->ncell++] = c->next->n;
 		g->rows += c->next->n;
-		c->next = acut_merge_next(&c->merge);
+		c->next = cells_next(c);
 	} while (c->next != NULL && c->next->key == g->key);
 	return true;
 }
@@ -275,7 +374,7 @@ acut_units_read(Track *t, Samp *s, double nsb, double rows_per_unit, double keye
 	g = palloc(sizeof(CellGroup));
 	cells = (Cells) {0};
 	cells_begin(s, t, &cells);
-	keyed = AUTOCUT_KEY_BYTES * (double) cells.sp.n / nsampled <= keyed_room;
+	keyed = AUTOCUT_KEY_BYTES * (double) cells.ncells / nsampled <= keyed_room;
 	while (cells_group(&cells, g))
 	{
 		/* the keys whose rows hold the points at, at + step, ..: a key of many rows is taken as often as its share of the rows */

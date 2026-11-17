@@ -88,6 +88,16 @@ extern void acut_spool_add(AcutSpool *s, const void *rec);
 
 extern void acut_spool_free(AcutSpool *s);
 
+/* record i of a spool that never wrote to its file: the rows of the sample, when it fits the budget, are read where they were written */
+static inline const void *
+acut_spool_row(const AcutSpool *s, uint64 i)
+{
+	uint64		chunk = i / s->per;
+
+	Assert(s->nspill == 0 && i < s->n);
+	return (chunk < s->nchunk ? s->chunk[chunk] : s->tail) + (i % s->per) * s->recsz;
+}
+
 extern void acut_cur_init(AcutCur *c, const AcutSpool *s, uint64 from, uint64 to);
 
 /* the cursor reads records from to (end of range) of its spool next */

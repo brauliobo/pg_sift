@@ -125,36 +125,40 @@ encoded_bytes(Unit *u, int t, StringInfo buf)
 	return buf->len;
 }
 
-/* a sampled row with the values of the (at most two) leaves a cut sorts by, so that the sort compares them in line */
-typedef struct SortRow
+/*
+ * A sampled row of the cut by a key, as the sort and the cut see it: the values of the (at most two) leaves it sorts by, a NULL after every value (PostgreSQL's default; a
+ * row with INT64_MAX and a NULL are in the order of their rows), its place among the rows of the superblocks of the trial, and its superblock's rank in them.
+ */
+typedef struct KeyRow
 {
-	int64		v[2];
+	int64		k0;
+	int64		k1;
 	uint32		row;
-	bool		nl[2];
-} SortRow;
+	uint32		flags;			/* bit 0: the first key is NULL; the rest: the rank */
+} KeyRow;
 
-/* a NULL sorts last, as PostgreSQL's default: after every value (a row with INT64_MAX and a NULL are in the order of their rows) */
-#define SORT_ROW_KEY(x) ((x)->nl[0] ? INT64_MAX : (x)->v[0])
-#define SORT_ROW_KEY2(x) ((x)->nl[1] ? INT64_MAX : (x)->v[1])
-#define SORT_ROW_TIE(x) ((x)->row)
+#define KEYROW_RANK(h)	((h)->flags >> 1)
+#define KEYROW_K0(x) ((x)->k0)
+#define KEYROW_K1(x) ((x)->k1)
+#define KEYROW_ROW(x) ((x)->row)
 
 static inline int
-sort_row_cmp(const SortRow *x, const SortRow *y)
+keyrow_cmp(const KeyRow *x, const KeyRow *y)
 {
-	if (SORT_ROW_KEY(x) != SORT_ROW_KEY(y))
-		return SORT_ROW_KEY(x) < SORT_ROW_KEY(y) ? -1 : 1;
-	if (SORT_ROW_KEY2(x) != SORT_ROW_KEY2(y))
-		return SORT_ROW_KEY2(x) < SORT_ROW_KEY2(y) ? -1 : 1;
+	if (x->k0 != y->k0)
+		return x->k0 < y->k0 ? -1 : 1;
+	if (x->k1 != y->k1)
+		return x->k1 < y->k1 ? -1 : 1;
 	return SIFT_CMP3(x->row, y->row);
 }
 
-#define SORT_ROW_LESS(x, y) (sort_row_cmp(x, y) < 0)
+#define KEYROW_LESS(x, y) (keyrow_cmp(x, y) < 0)
 
-SIFT_DEFINE_SORT(sort_rows_cmp, SortRow, SORT_ROW_LESS)
+SIFT_DEFINE_SORT(sort_keyrows_cmp, KeyRow, KEYROW_LESS)
 
 /* a copy of the rows for the radix sort: none when it would pass the largest allocation (the comparison sort then) */
 static void *
-sort_row_copy(size_t bytes)
+keyrow_copy(size_t bytes)
 {
 	void	   *copy = bytes <= MaxAllocSize ? palloc_extended(bytes, MCXT_ALLOC_NO_OOM) : NULL;
 
@@ -163,7 +167,7 @@ sort_row_copy(size_t bytes)
 }
 
 /* the sampled rows are added in the order of their rows, so the radix sort applies */
-SIFT_DEFINE_RADIX_SORT(sort_rows, SortRow, SORT_ROW_KEY, SORT_ROW_KEY2, SORT_ROW_TIE, sort_row_copy, pfree, sort_rows_cmp)
+SIFT_DEFINE_RADIX_SORT(sort_keyrows, KeyRow, KEYROW_K0, KEYROW_K1, KEYROW_ROW, keyrow_copy, pfree, sort_keyrows_cmp)
 
 /*
  * What a row takes in a leaf the sample does not read: its values dictionary-coded, the distinct ones (of the width the statistics of the column give, a share of it when they do not repeat)
@@ -244,6 +248,7 @@ typedef struct Layout
 	double	   *term;			/* for each unit ntr + 2 numbers: its directory, its leaves and its pre-aggregates */
 	uint32		ncut,
 				capcut;
+	uint32		off[AUTOCUT_TRIAL_SBS];	/* by rank: the row of the sample of a row of the trial, minus its place among the rows of the trial */
 	StringInfoData buf;
 	Unit		u;
 } Layout;
@@ -317,22 +322,19 @@ layout_superblocks(Layout *L, Samp *s, uint32 stride)
 	acut_cur_free(&cur);
 }
 
-/* a record of a sorted run: the keys it is sorted by and its place in the sample, then the record of the sample (its address moved to the layout) */
-typedef struct RunHead
-{
-	int64		k0;
-	int64		k1;
-	uint32		row;
-	uint32		flags;			/* 1: the first key is NULL */
-} RunHead;
-
-/* the records of the runs in the order of the keys, with the window of them the cut looks ahead in */
+/*
+ * The rows of the trial in the order of the keys, with the window of them the cut looks ahead in. When the sample is in memory the rows are read where it holds them; when it is
+ * on a temporary file a copy of each row goes with it, and, when the buffer sorted holds them all (by), beside it (pay), or in the runs after its head.
+ */
 typedef struct Feed
 {
 	AcutMerge	merge;
-	uint32		recsz;
-	const char *sb;				/* the sorted buffer the records are read from, record j at by[j].row, when the rows fit in one */
-	const SortRow *by;
+	const Samp *s;
+	const uint32 *off;
+	uint32		recsz;			/* a record of the runs: a head, and a copy of the row when the sample is on the file */
+	bool		inplace;
+	const KeyRow *by;			/* the heads of the rows in one sorted buffer, when they fit one */
+	const char *pay;
 	char	   *win;
 	uint32		head,
 				tail,
@@ -340,10 +342,12 @@ typedef struct Feed
 	bool		eof;
 } Feed;
 
-/* record i past the head of the window, read from the runs when the window ends before it; NULL past the last */
-static const char *
+/* the head of record i past the head of the window, read from the runs when the window ends before it; NULL past the last */
+static const KeyRow *
 feed_at(Feed *f, uint32 i)
 {
+	if (f->by != NULL)
+		return f->head + i < f->tail ? &f->by[f->head + i] : NULL;
 	while (f->head + i >= f->tail)
 	{
 		const void *rec = f->eof ? NULL : acut_merge_next(&f->merge);
@@ -367,27 +371,34 @@ feed_at(Feed *f, uint32 i)
 		memcpy(f->win + (size_t) f->tail * f->recsz, rec, f->recsz);
 		f->tail++;
 	}
-	if (f->sb != NULL)
-		return f->sb + (size_t) f->by[f->head + i].row * f->recsz;
-	return f->win + (size_t) (f->head + i) * f->recsz;
+	return (const KeyRow *) (f->win + (size_t) (f->head + i) * f->recsz);
+}
+
+/* the record of the sample of the row whose head is h */
+static const char *
+feed_row(const Feed *f, const KeyRow *h)
+{
+	if (f->inplace)
+		return acut_spool_row(&f->s->rows, h->row + f->off[KEYROW_RANK(h)]);
+	return f->by != NULL ? f->pay + (size_t) h->row * f->s->recsz : (const char *) (h + 1);
 }
 
 static bool
-feed_same_key(const RunHead *a, const RunHead *b)
+feed_same_key(const KeyRow *a, const KeyRow *b)
 {
-	return a->k0 == b->k0 && (a->flags & 1) == (b->flags & 1);
+	return a->k0 == b->k0 && ((a->flags ^ b->flags) & 1) == 0;
 }
 
 /* the rows from record `from` on that have the key of that record, up to `most` of them */
 static uint32
 feed_run(Feed *f, uint32 from, uint32 most)
 {
-	RunHead		first = *(const RunHead *) feed_at(f, from);
+	KeyRow		first = *feed_at(f, from);
 	uint32		n = 0;
 
 	while (n < most)
 	{
-		const RunHead *x = (const RunHead *) feed_at(f, from + n);
+		const KeyRow *x = feed_at(f, from + n);
 
 		if (x == NULL || !feed_same_key(&first, x))
 			break;
@@ -404,46 +415,52 @@ feed_take(Layout *L, Feed *f, uint32 n)
 
 	unit_reserve(u, L->ntr, n);
 	for (uint32 i = 0; i < n; i++)
-		u->ord[i] = (OrdRow) {((const RunHead *) feed_at(f, i))->row, i};
+		u->ord[i] = (OrdRow) {feed_at(f, i)->row, i};
 	sort_ord_rows(u->ord, n);
 	for (uint32 j = 0; j < n; j++)
-		unit_put(u, L->ntr, j, feed_at(f, u->ord[j].at) + sizeof(RunHead), 0);
+	{
+		const KeyRow *h = feed_at(f, u->ord[j].at);
+
+		unit_put(u, L->ntr, j, feed_row(f, h), ((SiftKey) KEYROW_RANK(h) * SIFT_SB_PAGES) << 16);
+	}
 	u->n = n;
 	f->head += n;
 }
 
-/* the rows of the buffer in the order of the keys, appended to the runs as the next run */
+/* the rows of the buffer in the order of the keys, appended to the runs as the next run: the heads, and the copies of the rows (pay, the first row of the buffer is `first`) when there are any */
 static void
-write_run(AcutSpool *runs, const char *sb, SortRow *by, uint32 fill)
+write_run(AcutSpool *runs, KeyRow *by, const char *pay, uint32 recsz, uint32 first, uint32 fill)
 {
-	sort_rows(by, fill);
+	sort_keyrows(by, fill);
 	for (uint32 i = 0; i < fill; i++)
-		acut_spool_add(runs, sb + (size_t) by[i].row * runs->recsz);
+	{
+		char	   *slot = acut_spool_slot(runs);
+
+		memcpy(slot, &by[i], sizeof(KeyRow));
+		if (pay != NULL)
+			memcpy(slot + sizeof(KeyRow), pay + (size_t) (by[i].row - first) * recsz, recsz);
+		acut_spool_commit(runs);
+	}
 	SIFT_MEM_CHECKPOINT();
 }
 
-/* the records of superblock u (rank in the trial) appended to the buffer from fill on, with the keys they sort by */
+/* the rows of superblock u (rank in the trial) appended to the buffer from fill on, with the keys they sort by; the row is the place among the rows of the trial, `base` for the first of the buffer */
 static uint32
-load_records(Layout *L, Samp *s, AcutCur *cur, int u, uint32 rank, uint32 fill, char *sb, SortRow *by)
+load_rows(const Layout *L, const Samp *s, AcutCur *cur, int u, uint32 rank, uint32 base, uint32 fill, KeyRow *by, char *pay)
 {
 	uint32		n = s->start[u + 1] - s->start[u];
-	uint64		shift = ((uint64) rank * SIFT_SB_PAGES) << 16;
 
 	acut_cur_seek(cur, s->start[u], s->start[u + 1]);
 	for (uint32 i = 0; i < n; i++, fill++)
 	{
-		RunHead    *h = (RunHead *) (sb + (size_t) fill * (s->recsz + sizeof(RunHead)));
-		char	   *rec = (char *) (h + 1);
+		const char *rec = acut_cur_next(cur);
+		bool		nl0 = ROW_NL(rec, s->ntr, L->order[0]->idx);
 
-		memcpy(rec, acut_cur_next(cur), s->recsz);
-		((uint64 *) rec)[0] += shift;
-		by[fill] = (SortRow) {.row = fill};
-		for (int k = 0; k < 2 && L->order[k] != NULL; k++)
-		{
-			by[fill].nl[k] = ROW_NL(rec, s->ntr, L->order[k]->idx);
-			by[fill].v[k] = ROW_V(rec, L->order[k]->idx);
-		}
-		*h = (RunHead) {.k0 = SORT_ROW_KEY(&by[fill]), .k1 = SORT_ROW_KEY2(&by[fill]), .row = s->start[u] + i, .flags = by[fill].nl[0]};
+		by[fill] = (KeyRow) {.k0 = nl0 ? INT64_MAX : ROW_V(rec, L->order[0]->idx), .row = base + fill, .flags = nl0 | rank << 1};
+		if (L->order[1] != NULL)
+			by[fill].k1 = ROW_NL(rec, s->ntr, L->order[1]->idx) ? INT64_MAX : ROW_V(rec, L->order[1]->idx);
+		if (pay != NULL)
+			memcpy(pay + (size_t) fill * s->recsz, rec, s->recsz);
 	}
 	return fill;
 }
@@ -461,58 +478,65 @@ layout_keyed(Layout *L, Samp *s, uint32 stride, double small)
 	AcutCur		cur;
 	AcutSpool	runs;
 	uint64		bound[AUTOCUT_SBS + 1];
-	uint32		recsz = s->recsz + sizeof(RunHead),
+	bool		inplace = s->rows.nspill == 0;
+	uint32		recsz = sizeof(KeyRow) + (inplace ? 0 : s->recsz),
 				most = 0,
 				nsel = 0,
 				nr = 0,
 				fill = 0,
+				base = 0,
 				cap,
 				rank = 0,
 				L2 = small > 0 ? (uint32) ceil(2 * small) : 0;
-	int64		held = recsz + 2 * sizeof(SortRow);
-	char	   *sb;
-	SortRow    *by;
-	Feed		f = {.recsz = recsz};
+	int64		held = 2 * sizeof(KeyRow) + (inplace ? 0 : s->recsz);
+	char	   *pay = NULL;
+	KeyRow	   *by;
+	Feed		f = {.s = s, .off = L->off, .recsz = recsz, .inplace = inplace};
 	bool		split = false;
 
-	for (int u = 0; u < s->nsb; u += stride)
+	for (int u = 0; u < s->nsb; u += stride, rank++)
 	{
+		L->off[rank] = s->start[u] - nsel;
 		most = Max(most, s->start[u + 1] - s->start[u]);
 		nsel += s->start[u + 1] - s->start[u];
 	}
-	/* a run holds the rows of as many superblocks as half of what the budget has left takes (a row held takes the record, its place in the sort and the sort's copy), at least one; when all the rows fit, the buffer sorted is the only run and is read as it is */
+	/* a run holds the rows of as many superblocks as half of what the budget has left takes (a row held takes its head and the sort's copy, and the copy of the row when it is on the file), at least one; when all the rows fit, the buffer sorted is the only run and is read as it is */
 	cap = (uint32) Min((int64) nsel, Max((int64) most, Max(s->budget.left, 0) / 2 / held));
 	s->budget.left -= cap * held;
-	sb = palloc((size_t) cap * recsz);
-	by = palloc_array(SortRow, cap);
+	by = palloc_array(KeyRow, cap);
+	if (!inplace)
+		pay = palloc((size_t) cap * s->recsz);
 	acut_spool_init(&runs, &s->budget, recsz);
 	acut_cur_init(&cur, &s->rows, 0, 0);
+	rank = 0;
 	for (int u = 0; u < s->nsb; u += stride, rank++)
 	{
 		if (fill > 0 && fill + s->start[u + 1] - s->start[u] > cap)
 		{
 			bound[nr++] = runs.n;
-			write_run(&runs, sb, by, fill);
+			write_run(&runs, by, pay, s->recsz, base, fill);
+			base += fill;
 			fill = 0;
 		}
-		fill = load_records(L, s, &cur, u, rank, fill, sb, by);
+		fill = load_rows(L, s, &cur, u, rank, base, fill, by, pay);
 	}
 	acut_cur_free(&cur);
 	if (nr == 0)
 	{
-		sort_rows(by, fill);
-		f.sb = sb;
+		sort_keyrows(by, fill);
 		f.by = by;
+		f.pay = pay;
 		f.tail = fill;
 		f.eof = true;
 	}
 	else
 	{
 		bound[nr++] = runs.n;
-		write_run(&runs, sb, by, fill);
+		write_run(&runs, by, pay, s->recsz, base, fill);
 		bound[nr] = runs.n;
 		pfree(by);
-		pfree(sb);
+		if (pay != NULL)
+			pfree(pay);
 		s->budget.left += cap * held;
 		acut_merge_begin(&f.merge, &runs, bound, nr, 2);
 	}
@@ -535,10 +559,10 @@ layout_keyed(Layout *L, Samp *s, uint32 stride, double small)
 				end = f.tail - f.head;
 			else if (small > 0 && feed_at(&f, end) != NULL)
 			{
-				RunHead		at = *(const RunHead *) feed_at(&f, end);
+				KeyRow		at = *feed_at(&f, end);
 				uint32		b = end;
 
-				while (b > 0 && feed_same_key((const RunHead *) feed_at(&f, b - 1), &at))
+				while (b > 0 && feed_same_key(feed_at(&f, b - 1), &at))
 					b--;
 				if (b < end && b > 0 && feed_run(&f, b, L2) >= L2)
 					end = b;
@@ -547,10 +571,11 @@ layout_keyed(Layout *L, Samp *s, uint32 stride, double small)
 		feed_take(L, &f, end);
 		unit_add(L, true, 0);
 	}
-	if (f.sb != NULL)
+	if (f.by != NULL)
 	{
 		pfree(by);
-		pfree(sb);
+		if (pay != NULL)
+			pfree(pay);
 		s->budget.left += cap * held;
 	}
 	else
