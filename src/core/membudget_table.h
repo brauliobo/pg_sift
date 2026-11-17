@@ -7,7 +7,7 @@
 static Size
 budget_agg_group(void)
 {
-	return (((Size) 134217728UL));
+	return (((Size) 536870912UL));
 }
 
 static Size
@@ -73,7 +73,7 @@ budget_index_vacuum(void)
 static Size
 budget_maint_worker_step(void)
 {
-	return (((Size) 2147483648UL));
+	return (((Size) 4194304UL));
 }
 
 static Size
@@ -88,7 +88,7 @@ static const struct
 	Size		(*bytes) (void);
 	const char *formula;
 }			budgets[] = {
-	{"agg_group", budget_agg_group, "128MB (open: ceiling measured today)"},
+	{"agg_group", budget_agg_group, "512MB (open: ceiling measured today)"},
 	{"agg_lookup", budget_agg_lookup, "32MB (open: ceiling measured today)"},
 	{"bm25_build", budget_bm25_build, "maintenance_work_mem + 16MB"},
 	{"bm25_merge", budget_bm25_merge, "maintenance_work_mem + 8MB"},
@@ -99,7 +99,7 @@ static const struct
 	{"col_verify", budget_col_verify, "3*maintenance_work_mem + 8MB"},
 	{"col_write_buffer", budget_col_write_buffer, "16MB"},
 	{"index_vacuum", budget_index_vacuum, "maintenance_work_mem + 16MB"},
-	{"maint_worker_step", budget_maint_worker_step, "2GB (open: ceiling measured today)"},
+	{"maint_worker_step", budget_maint_worker_step, "4MB"},
 	{"vstore_gc", budget_vstore_gc, "1MB"},
 };
 
