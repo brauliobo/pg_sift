@@ -29,7 +29,11 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
+#ifdef SIFT_TESTING
+#include "bm25/build.h"
+#endif
 #include "col/am.h"
+#include "col/build.h"
 #include "col/scope.h"
 #include "core/restrict.h"
 
@@ -88,6 +92,9 @@ sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumbe
 	stmt->indexParams = list_make2(journal_column(mname), journal_column(kname));
 	stmt->options = list_make1(makeDefElem("track_changes", (Node *) makeString("ctid"), -1));
 	stmt = transformIndexStmt(relid, stmt, journal_statement(rel, mname, kname, false));
+#ifdef SIFT_TESTING
+	sift_test_phase_wait(SIFT_COL_GATE_JOURNAL);
+#endif
 	addr = sift_create_index(relid, stmt);
 	CommandCounterIncrement();
 	sift_col_track_made(addr.objectId);

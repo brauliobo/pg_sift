@@ -23,6 +23,7 @@
 /* gates of sift.test_phase_gate that are no progress phase: before the locks of the end of the build are taken, and in the fill of the scope segments of a concurrent build */
 #define SIFT_COL_GATE_TAIL		4
 #define SIFT_COL_GATE_FILL		5
+#define SIFT_COL_GATE_JOURNAL	6
 #endif
 
 /* The segments a build may write: the directory keeps room for the write buffer and a merge */

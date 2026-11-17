@@ -8,7 +8,8 @@
 #   - a build killed (terminate or cancel) leaves an INVALID index that a plain DROP INDEX CONCURRENTLY IF EXISTS removes.
 # A writer that stays open while the build runs holds the build at the points where it waits for the writers; the build asks for no lock then (nothing queues behind a request that new writers would
 # wait for), and the new writers complete. After the build the answer of the index is the heap's, for the rows written before, during and after each phase.
-# A scope over a relation of pairs that has no journal yet is built too: the build makes the journal at its end, and the writers of the pairs wait only while that index is built.
+# A scope over a relation of pairs that has no journal yet is built too, with neither the table nor the pairs having a journal: the journal is made inside the build, and the writers of both tables must
+# complete while it is made (gate 6), as they do when the journal exists.
 # SIFT_CL_KINDS: the kinds to run (default all).
 . "$(dirname "$0")/lib.bash"
 
@@ -21,7 +22,7 @@ max_parallel_maintenance_workers = 0"
 node_start cl || bail "start failed"
 D=$(dir cl)
 FG=7101			# the advisory lock the expression of the btree and GIN indexes waits for in the build
-SG=7200			# sift.test_phase_gate of the build of sift_col: the phase gates are SG + the phase (2 scan, 3 write, 4 tail, 5 fill)
+SG=7200			# sift.test_phase_gate of the build of sift_col: the phase gates are SG + the phase (2 scan, 3 write, 4 tail, 5 fill, 6 the journal of a relation of pairs that has none, while the build holds what it holds to make it)
 STRONG="'ShareLock', 'ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock'"
 sql cl "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE FUNCTION gate_i(int) RETURNS int LANGUAGE plpgsql IMMUTABLE AS \$\$ BEGIN IF current_setting('application_name') = 'build' THEN PERFORM pg_advisory_lock($FG); PERFORM pg_advisory_unlock($FG); END IF; RETURN \$1; END \$\$" \
@@ -103,7 +104,7 @@ run_kind() {
 	build_bg "$gate" "$stmt"
 	for ph in "${phases[@]}"; do
 		key=$([[ $gate == fn ]] && echo $FG || echo $((SG + ph)))
-		wait_for "at_gate $key" 120 || bail "$kind: the build did not reach phase $ph"
+		wait_for "at_gate $key" 120 || bail "$kind: the build did not reach phase $ph ($(sql cl "SELECT wait_event_type, wait_event, state FROM pg_stat_activity WHERE application_name = 'build'") $(head -n 3 "$D/build.out"))"
 		BPID=$(build_pid)
 		check "$kind phase $ph: the build holds nothing stronger than ShareUpdateExclusiveLock on the tables ($(held_modes))" test -z "$(strong_held)"
 		writers
@@ -202,7 +203,7 @@ for kind in $KINDS; do
 		sift_scope)
 			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs(m, t)')" ; G=sift ; P=(2 3 4 5) ;;
 		sift_scope_new_journal)
-			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs2(m, t)')" ; G=sift ; P=(2 3 4 5) ; PT=pairs2 ;;
+			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs2(m, t)')" ; G=sift ; P=(2 3 4 6 5) ; PT=pairs2 ;;
 		reindex_btree)
 			C="CREATE INDEX k_ix ON t (gate_i(v))" ; G=fn ; P=(1) ;;
 		reindex_gin)
