@@ -1,0 +1,63 @@
+-- The scan works on chunks of 4096 rows (SIFT_AGG_VEC) in masks of 72 words, and the vectors of one unit are cut at row counts that are not a multiple of 4096: tables of
+-- 4095, 4096, 4097 and 8193 rows run predicates with long IN lists (a look-up table, a step test), NOT, OR, expressions and a text list, with sift on and off, and the rows are
+-- compared (md5 of the sorted rows). On a sanitizer build a mask written past its words ends the test; this one is the guard for agg_int.h:fill_ones, pred.c and pred_in.c.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
+
+CREATE TABLE vb_sizes (n int);
+INSERT INTO vb_sizes VALUES (4095), (4096), (4097), (8193);
+
+SELECT format('CREATE TABLE vb_%s (id int PRIMARY KEY, i int, s smallint, a float8, t text, g int)', n) FROM vb_sizes \gexec
+SELECT format($f$INSERT INTO vb_%s SELECT x, CASE WHEN x %% 11 = 0 THEN NULL ELSE (x * 7) %% 1000 END, (x %% 30)::smallint,
+	CASE WHEN x %% 7 = 0 THEN NULL ELSE (x %% 50) / 2.0 END, CASE WHEN x %% 13 = 0 THEN NULL ELSE 'k' || (x %% 300) END, x %% 97 FROM generate_series(1, %s) x$f$, n, n) FROM vb_sizes \gexec
+SELECT format('CREATE INDEX vb_%s_col ON vb_%s USING sift_col (id, i, s, a, t, g) WITH (key_cut = g)', n, n) FROM vb_sizes \gexec
+SELECT format('VACUUM ANALYZE vb_%s', n) FROM vb_sizes \gexec
+
+CREATE TABLE vb_shapes (ord serial, name text, cond text);
+INSERT INTO vb_shapes (name, cond) SELECT 'int IN 600', 'i IN (' || string_agg(x::text, ',') || ')' FROM generate_series(1, 600) x;
+INSERT INTO vb_shapes (name, cond) SELECT 'int NOT IN 600', 'i NOT IN (' || string_agg((x * 3)::text, ',') || ')' FROM generate_series(1, 600) x;
+INSERT INTO vb_shapes (name, cond) SELECT 'int IN 600 with NULL', 'i IN (NULL,' || string_agg((x * 5)::text, ',') || ')' FROM generate_series(1, 600) x;
+INSERT INTO vb_shapes (name, cond) SELECT 'text IN 300', 't IN (' || string_agg(quote_literal('k' || x), ',') || ')' FROM generate_series(1, 300) x;
+INSERT INTO vb_shapes (name, cond) SELECT 'text NOT IN 300', 't NOT IN (' || string_agg(quote_literal('k' || x), ',') || ')' FROM generate_series(1, 300) x;
+INSERT INTO vb_shapes (name, cond) SELECT 'smallint IN 30', 's IN (' || string_agg(x::text, ',') || ')' FROM generate_series(0, 29, 2) x;
+INSERT INTO vb_shapes (name, cond) SELECT 'float IN 40', 'a IN (' || string_agg((x / 2.0)::text, ',') || ')' FROM generate_series(1, 40) x;
+INSERT INTO vb_shapes (name, cond) VALUES
+	('int IN or text like',    $q$i IN (1, 2, 3, 500, 999) OR t LIKE 'k1%'$q$),
+	('NOT of a list',          $q$NOT (i IN (1, 2, 3, 500, 999) OR g = 4)$q$),
+	('expression',             $q$i * 2 + g > 1000$q$),
+	('modulo',                 $q$(i + g) % 7 = 3$q$),
+	('three-way and',          $q$i > 100 AND a < 20 AND t <> 'k7'$q$),
+	('or of ranges',           $q$i < 10 OR (i > 500 AND i < 520) OR i > 990$q$),
+	('is null or',             $q$i IS NULL OR a IS NULL OR t IS NULL$q$),
+	('between',                $q$i BETWEEN 100 AND 900 AND g BETWEEN 10 AND 80$q$);
+
+CREATE FUNCTION vb_check(q text) RETURNS TABLE (engaged bool, same bool) LANGUAGE plpgsql AS
+$$ DECLARE l text; plan text := ''; a text; b text;
+BEGIN
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
+  engaged := plan LIKE '%Custom Scan (SiftAgg)%';
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
+  PERFORM set_config('sift.enable_agg', 'off', true);
+  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO b;
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  same := a IS NOT DISTINCT FROM b;
+  RETURN NEXT;
+END $$;
+
+-- ungrouped, grouped by the key and by a text column, a FILTER, the ordered-set and distinct aggregates: the shapes engaged and the rows the same
+SELECT s.n, count(*) AS statements, count(*) FILTER (WHERE c.engaged) AS engaged, count(*) FILTER (WHERE NOT c.same) AS wrong
+FROM vb_sizes s, vb_shapes h, LATERAL vb_check(format('SELECT count(*), sum(i), avg(a), min(t), max(id) FROM vb_%s WHERE %s', s.n, h.cond)) c GROUP BY s.n ORDER BY s.n;
+SELECT s.n, count(*) AS statements, count(*) FILTER (WHERE c.engaged) AS engaged, count(*) FILTER (WHERE NOT c.same) AS wrong
+FROM vb_sizes s, vb_shapes h, LATERAL vb_check(format('SELECT g, count(*), sum(i), count(DISTINCT t) FROM vb_%s WHERE %s GROUP BY g', s.n, h.cond)) c GROUP BY s.n ORDER BY s.n;
+SELECT s.n, count(*) AS statements, count(*) FILTER (WHERE c.engaged) AS engaged, count(*) FILTER (WHERE NOT c.same) AS wrong
+FROM vb_sizes s, vb_shapes h, LATERAL vb_check(format('SELECT t, count(*) FILTER (WHERE %s), percentile_cont(0.5) WITHIN GROUP (ORDER BY a) FROM vb_%s GROUP BY t', h.cond, s.n)) c GROUP BY s.n ORDER BY s.n;
+SELECT s.n, count(*) AS statements, count(*) FILTER (WHERE NOT c.same) AS wrong
+FROM vb_sizes s, vb_shapes h, LATERAL vb_check(format('SELECT id %% 5000 AS k, count(*), sum(g) FROM vb_%s WHERE %s GROUP BY 1', s.n, h.cond)) c GROUP BY s.n ORDER BY s.n;
+
+DROP FUNCTION vb_check(text);
+SELECT format('DROP TABLE vb_%s', n) FROM vb_sizes \gexec
+DROP TABLE vb_shapes, vb_sizes;
+DROP EXTENSION pg_sift;
