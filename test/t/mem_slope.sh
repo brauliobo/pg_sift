@@ -13,7 +13,7 @@ shared_buffers = 64MB
 max_wal_size = 1GB
 sift.col_auto_merge = off"
 node_start ms || bail "start failed"
-sql ms "CREATE EXTENSION pg_sift" >/dev/null || bail "extension failed"
+sql ms "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" >/dev/null || bail "extension failed"
 
 out=$(PGHOST=$(dir ms)/sock PGPORT=$(port ms) PGUSER=postgres PGDATABASE=postgres python3 -I "$REPO/scripts/mem-slope.py" run 2>"$(dir ms)/slope.err")
 lines=$(grep '^SLOPE ' <<<"$out")

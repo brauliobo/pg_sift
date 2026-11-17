@@ -18,7 +18,7 @@ import os, re, subprocess, sys, threading, time
 CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference is 1.8 MB
 BOUNDED = "'sift cache unit buffers'"   # a fixed count of spare buffers (UNIT_KEEP of UNIT_KEEP_BYTES, col/seg/seg.c): it grows to its 16 MB while repeats find larger units, and no further
 LEAK_KB = 512              # kB the contexts of a backend may hold more after 60 repeats than after 10
-SETTINGS = "set work_mem='1MB'; set maintenance_work_mem='1MB'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
+SETTINGS = f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope.tsv")
 os.environ["LC_ALL"] = "C"
 
@@ -89,8 +89,8 @@ def build_tables(n):
 drop table if exists f{n}, d{n} cascade;
 create table f{n} as
 select g as id, g as k_hi, g % 5000 as k_mid, g % 10 as k_lo, (array['DE','FR','US','BR','JP','AR','CL','PE'])[1 + g % 8] as cat,
-       'name' || (g * 7919) % 1000000 as txt, ((g * 7919) % 29500)::numeric / 100 as amount, (g * 7919 % 29500)::float8 / 100 as fl,
-       timestamp '2025-01-01' + (g * 311 % 31536000) * interval '1 second' as ts,
+       'name' || (g::bigint * 7919) % 1000000 as txt, ((g::bigint * 7919) % 29500)::numeric / 100 as amount, (g::bigint * 7919 % 29500)::float8 / 100 as fl,
+       timestamp '2025-01-01' + (g::bigint * 311 % 31536000) * interval '1 second' as ts,
        (array['wireless','portable','compact','premium','rugged','slim','smart','classic'])[1 + g % 8] || ' ' ||
        (array['charger','speaker','headphones','keyboard','lamp','monitor','camera'])[1 + (g / 8) % 7] || ' w' || (g % 20000) as title
 from generate_series(1, {n}) g;
