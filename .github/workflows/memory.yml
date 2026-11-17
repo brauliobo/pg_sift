@@ -1,0 +1,133 @@
+name: memory
+
+# The memory analysis lanes (docs/MEMORY-ANALYSIS.md), on demand and never blocking: valgrind memcheck with leak checking over the curated list, massif on the slope
+# cases (the allocation sites that grow with the rows), and the report that ranks them with the memory census that the full tier of ci.yml uploads
+# (artifacts pg_sift-memcensus-*). The memory slope tests of the quick tier remain the gates; these say which code path to fix.
+on:
+  workflow_dispatch:
+    inputs:
+      census_run:
+        description: 'Run id of a ci.yml run whose pg_sift-memcensus-* artifacts the report ranks (empty: valgrind and massif only)'
+        required: false
+        default: ''
+      baseline_run:
+        description: 'Run id of an earlier memory.yml run whose report.json the report is compared with (empty: none)'
+        required: false
+        default: ''
+      valgrind_tests:
+        description: 'Regression tests of the valgrind job, space separated (empty: the default list of scripts/valgrind.sh)'
+        required: false
+        default: ''
+      massif_rows:
+        description: 'Rows of the small size of the massif cases (the large size is four times it)'
+        required: false
+        default: '50000'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: memory-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  valgrind:
+    name: Memcheck with leak checking (PostgreSQL 18)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    continue-on-error: true
+    env:
+      SIFT_VALGRIND_CONTAINER: '0'
+      SIFT_VALGRIND_LEAKS: '1'
+      SIFT_VALGRIND_ORIGINS: '1'
+      SIFT_VALGRIND_ACCUM: '1'
+      SIFT_VALGRIND_TIMEOUT: '1800'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/apt-limits
+      - name: Install build dependencies and valgrind
+        timeout-minutes: 10
+        run: scripts/apt-install.sh --update bison flex libipc-run-perl liblz4-dev libzstd-dev libicu-dev valgrind libc6-dbg
+      - name: Cache the PostgreSQL build
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/sift/pg
+          key: pg-valgrind-18-${{ hashFiles('scripts/pg-assert.sh') }}
+      - name: Build PostgreSQL 18 for valgrind
+        run: echo "$(PG_ASSERT_MAJOR=18 scripts/pg-assert.sh --valgrind)/bin" >> "$GITHUB_PATH"
+      - name: Memcheck over the curated list
+        env:
+          SIFT_VALGRIND_TESTS: ${{ inputs.valgrind_tests }}
+          SIFT_VALGRIND_ARTIFACTS: ${{ runner.temp }}/mem/valgrind
+        run: scripts/valgrind.sh
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: pg_sift-memory-valgrind
+          path: ${{ runner.temp }}/mem/valgrind
+          if-no-files-found: ignore
+
+  massif:
+    name: Massif on the slope cases (PostgreSQL 18)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    continue-on-error: true
+    env:
+      SIFT_VALGRIND_CONTAINER: '0'
+      SIFT_MASSIF_ROWS: ${{ inputs.massif_rows }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/apt-limits
+      - name: Install build dependencies and valgrind
+        timeout-minutes: 10
+        run: scripts/apt-install.sh --update bison flex libipc-run-perl liblz4-dev libzstd-dev libicu-dev valgrind libc6-dbg python3
+      - name: Cache the PostgreSQL build
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/sift/pg
+          key: pg-valgrind-18-${{ hashFiles('scripts/pg-assert.sh') }}
+      - name: Build PostgreSQL 18 for valgrind
+        run: echo "$(PG_ASSERT_MAJOR=18 scripts/pg-assert.sh --valgrind)/bin" >> "$GITHUB_PATH"
+      - name: Massif over the slope cases
+        env:
+          SIFT_VALGRIND_ARTIFACTS: ${{ runner.temp }}/mem/massif
+        run: scripts/valgrind.sh --massif
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: pg_sift-memory-massif
+          path: ${{ runner.temp }}/mem/massif
+          if-no-files-found: ignore
+
+  report:
+    name: Memory report
+    needs: [valgrind, massif]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: pg_sift-memory-*
+          path: ${{ runner.temp }}/in
+      - name: The census of a full run
+        if: ${{ inputs.census_run != '' }}
+        run: gh run download "${{ inputs.census_run }}" --repo "$GITHUB_REPOSITORY" --pattern 'pg_sift-memcensus-*' --dir "$RUNNER_TEMP/in"
+      - name: The report of the baseline run
+        if: ${{ inputs.baseline_run != '' }}
+        run: gh run download "${{ inputs.baseline_run }}" --repo "$GITHUB_REPOSITORY" --name pg_sift-memory-report --dir "$RUNNER_TEMP/base"
+      - name: Rank the paths that accumulate memory
+        run: |
+          python3 -I scripts/mem-report.py report "$RUNNER_TEMP/in" ${{ inputs.baseline_run != '' && '--baseline "$RUNNER_TEMP/base/report.json"' || '' }} \
+            --out "$RUNNER_TEMP/report.md" --json "$RUNNER_TEMP/report.json"
+          cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: pg_sift-memory-report
+          path: |
+            ${{ runner.temp }}/report.md
+            ${{ runner.temp }}/report.json
