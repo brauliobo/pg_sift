@@ -5,6 +5,7 @@
 #ifndef SIFT_COL_MAINT_INT_H
 #define SIFT_COL_MAINT_INT_H
 
+#include "datatype/timestamp.h"
 #include "col/build.h"
 #include "col/conn.h"
 #include "col/scope.h"
