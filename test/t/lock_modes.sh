@@ -75,7 +75,7 @@ sql lm "BEGIN" "LOCK TABLE b IN SHARE ROW EXCLUSIVE MODE" "SELECT pg_advisory_lo
 op_pid=$!
 await || bail "the control did not reach its gate"
 check "control: the probe sees the ShareRowExclusiveLock of a session at its gate" test "$(conflicting)" == "relation ShareRowExclusiveLock b"
-sql lm "SET lock_timeout = '500ms'" "$(new_rows b)" >/dev/null 2>&1  # timeout-ok: lock_timeout is the verdict: a lock that blocks fails the statement
+sql lm "SET lock_timeout = '500ms'" "$(new_rows b)" >/dev/null 2>&1   # timeout-ok: the statement must not wait at all; the timeout only bounds a failing run
 check "control: an INSERT waits for that lock" test $? -ne 0
 release_gate "$holder" "$op_pid"
 
@@ -89,11 +89,11 @@ for row in "${CASES[@]}"; do
 		out=$(conflicting)
 		diag "$name: holds $(held | paste -sd, -)"
 		check "$name: holds no lock that conflicts with RowExclusiveLock" test -z "$out"
-		sql lm "SET lock_timeout = '3s'" "$(new_rows "$table")" >"$D/w1" 2>&1  # timeout-ok: lock_timeout is the verdict: a lock that blocks fails the statement
+		sql lm "SET lock_timeout = '3s'" "$(new_rows "$table")" >"$D/w1" 2>&1   # timeout-ok: the statement must not wait at all; the timeout only bounds a failing run
 		check "$name: INSERT does not wait" test $? -eq 0
-		sql lm "SET lock_timeout = '3s'" "UPDATE $table SET id = id + 1 WHERE id = 100001" "DELETE FROM $table WHERE id = 100002" >"$D/w2" 2>&1  # timeout-ok: lock_timeout is the verdict: a lock that blocks fails the statement
+		sql lm "SET lock_timeout = '3s'" "UPDATE $table SET id = id + 1 WHERE id = 100001" "DELETE FROM $table WHERE id = 100002" >"$D/w2" 2>&1   # timeout-ok: the statement must not wait at all; the timeout only bounds a failing run
 		check "$name: UPDATE and DELETE do not wait" test $? -eq 0
-		sql lm "SET lock_timeout = '3s'" "SELECT count(*) FROM $table" >"$D/w3" 2>&1  # timeout-ok: lock_timeout is the verdict: a lock that blocks fails the statement
+		sql lm "SET lock_timeout = '3s'" "SELECT count(*) FROM $table" >"$D/w3" 2>&1   # timeout-ok: the statement must not wait at all; the timeout only bounds a failing run
 		check "$name: SELECT does not wait" test $? -eq 0
 	else
 		not_ok "$name: the operation reached its gate"; diag "$(cat "$D/op")"
