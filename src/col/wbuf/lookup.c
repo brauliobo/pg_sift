@@ -153,6 +153,12 @@ leaf_get(Relation index, const SiftSegEntry *entry, int col)
 		else if (wbuf_leaves[lru] == NULL || lf->used < wbuf_leaves[lru]->used)
 			lru = i;
 	}
+	for (int i = 0; i < WBUF_CACHE_LEAVES; i++)
+		if (wbuf_leaves[i] && wbuf_leaves[i]->rel == index->rd_locator.relNumber && wbuf_leaves[i]->gen < entry->gen)
+		{
+			leaf_free(wbuf_leaves[i]);
+			free_slot = i;
+		}
 	if (free_slot < 0)
 	{
 		leaf_free(wbuf_leaves[lru]);
