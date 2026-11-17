@@ -38,6 +38,7 @@ int			sift_test_fail_pages = 0;
 int			sift_test_max_extents = 0;
 bool		sift_test_run_gap = false;
 int			sift_test_crash_dir = 0;
+int			sift_test_crash_kind = 0;
 bool		sift_test_crash_worker = false;
 bool		sift_test_cut_with_standby = false;
 int			sift_test_dir_updates = 0;
@@ -58,9 +59,10 @@ sift_store_space_test_point(int phase)
 }
 
 /*
- * sift.test_crash_dir = n kills the process with SIGKILL, its log flushed, before (n > 0) or after (n < 0) the |n|-th directory update it makes
- * since the setting (every build, promotion, merge, VACUUM and table sealing publishes through store_update); the WAL it wrote is flushed; sift.test_crash_worker picks
- * background workers instead of the other processes. sift._test_dir_updates() is the count.
+ * sift.test_crash_dir = n faults the process, its log flushed, before (n > 0) or after (n < 0) the |n|-th directory update it makes
+ * since the setting (every build, promotion, merge, VACUUM and table sealing publishes through store_update); sift.test_crash_kind picks the fault: 0 SIGKILL, 1 an ERROR, 2 a wait for
+ * advisory lock (0x51F7, 13), where a test cancels or terminates the process, stops the server or lets it go on (a wait after the update is not interruptible: the update holds interrupts
+ * while it frees blocks); sift.test_crash_worker picks background workers instead of the other processes. sift._test_dir_updates() is the count.
  */
 void
 sift_store_dir_test_point(bool after)
@@ -70,10 +72,15 @@ sift_store_dir_test_point(bool after)
 	if (sift_test_crash_dir == 0 || (MyBackendType == B_BG_WORKER) != sift_test_crash_worker ||
 		sift_test_crash_dir != (after ? -sift_test_dir_updates : sift_test_dir_updates))
 		return;
-	ereport(LOG, (errmsg("sift test: crash %s directory update %d", after ? "after" : "before", sift_test_dir_updates)));
+	ereport(LOG, (errmsg("sift test: fault %d %s directory update %d", sift_test_crash_kind, after ? "after" : "before", sift_test_dir_updates)));
 	if (!XLogRecPtrIsInvalid(XactLastRecEnd))
 		XLogFlush(XactLastRecEnd);
-	kill(MyProcPid, SIGKILL);
+	if (sift_test_crash_kind == 1)
+		ereport(ERROR, (errmsg("sift test: error %s directory update %d", after ? "after" : "before", sift_test_dir_updates)));
+	if (sift_test_crash_kind == 2)
+		sift_test_wait(13);
+	else
+		kill(MyProcPid, SIGKILL);
 }
 
 /* sift.test_crash_clear = n kills the process with SIGKILL, its WAL flushed, when a pass that clears liveness bits (P8) has visited its nth segment */

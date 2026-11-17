@@ -11,6 +11,7 @@ tap:col_scope_textkey_fuzz	900	1500	231 s
 tap:col_wbuf_arena_fuzz	600	1000	82 s
 tap:col_scope_kill_writes	600	1000	12 rounds = 92-98 s
 tap:col_crash_matrix	900	1500	170 s hosted
+tap:fault_matrix	1500	1500	fault matrix: ~25 s a case, quick tier (95 cases) in waves with SIFT_FAULT_ONLY; full tier by operation
 tap:col_scope_crash	600	1000	60 s hosted
 tap:col_index_crash	900	1500	300-366 s hosted
 tap:col_wbuf_crash	600	1000	150 s hosted

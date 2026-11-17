@@ -67,6 +67,9 @@ sift_store_test_init(void)
 	DefineCustomIntVariable("sift.test_crash_dir",
 							"Testing: SIGKILL before (n) or after (-n) the nth directory update since this setting (0 = never).",
 							NULL, &sift_test_crash_dir, 0, INT_MIN, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, crash_dir_assign, NULL);
+	DefineCustomIntVariable("sift.test_crash_kind",
+							"Testing: the fault of sift.test_crash_dir: 0 SIGKILL, 1 ERROR, 2 wait for advisory lock (0x51F7, 13).",
+							NULL, &sift_test_crash_kind, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_crash_clear",
 							"Testing: SIGKILL after the nth segment a pass that clears liveness bits (VACUUM, the fold of the marks) has visited since this setting (0 = never).",
 							NULL, &sift_test_crash_clear, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, crash_clear_assign, NULL);
