@@ -12,9 +12,12 @@
 #include "postgres.h"
 
 #include "lib/ilist.h"
+#include "miscadmin.h"
 #include "utils/hsearch.h"
+#include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/relfilenumbermap.h"
 
 #include "agg/stats.h"
 #include "col/am.h"
@@ -80,6 +83,14 @@ dict_unpin(void *arg)
 	((Unpin *) arg)->ent->pins--;
 }
 
+static bool relations_changed;
+
+static void
+relcache_changed(Datum arg, Oid relid)
+{
+	relations_changed = true;
+}
+
 #define RETIRE_MEMO		32
 
 typedef struct RetireMemo
@@ -100,6 +111,21 @@ gen_in_dir(const SiftDirSnapshot *snap, uint64 gen)
 	return false;
 }
 
+/* The entries of an index that was dropped or got a new file (REINDEX, a rewrite) belong to no relation any more: looked for once after the relation cache changed */
+static void
+dict_drop_gone_relations(void)
+{
+	HASH_SEQ_STATUS seq;
+	DictEnt    *e;
+
+	relations_changed = false;
+	hash_seq_init(&seq, cache);
+	while ((e = hash_seq_search(&seq)) != NULL)
+		if (e->pins == 0 && !OidIsValid(RelidByRelfilenumber(e->key.rel.spcOid == MyDatabaseTableSpace ? InvalidOid : e->key.rel.spcOid,
+															  e->key.rel.relNumber)))
+			dict_drop(e);
+}
+
 /*
  * The directory a backend reads names the segments that exist: the entries kept for another generation of the index belong to segments a merge or a rewrite retired, which nobody
  * reads again, so they go (the ones a scan pins stay until it ends). Done once for each directory version a backend sees (the last 32 indexes are remembered), before the snapshot is cut to a family.
@@ -113,6 +139,8 @@ sift_cdict_retire(Relation index, const SiftDirSnapshot *snap)
 
 	if (cache == NULL)
 		return;
+	if (relations_changed)
+		dict_drop_gone_relations();
 	for (int i = 0; i < RETIRE_MEMO; i++)
 		if (RelFileLocatorEquals(retire_memo[i].rel, index->rd_locator))
 			m = &retire_memo[i];
@@ -217,6 +245,7 @@ cache_init(void)
 	sift_cache_register(&dict_kind);
 	ctl.hcxt = cache_cx;
 	cache = hash_create("sift column dictionaries", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	CacheRegisterRelcacheCallback(relcache_changed, (Datum) 0);
 }
 
 static void
