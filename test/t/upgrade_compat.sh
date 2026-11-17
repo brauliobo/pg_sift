@@ -97,6 +97,7 @@ run_variant() { # VARIANT OFFSET
 	check "$v: the prepared transaction is still there" test "$(sql "$n" "SELECT count(*) FROM pg_prepared_xacts")" == 1
 	check "$v: the quarantine list is the one the release wrote" test "$(sql "$n" "SELECT index::text FROM sift.quarantine")" == qt_idx
 	check "$v: the quarantined index is planned on the heap and its rows are the heap's" test "$(sql "$n" "SELECT count(*) FROM qt WHERE v = 3")" == "$(sql "$n" "SET enable_indexscan = off" "SET sift.enable_scan = off" "SET sift.enable_col_scan = off" "SELECT count(*) FROM qt WHERE v = 3")"
+	check "$v: the reserved word of the metapage the release left at zero holds no rewrite off" test "$(held_off "$n")" == 0
 	check "$v: the extension is at 5.0 and the library says which build runs" test "$(sql "$n" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 5.0
 	diag "$v: sift.version() = $(sql "$n" "SELECT sift.version()")"
 	check "$v: sift.check() has no finding beyond the damage and the leftover" sound_all "$n" "qt_idx,iv_inv"
@@ -159,8 +160,23 @@ run_variant() { # VARIANT OFFSET
 	check "$v: sift.check() is empty for the whole database" sound_all "$n"
 	check "$v: the second update and the preflight report" sql "$n" "ALTER EXTENSION pg_sift UPDATE" "SELECT count(*) FROM sift.upgrade_check()"
 	[[ $v != clean ]] || dump_restore "$n"
+	rewrite_hold_set "$n" "$v"
 	node_stop "$n"
 	check "$v: clean shutdown after the whole run" test "$(grep -c 'database system is shut down' "$(dir "$n")/postgres.log")" -ge 1
+}
+
+held_off() { sql "$1" "SELECT count(*) FROM unnest(ARRAY[$COLIDX]) u, LATERAL sift.col_maintenance_status(u::regclass), unnest(blocked_by) b WHERE b LIKE 'the last automatic rewrite holds the next one off%'"; }
+
+# an automatic rewrite of this tree sets the word of the metapage that holds the next one off (rewrite_hold, the reserved word the release leaves at zero); the files stay for the reverse smoke
+rewrite_hold_set() { # NODE VARIANT
+	local n=$1 v=$2 steps
+	sql "$n" "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || { not_ok "$v: the test extension"; return; }
+	steps=$(sql "$n" "SET sift.col_auto_rewrite_backoff = 1000000" "REINDEX INDEX dim_col" "SELECT sift._test_col_auto_rewrite('fact_col')" | tail -1)
+	check "$v: an automatic rewrite of the child index ran" test "${steps:-0}" -gt 0
+	sql "$n" "REINDEX INDEX dim_col" >/dev/null
+	check "$v: that is due again is held off through the metapage word" test "$(held_off "$n")" == 1
+	check "$v: the index with the word set verifies and answers as the heap" sound "$n" "'fact_col'"
+	sql "$n" "DROP EXTENSION pg_sift_test" >/dev/null
 }
 
 # the zoo through pg_dump into a fresh cluster of this tree
@@ -197,6 +213,7 @@ reverse_smoke() { # VARIANT
 		IFS='|' read -r kind ix q p <<<"$o"
 		res=FAIL; { sound "$n" "'$ix'" && agree "$n" "$ix" "$q" "$p"; } && res=PASS
 		echo "# COMPAT $kind new-files-old-lib $v $res"
+		[[ $kind != connect ]] || check "$v: the release opens, verifies and answers through the index whose metapage word holds a rewrite off" test "$res" == PASS
 		[[ $res == PASS ]] || diag "reverse $kind ($ix): $(head -c 300 <<<"$out")"
 	done
 	ok "$v reverse smoke done (reported, not a gate)"
