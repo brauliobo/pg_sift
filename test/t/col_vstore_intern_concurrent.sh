@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Two sessions intern strings into one shared value store (the strings of one column that several sift_col indexes share). The session that appends holds the lock of the appenders only
-# while it appends the codes of its strings; the merge of the store's runs, which follows, holds a lock of its own and no one waits for it: another session that interns, strings of the first
+# Two sessions intern strings into one shared value store (the strings of one column that several sift_col indexes share). The session that appends holds the store's extension lock
+# only while it appends the codes of its strings; the merge of the store's runs, which follows, holds a page lock of its own and no one waits for it: another session that interns, strings of the first
 # session's batch among them, gets its codes while the first is still inside its merge (stopped at a test gate, an advisory lock a test holds, so no timing is involved), and a session that
 # only extends the store's file is not held back by either. The codes are the same ones a sequence of the sessions would give: one code for each string, every code reads back its string.
 . "$(dirname "$0")/lib.bash"

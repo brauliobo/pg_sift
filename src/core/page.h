@@ -21,8 +21,7 @@
 #define SIFT_ACTIVE_LOCK_BLKNO	2	/* LockPage() target serializing active segment changes */
 #define SIFT_WORKER_LOCK_BLKNO	3	/* LockPage() target held by the maintenance worker of the index */
 #define SIFT_LOAD_LOCK_BLKNO	5	/* LockPage() target: a load whose segments are written and not yet in the directory shares it, the orphan sweep tries for it exclusive */
-#define SIFT_VSTORE_APPEND_LOCK_BLKNO	6	/* LockPage() target of a shared value store: the one session that gives new strings their codes (it excludes the members of a parallel build too) */
-#define SIFT_VSTORE_MERGE_LOCK_BLKNO	7	/* LockPage() target of a shared value store: the one session that merges its runs, tried and skipped when held */
+#define SIFT_VSTORE_MERGE_LOCK_BLKNO	6	/* LockPage() target of a shared value store: the one session that merges its runs, tried and skipped when held (the members of a lock group share it: page locks do not conflict inside a group) */
 
 typedef enum SiftPageType
 {

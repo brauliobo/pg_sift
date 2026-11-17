@@ -5,11 +5,11 @@
  * The code space of a store is append-only: a value has exactly one code, the position at which it was appended, and a code never moves. A run
  * is an immutable segment of the directory (kind SIFT_SEG_VALRUN) that holds the values of the codes [base, base + n) in code order, in the
  * serialized form of a string dictionary. A writer asks the store for the codes of a batch of values: those it finds are answered, the others are
- * appended as one run, under the append lock of the store (a page lock, which conflicts between the members of a parallel build as the extension lock does) that is held for the append and no longer, and published by a directory update that is logged after the pages
+ * appended as one run, under the extension lock of the store (the one heavyweight lock that the members of a parallel build do not share: core/extlock.h) that is held for the append and no longer, and published by a directory update that is logged after the pages
  * of the run, so that a segment that names the codes (published later, by the writer) is never seen without them. An append that is not followed
  * by a segment leaves values nobody uses: the store keeps them until its epoch is retired (col/vstore/vstore_gc.c).
- * Runs are merged by the appender (adjacent runs, the codes unchanged), so that a lookup reads few of them, under a merge lock of their own that it only tries for: no append waits for a merge,
- * and the relation extension lock is held only while a block is added (core/extlock.h).
+ * Runs are merged by the appender (adjacent runs, the codes unchanged), so that a lookup reads few of them, under a merge lock of their own that it only tries for: no append waits for a merge
+ * (the members of a parallel build merge under the extension lock too, see merge_when_idle).
  */
 #include "postgres.h"
 
@@ -21,6 +21,7 @@
 #include "lib/stringinfo.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
+#include "storage/proc.h"
 #include "utils/inval.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
@@ -506,17 +507,17 @@ write_run(SiftVStore *vs, const SiftCDict *src, uint32 from, uint32 lo, uint32 n
 	pfree(out.data);
 }
 
-/* The one session that appends codes: the codes it hands out start at the end of the store it read under this lock, and its run is published before the lock goes */
+/*
+ * The one session that appends codes: the codes it hands out start at the end of the store it read under this lock, and its run is published before the lock goes. The relation
+ * extension lock, because it is the only heavyweight lock that conflicts between the members of a lock group too (src/backend/storage/lmgr/README, LockCheckConflicts: every other
+ * lock of a group is shared): the members of a parallel build intern concurrently. Under it nothing may take a heavyweight lock: the xid is assigned first (the catalog the directory
+ * update reads is read by the lock, core/extlock.h)
+ */
 static void
-append_lock(SiftVStore *vs)
+lock_extend(SiftVStore *vs)
 {
-	LockPage(vs->rel, SIFT_VSTORE_APPEND_LOCK_BLKNO, ExclusiveLock);
-}
-
-static void
-append_unlock(SiftVStore *vs)
-{
-	UnlockPage(vs->rel, SIFT_VSTORE_APPEND_LOCK_BLKNO, ExclusiveLock);
+	(void) GetCurrentTransactionId();
+	sift_extension_lock(vs->rel);
 }
 
 static void
@@ -534,11 +535,11 @@ sift_vstore_bump_epoch(SiftVStore *vs)
 {
 	SiftDirChange chg = {.fn = epoch_edit};
 
-	append_lock(vs);
+	lock_extend(vs);
 	pfree(view_refresh(vs));
 	if (vs->view->total > 0)
 		sift_dir_update(vs->rel, &chg);
-	append_unlock(vs);
+	sift_extension_unlock(vs->rel);
 	pfree(view_refresh(vs));
 }
 
@@ -680,20 +681,26 @@ merge_runs(SiftVStore *vs, const SiftCcPolicy *pol, const SiftDirSnapshot *snap)
 }
 
 /*
- * The merge of the runs after an append, by the one session that gets the merge lock: another that interns meanwhile appends (the append lock is not this one) and leaves the merge
- * to the one that holds it. The runs a skipped merge leaves are merged by the next append
+ * The merge of the runs after an append, by the one session that gets the merge lock: another that interns meanwhile appends (the append is under the extension lock, which the merge
+ * does not hold) and leaves the merge to the one that holds it. The runs a skipped merge leaves are merged by the next append. The members of a lock group share the merge lock (page
+ * locks do not conflict inside a group): they take the extension lock for the merge as well, one after the other as the appends of a parallel build are
  */
 static void
 merge_when_idle(SiftVStore *vs, const SiftCcPolicy *pol)
 {
 	SiftDirSnapshot *snap;
+	bool		in_group = MyProc->lockGroupLeader != NULL;
 
 	if (!ConditionalLockPage(vs->rel, SIFT_VSTORE_MERGE_LOCK_BLKNO, ExclusiveLock))
 		return;
 	SIFT_TEST_GATE(sift_test_intern_gate, 12);
+	if (in_group)
+		lock_extend(vs);
 	snap = view_refresh(vs);
 	merge_runs(vs, pol, snap);
 	pfree(snap);
+	if (in_group)
+		sift_extension_unlock(vs->rel);
 	UnlockPage(vs->rel, SIFT_VSTORE_MERGE_LOCK_BLKNO, ExclusiveLock);
 }
 
@@ -767,11 +774,11 @@ retry:
 		missing += map[i] == PG_UINT32_MAX;
 	if (missing > 0)
 	{
-		append_lock(vs);
+		lock_extend(vs);
 		pfree(view_refresh(vs));
 		if (vs->view->epoch != *epoch)	/* a new epoch began since: the codes found are the old one's */
 		{
-			append_unlock(vs);
+			sift_extension_unlock(vs->rel);
 			goto retry;
 		}
 		map_codes(vs, batch, map);
@@ -803,7 +810,7 @@ retry:
 				appended = fresh->n;
 			}
 		}
-		append_unlock(vs);
+		sift_extension_unlock(vs->rel);
 		merge_when_idle(vs, pol);
 	}
 	*ncodes = vs->view->total;
