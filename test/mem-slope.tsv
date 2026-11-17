@@ -1,6 +1,6 @@
 # NAME	KIND	CEILING	STATUS	SETUP	OPERATION -- scripts/mem-slope.py: work_mem and maintenance_work_mem at 1 MB; {f} {d} the tables of the case, {m} {s} a copy it may change, {n} its rows.
 # kind leakx: a statement of its own repeated 25 times in one backend, kB the contexts hold after the 25th over the 10th (open: the ceiling in kB).
-# kind flat: {m} a table of 8, 16 and 32 times the rows, one run each; the ceiling is bytes of memory a row between the two largest, and they differ by 10% at most.
+# kind flat (flatcut: key_cut by k_mid): {m} a table of 8, 16 and 32 times the rows, one run each; the ceiling is bytes of memory a row between the two largest, and they differ by 10% at most.
 # kind slope: the ceiling is bytes of memory a row of the table, between the smallest and the largest size; status open: the slope it was measured at (a defect to fix, then clean).
 group_low	slope	12	clean		select k_lo, count(*), sum(amount) from {f} group by 1;
 group_mid	slope	12	clean		select k_mid, count(*), sum(amount) from {f} group by 1;
@@ -66,3 +66,6 @@ leakx_cic	leakx	0	clean		create index concurrently {m}_cc on {m} using sift_col 
 merge_flat_1mb	flat	12	clean	set maintenance_work_mem = '1MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
 merge_flat_4mb	flat	12	clean	set maintenance_work_mem = '4MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
 merge_flat_64mb	flat	12	clean	set maintenance_work_mem = '64MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
+merge_flatcut_1mb	flatcut	12	clean	set maintenance_work_mem = '1MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
+merge_flatcut_4mb	flatcut	12	clean	set maintenance_work_mem = '4MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
+merge_flatcut_64mb	flatcut	12	clean	set maintenance_work_mem = '64MB'; update {m} set amount = amount + 1 where k_lo < 2; update {m} set fl = fl + 1 where k_lo between 5 and 6;	select sift.col_merge('{m}_col'::regclass, true);
