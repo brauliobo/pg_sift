@@ -18,6 +18,7 @@
 #include "col/conn.h"
 #include "col/scope.h"
 #include "col/vstore/vstore.h"
+#include "core/membudget.h"
 
 #ifdef SIFT_TESTING
 char	   *sift_test_vstore_columns = NULL;
@@ -97,6 +98,7 @@ sift_colb_peak_note(void)
 {
 	Size		now = MemoryContextMemAllocated(TopMemoryContext, true);
 
+	SIFT_MEM_CHECKPOINT();
 	if (now > peak_max)
 	{
 		peak_max = now;
@@ -142,6 +144,7 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 		sift_colb_init_meta(index);
 	wt = sift_wt_begin(index, key_cut ? SIFT_WRITE_SHARED : SIFT_WRITE_BULK);
 	b = sift_colb_begin(index, wt, sift_colb_budget(1), SIFT_COL_BUILD_SEGMENTS, segs, false, 1, !info->ii_Concurrent);
+	SIFT_MEM_SCOPE(col_build, b->cxt);
 	SpinLockInit(&acc->mutex);
 	PG_TRY();
 	{
@@ -158,6 +161,7 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 		sift_test_phase_wait(SIFT_COL_PHASE_WRITE);
 #endif
 		nsegs = sift_colb_end(b);
+		SIFT_MEM_CHECKPOINT();
 	}
 	PG_FINALLY();
 	{
