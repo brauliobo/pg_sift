@@ -8,6 +8,8 @@
 #   null-result     a variable assigned from a call that returns NULL (SearchSysCache*, try_relation_open, RelationIdGetRelation, get_rel_name, get_func_name, get_opname, get_namespace_name,
 #                   malloc, strdup, fopen, fgets, getenv, strchr, strstr, ..) that the function never compares with NULL (or HeapTupleIsValid); a name used only as an argument of a message is not a use
 #   null-wrapped    such a name call as the argument of strcmp, strlen, pstrdup, strcpy, .. on the same line: the wrapper dereferences NULL
+#   sql-oid         relation_open/index_open/table_open/RelationIdGetRelation of an OID that a SQL argument supplies (PG_GETARG_OID, or a variable assigned from one) without sift_rel_must_exist
+#                   (core/inspect.h): a dropped regclass or 0 is the error 42P01 of the user, not the XX000 of the open; the test builds (src/*/test/) are not read for it
 # A test of an Assert does not count: a release build has none. A site that cannot be NULL says why in scripts/null.allow: FILE TAB FUNCTION TAB RULE TAB REASON (one line); a line whose function no
 # longer has a hit fails too, so the list stays the list of the sites that were read.
 #   scripts/check-null.sh            the tracked sources of src/
@@ -36,6 +38,8 @@ PRODUCERS = [
 ASSIGN = lambda call: re.compile(r'(?:\*\s*)?\b([A-Za-z_]\w*)\s*=\s*(?:\([A-Za-z_][\w \*]*\)\s*)?' + call)
 MESSAGE_ARG = re.compile(r'\b(errmsg\w*|errdetail\w*|errhint\w*|errcontext|elog|ereport|psprintf|appendStringInfo\w*|snprintf|agg_refuse\w*|ExplainProperty\w*|SIFT_INVARIANT|sift_\w*_refuse\w*)\(')
 WRAPPERS = r'(?:strcmp|strncmp|strlen|pstrdup|strcpy|strcasecmp|pg_strcasecmp|pg_strncasecmp|atoi|atol|strtol|strtoul|strtod|makeString|cstring_to_text|CStringGetTextDatum|namestrcpy|quote_identifier|memcpy|strncpy)'
+OPEN_CALL = re.compile(r'\b(?:relation_open|index_open|table_open|RelationIdGetRelation)\(\s*((?:[^(),]|\([^()]*\))*)')
+SQL_OID = re.compile(r'PG_GETARG_(?:OID|DATUM)\(')
 WRAPPED = re.compile(r'\b' + WRAPPERS + r'\(\s*(?:[^(),;]*,\s*)*(?:' + NAME_CALLS + r'|strchr|strrchr|strstr|getenv)\(')
 
 
@@ -99,6 +103,20 @@ def relation_entry_tested(m, line, body):
     return bool(assigned) and compared(assigned.group(1), body)
 
 
+def sql_oid_unchecked(arg, body, upto):
+    arg = arg.strip()
+    if 'sift_rel_must_exist(' in arg:
+        return False
+    if SQL_OID.search(arg):
+        return True
+    if not re.fullmatch(r'[A-Za-z_]\w*', arg):
+        return False
+    assigned = [l for l in body[:upto] if re.search(r'\b%s\s*=[^=]' % re.escape(arg), l)]
+    if not any(SQL_OID.search(l) for l in assigned):
+        return False
+    return not any(re.search(r'sift_rel_must_exist\(\s*%s\s*\)' % re.escape(arg), l) or re.search(r'\b%s\s*=\s*sift_rel_must_exist\(' % re.escape(arg), l) for l in body[:upto + 1])
+
+
 def hits(path, text):
     lines = text.split('\n')
     cl = clean(lines)
@@ -121,6 +139,10 @@ def hits(path, text):
                         continue
                     if not compared(v, body):
                         found.append((path, n, name, 'null-result', '%s is assigned a result that can be NULL and the function never tests it' % v))
+            if '/test/' not in path:
+                for m in OPEN_CALL.finditer(l):
+                    if sql_oid_unchecked(m.group(1), body, k):
+                        found.append((path, n, name, 'sql-oid', 'the OID is a SQL argument opened with no sift_rel_must_exist: a dropped regclass or 0 is the user error 42P01, not an XX000 of the open'))
             if WRAPPED.search(l):
                 found.append((path, n, name, 'null-wrapped', 'a result that can be NULL is the argument of a function that dereferences it'))
     seen, out = set(), []
@@ -158,6 +180,7 @@ if arg == '--selftest':
         'null-result': ['HeapTuple tp = SearchSysCache1(RELOID, 0);\nreturn GETSTRUCT(tp);', 'char *s = getenv("X");\nreturn s[0];', 'char *n = get_rel_name(x);\nreturn n[0];',
                         'Relation r = try_relation_open(x, NoLock);\nreturn r->rd_id;'],
         'null-wrapped': ['return strcmp(get_func_name(x), "sum");', 'return strlen(getenv("HOME"));', 'return pstrdup(get_rel_name(x));'],
+        'sql-oid': ['Relation r = table_open(PG_GETARG_OID(0), NoLock);\nreturn r->rd_id;', 'Oid o = PG_GETARG_OID(0);\nRelation r = index_open(o, NoLock);\nreturn r->rd_id;'],
     }
     for rule, srcs in cases.items():
         for s in srcs:
@@ -175,6 +198,10 @@ if arg == '--selftest':
         'Assert(0);',
         'return strncmp(n, "int", 3) != 0 || strstr(n, "div") == NULL;',
         'return strcmp(sift_func_name(x), "sum");',
+        'Relation r = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), NoLock);\nreturn r->rd_id;',
+        'Oid o = sift_rel_must_exist(PG_GETARG_OID(0));\nRelation r = index_open(o, NoLock);\nreturn r->rd_id;',
+        'Oid o = PG_GETARG_OID(0);\nsift_rel_must_exist(o);\nRelation r = index_open(o, NoLock);\nreturn r->rd_id;',
+        'Relation r = table_open(root->relid, NoLock);\nreturn r->rd_id;',
     ]
     for s in clean_src:
         assert not rules(s), 'reported a clean site: %s -> %s' % (s, rules(s))
