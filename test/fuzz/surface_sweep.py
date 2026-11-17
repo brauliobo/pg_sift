@@ -5,8 +5,9 @@
 
 Every function, procedure, aggregate, window function, ordered-set aggregate and trigger function of the extensions pg_sift, pg_sift_test and pg_sift_helpers (the
 sift schema and the objects of the extensions) must be exercised in each of three modes: as a superuser, inside a rolled-back savepoint and as an unprivileged role. "Exercised"
-is measured, not assumed: track_functions counts the calls whose arguments reached the function (an aggregate counts when a call does not fail before its transition), so
-a call that fails to cast its arguments does not count. A function that is not exercised in a mode fails the sweep unless scripts/surface.allow has a row (signature, modes,
+means the function body ran with the hostile argument: a normal return (not a strict function skipped for a NULL argument), an error whose call stack names the PL/pgSQL or SQL function, or
+an error of a call that analyzes without executing (the same call with WHERE false), so a call that fails to resolve, to cast its arguments or to be allowed does not count; a trigger
+function counts when its call counter moved or a firing statement of the created trigger failed; the unprivileged role is expected to be refused an EXECUTE it was not granted. A function that is not exercised in a mode fails the sweep unless scripts/surface.allow has a row (signature, modes,
 reason); a row of a function that is exercised, or that is gone, fails too. Every function is called with all-NULL arguments, with
 each argument in turn set to a hostile value of its type (NULL, empty, huge, NaN, a regclass that is dropped, a heap, a view, a partitioned table, a temp table,
 a table of another schema, a 1 MB text, a nested array, ...) while the others are valid, and with every argument set to the same kind of hostile value. Each call
@@ -17,11 +18,15 @@ A failure is a signal (the session ends), SQLSTATE XX000 or an internal message,
 import argparse
 import os
 import re
+import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import shapes_matrix  # noqa: E402
 from shapes_matrix import ENV, Crash, Session, wait_ready, log_mark, log_scan  # noqa: E402
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
@@ -186,16 +191,17 @@ def valid_args(args_t, base):
 EXTENSIONS = ('pg_sift', 'pg_sift_test', 'pg_sift_helpers')
 
 
-def state_counts(ob):
-    """whether the outcome of a call, not a function counter, tells that the function was reached: an aggregate has no counter, nor has a SQL function that is inlined"""
-    return ob['kind'] in ('a', 'w') or ob['lang'] in ('sql', 'internal')
+def refused_for_role(ob):
+    """a function whose EXECUTE is not granted to the unprivileged role: the call is refused before its body, and the expectation of the role mode is that refusal"""
+    return ob.get('role_denied', False)
 
 
 def objects(sess, with_test=False):
     sql = """SELECT p.oid, p.proname, p.prokind, p.proretset, p.provariadic <> 0, p.proisstrict, p.prorettype::regtype::text, coalesce(a.aggkind, ''),
 		coalesce(a.aggnumdirectargs, 0), p.oid::regprocedure::text,
 		coalesce((SELECT string_agg(format_type(t, NULL), ',' ORDER BY o) FROM unnest(p.proargtypes::oid[]) WITH ORDINALITY u(t, o)), ''),
-		(SELECT lanname FROM pg_language WHERE oid = p.prolang)
+		(SELECT lanname FROM pg_language WHERE oid = p.prolang),
+		(SELECT e.extname FROM pg_depend d JOIN pg_extension e ON e.oid = d.refobjid WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.refclassid = 'pg_extension'::regclass AND d.deptype = 'e' LIMIT 1)
 	FROM pg_proc p LEFT JOIN pg_aggregate a ON a.aggfnoid = p.oid
 	WHERE p.oid IN (SELECT objid FROM pg_depend WHERE classid = 'pg_proc'::regclass AND refclassid = 'pg_extension'::regclass AND deptype = 'e'
 			AND refobjid IN (SELECT oid FROM pg_extension WHERE extname = ANY(%s)))
@@ -204,8 +210,8 @@ def objects(sess, with_test=False):
     out = []
     for l in sess.run(sql):
         f = l.split('|')
-        if len(f) == 12:
-            out.append(dict(lang=f[11], oid=f[0], name=f[1], kind=f[2], retset=f[3] == 't', variadic=f[4] == 't', strict=f[5] == 't', ret=f[6], aggkind=f[7],
+        if len(f) == 13:
+            out.append(dict(ext=f[12], lang=f[11], oid=f[0], name=f[1], kind=f[2], retset=f[3] == 't', variadic=f[4] == 't', strict=f[5] == 't', ret=f[6], aggkind=f[7],
                             ndirect=int(f[8]), sig=f[9], args=f[10].split(',') if f[10] else []))
     return out
 
@@ -215,8 +221,28 @@ def qualified(sess, oid):
                     f"JOIN pg_namespace n ON n.oid = p.pronamespace WHERE p.oid = {oid};")[0].split('|')[1]
 
 
+PLANNER_CALLBACKS = {'matchsel': 'body @@> %1$L', 'match_support': "sift.match(body, %1$L) OR sift.match_idx(body, %1$L, 'fx.t_bm'::regclass::oid)"}
+
+
+def text_driven(ob):
+    """a function SQL cannot call with its own arguments (they are internal or cstring) and reaches by a text: a cast for the input and output functions of a type, the plan of a
+    query that uses the operator or the function for the planner callbacks"""
+    return ob['args'] == ['cstring'] or ob['ret'] == 'cstring' or ob['name'] in PLANNER_CALLBACKS
+
+
+def text_calls():
+    names = ["'fx.gone'", "'a.b.c.d'", "'\"fx\".\"t\"'", "'.'", "'fx.'", "'fx.t.id'", "'pg_class'", "'0'"]
+    return [(f'io{i}', [f'({v})::text']) for i, v in enumerate(POOL['text'] + names)]
+
+
 def call_sql(ob, name, args):
-    a = ', '.join(args)
+    if ob['name'] in PLANNER_CALLBACKS:
+        return f"EXECUTE format($q$EXPLAIN (COSTS OFF) SELECT id FROM fx.t WHERE {PLANNER_CALLBACKS[ob['name']]}$q$, {args[0]})"
+    if ob['args'] == ['cstring']:
+        return f"PERFORM ({args[0]})::{ob['ret']}"
+    if ob['ret'] == 'cstring':
+        return f"PERFORM (({args[0]})::{ob['args'][0]})::text"
+    a = ', '.join(args[:-1] + ['VARIADIC ' + args[-1]] if ob['variadic'] and ob['args'][-1] != '"any"' else args)
     if ob['kind'] == 'w':
         return f'PERFORM {name}({a}) OVER () FROM generate_series(1, 3)'
     if ob['kind'] == 'a' and ob['aggkind'] in ('o', 'h'):
@@ -232,8 +258,9 @@ def call_sql(ob, name, args):
 
 
 def wrap(stmt, label):
-    body = stmt if stmt.startswith(('CALL', 'PERFORM', 'EXECUTE')) else 'PERFORM ' + stmt
-    return (f"DO $do$ BEGIN {body}; RAISE NOTICE '@@OK {label}'; EXCEPTION WHEN OTHERS THEN RAISE NOTICE '@@ERR {label} % %', SQLSTATE, SQLERRM; END $do$;")
+    body = stmt if stmt.startswith(('CALL', 'PERFORM', 'EXECUTE', 'CREATE', 'DROP', 'ALTER', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')) else 'PERFORM ' + stmt
+    return (f"DO $do$ DECLARE c text; BEGIN {body}; RAISE NOTICE '@@OK {label}'; EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS c = PG_EXCEPTION_CONTEXT; "
+            f"RAISE NOTICE '@@ERR {label} % %', SQLSTATE, SQLERRM; RAISE NOTICE '@@CTX {label} %', replace(c, chr(10), ' | '); END $do$;")
 
 
 def call_sets(ob, args_t, cap, limit=0):
@@ -272,22 +299,24 @@ def subsample(calls, cap):
 
 
 def classify(lines):
-    """[(label, status, sqlstate, message)]"""
+    """[(label, status, sqlstate, message, context)]: the context of an error is its call stack, which names a PL/pgSQL or SQL function that raised it"""
     res = []
     for l in lines:
+        c = re.match(r'(?:NOTICE|WARNING):\s+(?:[0-9A-Z]{5}: )?@@CTX (\S+) (.*)', l)
+        if c and res and res[-1][0] == c.group(1):
+            res[-1] = res[-1][:4] + (c.group(2),)
+            continue
         m = re.match(r'(?:NOTICE|WARNING):\s+(?:[0-9A-Z]{5}: )?@@(OK|ERR) (\S+)(?: ([0-9A-Z]{5}) (.*))?', l)
         if m:
-            res.append((m.group(2), m.group(1), m.group(3), m.group(4)))
+            res.append((m.group(2), m.group(1), m.group(3), m.group(4), ''))
         else:
             m = re.match(r'ERROR:\s+([0-9A-Z]{5}): (.*)', l)
             if m:
-                res.append(('?', 'ERR', m.group(1), m.group(2)))
+                res.append(('?', 'ERR', m.group(1), m.group(2), ''))
     return res
 
 
 INIT = "SET client_min_messages = notice; SET statement_timeout = '15s'; SET lock_timeout = '2s'; SET track_functions = 'all';"
-NOT_RESOLVED = ('42883', '42846', '42725', '42704', '42P18', '42601', '42809')
-NOT_CALLED = re.compile(r'can only be called as|cannot accept a value|does not exist$|function .* does not exist|requires an OVER|is not a window function')
 MODES = ('super', 'rollback', 'role')
 ALLOW = os.path.join(REPO, 'scripts', 'surface.allow')
 
@@ -312,9 +341,9 @@ def load_allow():
 
 def int_limit(allow, ob):
     """the largest integer an integer argument is called with, 0 for no limit: an integer argument of the test extension is a workload (cases, pages, rows), so it is called with
-    integers of at most HUGE; a row of the allow file with the mode tiny (at most 3) is for a function that takes a resource of the backend for each (relcache callback slots)"""
+    integers of at most HUGE; _test_relcache_burn takes a relcache callback slot of the backend for each count (the table has 10, a call past them is a FATAL of PostgreSQL)"""
     modes = allow.get(ob['sig'], (set(),))[0]
-    return 3 if 'tiny' in modes else HUGE if ob['name'].startswith('_test') or 'no-huge' in modes else 0
+    return 3 if ob['name'] == '_test_relcache_burn' else HUGE if ob['name'].startswith('_test') or 'no-huge' in modes else 0
 
 
 def coverage(obs, reach, allow):
@@ -339,7 +368,7 @@ def bad(state, msg):
     return state == 'XX000' or (msg and BAD.search(msg) and not ALLOW_MSG.search(msg)) or state in ('57014',)
 
 
-def main():
+def parse():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--tier', default='quick', choices=['quick', 'full'])
     ap.add_argument('--only', default='')
@@ -349,8 +378,12 @@ def main():
     ap.add_argument('--no-ddl', action='store_true')
     ap.add_argument('--no-calls', action='store_true')
     ap.add_argument('--with-test-extension', action='store_true', help='also sweep the functions of pg_sift_test (needs a SIFT_TESTING build); many take internal pointers and offsets and raise XX000 on purpose')
-    ap.add_argument('--coverage', action='store_true', help='fail when a function is not exercised in a mode and has no row in scripts/surface.allow (the sweep of the whole extension: add --with-test-extension)')
-    a = ap.parse_args()
+    ap.add_argument('--no-coverage', action='store_true', help='do not fail on a function of pg_sift or pg_sift_helpers that is not reached in a mode and has no row in scripts/surface.allow')
+    ap.add_argument('--use-cluster', action='store_true', help='use the cluster of SIFT_TMP and SIFT_PORT, not a scratch cluster of its own (the default: it starts one on the install of SIFT_TMP and removes it)')
+    return ap.parse_args()
+
+
+def _sweep(a):
     db = a.db
     subprocess.run(['psql', '-X', '-q', '-d', 'postgres', '-c', f'DROP DATABASE IF EXISTS {db}', '-c', f'CREATE DATABASE {db}'], env=ENV, check=True, capture_output=True)
     subprocess.run(['psql', '-X', '-q', '-d', db, '-c', 'CREATE EXTENSION pg_sift'], env=ENV, check=True, capture_output=True)
@@ -364,8 +397,6 @@ def main():
     obs = [o for o in objects(sess, a.with_test_extension) if re.search(a.only, o['name'])]
     reach = {}
     allow = load_allow()
-    if a.coverage:
-        a.with_test_extension = True
     cap = 60 if a.tier == 'quick' else 400
     t0 = time.time()
     stats = dict(functions=len(obs), calls=0, errors_clean=0, ok=0, crashes=0, skipped=0)
@@ -389,6 +420,21 @@ def main():
             reconnect()
             sess.run(FIXTURE)
 
+    def in_stack(ob, ctx):
+        return bool(re.search(r'function "?(?:\w+\.)?' + re.escape(ob['name']) + r'"?[( ]', ctx))
+
+    def resolves(ob, name, args, prelude, after):
+        """the call is analyzed, not executed: it names the function and is allowed to"""
+        text = prelude + wrap(call_sql(ob, name, args) + ' WHERE false', 'probe') + after
+        return any(st == 'OK' for _, st, _, _, _ in classify(sess.run(text)))
+
+    def body_ran(ob, name, args, st, ctx, prelude, after):
+        """the function ran: it returned a result (not a strict function skipped for a NULL argument), or its call stack names it, or it raised an error from a call that is
+        analyzed and allowed; an error of resolving the function, casting its arguments or calling it unprivileged is not the function"""
+        if ob['strict'] and any(re.match(r'\(?NULL\b', x) for x in args):
+            return False
+        return st == 'OK' or in_stack(ob, ctx) or (ob['kind'] != 'p' and resolves(ob, name, args, prelude, after))
+
     def run_batch(ob, name, calls, label_pfx, prelude='', after='', mode='super'):
         nonlocal sess
         for lab, args in calls:
@@ -404,8 +450,11 @@ def main():
                 reconnect()
                 reset_fixture()
                 continue
-            for l, st, state, msg in classify(lines):
-                if state_counts(ob) and (st == 'OK' or (state not in NOT_RESOLVED and not NOT_CALLED.search(msg or ''))):
+            for l, st, state, msg, ctx in classify(lines):
+                if mode == 'role' and refused_for_role(ob):
+                    if state == '42501':
+                        reach[(ob['sig'], mode)] = True
+                elif body_ran(ob, name, args, st, ctx, prelude, after):
                     reach[(ob['sig'], mode)] = True
                 if st == 'OK':
                     stats['ok'] += 1
@@ -417,52 +466,60 @@ def main():
                 else:
                     stats['errors_clean'] += 1
 
-    def measured(ob, name, calls, label, mode, prelude='', after=''):
-        """run a batch in a mode; a function the counters track is exercised when its call count moved"""
-        before = None if state_counts(ob) else call_count(sess, ob['oid'])
-        run_batch(ob, name, calls, label, prelude, after, mode)
-        if before is not None and call_count(sess, ob['oid']) > before:
-            reach[(ob['sig'], mode)] = True
-
     def trigger_calls(ob, name):
-        """the statements that fire a trigger function or an event trigger function: (label, [statements])"""
+        """the statements that fire a trigger function or an event trigger function: (label, create, [firing statements], teardown)"""
         if ob['ret'] == 'event_trigger':
-            return [(f'evt.{ev}', [f'CREATE EVENT TRIGGER sw_ev ON {ev} EXECUTE FUNCTION {name}()', 'CREATE TABLE fx.evt (i int)', 'ALTER TABLE fx.evt ADD COLUMN j int',
-                                   'ALTER TABLE fx.evt ALTER COLUMN j TYPE bigint', 'DROP TABLE fx.evt']) for ev in ('ddl_command_start', 'ddl_command_end', 'sql_drop', 'table_rewrite')]
+            fires = ['CREATE TABLE fx.evt (i int)', 'ALTER TABLE fx.evt ADD COLUMN j int', 'ALTER TABLE fx.evt ALTER COLUMN j TYPE bigint', 'DROP TABLE fx.evt']
+            return [(f'evt.{ev}', f'CREATE EVENT TRIGGER sw_ev ON {ev} EXECUTE FUNCTION {name}()', fires, 'DROP EVENT TRIGGER IF EXISTS sw_ev; DROP TABLE IF EXISTS fx.evt')
+                    for ev in ('ddl_command_start', 'ddl_command_end', 'sql_drop', 'table_rewrite')]
         out = []
+        drop = 'DROP TRIGGER IF EXISTS sw_t ON fx.trg; DROP TRIGGER IF EXISTS sw_s ON fx.trg'
         for lab, args in (('none', ''), ('x', "'x'"), ('cols', "'id', 'g'"), ('rel', "'fx.t', 'id'"), ('empty', "''"), ('many', ', '.join(["'a'"] * 20))):
             for when in ('BEFORE', 'AFTER'):
-                out.append((f'trg.{when.lower()}.{lab}', [f'CREATE TRIGGER sw_t {when} INSERT OR UPDATE OR DELETE ON fx.trg FOR EACH ROW EXECUTE FUNCTION {name}({args})',
-                                                          'INSERT INTO fx.trg VALUES (1, 1), (2, NULL)', 'UPDATE fx.trg SET g = 5', 'DELETE FROM fx.trg WHERE id = 1']))
-            out.append((f'trg.stmt.{lab}', [f'CREATE TRIGGER sw_s AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON fx.trg FOR EACH STATEMENT EXECUTE FUNCTION {name}({args})',
-                                            'INSERT INTO fx.trg VALUES (3, 3)', 'UPDATE fx.trg SET g = 6', 'TRUNCATE fx.trg']))
+                out.append((f'trg.{when.lower()}.{lab}', f'CREATE TRIGGER sw_t {when} INSERT OR UPDATE OR DELETE ON fx.trg FOR EACH ROW EXECUTE FUNCTION {name}({args})',
+                            ['INSERT INTO fx.trg VALUES (1, 1), (2, NULL)', 'UPDATE fx.trg SET g = 5', 'DELETE FROM fx.trg WHERE id = 1'], drop))
+            out.append((f'trg.stmt.{lab}', f'CREATE TRIGGER sw_s AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON fx.trg FOR EACH STATEMENT EXECUTE FUNCTION {name}({args})',
+                        ['INSERT INTO fx.trg VALUES (3, 3)', 'UPDATE fx.trg SET g = 6', 'TRUNCATE fx.trg'], drop))
         return out
+
+    def trigger_ran(ob, mode, lab, results):
+        """the trigger function ran: it returned, or a firing statement of a created trigger failed (the statements are valid, so the trigger raised), or its call stack names it;
+        an event trigger is created by a superuser only, and the unprivileged role is expected to be refused"""
+        create = results.get(f'{lab}.create')
+        if mode == 'role' and ob['ret'] == 'event_trigger':
+            return bool(create) and create[1] == '42501'
+        failed = [r for l, r in results.items() if l.startswith(f'{lab}.fire') and r[0] == 'ERR']
+        return bool(create) and create[0] == 'OK' and bool(failed) or any(in_stack(ob, r[3]) for r in results.values())
 
     def triggered(ob, name, mode, prelude='', after=''):
         before = call_count(sess, ob['oid'])
-        for lab, stmts in trigger_calls(ob, name):
-            body = '; '.join(stmts)
-            text = prelude + (f"DO $do$ BEGIN {body}; RAISE NOTICE '@@OK {lab}'; EXCEPTION WHEN OTHERS THEN RAISE NOTICE '@@ERR {lab} % %', SQLSTATE, SQLERRM; END $do$;") + after
+        for lab, create, fires, teardown in trigger_calls(ob, name):
+            steps = [(f'{lab}.create', create)] + [(f'{lab}.fire{i}', f) for i, f in enumerate(fires)]
+            text = prelude + ''.join(wrap(f, l) for l, f in steps) + after + wrap(teardown, f'{lab}.drop')
             stats['calls'] += 1
             try:
                 lines = sess.run(text)
             except Crash as e:
                 stats['crashes'] += 1
                 fails.append(('CRASH', ob, lab, str(e)))
-                print(f'FAIL CRASH {mode} {name} {lab}: {e}\n  {body[:400]}', flush=True)
+                print(f'FAIL CRASH {mode} {name} {lab}: {e}\n  {create[:400]}', flush=True)
                 reconnect()
                 reset_fixture()
                 continue
-            for l, st, state, msg in classify(lines):
+            results = {}
+            for l, st, state, msg, ctx in classify(lines):
+                results.setdefault(l, (st, state, msg, ctx))
                 if st == 'OK':
                     stats['ok'] += 1
                     continue
                 states[state] = states.get(state, 0) + 1
                 if bad(state, msg):
-                    fails.append(('ERROR', ob, lab, f'{state}: {msg}'))
-                    print(f'FAIL INTERNAL {mode} {name} {lab}: {state}: {(msg or "")[:200]}\n  {body[:400]}', flush=True)
+                    fails.append(('ERROR', ob, l, f'{state}: {msg}'))
+                    print(f'FAIL INTERNAL {mode} {name} {l}: {state}: {(msg or "")[:200]}\n  {create[:400]}', flush=True)
                 else:
                     stats['errors_clean'] += 1
+            if trigger_ran(ob, mode, lab, results):
+                reach[(ob['sig'], mode)] = True
         if call_count(sess, ob['oid']) > before:
             reach[(ob['sig'], mode)] = True
 
@@ -470,7 +527,7 @@ def main():
         if ob['ret'] in ('trigger', 'event_trigger'):
             triggered(ob, name, mode, prelude, after)
         else:
-            measured(ob, name, calls, label, mode, prelude, after)
+            run_batch(ob, name, calls, label, prelude, after, mode)
 
     if not a.no_calls:
         reset_fixture()
@@ -484,7 +541,7 @@ def main():
                 reconnect()
                 continue
             ob['display'] = name
-            calls = call_sets(ob, ob['args'], cap, int_limit(allow, ob))
+            calls = text_calls() if text_driven(ob) else call_sets(ob, ob['args'], cap, int_limit(allow, ob))
             if a.list:
                 print(f'{ob["sig"]} kind={ob["kind"]} ret={ob["ret"]} strict={ob["strict"]} calls={len(calls)}')
                 continue
@@ -495,13 +552,16 @@ def main():
             reset_fixture()
             sess.run("DROP ROLE IF EXISTS ps_nobody; CREATE ROLE ps_nobody; GRANT USAGE ON SCHEMA fx, fx2, sift TO ps_nobody; GRANT SELECT ON ALL TABLES IN SCHEMA fx TO ps_nobody; "
                      "GRANT INSERT, UPDATE, DELETE, TRUNCATE, TRIGGER ON fx.trg TO ps_nobody;")
+            denied = set(sess.run("SELECT oid FROM pg_proc WHERE NOT has_function_privilege('ps_nobody', oid, 'EXECUTE');"))
+            for ob in obs:
+                ob['role_denied'] = ob['oid'] in denied
             for ob in obs:
                 if a.budget and time.time() - t0 > a.budget:
                     break
                 name = ob.get('display')
                 if not name:
                     continue
-                calls = call_sets(ob, ob['args'], 12 if a.tier == 'quick' else 60, int_limit(allow, ob))
+                calls = text_calls()[:12] if text_driven(ob) else call_sets(ob, ob['args'], 12 if a.tier == 'quick' else 60, int_limit(allow, ob))
                 batch(ob, name, calls, 'as-unprivileged ', 'role', prelude='SET ROLE ps_nobody;\n', after='\nRESET ROLE;')
     if not a.no_ddl and not a.list:
         ddl_sweep(sess, a, stats, fails, reconnect, reset_fixture, states)
@@ -516,10 +576,11 @@ def main():
     print(f'not strict ({len(nonstrict)}): ' + ', '.join(sorted(set(nonstrict))[:40]))
     subprocess.run(['psql', '-X', '-q', '-d', 'postgres', '-c', f'DROP DATABASE IF EXISTS {db}'], env=ENV, capture_output=True)
     gap = False
-    if a.coverage and not (a.only or a.budget or a.no_calls or a.list):
-        missing, stale = coverage(obs, reach, allow)
-        exercised = sum(1 for o in obs if all(reach.get((o['sig'], m)) for m in MODES))
-        print(f'coverage: functions={len(obs)} exercised_in_all_modes={exercised} allow_listed={len(allow)} not_exercised={len(missing)} stale_allow_rows={len(stale)}')
+    if not a.no_coverage and not (a.only or a.budget or a.no_calls or a.list):
+        prod = [o for o in obs if o['ext'] != 'pg_sift_test']
+        missing, stale = coverage(prod, reach, allow)
+        exercised = sum(1 for o in prod if all(reach.get((o['sig'], m)) for m in MODES))
+        print(f'coverage: functions={len(prod)} exercised_in_all_modes={exercised} allow_listed={len(allow)} not_exercised={len(missing)} stale_allow_rows={len(stale)}')
         for sig_, m in missing:
             print(f'FAIL NOT EXERCISED {sig_} in {m}: call it, or add a row to scripts/surface.allow with the reason it cannot be called')
         for sig_, why in stale:
@@ -578,7 +639,7 @@ def ddl_sweep(sess, a, stats, fails, reconnect, reset_fixture, states):
             print(f'FAIL CRASH ddl {label}: {e}\n  {text[:400]}', flush=True)
             reconnect()
             return False
-        for l, st, state, msg in classify(lines):
+        for l, st, state, msg, ctx in classify(lines):
             if st == 'OK':
                 stats['ok'] += 1
             elif not bad(state, msg):
@@ -623,6 +684,44 @@ def ddl_sweep(sess, a, stats, fails, reconnect, reset_fixture, states):
             go(lab, wrap(f"EXECUTE format('CREATE TABLE ddl_tt (id int, g int) USING sift_table WITH ({name} = %s)', quote_literal({v}))", lab) + '\nDROP TABLE IF EXISTS ddl_tt;')
     stats['ddl_calls'] = stats['calls'] - n0
     print(f'ddl sweep: {stats["calls"] - n0} statements, {len(opts)} options, {time.time() - t0:.0f} s', flush=True)
+
+
+PGTEST = os.path.join(REPO, 'scripts', 'pgtest.sh')
+
+
+def free_port(first):
+    for port in range(first, 56300):
+        with socket.socket() as sk:
+            if sk.connect_ex(('127.0.0.1', port)) != 0:
+                return port
+    sys.exit('no free port in 56100-56299')
+
+
+def main():
+    """the sweep runs on a cluster of its own, started on the install of SIFT_TMP and removed at the end (stop and destroy are the leak and sanitizer gate of pgtest.sh): a crash
+    of the sweep is never the state another test left, and the sweep leaves nothing to a test that runs after it"""
+    a = parse()
+    if a.use_cluster:
+        return _sweep(a)
+    root = os.environ.get('SIFT_ROOT') or os.path.join(shapes_matrix.TMP, 'root')
+    scratch = tempfile.mkdtemp(prefix='sift-surface-', dir=os.environ.get('TMPDIR') or '/dev/shm')
+    port = free_port(int(os.environ.get('SIFT_PORT', '56100')) + 1)
+    env = dict(os.environ, SIFT_TMP=scratch, SIFT_ROOT=root, SIFT_PORT=str(port))
+    started = subprocess.run([PGTEST, 'start'], env=env, capture_output=True, text=True)
+    if started.returncode != 0:
+        shutil.rmtree(scratch, ignore_errors=True)
+        sys.exit(f'the scratch cluster did not start: {started.stdout[-400:]}{started.stderr[-400:]}')
+    shapes_matrix.TMP = scratch
+    ENV.update(PGHOST=f'{scratch}/sock', PGPORT=str(port))
+    try:
+        rc = _sweep(a)
+    finally:
+        gate = subprocess.run([PGTEST, 'destroy'], env=env, capture_output=True, text=True)
+        shutil.rmtree(scratch, ignore_errors=True)
+    if gate.returncode != 0:
+        print('FAIL SCRATCH CLUSTER GATE (leaks, sanitizer reports or a signal in its log): ' + (gate.stdout + gate.stderr)[-1500:])
+        return 1
+    return rc
 
 
 if __name__ == '__main__':
