@@ -464,7 +464,7 @@ Datum
 sift_col_suggest_paths(PG_FUNCTION_ARGS)
 {
 	Oid			relid;
-	int			sample;
+	int			sample = PG_ARGISNULL(2) ? 2000 : PG_GETARG_INT32(2);
 	char	   *col;
 	Relation	rel;
 	AttrNumber	attno;
@@ -472,10 +472,9 @@ sift_col_suggest_paths(PG_FUNCTION_ARGS)
 				ngroups = 0;
 	char	   *result;
 
-	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
-		PG_RETURN_NULL();
+	SIFT_ARG_REQUIRED(0, "sift.suggest_paths", "rel");
+	SIFT_ARG_REQUIRED(1, "sift.suggest_paths", "column_name");
 	relid = PG_GETARG_OID(0);
-	sample = PG_ARGISNULL(2) ? 2000 : PG_GETARG_INT32(2);
 	col = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	if (sample < 1 || sample > 100000)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sample must be between 1 and 100000")));

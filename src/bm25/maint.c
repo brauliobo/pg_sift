@@ -410,7 +410,9 @@ open_index_table_first(Oid indexoid, LOCKMODE lock, bool missing_ok)
 		if (OidIsValid(heapoid))
 			LockRelationOid(heapoid, lock);
 		SIFT_POINT("sift-maint-after-table-lock");
-		index = missing_ok ? try_index_open(indexoid, lock) : index_open(indexoid, lock);
+		index = try_index_open(indexoid, lock);
+		if (index == NULL && !missing_ok)
+			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("relation with OID %u does not exist", indexoid)));
 		if (index == NULL || index->rd_index->indrelid == heapoid)
 			return index;
 		index_close(index, lock);

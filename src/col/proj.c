@@ -23,6 +23,7 @@
 #include "parser/parser.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
+#include "core/inspect.h"
 
 PG_FUNCTION_INFO_V1(sift_col_projection_filter_served);
 
@@ -72,8 +73,8 @@ index_holds_columns(Relation index, List *conjuncts)
 Datum
 sift_col_projection_filter_served(PG_FUNCTION_ARGS)
 {
-	Relation	heap = relation_open(PG_GETARG_OID(0), AccessShareLock);
-	Relation	index = relation_open(PG_GETARG_OID(2), AccessShareLock);
+	Relation	heap = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
+	Relation	index = relation_open(sift_rel_must_exist(PG_GETARG_OID(2)), AccessShareLock);
 	List	   *pred = RelationGetIndexPredicate(index);
 	List	   *filter = filter_conjuncts(heap, text_to_cstring(PG_GETARG_TEXT_PP(1)));
 	bool		served = pred == NIL ? index_holds_columns(index, filter) :

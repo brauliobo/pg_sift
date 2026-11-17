@@ -111,7 +111,7 @@ static Datum
 sections(FunctionCallInfo fcinfo, int64 only_gen)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SectionRows r = {.rsi = rsi};
 	SegSums		s = {0};

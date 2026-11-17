@@ -8,6 +8,7 @@
 #include "access/relation.h"
 #include "common/int.h"
 #include "funcapi.h"
+#include "utils/lsyscache.h"
 #include "utils/timestamp.h"
 #include "core/inspect.h"
 #include "core/explain.h"
@@ -24,6 +25,9 @@ sift_col_open_inspect(Oid relid, const char *bm25_use)
 	Relation	index;
 
 	sift_inspect_expect(relid, "sift_col", bm25_use);
+	if (get_rel_relkind(relid) == RELKIND_PARTITIONED_INDEX)
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is a partitioned index, which holds no data", get_rel_name(relid)),
+						errhint("Inspect the index of one of its partitions.")));
 	index = sift_mops_open(&maint_col_ops, relid, AccessShareLock);
 	sift_check_inspect(index);
 	return index;

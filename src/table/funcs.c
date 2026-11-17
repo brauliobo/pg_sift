@@ -30,7 +30,7 @@ Datum
 sift_table_segments(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
 	Snapshot	snap = RegisterSnapshot(GetTransactionSnapshot());
 
@@ -104,7 +104,7 @@ Datum
 sift_table_layouts(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
 	SiftTblKeyState ks;
 	AttrNumber	att[SIFT_TBL_KEY_MAX];
@@ -146,7 +146,7 @@ sift_table_layouts(PG_FUNCTION_ARGS)
 Datum
 sift_table_space(PG_FUNCTION_ARGS)
 {
-	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
 	SiftFreeStats fs;
 	Datum		v[6];

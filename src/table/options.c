@@ -32,6 +32,7 @@
 #include "col/seg.h"
 #include "core/restrict.h"
 #include "table/table.h"
+#include "core/inspect.h"
 
 typedef enum OptKind
 {
@@ -123,11 +124,14 @@ Datum
 sift_table_option_values_trg(PG_FUNCTION_ARGS)
 {
 	TriggerData *td = (TriggerData *) fcinfo->context;
-	HeapTuple	ret = td->tg_trigtuple;
+	HeapTuple	ret;
 	bool		isnull;
 	Oid			rel;
 
-	SIFT_INVARIANT(CALLED_AS_TRIGGER(fcinfo) && TRIGGER_FIRED_BEFORE(td->tg_event) && TRIGGER_FIRED_FOR_ROW(td->tg_event), "sift.table_option_values_trg is a BEFORE ROW trigger");
+	if (!CALLED_AS_TRIGGER(fcinfo) || !TRIGGER_FIRED_BEFORE(td->tg_event) || !TRIGGER_FIRED_FOR_ROW(td->tg_event))
+		ereport(ERROR, (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED), errmsg("sift.table_option_values_trg is a BEFORE ROW trigger function"),
+						errhint("It is attached to sift.table_option_values; it cannot be called from SQL.")));
+	ret = td->tg_trigtuple;
 	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event))
 	{
 		rel = DatumGetObjectId(heap_getattr(td->tg_trigtuple, 1, td->tg_relation->rd_att, &isnull));
@@ -320,7 +324,7 @@ opt_check(int id, const char *value)
 static Relation
 opt_open(Oid relid, LOCKMODE mode)
 {
-	Relation	rel = relation_open(relid, mode);
+	Relation	rel = relation_open(sift_rel_must_exist(relid), mode);
 
 	sift_tbl_require(rel);
 	return rel;

@@ -87,6 +87,16 @@ typedef struct config_enum_entry SiftEnumEntry;
 #endif
 
 /*
+ * An argument of a function that is not STRICT and cannot be NULL: the error names the function and the argument (SQLSTATE 22004), where reading
+ * it would take the value of no datum.
+ */
+#define SIFT_ARG_REQUIRED(n, fn, arg) \
+	do { \
+		if (PG_ARGISNULL(n)) \
+			ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("%s: the argument %s must not be NULL", fn, arg))); \
+	} while (0)
+
+/*
  * The grow of an array that is allocated on its first use: p = p ? repalloc(p, n) : palloc(n), with n written once.
  * _IN allocates in the given context, _HUGE_IN is the allocation above 1 GB. Macros: a hot append keeps its compare and branch.
  */

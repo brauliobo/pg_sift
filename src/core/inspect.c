@@ -52,6 +52,15 @@ sift_check_inspect(Relation rel)
  * What an inspector was given, before it opens the relation: the access method must be want (NULL: any of the three), and an object of another sift access method is
  * named with the function that serves it. A relation that does not exist is left to the open.
  */
+/* The relation of an OID argument: a relation that is gone (a dropped regclass, 0) is a user error (42P01), not a failure of the code that opens it */
+Oid
+sift_rel_must_exist(Oid relid)
+{
+	if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(relid)))
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("relation with OID %u does not exist", relid)));
+	return relid;
+}
+
 void
 sift_inspect_expect(Oid relid, const char *want, const char *use)
 {
@@ -99,7 +108,7 @@ sift_require_owner(PG_FUNCTION_ARGS)
 		if (!superuser_arg(user))
 			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE), errmsg("must be superuser to change the definition of a table that does not exist")));
 	}
-	else if (!object_ownercheck(RelationRelationId, relid, user))
+	else if (!object_ownercheck(RelationRelationId, sift_rel_must_exist(relid), user))
 		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(get_rel_relkind(relid)), get_rel_name(relid));
 	PG_RETURN_VOID();
 }

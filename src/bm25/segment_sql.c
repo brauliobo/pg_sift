@@ -23,6 +23,7 @@
 #include "core/worker.h"
 #include "table/table.h"
 #include "bm25/segment_sql.h"
+#include "core/inspect.h"
 
 #define corrupt SIFT_CORRUPT
 
@@ -282,12 +283,13 @@ sift_worker_history(PG_FUNCTION_ARGS)
 Datum
 sift_index_format(PG_FUNCTION_ARGS)
 {
-	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	Datum		v[4];
 	bool		nulls[4] = {0};
 	bool		bm25 = rel->rd_rel->relam == sift_catalog()->am;
 
+	sift_inspect_expect(RelationGetRelid(rel), NULL, NULL);
 	sift_check_inspect(rel);
 	sift_dir_read(rel, snap);
 	v[0] = Int32GetDatum(snap->meta.format_major);

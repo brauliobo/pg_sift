@@ -1,0 +1,75 @@
+-- Calls with a NULL argument, a relation that is gone, a relation of another kind and a partitioned index return or raise an error with its own SQLSTATE: the sweep
+-- of the SQL surface (test/fuzz/surface_sweep.py) found each of these ending the backend with a segmentation fault or raising XX000.
+CREATE EXTENSION pg_sift;
+CREATE TABLE sna_t (id int PRIMARY KEY, g int, doc jsonb) USING sift_table;
+CREATE TABLE sna_heap (id int, g int);
+CREATE TABLE sna_part (id int, g int) PARTITION BY RANGE (id);
+CREATE TABLE sna_part_1 PARTITION OF sna_part FOR VALUES FROM (0) TO (100);
+INSERT INTO sna_part SELECT i, i % 3 FROM generate_series(1, 30) i;
+SET client_min_messages = warning;
+CREATE INDEX sna_part_col ON sna_part USING sift_col (id, g);
+RESET client_min_messages;
+CREATE TABLE sna_gone (id int);
+CREATE TABLE sna_oids AS SELECT 'sna_gone'::regclass::oid AS gone;
+DROP TABLE sna_gone;
+CREATE FUNCTION sna_state(call text) RETURNS text LANGUAGE plpgsql AS $$ BEGIN
+	EXECUTE call;
+	RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLSTATE || ' ' || regexp_replace(SQLERRM, '[0-9]{3,}', 'N');
+END $$;
+SELECT call, sna_state(call) FROM (VALUES
+	('SELECT sift.suggest_paths(NULL, NULL, NULL)'),
+	('SELECT sift.suggest_paths(''sna_t''::regclass, NULL, 3)'),
+	('SELECT sift.table_paths_check(''sna_t''::regclass, NULL, ''doc'')'),
+	('SELECT sift.table_paths_check(NULL, ''doc'', NULL)'),
+	('SELECT sift.table_set_paths(''sna_t''::regclass, NULL, ''doc'')'),
+	('SELECT sift.table_option_values_trg()'),
+	('SELECT sift._names_expr(''id'', NULL, ''x'')'),
+	('SELECT sift._names_expr(''id'', ''id'', NULL)'),
+	('SELECT sift._names_exprs(NULL, ''id'', ''x'')'),
+	('SELECT sift._names_exprs(ARRAY[''id''], NULL, ''x'')'),
+	('SELECT sift._names_option(NULL, ''id'', ''id'', ''x'')'),
+	('SELECT sift._names_option(''key_cut'', ''id'', ''id'', NULL)'),
+	('SELECT * FROM sift.index_choices(''sna_part_col''::regclass)'),
+	('SELECT sift.key_cut_decision(''sna_part_col''::regclass)'),
+	('SELECT sift.col_index_info(''sna_part_col''::regclass)'),
+	('SELECT sift.col_index_info((SELECT gone FROM sna_oids)::regclass)'),
+	('SELECT sift.col_verify((SELECT gone FROM sna_oids)::regclass)'),
+	('SELECT sift.table_space(0::oid::regclass)'),
+	('SELECT sift.table_layouts((SELECT gone FROM sna_oids)::regclass)'),
+	('SELECT sift.table_set_paths(0::oid::regclass, ''doc'', NULL)'),
+	('SELECT sift.index_format((SELECT gone FROM sna_oids)::regclass)'),
+	('SELECT sift.index_format(''sna_heap''::regclass)'),
+	('SELECT sift._require_owner((SELECT gone FROM sna_oids)::regclass)')
+) v(call) ORDER BY call;
+                               call                                |                              sna_state                              
+-------------------------------------------------------------------+---------------------------------------------------------------------
+ SELECT * FROM sift.index_choices('sna_part_col'::regclass)        | 42809 "sna_part_col" is a partitioned index, which holds no data
+ SELECT sift._names_expr('id', 'id', NULL)                         | 22004 sift._names_expr: the argument to_name must not be NULL
+ SELECT sift._names_expr('id', NULL, 'x')                          | 22004 sift._names_expr: the argument from_name must not be NULL
+ SELECT sift._names_exprs(ARRAY['id'], NULL, 'x')                  | 22004 sift._names_exprs: the argument from_name must not be NULL
+ SELECT sift._names_exprs(NULL, 'id', 'x')                         | ok
+ SELECT sift._names_option('key_cut', 'id', 'id', NULL)            | 22004 sift._names_option: the argument to_name must not be NULL
+ SELECT sift._names_option(NULL, 'id', 'id', 'x')                  | 22004 sift._names_option: the argument option must not be NULL
+ SELECT sift._require_owner((SELECT gone FROM sna_oids)::regclass) | 42P01 relation with OID N does not exist
+ SELECT sift.col_index_info('sna_part_col'::regclass)              | 42809 "sna_part_col" is a partitioned index, which holds no data
+ SELECT sift.col_index_info((SELECT gone FROM sna_oids)::regclass) | 42P01 relation with OID N does not exist
+ SELECT sift.col_verify((SELECT gone FROM sna_oids)::regclass)     | 42P01 relation with OID N does not exist
+ SELECT sift.index_format('sna_heap'::regclass)                    | 42809 "sna_heap" is not a sift index
+ SELECT sift.index_format((SELECT gone FROM sna_oids)::regclass)   | 42P01 relation with OID N does not exist
+ SELECT sift.key_cut_decision('sna_part_col'::regclass)            | 42809 "sna_part_col" is a partitioned index, which holds no data
+ SELECT sift.suggest_paths('sna_t'::regclass, NULL, 3)             | 22004 sift.suggest_paths: the argument column_name must not be NULL
+ SELECT sift.suggest_paths(NULL, NULL, NULL)                       | 22004 sift.suggest_paths: the argument rel must not be NULL
+ SELECT sift.table_layouts((SELECT gone FROM sna_oids)::regclass)  | 42P01 relation with OID N does not exist
+ SELECT sift.table_option_values_trg()                             | 39P01 sift.table_option_values_trg is a BEFORE ROW trigger function
+ SELECT sift.table_paths_check('sna_t'::regclass, NULL, 'doc')     | 22004 sift.table_paths_check: the argument col must not be NULL
+ SELECT sift.table_paths_check(NULL, 'doc', NULL)                  | 22004 sift.table_paths_check: the argument tbl must not be NULL
+ SELECT sift.table_set_paths('sna_t'::regclass, NULL, 'doc')       | 22004 sift.table_paths_check: the argument col must not be NULL
+ SELECT sift.table_set_paths(0::oid::regclass, 'doc', NULL)        | 42P01 relation with OID 0 does not exist
+ SELECT sift.table_space(0::oid::regclass)                         | 42P01 relation with OID 0 does not exist
+(23 rows)
+
+DROP FUNCTION sna_state(text);
+DROP TABLE sna_oids, sna_part, sna_heap, sna_t;
+DROP EXTENSION pg_sift;
