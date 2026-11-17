@@ -98,13 +98,20 @@ SELECT runq('SELECT r.kind, sum(r.score) + 0, count(r.score) FROM facts t JOIN L
      = runq('SELECT r.kind, sum(r.score) + 0, count(r.score) FROM facts t JOIN LATERAL jsonb_to_recordset(t.payload -> $$parts$$) r(kind text, score float8) ON true WHERE id IN (100, 1500) GROUP BY 1', true) AS only_zeros;
 DROP TABLE facts;
 
--- ---- a list longer than a unit's limit (2^20 elements): the row is read again whole ----
+-- ---- a list longer than the elements a unit stores of a document (2^20; 1,000 here, so that the row the scan reads again whole, which holds all its elements in memory as SQL does, is small): the row is read again whole ----
+SELECT current_setting('sift.test_limits', true) IS NOT NULL AS limits \gset
+\if :limits
+SET sift.test_limits = 'shred_elems=1000';
+\endif
 CREATE TABLE lists (id int PRIMARY KEY, kind text, day int, payload jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO lists SELECT i, 'cat_' || chr(97 + i % 3), i / 10,
 	jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('kind', 'cat_a', 'score', i % 9), jsonb_build_object('kind', 'cat_b', 'score', i % 3)))
 FROM generate_series(1, 2000) i;
-INSERT INTO lists SELECT 5000, 'cat_a', 500, jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('kind', 'cat_a', 'score', g % 5)) FROM generate_series(1, 1100000) g));
+INSERT INTO lists SELECT 5000, 'cat_a', 500, jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('kind', 'cat_a', 'score', g % 5)) FROM generate_series(1, 3000) g));
 CREATE INDEX lists_col ON lists USING sift_col (id, kind, day, payload) WITH (paths = 'payload.parts[]{kind text, score float8}');
+\if :limits
+RESET sift.test_limits;
+\endif
 VACUUM ANALYZE lists;
 SELECT pushed('SELECT r.kind, avg(r.score), count(*) FROM lists t JOIN LATERAL jsonb_to_recordset(t.payload -> $$parts$$) r(kind text, score float8) ON true GROUP BY 1') AS long_list_pushed;
 SELECT same('SELECT r.kind, avg(r.score), count(*) FROM lists t JOIN LATERAL jsonb_to_recordset(t.payload -> $$parts$$) r(kind text, score float8) ON true WHERE day > 400 OR day < 10 GROUP BY 1') AS long_list;

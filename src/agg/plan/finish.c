@@ -489,8 +489,9 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	param_set_penalty(c, s, input_rel, output_rel);
 	nworkers = parallel_verdict(c, s,
 								preagg_share(c, s) >= AGG_PREAGG_EXACT ? "the pre-aggregates of the index answer it without reading its rows" :
-	/* the table that spills is the process's alone: the workers' would each hold their own, and the leader's the sum */
-								table > (double) get_hash_memory_limit() && sift_aggspec_spillable(s) ? "its group table outgrows hash memory and spills, which one process does" : NULL);
+	/* the table that spills is the process's alone: the workers' would each hold their own, and the leader's the sum, with the float sums of every lane */
+								table + group_lane_bytes(s, group_count(c, s)) > (double) get_hash_memory_limit() && sift_aggspec_spillable(s) ?
+								"its group table outgrows hash memory and spills, which one process does" : NULL);
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0, NIL);
 	if (nworkers > 0)
 	{

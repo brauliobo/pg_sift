@@ -41,6 +41,9 @@
 	X(group_nospill_factor, "GROUP_NOSPILL_FACTOR", "agg/spec.c", 32, "times hash memory", \
 	  "group table of a scan that cannot spill (a two level aggregate, ordered on a key that is not an integer, a date or a timestamp, ordered-set aggregates and aggregates that sort their input, numeric or text min, max and sum over combos) or of the node that groups the rows of a plan, as a multiple of work_mem times hash_mem_multiplier (8 MB at least): estimated by the planner, held by the scan", \
 	  "normal plan (slug group_memory, the detail names the groups and the limit); when the table the scan holds passes it, the statement runs again as the normal plan (NOTICE; also a cursor's first fetch, a function's query with parameters, a prepared statement); a statement that cannot run again (INSERT, UPDATE, DELETE, volatile functions) gets the scan only when the most groups its source can make fit the bound (slug group_memory otherwise)", "work_mem, hash_mem_multiplier", 1) \
+	X(group_par_factor, "GROUP_PAR_FACTOR", "agg/spec.c", 2, "times hash memory", \
+	  "group table of a process of a scan with workers, which does not spill (the planner leaves a scan whose estimated table, with the float sums of its lanes, passes hash memory to one process, which does), as a multiple of work_mem times hash_mem_multiplier (8 MB at least): held by each process", \
+	  "normal plan (the statement runs again as PostgreSQL plans it, as for group_nospill_factor)", "max_parallel_workers_per_gather = 0", 1) \
 	X(group_spill_parts, "SPILL_MAX_PARTS", "agg/spill.c", 128, "partitions", \
 	  "partitions a group table that outgrows hash memory is written to (the planner's groups over the groups the first table held, a power of two from 8)", "a partition that does not fit is partitioned again", "work_mem, hash_mem_multiplier", 1) \
 	X(group_spill_depth, "SPILL_MAX_DEPTH", "agg/spill_int.h", 8, "levels", \
@@ -214,6 +217,8 @@
 	  "one text value of a jsonb leaf", "the value is OVERFLOW (read from the heap)", "-", 0) \
 	X(shred_key_bytes, "SIFT_SHRED_MAX_KEY_BYTES", "col/shred.h", SIFT_SHRED_MAX_KEY_BYTES, "bytes", \
 	  "a key of a jsonb wildcard object", "the value is OVERFLOW (read from the heap)", "-", 0) \
+	X(shred_elems, "SIFT_SHRED_DEFAULT_ELEMS", "col/shred.h", SIFT_SHRED_DEFAULT_ELEMS, "elements", \
+	  "list and map elements of one document a unit stores", "the value is OVERFLOW (read from the heap: the scans that need it read the whole document again, which holds it in memory as SQL does)", "-", 1) \
 	X(shred_keys, "SIFT_SHRED_DEFAULT_KEYS", "col/shred.h", SIFT_SHRED_DEFAULT_KEYS, "keys", \
 	  "distinct keys of a jsonb wildcard object per segment", "the value is OVERFLOW (read from the heap); CREATE INDEX says how many units hold one (NOTICE)", "-", 1) \
 	X(array_bytes, "SIFT_ARRAY_UNLIMITED", "core/limits.h", SIFT_ARRAY_UNLIMITED, "bytes", \

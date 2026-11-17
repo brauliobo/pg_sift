@@ -4,6 +4,7 @@
 -- to the end: where the statement can run again as PostgreSQL plans it (a SELECT that calls no volatile function: also a cursor's first fetch, a function's query
 -- with parameters, a prepared statement, a scan with workers that failed) it does; where it cannot (an INSERT, a volatile function) the planner leaves the
 -- statement to the normal plan when the most groups the source can make would not fit hash memory.
+-- A node that can spill but runs with workers does not spill (each process holds its groups): past group_par_factor times hash memory it runs again too.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

@@ -589,6 +589,7 @@ extern double group_count(AggCtx *c, const SiftAggSpec *s);
 extern double source_rows(AggCtx *c, const SiftAggSpec *s);
 extern bool nospill_fits(const SiftAggSpec *s, bool reruns, const char **why);
 extern double group_table_bytes(const SiftAggSpec *s, double groups, double *state);
+extern double group_lane_bytes(const SiftAggSpec *s, double groups);
 extern double agg_share_rows(AggCtx *c, SiftAggSpec *s);
 
 extern bool unsupported_clause(AggCtx *c, Node *n);

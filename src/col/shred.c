@@ -188,7 +188,7 @@ sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits, bool
 	sift_shred_init();
 	sh->mcxt = cx;
 	sh->spec = spec;
-	sh->limits.max_elems = limits && limits->max_elems ? limits->max_elems : SIFT_SHRED_DEFAULT_ELEMS;
+	sh->limits.max_elems = limits && limits->max_elems ? limits->max_elems : sift_limit(shred_elems, SIFT_SHRED_DEFAULT_ELEMS);
 	sh->limits.max_bytes = limits && limits->max_bytes ? limits->max_bytes : SIFT_SHRED_DEFAULT_BYTES;
 	sh->limits.max_keys = limits && limits->max_keys ? limits->max_keys : sift_limit(shred_keys, SIFT_SHRED_DEFAULT_KEYS);
 	sh->doc.col = palloc0(spec->ncols * sizeof(SiftShredCol));

@@ -71,6 +71,7 @@ lane_keep(AggExec *ex, uint32 lane)
 		memcpy(a->lv[lane], a->d, n * sizeof(double));
 		memset(a->d, 0, n * sizeof(double));
 	}
+	table_nospill_check(ex);
 }
 
 /* the sums of the lanes, in lane order, then the sums of the rows after the lanes (the tail of a preserved side) */

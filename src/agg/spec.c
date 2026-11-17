@@ -24,6 +24,8 @@
 #define GROUP_NOSPILL_FACTOR	32
 /* ... of the hash memory, or of the memory the defaults give (work_mem 4MB, hash_mem_multiplier 2) when that is more: a small work_mem is a choice for sorts */
 #define GROUP_NOSPILL_BASE		(8 * 1024 * 1024)
+/* the same for the table of a process of a scan with workers, which does not spill (the planner leaves such a scan to one process when its estimate passes hash memory): the misestimate it is given */
+#define GROUP_PAR_FACTOR		2
 
 sift_i128
 sift_pow10(int e)
@@ -783,11 +785,11 @@ sift_aggspec_spillable(const SiftAggSpec *s)
 	return true;
 }
 
-/* does the node hold its groups to the end and cannot spill them? (A node of the rows of a top-N has no groups.) */
+/* does the node hold its groups to the end and cannot spill them? (A node of the rows of a top-N has no groups; the participants of a scan with workers do not spill.) */
 bool
 sift_aggspec_holds_groups(const SiftAggSpec *s)
 {
-	return s->nkeys > 0 && !s->topn && !sift_aggspec_spillable(s);
+	return s->nkeys > 0 && !s->topn && (!sift_aggspec_spillable(s) || s->nworkers > 0);
 }
 
 /* does the aggregate intern the strings it counts in a table of their own (count(DISTINCT) of a dictionary leaf of a string type)? */
@@ -828,6 +830,13 @@ sift_agg_nospill_bytes(int *factor, double *floor_bytes)
 	if (floor_bytes)
 		*floor_bytes = base;
 	return f * base;
+}
+
+/* The bytes the group table of a process of a scan with workers may take: the factor (group_par_factor) times the hash memory, or times the base when that is more */
+double
+sift_agg_par_bytes(void)
+{
+	return sift_limit(group_par_factor, GROUP_PAR_FACTOR) * Max((double) get_hash_memory_limit(), (double) sift_limit(group_nospill_base, GROUP_NOSPILL_BASE));
 }
 
 /*

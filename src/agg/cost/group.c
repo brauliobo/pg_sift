@@ -218,6 +218,19 @@ nospill_fits(const SiftAggSpec *s, bool reruns, const char **why)
 	return false;
 }
 
+/* A scan with workers keeps the float sums of each lane apart until the lanes are added (agg/par/lanes.c): a vector of the groups for each lane and each float sum */
+double
+group_lane_bytes(const SiftAggSpec *s, double groups)
+{
+	int			sums = 0;
+
+	if (!sift_aggspec_float_sums(s))
+		return 0;
+	for (int i = 0; i < s->naggs; i++)
+		sums += sift_aggkind_float_sum(&s->agg[i]);
+	return groups * sums * SIFT_AGG_LANES * sizeof(double) * AGG_GROUP_SLACK;
+}
+
 /* The bytes of the group table of the scan for the groups it is expected to hold. *state: of a group, what its partial state carries */
 double
 group_table_bytes(const SiftAggSpec *s, double groups, double *state)

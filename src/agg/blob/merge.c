@@ -551,6 +551,7 @@ blob_merge(AggExec *g, const char *p)
 			for (uint32 r = 0; r < ng; r++)
 				g->acc[i].lv[l][gids[r]] = v[r];
 		}
+	table_nospill_check(g);
 	pfree(gids);
 	pfree(ba);
 	pfree(lvec);

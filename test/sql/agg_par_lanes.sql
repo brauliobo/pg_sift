@@ -56,7 +56,7 @@ ANALYZE l_d;
 CREATE TABLE l_q (n int, q text);
 INSERT INTO l_q VALUES
 	(1, 'SELECT g, sum(v) AS s, avg(v) AS a, count(*) AS c FROM fl GROUP BY g'),
-	(2, 'SELECT g, h, sum(v) AS s, sum(w) AS t FROM fl GROUP BY g, h'),
+	(2, 'SELECT g, h, sum(v) AS s, sum(w) AS t FROM fl WHERE g < 800 GROUP BY g, h'),
 	(3, 'SELECT h, sum(v) AS s, avg(w) AS a FROM fl GROUP BY h'),
 	(4, 'SELECT sum(v) AS s, avg(v) AS a, sum(w) AS t FROM fl'),
 	(6, 'SELECT sum(v) FILTER (WHERE h = 3) AS s, avg(w) FILTER (WHERE g < 3000) AS a FROM fl'),
@@ -86,7 +86,7 @@ SELECT n, l_rows(q, true, 0, true) = l_rows(q, false, 0, true) AS none_is_normal
 CREATE TABLE l_b (n int, q text);
 INSERT INTO l_b VALUES
 	(1, 'SELECT g, sum(v) AS s, sum(abs(v)) AS sa, sum(w) AS t, sum(abs(w)) AS ta, count(*) AS c FROM fl GROUP BY g'),
-	(2, 'SELECT g * 10 + h AS g, sum(v) AS s, sum(abs(v)) AS sa, sum(w) AS t, sum(abs(w)) AS ta, count(*) AS c FROM fl GROUP BY g, h'),
+	(2, 'SELECT g * 10 + h AS g, sum(v) AS s, sum(abs(v)) AS sa, sum(w) AS t, sum(abs(w)) AS ta, count(*) AS c FROM fl WHERE g < 800 GROUP BY g, h'),
 	(3, 'SELECT h AS g, sum(v) AS s, sum(abs(v)) AS sa, sum(w) AS t, sum(abs(w)) AS ta, count(*) AS c FROM fl GROUP BY h'),
 	(4, 'SELECT 0 AS g, sum(v) AS s, sum(abs(v)) AS sa, sum(w) AS t, sum(abs(w)) AS ta, count(*) AS c FROM fl'),
 	(5, 'SELECT f.h AS g, sum(f.v) AS s, sum(abs(f.v)) AS sa, sum(f.w) AS t, sum(abs(f.w)) AS ta, count(*) AS c FROM fl f JOIN LATERAL (SELECT d.tag FROM l_d d WHERE d.h = f.h ORDER BY d.tag LIMIT 1) c ON true GROUP BY f.h');
@@ -108,6 +108,28 @@ END $$;
 
 SELECT n, l_launched(q, 3) AS parallel, d.* FROM l_b, LATERAL l_dev(q, 3) d ORDER BY n;
 
-DROP TABLE l_q, l_c, l_b, l_d, fl;
+-- the tables of the processes of a scan with workers do not spill, and each keeps the sums of its lanes apart (16 vectors for each float sum): the planner leaves a scan to
+-- one process, which spills, when the groups it expects and their lanes pass hash memory (42,000 groups: the planner is told how many), and a scan that was given too few
+-- (the planner expects 6,000: g and h are two columns of it) runs again as PostgreSQL plans it when a process holds more than group_par_factor times hash memory
+CREATE FUNCTION l_planned(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('max_parallel_workers_per_gather', '3', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Workers Planned%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE TABLE l_w (n int, q text);
+INSERT INTO l_w VALUES (1, 'SELECT g, h, sum(v) AS s, sum(abs(v)) AS sa, sum(w) AS t, sum(abs(w)) AS ta FROM fl GROUP BY g, h');
+SELECT n, l_planned(q) AS workers_planned, l_rows(q, true, 3, true) = l_rows(q, false, 0, true) AS same_rows FROM l_w;
+CREATE STATISTICS fl_gh (ndistinct) ON g, h FROM fl;
+ANALYZE fl;
+SELECT n, l_planned(q) AS workers_planned, l_rows(q, true, 3, true) = l_rows(q, false, 0, true) AS same_rows FROM l_w;
+DROP STATISTICS fl_gh;
+DROP FUNCTION l_planned(text);
+
+DROP TABLE l_q, l_c, l_b, l_d, l_w, fl;
 DROP FUNCTION l_rows(text, bool, int, bool), l_launched(text, int), l_dev(text, int);
 DROP EXTENSION pg_sift;
