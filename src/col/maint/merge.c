@@ -30,7 +30,8 @@ int			sift_test_col_refresh_sleep_armed = 0;
 typedef struct TidIn
 {
 	SiftColSegment *seg;
-	SiftColBatch *buf;
+	MergeWindow *win;
+	SiftColBatch *buf;			/* the unit in hand: none before the first and after the last */
 	uint32		next;			/* the next unit of seg to decode */
 	uint32		pos;			/* the next row of buf */
 	uint32		last;			/* the last superblock taken: the next one must be above it */
@@ -40,11 +41,19 @@ typedef struct TidIn
 static uint32
 tid_peek(TidIn *t, SiftColFreezeFn freeze, void *freeze_arg)
 {
-	while (t->pos >= t->buf->nrows)
+	while (t->buf == NULL || t->pos >= t->buf->nrows)
 	{
 		if (t->next >= t->seg->nsb)
+		{
+			if (t->buf != NULL)
+				maint_window_discard(t->win, t->buf);
+			t->buf = NULL;
 			return PG_UINT32_MAX;
+		}
+		if (t->buf == NULL)
+			t->buf = maint_window_take(t->win);
 		sift_cbatch_reset(t->buf, 0);
+		sift_cbatch_reserve(t->buf, t->seg->sbdir[t->next].nrows);
 		sift_cseg_decode_unit_freeze(t->seg, t->next++, t->buf, freeze, freeze_arg);
 		t->pos = 0;
 	}
@@ -61,64 +70,6 @@ tid_take(TidIn *t, uint32 sb, SiftColBatch *part, SiftColFreezeFn freeze, void *
 	sift_cbatch_reset(part, sb);
 	while (tid_peek(t, freeze, freeze_arg) == sb)
 		sift_cbatch_add_from(part, t->buf, t->pos++);
-}
-
-/*
- * The rows of one superblock of every input that has any, merged into one batch: the inputs are folded into the batch in hand in the order they are
- * decoded, so the earlier one still wins a key both hold (sift_cbatch_merge), as many at a time as fit a quarter of maintenance_work_mem (MERGE_INPUT_DIVISOR),
- * and the arrays of those folded are given back: a merge of any number of inputs holds the inputs of a step, the batch in hand and the one it is folded into,
- * not one unit of each input
- */
-typedef struct SbFold
-{
-	SiftColBatch **use;			/* the batches to fold into the one in hand, which comes first */
-	int			nuse;
-	SiftColBatch *acc;			/* the rows folded so far, and at the end of the superblock all of them */
-	SiftColBatch *spare;		/* what the next fold is written to: it takes the place of acc */
-	Size		budget;			/* the bytes of the arrays of use at which they are folded */
-} SbFold;
-
-static Size
-fold_bytes(const SbFold *f)
-{
-	Size		bytes = 0;
-
-	for (int i = 0; i < f->nuse; i++)
-		bytes += sift_cbatch_bytes(f->use[i]);
-	return bytes;
-}
-
-static void
-fold_run(SbFold *f, uint32 sb)
-{
-	SiftColBatch *done = f->spare;
-
-	sift_cbatch_reset(done, sb);
-	sift_cbatch_merge(done, f->use, f->nuse);
-	for (int i = 1; i < f->nuse; i++)
-		sift_cbatch_release(f->use[i]);
-	f->spare = f->acc;
-	f->acc = done;
-	f->use[0] = done;
-	f->nuse = 1;
-}
-
-/* A decoded batch joins the ones to fold, after those that fill the budget are folded */
-static void
-fold_add(SbFold *f, SiftColBatch *b, uint32 sb)
-{
-	if (f->nuse >= 2 && fold_bytes(f) + sift_cbatch_bytes(b) > f->budget)
-		fold_run(f, sb);
-	f->use[f->nuse++] = b;
-}
-
-/* The superblock is complete: its rows are in acc */
-static void
-fold_done(SbFold *f, uint32 sb)
-{
-	if (f->nuse > 1 || (f->nuse == 1 && f->use[0] != f->acc))
-		fold_run(f, sb);
-	f->nuse = 0;
 }
 
 /* The segments a merge writes: its output is one segment, or partitions, each done when it holds its share of the units */
@@ -250,14 +201,11 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SIFT_MEM_SCOPE(col_merge, cx);
 	SiftColSegment **seg = palloc(n * sizeof(SiftColSegment *));
-	SiftColBatch **part = palloc(n * sizeof(SiftColBatch *));
-	SiftColBatch **use = palloc(n * sizeof(SiftColBatch *));
 	uint32	   *cur = palloc0(n * sizeof(uint32));
 	TidIn	   *tin = palloc0(n * sizeof(TidIn));
 	uint32	   *at = palloc(n * sizeof(uint32));
 	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
-	SbFold		fold = {.use = use, .acc = sift_cbatch_create(icx, schema), .spare = sift_cbatch_create(icx, schema),
-						.budget = Max((Size) maintenance_work_mem * 1024 / MERGE_INPUT_DIVISOR, MERGE_INPUT_MIN)};
+	MergeWindow *win = maint_window_begin(icx, schema, n);
 	int			nscope = sift_cschema_nscope(schema);
 	bool		scope = n > 0 && (in[0].flags & SIFT_SEG_SCOPE) != 0;	/* the segments are those of one scope: the rows of the entities are not merged with them */
 	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .xstamp = sift_col_is_index(index) ? sift_xstamp_inputs(in, n) : (SiftXStamp) {InvalidTransactionId, InvalidTransactionId, 0}, .roots = sift_col_is_index(index) && merge_roots(in, n),
@@ -307,7 +255,6 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		seg[i] = sift_cseg_open(index, &in[i], icx);
 		if (!sift_cschema_same_leaves(seg[i]->schema, schema, RelationGetDescr(index)))
 			corrupt(index, "Segment %llu was written for another column layout.", (unsigned long long) in[i].gen);
-		part[i] = sift_cbatch_create(icx, schema);
 		exact &= sift_cseg_kinds_exact(seg[i]);
 		live = in[i].ndocs > 0 ? (double) sift_cseg_live_rows(seg[i]) / in[i].ndocs : 0;
 		for (uint32 u = 0; u < seg[i]->nsb; u++)
@@ -407,49 +354,51 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	else
 		for (int i = 0; i < n; i++)
 			if (sift_cseg_keyed(&in[i]))
-				tin[i] = (TidIn) {.seg = seg[i], .buf = sift_cbatch_create(icx, schema), .last = PG_UINT32_MAX};
+				tin[i] = (TidIn) {.seg = seg[i], .win = win, .last = PG_UINT32_MAX};
 	{
-	SIFT_MEM_SCOPE(col_merge_window, icx);
+		SIFT_MEM_SCOPE(col_merge_window, icx);
 
-	for (;;)
-	{
-		uint32		sb = PG_UINT32_MAX;
+		for (;;)
+		{
+			uint32		sb = PG_UINT32_MAX;
+			SiftColBatch *rows;
 
-		for (int i = 0; i < n; i++)
-		{
-			at[i] = tin[i].buf ? tid_peek(&tin[i], freeze, freeze_arg) : cur[i] < seg[i]->nsb ? seg[i]->sbdir[cur[i]].id : PG_UINT32_MAX;
-			sb = Min(sb, at[i]);
-		}
-		if (sb == PG_UINT32_MAX)
-			break;
-		for (int i = 0; i < n; i++)
-		{
-			if (at[i] != sb)
+			for (int i = 0; i < n; i++)
 			{
-				if (part[i]->rowcap > 256)
-					sift_cbatch_release(part[i]);
-				continue;
+				at[i] = tin[i].seg ? tid_peek(&tin[i], freeze, freeze_arg) : cur[i] < seg[i]->nsb ? seg[i]->sbdir[cur[i]].id : PG_UINT32_MAX;
+				sb = Min(sb, at[i]);
 			}
-			if (tin[i].buf)
-				tid_take(&tin[i], sb, part[i], freeze, freeze_arg);
-			else
-				sift_cseg_decode_unit_freeze(seg[i], cur[i]++, part[i], freeze, freeze_arg);
-			if (part[i]->nrows > 0)
-				fold_add(&fold, part[i], sb);
+			if (sb == PG_UINT32_MAX)
+				break;
+			for (int i = 0; i < n; i++)
+			{
+				SiftColBatch *b;
+
+				if (at[i] != sb)
+					continue;
+				b = maint_window_take(win);
+				if (tin[i].seg)
+					tid_take(&tin[i], sb, b, freeze, freeze_arg);
+				else
+				{
+					sift_cbatch_reserve(b, seg[i]->sbdir[cur[i]].nrows);
+					sift_cseg_decode_unit_freeze(seg[i], cur[i]++, b, freeze, freeze_arg);
+				}
+				if (b->nrows > 0)
+					maint_window_add(win, b, sb);
+				else
+					maint_window_discard(win, b);
+			}
+			if ((rows = maint_window_rows(win, sb)) == NULL)
+				continue;
+			o.held = maint_window_peak(win);
+			if (o.w == NULL)
+				out_begin(&o);
+			sift_colw_add(o.w, rows);
+			maint_window_written(win);
+			out_next(&o, o.w);
+			CHECK_FOR_INTERRUPTS();
 		}
-		if (fold.nuse == 0)
-			continue;
-		fold_done(&fold, sb);
-		o.held = sift_cbatch_bytes(fold.acc) + sift_cbatch_bytes(fold.spare);
-		for (int i = 0; i < n; i++)
-			o.held += sift_cbatch_bytes(part[i]);
-		if (o.w == NULL)
-			out_begin(&o);
-		sift_colw_add(o.w, fold.acc);
-		SIFT_MEM_CHECKPOINT();
-		out_next(&o, o.w);
-		CHECK_FOR_INTERRUPTS();
-	}
 	}
 	for (int i = 0; i < n; i++)
 		sift_cseg_close(seg[i]);

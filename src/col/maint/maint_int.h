@@ -28,8 +28,6 @@
 #define corrupt SIFT_CORRUPT
 
 #define MAX_PARTS		64		/* segments one merge cuts its output into */
-#define MERGE_INPUT_DIVISOR 4	/* the arrays of the inputs a merge decodes at a time are folded into one at a quarter of maintenance_work_mem ... */
-#define MERGE_INPUT_MIN	(4 * 1024 * 1024)	/* ... and at two units at least, whatever it is */
 
 #define PART_DIVISOR	48		/* the memory bound leaves a key-cut index (partitions of three quarters of the size) under MAX_PARTS of them */
 
@@ -136,6 +134,16 @@ typedef struct MergeSlice
 
 extern void maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
 								 int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts, const MergeSlice *slice);
+
+/* col/maint/merge_window.c: the units of the inputs of a merge that are decoded at a time */
+typedef struct MergeWindow MergeWindow;
+extern MergeWindow *maint_window_begin(MemoryContext cx, const SiftColSchema *schema, int inputs);
+extern SiftColBatch *maint_window_take(MergeWindow *w);
+extern void maint_window_add(MergeWindow *w, SiftColBatch *b, uint32 sb);
+extern SiftColBatch *maint_window_rows(MergeWindow *w, uint32 sb);
+extern void maint_window_written(MergeWindow *w);
+extern void maint_window_discard(MergeWindow *w, SiftColBatch *b);
+extern Size maint_window_peak(const MergeWindow *w);
 
 /* The rolling rewrite of a key-cut index in partitions (roll.c) */
 typedef enum RollPick
