@@ -473,6 +473,9 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_loose_inputs",
 							 "Testing: a merge reads every keyed input as cut another way: its rows are loaded and sorted, or sorted by the sort that spills, and none is a stream.",
 							 NULL, &sift_test_col_loose_inputs, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_merge_eager",
+							 "Testing: a merge of streams reads the first unit of every input before its first row, as before an input waited for the key range of its rows.",
+							 NULL, &sift_test_col_merge_eager, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_gorder_strings",
 							 "Testing: the global order of a text leaf keeps a copy of its strings (as before column format minor 42), not the dictionary codes of them.",
 							 NULL, &sift_test_col_gorder_strings, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

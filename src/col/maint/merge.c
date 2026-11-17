@@ -267,6 +267,8 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 			for (int j = 0; j < SIFT_SCOPE_JOURNALS; j++)
 				o.carry[k][j] = i == 0 ? seg[i]->scope[k][j] : sift_scope_stamp_older(o.carry[k][j], seg[i]->scope[k][j]);
 	}
+	SIFT_MEM_SCOPE(col_merge_inputs, icx);
+	SIFT_MEM_SCOPE(col_merge_window, maint_window_context(win));
 	/*
 	 * Equal partitions (a short last one would be an overlay of every later rewrite): as many as the live bytes of the inputs make of part_bytes, cut by
 	 * the bytes of units written, which are the part of a segment that grows with its rows (the dictionaries and the like grow with them)
@@ -360,9 +362,6 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 			if (sift_cseg_keyed(&in[i]))
 				tin[i] = (TidIn) {.seg = seg[i], .win = win, .last = PG_UINT32_MAX};
 	{
-		SIFT_MEM_SCOPE(col_merge_inputs, icx);
-		SIFT_MEM_SCOPE(col_merge_window, maint_window_context(win));
-
 		for (;;)
 		{
 			uint32		sb = PG_UINT32_MAX;

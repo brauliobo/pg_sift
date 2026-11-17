@@ -279,6 +279,8 @@ col/names.h
 col/names_text.c
 col/order.c
 col/order_units.c
+col/order_bound.c
+col/order_bound.h
 col/order_sort.c
 col/order_sort.h
 col/order_streams.c
