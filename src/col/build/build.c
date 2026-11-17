@@ -75,7 +75,7 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 #ifdef SIFT_TESTING
 		sift_test_phase_wait(SIFT_COL_PHASE_SCAN);
 #endif
-		res->heap_tuples = sift_colb_scan(b, heap, info);
+		res->heap_tuples = sift_col_journal_empty ? 0 : sift_colb_scan(b, heap, info);
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_WRITE);
 #ifdef SIFT_TESTING
 		sift_test_phase_wait(SIFT_COL_PHASE_WRITE);
@@ -129,7 +129,7 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 	}
 	sift_conn_auto(heap, index);
 	sift_conn_resolve(heap, index);
-	sift_scope_resolve(heap, index, false, info->ii_Concurrent);
+	sift_scope_resolve(heap, index, false, info->ii_Concurrent ? SIFT_JOURNAL_DEFER : SIFT_JOURNAL_PLAIN);
 	sift_scope_precheck(heap, index);
 #ifdef SIFT_TESTING
 	sift_test_col_workers = 0;
@@ -153,7 +153,7 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 		sift_scope_start(heap, index, true);
 		PushActiveSnapshot(GetLatestSnapshot());
 	}
-	if (info->ii_ParallelWorkers > 0)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
+	if (info->ii_ParallelWorkers > 0 && !sift_col_journal_empty)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
 		res = serial_build(heap, index, info);
@@ -162,9 +162,9 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 #ifdef SIFT_TESTING
 	sift_test_phase_wait(SIFT_COL_GATE_TAIL);
 #endif
-	/* the journal of a relation of pairs that has none is made here: it holds the writers of that relation out only while it is built, not for the scan of the table */
+	/* the journal of a relation of pairs that has none is made here, empty: it holds the writers of that relation out until this transaction ends, and the validation pass fills it */
 	if (info->ii_Concurrent && sift_scope_specs(index) != NULL)
-		sift_scope_resolve(heap, index, true, false);
+		sift_scope_resolve(heap, index, true, SIFT_JOURNAL_EMPTY);
 	if (sift_col_track_on(index))
 	{
 		sift_col_log_create(index);

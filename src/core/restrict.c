@@ -95,6 +95,13 @@ sift_create_index(Oid relid, IndexStmt *stmt)
 	return sift_define_index(relid, stmt);
 }
 
+void
+sift_index_set_state(Oid index, IndexStateFlagsAction action)
+{
+	sift_catalog_write_guard("an index state");
+	index_set_state_flags(index, action);
+}
+
 Oid
 sift_create_matview(const char *name, Oid namespaceId, Oid ownerId, Oid accessMethod, TupleDesc tupdesc, char persistence)
 {

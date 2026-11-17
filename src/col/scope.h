@@ -63,11 +63,18 @@ extern void sift_scope_relation(Relation heap, Relation index, const SiftScopeSp
 extern Oid	sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key);
 /* ... and those of the joined path and of the members of its via column of a scope of two paths (hop 1, 2): their columns (via, scope key) and (via, member) and their recorded btrees */
 extern Oid	sift_scope_hop_index(Relation heap, Relation index, const SiftScopeSpec *s, int hop, Relation *rel, AttrNumber *a, AttrNumber *b);
+/* How a relation of pairs without a journal gets one: made by a plain CREATE INDEX (holds the writers of the pairs for its build), left for later (a concurrent build before its end), or made empty and valid only after its validation pass */
+typedef enum SiftJournalMake
+{
+	SIFT_JOURNAL_PLAIN,
+	SIFT_JOURNAL_DEFER,
+	SIFT_JOURNAL_EMPTY
+} SiftJournalMake;
 /*
  * CREATE INDEX, REINDEX (sticky false: chooses the btree by the rule and records it) and ALTER INDEX (sticky true: leaves the recorded one): resolves the declaration, writes the dependency, or removes it.
  * A relation of pairs without a journal index gets one
  */
-extern void sift_scope_resolve(Relation heap, Relation index, bool sticky, bool concurrent);
+extern void sift_scope_resolve(Relation heap, Relation index, bool sticky, SiftJournalMake make);
 /* Is the value store the one of the scope key of an index (the codes of a text or uuid key): no epoch of it begins */
 extern bool sift_scope_key_store_pinned(Oid store);
 /* After ALTER INDEX of any option of a sift_col index: resolves again, so that scope = 'off' or RESET (scope) of an index with no segment removes the dependency */
@@ -76,7 +83,12 @@ extern void sift_scope_alter(Relation index);
 /* The sift_col indexes with a scope that depend on the index (they took it for the journal or the btree of a relation of their scopes) */
 extern List *sift_scope_users(Oid index);
 /* col/scope_make.c: the journal index of a relation of pairs that has none, made by CREATE INDEX of the scope index (named by the rule, owned by the table's owner, marked by its comment); dropped with the last scope index that uses it */
-extern Oid	sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumber member, AttrNumber key, Oid btree);
+extern Oid	sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumber member, AttrNumber key, Oid btree, SiftJournalMake make);
+/* The build of the journal that a concurrent build makes reads no row: the rows come in the validation pass (sift_scope_journals_validate) */
+extern bool sift_col_journal_empty;
+/* The validation pass of a concurrent build: the journals the build made empty are filled from the heap under ShareUpdateExclusiveLock, then made valid, as validate_index does for a CREATE INDEX CONCURRENTLY */
+extern void sift_scope_journals_validate(void);
+extern bool sift_scope_journal_pending(Oid index);
 extern void sift_scope_journal_drop_unused(void);
 extern void sift_scope_notice_relation(const char *key_name, const char *name, Relation rel);
 extern void sift_scope_journal_alter(Relation index);

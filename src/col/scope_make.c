@@ -12,6 +12,7 @@
 #include "access/table.h"
 #include "catalog/dependency.h"
 #include "catalog/index.h"
+#include "access/xact.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_description.h"
@@ -22,6 +23,7 @@
 #include "parser/parse_node.h"
 #include "parser/parse_utilcmd.h"
 #include "storage/lmgr.h"
+#include "utils/memutils.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -40,6 +42,31 @@
 #define JOURNAL_LABEL	"sift_journal"
 #define JOURNAL_COMMENT	"Journal of the pairs of \"%s\" (%s, %s), made by CREATE INDEX of a scope index and managed by sift: it records the pairs that change, and goes with the last scope index that uses it."
 #define JOURNAL_MARK	"Journal of the pairs of "
+
+bool		sift_col_journal_empty = false;
+
+/*
+ * The journals this backend made empty in the build that is running: ready for writes, not valid, filled by the validation pass of that build. Only the backend that made them reads them as journals
+ * (journal_scan), and an abort forgets them: what is left is an invalid index that DROP INDEX removes and no scope index takes for a journal.
+ */
+static List *pending = NIL;
+static bool pending_hooked = false;
+
+bool
+sift_scope_journal_pending(Oid index)
+{
+	return list_member_oid(pending, index);
+}
+
+static void
+pending_xact(XactEvent event, void *arg)
+{
+	if (event == XACT_EVENT_ABORT)
+	{
+		list_free(pending);
+		pending = NIL;
+	}
+}
 
 static IndexElem *
 journal_column(const char *name)
@@ -65,7 +92,7 @@ journal_statement(Relation rel, const char *member, const char *key, bool concur
  * while each holds the ShareLock of its own CREATE INDEX (the second finds the first one's journal when it gets the lock).
  */
 Oid
-sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumber member, AttrNumber key, Oid btree)
+sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumber member, AttrNumber key, Oid btree, SiftJournalMake make)
 {
 	Oid			relid = RelationGetRelid(rel);
 	const char *mname = get_attname(relid, member, false),
@@ -92,15 +119,41 @@ sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumbe
 	stmt->indexParams = list_make2(journal_column(mname), journal_column(kname));
 	stmt->options = list_make1(makeDefElem("track_changes", (Node *) makeString("ctid"), -1));
 	stmt = transformIndexStmt(relid, stmt, journal_statement(rel, mname, kname, false));
-	ereport(NOTICE,
-			(errmsg("scope \"%s\": making the journal index \"%s\" of \"%s\" (%s, %s)", s->key_name, name, RelationGetRelationName(rel), mname, kname),
-			 errdetail("The writers of \"%s\" wait until the build of this index ends, as for CREATE INDEX on it, for as long as it takes to read the relation. The index goes with the last scope index that uses it.", RelationGetRelationName(rel)),
-			 errhint("To build it without blocking the writers, name it, place it or keep it, make it first: %s.", journal_statement(rel, mname, kname, true))));
-#ifdef SIFT_TESTING
-	sift_test_phase_wait(SIFT_COL_GATE_JOURNAL);
-#endif
-	addr = sift_create_index(relid, stmt);
+	if (make == SIFT_JOURNAL_EMPTY)
+		ereport(NOTICE,
+				(errmsg("scope \"%s\": making the journal index \"%s\" of \"%s\" (%s, %s) in the validation of this statement", s->key_name, name, RelationGetRelationName(rel), mname, kname),
+				 errdetail("The writers of \"%s\" wait only until this transaction ends; the index is filled while they go on and is valid when the statement ends. The index goes with the last scope index that uses it.", RelationGetRelationName(rel)),
+				 errhint("To name it, place it or keep it, make it first: %s.", journal_statement(rel, mname, kname, true))));
+	else
+		ereport(NOTICE,
+				(errmsg("scope \"%s\": making the journal index \"%s\" of \"%s\" (%s, %s)", s->key_name, name, RelationGetRelationName(rel), mname, kname),
+				 errdetail("The writers of \"%s\" wait until the build of this index ends, as for CREATE INDEX on it, for as long as it takes to read the relation. The index goes with the last scope index that uses it.", RelationGetRelationName(rel)),
+				 errhint("To build it without blocking the writers, name it, place it or keep it, make it first: %s.", journal_statement(rel, mname, kname, true))));
+	sift_col_journal_empty = make == SIFT_JOURNAL_EMPTY;
+	PG_TRY();
+	{
+		addr = sift_create_index(relid, stmt);
+	}
+	PG_FINALLY();
+	{
+		sift_col_journal_empty = false;
+	}
+	PG_END_TRY();
 	CommandCounterIncrement();
+	if (make == SIFT_JOURNAL_EMPTY)
+	{
+		sift_index_set_state(addr.objectId, INDEX_DROP_CLEAR_VALID);
+		CommandCounterIncrement();
+		if (!pending_hooked)
+			RegisterXactCallback(pending_xact, NULL);
+		pending_hooked = true;
+		{
+			MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
+
+			pending = list_append_unique_oid(pending, addr.objectId);
+			MemoryContextSwitchTo(old);
+		}
+	}
 	sift_col_track_made(addr.objectId);
 	CreateComments(addr.objectId, RelationRelationId, 0, psprintf(JOURNAL_COMMENT, RelationGetRelationName(rel), mname, kname));
 	return addr.objectId;
@@ -144,4 +197,36 @@ sift_scope_journal_drop_unused(void)
 		ObjectAddressSet(obj, RelationRelationId, index);
 		sift_drop_object(&obj);
 	}
+}
+
+/*
+ * The validation pass of a concurrent build, for the journals it made empty (CREATE INDEX CONCURRENTLY and REINDEX CONCURRENTLY of a scope index over a relation of pairs without one): the
+ * phases that PostgreSQL gives a concurrent index. The journal was ready for writes when the transaction of the build committed, so the writers that began after it keep it (aminsert); the writers
+ * that began before it are waited for, and then the heap is read under a snapshot that sees all they did, adding the pairs the journal does not have (validate_index). The transactions whose
+ * snapshots are older than that one are waited for before the journal is valid, as for any index. No lock stronger than ShareUpdateExclusiveLock is held.
+ */
+void
+sift_scope_journals_validate(void)
+{
+	foreach_oid(journal, pending)
+	{
+		Oid			heap = IndexGetRelation(journal, false);
+		Snapshot	snap;
+
+		LockRelationOid(heap, ShareUpdateExclusiveLock);
+		sift_col_drain_writers(heap, ShareLock);
+#ifdef SIFT_TESTING
+		sift_test_phase_wait(SIFT_COL_GATE_JOURNAL);
+#endif
+		snap = RegisterSnapshot(GetLatestSnapshot());
+		PushActiveSnapshot(snap);
+		validate_index(heap, journal, snap);
+		PopActiveSnapshot();
+		WaitForOlderSnapshots(snap->xmin, false);
+		UnregisterSnapshot(snap);
+		sift_index_set_state(journal, INDEX_CREATE_SET_VALID);
+		CommandCounterIncrement();
+	}
+	list_free(pending);
+	pending = NIL;
 }

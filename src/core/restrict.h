@@ -13,6 +13,7 @@
 #define SIFT_RESTRICT_H
 
 #include "catalog/dependency.h"
+#include "catalog/index.h"
 #include "nodes/parsenodes.h"
 #include "utils/rel.h"
 
@@ -35,6 +36,7 @@ extern void sift_undepend(Oid classId, Oid objectId, DependencyType deptype, Oid
 extern ObjectAddress sift_create_trigger(CreateTrigStmt *stmt, Oid relid, Oid funcoid);
 extern void sift_drop_object(const ObjectAddress *object);
 extern ObjectAddress sift_create_index(Oid relid, IndexStmt *stmt);
+extern void sift_index_set_state(Oid index, IndexStateFlagsAction action);
 extern Oid sift_create_matview(const char *name, Oid namespaceId, Oid ownerId, Oid accessMethod, TupleDesc tupdesc, char persistence);
 extern void sift_change_owner(Oid relid, Oid ownerId);
 

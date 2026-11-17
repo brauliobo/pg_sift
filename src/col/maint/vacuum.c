@@ -185,7 +185,10 @@ sift_col_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, Index
 {
 	/* the validation pass of a concurrent build is the only caller that asks for progress reports: VACUUM does not */
 	if (info->report_progress && sift_col_rel(info->index)->nscope > 0)
+	{
+		sift_scope_journals_validate();
 		sift_scope_stamp_concurrent(info->index);
+	}
 	return sift_mops_bulkdelete(&maint_col_ops, info, stats, callback, callback_state);
 }
 

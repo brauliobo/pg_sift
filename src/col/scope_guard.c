@@ -48,7 +48,7 @@ journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btr
 	foreach_oid(ioid, RelationGetIndexList(rel))
 	{
 		Relation	idx = index_open(ioid, AccessShareLock);
-		bool		ok = sift_col_is_index(idx) && sift_index_ready(idx) && idx->rd_index->indisvalid && sift_col_track_ctid(idx) &&
+		bool		ok = sift_col_is_index(idx) && sift_index_ready(idx) && (idx->rd_index->indisvalid || sift_scope_journal_pending(ioid)) && sift_col_track_ctid(idx) &&
 			idx->rd_index->indkey.values[0] == member && sift_conn_index_column(idx, scope_key) != InvalidAttrNumber;
 
 		if (ok)

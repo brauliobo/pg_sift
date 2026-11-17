@@ -22,6 +22,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 - Changed: pg_sift: a maintenance worker with nothing to do leaves after two looks instead of staying for `sift.maintenance_naptime`, looks at growing intervals, and no longer writes `worker finished ... in 2000 ms` to the log.
 - Changed: pg_sift: a `sift_col` index asks for the fold of the marks of its log only when marks that a fold can clear exist (older than the oldest snapshot); an old snapshot no longer starts a worker every few seconds.
 - Changed: pg_sift: the line that says no background worker slot was free is written at LOG once an hour for each job (DEBUG1 in between) and names which jobs hold the slots.
+- Fixed: pg_sift: a concurrent build of a `sift_col` scope index over a relation of pairs that has no journal no longer holds the writers of that relation for the build of the journal: the journal is made in the same few milliseconds and filled in the validation pass, as a concurrent index is. `ALTER INDEX` and a `CREATE INDEX` without `CONCURRENTLY` still hold them, and say so.
 
 ## 5.0.0 - 2026-11-16
 

@@ -91,6 +91,17 @@ stored() { # INDEX: the scope is read from the scope units (the segments are fil
 	sift_explain=$(sql cl "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*) FROM t e WHERE sift.in_scope('$1'::regclass, 'tenant', e.m, 5)")
 	grep -q 'Scope Units' <<<"$sift_explain"
 }
+journal_whole() { # the journal of pairs2 made by the build: valid, ready, and the heap's rows are in it
+	local j
+	j=$(sql cl "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'pairs2'::regclass AND c.relname LIKE '%sift_journal' AND i.indisvalid AND i.indisready")
+	[[ -n $j ]] && [[ -z $(sql cl "SELECT sift.col_verify('$j', true)" 2>&1) ]]
+}
+journal_in_use() { # the journal of the pairs table, a scope index depends on it: the drop fails on the dependency without waiting, and the journal stays
+	local j out
+	[[ $PT == pairs ]] && j=pairs_j || j=$(sql cl "SELECT relname FROM pg_class WHERE relname LIKE '${PT}%sift_journal'")
+	out=$(sql cl "SET lock_timeout = '3s'" "DROP INDEX CONCURRENTLY $j" 2>&1) # timeout-ok: the drop fails on the dependency before it asks for a lock, so the timeout is never reached when the product is right
+	[[ $out == *depend* && -n $(sql cl "SELECT to_regclass('$j')") ]]
+}
 verifies() { [[ -z $(sql cl "SELECT sift.col_verify('$1', true)" 2>&1) ]]; }
 
 # run_kind KIND INDEX CREATE-SQL MODE(create|reindex) GATE(fn|sift) PHASES...: one build held at each phase in turn (the asserts), then to the end
@@ -134,6 +145,8 @@ run_kind() {
 	check "$kind: the index answers as the heap does, for the rows written before, during and after each phase" same_answer "$idx" "$shape"
 	[[ $shape != sift* ]] || check "$kind: the index verifies" verifies "$idx"
 	[[ $shape != sift_scope ]] || check "$kind: the scope is read from its units as soon as the build ends" stored "$idx"
+	[[ $shape != sift_scope ]] || check "$kind: DROP INDEX CONCURRENTLY of the journal the scope index uses is refused at once, holding no lock" journal_in_use
+	[[ $PT != pairs2 ]] || check "$kind: the journal the build made is valid, verifies against the pairs written while it was filled, and no scope index waits for it" journal_whole
 }
 
 # kill_kind KIND INDEX CREATE-SQL GATE HOW(terminate|cancel) PHASE: the build is killed in a phase; the INVALID index is dropped by a plain DROP INDEX CONCURRENTLY IF EXISTS
@@ -221,6 +234,7 @@ for kind in $KINDS; do
 	sql cl "DROP INDEX k_ix" >/dev/null
 	kill_kind "$kind" k_ix "$C" "$G" terminate "${P[${#P[@]} - 1]}"
 	kill_kind "$kind" k_ix "$C" "$G" cancel "${P[0]}"
+	[[ $kind != sift_scope_new_journal ]] || kill_kind "$kind" k_ix "$C" "$G" cancel 6
 	open_writer "$kind" k_ix "$C" "$G" "${P[0]}"
 	sql cl "DROP INDEX k_ix" >/dev/null
 done

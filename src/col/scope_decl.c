@@ -559,23 +559,23 @@ choose_btree(Oid owner, const SiftScopeSpec *s, int i, Relation rel, AttrNumber 
 
 /* The journal index of the pairs relation (of a scope of one path), which must hear of every pair: the one the relation has, else the one CREATE INDEX makes (sift_scope_journal_make) */
 static Oid
-require_journal(const SiftScopeSpec *s, Relation rel, AttrNumber member, AttrNumber key, Oid btree, bool concurrent)
+require_journal(const SiftScopeSpec *s, Relation rel, AttrNumber member, AttrNumber key, Oid btree, SiftJournalMake make)
 {
 	Oid			journal = sift_scope_journal_index(rel, member, key, btree);
 
-	return OidIsValid(journal) || concurrent ? journal : sift_scope_journal_make(s, rel, 0, member, key, btree);
+	return OidIsValid(journal) || make == SIFT_JOURNAL_DEFER ? journal : sift_scope_journal_make(s, rel, 0, member, key, btree, make);
 }
 
 /* The journal indexes of the three relations of a scope of two paths (added to keep), which must hear of every pair: the ones the relations have, else the ones CREATE INDEX makes */
 static void
-require_journals(const SiftScopeSpec *s, Relation *rel, const AttrNumber (*att)[2], const Oid *btree, bool concurrent, List **keep)
+require_journals(const SiftScopeSpec *s, Relation *rel, const AttrNumber (*att)[2], const Oid *btree, SiftJournalMake make, List **keep)
 {
 	for (int h = 0; h < 3; h++)
 	{
 		Oid			journal = sift_scope_hop_journal(rel[h], h, att[h][0], att[h][1], btree[h]);
 
-		if (!OidIsValid(journal) && !concurrent)
-			journal = sift_scope_journal_make(s, rel[h], h, att[h][h == 2 ? 1 : 0], att[h][h == 2 ? 0 : 1], btree[h]);
+		if (!OidIsValid(journal) && make != SIFT_JOURNAL_DEFER)
+			journal = sift_scope_journal_make(s, rel[h], h, att[h][h == 2 ? 1 : 0], att[h][h == 2 ? 0 : 1], btree[h], make);
 		if (OidIsValid(journal))
 			*keep = list_append_unique_oid(*keep, journal);
 	}
@@ -612,7 +612,7 @@ record_limits(Relation index, const SiftScopeSpecs *specs)
  * NOTICE; ALTER INDEX (sticky) leaves the one recorded, as the segments were written under it. The edges of the btrees of one relation are told apart by their columns.
  */
 void
-sift_scope_resolve(Relation heap, Relation index, bool sticky, bool concurrent)
+sift_scope_resolve(Relation heap, Relation index, bool sticky, SiftJournalMake make)
 {
 	SiftScopeSpecs *specs = sift_scope_specs(index);
 	Oid			origin = specs != NULL ? sift_col_swap_origin(heap, index, false) : InvalidOid;
@@ -654,10 +654,10 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky, bool concurrent)
 		if (sift_keymap_type(get_atttype(RelationGetRelid(rel[0]), att[0][1])))
 			(void) sift_vstore_ensure(rel[0], index, att[0][1]);
 		/* a scope needs its journal, a scope of two paths the three of its relations */
-		if (npath == 1 && OidIsValid(journal = require_journal(s, rel[0], att[0][0], att[0][1], btree[0], concurrent)))
+		if (npath == 1 && OidIsValid(journal = require_journal(s, rel[0], att[0][0], att[0][1], btree[0], make)))
 			keep = list_append_unique_oid(keep, journal);
 		if (npath == 3)
-			require_journals(s, rel, att, btree, concurrent, &keep);
+			require_journals(s, rel, att, btree, make, &keep);
 		for (int h = 0; h < npath; h++)
 			table_close(rel[h], NoLock);
 	}
@@ -673,7 +673,7 @@ sift_scope_alter(Relation index)
 {
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 
-	sift_scope_resolve(heap, index, true, false);
+	sift_scope_resolve(heap, index, true, SIFT_JOURNAL_PLAIN);
 	sift_scope_journal_drop_unused();
 	sift_scope_start(heap, index, false);
 	table_close(heap, NoLock);
