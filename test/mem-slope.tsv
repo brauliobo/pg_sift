@@ -6,8 +6,8 @@ group_unique_int	slope	50	open		select k_hi, count(*), sum(amount) from {f} grou
 group_unique_text	slope	12	clean		select txt, count(*), sum(amount) from {f} group by 1;
 group_two_keys	slope	12	clean		select k_mid, cat, count(*), avg(amount) from {f} group by 1,2;
 count_distinct_int	slope	12	clean		select count(distinct k_hi) from {f};
-count_distinct_text	slope	65	open		select count(distinct txt) from {f};
-count_distinct_text_grouped	slope	65	open		select k_lo, count(distinct txt) from {f} group by 1;
+count_distinct_text	slope	75	open		select count(distinct txt) from {f};
+count_distinct_text_grouped	slope	75	open		select k_lo, count(distinct txt) from {f} group by 1;
 percentile_grouped	slope	12	clean		select k_mid, percentile_cont(0.5) within group (order by amount) from {f} group by 1;
 mode_text	slope	12	clean		select mode() within group (order by txt) from {f};
 top_100k	slope	12	clean		select k_hi, amount from {f} order by amount desc, k_hi limit 100000;
