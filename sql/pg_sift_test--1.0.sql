@@ -198,19 +198,19 @@ CREATE FUNCTION sift._test_ring_walk(slots int4, steps int4) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_ring_walk' LANGUAGE C STRICT;
 
 -- Leak detection (src/core/leak_test.c): leaves a resource behind on purpose so that scripts/leakcheck.sh is shown to fail.
--- kind: buffer, relcache, tupledesc, snapshot, lock, context, malloc
+-- kind: buffer, relcache, tupledesc, snapshot, lock, context, malloc, palloc
 CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_leak' LANGUAGE C STRICT;
 
 -- n log lines, each reported under the error context of an index (test/mem-slope.tsv leak_errctx_report): the memory they leave in the backend
 CREATE FUNCTION sift._test_errctx_report(rel regclass, n int) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_errctx_report' LANGUAGE C STRICT;
--- whether sift_col_bits_any reads past the words of a vector of n bits (src/col/test/bits_test.c): true when it found a bit in the set words that follow
-CREATE FUNCTION sift._test_bits_any_bounds(n int) RETURNS bool
-	AS 'MODULE_PATHNAME', 'sift_test_bits_any_bounds' LANGUAGE C STRICT;
 -- n questions whether an index tracks a key, asked in a context of their own (src/col/test/alloc_test.c): the bytes that context holds, exact
 CREATE FUNCTION sift._test_row_key_bytes(idx regclass, n int) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_row_key_bytes' LANGUAGE C STRICT;
+-- whether sift_col_bits_any reads past the words of a vector of n bits (src/col/test/alloc_test.c): true when it found a bit in the set words that follow
+CREATE FUNCTION sift._test_bits_any_bounds(n int) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_bits_any_bounds' LANGUAGE C STRICT;
 -- Memory budgets (src/core/membudget.c, test/mem-budgets.tsv): the scopes this backend ran and the most memory each held at a checkpoint; reset clears the marks.
 CREATE FUNCTION sift._test_mem_highwater(reset bool DEFAULT false, OUT scope text, OUT peak int8, OUT budget int8, OUT begins int8, OUT checks int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_mem_highwater' LANGUAGE C STRICT;

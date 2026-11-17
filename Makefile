@@ -462,6 +462,7 @@ TESTING_REGRESS += index_parts
 TESTING_REGRESS += kernels_%
 TESTING_REGRESS += lang_chain
 TESTING_REGRESS += lang_memo
+TESTING_REGRESS += leak_planted
 TESTING_REGRESS += limits_registry
 TESTING_REGRESS += maint_%
 TESTING_REGRESS += merge_heal

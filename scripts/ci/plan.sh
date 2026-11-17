@@ -205,3 +205,6 @@ fi
 [[ ${SIFT_CI_JOBS:-} != *assert* ]] || job assert assert 0 "$S/assert.sh"
 [[ ${SIFT_CI_JOBS:-} != *valgrind* ]] || job valgrind valgrind 0 "$S/valgrind.sh"
 [[ ${SIFT_CI_JOBS:-} != *massif* ]] || job massif massif 0 "$S/valgrind.sh" --massif
+# the leak gate (docs/MEMORY-ANALYSIS.md): the curated tests under memcheck with leak checking and the reviewed allow-list, then the same tests on the ASan and UBSan build; SIFT_CI_LEAKS=1 adds it to quick
+[[ ${SIFT_CI_LEAKS:-} != 1 && ${SIFT_CI_JOBS:-} != *valgrind-leaks* ]] || job valgrind-leaks valgrind 0 "$S/valgrind.sh" --leaks
+[[ ${SIFT_CI_LEAKS:-} != 1 && ${SIFT_CI_JOBS:-} != *asan-leaks* ]] || flavor_job asan-leaks asan "$S/leaks-asan.sh"

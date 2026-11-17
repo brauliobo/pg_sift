@@ -69,7 +69,7 @@ sift_leak_test_init(void)
 	on_proc_exit(leaked_contexts_at_exit, 0);
 }
 
-/* sift._test_leak(kind text, rel regclass) returns void: buffer, relcache, tupledesc, snapshot, lock, context, malloc */
+/* sift._test_leak(kind text, rel regclass) returns void: buffer, relcache, tupledesc, snapshot, lock, context, malloc, palloc */
 Datum
 sift_test_leak(PG_FUNCTION_ARGS)
 {
@@ -103,6 +103,11 @@ sift_test_leak(PG_FUNCTION_ARGS)
 	}
 	else if (strcmp(kind, "context") == 0)
 		(void) AllocSetContextCreate(TopMemoryContext, "sift leaked", ALLOCSET_SMALL_SIZES);
+	else if (strcmp(kind, "palloc") == 0)
+	{
+		sink = MemoryContextAlloc(TopMemoryContext, 100);	/* a chunk of a long-lived context nothing points to: valgrind's definitely lost (scripts/valgrind.sh --leaks-selftest) */
+		sink = NULL;
+	}
 	else if (strcmp(kind, "malloc") == 0)
 	{
 		for (int i = 0; i < 256; i++)	/* many, so that no stale pointer on the stack hides them all */

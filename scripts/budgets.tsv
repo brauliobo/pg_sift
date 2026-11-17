@@ -48,7 +48,8 @@ script:isolation.sh	600	1000	-
 script:replication.sh	600	1000	-
 script:hardened.sh	900	2000	hosted hardened job 207 s
 script:assert.sh	1800	3000	regression subset + two TAP on the assert build; -
-script:valgrind.sh	1800	3000	memcheck over a regression subset, or massif over the 5 slope cases with --massif (2 sizes of 50000 rows); -
+script:leaks-asan.sh	900	2000	the leak set (scripts/valgrind-leaks.tests) on the ASan and UBSan build, as hardened.sh does the decoders; measured at the end of the lane
+script:valgrind.sh	1800	3000	memcheck over a regression subset (--leaks: the curated leak set, 900 s at most: scripts/valgrind-leaks.tests), or massif over the 5 slope cases with --massif (2 sizes of 50000 rows); -
 script:massif-slope.py	1800	3000	the massif half of valgrind.sh --massif: 5 cases x 2 sizes, a native setup and one backend under massif each
 script:release.sh	2700	3072	the release from a green head; the gate is gate:release
 script:exec-budget.sh	600	1000	-
