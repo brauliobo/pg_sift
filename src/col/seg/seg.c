@@ -812,6 +812,7 @@ void
 sift_col_dir_read(Relation index, SiftDirSnapshot *snap, bool scope)
 {
 	sift_dir_read(index, snap);
+	sift_cdict_retire(index, snap);
 	sift_col_dir_family(snap, scope);
 }
 
@@ -819,6 +820,7 @@ void
 sift_col_dir_read_segs(Relation index, SiftDirSnapshot *snap, bool scope)
 {
 	sift_dir_read_segs(index, snap);
+	sift_cdict_retire(index, snap);
 	sift_col_dir_family(snap, scope);
 }
 
@@ -826,6 +828,7 @@ void
 sift_col_dir_read_families(Relation index, SiftDirSnapshot *entity, SiftDirSnapshot *scope)
 {
 	sift_dir_read_segs(index, entity);
+	sift_cdict_retire(index, entity);
 	scope->version = entity->version;
 	scope->nsegs = entity->nsegs;
 	memcpy(scope->segs, entity->segs, entity->nsegs * sizeof(SiftSegEntry));

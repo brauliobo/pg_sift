@@ -1,5 +1,5 @@
 # NAME	KIND	CEILING	STATUS	SETUP	OPERATION -- scripts/mem-slope.py: work_mem and maintenance_work_mem at 1 MB; {f} {d} the tables of the case, {m} {s} a copy it may change, {n} its rows.
-# kind leakx: a statement of its own repeated 20 times in one backend, kB the contexts hold after the 20th over the 5th (open: the ceiling in kB).
+# kind leakx: a statement of its own repeated 25 times in one backend, kB the contexts hold after the 25th over the 10th (open: the ceiling in kB).
 # kind slope: the ceiling is bytes of memory a row of the table, between the smallest and the largest size; status open: the slope it was measured at (a defect to fix, then clean).
 group_low	slope	12	clean		select k_lo, count(*), sum(amount) from {f} group by 1;
 group_mid	slope	12	clean		select k_mid, count(*), sum(amount) from {f} group by 1;
@@ -49,10 +49,11 @@ repair_col	slope	12	clean		select count(*) from sift.col_repair('{m}_col'::regcl
 vacuum_deleted	slope	70	open	delete from {m} where k_lo < 6;	vacuum {m};
 vacuum_inserted	slope	12	clean	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;	vacuum {m};
 table_maintain	slope	25	open	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	select sift.table_maintain('{s}'::regclass);
-leakx_vacuum	leakx	2000	open	alter index {m}_col set (dict_cache_kb = 1024);	update {m} set amount = amount + 1 where k_lo < 2; select sift.col_promote('{m}_col'::regclass); vacuum {m};
-leakx_merge_col	leakx	16000	open	alter index {m}_col set (dict_cache_kb = 1024);	update {m} set amount = amount + 1 where k_lo < 2; select sift.col_merge('{m}_col'::regclass, true);
+leakx_vacuum	leakx	0	clean		update {m} set amount = amount + 1 where k_lo < 2; select sift.col_promote('{m}_col'::regclass); vacuum {m};
+leakx_merge_col	leakx	0	clean		update {m} set amount = amount + 1 where k_lo < 2; select sift.col_merge('{m}_col'::regclass, true);
 leakx_merge_bm	leakx	0	clean		insert into {m} select g+20000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,200) g; select sift.promote('{m}_bm'::regclass); select sift.merge('{m}_bm'::regclass, true);
 leakx_promote_col	leakx	0	clean		insert into {m} select g+30000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless w'||g from generate_series(1,500) g; select sift.col_promote('{m}_col'::regclass);
-leakx_maintain_col	leakx	8000	open		update {m} set amount = amount + 1 where k_lo = 0; select sift.col_maintain('{m}_col'::regclass);
+leakx_maintain_col	leakx	0	clean		update {m} set amount = amount + 1 where k_lo = 0; select sift.col_maintain('{m}_col'::regclass);
 leakx_refresh	leakx	0	clean		select * from sift.col_refresh('{m}_col'::regclass); select sift.col_rollup_refresh('{m}_col'::regclass); select count(*) from sift.col_repair('{m}_col'::regclass);
-leakx_table_maintain	leakx	24000	open	create table {s} using sift_table as select * from {f} order by id;	update {s} set amount = amount + 1 where k_lo < 3; select sift.table_maintain('{s}'::regclass); vacuum {s};
+leakx_table_maintain	leakx	0	clean	create table {s} using sift_table as select * from {f} order by id;	update {s} set amount = amount + 1 where k_lo < 3; select sift.table_maintain('{s}'::regclass); vacuum {s};
+leakx_wbuf	leakx	0	clean	set sift.test_limits = 'dict_cache_kb=1024';	update {m} set amount = amount + 1 where k_lo < 2; select sift.col_promote('{m}_col'::regclass); select count(*) from {m} where id = 5; select sift.col_merge('{m}_col'::regclass, true);

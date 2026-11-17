@@ -78,6 +78,60 @@ dict_unpin(void *arg)
 	((Unpin *) arg)->ent->pins--;
 }
 
+#define RETIRE_MEMO		32
+
+typedef struct RetireMemo
+{
+	RelFileLocator rel;
+	uint32		version;
+} RetireMemo;
+
+static RetireMemo retire_memo[RETIRE_MEMO];
+static int	retire_next;
+
+static bool
+gen_in_dir(const SiftDirSnapshot *snap, uint64 gen)
+{
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].gen == gen)
+			return true;
+	return false;
+}
+
+/*
+ * The directory a backend reads names the segments that exist: the entries kept for another generation of the index belong to segments a merge or a rewrite retired, which nobody
+ * reads again, so they go (the ones a scan pins stay until it ends). Done once for each directory version a backend sees (the last 32 indexes are remembered), before the snapshot is cut to a family.
+ */
+void
+sift_cdict_retire(Relation index, const SiftDirSnapshot *snap)
+{
+	HASH_SEQ_STATUS seq;
+	DictEnt    *e;
+	RetireMemo *m = NULL;
+
+	if (cache == NULL)
+		return;
+	for (int i = 0; i < RETIRE_MEMO; i++)
+		if (RelFileLocatorEquals(retire_memo[i].rel, index->rd_locator))
+			m = &retire_memo[i];
+	if (m != NULL && (int32) (snap->version - m->version) <= 0)
+		return;
+	if (m == NULL)
+	{
+		m = &retire_memo[retire_next++ % RETIRE_MEMO];
+		m->rel = index->rd_locator;
+	}
+	m->version = snap->version;
+	hash_seq_init(&seq, cache);
+	while ((e = hash_seq_search(&seq)) != NULL)
+	{
+		const DictKey *k = &e->key;
+
+		if (e->pins == 0 && RelFileLocatorEquals(k->rel, index->rd_locator) && !gen_in_dir(snap, k->gen))
+			dict_drop(e);
+	}
+}
+
 /* Drops the least recently used entries nobody pins until need more bytes fit; false when they do not */
 static bool
 dict_room(Size need)
