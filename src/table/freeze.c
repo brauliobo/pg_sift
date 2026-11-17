@@ -265,7 +265,7 @@ sift_tbl_drop_dead_groups(Relation rel, SiftTblRel *st)
 	if (n == 0)
 		return 0;
 	mi = sift_maint_inputs(rel, gone, n);
-	sift_maint_replace(rel, mi.gens, n, NULL, mi.release, mi.nrelease, psprintf("dropped %d column segments without a live row of", n), GetCurrentTimestamp(), 0);
+	sift_maint_replace(rel, NULL, mi.gens, n, NULL, mi.release, mi.nrelease, psprintf("dropped %d column segments without a live row of", n), GetCurrentTimestamp(), 0);
 	sift_tbl_refresh(rel, st);
 	return n;
 }

@@ -556,7 +556,7 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	SIFT_MEM_CHECKPOINT();
 	tuplesort_end(sort);
 	sift_wt_finish(wt);
-	sift_maint_replace(index, &sealed->gen, 1, any ? &neu : NULL, pages, npages, "promoted a sealed segment of", start, sealed->ndocs);
+	sift_maint_replace(index, wt, &sealed->gen, 1, any ? &neu : NULL, pages, npages, "promoted a sealed segment of", start, sealed->ndocs);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }
@@ -792,7 +792,7 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 	}
 	SIFT_MEM_CHECKPOINT();
 	sift_wt_finish(wt);
-	sift_maint_replace(index, mi.gens, in->n, written ? &neu : NULL, mi.release, mi.nrelease,
+	sift_maint_replace(index, wt, mi.gens, in->n, written ? &neu : NULL, mi.release, mi.nrelease,
 					   psprintf("merged %d segments of", in->n), start, written ? neu.ndocs : 0);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);

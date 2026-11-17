@@ -483,7 +483,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 
 		for (int i = 0; i < o.nneu; i++)
 			docs += o.neu[i].ndocs;
-		sift_maint_replace_n(index, mi.gens, n, o.neu, o.nneu, mi.release, mi.nrelease,
+		sift_maint_replace_n(index, NULL, mi.gens, n, o.neu, o.nneu, mi.release, mi.nrelease,
 							 psprintf("merged %d column segments into %d of", n, o.nneu), start, docs);
 		maint_merge_settles(index, in, n, o.nneu);
 	}
@@ -526,7 +526,7 @@ sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftS
 
 	for (int i = 0; i < nout; i++)
 		docs += out[i].ndocs;
-	sift_maint_replace_n(index, mi.gens, n, out, nout, mi.release, mi.nrelease, psprintf("merged %d column segments into %d of", n, nout), start, docs);
+	sift_maint_replace_n(index, NULL, mi.gens, n, out, nout, mi.release, mi.nrelease, psprintf("merged %d column segments into %d of", n, nout), start, docs);
 	maint_merge_settles(index, in, n, nout);
 }
 

@@ -62,13 +62,13 @@ extern SiftMaintInputs sift_maint_inputs(Relation index, const SiftSegEntry *in,
 
 /*
  * The directory switch that ends a promotion or a merge, in one place: old[0..nold) is replaced by neu (NULL: by nothing),
- * release[0..nrelease) is released, and the step is logged (what, docs; the bytes are those of neu)
+ * release[0..nrelease) is released, and the step is logged (what, docs; the bytes are those of neu); the blocks the step took through wt (NULL: none) pass to the directory in that switch
  */
-extern void sift_maint_replace(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, SiftExtent *release,
+extern void sift_maint_replace(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, const SiftSegEntry *neu, SiftExtent *release,
 							   int nrelease, const char *what, TimestampTz start, int64 docs);
 
 /* The same with nneu replacements (neu[0..nneu)), side by side where the first replaced segment was, in one switch */
-extern void sift_maint_replace_n(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release,
+extern void sift_maint_replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release,
 								 int nrelease, const char *what, TimestampTz start, int64 docs);
 
 /* Tells that a maintenance step of an index failed and is retried; kind: "sift" or "sift_col" */

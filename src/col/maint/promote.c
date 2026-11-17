@@ -163,7 +163,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	/* the floor of the stamps goes down to this promotion's before its segments are published, whether or not it wrote a scope segment: its rows with no pair are exact as of it too */
 	if (stamps.n > 0)
 		sift_scope_floor_lower(index, &stamps);
-	sift_maint_replace_n(index, &sealed->gen, 1, neu, nb > 0 ? nneu : 0, pages, npages, "promoted a sealed column segment of", start, rows);
+	sift_maint_replace_n(index, NULL, &sealed->gen, 1, neu, nb > 0 ? nneu : 0, pages, npages, "promoted a sealed column segment of", start, rows);
 	sift_cwbuf_arena_drop(index, sealed->gen);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);

@@ -465,7 +465,7 @@ void
 sift_wt_publish(SiftWriteTarget *wt, const SiftDirChange *chg)
 {
 	Assert(wt->mode == SIFT_WRITE_SHARED);
-	store_update(wt->index, chg, true, wt);
+	sift_dir_publish(wt->index, chg, wt);
 }
 
 /* The step that wrote through a SHARED target failed (its transaction is rolled back): the blocks go back */
