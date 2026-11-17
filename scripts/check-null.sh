@@ -9,9 +9,11 @@
 #                   malloc, strdup, fopen, fgets, getenv, strchr, strstr, ..) that the function never compares with NULL (or HeapTupleIsValid); a name used only as an argument of a message is not a use
 #   null-wrapped    such a name call as the argument of strcmp, strlen, pstrdup, strcpy, .. on the same line: the wrapper dereferences NULL
 #   sql-oid         relation_open/index_open/table_open/RelationIdGetRelation of an OID that a SQL argument supplies (PG_GETARG_OID, or a variable assigned from one) without sift_rel_must_exist
-#                   (core/inspect.h): a dropped regclass or 0 is the error 42P01 of the user, not the XX000 of the open; the test builds (src/*/test/) are not read for it
+#                   (core/inspect.h): a dropped regclass or 0 is the error 42P01 of the user, not the XX000 of the open; the code of the test build (*_test.c, src/*/test/) is read for this rule
+#                   only: its functions are called by the surface sweep too
 # A test of an Assert does not count: a release build has none. A site that cannot be NULL says why in scripts/null.allow: FILE TAB FUNCTION TAB RULE TAB REASON (one line); a line whose function no
 # longer has a hit fails too, so the list stays the list of the sites that were read.
+#   sites           scripts/check-sites.py (run here): a catalog or relcache call that SQL can reach and whose result is not tested needs a row in scripts/sites.verified (read: guarded, fixed or unreachable)
 #   scripts/check-null.sh            the tracked sources of src/
 #   scripts/check-null.sh --selftest
 set -euo pipefail
@@ -117,7 +119,11 @@ def sql_oid_unchecked(arg, body, upto):
     return not any(re.search(r'sift_rel_must_exist\(\s*%s\s*\)' % re.escape(arg), l) or re.search(r'\b%s\s*=\s*sift_rel_must_exist\(' % re.escape(arg), l) for l in body[:upto + 1])
 
 
+SQL_OID_MSG = 'the OID is a SQL argument opened with no sift_rel_must_exist: a dropped regclass or 0 is the user error 42P01, not an XX000 of the open'
+
+
 def hits(path, text):
+    test_code = path.endswith('_test.c') or '/test/' in path
     lines = text.split('\n')
     cl = clean(lines)
     found = []
@@ -125,6 +131,11 @@ def hits(path, text):
         body = cl[a:b + 1]
         for k, l in enumerate(body):
             n = a + k + 1
+            if test_code:
+                for m in OPEN_CALL.finditer(l):
+                    if sql_oid_unchecked(m.group(1), body, k):
+                        found.append((path, n, name, 'sql-oid', SQL_OID_MSG))
+                continue
             for m in ARRAYS.finditer(l):
                 if not relation_entry_tested(m, l, body):
                     found.append((path, n, name, 'planner-array', 'a relation entry that no code of the function compares with NULL: an outer join relid has none; skip it as the neighbouring loops do'))
@@ -139,10 +150,9 @@ def hits(path, text):
                         continue
                     if not compared(v, body):
                         found.append((path, n, name, 'null-result', '%s is assigned a result that can be NULL and the function never tests it' % v))
-            if '/test/' not in path:
-                for m in OPEN_CALL.finditer(l):
-                    if sql_oid_unchecked(m.group(1), body, k):
-                        found.append((path, n, name, 'sql-oid', 'the OID is a SQL argument opened with no sift_rel_must_exist: a dropped regclass or 0 is the user error 42P01, not an XX000 of the open'))
+            for m in OPEN_CALL.finditer(l):
+                if sql_oid_unchecked(m.group(1), body, k):
+                    found.append((path, n, name, 'sql-oid', SQL_OID_MSG))
             if WRAPPED.search(l):
                 found.append((path, n, name, 'null-wrapped', 'a result that can be NULL is the argument of a function that dereferences it'))
     seen, out = set(), []
@@ -213,7 +223,7 @@ if arg == '--selftest':
 
 allow = load_allow(os.path.join(root, 'scripts', 'null.allow'))
 names = subprocess.run(['git', '-C', root, 'ls-files', 'src'], capture_output=True, text=True, check=True).stdout.split()
-names = [f for f in names if f.endswith(('.c', '.h')) and not f.endswith('_test.c')]
+names = [f for f in names if f.endswith(('.c', '.h'))]
 found = []
 for f in names:
     found += hits(f, open(os.path.join(root, f), errors='replace').read())
@@ -223,5 +233,6 @@ for f, n, fn, rule, msg in bad:
 for k in stale:
     print('scripts/null.allow: %s %s %s has no hit any more: delete the row' % k)
 print('check-null: %d unread site(s), %d stale row(s), %d allowed, %d files' % (len(bad), len(stale), len(allow), len(names)))
-sys.exit(1 if bad or stale else 0)
+sites = subprocess.run([sys.executable, '-I', os.path.join(root, 'scripts', 'check-sites.py'), root]).returncode
+sys.exit(1 if bad or stale or sites else 0)
 PY
