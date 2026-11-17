@@ -26,9 +26,11 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
+#include "core/errctx.h"
 #include "core/sift.h"
 
 PG_FUNCTION_INFO_V1(sift_test_leak);
+PG_FUNCTION_INFO_V1(sift_test_errctx_report);
 
 static void *volatile sink;		/* keeps the compiler from dropping the leaked allocations */
 
@@ -102,6 +104,23 @@ sift_test_leak(PG_FUNCTION_ARGS)
 	}
 	else
 		elog(ERROR, "unknown leak kind \"%s\"", kind);
+	PG_RETURN_VOID();
+}
+
+/* sift._test_errctx_report(rel regclass, n int) returns void: n reports under the error context of rel, to the server log only */
+Datum
+sift_test_errctx_report(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+
+	for (int i = PG_GETARG_INT32(1); i > 0; i--)
+	{
+		SiftErrCtx	ctx;
+
+		sift_errctx_push(&ctx, relid);
+		ereport(LOG_SERVER_ONLY, (errhidestmt(true), errmsg_internal("sift test: a report under the error context of an index")));
+		sift_errctx_pop(&ctx);
+	}
 	PG_RETURN_VOID();
 }
 

@@ -38,3 +38,4 @@ leak_distinct_text	leak	0	clean		select count(distinct txt) from {f};
 leak_lookup_join	leak	0	clean		select d.cls, count(*) from {f} f join {d} d on d.id = f.k_hi group by 1;
 leak_search	leak	0	clean		select id from {f} where title @@> 'wireless charger' order by sift.score(ctid) desc, id limit 10;
 leak_top	leak	0	clean		select k_hi, amount from {f} order by amount desc, k_hi limit 1000;
+leak_errctx_report	leak	0	clean		select sift._test_errctx_report('{f}'::regclass, 1000);
