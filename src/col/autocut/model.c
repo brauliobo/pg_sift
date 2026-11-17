@@ -195,7 +195,6 @@ typedef struct Cells
 	uint32		fill,
 				at;
 	uint64		ncells;			/* the distinct (value, superblock) pairs */
-	Cell		cur;
 	const Cell *next;
 	uint64		groups;
 	uint32		cap;			/* the rows the buffer holds, taken from the budget while it is */
@@ -215,27 +214,34 @@ typedef struct CellGroup
 	uint32		n[AUTOCUT_SBS];
 } CellGroup;
 
-/* the cell the rows of the sorted buffer from i on make: those of one value and superblock counted; i is left past them */
-static Cell
-cell_take(const Cell *buf, uint32 fill, uint32 *i)
+/* the sorted rows of the buffer as cells, in place: the rows of one value in one superblock counted; returns the cells */
+static uint32
+cells_compact(Cell *buf, uint32 fill)
 {
-	Cell		c = buf[(*i)++];
+	uint32		n = 0;
 
-	for (; *i < fill && buf[*i].key == c.key && buf[*i].sb == c.sb; (*i)++)
-		c.n++;
-	return c;
+	for (uint32 i = 0; i < fill; i++)
+		if (n > 0 && buf[n - 1].key == buf[i].key && buf[n - 1].sb == buf[i].sb)
+			buf[n - 1].n++;
+		else
+			buf[n++] = buf[i];
+	return n;
+}
+
+/* the buffer sorted, as cells */
+static void
+cells_sort(Cells *c)
+{
+	sort_cells(c->buf, c->fill);
+	c->fill = cells_compact(c->buf, c->fill);
 }
 
 static void
 cells_write_run(Cells *c)
 {
-	sort_cells(c->buf, c->fill);
-	for (uint32 i = 0; i < c->fill;)
-	{
-		Cell		cell = cell_take(c->buf, c->fill, &i);
-
-		acut_spool_add(&c->sp, &cell);
-	}
+	cells_sort(c);
+	for (uint32 i = 0; i < c->fill; i++)
+		acut_spool_add(&c->sp, &c->buf[i]);
 	c->fill = 0;
 	SIFT_MEM_CHECKPOINT();
 }
@@ -277,9 +283,8 @@ cells_begin(Samp *s, const Track *t, Cells *c)
 	c->runs = nr > 0;
 	if (!c->runs)
 	{
-		sort_cells(c->buf, c->fill);
-		for (uint32 i = 0; i < c->fill; c->ncells++)
-			(void) cell_take(c->buf, c->fill, &i);
+		cells_sort(c);
+		c->ncells = c->fill;
 	}
 	else
 	{
@@ -301,10 +306,7 @@ cells_next(Cells *c)
 {
 	if (c->runs)
 		return acut_merge_next(&c->merge);
-	if (c->at >= c->fill)
-		return NULL;
-	c->cur = cell_take(c->buf, c->fill, &c->at);
-	return &c->cur;
+	return c->at < c->fill ? &c->buf[c->at++] : NULL;
 }
 
 static void
