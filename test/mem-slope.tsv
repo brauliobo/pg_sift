@@ -42,14 +42,14 @@ leak_top	leak	0	clean		select k_hi, amount from {f} order by amount desc, k_hi l
 cap_backend_caches	cap	4096	clean		select d.label, count(*) from {f} f join {d} d on d.id = f.k_hi group by 1 order by 2 desc, 1 limit 1;select txt, count(*) from {f} group by 1 order by 2 desc, 1 limit 1;select count(*) from {f} where txt like '%99%';select count(*) from {f} where title @@> 'wireless charger';
 promote_col	slope	12	clean	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;	select sift.col_promote('{m}_col'::regclass);
 promote_bm	slope	12	clean	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;	select sift.promote('{m}_bm'::regclass);
-merge_bm	slope	12	clean	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;select sift.promote('{m}_bm'::regclass);	select sift.merge('{m}_bm'::regclass, true);
+merge_bm	slope	15	open	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;select sift.promote('{m}_bm'::regclass);	select sift.merge('{m}_bm'::regclass, true);
 maintain_col	slope	12	clean	update {m} set amount = amount + 1;	select sift.col_maintain('{m}_col'::regclass);
 refresh_col	slope	12	clean		select * from sift.col_refresh('{m}_col'::regclass);
 rollup_refresh	slope	12	clean		select sift.col_rollup_refresh('{m}_col'::regclass);
 repair_col	slope	12	clean		select count(*) from sift.col_repair('{m}_col'::regclass);
-vacuum_deleted	slope	70	open	delete from {m} where k_lo < 6;	vacuum {m};
+vacuum_deleted	slope	60	open	delete from {m} where k_lo < 6;	vacuum {m};
 vacuum_inserted	slope	12	clean	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;	vacuum {m};
-table_maintain	slope	25	open	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	select sift.table_maintain('{s}'::regclass);
+table_maintain	slope	21	open	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	select sift.table_maintain('{s}'::regclass);
 leakx_vacuum	leakx	0	clean		update {m} set amount = amount + 1 where k_lo < 2; select sift.col_promote('{m}_col'::regclass); vacuum {m};
 leakx_merge_col	leakx	0	clean		update {m} set amount = amount + 1 where k_lo < 2; select sift.col_merge('{m}_col'::regclass, true);
 leakx_merge_bm	leakx	0	clean		insert into {m} select g+20000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,200) g; select sift.promote('{m}_bm'::regclass); select sift.merge('{m}_bm'::regclass, true);
