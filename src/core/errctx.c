@@ -18,10 +18,18 @@ sift_errctx_name(Oid relid)
 {
 	char	   *name = IsTransactionState() ? get_rel_name(relid) : NULL;
 	char	   *schema = name ? get_namespace_name(get_rel_namespace(relid)) : NULL;
+	char	   *full;
 
 	if (schema == NULL)
+	{
+		if (name != NULL)
+			pfree(name);
 		return psprintf("OID %u", relid);
-	return psprintf("%s.%s", schema, name);
+	}
+	full = psprintf("%s.%s", schema, name);
+	pfree(name);
+	pfree(schema);
+	return full;
 }
 
 const char *
@@ -45,14 +53,15 @@ errctx_callback(void *arg)
 {
 	SiftErrCtx *ctx = arg;
 	const char *what = ctx->what;
-	char	   *name = ctx->name;
+	char	   *name = ctx->name != NULL ? ctx->name : errctx_describe(ctx->relid, &what);
 
-	if (name == NULL)
-		name = errctx_describe(ctx->relid, &what);
 	if (ctx->segmented)
 		errcontext("sift %s \"%s\", segment %llu", what, name, (unsigned long long) ctx->segment);
 	else
 		errcontext("sift %s \"%s\"", what, name);
+	/* the callback runs in ErrorContext, which only an error that is caught empties: a report that is not one keeps what is left in it */
+	if (name != ctx->name)
+		pfree(name);
 }
 
 /* The diagnostic scope reports like the other, and is told from it by its callback: a push costs the same four stores */

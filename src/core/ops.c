@@ -89,7 +89,10 @@ sift_log_stall(Relation index, TimestampTz start)
 static void
 maint_errcontext(void *arg)
 {
-	errcontext("sift maintenance worker of index \"%s\"", sift_errctx_name((Oid) (uintptr_t) arg));
+	char	   *name = sift_errctx_name((Oid) (uintptr_t) arg);
+
+	errcontext("sift maintenance worker of index \"%s\"", name);
+	pfree(name);
 }
 
 void
