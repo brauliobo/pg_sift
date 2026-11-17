@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: fact -> dim (N:1, 1000 facts per dim row, facts of one dim row are contiguous in the heap)

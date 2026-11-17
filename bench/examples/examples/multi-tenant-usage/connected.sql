@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: usage -> account on (tenant_id, account_id) -> tenant; grant_row is the assignment table that scopes accounts by product

@@ -1,0 +1,4 @@
+child_table	child_col	parent_table	parent_col	relation	reads
+follows	follower	person	id	n:1	country,tier
+follows	followee	person	id	n:1	country,tier
+follows	followee	follows	follower	m:n	followee
