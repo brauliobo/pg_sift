@@ -108,13 +108,23 @@ maint_scope_run_bytes(ScopeRun *run)
 	return MemoryContextMemAllocated(run->cx, true);
 }
 
-/* The merge of the runs holds a unit of each: a run is cut into units of the rows that make the runs there will be fit half of maintenance_work_mem, at least SCOPE_RUN_UNIT_MIN */
+/* The least a run holds, as the writer of a merge holds at least SIFT_COLW_MIN_BUDGET: below it the runs of a table are too many for the directory and for the merge that joins them */
+#define SCOPE_RUN_MIN_BYTES	((Size) 16 << 20)
+
+/* The bytes of replicated rows a run holds: half of maintenance_work_mem, at least SCOPE_RUN_MIN_BYTES */
+static Size
+run_bytes(void)
+{
+	return Max((Size) maintenance_work_mem * 1024 / 2, SCOPE_RUN_MIN_BYTES);
+}
+
+/* The merge of the runs holds two units of each (the one it reads and the one before it): a run is cut into units of the rows that make the runs there will be fit the bytes of a run, at least SCOPE_RUN_UNIT_MIN */
 #define SCOPE_RUN_UNIT_MIN	256
 
 static uint32
 run_unit_rows(const ScopeRun *run, uint32 aim, uint32 runs)
 {
-	uint64		fit = (uint64) maintenance_work_mem * 1024 / 2 / Max(runs, 1) / sift_colk_row_bytes(run->r->schema);
+	uint64		fit = run_bytes() / Max(runs, 1) / 2 / sift_colk_row_bytes(run->r->schema);
 
 	return (uint32) Min(sift_colk_unit_rows(aim), Max(fit, SCOPE_RUN_UNIT_MIN));
 }
@@ -279,7 +289,7 @@ maint_scope_refill(Relation index)
 		MemoryContextDelete(cx);
 		return false;
 	}
-	/* a run holds three quarters of maintenance_work_mem of replicated rows, and at least the share of the rows that makes as many runs for each scope as the directory has room for */
+	/* a run holds half of maintenance_work_mem of replicated rows (at least SCOPE_RUN_MIN_BYTES), and at least the share of the rows that makes as many runs for each scope as the directory has room for */
 	room = Max((SIFT_MAX_SEGMENTS - REFILL_ROOM - nents) / Max(r->nscope, 1), 1);
 	chunk = rows / room + 1;
 	fill = maint_scope_fill_begin(index, cx, rows, &sf);
@@ -306,7 +316,7 @@ maint_scope_refill(Relation index)
 				maint_scope_run_add(run, b, from, to);
 				held_rows += to - from;
 				sift_colb_peak_note();
-				if (held_rows >= chunk && maint_scope_run_bytes(run) >= (Size) maintenance_work_mem * 1024 / 2)
+				if (held_rows >= chunk && maint_scope_run_bytes(run) >= run_bytes())
 				{
 					nout += maint_scope_run_write(run, wt, fill, rows, sift_col_format_minor, runs_of(rows, held_rows, room), out + nout);
 					held_rows = 0;

@@ -73,6 +73,20 @@ kg_spec(SiftColSegWriter *w, KeyGroups *g)
 			g->leaf[g->nleaf++] = c;
 }
 
+/* The rows the open group's arrays start with: most keys hold few, and each array of a leaf of the 131,072 rows a group may reach is a megabyte */
+#define KG_ROWS_MIN	1024
+
+static void
+kg_room(KeyGroups *g, uint32 nrows)
+{
+	if (g->rows + nrows <= g->valcap)
+		return;
+	while (g->rows + nrows > g->valcap)
+		g->valcap *= 2;
+	for (int i = 0; i < g->nleaf; i++)
+		g->vals[i] = repalloc(g->vals[i], g->valcap * sizeof(int64));
+}
+
 static bool
 kg_begin(SiftColSegWriter *w)
 {
@@ -96,11 +110,12 @@ kg_begin(SiftColSegWriter *w)
 	g->ready = palloc(g->nleaf * sizeof(bool));
 	for (int i = 0; i < g->nleaf; i++)
 	{
-		g->vals[i] = palloc(SIFT_SUPER_KEY_ROWS * sizeof(int64));
+		g->vals[i] = palloc(KG_ROWS_MIN * sizeof(int64));
 		g->nulls[i] = palloc0(words * sizeof(uint64));
 		g->ovf[i] = palloc0(words * sizeof(uint64));
 		g->ready[i] = true;
 	}
+	g->valcap = KG_ROWS_MIN;
 	g->cx = AllocSetContextCreate(w->mcxt, "sift col key groups", ALLOCSET_DEFAULT_SIZES);
 	g->cap = 16;
 	g->gfirst = palloc(g->cap * sizeof(uint32));
@@ -337,6 +352,7 @@ segw_kg_add(SiftColSegWriter *w, const SiftCPaggCol *cols, uint32 nrows)
 		g->first = w->nsb;
 		g->key = z->min;
 	}
+	kg_room(g, nrows);
 	for (int i = 0; i < g->nleaf; i++)
 	{
 		const SiftCPaggCol *c = &cols[g->leaf[i]];

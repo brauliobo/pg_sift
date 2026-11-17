@@ -103,7 +103,8 @@ typedef struct KeyGroups
 	SiftCPaggSpec calspec;		/* the cells of days of the first calendar dim, the cube that the id sets by month go with (ndims 0: none) */
 	int			nleaf;			/* the leaves the cube reads */
 	int			leaf[SIFT_COL_MAX_COLS];
-	int64	  **vals;			/* [nleaf] the rows of the open group, in the key domain */
+	int64	  **vals;			/* [nleaf] the rows of the open group, in the key domain, valcap of them: it grows with the group, up to SIFT_SUPER_KEY_ROWS */
+	uint32		valcap;
 	uint64	  **nulls;			/* ... their null and overflow bits, and whether any is set */
 	uint64	  **ovf;
 	bool	   *anynull;
