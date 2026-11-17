@@ -179,6 +179,7 @@ agg/vk_min.h
 agg/vk_spv.h
 agg/vnum.c
 agg/vnum.h
+agg/vnum_test.c
 agg/wide.c
 agg/wide.h
 agg/zoneoff.c
@@ -338,6 +339,7 @@ col/wbuf_test.c
 col/widescan.c
 col/xstamp.c
 col/xstamp.h
+core/catname.h
 core/check.c
 core/check.h
 core/cmp_test.c
