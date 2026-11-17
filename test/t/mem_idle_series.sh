@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A pooled backend is steady (scripts/mem-slope.py idle, test/idle-series.tsv): one backend runs 25 kinds of statements (aggregates, lookup joins, count distinct, search, partitions,
+# A pooled backend is steady (scripts/mem-slope-legacy.py idle, test/idle-series.tsv): one backend runs 25 kinds of statements (aggregates, lookup joins, count distinct, search, partitions,
 # writes, VACUUM, merges, verify, index builds) in turn, and over its last 1000 statements its anonymous memory and the memory of its contexts do not grow.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -13,7 +13,7 @@ sift.col_auto_merge = off"
 node_start is || bail "start failed"
 sql is "CREATE EXTENSION pg_sift" >/dev/null || bail "extension failed"
 
-out=$(PGHOST=$(dir is)/sock PGPORT=$(port is) PGUSER=postgres PGDATABASE=postgres python3 -I "$REPO/scripts/mem-slope.py" idle 2>"$(dir is)/idle.err")
+out=$(PGHOST=$(dir is)/sock PGPORT=$(port is) PGUSER=postgres PGDATABASE=postgres python3 -I "$REPO/scripts/mem-slope-legacy.py" idle 2>"$(dir is)/idle.err")
 plan 2
 check "the series ran" grep -q '^SLOPE idle_series ' <<<"$out"
 line=$(grep '^SLOPE idle_series ' <<<"$out")
