@@ -81,8 +81,7 @@ kg_room(KeyGroups *g, uint32 nrows)
 {
 	if (g->rows + nrows <= g->valcap)
 		return;
-	while (g->rows + nrows > g->valcap)
-		g->valcap *= 2;
+	g->valcap = Min(Max(g->valcap * 2, g->rows + nrows), SIFT_SUPER_KEY_ROWS);
 	for (int i = 0; i < g->nleaf; i++)
 		g->vals[i] = repalloc(g->vals[i], g->valcap * sizeof(int64));
 }
