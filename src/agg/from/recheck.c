@@ -371,7 +371,7 @@ read_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 }
 
 /* How the source reads leaf m again: the key test of doc ? 'k' (SRK_HASKEY) beside the way the query reads the value, if it does, which then is not NONE (SRK_WITH_HASKEY) */
-SiftSrcRecheck
+SiftSpecRecheck
 spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 {
 	SiftSrcRecheck read;

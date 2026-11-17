@@ -393,6 +393,8 @@ typedef enum SiftSrcRecheck
 
 /* in a spec, or'd onto the read mode of a leaf that a key test (SRK_HASKEY) tests too: the source reads again the rows of both */
 #define SRK_WITH_HASKEY	0x40
+/* The read mode of a leaf in a spec: a SiftSrcRecheck, with SRK_WITH_HASKEY or'd on (a bit set, not one enumerator) */
+typedef uint8 SiftSpecRecheck;
 #define SRK_MODE(r)		((SiftSrcRecheck) ((r) & ~SRK_WITH_HASKEY))
 
 /* Can the source of this access method recheck its overflow rows (SiftSrcProvider.set_recheck)? */

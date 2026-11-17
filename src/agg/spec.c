@@ -429,7 +429,7 @@ str_call_test(Oid funcid, Oid collid, List *args, SiftSrcStrTest *out, bool rang
 {
 	Node	   *a,
 			   *b;
-	SiftColOp sop = 0;
+	SiftColOp sop;
 	const char *s;
 	uint32		len;
 	bool		pattern = str_pattern_func(funcid),
