@@ -139,6 +139,18 @@ RESET plan_cache_mode;
 DEALLOCATE pm_n; DEALLOCATE pm_s;
 DROP FUNCTION exec_locks(text);
 
+-- a scan opens the source of each partition once, however many it holds (the index of a partition counts a scan for every open): the superblocks of the
+-- partitions are counted from their directories, and a source opens on the copy of its directory when the scan reaches the partition. A new backend: the
+-- units an earlier scan of the backend answered are not read again
+\c -
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+BEGIN;
+SELECT count(*) FROM (SELECT g, count(*) AS n FROM pm GROUP BY g) s;
+SELECT count(*) AS partitions, sum(n) AS opens, max(n) AS most_opens
+FROM (SELECT pg_stat_get_xact_numscans(i.indexrelid) AS n FROM pg_partition_tree('pm') t JOIN pg_index i ON i.indrelid = t.relid WHERE t.isleaf) x;
+COMMIT;
+
 DROP FUNCTION many_scan(text);
 DROP TABLE pm, pm_days, pc;
 DROP EXTENSION pg_sift;

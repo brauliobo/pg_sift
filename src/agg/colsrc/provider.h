@@ -10,6 +10,14 @@
 
 struct SiftScopeRead;
 
+/* What a partitioned scan numbers the units of a partition by: the end of its superblocks and the view a source of it opens on (sift_colsrc_count_part) */
+typedef struct SiftSrcPartCount
+{
+	uint32		nsb;
+	void	   *view;
+	Size		vlen;
+} SiftSrcPartCount;
+
 typedef struct SiftSrcProvider
 {
 	bool		(*owns_index) (Oid indexrelam);
@@ -33,9 +41,13 @@ typedef struct SiftSrcProvider
 	void		(*scope_delta) (void *impl, const struct SiftScopeRead *rd);
 	/* Optional (NULL: the provider has no partitioned tables, sift_colsrc_can_part): open for a partition read as part of its partitioned table, whose privileges and row security were checked */
 	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
-	/* Optional (NULL: the source reads no directory it could share): the bytes of the directory the source read, and their number; the participants of a parallel scan number the units of its items by one copy */
+	/* Optional (NULL: the source reads no directory it could share), required with open_part: the bytes of the directory the source read, and their number; the participants of a parallel scan, and the partitions of one, number the units of its items by one copy */
 	Size		(*view_size) (void *impl);
 	void		(*view_export) (void *impl, void *buf);
+	/* Optional (NULL: opened, read and closed): what a source of open_part opened now would say of its superblocks, and its view, without opening one */
+	void		(*part_count) (Relation heap, Relation index, MemoryContext mcxt, SiftSrcPartCount *c);
+	/* Optional (NULL: true): sb_heap of a source opened on the view */
+	bool		(*view_sb_heap) (const void *view);
 	void		(*close) (void *impl);
 	/* Optional: make a source that has read nothing (no begin, no test but the filters) ready for another scan of the same statement, the counters at zero; false: it holds state of the last (the caller opens again) */
 	bool		(*rescan) (void *impl);

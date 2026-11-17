@@ -229,6 +229,12 @@ extern SiftColSource *sift_col_open(Relation heap, Relation index, Snapshot snap
  */
 extern Size sift_col_view_size(const SiftColSource *src);
 extern void sift_col_view_export(const SiftColSource *src, void *buf);
+/*
+ * What a source opened now would export, without opening one: the directory as a view (len bytes in mcxt) and the end of the superblocks the source would number. A scan of
+ * many partitions counts them all before it reads one, and opens each on its view when it reaches it. sift_col_view_sb_heap: are the superblocks of a source opened on the view all heap pages.
+ */
+extern void *sift_col_count_view(Relation heap, Relation index, MemoryContext mcxt, Size *len, uint32 *heap_sbs);
+extern bool sift_col_view_sb_heap(const void *view);
 extern void sift_col_close(SiftColSource *src);
 /* Makes a source that has begun no scan, counted no rows and set no count or super mode ready for another scan of the statement (the counters at zero, what the global order made forgotten); false when it has, or its directory changed: open again */
 extern bool sift_col_rescan(SiftColSource *src);

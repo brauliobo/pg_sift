@@ -344,6 +344,12 @@ col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	return src;
 }
 
+static void
+col_part_count(Relation heap, Relation index, MemoryContext mcxt, SiftSrcPartCount *c)
+{
+	c->view = sift_col_count_view(heap, index, mcxt, &c->vlen, &c->nsb);
+}
+
 static Size
 col_view_size(void *impl)
 {
@@ -888,6 +894,8 @@ static const SiftSrcProvider col_provider = {
 	.scope_delta = sift_col_open_scope_delta,
 	.view_size = col_view_size,
 	.view_export = col_view_export,
+	.part_count = col_part_count,
+	.view_sb_heap = sift_col_view_sb_heap,
 	.conn_proof = sift_col_conn_proof,
 	.close = col_close,
 	.unpin = col_unpin,

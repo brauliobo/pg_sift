@@ -42,6 +42,10 @@ extern void sift_colsrc_view_export(SiftSrcSource *src, void *buf);
 /* Can the sources of an index (or, with index false, a table) of this access method be read as the partitions of one table (src/agg/part.h)? sift_colsrc_open_part is sift_colsrc_open for one of them */
 extern bool sift_colsrc_can_part(Oid relam, bool index);
 extern SiftSrcSource *sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
+/* ... the end of its superblocks and the view a source of it opens on (in mcxt), as an open source would say them, without opening one when the provider can tell; the snapshot is the scan's; sift_colsrc_view_sb_heap: are the superblocks of a source on that view all heap pages */
+struct SiftSrcPartCount;
+extern void sift_colsrc_count_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, struct SiftSrcPartCount *c);
+extern bool sift_colsrc_view_sb_heap(const SiftSrcSource *like, const void *view);
 extern void sift_colsrc_close(SiftSrcSource *src);
 extern bool sift_colsrc_rescan(SiftSrcSource *src);
 extern void sift_colsrc_unpin(SiftSrcSource *src);

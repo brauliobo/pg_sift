@@ -90,23 +90,19 @@ close_part(PartSource *ps, int i)
 void
 release_part(PartSource *ps, int i)
 {
-	if (ps->src[i] != NULL && ps->nopen > ps->keep && i != 0 && i != ps->last && i != ps->cur && !ps->hold[i] && ps->vlen[i] > 0)
+	if (ps->src[i] != NULL && ps->nopen > ps->keep && i != 0 && i != ps->last && i != ps->cur && !ps->hold[i])
 		close_part(ps, i);
 }
 
-/* what a source says of the view of its directory, kept by the wrapper to open the source again as it was counted */
+/* what an open source says of the view of its directory, kept by the wrapper to open the source again as it was counted */
 static void
 keep_view(PartSource *ps, int i)
 {
-	Size		len;
-	void	   *buf;
-
-	if (ps->view[i] != NULL || (len = sift_colsrc_view_size(ps->src[i])) == 0)
+	if (ps->view[i] != NULL)
 		return;
-	buf = MemoryContextAlloc(ps->mcxt, len);
-	sift_colsrc_view_export(ps->src[i], buf);
-	ps->view[i] = buf;
-	ps->vlen[i] = len;
+	ps->vlen[i] = sift_colsrc_view_size(ps->src[i]);
+	ps->view[i] = MemoryContextAlloc(ps->mcxt, ps->vlen[i]);
+	sift_colsrc_view_export(ps->src[i], (void *) ps->view[i]);
 }
 
 /*
@@ -220,7 +216,29 @@ part_source_layout(const void *impl)
 	return sift_colsrc_source_layout(ps->src[0]);
 }
 
-/* the superblocks the partitions have now, counted once: the units are numbered by them for as long as the scan runs, and a partition opens again on the directory it was counted on */
+/* the superblocks of a partition and the view its source opens on: an open source (the first, opened for the layout) says its own, else the index is read for them and no source is opened */
+static uint32
+count_part(PartSource *ps, int i)
+{
+	SiftSrcPartCount c;
+	Relation	index = NULL;
+
+	if (ps->src[i] != NULL)
+	{
+		keep_view(ps, i);
+		return sift_colsrc_nsb(ps->src[i]);
+	}
+	if (OidIsValid(ps->indexoid[i]))
+		index = index_open(ps->indexoid[i], AccessShareLock);
+	sift_colsrc_count_part(heap_part(ps, i), index, ps->snapshot, ps->mcxt, &c);
+	if (index != NULL)
+		index_close(index, NoLock);
+	ps->view[i] = c.view;
+	ps->vlen[i] = c.vlen;
+	return c.nsb;
+}
+
+/* the superblocks the partitions have now, counted once: the units are numbered by them for as long as the scan runs, and a partition opens on the directory it was counted on */
 void
 count_sbs(PartSource *ps)
 {
@@ -229,24 +247,17 @@ count_sbs(PartSource *ps)
 	if (ps->have_off)
 		return;
 	ps->opened = true;
-	ps->sb_heap_all = true;
 	for (int i = 0; i < ps->n; i++)
 	{
 		ps->off[i] = (uint32) total;
-		if (ps->skip != NULL && ps->skip[i])
-			continue;
-		open_part(ps, i);
-		total += sift_colsrc_nsb(ps->src[i]);
-		ps->sb_heap_all &= sift_colsrc_sb_heap(ps->src[i]);
-		keep_view(ps, i);
-		release_part(ps, i);
+		if (ps->skip == NULL || !ps->skip[i])
+			total += count_part(ps, i);
 	}
 	if (total > PG_UINT32_MAX)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: the partitions of a scan hold more superblocks than the scan can number"),
 						errhint("Filter on the partition key so that the scan reads fewer partitions, or set sift.enable_agg to off for this query.")));
 	ps->off[ps->n] = (uint32) total;
 	ps->have_off = true;
-	ps->counted_heap = true;
 }
 
 bool
@@ -255,20 +266,9 @@ part_sb_heap(void *impl)
 	PartSource *ps = impl;
 
 	count_sbs(ps);
-	if (ps->counted_heap)
-		return ps->sb_heap_all;
 	for (int i = 0; i < ps->n; i++)
-	{
-		bool		heap;
-
-		if (ps->skip != NULL && ps->skip[i])
-			continue;
-		open_part(ps, i);		/* a worker takes its offsets from the leader and has opened nothing yet */
-		heap = sift_colsrc_sb_heap(ps->src[i]);
-		release_part(ps, i);
-		if (!heap)
+		if ((ps->skip == NULL || !ps->skip[i]) && !sift_colsrc_view_sb_heap(ps->src[0], ps->view[i]))
 			return false;
-	}
 	return true;
 }
 

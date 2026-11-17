@@ -52,7 +52,7 @@ typedef struct PartSource
 	MemoryContext *pcx;			/* the context of each open source, deleted with it */
 	uint32	   *gen;			/* how many times the source of the partition was opened: a source opened again has dictionaries of its own */
 	const void **view;			/* the copy of the directory each partition's source was counted on (the leader's, or the one another process exported), NULL for a partition without one */
-	Size	   *vlen;			/* the bytes of view[i]: a source with a view is opened again as it was, one without stays open */
+	Size	   *vlen;			/* the bytes of view[i] */
 	bool	   *hold;			/* the source of the partition was handed out (sift_aggpart_source) */
 	int			last;			/* the partition the scan started last */
 	SiftSrcCounters done;		/* what the sources that were closed counted */
@@ -66,8 +66,6 @@ typedef struct PartSource
 	bool		have_off;
 	int			nopen;			/* the sources open now */
 	int			keep;			/* the sources a scan keeps open when it leaves them: half of hash memory over the size of the first (the layout of all) */
-	bool		counted_heap;	/* count_sbs ran here and sb_heap_all says whether every counted partition's superblocks are heap pages */
-	bool		sb_heap_all;
 	bool	   *skip;			/* sift_aggpart_prune: the partitions the scan does not read (no superblocks), NULL: all are read */
 	int			cur;			/* the partition of the unit the source is at */
 	int			next;			/* the first partition begin has not started */

@@ -158,6 +158,34 @@ sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryCo
 	return src;
 }
 
+void
+sift_colsrc_count_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, SiftSrcPartCount *c)
+{
+	const SiftSrcProvider *prov = provider_of_rel(index ? index : heap);
+	MemoryContext cx;
+	SiftSrcSource *src;
+
+	if (prov->part_count)
+	{
+		prov->part_count(heap, index, mcxt, c);
+		return;
+	}
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift source count", ALLOCSET_DEFAULT_SIZES);
+	src = sift_colsrc_open_part(heap, index, snapshot, cx, NULL);
+	c->nsb = sift_colsrc_nsb(src);
+	c->vlen = sift_colsrc_view_size(src);
+	c->view = MemoryContextAlloc(mcxt, c->vlen);
+	sift_colsrc_view_export(src, c->view);
+	sift_colsrc_close(src);
+	MemoryContextDelete(cx);
+}
+
+bool
+sift_colsrc_view_sb_heap(const SiftSrcSource *like, const void *view)
+{
+	return like->prov->view_sb_heap == NULL || like->prov->view_sb_heap(view);
+}
+
 Size
 sift_colsrc_view_size(SiftSrcSource *src)
 {
