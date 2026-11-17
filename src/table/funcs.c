@@ -189,7 +189,7 @@ sift_table_maintain(PG_FUNCTION_ARGS)
 		Relation	rel = try_table_open(relid, NoLock);
 
 		if (rel == NULL)
-			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("relation with OID %u does not exist", relid)));
+			sift_rel_missing(relid);
 		sift_tbl_require(rel);
 		if (pg_class_aclcheck(relid, GetUserId(), ACL_MAINTAIN) != ACLCHECK_OK)
 			aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));

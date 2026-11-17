@@ -29,6 +29,7 @@
 
 #include "bm25/am.h"
 #include "col/pg.h"
+#include "core/catname.h"
 #include "core/errctx.h"
 #include "core/limits.h"
 #include "core/live.h"
@@ -412,7 +413,7 @@ open_index_table_first(Oid indexoid, LOCKMODE lock, bool missing_ok)
 		SIFT_POINT("sift-maint-after-table-lock");
 		index = try_index_open(indexoid, lock);
 		if (index == NULL && !missing_ok)
-			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("relation with OID %u does not exist", indexoid)));
+			sift_rel_missing(indexoid);
 		if (index == NULL || index->rd_index->indrelid == heapoid)
 			return index;
 		index_close(index, lock);
