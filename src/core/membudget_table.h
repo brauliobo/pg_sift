@@ -99,7 +99,7 @@ budget_col_verify(void)
 static Size
 budget_col_write_buffer(void)
 {
-	return (((Size) 100663296UL));
+	return (((Size) 201326592UL));
 }
 
 static Size
@@ -141,7 +141,7 @@ static const struct
 	{"col_scope_refill", budget_col_scope_refill, "128MB (open: ceiling measured today)"},
 	{"col_tomb_log", budget_col_tomb_log, "sift.tomb_log_limit + 8MB"},
 	{"col_verify", budget_col_verify, "3*maintenance_work_mem + 8MB"},
-	{"col_write_buffer", budget_col_write_buffer, "96MB (open: ceiling measured today)"},
+	{"col_write_buffer", budget_col_write_buffer, "192MB (open: ceiling measured today)"},
 	{"index_vacuum", budget_index_vacuum, "maintenance_work_mem + 16MB"},
 	{"maint_worker_step", budget_maint_worker_step, "4MB"},
 	{"vstore_gc", budget_vstore_gc, "1MB"},
