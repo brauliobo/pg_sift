@@ -5,7 +5,7 @@
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-plan 20
+plan 21
 node_init mb 61 "autovacuum = off
 max_parallel_workers_per_gather = 0
 sift.col_auto_merge = off"
@@ -47,6 +47,18 @@ check "an expression over the text of 40 MB of unpromoted rows holds under 16 MB
 	test "$(agg_peak "SELECT count(*) FROM wb WHERE v <> repeat('x', 1000) || id")" -lt 16777216
 check "a scan that can spill holds twice hash memory and a constant at work_mem 1MB: under 20 MB" \
 	test "$(agg_peak "SELECT k2, count(*), sum(amount) FROM c GROUP BY 1")" -lt 20971520
+sql mb "DO \$\$ DECLARE n int; BEGIN FOREACH n IN ARRAY ARRAY[64, 256] LOOP
+	EXECUTE format('CREATE TABLE q%s (id int, g int, d date NOT NULL) PARTITION BY RANGE (d)', n);
+	FOR i IN 0..n - 1 LOOP EXECUTE format('CREATE TABLE q%s_%s PARTITION OF q%s FOR VALUES FROM (%L) TO (%L)', n, i, n, DATE '2000-01-01' + i, DATE '2000-01-02' + i); END LOOP;
+	EXECUTE format('INSERT INTO q%s SELECT i, i %% 7, %L::date + i %% %s FROM generate_series(1, %s) i', n, '2000-01-01', n, n * 4);
+	EXECUTE format('CREATE INDEX q%s_col ON q%s USING sift_col (id, g, d)', n, n);
+END LOOP; END \$\$" >/dev/null || bail "partitioned tables failed"
+part_peak() { sql mb "SET work_mem = '1MB'" "SET seq_page_cost = 10000" "SET random_page_cost = 10000" "SELECT g, count(*), sum(id) FROM $1 GROUP BY g" \
+	"SELECT peak FROM sift._test_mem_highwater() WHERE scope = 'agg_group'" | tail -1; }
+p64=$(part_peak q64)
+p256=$(part_peak q256)
+check "a scan holds 2 kB of state for each partition it reads, not its source (79 kB): 192 more partitions add under 8 kB each at work_mem 1MB" \
+	test "${p256:-999999999999}" -lt $(( ${p64:-0} + 192 * 8192 ))
 SCOPE=col_verify; check "a column verify over its lowered budget fails naming col_verify" red "SELECT sift.col_verify('c_col', true)"
 SCOPE=index_vacuum; check "a VACUUM over its lowered budget fails naming index_vacuum" red "UPDATE c SET amount = amount + 1 WHERE k < 2" "VACUUM c"
 sql mb "CREATE TABLE ct AS SELECT g AS id, g % 7 AS k, g % 500 AS k2, 'n' || g % 300 AS txt, g::numeric AS amount FROM generate_series(1, 20000) g" >/dev/null
