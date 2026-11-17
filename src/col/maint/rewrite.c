@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 #include "col/maint/maint_int.h"
+#include "core/membudget.h"
 
 #define WHY_BUFFER	"write buffer rows"
 #define WHY_DECIDE	"options chosen again"
@@ -239,6 +240,7 @@ rewrite_why(Relation index, bool automatic, int *gates)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col rewrite due", ALLOCSET_SMALL_SIZES);
+	SIFT_MEM_SCOPE(col_rewrite, cx);
 	RewriteView *v;
 	const char *why = NULL;
 	bool		partitioned,
@@ -364,6 +366,7 @@ rewrite_why(Relation index, bool automatic, int *gates)
 			*gates |= SIFT_COL_GATE_HELD;
 		return NULL;
 	}
+	SIFT_MEM_CHECKPOINT();
 	return why;
 }
 
