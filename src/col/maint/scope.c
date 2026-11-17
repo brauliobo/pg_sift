@@ -137,8 +137,8 @@ refill_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	meta->flags &= ~SIFT_META_FAILURES_MASK;
 }
 
-/* The runs a refill writes for each scope: a run holds a sixteenth of the rows at least, so that they fit the directory */
-#define REFILL_RUNS	16
+/* The segments of the directory a refill leaves free for the merge that follows it */
+#define REFILL_ROOM	16
 
 /*
  * The scope segments again, from the live rows of the entity segments, under a stamp taken now: the rows of each entity segment are decoded unit by unit, replicated by the keys of
@@ -193,7 +193,8 @@ maint_scope_refill(Relation index)
 		MemoryContextDelete(cx);
 		return false;
 	}
-	chunk = Max((uint64) maintenance_work_mem * 4, rows / REFILL_RUNS + 1);
+	/* a run holds half of maintenance_work_mem of decoded rows, and at least the share of the rows that makes as many runs for each scope as the directory has room for */
+	chunk = rows / Max((SIFT_MAX_SEGMENTS - REFILL_ROOM - nents) / Max(r->nscope, 1), 1) + 1;
 	fill = maint_scope_fill_begin(index, cx, rows, &sf);
 	wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 	for (int i = 0; i <= nents; i++)
@@ -204,14 +205,20 @@ maint_scope_refill(Relation index)
 		{
 			SiftColBatch *b = sift_cbatch_create(hcx, r->schema);
 
+			/* the scratch of a decode and of a run goes with the run: the context of the refill lives until the directory switch */
+			MemoryContextSwitchTo(hcx);
 			sift_cseg_decode_unit(seg, u, b);
+			MemoryContextSwitchTo(cx);
 			if (nheld == heldcap)
 				held = repalloc(held, (heldcap *= 2) * sizeof(SiftColBatch *));
 			held[nheld++] = b;
 			held_rows += b->nrows;
-			if (held_rows >= chunk)
+			sift_colb_peak_note();
+			if (held_rows >= chunk && MemoryContextMemAllocated(hcx, true) >= (Size) maintenance_work_mem * 1024 / 2)
 			{
+				MemoryContextSwitchTo(hcx);
 				nout += maint_scope_write(index, wt, sf, fill, held, nheld, rows, sift_col_format_minor, hcx, out + nout);
+				MemoryContextSwitchTo(cx);
 				nheld = 0;
 				held_rows = 0;
 				MemoryContextReset(hcx);
@@ -220,7 +227,11 @@ maint_scope_refill(Relation index)
 		if (seg != NULL)
 			sift_cseg_close(seg);
 		if (i == nents && nheld > 0)
+		{
+			MemoryContextSwitchTo(hcx);
 			nout += maint_scope_write(index, wt, sf, fill, held, nheld, rows, sift_col_format_minor, hcx, out + nout);
+			MemoryContextSwitchTo(cx);
+		}
 	}
 	sift_scope_fill_stamps(sf, &stamps);
 	sift_conn_fill_end(fill);
