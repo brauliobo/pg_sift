@@ -12,16 +12,14 @@
 #include "postgres.h"
 
 #include "lib/ilist.h"
-#include "miscadmin.h"
 #include "utils/hsearch.h"
-#include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/relfilenumbermap.h"
 
 #include "agg/stats.h"
 #include "col/am.h"
 #include "col/dictshm.h"
+#include "core/cachebudget.h"
 #include "core/limits.h"
 #include "col/seg_int.h"
 
@@ -44,6 +42,7 @@ typedef struct DictEnt
 	void	   *obj;			/* a SiftCDict, or a SiftCLens */
 	Size		size;
 	int			pins;
+	uint64		used;			/* sift_cache_tick() of the last pin */
 	dlist_node	node;			/* in lru: least recently used first */
 } DictEnt;
 
@@ -81,110 +80,64 @@ dict_unpin(void *arg)
 	((Unpin *) arg)->ent->pins--;
 }
 
-static bool relations_changed;
+static void
+dict_lru_push(DictEnt *e)
+{
+	e->used = sift_cache_tick();
+	dlist_push_tail(&lru, &e->node);
+}
+
+/* a pinned entry was used by the scan that holds it, so it is at the tail: the walk is as long as the entries dropped */
+static DictEnt *
+dict_victim(void)
+{
+	dlist_iter	it;
+
+	dlist_foreach(it, &lru)
+	{
+		DictEnt    *e = dlist_container(DictEnt, node, it.cur);
+
+		if (e->pins == 0)
+			return e;
+	}
+	return NULL;
+}
+
+static Size
+dict_bytes(void)
+{
+	return cache_bytes;
+}
+
+static uint64
+dict_oldest(void)
+{
+	DictEnt    *e = dict_victim();
+
+	return e ? e->used : UINT64_MAX;
+}
 
 static void
-relcache_changed(Datum arg, Oid relid)
+dict_evict_oldest(void)
 {
-	relations_changed = true;
+	dict_drop(dict_victim());
 }
 
-#define RETIRE_MEMO		32
+static const SiftCacheKind dict_kind = {dict_bytes, dict_oldest, dict_evict_oldest};
 
-typedef struct RetireMemo
-{
-	RelFileLocator rel;
-	uint32		version;
-} RetireMemo;
-
-static RetireMemo retire_memo[RETIRE_MEMO];
-static int	retire_next;
-
-static bool
-gen_in_dir(const SiftDirSnapshot *snap, uint64 gen)
-{
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].gen == gen)
-			return true;
-	return false;
-}
-
-/* The entries of an index that was dropped or got a new file (REINDEX, a rewrite) belong to no relation any more: looked for once after the relation cache changed */
-static void
-dict_drop_gone_relations(void)
-{
-	HASH_SEQ_STATUS seq;
-	DictEnt    *e;
-
-	relations_changed = false;
-	hash_seq_init(&seq, cache);
-	while ((e = hash_seq_search(&seq)) != NULL)
-		if (e->pins == 0 && !OidIsValid(RelidByRelfilenumber(e->key.rel.spcOid == MyDatabaseTableSpace ? InvalidOid : e->key.rel.spcOid,
-															  e->key.rel.relNumber)))
-			dict_drop(e);
-}
-
-/*
- * The directory a backend reads names the segments that exist: the entries kept for another generation of the index belong to segments a merge or a rewrite retired, which nobody
- * reads again, so they go (the ones a scan pins stay until it ends). Done once for each directory version a backend sees (the last 32 indexes are remembered), before the snapshot is cut to a family.
- */
-void
-sift_cdict_retire(Relation index, const SiftDirSnapshot *snap)
-{
-	HASH_SEQ_STATUS seq;
-	DictEnt    *e;
-	RetireMemo *m = NULL;
-
-	if (cache == NULL)
-		return;
-	if (relations_changed)
-		dict_drop_gone_relations();
-	for (int i = 0; i < RETIRE_MEMO; i++)
-		if (RelFileLocatorEquals(retire_memo[i].rel, index->rd_locator))
-			m = &retire_memo[i];
-	if (m != NULL && (int32) (snap->version - m->version) <= 0)
-		return;
-	if (m == NULL)
-	{
-		m = &retire_memo[retire_next++ % RETIRE_MEMO];
-		m->rel = index->rd_locator;
-	}
-	m->version = snap->version;
-	hash_seq_init(&seq, cache);
-	while ((e = hash_seq_search(&seq)) != NULL)
-	{
-		const DictKey *k = &e->key;
-
-		if (e->pins == 0 && RelFileLocatorEquals(k->rel, index->rd_locator) && !gen_in_dir(snap, k->gen))
-			dict_drop(e);
-	}
-}
-
-/* Drops the least recently used entries nobody pins until need more bytes fit; false when they do not */
+/* Drops the least recently used entries nobody pins until need more bytes fit this cache and the backend's budget; false when they do not */
 static bool
 dict_room(Size need)
 {
 	while (cache_bytes + need > CDICT_CACHE_BYTES)
 	{
-		dlist_iter	it;
-		DictEnt    *victim = NULL;
+		DictEnt    *victim = dict_victim();
 
-		/* a pinned entry was used by the scan that holds it, so it is at the tail: the walk is as long as the entries dropped */
-		dlist_foreach(it, &lru)
-		{
-			DictEnt    *e = dlist_container(DictEnt, node, it.cur);
-
-			if (e->pins == 0)
-			{
-				victim = e;
-				break;
-			}
-		}
 		if (victim == NULL)
 			return false;
 		dict_drop(victim);
 	}
-	return true;
+	return sift_cache_room(need);
 }
 
 static void
@@ -193,6 +146,7 @@ dict_pin(DictEnt *e, MemoryContext mcxt)
 	Unpin	   *u = MemoryContextAlloc(mcxt, sizeof(Unpin));
 
 	e->pins++;
+	e->used = sift_cache_tick();
 	dlist_move_tail(&lru, &e->node);
 	u->cb = (MemoryContextCallback) {dict_unpin, u, NULL};
 	u->ent = e;
@@ -205,9 +159,9 @@ cache_init(void)
 	HASHCTL		ctl = {.keysize = sizeof(DictKey),.entrysize = sizeof(DictEnt)};
 
 	cache_cx = AllocSetContextCreate(TopMemoryContext, "sift cache dictionaries", ALLOCSET_DEFAULT_SIZES);
+	sift_cache_register(&dict_kind);
 	ctl.hcxt = cache_cx;
 	cache = hash_create("sift column dictionaries", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-	CacheRegisterRelcacheCallback(relcache_changed, (Datum) 0);
 }
 
 static void
@@ -281,7 +235,7 @@ obj_keep(const DictKey *k, MemoryContext cx, void *obj, MemoryContext mcxt)
 	e->obj = obj;
 	e->size = size;
 	e->pins = 0;
-	dlist_push_tail(&lru, &e->node);
+	dict_lru_push(e);
 	cache_bytes += size;
 	dict_pin(e, mcxt);
 }
@@ -511,7 +465,7 @@ dict_keep(SiftColSegment *seg, int col, const DictKey *k, MemoryContext cx, Sift
 	e->obj = d;
 	e->size = size;
 	e->pins = 0;
-	dlist_push_tail(&lru, &e->node);
+	dict_lru_push(e);
 	cache_bytes += size;
 	dict_pin(e, seg->mcxt);
 	return d;
@@ -681,7 +635,7 @@ sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const u
 	e->obj = l;
 	e->size = size;
 	e->pins = 0;
-	dlist_push_tail(&lru, &e->node);
+	dict_lru_push(e);
 	cache_bytes += size;
 }
 
@@ -724,7 +678,7 @@ sift_cseg_sbhead(SiftColSegment *seg, uint32 u, int col, SiftCSbHead *out)
 	memcpy(e->obj, out, sizeof(*out));
 	e->size = sizeof(*out);
 	e->pins = 0;
-	dlist_push_tail(&lru, &e->node);
+	dict_lru_push(e);
 	cache_bytes += sizeof(*out);
 	return true;
 }

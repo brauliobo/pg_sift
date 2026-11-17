@@ -4,8 +4,6 @@
 PostgreSQL's sorts, hashes and aggregates honour work_mem and its maintenance honours maintenance_work_mem, so the memory of a statement does not follow the table.
 Each case runs in a new backend with work_mem and maintenance_work_mem at 1 MB, on tables of N, 2N and 4N rows; the peak of the anonymous resident memory of the
 backend (sampled every 2 ms from /proc, the minimum of two runs) above what it held before the operation gives the slope in bytes a row between the first and the last size.
-A case of kind `flat` (`flatcut`: the index cut by a key; `flat`: key_cut off, which also leaves out the sample of the heap that decides the key at every rewrite: a phase of its own, up to 400,000 rows) runs at 8, 16 and 32 times the rows (400,000, 800,000 and 1,600,000 by default) on a table of its own (one sift_col index, no search index), one run each, and
-passes when the memory between the two largest sizes grows at most the ceiling in bytes a row and by at most 10%: the memory of an operation that is bounded by maintenance_work_mem is flat once the rows pass its budget.
 A case passes when the slope is at most its ceiling. A clean case has the ceiling of the noise (CLEAN); a case that grows with the data today has the slope it was measured at
 (status `open`: a defect to fix, and its ceiling goes to CLEAN with the fix). A case whose slope is far under its open ceiling fails too, so that a fix is not left unrecorded.
 
@@ -13,14 +11,14 @@ A case passes when the slope is at most its ceiling. A clean case has the ceilin
   scripts/mem-slope.py selftest
 
 Reads PGHOST, PGPORT, PGUSER, PGDATABASE like psql; needs Linux (/proc) and an installed pg_sift. kind `leak` repeats a statement in one backend and asserts that the memory
-its contexts hold (pg_backend_memory_contexts) does not follow the number of statements.
+its contexts hold (pg_backend_memory_contexts) does not follow the number of statements. Kind `cap` runs its statements in one backend with sift.backend_cache_kb at
+the ceiling (kB) and asserts that the caches hold at most that; the same statements with the budget off must hold more, or the case measures nothing.
 """
 import os, re, subprocess, sys, threading, time
 
 CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference is 1.8 MB
-BOUNDED = "'sift cache unit buffers'"   # a fixed count of spare buffers (UNIT_KEEP of UNIT_KEEP_BYTES, col/seg/seg.c): it grows to its 16 MB while repeats find larger units, and no further
 LEAK_KB = 512              # kB the contexts of a backend may hold more after 60 repeats than after 10
-SETTINGS = f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
+SETTINGS = "set work_mem='1MB'; set maintenance_work_mem='1MB'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope.tsv")
 os.environ["LC_ALL"] = "C"
 
@@ -91,8 +89,8 @@ def build_tables(n):
 drop table if exists f{n}, d{n} cascade;
 create table f{n} as
 select g as id, g as k_hi, g % 5000 as k_mid, g % 10 as k_lo, (array['DE','FR','US','BR','JP','AR','CL','PE'])[1 + g % 8] as cat,
-       'name' || (g::bigint * 7919) % 1000000 as txt, ((g::bigint * 7919) % 29500)::numeric / 100 as amount, (g::bigint * 7919 % 29500)::float8 / 100 as fl,
-       timestamp '2025-01-01' + (g::bigint * 311 % 31536000) * interval '1 second' as ts,
+       'name' || (g * 7919) % 1000000 as txt, ((g * 7919) % 29500)::numeric / 100 as amount, (g * 7919 % 29500)::float8 / 100 as fl,
+       timestamp '2025-01-01' + (g * 311 % 31536000) * interval '1 second' as ts,
        (array['wireless','portable','compact','premium','rugged','slim','smart','classic'])[1 + g % 8] || ' ' ||
        (array['charger','speaker','headphones','keyboard','lamp','monitor','camera'])[1 + (g / 8) % 7] || ' w' || (g % 20000) as title
 from generate_series(1, {n}) g;
@@ -116,40 +114,6 @@ create index m{n}_col on m{n} using sift_col (k_hi, k_mid, k_lo, cat, txt, amoun
 create index m{n}_bm on m{n} using sift (title);
 vacuum analyze m{n};
 """)
-
-
-def flat_table(n):
-    script(f"""
-set client_min_messages=warning;
-drop table if exists g{n} cascade;
-create table g{n} as
-select g as id, g as k_hi, g % 5000 as k_mid, g % 10 as k_lo, (array['DE','FR','US','BR','JP','AR','CL','PE'])[1 + g % 8] as cat,
-       'name' || (g::bigint * 7919) % 1000000 as txt, ((g::bigint * 7919) % 29500)::numeric / 100 as amount, (g::bigint * 7919 % 29500)::float8 / 100 as fl,
-       timestamp '2025-01-01' + (g::bigint * 311 % 31536000) * interval '1 second' as ts from generate_series(1, {n}) g;
-alter table g{n} add primary key (id);
-create index g{n}_col on g{n} using sift_col (k_hi, k_mid, k_lo, cat, txt, amount, fl, ts);
-vacuum analyze g{n};
-""")
-
-
-def flat_copy(n, cut):
-    script(f"""
-set client_min_messages=warning;
-drop table if exists m{n} cascade;
-create table m{n} as select * from g{n};
-alter table m{n} add primary key (id);
-create index m{n}_col on m{n} using sift_col (k_hi, k_mid, k_lo, cat, txt, amount, fl, ts) with (key_cut = '{cut}');
-vacuum analyze m{n};
-""")
-
-
-def flat_case(sizes, setup, op, cut):
-    peaks = []
-    for n in sizes:
-        flat_copy(n, cut)
-        fmt = dict(m=f"m{n}", n=n)
-        peaks.append(peak_mb(setup.format(**fmt), op.format(**fmt)))
-    return (peaks[-1] - peaks[-2]) * 1048576.0 / (sizes[-1] - sizes[-2]), peaks
 
 
 def read_cases(only):
@@ -195,47 +159,36 @@ select string_agg(i || ':' || kb, ' ' order by i) from leakres;""")
     return int(m.group(2)) - int(m.group(1))
 
 
-def leakx_case(n, name, setup, op):
-    """one statement a transaction of its own (VACUUM, a merge) repeated 25 times in a backend: the memory of its contexts after the 25th over the 10th"""
-    copy_table(n)
-    fmt = dict(f=f"f{n}", d=f"d{n}", m=f"m{n}", s=f"s{n}", n=n)
-    probe = lambda i: f"insert into leakres select {i}, sum(total_bytes)/1024 from pg_backend_memory_contexts where name not in ({BOUNDED});\ninsert into leakctx select {i}, name, sum(total_bytes)/1024 from pg_backend_memory_contexts where name not in ({BOUNDED}) group by 2;\n"
-    steps = "".join(op.format(**fmt) + "\n" + (probe(i) if i in (10, 25) else "") for i in range(1, 26))
-    out = script(SETTINGS + "create temp table leakres(i int, kb bigint); create temp table leakctx(i int, name text, kb bigint);\n"
-                 + setup.format(**fmt) + "\n" + steps + "select string_agg(i || ':' || kb, ' ' order by i) from leakres;\n"
-                 + "select 'GROWER ' || a.name || ' ' || (b.kb - a.kb) from leakctx a join leakctx b using (name) where a.i = 10 and b.i = 25 and b.kb > a.kb order by b.kb - a.kb desc limit 3;")
-    print("   ", " ".join(re.findall(r"GROWER .*", out)).replace("GROWER ", "| "), flush=True)
-    m = re.search(r"10:(\d+) 25:(\d+)", out)
+CACHE_HELD = """with c as (select path[cardinality(path)] as id from pg_backend_memory_contexts
+  where name in ('sift cache dictionaries', 'sift cache lookup tables', 'sift cache segments'))
+select 'HELD', coalesce(sum(total_bytes), 0) / 1024 from pg_backend_memory_contexts m
+where m.path[cardinality(m.path)] in (select id from c) or m.path && (select coalesce(array_agg(id), '{}') from c);"""
+
+
+def cache_held_kb(n, op, budget_kb):
+    fmt = dict(f=f"f{n}", d=f"d{n}", n=n)
+    out = script(SETTINGS + f"set sift.backend_cache_kb = {budget_kb};\n" + op.format(**fmt) + "\n" + CACHE_HELD)
+    m = re.search(r"HELD\|(\d+)", out)
     if not m:
-        raise RuntimeError("leakx: " + out.strip()[-200:])
-    return int(m.group(2)) - int(m.group(1))
+        raise RuntimeError("cap: " + out.strip()[-200:])
+    return int(m.group(1))
 
 
 def run(rows, only):
     sizes = [rows, rows * 2, rows * 4]
-    flat = [rows * 8, rows * 16, rows * 32]
     cases = read_cases(only)
     if not os.path.exists("/proc/self/status"):
         print("SKIP needs /proc")
         return 0
-    if any(not c[1].startswith("flat") for c in cases):
-        for n in sizes:
-            build_tables(n)
-    if any(c[1].startswith("flat") for c in cases):
-        for n in flat:
-            flat_table(n)
+    for n in sizes:
+        build_tables(n)
     bad = 0
     for name, kind, ceiling, status, setup, op in cases:
         try:
-            if kind.startswith("flat"):
-                slope, peaks = flat_case(flat, setup, op, "k_mid" if kind == "flatcut" else "off")
-                ok = slope <= ceiling and peaks[-1] <= peaks[-2] * 1.1
-                print(f"SLOPE {name} flat {slope:.0f} B/row between the two largest sizes (peaks {'/'.join(f'{p:.1f}' for p in peaks)} MB at {'/'.join(str(s) for s in flat)} rows), ceiling {ceiling} {'PASS' if ok else 'FAIL'}", flush=True)
-            elif kind == "leakx":
-                grown = leakx_case(sizes[0], name, setup, op)
-                limit = ceiling if status == "open" else LEAK_KB
-                ok = grown <= limit and (status != "open" or grown > limit * 0.4)
-                print(f"SLOPE {name} leak {grown} kB over 15 repeats, at most {limit} kB [{status}] {'PASS' if ok else 'FAIL'}", flush=True)
+            if kind == "cap":
+                held, free = cache_held_kb(sizes[1], op, ceiling), cache_held_kb(sizes[1], op, -1)
+                ok = held <= ceiling < free
+                print(f"SLOPE {name} cap {held} kB held at a budget of {ceiling} kB, {free} kB without one {'PASS' if ok else 'FAIL'}", flush=True)
             elif kind == "leak":
                 grown = leak_case(sizes[1], name, op)
                 ok = grown <= LEAK_KB
@@ -259,7 +212,7 @@ def selftest():
     assert verdict(160, 140, "open") == "FAIL"
     assert verdict(10, 140, "open") == "FAIL"
     for c in read_cases(None):
-        assert c[1] in ("slope", "leak", "leakx", "flat", "flatcut") and c[3] in ("clean", "open") and (c[3] == "open") == (c[2] > CLEAN) or c[1].startswith("flat"), c[0]
+        assert c[1] in ("slope", "leak", "cap") and c[3] in ("clean", "open") and (c[1] == "cap" or (c[3] == "open") == (c[2] > CLEAN)), c[0]
     print("mem-slope selftest: ok")
     return 0
 

@@ -27,6 +27,7 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+#include "core/cachebudget.h"
 #include "core/sift.h"
 #include "core/explain.h"
 #include "core/limits.h"
@@ -118,6 +119,7 @@ define_gucs(void)
 {
 	sift_eval_init();
 	sift_quarantine_define_gucs();
+	sift_cache_budget_define_gucs();
 	DefineCustomIntVariable("sift.max_expansions",
 							"Maximum terms a wildcard, regex or fuzzy leaf may expand to, and a prefix may be scored over.",
 							"A prefix with more terms matches all of them and scores as the one term prefix_index would index.",

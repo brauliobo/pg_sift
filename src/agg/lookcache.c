@@ -22,6 +22,7 @@
 #include "utils/rel.h"
 
 #include "agg/agg_int.h"
+#include "core/cachebudget.h"
 #include "core/ring.h"
 
 int			sift_agg_lookup_cache_kb = 256 * 1024;
@@ -65,7 +66,6 @@ static SiftRing refused_ring;
 static List *entries;
 static MemoryContext cache_cx;
 static Size cache_bytes;
-static uint64 cache_clock;
 
 /* does the heap page hold rows every snapshot sees? (a page nobody wrote to has none) */
 static bool
@@ -168,7 +168,7 @@ look_pin(LookEnt *e, MemoryContext mcxt)
 	LookPin    *p = MemoryContextAlloc(mcxt, sizeof(LookPin));
 
 	e->pins++;
-	e->used = ++cache_clock;
+	e->used = sift_cache_tick();
 	p->cb = (MemoryContextCallback) {look_unpin, p, NULL};
 	p->ent = e;
 	MemoryContextRegisterResetCallback(mcxt, &p->cb);
@@ -191,22 +191,52 @@ look_unpinned(const char *key)
 	return NULL;
 }
 
-/* Drops the least recently used entries nobody pins until need more bytes fit; false when they do not */
+static LookEnt *
+look_victim(void)
+{
+	LookEnt    *lru = NULL;
+
+	foreach_ptr(LookEnt, e, entries)
+		if (e->pins == 0 && (lru == NULL || e->used < lru->used))
+			lru = e;
+	return lru;
+}
+
+static Size
+look_bytes(void)
+{
+	return cache_bytes;
+}
+
+static uint64
+look_oldest(void)
+{
+	LookEnt    *e = look_victim();
+
+	return e ? e->used : UINT64_MAX;
+}
+
+static void
+look_evict_oldest(void)
+{
+	look_drop(look_victim());
+}
+
+static const SiftCacheKind look_kind = {look_bytes, look_oldest, look_evict_oldest};
+
+/* Drops the least recently used entries nobody pins until need more bytes fit this cache and the backend's budget; false when they do not */
 static bool
 look_room(Size need)
 {
 	while (cache_bytes + need > LOOKCACHE_BYTES)
 	{
-		LookEnt    *lru = NULL;
+		LookEnt    *lru = look_victim();
 
-		foreach_ptr(LookEnt, e, entries)
-			if (e->pins == 0 && (lru == NULL || e->used < lru->used))
-				lru = e;
 		if (lru == NULL)
 			return false;
 		look_drop(lru);
 	}
-	return true;
+	return sift_cache_room(need);
 }
 
 bool
@@ -309,7 +339,10 @@ lookcache_keep(const char *key, const LookFinger *before, MapTab *m, const LookC
 	if (!look_room(size))
 		return false;
 	if (cache_cx == NULL)
+	{
 		cache_cx = AllocSetContextCreate(TopMemoryContext, "sift cache lookup tables", ALLOCSET_DEFAULT_SIZES);
+		sift_cache_register(&look_kind);
+	}
 	e = MemoryContextAllocZero(cx, sizeof(LookEnt));
 	e->key = MemoryContextStrdup(cx, key);
 	e->finger = MemoryContextAlloc(cx, sizeof(LookFinger));

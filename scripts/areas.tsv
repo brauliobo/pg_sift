@@ -130,3 +130,5 @@
 ^(scripts/(apply-rename\.(py|sh)|private-overlay\.sh)|test/README\.md)$	-
 ^scripts/(budget\.sh|budgets\.tsv)$	.
 ^scripts/(check-budgets|stability)\.sh$|^scripts/stability\.tsv$	-
+^(scripts/mem-slope\.py|test/mem-slope\.tsv|scripts/mem-growth\.allow)$	^tap-shell-mem_slope$
+^scripts/check-mem-growth\.sh$	-
