@@ -71,9 +71,12 @@ healthy() { # the indexes verify and the answers through them are the plain plan
 	twins=$(sql cm "SELECT count(*) FROM pg_class WHERE relname = 'tbl'")
 	[[ $twins == 0 ]] || [[ $(sql cm "$QT tbl") == "$(sql cm "$QT tbl_h")" ]] || { diag "the sift_table differs from its heap twin"; return 1; }
 }
-fresh() { # SETUP
+fresh() { # SETUP: statements split at @@ run in one session; a last one !crash stops the server immediately and starts it again
+	local setup=$1 crash=
+	[[ $setup != *'@@!crash' ]] || { setup=${setup%@@!crash}; crash=1; }
 	sql cm "DROP TABLE IF EXISTS docs, tbl, tbl_h, gp CASCADE" "$BASE" >/dev/null || return 1
-	[[ -z $1 ]] || { IFS=$'\x1f' read -ra stmts <<<"${1//@@/$'\x1f'}"; sql cm "${stmts[@]}" >/dev/null; } || return 1
+	[[ -z $setup ]] || { IFS=$'\x1f' read -ra stmts <<<"${setup//@@/$'\x1f'}"; sql cm "${stmts[@]}" >/dev/null; } || return 1
+	[[ -z $crash ]] || { pg_ctl -D "$D/data" -m immediate -w stop >/dev/null 2>&1; node_start cm || return 1; }
 	REF=$(answers PLAIN)
 }
 await_exit() { # PID

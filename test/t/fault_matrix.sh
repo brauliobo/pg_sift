@@ -11,16 +11,17 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 HERE=$(dirname "$0")
 SCENARIO_NAMES=(bm25_build col_build bm25_promote col_promote bm25_merge col_merge scope_build scope_promote scope_merge scope_refill vacuum col_roll tbl_seal
-	col_cic track_cic scope_cic reindex_col reindex_col_c drop_track)
-GATE_OPS=(col_build col_cic track_cic scope_cic reindex_col drop_track)
+	col_cic track_cic scope_cic scope_cic_nj reindex_col reindex_col_c vs_intern vs_compact tbl_tomb tbl_copy)
+GATES=(col_build:build col_cic:build track_cic:build scope_cic:build scope_cic:tail scope_cic:fill scope_cic_nj:journal reindex_col:build drop_track:drop vacuum:bulkdelete
+	vacuum:cleanup vs_intern:intern tbl_tomb:tombwrite tbl_tomb:tombmerge tbl_seal:tombrewrite tbl_copy:load)
 gen() { # the rows of the matrix: every operation at the phases of its directory updates, and at the gates
 	local op ph fault quick
 	quick=$(for op in "${SCENARIO_NAMES[@]}"; do for ph in b1:terminate bm:cancel bk:error a1:error ak:immediate ak:cancel; do printf '%s.%s.%s\t\n' "$op" "${ph%:*}" "${ph#*:}"; done; done)
 	for op in "${SCENARIO_NAMES[@]}"; do
-		[[ $op == drop_track ]] || for ph in b1:terminate bm:cancel bk:error a1:error ak:immediate ak:cancel; do
+		for ph in b1:terminate bm:cancel bk:error a1:error ak:immediate ak:cancel; do
 			printf '%s.%s.%s\t%s\t%s\t%s\tquick\n' "$op" "${ph%:*}" "${ph#*:}" "$op" "${ph%:*}" "${ph#*:}"
 		done
-		[[ $op == drop_track ]] || for ph in b1 bm bk a1 ak; do
+		for ph in b1 bm bk a1 ak; do
 			for fault in error terminate cancel immediate; do
 				grep -q "^$op\.$ph\.$fault	" <<<"$quick" || printf '%s.%s.%s\t%s\t%s\t%s\tfull\n' "$op" "$ph" "$fault" "$op" "$ph" "$fault"
 			done
@@ -38,10 +39,11 @@ col_promote|a1|error|wrong_answer|plain answers changed
 col_promote|a1|error|growth|files grew
 vacuum|a1|error|still_due|maintenance still finds
 MUTANTS
-	for op in "${GATE_OPS[@]}"; do
-		for ph in build:terminate build:immediate drop:cancel; do
-			case $op in drop_track) [[ ${ph%:*} == drop ]] || continue ;; *) [[ ${ph%:*} == build ]] || continue ;; esac
-			printf '%s.gate-%s.%s\t%s\tgate:%s\t%s\t%s\n' "$op" "${ph%:*}" "${ph#*:}" "$op" "${ph%:*}" "${ph#*:}" "$([[ ${ph#*:} == terminate || ${ph%:*} == drop ]] && echo quick || echo full)"
+	for row in "${GATES[@]}"; do
+		op=${row%:*} ph=${row#*:}
+		for fault in terminate cancel immediate; do
+			printf '%s.gate-%s.%s\t%s\tgate:%s\t%s\t%s\n' "$op" "$ph" "$fault" "$op" "$ph" "$fault" \
+				"$([[ $fault == terminate || ($ph == drop && $fault == cancel) ]] && echo quick || echo full)"
 		done
 	done
 }
@@ -63,18 +65,47 @@ sql cm "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension fai
 . "$HERE/crash_scenarios.bash"
 
 CIC_OPTS="WITH (write_buffer_limit = 4096)"
+VSTORE="SET sift.test_vstore_columns = 'body'@@CREATE INDEX docs_a ON docs USING sift_col (id, body)@@CREATE INDEX docs_b ON docs USING sift_col (body, id)"
+for i in $(seq 12); do VSTORE+="@@SELECT sift._test_vstore_intern('docs_body_sift_values', array['f$i', 'g$i'])"; done
 SCENARIOS+=(
 	"col_cic~~CREATE INDEX CONCURRENTLY docs_col ON docs USING sift_col (id, g, n) $CIC_OPTS"
 	"track_cic~~CREATE INDEX CONCURRENTLY docs_tr ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, track_changes = 'ctid')"
 	"scope_cic~$GP~CREATE INDEX CONCURRENTLY docs_sc ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, scope = 't: g -> gp(g, t)')"
+	"scope_cic_nj~${GP%%; CREATE INDEX gp_journal*}~CREATE INDEX CONCURRENTLY docs_sc ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, scope = 't: g -> gp(g, t)')"
 	"reindex_col~$COL~REINDEX INDEX docs_col"
 	"reindex_col_c~$COL~REINDEX INDEX CONCURRENTLY docs_col"
 	"drop_track~CREATE INDEX docs_tr ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, track_changes = 'ctid')~DROP INDEX IF EXISTS docs_tr"
+	"vs_intern~$VSTORE~LOAD 'pg_sift'; SELECT sift._test_vstore_intern('docs_body_sift_values', array['s1a', 's1b', 'shared'])"
+	"vs_compact~$VSTORE~LOAD 'pg_sift'; SELECT sift.col_value_store_compact('docs', 'body')"
+	"tbl_tomb~$TBL@@INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i@@INSERT INTO tbl_h SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i~UPDATE tbl SET n = n + 1; UPDATE tbl_h SET n = n + 1"
+	"tbl_copy~$TBL@@COPY (SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i) TO '$D/load.csv' CSV~COPY tbl FROM '$D/load.csv' CSV; COPY tbl_h FROM '$D/load.csv' CSV"
 )
+DATA_OPS=" tbl_tomb tbl_copy "
 declare -A SETUP OP KCOUNT SIZE0 DUE0
 for row in "${SCENARIOS[@]}"; do IFS='~' read -r name setup op <<<"$row"; SETUP[$name]=$setup; OP[$name]=$op; done
 
-GATE_KEY=13 GATE_GUC=
+# the gates: GATE_SET (statements of the session that runs the operation), GATE_LOCK (what the holder session takes) and GATE_COND (the row of pg_locks of that advisory lock)
+adv2() { GATE_LOCK="pg_advisory_lock(20983, $1)"; GATE_COND="classid = 20983 AND objid = $1 AND objsubid = 2"; }
+adv1() { GATE_LOCK="pg_advisory_lock($1)"; GATE_COND="classid = 0 AND objid = $1 AND objsubid = 1"; }
+gate_spec() { # GATE: the gate of the phase "gate:GATE"
+	GATE_SET=()
+	case $1 in
+		dir) adv2 13 ;;
+		build) adv2 8; GATE_SET=("SET sift.test_build_gate = on") ;;
+		drop) adv2 9; GATE_SET=("SET sift.test_drop_gate = on") ;;
+		cleanup) adv2 2; GATE_SET=("SET sift.test_cleanup_gate = on") ;;
+		rebuild) adv2 11; GATE_SET=("SET sift.test_rebuild_gate = on" "SET sift.agg_force = on" "SET sift.col_wbuf_ref = on" "SET max_parallel_workers_per_gather = 0") ;;
+		intern) adv2 12; GATE_SET=("SET sift.test_intern_gate = on") ;;
+		bulkdelete) adv1 100; GATE_SET=("SET sift.test_bulkdelete_gate = 100") ;;
+		tail) adv1 7004; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
+		fill) adv1 7005; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
+		journal) adv1 7006; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
+		load) adv1 7004; GATE_SET=("SET sift.test_phase_gate = 7000" "SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.test_load_unit_bytes = 128") ;;
+		tombrewrite) adv1 7007; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
+		tombwrite) adv1 7008; GATE_SET=("SET sift.test_phase_gate = 7000" "SET sift.tomb_log_limit = 16") ;;
+		tombmerge) adv1 7009; GATE_SET=("SET sift.test_phase_gate = 7000" "SET sift.tomb_log_limit = 16") ;;
+	esac
+}
 INDEXES="SELECT string_agg(c.oid::regclass::text, ' ') FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname IN ('sift', 'sift_col')"
 SIZES="SELECT coalesce(sum(pg_relation_size(c.oid)), 0) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname IN ('sift', 'sift_col')"
 LOCKS="SELECT count(*) FROM pg_locks WHERE pid IS DISTINCT FROM pg_backend_pid() AND locktype <> 'virtualxid'"
@@ -94,11 +125,9 @@ maintain_all() {
 sizes_ok() { # AFTER BASELINE: growth under a half of a clean run, and 256 kB
 	(( $1 <= $2 + $2 / 2 + 262144 ))
 }
-gate_guc() { # the gate GUC of a phase
-	case $1 in build) echo "SET sift.test_build_gate = on" ;; drop) echo "SET sift.test_drop_gate = on" ;; esac
-}
-holder_pid() { sql cm "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = 20983 AND objid = $GATE_KEY AND granted LIMIT 1"; }
-held_pid() { sql cm "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = 20983 AND objid = $GATE_KEY AND NOT granted LIMIT 1"; }
+holder_pid() { sql cm "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND $GATE_COND AND granted LIMIT 1"; }
+held_pid() { sql cm "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND $GATE_COND AND NOT granted LIMIT 1"; }
+release_gate() { sql cm "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND $GATE_COND AND granted" >/dev/null; }
 is_held() { [[ -n $(held_pid) ]]; }
 
 # the number of directory updates of an operation in a clean state, and the size it leaves
@@ -120,10 +149,10 @@ phase_point() { # NAME PHASE: the sift.test_crash_dir of a phase
 run_fault() { # NAME PHASE FAULT: leaves the server running (restarted after an immediate stop)
 	local name=$1 phase=$2 fault=$3 pre=() bpid hold op
 	if [[ $phase == gate:* ]]; then
-		GATE_KEY=$( [[ ${phase#gate:} == build ]] && echo 8 || echo 9 )
-		pre=("$(gate_guc "${phase#gate:}")")
+		gate_spec "${phase#gate:}"
+		pre=("${GATE_SET[@]}")
 	else
-		GATE_KEY=13
+		gate_spec dir
 		pre=("SET sift.test_crash_dir = $(phase_point "$name" "$phase")" "SET sift.test_crash_kind = $([[ $fault == error ]] && echo 1 || echo 2)")
 	fi
 	if [[ $fault == error ]]; then
@@ -131,14 +160,15 @@ run_fault() { # NAME PHASE FAULT: leaves the server running (restarted after an 
 		grep -q 'sift test: error' "$D/fault.out" || { diag "no injected error: $(head -3 "$D/fault.out")"; return 1; }
 		return 0
 	fi
-	sql cm "SELECT pg_advisory_lock(20983, $GATE_KEY), pg_sleep(600)" >/dev/null 2>&1 &
+	sql cm "SELECT $GATE_LOCK, pg_sleep(600)" >/dev/null 2>&1 &
 	hold=$!
 	wait_for "test -n \"\$(holder_pid)\"" 30 || { diag "the gate was not taken"; return 1; }
 	sql cm "${pre[@]}" "${OP[$name]}" >"$D/fault.out" 2>&1 &
 	op=$!
 	if ! wait_for is_held 60; then
 		diag "the operation did not reach the gate: $(head -3 "$D/fault.out")"
-		sql cm "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND classid = 20983 AND granted" >/dev/null
+		release_gate
+		wait 2>/dev/null
 		return 1
 	fi
 	bpid=$(held_pid)
@@ -148,7 +178,7 @@ run_fault() { # NAME PHASE FAULT: leaves the server running (restarted after an 
 		immediate) pg_ctl -D "$D/data" -m immediate -w stop >/dev/null 2>&1 ;;
 	esac
 	if [[ $fault != immediate ]] && ! wait_for "! kill -0 $op 2>/dev/null" 10; then
-		sql cm "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND classid = 20983 AND granted" >/dev/null
+		release_gate
 		wait 2>/dev/null
 		HELD_INTERRUPTS=1
 		return 1
@@ -157,7 +187,7 @@ run_fault() { # NAME PHASE FAULT: leaves the server running (restarted after an 
 	if [[ $fault == immediate ]]; then
 		node_start cm || { diag "restart: $(tail -20 "$D/postgres.log")"; return 1; }
 	else
-		sql cm "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND classid = 20983 AND granted" >/dev/null
+		release_gate
 	fi
 	wait 2>/dev/null
 	return 0
@@ -173,13 +203,17 @@ after_fault() { # NAME
 	wait_for settled 30 || { echo "a session is left"; return 1; }
 	[[ $(sql cm "$LOCKS") == 0 ]] || { echo "locks left: $(sql cm "SELECT locktype, mode, relation::regclass FROM pg_locks WHERE pid IS DISTINCT FROM pg_backend_pid() AND locktype <> 'virtualxid'" | tr '\n' ';')"; return 1; }
 	[[ $(sql cm "$SLOTS") == 0 ]] || { echo "a progress or quarantine slot is left"; return 1; }
-	for ix in $(sql cm "$INVALID"); do
-		sql cm "DROP INDEX CONCURRENTLY $ix" >/dev/null 2>&1 || { echo "DROP INDEX CONCURRENTLY of the INVALID $ix failed"; return 1; }
+	for _ in 1 2 3; do # an index another one depends on goes after it
+		for ix in $(sql cm "$INVALID"); do
+			out=$(sql cm "DROP INDEX CONCURRENTLY $ix" 2>&1) || [[ $out == *"other objects depend"* ]] ||
+				{ echo "DROP INDEX CONCURRENTLY of the INVALID $ix failed: $(head -c 300 <<<"$out" | tr '\n' ' ')"; return 1; }
+		done
 	done
 	[[ -z $(sql cm "$INVALID") ]] || { echo "an INVALID index is left"; return 1; }
 	wait_for "test \"\$(sql cm \"$ORPHANS\")\" == 0" 30 || { echo "orphan triggers of the log of changes are left"; return 1; }
 	out=$(healthy 2>&1) || { echo "the state is not healthy: $(head -c 300 <<<"$out" | tr '\n' ' ')"; return 1; }
 	sql cm "${OP[$name]}" >"$D/rerun.out" 2>&1 || { echo "the operation run again failed: $(head -3 "$D/rerun.out")"; return 1; }
+	[[ $DATA_OPS != *" $name "* ]] || REF=$(answers PLAIN)
 	out=$(healthy 2>&1) || { echo "not healthy after the operation run again: $(head -c 300 <<<"$out" | tr '\n' ' ')"; return 1; }
 	size=$(sql cm "$SIZES")
 	sizes_ok "$size" "${SIZE0[$name]}" || { echo "the files grew to $size bytes, a clean run leaves ${SIZE0[$name]}"; return 1; }
@@ -225,13 +259,15 @@ for row in "${ROWS[@]}"; do
 		continue
 	fi
 	(( ++total ))
-	fresh "${SETUP[$name]}" || bail "$id: setup"
+	fresh "${SETUP[$name]}" || bail "$id: setup $(sql cm "SELECT 1" 2>&1 | head -2)"
 	healthy || bail "$id: the starting state is not healthy"
 	HELD_INTERRUPTS= TAMPER_LATE= SKIP_MAINTAIN=
 	if ! run_fault "$name" "$phase" "$fault"; then
 		if [[ -n $HELD_INTERRUPTS ]]; then
 			skip 1 "$id: the process holds interrupts where it waits: a $fault does not act there"
 			fresh "" >/dev/null 2>&1
+		elif [[ $phase == b* ]] && ! grep -q "corrupt" "$D/fault.out"; then
+			skip 1 "$id: this run makes fewer directory updates than the clean run counted: the update is not reached"
 		elif [[ $phase == a* ]] && ! grep -q "corrupt" "$D/fault.out"; then
 			skip 1 "$id: the update after which it stops does not publish a directory (the fault goes only after one that does)"
 		else
