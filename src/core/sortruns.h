@@ -13,6 +13,12 @@
 
 #include "storage/buffile.h"
 
+#ifdef SIFT_TESTING
+/* the phases a writer of a run waits in for the advisory lock of sift.test_phase_gate + this (table/load/write.c: 4 to 6, core/tomb_write.c: 7) */
+#define SIFT_SRUN_PHASE_WRITE	8
+#define SIFT_SRUN_PHASE_MERGE	9
+#endif
+
 typedef struct SiftSortRun
 {
 	BufFile    *file;

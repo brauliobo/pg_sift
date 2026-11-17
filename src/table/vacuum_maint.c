@@ -75,16 +75,18 @@ removable_tombs(Relation rel, SiftTblRel *st, bool all)
 {
 	TransactionId horizon = GetOldestNonRemovableTransactionId(rel);
 	uint64		n = 0;
+	SiftTombWalk w;
+	const SiftTomb *e;
 
 	if (all)
 		sift_tomb_sync_all(rel, &st->tomb);
 	else
 		sift_tomb_sync(rel, &st->tomb);
 	/* (the frozen entries are the roots of chains that go on: a pass keeps them) */
-	for (uint32 i = 0; i < st->tomb.nents; i++)
-		n += st->tomb.ents[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->tomb.ents[i].xid, horizon);
-	for (uint32 i = 0; i < st->tomb.nrecent; i++)
-		n += st->tomb.recent[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->tomb.recent[i].xid, horizon);
+	sift_tomb_walk_begin(&w, &st->tomb);
+	while ((e = sift_tomb_walk_next(&w)) != NULL)
+		n += e->xid != FrozenTransactionId && TransactionIdPrecedes(e->xid, horizon);
+	sift_tomb_walk_end(&w);
 	return n;
 }
 

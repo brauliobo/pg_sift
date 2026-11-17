@@ -169,6 +169,7 @@ typedef struct SiftTombLog
 	SiftTomb   *found;			/* scratch: the entries of a key or a range read from the runs, with those of the arrays */
 	uint32		nfound;
 	uint32		capfound;
+	MemoryContextCallback cleanup;	/* closes the temp files of the runs when the context of the log is deleted */
 } SiftTombLog;
 
 /* The log of a relation that has none yet: cxt holds what it caches, dir is the owner's directory copy */
@@ -207,6 +208,23 @@ extern void sift_tomb_append_many(Relation rel, SiftTombLog *t, const SiftTomb *
  */
 typedef bool (*SiftTombKeep) (SiftTomb *e, void *arg);	/* may rewrite the entry it keeps */
 extern uint64 sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg);
+
+/*
+ * Every entry of the log, in (key, seq) order, the ones past the memory of the log read back from its runs: begin merges what the log keeps in memory into one array,
+ * next gives the entry (the one of the array in place, a copy of one of a run), NULL at the end. The log is not changed between begin and end.
+ */
+typedef struct SiftTombWalk
+{
+	SiftTombLog *t;
+	SiftSortRunCur *cur;
+	uint32		i;
+	SiftTomb	copy;
+} SiftTombWalk;
+extern void sift_tomb_walk_begin(SiftTombWalk *w, SiftTombLog *t);
+extern SiftTomb *sift_tomb_walk_next(SiftTombWalk *w);
+extern void sift_tomb_walk_end(SiftTombWalk *w);
+/* Does the log have a member of a HOT chain, in memory or in a run */
+extern bool sift_tomb_has_hot(const SiftTombLog *t);
 
 /* The entries of key (sorted by log position), n of them; NULL when none */
 extern const SiftTomb *sift_tomb_find(const SiftTombLog *t, uint64 key, int *n);

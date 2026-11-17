@@ -320,11 +320,14 @@ batch_drain_full(Relation rel, SiftTblRel *st, VacState *v)
  * widened to theirs. Committed deletions not old enough yet are counted as recently dead. A row has one committed deletion at most.
  */
 static void
-group_dead(Relation rel, SiftTblRel *st, VacState *v, const SiftTomb *a, uint32 n)
+group_dead(Relation rel, SiftTblRel *st, VacState *v)
 {
-	for (uint32 i = 0; i < n; i++)
+	SiftTombWalk w;
+	const SiftTomb *e;
+
+	sift_tomb_walk_begin(&w, &st->tomb);
+	while ((e = sift_tomb_walk_next(&w)) != NULL)
 	{
-		const SiftTomb *e = &a[i];
 		uint32		sb = (e->key >> 16) / SIFT_SB_PAGES;
 
 		batch_drain_full(rel, st, v);
@@ -347,6 +350,7 @@ group_dead(Relation rel, SiftTblRel *st, VacState *v, const SiftTomb *a, uint32 
 		v->sb_lo = Min(v->sb_lo, sb);
 		v->sb_hi = Max(v->sb_hi, sb);
 	}
+	sift_tomb_walk_end(&w);
 }
 
 /* The writers of the groups with unfrozen rows hold the oldest xid back */
@@ -383,8 +387,7 @@ vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 			pass_delay();
 		}
 	}
-	group_dead(rel, st, v, st->tomb.ents, st->tomb.nents);
-	group_dead(rel, st, v, st->tomb.recent, st->tomb.nrecent);
+	group_dead(rel, st, v);
 	v->dead_runs.mcxt = CurrentMemoryContext;
 	do
 	{
@@ -416,19 +419,17 @@ static bool
 tomb_changes(SiftTblRel *st, VacState *v)
 {
 	bool		changes = false;
+	SiftTombWalk w;
+	SiftTomb   *e;
 
-	for (uint32 i = 0; i < st->tomb.nents; i++)
+	sift_tomb_walk_begin(&w, &st->tomb);
+	while ((e = sift_tomb_walk_next(&w)) != NULL)
 	{
-		TransactionId xid = st->tomb.ents[i].xid;
+		TransactionId xid = e->xid;
 
-		changes |= !tomb_keep(&st->tomb.ents[i], v) || st->tomb.ents[i].xid != xid;
+		changes |= !tomb_keep(e, v) || e->xid != xid;
 	}
-	for (uint32 i = 0; i < st->tomb.nrecent; i++)
-	{
-		TransactionId xid = st->tomb.recent[i].xid;
-
-		changes |= !tomb_keep(&st->tomb.recent[i], v) || st->tomb.recent[i].xid != xid;
-	}
+	sift_tomb_walk_end(&w);
 	return changes;
 }
 
@@ -608,8 +609,7 @@ clear_removable(Relation rel, SiftTblRel *st, VacState *v)
 {
 	batch_begin(v);
 	sift_tomb_sync_all(rel, &st->tomb);
-	group_dead(rel, st, v, st->tomb.ents, st->tomb.nents);
-	group_dead(rel, st, v, st->tomb.recent, st->tomb.nrecent);
+	group_dead(rel, st, v);
 	batch_drain(rel, st, v);
 	return v->cleared;
 }

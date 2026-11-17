@@ -7,8 +7,10 @@
 #include "access/transam.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
+#include "portability/instr_time.h"
 #include "utils/rel.h"
 
+#include "core/cmp.h"
 #include "core/tomb.h"
 #include "core/tomb_int.h"
 #include "core/damage.h"
@@ -100,64 +102,20 @@ swap_tomb(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 			dir->segs[i] = a->fresh;
 }
 
-/* The entries of the log in (key, seq) order: the runs and the array of the log merged, equal keys oldest source first */
-typedef struct TombWalk
-{
-	SiftTombLog *t;
-	SiftSortRunCur *cur;
-	uint32		i;
-	SiftTomb	copy;
-} TombWalk;
-
-static void
-walk_begin(TombWalk *w, SiftTombLog *t)
-{
-	*w = (TombWalk) {.t = t};
-	w->cur = palloc(Max(1, t->spilled.nruns) * sizeof(SiftSortRunCur));
-	for (uint32 r = 0; r < t->spilled.nruns; r++)
-		sift_srun_cur_init(&w->cur[r], &t->spilled.runs[r], sizeof(SiftTomb), CurrentMemoryContext);
-}
-
-/* The next entry, NULL at the end: one of the array in place (keep may rewrite it), or a copy of one of a run */
-static SiftTomb *
-walk_next(TombWalk *w)
-{
-	const SiftTombLog *t = w->t;
-	int			from = -1;
-	uint64		key = PG_UINT64_MAX;
-	const SiftTomb *rec;
-
-	for (uint32 r = 0; r < t->spilled.nruns; r++)
-		if ((rec = sift_srun_cur_peek(&w->cur[r])) != NULL && (from < 0 || rec->key < key))
-			from = r, key = rec->key;
-	if (w->i < t->nents && (from < 0 || t->ents[w->i].key < key))
-		return &w->t->ents[w->i++];
-	if (from < 0)
-		return NULL;
-	w->copy = *(const SiftTomb *) sift_srun_cur_peek(&w->cur[from]);
-	sift_srun_cur_next(&w->cur[from]);
-	return &w->copy;
-}
-
-static void
-walk_end(TombWalk *w)
-{
-	for (uint32 r = 0; r < w->t->spilled.nruns; r++)
-		pfree(w->cur[r].blk);
-	pfree(w->cur);
-}
-
 /* The entries appended to the segment e since the log was read to its end, in the order of the log: palloc'd, n of them */
 static SiftTomb *
-tomb_read_tail(Relation rel, const SiftSegEntry *e, const SiftTombLog *t, uint32 *n)
+tomb_read_tail(Relation rel, const SiftSegEntry *e, const SiftTombLog *t, uint32 *n, SiftExtent **ext, int *next)
 {
 	BlockNumber blk = t->last;
 	uint32		from = t->lastcnt,
 				cap = 64;
 	SiftTomb   *out = palloc(cap * sizeof(SiftTomb));
-	BlockNumber visited = 0;
+	BlockNumber visited = 0,
+				known = t->last;
 
 	*n = 0;
+	*next = 0;
+	*ext = palloc(64 * sizeof(SiftExtent));
 	if (!BlockNumberIsValid(blk))
 	{
 		SiftWbufHeaderData hdr;
@@ -182,6 +140,12 @@ tomb_read_tail(Relation rel, const SiftSegEntry *e, const SiftTombLog *t, uint32
 			cap = Max(cap * 2, *n + tp->nent);
 			out = repalloc_huge(out, (Size) cap * sizeof(SiftTomb));
 		}
+		if (blk != known)
+		{
+			if (*next >= 64 && (*next & (*next - 1)) == 0)
+				*ext = repalloc(*ext, 2 * *next * sizeof(SiftExtent));
+			(*ext)[(*next)++] = (SiftExtent) {blk, 1};
+		}
 		memcpy(out + *n, SIFT_TOMB_ENTS(BufferGetPage(buf)) + from, (tp->nent - from) * sizeof(SiftTomb));
 		*n += tp->nent - from;
 		blk = tp->next;
@@ -189,6 +153,32 @@ tomb_read_tail(Relation rel, const SiftSegEntry *e, const SiftTombLog *t, uint32
 		from = 0;
 	}
 	return out;
+}
+
+/* The extents of the pages of the segment e up to the page last that the cache of the log read to (the header page included): what the swap releases of the old log, found with the appenders at work */
+static SiftExtent *
+old_extents(Relation rel, const SiftSegEntry *e, BlockNumber last, int *n)
+{
+	int			nb;
+	BlockNumber *blks = sift_lane_blocks(rel, e, &nb);
+	SiftExtent *ext = palloc((nb + 1) * sizeof(SiftExtent));
+
+	for (int i = 0; i < nb; i++)
+		if (blks[i] == last)
+		{
+			nb = i + 1;
+			break;
+		}
+	if (!BlockNumberIsValid(last))
+		nb = 0;
+	blks = repalloc(blks, (nb + 1) * sizeof(BlockNumber));
+	blks[nb++] = e->header_blk;
+	sift_sort_u32(blks, nb);
+	*n = 0;
+	for (int i = 0; i < nb; i++)
+		sift_extent_push(ext, n, blks[i], 1);
+	pfree(blks);
+	return ext;
 }
 
 /*
@@ -210,8 +200,16 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 	uint32		npages = 0,
 				ntail;
 	SiftExtent *rel_ext;
-	int			nrel;
-	TombWalk	wk;
+	int			nrel,
+				nbuilt,
+				ntail_ext;
+	SiftExtent *built,
+			   *tail_ext;
+	SiftTombWalk wk;
+#ifdef SIFT_TESTING
+	instr_time	hold,
+				done;
+#endif
 	SiftTomb   *ent,
 			   *tail;
 
@@ -228,8 +226,8 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 	sift_test_phase_wait(SIFT_TBL_PHASE_TOMB);
 #endif
 	hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
-	walk_begin(&wk, t);
-	for (ent = walk_next(&wk); ent != NULL;)
+	sift_tomb_walk_begin(&wk, t);
+	for (ent = sift_tomb_walk_next(&wk); ent != NULL;)
 	{
 		Buffer		nb = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
 		SiftXlog state = sift_xlog_start(rel);
@@ -242,7 +240,7 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 		np = sift_xlog_register(&state, nb, 0);
 		sift_lane_init_page(np, SIFT_TOMB_PAGE_INIT);
 		tp = SIFT_TOMB_PAGE(np);
-		for (; ent != NULL && tp->nent < SIFT_TOMB_CAP; ent = walk_next(&wk))
+		for (; ent != NULL && tp->nent < SIFT_TOMB_CAP; ent = sift_tomb_walk_next(&wk))
 			if (keep(ent, arg))
 			{
 				SIFT_TOMB_ENTS(np)[tp->nent++] = *ent;
@@ -259,7 +257,7 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 		prev = nb;
 		npages++;
 	}
-	walk_end(&wk);
+	sift_tomb_walk_end(&wk);
 	if (!BufferIsValid(prev))		/* nothing kept: one empty page, a lane always has a head */
 	{
 		prev = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
@@ -292,19 +290,34 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 	sw.fresh = (SiftSegEntry) {.gen = gen,.kind = old->kind,.flags = old->flags,.format = old->format,
 	.header_blk = BufferGetBlockNumber(hbuf)};
 	UnlockReleaseBuffer(hbuf);
+	built = old_extents(rel, old, t->last, &nbuilt);
 	UnlockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
 
 	LockPage(rel, SIFT_TOMB_LOCK_BLKNO, ExclusiveLock);
+#ifdef SIFT_TESTING
+	INSTR_TIME_SET_CURRENT(hold);
+#endif
 	sift_dir_read(rel, t->dir);
 	if ((old = sift_tomb_find_seg(t->dir)) == NULL || old->gen != sw.old_gen)
 		corrupt(rel, "The tombstone segment was replaced while its rewrite was built.");
-	tail = tomb_read_tail(rel, old, t, &ntail);
+	tail = tomb_read_tail(rel, old, t, &ntail, &tail_ext, &ntail_ext);
 	tomb_append_seg(rel, &sw.fresh, tail, ntail);
 	kept += ntail;
 	pfree(tail);
-	rel_ext = sift_lane_extents(rel, old, &nrel);
+	nrel = nbuilt + ntail_ext;
+	rel_ext = palloc(nrel * sizeof(SiftExtent));
+	memcpy(rel_ext, built, nbuilt * sizeof(SiftExtent));
+	memcpy(rel_ext + nbuilt, tail_ext, ntail_ext * sizeof(SiftExtent));
 	sift_dir_update(rel, &(SiftDirChange) {.fn = swap_tomb,.arg = &sw,.release = rel_ext,.nrelease = nrel,.extra = InvalidBuffer});
 	UnlockPage(rel, SIFT_TOMB_LOCK_BLKNO, ExclusiveLock);
+#ifdef SIFT_TESTING
+	INSTR_TIME_SET_CURRENT(done);
+	INSTR_TIME_SUBTRACT(done, hold);
+	elog(LOG, "sift tomb rewrite: exclusive hold %lld us, %u entries appended meanwhile, %llu kept",
+		 (long long) INSTR_TIME_GET_MICROSEC(done), ntail, (unsigned long long) kept);
+#endif
 	pfree(rel_ext);
+	pfree(built);
+	pfree(tail_ext);
 	return kept;
 }

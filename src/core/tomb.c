@@ -43,6 +43,15 @@ typedef struct HotLink
 	uint64		pred;
 } HotLink;
 
+static void
+tomb_close_runs(void *arg)
+{
+	SiftTombLog *t = arg;
+
+	sift_srun_reset(&t->spilled);
+	sift_srun_reset(&t->hotspilled);
+}
+
 void
 sift_tomb_init(SiftTombLog *t, MemoryContext cxt, SiftDirSnapshot *dir)
 {
@@ -51,6 +60,8 @@ sift_tomb_init(SiftTombLog *t, MemoryContext cxt, SiftDirSnapshot *dir)
 	t->last = InvalidBlockNumber;
 	sift_srun_init(&t->spilled, cxt, sizeof(SiftTomb));
 	sift_srun_init(&t->hotspilled, cxt, sizeof(HotLink));
+	t->cleanup = (MemoryContextCallback) {.func = tomb_close_runs,.arg = t};
+	MemoryContextRegisterResetCallback(cxt, &t->cleanup);
 }
 
 static int
@@ -865,6 +876,52 @@ sift_tomb_find(const SiftTombLog *t, uint64 key, int *n)
 	memcpy(w->run, m, nm * sizeof(SiftTomb));
 	memcpy(w->run + nm, r, nr * sizeof(SiftTomb));
 	return w->run;
+}
+
+/* The entries of the log in (key, seq) order: the runs and the array of the log merged, equal keys oldest source first */
+void
+sift_tomb_walk_begin(SiftTombWalk *w, SiftTombLog *t)
+{
+	tomb_flatten(t);
+	*w = (SiftTombWalk) {.t = t};
+	w->cur = palloc(Max(1, t->spilled.nruns) * sizeof(SiftSortRunCur));
+	for (uint32 r = 0; r < t->spilled.nruns; r++)
+		sift_srun_cur_init(&w->cur[r], &t->spilled.runs[r], sizeof(SiftTomb), CurrentMemoryContext);
+}
+
+/* The next entry, NULL at the end: one of the array in place (keep may rewrite it), or a copy of one of a run */
+SiftTomb *
+sift_tomb_walk_next(SiftTombWalk *w)
+{
+	const SiftTombLog *t = w->t;
+	int			from = -1;
+	uint64		key = PG_UINT64_MAX;
+	const SiftTomb *rec;
+
+	for (uint32 r = 0; r < t->spilled.nruns; r++)
+		if ((rec = sift_srun_cur_peek(&w->cur[r])) != NULL && (from < 0 || rec->key < key))
+			from = r, key = rec->key;
+	if (w->i < t->nents && (from < 0 || t->ents[w->i].key < key))
+		return &w->t->ents[w->i++];
+	if (from < 0)
+		return NULL;
+	w->copy = *(const SiftTomb *) sift_srun_cur_peek(&w->cur[from]);
+	sift_srun_cur_next(&w->cur[from]);
+	return &w->copy;
+}
+
+void
+sift_tomb_walk_end(SiftTombWalk *w)
+{
+	for (uint32 r = 0; r < w->t->spilled.nruns; r++)
+		pfree(w->cur[r].blk);
+	pfree(w->cur);
+}
+
+bool
+sift_tomb_has_hot(const SiftTombLog *t)
+{
+	return t->hotm != NULL || t->hotspilled.nruns > 0;
 }
 
 /* Does the tombstone e (not a LOCK) delete its row for the snapshot? Dirty snapshots also learn of an in-progress deleter */

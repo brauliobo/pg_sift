@@ -310,7 +310,7 @@ build_chain(Relation rel, SiftTblScan *s, const SiftTblRowVer *rv, TransactionId
 				next;
 	bool		found = false;
 
-	if (st->tomb.hotm == NULL)
+	if (!sift_tomb_has_hot(&st->tomb))
 		return CHAIN_NONE;
 	*root = key;
 	if (sift_tomb_hot_pred(&st->tomb, key, root))

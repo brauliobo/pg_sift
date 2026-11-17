@@ -172,7 +172,7 @@ chain_visible(VblockTest *t, uint64 key)
 {
 	uint64		succ;
 
-	while (t->chain && t->st->tomb.hotm != NULL && sift_tbl_hot_next(t->st, key, &succ))
+	while (t->chain && sift_tomb_has_hot(&t->st->tomb) && sift_tbl_hot_next(t->st, key, &succ))
 	{
 		ItemPointerData tid;
 		SiftTblRowVer rv;
@@ -312,7 +312,7 @@ sift_tbl_has_chains(Relation rel)
 	SiftTblRel *st = sift_tbl_rel(rel);
 
 	sift_tomb_sync(rel, &st->tomb);
-	return st->tomb.hotm != NULL;
+	return sift_tomb_has_hot(&st->tomb);
 }
 
 void

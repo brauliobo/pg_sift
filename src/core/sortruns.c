@@ -4,6 +4,9 @@
 #include "postgres.h"
 
 #include "core/sortruns.h"
+#ifdef SIFT_TESTING
+#include "bm25/build.h"
+#endif
 
 typedef struct RunWriter
 {
@@ -132,6 +135,11 @@ merge_last(SiftSortRunSet *s)
 	writer_begin(&w, s);
 	sift_srun_cur_init(&ca, a, s->recsz, s->cxt);
 	sift_srun_cur_init(&cb, b, s->recsz, s->cxt);
+	PG_TRY();
+	{
+#ifdef SIFT_TESTING
+	sift_test_phase_wait(SIFT_SRUN_PHASE_MERGE);
+#endif
 	for (ra = sift_srun_cur_peek(&ca), rb = sift_srun_cur_peek(&cb); ra != NULL || rb != NULL;)
 	{
 		if (rb == NULL || (ra != NULL && rec_key(ra) <= rec_key(rb)))
@@ -148,6 +156,13 @@ merge_last(SiftSortRunSet *s)
 		}
 		CHECK_FOR_INTERRUPTS();
 	}
+	}
+	PG_CATCH();
+	{
+		BufFileClose(w.file);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 	pfree(ca.blk);
 	pfree(cb.blk);
 	run_close(a);
@@ -164,8 +179,20 @@ sift_srun_add(SiftSortRunSet *s, const void *recs, uint64 n)
 	if (n == 0)
 		return;
 	writer_begin(&w, s);
-	for (uint64 i = 0; i < n; i++)
-		writer_put(&w, (const char *) recs + i * s->recsz);
+	PG_TRY();
+	{
+#ifdef SIFT_TESTING
+		sift_test_phase_wait(SIFT_SRUN_PHASE_WRITE);
+#endif
+		for (uint64 i = 0; i < n; i++)
+			writer_put(&w, (const char *) recs + i * s->recsz);
+	}
+	PG_CATCH();
+	{
+		BufFileClose(w.file);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 	if (s->nruns == s->capruns)
 	{
 		s->capruns = Max(8, s->capruns * 2);
