@@ -640,6 +640,10 @@ extern void sift_cdict_retire(Relation index, const SiftDirSnapshot *snap);
 extern SiftCDict *sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load);
 /* The same without loading: NULL when the cache does not hold it */
 extern SiftCDict *sift_cseg_dict_peek(SiftColSegment *seg, int col);
+#ifdef SIFT_TESTING
+/* A dictionary was parsed for a maintenance read (+1) or given back (-1): sift._test_col_stream_dicts */
+extern void sift_stream_dict_count(int delta);
+#endif
 /* Counts one more test of the dictionary of leaf col that was searched in the stream, and says how many the backend made */
 extern uint32 sift_cseg_dict_asked(SiftColSegment *seg, int col);
 extern bool sift_cseg_dict_nokeep(SiftColSegment *seg, int col);

@@ -63,6 +63,16 @@ static Size cache_bytes;
 static dlist_head lru = DLIST_STATIC_INIT(lru);
 
 #ifdef SIFT_TESTING
+SiftStreamDictStats sift_stream_dict_stats;
+
+void
+sift_stream_dict_count(int delta)
+{
+	sift_stream_dict_stats.parsed += delta > 0;
+	sift_stream_dict_stats.live += delta;
+	sift_stream_dict_stats.peak = Max(sift_stream_dict_stats.peak, sift_stream_dict_stats.live);
+}
+
 Size
 sift_cdict_cache_bytes(void)
 {
