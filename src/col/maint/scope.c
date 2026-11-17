@@ -29,52 +29,121 @@ maint_scope_fill_begin(Relation index, MemoryContext cx, uint64 rows, struct Sif
 	return *sf != NULL ? sift_scope_fill_hook(*sf, conn, sift_col_rel_private(index, cx)->nconn) : conn;
 }
 
+/* The scope segments of a run of rows: for each scope the rows replicated by the keys of their member, held until the run is written */
+struct ScopeRun
+{
+	Relation	index;
+	struct SiftScopeFill *sf;
+	const SiftColRel *r;
+	MemoryContext cx;			/* the rows of the run, reset by the write */
+	MemoryContext slice;		/* the entries of a slice: a slice has the entries of SCOPE_RUN_SLICE rows */
+	SiftColBatch **rep;
+	const int64 **members;
+	uint32	   *row;
+	int64	   *key;
+	uint32		cap;
+};
+
+static void
+run_open(ScopeRun *run)
+{
+	for (int s = 0; s < run->r->nscope; s++)
+	{
+		run->rep[s] = sift_cbatch_create(run->cx, run->r->schema);
+		run->rep[s]->keyed = run->rep[s]->unsorted = true;
+	}
+}
+
+ScopeRun *
+maint_scope_run_begin(Relation index, struct SiftScopeFill *sf, MemoryContext parent)
+{
+	ScopeRun   *run = MemoryContextAllocZero(parent, sizeof(ScopeRun));
+
+	run->index = index;
+	run->sf = sf;
+	run->r = sift_col_rel_private(index, parent);
+	run->cx = AllocSetContextCreate(parent, "sift_col scope run", ALLOCSET_DEFAULT_SIZES);
+	run->slice = AllocSetContextCreate(parent, "sift_col scope run slice", ALLOCSET_DEFAULT_SIZES);
+	run->rep = MemoryContextAlloc(parent, run->r->nscope * sizeof(SiftColBatch *));
+	run->members = MemoryContextAlloc(parent, run->r->nscope * sizeof(int64 *));
+	run_open(run);
+	return run;
+}
+
+void
+maint_scope_run_end(ScopeRun *run)
+{
+	MemoryContextDelete(run->cx);
+	MemoryContextDelete(run->slice);
+}
+
+/* The batch whose rows maint_scope_run_add takes next */
+void
+maint_scope_run_batch(ScopeRun *run, const SiftColBatch *b)
+{
+	for (int s = 0; s < run->r->nscope; s++)
+		run->members[s] = sift_scope_fill_members(run->sf, s, b);
+}
+
+/* Rows [from, to) of the batch of maint_scope_run_batch, from a multiple of SCOPE_RUN_SLICE, with a copy of each for each key of their member */
+void
+maint_scope_run_add(ScopeRun *run, const SiftColBatch *b, uint32 from, uint32 to)
+{
+	for (int s = 0; s < run->r->nscope; s++)
+	{
+		const SiftCVals *fk = &b->col[sift_scope_fill_fk_leaf(run->sf, s)];
+		MemoryContext old = MemoryContextSwitchTo(run->slice);
+		uint32		entries = sift_scope_fill_expand(run->sf, s, run->members[s] + from, fk->nulls ? fk->nulls + from / 64 : NULL, to - from,
+													 &run->row, &run->key, &run->cap);
+
+		MemoryContextSwitchTo(old);
+		for (uint32 e = 0; e < entries; e++)
+			sift_cbatch_add_scoped(run->rep[s], b, from + run->row[e], run->r->scope_leaf[s], run->key[e], run->r->scope_cols[s]);
+	}
+}
+
+Size
+maint_scope_run_bytes(ScopeRun *run)
+{
+	return MemoryContextMemAllocated(run->cx, true);
+}
+
 /*
- * The scope segments of the rows of batches[0..nb) (a promotion's), written with the fill of maint_scope_fill_begin: for each scope the rows replicated by the keys of their member,
- * sorted by the cut of the scope and cut into units of one key. out has room for one segment of each scope; the number of them is returned (a scope none of whose rows has a pair has none).
+ * The run written: for each scope its rows sorted by the cut of the scope and cut into units of one key, with the fill of maint_scope_fill_begin. out has room for one segment of each
+ * scope; the number of them is returned (a scope none of whose rows has a pair has none). The run is empty after it.
  */
 int
-maint_scope_write(Relation index, SiftWriteTarget *wt, struct SiftScopeFill *sf, SiftColFill *fill, SiftColBatch *const *batches, int nb, uint64 index_rows,
-				  int format, MemoryContext cx, SiftSegEntry *out)
+maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill *fill, uint64 index_rows, int format, SiftSegEntry *out)
 {
-	const SiftColRel *r = sift_col_rel_private(index, cx);
-	uint32		aim = sift_colk_aim_rows(index),
-				cap = 0;
-	uint32	   *row = NULL;
-	int64	   *key = NULL;
+	const SiftColRel *r = run->r;
+	uint32		aim = sift_colk_aim_rows(run->index);
+	MemoryContext old = MemoryContextSwitchTo(run->cx);
 	int			n = 0;
 
 	for (int s = 0; s < r->nscope; s++)
 	{
 		SiftCPaggSpec pagg = r->pagg;
-		SiftColBatch *rep = sift_cbatch_create(cx, r->schema);
 		SiftColSegWriter *w;
 		int			cut[SIFT_COL_CUT_MAX],
 					ncut = sift_scope_cut(r, s, cut);
 
+		if (run->rep[s]->nrows == 0)
+			continue;
 		pagg.lean = true;
 		sift_cpagg_spec_keep(&pagg, r->schema, r->scope_cols[s]);
-		rep->keyed = rep->unsorted = true;
-		for (int i = 0; i < nb; i++)
-		{
-			const SiftCVals *fk = &batches[i]->col[sift_scope_fill_fk_leaf(sf, s)];
-			uint32		entries = sift_scope_fill_expand(sf, s, sift_scope_fill_members(sf, s, batches[i]), fk->nulls, batches[i]->nrows, &row, &key, &cap);
-
-			for (uint32 e = 0; e < entries; e++)
-				sift_cbatch_add_scoped(rep, batches[i], row[e], r->scope_leaf[s], key[e], r->scope_cols[s]);
-		}
-		if (rep->nrows == 0)
-			continue;
-		w = sift_colw_begin(wt, sift_store_new_gen(index), r->schema, r->policy, format, cx);
+		w = sift_colw_begin(wt, sift_store_new_gen(run->index), r->schema, r->policy, format, run->cx);
 		sift_colw_set_fill(w, fill);
 		sift_colw_set_index_rows(w, index_rows);
 		sift_colw_set_preagg(w, &pagg);
 		sift_colw_set_keyed(w, aim, cut, ncut);
-		sift_colk_write(w, &rep, 1, r->schema, cut, ncut, sift_colk_unit_rows(aim), cx, 0);
+		sift_colk_write(w, &run->rep[s], 1, r->schema, cut, ncut, sift_colk_unit_rows(aim), run->cx, 0);
 		sift_colw_finish(w, &out[n]);
 		out[n].flags |= SIFT_SEG_SCOPE;
 		out[n++].pad = s;
 	}
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(run->cx);
+	run_open(run);
 	return n;
 }
 
@@ -153,7 +222,7 @@ maint_scope_refill(Relation index)
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	const SiftColRel *r = sift_col_rel_private(index, cx);
-	MemoryContext hcx = AllocSetContextCreate(cx, "sift_col scope refill run", ALLOCSET_DEFAULT_SIZES);	/* the rows of a run and its writer */
+	MemoryContext ucx = AllocSetContextCreate(cx, "sift_col scope refill unit", ALLOCSET_DEFAULT_SIZES);	/* the rows of the unit decoded */
 	SiftSegEntry ents[SIFT_MAX_SEGMENTS],
 				scopes[SIFT_MAX_SEGMENTS],
 			   *out = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry));
@@ -163,12 +232,10 @@ maint_scope_refill(Relation index)
 				chunk;
 	int			nents = 0,
 				nscopes = 0,
-				nout = 0,
-				nheld = 0,
-				heldcap = 16;
-	SiftColBatch **held = palloc(heldcap * sizeof(SiftColBatch *));
+				nout = 0;
 	TimestampTz start = GetCurrentTimestamp();
 	struct SiftScopeFill *sf;
+	ScopeRun   *run;
 	SiftColFill *fill;
 	SiftWriteTarget *wt;
 	SiftMaintInputs mi;
@@ -193,46 +260,44 @@ maint_scope_refill(Relation index)
 		MemoryContextDelete(cx);
 		return false;
 	}
-	/* a run holds half of maintenance_work_mem of decoded rows, and at least the share of the rows that makes as many runs for each scope as the directory has room for */
+	/* a run holds three quarters of maintenance_work_mem of replicated rows, and at least the share of the rows that makes as many runs for each scope as the directory has room for */
 	chunk = rows / Max((SIFT_MAX_SEGMENTS - REFILL_ROOM - nents) / Max(r->nscope, 1), 1) + 1;
 	fill = maint_scope_fill_begin(index, cx, rows, &sf);
+	run = maint_scope_run_begin(index, sf, cx);
 	wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
-	for (int i = 0; i <= nents; i++)
+	for (int i = 0; i < nents; i++)
 	{
-		SiftColSegment *seg = i < nents ? sift_cseg_open(index, &ents[i], cx) : NULL;
+		SiftColSegment *seg = sift_cseg_open(index, &ents[i], cx);
 
-		for (uint32 u = 0; seg != NULL && u < seg->nsb; u++)
+		for (uint32 u = 0; u < seg->nsb; u++)
 		{
-			SiftColBatch *b = sift_cbatch_create(hcx, r->schema);
+			SiftColBatch *b;
 
-			/* the scratch of a decode and of a run goes with the run: the context of the refill lives until the directory switch */
-			MemoryContextSwitchTo(hcx);
+			MemoryContextReset(ucx);
+			b = sift_cbatch_create(ucx, r->schema);
+			MemoryContextSwitchTo(ucx);
 			sift_cseg_decode_unit(seg, u, b);
 			MemoryContextSwitchTo(cx);
-			if (nheld == heldcap)
-				held = repalloc(held, (heldcap *= 2) * sizeof(SiftColBatch *));
-			held[nheld++] = b;
-			held_rows += b->nrows;
-			sift_colb_peak_note();
-			if (held_rows >= chunk && MemoryContextMemAllocated(hcx, true) >= (Size) maintenance_work_mem * 1024 / 2)
+			maint_scope_run_batch(run, b);
+			for (uint32 from = 0; from < b->nrows; from += SCOPE_RUN_SLICE)
 			{
-				MemoryContextSwitchTo(hcx);
-				nout += maint_scope_write(index, wt, sf, fill, held, nheld, rows, sift_col_format_minor, hcx, out + nout);
-				MemoryContextSwitchTo(cx);
-				nheld = 0;
-				held_rows = 0;
-				MemoryContextReset(hcx);
+				uint32		to = Min(from + SCOPE_RUN_SLICE, b->nrows);
+
+				maint_scope_run_add(run, b, from, to);
+				held_rows += to - from;
+				sift_colb_peak_note();
+				if (held_rows >= chunk && maint_scope_run_bytes(run) >= (Size) maintenance_work_mem * 1024 / 2)
+				{
+					nout += maint_scope_run_write(run, wt, fill, rows, sift_col_format_minor, out + nout);
+					held_rows = 0;
+				}
 			}
 		}
-		if (seg != NULL)
-			sift_cseg_close(seg);
-		if (i == nents && nheld > 0)
-		{
-			MemoryContextSwitchTo(hcx);
-			nout += maint_scope_write(index, wt, sf, fill, held, nheld, rows, sift_col_format_minor, hcx, out + nout);
-			MemoryContextSwitchTo(cx);
-		}
+		sift_cseg_close(seg);
 	}
+	if (held_rows > 0)
+		nout += maint_scope_run_write(run, wt, fill, rows, sift_col_format_minor, out + nout);
+	maint_scope_run_end(run);
 	sift_scope_fill_stamps(sf, &stamps);
 	sift_conn_fill_end(fill);
 	sift_wt_finish(wt);

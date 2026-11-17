@@ -110,11 +110,19 @@ extern int	maint_overlay_steps;
 
 extern void	maint_throttle(SiftWriteTarget *wt);
 
-/* col/maint/scope.c: the fill and the scope segments of a promotion */
+/* col/maint/scope.c: the fill and the scope segments of a promotion or a refill */
 struct SiftScopeFill;
 extern SiftColFill *maint_scope_fill_begin(Relation index, MemoryContext cx, uint64 rows, struct SiftScopeFill **sf);
-extern int	maint_scope_write(Relation index, SiftWriteTarget *wt, struct SiftScopeFill *sf, SiftColFill *fill, SiftColBatch *const *batches, int nb,
-							  uint64 index_rows, int format, MemoryContext cx, SiftSegEntry *out);
+
+/* The rows a ScopeRun takes in one step */
+#define SCOPE_RUN_SLICE	1024
+typedef struct ScopeRun ScopeRun;
+extern ScopeRun *maint_scope_run_begin(Relation index, struct SiftScopeFill *sf, MemoryContext parent);
+extern void maint_scope_run_end(ScopeRun *run);
+extern void maint_scope_run_batch(ScopeRun *run, const SiftColBatch *b);
+extern void maint_scope_run_add(ScopeRun *run, const SiftColBatch *b, uint32 from, uint32 to);
+extern Size maint_scope_run_bytes(ScopeRun *run);
+extern int	maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill *fill, uint64 index_rows, int format, SiftSegEntry *out);
 
 /* One slice of the key range of a merge that the participants of a parallel build share: the rows of slice i of nslices go to one segment, which is not put in the directory (*out; ndocs 0: none) */
 typedef struct MergeSlice
