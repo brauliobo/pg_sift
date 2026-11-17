@@ -157,7 +157,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	int			first_open;
 	AttrNumber	cluster = acut_cluster_att(heap);
 	double		best = 0;
-	uint32		cap;
+	uint32		cap,
+				sample_cap;
 	int64	   *tmp;
 	TupleTableSlot *slot;
 	const char *leaf = NULL;
@@ -235,11 +236,12 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	}
 	want = quick ? Min(full, AUTOCUT_QUICK_SBS) : full;
 	samp = palloc0(sizeof(Samp));
-	samp->tid = palloc_array(SiftKey, cap + SIFT_COL_UNIT_MAX_ROWS);
+	sample_cap = Min(cap + SIFT_COL_UNIT_MAX_ROWS, 4096);
+	samp->tid = palloc_array(SiftKey, sample_cap);
 	for (int t = 0; t < ntr; t++)
 	{
-		tr[t].v = palloc_array(int64, cap + SIFT_COL_UNIT_MAX_ROWS);
-		tr[t].nl = palloc_array(bool, cap + SIFT_COL_UNIT_MAX_ROWS);
+		tr[t].v = palloc_array(int64, sample_cap);
+		tr[t].nl = palloc_array(bool, sample_cap);
 	}
 	slot = table_slot_create(heap, NULL);
 	for (int s = 0; s < want; s++)
@@ -256,6 +258,16 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		heap_setscanlimits(scan, start, Min(SIFT_SB_PAGES, nblocks - start));
 		while (nrow++ < SIFT_COL_UNIT_MAX_ROWS && table_scan_getnextslot(scan, ForwardScanDirection, slot))
 		{
+			if (samp->n == sample_cap)
+			{
+				sample_cap = (uint32) Min((uint64) sample_cap * 2, (uint64) cap + SIFT_COL_UNIT_MAX_ROWS);
+				samp->tid = repalloc_array(samp->tid, SiftKey, sample_cap);
+				for (int t = 0; t < ntr; t++)
+				{
+					tr[t].v = repalloc_array(tr[t].v, int64, sample_cap);
+					tr[t].nl = repalloc_array(tr[t].nl, bool, sample_cap);
+				}
+			}
 			samp->tid[samp->n] = ((SiftKey) (samp->nsb * SIFT_SB_PAGES + ItemPointerGetBlockNumber(&slot->tts_tid) - start) << 16) | ItemPointerGetOffsetNumber(&slot->tts_tid);
 			for (int t = 0; t < ntr; t++)
 			{
