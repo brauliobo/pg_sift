@@ -6,6 +6,7 @@ group_low	slope	12	clean		select k_lo, count(*), sum(amount) from {f} group by 1
 group_mid	slope	12	clean		select k_mid, count(*), sum(amount) from {f} group by 1;
 group_unique_int	slope	50	open		select k_hi, count(*), sum(amount) from {f} group by 1;
 group_unique_text	slope	12	clean		select txt, count(*), sum(amount) from {f} group by 1;
+combo_text_filter	slope	12	clean		select count(*) from {f} where txt <> 'x' || k_hi;
 group_two_keys	slope	12	clean		select k_mid, cat, count(*), avg(amount) from {f} group by 1,2;
 count_distinct_int	slope	12	clean		select count(distinct k_hi) from {f};
 count_distinct_text	slope	12	clean		select count(distinct txt) from {f};

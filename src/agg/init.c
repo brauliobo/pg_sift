@@ -596,7 +596,6 @@ register_combos(AggExec *ex)
 			}
 			lf = &ex->lay->leaf[cb->leaf[p]];
 
-			cs->resettable &= lf->vtype != SCV_CODE;
 			if (lf->typid == NUMERICOID && lf->vtype == SCV_I64 && lf->scale > 0)
 				cs->unit[p] = DirectFunctionCall3(numeric_in, CStringGetDatum(psprintf("0.%0*d", lf->scale, 1)), ObjectIdGetDatum(InvalidOid),
 												  Int32GetDatum(-1));
@@ -608,6 +607,7 @@ register_combos(AggExec *ex)
 					cs->decode = palloc0(Max(cb->nslots, 1) * sizeof(bool));
 				cs->decode[s->agg[ai].slot] = true;
 			}
+		cs->icxt = cs->resettable ? cs->cxt : ex->cxt;
 		combo_reset(ex, ci);
 		if (cb->join >= 0)
 			foreach_ptr(Node, arg, s->join[cb->join].args)

@@ -31,7 +31,9 @@ INSERT INTO cases VALUES
 	(3, 'inner lookup join',        'SELECT m.label, count(*) AS n, sum(ev.amount) AS total FROM ev JOIN maps m ON m.kind = ev.kind GROUP BY 1'),
 	(4, 'expression, two leaves',   'SELECT o.cat || '':'' || (o.score::int % 50)::text AS k, count(*) AS n FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.doc[''parts'']) o(cat text, score float8) GROUP BY 1'),
 	(5, 'expression, one wide leaf', 'SELECT (o.score * 3)::int % 97 AS k, count(*) AS n, sum(o.score) AS total FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.doc[''parts'']) o(cat text, score float8) GROUP BY 1'),
-	(6, 'expression in a filter',   'SELECT o.cat, count(*) AS n FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.doc[''parts'']) o(cat text, score float8) WHERE (o.score::int % 7) <> 3 GROUP BY 1');
+	(6, 'expression in a filter',   'SELECT o.cat, count(*) AS n FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.doc[''parts'']) o(cat text, score float8) WHERE (o.score::int % 7) <> 3 GROUP BY 1'),
+	(7, 'expression, text and wide leaf', 'SELECT substr(kind, 1, 3) || (big % 7)::text AS k, count(*) AS n FROM ev GROUP BY 1'),
+	(8, 'filter on a text leaf',        'SELECT count(*) AS n, sum(amount) AS total FROM ev WHERE kind <> ''k'' || (id % 50)::text');
 
 -- the scan and the normal plan give the same rows; restarted: how many times the caches started again
 CREATE FUNCTION check_case(q text, OUT pushed bool, OUT restarted int, OUT differences bigint, OUT nrows bigint) LANGUAGE plpgsql AS $$
@@ -61,6 +63,10 @@ SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences 
 
 -- 0: they start again before every chunk
 SET sift.test_limits = 'combo_entries=0';
+SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
+
+-- 4 kB: the caches of a scan hold bytes, not entries, and the values of a text leaf start again with them
+SET sift.test_limits = 'combo_cache_bytes=4096';
 SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
 
 -- workers start their own caches again

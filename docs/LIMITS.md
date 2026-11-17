@@ -24,6 +24,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `joins` | lookup-joined tables per scan | 32 | tables | normal plan (slug shape_width) |  | `agg/spec/expr.h` `SIFT_AGG_MAX_JOINS` | yes |
 | `combos` | value combinations per scan | 128 | combinations | normal plan (slug shape_width) |  | `agg/spec/expr.h` `SIFT_AGG_MAX_COMBOS` | yes |
 | `combo_entries` | distinct input tuples of one value-combination cache | 16,777,216 | entries | the caches start again (re-evaluates the values they held) |  | `agg/combo/int.h` `COMBO_MAX_ENTRIES` | yes |
+| `combo_cache_bytes` | memory the value-combination caches of a scan hold together, half of hash memory at most, and the values of their dictionary leaves | 4,194,304 (4 MiB) | bytes | the caches start again (re-evaluates the values they held) | `work_mem, hash_mem_multiplier` | `agg/combo/int.h` `COMBO_CACHE_BYTES` | yes |
 | `join_keys` | equality columns of a lookup join | 3 | columns | normal plan |  | `agg/spec/expr.h` `SIFT_AGG_MAX_JKEYS` |  |
 | `join_cols` | columns of the joined table that expressions read | 16 | columns | normal plan (slug shape_width) |  | `agg/spec/expr.h` `SIFT_AGG_MAX_JCOLS` | yes |
 | `join_index_eqs` | equalities of a joined-table column with a value, for the index scan that loads it | 3 | equalities | normal plan |  | `agg/spec/expr.h` `SIFT_AGG_MAX_JIDX` |  |

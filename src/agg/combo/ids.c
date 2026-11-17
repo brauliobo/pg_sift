@@ -3,7 +3,7 @@
  * The ids of the dictionary and the 64-bit values a combo reads, the prior ids, and the
  * binding of the leaves a combo is computed from.
  */
-/* check-memory: allow-allocs the cache of combinations stops at COMBO_MAX_ENTRIES (16 million) and its hash slots follow them */
+/* check-memory: allow-allocs the cache of combinations and the values it interns start again at COMBO_CACHE_BYTES (combo_bytes_full) */
 #include "postgres.h"
 
 #include "common/hashfn.h"
@@ -15,8 +15,9 @@
 
 /* the id (1..) of a value among the distinct values of a dictionary leaf; the bytes are copied when new */
 uint32
-intern_id(AggExec *ex, Intern *t, const char *b, uint32 len)
+intern_id(ComboSt *cs, int p, const char *b, uint32 len)
 {
+	Intern	   *t = &cs->in[p];
 	uint32		hv = hash_bytes((const unsigned char *) b, len),
 				h;
 	char	   *cp;
@@ -25,10 +26,10 @@ intern_id(AggExec *ex, Intern *t, const char *b, uint32 len)
 	{
 		t->nslot = 64;
 		t->cap = 16;
-		t->slot = MemoryContextAllocZero(ex->cxt, t->nslot * sizeof(uint32));
-		t->ptr = MemoryContextAlloc(ex->cxt, t->cap * sizeof(char *));
-		t->len = MemoryContextAlloc(ex->cxt, t->cap * sizeof(uint32));
-		t->hv = MemoryContextAlloc(ex->cxt, t->cap * sizeof(uint32));
+		t->slot = MemoryContextAllocZero(cs->icxt, t->nslot * sizeof(uint32));
+		t->ptr = MemoryContextAlloc(cs->icxt, t->cap * sizeof(char *));
+		t->len = MemoryContextAlloc(cs->icxt, t->cap * sizeof(uint32));
+		t->hv = MemoryContextAlloc(cs->icxt, t->cap * sizeof(uint32));
 	}
 	h = hv & (t->nslot - 1);
 	for (uint32 id; (id = t->slot[h]) != 0; h = (h + 1) & (t->nslot - 1))
@@ -41,7 +42,7 @@ intern_id(AggExec *ex, Intern *t, const char *b, uint32 len)
 		t->len = repalloc(t->len, t->cap * sizeof(uint32));
 		t->hv = repalloc(t->hv, t->cap * sizeof(uint32));
 	}
-	cp = MemoryContextAlloc(ex->cxt, len + 1);
+	cp = MemoryContextAlloc(cs->icxt, len + 1);
 	memcpy(cp, b, len);
 	cp[len] = '\0';
 	t->ptr[t->n] = cp;
@@ -49,8 +50,22 @@ intern_id(AggExec *ex, Intern *t, const char *b, uint32 len)
 	t->hv[t->n] = hv;
 	t->slot[h] = ++t->n;
 	if (t->n * 2 > t->nslot)
-		SIFT_SLOT_REHASH(id, t->slot, t->nslot, MemoryContextAllocZero(ex->cxt, t->nslot * sizeof(uint32)), t->n, t->hv[id - 1]);
+		SIFT_SLOT_REHASH(id, t->slot, t->nslot, MemoryContextAllocZero(cs->icxt, t->nslot * sizeof(uint32)), t->n, t->hv[id - 1]);
 	return t->n;
+}
+
+/* the dictionaries forget the ids of dictionary leaf p of combo ci: the values they named start again with the cache */
+void
+cmap_forget(AggExec *ex, int ci, int p)
+{
+	int			slot = ex->spec->nkeys + ex->spec->naggs + ex->clbase[ci] + p;
+
+	for (int i = 0; i < NDICT_SLOTS; i++)
+		if (ex->dslot[i].kmap && ex->dslot[i].kmap[slot])
+		{
+			pfree(ex->dslot[i].kmap[slot]);
+			ex->dslot[i].kmap[slot] = NULL;
+		}
 }
 
 /* the ids over all dictionaries of the entries of d, for dictionary leaf p of combo ci; an entry gets its id when a tuple first reads it (cmap_id) */

@@ -10,11 +10,16 @@
 
 #define COMBO_MAX_ENTRIES	16777216	/* entries of one combo cache before the caches start again (combo_trim) */
 
+#define COMBO_CACHE_BYTES	((Size) 4 << 20)	/* the memory the caches of a scan hold together, at most (combo_cache_bytes) */
+#define COMBO_CACHE_MIN		((Size) 256 << 10)	/* ... and the least of one combo */
+
 #define CMAP_UNSET	UINT32_MAX
 
 #define WIDE_AHEAD	12
 
-extern uint32 intern_id(AggExec *ex, Intern *t, const char *b, uint32 len);
+extern bool combo_bytes_full(const AggExec *ex, int ci);
+extern void cmap_forget(AggExec *ex, int ci, int p);
+extern uint32 intern_id(ComboSt *cs, int p, const char *b, uint32 len);
 
 /* the id of entry c of the dictionary: a dictionary has far more entries than a scan reads (every distinct free text of a column) */
 static inline uint32
@@ -26,7 +31,7 @@ cmap_id(AggExec *ex, uint32 *map, const SiftSrcDict *d, int ci, int p, uint32 c)
 		char		buf[SIFT_SRC_DICT_ENTRY];
 		const char *str = sift_srcdict_str(d, c, &len, buf);
 
-		map[c] = intern_id(ex, &ex->cs[ci].in[p], str, len);
+		map[c] = intern_id(&ex->cs[ci], p, str, len);
 	}
 	return map[c];
 }

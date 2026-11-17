@@ -6,6 +6,7 @@
 #include "postgres.h"
 
 #include "agg/agg.h"
+#include "utils/memutils.h"
 #include "agg/combo/int.h"
 #include "core/hash.h"
 
@@ -152,6 +153,22 @@ combo_forget_priors(AggExec *ex, int ci)
 	cs->nbyrow = 0;
 }
 
+/* the memory the caches of a scan hold together: half of hash memory, at most COMBO_CACHE_BYTES, shared by its combos (at least COMBO_CACHE_MIN each) */
+static Size
+combo_cache_bytes(const AggExec *ex)
+{
+	Size		limit = sift_limit(combo_cache_bytes, COMBO_CACHE_BYTES);
+	Size		all = Min(get_hash_memory_limit() / 2, limit);
+
+	return Min(Max(all / Max(ex->spec->ncombo, 1), COMBO_CACHE_MIN), limit);
+}
+
+bool
+combo_bytes_full(const AggExec *ex, int ci)
+{
+	return MemoryContextMemAllocated(ex->cs[ci].cxt, true) >= combo_cache_bytes(ex);
+}
+
 /* the cache starts again: the entries, the outputs of the slots, the values and the ids of the leaves (nothing else holds them) */
 void
 combo_reset(AggExec *ex, int ci)
@@ -161,6 +178,8 @@ combo_reset(AggExec *ex, int ci)
 	MemoryContext old;
 
 	MemoryContextReset(cs->cxt);
+	if (cs->resettable)
+		memset(cs->in, 0, sizeof(cs->in));
 	cs->nent = cs->entcap = cs->nout = cs->outcap = cs->ndat = cs->datcap = 0;
 	cs->vid = NULL;
 	cs->null_input = NULL;
@@ -191,6 +210,8 @@ combo_reset(AggExec *ex, int ci)
 		}
 		else if (leaf_wide(&ex->lay->leaf[cb->leaf[p]]))
 			id64_init(&cs->id64[p]);
+		else if (cs->resettable && ex->lay->leaf[cb->leaf[p]].vtype == SCV_CODE)
+			cmap_forget(ex, ci, p);
 	MemoryContextSwitchTo(old);
 }
 
@@ -206,7 +227,7 @@ combo_trim(AggExec *ex)
 	bool		full = false;
 
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
-		full |= ex->cs[ci].nent >= max;
+		full |= ex->cs[ci].nent >= max || combo_bytes_full(ex, ci);
 	if (!full)
 		return;
 	ex->n_combo_trim++;

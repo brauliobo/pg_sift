@@ -32,7 +32,9 @@ INSERT INTO cases VALUES
 	(3, 'inner lookup join',        'SELECT m.label, count(*) AS n, sum(ev.amount) AS total FROM ev JOIN maps m ON m.kind = ev.kind GROUP BY 1'),
 	(4, 'expression, two leaves',   'SELECT o.cat || '':'' || (o.score::int % 50)::text AS k, count(*) AS n FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.doc[''parts'']) o(cat text, score float8) GROUP BY 1'),
 	(5, 'expression, one wide leaf', 'SELECT (o.score * 3)::int % 97 AS k, count(*) AS n, sum(o.score) AS total FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.doc[''parts'']) o(cat text, score float8) GROUP BY 1'),
-	(6, 'expression in a filter',   'SELECT o.cat, count(*) AS n FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.doc[''parts'']) o(cat text, score float8) WHERE (o.score::int % 7) <> 3 GROUP BY 1');
+	(6, 'expression in a filter',   'SELECT o.cat, count(*) AS n FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.doc[''parts'']) o(cat text, score float8) WHERE (o.score::int % 7) <> 3 GROUP BY 1'),
+	(7, 'expression, text and wide leaf', 'SELECT substr(kind, 1, 3) || (big % 7)::text AS k, count(*) AS n FROM ev GROUP BY 1'),
+	(8, 'filter on a text leaf',        'SELECT count(*) AS n, sum(amount) AS total FROM ev WHERE kind <> ''k'' || (id % 50)::text');
 -- the scan and the normal plan give the same rows; restarted: how many times the caches started again
 CREATE FUNCTION check_case(q text, OUT pushed bool, OUT restarted int, OUT differences bigint, OUT nrows bigint) LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -53,56 +55,79 @@ BEGIN
 END $$;
 -- the limit as it is: nothing starts again
 SELECT n, shape, c.pushed, c.restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
- n |           shape           | pushed | restarted | nrows | differences 
----+---------------------------+--------+-----------+-------+-------------
- 1 | lookup join, text key     | t      |         0 |   301 |           0
- 2 | lookup join on a lookup   | t      |         0 |    41 |           0
- 3 | inner lookup join         | t      |         0 |   300 |           0
- 4 | expression, two leaves    | t      |         0 |   450 |           0
- 5 | expression, one wide leaf | t      |         0 |    97 |           0
- 6 | expression in a filter    | t      |         0 |     9 |           0
-(6 rows)
+ n |             shape              | pushed | restarted | nrows | differences 
+---+--------------------------------+--------+-----------+-------+-------------
+ 1 | lookup join, text key          | t      |         0 |   301 |           0
+ 2 | lookup join on a lookup        | t      |         0 |    41 |           0
+ 3 | inner lookup join              | t      |         0 |   300 |           0
+ 4 | expression, two leaves         | t      |         0 |   450 |           0
+ 5 | expression, one wide leaf      | t      |         0 |    97 |           0
+ 6 | expression in a filter         | t      |         0 |     9 |           0
+ 7 | expression, text and wide leaf | t      |         0 |   674 |           0
+ 8 | filter on a text leaf          | t      |         0 |     1 |           0
+(8 rows)
 
 -- 64 entries: the caches start again many times, the rows stay the same
 SET sift.test_limits = 'combo_entries=64';
 SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
- n |           shape           | pushed | restarted | nrows | differences 
----+---------------------------+--------+-----------+-------+-------------
- 1 | lookup join, text key     | t      | t         |   301 |           0
- 2 | lookup join on a lookup   | t      | t         |    41 |           0
- 3 | inner lookup join         | t      | t         |   300 |           0
- 4 | expression, two leaves    | t      | t         |   450 |           0
- 5 | expression, one wide leaf | t      | t         |    97 |           0
- 6 | expression in a filter    | t      | t         |     9 |           0
-(6 rows)
+ n |             shape              | pushed | restarted | nrows | differences 
+---+--------------------------------+--------+-----------+-------+-------------
+ 1 | lookup join, text key          | t      | t         |   301 |           0
+ 2 | lookup join on a lookup        | t      | t         |    41 |           0
+ 3 | inner lookup join              | t      | t         |   300 |           0
+ 4 | expression, two leaves         | t      | t         |   450 |           0
+ 5 | expression, one wide leaf      | t      | t         |    97 |           0
+ 6 | expression in a filter         | t      | t         |     9 |           0
+ 7 | expression, text and wide leaf | t      | t         |   674 |           0
+ 8 | filter on a text leaf          | t      | t         |     1 |           0
+(8 rows)
 
 -- 0: they start again before every chunk
 SET sift.test_limits = 'combo_entries=0';
 SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
- n |           shape           | pushed | restarted | nrows | differences 
----+---------------------------+--------+-----------+-------+-------------
- 1 | lookup join, text key     | t      | t         |   301 |           0
- 2 | lookup join on a lookup   | t      | t         |    41 |           0
- 3 | inner lookup join         | t      | t         |   300 |           0
- 4 | expression, two leaves    | t      | t         |   450 |           0
- 5 | expression, one wide leaf | t      | t         |    97 |           0
- 6 | expression in a filter    | t      | t         |     9 |           0
-(6 rows)
+ n |             shape              | pushed | restarted | nrows | differences 
+---+--------------------------------+--------+-----------+-------+-------------
+ 1 | lookup join, text key          | t      | t         |   301 |           0
+ 2 | lookup join on a lookup        | t      | t         |    41 |           0
+ 3 | inner lookup join              | t      | t         |   300 |           0
+ 4 | expression, two leaves         | t      | t         |   450 |           0
+ 5 | expression, one wide leaf      | t      | t         |    97 |           0
+ 6 | expression in a filter         | t      | t         |     9 |           0
+ 7 | expression, text and wide leaf | t      | t         |   674 |           0
+ 8 | filter on a text leaf          | t      | t         |     1 |           0
+(8 rows)
+
+-- 4 kB: the caches of a scan hold bytes, not entries, and the values of a text leaf start again with them
+SET sift.test_limits = 'combo_cache_bytes=4096';
+SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
+ n |             shape              | pushed | restarted | nrows | differences 
+---+--------------------------------+--------+-----------+-------+-------------
+ 1 | lookup join, text key          | t      | t         |   301 |           0
+ 2 | lookup join on a lookup        | t      | t         |    41 |           0
+ 3 | inner lookup join              | t      | t         |   300 |           0
+ 4 | expression, two leaves         | t      | t         |   450 |           0
+ 5 | expression, one wide leaf      | t      | t         |    97 |           0
+ 6 | expression in a filter         | t      | t         |     9 |           0
+ 7 | expression, text and wide leaf | t      | t         |   674 |           0
+ 8 | filter on a text leaf          | t      | t         |     1 |           0
+(8 rows)
 
 -- workers start their own caches again
 RESET sift.test_limits;
 SET sift.test_limits = 'combo_entries=64';
 SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
 SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
- n |           shape           | pushed | restarted | nrows | differences 
----+---------------------------+--------+-----------+-------+-------------
- 1 | lookup join, text key     | t      | t         |   301 |           0
- 2 | lookup join on a lookup   | t      | t         |    41 |           0
- 3 | inner lookup join         | t      | t         |   300 |           0
- 4 | expression, two leaves    | t      | t         |   450 |           0
- 5 | expression, one wide leaf | t      | t         |    97 |           0
- 6 | expression in a filter    | t      | t         |     9 |           0
-(6 rows)
+ n |             shape              | pushed | restarted | nrows | differences 
+---+--------------------------------+--------+-----------+-------+-------------
+ 1 | lookup join, text key          | t      | t         |   301 |           0
+ 2 | lookup join on a lookup        | t      | t         |    41 |           0
+ 3 | inner lookup join              | t      | t         |   300 |           0
+ 4 | expression, two leaves         | t      | t         |   450 |           0
+ 5 | expression, one wide leaf      | t      | t         |    97 |           0
+ 6 | expression in a filter         | t      | t         |     9 |           0
+ 7 | expression, text and wide leaf | t      | t         |   674 |           0
+ 8 | filter on a text leaf          | t      | t         |     1 |           0
+(8 rows)
 
 RESET sift.test_limits;
 DROP TABLE ev, maps, groups, cases;
