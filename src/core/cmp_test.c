@@ -56,10 +56,10 @@ sift_test_radix_sort(PG_FUNCTION_ARGS)
 			   *b;
 	bool		same = true;
 
-	if (n < 0 || n > 100000000 || bits1 < 0 || bits2 < 0)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift._test_radix_sort: n must be 0 to 100000000 and the bits at least 0")));
+	if (n < 0 || n > 100000000 || bits1 < 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift._test_radix_sort: n must be 0 to 100000000 and bits1 at least 0")));
 	m1 = bits1 >= 64 ? UINT64_MAX : ((uint64_t) 1 << bits1) - 1;
-	m2 = bits2 >= 64 ? UINT64_MAX : ((uint64_t) 1 << bits2) - 1;
+	m2 = bits2 >= 64 ? UINT64_MAX : bits2 < 0 ? 0 : ((uint64_t) 1 << bits2) - 1;
 	a = palloc(Max(n, 1) * sizeof(RadixEnt));
 	b = palloc(Max(n, 1) * sizeof(RadixEnt));
 	for (int32 i = 0; i < n; i++)
