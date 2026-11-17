@@ -569,7 +569,7 @@ sift_colw_full(const SiftColSegWriter *w, Size budget)
 Size
 sift_colw_budget(Size mem, int resident_pct, Size base)
 {
-	return Max(mem > base ? (mem - base) * 100 / resident_pct : 0, SIFT_COLW_MIN_BUDGET);
+	return Max(mem > base ? (mem - base) * 100 / resident_pct : 0, (Size) sift_limit(writer_min_budget, SIFT_COLW_MIN_BUDGET));
 }
 
 /* The bytes of a row of a segment that sift_colw_memory counts for it, at its peak */

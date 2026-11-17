@@ -12,6 +12,7 @@
 #endif
 #include "col/build/build_int.h"
 #include "col/point.h"
+#include "core/limits.h"
 
 /*
  * col/build/build.c - CREATE INDEX / REINDEX of a sift_col index: the heap scan forms the rows of one superblock at a time (a batch)
@@ -58,7 +59,7 @@ sift_colb_budget(int nslots)
 	if (sift_test_col_segment_kb > 0)
 		return (Size) sift_test_col_segment_kb * 1024;
 #endif
-	return Max(b, nslots == 1 ? SIFT_COL_BUILD_SERIAL_BUDGET : SIFT_COL_BUILD_MIN_BUDGET);
+	return Max(b, (Size) (nslots == 1 ? sift_limit(build_serial_budget, SIFT_COL_BUILD_SERIAL_BUDGET) : sift_limit(build_min_budget, SIFT_COL_BUILD_MIN_BUDGET)));
 }
 
 /* The segment a participant writes without key_cut: its writer within its share of maintenance_work_mem */

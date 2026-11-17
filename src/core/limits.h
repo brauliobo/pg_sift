@@ -236,6 +236,18 @@
 	X(max_segments, "SIFT_MAX_SEGMENTS", "core/sift.h", SIFT_MAX_SEGMENTS, "segments", \
 	  "directory entries of a sift or sift_col index (a sift_table has sift.table_max_segments for a test)", \
 	  "writers merge the smallest closed segments from 16 entries below it; a forced seal leaves the write buffer open (NOTICE)", "-", 1) \
+	X(build_serial_budget, "SIFT_COL_BUILD_SERIAL_BUDGET", "col/build.h", 64 * 1024 * 1024, "bytes", \
+	  "the least memory the writer of the serial CREATE INDEX of a sift_col index may hold before it cuts a segment, or a run of a key_cut build, whatever maintenance_work_mem is (half of it above)", \
+	  "none: a smaller maintenance_work_mem still builds, the segments or runs are cut at this much", "maintenance_work_mem", 1) \
+	X(build_min_budget, "SIFT_COL_BUILD_MIN_BUDGET", "col/build.h", 16 * 1024 * 1024, "bytes", \
+	  "the least memory a participant of a parallel CREATE INDEX of a sift_col index may hold before it cuts a segment, whatever its share of maintenance_work_mem is", \
+	  "none: the segments are cut at this much", "maintenance_work_mem", 1) \
+	X(scope_sort_min_kb, "SCOPE_SORT_MIN_KB", "col/maint/scope.c", 16384, "kB", \
+	  "the least the sorts of a scope refill hold between them and the writer of the scope segments is given, whatever maintenance_work_mem is (half of it above)", \
+	  "none: the sorts write the rest to temp files and the segments are cut at this much", "maintenance_work_mem", 1) \
+	X(writer_min_budget, "SIFT_COLW_MIN_BUDGET", "col/seg.h", 16 * 1024 * 1024, "bytes", \
+	  "the least memory a segment writer of a build, merge or rewrite is given to hold its point arrays before it cuts the segment, whatever maintenance_work_mem is", \
+	  "none: a smaller maintenance_work_mem still writes the segments, the writer is cut at this much", "maintenance_work_mem", 1) \
 	X(term_bytes, "SIFT_MAX_TERM_BYTES", "core/sift.h", SIFT_MAX_TERM_BYTES, "bytes", \
 	  "a BM25 token", "the token is its first 236 bytes and a hash of all of it", "-", 0) \
 	X(term_tf, "SIFT_MAX_TF", "core/sift.h", SIFT_MAX_TF, "occurrences", \

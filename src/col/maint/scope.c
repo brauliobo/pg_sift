@@ -19,6 +19,7 @@
 #include "col/maint/maint_int.h"
 #include "col/order_sort.h"
 #include "col/scope.h"
+#include "core/limits.h"
 #include "core/membudget.h"
 
 /* The fill of the writers of a promotion: the found flags of the connections, and for an index with scopes the stamps of the fill that expands the rows (*sf; NULL for an index without) */
@@ -225,6 +226,7 @@ refill_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 
 /* The least the sorts of a refill hold between them, as the writer of a merge holds at least SIFT_COLW_MIN_BUDGET */
 #define SCOPE_SORT_MIN_KB	16384
+#define scope_sort_kb()		Max(maintenance_work_mem / 2, (int) sift_limit(scope_sort_min_kb, SCOPE_SORT_MIN_KB))
 
 /* The segments a refill writes of one scope: the rows come sorted, and a segment is done when its writer holds its budget of memory (and the directory has room for another) */
 typedef struct ScopeOut
@@ -266,7 +268,7 @@ scope_out_budget(void)
 	if (sift_test_col_segment_kb > 0)
 		return (Size) sift_test_col_segment_kb * 1024;
 #endif
-	return sift_colw_budget((Size) Max(maintenance_work_mem / 2, SCOPE_SORT_MIN_KB) * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE);
+	return sift_colw_budget((Size) scope_sort_kb() * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE);
 }
 
 static void
@@ -361,7 +363,7 @@ maint_scope_refill(Relation index, bool report)
 	{
 		int			cut[SIFT_COL_CUT_MAX];
 
-		sorter[s] = sift_colsort_begin(r->schema, cut, sift_scope_cut(r, s, cut), Max(maintenance_work_mem / 2, SCOPE_SORT_MIN_KB) / r->nscope);
+		sorter[s] = sift_colsort_begin(r->schema, cut, sift_scope_cut(r, s, cut), scope_sort_kb() / r->nscope);
 	}
 	for (int i = 0; i < nents; i++)
 	{

@@ -11,6 +11,8 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  bits_set_values      | MIN_BITS_VALUES                 |             1024 | t         | t
  blob_bytes           | BLOB_CHUNK_BYTES                |        268435456 | t         | t
  boost                | SIFT_MAX_BOOST                  |            10000 | t         | f
+ build_min_budget     | SIFT_COL_BUILD_MIN_BUDGET       |         16777216 | t         | t
+ build_serial_budget  | SIFT_COL_BUILD_SERIAL_BUDGET    |         67108864 | t         | t
  calendar_groups      | SIFT_PAGG_CAL_GROUPS            |             1024 | t         | f
  col_leaves           | SIFT_COL_MAX_COLS               |              128 | t         | t
  combo_cache_bytes    | SIFT_ARRAY_UNLIMITED            | 1125899906842624 | t         | t
@@ -90,6 +92,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  rows_shared          | SIFT_ROWS_MAX_SHARED            |               32 | t         | t
  scan_filters         | SIFT_COLSRC_MAX_FILTERS         |               64 | t         | f
  scope_batch_entries  | SIFT_SCOPE_BATCH_MAX_ENTRIES    |       2147483648 | t         | t
+ scope_sort_min_kb    | SCOPE_SORT_MIN_KB               |            16384 | t         | t
  segment_cache_kb     | SEGCACHE_MAX_KB                 |            32768 | t         | t
  semi_set             | SIFT_SEMI_MAX_SET               |            65536 | t         | f
  set_keys             | SIFT_CSET_LIMIT                 |               32 | t         | f
@@ -124,7 +127,8 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  wide_dict_bytes      | -                               |       1073741823 | t         | t
  wide_digits          | SIFT_COL_MAX_WIDE_SCALE         |               38 | t         | f
  write_buffer_kb      | SIFT_DEFAULT_WRITE_BUFFER_LIMIT |             4096 | t         | f
-(120 rows)
+ writer_min_budget    | SIFT_COLW_MIN_BUDGET            |         16777216 | t         | t
+(124 rows)
 
 -- a hooked limit is lowered for the session and comes back with RESET
 SET sift.test_limits = 'query_bytes=64, phrase_terms=3';
