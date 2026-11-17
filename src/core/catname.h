@@ -10,6 +10,22 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/relcache.h"
+#include "utils/syscache.h"
+
+static inline void
+sift_rel_missing(Oid relid)
+{
+	ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("relation with OID %u does not exist", relid)));
+}
+
+/* The OID of a relation argument that must exist: a dropped regclass or 0 is a user error (42P01), not a failure of the code that opens it */
+static inline Oid
+sift_rel_must_exist(Oid relid)
+{
+	if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(relid)))
+		sift_rel_missing(relid);
+	return relid;
+}
 
 static inline Relation
 sift_relation_get(Oid relid)
@@ -17,7 +33,7 @@ sift_relation_get(Oid relid)
 	Relation	rel = RelationIdGetRelation(relid);
 
 	if (!RelationIsValid(rel))
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("relation with OID %u does not exist", relid)));
+		sift_rel_missing(relid);
 	return rel;
 }
 
@@ -37,7 +53,7 @@ sift_rel_name(Oid relid)
 	char	   *name = get_rel_name(relid);
 
 	if (name == NULL)
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("relation with OID %u does not exist", relid)));
+		sift_rel_missing(relid);
 	return name;
 }
 

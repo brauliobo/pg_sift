@@ -11,7 +11,7 @@
 
 #include "bm25/analyze.h"
 #include "core/sql.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 
 /* Required-index lookup; callers decide when to use the default analyzer. */
 void

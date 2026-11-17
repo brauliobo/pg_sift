@@ -28,7 +28,7 @@
 #include "col/am.h"
 #include "col/pg.h"
 #include "col/shred.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 
 #define SAMPLE_CHUNKS	16		/* stretches of blocks read, evenly spaced */
 #define CHUNK_BLOCKS	32		/* the most blocks of a stretch */

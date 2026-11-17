@@ -12,6 +12,7 @@
 
 #include "col/am.h"
 #include "col/seg.h"
+#include "core/catname.h"
 #include "core/inspect.h"
 #include "table/table.h"
 

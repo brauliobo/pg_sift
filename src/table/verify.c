@@ -16,7 +16,7 @@
 #include "core/errctx.h"
 #include "core/sql.h"
 #include "table/table.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 
 typedef struct TblVerify
 {

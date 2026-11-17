@@ -18,6 +18,7 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
+#include "core/catname.h"
 #include "core/inspect.h"
 
 PG_FUNCTION_INFO_V1(sift_may_inspect_sql);
@@ -52,15 +53,6 @@ sift_check_inspect(Relation rel)
  * What an inspector was given, before it opens the relation: the access method must be want (NULL: any of the three), and an object of another sift access method is
  * named with the function that serves it. A relation that does not exist is left to the open.
  */
-/* The relation of an OID argument: a relation that is gone (a dropped regclass, 0) is a user error (42P01), not a failure of the code that opens it */
-Oid
-sift_rel_must_exist(Oid relid)
-{
-	if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(relid)))
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("relation with OID %u does not exist", relid)));
-	return relid;
-}
-
 void
 sift_inspect_expect(Oid relid, const char *want, const char *use)
 {

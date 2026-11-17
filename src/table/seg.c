@@ -44,7 +44,7 @@
 #include "core/limits.h"
 #include "table/table.h"
 #include "table/seg_int.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 
 static SiftColStore
 att_store(Form_pg_attribute att, uint8 *scale)

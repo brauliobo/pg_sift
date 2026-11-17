@@ -17,6 +17,7 @@
 #include "utils/tuplestore.h"
 
 #include "col/seg.h"
+#include "core/catname.h"
 #include "core/inspect.h"
 #include "core/sql.h"
 #include "table/table.h"

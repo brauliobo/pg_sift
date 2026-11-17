@@ -39,7 +39,7 @@
 #include "core/sql.h"
 #include "core/cmp.h"
 #include "core/rowmem.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 
 typedef uint64 Row[SIFT_OFFMASK_WORDS];
 

@@ -23,7 +23,7 @@
 #include "parser/parser.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 
 PG_FUNCTION_INFO_V1(sift_col_projection_filter_served);
 

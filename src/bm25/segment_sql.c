@@ -23,6 +23,7 @@
 #include "core/worker.h"
 #include "table/table.h"
 #include "bm25/segment_sql.h"
+#include "core/catname.h"
 #include "core/inspect.h"
 
 #define corrupt SIFT_CORRUPT

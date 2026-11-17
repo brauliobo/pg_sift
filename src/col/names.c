@@ -47,7 +47,6 @@
 #include "core/restrict.h"
 #include "core/store.h"
 #include "core/catname.h"
-#include "core/inspect.h"
 
 /* The table that ALTER TABLE .. SET SCHEMA is about to move, with the schema and the name it has until then: the event after the command does not tell */
 static struct

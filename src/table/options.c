@@ -32,7 +32,7 @@
 #include "col/seg.h"
 #include "core/restrict.h"
 #include "table/table.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 
 typedef enum OptKind
 {

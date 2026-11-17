@@ -5,6 +5,7 @@
 #define SIFT_BM25_SEGMENT_SQL_H
 
 #include "postgres.h"
+#include "core/catname.h"
 #include "core/inspect.h"
 #include "core/ops.h"
 #include "bm25/segment.h"
