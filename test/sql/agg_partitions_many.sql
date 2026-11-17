@@ -94,6 +94,14 @@ SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s 
 SET sift.test_limits = 'partitions=64';
 SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g') WHERE arm = 'single';
 RESET sift.test_limits;
+-- ... and follows hash memory: a scan keeps no more of its partitions' state (8 kB each) than hash memory holds, or the partition_memory the limit gives when it is
+-- smaller (16 MB: 2,048 partitions at the default work_mem): with 4 MB of it the hash memory of the default work_mem (8 MB) holds 1,024 partitions: the 1,201 of pm are refused, and read when hash memory is 128 MB
+SET sift.test_limits = 'partition_memory=4194304';
+SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g') WHERE arm = 'single';
+SET work_mem = '64MB';
+SELECT used, slug FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g') WHERE arm = 'single';
+RESET work_mem;
+RESET sift.test_limits;
 
 -- locks: PostgreSQL's planning takes two relation locks for each partition it keeps (its heap and its index), and a plan of the scan takes no
 -- more than the normal plan (max_locks_per_transaction needs about 2 x the partitions of the plan; the scan opens the index of the partitions

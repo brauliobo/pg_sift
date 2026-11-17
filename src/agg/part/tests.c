@@ -7,24 +7,82 @@
 
 #include "agg/part/int.h"
 
-/* the call on every partition's source, the rest of them opened first; an assignment keeps the last partition's answer */
-#define PART_EACH(ps, call) \
-	do { \
-		open_rest(ps); \
-		for (int i_ = 0; i_ < (ps)->n; i_++) \
-			if ((ps)->src[i_]) \
-			{ \
-				SiftSrcSource *s = (ps)->src[i_]; \
-				call; \
-			} \
-	} while (0)
+/* what the partitions are told is kept and told again to each source opened later: a partition's source is not open for the whole scan (agg/part/open.c) */
+uint64
+part_apply(const PartOp *op, SiftSrcSource *s)
+{
+	switch (op->kind)
+	{
+		case PO_FILTERS:
+			return sift_colsrc_set_filters(s, op->arg, op->n);
+		case PO_PRUNE_STR:
+			sift_colsrc_prune_str(s, op->arg, op->n);
+			return 0;
+		case PO_WIDE:
+			return sift_colsrc_set_wide(s, op->arg, op->n);
+		case PO_TOLERATE_OVF:
+			sift_colsrc_tolerate_ovf(s, op->leaf);
+			return 0;
+		case PO_RAW:
+			sift_colsrc_set_raw(s, op->leaf);
+			return 0;
+		case PO_NUMSUM:
+			sift_colsrc_set_numsum(s, op->leaf);
+			return 0;
+		case PO_RECHECK:
+			sift_colsrc_set_recheck(s, op->leaf, op->mode, op->key, op->cast);
+			return 0;
+	}
+	return 0;
+}
+
+/* the partitions share one layout, so they take the same tests: the first's answer is everyone's */
+uint64
+part_tell(PartSource *ps, const PartOp *op)
+{
+	uint64		answer = part_apply(op, ps->src[0]);
+
+	ps->op = ps->nop == 0 ? MemoryContextAlloc(ps->mcxt, sizeof(PartOp)) : repalloc(ps->op, (ps->nop + 1) * sizeof(PartOp));
+	ps->op[ps->nop++] = *op;
+	ps->opened = true;
+	for (int i = 1; i < ps->n; i++)
+		if (ps->src[i])
+			(void) part_apply(op, ps->src[i]);
+	return answer;
+}
+
+static const void *
+copy_in(PartSource *ps, const void *p, Size len)
+{
+	return memcpy(MemoryContextAlloc(ps->mcxt, Max(len, 1)), p, len);
+}
+
+void
+counters_add(SiftSrcCounters *c, const SiftSrcCounters *pc)
+{
+	c->units += pc->units;
+	c->units_pruned += pc->units_pruned;
+	c->units_set_pruned += pc->units_set_pruned;
+	c->units_search_pruned += pc->units_search_pruned;
+	c->rows += pc->rows;
+	c->bytes += pc->bytes;
+	c->rows_vetted += pc->rows_vetted;
+	c->heap_pages += pc->heap_pages;
+	c->rechecked += pc->rechecked;
+	c->recheck_units += pc->recheck_units;
+	c->point_units += pc->point_units;
+	c->point_rows += pc->point_rows;
+	c->run_windows += pc->run_windows;
+	c->dirty_rows += pc->dirty_rows;
+	c->rows_wbuf += pc->rows_wbuf;
+}
 
 void
 part_counters(const void *impl, SiftSrcCounters *c)
 {
 	const PartSource *ps = impl;
 
-	memset(c, 0, sizeof(*c));
+	*c = ps->done;
 	for (int i = 0; i < ps->n; i++)
 	{
 		SiftSrcCounters pc;
@@ -32,21 +90,7 @@ part_counters(const void *impl, SiftSrcCounters *c)
 		if (ps->src[i] == NULL)
 			continue;
 		sift_colsrc_counters(ps->src[i], &pc);
-		c->units += pc.units;
-		c->units_pruned += pc.units_pruned;
-		c->units_set_pruned += pc.units_set_pruned;
-		c->units_search_pruned += pc.units_search_pruned;
-		c->rows += pc.rows;
-		c->bytes += pc.bytes;
-		c->rows_vetted += pc.rows_vetted;
-		c->heap_pages += pc.heap_pages;
-		c->rechecked += pc.rechecked;
-		c->recheck_units += pc.recheck_units;
-		c->point_units += pc.point_units;
-		c->point_rows += pc.point_rows;
-		c->run_windows += pc.run_windows;
-		c->dirty_rows += pc.dirty_rows;
-		c->rows_wbuf += pc.rows_wbuf;
+		counters_add(c, &pc);
 	}
 }
 
@@ -61,7 +105,7 @@ part_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
 {
 	PartSource *ps = impl;
 
-	PART_EACH(ps, sift_colsrc_prune_str(s, t, nt));
+	(void) part_tell(ps, &(PartOp) {PO_PRUNE_STR, .n = nt, .arg = copy_in(ps, t, nt * sizeof(SiftSrcStrTest))});
 }
 
 bool
@@ -70,15 +114,12 @@ part_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, ui
 	return sift_colsrc_filter_str(cur_of(impl), unit_of(impl), t, rows);
 }
 
-/* the partitions share one layout, so they take the same tests: the first's answer is everyone's */
 int
 part_set_wide(void *impl, const SiftSrcWideTest *t, int nt)
 {
 	PartSource *ps = impl;
-	int			n = 0;
 
-	PART_EACH(ps, n = sift_colsrc_set_wide(s, t, nt));
-	return n;
+	return (int) part_tell(ps, &(PartOp) {PO_WIDE, .n = nt, .arg = copy_in(ps, t, nt * sizeof(SiftSrcWideTest))});
 }
 
 bool
@@ -91,10 +132,8 @@ uint64
 part_set_filters(void *impl, const SiftSrcFilter *f, int nf)
 {
 	PartSource *ps = impl;
-	uint64		applied = 0;
 
-	PART_EACH(ps, applied = sift_colsrc_set_filters(s, f, nf));
-	return applied;
+	return part_tell(ps, &(PartOp) {PO_FILTERS, .n = nf, .arg = copy_in(ps, f, nf * sizeof(SiftSrcFilter))});
 }
 
 bool
@@ -126,7 +165,7 @@ part_tolerate_ovf(void *impl, int leaf)
 {
 	PartSource *ps = impl;
 
-	PART_EACH(ps, sift_colsrc_tolerate_ovf(s, leaf));
+	(void) part_tell(ps, &(PartOp) {PO_TOLERATE_OVF, .leaf = leaf});
 }
 
 void
@@ -134,7 +173,7 @@ part_set_raw(void *impl, int leaf)
 {
 	PartSource *ps = impl;
 
-	PART_EACH(ps, sift_colsrc_set_raw(s, leaf));
+	(void) part_tell(ps, &(PartOp) {PO_RAW, .leaf = leaf});
 }
 
 void
@@ -142,7 +181,7 @@ part_set_numsum(void *impl, int leaf)
 {
 	PartSource *ps = impl;
 
-	PART_EACH(ps, sift_colsrc_set_numsum(s, leaf));
+	(void) part_tell(ps, &(PartOp) {PO_NUMSUM, .leaf = leaf});
 }
 
 void
@@ -150,7 +189,7 @@ part_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast)
 {
 	PartSource *ps = impl;
 
-	PART_EACH(ps, sift_colsrc_set_recheck(s, leaf, mode, key, cast));
+	(void) part_tell(ps, &(PartOp) {PO_RECHECK, .leaf = leaf, .mode = mode, .cast = cast, .key = key ? MemoryContextStrdup(ps->mcxt, key) : NULL});
 }
 
 void

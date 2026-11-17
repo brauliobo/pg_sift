@@ -13,7 +13,8 @@
 /*
  * The partitions of a partitioned table as one column source (agg/part.h, docs/AGG.md "Partitioned tables").
  *
- * The wrapper opens the source of every partition (sift_colsrc_open_part) and is a provider of its own behind the seam of agg/colsrc.h. Its
+ * The wrapper opens the source of a partition (sift_colsrc_open_part) when the scan reaches it, gives it back when the scan leaves it (a scan of thousands
+ * of partitions holds the sources of two of them) and is a provider of its own behind the seam of agg/colsrc.h. Its
  * units are those of the partitions one after the other: begin cuts the range of superblocks it is given into the ranges of the partitions it
  * overlaps (the superblocks of the partitions are numbered one after the other) and starts them one at a time, and every call about the
  * unit the source is at goes to the partition that returned it. Nothing is merged: the dictionaries of the units are their own already, and the
@@ -33,11 +34,16 @@ start_next(PartSource *ps)
 
 		if (from >= to)
 			continue;
+		int			prev = ps->last;
+
 		if (ps->cur >= 0)
 			sift_colsrc_unpin(ps->src[ps->cur]);	/* a scan of many partitions would pin the pages of all of them */
-		/* a worker has the offsets from the leader and opened the first partition only: the others when its items reach them */
+		/* the partition is opened when the scan reaches it (a worker has opened the first only), and the one the scan left gives its source back */
 		open_part(ps, i);
 		ps->cur = i;
+		ps->last = i;
+		if (prev >= 0 && prev != i)
+			release_part(ps, prev);
 		ps->next = i + 1;
 		sift_colsrc_begin(ps->src[i], from - ps->off[i], to - ps->off[i], ps->prune, ps->nprune);
 		return true;
@@ -100,9 +106,10 @@ presented(PartSource *ps, int slot, const SiftSrcDict *d)
 		ps->dict = MemoryContextAllocZero(ps->mcxt, NSLOTS(ps->nleaves) * sizeof(SiftSrcDict));
 	}
 	m = &ps->id[slot];
-	if (m->child != ps->cur + 1 || m->in != d->id)
+	if (m->child != ps->cur + 1 || m->gen != ps->gen[ps->cur] || m->in != d->id)
 	{
 		m->child = ps->cur + 1;
+		m->gen = ps->gen[ps->cur];
 		m->in = d->id;
 		m->out = (const void *) (uintptr_t) (PART_DICT_ID_BASE + ++ps->idseq);
 	}
@@ -195,6 +202,7 @@ part_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
 			continue;
 		open_part(ps, i);
 		units += sift_colsrc_zone_range(ps->src[i], from - ps->off[i], to - ps->off[i], leaf, &pz);
+		release_part(ps, i);
 		z->nvals += pz.nvals;
 		z->nnull += pz.nnull;
 		z->inexact |= pz.inexact;
@@ -229,11 +237,7 @@ sift_aggpart_current(SiftSrcSource *src)
 Relation
 sift_aggpart_heap(SiftSrcSource *src, int i)
 {
-	PartSource *ps = src->impl;
-
-	if (ps->heap[i] == NULL)
-		ps->heap[i] = table_open(ps->heapoid[i], AccessShareLock);
-	return ps->heap[i];
+	return heap_part(src->impl, i);
 }
 
 /* every live column of a keeps its name at its attribute number in b: what a test built on the attribute numbers of a reads in b too */
@@ -272,8 +276,7 @@ sift_aggpart_only(SiftSrcSource *src)
 	}
 	if (only <= 0)
 		return only;
-	open_part(ps, only);
-	return same_attnos(ps->heap[0], ps->heap[only]) ? only : -1;
+	return same_attnos(ps->heap[0], heap_part(ps, only)) ? only : -1;
 }
 
 SiftSrcSource *
@@ -282,6 +285,7 @@ sift_aggpart_source(SiftSrcSource *src, int i)
 	PartSource *ps = src->impl;
 
 	open_part(ps, i);
+	ps->hold[i] = true;
 	return ps->src[i];
 }
 

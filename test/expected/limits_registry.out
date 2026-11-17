@@ -68,6 +68,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  par_build_rows       | PAR_BUILD_ROWS                  |           150000 | t         | t
  par_build_workers    | MAX_WORKERS                     |               15 | t         | f
  part_key_tests       | KEYS_MAX_TESTS                  |            20000 | t         | t
+ partition_memory     | SIFT_AGG_PART_FLOOR             |         16777216 | t         | t
  partitions           | SIFT_AGG_MAX_PARTS              |            32768 | t         | t
  phrase_terms         | SIFT_MAX_PHRASE                 |              128 | t         | t
  pre_census_units     | -                               |               16 | t         | t

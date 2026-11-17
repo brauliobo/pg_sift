@@ -11,6 +11,8 @@
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
 
+#include "executor/nodeAgg.h"
+
 #include "core/limits.h"
 #include "agg/part/int.h"
 
@@ -31,28 +33,78 @@ check_access(Relation parent)
 				 errhint("Run the statement as the table owner or as a role with BYPASSRLS; the normal plan applies the policies.")));
 }
 
+int
+sift_aggpart_max(void)
+{
+	return (int) Min((Size) sift_limit(partitions, SIFT_AGG_MAX_PARTS), Max((Size) get_hash_memory_limit(), (Size) sift_limit(partition_memory, SIFT_AGG_PART_FLOOR)) / SIFT_AGG_PART_STATE);
+}
+
+Relation
+heap_part(PartSource *ps, int i)
+{
+	if (ps->heap[i] == NULL)
+		ps->heap[i] = table_open(ps->heapoid[i], AccessShareLock);
+	return ps->heap[i];
+}
+
 void
 open_part(PartSource *ps, int i)
 {
+	MemoryContext cx;
+
 	if (ps->src[i] != NULL)
 		return;
-	if (ps->heap[i] == NULL)
-		ps->heap[i] = table_open(ps->heapoid[i], AccessShareLock);
+	heap_part(ps, i);
 	if (OidIsValid(ps->indexoid[i]))
 		ps->index[i] = index_open(ps->indexoid[i], AccessShareLock);
-	ps->src[i] = sift_colsrc_open_part(ps->heap[i], ps->index[i], ps->snapshot, ps->mcxt, ps->view[i]);
+	cx = AllocSetContextCreate(ps->mcxt, "sift agg partition", ALLOCSET_DEFAULT_SIZES);
+	ps->pcx[i] = cx;
+	ps->src[i] = sift_colsrc_open_part(ps->heap[i], ps->index[i], ps->snapshot, cx, ps->view[i]);
+	ps->gen[i]++;
+	for (int k = 0; k < ps->nop; k++)
+		(void) part_apply(&ps->op[k], ps->src[i]);
 }
 
-/* the sources of the partitions the scan reads: opened at the first use (the pruned ones are not opened at all) */
-void
-open_rest(PartSource *ps)
+static void
+close_part(PartSource *ps, int i)
 {
-	if (ps->opened)
+	SiftSrcCounters pc;
+
+	sift_colsrc_counters(ps->src[i], &pc);
+	counters_add(&ps->done, &pc);
+	sift_colsrc_close(ps->src[i]);
+	if (ps->index[i])
+		index_close(ps->index[i], NoLock);
+	MemoryContextDelete(ps->pcx[i]);
+	ps->src[i] = NULL;
+	ps->index[i] = NULL;
+	ps->pcx[i] = NULL;
+}
+
+/*
+ * A partition the scan is done with gives its source back: the scan holds the first (it is the layout of all of them), the one it is at and those handed out,
+ * so that the memory of the sources follows the partitions the scan is in, not all of them. The source is opened again on the copy of the directory it was counted on.
+ */
+void
+release_part(PartSource *ps, int i)
+{
+	if (ps->src[i] != NULL && i != 0 && i != ps->last && i != ps->cur && !ps->hold[i] && ps->vlen[i] > 0)
+		close_part(ps, i);
+}
+
+/* what a source says of the view of its directory, kept by the wrapper to open the source again as it was counted */
+static void
+keep_view(PartSource *ps, int i)
+{
+	Size		len;
+	void	   *buf;
+
+	if (ps->view[i] != NULL || (len = sift_colsrc_view_size(ps->src[i])) == 0)
 		return;
-	ps->opened = true;
-	for (int i = 0; i < ps->n; i++)
-		if (ps->skip == NULL || !ps->skip[i])
-			open_part(ps, i);
+	buf = MemoryContextAlloc(ps->mcxt, len);
+	sift_colsrc_view_export(ps->src[i], buf);
+	ps->view[i] = buf;
+	ps->vlen[i] = len;
 }
 
 /*
@@ -67,7 +119,7 @@ part_view_size(void *impl)
 
 	count_sbs(ps);
 	for (int i = 0; i < ps->n; i++)
-		size += sizeof(Size) + (ps->src[i] ? sift_colsrc_view_size(ps->src[i]) : 0);
+		size += sizeof(Size) + ps->vlen[i];
 	return size;
 }
 
@@ -79,12 +131,10 @@ part_view_export(void *impl, void *buf)
 
 	for (int i = 0; i < ps->n; i++)
 	{
-		Size		len = ps->src[i] ? sift_colsrc_view_size(ps->src[i]) : 0;
-
-		memcpy(p, &len, sizeof(Size));
-		if (len > 0)
-			sift_colsrc_view_export(ps->src[i], p + sizeof(Size));
-		p += sizeof(Size) + len;
+		memcpy(p, &ps->vlen[i], sizeof(Size));
+		if (ps->vlen[i] > 0)
+			memcpy(p + sizeof(Size), ps->view[i], ps->vlen[i]);
+		p += sizeof(Size) + ps->vlen[i];
 	}
 }
 
@@ -97,6 +147,7 @@ slice_views(PartSource *ps, const char *view)
 
 		memcpy(&len, view, sizeof(Size));
 		ps->view[i] = len > 0 ? view + sizeof(Size) : NULL;
+		ps->vlen[i] = len;
 		view += sizeof(Size) + len;
 	}
 }
@@ -119,11 +170,16 @@ part_new(Relation parent, int n, const Oid *heaps, const Oid *indexes, Snapshot 
 	ps->heap = MemoryContextAllocZero(mcxt, n * sizeof(Relation));
 	ps->index = MemoryContextAllocZero(mcxt, n * sizeof(Relation));
 	ps->src = MemoryContextAllocZero(mcxt, n * sizeof(SiftSrcSource *));
+	ps->pcx = MemoryContextAllocZero(mcxt, n * sizeof(MemoryContext));
+	ps->gen = MemoryContextAllocZero(mcxt, n * sizeof(uint32));
+	ps->hold = MemoryContextAllocZero(mcxt, n * sizeof(bool));
 	ps->view = MemoryContextAllocZero(mcxt, n * sizeof(void *));
+	ps->vlen = MemoryContextAllocZero(mcxt, n * sizeof(Size));
 	slice_views(ps, view);
 	ps->indexoid = MemoryContextAlloc(mcxt, n * sizeof(Oid));
 	memcpy(ps->indexoid, indexes, n * sizeof(Oid));
 	ps->off = MemoryContextAllocZero(mcxt, (n + 1) * sizeof(uint32));
+	ps->last = -1;
 	open_part(ps, 0);
 	ps->nleaves = sift_colsrc_source_layout(ps->src[0])->nleaves;
 	ps->cur = 0;
@@ -146,11 +202,7 @@ part_close(void *impl)
 	for (int i = 0; i < ps->n; i++)
 	{
 		if (ps->src[i])
-		{
-			sift_colsrc_close(ps->src[i]);
-			if (ps->index[i])
-				index_close(ps->index[i], NoLock);
-		}
+			close_part(ps, i);
 		if (ps->heap[i])
 			table_close(ps->heap[i], NoLock);
 	}
@@ -165,7 +217,7 @@ part_source_layout(const void *impl)
 	return sift_colsrc_source_layout(ps->src[0]);
 }
 
-/* the superblocks the partitions have now, counted once: the units are numbered by them for as long as the source is open */
+/* the superblocks the partitions have now, counted once: the units are numbered by them for as long as the scan runs, and a partition opens again on the directory it was counted on */
 void
 count_sbs(PartSource *ps)
 {
@@ -173,12 +225,16 @@ count_sbs(PartSource *ps)
 
 	if (ps->have_off)
 		return;
-	open_rest(ps);
+	ps->opened = true;
 	for (int i = 0; i < ps->n; i++)
 	{
 		ps->off[i] = (uint32) total;
-		if (ps->skip == NULL || !ps->skip[i])
-			total += sift_colsrc_nsb(ps->src[i]);
+		if (ps->skip != NULL && ps->skip[i])
+			continue;
+		open_part(ps, i);
+		total += sift_colsrc_nsb(ps->src[i]);
+		keep_view(ps, i);
+		release_part(ps, i);
 	}
 	if (total > PG_UINT32_MAX)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: the partitions of a scan hold more superblocks than the scan can number"),
@@ -193,10 +249,18 @@ part_sb_heap(void *impl)
 	PartSource *ps = impl;
 
 	count_sbs(ps);
-	open_rest(ps);				/* a worker takes its offsets from the leader and has opened nothing yet */
 	for (int i = 0; i < ps->n; i++)
-		if ((ps->skip == NULL || !ps->skip[i]) && !sift_colsrc_sb_heap(ps->src[i]))
+	{
+		bool		heap;
+
+		if (ps->skip != NULL && ps->skip[i])
+			continue;
+		open_part(ps, i);		/* a worker takes its offsets from the leader and has opened nothing yet */
+		heap = sift_colsrc_sb_heap(ps->src[i]);
+		release_part(ps, i);
+		if (!heap)
 			return false;
+	}
 	return true;
 }
 

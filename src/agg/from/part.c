@@ -422,8 +422,8 @@ part_source(AggCtx *c)
 	n = list_length(leaves);
 	if (n == 0)
 		return agg_refuse_on(PARTITION_SOURCE, "no partition is left after the pruning");
-	if (n > sift_limit(partitions, SIFT_AGG_MAX_PARTS))
-		return agg_refuse_limit(PARTITION_COUNT, partitions, sift_limit(partitions, SIFT_AGG_MAX_PARTS), "%d partitions are left after the pruning", n);
+	if (n > sift_aggpart_max())
+		return agg_refuse_limit(PARTITION_COUNT, partitions, sift_aggpart_max(), "%d partitions are left after the pruning", n);
 	/* a partition without a column index is the reason, whatever the cost: the one a user can act on */
 	foreach_ptr(RelOptInfo, leaf, leaves)
 		if (!part_has_index(c, leaf))

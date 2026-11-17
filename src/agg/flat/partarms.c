@@ -222,7 +222,7 @@ sift_agg_partition_arms(Query *q, bool apply)
 	if (cols.attnos == NIL || linitial_int(cols.attnos) <= 0)
 		return false;
 	leaves = leaf_oids(parent->relid, &cols, &ordered, &asc, q);
-	if (list_length(leaves) < 2 || list_length(leaves) > sift_limit(partitions, SIFT_AGG_MAX_PARTS))
+	if (list_length(leaves) < 2 || list_length(leaves) > sift_aggpart_max())
 		return false;
 	if (!apply)
 		return true;

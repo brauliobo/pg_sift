@@ -13,9 +13,33 @@
 typedef struct PartId
 {
 	int			child;
+	uint32		gen;
 	const void *in;
 	const void *out;
 } PartId;
+
+/* what the scan told the sources of the partitions (agg/colsrc.h setters), told again to each one that is opened */
+typedef enum PartOpKind
+{
+	PO_FILTERS,
+	PO_PRUNE_STR,
+	PO_WIDE,
+	PO_TOLERATE_OVF,
+	PO_RAW,
+	PO_NUMSUM,
+	PO_RECHECK
+} PartOpKind;
+
+typedef struct PartOp
+{
+	PartOpKind	kind;
+	int			leaf;
+	int			mode;
+	Oid			cast;
+	const char *key;
+	int			n;
+	const void *arg;			/* the array of n tests or filters (the values they point to belong to the scan) */
+} PartOp;
 
 typedef struct PartSource
 {
@@ -23,13 +47,21 @@ typedef struct PartSource
 	Relation	parent;
 	Oid		   *heapoid;
 	Relation   *heap;			/* NULL until a partition is opened or its bound read the first time; the pruned ones are not opened at all (the first's always is: the layout) */
-	Relation   *index;			/* NULL until open_rest, as src, for a partition the scan reads; always NULL for a sift_table */
-	SiftSrcSource **src;
-	const void **view;			/* the directory copy of each partition's source another process exported (part_view_export), NULL for a partition without one */
+	Relation   *index;			/* NULL while the partition's source is closed; always NULL for a sift_table */
+	SiftSrcSource **src;		/* NULL for a partition whose source is closed: at most the first, the one the scan is at and those handed out stay open (release_part) */
+	MemoryContext *pcx;			/* the context of each open source, deleted with it */
+	uint32	   *gen;			/* how many times the source of the partition was opened: a source opened again has dictionaries of its own */
+	const void **view;			/* the copy of the directory each partition's source was counted on (the leader's, or the one another process exported), NULL for a partition without one */
+	Size	   *vlen;			/* the bytes of view[i]: a source with a view is opened again as it was, one without stays open */
+	bool	   *hold;			/* the source of the partition was handed out (sift_aggpart_source) */
+	int			last;			/* the partition the scan started last */
+	SiftSrcCounters done;		/* what the sources that were closed counted */
+	PartOp	   *op;
+	int			nop;
 	Oid		   *indexoid;
 	Snapshot	snapshot;
 	MemoryContext mcxt;
-	bool		opened;			/* open_rest ran: the partitions can no longer be pruned */
+	bool		opened;			/* the partitions were counted or told what to test: they can no longer be pruned */
 	uint32	   *off;			/* n + 1: the first superblock of each partition, the total last */
 	bool		have_off;
 	bool	   *skip;			/* sift_aggpart_prune: the partitions the scan does not read (no superblocks), NULL: all are read */
@@ -118,8 +150,12 @@ extern bool part_unit_rollup_miss(void *impl, const SiftSrcUnit *unit);
 extern uint32 part_unit_rollup_tuples(void *impl, const SiftSrcUnit *unit, int list);
 
 extern void open_part(PartSource *ps, int i);
-extern void open_rest(PartSource *ps);
+extern void release_part(PartSource *ps, int i);
+extern Relation heap_part(PartSource *ps, int i);
 extern void count_sbs(PartSource *ps);
+extern uint64 part_tell(PartSource *ps, const PartOp *op);
+extern uint64 part_apply(const PartOp *op, SiftSrcSource *s);
+extern void counters_add(SiftSrcCounters *c, const SiftSrcCounters *pc);
 
 /* the values a condition leaves a column of the partitioned table (a NULL matches nothing: n can be 0) */
 typedef struct KeyVals

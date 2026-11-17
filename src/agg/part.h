@@ -8,6 +8,13 @@
 
 /* the partitions of a plan, at most: planning keeps the layout and statistics of each for the backend (a few kB) and the scan opens each it does not prune (about 2 kB and 40 us of CPU), so this is far above what the cost of opening leaves the scan a win */
 #define SIFT_AGG_MAX_PARTS		32768
+/* what a scan keeps of each partition while it runs, at most: the copy of the directory its source was counted on (7,880 bytes) and a few words; the sources are open for the partitions the scan is in only */
+#define SIFT_AGG_PART_STATE		8192
+/* the memory the partitions of a scan may keep together when hash memory is small */
+#define SIFT_AGG_PART_FLOOR		(16 << 20)
+
+/* the partitions a scan may have: SIFT_AGG_MAX_PARTS, and no more than keep hash memory (SIFT_AGG_PART_FLOOR at least) at SIFT_AGG_PART_STATE a partition: 2,048 at the default work_mem */
+extern int	sift_aggpart_max(void);
 
 /*
  * The source of the n partitions heaps[i] with their column indexes indexes[i] (all of one provider, with the same layout: the planner proved it).

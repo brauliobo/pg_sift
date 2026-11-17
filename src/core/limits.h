@@ -31,7 +31,9 @@
 
 #define SIFT_LIMITS(X) \
 	X(partitions, "SIFT_AGG_MAX_PARTS", "agg/part.h", SIFT_AGG_MAX_PARTS, "partitions", \
-	  "leaf partitions per SiftAgg scan, after PostgreSQL's pruning", "normal plan (slug partition_count, the detail has the count)", "-", 1) \
+	  "leaf partitions per SiftAgg scan, after PostgreSQL's pruning; no more than hash memory (partition_memory at least) holds at 8 kB a partition (2,048 at the default work_mem)", "normal plan (slug partition_count, the detail has the count)", "-", 1) \
+	X(partition_memory, "SIFT_AGG_PART_FLOOR", "agg/part.h", SIFT_AGG_PART_FLOOR, "bytes", \
+	  "what the partitions of a scan may keep together when hash memory is smaller (SIFT_AGG_PART_STATE, 8 kB, a partition)", "normal plan (the partition limit follows it)", "-", 1) \
 	X(hash_part_combos, "HASH_MAX_COMBOS", "agg/part/prune.c", 1048576, "combinations", \
 	  "value combinations the remainders of a hash level are computed for (once per level)", "the partitions of the level are kept (not pruned)", "-", 1) \
 	X(part_key_tests, "KEYS_MAX_TESTS", "agg/part/prune.c", 20000, "tests", \
