@@ -745,6 +745,18 @@ alias_string(const SiftColOptions *o, int old, int *neu)
 		*neu = old;
 }
 
+/* the column track_changes names, without the quotes it was written in ("Order Id"): taken out once where the options are built, so that every reader has the name as it is */
+static void
+row_key_unquote(SiftColOptions *o)
+{
+	char	   *text = (char *) o + o->track_changes;
+	const char *p = text;
+	char	   *name = sift_cpagg_name_take(&p, "");
+
+	strcpy(text, name);
+	pfree(name);
+}
+
 bytea *
 am_col_amoptions(Datum reloptions, bool validate)
 {
@@ -771,6 +783,8 @@ am_col_amoptions(Datum reloptions, bool validate)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("superunit must be 0 or between %d and %d", SIFT_SUPER_MIN_FAN, SIFT_SUPER_MAX_FAN)));
 	if (o && o->key_order && *((const char *) o + o->key_order))
 		key_order_expand(&o);
+	if (o && o->track_changes && *((const char *) o + o->track_changes) == '"')
+		row_key_unquote(o);
 	return (bytea *) o;
 }
 #ifdef SIFT_TESTING
@@ -879,21 +893,13 @@ sift_col_options_key_order_auto(Relation index)
 	return strncmp(sift_col_options_key_order(index), "auto:", 5) == 0;
 }
 
-static const char *
-row_key_text(Relation index)
+/* the column that track_changes names (am_col_amoptions took the quotes out of it) */
+const char *
+sift_col_options_row_key(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->track_changes ? (const char *) o + o->track_changes : "auto";
-}
-
-/* the column that track_changes names: its quotes ("Order Id") are not part of the name */
-const char *
-sift_col_options_row_key(Relation index)
-{
-	const char *p = row_key_text(index);
-
-	return *p == '"' ? sift_cpagg_name_take(&p, "") : p;
 }
 
 COL_OPT_STR(sift_col_options_connect, connect, "")

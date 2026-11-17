@@ -403,6 +403,7 @@ TESTING_REGRESS += col_track_ctid_chains
 TESTING_REGRESS += col_track_default
 TESTING_REGRESS += col_track_deletes
 TESTING_REGRESS += col_track_drop_concurrently
+TESTING_REGRESS += col_track_key_quoted
 TESTING_REGRESS += col_track_own_statement_reads
 TESTING_REGRESS += col_track_rebaseline
 TESTING_REGRESS += col_track_reindex_concurrently
