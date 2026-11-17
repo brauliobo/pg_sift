@@ -4,7 +4,7 @@
 #
 #   scripts/static.sh [--update-baseline] [--tool NAME[,NAME]] [--files "src/a.c src/b.c"]
 #
-# NAME: tidy, gcc, scan, cppcheck (a tool that is not installed is reported and skipped). A finding is normalized to
+# NAME: tidy, gcc, scan, clang (clang --analyze with the checkers scan-build leaves off: ArrayBound, DivideZero, EnumCastOutOfRange, CallAndMessage, ..), cppcheck (a tool that is not installed is reported and skipped). A finding is normalized to
 # `tool|check|file|message` (no line or column: they drift with every edit; message text and identifiers stay), and compared with
 # scripts/static.baseline, the accepted findings. The new ones are printed. Non-blocking at first: the exit status is 0 unless
 # SIFT_STATIC_STRICT=1 and there are new findings. --update-baseline rewrites the baseline to what was found now (review the diff:
@@ -15,7 +15,7 @@ set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 BASELINE=$REPO/scripts/static.baseline
-UPDATE=0 TOOLS=tidy,gcc,scan,cppcheck FILES=
+UPDATE=0 TOOLS=tidy,gcc,scan,clang,cppcheck FILES=
 while (( $# )); do
 	case $1 in
 		--update-baseline) UPDATE=1 ;;
@@ -60,6 +60,14 @@ scan_build() {
 		sed -nE 's/^(.*):[0-9]+:[0-9]+: warning: (.*)$/scan|analyzer|\1|\2/p'
 }
 
+clang_checkers=core.DivideZero,security.ArrayBound,unix.cstring.UninitializedRead,optin.core.EnumCastOutOfRange,core.CallAndMessage,core.NullDereference,core.uninitialized.Assign,core.uninitialized.Branch,core.uninitialized.ArraySubscript,core.UndefinedBinaryOperatorResult,core.NonNullParamChecker
+
+clang_analyze() {
+	have clang || { echo "static: clang not installed, skipped" >&2; return; }
+	printf '%s\n' "${SRCS[@]}" | jobs4 -I{} sh -c 'cd "$1" && clang --analyze -Xclang -analyzer-checker="$2" -Xclang -analyzer-config -Xclang max-nodes=300000 "${@:4}" "$3" -o /dev/null 2>&1' _ "$REPO" "$clang_checkers" {} "${CFLAGS[@]}" |
+		sed -nE 's/^(.*):[0-9]+:[0-9]+: warning: (.*) \[([a-zA-Z0-9.]+)\]$/clang|\3|\1|\2 [\3]/p'
+}
+
 cppcheck_run() {
 	have cppcheck || { echo "static: cppcheck not installed, skipped" >&2; return; }
 	( cd "$REPO" && cppcheck -q --enable=warning,portability --inline-suppr --std=c11 "${INC[@]}" --suppress=missingInclude \
@@ -67,13 +75,14 @@ cppcheck_run() {
 		sed -nE 's/^(.*):[0-9]+:[0-9]+: warning: (.*) \[([a-zA-Z0-9_]+)\]$/cppcheck|\3|\1|\2/p'
 }
 
-export REPO WORK
+export REPO WORK clang_checkers
 export -f have
 for t in ${TOOLS//,/ }; do
 	case $t in
 		tidy) tidy ;;
 		gcc) gcc_analyzer ;;
 		scan) CC=$(command -v clang || echo cc) CFLAGS="${CFLAGS[*]}" scan_build ;;
+		clang) clang_analyze ;;
 		cppcheck) cppcheck_run ;;
 		*) echo "static: unknown tool $t" >&2 ;;
 	esac
@@ -81,11 +90,12 @@ done | sed -E "s#$REPO/##g" | sort -u >"$WORK/found"
 
 echo "static: $(wc -l <"$WORK/found") findings from ${#SRCS[@]} files ($(cut -d'|' -f1 "$WORK/found" | sort | uniq -c | tr -s ' ' | tr '\n' ',' | sed 's/,$//'))"
 if (( UPDATE )); then
-	{ echo "# Accepted findings of scripts/static.sh: tool|check|file|message, no line numbers. Regenerate with scripts/static.sh --update-baseline."; cat "$WORK/found"; } >"$BASELINE"
+	{ echo "# Accepted findings of scripts/static.sh: tool|check|file|message, no line numbers, then a TAB and the reason it is accepted (read, not guessed). Regenerate with scripts/static.sh --update-baseline (the reasons are kept)."
+	  awk -F'\t' 'NR == FNR { if (NF > 1) why[$1] = $2; next } { print ($0 in why) ? $0 "\t" why[$0] : $0 }' <(grep -v '^#' "$BASELINE") "$WORK/found"; } >"$BASELINE.new" && mv "$BASELINE.new" "$BASELINE"
 	echo "static: baseline written: $BASELINE"
 	exit 0
 fi
-grep -v '^#' "$BASELINE" 2>/dev/null | sort -u >"$WORK/accepted"
+grep -v '^#' "$BASELINE" 2>/dev/null | cut -f1 | sort -u >"$WORK/accepted"
 comm -23 "$WORK/found" "$WORK/accepted" >"$WORK/new"
 comm -13 "$WORK/found" "$WORK/accepted" >"$WORK/fixed"
 echo "static: $(wc -l <"$WORK/new") new, $(wc -l <"$WORK/fixed") in the baseline no longer found"
