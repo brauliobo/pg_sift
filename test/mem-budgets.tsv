@@ -7,7 +7,12 @@ bm25_merge	closed	maintenance_work_mem	8MB		the runs and the inverted buffer of 
 bm25_promote	closed	maintenance_work_mem	8MB		the sort of the documents of a sealed segment
 bm25_search	closed	work_mem	32MB		the state of a search scan: each open segment holds about 165 kB (a 64 kB dictionary block, its header and stream reader), up to 128 segments (24 MB), plus 8 MB of cursors, candidates and top-N; 0.5 MB at 2 segments, 9.8 MB at 60
 bm25_verify	closed	maintenance_work_mem	8MB		the walk of one segment and the heap check of sift.verify: a context for each segment, deleted at its end (before: 115 MB held for 60 segments, now 0.2 MB)
+col_build	open		192MB	maintenance_work_mem	the rows, runs and segment writer of CREATE INDEX of a sift_col index: 136 MB held at the default maintenance_work_mem (col_build_memory); the intended budget is maintenance_work_mem plus a constant, lane/5.0.1-build-memory is fixing it
+col_merge	open		96MB	maintenance_work_mem	the input segments, one batch each, and the partition being written by a column merge: 73 MB measured, it follows the inputs
 col_orphan_sweep	closed		8MB		the decoded unit of the sweep of overflow records (4.7 MB)
+col_rewrite	closed		1MB		the view of the segments the rewrite rule judges (1 kB)
+col_scope_refill	open		64MB	maintenance_work_mem	the units decoded and the runs of a scope refill: 48 MB measured, the runs hold at least 16 MB
+col_tomb_log	closed	sift.tomb_log_limit	8MB		the tombstone log a backend keeps of an index, capped by sift.tomb_log_limit (3 MB measured)
 col_verify	closed	3*maintenance_work_mem	8MB		the two sorts and the window of row hashes of sift.col_verify, each held to maintenance_work_mem (24 MB at the default, 17.6 MB at 4 MB)
 col_write_buffer	closed		16MB		the reader of the write buffer of a column index (12.6 MB)
 index_vacuum	closed	maintenance_work_mem	16MB		the directory snapshot and the steps of the ambulkdelete and amvacuumcleanup of an index, with the promotions and merges the cleanup runs inside it (8.6 MB at the default maintenance_work_mem)

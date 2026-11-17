@@ -3,6 +3,7 @@
 #define SIFT_MEMBUDGET_TABLE_H
 
 #include "agg/spec/spec.h"
+#include "core/tomb.h"
 #include "miscadmin.h"
 
 static Size
@@ -54,9 +55,39 @@ budget_bm25_verify(void)
 }
 
 static Size
+budget_col_build(void)
+{
+	return (((Size) 201326592UL));
+}
+
+static Size
+budget_col_merge(void)
+{
+	return (((Size) 100663296UL));
+}
+
+static Size
 budget_col_orphan_sweep(void)
 {
 	return (((Size) 8388608UL));
+}
+
+static Size
+budget_col_rewrite(void)
+{
+	return (((Size) 1048576UL));
+}
+
+static Size
+budget_col_scope_refill(void)
+{
+	return (((Size) 67108864UL));
+}
+
+static Size
+budget_col_tomb_log(void)
+{
+	return (((Size) sift_tomb_log_limit_kb * 1024) + ((Size) 8388608UL));
 }
 
 static Size
@@ -103,7 +134,12 @@ static const struct
 	{"bm25_promote", budget_bm25_promote, "maintenance_work_mem + 8MB"},
 	{"bm25_search", budget_bm25_search, "work_mem + 32MB"},
 	{"bm25_verify", budget_bm25_verify, "maintenance_work_mem + 8MB"},
+	{"col_build", budget_col_build, "192MB (open: ceiling measured today)"},
+	{"col_merge", budget_col_merge, "96MB (open: ceiling measured today)"},
 	{"col_orphan_sweep", budget_col_orphan_sweep, "8MB"},
+	{"col_rewrite", budget_col_rewrite, "1MB"},
+	{"col_scope_refill", budget_col_scope_refill, "64MB (open: ceiling measured today)"},
+	{"col_tomb_log", budget_col_tomb_log, "sift.tomb_log_limit + 8MB"},
 	{"col_verify", budget_col_verify, "3*maintenance_work_mem + 8MB"},
 	{"col_write_buffer", budget_col_write_buffer, "16MB"},
 	{"index_vacuum", budget_index_vacuum, "maintenance_work_mem + 16MB"},

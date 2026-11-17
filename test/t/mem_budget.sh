@@ -49,6 +49,8 @@ check "a scan that can spill holds twice hash memory and a constant at work_mem 
 	test "$(agg_peak "SELECT k2, count(*), sum(amount) FROM c GROUP BY 1")" -lt 20971520
 SCOPE=col_verify; check "a column verify over its lowered budget fails naming col_verify" red "SELECT sift.col_verify('c_col', true)"
 SCOPE=index_vacuum; check "a VACUUM over its lowered budget fails naming index_vacuum" red "UPDATE c SET amount = amount + 1 WHERE k < 2" "VACUUM c"
+sql mb "CREATE TABLE ct AS SELECT g AS id, g % 7 AS k, g % 500 AS k2, 'n' || g % 300 AS txt, g::numeric AS amount FROM generate_series(1, 20000) g" >/dev/null
+SCOPE=col_build; check "a column build over its lowered budget fails naming col_build" red "CREATE INDEX ct_col ON ct USING sift_col (id, k, k2, txt, amount)"
 check "the budget table, the generated header and the docs agree" bash -c "cd '$REPO' && python3 scripts/gen-membudget.py --check"
 check "the open rows are listed for the CI report" bash -c "cd '$REPO' && python3 scripts/gen-membudget.py --open >/dev/null"
 out=$(sql mb "SET sift.test_mem_check = off" "SET sift.test_mem_budget_scale = 0.0001" "SELECT count(*) FROM d WHERE body @@> 'wireless charger'" 2>&1)
