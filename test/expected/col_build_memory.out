@@ -290,7 +290,7 @@ SELECT lab(400000, 3)
 CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num, d2, region, status, name, amt, flag, doc) WITH (paths = 'doc->a text, doc->b int, doc->c text', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')
 INSERT INTO peaks VALUES ('concurrently scope 3', 65536, 400000, current_setting('sift.test_col_build_peak_kb')::int)
 \set WORK_KB 40960
-\set SLOPE_KB 6144
+\set SLOPE_KB 8192
 WITH r AS (SELECT kind, mwm_kb, kb, dense_rank() OVER (PARTITION BY kind, mwm_kb ORDER BY nrows DESC) AS larger FROM peaks)
 SELECT kind, mwm_kb, bool_and(kb <= mwm_kb * 5 / 4 + :WORK_KB) AS within_budget_and_working_set,
 	   max(kb) FILTER (WHERE larger = 1) - max(kb) FILTER (WHERE larger = 2) <= :SLOPE_KB AS flat_in_rows

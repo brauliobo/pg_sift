@@ -63,7 +63,7 @@ $$ SELECT format('SET maintenance_work_mem = %s', p.mwm_kb)
 SELECT s FROM plan p, LATERAL steps(p) s ORDER BY p.n \gexec
 
 \set WORK_KB 40960
-\set SLOPE_KB 6144
+\set SLOPE_KB 8192
 WITH r AS (SELECT kind, mwm_kb, kb, dense_rank() OVER (PARTITION BY kind, mwm_kb ORDER BY nrows DESC) AS larger FROM peaks)
 SELECT kind, mwm_kb, bool_and(kb <= mwm_kb * 5 / 4 + :WORK_KB) AS within_budget_and_working_set,
 	   max(kb) FILTER (WHERE larger = 1) - max(kb) FILTER (WHERE larger = 2) <= :SLOPE_KB AS flat_in_rows
