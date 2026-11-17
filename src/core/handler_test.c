@@ -124,6 +124,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_no_chain_root",
 							 "Testing: the row triggers of track_changes = ctid write the address of the version a HOT update chain ends in, not the one of its root (a mutant of the tracking).",
 							 NULL, &sift_test_no_chain_root, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_mutant",
+							"Testing: a deliberate defect of the fault matrix: 1 a job keeps its progress slot, 2 the orphan triggers of a dropped index stay (0 = none).",
+							NULL, &sift_test_mutant, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_count_gate",
 							 "Testing: a count waits for advisory lock (0x51F7, 1) once its plan is made.",
 							 NULL, &sift_test_count_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

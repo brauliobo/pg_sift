@@ -1,4 +1,5 @@
 # The scenarios of the crash and fault matrices (col_crash_matrix.sh, fault_matrix.sh) on the node "cm": the table docs and the operations that publish a directory of an index, the
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # verification of a healthy state (every sift index verifies against its heap and passes the store check, the answers through the indexes are the plain plan's).
 PLAIN=("SET sift.enable_agg = off" "SET sift.enable_scan = off" "SET sift.enable_count = off" "SET enable_indexscan = off" "SET enable_bitmapscan = off")
 IDX=("SET sift.enable_agg = on" "SET seq_page_cost = 10000" "SET enable_seqscan = off")

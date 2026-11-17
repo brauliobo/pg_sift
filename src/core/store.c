@@ -61,26 +61,53 @@ sift_store_space_test_point(int phase)
 /*
  * sift.test_crash_dir = n faults the process, its log flushed, before (n > 0) or after (n < 0) the |n|-th directory update it makes
  * since the setting (every build, promotion, merge, VACUUM and table sealing publishes through store_update); sift.test_crash_kind picks the fault: 0 SIGKILL, 1 an ERROR, 2 a wait for
- * advisory lock (0x51F7, 13), where a test cancels or terminates the process, stops the server or lets it go on (a wait after the update is not interruptible: the update holds interrupts
- * while it frees blocks); sift.test_crash_worker picks background workers instead of the other processes. sift._test_dir_updates() is the count.
+ * advisory lock (0x51F7, 13), where a test cancels or terminates the process, stops the server or lets it go on. The update holds interrupts while it has the buffers of the metapage and
+ * the directory locked: the wait is outside of that, before the update takes its locks (n > 0) and after it released them (n < 0), where a cancel and a terminate act at once; a SIGKILL
+ * and an ERROR before the update are inside it; an ERROR or a wait after it comes after the update has handed its blocks to the directory and released its buffers, and only after one that publishes: a caller of the others updates its own books once it returns. sift.test_crash_worker picks background workers instead of the other processes. sift._test_dir_updates() is the count.
  */
+static bool
+dir_fault_here(bool after)
+{
+	return sift_test_crash_dir != 0 && (MyBackendType == B_BG_WORKER) == sift_test_crash_worker &&
+		sift_test_crash_dir == (after ? -sift_test_dir_updates : sift_test_dir_updates);
+}
+
+void
+sift_store_dir_test_enter(void)
+{
+	sift_test_dir_updates++;
+	if (sift_test_crash_kind == 2 && dir_fault_here(false))
+		sift_test_wait(13);
+}
+
+static void
+dir_fault_error(bool after)
+{
+	ereport(ERROR, (errcode(ERRCODE_OPERATOR_INTERVENTION), errmsg("sift test: error %s directory update %d", after ? "after" : "before", sift_test_dir_updates)));
+}
+
+void
+sift_store_dir_test_leave(bool publish)
+{
+	if (!publish || !dir_fault_here(true))
+		return;
+	if (sift_test_crash_kind == 2)
+		sift_test_wait(13);
+	else if (sift_test_crash_kind == 1)
+		dir_fault_error(true);
+}
+
 void
 sift_store_dir_test_point(bool after)
 {
-	if (!after)
-		sift_test_dir_updates++;
-	if (sift_test_crash_dir == 0 || (MyBackendType == B_BG_WORKER) != sift_test_crash_worker ||
-		sift_test_crash_dir != (after ? -sift_test_dir_updates : sift_test_dir_updates))
+	if (sift_test_crash_kind == 2 || (sift_test_crash_kind == 1 && after) || !dir_fault_here(after))
 		return;
 	ereport(LOG, (errmsg("sift test: fault %d %s directory update %d", sift_test_crash_kind, after ? "after" : "before", sift_test_dir_updates)));
 	if (!XLogRecPtrIsInvalid(XactLastRecEnd))
 		XLogFlush(XactLastRecEnd);
 	if (sift_test_crash_kind == 1)
-		ereport(ERROR, (errmsg("sift test: error %s directory update %d", after ? "after" : "before", sift_test_dir_updates)));
-	if (sift_test_crash_kind == 2)
-		sift_test_wait(13);
-	else
-		kill(MyProcPid, SIGKILL);
+		dir_fault_error(false);
+	kill(MyProcPid, SIGKILL);
 }
 
 /* sift.test_crash_clear = n kills the process with SIGKILL, its WAL flushed, when a pass that clears liveness bits (P8) has visited its nth segment */
@@ -507,6 +534,7 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 
 	/* a test lets a reader start between the xid and the locks: its snapshot is later than the xid and reads the directory as it is before this change */
 	SIFT_TEST_GATE(pending && sift_test_release_gate, 6);
+	SIFT_DIR_TEST_ENTER();
 	metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
 	dirbuf = publish ? lock_dir(index, BUFFER_LOCK_EXCLUSIVE) : InvalidBuffer;
 	SIFT_DIR_TEST_POINT(false);
@@ -556,10 +584,17 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 		invalidate_mapping(index);
 		RESUME_INTERRUPTS();
 	}
+	SIFT_DIR_TEST_LEAVE(publish);
 }
 
 void
 sift_dir_update(Relation index, const SiftDirChange *chg)
 {
 	store_update(index, chg, true, NULL);
+}
+
+void
+sift_dir_publish(Relation index, const SiftDirChange *chg, SiftWriteTarget *wt)
+{
+	store_update(index, chg, true, wt);
 }

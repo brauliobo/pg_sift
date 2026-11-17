@@ -77,6 +77,7 @@ release(void)
 {
 	if (mine == NULL)
 		return;
+	SIFT_TEST_MUTANT(1, return);
 	SpinLockAcquire(&shared->mutex);
 	memset(mine, 0, sizeof(*mine));
 	SpinLockRelease(&shared->mutex);

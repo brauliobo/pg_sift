@@ -98,16 +98,20 @@ extern PGDLLIMPORT bool sift_test_par_gate;
 extern PGDLLIMPORT bool sift_test_rebuild_gate;
 extern PGDLLIMPORT bool sift_test_intern_gate;
 extern PGDLLIMPORT bool sift_test_par_stats;
+/* sift.test_mutant: 1 a job keeps its progress slot, 2 the orphan triggers of a dropped index stay (defects the fault matrix must catch) */
+extern PGDLLIMPORT int sift_test_mutant;
 extern void sift_test_wait(int key);
 extern void sift_test_wait_inval(int key);
 extern void sift_test_hold(int64 key);
 #define SIFT_TEST_GATE(flag, key) do { if (flag) sift_test_wait(key); } while (0)
 #define SIFT_BULKDELETE_GATE() sift_test_hold(sift_test_bulkdelete_gate)
+#define SIFT_TEST_MUTANT(kind, action) do { if (sift_test_mutant == (kind)) action; } while (0)
 /* the same, then what the next lock of a statement does: the cache entry of a table that was vacuumed meanwhile is replaced */
 #define SIFT_TEST_GATE_INVAL(flag, key) do { if (flag) sift_test_wait_inval(key); } while (0)
 #else
 #define SIFT_TEST_GATE(flag, key) ((void) 0)
 #define SIFT_BULKDELETE_GATE() ((void) 0)
+#define SIFT_TEST_MUTANT(kind, action) ((void) 0)
 #define SIFT_TEST_GATE_INVAL(flag, key) ((void) 0)
 #endif
 

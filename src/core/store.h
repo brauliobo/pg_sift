@@ -215,6 +215,8 @@ typedef struct SiftDirChange
 typedef struct SiftWriteTarget SiftWriteTarget;
 
 extern void sift_dir_update(Relation index, const SiftDirChange *chg);
+/* The same for a step that wrote through wt (NULL: it wrote nothing): the blocks wt took belong to the directory from this update on, so a later error does not return them again */
+extern void sift_dir_publish(Relation index, const SiftDirChange *chg, SiftWriteTarget *wt);
 /* Publish a completed SHARED write target; subsequent abort frees only unpublished allocations. */
 extern void sift_wt_publish(SiftWriteTarget *wt, const SiftDirChange *chg);
 
@@ -252,6 +254,10 @@ extern PGDLLIMPORT bool sift_test_cut_with_standby;
 extern PGDLLIMPORT int sift_test_dir_updates;
 extern void sift_store_dir_test_point(bool after);
 #define SIFT_DIR_TEST_POINT(after) sift_store_dir_test_point(after)
+extern void sift_store_dir_test_enter(void);
+extern void sift_store_dir_test_leave(bool publish);
+#define SIFT_DIR_TEST_ENTER() sift_store_dir_test_enter()
+#define SIFT_DIR_TEST_LEAVE(publish) sift_store_dir_test_leave(publish)
 extern PGDLLIMPORT int sift_test_crash_clear;
 extern PGDLLIMPORT int sift_test_clears;
 extern void sift_store_clear_test_point(void);
@@ -259,6 +265,8 @@ extern void sift_store_clear_test_point(void);
 #else
 #define SIFT_SPACE_TEST_POINT(phase) ((void) 0)
 #define SIFT_DIR_TEST_POINT(after) ((void) 0)
+#define SIFT_DIR_TEST_ENTER() ((void) 0)
+#define SIFT_DIR_TEST_LEAVE(publish) ((void) 0)
 #define SIFT_CLEAR_TEST_POINT() ((void) 0)
 #endif
 extern uint64 sift_store_space_written(void);
