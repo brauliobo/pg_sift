@@ -34,7 +34,7 @@ class Classes(unittest.TestCase):
     def test_opname(self):
         for what, want in [('promoted a sealed column segment of', 'promotion'), ('promoted (write buffer rows) the write buffer of', 'promotion-outer'),
                            ('merged 3 column segments into 1 of', 'merge'), ('shrunk', 'shrink'), ('rewrote (dirty units) the segments of', 'rewrote'),
-                           ('refreshed net pre-aggregates of', 'sidecar'), ('column rewrite worker finished', 'worker')]:
+                           ('refreshed net pre-aggregates of', 'sidecar'), ('maintenance worker finished', 'worker')]:
             self.assertEqual(wamp.opname(what), want, what)
 
 

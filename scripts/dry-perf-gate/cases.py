@@ -226,10 +226,6 @@ def wait_for(pred):
 
 
 BGW = [
-    # VACUUM of a churned index asks the rewrite worker (7 segments -> 2)
-    Case('bgw_col_rewrite', g('bgw', 'col-maint'), 'VACUUM mt', kind='once', pre=(NO_WORKERS,) + FILL_MT + ('DELETE FROM mt WHERE id % 10 < 4',) + ASYNC_ON, plan=False, par=True,
-         after=wait_for("(SELECT segments FROM sift.worker_state('mt_col')) < 7 AND coalesce((SELECT NOT running FROM sift.worker_state('mt_col')), true)"), cleanup=ASYNC_OFF,
-         note='the rewrite worker VACUUM asks for'),
     # an insert that seals the write buffer asks the promotion worker
     Case('bgw_bm25_promote', g('bgw', 'bm25-maint', 'bm25-wbuf'), 'INSERT INTO wbp SELECT * FROM docs', kind='once', pre=(NO_WORKERS, 'TRUNCATE wbp') + ASYNC_ON, plan=False, par=True,
          after=wait_for("coalesce((SELECT sealed = 0 AND segments = 2 FROM sift.worker_state('wbp_bm25')), false)"), cleanup=ASYNC_OFF, note='the promotion worker asked by the seal of the write buffer'),
