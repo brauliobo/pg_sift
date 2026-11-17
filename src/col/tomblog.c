@@ -19,6 +19,7 @@
 #include "col/am.h"
 #include "col/maint/maint_int.h"
 #include "core/tomb.h"
+#include "core/membudget.h"
 
 typedef struct LogEnt
 {
@@ -143,6 +144,7 @@ sift_col_log(Relation index)
 	/* the tombstones this backend holds back reach the log before it is read (supersede.c) */
 	sift_col_tombs_flush();
 	e = log_ent(index);
+	SIFT_MEM_SCOPE(col_tomb_log, e->cxt);
 	seg = sift_tomb_find_seg(&e->dir);
 
 	if (seg == NULL)
@@ -160,6 +162,7 @@ sift_col_log(Relation index)
 	if (e->log.gen != 0 && e->log.gen != seg->gen)
 		sift_tomb_forget(&e->log);
 	sift_tomb_sync(index, &e->log);
+	SIFT_MEM_CHECKPOINT();
 	return &e->log;
 }
 
