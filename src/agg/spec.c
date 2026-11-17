@@ -790,6 +790,29 @@ sift_aggspec_holds_groups(const SiftAggSpec *s)
 	return s->nkeys > 0 && !s->topn && !sift_aggspec_spillable(s);
 }
 
+/* does the aggregate intern the strings it counts in a table of their own (count(DISTINCT) of a dictionary leaf of a string type)? */
+static bool
+agg_interns_values(const SiftAggAgg *a)
+{
+	char		category = 0;
+	bool		preferred;
+
+	if (a->kind == SAA_COUNT_DISTINCT && a->leaf >= 0)
+		get_type_category_preferred(a->argtype, &category, &preferred);
+	return category == TYPCATEGORY_STRING;
+}
+
+/* does the scan keep the distinct strings of a count(DISTINCT) in memory, which no spill of its groups writes out? */
+bool
+sift_aggspec_holds_values(const SiftAggSpec *s)
+{
+	bool		holds = false;
+
+	for (int i = 0; i < s->naggs; i++)
+		holds |= agg_interns_values(&s->agg[i]);
+	return holds;
+}
+
 /*
  * The bytes a group table that cannot spill may take: the factor (group_nospill_factor) times the hash memory, or times the base when that is more. The planner leaves a
  * scan whose estimated table passes it to the normal plan, and the scan raises an error when its table does. *factor and *floor_bytes: the two terms, for the message.

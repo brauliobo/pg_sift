@@ -80,6 +80,7 @@ void ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid);
 void ot_init_image(OutTable *t, Oid typid);
 void ot_init_key(OutTable *t, Oid eqop, Oid typid, Oid collid);
 uint32 ot_id(OutTable *t, Datum d);
+double ot_bytes(const OutTable *t);
 
 /* the value of an integer key (ints) as the key of its IntIds table */
 static inline int64
@@ -106,6 +107,7 @@ uint32 *dict_kmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ki);
 uint32 *dict_amap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ai);
 uint32 kmap_resolve(AggExec *ex, const SiftSrcDict *d, int ki, uint32 c);
 uint32 amap_resolve(AggExec *ex, const SiftSrcDict *d, int ai, uint32 c);
+void values_nospill_check(const AggExec *ex, int ai);
 
 /* The maps of a dictionary give an entry its id when a tuple first reads it: a dictionary has far more entries (every distinct text of the column, 100,000 and more) than a scan reads. */
 #define DMAP_UNSET	UINT32_MAX

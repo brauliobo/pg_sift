@@ -22,6 +22,7 @@ amap_resolve(AggExec *ex, const SiftSrcDict *d, int ai, uint32 c)
 	uint32		id = ot_id(&ex->aot[ai], text_datum(ex->spec->agg[ai].argtype, -1, str, len));
 
 	MemoryContextSwitchTo(old);
+	values_nospill_check(ex, ai);
 	return id;
 }
 

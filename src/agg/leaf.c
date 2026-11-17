@@ -195,6 +195,13 @@ ot_id(OutTable *t, Datum d)
 	return t->n;
 }
 
+/* what the table holds: the arrays, the slots, and the values with the header of their chunk */
+double
+ot_bytes(const OutTable *t)
+{
+	return (double) t->cap * (sizeof(Datum) + sizeof(uint32)) + (double) t->nslot * sizeof(uint32) + (double) t->bytes + (double) t->n * 16;
+}
+
 void
 rt_init(RangeTab *r, int esize)
 {

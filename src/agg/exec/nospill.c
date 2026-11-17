@@ -21,7 +21,8 @@ nospill_walk(PlanState *ps, void *context)
 	if (IsA(ps, CustomScanState))
 	{
 		if (((CustomScanState *) ps)->methods == &agg_exec_methods)
-			*rerun = sift_aggspec_holds_groups(((AggExec *) ps)->spec) ? ((AggExec *) ps)->spec->rerun : NULL;
+			*rerun = sift_aggspec_holds_groups(((AggExec *) ps)->spec) || sift_aggspec_holds_values(((AggExec *) ps)->spec) ?
+				((AggExec *) ps)->spec->rerun : NULL;
 		else if (((CustomScan *) ps->plan)->methods == &sift_agg_rows_plan_methods)
 			*rerun = sift_agg_rows_rerun((CustomScanState *) ps);
 		if (*rerun != NULL)

@@ -1,0 +1,33 @@
+-- count(DISTINCT text) interns the strings it counts, which no spill of the group table writes out: past hash memory (work_mem times hash_mem_multiplier) the
+-- statement runs again as PostgreSQL plans it, whose sort spills. NULLs and empty strings are in the data; the rows must be the same at 64 kB and at 128 MB of
+-- work_mem, grouped or not, as the scan and as the normal plan (outcome); `scan` says whether the plan is the scan's.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+
+CREATE TABLE dts (id int, k int, txt text) WITH (autovacuum_enabled = false);
+INSERT INTO dts
+SELECT i, i % 7, CASE WHEN i % 40 = 0 THEN NULL WHEN i % 40 = 1 THEN '' ELSE 'v' || (i % 15000) END
+FROM generate_series(1, 60000) i;
+CREATE INDEX dts_col ON dts USING sift_col (id, k, txt);
+VACUUM (FREEZE, ANALYZE) dts;
+
+\ir test/agg_helpers.sql
+
+CREATE TEMP TABLE queries (n int, q text);
+INSERT INTO queries VALUES
+	(1, 'SELECT count(DISTINCT txt) FROM dts'),
+	(2, 'SELECT k, count(DISTINCT txt), count(*) FROM dts GROUP BY k'),
+	(3, 'SELECT count(DISTINCT txt), count(txt), count(*) FROM dts WHERE id % 3 = 0'),
+	(4, 'SELECT k, count(DISTINCT txt) FILTER (WHERE txt <> ''''), sum(id) FROM dts GROUP BY k'),
+	(5, 'SELECT count(DISTINCT txt) FROM dts WHERE txt IS NULL OR txt = ''''');
+
+SET work_mem = '64kB';
+SELECT n, outcome(q, false) = outcome(q, true) AS same FROM queries ORDER BY n;
+SET work_mem = '128MB';
+SELECT n, pushed(q) AS scan, outcome(q, false) = outcome(q, true) AS same FROM queries ORDER BY n;
+SELECT n, outcome(q, true) AS answer FROM queries WHERE n IN (1, 5) ORDER BY n;
+
+DROP FUNCTION outcome, runq, runs_in_scan, pushed;
+DROP TABLE dts;
+DROP EXTENSION pg_sift;

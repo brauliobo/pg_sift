@@ -115,7 +115,7 @@ stash_walk(Plan *p, Stash *st)
 				{
 					SiftAggSpec *s = sift_aggspec_unpack(cs->custom_private);
 
-					if (sift_aggspec_holds_groups(s))
+					if (sift_aggspec_holds_groups(s) || sift_aggspec_holds_values(s))
 					{
 						s->rerun = (char *) stash_text(st);
 						cs->custom_private = sift_aggspec_pack(s);

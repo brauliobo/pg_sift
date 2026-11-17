@@ -85,6 +85,25 @@ table_nospill_check(const AggExec *ex)
 			 errhint("Raise work_mem or hash_mem_multiplier, or set sift.enable_agg to off.")));
 }
 
+/*
+ * The strings a count(DISTINCT) interns are kept to the end of the scan, whatever its groups do: past hash memory the statement runs again as
+ * PostgreSQL plans it (agg/cte/rerun.c), whose sort of the values spills at work_mem. A statement that cannot run again keeps them, as it did.
+ */
+void
+values_nospill_check(const AggExec *ex, int ai)
+{
+	double		held,
+				limit = (double) get_hash_memory_limit();
+
+	if (ex->spec->rerun == NULL || (held = ot_bytes(&ex->aot[ai])) <= limit)
+		return;
+	par_note_overflow((AggExec *) ex);
+	ereport(ERROR,
+			(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+			 errmsg("sift: the distinct values of the aggregate hold %.0f kB and cannot spill, past the %.0f kB hash memory gives them", held / 1024.0, limit / 1024.0),
+			 errhint("Raise work_mem or hash_mem_multiplier, or set sift.enable_agg to off.")));
+}
+
 /* every per-group array to newcap groups; remap[old] = new index (UINT32_MAX: drop), NULL: identity */
 void
 groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
