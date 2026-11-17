@@ -45,6 +45,7 @@ typedef struct SiftMaintSwitch
 	const SiftSegEntry *neu;	/* the replacement or NULL */
 	const SiftSegEntry *more;	/* the replacements after neu */
 	int			nmore;
+	uint32		inserted;		/* the records of the write buffer the switch promotes (sift_col): added to the metapage's count of the rows that came in */
 } SiftMaintSwitch;
 
 extern void sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg);
@@ -70,6 +71,10 @@ extern void sift_maint_replace(Relation index, SiftWriteTarget *wt, const uint64
 /* The same with nneu replacements (neu[0..nneu)), side by side where the first replaced segment was, in one switch */
 extern void sift_maint_replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release,
 								 int nrelease, const char *what, TimestampTz start, int64 docs);
+
+/* The promotion of a sealed write buffer of a sift_col index, which held `records` records (sift_cwbuf_summary): the one switch that replaces it also counts them as rows that came in */
+extern void sift_maint_promote_n(Relation index, uint64 sealed, uint32 records, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
+								 const char *what, TimestampTz start, int64 docs);
 
 /* Tells that a maintenance step of an index failed and is retried; kind: "sift" or "sift_col" */
 extern void sift_maint_warn_failure(const char *kind, const char *name, ErrorData *err);
