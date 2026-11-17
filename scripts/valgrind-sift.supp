@@ -1,0 +1,3 @@
+# Valgrind suppressions of this repository, read after the server's own src/tools/valgrind.supp (scripts/valgrind.sh).
+# Every entry names the third-party or PostgreSQL frame it hides and why it is not a pg_sift defect. No entry may match a pg_sift frame:
+# a finding in pg_sift is fixed at its root. The file starts empty: the first runs (docs/MEMORY-ANALYSIS.md) needed none.

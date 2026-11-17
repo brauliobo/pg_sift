@@ -12,6 +12,10 @@
 # SIFT_VALGRIND_ORIGINS=1 adds --track-origins=yes (two times slower, tells where an uninitialized value came from). sift.simd is capped to
 # avx2 (SIFT_VALGRIND_SIMD): memcheck has no AVX-512. KEEP=1 keeps the scratch directory.
 # In scripts/ci.sh it is opt-in: `SIFT_CI_JOBS=valgrind scripts/ci.sh quick`.
+# The memory analysis (docs/MEMORY-ANALYSIS.md): SIFT_VALGRIND_LEAKS=1 adds --leak-check=full (definite and possible leaks; a definite one with a pg_sift frame fails the
+# lane, the others are reported by scripts/mem-report.py), SIFT_VALGRIND_ACCUM=1 adds the paths that accumulate, SIFT_VALGRIND_ARTIFACTS=DIR keeps the logs there (the input of scripts/mem-report.py), and
+# `scripts/valgrind.sh --massif [CASE...]` runs massif on the slope cases (scripts/massif-slope.py: SIFT_MASSIF_ROWS, default 50000, and four times that) and writes
+# the profiles, their ms_print text and the growth by allocation site (CSV) to the artifacts directory. scripts/valgrind-sift.supp is the suppression file of this repository.
 #
 # Native or container. Valgrind needs the debug symbols of the dynamic linker (libc6-dbg, glibc-debuginfo); a host whose glibc is a rebuild
 # that no debuginfod serves cannot run it. Then the lane runs in a container (SIFT_VALGRIND_CONTAINER=1 forces it, 0 forbids it; by default it
@@ -25,6 +29,8 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 source "$REPO/scripts/source-snapshot.sh"
+MASSIF=
+[[ ${1:-} != --massif ]] || { MASSIF=1; shift; }
 PGA=()
 [[ ${1:-} != --major ]] || { PGA=(--major "$2"); shift 2; }
 TESTS=("$@")
@@ -33,10 +39,14 @@ TESTS=("$@")
 # the relcache pointer of the column index 34 + 11, dictionary and lookup caches 16 + 21 + 32 + 116, write buffer 66 + 12, parallel build 58,
 # aggregation nodes 105 + 24. SIFT_VALGRIND_FULL=1 adds the slow ones: col_index_basic 289 (the assert lane runs it too), col_index_parallel 285,
 # col_index_dict_tests 283, agg_bucket 188, agg_dense 114.
-if (( ! ${#TESTS[@]} )); then
+if [[ -z $MASSIF ]] && (( ! ${#TESTS[@]} )); then
 	TESTS=(store_basic tbl_basic shred_values col_index_relcache verify_relcache col_dict_cache read_dict_ids aggstub_dict
 		agg_lookup_cache col_wbuf wbuf_lifecycle build_parallel agg_partial_index agg_distinct)
 	[[ -z ${SIFT_VALGRIND_FULL:-} ]] || TESTS+=(col_index_basic col_index_parallel col_index_dict_tests agg_bucket agg_dense)
+	# SIFT_VALGRIND_ACCUM=1 adds the small tests of the paths that accumulate memory (docs/MEMORY-ANALYSIS.md): merge, rewrite, fold and vacuum of a column index, the tombstone log,
+	# the scope journal, the value store, partitions, the lookup load and count(DISTINCT)
+	[[ -z ${SIFT_VALGRIND_ACCUM:-} ]] || TESTS+=(col_merge_force col_merge_levels col_merge_runs col_merge_memory col_rewrite_roll col_fold_marks col_dead_rewrite
+		col_build_merge_ends col_tomb_log col_scope_journal col_vstore_lifecycle col_vacuum_request col_track_partitions tbl_partitions tbl_maintain agg_lookup_load)
 fi
 
 BASE_IMAGE=debian:bookworm@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858
@@ -47,7 +57,7 @@ image() {
 	docker build -q -t "$1" --build-arg UID="$(id -u)" - <<DOCKERFILE >/dev/null
 FROM $BASE_IMAGE
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential bison flex curl ca-certificates bzip2 perl libipc-run-perl \\
-	liblz4-dev libzstd-dev valgrind libc6-dbg git util-linux procps && rm -rf /var/lib/apt/lists/*
+	liblz4-dev libzstd-dev libicu-dev pkg-config valgrind libc6-dbg git util-linux procps python3 && rm -rf /var/lib/apt/lists/*
 ARG UID
 RUN useradd -m -u \$UID sift
 DOCKERFILE
@@ -58,7 +68,7 @@ container() {
 	tmp=${SIFT_TMP:-/tmp/sift-valgrind-$$}/container name=sift-valgrind-$$-$RANDOM rc=0
 	local uid image
 	local cache=${SIFT_VALGRIND_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/pg-valgrind-bookworm}
-	uid=$(id -u) image=sift-valgrind:bookworm-$uid
+	uid=$(id -u) image=sift-valgrind:bookworm-r3-$uid
 	image "$image"
 	rm -rf "$tmp" && mkdir -p "$tmp/export" "$tmp/scratch" "$cache"
 	trap 'docker rm -f "$name" >/dev/null 2>&1 || true; (( rc )) || [[ -n ${KEEP:-} ]] || rm -rf "$tmp"' EXIT
@@ -67,9 +77,11 @@ container() {
 		-v "$tmp/export:/src:ro" -v "$cache:/cache")
 	# the server build needs the network the first time (the tarball), the tests do not
 	"${run[@]}" "$image" /src/scripts/pg-assert.sh --valgrind "${PGA[@]}" >/dev/null || { rc=1; echo "valgrind: the PostgreSQL build in the container failed"; return 1; }
+	[[ -z ${SIFT_VALGRIND_ARTIFACTS:-} ]] || mkdir -p "$SIFT_VALGRIND_ARTIFACTS"
 	"${run[@]}" --network none -v "$tmp/scratch:/scratch" -e SIFT_TMP=/scratch -e SIFT_VALGRIND_INSIDE=1 -e KEEP="${KEEP:-}" \
-		${SIFT_VALGRIND_ORIGINS:+-e SIFT_VALGRIND_ORIGINS=1} ${SIFT_VALGRIND_SIMD:+-e SIFT_VALGRIND_SIMD="$SIFT_VALGRIND_SIMD"} \
-		${SIFT_VALGRIND_TIMEOUT:+-e SIFT_VALGRIND_TIMEOUT="$SIFT_VALGRIND_TIMEOUT"} "$image" /src/scripts/valgrind.sh "${PGA[@]}" "${TESTS[@]}" || rc=$?
+		${SIFT_VALGRIND_ARTIFACTS:+-v "$SIFT_VALGRIND_ARTIFACTS:/artifacts" -e SIFT_VALGRIND_ARTIFACTS=/artifacts} ${SIFT_VALGRIND_LEAKS:+-e SIFT_VALGRIND_LEAKS=1} \
+		${SIFT_MASSIF_ROWS:+-e SIFT_MASSIF_ROWS="$SIFT_MASSIF_ROWS"} ${SIFT_VALGRIND_ACCUM:+-e SIFT_VALGRIND_ACCUM=1} ${SIFT_VALGRIND_ORIGINS:+-e SIFT_VALGRIND_ORIGINS=1} ${SIFT_VALGRIND_SIMD:+-e SIFT_VALGRIND_SIMD="$SIFT_VALGRIND_SIMD"} \
+		${SIFT_VALGRIND_TIMEOUT:+-e SIFT_VALGRIND_TIMEOUT="$SIFT_VALGRIND_TIMEOUT"} "$image" /src/scripts/valgrind.sh ${MASSIF:+--massif} "${PGA[@]}" "${TESTS[@]}" || rc=$?
 	(( rc == 0 )) || echo "valgrind: FAILED in the container (scratch directory kept: $tmp/scratch)"
 	return $rc
 }
@@ -117,13 +129,25 @@ autovacuum = off
 EOF
 
 rc=0
+ART=${SIFT_VALGRIND_ARTIFACTS:-}
 cleanup() {
 	pg_ctl -D "$DATA" -m immediate -t 120 stop >/dev/null 2>&1 || true
+	[[ -z $ART || -n $MASSIF ]] || cp -f "$WORK"/vg/*.log "$WORK/postgres.out" "$ART"/ 2>/dev/null || true
 	(( rc )) || [[ -n ${KEEP:-} ]] || rm -rf "$WORK"
 }
 trap cleanup EXIT
-VG=(valgrind --quiet "${DBG[@]}" --trace-children=yes --leak-check=no --error-exitcode=99 --suppressions="$PREFIX/share/valgrind.supp"
-	--error-markers=VALGRINDERROR-BEGIN,VALGRINDERROR-END --log-file="$WORK/vg/%p.log" ${SIFT_VALGRIND_ORIGINS:+--track-origins=yes})
+if [[ -n $MASSIF ]]; then
+	mkdir -p "${ART:=$WORK/massif}"
+	python3 -I scripts/massif-slope.py run --data "$DATA" --sock "$SOCK" --port "$PORT" --out "$ART" --rows "${SIFT_MASSIF_ROWS:-50000}" \
+		${TESTS[@]+--only "^($(IFS='|'; echo "${TESTS[*]}"))$"} || rc=1
+	(( rc == 0 )) || { echo "massif: FAILED (scratch directory kept: $WORK)"; exit 1; }
+	echo "massif: the profiles and growth_*.csv are in $ART"
+	exit 0
+fi
+LEAKS=(--leak-check=no)
+[[ -z ${SIFT_VALGRIND_LEAKS:-} ]] || LEAKS=(--leak-check=full --show-leak-kinds=definite,possible --errors-for-leak-kinds=none)
+VG=(valgrind --quiet "${DBG[@]}" --trace-children=yes "${LEAKS[@]}" --error-exitcode=99 --fullpath-after= --suppressions="$PREFIX/share/valgrind.supp"
+	--suppressions="$REPO/scripts/valgrind-sift.supp" --error-markers=VALGRINDERROR-BEGIN,VALGRINDERROR-END --log-file="$WORK/vg/%p.log" ${SIFT_VALGRIND_ORIGINS:+--track-origins=yes})
 nice "${VG[@]}" postgres -D "$DATA" >"$WORK/postgres.out" 2>&1 &
 for _ in $(seq 600); do pg_isready -q -h "$SOCK" -p "$PORT" && break; sleep 1; done
 pg_isready -q -h "$SOCK" -p "$PORT" || { echo "valgrind: the server did not start in 600 s"; tail -n 20 "$WORK/postgres.out"; rc=1; exit 1; }
@@ -142,12 +166,16 @@ for t in "${TESTS[@]}"; do
 done
 pg_ctl -D "$DATA" -m fast -t 600 stop >/dev/null 2>&1 || true
 
-# every error is a block between the markers in the log of its process
-n=$(cat "$WORK"/vg/*.log 2>/dev/null | grep -c VALGRINDERROR-BEGIN || true)
-if (( n )); then
-	echo "valgrind: $n error(s); first ones:"
-	cat "$WORK"/vg/*.log | awk '/VALGRINDERROR-BEGIN/ { c++ } c && c <= 3 { print } /VALGRINDERROR-END/ && c >= 3 { exit }'
-	rc=1
+# every error is a block between the markers in the log of its process; with leak checking the leak records are blocks too (the postmaster's own are many), so mem-report.py decides
+if [[ -n ${SIFT_VALGRIND_LEAKS:-} ]]; then
+	python3 -I scripts/mem-report.py gate "$WORK/vg" || rc=1
+else
+	n=$(cat "$WORK"/vg/*.log 2>/dev/null | grep -c VALGRINDERROR-BEGIN || true)
+	if (( n )); then
+		echo "valgrind: $n error(s); first ones:"
+		cat "$WORK"/vg/*.log | awk '/VALGRINDERROR-BEGIN/ { c++ } c && c <= 3 { print } /VALGRINDERROR-END/ && c >= 3 { exit }'
+		rc=1
+	fi
 fi
 (( rc == 0 )) || { echo "valgrind: FAILED (scratch directory kept: $WORK)"; exit 1; }
 echo "valgrind: ${#TESTS[@]} regression tests ran clean under memcheck on $(pg_config --version)"
