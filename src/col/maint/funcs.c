@@ -115,6 +115,21 @@ sift_col_maintain(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(n >= 0);
 }
 
+#ifdef SIFT_TESTING
+/* sift._test_col_auto_rewrite(index): what the rewrite worker does, in this session: the steps it made, -1 when none is due */
+PG_FUNCTION_INFO_V1(sift_test_col_auto_rewrite);
+Datum
+sift_test_col_auto_rewrite(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
+	int			steps = sift_col_auto_rewrite(&index);
+
+	if (index != NULL)
+		index_close(index, RowExclusiveLock);
+	PG_RETURN_INT32(steps);
+}
+#endif
+
 /*
  * sift.col_repair(index, dry_run): restores the liveness pages of every segment whose special space, dirty bits or count of dead rows are not what sift_live_clear keeps them
  * (a VACUUM of 4.2.1 to 4.3.5 on a segment of more than 65,152 superblocks), under the lock of VACUUM and the merges; a row for each segment that needed it, none when nothing did.
