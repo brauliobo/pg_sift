@@ -20,6 +20,7 @@
 #include "col/scope.h"
 #include "core/errctx.h"
 #include "agg/exec/int.h"
+#include "core/membudget.h"
 
 bool		sift_enable_agg = true;
 bool		sift_agg_force = false;
@@ -789,6 +790,11 @@ agg_exec(CustomScanState *node)
 	sift_errctx_push(&ctx, OidIsValid(ex->spec->indexoid) ? ex->spec->indexoid : ex->spec->heapoid);
 	slot = ExecScan(&node->ss, agg_next, agg_recheck);
 	sift_errctx_pop(&ctx);
+	if (TupIsNull(slot))
+	{
+		SIFT_MEM_SCOPE(agg_group, ex->cxt);
+		SIFT_MEM_CHECKPOINT();
+	}
 	return slot;
 }
 
@@ -855,7 +861,9 @@ static void
 agg_end(CustomScanState *node)
 {
 	AggExec    *ex = (AggExec *) node;
+	SIFT_MEM_SCOPE(agg_group, ex->cxt);
 
+	SIFT_MEM_CHECKPOINT();
 	for (int i = 0; ex->osa && i < ex->spec->naggs; i++)
 		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->runs)
 			osa_runs_end(ex->osa[i]);
