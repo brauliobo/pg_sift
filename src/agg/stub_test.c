@@ -47,7 +47,7 @@ typedef struct TestScan
 static void
 ts_open(TestScan *ts, Oid indexoid)
 {
-	ts->index = sift_test_open_index_am(indexoid, AccessShareLock, "sift_col");
+	ts->index = sift_test_open_index_am(indexoid, AccessShareLock, "sift_colstub");
 	if (!sift_aggstub_owns_index(ts->index->rd_rel->relam))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_colstub index", RelationGetRelationName(ts->index))));
 	ts->heap = table_open(ts->index->rd_index->indrelid, AccessShareLock);
@@ -117,7 +117,7 @@ Datum
 sift_test_aggstub_layout(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_colstub");
 	SiftSrcLayout *l = sift_colsrc_layout(index);
 	List	   *dpcontext = deparse_context_for(RelationGetRelationName(index), l->heapoid);
 
@@ -473,7 +473,7 @@ Datum
 sift_test_aggstub_stats(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_colstub");
 	SiftSrcLayout *l = sift_colsrc_layout(index);
 	SiftSrcStats *st = palloc(sizeof(SiftSrcStats));
 

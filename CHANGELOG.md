@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: a function that opens a shared value store (`sift.col_value_store_end()` and its siblings) with the OID of a relation that was dropped raises `42P01` (it ended in an internal error), and a scope key an index does not have is an error that names it, where the scope inspectors read an entry that was not there.
 - Fixed: pg_sift: `sift.col_unit_hist()` with a NULL index or a NULL dimension ended the backend with a segmentation fault; it raises an error (`22004`) that names the argument; so does `sift.col_unit_agg()`. `sift.col_value_store_usage()` of a relation that is gone raises `42P01` (it named the relation `(null)`).
 - Fixed: pg_sift: `sift.suggest_paths()` with a NULL table or column name, `sift.table_paths_check()` with a NULL table or column, and the internal `sift._names_expr()`, `sift._names_exprs()` and `sift._names_option()` with a NULL argument crashed the backend with a segmentation fault; each now raises an error (`22004`) that names the function and the argument.
 - Fixed: pg_sift: a relation, function or namespace that another session dropped while a statement read it could end the statement with a segmentation fault in a few places (the value store, the free-space check, the row fetch of a `sift_table`, the column renames); it ends with the error of a missing object (`relation with OID ... does not exist`).
