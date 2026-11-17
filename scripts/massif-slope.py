@@ -20,8 +20,10 @@ ALLOCATORS = ["palloc", "palloc0", "palloc_extended", "repalloc", "repalloc_huge
 SIFT_FRAME = re.compile(r"/src/(agg|bm25|col|core|table)/")
 CASES = ["merge", "lookup_join_label", "count_distinct_text", "table_update_all", "scoped_cic_3"]
 EXTRA = {   # a case that is not in test/mem-slope.tsv: name -> (setup, operation); {m} a copy of the table, {n} its rows
-    "scoped_cic_3": ("create table p{n} as select g as member, t as tenant from generate_series(1, {n}) g, generate_series(1, 3) t;"
+    "scoped_cic_3": ("create table p{n} (member bigint not null, tenant int not null);"
+                     "insert into p{n} select g, t from generate_series(1, {n}) g, generate_series(1, 3) t;"
                      "create index p{n}_j on p{n} (member);",
+                     "set maintenance_work_mem = '4MB';\n"
                      "create index concurrently {m}_sc on {m} using sift_col (id, k_mid, amount) with (scope = 'tenant: id -> p{n}(member, tenant)');"),
 }
 NODE = re.compile(r"^( *)n(\d+): (\d+) (.*)$")
