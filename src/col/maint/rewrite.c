@@ -4,10 +4,7 @@
  * the tick of the rewrite worker
  */
 #include "postgres.h"
-#include <math.h>
-
 #include "col/maint/maint_int.h"
-#include "core/worker.h"
 #include "core/membudget.h"
 
 #define WHY_BUFFER	"write buffer rows"
@@ -20,64 +17,6 @@ uint64		maint_pass_gen = 0;		/* the newest generation the rolling rewrite pass i
 
 /* The worker was started because the reads of a backend owe the rewrite (maint_read_due) */
 bool		maint_read_asked = false;
-
-/* The rewrite in hand is the server's own (a worker), not sift.col_maintain's: it keeps to the hold and the cap that follow */
-bool		maint_rewrite_automatic = false;
-double		sift_col_auto_rewrite_backoff = 10.0;
-int			sift_col_auto_rewrite_max_size = 2048;
-
-#define HOLD_REFUSED_S	3600
-
-TimestampTz
-maint_rewrite_hold_until(const SiftMetaPageData *meta)
-{
-	return (TimestampTz) meta->rewrite_hold * USECS_PER_SEC;
-}
-
-static bool
-stamp_hold(SiftMetaPageData *meta, void *arg)
-{
-	meta->rewrite_hold = Max(meta->rewrite_hold, *(uint32 *) arg);
-	return true;
-}
-
-static void
-hold_for(Relation index, double seconds)
-{
-	uint32		until = (uint32) Min(GetCurrentTimestamp() / USECS_PER_SEC + (int64) ceil(seconds), PG_UINT32_MAX);
-
-	sift_meta_update(index, stamp_hold, &until);
-}
-
-/*
- * What an automatic rewrite that ended well leaves in the index: the next one waits sift.col_auto_rewrite_backoff times as long as this one took. The stamps of what it wrote are as
- * old as its start, so a rewrite that runs for hours finds the changes of those hours counted against its own output, and without the wait the next one starts as it ends.
- */
-void
-maint_rewrite_hold_after(Relation index, TimestampTz start)
-{
-	if (sift_col_auto_rewrite_backoff > 0)
-		hold_for(index, sift_col_auto_rewrite_backoff * (double) (GetCurrentTimestamp() - start) / USECS_PER_SEC);
-}
-
-/*
- * A step of the automatic rewrite that would write more than sift.col_auto_rewrite_max_size is not started: it is one transaction, which holds back the blocks the last rewrite freed
- * and the horizon of the vacuums for as long as it runs. One LOG line an hour says what to run instead.
- */
-bool
-maint_rewrite_over_cap(Relation index, uint64 bytes)
-{
-	char	   *subject;
-
-	if (!maint_rewrite_automatic || sift_col_auto_rewrite_max_size <= 0 || bytes <= ((uint64) sift_col_auto_rewrite_max_size << 20))
-		return false;
-	subject = sift_worker_subject(index);
-	ereport(LOG, (errmsg("sift: the automatic rewrite of index \"%s\" was not started: its next step writes %llu MB, over sift.col_auto_rewrite_max_size (%d MB)",
-						 subject, (unsigned long long) (bytes >> 20), sift_col_auto_rewrite_max_size),
-				  errhint("Run SELECT sift.col_maintain('%s'::regclass) in a quiet window, or raise sift.col_auto_rewrite_max_size; the next automatic look is in an hour.", subject)));
-	hold_for(index, HOLD_REFUSED_S);
-	return true;
-}
 
 /*
  * The price of a row of the rewrite, instructions and WAL in instructions: 930 M instructions and 2.9 to 3.5 MB of WAL for 300,000 rows (3,100 a row), and a MB of WAL weighs
@@ -323,8 +262,7 @@ rewrite_why(Relation index, bool automatic, int *gates)
 	int			nseg,
 				key_overlap;
 	OverlayEv	ev;
-	bool		held_off,
-				stale = false,
+	bool		stale = false,
 				conn_stale,
 				old_epoch = false;
 
@@ -377,7 +315,6 @@ rewrite_why(Relation index, bool automatic, int *gates)
 		}
 	covered = sift_cseg_dir_units(snap);
 	shared = sift_cseg_dir_shared(snap, &shared_listed);
-	held_off = maint_rewrite_hold_until(&snap->meta) > GetCurrentTimestamp();
 	MemoryContextDelete(cx);
 	pfree(snap);
 	if (dirty > 0)
@@ -412,16 +349,6 @@ rewrite_why(Relation index, bool automatic, int *gates)
 	/* the budget is of the rewrite of the segments that churn calls for, not of the first one, which the peers of a build call for; the promotion of a write buffer costs its rows */
 	if (why != NULL && automatic && build_peers && gates != NULL && maint_rewrite_all(why))
 		*gates |= SIFT_COL_PEERS;
-	/* a rewrite the server did waits for as long again as it took, whatever the reason: the reason that asked for it may still be due when it ends */
-	if (why != NULL && automatic && maint_rewrite_all(why) && !build_peers && held_off)
-	{
-		maint_overlay_asked = false;
-		if (gates != NULL)
-			*gates |= SIFT_COL_GATE_HOLD;
-		if (!buffer_due)
-			return NULL;
-		why = WHY_BUFFER;
-	}
 	/* the merge of the overlays is paced by the bytes of a pass (maint_overlay_set), not by the WAL others write: a quiet server is when it costs least */
 	if (why != NULL && automatic && maint_rewrite_all(why) && !build_peers && !maint_read_asked && !maint_overlay_asked && maint_wal_budget_spent(lsn, sbytes, nseg, bytes))
 	{
@@ -458,7 +385,6 @@ maint_rewrite_due(Relation index, bool automatic)
 {
 	maint_pass_bytes = 0;
 	maint_pass_gen = 0;
-	maint_rewrite_automatic = automatic;
 	return maint_rewrite_check(index, automatic, NULL);
 }
 

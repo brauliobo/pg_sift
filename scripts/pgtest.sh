@@ -90,8 +90,6 @@ install() {
 # "sift" is a reserved prefix for it. The cluster of `start` gets it on the command line of the server of this tree, not in its postgresql.conf (`conf common`).
 # The clusters run with the default sift.on_corruption (quarantine), so that every write of every test goes through the guard of the quarantine; a test that asserts a corruption error says SET sift.on_corruption = error
 TREE_CONF="${SIFT_TESTING:+sift.test_scope_patch = on}"
-# a test that waits for the automatic rewrite of the next round wants it when the rule says so, not after ten times as long as the last took (the test of the wait sets its own)
-TREE_CONF+="${SIFT_TESTING:+$'\n'sift.col_auto_rewrite_backoff = 0}"
 # SIFT_MEMCENSUS=KB|on (docs/MEMORY-ANALYSIS.md): every statement of every test that grows memory by KB (on: 1024) writes a SIFTMEM line to the server log
 [[ -z ${SIFT_TESTING:-} || -z ${SIFT_MEMCENSUS:-} ]] || TREE_CONF+=$'\n'"sift.test_memctx_census = $([[ $SIFT_MEMCENSUS == on ]] && echo 1024 || echo "$SIFT_MEMCENSUS")"
 tree_options() { local l; [[ -z $TREE_CONF ]] || while IFS= read -r l; do printf -- '-c %s ' "${l// = /=}"; done <<<"$TREE_CONF"; }

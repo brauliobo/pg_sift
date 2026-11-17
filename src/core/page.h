@@ -138,7 +138,7 @@ typedef struct SiftMetaPageData
 	uint32		maint_ok_ms;
 	uint16		maint_ok_job;	/* SiftJob */
 	uint16		shrink_blocked;	/* SiftShrinkBlock: why the last VACUUM left the file longer than the shrink target */
-	uint32		rewrite_hold;	/* sift_col: seconds since 2000-01-01 before which the automatic rewrite does not start again (col/maint/rewrite.c); 0: none */
+	uint32		reserved;
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF

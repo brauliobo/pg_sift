@@ -122,12 +122,6 @@ extern bool sift_conn_gen_equal(const SiftConnGen *a, const SiftConnGen *b);
  * the horizon on; 0 only when there is none. An UPDATE writes the new version as a row too, so it answers true as well; the keys of an update are in changed(S, X). Only for a stamp the journal vouches for.
  */
 extern uint64 sift_conn_inserted_rows(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp);
-/*
- * The same for the rule of the automatic rewrite, which pays for the rows it counts: the largest segment is left out. A merge or rewrite of the parent index writes the rows it
- * holds again under the newest xstamp of its inputs, so that the segment with most of the parent says nothing of the rows inserted since the stamp (sift_conn_inserted_rows
- * counts all of them, as a reader must); the rows that updates and inserts left in the write buffer and the smaller segments are the ones that came since.
- */
-extern uint64 sift_conn_inserted_estimate(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp);
 extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
 /* The same without the keys that only updates which kept the key touched: the keys whose parent rows ended or whose key changed, which are the ones a flag filled before the stamp may no longer tell */
 extern SiftConnWhy sift_conn_moved(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);

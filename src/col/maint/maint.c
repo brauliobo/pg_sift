@@ -521,18 +521,6 @@ take_slot(void)
 	return sift_col_auto_merge_max_workers == 0;
 }
 
-/* The rewrite a worker does: the steps it made, -1 when none is due; what it took holds the next one off (maint_rewrite_hold_after) */
-int
-sift_col_auto_rewrite(Relation *indexp)
-{
-	TimestampTz start = GetCurrentTimestamp();
-	int			steps = sift_mops_rewrite(&maint_col_ops, indexp, true);
-
-	if (steps > 0 && *indexp != NULL)
-		maint_rewrite_hold_after(*indexp, start);
-	return steps;
-}
-
 /* The rewrite VACUUM asked for: the rule is judged again (the index may have changed since), and a held maintenance lock leaves it for the next VACUUM */
 void
 sift_col_rewrite_worker_main(Datum main_arg)
@@ -565,7 +553,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 
 				if (maint_decide_asked)
 					sift_vstore_release_left(index);
-				if (sift_col_auto_rewrite(&index) >= 0 && index != NULL)
+				if (sift_mops_rewrite(&maint_col_ops, &index, true) >= 0 && index != NULL)
 				{
 					sift_log_maint(index, "column rewrite worker finished", start, -1, -1);
 					sift_worker_ok(index, SIFT_JOB_REWRITE, start);

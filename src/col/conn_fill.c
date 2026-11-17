@@ -303,7 +303,7 @@ sift_conn_stale(SiftConnStale *s, const SiftColSegment *seg)
 		if (sift_conn_moved(s->c[i].heap, s->c[i].index, &st, s->snap, (uint32) Max(limit, 1), &keys) != SIFT_CONN_OK)
 			return true;
 		/* no journal records the inserted rows: a segment with orphans (no flag is read once a parent row was inserted, found.c) counts the rows inserted since with the keys changed; the versions that updates of a kept key wrote are not new keys */
-		inserted = st.reserved & SIFT_CONN_STAMP_CLEAN ? 0 : sift_conn_inserted_estimate(s->c[i].heap, s->c[i].index, &st);
+		inserted = st.reserved & SIFT_CONN_STAMP_CLEAN ? 0 : sift_conn_inserted_rows(s->c[i].heap, s->c[i].index, &st);
 		changed = keys.n + (inserted > keys.nkept ? inserted - keys.nkept : 0);
 		sift_conn_keys_free(&keys);
 		if (changed >= limit)

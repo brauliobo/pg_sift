@@ -37,7 +37,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | [default](#default) | 104 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 41 | to measure, compare or explain a plan; not for a deployed configuration |
-| [safety](#safety) | 24 | a limit or guard on memory, locks, I/O or replicas |
+| [safety](#safety) | 22 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 7 | an older spelling that is still accepted |
 
 ### default
@@ -2494,34 +2494,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave at 5: the whole-index rewrite waits until the server wrote 100 / 5 times the bytes of the index since it was last written. Raise it for sooner rewrites; 0 does not wait. col_maintain ignores it.
 - **Sources:** [USAGE](USAGE.md#maintenance-and-operations)
 
-#### sift.col_auto_rewrite_backoff
-
-`sift_col` · safety · since 5.0 · default 10
-
-- **What it does:** the automatic rewrite of a sift_col index waits as long again as the last one took, so that a rewrite whose reason is due again when it ends (its stamps are as old as its start) does not start the next one at once
-- **Gain:** 5 rounds of a parent index rebuilt (a connected index due after each): 5 automatic rewrites without the wait, 1 with it (150,000 rows, test:col_rewrite_hold)
-- **Impact:** index size: -; build, merge and writes: -; other: none: it only delays the next automatic rewrite; the churn waits in the write buffer, the overlays and the reads patch it
-- **When:** Every automatic rewrite of a sift_col index but the one after a build and the promotion of the write buffer; shown as a reason in sift.col_maintenance_status (blocked_by).
-- **Default:** 10 — A rewrite of 10 hours or 10 seconds ends with its reason due again when the changes during it count against its own stamps; the tenth bounds the time spent rewriting at under 10% whatever it takes.
-- **Turn off:** SET sift.col_auto_rewrite_backoff = 0 (ALTER SYSTEM or ALTER DATABASE) removes the wait; SET sift.col_auto_merge = off stops the automatic rewrite.
-- **Upgrade from 4.3:** New in 5.0.1: after ALTER EXTENSION UPDATE the automatic rewrite waits as set; it needs no REINDEX. The wait is kept in the metapage word that older libraries leave zero.
-- **Advice:** Leave at 10: the rewrites of an index take at most a tenth of the time (the next waits ten times as long as the last took, at least the naptime). Raise it for fewer rewrites of a very large index, 0 to turn the wait off. sift.col_maintain(index) is never held.
-- **Sources:** benchmark `test:col_rewrite_hold`; [USAGE](USAGE.md#maintenance-and-operations)
-
-#### sift.col_auto_rewrite_max_size
-
-`sift_col` · safety · since 5.0 · default 2048 MB
-
-- **What it does:** the automatic rewrite of a sift_col index does not start a step that writes more than this size: one step is one transaction, which holds back the blocks the last rewrite freed and the horizon of the vacuums until it ends
-- **Gain:** a step over the size is not started and holds the automatic rewrite off for an hour (4 MB index, size 1 MB: 0 steps, the generation unchanged; test:col_rewrite_hold)
-- **Impact:** index size: -; build, merge and writes: -; other: a very large step is left to sift.col_maintain(index) in a quiet window, or REINDEX; one LOG line an hour names the command
-- **When:** The steps of the automatic rewrite that take every segment of an index (not the partitions of a rolling pass, the rewrite after a build, or sift.col_maintain).
-- **Default:** 2048 MB — A rewrite that takes hours in one transaction was seen to grow an index from 18 to 46 GB and to hold the horizon of the database; 2 GB is about an hour at the rate it ran (at most 1 MB/s with the maintenance cost delay).
-- **Turn off:** SET sift.col_auto_rewrite_max_size = 0 (ALTER SYSTEM or ALTER DATABASE) removes the limit; SET sift.col_auto_merge = off stops the automatic rewrite.
-- **Upgrade from 4.3:** New in 5.0.1: after ALTER EXTENSION UPDATE a step over 2 GB is refused and logged instead of started; sift.col_maintain(index) still runs it.
-- **Advice:** Leave at 2048 (2 GB): an index over sift.vacuum_rewrite_limit is rewritten in steps of that size, so only a step over every segment of a very large index reaches it. Raise it when a long rewrite is acceptable, 0 to remove the limit.
-- **Sources:** benchmark `test:col_rewrite_hold`; [USAGE](USAGE.md#maintenance-and-operations)
-
 #### sift.col_auto_merge_pass_mb
 
 `sift_col` · safety · since 4.1 · default 1024 MB
@@ -2833,15 +2805,13 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-Defaults changed: sift.tomb_log_limit since 4.3; new: `sift.search_chunk_sbs`, `sift.col_scope_refresh_pct`, `sift.agg_scope`, `sift.scope_max_multiplicity`, `sift.col_auto_rewrite_backoff`, `sift.col_auto_rewrite_max_size`, `sift.col_unit_rows`, `sift.col_value_store`, `sift_col(scope)`, `sift_col(projection)`, `sift.backend_cache_kb`, `sift.on_corruption`.
+Defaults changed: sift.tomb_log_limit since 4.3; new: `sift.search_chunk_sbs`, `sift.col_scope_refresh_pct`, `sift.agg_scope`, `sift.scope_max_multiplicity`, `sift.col_unit_rows`, `sift.col_value_store`, `sift_col(scope)`, `sift_col(projection)`, `sift.backend_cache_kb`, `sift.on_corruption`.
 
 | Option | 4.3 | 5.0 | Column format | What a 4.3 user gets after the update |
 |---|---|---|---|---|
 | `sift_col(rollup_leaves)` | '' | '' |  | An index of 4.1 and older that carries the option `rollup` is read as rollup_leaves, and ALTER INDEX SET or RESET of the old name still works; no REINDEX. |
 | `sift_col(rollup_columns)` | '' | '' | minor 9 | An index of 4.1 and older that carries the option `rollup_dims` is read as rollup_columns, and ALTER INDEX SET or RESET of the old name still works; the next build writes the new name; no REINDEX. |
 | `sift.on_corruption` | new | quarantine |  | The default changed in 5.0: a damaged sift or sift_col index no longer breaks the application, it is taken out of service. No REINDEX is needed; set error to keep the earlier behaviour. |
-| `sift.col_auto_rewrite_backoff` | new | 10 |  | New in 5.0.1: after ALTER EXTENSION UPDATE the automatic rewrite waits as set; it needs no REINDEX. The wait is kept in the metapage word that older libraries leave zero. |
-| `sift.col_auto_rewrite_max_size` | new | 2048 MB |  | New in 5.0.1: after ALTER EXTENSION UPDATE a step over 2 GB is refused and logged instead of started; sift.col_maintain(index) still runs it. |
 | `sift.col_wbuf_ref` | on | on |  | On by default from 4.3: after ALTER EXTENSION UPDATE the rows of a heap table that tracks changes go to the buffer as references. A write buffer that holds a reference is column format minor 44: a release before 4.3 refuses the index, so upgrade every server that reads the index (a standby too) before the primary writes one, or set sift.col_wbuf_ref = off first. No REINDEX. |
 | `sift.agg_case_filter` | on | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement. |
 | `sift.backend_cache_kb` | new | 262144 kB |  | no REINDEX: the setting is read when a cache admits an entry; a backend that holds more gives entries back as it needs room |

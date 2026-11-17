@@ -82,9 +82,6 @@ sift_col_maintenance_status(PG_FUNCTION_ARGS)
 		blocked[nblocked++] = CStringGetTextDatum("the rewrite would take more than sift.col_auto_merge_wal_pct of the WAL written since the last");
 	if (gates & SIFT_COL_GATE_HELD)
 		blocked[nblocked++] = CStringGetTextDatum("a snapshot holds back the blocks of the last rewrite");
-	if (gates & SIFT_COL_GATE_HOLD)
-		blocked[nblocked++] = CStringGetTextDatum(psprintf("the last automatic rewrite holds the next one off until %s (sift.col_auto_rewrite_backoff, sift.col_auto_rewrite_max_size)",
-														   timestamptz_to_str(maint_rewrite_hold_until(&snap->meta))));
 	v[0] = ObjectIdGetDatum(RelationGetRelid(heap));
 	nulls[1] = nulls[2] = nulls[3] = !sift_col_table_churn(RelationGetRelid(heap), &changed, &threshold, &last);
 	nulls[1] |= last == 0;
@@ -117,21 +114,6 @@ sift_col_maintain(PG_FUNCTION_ARGS)
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_BOOL(n >= 0);
 }
-
-#ifdef SIFT_TESTING
-/* sift._test_col_auto_rewrite(index): what the rewrite worker does, in this session: the steps it made, -1 when none is due */
-PG_FUNCTION_INFO_V1(sift_test_col_auto_rewrite);
-Datum
-sift_test_col_auto_rewrite(PG_FUNCTION_ARGS)
-{
-	Relation	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
-	int			steps = sift_col_auto_rewrite(&index);
-
-	if (index != NULL)
-		index_close(index, RowExclusiveLock);
-	PG_RETURN_INT32(steps);
-}
-#endif
 
 /*
  * sift.col_repair(index, dry_run): restores the liveness pages of every segment whose special space, dirty bits or count of dead rows are not what sift_live_clear keeps them

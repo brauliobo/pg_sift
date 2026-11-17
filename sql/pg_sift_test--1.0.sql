@@ -609,8 +609,6 @@ CREATE FUNCTION sift._test_conn_inserted_since(index regclass, lineage int8, hor
 	AS 'MODULE_PATHNAME', 'sift_test_conn_inserted_since' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_conn_stamps(index regclass, OUT gen int8, OUT ordinal int4, OUT lineage int8, OUT horizon xid) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_conn_stamps' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_col_auto_rewrite(index regclass) RETURNS int
-	AS 'MODULE_PATHNAME', 'sift_test_col_auto_rewrite' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_conn_gen(index regclass, OUT lineage int8, OUT records int8, OUT trim_below xid) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_conn_gen' LANGUAGE C STRICT;
 
