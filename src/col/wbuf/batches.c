@@ -9,7 +9,7 @@
 #include "col/wbuf/wbuf_int.h"
 #include "core/membudget.h"
 
-/* A live record kept for sorting: its payload is at off in the arena */
+/* A live record kept for sorting: its payload is a copy in the arena of the read */
 typedef struct Held
 {
 	SiftKey		key;
@@ -18,7 +18,7 @@ typedef struct Held
 	uint32		len;
 	TransactionId xmin;
 	uint8		xst;			/* XST_*: what was known of the inserter when the record was read */
-	Size		off;
+	const uint8 *payload;
 } Held;
 
 /* The inserter of a record when it was read: no xid in it (a speculative insertion, an index without track_changes), committed, or not finished */
@@ -64,7 +64,8 @@ xst_forget(void)
 
 typedef struct Fresh
 {
-	StringInfoData arena;
+	MemoryContext arena;		/* the payloads: records of any size at their size, as they come */
+	Size		bytes;
 	Held	   *held;
 	int			nheld,
 				cap;
@@ -185,9 +186,9 @@ fresh_add(void *arg, const RawRec *rec)
 		return;
 	if (f->nheld == f->cap)
 		f->held = repalloc(f->held, (f->cap *= 2) * sizeof(Held));
-	f->held[f->nheld] = (Held) {sift_key_from_tid((ItemPointer) &rec->tid), rec->tid, f->nheld, rec->len, rec->xmin, st, f->arena.len};
+	f->held[f->nheld] = (Held) {sift_key_from_tid((ItemPointer) &rec->tid), rec->tid, f->nheld, rec->len, rec->xmin, st, memcpy(MemoryContextAlloc(f->arena, rec->len), rec->payload, rec->len)};
+	f->bytes += rec->len;
 	f->nheld++;
-	appendBinaryStringInfo(&f->arena, (const char *) rec->payload, rec->len);
 }
 
 /* Whether no record of the page, up to what the stamp read, was flagged dead since: its LSN is the stamp's (the pages of an index that is not WAL-logged keep theirs), or the dead are as many */
@@ -249,7 +250,8 @@ fresh_read(SiftCWbufReader *r, WbufLane *lane, StampList *stamp, Fresh *f)
 	f->cap = 256;
 	f->nheld = 0;
 	f->held = palloc(f->cap * sizeof(Held));
-	initStringInfo(&f->arena);
+	f->arena = GenerationContextCreate(CurrentMemoryContext, "sift col write buffer records", 8192, 65536, 1048576);
+	f->bytes = 0;
 	/* a lane read before is read on from where it ended, which names its page: the header page is read only for a lane not yet located (its head is fixed at the creation of the buffer) */
 	for (int l = 0; l < SIFT_LANES; l++)
 		located &= BlockNumberIsValid(lane[l].blk);
@@ -377,7 +379,7 @@ set_fill(BatchSet *s, SiftCWbufReader *r, const Fresh *f)
 {
 	SiftColRow	row;
 
-	s->recbytes += f->arena.len;
+	s->recbytes += f->bytes;
 	for (int i = 0; i < f->nheld; i++)
 	{
 		const Held *h = &f->held[i];
@@ -412,7 +414,7 @@ set_fill(BatchSet *s, SiftCWbufReader *r, const Fresh *f)
 		}
 		batch_drop_image(b);
 		set_note(s, h);
-		rec = (RawRec) {.tid = h->tid,.xmin = h->xmin,.payload = (const uint8 *) f->arena.data + h->off,.len = h->len};
+		rec = (RawRec) {.tid = h->tid,.xmin = h->xmin,.payload = h->payload,.len = h->len};
 		wbuf_decode_row(r, &rec, &row);
 		sift_cbatch_add(b, &row);
 	}
