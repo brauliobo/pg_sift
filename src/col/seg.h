@@ -211,6 +211,10 @@ extern uint64 sift_cseg_unit_plan(SiftColSegment *seg, uint32 u, const SiftCUnit
 
 /* The segment's dictionary of a STR leaf (loaded on first use, NULL for other leaves) */
 extern SiftCDict *sift_cseg_dict(SiftColSegment *seg, int col);
+/* The dictionary of leaf col for a maintenance read of the whole segment, unit after unit: the cache's or the ring's when it has it, else parsed into a context of the segment that
+ * sift_cseg_dict_release (the last unit, the close) gives back, and kept out of the cache */
+extern SiftCDict *sift_cseg_dict_stream(SiftColSegment *seg, int col);
+extern void sift_cseg_dict_release(SiftColSegment *seg);
 /*
  * The dictionary a test of a STR leaf is made over: the parsed one when it is at hand, else a dictionary of n codes that find and match search in the stream, without parsing it; else the parsed one. Only n, find and
  * match may be used, and it is valid for the life of the segment.

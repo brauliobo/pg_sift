@@ -5,6 +5,7 @@
  */
 #include "col/compress.h"
 #include "col/seg_int.h"
+#include "col/am.h"
 
 /* Where the dictionary of leaf col lies in the stream: offset and length (up to the next dictionary or the end of the section) */
 void
@@ -93,6 +94,49 @@ sift_cseg_dict(SiftColSegment *seg, int col)
 	if (pv->dict[col] == NULL)
 		pv->dict[col] = sift_cseg_dict_cached(seg, col, dict_load);
 	return pv->dict[col];
+}
+
+#ifdef SIFT_TESTING
+SiftStreamDictStats sift_stream_dict_stats;
+#endif
+
+SiftCDict *
+sift_cseg_dict_stream(SiftColSegment *seg, int col)
+{
+	SegPriv    *pv = PRIV(seg);
+
+	if (seg->schema->cols[col].store != SIFT_COLS_STR)
+		return NULL;
+	if (pv->dict[col] == NULL)
+		pv->dict[col] = sift_cseg_dict_peek(seg, col);
+	if (pv->dict[col] == NULL)
+	{
+		pv->stream_cx[col] = AllocSetContextCreate(seg->mcxt, "sift_col stream dictionary", ALLOCSET_DEFAULT_SIZES);
+		pv->dict[col] = dict_load(seg, col, pv->stream_cx[col]);
+#ifdef SIFT_TESTING
+		sift_stream_dict_stats.parsed++;
+		sift_stream_dict_stats.live++;
+		sift_stream_dict_stats.peak = Max(sift_stream_dict_stats.peak, sift_stream_dict_stats.live);
+#endif
+	}
+	return pv->dict[col];
+}
+
+void
+sift_cseg_dict_release(SiftColSegment *seg)
+{
+	SegPriv    *pv = PRIV(seg);
+
+	for (int col = 0; col < seg->schema->ncols; col++)
+		if (pv->stream_cx[col] != NULL)
+		{
+			MemoryContextDelete(pv->stream_cx[col]);
+			pv->stream_cx[col] = NULL;
+			pv->dict[col] = NULL;
+#ifdef SIFT_TESTING
+			sift_stream_dict_stats.live--;
+#endif
+		}
 }
 
 static const char *

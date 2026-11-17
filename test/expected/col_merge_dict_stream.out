@@ -1,0 +1,76 @@
+-- A merge reads each input front to back, so the parsed dictionary of an input is of use until the input's last unit: the merge of segments that
+-- follow each other in the heap holds the dictionary of one input at a time (two where a superblock is shared), not those of all of them, and
+-- the rows and the answers are the same as before the merge.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE ds (id int, k int, txt text, pad text DEFAULT repeat('x', 200));
+ALTER TABLE ds ALTER COLUMN pad SET STORAGE PLAIN;
+CREATE INDEX ds_ix ON ds USING sift_col (id, k, txt) WITH (key_cut = 'off');
+DO $$
+BEGIN
+	FOR i IN 0..5 LOOP
+		INSERT INTO ds SELECT i * 30000 + g, g % 100, 'v' || (i * 30000 + g) FROM generate_series(1, 30000) g;
+		PERFORM sift.col_promote('ds_ix');
+	END LOOP;
+END $$;
+SELECT count(*) AS segments FROM sift.col_segments('ds_ix') WHERE kind = 'immutable';
+ segments 
+----------
+        6
+(1 row)
+
+SELECT md5(string_agg(id || txt, ',' ORDER BY id)) AS before_merge FROM ds WHERE txt LIKE 'v1%';
+           before_merge           
+----------------------------------
+ dfa9ffce6217e0e42a4031c0821ad039
+(1 row)
+
+-- a backend that finds no dictionary in the cache or in the ring, as a worker that merges what another session wrote
+\c
+SET client_min_messages = warning;
+SET sift.col_dict_shared_cache_kb = 0;
+SET max_parallel_maintenance_workers = 0;
+SELECT parsed = 0 AS reset FROM sift._test_col_stream_dicts(true);
+ reset 
+-------
+ t
+(1 row)
+
+SELECT sift.col_merge('ds_ix', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT parsed = 6 AS one_for_each_input, live = 0 AS none_left, peak <= 2 AS held_one_at_a_time FROM sift._test_col_stream_dicts(true);
+ one_for_each_input | none_left | held_one_at_a_time 
+--------------------+-----------+--------------------
+ t                  | t         | t
+(1 row)
+
+SELECT count(*) AS segments FROM sift.col_segments('ds_ix') WHERE kind = 'immutable';
+ segments 
+----------
+        1
+(1 row)
+
+SELECT md5(string_agg(id || txt, ',' ORDER BY id)) AS after_merge FROM ds WHERE txt LIKE 'v1%';
+           after_merge            
+----------------------------------
+ dfa9ffce6217e0e42a4031c0821ad039
+(1 row)
+
+SELECT sift.col_verify('ds_ix', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP TABLE ds;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

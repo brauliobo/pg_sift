@@ -485,6 +485,7 @@ typedef struct SegPriv
 	SiftLive	live;
 	Buffer		live_pin;		/* the LIVE page the last dirty bit came from, pinned between reads (never locked) and released by sift_cseg_close */
 	SiftCDict **dict;
+	MemoryContext *stream_cx;	/* [ncols] the context of a dictionary parsed for a maintenance read (sift_cseg_dict_stream), NULL: dict[col] is the cache's or none */
 	DictLook  **look;			/* [ncols] read on first use; a NULL entry with look_checked: the dictionary is not of that form */
 	bool	   *look_checked;
 	ZoneArrays **zones;

@@ -335,6 +335,8 @@ CREATE FUNCTION sift._test_col_counters(index regclass, preds text DEFAULT '', f
 CREATE FUNCTION sift._test_col_dict_cache(reset bool DEFAULT false, OUT loads int8, OUT hits int8, OUT bytes int8,
 												 OUT head_loads int8, OUT head_hits int8, OUT zone_loads int8, OUT zone_hits int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_dict_cache' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_stream_dicts(reset bool DEFAULT false, OUT parsed int8, OUT live int8, OUT peak int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_stream_dicts' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_dict_pinned(OUT records int8, OUT pins int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_dict_pinned' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_pagg_fold(index regclass, dim int4, meas int4 DEFAULT -1,

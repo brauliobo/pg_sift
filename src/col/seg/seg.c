@@ -272,6 +272,7 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	pv->live =(SiftLive) {index, entry->gen, h->live_first, h->live_npages, h->sb_hi - h->sb_lo + 1, h->ndocs};
 	sift_live_check(&pv->live);
 	pv->dict = palloc0(h->nterms * sizeof(SiftCDict *));
+	pv->stream_cx = palloc0(h->nterms * sizeof(MemoryContext));
 	pv->look = palloc0(h->nterms * sizeof(DictLook *));
 	pv->look_checked = palloc0(h->nterms * sizeof(bool));
 	pv->zones = palloc0(h->nterms * sizeof(ZoneArrays *));
@@ -287,6 +288,7 @@ sift_cseg_close(SiftColSegment *seg)
 	if (BufferIsValid(pv->live_pin))
 		ReleaseBuffer(pv->live_pin);
 	pv->live_pin = InvalidBuffer;
+	sift_cseg_dict_release(seg);
 	sift_sr_release(&seg->sr);
 }
 

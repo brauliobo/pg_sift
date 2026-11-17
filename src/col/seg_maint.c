@@ -39,7 +39,7 @@ decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst, const bool *want, 
 	{
 		if (want != NULL && want[c] && v.chunk_len[c] > 0)
 			sift_cseg_unit_fill(seg, u, v.chunk_off[c], v.chunk_len[c]);
-		dicts[c] = want == NULL || want[c] ? sift_cseg_dict(seg, c) : NULL;
+		dicts[c] = want == NULL ? sift_cseg_dict_stream(seg, c) : want[c] ? sift_cseg_dict(seg, c) : NULL;
 	}
 	sift_cbatch_reset(dst, r->id);
 	dst->keyed = v.keyed;
@@ -51,6 +51,8 @@ decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst, const bool *want, 
 		sift_cunit_decode(&v, r->id, dicts, dirty ? live : NULL, want, dst);
 	}
 	pfree(dicts);
+	if (want == NULL && u + 1 == seg->nsb)
+		sift_cseg_dict_release(seg);
 	if (want == NULL && sift_cseg_vers(seg))
 	{
 		SiftColVerSum sum;

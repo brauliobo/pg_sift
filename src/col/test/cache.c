@@ -29,6 +29,8 @@ PG_FUNCTION_INFO_V1(sift_test_col_dict_cache);
 
 PG_FUNCTION_INFO_V1(sift_test_col_dict_pinned);
 
+PG_FUNCTION_INFO_V1(sift_test_col_stream_dicts);
+
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
 PG_FUNCTION_INFO_V1(sift_test_catalog_memos);
 PG_FUNCTION_INFO_V1(sift_test_scope_exact);
@@ -48,6 +50,18 @@ sift_test_col_dict_cache(PG_FUNCTION_ARGS)
 
 	if (PG_GETARG_BOOL(0))
 		memset(&sift_cdict_cache_stats, 0, sizeof(sift_cdict_cache_stats));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+}
+
+/* (reset bool) The dictionaries the maintenance reads of this backend parsed for themselves since the last reset, and the most that were held at once */
+Datum
+sift_test_col_stream_dicts(PG_FUNCTION_ARGS)
+{
+	Datum		v[3] = {Int64GetDatum(sift_stream_dict_stats.parsed), Int64GetDatum(sift_stream_dict_stats.live), Int64GetDatum(sift_stream_dict_stats.peak)};
+	bool		nulls[3] = {false};
+
+	if (PG_GETARG_BOOL(0))
+		sift_stream_dict_stats = (SiftStreamDictStats) {.live = sift_stream_dict_stats.live, .peak = sift_stream_dict_stats.live};
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 

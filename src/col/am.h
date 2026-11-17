@@ -491,6 +491,13 @@ typedef struct SiftCDictCacheStats
 	uint64		zone_hits;		/* zone arrays found in the cache */
 } SiftCDictCacheStats;
 extern SiftCDictCacheStats sift_cdict_cache_stats;
+typedef struct SiftStreamDictStats
+{
+	uint64		parsed;			/* dictionaries parsed for a maintenance read (sift_cseg_dict_stream) */
+	uint64		live;			/* ... that a segment holds now */
+	uint64		peak;			/* the most held at once since the reset */
+} SiftStreamDictStats;
+extern SiftStreamDictStats sift_stream_dict_stats;
 extern Size sift_cdict_cache_bytes(void);
 #endif
 extern PGDLLIMPORT bool sift_test_col_paranoid;	/* sift.test_col_paranoid: rows on all-visible pages are checked against the heap too, and a disagreement is logged */
