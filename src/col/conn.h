@@ -127,7 +127,8 @@ extern uint64 sift_conn_inserted_rows(Relation parent_heap, Relation parent_inde
  * index writes the rows it holds again under the newest xstamp of its inputs (no stamp says which rows are the old ones), so what the base holds says nothing of the rows inserted
  * since the stamp (sift_conn_inserted_rows counts all of them, as a reader must). The rows of the write buffer, which it counts exactly, and of the segments written after the base
  * are the ones that came since. Leaves out the rows inserted since that a merge put into the base (the readers still join for them): it never asks for a rewrite for what a merge did.
- * base_xstamp: the stamp of the base (InvalidTransactionId when it has none), for sift_conn_moved.
+ * base_xstamp: the stamp of the base (InvalidTransactionId when it has none), for sift_conn_moved. A parent cut by key (key_cut) counts none: a merge of it rewrites only the partitions it touches, so
+ * its partitions carry different stamps and no stamp tells the rows a merge wrote again from the rows inserted since; only the keys the journal records (exact) advise a rewrite for it.
  */
 extern uint64 sift_conn_inserted_estimate(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, TransactionId *base_xstamp);
 extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);

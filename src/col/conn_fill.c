@@ -300,7 +300,7 @@ sift_conn_stale(SiftConnStale *s, const SiftColSegment *seg)
 			continue;
 		if (st.lineage != s->c[i].now.lineage)
 			return true;
-		/* no journal records the inserted rows: a segment with orphans (no flag is read once a parent row was inserted, found.c) counts those outside the base of the parent index with the keys changed; a key that only updates of other columns rewrote keeps its flag (the readers hold it for every snapshot), and the versions of those updates that are outside the base are not new keys */
+		/* no journal records the inserted rows: a segment with orphans (no flag is read once a parent row was inserted, found.c) counts those outside the base of the parent index (none for a parent cut by key) with the keys changed; a key that only updates of other columns rewrote keeps its flag (the readers hold it for every snapshot), and the versions of those updates that are outside the base are not new keys */
 		inserted = st.reserved & SIFT_CONN_STAMP_CLEAN ? 0 : sift_conn_inserted_estimate(s->c[i].heap, s->c[i].index, &st, &base);
 		if (sift_conn_moved(s->c[i].heap, s->c[i].index, &st, s->snap, (uint32) Max(limit, 1), base, &keys) != SIFT_CONN_OK)
 			return true;

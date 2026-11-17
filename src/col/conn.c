@@ -496,6 +496,11 @@ sift_conn_inserted_rows(Relation heap, Relation index, const SiftConnStamp *stam
 uint64
 sift_conn_inserted_estimate(Relation heap, Relation index, const SiftConnStamp *stamp, TransactionId *base_xstamp)
 {
+	if (sift_col_rel(index)->ncut > 0)
+	{
+		*base_xstamp = InvalidTransactionId;
+		return 0;
+	}
 	return inserted_since(index, stamp, true, base_xstamp);
 }
 
