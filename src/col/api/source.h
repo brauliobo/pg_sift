@@ -290,6 +290,8 @@ extern bool sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int 
  */
 struct SiftColBatch;
 extern void sift_col_add_batches(SiftColSource *src, struct SiftColBatch *const *batches, int nbatches);
+/* the batches of the superblocks outside [sb_lo, sb_hi) leave the source: their owner frees them, the next begin over them feeds them again */
+extern void sift_col_drop_batches(SiftColSource *src, uint32 sb_lo, uint32 sb_hi);
 
 /* The source of the scope segments of an index (SIFT_COLO_SCOPE), before sift_col_begin: the rows of the write buffers expanded by the pairs rd->delta lists, as units of memory (col/scan/scope_delta.c); the rows were selected by the reader (sift_scope_delta_select) */
 struct SiftScopeRead;

@@ -7,6 +7,7 @@ group_mid	slope	12	clean		select k_mid, count(*), sum(amount) from {f} group by 
 group_unique_int	slope	50	open		select k_hi, count(*), sum(amount) from {f} group by 1;
 group_unique_text	slope	12	clean		select txt, count(*), sum(amount) from {f} group by 1;
 combo_text_filter	slope	12	clean		select count(*) from {f} where txt <> 'x' || k_hi;
+wbuf_group	slope	12	clean	drop table if exists wb{n}; create table wb{n} (id int, k int, t text) using sift_table; insert into wb{n} select g, g % 5000, 'name' || g % 100000 from generate_series(1, {n}) g;	select k, count(*), sum(id) from wb{n} group by 1;
 group_two_keys	slope	12	clean		select k_mid, cat, count(*), avg(amount) from {f} group by 1,2;
 count_distinct_int	slope	12	clean		select count(distinct k_hi) from {f};
 count_distinct_text	slope	12	clean		select count(distinct txt) from {f};

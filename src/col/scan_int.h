@@ -312,6 +312,7 @@ struct SiftColSource
 	bool		hstale;			/* the cursor on top gave the last unit: its next head is not looked up yet */
 	ColMem	   *mem;
 	int			nmem;
+	uint32		memseq;			/* the id of the last batch fed: it is not the place of the batch, which sift_col_drop_batches moves */
 	int			capmem;
 	bool		mem_loaded;
 	SiftColBatch **gb;			/* the rows of the segments without an order block of leaf gb_leaf (and of group leaf gb_gleaf), one batch for each unit, in gcx */

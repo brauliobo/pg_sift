@@ -259,9 +259,18 @@ scan_add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstam
 		src->capmem = Max(16, src->capmem * 2);
 		SIFT_REGROW_IN(src->mcxt, src->mem, src->capmem * sizeof(ColMem));
 	}
-	uint32		id = ++src->nmem;
+	src->mem[src->nmem++] = (ColMem) {b, ++src->memseq, lane, xstamp, roots};
+}
 
-	src->mem[id - 1] = (ColMem) {b, id, lane, xstamp, roots};
+void
+sift_col_drop_batches(SiftColSource *src, uint32 sb_lo, uint32 sb_hi)
+{
+	int			n = 0;
+
+	for (int i = 0; i < src->nmem; i++)
+		if (src->mem[i].b->sb >= sb_lo && src->mem[i].b->sb < sb_hi)
+			src->mem[n++] = src->mem[i];
+	src->nmem = n;
 }
 
 void
@@ -644,8 +653,8 @@ load_memory(ColUnit *cu, const ColMem *m)
 
 	if (im == NULL)
 	{
-		/* a batch of the write buffer outlives the scan: its unit is kept with it, the next scan parses it */
-		MemoryContext old = m->lane ? MemoryContextSwitchTo(b->mcxt) : CurrentMemoryContext;
+		/* a batch keeps its unit: the next scan of a write buffer batch parses it, and the owner of a fed one frees both together */
+		MemoryContext old = MemoryContextSwitchTo(b->mcxt);
 		StringInfo	buf = makeStringInfo();
 		Size		start;
 
@@ -660,8 +669,7 @@ load_memory(ColUnit *cu, const ColMem *m)
 		im->len = buf->len - start;
 		pfree(buf);
 		MemoryContextSwitchTo(old);
-		if (m->lane)
-			b->image = im;
+		b->image = im;
 	}
 	cu->mzones = im->zones;
 	SIFT_INVARIANT(sift_cunit_parse((uint8 *) im->buf + im->off, im->len, b->schema, &cu->v), "sift_col: an in-memory unit does not parse");

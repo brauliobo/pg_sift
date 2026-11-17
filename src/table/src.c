@@ -403,22 +403,71 @@ tbl_nsb(void *impl)
 	return sift_col_heap_sbs(((TblSource *) impl)->part[0].src);
 }
 
-/* The write buffer rows of the superblocks [sb_lo, sb_hi) that no begin has fed to the source of the table's layout yet */
-static void
-add_wbuf(TblSource *t, uint32 sb_lo, uint32 sb_hi)
+static bool
+wbuf_fed(const TblSource *t, uint32 sb)
 {
-	MemoryContext old = MemoryContextSwitchTo(t->cxt);
-	uint32		hi = Min(sb_hi, t->wbuf_hi + 1);
+	for (int i = 0; i < t->nwb; i++)
+		if (t->wb[i].sb == sb)
+			return true;
+	return false;
+}
 
-	for (uint32 sb = Max(sb_lo, t->wbuf_lo); sb < hi; sb++)
-		if (!bms_is_member(sb, t->batched))
-		{
-			SiftColBatch *b = sift_tbl_wbuf_batch(t->rel, t->st, t->wbuf, t->nwbuf, sb, t->cxt);
+/* The end of the window of a begin from sb: the superblock of write buffer rows alone (its batch is the memory of the scan, and the next window frees it), or the stored ones up to the next */
+static uint32
+wbuf_window(const TblSource *t, uint32 sb)
+{
+	uint32		next = t->range_hi;
 
-			sift_col_add_batches(t->part[0].src, &b, 1);
-			t->batched = bms_add_member(t->batched, sb);
-		}
-	MemoryContextSwitchTo(old);
+	for (int i = 0; i < t->nwbuf; i++)
+	{
+		uint32		first = t->wbuf[i].vbase / SIFT_SB_PAGES;
+
+		if (sb >= first && sb <= (t->wbuf[i].vbase + t->wbuf[i].npages - 1) / SIFT_SB_PAGES)
+			return Min(t->range_hi, sb + 1);
+		if (first > sb)
+			next = Min(next, first);
+	}
+	return next;
+}
+
+/* The batches of the write buffer rows outside [sb_lo, sb_hi) are freed: a scan holds the rows of the range it reads, and a pass over them again reads them again */
+static void
+drop_wbuf(TblSource *t, uint32 sb_lo, uint32 sb_hi)
+{
+	int			n = 0;
+
+	sift_col_drop_batches(t->part[0].src, sb_lo, sb_hi);
+	for (int i = 0; i < t->nwb; i++)
+		if (t->wb[i].sb >= sb_lo && t->wb[i].sb < sb_hi)
+			t->wb[n++] = t->wb[i];
+		else
+			MemoryContextDelete(t->wb[i].cxt);
+	t->nwb = n;
+}
+
+static bool
+wbuf_has(const TblSource *t, uint32 sb)
+{
+	for (int i = 0; i < t->nwbuf; i++)
+		if (sb >= t->wbuf[i].vbase / SIFT_SB_PAGES && sb <= (t->wbuf[i].vbase + t->wbuf[i].npages - 1) / SIFT_SB_PAGES)
+			return true;
+	return false;
+}
+
+/* The write buffer rows of superblock sb, when it holds some that the source does not hold yet, in a context of its own */
+static void
+add_wbuf(TblSource *t, uint32 sb)
+{
+	MemoryContext cx;
+	SiftColBatch *b;
+
+	if (!wbuf_has(t, sb) || wbuf_fed(t, sb))
+		return;
+	cx = AllocSetContextCreate(t->cxt, "sift_table write buffer batch", ALLOCSET_DEFAULT_SIZES);
+	b = sift_tbl_wbuf_batch(t->rel, t->st, t->wbuf, t->nwbuf, sb, cx);
+	sift_col_add_batches(t->part[0].src, &b, 1);
+	t->wb = t->wb ? repalloc(t->wb, (t->nwb + 1) * sizeof(TblWbatch)) : MemoryContextAlloc(t->cxt, sizeof(TblWbatch));
+	t->wb[t->nwb++] = (TblWbatch) {sb, cx};
 }
 
 /* The text tests join the zone pruning of every begin (a segment that lacks the column has no bound for it), and filter the rows of a unit on the encoded strings */
@@ -474,16 +523,17 @@ tbl_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 }
 
 static void
-tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
+begin_window(TblSource *t, uint32 sb_lo)
 {
-	TblSource  *t = impl;
+	uint32		sb_hi = wbuf_window(t, sb_lo);
 
-	add_wbuf(t, sb_lo, sb_hi);
+	drop_wbuf(t, sb_lo, sb_hi);
+	add_wbuf(t, sb_lo);
 	for (int k = 0; k < t->nparts; k++)
 	{
 		TblPart    *p = &t->part[k];
 		SiftColPred preds[SIFT_AGGZONE_MAX + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS];
-		int			n = sift_aggzone_preds(&p->zones, t->cxt, p->col, prune, nprune, preds);
+		int			n = sift_aggzone_preds(&p->zones, t->cxt, p->col, t->prune, t->nprune, preds);
 
 		for (int i = 0; i < p->nspred; i++)
 			preds[n++] = p->spred[i];
@@ -492,10 +542,22 @@ tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 		sift_col_begin_zones(p->src, preds, n, p->zones.zone, p->zones.nzone, sb_lo, sb_hi);
 		p->have = sift_col_next(p->src, &p->unit);
 	}
+	t->win_hi = sb_hi;
 	t->last = -1;
 }
 
-/* The units of the sources in ascending superblock: each source holds its head, and the one returned last advances on the next call */
+static void
+tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
+{
+	TblSource  *t = impl;
+
+	t->range_hi = sb_hi;
+	t->prune = prune;
+	t->nprune = nprune;
+	begin_window(t, sb_lo);
+}
+
+/* The units of the sources in ascending superblock: each source holds its head, and the one returned last advances on the next call; a range is read a window at a time */
 static bool
 tbl_next(void *impl, SiftSrcUnit *unit)
 {
@@ -512,6 +574,11 @@ tbl_next(void *impl, SiftSrcUnit *unit)
 		for (int k = 0; k < t->nparts; k++)
 			if (t->part[k].have && (best == NULL || t->part[k].unit.sb < best->unit.sb))
 				best = &t->part[k];
+		if (best == NULL && t->win_hi < t->range_hi)
+		{
+			begin_window(t, t->win_hi);
+			continue;
+		}
 		if (best == NULL)
 			return false;
 		t->last = best - t->part;

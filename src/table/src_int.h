@@ -37,6 +37,12 @@ typedef struct TblPart
 	int			nspred;
 } TblPart;
 
+typedef struct TblWbatch
+{
+	uint32		sb;
+	MemoryContext cxt;
+} TblWbatch;
+
 typedef struct TblSource
 {
 	Relation	rel;
@@ -50,7 +56,12 @@ typedef struct TblSource
 	SiftTblScanState ss;		/* what the page filter reads of the table: the copies above */
 	uint32		wbuf_lo;		/* the superblocks that hold write buffer rows: [wbuf_lo, wbuf_hi] */
 	uint32		wbuf_hi;
-	Bitmapset  *batched;		/* the superblocks whose write buffer rows are in the sources already */
+	struct TblWbatch *wb;		/* the superblocks of the last begin whose write buffer rows are in the source: each batch has a context of its own */
+	int			nwb;
+	uint32		range_hi;		/* the end of the range of the last begin, and of the window being read (win_hi): a begin reads the write buffer rows one superblock at a time */
+	uint32		win_hi;
+	const SiftSrcPrune *prune;	/* what the begin was asked with, for its next windows */
+	int			nprune;
 	SiftSrcLayout *lay;
 	TblPart    *part;
 	int			nparts;
