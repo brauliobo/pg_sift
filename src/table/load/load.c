@@ -111,7 +111,6 @@ end_run(Load *ld, Relation rel, SiftTblRel *st, bool parallel, bool more)
 	LoadRun    *r = &ld->run;
 	int			participants = parallel ? load_groups(rel) : 1;
 	int			ngroups;
-	int			room;
 	SiftSegEntry segs[LOAD_MAX_GROUPS];
 	Published	pub = {segs};
 
@@ -132,33 +131,14 @@ end_run(Load *ld, Relation rel, SiftTblRel *st, bool parallel, bool more)
 		ld->noring = true;
 	}
 	pub.n = ngroups = load_share_units(r, ld->rows.len, participants);
-	room = load_lock_with_room(rel, st, ngroups);
 	r->xid = r->vers ? GetCurrentTransactionId() : InvalidTransactionId;
-	if (room >= ngroups)
-	{
-		if (!(participants > 1 && ngroups > 1 && load_write_parallel(r, ld->rows.data, rel, ngroups, segs)))
-			for (int g = 0; g < ngroups; g++)
-				load_write_group(r, ld->rows.data, rel, g, &segs[g]);
-		sift_dir_update(rel, &(SiftDirChange) {.fn = load_publish_groups,.arg = &pub,.extra = InvalidBuffer});
-		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-	}
-	else
-	{
-		/* less room than groups: each is written and published under its own hold of the lock, the way a load without workers goes */
+	/* the groups are in no directory until published, and the lock keeps the orphan sweep from their blocks: no page lock is held while they are written */
+	LockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock);
+	if (!(participants > 1 && ngroups > 1 && load_write_parallel(r, ld->rows.data, rel, ngroups, segs)))
 		for (int g = 0; g < ngroups; g++)
-		{
-			Published	one = {&segs[g], 1};
-
-			if (g > 0)
-				(void) load_lock_with_room(rel, st, 1);
 			load_write_group(r, ld->rows.data, rel, g, &segs[g]);
-			sift_dir_update(rel, &(SiftDirChange) {.fn = load_publish_groups,.arg = &one,.extra = InvalidBuffer});
-			UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-		}
-	}
-	sift_tbl_refresh(rel, st);
-	if (sift_tbl_opt_bool(st, SIFT_TBLOPT_INLINE_PROMOTE))
-		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
+	load_publish_all(rel, st, &pub);
+	UnlockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock);
 }
 
 /* The segment the writer holds is closed: its blocks are in no directory until load_publish_all */

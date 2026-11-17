@@ -1,6 +1,6 @@
--- Every backend that reads a sift_table keeps the tombstone log of the table in memory, sorted (64 bytes an entry with the scratch of a first look), so the log is
--- bound by what one backend keeps (sift.tomb_log_limit, 1 GB): a read past it fails naming the setting and VACUUM, which is not bound and drops the entries of the
--- rows it cleared, and so does a statement whose own rows pass it. The test lowers the setting to 16 kB, 256 entries.
+-- Every backend that reads a sift_table keeps the tombstone log of the table sorted (64 bytes an entry with the scratch of a first look) up to what
+-- sift.tomb_log_limit allows, and the entries past it in sorted runs on temp files: a read and a statement of any number of rows complete, with the memory of the backend
+-- following the setting and not the log (test/t/tbl_tomb_spill.sh compares the rows with a heap twin). The test lowers the setting to 16 kB, 256 entries.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 
@@ -8,47 +8,24 @@ CREATE TABLE tl (id int, v int) USING sift_table;
 INSERT INTO tl SELECT i, i % 7 FROM generate_series(1, 4000) i;
 VACUUM tl;
 DELETE FROM tl WHERE id % 4 = 0;
-
-CREATE FUNCTION tl_count() RETURNS text LANGUAGE plpgsql AS $$
-DECLARE
-	n bigint;
-	hint text;
-BEGIN
-	SELECT count(*) INTO n FROM tl;
-	RETURN 'ok ' || n;
-EXCEPTION WHEN program_limit_exceeded THEN
-	GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT;
-	RETURN regexp_replace(SQLERRM, '[0-9]+', 'N', 'g') || ' / ' || hint;
-END $$;
-
-SELECT tl_count() AS default_limit;
+SELECT count(*) AS default_limit FROM tl;
 -- a new backend reads the log from its start
 \c -
 SET sift.tomb_log_limit = '16kB';
-SELECT tl_count() AS lowered;
--- VACUUM consumes the log, whatever its length: the table reads again
+SELECT count(*) AS lowered, sum(v) AS lowered_sum FROM tl WHERE id % 4 <> 0;
+SELECT count(*) AS lowered_all FROM tl;
+-- VACUUM consumes the log, whatever its length: the table reads the same
 VACUUM tl;
-SELECT tl_count() AS after_vacuum;
+SELECT count(*) AS after_vacuum FROM tl;
 
--- the entries of a statement's own rows count: a DELETE of more rows than the limit holds fails naming the setting, and runs with it raised
+-- the entries of a statement's own rows count as well: a DELETE of more rows than the limit holds completes
 CREATE TABLE tm (id int) USING sift_table;
 INSERT INTO tm SELECT i FROM generate_series(1, 2000) i;
-CREATE FUNCTION tm_delete() RETURNS text LANGUAGE plpgsql AS $$
-BEGIN
-	DELETE FROM tm;
-	RETURN 'deleted';
-EXCEPTION WHEN program_limit_exceeded THEN
-	RETURN regexp_replace(SQLERRM, '[0-9]+', 'N', 'g');
-END $$;
 \c -
 SET sift.tomb_log_limit = '16kB';
-SELECT tm_delete() AS own_rows_lowered;
-SET sift.tomb_log_limit = '1MB';
-SELECT tm_delete() AS own_rows_raised;
+DELETE FROM tm;
 SELECT count(*) AS left_rows FROM tm;
 
-DROP FUNCTION tm_delete();
 DROP TABLE tm;
-DROP FUNCTION tl_count();
 DROP TABLE tl;
 DROP EXTENSION pg_sift;

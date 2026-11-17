@@ -7,14 +7,15 @@
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_TS_ROWS 20000 6000)
-node_init primary 2 "autovacuum = off"
+node_init primary 2 "autovacuum = off
+log_temp_files = 0"
 node_start primary || bail "primary start failed"
 D=$(dir primary)
 sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE src AS SELECT g AS id, g % 500 AS grp, (g % 997)::numeric(10,2) AS amount, md5(g::text) AS pad FROM generate_series(1, $ROWS) g" \
 	"CREATE TABLE ht (LIKE src)" "CREATE TABLE lm (LIKE src) USING sift_table" "CREATE TABLE ls (LIKE src) USING sift_table" \
 	"CREATE INDEX lm_grp ON lm (grp)" "CREATE INDEX ls_grp ON ls (grp)" "CREATE INDEX ht_grp ON ht (grp)" >/dev/null || bail "setup failed"
-plan 12
+plan 11
 
 SMALL="SET sift.tomb_log_limit = 16"
 BIG="SET sift.tomb_log_limit = 8388608"
@@ -32,6 +33,7 @@ check "the rows are the heap twin's, read by a new backend with the small limit"
 check "... and the same with the log in memory" test "$(digest lm "$BIG")" == "$want"
 check "the b-tree reads (chain members) agree with the heap twin" test "$(via_index ls "$SMALL")" == "$(via_index ht "SELECT 1")"
 check "a point read agrees" test "$(sql primary "$SMALL" "SELECT amount FROM ls WHERE id = 3")" == "$(sql primary "SELECT amount FROM ht WHERE id = 3")"
+check "the entries past the limit were kept in temp files" grep -q "temporary file" "$D/postgres.log"
 
 # a statement that fails in the middle, and one rolled back
 out=$(sql primary "$SMALL" "BEGIN" "UPDATE ls SET amount = amount + 5" "SELECT 1 / 0" 2>&1)
@@ -55,5 +57,7 @@ wait "$UPD" 2>/dev/null
 SIFT_TMP=$D leak_expect 1 'terminated by signal 9'
 node_start primary || bail "restart after the crash failed"
 a=$(digest ls "$SMALL")
-check "after a power loss the table holds all of the statement or none of it" test "$a" == "$(digest ht 'SELECT 1')" -o "$a" == "$(sql primary "UPDATE ht SET amount = amount + 3" "SELECT 1" >/dev/null; digest ht 'SELECT 1')"
+none=$(digest ht "SELECT 1")
+sql primary "UPDATE ht SET amount = amount + 3" >/dev/null
+check "after a power loss the table holds all of the statement or none of it" test "$a" == "$none" -o "$a" == "$(digest ht 'SELECT 1')"
 finish

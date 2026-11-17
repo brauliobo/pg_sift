@@ -14,6 +14,7 @@
 
 #include "core/lane.h"
 #include "core/ring.h"
+#include "core/sortruns.h"
 #include "core/store.h"
 
 #define SIFT_TOMB_MAGIC			0x544F4D42	/* "TOMB" */
@@ -126,22 +127,23 @@ typedef struct SiftTomb
 StaticAssertDecl(sizeof(SiftTomb) == 32, "tombstone entries are 32 bytes");
 
 /*
- * What a backend may keep of the log of a relation, in kB (sift.tomb_log_limit): each entry costs it 64 bytes (the entry, the sort and merge scratch
- * of a first look, and the hash entry of a chain member). The entries a statement appends itself are kept as well, a DML over more rows than the limit
- * holds fails naming the setting. A reader that would pass it fails naming the setting; VACUUM, which drops the entries of the rows it cleared, is
- * not bound by it, and a worker is asked for when the log reaches a quarter of it. The default, 1 GiB (16.7 million entries), keeps the peak of a backend near
- * 800 MB: an UPDATE of 1,048,592 rows of a sift_table held 51 MB at its limit of 64 MB, 25.7 MB at 16 MB (scripts/mem-slope.py, docs/SIZING.md).
+ * What a backend keeps in memory of the log of a sift_table, in kB (sift.tomb_log_limit): each entry costs it 64 bytes (the entry, the sort and merge scratch
+ * of a first look, and the hash entry of a chain member). The entries past it are kept in sorted runs on temp files (core/sortruns.h): a log of any length is read, a
+ * statement of any number of rows appends to it, and the memory of a backend follows the setting, not the log. VACUUM reads and rewrites the log through the same runs.
+ * The worker is asked for at SIFT_TOMB_PRESSURE_ENTRIES entries, whatever the setting; the log of a column index keeps its entries whole in memory.
  */
-#define SIFT_TOMB_LOG_KB		1048576
+#define SIFT_TOMB_LOG_KB		65536
 extern int	sift_tomb_log_limit_kb;
 #define SIFT_TOMB_ENTRY_BYTES	64
+#define SIFT_TOMB_PRESSURE_ENTRIES	(UINT64CONST(8388608) * 1024 / SIFT_TOMB_ENTRY_BYTES / 4)
+#define SIFT_TOMB_SYNC_ENTRIES	(UINT64CONST(8388608) * 1024 / SIFT_TOMB_ENTRY_BYTES)
 
 /* What a backend keeps of a relation's log; dir is the directory copy the owner of the relation keeps (the log reads and refreshes it) */
 typedef struct SiftTombLog
 {
 	MemoryContext cxt;
 	SiftDirSnapshot *dir;
-	bool		bounded;		/* sift_tomb_sync fails past sift.tomb_log_limit (a sift_table; a column index keeps its log whole) */
+	bool		spill;			/* the entries past sift.tomb_log_limit go to sorted runs on temp files (a sift_table; a column index keeps its log whole) */
 	/* tombstones, sorted by (key, seq) */
 	uint64		gen;
 	BlockNumber hdr;
@@ -162,6 +164,11 @@ typedef struct SiftTombLog
 	struct HTAB *hotm;			/* the keys that are the succ of a HOT entry: chain members (NULL until the log has one) */
 	SiftTomb   *run;			/* scratch: the entries of one key found in both arrays */
 	uint32		caprun;
+	SiftSortRunSet	spilled;		/* the entries before ents, oldest run first: the same order of (key, seq) as ents */
+	SiftSortRunSet	hotspilled;		/* the chain members (hotm) before the ones hotm holds: HotLink, sorted by succ */
+	SiftTomb   *found;			/* scratch: the entries of a key or a range read from the runs, with those of the arrays */
+	uint32		nfound;
+	uint32		capfound;
 } SiftTombLog;
 
 /* The log of a relation that has none yet: cxt holds what it caches, dir is the owner's directory copy */

@@ -44,7 +44,7 @@ hold $PH_TOMB
 sql primary "SET sift.test_phase_gate = $GATE" "VACUUM lt" >"$D/vacuum.out" 2>&1 &
 VAC=$!
 check "VACUUM waits in the build of the new tombstone log" wait_for "waiting_at $PH_TOMB" 60
-out=$(sql primary "SET lock_timeout = '3s'" "UPDATE lt SET amount = amount + 1 WHERE id = 3" "DELETE FROM lt WHERE id = 5" 2>&1)
+out=$(sql primary "SET lock_timeout = '3s'" "UPDATE lt SET amount = amount + 1 WHERE id = 3" "DELETE FROM lt WHERE id = 5" 2>&1)  # timeout-ok: the product waits for no lock, the timeout is the failure
 check "an UPDATE and a DELETE complete while the rewrite builds" test $? -eq 0
 sql primary "UPDATE ht SET amount = amount + 1 WHERE id = 3" "DELETE FROM ht WHERE id = 5" >/dev/null
 release
@@ -59,10 +59,11 @@ sql primary "SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem
 	"SET sift.test_phase_gate = $GATE" "COPY lt2 FROM '$D/load.csv' CSV" >"$D/copy.out" 2>&1 &
 COPY=$!
 check "the COPY waits in the writing of its groups" wait_for "waiting_at $PH_LOAD" 60
-out=$(sql primary "SET lock_timeout = '3s'" "SET sift.table_write_buffer_limit = 2048" \
-	"DO \$\$ BEGIN FOR i IN 1..$((ROWS > 6000 ? ROWS : 6000)) LOOP INSERT INTO lt2 VALUES (-i, i % 500, 1, repeat(md5(i::text), 32)); END LOOP; END \$\$" 2>&1)
+INSERTS=$((ROWS > 6000 ? ROWS : 6000))
+BURST="DO \$\$ BEGIN FOR i IN 1..$INSERTS LOOP INSERT INTO lt2 VALUES (-i, i % 500, 1, repeat(md5(i::text), 32)); END LOOP; END \$\$"
+out=$(sql primary "SET lock_timeout = '3s'" "SET sift.table_write_buffer_limit = 2048" "$BURST" 2>&1)  # timeout-ok: the product waits for no lock, the timeout is the failure
 check "an INSERT whose write buffer fills rotates it while the run is written" test -z "$out"
 release
 wait "$COPY"
-check "the COPY ends with its rows and the INSERT's" test "$(sql primary "SELECT count(*) FROM lt2")" == "$((ROWS + (ROWS > 6000 ? ROWS : 6000)))"
+check "the COPY ends with its rows and the INSERT's" test "$(sql primary "SELECT count(*) FROM lt2")" == "$((ROWS + INSERTS))"
 finish
