@@ -8,10 +8,11 @@
 #include "access/relation.h"
 #include "access/table.h"
 #include "utils/inval.h"
-#include "utils/syscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 
+#include "core/cachebudget.h"
 #include "agg/agg.h"
 #include "agg/part.h"
 #include "agg/from/int.h"
@@ -75,6 +76,7 @@ static HTAB *facts;
 static HTAB *src_facts;
 static HTAB *facts_watch;
 static uint32 facts_all;		/* bumped by an invalidation of every row */
+static uint64 facts_used;		/* sift_cache_tick() of the last planning */
 static int	facts_replaced;		/* entries read again since the cache was emptied: their old facts stay until it is */
 
 /* a syscache callback, not a relcache one: a backend has ten relcache callback slots for all its libraries, and sixty-four for the syscaches */
@@ -97,6 +99,21 @@ facts_empty(void)
 	facts = src_facts = facts_watch = NULL;
 	facts_replaced = 0;
 }
+
+static Size
+facts_bytes(void)
+{
+	return facts_cx ? MemoryContextMemAllocated(facts_cx, true) : 0;
+}
+
+/* the cache goes whole, so it is one entry: as old as the last planning that read it, and held while a plan is under way */
+static uint64
+facts_oldest(void)
+{
+	return facts != NULL && part_memo_cx == NULL ? facts_used : UINT64_MAX;
+}
+
+static const SiftCacheKind facts_kind = {facts_bytes, facts_oldest, facts_empty};
 
 static FactsWatch *
 facts_watch_of(Oid relid)
@@ -142,6 +159,11 @@ sift_agg_memo_end(MemoryContext cx)
 	part_memo_cx = NULL;
 	part_memo = NULL;
 	MemoryContextDelete(cx);
+	if (facts != NULL)
+	{
+		facts_used = sift_cache_tick();
+		sift_cache_room(0);
+	}
 }
 
 /* sift.plan_scale: the source has that many times the rows, units and bytes */
@@ -184,6 +206,7 @@ facts_init(void)
 	{
 		facts_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache partition facts", ALLOCSET_DEFAULT_SIZES);
 		CacheRegisterSyscacheCallback(RELOID, facts_inval, (Datum) 0);
+		sift_cache_register(&facts_kind);
 	}
 	ctl.hcxt = facts_cx;
 	facts = hash_create("sift partition facts", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);

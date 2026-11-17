@@ -161,7 +161,7 @@ select string_agg(i || ':' || kb, ' ' order by i) from leakres;""")
 
 
 CACHE_HELD = """with c as (select path[cardinality(path)] as id from pg_backend_memory_contexts
-  where name in ('sift cache dictionaries', 'sift cache lookup tables', 'sift cache segments'))
+  where name in ('sift cache dictionaries', 'sift cache lookup tables', 'sift cache segments', 'sift cache partition facts'))
 select 'HELD', coalesce(sum(total_bytes), 0) / 1024 from pg_backend_memory_contexts m
 where m.path[cardinality(m.path)] in (select id from c) or m.path && (select coalesce(array_agg(id), '{}') from c);"""
 
@@ -192,6 +192,44 @@ def leakx_case(n, name, setup, op):
     return int(m.group(2)) - int(m.group(1))
 
 
+HELD_BY = """select 'HELD ' || :'tag' || ' ' || coalesce(string_agg(n || '=' || kb, ' ' order by n), '') from (select c.name n,
+  (select coalesce(sum(total_bytes), 0) / 1024 from pg_backend_memory_contexts m where m.path && array[c.id] or m.path[cardinality(m.path)] = c.id) kb
+  from (select name, path[cardinality(path)] id from pg_backend_memory_contexts
+        where name in ('sift cache dictionaries', 'sift cache lookup tables', 'sift cache segments')) c) x;"""
+EVICT_ROWS = "select d.label, count(distinct f.txt), sum(f.amount) from {f} f join {d} d on d.id = f.k_hi group by 1 order by 1 limit 20;"
+
+
+def held_by(n, a, b, budget_kb):
+    fmt = dict(f=f"f{n}", d=f"d{n}", n=n)
+    out = script(SETTINGS + f"set sift.backend_cache_kb = {budget_kb};\n" + a.format(**fmt) + "\n\\set tag A\n" + HELD_BY + "\n"
+                 + b.format(**fmt) + "\n\\set tag B\n" + HELD_BY)
+    got = {}
+    for tag, rest in re.findall(r"HELD (\w) (.*)", out):
+        got[tag] = {k.split()[-1]: int(v.split(".")[0]) for k, v in (kv.split("=") for kv in re.findall(r"sift cache \w+ ?\w*=\d+", rest))}
+    if "A" not in got or "B" not in got:
+        raise RuntimeError("evict: " + out.strip()[-200:])
+    return got
+
+
+def rows_at(n, budget_kb):
+    fmt = dict(f=f"f{n}", d=f"d{n}", n=n)
+    return script(SETTINGS + f"set sift.backend_cache_kb = {budget_kb};\n" + EVICT_ROWS.format(**fmt))
+
+
+def evict_case(n, a, b):
+    """statement a fills one cache, b another: with the budget off both stay; for some budget b makes a's cache give way to its own, and the rows a budget gives are those of none"""
+    free = held_by(n, a, b, -1)
+    kept = free["A"].get("tables", 0)
+    if not (kept > 0 and free["B"].get("tables") == kept and free["B"].get("segments", 0) > 0):
+        return False, "the budget off did not keep both caches"
+    for pct in range(98, 80, -1):
+        got = held_by(n, a, b, kept * pct // 100)
+        if got["A"].get("tables", 0) > 0 and got["B"].get("tables", 0) < got["A"]["tables"] and got["B"].get("segments", 0) > 0:
+            same = rows_at(n, 1024) == rows_at(n, -1) == rows_at(n, kept * pct // 100)
+            return same, f"budget {kept * pct // 100} kB: lookup {got['A']['tables']} -> {got['B']['tables']} kB for segments {got['B']['segments']} kB; rows {'equal' if same else 'DIFFER'}"
+    return False, "no budget made the segment cache take room from the lookup cache"
+
+
 def run(rows, only):
     sizes = [rows, rows * 2, rows * 4]
     cases = read_cases(only)
@@ -203,7 +241,11 @@ def run(rows, only):
     bad = 0
     for name, kind, ceiling, status, setup, op in cases:
         try:
-            if kind == "cap":
+            if kind == "evict":
+                ok, what = evict_case(sizes[1], setup, op)
+                print(f"SLOPE {name} evict {what} {'PASS' if ok else 'FAIL'}", flush=True)
+            elif kind == "cap":
+                script(setup.format(f=f"f{sizes[1]}", d=f"d{sizes[1]}", n=sizes[1]))
                 held, free = cache_held_kb(sizes[1], op, ceiling), cache_held_kb(sizes[1], op, -1)
                 ok = held <= ceiling < free
                 print(f"SLOPE {name} cap {held} kB held at a budget of {ceiling} kB, {free} kB without one {'PASS' if ok else 'FAIL'}", flush=True)
@@ -235,7 +277,7 @@ def selftest():
     assert verdict(160, 140, "open") == "FAIL"
     assert verdict(10, 140, "open") == "FAIL"
     for c in read_cases(None):
-        assert c[1] in ("slope", "leak", "leakx", "cap") and c[3] in ("clean", "open") and (c[1] == "cap" or (c[3] == "open") == (c[2] > CLEAN)), c[0]
+        assert c[1] in ("slope", "leak", "leakx", "cap", "evict") and c[3] in ("clean", "open") and (c[1] in ("cap", "evict") or (c[3] == "open") == (c[2] > CLEAN)), c[0]
     print("mem-slope selftest: ok")
     return 0
 
