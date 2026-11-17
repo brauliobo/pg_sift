@@ -44,6 +44,7 @@
 #define JOURNAL_MARK	"Journal of the pairs of "
 
 bool		sift_col_journal_empty = false;
+bool		sift_col_journal_validating = false;
 
 /*
  * The journals this backend made empty in the build that is running: ready for writes, not valid, filled by the validation pass of that build. Only the backend that made them reads them as journals
@@ -199,11 +200,30 @@ sift_scope_journal_drop_unused(void)
 	}
 }
 
+/* validate_index of a journal the statement made empty, which writes the pairs it adds and no record of them (sift_col_journal_validating) */
+static void
+journal_fill(Oid heap, Oid journal, Snapshot snap)
+{
+	sift_col_journal_validating = true;
+	PG_TRY();
+	{
+		validate_index(heap, journal, snap);
+	}
+	PG_FINALLY();
+	{
+		sift_col_journal_validating = false;
+	}
+	PG_END_TRY();
+}
+
 /*
  * The validation pass of a concurrent build, for the journals it made empty (CREATE INDEX CONCURRENTLY and REINDEX CONCURRENTLY of a scope index over a relation of pairs without one): the
  * phases that PostgreSQL gives a concurrent index. The journal was ready for writes when the transaction of the build committed, so the writers that began after it keep it (aminsert); the writers
  * that began before it are waited for, and then the heap is read under a snapshot that sees all they did, adding the pairs the journal does not have (validate_index). The transactions whose
  * snapshots are older than that one are waited for before the journal is valid, as for any index. No lock stronger than ShareUpdateExclusiveLock is held.
+ *
+ * The pairs that pass adds were written by transactions that finished before the lock that began the journal (the writers since record their own), and every stamp is taken from a snapshot
+ * after that lock, which sees them: no stamp can need a record of them, so the pass writes the pairs into the index and no journal record (sift_col_journal_validating).
  */
 void
 sift_scope_journals_validate(void)
@@ -220,7 +240,7 @@ sift_scope_journals_validate(void)
 #endif
 		snap = RegisterSnapshot(GetLatestSnapshot());
 		PushActiveSnapshot(snap);
-		validate_index(heap, journal, snap);
+		journal_fill(heap, journal, snap);
 		PopActiveSnapshot();
 		WaitForOlderSnapshots(snap->xmin, false);
 		UnregisterSnapshot(snap);
