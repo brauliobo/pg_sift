@@ -11,7 +11,7 @@
  * point_tid_columns is left alone: it lists rows, and a key_order of the user says the workload sorts by a column without a key, which a key cut
  * makes slower. sift.key_cut_decision(index) runs the same rule on an existing index and says what it would decide, without changing anything.
  *
- * The sample is a fixed set of superblocks spread over the heap, at most a quarter of it. For a key taken at a random row of the sample, the other sampled superblocks that hold
+ * The sample is a fixed set of superblocks spread over the heap, at most a quarter of it, whose rows are kept in memory up to maintenance_work_mem and the rest on a temporary file. For a key taken at a random row of the sample, the other sampled superblocks that hold
  * the key give the superblocks it is in (each stands for 1/f superblocks, f the sampled share), and the other sampled rows of the key give its rows.
  */
 #include "postgres.h"
@@ -21,20 +21,24 @@
 #include "core/sql.h"
 #include "core/cmp.h"
 #include "core/membudget.h"
-#include "core/membudget.h"
+#include "miscadmin.h"
 #include "col/autocut/autocut_int.h"
 
 #define AUTOCUT_MIN_SBS	16
+
+#ifdef SIFT_TESTING
+bool		sift_test_key_cut_unbounded = false;
+
+#define SIFT_TEST_UNBOUNDED sift_test_key_cut_unbounded
+#else
+#define SIFT_TEST_UNBOUNDED false
+#endif
 
 #define AUTOCUT_QUICK_SBS	8		/* superblocks of the first look, which most tables end at: it prices the decision at a share of the heap, not at a pass over it */
 
 #define AUTOCUT_ROWS		400000	/* rows sampled, at most, unless AUTOCUT_MIN_SBS superblocks hold more: the sample is a number of units, so that a table of narrow rows (25,000 to a unit) is sampled as one of wide rows */
 
 #define AUTOCUT_OTHER_PCT	1		/* percent more units that an equality on another leaf may keep under the cut of a lane: the cut spreads its zones over all the units */
-
-#define AUTOCUT_LEAVES		8		/* leaves read: the candidates and those that may compete with them */
-
-#define AUTOCUT_KEY_BYTES	2.0		/* what a key takes in the key list of a unit */
 
 #define AUTOCUT_CLUSTER_UNITS 1.0	/* units of the default formula (a gain of 5%) the leading column of a CLUSTER of the table adds to its benefit when the keys are ranked: the cut keeps the order the table was given */
 
@@ -51,17 +55,6 @@ point_tid_set(Relation index)
 
 	(void) sift_cpagg_auto_list(opt, &autolist);
 	return opt[0] != '\0' && !autolist;
-}
-
-int
-acut_cell_cmp(const void *a, const void *b)
-{
-	const Cell *x = a,
-			   *y = b;
-
-	if (x->key != y->key)
-		return x->key < y->key ? -1 : 1;
-	return x->sb < y->sb ? -1 : x->sb > y->sb;
 }
 
 static bool
@@ -126,51 +119,84 @@ typedef struct CutVerdict
 
 /* the rows of the superblock that starts at block `start`, up to a unit's worth, appended to the sample as one more sampled superblock; false when it holds none */
 static bool
-sample_superblock(Relation heap, TupleTableSlot *slot, Track *tr, int ntr, Samp *samp, uint32 *sample_cap, uint32 max_rows, BlockNumber start, BlockNumber nblocks)
+sample_superblock(Relation heap, TupleTableSlot *slot, Track *tr, int ntr, Samp *samp, char **rows, uint32 *cap, BlockNumber start, BlockNumber nblocks)
 {
 	TableScanDesc scan;
-	uint32		seen = 0;
+	uint32		n = 0;
+	int			u = samp->nsb;
 
-	samp->start[samp->nsb] = samp->n;
+	samp->start[u] = samp->n;
 	scan = table_beginscan_strat(heap, GetActiveSnapshot(), 0, NULL, true, false);
 	heap_setscanlimits(scan, start, Min(SIFT_SB_PAGES, nblocks - start));
-	while (seen++ < SIFT_COL_UNIT_MAX_ROWS && table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	while (n < SIFT_COL_UNIT_MAX_ROWS && table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
-		if (samp->n == *sample_cap)
+		uint64	   *rec;
+		uint64		nulls = 0;
+
+		if (n == *cap)
 		{
-			*sample_cap = Min(*sample_cap * 2, max_rows);
-			samp->tid = repalloc_array(samp->tid, SiftKey, *sample_cap);
-			for (int t = 0; t < ntr; t++)
-			{
-				tr[t].v = repalloc_array(tr[t].v, int64, *sample_cap);
-				tr[t].nl = repalloc_array(tr[t].nl, bool, *sample_cap);
-			}
+			*cap = Min(*cap * 2, SIFT_COL_UNIT_MAX_ROWS);
+			*rows = repalloc(*rows, (size_t) *cap * samp->recsz);
 		}
-		samp->tid[samp->n] = ((SiftKey) (samp->nsb * SIFT_SB_PAGES + ItemPointerGetBlockNumber(&slot->tts_tid) - start) << 16) | ItemPointerGetOffsetNumber(&slot->tts_tid);
+		rec = (uint64 *) (*rows + (size_t) n++ * samp->recsz);
+		rec[0] = ((uint64) (ItemPointerGetBlockNumber(&slot->tts_tid) - start) << 16) | ItemPointerGetOffsetNumber(&slot->tts_tid);
 		for (int t = 0; t < ntr; t++)
 		{
 			bool		isnull;
 			Datum		dat = slot_getattr(slot, tr[t].hatt, &isnull);
+			int64		x = 0;
 
-			tr[t].v[samp->n] = 0;
-			tr[t].nl[samp->n] = isnull;
 			if (!isnull && tr[t].shape != NULL)
 			{
 				SiftColValue lane[SIFT_COL_MAX_LANES];
 
 				sift_col_datum_values(tr[t].shape, dat, false, lane);
-				tr[t].nl[samp->n] = lane[tr[t].lane].isnull;	/* a bound that does not fit a lane is a NULL there */
-				tr[t].v[samp->n] = lane[tr[t].lane].v.i;
+				isnull = lane[tr[t].lane].isnull;	/* a bound that does not fit a lane is a NULL there */
+				x = lane[tr[t].lane].v.i;
 			}
 			else if (!isnull)
-				value_of(tr[t].type, dat, &tr[t].v[samp->n]);
+				value_of(tr[t].type, dat, &x);
+			rec[1 + t] = x;
+			nulls |= (uint64) isnull << t;
 		}
-		samp->n++;
+		rec[1 + ntr] = nulls;
 	}
 	table_endscan(scan);
-	if (samp->n == samp->start[samp->nsb])
+	if (n == 0)
 		return false;
+	for (int t = 0; t < ntr; t++)
+	{
+		int64		lo = 0,
+					hi = 0;
+		uint32		have = 0;
+
+		for (uint32 i = 0; i < n; i++)
+		{
+			const char *rec = *rows + (size_t) i * samp->recsz;
+			int64		x = ROW_V(rec, t);
+
+			if (ROW_NL(rec, ntr, t))
+				continue;
+			if (have++ == 0)
+				lo = hi = x;
+			else
+			{
+				lo = Min(lo, x);
+				hi = Max(hi, x);
+			}
+		}
+		if (have == 0)
+			continue;
+		tr[t].nonnull += have;
+		tr[t].has[u] = true;
+		tr[t].lo[u] = (double) lo;
+		tr[t].hi[u] = (double) hi;
+	}
+	for (uint32 i = 0; i < n; i++)
+		acut_spool_add(&samp->rows, *rows + (size_t) i * samp->recsz);
+	samp->n += n;
 	samp->start[++samp->nsb] = samp->n;
+	SIFT_MEM_CHECKPOINT();
 	return true;
 }
 
@@ -240,7 +266,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 
 	SIFT_MEM_SCOPE(col_key_cut_decision, cx);
 	Track	   *tr;
-	Samp	   *samp;
+	Samp	   *samp = NULL;
 	int			ntr = 0,
 				ncand = 0,
 				untracked = 0,
@@ -267,10 +293,9 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	AttrNumber	cluster = acut_cluster_att(heap);
 	double		best = 0;
 	uint32		cap,
-				sample_cap;
-	int64	   *tmp;
-	uint32	   *at,
-				max_rows;
+				sbcap = 1024;
+	uint32	   *at;
+	char	   *sbrows;
 	int			nat;
 	TupleTableSlot *slot;
 	const char *leaf = NULL;
@@ -308,7 +333,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		if (ntr < AUTOCUT_LEAVES && d->kind == SIFT_COLK_SCALAR && d->store == SIFT_COLS_INT && d->lane == 0 && d->parent < 0 && (d->path == NULL || d->path[0] == '\0') &&
 			hatt != 0 && value_of(d->type, 0, &x))
 		{
-			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = d->type,
+			tr[ntr] = (Track) {.c = c, .idx = ntr, .hatt = hatt, .type = d->type,
 				.cand = cand_type(d->type) && (kgroup != NULL ? strcmp(cut_name(index, sc, c), kgroup) == 0 : sift_col_key_shaped(heap, index, sc, d))};
 			tr[ntr].time = kgroup == NULL && !tr[ntr].cand && time_type(d->type);
 			tr[ntr].btree = acut_unique_btree(heap, hatt);
@@ -319,7 +344,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		{
 			/* the lanes of a range or a network are integer leaves of the index whose size the cut changes; the first (the start of the set, the node of a network) has values that
 			 * do not repeat, and a range of them is read like a range of dates */
-			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = SIFT_COLT_INT8, .time = d->lane == 1 && kgroup == NULL, .image = d->lane == 1, .shape = &sc->cols[c - d->lane], .lane = d->lane};
+			tr[ntr] = (Track) {.c = c, .idx = ntr, .hatt = hatt, .type = SIFT_COLT_INT8, .time = d->lane == 1 && kgroup == NULL, .image = d->lane == 1, .shape = &sc->cols[c - d->lane], .lane = d->lane};
 			ncand += d->lane == 1 && kgroup == NULL;
 			untracked -= d->lane == 1;
 			untracked_bytes -= (d->lane == 1) * AUTOCUT_LEAF_BYTES;
@@ -348,27 +373,19 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	}
 	want = quick ? Min(full, AUTOCUT_QUICK_SBS) : full;
 	samp = palloc0(sizeof(Samp));
+	samp->ntr = ntr;
+	samp->recsz = sizeof(uint64) * (2 + ntr);
+	samp->budget.left = SIFT_TEST_UNBOUNDED ? PG_INT64_MAX : (int64) maintenance_work_mem * 1024;
+	acut_spool_init(&samp->rows, &samp->budget, samp->recsz);
 	slot = table_slot_create(heap, NULL);
 	at = palloc_array(uint32, want);
 	nat = plan_superblocks(heap, slot, nsb, want, nblocks, at);
-	max_rows = nat * SIFT_COL_UNIT_MAX_ROWS;
-	sample_cap = Min(max_rows, 4096);
-	samp->tid = palloc_array(SiftKey, sample_cap);
-	for (int t = 0; t < ntr; t++)
-	{
-		tr[t].v = palloc_array(int64, sample_cap);
-		tr[t].nl = palloc_array(bool, sample_cap);
-	}
+	sbrows = palloc((size_t) sbcap * samp->recsz);
 	/* the cap on rows is calibrated by the mean rows of a superblock: it ends the sample once the superblocks the rule asks for at least are in, whatever their rows */
 	for (int i = 0; i < nat && (samp->n <= cap || i < Min(AUTOCUT_MIN_SBS, want)); i++)
-		sample_superblock(heap, slot, tr, ntr, samp, &sample_cap, max_rows, (BlockNumber) at[i] * SIFT_SB_PAGES, nblocks);
+		sample_superblock(heap, slot, tr, ntr, samp, &sbrows, &sbcap, (BlockNumber) at[i] * SIFT_SB_PAGES, nblocks);
+	pfree(sbrows);
 	ExecDropSingleTupleTableSlot(slot);
-	samp->tid = repalloc_array(samp->tid, SiftKey, Max(samp->n, 1));
-	for (int t = 0; t < ntr; t++)
-	{
-		tr[t].v = repalloc_array(tr[t].v, int64, Max(samp->n, 1));
-		tr[t].nl = repalloc_array(tr[t].nl, bool, Max(samp->n, 1));
-	}
 	v->sampled = samp->nsb;
 	SIFT_MEM_CHECKPOINT();
 	if (samp->nsb < Min(AUTOCUT_MIN_SBS, want))
@@ -376,55 +393,6 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		v->reason = psprintf("the sample holds %d superblocks, fewer than the %d it needs", samp->nsb, Min(AUTOCUT_MIN_SBS, want));
 		goto done;
 	}
-	tmp = palloc_array(int64, SIFT_COL_UNIT_MAX_ROWS);
-	for (int t = 0; t < ntr; t++)
-	{
-		Track	   *k = &tr[t];
-
-		for (int u = 0; u < samp->nsb; u++)
-		{
-			int			n = 0;
-
-			for (uint32 i = samp->start[u]; i < samp->start[u + 1]; i++)
-				if (!k->nl[i])
-					tmp[n++] = k->v[i];
-			if (n == 0)
-				continue;
-			k->has[u] = true;
-			if (!k->cand)
-			{
-				/* the zone alone: no cells to count, so no sort */
-				int64		lo = tmp[0],
-							hi = tmp[0];
-
-				for (int i = 1; i < n; i++)
-				{
-					lo = Min(lo, tmp[i]);
-					hi = Max(hi, tmp[i]);
-				}
-				k->lo[u] = (double) lo;
-				k->hi[u] = (double) hi;
-				continue;
-			}
-			sift_sort_i64(tmp, n);
-			k->lo[u] = (double) tmp[0];
-			k->hi[u] = (double) tmp[n - 1];
-			for (int i = 0, j; i < n; i = j)
-			{
-				for (j = i; j < n && tmp[j] == tmp[i];)
-					j++;
-				if (k->ncells == k->cap)
-				{
-					k->cap = k->cap ? k->cap * 2 : 1024;
-					k->cells = k->cells ? repalloc(k->cells, k->cap * sizeof(Cell)) : palloc(k->cap * sizeof(Cell));
-				}
-				k->cells[k->ncells++] = (Cell) {tmp[i], u, j - i};
-			}
-		}
-	}
-	for (int t = 0; t < ntr; t++)
-		if (tr[t].ncells > 0)
-			qsort(tr[t].cells, tr[t].ncells, sizeof(Cell), acut_cell_cmp);
 	/* what a row takes in the index now: the integer leaves as the codec writes them, the others as 1 byte, and the directory of the unit */
 	def_row = acut_layout_bytes(tr, ntr, ntr + untracked, samp, -1, -1, false, NULL, nsb, nblocks, rows_per_unit) + untracked_bytes;
 	/* the keys first, in the order of the index, then the time leaves: a range of a time leaf is the lookup of the rows of a key that has no key */
@@ -440,11 +408,9 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			/* the first look asks a quarter of the units: a sample of a few superblocks puts one hit at 1/f units, so it cannot tell 16 from 64, but it can tell a key that sits in few */
 			if (pass == 0)
 				/* the key list of a leaf is kept where it fits the share of the bytes of a unit (SIFT_CSET_PRES_PCT) */
-				u = acut_units_read(&tr[t], samp->nsb, nsb, rows_per_unit,
-							   AUTOCUT_KEY_BYTES * tr[t].ncells / samp->nsb <= SIFT_CSET_PRES_PCT / 100.0 * rows_per_unit * def_row, keys_kept,
-							   &fill, &fired);
+				u = acut_units_read(&tr[t], samp, nsb, rows_per_unit, SIFT_CSET_PRES_PCT / 100.0 * rows_per_unit * def_row, keys_kept, &fill, &fired);
 			else
-				u = acut_ranges_read(&tr[t], samp->n, samp->nsb, nsb, rows_per_unit, &fill, &fired);
+				u = acut_ranges_read(&tr[t], samp, nsb, rows_per_unit, &fill, &fired);
 			if (first < 0)
 			{
 				first = t;
@@ -639,6 +605,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	else if (v->res == SIFT_AUTOCUT_ADVISED)
 		v->reason = v->range ? "a range of the leaf reads many units, but the cost of the cut is above its benefit" : "an equality on the key reads many units, but the cost of the cut is above its benefit";
 done:
+	if (samp != NULL)
+		acut_spool_free(&samp->rows);
 	MemoryContextSwitchTo(old);
 	if (v->reason != NULL)
 		v->reason = pstrdup(v->reason);
@@ -760,7 +728,7 @@ sift_col_auto_cut(Relation heap, Relation index)
  * The rewrite of every segment (col/maint/merge.c) decides the key again from the data, as a build does, for an index whose key_cut the build chose or left to the default:
  * rows appended at the end of the heap turn a table in the order of its tenants into one the units no longer follow, and the rewrite is where the units are cut again.
  * Writes the option when the verdict is a key other than the one the index has, and returns whether it did; the build's NOTICE is not repeated (the caller says what changed).
- * The decision reads the build's sample and holds no rows of the segments, so it does not depend on maintenance_work_mem (a merge sorts rows that do not fit it on temporary files). A cut is not undone:
+ * The decision reads the build's sample and holds no rows of the segments, and the sample it holds in memory is held to maintenance_work_mem (the rest is on a temporary file). A cut is not undone:
  * the segments it cut are streamed in the order of the key, and a table that stops paying for one is a REINDEX's to take back.
  */
 bool

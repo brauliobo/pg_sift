@@ -68,9 +68,21 @@ budget_col_conn_changed(void)
 }
 
 static Size
+budget_col_key_cut_cells(void)
+{
+	return (((Size) maintenance_work_mem * 1024) + ((Size) 8388608UL));
+}
+
+static Size
 budget_col_key_cut_decision(void)
 {
-	return (((Size) 603979776UL));
+	return (((Size) maintenance_work_mem * 1024) + ((Size) 12582912UL));
+}
+
+static Size
+budget_col_key_cut_layout(void)
+{
+	return (((Size) maintenance_work_mem * 1024) + ((Size) 67108864UL));
 }
 
 static Size
@@ -185,7 +197,9 @@ static const struct
 	{"bm25_verify", budget_bm25_verify, "maintenance_work_mem + 8MB"},
 	{"col_build", budget_col_build, "192MB (open: ceiling measured today)"},
 	{"col_conn_changed", budget_col_conn_changed, "32kB"},
-	{"col_key_cut_decision", budget_col_key_cut_decision, "576MB"},
+	{"col_key_cut_cells", budget_col_key_cut_cells, "maintenance_work_mem + 8MB"},
+	{"col_key_cut_decision", budget_col_key_cut_decision, "maintenance_work_mem + 12MB"},
+	{"col_key_cut_layout", budget_col_key_cut_layout, "maintenance_work_mem + 64MB"},
 	{"col_merge", budget_col_merge, "256MB (open: ceiling measured today)"},
 	{"col_merge_window", budget_col_merge_window, "maintenance_work_mem + 24MB"},
 	{"col_orphan_sweep", budget_col_orphan_sweep, "8MB"},

@@ -24,7 +24,6 @@ double	agg/wide.c	w->bytes = repalloc(w->bytes, w->bcap);	open: wide values (num
 double	agg/wide.c	w->key = repalloc(w->key, w->dcap * 3 * sizeof(uint64));	open: wide values (numeric, text over 8 bytes) of one aggregate, one per distinct value: no limit but the group table check
 double	agg/wide.c	w->off = repalloc(w->off, (w->dcap + 1) * sizeof(uint32));	open: wide values (numeric, text over 8 bytes) of one aggregate, one per distinct value: no limit but the group table check
 double	bm25/step.c	pk->buf = repalloc(pk->buf, pk->cap = size * 2);	bounded: the size of one posting block of a cursor
-double	col/autocut/autocut.c	k->cells = k->cells ? repalloc(k->cells, k->cap * sizeof(Cell)) : palloc(k->cap * sizeof(Cell));	bounded: cells of the size sample of one segment cut
 double	col/dict/dict.c	d->off = repalloc(d->off, (d->cap + 1) * sizeof(uint32));	open: the entries of a dictionary under construction: segment writer, owned by the lane build-memory
 double	col/scan/scope.c	ps->p = ps->p ? repalloc(ps->p, ps->cap * sizeof(SiftScopePair)) : palloc(ps->cap * sizeof(SiftScopePair));	bounded: pairs of one scope read, under work_mem (sift_budget_check) in the caller
 double	col/scan/scope_delta.c	o->row = repalloc(o->row, o->cap * sizeof(DeltaRow));	bounded: rows of the changed keys of one scope delta, under sift.col_scope_refresh_pct
