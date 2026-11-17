@@ -53,6 +53,7 @@ TESTING_REGRESS += agg_combo_cap
 TESTING_REGRESS += agg_cte_verdict_cache
 TESTING_REGRESS += agg_dict_blocks_lazy
 TESTING_REGRESS += agg_distinct_narrow
+TESTING_REGRESS += agg_facts_reread_plans
 TESTING_REGRESS += agg_float_step
 TESTING_REGRESS += agg_gord_group_skip_limit
 TESTING_REGRESS += agg_group_hash_probe
