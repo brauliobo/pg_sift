@@ -98,8 +98,8 @@ lifetime	col/scope_parse.c	specs_memo[slot].cx = AllocSetContextCreate(TopMemory
 lifetime	col/seg/dead.c	dead_cxt = AllocSetContextCreate(TopMemoryContext, "sift cache dead rows", ALLOCSET_DEFAULT_SIZES);	bounded: least recently used evicted when the bytes pass the bound (work_mem for a list)
 lifetime	col/seg/seg.c	unit_spare_cx = AllocSetContextCreate(TopMemoryContext, "sift cache unit buffers", ALLOCSET_DEFAULT_SIZES);	bounded: UNIT_KEEP spare buffers of at most UNIT_KEEP_BYTES each; the others belong to open segments
 lifetime	col/supersede.c	h->ents = MemoryContextAlloc(TopMemoryContext, TOMB_HOLD * sizeof(SiftTomb));	bounded: TOMB_HOLD entries
-lifetime	col/tomblog.c	HASHCTL ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(LogEnt),.hcxt = CacheMemoryContext};	bounded: sift.tomb_log_limit per relation (tomb_log_kb, 8 GiB by default: see the findings)
-lifetime	col/tomblog.c	e->cxt = AllocSetContextCreate(CacheMemoryContext, "sift cache tombstone log", ALLOCSET_DEFAULT_SIZES);	bounded: sift.tomb_log_limit per relation (tomb_log_kb, 8 GiB by default: see the findings)
+lifetime	col/tomblog.c	HASHCTL ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(LogEnt),.hcxt = CacheMemoryContext};	bounded: sift.tomb_log_limit per relation (tomb_log_kb, 1 GiB by default: see the findings)
+lifetime	col/tomblog.c	e->cxt = AllocSetContextCreate(CacheMemoryContext, "sift cache tombstone log", ALLOCSET_DEFAULT_SIZES);	bounded: sift.tomb_log_limit per relation (tomb_log_kb, 1 GiB by default: see the findings)
 lifetime	col/track_drop.c	gone = gone ? repalloc(gone, gone_cap * sizeof(Oid)) : MemoryContextAlloc(TopMemoryContext, gone_cap * sizeof(Oid));	open: an array of dropped index oids, doubling: one per index dropped in a transaction; the release at transaction end is not proved
 lifetime	col/types.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: the type cache of the extension's own types, a fixed set
 lifetime	col/vacreq.c	MemoryContext cx = AllocSetContextCreate(TopMemoryContext, "sift_col vacuum", ALLOCSET_DEFAULT_SIZES);	bounded: the context of one requested vacuum, deleted after it

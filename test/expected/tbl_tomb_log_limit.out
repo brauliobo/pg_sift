@@ -1,5 +1,5 @@
 -- Every backend that reads a sift_table keeps the tombstone log of the table in memory, sorted (64 bytes an entry with the scratch of a first look), so the log is
--- bound by what one backend keeps (sift.tomb_log_limit, 8 GB): a read past it fails naming the setting and VACUUM, which is not bound and drops the entries of the
+-- bound by what one backend keeps (sift.tomb_log_limit, 1 GB): a read past it fails naming the setting and VACUUM, which is not bound and drops the entries of the
 -- rows it cleared, and so does a statement whose own rows pass it. The test lowers the setting to 16 kB, 256 entries.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;

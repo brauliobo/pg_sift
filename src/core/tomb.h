@@ -129,9 +129,10 @@ StaticAssertDecl(sizeof(SiftTomb) == 32, "tombstone entries are 32 bytes");
  * What a backend may keep of the log of a relation, in kB (sift.tomb_log_limit): each entry costs it 64 bytes (the entry, the sort and merge scratch
  * of a first look, and the hash entry of a chain member). The entries a statement appends itself are kept as well, a DML over more rows than the limit
  * holds fails naming the setting. A reader that would pass it fails naming the setting; VACUUM, which drops the entries of the rows it cleared, is
- * not bound by it, and a worker is asked for when the log reaches a quarter of it.
+ * not bound by it, and a worker is asked for when the log reaches a quarter of it. The default, 1 GiB (16.7 million entries), keeps the peak of a backend near
+ * 800 MB: an UPDATE of 1,048,592 rows of a sift_table held 51 MB at its limit of 64 MB, 25.7 MB at 16 MB (scripts/mem-slope.py, docs/SIZING.md).
  */
-#define SIFT_TOMB_LOG_KB		8388608
+#define SIFT_TOMB_LOG_KB		1048576
 extern int	sift_tomb_log_limit_kb;
 #define SIFT_TOMB_ENTRY_BYTES	64
 
