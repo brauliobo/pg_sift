@@ -396,15 +396,18 @@ static void colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 void
 sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 {
+	MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
 	if (w->fill == NULL || w->found == NULL)
-	{
 		colw_add(w, b);
-		return;
+	else
+	{
+		b = sift_cfound_view(w->found, b);
+		w->fill->batch(w->fill, (SiftColBatch *) b);
+		colw_add(w, b);
+		sift_cfound_done(w->found);
 	}
-	b = sift_cfound_view(w->found, b);
-	w->fill->batch(w->fill, (SiftColBatch *) b);
-	colw_add(w, b);
-	sift_cfound_done(w->found);
+	MemoryContextSwitchTo(old);
 }
 
 static void
