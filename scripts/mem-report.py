@@ -19,7 +19,7 @@ NOTES = 10
 REGRESS_KB = 256          # growth of a path against the baseline that is flagged (and at least REGRESS_PCT)
 REGRESS_PCT = 25
 SIFT_FRAME = re.compile(r"(/src/(?:agg|bm25|col|core|table)/(?!memcensus\.c)|pg_sift\.so)")
-PG_CACHE = re.compile(r"\b(relation_open|index_open|RelationIdGetRelation|RelationBuildDesc|RelationInitIndexAccessInfo|SearchCatCache\w*|SearchSysCache\w*|CatalogCacheCreateEntry|load_relcache_init_file)\b")
+PG_CACHE = re.compile(r"\b(standard_planner|standard_ExecutorStart|standard_ExecutorRun|standard_ProcessUtility|relation_open|index_open|RelationIdGetRelation|RelationBuildDesc|RelationInitIndexAccessInfo|SearchCatCache\w*|SearchSysCache\w*|CatalogCacheCreateEntry|load_relcache_init_file)\b")
 KV = re.compile(r'(\w+)=("[^"]*"|\S+)')
 
 
@@ -96,7 +96,7 @@ def parse_valgrind(path):
     for b in found:
         frames = [f for f in b if re.search(r"\b(at|by) 0x", f)]
         sift = next((f.strip() for f in frames if SIFT_FRAME.search(f)), None)
-        # a block that PostgreSQL's own caches allocate while sift asks them for a relation or a catalog row is the cache's: it is its first frame that tells, not the caller
+        # a block that PostgreSQL's own caches allocate while sift asks them for a relation or a catalog row, or that the planner and the executor allocate under a sift hook that only calls them, is theirs: it is the first frame that tells, not the caller
         if sift and any(PG_CACHE.search(f) for f in frames[:frames.index(next(f for f in frames if sift in f.strip()))]):
             sift = None
         out.append(dict(kind=b[0].strip()[:100], sift_frame=sift, file=os.path.basename(path), leak=bool(re.search(r"lost in loss record", b[0])),
@@ -200,6 +200,9 @@ def selftest():
         assert regressions(rep, prev) and not regressions(rep, json.loads(json.dumps(rep)))
         open(f"{d}/vg/2.log", "w").write("==2== VALGRINDERROR-BEGIN\n==2== 30 bytes in 1 blocks are definitely lost in loss record 9 of 9\n==2==    at 0x3: malloc (vg.c:2)\n==2==    by 0x4: relation_open (relation.c:58)\n==2==    by 0x5: add_parents (/w/src/col/track_hear.c:40)\n==2== VALGRINDERROR-END\n")
         assert [v["sift_frame"] for v in parse_valgrind(f"{d}/vg/2.log")] == [None]
+        open(f"{d}/vg/3.log", "w").write("==3== VALGRINDERROR-BEGIN\n==3== 16 bytes in 1 blocks are definitely lost in loss record 9 of 9\n==3==    at 0x3: palloc (mcxt.c:1)\n==3==    by 0x4: standard_planner (planner.c:1)\n==3==    by 0x5: sift_planner (/w/src/bm25/planner.c:609)\n==3== VALGRINDERROR-END\n")
+        assert [v["sift_frame"] for v in parse_valgrind(f"{d}/vg/3.log")] == [None]
+        os.unlink(f"{d}/vg/3.log")
         assert gate([f"{d}/vg"]) == 1
         md = markdown(rep, regressions(rep, prev), TOP)
         assert "sift_scan 200 kB" in md and "merge.c:10" in md and "seg_write" in md, md
