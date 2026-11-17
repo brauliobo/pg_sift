@@ -3,7 +3,11 @@
 
   test/fuzz/surface_sweep.py [--tier quick|full] [--only RE] [--budget SEC] [--db NAME] [--list] [--role]
 
-Every function, procedure, aggregate and view that pg_sift installs (the sift schema and the objects of the extension) is called with all-NULL arguments, with
+Every function, procedure, aggregate, window function, ordered-set aggregate and trigger function of the extensions pg_sift, pg_sift_test and pg_sift_helpers (the
+sift schema and the objects of the extensions) must be exercised in each of three modes: as a superuser, inside a rolled-back savepoint and as an unprivileged role. "Exercised"
+is measured, not assumed: track_functions counts the calls whose arguments reached the function (an aggregate counts when a call does not fail before its transition), so
+a call that fails to cast its arguments does not count. A function that is not exercised in a mode fails the sweep unless scripts/surface.allow has a row (signature, modes,
+reason); a row of a function that is exercised, or that is gone, fails too. Every function is called with all-NULL arguments, with
 each argument in turn set to a hostile value of its type (NULL, empty, huge, NaN, a regclass that is dropped, a heap, a view, a partitioned table, a temp table,
 a table of another schema, a 1 MB text, a nested array, ...) while the others are valid, and with every argument set to the same kind of hostile value. Each call
 runs in a plpgsql block with an EXCEPTION clause (a subtransaction) that reports the SQLSTATE; a sample also runs after a ROLLBACK TO SAVEPOINT, and as an unprivileged
@@ -36,6 +40,13 @@ INSERT INTO fx.t SELECT i, i % 5, CASE WHEN i % 4 = 0 THEN NULL ELSE i % 9 END, 
 CREATE INDEX t_col ON fx.t USING sift_col (id, g, v, amount, kind, d, ts);
 CREATE INDEX t_bm ON fx.t USING sift (body);
 CREATE INDEX t_bt ON fx.t (g);
+CREATE INDEX t_brin ON fx.t USING brin (id);
+CREATE INDEX t_hash ON fx.t USING hash (g);
+CREATE TABLE fx.t2 (id int PRIMARY KEY, g int, v int, kind text, body text);
+INSERT INTO fx.t2 SELECT i, i % 4, i % 7, 'k' || i % 2, 'word' || i % 3 FROM generate_series(1, 60) i;
+CREATE INDEX t2_col ON fx.t2 USING sift_col (id, g, v, kind);
+CREATE INDEX t2_bm ON fx.t2 USING sift (body);
+CREATE TABLE fx.trg (id int, g int);
 CREATE TABLE fx.heap (id int, g int);
 INSERT INTO fx.heap SELECT i, i % 5 FROM generate_series(1, 20) i;
 CREATE TABLE fx.tbl (id int, g int, v int) USING sift_table;
@@ -67,7 +78,7 @@ SET client_min_messages = notice;
 """
 
 OIDS = {'regclass': ["'fx.t'::regclass", "'fx.t_col'::regclass", "'fx.t_bm'::regclass", "'fx.t_bt'::regclass", "'fx.heap'::regclass", "'fx.tbl'::regclass",
-                     "'fx.vw'::regclass", "'fx.mv'::regclass", "'fx.part'::regclass", "'fx.part_col'::regclass", "'fx.sq'::regclass", "'fx_temp'::regclass",
+                     "'fx.vw'::regclass", "'fx.t_brin'::regclass", "'fx.t_hash'::regclass", "'fx.t2'::regclass", "'fx.t2_col'::regclass", "'fx.t2_bm'::regclass", "'fx.mv'::regclass", "'fx.part'::regclass", "'fx.part_col'::regclass", "'fx.sq'::regclass", "'fx_temp'::regclass",
                      "'fx2.other'::regclass", "'fx.ft'::regclass", "(SELECT toast FROM fx_oids)::regclass",
                      "(SELECT comp FROM fx_oids)::regclass", "(SELECT gone FROM fx_oids)::regclass", '0::oid::regclass', '4294967295::oid::regclass', "'pg_class'::regclass",
                      "'fx.t_pkey'::regclass"]}
@@ -91,6 +102,25 @@ POOL = {
     'timestamp': ["'infinity'", "'-infinity'", "'0001-01-01'", "'epoch'"],
     'date': ["'infinity'", "'-infinity'", "'0001-01-01'", "'2026-01-01'"],
     'interval': ["'0'", "'-1 day'", "'1 year'", "'178000000 years'"],
+    'regtype': ["'int4'::regtype", "0::oid::regtype", "'text'::regtype", "4294967295::oid::regtype", "'fx.ct'::regtype"],
+    'regproc': ["'now'::regproc", "0::oid::regproc", "4294967295::oid::regproc"],
+    'regprocedure': ["'now()'::regprocedure", "0::oid::regprocedure"],
+    'regnamespace': ["'fx'::regnamespace", "0::oid::regnamespace", "'pg_toast'::regnamespace", "4294967295::oid::regnamespace"],
+    'regrole': ["'postgres'::regrole", "0::oid::regrole", "4294967295::oid::regrole"],
+    'regconfig': ["'simple'::regconfig", "0::oid::regconfig"],
+    'regcollation': ["'\"C\"'::regcollation", "0::oid::regcollation"],
+    'regoperator': ["'=(int4,int4)'::regoperator", "0::oid::regoperator"],
+    'regoper': ["'='::regoper", "0::oid::regoper"],
+    'regdictionary': ["'simple'::regdictionary", "0::oid::regdictionary"],
+    'xid': ["'0'", "'1'", "'4294967295'"],
+    'cid': ["'0'", "'4294967295'"],
+    'name': ["''", "'id'", "repeat('x', 63)", "'fx'", "'nokey'"],
+    'time': ["'00:00'", "'24:00'"],
+    'point': ["'(0,0)'", "'(1e308,-1e308)'"],
+    'inet': ["'127.0.0.1'"],
+    'tsvector': ["''", "'a b'"],
+    'tsquery': ["'a'", "'a & b'"],
+    'jsonpath': ["'$'", "'$.a'"],
     'oid': ['0', '4294967295', "'fx.t'::regclass::oid", "'fx.t_col'::regclass::oid", "(SELECT gone FROM fx_oids)", '1259'],
     'text[]': ["'{}'", "ARRAY[NULL]::text[]", "'{a,b}'", "ARRAY[['a','b'],['c','d']]", f"ARRAY[{BIG}]", "ARRAY['id','g']", "ARRAY['nokey']", "ARRAY(SELECT 'x' FROM generate_series(1, 100000))"],
     'int4[]': ["'{}'", "ARRAY[NULL]::int[]", "'{1,2}'", "ARRAY[[1,2],[3,4]]", "ARRAY(SELECT i FROM generate_series(1, 100000) i)", "'{-1,0,2147483647}'"],
@@ -106,19 +136,28 @@ VALID_TBL = {'regclass': "'fx.t'::regclass", 'text': "'id'", 'oid': "'fx.t'::reg
 VALID_IDX = dict(VALID_TBL, regclass="'fx.t_col'::regclass", oid="'fx.t_col'::regclass::oid")
 VALID_BM = dict(VALID_TBL, regclass="'fx.t_bm'::regclass", oid="'fx.t_bm'::regclass::oid", text="'word1'")
 VALID_TAB = dict(VALID_TBL, regclass="'fx.tbl'::regclass", oid="'fx.tbl'::regclass::oid")
-BASES = [('tbl', VALID_TBL), ('idx', VALID_IDX), ('bm25', VALID_BM), ('table', VALID_TAB)]
-SKIP_NAME = re.compile(r'^_test_|^test_|_test$')
+VALID_CROSS = dict(VALID_TBL, regclass=["'fx.t'::regclass", "'fx.t2_col'::regclass", "'fx.t2'::regclass"], oid=["'fx.t'::regclass::oid", "'fx.t2_col'::regclass::oid"])
+VALID_CROSS2 = dict(VALID_IDX, regclass=["'fx.t_col'::regclass", "'fx.t2'::regclass", "'fx.t_bm'::regclass"], oid=["'fx.t_col'::regclass::oid", "'fx.t2'::regclass::oid"])
+BASES = [('tbl', VALID_TBL), ('idx', VALID_IDX), ('bm25', VALID_BM), ('table', VALID_TAB), ('cross', VALID_CROSS), ('cross2', VALID_CROSS2)]
 
 
-def pool(t):
+HUGE = 1000
+
+
+def pool(t, limit=0):
     """the hostile values of a type, as SQL expressions of that type"""
     t = {'int': 'int4', 'integer': 'int4', 'bigint': 'int8', 'smallint': 'int2', 'double precision': 'float8', 'real': 'float4', 'boolean': 'bool',
          'character varying': 'text', 'varchar': 'text', 'text[]': 'text[]', 'integer[]': 'int4[]', 'bigint[]': 'int8[]', 'timestamp with time zone': 'timestamptz',
          'timestamp without time zone': 'timestamp', 'double precision[]': 'float8[]', 'character varying[]': 'text[]', 'anyelement': 'text', 'anyarray': 'text[]',
-         'anycompatible': 'text', 'anycompatiblearray': 'text[]', '"char"': 'text', 'name': 'text', 'oid': 'oid', 'regclass': 'regclass', 'tid': 'tid'}.get(t, t)
+         'anycompatible': 'text', 'anycompatiblearray': 'text[]', '"char"': 'text', 'oid': 'oid', 'regclass': 'regclass', 'tid': 'tid',
+         'time without time zone': 'time', 'regdictionary': 'regdictionary'}.get(t, t)
     if t == 'regclass':
         return [(f'r{i}', v) for i, v in enumerate(OIDS['regclass'])]
     base = POOL.get(t)
+    if base is not None and limit:
+        base = [v for v in base if not (re.fullmatch(r'-?\d+', v) and abs(int(v)) > limit)]
+    if base is None and t.endswith('[]') and POOL.get(t[:-2]):
+        base = ["'{}'", 'ARRAY[NULL]::%s[]' % t[:-2]]
     if base is None and t.endswith('range'):
         return [('empty', f"'empty'::{t}")]
     if base is None:
@@ -126,26 +165,48 @@ def pool(t):
     return [(f'p{i}', f'({v})::{t}') for i, v in enumerate(base)]
 
 
-def valid(t, base):
+def valid(t, base, nth=0):
     t = {'int': 'int4', 'integer': 'int4', 'bigint': 'int8', 'smallint': 'int2', 'double precision': 'float8', 'real': 'float4', 'boolean': 'bool',
          'character varying': 'text', 'timestamp with time zone': 'timestamptz', 'timestamp without time zone': 'timestamp', 'anyelement': 'text',
          'anyarray': 'text[]', 'integer[]': 'int4[]', 'bigint[]': 'int8[]', 'double precision[]': 'float8[]', 'name': 'text'}.get(t, t)
     v = base.get(t)
+    if isinstance(v, list):
+        v = v[min(nth, len(v) - 1)]
     return f'({v})::{t}' if v else f'NULL::{t}'
 
 
-def objects(sess):
-    sql = """SELECT p.oid, p.proname, p.prokind, p.proretset, p.provariadic <> 0, p.proisstrict,
-		coalesce((SELECT string_agg(format_type(t, NULL), ',' ORDER BY o) FROM unnest(p.proargtypes::oid[]) WITH ORDINALITY u(t, o)), '')
-	FROM pg_proc p WHERE p.pronamespace = 'sift'::regnamespace
-		OR p.oid IN (SELECT objid FROM pg_depend WHERE classid = 'pg_proc'::regclass AND refclassid = 'pg_extension'::regclass AND deptype = 'e'
-			AND refobjid IN (SELECT oid FROM pg_extension WHERE extname = 'pg_sift'))
+def valid_args(args_t, base):
+    seen, out = {}, []
+    for t in args_t:
+        out.append(valid(t, base, seen.get(t, 0)))
+        seen[t] = seen.get(t, 0) + 1
+    return out
+
+
+EXTENSIONS = ('pg_sift', 'pg_sift_test', 'pg_sift_helpers')
+
+
+def state_counts(ob):
+    """whether the outcome of a call, not a function counter, tells that the function was reached: an aggregate has no counter, nor has a SQL function that is inlined"""
+    return ob['kind'] in ('a', 'w') or ob['lang'] in ('sql', 'internal')
+
+
+def objects(sess, with_test=False):
+    sql = """SELECT p.oid, p.proname, p.prokind, p.proretset, p.provariadic <> 0, p.proisstrict, p.prorettype::regtype::text, coalesce(a.aggkind, ''),
+		coalesce(a.aggnumdirectargs, 0), p.oid::regprocedure::text,
+		coalesce((SELECT string_agg(format_type(t, NULL), ',' ORDER BY o) FROM unnest(p.proargtypes::oid[]) WITH ORDINALITY u(t, o)), ''),
+		(SELECT lanname FROM pg_language WHERE oid = p.prolang)
+	FROM pg_proc p LEFT JOIN pg_aggregate a ON a.aggfnoid = p.oid
+	WHERE p.oid IN (SELECT objid FROM pg_depend WHERE classid = 'pg_proc'::regclass AND refclassid = 'pg_extension'::regclass AND deptype = 'e'
+			AND refobjid IN (SELECT oid FROM pg_extension WHERE extname = ANY(%s)))
 	ORDER BY p.proname, p.oid;"""
+    sql = sql % ("ARRAY['pg_sift', 'pg_sift_test', 'pg_sift_helpers']" if with_test else "ARRAY['pg_sift', 'pg_sift_helpers']")
     out = []
     for l in sess.run(sql):
         f = l.split('|')
-        if len(f) == 7:
-            out.append(dict(oid=f[0], name=f[1], kind=f[2], retset=f[3] == 't', variadic=f[4] == 't', strict=f[5] == 't', args=f[6].split(',') if f[6] else []))
+        if len(f) == 12:
+            out.append(dict(lang=f[11], oid=f[0], name=f[1], kind=f[2], retset=f[3] == 't', variadic=f[4] == 't', strict=f[5] == 't', ret=f[6], aggkind=f[7],
+                            ndirect=int(f[8]), sig=f[9], args=f[10].split(',') if f[10] else []))
     return out
 
 
@@ -156,6 +217,11 @@ def qualified(sess, oid):
 
 def call_sql(ob, name, args):
     a = ', '.join(args)
+    if ob['kind'] == 'w':
+        return f'PERFORM {name}({a}) OVER () FROM generate_series(1, 3)'
+    if ob['kind'] == 'a' and ob['aggkind'] in ('o', 'h'):
+        direct, grouped = args[:ob['ndirect']], args[ob['ndirect']:]
+        return f'PERFORM {name}({", ".join(direct)}) WITHIN GROUP (ORDER BY {", ".join(grouped) or "1"}) FROM generate_series(1, 3)'
     if ob['kind'] == 'p':
         return f'CALL {name}({a})'
     if ob['kind'] == 'a':
@@ -170,18 +236,20 @@ def wrap(stmt, label):
     return (f"DO $do$ BEGIN {body}; RAISE NOTICE '@@OK {label}'; EXCEPTION WHEN OTHERS THEN RAISE NOTICE '@@ERR {label} % %', SQLSTATE, SQLERRM; END $do$;")
 
 
-def call_sets(ob, args_t, cap):
+def call_sets(ob, args_t, cap, limit=0):
     """the argument lists of the sweep of one function: (label, [sql expression]) in a fixed order"""
     n = len(args_t)
     out = [('allnull', [f'NULL::{t}' for t in args_t])]
-    pools = [pool(t) for t in args_t]
+    pools = [pool(t, limit) for t in args_t]
+    for bname, base in BASES:
+        out.append((f'valid.{bname}', valid_args(args_t, base)))
     for bi, (bname, base) in enumerate(BASES):
         for i, t in enumerate(args_t):
             for lab, v in pools[i]:
-                args = [valid(x, base) for x in args_t]
+                args = valid_args(args_t, base)
                 args[i] = v
                 out.append((f'{bname}.a{i + 1}.{lab}', args))
-            args = [valid(x, base) for x in args_t]
+            args = valid_args(args_t, base)
             args[i] = f'NULL::{t}'
             out.append((f'{bname}.a{i + 1}.null', args))
     width = max((len(p) for p in pools), default=0)
@@ -189,10 +257,18 @@ def call_sets(ob, args_t, cap):
         out.append((f'all.p{j}', [pools[i][j % len(pools[i])][1] if pools[i] else f'NULL::{args_t[i]}' for i in range(n)]))
     for j in range(n):
         out.append((f'nullone.{j + 1}', [f'NULL::{t}' if i == j else valid(t, VALID_TBL) for i, t in enumerate(args_t)]))
-    if len(out) > cap:
-        step = len(out) / cap
-        out = [out[int(i * step)] for i in range(cap)]
-    return out
+    return subsample(out, cap)
+
+
+def subsample(calls, cap):
+    """at most cap calls, evenly spaced; the all-NULL call and the calls with only valid arguments stay: they are the ones that reach the function"""
+    head = [c for c in calls if c[0] == 'allnull' or c[0].startswith('valid.')]
+    rest = [c for c in calls if c not in head]
+    room = max(cap - len(head), 0)
+    if len(rest) > room:
+        step = len(rest) / max(room, 1)
+        rest = [rest[int(i * step)] for i in range(room)]
+    return head + rest
 
 
 def classify(lines):
@@ -209,6 +285,56 @@ def classify(lines):
     return res
 
 
+INIT = "SET client_min_messages = notice; SET statement_timeout = '15s'; SET lock_timeout = '2s'; SET track_functions = 'all';"
+NOT_RESOLVED = ('42883', '42846', '42725', '42704', '42P18', '42601', '42809')
+NOT_CALLED = re.compile(r'can only be called as|cannot accept a value|does not exist$|function .* does not exist|requires an OVER|is not a window function')
+MODES = ('super', 'rollback', 'role')
+ALLOW = os.path.join(REPO, 'scripts', 'surface.allow')
+
+
+def call_count(sess, oid):
+    sess.run('SELECT pg_stat_force_next_flush();')
+    r = sess.run(f'SELECT coalesce(pg_stat_get_function_calls({oid}), 0) FROM (SELECT pg_stat_clear_snapshot()) s;')
+    return int(r[0]) if r and r[0].strip().isdigit() else 0
+
+
+def load_allow():
+    rows = {}
+    with open(ALLOW) as f:
+        for line in f:
+            if line.strip() and not line.startswith('#'):
+                c = line.rstrip('\n').split('\t')
+                if len(c) != 3 or not c[2].strip():
+                    sys.exit(f'{ALLOW}: a row is SIGNATURE TAB MODES TAB REASON: {line.strip()}')
+                rows[c[0]] = (set(MODES) if c[1] == '*' else set(c[1].split(',')), c[2])
+    return rows
+
+
+def int_limit(allow, ob):
+    """the largest integer an integer argument is called with, 0 for no limit: an integer argument of the test extension is a workload (cases, pages, rows), so it is called with
+    integers of at most HUGE; a row of the allow file with the mode tiny (at most 3) is for a function that takes a resource of the backend for each (relcache callback slots)"""
+    modes = allow.get(ob['sig'], (set(),))[0]
+    return 3 if 'tiny' in modes else HUGE if ob['name'].startswith('_test') or 'no-huge' in modes else 0
+
+
+def coverage(obs, reach, allow):
+    """[(signature, mode)] never exercised and not allowed, and the allow rows that are stale"""
+    missing, stale = [], []
+    sigs = {o['sig'] for o in obs}
+    for o in obs:
+        for m in MODES:
+            if not reach.get((o['sig'], m)) and m not in allow.get(o['sig'], (set(),))[0]:
+                missing.append((o['sig'], m))
+    for sig, (modes, why) in allow.items():
+        if sig not in sigs:
+            stale.append((sig, 'no such function'))
+        else:
+            for m in sorted(modes - {'no-huge', 'tiny'}):
+                if reach.get((sig, m)):
+                    stale.append((sig, f'{m} is exercised'))
+    return missing, stale
+
+
 def bad(state, msg):
     return state == 'XX000' or (msg and BAD.search(msg) and not ALLOW_MSG.search(msg)) or state in ('57014',)
 
@@ -222,16 +348,24 @@ def main():
     ap.add_argument('--list', action='store_true')
     ap.add_argument('--no-ddl', action='store_true')
     ap.add_argument('--no-calls', action='store_true')
+    ap.add_argument('--with-test-extension', action='store_true', help='also sweep the functions of pg_sift_test (needs a SIFT_TESTING build); many take internal pointers and offsets and raise XX000 on purpose')
+    ap.add_argument('--coverage', action='store_true', help='fail when a function is not exercised in a mode and has no row in scripts/surface.allow (the sweep of the whole extension: add --with-test-extension)')
     a = ap.parse_args()
     db = a.db
     subprocess.run(['psql', '-X', '-q', '-d', 'postgres', '-c', f'DROP DATABASE IF EXISTS {db}', '-c', f'CREATE DATABASE {db}'], env=ENV, check=True, capture_output=True)
     subprocess.run(['psql', '-X', '-q', '-d', db, '-c', 'CREATE EXTENSION pg_sift'], env=ENV, check=True, capture_output=True)
+    for ext in ('pg_sift_test', 'pg_sift_helpers'):
+        subprocess.run(['psql', '-X', '-q', '-d', db, '-c', f'CREATE EXTENSION IF NOT EXISTS {ext}'], env=ENV, capture_output=True)
     sess = Session(db)
-    sess.run("SET client_min_messages = notice; SET statement_timeout = '15s'; SET lock_timeout = '2s';")
+    sess.run(INIT)
     other = Session(db)
     other.run('CREATE TEMP TABLE fx_other_temp (id int, g int);')
     OIDS['regclass'].append("%s::oid::regclass" % other.run("SELECT 'fx_other_temp'::regclass::oid;")[0].strip())
-    obs = [o for o in objects(sess) if not SKIP_NAME.search(o['name']) and re.search(a.only, o['name'])]
+    obs = [o for o in objects(sess, a.with_test_extension) if re.search(a.only, o['name'])]
+    reach = {}
+    allow = load_allow()
+    if a.coverage:
+        a.with_test_extension = True
     cap = 60 if a.tier == 'quick' else 400
     t0 = time.time()
     stats = dict(functions=len(obs), calls=0, errors_clean=0, ok=0, crashes=0, skipped=0)
@@ -245,7 +379,7 @@ def main():
         if not wait_ready(db):
             sys.exit('the server did not come back after the crash')
         sess = Session(db)
-        sess.run("SET client_min_messages = notice; SET statement_timeout = '15s'; SET lock_timeout = '2s';")
+        sess.run(INIT)
 
     def reset_fixture():
         nonlocal sess
@@ -255,7 +389,7 @@ def main():
             reconnect()
             sess.run(FIXTURE)
 
-    def run_batch(ob, name, calls, label_pfx, prelude='', after=''):
+    def run_batch(ob, name, calls, label_pfx, prelude='', after='', mode='super'):
         nonlocal sess
         for lab, args in calls:
             stmt = call_sql(ob, name, args)
@@ -271,6 +405,8 @@ def main():
                 reset_fixture()
                 continue
             for l, st, state, msg in classify(lines):
+                if state_counts(ob) and (st == 'OK' or (state not in NOT_RESOLVED and not NOT_CALLED.search(msg or ''))):
+                    reach[(ob['sig'], mode)] = True
                 if st == 'OK':
                     stats['ok'] += 1
                     continue
@@ -280,6 +416,61 @@ def main():
                     print(f'FAIL {"TIMEOUT" if state == "57014" else "INTERNAL"} {label_pfx}{name}({", ".join(ob["args"])}) call {lab}: {state}: {(msg or "")[:200]}\n  {stmt[:400]}', flush=True)
                 else:
                     stats['errors_clean'] += 1
+
+    def measured(ob, name, calls, label, mode, prelude='', after=''):
+        """run a batch in a mode; a function the counters track is exercised when its call count moved"""
+        before = None if state_counts(ob) else call_count(sess, ob['oid'])
+        run_batch(ob, name, calls, label, prelude, after, mode)
+        if before is not None and call_count(sess, ob['oid']) > before:
+            reach[(ob['sig'], mode)] = True
+
+    def trigger_calls(ob, name):
+        """the statements that fire a trigger function or an event trigger function: (label, [statements])"""
+        if ob['ret'] == 'event_trigger':
+            return [(f'evt.{ev}', [f'CREATE EVENT TRIGGER sw_ev ON {ev} EXECUTE FUNCTION {name}()', 'CREATE TABLE fx.evt (i int)', 'ALTER TABLE fx.evt ADD COLUMN j int',
+                                   'ALTER TABLE fx.evt ALTER COLUMN j TYPE bigint', 'DROP TABLE fx.evt']) for ev in ('ddl_command_start', 'ddl_command_end', 'sql_drop', 'table_rewrite')]
+        out = []
+        for lab, args in (('none', ''), ('x', "'x'"), ('cols', "'id', 'g'"), ('rel', "'fx.t', 'id'"), ('empty', "''"), ('many', ', '.join(["'a'"] * 20))):
+            for when in ('BEFORE', 'AFTER'):
+                out.append((f'trg.{when.lower()}.{lab}', [f'CREATE TRIGGER sw_t {when} INSERT OR UPDATE OR DELETE ON fx.trg FOR EACH ROW EXECUTE FUNCTION {name}({args})',
+                                                          'INSERT INTO fx.trg VALUES (1, 1), (2, NULL)', 'UPDATE fx.trg SET g = 5', 'DELETE FROM fx.trg WHERE id = 1']))
+            out.append((f'trg.stmt.{lab}', [f'CREATE TRIGGER sw_s AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON fx.trg FOR EACH STATEMENT EXECUTE FUNCTION {name}({args})',
+                                            'INSERT INTO fx.trg VALUES (3, 3)', 'UPDATE fx.trg SET g = 6', 'TRUNCATE fx.trg']))
+        return out
+
+    def triggered(ob, name, mode, prelude='', after=''):
+        before = call_count(sess, ob['oid'])
+        for lab, stmts in trigger_calls(ob, name):
+            body = '; '.join(stmts)
+            text = prelude + (f"DO $do$ BEGIN {body}; RAISE NOTICE '@@OK {lab}'; EXCEPTION WHEN OTHERS THEN RAISE NOTICE '@@ERR {lab} % %', SQLSTATE, SQLERRM; END $do$;") + after
+            stats['calls'] += 1
+            try:
+                lines = sess.run(text)
+            except Crash as e:
+                stats['crashes'] += 1
+                fails.append(('CRASH', ob, lab, str(e)))
+                print(f'FAIL CRASH {mode} {name} {lab}: {e}\n  {body[:400]}', flush=True)
+                reconnect()
+                reset_fixture()
+                continue
+            for l, st, state, msg in classify(lines):
+                if st == 'OK':
+                    stats['ok'] += 1
+                    continue
+                states[state] = states.get(state, 0) + 1
+                if bad(state, msg):
+                    fails.append(('ERROR', ob, lab, f'{state}: {msg}'))
+                    print(f'FAIL INTERNAL {mode} {name} {lab}: {state}: {(msg or "")[:200]}\n  {body[:400]}', flush=True)
+                else:
+                    stats['errors_clean'] += 1
+        if call_count(sess, ob['oid']) > before:
+            reach[(ob['sig'], mode)] = True
+
+    def batch(ob, name, calls, label, mode, prelude='', after=''):
+        if ob['ret'] in ('trigger', 'event_trigger'):
+            triggered(ob, name, mode, prelude, after)
+        else:
+            measured(ob, name, calls, label, mode, prelude, after)
 
     if not a.no_calls:
         reset_fixture()
@@ -293,28 +484,25 @@ def main():
                 reconnect()
                 continue
             ob['display'] = name
-            calls = call_sets(ob, ob['args'], cap)
+            calls = call_sets(ob, ob['args'], cap, int_limit(allow, ob))
             if a.list:
-                print(f'{name}({", ".join(ob["args"])}) kind={ob["kind"]} strict={ob["strict"]} calls={len(calls)}')
+                print(f'{ob["sig"]} kind={ob["kind"]} ret={ob["ret"]} strict={ob["strict"]} calls={len(calls)}')
                 continue
-            run_batch(ob, name, calls, '')
+            batch(ob, name, calls, '', 'super')
             reset_fixture()
-            sample = calls[::7]
-            run_batch(ob, name, sample, 'after-rollback ', prelude="BEGIN; SAVEPOINT s0; SELECT 1/0; ROLLBACK TO s0;\n", after='\nROLLBACK;')
+            batch(ob, name, subsample(calls, max(len(calls) // 7, 8)), 'after-rollback ', 'rollback', prelude="BEGIN; SAVEPOINT s0; SELECT 1/0; ROLLBACK TO s0;\n", after='\nROLLBACK;')
         if not a.list:
-            for ob in obs:
-                if ob.get('display'):
-                    reset_fixture()
-                    sess.run("DROP ROLE IF EXISTS ps_nobody; CREATE ROLE ps_nobody; GRANT USAGE ON SCHEMA fx, fx2, sift TO ps_nobody; GRANT SELECT ON ALL TABLES IN SCHEMA fx TO ps_nobody;")
-                    break
+            reset_fixture()
+            sess.run("DROP ROLE IF EXISTS ps_nobody; CREATE ROLE ps_nobody; GRANT USAGE ON SCHEMA fx, fx2, sift TO ps_nobody; GRANT SELECT ON ALL TABLES IN SCHEMA fx TO ps_nobody; "
+                     "GRANT INSERT, UPDATE, DELETE, TRUNCATE, TRIGGER ON fx.trg TO ps_nobody;")
             for ob in obs:
                 if a.budget and time.time() - t0 > a.budget:
                     break
                 name = ob.get('display')
                 if not name:
                     continue
-                calls = call_sets(ob, ob['args'], 12 if a.tier == 'quick' else 60)
-                run_batch(ob, name, calls, 'as-unprivileged ', prelude='SET ROLE ps_nobody;\n', after='\nRESET ROLE;')
+                calls = call_sets(ob, ob['args'], 12 if a.tier == 'quick' else 60, int_limit(allow, ob))
+                batch(ob, name, calls, 'as-unprivileged ', 'role', prelude='SET ROLE ps_nobody;\n', after='\nRESET ROLE;')
     if not a.no_ddl and not a.list:
         ddl_sweep(sess, a, stats, fails, reconnect, reset_fixture, states)
     other.close()
@@ -327,7 +515,17 @@ def main():
     print('sqlstates: ' + ' '.join(f'{k}={v}' for k, v in sorted(states.items(), key=lambda x: -x[1])[:14]))
     print(f'not strict ({len(nonstrict)}): ' + ', '.join(sorted(set(nonstrict))[:40]))
     subprocess.run(['psql', '-X', '-q', '-d', 'postgres', '-c', f'DROP DATABASE IF EXISTS {db}'], env=ENV, capture_output=True)
-    return 1 if fails or not up or sig else 0
+    gap = False
+    if a.coverage and not (a.only or a.budget or a.no_calls or a.list):
+        missing, stale = coverage(obs, reach, allow)
+        exercised = sum(1 for o in obs if all(reach.get((o['sig'], m)) for m in MODES))
+        print(f'coverage: functions={len(obs)} exercised_in_all_modes={exercised} allow_listed={len(allow)} not_exercised={len(missing)} stale_allow_rows={len(stale)}')
+        for sig_, m in missing:
+            print(f'FAIL NOT EXERCISED {sig_} in {m}: call it, or add a row to scripts/surface.allow with the reason it cannot be called')
+        for sig_, why in stale:
+            print(f'FAIL STALE ALLOW ROW {sig_}: {why}')
+        gap = bool(missing or stale)
+    return 1 if fails or not up or sig or gap else 0
 
 
 def options():

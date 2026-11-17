@@ -1,0 +1,4 @@
+# scripts/surface.allow: a function of the extensions that test/fuzz/surface_sweep.py cannot exercise in a mode (or must call with small integers). SIGNATURE TAB MODES TAB REASON
+# SIGNATURE is pg_proc.oid::regprocedure; MODES: * (super, rollback, role), a comma list of them, no-huge or tiny (called with integers of at most 1000 or 3, the function runs or allocates as much as it is given; every _test_ function is called so).
+# A function that is exercised in a listed mode, or that is gone, fails the sweep: delete the row.
+sift._test_relcache_burn(integer)	tiny	takes one relcache callback slot of the backend for each count: the table has 10, a call past them is a FATAL by PostgreSQL (test/t/relcache_slots.sh uses that on purpose)
