@@ -16,7 +16,17 @@ cd "$(dirname "$0")/.." || exit 2
 # origin/main a shallow commit, its history is cut, and the neutral check then judges every commit of HEAD that main reached before (3 600 instead of 271 on the merge of main)
 [[ -z ${CI:-} || $(git rev-parse --is-shallow-repository) != true ]] || git fetch -q --depth=1 origin "${GITHUB_BASE_REF:-main}:refs/remotes/origin/${GITHUB_BASE_REF:-main}" 2>/dev/null || true
 
-CHECKS=(
+# scripts/ci.sh --selftest, cut in parts that run side by side (a part takes seconds to a minute; the whole was minutes of one process), first in the list because they start first. The key of
+# a part is the content of the scripts, the tests other than the regression ones, the Makefile, the SQL and the worker that triggers the assertions family, and the names (not the content)
+# of the files under test/: a new test is a change of the plan, an edit of a regression test is not. areas-files, which proves that every file of the tree is in a row of scripts/areas.tsv,
+# reads every name; portability reads the content of the scripts, the shell tests and every Python file.
+PLAN_IN="scripts Makefile test sql pg_sift.control src/agg/par ':(exclude)test/sql' ':(exclude)test/expected'"
+plan_check() { CHECKS+=("plan-$1"$'\t'"scripts/lint-cache.sh plan-$1 --names $2 $3 -- scripts/ci.sh --selftest $1"); }   # PART NAMES-OF CONTENT
+CHECKS=()
+for part in shards-quick spread shards-full areas-select tooling slices flavors; do plan_check $part test "$PLAN_IN"; done
+plan_check areas-files . "$PLAN_IN"
+plan_check portability test/t "scripts test/t '*.py'"
+CHECKS+=(
 	'syntax		for f in scripts/*.sh scripts/ci/*.sh test/t/*.sh bench/bench bench/*.sh; do bash -n "$f" || exit 1; done'
 	'runner		scripts/lint.sh --selftest'
 	'layout		scripts/restructure-src.sh --check'
@@ -60,7 +70,6 @@ CHECKS=(
 	'file-size	scripts/check-file-size.sh'
 	'sql-parts	scripts/sql-parts.sh check'
 	'leakcheck	scripts/leakcheck.sh selftest'
-	'plan		scripts/lint-cache.sh plan --names scripts test Makefile sql pg_sift.control src/agg/par '\'':(exclude)test/sql'\'' '\'':(exclude)test/expected'\'' '\''*.py'\'' -- scripts/ci.sh --selftest'
 	'selftest-tools	scripts/lint-cache.sh selftest-tools scripts packaging bench/steps/cases.py bench/steps/cases -- bash -c '\''scripts/check-neutral.sh --selftest && scripts/package.sh --selftest && scripts/apt-install.sh --selftest && scripts/release.sh --selftest && scripts/plangate.sh --selftest && python3 -I bench/steps/cases.py cpus --selftest'\'
 	'tap-versions	v=$(sed -n "s/^default_version *= *.\(.*\).$/\1/p" pg_sift.control) && ! grep -nE "(extversion|version\(\)).*== *${v//./[.]}( |\"|$)" test/t/compat_*.sh'
 	'budgets	scripts/check-budgets.sh --selftest && scripts/check-budgets.sh'
