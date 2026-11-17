@@ -1,24 +1,24 @@
 # FILE<TAB>FUNCTION<TAB>RULE<TAB>REASON: a site that scripts/check-null.sh flags and that cannot be NULL (or empty). A new site is read, then fixed or listed here with the reason.
-src/agg/cost/combo.c	combo_eval_cost	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
-src/agg/cost/combo.c	reached_rows	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
+src/agg/cost/combo.c	combo_eval_cost	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
+src/agg/cost/combo.c	reached_rows	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
 src/agg/cost/cte.c	body_guessed	list-first	the plan id is a positive id of a SubPlan or CTE (cte_plan_id > 0 or the id of the plan node) and indexes glob->subroots or subplans
 src/agg/cost/cte.c	cte_guessed	list-first	the plan id is a positive id of a SubPlan or CTE (cte_plan_id > 0 or the id of the plan node) and indexes glob->subroots or subplans
 src/agg/cost/cte.c	cte_inner_body	list-first	the plan id is a positive id of a SubPlan or CTE (cte_plan_id > 0 or the id of the plan node) and indexes glob->subroots or subplans
 src/agg/cost/cte.c	cte_list_keys	list-first	the plan id is a positive id of a SubPlan or CTE (cte_plan_id > 0 or the id of the plan node) and indexes glob->subroots or subplans
 src/agg/cost/cte.c	cte_list_worth	list-first	the plan id is a positive id of a SubPlan or CTE (cte_plan_id > 0 or the id of the plan node) and indexes glob->subroots or subplans
 src/agg/cost/cte.c	derived_cte_rows	list-first	the plan id is a positive id of a SubPlan or CTE (cte_plan_id > 0 or the id of the plan node) and indexes glob->subroots or subplans
-src/agg/cost/join.c	join_dense	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
-src/agg/cost/join.c	join_keys_pay	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
-src/agg/cost/join.c	join_load_rows	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
-src/agg/cost/join.c	join_lut	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
-src/agg/cost/join.c	join_probe_keys	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
-src/agg/cost/join.c	join_whole_ops	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
-src/agg/cost/join.c	lookup_counted	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
-src/agg/cost/join.c	lookup_rows	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
-src/agg/cost/model.c	cost_tuples	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
-src/agg/cost/model.c	cost_work	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
-src/agg/cost/model.c	fan_row_ops	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
-src/agg/cost/model.c	joined_distinct	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
+src/agg/cost/join.c	join_dense	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
+src/agg/cost/join.c	join_keys_pay	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
+src/agg/cost/join.c	join_load_rows	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
+src/agg/cost/join.c	join_lut	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
+src/agg/cost/join.c	join_probe_keys	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
+src/agg/cost/join.c	join_whole_ops	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
+src/agg/cost/join.c	lookup_counted	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
+src/agg/cost/join.c	lookup_rows	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
+src/agg/cost/model.c	cost_tuples	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
+src/agg/cost/model.c	cost_work	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
+src/agg/cost/model.c	fan_row_ops	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
+src/agg/cost/model.c	joined_distinct	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
 src/agg/cost/scope.c	scope_alt_record	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
 src/agg/cte/price.c	cte_refs	list-first	the plan id is a positive id of a SubPlan or CTE (cte_plan_id > 0 or the id of the plan node) and indexes glob->subroots or subplans
 src/agg/cte/price.c	shared_work	list-first	the plan id is a positive id of a SubPlan or CTE (cte_plan_id > 0 or the id of the plan node) and indexes glob->subroots or subplans
@@ -45,14 +45,14 @@ src/agg/par/launch.c	par_launch	list-first	the plan id is a positive id of a Sub
 src/agg/plan_child.c	function_query	list-first	the caller matched the shape (a one-column, one-table sub-select or a query with ORDER BY) before this runs
 src/agg/plan_exists.c	compile_exists	list-first	the caller matched the shape (a one-column, one-table sub-select or a query with ORDER BY) before this runs
 src/agg/plan_exists.c	exists_leaf	list-first	the caller matched the shape (a one-column, one-table sub-select or a query with ORDER BY) before this runs
-src/agg/plan_join.c	child_kept_attrs	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
+src/agg/plan_join.c	child_kept_attrs	planner-array	jc->rti is the FROM-list RangeTblRef index that add_join (plan_join.c) or scoped_join (plan_exists.c, in an rtable expanded for it) stores in the JoinCtx; never a member of a path's relids bitmapset
 src/agg/plan_rows.c	rows_plan_path	list-first	the list is built by the planner of the same file with a fixed layout
 src/agg/plan_scope.c	initplan_rows	list-first	the plan id is a positive id of a SubPlan or CTE (cte_plan_id > 0 or the id of the plan node) and indexes glob->subroots or subplans
 src/agg/plan_scope.c	item_strays	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
 src/agg/plan_scope.c	take_item	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
 src/agg/scope_table.c	key_pairs	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
 src/agg/scope_table.c	scope_key_table	planner-array	the relid is a FROM item (RangeTblRef) of the scanned query, a base relation with an entry; never a relid read from a bitmapset of a path
-src/agg/scope_union.c	scope_union_perms	planner-array	a write at index list_length(rtable), inside the array that the planner sized for the rtable
+src/agg/scope_union.c	scope_union_perms	planner-array	expand_planner_arrays(root, 1) grows simple_rte_array before the write at the new last index of the rtable
 src/agg/two/arms.c	cte_root	list-first	the plan id is a positive id of a SubPlan or CTE (cte_plan_id > 0 or the id of the plan node) and indexes glob->subroots or subplans
 src/agg/two/spine.c	arm_input	planner-array	the result goes to agg_base, which takes a NULL input relation; the singleton case is the one base relation of the query
 src/bm25/analyze_config.c	sift_analyze_validate_fields	null-result	names is validated before as comma separated fields, so a comma lies before s
