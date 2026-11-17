@@ -148,6 +148,11 @@ sift_cseg_head_find(Relation index, const SiftSegEntry *entry, const SiftSegHead
 }
 
 void
+sift_cdict_retire(Relation index, const SiftDirSnapshot *snap)
+{
+}
+
+void
 sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx, SegHead *hd, MemoryContext mcxt)
 {
 }
