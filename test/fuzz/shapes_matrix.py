@@ -26,7 +26,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TMP = os.environ.get('SIFT_TMP', '/tmp/sift-arch')
 ENV = dict(os.environ, PGHOST=f'{TMP}/sock', PGPORT=os.environ.get('SIFT_PORT', '56100'), PGUSER='postgres',
            PGOPTIONS='-c client_min_messages=warning -c lc_messages=C')
-READ_TIMEOUT = 120.0
+# the limit of one statement of the matrix; a sanitizer build runs the reference plan several times slower, so it gets six times as long (SIFT_STATEMENT_TIMEOUT, in seconds, sets it)
+STATEMENT_SECS = int(os.environ.get('SIFT_STATEMENT_TIMEOUT') or (120 if os.environ.get('SANITIZE') else 20))
+READ_TIMEOUT = float(STATEMENT_SECS + 100)
 BAD = re.compile(r'cache lookup failed|unrecognized|could not find|must be computed|plan .* failed|invalid memory|could not open relation|'
                  r'variable not found|no relation entry|negative bitmapset|was not found|bogus|unsupported (node|path)')
 FACTS = ['none', 'btree', 'partial', 'expr', 'cover', 'scope', 'connect', 'proj', 'bm25', 'inh', 'part']
@@ -428,14 +430,14 @@ def run_text(it, sets, explain):
         run_sql = 'EXECUTE p(3, \'{2,5,9}\')'
     else:
         text, run_sql = '', sql
-    sets_sql = 'RESET ALL; SET statement_timeout = \'20s\'; ' + ''.join(f'SET {s.split("=")[0]} = \'{s.split("=", 1)[1]}\'; ' for s in sets)
+    sets_sql = f'RESET ALL; SET statement_timeout = \'{STATEMENT_SECS}s\'; ' + ''.join(f'SET {s.split("=")[0]} = \'{s.split("=", 1)[1]}\'; ' for s in sets)
     return (sets_sql + '\n' + text + ('\\echo @@X\nEXPLAIN (COSTS OFF) ' + run_sql + ';\n' if explain else '') + '\\echo @@R\n' + run_sql + ';')
 
 
 def baseline_text(it):
     sql = it.sql.replace('$1', '3').replace('$2', "'{2,5,9}'::int[]")
     sets = BASELINE_SCORE if 'sift.score' in sql else BASELINE
-    sets_sql = 'RESET ALL; SET statement_timeout = \'20s\'; ' + ''.join(f'SET {s.split("=")[0]} = \'{s.split("=", 1)[1]}\'; ' for s in sets)
+    sets_sql = f'RESET ALL; SET statement_timeout = \'{STATEMENT_SECS}s\'; ' + ''.join(f'SET {s.split("=")[0]} = \'{s.split("=", 1)[1]}\'; ' for s in sets)
     return sets_sql + '\n\\echo @@R\n' + sql + ';'
 
 
