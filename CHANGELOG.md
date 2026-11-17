@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+## 5.0.1 - 2026-11-17
+
 - Changed: pg_sift: the extension version is 5.0.1 (`pg_sift--5.0--5.0.1.sql` and `pg_sift--5.0.1--5.0.sql`, both empty): `ALTER EXTENSION pg_sift UPDATE` changes no object, the library does not need it.
 - Known limit: memory: `col_merge`, `col_build`, `col_scope_refill`, `col_write_buffer` and `agg_lookup` are still open scopes (`test/mem-budgets.tsv`), the peak of the operations listed as open in `test/mem-slope.tsv` still grows with the rows, and the memory of a `key_cut` merge is not proven flat; the automatic `key_cut` decision holds 534 MB at the most whatever the rows. An index whose `key_cut` parent grew through inserts alone is not advised for a `REINDEX`.
 - Fixed: col: a backend that appended to the tombstone log of a `sift_col` index with `track_changes` or a scope journal, or asked what the log vouches for (`sift.col_tracking`, the stamp of a scoped build), read every entry of the log into memory: a `CREATE INDEX CONCURRENTLY` of a scoped index over 200,000 rows held 600,000 entries (32 MB, 155 bytes a row). The writer and the header read none now (58 bytes a row, the rest the sort of the refill at its 16 MB floor).
