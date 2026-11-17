@@ -35,6 +35,7 @@ double	col/scope_paid.c	pending = pending ? repalloc(pending, cap * sizeof(Pendi
 double	col/seg_write/groups.c	g->gfirst = repalloc(g->gfirst, g->cap * sizeof(uint32));	open: the group arrays of the segment writer: the lane build-memory (src/col/build, seg_write) owns them
 double	col/seg_write/groups.c	g->gn = repalloc(g->gn, g->cap * sizeof(uint32));	open: the group arrays of the segment writer: the lane build-memory (src/col/build, seg_write) owns them
 double	col/seg_write/groups.c	g->xsplit = repalloc(g->xsplit, g->cap * sizeof(uint64));	open: the group arrays of the segment writer: the lane build-memory (src/col/build, seg_write) owns them
+double	col/verify.c	hc->win = hc->win ? repalloc(hc->win, hc->capwin * sizeof(RowHash)) : MemoryContextAlloc(hc->cv->cxt, hc->capwin * sizeof(RowHash));	bounded: the rows of the entities of one heap block (a window), at most MaxHeapTuplesPerPage live entries
 double	col/wbuf/batches.c	f->held = repalloc(f->held, (f->cap *= 2) * sizeof(Held));	bounded: the batches of one write buffer, which sift.wbuf_max_kb bounds
 double	col/wbuf/batches.c	s->b = s->b ? repalloc(s->b, (s->cap *= 2) * sizeof(SiftColBatch *)) :	bounded: the batches of one write buffer, which sift.wbuf_max_kb bounds
 double	col/wbuf/lookup.c	out = repalloc(out, (cap *= 2) * sizeof(ItemPointerData));	bounded: the addresses of one lookup of the write buffer

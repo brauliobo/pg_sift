@@ -42,6 +42,7 @@ tap-shell-sb_mask_small	0	393
 tap-shell-store_crash	365	391
 tap-shell-col_index_crash	299	366
 tap-shell-col_twin_fuzz	362	362
+tap-shell-mem_slope	360	360
 difftest-nopos	351	351
 tap-shell-pg_upgrade_33	252	333
 hardened	325	325

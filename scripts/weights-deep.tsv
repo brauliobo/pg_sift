@@ -43,6 +43,7 @@ difftest-3	574	574
 difftest-fuzz-tbl-3	537	537
 tap-001_crash	355	483
 tap-shell-compat_matrix	0	459
+tap-shell-mem_slope	360	360
 tap-shell-store_crash	414	356
 tap-shell-scaling_slope	0	401
 installcheck-tbl_writepath	372	388

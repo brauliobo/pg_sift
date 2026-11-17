@@ -5,6 +5,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 ## Unreleased
 
 - Added: tests: a memory gate (`scripts/mem-slope.py`, `test/mem-slope.tsv`, run by the TAP test `mem_slope`) measures the peak memory of reads, maintenance and writes at three table sizes with `work_mem` and `maintenance_work_mem` at 1 MB and fails when an operation holds more memory per row than its recorded ceiling, and a lint (`scripts/check-mem-growth.sh`, allowlist `scripts/mem-growth.allow`) names every allocation in a row loop without a reset, every array grown by doubling without a limit, every size computed in a narrow integer and every cache that lives as long as the backend.
+- Changed: pg_sift: `sift.col_verify` and `sift.check` with `heapallindexed` keep the hashes of the rows of the index in a sort that spills to temporary files at `maintenance_work_mem`, as `amcheck` bounds its own, where they held an array of 130 bytes a row whatever the setting (about 120 MB for each million rows): the memory is 6 bytes a row at 1 MB, the check stays exact and finds the same damage (test `mem_slope`, rows `verify_heapallindexed` and `check_heapallindexed` now clean).
 
 ## 5.0.0 - 2026-11-16
 
