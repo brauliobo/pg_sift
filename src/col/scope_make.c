@@ -92,6 +92,10 @@ sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumbe
 	stmt->indexParams = list_make2(journal_column(mname), journal_column(kname));
 	stmt->options = list_make1(makeDefElem("track_changes", (Node *) makeString("ctid"), -1));
 	stmt = transformIndexStmt(relid, stmt, journal_statement(rel, mname, kname, false));
+	ereport(NOTICE,
+			(errmsg("scope \"%s\": making the journal index \"%s\" of \"%s\" (%s, %s)", s->key_name, name, RelationGetRelationName(rel), mname, kname),
+			 errdetail("The writers of \"%s\" wait until the build of this index ends, as for CREATE INDEX on it, for as long as it takes to read the relation. The index goes with the last scope index that uses it.", RelationGetRelationName(rel)),
+			 errhint("To build it without blocking the writers, name it, place it or keep it, make it first: %s.", journal_statement(rel, mname, kname, true))));
 #ifdef SIFT_TESTING
 	sift_test_phase_wait(SIFT_COL_GATE_JOURNAL);
 #endif
@@ -99,10 +103,6 @@ sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumbe
 	CommandCounterIncrement();
 	sift_col_track_made(addr.objectId);
 	CreateComments(addr.objectId, RelationRelationId, 0, psprintf(JOURNAL_COMMENT, RelationGetRelationName(rel), mname, kname));
-	ereport(NOTICE,
-			(errmsg("scope \"%s\": made the journal index \"%s\" of \"%s\" (%s, %s)", s->key_name, name, RelationGetRelationName(rel), mname, kname),
-			 errdetail("The writers of \"%s\" wait until this statement ends. The index goes with the last scope index that uses it.", RelationGetRelationName(rel)),
-			 errhint("To name it, place it or keep it, make it first: %s.", journal_statement(rel, mname, kname, true))));
 	return addr.objectId;
 }
 
