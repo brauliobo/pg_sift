@@ -90,12 +90,8 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 		}
 		if (a->ord && w->inl[c])
 			a->bad = true;
-		for (uint32 i = 0; v->ovf && i < SIFT_COL_NWORDS(v->n); i++)
-			if (v->ovf[i])
-				a->bad = true;
-		for (uint32 i = 0; gv && gv->ovf && i < SIFT_COL_NWORDS(gv->n); i++)
-			if (gv->ovf[i])
-				a->bad = true;
+		if (sift_col_bits_any(v->ovf, v->n) || (gv && sift_col_bits_any(gv->ovf, gv->n)))
+			a->bad = true;
 		if (!v->ready || (gv && !gv->ready) || a->bad || w->rows + v->n >= SIFT_CPOINT_SEG_ROWS)
 		{
 			a->bad = true;

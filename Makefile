@@ -134,6 +134,7 @@ TESTING_REGRESS += col_alter_options
 TESTING_REGRESS += col_approx
 TESTING_REGRESS += col_auto_merge
 TESTING_REGRESS += col_auto_merge_partition
+TESTING_REGRESS += col_batch_bits_bounds
 TESTING_REGRESS += col_build_memory
 TESTING_REGRESS += col_build_merge_ends
 TESTING_REGRESS += col_build_par_choice
