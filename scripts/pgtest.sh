@@ -204,6 +204,7 @@ clean() {
 	for d in $(psql -U postgres -d postgres -X -qAt -c "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres', 'template0', 'template1', '$DB')"); do
 		dropdb -U postgres --force "$d"
 	done
+	psql -U postgres -d postgres -X -qAt -c CHECKPOINT >/dev/null   # the WAL of the job goes with its databases (no recycling: a checkpoint removes it; scripts/ci.sh counts the cluster in the scratch of the lane)
 }
 
 # regress [TEST...]: without names, make installcheck (the Makefile's database and test list). With names, one pg_regress run per test in one
