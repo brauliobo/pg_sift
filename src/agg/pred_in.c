@@ -3,6 +3,8 @@
  */
 #include "postgres.h"
 
+#include "executor/nodeAgg.h"
+
 #include "col/kern.h"
 #include "core/cmp.h"
 #include "core/i64set.h"
@@ -211,7 +213,7 @@ dict_lut(AggExec *ex, DictSlot *s, const SiftSrcDict *d, SiftAggPred *p, const u
 	return lut;
 }
 
-#define MAX_BITS_RANGE	(1 << 28)	/* values a bit table covers (32 MB) */
+#define MAX_BITS_RANGE	(1 << 28)	/* values a bit table covers at most (32 MB) */
 #define MAX_CACHED_RANGE	(1 << 16)	/* values a byte table covers within the first cache level */
 #define MIN_BITS_VALUES	1024		/* members of an IN list from which a range wider than a byte table is a bit table, not a hash table */
 
@@ -225,11 +227,18 @@ in_bit_has(const PredState *st, int64 x)
 
 typedef enum { IN_HASH, IN_BITS, IN_BYTES } InKind;
 
+/* the bit table takes half of hash memory at most (8 bits to the byte): a wider range is a hash table of the values, whose size follows the list */
+static uint64
+bits_range_max(void)
+{
+	return Min((uint64) MAX_BITS_RANGE, (uint64) get_hash_memory_limit() * 4);
+}
+
 /* the structure of the test of an IN list of nv values within a range of span values (0: all the 2^64) */
 static InKind
 in_kind(uint64 span, int nv)
 {
-	if (span != 0 && span > MAX_RANGE && span <= MAX_BITS_RANGE && nv >= sift_limit(bits_set_values, MIN_BITS_VALUES))
+	if (span != 0 && span > MAX_RANGE && span <= bits_range_max() && nv >= sift_limit(bits_set_values, MIN_BITS_VALUES))
 		return IN_BITS;
 	return span == 0 || span > MAX_RANGE ? IN_HASH : IN_BYTES;
 }

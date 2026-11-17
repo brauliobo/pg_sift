@@ -104,7 +104,7 @@
 	X(num_in_list, "AGG_MAX_NUM_IN", "agg/plan_pred.c", 64, "constants", \
 	  "constants of a numeric IN list compared one by one; a longer list is tested as a hash set", "a hash set of the scaled values", "-", 1) \
 	X(bits_set_values, "MIN_BITS_VALUES", "agg/pred_in.c", 1024, "values", \
-	  "members of an IN list from which a range wider than a byte table (4 million values) is tested in a bit table; a shorter list is a hash table", "a hash table of the values", "-", 1) \
+	  "members of an IN list from which a range wider than a byte table (4 million values) is tested in a bit table of at most half of hash memory (up to 2^28 values); a shorter list or a wider range is a hash table", "a hash table of the values", "-", 1) \
 	X(dist_narrow_words, "DIST_NARROW_WORDS", "agg/dist_int.h", 8, "words", \
 	  "words of a group in a narrow count(DISTINCT) set (64 values a word, one window of values for all the groups); 0 turns the form off", "the set is a bitmap, a directory and chunks of 4096 bits a group", "-", 1) \
 	X(arms, "SIFT_AGG_MAX_ARMS", "agg/spec/expr.h", SIFT_AGG_MAX_ARMS, "arms", \
