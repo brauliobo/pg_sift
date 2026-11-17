@@ -79,6 +79,8 @@ cdict_from(MemoryContext mcxt, uint32 n, const uint32 *off, const char *bytes)
 	if (off[0] != 0)
 		return NULL;
 	d = sift_cdict_create(mcxt);
+	pfree(d->off);
+	pfree(d->bytes);
 	d->n = n;
 	d->cap = Max(n, DICT_MINCAP);
 	d->off = MemoryContextAlloc(mcxt, ((Size) d->cap + 1) * sizeof(uint32));
