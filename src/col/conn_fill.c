@@ -57,6 +57,13 @@ static void fill_batch(SiftColFill *hook, SiftColBatch *view);
 static SiftConnStamp fill_stamp(const SiftColFill *hook, int i);
 static void fill_end(SiftColFill *hook);
 
+/* The most a fill holds of the lists it loads whole (the pairs of a scope, the keys of the parent of a connection) while it reads the rows of the index: an eighth of maintenance_work_mem each, so a quarter for the two; a list that needs more is asked of its btree instead */
+Size
+sift_fill_list_limit(void)
+{
+	return (Size) maintenance_work_mem * 1024 / 8;
+}
+
 /* The estimated rows of a table */
 double
 sift_conn_rows_of(Relation rel)
@@ -142,7 +149,7 @@ sift_conn_fill_begin(Relation index, MemoryContext mcxt, uint64 rows)
 			AttrNumber	key = get_attnum(RelationGetRelid(parent), s->parent_key);
 
 			if (!sift_conn_probe_cheaper(rows, sift_conn_rows_of(parent)))
-				fc->keys = sift_conn_keyset_load(mcxt, parent, key, snap, (Size) maintenance_work_mem * 1024 / 2);
+				fc->keys = sift_conn_keyset_load(mcxt, parent, key, snap, sift_fill_list_limit());
 			if (fc->keys == NULL)
 			{
 				fc->probe = sift_conn_probe_begin(mcxt, parent, key, snap);

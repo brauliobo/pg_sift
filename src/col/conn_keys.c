@@ -347,7 +347,7 @@ sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapsho
 		KeyFill		kf = {.set = set};
 		uint64		n = 0;
 
-		/* check-memory: allow the bytes were checked against the limit of the caller (maintenance_work_mem / 2) above */
+		/* check-memory: allow the bytes were checked against the limit of the caller (sift_fill_list_limit) above */
 		set->keys = palloc_extended(Max(st.rows, 1) * sizeof(int64), MCXT_ALLOC_HUGE);
 		sift_conn_scan_keys(parent, InvalidOid, key, InvalidAttrNumber, snap, add_key, &kf);
 		set->nkeys = kf.n;

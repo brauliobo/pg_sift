@@ -137,7 +137,7 @@ list_load(ScopeList *l, MemoryContext cx, const ScopeSrc *src, Snapshot snap, Si
 	if (n > *budget / sizeof(SiftScopePair))
 		return false;
 	*budget -= n * sizeof(SiftScopePair);
-	/* check-memory: allow the bytes were checked against the budget of the caller (maintenance_work_mem / 2) above */
+	/* check-memory: allow the bytes were checked against the budget of the caller (sift_fill_list_limit) above */
 	l->p = MemoryContextAllocExtended(cx, Max(n, 1) * sizeof(SiftScopePair), MCXT_ALLOC_HUGE);
 	l->n = 0;
 	sift_conn_scan_pairs(src->rel, src->btree, src->a, src->kma, src->b, src->km, snap, add_pair, l);
@@ -206,7 +206,7 @@ pairs_load(ScopeMap *m, MemoryContext cx, const ScopeSrc *src, int nsrc, Snapsho
 	ok = ok && nj <= budget / sizeof(SiftScopePair) - d.n;
 	if (ok)
 	{
-		/* check-memory: allow the bytes were checked against the limit of the caller (maintenance_work_mem / 2) above */
+		/* check-memory: allow the bytes were checked against the limit of the caller (sift_fill_list_limit) above */
 		m->pairs = MemoryContextAllocExtended(cx, Max(d.n + nj, 1) * sizeof(SiftScopePair), MCXT_ALLOC_HUGE);
 		memcpy(m->pairs, d.p, d.n * sizeof(SiftScopePair));
 		m->npairs = d.n;
@@ -259,7 +259,7 @@ map_begin(SiftScopeFill *f, ScopeMap *m, const ScopeSrc *src, int nsrc, Snapshot
 	m->kma = src[0].kma;
 	for (int i = 0; i < nsrc; i++)
 		parent_rows += sift_conn_rows_of(src[i].rel);
-	if (sift_conn_probe_cheaper(rows, parent_rows) || !pairs_load(m, f->cx, src, nsrc, snap, (Size) maintenance_work_mem * 1024 / 2))
+	if (sift_conn_probe_cheaper(rows, parent_rows) || !pairs_load(m, f->cx, src, nsrc, snap, sift_fill_list_limit()))
 	{
 		probe_begin(&m->d, f->cx, &src[0], src[0].a, src[0].b, snap);
 		if (m->hops)
