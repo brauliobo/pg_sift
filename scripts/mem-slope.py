@@ -17,6 +17,7 @@ the ceiling (kB) and asserts that the caches hold at most that; the same stateme
 import os, re, subprocess, sys, threading, time
 
 CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference is 1.8 MB
+BOUNDED = "'sift cache unit buffers'"   # a fixed count of spare buffers (UNIT_KEEP of UNIT_KEEP_BYTES, col/seg/seg.c): it grows to its 16 MB while repeats find larger units, and no further
 LEAK_KB = 512              # kB the contexts of a backend may hold more after 60 repeats than after 10
 SETTINGS = "set work_mem='1MB'; set maintenance_work_mem='1MB'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope.tsv")
@@ -176,16 +177,16 @@ def cache_held_kb(n, op, budget_kb):
 
 
 def leakx_case(n, name, setup, op):
-    """one statement a transaction of its own (VACUUM, a merge) repeated 20 times in a backend: the memory of its contexts after the 20th over the 5th"""
+    """one statement a transaction of its own (VACUUM, a merge) repeated 25 times in a backend: the memory of its contexts after the 25th over the 10th"""
     copy_table(n)
     fmt = dict(f=f"f{n}", d=f"d{n}", m=f"m{n}", s=f"s{n}", n=n)
-    probe = lambda i: f"insert into leakres select {i}, sum(total_bytes)/1024 from pg_backend_memory_contexts;\ninsert into leakctx select {i}, name, sum(total_bytes)/1024 from pg_backend_memory_contexts group by 2;\n"
-    steps = "".join(op.format(**fmt) + "\n" + (probe(i) if i in (5, 20) else "") for i in range(1, 21))
+    probe = lambda i: f"insert into leakres select {i}, sum(total_bytes)/1024 from pg_backend_memory_contexts where name not in ({BOUNDED});\ninsert into leakctx select {i}, name, sum(total_bytes)/1024 from pg_backend_memory_contexts where name not in ({BOUNDED}) group by 2;\n"
+    steps = "".join(op.format(**fmt) + "\n" + (probe(i) if i in (10, 25) else "") for i in range(1, 26))
     out = script(SETTINGS + "create temp table leakres(i int, kb bigint); create temp table leakctx(i int, name text, kb bigint);\n"
                  + setup.format(**fmt) + "\n" + steps + "select string_agg(i || ':' || kb, ' ' order by i) from leakres;\n"
-                 + "select 'GROWER ' || a.name || ' ' || (b.kb - a.kb) from leakctx a join leakctx b using (name) where a.i = 5 and b.i = 20 and b.kb > a.kb order by b.kb - a.kb desc limit 3;")
+                 + "select 'GROWER ' || a.name || ' ' || (b.kb - a.kb) from leakctx a join leakctx b using (name) where a.i = 10 and b.i = 25 and b.kb > a.kb order by b.kb - a.kb desc limit 3;")
     print("   ", " ".join(re.findall(r"GROWER .*", out)).replace("GROWER ", "| "), flush=True)
-    m = re.search(r"5:(\d+) 20:(\d+)", out)
+    m = re.search(r"10:(\d+) 25:(\d+)", out)
     if not m:
         raise RuntimeError("leakx: " + out.strip()[-200:])
     return int(m.group(2)) - int(m.group(1))
