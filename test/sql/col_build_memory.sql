@@ -1,7 +1,7 @@
 -- The memory of an index build is bounded the way PostgreSQL bounds the memory of a sort or a GIN accumulator: it follows maintenance_work_mem (here the budget of a run is scaled down to 2 MB with
 -- sift.test_col_segment_kb, so that tables of a few hundred thousand rows fill many runs, as a table of hundreds of millions fills them at the default) and not the rows of the table.
 -- sift.test_col_build_peak_kb is the most the contexts of the backend held above what they held when the build began (the plain index, a scope of 1 and of 3 entries a row; CREATE INDEX, REINDEX
--- and, of the plain index, CREATE INDEX CONCURRENTLY). For each kind the peak stays within the working set (a few superblocks of rows, their dictionaries and the encoded segment) above the budget, and the
+-- and CREATE INDEX CONCURRENTLY). For each kind the peak stays within the working set (a few superblocks of rows, their dictionaries and the encoded segment) above the larger of maintenance_work_mem and the budget of a run, and the
 -- peak of 4 times the rows exceeds that of 1 time the rows by at most a few MB: nothing is kept for each row, entry or run in a context that outlives the run that made it.
 -- The answers of the scope index built this way are the join's (the entries are the multiset of (address, scope key) of the heap and the pairs), and the index is verified.
 CREATE EXTENSION pg_sift;
@@ -37,7 +37,7 @@ CREATE TABLE plan (n serial, kind text, nrows int, per_member int, scoped boolea
 INSERT INTO plan (kind, nrows, per_member, scoped, how)
 	SELECT k.kind, r.n, k.per_member, k.scoped, k.how
 	FROM (VALUES ('plain', 0, false, 'create'), ('scope 1 entry', 1, true, 'create'), ('scope 3 entries', 3, true, 'create'), ('reindex scope 3', 3, true, 'reindex'),
-				 ('concurrently plain', 0, false, 'concurrently')) k(kind, per_member, scoped, how),
+				 ('concurrently plain', 0, false, 'concurrently'), ('concurrently scope 3', 3, true, 'concurrently')) k(kind, per_member, scoped, how),
 		 (VALUES (50000), (100000), (200000)) r(n)
 	ORDER BY r.n, k.kind;
 
@@ -56,7 +56,7 @@ SELECT s FROM plan p, LATERAL steps(p) s ORDER BY p.n \gexec
 
 \set WORK_KB 40960
 \set SLOPE_KB 6144
-SELECT kind, bool_and(kb <= 2048 + :WORK_KB) AS within_budget_and_working_set,
+SELECT kind, bool_and(kb <= greatest((SELECT setting::int FROM pg_settings WHERE name = 'maintenance_work_mem'), 2048) + :WORK_KB) AS within_budget_and_working_set,
 	   max(kb) FILTER (WHERE nrows = 200000) - max(kb) FILTER (WHERE nrows = 50000) <= :SLOPE_KB AS flat_in_rows
 FROM peaks GROUP BY kind ORDER BY kind;
 
