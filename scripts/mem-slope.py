@@ -29,7 +29,7 @@ LEAK_KB = 512              # kB the contexts of a backend may hold more after 60
 VARIANCE_ROWS, VARIANCE_PCT = 2.0, 0.15   # two runs of a case differ by at most max(2 B/row, 15%)
 RUNS = int(os.environ.get("MEM_SLOPE_RUNS", "2"))
 PAGE_KB = os.sysconf("SC_PAGE_SIZE") // 1024
-SETTINGS = f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
+SETTINGS = f"set sift.async_maintenance='off'; set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.environ.get("MEM_SLOPE_TSV") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope.tsv")
 STATUSES, KINDS = ("clean", "open", "noise"), ("slope", "leak")
 os.environ["LC_ALL"] = "C"
