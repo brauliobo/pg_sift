@@ -22,6 +22,7 @@
 #include "col/vstore/vstore.h"
 #include "core/page.h"
 #include "core/store.h"
+#include "core/membudget.h"
 
 typedef struct Use
 {
@@ -85,6 +86,7 @@ index_refs(Relation index, RefVisit fn, void *arg)
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift value store usage", ALLOCSET_DEFAULT_SIZES);
 	bool		stop = false;
+	SIFT_MEM_SCOPE(vstore_gc, cx);
 
 	sift_dir_read(index, snap);
 	for (int i = 0; !stop && i < snap->nsegs; i++)
@@ -113,6 +115,7 @@ index_refs(Relation index, RefVisit fn, void *arg)
 		}
 		sift_cseg_close(seg);
 		MemoryContextSwitchTo(old);
+		SIFT_MEM_CHECKPOINT();
 		MemoryContextReset(cx);
 	}
 	MemoryContextDelete(cx);
