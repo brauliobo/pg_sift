@@ -292,11 +292,12 @@ sift_conn_stale(SiftConnStale *s, const SiftColSegment *seg)
 			continue;
 		if (st.lineage != s->c[i].now.lineage)
 			return true;
-		if (sift_conn_changed(s->c[i].heap, s->c[i].index, &st, s->snap, (uint32) Max(limit, 1), &keys) != SIFT_CONN_OK)
+		/* a key that only updates of other columns rewrote keeps its flag (the readers hold it for every snapshot): it does not age the segment */
+		if (sift_conn_moved(s->c[i].heap, s->c[i].index, &st, s->snap, (uint32) Max(limit, 1), &keys) != SIFT_CONN_OK)
 			return true;
-		/* no journal records the inserted rows: a segment with orphans (no flag is read once a parent row was inserted, found.c) counts the rows inserted since with the keys changed */
+		/* no journal records the inserted rows: a segment with orphans (no flag is read once a parent row was inserted, found.c) counts the rows inserted since with the keys changed; the versions that updates of a kept key wrote are not new keys */
 		inserted = st.reserved & SIFT_CONN_STAMP_CLEAN ? 0 : sift_conn_inserted_rows(s->c[i].heap, s->c[i].index, &st);
-		changed = keys.n + inserted;
+		changed = keys.n + (inserted > keys.nkept ? inserted - keys.nkept : 0);
 		sift_conn_keys_free(&keys);
 		if (changed >= limit)
 			return true;

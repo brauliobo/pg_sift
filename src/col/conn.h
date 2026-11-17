@@ -71,6 +71,7 @@ typedef struct SiftConnKeys
 	bool	   *added;			/* [n] the last record of the key is of an entry inserted (changed_by with adds): the key probably has an entry now, which a read of a scope expects to patch */
 	uint32		n;
 	uint32		cap;
+	uint64		nkept;			/* sift_conn_moved: the records of updates that kept their key, which it leaves out (each wrote a row version the parent index holds) */
 } SiftConnKeys;
 
 /* Is key in the set (binary search) */
@@ -122,6 +123,8 @@ extern bool sift_conn_gen_equal(const SiftConnGen *a, const SiftConnGen *b);
  */
 extern uint64 sift_conn_inserted_rows(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp);
 extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
+/* The same without the keys that only updates which kept the key touched: the keys whose parent rows ended or whose key changed, which are the ones a flag filled before the stamp may no longer tell */
+extern SiftConnWhy sift_conn_moved(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
 typedef struct SiftKeyMap SiftKeyMap;
 /*
  * The same, with the keys of the inserted entries (adds) of a scope relation's journal (col/scope.h) as well, and only of the records of the pairs of the scope keys in tags (NULL: of every key). A

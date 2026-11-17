@@ -461,10 +461,25 @@ sift_conn_inserted_rows(Relation heap, Relation index, const SiftConnStamp *stam
 	return since;
 }
 
+static SiftConnWhy changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, bool moved, SiftConnTags *tags,
+							  SiftConnKeys *out);
+
+SiftConnWhy
+sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, SiftConnTags *tags, SiftConnKeys *out)
+{
+	return changed_by(heap, index, stamp, snap, cap, adds, false, tags, out);
+}
+
 SiftConnWhy
 sift_conn_changed(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out)
 {
-	return sift_conn_changed_by(heap, index, stamp, snap, cap, false, NULL, out);
+	return changed_by(heap, index, stamp, snap, cap, false, false, NULL, out);
+}
+
+SiftConnWhy
+sift_conn_moved(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out)
+{
+	return changed_by(heap, index, stamp, snap, cap, false, true, NULL, out);
 }
 
 uint16
@@ -546,9 +561,9 @@ tag_wanted(SiftConnTags *tags, const SiftTombLog *log, uint16 flags)
 	return tags->all || (tags->map[tag / 8] & (1 << (tag % 8))) != 0;
 }
 
-/* adds: the keys of the records of inserted entries (KEYADD, a scope relation's journal) are in the set as well as those of ended ones; tags: only those of the pairs of the keys it names */
-SiftConnWhy
-sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, SiftConnTags *tags, SiftConnKeys *out)
+/* adds: the keys of the records of inserted entries (KEYADD, a scope relation's journal) are in the set as well as those of ended ones; tags: only those of the pairs of the keys it names; moved: the records of updates that kept the key are left out */
+static SiftConnWhy
+changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, bool moved, SiftConnTags *tags, SiftConnKeys *out)
 {
 	SiftTombLog *log;
 	SiftConnWhy why = vouch(heap, index, stamp, snap, &log);
@@ -560,6 +575,7 @@ sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, 
 	bool	   *kept,
 			   *added;
 	uint32		nk = 0;
+	uint64		nkept = 0;
 	TransactionId last = InvalidTransactionId;
 	bool		last_void = false;
 
@@ -576,7 +592,8 @@ sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, 
 		KeyRec	   *slot;
 		bool		keeps = (rec[i].flags & SIFT_TOMB_KEPT) != 0;
 
-		if ((rec[i].kind != SIFT_TOMB_KEYCHG && !(adds && rec[i].kind == SIFT_TOMB_KEYADD)) || TransactionIdPrecedes(rec[i].xid, stamp->xmin) || !tag_wanted(tags, log, rec[i].flags))
+		if ((rec[i].kind != SIFT_TOMB_KEYCHG && !(adds && rec[i].kind == SIFT_TOMB_KEYADD)) || TransactionIdPrecedes(rec[i].xid, stamp->xmin) ||
+			!tag_wanted(tags, log, rec[i].flags))
 			continue;
 		if (rec[i].xid != last)
 		{
@@ -585,6 +602,11 @@ sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, 
 		}
 		if (last_void)
 			continue;
+		if (moved && keeps)
+		{
+			nkept++;
+			continue;
+		}
 		slot = key_slot(tab, mask, (int64) rec[i].succ);
 		if (slot->used)
 		{
@@ -615,7 +637,7 @@ sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, 
 		added[i] = key_slot(tab, mask, keys[i])->add;
 	}
 	pfree(tab);
-	*out = (SiftConnKeys) {.keys = keys,.kept = kept,.added = added,.n = nk,.cap = nk};
+	*out = (SiftConnKeys) {.keys = keys,.kept = kept,.added = added,.n = nk,.cap = nk,.nkept = nkept};
 	return SIFT_CONN_OK;
 }
 
