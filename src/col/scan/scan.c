@@ -658,6 +658,7 @@ load_memory(ColUnit *cu, const ColMem *m)
 		im->buf = buf->data;
 		im->off = start;
 		im->len = buf->len - start;
+		pfree(buf);
 		MemoryContextSwitchTo(old);
 		if (m->lane)
 			b->image = im;
