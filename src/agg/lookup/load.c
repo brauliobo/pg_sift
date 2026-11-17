@@ -30,6 +30,7 @@
 #include "agg/agg.h"
 #include "agg/lookup/int.h"
 #include "agg/init_int.h"
+#include "core/membudget.h"
 
 #define LOOKUP_RESERVE_MAX	(1 << 22)	/* rows a map is sized for before the load: a table the statistics put above is grown as it is read */
 
@@ -400,6 +401,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	ScanKeyData keys[SIFT_AGG_MAX_JIDX];
 	Datum		val[SIFT_AGG_MAX_JIDX];
 	int			nkeys = 0;
+	SIFT_MEM_SCOPE(agg_lookup, cxt);
 	bool		none = false,
 				cond_keys = false;	/* the keys of the scan are the table's own conditions (map_index; map_probe's are the join key and trailing equalities) */
 	Relation	idx;
@@ -590,6 +592,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	ExecDropSingleTupleTableSlot(slot);
 	table_close(rel, NoLock);
 	map_loaded(ex, m->nrow, t0);
+	SIFT_MEM_CHECKPOINT();
 	return kept.cols.n > 0 ? map_view(m, &kept.cols, j, cxt) : m;
 }
 
