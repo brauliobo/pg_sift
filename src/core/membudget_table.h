@@ -10,9 +10,9 @@
 #define SIFT_MEMF_bm25_merge "maintenance_work_mem + 8MB"
 #define SIFT_MEMB_bm25_promote (((Size) maintenance_work_mem * 1024) + ((Size) 8388608UL))
 #define SIFT_MEMF_bm25_promote "maintenance_work_mem + 8MB"
-#define SIFT_MEMB_bm25_search (((Size) 41943040UL))
-#define SIFT_MEMF_bm25_search "40MB (open: ceiling measured today)"
-#define SIFT_MEMB_bm25_verify (((Size) 1073741824UL))
-#define SIFT_MEMF_bm25_verify "1GB (open: ceiling measured today)"
+#define SIFT_MEMB_bm25_search (((Size) work_mem * 1024) + ((Size) 33554432UL))
+#define SIFT_MEMF_bm25_search "work_mem + 32MB"
+#define SIFT_MEMB_bm25_verify (((Size) maintenance_work_mem * 1024) + ((Size) 8388608UL))
+#define SIFT_MEMF_bm25_verify "maintenance_work_mem + 8MB"
 
 #endif

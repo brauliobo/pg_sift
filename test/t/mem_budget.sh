@@ -5,7 +5,7 @@
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-plan 10
+plan 12
 node_init mb 61 "autovacuum = off
 max_parallel_workers_per_gather = 0
 sift.col_auto_merge = off"
@@ -29,8 +29,13 @@ SCOPE=bm25_search; check "a search over its lowered budget fails naming bm25_sea
 sql mb "CREATE INDEX d_m ON d USING sift (body) WITH (build_segments = 6)" >/dev/null
 SCOPE=bm25_merge; check "a merge over its lowered budget fails naming bm25_merge" red "SELECT sift.merge('d_m', true)"
 SCOPE=bm25_verify; check "a verify over its lowered budget fails naming bm25_verify" red "SELECT sift.verify('d_idx', true)"
+sql mb "CREATE INDEX d_many ON d USING sift (body) WITH (build_segments = 60)" >/dev/null
+out=$(sql mb "SELECT sift.verify('d_many', true) IS NOT NULL" "SELECT peak FROM sift._test_mem_highwater() WHERE scope = 'bm25_verify'" | tail -1)
+check "a verify of 60 segments holds under 4 MB, flat in the segments (115 MB before the per-segment contexts)" test "$out" -lt 4194304
+out=$(sql mb "SELECT count(*) FROM d WHERE body @@> 'wireless charger'" "SELECT peak FROM sift._test_mem_highwater() WHERE scope = 'bm25_search'" | tail -1)
+check "a search over 60 open segments holds under its 32 MB term" test "$out" -lt 33554432
 check "the budget table, the generated header and the docs agree" bash -c "cd '$REPO' && python3 scripts/gen-membudget.py --check"
-check "the open rows are listed for the CI report" bash -c "cd '$REPO' && python3 scripts/gen-membudget.py --open | grep -q '^bm25_verify'"
+check "the open rows are listed for the CI report" bash -c "cd '$REPO' && python3 scripts/gen-membudget.py --open >/dev/null"
 out=$(sql mb "SET sift.test_mem_check = off" "SET sift.test_mem_budget_scale = 0.0001" "SELECT count(*) FROM d WHERE body @@> 'wireless charger'" 2>&1)
 check "sift.test_mem_check = off returns before the measure" test "$out" -gt 0
 check "the server log has one SIFTMEM_SCOPE line for a scope at backend exit" grep -q "SIFTMEM_SCOPE name=bm25_" "$(dir mb)/postgres.log"

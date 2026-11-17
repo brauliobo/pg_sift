@@ -514,10 +514,16 @@ verify_heap(Relation index, const SiftDirSnapshot *snap, Snapshot snapshot, uint
 	{
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{
-			SiftSegment *seg = sift_seg_open(index, &snap->segs[i], cxt);
+			MemoryContext segcx = AllocSetContextCreate(cxt, "sift verify heap segment", ALLOCSET_DEFAULT_SIZES);
+			SiftSegment *seg = sift_seg_open(index, &snap->segs[i], segcx);
+
+			MemoryContext old = MemoryContextSwitchTo(segcx);
 
 			sift_seg_stream(seg, (Size) maintenance_work_mem * 1024 / 2, &(SiftSegSink) {dump_docs, dump_term, dump_postings}, &dump);
+			MemoryContextSwitchTo(old);
 			sift_seg_close(seg);
+			SIFT_MEM_CHECKPOINT();
+			MemoryContextDelete(segcx);
 		}
 		else
 			add_wbuf(hc.bf, index, &snap->segs[i]);
@@ -578,9 +584,12 @@ disjoint_from_earlier(Bm25Verify *bv, SiftSegment *seg)
 
 		if (e->kind != SIFT_SEG_IMMUTABLE || e->sb_hi < bv->seg->sb_lo || bv->seg->sb_hi < e->sb_lo)
 			continue;
-		earlier = sift_seg_open(bv->index, e, bv->cxt);
+		MemoryContext earliercx = AllocSetContextCreate(bv->cxt, "sift verify earlier segment", ALLOCSET_DEFAULT_SIZES);
+
+		earlier = sift_seg_open(bv->index, e, earliercx);
 		verify_disjoint(bv->index, earlier, seg);
 		sift_seg_close(earlier);
+		MemoryContextDelete(earliercx);
 	}
 }
 
@@ -594,6 +603,7 @@ step_segment(void *arg)
 	SiftSegStats st;
 	SiftSegment *seg;
 	MemoryContext old;
+	MemoryContext segcx = AllocSetContextCreate(bv->cxt, "sift verify segment", ALLOCSET_DEFAULT_SIZES);
 
 	LockPage(bv->index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
 	if (e->kind != SIFT_SEG_IMMUTABLE)
@@ -602,7 +612,7 @@ step_segment(void *arg)
 	{
 		bv->ndocs += e->ndocs;
 		bv->sum_dl += e->sum_dl;
-		seg = sift_seg_open(bv->index, e, bv->cxt);
+		seg = sift_seg_open(bv->index, e, segcx);
 		old = MemoryContextSwitchTo(bv->walk);
 		sift_seg_walk(seg, &ref, true, &st, NULL, NULL);
 		bv->nelems += st.postings + e->ndocs;
@@ -611,6 +621,8 @@ step_segment(void *arg)
 		disjoint_from_earlier(bv, seg);
 		sift_seg_close(seg);
 	}
+	SIFT_MEM_CHECKPOINT();
+	MemoryContextDelete(segcx);
 	UnlockPage(bv->index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
 }
 
@@ -631,6 +643,7 @@ step_heap(void *arg)
 	Bm25Verify *bv = arg;
 
 	verify_heap(bv->index, bv->snap, bv->snapshot, bv->nelems, bv->cxt);
+	SIFT_MEM_CHECKPOINT();
 }
 
 /*

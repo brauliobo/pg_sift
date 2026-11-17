@@ -13,6 +13,7 @@
 #include "fmgr.h"
 #include "funcapi.h"
 #include "storage/ipc.h"
+#include "lib/stringinfo.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 
@@ -112,6 +113,46 @@ sift_mem_scope_end(SiftMemScope *scope)
 		depth = scope->depth;
 }
 
+#define SIFT_MEM_TOP 3
+
+typedef struct MemTop
+{
+	const char *name[SIFT_MEM_TOP];
+	Size		bytes[SIFT_MEM_TOP];
+} MemTop;
+
+static void
+top_contexts(MemoryContext cx, MemTop *top)
+{
+	Size		own = MemoryContextMemAllocated(cx, false);
+	int			at = SIFT_MEM_TOP;
+
+	while (at > 0 && own > top->bytes[at - 1])
+		at--;
+	if (at < SIFT_MEM_TOP)
+	{
+		memmove(&top->name[at + 1], &top->name[at], (SIFT_MEM_TOP - at - 1) * sizeof(top->name[0]));
+		memmove(&top->bytes[at + 1], &top->bytes[at], (SIFT_MEM_TOP - at - 1) * sizeof(top->bytes[0]));
+		top->name[at] = cx->name;
+		top->bytes[at] = own;
+	}
+	for (MemoryContext c = cx->firstchild; c != NULL; c = c->nextchild)
+		top_contexts(c, top);
+}
+
+static char *
+top_text(MemoryContext cx)
+{
+	MemTop		top = {0};
+	StringInfoData buf;
+
+	top_contexts(cx, &top);
+	initStringInfo(&buf);
+	for (int i = 0; i < SIFT_MEM_TOP && top.name[i] != NULL; i++)
+		appendStringInfo(&buf, "%s\"%s\" %zu", i ? ", " : "", top.name[i], top.bytes[i]);
+	return buf.data;
+}
+
 void
 sift_mem_checkpoint(void)
 {
@@ -130,7 +171,8 @@ sift_mem_checkpoint(void)
 	if (used > limit)
 		/* check-errors: allow XX000 is the code of a budget failure of the test build, which the CI reports by name */
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
-						errmsg("sift memory budget exceeded: %s: %zu > %zu bytes (%s)", f->mark->name, used, limit, f->formula)));
+						errmsg("sift memory budget exceeded: %s: %zu > %zu bytes (%s)", f->mark->name, used, limit, f->formula),
+						errdetail("The largest contexts of the scope, in bytes: %s.", top_text(f->cx))));
 }
 
 /* sift._test_mem_highwater(reset bool) returns setof (scope text, peak int8, budget int8, begins int8, checks int8): the scopes this backend ran and the most memory each held at a checkpoint */
