@@ -258,9 +258,14 @@ drop_stale_edges(Oid child, List *keep)
 Oid
 sift_conn_relation_oid(Oid index_table, const char *schema, const char *name, LOCKMODE lock, bool missing_ok)
 {
-	RangeVar   *rv = makeRangeVar(schema ? (char *) schema : get_namespace_name(get_rel_namespace(index_table)), (char *) name, -1);
+	char	   *home = schema ? NULL : get_namespace_name(get_rel_namespace(index_table));
+	RangeVar   *rv = makeRangeVar(schema ? (char *) schema : home, (char *) name, -1);
+	Oid			relid = RangeVarGetRelid(rv, lock, missing_ok);
 
-	return RangeVarGetRelid(rv, lock, missing_ok);
+	pfree(rv);
+	if (home != NULL)
+		pfree(home);
+	return relid;
 }
 
 /*
