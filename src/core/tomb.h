@@ -245,7 +245,24 @@ extern bool sift_tomb_empty(const SiftTombLog *t);
 /* Does the log have a member of a HOT chain, in memory or in a run */
 extern bool sift_tomb_has_hot(const SiftTombLog *t);
 
-/* The entries of key (sorted by log position), n of them; NULL when none */
+/*
+ * The entries of one key, one at a time, in no order across the sources (each run oldest first, then the arrays): nothing is copied, so the memory of the walk is one block
+ * of a run in cxt whatever the number of entries. The entry is valid until the next call; the log is not changed between begin and end.
+ */
+typedef struct SiftTombKeyWalk
+{
+	const SiftTombLog *t;
+	uint64		key;
+	uint32		stage;			/* a run each below spilled.nruns, then the main array, then the recent one */
+	SiftSortRunCur cur;
+	const SiftTomb *arr;
+	uint32		n;
+} SiftTombKeyWalk;
+extern void sift_tomb_key_begin(SiftTombKeyWalk *w, const SiftTombLog *t, uint64 key, MemoryContext cxt);
+extern const SiftTomb *sift_tomb_key_next(SiftTombKeyWalk *w);
+extern void sift_tomb_key_end(SiftTombKeyWalk *w);
+
+/* The entries of key (sorted by log position), n of them; NULL when none: a copy of all of them, for a key that holds few (a heap address) */
 extern const SiftTomb *sift_tomb_find(const SiftTombLog *t, uint64 key, int *n);
 /* Is there a tombstone entry for a key between lo and hi? */
 extern bool sift_tomb_any(const SiftTombLog *t, uint64 lo, uint64 hi);

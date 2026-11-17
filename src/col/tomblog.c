@@ -291,19 +291,24 @@ drop:
 static void
 trim_journal(Relation index, SiftTombLog *log, TransactionId aged)
 {
-	int			n;
-	const SiftTomb *rec = log->keys_cover && log->keys.lineage != 0 ? sift_tomb_find(log, SIFT_TOMB_KEYS_KEY, &n) : NULL;
+	SiftTombKeyWalk w;
+	const SiftTomb *rec;
+	bool		old = false;
 
-	for (int i = 0; rec != NULL && i < n; i++)
-		if (SIFT_TOMB_IS_JOURNAL(rec[i].kind) && TransactionIdPrecedes(rec[i].xid, aged))
-		{
-			SiftTombKeys keys = log->keys;
+	if (!log->keys_cover || log->keys.lineage == 0)
+		return;
+	sift_tomb_key_begin(&w, log, SIFT_TOMB_KEYS_KEY, CurrentMemoryContext);
+	while (!old && (rec = sift_tomb_key_next(&w)) != NULL)
+		old = SIFT_TOMB_IS_JOURNAL(rec->kind) && TransactionIdPrecedes(rec->xid, aged);
+	sift_tomb_key_end(&w);
+	if (old)
+	{
+		SiftTombKeys keys = log->keys;
 
-			if (!TransactionIdIsNormal(keys.trim) || TransactionIdPrecedes(keys.trim, aged))
-				keys.trim = aged;
-			sift_tomb_set_keys(index, log, &keys);
-			return;
-		}
+		if (!TransactionIdIsNormal(keys.trim) || TransactionIdPrecedes(keys.trim, aged))
+			keys.trim = aged;
+		sift_tomb_set_keys(index, log, &keys);
+	}
 }
 
 /* Does the log hold an entry drop_keep changes (in memory or in a run): it works on a copy of each, as the rewrite does on the entries it keeps */

@@ -488,8 +488,8 @@ sift_tomb_sync_all(Relation rel, SiftTombLog *t)
 }
 
 /* The run of entries for key in the sorted array a: its first element and length */
-static const SiftTomb *
-find_run(const SiftTomb *a, uint32 na, uint64 key, uint32 *n)
+const SiftTomb *
+tomb_find_run(const SiftTomb *a, uint32 na, uint64 key, uint32 *n)
 {
 	uint32		lo = 0,
 				hi = na;
@@ -515,7 +515,7 @@ tomb_run_in(const SiftTomb *a, uint32 na, uint64 lo, uint64 hi)
 
 	if (na == 0)
 		return false;
-	for (const SiftTomb *f = find_run(a, na, lo, &n); f < a + na && f->key <= hi; f++)
+	for (const SiftTomb *f = tomb_find_run(a, na, lo, &n); f < a + na && f->key <= hi; f++)
 		if (f->xid != FrozenTransactionId)
 			return true;
 	return false;
@@ -565,7 +565,7 @@ hot_offsets(const SiftTomb *a, uint32 na, uint32 *pos, uint64 lo, uint64 hi, uin
 	if (pos)
 		i = *pos = gallop(a, na, *pos, lo);
 	else
-		i = find_run(a, na, lo, &n) - a;
+		i = tomb_find_run(a, na, lo, &n) - a;
 	for (; i < na && a[i].key <= hi; i++)
 		if (a[i].kind == SIFT_TOMB_UPDATE && (a[i].flags & SIFT_TOMB_HOT))
 			mask[((a[i].key & 0xFFFF) - 1) / 64] |= UINT64CONST(1) << (((a[i].key & 0xFFFF) - 1) % 64);
@@ -864,8 +864,8 @@ sift_tomb_find(const SiftTombLog *t, uint64 key, int *n)
 {
 	uint32		nm,
 				nr;
-	const SiftTomb *m = find_run(t->ents, t->nents, key, &nm),
-			   *r = find_run(t->recent, t->nrecent, key, &nr);
+	const SiftTomb *m = tomb_find_run(t->ents, t->nents, key, &nm),
+			   *r = tomb_find_run(t->recent, t->nrecent, key, &nr);
 	SiftTombLog *w = (SiftTombLog *) t;
 
 	if (t->spilled.nruns > 0)

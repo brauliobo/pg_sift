@@ -30,6 +30,7 @@
 #include "col/am.h"
 #include "col/conn.h"
 #include "core/cmp.h"
+#include "core/membudget.h"
 #include "core/rowmem.h"
 #include "core/restrict.h"
 #include "core/tomb.h"
@@ -435,6 +436,32 @@ key_slot(KeyRec *tab, uint32 mask, int64 key)
 	return &tab[h];
 }
 
+#define KEY_TABLE_START	64
+
+static KeyRec *
+key_table_new(uint32 size)
+{
+	KeyRec	   *tab = sift_rows_alloc(size * sizeof(KeyRec));
+
+	memset(tab, 0, size * sizeof(KeyRec));
+	return tab;
+}
+
+/* The table with twice the slots, the keys of the old one in it */
+static KeyRec *
+key_table_grow(KeyRec *tab, uint32 *mask)
+{
+	uint32		nmask = *mask * 2 + 1;
+	KeyRec	   *grown = key_table_new(nmask + 1);
+
+	for (uint32 i = 0; i <= *mask; i++)
+		if (tab[i].used)
+			*key_slot(grown, nmask, tab[i].key) = tab[i];
+	pfree(tab);
+	*mask = nmask;
+	return grown;
+}
+
 /* The index of the immutable segment with most documents (the base a merge or rewrite wrote), -1 when there is none */
 static int
 base_segment(const SiftDirSnapshot *dir)
@@ -606,68 +633,100 @@ tag_wanted(SiftConnTags *tags, const SiftTombLog *log, uint16 flags)
 	return tags->all || (tags->map[tag / 8] & (1 << (tag % 8))) != 0;
 }
 
+typedef struct KeySet
+{
+	KeyRec	   *tab;
+	uint32		mask;
+	uint32		n;				/* distinct keys */
+	uint64		nkept;			/* the records of updates that kept the key from kept_after on, left out */
+} KeySet;
+
+/* Adds the key of a record to the set */
+static void
+keyset_add(KeySet *ks, const SiftTomb *rec, bool keeps)
+{
+	KeyRec	   *slot = key_slot(ks->tab, ks->mask, (int64) rec->succ);
+
+	if (slot->used)
+	{
+		slot->kept &= keeps;
+		slot->add |= rec->kind == SIFT_TOMB_KEYADD;
+		return;
+	}
+	if ((ks->n + 1) * 2 > ks->mask + 1)
+	{
+		ks->tab = key_table_grow(ks->tab, &ks->mask);
+		slot = key_slot(ks->tab, ks->mask, (int64) rec->succ);
+	}
+	*slot = (KeyRec) {(int64) rec->succ, keeps, true, rec->kind == SIFT_TOMB_KEYADD};
+	ks->n++;
+}
+
+/*
+ * The distinct keys of the journal records of the log that count (see changed_by), up to cap + 1. The records are read one at a time, those of a long journal from the runs of the log:
+ * what the read holds is the table of the keys and one block of a run, whatever the number of records.
+ */
+static KeySet
+journal_keys(SiftTombLog *log, const SiftConnStamp *stamp, uint32 cap, bool adds, TransactionId kept_after, SiftConnTags *tags)
+{
+	KeySet		ks = {.tab = key_table_new(KEY_TABLE_START),.mask = KEY_TABLE_START - 1};
+	MemoryContext walkcx = AllocSetContextCreate(CurrentMemoryContext, "sift key journal walk", ALLOCSET_SMALL_SIZES);
+	SiftTombKeyWalk walk;
+	const SiftTomb *rec;
+	TransactionId last = InvalidTransactionId;
+	bool		last_void = false;
+
+	SIFT_MEM_SCOPE(col_conn_changed, walkcx);
+	sift_tomb_key_begin(&walk, log, SIFT_TOMB_KEYS_KEY, walkcx);
+	for (uint64 i = 0; ks.n <= cap && (rec = sift_tomb_key_next(&walk)) != NULL; i++)
+	{
+		bool		keeps = (rec->flags & SIFT_TOMB_KEPT) != 0;
+
+		if ((i & 1023) == 0)
+			SIFT_MEM_CHECKPOINT();
+		if ((rec->kind != SIFT_TOMB_KEYCHG && !(adds && rec->kind == SIFT_TOMB_KEYADD)) || TransactionIdPrecedes(rec->xid, stamp->xmin) ||
+			!tag_wanted(tags, log, rec->flags))
+			continue;
+		if (rec->xid != last)
+		{
+			last = rec->xid;
+			last_void = sift_xid_state(last) == SIFT_XID_ABORTED;
+		}
+		if (last_void)
+			continue;
+		if (TransactionIdIsValid(kept_after) && keeps)
+			ks.nkept += TransactionIdFollowsOrEquals(rec->xid, kept_after);
+		else
+			keyset_add(&ks, rec, keeps);
+	}
+	sift_tomb_key_end(&walk);
+	MemoryContextDelete(walkcx);
+	return ks;
+}
+
 /* adds: the keys of the records of inserted entries (KEYADD, a scope relation's journal) are in the set as well as those of ended ones; tags: only those of the pairs of the keys it names; kept_after (not invalid): the records of updates that kept the key are left out, and nkept counts those from that xid on */
 static SiftConnWhy
 changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, TransactionId kept_after, SiftConnTags *tags, SiftConnKeys *out)
 {
 	SiftTombLog *log;
 	SiftConnWhy why = vouch(heap, index, stamp, snap, &log);
-	const SiftTomb *rec;
-	int			n;
+	KeySet		ks;
 	KeyRec	   *tab;
-	uint32		mask;
 	int64	   *keys;
 	bool	   *kept,
 			   *added;
-	uint32		nk = 0;
-	uint64		nkept = 0;
-	TransactionId last = InvalidTransactionId;
-	bool		last_void = false;
+	uint32		nk;
 
 	*out = (SiftConnKeys) {0};
 	if (why != SIFT_CONN_OK)
 		return why;
-	log = sift_col_log(index);
-	rec = sift_tomb_find(log, SIFT_TOMB_KEYS_KEY, &n);
-	/* the distinct keys are at most cap + 1 before the read refuses: the table of a log that overflows is no larger, and the records past the one that overflows it are not looked at */
-	mask = pg_nextpower2_32(2 * Max(Min((uint64) n, (uint64) cap + 1), 1)) - 1;
-	tab = sift_rows_alloc((mask + 1) * sizeof(KeyRec));
-	memset(tab, 0, (mask + 1) * sizeof(KeyRec));
-	for (int i = 0; i < n; i++)
+	ks = journal_keys(sift_col_log(index), stamp, cap, adds, kept_after, tags);
+	tab = ks.tab;
+	nk = ks.n;
+	if (nk > cap)
 	{
-		KeyRec	   *slot;
-		bool		keeps = (rec[i].flags & SIFT_TOMB_KEPT) != 0;
-
-		if ((rec[i].kind != SIFT_TOMB_KEYCHG && !(adds && rec[i].kind == SIFT_TOMB_KEYADD)) || TransactionIdPrecedes(rec[i].xid, stamp->xmin) ||
-			!tag_wanted(tags, log, rec[i].flags))
-			continue;
-		if (rec[i].xid != last)
-		{
-			last = rec[i].xid;
-			last_void = sift_xid_state(last) == SIFT_XID_ABORTED;
-		}
-		if (last_void)
-			continue;
-		if (TransactionIdIsValid(kept_after) && keeps)
-		{
-			nkept += TransactionIdFollowsOrEquals(rec[i].xid, kept_after);
-			continue;
-		}
-		slot = key_slot(tab, mask, (int64) rec[i].succ);
-		if (slot->used)
-		{
-			slot->kept &= keeps;
-			slot->add |= rec[i].kind == SIFT_TOMB_KEYADD;
-		}
-		else
-		{
-			*slot = (KeyRec) {(int64) rec[i].succ, keeps, true, rec[i].kind == SIFT_TOMB_KEYADD};
-			if (++nk > cap)
-			{
-				pfree(tab);
-				return SIFT_CONN_OVERFLOW;
-			}
-		}
+		pfree(tab);
+		return SIFT_CONN_OVERFLOW;
 	}
 	keys = nk > 0 ? palloc(nk * sizeof(int64)) : NULL;
 	kept = nk > 0 ? palloc(nk * sizeof(bool)) : NULL;
@@ -679,11 +738,11 @@ changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot s
 		sift_sort_i64(keys, nk);
 	for (uint32 i = 0; i < nk; i++)
 	{
-		kept[i] = key_slot(tab, mask, keys[i])->kept;
-		added[i] = key_slot(tab, mask, keys[i])->add;
+		kept[i] = key_slot(tab, ks.mask, keys[i])->kept;
+		added[i] = key_slot(tab, ks.mask, keys[i])->add;
 	}
 	pfree(tab);
-	*out = (SiftConnKeys) {.keys = keys,.kept = kept,.added = added,.n = nk,.cap = nk,.nkept = nkept};
+	*out = (SiftConnKeys) {.keys = keys,.kept = kept,.added = added,.n = nk,.cap = nk,.nkept = ks.nkept};
 	return SIFT_CONN_OK;
 }
 

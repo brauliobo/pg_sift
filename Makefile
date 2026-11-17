@@ -150,6 +150,7 @@ TESTING_REGRESS += col_conn_found
 TESTING_REGRESS += col_conn_inserted
 TESTING_REGRESS += col_conn_invert
 TESTING_REGRESS += col_conn_journal
+TESTING_REGRESS += col_conn_journal_mem
 TESTING_REGRESS += col_conn_keyset
 TESTING_REGRESS += col_conn_probe
 TESTING_REGRESS += col_conn_refresh
