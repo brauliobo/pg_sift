@@ -151,6 +151,7 @@ TESTING_REGRESS += col_conn_journal
 TESTING_REGRESS += col_conn_keyset
 TESTING_REGRESS += col_conn_probe
 TESTING_REGRESS += col_conn_refresh
+TESTING_REGRESS += col_rewrite_loop
 TESTING_REGRESS += col_conn_reindex
 TESTING_REGRESS += col_conn_relocate
 TESTING_REGRESS += col_cube_priority
