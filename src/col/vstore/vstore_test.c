@@ -14,6 +14,7 @@
 
 #include "col/vstore/vstore.h"
 #include "core/store.h"
+#include "core/inspect.h"
 
 PG_FUNCTION_INFO_V1(sift_test_vstore_intern);
 PG_FUNCTION_INFO_V1(sift_test_vstore_info);
@@ -61,7 +62,7 @@ sift_test_vstore_intern(PG_FUNCTION_ARGS)
 Datum
 sift_test_vstore_info(PG_FUNCTION_ARGS)
 {
-	Oid			store = PG_GETARG_OID(0);
+	Oid			store = sift_rel_must_exist(PG_GETARG_OID(0));
 	SiftVStore *vs = sift_vstore_open(store, AccessShareLock);
 	Relation	rel = table_open(store, NoLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));

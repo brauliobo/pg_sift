@@ -15,6 +15,7 @@
 #include "core/extlock.h"
 #include "core/live.h"
 #include "core/lane.h"
+#include "core/inspect.h"
 
 #ifdef SIFT_TESTING
 
@@ -46,13 +47,13 @@ PG_FUNCTION_INFO_V1(sift_test_relcache_burn);
 Datum
 sift_test_alloc(PG_FUNCTION_ARGS)
 {
-	Relation	index = relation_open(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = sift_test_open_store(PG_GETARG_OID(0), RowExclusiveLock);
 	int32		nblocks = PG_GETARG_INT32(1);
 	int32		count = PG_GETARG_INT32(2);
 	BlockNumber last;
 
 	if (nblocks <= 0 || count < 0)
-		elog(ERROR, "invalid allocation");
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid allocation: %d blocks, %d times", nblocks, count)));
 	last = alloc_many(index, nblocks, count, PG_GETARG_INT32(3));
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_INT64(last);
@@ -74,7 +75,7 @@ sift_test_check(PG_FUNCTION_ARGS)
 {
 	bool		standby = RecoveryInProgress();
 	LOCKMODE	mode = standby ? AccessShareLock : RowExclusiveLock;
-	Relation	index = relation_open(PG_GETARG_OID(0), mode);
+	Relation	index = sift_test_open_store(PG_GETARG_OID(0), mode);
 	int64		n;
 
 	if (!standby)
@@ -477,9 +478,9 @@ sift_test_live2_clear(PG_FUNCTION_ARGS)
 	uint32		nsb = PG_GETARG_INT32(1),
 				sbidx = PG_GETARG_INT32(2),
 				nslots = 4200;
-	uint64	   *reg = palloc0((nsb + 1) * sizeof(uint64));
-	uint8	   *dirty = palloc0((nsb + 7) / 8);
-	BufFile    *rows = BufFileCreateTemp(false);
+	uint64	   *reg;
+	uint8	   *dirty;
+	BufFile    *rows;
 	SiftLive	l = {.index = index, .nsb = nsb, .nbits = 64};
 	SiftLive2HeaderData h;
 	SiftWriteTarget *wt;
@@ -488,6 +489,13 @@ sift_test_live2_clear(PG_FUNCTION_ARGS)
 	Datum		values[4];
 	bool		nulls[4] = {0};
 
+	if (nsb == 0 || nsb > 100000 || sbidx >= nsb)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift._test_live2_clear: nsb must be 1 to 100000 and sbidx below it")));
+	reg = palloc0((nsb + 1) * sizeof(uint64));
+	dirty = palloc0((nsb + 7) / 8);
+	rows = BufFileCreateTemp(false);
+	l.index = index;
+	l.nsb = nsb;
 	MAINT_LOCK(index, ShareLock);
 	l.gen = sift_store_new_gen(index);
 	wt = sift_wt_begin(index, SIFT_WRITE_SHARED);

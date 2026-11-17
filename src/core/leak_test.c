@@ -29,6 +29,7 @@
 
 #include "core/errctx.h"
 #include "core/sift.h"
+#include "core/inspect.h"
 
 PG_FUNCTION_INFO_V1(sift_test_leak);
 PG_FUNCTION_INFO_V1(sift_test_errctx_report);
@@ -69,7 +70,7 @@ Datum
 sift_test_leak(PG_FUNCTION_ARGS)
 {
 	const char *kind = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	Oid			relid = PG_GETARG_OID(1);
+	Oid			relid = sift_rel_must_exist(PG_GETARG_OID(1));
 
 	if (strcmp(kind, "buffer") == 0)
 	{

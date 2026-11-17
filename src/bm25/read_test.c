@@ -18,6 +18,8 @@
 #include "bm25/posting.h"
 #include "bm25/segment.h"
 #include "bm25/prefix.h"
+#include "core/inspect.h"
+#include "core/store.h"
 
 PG_FUNCTION_INFO_V1(sift_test_read_stats);
 PG_FUNCTION_INFO_V1(sift_test_wbuf_reads);
@@ -75,7 +77,7 @@ sift_test_read_stats(PG_FUNCTION_ARGS)
 Datum
 sift_test_wbuf_reads(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift");
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	TupleDesc	tupdesc;
 	Datum		values[4] = {0, 0, 0, 0};

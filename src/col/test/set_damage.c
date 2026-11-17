@@ -11,6 +11,8 @@
 #include "core/sql.h"
 #endif							/* SIFT_TESTING */
 #include "col/test/test_int.h"
+#include "core/inspect.h"
+#include "core/store.h"
 
 #ifdef SIFT_TESTING
 PG_FUNCTION_INFO_V1(sift_test_col_set_damage);
@@ -256,7 +258,7 @@ Datum
 sift_test_col_super_damage(PG_FUNCTION_ARGS)
 {
 	static const uint8 masks[] = {0x01, 0x80};
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	int64		supers = 0,
 				damaged = 0,
@@ -306,7 +308,7 @@ static Datum
 section_file_damage(PG_FUNCTION_ARGS, bool (*span) (SiftColSegment *, uint64 *, uint64 *, uint8 **))
 {
 	static const uint8 masks[] = {0x01, 0x80};
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	int32		stride = Max(PG_GETARG_INT32(1), 1);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	int64		runs = 0,

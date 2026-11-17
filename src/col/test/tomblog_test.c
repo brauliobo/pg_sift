@@ -21,6 +21,8 @@
 #include "col/conn.h"
 #include "col/wbuf.h"
 #include "core/tomb.h"
+#include "core/inspect.h"
+#include "core/store.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_log_create);
 PG_FUNCTION_INFO_V1(sift_test_col_fold_marks);
@@ -49,7 +51,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_conn_stamps);
 Datum
 sift_test_col_fold_marks(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), RowExclusiveLock, "sift_col");
 	uint64		n = sift_col_fold_marks(index);
 
 	index_close(index, RowExclusiveLock);
@@ -60,7 +62,7 @@ sift_test_col_fold_marks(PG_FUNCTION_ARGS)
 Datum
 sift_test_col_marks_paid(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftTombLog *log = sift_col_log(index);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	int64		paid;
@@ -75,7 +77,7 @@ sift_test_col_marks_paid(PG_FUNCTION_ARGS)
 Datum
 sift_test_col_log_create(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), ShareUpdateExclusiveLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), ShareUpdateExclusiveLock, "sift_col");
 
 	sift_col_log_create(index);
 	index_close(index, NoLock);
@@ -86,7 +88,7 @@ sift_test_col_log_create(PG_FUNCTION_ARGS)
 Datum
 sift_test_col_log_append(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), RowExclusiveLock, "sift_col");
 	ItemPointer tid = PG_GETARG_ITEMPOINTER(1);
 	SiftTombLog *log = sift_col_log(index);
 
@@ -102,7 +104,7 @@ Datum
 sift_test_col_log_entries(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftTombLog *log = sift_col_log(index);
 	SiftTomb   *all;
 	uint32		n;
@@ -214,7 +216,7 @@ Datum
 sift_test_col_unit_tombs(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	SiftTombLog *log = sift_col_log(index);
 	SiftColSource *src = sift_col_open(heap, index, GetActiveSnapshot(), CurrentMemoryContext, 0, NULL);
@@ -286,7 +288,7 @@ sift_test_xid_state(PG_FUNCTION_ARGS)
 Datum
 sift_test_tomb_header(PG_FUNCTION_ARGS)
 {
-	Relation	rel = relation_open(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), RowExclusiveLock);
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
 	const SiftSegEntry *e;
 	Buffer		buf;
@@ -335,7 +337,7 @@ sift_test_tomb_header(PG_FUNCTION_ARGS)
 Datum
 sift_test_log_chan(PG_FUNCTION_ARGS)
 {
-	Relation	index = relation_open(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), RowExclusiveLock);
 	SiftTombLog *log;
 	SiftTombChan chan;
 	TupleDesc	desc;
@@ -366,7 +368,7 @@ sift_test_log_chan(PG_FUNCTION_ARGS)
 Datum
 sift_test_conn_enable(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), ShareUpdateExclusiveLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), ShareUpdateExclusiveLock, "sift_col");
 	Relation	heap = table_open(index->rd_index->indrelid, ShareLock);
 	uint64		lineage = sift_conn_enable(heap, index, false, InvalidAttrNumber);
 
@@ -379,8 +381,8 @@ sift_test_conn_enable(PG_FUNCTION_ARGS)
 Datum
 sift_test_conn_connect(PG_FUNCTION_ARGS)
 {
-	Relation	child = index_open(PG_GETARG_OID(0), AccessShareLock);
-	Relation	parent = index_open(PG_GETARG_OID(1), ShareUpdateExclusiveLock);
+	Relation	child = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	parent = sift_test_open_index_am(PG_GETARG_OID(1), ShareUpdateExclusiveLock, "sift_col");
 	Relation	heap = table_open(parent->rd_index->indrelid, ShareLock);
 
 	sift_conn_connect(child, heap, parent);
@@ -394,7 +396,7 @@ sift_test_conn_connect(PG_FUNCTION_ARGS)
 Datum
 sift_test_conn_take(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	SiftConnStamp st = {0};
 	TupleDesc	desc;
@@ -419,7 +421,7 @@ Datum
 sift_test_col_conn_stamps(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -450,7 +452,7 @@ sift_test_col_conn_stamps(PG_FUNCTION_ARGS)
 Datum
 sift_test_conn_changed(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	SiftConnStamp st = {.lineage = (uint64) PG_GETARG_INT64(1),.xmin = PG_GETARG_TRANSACTIONID(2)};
 	SiftConnKeys keys;
@@ -480,7 +482,7 @@ sift_test_conn_changed(PG_FUNCTION_ARGS)
 Datum
 sift_test_conn_gen(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftConnGen g;
 	TupleDesc	desc;
 	Datum		v[3];
@@ -501,7 +503,7 @@ sift_test_conn_gen(PG_FUNCTION_ARGS)
 Datum
 sift_test_conn_inserted_since(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	SiftConnStamp st = {.lineage = (uint64) PG_GETARG_INT64(1),.xmin = PG_GETARG_TRANSACTIONID(2)};
 	bool		since = sift_conn_inserted_rows(heap, index, &st) > 0;

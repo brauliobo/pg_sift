@@ -13,6 +13,7 @@
 #include "utils/syscache.h"
 
 #include "core/restrict.h"
+#include "core/host.h"
 
 #ifdef SIFT_TESTING
 
@@ -38,8 +39,15 @@ set_in_vacuum(bool on)
 Datum
 sift_test_catalog_write(PG_FUNCTION_ARGS)
 {
-	char	   *kind = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	bool		as_vacuum = PG_GETARG_BOOL(1);
+	char	   *kind;
+	bool		as_vacuum;
+
+	SIFT_ARG_REQUIRED(0, "sift._test_catalog_write", "kind");
+	SIFT_ARG_REQUIRED(1, "sift._test_catalog_write", "as_vacuum");
+	SIFT_ARG_REQUIRED(2, "sift._test_catalog_write", "a");
+	SIFT_ARG_REQUIRED(3, "sift._test_catalog_write", "b");
+	kind = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	as_vacuum = PG_GETARG_BOOL(1);
 	Oid			a = PG_GETARG_OID(2);
 	Oid			b = PG_GETARG_OID(3);
 	ObjectAddress from,
@@ -72,7 +80,7 @@ sift_test_catalog_write(PG_FUNCTION_ARGS)
 		else if (strcmp(kind, "drop") == 0)
 			sift_drop_object(&from);
 		else
-			elog(ERROR, "sift._test_catalog_write: unknown kind \"%s\"", kind);
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift._test_catalog_write: unknown kind \"%s\"", kind)));
 	}
 	PG_FINALLY();
 	{

@@ -406,7 +406,10 @@ sift_test_shred_kern_rate(PG_FUNCTION_ARGS)
 	char	   *name = text_to_cstring(PG_GETARG_TEXT_PP(0));
 	uint32		n = PG_GETARG_INT32(1);
 	int			iters = PG_GETARG_INT32(2);
-	uint8	   *state = palloc(n + 64);
+	uint8	   *state;
+	if (PG_GETARG_INT32(1) < 4 || iters < 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift._test_shred_kern_rate: n must be at least 4 and iters at least 0")));
+	state = palloc(n + 64);
 	int64	   *val = palloc(n * 8 + 64);
 	uint32	   *end = palloc((n / 4 + 1) * 4),
 			   *parent = palloc(n * 4 + 64);

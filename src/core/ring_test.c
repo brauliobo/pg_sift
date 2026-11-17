@@ -95,6 +95,8 @@ sift_test_ring_walk(PG_FUNCTION_ARGS)
 	bool		ok = true;
 	uint32_t	start = sift_ring_test_start;
 
+	if (slots == 0 || (slots & (slots - 1)) != 0 || steps > 10000000)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift._test_ring_walk: slots must be a power of two and steps at most 10000000")));
 	sift_ring_test_start = 0;
 	for (int f = 0; f < 2; f++)
 	{

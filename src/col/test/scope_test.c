@@ -24,6 +24,9 @@
 #include "col/am.h"
 #include "col/scope.h"
 #include "col/test/test_int.h"
+#include "core/inspect.h"
+#include "core/store.h"
+#include "core/host.h"
 
 PG_FUNCTION_INFO_V1(sift_test_member_hash);
 PG_FUNCTION_INFO_V1(sift_test_scope_expand);
@@ -48,7 +51,7 @@ Datum
 sift_test_scope_expand(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	Oid			btree = PG_GETARG_OID(1);
 	AttrNumber	member = get_attnum(RelationGetRelid(rel), text_to_cstring(PG_GETARG_TEXT_PP(2))),
 				key = get_attnum(RelationGetRelid(rel), text_to_cstring(PG_GETARG_TEXT_PP(3)));
@@ -94,7 +97,7 @@ Datum
 sift_test_col_scope_entries(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
 	SiftColBatch *batch = sift_cbatch_create(CurrentMemoryContext, sift_col_rel(index)->schema);
 
@@ -151,7 +154,7 @@ Datum
 sift_test_col_scope_stamps(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -186,7 +189,7 @@ Datum
 sift_test_col_scope_journal_stamps(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -218,7 +221,7 @@ sift_test_col_scope_journal_stamps(PG_FUNCTION_ARGS)
 Datum
 sift_test_col_scope_filled(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftScopeSpecs *sp = sift_scope_specs(index);
 	char	   *name = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
@@ -242,7 +245,7 @@ Datum
 sift_test_col_scope_floor(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftScopeSpecs *sp = sift_scope_specs(index);
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
 
@@ -317,13 +320,14 @@ same_ask(const InScope *st, Oid indexoid, const int64 *keys, int nkeys, Snapshot
 static Datum
 in_scope(FunctionCallInfo fcinfo, const int64 *keys, int nkeys)
 {
-	Oid			indexoid = PG_GETARG_OID(0);
+	Oid			indexoid = sift_rel_must_exist(PG_GETARG_OID(0));
 	Snapshot	snap = GetActiveSnapshot();
 	InScope    *st = fcinfo->flinfo->fn_extra;
 	int64		fk;
 
 	if (PG_ARGISNULL(2))
 		PG_RETURN_BOOL(false);
+	SIFT_ARG_REQUIRED(1, "sift.in_scope", "key_name");
 	switch (get_fn_expr_argtype(fcinfo->flinfo, 2))
 	{
 		case INT2OID:
@@ -338,7 +342,7 @@ in_scope(FunctionCallInfo fcinfo, const int64 *keys, int nkeys)
 	if (!same_ask(st, indexoid, keys, nkeys, snap))
 	{
 		MemoryContext old = MemoryContextSwitchTo(fcinfo->flinfo->fn_mcxt);
-		Relation	index = index_open(indexoid, AccessShareLock);
+		Relation	index = sift_test_open_index_am(indexoid, AccessShareLock, "sift_col");
 		Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 
 		if (st == NULL)
@@ -411,7 +415,7 @@ PG_FUNCTION_INFO_V1(sift_test_scope_stamps);
 Datum
 sift_test_scope_stamps(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	SiftConnStamp st[SIFT_SCOPE_JOURNALS];
 	SiftConnWhy why = sift_scope_take(index, PG_GETARG_INT32(1), GetTransactionSnapshot(), st);
@@ -440,7 +444,7 @@ stamps_arg(FunctionCallInfo fcinfo, int more, SiftConnStamp *st)
 Datum
 sift_test_scope_take(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftConnStamp st[SIFT_SCOPE_JOURNALS];
 	SiftConnWhy why = sift_scope_take(index, PG_GETARG_INT32(1), GetTransactionSnapshot(), st);
 	TupleDesc	desc;
@@ -459,7 +463,7 @@ PG_FUNCTION_INFO_V1(sift_test_scope_journals_open);
 Datum
 sift_test_scope_journals_open(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	bool		failed;
 	int			counted = sift_scope_journals_probe(index, PG_GETARG_INT32(1), PG_GETARG_INT32(2), &failed);
 
@@ -471,7 +475,7 @@ sift_test_scope_journals_open(PG_FUNCTION_ARGS)
 Datum
 sift_test_scope_vouch(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftConnStamp st[SIFT_SCOPE_JOURNALS];
 	SiftConnWhy why;
 
@@ -486,7 +490,7 @@ sift_test_scope_vouch(PG_FUNCTION_ARGS)
 Datum
 sift_test_scope_journal_changes(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftConnStamp st[SIFT_SCOPE_JOURNALS];
 	SiftConnKeys keys;
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
@@ -578,7 +582,7 @@ PG_FUNCTION_INFO_V1(sift_test_scope_paid);
 Datum
 sift_test_scope_paid(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
 	uint64		paid;
 
@@ -594,7 +598,7 @@ PG_FUNCTION_INFO_V1(sift_test_scope_balance);
 Datum
 sift_test_scope_balance(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftScopeStale *st = sift_scope_stale_begin(index, CurrentMemoryContext);
 	Datum		v[2];
 	bool		nulls[2] = {false, false};
@@ -620,7 +624,7 @@ PG_FUNCTION_INFO_V1(sift_test_scope_paid_flush);
 Datum
 sift_test_scope_paid_flush(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 
 	sift_scope_paid_flush(index);
 	index_close(index, AccessShareLock);
@@ -643,7 +647,7 @@ Datum
 sift_test_scope_legs(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftScopeLeg legs[2];
 	int			n;
 

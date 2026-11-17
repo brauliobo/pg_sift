@@ -50,12 +50,18 @@ sift_test_radix_sort(PG_FUNCTION_ARGS)
 	uint64_t	off1 = (uint64_t) PG_GETARG_INT64(3),
 				off2 = (uint64_t) PG_GETARG_INT64(4),
 				rs = (uint64_t) PG_GETARG_INT64(5),
-				m1 = bits1 >= 64 ? UINT64_MAX : ((uint64_t) 1 << bits1) - 1,
-				m2 = bits2 >= 64 ? UINT64_MAX : bits2 < 0 ? 0 : ((uint64_t) 1 << bits2) - 1;
-	RadixEnt   *a = palloc(Max(n, 1) * sizeof(RadixEnt)),
-			   *b = palloc(Max(n, 1) * sizeof(RadixEnt));
+				m1,
+				m2;
+	RadixEnt   *a,
+			   *b;
 	bool		same = true;
 
+	if (n < 0 || n > 100000000 || bits1 < 0 || bits2 < 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift._test_radix_sort: n must be 0 to 100000000 and the bits at least 0")));
+	m1 = bits1 >= 64 ? UINT64_MAX : ((uint64_t) 1 << bits1) - 1;
+	m2 = bits2 >= 64 ? UINT64_MAX : ((uint64_t) 1 << bits2) - 1;
+	a = palloc(Max(n, 1) * sizeof(RadixEnt));
+	b = palloc(Max(n, 1) * sizeof(RadixEnt));
 	for (int32 i = 0; i < n; i++)
 	{
 		a[i].k1 = (int64_t) ((sift_splitmix_next(&rs) & m1) + off1);

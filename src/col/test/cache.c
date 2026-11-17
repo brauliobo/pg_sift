@@ -15,6 +15,8 @@
 #include "core/sql.h"
 #endif							/* SIFT_TESTING */
 #include "col/test/test_int.h"
+#include "core/inspect.h"
+#include "core/store.h"
 
 #ifdef SIFT_TESTING
 /*
@@ -75,7 +77,7 @@ sift_test_catalog_memos(PG_FUNCTION_ARGS)
 Datum
 sift_test_scope_exact(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftSrcStats *st = palloc(sizeof(SiftSrcStats));
 	bool		ok = sift_col_scope_stats(index, st);
 
@@ -124,7 +126,7 @@ Datum
 sift_test_col_leaf_stats(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	int			nleaves = sift_colsrc_layout(rel)->nleaves;
 	SiftSrcStats st;
 

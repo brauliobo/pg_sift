@@ -721,7 +721,7 @@ sift_test_col_kernels(PG_FUNCTION_ARGS)
 	int32		level = PG_GETARG_INT32(0);
 
 	if (level < SIFT_SIMD_SCALAR || level > SIFT_SIMD_AVX512)
-		elog(ERROR, "sift_col_kern: no SIMD level %d", level);
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift_col_kern: no SIMD level %d", level)));
 	PG_RETURN_INT64(run_cases(sift_col_kernels_for((SiftSimdLevel) level), PG_GETARG_INT32(1)));
 }
 

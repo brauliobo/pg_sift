@@ -118,7 +118,7 @@ parse_pred(const SiftColSchema *sc, char *item)
 	int			cap = 1;
 
 	if (op == NULL)
-		elog(ERROR, "sift test: bad predicate \"%s\"", item);
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift test: bad predicate \"%s\"", item)));
 	*op++ = 0;
 	if ((vals = strchr(op, ':')) != NULL)
 		*vals++ = 0;
@@ -486,6 +486,8 @@ sift_test_col_types(PG_FUNCTION_ARGS)
 
 	InitMaterializedSRF(fcinfo, 0);
 	ctest_scan_open(&ts, PG_GETARG_OID(0), "", 0);
+	if (leaf < 0 || leaf >= sift_col_ncols(ts.src) || deftag < 0 || deftag >= 32)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift._test_col_types: leaf %d is not a leaf of the index, or the tag %d is not 0 to 31", leaf, deftag)));
 	while (ctest_test_next(&ts, &unit))
 	{
 		SiftColSel	sel;

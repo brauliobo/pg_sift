@@ -12,6 +12,8 @@
 #include "core/sql.h"
 #endif							/* SIFT_TESTING */
 #include "col/test/test_int.h"
+#include "core/inspect.h"
+#include "core/store.h"
 
 #ifdef SIFT_TESTING
 PG_FUNCTION_INFO_V1(sift_test_col_damage);
@@ -246,7 +248,7 @@ sift_test_col_damage(PG_FUNCTION_ARGS)
 	else if (strcmp(section, "schema") == 0)
 		d.section = DMG_SCHEMA;
 	else
-		elog(ERROR, "sift test: unknown section \"%s\"", section);
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift test: unknown section \"%s\"", section)));
 	d.cx = AllocSetContextCreate(CurrentMemoryContext, "damage", ALLOCSET_DEFAULT_SIZES);
 	ctest_scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
 	d.sc = sift_col_rel(ts.index)->schema;
@@ -297,7 +299,7 @@ Datum
 sift_test_col_pre_stats(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	const SiftColPreStats *pre = sift_col_pre_stats(index, false);
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -317,7 +319,7 @@ sift_test_col_pre_stats(PG_FUNCTION_ARGS)
 Datum
 sift_test_leaf_fold(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	int			inc,
 				full;
 	bool		same = sift_col_leaf_fold_check(index, &inc, &full);

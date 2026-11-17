@@ -26,7 +26,11 @@ sift_test_vnum_program_ok(PG_FUNCTION_ARGS)
 	SiftAggNum	p = {.n = n, .step = step};
 
 	for (int k = 0; k < n; k++)
+	{
+		if (code[k] < 0 || code[k] >= lengthof(ops))
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift._test_vnum_program_ok: step %d is not a code of 0 to %d", code[k], (int) lengthof(ops) - 1)));
 		step[k].op = ops[code[k]];
+	}
 	PG_RETURN_BOOL(vnum_program_ok(&p));
 }
 

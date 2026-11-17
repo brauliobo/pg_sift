@@ -10,6 +10,7 @@
 #include "bm25/maint.h"
 #include "core/sql.h"
 #include "table/seg_int.h"
+#include "core/inspect.h"
 
 /* The next column segment of the table from directory entry *i on, open (the caller closes it); NULL after the last */
 static SiftColSegment *
@@ -31,7 +32,7 @@ PG_FUNCTION_INFO_V1(sift_test_tbl_bulk_refusal);
 Datum
 sift_test_tbl_bulk_refusal(PG_FUNCTION_ARGS)
 {
-	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	const char *why;
 
 	sift_tbl_require(rel);
@@ -48,7 +49,7 @@ PG_FUNCTION_INFO_V1(sift_test_tbl_hold_maint);
 Datum
 sift_test_tbl_hold_maint(PG_FUNCTION_ARGS)
 {
-	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 
 	sift_tbl_require(rel);
 	(void) sift_maint_lock(rel, true);
@@ -62,7 +63,7 @@ PG_FUNCTION_INFO_V1(sift_test_tbl_promote_held);
 Datum
 sift_test_tbl_promote_held(PG_FUNCTION_ARGS)
 {
-	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
 
 	sift_tbl_require(rel);
@@ -78,7 +79,7 @@ PG_FUNCTION_INFO_V1(sift_test_tbl_cube_damage);
 Datum
 sift_test_tbl_cube_damage(PG_FUNCTION_ARGS)
 {
-	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
 	SiftColSegment *seg;
 	int			maxunits = PG_GETARG_INT32(1);
@@ -116,7 +117,7 @@ PG_FUNCTION_INFO_V1(sift_test_tbl_cal_grains);
 Datum
 sift_test_tbl_cal_grains(PG_FUNCTION_ARGS)
 {
-	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
 	SiftColSegment *seg;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "cal grains", ALLOCSET_DEFAULT_SIZES);
@@ -157,7 +158,7 @@ PG_FUNCTION_INFO_V1(sift_test_tbl_preagg_bytes);
 Datum
 sift_test_tbl_preagg_bytes(PG_FUNCTION_ARGS)
 {
-	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
 	SiftColSegment *seg;
 	int64		bytes = 0;
@@ -176,7 +177,7 @@ PG_FUNCTION_INFO_V1(sift_test_tbl_tagged);
 Datum
 sift_test_tbl_tagged(PG_FUNCTION_ARGS)
 {
-	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
 	int32		n = 0;
 

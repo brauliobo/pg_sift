@@ -31,6 +31,8 @@
 #include "col/wbuf.h"
 #include "col/wbuf/wbuf_int.h"
 #include "core/lane.h"
+#include "core/inspect.h"
+#include "core/store.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_prepare);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_append);
@@ -723,7 +725,7 @@ sift_test_col_wbuf_segments(PG_FUNCTION_ARGS)
 Datum
 sift_test_col_wbuf_reads(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftDirSnapshot *snap = read_dir(index);
 	TupleDesc	tupdesc;
 	Datum		values[3] = {0, 0, 0};
@@ -766,7 +768,7 @@ sift_test_arena_gc(PG_FUNCTION_ARGS)
 Datum
 sift_test_wbuf_format(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftDirSnapshot *snap = read_dir(index);
 	int			format = 0;
 

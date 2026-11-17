@@ -23,6 +23,7 @@
 #include "agg/agg_int.h"
 #include "core/damage.h"
 #include "executor/instrument.h"
+#include "core/inspect.h"
 
 #ifdef SIFT_TESTING
 
@@ -125,7 +126,17 @@ aligned_pos(uint64 pos, uint32 align)
 Relation
 sift_test_open_index(Oid relid, LOCKMODE mode)
 {
-	Relation	index = relation_open(relid, mode);
+	return sift_test_open_index_am(relid, mode, NULL);
+}
+
+/* An index of the access method want ("sift", "sift_col"; NULL: any sift one) opened for a test function: a relation that is gone is 42P01, one of another kind or method 42809 */
+Relation
+sift_test_open_index_am(Oid relid, LOCKMODE mode, const char *want)
+{
+	Relation	index;
+
+	sift_inspect_expect(sift_rel_must_exist(relid), want, NULL);
+	index = relation_open(relid, mode);
 
 	if (index->rd_rel->relkind != RELKIND_INDEX)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE),
@@ -137,8 +148,10 @@ sift_test_open_index(Oid relid, LOCKMODE mode)
 Relation
 sift_test_open_store(Oid relid, LOCKMODE mode)
 {
-	Relation	rel = relation_open(relid, mode);
+	Relation	rel;
 
+	sift_inspect_expect(sift_rel_must_exist(relid), NULL, NULL);
+	rel = relation_open(relid, mode);
 	if (rel->rd_rel->relkind != RELKIND_INDEX && rel->rd_rel->relkind != RELKIND_RELATION)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE),
 						errmsg("\"%s\" is not an index or a table", RelationGetRelationName(rel))));
