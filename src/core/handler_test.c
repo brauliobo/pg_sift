@@ -163,6 +163,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_rebuild_gate",
 							 "Testing: the reader that owns the rebuild of an arena slot of a write buffer waits for advisory lock (0x51F7, 11) once it owns it.",
 							 NULL, &sift_test_rebuild_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_intern_gate",
+							 "Testing: a session that interned strings into a shared value store waits for advisory lock (0x51F7, 12) before it merges the runs of the store.",
+							 NULL, &sift_test_intern_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_par_stats",
 							 "Testing: each participant of a parallel aggregate logs its instructions, blocks, memory and group table (bench/steps/scope_parallel.py reads them).",
 							 NULL, &sift_test_par_stats, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

@@ -45,6 +45,7 @@ bool		sift_test_drop_gate = false;
 bool		sift_test_build_gate = false;
 bool		sift_test_par_gate = false;
 bool		sift_test_rebuild_gate = false;
+bool		sift_test_intern_gate = false;
 bool		sift_test_par_stats = false;
 static int	test_masks = 0;
 

@@ -41,7 +41,7 @@ Compaction is lazy: no write of a row copies anything, and a VACUUM or the maint
 
 ## Locks
 
-A writer of a member holds the store in `RowExclusiveLock` to the end of its transaction, from the codes it takes to the segment it publishes; a reader takes `AccessShareLock` when it first needs a string. The retirement of an epoch takes the members (`ShareUpdateExclusiveLock`, as maintenance does) and then the store in `ShareRowExclusiveLock`, so that no segment is written between its codes and its publication while the segments of the members are read for the epochs they name. The append of a run takes the relation-extension lock of the store for the append only.
+A writer of a member holds the store in `RowExclusiveLock` to the end of its transaction, from the codes it takes to the segment it publishes; a reader takes `AccessShareLock` when it first needs a string. The retirement of an epoch takes the members (`ShareUpdateExclusiveLock`, as maintenance does) and then the store in `ShareRowExclusiveLock`, so that no segment is written between its codes and its publication while the segments of the members are read for the epochs they name. The sessions that give new strings their codes take a page lock of the store one at a time, for the append of their run only (the members of a parallel build exclude each other with it too); the merge of the runs that follows takes a page lock of its own that a session only tries for, so no append waits for a merge. The relation-extension lock of the store is held while a block is added, as for any relation.
 
 ## What each type shares
 

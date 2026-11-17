@@ -5,10 +5,11 @@
  * The code space of a store is append-only: a value has exactly one code, the position at which it was appended, and a code never moves. A run
  * is an immutable segment of the directory (kind SIFT_SEG_VALRUN) that holds the values of the codes [base, base + n) in code order, in the
  * serialized form of a string dictionary. A writer asks the store for the codes of a batch of values: those it finds are answered, the others are
- * appended as one run, under the extension lock of the store (the one heavyweight lock that the members of a parallel build do not share) that is held for the append and no longer, and published by a directory update that is logged after the pages
+ * appended as one run, under the append lock of the store (a page lock, which conflicts between the members of a parallel build as the extension lock does) that is held for the append and no longer, and published by a directory update that is logged after the pages
  * of the run, so that a segment that names the codes (published later, by the writer) is never seen without them. An append that is not followed
  * by a segment leaves values nobody uses: the store keeps them until its epoch is retired (col/vstore/vstore_gc.c).
- * Runs are merged by the appender (adjacent runs, the codes unchanged), so that a lookup reads few of them.
+ * Runs are merged by the appender (adjacent runs, the codes unchanged), so that a lookup reads few of them, under a merge lock of their own that it only tries for: no append waits for a merge,
+ * and the relation extension lock is held only while a block is added (core/extlock.h).
  */
 #include "postgres.h"
 
@@ -35,6 +36,7 @@
 #include "core/page.h"
 #include "core/sift.h"
 #include "core/store.h"
+#include "core/visibility.h"
 #include "core/damage.h"
 #include "core/catname.h"
 
@@ -504,12 +506,17 @@ write_run(SiftVStore *vs, const SiftCDict *src, uint32 from, uint32 lo, uint32 n
 	pfree(out.data);
 }
 
-/* Under the extension lock nothing may take a heavyweight lock: the xid is assigned first (the catalog the directory update reads is read by the lock, core/extlock.h) */
+/* The one session that appends codes: the codes it hands out start at the end of the store it read under this lock, and its run is published before the lock goes */
 static void
-lock_extend(SiftVStore *vs)
+append_lock(SiftVStore *vs)
 {
-	(void) GetCurrentTransactionId();
-	sift_extension_lock(vs->rel);
+	LockPage(vs->rel, SIFT_VSTORE_APPEND_LOCK_BLKNO, ExclusiveLock);
+}
+
+static void
+append_unlock(SiftVStore *vs)
+{
+	UnlockPage(vs->rel, SIFT_VSTORE_APPEND_LOCK_BLKNO, ExclusiveLock);
 }
 
 static void
@@ -527,11 +534,11 @@ sift_vstore_bump_epoch(SiftVStore *vs)
 {
 	SiftDirChange chg = {.fn = epoch_edit};
 
-	lock_extend(vs);
+	append_lock(vs);
 	pfree(view_refresh(vs));
 	if (vs->view->total > 0)
 		sift_dir_update(vs->rel, &chg);
-	sift_extension_unlock(vs->rel);
+	append_unlock(vs);
 	pfree(view_refresh(vs));
 }
 
@@ -672,6 +679,24 @@ merge_runs(SiftVStore *vs, const SiftCcPolicy *pol, const SiftDirSnapshot *snap)
 	pfree(runs);
 }
 
+/*
+ * The merge of the runs after an append, by the one session that gets the merge lock: another that interns meanwhile appends (the append lock is not this one) and leaves the merge
+ * to the one that holds it. The runs a skipped merge leaves are merged by the next append
+ */
+static void
+merge_when_idle(SiftVStore *vs, const SiftCcPolicy *pol)
+{
+	SiftDirSnapshot *snap;
+
+	if (!ConditionalLockPage(vs->rel, SIFT_VSTORE_MERGE_LOCK_BLKNO, ExclusiveLock))
+		return;
+	SIFT_TEST_GATE(sift_test_intern_gate, 12);
+	snap = view_refresh(vs);
+	merge_runs(vs, pol, snap);
+	pfree(snap);
+	UnlockPage(vs->rel, SIFT_VSTORE_MERGE_LOCK_BLKNO, ExclusiveLock);
+}
+
 /* map[i] = the code of the value i of the batch for the values the table of the view has (the others are left as they are) */
 static void
 map_codes(SiftVStore *vs, SiftCDict *batch, uint32 *map)
@@ -731,7 +756,6 @@ sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch_in, const SiftCcPolicy
 	SiftCDict  *batch = (SiftCDict *) batch_in;
 	uint32		missing,
 				appended = 0;
-	SiftDirSnapshot *snap;
 
 retry:
 	missing = 0;
@@ -743,12 +767,11 @@ retry:
 		missing += map[i] == PG_UINT32_MAX;
 	if (missing > 0)
 	{
-		lock_extend(vs);
-		snap = view_refresh(vs);
+		append_lock(vs);
+		pfree(view_refresh(vs));
 		if (vs->view->epoch != *epoch)	/* a new epoch began since: the codes found are the old one's */
 		{
-			sift_extension_unlock(vs->rel);
-			pfree(snap);
+			append_unlock(vs);
 			goto retry;
 		}
 		map_codes(vs, batch, map);
@@ -778,12 +801,10 @@ retry:
 				/* published: the view has the run as it was made (the directory update is logged after the pages of the run) */
 				view_add(vs->view, lo, lo, fresh);
 				appended = fresh->n;
-				pfree(snap);
-				snap = view_refresh(vs);
 			}
 		}
-		merge_runs(vs, pol, snap);
-		sift_extension_unlock(vs->rel);
+		append_unlock(vs);
+		merge_when_idle(vs, pol);
 	}
 	*ncodes = vs->view->total;
 	return appended;
