@@ -19,7 +19,7 @@ gen() { # the rows of the matrix: every operation at the phases of its directory
 	local op ph fault quick
 	quick=$(for op in "${SCENARIO_NAMES[@]}"; do for ph in b1:terminate bm:cancel bk:error a1:error ak:immediate ak:cancel; do printf '%s.%s.%s\t\n' "$op" "${ph%:*}" "${ph#*:}"; done; done)
 	for op in "${SCENARIO_NAMES[@]}"; do
-		[[ " alter_reloption col_repair " != *" $op "* ]] || continue
+		[[ " alter_reloption col_repair tbl_tomb " != *" $op "* ]] || continue
 		for ph in b1:terminate bm:cancel bk:error a1:error ak:immediate ak:cancel; do
 			printf '%s.%s.%s\t%s\t%s\t%s\tquick\n' "$op" "${ph%:*}" "${ph#*:}" "$op" "${ph%:*}" "${ph#*:}"
 		done

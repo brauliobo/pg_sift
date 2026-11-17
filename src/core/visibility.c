@@ -48,6 +48,8 @@ bool		sift_test_step_gate = false;
 bool		sift_test_repair_gate = false;
 bool		sift_test_par_gate = false;
 int			sift_test_mutant = 0;
+bool		sift_test_rebuild_gate = false;
+bool		sift_test_intern_gate = false;
 bool		sift_test_par_stats = false;
 static int	test_masks = 0;
 
