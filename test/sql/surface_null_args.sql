@@ -1,6 +1,7 @@
 -- Calls with a NULL argument, a relation that is gone, a relation of another kind and a partitioned index return or raise an error with its own SQLSTATE: the sweep
 -- of the SQL surface (test/fuzz/surface_sweep.py) found each of these ending the backend with a segmentation fault or raising XX000.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 CREATE TABLE sna_t (id int PRIMARY KEY, g int, doc jsonb) USING sift_table;
 CREATE TABLE sna_heap (id int, g int);
 CREATE TABLE sna_part (id int, g int) PARTITION BY RANGE (id);
@@ -61,9 +62,12 @@ SELECT call, sna_state(call) FROM (VALUES
 	('SELECT count(*) FROM sift.col_unit_agg(''sna_idx''::regclass, NULL)'),
 	('SELECT count(*) FROM sift.col_unit_agg(NULL, ''g'')'),
 	('SELECT count(*) FROM sift.col_value_store_usage((SELECT gone FROM sna_oids)::regclass)'),
-	('SELECT count(*) FROM sift.col_value_store_usage(0::oid::regclass)')
+	('SELECT count(*) FROM sift.col_value_store_usage(0::oid::regclass)'),
+	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''g'')'),
+	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''9:eq:1'')'),
+	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''0:bogus:1'')')
 ) v(call) ORDER BY call;
 
 DROP FUNCTION sna_state(text);
 DROP TABLE sna_oids, sna_part, sna_heap, sna_idx_t, sna_t;
-DROP EXTENSION pg_sift;
+DROP EXTENSION pg_sift_test, pg_sift;

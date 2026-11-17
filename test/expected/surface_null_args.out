@@ -1,6 +1,7 @@
 -- Calls with a NULL argument, a relation that is gone, a relation of another kind and a partitioned index return or raise an error with its own SQLSTATE: the sweep
 -- of the SQL surface (test/fuzz/surface_sweep.py) found each of these ending the backend with a segmentation fault or raising XX000.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 CREATE TABLE sna_t (id int PRIMARY KEY, g int, doc jsonb) USING sift_table;
 CREATE TABLE sna_heap (id int, g int);
 CREATE TABLE sna_part (id int, g int) PARTITION BY RANGE (id);
@@ -59,13 +60,19 @@ SELECT call, sna_state(call) FROM (VALUES
 	('SELECT count(*) FROM sift.col_unit_agg(''sna_idx''::regclass, NULL)'),
 	('SELECT count(*) FROM sift.col_unit_agg(NULL, ''g'')'),
 	('SELECT count(*) FROM sift.col_value_store_usage((SELECT gone FROM sna_oids)::regclass)'),
-	('SELECT count(*) FROM sift.col_value_store_usage(0::oid::regclass)')
+	('SELECT count(*) FROM sift.col_value_store_usage(0::oid::regclass)'),
+	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''g'')'),
+	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''9:eq:1'')'),
+	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''0:bogus:1'')')
 ) v(call) ORDER BY call;
                                           call                                          |                              sna_state                              
 ----------------------------------------------------------------------------------------+---------------------------------------------------------------------
  SELECT * FROM sift.index_choices('sna_part_col'::regclass)                             | 42809 "sna_part_col" is a partitioned index, which holds no data
  SELECT * FROM sift.segments((SELECT gone FROM sna_oids)::regclass)                     | 42P01 relation with OID N does not exist
  SELECT * FROM sift.tokenize('x', 0::oid::regclass)                                     | 42P01 relation with OID 0 does not exist
+ SELECT count(*) FROM sift._test_col_tids('sna_idx'::regclass, '0:bogus:1')             | XX000 sift test: unknown operator "bogus"
+ SELECT count(*) FROM sift._test_col_tids('sna_idx'::regclass, '9:eq:1')                | XX000 sift test: no leaf 9
+ SELECT count(*) FROM sift._test_col_tids('sna_idx'::regclass, 'g')                     | XX000 sift test: bad group predicate "g"
  SELECT count(*) FROM sift.col_unit_agg('sna_idx'::regclass, NULL)                      | 22004 sift.col_unit_agg: the argument leaf must not be NULL
  SELECT count(*) FROM sift.col_unit_agg(NULL, 'g')                                      | 22004 sift.col_unit_agg: the argument index must not be NULL
  SELECT count(*) FROM sift.col_unit_hist('sna_idx'::regclass, 'g', NULL)                | ok
@@ -99,8 +106,8 @@ SELECT call, sna_state(call) FROM (VALUES
  SELECT sift.table_set_paths(0::oid::regclass, 'doc', NULL)                             | 42P01 relation with OID 0 does not exist
  SELECT sift.table_space(0::oid::regclass)                                              | 42P01 relation with OID 0 does not exist
  SELECT sift.table_verify(0::oid::regclass)                                             | 42P01 relation with OID 0 does not exist
-(36 rows)
+(39 rows)
 
 DROP FUNCTION sna_state(text);
 DROP TABLE sna_oids, sna_part, sna_heap, sna_idx_t, sna_t;
-DROP EXTENSION pg_sift;
+DROP EXTENSION pg_sift_test, pg_sift;
