@@ -7,8 +7,9 @@
  * an old epoch its runs are marked retired, and removed once the transactions that could have read a segment naming it have ended (sift_vstore_retire).
  *
  * The locks: a writer holds the store in RowExclusiveLock to the end of its transaction, from its codes to its segment, so that an epoch is not retired under a
- * segment that is not yet published; this code holds it in ShareRowExclusiveLock (after the members, in the order the writers take them), which waits for the
- * writers and blocks new ones while the segments of the members are read for the epochs they name.
+ * segment that is not yet published; this code holds it in ShareRowExclusiveLock (after the members, in the order the writers take them), which blocks new
+ * writers while the segments of the members are read for the epochs they name. Every lock of a pass is asked for without waiting, as VACUUM does: a pass that finds one held
+ * fails (sift.col_value_store_compact) or is skipped (VACUUM) and names what is locked.
  */
 #include "postgres.h"
 
@@ -33,7 +34,20 @@
 PG_FUNCTION_INFO_V1(sift_col_value_store_begin);
 PG_FUNCTION_INFO_V1(sift_col_value_store_end);
 
-/* The store of the column of the table, the members and the store locked, in that order */
+/* The lock of a pass that is asked for, as VACUUM asks (try_lock_all): not waited for, since a request that queues blocks every statement behind it */
+static void
+lock_or_fail(Oid rel, LOCKMODE mode)
+{
+	if (!ConditionalLockRelationOid(rel, mode))
+		ereport(ERROR, (errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+						errmsg("could not lock %s for the shared value store: another session holds a lock that conflicts with it", sift_rel_label(rel)),
+						errhint("Try again when that session ends.")));
+}
+
+/*
+ * The store of the column of the table, the members and the store locked, in that order. The store is locked in ShareRowExclusiveLock because the pass reads the segments
+ * of the members for the epochs they name: a writer between its codes and its segment (RowExclusiveLock on the store) would be missed
+ */
 static SiftVStore *
 open_locked(Oid store)
 {
@@ -43,10 +57,11 @@ open_locked(Oid store)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("relation %s is not a shared value store", sift_rel_label(store))));
 	if (!object_ownercheck(RelationRelationId, heap, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_TABLE, get_rel_name(heap));
-	LockRelationOid(heap, ShareUpdateExclusiveLock);
+	lock_or_fail(heap, ShareUpdateExclusiveLock);
 	foreach_oid(index, sift_vstore_members(store))
-		LockRelationOid(index, ShareUpdateExclusiveLock);
-	return sift_vstore_open(store, ShareRowExclusiveLock);
+		lock_or_fail(index, ShareUpdateExclusiveLock);
+	lock_or_fail(store, ShareRowExclusiveLock);
+	return sift_vstore_open(store, NoLock);
 }
 
 /*
