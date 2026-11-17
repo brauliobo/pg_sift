@@ -10,6 +10,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 - Fixed: col: a backend that updates a table and promotes or vacuums its `sift_col` index in a loop no longer keeps the lookup keys of every write buffer it saw: the keys of a buffer that was sealed are freed when the next one is read (they held 24 bytes for each row of every old buffer until 4 million rows)
 - Fixed: col: a backend that read a `sift_col` index before a merge, a rewrite or `sift.col_maintain` kept the parsed dictionaries, zone arrays and bisection tables of the segments they retired until its cache budget (64 MB) was full; the cache now drops what the directory no longer lists each time the backend sees a new directory version (a loop of 25 merges at 50,000 rows held 13 MB more, now nothing)
 - Fixed: col: dropping or recreating a `sift_col` index with text columns no longer leaves the strings of its shared value store in every backend that read it (a loop of 15 create and drop cycles at 50,000 rows held 28 MB more, now nothing)
+- Fixed: col: the dictionaries a backend kept of an index that was dropped or got a new file (`REINDEX`) are freed when the backend next reads a directory, not when its cache budget is full
 - Added: tests: the memory gate repeats VACUUM, merges, promotions, `sift.col_maintain` and `sift.table_maintain` 20 times in a backend (kind `leakx`) and lists the contexts that grew; the merge scratch of a VACUUM that deletes rows stays recorded as open
 
 ## 5.0.0 - 2026-11-16
