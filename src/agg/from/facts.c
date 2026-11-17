@@ -211,6 +211,17 @@ zones_copy(const SiftSrcZones *z, MemoryContext cx)
 	return c;
 }
 
+static void
+zones_free(const SiftSrcZones *z)
+{
+	if (z == NULL)
+		return;
+	for (int i = 0; i < SIFT_COLSRC_MAX_LEAVES; i++)
+		if (z->lo[i] != NULL)
+			pfree((void *) z->lo[i]), pfree((void *) z->hi[i]);
+	pfree((void *) z);
+}
+
 /* The statistics of the first n leaves: the struct is 30 KB for the 128 leaves an index can have, and an index has a few (the rest of dst is zero) */
 static void
 stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
@@ -274,6 +285,16 @@ facts_check(Relation rel, SrcFacts *e, bool found)
 		e->index_gen = e->index->gen;
 		e->table_gen = e->table->gen;
 		e->all_gen = facts_all;
+		/* the facts a planning of this backend took are not read again by the same planning (memo_seq), so the copies of an earlier one are the only ones left */
+		if (found && e->read && part_memo_cx != NULL)
+		{
+			zones_free(e->stats.zones);
+			if (e->scope_stats != NULL)
+			{
+				zones_free(e->scope_stats->zones);
+				pfree(e->scope_stats);
+			}
+		}
 		e->read = false;
 		sift_colsrc_stats_lazy(rel, &fresh);
 		fresh.zones = zones_copy(fresh.zones, facts_cx);
