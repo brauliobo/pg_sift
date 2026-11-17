@@ -12,6 +12,7 @@
 #include "nodes/pathnodes.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
@@ -61,7 +62,7 @@ column_distinct(AggCtx *c, Var *v, bool conditions)
 double
 joined_distinct(AggCtx *c, JoinCtx *jc, int col)
 {
-	RelOptInfo *rel = c->root->simple_rel_array[jc->rti];
+	RelOptInfo *rel = find_base_rel(c->root, jc->rti);
 	Node	   *x = jc->j.colexpr[col];
 	HeapTuple	tup;
 	double		nd = 0;
@@ -114,7 +115,7 @@ cost_tuples(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, CostAcc *k)
 	/* the rows of a preserved side no tuple matches are tuples too */
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (sift_aggjoin_preserves(jc->kind))
-			k->agg_rows += Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0);
+			k->agg_rows += Max(find_base_rel(c->root, jc->rti)->tuples, 1.0);
 	/* a group takes a tuple: the groups PostgreSQL expects of the unnested rows it assumes (a cap of 100 a call) are more than the elements hold */
 	k->rows_out = Min(k->rows_out, Max(Max(s->nsets, 1) * k->agg_rows, 1.0));
 	k->scan_cost += k->agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
@@ -143,7 +144,7 @@ static double
 fan_row_ops(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, JoinCtx *jc)
 {
 	double		ops = AGG_FAN_ROW,
-				rows = Max(c->root->simple_rel_array[jc->rti]->rows, 1.0);
+				rows = Max(find_base_rel(c->root, jc->rti)->rows, 1.0);
 
 	for (int ci = 0; ci < s->ncombo; ci++)
 		for (int sl = 0; sl < s->combo[ci].nslots; sl++)
@@ -195,7 +196,7 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		if (s->combo[ci].join >= 0 && ((JoinCtx *) list_nth(c->joins, s->combo[ci].join))->j.params == NIL)
 		{
 			JoinCtx    *jc = list_nth(c->joins, s->combo[ci].join);
-			double		past = c->root->simple_rte_array[jc->rti]->rtekind == RTE_RELATION ? c->root->simple_rel_array[jc->rti]->rows - AGG_FAN_CACHE : 0.0;
+			double		past = planner_rt_fetch(jc->rti, c->root)->rtekind == RTE_RELATION ? find_base_rel(c->root, jc->rti)->rows - AGG_FAN_CACHE : 0.0;
 
 			k->scan_cost += Max(k->agg_rows - k->sel_rows * k->elems, 0.0) * fan_row_ops(c, s, &s->combo[ci], jc) * Min(sqrt(Max(past, 0.0) / AGG_FAN_CACHE), AGG_FAN_CAP);
 		}

@@ -20,6 +20,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/pathnode.h"
 #include "optimizer/subselect.h"
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
@@ -109,7 +110,7 @@ key_pairs(PlannerInfo *root, Index srti, OpExpr *joinq, Var *kvar, double nkeys)
 {
 	OpExpr	   *e = copyObject(joinq);
 	Param	   *prm = makeNode(Param);
-	double		rows = root->simple_rel_array[srti]->rows;
+	double		rows = find_base_rel(root, srti)->rows;
 
 	prm->paramkind = PARAM_EXEC;
 	prm->paramtype = kvar->vartype;
@@ -173,7 +174,7 @@ scope_key_table(AggCtx *c, FromScan *fs, List *pool, Node *joinq, Var *kvar, Ind
 	PlannerInfo *root = c->root;
 	Index		krti = kvar->varno;
 	RangeTblEntry *rte = planner_rt_fetch(krti, root);
-	RelOptInfo *rel = root->simple_rel_array[krti];
+	RelOptInfo *rel = find_base_rel(root, krti);
 	LeftJoin   *klj = NULL;
 	List	   *kquals = NIL;
 	const char *why = table_why(root, rte);

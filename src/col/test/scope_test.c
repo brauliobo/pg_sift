@@ -24,7 +24,7 @@
 #include "col/am.h"
 #include "col/scope.h"
 #include "col/test/test_int.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 #include "core/store.h"
 #include "core/host.h"
 

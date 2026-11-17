@@ -187,7 +187,7 @@ sift_col_add_ordered_paths(PlannerInfo *root, RelOptInfo *rel)
 	List	   *added = NIL;
 
 	/* the parent of partitions or of an inheritance tree has no rows of its own to scan (a partitioned table lists its partitioned indexes, which have no access method routine): its children have the paths */
-	if (root->simple_rte_array[rel->relid]->inh)
+	if (planner_rt_fetch(rel->relid, root)->inh)
 		return;
 	/* no ORDER BY, window or merge join can use an order: truncate_useless_pathkeys would drop every path below, after a pathkey built for each index of each partition (a count(*) of 4 partitions: 261k instructions) */
 	if (!has_useful_pathkeys(root, rel))

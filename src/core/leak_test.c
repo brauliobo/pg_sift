@@ -29,7 +29,7 @@
 
 #include "core/errctx.h"
 #include "core/sift.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 
 PG_FUNCTION_INFO_V1(sift_test_leak);
 PG_FUNCTION_INFO_V1(sift_test_errctx_report);

@@ -14,7 +14,7 @@
 
 #include "col/vstore/vstore.h"
 #include "core/store.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 
 PG_FUNCTION_INFO_V1(sift_test_vstore_intern);
 PG_FUNCTION_INFO_V1(sift_test_vstore_info);

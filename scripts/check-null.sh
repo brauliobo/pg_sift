@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # A result that can be NULL is tested before it is used (the crash of 5.0.0: the row estimate of `simple_rel_array[x]` read for the relid of an outer join, which has no RelOptInfo). Per function of
 # src/ (the code of a test build, *_test.c, is not read), this fails on:
-#   planner-array   `simple_rel_array[..]`, `simple_rte_array[..]`, `find_base_rel(`, `find_join_rel(` whose result is not compared with NULL in the function. A relid of a bitmapset (ppi_req_outer,
+#   planner-array   `simple_rel_array[..]`, `simple_rte_array[..]`, `find_join_rel(` whose result is not compared with NULL in the function. A relid of a bitmapset (ppi_req_outer,
 #                   relids, all_query_rels) names a base relation, an outer join (no RelOptInfo) or a join; a relid of a FROM item names a base relation. Loop over a set: skip what has no entry
 #   list-first      linitial/lsecond/llast/list_nth.. of a list that the planner or the parser fills with a variable length (indexlist, pathlist, subroots, rtable, sortClause, custom_private, ..) when the
-#                   function never tests that list (list_length, NIL, a condition, a loop over it)
+#                   function never tests that list (list_length, NIL, a condition, a loop over it); list_nth(.., id - 1) is read when the function tests id against 0 or 1
 #   null-result     a variable assigned from a call that returns NULL (SearchSysCache*, try_relation_open, RelationIdGetRelation, get_rel_name, get_func_name, get_opname, get_namespace_name,
 #                   malloc, strdup, fopen, fgets, getenv, strchr, strstr, ..) that the function never compares with NULL (or HeapTupleIsValid); a name used only as an argument of a message is not a use
 #   null-wrapped    such a name call as the argument of strcmp, strlen, pstrdup, strcpy, .. on the same line: the wrapper dereferences NULL
 #   sql-oid         relation_open/index_open/table_open/RelationIdGetRelation of an OID that a SQL argument supplies (PG_GETARG_OID, or a variable assigned from one) without sift_rel_must_exist
 #                   (core/inspect.h): a dropped regclass or 0 is the error 42P01 of the user, not the XX000 of the open; the code of the test build (*_test.c, src/*/test/) is read for this rule
 #                   only: its functions are called by the surface sweep too
-# A test of an Assert does not count: a release build has none. A site that cannot be NULL says why in scripts/null.allow: FILE TAB FUNCTION TAB RULE TAB REASON (one line); a line whose function no
+# A store to an entry (`simple_rte_array[i] = e`) and find_base_rel (it raises for a relid without an entry) are no reads of a NULL. A test of an Assert does not count: a release build has none. A site that cannot be NULL says why in scripts/null.allow: FILE TAB FUNCTION TAB RULE TAB REASON (one line); a line whose function no
 # longer has a hit fails too, so the list stays the list of the sites that were read.
 #   sites           scripts/check-sites.py (run here): a catalog or relcache call that SQL can reach and whose result is not tested needs a row in scripts/sites.verified (read: guarded, fixed or unreachable)
 #   scripts/check-null.sh            the tracked sources of src/
@@ -25,7 +25,7 @@ root, arg = sys.argv[1], sys.argv[2]
 FUNC = re.compile(r'^([A-Za-z_]\w*)\(')
 TYPE_LINE = re.compile(r'^[A-Za-z_][\w \t\*]*$')
 
-ARRAYS = re.compile(r'\b(simple_rel_array|simple_rte_array)\[|\b(find_base_rel|find_join_rel|find_base_rel_ignore_join)\(')
+ARRAYS = re.compile(r'\b(simple_rel_array|simple_rte_array)\[|\b(find_join_rel|find_base_rel_ignore_join)\(')
 LIST_ACCESS = re.compile(r'\b(linitial|linitial_node|linitial_oid|linitial_int|lsecond|lsecond_node|lthird|lthird_node|llast|llast_node|llast_int|llast_oid|list_nth|list_second)\(\s*(?:[A-Za-z_]\w*\s*,\s*)?((?:[^(),]|\([^()]*\))*)')
 VARIABLE_LISTS = re.compile(r'\b(indexlist|pathlist|partial_pathlist|fromlist|targetList|rtable|groupClause|subroots|subplans|baserestrictinfo|join_info_list|eq_classes|ec_members|sortClause|'
                             r'distinctClause|windowClause|rowMarks|returningList|indexprs|indpred|append_rel_list|functions|colnames|custom_private|custom_exprs|partexprs|attexprs|jointree|'
@@ -93,6 +93,32 @@ def guarded_list(arg, body):
     return any(re.search(t, l) for l in body for t in tests)
 
 
+def call_args(l, start):
+    args, cur, depth = [], '', 0
+    for ch in l[l.index('(', start):]:
+        if ch == '(':
+            depth += 1
+            if depth == 1:
+                continue
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                break
+        if ch == ',' and depth == 1:
+            args.append(cur.strip())
+            cur = ''
+        else:
+            cur += ch
+    return args + [cur.strip()]
+
+
+def positive_id(m, l, body):
+    """list_nth(root->glob->subroots, id - 1) where the function tests id against 0 or 1: a plan id counts from 1, 0 or -1 is a CTE without a plan"""
+    args = call_args(l, m.start())
+    idx = re.fullmatch(r'([\w>.-]+)\s*-\s*1', args[1]) if m.group(1) == 'list_nth' and len(args) > 1 else None
+    return bool(idx) and any(re.search(r'\b%s\b[^;{}]{0,60}?(?:<=?|>=?)\s*[01]\b' % re.escape(idx.group(1)), x) for x in body)
+
+
 def relation_entry_tested(m, line, body):
     if m.group(1):
         index = re.match(r'[^\]]*', line[m.end():]).group(0)
@@ -122,6 +148,17 @@ def sql_oid_unchecked(arg, body, upto):
 SQL_OID_MSG = 'the OID is a SQL argument opened with no sift_rel_must_exist: a dropped regclass or 0 is the user error 42P01, not an XX000 of the open'
 
 
+def array_store(m, l):
+    """`simple_rte_array[i] = e;` writes the entry, it does not read one"""
+    if not m.group(0).endswith('['):
+        return False
+    depth, i = 1, m.end()
+    while i < len(l) and depth:
+        depth += (l[i] == '[') - (l[i] == ']')
+        i += 1
+    return re.match(r'\s*=(?!=)', l[i:]) is not None
+
+
 def hits(path, text):
     test_code = path.endswith('_test.c') or '/test/' in path
     lines = text.split('\n')
@@ -137,11 +174,11 @@ def hits(path, text):
                         found.append((path, n, name, 'sql-oid', SQL_OID_MSG))
                 continue
             for m in ARRAYS.finditer(l):
-                if not relation_entry_tested(m, l, body):
+                if not array_store(m, l) and not relation_entry_tested(m, l, body):
                     found.append((path, n, name, 'planner-array', 'a relation entry that no code of the function compares with NULL: an outer join relid has none; skip it as the neighbouring loops do'))
             for m in LIST_ACCESS.finditer(l):
                 arg = m.group(2).strip()
-                if VARIABLE_LISTS.search(arg) and not guarded_list(arg, body):
+                if VARIABLE_LISTS.search(arg) and not guarded_list(arg, body) and not positive_id(m, l, body):
                     found.append((path, n, name, 'list-first', '%s of %s with no test of the list in the function (list_length or NIL)' % (m.group(1), arg)))
             for rule, call in PRODUCERS:
                 for m in ASSIGN(call).finditer(l):
@@ -199,8 +236,11 @@ if arg == '--selftest':
         'RelOptInfo *r = root->simple_rel_array[x];\nif (r == NULL)\n\treturn 0;\nreturn r->rows;',
         'if (root->simple_rel_array[x] != NULL)\n\treturn root->simple_rel_array[x]->rows;',
         'RelOptInfo *r = find_join_rel(root, s);\nreturn r ? r->rows : 0;',
+        'root->simple_rte_array[x] = e;',
+        'return find_base_rel(root, x)->rows;',
         'if (rel->pathlist == NIL)\n\treturn 0;\nreturn linitial(rel->pathlist);',
         'if (list_length(root->glob->subroots) < x)\n\treturn 0;\nreturn list_nth(root->glob->subroots, x - 1);',
+        'if (x <= 0)\n\treturn 0;\nreturn list_nth(root->glob->subroots, x - 1);',
         'HeapTuple tp = SearchSysCache1(RELOID, 0);\nif (!HeapTupleIsValid(tp))\n\telog(ERROR, "cache lookup failed");\nreturn 0;',
         'char *n = get_rel_name(x);\nelog(ERROR, "no %s", n);',
         'char *s = getenv("X");\nreturn s != NULL && s[0] == 1;',

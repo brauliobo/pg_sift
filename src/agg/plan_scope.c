@@ -43,6 +43,7 @@
 #include "catalog/pg_type_d.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/pathnode.h"
 #include "parser/parsetree.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -278,7 +279,7 @@ item_strays(AggCtx *c, const SiftScopeSpecs *specs, Index rti)
 
 	if (rte->rtekind != RTE_SUBQUERY || !scope_seen_walker((Node *) rte->subquery, &seen))
 		return NOT_SCOPE;
-	return bms_is_empty(c->root->simple_rel_array[rti]->lateral_relids) ?
+	return bms_is_empty(find_base_rel(c->root, rti)->lateral_relids) ?
 		"a sub-select reads the scope relation and is no select of it alone: the relation, a view or a sub-select that projects its columns, and the union of the two paths of a scope, are read from the units" :
 		"a lateral (correlated) sub-select reads the scope relation";
 }
@@ -749,7 +750,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	sc.once = once;
 	t->sc = sc;
 	if (tabq == NULL)
-		t->pairs = root->simple_rel_array[rti]->rows;
+		t->pairs = find_base_rel(root, rti)->rows;
 	scope_union_perms(root, &it);
 	return NULL;
 }

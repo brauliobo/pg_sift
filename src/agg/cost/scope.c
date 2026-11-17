@@ -11,6 +11,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/pathnode.h"
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
@@ -192,7 +193,7 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 
 	if (t == NULL || t->second || !t->try || !alt_runs(c, s) || !sift_agg_scope_item(c, &rti, &att, &fk))
 		return;
-	srel = c->root->simple_rel_array[rti];
+	srel = find_base_rel(c->root, rti);
 	rte = planner_rt_fetch(rti, c->root);
 	if (rte->rtekind == RTE_RELATION)
 		get_atttypetypmodcoll(rte->relid, att, &type, &typmod, &coll);

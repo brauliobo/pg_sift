@@ -12,6 +12,7 @@
 #include "catalog/pg_type_d.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "parser/parsetree.h"
 #include "catalog/pg_class_d.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
@@ -272,7 +273,7 @@ add_semi(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, Node *docs_side, 
 		(type == BOOLOID) != (kv->vartype == BOOLOID) || bms_is_member(kv->varno, *rels))
 		return false;
 	dim = root->simple_rel_array[kv->varno];
-	rte = root->simple_rte_array[kv->varno];
+	rte = planner_rt_fetch(kv->varno, root);
 	if (dim == NULL || dim->reloptkind != RELOPT_BASEREL || rte->rtekind != RTE_RELATION || rte->inh || rte->relkind != RELKIND_RELATION ||
 		dim->baserestrictinfo == NIL || dim->rows > SIFT_SEMI_MAX_SET || dim->tuples <= 0)
 		return false;

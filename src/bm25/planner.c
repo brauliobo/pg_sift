@@ -534,7 +534,7 @@ count_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_
 		root->rowMarks != NIL || input_rel->reloptkind != RELOPT_BASEREL ||
 		bms_membership(input_rel->relids) != BMS_SINGLETON)
 		return;
-	rte = root->simple_rte_array[input_rel->relid];
+	rte = planner_rt_fetch(input_rel->relid, root);
 	if (rte->rtekind != RTE_RELATION || (rte->relkind != RELKIND_RELATION && rte->relkind != RELKIND_MATVIEW) || rte->tablesample || rte->inh)
 		return;
 	foreach_ptr(Node, e, output_rel->reltarget->exprs)

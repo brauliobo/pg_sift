@@ -379,7 +379,10 @@ exists_leaf(Node *n, List **quals)
 
 	if (IsA(n, RangeTblRef))
 		return (RangeTblRef *) n;
-	if (!IsA(n, FromExpr) || list_length((f = (FromExpr *) n)->fromlist) != 1)
+	if (!IsA(n, FromExpr))
+		return NULL;
+	f = (FromExpr *) n;
+	if (list_length(f->fromlist) != 1)
 		return NULL;
 	if (f->quals != NULL)
 		*quals = list_concat(*quals, list_copy(IsA(f->quals, List) ? (List *) f->quals : list_make1(f->quals)));

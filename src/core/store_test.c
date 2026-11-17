@@ -23,6 +23,7 @@
 #include "agg/agg_int.h"
 #include "core/damage.h"
 #include "executor/instrument.h"
+#include "core/catname.h"
 #include "core/inspect.h"
 
 #ifdef SIFT_TESTING

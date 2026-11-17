@@ -10,6 +10,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/pathnode.h"
 #include "utils/selfuncs.h"
 #include "catalog/pg_type.h"
 #include "utils/fmgroids.h"
@@ -104,7 +105,7 @@ reached_rows(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc, double tuples, 
 {
 	const SiftAggCombo *cb = &s->combo[jc->combo];
 	const SiftAggJoin *j = &s->join[cb->join];
-	RelOptInfo *rel = c->root->simple_rel_array[jc->rti];
+	RelOptInfo *rel = find_base_rel(c->root, jc->rti);
 	double		rows = Max(rel->rows, 1.0),
 				rpk;
 
@@ -315,7 +316,7 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 					cost += probes * AGG_JOIN_LUT;
 				else
 				{
-					double		probe = probes * AGG_JOIN_PROBE * sqrt(Max(c->root->simple_rel_array[jc->rti]->rows, 1.0) / 250000.0);
+					double		probe = probes * AGG_JOIN_PROBE * sqrt(Max(find_base_rel(c->root, jc->rti)->rows, 1.0) / 250000.0);
 
 					/* what of the probes the entries are: each process that takes rows of a key makes its entry (cost_work) */
 					k->entry_ops += combo_entries(c, s, cb, probes, false) * AGG_ENTRY_ROW / AGG_SCAN_SPEED;
@@ -336,7 +337,7 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 			/* Without equality keys, every cached input tests every child row, and the inputs are the tuples the scan keeps: the join that follows narrows them to scan_rows only after the test */
 			if (j->nkey == 0 && j->params == NIL)
 			{
-				double		candidates = jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->rows,
+				double		candidates = jc->cpath ? child_rows(jc->cpath) : find_base_rel(c->root, jc->rti)->rows,
 							built = 0;
 
 				/* agg_cost scales the scan by AGG_SCAN_SPEED, which the executor's evaluation of the clause for a pair (PostgreSQL's expression: jsonb builds, calendar functions) does not get; a semi join stops at the first match: half the candidates for a key that has one (in_expr_key measured 105 ns a pair at that count) */

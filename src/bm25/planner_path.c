@@ -11,6 +11,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/cost.h"
+#include "parser/parsetree.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
@@ -428,7 +429,7 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, S
 	/* a pushed down filter has the ranker meet only rows that pass, and parallel workers share a threshold of k rows that did */
 	if (push || nworkers > 0)
 		plain.late_k = 0;
-	cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, &plain, mode, k, CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods, NULL);
+	cp = make_path(planner_rt_fetch(rel->relid, root)->relid, rel, &plain, mode, k, CUSTOMPATH_SUPPORT_PROJECTION, &sift_scan_path_methods, NULL);
 	dict = parallel_dict_cost(&sc.idx, nworkers);
 	postings = sc.idx.known ? sc.idx.cost - dict : 0;
 	cp->path.pathkeys = pathkeys;
@@ -561,7 +562,7 @@ keyed_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, 
 	/* the rows of a round are held in memory: past work_mem the ranked scan and the sort above it serve the query */
 	if (held * SIFT_KEYED_ROW_BYTES(nkeys) > (double) work_mem * 1024)
 		return NULL;
-	cp = make_path(root->simple_rte_array[rel->relid]->relid, rel, c, SIFT_MODE_RANKED, k, CUSTOMPATH_SUPPORT_PROJECTION,
+	cp = make_path(planner_rt_fetch(rel->relid, root)->relid, rel, c, SIFT_MODE_RANKED, k, CUSTOMPATH_SUPPORT_PROJECTION,
 				   &sift_scan_path_methods, ko);
 	cp->path.pathkeys = ko->pathkeys;
 	cp->path.rows = rel->rows;

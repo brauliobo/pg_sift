@@ -32,7 +32,8 @@ PlannerInfo *
 cte_root(PlannerInfo *root, RangeTblEntry *rte)
 {
 	PlannerInfo *cteroot = root;
-	int			ndx = 0;
+	int			ndx = 0,
+				id;
 	CommonTableExpr *cte = NULL;
 
 	for (Index up = rte->ctelevelsup; up > 0 && cteroot != NULL; up--)
@@ -50,7 +51,8 @@ cte_root(PlannerInfo *root, RangeTblEntry *rte)
 	}
 	if (cte == NULL || cte->cterecursive || cte->search_clause || cte->cycle_clause || ndx >= list_length(cteroot->cte_plan_ids))
 		return NULL;
-	return list_nth(root->glob->subroots, list_nth_int(cteroot->cte_plan_ids, ndx) - 1);
+	id = list_nth_int(cteroot->cte_plan_ids, ndx);
+	return id > 0 ? list_nth(root->glob->subroots, id - 1) : NULL;
 }
 
 /* the subqueries of a UNION ALL: a member that is itself a UNION ALL (a subquery of arms in an arm's place) gives its own */

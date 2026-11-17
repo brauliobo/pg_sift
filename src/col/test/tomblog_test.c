@@ -21,7 +21,7 @@
 #include "col/conn.h"
 #include "col/wbuf.h"
 #include "core/tomb.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 #include "core/store.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_log_create);

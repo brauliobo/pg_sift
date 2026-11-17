@@ -10,7 +10,7 @@
 #include "bm25/maint.h"
 #include "core/sql.h"
 #include "table/seg_int.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 
 /* The next column segment of the table from directory entry *i on, open (the caller closes it); NULL after the last */
 static SiftColSegment *

@@ -21,7 +21,7 @@
 #include "core/visibility.h"
 #endif							/* SIFT_TESTING */
 #include "col/test/test_int.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 #include "core/store.h"
 
 #ifdef SIFT_TESTING

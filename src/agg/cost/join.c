@@ -90,7 +90,7 @@ join_lut(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc)
 		return false;
 	if (j->kind != SJ_INNER)
 		return true;
-	rpk = OidIsValid(j->relid) && j->tkey[0] == NULL ? sift_agg_rows_per_key(j->relid, j->keyatt[0], c->root->simple_rel_array[jc->rti]->tuples) : 0;
+	rpk = OidIsValid(j->relid) && j->tkey[0] == NULL ? sift_agg_rows_per_key(j->relid, j->keyatt[0], find_base_rel(c->root, jc->rti)->tuples) : 0;
 	return rpk > 0 && rpk <= 2.0;
 }
 
@@ -159,7 +159,7 @@ dependent_join(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc, int *key)
 double
 lookup_rows(AggCtx *c, const JoinCtx *jc)
 {
-	return Max(jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->rows, 1.0);
+	return Max(jc->cpath ? child_rows(jc->cpath) : find_base_rel(c->root, jc->rti)->rows, 1.0);
 }
 
 /*
@@ -259,7 +259,7 @@ lookup_counted(AggCtx *c, const JoinCtx *jc)
 	}
 	if (rte->rtekind != RTE_RELATION)
 		return false;
-	foreach_node(RestrictInfo, ri, c->root->simple_rel_array[jc->rti]->baserestrictinfo)
+	foreach_node(RestrictInfo, ri, find_base_rel(c->root, jc->rti)->baserestrictinfo)
 		if (!filter_has_stats(c->root, ri))
 			return false;
 	return true;
@@ -459,7 +459,7 @@ join_dense(AggCtx *c, const SiftAggSpec *s, JoinCtx *jc)
 			for (int col = 0; col < jc->j.ncol; col++)
 				jc->classes *= bound[col] > 0 ? Min(bound[col], joined_distinct(c, jc, col)) : joined_distinct(c, jc, col);
 			/* a key the table repeats is refused by the load (a class is the key's): such a table is read as rows */
-			ok = ok && jc->classes <= DENSE_MAX_CLASSES / 2 && join_rows_per_key(jc, Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0)) <= DENSE_KEY_REPEAT;
+			ok = ok && jc->classes <= DENSE_MAX_CLASSES / 2 && join_rows_per_key(jc, Max(find_base_rel(c->root, jc->rti)->tuples, 1.0)) <= DENSE_KEY_REPEAT;
 			jc->dense = ok ? 1 : 2;
 		}
 	}
@@ -503,7 +503,7 @@ load_keys_ops(const JoinCtx *jc, double tuples)
 static double
 join_whole_ops(AggCtx *c, SiftAggSpec *s, JoinCtx *jc)
 {
-	RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
+	RelOptInfo *jrel = find_base_rel(c->root, jc->rti);
 	Relation	rel;
 	int			nnum = 0;
 	bool		cols,
@@ -517,7 +517,7 @@ join_whole_ops(AggCtx *c, SiftAggSpec *s, JoinCtx *jc)
 			ntests += jc->j.colexpr[col] != NULL;
 		return Max(jrel->tuples, 1.0) * (AGG_LOAD_DENSE + ntests * AGG_LOAD_TEST);
 	}
-	rel = relation_open(c->root->simple_rte_array[jc->rti]->relid, NoLock);
+	rel = relation_open(planner_rt_fetch(jc->rti, c->root)->relid, NoLock);
 	cols = map_load_cols_possible(rel, &jc->j, &nnum);
 	relation_close(rel, NoLock);
 	keys_only = join_keys_only(c, s, jc);
@@ -552,7 +552,7 @@ index_covers(const IndexOptInfo *ii, const SiftAggJoin *j)
 static bool
 join_keys_pay(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, int att, double keys, double *rows, double *entries_only)
 {
-	RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
+	RelOptInfo *jrel = find_base_rel(c->root, jc->rti);
 	const SiftAggJoin *j = &jc->j;
 	Oid			relid = planner_rt_fetch(jc->rti, c->root)->relid;
 	bool		heap = get_rel_relam(relid) == HEAP_TABLE_AM_OID;
@@ -622,7 +622,7 @@ join_in_keys(AggCtx *c, SiftAggSpec *s, const JoinCtx *jc)
 static double
 join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *rows, double *entries_only)
 {
-	RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
+	RelOptInfo *jrel = find_base_rel(c->root, jc->rti);
 	const SiftAggCombo *cb = &s->combo[jc->combo];
 	const SiftAggJoin *j = &jc->j;
 	const SiftAggJoin *sj = &s->join[cb->join];
@@ -745,7 +745,7 @@ static double
 join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 {
 	PlannerInfo *root = c->root;
-	RelOptInfo *jrel = root->simple_rel_array[jc->rti];
+	RelOptInfo *jrel = find_base_rel(root, jc->rti);
 	double		tuples = Max(jrel->tuples, 1.0),
 				probes,
 				prows,

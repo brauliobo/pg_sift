@@ -27,7 +27,7 @@
 #include "col/am.h"
 #include "col/scope.h"
 #include "col/vstore/vstore.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 #include "core/ops.h"
 #include "core/restrict.h"
 #include "utils/builtins.h"

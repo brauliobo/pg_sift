@@ -20,7 +20,7 @@
 #include "col/am.h"
 #include "col/seg.h"
 #include "col/vstore/vstore.h"
-#include "core/inspect.h"
+#include "core/catname.h"
 #include "core/page.h"
 #include "core/store.h"
 #include "core/membudget.h"
