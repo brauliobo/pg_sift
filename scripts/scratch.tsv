@@ -178,7 +178,6 @@ installcheck-tbl_preagg_calendar	180
 installcheck-tbl_space	180
 tap-016_space_cache	180
 tap-023_dimmap	180
-tap-shell-col_auto_merge_partition	180
 tap-shell-col_first_statement_reads	180
 tap-shell-col_reindex_concurrent	180
 tap-shell-col_vacuum_space_idle	180
@@ -190,7 +189,6 @@ installcheck-col_key_cut_redecide	170
 installcheck-insert_backpressure	170
 tap-008_tbl_promote	170
 tap-021_tbl_hot_update	170
-tap-shell-col_build_peers	170
 tap-shell-tbl_load_workers	170
 installcheck-agg_join_chain_load_price	160
 installcheck-agg_join_key_types	160
