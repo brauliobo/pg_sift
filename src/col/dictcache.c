@@ -17,12 +17,14 @@
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 #include "utils/relfilenumbermap.h"
 
 #include "agg/stats.h"
 #include "col/am.h"
 #include "col/dictshm.h"
 #include "core/cachebudget.h"
+#include "core/ring.h"
 #include "core/limits.h"
 #include "col/seg_int.h"
 
@@ -86,7 +88,7 @@ dict_unpin(void *arg)
 static bool relations_changed;
 
 static void
-relcache_changed(Datum arg, Oid relid)
+relcache_changed(Datum arg, int cacheid, uint32 hashvalue)
 {
 	relations_changed = true;
 }
@@ -100,7 +102,7 @@ typedef struct RetireMemo
 } RetireMemo;
 
 static RetireMemo retire_memo[RETIRE_MEMO];
-static int	retire_next;
+static SiftRing retire_ring;
 
 static bool
 gen_in_dir(const SiftDirSnapshot *snap, uint64 gen)
@@ -148,7 +150,7 @@ sift_cdict_retire(Relation index, const SiftDirSnapshot *snap)
 		return;
 	if (m == NULL)
 	{
-		m = &retire_memo[retire_next++ % RETIRE_MEMO];
+		m = &retire_memo[SIFT_RING_SLOT(retire_ring, RETIRE_MEMO)];
 		m->rel = index->rd_locator;
 	}
 	m->version = snap->version;
@@ -245,7 +247,7 @@ cache_init(void)
 	sift_cache_register(&dict_kind);
 	ctl.hcxt = cache_cx;
 	cache = hash_create("sift column dictionaries", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-	CacheRegisterRelcacheCallback(relcache_changed, (Datum) 0);
+	CacheRegisterSyscacheCallback(RELOID, relcache_changed, (Datum) 0);
 }
 
 static void

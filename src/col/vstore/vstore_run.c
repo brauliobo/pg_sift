@@ -32,7 +32,9 @@
 #include "col/enc.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
+#include "core/cachebudget.h"
 #include "col/vstore/vstore.h"
+#include "col/vstore/vstore_int.h"
 #include "core/extlock.h"
 #include "core/limits.h"
 #include "core/page.h"
@@ -57,126 +59,18 @@ typedef struct VRunHead
 	uint32		pad;
 } VRunHead;
 
-/*
- * What a backend keeps of a store, up to the last code it has read: the runs as they were parsed (a piece covers the codes from lo, its strings from index
- * lo - dbase of the dictionary of the run), which is all that a reader of strings by code needs, and, for an appender whose batch is small beside the
- * store, a table of the hash of the strings (slots: hash << 32 | code + 1) that finds the code of a string
- */
-typedef struct ViewPiece
-{
-	uint64		lo;				/* the first code of the piece */
-	uint64		dbase;			/* the code of string 0 of d */
-	SiftCDict  *d;
-} ViewPiece;
-
-typedef struct VStoreView
-{
-	Oid			store;			/* first: the hash key */
-	MemoryContext cx;
-	bool		loaded;
-	uint64	   *slots;			/* the table of the codes below indexed (NULL until an appender asks), nslots of them */
-	uint32		nslots;
-	uint64		indexed;
-	ViewPiece  *piece;
-	int			npiece;
-	int			cap;
-	uint64		total;			/* the codes the pieces cover */
-	uint64		epoch;
-} VStoreView;
-
 struct SiftVStore
 {
 	Relation	rel;
 	VStoreView *view;
+	ViewPin    *pin;
 };
 
-static HTAB *views;
-static bool stores_changed;
-
-static void
-stores_relcache_changed(Datum arg, Oid relid)
-{
-	stores_changed = true;
-}
-
-/* The views of the stores that were dropped: a store is one relation, and its view holds the strings of all its codes */
-static void
-views_drop_gone(Oid keep)
-{
-	HASH_SEQ_STATUS seq;
-	VStoreView *v;
-
-	stores_changed = false;
-	hash_seq_init(&seq, views);
-	while ((v = hash_seq_search(&seq)) != NULL)
-		if (v->store != keep && !SearchSysCacheExists1(RELOID, ObjectIdGetDatum(v->store)))
-		{
-			MemoryContextDelete(v->cx);
-			hash_search(views, &v->store, HASH_REMOVE, NULL);
-		}
-}
 
 static void
 vs_corrupt(Relation rel, const char *what)
 {
 	SIFT_DAMAGE_OTHER_DATA(errmsg("shared value store \"%s\": %s", RelationGetRelationName(rel), what));
-}
-
-static VStoreView *
-view_get(Oid store)
-{
-	bool		found;
-	VStoreView *v;
-
-	if (views == NULL)
-	{
-		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(VStoreView), .hcxt = TopMemoryContext};
-
-		views = hash_create("sift value store views", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-		CacheRegisterRelcacheCallback(stores_relcache_changed, (Datum) 0);
-	}
-	if (stores_changed)
-		views_drop_gone(store);
-	v = hash_search(views, &store, HASH_ENTER, &found);
-	if (!found)
-	{
-		v->cx = AllocSetContextCreate(TopMemoryContext, "sift cache value store view", ALLOCSET_DEFAULT_SIZES);
-		v->slots = NULL;
-		v->nslots = 0;
-		v->indexed = 0;
-			v->loaded = false;
-		v->piece = NULL;
-		v->npiece = v->cap = 0;
-		v->total = 0;
-		v->epoch = 0;
-	}
-	return v;
-}
-
-static void
-view_reset(VStoreView *v, uint64 epoch)
-{
-	MemoryContextReset(v->cx);
-	v->slots = NULL;
-	v->nslots = 0;
-	v->indexed = 0;
-	v->piece = NULL;
-	v->npiece = v->cap = 0;
-	v->total = 0;
-	v->loaded = true;
-	v->epoch = epoch;
-}
-
-static void
-view_add(VStoreView *v, uint64 lo, uint64 dbase, SiftCDict *d)
-{
-	if (v->npiece == v->cap)
-	{
-		v->cap = Max(8, 2 * v->cap);
-		v->piece = v->piece ? repalloc(v->piece, v->cap * sizeof(ViewPiece)) : MemoryContextAlloc(v->cx, v->cap * sizeof(ViewPiece));
-	}
-	v->piece[v->npiece++] = (ViewPiece) {lo, dbase, d};
-	v->total = lo + d->n - (lo - dbase);
 }
 
 SiftVStore *
@@ -187,13 +81,14 @@ sift_vstore_open(Oid store, LOCKMODE lock)
 	vs->rel = table_open(store, lock);
 	if (!sift_vstore_is_store(store))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a shared value store", RelationGetRelationName(vs->rel))));
-	vs->view = view_get(store);
+	vs->view = vview_open(store, &vs->pin);
 	return vs;
 }
 
 void
 sift_vstore_close(SiftVStore *vs)
 {
+	vview_release(vs->pin);
 	table_close(vs->rel, NoLock);
 	pfree(vs);
 }
@@ -252,6 +147,7 @@ load_run(SiftVStore *vs, const SiftSegEntry *e)
 	SiftCDict  *run;
 	Size		used;
 
+	sift_cache_room(e->bytes);
 	sift_sr_init(&sr, vs->rel, ext, next, e->gen);
 	head = sift_sr_get(&sr, 0, e->bytes, scratch);
 	if (head->magic != VRUN_MAGIC || head->base != e->sum_dl || head->n != e->ndocs || head->epoch != v->epoch)
@@ -259,7 +155,7 @@ load_run(SiftVStore *vs, const SiftSegEntry *e)
 	run = sift_cdict_parse(v->cx, (const char *) head + sizeof(VRunHead), e->bytes - sizeof(VRunHead), &used);
 	if (run == NULL || run->n != head->n)
 		vs_corrupt(vs->rel, "a run does not parse");
-	view_add(v, v->total, head->base, run);
+	vview_add(v, v->total, head->base, run);
 	sift_sr_release(&sr);
 	pfree(scratch);
 	pfree(ext);
@@ -363,7 +259,7 @@ view_refresh(SiftVStore *vs)
 	sift_dir_read(vs->rel, snap);
 	n = dir_runs(snap, runs, &epoch);
 	if (!vs->view->loaded || vs->view->epoch != epoch)
-		view_reset(vs->view, epoch);
+		vview_reset(vs->view, epoch);
 	for (int i = 0; i < n; i++)
 	{
 		if (runs[i].sum_dl + runs[i].ndocs <= vs->view->total)
@@ -376,20 +272,6 @@ view_refresh(SiftVStore *vs)
 	return snap;
 }
 
-#ifdef SIFT_TESTING
-void
-sift_vstore_forget_views(void)
-{
-	HASH_SEQ_STATUS seq;
-	VStoreView *v;
-
-	if (views == NULL)
-		return;
-	hash_seq_init(&seq, views);
-	while ((v = hash_seq_search(&seq)) != NULL)
-		v->loaded = false;
-}
-#endif
 
 /* The current epoch of a store (the low 32 bits, the way a segment names it), from the metapage of its relation */
 uint32
@@ -834,7 +716,7 @@ retry:
 			{
 				write_run(vs, fresh, 0, lo, fresh->n, pol, NULL, 0);
 				/* published: the view has the run as it was made (the directory update is logged after the pages of the run) */
-				view_add(vs->view, lo, lo, fresh);
+				vview_add(vs->view, lo, lo, fresh);
 				appended = fresh->n;
 			}
 		}

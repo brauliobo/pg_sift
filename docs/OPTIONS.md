@@ -2554,7 +2554,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col`, `sift_table`, `BM25` · safety · default 262144 kB
 
-- **What it does:** the total a backend keeps in its caches of parsed dictionaries, bm25 segment bytes, joined-table rows and the facts of partitions for the next statement; the least recently used entry nobody holds goes first, from whichever cache has it
+- **What it does:** the total a backend keeps in its caches of parsed dictionaries, bm25 segment bytes, joined-table rows, the strings of shared value stores and the facts of partitions for the next statement; the least recently used entry nobody holds goes first, from whichever cache has it
 - **Gain:** -
 - **Impact:** index size: -; build, merge and writes: -; other: at most 256 MB a backend for the three caches together (up to 480 MB before, 96 GB for 200 connections); the gate case cap_backend_caches holds 0.1 MB against a 4 MB budget where 9.5 MB were kept without one
 - **When:** Always, on top of the limit of each cache (sift.agg_lookup_cache_kb and the dictionary and segment caches): an entry that alone is larger than the total is not kept and its statement parses or loads it for itself.

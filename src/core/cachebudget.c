@@ -9,7 +9,7 @@
 
 #include "core/cachebudget.h"
 
-#define CACHE_KINDS		4
+#define CACHE_KINDS		5
 
 int			sift_backend_cache_kb = 256 * 1024;
 

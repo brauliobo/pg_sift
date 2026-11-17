@@ -161,7 +161,7 @@ select string_agg(i || ':' || kb, ' ' order by i) from leakres;""")
 
 
 CACHE_HELD = """with c as (select path[cardinality(path)] as id from pg_backend_memory_contexts
-  where name in ('sift cache dictionaries', 'sift cache lookup tables', 'sift cache segments', 'sift cache partition facts'))
+  where name in ('sift cache dictionaries', 'sift cache lookup tables', 'sift cache segments', 'sift cache partition facts', 'sift cache value store view'))
 select 'HELD', coalesce(sum(total_bytes), 0) / 1024 from pg_backend_memory_contexts m
 where m.path[cardinality(m.path)] in (select id from c) or m.path && (select coalesce(array_agg(id), '{}') from c);"""
 
