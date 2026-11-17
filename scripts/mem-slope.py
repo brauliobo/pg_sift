@@ -4,6 +4,8 @@
 PostgreSQL's sorts, hashes and aggregates honour work_mem and its maintenance honours maintenance_work_mem, so the memory of a statement does not follow the table.
 Each case runs in a new backend with work_mem and maintenance_work_mem at 1 MB, on tables of N, 2N and 4N rows; the peak of the anonymous resident memory of the
 backend (sampled every 2 ms from /proc, the minimum of two runs) above what it held before the operation gives the slope in bytes a row between the first and the last size.
+A case of kind `flat` runs at 8, 16 and 32 times the rows (400,000, 800,000 and 1,600,000 by default) on a table of its own (one sift_col index, no search index), one run each, and
+passes when the memory between the two largest sizes grows at most the ceiling in bytes a row and by at most 10%: the memory of an operation that is bounded by maintenance_work_mem is flat once the rows pass its budget.
 A case passes when the slope is at most its ceiling. A clean case has the ceiling of the noise (CLEAN); a case that grows with the data today has the slope it was measured at
 (status `open`: a defect to fix, and its ceiling goes to CLEAN with the fix). A case whose slope is far under its open ceiling fails too, so that a fix is not left unrecorded.
 
@@ -116,6 +118,40 @@ vacuum analyze m{n};
 """)
 
 
+def flat_table(n):
+    script(f"""
+set client_min_messages=warning;
+drop table if exists g{n} cascade;
+create table g{n} as
+select g as id, g as k_hi, g % 5000 as k_mid, g % 10 as k_lo, (array['DE','FR','US','BR','JP','AR','CL','PE'])[1 + g % 8] as cat,
+       'name' || (g::bigint * 7919) % 1000000 as txt, ((g::bigint * 7919) % 29500)::numeric / 100 as amount, (g::bigint * 7919 % 29500)::float8 / 100 as fl,
+       timestamp '2025-01-01' + (g::bigint * 311 % 31536000) * interval '1 second' as ts from generate_series(1, {n}) g;
+alter table g{n} add primary key (id);
+create index g{n}_col on g{n} using sift_col (k_hi, k_mid, k_lo, cat, txt, amount, fl, ts);
+vacuum analyze g{n};
+""")
+
+
+def flat_copy(n):
+    script(f"""
+set client_min_messages=warning;
+drop table if exists m{n} cascade;
+create table m{n} as select * from g{n};
+alter table m{n} add primary key (id);
+create index m{n}_col on m{n} using sift_col (k_hi, k_mid, k_lo, cat, txt, amount, fl, ts);
+vacuum analyze m{n};
+""")
+
+
+def flat_case(sizes, setup, op):
+    peaks = []
+    for n in sizes:
+        flat_copy(n)
+        fmt = dict(m=f"m{n}", n=n)
+        peaks.append(peak_mb(setup.format(**fmt), op.format(**fmt)))
+    return (peaks[-1] - peaks[-2]) * 1048576.0 / (sizes[-1] - sizes[-2]), peaks
+
+
 def read_cases(only):
     cases = []
     for l in open(TSV, encoding="utf-8").read().split("\n"):
@@ -177,16 +213,25 @@ def leakx_case(n, name, setup, op):
 
 def run(rows, only):
     sizes = [rows, rows * 2, rows * 4]
+    flat = [rows * 8, rows * 16, rows * 32]
     cases = read_cases(only)
     if not os.path.exists("/proc/self/status"):
         print("SKIP needs /proc")
         return 0
-    for n in sizes:
-        build_tables(n)
+    if any(c[1] != "flat" for c in cases):
+        for n in sizes:
+            build_tables(n)
+    if any(c[1] == "flat" for c in cases):
+        for n in flat:
+            flat_table(n)
     bad = 0
     for name, kind, ceiling, status, setup, op in cases:
         try:
-            if kind == "leakx":
+            if kind == "flat":
+                slope, peaks = flat_case(flat, setup, op)
+                ok = slope <= ceiling and peaks[-1] <= peaks[-2] * 1.1
+                print(f"SLOPE {name} flat {slope:.0f} B/row between the two largest sizes (peaks {'/'.join(f'{p:.1f}' for p in peaks)} MB at {'/'.join(str(s) for s in flat)} rows), ceiling {ceiling} {'PASS' if ok else 'FAIL'}", flush=True)
+            elif kind == "leakx":
                 grown = leakx_case(sizes[0], name, setup, op)
                 limit = ceiling if status == "open" else LEAK_KB
                 ok = grown <= limit and (status != "open" or grown > limit * 0.4)
@@ -214,7 +259,7 @@ def selftest():
     assert verdict(160, 140, "open") == "FAIL"
     assert verdict(10, 140, "open") == "FAIL"
     for c in read_cases(None):
-        assert c[1] in ("slope", "leak", "leakx") and c[3] in ("clean", "open") and (c[3] == "open") == (c[2] > CLEAN), c[0]
+        assert c[1] in ("slope", "leak", "leakx", "flat") and c[3] in ("clean", "open") and (c[3] == "open") == (c[2] > CLEAN) or c[1] == "flat", c[0]
     print("mem-slope selftest: ok")
     return 0
 
