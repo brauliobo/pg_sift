@@ -323,6 +323,10 @@ if [[ $MODE == --selftest ]]; then
 	{ wait "$pm"; } 2>/dev/null   # the postmaster is a child of this shell: a stopped one is a zombie until it is waited for
 	! kill -0 "$pm" 2>/dev/null || { echo "FAIL: the postmaster in the directory of a dead run is not stopped"; bad=1; kill -KILL "$pm"; }
 	[[ -d $t/sift-ci-$$ && -d $t/sift-ci-1$dead ]] || { echo "FAIL: the directory of a live run or a kept one is reaped"; bad=1; }
+	# the scratch cap of the quick tier is the tmpfs budget of ci.sh in scripts/budgets.tsv: a shard that passes it fails
+	cap=$(bash -c 'REPO=$1; set -- --plan quick; MODE=$1; usage() { :; }; . "$REPO/scripts/ci/config.sh"; echo "$MAX_MB"' _ "$REPO")
+	want=$("$REPO/scripts/budget.sh" limits script:ci.sh | cut -d' ' -f2)
+	[[ -n $want && $cap == "$want" ]] || { echo "FAIL: the scratch cap of the quick tier (CI_MAX_MB '$cap' in scripts/ci/config.sh) is not the tmpfs budget of script:ci.sh in scripts/budgets.tsv ('$want')"; bad=1; }
 	# the skips of a job: each form of skip line gives its reason, a line that is not a skip gives none, and a skip with no reason is named; the retained summary of a run lists the skips
 	# of its jobs and fails when one has no reason. No test script says a skip without one
 	t=$ST/skips.log

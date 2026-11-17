@@ -29,14 +29,21 @@ rest() {
 	local n
 	for n in $(basename -a -s "$2" "$REPO/test/$1"/*"$2"); do [[ " ${*:3} " == *" $n "* ]] || echo "$n"; done
 }
-# The scratch a job needs, in MB: the peak of its lane directory with the cluster of the lane in it (SIFT_CI_STATS=1 lists it per job). The
+# The scratch a job needs, in MB: the peak of its lane directory with the cluster of the lane in it (a run lists the jobs above their estimate at its end: scripts/ci/summary.sh). The
 # jobs below grow the store (the churn of the store tests, WAL of the WAL tests, spill of a large build) and are the only ones above JOB_MB.
 declare -A EST_MB=([tap-013_tbl_bigtx]=820 [tap-014_tbl_writepath]=1130 [installcheck-tbl_writepath]=500 [tap-shell-old_lib_refusal]=470 [tap-shell-scaling_slope]=1400 [installcheck-tbl_bigtx]=700 [tap-004_wal_consistency]=690 [tap-shell-store_replica]=500 [tap-006_truncate]=550 [tap-010_tbl_settings]=420
 	[tap-006_tbl]=380 [tap-002_standby]=380 [tap-shell-maint_memory]=330 [tap-shell-extension_lifecycle]=360 [installcheck-batch5]=260 [installcheck-index_build_postings]=230
 	[tap-shell-replication]=200 [tap-shell-store_concurrency]=200 [tap-shell-index_build_crash]=180
 	[tap-shell-store_crash]=170 [tap-001_crash]=150 [installcheck-index_build_thresholds]=140
 	[tap-shell-mem_slope]=1250 [tap-shell-mem_slope-1]=1100 [tap-shell-mem_slope-2]=1200 [tap-shell-mem_slope-3]=1150 [tap-shell-mem_slope_order]=950
-	[release-library-regress]=900 [installcheck-agg_group_spill_fuzz]=800 [installcheck-tbl_cap]=480 [installcheck-col_approx]=350)
+	[release-library-regress]=900 [installcheck-agg_group_spill_fuzz]=800 [installcheck-tbl_cap]=480 [installcheck-col_approx]=350
+	[difftest-fuzz]=1060 [difftest-fuzz-vstore]=970 [difftest-fuzz-having]=880 [plan-gate-tuned]=860 [plan-gate-calibrate]=850
+	[plan-gate-calibrate-tuned]=850 [plan-gate]=840 [plan-gate-table]=830 [plan-gate-table-tuned]=830 [difftest-fuzz-tbl]=760
+	[tap-shell-col_online_cut]=650 [tap-shell-col_build_standby_space]=580 [tap-015_space]=580 [tap-shell-col_cut_online_fallback]=580
+	[tap-shell-col_merge_memory]=450 [tap-shell-col_scope_oracle]=430 [tap-shell-mem_idle_series]=420 [tap-019_tbl_defrag]=390
+	[tap-shell-col_build_slices_standby]=360 [hardened]=230 [tap-019_tbl_bulk_groups]=320 [tap-017_tbl_autodefrag]=310 [tap-shell-col_scope_replica]=300
+	[tap-shell-col_cic_temp_files]=280 [tap-shell-col_online_compact]=240 [installcheck-parallel_build]=230 [tap-shell-col_build_slices]=220
+	[tap-shell-col_build_pays]=220)
 JOB_MB=70
 
 tap_perl() { local f; for f in "$@"; do job "tap-$f" tap 0 "$S/tap.sh" "t/$f.pl"; done; }
