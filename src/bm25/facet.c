@@ -39,6 +39,7 @@
 #include "core/sql.h"
 #include "core/cmp.h"
 #include "core/rowmem.h"
+#include "core/inspect.h"
 
 typedef uint64 Row[SIFT_OFFMASK_WORDS];
 
@@ -618,7 +619,7 @@ count_values(Facets *f, bool nulls)
 static Relation
 open_index(Oid oid)
 {
-	Relation	index = index_open(oid, AccessShareLock);
+	Relation	index = index_open(sift_rel_must_exist(oid), AccessShareLock);
 
 	if (index->rd_rel->relam != sift_catalog()->am || index->rd_rel->relkind != RELKIND_INDEX)
 		ereport(ERROR,

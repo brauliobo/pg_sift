@@ -11,12 +11,13 @@
 
 #include "bm25/analyze.h"
 #include "core/sql.h"
+#include "core/inspect.h"
 
 /* Required-index lookup; callers decide when to use the default analyzer. */
 void
 sift_analyzer_config_lookup_index(Oid indexoid, SiftAnalyzerConfig *cfg)
 {
-	Relation	index = index_open(indexoid, AccessShareLock);
+	Relation	index = index_open(sift_rel_must_exist(indexoid), AccessShareLock);
 
 	if (index->rd_rel->relam != sift_catalog()->am)
 		ereport(ERROR,

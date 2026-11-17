@@ -28,6 +28,7 @@
 #include "col/am.h"
 #include "col/pg.h"
 #include "col/shred.h"
+#include "core/inspect.h"
 
 #define SAMPLE_CHUNKS	16		/* stretches of blocks read, evenly spaced */
 #define CHUNK_BLOCKS	32		/* the most blocks of a stretch */
@@ -474,7 +475,7 @@ sift_col_suggest_paths(PG_FUNCTION_ARGS)
 
 	SIFT_ARG_REQUIRED(0, "sift.suggest_paths", "rel");
 	SIFT_ARG_REQUIRED(1, "sift.suggest_paths", "column_name");
-	relid = PG_GETARG_OID(0);
+	relid = sift_rel_must_exist(PG_GETARG_OID(0));
 	col = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	if (sample < 1 || sample > 100000)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sample must be between 1 and 100000")));

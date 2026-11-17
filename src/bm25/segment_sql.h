@@ -15,7 +15,7 @@ open_sift(Oid relid, const char *col_use)
 {
 	Relation	index;
 
-	sift_inspect_expect(relid, "sift", col_use);
+	sift_inspect_expect(sift_rel_must_exist(relid), "sift", col_use);
 	index = index_open(relid, AccessShareLock);
 	sift_store_require_ready(index);
 	sift_check_inspect(index);

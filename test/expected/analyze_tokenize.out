@@ -253,7 +253,7 @@ SELECT token FROM sift.tokenize('Hello', NULL);
 (1 row)
 
 SELECT token FROM sift.tokenize('Hello', 0::oid::regclass);
-ERROR:  could not open relation with OID 0
+ERROR:  relation with OID 0 does not exist
 -- the analyzer of a relation that is not a sift index
 CREATE TABLE plain (body text);
 CREATE INDEX plain_btree ON plain (body);

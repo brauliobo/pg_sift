@@ -16,6 +16,7 @@
 #include "core/errctx.h"
 #include "core/sql.h"
 #include "table/table.h"
+#include "core/inspect.h"
 
 typedef struct TblVerify
 {
@@ -78,7 +79,7 @@ tbl_verify(SiftCheck *ck, Relation rel)
 static Relation
 open_verifiable(Oid relid)
 {
-	Relation	rel = table_open(relid, AccessShareLock);
+	Relation	rel = table_open(sift_rel_must_exist(relid), AccessShareLock);
 
 	sift_tbl_require(rel);
 	if (pg_class_aclcheck(relid, GetUserId(), ACL_MAINTAIN) != ACLCHECK_OK)

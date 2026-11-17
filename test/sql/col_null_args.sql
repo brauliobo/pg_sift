@@ -1,5 +1,5 @@
 -- Every function of the extension that takes NULL (not STRICT) is called with each argument NULL in turn and with all of them NULL, the others being a value of the type: a
--- NULL argument is an answer (NULL or an error), never a crash. sift.suggest_paths and sift._names_expr, _names_exprs and _names_option dereferenced the NULL text (signal 11).
+-- NULL argument is an answer (NULL or an error), never a crash. The answer of each is pinned in surface_null_args.
 CREATE EXTENSION pg_sift;
 CREATE TABLE null_args_t (a int PRIMARY KEY, b text);
 INSERT INTO null_args_t SELECT i, 'x' FROM generate_series(1, 10) i;
@@ -36,8 +36,5 @@ BEGIN
 END $$;
 
 SELECT count(DISTINCT fn) > 10 AS functions, count(*) > 50 AS calls FROM null_calls;
-SELECT sift.suggest_paths(NULL, 'b'), sift.suggest_paths('null_args_t', NULL), sift._names_expr('a', NULL, 'c'), sift._names_exprs(ARRAY['a'], 'a', NULL),
-	sift._names_option('o', 'v', NULL, 'c');
-
 DROP TABLE null_args_t;
 DROP EXTENSION pg_sift;

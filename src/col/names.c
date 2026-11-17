@@ -46,6 +46,8 @@
 #include "col/vstore/vstore.h"
 #include "core/restrict.h"
 #include "core/store.h"
+#include "core/catname.h"
+#include "core/inspect.h"
 
 /* The table that ALTER TABLE .. SET SCHEMA is about to move, with the schema and the name it has until then: the event after the command does not tell */
 static struct
@@ -76,8 +78,8 @@ sift_col_names_before(PG_FUNCTION_ARGS)
 	{
 		MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
 
-		before.schema = get_namespace_name(get_rel_namespace(before.relid));
-		before.name = get_rel_name(before.relid);
+		before.schema = sift_namespace_name(get_rel_namespace(before.relid));
+		before.name = sift_rel_name(before.relid);
 		MemoryContextSwitchTo(old);
 	}
 	PG_RETURN_NULL();
@@ -98,6 +100,8 @@ rename_attribute(Oid indexoid, int pos, const char *to)
 	Relation	attrel = table_open(AttributeRelationId, RowExclusiveLock);
 	HeapTuple	tp = SearchSysCacheCopy2(ATTNUM, ObjectIdGetDatum(indexoid), Int16GetDatum(pos + 1));
 
+	if (!HeapTupleIsValid(tp))
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("column %d of relation with OID %u does not exist", pos + 1, indexoid)));
 	namestrcpy(&((Form_pg_attribute) GETSTRUCT(tp))->attname, to);
 	sift_cat_update(attrel, tp);
 	heap_freetuple(tp);
@@ -252,7 +256,7 @@ change_of(Node *stmt, Oid relid, SiftNameChange *c)
 {
 	RenameStmt *rs = IsA(stmt, RenameStmt) ? (RenameStmt *) stmt : NULL;
 	AlterObjectSchemaStmt *as = IsA(stmt, AlterObjectSchemaStmt) ? (AlterObjectSchemaStmt *) stmt : NULL;
-	char	   *schema = get_namespace_name(get_rel_namespace(relid));
+	char	   *schema = sift_namespace_name(get_rel_namespace(relid));
 
 	*c = (SiftNameChange) {.relid = relid,.from_schema = schema,.to_schema = schema};
 	if (rs != NULL && rs->renameType == OBJECT_COLUMN)
@@ -407,9 +411,11 @@ rewrite_expr(const char *text, const char *from, const char *to)
 	StringInfoData out;
 	char	   *sql = psprintf("%s%s", prefix, text);
 	int			at = 0;
+	List	   *stmts = raw_parser(sql, RAW_PARSE_DEFAULT);
 
-	foreach_node(RawStmt, raw, raw_parser(sql, RAW_PARSE_DEFAULT))
-		(void) raw_expression_tree_walker(raw->stmt, collect_refs, &refs);
+	if (list_length(stmts) != 1 || !IsA(linitial_node(RawStmt, stmts)->stmt, SelectStmt))
+		ereport(ERROR, (errcode(ERRCODE_SYNTAX_ERROR), errmsg("sift._names_expr: the argument is not one expression")));
+	(void) raw_expression_tree_walker(linitial_node(RawStmt, stmts)->stmt, collect_refs, &refs);
 	list_sort(refs.locations, cmp_int);
 	initStringInfo(&out);
 	foreach_int(loc, refs.locations)
@@ -430,7 +436,7 @@ rewrite_expr(const char *text, const char *from, const char *to)
 
 PG_FUNCTION_INFO_V1(sift_names_expr);
 
-/* sift._names_expr(expression text, from name, to name): the expression with the column from named to; NULL for NULL */
+/* sift._names_expr(expression text, from name, to name): the expression with the column from named to; NULL for a NULL expression */
 Datum
 sift_names_expr(PG_FUNCTION_ARGS)
 {
@@ -468,7 +474,7 @@ sift_names_exprs(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_names_option);
 
-/* sift._names_option(option text, value text, from name, to name): the value of the sift_col option with the column from named to; NULL for NULL */
+/* sift._names_option(option text, value text, from name, to name): the value of the sift_col option with the column from named to; NULL for a NULL value */
 Datum
 sift_names_option(PG_FUNCTION_ARGS)
 {
