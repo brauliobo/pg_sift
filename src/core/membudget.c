@@ -120,43 +120,56 @@ sift_mem_scope_end(SiftMemScope *scope)
 		depth = scope->depth;
 }
 
-#define SIFT_MEM_TOP 3
+#define SIFT_MEM_TOP 4
+#define SIFT_MEM_KINDS 64
 
-typedef struct MemTop
+typedef struct MemKinds
 {
-	const char *name[SIFT_MEM_TOP];
-	Size		bytes[SIFT_MEM_TOP];
-} MemTop;
+	int			n;
+	const char *name[SIFT_MEM_KINDS];
+	Size		bytes[SIFT_MEM_KINDS];
+	int			count[SIFT_MEM_KINDS];
+} MemKinds;
 
+/* the contexts of a tree by name: a path that makes a context per partition or per group shows as one kind with its instances */
 static void
-top_contexts(MemoryContext cx, MemTop *top)
+kinds_add(MemoryContext cx, MemKinds *k)
 {
-	Size		own = MemoryContextMemAllocated(cx, false);
-	int			at = SIFT_MEM_TOP;
+	int			i = 0;
 
-	while (at > 0 && own > top->bytes[at - 1])
-		at--;
-	if (at < SIFT_MEM_TOP)
+	while (i < k->n && strcmp(k->name[i], cx->name) != 0)
+		i++;
+	if (i == k->n && k->n < SIFT_MEM_KINDS)
+		k->name[k->n++] = cx->name;
+	if (i < k->n)
 	{
-		memmove(&top->name[at + 1], &top->name[at], (SIFT_MEM_TOP - at - 1) * sizeof(top->name[0]));
-		memmove(&top->bytes[at + 1], &top->bytes[at], (SIFT_MEM_TOP - at - 1) * sizeof(top->bytes[0]));
-		top->name[at] = cx->name;
-		top->bytes[at] = own;
+		k->bytes[i] += MemoryContextMemAllocated(cx, false);
+		k->count[i]++;
 	}
 	for (MemoryContext c = cx->firstchild; c != NULL; c = c->nextchild)
-		top_contexts(c, top);
+		kinds_add(c, k);
 }
 
 static char *
 top_text(MemoryContext cx)
 {
-	MemTop		top = {0};
+	MemKinds   *k = palloc0(sizeof(MemKinds));
 	StringInfoData buf;
 
-	top_contexts(cx, &top);
+	kinds_add(cx, k);
 	initStringInfo(&buf);
-	for (int i = 0; i < SIFT_MEM_TOP && top.name[i] != NULL; i++)
-		appendStringInfo(&buf, "%s\"%s\" %zu", i ? ", " : "", top.name[i], top.bytes[i]);
+	for (int shown = 0; shown < SIFT_MEM_TOP; shown++)
+	{
+		int			big = -1;
+
+		for (int i = 0; i < k->n; i++)
+			if (k->count[i] > 0 && (big < 0 || k->bytes[i] > k->bytes[big]))
+				big = i;
+		if (big < 0)
+			break;
+		appendStringInfo(&buf, "%s\"%s\" %zu in %d", shown ? ", " : "", k->name[big], k->bytes[big], k->count[big]);
+		k->count[big] = 0;
+	}
 	return buf.data;
 }
 
@@ -181,7 +194,7 @@ sift_mem_checkpoint(void)
 		/* check-errors: allow XX000 is the code of a budget failure of the test build, which the CI reports by name */
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
 						errmsg("sift memory budget exceeded: %s: %zu > %zu bytes (%s)", f->mark->name, used, limit, f->mark->formula),
-						errdetail("The largest contexts of the scope, in bytes: %s.", top_text(f->cx))));
+						errdetail("The largest kinds of context of the scope, in bytes and instances: %s.", top_text(f->cx))));
 }
 
 /* sift._test_mem_highwater(reset bool) returns setof (scope text, peak int8, budget int8, begins int8, checks int8): the scopes this backend ran and the most memory each held at a checkpoint */
