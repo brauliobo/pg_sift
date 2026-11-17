@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 #include "access/xact.h"
+#include "datatype/timestamp.h"
 #include "commands/progress.h"
 #include "pgstat.h"
 #include "utils/lsyscache.h"
