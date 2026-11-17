@@ -222,8 +222,10 @@ journal_fill(Oid heap, Oid journal, Snapshot snap)
  * that began before it are waited for, and then the heap is read under a snapshot that sees all they did, adding the pairs the journal does not have (validate_index). The transactions whose
  * snapshots are older than that one are waited for before the journal is valid, as for any index. No lock stronger than ShareUpdateExclusiveLock is held.
  *
- * The pairs that pass adds were written by transactions that finished before the lock that began the journal (the writers since record their own), and every stamp is taken from a snapshot
- * after that lock, which sees them: no stamp can need a record of them, so the pass writes the pairs into the index and no journal record (sift_col_journal_validating).
+ * The pairs that pass adds were written by transactions that finished before the lock that began the journal (the writers since record their own), so the pass writes the pairs into the index
+ * and no journal record (sift_col_journal_validating). A stamp is not what keeps a read from needing a record of them: the wait for older snapshots does not wait for a prepared transaction
+ * or an idle READ COMMITTED one, so the xmin of a stamp can stay at or below the xid of a writer of those pairs. What does is the check of sift_col_track_ok_log that the snapshot of a read sees as
+ * committed the transaction that made the journal, which every writer of those pairs finished before: a read that does not see it takes the heap. That check is the only defence.
  */
 void
 sift_scope_journals_validate(void)
