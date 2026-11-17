@@ -7,6 +7,7 @@
 
 #include <float.h>
 
+#include "catalog/pg_type_d.h"
 #include "utils/float.h"
 
 #include "agg/dense_int.h"
@@ -19,8 +20,13 @@ amap_resolve(AggExec *ex, const SiftSrcDict *d, int ai, uint32 c)
 	uint32		len;
 	char		buf[SIFT_SRC_DICT_ENTRY];
 	const char *str = sift_srcdict_str(d, c, &len, buf);
-	uint32		id = ot_id(&ex->aot[ai], text_datum(ex->spec->agg[ai].argtype, -1, str, len));
+	Oid			argtype = ex->spec->agg[ai].argtype;
+	Datum		v = text_datum(argtype, -1, str, len);
+	uint32		id = ot_id(&ex->aot[ai], v);
 
+	/* the table copies a value it keeps: the one made for the look up is garbage in the context of the chunk */
+	if (argtype == TEXTOID || argtype == VARCHAROID)
+		pfree(DatumGetPointer(v));
 	MemoryContextSwitchTo(old);
 	values_nospill_check(ex, ai);
 	return id;
