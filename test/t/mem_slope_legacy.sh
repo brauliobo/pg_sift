@@ -4,6 +4,8 @@
 # maintenance_work_mem at 1 MB. An operation holds the memory its setting gives, not memory that follows the table: a clean case stays within the noise of a row
 # (12 bytes), an open one (a defect recorded with the slope it was measured at) may not grow faster than its ceiling, and a statement repeated in one backend
 # does not make its contexts grow. One SLOPE line a case; a fix of an open case turns its row to clean in the same commit.
+# The shared dictionary ring and the maintenance worker are off: a dictionary a merge finds in the ring is not memory of its backend, and whether it finds it depends on what the
+# sessions before it parsed; the worker promotes and merges the churn the setup made while the measured backend starts, so what the merge finds left to do depends on who is first.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
@@ -12,7 +14,9 @@ node_init ms 33 "autovacuum = off
 max_parallel_workers_per_gather = 0
 shared_buffers = 64MB
 max_wal_size = 1GB
-sift.col_auto_merge = off"
+sift.col_auto_merge = off
+sift.col_dict_shared_cache_kb = 0
+sift.async_maintenance = off"
 node_start ms || bail "start failed"
 sql ms "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" >/dev/null || bail "extension failed"
 

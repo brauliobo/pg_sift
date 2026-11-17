@@ -3,9 +3,10 @@
 
 PostgreSQL's sorts, hashes and aggregates honour work_mem and its maintenance honours maintenance_work_mem, so the memory of a statement does not follow the table.
 Each case runs in a new backend with work_mem and maintenance_work_mem at 1 MB, on tables of N, 2N and 4N rows; the peak of the anonymous resident memory of the
-backend (sampled every 2 ms from /proc, the minimum of two runs) above what it held before the operation gives the slope in bytes a row between the first and the last size.
+backend above what it held before the operation gives the slope in bytes a row between the first and the last size. The cases that measure a peak (`slope`, `flat`) take it as scripts/mem-slope.py does:
+the setup runs in a session of its own that disconnects, the measured backend is new and gives back what malloc holds before its baseline, so what a setup left in the heap of its backend (26 MB of free chunks after an UPDATE of 20% of 1,600,000 rows, or none) never decides the peak. A statement of the operation sets its own maintenance_work_mem.
 A case of kind `flat` (`flatcut`: the index cut by a key; `flat`: key_cut off, which also leaves out the sample of the heap that decides the key at every rewrite: a phase of its own, up to 400,000 rows) runs at 8, 16 and 32 times the rows (400,000, 800,000 and 1,600,000 by default) on a table of its own (one sift_col index, no search index), one run each, and
-passes when the memory between the two largest sizes grows at most the ceiling in bytes a row and by at most 10%: the memory of an operation that is bounded by maintenance_work_mem is flat once the rows pass its budget.
+passes when the memory between the two largest sizes grows at most the ceiling in bytes a row and (a clean row) by at most 10%: the memory of an operation that is bounded by maintenance_work_mem is flat once the rows pass its budget.
 A case passes when the slope is at most its ceiling. A clean case has the ceiling of the noise (CLEAN); a case that grows with the data today has the slope it was measured at
 (status `open`: a defect to fix, and its ceiling goes to CLEAN with the fix; status `noise`: a case whose slope moves from run to run with where the allocator
 places its blocks, with the largest of three runs plus 15 percent as its ceiling and no floor). A case whose slope is far under its open ceiling fails too, so that a fix is not left unrecorded.
@@ -19,7 +20,7 @@ Reads PGHOST, PGPORT, PGUSER, PGDATABASE like psql; needs Linux (/proc) and an i
 its contexts hold (pg_backend_memory_contexts) does not follow the number of statements. Kind `cap` runs its statements in one backend with sift.backend_cache_kb at
 the ceiling (kB) and asserts that the caches hold at most that; the same statements with the budget off must hold more, or the case measures nothing.
 """
-import os, re, subprocess, sys, threading, time
+import importlib.util, os, re, subprocess, sys
 
 CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference is 1.8 MB
 BOUNDED = "'sift cache unit buffers'"   # a fixed count of spare buffers (UNIT_KEEP of UNIT_KEEP_BYTES, col/seg/seg.c): it grows to its 16 MB while repeats find larger units, and no further
@@ -30,6 +31,9 @@ LEAK_KB = 512              # kB the contexts of a backend may hold more after 60
 SETTINGS = f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope-legacy.tsv")
 os.environ["LC_ALL"] = "C"
+_gate = importlib.util.spec_from_file_location("mem_slope", os.path.join(os.path.dirname(os.path.abspath(__file__)), "mem-slope.py"))
+slope_gate = importlib.util.module_from_spec(_gate)
+_gate.loader.exec_module(slope_gate)
 
 
 def psql():
@@ -54,46 +58,8 @@ def anon_kb(pid):
 
 
 def peak_mb(setup, op):
-    """a new backend: SETTINGS and setup (run in a backend of its own when it starts with "@other ": what the operation reads is then a table another session made), then op; the peak anonymous memory above what it held before op, in MB"""
-    p = psql()
-    p.stdin.write("select 'PID', pg_backend_pid();\n")
-    line = p.stdout.readline()
-    while "PID" not in line:
-        line = p.stdout.readline()
-    pid = int(line.strip().split("|")[1])
-    if setup.startswith("@other "):
-        script(setup[7:])
-        setup = ""
-    p.stdin.write(SETTINGS + "select sift._test_thp_disable();\n" + setup + "\n\\echo SETUPDONE\n")
-    for l in iter(p.stdout.readline, ""):
-        if "SETUPDONE" in l:
-            break
-        if "ERROR" in l:
-            raise RuntimeError("setup: " + l.strip())
-    base = anon_kb(pid)
-    peak, stop = [base], threading.Event()
-
-    def sample():
-        while not stop.is_set():
-            peak[0] = max(peak[0], anon_kb(pid))
-            time.sleep(0.002)
-
-    t = threading.Thread(target=sample)
-    t.start()
-    p.stdin.write(op + "\n\\echo OPDONE\n")
-    err = None
-    for l in iter(p.stdout.readline, ""):
-        if "OPDONE" in l:
-            break
-        if "ERROR" in l:
-            err = l.strip()
-    stop.set()
-    t.join()
-    p.stdin.write("\\q\n")
-    p.wait()
-    if err:
-        raise RuntimeError("op: " + err)
-    return (peak[0] - base) / 1024.0
+    """the slope gate's measurement (setup in a session of its own, a new backend that gives back what malloc holds, op): the peak anonymous memory above that baseline, in MB"""
+    return slope_gate.measure_mb(setup, "", op)
 
 
 def build_tables(n):
@@ -119,6 +85,7 @@ vacuum analyze d{n};
 
 def copy_table(n):
     script(f"""
+set max_parallel_maintenance_workers = 0;
 drop table if exists m{n}, s{n} cascade;
 create table m{n} as select * from f{n};
 alter table m{n} add primary key (id);
@@ -144,7 +111,7 @@ vacuum analyze g{n};
 
 def flat_copy(n, cut):
     script(f"""
-set client_min_messages=warning;
+set client_min_messages=warning; set max_parallel_maintenance_workers = 0;
 drop table if exists m{n} cascade;
 create table m{n} as select * from g{n};
 alter table m{n} add primary key (id);
@@ -312,7 +279,7 @@ def run(rows, only):
         try:
             if kind.startswith("flat"):
                 slope, peaks = flat_case(flat, setup, op, "k_mid" if kind == "flatcut" else "off")
-                ok = verdict(slope, ceiling, status) == "PASS" and (status == "noise" or peaks[-1] <= peaks[-2] * 1.1)
+                ok = verdict(slope, ceiling, status) == "PASS" and (status != "clean" or peaks[-1] <= peaks[-2] * 1.1)
                 print(f"SLOPE {name} flat {slope:.0f} B/row between the two largest sizes (peaks {'/'.join(f'{p:.1f}' for p in peaks)} MB at {'/'.join(str(s) for s in flat)} rows), ceiling {ceiling} {'PASS' if ok else 'FAIL'}", flush=True)
             elif kind == "pinned":
                 got, want = pinned_case(sizes[1], ceiling)
@@ -441,6 +408,7 @@ def selftest():
     assert verdict(-80, 64, "noise") == "PASS" and verdict(65, 64, "noise") == "FAIL"
     for c in read_cases(None):
         assert c[1] in ("slope", "leak", "leakx", "flat", "flatcut", "cap", "evict", "pinned") and c[3] in ("clean", "open", "noise"), c[0]
+        assert not (c[1] == "slope" or c[1].startswith("flat")) or not re.search(r"(?i)(^|;)\s*set\s", c[4]), f"{c[0]}: a setting of the setup is gone when the measured backend connects: put it in the operation"
         assert c[1] in ("cap", "evict", "pinned") or c[1].startswith("flat") or (c[3] == "clean") == (c[2] <= CLEAN), c[0]
     print("mem-slope selftest: ok")
     return 0
