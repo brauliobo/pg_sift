@@ -18,6 +18,12 @@
 #include "core/tomb.h"
 #include "core/rowmem.h"
 #include "core/damage.h"
+#ifdef SIFT_TESTING
+#include "bm25/build.h"
+
+/* the phase the rewrite of the log waits in for the advisory lock of sift.test_phase_gate + this, once the new generation is taken (table/load/write.c: 4 to 6) */
+#define SIFT_TBL_PHASE_TOMB		7
+#endif
 
 #define corrupt(rel, ...) \
 	SIFT_DAMAGE_DATA(rel, errmsg("relation \"%s\" has a corrupted tombstone log", RelationGetRelationName(rel)), errdetail(__VA_ARGS__))
@@ -839,6 +845,9 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 	sift_tomb_sync_all(rel, t);
 	tomb_flatten(t);
 	gen = sift_store_new_gen(rel);
+#ifdef SIFT_TESTING
+	sift_test_phase_wait(SIFT_TBL_PHASE_TOMB);
+#endif
 	hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
 	for (uint32 i = 0; i < t->nents;)
 	{
