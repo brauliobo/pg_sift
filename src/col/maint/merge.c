@@ -270,7 +270,11 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		live_bytes = slice->bytes;
 	}
 	if (part_bytes > 0)
-		o.parts = Max(1, Min(Min(maint_part_count(live_bytes, part_bytes, key_cut), MAX_PARTS), max_parts));
+	{
+		uint64		fit = maint_part_count(live_bytes, part_bytes, key_cut);
+
+		o.parts = Max(1, Min(Min(fit, MAX_PARTS), max_parts));
+	}
 	else if (slice && slice->win)
 		o.parts = max_parts;
 	o.live_rows = live_rows;
