@@ -201,6 +201,8 @@ settled() { # no session but ours is left
 after_fault() { # NAME
 	local name=$1 ix size n out
 	wait_for settled 30 || { echo "a session is left"; return 1; }
+	# first: a session that loads the library in a transaction removes the orphans of the log, as the sessions of the checks below do
+	wait_for "test \"\$(sql cm \"$ORPHANS\")\" == 0" 30 || { echo "orphan triggers of the log of changes are left"; return 1; }
 	[[ $(sql cm "$LOCKS") == 0 ]] || { echo "locks left: $(sql cm "SELECT locktype, mode, relation::regclass FROM pg_locks WHERE pid IS DISTINCT FROM pg_backend_pid() AND locktype <> 'virtualxid'" | tr '\n' ';')"; return 1; }
 	[[ $(sql cm "$SLOTS") == 0 ]] || { echo "a progress or quarantine slot is left"; return 1; }
 	for _ in 1 2 3; do # an index another one depends on goes after it
@@ -210,7 +212,6 @@ after_fault() { # NAME
 		done
 	done
 	[[ -z $(sql cm "$INVALID") ]] || { echo "an INVALID index is left"; return 1; }
-	wait_for "test \"\$(sql cm \"$ORPHANS\")\" == 0" 30 || { echo "orphan triggers of the log of changes are left"; return 1; }
 	out=$(healthy 2>&1) || { echo "the state is not healthy: $(head -c 300 <<<"$out" | tr '\n' ' ')"; return 1; }
 	sql cm "${OP[$name]}" >"$D/rerun.out" 2>&1 || { echo "the operation run again failed: $(head -3 "$D/rerun.out")"; return 1; }
 	[[ $DATA_OPS != *" $name "* ]] || REF=$(answers PLAIN)
