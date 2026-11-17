@@ -653,15 +653,61 @@ sift_maint_register_worker(Relation index, const char *function)
 	return sift_maint_register_worker_oid(RelationGetRelid(index), function, sift_worker_subject(index));
 }
 
+/*
+ * A worker that stays (sift_maint_worker_stay) holds this session lock of its index from before its first look until it decided to leave. A request that finds it held is
+ * served by that worker's last look (made after the lock is let go, so a request that saw it held is in the index by then); one that finds it free starts a worker.
+ */
+static void
+stay_tag(LOCKTAG *tag, Oid indexoid)
+{
+	SET_LOCKTAG_ADVISORY(*tag, MyDatabaseId, 0x51F9, indexoid, 3);
+}
+
+static bool
+stay_alive(Oid indexoid)
+{
+	LOCKTAG		tag;
+
+	stay_tag(&tag, indexoid);
+	if (LockAcquire(&tag, ExclusiveLock, true, true) == LOCKACQUIRE_NOT_AVAIL)
+		return true;
+	LockRelease(&tag, ExclusiveLock, true);
+	return false;
+}
+
+bool
+sift_maint_stay_begin(Oid indexoid)
+{
+	LOCKTAG		tag;
+
+	stay_tag(&tag, indexoid);
+	return LockAcquire(&tag, ExclusiveLock, true, true) != LOCKACQUIRE_NOT_AVAIL;
+}
+
+static void
+stay_end(Oid indexoid)
+{
+	LOCKTAG		tag;
+
+	stay_tag(&tag, indexoid);
+	LockRelease(&tag, ExclusiveLock, true);
+}
+
 bool
 sift_maint_request_worker(Relation index, const char *function)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	TimestampTz now = GetCurrentTimestamp();
+	bool		stays = sift_worker_stays(function);
 	bool		started;
 
+	if (stays && stay_alive(RelationGetRelid(index)))
+	{
+		pfree(snap);
+		return false;
+	}
 	sift_dir_read(index, snap);
-	started = now - snap->meta.maint_requested_at >= backoff_ms(&snap->meta) * INT64CONST(1000) && !sift_index_out(index, snap->meta.flags);
+	started = (stays ? !in_backoff(&snap->meta) : now - snap->meta.maint_requested_at >= backoff_ms(&snap->meta) * INT64CONST(1000)) && !sift_index_out(index, snap->meta.flags);
 	pfree(snap);
 	if (!started)
 		return false;
@@ -794,7 +840,11 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 			maint_unlock_mode(index, RowExclusiveLock);
 			if (r == SIFT_STEP_DONE)
 				sift_worker_ok(index, job, began);
+			else if (r == SIFT_STEP_IDLE && busy != 0)
+				r = SIFT_STEP_BUSY;
 		}
+		else if (is_sift(index))
+			r = SIFT_STEP_BUSY;
 		if (r == SIFT_STEP_FAILED)
 			sift_log_maint(index, "maintenance worker finished", start, -1, -1);
 		index_close(index, RowExclusiveLock);
@@ -804,35 +854,45 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 }
 
 /*
- * The worker stays until sift.maintenance_naptime after it started, looking for work every so often: a seal inside that window
- * of the request that started it asks for no worker of its own, and its segments would wait for the next seal or a VACUUM. So
- * does a look that finds the maintenance lock with an inserter, which promotes and leaves the merges to the worker.
- * The last look is made after the window ended, so every such seal is before it.
+ * The worker looks for work every so often while it is up and leaves after two looks that find nothing, or when sift.maintenance_naptime after it started has passed
+ * if the lock was held at its looks (an inserter promotes and leaves the merges to the worker, which would be left undone). A request finds the worker alive by the lock
+ * it holds (stay_alive) and asks for no worker of its own; the worker lets the lock go before its last look, so a request that found it held is in the index by then,
+ * and one that finds it free starts another.
  */
 void
 sift_maint_worker_stay(Oid indexoid, TimestampTz start, SiftWorkerStep step)
 {
 	long		look = 100;
 	int			idle = 0;
+	SiftStepResult r;
 
 	for (;;)
 	{
 		long		left = sift_maintenance_naptime - TimestampDifferenceMilliseconds(start, GetCurrentTimestamp());
-		bool		last = left <= 0 || idle >= 1;
 		bool		worked = false;
-		SiftStepResult	r;
 
-		while ((r = step(indexoid, start, last)) == SIFT_STEP_DONE)
+		while ((r = step(indexoid, start, false)) == SIFT_STEP_DONE)
 		{
 			worked = true;
 			CHECK_FOR_INTERRUPTS();
 		}
-		idle = worked ? 0 : idle + 1;
-		if (r == SIFT_STEP_FAILED || last)
+		idle = worked || r == SIFT_STEP_BUSY ? 0 : idle + 1;
+		if (r == SIFT_STEP_FAILED || left <= 0 || idle >= 2)
 			break;
 		sift_worker_nap(Min(left, look));
 		look = Min(2 * look, 1000);
 	}
+#ifdef SIFT_TESTING
+	if (sift_test_stay_gate)
+	{
+		StartTransactionCommand();
+		sift_test_wait(12);
+		CommitTransactionCommand();
+	}
+#endif
+	stay_end(indexoid);
+	while (r != SIFT_STEP_FAILED && (r = step(indexoid, start, true)) == SIFT_STEP_DONE)
+		CHECK_FOR_INTERRUPTS();
 }
 
 static void
@@ -842,6 +902,8 @@ worker_main(Datum main_arg, bool seal)
 	TimestampTz start = GetCurrentTimestamp();
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
 
+	if (!sift_maint_stay_begin(indexoid))
+		return;
 	if (seal)
 	{
 		Relation	index;

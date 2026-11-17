@@ -95,12 +95,15 @@ typedef enum SiftStepResult
 {
 	SIFT_STEP_IDLE,				/* nothing to do */
 	SIFT_STEP_DONE,
-	SIFT_STEP_FAILED			/* rolled back, its blocks returned, reported and counted */
+	SIFT_STEP_FAILED,			/* rolled back, its blocks returned, reported and counted */
+	SIFT_STEP_BUSY				/* nothing was done because the maintenance lock or the segments were held: work may be left, look again */
 } SiftStepResult;
 
 /* One step of a worker in a transaction of its own; last: the look after the window of the request ended */
 typedef SiftStepResult (*SiftWorkerStep) (Oid indexoid, TimestampTz start, bool last);
 extern void sift_maint_worker_stay(Oid indexoid, TimestampTz start, SiftWorkerStep step);
+/* The first thing a worker that stays does: false when another worker of the index stays (it looks for what was asked, and this one ends) */
+extern bool sift_maint_stay_begin(Oid indexoid);
 
 /* Who asks for a merge: any (explicit, or for room in a full directory), the background (worker), VACUUM */
 typedef enum SiftMergeGoal

@@ -308,6 +308,9 @@ sweep_step(Oid indexoid, bool cut)
 		{
 			freed = sift_maint_orphan_sweep(index);
 			sift_maint_unlock(index);
+			if (freed > 0)
+				ereport(LOG, (errmsg("sift: returned %lld blocks that no segment lists to index \"%s\"", (long long) freed, RelationGetRelationName(index)),
+							  errdetail("A rewrite or merge that was shut down or failed had written them.")));
 		}
 		index_close(index, RowExclusiveLock);
 	}
@@ -397,10 +400,16 @@ col_worker_step(Oid indexoid, TimestampTz start, bool last)
 				col_worker_worked = true;
 				sift_worker_ok(index, job, began);
 			}
-			else if (last && col_worker_worked)
+			else if (!sift_maint_lock(index, false))
+				r = SIFT_STEP_BUSY;
+			else
 			{
-				sift_mops_cut_free_end(&maint_col_ops, index);
-				sift_vstore_compact(index);
+				sift_maint_unlock(index);
+				if (last && col_worker_worked)
+				{
+					sift_mops_cut_free_end(&maint_col_ops, index);
+					sift_vstore_compact(index);
+				}
 			}
 		}
 		if (index != NULL)
@@ -460,6 +469,8 @@ maint_worker(Datum main_arg, bool seal)
 	volatile bool failed = false;
 
 	sift_maint_own_xacts = true;
+	if (!sift_maint_stay_begin(indexoid))
+		return;
 
 	PG_TRY();
 	{

@@ -38,6 +38,9 @@ extern char *sift_worker_subject_db(void);
  */
 extern bool sift_worker_register(const char *function, const char *subject, Datum main_arg);
 
+/* Does the worker of this entry point look for work again while it is up (the promotion and merge workers)? */
+extern bool sift_worker_stays(const char *function);
+
 /* The first thing a worker does once it is connected: its job and subject are in pg_stat_activity from then on */
 extern void sift_worker_announce(void);
 

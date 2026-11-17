@@ -24,11 +24,12 @@ static const struct
 {
 	const char *function;
 	SiftJob		job;
+	bool		stays;			/* looks for work again while it is up (sift_maint_worker_stay): its index counts it as alive */
 }			job_of_function[] = {
-	{"sift_maint_worker_main", SIFT_JOB_MERGE},
-	{"sift_read_promote_worker_main", SIFT_JOB_PROMOTE},
-	{"sift_col_maint_worker_main", SIFT_JOB_MERGE},
-	{"sift_col_read_promote_worker_main", SIFT_JOB_PROMOTE},
+	{"sift_maint_worker_main", SIFT_JOB_MERGE, true},
+	{"sift_read_promote_worker_main", SIFT_JOB_PROMOTE, true},
+	{"sift_col_maint_worker_main", SIFT_JOB_MERGE, true},
+	{"sift_col_read_promote_worker_main", SIFT_JOB_PROMOTE, true},
 	{"sift_col_rewrite_worker_main", SIFT_JOB_REWRITE},
 	{"sift_col_read_rewrite_worker_main", SIFT_JOB_REWRITE},
 	{"sift_col_decide_worker_main", SIFT_JOB_REWRITE},
@@ -75,6 +76,15 @@ char *
 sift_worker_subject_db(void)
 {
 	return psprintf("database %s", get_database_name(MyDatabaseId));
+}
+
+bool
+sift_worker_stays(const char *function)
+{
+	for (int i = 0; i < lengthof(job_of_function); i++)
+		if (strcmp(job_of_function[i].function, function) == 0)
+			return job_of_function[i].stays;
+	return false;
 }
 
 static SiftJob

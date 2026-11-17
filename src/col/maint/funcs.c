@@ -538,3 +538,18 @@ sift_col_leaves(PG_FUNCTION_ARGS)
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
 }
+
+#ifdef SIFT_TESTING
+PG_FUNCTION_INFO_V1(sift_test_col_rewrite_worker);
+
+/* sift._test_col_rewrite_worker(index): the rewrite worker of the index that no VACUUM asked for, whether or not a rewrite is due */
+Datum
+sift_test_col_rewrite_worker(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_mops_open(&maint_col_ops, PG_GETARG_OID(0), AccessShareLock);
+	bool		started = sift_maint_register_worker(index, "sift_col_rewrite_worker_main");
+
+	relation_close(index, AccessShareLock);
+	PG_RETURN_BOOL(started);
+}
+#endif
