@@ -174,6 +174,23 @@ def cache_held_kb(n, op, budget_kb):
     return int(m.group(1))
 
 
+
+def leakx_case(n, name, setup, op):
+    """one statement a transaction of its own (VACUUM, a merge) repeated 20 times in a backend: the memory of its contexts after the 20th over the 5th"""
+    copy_table(n)
+    fmt = dict(f=f"f{n}", d=f"d{n}", m=f"m{n}", s=f"s{n}", n=n)
+    probe = lambda i: f"insert into leakres select {i}, sum(total_bytes)/1024 from pg_backend_memory_contexts;\ninsert into leakctx select {i}, name, sum(total_bytes)/1024 from pg_backend_memory_contexts group by 2;\n"
+    steps = "".join(op.format(**fmt) + "\n" + (probe(i) if i in (5, 20) else "") for i in range(1, 21))
+    out = script(SETTINGS + "create temp table leakres(i int, kb bigint); create temp table leakctx(i int, name text, kb bigint);\n"
+                 + setup.format(**fmt) + "\n" + steps + "select string_agg(i || ':' || kb, ' ' order by i) from leakres;\n"
+                 + "select 'GROWER ' || a.name || ' ' || (b.kb - a.kb) from leakctx a join leakctx b using (name) where a.i = 5 and b.i = 20 and b.kb > a.kb order by b.kb - a.kb desc limit 3;")
+    print("   ", " ".join(re.findall(r"GROWER .*", out)).replace("GROWER ", "| "), flush=True)
+    m = re.search(r"5:(\d+) 20:(\d+)", out)
+    if not m:
+        raise RuntimeError("leakx: " + out.strip()[-200:])
+    return int(m.group(2)) - int(m.group(1))
+
+
 def run(rows, only):
     sizes = [rows, rows * 2, rows * 4]
     cases = read_cases(only)
@@ -189,6 +206,11 @@ def run(rows, only):
                 held, free = cache_held_kb(sizes[1], op, ceiling), cache_held_kb(sizes[1], op, -1)
                 ok = held <= ceiling < free
                 print(f"SLOPE {name} cap {held} kB held at a budget of {ceiling} kB, {free} kB without one {'PASS' if ok else 'FAIL'}", flush=True)
+            elif kind == "leakx":
+                grown = leakx_case(sizes[0], name, setup, op)
+                limit = ceiling if status == "open" else LEAK_KB
+                ok = grown <= limit and (status != "open" or grown > limit * 0.4)
+                print(f"SLOPE {name} leak {grown} kB over 15 repeats, at most {limit} kB [{status}] {'PASS' if ok else 'FAIL'}", flush=True)
             elif kind == "leak":
                 grown = leak_case(sizes[1], name, op)
                 ok = grown <= LEAK_KB
@@ -212,7 +234,7 @@ def selftest():
     assert verdict(160, 140, "open") == "FAIL"
     assert verdict(10, 140, "open") == "FAIL"
     for c in read_cases(None):
-        assert c[1] in ("slope", "leak", "cap") and c[3] in ("clean", "open") and (c[1] == "cap" or (c[3] == "open") == (c[2] > CLEAN)), c[0]
+        assert c[1] in ("slope", "leak", "leakx", "cap") and c[3] in ("clean", "open") and (c[1] == "cap" or (c[3] == "open") == (c[2] > CLEAN)), c[0]
     print("mem-slope selftest: ok")
     return 0
 

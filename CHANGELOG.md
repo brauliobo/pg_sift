@@ -6,6 +6,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 - Added: pg_sift: `sift.backend_cache_kb` (default 256MB) caps what a backend keeps in its caches of parsed dictionaries, bm25 segment bytes and joined-table rows together, dropping the least recently used entry of any of them; the sum of their separate limits was about 480 MB for each backend, which a pool of connections multiplied. `-1` leaves each cache to its own setting.
 - Added: tests: a memory gate (`scripts/mem-slope.py`, `test/mem-slope.tsv`, run by the TAP test `mem_slope`) measures the peak memory of reads, maintenance and writes at three table sizes with `work_mem` and `maintenance_work_mem` at 1 MB and fails when an operation holds more memory per row than its recorded ceiling, and a lint (`scripts/check-mem-growth.sh`, allowlist `scripts/mem-growth.allow`) names every allocation in a row loop without a reset, every array grown by doubling without a limit, every size computed in a narrow integer and every cache that lives as long as the backend.
+- Fixed: col: a backend that updates a table and promotes or vacuums its `sift_col` index in a loop no longer keeps the lookup keys of every write buffer it saw: the keys of a buffer that was sealed are freed when the next one is read (they held 24 bytes for each row of every old buffer until 4 million rows)
+- Added: tests: the memory gate repeats VACUUM, merges, promotions, `sift.col_maintain` and `sift.table_maintain` 20 times in a backend (kind `leakx`) and lists the contexts that grew; the dictionary cache of retired segments (VACUUM and merge, `sift.col_maintain`, `sift.table_maintain`) and the merge scratch of a VACUUM that deletes rows are recorded as open
 
 ## 5.0.0 - 2026-11-16
 
