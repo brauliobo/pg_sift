@@ -260,10 +260,7 @@ sift_maint_online_fallback(bool on)
 		cut_busy = false;
 }
 
-/*
- * The lock of a cut of the file, only if it is free right now (any scan, insert or step of the worker holds a lock on it) and no standby would stall on it: the mode taken, which the
- * caller releases (the state cut_lock reads can change while the cut runs); NoLock when it is not taken
- */
+/* The lock of a cut of the file, only if it is free right now and no standby would stall on it: the mode taken, which the caller releases (cut_lock can change while the cut runs); NoLock when not taken */
 static LOCKMODE
 lock_for_cut(Relation rel, const char *what, int elevel)
 {
