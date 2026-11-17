@@ -172,17 +172,6 @@ typedef struct CellGroup
 	uint32		n[AUTOCUT_SBS];
 } CellGroup;
 
-static int
-cell_cmp(const void *a, const void *b)
-{
-	const Cell *x = a,
-			   *y = b;
-
-	if (x->key != y->key)
-		return x->key < y->key ? -1 : 1;
-	return SIFT_CMP3(x->sb, y->sb);
-}
-
 /* the cells of the leaf: the values of each sampled superblock sorted once and written as a run, then read merged */
 static void
 cells_begin(Samp *s, const Track *t, Cells *c)
@@ -220,7 +209,7 @@ cells_begin(Samp *s, const Track *t, Cells *c)
 	c->bound[s->nsb] = c->sp.n;
 	acut_cur_free(&cur);
 	pfree(vals);
-	acut_merge_begin(&c->merge, &c->sp, c->bound, s->nsb, cell_cmp);
+	acut_merge_begin(&c->merge, &c->sp, c->bound, s->nsb, 1);
 	c->next = acut_merge_next(&c->merge);
 	SIFT_MEM_CHECKPOINT();
 }

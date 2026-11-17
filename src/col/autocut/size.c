@@ -326,19 +326,6 @@ typedef struct RunHead
 	uint32		flags;			/* 1: the first key is NULL */
 } RunHead;
 
-static int
-run_cmp(const void *a, const void *b)
-{
-	const RunHead *x = a,
-			   *y = b;
-
-	if (x->k0 != y->k0)
-		return x->k0 < y->k0 ? -1 : 1;
-	if (x->k1 != y->k1)
-		return x->k1 < y->k1 ? -1 : 1;
-	return SIFT_CMP3(x->row, y->row);
-}
-
 /* the records of the runs in the order of the keys, with the window of them the cut looks ahead in */
 typedef struct Feed
 {
@@ -527,7 +514,7 @@ layout_keyed(Layout *L, Samp *s, uint32 stride, double small)
 		pfree(by);
 		pfree(sb);
 		s->budget.left += cap * held;
-		acut_merge_begin(&f.merge, &runs, bound, nr, run_cmp);
+		acut_merge_begin(&f.merge, &runs, bound, nr, 2);
 	}
 	while (feed_at(&f, 0) != NULL)
 	{

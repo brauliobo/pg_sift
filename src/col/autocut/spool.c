@@ -133,50 +133,76 @@ acut_cur_window(AcutCur *c)
 	return acut_cur_next(c);
 }
 
-static inline int
-merge_cmp(const AcutMerge *m, int a, int b)
+/* the record a run is at, as a match of the tree sees it */
+static MergeEnt
+merge_ent(const AcutMerge *m, int run)
 {
-	return m->cmp(m->head[a], m->head[b]);
+	const int64 *x = m->head[run];
+
+	if (x == NULL)
+		return (MergeEnt) {.run = run, .end = true};
+	return (MergeEnt) {.k = {x[0], m->nkeys > 1 ? x[1] : 0}, .run = run};
 }
 
-static void
-merge_down(AcutMerge *m, int i)
+/* a is read before b: a run past its end after all, then the smaller keys, and those of equal keys in the order of the runs */
+static inline bool
+merge_before(const MergeEnt *a, const MergeEnt *b)
 {
-	int			x = m->heap[i];
+	if (a->end != b->end)
+		return b->end;
+	if (a->k[0] != b->k[0])
+		return a->k[0] < b->k[0];
+	if (a->k[1] != b->k[1])
+		return a->k[1] < b->k[1];
+	return a->run < b->run;
+}
 
-	for (;;)
-	{
-		int			child = 2 * i + 1;
+/* the run that was read replays its matches up the tree: at each node the loser stays and the winner goes on */
+static void
+merge_replay(AcutMerge *m, int run)
+{
+	MergeEnt	x = merge_ent(m, run);
 
-		if (child >= m->nheap)
-			break;
-		if (child + 1 < m->nheap && merge_cmp(m, m->heap[child + 1], m->heap[child]) < 0)
-			child++;
-		if (merge_cmp(m, m->heap[child], x) >= 0)
-			break;
-		m->heap[i] = m->heap[child];
-		i = child;
-	}
-	m->heap[i] = x;
+	for (int node = (m->width + run) >> 1; node >= 1; node >>= 1)
+		if (merge_before(&m->tree[node], &x))
+		{
+			MergeEnt	t = m->tree[node];
+
+			m->tree[node] = x;
+			x = t;
+		}
+	m->tree[0] = x;
 }
 
 void
-acut_merge_begin(AcutMerge *m, const AcutSpool *s, const uint64 *bound, int nruns, int (*cmp) (const void *, const void *))
+acut_merge_begin(AcutMerge *m, const AcutSpool *s, const uint64 *bound, int nruns, int nkeys)
 {
-	*m = (AcutMerge) {.cmp = cmp, .last = -1, .nheap = 0};
+	int			width = 1;
+	MergeEnt   *winner;
+
+	while (width < nruns)
+		width *= 2;
+	*m = (AcutMerge) {.nruns = nruns, .nkeys = nkeys, .width = width, .last = -1};
 	m->cur = palloc_array(AcutCur, Max(nruns, 1));
-	m->head = palloc_array(const void *, Max(nruns, 1));
-	m->heap = palloc_array(int, Max(nruns, 1));
+	m->head = palloc0_array(const void *, width);
+	m->tree = palloc_array(MergeEnt, width);
+	winner = palloc_array(MergeEnt, (Size) 2 * width);
 	for (int r = 0; r < nruns; r++)
 	{
 		acut_cur_init(&m->cur[r], s, bound[r], bound[r + 1]);
 		m->head[r] = acut_cur_next(&m->cur[r]);
-		if (m->head[r] != NULL)
-			m->heap[m->nheap++] = r;
 	}
-	m->nruns = nruns;
-	for (int i = m->nheap / 2; i-- > 0;)
-		merge_down(m, i);
+	for (int r = 0; r < width; r++)
+		winner[width + r] = merge_ent(m, r);
+	for (int node = width - 1; node >= 1; node--)
+	{
+		bool		left = merge_before(&winner[2 * node], &winner[2 * node + 1]);
+
+		winner[node] = winner[2 * node + !left];
+		m->tree[node] = winner[2 * node + left];
+	}
+	m->tree[0] = winner[1];
+	pfree(winner);
 }
 
 const void *
@@ -184,17 +210,16 @@ acut_merge_next(AcutMerge *m)
 {
 	if (m->nruns == 1)
 		return acut_cur_next(&m->cur[0]);
+	if (m->nruns == 0)
+		return NULL;
 	if (m->last >= 0)
 	{
 		m->head[m->last] = acut_cur_next(&m->cur[m->last]);
-		if (m->head[m->last] == NULL)
-			m->heap[0] = m->heap[--m->nheap];
-		if (m->nheap > 0)
-			merge_down(m, 0);
+		merge_replay(m, m->last);
 	}
-	if (m->nheap == 0)
+	if (m->tree[0].end)
 		return NULL;
-	m->last = m->heap[0];
+	m->last = m->tree[0].run;
 	return m->head[m->last];
 }
 
@@ -205,5 +230,5 @@ acut_merge_end(AcutMerge *m)
 		acut_cur_free(&m->cur[r]);
 	pfree(m->cur);
 	pfree(m->head);
-	pfree(m->heap);
+	pfree(m->tree);
 }

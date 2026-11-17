@@ -54,16 +54,27 @@ typedef struct AcutCur
 	int64		bufchunk;
 } AcutCur;
 
-/* the records of several runs of one spool (run r is bound[r] to bound[r + 1]), each ascending by cmp, read as one run */
+/*
+ * the records of several runs of one spool (run r is bound[r] to bound[r + 1]) read as one run: each run ascends by its first nkeys (1 or 2) signed 64-bit fields, and records
+ * of equal keys come in the order of the runs, so a run holds the records that come before those of the runs after it. A tournament tree of the runs: the next record costs
+ * one match a level.
+ */
+typedef struct MergeEnt
+{
+	int64		k[2];			/* the keys of the record the run is at (0 for a key a record has not) */
+	int			run;
+	bool		end;			/* the run is past its end */
+} MergeEnt;
+
 typedef struct AcutMerge
 {
-	int			nruns;
+	int			nruns,
+				nkeys,
+				width;			/* the runs, as a power of 2 */
 	AcutCur   *cur;
 	const void **head;			/* the record each run is at, NULL past its end */
-	int		   *heap;			/* the runs that have one, the smallest record first */
-	int			nheap;
+	MergeEnt   *tree;			/* tree[0]: the run to read next; tree[1 ..]: the loser of each match */
 	int			last;			/* the run of the record returned last, advanced by the next call */
-	int			(*cmp) (const void *, const void *);
 } AcutMerge;
 
 extern void acut_spool_init(AcutSpool *s, AcutBudget *budget, uint32 recsz);
@@ -100,7 +111,7 @@ acut_cur_next(AcutCur *c)
 	return rec;
 }
 
-extern void acut_merge_begin(AcutMerge *m, const AcutSpool *s, const uint64 *bound, int nruns, int (*cmp) (const void *, const void *));
+extern void acut_merge_begin(AcutMerge *m, const AcutSpool *s, const uint64 *bound, int nruns, int nkeys);
 
 extern const void *acut_merge_next(AcutMerge *m);
 
