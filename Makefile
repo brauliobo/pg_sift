@@ -478,6 +478,7 @@ TESTING_REGRESS += shred_%
 TESTING_REGRESS += slot_owner
 TESTING_REGRESS += store_%
 TESTING_REGRESS += store_sweep_runs
+TESTING_REGRESS += surface_null_args
 TESTING_REGRESS += tbl_bigtx
 TESTING_REGRESS += tbl_bitmap_lazy
 TESTING_REGRESS += tbl_bulk_eligible
