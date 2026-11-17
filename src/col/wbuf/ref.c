@@ -21,6 +21,7 @@
 #include "utils/snapmgr.h"
 #include "col/am.h"
 #include "core/compat.h"
+#include "core/visibility.h"
 #include "col/wbuf/wbuf_int.h"
 
 static int
@@ -164,7 +165,7 @@ ref_page(SiftCWbufReader *r, Size from)
 {
 	Relation	index = r->cur.index;
 	RefRow	  **ord;
-	int			n;
+	volatile int n;
 
 	if (r->refpay.data == NULL)
 	{
@@ -181,14 +182,15 @@ ref_page(SiftCWbufReader *r, Size from)
 	{
 		ArenaRebuild st = wbuf_arena_rebuild_enter(index, r->entry.gen);
 
-		/* the reader that held it may have built them, or the slot has none for them */
-		if (st != ARENA_REBUILD_NO_SLOT)
-		{
-			wbuf_arena_read(index, r->entry.gen, r->ref, r->nref, &r->refpay);
-			n = ref_missing(r, ord);
-		}
 		PG_TRY();
 		{
+			SIFT_TEST_GATE(sift_test_rebuild_gate, 11);
+			/* the reader that held it may have built them, or the slot has none for them */
+			if (st != ARENA_REBUILD_NO_SLOT)
+			{
+				wbuf_arena_read(index, r->entry.gen, r->ref, r->nref, &r->refpay);
+				n = ref_missing(r, ord);
+			}
 			if (n > 0)
 				ref_fetch(r, ord, n);
 		}

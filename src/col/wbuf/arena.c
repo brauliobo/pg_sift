@@ -23,6 +23,7 @@
 #include "funcapi.h"
 #include "utils/timestamp.h"
 #include "miscadmin.h"
+#include "storage/condition_variable.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
@@ -72,6 +73,7 @@ typedef struct ArenaSlot
 typedef struct Arena
 {
 	slock_t		mutex;
+	ConditionVariable rebuilt;	/* a reader gave up the rebuild of a slot: the readers that wait for it look again */
 	bool		gc_wanted;		/* a row found no slot or no page: the slots of buffers that are gone are given back */
 	bool		squeezed;		/* and none was free to take (no slot, the pool at its ceiling): the oldest buffer is asked back */
 	bool		want_grow;		/* the pool is empty and a segment can be made */
@@ -113,6 +115,7 @@ arena_init(SIFT_DSM_INIT_ARGS)
 
 	memset(a, 0, sizeof(Arena));
 	SpinLockInit(&a->mutex);
+	ConditionVariableInit(&a->rebuilt);
 	a->slots_max = ARENA_SLOTS;
 	a->freehead = -1;
 	for (int i = 0; i < ARENA_SLOTS; i++)
@@ -654,13 +657,15 @@ rebuild_release(int code, Datum arg)
 			a->slot[rebuilding].rebuilder = -1;
 		SpinLockRelease(&a->mutex);
 		rebuilding = -1;
+		ConditionVariableBroadcast(&a->rebuilt);
 	}
 }
 
 /*
- * A reader that found rows of the buffer without entries builds them from the heap, one reader at a time: ARENA_REBUILD_OWN when this one may (call wbuf_arena_rebuild_exit after),
+ * A reader that found rows of the buffer without entries builds them from the heap, one reader at a time: ARENA_REBUILD_OWN when this one may (call wbuf_arena_rebuild_exit after,
+ * whatever the build does: the slot is this backend's until then),
  * ARENA_REBUILD_WAITED when another one did while this one waited (the same, and the entries may be there now), ARENA_REBUILD_NO_SLOT when the arena has no slot to keep them
- * (they are built for this reader alone)
+ * (they are built for this reader alone). The readers that wait sleep on a condition variable that the owner broadcasts when it gives the slot up
  */
 ArenaRebuild
 wbuf_arena_rebuild_enter(Relation index, uint64 gen)
@@ -669,6 +674,7 @@ wbuf_arena_rebuild_enter(Relation index, uint64 gen)
 	ArenaSlot  *s;
 	static bool registered;
 	bool		waited = false;
+	ArenaRebuild st;
 
 	if (a == NULL)
 		return ARENA_REBUILD_NO_SLOT;
@@ -677,23 +683,28 @@ wbuf_arena_rebuild_enter(Relation index, uint64 gen)
 		before_shmem_exit(rebuild_release, 0);
 		registered = true;
 	}
+	ConditionVariablePrepareToSleep(&a->rebuilt);
 	for (;;)
 	{
 		if ((s = slot_enter(a, index, gen, true)) == NULL)
-			return ARENA_REBUILD_NO_SLOT;
+		{
+			st = ARENA_REBUILD_NO_SLOT;
+			break;
+		}
 		if (s->rebuilder < 0)
 		{
 			s->rebuilder = MyProcNumber;
 			rebuilding = s - a->slot;
 			SpinLockRelease(&a->mutex);
-			return waited ? ARENA_REBUILD_WAITED : ARENA_REBUILD_OWN;
+			st = waited ? ARENA_REBUILD_WAITED : ARENA_REBUILD_OWN;
+			break;
 		}
 		SpinLockRelease(&a->mutex);
 		waited = true;
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, 1, sift_wait_event(SIFT_WAIT_ARENA));
-		ResetLatch(MyLatch);
-		CHECK_FOR_INTERRUPTS();
+		ConditionVariableSleep(&a->rebuilt, sift_wait_event(SIFT_WAIT_ARENA));
 	}
+	ConditionVariableCancelSleep();
+	return st;
 }
 
 void
@@ -707,6 +718,7 @@ wbuf_arena_rebuild_exit(uint64 nrows)
 	a->rows_rebuilt += nrows;
 	SpinLockRelease(&a->mutex);
 	rebuilding = -1;
+	ConditionVariableBroadcast(&a->rebuilt);
 }
 
 static TimestampTz gc_statement;	/* the statement of this backend that looked at the slots: once is enough for the rows it writes */
