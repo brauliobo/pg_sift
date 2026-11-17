@@ -219,6 +219,10 @@ extern bool	maint_wal_budget_spent(const XLogRecPtr *lsn, const uint64 *sbytes, 
 extern const char *	maint_rewrite_check(Relation index, bool automatic, int *gates);
 
 extern const char *	maint_rewrite_due(Relation index, bool automatic);
+extern bool	maint_rewrite_automatic;
+extern void maint_rewrite_hold_after(Relation index, TimestampTz start);
+extern bool maint_rewrite_over_cap(Relation index, uint64 bytes);
+extern TimestampTz maint_rewrite_hold_until(const SiftMetaPageData *meta);
 
 extern bool	maint_rewrite_all(const char *why);
 

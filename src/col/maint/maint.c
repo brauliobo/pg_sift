@@ -525,8 +525,11 @@ take_slot(void)
 int
 sift_col_auto_rewrite(Relation *indexp)
 {
+	TimestampTz start = GetCurrentTimestamp();
 	int			steps = sift_mops_rewrite(&maint_col_ops, indexp, true);
 
+	if (steps > 0 && *indexp != NULL)
+		maint_rewrite_hold_after(*indexp, start);
 	return steps;
 }
 

@@ -659,6 +659,19 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 			rs.on = false;
 		}
 	}
+	/* one step is one transaction: the automatic rewrite does not start one that writes more than sift.col_auto_rewrite_max_size */
+	if (n > 0 && goal == SIFT_GOAL_REWRITE && !maint_after_build)
+	{
+		uint64		step = 0;
+
+		for (int i = 0; i < n; i++)
+			step += sel[i].bytes;
+		if (maint_rewrite_over_cap(index, rs.on ? rs.bytes : step))
+		{
+			pfree(snap);
+			return SIFT_STEP_IDLE;
+		}
+	}
 	/* the new segments must fit the directory beside the others, with the room the inserters keep */
 	room = SIFT_MAX_SEGMENTS - 16 - (total - n);
 	pfree(snap);

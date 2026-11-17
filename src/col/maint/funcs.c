@@ -82,6 +82,9 @@ sift_col_maintenance_status(PG_FUNCTION_ARGS)
 		blocked[nblocked++] = CStringGetTextDatum("the rewrite would take more than sift.col_auto_merge_wal_pct of the WAL written since the last");
 	if (gates & SIFT_COL_GATE_HELD)
 		blocked[nblocked++] = CStringGetTextDatum("a snapshot holds back the blocks of the last rewrite");
+	if (gates & SIFT_COL_GATE_HOLD)
+		blocked[nblocked++] = CStringGetTextDatum(psprintf("the last automatic rewrite holds the next one off until %s (sift.col_auto_rewrite_backoff, sift.col_auto_rewrite_max_size)",
+														   timestamptz_to_str(maint_rewrite_hold_until(&snap->meta))));
 	v[0] = ObjectIdGetDatum(RelationGetRelid(heap));
 	nulls[1] = nulls[2] = nulls[3] = !sift_col_table_churn(RelationGetRelid(heap), &changed, &threshold, &last);
 	nulls[1] |= last == 0;

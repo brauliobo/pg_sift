@@ -338,6 +338,18 @@ sift_col_init(void)
 							 "The segments of a build that overlap each other (a parallel build leaves one set per worker) are not churn: their rewrite does not wait. "
 							 "0 does not wait. sift.col_maintain(index) ignores it.",
 							 &sift_col_auto_merge_wal_pct, 5.0, 0.0, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.col_auto_rewrite_backoff",
+							 "Times the duration of the last automatic rewrite of a sift_col index that the next one waits.",
+							 "The stamps of what a rewrite writes are as old as its start, so the changes made while it ran are counted against its output and, for a rewrite that runs for hours, "
+							 "the reason that asked for it is due again when it ends. The wait is this many times as long as the rewrite took (10: a tenth of the time at most). "
+							 "0 does not wait. sift.col_maintain(index) ignores it, and so does the rewrite of the segments a build left.",
+							 &sift_col_auto_rewrite_backoff, 10.0, 0.0, 1000000.0, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_auto_rewrite_max_size",
+							"Megabytes one step of the automatic rewrite of a sift_col index may write.",
+							"A step is one transaction: it holds back the blocks the last rewrite freed, and the horizon of the vacuums of the database, until it ends. "
+							"An index over sift.vacuum_rewrite_limit is rewritten in steps of that size; a step over this size is not started, one LOG line an hour names the command to run in a quiet window "
+							"(sift.col_maintain(index)), and the automatic rewrite looks again after an hour. 0 does not limit it. sift.col_maintain(index) ignores it.",
+							&sift_col_auto_rewrite_max_size, 2048, 0, MAX_KILOBYTES / 1024, PGC_SUSET, GUC_UNIT_MB, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_build_key_ranges",
 							 "A serial sift_col build with key_cut of a large table writes runs that do not overlap in the key.",
 							 "The rows go to a temporary file for each stretch of the key (cut at quantiles of a sample of the table) while the table is scanned, and the stretches are written as runs in the order of the key, where the runs of the rows in table order each hold every key and wait for a rewrite. temp_file_limit and the free room of the temporary tablespaces bound it (a build that does not fit them writes the runs in table order). off: runs in table order.",
