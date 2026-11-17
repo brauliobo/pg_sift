@@ -14,7 +14,7 @@ job_skips() {
 }
 # job_state STATUS LOG: PASS and FAIL as they are; a job that passed with skip lines and no test that ran is SKIP
 job_state() {
-	[[ $1 == PASS ]] && job_skips "$2" | grep -q . && ! grep -qE '^ok [0-9]+ ([^#]|$)|^ok [0-9]+$|\.\. ok$' "$2" && { echo SKIP; return; }
+	[[ $1 == PASS && -n $(job_skips "$2") ]] && ! grep -qE '^ok [0-9]+ ([^#]|$)|^ok [0-9]+$|\.\. ok$' "$2" && { echo SKIP; return; }
 	echo "$1"
 }
 # job_row ID STATUS SECONDS PEAK_MB LOG: the line of the retained summary, tab separated: id, state, seconds, scratch peak MB, skip count, the reasons joined by " | "

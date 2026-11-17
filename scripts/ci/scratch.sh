@@ -100,7 +100,7 @@ step() {
 	fi
 	c1=$(lane_cpu "$id")
 	skips=$(job_skips "$LOG/$id.log" | grep -c .)
-	[[ $status == FAIL ]] || ! job_skips "$LOG/$id.log" | grep -qxF "$NO_REASON" || { status=FAIL; echo "ci: $id skips without a reason: say why (SKIP: reason)" | tee -a "$LOG/$id.log"; }
+	[[ $status == FAIL ]] || ! job_skips "$LOG/$id.log" | grep -xF "$NO_REASON" >/dev/null || { status=FAIL; echo "ci: $id skips without a reason: say why (SKIP: reason)" | tee -a "$LOG/$id.log"; }
 	peak=$(cat "$LOG/peak/$id" 2>/dev/null || echo 0)
 	echo "ci: $status $id $((SECONDS - t)) s ($LANE)"
 	printf '%s %s %s %s %s %s %s %s %s %s\n' "$id" "$suite" "$status" $((SECONDS - t)) "$skips" "$LANE" "$t" "$SECONDS" \

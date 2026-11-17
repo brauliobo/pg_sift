@@ -369,7 +369,7 @@ if [[ $MODE == --selftest ]]; then
 		known=$(for m in quick full; do for pg in 17 18; do for deep in '' 1; do plan_of $m $pg "$deep"; echo "$PLAN_OUT"; done; done; done | awk '{ print $1 }' | sort -u)
 		stale=$(grep -v '^#' "$REPO/scripts/scratch.tsv" | cut -f1 | sort | comm -23 - <(echo "$known") | paste -sd' ' -)
 		[[ -z $stale ]] || { echo "FAIL: scripts/scratch.tsv has rows for jobs that are in no plan: $stale (scripts/ci.sh --scratch FILE... updates the table)"; bad=1; }
-		grep -v '^#' "$REPO/scripts/scratch.tsv" | grep -qvE $'^[a-z0-9_-]+\t[0-9]+$' && { echo "FAIL: scripts/scratch.tsv has a row that is not job, tab, MB"; bad=1; }
+		grep -v '^#' "$REPO/scripts/scratch.tsv" | grep -vE $'^[a-z0-9_-]+\t[0-9]+$' >/dev/null && { echo "FAIL: scripts/scratch.tsv has a row that is not job, tab, MB"; bad=1; }
 		printf '# header\nkept\t500\nreplaced\t900\nshrunk\t400\n' >"$ST/table.tsv"
 		printf 'replaced\tPASS\t5\t1000\t0\t\nshrunk\tPASS\t5\t120\t0\t\nnew\tPASS\t5\t200\t0\t\nsmall\tPASS\t5\t90\t0\t\nreplaced\tPASS\t5\t800\t0\t\nkept\tFAIL\t5\t10\t0\t\n' >"$ST/runs.tsv"
 		[[ $(scratch_table "$ST/table.tsv" "$ST/runs.tsv" | paste -sd'|' -) == '# header|replaced	1050|kept	500|new	210' ]] ||
