@@ -167,7 +167,7 @@ sift_colsrc_count_part(Relation heap, Relation index, Snapshot snapshot, MemoryC
 
 	if (prov->part_count)
 	{
-		prov->part_count(heap, index, mcxt, c);
+		c->view = prov->part_count(heap, index, mcxt, &c->vlen, &c->nsb);
 		return;
 	}
 	cx = AllocSetContextCreate(CurrentMemoryContext, "sift source count", ALLOCSET_DEFAULT_SIZES);

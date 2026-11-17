@@ -45,7 +45,7 @@ typedef struct SiftSrcProvider
 	Size		(*view_size) (void *impl);
 	void		(*view_export) (void *impl, void *buf);
 	/* Optional (NULL: opened, read and closed): what a source of open_part opened now would say of its superblocks, and its view, without opening one */
-	void		(*part_count) (Relation heap, Relation index, MemoryContext mcxt, SiftSrcPartCount *c);
+	void	   *(*part_count) (Relation heap, Relation index, MemoryContext mcxt, Size *vlen, uint32 *nsb);
 	/* Optional (NULL: true): sb_heap of a source opened on the view */
 	bool		(*view_sb_heap) (const void *view);
 	void		(*close) (void *impl);
