@@ -52,8 +52,8 @@
 	  "value combinations per scan", "normal plan (slug shape_width)", "-", 1) \
 	X(combo_entries, "COMBO_MAX_ENTRIES", "agg/combo/int.h", 16777216, "entries", \
 	  "distinct input tuples of one value-combination cache", "the caches start again (re-evaluates the values they held)", "-", 1) \
-	X(combo_cache_bytes, "COMBO_CACHE_BYTES", "agg/combo/int.h", 4194304, "bytes", \
-	  "memory the value-combination caches of a scan hold together, half of hash memory at most, and the values of their dictionary leaves", "the caches start again (re-evaluates the values they held)", "work_mem, hash_mem_multiplier", 1) \
+	X(combo_cache_bytes, "SIFT_ARRAY_UNLIMITED", "core/limits.h", SIFT_ARRAY_UNLIMITED, "bytes", \
+	  "memory the value-combination caches of a scan hold together, and the values of their dictionary leaves", "none outside a test: the caches hold half of hash memory at most and start again past it (re-evaluates the values they held)", "work_mem, hash_mem_multiplier", 1) \
 	X(join_keys, "SIFT_AGG_MAX_JKEYS", "agg/spec/expr.h", SIFT_AGG_MAX_JKEYS, "columns", \
 	  "equality columns of a lookup join", "normal plan", "-", 0) \
 	X(join_cols, "SIFT_AGG_MAX_JCOLS", "agg/spec/expr.h", SIFT_AGG_MAX_JCOLS, "columns", \

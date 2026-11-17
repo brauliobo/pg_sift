@@ -153,11 +153,11 @@ combo_forget_priors(AggExec *ex, int ci)
 	cs->nbyrow = 0;
 }
 
-/* the memory the caches of a scan hold together: half of hash memory, at most COMBO_CACHE_BYTES, shared by its combos (at least COMBO_CACHE_MIN each) */
+/* the memory the caches of a scan hold together: half of hash memory, shared by its combos (at least COMBO_CACHE_MIN each) */
 static Size
 combo_cache_bytes(const AggExec *ex)
 {
-	Size		limit = sift_limit(combo_cache_bytes, COMBO_CACHE_BYTES);
+	Size		limit = sift_limit(combo_cache_bytes, SIFT_ARRAY_UNLIMITED);
 	Size		all = Min(get_hash_memory_limit() / 2, limit);
 
 	return Min(Max(all / Max(ex->spec->ncombo, 1), COMBO_CACHE_MIN), limit);
