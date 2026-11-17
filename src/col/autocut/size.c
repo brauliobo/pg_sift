@@ -13,6 +13,7 @@
 #include "core/cmp.h"
 #include "core/hash.h"
 #include "col/autocut/autocut_int.h"
+#include "core/membudget.h"
 
 #define AUTOCUT_TRIAL_SBS	48		/* superblocks of the sample whose integer leaves are encoded to predict the size */
 
@@ -83,7 +84,10 @@ SIFT_DEFINE_SORT(sort_rows_cmp, SortRow, SORT_ROW_LESS)
 static void *
 sort_row_copy(size_t bytes)
 {
-	return bytes <= MaxAllocSize ? palloc_extended(bytes, MCXT_ALLOC_NO_OOM) : NULL;
+	void	   *copy = bytes <= MaxAllocSize ? palloc_extended(bytes, MCXT_ALLOC_NO_OOM) : NULL;
+
+	SIFT_MEM_CHECKPOINT();
+	return copy;
 }
 
 /* the sampled rows are added in the order of their rows, so the radix sort applies */
@@ -210,15 +214,16 @@ acut_layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key,
 {
 	const Track *order[2] = {key >= 0 ? &tr[key] : NULL, key2 >= 0 ? &tr[key2] : NULL};
 	StringInfoData buf;
-	int64	   *tmp = palloc_array(int64, s->n + 1);
-	uint32	   *rows = palloc_array(uint32, s->n + 1);
+	int64	   *tmp;
+	uint32	   *rows;
 	uint32	   *sel = palloc_array(uint32, s->n + 1);
-	uint32	   *tidrows = key >= 0 ? palloc_array(uint32, s->n + 1) : NULL;
+	uint32	   *tidrows = NULL;
 	uint32	   *asc = key >= 0 ? palloc_array(uint32, s->n + 1) : NULL;	/* the sampled rows in the order of their rows */
 	SiftKey    *tid = palloc_array(SiftKey, s->n + 1);	/* by sampled row: its address with the taken superblocks side by side */
-	SiftKey    *keys = palloc_array(SiftKey, s->n + 1);
+	SiftKey    *keys = NULL;
 	uint32	   *cuts = palloc_array(uint32, s->n + 2);
 	uint32		ncut = 0,
+				most = 0,
 				nsel = 0,
 				stride = (s->nsb + AUTOCUT_TRIAL_SBS - 1) / AUTOCUT_TRIAL_SBS,
 				unit,
@@ -239,6 +244,8 @@ acut_layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key,
 		if (key < 0)
 			bytes += sift_cunit_directory_bytes(tid + s->start[u], nsel - from, false, nused, &pages);
 	}
+	for (int u = 0; u < s->nsb && key < 0; u += stride)
+		most = Max(most, s->start[u + 1] - s->start[u]);
 	unit = key >= 0 ? (uint32) Max(nsel / nsb, AUTOCUT_DIR_ROWS) : Max(1, nsel / nused);	/* a unit of the cut holds the rows of the whole heap in a range of the key, the sampled share of them */
 	narrower = Max(0, log2(nsb / nused));	/* the units of the sample are sorted slices of nused superblocks: a unit of the whole heap holds a key range this much narrower, so its gaps take this many bits fewer */
 	initStringInfo(&buf);
@@ -263,6 +270,10 @@ acut_layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key,
 			sel[i] = by[i].row;
 		pfree(by);
 		ncut = cut_units(order[0], sel, nsel, unit, small, cuts);
+		tidrows = palloc_array(uint32, nsel + 1);
+		for (uint32 u = 0; u < ncut; u++)
+			most = Max(most, cuts[u + 1] - cuts[u]);
+		keys = palloc_array(SiftKey, most + 1);
 		/* the rows of each unit in the order of their rows (their addresses), whatever the leaf: a pass over the rows in that order, each to the next place of its unit */
 		{
 			uint32	   *unit_of = palloc_array(uint32, s->n + 1);
@@ -290,6 +301,8 @@ acut_layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key,
 			bytes += sift_cunit_directory_bytes(keys, n, true, 0, &pages) + wider * pages / 8;
 		}
 	}
+	tmp = palloc_array(int64, most + 1);
+	rows = palloc_array(uint32, most + 1);
 	for (int t = 0; t < ntr; t++)
 	{
 		if (key < 0)
@@ -342,7 +355,8 @@ acut_layout_bytes(const Track *tr, int ntr, int nleaves, const Samp *s, int key,
 		pfree(asc);
 	}
 	pfree(tid);
-	pfree(keys);
+	if (keys != NULL)
+		pfree(keys);
 	pfree(cuts);
 	return bytes / Max(nsel, 1) + AUTOCUT_OVERHEAD_BYTES;
 }

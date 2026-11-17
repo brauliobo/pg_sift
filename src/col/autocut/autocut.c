@@ -20,6 +20,8 @@
 #include "col/am.h"
 #include "core/sql.h"
 #include "core/cmp.h"
+#include "core/membudget.h"
+#include "core/membudget.h"
 #include "col/autocut/autocut_int.h"
 
 #define AUTOCUT_MIN_SBS	16
@@ -235,6 +237,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	const SiftColSchema *sc;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col auto key_cut", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
+
+	SIFT_MEM_SCOPE(col_key_cut_decision, cx);
 	Track	   *tr;
 	Samp	   *samp;
 	int			ntr = 0,
@@ -359,7 +363,14 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	for (int i = 0; i < nat && (samp->n <= cap || i < Min(AUTOCUT_MIN_SBS, want)); i++)
 		sample_superblock(heap, slot, tr, ntr, samp, &sample_cap, max_rows, (BlockNumber) at[i] * SIFT_SB_PAGES, nblocks);
 	ExecDropSingleTupleTableSlot(slot);
+	samp->tid = repalloc_array(samp->tid, SiftKey, Max(samp->n, 1));
+	for (int t = 0; t < ntr; t++)
+	{
+		tr[t].v = repalloc_array(tr[t].v, int64, Max(samp->n, 1));
+		tr[t].nl = repalloc_array(tr[t].nl, bool, Max(samp->n, 1));
+	}
 	v->sampled = samp->nsb;
+	SIFT_MEM_CHECKPOINT();
 	if (samp->nsb < Min(AUTOCUT_MIN_SBS, want))
 	{
 		v->reason = psprintf("the sample holds %d superblocks, fewer than the %d it needs", samp->nsb, Min(AUTOCUT_MIN_SBS, want));
@@ -411,6 +422,9 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			}
 		}
 	}
+	for (int t = 0; t < ntr; t++)
+		if (tr[t].ncells > 0)
+			qsort(tr[t].cells, tr[t].ncells, sizeof(Cell), acut_cell_cmp);
 	/* what a row takes in the index now: the integer leaves as the codec writes them, the others as 1 byte, and the directory of the unit */
 	def_row = acut_layout_bytes(tr, ntr, ntr + untracked, samp, -1, -1, false, NULL, nsb, nblocks, rows_per_unit) + untracked_bytes;
 	/* the keys first, in the order of the index, then the time leaves: a range of a time leaf is the lookup of the rows of a key that has no key */

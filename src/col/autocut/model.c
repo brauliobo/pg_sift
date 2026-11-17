@@ -161,7 +161,6 @@ acut_units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool k
 	*fired = false;
 	if (t->ncells == 0)
 		return 0;
-	qsort(t->cells, t->ncells, sizeof(Cell), acut_cell_cmp);
 	for (int64 k = 0; k < t->ncells; k++)
 		total += t->cells[k].n;
 	step = total / AUTOCUT_KEYS;
@@ -299,8 +298,7 @@ acut_hot_share(Relation heap, const Track *t, uint32 nsampled)
 {
 	HeapTuple	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(t->hatt), BoolGetDatum(false));
 	AttStatsSlot sslot;
-	Cell	   *cells;
-	uint32		top = 0,
+	uint64		top = 0,
 				run = 0;
 
 	if (HeapTupleIsValid(tup))
@@ -315,14 +313,10 @@ acut_hot_share(Relation heap, const Track *t, uint32 nsampled)
 		ReleaseSysCache(tup);
 		return share;
 	}
-	cells = palloc_array(Cell, Max(t->ncells, 1));
-	memcpy(cells, t->cells, t->ncells * sizeof(Cell));
-	qsort(cells, t->ncells, sizeof(Cell), acut_cell_cmp);
 	for (int64 i = 0; i < t->ncells; i++)
 	{
-		run = (i > 0 && cells[i].key == cells[i - 1].key ? run : 0) + cells[i].n;
+		run = (i > 0 && t->cells[i].key == t->cells[i - 1].key ? run : 0) + t->cells[i].n;
 		top = Max(top, run);
 	}
-	pfree(cells);
 	return (double) top / Max(nsampled, 1);
 }
