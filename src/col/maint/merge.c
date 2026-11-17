@@ -9,6 +9,7 @@
 #include "bm25/merge.h"
 #include "col/maint/maint_int.h"
 #include "col/point.h"
+#include "core/membudget.h"
 
 /* the key the rewrite is about to cut by is not the one the segments were written for: their rows are sorted again (col/order.c) */
 static bool merge_recut;
@@ -246,6 +247,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col merge", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
+	SIFT_MEM_SCOPE(col_merge, cx);
 	SiftColSegment **seg = palloc(n * sizeof(SiftColSegment *));
 	SiftColBatch **part = palloc(n * sizeof(SiftColBatch *));
 	SiftColBatch **use = palloc(n * sizeof(SiftColBatch *));
@@ -312,6 +314,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		live_bytes += (uint64) (in[i].bytes * live);
 		live_units += (uint64) (units * live);
 		live_rows += sift_cseg_live_rows(seg[i]);
+		SIFT_MEM_CHECKPOINT();
 		for (int k = 0; k < nscope; k++)
 			for (int j = 0; j < SIFT_SCOPE_JOURNALS; j++)
 				o.carry[k][j] = i == 0 ? seg[i]->scope[k][j] : sift_scope_stamp_older(o.carry[k][j], seg[i]->scope[k][j]);
@@ -484,6 +487,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 							 psprintf("merged %d column segments into %d of", n, o.nneu), start, docs);
 		maint_merge_settles(index, in, n, o.nneu);
 	}
+	SIFT_MEM_CHECKPOINT();
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }
