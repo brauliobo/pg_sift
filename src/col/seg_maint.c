@@ -13,6 +13,7 @@
 #include "col/ver.h"
 #include "core/cmp.h"
 #include "core/live.h"
+#include "core/membudget.h"
 
 /* want: the scalar leaves to decode (NULL: all, with the versions of the rows): only their chunks and the directory of the rows are read from the unit, and only their dictionaries; rows: the m rows (ascending, live) to decode (NULL: all the live ones) */
 static void
@@ -163,6 +164,7 @@ sift_cseg_reap_overflow(SiftColSegment *seg, SiftCsegDead dead, void *arg)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col reap overflow", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
+	SIFT_MEM_SCOPE(col_orphan_sweep, cx);
 	SiftColBatch *b = sift_cbatch_create(cx, seg->schema);
 	uint64	   *live = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
 	uint64	   *gone = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(uint64));
@@ -180,6 +182,7 @@ sift_cseg_reap_overflow(SiftColSegment *seg, SiftCsegDead dead, void *arg)
 		if (!flagged)
 			continue;
 		sift_cseg_decode_unit(seg, u, b);
+		SIFT_MEM_CHECKPOINT();
 		sift_cseg_live(seg, u, live);
 		for (uint32 i = 0; i < r->nrows; i++)
 		{
