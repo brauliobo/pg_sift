@@ -340,8 +340,6 @@ col/widescan.c
 col/xstamp.c
 col/xstamp.h
 core/catname.h
-core/cachebudget.c
-core/cachebudget.h
 core/check.c
 core/check.h
 core/cmp_test.c
@@ -368,12 +366,9 @@ core/jsonbuild.c
 core/lane.c
 core/lane.h
 core/leak_test.c
-core/memcensus.c
 core/limits.c
 core/live_repair.c
 core/live_repair_test.c
-core/membudget.c
-core/membudget_table.h
 core/ops.c
 core/ops.h
 core/parbuild.c
@@ -389,8 +384,6 @@ core/restrict.c
 core/restrict.h
 core/restrict_test.c
 core/ring_test.c
-core/sortruns.c
-core/sortruns.h
 core/sql.h
 core/store.c
 core/store_int.h
@@ -401,8 +394,6 @@ core/store_test_int.h
 core/tomb.c
 core/tomb.h
 core/tomb_hdr.c
-core/tomb_int.h
-core/tomb_write.c
 core/verify.c
 core/visibility.c
 core/visibility_popcnt.c
