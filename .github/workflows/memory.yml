@@ -1,6 +1,6 @@
 name: memory
 
-# The memory analysis lanes (docs/MEMORY-ANALYSIS.md), on demand and never blocking: valgrind memcheck with leak checking over the curated list, massif on the slope
+# The memory analysis lanes, on demand and never blocking: valgrind memcheck with leak checking over the curated list, massif on the slope
 # cases (the allocation sites that grow with the rows), and the report that ranks them with the memory census that the full tier of ci.yml uploads
 # (artifacts pg_sift-memcensus-*). The memory slope tests of the quick tier remain the gates; these say which code path to fix.
 on:

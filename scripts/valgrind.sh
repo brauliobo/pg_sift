@@ -12,7 +12,7 @@
 # SIFT_VALGRIND_ORIGINS=1 adds --track-origins=yes (two times slower, tells where an uninitialized value came from). sift.simd is capped to
 # avx2 (SIFT_VALGRIND_SIMD): memcheck has no AVX-512. KEEP=1 keeps the scratch directory.
 # In scripts/ci.sh it is opt-in: `SIFT_CI_JOBS=valgrind scripts/ci.sh quick`.
-# The memory analysis (docs/MEMORY-ANALYSIS.md): SIFT_VALGRIND_LEAKS=1 adds --leak-check=full (definite and possible leaks; a definite one with a pg_sift frame fails the
+# The memory analysis: SIFT_VALGRIND_LEAKS=1 adds --leak-check=full (definite and possible leaks; a definite one with a pg_sift frame fails the
 # lane, the others are reported by scripts/mem-report.py), SIFT_VALGRIND_ACCUM=1 adds the paths that accumulate, SIFT_VALGRIND_ARTIFACTS=DIR keeps the logs there (the input of scripts/mem-report.py), and
 # `scripts/valgrind.sh --massif [CASE...]` runs massif on the slope cases (scripts/massif-slope.py: SIFT_MASSIF_ROWS, default 50000, and four times that) and writes
 # the profiles, their ms_print text and the growth by allocation site (CSV) to the artifacts directory. scripts/valgrind-sift.supp is the suppression file of this repository.
@@ -43,7 +43,7 @@ if [[ -z $MASSIF ]] && (( ! ${#TESTS[@]} )); then
 	TESTS=(store_basic tbl_basic shred_values col_index_relcache verify_relcache col_dict_cache read_dict_ids aggstub_dict
 		agg_lookup_cache col_wbuf wbuf_lifecycle build_parallel agg_partial_index agg_distinct)
 	[[ -z ${SIFT_VALGRIND_FULL:-} ]] || TESTS+=(col_index_basic col_index_parallel col_index_dict_tests agg_bucket agg_dense)
-	# SIFT_VALGRIND_ACCUM=1 adds the small tests of the paths that accumulate memory (docs/MEMORY-ANALYSIS.md): merge, rewrite, fold and vacuum of a column index, the tombstone log,
+	# SIFT_VALGRIND_ACCUM=1 adds the small tests of the paths that accumulate memory: merge, rewrite, fold and vacuum of a column index, the tombstone log,
 	# the scope journal, the value store, partitions, the lookup load and count(DISTINCT)
 	[[ -z ${SIFT_VALGRIND_ACCUM:-} ]] || TESTS+=(col_merge_force col_merge_levels col_merge_runs col_merge_memory col_rewrite_roll col_fold_marks col_dead_rewrite
 		col_build_merge_ends col_tomb_log col_scope_journal col_vstore_lifecycle col_vacuum_request col_track_partitions tbl_partitions tbl_maintain agg_lookup_load)

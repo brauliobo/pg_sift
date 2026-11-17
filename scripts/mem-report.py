@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ranks the code paths that accumulate memory, from the artifacts of a run (docs/MEMORY-ANALYSIS.md).
+"""Ranks the code paths that accumulate memory, from the artifacts of a run.
 
   scripts/mem-report.py report DIR... [--baseline PREV.json] [--out report.md] [--json report.json] [--top N]
   scripts/mem-report.py gate DIR...        valgrind logs only: exit 1 for an error or a definite leak with a pg_sift frame (scripts/valgrind.sh)

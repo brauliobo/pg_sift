@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Massif on the slope cases: the allocation sites that make an operation hold more memory on more rows (docs/MEMORY-ANALYSIS.md).
+"""Massif on the slope cases: the allocation sites that make an operation hold more memory on more rows.
 
   scripts/massif-slope.py run --data DIR --sock DIR --port N --out DIR [--rows N] [--only RE]
   scripts/massif-slope.py selftest

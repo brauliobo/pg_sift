@@ -316,7 +316,7 @@ jobs:
           SIFT_CI_STATS: ${{ matrix.tier == 'quick' && '1' || '' }}
           SIFT_CI_ASSERT: ${{ matrix.cassert && '1' || '' }}
           SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
-          # the memory census (docs/MEMORY-ANALYSIS.md) rides along in the full tier of PostgreSQL 18: the report of the shard ends its run and the files are uploaded below
+          # the memory census rides along in the full tier of PostgreSQL 18: the report of the shard ends its run and the files are uploaded below
           SIFT_MEMCENSUS: ${{ matrix.tier == 'full' && matrix.pg == 18 && 'on' || '' }}
           SIFT_MEMCENSUS_DIR: ${{ runner.temp }}/memcensus
           SIFT_MEMCENSUS_LABEL: pg${{ matrix.pg }}-${{ matrix.tier }}-${{ matrix.shard }}
