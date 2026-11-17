@@ -508,7 +508,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	if (r->out)
 		return skip_insert(index);
 	hint = r->hint;
-	rowcxt = r->rowcxt;
+	rowcxt = sift_col_rel_rowcxt(r);
 	supersede = r->rowkey && batch_updates > 0;
 	speculative = batch_stmts > 0 || (batch_blind && !batch_blind_copy && heap->rd_rel->relam == HEAP_TABLE_AM_OID && sift_col_is_speculative(heap, heap_tid));
 	/*

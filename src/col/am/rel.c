@@ -289,7 +289,6 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 	r->track = r->rowkey || sift_col_track_ctid(index);
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};
-	r->rowcxt = AllocSetContextCreate(mcxt, "sift cache col insert", ALLOCSET_DEFAULT_SIZES);
 	/* mcxt is the context of the index in the relcache for as long as the entry lives: the leaf definitions and names the parsers read are theirs only here */
 	for (int i = 0; i < n; i++)
 		pfree(names[i]);
@@ -453,6 +452,15 @@ sift_col_rel(Relation index)
 	if (index->rd_amcache == NULL)
 		index->rd_amcache = build_rel(index, index->rd_indexcxt);
 	return index->rd_amcache;
+}
+
+/* The memory of one inserted row, in the context that holds the state: a backend that only reads an index never pays its first block */
+MemoryContext
+sift_col_rel_rowcxt(SiftColRel *r)
+{
+	if (r->rowcxt == NULL)
+		r->rowcxt = AllocSetContextCreate(GetMemoryChunkContext(r), "sift cache col insert", ALLOCSET_DEFAULT_SIZES);
+	return r->rowcxt;
 }
 
 SiftColRel *

@@ -221,6 +221,7 @@ TESTING_REGRESS += col_heapfree_stamp_words
 TESTING_REGRESS += col_heapfree_xmin
 TESTING_REGRESS += col_holes_fuzz
 TESTING_REGRESS += col_index_%
+TESTING_REGRESS += col_insert_context_lazy
 TESTING_REGRESS += col_ioss_columns
 TESTING_REGRESS += col_kernels_%
 TESTING_REGRESS += col_key_columns_auto

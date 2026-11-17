@@ -53,7 +53,7 @@ typedef struct SiftColRel
 	bool		journal_known;	/* journal_lineage (col/conn.c) is read: the relcache frees this state with the entry when it invalidates it */
 	uint64		journal_lineage;
 	uint16		journal_tagatt;	/* the column the records of the journal are tagged by (SIFT_TOMB_KEYS_TAGATT): 0 for none */
-	MemoryContext rowcxt;		/* reset after every aminsert */
+	MemoryContext rowcxt;		/* made by the first aminsert of the backend (sift_col_rel_rowcxt), reset after each */
 } SiftColRel;
 
 /* The tombstone log of a heap index with track_changes, synced with what is appended (core/tomb.h); NULL when the index keeps none. sift_col_log_create adds the segment */
@@ -285,6 +285,7 @@ extern void sift_col_datum_values(const SiftColDef *def, Datum d, bool name, Sif
 
 /* Built on first use from the index definition (ERROR for an unsupported type or a jsonb attribute without paths) */
 extern SiftColRel *sift_col_rel(Relation index);
+extern MemoryContext sift_col_rel_rowcxt(SiftColRel *r);
 /*
  * The same in mcxt, for a caller that holds it across a lock or an expression of the index: a reload of the relcache entry (any lock taken
  * meanwhile may cause one) frees the one sift_col_rel returns, which stays only for what the caller reads before it does either.
