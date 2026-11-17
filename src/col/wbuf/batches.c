@@ -7,6 +7,7 @@
 #include "core/limits.h"
 #include "core/tomb.h"
 #include "col/wbuf/wbuf_int.h"
+#include "core/membudget.h"
 
 /* A live record kept for sorting: its payload is at off in the arena */
 typedef struct Held
@@ -472,6 +473,7 @@ sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchem
 {
 	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer batches", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(tmp);
+	SIFT_MEM_SCOPE(col_write_buffer, tmp);
 	SiftCWbufReader *r = sift_cwbuf_open(index, entry, schema, tmp);
 	BatchSet	s = {.cx = mcxt,.schema = schema};
 	WbufLane	lane[SIFT_LANES];
@@ -483,6 +485,7 @@ sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchem
 		SIFT_CORRUPT(index, "A write buffer record of segment %llu repeats an address.", (unsigned long long) entry->gen);
 	if (stamp)
 		fresh_stamp(&f, stamp);
+	SIFT_MEM_CHECKPOINT();
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
 	*n = s.n;
