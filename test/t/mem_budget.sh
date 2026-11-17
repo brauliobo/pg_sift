@@ -5,7 +5,7 @@
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-plan 19
+plan 20
 node_init mb 61 "autovacuum = off
 max_parallel_workers_per_gather = 0
 sift.col_auto_merge = off"
