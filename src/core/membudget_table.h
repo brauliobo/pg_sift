@@ -182,6 +182,12 @@ budget_maint_worker_step(void)
 }
 
 static Size
+budget_tomb_sync_batch(void)
+{
+	return (((Size) sift_tomb_log_limit_kb * 1024) + ((Size) 16384UL));
+}
+
+static Size
 budget_vstore_gc(void)
 {
 	return (((Size) 1048576UL));
@@ -222,6 +228,7 @@ static const struct
 	{"col_writer_spool", budget_col_writer_spool, "maintenance_work_mem + 16MB"},
 	{"index_vacuum", budget_index_vacuum, "maintenance_work_mem + 16MB"},
 	{"maint_worker_step", budget_maint_worker_step, "4MB"},
+	{"tomb_sync_batch", budget_tomb_sync_batch, "sift.tomb_log_limit + 16kB"},
 	{"vstore_gc", budget_vstore_gc, "1MB"},
 };
 

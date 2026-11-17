@@ -29,4 +29,5 @@ col_writer_points	src/col/seg_write/seg_write.c	sift_colw_add	scoped
 col_writer_spool	src/col/seg_write/add.c	add_points	scoped
 index_vacuum	src/bm25/maint_vacuum.c	bulkdelete_index	scoped
 maint_worker_step	src/bm25/maint.c	worker_step	scoped
+tomb_sync_batch	src/core/tomb.c	tomb_sync	scoped
 vstore_gc	src/col/vstore/vstore_live.c	index_refs	scoped

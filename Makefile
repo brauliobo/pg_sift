@@ -375,6 +375,7 @@ TESTING_REGRESS += col_tomb_log
 TESTING_REGRESS += col_tomb_log_block_cache
 TESTING_REGRESS += col_tomb_log_cache
 TESTING_REGRESS += col_tomb_stale_header
+TESTING_REGRESS += col_tomb_sync_mem
 TESTING_REGRESS += col_topn_arith
 TESTING_REGRESS += col_topn_case
 TESTING_REGRESS += col_topn_code

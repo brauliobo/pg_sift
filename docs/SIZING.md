@@ -67,6 +67,7 @@ Every main path declares the memory it may hold as a formula of the settings abo
 | `col_writer_spool` | closed | maintenance_work_mem + 16MB | the entries of the order arrays a segment writer holds until its last unit is in (col/spool.h): a buffer of SIFT_ESET_ROWS entries (256 kB) for each leaf and each of its two regions, the file buffers and the runs of the levels of a leaf that spilled, the blocks built and the merge in hand: the writer weighs the arrays as they would be in memory (16 bytes an entry), a segment is cut at that weight, so what it holds is under its budget |
 | `index_vacuum` | closed | maintenance_work_mem + 16MB | the directory snapshot and the steps of the ambulkdelete and amvacuumcleanup of an index, with the promotions and merges the cleanup runs inside it (8.6 MB at the default maintenance_work_mem) |
 | `maint_worker_step` | closed | 4MB | what one step of the maintenance worker holds besides its promotion or merge, once they end (0.16 MB measured) |
+| `tomb_sync_batch` | closed | sift.tomb_log_limit + 16kB | the batch of entries a backend reads from the pages of a tombstone log before it sorts them into the log it keeps (sift_table and sift_col): a chunk of a quarter of the entries the limit lets the log keep, and one page; whatever the length of the log |
 | `vstore_gc` | closed | 1MB | the segment read of a value store usage count, reset at each segment (88 kB) |
 
 <!-- membudget:end -->
