@@ -18,6 +18,8 @@ tap:store_crash	900	1500	365-391 s hosted
 tap:index_build_crash	900	1500	225-300 s hosted
 fuzz:diff_fuzz.py	900	2500	4 seeds x 300 queries x 6,000 rows: 357 s, peak 1.6-1.9 GB (base database 609 MB, the copy of each seed, WAL) (table mode 496 s); cassert 3 seeds x 100 x 3,000 = 553-615 s
 fuzz:txn_fuzz.py	600	1000	60 seeds = 162 s; --shapes 60 seeds = 122-179 s; cassert 12 seeds = 108-123 s
+fuzz:shapes_matrix.py	600	300	quick tier 4,192 statements 11,505 runs = 36 s; full tier 6,731 statements 20,491 runs = 78 s (one cluster, tiny tables)
+fuzz:surface_sweep.py	600	300	quick tier 165 functions 9,423 calls = 12 s; the option sweep is added to it
 fuzz:bm25_fuzz.py	300	500	40 seeds = 30 s
 fuzz:col_scope_fuzz.py	900	1500	run through tap:col_scope_fuzz
 fuzz:col_scope_textkey_fuzz.py	900	1500	run through tap:col_scope_textkey_fuzz

@@ -84,6 +84,10 @@ if [[ $MODE == full ]]; then
 		job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-400 --stop-after 3
 		job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-400 --stop-after 3
 	fi
+	# every statement shape (join type and key form, grouping, ordering, predicates, index availability, parallelism, planner settings) against the plain plan, and every
+	# call of the SQL surface with hostile arguments: no signal, no internal error, same rows (test/fuzz/shapes_matrix.py, test/fuzz/surface_sweep.py)
+	job shapes-matrix shapes-matrix 1 python3 "$REPO/test/fuzz/shapes_matrix.py" --tier full
+	job shapes-surface shapes-surface 1 python3 "$REPO/test/fuzz/surface_sweep.py" --tier full
 	# BM25 queries (phrase, plain, boolean) in subplans, LATERAL joins and cursors, each plan in a new backend, the heap plan against the index and the parallel plan (test/fuzz/bm25_fuzz.py)
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
 		job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-12 --queries 30 --stop-after 2
@@ -173,6 +177,8 @@ else
 	job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-6,9,10,34 --stop-after 2
 	once_on_18 && job difftest-txn-vstore difftest-txn 1 env PGOPTIONS='-c sift.test_vstore_columns=*' python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6 --stop-after 2
 	job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-12 --queries 30 --stop-after 2
+	job shapes-matrix shapes-matrix 1 python3 "$REPO/test/fuzz/shapes_matrix.py" --tier quick
+	job shapes-surface shapes-surface 1 python3 "$REPO/test/fuzz/surface_sweep.py" --tier quick
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
 	installcheck filter_pushdown
