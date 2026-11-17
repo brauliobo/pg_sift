@@ -595,6 +595,8 @@ CREATE FUNCTION sift._test_col_fold_marks(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_fold_marks' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_marks_paid(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_marks_paid' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_fold_counts() RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_fold_counts' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_log_create(index regclass) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_create' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_log_append(index regclass, tid tid) RETURNS void

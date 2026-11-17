@@ -435,6 +435,9 @@ extern int	sift_col_maint_promote(Relation index, bool wait);
 #define MAINT_HALF		0.5
 /* The rows whose delete or update every snapshot sees as committed are cleared in the segments and the write buffer and their tombstones dropped, without waiting for a VACUUM (maintenance lock free) */
 extern uint64 sift_col_fold_marks(Relation index);
+#ifdef SIFT_TESTING
+extern int64 sift_col_fold_counts;
+#endif
 /* Have the reads of the server paid for the fold of the marks, and the worker asked for when they have */
 extern bool sift_col_fold_due(Relation index);
 extern void sift_col_reads_flush(Relation index);

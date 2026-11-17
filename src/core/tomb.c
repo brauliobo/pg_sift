@@ -90,6 +90,7 @@ tomb_reset(SiftTombLog *t, const SiftSegEntry *e)
 	memset(&t->keys, 0, sizeof(t->keys));
 	t->keys_cover = false;
 	t->nents = t->nrecent = 0;
+	t->foldable = 0;
 	sift_srun_reset(&t->spilled);
 	sift_srun_reset(&t->hotspilled);
 	if (t->hotm)

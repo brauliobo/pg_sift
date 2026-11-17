@@ -270,7 +270,10 @@ sift_col_fold_marks(Relation index)
 }
 
 /* The marks a fold could clear now: those of a delete or update that is frozen or older than the horizon (the rest wait for the snapshots that hold it, and a fold of them clears nothing) */
-/* The marks a fold could clear now: those of a delete or update that is frozen or older than the horizon (the rest wait for the snapshots that hold it, and a fold of them clears nothing) */
+#ifdef SIFT_TESTING
+int64		sift_col_fold_counts;	/* sift._test_col_fold_counts: the passes over a log that counted the marks a fold could clear */
+#endif
+
 static uint64
 fold_ready(SiftTombLog *log, TransactionId horizon)
 {
@@ -279,16 +282,24 @@ fold_ready(SiftTombLog *log, TransactionId horizon)
 	uint32		n;
 	uint64		ready = 0;
 
+#ifdef SIFT_TESTING
+	sift_col_fold_counts++;
+#endif
 	sift_tomb_each_begin(&each, log, CurrentMemoryContext);
 	while ((a = sift_tomb_each_next(&each, &n)) != NULL)
 		for (uint32 i = 0; i < n; i++)
 			ready += (a[i].kind == SIFT_TOMB_DELETE || a[i].kind == SIFT_TOMB_UPDATE) &&
 				(a[i].xid == FrozenTransactionId || (TransactionIdIsNormal(a[i].xid) && TransactionIdPrecedes(a[i].xid, horizon)));
 	sift_tomb_each_end(&each);
+	log->foldable = ready;
 	return ready;
 }
 
-/* Have the reads of the server paid for the fold of the marks of the log? What they paid is counted for the log in hand: a fold, or a VACUUM, makes a new one */
+/*
+ * Have the reads of the server paid for the fold of the marks of the log? What they paid is counted for the log in hand: a fold, or a VACUUM, makes a new one. The marks a fold clears are counted
+ * by a pass over all the entries of the log, which a scan that paid for some marks would make again and again: the last count is a floor (entries are added and only become clearable), and the log is
+ * counted again only when what the reads paid is half the cost of a fold of that many marks.
+ */
 bool
 sift_col_fold_due(Relation index)
 {
@@ -301,17 +312,18 @@ sift_col_fold_due(Relation index)
 
 	if (log == NULL)
 		return false;
-	ready = fold_ready(log, GetOldestNonRemovableTransactionId(NULL));
-	if (ready == 0)
-		return false;
 	sift_col_dir_read(index, snap, false);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			rows += snap->segs[i].ndocs;
 	paid = sift_col_marks_paid(index, &snap->meta, log->gen);
 	pfree(snap);
+	cost = FOLD_ROW_PRICE * (double) rows + FOLD_MARK_PRICE * (double) Max(1, log->foldable) + FOLD_WAL_PRICE;
+	if ((double) paid < MAINT_HALF * cost)
+		return false;
+	ready = fold_ready(log, GetOldestNonRemovableTransactionId(NULL));
 	cost = FOLD_ROW_PRICE * (double) rows + FOLD_MARK_PRICE * (double) ready + FOLD_WAL_PRICE;
-	return (double) paid >= MAINT_HALF * cost;
+	return ready > 0 && (double) paid >= MAINT_HALF * cost;
 }
 
 bool
