@@ -27,6 +27,7 @@
 #include "col/am.h"
 #include "col/scope.h"
 #include "col/vstore/vstore.h"
+#include "core/inspect.h"
 #include "core/ops.h"
 #include "core/restrict.h"
 #include "utils/builtins.h"
@@ -71,7 +72,7 @@ open_locked(Oid store)
 Datum
 sift_col_value_store_begin(PG_FUNCTION_ARGS)
 {
-	Oid			heap = PG_GETARG_OID(0);
+	Oid			heap = sift_rel_must_exist(PG_GETARG_OID(0));
 	AttrNumber	attno = get_attnum(heap, NameStr(*PG_GETARG_NAME(1)));
 	Oid			store;
 	SiftVStore *vs;

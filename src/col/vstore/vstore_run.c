@@ -5,11 +5,10 @@
  * The code space of a store is append-only: a value has exactly one code, the position at which it was appended, and a code never moves. A run
  * is an immutable segment of the directory (kind SIFT_SEG_VALRUN) that holds the values of the codes [base, base + n) in code order, in the
  * serialized form of a string dictionary. A writer asks the store for the codes of a batch of values: those it finds are answered, the others are
- * appended as one run, under the extension lock of the store (the one heavyweight lock that the members of a parallel build do not share: core/extlock.h) that is held for the append and no longer, and published by a directory update that is logged after the pages
+ * appended as one run, under the extension lock of the store (the one heavyweight lock that the members of a parallel build do not share) that is held for the append and no longer, and published by a directory update that is logged after the pages
  * of the run, so that a segment that names the codes (published later, by the writer) is never seen without them. An append that is not followed
  * by a segment leaves values nobody uses: the store keeps them until its epoch is retired (col/vstore/vstore_gc.c).
- * Runs are merged by the appender (adjacent runs, the codes unchanged), so that a lookup reads few of them, under a merge lock of their own that it only tries for: no append waits for a merge
- * (the members of a parallel build merge under the extension lock too, see merge_when_idle).
+ * Runs are merged by the appender (adjacent runs, the codes unchanged), so that a lookup reads few of them.
  */
 #include "postgres.h"
 
@@ -21,26 +20,22 @@
 #include "lib/stringinfo.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
-#include "storage/proc.h"
 #include "utils/inval.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/syscache.h"
 
 #include "col/codec.h"
 #include "col/enc.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
-#include "core/cachebudget.h"
 #include "col/vstore/vstore.h"
-#include "col/vstore/vstore_int.h"
+#include "core/inspect.h"
 #include "core/extlock.h"
 #include "core/limits.h"
 #include "core/page.h"
 #include "core/sift.h"
 #include "core/store.h"
-#include "core/visibility.h"
 #include "core/damage.h"
 #include "core/catname.h"
 
@@ -59,13 +54,40 @@ typedef struct VRunHead
 	uint32		pad;
 } VRunHead;
 
+/*
+ * What a backend keeps of a store, up to the last code it has read: the runs as they were parsed (a piece covers the codes from lo, its strings from index
+ * lo - dbase of the dictionary of the run), which is all that a reader of strings by code needs, and, for an appender whose batch is small beside the
+ * store, a table of the hash of the strings (slots: hash << 32 | code + 1) that finds the code of a string
+ */
+typedef struct ViewPiece
+{
+	uint64		lo;				/* the first code of the piece */
+	uint64		dbase;			/* the code of string 0 of d */
+	SiftCDict  *d;
+} ViewPiece;
+
+typedef struct VStoreView
+{
+	Oid			store;			/* first: the hash key */
+	MemoryContext cx;
+	bool		loaded;
+	uint64	   *slots;			/* the table of the codes below indexed (NULL until an appender asks), nslots of them */
+	uint32		nslots;
+	uint64		indexed;
+	ViewPiece  *piece;
+	int			npiece;
+	int			cap;
+	uint64		total;			/* the codes the pieces cover */
+	uint64		epoch;
+} VStoreView;
+
 struct SiftVStore
 {
 	Relation	rel;
 	VStoreView *view;
-	ViewPin    *pin;
 };
 
+static HTAB *views;
 
 static void
 vs_corrupt(Relation rel, const char *what)
@@ -73,22 +95,75 @@ vs_corrupt(Relation rel, const char *what)
 	SIFT_DAMAGE_OTHER_DATA(errmsg("shared value store \"%s\": %s", RelationGetRelationName(rel), what));
 }
 
+static VStoreView *
+view_get(Oid store)
+{
+	bool		found;
+	VStoreView *v;
+
+	if (views == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(VStoreView), .hcxt = TopMemoryContext};
+
+		views = hash_create("sift value store views", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	v = hash_search(views, &store, HASH_ENTER, &found);
+	if (!found)
+	{
+		v->cx = AllocSetContextCreate(TopMemoryContext, "sift cache value store view", ALLOCSET_DEFAULT_SIZES);
+		v->slots = NULL;
+		v->nslots = 0;
+		v->indexed = 0;
+			v->loaded = false;
+		v->piece = NULL;
+		v->npiece = v->cap = 0;
+		v->total = 0;
+		v->epoch = 0;
+	}
+	return v;
+}
+
+static void
+view_reset(VStoreView *v, uint64 epoch)
+{
+	MemoryContextReset(v->cx);
+	v->slots = NULL;
+	v->nslots = 0;
+	v->indexed = 0;
+	v->piece = NULL;
+	v->npiece = v->cap = 0;
+	v->total = 0;
+	v->loaded = true;
+	v->epoch = epoch;
+}
+
+static void
+view_add(VStoreView *v, uint64 lo, uint64 dbase, SiftCDict *d)
+{
+	if (v->npiece == v->cap)
+	{
+		v->cap = Max(8, 2 * v->cap);
+		v->piece = v->piece ? repalloc(v->piece, v->cap * sizeof(ViewPiece)) : MemoryContextAlloc(v->cx, v->cap * sizeof(ViewPiece));
+	}
+	v->piece[v->npiece++] = (ViewPiece) {lo, dbase, d};
+	v->total = lo + d->n - (lo - dbase);
+}
+
 SiftVStore *
 sift_vstore_open(Oid store, LOCKMODE lock)
 {
 	SiftVStore *vs = palloc(sizeof(SiftVStore));
 
-	vs->rel = table_open(store, lock);
+	vs->rel = table_open(sift_rel_must_exist(store), lock);
 	if (!sift_vstore_is_store(store))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a shared value store", RelationGetRelationName(vs->rel))));
-	vs->view = vview_open(store, &vs->pin);
+	vs->view = view_get(store);
 	return vs;
 }
 
 void
 sift_vstore_close(SiftVStore *vs)
 {
-	vview_release(vs->pin);
 	table_close(vs->rel, NoLock);
 	pfree(vs);
 }
@@ -147,7 +222,6 @@ load_run(SiftVStore *vs, const SiftSegEntry *e)
 	SiftCDict  *run;
 	Size		used;
 
-	sift_cache_room(e->bytes);
 	sift_sr_init(&sr, vs->rel, ext, next, e->gen);
 	head = sift_sr_get(&sr, 0, e->bytes, scratch);
 	if (head->magic != VRUN_MAGIC || head->base != e->sum_dl || head->n != e->ndocs || head->epoch != v->epoch)
@@ -155,7 +229,7 @@ load_run(SiftVStore *vs, const SiftSegEntry *e)
 	run = sift_cdict_parse(v->cx, (const char *) head + sizeof(VRunHead), e->bytes - sizeof(VRunHead), &used);
 	if (run == NULL || run->n != head->n)
 		vs_corrupt(vs->rel, "a run does not parse");
-	vview_add(v, v->total, head->base, run);
+	view_add(v, v->total, head->base, run);
 	sift_sr_release(&sr);
 	pfree(scratch);
 	pfree(ext);
@@ -259,7 +333,7 @@ view_refresh(SiftVStore *vs)
 	sift_dir_read(vs->rel, snap);
 	n = dir_runs(snap, runs, &epoch);
 	if (!vs->view->loaded || vs->view->epoch != epoch)
-		vview_reset(vs->view, epoch);
+		view_reset(vs->view, epoch);
 	for (int i = 0; i < n; i++)
 	{
 		if (runs[i].sum_dl + runs[i].ndocs <= vs->view->total)
@@ -272,6 +346,20 @@ view_refresh(SiftVStore *vs)
 	return snap;
 }
 
+#ifdef SIFT_TESTING
+void
+sift_vstore_forget_views(void)
+{
+	HASH_SEQ_STATUS seq;
+	VStoreView *v;
+
+	if (views == NULL)
+		return;
+	hash_seq_init(&seq, views);
+	while ((v = hash_seq_search(&seq)) != NULL)
+		v->loaded = false;
+}
+#endif
 
 /* The current epoch of a store (the low 32 bits, the way a segment names it), from the metapage of its relation */
 uint32
@@ -417,12 +505,7 @@ write_run(SiftVStore *vs, const SiftCDict *src, uint32 from, uint32 lo, uint32 n
 	pfree(out.data);
 }
 
-/*
- * The one session that appends codes: the codes it hands out start at the end of the store it read under this lock, and its run is published before the lock goes. The relation
- * extension lock, because it is the only heavyweight lock that conflicts between the members of a lock group too (src/backend/storage/lmgr/README, LockCheckConflicts: every other
- * lock of a group is shared): the members of a parallel build intern concurrently. Under it nothing may take a heavyweight lock: the xid is assigned first (the catalog the directory
- * update reads is read by the lock, core/extlock.h)
- */
+/* Under the extension lock nothing may take a heavyweight lock: the xid is assigned first (the catalog the directory update reads is read by the lock, core/extlock.h) */
 static void
 lock_extend(SiftVStore *vs)
 {
@@ -590,30 +673,6 @@ merge_runs(SiftVStore *vs, const SiftCcPolicy *pol, const SiftDirSnapshot *snap)
 	pfree(runs);
 }
 
-/*
- * The merge of the runs after an append, by the one session that gets the merge lock: another that interns meanwhile appends (the append is under the extension lock, which the merge
- * does not hold) and leaves the merge to the one that holds it. The runs a skipped merge leaves are merged by the next append. The members of a lock group share the merge lock (page
- * locks do not conflict inside a group): they take the extension lock for the merge as well, one after the other as the appends of a parallel build are
- */
-static void
-merge_when_idle(SiftVStore *vs, const SiftCcPolicy *pol)
-{
-	SiftDirSnapshot *snap;
-	bool		in_group = MyProc->lockGroupLeader != NULL;
-
-	if (!ConditionalLockPage(vs->rel, SIFT_VSTORE_MERGE_LOCK_BLKNO, ExclusiveLock))
-		return;
-	SIFT_TEST_GATE(sift_test_intern_gate, 12);
-	if (in_group)
-		lock_extend(vs);
-	snap = view_refresh(vs);
-	merge_runs(vs, pol, snap);
-	pfree(snap);
-	if (in_group)
-		sift_extension_unlock(vs->rel);
-	UnlockPage(vs->rel, SIFT_VSTORE_MERGE_LOCK_BLKNO, ExclusiveLock);
-}
-
 /* map[i] = the code of the value i of the batch for the values the table of the view has (the others are left as they are) */
 static void
 map_codes(SiftVStore *vs, SiftCDict *batch, uint32 *map)
@@ -673,6 +732,7 @@ sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch_in, const SiftCcPolicy
 	SiftCDict  *batch = (SiftCDict *) batch_in;
 	uint32		missing,
 				appended = 0;
+	SiftDirSnapshot *snap;
 
 retry:
 	missing = 0;
@@ -685,10 +745,11 @@ retry:
 	if (missing > 0)
 	{
 		lock_extend(vs);
-		pfree(view_refresh(vs));
+		snap = view_refresh(vs);
 		if (vs->view->epoch != *epoch)	/* a new epoch began since: the codes found are the old one's */
 		{
 			sift_extension_unlock(vs->rel);
+			pfree(snap);
 			goto retry;
 		}
 		map_codes(vs, batch, map);
@@ -716,12 +777,14 @@ retry:
 			{
 				write_run(vs, fresh, 0, lo, fresh->n, pol, NULL, 0);
 				/* published: the view has the run as it was made (the directory update is logged after the pages of the run) */
-				vview_add(vs->view, lo, lo, fresh);
+				view_add(vs->view, lo, lo, fresh);
 				appended = fresh->n;
+				pfree(snap);
+				snap = view_refresh(vs);
 			}
 		}
+		merge_runs(vs, pol, snap);
 		sift_extension_unlock(vs->rel);
-		merge_when_idle(vs, pol);
 	}
 	*ncodes = vs->view->total;
 	return appended;
