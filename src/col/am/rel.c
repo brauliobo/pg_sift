@@ -292,6 +292,8 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 	/* mcxt is the context of the index in the relcache for as long as the entry lives: the leaf definitions and names the parsers read are theirs only here */
 	for (int i = 0; i < n; i++)
 		pfree(names[i]);
+	for (int i = r->conn_first; i < n; i++)
+		pfree(defs[i].path);
 	pfree(names);
 	pfree(defs);
 	MemoryContextSwitchTo(old);
