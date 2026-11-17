@@ -125,6 +125,7 @@ TESTING_REGRESS += bm25_wbuf_wide_bloom
 TESTING_REGRESS += build_limits
 TESTING_REGRESS += build_page_text
 TESTING_REGRESS += build_pool
+TESTING_REGRESS += col_advice_connect
 TESTING_REGRESS += col_alloc_limit
 TESTING_REGRESS += col_alloc_scaled
 TESTING_REGRESS += col_alter_layout
