@@ -6,3 +6,4 @@ test/expected/agg_shape_widths.out:rows_ok	12	NULL where the scan was not used (
 test/expected/col_track_update_skip.out:same_key	6	the column is the name of a function that returns void: the empty cell is the void, the comparison is the RAISE inside it
 test/expected/dirty_query.out:top_ok	6	NULL for a case without ties (dq_cases.ties false): the order of equal scores is not specified, so no top-N comparison is made
 test/expected/dirty_query.out:deep_ok	6	as top_ok, for the page past 2000 rows
+test/expected/agg_vnum_program.out:ok	8	a program that pops an empty stack, ends with other than one value or overflows the stack is refused: f is the answer
