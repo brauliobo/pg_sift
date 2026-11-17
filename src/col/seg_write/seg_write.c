@@ -502,7 +502,8 @@ sift_colw_bytes(const SiftColSegWriter *w)
  * The bytes of a segment that grow with its rows and not with its units: the keys, rows and addresses kept for each point directory and order array, with the
  * arrays the end of the segment builds from them (a sort copy of 24 bytes an entry for an order, 16 for each of the two copies of a directory), the blobs of the
  * summaries, runs and sketches of the units, and the rows of the counted codes. Without them a table whose units are small never reaches the budget, and
- * the segment holds every row of it.
+ * the segment holds every row of it. The entries of an order array that is built alone are weighed as the arrays they would be, though they wait on temp files (col/spool.h):
+ * the weight is what cuts the segments, and a segment is the same whether its entries were held or spilled.
  */
 static Size
 rows_memory(const SiftColSegWriter *w)
@@ -514,7 +515,8 @@ rows_memory(const SiftColSegWriter *w)
 	{
 		const PointAcc *a = &w->pt[c];
 
-		m += (Size) a->cap * (sizeof(int64) + (a->row ? sizeof(uint32) : 0) + (a->tid ? sizeof(uint64) : 0)) + (Size) a->gcap * (sizeof(int64) + sizeof(uint8)) +
+		m += a->spool ? (Size) a->cap * (sizeof(int64) + sizeof(uint64)) + (Size) a->ncap * sizeof(uint64) :
+			(Size) a->cap * (sizeof(int64) + (a->row ? sizeof(uint32) : 0) + (a->tid ? sizeof(uint64) : 0)) + (Size) a->gcap * (sizeof(int64) + sizeof(uint8)) +
 			(Size) a->ncap * (sizeof(uint64) + (a->ngk ? sizeof(int64) + sizeof(uint8) : 0));
 		/* the end of the segment builds one leaf at a time: the largest of them is what it adds (the entries of the order, group + key + address; the entries and the copy of the directory) */
 		build = Max(build, (a->ord ? ((Size) a->n + a->nn) * 3 * sizeof(int64) : 0) + (a->want ? (Size) a->n * 2 * 2 * sizeof(int64) : 0));
@@ -750,5 +752,6 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		entry->flags |= SIFT_SEG_LSTATS;
 	entry->ndocs = w->rows;
 	entry->bytes = blocks * BLCKSZ;
+	segw_free_points(w);
 	pfree(schema.data);
 }

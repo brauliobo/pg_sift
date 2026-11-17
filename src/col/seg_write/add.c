@@ -6,7 +6,63 @@
 #include "core/host.h"
 #include "col/hll.h"
 #include "col/setsum.h"
+#include "col/gorder.h"
 #include "col/seg_write/seg_write_int.h"
+
+/* The entry (key, address) of the next row with a value of the leaf: does it still follow the heap */
+static inline void
+track_order(PointAcc *a, int64 key, uint64 tid)
+{
+	a->unordered |= a->n > 0 && (key < a->last_key || tid < a->last_tid);
+	a->last_key = key;
+	a->last_tid = tid;
+}
+
+/* The room an array of the entries of a leaf has for `need` of them when it has `cap` */
+static inline uint32
+grow_cap(uint32 cap, uint32 need)
+{
+	return (uint32) Max(Max(cap + cap / 4, 4096), need);
+}
+
+static inline uint32
+grow_ncap(uint32 ncap, uint32 need)
+{
+	return Max(Max(ncap * 2, 1024), need);
+}
+
+/*
+ * The rows of a unit to the order array of a leaf that has no other use of its entries: they go to the sets, which keep what the writer may hold and spill the rest. The room the
+ * entries would take as arrays (cap, ncap) is still tracked: it is what sift_colw_memory weighs a segment by, so that it is cut where it always was.
+ */
+static void
+add_spooled(PointAcc *a, const SiftCPaggCol *v, const SiftKey *rowkeys)
+{
+	if (a->n + v->n > a->cap)
+		a->cap = grow_cap(a->cap, a->n + v->n);
+	if (v->nulls && a->nn + v->n > a->ncap)
+		a->ncap = grow_ncap(a->ncap, a->nn + v->n);
+	for (uint32 i = 0; i < v->n; i++)
+	{
+		uint64		code = sift_cpoint_tid_code(rowkeys[i]);
+
+		/* no offset number of a heap page of 8 kB reaches the codes' room, but a key from elsewhere must not be listed wrongly */
+		if ((rowkeys[i] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
+		{
+			a->bad = true;
+			return;
+		}
+		if (sift_col_bit_test(v->nulls, i))
+		{
+			sift_eset_add(&a->nulls, 0, code);
+			a->nn++;
+			continue;
+		}
+		track_order(a, v->key[i], rowkeys[i]);
+		sift_eset_add(&a->vals, v->key[i], code);
+		a->n++;
+	}
+}
 
 /* Adds the rows of the unit just encoded to the point directories of the leaves that ask for one (the keys of cols: the segment's codes of a dictionary leaf) */
 static void
@@ -24,6 +80,12 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 
 		if (!(a->want || a->ord) || a->bad)
 			continue;
+		a->spool = a->ord && !a->want && gv == NULL;
+		if (a->spool && a->vals.cxt == NULL)
+		{
+			sift_eset_init(&a->vals, w->mcxt, !sift_cgord_leaf_text(&w->schema->cols[c]));
+			sift_eset_init(&a->nulls, w->mcxt, true);
+		}
 		if (a->ord && w->inl[c])
 			a->bad = true;
 		for (uint32 i = 0; v->ovf && i < SIFT_COL_NWORDS(v->n); i++)
@@ -35,13 +97,21 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 		if (!v->ready || (gv && !gv->ready) || a->bad || w->rows + v->n >= SIFT_CPOINT_SEG_ROWS)
 		{
 			a->bad = true;
+			segw_drop_spool(a);
+			continue;
+		}
+		if (a->spool)
+		{
+			add_spooled(a, v, rowkeys);
+			if (a->bad)
+				segw_drop_spool(a);
 			continue;
 		}
 		if (a->n + v->n > a->cap)
 		{
 			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
 
-			a->cap = (uint32) Max(Max(a->cap + a->cap / 4, 4096), a->n + v->n);
+			a->cap = grow_cap(a->cap, a->n + v->n);
 			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->key, (Size) a->cap * sizeof(int64));
 			if ((a->want && !a->tids) || segw_elem_point(w, c))
 				SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->row, (Size) a->cap * sizeof(uint32));
@@ -53,7 +123,7 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 		{
 			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
 
-			a->ncap = Max(Max(a->ncap * 2, 1024), a->nn + v->n);
+			a->ncap = grow_ncap(a->ncap, a->nn + v->n);
 			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->ntid, (Size) a->ncap * sizeof(uint64));
 			if (gv)
 			{
@@ -115,6 +185,8 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 				a->gok[a->n] = !gnull;
 				a->gk[a->n] = gnull ? 0 : gv->key[i];
 			}
+			if (a->ord)
+				track_order(a, v->key[i], rowkeys[i]);
 			a->key[a->n] = v->key[i];
 			if (wt)
 				a->tid[a->n] = rowkeys[i];

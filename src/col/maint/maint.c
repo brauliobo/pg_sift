@@ -28,8 +28,8 @@ int			sift_col_auto_merge_partition_kb = 0;
 /*
  * The size of a partition in effect for the directory in hand: sift.col_auto_merge_partition_kb, else the smaller of sift.vacuum_rewrite_limit (for an index
  * over it, so that the rewrite of a large index is a step for each partition, the lock let go between them, and not one step for all of it) and the share of
- * the memory a writer may take within maintenance_work_mem (sift_colw_budget): it keeps the key and address of each row of a global order until its last unit is in, about 2.5 bytes of memory
- * for each byte of segment. The memory bound gives way to the directory: an index never has more than PART_DIVISOR partitions. 0: no partitions.
+ * the memory a writer may take within maintenance_work_mem (sift_colw_budget): a global order weighs the key and address of each of its rows until the last unit is in, about 2.5 bytes
+ * for each byte of segment (the entries wait on temp files, but the weight is what cuts the segment). The memory bound gives way to the directory: an index never has more than PART_DIVISOR partitions. 0: no partitions.
  */
 int	maint_part_kb = 0;
 

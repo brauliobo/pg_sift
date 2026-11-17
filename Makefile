@@ -208,6 +208,7 @@ TESTING_REGRESS += col_gorder_layout
 TESTING_REGRESS += col_gorder_mem_segment
 TESTING_REGRESS += col_gorder_narrow
 TESTING_REGRESS += col_gorder_seek
+TESTING_REGRESS += col_gorder_spill
 TESTING_REGRESS += col_gorder_text
 TESTING_REGRESS += col_gorder_text_buffer
 TESTING_REGRESS += col_gorder_text_count

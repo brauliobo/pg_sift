@@ -81,7 +81,7 @@ int			work_mem = 1024 * 1024;
 int
 BufFileSeek(BufFile *file, int fileno, long offset, int whence)
 {
-	return fseek(file->f, offset, whence);
+	return fseek(file->f, whence == SEEK_SET ? (long) fileno * 0x40000000L + offset : offset, whence);
 }
 
 void

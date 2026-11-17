@@ -57,6 +57,7 @@
 #include "core/host.h"
 
 #include "col/enc.h"
+#include "col/spool.h"
 #include "core/limits.h"
 
 #define SIFT_CGORD_MAGIC	0x44474F43		/* "COGD" */
@@ -198,13 +199,13 @@ typedef struct SiftCGOrdDir
 } SiftCGOrdDir;
 
 /*
- * Appends the block of the key (key[i], tid[i]) of the rows with a value and the addresses ntid of those without (the lists are left as they are); the addresses
- * are heap addresses (block << 16 | offset, offsets below 512). The chunks hold SIFT_CGORD_ROWS_FINE entries (a block of SIFT_CGORD_ROWS is read as well). The block is a multiple of 8 bytes.
+ * Writes to out the block of the entries src gives, in order: nvals rows with a value by (key, address) and then nnull without by address (the addresses are the
+ * codes of heap addresses, block << 9 | offset, offsets below 512; the key of the rows without is 0), once. The chunks hold SIFT_CGORD_ROWS_FINE entries (a block of SIFT_CGORD_ROWS is read as well). The block is a multiple of 8 bytes.
  * ends: a segment of more than 2 * SIFT_CGORD_ENDS values keeps the ends only.
  * layout: SIFT_CGORD_L_COMPACT writes a block of version 4 when the segment has more than 8 * SIFT_CGORD_ENDS (32,768) values and dense is set, else the whole order;
  * SIFT_CGORD_L_AUTO the same with a compact chunk only where it is at least a fifth smaller than the whole one (a block with none is the whole order).
  */
-extern void sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, bool dense, bool ends, int layout, StringInfo out);
+extern void sift_cgord_build(SiftEntSrc *src, uint32 nvals, uint32 nnull, bool dense, bool ends, int layout, SiftBlob *out);
 /* The rows of the complete plain block of the leaf, which a grouped block may name its entries by position in (the rows with no group are among them) */
 typedef struct SiftCGOrdPlain
 {
@@ -216,11 +217,11 @@ typedef struct SiftCGOrdPlain
 } SiftCGOrdPlain;
 /* The same grouped by the leaf gcol: group[i] is the group of entry i of key / tid, ngroup[i] that of ntid[i]; every entry has one. plain: the rows of the plain block written beside it, or NULL */
 extern void sift_cgord_build_grouped(const int64 *key, const uint64 *tid, const int64 *group, const uint8 *ok, uint32 n, uint32 nvals, const uint64 *ntid, const int64 *ngroup,
-									 const uint8 *nok, uint32 nn, uint32 nnull, int gcol, bool dense, int layout, const SiftCGOrdPlain *plain, StringInfo out);
+									 const uint8 *nok, uint32 nn, uint32 nnull, int gcol, bool dense, int layout, const SiftCGOrdPlain *plain, SiftBlob *out);
 
 /*
- * The block of a text leaf (version 3): key[i] is the segment code of the string of the entry in d, ranked here by cmp under collid (0: the bytes), which the caller
- * says how to compare (the library of the host knows the collations); otherwise as sift_cgord_build.
+ * The block of a text leaf (version 3): the key of an entry is the rank of its string, which the caller maps its segment codes to (sift_cgord_text_ranks over the order of d under collid
+ * (0: the bytes), which it says how to compare: the library of the host knows the collations); otherwise as sift_cgord_build.
  */
 typedef int (*SiftCStrCmp) (const char *a, uint32 la, const char *b, uint32 lb, uint32 collid);
 extern SiftCStrCmp sift_cgord_strcmp;
@@ -231,7 +232,9 @@ extern int sift_cgord_str_order(const char *a, uint32 la, const char *b, uint32 
 /* perm: the block names the strings by their dictionary codes (version 5) instead of holding them (version 3) */
 /* The codes of the strings of d in the order of the collation, then the bytes (palloc'd, d->n of them); a block of both forms takes the same */
 extern uint32 *sift_cgord_text_order(const SiftCDict *d, uint32 collid);
-extern void sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, const uint32 *order, bool dense, bool perm, StringInfo out);
+/* The rank of each code among the strings in the order of `order` (nstr of them, palloc'd): what the keys of the entries of the block are mapped to when they are sealed */
+extern int64 *sift_cgord_text_ranks(const uint32 *order, uint32 nstr);
+extern void sift_cgord_build_text(SiftEntSrc *src, uint32 nvals, uint32 nnull, const SiftCDict *d, uint32 collid, const uint32 *order, bool dense, bool perm, SiftBlob *out);
 /* Where the decode of a front coded block of strings stands: the next string to decode, its place in the block, and the bytes of the string before it, which out holds */
 typedef struct SiftCStrPos
 {

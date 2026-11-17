@@ -72,10 +72,13 @@ col/preagg_super.c
 col/ktab.c
 col/gorder.c
 col/gquant.c
+col/gorder_leaf.c
 col/gorder_opt.c
 col/gorder_read.c
 col/gorder_seek.c
+col/gorder_text.c
 col/point.c
+col/spool.c
 col/runs.c
 col/hll.c
 col/setsum.c
@@ -116,6 +119,7 @@ col/seg_write/seg_write_int.h
 col/gorder.h
 col/gquant.h
 col/point.h
+col/spool.h
 col/runs.h
 col/hll.h
 col/ktab.h

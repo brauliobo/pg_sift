@@ -1,0 +1,43 @@
+-- The entries of an order array that a segment writer cannot hold are written to temp files as sorted runs and merged back in order (col/spool.c): the arrays of an index built with a run
+-- of a few entries are those of the build that holds them all, for every kind of leaf (integers with NULL rows, a time, a text under the C collation and under an ICU one, an array that
+-- keeps the ends only), and the runs are merged in passes of at most 64 files.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
+
+CREATE TABLE gs (id int, k int, ts timestamp, sc text COLLATE "C", sf text COLLATE "en-x-icu", amount int) WITH (autovacuum_enabled = off);
+INSERT INTO gs SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i * 7919 % 10007 END, TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 300011) * INTERVAL '1 minute',
+	CASE WHEN i % 37 = 0 THEN NULL ELSE 's' || lpad((i::bigint * 7919 % 10007)::text, 6, '0') END, 'f' || lpad((i::bigint * 7919 % 9973)::text, 5, '0'), i % 100
+FROM generate_series(1, 30000) i;
+ANALYZE gs;
+
+CREATE INDEX gs_whole ON gs USING sift_col (id, k, ts, sc, sf, amount) WITH (key_cut = 'off', order_array_columns = 'k, ts, sc, sf');
+SET sift.test_limits = 'eset_rows=64';
+CREATE INDEX gs_runs ON gs USING sift_col (id, k, ts, sc, sf, amount) WITH (key_cut = 'off', order_array_columns = 'k, ts, sc, sf');
+RESET sift.test_limits;
+
+-- the same segments hold the same arrays: their entries and their bytes
+SELECT (SELECT sum(bytes) FROM sift.col_sections('gs_whole') WHERE section = 'order_arrays') = (SELECT sum(bytes) FROM sift.col_sections('gs_runs') WHERE section = 'order_arrays') AS same_array_bytes;
+SELECT l AS leaf, (SELECT md5(string_agg(key || '/' || coalesce(tid::text, '-') || '/' || null_row, ',' ORDER BY seg, pos)) FROM sift._test_col_gorder('gs_whole', l)) =
+	(SELECT md5(string_agg(key || '/' || coalesce(tid::text, '-') || '/' || null_row, ',' ORDER BY seg, pos)) FROM sift._test_col_gorder('gs_runs', l)) AS same_entries
+FROM generate_series(1, 4) l ORDER BY l;
+
+-- the same arrays after a merge of segments written from runs
+SET sift.test_limits = 'eset_rows=64';
+UPDATE gs SET amount = amount + 1 WHERE id % 3 = 0;
+VACUUM gs;
+SELECT sift.col_merge('gs_runs', true) > 0 AS merged;
+RESET sift.test_limits;
+SELECT l AS leaf, count(*) AS entries, count(*) FILTER (WHERE null_row) AS nulls FROM generate_series(1, 4) l, sift._test_col_gorder('gs_runs', l) GROUP BY l ORDER BY l;
+
+-- and read: the top of each order is the heap's
+SET sift.enable_agg = off;
+SELECT md5(string_agg(id::text, ',')) AS heap_top FROM (SELECT id FROM gs ORDER BY ts, id LIMIT 50) q \gset
+SET sift.enable_agg = on;
+SELECT md5(string_agg(id::text, ',')) = :'heap_top' AS ts_top_same FROM (SELECT id FROM gs ORDER BY ts, id LIMIT 50) q;
+
+DROP TABLE gs;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -6,6 +6,7 @@
 #define SIFT_COL_SEG_WRITE_INT_H
 
 #include "col/ktab.h"
+#include "col/spool.h"
 #include "col/seg_int.h"
 
 /* The entries of the point directory of one leaf: the key and the row number (in the segment) of each row with a value; bad: some unit cannot be listed (an overflow value, inline strings, too many rows) */
@@ -14,7 +15,7 @@ typedef struct OrdBlock
 	uint32		nch;			/* chunks (0: none) */
 	uint32		nent;
 	uint32		nvals;
-	StringInfoData tab;
+	SiftBlob	tab;
 } OrdBlock;
 
 typedef struct PointAcc
@@ -29,6 +30,12 @@ typedef struct PointAcc
 	bool		tids;			/* ... and wants the table to list heap addresses */
 	bool		ends;			/* ... and keeps the ends of its order only (sift_cgord_pay, column format minor 40) */
 	bool		tperm;			/* the order of the text leaf names its strings by their dictionary codes (version 5), so the dictionary is written to be read in place */
+	bool		spool;			/* the leaf has an order array alone (no point directory, not grouped): its entries are in vals and nulls, not in the arrays below */
+	bool		unordered;		/* some entry has a key or an address before that of the entry added before it */
+	int64		last_key;
+	uint64		last_tid;
+	SiftEntSet	vals;
+	SiftEntSet	nulls;
 	bool		ord;			/* the leaf also gets a global order block (col/gorder.h): the entries are kept for it, with the addresses of the rows without a value */
 	int64	   *gk;				/* ord with a group leaf: the group of each entry of key, and of each one of ntid (a row with no group is left out when the block is built) */
 	uint8	   *gok;
@@ -239,6 +246,12 @@ extern void *segw_mirror_block(SiftColSegWriter *w, uint32 nextents, uint32 *len
 extern bool	segw_rooted_ok(const SiftColSegWriter *w);
 
 extern void	segw_build_points(SiftColSegWriter *w);
+
+/* Drops the entries a leaf spooled: its order array cannot be written */
+extern void	segw_drop_spool(PointAcc *a);
+
+/* Closes the files of the point directories and order arrays: after the segment is written */
+extern void	segw_free_points(SiftColSegWriter *w);
 
 extern void	segw_write_points(SiftColSegWriter *w, SiftSectionRef *sec);
 
