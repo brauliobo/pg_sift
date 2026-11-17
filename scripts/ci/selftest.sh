@@ -13,7 +13,7 @@ if [[ $MODE == --selftest ]]; then
 	# plan_of MODE PG [DEEP [SHARD]]: sets PLAN_OUT to that plan; each distinct plan is made once (a run of --plan costs a second of CPU and the checks below ask for the same ones many times)
 	ST=$(mktemp -d); trap 'rm -rf "$ST"' EXIT   # everything the selftest makes is under it
 	declare -A PLANS INSTALLS
-	installs() { [[ -n ${INSTALLS[$1]+x} ]] || { grep -E 'pgtest\.sh"? install' "$1" | grep -qvE '^\s*#|echo' && INSTALLS[$1]=0 || INSTALLS[$1]=1; }; return "${INSTALLS[$1]}"; }
+	installs() { [[ -n ${INSTALLS[$1]+x} ]] || { grep -E 'pgtest\.sh"? install' "$1" | grep -vE '^\s*#|echo' >/dev/null && INSTALLS[$1]=0 || INSTALLS[$1]=1; }; return "${INSTALLS[$1]}"; }
 	before=" $(descendants $$ | tr '\n' ' ')"
 	plan_of() {
 		local k="$1 $2 ${3:-} ${4:-}" out i n
@@ -180,7 +180,7 @@ if [[ $MODE == --selftest ]]; then
 		got=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /release-library-check\.sh$/) { for (j = i + 1; j <= NF; j++) print $j; next } }' <<<"$(grep '^release-library-regress-[12] ' <<<"$PLAN_OUT")" | sort)
 		# the Makefile refuses a pg_config older than 17 (the lint job of the hosted CI has none or a 16): the list is compared where there is a usable one
 		pgc=${PG_CONFIG:-pg_config}
-		if "$pgc" --version 2>/dev/null | grep -qE '^PostgreSQL (1[7-9]|[2-9][0-9])' && [[ -r $("$pgc" --pgxs 2>/dev/null) ]]; then
+		if "$pgc" --version 2>/dev/null | grep -E '^PostgreSQL (1[7-9]|[2-9][0-9])' >/dev/null && [[ -r $("$pgc" --pgxs 2>/dev/null) ]]; then
 			want=$(printf 'include Makefile\nrelease-regress: ; @echo $(REGRESS)\n' | make -s -C "$REPO" USE_PGXS=1 SIFT_TESTING= -f - release-regress | tr ' ' '\n' | grep -vxF -f <(xargs -n1 <<<"$SLOW_REGRESS") | sort)
 			[[ -n $got && $got == "$want" ]] || { echo "FAIL: the release-library-regress job of the deep plan and the Makefile (REGRESS without TESTING_REGRESS) disagree on the tests of the release build: $(diff <(echo "$got") <(echo "$want") | grep '^[<>]' | head -4 | tr '\n' ' ')"; bad=1; }
 		else echo "plan: the tests of the release build are not compared with the Makefile (no pg_config of PostgreSQL 17 or newer)" >&2; fi

@@ -84,6 +84,7 @@ CHECKS+=(
 	'scaling-lock	scripts/test-scaling-gate.sh'
 	'relcache-slots	scripts/check-relcache-slots.sh --selftest && scripts/check-relcache-slots.sh'
 	'polling	scripts/check-polling.sh --selftest && scripts/check-polling.sh'
+	'pipefail-grep	scripts/check-pipefail-grep.sh --selftest && scripts/check-pipefail-grep.sh'
 	'pg-bare	scripts/check-pg-bare.sh --selftest && scripts/check-pg-bare.sh'
 	'scaling-triggers	scripts/check-scaling-triggers.sh'
 	'scratch	scripts/check-scratch.sh --selftest && scripts/check-scratch.sh'
