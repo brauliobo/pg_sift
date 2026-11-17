@@ -139,7 +139,9 @@ new_data() {
 # reloption autovacuum_enabled cannot switch off the workers' catalogs). The one job that needs it (scripts/soak.sh) turns it on for its run.
 # max_wal_size 512MB: with 48MB a test that writes 30 MB of WAL in 14 s (col_sorted_run) checkpointed all the time, and on a runner disk that wrote
 # 0.1 MB/s a backend waited 100 to 250 s for a dirty buffer (33 to 255 "checkpoints are occurring too frequently" per lane in a PostgreSQL 19 quick shard).
-# The WAL a lane keeps is at most this, 1 MB segments, no recycling.
+# The WAL a lane keeps is at most this, 1 MB segments, no recycling. A data directory in RAM (tmpfs) has no disk to wait for, and 8 lanes at 512MB
+# held 2 GB of WAL at once: there it is 128MB.
+wal_cap() { [[ $(df -P "$TMP" 2>/dev/null | awk 'NR == 2 { print $1 }') == tmpfs ]] && echo 128MB || echo 512MB; }
 # reset_auto_conf DIR: the settings an ALTER SYSTEM of an earlier session left (max_parallel_workers_per_gather = 0, a small shared_buffers, work_mem) change the plans of
 # the tests: 18 of them failed on a clean tree for it. The cluster starts from the conf above alone.
 reset_auto_conf() {
@@ -159,7 +161,7 @@ start() {
 			unix_socket_directories = '$SOCK'
 			$(conf common)
 			fsync = off
-			max_wal_size = 512MB
+			max_wal_size = $(wal_cap)
 			min_wal_size = 80MB
 			wal_recycle = off
 			shared_buffers = 64MB
