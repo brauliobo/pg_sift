@@ -385,6 +385,8 @@ core/restrict.c
 core/restrict.h
 core/restrict_test.c
 core/ring_test.c
+core/sortruns.c
+core/sortruns.h
 core/sql.h
 core/store.c
 core/store_int.h
@@ -395,6 +397,8 @@ core/store_test_int.h
 core/tomb.c
 core/tomb.h
 core/tomb_hdr.c
+core/tomb_int.h
+core/tomb_write.c
 core/verify.c
 core/visibility.c
 core/visibility_popcnt.c
