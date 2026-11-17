@@ -52,7 +52,7 @@ parse_op(const char *s)
 	for (int i = 0; i < lengthof(ops); i++)
 		if (strcmp(ops[i].name, s) == 0)
 			return ops[i].op;
-	elog(ERROR, "sift test: unknown operator \"%s\"", s);
+	ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift test: unknown operator \"%s\"", s)));
 	return 0;
 }
 
@@ -82,7 +82,7 @@ parse_value(const SiftColDef *def, char *s)
 				v.v.s = (const char *) sift_col_numeric_image(d, &v.len, &dscale);
 			}
 			else if (sift_col_numeric_wide_key(def->scale, d, SIFT_COL_ROUND_NEAREST, &v.v.i, &v.lo) == 2)
-				elog(ERROR, "sift test: \"%s\" is not a number of a wide numeric leaf", s);
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift test: \"%s\" is not a number of a wide numeric leaf", s)));
 		}
 		return v;
 	}
@@ -124,7 +124,7 @@ parse_pred(const SiftColSchema *sc, char *item)
 		*vals++ = 0;
 	p.col = atoi(leaf);
 	if (p.col < 0 || p.col >= sc->ncols)
-		elog(ERROR, "sift test: no leaf %d", p.col);
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift test: no leaf %d", p.col)));
 	p.op = parse_op(op);
 	if (vals)
 	{
@@ -166,7 +166,7 @@ parse_query(const SiftColSchema *sc, const char *text, TestQuery *q)
 			int			g = atoi(item + 1);
 
 			if (rest == NULL)
-				elog(ERROR, "sift test: bad group predicate \"%s\"", item);
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift test: bad group predicate \"%s\"", item)));
 			*rest++ = 0;
 			grpof[n] = g;
 			neg[n] = strchr(item, '!') != NULL;

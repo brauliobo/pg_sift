@@ -70,9 +70,9 @@ SELECT call, sna_state(call) FROM (VALUES
  SELECT * FROM sift.index_choices('sna_part_col'::regclass)                             | 42809 "sna_part_col" is a partitioned index, which holds no data
  SELECT * FROM sift.segments((SELECT gone FROM sna_oids)::regclass)                     | 42P01 relation with OID N does not exist
  SELECT * FROM sift.tokenize('x', 0::oid::regclass)                                     | 42P01 relation with OID 0 does not exist
- SELECT count(*) FROM sift._test_col_tids('sna_idx'::regclass, '0:bogus:1')             | XX000 sift test: unknown operator "bogus"
- SELECT count(*) FROM sift._test_col_tids('sna_idx'::regclass, '9:eq:1')                | XX000 sift test: no leaf 9
- SELECT count(*) FROM sift._test_col_tids('sna_idx'::regclass, 'g')                     | XX000 sift test: bad group predicate "g"
+ SELECT count(*) FROM sift._test_col_tids('sna_idx'::regclass, '0:bogus:1')             | 22023 sift test: unknown operator "bogus"
+ SELECT count(*) FROM sift._test_col_tids('sna_idx'::regclass, '9:eq:1')                | 22023 sift test: no leaf 9
+ SELECT count(*) FROM sift._test_col_tids('sna_idx'::regclass, 'g')                     | 22023 sift test: bad group predicate "g"
  SELECT count(*) FROM sift.col_unit_agg('sna_idx'::regclass, NULL)                      | 22004 sift.col_unit_agg: the argument leaf must not be NULL
  SELECT count(*) FROM sift.col_unit_agg(NULL, 'g')                                      | 22004 sift.col_unit_agg: the argument index must not be NULL
  SELECT count(*) FROM sift.col_unit_hist('sna_idx'::regclass, 'g', NULL)                | ok
