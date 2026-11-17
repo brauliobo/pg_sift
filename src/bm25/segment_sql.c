@@ -23,8 +23,7 @@
 #include "core/worker.h"
 #include "table/table.h"
 #include "bm25/segment_sql.h"
-#include "core/catname.h"
-#include "core/inspect.h"
+#include "core/membudget.h"
 
 #define corrupt SIFT_CORRUPT
 
@@ -284,13 +283,12 @@ sift_worker_history(PG_FUNCTION_ARGS)
 Datum
 sift_index_format(PG_FUNCTION_ARGS)
 {
-	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
+	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	Datum		v[4];
 	bool		nulls[4] = {0};
 	bool		bm25 = rel->rd_rel->relam == sift_catalog()->am;
 
-	sift_inspect_expect(RelationGetRelid(rel), NULL, NULL);
 	sift_check_inspect(rel);
 	sift_dir_read(rel, snap);
 	v[0] = Int32GetDatum(snap->meta.format_major);
@@ -654,6 +652,7 @@ bm25_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 	bv->cxt = AllocSetContextCreate(old, "sift verify", ALLOCSET_DEFAULT_SIZES);
 	bv->walk = AllocSetContextCreate(bv->cxt, "sift verify walk", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(bv->cxt);
+	SIFT_MEM_SCOPE(bm25_verify, bv->cxt);
 	sift_errctx_push_diagnostic(&bv->errctx, RelationGetRelid(index));
 	/* registered before the directory is read, and kept: the segments of the copy stay readable while they are verified one at a time */
 	sound = listed = sift_check_step(ck, SIFT_CHECK_WHOLE, step_store, bv);
@@ -662,6 +661,7 @@ bm25_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 		bv->seg = &bv->snap->segs[i];
 		sift_errctx_segment(&bv->errctx, bv->seg->gen);
 		sound &= sift_check_step(ck, bv->seg->gen, step_segment, bv);
+		SIFT_MEM_CHECKPOINT();
 	}
 	sift_errctx_whole(&bv->errctx);
 	if (sound)

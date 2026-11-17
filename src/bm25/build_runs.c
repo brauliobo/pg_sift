@@ -3,6 +3,7 @@
  * and the documents of a page (sort, order check, analysis, flush).
  */
 #include "build_int.h"
+#include "core/membudget.h"
 
 /* Reserves the next directory entry; its generation is the entry's 1-based position */
 static SiftSegEntry *
@@ -269,6 +270,7 @@ flush_page(BuildState *bs)
 	resetStringInfo(&bs->text);
 	sift_analyzer_reset(bs->an);
 	progress_docs(bs, false);
+	SIFT_MEM_CHECKPOINT();
 	CHECK_FOR_INTERRUPTS();
 }
 

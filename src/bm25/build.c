@@ -4,6 +4,7 @@
  * merge and segment writing of the build, and the page documents, are in build_runs.c.
  */
 #include "build_int.h"
+#include "core/membudget.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_build_peak = 0;
@@ -396,6 +397,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	}
 	bs = build_begin(index, (Size) maintenance_work_mem * 1024 / (ldr ? ((SiftBuildShared *) ldr->shared)->nparticipants : 1));
 	old = MemoryContextSwitchTo(bs->cxt);
+	SIFT_MEM_SCOPE(bm25_build, bs->cxt);
 	if (ldr == NULL)
 		init_bounds(bs, heap, sift_index_options(index)->build_segments);
 	else
@@ -420,6 +422,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) res->index_tuples);
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, 0);
 	end_segment(bs);
+	SIFT_MEM_CHECKPOINT();
 	if (ldr)
 	{
 		sift_ranges_close(bs->shared);

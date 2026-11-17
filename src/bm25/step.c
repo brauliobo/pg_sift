@@ -34,6 +34,7 @@
 #include "bm25/wbuf.h"
 #include "core/varint.h"
 #include "core/visibility.h"
+#include "core/membudget.h"
 
 #define CLAIM_TRIES			8		/* picks of a step whose segments others replaced meanwhile */
 
@@ -538,6 +539,7 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	const SiftSegEntry *sealed = arg;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift promote", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
+	SIFT_MEM_SCOPE(bm25_promote, cx);
 	Tuplesortstate *sort;
 	SiftSegEntry neu;
 	bool		any;
@@ -549,7 +551,9 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	pages = sift_lane_extents(index, sealed, &npages);
 	sift_wt_expect(wt, extents_bytes(pages, npages));
 	sort = sort_docs(index, sealed);
+	SIFT_MEM_CHECKPOINT();
 	any = write_docs(index, wt, sort, sift_store_new_gen(index), &neu);
+	SIFT_MEM_CHECKPOINT();
 	tuplesort_end(sort);
 	sift_wt_finish(wt);
 	sift_maint_replace(index, &sealed->gen, 1, any ? &neu : NULL, pages, npages, "promoted a sealed segment of", start, sealed->ndocs);
@@ -740,6 +744,7 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 	const MergeSel *in = arg;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift merge", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
+	SIFT_MEM_SCOPE(bm25_merge, cx);
 	SiftScoreRef ref = score_ref(index);
 	RunList		runs = {.run = palloc(in->n * sizeof(SiftRun *)),.max = in->n};
 	SiftMaintInputs mi = sift_maint_inputs(index, in->seg, in->n);
@@ -779,11 +784,13 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 			else if ((run = sift_run_from_segment(seg, &ref, cx)) != NULL)
 				runlist_push(&runs, run);
 			sift_seg_close(seg);
+			SIFT_MEM_CHECKPOINT();
 		}
 		doctext_close(dt);
 		if ((written = runs.n > 0) != 0)
 			sift_runs_write(runs.run, runs.n, wt, sift_store_new_gen(index), &ref, &neu);
 	}
+	SIFT_MEM_CHECKPOINT();
 	sift_wt_finish(wt);
 	sift_maint_replace(index, mi.gens, in->n, written ? &neu : NULL, mi.release, mi.nrelease,
 					   psprintf("merged %d segments of", in->n), start, written ? neu.ndocs : 0);

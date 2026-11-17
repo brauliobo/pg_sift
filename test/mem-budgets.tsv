@@ -1,0 +1,6 @@
+# scope	status	formula	constant	intended	rationale -- scripts/gen-membudget.py; docs/SIZING.md "Memory budgets"; CONTRIBUTING.md "Memory budgets" for flipping an open row.
+bm25_build	closed	maintenance_work_mem	16MB		the inverted buffer of a CREATE INDEX of a search index, its runs and the page of text (9.5 MB held at maintenance_work_mem 1MB: 13.6 MB)
+bm25_merge	closed	maintenance_work_mem	8MB		the runs and the inverted buffer of a merge of search segments
+bm25_promote	closed	maintenance_work_mem	8MB		the sort of the documents of a sealed segment
+bm25_search	open		40MB	work_mem	the state of a search scan: its cursors, candidates and top-N; 13 to 27 MB held at the default work_mem (build_parallel, build_runs, rank_leaves, maint_failure)
+bm25_verify	open		1GB	maintenance_work_mem	the walk of the segments by sift.verify: 552 MB held at the end of the verify of the largest index of the tests (insert_backpressure, maint_failure, about 4 MB a segment) and 9.6 to 13.6 MB at maintenance_work_mem 1 to 4MB: it follows the number of segments, not the setting

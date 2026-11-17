@@ -44,6 +44,7 @@ CHECKS=(
 	'kernels	python3 scripts/check-kernels.py'
 	'memory		scripts/check-memory.sh && scripts/check-memory.sh --selftest'
 	'mem-growth	scripts/check-mem-growth.sh --selftest && scripts/check-mem-growth.sh && python3 scripts/mem-slope.py selftest'
+	'mem-budget	scripts/gen-membudget.py --selftest && scripts/check-membudget.sh --selftest && scripts/check-membudget.sh'
 	'pg-includes	scripts/check-pg-includes.sh && scripts/check-pg-includes.sh --selftest'
 	'alternates	scripts/check-alternates.sh --selftest && scripts/check-alternates.sh'
 	'quick-skip	scripts/check-quick-skip.sh --selftest && scripts/check-quick-skip.sh'

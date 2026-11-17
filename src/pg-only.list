@@ -372,6 +372,9 @@ core/memcensus.c
 core/limits.c
 core/live_repair.c
 core/live_repair_test.c
+core/membudget.c
+core/membudget.h
+core/membudget_table.h
 core/ops.c
 core/ops.h
 core/parbuild.c

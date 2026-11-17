@@ -25,6 +25,7 @@
 #include "core/compat.h"
 #include "core/errctx.h"
 #include "core/explain.h"
+#include "core/membudget.h"
 
 #include "cscan_int.h"
 
@@ -241,6 +242,11 @@ sift_exec(CustomScanState *node)
 	sift_errctx_push(&ctx, ((SiftScanState *) node)->indexoid);
 	slot = ExecScan(&node->ss, scan_next, scan_recheck);
 	sift_errctx_pop(&ctx);
+	if (TupIsNull(slot))
+	{
+		SIFT_MEM_SCOPE(bm25_search, ((SiftScanState *) node)->cxt);
+		SIFT_MEM_CHECKPOINT();
+	}
 	return slot;
 }
 
@@ -248,7 +254,9 @@ static void
 sift_end(CustomScanState *node)
 {
 	SiftScanState *ss = (SiftScanState *) node;
+	SIFT_MEM_SCOPE(bm25_search, ss->cxt);
 
+	SIFT_MEM_CHECKPOINT();
 	close_scan(ss);
 	foreach_ptr(PlanState, child, node->custom_ps)
 		ExecEndNode(child);
