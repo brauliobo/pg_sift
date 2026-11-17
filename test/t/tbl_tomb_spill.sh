@@ -31,7 +31,7 @@ sql primary "UPDATE ht SET amount = amount + 1 WHERE id % 3 = 0" "DELETE FROM ht
 want=$(digest ht "SELECT 1")
 check "the rows are the heap twin's, read by a new backend with the small limit" test "$(digest ls "$SMALL")" == "$want"
 check "... and the same with the log in memory" test "$(digest lm "$BIG")" == "$want"
-check "the b-tree reads (chain members) agree with the heap twin" test "$(via_index ls "$SMALL")" == "$(via_index ht "SELECT 1")"
+check "the b-tree reads (chain entries) agree with the heap twin" test "$(via_index ls "$SMALL")" == "$(via_index ht "SELECT 1")"
 check "a point read agrees" test "$(sql primary "$SMALL" "SELECT amount FROM ls WHERE id = 3")" == "$(sql primary "SELECT amount FROM ht WHERE id = 3")"
 check "the entries past the limit were kept in temp files" grep -q "temporary file" "$D/postgres.log"
 
