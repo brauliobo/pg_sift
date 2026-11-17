@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # A column merge holds a bounded amount of memory whatever the rows it merges, in exact bytes per memory context (scopes col_merge, col_merge_window, col_writer_spool,
 # col_writer_order of core/membudget.h, and the kinds of context of the tree of col_merge, sift._test_mem_kinds()), at six row steps, plain and key_cut, 12 promoted inputs and
 # the one the build wrote (13 inputs). The 8-page-superblock flavour of scripts/scaling-gate.sh holds a few thousand units in the steps, and sift.test_limits lowers the three
