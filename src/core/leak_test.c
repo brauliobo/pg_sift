@@ -16,6 +16,9 @@
 
 #include <malloc.h>
 #include <stdlib.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 #include "access/relation.h"
 #include "access/tupdesc.h"
@@ -29,11 +32,11 @@
 
 #include "core/errctx.h"
 #include "core/sift.h"
-#include "core/catname.h"
 
 PG_FUNCTION_INFO_V1(sift_test_leak);
-PG_FUNCTION_INFO_V1(sift_test_errctx_report);
 PG_FUNCTION_INFO_V1(sift_test_malloc_stats);
+PG_FUNCTION_INFO_V1(sift_test_thp_disable);
+PG_FUNCTION_INFO_V1(sift_test_errctx_report);
 
 static void *volatile sink;		/* keeps the compiler from dropping the leaked allocations */
 
@@ -70,7 +73,7 @@ Datum
 sift_test_leak(PG_FUNCTION_ARGS)
 {
 	const char *kind = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	Oid			relid = sift_rel_must_exist(PG_GETARG_OID(1));
+	Oid			relid = PG_GETARG_OID(1);
 
 	if (strcmp(kind, "buffer") == 0)
 	{
@@ -142,6 +145,17 @@ sift_test_malloc_stats(PG_FUNCTION_ARGS)
 #else
 	PG_RETURN_NULL();
 #endif
+}
+
+/* sift._test_thp_disable() returns void: this backend gets no transparent huge pages from now on, so that its anonymous memory grows by pages and not by steps of 2 MB (a memory slope of 12 bytes a row over 150,000 rows is 1.8 MB) */
+Datum
+sift_test_thp_disable(PG_FUNCTION_ARGS)
+{
+#ifdef PR_SET_THP_DISABLE
+	if (prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0) != 0)
+		elog(ERROR, "could not disable transparent huge pages: %m");
+#endif
+	PG_RETURN_VOID();
 }
 
 #endif							/* SIFT_TESTING */
