@@ -51,6 +51,17 @@ scope_ordinal(const SiftScopeSpecs *sp, const char *key_name)
 	return -1;
 }
 
+/* The ordinal of the scope key_name of the index, or the error of an index that has none by that name */
+static int
+scope_ordinal_named(Relation index, const char *key_name)
+{
+	int			ord = scope_ordinal(sift_scope_specs(index), key_name);
+
+	if (ord < 0)
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("index \"%s\" has no scope \"%s\"", RelationGetRelationName(index), key_name)));
+	return ord;
+}
+
 /* The first leaf among leaves[0..n) the scope segments keep no values of, as the name of its column or path; NULL when they keep all (leaves beyond the index's are the scan's own) */
 static const char *
 unit_missing(Relation index, int scope, const int *leaves, int n)
@@ -542,7 +553,7 @@ sift_scope_members(Relation heap, Relation index, const char *key_name, SiftKeyM
 {
 	uint32		nk;
 	int64	   *sorted = sorted_keys(keys, nkeys, &nk);
-	ScopePairs	pairs = scope_pairs(heap, index, scope_ordinal(sift_scope_specs(index), key_name), km, NULL, snap, sorted, nk, NULL, 0, 0);
+	ScopePairs	pairs = scope_pairs(heap, index, scope_ordinal_named(index, key_name), km, NULL, snap, sorted, nk, NULL, 0, 0);
 
 	return pair_values(&pairs, false, n);
 }
@@ -551,7 +562,7 @@ Oid
 sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Relation *rel, AttrNumber *member, AttrNumber *skey)
 {
 	PairScan	ps = {0};
-	int			ord = scope_ordinal(sift_scope_specs(index), key_name);
+	int			ord = scope_ordinal_named(index, key_name);
 
 	scope_relation(heap, index, ord, NULL, NULL, &ps, NULL, 0, NULL);
 	*rel = ps.rel;
