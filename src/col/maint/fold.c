@@ -188,6 +188,18 @@ sift_col_fold_marks(Relation index)
 	return removed;
 }
 
+/* The marks a fold could clear now: those of a delete or update that is frozen or older than the horizon (the rest wait for the snapshots that hold it, and a fold of them clears nothing) */
+static uint64
+fold_ready(const SiftTomb *ents, uint32 n, TransactionId horizon)
+{
+	uint64		ready = 0;
+
+	for (uint32 i = 0; i < n; i++)
+		ready += (ents[i].kind == SIFT_TOMB_DELETE || ents[i].kind == SIFT_TOMB_UPDATE) &&
+			(ents[i].xid == FrozenTransactionId || (TransactionIdIsNormal(ents[i].xid) && TransactionIdPrecedes(ents[i].xid, horizon)));
+	return ready;
+}
+
 /* Have the reads of the server paid for the fold of the marks of the log? What they paid is counted for the log in hand: a fold, or a VACUUM, makes a new one */
 bool
 sift_col_fold_due(Relation index)
@@ -195,10 +207,14 @@ sift_col_fold_due(Relation index)
 	SiftTombLog *log = sift_col_log(index);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	uint64		rows = 0,
-				paid;
+				paid,
+				ready;
 	double		cost;
 
 	if (log == NULL)
+		return false;
+	ready = fold_ready(log->ents, log->nents, GetOldestNonRemovableTransactionId(NULL)) + fold_ready(log->recent, log->nrecent, GetOldestNonRemovableTransactionId(NULL));
+	if (ready == 0)
 		return false;
 	sift_col_dir_read(index, snap, false);
 	for (int i = 0; i < snap->nsegs; i++)
@@ -206,7 +222,7 @@ sift_col_fold_due(Relation index)
 			rows += snap->segs[i].ndocs;
 	paid = sift_col_marks_paid(index, &snap->meta, log->gen);
 	pfree(snap);
-	cost = FOLD_ROW_PRICE * (double) rows + FOLD_MARK_PRICE * (double) (log->nents + log->nrecent) + FOLD_WAL_PRICE;
+	cost = FOLD_ROW_PRICE * (double) rows + FOLD_MARK_PRICE * (double) ready + FOLD_WAL_PRICE;
 	return (double) paid >= MAINT_HALF * cost;
 }
 
