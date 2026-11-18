@@ -30,6 +30,7 @@ int			sift_test_col_spill_rows = 0;
 #define SAMPLE_SBS		512			/* superblocks the keys are taken from */
 #define CHUNKS_PER_RUN	4			/* a run is the chunks of the key that fit its memory, cut at a chunk end: its size is within a quarter of the budget */
 #define MAX_RANGES		512
+#define BLOCK_MIN		((Size) 1 << 10)	/* the least a block of the row files holds: under it the codec gains nothing */
 #define BYTES_SAMPLE_ROWS	4096		/* rows of the first run that are written to a file that is only counted, to know what a row takes in the files */
 
 struct ColSpill
@@ -307,7 +308,7 @@ spill_run_rows(const ColBuild *b, Size held_bytes)
 
 /* The bytes a row takes in the files, as the rows of the first run say: a sample of them goes through a file that is only counted */
 static double
-spill_row_bytes(const ColBuild *b)
+spill_row_bytes(const ColBuild *b, Size block)
 {
 	StringInfoData scratch;
 	SiftRowFile *f;
@@ -319,7 +320,7 @@ spill_row_bytes(const ColBuild *b)
 	ListCell   *lc;
 
 	initStringInfo(&scratch);
-	f = sift_rowfile_create(b->r->schema, &scratch, false);
+	f = sift_rowfile_create(b->r->schema, &scratch, false, block);
 	foreach(lc, b->held)
 	{
 		const SiftColBatch *batch = lfirst(lc);
@@ -375,7 +376,7 @@ spill_plan(const ColBuild *b, const ColSpill *s)
  * The rows held when the first run is full give the ranges: as many as runs the estimate of the rows of the table makes, cut at the quantiles of the key
  * of those rows. False (the rows stay to be written as a run, in the order of the table) for a key that is not a number, a parallel participant
  * or a key of two values or fewer. The rows are spooled as columnar chunks when the memory the build gives the spool (its budget) holds a chunk of the plan for each range,
- * else packed in blocks, which take 32 kB of memory for each range.
+ * else packed in blocks, which take up to the budget between the ranges (at most 32 kB each).
  */
 bool
 colb_spill_start(ColBuild *b)
@@ -385,6 +386,7 @@ colb_spill_start(ColBuild *b)
 	Size		held_bytes;
 	uint64		run_rows;
 	double		need;
+	Size		block;
 	ColSpill   *s;
 	SiftColBatch **in;
 	int			nin = 0;
@@ -417,7 +419,8 @@ colb_spill_start(ColBuild *b)
 		return false;
 	/* the rows go to temporary files, as many bytes for each as those of one range of the first run take */
 	s->plan = spill_plan(b, s);
-	need = (s->plan != NULL ? sift_chunkplan_row_bytes(s->plan) : spill_row_bytes(b)) * (double) b->total_rows;
+	block = Min(Max(b->budget / ((Size) s->n * 2), BLOCK_MIN), SIFT_ROWFILE_BLOCK_MAX);
+	need = (s->plan != NULL ? sift_chunkplan_row_bytes(s->plan) : spill_row_bytes(b, block)) * (double) b->total_rows;
 	spill_refuse_unless_fits(b, need);
 
 	in = palloc_array(SiftColBatch *, list_length(b->held));
@@ -436,7 +439,7 @@ colb_spill_start(ColBuild *b)
 		s->file = palloc(s->n * sizeof(SiftRowFile *));
 		initStringInfo(&s->scratch);
 		for (int i = 0; i < s->n; i++)
-			s->file[i] = sift_rowfile_create(b->r->schema, &s->scratch, true);
+			s->file[i] = sift_rowfile_create(b->r->schema, &s->scratch, true, block);
 		MemoryContextSwitchTo(old);
 	}
 	b->spill = s;

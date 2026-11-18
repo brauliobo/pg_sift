@@ -12,9 +12,11 @@ typedef struct SiftRowFile SiftRowFile;
 
 /*
  * A file of rows of the schema, in the current resource owner's temporary files; scratch is the buffer the blocks are compressed into, shared by the
- * files of one caller. With file false no file is made and the rows are only counted: sift_rowfile_bytes says what a file of them would take.
+ * files of one caller. A block goes out when it holds block raw bytes, so the file holds up to twice that in memory. With file false no file is made and the
+ * rows are only counted: sift_rowfile_bytes says what a file of them would take.
  */
-extern SiftRowFile *sift_rowfile_create(const SiftColSchema *sc, StringInfo scratch, bool file);
+extern SiftRowFile *sift_rowfile_create(const SiftColSchema *sc, StringInfo scratch, bool file, Size block);
+#define SIFT_ROWFILE_BLOCK_MAX	((Size) 32 << 10)
 extern void sift_rowfile_put(SiftRowFile *f, const SiftColRow *row);
 /* The bytes the file holds, or would hold, so far (the block being filled counts as it is) */
 extern uint64 sift_rowfile_bytes(SiftRowFile *f);

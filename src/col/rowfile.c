@@ -10,11 +10,10 @@
 #include "col/rowfile.h"
 #include "col/rowpack.h"
 
-#define ROWFILE_BLOCK	(32 * 1024)		/* the raw bytes a block holds: the rows that make it pass this */
-
 struct SiftRowFile
 {
 	const SiftColSchema *sc;
+	Size		block;			/* the raw bytes a block holds: the rows that make it pass this */
 	MemoryContext cxt;			/* the memory of the file: the block is made again in it when the file is read */
 	BufFile    *file;			/* NULL: the rows are only counted */
 	StringInfo	scratch;
@@ -32,11 +31,12 @@ rowfile_alg(void)
 }
 
 SiftRowFile *
-sift_rowfile_create(const SiftColSchema *sc, StringInfo scratch, bool file)
+sift_rowfile_create(const SiftColSchema *sc, StringInfo scratch, bool file, Size block)
 {
 	SiftRowFile *f = palloc0(sizeof(SiftRowFile));
 
 	f->sc = sc;
+	f->block = block;
 	f->cxt = CurrentMemoryContext;
 	f->scratch = scratch;
 	f->file = file ? BufFileCreateTemp(false) : NULL;
@@ -79,7 +79,7 @@ void
 sift_rowfile_put(SiftRowFile *f, const SiftColRow *row)
 {
 	sift_colrow_pack(&f->blk, f->sc, row);
-	if (f->blk.len >= ROWFILE_BLOCK)
+	if (f->blk.len >= f->block)
 		flush_block(f);
 }
 
