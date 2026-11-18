@@ -171,7 +171,7 @@ def uses_copy(*sql):
 
 
 def slope_case(sizes, name, setup, warm, op):
-    peaks = []
+    peaks, highs = [], []
     for n in sizes:
         fmt = dict(f=f"f{n}", d=f"d{n}", m=f"m{n}", s=f"s{n}", n=n)
         runs = []
@@ -180,7 +180,8 @@ def slope_case(sizes, name, setup, warm, op):
                 copy_table(n)
             runs.append(measure_mb(setup.removeprefix("@other ").format(**fmt), warm if warm == "=" else warm.format(**fmt), op.format(**fmt)))
         peaks.append(min(runs))
-    return (peaks[-1] - peaks[0]) * 1048576.0 / (sizes[-1] - sizes[0]), peaks
+        highs.append(max(runs))
+    return (peaks[-1] - peaks[0]) * 1048576.0 / (sizes[-1] - sizes[0]), peaks, highs
 
 
 def leak_case(n, name, op):
@@ -200,11 +201,11 @@ def run_case(sizes, name, kind, ceiling, status, setup, op, warm):
     if kind == "leak":
         grown = leak_case(sizes[1], name, op)
         ok = grown <= LEAK_KB
-        return ok, f"SLOPE {name} leak {grown} kB over 50 repeats, at most {LEAK_KB} kB {'PASS' if ok else 'FAIL'}", None
-    slope, peaks = slope_case(sizes, name, setup, warm, op)
+        return ok, f"SLOPE {name} leak {grown} kB over 50 repeats, at most {LEAK_KB} kB {'PASS' if ok else 'FAIL'}", None, None
+    slope, peaks, highs = slope_case(sizes, name, setup, warm, op)
     v = verdict(slope, ceiling, status)
     shown = '/'.join(f'{p:.1f}' for p in peaks)
-    return v == "PASS", f"SLOPE {name} slope {slope:.0f} B/row (peaks {shown} MB at {'/'.join(str(s) for s in sizes)} rows), ceiling {ceiling} [{status}] {v}", slope
+    return v == "PASS", f"SLOPE {name} slope {slope:.0f} B/row (peaks {shown} MB at {'/'.join(str(s) for s in sizes)} rows), ceiling {ceiling} [{status}] {v}", slope, [f"{p:.1f}" if p == h else f"{p:.1f}-{h:.1f}" for p, h in zip(peaks, highs)]
 
 
 def run_cases(sizes, cases):
@@ -212,7 +213,7 @@ def run_cases(sizes, cases):
     for name, kind, ceiling, status, setup, op, warm, _ in cases:
         t0 = time.time()
         try:
-            ok, line, _ = run_case(sizes, name, kind, ceiling, status, setup, op, warm)
+            ok, line, *_ = run_case(sizes, name, kind, ceiling, status, setup, op, warm)
         except RuntimeError as e:
             ok, line = False, f"SLOPE {name} {kind} ERROR {e}"
         print(line, flush=True)
@@ -266,12 +267,13 @@ def determinism(rows, only):
     runs = {k: {} for k in ("first", "again", "reverse")}
     for tag, order in (("first", cases), ("again", cases), ("reverse", cases[::-1])):
         for c in order:
-            runs[tag][c[0]] = run_case(sizes, *c[:7])[2]
+            runs[tag][c[0]] = run_case(sizes, *c[:7])[2:]
     bad = 0
     for name, *_ in cases:
-        got = [runs[t][name] for t in runs]
+        got = [runs[t][name][0] for t in runs]
+        peaks = "; ".join("/".join(runs[t][name][1]) for t in runs)
         ok = all(spread_ok(got[0], g) for g in got[1:])
-        print(f"SLOPE {name} determinism {'/'.join(f'{g:.0f}' for g in got)} B/row (first, again, reverse), at most max({VARIANCE_ROWS:.0f} B/row, {VARIANCE_PCT:.0%}) apart {'PASS' if ok else 'FAIL'}", flush=True)
+        print(f"SLOPE {name} determinism {'/'.join(f'{g:.0f}' for g in got)} B/row (first, again, reverse; peaks {peaks} MB), at most max({VARIANCE_ROWS:.0f} B/row, {VARIANCE_PCT:.0%}) apart {'PASS' if ok else 'FAIL'}", flush=True)
         bad += not ok
     return 1 if bad else 0
 
