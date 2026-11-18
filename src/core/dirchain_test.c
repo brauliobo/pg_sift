@@ -18,6 +18,7 @@ PG_FUNCTION_INFO_V1(sift_test_dir_info);
 PG_FUNCTION_INFO_V1(sift_test_dir_check);
 PG_FUNCTION_INFO_V1(sift_test_dir_read_stale);
 PG_FUNCTION_INFO_V1(sift_test_dir_parts);
+PG_FUNCTION_INFO_V1(sift_test_dir_blocks);
 
 typedef struct DirEditArg
 {
@@ -202,6 +203,26 @@ sift_test_dir_parts(PG_FUNCTION_ARGS)
 
 			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 		}
+	}
+	relation_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/* sift._test_dir_blocks(index): the blocks of the chain, in the order the snapshot lists them (the root first), with their place in it */
+Datum
+sift_test_dir_blocks(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = sift_dir_read(index);
+
+	InitMaterializedSRF(fcinfo, 0);
+	for (int i = 0; i < snap->nchain; i++)
+	{
+		Datum		values[2] = {Int32GetDatum(i), Int64GetDatum(snap->chain[i])};
+		bool		nulls[2] = {0};
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
 	relation_close(index, AccessShareLock);
 	return (Datum) 0;

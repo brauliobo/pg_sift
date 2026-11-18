@@ -77,6 +77,9 @@ CREATE FUNCTION sift._test_dir_read_stale(index regclass) RETURNS void
 CREATE FUNCTION sift._test_dir_parts(index regclass, OUT first int4, OUT n int4, OUT lineage int8, OUT first_gen int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_dir_parts' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_blocks(index regclass, OUT ord int4, OUT blk int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_dir_blocks' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_dir_check(index regclass) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_dir_check' LANGUAGE C STRICT;
 -- everything inserted into the WAL so far is flushed

@@ -8,12 +8,19 @@
 
 #include "core/page.h"
 
+/* An interior page as its root lists it, and the first of its leaves in the leaves of the chain */
+typedef struct SiftDirInner
+{
+	SiftChainRef ref;
+	uint32		leaf0;
+} SiftDirInner;
+
 /* A chain as read: its root, its interior pages, its leaves in directory order and every block it occupies (the root first) */
 typedef struct SiftDirChain
 {
 	BlockNumber root;
 	uint32		ninner;
-	BlockNumber *inner;
+	SiftDirInner *inner;
 	uint32		nleaves;
 	SiftChainRef *leaf;
 	BlockNumber *blocks;
