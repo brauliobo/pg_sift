@@ -208,6 +208,9 @@ CREATE FUNCTION sift._test_errctx_report(rel regclass, n int) RETURNS void
 -- n questions whether an index tracks a key, asked in a context of their own (src/col/test/alloc_test.c): the bytes that context holds, exact
 CREATE FUNCTION sift._test_row_key_bytes(idx regclass, n int) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_row_key_bytes' LANGUAGE C STRICT;
+-- n syntax checks of the value of an option (preagg, rollup_leaves, calendar_columns), asked in a context of their own (src/col/test/alloc_test.c): the bytes that context holds, exact
+CREATE FUNCTION sift._test_option_syntax_bytes(option text, opt text, n int) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_option_syntax_bytes' LANGUAGE C STRICT;
 -- whether sift_col_bits_any reads past the words of a vector of n bits (src/col/test/alloc_test.c): true when it found a bit in the set words that follow
 CREATE FUNCTION sift._test_bits_any_bounds(n int) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_bits_any_bounds' LANGUAGE C STRICT;

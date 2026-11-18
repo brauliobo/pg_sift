@@ -263,6 +263,7 @@ TESTING_REGRESS += col_merge_idempotent
 TESTING_REGRESS += col_merge_keys
 TESTING_REGRESS += col_merge_settled
 TESTING_REGRESS += col_minmax_runs
+TESTING_REGRESS += col_option_names_bytes
 TESTING_REGRESS += col_order_layout
 TESTING_REGRESS += col_ordered_budget
 TESTING_REGRESS += col_overlay_unordered
