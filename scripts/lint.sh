@@ -9,7 +9,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 cd "$(dirname "$0")/.." || exit 2
 
-# bench-fresh, docs, plan, portable, testing-regress and the selftests of the tools go through scripts/lint-cache.sh: a pass is kept per box by the content of the check's inputs, and the same check on the same inputs in another run
+# bench-fresh, docs, plan, portable, testing-regress, worker-tests and the selftests of the tools go through scripts/lint-cache.sh: a pass is kept per box by the content of the check's inputs, and the same check on the same inputs in another run
 # waits for the one that is running and takes its result; CI always runs them.
 
 # bench-cases compares with the base branch: a CI checkout is shallow. Only a shallow one is given the base: in a full clone (fetch-depth 0, the macOS job) a depth-1 fetch makes
@@ -37,6 +37,7 @@ CHECKS+=(
 	'changelog-summary	[ "$(sed -n "/^## Unreleased/,/^## [^U]/p" CHANGELOG.md | grep -c "things worth reading")" -le 1 ] || { echo "CHANGELOG.md: Unreleased has two summary entries (\"things worth reading\"); a merge left the old wording beside the new one"; exit 1; }'
 	'neon-includes	for f in $(grep -l SIFT_HAVE_NEON src/*/*_neon.c src/core/visibility_popcnt.c); do grep -q -E "^#include \"core/(cpu|neon|simd_isa)[.]h\"" $f || { echo "$f: SIFT_HAVE_NEON is defined by core/cpu.h; without it the object is empty on AArch64 and the library does not link there"; exit 1; }; done'
 	'testing-regress	scripts/lint-cache.sh testing-regress Makefile test/sql scripts/check-testing-regress.sh -- scripts/check-testing-regress.sh'
+	'worker-tests	scripts/lint-cache.sh worker-tests test/sql scripts/check-worker-tests.sh scripts/worker-tests.allow -- scripts/check-worker-tests.sh --selftest && scripts/check-worker-tests.sh'
 	'host-stubs	a=$(mktemp -d) b=$(mktemp -d) && trap "rm -rf $a $b" EXIT && make -s -C sqlite B=$a $a/host_stubs.o && make -s -C mariadb OUT=$b $b/host_stubs.o && echo "host_stubs.c compiles for the SQLite and MariaDB hosts"'
 	'neutral	scripts/check-neutral.sh'
 	'pgtest-auto-conf	d=$(mktemp -d) && trap "rm -rf $d" EXIT && echo "work_mem = 1GB" >$d/postgresql.auto.conf && scripts/pgtest.sh reset-auto-conf $d 2>/dev/null && [ ! -s $d/postgresql.auto.conf ]'
