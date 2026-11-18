@@ -8,7 +8,7 @@
 #   5. TERM and KILL of the holder release its lock at once and the next run of that PR goes on; TERM stops the worker and removes the work tree
 #   6. a background process of the worker or of the merge call that outlives the landing holds no lock; the normal end removes what the worker left
 #   7. the privacy gate fails on a hit and closed without its deny list
-#   7b. overlapping runs of one PR fetch its head, and overlapping fetches of the base tip (one moved under another) do not disturb each other
+#   7b. the head of a PR and the tip of the base are fetched through private handles: the handles of other runs, live or dangling, do not disturb the fetch, and the base moves between fetches
 #   8. land-union.py keeps both sides of added lines only, each entry once
 #   9. a CHANGELOG a merge of the tip left broken (markers, a duplicated line, an entry moved out of Unreleased or lost) is refused
 #  10. the verdict on the required checks (ok, missing, pending, red, a head that is not the PR head, a re-run) and the bounded wait for pending and missing ones
@@ -152,19 +152,22 @@ for what in missing comments regex; do
 done
 unset LAND_DENY
 
-# 7b. the head of a PR is fetched through a handle of the run: overlapping runs of one PR do not delete each other's
+# 7b. the head of a PR and the tip of the base are fetched through handles private to the run and hidden from the ref walk of the fetch: the live handle of another run survives, and a
+# dangling one (what a ref another run is deleting reads as to `rev-list --all`, which dies on it) does not fail the fetch; the base moves between the fetches
 git init -q --bare "$T/origin.git"; g remote add origin "$T/origin.git"; g push -q origin HEAD:refs/pull/5/head
-# shellcheck source=land.sh
-fp() { ( . "$LAND"; for _ in $(seq 15); do [[ $(fetch_pr_head 5) == "$(g rev-parse HEAD)" ]] || exit 1; done ); }
-fp & p1=$!; fp & p2=$!; fp & p3=$!
-wait "$p1" && wait "$p2" && wait "$p3" || fail "overlapping fetches of one PR head disturb each other"
-# and the tip of a branch that other landings fetch into the same clone while it moves
-git --git-dir="$T/origin.git" update-ref refs/heads/b "$(g rev-parse HEAD)"
-# shellcheck source=land.sh disable=SC2034
-ft() { ( . "$LAND"; base=b; for _ in $(seq 12); do fetch_tip || exit 1; done ); }
-mover() { local i p; for i in $(seq 30); do p=$(git --git-dir="$T/origin.git" rev-parse refs/heads/b); git --git-dir="$T/origin.git" -c user.name=t -c user.email=t@example.com update-ref refs/heads/b "$(git --git-dir="$T/origin.git" -c user.name=t -c user.email=t@example.com commit-tree -p "$p" -m "n$i" "$p^{tree}")"; done; }
-mover & pm=$!; ft & p1=$!; ft & p2=$!; ft & p3=$!
-wait "$pm"; wait "$p1" && wait "$p2" && wait "$p3" || fail "overlapping fetches of a moving tip fail"
+og() { git --git-dir="$T/origin.git" -c user.name=t -c user.email=t@example.com "$@"; }
+move_base() { local p; p=$(og rev-parse refs/heads/b); og update-ref refs/heads/b "$(og commit-tree -p "$p" -m "n$1" "$p^{tree}")"; }
+head=$(g rev-parse HEAD); og update-ref refs/heads/b "$head"
+g update-ref refs/land/live.1 "$head"; mkdir -p "$T/clone/.git/refs/land"; echo 1111111111111111111111111111111111111111 >"$T/clone/.git/refs/land/tip.2"
+move_base 0
+g fetch -q --refmap= origin +refs/heads/b:refs/land/probe 2>/dev/null && fail "a dangling handle in refs/land does not fail a plain fetch: the cases below prove nothing"
+for i in 1 2 3; do
+	move_base "$i"
+	( . "$LAND"; base=b; fetch_tip ) 2>/dev/null && [[ $(g rev-parse refs/remotes/origin/b) == "$(og rev-parse refs/heads/b)" ]] || fail "fetch_tip fails or misses the moved tip next to the handles of other runs"
+	[[ $( . "$LAND"; fetch_pr_head 5 2>/dev/null) == "$head" ]] || fail "fetch_pr_head fails next to the handles of other runs"
+done
+[[ $(ls "$T/clone/.git/refs/land" | tr '\n' ' ') == 'live.1 tip.2 ' ]] || fail "a fetch left a handle behind or deleted the handle of another run: $(ls "$T/clone/.git/refs/land" | tr '\n' ' ')"
+rm "$T/clone/.git/refs/land/tip.2"; g update-ref -d refs/land/live.1
 
 # a landing that moves the tracking ref between the read and the lock of a fetch (the hook moves it under the first five) does not fail the other
 mkdir -p "$T/clone/.git/hooks"; echo 0 >"$T/moves"; g update-ref refs/remotes/origin/b "HEAD~2"
