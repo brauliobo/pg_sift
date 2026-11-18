@@ -104,6 +104,13 @@ SELECT count(*) AS options_left FROM sift.table_option_values WHERE rel::oid NOT
 ALTER TABLE dh_wide ADD COLUMN extra int;
 ERROR:  a sift_table holds at most 127 columns
 DETAIL:  Table "dh_wide" has 128.
+-- the function of the hooks in an event trigger of a role's own, at an event where the statement has not locked its table yet
+CREATE TABLE dh_ev (a int);
+CREATE EVENT TRIGGER dh_ev_start ON ddl_command_start EXECUTE FUNCTION sift.table_ddl_check();
+ALTER TABLE dh_ev ADD COLUMN b int;
+ALTER TABLE dh_ev RENAME COLUMN b TO c;
+DROP EVENT TRIGGER dh_ev_start;
+DROP TABLE dh_ev;
 -- only a superuser
 CREATE ROLE dh_user;
 SET SESSION AUTHORIZATION dh_user;

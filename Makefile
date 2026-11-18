@@ -142,6 +142,8 @@ TESTING_REGRESS += col_build_par_rows
 TESTING_REGRESS += col_build_paths
 TESTING_REGRESS += col_build_row_estimate
 TESTING_REGRESS += col_build_same_options
+TESTING_REGRESS += col_build_spool
+TESTING_REGRESS += col_build_spool_values
 TESTING_REGRESS += col_calendar_columns
 TESTING_REGRESS += col_census_sample
 TESTING_REGRESS += col_check
@@ -550,9 +552,7 @@ TESTING_REGRESS += agg_preagg
 TESTING_REGRESS += agg_preagg_rows
 TESTING_REGRESS += agg_workers_few_units
 TESTING_REGRESS += col_build_peers
-TESTING_REGRESS += col_build_spool
 TESTING_REGRESS += col_build_spool_memory
-TESTING_REGRESS += col_build_spool_values
 TESTING_REGRESS += col_merge_memory
 ifdef SIFT_SB_SHIFT
 ifndef SIFT_TESTING

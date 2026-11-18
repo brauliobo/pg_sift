@@ -64,7 +64,7 @@ CHECKS+=(
 	'alternates	scripts/check-alternates.sh --selftest && scripts/check-alternates.sh'
 	'quick-skip	scripts/check-quick-skip.sh --selftest && scripts/check-quick-skip.sh'
 	'undefined-symbols	scripts/check-undefined.sh --selftest'
-	'bench-tests	ls bench/test/test_*.py | xargs -P 4 -n 1 python3 -I'
+	'bench-tests	scripts/bench-tests.sh --selftest && scripts/bench-tests.sh'
 	'bench-resume	scripts/lint-cache.sh bench-resume bench/steps bench/test/test_resume.sh -- bash bench/test/test_resume.sh'
 	'bench-coverage	bench/bench cases --check'
 	'slugs		scripts/check-slugs.sh'
@@ -106,6 +106,7 @@ CHECKS+=(
 	'version-shape	! git grep -nE "version\(\).*cut -d[.] -f1-2|version\(\) ~ .\^\[0-9\]\+\[[.]\]\[0-9\]\+[$]." -- test'
 	'format-literals	scripts/check-format-literals.sh && scripts/check-format-literals.sh --selftest'
 	'expected-oracle	scripts/check-expected-oracle.py --selftest && scripts/check-expected-oracle.py'
+	'codec-bytes	scripts/check-codec-bytes.py --selftest && scripts/check-codec-bytes.py'
 	'affected-untracked	scripts/test-affected-untracked.sh'
 	'affected-wide	scripts/test-affected-wide.sh'
 	'gen-docs-skip	scripts/lint-cache.sh gen-docs-skip scripts bench/steps README.md -- scripts/test-gen-docs-skip.sh'
@@ -119,13 +120,17 @@ CHECKS+=(
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+# now NAME: the clock of a check in whole seconds (the selftest sets it per check, so no result depends on the load of the machine)
+now() { echo "$SECONDS"; }
+
 # one check: its output in $tmp/NAME, then "exit-status wall-seconds cpu-seconds" in $tmp/NAME.t (the cpu is the user and system time of the processes the check waited for)
 run_check() {
-	local name=$1 start=$SECONDS rc
+	local name=$1 start rc
+	start=$(now "$name")
 	bash -c "$2" >"$tmp/$name" 2>&1
 	rc=$?
 	times >"$tmp/$name.cpu"
-	echo "$rc $((SECONDS - start)) $(tail -n 1 "$tmp/$name.cpu" | tr , . | awk '{ for (i = 1; i <= 2; i++) { split($i, a, "m"); t += a[1] * 60 + a[2] } print t }')" >"$tmp/$name.t"
+	echo "$rc $(( $(now "$name") - start )) $(tail -n 1 "$tmp/$name.cpu" | tr , . | awk '{ for (i = 1; i <= 2; i++) { split($i, a, "m"); t += a[1] * 60 + a[2] } print t }')" >"$tmp/$name.t"
 	exit "$rc"
 }
 
@@ -155,12 +160,13 @@ run_checks() {
 
 if [[ ${1:-} == --selftest ]]; then
 	unset LINT_TIMES
-	CHECKS=($'quick\ttrue' $'slow\tsleep 1; echo slept' $'broken\techo boom; exit 3' $'silent\texit 4')
+	now() { cat "$tmp/$1.clock" 2>/dev/null || echo 0; }
+	CHECKS=($'quick\ttrue' "slow"$'\t'"echo 1 >$tmp/slow.clock; echo slept" $'broken\techo boom; exit 3' $'silent\texit 4')
 	out=$(LINT_JOBS=2 run_checks); rc=$?
 	want=$'ok    quick (Ns): \nok    slow (Ns): slept\nFAIL  broken (exit 3, Ns)\nboom\nFAIL  silent (exit 4, Ns)\n(the check printed nothing: a defect of the check)'
 	[[ $rc == 1 ]] || { echo "FAIL: lint.sh exits $rc with two failed checks, want 1"; exit 1; }
 	[[ $(sed -E 's/[0-9]+s\)/Ns)/' <<<"$out" | head -n 6) == "$want" ]] || { echo "FAIL: lint.sh output differs: $out"; exit 1; }
-	[[ $out == *'ok    slow (1s)'* && $out == *$'\nslowest slow (1s)'* ]] || { echo "FAIL: the slow check does not show its second and lead the slowest line: $out"; exit 1; }
+	[[ $out == *'ok    quick (0s)'* && $out == *'ok    slow (1s)'* && $out == *$'\nslowest slow (1s), '* ]] || { echo "FAIL: the slow check does not show its second and lead the slowest line: $out"; exit 1; }
 	CHECKS=($'work\tawk "BEGIN { for (i = 0; i < 5000000; i++) s += i }"')
 	LINT_TIMES=$tmp/times run_checks >/dev/null
 	[[ $(cut -f1,3 "$tmp/times" | awk '$2 > 0') == work* ]] || { echo "FAIL: LINT_TIMES does not record the cpu seconds of a check that computes: $(cat "$tmp/times")"; exit 1; }

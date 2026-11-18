@@ -32,6 +32,7 @@
 #include "col/pg.h"
 #include "core/catname.h"
 #include "core/errctx.h"
+#include "core/inspect.h"
 #include "core/limits.h"
 #include "core/live.h"
 #include "bm25/maint.h"
@@ -453,6 +454,7 @@ sift_mops_open(const SiftMaintOps *ops, Oid indexoid, LOCKMODE lock)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a %s index", RelationGetRelationName(index), ops->name)));
+	sift_refuse_partitioned_index(index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX, RelationGetRelationName(index));
 	sift_store_require_ready(index);
 	return index;
 }

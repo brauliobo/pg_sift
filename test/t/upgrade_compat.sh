@@ -13,6 +13,7 @@ OLD_REF=${SIFT_UPGRADE_OLD_REF:-v5.0.0}
 ROWS=$(knob SIFT_COMPAT_ROWS 6000 3000)
 newroot=$ROOT
 build_old "$OLD_REF"; oldroot=$OLDROOT
+OLD_VERSION=$(sed -n "s/^default_version = '\(.*\)'/\1/p" "$oldroot$(pg_config --sharedir)/extension/pg_sift.control")
 
 . "$(dirname "$0")/lib_compat.bash"
 
@@ -98,15 +99,15 @@ run_variant() { # VARIANT OFFSET
 	check "$v: the prepared transaction is still there" test "$(sql "$n" "SELECT count(*) FROM pg_prepared_xacts")" == 1
 	check "$v: the quarantine list is the one the release wrote" test "$(sql "$n" "SELECT index::text FROM sift.quarantine")" == qt_idx
 	check "$v: the quarantined index is planned on the heap and its rows are the heap's" test "$(sql "$n" "SELECT count(*) FROM qt WHERE v = 3")" == "$(sql "$n" "SET enable_indexscan = off" "SET sift.enable_scan = off" "SET sift.enable_col_scan = off" "SELECT count(*) FROM qt WHERE v = 3")"
-	check "$v: the extension is at $VERSION and the library says which build runs" test "$(sql "$n" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == "$VERSION"
+	check "$v: the extension is still at $OLD_VERSION, the version of the release, until ALTER EXTENSION UPDATE" test "$(sql "$n" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == "$OLD_VERSION"
 	diag "$v: sift.version() = $(sql "$n" "SELECT sift.version()")"
 	check "$v: sift.check() has no finding beyond the damage and the leftover" sound_all "$n" "qt_idx,iv_inv"
 	compat old-files-new-lib "$v" "$n"
 	out=$(sql "$n" "SELECT kind || ':' || object || ':' || coalesce(command, '') FROM sift.upgrade_commands() ORDER BY object::text" 2>&1)
 	check "$v: sift.upgrade_commands() answers" test "$(grep -c ERROR <<<"$out")" == 0
 	diag "$v: upgrade_commands: ${out:-empty}"
-	check "$v: ALTER EXTENSION UPDATE is a no-op that works" sql "$n" "ALTER EXTENSION pg_sift UPDATE"
-	check "$v: the extension version after the update" test "$(sql "$n" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == "$VERSION"
+	check "$v: ALTER EXTENSION UPDATE from $OLD_VERSION to $VERSION works" sql "$n" "ALTER EXTENSION pg_sift UPDATE"
+	check "$v: the extension is at $VERSION after the update" test "$(sql "$n" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == "$VERSION"
 
 	# the prepared transaction ends the way the variant says
 	if [[ $v == clean ]]; then sql "$n" "COMMIT PREPARED 'zoo_prepared'" >/dev/null; else sql "$n" "ROLLBACK PREPARED 'zoo_prepared'" >/dev/null; fi

@@ -25,6 +25,7 @@ extern PGDLLIMPORT int sift_test_col_spool_share_kb;	/* 0: the share the build g
 extern PGDLLIMPORT int sift_test_col_spool_unbounded;	/* 1: a chunk is as large as it can be and no memory limit flushes it (a mutant of the share) */
 extern PGDLLIMPORT int sift_test_col_spool_used_rows;	/* the chunk rows the last plan chose (0: the rows went to the row file) */
 extern PGDLLIMPORT int sift_test_col_spool_est_bytes;	/* the bytes the last plan priced the files of the build at */
+extern PGDLLIMPORT int sift_test_col_spool_ranges;	/* the key ranges, each with a spool of chunks, of the last build by key ranges */
 #endif
 
 /*

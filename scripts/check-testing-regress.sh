@@ -19,7 +19,8 @@ unsorted=$(awk '/^TESTING_REGRESS \+= / { if (prev != "" && $3 < prev) print $3 
 [[ -z $unsorted ]] || { echo "TESTING_REGRESS: not in byte order (LC_ALL=C sort): $unsorted"; bad=1; }
 needs_testing() {
 	grep -q -i -E 'sift\._test_|^create extension (if not exists )?pg_sift_test' "$1" ||
-		{ ! grep -q "current_setting('sift\.test_" "$1" && grep -o -E 'sift\.test_[a-z_]+' "$1" | grep -vE "^($shipped)\$" >/dev/null; }
+		perl -0777 -ne 'my %p = map { $_ => 1 } /current_setting\(\s*\x27(sift\.test_\w+)\x27\s*,\s*true\s*\)/g; for (/sift\.test_\w+/g) { print "$_\n" unless $p{$_} }' "$1" |
+			grep -vE "^($shipped)\$" >/dev/null
 }
 for f in test/sql/*.sql; do
 	needs_testing "$f" || continue

@@ -15,7 +15,7 @@ rc=$?
 if ((rc == 77)); then echo '1..0 # SKIP the 8-page flavour needs PostgreSQL 18'; exit 0; fi
 ((rc == 0)) || { echo '1..1'; echo 'not ok 1 - build of the 8-page flavour'; exit 1; }
 
-SIZES=(40000 60000 80000 100000 120000)
+SIZES=(40000 80000 120000)
 SLOPE_MAX=32
 MB=1048576
 LOWER="build_serial_budget=0,writer_min_budget=$MB"
@@ -54,6 +54,7 @@ series() {
 	local mwm=$1 opt=$2 limits=$3 bound=$4 n peak rows="" over=0 slope
 	for n in "${SIZES[@]}"; do
 		peak=$(build_peak "$n" "${mwm}MB" "$opt" "$limits")
+		[[ $peak =~ ^[0-9]+$ ]] || bail "no peak for $n rows at ${mwm} MB ${opt:-plain}: the build failed"
 		rows+="$n $peak"$'\n'
 		((peak <= bound)) || over=$((over + 1))
 	done

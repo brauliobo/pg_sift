@@ -1,6 +1,7 @@
 -- The memory of the chunks a build by key ranges writes its rows to (scope col_build_spool of core/membudget.h, sift._test_mem_highwater()) is the share its plan was made for, whatever the
--- number of rows: the bytes of the contexts of the chunks at the end of each batch are under the share (10 MB of the 12 MB of the build) at 24,000, 36,000 and 48,000 rows, with a fitted per-row term
--- under 64 bytes (the ranges and so the chunk rows change with the rows: 2,048 rows of a chunk at the first two sizes and 1,024 at the last). The plan
+-- number of rows: the bytes of the contexts of the chunks at the end of each batch are under the share (10 MB of the 12 MB of the build) at 24,000, 36,000 and 48,000 rows, and each row of
+-- capacity of a chunk (a spool of chunks for each of the ranges, so that the bytes follow the ranges and the chunk rows, which change with the rows: 4, 6 and 8 ranges, 2,048 rows of a chunk
+-- at the first two sizes and 1,024 at the last) takes under 1 KB (about 520 to 570 bytes on a server without assertions; 520 to 830 with them, whose sentinel byte sends an array of 4,096 bytes to a chunk of 8,192). The plan
 -- takes the share, the ranges and the bytes of a row of the first run and writes a chunk when its rows or its memory reach their part of it. A plan that ignores the share (chunks of 16,384 rows and no
 -- memory limit, sift.test_col_spool_unbounded) overruns the budget of the scope and the build stops with the error of the budget, at every size that has the ranges to fill it.
 CREATE EXTENSION pg_sift_test CASCADE;
@@ -28,13 +29,13 @@ CREATE TABLE sp_t48000 AS SELECT * FROM sp_all;
 VACUUM (FREEZE, ANALYZE) sp_t24000;
 VACUUM (FREEZE, ANALYZE) sp_t36000;
 VACUUM (FREEZE, ANALYZE) sp_t48000;
-CREATE TABLE peaks (n int, chunk_rows int, peak bigint);
+CREATE TABLE peaks (n int, ranges int, chunk_rows int, peak bigint);
 CREATE FUNCTION sp_peak(n int) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM count(*) FROM sift._test_mem_highwater(true);
 	EXECUTE format('CREATE INDEX sp_idx ON sp_t%s USING sift_col (id, tenant_id, parent_id, status, created_at, updated_at, a_count, counter_a, kind, label, body, doc)
 		WITH (key_cut = ''parent_id'', paths = ''doc.metrics.* float8, doc.items[]{category text, strength text, score float8, sub text}, doc.label text, doc.note text'')', n);
-	INSERT INTO peaks SELECT n, current_setting('sift.test_col_spool_used_rows')::int, peak FROM sift._test_mem_highwater(false) WHERE scope = 'col_build_spool';
+	INSERT INTO peaks SELECT n, current_setting('sift.test_col_spool_ranges')::int, current_setting('sift.test_col_spool_used_rows')::int, peak FROM sift._test_mem_highwater(false) WHERE scope = 'col_build_spool';
 	DROP INDEX sp_idx;
 END $$;
 SELECT sp_peak(24000);
@@ -63,9 +64,9 @@ SELECT n, chunk_rows > 0 AS columns, peak > 0 AS measured, peak <= 10000 * 1024 
  48000 | t       | t        | t
 (3 rows)
 
-SELECT abs(regr_slope(peak, n)) < 64 AS fitted_bytes_a_row_under_64 FROM peaks;
- fitted_bytes_a_row_under_64 
------------------------------
+SELECT max(peak / (ranges::numeric * chunk_rows)) < 1024 AS bytes_a_chunk_row_under_1k FROM peaks;
+ bytes_a_chunk_row_under_1k 
+----------------------------
  t
 (1 row)
 
