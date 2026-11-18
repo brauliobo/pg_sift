@@ -2539,16 +2539,16 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 #### sift.backend_cache_kb
 
-`sift_col`, `sift_table`, `BM25` · safety · default 262144 kB
+`sift_col`, `sift_table`, `BM25` · safety · default 131072 kB
 
 - **What it does:** the total a backend keeps in its caches of parsed dictionaries, bm25 segment bytes, joined-table rows, the strings of shared value stores and the facts of partitions for the next statement; the least recently used entry nobody holds goes first, from whichever cache has it
 - **Gain:** -
-- **Impact:** index size: -; build, merge and writes: -; other: at most 256 MB a backend for the three caches together (up to 480 MB before, 96 GB for 200 connections); the gate case cap_backend_caches holds 0.1 MB against a 4 MB budget where 9.5 MB were kept without one
+- **Impact:** index size: -; build, merge and writes: -; other: at most 128 MB a backend for the caches together (256 MB, 50 GB for 200 connections, in 5.0.1; up to 480 MB, 96 GB before): 25 GB for 200 connections; the gate case cap_backend_caches holds 0.1 MB against a 4 MB budget where 9.5 MB were kept without one
 - **When:** Always, on top of the limit of each cache (sift.agg_lookup_cache_kb and the dictionary and segment caches): an entry that alone is larger than the total is not kept and its statement parses or loads it for itself.
-- **Default:** 262144 kB — 256 MB is the largest lookup cache a backend could keep alone, so a backend with one big joined table keeps what it kept; the instructions of the hot lookup, dictionary and search statements are the same with the budget and without it.
+- **Default:** 131072 kB — 128 MB keeps whole every working set of the shapes matrix that 256 MB kept: two joined tables of 27 and 75 MB (102 MB held) and a rotation of lookups, text dictionaries and search (170 MB held, 112 MB counted) read the same instructions and blocks with either, cold and warm. At 64 MB the two joined tables lose their cache (the warm run reads 2.87 against 1.40 thousand million instructions and 8,659 blocks) and the rotation does too (7.92 against 6.04), and 96 MB still loses the rotation. 128 MB is the power of two over the smallest budget that loses nothing (112 MB), half the 5.0.1 worst case of a pool.
 - **Turn off:** SET sift.backend_cache_kb = -1 (session, role, database or postgresql.conf): each cache is limited by its own setting only
 - **Upgrade from 4.3:** no REINDEX: the setting is read when a cache admits an entry; a backend that holds more gives entries back as it needs room
-- **Advice:** Default 256 MB a backend; lower it on a server with many backends, raise it for a few backends that join large tables. -1 leaves each cache to its own setting.
+- **Advice:** Default 128 MB a backend; lower it on a server with many backends, raise it for a few backends that join large tables (a joined table whose rows alone are larger than the total is loaded again by every statement). -1 leaves each cache to its own setting.
 - **Sources:** benchmark `test:mem_slope`; [SIZING](SIZING.md#memory)
 
 #### sift.agg_lookup_shared_kb
@@ -2801,7 +2801,7 @@ Defaults changed: sift.tomb_log_limit since 4.3; new: `sift.search_chunk_sbs`, `
 | `sift.on_corruption` | new | quarantine |  | The default changed in 5.0: a damaged sift or sift_col index no longer breaks the application, it is taken out of service. No REINDEX is needed; set error to keep the earlier behaviour. |
 | `sift.col_wbuf_ref` | on | on |  | On by default from 4.3: after ALTER EXTENSION UPDATE the rows of a heap table that tracks changes go to the buffer as references. A write buffer that holds a reference is column format minor 44: a release before 4.3 refuses the index, so upgrade every server that reads the index (a standby too) before the primary writes one, or set sift.col_wbuf_ref = off first. No REINDEX. |
 | `sift.agg_case_filter` | on | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement. |
-| `sift.backend_cache_kb` | new | 262144 kB |  | no REINDEX: the setting is read when a cache admits an entry; a backend that holds more gives entries back as it needs room |
+| `sift.backend_cache_kb` | new | 131072 kB |  | no REINDEX: the setting is read when a cache admits an entry; a backend that holds more gives entries back as it needs room |
 | `sift.agg_dimmap_kb` | 65536 kB | 65536 kB |  | ALTER EXTENSION UPDATE is enough; nothing is rebuilt and no REINDEX is needed. |
 | `sift.agg_connect_found` | on | on |  | New in 4.3. |
 | `sift.agg_child_first` | on | on |  | New in 4.3. |
