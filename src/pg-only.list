@@ -366,6 +366,8 @@ core/explain.h
 core/extver.c
 core/filter_test.c
 core/freelist.c
+core/dirchain.c
+core/dirchain_test.c
 core/freelist_alloc.c
 core/freelist_int.h
 core/handler.c

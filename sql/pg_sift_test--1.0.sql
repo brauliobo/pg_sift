@@ -63,6 +63,17 @@ CREATE FUNCTION sift._test_maint_wait_us() RETURNS int8
 -- directory updates of this process since sift.test_crash_dir was set (the named crash points of the matrix in test/t/crash_matrix.sh)
 CREATE FUNCTION sift._test_dir_updates() RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_dir_updates_count' LANGUAGE C STRICT;
+-- the chained directory (core/dirchain_test.c): edit entries that name no storage (op ins|del|rev|set), list them, describe the directory, check the chain's blocks
+CREATE FUNCTION sift._test_dir_edit(index regclass, op text, pos int4, n int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_dir_edit' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_list(index regclass, OUT ord int4, OUT gen int8, OUT ndocs int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_dir_list' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_info(index regclass, OUT version int8, OUT nsegs int4, OUT chained bool,
+									OUT chain_blocks int4, OUT format_minor int4, OUT top_chain_block int8)
+	AS 'MODULE_PATHNAME', 'sift_test_dir_info' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_check(index regclass) RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_dir_check' LANGUAGE C STRICT;
 -- everything inserted into the WAL so far is flushed
 CREATE FUNCTION sift._test_flush_wal() RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_flush_wal' LANGUAGE C STRICT;

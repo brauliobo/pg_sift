@@ -16,6 +16,7 @@
 #include "miscadmin.h"
 
 #include "col/col.h"
+#include "core/dirchain.h"
 #include "core/ops.h"
 #include "core/restrict.h"
 #include "core/extlock.h"
@@ -41,6 +42,7 @@ bool		sift_test_run_gap = false;
 int			sift_test_crash_dir = 0;
 int			sift_test_crash_kind = 0;
 bool		sift_test_crash_worker = false;
+bool		sift_test_crash_chain = false;
 bool		sift_test_cut_with_standby = false;
 int			sift_test_dir_updates = 0;
 int			sift_test_crash_clear = 0;
@@ -67,10 +69,16 @@ sift_store_space_test_point(int phase)
  * and an ERROR before the update are inside it; an ERROR or a wait after it comes after the update has handed its blocks to the directory and released its buffers, and only after one that publishes: a caller of the others updates its own books once it returns. An update under the relation extension lock (the appends of a value store) waits where the lock is released: PostgreSQL forbids a wait for a heavyweight lock under it. sift.test_crash_worker picks background workers instead of the other processes. sift._test_dir_updates() is the count.
  */
 static bool
-dir_fault_here(bool after)
+dir_fault_match(bool after)
 {
 	return sift_test_crash_dir != 0 && (MyBackendType == B_BG_WORKER) == sift_test_crash_worker &&
 		sift_test_crash_dir == (after ? -sift_test_dir_updates : sift_test_dir_updates);
+}
+
+static bool
+dir_fault_here(bool after)
+{
+	return dir_fault_match(after) && (after || !sift_test_crash_chain);
 }
 
 static bool dir_books_pending;
@@ -108,6 +116,23 @@ static void
 dir_fault_error(bool after)
 {
 	ereport(ERROR, (errcode(ERRCODE_OPERATOR_INTERVENTION), errmsg("sift test: error %s directory update %d", after ? "after" : "before", sift_test_dir_updates)));
+}
+
+/*
+ * With sift.test_crash_chain the fault "before the nth update" is raised after the update has written and logged the pages of a new chain and before the record that
+ * flips the metapage to them: the point where a crash leaves pages that nothing refers to (SIGKILL or an ERROR; the wait of kind 2 would hold the locks of the directory)
+ */
+void
+sift_store_dir_test_chain_point(void)
+{
+	if (!sift_test_crash_chain || !dir_fault_match(false))
+		return;
+	ereport(LOG, (errmsg("sift test: fault %d after the pages of the chain of directory update %d", sift_test_crash_kind, sift_test_dir_updates)));
+	if (!XLogRecPtrIsInvalid(XactLastRecEnd))
+		XLogFlush(XactLastRecEnd);
+	if (sift_test_crash_kind == 1)
+		dir_fault_error(false);
+	kill(MyProcPid, SIGKILL);
 }
 
 static void
@@ -307,6 +332,12 @@ check_meta(Relation index, Buffer buf)
 		corrupt(index, "High-water mark %u is below the first data block.", meta->high_water);
 }
 
+static inline bool
+dir_is_chained(const SiftDirectoryData *dir)
+{
+	return (dir->reserved & SIFT_DIR_CHAINED) != 0;
+}
+
 static void
 check_dir(Relation index, Buffer buf)
 {
@@ -316,7 +347,17 @@ check_dir(Relation index, Buffer buf)
 	sift_store_check_page(index, buf, SIFT_PT_DIRECTORY, 0);
 	if (dir->nsegs > SIFT_MAX_SEGMENTS || SiftPageGetUsed(page) != DIR_USED(dir->nsegs))
 		corrupt(index, "Directory holds %u segments in %u bytes.", dir->nsegs, SiftPageGetUsed(page));
+	if ((dir->reserved & ~SIFT_DIR_CHAINED) != 0 || (dir_is_chained(dir) && dir->nsegs != 0))
+		corrupt(index, "Directory holds %u segments with the flags %u.", dir->nsegs, dir->reserved);
 }
+
+/* The root of the chained directory the metapage names, 0 for none: a page that stops short of the field has none */
+static inline BlockNumber
+meta_dir_chain(Page metapage)
+{
+	return SiftPageGetUsed(metapage) >= sizeof(SiftMetaPageData) ? META(metapage)->dir_chain : 0;
+}
+
 
 Buffer
 lock_meta(Relation index, int mode)
@@ -366,21 +407,62 @@ sift_store_meta_has_flag(Relation index, uint32 flag)
 	return on;
 }
 
-void
-sift_dir_read(Relation index, SiftDirSnapshot *snap)
+/*
+ * The directory under the share locks of the metapage and block 1: version, the entries into dst (room for cap) and the chain they came from
+ * (nblocks 0 for none). Returns the number of entries; the metapage is copied into meta when asked for.
+ */
+static int
+dir_read_into(Relation index, SiftMetaPageData *meta, uint32 *version, SiftSegEntry *dst, int cap, SiftDirChain *chain)
 {
 	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
 	Buffer		dirbuf = lock_dir(index, BUFFER_LOCK_SHARE);
 	SiftDirectoryData *dir = DIR(BufferGetPage(dirbuf));
+	Page		mpage = BufferGetPage(metabuf);
+	BlockNumber root = meta_dir_chain(mpage);
+	int			n;
 
-	snap->meta = *META(BufferGetPage(metabuf));
-	if (SiftPageGetUsed(BufferGetPage(metabuf)) < sizeof(SiftMetaPageData))
-		memset((char *) &snap->meta + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
-	snap->version = dir->version;
-	snap->nsegs = dir->nsegs;
-	memcpy(snap->segs, dir->segs, dir->nsegs * sizeof(SiftSegEntry));
+	if (meta)
+	{
+		*meta = *META(mpage);
+		if (SiftPageGetUsed(mpage) < sizeof(SiftMetaPageData))
+			memset((char *) meta + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
+	}
+	if (dir_is_chained(dir) != (root != 0))
+		corrupt(index, "The directory says it is %schained, the metapage names the chain root %u.", dir_is_chained(dir) ? "" : "not ", root);
+	*version = dir->version;
+	*chain = (SiftDirChain) {0};
+	if (root != 0)
+		n = sift_dirchain_read(index, root, dir->version, dst, cap, chain);
+	else
+	{
+		n = dir->nsegs;
+		memcpy(dst, dir->segs, n * sizeof(SiftSegEntry));
+	}
 	UnlockReleaseBuffer(dirbuf);
 	UnlockReleaseBuffer(metabuf);
+	return n;
+}
+
+void
+sift_dir_read(Relation index, SiftDirSnapshot *snap)
+{
+	SiftDirChain chain;
+
+	snap->nsegs = dir_read_into(index, &snap->meta, &snap->version, snap->segs, SIFT_MAX_SEGMENTS, &chain);
+	snap->chain = chain.blocks;
+	snap->nchain = chain.nblocks;
+}
+
+/* The directory whatever its size: segs is allocated in the current memory context, the blocks of a chain too */
+void
+sift_dir_read_list(Relation index, SiftDirList *list)
+{
+	SiftDirChain chain;
+
+	list->segs = palloc(SIFT_DIR_WIDE_MAX * sizeof(SiftSegEntry));
+	list->nsegs = dir_read_into(index, &list->meta, &list->version, list->segs, SIFT_DIR_WIDE_MAX, &chain);
+	list->chain = chain.blocks;
+	list->nchain = chain.nblocks;
 }
 
 /* The directory without the metapage: a caller that reads only the segments (one page where sift_dir_read reads two); snap->meta is zero, so a copy of it for a scan that opens the index must be of sift_dir_read */
@@ -390,9 +472,18 @@ sift_dir_read_segs(Relation index, SiftDirSnapshot *snap)
 	Buffer		dirbuf = lock_dir(index, BUFFER_LOCK_SHARE);
 	SiftDirectoryData *dir = DIR(BufferGetPage(dirbuf));
 
+	if (dir_is_chained(dir))
+	{
+		UnlockReleaseBuffer(dirbuf);
+		sift_dir_read(index, snap);
+		memset(&snap->meta, 0, sizeof(snap->meta));
+		return;
+	}
 	memset(&snap->meta, 0, sizeof(snap->meta));
 	snap->version = dir->version;
 	snap->nsegs = dir->nsegs;
+	snap->chain = NULL;
+	snap->nchain = 0;
 	memcpy(snap->segs, dir->segs, dir->nsegs * sizeof(SiftSegEntry));
 	UnlockReleaseBuffer(dirbuf);
 }
@@ -433,6 +524,19 @@ Buffer
 sift_dir_pin(Relation index)
 {
 	return ReadBufferExtended(index, MAIN_FORKNUM, SIFT_DIRECTORY_BLKNO, RBM_NORMAL, NULL);
+}
+
+/* Is the directory chained, as a pinned block 1 shows it without its lock: a hint for the update that decides whether to take a transaction id before it locks, which a change of shape between the peek and the locks does not break (store_update asks again) */
+static bool
+dir_chained_peek(Relation index)
+{
+	Buffer		buf = sift_dir_pin(index);
+	bool		chained;
+
+	pg_read_barrier();
+	chained = dir_is_chained(DIR(BufferGetPage(buf)));
+	ReleaseBuffer(buf);
+	return chained;
 }
 
 uint32
@@ -485,28 +589,27 @@ sift_meta_update(Relation index, SiftMetaMutator fn, void *arg)
 	UnlockReleaseBuffer(metabuf);
 }
 
-/* Validates the mutator's result inside the record; aborts it on failure */
+/* Validates the mutator's result (metapage and nsegs entries) inside the record; aborts it on failure */
 static void
-finish_dir(Relation index, SiftXlog *state, const SiftMetaPageData *before, const SiftMetaPageData *meta,
-		   Page dirpage)
+check_dir_result(Relation index, SiftXlog *state, const SiftMetaPageData *before, const SiftMetaPageData *meta,
+				 const SiftSegEntry *segs, int nsegs, int limit)
 {
-	SiftDirectoryData *dir = DIR(dirpage);
 	const char *err = NULL;
 
 	if (meta->magic != before->magic || meta->high_water != before->high_water ||
 		meta->freelist_head != before->freelist_head || meta->next_gen < before->next_gen)
 		err = "allocation state changed";
-	else if (dir->nsegs > SIFT_MAX_SEGMENTS)
+	else if (nsegs > limit)
 	{
 		sift_xlog_abort(state);
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift index \"%s\" cannot hold more than %d segments", RelationGetRelationName(index), SIFT_MAX_SEGMENTS),
+				 errmsg("sift index \"%s\" cannot hold more than %d segments", RelationGetRelationName(index), limit),
 				 errhint("Run sift.merge() on the index.")));
 	}
-	for (int i = 0; !err && i < dir->nsegs; i++)
+	for (int i = 0; !err && i < nsegs; i++)
 	{
-		const SiftSegEntry *s = &dir->segs[i];
+		const SiftSegEntry *s = &segs[i];
 
 		if (s->kind < SIFT_SEG_IMMUTABLE || s->kind > SIFT_SEG_VALRUN)
 			err = "invalid segment kind";
@@ -515,7 +618,7 @@ finish_dir(Relation index, SiftXlog *state, const SiftMetaPageData *before, cons
 		else if (s->format > Max(Max(SIFT_FORMAT_MINOR, SIFT_COL_FORMAT_MAX_READ), SIFT_COL_FORMAT_WIDE_ROWS))	/* the column engine numbers its segment formats on its own */
 			err = "unknown segment format";
 		for (int j = 0; !err && j < i; j++)
-			if (dir->segs[j].gen == s->gen)
+			if (segs[j].gen == s->gen)
 				err = "duplicate segment generation";
 	}
 	if (err)
@@ -523,8 +626,94 @@ finish_dir(Relation index, SiftXlog *state, const SiftMetaPageData *before, cons
 		sift_xlog_abort(state);
 		SIFT_INVARIANT(false, "sift: invalid directory update: %s", err);
 	}
+}
+
+/* The directory page after a mutator edited it in place */
+static void
+finish_dir(Relation index, SiftXlog *state, const SiftMetaPageData *before, const SiftMetaPageData *meta,
+		   Page dirpage)
+{
+	SiftDirectoryData *dir = DIR(dirpage);
+
+	check_dir_result(index, state, before, meta, dir->segs, dir->nsegs, SIFT_MAX_SEGMENTS);
 	dir->version++;
 	SiftPageSetUsed(dirpage, DIR_USED(dir->nsegs));
+}
+
+/* An update that works on the directory as a list: the entries the mutator edits, and what the chain it replaces holds */
+typedef struct DirEdit
+{
+	SiftDirectoryData *dir;		/* the mutator's copy of block 1, with room for the most entries the caller supports */
+	SiftSegEntry *old;			/* its entries as they were */
+	int			nold;
+	bool		chained;
+	SiftDirChain chain;			/* the chain they came from, when chained */
+	SiftExtent *release;		/* the release list of the caller and the blocks of the old chain that the new one does not keep */
+	int			nrelease;
+} DirEdit;
+
+static void
+dir_edit_open(Relation index, Page mp, Page dp, bool wide, DirEdit *e)
+{
+	int			cap = wide ? SIFT_DIR_WIDE_MAX : SIFT_MAX_SEGMENTS;
+	SiftDirectoryData *page = DIR(dp);
+
+	e->chained = dir_is_chained(page);
+	e->dir = palloc(DIR_USED(cap));
+	e->dir->version = page->version;
+	e->dir->reserved = 0;
+	if (e->chained)
+		e->nold = sift_dirchain_read(index, meta_dir_chain(mp), page->version, e->dir->segs, cap, &e->chain);
+	else
+	{
+		e->nold = page->nsegs;
+		memcpy(e->dir->segs, page->segs, e->nold * sizeof(SiftSegEntry));
+	}
+	e->dir->nsegs = e->nold;
+	e->old = palloc(Max(e->nold, 1) * sizeof(SiftSegEntry));
+	memcpy(e->old, e->dir->segs, e->nold * sizeof(SiftSegEntry));
+}
+
+/*
+ * The mutator is done: lays the entries out, in block 1 while they fit and the directory is not chained, else in a chain whose new pages are logged now
+ * (before the record that refers to them), and plans the release of the old chain's blocks with the caller's. The chain's blocks come off the free list
+ * and the end of the file, which logs the metapage on its own: the working copy of the record takes over those two fields afterwards.
+ */
+static void
+dir_edit_close(Relation index, SiftXlog *state, Buffer metabuf, Page mp, Page dp, const SiftMetaPageData *before,
+			   const SiftDirChange *chg, DirEdit *e, FullTransactionId safexid, FreePlan *plan)
+{
+	SiftDirectoryData *dir = e->dir;
+	SiftDirectoryData *page = DIR(dp);
+	uint64		version = page->version + 1;
+
+	check_dir_result(index, state, before, META(mp), dir->segs, dir->nsegs, SIFT_DIR_WIDE_MAX);
+	e->release = palloc((chg->nrelease + e->chain.nleaves + 2 + dir->nsegs) * sizeof(SiftExtent));
+	memcpy(e->release, chg->release, chg->nrelease * sizeof(SiftExtent));
+	e->nrelease = chg->nrelease;
+	if (!e->chained && dir->nsegs <= sift_dir_flat_max())
+	{
+		page->nsegs = dir->nsegs;
+		memcpy(page->segs, dir->segs, dir->nsegs * sizeof(SiftSegEntry));
+		SiftPageSetUsed(dp, DIR_USED(page->nsegs));
+	}
+	else
+	{
+		BlockNumber root = sift_dirchain_write(index, metabuf, version, e->chained ? &e->chain : NULL, e->old, dir->segs, dir->nsegs,
+											   chg->chain_below != 0 ? chg->chain_below : InvalidBlockNumber, e->release, &e->nrelease);
+
+		SIFT_DIR_TEST_CHAIN_POINT();
+		page->nsegs = 0;
+		page->reserved = SIFT_DIR_CHAINED;
+		SiftPageSetUsed(dp, DIR_USED(0));
+		META(mp)->dir_chain = root;
+		META(mp)->format_minor = Max(META(mp)->format_minor, SIFT_FORMAT_MINOR_DIRCHAIN);
+	}
+	page->version = version;
+	if (e->nrelease > 0)
+		prepare_free(index, metabuf, e->release, e->nrelease, safexid, plan);
+	META(mp)->high_water = META(BufferGetPage(metabuf))->high_water;
+	META(mp)->freelist_head = META(BufferGetPage(metabuf))->freelist_head;
 }
 
 /*
@@ -563,18 +752,20 @@ invalidate_mapping(Relation index)
 void
 store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTarget *published)
 {
-	bool		pending = publish && chg->nrelease > 0 && !chg->immediate && !space_exclusive;
+	bool		pending = publish && !chg->immediate && !space_exclusive && (chg->nrelease > 0 || dir_chained_peek(index));
 	FullTransactionId safexid = pending && xid_safexid() ?
 		GetTopFullTransactionId() : InvalidFullTransactionId;
 	Buffer		metabuf;
 	Buffer		dirbuf;
 	FreePlan	plan = {.flbuf = InvalidBuffer, .newhead = InvalidBlockNumber};
-	SiftXlog state;
+	SiftXlog	state;
 	SiftMetaPageData before;
 	Page		mp;
 	Page		dp = NULL;
 	Page		fp = NULL;
 	Page		xp = NULL;
+	DirEdit		edit = {0};
+	bool		listed;
 
 	/* a test lets a reader start between the xid and the locks: its snapshot is later than the xid and reads the directory as it is before this change */
 	SIFT_TEST_GATE(pending && sift_test_release_gate, 6);
@@ -582,9 +773,12 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
 	dirbuf = publish ? lock_dir(index, BUFFER_LOCK_EXCLUSIVE) : InvalidBuffer;
 	SIFT_DIR_TEST_POINT(false);
-	if (pending && !FullTransactionIdIsValid(safexid))
+	listed = publish && (chg->wide || dir_is_chained(DIR(BufferGetPage(dirbuf))) || sift_dir_flat_max() < SIFT_MAX_SEGMENTS);
+	/* a chain's old blocks wait for the horizon like the extents of a segment, whether or not the caller releases any */
+	if ((pending || (listed && dir_is_chained(DIR(BufferGetPage(dirbuf))) && !chg->immediate && !space_exclusive)) &&
+		!FullTransactionIdIsValid(safexid))
 		safexid = ReadNextFullTransactionId();
-	if (chg->nrelease > 0)
+	if (!listed && chg->nrelease > 0)
 		prepare_free(index, metabuf, chg->release, chg->nrelease, safexid, &plan);
 	state = sift_xlog_start(index);
 	mp = sift_xlog_register(&state, metabuf, 0);
@@ -599,15 +793,24 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	before = *META(mp);
 	if (publish)
 	{
+		if (listed)
+			dir_edit_open(index, mp, dp, chg->wide, &edit);
 		if (chg->fn)
-			chg->fn(META(mp), DIR(dp), xp, chg->arg);
+			chg->fn(META(mp), listed ? edit.dir : DIR(dp), xp, chg->arg);
+		if (listed)
+		{
+			dir_edit_close(index, &state, metabuf, mp, dp, &before, chg, &edit, safexid, &plan);
+			if (BufferIsValid(plan.flbuf))
+				fp = sift_xlog_register(&state, plan.flbuf, 0);
+		}
 		/* the page ends where the base does until a failure note or a floor is written: pd_lower covers the bytes of a note once it has one */
 		if (sift_meta_extended(META(mp)))
 			SiftPageSetUsed(mp, sizeof(SiftMetaPageData));
 		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (col/col.h), its unfrozen rows raise the minor */
-		for (int i = 0; i < DIR(dp)->nsegs; i++)
-			META(mp)->format_minor = Max(META(mp)->format_minor, seg_minor(index, &DIR(dp)->segs[i]));
-		finish_dir(index, &state, &before, META(mp), dp);
+		for (int i = 0; i < (listed ? edit.dir->nsegs : DIR(dp)->nsegs); i++)
+			META(mp)->format_minor = Max(META(mp)->format_minor, seg_minor(index, listed ? &edit.dir->segs[i] : &DIR(dp)->segs[i]));
+		if (!listed)
+			finish_dir(index, &state, &before, META(mp), dp);
 	}
 	apply_free(META(mp), fp, &plan);
 	/* Do not accept cancellation between a durable physical mapping change and its immediate invalidation. */

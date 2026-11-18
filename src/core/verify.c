@@ -169,6 +169,8 @@ referenced_blocks(Relation index, const SiftDirSnapshot *snap, SiftExtentVisit v
 	metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
 	m.hwm = META(BufferGetPage(metabuf))->high_water;
 	mark(&m, SIFT_METAPAGE_BLKNO, 2, "metapage and directory", 0);
+	for (int i = 0; i < snap->nchain; i++)
+		mark(&m, snap->chain[i], 1, "directory chain page", 0);
 	sift_freelist_walk(index, metabuf, mark_freelist_page, &m);
 	UnlockReleaseBuffer(metabuf);
 	return m.set;
@@ -198,6 +200,9 @@ in_flight(Page page, const SiftDirSnapshot *snap)
 	if (!sift_page_layout_ok(page))
 		return false;
 	op = SiftPageGetOpaque(page);
+	/* a chain page written by an update that has not flipped yet carries the version it will have */
+	if (op->type == SIFT_PT_DIRROOT || op->type == SIFT_PT_DIRLEAF)
+		return op->gen > snap->version;
 	if (op->type < SIFT_PT_SEGHEADER || op->type > SIFT_PT_WBUFDATA)
 		return false;
 	if (op->gen >= snap->meta.next_gen)

@@ -33,7 +33,9 @@ typedef enum SiftPageType
 	SIFT_PT_WBUFHEADER,			/* write buffer lane headers */
 	SIFT_PT_WBUFDATA,			/* write buffer doc records */
 	SIFT_PT_FREELIST,			/* free extent records */
-	SIFT_PT_FREE				/* unused, reclaimable */
+	SIFT_PT_FREE,				/* unused, reclaimable */
+	SIFT_PT_DIRROOT,			/* root of a chained directory (SiftChainRootData): gen = the directory version that wrote it */
+	SIFT_PT_DIRLEAF				/* run of directory entries of a chained directory (SiftChainLeafData): gen = the directory version that wrote it */
 } SiftPageType;
 
 typedef struct SiftPageOpaqueData
@@ -139,6 +141,7 @@ typedef struct SiftMetaPageData
 	uint16		maint_ok_job;	/* SiftJob */
 	uint16		shrink_blocked;	/* SiftShrinkBlock: why the last VACUUM left the file longer than the shrink target */
 	uint32		inserted;		/* sift_col: the records of the write buffers promoted so far, modulo 2^32 (the word was reserved, 0 before: a library that does not know it leaves it as it is) */
+	BlockNumber dir_chain;		/* the root of a chained directory (SIFT_PT_DIRROOT); 0: the directory is block 1 alone. Format minor SIFT_FORMAT_MINOR_DIRCHAIN: an older library refuses the index */
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF
@@ -233,6 +236,44 @@ typedef struct SiftDirectoryData
 
 StaticAssertDecl(offsetof(SiftDirectoryData, segs) + SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry)
 				 <= SIFT_PAGE_PAYLOAD, "directory must fit one page");
+
+/*
+ * A chained directory (metapage dir_chain != 0): block 1 keeps the version and the lock of the directory and says SIFT_DIR_CHAINED with no entries;
+ * the entries are in SIFT_PT_DIRLEAF pages in directory order, listed by the SIFT_PT_DIRROOT page the metapage names. Pages of a chain are never
+ * changed once written: an update writes the leaves it changes and a new root, then one record flips dir_chain and the version, and the old root
+ * and the replaced leaves go through the free list like the extents of a segment. A leaf is reused as it is while its entries stay together.
+ */
+#define SIFT_DIR_CHAINED	0x0001	/* SiftDirectoryData.reserved of block 1 */
+
+typedef struct SiftChainRef
+{
+	BlockNumber blk;
+	uint32		n;				/* entries of the leaf */
+	uint64		gen;			/* the version the leaf was written under: the page must say the same */
+} SiftChainRef;
+
+typedef struct SiftChainRootData
+{
+	uint32		nleaves;
+	uint32		nsegs;			/* entries in all leaves */
+	SiftChainRef leaf[FLEXIBLE_ARRAY_MEMBER];
+} SiftChainRootData;
+
+typedef struct SiftChainLeafData
+{
+	uint32		n;
+	uint32		reserved;
+	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
+} SiftChainLeafData;
+
+#define SIFT_CHAIN_ROOT_CAP	((SIFT_PAGE_PAYLOAD - offsetof(SiftChainRootData, leaf)) / sizeof(SiftChainRef))
+#define SIFT_CHAIN_LEAF_CAP	((SIFT_PAGE_PAYLOAD - offsetof(SiftChainLeafData, segs)) / sizeof(SiftSegEntry))
+#define SIFT_CHAIN_ROOT_USED(nleaves)	(offsetof(SiftChainRootData, leaf) + (nleaves) * sizeof(SiftChainRef))
+#define SIFT_CHAIN_LEAF_USED(n)			(offsetof(SiftChainLeafData, segs) + (n) * sizeof(SiftSegEntry))
+/* The most entries a directory holds: what a chain of SIFT_CHAIN_LEAF_CAP / 2 entries a leaf in a full root holds, below the 16 bits of SiftDirectoryData.nsegs */
+#define SIFT_DIR_WIDE_MAX	32768
+StaticAssertDecl(SIFT_DIR_WIDE_MAX <= SIFT_CHAIN_ROOT_CAP * (SIFT_CHAIN_LEAF_CAP / 2) && SIFT_DIR_WIDE_MAX <= PG_UINT16_MAX,
+				 "a full root of half-full leaves holds the most entries");
 
 /* Immutable segment header page */
 typedef enum SiftSection

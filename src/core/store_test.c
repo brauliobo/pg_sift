@@ -25,6 +25,7 @@
 #include "executor/instrument.h"
 #include "core/catname.h"
 #include "core/inspect.h"
+#include "core/dirchain.h"
 
 #ifdef SIFT_TESTING
 
@@ -73,12 +74,24 @@ sift_store_test_init(void)
 	DefineCustomIntVariable("sift.test_crash_clear",
 							"Testing: SIGKILL after the nth segment a pass that clears liveness bits (VACUUM, the fold of the marks) has visited since this setting (0 = never).",
 							NULL, &sift_test_crash_clear, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, crash_clear_assign, NULL);
+	DefineCustomBoolVariable("sift.test_crash_chain",
+							 "Testing: the fault \"before the nth directory update\" of sift.test_crash_dir comes after the update has written the pages of a new chain, before the record that flips to it.",
+							 NULL, &sift_test_crash_chain, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_crash_worker",
 							 "Testing: sift.test_crash_dir applies to background workers (on) or to the other processes (off).",
 							 NULL, &sift_test_crash_worker, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_cut_with_standby",
 							 "Testing: VACUUM cuts the file even while a standby streams.",
 							 NULL, &sift_test_cut_with_standby, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_dir_flat_max",
+							"Testing: entries from which a directory is chained instead of kept in block 1 (0 = what block 1 holds).",
+							NULL, &sift_test_dir_flat_max, 0, 0, SIFT_MAX_SEGMENTS, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_dir_leaf_max",
+							"Testing: entries a leaf of a chained directory is written with at most (0 = what a page holds).",
+							NULL, &sift_test_dir_leaf_max, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_dir_root_max",
+							"Testing: leaves the root of a chained directory lists at most (0 = what a page holds).",
+							NULL, &sift_test_dir_root_max, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_max_extents",
 							"Testing: extents a segment may use (0 = what its header page holds).",
 							NULL, &sift_test_max_extents, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
