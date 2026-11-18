@@ -19,6 +19,11 @@ ms = importlib.util.module_from_spec(spec); spec.loader.exec_module(ms)
 sizes = [50000, 100000, 200000]
 ms.build_all(sizes)
 print("SERVER", ms.script("select version();").strip())
+print("FLAGS", ms.script("select current_setting('debug_assertions'), current_setting('block_size'), (select string_agg(name || '=' || setting, ' ') from pg_settings where name in ('debug_discard_caches','wal_segment_size', 'max_stack_depth'));").strip())
+for n in sizes:
+    for tag, op in (("plain_rows", f"select g, g::numeric, 'x' || g from generate_series(1, {n}) g;"), ("plain_hashagg", f"set sift.enable_agg = off; set sift.enable_scan = off; select k_hi, count(*), sum(amount) from f{n} group by 1;"), ("plain_numeric_sum", f"select sum(g::numeric) from generate_series(1, {n}) g;")):
+        mbs = [ms.measure_mb("", "", op) for _ in range(2)]
+        print("PLAINMEASURE", tag, n, " ".join(f"{m:.2f}" for m in mbs), "MB")
 for n in sizes:
     out = ms.script(ms.SETTINGS + f"explain (analyze, costs on, summary off) select k_hi, count(*), sum(amount) from f{n} group by 1;")
     print("PLAN", n, " | ".join(l.strip() for l in out.splitlines() if re.search(r"Aggregate|Batches|Planned|Memory|Disk|rows=", l)))
