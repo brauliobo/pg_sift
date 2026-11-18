@@ -298,6 +298,7 @@ TESTING_REGRESS += col_rewrite_cut
 TESTING_REGRESS += col_rewrite_roll
 TESTING_REGRESS += col_rollup_auto
 TESTING_REGRESS += col_rollup_refresh
+TESTING_REGRESS += col_rollup_worker
 TESTING_REGRESS += col_run_heads
 TESTING_REGRESS += col_scan_unit_order
 TESTING_REGRESS += col_scope_alter_scope
