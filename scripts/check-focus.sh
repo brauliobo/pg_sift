@@ -55,6 +55,11 @@ def parse(path):
     return cache[path]
 
 
+def canonical(base, text):
+    row, _, tokens = text.partition("\t")
+    return row == ("=hot" if base == "_hot.tsv" else base[:-4]) and text == row + "\t" + " ".join(sorted(set(tokens.split()))) + "\n"
+
+
 def check(root, tables, pins, moved):
     os.chdir(root)
     cache.clear()
@@ -79,20 +84,22 @@ def check(root, tables, pins, moved):
 
     bad = {}
     for table in tables:
-        for line in open(table, encoding="utf-8"):
-            row, _, tokens = line.rstrip("\n").partition("\t")
-            for token in tokens.split():
-                path, _, fn = token.partition(":")
-                got = parse(path)
-                if not fn and got or got and fn in got[0] or fn and in_split(path, fn):
-                    continue
-                elif got is None:
-                    why = "is not a file of src/"
-                elif where(fn) and not path.endswith(".h"):
-                    why = "is defined in " + where(fn)
-                else:
-                    continue
-                bad.setdefault((os.path.basename(table), token, why), set()).add(row)
+        text = open(table, encoding="utf-8", newline="").read()
+        if not canonical(os.path.basename(table), text):
+            bad.setdefault((os.path.basename(table), "row", "is not one LF-ended line NAME<TAB>tokens, sorted and unique, as scripts/focus-merge.py writes it"), set()).add(text.partition("\t")[0])
+        row, _, tokens = text.rstrip("\n").partition("\t")
+        for token in tokens.split():
+            path, _, fn = token.partition(":")
+            got = parse(path)
+            if not fn and got or got and fn in got[0] or fn and in_split(path, fn):
+                continue
+            elif got is None:
+                why = "is not a file of src/"
+            elif where(fn) and not path.endswith(".h"):
+                why = "is defined in " + where(fn)
+            else:
+                continue
+            bad.setdefault((os.path.basename(table), token, why), set()).add(row)
     for pin in pins:
         for line in open(pin, encoding="utf-8"):
             if line.strip() and not line.startswith("#") and parse(line.split("\t")[0]) is None and line.split("\t")[0] not in [r[1] for r in splits]:
@@ -128,14 +135,18 @@ if mode == "--selftest":
         open(d + "/src/a/split/in.c", "w").write("int\nsplit_fn(void)\n{\n\treturn 1;\n}\n")
         open(d + "/scripts/moved-sources.tsv", "w").write("src/a/split/\tsrc/a/old.c\t\n")
         open(d + "/scripts/focus-pins.tsv", "w").write("# pins\nsrc/a/gone.c\tt1\n")
-        open(d + "/scripts/focus/t1.tsv", "w").write("t1\tsrc/a/one.c:kept src/a/two.c:pg_finfo_sift_x src/a/old.c:split_fn src/a/one.c:f_made\n")
-        open(d + "/scripts/focus/t2.tsv", "w").write("t2\tsrc/a/one.c:moved_here src/a/two.c:renamed src/a/missing.c:kept\n")
-        got = {(t, w) for (_, t, w) in run(d)}
-        want = {("src/a/one.c:moved_here", "is defined in src/a/two.c"), ("src/a/missing.c:kept", "is not a file of src/"), ("src/a/gone.c", "is not a file of src/")}
+        open(d + "/scripts/focus/t1.tsv", "w").write("t1\tsrc/a/old.c:split_fn src/a/one.c:f_made src/a/one.c:kept src/a/two.c:pg_finfo_sift_x\n")
+        open(d + "/scripts/focus/t2.tsv", "w").write("t2\tsrc/a/missing.c:kept src/a/one.c:moved_here src/a/two.c:renamed\n")
+        open(d + "/scripts/focus/t3.tsv", "w").write("t3\tsrc/a/two.c:b src/a/one.c:a\n")
+        open(d + "/scripts/focus/t4.tsv", "w").write("t4\tsrc/a/one.c:a")
+        found = run(d)
+        got = {(t, w) for (_, t, w) in found}
+        assert {f for (f, t, _) in found if t == "row"} == {"t3.tsv", "t4.tsv"}, "the rows to write differently are t3 (unsorted) and t4 (no LF)"
+        want = {("src/a/one.c:moved_here", "is defined in src/a/two.c"), ("src/a/missing.c:kept", "is not a file of src/"), ("src/a/gone.c", "is not a file of src/"), ("row", "is not one LF-ended line NAME<TAB>tokens, sorted and unique, as scripts/focus-merge.py writes it")}
         if got != want:
             print("check-focus: selftest: got %s, want %s" % (sorted(got), sorted(want)), file=sys.stderr)
             sys.exit(1)
-    print("check-focus: selftest ok: a moved function and a missing file are told; split files, macro names, declarations and PG_FUNCTION_INFO_V1 are not")
+    print("check-focus: selftest ok: a moved function, a missing file and a row that scripts/focus-merge.py would write differently are told; split files, macro names, declarations and PG_FUNCTION_INFO_V1 are not")
     sys.exit(0)
 
 bad = run(repo)

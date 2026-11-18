@@ -15,12 +15,12 @@ SELECT s FROM unnest(ARRAY[20000, 24000, 28000, 32000, 36000]) n, LATERAL unnest
 		FROM generate_series(1, %s) i', n),
 	'SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)',
 	'CREATE INDEX ws_i ON ws USING sift_col (id, k, ts, sc, amount) WITH (key_cut = ''off'', key_columns = ''amount'', order_array_columns = ''id, k, ts, sc'')',
-	format('INSERT INTO peaks SELECT %s, ''build'', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE ''col_writer%%''', n),
+	format('INSERT INTO peaks SELECT %s, ''build'', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN (''col_writer_order'', ''col_writer_spool'')', n),
 	'UPDATE ws SET amount = amount + 1 WHERE id % 3 = 0',
 	'VACUUM ws',
 	'SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)',
 	'SELECT sift.col_merge(''ws_i'', true) > 0',
-	format('INSERT INTO peaks SELECT %s, ''merge'', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE ''col_writer%%''', n),
+	format('INSERT INTO peaks SELECT %s, ''merge'', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN (''col_writer_order'', ''col_writer_spool'')', n),
 	'DROP TABLE ws']) WITH ORDINALITY AS t(s, k) ORDER BY n, k
 \gexec
 CREATE TABLE ws WITH (autovacuum_enabled = off) AS SELECT i AS id, CASE WHEN i % 31 = 0 THEN NULL ELSE i * 7919 % 10007 END AS k,
@@ -33,7 +33,7 @@ SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
 (1 row)
 
 CREATE INDEX ws_i ON ws USING sift_col (id, k, ts, sc, amount) WITH (key_cut = 'off', key_columns = 'amount', order_array_columns = 'id, k, ts, sc')
-INSERT INTO peaks SELECT 20000, 'build', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE 'col_writer%'
+INSERT INTO peaks SELECT 20000, 'build', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_writer_order', 'col_writer_spool')
 UPDATE ws SET amount = amount + 1 WHERE id % 3 = 0
 VACUUM ws
 SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
@@ -48,7 +48,7 @@ SELECT sift.col_merge('ws_i', true) > 0
  t
 (1 row)
 
-INSERT INTO peaks SELECT 20000, 'merge', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE 'col_writer%'
+INSERT INTO peaks SELECT 20000, 'merge', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_writer_order', 'col_writer_spool')
 DROP TABLE ws
 CREATE TABLE ws WITH (autovacuum_enabled = off) AS SELECT i AS id, CASE WHEN i % 31 = 0 THEN NULL ELSE i * 7919 % 10007 END AS k,
 		TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 300011) * INTERVAL '1 minute' AS ts, 's' || lpad((i::bigint * 7919 % 50)::text, 6, '0') AS sc, i % 100 AS amount
@@ -60,7 +60,7 @@ SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
 (1 row)
 
 CREATE INDEX ws_i ON ws USING sift_col (id, k, ts, sc, amount) WITH (key_cut = 'off', key_columns = 'amount', order_array_columns = 'id, k, ts, sc')
-INSERT INTO peaks SELECT 24000, 'build', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE 'col_writer%'
+INSERT INTO peaks SELECT 24000, 'build', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_writer_order', 'col_writer_spool')
 UPDATE ws SET amount = amount + 1 WHERE id % 3 = 0
 VACUUM ws
 SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
@@ -75,7 +75,7 @@ SELECT sift.col_merge('ws_i', true) > 0
  t
 (1 row)
 
-INSERT INTO peaks SELECT 24000, 'merge', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE 'col_writer%'
+INSERT INTO peaks SELECT 24000, 'merge', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_writer_order', 'col_writer_spool')
 DROP TABLE ws
 CREATE TABLE ws WITH (autovacuum_enabled = off) AS SELECT i AS id, CASE WHEN i % 31 = 0 THEN NULL ELSE i * 7919 % 10007 END AS k,
 		TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 300011) * INTERVAL '1 minute' AS ts, 's' || lpad((i::bigint * 7919 % 50)::text, 6, '0') AS sc, i % 100 AS amount
@@ -87,7 +87,7 @@ SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
 (1 row)
 
 CREATE INDEX ws_i ON ws USING sift_col (id, k, ts, sc, amount) WITH (key_cut = 'off', key_columns = 'amount', order_array_columns = 'id, k, ts, sc')
-INSERT INTO peaks SELECT 28000, 'build', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE 'col_writer%'
+INSERT INTO peaks SELECT 28000, 'build', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_writer_order', 'col_writer_spool')
 UPDATE ws SET amount = amount + 1 WHERE id % 3 = 0
 VACUUM ws
 SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
@@ -102,7 +102,7 @@ SELECT sift.col_merge('ws_i', true) > 0
  t
 (1 row)
 
-INSERT INTO peaks SELECT 28000, 'merge', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE 'col_writer%'
+INSERT INTO peaks SELECT 28000, 'merge', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_writer_order', 'col_writer_spool')
 DROP TABLE ws
 CREATE TABLE ws WITH (autovacuum_enabled = off) AS SELECT i AS id, CASE WHEN i % 31 = 0 THEN NULL ELSE i * 7919 % 10007 END AS k,
 		TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 300011) * INTERVAL '1 minute' AS ts, 's' || lpad((i::bigint * 7919 % 50)::text, 6, '0') AS sc, i % 100 AS amount
@@ -114,7 +114,7 @@ SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
 (1 row)
 
 CREATE INDEX ws_i ON ws USING sift_col (id, k, ts, sc, amount) WITH (key_cut = 'off', key_columns = 'amount', order_array_columns = 'id, k, ts, sc')
-INSERT INTO peaks SELECT 32000, 'build', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE 'col_writer%'
+INSERT INTO peaks SELECT 32000, 'build', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_writer_order', 'col_writer_spool')
 UPDATE ws SET amount = amount + 1 WHERE id % 3 = 0
 VACUUM ws
 SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
@@ -129,7 +129,7 @@ SELECT sift.col_merge('ws_i', true) > 0
  t
 (1 row)
 
-INSERT INTO peaks SELECT 32000, 'merge', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE 'col_writer%'
+INSERT INTO peaks SELECT 32000, 'merge', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_writer_order', 'col_writer_spool')
 DROP TABLE ws
 CREATE TABLE ws WITH (autovacuum_enabled = off) AS SELECT i AS id, CASE WHEN i % 31 = 0 THEN NULL ELSE i * 7919 % 10007 END AS k,
 		TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 300011) * INTERVAL '1 minute' AS ts, 's' || lpad((i::bigint * 7919 % 50)::text, 6, '0') AS sc, i % 100 AS amount
@@ -141,7 +141,7 @@ SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
 (1 row)
 
 CREATE INDEX ws_i ON ws USING sift_col (id, k, ts, sc, amount) WITH (key_cut = 'off', key_columns = 'amount', order_array_columns = 'id, k, ts, sc')
-INSERT INTO peaks SELECT 36000, 'build', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE 'col_writer%'
+INSERT INTO peaks SELECT 36000, 'build', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_writer_order', 'col_writer_spool')
 UPDATE ws SET amount = amount + 1 WHERE id % 3 = 0
 VACUUM ws
 SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
@@ -156,7 +156,7 @@ SELECT sift.col_merge('ws_i', true) > 0
  t
 (1 row)
 
-INSERT INTO peaks SELECT 36000, 'merge', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE 'col_writer%'
+INSERT INTO peaks SELECT 36000, 'merge', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_writer_order', 'col_writer_spool')
 DROP TABLE ws
 SELECT stage, scope, count(*) AS sizes FROM peaks GROUP BY stage, scope ORDER BY stage, scope;
  stage |      scope       | sizes 

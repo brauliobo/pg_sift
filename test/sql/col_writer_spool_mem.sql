@@ -16,12 +16,12 @@ SELECT s FROM unnest(ARRAY[20000, 24000, 28000, 32000, 36000]) n, LATERAL unnest
 		FROM generate_series(1, %s) i', n),
 	'SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)',
 	'CREATE INDEX ws_i ON ws USING sift_col (id, k, ts, sc, amount) WITH (key_cut = ''off'', key_columns = ''amount'', order_array_columns = ''id, k, ts, sc'')',
-	format('INSERT INTO peaks SELECT %s, ''build'', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE ''col_writer%%''', n),
+	format('INSERT INTO peaks SELECT %s, ''build'', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN (''col_writer_order'', ''col_writer_spool'')', n),
 	'UPDATE ws SET amount = amount + 1 WHERE id % 3 = 0',
 	'VACUUM ws',
 	'SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)',
 	'SELECT sift.col_merge(''ws_i'', true) > 0',
-	format('INSERT INTO peaks SELECT %s, ''merge'', scope, peak FROM sift._test_mem_highwater(true) WHERE scope LIKE ''col_writer%%''', n),
+	format('INSERT INTO peaks SELECT %s, ''merge'', scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN (''col_writer_order'', ''col_writer_spool'')', n),
 	'DROP TABLE ws']) WITH ORDINALITY AS t(s, k) ORDER BY n, k
 \gexec
 

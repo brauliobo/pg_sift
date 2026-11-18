@@ -257,6 +257,8 @@ extern void sift_store_dir_test_point(bool after);
 extern void sift_store_dir_test_enter(void);
 extern void sift_store_dir_test_leave(bool publish);
 extern void sift_store_dir_test_books(void);
+extern void sift_store_dir_test_unlocked(void);
+#define SIFT_DIR_TEST_UNLOCKED() sift_store_dir_test_unlocked()
 #define SIFT_DIR_TEST_ENTER() sift_store_dir_test_enter()
 #define SIFT_DIR_TEST_LEAVE(publish) sift_store_dir_test_leave(publish)
 #define SIFT_DIR_TEST_BOOKS() sift_store_dir_test_books()
@@ -270,6 +272,7 @@ extern void sift_store_clear_test_point(void);
 #define SIFT_DIR_TEST_ENTER() ((void) 0)
 #define SIFT_DIR_TEST_LEAVE(publish) ((void) 0)
 #define SIFT_DIR_TEST_BOOKS() ((void) 0)
+#define SIFT_DIR_TEST_UNLOCKED() ((void) 0)
 #define SIFT_CLEAR_TEST_POINT() ((void) 0)
 #endif
 extern uint64 sift_store_space_written(void);

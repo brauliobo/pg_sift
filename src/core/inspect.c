@@ -49,6 +49,15 @@ sift_check_inspect(Relation rel)
 				 errdetail("Only a role that can read table \"%s\", maintain it, or is a member of pg_monitor can do this.", get_rel_name(heap))));
 }
 
+/* A partitioned index has no storage: what reads a metapage or a segment is given the index of one of its partitions */
+void
+sift_refuse_partitioned_index(bool partitioned, const char *name)
+{
+	if (partitioned)
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is a partitioned index, which holds no data", name),
+						errhint("Use the index of one of its partitions.")));
+}
+
 /*
  * What an inspector was given, before it opens the relation: the access method must be want (NULL: any of the three), and an object of another sift access method is
  * named with the function that serves it. A relation that does not exist is left to the open.
@@ -61,7 +70,8 @@ sift_inspect_expect(Oid relid, const char *want, const char *use)
 	const char *am;
 	char	   *name;
 	bool		is_index,
-				is_sift;
+				is_sift,
+				partitioned;
 
 	if (!HeapTupleIsValid(tup))
 		return;
@@ -69,10 +79,14 @@ sift_inspect_expect(Oid relid, const char *want, const char *use)
 	am = OidIsValid(form->relam) ? get_am_name(form->relam) : NULL;
 	name = pstrdup(NameStr(form->relname));
 	is_index = form->relkind == RELKIND_INDEX;
+	partitioned = form->relkind == RELKIND_PARTITIONED_INDEX;
 	ReleaseSysCache(tup);
 	is_sift = am != NULL && strncmp(am, "sift", 4) == 0;
 	if (is_sift && (want == NULL || strcmp(am, want) == 0))
+	{
+		sift_refuse_partitioned_index(partitioned, name);
 		return;
+	}
 	if (!is_sift)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a %s index", name, want ? want : "sift")));
 	ereport(ERROR,

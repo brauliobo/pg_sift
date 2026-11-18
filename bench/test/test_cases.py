@@ -291,14 +291,17 @@ class Profile(unittest.TestCase):
         perf = self.perf(record)
         path = os.path.join(tmp, 'c.sift.data')
         proc = measure.record_start('4242', path, perf)
-        time.sleep(0.5)
+        deadline = time.monotonic() + 60
+        while proc.poll() is None and not os.path.exists(path):   # the stand-in made its file after its trap, or ended: only then is the SIGTERM the test's to send
+            self.assertLess(time.monotonic(), deadline, 'the stand-in perf neither wrote its file nor ended')
+            time.sleep(0.01)
         measure.record_stop(proc, path, perf)
         return path
 
     def test_the_symbols_of_the_recording_are_written_beside_it(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
-            path = self.run_record('echo data > "$out"; trap "exit 0" TERM; while :; do sleep 0.05; done', tmp)
+            path = self.run_record('trap "exit 0" TERM; echo data > "$out"; while :; do sleep 0.05; done', tmp)
             with open(path + '.txt') as f:
                 self.assertEqual(f.read().split('\n')[0].split()[-1], 'sort_rows_rec')
 

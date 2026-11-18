@@ -36,6 +36,7 @@ typedef struct IntIds
 } IntIds;
 
 extern void intids_init(IntIds *x);
+extern void intids_init_bounded(IntIds *x, Size bytes);
 extern void intids_free(IntIds *x);
 extern uint32 intids_slow(IntIds *x, int64 k, uint32 next);
 
