@@ -28,6 +28,8 @@
 
 /* The segments a build may write: the directory keeps room for the write buffer and a merge */
 #define SIFT_COL_BUILD_SEGMENTS	(SIFT_MAX_SEGMENTS - 7)
+extern PGDLLIMPORT int sift_col_build_source;
+extern void sift_col_build_define_gucs(void);
 /* The workers a build through a btree may have (the participants take ranges of the key; col/build/btree_par.c) */
 #define SIFT_COL_BTREE_WORKERS	15
 
@@ -121,6 +123,8 @@ extern PGDLLIMPORT bool sift_test_col_parallel_always;	/* a parallel build with 
 extern PGDLLIMPORT int sift_test_col_merge_par_kb;	/* the input of a merge outside a build from which the workers make it, in kB (the gate MERGE_PAR_BYTES) */
 extern PGDLLIMPORT int sift_test_col_merge_workers;	/* workers that merge the segments of a parallel build (-1 = those that built them, 0 = the leader alone) */
 extern PGDLLIMPORT int sift_test_col_temp_free_kb;	/* the disk space the temporary files of a build by key ranges may use, in kB (-1 = what the disks of the temporary tablespaces have free) */
+extern PGDLLIMPORT int sift_test_col_build_source_used;
+extern PGDLLIMPORT int sift_test_col_choose_mutant;
 extern PGDLLIMPORT int sift_test_col_build_btree;	/* the build by a btree on the key (col/build/btree.c): 0 the chooser decides, 1 whenever a btree can, -1 never */
 extern PGDLLIMPORT int sift_test_col_btree_entries;	/* entries of the btree the last build read, tuples it found visible and heap blocks it asked for */
 extern PGDLLIMPORT int sift_test_col_btree_visible;

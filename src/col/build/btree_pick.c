@@ -35,9 +35,8 @@ int			sift_test_col_pick_walk_bytes = 0;
 
 #define SIM_MAX_BLOCKS	65536		/* the blocks the cache of the simulation holds at most: the cache is scaled down by a power of two to it */
 #define SEQ_GAP			16			/* a block this far after the last one is read as a part of a sequential read */
-/* microseconds: a MB of a temporary file in one direction (they are written and read once), and what a row costs to go through a key range file and a sort; the time of a read is measured (btree_probe.c) */
+/* microseconds: a MB of a temporary file in one direction (they are written and read once); the time of a read is measured (btree_probe.c), the CPU of a row by path is COLB_*_ROW_US */
 #define TEMP_MB_US		1000.0
-#define SPOOL_ROW_US	2.2
 #define PAR_SCALING		1.0			/* the speed of a participant of a parallel scan against one alone, measured (docs/SIZING.md) */
 #define SAMPLE_PAGES_MIN	4096
 #define BOUND_SAMPLES	256			/* keys of the leaf level kept for the boundaries of the ranges of a parallel build */
@@ -258,7 +257,7 @@ temp_mb_us(void)
  * large to read before the build. The plan is made in the current context, the walk's own memory is freed.
  */
 static BtPlan *
-pick_cost(Relation heap, Relation bt, uint64 est_entries, double degree, const BtCosts *cost, double spool_bytes_per_row, MemoryContext plan_cx)
+pick_cost(Relation heap, Relation bt, uint64 est_entries, double degree, const BtCosts *cost, MemoryContext plan_cx)
 {
 	BlockNumber heap_blocks = RelationGetNumberOfBlocks(heap),
 				bt_blocks = RelationGetNumberOfBlocks(bt);
@@ -266,8 +265,7 @@ pick_cost(Relation heap, Relation bt, uint64 est_entries, double degree, const B
 	MemoryContext cx = AllocSetContextCreate(walk_cx, "sift_col build pick", ALLOCSET_DEFAULT_SIZES);
 	BtPlan	   *c;
 	PickSim		s;
-	double		scale,
-				seq_blocks;
+	double		scale;
 
 	MemoryContextSwitchTo(cx);
 	sim_begin(&s, bt, cache_blocks(), est_entries);
@@ -285,11 +283,10 @@ pick_cost(Relation heap, Relation bt, uint64 est_entries, double degree, const B
 	c->random_reads = s.rand_miss * scale;
 	c->reads = c->random_reads + s.seq_miss * scale;
 	c->cost = *cost;
-	seq_blocks = c->reads - c->random_reads + bt_blocks;
-	c->btree_us = (c->random_reads * cost->random_us + seq_blocks * cost->seq_us) / degree;
-	c->spool_mb = (double) s.entries * spool_bytes_per_row / 1048576.0;
-	c->spool_us = heap_blocks * cost->seq_us + 2 * c->spool_mb * temp_mb_us() + s.entries * SPOOL_ROW_US;
-	c->break_even_us = c->random_reads > 0 ? Min((c->spool_us * degree - seq_blocks * cost->seq_us) / c->random_reads, 1e6) : 1e6;
+	c->seq_blocks = c->reads - c->random_reads + bt_blocks;
+	c->degree = degree;
+	c->heap_blocks = heap_blocks;
+	c->btree_us = (c->random_reads * cost->random_us + c->seq_blocks * cost->seq_us + s.entries * COLB_BTREE_ROW_US) / degree;
 	c->nbound = s.nbound;
 	c->bound = palloc(s.nbound * sizeof(BtBound));
 	for (int i = 0; i < s.nbound; i++)
@@ -299,26 +296,39 @@ pick_cost(Relation heap, Relation bt, uint64 est_entries, double degree, const B
 	sift_test_col_pick_blocks = (int) s.blocks;
 	sift_test_col_pick_reads = (int) c->reads;
 	sift_test_col_pick_random = (int) c->random_reads;
-	sift_test_col_pick_spool_bytes = (int) (c->spool_mb * 1048576.0);
 #endif
 	MemoryContextSwitchTo(walk_cx);
 	MemoryContextDelete(cx);
 	return c;
 }
 
-/*
- * The cheapest btree to read the heap through among the candidates, costed at what a read of the heap costs on its disk and what the key ranges' files would take (rows
- * of the table priced as the build writes them): the memory of the walks and of the pricing is held in one context, whose scope the tests assert.
- */
-static BtPlan *
-pick_best(Relation heap, Relation index, IndexInfo *info, List *cands, uint64 tuples, int participants, StringInfo names)
+/* The files of the key ranges, priced from rows of the table (that is a read of the heap), against the btree's time: when they would be written, their time, and the cost of a random read at which both paths take as long */
+static void
+price_files(Relation heap, Relation index, IndexInfo *info, BtPlan *c, BtPricing *price)
 {
-	MemoryContext plan_cx = CurrentMemoryContext;
+	price->row_bytes = colb_spill_price(heap, index, info, c->entries);
+	price->files_priced = true;
+	c->spool_mb = (double) c->entries * price->row_bytes / 1048576.0;
+	c->spool_us = c->heap_blocks * price->cost.seq_us + 2 * c->spool_mb * temp_mb_us() + c->entries * COLB_HEAP_ROW_US;
+	c->break_even_us = c->random_reads > 0 ?
+		Min((c->spool_us * c->degree - c->seq_blocks * price->cost.seq_us - c->entries * COLB_BTREE_ROW_US) / c->random_reads, 1e6) : 1e6;
+#ifdef SIFT_TESTING
+	sift_test_col_pick_spool_bytes = (int) (c->spool_mb * 1048576.0);
+#endif
+}
+
+/*
+ * The cheapest btree to read the heap through among the candidates, costed at what a read of the heap costs on its disk: the memory of the walks and of the pricing is held in
+ * one context, whose scope the tests assert. price->cost is what the walks were costed at (price->costed: a btree was walkable, so the disk was measured). The files of the key
+ * ranges are priced, from rows of the heap, unless the index a REINDEX replaces (price->old_us) is cheaper than this btree and than the heap read at its least
+ * (price->heap_floor_us): the build then reads no block of the heap, and its files are not priced.
+ */
+BtPlan *
+colb_btree_best(Relation heap, Relation index, IndexInfo *info, List *cands, uint64 tuples, int participants, MemoryContext plan_cx, StringInfo names, BtPricing *price)
+{
+	MemoryContext walk_cx = CurrentMemoryContext;
 	MemoryContext pcx = AllocSetContextCreate(plan_cx, "sift_col build choice", ALLOCSET_DEFAULT_SIZES);
 	BtPlan	   *best = NULL;
-	BtCosts		cost;
-	double		row_bytes = 0;
-	bool		costed = false;
 	ListCell   *lc;
 
 	SIFT_MEM_SCOPE(col_btree_pick, pcx);
@@ -331,91 +341,23 @@ pick_best(Relation heap, Relation index, IndexInfo *info, List *cands, uint64 tu
 		{
 			BtPlan	   *c;
 
-			if (!costed)
+			if (!price->costed)
 			{
-				cost = colb_btree_costs(heap);
-				row_bytes = colb_spill_price(heap, index, info, tuples);
-				SIFT_MEM_CHECKPOINT();
+				price->cost = colb_btree_costs(heap);
+				price->costed = true;
 			}
-			costed = true;
-			c = pick_cost(heap, bt, tuples, participants * PAR_SCALING, &cost, row_bytes, plan_cx);
+			c = pick_cost(heap, bt, tuples, participants * PAR_SCALING, &price->cost, plan_cx);
 			appendStringInfo(names, "%s%s %.0f reads", names->len ? ", " : "", RelationGetRelationName(bt), c->reads);
 			if (best == NULL || c->btree_us < best->btree_us)
 				best = c;
 		}
 		index_close(bt, NoLock);
 	}
-	MemoryContextSwitchTo(plan_cx);
+	if (best != NULL && !(price->old_us <= best->btree_us && price->old_us <= price->heap_floor_us))
+		price_files(heap, index, info, best, price);
+	SIFT_MEM_CHECKPOINT();
+	MemoryContextSwitchTo(walk_cx);
 	MemoryContextDelete(pcx);
 	return best;
 }
 
-static void
-say_choice(Relation index, Relation heap, const BtPlan *best, const char *candidates, int participants, bool use)
-{
-	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
-	const char *s = participants == 1 ? "" : "es";
-	const char *name = best->name;
-	const char *how = best->cost.measured ? "measured" : "set";
-
-	if (use && best->no_room)
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": no room for the key ranges' files, heap read through the btree \"%s\"", sift_col_final_name(index), name),
-						 errdetail("The key ranges need about %.0f MB of temporary files, %.0f MB are allowed. The btree reads %.0f of %u blocks, %.0f at random, at %.1f us (%s): %.2f s with %d process%s.",
-								   best->spool_mb, best->room_mb, best->reads, nblocks, best->random_reads, best->cost.random_us, how, best->btree_us / 1e6, participants, s),
-						 errhint("Candidates: %s.", candidates)));
-	else if (use)
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": heap read through the btree \"%s\" in key order, no temporary files", sift_col_final_name(index), name),
-						 errdetail("%.0f of %u blocks are read, %.0f at random, at %.1f us (%s): %.2f s with %d process%s; key ranges %.0f MB, %.2f s; even at %.1f us.",
-								   best->reads, nblocks, best->random_reads, best->cost.random_us, how, best->btree_us / 1e6, participants, s, best->spool_mb, best->spool_us / 1e6,
-								   best->break_even_us),
-						 errhint("Candidates: %s.", candidates)));
-	else
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": key ranges are cheaper than reading the heap through a btree", sift_col_final_name(index)),
-						 errdetail("The btree \"%s\" reads %.0f of %u blocks, %.0f at random, at %.1f us (%s): %.2f s with %d process%s; key ranges %.0f MB, %.2f s; even at %.1f us.",
-								   name, best->reads, nblocks, best->random_reads, best->cost.random_us, how, best->btree_us / 1e6, participants, s, best->spool_mb, best->spool_us / 1e6,
-								   best->break_even_us),
-						 errhint("Candidates: %s.", candidates)));
-}
-
-/*
- * The btree the build reads the heap through (and the keys to split it at), or NULL for the key ranges (the one path that needs no btree); the NOTICE says which
- * and why. participants: the processes a parallel build would have (1: serial); a read costs a participant's share of the time of one.
- */
-BtPlan *
-colb_btree_plan(Relation heap, Relation index, IndexInfo *info, int participants)
-{
-	BlockNumber nblocks = RelationGetNumberOfBlocks(heap),
-				pages;
-	double		tuples,
-				allvisfrac;
-	List	   *cands;
-	BtPlan	   *best;
-	StringInfoData names;
-	double		allowed;
-	bool		use;
-
-#ifdef SIFT_TESTING
-	sift_test_col_btree_entries = sift_test_col_btree_visible = sift_test_col_btree_blocks = 0;
-	sift_test_col_pick_entries = sift_test_col_pick_blocks = sift_test_col_pick_reads = sift_test_col_pick_random = sift_test_col_pick_spool_bytes = 0;
-#endif
-	table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
-	if (colb_spill_leaf_of(sift_col_rel(index), nblocks, (uint64) tuples, sift_colb_budget(1)) < 0)
-		return NULL;
-#ifdef SIFT_TESTING
-	if (sift_test_col_build_btree < 0)
-		return NULL;
-#endif
-	cands = colb_btree_candidates(index, heap, info);
-	initStringInfo(&names);
-	best = pick_best(heap, index, info, cands, (uint64) tuples, participants, &names);
-	if (best == NULL)
-		return NULL;
-	best->no_room = !colb_spill_fits(best->spool_mb * 1048576.0, &allowed);
-	best->room_mb = allowed / 1048576.0;
-	use = best->no_room || best->btree_us <= best->spool_us;
-#ifdef SIFT_TESTING
-	use = use || sift_test_col_build_btree > 0;
-#endif
-	say_choice(index, heap, best, names.data, participants, use);
-	return use ? best : NULL;
-}

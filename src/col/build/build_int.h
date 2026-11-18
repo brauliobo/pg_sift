@@ -113,7 +113,10 @@ typedef struct BtPlan
 	Oid			btree;
 	char	   *name;
 	BtCosts		cost;
-	double		reads,
+	double		heap_blocks,	/* the blocks of the heap */
+				seq_blocks,		/* the blocks it reads in order: the stretches of the heap and the btree's own pages */
+				degree,			/* the participants' share of the time of one */
+				reads,
 				random_reads,
 				btree_us,
 				spool_us,
@@ -138,13 +141,63 @@ typedef struct BtRange
 				unit_limit;
 } BtRange;
 
+/* What the walks of the btrees were costed at, once one was walkable: the disk's read costs and the bytes a row takes in the key ranges' files */
+typedef struct BtPricing
+{
+	bool		costed,
+				files_priced;
+	BtCosts		cost;
+	double		row_bytes,
+				old_us,			/* in: what the build from the index a REINDEX replaces costs (DBL_MAX: none), and the heap read at its least, whose files are priced only if neither wins */
+				heap_floor_us;
+} BtPricing;
+
+/*
+ * The CPU of a row in each path of a build, in microseconds: the instructions of a row of 13 columns and four path sets (300,000 rows, 3 alternating rounds, perf stat -e
+ * instructions:u: 98.9 k, 56.7 k and 27.3 k) over the 11.7 G instructions a second of the lab host (docs/SIZING.md). The heap read with the key ranges' files, the heap read
+ * through a btree, the rows of the index a REINDEX replaces merged by key.
+ */
+#define COLB_HEAP_ROW_US	8.4
+#define COLB_BTREE_ROW_US	4.8
+#define COLB_OLD_ROW_US		2.3
+
+typedef struct ColOld ColOld;
+
+/* Where the rows of a build come from: the heap (by key ranges when the index is key_cut), the heap in the order of a btree on the key, or the index a REINDEX replaces */
+typedef enum ColBuildSource
+{
+	COLB_HEAP,
+	COLB_BTREE,
+	COLB_OLD
+} ColBuildSource;
+
+typedef struct BuildPlan
+{
+	ColBuildSource source;
+	BtPlan	   *btree;
+	ColOld	   *old;			/* the index a REINDEX replaces, when there is one (source says whether the rows come from it) */
+	int			participants;	/* the processes that scan: 1 + the workers a parallel build through the btree has */
+	MemoryContext cx;			/* the memory of the choice, deleted by colb_choose_end */
+} BuildPlan;
+
+extern BuildPlan colb_choose(Relation heap, Relation index, IndexInfo *info, bool heap_only);
+extern void colb_choose_end(BuildPlan *plan);
+
+extern ColOld *colb_old_open(Relation heap, Relation index, IndexInfo *info);
+extern Relation colb_old_view(const ColOld *o);
+extern const char *colb_old_refusal(const ColOld *o);
+extern uint64 colb_old_rows(const ColOld *o);
+extern BlockNumber colb_old_blocks(const ColOld *o);
+extern IndexBuildResult *colb_old_build(Relation heap, Relation index, ColOld *o);
+extern void colb_old_close(ColOld *o);
+
 extern BtCosts colb_btree_costs(Relation heap);
+extern double colb_seq_us(Relation rel);
+extern BtPlan *colb_btree_best(Relation heap, Relation index, IndexInfo *info, List *cands, uint64 tuples, int participants, MemoryContext plan_cx, StringInfo names, BtPricing *price);
 extern double colb_spill_price(Relation heap, Relation index, IndexInfo *info, uint64 total_rows);
 extern bool colb_spill_fits(double need, double *allowed);
 extern List *colb_btree_candidates(Relation index, Relation heap, const IndexInfo *info);
-extern BtPlan *colb_btree_plan(Relation heap, Relation index, IndexInfo *info, int participants);
 extern IndexBuildResult *colb_btree_build_par(Relation heap, Relation index, IndexInfo *info, const BtPlan *plan, int nworkers);
 extern double colb_btree_scan(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snap, Oid btree, const BtRange *range);
-extern IndexBuildResult *sift_colb_from_old(Relation heap, Relation index, IndexInfo *info);
 
 #endif

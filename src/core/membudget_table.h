@@ -69,6 +69,12 @@ budget_col_build(void)
 }
 
 static Size
+budget_col_build_choose(void)
+{
+	return (((Size) 32768UL));
+}
+
+static Size
 budget_col_build_spool(void)
 {
 	return (((Size) sift_colb_budget(1)) + ((Size) 4194304UL));
@@ -234,6 +240,7 @@ static const struct
 	{"bm25_verify", budget_bm25_verify, "maintenance_work_mem + 8MB"},
 	{"col_btree_pick", budget_col_btree_pick, "24MB"},
 	{"col_build", budget_col_build, "192MB (open: ceiling measured today)"},
+	{"col_build_choose", budget_col_build_choose, "32kB"},
 	{"col_build_spool", budget_col_build_spool, "col_build_budget + 4MB"},
 	{"col_conn_changed", budget_col_conn_changed, "32kB"},
 	{"col_fold_keys", budget_col_fold_keys, "sift.tomb_log_limit + 64kB"},

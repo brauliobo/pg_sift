@@ -65,7 +65,7 @@ SELECT pg_stat_force_next_flush() \gset
 SELECT * FROM ri_note('heap build');
     step    | build | table_passes | spill_bytes | verified | same_answers 
 ------------+-------+--------------+-------------+----------+--------------
- heap build | heap  |            2 |      152829 | t        | t
+ heap build | heap  |            2 |      180290 | t        | t
 (1 row)
 
 -- a clean index
@@ -197,7 +197,7 @@ SELECT pg_stat_force_next_flush() \gset
 SELECT * FROM ri_note('concurrently, buffered');
           step          | build | table_passes | spill_bytes | verified | same_answers 
 ------------------------+-------+--------------+-------------+----------+--------------
- concurrently, buffered | heap  |            3 |      185181 | t        | t
+ concurrently, buffered | heap  |            3 |      218933 | t        | t
 (1 row)
 
 SELECT sift.col_promote('ri_idx') >= 0 AS promoted;
@@ -219,7 +219,7 @@ SELECT pg_stat_force_next_flush() \gset
 SELECT * FROM ri_note('concurrently, promoted');
           step          | build | table_passes | spill_bytes | verified | same_answers 
 ------------------------+-------+--------------+-------------+----------+--------------
- concurrently, promoted | heap  |            3 |      185560 | t        | t
+ concurrently, promoted | heap  |            3 |      218887 | t        | t
 (1 row)
 
 -- an index that tracks changes (the table has a primary key) reads the table for the baseline of its log, one access of each page that is not all-visible, and for nothing else
@@ -250,7 +250,7 @@ REINDEX INDEX ri_idx;
 SELECT current_setting('sift.test_col_from_index_used') AS used_with_own_rows;
  used_with_own_rows 
 --------------------
- 1
+ 0
 (1 row)
 
 SELECT ri_answers(true) = ri_answers(false) AS own_rows_indexed;

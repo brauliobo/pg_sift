@@ -190,7 +190,7 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 	bool		chosen,
 				scoped,
 				heap_only;
-	BtPlan	   *plan = NULL;
+	BuildPlan	plan;
 
 	/* the build reads the heap, which holds the rows this transaction has buffered for the index: a build from the old index has not got them */
 	heap_only = sift_cwbuf_pending(&buffered) && buffered == RelationGetRelid(index);
@@ -243,21 +243,16 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 		sift_scope_start(heap, index, true);
 		PushActiveSnapshot(GetLatestSnapshot());
 	}
-	if (!heap_only)
-		res = sift_colb_from_old(heap, index, info);
-	if (res == NULL && sift_col_key_cut(sift_col_rel(index)) && !sift_col_journal_empty)
-	{
-		/* a scope index builds the families of its scopes in the one process that scans */
-		bool		par = info->ii_ParallelWorkers > 0 && sift_scope_specs(index) == NULL;
-
-		plan = colb_btree_plan(heap, index, info, par ? 1 + Min(info->ii_ParallelWorkers, SIFT_COL_BTREE_WORKERS) : 1);
-		if (plan != NULL && par)
-			res = colb_btree_build_par(heap, index, info, plan, Min(info->ii_ParallelWorkers, SIFT_COL_BTREE_WORKERS));
-	}
-	if (res == NULL && plan == NULL && info->ii_ParallelWorkers > 0 && !sift_col_journal_empty)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
+	plan = colb_choose(heap, index, info, heap_only);
+	if (plan.source == COLB_OLD)
+		res = colb_old_build(heap, index, plan.old);
+	else if (plan.source == COLB_BTREE && plan.participants > 1)
+		res = colb_btree_build_par(heap, index, info, plan.btree, plan.participants - 1);
+	else if (plan.source == COLB_HEAP && info->ii_ParallelWorkers > 0 && !sift_col_journal_empty)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
-		res = serial_build(heap, index, info, plan);
+		res = serial_build(heap, index, info, plan.btree);
+	colb_choose_end(&plan);
 	if (scoped)
 		PopActiveSnapshot();
 #ifdef SIFT_TESTING

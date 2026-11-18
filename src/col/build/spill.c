@@ -154,7 +154,7 @@ sample_entity(Sample *sm, SampleKeys *k, ItemPointer tid, Datum *values, bool *i
 
 	sift_col_make_row(sm->b->r, tid, values, isnull, &row, sm->cx);
 	if (!row.val[k->leaf].isnull && !row.val[k->leaf].overflow && k->n < k->cap)
-		k->keys[k->n++] = key_of(&sm->b->r->schema->cols[k->leaf], &row.val[k->leaf]);
+		k->keys[k->n++] = colb_key_of(&sm->b->r->schema->cols[k->leaf], &row.val[k->leaf]);
 }
 
 static void

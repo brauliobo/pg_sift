@@ -95,8 +95,8 @@ index_in_service(Relation index)
 }
 
 /*
- * The index REINDEX replaces, with its old file. Never for REINDEX CONCURRENTLY, whose writers change the old index while it is read, nor for a rewrite of the table
- * (VACUUM FULL, CLUSTER, ALTER TABLE) that rebuilds its indexes: the addresses of the rows are other ones there.
+ * The index REINDEX replaces, with its old file. Never for REINDEX CONCURRENTLY (its writers change the index it would read: 1 of 102 rounds under 8 writers found it
+ * readable), nor for a rewrite of the table (VACUUM FULL, CLUSTER, ALTER TABLE) that rebuilds its indexes: the addresses of the rows are other ones there.
  */
 static Relation
 replaced_index(Relation heap, Relation index, IndexInfo *info)
@@ -117,9 +117,19 @@ typedef struct FromOld
 	SiftSegEntry buffers[SIFT_MAX_SEGMENTS];
 } FromOld;
 
+/* The index REINDEX replaces, read through its superseded file, and whether it can give the rows */
+struct ColOld
+{
+	Relation	view;
+	FromOld		from;
+	const char *why;			/* NULL: it can */
+	uint64		rows;			/* the entries of its segments and write buffers */
+	BlockNumber blocks;
+};
+
 /* The segments and write buffers of the old index; the reason it cannot give the rows (NULL: it can) */
 static const char *
-old_state(Relation old, const SiftColRel *r, FromOld *f)
+old_state(Relation old, const SiftColRel *r, FromOld *f, uint64 *entries)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col from-index check", ALLOCSET_SMALL_SIZES);
@@ -135,9 +145,15 @@ old_state(Relation old, const SiftColRel *r, FromOld *f)
 					pages;
 
 		if (e->kind == SIFT_SEG_IMMUTABLE)
+		{
 			f->in[f->n++] = *e;
+			*entries += e->ndocs;
+		}
 		else if ((e->kind == SIFT_SEG_WBUF_OPEN || e->kind == SIFT_SEG_WBUF_SEALED) && (sift_cwbuf_summary(old, e, &rows, &pages), rows > 0))
+		{
 			f->buffers[f->nbuffers++] = *e;
+			*entries += rows;
+		}
 	}
 	if (f->n + f->nbuffers == 0)
 		why = "the index holds no rows";
@@ -238,14 +254,13 @@ buffer_run(Relation old, Relation index, SiftWriteTarget *wt, const SiftColRel *
 }
 
 static IndexBuildResult *
-build_from(Relation heap, Relation index, Relation old)
+build_from(Relation heap, Relation index, ColOld *o)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col from-index", ALLOCSET_DEFAULT_SIZES);
 	SIFT_MEM_SCOPE(col_from_index, cx);
 	MemoryContext caller = MemoryContextSwitchTo(cx);
 	const SiftColRel *r = sift_col_rel_private(index, cx);
-	FromOld    *f = palloc0(sizeof(FromOld));
-	const char *why;
+	FromOld    *f = &o->from;
 	SiftSegEntry *in,
 			   *out;
 	SiftWriteTarget *wt = NULL;
@@ -254,54 +269,47 @@ build_from(Relation heap, Relation index, Relation old)
 				nin,
 				nout;
 	double		rows = 0;
-	IndexBuildResult *res = NULL;
+	IndexBuildResult *res;
 
-	if ((why = new_layout_refused(index, r)) == NULL)
-		why = old_state(old, r, f);
 #ifdef SIFT_TESTING
 	if (sift_test_col_from_index_mutant == 1)
 		f->nbuffers = 0;
 #endif
-	if (why != NULL)
-		elog(DEBUG1, "sift_col index \"%s\" is built from the heap: %s", RelationGetRelationName(index), why);
-	else
+	out = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
+	in = palloc((f->n + f->nbuffers) * sizeof(SiftSegEntry));
+	memcpy(in, f->in, f->n * sizeof(SiftSegEntry));
+	nin = f->n;
+	sift_colb_init_meta(index);
+	if (f->nbuffers > 0)
+		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
+	for (int i = 0; i < f->nbuffers; i++)
 	{
-		out = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
-		in = palloc((f->n + f->nbuffers) * sizeof(SiftSegEntry));
-		memcpy(in, f->in, f->n * sizeof(SiftSegEntry));
-		nin = f->n;
-		sift_colb_init_meta(index);
-		if (f->nbuffers > 0)
-			wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
-		for (int i = 0; i < f->nbuffers; i++)
-		{
-			MemoryContext run = AllocSetContextCreate(cx, "sift_col from-index buffer", ALLOCSET_DEFAULT_SIZES);
+		MemoryContext run = AllocSetContextCreate(cx, "sift_col from-index buffer", ALLOCSET_DEFAULT_SIZES);
 
-			if (buffer_run(old, index, wt, r, &f->buffers[i], &in[nin], run))
-			{
-				int			k;
-				SiftExtent *ext = sift_store_immutable_extents(index, &in[nin], &k);
-
-				release = release ? repalloc(release, (nrelease + k) * sizeof(SiftExtent)) : palloc(k * sizeof(SiftExtent));
-				memcpy(release + nrelease, ext, k * sizeof(SiftExtent));
-				nrelease += k;
-				nin++;
-			}
-			MemoryContextDelete(run);
-		}
-		nout = sift_col_merge_from(index, old, in, nin, f->n, out, SIFT_COL_BUILD_SEGMENTS);
-		if (wt != NULL)
+		if (buffer_run(o->view, index, wt, r, &f->buffers[i], &in[nin], run))
 		{
-			sift_wt_release(wt, release, nrelease);
-			sift_wt_finish(wt);
+			int			k;
+			SiftExtent *ext = sift_store_immutable_extents(index, &in[nin], &k);
+
+			release = release ? repalloc(release, (nrelease + k) * sizeof(SiftExtent)) : palloc(k * sizeof(SiftExtent));
+			memcpy(release + nrelease, ext, k * sizeof(SiftExtent));
+			nrelease += k;
+			nin++;
 		}
-		for (int i = 0; i < nin; i++)
-			rows += in[i].ndocs;
-		sift_colb_publish(index, out, nout, false);
-		res = MemoryContextAllocZero(caller, sizeof(IndexBuildResult));
-		res->index_tuples = rows;
-		res->heap_tuples = heap->rd_rel->reltuples >= 0 ? heap->rd_rel->reltuples : rows;
+		MemoryContextDelete(run);
 	}
+	nout = sift_col_merge_from(index, o->view, in, nin, f->n, out, SIFT_COL_BUILD_SEGMENTS);
+	if (wt != NULL)
+	{
+		sift_wt_release(wt, release, nrelease);
+		sift_wt_finish(wt);
+	}
+	for (int i = 0; i < nin; i++)
+		rows += in[i].ndocs;
+	sift_colb_publish(index, out, nout, false);
+	res = MemoryContextAllocZero(caller, sizeof(IndexBuildResult));
+	res->index_tuples = rows;
+	res->heap_tuples = heap->rd_rel->reltuples >= 0 ? heap->rd_rel->reltuples : rows;
 	SIFT_MEM_CHECKPOINT();
 	MemoryContextSwitchTo(caller);
 	MemoryContextDelete(cx);
@@ -309,27 +317,70 @@ build_from(Relation heap, Relation index, Relation old)
 }
 
 /*
- * The rows of the old index, merged by the key of the new one into the segments of the new one: the build of REINDEX and REINDEX CONCURRENTLY when the old index can give them,
- * else NULL and the heap is read as for any build. The rows the old index lists that the heap no longer has (dead, not yet vacuumed) stay as the old index has them: a read
- * checks them against the heap as it does there.
+ * The index a REINDEX replaces and what it holds, for the choice of the path of the build: NULL when there is none (not a REINDEX, a REINDEX CONCURRENTLY, a rewrite of the
+ * table). Whether it can give the rows is exact (why says what stops it): any other layout, key, option or state is built from the heap.
  */
-IndexBuildResult *
-sift_colb_from_old(Relation heap, Relation index, IndexInfo *info)
+ColOld *
+colb_old_open(Relation heap, Relation index, IndexInfo *info)
 {
-	Relation	old;
-	IndexBuildResult *res;
+	ColOld	   *o;
+	Relation	view;
+	const SiftColRel *r;
 
 #ifdef SIFT_TESTING
 	sift_test_col_from_index_used = 0;
 	if (sift_test_col_from_index_off)
 		return NULL;
 #endif
-	if ((old = replaced_index(heap, index, info)) == NULL)
+	if ((view = replaced_index(heap, index, info)) == NULL)
 		return NULL;
-	res = build_from(heap, index, old);
-	sift_col_rel_file_view_close(old);
+	o = palloc0(sizeof(ColOld));
+	o->view = view;
+	r = sift_col_rel(index);
+	if ((o->why = new_layout_refused(index, r)) == NULL)
+		o->why = old_state(view, r, &o->from, &o->rows);
+	o->blocks = RelationGetNumberOfBlocks(view);
+	return o;
+}
+
+Relation
+colb_old_view(const ColOld *o)
+{
+	return o->view;
+}
+
+const char *
+colb_old_refusal(const ColOld *o)
+{
+	return o->why;
+}
+
+uint64
+colb_old_rows(const ColOld *o)
+{
+	return o->rows;
+}
+
+BlockNumber
+colb_old_blocks(const ColOld *o)
+{
+	return o->blocks;
+}
+
+/* The rows of the old index, merged by the key of the new one into the segments of the new one. The rows the old index lists that the heap no longer has (dead, not yet vacuumed) stay as the old index has them: a read checks them against the heap as it does there. */
+IndexBuildResult *
+colb_old_build(Relation heap, Relation index, ColOld *o)
+{
+	IndexBuildResult *res = build_from(heap, index, o);
+
 #ifdef SIFT_TESTING
-	sift_test_col_from_index_used = res != NULL;
+	sift_test_col_from_index_used = 1;
 #endif
 	return res;
+}
+
+void
+colb_old_close(ColOld *o)
+{
+	sift_col_rel_file_view_close(o->view);
 }

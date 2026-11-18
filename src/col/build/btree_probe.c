@@ -72,6 +72,23 @@ clamp_us(double us)
 	return Min(Max(us, COST_MIN_US), COST_MAX_US);
 }
 
+/* A stretch of a relation read in order, from a place of it that is not the same twice: microseconds a block that came from the disk took */
+static double
+seq_probe_us(Relation rel, int *reads)
+{
+	BlockNumber nblocks = RelationGetNumberOfBlocks(rel);
+	int			n = (int) Min(PROBE_BLOCKS, nblocks / 4);
+	BlockNumber *blk = palloc_array(BlockNumber, Max(n, 1));
+	BlockNumber first = n > 0 ? pg_prng_uint64_range(&pg_global_prng_state, 0, nblocks - n) : 0;
+	double		us;
+
+	for (int i = 0; i < n; i++)
+		blk[i] = first + i;
+	us = probe_read_us(rel, blk, n, reads);
+	pfree(blk);
+	return us;
+}
+
 static BtCosts
 probe(Relation heap)
 {
@@ -80,14 +97,10 @@ probe(Relation heap)
 				rand_reads,
 				seq_reads;
 	BlockNumber *blk = palloc_array(BlockNumber, Max(n, 1));
-	BlockNumber first = n > 0 ? pg_prng_uint64_range(&pg_global_prng_state, 0, nblocks - n) : 0;
-	double		seq_us,
+	double		seq_us = seq_probe_us(heap, &seq_reads),
 				rand_us;
 	BtCosts		c;
 
-	for (int i = 0; i < n; i++)
-		blk[i] = first + i;
-	seq_us = probe_read_us(heap, blk, n, &seq_reads);
 	for (int i = 0; i < n; i++)
 		blk[i] = (BlockNumber) pg_prng_uint64_range(&pg_global_prng_state, 0, nblocks - 1);
 	rand_us = probe_read_us(heap, blk, n, &rand_reads);
@@ -101,6 +114,19 @@ probe(Relation heap)
 	sift_test_col_pick_probe_reads = rand_reads;
 #endif
 	return c;
+}
+
+/* What a block of a sequential read of a relation costs on its disk: the index a REINDEX replaces is read in order, and has not been read before the build */
+double
+colb_seq_us(Relation rel)
+{
+	int			reads;
+
+#ifdef SIFT_TESTING
+	if (sift_test_col_pick_seq_us >= 0)
+		return sift_test_col_pick_seq_us;
+#endif
+	return clamp_us(seq_probe_us(rel, &reads));
 }
 
 /* The costs the choice of the path of a build is made at */

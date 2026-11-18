@@ -394,6 +394,7 @@ sift_col_init(void)
 							"The table is allocated, at the size of this setting, by the first backend that plans a statement over a sift_col index after the server starts; a later change turns the use of it on and off (0), and a size no table has yet is a table of its own (the tables of other sizes stay until the server restarts). A record is about 33 kB for each integer leaf and 0.4 kB for the others; a record that does not fit is not kept, and the oldest goes when the table is full.",
 							&sift_col_leaf_cache_kb, 16384, 0, 262144,
 							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
+	sift_col_build_define_gucs();
 	DefineCustomIntVariable("sift.col_format_minor",
 							"Column format minor of the segments written (15 by default; an option with a newer layout, such as key_cut or point_tid_columns, stamps its own higher minor): 6 keeps them readable by pg_sift 3.2, 4 by 3.1, 3 by 3.0.",
 							"Segments already written keep their minor; a 3.2 library refuses the ones above 6. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
