@@ -246,6 +246,11 @@ upper_paths_on(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel
 
 	if (stage == UPPERREL_ORDERED)
 	{
+#ifdef SIFT_TESTING
+		/* create_ordered_paths gave the paths of its input to the ordered relation and add_path freed the ones it rejected there: the pricing must not read them, and in tests it finds none (min/max offers the top-N on the live scan relation, input_rel == output_rel) */
+		if (input_rel != output_rel)
+			input_rel->pathlist = input_rel->partial_pathlist = NIL;
+#endif
 		agg_arm_begin("topn", false);
 		topn_paths(root, input_rel, output_rel);
 		agg_arm_end();

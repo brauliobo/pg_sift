@@ -294,18 +294,26 @@ normal_units(AggCtx *c)
 	return best && best->pathtype == T_SeqScan;
 }
 
-/* does a b-tree index of the table give the first key of the query's order (a top-N over it reads the rows in that order from the heap, as the scan does) */
+/*
+ * Does a b-tree index of the table give the first key of the query's order (a top-N over it reads the rows in that order from the heap, as the scan does)? Asked of the
+ * indexes: the paths of the relation are not ours to read here, add_path of the ordered stage frees one it rejects, and the relation still lists it.
+ */
 static bool
 btree_presorts(AggCtx *c)
 {
-	foreach_ptr(Path, p, c->rel->pathlist)
+	foreach_node(IndexOptInfo, ii, c->rel->indexlist)
 	{
-		int			n = 0;
+		if (ii->relam != BTREE_AM_OID || ii->hypothetical || (ii->indpred != NIL && !ii->predOK))
+			continue;
+		for (int d = 0; d < 2; d++)
+		{
+			List	   *keys = build_index_pathkeys(c->root, ii, d == 0 ? ForwardScanDirection : BackwardScanDirection);
+			int			n = 0;
 
-		if (IsA(p, IndexPath) && ((IndexPath *) p)->indexinfo->relam == BTREE_AM_OID && p->pathkeys != NIL)
-			(void) pathkeys_count_contained_in(c->root->query_pathkeys, p->pathkeys, &n);
-		if (n > 0)
-			return true;
+			(void) pathkeys_count_contained_in(c->root->query_pathkeys, keys, &n);
+			if (n > 0)
+				return true;
+		}
 	}
 	return false;
 }
