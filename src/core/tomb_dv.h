@@ -57,6 +57,9 @@ extern uint32 sift_dv_encode(SiftTomb **out, uint32 *nout, uint32 *cap, MemoryCo
 /* The slots of the record whose head is at e[0]; 0 when the slots do not describe one */
 extern uint32 sift_dv_slots_of(const SiftTomb *e, uint32 avail);
 
+/* The rows the record whose head is at e names (the descriptor is the slot after it) */
+extern uint32 sift_dv_head_rows(const SiftTomb *e);
+
 /* Reads the record at e (slots_of(e) slots) */
 extern void sift_dv_decode(const SiftTomb *e, uint32 nslots, SiftDvRec *r);
 

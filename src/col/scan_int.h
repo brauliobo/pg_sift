@@ -163,6 +163,14 @@ typedef struct ColInline
 #define COL_MARK_ROW_PRICE		320.0
 #define COL_MARK_PREAGG_PRICE	100.0
 
+/*
+ * What the deletion records of a unit cost a scan that reads it over the fold that clears them: the record found and its rows taken away from the unit, and the dead rows of the unit listed again
+ * for each scan, where a unit whose bits are stored lists them once (col/seg/dead.c). 150,000 rows in 125 units, a filtered scan and an aggregate over the table, records and then the fold: the
+ * difference is 0.43 M instructions with 1,500 rows deleted (3,400 a unit), 1.9 M with 15,000 (15,000 a unit) and 4.6 to 5.8 M with 75,000 (37,000 to 46,000 a unit): 2,000 a unit and 80 a row come within a third of each.
+ */
+#define COL_DV_UNIT_PRICE		2000.0
+#define COL_DV_ROW_PRICE		80.0
+
 typedef struct ColUnit
 {
 	SiftColSource *src;

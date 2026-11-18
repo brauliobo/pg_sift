@@ -149,6 +149,15 @@ sift_dv_slots_of(const SiftTomb *e, uint32 avail)
 	return 2 + data_slots(bytes) <= avail ? 2 + data_slots(bytes) : 0;
 }
 
+uint32
+sift_dv_head_rows(const SiftTomb *e)
+{
+	SiftDvDesc	desc;
+
+	memcpy(&desc, SLOT_PAYLOAD(&e[1]), sizeof(desc));
+	return desc.count;
+}
+
 void
 sift_dv_decode(const SiftTomb *e, uint32 nslots, SiftDvRec *r)
 {

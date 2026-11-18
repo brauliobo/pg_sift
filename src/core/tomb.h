@@ -165,7 +165,9 @@ typedef struct SiftTombLog
 	uint32		caprecent;
 	uint64		dvecs;			/* the deletion records (core/tomb_dv.h) read so far, and the oldest transaction among them: a read of the records asks the commit log of that one first */
 	TransactionId dv_oldest;
-	uint64		foldable;		/* the entries a fold of the marks could clear when they were last counted (col/maint/fold.c): a floor until the log is read again, since entries are added and only become clearable */
+	uint64		foldable;		/* the marks a fold could clear when they were last counted (col/maint/fold.c): a floor until the log is read again, since entries are added and only become clearable */
+	uint64		foldable_dv;	/* ... and the rows of the deletion records it could */
+	bool		fold_due;		/* what the reads paid came to half of a fold of the entries counted: it stays so for the log, whose entries only become clearable */
 	struct HTAB *hotm;			/* the keys that are the succ of a HOT entry: chain members (NULL until the log has one) */
 	SiftTomb   *run;			/* scratch: the entries of one key found in both arrays */
 	uint32		caprun;

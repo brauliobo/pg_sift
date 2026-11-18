@@ -29,6 +29,7 @@
 PG_FUNCTION_INFO_V1(sift_test_col_log_create);
 PG_FUNCTION_INFO_V1(sift_test_col_fold_marks);
 PG_FUNCTION_INFO_V1(sift_test_col_marks_paid);
+PG_FUNCTION_INFO_V1(sift_test_col_fold_due);
 PG_FUNCTION_INFO_V1(sift_test_col_fold_counts);
 PG_FUNCTION_INFO_V1(sift_test_col_log_append);
 PG_FUNCTION_INFO_V1(sift_test_col_log_entries);
@@ -83,6 +84,17 @@ sift_test_col_marks_paid(PG_FUNCTION_ARGS)
 	paid = log == NULL ? 0 : (int64) sift_col_marks_paid(index, &snap->meta, log->gen);
 	index_close(index, AccessShareLock);
 	PG_RETURN_INT64(paid);
+}
+
+/* sift._test_col_fold_due(index): whether what the reads paid for the marks and records of the log comes to half of a fold of them (col/maint/fold.c) */
+Datum
+sift_test_col_fold_due(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	bool		due = sift_col_fold_due(index);
+
+	index_close(index, AccessShareLock);
+	PG_RETURN_BOOL(due);
 }
 
 /* sift._test_col_log_create(index): adds the tombstone log to an index that has none */

@@ -182,6 +182,7 @@ TESTING_REGRESS += col_document_present
 TESTING_REGRESS += col_dsm_write_caches
 TESTING_REGRESS += col_dsm_write_statements
 TESTING_REGRESS += col_dv_oracle
+TESTING_REGRESS += col_dv_reads_paid
 TESTING_REGRESS += col_enc
 TESTING_REGRESS += col_fold_due_count
 TESTING_REGRESS += col_fold_keys_mem

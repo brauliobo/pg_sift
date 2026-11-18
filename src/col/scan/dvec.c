@@ -9,6 +9,7 @@
 #include "utils/memutils.h"
 
 #include "col/scan_int.h"
+#include "col/wbuf.h"
 #include "core/damage.h"
 #include "core/membudget.h"
 #include "core/popcount.h"
@@ -101,7 +102,10 @@ dv_make(ColDvOv *o, const SiftColSegment *seg, uint32 u, const DvKey *key)
 	e->has = ndead > 0;
 	e->unit = (SiftColDvUnit) {ndead, NULL};
 	if (e->has)
+	{
 		dv_keep(o, e, nw);
+		sift_col_marks_note(o->src->index, o->src->hflog->gen, (uint64) (COL_DV_UNIT_PRICE + ndead * COL_DV_ROW_PRICE));
+	}
 	return e;
 }
 

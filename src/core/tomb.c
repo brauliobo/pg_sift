@@ -90,7 +90,8 @@ tomb_reset(SiftTombLog *t, const SiftSegEntry *e)
 	memset(&t->keys, 0, sizeof(t->keys));
 	t->keys_cover = false;
 	t->nents = t->nrecent = 0;
-	t->foldable = 0;
+	t->foldable = t->foldable_dv = 0;
+	t->fold_due = false;
 	t->dvecs = 0;
 	t->dv_oldest = InvalidTransactionId;
 	sift_srun_reset(&t->spilled);
