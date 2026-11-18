@@ -88,7 +88,7 @@ script:test-perf-select.py	-	-	a helper of the entry points above, no run of its
 regress:shard	1800	2000	one of 4 shards of the 1,265 regression tests (every fourth name) on a cluster of its own; serial: 2,459 s release / 5,556 s cassert, so a shard is ~620 s / ~1,400 s
 script:instr-budget-cost.sh	600	1000	callgrind of one backend: planning, INSERT and an unchanged VACUUM on a table with a sift_col index; -
 tap:mem_slope_legacy	1500	3000	the legacy memory slope gate (leakx, cap, evict, pinned): 180 s and 2.0 GB of tmpfs measured, one cluster at shared_buffers 64 MB
-tap:mem_idle_series	1200	1500	12000 statements of 25 kinds in one backend at 100,000-row tables: 481 s measured, one cluster at shared_buffers 64 MB
+tap:mem_idle_series	900	1500	12000 statements of 25 kinds in one backend at 100,000-row tables, 100 rows inserted a round: 224 s on one host, 210 to 290 s on the hosted fast tier (786 s at 200 rows under 4 parallel lanes), one cluster at shared_buffers 64 MB
 tap:col_build_exact_memory	120	300	the exact bytes of the col_build scope at three steps of 40,000 to 120,000 rows on the 8-page flavour, key_cut at 1, 8 and 16 MB and plain at 36 and 40 MB, and the same rows under the shipped floor: 32 s with the 8-page flavour built beforehand (scripts/ci/run.sh), 7.5e10 user instructions, one cluster
 tap:col_merge_exact_memory	120	300	the exact bytes of the col_merge scope at five steps of 8,000 to 40,000 rows, plain and key_cut: 4 s, one cluster
 tap:upgrade_compat	1200	600	one zoo cluster of the release, two shutdowns, two copies opened by this tree and one by the release, one fresh cluster for the restore: 9 min on a loaded host, 3000 rows with SIFT_QUICK
