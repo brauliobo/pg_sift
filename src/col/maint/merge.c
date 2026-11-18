@@ -456,7 +456,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 			docs += o.neu[i].ndocs;
 		sift_maint_replace_n(index, NULL, mi.gens, n, o.neu, o.nneu, mi.release, mi.nrelease,
 							 psprintf("merged %d column segments into %d of", n, o.nneu), start, docs);
-		maint_merge_settles(index, in, n, o.nneu);
+		maint_merge_settles(index, in, n, o.neu, o.nneu);
 	}
 	SIFT_MEM_CHECKPOINT();
 	MemoryContextSwitchTo(old);
@@ -499,7 +499,7 @@ sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftS
 	for (int i = 0; i < nout; i++)
 		docs += out[i].ndocs;
 	sift_maint_replace_n(index, NULL, mi.gens, n, out, nout, mi.release, mi.nrelease, psprintf("merged %d column segments into %d of", n, nout), start, docs);
-	maint_merge_settles(index, in, n, nout);
+	maint_merge_settles(index, in, n, out, nout);
 }
 
 /* the workers that make one segment of a merge outside a build, besides the backend (maint_merge_par_bytes) */

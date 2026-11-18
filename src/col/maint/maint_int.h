@@ -200,7 +200,7 @@ extern void	maint_seg_key_range(SiftColSegment *seg, int leaf, int64 *lo, int64 
 /* col/maint/merge_pick.c: the segments a merge or a rewrite takes, and the end state of an index */
 extern int	maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel);
 extern int	maint_pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, bool *cut, bool *paced, RollStep *rs);
-extern void	maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, int nout);
+extern void	maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftSegEntry *out, int nout);
 extern uint64	maint_merge_par_bytes(void);
 
 extern SiftStepResult	maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy);

@@ -106,14 +106,53 @@ maint_part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut)
 }
 
 
-/* The index whose last merge of entity segments wrote as many segments as it read: a merge of the same segments writes them again (the cuts of its writer are the same), so they are its end state; the merges of scope segments say nothing of the entities */
-static Oid	settled_index = InvalidOid;
+/*
+ * The segments a merge of entity segments of an index wrote when it wrote as many as it read: its writer cut them where it cuts, so a merge of segments that all are such writes them
+ * again as they are, and they are the end state of the tiers and of the rewrite. The merges of scope segments say nothing of the entities.
+ */
+#define SETTLED_MAX (2 * SIFT_MAX_SEGMENTS)
+
+static struct
+{
+	Oid			index;
+	int			n;
+	int			next;
+	uint64		gens[SETTLED_MAX];
+}			settled;
 
 void
-maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, int nout)
+maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftSegEntry *out, int nout)
 {
-	if (!(in[0].flags & SIFT_SEG_SCOPE))
-		settled_index = nout >= nin ? RelationGetRelid(index) : InvalidOid;
+	if ((in[0].flags & SIFT_SEG_SCOPE) || nout < nin)
+		return;
+	if (settled.index != RelationGetRelid(index))
+	{
+		memset(&settled, 0, sizeof(settled));
+		settled.index = RelationGetRelid(index);
+	}
+	for (int i = 0; i < nout; i++)
+	{
+		settled.gens[settled.next] = out[i].gen;
+		settled.next = (settled.next + 1) % SETTLED_MAX;
+		settled.n = Min(settled.n + 1, SETTLED_MAX);
+	}
+}
+
+static bool
+settled_all(Relation index, const SiftSegEntry *sel, int n)
+{
+	if (settled.index != RelationGetRelid(index))
+		return false;
+	for (int i = 0; i < n; i++)
+	{
+		bool		found = false;
+
+		for (int k = 0; k < settled.n && !found; k++)
+			found = settled.gens[k] == sel[i].gen;
+		if (!found)
+			return false;
+	}
+	return true;
 }
 
 /*
@@ -167,7 +206,7 @@ maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSe
 	if (maint_part_kb == 0)
 	{
 		n = sift_merge_pick(index, &pol, snap, false, sel);
-		return n > 0 && clean_apart(index, snap, sel, n) ? sift_merge_pick_dead(index, &pol, snap, sel) : n;
+		return n > 0 && (settled_all(index, sel, n) || clean_apart(index, snap, sel, n)) ? sift_merge_pick_dead(index, &pol, snap, sel) : n;
 	}
 	/* the tiers merge the overlays: the partitions of the same size would go back into one segment, and wait for their rewrite (or for the dead rows to fill them) */
 	overlays = palloc(sizeof(SiftDirSnapshot));
@@ -364,7 +403,7 @@ maint_pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *se
 
 		for (int i = 0; i < nsel; i++)
 			bytes += sel[i].bytes;
-		apart = settled_index == RelationGetRelid(index) || bytes >= maint_merge_par_bytes();
+		apart = settled_all(index, sel, nsel) || bytes >= maint_merge_par_bytes();
 		for (int i = 0; i < v->n && apart; i++)
 			apart = !(v->imm[i].flags & SIFT_SEG_DIRTY);
 		for (int i = 0; i < v->n && apart; i++)
