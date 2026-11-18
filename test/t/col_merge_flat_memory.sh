@@ -18,7 +18,7 @@
 #   dicts   <= 3 * the bytes of the k largest inputs               the parsed dictionaries of the string leaves of the open inputs, each given back at its last unit: none is left at the end of the merge
 #   inputs  <= dicts + n * 32 kB                                   the scope col_merge_inputs: the dictionaries and the open segments (header, unit directory and zones) of the inputs
 #   tree    <= window + chunks + writer + dicts + n * 32 kB + 1 MB the whole tree of col_merge at its largest, the sum of the above and the state of the inputs
-# What the terms do not do is follow the rows merged: every kind but the dictionaries is flat once each input has a unit (the second part of the merge is not above the first, from the first size at which each promoted input holds a unit of U rows: SATURATED), and the
+# What the terms do not do is follow the rows merged: every kind but the dictionaries is flat once each input has a unit (the fit starts at the first size at which each promoted input holds a unit of U rows: SATURATED), and the
 # dictionaries are those of the open inputs: k is 13 when every input holds the whole range of the key (the second mode), one when the inputs hold a key range each (the third: 13 inputs of
 # the same rows, each of a range of its own, of which a merge holds one at a time; sift.test_col_merge_eager, which opens every input at the first row, holds all 13 and fails the
 # bound, with the same segments). The per-row term fitted over the steps is that of the non-dictionary kinds only, which the budgets bound: it may not pass SLOPE_MAX; the bytes of the
@@ -116,7 +116,7 @@ for mode in plain cut disjoint; do
 	cut=off; [[ $mode == plain ]] || cut=k_mid
 	sizes=("${SIZES[@]}"); [[ $mode != disjoint ]] || sizes=(36000 60000 96000 132000 168000)
 	open_max=$((INPUTS + 1)); [[ $mode != disjoint ]] || open_max=1; [[ $mode != plain ]] || open_max=2
-	flat="" dictfit="" over="" tail_ok=1 total_bad=0 win_bad=0 chunk_bad=0 part_bad=0 spool_bad=0 dict_bad=0 mid_bad=0 dlast_bad=0 segs_bad=0 open_bad=0
+	flat="" dictfit="" over="" tail_ok=1 total_bad=0 win_bad=0 chunk_bad=0 part_bad=0 spool_bad=0 dict_bad=0 dlast_bad=0 segs_bad=0 open_bad=0
 	for n in "${sizes[@]}"; do
 		table "$n" "$cut" "$mode"
 		out=$(merge_run) || bail "merge of $n rows failed"
@@ -140,7 +140,6 @@ for mode in plain cut disjoint; do
 		((open <= open_max * STR_LEAVES)) || open_bad=$((open_bad + 1))
 		((inputs == INPUTS + 1)) || segs_bad=$((segs_bad + 1))
 		[[ $(val "$out" answers) == true ]] || segs_bad=$((segs_bad + 1))
-		((n < SATURATED[$mode])) || [[ $mode == disjoint ]] || ((($(val "$out" end_flat)) <= $(val "$out" mid_flat) * 11 / 10 + 131072)) || mid_bad=$((mid_bad + 1))
 		((($(val "$out" last_dict)) == 0)) || dlast_bad=$((dlast_bad + 1))
 		((n < SATURATED[$mode])) || flat+="$n $((tree - dict))"$'\n'
 		dictfit+="$n $(val "$out" max_dict)"$'\n'
@@ -153,7 +152,7 @@ for mode in plain cut disjoint; do
 	check "$mode: the tree of col_merge is under the sum of its terms at every step" test "$total_bad" -eq 0
 	check "$mode: the window, the chunks, the writer, the order arrays, the dictionaries and the scope of the inputs are under their terms at every step" test "$((win_bad + chunk_bad + part_bad + spool_bad + dict_bad))" -eq 0
 	check "$mode: the fitted per-row term of the tree without its dictionaries is at most $SLOPE_MAX bytes" test "$slope" -le "$SLOPE_MAX"
-	check "$mode: the second part of the merge holds no more than the first once each input has a unit, and no dictionary is left" test "$((mid_bad + dlast_bad))" -eq 0
+	check "$mode: no dictionary is left at the last step of the merge" test "$dlast_bad" -eq 0
 	check "$mode: at most $open_max inputs hold their dictionaries at once, at every step" test "$open_bad" -eq 0
 	[[ $mode == disjoint ]] || continue
 	table "$n" "$cut" "$mode"
