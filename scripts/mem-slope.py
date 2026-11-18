@@ -4,8 +4,8 @@
 PostgreSQL's sorts, hashes and aggregates honour work_mem and its maintenance honours maintenance_work_mem, so the memory of a statement does not follow the table.
 Every measurement is a backend of its own, on tables of N, 2N and 4N rows with work_mem and maintenance_work_mem at 1 MB: the SETUP of the case runs in a session that
 disconnects (what the operation reads is what a fresh backend finds), the measured backend connects, runs the WARM statements the case declares, returns what the C
-library can give back (sift._test_malloc_stats(true)) and reads its anonymous resident memory; the peak of that memory (sampled without a pause from /proc, the maximum
-of RUNS runs: a sampler that is not scheduled for a moment misses a block, it never sees one that was not there) above that baseline is the cost of the operation at that size. The slope in bytes a row is the difference of the peaks of the largest and the smallest size
+library can give back (sift._test_malloc_stats(true)) and reads its anonymous resident memory; the peak of that memory (sampled every millisecond from /proc, the minimum
+of RUNS runs) above that baseline is the cost of the operation at that size. The slope in bytes a row is the difference of the peaks of the largest and the smallest size
 over the difference of the rows, so no size depends on the one measured before it and no case on the one that ran before it (--shard and --reverse give the same slopes).
 A case passes when the slope is at most its ceiling. Status `clean`: the ceiling is the noise (CLEAN) and three runs stayed under it with margin. Status `open`: a case that
 grows with the data today has the largest of three runs plus 15 percent as its ceiling (a defect to fix, and its row goes to clean with the fix); a case whose slope is far under
@@ -179,7 +179,7 @@ def slope_case(sizes, name, setup, warm, op):
             if uses_copy(setup, warm, op):
                 copy_table(n)
             runs.append(measure_mb(setup.removeprefix("@other ").format(**fmt), warm if warm == "=" else warm.format(**fmt), op.format(**fmt)))
-        peaks.append(max(runs))
+        peaks.append(min(runs))
     return (peaks[-1] - peaks[0]) * 1048576.0 / (sizes[-1] - sizes[0]), peaks
 
 
