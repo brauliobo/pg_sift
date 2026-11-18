@@ -404,10 +404,10 @@ has_rows(Relation index, const SiftSegEntry *entry)
 static uint32
 seal_limit(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	uint32		limit = wbuf_limit_pages(index);
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN && wbuf_arena_full(index, snap->segs[i].gen, (Size) limit * BLCKSZ))
 			limit = 0;

@@ -17,7 +17,7 @@ sq_store_hw(const SqStore *st)
 const SiftDirSnapshot *
 sq_store_dir(const SqStore *st)
 {
-	return &st->dir;
+	return st->dir;
 }
 
 uint64
@@ -85,7 +85,7 @@ load_segs(SqStore *st)
 	char	   *t = tbl(st, "segs"),
 			   *sql = sqlite3_mprintf("SELECT gen, header_blk, first_blk, sb_lo, sb_hi, ndocs, sum_dl, bytes, flags FROM %s ORDER BY gen", t);
 	int			rc = sqlite3_prepare_v2(st->db, sql, -1, &q, NULL);
-	SiftDirSnapshot *d = &st->dir;
+	SiftDirSnapshot *d = st->dir;
 
 	sqlite3_free(sql);
 	sqlite3_free(t);
@@ -96,10 +96,10 @@ load_segs(SqStore *st)
 	{
 		SiftSegEntry *e = &d->segs[d->nsegs];
 
-		if (d->nsegs == SIFT_MAX_SEGMENTS)
+		if (d->nsegs == SIFT_DIR_POLICY_MAX)
 		{
 			sqlite3_finalize(q);
-			elog(ERROR, "sift: more than %d segments", SIFT_MAX_SEGMENTS);
+			elog(ERROR, "sift: more than %d segments", SIFT_DIR_POLICY_MAX);
 		}
 		memset(e, 0, sizeof(*e));
 		e->gen = sqlite3_column_int64(q, 0);
@@ -123,7 +123,7 @@ load_segs(SqStore *st)
 static void
 init_meta(SqStore *st)
 {
-	SiftMetaPageData *m = &st->dir.meta;
+	SiftMetaPageData *m = &st->dir->meta;
 
 	m->magic = SIFT_MAGIC;
 	m->format_major = SIFT_FORMAT_MAJOR;
@@ -144,7 +144,7 @@ versions_moved(SqStore *st)
 	bool		moved = true;
 
 	if (rc == SQLITE_ROW)
-		moved = (uint32) sqlite3_column_int(q, 0) != st->dir.version || (uint32) sqlite3_column_int(q, 1) != st->lversion;
+		moved = (uint32) sqlite3_column_int(q, 0) != st->dir->version || (uint32) sqlite3_column_int(q, 1) != st->lversion;
 	sqlite3_reset(q);
 	if (rc != SQLITE_ROW)
 		elog(ERROR, "sift: cannot read the metadata of \"%s\": %s", st->name, sqlite3_errmsg(st->db));
@@ -161,13 +161,13 @@ sq_store_refresh(SqStore *st, bool changed_only)
 	uint32		version,
 				lversion = st->lversion;
 
-	if (changed_only && st->dir.version != 0 && !versions_moved(st))
+	if (changed_only && st->dir->version != 0 && !versions_moved(st))
 		return false;
 	if (!changed_only)
 		load_config(st);
 	load_meta(st, &version);
 	load_segs(st);
-	st->dir.version = version;
+	st->dir->version = version;
 	init_meta(st);
 	if (!changed_only || st->lversion != lversion)
 		cache_invalidate(st);
@@ -182,7 +182,7 @@ sq_store_rollback(SqStore *st, bool final)
 		return;
 	st->changed = !final;
 	close_blobs(st);
-	st->dir.version = 0;
+	st->dir->version = 0;
 	sq_store_refresh(st, false);
 }
 
@@ -204,17 +204,17 @@ persist_meta(SqStore *st, bool live)
 	sqlite3_free(sql);
 	sqlite3_free(t);
 	CHECK(st, rc);
-	st->dir.version++;
+	st->dir->version++;
 	st->lversion += live;
-	st->dir.meta.next_gen = st->next_gen;
-	st->dir.meta.high_water = st->hw;
+	st->dir->meta.next_gen = st->next_gen;
+	st->dir->meta.high_water = st->hw;
 	st->changed = true;
 }
 
 void
 sq_store_publish(SqStore *st, const SiftSegEntry *e)
 {
-	SiftDirSnapshot *d = &st->dir;
+	SiftDirSnapshot *d = st->dir;
 	char	   *t = tbl(st, "segs"),
 			   *sql = sqlite3_mprintf("INSERT INTO %s VALUES(%llu, %u, %u, %u, %u, %llu, %llu, %llu, %u)", t,
 									  (unsigned long long) e->gen, e->header_blk, e->reserved, e->sb_lo, e->sb_hi,
@@ -225,8 +225,8 @@ sq_store_publish(SqStore *st, const SiftSegEntry *e)
 	sqlite3_free(sql);
 	sqlite3_free(t);
 	CHECK(st, rc);
-	if (d->nsegs == SIFT_MAX_SEGMENTS)
-		elog(ERROR, "sift: more than %d segments", SIFT_MAX_SEGMENTS);
+	if (d->nsegs == SIFT_DIR_POLICY_MAX)
+		elog(ERROR, "sift: more than %d segments", SIFT_DIR_POLICY_MAX);
 	d->segs[d->nsegs++] = *e;
 	d->meta.ndocs += e->ndocs;
 	d->meta.sum_dl += e->sum_dl;
@@ -243,7 +243,7 @@ sq_store_seg_rows(const SqStore *st, const SiftSegEntry *e, int64_t *lo, int64_t
 void
 sq_store_retire(SqStore *st, uint64 gen)
 {
-	SiftDirSnapshot *d = &st->dir;
+	SiftDirSnapshot *d = st->dir;
 	int			i = 0;
 	int64_t		lo,
 				hi;
@@ -288,9 +288,9 @@ sq_store_set_flags(SqStore *st, uint64 gen, uint16 flags)
 	sqlite3_free(sql);
 	sqlite3_free(t);
 	CHECK(st, rc);
-	for (int i = 0; i < st->dir.nsegs; i++)
-		if (st->dir.segs[i].gen == gen)
-			st->dir.segs[i].flags = flags;
+	for (int i = 0; i < st->dir->nsegs; i++)
+		if (st->dir->segs[i].gen == gen)
+			st->dir->segs[i].flags = flags;
 	persist_meta(st, false);
 }
 
@@ -308,30 +308,47 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 							   (unsigned long long) gen)));
 }
 
-void
-sift_dir_read(Relation index, SiftDirSnapshot *snap)
+SiftDirSnapshot *
+sift_dir_alloc(int n)
 {
-	*snap = index->store->dir;
+	return calloc(1, offsetof(SiftDirSnapshot, segs) + n * sizeof(SiftSegEntry));
 }
 
-void
-sift_dir_read_segs(Relation index, SiftDirSnapshot *snap)
+SiftDirSnapshot *
+sift_dir_copy(const SiftDirSnapshot *snap)
 {
-	sift_dir_read(index, snap);
+	SiftDirSnapshot *copy = sift_dir_alloc(snap->nsegs);
+
+	memcpy(copy, snap, sift_dir_bytes(snap));
+	return copy;
+}
+
+SiftDirSnapshot *
+sift_dir_read(Relation index)
+{
+	return sift_dir_copy(index->store->dir);
+}
+
+SiftDirSnapshot *
+sift_dir_read_segs(Relation index)
+{
+	SiftDirSnapshot *snap = sift_dir_read(index);
+
 	memset(&snap->meta, 0, sizeof(snap->meta));
+	return snap;
 }
 
 void
 sift_dir_update(Relation index, const SiftDirChange *chg)
 {
 	SqStore    *st = index->store;
-	SiftDirectoryData *dir = malloc(offsetof(SiftDirectoryData, segs) + SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry));
+	SiftDirectoryData *dir = malloc(offsetof(SiftDirectoryData, segs) + SIFT_DIR_POLICY_MAX * sizeof(SiftSegEntry));
 
-	dir->nsegs = st->dir.nsegs;
-	memcpy(dir->segs, st->dir.segs, st->dir.nsegs * sizeof(SiftSegEntry));
-	chg->fn(&st->dir.meta, dir, NULL, chg->arg);
+	dir->nsegs = st->dir->nsegs;
+	memcpy(dir->segs, st->dir->segs, st->dir->nsegs * sizeof(SiftSegEntry));
+	chg->fn(&st->dir->meta, dir, NULL, chg->arg);
 	for (int i = 0; i < dir->nsegs; i++)
-		if (dir->segs[i].flags != st->dir.segs[i].flags)
+		if (dir->segs[i].flags != st->dir->segs[i].flags)
 			sq_store_set_flags(st, dir->segs[i].gen, dir->segs[i].flags);
 	free(dir);
 }

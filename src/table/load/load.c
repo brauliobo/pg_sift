@@ -75,8 +75,8 @@ reserve_run(Load *ld, Relation rel, SiftTblRel *st)
 	if (ld->rl)
 		load_ring_take_slot(ld, rel);
 	LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-	sift_dir_read(rel, &st->dir);
-	ld->run.first = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, Max(SIFT_TBL_NEXT_VBLOCK(&st->dir.meta), (uint64) sift_tbl_vblock_floor));
+	sift_dir_reload(rel, &st->dir, st->cxt);
+	ld->run.first = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, Max(SIFT_TBL_NEXT_VBLOCK(&st->dir->meta), (uint64) sift_tbl_vblock_floor));
 	end = ld->run.first + (uint64) ld->maxunits * SIFT_TBL_VBLOCKS_SB;
 	if (end > (uint64) MaxBlockNumber)
 		ereport(ERROR,

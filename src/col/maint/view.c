@@ -57,11 +57,21 @@ RewriteView *
 maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 {
 	RewriteView *v = MemoryContextAllocZero(cx, sizeof(RewriteView));
+	int			room = Max(snap->nsegs, 1);
 	SiftConnStale *conn = sift_conn_stale_begin(index, cx);
 	SiftScopeStale *scope = sift_scope_stale_begin(index, cx);
 	bool	   *left = sift_vstore_left_leaves(index, sift_col_rel(index)->schema);
 	bool		stale_conn;
 
+	v->imm = MemoryContextAllocZero(cx, room * sizeof(SiftSegEntry));
+	v->seg = MemoryContextAllocZero(cx, room * sizeof(SiftColSegment *));
+	v->span = MemoryContextAllocZero(cx, room * sizeof(SbSpans));
+	v->over = MemoryContextAllocZero(cx, room * sizeof(bool));
+	v->stale = MemoryContextAllocZero(cx, room * sizeof(bool));
+	v->old_epoch = MemoryContextAllocZero(cx, room * sizeof(bool));
+	v->kover = MemoryContextAllocZero(cx, room * sizeof(bool));
+	v->klo = MemoryContextAllocZero(cx, room * sizeof(int64));
+	v->khi = MemoryContextAllocZero(cx, room * sizeof(int64));
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{

@@ -487,9 +487,9 @@ sift_col_connection_fill(PG_FUNCTION_ARGS)
 	specs = sift_conn_specs(index);
 	if (specs != NULL && specs->n > 0)
 	{
-		SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+		SiftDirSnapshot *snap;
 
-		sift_dir_read(index, snap);
+		snap = sift_dir_read(index);
 		for (int i = 0; i < snap->nsegs; i++)
 		{
 			SiftColSegment *seg;

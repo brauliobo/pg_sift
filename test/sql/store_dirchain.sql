@@ -123,6 +123,22 @@ SELECT sift._test_check('dr_idx') AS orphans;
 -- no free run below the limit: the update fails and the directory stays as it was
 SELECT sift._test_dir_edit('dr_idx', 'rechain', 3, 0);
 SELECT nsegs, top_chain_block < 30 AS still_low FROM sift._test_dir_info('dr_idx');
+-- more leaves than a root holds: the root lists interior pages, each of them leaves
+CREATE TABLE di (v int);
+CREATE INDEX di_idx ON di USING sift_store_test (v);
+SET sift.test_dir_flat_max = 2;
+SET sift.test_dir_leaf_max = 3;
+SET sift.test_dir_root_max = 4;
+SELECT count(sift._test_seg_write('di_idx', 100, i)) AS written FROM generate_series(1, 30) i;
+SELECT chained, nsegs FROM sift._test_dir_info('di_idx');
+SELECT sift._test_dir_check('di_idx') >= 1 + 3 + 10 AS root_interior_pages_and_leaves;
+SELECT count(*) AS segments, bool_and(sift._test_seg_read('di_idx', gen) = payload) AS intact FROM sift._test_segments('di_idx');
+SELECT count(*) = 30 AS listed, bool_and(ord = rn - 1) AS in_order FROM (SELECT ord, row_number() OVER (ORDER BY ord) rn FROM sift._test_dir_list('di_idx')) l;
+SELECT sift._test_dir_edit('di_idx', 'del', 5, 20);
+SELECT sift._test_dir_edit('di_idx', 'ins', 7, 6) > 0 AS inserted;
+SELECT nsegs FROM sift._test_dir_info('di_idx');
+SELECT sift._test_dir_check('di_idx') > 0 AS chain_blocks;
+DROP TABLE di;
 DROP TABLE dr;
 DROP TABLE dm;
 DROP TABLE model;

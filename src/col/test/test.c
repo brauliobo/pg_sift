@@ -72,10 +72,10 @@ sift_test_col_formats(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		Datum		v[4] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(snap->segs[i].format),
@@ -95,10 +95,10 @@ sift_test_col_cuts(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -161,10 +161,10 @@ sift_test_col_mirror(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -207,10 +207,10 @@ sift_test_col_dict_tsig(PG_FUNCTION_ARGS)
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	int			leaf = PG_GETARG_INT32(1);
 	text	   *needle = PG_GETARG_TEXT_PP(2);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -247,10 +247,10 @@ sift_test_col_dict_count(PG_FUNCTION_ARGS)
 	SiftColValue c = {.len = VARSIZE_ANY_EXHDR(val), .v.s = VARDATA_ANY(val)};
 	SiftColOp	op = strcmp(opname, "eq") == 0 ? SIFT_COLOP_EQ : strcmp(opname, "lt") == 0 ? SIFT_COLOP_LT : strcmp(opname, "le") == 0 ? SIFT_COLOP_LE :
 		strcmp(opname, "gt") == 0 ? SIFT_COLOP_GT : strcmp(opname, "ge") == 0 ? SIFT_COLOP_GE : SIFT_COLOP_PREFIX;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -316,10 +316,10 @@ sift_test_col_unit_of_block(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	BlockNumber blk = (BlockNumber) PG_GETARG_INT64(1);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -350,12 +350,12 @@ sift_test_col_gorder(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	int			leaf = PG_GETARG_INT32(1);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	int64		kv[SIFT_CGORD_CAP];
 	uint64		av[SIFT_CGORD_CAP];
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;

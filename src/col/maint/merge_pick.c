@@ -68,8 +68,8 @@ sift_col_mostly_dead(Relation index, const SiftSegEntry *e)
 static bool
 clean_apart(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry *sel, int n)
 {
-	SiftColSegment *seg[SIFT_MAX_SEGMENTS];
-	SbSpans		span[SIFT_MAX_SEGMENTS];
+	SiftColSegment **seg;
+	SbSpans    *span;
 	uint64		bytes = 0;
 	bool		apart = true;
 
@@ -83,6 +83,8 @@ clean_apart(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry *sel
 	}
 	if (bytes <= ((uint64) sift_vacuum_rewrite_limit << 20))
 		return false;
+	seg = palloc(n * sizeof(SiftColSegment *));
+	span = palloc(n * sizeof(SbSpans));
 	for (int i = 0; i < n; i++)
 	{
 		seg[i] = sift_cseg_open(index, &sel[i], CurrentMemoryContext);
@@ -93,6 +95,8 @@ clean_apart(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry *sel
 			apart = !maint_share_superblock(&span[i], &span[j], 1);
 	for (int i = 0; i < n; i++)
 		sift_cseg_close(seg[i]);
+	pfree(seg);
+	pfree(span);
 	return apart;
 }
 
@@ -209,8 +213,7 @@ maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSe
 		return n > 0 && (settled_all(index, sel, n) || clean_apart(index, snap, sel, n)) ? sift_merge_pick_dead(index, &pol, snap, sel) : n;
 	}
 	/* the tiers merge the overlays: the partitions of the same size would go back into one segment, and wait for their rewrite (or for the dead rows to fill them) */
-	overlays = palloc(sizeof(SiftDirSnapshot));
-	*overlays = *snap;
+	overlays = sift_dir_copy(snap);
 	maint_keep_overlays(overlays);
 	n = sift_merge_pick(index, &pol, overlays, false, sel);
 	pfree(overlays);
@@ -258,7 +261,7 @@ maint_merge_par_bytes(void)
 static bool
 pick_key_window(const RewriteView *v, bool *take)
 {
-	int			order[SIFT_MAX_SEGMENTS];
+	int		   *order = palloc(Max(v->n, 1) * sizeof(int));
 	int			n = 0,
 				taken = 0;
 	uint64		bytes = 0,
@@ -290,6 +293,7 @@ pick_key_window(const RewriteView *v, bool *take)
 		taken++;
 		hi = Max(hi, v->khi[i]);
 	}
+	pfree(order);
 	return taken > 0;
 }
 
@@ -306,8 +310,8 @@ maint_pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *se
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col rewrite pick", ALLOCSET_SMALL_SIZES);
 	RewriteView *v;
-	bool		take[SIFT_MAX_SEGMENTS] = {false},
-				dirty_part[SIFT_MAX_SEGMENTS] = {false};
+	bool	   *take,
+			   *dirty_part;
 	int			nsel = 0,
 				nover = 0,
 				over = 0,
@@ -321,6 +325,10 @@ maint_pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *se
 
 	maint_use_partitions(index, snap);
 	v = maint_view_open(index, snap, cx);
+	take = MemoryContextAllocZero(cx, Max(v->n, 1) * sizeof(bool));
+	dirty_part = MemoryContextAllocZero(cx, Max(v->n, 1) * sizeof(bool));
+	rs->over = palloc0(Max(v->n, 1) * sizeof(bool));
+	rs->bounded = palloc0(Max(v->n, 1) * sizeof(bool));
 	/*
 	 * The units of a key-cut index are numbered by the sequence of the key, so the superblocks two segments hold in common say nothing of their rows
 	 * (every segment starts at unit 0): its rewrite is of every segment, cut into partitions, which are what the VACUUM space step moves. It is done

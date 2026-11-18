@@ -65,14 +65,14 @@ create_wbuf(Relation rel, SiftTblRel *st, uint64 seen, uint16 flags, uint32 *vbl
 
 again:
 	LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-	sift_dir_read(rel, &st->dir);
-	act = find_seg(&st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
+	sift_dir_reload(rel, &st->dir, st->cxt);
+	act = find_seg(st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
 	if ((act ? act->gen : 0) == seen)
 	{
 		SwapArg		arg = {0};
 		uint32		vcap = wbuf_vcap(st);
 		uint64		gen,
-					vbase = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, Max(SIFT_TBL_NEXT_VBLOCK(&st->dir.meta), (uint64) sift_tbl_vblock_floor));
+					vbase = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, Max(SIFT_TBL_NEXT_VBLOCK(&st->dir->meta), (uint64) sift_tbl_vblock_floor));
 		Buffer		hbuf,
 					dbuf;
 		SiftXlog state;
@@ -83,7 +83,7 @@ again:
 		 * the directory is full, or past sift.table_backpressure: whoever promotes and merges holds the maintenance lock, which is waited for
 		 * (not under the active lock: that one is taken inside it) before this is an error
 		 */
-		if ((st->dir.nsegs >= sift_tbl_max_segments - 2 || dir_backpressure(st)) && !waited)
+		if ((st->dir->nsegs >= sift_tbl_max_segments - 2 || dir_backpressure(st)) && !waited)
 		{
 			UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 			waited = true;
@@ -91,10 +91,10 @@ again:
 								   sift_tbl_opt_int(st, SIFT_TBLOPT_BACKPRESSURE) ? SIFT_TBL_ROOM_STEPS : SIFT_TBL_SETTLE_STEPS);
 			goto again;
 		}
-		if (st->dir.nsegs >= sift_tbl_max_segments - 2)
+		if (st->dir->nsegs >= sift_tbl_max_segments - 2)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir.nsegs),
+					 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir->nsegs),
 					 errdetail("Too many write buffers waiting for promotion: a write buffer that holds a deleted row VACUUM has not seen, or a speculative insertion, is promoted only after that is settled, and about %d MB of rows are in write buffers like that.",
 							   (int) ((uint64) (sift_tbl_max_segments - 2) * sift_tbl_opt_int(st, SIFT_TBLOPT_WRITE_BUFFER_LIMIT) / 1024)),
 					 errhint("Run VACUUM on the table, or end the transaction that wrote them.")));
@@ -154,7 +154,7 @@ sift_tbl_close_wbuf(Relation rel, SiftTblRel *st, uint32 minpages)
 	uint64		gen;
 
 	sift_tbl_refresh(rel, st);
-	if (!st->initialized || (act = find_seg(&st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN)) == NULL)
+	if (!st->initialized || (act = find_seg(st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN)) == NULL)
 		return;
 	for (int i = 0; i < st->nwbuf; i++)
 		if (st->wbuf[i].gen == act->gen)
@@ -272,7 +272,7 @@ claim_page(Relation rel, SiftTblRel *st, uint16 flags, uint32 *vblock, uint64 *g
 		BlockNumber blk;
 
 		sift_tbl_refresh(rel, st);
-		act = find_seg(&st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
+		act = find_seg(st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
 		if (act && BlockNumberIsValid(blk = extend_wbuf(rel, act, flags, vblock)))
 		{
 			*gen = act->gen;
@@ -291,7 +291,7 @@ claim_page_in(Relation rel, SiftTblRel *st, uint64 gen, uint16 flags, bool tail)
 	uint32		vb;
 
 	sift_tbl_refresh(rel, st);
-	act = find_seg(&st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
+	act = find_seg(st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
 	return act && act->gen == gen ? extend_wbuf(rel, act, flags, tail ? NULL : &vb) : InvalidBlockNumber;
 }
 
@@ -316,8 +316,8 @@ mark_wide(Relation rel, SiftTblRel *st, uint64 gen)
 	bool		open;
 
 	LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-	sift_dir_read(rel, &st->dir);
-	act = find_seg(&st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
+	sift_dir_reload(rel, &st->dir, st->cxt);
+	act = find_seg(st->dir, is_wbuf, SIFT_SEG_WBUF_OPEN);
 	open = act && act->gen == gen;
 	if (open && act->format != SIFT_COL_FORMAT_WIDE_ROWS)
 		sift_dir_update(rel, &(SiftDirChange) {.fn = set_wide_format,.arg = &gen,.extra = InvalidBuffer});
@@ -572,7 +572,7 @@ fetch_row(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv, bool
 			UnlockReleaseBuffer(buf);
 			return true;
 		}
-		if (retry == 0 && (vblock >= SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) || !st->initialized))
+		if (retry == 0 && (vblock >= SIFT_TBL_NEXT_VBLOCK(&st->dir->meta) || !st->initialized))
 			sift_tbl_refresh(rel, st);
 		else
 			break;

@@ -54,7 +54,7 @@ tomb_close_runs(void *arg)
 }
 
 void
-sift_tomb_init(SiftTombLog *t, MemoryContext cxt, SiftDirSnapshot *dir)
+sift_tomb_init(SiftTombLog *t, MemoryContext cxt, SiftDirSnapshot **dir)
 {
 	t->cxt = cxt;
 	t->dir = dir;
@@ -479,7 +479,7 @@ tomb_sync(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
 void
 sift_tomb_sync(Relation rel, SiftTombLog *t)
 {
-	tomb_sync(rel, t, t->dir);
+	tomb_sync(rel, t, *t->dir);
 }
 
 void
@@ -488,7 +488,7 @@ sift_tomb_sync_header(Relation rel, SiftTombLog *t)
 	uint64		n;
 	BlockNumber blk;
 
-	(void) tomb_sync_header(rel, t, t->dir, &n, &blk);
+	(void) tomb_sync_header(rel, t, *t->dir, &n, &blk);
 }
 
 /*
@@ -505,7 +505,7 @@ sift_tomb_sync_at(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
 void
 sift_tomb_sync_all(Relation rel, SiftTombLog *t)
 {
-	tomb_sync(rel, t, t->dir);
+	tomb_sync(rel, t, *t->dir);
 }
 
 /* The run of entries for key in the sorted array a: its first element and length */

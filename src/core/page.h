@@ -141,7 +141,6 @@ typedef struct SiftMetaPageData
 	uint16		maint_ok_job;	/* SiftJob */
 	uint16		shrink_blocked;	/* SiftShrinkBlock: why the last VACUUM left the file longer than the shrink target */
 	uint32		inserted;		/* sift_col: the records of the write buffers promoted so far, modulo 2^32 (the word was reserved, 0 before: a library that does not know it leaves it as it is) */
-	BlockNumber dir_chain;		/* the root of a chained directory (SIFT_PT_DIRROOT); 0: the directory is block 1 alone. Format minor SIFT_FORMAT_MINOR_DIRCHAIN: an older library refuses the index */
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF
@@ -234,30 +233,58 @@ typedef struct SiftDirectoryData
 	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
 } SiftDirectoryData;
 
-StaticAssertDecl(offsetof(SiftDirectoryData, segs) + SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry)
+/* The entries block 1 holds: a directory of more is chained */
+#define SIFT_DIR_FLAT_MAX	128
+/* The entries the policy of the writers keeps a directory within (they merge from 16 below it, the build cuts its segments to fit it): a count of the policy, not a capacity; the chain holds SIFT_DIR_WIDE_MAX */
+#define SIFT_DIR_POLICY_MAX	128
+StaticAssertDecl(offsetof(SiftDirectoryData, segs) + SIFT_DIR_FLAT_MAX * sizeof(SiftSegEntry)
 				 <= SIFT_PAGE_PAYLOAD, "directory must fit one page");
 
 /*
- * A chained directory (metapage dir_chain != 0): block 1 keeps the version and the lock of the directory and says SIFT_DIR_CHAINED with no entries;
- * the entries are in SIFT_PT_DIRLEAF pages in directory order, listed by the SIFT_PT_DIRROOT page the metapage names. Pages of a chain are never
- * changed once written: an update writes the leaves it changes and a new root, then one record flips dir_chain and the version, and the old root
- * and the replaced leaves go through the free list like the extents of a segment. A leaf is reused as it is while its entries stay together.
+ * A chained directory (SIFT_DIR_CHAINED in block 1): block 1 keeps the version and the lock of the directory, no entry, and the block of the
+ * SIFT_PT_DIRROOT page where its entries start; the entries are in SIFT_PT_DIRLEAF pages in directory order, listed by that root, directly or through interior SIFT_PT_DIRROOT pages (SiftChainRootData.level). Pages of a chain are
+ * never changed once written: an update writes the leaves it changes and a new root, then one record flips the root and the version in block 1, and
+ * the old root and the replaced leaves go through the free list like the extents of a segment. A leaf is reused as it is while its entries stay
+ * together. The metapage is not changed by the shape of the directory (its struct is the one of 5.0, which an older library reads as before) but for
+ * the format minor SIFT_FORMAT_MINOR_DIRCHAIN that makes an older library refuse the index.
  */
-#define SIFT_DIR_CHAINED	0x0001	/* SiftDirectoryData.reserved of block 1 */
+#define SIFT_DIR_CHAINED	0x0001	/* SiftDirectoryData.reserved of block 1: the directory is never written back to block 1 once chained */
+#define SIFT_DIR_ROOT(dir)	(*(BlockNumber *) (dir)->segs)	/* of a chained block 1, in the place of its first entry */
 
+/*
+ * A reference to a page of the chain, 64 bytes. blk: the page; n: the entries below it; gen: the version the page was written under, which the page must say too.
+ * lo: the exact lower bound of the range the reference covers, 40 bytes, compared with memcmp: 3 key components of 9 bytes and the 6-byte TID of a point of a partition
+ * (core/range.h of the nested directory fills and reads it; a bound shorter than 40 bytes is padded with zeros, a shorter key sorts first like any memcmp). lineage: the
+ * identity of a partition, which survives a fold, a split and a merge; 0 is the set of the entries that are not partitions (an index of 5.0, promotions that no tail
+ * names): its references are the first ones of the root, all with lineage 0 and lo all zero, and a partition is a reference of lineage != 0 whose bounds ascend from there.
+ * A reference to an interior page has lineage 0 and the lo of its first reference. Nothing but the bound and the lineage is kept for a partition here: the stamps of its
+ * scopes are in the sidecar of its segment, the ones of its connections in its segment entries.
+ */
+#define SIFT_BOUND_BYTES	40
 typedef struct SiftChainRef
 {
 	BlockNumber blk;
-	uint32		n;				/* entries of the leaf */
-	uint64		gen;			/* the version the leaf was written under: the page must say the same */
+	uint32		n;
+	uint64		gen;
+	uint64		lineage;
+	uint8		lo[SIFT_BOUND_BYTES];
 } SiftChainRef;
+StaticAssertDecl(sizeof(SiftChainRef) == 64, "a reference of the chain is 64 bytes");
 
+/*
+ * A page of the references of the chain. level: how many pages of references lie below this one before the leaves, so that level 1 names leaves and level 2 names pages of
+ * level 1 (interior pages); a chain is at most 3 pages deep (root, interior, leaf), SIFT_CHAIN_LEVELS_MAX, and a reader refuses a level it does not know. nsegs: the
+ * entries below the page.
+ */
 typedef struct SiftChainRootData
 {
-	uint32		nleaves;
-	uint32		nsegs;			/* entries in all leaves */
-	SiftChainRef leaf[FLEXIBLE_ARRAY_MEMBER];
+	uint32		nrefs;
+	uint32		nsegs;
+	uint32		level;
+	uint32		reserved;
+	SiftChainRef ref[FLEXIBLE_ARRAY_MEMBER];
 } SiftChainRootData;
+#define SIFT_CHAIN_LEVELS_MAX	2
 
 typedef struct SiftChainLeafData
 {
@@ -266,14 +293,14 @@ typedef struct SiftChainLeafData
 	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
 } SiftChainLeafData;
 
-#define SIFT_CHAIN_ROOT_CAP	((SIFT_PAGE_PAYLOAD - offsetof(SiftChainRootData, leaf)) / sizeof(SiftChainRef))
+#define SIFT_CHAIN_ROOT_CAP	((SIFT_PAGE_PAYLOAD - offsetof(SiftChainRootData, ref)) / sizeof(SiftChainRef))
 #define SIFT_CHAIN_LEAF_CAP	((SIFT_PAGE_PAYLOAD - offsetof(SiftChainLeafData, segs)) / sizeof(SiftSegEntry))
-#define SIFT_CHAIN_ROOT_USED(nleaves)	(offsetof(SiftChainRootData, leaf) + (nleaves) * sizeof(SiftChainRef))
+#define SIFT_CHAIN_ROOT_USED(nrefs)	(offsetof(SiftChainRootData, ref) + (nrefs) * sizeof(SiftChainRef))
 #define SIFT_CHAIN_LEAF_USED(n)			(offsetof(SiftChainLeafData, segs) + (n) * sizeof(SiftSegEntry))
-/* The most entries a directory holds: what a chain of SIFT_CHAIN_LEAF_CAP / 2 entries a leaf in a full root holds, below the 16 bits of SiftDirectoryData.nsegs */
+/* The most entries a directory holds: below the 16 bits of SiftDirectoryData.nsegs, and what two levels of half-full pages hold */
 #define SIFT_DIR_WIDE_MAX	32768
-StaticAssertDecl(SIFT_DIR_WIDE_MAX <= SIFT_CHAIN_ROOT_CAP * (SIFT_CHAIN_LEAF_CAP / 2) && SIFT_DIR_WIDE_MAX <= PG_UINT16_MAX,
-				 "a full root of half-full leaves holds the most entries");
+StaticAssertDecl(SIFT_DIR_WIDE_MAX <= SIFT_CHAIN_ROOT_CAP * SIFT_CHAIN_ROOT_CAP * (SIFT_CHAIN_LEAF_CAP / 2) && SIFT_DIR_WIDE_MAX <= PG_UINT16_MAX,
+				 "two levels of half-full pages hold the most entries");
 
 /* Immutable segment header page */
 typedef enum SiftSection

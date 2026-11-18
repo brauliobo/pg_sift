@@ -98,11 +98,11 @@ sift_test_col_scope_entries(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	SiftColBatch *batch = sift_cbatch_create(CurrentMemoryContext, sift_col_rel(index)->schema);
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -155,10 +155,10 @@ sift_test_col_scope_stamps(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		const SiftSegEntry *e = &dir->segs[i];
@@ -190,10 +190,10 @@ sift_test_col_scope_journal_stamps(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		const SiftSegEntry *e = &dir->segs[i];
@@ -224,10 +224,10 @@ sift_test_col_scope_filled(PG_FUNCTION_ARGS)
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftScopeSpecs *sp = sift_scope_specs(index);
 	char	   *name = text_to_cstring(PG_GETARG_TEXT_PP(1));
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	bool		filled = false;
 
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	for (int i = 0; sp != NULL && i < sp->n; i++)
 		if (strcmp(sp->s[i]->key_name, name) == 0)
 		{
@@ -247,10 +247,10 @@ sift_test_col_scope_floor(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftScopeSpecs *sp = sift_scope_specs(index);
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	for (int s = 0; sp != NULL && s < sp->n; s++)
 	{
 		SiftConnStamp floor[SIFT_SCOPE_JOURNALS];
@@ -583,10 +583,10 @@ Datum
 sift_test_scope_paid(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	uint64		paid;
 
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	paid = sift_scope_paid(index, &dir->meta, PG_GETARG_INT32(1));
 	index_close(index, AccessShareLock);
 	PG_RETURN_INT64((int64) paid);

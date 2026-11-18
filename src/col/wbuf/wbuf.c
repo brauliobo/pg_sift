@@ -359,8 +359,7 @@ wbuf_flag_overflow(Relation index, SiftCWbufHint *h, uint32 mask, uint32 jmask)
 	h->ovf_gen = h->gen;
 	if ((mask & ~h->ovf_known) == 0 && (jmask & ~h->jnull_known) == 0)
 		return;
-	snap = palloc(sizeof(SiftDirSnapshot));
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].gen == h->gen)
 		{
@@ -394,8 +393,7 @@ wbuf_flag_ref(Relation index, SiftCWbufHint *h)
 
 	if (h->ref_gen == h->gen)
 		return;
-	snap = palloc(sizeof(SiftDirSnapshot));
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].gen == h->gen && snap->segs[i].format < SIFT_COL_FORMAT_REFBUF)
 			sift_dir_update(index, &(SiftDirChange) {.fn = set_ref_format,.arg = &h->gen,.extra = InvalidBuffer});

@@ -45,9 +45,9 @@ sift_dir_flat_max(void)
 {
 #ifdef SIFT_TESTING
 	if (sift_test_dir_flat_max > 0)
-		return Min(SIFT_MAX_SEGMENTS, sift_test_dir_flat_max);
+		return Min(SIFT_DIR_FLAT_MAX, sift_test_dir_flat_max);
 #endif
-	return SIFT_MAX_SEGMENTS;
+	return SIFT_DIR_FLAT_MAX;
 }
 
 /* A chain page in a buffer locked by the caller: the layout, the type and the version it was written under */
@@ -83,51 +83,111 @@ chain_add_block(SiftDirChain *c, BlockNumber blk)
 	c->blocks[c->nblocks++] = blk;
 }
 
+static void
+check_refs(Relation index, const SiftChainRootData *r, Buffer buf, uint32 level, BlockNumber blk, bool empty_ok)
+{
+	if (r->level != level || (r->nrefs == 0 && !empty_ok) || r->nrefs > root_cap() || r->nsegs > SIFT_DIR_WIDE_MAX ||
+		SiftPageGetUsed(BufferGetPage(buf)) != SIFT_CHAIN_ROOT_USED(r->nrefs))
+		corrupt(index, "Directory page %u is of level %u and holds %u references and %u entries in %u bytes, this build reads level %u.", blk, r->level,
+				r->nrefs, r->nsegs, SiftPageGetUsed(BufferGetPage(buf)), level);
+}
+
+static bool
+bound_is_zero(const uint8 *lo)
+{
+	for (int i = 0; i < SIFT_BOUND_BYTES; i++)
+		if (lo[i] != 0)
+			return false;
+	return true;
+}
+
 /*
- * The entries of the chain whose root is root, written under version, into dst (room for cap), and the chain itself. The caller holds the
- * metapage and the directory, so no update runs; the pages are read once each, under a share lock.
+ * The entries of the chain whose root is root, written under version, into *segs (allocated for the entries and room more), and the chain itself.
+ * The caller holds the metapage and the directory, so no update runs; the pages are read once each, under a share lock.
  */
 int
-sift_dirchain_read(Relation index, BlockNumber root, uint64 version, SiftSegEntry *dst, int cap, SiftDirChain *chain)
+sift_dirchain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEntry **segs, SiftDirChain *chain)
 {
 	Buffer		buf = read_locked(index, root, BUFFER_LOCK_SHARE);
 	SiftChainRootData *r = (SiftChainRootData *) SiftPageGetData(BufferGetPage(buf));
-	uint32		nleaves;
+	SiftChainRef *top;
+	uint32		ntop;
 	uint32		nsegs;
+	uint32		level;
 	int			n = 0;
+	bool		in_partitions = false;
 
 	check_chain_page(index, buf, SIFT_PT_DIRROOT, version);
-	nleaves = r->nleaves;
+	level = r->level;
+	if (level < 1 || level > SIFT_CHAIN_LEVELS_MAX)
+		corrupt(index, "Directory root %u is of level %u, this build reads up to level %d.", root, level, SIFT_CHAIN_LEVELS_MAX);
+	check_refs(index, r, buf, level, root, level == 1);
+	ntop = r->nrefs;
 	nsegs = r->nsegs;
-	if (nleaves > SIFT_CHAIN_ROOT_CAP || SiftPageGetUsed(BufferGetPage(buf)) != SIFT_CHAIN_ROOT_USED(nleaves))
-		corrupt(index, "Directory root %u holds %u leaves in %u bytes.", root, nleaves, SiftPageGetUsed(BufferGetPage(buf)));
-	if (nsegs > (uint32) cap)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift index \"%s\" holds %u segments, more than this caller can read", RelationGetRelationName(index), nsegs),
-				 errhint("Run sift.merge() on the index.")));
-	*chain = (SiftDirChain) {.root = root,.nleaves = nleaves,.leaf = palloc((nleaves + 1) * sizeof(SiftChainRef))};
-	memcpy(chain->leaf, r->leaf, nleaves * sizeof(SiftChainRef));
+	top = palloc(ntop * sizeof(SiftChainRef));
+	memcpy(top, r->ref, ntop * sizeof(SiftChainRef));
+	*chain = (SiftDirChain) {.root = root,.inner = palloc((level > 1 ? ntop : 1) * sizeof(BlockNumber)),.leaf = palloc(Max(level == 1 ? ntop : Min(nsegs, ntop * root_cap()), 1) * sizeof(SiftChainRef))};
 	chain_add_block(chain, root);
 	UnlockReleaseBuffer(buf);
-	for (uint32 i = 0; i < nleaves; i++)
+	*segs = palloc(Max(nsegs + room, 1) * sizeof(SiftSegEntry));
+	for (uint32 t = 0; t < ntop; t++)
 	{
-		const SiftChainRef *ref = &chain->leaf[i];
-		SiftChainLeafData *leaf;
+		const SiftChainRef *inner = &top[t];
+		SiftChainRef *refs = top + t;
+		uint32		nrefs = 1;
+		uint32		below = 0;
 
-		if (ref->n == 0 || ref->n > SIFT_CHAIN_LEAF_CAP || (uint32) n + ref->n > nsegs)
-			corrupt(index, "Directory leaf %u of root %u holds %u of the %u entries.", i, root, ref->n, nsegs);
-		buf = read_locked(index, ref->blk, BUFFER_LOCK_SHARE);
-		check_chain_page(index, buf, SIFT_PT_DIRLEAF, ref->gen);
-		leaf = (SiftChainLeafData *) SiftPageGetData(BufferGetPage(buf));
-		if (leaf->n != ref->n || SiftPageGetUsed(BufferGetPage(buf)) != SIFT_CHAIN_LEAF_USED(leaf->n))
-			corrupt(index, "Directory leaf %u holds %u entries in %u bytes, its root says %u.", ref->blk, leaf->n,
-					SiftPageGetUsed(BufferGetPage(buf)), ref->n);
-		memcpy(dst + n, leaf->segs, ref->n * sizeof(SiftSegEntry));
-		n += ref->n;
-		UnlockReleaseBuffer(buf);
-		chain_add_block(chain, ref->blk);
+		if (level > 1)
+		{
+			SiftChainRootData *ir;
+
+			if (inner->lineage != 0)
+				corrupt(index, "Directory interior reference %u of root %u has the lineage " UINT64_FORMAT ".", t, root, inner->lineage);
+			buf = read_locked(index, inner->blk, BUFFER_LOCK_SHARE);
+			check_chain_page(index, buf, SIFT_PT_DIRROOT, inner->gen);
+			ir = (SiftChainRootData *) SiftPageGetData(BufferGetPage(buf));
+			check_refs(index, ir, buf, 1, inner->blk, false);
+			if (ir->nsegs != inner->n || memcmp(ir->ref[0].lo, inner->lo, SIFT_BOUND_BYTES) != 0)
+				corrupt(index, "Directory interior page %u holds %u entries from another bound, its root says %u.", inner->blk, ir->nsegs, inner->n);
+			nrefs = ir->nrefs;
+			refs = palloc(nrefs * sizeof(SiftChainRef));
+			memcpy(refs, ir->ref, nrefs * sizeof(SiftChainRef));
+			UnlockReleaseBuffer(buf);
+			chain->inner[chain->ninner++] = inner->blk;
+			chain_add_block(chain, inner->blk);
+		}
+		for (uint32 i = 0; i < nrefs; i++)
+		{
+			const SiftChainRef *ref = &refs[i];
+			SiftChainLeafData *leaf;
+
+			if (ref->n == 0 || ref->n > SIFT_CHAIN_LEAF_CAP || (uint32) n + ref->n > nsegs)
+				corrupt(index, "Directory leaf %u of root %u holds %u of the %u entries.", chain->nleaves, root, ref->n, nsegs);
+			if (ref->lineage == 0 ? in_partitions || !bound_is_zero(ref->lo) :
+				chain->nleaves > 0 && in_partitions && memcmp(chain->leaf[chain->nleaves - 1].lo, ref->lo, SIFT_BOUND_BYTES) > 0)
+				corrupt(index, "Directory leaf %u of root %u breaks the order of its partitions (lineage " UINT64_FORMAT ").", chain->nleaves, root, ref->lineage);
+			in_partitions |= ref->lineage != 0;
+			buf = read_locked(index, ref->blk, BUFFER_LOCK_SHARE);
+			check_chain_page(index, buf, SIFT_PT_DIRLEAF, ref->gen);
+			leaf = (SiftChainLeafData *) SiftPageGetData(BufferGetPage(buf));
+			if (leaf->n != ref->n || SiftPageGetUsed(BufferGetPage(buf)) != SIFT_CHAIN_LEAF_USED(leaf->n))
+				corrupt(index, "Directory leaf %u holds %u entries in %u bytes, its root says %u.", ref->blk, leaf->n,
+						SiftPageGetUsed(BufferGetPage(buf)), ref->n);
+			memcpy(*segs + n, leaf->segs, ref->n * sizeof(SiftSegEntry));
+			n += ref->n;
+			below += ref->n;
+			chain->leaf[chain->nleaves++] = *ref;
+			UnlockReleaseBuffer(buf);
+			chain_add_block(chain, ref->blk);
+		}
+		if (level > 1)
+		{
+			if (below != inner->n)
+				corrupt(index, "Directory interior page %u says %u entries, its leaves hold %u.", inner->blk, inner->n, below);
+			pfree(refs);
+		}
 	}
+	pfree(top);
 	if ((uint32) n != nsegs)
 		corrupt(index, "Directory root %u says %u entries, its leaves hold %d.", root, nsegs, n);
 	return n;
@@ -217,13 +277,66 @@ put_leaves(ChainOut *o, const SiftSegEntry *segs, int from, int to)
 		leaf->n = hi - lo;
 		memcpy(leaf->segs, segs + lo, (hi - lo) * sizeof(SiftSegEntry));
 		SiftPageSetUsed(page, SIFT_CHAIN_LEAF_USED(leaf->n));
-		o->ref[o->nref++] = (SiftChainRef) {blk, hi - lo, o->version};
+		o->ref[o->nref++] = (SiftChainRef) {.blk = blk,.n = hi - lo,.gen = o->version};
+	}
+}
+
+/* A page of references [from, to) of ref, written as a level of its own: the references it holds are n entries below it */
+static BlockNumber
+put_refs(ChainOut *o, const SiftChainRef *ref, int from, int to, uint32 level)
+{
+	Page		page;
+	SiftChainRootData *r;
+	BlockNumber blk = put_page(o, SIFT_PT_DIRROOT, &page);
+
+	r = (SiftChainRootData *) SiftPageGetData(page);
+	r->nrefs = to - from;
+	r->level = level;
+	r->nsegs = 0;
+	for (int i = from; i < to; i++)
+		r->nsegs += ref[i].n;
+	memcpy(r->ref, ref + from, (to - from) * sizeof(SiftChainRef));
+	SiftPageSetUsed(page, SIFT_CHAIN_ROOT_USED(r->nrefs));
+	return blk;
+}
+
+/* The pages over the leaves o->ref lists: the root, or a root over interior pages of as even a number of references as a page holds when the leaves are more than a root holds */
+static void
+put_top(ChainOut *o, Relation index, int n, BlockNumber *rootblk)
+{
+	if ((uint32) o->nref <= root_cap())
+	{
+		*rootblk = put_refs(o, o->ref, 0, o->nref, 1);
+		return;
+	}
+	{
+		int			pages = (o->nref + root_cap() - 1) / root_cap();
+		SiftChainRef *inner = palloc(pages * sizeof(SiftChainRef));
+
+		if ((uint32) pages > root_cap())
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("sift index \"%s\" cannot hold %d segments", RelationGetRelationName(index), n),
+					 errhint("Run sift.merge() on the index.")));
+		for (int i = 0; i < pages; i++)
+		{
+			int			from = (int) ((int64) o->nref * i / pages),
+						to = (int) ((int64) o->nref * (i + 1) / pages);
+
+			inner[i] = (SiftChainRef) {.blk = put_refs(o, o->ref, from, to, 1),.gen = o->version};
+			for (int k = from; k < to; k++)
+				inner[i].n += o->ref[k].n;
+			memcpy(inner[i].lo, o->ref[from].lo, SIFT_BOUND_BYTES);
+		}
+		*rootblk = put_refs(o, inner, 0, pages, 2);
+		pfree(inner);
 	}
 }
 
 /*
  * Writes the chain of segs (n entries) that follows old (the chain being replaced, NULL when the directory was block 1 alone), whose entries were
- * oldsegs: a leaf of old whose entries are found in segs as they were, together and in order, stays; the entries between two such leaves go to
+ * oldsegs: a leaf of old that is at least half full and whose entries are found in segs as they were, together and in order, stays (a smaller one is
+ * written again with the entries beside it, so that the leaves of a directory that grows by single entries stay half full and the root does not fill with small ones); the entries between two such leaves go to
  * new leaves; with below, a leaf at or above it is written again, and so is every page the update writes, below it. The metapage is locked exclusively (the blocks come from the free list under it). The blocks of old that the new chain does not
  * keep go to release (room for old->nleaves + 1); returns the new root, which nothing refers to yet.
  */
@@ -236,11 +349,9 @@ sift_dirchain_write(Relation index, Buffer metabuf, uint64 version, const SiftDi
 	bool	   *kept = palloc0(((old ? old->nleaves : 0) + 1) * sizeof(bool));
 	int			pos = 0;
 	int			off = 0;
-	Page		page;
-	SiftChainRootData *root;
 	BlockNumber rootblk;
 
-	o.ref = palloc((n + 1) * sizeof(SiftChainRef));
+	o.ref = palloc((n / leaf_cap() + 2 * (old ? old->nleaves : 0) + 2) * sizeof(SiftChainRef));
 	for (int i = 0; i < n; i++)
 		by_gen[i] = (GenPos) {segs[i].gen, i};
 	qsort(by_gen, n, sizeof(GenPos), cmp_genpos);
@@ -250,7 +361,7 @@ sift_dirchain_write(Relation index, Buffer metabuf, uint64 version, const SiftDi
 		GenPos		key = {oldsegs[off].gen, 0};
 		const GenPos *hit = bsearch(&key, by_gen, n, sizeof(GenPos), cmp_genpos);
 
-		if (hit == NULL || hit->pos < pos || hit->pos + ref->n > n || (BlockNumberIsValid(below) && ref->blk >= below) ||
+		if (ref->n * 2 < leaf_cap() || hit == NULL || hit->pos < pos || hit->pos + ref->n > n || (BlockNumberIsValid(below) && ref->blk >= below) ||
 			memcmp(segs + hit->pos, oldsegs + off, ref->n * sizeof(SiftSegEntry)) != 0)
 			continue;
 		put_leaves(&o, segs, pos, hit->pos);
@@ -259,31 +370,13 @@ sift_dirchain_write(Relation index, Buffer metabuf, uint64 version, const SiftDi
 		pos = hit->pos + ref->n;
 	}
 	put_leaves(&o, segs, pos, n);
-	if ((uint32) o.nref > root_cap())
-	{
-		/* more leaves than a root holds: the whole directory goes to new leaves, as full as they hold, and the leaves taken so far are written for nothing (they are released with the old chain below) */
-		for (int i = 0; i < o.nref; i++)
-			if (o.ref[i].gen == version)
-				release[(*nrelease)++] = (SiftExtent) {o.ref[i].blk, 1};
-		memset(kept, 0, (old ? old->nleaves : 0) * sizeof(bool));
-		o.nref = 0;
-		put_leaves(&o, segs, 0, n);
-		if ((uint32) o.nref > root_cap())
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("sift index \"%s\" cannot hold %d segments", RelationGetRelationName(index), n),
-					 errhint("Run sift.merge() on the index.")));
-	}
-	rootblk = put_page(&o, SIFT_PT_DIRROOT, &page);
-	root = (SiftChainRootData *) SiftPageGetData(page);
-	root->nleaves = o.nref;
-	root->nsegs = n;
-	memcpy(root->leaf, o.ref, o.nref * sizeof(SiftChainRef));
-	SiftPageSetUsed(page, SIFT_CHAIN_ROOT_USED(o.nref));
+	put_top(&o, index, n, &rootblk);
 	flush_pending(&o);
 	if (old)
 	{
 		release[(*nrelease)++] = (SiftExtent) {old->root, 1};
+		for (uint32 k = 0; k < old->ninner; k++)
+			release[(*nrelease)++] = (SiftExtent) {old->inner[k], 1};
 		for (uint32 k = 0; k < old->nleaves; k++)
 			if (!kept[k])
 				release[(*nrelease)++] = (SiftExtent) {old->leaf[k].blk, 1};

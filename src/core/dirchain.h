@@ -8,10 +8,12 @@
 
 #include "core/page.h"
 
-/* A chain as read: its root, its leaves in directory order and every block it occupies (the root first) */
+/* A chain as read: its root, its interior pages, its leaves in directory order and every block it occupies (the root first) */
 typedef struct SiftDirChain
 {
 	BlockNumber root;
+	uint32		ninner;
+	BlockNumber *inner;
 	uint32		nleaves;
 	SiftChainRef *leaf;
 	BlockNumber *blocks;
@@ -19,7 +21,7 @@ typedef struct SiftDirChain
 	int			maxblocks;
 } SiftDirChain;
 
-extern int	sift_dirchain_read(Relation index, BlockNumber root, uint64 version, SiftSegEntry *dst, int cap, SiftDirChain *chain);
+extern int	sift_dirchain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEntry **segs, SiftDirChain *chain);
 extern BlockNumber sift_dirchain_write(Relation index, Buffer metabuf, uint64 version, const SiftDirChain *old, const SiftSegEntry *oldsegs,
 									   const SiftSegEntry *segs, int n, BlockNumber below, SiftExtent *release, int *nrelease);
 

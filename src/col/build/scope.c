@@ -154,10 +154,10 @@ colb_scope_gather(ColBuild *b)
 static double
 rollup_bytes(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	double		bytes = 0;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{

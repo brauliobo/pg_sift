@@ -59,10 +59,10 @@ window_bytes(const RewriteView *v, int i, const SiftColWindow *w, bool overlay)
 static int
 pick_partitions(const RewriteView *v, bool *over, int *order)
 {
-	int			cand[SIFT_MAX_SEGMENTS],
-				before[SIFT_MAX_SEGMENTS];
-	uint64		best[SIFT_MAX_SEGMENTS + 1] = {0};
-	bool		used[SIFT_MAX_SEGMENTS];
+	int		   *cand = palloc(Max(v->n, 1) * sizeof(int)),
+			   *before = palloc(Max(v->n, 1) * sizeof(int));
+	uint64	   *best = palloc0((v->n + 1) * sizeof(uint64));
+	bool	   *used = palloc(Max(v->n, 1) * sizeof(bool));
 	int			nc = 0,
 				np = 0;
 
@@ -106,6 +106,10 @@ pick_partitions(const RewriteView *v, bool *over, int *order)
 		order[k] = order[np - 1 - k];
 		order[np - 1 - k] = t;
 	}
+	pfree(cand);
+	pfree(before);
+	pfree(best);
+	pfree(used);
 	return np;
 }
 
@@ -115,7 +119,7 @@ static bool pass_all = false;
 static RollPick
 roll_pick(const RewriteView *v, bool *take, RollStep *rs)
 {
-	int			order[SIFT_MAX_SEGMENTS];
+	int		   *order = palloc(Max(v->n, 1) * sizeof(int));
 	int			np = 0,
 				at = 0;
 	uint64		pass = maint_pass_gen;
@@ -126,14 +130,20 @@ roll_pick(const RewriteView *v, bool *take, RollStep *rs)
 	/* one partition is the whole index: the rewrite of every segment, by the workers */
 	np = pick_partitions(v, rs->over, order);
 	if (np < 2)
+	{
+		pfree(order);
 		return ROLL_NO;
+	}
 	for (int i = 0; i < v->n && maint_pass_gen == 0; i++)
 		all |= rs->over[i] && ((v->imm[i].flags & SIFT_SEG_DIRTY) || v->stale[i]);
 	/* the partitions that hold a dead row, or whose connection is stale, are the steps of a pass (or all of them) */
 	while (at < np && (v->imm[order[at]].gen > pass || !(all || (v->imm[order[at]].flags & SIFT_SEG_DIRTY) || v->stale[order[at]])))
 		at++;
 	if (at == np)
+	{
+		pfree(order);
 		return ROLL_DONE;
+	}
 	rs->first = maint_pass_gen == 0;
 	pass_all = all;
 	maint_pass_gen = pass;
@@ -157,6 +167,7 @@ roll_pick(const RewriteView *v, bool *take, RollStep *rs)
 		for (int g = 1; g < groups; g++)
 			rs->high[rs->nhigh++] = v->khi[order[at + (int) ((int64) g * ahead / groups)]] + 1;
 	}
+	pfree(order);
 	return ROLL_STEP;
 }
 
@@ -192,9 +203,9 @@ roll_write(Relation index, const SiftSegEntry *in, int n, const SiftColWindow *w
 void
 maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep *rs, int room)
 {
-	SiftSegEntry out[MAX_PARTS + ROLL_PIECES + 2],
-				over[SIFT_MAX_SEGMENTS];
-	bool		every[SIFT_MAX_SEGMENTS];
+	SiftSegEntry out[MAX_PARTS + ROLL_PIECES + 2];
+	SiftSegEntry *over = palloc(Max(n, 1) * sizeof(SiftSegEntry));
+	bool	   *every = palloc(Max(n, 1) * sizeof(bool));
 	TimestampTz start = GetCurrentTimestamp();
 	int			nout = 0,
 				nover = 0;
@@ -203,7 +214,7 @@ maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep 
 	for (int i = 0; i < n; i++)
 		if (rs->bounded[i])
 			over[nover++] = sel[i];
-	memset(every, true, sizeof(every));
+	memset(every, true, n * sizeof(bool));
 	rest = (SiftColWindow) {.bounded = every};
 	if (rs->win.has_lo && nover > 0)
 	{
@@ -218,5 +229,7 @@ maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep 
 		nout += roll_write(index, over, nover, &rest, 0, 1, &out[nout]);
 	}
 	sift_col_merge_switch(index, sel, n, out, nout, start);
+	pfree(over);
+	pfree(every);
 }
 

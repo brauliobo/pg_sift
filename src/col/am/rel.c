@@ -373,10 +373,10 @@ sift_cschema_same_leaves(const SiftColSchema *old, const SiftColSchema *cur, Tup
 static bool
 segments_have_leaves(Relation index, const SiftColSchema *s)
 {
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	bool		same = true;
 
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	for (int i = 0; i < dir->nsegs && same; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{

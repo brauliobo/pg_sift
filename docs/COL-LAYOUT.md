@@ -190,7 +190,7 @@ A key of a range-built `key_cut` index lies in one unit (two where its rows cros
 
 | claim | file and function |
 |---|---|
-| metapage, directory, segment entry, block numbers | `src/core/page.h` (`SiftMetaPageData`, `SiftDirectoryData`, `SiftSegEntry`); `src/core/sift.h` (`SIFT_MAX_SEGMENTS`) |
+| metapage, directory, segment entry, block numbers | `src/core/page.h` (`SiftMetaPageData`, `SiftDirectoryData`, `SiftSegEntry`); `src/core/page.h` (`SIFT_DIR_FLAT_MAX`, `SIFT_DIR_WIDE_MAX`) |
 | segment stream order, header, entry flags | `src/col/seg_write/seg_write.c` (`sift_colw_finish`); `src/col/seg.h`; `src/col/seg_int.h` |
 | unit record: row directory, chunk table | `src/col/enc.c` (`sift_cunit_encode`, `unit_put_directory`, `unit_put_directory_keyed`) |
 | chunk header and encodings | `src/col/enc.c` (`chunk_encode`, `chunk_encode_istr`); `src/col/enc.h` (`SiftCChunk`, `SIFT_COLC_*`, `SIFT_COLENC_*`) |

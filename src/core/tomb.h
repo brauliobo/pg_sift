@@ -144,7 +144,7 @@ extern int	sift_tomb_log_limit_kb;
 typedef struct SiftTombLog
 {
 	MemoryContext cxt;
-	SiftDirSnapshot *dir;
+	SiftDirSnapshot **dir;		/* the owner's slot: the snapshot it holds now */
 	bool		spill;			/* the entries past sift.tomb_log_limit go to sorted runs on temp files */
 	/* tombstones, sorted by (key, seq) */
 	uint64		gen;
@@ -180,7 +180,7 @@ typedef struct SiftTombLog
 } SiftTombLog;
 
 /* The log of a relation that has none yet: cxt holds what it caches, dir is the owner's directory copy */
-extern void sift_tomb_init(SiftTombLog *t, MemoryContext cxt, SiftDirSnapshot *dir);
+extern void sift_tomb_init(SiftTombLog *t, MemoryContext cxt, SiftDirSnapshot **dir);
 /* Is the directory entry the tombstone segment */
 extern bool sift_tomb_is_seg(const SiftSegEntry *e);
 /* The directory entry of the log segment in a directory copy (NULL when the relation has none) */

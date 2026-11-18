@@ -288,6 +288,67 @@ SELECT nsegs, top_chain_block < 30 AS still_low FROM sift._test_dir_info('dr_idx
      8 | t
 (1 row)
 
+-- more leaves than a root holds: the root lists interior pages, each of them leaves
+CREATE TABLE di (v int);
+CREATE INDEX di_idx ON di USING sift_store_test (v);
+SET sift.test_dir_flat_max = 2;
+SET sift.test_dir_leaf_max = 3;
+SET sift.test_dir_root_max = 4;
+SELECT count(sift._test_seg_write('di_idx', 100, i)) AS written FROM generate_series(1, 30) i;
+ written 
+---------
+      30
+(1 row)
+
+SELECT chained, nsegs FROM sift._test_dir_info('di_idx');
+ chained | nsegs 
+---------+-------
+ t       |    30
+(1 row)
+
+SELECT sift._test_dir_check('di_idx') >= 1 + 3 + 10 AS root_interior_pages_and_leaves;
+ root_interior_pages_and_leaves 
+--------------------------------
+ t
+(1 row)
+
+SELECT count(*) AS segments, bool_and(sift._test_seg_read('di_idx', gen) = payload) AS intact FROM sift._test_segments('di_idx');
+ segments | intact 
+----------+--------
+       30 | t
+(1 row)
+
+SELECT count(*) = 30 AS listed, bool_and(ord = rn - 1) AS in_order FROM (SELECT ord, row_number() OVER (ORDER BY ord) rn FROM sift._test_dir_list('di_idx')) l;
+ listed | in_order 
+--------+----------
+ t      | t
+(1 row)
+
+SELECT sift._test_dir_edit('di_idx', 'del', 5, 20);
+ _test_dir_edit 
+----------------
+              0
+(1 row)
+
+SELECT sift._test_dir_edit('di_idx', 'ins', 7, 6) > 0 AS inserted;
+ inserted 
+----------
+ t
+(1 row)
+
+SELECT nsegs FROM sift._test_dir_info('di_idx');
+ nsegs 
+-------
+    16
+(1 row)
+
+SELECT sift._test_dir_check('di_idx') > 0 AS chain_blocks;
+ chain_blocks 
+--------------
+ t
+(1 row)
+
+DROP TABLE di;
 DROP TABLE dr;
 DROP TABLE dm;
 DROP TABLE model;

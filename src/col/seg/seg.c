@@ -719,24 +719,28 @@ sift_cseg_gorder_bytes(SiftColSegment *seg)
 	return PRIV(seg)->gorder_bytes;
 }
 
+static int
+seg_lo_cmp(const void *a, const void *b)
+{
+	uint32		x = (*(const SiftSegEntry *const *) a)->sb_lo,
+				y = (*(const SiftSegEntry *const *) b)->sb_lo;
+
+	return (x > y) - (x < y);
+}
+
 /* The superblocks the immutable segments of dir cover: the ranges of the segments of a parallel build interleave, so they are not summed */
 uint64
 sift_cseg_dir_units(const SiftDirSnapshot *dir)
 {
-	const SiftSegEntry *imm[SIFT_MAX_SEGMENTS];
+	const SiftSegEntry **imm = palloc(Max(dir->nsegs, 1) * sizeof(SiftSegEntry *));
 	int			n = 0;
 	uint64		units = 0,
 				end = 0;
 
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
-		{
-			int			j = n++;
-
-			for (; j > 0 && imm[j - 1]->sb_lo > dir->segs[i].sb_lo; j--)
-				imm[j] = imm[j - 1];
-			imm[j] = &dir->segs[i];
-		}
+			imm[n++] = &dir->segs[i];
+	qsort(imm, n, sizeof(SiftSegEntry *), seg_lo_cmp);
 	for (int i = 0; i < n; i++)
 	{
 		uint64		lo = Max(imm[i]->sb_lo, end),
@@ -748,6 +752,7 @@ sift_cseg_dir_units(const SiftDirSnapshot *dir)
 			end = hi;
 		}
 	}
+	pfree(imm);
 	return units;
 }
 
@@ -774,7 +779,7 @@ range_end_cmp(const void *a, const void *b)
 uint64
 sift_cseg_dir_shared(const SiftDirSnapshot *dir, uint64 *listed)
 {
-	RangeEnd	ends[2 * SIFT_MAX_SEGMENTS];
+	RangeEnd   *ends = palloc(Max(2 * dir->nsegs, 1) * sizeof(RangeEnd));
 	int			n = 0,
 				depth = 0;
 	uint64		shared = 0;
@@ -796,6 +801,7 @@ sift_cseg_dir_shared(const SiftDirSnapshot *dir, uint64 *listed)
 			*listed += (ends[i + 1].at - ends[i].at) * depth;
 		}
 	}
+	pfree(ends);
 	return shared;
 }
 
@@ -810,32 +816,34 @@ sift_col_dir_family(SiftDirSnapshot *snap, bool scope)
 	snap->nsegs = n;
 }
 
-void
-sift_col_dir_read(Relation index, SiftDirSnapshot *snap, bool scope)
+SiftDirSnapshot *
+sift_col_dir_read(Relation index, bool scope)
 {
-	sift_dir_read(index, snap);
+	SiftDirSnapshot *snap = sift_dir_read(index);
+
 	sift_cdict_retire(index, snap);
 	sift_col_dir_family(snap, scope);
+	return snap;
+}
+
+SiftDirSnapshot *
+sift_col_dir_read_segs(Relation index, bool scope)
+{
+	SiftDirSnapshot *snap = sift_dir_read_segs(index);
+
+	sift_cdict_retire(index, snap);
+	sift_col_dir_family(snap, scope);
+	return snap;
 }
 
 void
-sift_col_dir_read_segs(Relation index, SiftDirSnapshot *snap, bool scope)
+sift_col_dir_read_families(Relation index, SiftDirSnapshot **entity, SiftDirSnapshot **scope)
 {
-	sift_dir_read_segs(index, snap);
-	sift_cdict_retire(index, snap);
-	sift_col_dir_family(snap, scope);
-}
-
-void
-sift_col_dir_read_families(Relation index, SiftDirSnapshot *entity, SiftDirSnapshot *scope)
-{
-	sift_dir_read_segs(index, entity);
-	sift_cdict_retire(index, entity);
-	scope->version = entity->version;
-	scope->nsegs = entity->nsegs;
-	memcpy(scope->segs, entity->segs, entity->nsegs * sizeof(SiftSegEntry));
-	sift_col_dir_family(entity, false);
-	sift_col_dir_family(scope, true);
+	*entity = sift_dir_read_segs(index);
+	sift_cdict_retire(index, *entity);
+	*scope = sift_dir_copy(*entity);
+	sift_col_dir_family(*entity, false);
+	sift_col_dir_family(*scope, true);
 }
 
 static const SiftColDvUnit *

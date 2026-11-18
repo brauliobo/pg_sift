@@ -211,8 +211,8 @@ ring_publish(Load *ld, Relation rel, SiftTblRel *st)
 	sift_test_phase_wait(SIFT_TBL_PHASE_PUBLISH);
 #endif
 	LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-	sift_dir_read(rel, &st->dir);
-	if (st->dir.nsegs + pub.n > sift_tbl_max_segments - 2 || dir_backpressure(st))
+	sift_dir_reload(rel, &st->dir, st->cxt);
+	if (st->dir->nsegs + pub.n > sift_tbl_max_segments - 2 || dir_backpressure(st))
 	{
 		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 		return false;
@@ -259,7 +259,7 @@ load_ring_hand_over(Load *ld, Relation rel, SiftTblRel *st, bool last)
 #endif
 	while (ring_reap(ld, rel, false))
 		;
-	sift_dir_read(rel, &st->dir);
+	sift_dir_reload(rel, &st->dir, st->cxt);
 	if (!ring_room(st, rl->nsegs + (int) (rl->head - rl->tail)) || (rl->nsegs >= load_publish() && !ring_publish(ld, rel, st)))
 	{
 		/* the directory has little room: the rest of the load goes the way of a load without workers, which makes room between its runs */
@@ -284,7 +284,7 @@ load_ring_start(Load *ld, Relation rel, SiftTblRel *st)
 	LoadRing   *rg;
 	MemoryContext old;
 
-	sift_dir_read(rel, &st->dir);
+	sift_dir_reload(rel, &st->dir, st->cxt);
 	if (!ring_room(st, 0) || !ConditionalLockPage(rel, SIFT_LOAD_LOCK_BLKNO, ShareLock))
 		return false;
 	(void) GetCurrentTransactionId();

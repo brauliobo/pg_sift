@@ -101,7 +101,7 @@ net_write(Relation index, SiftWriteTarget *wt, const void *arg)
 void
 maint_net_refresh(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	uint64		largest = 0;
 
 	if (RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
@@ -110,7 +110,7 @@ maint_net_refresh(Relation index)
 	if (!sift_test_col_net)
 		return;
 #endif
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			largest = Max(largest, snap->segs[i].ndocs);

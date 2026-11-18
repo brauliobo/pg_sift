@@ -64,36 +64,40 @@ pick_dead(Relation index, const SiftMergePolicy *pol, const SiftSegEntry *imm, i
 int
 sift_merge_pick_dead(Relation index, const SiftMergePolicy *pol, const SiftDirSnapshot *snap, SiftSegEntry *sel)
 {
-	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
+	SiftSegEntry *imm = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
+	int			n = pick_dead(index, pol, imm, immutables(snap, imm), sel);
 
-	return pick_dead(index, pol, imm, immutables(snap, imm), sel);
+	pfree(imm);
+	return n;
 }
 
 int
 sift_merge_pick(Relation index, const SiftMergePolicy *pol, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
 {
-	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
+	SiftSegEntry *imm = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
 	int			n = immutables(snap, imm),
-				fanin = pol->fanin;
+				fanin = pol->fanin,
+				picked = -1;
 
 	if (force)
 	{
 		memcpy(sel, imm, n * sizeof(SiftSegEntry));
-		return n > 1 || (n == 1 && (imm[0].flags & SIFT_SEG_DIRTY)) ? n : 0;
+		picked = n > 1 || (n == 1 && (imm[0].flags & SIFT_SEG_DIRTY)) ? n : 0;
 	}
-	for (int i = 0; i + fanin <= n; i++)
+	for (int i = 0; picked < 0 && i + fanin <= n; i++)
 		if (tier_of(&imm[i], pol) == tier_of(&imm[i + fanin - 1], pol))
 		{
-			int			k = 0;
-
-			for (int j = i; j < n && tier_of(&imm[j], pol) == tier_of(&imm[i], pol) && k < 2 * fanin; j++)
-				sel[k++] = imm[j];
-			return k;
+			picked = 0;
+			for (int j = i; j < n && tier_of(&imm[j], pol) == tier_of(&imm[i], pol) && picked < 2 * fanin; j++)
+				sel[picked++] = imm[j];
 		}
-	if (snap->nsegs > SIFT_MERGE_ENTRIES(fanin) && n >= 2)
+	if (picked < 0 && snap->nsegs > SIFT_MERGE_ENTRIES(fanin) && n >= 2)
 	{
 		memcpy(sel, imm, Min(n, fanin) * sizeof(SiftSegEntry));
-		return Min(n, fanin);
+		picked = Min(n, fanin);
 	}
-	return pick_dead(index, pol, imm, n, sel);
+	if (picked < 0)
+		picked = pick_dead(index, pol, imm, n, sel);
+	pfree(imm);
+	return picked;
 }

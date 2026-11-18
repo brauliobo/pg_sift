@@ -366,11 +366,11 @@ struct SiftColSource
 	int			galeaf1;		/* 1 + the leaf whose second order the scan reads group after group in place of the order of a group leaf that has none (sift_col_gorder_open), 0: none */
 	int			gpin_n;			/* the values of the group the scan reads (an IN list reads each in turn), in gpin_vals */
 	int64		gpin_vals[SIFT_GORD_PIN_MAX];
+	SiftDirSnapshot *dir;		/* the directory the source reads: its own copy in mcxt */
 	int			gper;			/* the sources of one value: the stored segments, then the segments without the block when they are one source, then the write buffers when they hold rows (value v of source i is i / gper) */
 	struct ColGOrdMem *gmem[SIFT_GORD_PIN_MAX];	/* the rows of the write buffers sorted for the global order, one for each value of the group (sift_col_gorder_open), in mcxt */
-	/* col_source zeroes the fields before these two only (a partitioned table's scan opens thousands of sources): a reader looks at the first ntests tests and the first dir.nsegs segments */
+	/* col_source zeroes the fields before tests only (a partitioned table's scan opens thousands of sources): a reader looks at the first ntests tests */
 	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */
-	SiftDirSnapshot dir;
 };
 
 /* scan_unit.c: the group of units at the cursor as one unit in cu, when its summary can answer (docs/COL-PREAGG.md section 10); false: read the units one by one */

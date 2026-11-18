@@ -98,10 +98,10 @@ sift_tbl_key_state(Relation rel, SiftTblRel *st, SiftTblKeyState *ks)
 	def = &l->schema->cols[l->leaf[att[0]]];
 	cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table key state", ALLOCSET_DEFAULT_SIZES);
 	old = MemoryContextSwitchTo(cx);
-	seg = palloc(Max(st->dir.nsegs, 1) * sizeof(SiftColSegment *));
-	for (int i = 0; i < st->dir.nsegs; i++)
+	seg = palloc(Max(st->dir->nsegs, 1) * sizeof(SiftColSegment *));
+	for (int i = 0; i < st->dir->nsegs; i++)
 	{
-		const SiftSegEntry *e = &st->dir.segs[i];
+		const SiftSegEntry *e = &st->dir->segs[i];
 
 		if (e->kind != SIFT_SEG_IMMUTABLE || schema_of(rel, st, e)->hash != l->schema->hash)
 			continue;

@@ -251,12 +251,13 @@ view_find(const VStoreView *v, const char *s, uint32 len, uint32 hash)
 static SiftDirSnapshot *
 view_refresh(SiftVStore *vs)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	SiftSegEntry *runs = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry));
+	SiftDirSnapshot *snap;
+	SiftSegEntry *runs;
 	uint64		epoch = UINT64_MAX;
 	int			n;
 
-	sift_dir_read(vs->rel, snap);
+	snap = sift_dir_read(vs->rel);
+	runs = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
 	n = dir_runs(snap, runs, &epoch);
 	if (!vs->view->loaded || vs->view->epoch != epoch)
 		vview_reset(vs->view, epoch);
@@ -278,10 +279,10 @@ uint32
 sift_vstore_current_epoch(uint32 store)
 {
 	Relation	rel = sift_relation_get(store);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	uint32		epoch;
 
-	sift_dir_read(rel, snap);
+	snap = sift_dir_read(rel);
 	epoch = (uint32) snap->meta.sum_dl;
 	RelationClose(rel);
 	pfree(snap);
@@ -292,13 +293,14 @@ sift_vstore_current_epoch(uint32 store)
 uint64
 sift_vstore_dir_codes(Relation rel, uint64 *epoch)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	SiftSegEntry *runs = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry));
+	SiftDirSnapshot *snap;
+	SiftSegEntry *runs;
 	int			n;
 	uint64		codes = 0;
 
 	*epoch = UINT64_MAX;
-	sift_dir_read(rel, snap);
+	snap = sift_dir_read(rel);
+	runs = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
 	n = dir_runs(snap, runs, epoch);
 	for (int i = 0; i < n; i++)
 		codes = Max(codes, runs[i].sum_dl + runs[i].ndocs);
@@ -457,10 +459,10 @@ sift_vstore_bump_epoch(SiftVStore *vs)
 bool
 sift_vstore_old_epochs(SiftVStore *vs)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	bool		old = false;
 
-	sift_dir_read(vs->rel, snap);
+	snap = sift_dir_read(vs->rel);
 	for (int i = 0; i < snap->nsegs; i++)
 		old |= snap->segs[i].kind == SIFT_SEG_VALRUN && snap->segs[i].reserved < snap->meta.sum_dl;
 	pfree(snap);
@@ -515,13 +517,13 @@ retire_edit(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *ar
 int
 sift_vstore_retire(SiftVStore *vs, const Bitmapset *in_use)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	RetireEdit	ed = {0};
 	SiftExtent *rel_ext;
 	int			nrel = 0;
 	SiftDirChange chg = {0};
 
-	sift_dir_read(vs->rel, snap);
+	snap = sift_dir_read(vs->rel);
 	ed.mark = palloc(snap->nsegs * sizeof(uint64) + 1);
 	ed.gone = palloc(snap->nsegs * sizeof(uint64) + 1);
 	ed.xid = ReadNextFullTransactionId();
@@ -562,7 +564,7 @@ sift_vstore_retire(SiftVStore *vs, const Bitmapset *in_use)
 static void
 merge_runs(SiftVStore *vs, const SiftCcPolicy *pol, const SiftDirSnapshot *snap)
 {
-	SiftSegEntry *runs = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry));
+	SiftSegEntry *runs = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
 	uint64		epoch = UINT64_MAX;
 	int			n = dir_runs(snap, runs, &epoch),
 				best = 0;
@@ -753,15 +755,16 @@ sift_vstore_read_open(Relation index, uint32 store, uint32 epoch, MemoryContext 
 {
 	StoreRead  *r = MemoryContextAllocZero(mcxt, sizeof(StoreRead));
 	Relation	rel;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	SiftSegEntry *runs = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry));
+	SiftDirSnapshot *snap;
+	SiftSegEntry *runs;
 	uint64		ep = epoch;
 
 	if (!sift_vstore_is_store(store))
 		SIFT_DAMAGE_DATA(NULL, errmsg("a segment names relation %s as its shared value store, which is none", sift_rel_label(store)));
 	LockRelationOid(store, AccessShareLock);
 	rel = sift_relation_get(store);
-	sift_dir_read(rel, snap);
+	snap = sift_dir_read(rel);
+	runs = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
 	/* the epoch is the segment's: the store keeps those it names until no segment does (vstore_gc) */
 	r->nruns = dir_runs(snap, runs, &ep);
 	if (r->nruns == 0 && (uint32) snap->meta.sum_dl != epoch)

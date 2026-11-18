@@ -500,7 +500,7 @@ step_store(void *arg)
 	cv->r = sift_col_rel_private(cv->index, cv->cxt);
 	cv->batch = sift_cbatch_create(cv->cxt, cv->r->schema);
 	sift_store_verify(cv->index);
-	sift_dir_read(cv->index, cv->snap);
+	cv->snap = sift_dir_read(cv->index);
 	if (!(cv->snap->meta.flags & SIFT_COL_META_FLAG) || sift_dir_layout_differs(cv->snap, cv->r->schema->hash))
 		corrupt(cv->index, "The metapage does not describe this column layout.");
 }
@@ -664,7 +664,6 @@ col_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 	cv->cxt = AllocSetContextCreate(old, "sift_col verify", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(cv->cxt);
 	SIFT_MEM_SCOPE(col_verify, cv->cxt);
-	cv->snap = palloc(sizeof(SiftDirSnapshot));
 	sift_errctx_push_diagnostic(&cv->errctx, RelationGetRelid(index));
 	/* the snapshot is registered before the directory is read, and kept: the segments of the copy stay readable while they are verified one at a time */
 	sound = listed = sift_check_step(ck, SIFT_CHECK_WHOLE, step_store, cv);

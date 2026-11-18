@@ -24,16 +24,10 @@
 #define SIFT_COL_GATE_TAIL		4
 #define SIFT_COL_GATE_FILL		5
 #define SIFT_COL_GATE_JOURNAL	6
-/* a delete that found the units of its rows, before it appends their deletion records (col/track_dv.c) */
-#define SIFT_COL_GATE_DELETE	8
 #endif
 
 /* The segments a build may write: the directory keeps room for the write buffer and a merge */
-#define SIFT_COL_BUILD_SEGMENTS	(SIFT_MAX_SEGMENTS - 7)
-extern PGDLLIMPORT int sift_col_build_source;
-extern void sift_col_build_define_gucs(void);
-/* The workers a build through a btree may have (the participants take ranges of the key; col/build/btree_par.c) */
-#define SIFT_COL_BTREE_WORKERS	15
+#define SIFT_COL_BUILD_SEGMENTS	(SIFT_DIR_POLICY_MAX - 7)
 
 /* The writer of a segment of a participant holds up to half of maintenance_work_mem shared by nslots participants (the segments of a key_cut build), at least this much (the serial build 64 MB) */
 #define SIFT_COL_BUILD_MIN_BUDGET	((Size) 16 * 1024 * 1024)
@@ -75,16 +69,6 @@ extern void sift_colb_free(ColBuild *b);
  */
 extern void sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs, bool stamped);
 
-/* The segments of a participant of a parallel build: slot i of the parts of maxsegs each (col/build_par.c) */
-typedef struct SiftColPart
-{
-	int			nsegs;
-	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
-} SiftColPart;
-extern Size sift_colp_part_size(int maxsegs);
-extern SiftColPart *sift_colp_part(char *parts, int maxsegs, int slot);
-extern SiftSegEntry *sift_colp_collect(char *parts, int maxsegs, int nslots, int *nsegs);
-
 /* col/build_par.c: the whole build with workers, NULL when none could be launched (nothing is written then) */
 extern IndexBuildResult *sift_colp_build(Relation heap, Relation index, IndexInfo *info);
 /* The merge of the segments of a parallel build by the participants, each a slice of the key range (col/build_par.c); false: no worker could be launched, the caller merges alone */
@@ -109,9 +93,6 @@ extern PGDLLIMPORT bool sift_test_col_build_peak_log;	/* the largest contexts ar
 extern PGDLLIMPORT char *sift_test_vstore_columns;
 extern PGDLLIMPORT int sift_test_col_fail_sb;
 extern PGDLLIMPORT int sift_test_col_segment_kb;
-extern PGDLLIMPORT bool sift_test_col_from_index_off;	/* a REINDEX reads the heap even when the index it replaces could give the rows */
-extern PGDLLIMPORT int sift_test_col_from_index_mutant;	/* a defect planted in the build from the replaced index (col/build/from_index.c) */
-extern PGDLLIMPORT int sift_test_col_from_index_used;	/* 1: the last build of this session took its rows from the index it replaced */
 extern PGDLLIMPORT int sift_test_col_spill_run_kb;	/* kB of memory a run of the ranges of a build by key ranges may take (0 = the fixed cap) */
 extern PGDLLIMPORT bool sift_test_col_build_runs_overlap;	/* a build with key_cut writes the runs of the table's order, as a key that is not a number does */
 extern PGDLLIMPORT int sift_test_col_spill_bytes;	/* bytes the temporary files of the last build by key ranges of this session took */
@@ -125,27 +106,6 @@ extern PGDLLIMPORT bool sift_test_col_parallel_always;	/* a parallel build with 
 extern PGDLLIMPORT int sift_test_col_merge_par_kb;	/* the input of a merge outside a build from which the workers make it, in kB (the gate MERGE_PAR_BYTES) */
 extern PGDLLIMPORT int sift_test_col_merge_workers;	/* workers that merge the segments of a parallel build (-1 = those that built them, 0 = the leader alone) */
 extern PGDLLIMPORT int sift_test_col_temp_free_kb;	/* the disk space the temporary files of a build by key ranges may use, in kB (-1 = what the disks of the temporary tablespaces have free) */
-extern PGDLLIMPORT int sift_test_col_build_source_used;
-extern PGDLLIMPORT int sift_test_col_choose_mutant;
-extern PGDLLIMPORT int sift_test_col_build_btree;	/* the build by a btree on the key (col/build/btree.c): 0 the chooser decides, 1 whenever a btree can, -1 never */
-extern PGDLLIMPORT int sift_test_col_btree_entries;	/* entries of the btree the last build read, tuples it found visible and heap blocks it asked for */
-extern PGDLLIMPORT int sift_test_col_btree_visible;
-extern PGDLLIMPORT int sift_test_col_btree_blocks;
-extern PGDLLIMPORT bool sift_test_col_btree_gate_open;	/* a mutant: any btree passes for one that gives the key's order */
-extern PGDLLIMPORT int sift_test_col_pick_cache_blocks;	/* heap blocks the cache of the choice holds (-1 = shared_buffers), and what the last choice walked and predicted (col/build/btree_pick.c) */
-extern PGDLLIMPORT int sift_test_col_pick_entries;
-extern PGDLLIMPORT int sift_test_col_pick_blocks;
-extern PGDLLIMPORT int sift_test_col_pick_reads;
-extern PGDLLIMPORT int sift_test_col_pick_random;
-extern PGDLLIMPORT int sift_test_col_pick_walk_bytes;	/* the bytes the walk of the last choice held: the simulated cache and the keys of the boundaries */
-extern PGDLLIMPORT int sift_test_col_pick_spool_bytes;	/* the bytes the last choice estimated the key ranges write */
-extern PGDLLIMPORT int sift_test_col_pick_probe_random_ns;	/* what the last choice measured a random read and a block of a sequential read of the heap to cost, in ns, and the blocks read from the disk */
-extern PGDLLIMPORT int sift_test_col_pick_probe_seq_ns;
-extern PGDLLIMPORT int sift_test_col_pick_probe_reads;
-extern PGDLLIMPORT double sift_test_col_pick_random_us;	/* the costs the choice is made at, in microseconds (-1: measured), and a MB of the key ranges' files in one direction */
-extern PGDLLIMPORT double sift_test_col_pick_seq_us;
-extern PGDLLIMPORT double sift_test_col_pick_temp_mb_us;
-extern void sift_col_btree_test_gucs(void);
 extern PGDLLIMPORT int sift_test_col_gap_blocks;	/* blocks a parallel build reserves for the merge (-1 = by the statistics, 0 = none) */
 #endif
 

@@ -23,8 +23,9 @@ struct SiftTblBulk
 	uint64		vbase;			/* row i has the TID (vbase + i / SIFT_TBL_MAX_OFF, i % SIFT_TBL_MAX_OFF + 1) */
 	uint64		nrows;
 	Size		budget;			/* memory a segment's writer may hold before the next one starts */
-	SiftSegEntry segs[SIFT_MAX_SEGMENTS];
+	SiftSegEntry *segs;
 	int			nsegs;
+	int			segcap;
 };
 
 typedef struct BulkPublish
@@ -65,7 +66,7 @@ sift_tbl_bulk_begin(Relation rel, SiftTblRel *st)
 	sift_tbl_refresh(rel, st);
 	/* the vblocks come from the directory as it is now, without the active lock: no writer may race for them, as none does in the new table of a rewrite */
 	Assert(st->fresh);
-	b->vbase = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, SIFT_TBL_NEXT_VBLOCK(&st->dir.meta));
+	b->vbase = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, SIFT_TBL_NEXT_VBLOCK(&st->dir->meta));
 	sift_cbatch_reset(b->sw.batch, b->vbase / SIFT_SB_PAGES);
 	MemoryContextSwitchTo(old);
 	return b;
@@ -76,6 +77,11 @@ bulk_end_segment(SiftTblBulk *b)
 {
 	MemoryContext old = MemoryContextSwitchTo(b->sw.cxt);
 
+	if (b->nsegs == b->segcap)
+	{
+		b->segcap = Max(2 * b->segcap, SIFT_DIR_FLAT_MAX);
+		b->segs = b->segs ? repalloc(b->segs, b->segcap * sizeof(SiftSegEntry)) : palloc(b->segcap * sizeof(SiftSegEntry));
+	}
 	sift_colw_finish(b->sw.w, &b->segs[b->nsegs++]);
 	sift_wt_finish(b->sw.wt);
 	b->sw.w = NULL;
@@ -87,7 +93,7 @@ static void
 bulk_flush(SiftTblBulk *b)
 {
 	seal_flush(&b->sw);
-	if (b->sw.w && sift_colw_full(b->sw.w, b->budget) && b->nsegs < SIFT_MAX_SEGMENTS - 8)
+	if (b->sw.w && sift_colw_full(b->sw.w, b->budget) && b->nsegs < SIFT_DIR_POLICY_MAX - 8)
 		bulk_end_segment(b);
 }
 
@@ -135,18 +141,18 @@ sift_tbl_bulk_tuple(SiftTblBulk *b, HeapTuple tup)
 static bool
 bulk_same_layout(SiftTblBulk *b, Relation old, SiftTblRel *ost)
 {
-	for (int i = 0; i < ost->dir.nsegs; i++)
+	for (int i = 0; i < ost->dir->nsegs; i++)
 	{
 		SiftColSegment *seg;
 		bool		exact;
 
-		if (ost->dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
+		if (ost->dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
 			continue;
-		if (schema_of(old, ost, &ost->dir.segs[i])->hash != b->sw.l->schema->hash)
+		if (schema_of(old, ost, &ost->dir->segs[i])->hash != b->sw.l->schema->hash)
 			return false;
-		if (!b->sw.l->schema->kinds || ost->dir.segs[i].format >= SIFT_COL_FORMAT_KINDS)
+		if (!b->sw.l->schema->kinds || ost->dir->segs[i].format >= SIFT_COL_FORMAT_KINDS)
 			continue;
-		seg = sift_cseg_open(old, &ost->dir.segs[i], b->sw.cxt);
+		seg = sift_cseg_open(old, &ost->dir->segs[i], b->sw.cxt);
 		exact = sift_cseg_kinds_exact(seg);
 		sift_cseg_close(seg);
 		if (!exact)
@@ -224,10 +230,10 @@ sift_tbl_bulk_copy(SiftTblBulk *b, Relation old, SiftTblRel *ost, SiftTblKeep ke
 	sift_tbl_refresh(old, ost);
 	if (!bulk_same_layout(b, old, ost))
 		return false;
-	segs = palloc(Max(ost->dir.nsegs, 1) * sizeof(SiftSegEntry));
-	for (int i = 0; i < ost->dir.nsegs; i++)
-		if (ost->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
-			segs[n++] = ost->dir.segs[i];
+	segs = palloc(Max(ost->dir->nsegs, 1) * sizeof(SiftSegEntry));
+	for (int i = 0; i < ost->dir->nsegs; i++)
+		if (ost->dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			segs[n++] = ost->dir->segs[i];
 	qsort(segs, n, sizeof(SiftSegEntry), sift_tbl_cmp_sb_lo);
 	for (int i = 0; i < n; i++)
 		bulk_segment(b, old, &segs[i], keep, arg);

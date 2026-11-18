@@ -185,9 +185,9 @@ sift_store_referenced_blocks(Relation index, const SiftDirSnapshot *snap)
 void
 sift_store_extent_map(Relation index, SiftExtentVisit visit, void *arg)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	bms_free(referenced_blocks(index, snap, visit, arg));
 	pfree(snap);
 }
@@ -220,11 +220,11 @@ in_flight(Page page, const SiftDirSnapshot *snap)
 Bitmapset *
 sift_store_orphans(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	Bitmapset  *ref;
 	Bitmapset  *orphans = NULL;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	ref = sift_store_referenced_blocks(index, snap);
 	for (BlockNumber b = FIRST_DATA_BLKNO; b < snap->meta.high_water; b++)
 	{
@@ -267,10 +267,10 @@ sift_store_block_extents(const Bitmapset *set, int *n)
 void
 sift_store_verify(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	BlockNumber nblocks;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	nblocks = RelationGetNumberOfBlocks(index);
 	if (nblocks < snap->meta.high_water)
 		corrupt(index, "Relation has %u blocks, below the high-water mark %u.", nblocks, snap->meta.high_water);

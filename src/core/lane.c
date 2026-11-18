@@ -143,8 +143,8 @@ open_first(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg
 	swap_active(meta, dir, extra, arg);
 }
 
-/* The directory entries a write may fill: the page holds SIFT_MAX_SEGMENTS, sift.test_limits lowers it in a test build */
-#define DIR_CAP()	((int) sift_limit(max_segments, SIFT_MAX_SEGMENTS))
+/* The directory entries a write may fill: the policy of the writers (a chain holds more), sift.test_limits lowers it in a test build */
+#define DIR_CAP()	((int) sift_limit(max_segments, SIFT_DIR_POLICY_MAX))
 
 /* What the last failed maintenance step said (the note of sift.workers), NULL if there is none or it is not text of the database encoding */
 static const char *
@@ -163,11 +163,11 @@ last_failure(const SiftDirSnapshot *snap)
 static bool
 create_active(Relation index, uint32 hash, Size hdrsize, uint16 format, uint16 flags)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	bool		room = true;
 
 	LockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	if (find_kind(snap, SIFT_SEG_WBUF_OPEN) == NULL && (room = snap->nsegs < DIR_CAP()))
 	{
 		SwapArg		arg = {0};
@@ -228,13 +228,13 @@ sift_lane_flag_sealed_pages(Relation index, const SiftSegEntry *entry)
 static uint64
 seal_open(Relation index, bool rotate, bool force, Size hdrsize, uint16 format, uint16 flags, uint32 limit, bool (*has_records) (Relation, const SiftSegEntry *))
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	const SiftSegEntry *act;
 	SiftSegEntry sealed;
 	SwapArg		arg = {0};
 
 	LockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	act = find_kind(snap, SIFT_SEG_WBUF_OPEN);
 	if (act != NULL)
 	{
@@ -296,13 +296,13 @@ void
 sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, uint16 format, uint16 flags, bool (*make_room) (Relation),
 				  uint64 *gen, BlockNumber *hdr_blk, BlockNumber *tail)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	const SiftSegEntry *act;
 	SiftWbufHeaderData hdr;
 
 	for (;;)
 	{
-		sift_dir_read(index, snap);
+		snap = sift_dir_read(index);
 		if (sift_dir_layout_differs(snap, hash))
 			sift_lane_layout_error(index, what);
 		if ((act = find_kind(snap, SIFT_SEG_WBUF_OPEN)) != NULL)
@@ -311,7 +311,8 @@ sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, u
 		{
 			const char *why;
 
-			sift_dir_read(index, snap);
+			pfree(snap);
+			snap = sift_dir_read(index);
 			why = last_failure(snap);
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),

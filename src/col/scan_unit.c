@@ -126,18 +126,18 @@ segments_current(SiftColSource *src)
 
 	if (v != src->dir_checked)
 	{
-		SiftDirSnapshot now;
+		SiftDirSnapshot *now = sift_dir_read_segs(src->index);
 
-		sift_dir_read(src->index, &now);
 		src->dir_current = true;
-		for (int i = 0; i < src->dir.nsegs && src->dir_current; i++)
+		for (int i = 0; i < src->dir->nsegs && src->dir_current; i++)
 		{
-			bool		found = src->dir.segs[i].kind != SIFT_SEG_IMMUTABLE;
+			bool		found = src->dir->segs[i].kind != SIFT_SEG_IMMUTABLE;
 
-			for (int j = 0; j < now.nsegs && !found; j++)
-				found = now.segs[j].gen == src->dir.segs[i].gen;
+			for (int j = 0; j < now->nsegs && !found; j++)
+				found = now->segs[j].gen == src->dir->segs[i].gen;
 			src->dir_current = found;
 		}
+		pfree(now);
 		src->dir_checked = v;
 	}
 	return src->dir_current;
@@ -147,7 +147,7 @@ segments_current(SiftColSource *src)
 void
 segments_pin(SiftColSource *src, uint32 flags)
 {
-	src->dir_checked = src->dir.version;
+	src->dir_checked = src->dir->version;
 	src->dir_current = true;
 	src->dirbuf = (flags & COLO_TABLE) ? InvalidBuffer : sift_dir_pin(src->index);
 }
@@ -687,7 +687,7 @@ sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int c
 			mem[(*nmem)++] = mem[i];
 	st->index = RelationGetRelid(src->index);
 	st->file = src->index->rd_locator.relNumber;
-	st->version = src->dir.version;
+	st->version = src->dir->version;
 	st->scope = (src->flags & SIFT_COLO_SCOPE) != 0;
 	return true;
 }

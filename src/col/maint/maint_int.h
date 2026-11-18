@@ -49,17 +49,17 @@ typedef struct SbSpans
 typedef struct RewriteView
 {
 	int			n;
-	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
-	SiftColSegment *seg[SIFT_MAX_SEGMENTS];
-	SbSpans		span[SIFT_MAX_SEGMENTS];
-	bool		over[SIFT_MAX_SEGMENTS];
-	bool		stale[SIFT_MAX_SEGMENTS];	/* a segment of a connected or scope index whose found flags or scope entries a rewrite should fill again (sift_conn_stale, sift_scope_stale) */
+	SiftSegEntry *imm;			/* the arrays hold the n segments */
+	SiftColSegment **seg;
+	SbSpans    *span;
+	bool	   *over;
+	bool	   *stale;			/* a segment of a connected or scope index whose found flags or scope entries a rewrite should fill again (sift_conn_stale, sift_scope_stale) */
 	bool		conn_stale;					/* ... of them one by its connection: the reason is "stale connection", else "stale scope" */
-	bool		old_epoch[SIFT_MAX_SEGMENTS];	/* a segment that names an old epoch of a shared value store: its rewrite moves the strings to the current one (col/vstore/vstore_gc.c) */
-	bool		kover[SIFT_MAX_SEGMENTS];	/* a partition-sized segment of a key-cut index whose key range overlaps another one's: it is no partition of the key */
+	bool	   *old_epoch;		/* a segment that names an old epoch of a shared value store: its rewrite moves the strings to the current one (col/vstore/vstore_gc.c) */
+	bool	   *kover;			/* a partition-sized segment of a key-cut index whose key range overlaps another one's: it is no partition of the key */
 	int			nkover;
-	int64		klo[SIFT_MAX_SEGMENTS],		/* the range of the cut leaf over the units of each segment of a key-cut index in partitions (klo > khi: no value) */
-				khi[SIFT_MAX_SEGMENTS];
+	int64	   *klo,			/* the range of the cut leaf over the units of each segment of a key-cut index in partitions (klo > khi: no value) */
+			   *khi;
 } RewriteView;
 
 extern int maint_merge_workers;
@@ -170,8 +170,8 @@ typedef struct RollStep
 	int64		high[ROLL_PIECES];
 	uint64		bytes;			/* the live bytes of the segments the step takes that its window holds */
 	int			parts;			/* the segments of the size of a partition they make */
-	bool		over[SIFT_MAX_SEGMENTS];	/* of the segments of the view: the overlays, which hold rows of the key range of other segments */
-	bool		bounded[SIFT_MAX_SEGMENTS];	/* of the segments the step takes: the overlays, whose rows the window cuts */
+	bool	   *over;			/* of the segments of the view: the overlays, which hold rows of the key range of other segments */
+	bool	   *bounded;		/* of the segments the step takes: the overlays, whose rows the window cuts */
 } RollStep;
 
 extern uint64 maint_part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut);

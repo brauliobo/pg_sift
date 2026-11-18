@@ -245,7 +245,7 @@ refill_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 			continue;
 		dir->segs[n++] = dir->segs[i];
 	}
-	if (n + rf->nneu > SIFT_MAX_SEGMENTS)
+	if (n + rf->nneu > SIFT_DIR_WIDE_MAX)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the directory has no room for the %d scope segments this refill wrote", rf->nneu),
 						errhint("Merge the segments first (sift.col_merge()).")));
 	sift_scope_floor_raise(meta, dir, rf->mine, rf->ents, rf->nents);
@@ -394,15 +394,15 @@ maint_scope_refill(Relation index, bool report)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col scope refill", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	const SiftColRel *r = sift_col_rel_private(index, cx);
 	MemoryContext ucx = AllocSetContextCreate(cx, "sift_col scope refill unit", ALLOCSET_DEFAULT_SIZES);	/* the rows of the unit decoded */
 	SIFT_MEM_SCOPE(col_scope_refill, cx);
-	SiftSegEntry ents[SIFT_MAX_SEGMENTS],
-				scopes[SIFT_MAX_SEGMENTS],
-			   *out = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry));
+	SiftSegEntry *ents,
+			   *scopes,
+			   *out;
 	SiftColSorter *sorter[SIFT_SCOPE_MAX];
-	uint64		egen[SIFT_MAX_SEGMENTS],
+	uint64	   *egen,
 				rows = 0,
 				count[SIFT_SCOPE_MAX] = {0};
 	int			nents = 0,
@@ -417,7 +417,10 @@ maint_scope_refill(Relation index, bool report)
 	SiftScopeStamps stamps;
 	Refill		rf;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
+	ents = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
+	scopes = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
+	egen = palloc(Max(snap->nsegs, 1) * sizeof(uint64));
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		if (sift_seg_is_scope(&snap->segs[i]))
@@ -436,7 +439,8 @@ maint_scope_refill(Relation index, bool report)
 		return false;
 	}
 	/* the rows of each scope are sorted by a sort that holds half of maintenance_work_mem between the scopes (at least SCOPE_SORT_MIN_KB) and writes the rest to temporary files, and come out in the order of the cut of the scope */
-	room = Max((SIFT_MAX_SEGMENTS - REFILL_ROOM - nents) / Max(r->nscope, 1), 1);
+	room = Max((SIFT_DIR_POLICY_MAX - REFILL_ROOM - nents) / Max(r->nscope, 1), 1);
+	out = palloc(room * r->nscope * sizeof(SiftSegEntry));
 	fill = maint_scope_fill_begin(index, cx, rows, &sf);
 	run = maint_scope_run_begin(index, sf, cx);
 	for (int s = 0; s < r->nscope; s++)
@@ -540,8 +544,8 @@ typedef struct ScopeSet
 static bool
 scope_chained(Relation index, const SiftSegEntry *sel, int n, int s, ScopeSet *set)
 {
-	int64		lo[SIFT_MAX_SEGMENTS],
-				hi[SIFT_MAX_SEGMENTS];
+	int64	   *lo = palloc(Max(n, 1) * sizeof(int64)),
+			   *hi = palloc(Max(n, 1) * sizeof(int64));
 	int			leaf = sift_col_rel(index)->scope_leaf[s];
 	bool		chained = true;
 
@@ -565,6 +569,8 @@ scope_chained(Relation index, const SiftSegEntry *sel, int n, int s, ScopeSet *s
 			chained = !(lo[i] < hi[j] && lo[j] < hi[i]);
 			set->runs |= lo[i] == hi[i] && lo[j] == hi[j] && lo[i] == lo[j];
 		}
+	pfree(lo);
+	pfree(hi);
 	return chained;
 }
 
@@ -585,18 +591,18 @@ scope_apart(Relation index, const SiftSegEntry *sel, int n, int s, int room)
 static int
 scope_room(const SiftDirSnapshot *all, int n)
 {
-	return Max(SIFT_MAX_SEGMENTS - 16 - (all->nsegs - n), 1);
+	return Max(SIFT_DIR_POLICY_MAX - 16 - (all->nsegs - n), 1);
 }
 
 /* The segments of scope s among those of the directory, and which of them the policy merges: by the tiers (of those that are not partitions), or all of them (force) */
 static int
 scope_pick(Relation index, const SiftDirSnapshot *all, int s, bool force, SiftSegEntry *sel)
 {
-	SiftDirSnapshot *fam = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *fam;
 	SiftMergePolicy pol = {.tier_base = (uint64) sift_col_options(index)->write_buffer_limit * 1024, .fanin = SIFT_MERGE_FANIN, .mostly_dead = sift_col_mostly_dead};
 	int			n;
 
-	fam->nsegs = 0;
+	fam = sift_dir_alloc(all->nsegs);
 	for (int i = 0; i < all->nsegs; i++)
 		if (sift_seg_is_scope(&all->segs[i]) && sift_seg_scope_ordinal(&all->segs[i]) == s)
 			fam->segs[fam->nsegs++] = all->segs[i];
@@ -618,12 +624,13 @@ scope_pick(Relation index, const SiftDirSnapshot *all, int s, bool force, SiftSe
 bool
 maint_scope_merge_step(Relation index, bool force)
 {
-	SiftDirSnapshot *all = palloc(sizeof(SiftDirSnapshot));
-	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
+	SiftDirSnapshot *all;
+	SiftSegEntry *sel;
 	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 	bool		progress = false;
 
-	sift_dir_read(index, all);
+	all = sift_dir_read(index);
+	sel = palloc(Max(all->nsegs, 1) * sizeof(SiftSegEntry));
 	for (int s = 0; s < r->nscope && !progress; s++)
 	{
 		int			n = scope_pick(index, all, s, force, sel);
@@ -638,6 +645,7 @@ maint_scope_merge_step(Relation index, bool force)
 		progress |= maint_merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
 						   maint_part_kb > 0 ? (uint64) maint_part_kb * 1024 : 0, scope_room(all, n), NULL) < n;
 	}
+	pfree(sel);
 	pfree(all);
 	return progress;
 }
@@ -646,14 +654,16 @@ maint_scope_merge_step(Relation index, bool force)
 bool
 maint_scope_merge_due(Relation index, bool force)
 {
-	SiftDirSnapshot *all = palloc(sizeof(SiftDirSnapshot));
-	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
+	SiftDirSnapshot *all;
+	SiftSegEntry *sel;
 	int			nscope = sift_col_rel(index)->nscope;
 	bool		due = false;
 
-	sift_dir_read(index, all);
+	all = sift_dir_read(index);
+	sel = palloc(Max(all->nsegs, 1) * sizeof(SiftSegEntry));
 	for (int s = 0; s < nscope && !due; s++)
 		due = scope_pick(index, all, s, force, sel) > 0;
+	pfree(sel);
 	pfree(all);
 	return due;
 }

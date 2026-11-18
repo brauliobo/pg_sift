@@ -6,7 +6,7 @@
 . "$(dirname "$0")/lib.bash"
 
 ROUNDS=$(knob SIFT_DIRCHAIN_ROUNDS 12 4)
-plan $((ROUNDS * 2 + 2))
+plan $((ROUNDS * 2 + 4))
 node_init primary 2 "$WAL_CONF
 wal_level = replica
 max_wal_senders = 4
@@ -26,16 +26,16 @@ SEGS="SELECT coalesce(string_agg(gen || ':' || header || ':' || size, ' ' ORDER 
 HOLDS="SELECT sift._test_check('s_idx') || '|' || (sift._test_dir_check('f_idx') > 0)"
 RANDOM=7
 for r in $(seq "$ROUNDS"); do
-	stmts=()
 	for _ in 1 2 3 4; do
 		have=$(sql primary "SELECT count(*) FROM sift._test_dir_list('f_idx')")
+		stmt="SELECT 1"
 		case $((RANDOM % 5)) in
-			0 | 1) ((have < 28)) && stmts+=("SELECT sift._test_dir_edit('f_idx', 'ins', $((RANDOM % (have + 1))), $((1 + RANDOM % 6)))") ;;
-			2) ((have > 3)) && stmts+=("SELECT sift._test_dir_edit('f_idx', 'del', $((RANDOM % (have - 2))), $((1 + RANDOM % 3)))") ;;
-			3) ((have > 4)) && stmts+=("SELECT sift._test_dir_edit('f_idx', 'rev', $((RANDOM % (have - 3))), 4)") ;;
-			4) ((have > 0)) && stmts+=("SELECT sift._test_dir_edit('f_idx', 'set', 0, 1)") ;;
+			0 | 1) ((have < 28)) && stmt="SELECT sift._test_dir_edit('f_idx', 'ins', $((RANDOM % (have + 1))), $((1 + RANDOM % 6)))" ;;
+			2) ((have > 3)) && stmt="SELECT sift._test_dir_edit('f_idx', 'del', $((RANDOM % (have - 2))), $((1 + RANDOM % 3)))" ;;
+			3) ((have > 4)) && stmt="SELECT sift._test_dir_edit('f_idx', 'rev', $((RANDOM % (have - 3))), 4)" ;;
+			4) ((have > 0)) && stmt="SELECT sift._test_dir_edit('f_idx', 'set', 0, 1)" ;;
 		esac
-		sql primary "${SHAPE[@]}" "${stmts[-1]:-SELECT 1}" >/dev/null || bail "round $r: ${stmts[-1]:-}"
+		sql primary "${SHAPE[@]}" "$stmt" >/dev/null || bail "round $r: $stmt"
 	done
 	sql primary "${SHAPE[@]}" "SELECT sift._test_seg_write('s_idx', $((200 + r * 13)), $r)" \
 		"SELECT sift._test_seg_drop('s_idx', (SELECT gen FROM sift._test_segments('s_idx') ORDER BY gen OFFSET $((r % 3)) LIMIT 1))" \
@@ -47,5 +47,9 @@ for r in $(seq "$ROUNDS"); do
 	check "round $r: the segments of the second index and the chain of the first hold on the standby" \
 		test "$(sql standby "$SEGS")|$(sql standby "$HOLDS")" == "$(sql primary "$SEGS")|$(sql primary "$HOLDS")"
 done
+check "a chain page that is not the one the reader expected is a retry on the standby (40001)" \
+	test "$(sql standby "SELECT sift._test_dir_read_stale('f_idx')" 2>&1 | head -1)" == "ERROR:  sift directory recycled during scan, retry"
+check "the same page is damage on the primary" \
+	grep -q "is corrupted" <<<"$(sql primary "SELECT sift._test_dir_read_stale('f_idx')" 2>&1)"
 check "the chain of the first index is chained on both" test "$(sql standby "SELECT chained FROM sift._test_dir_info('f_idx')")|$(sql primary "SELECT chained FROM sift._test_dir_info('f_idx')")" == "t|t"
 finish

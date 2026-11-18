@@ -58,7 +58,7 @@ sift_store_test_init(void)
 							NULL, &sift_test_merge_max_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_room_segments",
 							"Testing: directory entries from which inserters merge (0 = 112).",
-							NULL, &sift_test_room_segments, 0, 0, SIFT_MAX_SEGMENTS, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+							NULL, &sift_test_room_segments, 0, 0, SIFT_DIR_POLICY_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_no_heap_positions",
 							 "Testing: promotions and merges take no positions from the heap, as 3.7.0 did.",
 							 NULL, &sift_test_no_heap_positions, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -85,7 +85,7 @@ sift_store_test_init(void)
 							 NULL, &sift_test_cut_with_standby, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_dir_flat_max",
 							"Testing: entries from which a directory is chained instead of kept in block 1 (0 = what block 1 holds).",
-							NULL, &sift_test_dir_flat_max, 0, 0, SIFT_MAX_SEGMENTS, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+							NULL, &sift_test_dir_flat_max, 0, 0, SIFT_DIR_FLAT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_dir_leaf_max",
 							"Testing: entries a leaf of a chained directory is written with at most (0 = what a page holds).",
 							NULL, &sift_test_dir_leaf_max, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -237,12 +237,11 @@ sift_test_write_segment(SiftWriteTarget *wt, uint64 gen, uint64 payload, uint64 
 }
 
 bool
-find_segment(Relation index, uint64 gen, SiftDirSnapshot *snap, TestSeg *seg)
+find_segment(Relation index, uint64 gen, TestSeg *seg)
 {
 	Buffer		buf;
 	SiftSegHeaderData *hdr;
-
-	sift_dir_read(index, snap);
+	SiftDirSnapshot *snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		if (snap->segs[i].gen != gen)
@@ -262,8 +261,10 @@ find_segment(Relation index, uint64 gen, SiftDirSnapshot *snap, TestSeg *seg)
 		seg->extents = palloc(Max(seg->nextents, 1) * sizeof(SiftExtent));
 		memcpy(seg->extents, hdr->extents, seg->nextents * sizeof(SiftExtent));
 		UnlockReleaseBuffer(buf);
+		pfree(snap);
 		return true;
 	}
+	pfree(snap);
 	return false;
 }
 
@@ -491,14 +492,13 @@ seg_write(Relation index, uint64 nbytes, uint64 seed, uint32 piece, uint32 align
 int64
 seg_drop(Relation index, uint64 gen)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	TestSeg		seg;
 	SiftExtent *rel;
 	int64		blocks = 1;
 
 	MAINT_LOCK(index, ShareLock);
 	LockPage(index, SIFT_DIRECTORY_BLKNO, ExclusiveLock);
-	if (!find_segment(index, gen, snap, &seg))
+	if (!find_segment(index, gen, &seg))
 		blocks = -1;
 	else
 	{
@@ -585,11 +585,10 @@ Datum
 sift_test_seg_read(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	TestSeg		seg;
 	int64		n = -1;
 
-	if (find_segment(index, PG_GETARG_INT64(1), snap, &seg))
+	if (find_segment(index, PG_GETARG_INT64(1), &seg))
 	{
 		sleep_ms(PG_GETARG_INT32(3));
 		n = read_segment(index, &seg, PG_GETARG_INT32(2));
@@ -613,18 +612,17 @@ sift_test_segments(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	SiftDirSnapshot *tmp = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		TestSeg		seg;
 		Datum		values[5];
 		bool		nulls[5] = {0};
 
-		if (!find_segment(index, snap->segs[i].gen, tmp, &seg))
+		if (!find_segment(index, snap->segs[i].gen, &seg))
 			continue;
 		values[0] = Int64GetDatum(seg.gen);
 		values[1] = Int64GetDatum(seg.header);

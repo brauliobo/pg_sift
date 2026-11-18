@@ -16,6 +16,7 @@ PG_FUNCTION_INFO_V1(sift_test_dir_edit);
 PG_FUNCTION_INFO_V1(sift_test_dir_list);
 PG_FUNCTION_INFO_V1(sift_test_dir_info);
 PG_FUNCTION_INFO_V1(sift_test_dir_check);
+PG_FUNCTION_INFO_V1(sift_test_dir_read_stale);
 
 typedef struct DirEditArg
 {
@@ -73,17 +74,16 @@ sift_test_dir_edit(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	DirEditArg	arg = {.op = text_to_cstring(PG_GETARG_TEXT_PP(1)),.pos = PG_GETARG_INT32(2),.n = PG_GETARG_INT32(3)};
-	SiftDirList cur;
+	SiftDirSnapshot *cur = sift_dir_read(index);
 
-	sift_dir_read_list(index, &cur);
-	if ((strcmp(arg.op, "rechain") != 0 && (arg.pos < 0 || arg.n < 0 || arg.pos + (strcmp(arg.op, "ins") == 0 ? 0 : arg.n) > cur.nsegs)) ||
-		cur.nsegs + (strcmp(arg.op, "ins") == 0 ? arg.n : 0) > SIFT_DIR_WIDE_MAX)
-		elog(ERROR, "directory edit %s %d %d does not fit %d entries", arg.op, arg.pos, arg.n, cur.nsegs);
+	if ((strcmp(arg.op, "rechain") != 0 && (arg.pos < 0 || arg.n < 0 || arg.pos + (strcmp(arg.op, "ins") == 0 ? 0 : arg.n) > cur->nsegs)) ||
+		cur->nsegs + (strcmp(arg.op, "ins") == 0 ? arg.n : 0) > SIFT_DIR_WIDE_MAX)
+		elog(ERROR, "directory edit %s %d %d does not fit %d entries", arg.op, arg.pos, arg.n, cur->nsegs);
 	MAINT_LOCK(index, ShareLock);
 	if (strcmp(arg.op, "rechain") == 0)
-		sift_dir_update(index, &(SiftDirChange) {.chain_below = arg.pos,.extra = InvalidBuffer,.wide = true});
+		sift_dir_update(index, &(SiftDirChange) {.chain_below = arg.pos,.extra = InvalidBuffer});
 	else
-		sift_dir_update(index, &(SiftDirChange) {.fn = edit_entries,.arg = &arg,.extra = InvalidBuffer,.wide = true});
+		sift_dir_update(index, &(SiftDirChange) {.fn = edit_entries,.arg = &arg,.nadd = arg.n,.extra = InvalidBuffer});
 	MAINT_UNLOCK(index, ShareLock);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_INT64(arg.first_gen);
@@ -95,13 +95,13 @@ sift_test_dir_list(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
-	SiftDirList list;
+	SiftDirSnapshot *list;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read_list(index, &list);
-	for (int i = 0; i < list.nsegs; i++)
+	list = sift_dir_read(index);
+	for (int i = 0; i < list->nsegs; i++)
 	{
-		Datum		values[3] = {Int32GetDatum(i), Int64GetDatum(list.segs[i].gen), Int64GetDatum(list.segs[i].ndocs)};
+		Datum		values[3] = {Int32GetDatum(i), Int64GetDatum(list->segs[i].gen), Int64GetDatum(list->segs[i].ndocs)};
 		bool		nulls[3] = {0};
 
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
@@ -118,22 +118,37 @@ sift_test_dir_info(PG_FUNCTION_ARGS)
 	TupleDesc	tupdesc;
 	Datum		values[6];
 	bool		nulls[6] = {0};
-	SiftDirList list;
+	SiftDirSnapshot *list;
 	BlockNumber top = 0;
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
-	sift_dir_read_list(index, &list);
-	values[0] = Int64GetDatum(list.version);
-	values[1] = Int32GetDatum(list.nsegs);
-	values[2] = BoolGetDatum(list.nchain > 0);
-	values[3] = Int32GetDatum(list.nchain);
-	values[4] = Int32GetDatum(list.meta.format_minor);
-	for (int i = 0; i < list.nchain; i++)
-		top = Max(top, list.chain[i]);
+	list = sift_dir_read(index);
+	values[0] = Int64GetDatum(list->version);
+	values[1] = Int32GetDatum(list->nsegs);
+	values[2] = BoolGetDatum(list->nchain > 0);
+	values[3] = Int32GetDatum(list->nchain);
+	values[4] = Int32GetDatum(list->meta.format_minor);
+	for (int i = 0; i < list->nchain; i++)
+		top = Max(top, list->chain[i]);
 	values[5] = Int64GetDatum(top);
 	relation_close(index, AccessShareLock);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
+/* sift._test_dir_read_stale(index): reads the chain as a reader would that found a page of it recycled (the version its root was written under is not the one expected): the retry error on a standby, damage on a primary */
+Datum
+sift_test_dir_read_stale(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = sift_dir_read(index);
+	SiftSegEntry *segs;
+	SiftDirChain chain;
+
+	if (snap->nchain == 0)
+		elog(ERROR, "sift test: the directory of \"%s\" is not chained", RelationGetRelationName(index));
+	(void) sift_dirchain_read(index, snap->chain[0], snap->version + 1, 0, &segs, &chain);
+	PG_RETURN_VOID();
 }
 
 typedef struct ChainBlocks
@@ -162,25 +177,25 @@ Datum
 sift_test_dir_check(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
-	SiftDirList list;
+	SiftDirSnapshot *list;
 	ChainBlocks c = {.index = index};
 	Buffer		metabuf;
 
-	sift_dir_read_list(index, &list);
-	c.hwm = list.meta.high_water;
-	for (int i = 0; i < list.nchain; i++)
+	list = sift_dir_read(index);
+	c.hwm = list->meta.high_water;
+	for (int i = 0; i < list->nchain; i++)
 	{
-		if (list.chain[i] < FIRST_DATA_BLKNO || list.chain[i] >= c.hwm)
-			elog(ERROR, "directory chain block %u lies outside [%d, %u)", list.chain[i], FIRST_DATA_BLKNO, c.hwm);
-		if (bms_is_member(list.chain[i], c.set))
-			elog(ERROR, "directory chain block %u appears twice", list.chain[i]);
-		c.set = bms_add_member(c.set, list.chain[i]);
+		if (list->chain[i] < FIRST_DATA_BLKNO || list->chain[i] >= c.hwm)
+			elog(ERROR, "directory chain block %u lies outside [%d, %u)", list->chain[i], FIRST_DATA_BLKNO, c.hwm);
+		if (bms_is_member(list->chain[i], c.set))
+			elog(ERROR, "directory chain block %u appears twice", list->chain[i]);
+		c.set = bms_add_member(c.set, list->chain[i]);
 	}
 	metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
 	sift_freelist_walk(index, metabuf, free_page_blocks, &c);
 	UnlockReleaseBuffer(metabuf);
 	relation_close(index, AccessShareLock);
-	PG_RETURN_INT32(list.nchain);
+	PG_RETURN_INT32(list->nchain);
 }
 
 #endif							/* SIFT_TESTING */

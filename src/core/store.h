@@ -131,15 +131,20 @@ extern void sift_page_init(Page page, SiftPageType type, uint64 gen);
 extern void sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen);
 extern void sift_store_require_ready(Relation index);
 
-/* Directory snapshot: plain copy of metapage + directory (invariant I3) */
+/*
+ * Directory snapshot: plain copy of metapage + directory (invariant I3), of any number of entries up to SIFT_DIR_WIDE_MAX. It is one allocation made by
+ * sift_dir_read and its end holds the segments, so a copy of the bytes sift_dir_bytes says is a copy of the snapshot (the shared views of a scan do that);
+ * never declare one or size one with sizeof. chain lists the blocks of a chained directory, its root first, in the memory context of the read: it is meaningful in the snapshot
+ * sift_dir_read returned and not in a copy of its bytes.
+ */
 typedef struct SiftDirSnapshot
 {
 	SiftMetaPageData meta;
 	uint32		version;
 	int			nsegs;
-	BlockNumber *chain;			/* the blocks of a chained directory, its root first, in the memory context of the read; NULL for the directory of block 1 alone */
+	BlockNumber *chain;
 	int			nchain;
-	SiftSegEntry segs[SIFT_MAX_SEGMENTS];
+	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
 } SiftDirSnapshot;
 
 /*
@@ -162,20 +167,6 @@ sift_lane_layout_error(Relation index, const char *what)
 			 errhint("Use REINDEX to apply the new options.")));
 }
 
-/*
- * The directory of any size (a chain holds up to SIFT_DIR_WIDE_MAX entries): segs and chain are allocated in the current memory context. chain lists the blocks of a chained
- * directory (its root first), NULL and 0 for the directory of block 1 alone. sift_dir_read errors for a directory that holds more than SIFT_MAX_SEGMENTS entries.
- */
-typedef struct SiftDirList
-{
-	SiftMetaPageData meta;
-	uint32		version;
-	int			nsegs;
-	SiftSegEntry *segs;
-	BlockNumber *chain;
-	int			nchain;
-} SiftDirList;
-
 /* The bytes of a directory copy that matter: the segments it lists, not the room for the most the directory holds */
 static inline Size
 sift_dir_bytes(const SiftDirSnapshot *dir)
@@ -188,9 +179,14 @@ sift_dir_bytes(const SiftDirSnapshot *dir)
 extern uint32 sift_store_meta_flags(Relation index);
 /* Whether the metapage holds the flag, read as it is: a page that is not a metapage holds none, and no error is raised for it (the report of the flags of an index that may be damaged) */
 extern bool sift_store_meta_has_flag(Relation index, uint32 flag);
-extern void sift_dir_read(Relation index, SiftDirSnapshot *snap);
-extern void sift_dir_read_segs(Relation index, SiftDirSnapshot *snap);
-extern void sift_dir_read_list(Relation index, SiftDirList *list);
+extern SiftDirSnapshot *sift_dir_read(Relation index);
+extern SiftDirSnapshot *sift_dir_read_segs(Relation index);
+/* An empty snapshot (zero entries, zero meta) with room for n entries */
+extern SiftDirSnapshot *sift_dir_alloc(int n);
+/* A copy of the snapshot in the current memory context, with no chain (the copy outlives the read) */
+extern SiftDirSnapshot *sift_dir_copy(const SiftDirSnapshot *snap);
+/* Replaces the snapshot a long-lived owner keeps in *slot (NULL at first) by a fresh read, kept in cxt */
+extern void sift_dir_reload(Relation index, SiftDirSnapshot **slot, MemoryContext cxt);
 extern bool sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags);
 extern void sift_store_rekey_layout(Relation index, uint32 hash);
 
@@ -227,8 +223,8 @@ typedef struct SiftDirChange
 	int			nrelease;
 	Buffer		extra;			/* InvalidBuffer if none */
 	bool		immediate;		/* no snapshot can hold the released extents (a relation still being written by its creator): reusable at once */
+	int			nadd;			/* the entries fn adds to the directory at most; 0: SIFT_DIR_POLICY_MAX, which no writer of the policy goes past */
 	BlockNumber chain_below;	/* a chained directory: its pages at or above this block are written again below it (the shrink of the file); 0: they stay. ERROR when no free run below holds them */
-	bool		wide;			/* fn supports a directory of more than SIFT_MAX_SEGMENTS entries (up to SIFT_DIR_WIDE_MAX): it edits dir->segs[0..nsegs) with no other limit than the room the call gives it; the entries then go to a chain once they do not fit block 1 */
 } SiftDirChange;
 
 typedef struct SiftWriteTarget SiftWriteTarget;
