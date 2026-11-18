@@ -35,8 +35,6 @@
 
 typedef struct ColBuild ColBuild;
 
-extern PGDLLIMPORT bool sift_col_build_key_ranges;
-
 extern Size sift_colb_budget(int nslots);
 extern void sift_colb_init_meta(Relation index);
 
@@ -96,6 +94,9 @@ extern PGDLLIMPORT char *sift_test_vstore_columns;
 extern PGDLLIMPORT int sift_test_col_fail_sb;
 extern PGDLLIMPORT int sift_test_col_segment_kb;
 extern PGDLLIMPORT int sift_test_col_spill_run_kb;	/* kB of memory a run of the ranges of a build by key ranges may take (0 = the fixed cap) */
+extern PGDLLIMPORT bool sift_test_col_build_runs_overlap;	/* a build with key_cut writes the runs of the table's order, as a key that is not a number does */
+extern PGDLLIMPORT int sift_test_col_spill_bytes;	/* bytes the temporary files of the last build by key ranges of this session took */
+extern PGDLLIMPORT int sift_test_col_spill_rows;	/* rows they hold */
 extern PGDLLIMPORT int sift_test_col_max_segments;
 extern PGDLLIMPORT bool sift_test_col_no_present;	/* a build writes no presence leaf: the layout of an index made before it */
 extern PGDLLIMPORT int sift_test_col_merge_slices;	/* slices the participants of the last parallel build merged in (0 = one process merged) */

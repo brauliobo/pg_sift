@@ -289,6 +289,8 @@ col/pagg.h
 col/pg.h
 col/proj.c
 col/rollup.c
+col/rowfile.c
+col/rowfile.h
 col/rowkey.c
 col/rowpack.c
 col/rowpack.h

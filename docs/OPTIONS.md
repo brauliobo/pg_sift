@@ -34,7 +34,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 104 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 103 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 41 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
@@ -656,21 +656,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 4.3:** unchanged
 - **Advice:** Leave at 1.0: VACUUM seals and promotes the write buffer once it holds more than this percent of the rows of the index, as a promotion alone, and sift.col_maintenance_due says write buffer rows until it has. Lower it to keep the buffer smaller.
 - **Sources:** benchmark as `sift.col_auto_merge`; [USAGE](USAGE.md#maintenance-and-operations)
-
-#### sift.col_build_key_ranges
-
-`sift_col` · default · since 4.1 · default on
-
-- **What it does:** a serial CREATE INDEX or REINDEX of a key_cut index on a table that does not fit one run writes runs that do not overlap in the key, so a lookup of a key set reads one unit for a key and nothing is rewritten after the build
-- **Gain:** 2,650,000 rows, 4 columns, key_cut on an integer of 28,000 values, runs of 5 MB: a key in 1.00 units where the runs of the table hold it in 7.95; 25 keys 12.9 to 4.9 million instructions and 990 to 243 blocks, 200 keys 49.5 to 18.5 million, 2,000 keys 84.9 to 93.9 million but 4,715 to 3,985 blocks (the layout the rewrite makes)
-- **Gain and cost:** 2.70x fewer instructions (8070k saved a query), index +0.4%, build +25.0%, automatic
-- **Impact:** index size: the index is the size of the runs (170.3 against 169.6 MB) where the rewrite that cuts the runs leaves 342 MB until the freed blocks are reused; a maintenance_work_mem whose run is over 768 MB (1.5 GB and more) cuts the runs of the ranges at 768 MB of rows in memory, where it left the build to overlapping runs: 300,000 rows, 13 columns, key_cut, a first run three times the cap: the overlapping runs 54.1 MB, 95.3 MB after the automatic rewrite (1.76x) and 153.6 MB (2.84x) with a snapshot held through three passes, 55.5 MB after the VACUUM that follows; the ranges 65.7 MB in 12 runs, 1.01x of its live bytes at once (the runs are a third of the size: a point directory and the order arrays cost about 1 MB a run at this size, 1% of a 100 MB run); build, merge and writes: CREATE INDEX 4.8 to 6.0 s (+25%) and 170 MB of WAL, where the runs and their rewrite take 11 s and 340 MB of WAL (460 MB paced); 187 MB of temporary files; other: the rows go to temporary files while the table is scanned (about the size of the index, no WAL), and a sample of the table is read before the scan: the build takes about a quarter longer than runs in the order of the table, and half the time and half the WAL of those runs and the rewrite that cuts them
-- **When:** A serial build of a key_cut index whose first leaf is an integer, date, timestamp, numeric or float (the columns key_cut takes), on a table of more than one run; not a parallel build (a key_cut index is built by one process) or a table that fits one run.
-- **Default:** on — on: the runs of the ranges are what the rewrite after a build makes, for the cost of a sample of the table and temporary files that the build writes and reads once.
-- **Turn off:** SET sift.col_build_key_ranges = off (ALTER SYSTEM or ALTER DATABASE) writes the runs in the order of the table.
-- **Upgrade from 4.3:** unchanged
-- **Advice:** Leave on. Off writes the runs in the order of the table, each holding every key, which the maintenance worker cuts by key afterwards. A temp_file_limit smaller than the rows, or a disk of the temporary tablespaces with less than twice the room they need, leaves it off for that build. A maintenance_work_mem over 1.5 GB makes a first run larger than a run of the ranges may be (the rows of a run are read into one batch whose string dictionary holds 1 GB): the runs are cut at 768 MB of memory, not left to overlap.
-- **Sources:** benchmark `test:col_key_cut_ranges`; [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift.col_unit_floor
 

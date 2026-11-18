@@ -340,10 +340,6 @@ sift_col_init(void)
 							 "A pass of sift.col_maintain(index) that merges the small segments left over the partitions of a key_cut index takes an eighth of max_wal_size at most, and this percent of it, "
 							 "so that it forces no checkpoint of its own; the next pass takes the rest. 0 does not limit the pass to a share.",
 							 &sift_col_auto_merge_wal_pct, 5.0, 0.0, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.col_build_key_ranges",
-							 "A serial sift_col build with key_cut of a large table writes runs that do not overlap in the key.",
-							 "The rows go to a temporary file for each stretch of the key (cut at quantiles of a sample of the table) while the table is scanned, and the stretches are written as runs in the order of the key, where the runs of the rows in table order each hold every key and wait for a rewrite. temp_file_limit and the free room of the temporary tablespaces bound it (a build that does not fit them writes the runs in table order). off: runs in table order.",
-							 &sift_col_build_key_ranges, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_pass_mb",
 							"Megabytes of overlapping runs one pass of sift.col_maintain(index) rewrites in a sift_col index.",
 							"A build leaves runs of rows sorted by the key_cut key, each as large as a partition and overlapping its neighbours in the key; the rewrite cuts them by key, "
@@ -539,6 +535,15 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_spill_run_kb",
 							"Testing: kB of memory a run of a sift_col build by key ranges may take (0 = 768 MB).",
 							NULL, &sift_test_col_spill_run_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_build_runs_overlap",
+							 "Testing: a sift_col build with key_cut writes the runs of the table's order, which overlap in the key, to leave a rewrite to do.",
+							 NULL, &sift_test_col_build_runs_overlap, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spill_bytes",
+							"Testing: bytes the temporary files of the last sift_col build by key ranges of this session took.",
+							NULL, &sift_test_col_spill_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spill_rows",
+							"Testing: rows the temporary files of the last sift_col build by key ranges of this session hold.",
+							NULL, &sift_test_col_spill_rows, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_no_present",
 							 "Testing: a sift_col build writes no presence leaf for the jsonb documents (the layout of an index made before 4.2).",
 							 NULL, &sift_test_col_no_present, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
