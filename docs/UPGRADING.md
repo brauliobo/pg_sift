@@ -280,6 +280,14 @@ Three `sift_col` options are accepted and ignored by 4.3 and still ignored by 5.
 
 `order_layout` and `sift.col_format_minor` stay.
 
+## What 5.1 writes that 5.0 does not read
+
+One feature writes column format minor 52, which 5.0 refuses ([FORMATS](FORMATS.md)); `sift.upgrade_check` does not look at the stamp of a tombstone log. A 5.1 library reads every older minor; nothing is rebuilt.
+
+| what | column format | to go back to 5.0 |
+|---|---|---|
+| a statement that deletes many rows of a `sift_col` index with `track_changes` writes deletion records in the tombstone log (one for each unit it touches, [COL-HEAPFREE.md](COL-HEAPFREE.md) "Deletion records"); the log is stamped when the first record is written | 52 | `VACUUM` the table (the records are folded into the liveness and dropped), then `REINDEX` the index: the stamp stays on the log, and 5.0 refuses the index with the format message ("Use a newer pg_sift") until it is built again. Marks alone keep the minor of the log |
+
 ## What 5.0 writes that 4.3 does not read
 
 Two features write column formats that 4.3 and older refuse (`sift.upgrade_check('4.3')` lists each index with its command; [FORMATS](FORMATS.md)). The shared value store is on by default (`sift.col_value_store`), so an index whose column shares strings with another index of the table is at 46 from its first build under 5.0; a scope is written only where you declare one.

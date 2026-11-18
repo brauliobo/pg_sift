@@ -407,6 +407,8 @@ core/store_test_am.c
 core/store_test_int.h
 core/tomb.c
 core/tomb.h
+core/tomb_dv.c
+core/tomb_dv.h
 core/tomb_hdr.c
 core/tomb_iter.c
 core/tomb_int.h

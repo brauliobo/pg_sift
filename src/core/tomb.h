@@ -88,7 +88,9 @@ typedef enum SiftTombKind
 	SIFT_TOMB_UPDATE,			/* succ is the new version */
 	SIFT_TOMB_LOCK,				/* row lock: never deletes */
 	SIFT_TOMB_KEYCHG,			/* key journal (col/conn.h): the entry of key `succ` was ended by xid; key is SIFT_TOMB_KEYS_KEY, not a heap address */
-	SIFT_TOMB_KEYADD			/* key journal of a scope relation (col/scope.h): an entry of key `succ` was inserted by xid */
+	SIFT_TOMB_KEYADD,			/* key journal of a scope relation (col/scope.h): an entry of key `succ` was inserted by xid */
+	SIFT_TOMB_DVEC,				/* head of a deletion record (core/tomb_dv.h): rows of one unit that xid ended; key is SIFT_DV_KEY, not a heap address */
+	SIFT_TOMB_DVEC_BODY			/* a slot of a deletion record after its head: 16 bytes of the record in place of xid, cid and succ */
 } SiftTombKind;
 
 #define SIFT_TOMB_IS_JOURNAL(kind)	((kind) == SIFT_TOMB_KEYCHG || (kind) == SIFT_TOMB_KEYADD)
@@ -161,6 +163,8 @@ typedef struct SiftTombLog
 	SiftTomb   *recent;			/* sorted likewise: entries synced since the last merge into ents (small, cheap to insert into) */
 	uint32		nrecent;
 	uint32		caprecent;
+	uint64		dvecs;			/* the deletion records (core/tomb_dv.h) read so far, and the oldest transaction among them: a read of the records asks the commit log of that one first */
+	TransactionId dv_oldest;
 	uint64		foldable;		/* the entries a fold of the marks could clear when they were last counted (col/maint/fold.c): a floor until the log is read again, since entries are added and only become clearable */
 	struct HTAB *hotm;			/* the keys that are the succ of a HOT entry: chain members (NULL until the log has one) */
 	SiftTomb   *run;			/* scratch: the entries of one key found in both arrays */
@@ -211,6 +215,12 @@ extern void sift_tomb_append_many(Relation rel, SiftTombLog *t, const SiftTomb *
  */
 typedef bool (*SiftTombKeep) (SiftTomb *e, void *arg);	/* may rewrite the entry it keeps */
 extern uint64 sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg);
+/*
+ * ... for a log that may hold deletion records (core/tomb_dv.h): keep_dv decides a whole record, given its slots (n of them, the head first, which it may rewrite), and a record is kept or
+ * dropped whole; keep decides every other entry. A log read by a library that does not know the records has none, and keep_dv NULL keeps them.
+ */
+typedef bool (*SiftTombKeepDv) (SiftTomb *slots, uint32 n, void *arg);
+extern uint64 sift_tomb_rewrite_dv(Relation rel, SiftTombLog *t, SiftTombKeep keep, SiftTombKeepDv keep_dv, void *arg);
 
 /*
  * Every entry of the log, in (key, seq) order, the ones past the memory of the log read back from its runs: begin merges what the log keeps in memory into one array,
@@ -226,6 +236,8 @@ typedef struct SiftTombWalk
 extern void sift_tomb_walk_begin(SiftTombWalk *w, SiftTombLog *t);
 extern SiftTomb *sift_tomb_walk_next(SiftTombWalk *w);
 extern void sift_tomb_walk_end(SiftTombWalk *w);
+/* The next entry, or the next deletion record whole: a record's slots are copied to buf (SIFT_TOMB_CAP of them) and *n says how many, else *n is 1 and the entry is the walk's */
+extern SiftTomb *sift_tomb_walk_next_rec(SiftTombWalk *w, SiftTomb *buf, uint32 *n);
 /*
  * Every entry of the log in no order, as arrays: the main and the recent array of the log, then the blocks of each run. Each call gives the next array and its length, NULL at the end,
  * so that a pass that needs no order (a count, a first match) is a loop over arrays: no call for each entry. A run is read through one block in cxt. The log is not changed between

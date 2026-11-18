@@ -12,6 +12,7 @@
 
 #include "core/cmp.h"
 #include "core/tomb.h"
+#include "core/tomb_dv.h"
 #include "core/tomb_int.h"
 #include "core/damage.h"
 #ifdef SIFT_TESTING
@@ -23,6 +24,24 @@
 
 #define corrupt(rel, ...) \
 	SIFT_DAMAGE_DATA(rel, errmsg("relation \"%s\" has a corrupted tombstone log", RelationGetRelationName(rel)), errdetail(__VA_ARGS__))
+
+/* The slots of ents[0, n) that fit room more slots of a page without cutting a deletion record: a record is on one page, so that no appender can put another between its slots */
+static int
+fit_whole(const SiftTomb *ents, int n, int room)
+{
+	int			k = 0;
+
+	while (k < n)
+	{
+		int			len = ents[k].kind == SIFT_TOMB_DVEC ? (int) sift_dv_slots_of(&ents[k], n - k) : 1;
+
+		Assert(len > 0);
+		if (k + len > room)
+			break;
+		k += len;
+	}
+	return k;
+}
 
 /* Appends n entries to the segment e, under the lock of the caller: by the page, one record for the page and one for the header */
 static void
@@ -43,14 +62,14 @@ tomb_append_seg(Relation rel, const SiftSegEntry *e, const SiftTomb *ents, int n
 		sift_lane_read_header(rel, e, &hdr);
 		if (!BufferIsValid(cur = sift_lane_lock_tail(rel, e->gen, &hdr.lanes[0].tail, 1, &lane)))
 			corrupt(rel, "The tombstone segment is sealed.");
-		if (SIFT_TOMB_PAGE(BufferGetPage(cur))->nent >= SIFT_TOMB_CAP)
+		if (fit_whole(ents, n, SIFT_TOMB_CAP - SIFT_TOMB_PAGE(BufferGetPage(cur))->nent) == 0)
 			cur = sift_lane_grow(rel, e->gen, e->header_blk, lane, cur, SIFT_TOMB_PAGE_INIT, PG_UINT32_MAX, NULL, NULL, &crossed);
 		hbuf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_EXCLUSIVE);
 		sift_page_edit_begin(&ed[0], hbuf, SIFT_PAGE_DATA_OFFSET);
 		sift_page_edit_extra(&ed[0], (char *) &SIFT_TOMB_HDR(ed[0].page)->nentries - (char *) ed[0].page, sizeof(uint64));
 		sift_page_edit_begin(&ed[1], cur, SIFT_PAGE_DATA_OFFSET + SIFT_TOMB_PAGE_INIT);
 		tp = ed[1].page;
-		k = Min((int) (SIFT_TOMB_CAP - SIFT_TOMB_PAGE(tp)->nent), n);
+		k = fit_whole(ents, n, (int) (SIFT_TOMB_CAP - SIFT_TOMB_PAGE(tp)->nent));
 		memcpy(&SIFT_TOMB_ENTS(tp)[SIFT_TOMB_PAGE(tp)->nent], ents, k * sizeof(SiftTomb));
 		SIFT_TOMB_PAGE(tp)->nent += k;
 		SiftPageSetUsed(tp, SIFT_TOMB_PAGE_INIT + SIFT_TOMB_PAGE(tp)->nent * sizeof(SiftTomb));
@@ -189,6 +208,12 @@ old_extents(Relation rel, const SiftSegEntry *e, BlockNumber last, int *n)
 uint64
 sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 {
+	return sift_tomb_rewrite_dv(rel, t, keep, NULL, arg);
+}
+
+uint64
+sift_tomb_rewrite_dv(Relation rel, SiftTombLog *t, SiftTombKeep keep, SiftTombKeepDv keep_dv, void *arg)
+{
 	const SiftSegEntry *old;
 	TombSwap	sw;
 	uint64		gen,
@@ -212,6 +237,10 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 #endif
 	SiftTomb   *ent,
 			   *tail;
+	SiftTomb	rec[SIFT_TOMB_CAP];
+	uint32		nrec;
+	bool		decided = false,
+				keeping = false;
 
 	LockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
 	sift_dir_read(rel, t->dir);
@@ -227,7 +256,7 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 #endif
 	hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
 	sift_tomb_walk_begin(&wk, t);
-	for (ent = sift_tomb_walk_next(&wk); ent != NULL;)
+	for (ent = sift_tomb_walk_next_rec(&wk, rec, &nrec); ent != NULL;)
 	{
 		Buffer		nb = sift_alloc_page(rel, SIFT_PT_WBUFDATA, gen);
 		SiftXlog state = sift_xlog_start(rel);
@@ -240,12 +269,24 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 		np = sift_xlog_register(&state, nb, 0);
 		sift_lane_init_page(np, SIFT_TOMB_PAGE_INIT);
 		tp = SIFT_TOMB_PAGE(np);
-		for (; ent != NULL && tp->nent < SIFT_TOMB_CAP; ent = sift_tomb_walk_next(&wk))
-			if (keep(ent, arg))
+		/* a record is kept or dropped whole and lies on one page: one that does not fit what is left of this one is the first of the next, with the decision taken */
+		for (; ent != NULL; ent = sift_tomb_walk_next_rec(&wk, rec, &nrec))
+		{
+			if (!decided)
+				keeping = nrec > 1 ? (keep_dv == NULL || keep_dv(ent, nrec, arg)) : keep(ent, arg);
+			if (keeping && tp->nent + nrec > SIFT_TOMB_CAP)
 			{
-				SIFT_TOMB_ENTS(np)[tp->nent++] = *ent;
-				kept++;
+				decided = true;
+				break;
 			}
+			decided = false;
+			if (keeping)
+			{
+				memcpy(&SIFT_TOMB_ENTS(np)[tp->nent], ent, nrec * sizeof(SiftTomb));
+				tp->nent += nrec;
+				kept += nrec;
+			}
+		}
 		SiftPageSetUsed(np, SIFT_TOMB_PAGE_INIT + tp->nent * sizeof(SiftTomb));
 		if (pp)
 			SIFT_TOMB_PAGE(pp)->next = BufferGetBlockNumber(nb);

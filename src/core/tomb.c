@@ -91,6 +91,8 @@ tomb_reset(SiftTombLog *t, const SiftSegEntry *e)
 	t->keys_cover = false;
 	t->nents = t->nrecent = 0;
 	t->foldable = 0;
+	t->dvecs = 0;
+	t->dv_oldest = InvalidTransactionId;
 	sift_srun_reset(&t->spilled);
 	sift_srun_reset(&t->hotspilled);
 	if (t->hotm)
@@ -276,7 +278,13 @@ static void
 tomb_add(SiftTombLog *t, SiftTomb *batch, uint32 n)
 {
 	for (uint32 i = 0; i < n; i++)
-		if (batch[i].kind == SIFT_TOMB_UPDATE && (batch[i].flags & SIFT_TOMB_HOT))
+		if (batch[i].kind == SIFT_TOMB_DVEC)
+		{
+			t->dvecs++;
+			if (TransactionIdIsNormal(batch[i].xid) && (!TransactionIdIsNormal(t->dv_oldest) || TransactionIdPrecedes(batch[i].xid, t->dv_oldest)))
+				t->dv_oldest = batch[i].xid;
+		}
+		else if (batch[i].kind == SIFT_TOMB_UPDATE && (batch[i].flags & SIFT_TOMB_HOT))
 		{
 			if (t->hotm == NULL)
 			{
