@@ -7,7 +7,7 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 allow=scripts/polling.allow
 check() { # ROOT: prints a line for each wait without a row
 	local root=$1
-	git -C "$root" grep -nE '\b(pg_usleep|sift_nap|sift_worker_nap)\(|\bWaitLatch\([^;]*WL_TIMEOUT' -- 'src/*.c' ':!src/*_test.c' ':!src/*/*_test.c' ':!src/*/test/*' |
+	git -C "$root" grep -nE '(^|[^[:alnum:]_])((pg_usleep|sift_nap|sift_worker_nap)\(|WaitLatch\([^;]*WL_TIMEOUT)' -- 'src/*.c' ':!src/*_test.c' ':!src/*/*_test.c' ':!src/*/test/*' |
 		grep -vE '^[^:]+:[0-9]+:[[:space:]]*(/?\*|//)' | grep -vE 'sift_(worker_)?nap\(long ms\)' | while IFS=: read -r f n text; do
 			awk -F'\t' -v f="$f" -v t="$text" '$1 == f && index(t, $2) { found = 1 } END { exit !found }' "$root/$allow" ||
 				echo "$f:$n: a wait on a timer:$text  (wake on an event instead; a wait that cannot be one goes in $allow with its reason)"

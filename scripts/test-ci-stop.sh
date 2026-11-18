@@ -23,7 +23,7 @@ out=$("$REPO/scripts/ci.sh" stop "$T/reused" 2>&1); rc=$?
 (( rc != 0 )) || fail "a recorded pid with another start time was accepted"
 kill -0 "$reused" 2>/dev/null || fail "a reused pid was ended"
 [[ $out == *"left alone"* ]] || fail "no word about the refusal: $out"
-"$REPO/scripts/ci.sh" stop "$T/gone" 2>&1 | grep -q "is not running" || fail "a run that is gone is not reported"
+"$REPO/scripts/ci.sh" stop "$T/gone" 2>&1 | grep "is not running" >/dev/null || fail "a run that is gone is not reported"
 "$REPO/scripts/ci.sh" stop "$T/empty" >/dev/null 2>&1 && fail "a directory with no record was accepted"
 env -u SIFT_CI_TMP "$REPO/scripts/ci.sh" stop >/dev/null 2>&1 && fail "stop with no directory was accepted"
 kill -0 "$other" 2>/dev/null || fail "a process was ended by one of the refusals"

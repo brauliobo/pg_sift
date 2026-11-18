@@ -14,8 +14,6 @@
 #include "col/scope.h"
 #include "col/seg.h"
 
-#define SCOPE_ROWS_FACTOR	2		/* the rows a scope family is expected to hold for each row of the table, to fit its segments to the directory (a bound: the average is the keys of a member) */
-
 /* The cut of the units of a scope */
 void
 colb_scope_cut(SiftColRel *r, int scope)
@@ -36,9 +34,7 @@ colb_scope_begin(ColBuild *b, SiftSegEntry *segs, int room)
 		ColBuild   *sb = colb_alloc(b->index, b->wt, b->budget, room, segs + (Size) s * room, false, 1, s, b->nscope);
 
 		sb->fill = b->fill;
-		/* the rows go to runs and merges only: the ranges of a spill are cut from a sample of the heap, which has no scope keys */
-		sb->spill_tried = true;
-		sb->share = b->total_rows * SCOPE_ROWS_FACTOR;
+		sb->share = sb->entries = b->total_rows * SCOPE_ROWS_FACTOR;
 		b->scope[s] = sb;
 	}
 }
