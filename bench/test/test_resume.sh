@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The resume contract of bench/steps/lib.sh, checked by killing a run at random points: a synthetic run (stages of cells, rounds of cells.tsv) is started, killed with SIGKILL after a random time,
+# The resume contract of bench/steps/lib.sh, checked by killing a run at random points: a synthetic run (stages of cells, rounds of cells.tsv) is started, killed with SIGKILL after a random number of results,
 # resumed until it finishes, and its results are compared with an uninterrupted run: the same files, the same contents, no duplicate rows, no half-written file. Also: a killed run is found out
 # as crashed by the next start, SIGTERM exits with 75 and records `interrupted`, and a run with another key starts over instead of mixing. Usage: bench/test/test_resume.sh [KILLS] (default 6)
 set -euo pipefail
@@ -22,7 +22,9 @@ run_begin work "$@"
 cell() { # STAGE N: its result is kept once written; a cell that exists with this key is not measured again
   local f=$OUT/$1-$2.json
   [[ $(cat "$f" 2>/dev/null) == "{\"key\": \"$KEY\", \"cell\": \"$1-$2\"}" ]] && return 0
-  sleep "${CELL_SLEEP:-0.03}"
+  sleep "${CELL_SLEEP:-0.03}" &
+  [[ -z ${CELL_READY:-} ]] || echo >"$CELL_READY"   # the fifo of a test waiting for the cell: its sleep exists (a child of this run) when the test reads
+  wait $!
   printf '{"key": "%s", "cell": "%s-%s"}' "$KEY" "$1" "$2" | atomic_write "$f"
 }
 st() { local n; for n in 1 2 3 4 5; do cell "$1" "$n"; done; }
@@ -44,17 +46,19 @@ snapshot "$T/runs/run-clean" >"$T/clean.snap"
 [[ $(cut -f1 "$T/runs/run-clean/.run/state") == 'done' ]] || fail "the clean run is not done"
 (( $(grep -c . "$T/runs/run-clean/table/cells.tsv") == 10 )) || fail "the clean table has not 9 rows and a header"
 
+shopt -s nullglob
+progress() { local f=("$1"/*.json "$1"/table/*) r=(); [[ ! -r $1/table/cells.tsv ]] || mapfile -t r <"$1/table/cells.tsv"; PROGRESS=$(( ${#f[@]} + ${#r[@]} )); }   # DIR: results and rows written so far
 for i in $(seq "$KILLS"); do
-  d=$T/runs/run-kill$i
-  for attempt in $(seq 12); do   # killed at a random point, started again, until it finishes
+  d=$T/runs/run-kill$i kills=0
+  until [[ $(cut -f1 "$d/.run/state" 2>/dev/null) == 'done' ]]; do   # killed after a random one to nine more results, started again, until it finishes
     "$T/work.sh" "$d" k1 >/dev/null 2>&1 &
     pid=$!
-    sleep "0.0$(( RANDOM % 9 + 1 ))$(( RANDOM % 10 ))"
-    if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid"; wait "$pid" 2>/dev/null || true; else wait "$pid" && break; fi
+    progress "$d"; target=$(( PROGRESS + 1 + RANDOM % 9 ))
+    while kill -0 "$pid" 2>/dev/null && progress "$d" && (( PROGRESS < target )); do sleep 0.01; done
+    kill -KILL "$pid" 2>/dev/null && kills=$((kills + 1))
+    wait "$pid" 2>/dev/null || true
   done
-  [[ $(cut -f1 "$d/.run/state") == 'done' ]] || { "$T/work.sh" "$d" k1 >/dev/null 2>&1; }
-  [[ -z ${VERBOSE:-} ]] || echo "run $i: killed $((attempt - 1)) times"
-  [[ $(cut -f1 "$d/.run/state") == 'done' ]] || fail "run $i did not finish"
+  [[ -z ${VERBOSE:-} ]] || echo "run $i: killed $kills times"
   snapshot "$d" >"$T/kill$i.snap"
   diff -q "$T/clean.snap" "$T/kill$i.snap" >/dev/null || { diff "$T/clean.snap" "$T/kill$i.snap" | head >&2; fail "run $i differs from the uninterrupted run"; }
 done
@@ -71,15 +75,13 @@ echo "ok: a run with another key measures again"
 if [[ -r /proc/self/environ ]]; then
 # a killed run is found out as crashed and what it left running (orphans of the SIGKILL) is stopped; SIGTERM is resumable
 d=$T/runs/run-orphan$$   # unique: the run id is in the environment of its processes, and a second copy of this test (another lint) must not find or stop these
-CELL_SLEEP=30 "$T/work.sh" "$d" k5 >/dev/null 2>&1 & pid=$!
-# the run is at its first cell when its `sleep 30` runs (on a slow host the start takes longer than any fixed wait)
-at_cell() { local e; for e in /proc/[0-9]*/environ; do grep -qaxz "BENCH_RUN_ID=orphan$$" "$e" 2>/dev/null && [[ $(tr '\0' ' ' <"${e%environ}cmdline" 2>/dev/null) == 'sleep 30 ' ]] && return 0; done; return 1; }
-for _ in $(seq 300); do at_cell && break; sleep 0.1; done
-at_cell || fail "the run did not reach its first cell"
+mkfifo "$T/ready"
+CELL_READY=$T/ready CELL_SLEEP=30 "$T/work.sh" "$d" k5 >/dev/null 2>&1 & pid=$!
+read -r <"$T/ready"   # the run is in its first cell, its `sleep 30` started: whatever the speed of the host, the orphan exists when the run is killed
 kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
-( . "$LIBSH"; run_procs orphan$$ ) | grep -q . || fail "the orphan of the killed run is not found by its environment"
+[[ -n $( . "$LIBSH"; run_procs orphan$$) ]] || fail "the orphan of the killed run is not found by its environment"
 ( . "$LIBSH"; log() { :; }; RUNS_DIR=$T/runs run_reclaim ) >/dev/null 2>&1
-( . "$LIBSH"; run_procs orphan$$ ) | grep -q . && fail "the orphan of the killed run is still running" || true
+[[ -z $( . "$LIBSH"; run_procs orphan$$) ]] || fail "the orphan of the killed run is still running"
 echo "ok: the processes a killed run left are stopped"
 
 # run_stop returns when the processes are gone, also when a loaded host delivers the KILL late: the orphan ignores TERM and the KILL arrives 0.7 s after it is sent

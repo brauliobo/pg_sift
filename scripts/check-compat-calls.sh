@@ -10,6 +10,12 @@ RAW='table_beginscan|table_beginscan_parallel|table_index_fetch_begin|index_begi
 scan() { # DIR [SOURCE_DIR]: the raw calls under DIR/SOURCE_DIR (default: the sources)
 	(cd "$1" && grep -rnE --include='*.c' --include='*.h' "\\b($RAW)\\(" "${2:-src}" | grep -v '/core/compat\.h:' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(/?\*|//)')
 }
+# a tuple descriptor built by hand is finalized before its first use (19 asserts on the one that is not): each source that creates one calls sift_tupdesc_finalize as often
+unfinalized() { # DIR
+	(cd "$1" && grep -rcE --include='*.c' '\bCreateTemplateTupleDesc\(' "${2:-src}" | awk -F: '$2 > 0' | while IFS=: read -r f n; do
+		[[ $(grep -cE '\bsift_tupdesc_finalize\(' "$f") -ge $n ]] || echo "$f: $n CreateTemplateTupleDesc, fewer sift_tupdesc_finalize"
+	done)
+}
 if [[ ${1:-} == --selftest ]]; then
 	d=$(mktemp -d) && trap 'rm -rf "$d"' EXIT
 	mkdir -p "$d/tree/col" "$d/tree/core"
@@ -18,9 +24,13 @@ if [[ ${1:-} == --selftest ]]; then
 	[[ -z $(scan "$d" tree) ]] || { echo "FAIL: the macro, the comment or compat.h is reported: $(scan "$d" tree)"; exit 1; }
 	printf '%s\n' 'fetch = table_index_fetch_begin(heap);' >"$d/tree/col/mutant.c"
 	[[ $(scan "$d" tree) == 'tree/col/mutant.c:1:'* ]] || { echo "FAIL: a raw call of table_index_fetch_begin is not found"; exit 1; }
+	printf '%s\n' 'desc = CreateTemplateTupleDesc(2);' 'sift_tupdesc_finalize(desc);' >"$d/tree/col/finalized.c"
+	[[ -z $(unfinalized "$d" tree) ]] || { echo "FAIL: a finalized descriptor is reported: $(unfinalized "$d" tree)"; exit 1; }
+	printf '%s\n' 'desc = CreateTemplateTupleDesc(2);' >"$d/tree/col/bare.c"
+	[[ $(unfinalized "$d" tree) == *bare.c* ]] || { echo "FAIL: a descriptor that is not finalized is not found"; exit 1; }
 	echo "compat-calls selftest ok"; exit 0
 fi
-bad=$(scan "${1:-$(cd "$(dirname "$0")/.." && pwd)}")
+bad=$(scan "${1:-$(cd "$(dirname "$0")/.." && pwd)}")$(unfinalized "${1:-$(cd "$(dirname "$0")/.." && pwd)}")
 if [[ -n $bad ]]; then
 	echo "FAIL: a call of a function that differs between PostgreSQL versions, without its macro of src/core/compat.h (sift_<name>):"
 	sed 's/^/  /' <<<"$bad"

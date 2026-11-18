@@ -9,9 +9,9 @@ INSERT INTO tw SELECT i, i % 10, i FROM generate_series(1, 5000) i;
 INSERT INTO tp SELECT i, i % 10 FROM generate_series(1, 100) i;
 SELECT index, kind, segments >= 1 AS has_segments, sealed >= 0 AS has_sealed, failures, failed_at, next_retry, error_code, last_error, due
 FROM sift.workers ORDER BY 1::text;
- index  |    kind    | has_segments | has_sealed | failures | failed_at | next_retry | error_code | last_error | due 
---------+------------+--------------+------------+----------+-----------+------------+------------+------------+-----
- tp_col | sift_col   | t            | t          |        0 |           |            |            |            | 
+ index  |    kind    | has_segments | has_sealed | failures | failed_at | next_retry | error_code | last_error |        due        
+--------+------------+--------------+------------+----------+-----------+------------+------------+------------+-------------------
+ tp_col | sift_col   | t            | t          |        0 |           |            |            |            | write buffer rows
  tw     | sift_table | t            | t          |        0 |           |            |            |            | 
 (2 rows)
 

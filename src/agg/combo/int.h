@@ -64,7 +64,8 @@ extern int combo_filter_rows(AggExec *ex, int ci, uint32 *rows, int nm);
 
 extern void combo_make(AggExec *ex, int ci, const uint64 *v, ComboEnt *ent);
 
-extern void id64_init(Id64 *m);
+extern Size combo_cache_bytes(const AggExec *ex);
+extern void id64_init(AggExec *ex, Id64 *m);
 extern uint32 combo_ent(AggExec *ex, int ci, const uint64 *v);
 
 extern uint32 * dict_cmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ci, int p);

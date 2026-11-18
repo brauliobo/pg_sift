@@ -377,10 +377,8 @@ run_exit() { # EXIT: the state of the run and of the stage that was running
 }
 ppid() { sed -E 's/^.*\) [A-Za-z] ([0-9]+) .*/\1/' "/proc/$1/stat" 2>/dev/null; }   # PID: its parent
 run_procs() { # RUN-ID: the processes that carry the run's id in their environment (BENCH_RUN_ID) and are not this shell or below it: the run's own, orphans of a killed attempt included
-  local e p q
-  for e in /proc/[0-9]*/environ; do
-    p=${e#/proc/}; p=${p%/environ}
-    grep -qaxz "BENCH_RUN_ID=$1" "$e" 2>/dev/null || continue
+  local p q
+  for p in $(grep -lazx "BENCH_RUN_ID=$1" /proc/[0-9]*/environ 2>/dev/null | sed -E 's#^/proc/([0-9]+)/environ$#\1#' || true); do
     for (( q = p; q > 1; q = $(ppid "$q") )); do [[ $q == "$$" ]] && continue 2; done
     echo "$p"
   done

@@ -6,6 +6,7 @@
  */
 #include "postgres.h"
 #include "col/maint/maint_int.h"
+#include "core/limits.h"
 #include "core/membudget.h"
 
 #define WINDOW_MIN	(4 * 1024 * 1024)	/* the budget of the units whatever maintenance_work_mem is: two units of 20,000 rows of a column index of 8 leaves */
@@ -27,11 +28,11 @@ maint_window_begin(MemoryContext cx, const SiftColSchema *schema, int inputs)
 {
 	MergeWindow *w = MemoryContextAllocZero(cx, sizeof(MergeWindow));
 
-	w->cx = cx;
+	w->cx = AllocSetContextCreate(cx, "sift_col merge window", ALLOCSET_DEFAULT_SIZES);
 	w->schema = schema;
-	w->budget = Max((Size) maintenance_work_mem * 1024 / 4, WINDOW_MIN);
-	w->use = MemoryContextAlloc(cx, (inputs + 1) * sizeof(SiftColBatch *));
-	w->idle = MemoryContextAlloc(cx, (2 * inputs + 2) * sizeof(SiftColBatch *));
+	w->budget = Max((Size) maintenance_work_mem * 1024 / 4, (Size) sift_limit(window_min_bytes, WINDOW_MIN));
+	w->use = MemoryContextAlloc(w->cx, (inputs + 1) * sizeof(SiftColBatch *));
+	w->idle = MemoryContextAlloc(w->cx, (2 * inputs + 2) * sizeof(SiftColBatch *));
 	return w;
 }
 
@@ -116,4 +117,10 @@ Size
 maint_window_peak(const MergeWindow *w)
 {
 	return w->peak;
+}
+
+MemoryContext
+maint_window_context(const MergeWindow *w)
+{
+	return w->cx;
 }

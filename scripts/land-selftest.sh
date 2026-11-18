@@ -274,9 +274,15 @@ wait "$hold"
 
 # 13. lint-cache.sh (env -u CI: with CI set it runs the command as it is): a pass recorded by the caller (LINT_CACHE_RECORD, after gen-docs wrote the tree) is taken by the next run without running the command, and a check never recorded runs it
 LC=$T/lint-cache; mkdir -p "$LC"
-(cd "$HERE/.." && env -u CI SIFT_LINT_CACHE=$LC LINT_CACHE_RECORD=1 scripts/lint-cache.sh rec scripts/lint-cache.sh -- false >/dev/null) || fail "lint-cache.sh did not record a pass"
-[[ $(cd "$HERE/.." && env -u CI SIFT_LINT_CACHE=$LC scripts/lint-cache.sh rec scripts/lint-cache.sh -- false) == *cached* ]] || fail "lint-cache.sh ran a command whose pass the caller had recorded"
-(cd "$HERE/.." && env -u CI SIFT_LINT_CACHE=$LC scripts/lint-cache.sh other scripts/lint-cache.sh -- false >/dev/null 2>&1) && fail "lint-cache.sh passed a check nobody recorded or ran"
+(cd "$HERE/.." && env -u CI -u SIFT_LINT_NOCACHE SIFT_LINT_CACHE=$LC LINT_CACHE_RECORD=1 scripts/lint-cache.sh rec scripts/lint-cache.sh -- false >/dev/null) || fail "lint-cache.sh did not record a pass"
+[[ $(cd "$HERE/.." && env -u CI -u SIFT_LINT_NOCACHE SIFT_LINT_CACHE=$LC scripts/lint-cache.sh rec scripts/lint-cache.sh -- false) == *cached* ]] || fail "lint-cache.sh ran a command whose pass the caller had recorded"
+(cd "$HERE/.." && env -u CI -u SIFT_LINT_NOCACHE SIFT_LINT_CACHE=$LC scripts/lint-cache.sh other scripts/lint-cache.sh -- false >/dev/null 2>&1) && fail "lint-cache.sh passed a check nobody recorded or ran"
+# the same check on the same inputs, while another run has it: wait for it LINT_CACHE_WAIT seconds, then run on our own (the holder goes on)
+lc() { (cd "$HERE/.." && env -u CI -u SIFT_LINT_NOCACHE SIFT_LINT_CACHE=$LC "$@"); }
+lc scripts/lint-cache.sh busy scripts/lint-cache.sh -- bash -c "touch $T/busy.started; sleep 4; touch $T/busy.done" >/dev/null & hold=$!
+until [[ -e $T/busy.started ]]; do sleep 0.05; done
+[[ $(lc env LINT_CACHE_WAIT=1 scripts/lint-cache.sh busy scripts/lint-cache.sh -- echo ran-alone) == ran-alone && ! -e $T/busy.done ]] || fail "lint-cache.sh waited for a running check longer than LINT_CACHE_WAIT"
+wait "$hold"
 
 # 14. settle_mergeable: GitHub answers UNKNOWN for a few polls after a push to the base, the answer that follows is taken; an answer that never comes is UNKNOWN
 mkdir -p "$T/fakebin"
