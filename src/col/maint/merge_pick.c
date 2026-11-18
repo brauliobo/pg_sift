@@ -100,6 +100,31 @@ clean_apart(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry *sel
 	return apart;
 }
 
+bool		maint_force_bounded = false;
+
+/* The segments of the run of fan consecutive ones of sel[0..n) that hold the fewest bytes, moved to the front of sel: a merge opens all its inputs, so a forced merge of many goes in passes of a bounded fan-in */
+static int
+cheapest_window(SiftSegEntry *sel, int n, int fan)
+{
+	uint64		sum = 0,
+				best = PG_UINT64_MAX;
+	int			at = 0;
+
+	for (int i = 0; i < n; i++)
+	{
+		sum += sel[i].bytes;
+		if (i >= fan)
+			sum -= sel[i - fan].bytes;
+		if (i >= fan - 1 && sum < best)
+		{
+			best = sum;
+			at = i - fan + 1;
+		}
+	}
+	memmove(sel, sel + at, fan * sizeof(SiftSegEntry));
+	return fan;
+}
+
 /* The partitions the live bytes make of part_bytes (a key-cut partition is under three quarters of the size: the VACUUM space step moves a segment whole, within the bytes of a partition) */
 uint64
 maint_part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut)
@@ -202,10 +227,19 @@ maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSe
 	int			n;
 
 	maint_use_partitions(index, snap);
+	maint_force_bounded = false;
 	if (force)
 	{
 		n = sift_merge_pick(index, &pol, snap, true, sel);
-		return n > 0 && at_minimum(index, &pol, sel, n) ? 0 : n;
+		if (n > 0 && at_minimum(index, &pol, sel, n))
+			return 0;
+		if (n > MERGE_FORCE_FANIN)
+		{
+			n = cheapest_window(sel, n, MERGE_FORCE_FANIN);
+			maint_force_bounded = true;
+			return settled_all(index, sel, n) ? 0 : n;
+		}
+		return n;
 	}
 	if (maint_part_kb == 0)
 	{

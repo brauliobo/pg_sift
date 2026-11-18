@@ -564,7 +564,8 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	int			n;
 	int			nimm = 0;
 	bool		cut = false,
-				paced = false;
+				paced = false,
+				bounded;
 	RollStep	rs = {0};
 	SiftSegEntry *all;
 	int			nall = 0;
@@ -587,6 +588,7 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 		snap->nsegs = keep;
 	}
 	n = goal == SIFT_GOAL_REWRITE ? maint_pick_rewrite(index, snap, sel, &cut, &paced, &rs) : maint_pick_merge(index, snap, force, sel);
+	bounded = goal != SIFT_GOAL_REWRITE && maint_force_bounded;
 	/* a pass of the rewrite of overlapping runs does about sift.col_auto_merge_pass_mb of them: the next VACUUM, worker or sift.col_maintain call goes on from the directory this one left */
 	if (paced && n > 0)
 	{
@@ -653,6 +655,8 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	}
 	pfree(sel);
 	pfree(all);
+	if (n > 0 && bounded)
+		return maint_merge_next(index, force, goal, propagate, busy);
 	if (!sift_col_is_index(index) || sift_col_rel(index)->nscope == 0)
 		return n > 0 ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 	/* a merge of everything is of the scope segments too, in the same step */

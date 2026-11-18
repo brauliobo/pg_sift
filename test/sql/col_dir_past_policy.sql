@@ -33,8 +33,8 @@ SELECT s FROM unnest(ARRAY[11264, 22528, 33536]) n, LATERAL unnest(ARRAY[
 -- every segment of the build is one superblock, and the largest table makes more than the policy of the other kinds (128)
 SELECT n, segs, min_rows = 256 AND max_rows = 256 AS one_superblock_each, segs > 128 AS past_the_policy FROM peaks WHERE stage = 'build' AND scope = 'col_build' ORDER BY n;
 
--- the bytes of the writer and of the build do not follow the segments: the largest is under twice the smallest (the merge opens every input, 8 kB of col_merge and col_merge_inputs for each: the open scopes of test/mem-budgets.tsv)
-SELECT stage, scope, max(peak) < 2 * min(peak) AS flat_in_segments FROM peaks WHERE scope NOT IN ('col_merge', 'col_merge_inputs') GROUP BY stage, scope ORDER BY stage, scope;
+-- the bytes of the writer and of the build do not follow the segments: the largest is under twice the smallest (a merge opens at most 64 inputs at a time; col_merge holds the rows of the one segment it writes: the open scope of test/mem-budgets.tsv)
+SELECT stage, scope, max(peak) < 2 * min(peak) AS flat_in_segments FROM peaks WHERE scope <> 'col_merge' GROUP BY stage, scope ORDER BY stage, scope;
 
 -- the merge of 44, 88 and 131 segments writes the one segment their rows make
 SELECT n, segs = 1 AS one_segment FROM peaks WHERE stage = 'merge' AND scope = 'col_merge' ORDER BY n;

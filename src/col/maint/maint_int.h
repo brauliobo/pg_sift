@@ -27,7 +27,11 @@
 
 #define corrupt SIFT_CORRUPT
 
+/* A forced merge opens at most this many segments at a time: more are merged in passes, the cheapest consecutive ones first */
+#define MERGE_FORCE_FANIN	64
+
 extern int maint_part_kb;
+extern bool maint_force_bounded;
 
 /* The superblocks a segment holds rows of (sift_cseg_sb_spans) */
 typedef struct SbSpans
