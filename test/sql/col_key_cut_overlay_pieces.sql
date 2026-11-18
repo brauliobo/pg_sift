@@ -10,7 +10,7 @@ SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
 SET sift.vacuum_rewrite_limit = 1;
 SET sift.col_auto_merge_partition_kb = 512;
-SET sift.col_build_key_ranges = off;
+SET sift.test_col_build_runs_overlap = on;
 
 CREATE TABLE kc (id int, tenant_id int, d date, amount int, pad text) WITH (autovacuum_enabled = false);
 CREATE FUNCTION kc_fill(n int, lo int, hi int) RETURNS void LANGUAGE sql AS $$

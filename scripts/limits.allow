@@ -77,3 +77,4 @@ SET_MEMO_SLOTS	entries of the memo of the ranges of one probe, replaced in turn 
 TOMB_SLOTS	indexes whose tombstones a statement holds back for the page-wise append (col/supersede.c): when none is free every held buffer goes to the log and the first is reused
 SIFT_TOMB_PRESSURE_ENTRIES	the length of the tombstone log of a sift_table at which the maintenance worker is asked for: a scheduling threshold, with no effect on what a statement may do
 SIFT_TOMB_SYNC_ENTRIES	the length of the tombstone log of a sift_table past which a ticking backend leaves the count of its tombstones to the worker: a scheduling threshold, with no effect on what a statement may do
+REFILL_SAMPLE_ENTRIES	the entries of each sampled unit that go to the sample of the key ranges of a refill sort (col/maint/scope.c): the size of a sample, the ranges only come out less even from a smaller one

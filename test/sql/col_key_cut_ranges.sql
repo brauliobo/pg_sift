@@ -1,7 +1,8 @@
 -- A serial build with key_cut of a table that does not fit one run writes runs that do not overlap in the key (sift_col build spill.c): the rows go to a temporary
 -- file for each stretch of the key, cut at quantiles of a sample of the table, and the stretches are written in the order of the key. A key is in one unit,
 -- nothing is due after the build, the rows are the heap's for every kind of leaf (NULL keys, text, numeric, float, boolean, date, an array), and a build that
--- the temp_file_limit does not allow, or with the setting off, writes the runs of the table's order.
+-- the temp_file_limit or the disk does not allow is refused before it starts to write them (the testing setting sift.test_col_build_runs_overlap writes the runs of the
+-- table's order, as a key that is not a number does, to show what the ranges are against).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -34,7 +35,7 @@ CREATE FUNCTION kr_units(ix regclass) RETURNS numeric LANGUAGE sql AS $$
 	SELECT round(point_units::numeric, 1) FROM sift.col_clustering(ix, 1) WHERE path = 'tenant_id' $$;
 
 -- the runs of the table's order: a unit in each run for a key
-SET sift.col_build_key_ranges = off;
+SET sift.test_col_build_runs_overlap = on;
 SET sift.col_unit_rows = 1200;
 CREATE INDEX kr_runs ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
 SELECT count(*) > 3 AS several_runs FROM sift.col_segments('kr_runs') WHERE kind = 'immutable';
@@ -43,7 +44,7 @@ SELECT sift.col_maintenance_due('kr_runs') AS runs_due;
 DROP INDEX kr_runs;
 
 -- the runs by ranges: a unit, nothing due
-SET sift.col_build_key_ranges = on;
+SET sift.test_col_build_runs_overlap = off;
 CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
 SELECT count(*) > 3 AS several_runs FROM sift.col_segments('kr_idx') WHERE kind = 'immutable';
 SELECT kr_units('kr_idx') AS units_for_a_key;
@@ -56,32 +57,38 @@ DROP INDEX kr_idx;
 
 -- a key of floats is cut as well (the order of a float is that of its key: -0 and +0 are the same, NaN last)
 UPDATE kr SET score = CASE WHEN id % 89 = 0 THEN 'NaN' WHEN id % 83 = 0 THEN -0.0 WHEN id % 79 = 0 THEN 0.0 ELSE score END;
-SET sift.col_build_key_ranges = off;
+SET sift.test_col_build_runs_overlap = on;
 CREATE INDEX kr_runs ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'score', point_tid_columns = 'id');
 SELECT sift.col_maintenance_due('kr_runs') AS float_runs_due;
 DROP INDEX kr_runs;
-SET sift.col_build_key_ranges = on;
+SET sift.test_col_build_runs_overlap = off;
 CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'score');
 SELECT count(*) > 3 AS several_runs, sift.col_maintenance_due('kr_idx') AS float_ranges_due FROM sift.col_segments('kr_idx') WHERE kind = 'immutable';
 SELECT sift.col_verify('kr_idx', true);
 SELECT kr_same() AS same_rows_float_key;
 DROP INDEX kr_idx;
 
--- a temp_file_limit below the rows leaves the runs of the table's order, and the rows are the same
+-- a temp_file_limit below the rows refuses the build, and says what it needs and what to change
+CREATE FUNCTION kr_refused() RETURNS text LANGUAGE plpgsql AS $$
+DECLARE m text; h text;
+BEGIN
+	EXECUTE 'CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = ''tenant_id'')';
+	RETURN 'built';
+EXCEPTION WHEN program_limit_exceeded THEN
+	GET STACKED DIAGNOSTICS m = MESSAGE_TEXT, h = PG_EXCEPTION_HINT;
+	RETURN (regexp_match(m, '^(sift_col index "kr_idx": the rows of the build need about) \d+ MB of temporary files$'))[1] || ' / ' || (h ~ 'temp_file_limit' AND h ~ 'temp_tablespaces')::text;
+END $$;
 SET temp_file_limit = '1MB';
-CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
-SELECT kr_units('kr_idx') > 3 AS runs_of_the_table_order;
-SELECT kr_same() AS same_rows_without_ranges;
+SELECT kr_refused() AS refused_by_temp_file_limit;
 RESET temp_file_limit;
-DROP INDEX kr_idx;
+SELECT count(*) AS indexes_left FROM pg_class WHERE relname = 'kr_idx';
 
 -- so does a disk with less room than the rows need (half of what is free is the most the files take)
 SET sift.test_col_temp_free_kb = 1024;
-CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
-SELECT kr_units('kr_idx') > 3 AS runs_of_the_table_order;
-SELECT kr_same() AS same_rows_without_room;
+SELECT kr_refused() AS refused_by_the_disk;
 RESET sift.test_col_temp_free_kb;
-DROP INDEX kr_idx;
+SELECT count(*) AS indexes_left FROM pg_class WHERE relname = 'kr_idx';
+DROP FUNCTION kr_refused();
 
 -- a first run larger than the memory a run of the ranges may take (a large maintenance_work_mem) is cut into runs of that size, still without overlap
 SET sift.test_col_segment_kb = 6000;
@@ -100,7 +107,7 @@ SET sift.test_col_segment_kb = 1500;
 DROP INDEX kr_idx;
 
 -- changes after the build are kept
-SET sift.col_build_key_ranges = on;
+SET sift.test_col_build_runs_overlap = off;
 CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
 INSERT INTO kr SELECT 1000000 + g, g % 300, 'late', 1, 1, true, date '2027-01-01', ARRAY['z'], md5(g::text) FROM generate_series(1, 2000) g;
 UPDATE kr SET price = price + 1 WHERE id % 50 = 3;

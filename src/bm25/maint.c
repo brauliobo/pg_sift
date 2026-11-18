@@ -173,6 +173,7 @@ sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page 
 		n += k;
 	}
 	dir->nsegs = n;
+	meta->inserted += sw->inserted;
 	meta->flags &= ~SIFT_META_FAILURES_MASK;
 }
 
@@ -205,11 +206,11 @@ maint_written_bytes(void)
 	return maint_written;
 }
 
-void
-sift_maint_replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
-					 const char *what, TimestampTz start, int64 docs)
+static void
+replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
+		  const char *what, TimestampTz start, int64 docs, uint32 inserted)
 {
-	SiftMaintSwitch sw = {.old = old,.nold = nold,.neu = nneu > 0 ? neu : NULL,.more = nneu > 1 ? neu + 1 : NULL,.nmore = Max(nneu - 1, 0)};
+	SiftMaintSwitch sw = {.old = old,.nold = nold,.neu = nneu > 0 ? neu : NULL,.more = nneu > 1 ? neu + 1 : NULL,.nmore = Max(nneu - 1, 0),.inserted = inserted};
 	uint64		bytes = 0;
 
 	for (int i = 0; i < nneu; i++)
@@ -220,6 +221,20 @@ sift_maint_replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int
 	sift_dir_publish(index, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = release,
 			.nrelease = nrelease,.extra = InvalidBuffer}, wt);
 	sift_log_maint(index, what, start, docs, bytes);
+}
+
+void
+sift_maint_replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
+					 const char *what, TimestampTz start, int64 docs)
+{
+	replace_n(index, wt, old, nold, neu, nneu, release, nrelease, what, start, docs, 0);
+}
+
+void
+sift_maint_promote_n(Relation index, uint64 sealed, uint32 records, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease, const char *what,
+					 TimestampTz start, int64 docs)
+{
+	replace_n(index, NULL, &sealed, 1, neu, nneu, release, nrelease, what, start, docs, records);
 }
 
 void

@@ -74,6 +74,7 @@ probe_key_order(SiftColSegment *seg, const int *leaf, int nleaf, MemoryContext c
 #ifdef SIFT_TESTING
 int64		sift_test_cut_probes = 0;
 bool		sift_test_col_loose_inputs = false;
+bool		sift_test_col_merge_eager = false;
 #endif
 static struct
 {
