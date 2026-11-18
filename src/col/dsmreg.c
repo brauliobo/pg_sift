@@ -409,7 +409,7 @@ sift_dsm_test_leak_user(void)
 			pg_atomic_fetch_add_u32(&d->ent[i].users, 1);
 			return;
 		}
-	elog(ERROR, "no shared table to leak a user of: sift._test_dsm_join first");
+	ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("no shared table to leak a user of"), errhint("Call sift._test_dsm_join first.")));
 }
 
 /* sift._test_dsm_magic(magic): the magic of the directory, set to magic (a directory another library made); the one it had */
