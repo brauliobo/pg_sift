@@ -1526,6 +1526,21 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave at 10: a read patches the members whose pairs changed from the join, so a few changed members cost less than the rewrite of the scope segments. Lower it to hear of it sooner; scope segments never filled, or stamped under a journal a relation has since lost, are stale whatever the share. sift.col_connect_refresh_pct is the same rule for connected indexes.
 - **Sources:** benchmark `test:col_scope_journal`; [COL-SCOPE](COL-SCOPE.md#what-it-costs)
 
+#### sift.col_wbuf_key_range
+
+`sift_col` · default · since 5.1 · default on
+
+- **What it does:** a page of the write buffer says the range of the first key_cut column of its rows (an integer column), and a statement that asks for keys of that column reads only the pages that can hold them, not the whole buffer
+- **Gain:** first statement of a backend, 40,000 buffered rows, key_cut on a tenant column: equality 94.9 to 5.4 M instructions when the keys of an INSERT are ordered, 108 to 3.4 M for a key that is not in the buffer; clustered keys (200 rows of one key an INSERT) 95.0 to 9.8 M for a key in 25 of 200 pages and no gain for one in all of them; a random key in every row gains nothing (108.4 to 108.7 M, +0.3%); a second read of the same keys in a partial read costs up to 6.2 M against 0.7 M (40,000 rows, 25 of 200 pages) until the buffer is read whole and kept
+- **Gain and cost:** 17.60x fewer instructions (89500k saved a query), index +0.0%, build +0.3%, automatic
+- **Impact:** index size: 16 B a page of the buffer, which is never more than write_buffer_limit; build, merge and writes: insert of a 2,000-row batch +0.3% instructions (114.9 to 115.3 M, three alternating rounds, a 100,000-row table with 30 batches, a checkpoint after each); index pages written 619 to 618 and index WAL 91 to 92 B a row, within the noise of the rounds; other: 16 bytes a buffer page; an index made with it on has column format minor 55, which a library older than 5.1 refuses to open (REINDEX with the setting off writes the older minor)
+- **When:** a key_cut whose first column is an integer scalar (not a scope) and a statement with an equality, range or IN on it; the buffer of the index holds rows with that key in a part of its pages (an ordered or clustered load, a key that is rare or absent). A random key in every page reads them all, as before
+- **Default:** on — the first statement of a backend is the one that pays for the buffer and reads a part of it; a backend that goes on asking for keys reads the whole buffer once the partial reads have decoded as many rows as it holds, so no session pays more than twice the whole read; the 16 bytes a page are the write cost
+- **Turn off:** SET sift.col_wbuf_key_range = off (superuser) before the buffer is opened, or REINDEX with it off
+- **Upgrade from 4.3:** 5.0 reads and writes no minor 55: an index whose buffer was made by 5.1 with the setting on is refused by 5.0 until REINDEX with the setting off; indexes made by 5.0 are read as they are (no REINDEX), and take the setting at the next REINDEX
+- **Advice:** Leave on. Off writes buffers of minor 51, which a 5.0 library reads; set it off only before a downgrade, or where every key of every statement is in every page of the buffer
+- **Sources:** benchmark `test:col_wbuf_keyrange`; [USAGE](USAGE.md#maintenance-and-operations)
+
 ### opt-in
 
 #### sift(analyzer)
@@ -2777,7 +2792,7 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-Defaults changed: sift.tomb_log_limit since 4.3; new: `sift.search_chunk_sbs`, `sift.col_scope_refresh_pct`, `sift.agg_scope`, `sift.scope_max_multiplicity`, `sift.col_unit_rows`, `sift.col_value_store`, `sift_col(scope)`, `sift_col(projection)`, `sift.col_build_source`, `sift.backend_cache_kb`, `sift.on_corruption`.
+Defaults changed: sift.tomb_log_limit since 4.3; new: `sift.search_chunk_sbs`, `sift.col_scope_refresh_pct`, `sift.agg_scope`, `sift.scope_max_multiplicity`, `sift.col_wbuf_key_range`, `sift.col_unit_rows`, `sift.col_value_store`, `sift_col(scope)`, `sift_col(projection)`, `sift.col_build_source`, `sift.backend_cache_kb`, `sift.on_corruption`.
 
 | Option | 4.3 | 5.0 | Column format | What a 4.3 user gets after the update |
 |---|---|---|---|---|
@@ -2804,6 +2819,7 @@ Defaults changed: sift.tomb_log_limit since 4.3; new: `sift.search_chunk_sbs`, `
 | `sift_col(scope)` | new | '' | minor 45, unreadable by 4.3 | A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 5.0 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the segments. |
 | `sift.agg_scope` | new | on |  | New in 5.0. |
 | `sift.scope_max_multiplicity` | new | 3 |  | New in 5.0. |
+| `sift.col_wbuf_key_range` | new | on |  | 5.0 reads and writes no minor 55: an index whose buffer was made by 5.1 with the setting on is refused by 5.0 until REINDEX with the setting off; indexes made by 5.0 are read as they are (no REINDEX), and take the setting at the next REINDEX |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts
