@@ -28,6 +28,8 @@
 
 /* The segments a build may write: the directory keeps room for the write buffer and a merge */
 #define SIFT_COL_BUILD_SEGMENTS	(SIFT_MAX_SEGMENTS - 7)
+/* The workers a build through a btree may have (the participants take ranges of the key; col/build/btree_par.c) */
+#define SIFT_COL_BTREE_WORKERS	15
 
 /* The writer of a segment of a participant holds up to half of maintenance_work_mem shared by nslots participants (the segments of a key_cut build), at least this much (the serial build 64 MB) */
 #define SIFT_COL_BUILD_MIN_BUDGET	((Size) 16 * 1024 * 1024)
@@ -69,6 +71,16 @@ extern void sift_colb_free(ColBuild *b);
  */
 extern void sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs, bool stamped);
 
+/* The segments of a participant of a parallel build: slot i of the parts of maxsegs each (col/build_par.c) */
+typedef struct SiftColPart
+{
+	int			nsegs;
+	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
+} SiftColPart;
+extern Size sift_colp_part_size(int maxsegs);
+extern SiftColPart *sift_colp_part(char *parts, int maxsegs, int slot);
+extern SiftSegEntry *sift_colp_collect(char *parts, int maxsegs, int nslots, int *nsegs);
+
 /* col/build_par.c: the whole build with workers, NULL when none could be launched (nothing is written then) */
 extern IndexBuildResult *sift_colp_build(Relation heap, Relation index, IndexInfo *info);
 /* The merge of the segments of a parallel build by the participants, each a slice of the key range (col/build_par.c); false: no worker could be launched, the caller merges alone */
@@ -106,6 +118,16 @@ extern PGDLLIMPORT bool sift_test_col_parallel_always;	/* a parallel build with 
 extern PGDLLIMPORT int sift_test_col_merge_par_kb;	/* the input of a merge outside a build from which the workers make it, in kB (the gate MERGE_PAR_BYTES) */
 extern PGDLLIMPORT int sift_test_col_merge_workers;	/* workers that merge the segments of a parallel build (-1 = those that built them, 0 = the leader alone) */
 extern PGDLLIMPORT int sift_test_col_temp_free_kb;	/* the disk space the temporary files of a build by key ranges may use, in kB (-1 = what the disks of the temporary tablespaces have free) */
+extern PGDLLIMPORT int sift_test_col_build_btree;	/* the build by a btree on the key (col/build/btree.c): 0 the chooser decides, 1 whenever a btree can, -1 never */
+extern PGDLLIMPORT int sift_test_col_btree_entries;	/* entries of the btree the last build read, tuples it found visible and heap blocks it asked for */
+extern PGDLLIMPORT int sift_test_col_btree_visible;
+extern PGDLLIMPORT int sift_test_col_btree_blocks;
+extern PGDLLIMPORT bool sift_test_col_btree_gate_open;	/* a mutant: any btree passes for one that gives the key's order */
+extern PGDLLIMPORT int sift_test_col_pick_cache_blocks;	/* heap blocks the cache of the choice holds (-1 = shared_buffers), and what the last choice walked and predicted (col/build/btree_pick.c) */
+extern PGDLLIMPORT int sift_test_col_pick_entries;
+extern PGDLLIMPORT int sift_test_col_pick_blocks;
+extern PGDLLIMPORT int sift_test_col_pick_reads;
+extern PGDLLIMPORT int sift_test_col_pick_random;
 extern PGDLLIMPORT int sift_test_col_gap_blocks;	/* blocks a parallel build reserves for the merge (-1 = by the statistics, 0 = none) */
 #endif
 

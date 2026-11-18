@@ -132,7 +132,7 @@ sift_col_ambuildphasename(int64 phase)
 }
 
 static IndexBuildResult *
-serial_build(Relation heap, Relation index, IndexInfo *info)
+serial_build(Relation heap, Relation index, IndexInfo *info, const BtPlan *plan)
 {
 	IndexBuildResult *res = palloc0(sizeof(IndexBuildResult));
 	SiftSegEntry *segs = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
@@ -147,6 +147,7 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 		sift_colb_init_meta(index);
 	wt = sift_wt_begin(index, key_cut ? SIFT_WRITE_SHARED : SIFT_WRITE_BULK);
 	b = sift_colb_begin(index, wt, sift_colb_budget(1), SIFT_COL_BUILD_SEGMENTS, segs, false, 1, !info->ii_Concurrent);
+	b->btree = plan ? plan->btree : InvalidOid;
 	SIFT_MEM_SCOPE(col_build, b->cxt);
 	SpinLockInit(&acc->mutex);
 	PG_TRY();
@@ -187,6 +188,7 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 	IndexBuildResult *res = NULL;
 	bool		chosen,
 				scoped;
+	BtPlan	   *plan = NULL;
 
 	/* the build reads the heap, which holds the rows this transaction has buffered for the index */
 	sift_cwbuf_discard(RelationGetRelid(index));
@@ -238,10 +240,19 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 		sift_scope_start(heap, index, true);
 		PushActiveSnapshot(GetLatestSnapshot());
 	}
-	if (info->ii_ParallelWorkers > 0 && !sift_col_journal_empty)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
+	if (sift_col_key_cut(sift_col_rel(index)) && !sift_col_journal_empty)
+	{
+		/* a scope index builds the families of its scopes in the one process that scans */
+		bool		par = info->ii_ParallelWorkers > 0 && sift_scope_specs(index) == NULL;
+
+		plan = colb_btree_plan(heap, index, info, par ? 1 + Min(info->ii_ParallelWorkers, SIFT_COL_BTREE_WORKERS) : 1);
+		if (plan != NULL && par)
+			res = colb_btree_build_par(heap, index, info, plan, Min(info->ii_ParallelWorkers, SIFT_COL_BTREE_WORKERS));
+	}
+	if (res == NULL && plan == NULL && info->ii_ParallelWorkers > 0 && !sift_col_journal_empty)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
-		res = serial_build(heap, index, info);
+		res = serial_build(heap, index, info, plan);
 	if (scoped)
 		PopActiveSnapshot();
 #ifdef SIFT_TESTING

@@ -48,6 +48,7 @@ struct ColBuild
 	uint32		unit_base;		/* the unit the next run of the ranges starts at */
 	bool		spill_final;	/* the ranges are being read back */
 	bool		spill_tried;	/* the first full run decided whether the build goes by ranges */
+	Oid			btree;			/* key_cut: the btree the heap is read through, in the order of the key (col/build/btree.c) */
 	int			nsegs;
 	int			maxsegs;
 	bool		shared;			/* a participant of a parallel build */
@@ -86,5 +87,47 @@ extern void colb_spill_sample(ColBuild *b, Relation heap, IndexInfo *info);
 extern bool colb_spill_start(ColBuild *b);
 extern void colb_spill_batch(ColBuild *b, const SiftColBatch *batch);
 extern void colb_spill_finish(ColBuild *b);
+extern int	colb_key_leaf(const SiftColRel *r);
+extern int64 colb_key_of(const SiftColDef *def, const SiftColValue *v);
+extern void colb_report_rows(ColBuild *b);
+extern int	colb_spill_leaf_of(const SiftColRel *r, uint64 nblocks, uint64 total_rows, Size budget);
+
+/* A key of the leaf level of a btree, and the entries before it: the boundaries of the ranges of a parallel build */
+typedef struct BtBound
+{
+	Datum		key;
+	uint64		before;
+} BtBound;
+
+/* The btree a build reads the heap through, what it costs and the keys to split it at (col/build/btree_pick.c) */
+typedef struct BtPlan
+{
+	Oid			btree;
+	double		reads,
+				random_reads,
+				btree_us,
+				spool_us,
+				spool_mb;
+	uint64		entries;
+	int			nbound;
+	BtBound    *bound;
+} BtPlan;
+
+/* The rows of the btree to scan: [lo, hi) of the first column, or its NULLs; the units it numbers are unit_base up to unit_limit (0: no limit) */
+typedef struct BtRange
+{
+	bool		has_lo,
+				has_hi,
+				nulls;
+	Datum		lo,
+				hi;
+	uint32		unit_base,
+				unit_limit;
+} BtRange;
+
+extern List *colb_btree_candidates(Relation index, Relation heap, const IndexInfo *info);
+extern BtPlan *colb_btree_plan(Relation heap, Relation index, IndexInfo *info, int participants);
+extern IndexBuildResult *colb_btree_build_par(Relation heap, Relation index, IndexInfo *info, const BtPlan *plan, int nworkers);
+extern double colb_btree_scan(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snap, Oid btree, const BtRange *range);
 
 #endif

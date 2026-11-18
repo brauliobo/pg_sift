@@ -232,6 +232,7 @@ TESTING_REGRESS += col_kernels_%
 TESTING_REGRESS += col_key_columns_auto
 TESTING_REGRESS += col_key_cut
 TESTING_REGRESS += col_key_cut_big_overlays
+TESTING_REGRESS += col_key_cut_btree
 TESTING_REGRESS += col_key_cut_grown_overlay
 TESTING_REGRESS += col_key_cut_hot_value
 TESTING_REGRESS += col_key_cut_overlap

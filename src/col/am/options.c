@@ -551,6 +551,28 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_build_runs_overlap",
 							 "Testing: a sift_col build with key_cut writes the runs of the table's order, which overlap in the key, to leave a rewrite to do.",
 							 NULL, &sift_test_col_build_runs_overlap, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_build_btree",
+							"Testing: the build of a sift_col index with key_cut by a btree on the key: 0 the chooser decides, 1 whenever a btree can, -1 never.",
+							NULL, &sift_test_col_build_btree, 0, -1, 1, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_btree_gate_open",
+							 "Testing: a btree passes for one that gives the key's order whatever its columns and order (a mutant of the gate).",
+							 NULL, &sift_test_col_btree_gate_open, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_btree_entries",
+							"Testing: entries of the btree the last build read the heap through.", NULL, &sift_test_col_btree_entries, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_btree_visible",
+							"Testing: tuples the last build by btree found visible.", NULL, &sift_test_col_btree_visible, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_btree_blocks",
+							"Testing: heap blocks the last build by btree asked for (a run of entries of one block counts once).", NULL, &sift_test_col_btree_blocks, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_pick_cache_blocks",
+							"Testing: heap blocks the cache of the build's choice between the btree and the key ranges holds (-1 = shared_buffers).", NULL, &sift_test_col_pick_cache_blocks, -1, -1, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_pick_entries",
+							"Testing: entries of the btree the last choice walked.", NULL, &sift_test_col_pick_entries, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_pick_blocks",
+							"Testing: heap blocks the last choice counted along the entries (a run of entries of one block counts once).", NULL, &sift_test_col_pick_blocks, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_pick_reads",
+							"Testing: heap blocks the last choice predicted the btree reads.", NULL, &sift_test_col_pick_reads, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_pick_random",
+							"Testing: of those, the blocks the last choice predicted are read at random.", NULL, &sift_test_col_pick_random, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_spill_bytes",
 							"Testing: bytes the temporary files of the last sift_col build by key ranges of this session took.",
 							NULL, &sift_test_col_spill_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

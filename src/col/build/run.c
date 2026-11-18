@@ -392,8 +392,8 @@ flush_page(ColBuild *b)
 }
 
 /* The rows indexed since the last report; a worker's go to the progress of the leader */
-static void
-report_rows(ColBuild *b)
+void
+colb_report_rows(ColBuild *b)
 {
 	pgstat_progress_parallel_incr_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) (b->indexed - b->reported));
 	b->reported = b->indexed;
@@ -425,7 +425,7 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	MemoryContextReset(b->tmpcxt);
 	b->indexed++;
 	if (b->indexed - b->reported >= PROGRESS_ROWS)
-		report_rows(b);
+		colb_report_rows(b);
 }
 
 /* A participant's build without its fills: the families of a scope index (col/build/scope.c) are begun like the build of the entities, with their own cut and share the fill of the entities */
@@ -510,12 +510,24 @@ sift_colb_scan(ColBuild *b, Relation heap, IndexInfo *info)
 	MemoryContext old = MemoryContextSwitchTo(b->cxt);
 	double		tuples;
 
-	if (sift_col_key_cut(b->r) || b->nscope > 0)
-		colb_spill_sample(b, heap, info);
-	tuples = table_index_build_scan(heap, b->index, info, false, true, build_cb, b, NULL);
+	if (OidIsValid(b->btree))
+	{
+		Snapshot	snap = RegisterSnapshot(info->ii_Concurrent ? GetTransactionSnapshot() : GetLatestSnapshot());
+
+		/* an MVCC scan does not see the tuples only an older snapshot sees, which the scan of a build takes: the index is not for the snapshots older than itself */
+		info->ii_BrokenHotChain = true;
+		tuples = colb_btree_scan(b, heap, info, snap, b->btree, NULL);
+		UnregisterSnapshot(snap);
+	}
+	else
+	{
+		if (sift_col_key_cut(b->r) || b->nscope > 0)
+			colb_spill_sample(b, heap, info);
+		tuples = table_index_build_scan(heap, b->index, info, false, true, build_cb, b, NULL);
+	}
 
 	MemoryContextSwitchTo(old);
-	report_rows(b);
+	colb_report_rows(b);
 	return tuples;
 }
 
@@ -536,7 +548,7 @@ sift_colb_scan_sb(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snapshot
 	tuples = table_index_build_range_scan(heap, b->index, info, true, false, false, 0, InvalidBlockNumber, build_cb, b, scan);
 	MemoryContextSwitchTo(old);
 	pgstat_progress_parallel_incr_param(PROGRESS_SCAN_BLOCKS_DONE, Min(SIFT_SB_PAGES, nblocks - start));
-	report_rows(b);
+	colb_report_rows(b);
 	return tuples;
 }
 
@@ -561,7 +573,7 @@ sift_colb_end(ColBuild *b)
 		colb_finish_runs(b->scope[s]);
 	sift_conn_fill_end(b->fill);
 	colb_scope_gather(b);
-	report_rows(b);
+	colb_report_rows(b);
 	return b->nsegs;
 }
 

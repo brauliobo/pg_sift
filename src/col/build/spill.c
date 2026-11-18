@@ -48,8 +48,8 @@ struct ColSpill
 };
 
 /* The key a row sorts by (the chunk's key of col/order.c) */
-static int64
-key_of(const SiftColDef *def, const SiftColValue *v)
+int64
+colb_key_of(const SiftColDef *def, const SiftColValue *v)
 {
 	return def->store == SIFT_COLS_INT ? v->v.i : sift_crun_key(def, sift_col_f8_key(v->v.f));
 }
@@ -77,7 +77,7 @@ range_of(const ColSpill *s, const SiftColValue *v)
 {
 	if (v->isnull || v->overflow)
 		return s->n - 1;
-	return range_of_key(s, key_of(s->def, v));
+	return range_of_key(s, colb_key_of(s->def, v));
 }
 
 static bool
@@ -91,19 +91,28 @@ ranges_wanted(void)
 }
 
 /* The first leaf of the key when it is a plain number (an integer, date, timestamp, numeric or float), else -1 */
-static int
-range_leaf(const ColBuild *b)
+int
+colb_key_leaf(const SiftColRel *r)
 {
-	const SiftColSchema *sc = b->r->schema;
+	const SiftColSchema *sc = r->schema;
 	int			leaf;
 
-	if (b->shared || b->r->ncut == 0)
+	if (r->ncut == 0)
 		return -1;
-	leaf = b->r->cut[0];
+	leaf = r->cut[0];
 	if (sc->cols[leaf].parent >= 0 || (sc->cols[leaf].store != SIFT_COLS_INT && sc->cols[leaf].store != SIFT_COLS_F4 && sc->cols[leaf].store != SIFT_COLS_F8) ||
 		sift_col_def_value_lanes(&sc->cols[leaf]) > 1)
 		return -1;
 	return leaf;
+}
+
+/* The leaf of the key of a build by key ranges: a table of more than half a run (budget), whose key is a plain number; else -1 */
+int
+colb_spill_leaf_of(const SiftColRel *r, uint64 nblocks, uint64 total_rows, Size budget)
+{
+	if (!ranges_wanted() || total_rows == 0 || nblocks * BLCKSZ < (uint64) budget / 2)
+		return -1;
+	return colb_key_leaf(r);
 }
 
 /* The keys the ranges of one build are cut at: those of the entities' key_cut, or the scope keys the members of the sampled rows have (a scope's units are cut by its key) */
@@ -184,7 +193,7 @@ sample_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool ali
 static bool
 wants_ranges(const ColBuild *b, BlockNumber nblocks, uint64 expansion)
 {
-	return range_leaf(b) >= 0 && b->total_rows > 0 && (uint64) nblocks * BLCKSZ * expansion >= (uint64) b->budget / 2;
+	return !b->shared && colb_spill_leaf_of(b->r, (uint64) nblocks * expansion, b->total_rows, b->budget) >= 0;
 }
 
 static void
@@ -193,7 +202,7 @@ sample_add(Sample *sm, ColBuild *b, int scope)
 	SampleKeys *k = &sm->of[sm->nof++];
 
 	k->b = b;
-	k->leaf = range_leaf(b);
+	k->leaf = colb_key_leaf(b->r);
 	k->scope = scope;
 	k->cap = SAMPLE_KEYS * 2;
 	if (scope >= 0)
@@ -230,8 +239,6 @@ colb_spill_sample(ColBuild *b, Relation heap, IndexInfo *info)
 				take;
 	Sample		sm = {.b = b};
 
-	if (!ranges_wanted())
-		return;
 	if (sift_col_key_cut(b->r) && wants_ranges(b, nblocks, 1))
 		sample_add(&sm, b, -1);
 	for (int s = 0; s < b->nscope; s++)
@@ -466,7 +473,7 @@ spill_plan(const ColBuild *b, const ColSpill *s)
 bool
 colb_spill_start(ColBuild *b)
 {
-	int			leaf = range_leaf(b);
+	int			leaf = b->shared ? -1 : colb_key_leaf(b->r);
 	int			nr;
 	Size		held_bytes;
 	uint64		run_rows;

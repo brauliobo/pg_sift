@@ -1455,6 +1455,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on. To keep the footprint of a column: compression = 'auto; col=zstd' and REINDEX; the server log at DEBUG1 lists, at CREATE INDEX, the columns that took LZ4 (and the ones that came close) with their numbers.
 - **Sources:** benchmark `test:col_text_scanwrap`; [COLUMN-STORAGE](COLUMN-STORAGE.md#dictionaries-and-text)
 
+#### auto(key-cut-btree-order)
+
+`sift_col` · default · since 5.1 · default automatic
+
+- **What it does:** A key_cut build of a table of several runs reads the heap in the order of a btree on the key, by one process or by the participants of a parallel build, when the cost chooser says that is cheaper than the key ranges: no temporary file, the same rows and units
+- **Gain:** 300,000 rows, 13 columns, heap 21,004 blocks, key in heap order: 0 temporary files (the key ranges wrote 25.5 MB), 21,004 heap blocks read (the key ranges 38,306 with their sample), 19.0 G instructions (29.7 G)
+- **Impact:** index size: -; build, merge and writes: -; other: No index growth (the index is the one the key ranges write, within 3% of its bytes). The heap blocks the btree asks for are read again when the heap is not in the order of the key; the choice plays the entries of every usable btree through a cache of shared_buffers and says what it would read.
+- **When:** A table of more than half a run whose key_cut is a number (integer, date, timestamp, numeric or float column) and that has a valid btree whose first column is that key, ascending: a primary key updated in place, a timestamp that follows the inserts.
+- **Default:** automatic — Zero temporary files and 35% fewer instructions where the heap follows the key; the key ranges where it does not (a heap read at random costs more than the files).
+- **Turn off:** A table with no such btree, or a build whose cost says the key ranges are cheaper, takes the key ranges; sift.col_verify and the same answers as the key ranges are checked by col_key_cut_btree.
+- **Upgrade from 4.3:** Nothing changes in the files or the format; a CREATE INDEX or REINDEX of a key_cut index after the update may read the heap through a btree, with no REINDEX needed.
+- **Advice:** Leave on. The NOTICE of CREATE INDEX and REINDEX names the btree, the heap blocks it would read and the temporary files the key ranges would write; the build takes the key ranges whenever the btree would read the heap again.
+- **Sources:** benchmark `test:col_key_cut_btree`; [SIZING](SIZING.md#temporary-space-of-a-key_cut-build)
+
 #### sift.col_auto_connect
 
 `sift_col` · default · since 4.3 · default on
@@ -2793,6 +2807,7 @@ Defaults changed: sift.tomb_log_limit since 4.3; new: `sift.search_chunk_sbs`, `
 | `sift.col_unit_rows` | new | 0 |  | Named sift.test_col_unit_rows before 5.0; nothing to do, it was never in a release. |
 | `sift.search_chunk_sbs` | new | 32 |  | Named sift.test_search_chunk_sbs before 5.0; nothing to do, it was never in a release. |
 | `sift.tomb_log_limit` | 8388608 kB | 65536 kB |  | 5.0.1 keeps the setting as the memory of the log: the entries past it are kept in sorted runs on temp files, so a DELETE or UPDATE of any number of rows completes (a first 5.0.1 candidate lowered the default to 1 GB with an error past it: reverted). The default is 64 MB, down from 8 GB: a backend that read a log of 16 million entries held 1 GB, and holds 64 MB now. |
+| `auto(key-cut-btree-order)` | automatic | automatic |  | Nothing changes in the files or the format; a CREATE INDEX or REINDEX of a key_cut index after the update may read the heap through a btree, with no REINDEX needed. |
 | `sift.eval_methods` | '' | '' |  | 4.2 removed four names, so naming one is an error (the sign of -name is refused too): skip_trigger_lookup (always on: the statement trigger of track_changes leaves out the look at an UPDATE that kept the key), snapshot_masks (it had no code), latest_hint (it won nothing) and unit_rewrite (its writer is gone; segments an earlier release wrote with it stay readable and are vacuumed like the others, the automatic merge and rewrite leave them alone, and a forced sift.col_merge folds them): invalid value for parameter "sift.eval_methods": "snapshot_masks", DETAIL: Unknown evaluation method: snapshot_masks. Remove a removed name from ALTER DATABASE .. SET, ALTER SYSTEM and postgresql.conf before updating. Available after the extension library is loaded. Use the selection in the VACUUM session as well. |
 | `sift_col(connect)` | '' | '' | minor 44 | A new option: nothing changes for an index without it. The parent index of a connection is column format minor 44, which only 4.3 and later read. |
 | `sift_col(projection)` | new | '' |  | A new option: nothing changes for an index without it. ALTER EXTENSION UPDATE creates the definitions table and the status; an index that already lists a name is reported broken as not defined until the projection is created. No REINDEX. |
