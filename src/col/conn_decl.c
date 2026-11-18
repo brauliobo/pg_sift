@@ -171,6 +171,23 @@ sift_conn_parse(const char *text, const char **err)
 	return all;
 }
 
+void
+sift_conn_specs_free(SiftConnSpecs *all)
+{
+	for (int i = 0; i < all->n; i++)
+	{
+		SiftConnSpec *s = all->c[i];
+
+		pfree(s->fk);
+		if (s->parent_schema)
+			pfree(s->parent_schema);
+		pfree(s->parent_table);
+		pfree(s->parent_key);
+		pfree(s);
+	}
+	pfree(all);
+}
+
 /* The connections of the index, or NULL: the option is not set, or 'off' */
 SiftConnSpecs *
 sift_conn_specs(Relation child_index)
@@ -396,6 +413,7 @@ sift_conn_leaves(Relation index, SiftColDef *defs, int n, int *found, int *nconn
 		n++;
 		(*nconn)++;
 	}
+	sift_conn_specs_free(specs);
 	return n;
 }
 
