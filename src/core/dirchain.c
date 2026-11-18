@@ -30,6 +30,12 @@ leaf_cap(void)
 	return SIFT_CHAIN_LEAF_CAP;
 }
 
+uint32
+sift_dirchain_leaf_cap(void)
+{
+	return leaf_cap();
+}
+
 static uint32
 root_cap(void)
 {
@@ -99,6 +105,29 @@ bound_is_zero(const uint8 *lo)
 		if (lo[i] != 0)
 			return false;
 	return true;
+}
+
+static int
+cmp_u64(const void *a, const void *b)
+{
+	return pg_cmp_u64(*(const uint64 *) a, *(const uint64 *) b);
+}
+
+/* A lineage names one partition: no two leaves of a chain carry the same */
+static void
+check_lineages(Relation index, const SiftDirChain *chain, BlockNumber root)
+{
+	uint64	   *ids = palloc(Max(chain->nleaves, 1) * sizeof(uint64));
+	int			k = 0;
+
+	for (uint32 i = 0; i < chain->nleaves; i++)
+		if (chain->leaf[i].lineage != 0)
+			ids[k++] = chain->leaf[i].lineage;
+	qsort(ids, k, sizeof(uint64), cmp_u64);
+	for (int i = 1; i < k; i++)
+		if (ids[i] == ids[i - 1])
+			corrupt(index, "Directory root %u lists the partition " UINT64_FORMAT " twice.", root, ids[i]);
+	pfree(ids);
 }
 
 /*
@@ -188,9 +217,30 @@ sift_dirchain_read(Relation index, BlockNumber root, uint64 version, int room, S
 		}
 	}
 	pfree(top);
+	check_lineages(index, chain, root);
 	if ((uint32) n != nsegs)
 		corrupt(index, "Directory root %u says %u entries, its leaves hold %d.", root, nsegs, n);
 	return n;
+}
+
+int
+sift_dirchain_parts(const SiftDirChain *chain, SiftDirPart **parts)
+{
+	int			np = 0,
+				at = 0;
+
+	*parts = palloc(Max(chain->nleaves, 1) * sizeof(SiftDirPart));
+	for (uint32 k = 0; k < chain->nleaves; at += chain->leaf[k].n, k++)
+		if (chain->leaf[k].lineage != 0)
+		{
+			SiftDirPart *p = &(*parts)[np++];
+
+			p->lineage = chain->leaf[k].lineage;
+			p->first = at;
+			p->n = chain->leaf[k].n;
+			memcpy(p->lo, chain->leaf[k].lo, SIFT_BOUND_BYTES);
+		}
+	return np;
 }
 
 typedef struct GenPos
@@ -281,6 +331,22 @@ put_leaves(ChainOut *o, const SiftSegEntry *segs, int from, int to)
 	}
 }
 
+/* A partition: its entries [from, to) in a leaf of their own */
+static void
+put_part(ChainOut *o, const SiftSegEntry *segs, const SiftDirPart *part)
+{
+	Page		page;
+	SiftChainLeafData *leaf;
+	BlockNumber blk = put_page(o, SIFT_PT_DIRLEAF, &page);
+
+	leaf = (SiftChainLeafData *) SiftPageGetData(page);
+	leaf->n = part->n;
+	memcpy(leaf->segs, segs + part->first, part->n * sizeof(SiftSegEntry));
+	SiftPageSetUsed(page, SIFT_CHAIN_LEAF_USED(leaf->n));
+	o->ref[o->nref] = (SiftChainRef) {.blk = blk,.n = part->n,.gen = o->version,.lineage = part->lineage};
+	memcpy(o->ref[o->nref++].lo, part->lo, SIFT_BOUND_BYTES);
+}
+
 /* A page of references [from, to) of ref, written as a level of its own: the references it holds are n entries below it */
 static BlockNumber
 put_refs(ChainOut *o, const SiftChainRef *ref, int from, int to, uint32 level)
@@ -342,16 +408,17 @@ put_top(ChainOut *o, Relation index, int n, BlockNumber *rootblk)
  */
 BlockNumber
 sift_dirchain_write(Relation index, Buffer metabuf, uint64 version, const SiftDirChain *old, const SiftSegEntry *oldsegs,
-					const SiftSegEntry *segs, int n, BlockNumber below, SiftExtent *release, int *nrelease)
+					const SiftSegEntry *segs, int n, const SiftDirPart *parts, int nparts, BlockNumber below, SiftExtent *release, int *nrelease)
 {
 	ChainOut	o = {.index = index,.metabuf = metabuf,.version = version,.below = below};
 	GenPos	   *by_gen = palloc(Max(n, 1) * sizeof(GenPos));
 	bool	   *kept = palloc0(((old ? old->nleaves : 0) + 1) * sizeof(bool));
 	int			pos = 0;
 	int			off = 0;
+	int			head = nparts > 0 ? (int) parts[0].first : n;
 	BlockNumber rootblk;
 
-	o.ref = palloc((n / leaf_cap() + 2 * (old ? old->nleaves : 0) + 2) * sizeof(SiftChainRef));
+	o.ref = palloc((n / leaf_cap() + 2 * (old ? old->nleaves : 0) + nparts + 2) * sizeof(SiftChainRef));
 	for (int i = 0; i < n; i++)
 		by_gen[i] = (GenPos) {segs[i].gen, i};
 	qsort(by_gen, n, sizeof(GenPos), cmp_genpos);
@@ -361,7 +428,7 @@ sift_dirchain_write(Relation index, Buffer metabuf, uint64 version, const SiftDi
 		GenPos		key = {oldsegs[off].gen, 0};
 		const GenPos *hit = bsearch(&key, by_gen, n, sizeof(GenPos), cmp_genpos);
 
-		if (ref->n * 2 < leaf_cap() || hit == NULL || hit->pos < pos || hit->pos + ref->n > n || (BlockNumberIsValid(below) && ref->blk >= below) ||
+		if (ref->lineage != 0 || ref->n * 2 < leaf_cap() || hit == NULL || hit->pos < pos || hit->pos + ref->n > head || (BlockNumberIsValid(below) && ref->blk >= below) ||
 			memcmp(segs + hit->pos, oldsegs + off, ref->n * sizeof(SiftSegEntry)) != 0)
 			continue;
 		put_leaves(&o, segs, pos, hit->pos);
@@ -369,7 +436,25 @@ sift_dirchain_write(Relation index, Buffer metabuf, uint64 version, const SiftDi
 		kept[k] = true;
 		pos = hit->pos + ref->n;
 	}
-	put_leaves(&o, segs, pos, n);
+	put_leaves(&o, segs, pos, head);
+	for (int p = 0; p < nparts; p++)
+	{
+		uint32		k = 0;
+		int			at = 0;
+
+		for (; old && k < old->nleaves; at += old->leaf[k].n, k++)
+			if (old->leaf[k].lineage == parts[p].lineage)
+				break;
+		if (old && k < old->nleaves && old->leaf[k].n == parts[p].n && memcmp(old->leaf[k].lo, parts[p].lo, SIFT_BOUND_BYTES) == 0 &&
+			!(BlockNumberIsValid(below) && old->leaf[k].blk >= below) &&
+			memcmp(segs + parts[p].first, oldsegs + at, parts[p].n * sizeof(SiftSegEntry)) == 0)
+		{
+			o.ref[o.nref++] = old->leaf[k];
+			kept[k] = true;
+		}
+		else
+			put_part(&o, segs, &parts[p]);
+	}
 	put_top(&o, index, n, &rootblk);
 	flush_pending(&o);
 	if (old)

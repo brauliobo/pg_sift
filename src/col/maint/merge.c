@@ -448,9 +448,9 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 
 		for (int i = 0; i < o.nneu; i++)
 			docs += o.neu[i].ndocs;
-		sift_maint_replace_n(index, NULL, mi.gens, n, o.neu, o.nneu, mi.release, mi.nrelease,
-							 psprintf("merged %d column segments into %d of", n, o.nneu), start, docs);
-		maint_merge_settles(index, in, n, o.nneu);
+		sift_maint_replace_partitions(index, mi.gens, n, o.neu, o.nneu, mi.release, mi.nrelease,
+									  psprintf("merged %d column segments into %d of", n, o.nneu), start, docs, 0, part_bytes > 0 && key_cut && sift_col_is_index(index) ? o.nneu : 0);
+		maint_merge_settles(index, in, n, o.neu, o.nneu);
 	}
 	SIFT_MEM_CHECKPOINT();
 	MemoryContextSwitchTo(old);
@@ -485,15 +485,15 @@ sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int n
 
 /* The directory switch of a merge the participants made in slices: out[0..nout) replace in[0..n) */
 void
-sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start)
+sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start, int part_first, int part_n)
 {
 	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
 	int64		docs = 0;
 
 	for (int i = 0; i < nout; i++)
 		docs += out[i].ndocs;
-	sift_maint_replace_n(index, NULL, mi.gens, n, out, nout, mi.release, mi.nrelease, psprintf("merged %d column segments into %d of", n, nout), start, docs);
-	maint_merge_settles(index, in, n, nout);
+	sift_maint_replace_partitions(index, mi.gens, n, out, nout, mi.release, mi.nrelease, psprintf("merged %d column segments into %d of", n, nout), start, docs, part_first, part_n);
+	maint_merge_settles(index, in, n, out, nout);
 }
 
 /* the workers that make one segment of a merge outside a build, besides the backend (maint_merge_par_bytes) */
@@ -553,7 +553,7 @@ merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut)
 #ifdef SIFT_TESTING
 	sift_test_col_merge_slices = nslices;
 #endif
-	return sift_colp_merge(index, sel, n, workers, nslices, GetCurrentTimestamp());
+	return sift_colp_merge(index, sel, n, workers, nslices, GetCurrentTimestamp(), cut);
 }
 
 SiftStepResult

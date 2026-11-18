@@ -17,6 +17,7 @@ PG_FUNCTION_INFO_V1(sift_test_dir_list);
 PG_FUNCTION_INFO_V1(sift_test_dir_info);
 PG_FUNCTION_INFO_V1(sift_test_dir_check);
 PG_FUNCTION_INFO_V1(sift_test_dir_read_stale);
+PG_FUNCTION_INFO_V1(sift_test_dir_parts);
 
 typedef struct DirEditArg
 {
@@ -25,6 +26,26 @@ typedef struct DirEditArg
 	int			n;
 	uint64		first_gen;
 } DirEditArg;
+
+/* nold entries from pos become nnew new ones, each a partition of its own (sift_dir_part_replace) */
+static void
+repartition(SiftMetaPageData *meta, SiftDirectoryData *dir, int pos, int nold, int nnew)
+{
+	SiftSegEntry *segs = dir->segs;
+	uint64	   *old = palloc(nold * sizeof(uint64));
+
+	for (int i = 0; i < nold; i++)
+		old[i] = segs[pos + i].gen;
+	memmove(&segs[pos + nnew], &segs[pos + nold], (dir->nsegs - pos - nold) * sizeof(SiftSegEntry));
+	for (int i = 0; i < nnew; i++)
+	{
+		uint64		gen = meta->next_gen++;
+
+		segs[pos + i] = (SiftSegEntry) {.gen = gen,.kind = SIFT_SEG_VALRUN,.header_blk = InvalidBlockNumber,.ndocs = gen * 7};
+	}
+	dir->nsegs += nnew - nold;
+	sift_dir_part_replace(old, nold, &segs[pos], nnew, NULL);
+}
 
 static void
 edit_entries(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
@@ -59,6 +80,12 @@ edit_entries(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *a
 			segs[a->pos + a->n - 1 - i] = t;
 		}
 	}
+	else if (strcmp(a->op, "part") == 0)
+		repartition(meta, dir, a->pos, a->n, a->n);
+	else if (strcmp(a->op, "split") == 0)
+		repartition(meta, dir, a->pos, 1, a->n);
+	else if (strcmp(a->op, "merge") == 0)
+		repartition(meta, dir, a->pos, a->n, 1);
 	else if (strcmp(a->op, "set") == 0)
 	{
 		for (int i = 0; i < a->n; i++)
@@ -68,7 +95,7 @@ edit_entries(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *a
 		elog(ERROR, "unknown directory edit \"%s\"", a->op);
 }
 
-/* sift._test_dir_edit(index, op, pos, n): rechain writes the pages of a chain at or above block pos again below it; ins n new entries at pos, del n from pos, rev the n from pos, set (count a document in) the n from pos; the first generation inserted, else 0 */
+/* sift._test_dir_edit(index, op, pos, n): part makes the n entries from pos partitions of their own (new entries, one each), split cuts the partition at pos in n, merge makes the n from pos one; rechain writes the pages of a chain at or above block pos again below it; ins n new entries at pos, del n from pos, rev the n from pos, set (count a document in) the n from pos; the first generation inserted, else 0 */
 Datum
 sift_test_dir_edit(PG_FUNCTION_ARGS)
 {
@@ -76,8 +103,8 @@ sift_test_dir_edit(PG_FUNCTION_ARGS)
 	DirEditArg	arg = {.op = text_to_cstring(PG_GETARG_TEXT_PP(1)),.pos = PG_GETARG_INT32(2),.n = PG_GETARG_INT32(3)};
 	SiftDirSnapshot *cur = sift_dir_read(index);
 
-	if ((strcmp(arg.op, "rechain") != 0 && (arg.pos < 0 || arg.n < 0 || arg.pos + (strcmp(arg.op, "ins") == 0 ? 0 : arg.n) > cur->nsegs)) ||
-		cur->nsegs + (strcmp(arg.op, "ins") == 0 ? arg.n : 0) > SIFT_DIR_WIDE_MAX)
+	if ((strcmp(arg.op, "rechain") != 0 && (arg.pos < 0 || arg.n < 0 || arg.pos + (strcmp(arg.op, "ins") == 0 || strcmp(arg.op, "split") == 0 ? 0 : arg.n) > cur->nsegs || (strcmp(arg.op, "split") == 0 && arg.pos >= cur->nsegs))) ||
+		cur->nsegs + (strcmp(arg.op, "ins") == 0 || strcmp(arg.op, "split") == 0 ? arg.n : 0) > SIFT_DIR_WIDE_MAX)
 		elog(ERROR, "directory edit %s %d %d does not fit %d entries", arg.op, arg.pos, arg.n, cur->nsegs);
 	MAINT_LOCK(index, ShareLock);
 	if (strcmp(arg.op, "rechain") == 0)
@@ -149,6 +176,35 @@ sift_test_dir_read_stale(PG_FUNCTION_ARGS)
 		elog(ERROR, "sift test: the directory of \"%s\" is not chained", RelationGetRelationName(index));
 	(void) sift_dirchain_read(index, snap->chain[0], snap->version + 1, 0, &segs, &chain);
 	PG_RETURN_VOID();
+}
+
+/* sift._test_dir_parts(index): the partitions the chain of any sift index lists, in directory order: the position of the first entry, the entries, the lineage and the generation of the first entry */
+Datum
+sift_test_dir_parts(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = sift_dir_read(index);
+	SiftDirPart *parts;
+	SiftSegEntry *segs;
+	SiftDirChain chain;
+	int			np;
+
+	InitMaterializedSRF(fcinfo, 0);
+	if (snap->nchain > 0)
+	{
+		(void) sift_dirchain_read(index, snap->chain[0], snap->version, 0, &segs, &chain);
+		np = sift_dirchain_parts(&chain, &parts);
+		for (int i = 0; i < np; i++)
+		{
+			Datum		values[4] = {Int32GetDatum(parts[i].first), Int32GetDatum(parts[i].n), Int64GetDatum(parts[i].lineage), Int64GetDatum(segs[parts[i].first].gen)};
+			bool		nulls[4] = {0};
+
+			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+		}
+	}
+	relation_close(index, AccessShareLock);
+	return (Datum) 0;
 }
 
 typedef struct ChainBlocks

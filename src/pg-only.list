@@ -369,6 +369,8 @@ core/freelist.c
 core/dirchain.c
 core/dirchain.h
 core/dirchain_test.c
+core/dirpart.c
+core/dirpart.h
 core/freelist_alloc.c
 core/freelist_int.h
 core/handler.c

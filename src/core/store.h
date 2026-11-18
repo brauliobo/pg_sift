@@ -150,6 +150,12 @@ typedef struct SiftDirSnapshot
 /* The directory entries a writer keeps the index within: the policy of the writers (SIFT_DIR_POLICY_MAX; sift.test_limits lowers it), or for a sift_col index the capacity: its partitions make as many as its bytes ask */
 extern int	sift_dir_cap(const SiftMetaPageData *meta);
 
+/* The entries old[0..nold) a directory update replaces by neu[0..nneu), each a partition of its own, with the lineage the rules give it; lo: their lower bounds or NULL (core/dirchain.h) */
+/* The entries neu[0..nneu) replace old[0..nold), all of one partition: they are in it (a rewrite, a vacuum step) */
+extern void sift_dir_part_inherit(const uint64 *old, int nold, const SiftSegEntry *neu, int nneu);
+
+extern void sift_dir_part_replace(const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, const uint8 (*lo)[SIFT_BOUND_BYTES]);
+
 /*
  * Do the segments of the index hold documents written under other options than hash (the analyzer of a BM25 index, the leaf list of a column index)? An index with
  * no such segment has written nothing under the options of its metapage, so they do not count: its first write takes the current ones (sift_lane_refresh)

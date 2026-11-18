@@ -208,7 +208,9 @@ maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep 
 	bool	   *every = palloc(Max(n, 1) * sizeof(bool));
 	TimestampTz start = GetCurrentTimestamp();
 	int			nout = 0,
-				nover = 0;
+				nover = 0,
+				nlow,
+				nwin;
 	SiftColWindow rest;
 
 	for (int i = 0; i < n; i++)
@@ -222,13 +224,15 @@ maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep 
 		rest.hi = rs->win.lo;
 		nout += roll_write(index, over, nover, &rest, 0, 1, &out[nout]);
 	}
-	nout += roll_write(index, sel, n, &rs->win, rs->bytes, Max(1, rs->parts), &out[nout]);
+	nlow = nout;
+	nwin = roll_write(index, sel, n, &rs->win, rs->bytes, Max(1, rs->parts), &out[nout]);
+	nout += nwin;
 	for (int g = 0; rs->win.has_hi && nover > 0 && g <= rs->nhigh; g++)
 	{
 		rest = (SiftColWindow) {.has_lo = true,.lo = g == 0 ? rs->win.hi : rs->high[g - 1],.has_hi = g < rs->nhigh,.hi = g < rs->nhigh ? rs->high[g] : 0,.bounded = every};
 		nout += roll_write(index, over, nover, &rest, 0, 1, &out[nout]);
 	}
-	sift_col_merge_switch(index, sel, n, out, nout, start);
+	sift_col_merge_switch(index, sel, n, out, nout, start, nlow, nwin);
 	pfree(out);
 	pfree(over);
 	pfree(every);

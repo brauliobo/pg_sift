@@ -306,7 +306,7 @@ merge_slices(MergeShared *sh, SiftSegEntry *out, Relation index)
 }
 
 bool
-sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int nslices, TimestampTz start)
+sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int nslices, TimestampTz start, bool partitions)
 {
 	SiftParLeader *ldr = sift_par_enter(false);
 	MergeShared *sh;
@@ -331,7 +331,7 @@ sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int
 		if (out[i].ndocs > 0)
 			made[nout++] = out[i];
 	sift_par_end(ldr);
-	sift_col_merge_switch(index, in, n, made, nout, start);
+	sift_col_merge_switch(index, in, n, made, nout, start, 0, partitions ? nout : 0);
 	return true;
 }
 

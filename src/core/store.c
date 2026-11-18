@@ -17,6 +17,7 @@
 
 #include "col/col.h"
 #include "core/dirchain.h"
+#include "core/dirpart.h"
 #include "core/limits.h"
 #include "core/ops.h"
 #include "core/restrict.h"
@@ -656,6 +657,7 @@ check_dir_result(Relation index, SiftXlog *state, const SiftMetaPageData *before
 /* An update that works on the directory as a list: the entries the mutator edits, and what the chain it replaces holds */
 typedef struct DirEdit
 {
+	SiftDirParts parts;			/* the partition each entry is in (core/dirpart.c) */
 	SiftDirectoryData *dir;		/* the mutator's copy of block 1, with room for the entries a mutator adds (SiftDirChange.nadd) */
 	int			cap;
 	SiftSegEntry *old;			/* its entries as they were */
@@ -688,11 +690,15 @@ dir_edit_open(Relation index, Page dp, const SiftDirChange *chg, DirEdit *e)
 	e->dir->nsegs = e->nold;
 	e->old = palloc(Max(e->nold, 1) * sizeof(SiftSegEntry));
 	memcpy(e->old, old, e->nold * sizeof(SiftSegEntry));
+	if (e->chained)
+		sift_dirpart_open(&e->parts, &e->chain, e->old);
+	sift_dirpart_enter(&e->parts);
 }
 
 static void
 dir_edit_free(DirEdit *e)
 {
+	sift_dirpart_leave(&e->parts);
 	pfree(e->dir);
 	pfree(e->old);
 	pfree(e->release);
@@ -717,11 +723,14 @@ dir_edit_close(Relation index, SiftXlog *state, Buffer metabuf, Page mp, Page dp
 	SiftDirectoryData *page = DIR(dp);
 	uint64		version = page->version + 1;
 
+	SiftDirPart *parts = NULL;
+	int			nparts = e->parts.n > 0 ? sift_dirpart_arrange(index, &e->parts, dir->segs, dir->nsegs, &parts) : 0;
+
 	check_dir_result(index, state, before, META(mp), dir->segs, dir->nsegs, SIFT_DIR_WIDE_MAX);
 	e->release = palloc((chg->nrelease + e->chain.nleaves + e->chain.ninner + 2 + dir->nsegs) * sizeof(SiftExtent));
 	memcpy(e->release, chg->release, chg->nrelease * sizeof(SiftExtent));
 	e->nrelease = chg->nrelease;
-	if (!e->chained && dir->nsegs <= sift_dir_flat_max())
+	if (!e->chained && nparts == 0 && dir->nsegs <= sift_dir_flat_max())
 	{
 		page->nsegs = dir->nsegs;
 		memcpy(page->segs, dir->segs, dir->nsegs * sizeof(SiftSegEntry));
@@ -729,7 +738,7 @@ dir_edit_close(Relation index, SiftXlog *state, Buffer metabuf, Page mp, Page dp
 	}
 	else
 	{
-		BlockNumber root = sift_dirchain_write(index, metabuf, version, e->chained ? &e->chain : NULL, e->old, dir->segs, dir->nsegs,
+		BlockNumber root = sift_dirchain_write(index, metabuf, version, e->chained ? &e->chain : NULL, e->old, dir->segs, dir->nsegs, parts, nparts,
 											   chg->chain_below != 0 ? chg->chain_below : InvalidBlockNumber, e->release, &e->nrelease);
 
 		SIFT_DIR_TEST_CHAIN_POINT();

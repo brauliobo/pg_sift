@@ -294,8 +294,6 @@ extern void sift_col_datum_values(const SiftColDef *def, Datum d, bool name, Sif
 
 /* Built on first use from the index definition (ERROR for an unsupported type or a jsonb attribute without paths) */
 extern SiftColRel *sift_col_rel(Relation index);
-extern Relation sift_col_rel_file_view(Relation index, const RelFileLocator *loc);
-extern void sift_col_rel_file_view_close(Relation view);
 extern MemoryContext sift_col_rel_rowcxt(SiftColRel *r);
 /*
  * The same in mcxt, for a caller that holds it across a lock or an expression of the index: a reload of the relcache entry (any lock taken
@@ -475,9 +473,7 @@ extern void sift_col_vacuum_notice(Relation heap, Relation index);
 extern BlockNumber sift_col_build_gap(Relation heap, Relation index);
 extern void sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers);
 extern void sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int nslices, SiftSegEntry *out);
-/* The merge of the build of a REINDEX: in[0..nfrom) are segments of the relation from, in[nfrom..n) of the index; returns the segments written to out, which are not in the directory (maxout of them at most) */
-extern int	sift_col_merge_from(Relation index, Relation from, const SiftSegEntry *in, int n, int nfrom, SiftSegEntry *out, int maxout);
-extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start);
+extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start, int part_first, int part_n);
 extern bool sift_col_autovacuum_enabled(Relation heap);
 extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, TimestampTz *last);
 extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows);

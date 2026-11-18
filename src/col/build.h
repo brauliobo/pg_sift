@@ -75,7 +75,7 @@ extern void sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs, boo
 /* col/build_par.c: the whole build with workers, NULL when none could be launched (nothing is written then) */
 extern IndexBuildResult *sift_colp_build(Relation heap, Relation index, IndexInfo *info);
 /* The merge of the segments of a parallel build by the participants, each a slice of the key range (col/build_par.c); false: no worker could be launched, the caller merges alone */
-extern bool sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int nslices, TimestampTz start);
+extern bool sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int nslices, TimestampTz start, bool partitions);
 
 /* The peak of the memory the build holds is noted where it grows (a batch, a run, a unit); a release library does not look */
 #ifdef SIFT_TESTING

@@ -177,6 +177,7 @@ TESTING_REGRESS += col_dict_packed
 TESTING_REGRESS += col_dict_shared
 TESTING_REGRESS += col_dict_shared_stale
 TESTING_REGRESS += col_dict_stored
+TESTING_REGRESS += col_dir_lineage
 TESTING_REGRESS += col_dir_past_policy
 TESTING_REGRESS += col_document_present
 TESTING_REGRESS += col_dsm_write_caches
