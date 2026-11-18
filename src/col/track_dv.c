@@ -22,9 +22,13 @@
 #include "core/membudget.h"
 #include "core/tomb_dv.h"
 
-#define DV_ROW_INSTR		270		/* the fixed price of the lookup for each row of the index (measured: 80 M instructions at 1% scattered deletes of 150,000 rows, 40 M of them not for the addresses) */
-#define DV_KEY_INSTR		25000	/* the price of finding one address in its unit (measured: 22 k to 32 k as the statement grows from 1% to 50% of the rows) */
-#define DV_MARK_INSTR		60000	/* a mark over its life: 4 k to 11 k to write, 55 k for the fold to clear its row (docs/COL-HEAPFREE.md) */
+/*
+ * 150,000 rows, statements of 150 to 75,000 scattered or contiguous rows, the same statement with marks and with records (release build): (A) 125 units of 1,200 rows, key-cut on a key that is not
+ * correlated to the heap; (B) 42 units of 8,192 rows, not key-cut; (C) 32 units of 4,800 rows, key-cut on a key correlated to the heap
+ */
+#define DV_ROW_INSTR		31		/* the walk of the pages of every unit against the addresses, for each row of the index: the 150 addresses of the statement cost 9.2 M more with records (A: 61), 1.3 M (B: 8.7) and 3.8 M (C: 25) */
+#define DV_KEY_INSTR		2000	/* an address found, at the least that pays: 9.7 k at 150 addresses, 2 k at 750 (the offsets of the pages of the unit decoded), 0.6 k from 15,000 (A, C) */
+#define DV_MARK_INSTR		7100	/* a mark over its life: 6 k to write (6.0 k a row of 75,000 in A, 13 k of 15,000), 1.1 k for the fold (0.9 to 1.2 k: col/maint/fold.c), where a record costs the fold 0.12 k a row */
 #define DV_MIN_ROWS			64
 #define DV_KEYS_MAX			(1 << 20)
 #define MARKS_CHUNK			8192
@@ -101,12 +105,6 @@ found_unit(uint32 u, const uint32 *rows, const SiftKey *at, uint32 nrows, void *
 	(void) sift_dv_encode(&f->slots, &f->nslots, &f->capslots, f->cxt, f->gen, u, f->d->xid, f->d->cid, rows, nrows);
 	memcpy(f->resolved + f->nres, at, nrows * sizeof(uint64));
 	f->nres += nrows;
-}
-
-static int
-cmp_keys(const void *a, const void *b)
-{
-	return SIFT_CMP3(*(const uint64 *) a, *(const uint64 *) b);
 }
 
 /* Does an immutable segment of the directory hold copies of the rows (a scope): a record would not end them */
@@ -194,7 +192,7 @@ write_records(SiftColDead *d, uint32 *nrest)
 	{
 		stamp_format(d);
 		sift_tomb_append_many(d->index, d->log, f.slots, (int) f.nslots);
-		qsort(f.resolved, f.nres, sizeof(uint64), cmp_keys);
+		sift_sort_u64(f.resolved, f.nres);
 		rest = unresolved(d, &f, nrest);
 	}
 	UnlockPage(d->index, SIFT_TOMB_LOCK_BLKNO, ShareLock);
@@ -229,7 +227,7 @@ dead_flush(SiftColDead *d)
 	SIFT_MEM_SCOPE(col_dead_keys, d->cxt);
 	if (d->n == 0)
 		return;
-	qsort(d->keys, d->n, sizeof(uint64), cmp_keys);
+	sift_sort_u64(d->keys, d->n);
 	d->n = unique_keys(d->keys, d->n);
 	if (d->n >= threshold(d))
 		rest = write_records(d, &nrest);

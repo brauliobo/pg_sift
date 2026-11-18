@@ -11,7 +11,7 @@ CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (
 VACUUM (FREEZE) events;
 SELECT sum(units) > 1 AS several_units FROM sift.col_segments('events_c') WHERE kind = 'immutable';
 
-CREATE FUNCTION chk(what text, OUT test text, OUT same_as_heap bool, OUT sift_plan bool) LANGUAGE plpgsql AS $$
+CREATE FUNCTION chk(what text, tbl text DEFAULT 'events', OUT test text, OUT same_as_heap bool, OUT sift_plan bool) LANGUAGE plpgsql AS $$
 DECLARE a text; o text; q text; ex text;
 BEGIN
 	test := what;
@@ -27,6 +27,7 @@ BEGIN
 		'SELECT count(*) FROM events WHERE id BETWEEN 1000 AND 9000 AND tenant_id IN (2, 5)',
 		'SELECT id FROM events WHERE id BETWEEN 5000 AND 5100 ORDER BY id']
 	LOOP
+		q := replace(q, ' events', ' ' || tbl);
 		PERFORM set_config('sift.enable_agg', 'on', true);
 		EXECUTE 'SELECT string_agg(r::text, '';'') FROM (' || q || ') r' INTO a;
 		PERFORM set_config('sift.enable_agg', 'off', true);
@@ -35,10 +36,10 @@ BEGIN
 	END LOOP;
 END $$;
 
-CREATE FUNCTION log_kinds(OUT marks int, OUT records int) LANGUAGE sql AS
-	$$ SELECT (SELECT count(*)::int FROM sift._test_col_log_entries('events_c') WHERE kind = 1 AND flags & 32768 = 0),
-	          (SELECT count(*)::int FROM sift._test_col_log_records('events_c')) $$;
-CREATE FUNCTION dead() RETURNS bigint LANGUAGE sql AS $$ SELECT dead_rows FROM sift.col_index_status WHERE index::text = 'events_c' $$;
+CREATE FUNCTION log_kinds(idx text DEFAULT 'events_c', OUT marks int, OUT records int) LANGUAGE sql AS
+	$$ SELECT (SELECT count(*)::int FROM sift._test_col_log_entries(idx::regclass) WHERE kind = 1 AND flags & 32768 = 0),
+	          (SELECT count(*)::int FROM sift._test_col_log_records(idx::regclass)) $$;
+CREATE FUNCTION dead(idx text DEFAULT 'events_c') RETURNS bigint LANGUAGE sql AS $$ SELECT dead_rows FROM sift.col_index_status WHERE index::text = idx $$;
 
 SELECT * FROM chk('fresh');
 
@@ -116,7 +117,28 @@ SELECT (log_kinds()).records AS records_after_vacuum;
 INSERT INTO events SELECT 200000 + i, i % 10, i, 'y', 'n' FROM generate_series(1, 3000) i;
 SELECT * FROM chk('inserted after vacuum');
 SELECT sift.col_verify('events_c', true) IS NOT NULL AS verified;
-DROP TABLE events;
-DROP FUNCTION chk(text), log_kinds(), dead(), cursor_keeps_its_snapshot();
+
+-- a key-cut index: its units are the rows of a range of a key that has nothing to do with the heap, so a range of the heap lies in every unit and the lookup of the rows of a statement walks the
+-- blocks of each unit against its addresses; a range of ids deletes whole heap pages (many rows of a block in one unit) and a stride deletes one row of a page
+CREATE TABLE events_k (id int PRIMARY KEY, grp int NOT NULL, counter_a int, tenant_id int, label text, note text) WITH (autovacuum_enabled = false, fillfactor = 60);
+INSERT INTO events_k SELECT i, (i::bigint * 7919 % 300)::int, i, i % 10, 'x', repeat('n', 150) FROM generate_series(1, 30000) i;
+SET sift.col_unit_rows = 1200;
+CREATE INDEX events_kc ON events_k USING sift_col (id, grp, counter_a, tenant_id) WITH (key_cut = 'grp', track_changes = 'id');
+VACUUM (FREEZE) events_k;
+SELECT sum(units) > 1 AS several_units FROM sift.col_segments('events_kc') WHERE kind = 'immutable';
+SELECT * FROM chk('key-cut, fresh', 'events_k');
+DELETE FROM events_k WHERE id BETWEEN 2001 AND 9000;
+SELECT (log_kinds('events_kc')).records > 0 AS records_for_the_range, (log_kinds('events_kc')).marks AS marks_for_the_range;
+SELECT * FROM chk('key-cut, a range deleted', 'events_k');
+DELETE FROM events_k WHERE id % 7 = 3;
+SELECT * FROM chk('key-cut, a stride deleted', 'events_k');
+DELETE FROM events_k WHERE id % 4999 = 2;
+SELECT * FROM chk('key-cut, a few deleted', 'events_k');
+SELECT sift._test_col_fold_marks('events_kc') > 0 AS folded;
+SELECT (log_kinds('events_kc')).records AS records_after_fold, dead('events_kc') = 30000 - (SELECT count(*) FROM events_k) AS every_deleted_row_cleared;
+SELECT * FROM chk('key-cut, folded', 'events_k');
+
+DROP TABLE events, events_k;
+DROP FUNCTION chk(text, text), log_kinds(text), dead(text), cursor_keeps_its_snapshot();
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
