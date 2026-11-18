@@ -366,6 +366,12 @@ sift_col_init(void)
 							 "is written with its values (sift.col_arena_status shows how many). Records written while it was on stay references after it is turned off; a buffer that holds one is column format minor 44. "
 							 "An index without track_changes, a speculative insertion and a table that is not a heap keep the values.",
 							 &sift_col_wbuf_ref, true, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.col_wbuf_key_range",
+							 "The pages of the write buffers of a key_cut index with an integer key hold the range of the keys of their rows, so that a read of some keys skips the pages that hold none of them.",
+							 "A buffer opened with it on is column format minor 55: a release before 5.1 refuses the index, so upgrade every server that reads it (a standby too) before the primary opens one, or set it off first: off writes buffers of minor 51, which 5.0 reads. "
+							 "The buffers opened while it is off, and one that was open when the release was installed, keep the pages they have. A read of keys decodes the rows of the pages that meet them until it has decoded "
+							 "as many rows as the buffer holds, then keeps the whole buffer as the reads of a buffer without ranges do.",
+							 &sift_col_wbuf_key_range, true, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_unit_rows",
 							"The rows a key-cut unit aims at, 0 for the rows of 256 average heap pages.",
 							"A smaller unit prunes finer and costs more directory per row; it applies to the units written from now on. It also gets several units out of a small table.",

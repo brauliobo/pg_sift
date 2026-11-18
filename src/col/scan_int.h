@@ -315,6 +315,8 @@ struct SiftColSource
 	uint32		memseq;			/* the id of the last batch fed: it is not the place of the batch, which sift_col_drop_batches moves */
 	int			capmem;
 	bool		mem_loaded;
+	bool		mem_partial;	/* the batches of the write buffers are the rows that may have a key in mem_keys (scan_load_wbuf_keys): a walk that needs every row does not use them */
+	SiftCWbufKeys mem_keys;
 	SiftColBatch **gb;			/* the rows of the segments without an order block of leaf gb_leaf (and of group leaf gb_gleaf), one batch for each unit, in gcx */
 	int			ngb;
 	int			gb_leaf,
@@ -496,6 +498,8 @@ typedef struct PruneRange
 } PruneRange;
 
 extern void	scan_load_wbuf(SiftColSource *src);
+extern void	scan_load_wbuf_keys(SiftColSource *src, const SiftCWbufKeys *keys);
+extern void	scan_load_mem(SiftColSource *src, const SiftColPred *preds, int npreds);
 /* A batch of memory as a unit of the scan; lane: its rows are those of a write buffer, stamped xstamp, which the heap check vets */
 extern void	scan_add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstamp, bool roots);
 extern bool	segments_current(SiftColSource *src);

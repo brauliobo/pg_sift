@@ -442,6 +442,7 @@ TESTING_REGRESS += col_wbuf_arena_gc
 TESTING_REGRESS += col_wbuf_arena_relocate
 TESTING_REGRESS += col_wbuf_big_set
 TESTING_REGRESS += col_wbuf_cache
+TESTING_REGRESS += col_wbuf_keyrange
 TESTING_REGRESS += col_wbuf_order_cache
 TESTING_REGRESS += col_wbuf_read_priced
 TESTING_REGRESS += col_wbuf_reader_memory

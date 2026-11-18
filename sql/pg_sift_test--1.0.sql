@@ -236,7 +236,7 @@ CREATE FUNCTION sift._test_col_enc_sizes(OUT shape text, OUT rows int8, OUT byte
 -- Write buffer lanes of the column engine (src/col/wbuf_test.c), on an index of the BM25 access method created on an empty table.
 -- Rows are generated from (seed, id) over a schema of orders with line items; prepare gives the index that schema's hash
 -- (xor hash_xor: a stale definition), limit sets the write buffer limit in kB.
-CREATE FUNCTION sift._test_col_wbuf_prepare(index regclass, hash_xor int4 DEFAULT 0) RETURNS int8
+CREATE FUNCTION sift._test_col_wbuf_prepare(index regclass, hash_xor int4 DEFAULT 0, key_leaf int4 DEFAULT -1, small_rows bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_prepare' LANGUAGE C STRICT;
 -- appends rows first .. first + n - 1; returns how many appends found the segment full. busy holds up to six lane tails while appending, so that
 -- the rows go to other lanes: for one session at a time (two of them would wait for each other's tails)
@@ -255,6 +255,14 @@ CREATE FUNCTION sift._test_col_wbuf_rows(index regclass, seed int8, OUT gen int8
 CREATE FUNCTION sift._test_col_wbuf_batches(index regclass, seed int8, shared bool DEFAULT false, dirver int8 DEFAULT -1, OUT gen int8, OUT sb int8, OUT id int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_batches' LANGUAGE C STRICT;
+-- the rows a scan that asks for the keys lo to hi reads of the write buffers (NULL, NULL: every row), the value of their key leaf, and whether the set is that of the pages that meet the keys
+CREATE FUNCTION sift._test_col_wbuf_keyed(index regclass, seed int8, lo int8, hi int8, cold bool DEFAULT true, OUT gen int8, OUT id int8, OUT key int8, OUT unknown bool, OUT partial bool)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_keyed' LANGUAGE C;
+-- the data pages of the write buffers: the lane head and, for a buffer with ranges, the leaf and the range of the keys of the page
+CREATE FUNCTION sift._test_col_wbuf_pages(index regclass, OUT gen int8, OUT blk int8, OUT nrecs int4, OUT flags int4, OUT leaf int4, OUT kmin int8, OUT kmax int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_pages' LANGUAGE C STRICT;
 -- the directory version a scan that opens now reads; dirver of _test_col_wbuf_batches reads as the scan that read it (-1: the current one)
 CREATE FUNCTION sift._test_col_dir_version(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_dir_version' LANGUAGE C STRICT;

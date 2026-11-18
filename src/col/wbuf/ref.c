@@ -34,8 +34,9 @@ tid_cmp(const void *a, const void *b)
 static void
 ref_collect(SiftCWbufReader *r, Size from)
 {
-	PageCursor	c = {.index = r->cur.index};
+	PageCursor	c;
 
+	wbuf_cursor_init(&c, r->cur.index, r->hs);
 	wbuf_cursor_set(&c, r->page);
 	c.pos = from;
 	r->nref = r->refnext = 0;

@@ -179,7 +179,7 @@ A key of a range-built `key_cut` index lies in one unit (two where its rows cros
 | rows of a unit | at most 74,496 (256 pages of 291 line pointers); key-cut: aim = 256 average pages, 64 to 32,768 (1,024 with no statistics); `sift.col_unit_floor` 2,048 for sparse promotions |
 | rows of a segment | at most 2^26, whatever the budget |
 | dictionary entry | at most 255 bytes; a segment dictionary at most 64 MB; blocks of 64 strings |
-| write buffer | 8 lanes; `write_buffer_limit` default 4,096 kB |
+| write buffer | 8 lanes; `write_buffer_limit` default 4,096 kB; a buffer of format 55 has the range of one integer key in the head of each page (16 bytes: `kmin`, `kmax`) and a scan that asks for keys skips the pages that hold none of them (`sift.col_wbuf_key_range`, `docs/FORMATS.md` 52) |
 | tombstone entry | 32 bytes |
 | unit head read first | 2,048 bytes |
 | superunit fan | default 16 units, at most 256 |
@@ -202,7 +202,7 @@ A key of a range-built `key_cut` index lies in one unit (two where its rows cros
 | leaf lists of the SQL types | `src/col/types.c` (`sift_col_att_leaves`); `src/col/shape.c`; `src/col/api/leaf.h`; `src/col/wide.h` |
 | jsonb groups and slots | `src/col/jsonb.c` (`add_group`, `fill_group`); `src/col/shred.h`; `src/col/shred_spec.c` |
 | insert into the write buffer | `src/col/am/am.c` (`sift_col_aminsert`); `src/col/wbuf/wbuf.c`; `src/col/wbuf/pending.c` (`sift_cwbuf_pend`, `sift_cwbuf_seal`) |
-| scan reads the buffer | `src/col/scan/scan.c` (`scan_load_wbuf`); `src/col/wbuf/batches.c` |
+| scan reads the buffer | `src/col/scan/memload.c` (`scan_load_wbuf`, `scan_load_mem`); `src/col/wbuf/batches.c` (`sift_cwbuf_batches_keys`); `src/col/wbuf/read.c` (`keys_skip`) |
 | promotion | `src/col/maint/promote.c` (`promote_one`, `maint_floor_rows`) |
 | merge and rewrite | `src/col/maint/merge.c` (`maint_merge_segments`); `src/col/maint/merge_pick.c`; `src/col/order.c` (`sift_colk_merge`) |
 | `VACUUM`, fold, net sidecar | `src/col/maint/vacuum.c`; `src/col/maint/fold.c`; `src/col/maint/net.c` |

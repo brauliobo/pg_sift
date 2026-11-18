@@ -200,7 +200,8 @@ pend_rec(Relation index, const SiftCWbufHint *h, const char *cur, bool *crossed)
 static bool
 pend_flush(Relation index, PendIndex *p)
 {
-	uint32		hash = sift_col_rel(index)->schema->hash;
+	const SiftColSchema *schema = sift_col_rel(index)->schema;
+	int			keyleaf = sift_cwbuf_key_leaf(index);
 	SiftCWbufHint h = sift_col_rel(index)->hint;
 	Size		total = p->buf.len;
 	char	   *rows = palloc(total);
@@ -227,7 +228,7 @@ pend_flush(Relation index, PendIndex *p)
 		for (;;)
 		{
 			if (h.gen == 0)
-				sift_lane_refresh(index, hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, sift_col_maint_make_room, &h.gen, &h.hdr, h.tail);
+				wbuf_refresh(index, schema, &h);
 			if (ref)
 				wbuf_flag_ref(index, &h);
 			if (BufferIsValid(tailbuf = sift_lane_lock_tail(index, h.gen, h.tail, SIFT_LANES, &lane)))
@@ -240,9 +241,11 @@ pend_flush(Relation index, PendIndex *p)
 		if (RECSIZE(batch[0].len) > room)
 		{
 			BlockNumber tail;
+			WbufKey		key;
 
 			/* a record that does not fit what is left of the tail page: as a row that goes in at once (a new page, pieces) */
-			crossed |= wbuf_write_row(index, &h, lane, tailbuf, &batch[0].tid, batch[0].flags, batch[0].payload, batch[0].len, &tail);
+			wbuf_payload_key(schema, keyleaf, batch[0].flags, batch[0].payload, batch[0].stored, &key);
+			crossed |= wbuf_write_row(index, &h, lane, tailbuf, &batch[0].tid, batch[0].flags, batch[0].payload, batch[0].len, h.format >= SIFT_COL_FORMAT_WBUFKEY ? &key : NULL, &tail);
 			h.tail[lane] = tail;
 			cur += PEND_HEAD + batch[0].stored;
 		}
@@ -267,9 +270,14 @@ pend_flush(Relation index, PendIndex *p)
 				room -= RECSIZE(r.len);
 				end += PEND_HEAD + r.stored;
 			}
-			sift_page_edit_begin(&ed, tailbuf, SIFT_PAGE_DATA_OFFSET + HDRSIZE);
+			sift_page_edit_begin(&ed, tailbuf, SIFT_PAGE_DATA_OFFSET + wbuf_hs(h.format));
 			for (int i = 0; i < n; i++)
-				wbuf_put_piece(ed.page, &batch[i].tid, batch[i].flags, batch[i].payload, batch[i].len);
+			{
+				WbufKey		key;
+
+				wbuf_payload_key(schema, keyleaf, batch[i].flags, batch[i].payload, batch[i].stored, &key);
+				wbuf_put_piece(ed.page, &batch[i].tid, batch[i].flags, batch[i].payload, batch[i].len, h.format >= SIFT_COL_FORMAT_WBUFKEY ? &key : NULL);
+			}
 			sift_page_edit_end(index, &ed, 1);
 			h.tail[lane] = BufferGetBlockNumber(tailbuf);
 			UnlockReleaseBuffer(tailbuf);
@@ -311,6 +319,7 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 				len;
 	uint16		flags = wbuf_rec_flags(xmin, ref);
 	uint32		stored;
+	Size		empty = wbuf_empty_room(index);
 
 	*crossed = false;
 	if (pend_enc.data == NULL)
@@ -329,9 +338,9 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 	ovf = wbuf_encode_row(&pend_enc, schema, row, &jnull);
 	len = pend_enc.len;
 	/* a row of several pages goes in as pieces, at once; its scratch space does not stay allocated */
-	if (RECSIZE(len) > EMPTY_ROOM)
+	if (RECSIZE(len) > empty)
 	{
-		if (pend_enc.maxlen > EMPTY_ROOM * 4)
+		if (pend_enc.maxlen > empty * 4)
 		{
 			pfree(pend_enc.data);
 			pend_enc.data = NULL;
@@ -350,7 +359,7 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 		pend_used++;
 	}
 	if (h->gen == 0)
-		sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
+		wbuf_refresh(index, schema, h);
 	wbuf_flag_overflow(index, h, ovf, jnull);
 	enlargeStringInfo(&p->buf, PEND_HEAD + len);
 	memcpy(p->buf.data + p->buf.len, &row->tid, sizeof(ItemPointerData));
@@ -362,7 +371,7 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 	p->ovf |= ovf;
 	p->jnull |= jnull;
 	p->ref |= (flags & SIFT_COLR_REF) != 0;
-	if (p->buf.len >= EMPTY_ROOM)
+	if (p->buf.len >= empty)
 	{
 		sift_col_rel(index)->hint = *h;
 		*crossed = pend_flush(index, p);
@@ -379,7 +388,7 @@ wbuf_count_rows(Relation index, const SiftSegEntry *entry, bool first_only)
 	uint64		n = 0;
 
 	sift_lane_iter_init(&it, index, entry);
-	while ((!first_only || n == 0) && sift_lane_iter_next(&it, page, HDRSIZE))
+	while ((!first_only || n == 0) && sift_lane_iter_next(&it, page, wbuf_hs(entry->format)))
 		n += SiftLaneHead(page)->nrecs;
 	pfree(page);
 	return n;
@@ -409,15 +418,19 @@ seal_limit(Relation index)
 uint64
 sift_cwbuf_seal(Relation index, bool force)
 {
+	uint16		format = wbuf_new_format(index);
+
 	wbuf_flush_for_read(index);
-	return sift_lane_seal(index, force, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, seal_limit(index), has_rows);
+	return sift_lane_seal(index, force, wbuf_hs(format), format, SIFT_SEG_ROOTS_NOW, seal_limit(index), has_rows);
 }
 
 uint64
 sift_cwbuf_rotate(Relation index)
 {
+	uint16		format = wbuf_new_format(index);
+
 	wbuf_flush_for_read(index);
-	return sift_lane_rotate(index, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW);
+	return sift_lane_rotate(index, wbuf_hs(format), format, SIFT_SEG_ROOTS_NOW);
 }
 
 /* A quarter of a unit: rows this few are not worth a segment of their own for a reader of the units, but a buffer that holds them is read row by row by every probe */
@@ -435,10 +448,11 @@ uint64
 sift_cwbuf_seal_vacuum(Relation index)
 {
 	uint64		gen;
+	uint16		format = wbuf_new_format(index);
 
 	wbuf_flush_for_read(index);
-	gen = sift_lane_seal(index, false, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, Max(wbuf_limit_pages(index) / 4, 2 * SIFT_LANES), has_rows);
-	return gen ? gen : sift_lane_seal(index, true, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, 0, quarter_unit);
+	gen = sift_lane_seal(index, false, wbuf_hs(format), format, SIFT_SEG_ROOTS_NOW, Max(wbuf_limit_pages(index) / 4, 2 * SIFT_LANES), has_rows);
+	return gen ? gen : sift_lane_seal(index, true, wbuf_hs(format), format, SIFT_SEG_ROOTS_NOW, 0, quarter_unit);
 }
 
 void
