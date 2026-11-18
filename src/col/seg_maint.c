@@ -52,7 +52,10 @@ decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst, const bool *want, 
 	}
 	pfree(dicts);
 	if (want == NULL && u + 1 == seg->nsb)
+	{
+		SIFT_MEM_CHECKPOINT_OF(col_merge_inputs);
 		sift_cseg_dict_release(seg);
+	}
 	if (want == NULL && sift_cseg_vers(seg))
 	{
 		SiftColVerSum sum;

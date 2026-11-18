@@ -21,6 +21,7 @@
 #include "core/popcount.h"
 #include "core/cmp.h"
 #include "core/cpu.h"
+#include "core/extlock.h"
 #include "core/store.h"
 #include "core/visibility.h"
 #include "core/visibility_run.h"
@@ -59,6 +60,7 @@ sift_test_wait(int key)
 {
 	LOCKTAG		tag;
 
+	SIFT_INVARIANT(!sift_extension_held(), "sift: a test gate waits for a heavyweight lock under the relation extension lock");
 	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, 0x51F7, key, 2);
 	(void) LockAcquire(&tag, ShareLock, false, false);
 	LockRelease(&tag, ShareLock, false);

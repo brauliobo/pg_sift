@@ -14,6 +14,14 @@ extern SiftColSorter *sift_colsort_begin(const SiftColSchema *schema, const int 
 extern void sift_colsort_put(SiftColSorter *s, const SiftColBatch *b, uint32 r);
 /* ... or the copy of row r for a scope key: the integer leaf scope_leaf holds key in it, and the leaves of kept that are false are NULL (sift_cbatch_add_scoped) */
 extern void sift_colsort_put_scoped(SiftColSorter *s, const SiftColBatch *b, uint32 r, int scope_leaf, int64 key, const bool *kept);
+/*
+ * A sort of more rows than its memory holds goes by key ranges of its first leaf (an integer): before the first put, a sample of the rows that will come (the same calls as put, a
+ * few thousand of them spread over the input) is given to sift_colsort_sample_put_scoped, and sift_colsort_sample_end(entries: the rows the sort will get) cuts the ranges when
+ * they would not fit the memory of the sort (half of it: sift_colsort_may_range tells from the row count alone, before any sample, whether they might). Without them the rows go to the tuplesort as ever.
+ */
+extern void sift_colsort_sample_put_scoped(SiftColSorter *s, const SiftColBatch *b, uint32 r, int scope_leaf, int64 key, const bool *kept);
+extern void sift_colsort_sample_end(SiftColSorter *s, uint64 entries);
+extern bool sift_colsort_may_range(uint64 rows, int work_kb);
 extern void sift_colsort_done(SiftColSorter *s);
 /* Appends the next row, in order, to b (the keys of its rows need not ascend: b is an unsorted batch); false at the end */
 extern bool sift_colsort_next(SiftColSorter *s, SiftColBatch *b);

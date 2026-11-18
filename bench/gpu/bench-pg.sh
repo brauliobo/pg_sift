@@ -27,7 +27,7 @@ QUERIES=(
 	"group-month-sum|SELECT date_trunc('month', created_at)::date, sum(amount) FROM orders WHERE quantity >= 2 GROUP BY 1"
 )
 
-if ! psql -X -At -d postgres -c "SELECT 1 FROM pg_database WHERE datname = '$DB'" | grep -q 1; then
+if ! psql -X -At -d postgres -c "SELECT 1 FROM pg_database WHERE datname = '$DB'" | grep 1 >/dev/null; then
 	createdb "$DB"
 	$P -c "CREATE EXTENSION pg_sift"
 	$P -v n="$N" -f bench/sql/store/gen.sql

@@ -112,6 +112,30 @@ typedef struct SiftConnStamp
 {
 	uint64		lineage;		/* the id of the parent's journal: another after a rebuild of the parent index */
 	uint32		xmin;			/* X, the horizon (xmin of the snapshot the value was derived under; a TransactionId) */
-	uint32		reserved;		/* zero or SIFT_CONN_STAMP_CLEAN */
+	uint32		reserved;		/* SIFT_CONN_STAMP_CLEAN and the insert horizon of the parent (SIFT_CONN_STAMP_HORIZON); 0 in a stamp that has neither */
 } SiftConnStamp;
 #define SIFT_CONN_STAMP_CLEAN	2	/* every row of the segment has a NULL key or a parent row under the stamp: a parent row inserted since cannot change a flag */
+/*
+ * Bit 0 says the stamp holds the insert horizon of the parent index when it was taken (its count of the rows that came in, SiftMetaPageData.inserted plus the records of its write
+ * buffers) in the 30 bits above bit 1. A stamp written before it has bit 0 clear and says nothing of the rows that came since. Libraries that do not know the bits read only
+ * SIFT_CONN_STAMP_CLEAN.
+ */
+#define SIFT_CONN_STAMP_HORIZON		1
+#define SIFT_CONN_STAMP_HORIZON_SHIFT	2
+#define SIFT_CONN_STAMP_HORIZON_MASK	((1U << 30) - 1)
+
+static inline void
+sift_conn_stamp_set_horizon(SiftConnStamp *st, uint32 horizon)
+{
+	st->reserved = (st->reserved & SIFT_CONN_STAMP_CLEAN) | SIFT_CONN_STAMP_HORIZON | ((horizon & SIFT_CONN_STAMP_HORIZON_MASK) << SIFT_CONN_STAMP_HORIZON_SHIFT);
+}
+
+/* The rows that came into the parent index between the stamp and a horizon read later; false when the stamp holds none */
+static inline bool
+sift_conn_stamp_inserted_since(const SiftConnStamp *st, uint32 horizon_now, uint64 *since)
+{
+	if (!(st->reserved & SIFT_CONN_STAMP_HORIZON))
+		return false;
+	*since = (horizon_now - (st->reserved >> SIFT_CONN_STAMP_HORIZON_SHIFT)) & SIFT_CONN_STAMP_HORIZON_MASK;
+	return true;
+}
