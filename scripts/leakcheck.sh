@@ -164,10 +164,10 @@ LEAK_IDLE_LOCKS="SELECT format('session %s %s holds %s on %s', a.pid, a.state, l
 
 # The shared tables of the test library (col/dsmreg.c) count the backends that map them: with no client session left every count is 0. A backend gives
 # its count back when it detaches its segments, after it left pg_stat_activity, so the read repeats while any is above 0. Needs the test library
-# (pg_sift_test); a cluster without it (a released library) has no counts to read
+# (pg_sift_test); a cluster without it (a released library, whose build still ships the helper extension) has no counts to read
 leak_shared_tables() {
 	local out
-	[[ -n $(leak_psql -c "SELECT 1 FROM pg_available_extensions WHERE name = 'pg_sift_test'" 2>/dev/null) ]] || return 0
+	[[ -n ${SIFT_TESTING-1} ]] || return 0
 	[[ -z $(leak_psql -c "SELECT 1 FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()") ]] || return 0
 	leak_psql -c "CREATE DATABASE leakcheck_probe" >/dev/null
 	PGOPTIONS="-c client_min_messages=warning" leak_psql -d leakcheck_probe -c "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null
