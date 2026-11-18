@@ -1,0 +1,246 @@
+-- Deletion records of the tombstone log: a statement that deletes many rows of the units of an index writes one record for each unit that holds enough of them, and marks for the rest.
+-- Every state is compared with the answer of the heap: the records of a statement in progress, aborted, rolled back to a savepoint, committed and not yet folded, folded into the liveness
+-- runs, carried to marks by a merge, and dropped by VACUUM.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE events (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int, label text, note text) WITH (autovacuum_enabled = false, fillfactor = 60);
+INSERT INTO events SELECT i, i % 10, i, 'x', repeat('n', 150) FROM generate_series(1, 30000) i;
+CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id');
+VACUUM (FREEZE) events;
+SELECT sum(units) > 1 AS several_units FROM sift.col_segments('events_c') WHERE kind = 'immutable';
+ several_units 
+---------------
+ t
+(1 row)
+
+CREATE FUNCTION chk(what text, OUT test text, OUT same_as_heap bool, OUT sift_plan bool) LANGUAGE plpgsql AS $$
+DECLARE a text; o text; q text; ex text;
+BEGIN
+	test := what;
+	same_as_heap := true;
+	sift_plan := false;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR ex IN EXECUTE 'EXPLAIN (COSTS OFF) SELECT tenant_id, count(*), sum(counter_a) FROM events GROUP BY 1' LOOP
+		sift_plan := sift_plan OR ex LIKE '%SiftAgg%';
+	END LOOP;
+	FOREACH q IN ARRAY ARRAY[
+		'SELECT tenant_id, count(*), sum(counter_a) FROM events GROUP BY 1 ORDER BY 1',
+		'SELECT count(*), sum(counter_a), min(id), max(id) FROM events',
+		'SELECT count(*) FROM events WHERE id BETWEEN 1000 AND 9000 AND tenant_id IN (2, 5)',
+		'SELECT id FROM events WHERE id BETWEEN 5000 AND 5100 ORDER BY id']
+	LOOP
+		PERFORM set_config('sift.enable_agg', 'on', true);
+		EXECUTE 'SELECT string_agg(r::text, '';'') FROM (' || q || ') r' INTO a;
+		PERFORM set_config('sift.enable_agg', 'off', true);
+		EXECUTE 'SELECT string_agg(r::text, '';'') FROM (' || q || ') r' INTO o;
+		same_as_heap := same_as_heap AND a IS NOT DISTINCT FROM o;
+	END LOOP;
+END $$;
+CREATE FUNCTION log_kinds(OUT marks int, OUT records int) LANGUAGE sql AS
+	$$ SELECT (SELECT count(*)::int FROM sift._test_col_log_entries('events_c') WHERE kind = 1 AND flags & 32768 = 0),
+	          (SELECT count(*)::int FROM sift._test_col_log_records('events_c')) $$;
+CREATE FUNCTION dead() RETURNS bigint LANGUAGE sql AS $$ SELECT dead_rows FROM sift.col_index_status WHERE index::text = 'events_c' $$;
+SELECT * FROM chk('fresh');
+ test  | same_as_heap | sift_plan 
+-------+--------------+-----------
+ fresh | t            | t
+(1 row)
+
+-- a small statement writes marks only: the lookup of its rows in the units would cost more than they do
+DELETE FROM events WHERE id % 5000 = 1;
+SELECT (log_kinds()).marks AS marks, (log_kinds()).records AS records;
+ marks | records 
+-------+---------
+     6 |       0
+(1 row)
+
+SELECT * FROM chk('few deletes, marks');
+        test        | same_as_heap | sift_plan 
+--------------------+--------------+-----------
+ few deletes, marks | t            | t
+(1 row)
+
+-- a large one writes records
+DELETE FROM events WHERE id % 20 = 3;
+SELECT (log_kinds()).records > 0 AS records_written, (log_kinds()).marks AS marks_after;
+ records_written | marks_after 
+-----------------+-------------
+ t               |           6
+(1 row)
+
+SELECT * FROM chk('scattered deletes, records');
+            test            | same_as_heap | sift_plan 
+----------------------------+--------------+-----------
+ scattered deletes, records | t            | t
+(1 row)
+
+-- a cursor opened before the statement does not see its records: the command id of a record is part of the rule
+CREATE FUNCTION cursor_keeps_its_snapshot(OUT same_before_and_after bool, OUT records_in_own_transaction bool) LANGUAGE plpgsql AS $$
+DECLARE
+	c CURSOR FOR SELECT tenant_id, count(*), sum(counter_a) FROM events GROUP BY 1 ORDER BY 1;
+	before text; after text := ''; r record;
+BEGIN
+	SELECT string_agg(t::text, ';') INTO before FROM (SELECT tenant_id, count(*), sum(counter_a) FROM events GROUP BY 1 ORDER BY 1) t;
+	OPEN c;
+	DELETE FROM events WHERE id % 20 = 5;
+	records_in_own_transaction := (log_kinds()).records > 0;
+	LOOP
+		FETCH c INTO r;
+		EXIT WHEN NOT FOUND;
+		after := after || CASE WHEN after = '' THEN '' ELSE ';' END || r::text;
+	END LOOP;
+	same_before_and_after := before = after;
+END $$;
+SELECT * FROM cursor_keeps_its_snapshot();
+ same_before_and_after | records_in_own_transaction 
+-----------------------+----------------------------
+ t                     | t
+(1 row)
+
+SELECT * FROM chk('after the cursor');
+       test       | same_as_heap | sift_plan 
+------------------+--------------+-----------
+ after the cursor | t            | t
+(1 row)
+
+-- a transaction in progress, one rolled back and a savepoint rolled back
+BEGIN;
+DELETE FROM events WHERE id % 20 = 7;
+SAVEPOINT s;
+DELETE FROM events WHERE id % 20 = 9;
+SELECT * FROM chk('own deletes in progress');
+          test           | same_as_heap | sift_plan 
+-------------------------+--------------+-----------
+ own deletes in progress | t            | t
+(1 row)
+
+ROLLBACK TO s;
+SELECT * FROM chk('own deletes, savepoint rolled back');
+                test                | same_as_heap | sift_plan 
+------------------------------------+--------------+-----------
+ own deletes, savepoint rolled back | t            | t
+(1 row)
+
+COMMIT;
+BEGIN;
+DELETE FROM events WHERE id % 20 = 11;
+ROLLBACK;
+SELECT * FROM chk('committed, rolled back and savepoint deletes');
+                     test                     | same_as_heap | sift_plan 
+----------------------------------------------+--------------+-----------
+ committed, rolled back and savepoint deletes | t            | t
+(1 row)
+
+-- the fold clears the rows of the records and drops them
+SELECT sift._test_col_fold_marks('events_c') > 0 AS folded;
+ folded 
+--------
+ t
+(1 row)
+
+SELECT (log_kinds()).records AS records_after_fold, dead() > 0 AS dead_rows;
+ records_after_fold | dead_rows 
+--------------------+-----------
+                  0 | t
+(1 row)
+
+SELECT * FROM chk('folded');
+  test  | same_as_heap | sift_plan 
+--------+--------------+-----------
+ folded | t            | t
+(1 row)
+
+-- updates that change the key, then deletes again: marks (the write buffer) and records (the units) beside each other
+UPDATE events SET id = id + 100000 WHERE id % 25 = 4;
+DELETE FROM events WHERE id % 15 = 2;
+SELECT * FROM chk('mixed marks and records');
+          test           | same_as_heap | sift_plan 
+-------------------------+--------------+-----------
+ mixed marks and records | t            | t
+(1 row)
+
+SELECT sift.col_promote('events_c') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT * FROM chk('promoted');
+   test   | same_as_heap | sift_plan 
+----------+--------------+-----------
+ promoted | t            | t
+(1 row)
+
+-- a merge replaces the segments the records name: they are carried to marks first
+DELETE FROM events WHERE id % 12 = 5;
+SELECT (log_kinds()).records > 0 AS records_before_merge;
+ records_before_merge 
+----------------------
+ t
+(1 row)
+
+SELECT string_agg(gen::text, ',' ORDER BY gen) AS gens_before FROM sift.col_segments('events_c') WHERE kind = 'immutable' \gset
+SELECT sift.col_merge('events_c', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT string_agg(gen::text, ',' ORDER BY gen) <> :'gens_before' AS segments_replaced FROM sift.col_segments('events_c') WHERE kind = 'immutable';
+ segments_replaced 
+-------------------
+ t
+(1 row)
+
+SELECT * FROM chk('merged with records pending');
+            test             | same_as_heap | sift_plan 
+-----------------------------+--------------+-----------
+ merged with records pending | t            | t
+(1 row)
+
+SELECT sift._test_col_fold_marks('events_c') >= 0 AS folded_after_merge;
+ folded_after_merge 
+--------------------
+ t
+(1 row)
+
+SELECT * FROM chk('folded after the merge');
+          test          | same_as_heap | sift_plan 
+------------------------+--------------+-----------
+ folded after the merge | t            | t
+(1 row)
+
+-- VACUUM drops what is cleared
+DELETE FROM events WHERE id % 14 = 6;
+VACUUM events;
+SELECT * FROM chk('vacuumed');
+   test   | same_as_heap | sift_plan 
+----------+--------------+-----------
+ vacuumed | t            | t
+(1 row)
+
+SELECT (log_kinds()).records AS records_after_vacuum;
+ records_after_vacuum 
+----------------------
+                    0
+(1 row)
+
+INSERT INTO events SELECT 200000 + i, i % 10, i, 'y', 'n' FROM generate_series(1, 3000) i;
+SELECT * FROM chk('inserted after vacuum');
+         test          | same_as_heap | sift_plan 
+-----------------------+--------------+-----------
+ inserted after vacuum | t            | t
+(1 row)
+
+SELECT sift.col_verify('events_c', true) IS NOT NULL AS verified;
+ verified 
+----------
+ t
+(1 row)
+
+DROP TABLE events;
+DROP FUNCTION chk(text), log_kinds(), dead(), cursor_keeps_its_snapshot();
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

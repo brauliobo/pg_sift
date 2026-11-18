@@ -212,6 +212,18 @@ extern bool	maint_is_col(Relation index);
 extern void	maint_bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 
 extern void	maint_vacuum_log(Relation index);
+
+/* col/maint/dvfold.c: the deletion records of the tombstone log (core/tomb_dv.h) in VACUUM, the fold and the steps that replace segments */
+typedef struct DvSettle DvSettle;
+extern DvSettle *sift_col_dv_settle_begin(Relation index);
+/* May the record (its slots, n of them) leave the log: its transaction aborted, its segment is gone, or every row it names is cleared */
+extern bool sift_col_dv_settled(DvSettle *st, const SiftTomb *slots, uint32 n);
+extern uint32 sift_col_dv_record_keys(DvSettle *st, const SiftTomb *slots, uint32 n, SiftKey **keys);
+extern void sift_col_dv_settle_end(DvSettle *st);
+/* Is the head of a record of a transaction that committed before every snapshot */
+extern bool sift_col_dv_foldable(const SiftTomb *head, TransactionId horizon);
+/* Clears the rows of the records that are, and returns how many it cleared; the maintenance lock is held, and a standby has been told of the newest transaction */
+extern uint64 sift_col_dv_fold(Relation index, SiftTombLog *log, TransactionId horizon);
 extern void	maint_bulkdelete_tomb(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 extern void	maint_bulkdelete_wbuf(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 

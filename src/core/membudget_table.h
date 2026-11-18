@@ -87,6 +87,24 @@ budget_col_conn_changed(void)
 }
 
 static Size
+budget_col_dead_keys(void)
+{
+	return (((Size) 100663296UL));
+}
+
+static Size
+budget_col_dv_overlay(void)
+{
+	return (((Size) 67108864UL));
+}
+
+static Size
+budget_col_dv_settle(void)
+{
+	return (((Size) 16777216UL));
+}
+
+static Size
 budget_col_fold_keys(void)
 {
 	return (((Size) sift_tomb_log_limit_kb * 1024) + ((Size) 65536UL));
@@ -243,6 +261,9 @@ static const struct
 	{"col_build_choose", budget_col_build_choose, "32kB"},
 	{"col_build_spool", budget_col_build_spool, "col_build_budget + 4MB"},
 	{"col_conn_changed", budget_col_conn_changed, "32kB"},
+	{"col_dead_keys", budget_col_dead_keys, "96MB"},
+	{"col_dv_overlay", budget_col_dv_overlay, "64MB (open: ceiling measured today)"},
+	{"col_dv_settle", budget_col_dv_settle, "16MB"},
 	{"col_fold_keys", budget_col_fold_keys, "sift.tomb_log_limit + 64kB"},
 	{"col_from_index", budget_col_from_index, "64MB (open: ceiling measured today)"},
 	{"col_key_cut_cells", budget_col_key_cut_cells, "maintenance_work_mem + 8MB"},

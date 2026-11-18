@@ -331,6 +331,7 @@ col/test/
 col/tomblog.c
 col/track.c
 col/track_drop.c
+col/track_dv.c
 col/track_hear.c
 col/track_hear.h
 col/track_made.c

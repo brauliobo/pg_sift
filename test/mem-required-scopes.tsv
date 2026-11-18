@@ -13,6 +13,9 @@ col_build	src/col/build/build.c	serial_build	scoped
 col_build_choose	src/col/build/choose.c	colb_choose	scoped
 col_build_spool	src/col/build/spill.c	colb_spill_batch	scoped
 col_conn_changed	src/col/conn.c	journal_keys	scoped
+col_dead_keys	src/col/track_dv.c	sift_col_dead_add	scoped
+col_dv_overlay	src/col/scan/dvec.c	dv_keep	scoped
+col_dv_settle	src/col/maint/dvfold.c	settle_segment	scoped
 col_fold_keys	src/col/maint/fold.c	sift_col_fold_marks	scoped
 col_from_index	src/col/build/from_index.c	build_from	scoped
 col_key_cut_cells	src/col/autocut/model.c	acut_units_read	scoped

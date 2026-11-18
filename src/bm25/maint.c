@@ -219,8 +219,12 @@ replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, cons
 	maint_written += bytes;
 	sift_progress_step(nold, bytes);
 
+	if (sift_col_is_index(index))
+		sift_col_dv_switching(index, old, nold);
 	sift_dir_publish(index, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = release,
 			.nrelease = nrelease,.extra = InvalidBuffer}, wt);
+	if (sift_col_is_index(index))
+		sift_col_dv_switched(index);
 	sift_log_maint(index, what, start, docs, bytes);
 }
 

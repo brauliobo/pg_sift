@@ -44,7 +44,7 @@ Side structures:
 | structure | what it is | where |
 |---|---|---|
 | write buffer | rows inserted since the last promotion, as records in pages | directory entries `WBUF_OPEN`, `WBUF_SEALED`; 8 lanes of page chains |
-| tombstone log | 32-byte entries (heap address, transaction, command, kind) of entries that stopped being live; only with `track_changes` | directory entry `TOMB` |
+| tombstone log | 32-byte entries (heap address, transaction, command, kind) of entries that stopped being live, and deletion records (one head, descriptor and body slots for the rows of a unit that a statement ended, `docs/COL-HEAPFREE.md`); only with `track_changes` | directory entry `TOMB` |
 | journal | not a structure of its own: records of kind `KEYCHG` (parent index) and `KEYADD` (a scope's pair relation) in a tombstone log | the log of the parent index or of the journal index |
 | scope segments | segments of the rows replicated once for each scope key, cut by that key | `IMMUTABLE` entries with the flag `SIFT_SEG_SCOPE`; the entry's `pad` is the scope's ordinal |
 | connected child | the child index holds leaves of its parent (`<fk>#found`, `<fk>.<column>`); its segments carry the stamp each was filled under | leaves in the schema, stamps in the SCHEMA section |
@@ -138,7 +138,7 @@ The question of whether one row creates a unit: it does not, at insert. It goes 
 | buffer reaches `write_buffer_limit` (default 4096 kB, 512 pages) | the buffer is sealed and a new one opened | no |
 | promotion (worker, `VACUUM`, `sift.col_promote`, or an inserter that needs room) | one new segment from the live rows of the sealed buffer, plus scope segments in the same directory switch; the buffer's pages are freed in that switch | writes new units; older units untouched |
 | merge or rewrite (worker, tiers, `sift.col_merge`, `VACUUM`, after a parallel build) | the live rows of the input segments are written as one segment or partitions; with `key_cut` the rows are cut again by key; the inputs are freed at the directory switch | yes: new units, dead rows dropped |
-| `DELETE` with `track_changes` | a 32-byte entry in the tombstone log (statement triggers). A fold or `VACUUM` then clears the liveness bit | no |
+| `DELETE` with `track_changes` | a 32-byte entry in the tombstone log for each row (statement triggers), or one deletion record for each unit when the statement deletes enough rows of it. A fold or `VACUUM` then clears the liveness bits | no |
 | `DELETE` without `track_changes` | nothing at delete time; reads check the heap; `VACUUM` clears the bit | no |
 | `UPDATE` that changes an indexed column | the old entry ends (a tombstone with `track_changes`, else it stays until `VACUUM`) and the new version is a new record in the buffer. An update that changes no indexed column (HOT) writes nothing | no |
 | fold (a worker, from the tombstone log) | the bits of the entries whose deleting transaction every snapshot sees; their tombstones are dropped | no |

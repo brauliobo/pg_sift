@@ -22,6 +22,8 @@
 #include "core/lane.h"
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
+#include "col/pg.h"
+#include "col/wbuf.h"
 #include "core/ops.h"
 #include "core/restrict.h"
 #include "core/cmp.h"
@@ -530,8 +532,12 @@ space_move(Relation rel, SiftWriteTarget *wt, const void *arg)
 	if (move->written == 0)
 		return;
 	move->header = fresh.header_blk;
+	if (sift_col_is_index(rel))
+		sift_col_dv_switching(rel, &move->entry->gen, 1);
 	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,
 					.release = move->release,.nrelease = move->nrelease,.extra = InvalidBuffer});
+	if (sift_col_is_index(rel))
+		sift_col_dv_switched(rel);
 	sift_log_maint(rel, "relocated", GetCurrentTimestamp(), move->entry->ndocs, fresh.bytes);
 }
 

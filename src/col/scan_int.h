@@ -253,6 +253,7 @@ struct SiftColSource
 	SiftTombMemo hfmemo;		/* verdicts of the log's transactions for snap */
 	uint64		hfgen;
 	struct ColHfBlocks *hfblocks;	/* what the log says of each heap block the scan asked about (scan_unit.c), in mcxt */
+	struct ColDvOv *dvov;		/* the deletion records of the log that the segments of the scan read their liveness through (scan/dvec.c): NULL when the log has none */
 	int			hf;
 	bool		begun;			/* a begin ran: sift_col_rescan refuses */
 	MemoryContext gxcx;		/* the exactness of the units (sift_col_gorder_exact: their dead rows and all-visible pages), which sift_col_rescan keeps; made on first use */
@@ -467,6 +468,8 @@ extern bool col_range_allvisible(SiftColSource *src, const SiftColSegment *seg, 
 extern void col_blocks_allvisible(SiftColSource *src, const SiftColSegment *seg, const BlockNumber *blocks, uint32 n, uint64 *bits);
 /* Opens the log of the source (before its first liveness read) */
 extern void col_hf_open(SiftColSource *src);
+/* Attaches the deletion records of that log to the segments the source opened (scan/dvec.c) */
+extern void col_dv_open(SiftColSource *src);
 /* Can the rows of a unit of this segment be told visible or not by the log, without the heap (the segment is stamped for the snapshot and the log is complete) */
 extern bool col_hf_unit(SiftColSource *src, const ColUnit *cu);
 /* What the log says of a heap block, kept by the scan for the blocks it asks about again (scan_hfblocks.c) */

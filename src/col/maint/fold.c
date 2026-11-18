@@ -17,6 +17,7 @@
 #include "core/ops.h"
 #include "col/wbuf.h"
 #include "core/tomb.h"
+#include "core/tomb_dv.h"
 
 /*
  * What a fold costs, in instructions and WAL in instructions (MAINT_WAL_BYTE: a MB of WAL weighs 0.6 G instructions, as in the price of a row of the rewrite): the segments are opened and the directory of
@@ -222,6 +223,7 @@ sift_col_fold_marks(Relation index)
 	IndexBulkDeleteResult stats = {0};
 	Fold		f = {0};
 	uint64		removed = 0;
+	bool		dropped = false;
 
 	if (RecoveryInProgress())
 		return 0;
@@ -257,6 +259,18 @@ sift_col_fold_marks(Relation index)
 	{
 		SIFT_MEM_CHECKPOINT();
 		removed += fold_clear(index, &f, &stats);
+		dropped = true;
+	}
+	/* the deletion records are folded and dropped by the pass over the log that drops the marks: when there were no marks to clear, it is made here */
+	if (!dropped && log->dvecs > 0)
+	{
+		SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+		sift_dir_read(index, snap);
+		for (int i = 0; i < snap->nsegs; i++)
+			if (snap->segs[i].kind == SIFT_SEG_TOMB)
+				maint_bulkdelete_tomb(index, &snap->segs[i], NULL, NULL, &stats);
+		pfree(snap);
 	}
 	removed += (uint64) stats.tuples_removed;
 	/* a scan that began before reads the directory again: the heap marks pages all-visible after a pass the same way (sift_mops_bulkdelete) */
@@ -288,7 +302,7 @@ fold_ready(SiftTombLog *log, TransactionId horizon)
 	sift_tomb_each_begin(&each, log, CurrentMemoryContext);
 	while ((a = sift_tomb_each_next(&each, &n)) != NULL)
 		for (uint32 i = 0; i < n; i++)
-			ready += (a[i].kind == SIFT_TOMB_DELETE || a[i].kind == SIFT_TOMB_UPDATE) &&
+			ready += (a[i].kind == SIFT_TOMB_DELETE || a[i].kind == SIFT_TOMB_UPDATE || a[i].kind == SIFT_TOMB_DVEC) &&
 				(a[i].xid == FrozenTransactionId || (TransactionIdIsNormal(a[i].xid) && TransactionIdPrecedes(a[i].xid, horizon)));
 	sift_tomb_each_end(&each);
 	log->foldable = ready;

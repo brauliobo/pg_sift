@@ -327,17 +327,6 @@ other_tracker(Relation index, Relation heap, AttrNumber hatt)
 	return false;
 }
 
-/* The tombstone of an address the log does not hold from this transaction yet, in the chunk */
-static void
-add_dead(SiftTomb **ents, int *nents, int *cap, const SiftTombLog *log, uint64 key)
-{
-	if (own_entry(log, key))
-		return;
-	if (*nents == *cap)
-		*ents = repalloc(*ents, (*cap *= 2) * sizeof(SiftTomb));
-	(*ents)[(*nents)++] = (SiftTomb) {.key = key, .xid = GetCurrentTransactionId(), .cid = sift_col_stmt_cid(), .kind = SIFT_TOMB_DELETE};
-}
-
 /* The attribute number of the key column of the index in the rows of rel, its table or a table above it (the transition table of a statement on a parent has the rowtype of the parent) */
 AttrNumber
 sift_col_row_key_attno(Relation index, Relation rel)
@@ -399,8 +388,7 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Relation old_rel, Tuplest
 	TupleTableSlot *old,
 			   *seen;
 	MemoryContext chunk_cxt;
-	SiftTomb   *ents;
-	int			cap = 1024;
+	SiftColDead *dead;
 	bool		more = true;
 	bool		keep;
 
@@ -418,19 +406,13 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Relation old_rel, Tuplest
 	}
 	if (sift_conn_journal_on(index))
 		journal_old_rows(index, old_rel, oatt, log, old_rows);
-	ents = palloc(cap * sizeof(SiftTomb));
+	dead = sift_col_dead_begin(index, log);
 	if (dead_share_is(heap, uoid, old_rows))
 	{
-		for (int done = 0; done < dead_share.n;)
-		{
-			int			nents = 0;
-
-			for (int end = Min(done + DEAD_KEYS_CHUNK, dead_share.n); done < end; done++)
-				add_dead(&ents, &nents, &cap, log, dead_share.keys[done]);
-			if (nents > 0)
-				sift_tomb_append_many(index, log, ents, nents);
-		}
-		pfree(ents);
+		for (int i = 0; i < dead_share.n; i++)
+			if (!own_entry(log, dead_share.keys[i]))
+				sift_col_dead_add(dead, dead_share.keys[i]);
+		sift_col_dead_end(dead);
 		return;
 	}
 	keep = other_tracker(index, heap, hatt);
@@ -459,7 +441,6 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Relation old_rel, Tuplest
 	while (more)
 	{
 		ArrayBuildState *keys = NULL;
-		int			nents = 0;
 		int			nkeys = 0;
 
 		while (nkeys < DEAD_KEYS_CHUNK)
@@ -489,7 +470,8 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Relation old_rel, Tuplest
 
 				if (table_index_fetch_tuple(fetch, &tid, &dirty, seen, &again, &all_dead))
 					continue;
-				add_dead(&ents, &nents, &cap, log, sift_key_from_tid(t));
+				if (!own_entry(log, sift_key_from_tid(t)))
+					sift_col_dead_add(dead, sift_key_from_tid(t));
 				if (keep)
 				{
 					if (dead_share.n == DEAD_SHARE_MAX)
@@ -510,8 +492,6 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Relation old_rel, Tuplest
 			}
 		}
 		MemoryContextReset(chunk_cxt);
-		if (nents > 0)
-			sift_tomb_append_many(index, log, ents, nents);
 	}
 	if (keep)
 	{
@@ -524,7 +504,7 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Relation old_rel, Tuplest
 	}
 	else
 		dead_share_reset(XACT_EVENT_COMMIT, NULL);
-	pfree(ents);
+	sift_col_dead_end(dead);
 	MemoryContextDelete(chunk_cxt);
 	ExecDropSingleTupleTableSlot(seen);
 	ExecDropSingleTupleTableSlot(old);

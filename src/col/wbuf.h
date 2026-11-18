@@ -188,6 +188,13 @@ extern uint64 sift_scans_paid(Relation index, const SiftMetaPageData *meta);
 extern bool sift_reads_pending(Oid index);
 extern void sift_reads_flush(Relation index, bool (*wbuf_met) (Relation), bool (*marks_met) (Relation));
 extern bool sift_col_marks_take(void);
+
+/*
+ * A step that replaces segments of a column index (merge, rewrite, relocation) carries the deletion records that name them to marks first (col/maint/dvfold.c): _switching takes the lock that
+ * the writers of records share, from there to _switched, which the step calls after the directory switch
+ */
+extern void sift_col_dv_switching(Relation index, const uint64 *old, int nold);
+extern void sift_col_dv_switched(Relation index);
 /* Extents (header and data pages) for release after promotion; records, rows (deleted included) and pages */
 extern SiftExtent *sift_cwbuf_pages(Relation index, const SiftSegEntry *entry, int *n);
 extern void sift_cwbuf_summary(Relation index, const SiftSegEntry *entry, uint64 *nrows, uint64 *npages);

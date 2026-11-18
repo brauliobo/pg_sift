@@ -81,6 +81,15 @@ extern void sift_col_row_key_prepare(Relation heap, Relation index);
 extern Oid sift_col_row_key_unique(Relation heap, AttrNumber att);
 /* Tombstones for the addresses the unique index lists for key that no version is live for (col/rowkey.c) */
 extern void sift_col_tomb_dead_keys(Relation index, Relation heap, Relation old_rel, struct Tuplestorestate *old_rows);
+
+/*
+ * The addresses a statement left dead in the index, held until it is done with them and then written to the log (col/track_dv.c): as deletion records for the units that hold enough of them, as
+ * marks for the rest
+ */
+typedef struct SiftColDead SiftColDead;
+extern SiftColDead *sift_col_dead_begin(Relation index, struct SiftTombLog *log);
+extern void sift_col_dead_add(SiftColDead *d, uint64 key);
+extern void sift_col_dead_end(SiftColDead *d);
 extern AttrNumber sift_col_row_key_attno(Relation index, Relation rel);
 /* The option track_changes (col/track.c): why the table is one a statement trigger cannot hear, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
 extern const char *sift_col_track_deaf(Relation heap);

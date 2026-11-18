@@ -19,8 +19,10 @@
 #include "utils/rel.h"
 #include "col/am.h"
 #include "col/conn.h"
+#include "col/maint/maint_int.h"
 #include "col/wbuf.h"
 #include "core/tomb.h"
+#include "core/tomb_dv.h"
 #include "core/catname.h"
 #include "core/store.h"
 
@@ -30,6 +32,8 @@ PG_FUNCTION_INFO_V1(sift_test_col_marks_paid);
 PG_FUNCTION_INFO_V1(sift_test_col_fold_counts);
 PG_FUNCTION_INFO_V1(sift_test_col_log_append);
 PG_FUNCTION_INFO_V1(sift_test_col_log_entries);
+PG_FUNCTION_INFO_V1(sift_test_col_log_records);
+PG_FUNCTION_INFO_V1(sift_test_col_log_format);
 PG_FUNCTION_INFO_V1(sift_test_col_log_cache);
 PG_FUNCTION_INFO_V1(sift_test_tomb_header);
 PG_FUNCTION_INFO_V1(sift_test_log_chan);
@@ -107,6 +111,25 @@ sift_test_col_log_append(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
+/* the flag of the entries that stand for the rows of a deletion record: no mark has it */
+#define TEST_FROM_RECORD	0x8000
+
+static void
+put_entry(ReturnSetInfo *rsi, SiftKey key, TransactionId xid, CommandId cid, int kind, int flags)
+{
+	Datum		v[5];
+	bool		nulls[5] = {false};
+	ItemPointer tid = palloc(sizeof(ItemPointerData));
+
+	sift_key_to_tid(key, tid);
+	v[0] = ItemPointerGetDatum(tid);
+	v[1] = TransactionIdGetDatum(xid);
+	v[2] = Int32GetDatum((int32) cid);
+	v[3] = Int32GetDatum(kind);
+	v[4] = Int32GetDatum(flags);
+	tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+}
+
 /* sift._test_col_log_entries(index): the entries of the log in log order: heap address, transaction, command, kind, flags */
 Datum
 sift_test_col_log_entries(PG_FUNCTION_ARGS)
@@ -116,6 +139,7 @@ sift_test_col_log_entries(PG_FUNCTION_ARGS)
 	SiftTombLog *log = sift_col_log(index);
 	SiftTomb   *all;
 	uint32		n;
+	DvSettle   *st = NULL;
 
 	InitMaterializedSRF(fcinfo, 0);
 	if (log != NULL)
@@ -136,20 +160,82 @@ sift_test_col_log_entries(PG_FUNCTION_ARGS)
 				all[j] = all[j - 1];
 				all[j - 1] = t;
 			}
+		/* a deletion record is the entries of the rows it names (what the marks of the statement would be): the oracles of the tests compare the addresses the log says are deleted */
 		for (uint32 i = 0; i < n; i++)
 		{
-			Datum		v[5];
-			bool		nulls[5] = {false};
-			ItemPointer tid = palloc(sizeof(ItemPointerData));
+			if (all[i].kind == SIFT_TOMB_DVEC)
+			{
+				uint32		slots = sift_dv_slots_of(&all[i], n - i);
+				SiftKey    *keys;
+				uint32		nkeys;
 
-			sift_key_to_tid(all[i].key, tid);
-			v[0] = ItemPointerGetDatum(tid);
-			v[1] = TransactionIdGetDatum(all[i].xid);
-			v[2] = Int32GetDatum((int32) all[i].cid);
-			v[3] = Int32GetDatum(all[i].kind);
-			v[4] = Int32GetDatum(all[i].flags);
+				if (st == NULL)
+					st = sift_col_dv_settle_begin(index);
+				nkeys = sift_col_dv_record_keys(st, &all[i], slots, &keys);
+				for (uint32 k = 0; k < nkeys; k++)
+					put_entry(rsi, keys[k], all[i].xid, all[i].cid, SIFT_TOMB_DELETE, TEST_FROM_RECORD);
+				i += slots - 1;
+			}
+			else
+				put_entry(rsi, all[i].key, all[i].xid, all[i].cid, all[i].kind, all[i].flags);
+		}
+		if (st != NULL)
+			sift_col_dv_settle_end(st);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/* sift._test_col_log_format(index): the column format minor of the tombstone log's directory entry (0: no log) */
+Datum
+sift_test_col_log_format(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	const SiftSegEntry *e;
+	int32		format;
+
+	sift_dir_read(index, snap);
+	e = sift_tomb_find_seg(snap);
+	format = e == NULL ? 0 : e->format;
+	index_close(index, AccessShareLock);
+	PG_RETURN_INT32(format);
+}
+
+/* sift._test_col_log_records(index): the deletion records of the log in log order: transaction, command, generation, part, rows, whether the data is a bitmap */
+Datum
+sift_test_col_log_records(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	SiftTombLog *log = sift_col_log(index);
+	SiftTombWalk w;
+	SiftTomb	buf[SIFT_TOMB_CAP];
+	SiftTomb   *e;
+	uint32		nslots;
+	SiftDvRec  *r = palloc(sizeof(SiftDvRec));
+
+	InitMaterializedSRF(fcinfo, 0);
+	if (log != NULL)
+	{
+		sift_tomb_walk_begin(&w, log);
+		while ((e = sift_tomb_walk_next_rec(&w, buf, &nslots)) != NULL)
+		{
+			Datum		v[6];
+			bool		nulls[6] = {false};
+
+			if (nslots == 1)
+				continue;
+			sift_dv_decode(e, nslots, r);
+			v[0] = TransactionIdGetDatum(r->xid);
+			v[1] = Int32GetDatum((int32) r->cid);
+			v[2] = Int64GetDatum((int64) r->gen);
+			v[3] = Int32GetDatum((int32) r->desc.part);
+			v[4] = Int32GetDatum((int32) r->desc.count);
+			v[5] = BoolGetDatum(r->bitmap);
 			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 		}
+		sift_tomb_walk_end(&w);
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;

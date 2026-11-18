@@ -24,6 +24,8 @@
 #define SIFT_COL_GATE_TAIL		4
 #define SIFT_COL_GATE_FILL		5
 #define SIFT_COL_GATE_JOURNAL	6
+/* a delete that found the units of its rows, before it appends their deletion records (col/track_dv.c) */
+#define SIFT_COL_GATE_DELETE	8
 #endif
 
 /* The segments a build may write: the directory keeps room for the write buffer and a merge */
