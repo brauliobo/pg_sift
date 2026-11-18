@@ -80,7 +80,8 @@ BEGIN
 		err := coldiff.materialize(q, 'pg_scan');
 		diff := CASE WHEN err IS NULL THEN coldiff.compare('pg_native', 'pg_scan', keycols, 1e-9, 1e-12) ELSE err END;
 		IF diff IS NOT NULL THEN problems := problems || ('result scan: ' || diff); END IF;
-		IF nruns > 0 AND err IS NULL THEN scan_ms := plangate.ms(q, nruns); END IF;
+		-- the time of the scan is the time of the plan the planner takes when that is a scan: the one forced with the other scans off can be another plan
+		IF nruns > 0 AND err IS NULL THEN PERFORM plangate.path(CASE WHEN ch.siftagg THEN 'chosen' ELSE 'scan' END); scan_ms := plangate.ms(q, nruns); END IF;
 	END IF;
 	PERFORM plangate.path('chosen');
 

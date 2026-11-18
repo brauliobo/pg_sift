@@ -210,8 +210,8 @@ typedef struct SiftCcScanTerms
 extern void sift_cc_scan_terms(double z, double l, double raw, SiftCcScanTerms *t);
 extern bool sift_cc_scan_lz4(Size zlen, Size llen, Size rawlen);
 extern void sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol, SiftCcScan *scan);
-/* The list of exactly n strings (its count is compared before anything is allocated for it); off[n + 1] and bytes palloc'd in mcxt */
-extern void sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 n, uint32 **off, char **bytes);
+/* The list of exactly n strings (its count is compared before anything is allocated for it); off[n + 1] and bytes palloc'd in mcxt, with room for at least min_n strings and min_bytes bytes (a caller that keeps the arrays as they are asks for the room its owner needs) */
+extern void sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 n, uint32 min_n, Size min_bytes, uint32 **off, char **bytes);
 /* A bit vector of nbits: constant, raw words, or the positions of the minority bit as an integer cascade. */
 extern void sift_cc_encode_bits(StringInfo out, const uint64 *words, uint32 nbits, const SiftCcPolicy *pol);
 extern void sift_cc_decode_bits(const uint8 *blob, Size len, uint32 nbits, uint64 *words);

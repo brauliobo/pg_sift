@@ -18,6 +18,7 @@
 #include "col/col.h"
 #include "core/ops.h"
 #include "core/restrict.h"
+#include "core/extlock.h"
 #include "core/store.h"
 #include "core/store_int.h"
 #include "core/visibility.h"
@@ -63,7 +64,7 @@ sift_store_space_test_point(int phase)
  * since the setting (every build, promotion, merge, VACUUM and table sealing publishes through store_update); sift.test_crash_kind picks the fault: 0 SIGKILL, 1 an ERROR, 2 a wait for
  * advisory lock (0x51F7, 13), where a test cancels or terminates the process, stops the server or lets it go on. The update holds interrupts while it has the buffers of the metapage and
  * the directory locked: the wait is outside of that, before the update takes its locks (n > 0) and after it released them (n < 0), where a cancel and a terminate act at once; a SIGKILL
- * and an ERROR before the update are inside it; an ERROR or a wait after it comes after the update has handed its blocks to the directory and released its buffers, and only after one that publishes: a caller of the others updates its own books once it returns. sift.test_crash_worker picks background workers instead of the other processes. sift._test_dir_updates() is the count.
+ * and an ERROR before the update are inside it; an ERROR or a wait after it comes after the update has handed its blocks to the directory and released its buffers, and only after one that publishes: a caller of the others updates its own books once it returns. An update under the relation extension lock (the appends of a value store) waits where the lock is released: PostgreSQL forbids a wait for a heavyweight lock under it. sift.test_crash_worker picks background workers instead of the other processes. sift._test_dir_updates() is the count.
  */
 static bool
 dir_fault_here(bool after)
@@ -73,6 +74,26 @@ dir_fault_here(bool after)
 }
 
 static bool dir_books_pending;
+static bool dir_wait_pending;
+
+/* A wait is a heavyweight lock, which PostgreSQL forbids under the relation extension lock: a directory update under it waits when the lock is released */
+static void
+dir_wait(void)
+{
+	if (sift_extension_held())
+		dir_wait_pending = true;
+	else
+		sift_test_wait(13);
+}
+
+void
+sift_store_dir_test_unlocked(void)
+{
+	if (!dir_wait_pending)
+		return;
+	dir_wait_pending = false;
+	sift_test_wait(13);
+}
 
 void
 sift_store_dir_test_enter(void)
@@ -80,7 +101,7 @@ sift_store_dir_test_enter(void)
 	sift_test_dir_updates++;
 	dir_books_pending = false;
 	if (sift_test_crash_kind == 2 && dir_fault_here(false))
-		sift_test_wait(13);
+		dir_wait();
 }
 
 static void
@@ -93,7 +114,7 @@ static void
 dir_fault_after(void)
 {
 	if (sift_test_crash_kind == 2)
-		sift_test_wait(13);
+		dir_wait();
 	else if (sift_test_crash_kind == 1)
 		dir_fault_error(true);
 }

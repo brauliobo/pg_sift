@@ -18,6 +18,7 @@
 #include "col/conn.h"
 #include "col/scope.h"
 #include "col/vstore/vstore.h"
+#include "col/colspool.h"
 #include "core/membudget.h"
 
 #ifdef SIFT_TESTING
@@ -91,6 +92,8 @@ sift_colb_peak_begin(void)
 	statement = GetCurrentStatementStartTimestamp();
 	peak_base = peak_max = peak_logged = MemoryContextMemAllocated(TopMemoryContext, true);
 	sift_test_col_build_peak_kb = 0;
+	sift_test_col_spill_bytes = sift_test_col_spill_rows = 0;
+	sift_test_col_spool_used_rows = sift_test_col_spool_est_bytes = sift_test_col_spool_ranges = 0;
 }
 
 void

@@ -48,7 +48,8 @@ script:isolation.sh	600	1000	-
 script:replication.sh	600	1000	-
 script:hardened.sh	900	2000	hosted hardened job 207 s
 script:assert.sh	1800	3000	regression subset + two TAP on the assert build; -
-script:valgrind.sh	1800	3000	memcheck over a regression subset, or massif over the 5 slope cases with --massif (2 sizes of 50000 rows); -
+script:leaks-asan.sh	900	2000	the leak set (scripts/valgrind-leaks.tests) on the ASan and UBSan build, as hardened.sh does the decoders; measured at the end of the lane
+script:valgrind.sh	1800	3000	memcheck over a regression subset (--leaks: the curated leak set, 900 s at most: scripts/valgrind-leaks.tests), or massif over the 5 slope cases with --massif (2 sizes of 50000 rows); -
 script:massif-slope.py	1800	3000	the massif half of valgrind.sh --massif: 5 cases x 2 sizes, a native setup and one backend under massif each
 script:release.sh	2700	3072	the release from a green head; the gate is gate:release
 script:exec-budget.sh	600	1000	-
@@ -88,6 +89,7 @@ regress:shard	1800	2000	one of 4 shards of the 1,265 regression tests (every fou
 script:instr-budget-cost.sh	600	1000	callgrind of one backend: planning, INSERT and an unchanged VACUUM on a table with a sift_col index; -
 tap:mem_slope_legacy	1500	3000	the legacy memory slope gate (leakx, cap, evict, pinned): 180 s and 2.0 GB of tmpfs measured, one cluster at shared_buffers 64 MB
 tap:mem_idle_series	1200	1500	12000 statements of 25 kinds in one backend at 100,000-row tables: 481 s measured, one cluster at shared_buffers 64 MB
+tap:col_build_exact_memory	120	300	the exact bytes of the col_build scope at three steps of 40,000 to 120,000 rows on the 8-page flavour, key_cut at 1, 8 and 16 MB and plain at 36 and 40 MB, and the same rows under the shipped floor: 32 s with the 8-page flavour built beforehand (scripts/ci/run.sh), 7.5e10 user instructions, one cluster
 tap:col_merge_exact_memory	120	300	the exact bytes of the col_merge scope at five steps of 8,000 to 40,000 rows, plain and key_cut: 4 s, one cluster
 tap:upgrade_compat	1200	600	one zoo cluster of the release, two shutdowns, two copies opened by this tree and one by the release, one fresh cluster for the restore: 9 min on a loaded host, 3000 rows with SIFT_QUICK
 tap:upgrade_compat_standby	900	500	two directions of a primary and a standby on different libraries, 3 stages each: 5 min
