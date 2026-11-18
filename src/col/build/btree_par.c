@@ -15,6 +15,7 @@
 #include "utils/datum.h"
 #include "utils/rel.h"
 #include "col/build/build_int.h"
+#include "core/membudget.h"
 #include "core/parbuild.h"
 #include "core/waits.h"
 
@@ -101,6 +102,7 @@ participate(BtShared *sh, char *parts, int slot, Relation heap, Relation index, 
 	double		reltuples = 0;
 	uint32		i;
 
+	SIFT_MEM_SCOPE(col_build, b->cxt);
 	PG_TRY();
 	{
 		sift_colb_scan_watch(&sh->scan);
@@ -109,6 +111,7 @@ participate(BtShared *sh, char *parts, int slot, Relation heap, Relation index, 
 			BtRange		rg = range_of(sh, i);
 
 			reltuples += colb_btree_scan(b, heap, info, snapshot, sh->btree, &rg);
+			SIFT_MEM_CHECKPOINT();
 		}
 		part->nsegs = sift_colb_end(b);
 	}
