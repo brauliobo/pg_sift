@@ -3,6 +3,7 @@
 #define SIFT_MEMBUDGET_TABLE_H
 
 #include "agg/spec/spec.h"
+#include "col/build.h"
 #include "core/tomb.h"
 #include "executor/nodeHash.h"
 #include "miscadmin.h"
@@ -62,19 +63,49 @@ budget_col_build(void)
 }
 
 static Size
+budget_col_build_spool(void)
+{
+	return (((Size) sift_colb_budget(1)) + ((Size) 4194304UL));
+}
+
+static Size
 budget_col_conn_changed(void)
 {
 	return (((Size) 32768UL));
 }
 
 static Size
+budget_col_fold_keys(void)
+{
+	return (((Size) sift_tomb_log_limit_kb * 1024) + ((Size) 65536UL));
+}
+
+static Size
+budget_col_key_cut_cells(void)
+{
+	return (((Size) maintenance_work_mem * 1024) + ((Size) 8388608UL));
+}
+
+static Size
 budget_col_key_cut_decision(void)
 {
-	return (((Size) 603979776UL));
+	return (((Size) maintenance_work_mem * 1024) + ((Size) 12582912UL));
+}
+
+static Size
+budget_col_key_cut_layout(void)
+{
+	return (((Size) maintenance_work_mem * 1024) + ((Size) 67108864UL));
 }
 
 static Size
 budget_col_merge(void)
+{
+	return (((Size) 268435456UL));
+}
+
+static Size
+budget_col_merge_inputs(void)
 {
 	return (((Size) 268435456UL));
 }
@@ -128,9 +159,21 @@ budget_col_write_buffer(void)
 }
 
 static Size
+budget_col_writer_dict(void)
+{
+	return (((Size) 536870912UL));
+}
+
+static Size
 budget_col_writer_order(void)
 {
 	return (((Size) maintenance_work_mem * 1024) + ((Size) 16777216UL));
+}
+
+static Size
+budget_col_writer_points(void)
+{
+	return (((Size) 536870912UL));
 }
 
 static Size
@@ -149,6 +192,12 @@ static Size
 budget_maint_worker_step(void)
 {
 	return (((Size) 4194304UL));
+}
+
+static Size
+budget_tomb_sync_batch(void)
+{
+	return (((Size) sift_tomb_log_limit_kb * 1024) + ((Size) 16384UL));
 }
 
 static Size
@@ -172,9 +221,14 @@ static const struct
 	{"bm25_search", budget_bm25_search, "work_mem + 32MB"},
 	{"bm25_verify", budget_bm25_verify, "maintenance_work_mem + 8MB"},
 	{"col_build", budget_col_build, "192MB (open: ceiling measured today)"},
+	{"col_build_spool", budget_col_build_spool, "col_build_budget + 4MB"},
 	{"col_conn_changed", budget_col_conn_changed, "32kB"},
-	{"col_key_cut_decision", budget_col_key_cut_decision, "576MB"},
+	{"col_fold_keys", budget_col_fold_keys, "sift.tomb_log_limit + 64kB"},
+	{"col_key_cut_cells", budget_col_key_cut_cells, "maintenance_work_mem + 8MB"},
+	{"col_key_cut_decision", budget_col_key_cut_decision, "maintenance_work_mem + 12MB"},
+	{"col_key_cut_layout", budget_col_key_cut_layout, "maintenance_work_mem + 64MB"},
 	{"col_merge", budget_col_merge, "256MB (open: ceiling measured today)"},
+	{"col_merge_inputs", budget_col_merge_inputs, "256MB (open: ceiling measured today)"},
 	{"col_merge_window", budget_col_merge_window, "maintenance_work_mem + 24MB"},
 	{"col_orphan_sweep", budget_col_orphan_sweep, "8MB"},
 	{"col_rewrite", budget_col_rewrite, "1MB"},
@@ -183,10 +237,13 @@ static const struct
 	{"col_tomb_log", budget_col_tomb_log, "sift.tomb_log_limit + 8MB"},
 	{"col_verify", budget_col_verify, "3*maintenance_work_mem + 8MB"},
 	{"col_write_buffer", budget_col_write_buffer, "96MB (open: ceiling measured today)"},
+	{"col_writer_dict", budget_col_writer_dict, "512MB (open: ceiling measured today)"},
 	{"col_writer_order", budget_col_writer_order, "maintenance_work_mem + 16MB"},
+	{"col_writer_points", budget_col_writer_points, "512MB (open: ceiling measured today)"},
 	{"col_writer_spool", budget_col_writer_spool, "maintenance_work_mem + 16MB"},
 	{"index_vacuum", budget_index_vacuum, "maintenance_work_mem + 16MB"},
 	{"maint_worker_step", budget_maint_worker_step, "4MB"},
+	{"tomb_sync_batch", budget_tomb_sync_batch, "sift.tomb_log_limit + 16kB"},
 	{"vstore_gc", budget_vstore_gc, "1MB"},
 };
 

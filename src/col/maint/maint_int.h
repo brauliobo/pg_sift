@@ -74,6 +74,7 @@ extern const SiftMaintOps maint_col_ops;
 extern void	maint_use_partitions(Relation index, const SiftDirSnapshot *snap);
 extern int	maint_part_kb_for(uint64 bytes, double mem_ratio);
 
+extern void	maint_keep_overlays(SiftDirSnapshot *snap);
 extern bool	maint_is_partition(const SiftSegEntry *e);
 extern SbSpans	maint_seg_spans(SiftColSegment *seg);
 extern bool	maint_share_superblock(const SbSpans *a, const SbSpans *b, int allowed);
@@ -132,7 +133,9 @@ typedef struct MergeSlice
 	int		   *nout;			/* the number of segments written to out (a window: up to max_parts of them) */
 } MergeSlice;
 
-extern void maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
+extern int maint_merge_maxout(int max_parts, int n);
+extern int maint_merge_parts(uint64 live_bytes, uint64 live_rows, uint64 part_bytes, bool key_cut, int max_parts, int maxout);
+extern int maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
 								 int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts, const MergeSlice *slice);
 
 /* col/maint/merge_window.c: the units of the inputs of a merge that are decoded at a time */
@@ -144,6 +147,7 @@ extern SiftColBatch *maint_window_rows(MergeWindow *w, uint32 sb);
 extern void maint_window_written(MergeWindow *w);
 extern void maint_window_discard(MergeWindow *w, SiftColBatch *b);
 extern Size maint_window_peak(const MergeWindow *w);
+extern MemoryContext maint_window_context(const MergeWindow *w);
 
 /* The rolling rewrite of a key-cut index in partitions (roll.c) */
 typedef enum RollPick
@@ -196,7 +200,7 @@ extern void	maint_seg_key_range(SiftColSegment *seg, int leaf, int64 *lo, int64 
 /* col/maint/merge_pick.c: the segments a merge or a rewrite takes, and the end state of an index */
 extern int	maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel);
 extern int	maint_pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, bool *cut, bool *paced, RollStep *rs);
-extern void	maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, int nout);
+extern void	maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftSegEntry *out, int nout);
 extern uint64	maint_merge_par_bytes(void);
 
 extern SiftStepResult	maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy);

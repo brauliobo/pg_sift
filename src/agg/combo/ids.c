@@ -85,9 +85,9 @@ dict_cmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ci, int p)
 }
 
 void
-id64_init(Id64 *m)
+id64_init(AggExec *ex, Id64 *m)
 {
-	intids_init(&m->ix);
+	intids_init_bounded(&m->ix, combo_cache_bytes(ex));
 	m->n = 0;
 	m->cap = 2048;
 	m->nan_id = 0;
@@ -172,7 +172,7 @@ prior_vid_new(AggExec *ex, int ci, int p, uint32 out)
 				MemoryContext old = MemoryContextSwitchTo(cs->cxt);
 
 				if (cs->id64[p].val == NULL)
-					id64_init(&cs->id64[p]);
+					id64_init(ex, &cs->id64[p]);
 				MemoryContextSwitchTo(old);
 				id = id64_id(&cs->id64[p], (int64) d);
 			}

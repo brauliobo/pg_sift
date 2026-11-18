@@ -989,6 +989,7 @@ const CustomExecMethods agg_exec_methods = {
 	.ExecCustomScan = agg_exec,
 	.EndCustomScan = agg_end,
 	.ReScanCustomScan = agg_rescan,
+	.ShutdownCustomScan = agg_shutdown,
 	.ExplainCustomScan = agg_explain,
 };
 

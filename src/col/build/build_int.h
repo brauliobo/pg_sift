@@ -12,6 +12,8 @@
 
 typedef struct ColSpill ColSpill;
 
+#define SCOPE_ROWS_FACTOR	2		/* the rows a scope family is expected to hold for each row of the table, to fit its segments to the directory (a bound: the average is the keys of a member) */
+
 struct ColBuild
 {
 	Relation	index;
@@ -50,6 +52,10 @@ struct ColBuild
 	int			maxsegs;
 	bool		shared;			/* a participant of a parallel build */
 	uint64		total_rows;		/* the heap's estimate of the rows of the index */
+	uint64		entries;		/* the rows this build writes: those of the index, or the entries of a scope (from the sample of its keys) */
+	BlockNumber heap_pages;		/* the pages of the heap when the build began */
+	int			nslots;			/* the participants that share the scan */
+	uint64		pages_seen;		/* the heap pages this participant has read rows from */
 	double		indexed;
 	double		reported;
 	/* a scope index (col/build/scope.c): the build of the entities feeds the rows of each batch, replicated by the scope keys of their member, to a build of its own for each scope */

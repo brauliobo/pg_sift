@@ -6,6 +6,7 @@
 #include "postgres.h"
 #include "access/table.h"
 #include "catalog/index.h"
+#include "core/limits.h"
 #include "core/ops.h"
 #include "core/worker.h"
 #include "storage/lmgr.h"
@@ -42,7 +43,7 @@ maint_part_kb_for(uint64 bytes, double mem_ratio)
 
 	if (sift_col_auto_merge_partition_kb > 0)
 		return kb;
-	mem_kb = Max((uint64) (sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE) / 1024 / mem_ratio), Max(bytes / 1024 / PART_DIVISOR, (uint64) (PART_MIN_KB * MAINT_MEM_RATIO / mem_ratio)));
+	mem_kb = Max((uint64) (sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE) / 1024 / mem_ratio), Max(bytes / 1024 / PART_DIVISOR, (uint64) (sift_limit(part_min_kb, PART_MIN_KB) * MAINT_MEM_RATIO / mem_ratio)));
 	if (bytes / 1024 > mem_kb && (kb == 0 || mem_kb < (uint64) kb))
 		kb = (int) Min(mem_kb, (uint64) INT_MAX);
 	return kb;
