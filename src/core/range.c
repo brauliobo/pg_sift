@@ -82,6 +82,38 @@ sift_bound_push_tid(SiftBound *b, uint64_t tid)
 	return true;
 }
 
+void
+sift_bound_pack(const SiftBound *b, uint8_t *out)
+{
+	memcpy(out, b->bytes, b->len);
+	memset(out + b->len, 0, SIFT_BOUND_BYTES - b->len);
+}
+
+bool
+sift_bound_unpack(const uint8_t *in, SiftBound *b)
+{
+	uint32_t	at = 0;
+
+	sift_bound_clear(b);
+	while (at < SIFT_BOUND_PAYLOAD && in[at] != 0)
+	{
+		uint8_t		tag = in[at];
+		uint32_t	n = 1 + elem_bytes(tag);
+
+		if (tag > TAG_TID || at + n > SIFT_BOUND_PAYLOAD || (tag == TAG_TID ? has_tid(b) : b->ncomp >= SIFT_BOUND_COMPS || has_tid(b)))
+			return false;
+		memcpy(&b->bytes[at], &in[at], n);
+		at += n;
+		b->len = (uint8_t) at;
+		if (tag != TAG_TID)
+			b->ncomp++;
+	}
+	for (uint32_t i = at; i < SIFT_BOUND_BYTES; i++)
+		if (in[i] != 0)
+			return false;
+	return true;
+}
+
 int
 sift_bound_cmp(const SiftBound *a, const SiftBound *b)
 {

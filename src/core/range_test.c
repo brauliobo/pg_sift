@@ -229,6 +229,20 @@ check_order(SiftRng *r, Counts *c)
 	want = sign(key_cmp(&a, &b));
 	c->order++;
 	c->order_bad += sign(sift_bound_cmp(&ea, &eb)) != want || sign(sift_bound_cmp(&eb, &ea)) != -want;
+	{
+		uint8_t		pa[SIFT_BOUND_BYTES],
+					pb[SIFT_BOUND_BYTES];
+		SiftBound	ua,
+					ub;
+
+		sift_bound_pack(&ea, pa);
+		sift_bound_pack(&eb, pb);
+		pb[SIFT_BOUND_BYTES - 1] = 1;
+		c->order_bad += sift_bound_unpack(pb, &ub);
+		sift_bound_pack(&eb, pb);
+		c->order_bad += sign(memcmp(pa, pb, SIFT_BOUND_BYTES)) != want || !sift_bound_unpack(pa, &ua) || sift_bound_cmp(&ua, &ea) != 0 ||
+			ua.len != ea.len || ua.ncomp != ea.ncomp || !sift_bound_unpack(pb, &ub) || sift_bound_cmp(&ub, &eb) != 0;
+	}
 	c->depth++;
 	c->depth_bad += sift_bound_depth(&ea, &eb) != key_depth(&a, &b);
 }

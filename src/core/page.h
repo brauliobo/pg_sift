@@ -14,6 +14,7 @@
 #include "core/host.h"
 
 #include "core/sift.h"
+#include "core/range.h"
 
 #define SIFT_METAPAGE_BLKNO		0
 #define SIFT_DIRECTORY_BLKNO	1
@@ -260,7 +261,6 @@ StaticAssertDecl(offsetof(SiftDirectoryData, segs) + SIFT_DIR_FLAT_MAX * sizeof(
  * A reference to an interior page has lineage 0 and the lo of its first reference. Nothing but the bound and the lineage is kept for a partition here: the stamps of its
  * scopes are in the sidecar of its segment, the ones of its connections in its segment entries.
  */
-#define SIFT_BOUND_BYTES	40
 typedef struct SiftChainRef
 {
 	BlockNumber blk;

@@ -13,17 +13,18 @@
 #include <stdint.h>
 
 #define SIFT_BOUND_COMPS	3		/* key components of a bound: three integers and the address are the most 38 bytes hold */
-#define SIFT_BOUND_BYTES	38
+#define SIFT_BOUND_PAYLOAD	38
+#define SIFT_BOUND_BYTES	40		/* a bound as stored (core/page.h SiftChainRef.lo): the payload, zero padded */
 #define SIFT_BOUND_TID_MAX	((UINT64_C(1) << 48) - 1)
 
 typedef struct SiftBound
 {
 	uint8_t		len;			/* bytes of the encoding in use */
 	uint8_t		ncomp;			/* its key components, the address not counted */
-	uint8_t		bytes[SIFT_BOUND_BYTES];
+	uint8_t		bytes[SIFT_BOUND_PAYLOAD];
 } SiftBound;
 
-_Static_assert(sizeof(SiftBound) == 40, "a bound is the 40 bytes of a directory reference");
+_Static_assert(sizeof(SiftBound) == SIFT_BOUND_BYTES, "a bound is the 40 bytes of a directory reference");
 
 /* [lo, hi): hi with no bytes is unbounded; the empty lo is below every key */
 typedef struct SiftRange
@@ -37,6 +38,13 @@ extern void sift_bound_clear(SiftBound *b);
 extern bool sift_bound_push_i64(SiftBound *b, int64_t v);
 extern bool sift_bound_push_null(SiftBound *b);
 extern bool sift_bound_push_tid(SiftBound *b, uint64_t tid);
+
+/*
+ * A bound as stored: the payload padded with zeros to SIFT_BOUND_BYTES, whose memcmp is the order of sift_bound_cmp (a tag is never 0, so a shorter bound sorts before its extensions). Unpacking
+ * reads the tags: false for bytes that are no bound (a tag past the components, a bound cut short, bytes after the padding begins).
+ */
+extern void sift_bound_pack(const SiftBound *b, uint8_t *out);
+extern bool sift_bound_unpack(const uint8_t *in, SiftBound *b);
 
 /* The order of two bounds: below zero, zero, above zero */
 extern int	sift_bound_cmp(const SiftBound *a, const SiftBound *b);
