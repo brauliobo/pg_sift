@@ -26,6 +26,7 @@ BEGIN, END = "<!-- membudget:begin -->", "<!-- membudget:end -->"
 TOKENS = {
     "work_mem": ("((Size) work_mem * 1024)", "miscadmin.h"),
     "maintenance_work_mem": ("((Size) maintenance_work_mem * 1024)", "miscadmin.h"),
+    "col_build_budget": ("((Size) sift_colb_budget(1))", "col/build.h"),
     "hash_mem": ("((Size) get_hash_memory_limit())", "executor/nodeHash.h"),
     "sift.tomb_log_limit": ("((Size) sift_tomb_log_limit_kb * 1024)", "core/tomb.h"),
     "sift.table_write_buffer_limit": ("((Size) sift_tbl_write_buffer_limit * 1024)", "table/table.h"),

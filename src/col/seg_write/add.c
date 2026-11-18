@@ -90,12 +90,8 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 		}
 		if (a->ord && w->inl[c])
 			a->bad = true;
-		for (uint32 i = 0; v->ovf && i < SIFT_COL_NWORDS(v->n); i++)
-			if (v->ovf[i])
-				a->bad = true;
-		for (uint32 i = 0; gv && gv->ovf && i < SIFT_COL_NWORDS(gv->n); i++)
-			if (gv->ovf[i])
-				a->bad = true;
+		if (sift_col_bits_any(v->ovf, v->n) || (gv && sift_col_bits_any(gv->ovf, gv->n)))
+			a->bad = true;
 		if (!v->ready || (gv && !gv->ready) || a->bad || w->rows + v->n >= SIFT_CPOINT_SEG_ROWS)
 		{
 			a->bad = true;
@@ -111,7 +107,7 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 		}
 		if (a->n + v->n > a->cap)
 		{
-			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+			MemoryContext old = MemoryContextSwitchTo(w->pcxt);
 
 			a->cap = grow_cap(a->cap, a->n + v->n);
 			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->key, (Size) a->cap * sizeof(int64));
@@ -123,7 +119,7 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 		}
 		if (a->ord && v->nulls && a->nn + v->n > a->ncap)
 		{
-			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+			MemoryContext old = MemoryContextSwitchTo(w->pcxt);
 
 			a->ncap = grow_ncap(a->ncap, a->nn + v->n);
 			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->ntid, (Size) a->ncap * sizeof(uint64));
@@ -136,7 +132,7 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 		}
 		if (gv && a->n + v->n > a->gcap)
 		{
-			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+			MemoryContext old = MemoryContextSwitchTo(w->pcxt);
 
 			a->gcap = a->cap;
 			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->gk, (Size) a->gcap * sizeof(int64));

@@ -130,7 +130,7 @@ selftest() {
 	n=$(( $(matrix | grep -o '"pg"' | wc -l) ))
 	[[ $n == $(( $(combos | wc -l) * $(wc -w <<<"$ARCHES") )) ]] || { echo "FAIL: the matrix has $n jobs, not the packages of PGS, FAMILIES and ARCHES"; bad=1; }
 	for pg in $PGS; do
-		[[ " $AMZN_PGS " == *" $pg "* ]] || ! matrix | grep -q "\"pg\":$pg,\"family\":\"amzn\"" || { echo "FAIL: the matrix has an amzn job for $pg, a major the distribution lacks"; bad=1; }
+		[[ " $AMZN_PGS " == *" $pg "* ]] || ! matrix | grep "\"pg\":$pg,\"family\":\"amzn\"" >/dev/null || { echo "FAIL: the matrix has an amzn job for $pg, a major the distribution lacks"; bad=1; }
 	done
 	(( bad == 0 )) && echo "package selftest: verify names every missing package of PGS ($PGS), FAMILIES ($FAMILIES; amzn for $AMZN_PGS) and ARCHES ($ARCHES), the matrix has a job for each; the recipes carry no literal major or architecture"
 	return $bad

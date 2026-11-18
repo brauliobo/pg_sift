@@ -139,7 +139,9 @@ new_data() {
 # reloption autovacuum_enabled cannot switch off the workers' catalogs). The one job that needs it (scripts/soak.sh) turns it on for its run.
 # max_wal_size 512MB: with 48MB a test that writes 30 MB of WAL in 14 s (col_sorted_run) checkpointed all the time, and on a runner disk that wrote
 # 0.1 MB/s a backend waited 100 to 250 s for a dirty buffer (33 to 255 "checkpoints are occurring too frequently" per lane in a PostgreSQL 19 quick shard).
-# The WAL a lane keeps is at most this, 1 MB segments, no recycling.
+# The WAL a lane keeps is at most this, 1 MB segments, no recycling. A data directory in RAM (tmpfs) has no disk to wait for, and 8 lanes at 512MB
+# held 2 GB of WAL at once: there it is 128MB.
+wal_cap() { [[ $(df -P "$TMP" 2>/dev/null | awk 'NR == 2 { print $1 }') == tmpfs ]] && echo 128MB || echo 512MB; }
 # reset_auto_conf DIR: the settings an ALTER SYSTEM of an earlier session left (max_parallel_workers_per_gather = 0, a small shared_buffers, work_mem) change the plans of
 # the tests: 18 of them failed on a clean tree for it. The cluster starts from the conf above alone.
 reset_auto_conf() {
@@ -159,7 +161,7 @@ start() {
 			unix_socket_directories = '$SOCK'
 			$(conf common)
 			fsync = off
-			max_wal_size = 512MB
+			max_wal_size = $(wal_cap)
 			min_wal_size = 80MB
 			wal_recycle = off
 			shared_buffers = 64MB
@@ -177,12 +179,7 @@ start() {
 
 stop() {
 	[[ -f $DATA/postmaster.pid ]] || return 0
-	local rc=0
-	PGUSER=postgres leak_cluster "$DATA" || rc=1
-	pg_ctl -D "$DATA" -m fast -w stop >/dev/null
-	leak_after_stop "$DATA" || rc=1
-	leak_scan "$TMP" || rc=1
-	return $rc
+	PGUSER=postgres leak_end "$DATA" "$TMP" pg_ctl -D "$DATA" -m fast -w stop >/dev/null
 }
 
 # ready: waits until the cluster accepts connections (SIFT_READY_SECS, 300). A backend that dies (a sanitizer that halts it, a PANIC test) makes the postmaster
@@ -204,6 +201,7 @@ clean() {
 	for d in $(psql -U postgres -d postgres -X -qAt -c "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres', 'template0', 'template1', '$DB')"); do
 		dropdb -U postgres --force "$d"
 	done
+	psql -U postgres -d postgres -X -qAt -c CHECKPOINT >/dev/null   # the WAL of the job goes with its databases (no recycling: a checkpoint removes it; scripts/ci.sh counts the cluster in the scratch of the lane)
 }
 
 # regress [TEST...]: without names, make installcheck (the Makefile's database and test list). With names, one pg_regress run per test in one
@@ -215,10 +213,13 @@ regress() {
 	local db=contrib_regression_$1 t out rc=0 reuse=() before= now left
 	for t in "$@"; do
 		out=$TMP/regress/$t
+		leak_before "regress-$t" "$TMP/postgres.log"
 		if ! pg_regress "$out" "$db" "${reuse[@]}" "$t"; then
 			rc=1; cat "$out/regression.diffs" 2>/dev/null; reuse=() before=
+			leak_after "regress-$t" "$DATA" "$db" || true
 			continue
 		fi
+		leak_after "regress-$t" "$DATA" "$db" || { rc=1; reuse=() before=; echo "not ok - $t leaks memory or resources"; continue; }
 		now=$(db_left "$db")
 		left=$({ grep -vxFf <(echo "$before") <<<"$now" || true; } | { grep -vEf <(sed -n "s/^$t: \(.*[^ ]\) *# .*/\1/p" "$REPO/scripts/leftovers.allow") || true; })
 		if [[ -n $left ]]; then

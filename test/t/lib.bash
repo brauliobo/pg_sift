@@ -292,15 +292,13 @@ node_stop_fast() {
 # node_leakcheck NAME: the cluster invariants while it runs, a clean shutdown (LeakSanitizer reports as the processes exit)
 # and the scan of its log
 node_leakcheck() {
-	local d rc=0
+	local d
 	d=$(dir "$1")
 	if [[ -f $d/data/postmaster.pid ]]; then
-		PGHOST=$d/sock PGPORT=$(port "$1") PGUSER=postgres leak_cluster "$d/data" || rc=1
-		node_stop_fast "$d/data" || rc=1
-		leak_after_stop "$d/data" || rc=1
+		PGHOST=$d/sock PGPORT=$(port "$1") PGUSER=postgres leak_end "$d/data" "$d" node_stop_fast "$d/data"
+	else
+		leak_scan "$d"
 	fi
-	leak_scan "$d" || rc=1
-	return $rc
 }
 
 # upgrade_failed NODE: after a failed pg_upgrade into NODE, the tail of its log and the error lines of the logs under pg_upgrade_output.d (a restore command is

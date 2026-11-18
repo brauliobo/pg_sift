@@ -81,7 +81,7 @@ log() { printf '[plangate %s] %s\n' "$(date +%T)" "$*" >&2; }
 # one psql session whose backend perf counts (globals pid, pf, PSQ); instr NAME VARIANT PLAN_ONLY prints the user instructions of three runs of a shape under the settings of
 # a way (plangate.cal_set); returns 1, and says so, without perf
 perf_session() {
-	perf stat -e instructions:u -x, true 2>&1 | grep -q 'instructions' || { log "$1: perf stat of user instructions is not available, skipped"; return 1; }
+	perf stat -e instructions:u -x, true 2>&1 | grep 'instructions' >/dev/null || { log "$1: perf stat of user instructions is not available, skipped"; return 1; }
 	pf=$(mktemp)
 	coproc PSQ { sql -qAtX; }
 	echo "SELECT pg_backend_pid();" >&"${PSQ[1]}"
