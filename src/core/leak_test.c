@@ -24,7 +24,6 @@
 
 #include "access/relation.h"
 #include "access/tupdesc.h"
-#include "catalog/pg_type.h"
 #include "fmgr.h"
 #include "storage/buffile.h"
 #include "storage/bufmgr.h"
@@ -95,7 +94,7 @@ sift_test_leak(PG_FUNCTION_ARGS)
 	{
 		TupleDesc	td = CreateTemplateTupleDesc(1);
 
-		TupleDescInitBuiltinEntry(td, 1, "leaked", INT4OID, -1, 0);
+		TupleDescInitEntry(td, 1, "leaked", INT4OID, -1, 0);
 		sift_tupdesc_finalize(td);
 		td->tdrefcount = 1;		/* reference counted */
 		PinTupleDesc(td);		/* never released */
