@@ -77,7 +77,7 @@ for n in "${SIZES[@]}"; do
 	serial+="$n $peak"$'\n'
 	((peak <= BOUND)) || over_serial=$((over_serial + 1))
 	[[ $path == btree ]] || paths_ok=0
-	off=$(stat -c %s "$LOG")
+	off=$(wc -c <"$LOG" | tr -d " ")
 	read -r _ _ _ path launched <<<"$(build "$n" 2 -1 "$PAR_SEG_KB")"
 	peak=$(worker_peak "$off" "$launched")
 	sql bm "DROP INDEX e_col" >/dev/null
