@@ -4,6 +4,10 @@
 # inside a chunk, a read of uninitialized palloc memory and a use after pfree are errors) with the server's own src/tools/valgrind.supp.
 #
 #   scripts/valgrind.sh [--major 17|18] [TEST...]       (SIFT_TMP and SIFT_PORT as scripts/pgtest.sh)
+#   scripts/valgrind.sh --leaks [--major 17|18] [TEST...]   the leak gate: the curated tests of scripts/valgrind-leaks.tests (about ten minutes of memcheck) with leak checking, every definite
+#                                                       leak with a pg_sift frame failing the run unless a row of scripts/valgrind-leaks.allow (reviewed, one line of evidence each) covers it;
+#                                                       in scripts/ci.sh: SIFT_CI_LEAKS=1 scripts/ci.sh quick, or SIFT_CI_JOBS=valgrind-leaks scripts/ci.sh quick
+#   scripts/valgrind.sh --leaks-selftest                a planted leak (sift._test_leak('palloc'), test leak_planted) must fail that gate
 #
 # Memcheck is 20 to 50 times slower, so the default tests are the memory-sensitive paths (list below; SIFT_VALGRIND_FULL=1 adds the slow ones)
 # (`col_enc` alone takes over 30 minutes: name it to run it). The whole run is bounded by SIFT_VALGRIND_TIMEOUT seconds (default 3000; a run that hits it fails). The postmaster and every
@@ -25,16 +29,27 @@
 # as the invoking user's uid on a private copy of the checkout mounted read-only (the checkout itself is never mounted), writing only to the
 # scratch directory (SIFT_VALGRIND_CPUS, SIFT_VALGRIND_MEMORY bound the container: 4, 16g), without network. The image sift-valgrind:bookworm-UID is part of the cache (docker rmi to drop it). Without a working
 # valgrind and without docker the lane says so and exits 0 (skipped); SIFT_VALGRIND_DEBUGPATH is valgrind's --extra-debuginfo-path.
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 source "$REPO/scripts/source-snapshot.sh"
 MASSIF=
 [[ ${1:-} != --massif ]] || { MASSIF=1; shift; }
+if [[ ${1:-} == --leaks-selftest ]]; then
+	out=$("$0" --leaks leak_planted 2>&1) && { echo "valgrind: the planted leak did not fail the leak gate"; exit 1; }
+	grep -q 'FAIL: .*sift_test_leak' <<<"$out" || { echo "valgrind: the leak gate failed, but not on the planted leak:"; tail -n 20 <<<"$out"; exit 1; }
+	echo "valgrind: the planted leak fails the leak gate"
+	exit 0
+fi
+[[ ${1:-} != --leaks ]] || { export SIFT_VALGRIND_LEAKS=1 LEAKSET=1; shift; }
 PGA=()
 [[ ${1:-} != --major ]] || { PGA=(--major "$2"); shift 2; }
 TESTS=("$@")
 (( ${#TESTS[@]} )) || read -ra TESTS <<<"${SIFT_VALGRIND_TESTS:-}"
+if [[ -n ${LEAKSET:-} ]] && (( ! ${#TESTS[@]} )); then
+	mapfile -t TESTS < <(awk -F'\t' '!/^#/ && NF { print $1 }' "$(dirname "$0")/valgrind-leaks.tests")
+fi
 # the default list is the memory-sensitive paths that are cheap under memcheck (seconds measured in CI): store 33, table AM 9, shredder 154,
 # the relcache pointer of the column index 34 + 11, dictionary and lookup caches 16 + 21 + 32 + 116, write buffer 66 + 12, parallel build 58,
 # aggregation nodes 105 + 24. SIFT_VALGRIND_FULL=1 adds the slow ones: col_index_basic 289 (the assert lane runs it too), col_index_parallel 285,
@@ -168,7 +183,7 @@ pg_ctl -D "$DATA" -m fast -t 600 stop >/dev/null 2>&1 || true
 
 # every error is a block between the markers in the log of its process; with leak checking the leak records are blocks too (the postmaster's own are many), so mem-report.py decides
 if [[ -n ${SIFT_VALGRIND_LEAKS:-} ]]; then
-	python3 -I scripts/mem-report.py gate "$WORK/vg" || rc=1
+	python3 -I scripts/mem-report.py gate --allow "$REPO/scripts/valgrind-leaks.allow" "$WORK/vg" || rc=1
 else
 	n=$(cat "$WORK"/vg/*.log 2>/dev/null | grep -c VALGRINDERROR-BEGIN || true)
 	if (( n )); then

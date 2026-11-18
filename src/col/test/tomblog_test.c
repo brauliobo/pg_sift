@@ -27,6 +27,7 @@
 PG_FUNCTION_INFO_V1(sift_test_col_log_create);
 PG_FUNCTION_INFO_V1(sift_test_col_fold_marks);
 PG_FUNCTION_INFO_V1(sift_test_col_marks_paid);
+PG_FUNCTION_INFO_V1(sift_test_col_fold_counts);
 PG_FUNCTION_INFO_V1(sift_test_col_log_append);
 PG_FUNCTION_INFO_V1(sift_test_col_log_entries);
 PG_FUNCTION_INFO_V1(sift_test_col_log_cache);
@@ -56,6 +57,13 @@ sift_test_col_fold_marks(PG_FUNCTION_ARGS)
 
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_INT64(n);
+}
+
+/* sift._test_col_fold_counts(): the passes over a log that counted the marks a fold could clear, in this backend (col/maint/fold.c) */
+Datum
+sift_test_col_fold_counts(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(sift_col_fold_counts);
 }
 
 /* sift._test_col_marks_paid(index): the instructions the reads of the server paid for the marks of the log in hand (the weight of the fold) */

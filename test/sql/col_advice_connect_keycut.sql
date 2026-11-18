@@ -1,7 +1,5 @@
--- sift.col_maintenance_status of a connected index whose parent index is cut by key (key_cut) recommends REINDEX for a stale connection only for parent keys that really changed (docs/COL-CONNECT.md):
--- updates of other columns of the parent and the maintenance of its index never do. A key_cut merge rewrites only the partitions it touches, so the partitions of the parent carry different stamps
--- and no stamp tells the rows a merge wrote again from the rows inserted since: the rule counts no inserted parent rows for such a parent. It does NOT cover parent rows inserted beyond the share:
--- they are not advised for a key_cut parent (reads join for them and answer as the normal plan does); the proper count needs an on-disk change (5.0.2).
+-- The advice of REINDEX for a connected index whose parent index is cut by key (key_cut) is the same as for any parent (col_advice_connect): the parent's insert horizon, which a stamp of the
+-- child holds, counts the rows that came in whatever its partitions were merged into, and the journal counts the keys that went. Updates of other columns and the maintenance of the parent never advise.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -33,12 +31,13 @@ BEGIN
 END $$;
 SELECT advice('facts_col') AS advice, sift.col_maintenance_due('facts_col', true) AS due, same_rows() AS same_rows;
 
--- eight rounds of the application at 3% and at 8% of the parent rows: they change a column the index does not key, children come in and change, the tables are vacuumed and the
+-- eight rounds of the application at 3% and at 8% of the parent rows: they change columns the index does not key (one of them one the index holds, so that every version gets an entry of its own), children come in and change, the tables are vacuumed and the
 -- parent index is maintained; the child is not stale in any round (the second share goes on from the first, no rewrite between)
 CREATE TABLE trail (pct int, round int, due text, advice text, same_rows boolean);
 \o /dev/null
 SELECT s FROM unnest(ARRAY[3, 8]) pct, generate_series(1, 8) r, LATERAL unnest(ARRAY[
 	format('UPDATE dim_a SET updated_at = now() WHERE (id + %s * 7) %% 100 < %s', r, pct),
+	format('UPDATE dim_a SET score = (score + 1) %% 100 WHERE (id + %s * 11) %% 100 < %s', r, pct),
 	format('INSERT INTO facts SELECT 100000 + %s * 1000 + i, 1 + (i * 13) %% 20000, i %% 5, ''n'' FROM generate_series(1, 200) i', pct * 10 + r),
 	format('UPDATE facts SET body = body || ''x'' WHERE id BETWEEN %s * 100 AND %s * 100 + 199', r, r),
 	'VACUUM dim_a, facts',
@@ -49,11 +48,16 @@ SELECT s FROM unnest(ARRAY[3, 8]) pct, generate_series(1, 8) r, LATERAL unnest(A
 SELECT pct, count(*) AS rounds, count(*) FILTER (WHERE due = 'stale connection') AS rounds_stale, count(*) FILTER (WHERE advice <> '-') AS rounds_advised, bool_and(same_rows) AS same_rows
 	FROM trail GROUP BY pct ORDER BY pct;
 
--- parent rows that came since, beyond the share (the parent rows the orphans wait for): NOT advised for a key_cut parent (the limit above), the answers stay those of the normal plan
+-- parent rows that came since, beyond the share (the parent rows the orphans wait for): in the write buffer, in the segment its promotion wrote and in the base segment of the parent that a
+-- merge put them into, they ask for the rewrite; a child whose segments were stamped before the horizon existed (sift.test_conn_no_horizon) is told only by the keys
 INSERT INTO dim_a SELECT i, 'p' || i, now(), i % 100, md5(i::text) FROM generate_series(60001, 69000) i;
 SELECT sift.col_maintenance_due('facts_col', true) AS due, advice('facts_col') <> '-' AS advised, same_rows() AS same_rows;
 VACUUM dim_a;
 SELECT sift.col_maintenance_due('facts_col', true) AS due, advice('facts_col') <> '-' AS advised, same_rows() AS same_rows;
+SELECT sift.col_maintain('dim_a_col') AS parent_maintained;
+SELECT sift.col_maintenance_due('facts_col', true) AS due, advice('facts_col') <> '-' AS advised, same_rows() AS same_rows;
+SELECT sift.col_maintain('facts_col') AS rewritten;
+SELECT advice('facts_col') AS advice, sift.col_maintenance_due('facts_col', true) AS due, same_rows() AS same_rows;
 
 -- real changes of the parent keys beyond the share: the keys that went and the ones that came ask for the rewrite
 UPDATE dim_a SET id = id + 100000 WHERE id % 100 < 15;
@@ -62,6 +66,16 @@ SELECT sift.col_maintain('dim_a_col') AS parent_maintained;
 SELECT sift.col_maintenance_due('facts_col', true) AS due, advice('facts_col') AS advice, same_rows() AS same_rows;
 SELECT sift.col_maintain('facts_col') AS rewritten;
 SELECT advice('facts_col') AS advice, sift.col_maintenance_due('facts_col', true) AS due, same_rows() AS same_rows;
+
+-- a child stamped before the horizon existed says nothing of the rows that came: not advised for them, whatever came; stamped again, it is told
+SET sift.test_conn_no_horizon = on;
+REINDEX INDEX facts_col;
+RESET sift.test_conn_no_horizon;
+INSERT INTO dim_a SELECT i, 'p' || i, now(), i % 100, md5(i::text) FROM generate_series(80001, 89000) i;
+SELECT sift.col_maintenance_due('facts_col', true) AS due, advice('facts_col') <> '-' AS advised, same_rows() AS same_rows;
+REINDEX INDEX facts_col;
+INSERT INTO dim_a SELECT i, 'p' || i, now(), i % 100, md5(i::text) FROM generate_series(89001, 98000) i;
+SELECT sift.col_maintenance_due('facts_col', true) AS due, advice('facts_col') <> '-' AS advised, same_rows() AS same_rows;
 
 DROP TABLE trail, facts, dim_a CASCADE;
 DROP FUNCTION advice(regclass), same_rows();
