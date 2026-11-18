@@ -38,9 +38,25 @@ alternates() {
 	done
 }
 
+# echoed ALT...: a line for each alternate that drops a line of its test's SQL file from the main output: psql echoes that file on every version, so no listing excuses it
+echoed() {
+	python3 - "$@" <<'PY'
+import re, subprocess, sys
+for alt in sys.argv[1:]:
+    main = re.sub(r'_[0-9]+\.out$', '.out', alt)
+    sql = 'test/sql/' + main.rsplit('/', 1)[1][:-4] + '.sql'
+    src = {l.rstrip() for l in open(sql) if len(l.strip()) >= 12}
+    out = subprocess.run(['diff', '-U0', main, alt], capture_output=True, text=True).stdout.split('\n')[2:]
+    n = sum(1 for l in out if l.startswith('-') and l[1:].rstrip() in src)
+    if n:
+        print(f'{alt}: {n} lines of {sql} that {main} echoes are not in the alternate: no version changes them, so the alternate is stale: regenerate it from the main output (cp {main} {alt}) and inspect only the version-specific differences')
+PY
+}
+
 # stale ALT...: a line for each hunk of the alternates that is not listed in the allow file, and for each listed hunk they no longer have
 stale() {
 	local f TMP; TMP=$(mktemp -d); trap "rm -rf $TMP" RETURN
+	echoed "$@"
 	for f in "$@"; do
 		hunks "$f" | cut -f1,2 | sort -u >"$TMP/now"
 		{ grep -F "$f	" "$ALLOW" 2>/dev/null || true; } | cut -f1,2 | sort -u >"$TMP/listed"
@@ -117,6 +133,10 @@ hunk_selftest() {
 	printf 'one\ntwo\nthree\n4\n' >"$t/test/expected/a_1.out"; printf 'one\ntwo\nthree\nfour\n' >"$t/test/expected/a.out"
 	[[ -n $(h stale test/expected/a_1.out) ]] || { echo "selftest: a version-specific hunk that is not listed was accepted"; return 1; }
 	h accept test/expected/a_1.out
+	mkdir -p "$t/test/sql"; printf 'a line that psql echoes\none\n' >"$t/test/sql/a.sql"; printf 'a line that psql echoes\ntwo\n' >"$t/test/expected/a.out"
+	printf 'a changed line that psql echoes\ntwo\n' >"$t/test/expected/a_1.out"; h accept test/expected/a_1.out
+	[[ $(h stale test/expected/a_1.out) == *"the alternate is stale"* ]] || { echo "selftest: an alternate that drops an echoed line was accepted"; return 1; }
+	printf 'one\ntwo\nthree\n4\n' >"$t/test/expected/a_1.out"; printf 'one\ntwo\nthree\nfour\n' >"$t/test/expected/a.out"; rm "$t/test/sql/a.sql"; echo a >"$t/test/sql/a.sql"; h accept test/expected/a_1.out
 	[[ -z $(h stale test/expected/a_1.out) ]] || { echo "selftest: a listed version-specific hunk was refused"; return 1; }
 	printf 'ONE\ntwo\nthree\n4\n' >"$t/test/expected/a.out"; printf 'ONE\ntwo\nthree\n4\n' >"$t/test/expected/a_1.out"
 	[[ $(h stale test/expected/a_1.out) == *"lists a hunk that the alternate no longer has"* ]] || { echo "selftest: a listed hunk that is gone was accepted"; return 1; }

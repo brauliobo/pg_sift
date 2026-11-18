@@ -1,0 +1,106 @@
+-- The inline plan of a shared CTE is chosen when the scans cost less than the work of the shared plan they replace. What the scans leave in the inline plan is
+-- the copies of the other CTEs that the statement reads more than once (inlined, each reference is a copy), priced by PostgreSQL's estimates: where that rest costs
+-- more than the whole shared plan did, no scan pays for it. Here a CTE of rows of a table with a column index is read by two aggregates, and a heavy CTE of another
+-- table is joined to their result two or three times. Two copies are a rest within the margin of the shared plan and the scans run; three are not, and the shared
+-- plan is kept (the scans would have won on the work they replace alone). Every statement runs with the pushdown on and off: the rows must be the same.
+-- PostgreSQL 17 orders the joins of the rest worse and prices it 1.3 times the shared plan (1.1 on 18, the limit is 1.25): there two copies keep the shared plan
+-- (agg_cte_inline_rest_1.out).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 100;
+SET sift.agg_verdict_cache = off;
+CREATE TABLE docs (id int PRIMARY KEY, grp int NOT NULL, v int NOT NULL, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO docs SELECT i, i % 20000, i % 17, jsonb_build_object('a', i % 9, 'b', i % 5, 'c', i % 3) FROM generate_series(1, 100000) i;
+CREATE INDEX docs_col ON docs USING sift_col (id, grp, v, doc) WITH (paths = 'doc.* float8');
+VACUUM (FREEZE, ANALYZE) docs;
+CREATE TABLE fat (id int PRIMARY KEY, grp int, w int) WITH (autovacuum_enabled = false);
+INSERT INTO fat SELECT i, i % 50, i % 1000 FROM generate_series(1, 200000) i;
+VACUUM (FREEZE, ANALYZE) fat;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'shared';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'scans'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO result_rows FROM r_on;
+	SELECT count(*) INTO vs_normal_plan FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+-- the statement: copies = the number of references of the heavy CTE (2 or 3), keys = the condition that picks the keys the aggregates are asked for
+CREATE FUNCTION stmt(copies int, keys text) RETURNS text LANGUAGE sql AS $f$ SELECT format($q$
+WITH keys AS (SELECT grp FROM fat WHERE %s),
+ r AS (SELECT docs.* FROM docs JOIN keys USING (grp)),
+ heavy AS (SELECT grp, count(*) AS n, sum(w) AS sw FROM fat GROUP BY grp, w %% 97),
+ a1 AS (SELECT grp, sum(x.value::float8) AS s FROM r CROSS JOIN LATERAL jsonb_each_text(r.doc) x WHERE v < 8 GROUP BY grp),
+ a2 AS (SELECT grp, sum(x.value::float8) AS s FROM r CROSS JOIN LATERAL jsonb_each_text(r.doc) x WHERE v >= 8 GROUP BY grp)
+SELECT a1.grp, a1.s AS s1, a2.s AS s2, h1.n, h2.sw %s
+FROM a1 JOIN a2 USING (grp) JOIN heavy h1 ON h1.grp = a1.grp JOIN heavy h2 ON h2.grp = a2.grp AND h2.n >= h1.n %s $q$, keys,
+ CASE copies WHEN 3 THEN ', h3.n AS n3' ELSE '' END, CASE copies WHEN 3 THEN 'JOIN heavy h3 ON h3.grp = a1.grp AND h3.sw >= h2.sw' ELSE '' END) $f$;
+-- two copies of the heavy CTE: the scans run; three: the shared plan is kept
+SELECT copies, plan, result_rows, vs_normal_plan FROM (VALUES (2), (3)) c(copies), LATERAL same(stmt(copies, 'id = 17'));
+ copies |  plan  | result_rows | vs_normal_plan 
+--------+--------+-------------+----------------
+      2 | shared |         400 |              0
+      3 | shared |        4200 |              0
+(2 rows)
+
+-- the rows are the same for no key, one, a few, forty and all of them, two and three copies
+SELECT keys, copies, result_rows, vs_normal_plan FROM (VALUES ('id = 0'), ('id = 17'), ('id <= 3'), ('id <= 40'), ('true')) k(keys), (VALUES (2), (3)) c(copies), LATERAL same(stmt(copies, keys)) ORDER BY 1, 2;
+   keys   | copies | result_rows | vs_normal_plan 
+----------+--------+-------------+----------------
+ id <= 3  |      2 |        1200 |              0
+ id <= 3  |      3 |       12600 |              0
+ id <= 40 |      2 |       16000 |              0
+ id <= 40 |      3 |      168000 |              0
+ id = 0   |      2 |           0 |              0
+ id = 0   |      3 |           0 |              0
+ id = 17  |      2 |         400 |              0
+ id = 17  |      3 |        4200 |              0
+ true     |      2 |       20000 |              0
+ true     |      3 |      210000 |              0
+(10 rows)
+
+-- documents that are NULL, empty, or without a number, rows that move to another group or are gone, rows that appear
+UPDATE docs SET doc = NULL WHERE id % 11 = 0;
+UPDATE docs SET doc = '{}' WHERE id % 13 = 0;
+UPDATE docs SET doc = doc || '{"a": null, "d": 5}' WHERE id % 7 = 0 AND doc IS NOT NULL;
+UPDATE docs SET grp = (grp + 1) % 20000 WHERE id % 17 = 0;
+DELETE FROM docs WHERE id % 19 = 0;
+INSERT INTO docs SELECT 100000 + i, i % 20000, i % 17, jsonb_build_object('a', i % 4, 'b', i % 5) FROM generate_series(1, 3000) i;
+SELECT keys, copies, result_rows, vs_normal_plan FROM (VALUES ('id = 0'), ('id = 17'), ('id <= 3'), ('id <= 40')) k(keys), (VALUES (2), (3)) c(copies), LATERAL same(stmt(copies, keys)) ORDER BY 1, 2;
+   keys   | copies | result_rows | vs_normal_plan 
+----------+--------+-------------+----------------
+ id <= 3  |      2 |        1200 |              0
+ id <= 3  |      3 |       12600 |              0
+ id <= 40 |      2 |       15600 |              0
+ id <= 40 |      3 |      163800 |              0
+ id = 0   |      2 |           0 |              0
+ id = 0   |      3 |           0 |              0
+ id = 17  |      2 |         400 |              0
+ id = 17  |      3 |        4200 |              0
+(8 rows)
+
+VACUUM (ANALYZE) docs;
+SELECT keys, copies, result_rows, vs_normal_plan FROM (VALUES ('id = 17'), ('id <= 3')) k(keys), (VALUES (2), (3)) c(copies), LATERAL same(stmt(copies, keys)) ORDER BY 1, 2;
+  keys   | copies | result_rows | vs_normal_plan 
+---------+--------+-------------+----------------
+ id <= 3 |      2 |        1200 |              0
+ id <= 3 |      3 |       12600 |              0
+ id = 17 |      2 |         400 |              0
+ id = 17 |      3 |        4200 |              0
+(4 rows)
+
+DROP TABLE docs, fat;
+DROP FUNCTION same(text), plan_of(text), stmt(int, text);
+DROP EXTENSION pg_sift;
