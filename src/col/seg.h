@@ -677,6 +677,7 @@ sift_cseg_cut_order(const SiftColSegment *seg, const int *cut, int ncut)
 #ifdef SIFT_TESTING
 extern int64 sift_test_cut_probes;	/* sift._test_col_cut_probes(): the segments whose units sift_colk_streams has checked in this backend */
 extern bool sift_test_col_loose_inputs;	/* sift.test_col_loose_inputs: sift_colk_streams takes no keyed input as a stream */
+extern bool sift_test_col_merge_eager;	/* sift.test_col_merge_eager: a merge of streams reads the first unit of every input before its first row, as before the inputs waited for their key range */
 extern int sift_test_col_cut_record;	/* sift.test_col_cut_record: 1 writes a segment cut by a key as the 5.0 development builds before SIFT_SEG_CUTREC did (the flag SIFT_SEG_BYKEY or SIFT_SEG_BYTID, no record of the cut), 2 as 4.3 and older (neither) */
 extern bool sift_test_col_gorder_strings;	/* sift.test_col_gorder_strings: the global order of a text leaf keeps a copy of its strings (version 3, as before column format minor 42), not the dictionary codes of them */
 extern bool sift_test_col_gorder_unpacked;	/* sift.test_col_gorder_unpacked: the chunks of a global order code their addresses with 9 bits of offset (column format minor 37), not the bits of the largest */

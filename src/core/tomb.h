@@ -161,6 +161,7 @@ typedef struct SiftTombLog
 	SiftTomb   *recent;			/* sorted likewise: entries synced since the last merge into ents (small, cheap to insert into) */
 	uint32		nrecent;
 	uint32		caprecent;
+	uint64		foldable;		/* the entries a fold of the marks could clear when they were last counted (col/maint/fold.c): a floor until the log is read again, since entries are added and only become clearable */
 	struct HTAB *hotm;			/* the keys that are the succ of a HOT entry: chain members (NULL until the log has one) */
 	SiftTomb   *run;			/* scratch: the entries of one key found in both arrays */
 	uint32		caprun;

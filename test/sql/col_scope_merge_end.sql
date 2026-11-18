@@ -1,0 +1,67 @@
+-- The merge of the scope segments ends. A scope key with more rows than a segment holds lies in several segments, and a merge of all of them writes it in as many again: that is the end state,
+-- not a reason to merge again. The merges that follow a CREATE INDEX CONCURRENTLY and sift.col_merge stopped only when no key lay in two segments, so a key too large for a segment (a segment
+-- is cut at the memory of its writer, or at the partition size of the bytes) was merged again and again, and the index grew with each merge. sift.test_col_scope_merge_limit stops a test
+-- that does not end; the merges, segments and bytes below are exact: the indexes take the encodings only, as the bytes of LZ4 and zstd depend on the version of the library.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET sift.scope_max_multiplicity = 8;
+SET client_min_messages = warning;
+SET sift.test_col_scope_merge_limit = 20;
+
+-- every member is in tenant 1, and a few of them in others too: tenant 1 is the one key of more rows than a segment holds
+CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));
+INSERT INTO tenant_scope SELECT m, CASE WHEN j = 0 THEN 1 ELSE 2 + (m * 7 + j * 5) % 15 END FROM generate_series(1, 200) m, generate_series(0, 2) j WHERE j < m % 4 ON CONFLICT DO NOTHING;
+INSERT INTO tenant_scope SELECT m, 1 FROM generate_series(1, 210) m ON CONFLICT DO NOTHING;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int, pad text) WITH (autovacuum_enabled = false);
+
+CREATE FUNCTION load_events(first_id int, n int) RETURNS void LANGUAGE sql AS $$
+	INSERT INTO events SELECT i, 1 + (i * 7919) % 210, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, 'x' FROM generate_series(first_id, first_id + n - 1) i $$;
+
+CREATE FUNCTION scope_state(OUT merges int, OUT segments bigint, OUT largest_rows bigint, OUT live_kb bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	merges := current_setting('sift.test_col_scope_merges')::int;
+	SELECT count(*), max(g.rows), sum(g.bytes) / 1024 INTO segments, largest_rows, live_kb
+	FROM sift._test_col_scope_stamps('events_col') s JOIN sift.col_segments('events_col') g USING (gen) WHERE s.family = 'scope';
+END $$;
+
+-- the writer of a segment is cut at 16 kB of memory: tenant 1 spans several segments, at five sizes. CREATE INDEX CONCURRENTLY and REINDEX INDEX CONCURRENTLY merge the scope segments until they are the end state
+SET sift.test_col_segment_kb = 16;
+CREATE TABLE sizes AS SELECT n FROM unnest(ARRAY[6000, 12000, 18000, 24000, 30000]) n;
+SELECT s FROM sizes, LATERAL unnest(ARRAY[
+	'TRUNCATE events',
+	format('SELECT load_events(1, %s)', n),
+	'VACUUM (FREEZE, ANALYZE) events',
+	'SET sift.test_col_scope_merges = 0',
+	'CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (compression = ''for+delta+rle+dict+alp+scale'', scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')',
+	format('SELECT %s AS rows, * FROM scope_state()', n),
+	'SET sift.test_col_scope_merges = 0',
+	'REINDEX INDEX CONCURRENTLY events_col',
+	format('SELECT %s AS rows, * FROM scope_state()', n),
+	'DROP INDEX events_col']) s ORDER BY n \gexec
+RESET sift.test_col_segment_kb;
+
+-- the partitions of the bytes (no memory cut): the scope segments of promotions are merged by sift.col_merge into the partitions of 8 kB, in the one merge that makes fewer segments than it read, and
+-- the merges after it find the partitions apart, as they find the segments of the tiers when the partitions are left to the rewrite
+TRUNCATE events;
+SELECT load_events(1, 30000);
+VACUUM (FREEZE, ANALYZE) events;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (compression = 'for+delta+rle+dict+alp+scale', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+SELECT s FROM unnest(ARRAY[1000, 2000, 3000, 4000]) n, LATERAL unnest(ARRAY[
+	format('SELECT load_events(100000 + %s * 10, %s)', n, n),
+	'SELECT sift.col_promote(''events_col'')']) s ORDER BY n \gexec
+SET sift.test_col_scope_merges = 0;
+SELECT * FROM scope_state();
+SET sift.col_auto_merge_partition_kb = 8;
+SELECT sift.col_merge('events_col', true) AS steps;
+SELECT * FROM scope_state();
+SELECT sift.col_merge('events_col', true) AS steps;
+SELECT * FROM scope_state();
+SELECT sift.col_verify('events_col', true);
+RESET sift.col_auto_merge_partition_kb;
+DROP INDEX events_col;
+DROP TABLE sizes, events, tenant_scope;
+DROP FUNCTION scope_state(), load_events(int, int);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

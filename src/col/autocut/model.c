@@ -3,17 +3,20 @@
  * how scattered a leaf is, whether a b-tree already serves it, what a cut saves
  * measured on the sampled superblocks
  */
-/* check-memory: allow-allocs the sample of the autocut is capped at AUTOCUT_ROWS rows and AUTOCUT_SBS superblocks */
+/* check-memory: allow-allocs the cells of a leaf are in a spool held to maintenance_work_mem; the arrays follow one superblock */
 #include "postgres.h"
 #include <math.h>
 #include "access/htup_details.h"
 #include "catalog/pg_statistic.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/syscache.h"
 #include "col/point.h"
 #include "core/limits.h"
 #include "core/cmp.h"
 #include "col/autocut/autocut_int.h"
+#include "core/host.h"
+#include "core/membudget.h"
 
 #define AUTOCUT_KEYS		32		/* keys taken from the sample, more than half of them must read that many */
 
@@ -141,66 +144,273 @@ acut_cut_cost(double growth_pct, int nleaves)
 	return growth_pct / 3 + 100.0 * AUTOCUT_BUILD_CUT / (AUTOCUT_BUILD_BASE + (double) AUTOCUT_BUILD_LEAF * nleaves) / 5;
 }
 
+/* a distinct value of a leaf in one sampled superblock, with the rows that hold it */
+typedef struct Cell
+{
+	int64		key;
+	uint32		sb;
+	uint32		n;
+} Cell;
+
+#define CELL_KEY(x) ((x)->key)
+#define CELL_KEY2(x) 0
+#define CELL_TIE(x) ((x)->sb)
+
+static inline int
+cell_cmp(const Cell *x, const Cell *y)
+{
+	if (x->key != y->key)
+		return x->key < y->key ? -1 : 1;
+	return SIFT_CMP3(x->sb, y->sb);
+}
+
+#define CELL_LESS(x, y) (cell_cmp(x, y) < 0)
+
+SIFT_DEFINE_SORT(sort_cells_cmp, Cell, CELL_LESS)
+
+/* a copy of the cells for the radix sort: none when it would pass the largest allocation (the comparison sort then) */
+static void *
+cell_copy(size_t bytes)
+{
+	void	   *copy = bytes <= MaxAllocSize ? palloc_extended(bytes, MCXT_ALLOC_NO_OOM) : NULL;
+
+	SIFT_MEM_CHECKPOINT();
+	return copy;
+}
+
+/* the rows are added in the order of the superblocks, so the radix sort applies */
+SIFT_DEFINE_RADIX_SORT(sort_cells, Cell, CELL_KEY, CELL_KEY2, CELL_TIE, cell_copy, pfree, sort_cells_cmp)
+
+/*
+ * The cells of a leaf in the order of the values, those of one value in the order of the superblocks. The non-NULL rows of the sample are put in a buffer as a cell each, and
+ * sorted: a buffer that holds them all is the order, read as it is; a smaller one is sorted a run at a time (a run ends at a superblock), each run written as cells (the rows of
+ * one value in one superblock counted) to a spool, and the runs are merged.
+ */
+typedef struct Cells
+{
+	AcutSpool	sp;
+	uint64		bound[AUTOCUT_SBS + 1];
+	AcutMerge	merge;
+	Cell	   *buf;
+	uint32		fill,
+				at;
+	uint64		ncells;			/* the distinct (value, superblock) pairs */
+	const Cell *next;
+	uint64		groups;
+	uint32		cap;			/* the rows the buffer holds, taken from the budget while it is */
+	bool		runs;
+	AcutBudget *budget;
+} Cells;
+
+#define CELL_HELD	(2 * sizeof(Cell))	/* what a row in the buffer takes of the budget: its cell and the sort's copy */
+
+/* all the cells of one value */
+typedef struct CellGroup
+{
+	int64		key;
+	double		rows;
+	int			ncell;
+	uint32		sb[AUTOCUT_SBS];
+	uint32		n[AUTOCUT_SBS];
+} CellGroup;
+
+/* the sorted rows of the buffer as cells, in place: the rows of one value in one superblock counted; returns the cells */
+static uint32
+cells_compact(Cell *buf, uint32 fill)
+{
+	uint32		n = 0;
+
+	for (uint32 i = 0; i < fill; i++)
+		if (n > 0 && buf[n - 1].key == buf[i].key && buf[n - 1].sb == buf[i].sb)
+			buf[n - 1].n++;
+		else
+			buf[n++] = buf[i];
+	return n;
+}
+
+/* the buffer sorted, as cells */
+static void
+cells_sort(Cells *c)
+{
+	sort_cells(c->buf, c->fill);
+	c->fill = cells_compact(c->buf, c->fill);
+}
+
+static void
+cells_write_run(Cells *c)
+{
+	cells_sort(c);
+	for (uint32 i = 0; i < c->fill; i++)
+		acut_spool_add(&c->sp, &c->buf[i]);
+	c->fill = 0;
+	SIFT_MEM_CHECKPOINT();
+}
+
+static const Cell *cells_next(Cells *c);
+
+static void
+cells_begin(Samp *s, const Track *t, Cells *c)
+{
+	AcutCur		cur;
+	uint32		most = 0,
+				nr = 0;
+
+	*c = (Cells) {.budget = &s->budget};
+	acut_spool_init(&c->sp, &s->budget, sizeof(Cell));
+	for (int u = 0; u < s->nsb; u++)
+		most = Max(most, s->start[u + 1] - s->start[u]);
+	/* a run holds the rows of as many superblocks as half of what the budget has left takes, at least one */
+	c->cap = (uint32) Min((int64) t->nonnull, Max((int64) most, Max(s->budget.left, 0) / 2 / (int64) CELL_HELD));
+	s->budget.left -= c->cap * (int64) CELL_HELD;
+	c->buf = palloc_array(Cell, c->cap);
+	acut_cur_init(&cur, &s->rows, 0, s->n);
+	for (int u = 0; u < s->nsb; u++)
+	{
+		if (c->fill > 0 && c->fill + s->start[u + 1] - s->start[u] > c->cap)
+		{
+			c->bound[nr++] = c->sp.n;
+			cells_write_run(c);
+		}
+		for (uint32 i = s->start[u]; i < s->start[u + 1]; i++)
+		{
+			const void *rec = acut_cur_next(&cur);
+
+			if (!ROW_NL(rec, s->ntr, t->idx))
+				c->buf[c->fill++] = (Cell) {ROW_V(rec, t->idx), u, 1};
+		}
+	}
+	acut_cur_free(&cur);
+	c->runs = nr > 0;
+	if (!c->runs)
+	{
+		cells_sort(c);
+		c->ncells = c->fill;
+	}
+	else
+	{
+		c->bound[nr++] = c->sp.n;
+		cells_write_run(c);
+		c->bound[nr] = c->sp.n;
+		pfree(c->buf);
+		c->buf = NULL;
+		s->budget.left += c->cap * (int64) CELL_HELD;
+		c->ncells = c->sp.n;
+		acut_merge_begin(&c->merge, &c->sp, c->bound, nr, 1);
+	}
+	c->next = cells_next(c);
+	SIFT_MEM_CHECKPOINT();
+}
+
+static const Cell *
+cells_next(Cells *c)
+{
+	if (c->runs)
+		return acut_merge_next(&c->merge);
+	return c->at < c->fill ? &c->buf[c->at++] : NULL;
+}
+
+static void
+cells_end(Cells *c)
+{
+	if (c->runs)
+		acut_merge_end(&c->merge);
+	else
+	{
+		pfree(c->buf);
+		c->budget->left += c->cap * (int64) CELL_HELD;
+	}
+	acut_spool_free(&c->sp);
+}
+
+static bool
+cells_group(Cells *c, CellGroup *g)
+{
+	if (c->next == NULL)
+		return false;
+	if ((++c->groups & 1023) == 0)
+		SIFT_MEM_CHECKPOINT();
+	g->key = c->next->key;
+	g->rows = 0;
+	g->ncell = 0;
+	do
+	{
+		SIFT_INVARIANT(g->ncell < AUTOCUT_SBS, "sift: a value has more cells than the %d superblocks of the sample", AUTOCUT_SBS);
+		g->sb[g->ncell] = c->next->sb;
+		g->n[g->ncell++] = c->next->n;
+		g->rows += c->next->n;
+		c->next = cells_next(c);
+	} while (c->next != NULL && c->next->key == g->key);
+	return true;
+}
+
 /*
  * The sampled superblocks of a key candidate give the units an equality on its keys reads: the median over AUTOCUT_KEYS keys taken at random rows, and the
- * median of the units their rows fill. fired: the cut would save a lookup what the default formula asks (cut_pays_a_lookup). keyed: the index keeps a key list of
- * the leaf; kept: it keeps the keys of the leaf in some form (a bloom filter where no list fits), not key_columns = 'off'.
+ * median of the units their rows fill. fired: the cut would save a lookup what the default formula asks (cut_pays_a_lookup). keyed_room: the bytes the index keeps a
+ * key list of the leaf in (the list takes AUTOCUT_KEY_BYTES for each cell of a superblock); kept: it keeps the keys of the leaf in some form (a bloom filter where no list
+ * fits), not key_columns = 'off'. The cells are read once, in the order of the values; the rows of the most common value are left in t->top.
  */
 double
-acut_units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed, bool kept, double *ideal, bool *fired)
+acut_units_read(Track *t, Samp *s, double nsb, double rows_per_unit, double keyed_room, bool kept, double *ideal, bool *fired)
 {
+	int			nsampled = s->nsb;
 	double		f = nsampled / nsb,
-				total = 0,
-				step,
-				at,
+				step = (double) t->nonnull / AUTOCUT_KEYS,
+				at = step / 2,
+				seen = 0,
 				reads[AUTOCUT_KEYS],
 				fills[AUTOCUT_KEYS];
 	int			nk = 0;
-	int64		i = 0;
+	bool		keyed;
+	Cells		cells;
+	CellGroup  *g;
+	MemoryContext cx;
+	MemoryContext old;
 
 	*fired = false;
-	if (t->ncells == 0)
+	t->top = 0;
+	if (t->nonnull == 0)
 		return 0;
-	for (int64 k = 0; k < t->ncells; k++)
-		total += t->cells[k].n;
-	step = total / AUTOCUT_KEYS;
-	at = step / 2;
-	for (double seen = 0; i < t->ncells && nk < AUTOCUT_KEYS;)
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col key_cut cells", ALLOCSET_DEFAULT_SIZES);
+	old = MemoryContextSwitchTo(cx);
+	SIFT_MEM_SCOPE(col_key_cut_cells, cx);
+	g = palloc(sizeof(CellGroup));
+	cells = (Cells) {0};
+	cells_begin(s, t, &cells);
+	keyed = AUTOCUT_KEY_BYTES * (double) cells.ncells / nsampled <= keyed_room;
+	while (cells_group(&cells, g))
 	{
-		int64		j = i;
-		double		rows = 0;
-
-		while (j < t->ncells && t->cells[j].key == t->cells[i].key)
-			rows += t->cells[j++].n;
 		/* the keys whose rows hold the points at, at + step, ..: a key of many rows is taken as often as its share of the rows */
-		while (nk < AUTOCUT_KEYS && at < seen + rows)
+		while (nk < AUTOCUT_KEYS && at < seen + g->rows)
 		{
 			double		pos = at - seen,
 						cum = 0,
 						mine,
 						zone,
-						others = j - i - 1;
-			int64		e = i;
+						others = g->ncell - 1;
+			int			e = 0;
 
-			while (e < j - 1 && cum + t->cells[e].n <= pos)
-				cum += t->cells[e++].n;
-			mine = t->cells[e].n;
+			while (e < g->ncell - 1 && cum + g->n[e] <= pos)
+				cum += g->n[e++];
+			mine = g->n[e];
 			/* a unit is read when its zone holds the key, and then only when its key list holds it or its bloom filter passes it */
 			zone = 0;
 			for (int u = 0; u < nsampled; u++)
-				zone += u != t->cells[e].sb && t->has[u] && t->lo[u] <= t->cells[e].key && t->cells[e].key <= t->hi[u];
+				zone += u != g->sb[e] && t->has[u] && t->lo[u] <= g->key && g->key <= t->hi[u];
 			if (keyed)
 				zone = others;
 			else if (kept)
 				zone = others + AUTOCUT_BLOOM_PASS * Max(zone - others, 0);
 			reads[nk] = Min(nsb, 1 + zone / f);
-			fills[nk] = Max(1, (mine + (rows - mine) / f) / rows_per_unit);
+			fills[nk] = Max(1, (mine + (g->rows - mine) / f) / rows_per_unit);
 			nk++;
 			at += step;
 		}
-		seen += rows;
-		i = j;
+		seen += g->rows;
+		t->top = Max(t->top, (uint64) g->rows);
 	}
+	cells_end(&cells);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
 	if (nk == 0)
 		return 0;
 	qsort(reads, nk, sizeof(double), sift_cmp_f64);
@@ -213,48 +423,75 @@ acut_units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool k
 /*
  * The same for the values of a time leaf, which do not repeat: AUTOCUT_KEYS ranges at places spread over the sorted values of the sample, each holding the
  * rows of one unit (a day, a week of a table that takes it). A unit is read when its zone meets the range, so the units read are the sampled superblocks
- * that meet it (the first stands for itself, the others for 1/f each), and the units its rows fill are those of the rows with a value in it.
+ * that meet it (the first stands for itself, the others for 1/f each), and the units its rows fill are those of the rows with a value in it. The ranges are
+ * found in one pass over the cells: a range ends at the values it starts and ends at, and takes every row of them.
  */
 double
-acut_ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double rows_per_unit, double *ideal, bool *fired)
+acut_ranges_read(const Track *t, Samp *s, double nsb, double rows_per_unit, double *ideal, bool *fired)
 {
+	int			nsampled = s->nsb;
 	double		f = nsampled / nsb,
 				reads[AUTOCUT_KEYS],
 				fills[AUTOCUT_KEYS];
-	int64	   *s = palloc_array(int64, nrows);
-	uint32		n = 0,
+	uint32		n = t->nonnull,
 				half;
+	uint64		from_at[AUTOCUT_KEYS],
+				to_at[AUTOCUT_KEYS],
+				from[AUTOCUT_KEYS],
+				to[AUTOCUT_KEYS],
+				rank = 0;
+	int64		lo[AUTOCUT_KEYS],
+				hi[AUTOCUT_KEYS];
+	int			kf = 0,
+				kt = 0;
+	Cells		cells;
+	CellGroup  *g;
+	MemoryContext cx;
+	MemoryContext old;
 
 	*fired = false;
-	for (uint32 i = 0; i < nrows; i++)
-		if (!t->nl[i])
-			s[n++] = t->v[i];
 	if (n < AUTOCUT_KEYS)
-	{
-		pfree(s);
 		return 0;
-	}
-	sift_sort_i64(s, n);
 	half = (uint32) Max(1, n / nsb / 2);
 	for (int k = 0; k < AUTOCUT_KEYS; k++)
 	{
-		uint32		mid = (uint64) n * (2 * k + 1) / (2 * AUTOCUT_KEYS),
-					from = mid > half ? mid - half : 0,
-					to = Min(n - 1, mid + half);
-		int64		lo = s[from],
-					hi = s[to];
+		uint64		mid = (uint64) n * (2 * k + 1) / (2 * AUTOCUT_KEYS);
+
+		from_at[k] = mid > half ? mid - half : 0;
+		to_at[k] = Min(n - 1, mid + half);
+	}
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col key_cut cells", ALLOCSET_DEFAULT_SIZES);
+	old = MemoryContextSwitchTo(cx);
+	SIFT_MEM_SCOPE(col_key_cut_cells, cx);
+	g = palloc(sizeof(CellGroup));
+	cells = (Cells) {0};
+	cells_begin(s, t, &cells);
+	while (cells_group(&cells, g))
+	{
+		for (; kf < AUTOCUT_KEYS && from_at[kf] < rank + g->rows; kf++)
+		{
+			lo[kf] = g->key;
+			from[kf] = rank;
+		}
+		for (; kt < AUTOCUT_KEYS && to_at[kt] < rank + g->rows; kt++)
+		{
+			hi[kt] = g->key;
+			to[kt] = rank + (uint64) g->rows - 1;
+		}
+		rank += (uint64) g->rows;
+	}
+	cells_end(&cells);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
+	for (int k = 0; k < AUTOCUT_KEYS; k++)
+	{
 		double		hits = 0;
 
-		while (from > 0 && s[from - 1] == lo)
-			from--;
-		while (to + 1 < n && s[to + 1] == hi)
-			to++;
 		for (int u = 0; u < nsampled; u++)
-			hits += t->has[u] && t->lo[u] <= hi && lo <= t->hi[u];
+			hits += t->has[u] && t->lo[u] <= hi[k] && lo[k] <= t->hi[u];
 		reads[k] = Min(nsb, hits > 1 ? 1 + (hits - 1) / f : 1);
-		fills[k] = Max(1, (double) (to - from + 1) / n * nsb);
+		fills[k] = Max(1, (double) (to[k] - from[k] + 1) / n * nsb);
 	}
-	pfree(s);
 	qsort(reads, AUTOCUT_KEYS, sizeof(double), sift_cmp_f64);
 	qsort(fills, AUTOCUT_KEYS, sizeof(double), sift_cmp_f64);
 	*ideal = fills[AUTOCUT_KEYS / 2];
@@ -270,12 +507,10 @@ acut_ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double 
 double
 acut_zone_loss(const Track *t, uint32 nrows, double nsb, double rows_per_unit, double kept_share)
 {
-	double		filled = 0,
+	double		filled = t->nonnull,
 				held,
 				kept;
 
-	for (uint32 i = 0; i < nrows; i++)
-		filled += !t->nl[i];
 	filled /= Max(nrows, 1);
 	held = Min(nsb, filled * nsb * rows_per_unit);
 	kept = Min(held, Max(1.0, kept_share * held));
@@ -291,15 +526,13 @@ acut_segment_rows(void)
 
 /*
  * The share of the rows that the most common value of the leaf holds: the first of the most common values of the statistics of the column when it has them
- * (none: no value holds more than the rarest of the list), else the most common value of the sample.
+ * (none: no value holds more than the rarest of the list), else the most common value of the sample (t->top, left by acut_units_read).
  */
 double
 acut_hot_share(Relation heap, const Track *t, uint32 nsampled)
 {
 	HeapTuple	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(t->hatt), BoolGetDatum(false));
 	AttStatsSlot sslot;
-	uint64		top = 0,
-				run = 0;
 
 	if (HeapTupleIsValid(tup))
 	{
@@ -313,10 +546,5 @@ acut_hot_share(Relation heap, const Track *t, uint32 nsampled)
 		ReleaseSysCache(tup);
 		return share;
 	}
-	for (int64 i = 0; i < t->ncells; i++)
-	{
-		run = (i > 0 && t->cells[i].key == t->cells[i - 1].key ? run : 0) + t->cells[i].n;
-		top = Max(top, run);
-	}
-	return (double) top / Max(nsampled, 1);
+	return (double) t->top / Max(nsampled, 1);
 }

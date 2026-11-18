@@ -18,7 +18,7 @@ check() {
 	[[ -n $1 ]] || return 0
 	for f in $(git diff --name-only --no-renames --diff-filter=AM "$1" HEAD -- 'test/expected/*.out'); do
 		n=${f##*/}; n=${n%.out}
-		git log --format=%B "$1..HEAD" | grep -qE "^alt-unchanged: $n .+" && continue
+		git log --format=%B "$1..HEAD" | grep -E "^alt-unchanged: $n .+" >/dev/null && continue
 		for a in $(git ls-files "test/expected/${n}_[0-9]*.out" | grep -E "^test/expected/${n}_[0-9]+[.]out$"); do
 			git diff --quiet "$1" HEAD -- "$a" && echo "$f changed and $a did not: change the alternate, or say in a commit message \"alt-unchanged: $n <reason>\""
 		done
