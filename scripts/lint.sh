@@ -64,7 +64,7 @@ CHECKS+=(
 	'alternates	scripts/check-alternates.sh --selftest && scripts/check-alternates.sh'
 	'quick-skip	scripts/check-quick-skip.sh --selftest && scripts/check-quick-skip.sh'
 	'undefined-symbols	scripts/check-undefined.sh --selftest'
-	'bench-tests	ls bench/test/test_*.py | xargs -P 4 -n 1 python3 -I'
+	'bench-tests	scripts/bench-tests.sh --selftest && scripts/bench-tests.sh'
 	'bench-resume	scripts/lint-cache.sh bench-resume bench/steps bench/test/test_resume.sh -- bash bench/test/test_resume.sh'
 	'bench-coverage	bench/bench cases --check'
 	'slugs		scripts/check-slugs.sh'
