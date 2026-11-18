@@ -254,9 +254,6 @@ refill_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	meta->flags &= ~SIFT_META_FAILURES_MASK;
 }
 
-/* The segments of the directory a refill leaves free for the merge that follows it */
-#define REFILL_ROOM	16
-
 /* The least the sorts of a refill hold between them, as the writer of a merge holds at least SIFT_COLW_MIN_BUDGET */
 #define SCOPE_SORT_MIN_KB	16384
 #define scope_sort_kb()		Max(maintenance_work_mem / 2, (int) sift_limit(scope_sort_min_kb, SCOPE_SORT_MIN_KB))
@@ -308,7 +305,7 @@ refill_sample(Relation index, const SiftColRel *r, const SiftSegEntry *ents, int
 		sift_colsort_sample_end(sorter[s], (uint64) ((double) entries[s] * rows / sampled));
 }
 
-/* The segments a refill writes of one scope: the rows come sorted, and a segment is done when its writer holds its budget of memory (and the directory has room for another) */
+/* The segments a refill writes of one scope: the rows come sorted, and a segment is done when its writer holds its budget of memory */
 typedef struct ScopeOut
 {
 	Relation	index;
@@ -317,7 +314,6 @@ typedef struct ScopeOut
 	int			format;
 	uint64		index_rows;
 	Size		budget;
-	int			room;
 	SiftColFill *fill;
 	SiftCPaggSpec pagg;
 	int			cut[SIFT_COL_CUT_MAX];
@@ -328,6 +324,7 @@ typedef struct ScopeOut
 	MemoryContext pcx;
 	SiftSegEntry *out;
 	int			n;
+	int			cap;
 } ScopeOut;
 
 /* The bytes of the segments seg[n] of one scope (-1: all of them) */
@@ -354,6 +351,11 @@ scope_out_budget(void)
 static void
 scope_out_finish(ScopeOut *o)
 {
+	if (o->n == o->cap)
+	{
+		o->cap = Max(o->cap * 2, 8);
+		o->out = o->out ? repalloc(o->out, o->cap * sizeof(SiftSegEntry)) : MemoryContextAlloc(o->cx, o->cap * sizeof(SiftSegEntry));
+	}
 	sift_colw_finish(o->w, &o->out[o->n]);
 	o->out[o->n].flags |= SIFT_SEG_SCOPE;
 	o->out[o->n++].pad = o->scope;
@@ -377,7 +379,7 @@ scope_out_next(void *arg, SiftColSegWriter *w)
 		sift_colw_set_preagg(o->w, &o->pagg);
 		sift_colw_set_keyed(o->w, sift_colk_aim_rows(o->index), o->cut, o->ncut);
 	}
-	else if (o->n + 1 < o->room && sift_colw_full(w, o->budget))
+	else if (sift_colw_full(w, o->budget))
 		scope_out_finish(o);
 	return o->w;
 }
@@ -407,8 +409,7 @@ maint_scope_refill(Relation index, bool report)
 				count[SIFT_SCOPE_MAX] = {0};
 	int			nents = 0,
 				nscopes = 0,
-				nout = 0,
-				room;
+				nout = 0;
 	TimestampTz start = GetCurrentTimestamp();
 	struct SiftScopeFill *sf;
 	ScopeRun   *run;
@@ -439,8 +440,7 @@ maint_scope_refill(Relation index, bool report)
 		return false;
 	}
 	/* the rows of each scope are sorted by a sort that holds half of maintenance_work_mem between the scopes (at least SCOPE_SORT_MIN_KB) and writes the rest to temporary files, and come out in the order of the cut of the scope */
-	room = Max((SIFT_DIR_POLICY_MAX - REFILL_ROOM - nents) / Max(r->nscope, 1), 1);
-	out = palloc(room * r->nscope * sizeof(SiftSegEntry));
+	out = palloc(0);
 	fill = maint_scope_fill_begin(index, cx, rows, &sf);
 	run = maint_scope_run_begin(index, sf, cx);
 	for (int s = 0; s < r->nscope; s++)
@@ -480,7 +480,7 @@ maint_scope_refill(Relation index, bool report)
 	for (int s = 0; s < r->nscope; s++)
 	{
 		MemoryContext mcx = AllocSetContextCreate(cx, "sift_col scope refill merge", ALLOCSET_DEFAULT_SIZES);
-		ScopeOut	o = {.index = index, .cx = mcx, .r = r, .scope = s, .format = sift_col_format_minor, .index_rows = rows, .room = room, .fill = fill, .pagg = r->pagg, .out = out + nout,
+		ScopeOut	o = {.index = index, .cx = mcx, .r = r, .scope = s, .format = sift_col_format_minor, .index_rows = rows, .fill = fill, .pagg = r->pagg,
 					 .budget = scope_out_budget()};
 
 		if (count[s] == 0)
@@ -497,6 +497,8 @@ maint_scope_refill(Relation index, bool report)
 		sift_colk_merge(NULL, NULL, NULL, 0, NULL, NULL, r->schema, o.cut, o.ncut, sift_colk_unit_rows(sift_colk_aim_rows(index)), maintenance_work_mem, mcx, scope_out_next, &o, 0, 1, 0, NULL, NULL, sorter[s]);
 		if (o.w != NULL)
 			scope_out_finish(&o);
+		out = repalloc(out, (nout + o.n) * sizeof(SiftSegEntry));
+		memcpy(out + nout, o.out, o.n * sizeof(SiftSegEntry));
 		nout += o.n;
 		MemoryContextDelete(mcx);
 	}
@@ -506,7 +508,7 @@ maint_scope_refill(Relation index, bool report)
 	sift_conn_fill_end(fill);
 	mi = sift_maint_inputs(index, scopes, nscopes);
 	rf = (Refill) {mi.gens, nscopes, out, nout, egen, nents, &stamps};
-	sift_dir_update(index, &(SiftDirChange) {.fn = refill_switch,.arg = &rf,.release = mi.release,.nrelease = mi.nrelease,.extra = InvalidBuffer});
+	sift_dir_update(index, &(SiftDirChange) {.fn = refill_switch,.arg = &rf,.release = mi.release,.nrelease = mi.nrelease,.nadd = nout,.extra = InvalidBuffer});
 	sift_log_maint(index, "refilled the scope segments of", start, rows, 0);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
@@ -579,19 +581,12 @@ scope_chained(Relation index, const SiftSegEntry *sel, int n, int s, ScopeSet *s
  * than a segment holds is in the fewest segments that hold it, and the runs of the participants of a build, which are more, are merged.
  */
 static bool
-scope_apart(Relation index, const SiftSegEntry *sel, int n, int s, int room)
+scope_apart(Relation index, const SiftSegEntry *sel, int n, int s)
 {
 	ScopeSet	set;
 
 	return scope_chained(index, sel, n, s, &set) &&
-		(!set.runs || n <= maint_merge_parts(set.bytes, set.rows, maint_part_kb > 0 ? (uint64) maint_part_kb * 1024 : 0, true, room, maint_merge_maxout(room, n)));
-}
-
-/* The room the directory leaves for the segments a merge of n scope segments writes: besides the others, the inserters' */
-static int
-scope_room(const SiftDirSnapshot *all, int n)
-{
-	return Max(SIFT_DIR_POLICY_MAX - 16 - (all->nsegs - n), 1);
+		(!set.runs || n <= maint_merge_parts(set.bytes, set.rows, maint_part_kb > 0 ? (uint64) maint_part_kb * 1024 : 0, true));
 }
 
 /* The segments of scope s among those of the directory, and which of them the policy merges: by the tiers (of those that are not partitions), or all of them (force) */
@@ -611,7 +606,7 @@ scope_pick(Relation index, const SiftDirSnapshot *all, int s, bool force, SiftSe
 		maint_keep_overlays(fam);
 	n = sift_merge_pick(index, &pol, fam, force, sel);
 	pfree(fam);
-	return force && n > 1 && scope_apart(index, sel, n, s, scope_room(all, n)) ? 0 : n;
+	return force && n > 1 && scope_apart(index, sel, n, s) ? 0 : n;
 }
 
 /*
@@ -643,7 +638,7 @@ maint_scope_merge_step(Relation index, bool force)
 		scope_merge_counted();
 #endif
 		progress |= maint_merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
-						   maint_part_kb > 0 ? (uint64) maint_part_kb * 1024 : 0, scope_room(all, n), NULL) < n;
+						   maint_part_kb > 0 ? (uint64) maint_part_kb * 1024 : 0, 1, NULL) < n;
 	}
 	pfree(sel);
 	pfree(all);

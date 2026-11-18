@@ -32,7 +32,6 @@
 #include "col/pg.h"
 #include "core/catname.h"
 #include "core/errctx.h"
-#include "core/inspect.h"
 #include "core/limits.h"
 #include "core/live.h"
 #include "bm25/maint.h"
@@ -54,13 +53,13 @@
 int			sift_test_merge_max_kb = 0;
 int			sift_test_room_segments = 0;
 bool		sift_test_no_heap_positions = false;
-#define room_segments()		(sift_test_room_segments > 0 ? sift_test_room_segments : (int) sift_limit(max_segments, SIFT_DIR_POLICY_MAX) - ROOM_SPARE)
+#define room_segments(snap)	(sift_test_room_segments > 0 ? sift_test_room_segments : sift_dir_cap(&(snap)->meta) - ROOM_SPARE)
 /* longest wait of an inserter for the maintenance of others (sift._test_maint_wait_us) */
 int64		sift_maint_wait_max_us = 0;
 #define wait_started()		GetCurrentTimestamp()
 #define wait_done(start)	(sift_maint_wait_max_us = Max(sift_maint_wait_max_us, GetCurrentTimestamp() - (start)))
 #else
-#define room_segments()		(SIFT_DIR_POLICY_MAX - ROOM_SPARE)
+#define room_segments(snap)	(sift_dir_cap(&(snap)->meta) - ROOM_SPARE)
 #define wait_started()		((TimestampTz) 0)
 #define wait_done(start)	((void) (start))
 #endif
@@ -219,12 +218,8 @@ replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, cons
 	maint_written += bytes;
 	sift_progress_step(nold, bytes);
 
-	if (sift_col_is_index(index))
-		sift_col_dv_switching(index, old, nold);
 	sift_dir_publish(index, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = release,
-			.nrelease = nrelease,.extra = InvalidBuffer}, wt);
-	if (sift_col_is_index(index))
-		sift_col_dv_switched(index);
+			.nrelease = nrelease,.nadd = Max(nneu, 1),.extra = InvalidBuffer}, wt);
 	sift_log_maint(index, what, start, docs, bytes);
 }
 
@@ -303,7 +298,7 @@ make_room_locked(const SiftMaintOps *ops, Relation index)
 		uint64		busy = 0;
 
 		snap = sift_dir_read(index);
-		if (snap->nsegs < room_segments())
+		if (snap->nsegs < room_segments(snap))
 			break;
 		if ((r = ops->promote_next(index, false, &busy)) == SIFT_STEP_IDLE)
 			r = ops->merge_next(index, false, SIFT_GOAL_ANY, false, &busy);
@@ -317,7 +312,7 @@ make_room_locked(const SiftMaintOps *ops, Relation index)
 			break;
 		CHECK_FOR_INTERRUPTS();
 	}
-	room = snap->nsegs < room_segments();
+	room = snap->nsegs < room_segments(snap);
 	pfree(snap);
 	return room;
 }
@@ -398,7 +393,7 @@ sift_mops_after_seal(const SiftMaintOps *ops, Relation index)
 	int			nsealed = 0;
 
 	snap = sift_dir_read(index);
-	if (snap->nsegs >= room_segments())
+	if (snap->nsegs >= room_segments(snap))
 		sift_mops_make_room(ops, index);
 	if (ops->seal(index, false) == 0)
 	{
@@ -459,7 +454,6 @@ sift_mops_open(const SiftMaintOps *ops, Oid indexoid, LOCKMODE lock)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a %s index", RelationGetRelationName(index), ops->name)));
-	sift_refuse_partitioned_index(index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX, RelationGetRelationName(index));
 	sift_store_require_ready(index);
 	return index;
 }

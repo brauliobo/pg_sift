@@ -27,10 +27,6 @@
 
 #define corrupt SIFT_CORRUPT
 
-#define MAX_PARTS		64		/* segments one merge cuts its output into */
-
-#define PART_DIVISOR	48		/* the memory bound leaves a key-cut index (partitions of three quarters of the size) under MAX_PARTS of them */
-
 extern int maint_part_kb;
 
 /* The superblocks a segment holds rows of (sift_cseg_sb_spans) */
@@ -126,19 +122,16 @@ extern int	maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill
 typedef struct MergeSlice
 {
 	int			i;
-	int			nslices;			/* 0: not a slice, the merge of a REINDEX whose partitions go to out */
+	int			nslices;
 	SiftSegEntry *out;
-	const SiftColWindow *win;	/* the rows are those of the window (i 0, nslices 1): written as the max_parts segments asked for, of the bytes the window holds (0: all that the inputs hold) */
+	const SiftColWindow *win;	/* the rows are those of the window (i 0, nslices 1): written as the window_parts segments asked for, of the bytes the window holds (0: all that the inputs hold) */
 	uint64		bytes;
-	int		   *nout;			/* the number of segments written to out (a window: up to max_parts of them) */
-	Relation	from;			/* the relation the first nfrom inputs are read from (the index a REINDEX replaces), the others are in the index the merge writes */
-	int			nfrom;
+	int		   *nout;			/* the number of segments written to out */
 } MergeSlice;
 
-extern int maint_merge_maxout(int max_parts, int n);
-extern int maint_merge_parts(uint64 live_bytes, uint64 live_rows, uint64 part_bytes, bool key_cut, int max_parts, int maxout);
+extern int maint_merge_parts(uint64 live_bytes, uint64 live_rows, uint64 part_bytes, bool key_cut);
 extern int maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
-								 int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts, const MergeSlice *slice);
+								 int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int window_parts, const MergeSlice *slice);
 
 /* col/maint/merge_window.c: the units of the inputs of a merge that are decoded at a time */
 typedef struct MergeWindow MergeWindow;
@@ -176,7 +169,7 @@ typedef struct RollStep
 
 extern uint64 maint_part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut);
 extern RollPick maint_roll_pick(const RewriteView *v, bool *take, RollStep *rs);
-extern void maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep *rs, int room);
+extern void maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep *rs);
 extern bool maint_scope_merge_step(Relation index, bool force);
 extern bool maint_scope_refill(Relation index, bool report);
 extern bool maint_scope_refill_due(Relation index);
@@ -202,7 +195,7 @@ extern void	maint_seg_key_range(SiftColSegment *seg, int leaf, int64 *lo, int64 
 /* col/maint/merge_pick.c: the segments a merge or a rewrite takes, and the end state of an index */
 extern int	maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel);
 extern int	maint_pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, bool *cut, bool *paced, RollStep *rs);
-extern void	maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftSegEntry *out, int nout);
+extern void	maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, int nout);
 extern uint64	maint_merge_par_bytes(void);
 
 extern SiftStepResult	maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy);
@@ -212,18 +205,6 @@ extern bool	maint_is_col(Relation index);
 extern void	maint_bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 
 extern void	maint_vacuum_log(Relation index);
-
-/* col/maint/dvfold.c: the deletion records of the tombstone log (core/tomb_dv.h) in VACUUM, the fold and the steps that replace segments */
-typedef struct DvSettle DvSettle;
-extern DvSettle *sift_col_dv_settle_begin(Relation index);
-/* May the record (its slots, n of them) leave the log: its transaction aborted, its segment is gone, or every row it names is cleared */
-extern bool sift_col_dv_settled(DvSettle *st, const SiftTomb *slots, uint32 n);
-extern uint32 sift_col_dv_record_keys(DvSettle *st, const SiftTomb *slots, uint32 n, SiftKey **keys);
-extern void sift_col_dv_settle_end(DvSettle *st);
-/* Is the head of a record of a transaction that committed before every snapshot */
-extern bool sift_col_dv_foldable(const SiftTomb *head, TransactionId horizon);
-/* Clears the rows of the records that are, and returns how many it cleared; the maintenance lock is held, and a standby has been told of the newest transaction */
-extern uint64 sift_col_dv_fold(Relation index, SiftTombLog *log, TransactionId horizon);
 extern void	maint_bulkdelete_tomb(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 extern void	maint_bulkdelete_wbuf(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 

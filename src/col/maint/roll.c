@@ -198,12 +198,12 @@ roll_write(Relation index, const SiftSegEntry *in, int n, const SiftColWindow *w
 /*
  * One step of the rolling rewrite: the partition and the overlays are merged into the partition's window of the key range, as one segment or, when the window holds more than
  * the size of one, as the segments that size makes of it (the pieces a build's partitions are cut into), and what the overlays hold outside the window is written as overlays
- * again (below it, above it), all in one switch of the directory. room: the segments the directory has place for.
+ * again (below it, above it), all in one switch of the directory.
  */
 void
-maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep *rs, int room)
+maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep *rs)
 {
-	SiftSegEntry out[MAX_PARTS + ROLL_PIECES + 2];
+	SiftSegEntry *out = palloc((rs->parts + ROLL_PIECES + 2) * sizeof(SiftSegEntry));
 	SiftSegEntry *over = palloc(Max(n, 1) * sizeof(SiftSegEntry));
 	bool	   *every = palloc(Max(n, 1) * sizeof(bool));
 	TimestampTz start = GetCurrentTimestamp();
@@ -222,13 +222,14 @@ maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep 
 		rest.hi = rs->win.lo;
 		nout += roll_write(index, over, nover, &rest, 0, 1, &out[nout]);
 	}
-	nout += roll_write(index, sel, n, &rs->win, rs->bytes, Max(1, Min(Min(rs->parts, MAX_PARTS), room - ROLL_PIECES - 2)), &out[nout]);
+	nout += roll_write(index, sel, n, &rs->win, rs->bytes, Max(1, rs->parts), &out[nout]);
 	for (int g = 0; rs->win.has_hi && nover > 0 && g <= rs->nhigh; g++)
 	{
 		rest = (SiftColWindow) {.has_lo = true,.lo = g == 0 ? rs->win.hi : rs->high[g - 1],.has_hi = g < rs->nhigh,.hi = g < rs->nhigh ? rs->high[g] : 0,.bounded = every};
 		nout += roll_write(index, over, nover, &rest, 0, 1, &out[nout]);
 	}
 	sift_col_merge_switch(index, sel, n, out, nout, start);
+	pfree(out);
 	pfree(over);
 	pfree(every);
 }

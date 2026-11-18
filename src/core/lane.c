@@ -143,9 +143,6 @@ open_first(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg
 	swap_active(meta, dir, extra, arg);
 }
 
-/* The directory entries a write may fill: the policy of the writers (a chain holds more), sift.test_limits lowers it in a test build */
-#define DIR_CAP()	((int) sift_limit(max_segments, SIFT_DIR_POLICY_MAX))
-
 /* What the last failed maintenance step said (the note of sift.workers), NULL if there is none or it is not text of the database encoding */
 static const char *
 last_failure(const SiftDirSnapshot *snap)
@@ -168,7 +165,7 @@ create_active(Relation index, uint32 hash, Size hdrsize, uint16 format, uint16 f
 
 	LockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	snap = sift_dir_read(index);
-	if (find_kind(snap, SIFT_SEG_WBUF_OPEN) == NULL && (room = snap->nsegs < DIR_CAP()))
+	if (find_kind(snap, SIFT_SEG_WBUF_OPEN) == NULL && (room = snap->nsegs < sift_dir_cap(&snap->meta)))
 	{
 		SwapArg		arg = {0};
 
@@ -243,7 +240,7 @@ seal_open(Relation index, bool rotate, bool force, Size hdrsize, uint16 format, 
 		sift_lane_read_header(index, act, &hdr);
 		if (rotate || (force ? has_records(index, act) : sift_lane_npages(&hdr) >= limit))
 		{
-			if (snap->nsegs < DIR_CAP())
+			if (snap->nsegs < sift_dir_cap(&snap->meta))
 			{
 				sealed = *act;
 				arg.sealed = act->gen;

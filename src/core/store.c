@@ -17,6 +17,7 @@
 
 #include "col/col.h"
 #include "core/dirchain.h"
+#include "core/limits.h"
 #include "core/ops.h"
 #include "core/restrict.h"
 #include "core/extlock.h"
@@ -489,6 +490,12 @@ sift_dir_copy(const SiftDirSnapshot *snap)
 	copy->chain = NULL;
 	copy->nchain = 0;
 	return copy;
+}
+
+int
+sift_dir_cap(const SiftMetaPageData *meta)
+{
+	return (meta->flags & SIFT_COL_META_FLAG) ? SIFT_DIR_WIDE_MAX : (int) sift_limit(max_segments, SIFT_DIR_POLICY_MAX);
 }
 
 void

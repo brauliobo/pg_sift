@@ -173,7 +173,7 @@ A key of a range-built `key_cut` index lies in one unit (two where its rows cros
 | what | value |
 |---|---|
 | block size | 8,192 bytes (compile-time check) |
-| directory | one page; at most 128 entries of 56 bytes; a build writes at most 121 (`SIFT_COL_BUILD_SEGMENTS`) |
+| directory | block 1, or a chain of pages (format 1.7) of up to 32,768 entries of 56 bytes; a `key_cut` build keeps at most 121 runs (`SIFT_COL_BUILD_RUNS`) |
 | leaves in an index | at most 128 |
 | superblock | 256 heap pages |
 | rows of a unit | at most 74,496 (256 pages of 291 line pointers); key-cut: aim = 256 average pages, 64 to 32,768 (1,024 with no statistics); `sift.col_unit_floor` 2,048 for sparse promotions |

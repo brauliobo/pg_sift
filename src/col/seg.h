@@ -89,7 +89,6 @@ extern Size sift_colw_budget(Size mem, int resident_pct, Size base);
 #define SIFT_COLW_MERGE_BASE ((Size) 36 * 1024 * 1024)
 #define SIFT_COLW_MIN_BUDGET ((Size) 16 * 1024 * 1024)
 /* The budget the segments still to come need: the rows left over the segments left, at the rows per budget the last segment reached; never less than budget */
-extern Size sift_colw_fit_budget(Size budget, uint64 seg_rows, uint64 rows_left, int segs_left);
 /* Writes DICTS, ZONES, SBDIR, SCHEMA, the all-live LIVE pages and the header; fills the directory entry (kind IMMUTABLE, format, header_blk, sb_lo/hi, ndocs = rows, bytes) */
 extern void sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry);
 
