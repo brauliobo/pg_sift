@@ -15,8 +15,10 @@
 #include "agg/cost/model.h"
 #include "col/am.h"
 #include "col/gorder.h"
+#include "col/order_bound.h"
 #include "col/order_sort.h"
 #include "col/pagg.h"
+#include "core/dirchain.h"
 #include "core/sql.h"
 #include "core/visibility.h"
 #endif							/* SIFT_TESTING */
@@ -32,6 +34,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_unit_of_block);
 PG_FUNCTION_INFO_V1(sift_test_col_formats);
 
 PG_FUNCTION_INFO_V1(sift_test_col_segment_keys);
+PG_FUNCTION_INFO_V1(sift_test_col_part_bounds);
 
 PG_FUNCTION_INFO_V1(sift_test_col_mirror);
 
@@ -129,6 +132,80 @@ sift_test_col_segment_keys(PG_FUNCTION_ARGS)
 		v[4] = Int64GetDatum(hi);
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 		sift_cseg_close(seg);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/* Do the live rows of the segment lie from lo (NULL: no start) up to below hi (NULL: no end)? A segment with none lies anywhere */
+static bool
+rows_within(SiftColSegment *seg, const SiftBound *lo, const SiftBound *hi)
+{
+	SiftBound	first,
+				last;
+
+	if (!sift_colk_segment_bound(seg, false, &first) || !sift_colk_segment_bound(seg, true, &last))
+		return true;
+	return (lo == NULL || sift_bound_cmp(&first, lo) >= 0) && (hi == NULL || sift_bound_cmp(&last, hi) < 0);
+}
+
+/* sift._test_col_part_bounds(index): for every partition of the directory chain, its entries and whether its lower bound is empty, whether the rows of its segments are all from it, and below the bound of the next partition */
+Datum
+sift_test_col_part_bounds(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	SiftDirSnapshot *snap = sift_dir_read(index);
+	SiftDirPart *part;
+	SiftSegEntry *segs;
+	SiftDirChain chain;
+
+	InitMaterializedSRF(fcinfo, 0);
+	if (snap->nchain > 0)
+	{
+		(void) sift_dirchain_read(index, snap->chain[0], snap->version, 0, &segs, &chain);
+		for (int k = 0, np = sift_dirchain_parts(&chain, &part); k < np; k++)
+		{
+			SiftBound	lo,
+						next;
+			bool		from_lo = true,
+						below_next = true;
+			Datum		v[6];
+			bool		nulls[6] = {false};
+			StringInfoData text;
+
+			if (!sift_bound_unpack(part[k].lo, &lo) || (k + 1 < np && !sift_bound_unpack(part[k + 1].lo, &next)))
+				elog(ERROR, "sift test: the bound of a partition is no bound");
+			for (uint32 e = part[k].first; e < part[k].first + part[k].n; e++)
+			{
+				SiftColSegment *seg = sift_cseg_open(index, &segs[e], CurrentMemoryContext);
+
+				from_lo &= rows_within(seg, &lo, NULL);
+				below_next &= rows_within(seg, NULL, k + 1 < np ? &next : NULL);
+				sift_cseg_close(seg);
+			}
+			initStringInfo(&text);
+			for (uint32 c = 0; c < SIFT_BOUND_COMPS; c++)
+			{
+				int64		key;
+				SiftComp	kind = sift_bound_comp(&lo, c, &key);
+
+				if (kind == SIFT_COMP_NONE)
+					break;
+				appendStringInfoString(&text, c > 0 ? "," : "");
+				if (kind == SIFT_COMP_NULL)
+					appendStringInfoString(&text, "NULL");
+				else
+					appendStringInfo(&text, INT64_FORMAT, key);
+			}
+			v[0] = Int32GetDatum((int32) part[k].first);
+			v[1] = Int32GetDatum((int32) part[k].n);
+			v[5] = CStringGetTextDatum(text.data);
+			v[2] = BoolGetDatum(lo.len == 0);
+			v[3] = BoolGetDatum(from_lo);
+			v[4] = BoolGetDatum(below_next);
+			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+		}
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;

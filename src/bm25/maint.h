@@ -44,6 +44,7 @@ typedef struct SiftMaintSwitch
 {
 	int			part_first;		/* the replacements neu[part_first, part_first + part_n) are partitions of the key (sift_dir_part_replace) */
 	int			part_n;
+	const uint8 (*part_lo)[SIFT_BOUND_BYTES];	/* the lower bound of each of them (NULL: unknown) */
 	const uint64 *old;			/* generations replaced */
 	int			nold;
 	const SiftSegEntry *neu;	/* the replacement or NULL */
@@ -77,7 +78,8 @@ extern void sift_maint_replace_n(Relation index, SiftWriteTarget *wt, const uint
 								 int nrelease, const char *what, TimestampTz start, int64 docs);
 
 extern void sift_maint_replace_partitions(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
-										 const char *what, TimestampTz start, int64 docs, int part_first, int part_n);
+										 const char *what, TimestampTz start, int64 docs, int part_first, int part_n,
+										 const uint8 (*part_lo)[SIFT_BOUND_BYTES]);
 
 /* The promotion of a sealed write buffer of a sift_col index, which held `records` records (sift_cwbuf_summary): the one switch that replaces it also counts them as rows that came in */
 extern void sift_maint_promote_n(Relation index, uint64 sealed, uint32 records, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,

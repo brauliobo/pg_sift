@@ -331,7 +331,7 @@ sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int
 		if (out[i].ndocs > 0)
 			made[nout++] = out[i];
 	sift_par_end(ldr);
-	sift_col_merge_switch(index, in, n, made, nout, start, 0, partitions ? nout : 0);
+	sift_col_merge_switch(index, in, n, made, nout, start, 0, partitions ? nout : 0, NULL);
 	return true;
 }
 

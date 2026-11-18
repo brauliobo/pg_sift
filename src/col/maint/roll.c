@@ -212,7 +212,11 @@ maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep 
 				nlow,
 				nwin;
 	SiftColWindow rest;
+	SiftBound	win_lo;
 
+	sift_bound_clear(&win_lo);
+	if (rs->win.has_lo)
+		sift_bound_push_i64(&win_lo, rs->win.lo);
 	for (int i = 0; i < n; i++)
 		if (rs->bounded[i])
 			over[nover++] = sel[i];
@@ -232,7 +236,7 @@ maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep 
 		rest = (SiftColWindow) {.has_lo = true,.lo = g == 0 ? rs->win.hi : rs->high[g - 1],.has_hi = g < rs->nhigh,.hi = g < rs->nhigh ? rs->high[g] : 0,.bounded = every};
 		nout += roll_write(index, over, nover, &rest, 0, 1, &out[nout]);
 	}
-	sift_col_merge_switch(index, sel, n, out, nout, start, nlow, nwin);
+	sift_col_merge_switch(index, sel, n, out, nout, start, nlow, nwin, rs->win.has_lo ? &win_lo : NULL);
 	pfree(out);
 	pfree(over);
 	pfree(every);

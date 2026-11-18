@@ -47,6 +47,55 @@ sift_colk_bound_unpack(const OrderCtx *ctx, const SiftBound *b, BoundKey *bk)
 	}
 }
 
+/* The bound of row r: the leaves of the order, then the address, which orders the rows of one key: that is the whole order only when the leaves fit the bound */
+static void
+row_bound(const OrderCtx *ctx, const SiftColBatch *b, uint32 r, SiftBound *out)
+{
+	sift_bound_clear(out);
+	for (int t = 0; t < Min(ctx->nleaf, SIFT_BOUND_COMPS); t++)
+	{
+		int			leaf = ctx->leaf[t];
+		bool		fits = row_null(b, r, leaf) ? sift_bound_push_null(out) : sift_bound_push_i64(out, sift_crun_key(&ctx->schema->cols[leaf], b->col[leaf].key[r]));
+
+		SIFT_INVARIANT(fits, "a key of %d leaves fits a bound", ctx->nleaf);
+	}
+	if (ctx->nleaf <= SIFT_BOUND_COMPS)
+	{
+		bool		fits = sift_bound_push_tid(out, b->keys[r]);
+
+		SIFT_INVARIANT(fits, "the address of a row fits a bound");
+	}
+}
+
+bool
+sift_colk_segment_bound(SiftColSegment *seg, bool last, SiftBound *out)
+{
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col segment bound", ALLOCSET_SMALL_SIZES);
+	OrderCtx	ctx = {seg->schema, seg->cut, seg->ncut};
+	bool	   *want = MemoryContextAllocZero(cx, seg->schema->ncols * sizeof(bool));
+	SiftColBatch *b = sift_cbatch_create(cx, seg->schema);
+	bool		found = false;
+
+	for (int t = 0; t < ctx.nleaf; t++)
+		want[ctx.leaf[t]] = true;
+	for (uint32 i = 0; i < seg->nsb && !found && ctx.nleaf > 0; i++)
+	{
+		sift_cseg_decode_unit_leaves(seg, last ? seg->nsb - 1 - i : i, want, b);
+		/* the rows of a unit are in the order of their addresses, not of the key: the least (the greatest) of them is the bound */
+		for (uint32 r = 0; r < b->nrows; r++)
+		{
+			SiftBound	row;
+
+			row_bound(&ctx, b, r, &row);
+			if (!found || (sift_bound_cmp(&row, out) < 0) != last)
+				*out = row;
+			found = true;
+		}
+	}
+	MemoryContextDelete(cx);
+	return found;
+}
+
 /* Row r of b against the bound: key by key, NULL last; equal on the leaves the bound has, the row is at it */
 int
 sift_colk_bound_cmp(const OrderCtx *ctx, const SiftColBatch *b, uint32 r, const BoundKey *bk)

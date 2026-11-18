@@ -172,7 +172,7 @@ sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page 
 		}
 		n += k;
 		if (sw->part_n > 0)
-			sift_dir_part_replace(sw->old, sw->nold, &dir->segs[at + sw->part_first], sw->part_n, NULL);
+			sift_dir_part_replace(sw->old, sw->nold, &dir->segs[at + sw->part_first], sw->part_n, sw->part_lo);
 		else
 			sift_dir_part_inherit(sw->old, sw->nold, &dir->segs[at], k);
 	}
@@ -212,9 +212,9 @@ maint_written_bytes(void)
 
 static void
 replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
-		  const char *what, TimestampTz start, int64 docs, uint32 inserted, int part_first, int part_n)
+		  const char *what, TimestampTz start, int64 docs, uint32 inserted, int part_first, int part_n, const uint8 (*part_lo)[SIFT_BOUND_BYTES])
 {
-	SiftMaintSwitch sw = {.part_first = part_first,.part_n = part_n,.old = old,.nold = nold,.neu = nneu > 0 ? neu : NULL,.more = nneu > 1 ? neu + 1 : NULL,.nmore = Max(nneu - 1, 0),.inserted = inserted};
+	SiftMaintSwitch sw = {.part_first = part_first,.part_n = part_n,.part_lo = part_lo,.old = old,.nold = nold,.neu = nneu > 0 ? neu : NULL,.more = nneu > 1 ? neu + 1 : NULL,.nmore = Max(nneu - 1, 0),.inserted = inserted};
 	uint64		bytes = 0;
 
 	for (int i = 0; i < nneu; i++)
@@ -231,22 +231,22 @@ void
 sift_maint_replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
 					 const char *what, TimestampTz start, int64 docs)
 {
-	replace_n(index, wt, old, nold, neu, nneu, release, nrelease, what, start, docs, 0, 0, 0);
+	replace_n(index, wt, old, nold, neu, nneu, release, nrelease, what, start, docs, 0, 0, 0, NULL);
 }
 
 /* The same where neu[part_first, part_first + part_n) are partitions of the key, one each, in the order of the key: they take the lineage of the partitions they replace (sift_dir_part_replace) */
 void
 sift_maint_replace_partitions(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
-							  const char *what, TimestampTz start, int64 docs, int part_first, int part_n)
+							  const char *what, TimestampTz start, int64 docs, int part_first, int part_n, const uint8 (*part_lo)[SIFT_BOUND_BYTES])
 {
-	replace_n(index, NULL, old, nold, neu, nneu, release, nrelease, what, start, docs, 0, part_first, part_n);
+	replace_n(index, NULL, old, nold, neu, nneu, release, nrelease, what, start, docs, 0, part_first, part_n, part_lo);
 }
 
 void
 sift_maint_promote_n(Relation index, uint64 sealed, uint32 records, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease, const char *what,
 					 TimestampTz start, int64 docs)
 {
-	replace_n(index, NULL, &sealed, 1, neu, nneu, release, nrelease, what, start, docs, records, 0, 0);
+	replace_n(index, NULL, &sealed, 1, neu, nneu, release, nrelease, what, start, docs, records, 0, 0, NULL);
 }
 
 void

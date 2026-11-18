@@ -8,6 +8,7 @@
 #include "utils/timestamp.h"
 #include "bm25/merge.h"
 #include "col/maint/maint_int.h"
+#include "col/order_bound.h"
 #include "col/point.h"
 #include "core/membudget.h"
 
@@ -234,6 +235,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 				largest = 0,
 				overlay_rows = 0,
 				heap_sbs;
+	int			nimm = 0;
 	uint32		unit;
 	SiftCPaggSpec rewrite;
 	bool		resort = merge_recut,
@@ -257,6 +259,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 			{
 				o.index_rows += dir->segs[i].ndocs;
 				largest = Max(largest, dir->segs[i].ndocs);
+				nimm += !(dir->segs[i].flags & SIFT_SEG_SCOPE);
 			}
 		overlay_rows = maint_overlay_rows(dir->segs, dir->nsegs, in, n);
 		pfree(dir);
@@ -443,15 +446,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	if (sift_test_col_refresh_sleep_armed > 0)
 		pg_usleep(sift_test_col_refresh_sleep_armed * 1000L);
 #endif
-	{
-		int64		docs = 0;
-
-		for (int i = 0; i < o.nneu; i++)
-			docs += o.neu[i].ndocs;
-		sift_maint_replace_partitions(index, mi.gens, n, o.neu, o.nneu, mi.release, mi.nrelease,
-									  psprintf("merged %d column segments into %d of", n, o.nneu), start, docs, 0, part_bytes > 0 && key_cut && sift_col_is_index(index) ? o.nneu : 0);
-		maint_merge_settles(index, in, n, o.neu, o.nneu);
-	}
+	sift_col_merge_switch(index, in, n, o.neu, o.nneu, start, 0, part_bytes > 0 && key_cut && !scope && sift_col_is_index(index) && n == nimm ? o.nneu : 0, NULL);
 	SIFT_MEM_CHECKPOINT();
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
@@ -483,17 +478,47 @@ sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int n
 	maint_merge_segments(index, r->schema, r->policy, &r->pagg, in, n, sift_col_format_minor, NULL, NULL, 0, 1, &(MergeSlice) {i, nslices, out});
 }
 
-/* The directory switch of a merge the participants made in slices: out[0..nout) replace in[0..n) */
+/*
+ * The lower bounds of the partitions part[0..n): the first starts where the range they tile does (lo0; NULL: at the lowest key), each of the others at the first row of its
+ * segment, which is above every row of the one before it
+ */
+static void
+part_bounds(Relation index, const SiftSegEntry *part, int n, const SiftBound *lo0, uint8 (*lo)[SIFT_BOUND_BYTES])
+{
+	SiftBound	empty;
+
+	sift_bound_clear(&empty);
+	sift_bound_pack(lo0 ? lo0 : &empty, lo[0]);
+	for (int j = 1; j < n; j++)
+	{
+		SiftColSegment *seg = sift_cseg_open(index, &part[j], CurrentMemoryContext);
+		SiftBound	b;
+
+		if (!sift_colk_segment_bound(seg, false, &b))
+			corrupt(index, "Segment %llu is a partition of the key and holds no row.", (unsigned long long) part[j].gen);
+		sift_bound_pack(&b, lo[j]);
+		sift_cseg_close(seg);
+	}
+}
+
+/*
+ * The directory switch of a merge: out[0..nout) replace in[0..n); out[part_first, part_first + part_n) tile the range that starts at lo0 (NULL: the lowest key) and are
+ * recorded as its partitions, each with the bound it starts at
+ */
 void
-sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start, int part_first, int part_n)
+sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start, int part_first, int part_n, const SiftBound *lo0)
 {
 	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
+	uint8		(*lo)[SIFT_BOUND_BYTES] = palloc(Max(part_n, 1) * SIFT_BOUND_BYTES);
 	int64		docs = 0;
 
 	for (int i = 0; i < nout; i++)
 		docs += out[i].ndocs;
-	sift_maint_replace_partitions(index, mi.gens, n, out, nout, mi.release, mi.nrelease, psprintf("merged %d column segments into %d of", n, nout), start, docs, part_first, part_n);
+	if (part_n > 0)
+		part_bounds(index, &out[part_first], part_n, lo0, lo);
+	sift_maint_replace_partitions(index, mi.gens, n, out, nout, mi.release, mi.nrelease, psprintf("merged %d column segments into %d of", n, nout), start, docs, part_first, part_n, lo);
 	maint_merge_settles(index, in, n, out, nout);
+	pfree(lo);
 }
 
 /* the workers that make one segment of a merge outside a build, besides the backend (maint_merge_par_bytes) */

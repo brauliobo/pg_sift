@@ -4,6 +4,7 @@
 -- it is under half. Their rewrite is for sift.col_maintain on request; sift.col_maintenance_due still sees the overlap.
 -- Three geometries: the runs a build leaves (due at once), one base partition with pieces added one by one, partitions with overlays as wide as their keys.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -56,6 +57,10 @@ SELECT sift.col_maintain('kc_idx') AS partitioned;
 SELECT count(*) > 1 AS partitions FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
 SELECT stmt FROM generate_series(1, 3) i, LATERAL (VALUES (1, 'SELECT kc_add(11000, 0, 400)'), (2, 'SELECT * FROM kc_state()')) v(k, stmt) ORDER BY i, k \gexec
 
+-- the tier merge of the overlays leaves the recorded partitions as they were: it writes no partition, the overlays hold rows of every key
+SELECT sift.col_merge('kc_idx') >= 0 AS tier_merged;
+SELECT count(*) > 1 AS recorded, bool_and(rows_from_lo) AS rows_from_lo, bool_and(rows_below_next) AS rows_below_next FROM sift._test_col_part_bounds('kc_idx');
+
 -- the manual rule takes the overlays in, and nothing is due after it; the rows are all there
 SELECT sift.col_maintain('kc_idx') AS rewritten;
 SELECT sift.col_verify('kc_idx', true);
@@ -63,4 +68,5 @@ SELECT count(*) FILTER (WHERE rows = 11000) AS overlays, coalesce(sift.col_maint
 SELECT count(*) = 40000 + 3 * 11000 AS rows_kept FROM kc;
 DROP FUNCTION kc_fill(int, int, int), kc_add(int, int, int), kc_state();
 DROP TABLE kc;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
