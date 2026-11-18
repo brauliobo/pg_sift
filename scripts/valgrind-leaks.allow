@@ -1,4 +1,4 @@
-# Reviewed leak allow-list of the memcheck leak gate (scripts/valgrind.sh --leaks, docs/MEMORY-ANALYSIS.md "The leak gate"): a definite leak with a pg_sift frame that a row covers does not fail the gate.
+# Reviewed leak allow-list of the memcheck leak gate (scripts/valgrind.sh --leaks): a definite leak with a pg_sift frame that a row covers does not fail the gate.
 # FUNCTION[ < OUTER]<TAB>CLASS<TAB>EVIDENCE. FUNCTION is the innermost pg_sift frame of the record, OUTER (optional) a frame further out in its stack.
 # CLASS: pg-owned (the server allocated it for a sift call and keeps it), per-process (one block per process, never repeated), bounded-cache (a backend cache that empties whole at its cap),
 # entry-lifetime (state of one relcache entry, freed with it, bounded by the index definition). A leak that grows with the work is fixed at its allocation site, never listed here.
