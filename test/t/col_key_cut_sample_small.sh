@@ -85,23 +85,25 @@ sql ks "DROP TABLE e116" >/dev/null
 for sbs in 256 320 384 448 512; do
 	sql ks "SELECT kx($sbs, 0)" "VACUUM (FREEZE, ANALYZE) kx" "SELECT kxi(3)" "SELECT kd(3, '1MB', $sbs)" >/dev/null || bail "fixture $sbs failed"
 done
+# the bytes a run merged holds: its two buffers of 8,192 and 48 of headers, and 16 more where the allocator keeps a requested size and a sentinel with each chunk (a server built with assertions)
+run_bytes=$(sql ks "SELECT 16432 + 16 * (current_setting('debug_assertions') = 'on')::int")
 # the code's bound for the stage (R = 2,328 rows of a superblock, recsz = 8 * (2 + leaves) bytes of a sampled row, mwm = 1MB):
 #   sample  mwm + 192 kB                       (the tracks, the state of the index)
-#   cells   mwm + 32 * R + 16,432 * sampled + 80 kB   (the rows of a run and the sort's copy, a buffer for each run on the file)
-#   layout  mwm + R * (recsz + 64) + 4 * R * (recsz + 24) + 4 * R * 88 + 16,432 * nused + 64 kB (the superblock being sorted, the window of the merge, the columns of a unit, a buffer for each run)
+#   cells   mwm + 32 * R + run_bytes * sampled + 80 kB   (the rows of a run and the sort's copy, a buffer for each run on the file)
+#   layout  mwm + R * (recsz + 64) + 4 * R * (recsz + 24) + 4 * R * 88 + run_bytes * nused + 64 kB (the superblock being sorted, the window of the merge, the columns of a unit, a buffer for each run)
 read -r sb_max cb_max lb_max s_spread c_spread l_spread s_slope c_slope l_slope s_flat c_flat l_flat <<<"$(sql ks "
-SELECT max(s_peak - (1048576 + 196608)), max(c_peak - (1048576 + 32 * 2328 + 16432 * sampled + 81920)),
-	max(l_peak - (1048576 + 2328 * (40 + 64) + 4 * 2328 * (40 + 24) + 4 * 2328 * 88 + 16432 * nused + 65536)),
-	max(s_peak) - min(s_peak), max(c_peak - 16432 * sampled) - min(c_peak - 16432 * sampled), max(l_peak - 16432 * nused) - min(l_peak - 16432 * nused),
-	round(regr_slope(s_peak, sample_rows)::numeric, 3), round(regr_slope(c_peak - 16432 * sampled, sample_rows)::numeric, 3), round(regr_slope(l_peak - 16432 * nused, sample_rows)::numeric, 3),
-	abs(regr_slope(s_peak, sample_rows)) < 0.1, abs(regr_slope(c_peak - 16432 * sampled, sample_rows)) < 0.1, abs(regr_slope(l_peak - 16432 * nused, sample_rows)) < 0.1
+SELECT max(s_peak - (1048576 + 196608)), max(c_peak - (1048576 + 32 * 2328 + $run_bytes * sampled + 81920)),
+	max(l_peak - (1048576 + 2328 * (40 + 64) + 4 * 2328 * (40 + 24) + 4 * 2328 * 88 + $run_bytes * nused + 65536)),
+	max(s_peak) - min(s_peak), max(c_peak - $run_bytes * sampled) - min(c_peak - $run_bytes * sampled), max(l_peak - $run_bytes * nused) - min(l_peak - $run_bytes * nused),
+	round(regr_slope(s_peak, sample_rows)::numeric, 3), round(regr_slope(c_peak - $run_bytes * sampled, sample_rows)::numeric, 3), round(regr_slope(l_peak - $run_bytes * nused, sample_rows)::numeric, 3),
+	abs(regr_slope(s_peak, sample_rows)) < 0.1, abs(regr_slope(c_peak - $run_bytes * sampled, sample_rows)) < 0.1, abs(regr_slope(l_peak - $run_bytes * nused, sample_rows)) < 0.1
 FROM kres WHERE mwm = '1MB'" | tr '|' ' ')"
 check "the sample stage held no more than its bound at five sizes of sample (the largest 293,000 rows of 40 bytes, 11.7 MB)" test "$sb_max" -le 0
 check "the cells of the leaf held no more than their bound" test "$cb_max" -le 0
 check "the layouts held no more than their bound" test "$lb_max" -le 0
 check "the sample stage held the same bytes at every size of sample (spread $s_spread bytes, fitted $s_slope bytes a row)" test "$s_spread" -le 8192 -a "$s_flat" == t
-check "the cells held the same bytes at every size of sample past the 16,432 bytes of each run merged (spread $c_spread bytes, fitted $c_slope bytes a row)" test "$c_spread" -le 8192 -a "$c_flat" == t
-check "the layouts held the same bytes at every size of sample past the 16,432 bytes of each superblock merged (spread $l_spread bytes, fitted $l_slope bytes a row)" test "$l_spread" -le 8192 -a "$l_flat" == t
+check "the cells held the same bytes at every size of sample past the bytes of each run merged (spread $c_spread bytes, fitted $c_slope bytes a row)" test "$c_spread" -le 8192 -a "$c_flat" == t
+check "the layouts held the same bytes at every size of sample past the bytes of each superblock merged (spread $l_spread bytes, fitted $l_slope bytes a row)" test "$l_spread" -le 8192 -a "$l_flat" == t
 out=$(sql ks "SELECT min(sampled), max(sampled), min(s_peak) > 1048576 FROM kres WHERE mwm = '1MB'" | tr '|' ' ')
 check "the samples were 64 to 126 superblocks and the sample stage held the memory it may keep" test "$out" == "64 126 t"
 out=$(sql ks "SELECT kdiff()")
