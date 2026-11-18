@@ -33,6 +33,7 @@ int			sift_test_col_spool_share_kb = 0;
 int			sift_test_col_spool_unbounded = 0;
 int			sift_test_col_spool_used_rows = 0;
 int			sift_test_col_spool_est_bytes = 0;
+int			sift_test_col_spool_ranges = 0;
 #endif
 
 typedef struct SpoolLayer

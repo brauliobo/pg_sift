@@ -538,6 +538,7 @@ colb_spill_start(ColBuild *b)
 	pfree(in);
 #ifdef SIFT_TESTING
 	sift_test_col_spool_est_bytes = (int) Min(need, (double) INT_MAX);
+	sift_test_col_spool_ranges = s->n;
 #endif
 	if (s->plan != NULL)
 		ereport(NOTICE, (errmsg("sift_col index \"%s\": %d key ranges, about %.1f MB of temporary files, in chunks of %u rows (%s)",

@@ -566,6 +566,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_spool_used_rows",
 							"Testing: rows of a chunk of the last sift_col build by key ranges of this session (0 = its rows went to packed files).",
 							NULL, &sift_test_col_spool_used_rows, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_ranges",
+							"Testing: key ranges of the last sift_col build by key ranges of this session (each has a spool of chunks).",
+							NULL, &sift_test_col_spool_ranges, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_spool_est_bytes",
 							"Testing: bytes the last sift_col build by key ranges of this session priced its chunks at.",
 							NULL, &sift_test_col_spool_est_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
