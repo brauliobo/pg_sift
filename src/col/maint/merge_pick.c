@@ -184,27 +184,79 @@ settled_all(Relation index, const SiftSegEntry *sel, int n)
 	return true;
 }
 
+/* The size the writer of a merge cuts a key-cut segment at: the partition size, in a test the allowance of its writer. 0: it writes one segment */
+static uint64
+merge_cut_bytes(bool key_cut)
+{
+	uint64		kb = maint_part_kb;
+
+#ifdef SIFT_TESTING
+	if (kb == 0 && key_cut && sift_test_col_segment_kb > 0 && !maint_after_build)
+		kb = sift_test_col_segment_kb;
+#endif
+	return kb * 1024;
+}
+
+typedef struct KeySpan
+{
+	int64		lo;
+	int64		hi;
+}			KeySpan;
+
+static int
+key_span_cmp(const void *a, const void *b)
+{
+	const KeySpan *x = a,
+			   *y = b;
+
+	return x->lo < y->lo ? -1 : x->lo > y->lo;
+}
+
+/* Do the key ranges of sel[0..n) of a key-cut index share at most a boundary key: a lookup of a key reads one of them */
+static bool
+key_apart(Relation index, const SiftSegEntry *sel, int n)
+{
+	KeySpan    *span = palloc(n * sizeof(KeySpan));
+	bool		apart = true;
+
+	for (int i = 0; i < n; i++)
+	{
+		SiftColSegment *seg = sift_cseg_open(index, &sel[i], CurrentMemoryContext);
+
+		maint_seg_key_range(seg, sift_col_rel(index)->cut[0], &span[i].lo, &span[i].hi);
+		sift_cseg_close(seg);
+	}
+	qsort(span, n, sizeof(KeySpan), key_span_cmp);
+	for (int i = 1; i < n && apart; i++)
+		apart = span[i].lo >= span[i - 1].hi;
+	pfree(span);
+	return apart;
+}
+
 /*
  * Force means merge to the minimum count of segments, so that a second force is a no-op: segments that are all partitions (from half the size to one and a half of
- * it: a merge cuts its partitions within that), clean, and no more of them than the partitions their bytes make are the minimum, and writing them again would give
- * the same ones (an index built by a parallel build, or merged by a force, is there). A segment over the size is cut again, as a smaller allowance asks.
+ * it: a merge cuts its partitions within that), clean, apart in the key when the index is cut by it, and no more of them than the partitions their bytes make are the
+ * minimum, and writing them again would give the same ones (an index built by a parallel build, or merged by a force, is there). A segment over the size is cut
+ * again, as a smaller allowance asks.
  */
 static bool
 at_minimum(Relation index, const SiftMergePolicy *pol, const SiftSegEntry *sel, int n)
 {
-	uint64		bytes = 0,
+	bool		key_cut = sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index));
+	uint64		cut = merge_cut_bytes(key_cut),
+				bytes = 0,
 				rows = 0;
 
-	if (maint_part_kb == 0 || (sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index))))
+	if (cut == 0)
 		return false;
 	for (int i = 0; i < n; i++)
 	{
-		if (!maint_is_partition(&sel[i]) || sel[i].bytes > (uint64) maint_part_kb * 1536 || (sel[i].flags & (SIFT_SEG_DIRTY | SIFT_SEG_VERS)) || pol->mostly_dead(index, &sel[i]))
+		if (sel[i].bytes < cut / 2 || sel[i].bytes > cut / 2 * 3 || (sel[i].flags & (SIFT_SEG_DIRTY | SIFT_SEG_VERS)) || pol->mostly_dead(index, &sel[i]))
 			return false;
 		bytes += sel[i].bytes;
 		rows += sel[i].ndocs;
 	}
-	return (uint64) n <= Max(maint_part_count(bytes, (uint64) maint_part_kb * 1024, false), (rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS);
+	return (uint64) n <= Max(maint_part_count(bytes, cut, key_cut), (rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS) && (!key_cut || key_apart(index, sel, n));
 }
 
 /* Of the segments of snap those the tiers may merge: not the immutable ones that are partitions, which the same merge would write again as they are */

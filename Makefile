@@ -264,6 +264,7 @@ TESTING_REGRESS += col_live_repair
 TESTING_REGRESS += col_log_newer_format
 TESTING_REGRESS += col_merge_dict_stream
 TESTING_REGRESS += col_merge_idempotent
+TESTING_REGRESS += col_merge_key_cut_minimum
 TESTING_REGRESS += col_merge_keys
 TESTING_REGRESS += col_merge_settled
 TESTING_REGRESS += col_minmax_runs

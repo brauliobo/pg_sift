@@ -1,0 +1,31 @@
+-- A forced merge of a key-cut index leaves segments that its writer cut where it cuts and that are apart in the key: those are the minimum, and a second forced merge in a backend
+-- that does not remember the first changes none of them (the same generations).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET sift.test_col_build_runs_overlap = on;
+SET statement_timeout = '60s';
+CREATE TABLE t (id int, dim int, day date, v int, w int) WITH (autovacuum_enabled = false);
+INSERT INTO t SELECT g, 1 + (g::bigint * 7919 % 12)::int, date '2018-01-01' + (((g::bigint * 2654435761) % 4294967296 / 65536) % 2900)::int, g % 100, (g::bigint * 40503 % 1000003)::int FROM generate_series(1, 400000) g;
+VACUUM (FREEZE, ANALYZE) t;
+SET sift.test_col_segment_kb = 64;
+CREATE INDEX t_cut ON t USING sift_col (dim, day, v, w) WITH (key_cut = 'dim, day');
+CREATE TABLE gens (step text, gens bigint[]);
+SELECT sift.col_merge('t_cut', true) > 0 AS merged;
+INSERT INTO gens SELECT 'first', array_agg(gen ORDER BY gen) FROM sift.col_segments('t_cut') WHERE kind = 'immutable';
+SELECT cardinality(gens) > 30 AS cut_in_segments FROM gens;
+
+\c -
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET sift.test_col_segment_kb = 64;
+SET statement_timeout = '60s';
+SELECT sift.col_merge('t_cut', true) AS second_merge_steps;
+INSERT INTO gens SELECT 'second', array_agg(gen ORDER BY gen) FROM sift.col_segments('t_cut') WHERE kind = 'immutable';
+SELECT a.gens = b.gens AS same_generations FROM gens a, gens b WHERE a.step = 'first' AND b.step = 'second';
+SELECT sift.col_verify('t_cut', true);
+RESET sift.test_col_segment_kb;
+DROP TABLE t, gens;
+DROP EXTENSION pg_sift;
