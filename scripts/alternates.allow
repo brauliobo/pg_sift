@@ -1,0 +1,95 @@
+test/expected/agg_cte_inline_rest_1.out	13a4efc3b4d26d175120b048bb318ec8dd095df7	2 | scans  |         400 |              0
+test/expected/agg_flat_key_lookup_diff_1.out	3bebe8a72273692aa52a1e20b6f6f0e932216dbb	t
+test/expected/agg_flat_key_lookup_diff_1.out	48545e7a97f6e83feaff4ffe3b2b5242ff2a2a7d	after dml group 4 periods | t    |   10
+test/expected/agg_flat_key_lookup_diff_1.out	4de895ea0b3f091d45d58dfb44875db2f2e85371	initial group 1 periods | t    |   10
+test/expected/agg_flat_key_lookup_diff_1.out	5dc015a408688f6bfbcc8454d84fd9ad192867a4	after links group 4 periods | t    |   10
+test/expected/agg_flat_key_lookup_diff_1.out	86cda9922568e2635e1e5235f57c6ee70077cbc3	after insert group 1 periods | t    |   10
+test/expected/agg_flat_key_lookup_diff_1.out	ae01baff09ccae77746b588e6e2a8f20b69686e6	after dml group 1 periods | t    |   10
+test/expected/agg_flat_key_lookup_diff_1.out	eac90b83fc0808096a1c27e3dca9d9fbb79b0a58	after links group 1 periods | t    |   10
+test/expected/agg_flat_key_lookup_diff_1.out	f0f569f9655788bb6b59f007ae49f4b742db2455	after vacuum group 1 periods | t    |   10
+test/expected/agg_plan_tables_1.out	55fc321df3bd092db15a996db0656248b7376904	plan                       | result_rows | vs_normal_plan
+test/expected/agg_plan_tables_1.out	a1de4d3fcc0ea5fe62a6f71958da8515d3e1bd6e	Lookup Joins: ANY_subquery (subquery) (semi)
+test/expected/agg_plan_tables_1.out	b5ccafa27970a6d1ac47af6e914cd1539605803d	semi_limit
+test/expected/agg_plan_tables_1.out	ca1668186929bafd661088ed0aef3fb20f8725aa	QUERY PLAN
+test/expected/agg_scalar_dirty_1.out	04e2177fc4449c6ac87a22414d15172196161626	cast float8     | t      |     60 | same rows
+test/expected/agg_scalar_dirty_1.out	294d9e4bc2415f209f17e89f4d603cc926d16b8e	cast float8 raises    | t      | same ERR 22023 cannot cast jsonb string to typ
+test/expected/agg_scalar_dirty_1.out	3a02e2e359dab9074cb9aef22b7cc7b0ac5a7cb1	n        | pushed | reread |  outcome
+test/expected/agg_scalar_dirty_1.out	50f22d4942a479a5e9b35321b1895226c916b208	cast float8 deleted | t      | same ERR 22023 cannot cast jsonb string to type
+test/expected/agg_scalar_dirty_1.out	5a24ace01cfb970250772c8f393f79e96350b82c	key float8      | t      |     60 | same rows
+test/expected/agg_scalar_dirty_1.out	7c2028eb91978e157ec048eecae9ee12f14fa725	only the deleted    | t      | same rows
+test/expected/agg_scalar_dirty_1.out	e0c7a3f0b74c4b0ea4502180aa0f1b95df605633	dropped, cast         | t      | same ERR 22023 cannot cast jsonb string to typ
+test/expected/agg_scalar_dirty_where_1.out	85deccbce3c6f678aba7e333ab055b2dcb254183	sub-select         | normal | same ERR 22P02 invalid input syntax for type doub
+test/expected/agg_scope_param_keys_1.out	028afff94b99f0328aa857452b59e269a6ec0e66	latest 5, $1                                            | force_custom_plan  |
+test/expected/agg_scope_param_keys_1.out	1a7fee691f493a6d20207897c398bd9120aad8fe	CTE, $1                                                 | force_custom_plan  |
+test/expected/agg_scope_param_keys_1.out	32de2e7459e082847a1656818a6bf9ad5f8acf66	IN, $1                                                  | force_custom_plan  |
+test/expected/agg_scope_param_keys_1.out	539b968e7a4145b3b6a4dac0c69d72f5778fbc0f	IN, a text $1 cast                                      | force_custom_plan  |
+test/expected/agg_scope_param_keys_1.out	cbafab979d05dead65468cbabd46cd3e2ce9c7ea	more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback:
+test/expected/agg_scope_param_keys_2.out	028afff94b99f0328aa857452b59e269a6ec0e66	latest 5, $1                                            | force_custom_plan  |
+test/expected/agg_scope_param_keys_2.out	1a7fee691f493a6d20207897c398bd9120aad8fe	CTE, $1                                                 | force_custom_plan  |
+test/expected/agg_scope_param_keys_2.out	32de2e7459e082847a1656818a6bf9ad5f8acf66	IN, $1                                                  | force_custom_plan  |
+test/expected/agg_scope_param_keys_2.out	a6e8bbef9af2f5a86f7534a7c48540e52b2f438b	IN, a text $1 cast                                      | force_custom_plan  |
+test/expected/agg_scope_param_keys_2.out	cbafab979d05dead65468cbabd46cd3e2ce9c7ea	more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback:
+test/expected/agg_scope_recognition_1.out	6bc29cda1b6c0fc38b3e9ca4bfd892a238a51160	more changed pairs than the bound | latest 5         | Fallback: join is cheape
+test/expected/agg_scope_refusals_1.out	bf058ddb00d60ee3be7efa7d189946e8d611bef2	CTE used twice                                          | join, a sub-select ov
+test/expected/agg_spill_contexts_1.out	a879aa77beb39ff57c76ae083c7b0174dfda0c5d	kind     | select_ |      insert_       |     volatile_
+test/expected/agg_subplan_lut_1.out	01841054a351688288ac808012bbf7f61517a2a1	plan          | result_rows | vs_normal_plan
+test/expected/agg_subplan_lut_1.out	14041d7151598025fefce12ddffde531149e5982	not_in
+test/expected/agg_subplan_lut_1.out	18f010d562e7cd0f6b312fc1d9d10bde0b3d257f	plan          | result_rows | vs_normal_plan
+test/expected/agg_subplan_lut_1.out	3d127528743883af12be144cfe49756f8b13c0e5	plan          | result_rows | vs_normal_plan
+test/expected/agg_subplan_lut_1.out	40a73829da2d83ee401199cd1b06b56c85683b01	not_hashed
+test/expected/agg_subplan_lut_1.out	4f429bbd87b4ee25b0ff6e32eae269f0232d9ff0	in_or
+test/expected/agg_subplan_lut_1.out	544909052b9e5fc43b40e2e645313adf1aa1890c	QUERY PLAN
+test/expected/agg_subplan_lut_1.out	5cd6066ffd60200085ba9119f05da55669486653	correlated
+test/expected/agg_subplan_lut_1.out	61ee54aac571645e1a24a555eff003c8b9344bb2	int8_leaf
+test/expected/agg_subplan_lut_1.out	64620189b8edcb78876437b8d343e065138d9a84	plan                  | result_rows | vs_normal_plan
+test/expected/agg_subplan_lut_1.out	769713299c92e8460efd8e32f04b768e312b11e7	volatile_subselect
+test/expected/agg_subplan_lut_1.out	7d4e144b47d2f983b0ec7e64f71941db864dbc07	plan                 | result_rows | vs_normal_plan
+test/expected/agg_subplan_lut_1.out	815d7098061ff3f9e35541640602d98512d2f6c6	plan          | result_rows | vs_normal_plan
+test/expected/agg_subplan_lut_1.out	8737b21d6426ffffda85e8c87f0247e3eda564d9	generic_plan
+test/expected/agg_subplan_lut_1.out	8865a0f650b1b6a0a40c031577460bc00cd911d5	plan          | result_rows | vs_normal_plan
+test/expected/agg_subplan_lut_1.out	8e4b2bd006cc4460a1b913e49ad1e815bab49a2d	row_valued
+test/expected/agg_subplan_lut_1.out	9f091d125d7ac4247abc29e8c3cdc12d9051624b	locking
+test/expected/agg_subplan_lut_1.out	aa6cc9989b11c764e71a69b687989ef2877582d2	after_drop
+test/expected/agg_subplan_lut_1.out	ba3c14d64ad8882d64f444bd73ccdb376ea36be5	with_subplan
+test/expected/agg_subplan_lut_1.out	d5ee762d3573a3bcaa0db2f6b1c6a3f90e6adc63	Filters: dim_a_id: (NOT (ANY (ev.dim_a_id = (hashed SubPlan 1).col1)))
+test/expected/agg_subplan_lut_1.out	e67128f7a4ef0d9e5e220f22a7c13547981b6f19	plan          | result_rows | vs_normal_plan
+test/expected/agg_subplan_lut_1.out	e7248545797ed2149f35d80e5693d6b0b9f4be4c	pushdown_off
+test/expected/agg_subplan_lut_1.out	e78e16e5116dbe6668acd8776b984acc39b99fc0	row_valued_in
+test/expected/agg_subplan_lut_1.out	eb43e0d6f621cf781fd23135e374e6bb88037161	before_drop
+test/expected/agg_subplan_lut_1.out	ee208c932140974d0cdcc51cf2166c3d5dc84436	nested_subplan
+test/expected/agg_subplan_lut_1.out	fb4b779dbfb651256a43e667dc8449c760f00be8	plan          | result_rows | vs_normal_plan
+test/expected/col_scope_textkey_1.out	6c58555face2d1d44e30fbaaa3c03d9b63dad22d	IN, no key the store has                    | scope read, once
+test/expected/col_scope_textkey_1.out	893491e2c5c91f8b40a672f9a7fdafc060055223	uuid key, a literal                         | scope read, once
+test/expected/col_scope_textkey_1.out	8c9d83a5155d72634f29e02cee2fcee1f4b770e4	EXISTS                                      | scope read, once
+test/expected/col_scope_textkey_1.out	bd65f16ac3efad89f8893beba14b9a444029e5c2	varchar key, a text parameter type          | scope read, once
+test/expected/col_scope_textkey_1.out	d33e6d8e6c15e3198bc910ff0c5438640ab47e6f	IN, a key only the pairs added later have   | scope read, once
+test/expected/col_scope_textkey_1.out	ea71ffea2b7e815d6507d1eca1ac95748ae5988a	IN, a long key                              | scope read, once
+test/expected/col_scope_textmember_1.out	14d8b4b0a58ec1b27af2e594b717378b97c86497	IN, one key                             | scope read, once
+test/expected/col_scope_textmember_1.out	99b2db9a04677b91aa0d5ac84efe85da31a87935	EXISTS                                  | scope read, once
+test/expected/col_scope_textmember_collide_1.out	14d8b4b0a58ec1b27af2e594b717378b97c86497	IN, one key                             | scope read, once
+test/expected/col_scope_textmember_collide_1.out	99b2db9a04677b91aa0d5ac84efe85da31a87935	EXISTS                                  | scope read, once
+test/expected/col_skip_map_1.out	1a946b21e6da3e67c2d462a3b68d45c34498ae8c	sm_z | avg(f)  | 3 | k = 500               | SiftAgg read 0 pruned 100 |
+test/expected/col_skip_map_1.out	25b96df3cbf4b831eec9465460ae43b4304b1b10	sm_o | sum(id) | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
+test/expected/col_skip_map_1.out	29c8c731d006b5f73225798c82513c7965235355	sm_z | sum(id) | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
+test/expected/col_skip_map_1.out	5a63a2f9592e4e3adf30f8aa444b0d152cb196cb	sm_o | avg(f)  | 3 | k = 500               | SiftAgg read 0 pruned 100 |
+test/expected/col_skip_map_1.out	60e43d0790fe1c87cba8d7be03bd8e618acc3324	sm   | avg(f)  | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
+test/expected/col_skip_map_1.out	632c7805145d659309106edb3c5e64f8b47d299b	sm   | sum(id) | 3 | k = 500               | SiftAgg read 0 pruned 100 |
+test/expected/col_skip_map_1.out	6dc763e5266bc4e28ad77a95e7c4271e88e7b3e7	sm   | avg(f)  | 3 | k = 500               | SiftAgg read 0 pruned 100 |
+test/expected/col_skip_map_1.out	7407c5abffbb4187c7d17b05b2e1e59146f1d9dc	sm_z | avg(f)  | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
+test/expected/col_skip_map_1.out	8e34e83ed753d32b8083aa0bdb2bfd821a0902ae	sm   | sum(id) | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
+test/expected/col_skip_map_1.out	e5109153b15a7c8fecc365a3b3f702e68b611a10	sm_z | sum(id) | 3 | k = 500               | SiftAgg read 0 pruned 100 |
+test/expected/col_skip_map_1.out	ef2511451d8fb33dd89e74eae4a9d95250d2a627	sm_o | avg(f)  | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
+test/expected/col_skip_map_1.out	f6c04dafc71d45625470833e31b521767c771f06	sm_o | sum(id) | 3 | k = 500               | SiftAgg read 0 pruned 100 |
+test/expected/col_topn_offset_1.out	3855a99e3a1312abe7e20e1bec123f6a0a95e425	confirmed | 74
+test/expected/col_topn_offset_1.out	5f3a76f93fb85af3330441f90a0bd7ac88fa9f31	result   | n
+test/expected/col_topn_offset_1.out	65f85ed967261617e3035128ac302bfb1b8195bd	confirmed | 95
+test/expected/explain_sift_1.out	27fe9942929a7ef582728ce2070736dc6237f482	sift_lines
+test/expected/explain_sift_1.out	4148b089f33064724d2716c1c96edd654a2b36ad	sift_refusals
+test/expected/explain_sift_1.out	6828e0176c1ed616697ed217d1a40490b1f94e87	sift_lines
+test/expected/explain_sift_1.out	7cd3fdcc53a76913cce007615af3b6d2a7b7063c	sift_lines
+test/expected/explain_sift_1.out	aa14f7ed610b34ab40fb563979f325db1dc9d01b	sift_lines
+test/expected/explain_sift_1.out	ac9e3a1517d156660b80a9b34d9b2bd47610f985	sift_lines
+test/expected/explain_sift_1.out	afcac95d97a4de5a02b27066325e95f6ffe42edd	sift_lines
+test/expected/explain_sift_1.out	b2cca5de98d6c09b57bd58a4c85f10262d3a486e	sift_lines
+test/expected/explain_sift_1.out	c2d54243cd3cd0a4d0dd3baddf8c9bb6c387db68	sift_lines
+test/expected/explain_sift_1.out	fc30b8dae64f47cfa61b208eb95b51afae25696f	sift_lines

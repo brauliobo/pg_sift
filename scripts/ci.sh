@@ -6,6 +6,9 @@
 #                                     (scripts/areas.tsv; --list prints them, --github the outputs of the workflow's `changes` job)
 #   scripts/ci.sh stop [DIR]          ends the run of the scratch directory DIR (default $SIFT_CI_TMP) by the pid it recorded in DIR/run.pid, never by a name
 #   scripts/ci.sh --times [RESULTS]   the per-job wall and CPU seconds of a kept run (KEEP=1), longest first
+#   scripts/ci.sh summary [FILE...]   the jobs of the last runs by state and every job that skipped with its reasons, from the one-line-per-job files a run retains in
+#                                     $TMPDIR/sift-ci-summary (default: all of them); fails when a skip gives no reason
+#   scripts/ci.sh --scratch [FILE...] scripts/scratch.tsv (the scratch each job measured, which the scheduler trusts) updated by retained summaries, on stdout
 #   scripts/ci.sh --plan [quick|full] the jobs and whether each runs in the pool or after it; --selftest checks that on every PostgreSQL major
 #
 # quick (default, about a minute on 8 free cores): non-ASan build, small corpora and short runs. installcheck (also against the
@@ -22,11 +25,11 @@
 # The suites are cut into jobs (a regression test, a TAP file, a differential test...) that a pool of lanes takes from one
 # queue, longest first: SIFT_LANES lanes (default: the cores, at most 8), each with its own cluster (started when its first
 # job needs one) and one shared install, at nice 19. A lane starts a job when the scratch estimated for the jobs running (EST_MB,
-# JOB_MB) plus its own fits CI_BUDGET_MB (quick 1200, full 2000; the first job always runs), so the run stays at about 1 GB
+# JOB_MB) plus its own fits CI_BUDGET_MB (quick 1800, full 2000; the first job always runs), so the run stays under 3 GB
 # however many lanes there are. The scratch directory is $SIFT_CI_TMP (default $TMPDIR/sift-ci-<pid>, /tmp when unset and on macOS), removed
 # when everything passed or the run was interrupted (INT, TERM; KEEP=1 keeps it; a failure keeps it for the logs, a day); a job that passed leaves it at once. On exit, and at the start of
 # the next run (the directories of dead pids), every postmaster under the directory is stopped and the directory removed: no run leaves a cluster behind. The ports are
-# SIFT_PORT (default 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (quick 6144; full
+# SIFT_PORT (default 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (quick 3072, the shard fails; full
 # 8192, 512 more per lane above four). SIFT_CI_STATS=1 prints the footprint of the run (peak by component, lane and job, and the
 # memory of the postgres processes) and is how EST_MB is kept up to date. SIFT_CI_JOBS, a regex on the job names
 # (installcheck-facets, tap-001_crash, tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those (the regression tests of
@@ -81,10 +84,20 @@ if [[ $MODE == --times ]]; then
 		{ printf "%-44s %7d %7.1f  %-6s %s\n", $1, $4, $9, $6, $3; w += $4; c += $9 } END { printf "%-44s %7d %7.1f\n", "total", w, c }'
 	exit
 fi
+if [[ $MODE == summary || $MODE == --scratch ]]; then
+	source "$REPO/scripts/ci/skips.sh"
+	shift
+	files=("$@")
+	(( ${#files[@]} )) || files=("${TMPDIR:-/tmp}"/sift-ci-summary/*.tsv)
+	[[ -f ${files[0]} ]] || { echo "ci: no retained summary (a run writes one to ${TMPDIR:-/tmp}/sift-ci-summary)" >&2; exit 2; }
+	if [[ $MODE == summary ]]; then summary_report "${files[@]}"; else scratch_table "$REPO/scripts/scratch.tsv" "${files[@]}"; fi
+	exit
+fi
 # the rest of the run, in the order it needs: each part is a piece of this script, sourced into this shell (scripts/ci/NAME.sh)
 source "$REPO/scripts/ci/affected.sh"
 source "$REPO/scripts/ci/weights.sh"
 source "$REPO/scripts/ci/procs.sh"
+source "$REPO/scripts/ci/skips.sh"
 source "$REPO/scripts/ci/selftest.sh"
 source "$REPO/scripts/ci/config.sh"
 source "$REPO/scripts/ci/jobs.sh"

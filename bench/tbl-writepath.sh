@@ -51,7 +51,7 @@ export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPD
 if [[ -z ${SIFT_PORT:-} ]]; then
 	for _ in $(seq 1 50); do
 		SIFT_PORT=$((56150 + RANDOM % 101))
-		ss -ltn 2>/dev/null | grep -q ":$SIFT_PORT " || break
+		ss -ltn 2>/dev/null | grep ":$SIFT_PORT " >/dev/null || break
 	done
 fi
 export SIFT_PORT

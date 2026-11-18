@@ -53,7 +53,7 @@ typedef struct SiftColRel
 	bool		journal_known;	/* journal_lineage (col/conn.c) is read: the relcache frees this state with the entry when it invalidates it */
 	uint64		journal_lineage;
 	uint16		journal_tagatt;	/* the column the records of the journal are tagged by (SIFT_TOMB_KEYS_TAGATT): 0 for none */
-	MemoryContext rowcxt;		/* reset after every aminsert */
+	MemoryContext rowcxt;		/* made by the first aminsert of the backend (sift_col_rel_rowcxt), reset after each */
 } SiftColRel;
 
 /* The tombstone log of a heap index with track_changes, synced with what is appended (core/tomb.h); NULL when the index keeps none. sift_col_log_create adds the segment */
@@ -122,6 +122,7 @@ extern bool sift_col_is_speculative(Relation heap, ItemPointer newtid);
 extern void sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPointer newtid, bool speculative_stmt);
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT bool sift_test_no_supersede;
+extern PGDLLIMPORT bool sift_test_key_cut_unbounded;
 extern PGDLLIMPORT bool sift_test_tombs_at_once;
 extern PGDLLIMPORT bool sift_test_supersede_scan;
 extern PGDLLIMPORT bool sift_test_no_track;
@@ -241,6 +242,7 @@ extern int sift_test_col_merge_error;
 extern int	sift_test_col_refresh_sleep_ms;		/* sift.test_col_refresh_sleep_ms: the refresh of a segment sleeps this long once the new segment is written */
 extern int	sift_test_col_refresh_sleep_armed;
 extern int	sift_test_conn_fill;			/* sift.test_conn_fill: 1 = the fill of the found flags reads the parent, 2 = it probes the btree (0 = by price) */
+extern bool	sift_test_conn_no_horizon;		/* sift.test_conn_no_horizon: the stamps of a fill have no insert horizon (segments written before 5.0.2) */
 extern int	sift_test_col_floor_sbs;		/* sift.test_col_floor_sbs: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16) */
 #endif
 
@@ -283,6 +285,7 @@ extern void sift_col_datum_values(const SiftColDef *def, Datum d, bool name, Sif
 
 /* Built on first use from the index definition (ERROR for an unsupported type or a jsonb attribute without paths) */
 extern SiftColRel *sift_col_rel(Relation index);
+extern MemoryContext sift_col_rel_rowcxt(SiftColRel *r);
 /*
  * The same in mcxt, for a caller that holds it across a lock or an expression of the index: a reload of the relcache entry (any lock taken
  * meanwhile may cause one) frees the one sift_col_rel returns, which stays only for what the caller reads before it does either.
@@ -432,6 +435,9 @@ extern int	sift_col_maint_promote(Relation index, bool wait);
 #define MAINT_HALF		0.5
 /* The rows whose delete or update every snapshot sees as committed are cleared in the segments and the write buffer and their tombstones dropped, without waiting for a VACUUM (maintenance lock free) */
 extern uint64 sift_col_fold_marks(Relation index);
+#ifdef SIFT_TESTING
+extern int64 sift_col_fold_counts;
+#endif
 /* Have the reads of the server paid for the fold of the marks, and the worker asked for when they have */
 extern bool sift_col_fold_due(Relation index);
 extern void sift_col_reads_flush(Relation index);

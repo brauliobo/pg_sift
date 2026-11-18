@@ -252,6 +252,11 @@ def sift_bool_agg(sess):
     return [l for l in sess.run("SELECT name FROM pg_settings WHERE name LIKE 'sift.agg\\_%' AND vartype = 'bool' ORDER BY 1;")]
 
 
+def server_enables(sess):
+    have = set(sess.run("SELECT substr(name, 8) FROM pg_settings WHERE name LIKE 'enable\\_%' AND vartype = 'bool';"))
+    return [e for e in ENABLES if e in have]
+
+
 def configs(sess):
     c = {'default': [], 'force': ['sift.agg_force=on'], 'w2': PAR, 'force_w2': ['sift.agg_force=on'] + PAR,
          'generic': ['plan_cache_mode=force_generic_plan'], 'custom': ['plan_cache_mode=force_custom_plan'],
@@ -259,7 +264,7 @@ def configs(sess):
          'noscan': ['sift.enable_scan=off'], 'noagg': ['sift.enable_agg=off'], 'nocolscan': ['sift.enable_col_scan=off', 'sift.agg_force=on'],
          'nocount': ['sift.enable_count=off'], 'notopn': ['sift.enable_topn=off', 'sift.agg_force=on'], 'pscan': ['sift.parallel_scan=on'] + PAR,
          'plan_lo': ['sift.plan_scale=1', 'sift.agg_force=on'], 'plan_hi': ['sift.plan_scale=1000000'], 'cheap_idx': ['random_page_cost=1.01', 'seq_page_cost=4']}
-    for e in ENABLES:
+    for e in server_enables(sess):
         c[f'no_{e}'] = [f'enable_{e}=off']
         c[f'no_{e}_force'] = [f'enable_{e}=off', 'sift.agg_force=on']
     for name in sift_bool_agg(sess):
