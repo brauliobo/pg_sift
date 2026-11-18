@@ -14,8 +14,10 @@
 
 #ifdef SIFT_TESTING
 
-#include <malloc.h>
 #include <stdlib.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 #ifdef __linux__
 #include <sys/prctl.h>
 #endif
