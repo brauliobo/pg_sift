@@ -149,6 +149,19 @@ sift_dv_slots_of(const SiftTomb *e, uint32 avail)
 	return 2 + data_slots(bytes) <= avail ? 2 + data_slots(bytes) : 0;
 }
 
+void
+sift_dv_rekey_slots(SiftTomb *slots, uint32 n, uint64 gen, uint32 part)
+{
+	SiftDvDesc	desc;
+
+	memcpy(&desc, SLOT_PAYLOAD(&slots[1]), sizeof(desc));
+	desc.part = part;
+	memcpy(SLOT_PAYLOAD(&slots[1]), &desc, sizeof(desc));
+	slots[0].succ = gen;
+	for (uint32 i = 0; i < n; i++)
+		slots[i].key = SIFT_DV_KEY(gen, part);
+}
+
 uint32
 sift_dv_head_rows(const SiftTomb *e)
 {

@@ -60,6 +60,9 @@ extern uint32 sift_dv_slots_of(const SiftTomb *e, uint32 avail);
 /* The rows the record whose head is at e names (the descriptor is the slot after it) */
 extern uint32 sift_dv_head_rows(const SiftTomb *e);
 
+/* Makes the n slots of a record (copied from the log) the record of part in generation gen: the key of every slot, the generation of the head and the part of the descriptor */
+extern void sift_dv_rekey_slots(SiftTomb *slots, uint32 n, uint64 gen, uint32 part);
+
 /* Reads the record at e (slots_of(e) slots) */
 extern void sift_dv_decode(const SiftTomb *e, uint32 nslots, SiftDvRec *r);
 

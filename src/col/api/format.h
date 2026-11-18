@@ -59,7 +59,8 @@ struct SiftCGOrdCuts;
 #define SIFT_COL_FORMAT_KEYGROUPS	51	/* 5.0: the superunit block of a scope segment is made of key groups: runs of units that hold one scope key, each with the merged cubes of its units and the cube of the dims of its rows (docs/COL-SCOPE.md "Key groups", seg_int.h SUPER_KMAGIC); an index without it reads as before */
 #define SIFT_COL_FORMAT_M1		52	/* 5.1: the one minor of the first 5.1 features that an older library refuses (docs/FORMATS.md): a segment or directory entry that holds any of them is stamped with it */
 #define SIFT_COL_FORMAT_TOMBDV	SIFT_COL_FORMAT_M1	/* 5.1: the tombstone log of the index may hold deletion records (core/tomb_dv.h: the rows of one unit that one transaction ended); the format of its directory entry, written with the first record */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_M1	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_WBUFKEY	55	/* 5.1: the pages of the write buffer of a key_cut index with an integer key start with the range of the keys of their rows (SiftColPageHead), so that a read of a range of keys skips the pages that hold none of it: the format of the directory entry of the buffer, so that an older release refuses the index */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_WBUFKEY	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */

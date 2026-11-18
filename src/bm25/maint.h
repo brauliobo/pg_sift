@@ -24,6 +24,8 @@ extern PGDLLIMPORT int sift_test_room_segments;
 /* Testing knob (sift.test_no_heap_positions): promotions and merges take no positions from the heap, as 3.7.0 did */
 extern PGDLLIMPORT bool sift_test_no_heap_positions;
 extern PGDLLIMPORT int64 sift_maint_wait_max_us;
+/* Moves the segment that ends the file highest into the free blocks below it, units of recut (a mask) cut again: the switch of a split that copies units (bm25/space.c) */
+extern bool sift_maint_relocate_test(Relation rel, uint64 recut);
 #endif
 
 #include "core/store.h"

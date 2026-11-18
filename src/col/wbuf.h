@@ -190,9 +190,22 @@ extern void sift_reads_flush(Relation index, bool (*wbuf_met) (Relation), bool (
 extern bool sift_col_marks_take(void);
 
 /*
- * A step that replaces segments of a column index (merge, rewrite, relocation) carries the deletion records that name them to marks first (col/maint/dvfold.c): _switching takes the lock that
- * the writers of records share, from there to _switched, which the step calls after the directory switch
+ * The switch contract of the deletion records (col/maint/dvfold.c, REPORT "switch contract"). A step that gives a column index a segment generation in place of others (merge, rewrite, promotion,
+ * relocation, the split of a partition, the fold of a tail) calls _rekey (or _switching, which is _rekey with no move) after it wrote the new segments and before it publishes the directory, and
+ * _switched after the publish: _rekey takes the lock that the writers of records share. Units that the new segments hold as they were (same rows in the same positions) are named in moves, one
+ * run of units of a generation to a run of units of another: their records are written again under the new names. Every other record that names a replaced generation is carried to marks, which
+ * name rows by heap address. A step that keeps the generation of its segment (shift, shrink, net pre-aggregates) calls neither.
  */
+typedef struct SiftDvMove
+{
+	uint64		gen;			/* the replaced generation */
+	uint32		unit;			/* its first unit of the run */
+	uint32		nunits;			/* the units of the run (PG_UINT32_MAX: to the last unit of the segment) */
+	uint64		gen2;			/* the generation that holds the run */
+	uint32		unit2;			/* the unit of gen2 that the first unit of the run is */
+} SiftDvMove;
+
+extern void sift_col_dv_rekey(Relation index, const uint64 *old, int nold, const SiftDvMove *moves, int nmoves);
 extern void sift_col_dv_switching(Relation index, const uint64 *old, int nold);
 extern void sift_col_dv_switched(Relation index);
 /* Extents (header and data pages) for release after promotion; records, rows (deleted included) and pages */

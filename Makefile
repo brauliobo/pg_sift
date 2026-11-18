@@ -184,6 +184,7 @@ TESTING_REGRESS += col_dsm_write_statements
 TESTING_REGRESS += col_dv_memory
 TESTING_REGRESS += col_dv_oracle
 TESTING_REGRESS += col_dv_reads_paid
+TESTING_REGRESS += col_dv_switch
 TESTING_REGRESS += col_enc
 TESTING_REGRESS += col_fold_due_count
 TESTING_REGRESS += col_fold_keys_mem

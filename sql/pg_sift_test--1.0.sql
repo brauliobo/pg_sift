@@ -610,6 +610,8 @@ CREATE TEXT SEARCH TEMPLATE sift._test_syn (INIT = sift._test_syn_init, LEXIZE =
 -- the tombstone log of a heap column index (col/tomblog.c): add the segment, append an entry for a heap address by the current transaction, and list the entries in log order
 CREATE FUNCTION sift._test_col_fold_marks(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_fold_marks' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_relocate(index regclass, recut int4[] DEFAULT '{}') RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_col_relocate' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_marks_paid(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_marks_paid' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_fold_due(index regclass) RETURNS bool

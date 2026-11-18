@@ -502,44 +502,6 @@ space_entry(const SiftDirSnapshot *snap, uint64 gen)
 	return NULL;
 }
 
-/*
- * Writes the segments that end the file again, into the free blocks below them (space_plan chooses), so that the cut finds its end free:
- * a load leaves its write buffers below the column segment promoted from them, a merge leaves its output above the segments it replaced,
- * and a few live segments among free blocks would hold the file at its size for good. A second look follows each round, as the blocks
- * a segment was copied into are reserved by exact extent length, which can reject a coarse candidate. Every completed copy consumes the remaining allowance.
- */
-typedef struct SpaceMove
-{
-	const SiftSegEntry *entry;
-	SiftExtent *release;
-	int			nrelease;
-	BlockNumber limit;
-	uint64		budget;
-	uint64		written;
-	BlockNumber header;
-	SiftRelocatePage relocate_page;
-} SpaceMove;
-
-static void
-space_move(Relation rel, SiftWriteTarget *wt, const void *arg)
-{
-	SpaceMove  *move = (SpaceMove *) arg;
-	SiftSegEntry fresh;
-	SiftMaintSwitch sw = {.old = &move->entry->gen,.nold = 1,.neu = &fresh};
-
-	move->written = sift_store_relocate(rel, wt, move->entry, move->release, move->nrelease,
-									 move->limit, move->budget, &fresh, move->relocate_page);
-	if (move->written == 0)
-		return;
-	move->header = fresh.header_blk;
-	if (sift_col_is_index(rel))
-		sift_col_dv_switching(rel, &move->entry->gen, 1);
-	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,
-					.release = move->release,.nrelease = move->nrelease,.extra = InvalidBuffer});
-	if (sift_col_is_index(rel))
-		sift_col_dv_switched(rel);
-	sift_log_maint(rel, "relocated", GetCurrentTimestamp(), move->entry->ndocs, fresh.bytes);
-}
 
 /* The shift of the segment that ends the file: its highest runs go down into the free blocks below them, as far as the allowance reaches */
 typedef struct SpaceShift
@@ -591,6 +553,13 @@ space_shift_round(Relation rel, const SiftDirSnapshot *snap, const SpaceSeg *seg
 	return true;
 }
 
+/*
+ * Writes the segments that end the file again, into the free blocks below them (space_plan chooses), so that the cut finds its end free:
+ * a load leaves its write buffers below the column segment promoted from them, a merge leaves its output above the segments it replaced,
+ * and a few live segments among free blocks would hold the file at its size for good. A second look follows each round, as the blocks
+ * a segment was copied into are reserved by exact extent length, which can reject a coarse candidate. Every completed copy consumes the remaining allowance.
+ */
+
 static void
 space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 {
@@ -626,7 +595,7 @@ space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 				continue;
 			release = e->kind == SIFT_SEG_IMMUTABLE ? sift_store_immutable_extents(rel, e, &nrelease) : sift_lane_extents(rel, e, &nrelease);
 			move = (SpaceMove) {.entry = e,.release = release,.nrelease = nrelease,.limit = limit,.budget = budget,.relocate_page = relocate_page};
-			if (run_step(rel, false, space_move, &move) != SIFT_STEP_DONE || move.written == 0)
+			if (run_step(rel, false, sift_space_move, &move) != SIFT_STEP_DONE || move.written == 0)
 			{
 				pfree(release);
 				goto done;

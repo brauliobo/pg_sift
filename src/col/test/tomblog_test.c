@@ -12,9 +12,12 @@
 #include "col/seg.h"
 #include "col/test/test_int.h"
 #include "access/xact.h"
+#include "bm25/maint.h"
 #include "storage/bufmgr.h"
+#include "storage/lmgr.h"
 #include "funcapi.h"
 #include "utils/tuplestore.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
 #include "col/am.h"
@@ -28,6 +31,7 @@
 
 PG_FUNCTION_INFO_V1(sift_test_col_log_create);
 PG_FUNCTION_INFO_V1(sift_test_col_fold_marks);
+PG_FUNCTION_INFO_V1(sift_test_col_relocate);
 PG_FUNCTION_INFO_V1(sift_test_col_marks_paid);
 PG_FUNCTION_INFO_V1(sift_test_col_fold_due);
 PG_FUNCTION_INFO_V1(sift_test_col_fold_counts);
@@ -62,6 +66,25 @@ sift_test_col_fold_marks(PG_FUNCTION_ARGS)
 
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_INT64(n);
+}
+
+/* sift._test_col_relocate(index, recut): moves the last segment of the file down, the units numbered in recut (0-based) cut again; false when nothing could move */
+Datum
+sift_test_col_relocate(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessExclusiveLock, "sift_col");
+	uint64		recut = 0;
+	bool		moved;
+	ArrayType  *units = PG_GETARG_ARRAYTYPE_P(1);
+	int32	   *u = (int32 *) ARR_DATA_PTR(units);
+
+	for (int i = 0; i < ArrayGetNItems(ARR_NDIM(units), ARR_DIMS(units)); i++)
+		recut |= UINT64CONST(1) << u[i];
+	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
+	moved = sift_maint_relocate_test(index, recut);
+	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
+	index_close(index, AccessExclusiveLock);
+	PG_RETURN_BOOL(moved);
 }
 
 /* sift._test_col_fold_counts(): the passes over a log that counted the marks a fold could clear, in this backend (col/maint/fold.c) */

@@ -186,13 +186,64 @@ sift_col_dv_fold(Relation index, SiftTombLog *log, TransactionId horizon)
 	return cleared;
 }
 
+/* The unit the moves send (gen, unit) to: false when no move holds it */
+static bool
+rekey_target(const SiftDvMove *moves, int nmoves, uint64 gen, uint32 unit, uint64 *gen2, uint32 *unit2)
+{
+	for (int i = 0; i < nmoves; i++)
+		if (moves[i].gen == gen && unit >= moves[i].unit && unit - moves[i].unit < moves[i].nunits)
+		{
+			*gen2 = moves[i].gen2;
+			*unit2 = moves[i].unit2 + (unit - moves[i].unit);
+			return true;
+		}
+	return false;
+}
+
+/* The record in hand written again for the unit that holds its rows now: the old one stays in the log, as nothing names its segment after the switch, and the next rewrite of the log drops it */
+static void
+rekey_record(Relation index, SiftTombLog *log, const SiftTomb *slots, uint32 n, uint64 gen2, uint32 unit2)
+{
+	SiftTomb   *copy = palloc(n * sizeof(SiftTomb));
+
+	memcpy(copy, slots, n * sizeof(SiftTomb));
+	sift_dv_rekey_slots(copy, n, gen2, unit2);
+	sift_tomb_append_many(index, log, copy, (int) n);
+	pfree(copy);
+}
+
+/* The live rows of the record in hand as marks, for a unit that the new segments cut again */
+static void
+carry_record(DvSettle *st, SiftColSegment *seg, Relation index, SiftTombLog *log)
+{
+	SiftTomb   *marks;
+	SiftKey    *at;
+	uint32		nmarks = 0;
+
+	sift_dv_rows(st->rec, st->rows);
+	at = palloc(st->rec->desc.count * sizeof(SiftKey));
+	marks = palloc(st->rec->desc.count * sizeof(SiftTomb));
+	for (uint32 i = 0; i < st->rec->desc.count; i++)
+		if (st->live[st->rows[i] / 64] >> (st->rows[i] % 64) & 1)
+			st->rows[nmarks++] = st->rows[i];
+	sift_cseg_row_keys(seg, st->rec->desc.part, st->rows, nmarks, at);
+	for (uint32 i = 0; i < nmarks; i++)
+		marks[i] = (SiftTomb) {.key = at[i],.xid = st->rec->xid,.cid = st->rec->cid,.kind = SIFT_TOMB_DELETE};
+	sift_tomb_append_many(index, log, marks, (int) nmarks);
+	pfree(at);
+	pfree(marks);
+}
+
 /*
- * The records of the segments old[0..nold) carried to marks, for a step that is about to replace them: a mark names a row by its heap address, which the new segments keep, where a record
- * names the unit of a segment that will be gone. Holds the lock that the writers of records take shared, from here to sift_col_dv_switched, so that no record is written for a segment after
- * this has looked, and the switch of the directory is the step's own. The records stay in the log, as nothing names their segments any more, and the next rewrite of the log drops them.
+ * The records of the segments old[0..nold) settled for a step that is about to replace them: those of the units that moves name are written again under the names of the units that hold their
+ * rows (the new segments hold them as they were), the rest carried to marks (a mark names a row by its heap address, which the new segments keep, where a record names the unit of a segment that
+ * will be gone). Holds the lock that the writers of records take shared, from here to sift_col_dv_switched, so that no record is written for a segment after this has looked, and the switch of the
+ * directory is the step's own: a reader that holds the old directory finds the old records, one that holds the new finds the new, and nothing between the two is lost. A record of a transaction that
+ * aborted, or whose rows are cleared, is left alone. The step that re-cuts units may fold the records of committed-and-old transactions into the liveness first (sift_col_fold_marks, before it reads
+ * the liveness of the units it re-cuts), which spares their marks; the carry is correct without it.
  */
 void
-sift_col_dv_switching(Relation index, const uint64 *old, int nold)
+sift_col_dv_rekey(Relation index, const uint64 *old, int nold, const SiftDvMove *moves, int nmoves)
 {
 	SiftTombLog *log;
 	DvSettle   *st;
@@ -209,9 +260,8 @@ sift_col_dv_switching(Relation index, const uint64 *old, int nold)
 	while ((e = sift_tomb_walk_next_rec(&w, buf, &n)) != NULL)
 	{
 		SiftColSegment *seg;
-		SiftTomb   *marks;
-		SiftKey    *at;
-		uint32		nmarks = 0;
+		uint64		gen2;
+		uint32		unit2;
 		bool		named = false;
 
 		if (n == 1)
@@ -223,22 +273,19 @@ sift_col_dv_switching(Relation index, const uint64 *old, int nold)
 			continue;
 		if ((seg = settle_segment(st, st->rec->gen)) == NULL || !record_live(st, seg, st->rec))
 			continue;
-		sift_dv_rows(st->rec, st->rows);
-		at = palloc(st->rec->desc.count * sizeof(SiftKey));
-		marks = palloc(st->rec->desc.count * sizeof(SiftTomb));
-		for (uint32 i = 0; i < st->rec->desc.count; i++)
-			if (st->live[st->rows[i] / 64] >> (st->rows[i] % 64) & 1)
-				st->rows[nmarks++] = st->rows[i];
-		sift_cseg_row_keys(seg, st->rec->desc.part, st->rows, nmarks, at);
-		for (uint32 i = 0; i < nmarks; i++)
-			marks[i] = (SiftTomb) {.key = at[i],.xid = st->rec->xid,.cid = st->rec->cid,.kind = SIFT_TOMB_DELETE};
-		sift_tomb_append_many(index, log, marks, (int) nmarks);
-		pfree(at);
-		pfree(marks);
-		SIFT_MEM_CHECKPOINT();
+		if (rekey_target(moves, nmoves, st->rec->gen, st->rec->desc.part, &gen2, &unit2))
+			rekey_record(index, log, e, n, gen2, unit2);
+		else
+			carry_record(st, seg, index, log);
 	}
 	sift_tomb_walk_end(&w);
 	sift_col_dv_settle_end(st);
+}
+
+void
+sift_col_dv_switching(Relation index, const uint64 *old, int nold)
+{
+	sift_col_dv_rekey(index, old, nold, NULL, 0);
 }
 
 void
