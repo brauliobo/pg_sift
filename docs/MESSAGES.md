@@ -265,11 +265,11 @@ The text after the message line, as `psql` prints it (`%s`, `%d` fill in values)
   - DETAIL: They do not hold the leaves the index names now, so it stays stale: reads refuse it until it is built again.
   - HINT: CREATE INDEX CONCURRENTLY a new index like this one, then DROP INDEX %s: no scan is lost.
 - **btree-order** (NOTICE)
-  - DETAIL: %.0f of %u blocks are read, %.0f at random, at %.1f us (%s): %.0f s with %d process%s; key ranges %.0f MB, %.0f s; even at %.1f us.
+  - DETAIL: %.0f of %u blocks are read, %.0f at random, at %.1f us (%s): %.2f s with %d process%s; key ranges %.0f MB, %.2f s; even at %.1f us.
   - HINT: Candidates: %s.
 - **btree-order-no-room** (NOTICE)
-  - DETAIL: The key ranges need about %.0f MB of temporary files, %.0f MB are allowed. The btree reads %.0f of %u blocks, %.0f at random, at %.1f us (%s): %.0f s with %d process%s.
+  - DETAIL: The key ranges need about %.0f MB of temporary files, %.0f MB are allowed. The btree reads %.0f of %u blocks, %.0f at random, at %.1f us (%s): %.2f s with %d process%s.
   - HINT: Candidates: %s.
 - **key-ranges-cheaper** (NOTICE)
-  - DETAIL: The btree "%s" reads %.0f of %u blocks, %.0f at random, at %.1f us (%s): %.0f s with %d process%s; key ranges %.0f MB, %.0f s; even at %.1f us.
+  - DETAIL: The btree "%s" reads %.0f of %u blocks, %.0f at random, at %.1f us (%s): %.2f s with %d process%s; key ranges %.0f MB, %.2f s; even at %.1f us.
   - HINT: Candidates: %s.

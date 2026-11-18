@@ -360,18 +360,18 @@ say_choice(Relation index, Relation heap, const BtPlan *best, const char *candid
 
 	if (use && best->no_room)
 		ereport(NOTICE, (errmsg("sift_col index \"%s\": no room for the key ranges' files, heap read through the btree \"%s\"", sift_col_final_name(index), name),
-						 errdetail("The key ranges need about %.0f MB of temporary files, %.0f MB are allowed. The btree reads %.0f of %u blocks, %.0f at random, at %.1f us (%s): %.0f s with %d process%s.",
+						 errdetail("The key ranges need about %.0f MB of temporary files, %.0f MB are allowed. The btree reads %.0f of %u blocks, %.0f at random, at %.1f us (%s): %.2f s with %d process%s.",
 								   best->spool_mb, best->room_mb, best->reads, nblocks, best->random_reads, best->cost.random_us, how, best->btree_us / 1e6, participants, s),
 						 errhint("Candidates: %s.", candidates)));
 	else if (use)
 		ereport(NOTICE, (errmsg("sift_col index \"%s\": heap read through the btree \"%s\" in key order, no temporary files", sift_col_final_name(index), name),
-						 errdetail("%.0f of %u blocks are read, %.0f at random, at %.1f us (%s): %.0f s with %d process%s; key ranges %.0f MB, %.0f s; even at %.1f us.",
+						 errdetail("%.0f of %u blocks are read, %.0f at random, at %.1f us (%s): %.2f s with %d process%s; key ranges %.0f MB, %.2f s; even at %.1f us.",
 								   best->reads, nblocks, best->random_reads, best->cost.random_us, how, best->btree_us / 1e6, participants, s, best->spool_mb, best->spool_us / 1e6,
 								   best->break_even_us),
 						 errhint("Candidates: %s.", candidates)));
 	else
 		ereport(NOTICE, (errmsg("sift_col index \"%s\": key ranges are cheaper than reading the heap through a btree", sift_col_final_name(index)),
-						 errdetail("The btree \"%s\" reads %.0f of %u blocks, %.0f at random, at %.1f us (%s): %.0f s with %d process%s; key ranges %.0f MB, %.0f s; even at %.1f us.",
+						 errdetail("The btree \"%s\" reads %.0f of %u blocks, %.0f at random, at %.1f us (%s): %.2f s with %d process%s; key ranges %.0f MB, %.2f s; even at %.1f us.",
 								   name, best->reads, nblocks, best->random_reads, best->cost.random_us, how, best->btree_us / 1e6, participants, s, best->spool_mb, best->spool_us / 1e6,
 								   best->break_even_us),
 						 errhint("Candidates: %s.", candidates)));
