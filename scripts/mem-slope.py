@@ -29,7 +29,8 @@ LEAK_KB = 512              # kB the contexts of a backend may hold more after 60
 VARIANCE_ROWS, VARIANCE_PCT = 2.0, 0.15   # two runs of a case differ by at most max(2 B/row, 15%)
 RUNS = int(os.environ.get("MEM_SLOPE_RUNS", "2"))
 PAGE_KB = os.sysconf("SC_PAGE_SIZE") // 1024
-SETTINGS = f"set sift.async_maintenance='off'; set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
+ASYNC_OFF = "set sift.async_maintenance='off';\n"
+SETTINGS = ASYNC_OFF + f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.environ.get("MEM_SLOPE_TSV") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope.tsv")
 STATUSES, KINDS = ("clean", "open", "noise"), ("slope", "leak")
 os.environ["LC_ALL"] = "C"
@@ -104,7 +105,7 @@ def measure_mb(setup, warm, op):
 
 
 def build_tables(n):
-    script(f"""
+    script(ASYNC_OFF + f"""
 drop table if exists f{n}, d{n} cascade;
 create table f{n} as
 select g as id, g as k_hi, g % 5000 as k_mid, g % 10 as k_lo, (array['DE','FR','US','BR','JP','AR','CL','PE'])[1 + g % 8] as cat,
@@ -125,7 +126,7 @@ vacuum analyze d{n};
 
 
 def copy_table(n):
-    script(f"""
+    script(ASYNC_OFF + f"""
 drop table if exists m{n}, s{n} cascade;
 create table m{n} as select * from f{n};
 alter table m{n} add primary key (id);
