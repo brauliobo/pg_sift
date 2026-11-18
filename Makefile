@@ -405,6 +405,7 @@ TESTING_REGRESS += col_topn_text_offset
 TESTING_REGRESS += col_topn_trail
 TESTING_REGRESS += col_topn_unit_ends
 TESTING_REGRESS += col_topn_walk_price
+TESTING_REGRESS += col_track_baseline_blocks
 TESTING_REGRESS += col_track_ctid
 TESTING_REGRESS += col_track_ctid_chains
 TESTING_REGRESS += col_track_default
