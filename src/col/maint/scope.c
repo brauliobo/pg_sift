@@ -19,6 +19,7 @@
 #include "col/maint/maint_int.h"
 #include "col/order_sort.h"
 #include "col/scope.h"
+#include "core/hash.h"
 #include "core/limits.h"
 #include "core/membudget.h"
 
@@ -137,6 +138,24 @@ maint_scope_run_sort(ScopeRun *run, const SiftColBatch *b, uint32 from, uint32 t
 	}
 }
 
+/* Rows [from, to) of the batch of maint_scope_run_batch as maint_scope_run_sort takes them, but about one entry in stride of each scope goes to its sample (sift_colsort_sample_put_scoped); entries[s] counts all of them */
+static void
+run_sample(ScopeRun *run, const SiftColBatch *b, uint32 from, uint32 to, SiftColSorter **sorter, uint64 *entries, uint32 stride)
+{
+	for (int s = 0; s < run->r->nscope; s++)
+	{
+		const SiftCVals *fk = &b->col[sift_scope_fill_fk_leaf(run->sf, s)];
+		MemoryContext old = MemoryContextSwitchTo(run->slice);
+		uint32		n = sift_scope_fill_expand(run->sf, s, run->members[s] + from, fk->nulls ? fk->nulls + from / 64 : NULL, to - from,
+											   &run->row, &run->key, &run->cap);
+
+		MemoryContextSwitchTo(old);
+		for (uint32 e = 0; e < n; e = (uint32) sift_sample_next(e, stride))
+			sift_colsort_sample_put_scoped(sorter[s], b, from + run->row[e], run->r->scope_leaf[s], run->key[e], run->r->scope_cols[s]);
+		entries[s] += n;
+	}
+}
+
 /*
  * The run written (a promotion's rows): for each scope its rows sorted by the cut of the scope and cut into units of one key, with the fill of maint_scope_fill_begin. out has room for one segment of each
  * scope; the number of them is returned (a scope none of whose rows has a pair has none). The run is empty after it.
@@ -241,6 +260,53 @@ refill_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 /* The least the sorts of a refill hold between them, as the writer of a merge holds at least SIFT_COLW_MIN_BUDGET */
 #define SCOPE_SORT_MIN_KB	16384
 #define scope_sort_kb()		Max(maintenance_work_mem / 2, (int) sift_limit(scope_sort_min_kb, SCOPE_SORT_MIN_KB))
+
+/*
+ * The sorts of a refill go by key ranges when their rows would not fit their memory (col/order_sort.c): the keys the ranges are cut at, and the size of the rows, are those of a sample, the rows
+ * of REFILL_SAMPLE_UNITS units spread over the entity segments (REFILL_SAMPLE_ENTRIES of the entries of each go to the sample), before the rows are read; and the sample is not made when even
+ * the smallest entries of one for each row would fit (sift_colsort_may_range).
+ */
+#define REFILL_SAMPLE_UNITS		24
+#define REFILL_SAMPLE_ENTRIES	256
+
+static void
+refill_sample(Relation index, const SiftColRel *r, const SiftSegEntry *ents, int nents, uint64 rows, ScopeRun *run, SiftColSorter **sorter, MemoryContext cx, MemoryContext ucx)
+{
+	uint64		entries[SIFT_SCOPE_MAX] = {0},
+				sampled = 0;
+
+	for (int i = 0; i < nents; i++)
+	{
+		int			take = (int) ((int64) REFILL_SAMPLE_UNITS * (i + 1) / nents - (int64) REFILL_SAMPLE_UNITS * i / nents);
+		SiftColSegment *seg;
+		uint32		last = PG_UINT32_MAX;
+
+		if (take == 0)
+			continue;
+		seg = sift_cseg_open(index, &ents[i], cx);
+		for (int j = 0; j < take && seg->nsb > 0; j++)
+		{
+			uint32		u = (uint32) ((uint64) (2 * j + 1) * seg->nsb / (2 * take));
+			SiftColBatch *b;
+
+			if (u == last)
+				continue;
+			last = u;
+			MemoryContextReset(ucx);
+			b = sift_cbatch_create(ucx, r->schema);
+			MemoryContextSwitchTo(ucx);
+			sift_cseg_decode_unit(seg, u, b);
+			MemoryContextSwitchTo(cx);
+			maint_scope_run_batch(run, b);
+			for (uint32 from = 0; from < b->nrows; from += SCOPE_RUN_SLICE)
+				run_sample(run, b, from, Min(from + SCOPE_RUN_SLICE, b->nrows), sorter, entries, Max(b->nrows / REFILL_SAMPLE_ENTRIES, 1));
+			sampled += b->nrows;
+		}
+		sift_cseg_close(seg);
+	}
+	for (int s = 0; s < r->nscope && sampled > 0; s++)
+		sift_colsort_sample_end(sorter[s], (uint64) ((double) entries[s] * rows / sampled));
+}
 
 /* The segments a refill writes of one scope: the rows come sorted, and a segment is done when its writer holds its budget of memory (and the directory has room for another) */
 typedef struct ScopeOut
@@ -379,6 +445,8 @@ maint_scope_refill(Relation index, bool report)
 
 		sorter[s] = sift_colsort_begin(r->schema, cut, sift_scope_cut(r, s, cut), scope_sort_kb() / r->nscope);
 	}
+	if (sift_colsort_may_range(rows, scope_sort_kb() / r->nscope))
+		refill_sample(index, r, ents, nents, rows, run, sorter, cx, ucx);
 	for (int i = 0; i < nents; i++)
 	{
 		MemoryContext scx = AllocSetContextCreate(cx, "sift_col scope refill input", ALLOCSET_DEFAULT_SIZES);

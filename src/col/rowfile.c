@@ -9,6 +9,9 @@
 #include "col/compress.h"
 #include "col/rowfile.h"
 #include "col/rowpack.h"
+#include "core/varint.h"
+
+#define ROWFILE_VARINT_LEN	10
 
 struct SiftRowFile
 {
@@ -22,6 +25,7 @@ struct SiftRowFile
 	const char *at;				/* reading: the next row of blk, and the end of the rows it holds */
 	const char *end;
 	bool		reading;
+	bool		versions;		/* each row is preceded by the xmin and cmin of its version */
 };
 
 static int
@@ -31,12 +35,13 @@ rowfile_alg(void)
 }
 
 SiftRowFile *
-sift_rowfile_create(const SiftColSchema *sc, StringInfo scratch, bool file, Size block)
+sift_rowfile_create(const SiftColSchema *sc, StringInfo scratch, bool file, Size block, bool versions)
 {
 	SiftRowFile *f = palloc0(sizeof(SiftRowFile));
 
 	f->sc = sc;
 	f->block = block;
+	f->versions = versions;
 	f->cxt = CurrentMemoryContext;
 	f->scratch = scratch;
 	f->file = file ? BufFileCreateTemp(false) : NULL;
@@ -76,8 +81,14 @@ flush_block(SiftRowFile *f)
 }
 
 void
-sift_rowfile_put(SiftRowFile *f, const SiftColRow *row)
+sift_rowfile_put(SiftRowFile *f, const SiftColRow *row, uint32 xmin, uint32 cmin)
 {
+	if (f->versions)
+	{
+		enlargeStringInfo(&f->blk, 2 * ROWFILE_VARINT_LEN);
+		f->blk.len = (uint8 *) sift_put_varint((uint8 *) f->blk.data + f->blk.len, xmin) - (uint8 *) f->blk.data;
+		f->blk.len = (uint8 *) sift_put_varint((uint8 *) f->blk.data + f->blk.len, cmin) - (uint8 *) f->blk.data;
+	}
 	sift_colrow_pack(&f->blk, f->sc, row);
 	if (f->blk.len >= f->block)
 		flush_block(f);
@@ -120,7 +131,7 @@ next_block(SiftRowFile *f)
 }
 
 bool
-sift_rowfile_get(SiftRowFile *f, SiftColRow *row)
+sift_rowfile_get(SiftRowFile *f, SiftColRow *row, uint32 *xmin, uint32 *cmin)
 {
 	if (!f->reading)
 	{
@@ -136,6 +147,15 @@ sift_rowfile_get(SiftRowFile *f, SiftColRow *row)
 	}
 	if (f->at == f->end && !next_block(f))
 		return false;
+	if (f->versions)
+	{
+		uint64		x;
+
+		f->at = (const char *) sift_get_varint64_n((const uint8 *) f->at, (const uint8 *) f->end, &x);
+		*xmin = (uint32) x;
+		f->at = (const char *) sift_get_varint64_n((const uint8 *) f->at, (const uint8 *) f->end, &x);
+		*cmin = (uint32) x;
+	}
 	f->at = sift_colrow_unpack(f->at, f->sc, row);
 	return true;
 }

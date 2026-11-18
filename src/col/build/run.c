@@ -479,7 +479,7 @@ colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSe
 					allvisfrac;
 
 		table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
-		b->total_rows = tuples >= (double) PG_UINT64_MAX ? PG_UINT64_MAX : (uint64) tuples;
+		b->total_rows = b->entries = tuples >= (double) PG_UINT64_MAX ? PG_UINT64_MAX : (uint64) tuples;
 		b->share = b->total_rows / nslots;
 		b->heap_pages = pages;
 		b->nslots = nslots;
@@ -510,7 +510,7 @@ sift_colb_scan(ColBuild *b, Relation heap, IndexInfo *info)
 	MemoryContext old = MemoryContextSwitchTo(b->cxt);
 	double		tuples;
 
-	if (sift_col_key_cut(b->r))
+	if (sift_col_key_cut(b->r) || b->nscope > 0)
 		colb_spill_sample(b, heap, info);
 	tuples = table_index_build_scan(heap, b->index, info, false, true, build_cb, b, NULL);
 

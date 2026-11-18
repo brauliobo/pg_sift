@@ -297,6 +297,7 @@ TESTING_REGRESS += col_scope_alter_scope
 TESTING_REGRESS += col_scope_auto_rollup
 TESTING_REGRESS += col_scope_batch_entries
 TESTING_REGRESS += col_scope_build
+TESTING_REGRESS += col_scope_build_temp
 TESTING_REGRESS += col_scope_catalog_memo
 TESTING_REGRESS += col_scope_changed_pairs
 TESTING_REGRESS += col_scope_cols
