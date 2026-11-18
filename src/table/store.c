@@ -61,7 +61,10 @@ cache_xact(XactEvent event, void *arg)
 		}
 }
 
-/* The backend's caches go before its exit (the scans that the group reads keep between statements are not leaks to the leak check) */
+/*
+ * The backend's caches go before its exit (the scans that the group reads keep between statements are not leaks to the leak check). Before the shared memory exit, not at
+ * the process exit: the tombstone runs are inter-transaction temp files, which fd.c closes in its own before_shmem_exit callback since 19, and closing them again fails
+ */
 static void
 cache_exit(int code, Datum arg)
 {
@@ -73,7 +76,10 @@ cache_exit(int code, Datum arg)
 	retired = NIL;
 	hash_seq_init(&seq, cache_tab);
 	while ((e = hash_seq_search(&seq)) != NULL)
+	{
 		MemoryContextDelete(e->st->cxt);
+		hash_search(cache_tab, &e->relid, HASH_REMOVE, NULL);
+	}
 }
 
 SiftTblRel *
@@ -89,7 +95,7 @@ sift_tbl_rel(Relation rel)
 
 		cache_tab = hash_create("sift_table relations", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		RegisterXactCallback(cache_xact, NULL);
-		on_proc_exit(cache_exit, 0);
+		before_shmem_exit(cache_exit, 0);
 	}
 	e = hash_search(cache_tab, &relid, HASH_ENTER, &found);
 	/*

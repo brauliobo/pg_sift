@@ -31,7 +31,6 @@ array-append	src/col/build/run.c	pick[n++] = low;	two picks, the loop runs twice
 array-append	src/col/gorder.c	anc[nan++] = kv[i];	the anchors are counted first and the writer returns when there are more than the array holds
 array-append	src/col/gquant.c	pos[n++] = (uint8) i;	the loop runs over SIFT_GQ_MB positions, the array holds that many
 cast-after-product	src/col/keycols/gorder.c	if ((double) sift_cdict_parsed_bytes((Size) (ndistinct * Min(width, 255)), (uint32) Min(ndistinct, (double) UINT32_MAX)) > (double) sift_cdict_cache_budget() * CDICT_CODES_PCT / 100.0)	ndistinct is a double estimate, the cast truncates it
-cast-after-product	src/col/maint/maint.c	mem_kb = Max((uint64) (sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE) / 1024 / mem_ratio), Max(bytes / 1024 / PART_DIVISOR, (uint64) (PART_MIN_KB * MAINT_MEM_RATIO / mem_ratio)));	a double estimate of kilobytes, the cast truncates it
 array-append	src/col/maint/merge.c	all[nall++] = snap->segs[i];	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_MAX_SEGMENTS
 cast-after-product	src/col/maint/merge.c	live_rows = Max((uint64) (live_rows * share), 1);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_MAX_SEGMENTS
 cast-after-product	src/col/maint/merge.c	live_units += (uint64) (units * live);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_MAX_SEGMENTS

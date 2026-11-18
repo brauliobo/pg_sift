@@ -12,6 +12,7 @@
 #include "col/leafshm.h"
 #include "col/point.h"
 #include "col/hll.h"
+#include "col/colspool.h"
 #include "col/gorder.h"
 #include "col/setsum.h"
 #include "col/seg.h"
@@ -158,7 +159,7 @@ row_key_syntax(const char *value)
 {
 	const char *p = value;
 
-	(void) sift_cpagg_name_take(&p, ",;");
+	pfree(sift_cpagg_name_take(&p, ",;"));
 	return *p == '\0' ? NULL : "a single column: a composite key is not supported";
 }
 
@@ -220,11 +221,14 @@ key_order_syntax(const char *value)
 	name = sift_cpagg_name_take(&p, ",");
 	if (*name == '\0')
 		return "a column name, or 'group, key'";
+	pfree(name);
 	if (*p == ',')
 	{
 		p++;
-		if (*sift_cpagg_name_take(&p, ",") == '\0' || *p != '\0')
+		name = sift_cpagg_name_take(&p, ",");
+		if (*name == '\0' || *p != '\0')
 			return "at most two columns, 'group, key'";
+		pfree(name);
 	}
 	return NULL;
 }
@@ -337,10 +341,6 @@ sift_col_init(void)
 							 "A pass of sift.col_maintain(index) that merges the small segments left over the partitions of a key_cut index takes an eighth of max_wal_size at most, and this percent of it, "
 							 "so that it forces no checkpoint of its own; the next pass takes the rest. 0 does not limit the pass to a share.",
 							 &sift_col_auto_merge_wal_pct, 5.0, 0.0, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.col_build_key_ranges",
-							 "A serial sift_col build with key_cut of a large table writes runs that do not overlap in the key.",
-							 "The rows go to a temporary file for each stretch of the key (cut at quantiles of a sample of the table) while the table is scanned, and the stretches are written as runs in the order of the key, where the runs of the rows in table order each hold every key and wait for a rewrite. temp_file_limit and the free room of the temporary tablespaces bound it (a build that does not fit them writes the runs in table order). off: runs in table order.",
-							 &sift_col_build_key_ranges, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_pass_mb",
 							"Megabytes of overlapping runs one pass of sift.col_maintain(index) rewrites in a sift_col index.",
 							"A build leaves runs of rows sorted by the key_cut key, each as large as a partition and overlapping its neighbours in the key; the rewrite cuts them by key, "
@@ -413,6 +413,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_conn_fill",
 							"Testing: how the fill of the found flags of a connected index knows the keys of the parent: 1 reads the parent, 2 probes its btree, 0 takes the cheaper.",
 							NULL, &sift_test_conn_fill, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_conn_no_horizon",
+							 "Testing: the fill of the found flags of a connected index writes stamps without the insert horizon of the parent, as the segments written before it have.",
+							 NULL, &sift_test_conn_no_horizon, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_scope_patch",
 							 "Testing: a read of a scope key patches the members that changed, however many and whatever it costs, where it reads the entity path when that costs less.",
 							 NULL, &sift_test_scope_patch, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -470,6 +473,9 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_loose_inputs",
 							 "Testing: a merge reads every keyed input as cut another way: its rows are loaded and sorted, or sorted by the sort that spills, and none is a stream.",
 							 NULL, &sift_test_col_loose_inputs, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_merge_eager",
+							 "Testing: a merge of streams reads the first unit of every input before its first row, as before an input waited for the key range of its rows.",
+							 NULL, &sift_test_col_merge_eager, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_gorder_strings",
 							 "Testing: the global order of a text leaf keeps a copy of its strings (as before column format minor 42), not the dictionary codes of them.",
 							 NULL, &sift_test_col_gorder_strings, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -518,6 +524,12 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_merge_slices",
 							"Testing: slices the participants of the last parallel sift_col build merged in (0 = one process merged).",
 							NULL, &sift_test_col_merge_slices, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_scope_merges",
+							"Testing: merges of scope segments this session has written.",
+							NULL, &sift_test_col_scope_merges, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_scope_merge_limit",
+							"Testing: the merge of scope segments after this many of them (sift.test_col_scope_merges) stops with an error (0 = no limit).",
+							NULL, &sift_test_col_scope_merge_limit, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_temp_free_kb",
 							"Testing: kB of disk the temporary files of a sift_col build by key ranges may use, instead of what the temporary tablespaces have free (-1 = the disk).",
 							NULL, &sift_test_col_temp_free_kb, -1, -1, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
@@ -525,11 +537,41 @@ sift_col_init(void)
 							"Testing: blocks a parallel sift_col build reserves in front of its segments for the merge (-1 = by the statistics, 0 = none).",
 							NULL, &sift_test_col_gap_blocks, -1, -1, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_segment_kb",
-							"Testing: kB of memory a sift_col build's segment writer holds before the segment is cut (0 = by maintenance_work_mem).",
+							"Testing: kB of memory a sift_col build's segment writer holds before the segment is cut (0 = by maintenance_work_mem; a merge honors it too, but the one that ends a parallel build).",
 							NULL, &sift_test_col_segment_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_spill_run_kb",
 							"Testing: kB of memory a run of a sift_col build by key ranges may take (0 = 768 MB).",
 							NULL, &sift_test_col_spill_run_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_build_runs_overlap",
+							 "Testing: a sift_col build with key_cut writes the runs of the table's order, which overlap in the key, to leave a rewrite to do.",
+							 NULL, &sift_test_col_build_runs_overlap, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spill_bytes",
+							"Testing: bytes the temporary files of the last sift_col build by key ranges of this session took.",
+							NULL, &sift_test_col_spill_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spill_rows",
+							"Testing: rows the temporary files of the last sift_col build by key ranges of this session hold.",
+							NULL, &sift_test_col_spill_rows, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_layer",
+							"Testing: the layer over the cascade codecs of the chunks of a sift_col build by key ranges (0 = chosen from a sample, 1 cascade alone, 2 lz4, 3 zstd, 4 no compression).",
+							NULL, &sift_test_col_spool_layer, 0, 0, 4, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_chunk_rows",
+							"Testing: rows of a chunk of the temporary files of a sift_col build by key ranges (0 = from the memory the build gives them).",
+							NULL, &sift_test_col_spool_chunk_rows, 0, 0, 1 << 20, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_share_kb",
+							"Testing: kB of memory the chunks of all the key ranges of a sift_col build may hold, instead of the build's budget (0 = the budget).",
+							NULL, &sift_test_col_spool_share_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_unbounded",
+							"Testing: the chunks of a sift_col build by key ranges are as large as they can be and no memory limit writes them (a build that ignores its share).",
+							NULL, &sift_test_col_spool_unbounded, 0, 0, 1, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_used_rows",
+							"Testing: rows of a chunk of the last sift_col build by key ranges of this session (0 = its rows went to packed files).",
+							NULL, &sift_test_col_spool_used_rows, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_ranges",
+							"Testing: key ranges of the last sift_col build by key ranges of this session (each has a spool of chunks).",
+							NULL, &sift_test_col_spool_ranges, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_est_bytes",
+							"Testing: bytes the last sift_col build by key ranges of this session priced its chunks at.",
+							NULL, &sift_test_col_spool_est_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_no_present",
 							 "Testing: a sift_col build writes no presence leaf for the jsonb documents (the layout of an index made before 4.2).",
 							 NULL, &sift_test_col_no_present, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -700,14 +742,16 @@ key_order_expand(SiftColOptions **op)
 	const char *spec = (const char *) o + o->key_order;
 	bool		autochosen = strncmp(spec, "auto:", 5) == 0;
 	const char *p = autochosen ? spec + 5 : spec;
-	char	   *first = sift_cpagg_name_take(&p, ","),
-			   *last = first;
-	bool		two = *p == ',';
+	char	   *first,
+			   *last;
+	bool		two;
 	size_t		base = VARSIZE(o);
 	char	   *dst;
 
 	if (strcmp(spec, "off") == 0)
 		return;
+	first = last = sift_cpagg_name_take(&p, ",");
+	two = *p == ',';
 	if (two)
 	{
 		p++;
@@ -729,6 +773,9 @@ key_order_expand(SiftColOptions **op)
 	o->ko_auto = autochosen;
 	SET_VARSIZE(o, dst - (char *) o);
 	*op = o;
+	if (two)
+		pfree(last);
+	pfree(first);
 }
 
 /* The older name counts when the new one is empty (the strings live in the same bytea, so the offset is shared) */
@@ -737,6 +784,18 @@ alias_string(const SiftColOptions *o, int old, int *neu)
 {
 	if (old && *((const char *) o + old) && !(*neu && *((const char *) o + *neu)))
 		*neu = old;
+}
+
+/* the column track_changes names, without the quotes it was written in ("Order Id"): taken out once where the options are built, so that every reader has the name as it is */
+static void
+row_key_unquote(SiftColOptions *o)
+{
+	char	   *text = (char *) o + o->track_changes;
+	const char *p = text;
+	char	   *name = sift_cpagg_name_take(&p, "");
+
+	strcpy(text, name);
+	pfree(name);
 }
 
 bytea *
@@ -765,6 +824,8 @@ am_col_amoptions(Datum reloptions, bool validate)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("superunit must be 0 or between %d and %d", SIFT_SUPER_MIN_FAN, SIFT_SUPER_MAX_FAN)));
 	if (o && o->key_order && *((const char *) o + o->key_order))
 		key_order_expand(&o);
+	if (o && o->track_changes && *((const char *) o + o->track_changes) == '"')
+		row_key_unquote(o);
 	return (bytea *) o;
 }
 #ifdef SIFT_TESTING
@@ -873,21 +934,13 @@ sift_col_options_key_order_auto(Relation index)
 	return strncmp(sift_col_options_key_order(index), "auto:", 5) == 0;
 }
 
-static const char *
-row_key_text(Relation index)
+/* the column that track_changes names (am_col_amoptions took the quotes out of it) */
+const char *
+sift_col_options_row_key(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->track_changes ? (const char *) o + o->track_changes : "auto";
-}
-
-/* the column that track_changes names: its quotes ("Order Id") are not part of the name */
-const char *
-sift_col_options_row_key(Relation index)
-{
-	const char *p = row_key_text(index);
-
-	return *p == '"' ? sift_cpagg_name_take(&p, "") : p;
 }
 
 COL_OPT_STR(sift_col_options_connect, connect, "")

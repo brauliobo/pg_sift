@@ -57,6 +57,7 @@ extern PGDLLIMPORT char *sift_test_dsm_fail;
 extern char sift_dsm_test_build[16];
 /* Entry i of the directory of the tables (sift._test_dsm_entries): false past the last; a free entry has the handle DSM_HANDLE_INVALID */
 extern uint32 sift_dsm_test_magic(uint32 magic);
+extern void sift_dsm_test_leak_user(void);
 extern bool sift_dsm_entry(int i, const char **name, const char **build, uint64 *size, dsm_handle *handle, uint32 *users);
 
 #define SIFT_DSM_DEFERRED_MAX	8
