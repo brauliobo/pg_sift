@@ -1,7 +1,7 @@
 -- The merge of the scope segments ends. A scope key with more rows than a segment holds lies in several segments, and a merge of all of them writes it in as many again: that is the end state,
 -- not a reason to merge again. The merges that follow a CREATE INDEX CONCURRENTLY and sift.col_merge stopped only when no key lay in two segments, so a key too large for a segment (a segment
 -- is cut at the memory of its writer, or at the partition size of the bytes) was merged again and again, and the index grew with each merge. sift.test_col_scope_merge_limit stops a test
--- that does not end; the merges, segments and bytes below are exact.
+-- that does not end; the merges, segments and bytes below are exact: the indexes take the encodings only, as the bytes of LZ4 and zstd depend on the version of the library.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -34,7 +34,7 @@ SELECT s FROM sizes, LATERAL unnest(ARRAY[
 	format('SELECT load_events(1, %s)', n),
 	'VACUUM (FREEZE, ANALYZE) events',
 	'SET sift.test_col_scope_merges = 0',
-	'CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')',
+	'CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (compression = ''for+delta+rle+dict+alp+scale'', scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')',
 	format('SELECT %s AS rows, * FROM scope_state()', n),
 	'SET sift.test_col_scope_merges = 0',
 	'REINDEX INDEX CONCURRENTLY events_col',
@@ -47,7 +47,7 @@ RESET sift.test_col_segment_kb;
 TRUNCATE events;
 SELECT load_events(1, 30000);
 VACUUM (FREEZE, ANALYZE) events;
-CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (compression = 'for+delta+rle+dict+alp+scale', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 SELECT s FROM unnest(ARRAY[1000, 2000, 3000, 4000]) n, LATERAL unnest(ARRAY[
 	format('SELECT load_events(100000 + %s * 10, %s)', n, n),
 	'SELECT sift.col_promote(''events_col'')']) s ORDER BY n \gexec

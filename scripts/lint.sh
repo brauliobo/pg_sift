@@ -106,6 +106,7 @@ CHECKS+=(
 	'version-shape	! git grep -nE "version\(\).*cut -d[.] -f1-2|version\(\) ~ .\^\[0-9\]\+\[[.]\]\[0-9\]\+[$]." -- test'
 	'format-literals	scripts/check-format-literals.sh && scripts/check-format-literals.sh --selftest'
 	'expected-oracle	scripts/check-expected-oracle.py --selftest && scripts/check-expected-oracle.py'
+	'codec-bytes	scripts/check-codec-bytes.py --selftest && scripts/check-codec-bytes.py'
 	'affected-untracked	scripts/test-affected-untracked.sh'
 	'affected-wide	scripts/test-affected-wide.sh'
 	'gen-docs-skip	scripts/lint-cache.sh gen-docs-skip scripts bench/steps README.md -- scripts/test-gen-docs-skip.sh'

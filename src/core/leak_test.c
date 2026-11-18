@@ -94,6 +94,7 @@ sift_test_leak(PG_FUNCTION_ARGS)
 	{
 		TupleDesc	td = CreateTemplateTupleDesc(1);
 
+		TupleDescInitEntry(td, 1, "leaked", INT4OID, -1, 0);
 		sift_tupdesc_finalize(td);
 		td->tdrefcount = 1;		/* reference counted */
 		PinTupleDesc(td);		/* never released */
