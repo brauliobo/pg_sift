@@ -73,6 +73,7 @@ CHECKS+=(
 	'leakcheck	scripts/leakcheck.sh selftest'
 	'leak-hooks	scripts/check-leak-hooks.sh --selftest && scripts/check-leak-hooks.sh'
 	'raw-alloc	scripts/check-raw-alloc.sh'
+	'upper-paths	scripts/check-upper-paths.sh --selftest && scripts/check-upper-paths.sh'
 	'selftest-tools	scripts/lint-cache.sh selftest-tools scripts packaging bench/steps/cases.py bench/steps/cases -- bash -c '\''scripts/check-neutral.sh --selftest && scripts/package.sh --selftest && scripts/apt-install.sh --selftest && scripts/release.sh --selftest && scripts/plangate.sh --selftest && python3 -I bench/steps/cases.py cpus --selftest'\'
 	'tap-versions	v=$(sed -n "s/^default_version *= *.\(.*\).$/\1/p" pg_sift.control) && ! grep -nE "(extversion|version\(\)).*== *${v//./[.]}( |\"|$)" test/t/compat_*.sh'
 	'budgets	scripts/check-budgets.sh --selftest && scripts/check-budgets.sh'
