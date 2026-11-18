@@ -20,6 +20,7 @@ CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference 
 BOUNDED = "'sift cache unit buffers'"   # a fixed count of spare buffers (UNIT_KEEP of UNIT_KEEP_BYTES, col/seg/seg.c): it grows to its 16 MB while repeats find larger units, and no further
 DEFAULT_BUDGET_KB = 256 * 1024   # sift.backend_cache_kb at its default: what a normal workload holds is what -1 holds
 IDLE_CTX_KB = 1024        # kB its contexts may grow over the same statements
+IDLE_CACHE_KB = 4096      # sift.backend_cache_kb of the idle series: at the default 256 MB the caches fill about 1 kB a statement for the whole series (+620 kB over its last 1000 statements on one host, +1052 on a hosted one), which a window of 1000 statements does not tell from a leak; at 4 MB they are full long before it
 LEAK_KB = 512              # kB the contexts of a backend may hold more after 25 repeats than after 10
 SETTINGS = f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope-legacy.tsv")
@@ -293,6 +294,7 @@ def idle_series(rows, total, mode, db):
     q("set client_min_messages=warning; set max_parallel_workers_per_gather=0; set work_mem='4MB'")
     if mode != "plain":
         q("select sift._test_thp_disable()")
+        q(f"set sift.backend_cache_kb = {IDLE_CACHE_KB}")
     if mode == "off":
         q("set sift.enable_scan = off; set sift.enable_agg = off")
     for st in setup:
