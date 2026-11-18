@@ -25,6 +25,7 @@
 #include "col/test/test_int.h"
 #include "core/catname.h"
 #include "core/store.h"
+#include "core/store_test_int.h"
 
 #ifdef SIFT_TESTING
 PG_FUNCTION_INFO_V1(sift_test_col_gorder);
@@ -35,6 +36,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_formats);
 
 PG_FUNCTION_INFO_V1(sift_test_col_segment_keys);
 PG_FUNCTION_INFO_V1(sift_test_col_part_bounds);
+PG_FUNCTION_INFO_V1(sift_test_col_part_shift);
 
 PG_FUNCTION_INFO_V1(sift_test_col_mirror);
 
@@ -137,16 +139,50 @@ sift_test_col_segment_keys(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-/* Do the live rows of the segment lie from lo (NULL: no start) up to below hi (NULL: no end)? A segment with none lies anywhere */
-static bool
-rows_within(SiftColSegment *seg, const SiftBound *lo, const SiftBound *hi)
+typedef struct PartShift
 {
-	SiftBound	first,
-				last;
+	uint32		first;
+	uint32		n;
+	uint8		lo[SIFT_BOUND_BYTES];
+} PartShift;
 
-	if (!sift_colk_segment_bound(seg, false, &first) || !sift_colk_segment_bound(seg, true, &last))
-		return true;
-	return (lo == NULL || sift_bound_cmp(&first, lo) >= 0) && (hi == NULL || sift_bound_cmp(&last, hi) < 0);
+static void
+shift_partition(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	const PartShift *ps = arg;
+	uint64	   *gens = palloc(ps->n * sizeof(uint64));
+
+	for (uint32 i = 0; i < ps->n; i++)
+		gens[i] = dir->segs[ps->first + i].gen;
+	sift_dir_part_replace(gens, ps->n, &dir->segs[ps->first], ps->n, (const uint8 (*)[SIFT_BOUND_BYTES]) ps->lo);
+}
+
+/* sift._test_col_part_shift(index, k): records the lower bound of the partition k+1 as that of the partition k, which then starts above rows it holds: what the check of a partition's rows finds */
+Datum
+sift_test_col_part_shift(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), RowExclusiveLock, "sift_col");
+	int			k = PG_GETARG_INT32(1);
+	SiftDirSnapshot *snap = sift_dir_read(index);
+	SiftDirPart *part;
+	SiftSegEntry *segs;
+	SiftDirChain chain;
+	PartShift	ps;
+	int			np;
+
+	if (snap->nchain == 0)
+		elog(ERROR, "sift test: the directory of \"%s\" has no partitions", RelationGetRelationName(index));
+	(void) sift_dirchain_read(index, snap->chain[0], snap->version, 0, &segs, &chain);
+	np = sift_dirchain_parts(&chain, &part);
+	if (k < 0 || k + 1 >= np)
+		elog(ERROR, "sift test: partition %d has no partition after it (%d)", k, np);
+	ps = (PartShift) {.first = part[k].first,.n = part[k].n};
+	memcpy(ps.lo, part[k + 1].lo, SIFT_BOUND_BYTES);
+	MAINT_LOCK(index, ShareLock);
+	sift_dir_update(index, &(SiftDirChange) {.fn = shift_partition,.arg = &ps,.extra = InvalidBuffer});
+	MAINT_UNLOCK(index, ShareLock);
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
 }
 
 /* sift._test_col_part_bounds(index): for every partition of the directory chain, its entries and whether its lower bound is empty, whether the rows of its segments are all from it, and below the bound of the next partition */
@@ -180,8 +216,8 @@ sift_test_col_part_bounds(PG_FUNCTION_ARGS)
 			{
 				SiftColSegment *seg = sift_cseg_open(index, &segs[e], CurrentMemoryContext);
 
-				from_lo &= rows_within(seg, &lo, NULL);
-				below_next &= rows_within(seg, NULL, k + 1 < np ? &next : NULL);
+				from_lo &= sift_colk_rows_within(seg, &lo, NULL);
+				below_next &= sift_colk_rows_within(seg, NULL, k + 1 < np ? &next : NULL);
 				sift_cseg_close(seg);
 			}
 			initStringInfo(&text);

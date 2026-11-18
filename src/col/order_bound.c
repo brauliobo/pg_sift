@@ -96,6 +96,18 @@ sift_colk_segment_bound(SiftColSegment *seg, bool last, SiftBound *out)
 	return found;
 }
 
+/* Do the live rows of the segment lie from lo (NULL: no start) up to below hi (NULL: no end)? A segment with none lies anywhere */
+bool
+sift_colk_rows_within(SiftColSegment *seg, const SiftBound *lo, const SiftBound *hi)
+{
+	SiftBound	first,
+				last;
+
+	if (!sift_colk_segment_bound(seg, false, &first) || !sift_colk_segment_bound(seg, true, &last))
+		return true;
+	return (lo == NULL || sift_bound_cmp(&first, lo) >= 0) && (hi == NULL || sift_bound_cmp(&last, hi) < 0);
+}
+
 /* Row r of b against the bound: key by key, NULL last; equal on the leaves the bound has, the row is at it */
 int
 sift_colk_bound_cmp(const OrderCtx *ctx, const SiftColBatch *b, uint32 r, const BoundKey *bk)

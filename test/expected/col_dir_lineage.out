@@ -54,6 +54,35 @@ SELECT sift.col_verify('t_idx', true);
  
 (1 row)
 
+-- the rows of a segment lie within its partition: one that starts above rows it holds is damage col_verify names
+CREATE FUNCTION verify_says() RETURNS text LANGUAGE plpgsql AS $$
+DECLARE detail text;
+BEGIN
+	PERFORM sift.col_verify('t_idx', false);
+	RETURN 'sound';
+EXCEPTION WHEN OTHERS THEN
+	GET STACKED DIAGNOSTICS detail = PG_EXCEPTION_DETAIL;
+	RETURN CASE WHEN detail LIKE '%holds rows outside its partition%' THEN 'straddles' ELSE detail END;
+END $$;
+SELECT verify_says() AS before_the_bound_moves;
+ before_the_bound_moves 
+------------------------
+ sound
+(1 row)
+
+SELECT sift._test_col_part_shift('t_idx', 3);
+ _test_col_part_shift 
+----------------------
+ 
+(1 row)
+
+SELECT verify_says() AS after_the_bound_moves;
+ after_the_bound_moves 
+-----------------------
+ straddles
+(1 row)
+
+DROP FUNCTION verify_says();
 DROP TABLE t, before;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

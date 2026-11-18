@@ -84,6 +84,16 @@ sift_dir_part_replace(const uint64 *old, int nold, const SiftSegEntry *neu, int 
 				lin[m++] = p->lineage;
 		}
 	}
+	for (int i = 0; i < nold; i++)
+	{
+		SiftPartOf *gone = (SiftPartOf *) part_of(e, old[i]);
+
+		if (gone != NULL)
+			gone->gen = PG_UINT64_MAX;
+	}
+	qsort(e->of, e->n, sizeof(SiftPartOf), cmp_partof);
+	while (e->n > 0 && e->of[e->n - 1].gen == PG_UINT64_MAX)
+		e->n--;
 	for (int j = 0; j < nneu; j++)
 	{
 		uint64		id = neu[j].gen;

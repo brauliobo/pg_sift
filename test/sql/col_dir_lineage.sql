@@ -24,6 +24,20 @@ SELECT (SELECT count(*) FROM sift.col_segments('t_idx') WHERE kind = 'immutable'
 	count(DISTINCT lineage) = count(*) AS distinct_lineages, bool_and(lineage IN (SELECT lineage FROM before)) AS lineages_kept FROM sift._test_dir_parts('t_idx');
 SELECT count(*) AS partitions, count(*) FILTER (WHERE lo_empty) AS empty_bound, bool_and(rows_from_lo) AS rows_from_lo, bool_and(rows_below_next) AS rows_below_next FROM sift._test_col_part_bounds('t_idx');
 SELECT sift.col_verify('t_idx', true);
+-- the rows of a segment lie within its partition: one that starts above rows it holds is damage col_verify names
+CREATE FUNCTION verify_says() RETURNS text LANGUAGE plpgsql AS $$
+DECLARE detail text;
+BEGIN
+	PERFORM sift.col_verify('t_idx', false);
+	RETURN 'sound';
+EXCEPTION WHEN OTHERS THEN
+	GET STACKED DIAGNOSTICS detail = PG_EXCEPTION_DETAIL;
+	RETURN CASE WHEN detail LIKE '%holds rows outside its partition%' THEN 'straddles' ELSE detail END;
+END $$;
+SELECT verify_says() AS before_the_bound_moves;
+SELECT sift._test_col_part_shift('t_idx', 3);
+SELECT verify_says() AS after_the_bound_moves;
+DROP FUNCTION verify_says();
 DROP TABLE t, before;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

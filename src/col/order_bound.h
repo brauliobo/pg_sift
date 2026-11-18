@@ -31,6 +31,8 @@ extern void sift_colk_bound_pack(const OrderCtx *ctx, const BoundKey *bk, SiftBo
 extern void sift_colk_bound_unpack(const OrderCtx *ctx, const SiftBound *b, BoundKey *bk);
 /* The bound of the least live row of a segment cut by a key, or of its greatest (the leaves of its cut and, up to SIFT_BOUND_COMPS of them, the address): false when it has none or records no cut */
 extern bool sift_colk_segment_bound(SiftColSegment *seg, bool last, SiftBound *out);
+/* Do the live rows of the segment lie from lo (NULL: no start) up to below hi (NULL: no end)? */
+extern bool sift_colk_rows_within(SiftColSegment *seg, const SiftBound *lo, const SiftBound *hi);
 /* Row r of b against the bound: key by key, NULL last; equal on the leaves the bound has, the row is at it */
 extern int	sift_colk_bound_cmp(const OrderCtx *ctx, const SiftColBatch *b, uint32 r, const BoundKey *bk);
 /* The order of two bounds (qsort); a bound on fewer leaves holds the lowest key of the others */

@@ -21,10 +21,12 @@
 #include "utils/tuplesort.h"
 
 #include "col/am.h"
+#include "col/order_bound.h"
 #include "col/pg.h"
 #include "col/seg.h"
 #include "core/check.h"
 #include "core/cmp.h"
+#include "core/dirchain.h"
 #include "core/errctx.h"
 #include "core/ops.h"
 #include "core/membudget.h"
@@ -66,6 +68,8 @@ typedef struct ColVerify
 	SiftColRel *r;
 	MemoryContext cxt;
 	SiftDirSnapshot *snap;
+	SiftDirPart *parts;			/* the partitions of the directory's chain: their entries are those of snap from first on */
+	int			nparts;
 	SiftColBatch *batch;
 	Tuplesortstate *keys;
 	Tuplesortstate *rows;		/* the RowHash of every live entry, entities and scope segments */
@@ -503,6 +507,36 @@ step_store(void *arg)
 	cv->snap = sift_dir_read(cv->index);
 	if (!(cv->snap->meta.flags & SIFT_COL_META_FLAG) || sift_dir_layout_differs(cv->snap, cv->r->schema->hash))
 		corrupt(cv->index, "The metapage does not describe this column layout.");
+	if (cv->snap->nchain > 0)
+	{
+		SiftSegEntry *segs;
+		SiftDirChain chain;
+
+		(void) sift_dirchain_read(cv->index, cv->snap->chain[0], cv->snap->version, 0, &segs, &chain);
+		cv->nparts = sift_dirchain_parts(&chain, &cv->parts);
+	}
+}
+
+/* The rows of a segment of a partition lie from its lower bound up to below the bound of the next partition: a segment that straddles two is read by neither's bound */
+static void
+verify_partition(ColVerify *cv, const SiftSegEntry *e, SiftColSegment *seg)
+{
+	int			at = (int) (e - cv->snap->segs);
+
+	for (int k = 0; k < cv->nparts; k++)
+	{
+		const SiftDirPart *p = &cv->parts[k];
+		SiftBound	lo,
+					next;
+
+		if (at < (int) p->first || at >= (int) (p->first + p->n))
+			continue;
+		if (!sift_bound_unpack(p->lo, &lo) || (k + 1 < cv->nparts && !sift_bound_unpack(cv->parts[k + 1].lo, &next)))
+			corrupt(cv->index, "The lower bound of the partition " UINT64_FORMAT " is no bound.", p->lineage);
+		if (!sift_colk_rows_within(seg, &lo, k + 1 < cv->nparts ? &next : NULL))
+			corrupt(cv->index, "Segment %llu holds rows outside its partition " UINT64_FORMAT " of the key.", (unsigned long long) e->gen, p->lineage);
+		return;
+	}
 }
 
 static void
@@ -519,6 +553,7 @@ verify_immutable(ColVerify *cv, const SiftSegEntry *e)
 	if (scope && !sift_cseg_keyed(e))
 		corrupt(cv->index, "Scope segment %llu is not cut by key.", (unsigned long long) e->gen);
 	cv->ndocs += scope ? 0 : e->ndocs;
+	verify_partition(cv, e, seg);
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
 		sift_cseg_decode_unit(seg, u, cv->batch);
