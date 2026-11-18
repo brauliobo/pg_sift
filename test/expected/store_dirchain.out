@@ -281,6 +281,7 @@ SELECT sift._test_check('dr_idx') AS orphans;
 -- no free run below the limit: the update fails and the directory stays as it was
 SELECT sift._test_dir_edit('dr_idx', 'rechain', 3, 0);
 ERROR:  sift index "dr_idx" has no free block below block 3 for its directory
+HINT:  The pages of the directory move once the blocks released by earlier steps are reusable.
 SELECT nsegs, top_chain_block < 30 AS still_low FROM sift._test_dir_info('dr_idx');
  nsegs | still_low 
 -------+-----------
