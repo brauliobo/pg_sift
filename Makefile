@@ -550,7 +550,9 @@ TESTING_REGRESS += agg_preagg
 TESTING_REGRESS += agg_preagg_rows
 TESTING_REGRESS += agg_workers_few_units
 TESTING_REGRESS += col_build_peers
+TESTING_REGRESS += col_build_spool
 TESTING_REGRESS += col_build_spool_memory
+TESTING_REGRESS += col_build_spool_values
 TESTING_REGRESS += col_merge_memory
 ifdef SIFT_SB_SHIFT
 ifndef SIFT_TESTING
