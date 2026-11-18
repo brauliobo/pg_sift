@@ -105,6 +105,9 @@ extern PGDLLIMPORT bool sift_test_col_build_peak_log;	/* the largest contexts ar
 extern PGDLLIMPORT char *sift_test_vstore_columns;
 extern PGDLLIMPORT int sift_test_col_fail_sb;
 extern PGDLLIMPORT int sift_test_col_segment_kb;
+extern PGDLLIMPORT bool sift_test_col_from_index_off;	/* a REINDEX reads the heap even when the index it replaces could give the rows */
+extern PGDLLIMPORT int sift_test_col_from_index_mutant;	/* a defect planted in the build from the replaced index (col/build/from_index.c) */
+extern PGDLLIMPORT int sift_test_col_from_index_used;	/* 1: the last build of this session took its rows from the index it replaced */
 extern PGDLLIMPORT int sift_test_col_spill_run_kb;	/* kB of memory a run of the ranges of a build by key ranges may take (0 = the fixed cap) */
 extern PGDLLIMPORT bool sift_test_col_build_runs_overlap;	/* a build with key_cut writes the runs of the table's order, as a key that is not a number does */
 extern PGDLLIMPORT int sift_test_col_spill_bytes;	/* bytes the temporary files of the last build by key ranges of this session took */

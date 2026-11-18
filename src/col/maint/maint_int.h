@@ -126,11 +126,13 @@ extern int	maint_scope_run_write(ScopeRun *run, SiftWriteTarget *wt, SiftColFill
 typedef struct MergeSlice
 {
 	int			i;
-	int			nslices;
+	int			nslices;			/* 0: not a slice, the merge of a REINDEX whose partitions go to out */
 	SiftSegEntry *out;
 	const SiftColWindow *win;	/* the rows are those of the window (i 0, nslices 1): written as the max_parts segments asked for, of the bytes the window holds (0: all that the inputs hold) */
 	uint64		bytes;
 	int		   *nout;			/* the number of segments written to out (a window: up to max_parts of them) */
+	Relation	from;			/* the relation the first nfrom inputs are read from (the index a REINDEX replaces), the others are in the index the merge writes */
+	int			nfrom;
 } MergeSlice;
 
 extern int maint_merge_maxout(int max_parts, int n);

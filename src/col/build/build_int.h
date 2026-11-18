@@ -145,5 +145,6 @@ extern List *colb_btree_candidates(Relation index, Relation heap, const IndexInf
 extern BtPlan *colb_btree_plan(Relation heap, Relation index, IndexInfo *info, int participants);
 extern IndexBuildResult *colb_btree_build_par(Relation heap, Relation index, IndexInfo *info, const BtPlan *plan, int nworkers);
 extern double colb_btree_scan(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snap, Oid btree, const BtRange *range);
+extern IndexBuildResult *sift_colb_from_old(Relation heap, Relation index, IndexInfo *info);
 
 #endif

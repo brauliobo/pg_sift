@@ -291,6 +291,7 @@ TESTING_REGRESS += col_range_count_dirty
 TESTING_REGRESS += col_range_order
 TESTING_REGRESS += col_read_ahead
 TESTING_REGRESS += col_refresh
+TESTING_REGRESS += col_reindex_from_index
 TESTING_REGRESS += col_rewrite_cut
 TESTING_REGRESS += col_rewrite_roll
 TESTING_REGRESS += col_rollup_auto

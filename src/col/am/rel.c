@@ -448,6 +448,28 @@ sift_col_index_stale(Oid indexoid)
 	return stale;
 }
 
+/* The index with another file (the one REINDEX replaced): the relation entry over that file, with a state of its own; closed with sift_col_rel_file_view_close */
+Relation
+sift_col_rel_file_view(Relation index, const RelFileLocator *loc)
+{
+	Relation	view = palloc(sizeof(RelationData));
+
+	memcpy(view, index, sizeof(RelationData));
+	view->rd_locator = *loc;
+	view->rd_smgr = NULL;
+	view->rd_amcache = NULL;
+	view->rd_indexcxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col replaced file", ALLOCSET_SMALL_SIZES);
+	return view;
+}
+
+void
+sift_col_rel_file_view_close(Relation view)
+{
+	RelationCloseSmgr(view);
+	MemoryContextDelete(view->rd_indexcxt);
+	pfree(view);
+}
+
 SiftColRel *
 sift_col_rel(Relation index)
 {

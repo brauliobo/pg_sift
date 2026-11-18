@@ -13,6 +13,7 @@ col_build	src/col/build/build.c	serial_build	scoped
 col_build_spool	src/col/build/spill.c	colb_spill_batch	scoped
 col_conn_changed	src/col/conn.c	journal_keys	scoped
 col_fold_keys	src/col/maint/fold.c	sift_col_fold_marks	scoped
+col_from_index	src/col/build/from_index.c	build_from	scoped
 col_key_cut_cells	src/col/autocut/model.c	acut_units_read	scoped
 col_key_cut_decision	src/col/autocut/autocut.c	decide_stage	scoped
 col_key_cut_layout	src/col/autocut/size.c	acut_layout_bytes	scoped

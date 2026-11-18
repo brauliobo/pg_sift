@@ -1,0 +1,460 @@
+-- REINDEX of a sift_col index takes the rows from the index it replaces when it can give them (col/build/from_index.c): the heap is not read, no row goes
+-- to a temporary file, and the answers are those of a build from the heap at every state of the table (rows inserted, deleted and updated since the index was built, in the write
+-- buffer or in segments, vacuumed or not). Whatever the old index cannot give (no key, a scope, a rewrite of the table, rows this transaction has buffered) is built from the heap.
+-- sift.test_col_from_index_used says which; sift.test_col_from_index_off forces the heap, and sift.test_col_from_index_mutant plants a defect that a step must catch.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+SET sift.test_col_segment_kb = 64;
+SET sift.test_col_spill_run_kb = 64;
+CREATE TABLE ri_t (id int PRIMARY KEY, tenant_id int, k int, status smallint, created_at timestamptz, a_count int, kind text, label text)
+	WITH (autovacuum_enabled = false);
+CREATE FUNCTION ri_rows(lo int, hi int) RETURNS SETOF ri_t LANGUAGE sql AS $$
+	SELECT i, i % 40, (i::bigint * 7919 % 3000)::int, (i % 5)::smallint, timestamptz '2026-01-01' + (i * 37 % 100000) * interval '1 minute', i % 11, 'kind_' || (i % 9),
+		'label ' || (i % 300)
+	FROM generate_series(lo, hi) i $$;
+INSERT INTO ri_t SELECT * FROM ri_rows(1, 6000);
+VACUUM (FREEZE, ANALYZE) ri_t;
+CREATE INDEX ri_idx ON ri_t USING sift_col (id, tenant_id, k, status, created_at, a_count, kind, label) WITH (key_cut = 'k', track_changes = 'off');
+-- the answers by the index and by the table, which a build from the old index must not change
+CREATE FUNCTION ri_answers(by_index bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text := ''; a text; q text;
+BEGIN
+	FOREACH q IN ARRAY ARRAY['SELECT count(*), sum(a_count), min(label), max(created_at) FROM ri_t WHERE k = 42',
+		'SELECT status, count(*), sum(a_count) FROM ri_t WHERE k < 200 GROUP BY 1 ORDER BY 1', 'SELECT count(*), sum(id), sum(k) FROM ri_t',
+		'SELECT tenant_id, count(*) FROM ri_t WHERE k BETWEEN 1000 AND 1100 GROUP BY 1 ORDER BY 1', 'SELECT kind, count(*) FROM ri_t WHERE k < 500 GROUP BY 1 ORDER BY 1'] LOOP
+		IF by_index THEN
+			SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL sift.enable_agg = on;
+		ELSE
+			SET LOCAL enable_seqscan = on; SET LOCAL sift.enable_agg = off;
+		END IF;
+		EXECUTE 'SELECT string_agg(x::text, E''\n'') FROM (' || q || ') x' INTO a;
+		r := r || md5(a);
+	END LOOP;
+	RETURN md5(r);
+END $$;
+-- what one REINDEX did: the build it took, the passes over the table's pages (accesses of its buffers over its pages), the bytes of temporary files, and the answers of the index against the table's
+CREATE TABLE ri_mark (heap_buffers bigint, temp_bytes bigint);
+CREATE FUNCTION ri_start() RETURNS void LANGUAGE sql AS $$
+	TRUNCATE ri_mark;
+	INSERT INTO ri_mark SELECT coalesce((SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relname = 'ri_t'), 0),
+		(SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database()) $$;
+CREATE FUNCTION ri_note(step text, idx text DEFAULT 'ri_idx') RETURNS TABLE (step text, build text, table_passes int, spill_bytes bigint, verified bool, same_answers bool)
+	LANGUAGE sql AS $$
+	SELECT step, CASE current_setting('sift.test_col_from_index_used') WHEN '1' THEN 'old index' ELSE 'heap' END,
+		round((coalesce((SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relname = 'ri_t'), 0) - m.heap_buffers) / (pg_relation_size('ri_t') / 8192.0))::int,
+		(SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database()) - m.temp_bytes,
+		sift.col_verify(idx::regclass, true)::text = '', ri_answers(true) = ri_answers(false)
+	FROM ri_mark m $$;
+-- the build of the table's rows, the baseline
+SELECT pg_stat_force_next_flush() \gset
+SELECT ri_start();
+ ri_start 
+----------
+ 
+(1 row)
+
+SET sift.test_col_from_index_off = on;
+REINDEX INDEX ri_idx;
+RESET sift.test_col_from_index_off;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ri_note('heap build');
+    step    | build | table_passes | spill_bytes | verified | same_answers 
+------------+-------+--------------+-------------+----------+--------------
+ heap build | heap  |            2 |      152829 | t        | t
+(1 row)
+
+-- a clean index
+SELECT pg_stat_force_next_flush() \gset
+SELECT ri_start();
+ ri_start 
+----------
+ 
+(1 row)
+
+REINDEX INDEX ri_idx;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ri_note('clean');
+ step  |   build   | table_passes | spill_bytes | verified | same_answers 
+-------+-----------+--------------+-------------+----------+--------------
+ clean | old index |            0 |           0 | t        | t
+(1 row)
+
+-- rows inserted since the build, in the write buffer
+INSERT INTO ri_t SELECT * FROM ri_rows(6001, 6800);
+SELECT pg_stat_force_next_flush() \gset
+SELECT ri_start();
+ ri_start 
+----------
+ 
+(1 row)
+
+REINDEX INDEX ri_idx;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ri_note('inserted, buffered');
+        step        |   build   | table_passes | spill_bytes | verified | same_answers 
+--------------------+-----------+--------------+-------------+----------+--------------
+ inserted, buffered | old index |            0 |           0 | t        | t
+(1 row)
+
+-- rows deleted and updated (their key and others), still in the segments the build wrote
+DELETE FROM ri_t WHERE id % 13 = 0;
+UPDATE ri_t SET k = (k + 7) % 3000 WHERE id % 17 = 1;
+UPDATE ri_t SET a_count = a_count + 1, label = 'moved ' || id WHERE id % 19 = 2;
+SELECT pg_stat_force_next_flush() \gset
+SELECT ri_start();
+ ri_start 
+----------
+ 
+(1 row)
+
+REINDEX INDEX ri_idx;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ri_note('deleted and updated, buffered');
+             step              |   build   | table_passes | spill_bytes | verified | same_answers 
+-------------------------------+-----------+--------------+-------------+----------+--------------
+ deleted and updated, buffered | old index |            0 |           0 | t        | t
+(1 row)
+
+-- the same changes, promoted into segments
+INSERT INTO ri_t SELECT * FROM ri_rows(6801, 7600);
+DELETE FROM ri_t WHERE id % 23 = 0;
+SELECT sift.col_promote('ri_idx') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT pg_stat_force_next_flush() \gset
+SELECT ri_start();
+ ri_start 
+----------
+ 
+(1 row)
+
+REINDEX INDEX ri_idx;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ri_note('deleted and inserted, promoted');
+              step              |   build   | table_passes | spill_bytes | verified | same_answers 
+--------------------------------+-----------+--------------+-------------+----------+--------------
+ deleted and inserted, promoted | old index |            0 |           0 | t        | t
+(1 row)
+
+-- changes in the buffer over changes in segments, then VACUUM (the dead rows of the table go, the index keeps the entries it has not been asked to drop)
+INSERT INTO ri_t SELECT * FROM ri_rows(7601, 8000);
+UPDATE ri_t SET k = (k + 11) % 3000 WHERE id % 29 = 3;
+DELETE FROM ri_t WHERE id % 31 = 0;
+VACUUM ri_t;
+SELECT pg_stat_force_next_flush() \gset
+SELECT ri_start();
+ ri_start 
+----------
+ 
+(1 row)
+
+REINDEX INDEX ri_idx;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ri_note('buffered over segments, vacuumed');
+               step               |   build   | table_passes | spill_bytes | verified | same_answers 
+----------------------------------+-----------+--------------+-------------+----------+--------------
+ buffered over segments, vacuumed | old index |            0 |           0 | t        | t
+(1 row)
+
+-- the rows of a table that the VACUUM of the index has not seen: updated and deleted after the last VACUUM
+UPDATE ri_t SET a_count = a_count + 2 WHERE id % 37 = 4;
+DELETE FROM ri_t WHERE id % 41 = 0;
+SELECT pg_stat_force_next_flush() \gset
+SELECT ri_start();
+ ri_start 
+----------
+ 
+(1 row)
+
+REINDEX INDEX ri_idx;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ri_note('not vacuumed');
+     step     |   build   | table_passes | spill_bytes | verified | same_answers 
+--------------+-----------+--------------+-------------+----------+--------------
+ not vacuumed | old index |            0 |           0 | t        | t
+(1 row)
+
+-- REINDEX CONCURRENTLY is built from the heap: its writers change the index it would read
+INSERT INTO ri_t SELECT * FROM ri_rows(8001, 8600);
+DELETE FROM ri_t WHERE id % 43 = 0;
+SELECT pg_stat_force_next_flush() \gset
+SELECT ri_start();
+ ri_start 
+----------
+ 
+(1 row)
+
+REINDEX INDEX CONCURRENTLY ri_idx;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ri_note('concurrently, buffered');
+          step          | build | table_passes | spill_bytes | verified | same_answers 
+------------------------+-------+--------------+-------------+----------+--------------
+ concurrently, buffered | heap  |            3 |      185181 | t        | t
+(1 row)
+
+SELECT sift.col_promote('ri_idx') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+UPDATE ri_t SET k = (k + 3) % 3000 WHERE id % 47 = 5;
+SELECT pg_stat_force_next_flush() \gset
+SELECT ri_start();
+ ri_start 
+----------
+ 
+(1 row)
+
+REINDEX INDEX CONCURRENTLY ri_idx;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ri_note('concurrently, promoted');
+          step          | build | table_passes | spill_bytes | verified | same_answers 
+------------------------+-------+--------------+-------------+----------+--------------
+ concurrently, promoted | heap  |            3 |      185560 | t        | t
+(1 row)
+
+-- an index that tracks changes (the table has a primary key) reads the table for the baseline of its log, one access of each page that is not all-visible, and for nothing else
+CREATE INDEX ri_tracked ON ri_t USING sift_col (id, tenant_id, k, status) WITH (key_cut = 'k');
+SELECT pg_stat_force_next_flush() \gset
+SELECT ri_start();
+ ri_start 
+----------
+ 
+(1 row)
+
+REINDEX INDEX ri_tracked;
+SELECT pg_stat_force_next_flush() \gset
+SELECT current_setting('sift.test_col_from_index_used') AS used,
+	(SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relname = 'ri_t') - m.heap_buffers <= pg_relation_size('ri_t') / 8192 + 1 AS reads_each_page_once_and_the_map
+	FROM ri_mark m;
+ used | reads_each_page_once_and_the_map 
+------+----------------------------------
+ 1    | t
+(1 row)
+
+DROP INDEX ri_tracked;
+-- a build from the heap for what the old index cannot give
+-- rows this transaction has buffered are not in the index that is replaced
+BEGIN;
+INSERT INTO ri_t SELECT * FROM ri_rows(9001, 9100);
+REINDEX INDEX ri_idx;
+SELECT current_setting('sift.test_col_from_index_used') AS used_with_own_rows;
+ used_with_own_rows 
+--------------------
+ 1
+(1 row)
+
+SELECT ri_answers(true) = ri_answers(false) AS own_rows_indexed;
+ own_rows_indexed 
+------------------
+ t
+(1 row)
+
+COMMIT;
+SELECT sift.col_verify('ri_idx', true)::text = '' AS verified, ri_answers(true) = ri_answers(false) AS same_answers;
+ verified | same_answers 
+----------+--------------
+ t        | t
+(1 row)
+
+-- a table that this transaction rewrote has no rows at the addresses the old index holds
+BEGIN;
+ALTER TABLE ri_t ALTER COLUMN label TYPE varchar(100);
+SELECT current_setting('sift.test_col_from_index_used') AS used_after_rewrite;
+ used_after_rewrite 
+--------------------
+ 0
+(1 row)
+
+COMMIT;
+SELECT sift.col_verify('ri_idx', true)::text = '' AS verified, ri_answers(true) = ri_answers(false) AS same_answers;
+ verified | same_answers 
+----------+--------------
+ t        | t
+(1 row)
+
+-- no key: the segments are taken in the order the old index holds them (the old index is read as it is)
+CREATE INDEX ri_plain ON ri_t USING sift_col (id, k, status);
+REINDEX INDEX ri_plain;
+SELECT current_setting('sift.test_col_from_index_used') AS used_unkeyed;
+ used_unkeyed 
+--------------
+ 1
+(1 row)
+
+DROP INDEX ri_plain;
+-- key_order is a key too
+CREATE INDEX ri_ordered ON ri_t USING sift_col (id, k, status, created_at) WITH (key_order = 'created_at');
+DELETE FROM ri_t WHERE id % 53 = 0;
+INSERT INTO ri_t SELECT * FROM ri_rows(9101, 9400);
+REINDEX INDEX ri_ordered;
+SELECT current_setting('sift.test_col_from_index_used') AS used_key_order;
+ used_key_order 
+----------------
+ 1
+(1 row)
+
+SELECT sift.col_verify('ri_ordered', true)::text = '' AS verified;
+ verified 
+----------
+ t
+(1 row)
+
+DROP INDEX ri_ordered;
+-- a mutant that leaves the write buffer out loses the rows of the buffer: a step that cannot tell it from the build has no value
+INSERT INTO ri_t SELECT * FROM ri_rows(9401, 9700);
+SET sift.test_col_from_index_mutant = 1;
+SELECT ri_start();
+ ri_start 
+----------
+ 
+(1 row)
+
+REINDEX INDEX ri_idx;
+RESET sift.test_col_from_index_mutant;
+SELECT current_setting('sift.test_col_from_index_used') AS used_with_mutant;
+ used_with_mutant 
+------------------
+ 1
+(1 row)
+
+SELECT ri_answers(true) = ri_answers(false) AS same_answers_with_rows_left_out;
+ same_answers_with_rows_left_out 
+---------------------------------
+ f
+(1 row)
+
+SET sift.test_col_from_index_off = on;
+REINDEX INDEX ri_idx;
+RESET sift.test_col_from_index_off;
+SELECT ri_answers(true) = ri_answers(false) AS same_answers_after_a_build_from_the_heap;
+ same_answers_after_a_build_from_the_heap 
+------------------------------------------
+ t
+(1 row)
+
+DROP TABLE ri_t CASCADE;
+DROP TABLE ri_mark;
+DROP FUNCTION ri_start();
+DROP FUNCTION ri_note(text, text);
+DROP FUNCTION ri_answers(bool);
+-- an index that tracks changes answers without the heap for the rows whose inserters it knows committed before the snapshot (the stamp of each segment) and what was deleted (the log):
+-- the rows the old index gave keep their stamps and the log is the build's own, so the read after REINDEX is as free of the heap as it was and gives the table's rows
+CREATE TABLE events (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int, label text) WITH (autovacuum_enabled = false, fillfactor = 100);
+INSERT INTO events SELECT i, i % 10, i, 'x' FROM generate_series(1, 20000) i;
+CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id', key_cut = 'tenant_id');
+VACUUM events;
+CREATE FUNCTION answer(want_sift bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.events_sums_with_plan_check(want_sift) $$;
+CREATE FUNCTION pages() RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.events_heap_pages() $$;
+CREATE FUNCTION chk(what text, OUT test text, OUT build text, OUT same_as_heap_check bool, OUT same_as_no_sift bool, OUT free_reads_heap bool)
+LANGUAGE plpgsql AS $$
+DECLARE free_ans text; checked text; oracle text; pf int;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.test_no_heapfree', 'off', true);
+	free_ans := answer(true);
+	pf := pages();
+	PERFORM set_config('sift.test_no_heapfree', 'on', true);
+	checked := answer(true);
+	PERFORM set_config('sift.test_no_heapfree', 'off', true);
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	oracle := answer(false);
+	test := what;
+	build := CASE current_setting('sift.test_col_from_index_used') WHEN '1' THEN 'old index' ELSE 'heap' END;
+	same_as_heap_check := free_ans = checked;
+	same_as_no_sift := free_ans = oracle;
+	free_reads_heap := pf > 0;
+END $$;
+SELECT * FROM chk('fresh build');
+    test     | build | same_as_heap_check | same_as_no_sift | free_reads_heap 
+-------------+-------+--------------------+-----------------+-----------------
+ fresh build | heap  | t                  | t               | f
+(1 row)
+
+DELETE FROM events WHERE id % 97 = 0;
+UPDATE events SET counter_a = counter_a + 5, tenant_id = (tenant_id + 1) % 10 WHERE id % 89 = 1;
+INSERT INTO events SELECT i, i % 10, i, 'y' FROM generate_series(20001, 20800) i;
+BEGIN; INSERT INTO events SELECT i, i % 10, i, 'z' FROM generate_series(30001, 30200) i; ROLLBACK;
+REINDEX INDEX events_c;
+SELECT * FROM chk('deleted, updated, inserted, an insert rolled back; REINDEX');
+                            test                            |   build   | same_as_heap_check | same_as_no_sift | free_reads_heap 
+------------------------------------------------------------+-----------+--------------------+-----------------+-----------------
+ deleted, updated, inserted, an insert rolled back; REINDEX | old index | t                  | t               | f
+(1 row)
+
+SELECT sift.col_promote('events_c') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO events SELECT i, i % 10, i, 'w' FROM generate_series(20801, 21000) i;
+DELETE FROM events WHERE id % 101 = 0;
+REINDEX INDEX CONCURRENTLY events_c;
+SELECT * FROM chk('promoted, then more writes; REINDEX CONCURRENTLY');
+                       test                       | build | same_as_heap_check | same_as_no_sift | free_reads_heap 
+--------------------------------------------------+-------+--------------------+-----------------+-----------------
+ promoted, then more writes; REINDEX CONCURRENTLY | heap  | t                  | t               | t
+(1 row)
+
+REINDEX INDEX events_c;
+SELECT count(*) = count(stamp) AS every_segment_stamped FROM sift.col_stamps('events_c');
+ every_segment_stamped 
+-----------------------
+ t
+(1 row)
+
+SELECT sift.col_verify('events_c', true)::text = '' AS verified;
+ verified 
+----------
+ t
+(1 row)
+
+-- a mutant that leaves out the rows of the write buffer (the stamp mutant, which vouches for inserters it never saw finish, is held by col_reindex_from_index_writers)
+CREATE FUNCTION ri_writes(lo int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	INSERT INTO events SELECT i, i % 10, i, 'v' FROM generate_series(lo, lo + 499) i;
+	DELETE FROM events WHERE id % 103 = 0;
+END $$;
+SELECT ri_writes(21001);
+ ri_writes 
+-----------
+ 
+(1 row)
+
+BEGIN; INSERT INTO events SELECT i, i % 10, i, 'z' FROM generate_series(40001, 40300) i; ROLLBACK;
+SET sift.test_col_from_index_mutant = 1;
+REINDEX INDEX events_c;
+RESET sift.test_col_from_index_mutant;
+SELECT * FROM chk('mutant 1: the write buffer left out');
+                test                 |   build   | same_as_heap_check | same_as_no_sift | free_reads_heap 
+-------------------------------------+-----------+--------------------+-----------------+-----------------
+ mutant 1: the write buffer left out | old index | t                  | f               | f
+(1 row)
+
+SET sift.test_col_from_index_off = on;
+REINDEX INDEX events_c;
+RESET sift.test_col_from_index_off;
+SELECT * FROM chk('a build from the heap after the mutant');
+                  test                  | build | same_as_heap_check | same_as_no_sift | free_reads_heap 
+----------------------------------------+-------+--------------------+-----------------+-----------------
+ a build from the heap after the mutant | heap  | t                  | t               | f
+(1 row)
+
+DROP FUNCTION ri_writes(int);
+DROP FUNCTION answer(bool);
+DROP FUNCTION pages();
+DROP FUNCTION chk(text);
+DROP TABLE events;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

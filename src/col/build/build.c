@@ -186,11 +186,14 @@ static IndexBuildResult *
 build_index(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res = NULL;
+	Oid			buffered;
 	bool		chosen,
-				scoped;
+				scoped,
+				heap_only;
 	BtPlan	   *plan = NULL;
 
-	/* the build reads the heap, which holds the rows this transaction has buffered for the index */
+	/* the build reads the heap, which holds the rows this transaction has buffered for the index: a build from the old index has not got them */
+	heap_only = sift_cwbuf_pending(&buffered) && buffered == RelationGetRelid(index);
 	sift_cwbuf_discard(RelationGetRelid(index));
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table"),
@@ -240,7 +243,9 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 		sift_scope_start(heap, index, true);
 		PushActiveSnapshot(GetLatestSnapshot());
 	}
-	if (sift_col_key_cut(sift_col_rel(index)) && !sift_col_journal_empty)
+	if (!heap_only)
+		res = sift_colb_from_old(heap, index, info);
+	if (res == NULL && sift_col_key_cut(sift_col_rel(index)) && !sift_col_journal_empty)
 	{
 		/* a scope index builds the families of its scopes in the one process that scans */
 		bool		par = info->ii_ParallelWorkers > 0 && sift_scope_specs(index) == NULL;
