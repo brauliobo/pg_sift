@@ -224,11 +224,13 @@ leak_before() {
 # leak_wait_backends DATA DB: until no client backend of DB is left in the cluster. A backend leaves the process table after its exit
 # callbacks, the sift leak report among them, and not before: pg_stat_activity forgets it earlier
 leak_wait_backends() {
-	local pm pids
+	local pm pids args
 	pm=$(head -1 "$1/postmaster.pid")
 	for _ in $(seq 600); do
 		pids=$(pgrep -P "$pm" | paste -sd, -)
-		[[ -z $pids ]] || ps -o args= -p "$pids" | grep -q "^postgres: [^ ]* $2 " || return 0
+		[[ -z $pids ]] && return 0
+		args=$(ps -o args= -p "$pids" || true)
+		grep -q "^postgres: [^ ]* $2 " <<<"$args" || return 0
 		sleep 0.05
 	done
 	leak_finding "a backend of database $2 still runs after 30 s"
