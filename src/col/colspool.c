@@ -15,7 +15,7 @@
 #include "col/kern.h"
 
 #define CHUNK_ROWS_MIN	512				/* below it the chunks lose what the columns gain from many rows: the rows go to the row file */
-#define CHUNK_ROWS_MAX	16384
+#define CHUNK_ROWS_MAX	Min(16384, SIFT_COL_UNIT_MAX_ROWS)	/* a chunk is a unit record: no more rows than a unit holds (2,328 on the 8-page test flavour) */
 #define PROBE_ROWS		4096			/* the rows whose memory the plan measures */
 #define PICK_ROWS		2048			/* the rows whose chunk the plan encodes with each layer, to pick one */
 #define PRICE_ROWS		4096			/* the rows whose chunks, with the layer picked, price the files */
@@ -23,6 +23,8 @@
 #define DICT_CAP_MAX	((Size) 256 << 10)
 #define DICT_MEM_FACTOR	3				/* what a dictionary holds in memory for each byte of its strings: the strings, their offsets and the table */
 #define LAYER_GAIN_PCT	20				/* a layer is used when the sample's chunks are at least this much smaller with it than without */
+
+StaticAssertDecl(CHUNK_ROWS_MIN <= CHUNK_ROWS_MAX, "a unit holds fewer rows than the smallest spool chunk");
 
 #ifdef SIFT_TESTING
 int			sift_test_col_spool_layer = 0;
