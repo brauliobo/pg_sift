@@ -128,6 +128,15 @@ extern PGDLLIMPORT int sift_test_col_pick_entries;
 extern PGDLLIMPORT int sift_test_col_pick_blocks;
 extern PGDLLIMPORT int sift_test_col_pick_reads;
 extern PGDLLIMPORT int sift_test_col_pick_random;
+extern PGDLLIMPORT int sift_test_col_pick_walk_bytes;	/* the bytes the walk of the last choice held: the simulated cache and the keys of the boundaries */
+extern PGDLLIMPORT int sift_test_col_pick_spool_bytes;	/* the bytes the last choice estimated the key ranges write */
+extern PGDLLIMPORT int sift_test_col_pick_probe_random_ns;	/* what the last choice measured a random read and a block of a sequential read of the heap to cost, in ns, and the blocks read from the disk */
+extern PGDLLIMPORT int sift_test_col_pick_probe_seq_ns;
+extern PGDLLIMPORT int sift_test_col_pick_probe_reads;
+extern PGDLLIMPORT double sift_test_col_pick_random_us;	/* the costs the choice is made at, in microseconds (-1: measured), and a MB of the key ranges' files in one direction */
+extern PGDLLIMPORT double sift_test_col_pick_seq_us;
+extern PGDLLIMPORT double sift_test_col_pick_temp_mb_us;
+extern void sift_col_btree_test_gucs(void);
 extern PGDLLIMPORT int sift_test_col_gap_blocks;	/* blocks a parallel build reserves for the merge (-1 = by the statistics, 0 = none) */
 #endif
 

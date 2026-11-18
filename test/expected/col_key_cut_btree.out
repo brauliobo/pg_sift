@@ -213,6 +213,75 @@ SELECT bt_build('bt_gate', 1) AS invalid_btree;
 (1 row)
 
 UPDATE pg_index SET indisvalid = true WHERE indexrelid = 'bt_gate_prefix'::regclass;
+-- the choice follows the cost of a read, which is the disk's: a table the key ranges win at 80 microseconds a random read goes through the btree when a read costs what the
+-- key ranges' rows cost to write, and back
+SET sift.test_col_pick_random_us = 0.5;
+SET sift.test_col_pick_seq_us = 0.5;
+SELECT 'bt_noisy' AS tbl, bt_build('bt_noisy', 0) AS path;
+   tbl    | path  
+----------+-------
+ bt_noisy | btree
+(1 row)
+
+SELECT 'bt_random' AS tbl, bt_build('bt_random', 0) AS path;
+    tbl    | path  
+-----------+-------
+ bt_random | btree
+(1 row)
+
+SET sift.test_col_pick_random_us = 80;
+SET sift.test_col_pick_seq_us = 10;
+SELECT 'bt_noisy' AS tbl, bt_build('bt_noisy', 0) AS path;
+   tbl    |  path  
+----------+--------
+ bt_noisy | ranges
+(1 row)
+
+-- the bytes the choice expects the key ranges to write are what they write (within a factor of two: it prices rows of superblocks spread over the table, the build the first run's)
+SELECT bt_build('bt_random', -1) AS path, current_setting('sift.test_col_spill_bytes')::int AS spilled \gset
+SELECT bt_build('bt_random', 0) AS path;
+  path  
+--------
+ ranges
+(1 row)
+
+SELECT current_setting('sift.test_col_pick_spool_bytes')::int BETWEEN :spilled / 2 AND :spilled * 2 AS spool_priced_within_two;
+ spool_priced_within_two 
+-------------------------
+ t
+(1 row)
+
+-- when the key ranges' files do not fit temp_file_limit or the temporary tablespaces the build reads the heap through a btree that can, whatever it costs; without one it is refused
+SET sift.test_col_temp_free_kb = 100;
+SELECT 'bt_random' AS tbl, bt_build('bt_random', 0) AS path;
+    tbl    | path  
+-----------+-------
+ bt_random | btree
+(1 row)
+
+SELECT sift.col_verify('bt_random_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+CREATE TABLE bt_nobtree (LIKE bt_random);
+INSERT INTO bt_nobtree SELECT * FROM bt_random;
+CREATE FUNCTION bt_refused() RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	CREATE INDEX bt_nobtree_idx ON bt_nobtree USING sift_col (id, k, g, note, pad) WITH (key_cut = 'k');
+	RETURN 'built';
+EXCEPTION WHEN program_limit_exceeded THEN RETURN 'refused';
+END $$;
+SELECT bt_refused() AS without_a_btree;
+ without_a_btree 
+-----------------
+ refused
+(1 row)
+
+RESET sift.test_col_temp_free_kb;
+DROP TABLE bt_nobtree;
+DROP FUNCTION bt_refused();
 RESET sift.test_col_segment_kb;
 DROP TABLE bt_sorted, bt_noisy, bt_random, bt_gate;
 DROP FUNCTION bt_build(regclass, int), bt_same(regclass), bt_units(regclass);

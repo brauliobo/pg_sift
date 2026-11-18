@@ -100,14 +100,27 @@ typedef struct BtBound
 } BtBound;
 
 /* The btree a build reads the heap through, what it costs and the keys to split it at (col/build/btree_pick.c) */
+/* What a read of the heap costs on its disk, in microseconds (btree_probe.c), and whether it was measured */
+typedef struct BtCosts
+{
+	double		random_us,
+				seq_us;
+	bool		measured;
+} BtCosts;
+
 typedef struct BtPlan
 {
 	Oid			btree;
+	char	   *name;
+	BtCosts		cost;
 	double		reads,
 				random_reads,
 				btree_us,
 				spool_us,
-				spool_mb;
+				spool_mb,
+				break_even_us,	/* the cost of a random read at which both paths take as long */
+				room_mb;		/* what the temporary files may take (-1: any size) */
+	bool		no_room;		/* the key ranges' files do not fit it: the build would be refused */
 	uint64		entries;
 	int			nbound;
 	BtBound    *bound;
@@ -125,6 +138,9 @@ typedef struct BtRange
 				unit_limit;
 } BtRange;
 
+extern BtCosts colb_btree_costs(Relation heap);
+extern double colb_spill_price(Relation heap, Relation index, IndexInfo *info, uint64 total_rows);
+extern bool colb_spill_fits(double need, double *allowed);
 extern List *colb_btree_candidates(Relation index, Relation heap, const IndexInfo *info);
 extern BtPlan *colb_btree_plan(Relation heap, Relation index, IndexInfo *info, int participants);
 extern IndexBuildResult *colb_btree_build_par(Relation heap, Relation index, IndexInfo *info, const BtPlan *plan, int nworkers);

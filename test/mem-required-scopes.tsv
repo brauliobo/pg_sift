@@ -8,6 +8,7 @@ bm25_merge	src/bm25/step.c	merge_segments	scoped
 bm25_promote	src/bm25/step.c	promote_one	scoped
 bm25_search	src/bm25/cscan_exec.c	sift_exec	scoped
 bm25_verify	src/bm25/segment_sql.c	bm25_verify	scoped
+col_btree_pick	src/col/build/btree_pick.c	pick_best	scoped
 col_build	src/col/build/build.c	serial_build	scoped
 col_build_spool	src/col/build/spill.c	colb_spill_batch	scoped
 col_conn_changed	src/col/conn.c	journal_keys	scoped
