@@ -524,7 +524,7 @@ space_shift(Relation rel, SiftWriteTarget *wt, const void *arg)
 	shift->written = sift_store_shift(rel, wt, shift->entry, shift->budget, &fresh, &shift->release, &shift->nrelease);
 	if (shift->written == 0)
 		return;
-	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = shift->release,
+	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.nadd = 1,.release = shift->release,
 					.nrelease = shift->nrelease,.extra = InvalidBuffer});
 	sift_log_maint(rel, "shifted", start, shift->entry->ndocs, fresh.bytes);
 }
@@ -648,7 +648,7 @@ space_shrink_step(Relation rel, SiftWriteTarget *wt, const void *arg)
 	if (sh->written == 0)
 		return;
 	SIFT_SPACE_TEST_POINT(5);
-	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = sh->release,
+	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.nadd = 1,.release = sh->release,
 					.nrelease = sh->nrelease,.chain_below = sh->keep,.extra = InvalidBuffer});
 	SIFT_SPACE_TEST_POINT(6);
 	sift_log_maint(rel, "shrunk", start, sh->entry->ndocs, fresh.bytes);

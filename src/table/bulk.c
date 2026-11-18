@@ -253,7 +253,7 @@ sift_tbl_bulk_finish(SiftTblBulk *b)
 		bulk_end_segment(b);
 	p = (BulkPublish) {b->segs, b->nsegs, b->vbase + (b->nrows + SIFT_TBL_MAX_OFF - 1) / SIFT_TBL_MAX_OFF};
 	if (b->nsegs > 0)
-		sift_dir_update(b->sw.rel, &(SiftDirChange) {.fn = bulk_publish,.arg = &p,.extra = InvalidBuffer});
+		sift_dir_update(b->sw.rel, &(SiftDirChange) {.fn = bulk_publish,.arg = &p,.nadd = p.n,.extra = InvalidBuffer});
 	sift_tbl_refresh(b->sw.rel, b->st);
 	MemoryContextDelete(b->sw.cxt);
 }

@@ -171,7 +171,7 @@ create_active(Relation index, uint32 hash, Size hdrsize, uint16 format, uint16 f
 
 		arg.hash = hash;
 		arg.fresh = new_segment(index, hdrsize, format, flags);
-		sift_dir_update(index, &(SiftDirChange) {.fn = open_first,.arg = &arg,.extra = InvalidBuffer});
+		sift_dir_update(index, &(SiftDirChange) {.fn = open_first,.arg = &arg,.nadd = 1,.extra = InvalidBuffer});
 	}
 	UnlockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	pfree(snap);
@@ -245,7 +245,7 @@ seal_open(Relation index, bool rotate, bool force, Size hdrsize, uint16 format, 
 				sealed = *act;
 				arg.sealed = act->gen;
 				arg.fresh = new_segment(index, hdrsize, format, flags);
-				sift_dir_update(index, &(SiftDirChange) {.fn = swap_active,.arg = &arg,.extra = InvalidBuffer});
+				sift_dir_update(index, &(SiftDirChange) {.fn = swap_active,.arg = &arg,.nadd = 1,.extra = InvalidBuffer});
 			}
 			else if (force)
 			{

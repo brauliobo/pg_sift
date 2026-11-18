@@ -656,7 +656,7 @@ check_dir_result(Relation index, SiftXlog *state, const SiftMetaPageData *before
 /* An update that works on the directory as a list: the entries the mutator edits, and what the chain it replaces holds */
 typedef struct DirEdit
 {
-	SiftDirectoryData *dir;		/* the mutator's copy of block 1, with room for the entries a mutator adds (SIFT_DIR_POLICY_MAX) */
+	SiftDirectoryData *dir;		/* the mutator's copy of block 1, with room for the entries a mutator adds (SiftDirChange.nadd) */
 	int			cap;
 	SiftSegEntry *old;			/* its entries as they were */
 	int			nold;
@@ -680,7 +680,7 @@ dir_edit_open(Relation index, Page dp, const SiftDirChange *chg, DirEdit *e)
 		e->nold = page->nsegs;
 		old = page->segs;
 	}
-	e->cap = e->nold + (chg->nadd > 0 ? chg->nadd : SIFT_DIR_POLICY_MAX);
+	e->cap = e->nold + chg->nadd;
 	e->dir = palloc(DIR_USED(e->cap));
 	e->dir->version = page->version;
 	e->dir->reserved = 0;
@@ -823,7 +823,10 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	{
 		dir_edit_open(index, dp, chg, &edit);
 		if (chg->fn)
+		{
 			chg->fn(META(mp), edit.dir, xp, chg->arg);
+			SIFT_INVARIANT(edit.dir->nsegs <= edit.cap, "sift: a directory mutator added %d entries, its bound (SiftDirChange.nadd) is %d", edit.dir->nsegs - edit.nold, chg->nadd);
+		}
 		dir_edit_close(index, &state, metabuf, mp, dp, &before, chg, &edit, safexid, &plan);
 		if (BufferIsValid(plan.flbuf))
 			fp = sift_xlog_register(&state, plan.flbuf, 0);

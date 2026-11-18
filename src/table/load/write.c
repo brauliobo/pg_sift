@@ -82,7 +82,7 @@ load_publish_all(Relation rel, SiftTblRel *st, Published *pub)
 	{
 		Published	part = {pub->segs + done, load_lock_with_room(rel, st, pub->n - done)};
 
-		sift_dir_update(rel, &(SiftDirChange) {.fn = load_publish_groups,.arg = &part,.extra = InvalidBuffer});
+		sift_dir_update(rel, &(SiftDirChange) {.fn = load_publish_groups,.arg = &part,.nadd = part.n,.extra = InvalidBuffer});
 		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 		done += part.n;
 		sift_tbl_refresh(rel, st);

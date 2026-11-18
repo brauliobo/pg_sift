@@ -484,7 +484,7 @@ seg_write(Relation index, uint64 nbytes, uint64 seed, uint32 piece, uint32 align
 	wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 	sift_test_write_segment(wt, gen, nbytes, seed, piece, align, &entry);
 	sift_wt_finish(wt);
-	sift_dir_update(index, &(SiftDirChange) {.fn = add_seg, .arg = &entry, .extra = InvalidBuffer});
+	sift_dir_update(index, &(SiftDirChange) {.fn = add_seg, .arg = &entry, .nadd = 1, .extra = InvalidBuffer});
 	MAINT_UNLOCK(index, ShareLock);
 	return gen;
 }

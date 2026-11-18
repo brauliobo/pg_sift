@@ -232,7 +232,7 @@ sift_col_log_create(Relation index)
 	if (sift_tomb_find_seg(e->dir) != NULL)
 		return;
 	seg = sift_tomb_new_segment(index, SIFT_SEG_TOMB, SIFT_COL_FORMAT_ROWKEY);
-	sift_dir_update(index, &(SiftDirChange) {.fn = add_log_segment,.arg = &seg,.extra = InvalidBuffer});
+	sift_dir_update(index, &(SiftDirChange) {.fn = add_log_segment,.arg = &seg,.nadd = 1,.extra = InvalidBuffer});
 }
 
 typedef struct DropArg

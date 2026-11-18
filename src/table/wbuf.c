@@ -130,7 +130,7 @@ again:
 		.sb_hi = (vbase + vcap) / SIFT_TBL_VBLOCKS_SB - 1};
 		UnlockReleaseBuffer(hbuf);
 		UnlockReleaseBuffer(dbuf);
-		sift_dir_update(rel, &(SiftDirChange) {.fn = swap_wbuf,.arg = &arg,.extra = InvalidBuffer});
+		sift_dir_update(rel, &(SiftDirChange) {.fn = swap_wbuf,.arg = &arg,.nadd = 1,.extra = InvalidBuffer});
 	}
 	UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	if (old.gen)

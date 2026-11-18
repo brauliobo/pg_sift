@@ -217,7 +217,7 @@ ring_publish(Load *ld, Relation rel, SiftTblRel *st)
 		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 		return false;
 	}
-	sift_dir_update(rel, &(SiftDirChange) {.fn = load_publish_groups,.arg = &pub,.extra = InvalidBuffer});
+	sift_dir_update(rel, &(SiftDirChange) {.fn = load_publish_groups,.arg = &pub,.nadd = pub.n,.extra = InvalidBuffer});
 	UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 	rl->nsegs = 0;
 	return true;

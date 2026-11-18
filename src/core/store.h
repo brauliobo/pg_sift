@@ -226,7 +226,7 @@ typedef struct SiftDirChange
 	int			nrelease;
 	Buffer		extra;			/* InvalidBuffer if none */
 	bool		immediate;		/* no snapshot can hold the released extents (a relation still being written by its creator): reusable at once */
-	int			nadd;			/* the entries fn adds to the directory at most; 0: SIFT_DIR_POLICY_MAX, which no writer of the policy goes past */
+	int			nadd;			/* the entries fn adds to the directory at most (a mutator that only edits or removes: 0); the working copy has room for the entries it has and these */
 	BlockNumber chain_below;	/* a chained directory: its pages at or above this block are written again below it (the shrink of the file); 0: they stay. ERROR when no free run below holds them */
 } SiftDirChange;
 

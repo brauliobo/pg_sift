@@ -178,7 +178,7 @@ seal_segment(Relation rel, SiftTblRel *st, const SiftSegEntry *e, SiftTblSeg *se
 		sw_dir.neu = &neu;
 	}
 	ext = sift_lane_extents(rel, e, &next);
-	sift_dir_update(rel, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw_dir,.release = ext,.nrelease = next,
+	sift_dir_update(rel, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw_dir,.nadd = 1,.release = ext,.nrelease = next,
 			.extra = InvalidBuffer,.immediate = st->fresh});
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);

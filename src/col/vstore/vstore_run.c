@@ -412,6 +412,7 @@ write_run(SiftVStore *vs, const SiftCDict *src, uint32 from, uint32 lo, uint32 n
 		sift_extent_push(rel_ext, &nrel, old[i].header_blk, 1);
 	}
 	chg.fn = dir_edit;
+	chg.nadd = 1;
 	chg.arg = &ed;
 	chg.release = rel_ext;
 	chg.nrelease = nrel;
