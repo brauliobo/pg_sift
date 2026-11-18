@@ -3,9 +3,9 @@
  * enough of them, as marks (one 32-byte entry each) for the rest. The statement's addresses are held (8 bytes each, a million at most) until the statement is done with them, so that they
  * are looked up in the units once and not for each chunk of the probe of the table's unique index.
  *
- * What a statement pays to write records is the lookup of its addresses in the units: DV_ROW_INSTR for each row of the index (every unit is opened) and DV_KEY_INSTR for each address found. What a
- * mark costs over its life is DV_MARK_INSTR: the entry written and the clearing of its row by the fold (col/maint/fold.c). Records are written when the statement has at least as many addresses as
- * pay for the lookup, rows * DV_ROW_INSTR / (DV_MARK_INSTR - DV_KEY_INSTR), and for the units where they are smaller than the marks they replace.
+ * What a statement pays to write records is the lookup of its addresses in the units: DV_ROW_INSTR for each row of the index (every unit is walked), which the marks' fold (col/maint/fold.c) pays
+ * once for all the marks it clears. Records are written when the statement has at least as many addresses as pay for the lookup, rows * DV_ROW_INSTR / DV_GAIN_INSTR, and for the units where they
+ * are smaller than the marks they replace.
  */
 #include "postgres.h"
 
@@ -23,12 +23,14 @@
 #include "core/tomb_dv.h"
 
 /*
- * 150,000 rows, statements of 150 to 75,000 scattered or contiguous rows, the same statement with marks and with records (release build): (A) 125 units of 1,200 rows, key-cut on a key that is not
- * correlated to the heap; (B) 42 units of 8,192 rows, not key-cut; (C) 32 units of 4,800 rows, key-cut on a key correlated to the heap
+ * 150,000 rows, statements of 150 to 75,000 scattered rows, the same statement with marks and with records (release build), and the fold of each: (A) 125 units of 1,200 rows, key-cut on a key that is not
+ * correlated to the heap; (B) 42 units of 8,192 rows, not key-cut; (C) 32 units of 4,800 rows, key-cut on a key correlated to the heap. The statement with records costs more than with marks by a walk of the
+ * pages of every unit against its addresses, 9.2 M instructions for 150 addresses (A: 61 for each row of the index), 1.3 M (B: 8.7) and 3.8 M (C: 25), and by 0.6 k to 9.7 k for each address found; the fold
+ * of the marks it did not write costs 17 M (A), 3 M (B) and 3.5 M (C) for 750 marks and 1.1 k for each mark more, where the fold of the record costs 0.1 k for each row. Over the statement and its fold the two
+ * cost the same at 750 addresses in each fixture (-1.3 M, +0.3 M, +1.0 M) and records cost less above: DV_GAIN_INSTR is what an address gains in that exchange at the break-even of 0.5% of the rows.
  */
-#define DV_ROW_INSTR		31		/* the walk of the pages of every unit against the addresses, for each row of the index: the 150 addresses of the statement cost 9.2 M more with records (A: 61), 1.3 M (B: 8.7) and 3.8 M (C: 25) */
-#define DV_KEY_INSTR		2000	/* an address found, at the least that pays: 9.7 k at 150 addresses, 2 k at 750 (the offsets of the pages of the unit decoded), 0.6 k from 15,000 (A, C) */
-#define DV_MARK_INSTR		7100	/* a mark over its life: 6 k to write (6.0 k a row of 75,000 in A, 13 k of 15,000), 1.1 k for the fold (0.9 to 1.2 k: col/maint/fold.c), where a record costs the fold 0.12 k a row */
+#define DV_ROW_INSTR		31
+#define DV_GAIN_INSTR		6200
 #define DV_MIN_ROWS			64
 #define DV_KEYS_MAX			(1 << 20)
 #define MARKS_CHUNK			8192
@@ -215,7 +217,7 @@ unique_keys(uint64 *keys, uint32 n)
 static uint64
 threshold(const SiftColDead *d)
 {
-	return Max(DV_MIN_ROWS, d->index_rows * DV_ROW_INSTR / (DV_MARK_INSTR - DV_KEY_INSTR));
+	return Max(DV_MIN_ROWS, d->index_rows * DV_ROW_INSTR / DV_GAIN_INSTR);
 }
 
 static void
