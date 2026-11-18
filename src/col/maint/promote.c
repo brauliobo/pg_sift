@@ -78,12 +78,15 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	SiftExtent *pages;
 	int			npages;
 	TimestampTz start = GetCurrentTimestamp();
-	uint64		rows = 0;
+	uint64		rows = 0,
+				records,
+				buffer_pages;
 	SiftCPaggSpec rewrite = r->pagg;
 	SiftXWait	xwait = {InvalidTransactionId};
 	SiftScopeStamps stamps = {0};
 
 	sift_cwbuf_flag_sealed(index, sealed);
+	sift_cwbuf_summary(index, sealed, &records, &buffer_pages);
 	batches = sift_cwbuf_batches(index, sealed, schema, cx, &nb, &xwait);
 	if (nb > 0)
 	{
@@ -163,7 +166,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	/* the floor of the stamps goes down to this promotion's before its segments are published, whether or not it wrote a scope segment: its rows with no pair are exact as of it too */
 	if (stamps.n > 0)
 		sift_scope_floor_lower(index, &stamps);
-	sift_maint_replace_n(index, NULL, &sealed->gen, 1, neu, nb > 0 ? nneu : 0, pages, npages, "promoted a sealed column segment of", start, rows);
+	sift_maint_promote_n(index, sealed->gen, (uint32) records, neu, nb > 0 ? nneu : 0, pages, npages, "promoted a sealed column segment of", start, rows);
 	sift_cwbuf_arena_drop(index, sealed->gen);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);

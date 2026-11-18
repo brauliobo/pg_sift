@@ -10,7 +10,7 @@ sift.test_col_net = off
 sift.async_maintenance = off
 sift.vacuum_rewrite_limit = 1
 sift.col_auto_merge_pass_mb = 2
-sift.col_build_key_ranges = off"
+sift.test_col_build_runs_overlap = on"
 node_start cr || bail "start failed"
 sql cr "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE kp (id int, tenant_id int, amount int, pad text) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO kp SELECT i, (i::bigint * 7919 % 400)::int, i % 100, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) FROM generate_series(1, 337920) i" \

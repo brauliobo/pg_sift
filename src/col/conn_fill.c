@@ -30,6 +30,7 @@
 
 #ifdef SIFT_TESTING
 int			sift_test_conn_fill = 0;
+bool		sift_test_conn_no_horizon = false;
 #endif
 
 typedef struct FillConn
@@ -148,6 +149,11 @@ sift_conn_fill_begin(Relation index, MemoryContext mcxt, uint64 rows)
 		{
 			AttrNumber	key = get_attnum(RelationGetRelid(parent), s->parent_key);
 
+#ifdef SIFT_TESTING
+			if (!sift_test_conn_no_horizon)
+#endif
+				sift_conn_stamp_set_horizon(&fc->stamp, sift_conn_horizon(pindex));
+
 			if (!sift_conn_probe_cheaper(rows, sift_conn_rows_of(parent)))
 				fc->keys = sift_conn_keyset_load(mcxt, parent, key, snap, sift_fill_list_limit());
 			if (fc->keys == NULL)
@@ -250,6 +256,7 @@ struct SiftConnStale
 		Relation	heap,
 					index;
 		SiftConnStamp now;
+		uint32		horizon;
 		bool		vouches;
 		double		rows;
 	}			c[SIFT_CONN_MAX_CONNECTIONS];
@@ -278,6 +285,7 @@ sift_conn_stale_begin(Relation index, MemoryContext mcxt)
 		sift_col_test_inval(index);
 #endif
 		s->c[i].vouches = sift_conn_take(s->c[i].heap, s->c[i].index, s->snap, &s->c[i].now, NULL) == SIFT_CONN_OK;
+		s->c[i].horizon = s->c[i].vouches ? sift_conn_horizon(s->c[i].index) : 0;
 		s->c[i].rows = Max(s->c[i].index->rd_rel->reltuples, 1);
 	}
 	table_close(heap, NoLock);
@@ -292,7 +300,6 @@ sift_conn_stale(SiftConnStale *s, const SiftColSegment *seg)
 		SiftConnStamp st = i < seg->nconn ? seg->conn[i] : (SiftConnStamp) {0};
 		double		limit = s->c[i].rows * sift_col_connect_refresh_pct / 100;
 		SiftConnKeys keys;
-		TransactionId base = InvalidTransactionId;
 		uint64		inserted,
 					changed;
 
@@ -300,11 +307,17 @@ sift_conn_stale(SiftConnStale *s, const SiftColSegment *seg)
 			continue;
 		if (st.lineage != s->c[i].now.lineage)
 			return true;
-		/* no journal records the inserted rows: a segment with orphans (no flag is read once a parent row was inserted, found.c) counts those outside the base of the parent index (none for a parent cut by key) with the keys changed; a key that only updates of other columns rewrote keeps its flag (the readers hold it for every snapshot), and the versions of those updates that are outside the base are not new keys */
-		inserted = st.reserved & SIFT_CONN_STAMP_CLEAN ? 0 : sift_conn_inserted_estimate(s->c[i].heap, s->c[i].index, &st, &base);
-		if (sift_conn_moved(s->c[i].heap, s->c[i].index, &st, s->snap, (uint32) Max(limit, 1), base, &keys) != SIFT_CONN_OK)
+		/*
+		 * The rows that came into the parent since the stamp are the difference of its insert horizon, less the entries that updates which kept their key wrote (their keys have a flag): a segment
+		 * that has no orphans is not told by a new parent row (CLEAN), and one stamped before the horizon existed says nothing of them, so only the keys the journal records advise for it
+		 */
+		if (sift_conn_moved(s->c[i].heap, s->c[i].index, &st, s->snap, (uint32) Max(limit, 1), &keys) != SIFT_CONN_OK)
 			return true;
-		changed = keys.n + (inserted > keys.nkept ? inserted - keys.nkept : 0);
+		if (!(st.reserved & SIFT_CONN_STAMP_CLEAN) && sift_conn_stamp_inserted_since(&st, s->c[i].horizon, &inserted))
+			inserted = inserted > keys.nkept ? inserted - keys.nkept : 0;
+		else
+			inserted = 0;
+		changed = keys.n + inserted;
 		sift_conn_keys_free(&keys);
 		if (changed >= limit)
 			return true;

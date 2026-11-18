@@ -283,13 +283,17 @@ PG_FUNCTION_INFO_V1(sift_table_ddl_check);
 Datum
 sift_table_ddl_check(PG_FUNCTION_ARGS)
 {
+	EventTriggerData *event;
 	Node	   *stmt;
 	RangeVar   *rv = NULL;
+	bool		altered;
 
 	if (!CALLED_AS_EVENT_TRIGGER(fcinfo))
 		ereport(ERROR, (errcode(ERRCODE_E_R_I_E_EVENT_TRIGGER_PROTOCOL_VIOLATED), errmsg("not fired by the event trigger manager")));
-	stmt = ((EventTriggerData *) fcinfo->context)->parsetree;
-	if (IsA(stmt, AlterTableStmt))
+	event = (EventTriggerData *) fcinfo->context;
+	stmt = event->parsetree;
+	altered = strcmp(event->event, "ddl_command_end") == 0;
+	if (altered && IsA(stmt, AlterTableStmt))
 	{
 		foreach_node(AlterTableCmd, cmd, ((AlterTableStmt *) stmt)->cmds)
 		{
@@ -302,7 +306,7 @@ sift_table_ddl_check(PG_FUNCTION_ARGS)
 				sift_col_track_rechain(RangeVarGetRelid(((AlterTableStmt *) stmt)->relation, NoLock, true));
 		}
 	}
-	else if (IsA(stmt, RenameStmt) && ((RenameStmt *) stmt)->renameType == OBJECT_COLUMN)
+	else if (altered && IsA(stmt, RenameStmt) && ((RenameStmt *) stmt)->renameType == OBJECT_COLUMN)
 		rv = ((RenameStmt *) stmt)->relation;
 	else if (IsA(stmt, CreateTrigStmt))
 	{

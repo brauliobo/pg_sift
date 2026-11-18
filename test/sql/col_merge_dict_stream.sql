@@ -35,5 +35,48 @@ SELECT count(*) AS segments FROM sift.col_segments('ds_ix') WHERE kind = 'immuta
 SELECT md5(string_agg(id || txt, ',' ORDER BY id)) AS after_merge FROM ds WHERE txt LIKE 'v1%';
 SELECT sift.col_verify('ds_ix', true);
 DROP TABLE ds;
+
+-- A key_cut merge opens an input when its rows reach the lowest key of the input, from the zones of its first unit: inputs that hold a key range each are read
+-- one at a time, where reading the first unit of every input before the first row (sift.test_col_merge_eager) holds them all; the rows are the same.
+CREATE TABLE dk (id int, k int, txt text);
+CREATE INDEX dk_ix ON dk USING sift_col (k, id, txt) WITH (key_cut = 'k');
+DO $$
+BEGIN
+	FOR i IN 0..5 LOOP
+		INSERT INTO dk SELECT i * 30000 + g, (5 - i) * 1000 + g % 100, 'v' || (i * 30000 + g) FROM generate_series(1, 30000) g;
+		PERFORM sift.col_promote('dk_ix');
+	END LOOP;
+END $$;
+SELECT count(*) AS segments FROM sift.col_segments('dk_ix') WHERE kind = 'immutable';
+SELECT md5(string_agg(id || txt, ',' ORDER BY id)) AS before_merge FROM dk WHERE txt LIKE 'v1%';
+
+\c
+SET client_min_messages = warning;
+SET sift.col_dict_shared_cache_kb = 0;
+SET max_parallel_maintenance_workers = 0;
+SELECT sift.col_merge('dk_ix', true) >= 0 AS merged;
+SELECT parsed = 6 AS one_for_each_input, live = 0 AS none_left, peak = 1 AS one_at_a_time FROM sift._test_col_stream_dicts(true);
+SELECT md5(string_agg(id || txt, ',' ORDER BY id)) AS after_merge FROM dk WHERE txt LIKE 'v1%';
+SELECT sift.col_verify('dk_ix', true);
+
+CREATE TABLE dk2 (LIKE dk);
+CREATE INDEX dk2_ix ON dk2 USING sift_col (k, id, txt) WITH (key_cut = 'k');
+DO $$
+BEGIN
+	FOR i IN 0..5 LOOP
+		INSERT INTO dk2 SELECT i * 30000 + g, (5 - i) * 1000 + g % 100, 'v' || (i * 30000 + g) FROM generate_series(1, 30000) g;
+		PERFORM sift.col_promote('dk2_ix');
+	END LOOP;
+END $$;
+\c
+SET client_min_messages = warning;
+SET sift.col_dict_shared_cache_kb = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.test_col_merge_eager = on;
+SELECT sift.col_merge('dk2_ix', true) >= 0 AS merged_eager;
+SELECT peak = 6 AS all_held FROM sift._test_col_stream_dicts(true);
+SELECT (SELECT sum(bytes) FROM sift.col_segments('dk_ix') WHERE kind = 'immutable') =
+       (SELECT sum(bytes) FROM sift.col_segments('dk2_ix') WHERE kind = 'immutable') AS same_segments;
+DROP TABLE dk, dk2;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

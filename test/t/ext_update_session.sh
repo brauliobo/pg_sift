@@ -5,6 +5,7 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 6
+VERSION=$(sed -n "s/^default_version = '\(.*\)'/\1/p" "$(dirname "$0")/../../pg_sift.control")
 node_init eu 45 'autovacuum = off'
 node_start eu || bail "start failed"
 
@@ -55,6 +56,6 @@ for tag in $tags; do
 	check "the $tag answer is the same after ALTER EXTENSION UPDATE in the session that used the old objects" test -n "$b" -a "$b" != false -a "$a" == "$b"
 done
 out=$session
-check "the extension was updated" test "$(sed -n 's/^version|//p' <<<"$session" | tr '\n' ' ')" == "4.3 5.0 "
+check "the extension was updated" test "$(sed -n 's/^version|//p' <<<"$session" | tr '\n' ' ')" == "4.3 $VERSION "
 
 finish
