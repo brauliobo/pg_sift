@@ -79,4 +79,10 @@ for s in "${SPECS[@]}"; do
 	run+=("$s")
 done
 (( ${#run[@]} )) || { echo "isolation ($MODE): nothing runnable yet"; exit 0; }
-"$ISO" --use-existing --dbname="$DB" --inputdir="$OUT/in" --outputdir="$OUT" --bindir= "${run[@]}"
+source "$REPO/scripts/leakcheck.sh"
+TMP=${SIFT_TMP:-/tmp/sift-arch}
+leak_before "isolation-$MODE" "$TMP/postgres.log"
+rc=0
+"$ISO" --use-existing --dbname="$DB" --inputdir="$OUT/in" --outputdir="$OUT" --bindir= "${run[@]}" || rc=1
+leak_after "isolation-$MODE" "$TMP/data" "$DB" || rc=1
+exit $rc

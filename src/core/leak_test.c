@@ -23,7 +23,9 @@
 #include "access/relation.h"
 #include "access/tupdesc.h"
 #include "fmgr.h"
+#include "storage/buffile.h"
 #include "storage/bufmgr.h"
+#include "storage/dsm.h"
 #include "storage/lmgr.h"
 #include "storage/ipc.h"
 #include "utils/builtins.h"
@@ -33,6 +35,7 @@
 #include "core/errctx.h"
 #include "core/sift.h"
 #include "core/catname.h"
+#include "col/dsmreg.h"
 
 PG_FUNCTION_INFO_V1(sift_test_leak);
 PG_FUNCTION_INFO_V1(sift_test_malloc_stats);
@@ -69,7 +72,7 @@ sift_leak_test_init(void)
 	on_proc_exit(leaked_contexts_at_exit, 0);
 }
 
-/* sift._test_leak(kind text, rel regclass) returns void: buffer, relcache, tupledesc, snapshot, lock, context, malloc, palloc */
+/* sift._test_leak(kind text, rel regclass) returns void: buffer, relcache, tupledesc, snapshot, lock, temp, dsm, shared, context, malloc, palloc */
 Datum
 sift_test_leak(PG_FUNCTION_ARGS)
 {
@@ -101,6 +104,12 @@ sift_test_leak(PG_FUNCTION_ARGS)
 		UnlockPage(rel, 0, ExclusiveLock);	/* never locked: "you don't own a lock" */
 		relation_close(rel, AccessShareLock);
 	}
+	else if (strcmp(kind, "temp") == 0)
+		(void) BufFileCreateTemp(false);	/* never closed */
+	else if (strcmp(kind, "dsm") == 0)
+		(void) dsm_create(4096, 0);		/* never detached */
+	else if (strcmp(kind, "shared") == 0)
+		sift_dsm_test_leak_user();		/* a shared table that a backend counted and never gave back */
 	else if (strcmp(kind, "context") == 0)
 		(void) AllocSetContextCreate(TopMemoryContext, "sift leaked", ALLOCSET_SMALL_SIZES);
 	else if (strcmp(kind, "palloc") == 0)

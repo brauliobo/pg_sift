@@ -179,12 +179,7 @@ start() {
 
 stop() {
 	[[ -f $DATA/postmaster.pid ]] || return 0
-	local rc=0
-	PGUSER=postgres leak_cluster "$DATA" || rc=1
-	pg_ctl -D "$DATA" -m fast -w stop >/dev/null
-	leak_after_stop "$DATA" || rc=1
-	leak_scan "$TMP" || rc=1
-	return $rc
+	PGUSER=postgres leak_end "$DATA" "$TMP" pg_ctl -D "$DATA" -m fast -w stop >/dev/null
 }
 
 # ready: waits until the cluster accepts connections (SIFT_READY_SECS, 300). A backend that dies (a sanitizer that halts it, a PANIC test) makes the postmaster
@@ -218,10 +213,13 @@ regress() {
 	local db=contrib_regression_$1 t out rc=0 reuse=() before= now left
 	for t in "$@"; do
 		out=$TMP/regress/$t
+		leak_before "regress-$t" "$TMP/postgres.log"
 		if ! pg_regress "$out" "$db" "${reuse[@]}" "$t"; then
 			rc=1; cat "$out/regression.diffs" 2>/dev/null; reuse=() before=
+			leak_after "regress-$t" "$DATA" "$db" || true
 			continue
 		fi
+		leak_after "regress-$t" "$DATA" "$db" || { rc=1; reuse=() before=; echo "not ok - $t leaks memory or resources"; continue; }
 		now=$(db_left "$db")
 		left=$({ grep -vxFf <(echo "$before") <<<"$now" || true; } | { grep -vEf <(sed -n "s/^$t: \(.*[^ ]\) *# .*/\1/p" "$REPO/scripts/leftovers.allow") || true; })
 		if [[ -n $left ]]; then
