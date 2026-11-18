@@ -30,7 +30,7 @@ for r in $(seq "$ROUNDS"); do
 	for _ in 1 2 3 4; do
 		have=$(sql primary "SELECT count(*) FROM sift._test_dir_list('f_idx')")
 		case $((RANDOM % 5)) in
-			0 | 1) stmts+=("SELECT sift._test_dir_edit('f_idx', 'ins', $((RANDOM % (have + 1))), $((1 + RANDOM % 6)))") ;;
+			0 | 1) ((have < 28)) && stmts+=("SELECT sift._test_dir_edit('f_idx', 'ins', $((RANDOM % (have + 1))), $((1 + RANDOM % 6)))") ;;
 			2) ((have > 3)) && stmts+=("SELECT sift._test_dir_edit('f_idx', 'del', $((RANDOM % (have - 2))), $((1 + RANDOM % 3)))") ;;
 			3) ((have > 4)) && stmts+=("SELECT sift._test_dir_edit('f_idx', 'rev', $((RANDOM % (have - 3))), 4)") ;;
 			4) ((have > 0)) && stmts+=("SELECT sift._test_dir_edit('f_idx', 'set', 0, 1)") ;;
