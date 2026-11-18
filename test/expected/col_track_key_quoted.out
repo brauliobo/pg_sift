@@ -1,0 +1,32 @@
+-- track_changes names its column in quotes ("Order Id", "a""b"): the index keeps that column, and asking whether an index tracks a key holds no memory per ask
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE q (id int PRIMARY KEY, "Order Id" int NOT NULL, "a""b" int NOT NULL, v int) WITH (autovacuum_enabled = false);
+INSERT INTO q SELECT i, i, i, i % 7 FROM generate_series(1, 300) i;
+CREATE UNIQUE INDEX q_order ON q ("Order Id");
+CREATE UNIQUE INDEX q_ab ON q ("a""b");
+CREATE INDEX q_plain ON q USING sift_col (id, v) WITH (track_changes = 'id');
+CREATE INDEX q_quoted ON q USING sift_col ("Order Id", v) WITH (track_changes = '"Order Id"');
+CREATE INDEX q_escaped ON q USING sift_col ("a""b", v) WITH (track_changes = '"a""b"');
+SELECT c.relname, t.* FROM pg_class c, LATERAL sift.col_tracking(c.oid) t WHERE c.relname IN ('q_plain', 'q_quoted', 'q_escaped') ORDER BY 1;
+  relname  | track_changes | triggers | complete | heap_free 
+-----------+---------------+----------+----------+-----------
+ q_escaped | t             | t        | t        | t
+ q_plain   | t             | t        | t        | t
+ q_quoted  | t             | t        | t        | t
+(3 rows)
+
+SELECT i.relname, sift._test_row_key_bytes(i.oid, 1000) = sift._test_row_key_bytes(i.oid, 1) AS holds_nothing_per_ask
+FROM pg_class i WHERE i.relname IN ('q_plain', 'q_quoted', 'q_escaped') ORDER BY 1;
+  relname  | holds_nothing_per_ask 
+-----------+-----------------------
+ q_escaped | t
+ q_plain   | t
+ q_quoted  | t
+(3 rows)
+
+DROP TABLE q;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

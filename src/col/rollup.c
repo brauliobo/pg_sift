@@ -360,18 +360,25 @@ sift_col_rollup_worker_main(Datum main_arg)
 	}
 	while (pop(db, InvalidOid, &r))
 	{
-		const char *volatile name = psprintf("%u", r.index);
+		MemoryContext rcx = AllocSetContextCreate(cx, "sift rollup request", ALLOCSET_SMALL_SIZES);
+		char		oid[16];
+		const char *volatile name;
+
+		snprintf(oid, sizeof(oid), "%u", r.index);
+		name = MemoryContextStrdup(rcx, oid);
 
 		PG_TRY();
 		{
-			process(&r, &name, cx);
+			process(&r, &name, rcx);
 		}
 		PG_CATCH();
 		{
-			sift_maint_worker_failed("sift_col", r.index, name, cx);
+			sift_maint_worker_failed("sift_col", r.index, name, rcx);
 			finish(&r, false, 0);
 		}
 		PG_END_TRY();
+		MemoryContextSwitchTo(cx);
+		MemoryContextDelete(rcx);
 	}
 }
 

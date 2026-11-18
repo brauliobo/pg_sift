@@ -1,0 +1,20 @@
+-- The overflow bitmap of a batch has (n + 63) / 64 words, not the SIFT_COL_NWORDS(n) a decoded unit pads to 512 bits: testing whether it has a bit set stays inside them
+-- (the segment writer read past them in a build of a jsonb column with array paths: memcheck, and an unrelated bit there dropped the point arrays of a leaf)
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SELECT n, sift._test_bits_any_bounds(n) AS reads_past_the_words FROM unnest(ARRAY[1, 63, 64, 65, 200, 512, 513, 600, 3000]) n ORDER BY n;
+  n   | reads_past_the_words 
+------+----------------------
+    1 | f
+   63 | f
+   64 | f
+   65 | f
+  200 | f
+  512 | f
+  513 | f
+  600 | f
+ 3000 | f
+(9 rows)
+
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

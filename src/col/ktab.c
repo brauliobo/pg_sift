@@ -210,12 +210,7 @@ is_null(const uint64 *nulls, uint32 i)
 static bool
 usable(const SiftCPaggCol *c, uint32 nrows)
 {
-	if (!c->ready || c->n != nrows)
-		return false;
-	for (uint32 w = 0; c->ovf != NULL && w < (nrows + 63) / 64; w++)
-		if (c->ovf[w])
-			return false;
-	return true;
+	return c->ready && c->n == nrows && !sift_col_bits_any(c->ovf, nrows);
 }
 
 /* The leading measures of the leaf that every unit gave */

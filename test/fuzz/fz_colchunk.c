@@ -170,7 +170,7 @@ strs_run(void *a)
 
 	if (j->len >= 8)
 		memcpy(&n, j->p + 4, sizeof(n));	/* the caller's count: the one the list declares */
-	sift_cc_decode_strs(CurrentMemoryContext, j->p, j->len, n, &off, &bytes);
+	sift_cc_decode_strs(CurrentMemoryContext, j->p, j->len, n, 0, 0, &off, &bytes);
 	for (uint32 i = 0; i < n; i++)
 	{
 		if (off[i + 1] < off[i])

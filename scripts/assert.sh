@@ -31,7 +31,7 @@ BAD='TRAP: |detected write past chunk end|problem in alloc set|could not find bl
 
 PREFIX=$("$REPO/scripts/pg-assert.sh" "${PGA[@]}")
 export PATH=$PREFIX/bin:$PATH
-pg_config --configure | grep -q -- --enable-cassert || { echo "assert: $PREFIX has no assertions" >&2; exit 1; }
+pg_config --configure | grep -- --enable-cassert >/dev/null || { echo "assert: $PREFIX has no assertions" >&2; exit 1; }
 TMP=${SIFT_TMP:-/tmp/sift-assert-$$}
 WORK=$TMP/assert
 # the clusters of scripts/ci.sh are made by another initdb
