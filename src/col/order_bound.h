@@ -5,6 +5,7 @@
 #define SIFT_COL_ORDER_BOUND_H
 
 #include "col/enc.h"
+#include "core/range.h"
 #include "col/seg.h"
 
 typedef struct OrderCtx
@@ -25,6 +26,9 @@ typedef struct BoundKey
 	uint32		rows;			/* the rows of the unit the point stands for, a share of the points of the unit */
 } BoundKey;
 
+/* A bound as the lower bound of a partition of the directory (core/range.h), and back: the leaves it has; a bound that stops short reads as the lowest key of the leaves it lacks */
+extern void sift_colk_bound_pack(const OrderCtx *ctx, const BoundKey *bk, SiftBound *out);
+extern void sift_colk_bound_unpack(const OrderCtx *ctx, const SiftBound *b, BoundKey *bk);
 /* Row r of b against the bound: key by key, NULL last; equal on the leaves the bound has, the row is at it */
 extern int	sift_colk_bound_cmp(const OrderCtx *ctx, const SiftColBatch *b, uint32 r, const BoundKey *bk);
 /* The order of two bounds (qsort); a bound on fewer leaves holds the lowest key of the others */

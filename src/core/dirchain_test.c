@@ -6,6 +6,7 @@
  * the chain and the free list are disjoint and inside the file.
  */
 #include "store_test_int.h"
+#include "col/order_bound.h"
 #include "core/dirchain.h"
 #include "core/store_int.h"
 #include "nodes/bitmapset.h"
@@ -18,7 +19,7 @@ PG_FUNCTION_INFO_V1(sift_test_dir_info);
 PG_FUNCTION_INFO_V1(sift_test_dir_check);
 PG_FUNCTION_INFO_V1(sift_test_dir_read_stale);
 PG_FUNCTION_INFO_V1(sift_test_dir_parts);
-PG_FUNCTION_INFO_V1(sift_test_dir_blocks);
+PG_FUNCTION_INFO_V1(sift_test_dir_part_bounds);
 
 typedef struct DirEditArg
 {
@@ -28,12 +29,25 @@ typedef struct DirEditArg
 	uint64		first_gen;
 } DirEditArg;
 
-/* nold entries from pos become nnew new ones, each a partition of its own (sift_dir_part_replace) */
+static const OrderCtx two_leaves = {.nleaf = 2},
+			 one_leaf = {.nleaf = 1};
+
+/* The lower bound of the partition made by the entry of generation gen: two leaves, ascending with gen, the second the least integer, the greatest or NULL */
+static BoundKey
+part_key(uint64 gen)
+{
+	static const int64 second[] = {PG_INT64_MIN, PG_INT64_MAX, 0};
+
+	return (BoundKey) {.k = {(int64) (gen / 3) - 5, second[gen % 3]},.nul = {false, gen % 3 == 2}};
+}
+
+/* nold entries from pos become nnew new ones, each a partition of its own, with the bound part_key names when bounded (sift_dir_part_replace) */
 static void
-repartition(SiftMetaPageData *meta, SiftDirectoryData *dir, int pos, int nold, int nnew)
+repartition(SiftMetaPageData *meta, SiftDirectoryData *dir, int pos, int nold, int nnew, bool bounded)
 {
 	SiftSegEntry *segs = dir->segs;
 	uint64	   *old = palloc(nold * sizeof(uint64));
+	uint8		(*lo)[SIFT_BOUND_BYTES] = palloc(Max(nnew, 1) * SIFT_BOUND_BYTES);
 
 	for (int i = 0; i < nold; i++)
 		old[i] = segs[pos + i].gen;
@@ -41,11 +55,15 @@ repartition(SiftMetaPageData *meta, SiftDirectoryData *dir, int pos, int nold, i
 	for (int i = 0; i < nnew; i++)
 	{
 		uint64		gen = meta->next_gen++;
+		BoundKey	bk = part_key(gen);
+		SiftBound	b;
 
 		segs[pos + i] = (SiftSegEntry) {.gen = gen,.kind = SIFT_SEG_VALRUN,.header_blk = InvalidBlockNumber,.ndocs = gen * 7};
+		sift_colk_bound_pack(&two_leaves, &bk, &b);
+		sift_bound_pack(&b, lo[i]);
 	}
 	dir->nsegs += nnew - nold;
-	sift_dir_part_replace(old, nold, &segs[pos], nnew, NULL);
+	sift_dir_part_replace(old, nold, &segs[pos], nnew, bounded ? lo : NULL);
 }
 
 static void
@@ -82,11 +100,13 @@ edit_entries(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *a
 		}
 	}
 	else if (strcmp(a->op, "part") == 0)
-		repartition(meta, dir, a->pos, a->n, a->n);
+		repartition(meta, dir, a->pos, a->n, a->n, false);
+	else if (strcmp(a->op, "bound") == 0)
+		repartition(meta, dir, a->pos, a->n, a->n, true);
 	else if (strcmp(a->op, "split") == 0)
-		repartition(meta, dir, a->pos, 1, a->n);
+		repartition(meta, dir, a->pos, 1, a->n, false);
 	else if (strcmp(a->op, "merge") == 0)
-		repartition(meta, dir, a->pos, a->n, 1);
+		repartition(meta, dir, a->pos, a->n, 1, false);
 	else if (strcmp(a->op, "set") == 0)
 	{
 		for (int i = 0; i < a->n; i++)
@@ -96,7 +116,7 @@ edit_entries(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *a
 		elog(ERROR, "unknown directory edit \"%s\"", a->op);
 }
 
-/* sift._test_dir_edit(index, op, pos, n): part makes the n entries from pos partitions of their own (new entries, one each), split cuts the partition at pos in n, merge makes the n from pos one; rechain writes the pages of a chain at or above block pos again below it; ins n new entries at pos, del n from pos, rev the n from pos, set (count a document in) the n from pos; the first generation inserted, else 0 */
+/* sift._test_dir_edit(index, op, pos, n): part makes the n entries from pos partitions of their own (new entries, one each), bound the same with a lower bound each (part_key), split cuts the partition at pos in n, merge makes the n from pos one; rechain writes the pages of a chain at or above block pos again below it; ins n new entries at pos, del n from pos, rev the n from pos, set (count a document in) the n from pos; the first generation inserted, else 0 */
 Datum
 sift_test_dir_edit(PG_FUNCTION_ARGS)
 {
@@ -208,21 +228,46 @@ sift_test_dir_parts(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-/* sift._test_dir_blocks(index): the blocks of the chain, in the order the snapshot lists them (the root first), with their place in it */
+/* sift._test_dir_part_bounds(index): of the partitions of a sift_store_test index, whether the lower bound the chain holds is the one the partition was made with, packed, unpacked and compared leaf by leaf */
 Datum
-sift_test_dir_blocks(PG_FUNCTION_ARGS)
+sift_test_dir_part_bounds(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap = sift_dir_read(index);
+	SiftDirPart *parts;
+	SiftSegEntry *segs;
+	SiftDirChain chain;
 
 	InitMaterializedSRF(fcinfo, 0);
-	for (int i = 0; i < snap->nchain; i++)
+	if (snap->nchain > 0)
 	{
-		Datum		values[2] = {Int32GetDatum(i), Int64GetDatum(snap->chain[i])};
-		bool		nulls[2] = {0};
+		(void) sift_dirchain_read(index, snap->chain[0], snap->version, 0, &segs, &chain);
+		for (int i = 0, np = sift_dirchain_parts(&chain, &parts); i < np; i++)
+		{
+			BoundKey	want = part_key(segs[parts[i].first].gen),
+						got;
+			SiftBound	b,
+						packed;
+			uint8		bytes[SIFT_BOUND_BYTES];
+			bool		stored = sift_bound_unpack(parts[i].lo, &b);
+			BoundKey	lowest;
+			SiftBound	first_leaf;
+			Datum		values[3];
+			bool		nulls[3] = {0};
 
-		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+			if (stored)
+				sift_colk_bound_unpack(&two_leaves, &b, &got);
+			sift_colk_bound_pack(&two_leaves, &want, &packed);
+			sift_bound_pack(&packed, bytes);
+			sift_colk_bound_pack(&one_leaf, &want, &first_leaf);
+			sift_colk_bound_unpack(&two_leaves, &first_leaf, &lowest);
+			values[0] = Int32GetDatum(parts[i].first);
+			values[1] = BoolGetDatum(stored && memcmp(&got.k, &want.k, sizeof(want.k)) == 0 && memcmp(&got.nul, &want.nul, sizeof(want.nul)) == 0 &&
+									 memcmp(bytes, parts[i].lo, SIFT_BOUND_BYTES) == 0);
+			values[2] = BoolGetDatum(lowest.k[0] == want.k[0] && lowest.k[1] == PG_INT64_MIN && !lowest.nul[0] && !lowest.nul[1]);
+			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+		}
 	}
 	relation_close(index, AccessShareLock);
 	return (Datum) 0;

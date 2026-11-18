@@ -34,6 +34,17 @@ SELECT (SELECT lineage FROM lineages WHERE step = 'merged' AND first = 2) = (SEL
 SELECT count(*) = count(DISTINCT lineage) AS distinct_lineages, min(first) AS first_partition, sum(n) AS entries_in_partitions FROM sift._test_dir_parts('dm_idx');
 SELECT nsegs, chained FROM sift._test_dir_info('dm_idx');
 SELECT sift._test_dir_check('dm_idx') > 0 AS chain_sound;
+-- the lower bound of a partition, from a key bound of two leaves (integer, least, greatest, NULL), is what the chain holds when read back; partitions made with no bound hold none;
+-- a bound of the first leaf alone reads as the lowest key of the second
+CREATE TABLE dn (v int);
+CREATE INDEX dn_idx ON dn USING sift_store_test (v);
+SELECT sift._test_dir_edit('dn_idx', 'ins', 0, 12) > 0 AS inserted;
+SELECT sift._test_dir_edit('dn_idx', 'part', 2, 10) IS NOT NULL AS partitioned_unbounded;
+SELECT count(*) AS partitions, count(*) FILTER (WHERE lo_round_trips) AS round_trip FROM sift._test_dir_part_bounds('dn_idx');
+SELECT sift._test_dir_edit('dn_idx', 'bound', 2, 10) IS NOT NULL AS partitioned_bounded;
+SELECT count(*) AS partitions, count(*) FILTER (WHERE lo_round_trips) AS round_trip, count(*) FILTER (WHERE short_bound_lowest) AS short_reads_lowest FROM sift._test_dir_part_bounds('dn_idx');
+SELECT sift._test_dir_check('dn_idx') > 0 AS chain_sound;
+DROP TABLE dn;
 DROP TABLE dm, lineages;
 DROP FUNCTION note(text);
 DROP EXTENSION pg_sift_test;

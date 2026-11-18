@@ -46,6 +46,16 @@ extern bool sift_bound_push_tid(SiftBound *b, uint64_t tid);
 extern void sift_bound_pack(const SiftBound *b, uint8_t *out);
 extern bool sift_bound_unpack(const uint8_t *in, SiftBound *b);
 
+/* Component i of a bound: its integer in *v, or that it is NULL, or that the bound stops before it (it holds the lowest key of the others) */
+typedef enum SiftComp
+{
+	SIFT_COMP_VALUE,
+	SIFT_COMP_NULL,
+	SIFT_COMP_NONE
+} SiftComp;
+
+extern SiftComp sift_bound_comp(const SiftBound *b, uint32_t i, int64_t *v);
+
 /* The order of two bounds: below zero, zero, above zero */
 extern int	sift_bound_cmp(const SiftBound *a, const SiftBound *b);
 /* The leading key components in which two bounds agree: the depth at which they differ (the address is no component) */

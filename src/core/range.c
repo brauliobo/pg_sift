@@ -114,6 +114,31 @@ sift_bound_unpack(const uint8_t *in, SiftBound *b)
 	return true;
 }
 
+SiftComp
+sift_bound_comp(const SiftBound *b, uint32_t i, int64_t *v)
+{
+	uint32_t	at = 0;
+
+	for (uint32_t c = 0; at < b->len && b->bytes[at] != TAG_TID; c++)
+	{
+		uint8_t		tag = b->bytes[at];
+
+		if (c == i)
+		{
+			uint64_t	u = 0;
+
+			if (tag == TAG_NULL)
+				return SIFT_COMP_NULL;
+			for (uint32_t k = 0; k < VALUE_BYTES; k++)
+				u = u << 8 | b->bytes[at + 1 + k];
+			*v = (int64_t) (u ^ (UINT64_C(1) << 63));
+			return SIFT_COMP_VALUE;
+		}
+		at += 1 + elem_bytes(tag);
+	}
+	return SIFT_COMP_NONE;
+}
+
 int
 sift_bound_cmp(const SiftBound *a, const SiftBound *b)
 {

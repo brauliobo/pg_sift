@@ -21,6 +21,32 @@ bound_leaves(const OrderCtx *c)
 	return Min(c->nleaf, 2);
 }
 
+void
+sift_colk_bound_pack(const OrderCtx *ctx, const BoundKey *bk, SiftBound *out)
+{
+	sift_bound_clear(out);
+	for (int t = 0; t < bound_leaves(ctx); t++)
+	{
+		bool		fits = bk->nul[t] ? sift_bound_push_null(out) : sift_bound_push_i64(out, bk->k[t]);
+
+		SIFT_INVARIANT(fits, "a bound of %d leaves fits a partition", bound_leaves(ctx));
+	}
+}
+
+void
+sift_colk_bound_unpack(const OrderCtx *ctx, const SiftBound *b, BoundKey *bk)
+{
+	memset(bk, 0, sizeof(BoundKey));
+	for (int t = 0; t < bound_leaves(ctx); t++)
+	{
+		SiftComp	kind = sift_bound_comp(b, t, &bk->k[t]);
+
+		bk->nul[t] = kind == SIFT_COMP_NULL;
+		if (kind != SIFT_COMP_VALUE)
+			bk->k[t] = kind == SIFT_COMP_NONE ? PG_INT64_MIN : 0;
+	}
+}
+
 /* Row r of b against the bound: key by key, NULL last; equal on the leaves the bound has, the row is at it */
 int
 sift_colk_bound_cmp(const OrderCtx *ctx, const SiftColBatch *b, uint32 r, const BoundKey *bk)
