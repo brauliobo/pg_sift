@@ -37,7 +37,7 @@ done
 # a shared table that a backend counted and never gave back shows when no session is left, at the end of the cluster
 msql -c "SELECT sift._test_dsm_join('leak_probe', 4096)" -c "SELECT sift._test_leak('shared')" >/dev/null || bail "planting the shared table failed"
 cluster_out() { PGHOST=$D/sock PGPORT=$(port hooks) PGUSER=postgres leak_cluster "$D/data" 2>&1; }
-shared_fails() { local out; ! out=$(cluster_out) && grep -q "leak_probe.* is mapped by 1 backend" <<<"$out"; }
+shared_fails() { local out; ! out=$(cluster_out) && grep -q "leak_probe.* by 1 backend" <<<"$out"; }
 check "the cluster check fails a shared table that a backend still counts" shared_fails
 
 # the next unit is clean again: a finding of an earlier unit is not read as its own

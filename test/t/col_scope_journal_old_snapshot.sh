@@ -7,30 +7,30 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 5
-node_init pr 32 "sift.scope_max_multiplicity = 8
+node_init pm 32 "sift.scope_max_multiplicity = 8
 wal_level = replica
 max_wal_senders = 4
 max_prepared_transactions = 8
 autovacuum = off"
-node_start pr || bail "primary start failed"
-sql pr "CREATE EXTENSION pg_sift_test CASCADE" \
+node_start pm || bail "primary start failed"
+sql pm "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id))" \
 	"INSERT INTO tenant_scope SELECT m, 1 + (m * 31 + j * 13) % 12 FROM generate_series(1, 300) m, generate_series(0, 2) j ON CONFLICT DO NOTHING" \
 	"CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int)" \
 	"INSERT INTO events SELECT i, 1 + i % 300, timestamptz '2026-01-01' + i * interval '1 minute', i % 10 FROM generate_series(1, 9000) i" \
 	"CREATE TABLE other (x int)" \
 	"VACUUM (FREEZE, ANALYZE) events, tenant_scope" >/dev/null || bail "setup failed"
-node_clone pr sb 33 "hot_standby_feedback = on
+node_clone pm sb 33 "hot_standby_feedback = on
 wal_receiver_status_interval = 1s"
 node_start sb || bail "standby start failed"
-D=$(dir pr)
+D=$(dir pm)
 SCOPE="scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'"
 READ="SELECT count(*), sum(v) FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, 12)"
 PLAIN="SELECT count(*), sum(v) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 12)"
 
 # a prepared transaction with an old xid, a standby reader whose snapshot (xmin = that xid) predates the writers of the pairs
-sql pr "BEGIN" "INSERT INTO other VALUES (1)" "PREPARE TRANSACTION 'old'" >/dev/null || bail "prepare failed"
-catchup pr sb || bail "the standby did not catch up"
+sql pm "BEGIN" "INSERT INTO other VALUES (1)" "PREPARE TRANSACTION 'old'" >/dev/null || bail "prepare failed"
+catchup pm sb || bail "the standby did not catch up"
 mkfifo "$D/r.in"
 psql -X -At -q -h "$(dir sb)/sock" -p "$(port sb)" -U postgres -d postgres <"$D/r.in" >"$D/r.out" 2>&1 &
 exec {FDR}>"$D/r.in"
@@ -38,11 +38,11 @@ echo "BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 'snap', pg_current_snapshot(
 wait_for "grep -q '^snap' '$D/r.out'" 30 || bail "the reader did not start"
 
 # pairs inserted and deleted and committed after that snapshot and before the build
-sql pr "INSERT INTO tenant_scope VALUES (1, 12), (2, 12), (3, 12) ON CONFLICT DO NOTHING" \
+sql pm "INSERT INTO tenant_scope VALUES (1, 12), (2, 12), (3, 12) ON CONFLICT DO NOTHING" \
 	"DELETE FROM tenant_scope WHERE (dim_a_id, tenant_id) IN (SELECT dim_a_id, min(tenant_id) FROM tenant_scope WHERE dim_a_id IN (10, 11, 12) GROUP BY 1)" >/dev/null
-sql pr "SET statement_timeout = 120000" "CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH ($SCOPE)" >"$D/build.out" 2>&1
+sql pm "SET statement_timeout = 120000" "CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH ($SCOPE)" >"$D/build.out" 2>&1
 check "the scoped build completes with a prepared transaction holding an old xid" test $? == 0
-catchup pr sb
+catchup pm sb
 
 ask() { echo "$1" >&$FDR; echo "\\echo end-$2" >&$FDR; wait_for "grep -q '^end-$2\$' '$D/r.out'" 30; }
 : >"$D/r.out"
@@ -59,6 +59,6 @@ check "... because it does not read the log: it falls back, as its snapshot does
 echo "\\q" >&$FDR
 exec {FDR}>&-
 check "a new snapshot on the standby reads the join's rows" test "$(sql sb "SET sift.agg_force = on" "$READ")" == "$(sql sb "SET sift.enable_agg = off" "$PLAIN")"
-check "the primary reads the join's rows" test "$(sql pr "SET sift.agg_force = on" "$READ")" == "$(sql pr "SET sift.enable_agg = off" "$PLAIN")"
-sql pr "COMMIT PREPARED 'old'" >/dev/null
+check "the primary reads the join's rows" test "$(sql pm "SET sift.agg_force = on" "$READ")" == "$(sql pm "SET sift.enable_agg = off" "$PLAIN")"
+sql pm "COMMIT PREPARED 'old'" >/dev/null
 finish
