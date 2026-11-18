@@ -214,7 +214,7 @@ maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSe
 	maint_keep_overlays(overlays);
 	n = sift_merge_pick(index, &pol, overlays, false, sel);
 	pfree(overlays);
-	if (n > 0 && !clean_apart(index, snap, sel, n))
+	if (n > 0 && !settled_all(index, sel, n) && !clean_apart(index, snap, sel, n))
 		return n;
 	return (n = maint_pick_big_overlays(index, snap, sel)) > 0 ? n : sift_merge_pick_dead(index, &pol, snap, sel);
 }
