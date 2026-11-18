@@ -1,7 +1,7 @@
 /*
  * col/build/spill.c - the key ranges of a build with key_cut
  * The runs of a serial build overlap in the key (each holds the rows of a stretch of the table, sorted by the key), so a lookup of a key reads a unit in
- * every run until a rewrite cuts them. When the rows do not fit the memory of one run, the rows of the first run give the boundaries of ranges of the key,
+ * every run, and nothing cuts them by key but sift.col_maintain. When the rows do not fit the memory of one run, the rows of the first run give the boundaries of ranges of the key,
  * and the rows go to a temporary file for each range as the table is scanned; each range is then written as a run of its own: runs that do not overlap.
  */
 #include "postgres.h"
@@ -282,8 +282,8 @@ spill_row_bytes(const ColBuild *b)
 
 /*
  * The rows held when the first run is full give the ranges: as many as runs the estimate of the rows of the table makes, cut at the quantiles of the key
- * of those rows. False (the rows stay to be written as a run) for a key that is not a number, a parallel participant
- * or a key of a few values.
+ * of those rows. False (the rows stay to be written as a run, in the order of the table) for a key that is not a number, a parallel participant
+ * or a key of two values or fewer.
  */
 bool
 colb_spill_start(ColBuild *b)
