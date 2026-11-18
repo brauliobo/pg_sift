@@ -52,6 +52,26 @@ SELECT sift.col_promote('v_i') >= 0 AS promoted;
 SELECT count(*) FILTER (WHERE kind = 'immutable') > 131 AS grown_past_131, count(*) FILTER (WHERE kind = 'immutable') > 128 AS past_the_policy FROM sift.col_segments('v_i');
 SELECT sift.col_verify('v_i', true);
 SELECT count(*) AS rows_found FROM v WHERE k < 1000 AND id > 0;
+-- a forced merge with a writer budget below the size of its inputs (1 kB against segments of 256 rows) cannot make fewer segments than it reads: it writes them as they are, once,
+-- and a second one ends too (the segments a merge wrote as many as it read are settled), whether the index is cut by key or not
+CREATE TABLE u (id int, k int, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE u ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO u SELECT i, (i::bigint * 7919) % 1000, repeat('x', 7000) FROM generate_series(1, 3072) i;
+SET sift.test_col_segment_kb = 1;
+CREATE INDEX u_plain ON u USING sift_col (id, k) WITH (key_cut = 'off');
+CREATE INDEX u_cut ON u USING sift_col (id, k) WITH (key_cut = 'k');
+SELECT 'plain' AS index, count(*) AS built FROM sift.col_segments('u_plain') WHERE kind = 'immutable';
+SELECT sift.col_merge('u_plain', true) > 0 AS first_merge;
+SELECT count(*) AS after_first, min(rows) AS min_rows, max(rows) AS max_rows FROM sift.col_segments('u_plain') WHERE kind = 'immutable';
+SELECT sift.col_merge('u_plain', true) > 0 AS second_merge;
+SELECT count(*) AS after_second FROM sift.col_segments('u_plain') WHERE kind = 'immutable';
+SELECT sift.col_merge('u_cut', true) >= 0 AS first_merge;
+SELECT sift.col_merge('u_cut', true) AS second_merge_steps;
+SELECT count(*) <= 12 AS not_more_than_built, sum(rows) = 3072 AS all_rows FROM sift.col_segments('u_cut') WHERE kind = 'immutable';
+SELECT sift.col_verify('u_plain', true);
+SELECT sift.col_verify('u_cut', true);
+RESET sift.test_col_segment_kb;
+DROP TABLE u;
 DROP TABLE v, peaks;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
