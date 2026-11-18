@@ -76,7 +76,10 @@ cache_exit(int code, Datum arg)
 	retired = NIL;
 	hash_seq_init(&seq, cache_tab);
 	while ((e = hash_seq_search(&seq)) != NULL)
+	{
 		MemoryContextDelete(e->st->cxt);
+		hash_search(cache_tab, &e->relid, HASH_REMOVE, NULL);
+	}
 }
 
 SiftTblRel *

@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: table: a backend that read a `sift_table` and leaves a transaction on its way out (a client that disconnects inside one) no longer reads the freed cache of the table: the cache entries go with their memory when the backend frees them before its shared-memory exit, so the transaction callback that runs after it finds none (a use after free that ended the backend with a segmentation fault)
 - Fixed: col: planning an aggregate on a `sift_col` index read index metadata (the heap OID and the leaf definitions) from cached relcache state that the reads of the directory free whenever the entry reloads, after an invalidation. The planner now takes what it needs before the read.
 - Fixed: maint: `sift.promote`, `sift.index_format`, `sift.col_promote` and the other maintenance functions and inspectors refuse a partitioned `sift` index with an error, where they went on to read the metapage of a storage that does not exist (the parent index of a partitioned table has none).
 - Fixed: table: `sift.table_ddl_check` opens the table of an `ALTER TABLE` or `RENAME COLUMN` only after the statement has locked it. An event trigger of a role's own that called it at the start of the statement opened the table without a lock.
