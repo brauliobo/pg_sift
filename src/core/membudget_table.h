@@ -3,6 +3,7 @@
 #define SIFT_MEMBUDGET_TABLE_H
 
 #include "agg/spec/spec.h"
+#include "col/build.h"
 #include "core/tomb.h"
 #include "executor/nodeHash.h"
 #include "miscadmin.h"
@@ -59,6 +60,12 @@ static Size
 budget_col_build(void)
 {
 	return (((Size) 201326592UL));
+}
+
+static Size
+budget_col_build_spool(void)
+{
+	return (((Size) sift_colb_budget(1)) + ((Size) 4194304UL));
 }
 
 static Size
@@ -214,6 +221,7 @@ static const struct
 	{"bm25_search", budget_bm25_search, "work_mem + 32MB"},
 	{"bm25_verify", budget_bm25_verify, "maintenance_work_mem + 8MB"},
 	{"col_build", budget_col_build, "192MB (open: ceiling measured today)"},
+	{"col_build_spool", budget_col_build_spool, "col_build_budget + 4MB"},
 	{"col_conn_changed", budget_col_conn_changed, "32kB"},
 	{"col_fold_keys", budget_col_fold_keys, "sift.tomb_log_limit + 64kB"},
 	{"col_key_cut_cells", budget_col_key_cut_cells, "maintenance_work_mem + 8MB"},

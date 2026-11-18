@@ -249,6 +249,8 @@ col/chunk_test.c
 col/cluster.c
 col/codec_gen.h
 col/codec_test.c
+col/colspool.c
+col/colspool.h
 col/conn.c
 col/conn.h
 col/conn_decl.c

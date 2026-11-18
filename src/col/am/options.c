@@ -12,6 +12,7 @@
 #include "col/leafshm.h"
 #include "col/point.h"
 #include "col/hll.h"
+#include "col/colspool.h"
 #include "col/gorder.h"
 #include "col/setsum.h"
 #include "col/seg.h"
@@ -550,6 +551,24 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_spill_rows",
 							"Testing: rows the temporary files of the last sift_col build by key ranges of this session hold.",
 							NULL, &sift_test_col_spill_rows, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_layer",
+							"Testing: the layer over the cascade codecs of the chunks of a sift_col build by key ranges (0 = chosen from a sample, 1 cascade alone, 2 lz4, 3 zstd, 4 no compression).",
+							NULL, &sift_test_col_spool_layer, 0, 0, 4, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_chunk_rows",
+							"Testing: rows of a chunk of the temporary files of a sift_col build by key ranges (0 = from the memory the build gives them).",
+							NULL, &sift_test_col_spool_chunk_rows, 0, 0, 1 << 20, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_share_kb",
+							"Testing: kB of memory the chunks of all the key ranges of a sift_col build may hold, instead of the build's budget (0 = the budget).",
+							NULL, &sift_test_col_spool_share_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_unbounded",
+							"Testing: the chunks of a sift_col build by key ranges are as large as they can be and no memory limit writes them (a build that ignores its share).",
+							NULL, &sift_test_col_spool_unbounded, 0, 0, 1, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_used_rows",
+							"Testing: rows of a chunk of the last sift_col build by key ranges of this session (0 = its rows went to packed files).",
+							NULL, &sift_test_col_spool_used_rows, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_spool_est_bytes",
+							"Testing: bytes the last sift_col build by key ranges of this session priced its chunks at.",
+							NULL, &sift_test_col_spool_est_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_no_present",
 							 "Testing: a sift_col build writes no presence leaf for the jsonb documents (the layout of an index made before 4.2).",
 							 NULL, &sift_test_col_no_present, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
