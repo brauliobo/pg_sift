@@ -530,7 +530,7 @@ sift_col_init(void)
 							"Testing: blocks a parallel sift_col build reserves in front of its segments for the merge (-1 = by the statistics, 0 = none).",
 							NULL, &sift_test_col_gap_blocks, -1, -1, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_segment_kb",
-							"Testing: kB of memory a sift_col build's segment writer holds before the segment is cut (0 = by maintenance_work_mem; a merge honors it too).",
+							"Testing: kB of memory a sift_col build's segment writer holds before the segment is cut (0 = by maintenance_work_mem; a merge honors it too, but the one that ends a parallel build).",
 							NULL, &sift_test_col_segment_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_spill_run_kb",
 							"Testing: kB of memory a run of a sift_col build by key ranges may take (0 = 768 MB).",

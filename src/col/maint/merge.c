@@ -304,7 +304,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	if (part_bytes > 0 || o.parts > 1)
 		o.budget = Max(o.budget, (Size) ((double) live_rows / o.parts * sift_colw_row_memory(pagg, schema->ncols)));
 #ifdef SIFT_TESTING
-	if (sift_test_col_segment_kb > 0)
+	if (sift_test_col_segment_kb > 0 && !maint_after_build)
 		o.budget = (Size) sift_test_col_segment_kb * 1024;
 #endif
 	o.units_left = live_units;
