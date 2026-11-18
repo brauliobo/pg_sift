@@ -497,6 +497,7 @@ typedef struct Price
 	SiftColBatch *batch;
 	MemoryContext cx,
 				tmpcx;
+	ItemPointerData last;		/* the rows of a chunk plan ascend in address: a row of a HOT chain that comes after a later one is left out of the sample */
 	uint32		stride,
 				seen,
 				n;
@@ -508,8 +509,9 @@ price_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	Price	   *p = state;
 	SiftColRow	row;
 
-	if (++p->seen % p->stride != 0 || p->n == PRICE_ROWS || MemoryContextMemAllocated(p->cx, false) > PRICE_BYTES)
+	if (++p->seen % p->stride != 0 || p->n == PRICE_ROWS || MemoryContextMemAllocated(p->cx, false) > PRICE_BYTES || ItemPointerCompare(tid, &p->last) <= 0)
 		return;
+	p->last = *tid;
 	sift_col_make_row(p->r, tid, values, isnull, &row, p->tmpcx);
 	sift_cbatch_add(p->batch, &row);
 	p->n++;
@@ -552,6 +554,7 @@ colb_spill_price(Relation heap, Relation index, IndexInfo *info, uint64 total_ro
 			continue;
 		p.batch = sift_cbatch_create(cx, p.r->schema);
 		sift_cbatch_reset(p.batch, sift_block_sb(start));
+		ItemPointerSet(&p.last, 0, 0);
 		(void) table_index_build_range_scan(heap, index, info, false, false, false, start, Min(SIFT_SB_PAGES, nblocks - start), price_cb, &p, NULL);
 		held = lappend(held, p.batch);
 	}

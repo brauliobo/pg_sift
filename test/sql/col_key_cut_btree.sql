@@ -117,6 +117,17 @@ SELECT bt_build('bt_random', -1) AS path, current_setting('sift.test_col_spill_b
 SELECT bt_build('bt_random', 0) AS path;
 SELECT current_setting('sift.test_col_pick_spool_bytes')::int BETWEEN :spilled / 2 AND :spilled * 2 AS spool_priced_within_two;
 
+-- the price of the key ranges' files is taken from rows of the table, which a HOT chain gives out of the order of their addresses: such a table is priced and built
+CREATE TABLE bt_hot (LIKE bt_random) WITH (autovacuum_enabled = false, fillfactor = 60);
+INSERT INTO bt_hot SELECT * FROM bt_random;
+CREATE INDEX bt_hot_k ON bt_hot (k);
+UPDATE bt_hot SET note = 'hot ' || note WHERE id % 3 = 0;
+SELECT pg_stat_force_next_flush();
+SELECT n_tup_hot_upd > 0 AS hot_chains FROM pg_stat_user_tables WHERE relname = 'bt_hot';
+SELECT bt_build('bt_hot', 0) AS path;
+SELECT current_setting('sift.test_col_pick_spool_bytes')::int > 0 AS priced, sift.col_verify('bt_hot_idx', true);
+DROP TABLE bt_hot;
+
 -- when the key ranges' files do not fit temp_file_limit or the temporary tablespaces the build reads the heap through a btree that can, whatever it costs; without one it is refused
 SET sift.test_col_temp_free_kb = 100;
 SELECT 'bt_random' AS tbl, bt_build('bt_random', 0) AS path;
