@@ -426,7 +426,7 @@ sift_chunkplan_make(const SiftColSchema *sc, const SiftColRowRef *ref, uint32 n,
 	room = spool_share > fixed + dict_mem ? spool_share - fixed - dict_mem : 0;
 	while (chunk > CHUNK_ROWS_MIN && (double) chunk * per_row > (double) room)
 		chunk /= 2;
-	fits = (double) chunk * per_row <= (double) room;
+	fits = room > 0 && (double) chunk * per_row <= (double) room;
 #ifdef SIFT_TESTING
 	if (sift_test_col_spool_unbounded)
 		chunk = CHUNK_ROWS_MAX;
