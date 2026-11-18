@@ -466,6 +466,7 @@ TESTING_REGRESS += col_writer_terms_mem
 TESTING_REGRESS += col_zone_jnull
 TESTING_REGRESS += colcodec_%
 TESTING_REGRESS += core_radix_sort
+TESTING_REGRESS += core_range
 TESTING_REGRESS += core_ring_wrap
 TESTING_REGRESS += errors_hints
 TESTING_REGRESS += ext_recreate

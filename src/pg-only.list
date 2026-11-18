@@ -400,6 +400,7 @@ core/relocate.c
 core/restrict.c
 core/restrict.h
 core/restrict_test.c
+core/range_test.c
 core/ring_test.c
 core/sortruns.c
 core/sortruns.h

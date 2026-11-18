@@ -197,6 +197,9 @@ CREATE FUNCTION sift._test_filter(tids tid[], lossy_blocks int8[], maxbytes int8
 								  OUT has bool[], OUT block_mismatches int8)
 	AS 'MODULE_PATHNAME', 'sift_test_filter' LANGUAGE C STRICT;
 
+-- The bounds of core/range.h against an oracle (src/core/range_test.c): for order, successor, span, range and depth the checks made and failed, over rounds random cases
+CREATE FUNCTION sift._test_range_check(seed int8, rounds int4) RETURNS int8[]
+	AS 'MODULE_PATHNAME', 'sift_test_range_check' LANGUAGE C STRICT;
 -- The radix sort of core/cmp.h (src/core/cmp_test.c): n entries of random keys of bits1 and bits2 bits (bits2 < 0: one key) moved by offsets, sorted by it and by the comparison sort: do the arrays agree?
 CREATE FUNCTION sift._test_radix_sort(n int4, bits1 int4, bits2 int4, offset1 int8, offset2 int8, seed int8) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_radix_sort' LANGUAGE C STRICT;
