@@ -1,0 +1,6 @@
+-- A chunk of a long-lived context that nothing points to any more: the leak scripts/valgrind.sh --leaks-selftest plants, which the memcheck leak gate has to fail on (a plain run only returns)
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SELECT sift._test_leak('palloc');
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

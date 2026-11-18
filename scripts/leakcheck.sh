@@ -8,6 +8,9 @@
 #   scripts/leakcheck.sh cluster DATA        invariants of a running cluster: no session left holding locks or a transaction, no
 #                                            prepared transaction, long-lived processes (postmaster, workers) not grown
 #   scripts/leakcheck.sh stopped DATA        after the shutdown: no temporary file left behind
+#   scripts/leakcheck.sh before UNIT LOG...  the start of a unit of work (a regress test, a node): marks where its server logs end
+#   scripts/leakcheck.sh after UNIT DATA DB  the end of the unit: waits for its backends to exit, scans what the logs gained since `before`, checks the
+#                                            shared state the backends leave behind; names the leak and fails
 #   scripts/leakcheck.sh baseline DATA       records the memory of those processes (the start of the cluster)
 #   scripts/leakcheck.sh growth FILE         sustained memory growth in the samples of leak_watch
 #   scripts/leakcheck.sh conf | env DIR      postgresql.conf lines | exports that run a server under ASan/UBSan/LeakSanitizer
@@ -19,6 +22,8 @@
 # assertion failures, crashes) as log lines, and an ASan/UBSan/LeakSanitizer build reports memory errors and malloc leaks
 # when each server process exits (LeakSanitizer needs the clean exit of a fast shutdown, an immediate one reports nothing).
 # SIFT_TESTING builds also log the sift memory contexts that outlive a backend (src/core/leak_test.c). Exit 1 on a finding.
+# Every driver brackets its unit of work with the same pair, leak_before and leak_after (scripts/pgtest.sh regress: a test; test/t/lib.bash: a node; one cluster
+# for the drivers that have no smaller unit), and a driver without the pair fails scripts/check-leak-hooks.sh.
 # SIFT_MEMCENSUS=KB|on (pgtest.sh) makes the servers write SIFTMEM lines; SIFT_MEMCENSUS_DIR keeps them (leak_harvest) for scripts/mem-report.py.
 #
 # LEAK_PROC_MB (32): growth of a long-lived server process; LEAK_GROWTH_MB (8), LEAK_GROWTH_R2 (0.8): growth of a sampled
@@ -52,6 +57,8 @@ LEAK_RULES=(
 	$'runtime error:\tsrc/sift_bitmap.c:10:5: runtime error: shift exponent 64 is too large'
 	$'SUMMARY: (Address|Undefined|Leak)Sanitizer\tSUMMARY: LeakSanitizer: 1000 byte(s) leaked in 1 allocation(s).'
 	$'leaked server state\tleaked server state: session 42 idle holds ExclusiveLock on t'
+	$'leaked server state: shared table\tleaked server state: shared table sift_col_dict_5 is mapped by 1 backend(s) with no session left'
+	$'dynamic shared memory leak\tWARNING:  dynamic shared memory leak: segment 1234 still referenced'
 	$'sift leak: memory context\tLOG:  sift leak: memory context "sift scan" (8192 bytes) still allocated in "TopMemoryContext" at backend exit'
 )
 
@@ -155,6 +162,25 @@ LEAK_IDLE_LOCKS="SELECT format('session %s %s holds %s on %s', a.pid, a.state, l
 	WHERE a.backend_type = 'client backend' AND a.pid <> pg_backend_pid() AND l.granted
 		AND l.locktype NOT IN ('virtualxid', 'transactionid') AND a.state = 'idle'"
 
+# The shared tables of the test library (col/dsmreg.c) count the backends that map them: with no client session left every count is 0. A backend gives
+# its count back when it detaches its segments, after it left pg_stat_activity, so the read repeats while any is above 0. Needs the test library
+# (pg_sift_test); a cluster without it (a released library, whose build still ships the helper extension) has no counts to read
+leak_shared_tables() {
+	local out
+	[[ -n ${SIFT_TESTING-1} ]] || return 0
+	[[ -z $(leak_psql -c "SELECT 1 FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()") ]] || return 0
+	leak_psql -c "CREATE DATABASE leakcheck_probe" >/dev/null
+	PGOPTIONS="-c client_min_messages=warning" leak_psql -d leakcheck_probe -c "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null
+	for _ in $(seq 100); do
+		out=$(leak_psql -d leakcheck_probe -c "SELECT format('shared table %s is mapped by %s backend(s) with no session left', name, users)
+			FROM sift._test_dsm_entries() WHERE users > 0")
+		[[ -n $out ]] || break
+		sleep 0.05
+	done
+	[[ -z $out ]] || echo "$out"
+	leak_psql -c "DROP DATABASE leakcheck_probe WITH (FORCE)" >/dev/null
+}
+
 # leak_cluster DATA: run against the cluster in DATA before it stops (PGHOST/PGPORT/PGUSER select it)
 leak_cluster() {
 	local data=$1 bad=0 line pid start kb name now max=$(( ${LEAK_PROC_MB:-32} + $(leak_quarantine_mb) ))
@@ -166,6 +192,7 @@ leak_cluster() {
 		SELECT 'prepared transaction ' || gid FROM pg_prepared_xacts;
 	SQL
 	)
+	while read -r line; do [[ -z $line ]] || { leak_finding "$line"; bad=1; }; done < <(leak_shared_tables)
 	while read -r pid start kb name; do
 		[[ -r /proc/$pid/stat && $(cut -d' ' -f22 "/proc/$pid/stat") == "$start" ]] || continue
 		now=$(leak_anon_kb "$pid")
@@ -179,6 +206,66 @@ leak_after_stop() {
 	local f bad=0
 	for f in $(find "$1" -path '*/pgsql_tmp/*' -type f 2>/dev/null); do leak_finding "temporary file left after shutdown: $f"; bad=1; done
 	return $bad
+}
+
+# ---------- units of work: the before and after hooks ----------
+
+LEAK_MARKS=${SIFT_TMP:-/tmp/sift-arch}/leakmarks
+
+# leak_before UNIT LOG...: a unit of work starts; the sizes of its server logs are what leak_after reads from
+leak_before() {
+	local unit=$1 f
+	shift
+	mkdir -p "$LEAK_MARKS"
+	for f in "$@"; do echo "$f $(wc -c <"$f" 2>/dev/null || echo 0)"; done >"$LEAK_MARKS/$unit"
+	: >"$LEAK_MARKS/$unit.start"
+}
+
+# leak_wait_backends DATA DB: until no client backend of DB is left in the cluster. A backend leaves the process table after its exit
+# callbacks, the sift leak report among them, and not before: pg_stat_activity forgets it earlier
+leak_wait_backends() {
+	local pm pids args
+	pm=$(head -1 "$1/postmaster.pid")
+	for _ in $(seq 600); do
+		pids=$(pgrep -P "$pm" | paste -sd, -)
+		[[ -z $pids ]] && return 0
+		args=$(ps -o args= -p "$pids" || true)
+		grep -q "^postgres: [^ ]* $2 " <<<"$args" || return 0
+		sleep 0.05
+	done
+	leak_finding "a backend of database $2 still runs after 30 s"
+	return 1
+}
+
+# leak_after UNIT DATA DB: the unit is done, DB is the database it used. Fails with the leaked context, resource or table
+leak_after() {
+	local unit=$1 data=$2 db=$3 log off size rc=0
+	leak_wait_backends "$data" "$db" || rc=1
+	while read -r log off; do
+		size=$(wc -c <"$log")
+		(( size > off )) || continue
+		tail -c +"$((off + 1))" "$log" >"$LEAK_MARKS/$unit.slice"
+		leak_scan "$LEAK_MARKS/$unit.slice" 2>"$LEAK_MARKS/$unit.found" || { rc=1; sed "s|^|leak in $unit: |" "$LEAK_MARKS/$unit.found" >&2; }
+	done <"$LEAK_MARKS/$unit"
+	# sanitizer reports the unit's processes wrote: one file for each process, in the directory of the cluster
+	while read -r log; do
+		leak_scan "$log" 2>"$LEAK_MARKS/$unit.found" || { rc=1; sed "s|^|leak in $unit: |" "$LEAK_MARKS/$unit.found" >&2; }
+	done < <(find "$(dirname "$data")" -maxdepth 2 -type f \( -name 'asan.*' -o -name 'ubsan.*' \) -newer "$LEAK_MARKS/$unit.start" 2>/dev/null)
+	(( rc == 0 )) || echo "leakcheck: $unit leaves memory or resources behind: fix the allocation or the release that is wrong, do not allow-list the finding" >&2
+	rm -f "$LEAK_MARKS/$unit" "$LEAK_MARKS/$unit.start" "$LEAK_MARKS/$unit.slice" "$LEAK_MARKS/$unit.found"
+	return $rc
+}
+
+# leak_end DATA DIR STOP...: a cluster is done (STOP stops it fast, so that LeakSanitizer reports): invariants while it runs, the shutdown, what the shutdown leaves,
+# the scan of every log under DIR
+leak_end() {
+	local data=$1 dir=$2 rc=0
+	shift 2
+	leak_cluster "$data" || rc=1
+	"$@" || rc=1
+	leak_after_stop "$data" || rc=1
+	leak_scan "$dir" || rc=1
+	return $rc
 }
 
 # ---------- memory growth ----------
@@ -276,6 +363,8 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 		scan) leak_scan "$@" ;;
 		cluster) leak_cluster "$@" ;;
 		stopped) leak_after_stop "$@" ;;
+		before) leak_before "$@" ;;
+		after) leak_after "$@" ;;
 		baseline) leak_baseline "$@" ;;
 		growth) leak_growth "$@" ;;
 		conf) leak_conf ;;

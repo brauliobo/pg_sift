@@ -29,14 +29,14 @@ BEGIN
 	RETURN true;
 END $$;
 
-SET sift.col_build_key_ranges = off;
+SET sift.test_col_build_runs_overlap = on;
 SET sift.col_unit_rows = 1200;
 CREATE INDEX ks_runs ON ks USING sift_col (id, tenant_id, note, price, pad) WITH (key_cut = 'tenant_id');
 SELECT count(*) > 1 AS several_runs FROM sift.col_segments('ks_runs') WHERE kind = 'immutable';
 SELECT ks_units('ks_runs') > 1 AS units_in_every_run;
 DROP INDEX ks_runs;
 
-SET sift.col_build_key_ranges = on;
+SET sift.test_col_build_runs_overlap = off;
 CREATE INDEX ks_idx ON ks USING sift_col (id, tenant_id, note, price, pad) WITH (key_cut = 'tenant_id');
 SELECT count(*) > 1 AS several_runs FROM sift.col_segments('ks_idx') WHERE kind = 'immutable';
 SELECT ks_units('ks_idx') AS units_for_a_key;

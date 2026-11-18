@@ -1,0 +1,28 @@
+-- A merge whose writer cuts at a lower memory than the writers of its inputs used writes more segments than it read, and the steps of sift.col_merge that follow do not merge
+-- those again as they are: the call ends, where each step wrote the index again (a tier of 16 segments into 16) until the disk was full. Rows in wide heap pages are sparse
+-- in the superblocks, so the writer cuts at its memory, here 64 kB.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz NOT NULL, kind int NOT NULL, amount int NOT NULL, pad text DEFAULT repeat('x', 1500),
+	d date) WITH (autovacuum_enabled = false);
+ALTER TABLE facts ALTER COLUMN pad SET STORAGE PLAIN;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, amount, d) WITH (key_order = 'dim_a_id, created_at');
+DO $$ BEGIN FOR i IN 0..6 LOOP
+	INSERT INTO facts (id, dim_a_id, created_at, kind, amount, d)
+	SELECT g, 1 + g % 200, timestamptz '2024-01-01' + g * interval '1 minute', g % 7, (g * 7919) % 100000, date '2024-01-01' + g % 300 FROM generate_series(i * 2200 + 1, i * 2200 + 2200) g;
+	PERFORM sift.col_promote('facts_col');
+END LOOP; END $$;
+SELECT count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('facts_col') WHERE kind = 'immutable';
+
+SET sift.test_col_segment_kb = 64;
+SET sift.col_unit_rows = 600;
+SET statement_timeout = '3s';
+SELECT sift.col_merge('facts_col', true) <= 2 AS merge_ends;
+SELECT count(*) > 16 AS cut_in_more, sum(rows) AS rows FROM sift.col_segments('facts_col') WHERE kind = 'immutable';
+SELECT pg_relation_size('facts_col') < 8 << 20 AS index_not_rewritten_again;
+SELECT sift.col_merge('facts_col') AS next_call_has_nothing_to_do;
+RESET statement_timeout;
+SELECT sift.col_verify('facts_col', true);
+DROP TABLE facts;
+DROP EXTENSION pg_sift;

@@ -4,7 +4,7 @@
 #   scripts/exec-budget.sh [--update]      --update rewrites the ceilings from this run (the count + 15% or 0.5)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-perf stat -e instructions:u -x, true 2>&1 | grep -q instructions || { echo "exec-budget: perf cannot count user instructions, skipped"; exit 0; }
+perf stat -e instructions:u -x, true 2>&1 | grep instructions >/dev/null || { echo "exec-budget: perf cannot count user instructions, skipped"; exit 0; }
 eval "$(scripts/pgtest.sh env)"
 psql -X -q -U postgres -d postgres -c "DROP DATABASE IF EXISTS cases WITH (FORCE)" -c "CREATE DATABASE cases"
 psql -X -q -U postgres -d cases -c "CREATE EXTENSION pg_sift"

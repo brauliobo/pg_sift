@@ -41,4 +41,11 @@ sift_fmix64(uint64_t x)
 	return x ^ (x >> 33);
 }
 
+/* The index of the element a sample of about one in stride takes after the one at at: the gap runs from 1 to 2 * stride - 1 by the hash of at, so that a stride that divides a period of the data (the entries of a row, a cycle of keys) does not take the same element of every period */
+static inline uint64_t
+sift_sample_next(uint64_t at, uint32_t stride)
+{
+	return at + 1 + sift_fmix64(at) % (2 * (uint64_t) stride - 1);
+}
+
 #endif
