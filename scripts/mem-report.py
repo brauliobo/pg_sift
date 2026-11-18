@@ -2,7 +2,8 @@
 """Ranks the code paths that accumulate memory, from the artifacts of a run.
 
   scripts/mem-report.py report DIR... [--baseline PREV.json] [--out report.md] [--json report.json] [--top N]
-  scripts/mem-report.py gate DIR...        valgrind logs only: exit 1 for an error or a definite leak with a pg_sift frame (scripts/valgrind.sh)
+  scripts/mem-report.py gate [--allow FILE] DIR...   valgrind logs only: exit 1 for an error or a definite leak with a pg_sift frame that FILE (scripts/valgrind-leaks.allow) does not allow (scripts/valgrind.sh)
+  scripts/mem-report.py check              the allow-list and the curated test list of the leak gate (scripts/valgrind-leaks.allow, scripts/valgrind-leaks.tests): well formed, every test exists, the estimates add up to LEAK_SET_SECONDS at most
   scripts/mem-report.py selftest
 
 DIR is searched for the three kinds of artifact:
@@ -16,10 +17,12 @@ import argparse, collections, glob, json, os, re, sys
 
 TOP = 15
 NOTES = 10
+LEAK_SET_SECONDS = 900
+ALLOW_CLASSES = {"pg-owned", "per-process", "bounded-cache", "entry-lifetime", "statement-context"}
 REGRESS_KB = 256          # growth of a path against the baseline that is flagged (and at least REGRESS_PCT)
 REGRESS_PCT = 25
 SIFT_FRAME = re.compile(r"(/src/(?:agg|bm25|col|core|table)/(?!memcensus\.c)|pg_sift\.so)")
-PG_CACHE = re.compile(r"\b(standard_planner|standard_ExecutorStart|standard_ExecutorRun|standard_ProcessUtility|relation_open|index_open|RelationIdGetRelation|RelationBuildDesc|RelationInitIndexAccessInfo|SearchCatCache\w*|SearchSysCache\w*|CatalogCacheCreateEntry|load_relcache_init_file)\b")
+PG_CACHE = re.compile(r"\b(standard_planner|standard_ExecutorStart|standard_ExecutorRun|standard_ProcessUtility|relation_open|index_open|RelationIdGetRelation|RelationBuildDesc|RelationInitIndexAccessInfo|SearchCatCache\w*|SearchSysCache\w*|lookup_ts_\w+_cache|mdopenfork|smgropen|CatalogCacheCreateEntry|load_relcache_init_file)\b")
 KV = re.compile(r'(\w+)=("[^"]*"|\S+)')
 
 
@@ -79,6 +82,12 @@ def census(rows):
     return paths, tests
 
 
+def frame_func(frame):
+    """the function of a valgrind frame line: 'by 0xADDR: name (file:line)' -> name"""
+    m = re.search(r"\b(?:at|by) 0x[0-9A-Fa-f]+: ([^ ]+) \(", frame)
+    return m.group(1) if m else ""
+
+
 def parse_valgrind(path):
     """the blocks between VALGRINDERROR-BEGIN and -END (errors and leak records), each with the first pg_sift frame"""
     found, block, lines = [], None, open(path, errors="replace").read().splitlines()
@@ -96,22 +105,77 @@ def parse_valgrind(path):
     for b in found:
         frames = [f for f in b if re.search(r"\b(at|by) 0x", f)]
         sift = next((f.strip() for f in frames if SIFT_FRAME.search(f)), None)
+        funcs = [frame_func(f) for f in frames]
         # a block that PostgreSQL's own caches allocate while sift asks them for a relation or a catalog row, or that the planner and the executor allocate under a sift hook that only calls them, is theirs: it is the first frame that tells, not the caller
         if sift and any(PG_CACHE.search(f) for f in frames[:frames.index(next(f for f in frames if sift in f.strip()))]):
             sift = None
-        out.append(dict(kind=b[0].strip()[:100], sift_frame=sift, file=os.path.basename(path), leak=bool(re.search(r"lost in loss record", b[0])),
+        out.append(dict(kind=b[0].strip()[:100], sift_frame=sift, funcs=funcs, file=os.path.basename(path), leak=bool(re.search(r"lost in loss record", b[0])),
                         definite="definitely lost" in b[0]))
     return out
 
 
-def gate(dirs):
-    """exit 1 for every valgrind error and every definite leak with a pg_sift frame; the other leaks with a pg_sift frame are listed (the first NOTES)"""
+def load_allow(path):
+    """scripts/valgrind-leaks.allow: FUNCTION[ < OUTER]<TAB>CLASS<TAB>EVIDENCE per row, # comments. FUNCTION is the innermost pg_sift frame of the leak record, OUTER (optional) a frame further out"""
+    rows = []
+    for n, line in enumerate(open(path), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        f = line.rstrip("\n").split("\t")
+        if len(f) != 3 or not all(x.strip() for x in f) or f[1] not in ALLOW_CLASSES:
+            raise SystemExit(f"{path}:{n}: a row is FUNCTION[ < OUTER], CLASS ({'/'.join(sorted(ALLOW_CLASSES))}) and EVIDENCE, tab separated")
+        inner, _, outer = f[0].partition(" < ")
+        rows.append(dict(inner=inner.strip(), outer=outer.strip(), cls=f[1], evidence=f[2], hits=0))
+    return rows
+
+
+def check_leak_set(root):
+    """the curated list of tests of the leak gate: NAME<TAB>SECONDS (measured under memcheck), each a regression test of the checkout, the sum within LEAK_SET_SECONDS; the allow rows load"""
+    load_allow(os.path.join(root, "scripts/valgrind-leaks.allow"))
+    total = 0
+    for n, line in enumerate(open(os.path.join(root, "scripts/valgrind-leaks.tests")), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        name, _, secs = line.rstrip("\n").partition("\t")
+        if not secs.isdigit() or not os.path.exists(os.path.join(root, "test/sql", name + ".sql")):
+            raise SystemExit(f"scripts/valgrind-leaks.tests:{n}: a row is a regression test of test/sql and its measured seconds under memcheck, tab separated")
+        total += int(secs)
+    if total > LEAK_SET_SECONDS:
+        raise SystemExit(f"scripts/valgrind-leaks.tests: {total} s under memcheck, at most {LEAK_SET_SECONDS} s: a test that costs more is shrunk or left out")
+    print(f"leak set: {total} s of memcheck, allow rows load")
+
+
+def allowed(v, rows):
+    """the allow row of a leak record, or None: its innermost pg_sift frame (and the OUTER frame, when the row names one) match"""
+    inner = frame_func(v["sift_frame"] or "")
+    funcs = v["funcs"]
+    for r in rows:
+        if r["inner"] == inner and (not r["outer"] or r["outer"] in funcs[funcs.index(inner):]):
+            return r
+    return None
+
+
+def gate(dirs, allow=None):
+    """exit 1 for every valgrind error and every definite leak with a pg_sift frame that no allow row covers; the other leaks with a pg_sift frame are listed (the first NOTES)"""
+    rows = load_allow(allow) if allow else []
     vg = [v for d in dirs for f in sorted(glob.glob(os.path.join(d, "*.log"))) for v in parse_valgrind(f)]
-    bad = [v for v in vg if not v["leak"] or (v["definite"] and v["sift_frame"])]
-    notes = [v for v in vg if v["leak"] and v not in bad and v["sift_frame"]]
+    skipped = 0
+    bad = []
+    for v in vg:
+        if v["leak"] and v["definite"] and v["sift_frame"]:
+            row = allowed(v, rows)
+            if row:
+                row["hits"] += 1
+                skipped += 1
+                continue
+        if not v["leak"] or (v["definite"] and v["sift_frame"]):
+            bad.append(v)
+    notes = [v for v in vg if v["leak"] and v not in bad and v["sift_frame"] and not (v["definite"] and allowed(v, rows))]
     for v in bad + notes[:NOTES]:
         print(f"valgrind: {'FAIL' if v in bad else 'note'}: {v['kind']}; first pg_sift frame: {v['sift_frame'] or '-'} ({v['file']})")
-    print(f"valgrind: {len(vg)} records, {len(bad)} failing, {len(notes)} leaks with a pg_sift frame to read in the report")
+    for r in rows:
+        if not r["hits"]:
+            print(f"valgrind: note: allow row {r['inner']}{' < ' + r['outer'] if r['outer'] else ''} matched nothing in this run")
+    print(f"valgrind: {len(vg)} records, {len(bad)} failing, {skipped} definite leaks allowed ({len(rows)} rows), {len(notes)} other leaks with a pg_sift frame to read in the report")
     return 1 if bad else 0
 
 
@@ -202,8 +266,39 @@ def selftest():
         assert [v["sift_frame"] for v in parse_valgrind(f"{d}/vg/2.log")] == [None]
         open(f"{d}/vg/3.log", "w").write("==3== VALGRINDERROR-BEGIN\n==3== 16 bytes in 1 blocks are definitely lost in loss record 9 of 9\n==3==    at 0x3: palloc (mcxt.c:1)\n==3==    by 0x4: standard_planner (planner.c:1)\n==3==    by 0x5: sift_planner (/w/src/bm25/planner.c:609)\n==3== VALGRINDERROR-END\n")
         assert [v["sift_frame"] for v in parse_valgrind(f"{d}/vg/3.log")] == [None]
+        for n, pg in ((5, "lookup_ts_dictionary_cache (ts_cache.c:316)"), (6, "mdopenfork (md.c:689)")):
+            open(f"{d}/vg/{n}.log", "w").write(f"==5== VALGRINDERROR-BEGIN\n==5== 12 bytes in 1 blocks are definitely lost in loss record 9 of 9\n==5==    at 0x3: palloc (mcxt.c:1)\n==5==    by 0x4: {pg}\n==5==    by 0x5: sift_probe (/w/src/core/store.c:324)\n==5== VALGRINDERROR-END\n")
+            assert [v["sift_frame"] for v in parse_valgrind(f"{d}/vg/{n}.log")] == [None], "a block the server's caches allocate is theirs, not the sift frame below"
+            os.unlink(f"{d}/vg/{n}.log")
         os.unlink(f"{d}/vg/3.log")
         assert gate([f"{d}/vg"]) == 1
+        os.makedirs(f"{d}/leak")
+        planted = lambda fn, outer: ("==4== VALGRINDERROR-BEGIN\n==4== 64 bytes in 1 blocks are definitely lost in loss record 9 of 9\n==4==    at 0x3: palloc (mcxt.c:1)\n"
+                                     f"==4==    by 0x4: {fn} (/w/src/col/rowkey.c:7)\n==4==    by 0x5: {outer} (/w/src/col/names.c:9)\n==4== VALGRINDERROR-END\n")
+        open(f"{d}/leak/4.log", "w").write(planted("plant", "caller"))
+        write_allow = lambda rows: open(f"{d}/allow", "w").write("# c\n" + "".join("\t".join(r) + "\n" for r in rows))
+        write_allow([])
+        assert gate([f"{d}/leak"], f"{d}/allow") == 1, "a planted leak no row allows fails the gate"
+        write_allow([("plant", "bounded-cache", "why")])
+        assert gate([f"{d}/leak"], f"{d}/allow") == 0, "an allowed leak passes"
+        write_allow([("plant < caller", "per-process", "why")])
+        assert gate([f"{d}/leak"], f"{d}/allow") == 0
+        write_allow([("plant < other", "per-process", "why")])
+        assert gate([f"{d}/leak"], f"{d}/allow") == 1, "a row for another caller does not allow it"
+        write_allow([("caller", "per-process", "why")])
+        assert gate([f"{d}/leak"], f"{d}/allow") == 1, "a row names the innermost frame, not an outer one"
+        write_allow([("plant", "unknown-class", "why")])
+        try:
+            gate([f"{d}/leak"], f"{d}/allow")
+            raise AssertionError("an unknown class is refused")
+        except SystemExit:
+            pass
+        write_allow([("plant", "pg-owned", "")])
+        try:
+            gate([f"{d}/leak"], f"{d}/allow")
+            raise AssertionError("a row without evidence is refused")
+        except SystemExit:
+            pass
         md = markdown(rep, regressions(rep, prev), TOP)
         assert "sift_scan 200 kB" in md and "merge.c:10" in md and "seg_write" in md, md
     print("mem-report selftest: ok")
@@ -219,12 +314,17 @@ def main():
     r.add_argument("--json")
     r.add_argument("--top", type=int, default=TOP)
     sub.add_parser("selftest")
-    sub.add_parser("gate").add_argument("dirs", nargs="+")
+    sub.add_parser("check")
+    g = sub.add_parser("gate")
+    g.add_argument("--allow")
+    g.add_argument("dirs", nargs="+")
     a = ap.parse_args()
     if a.cmd == "gate":
-        sys.exit(gate(a.dirs))
+        sys.exit(gate(a.dirs, a.allow))
     if a.cmd == "selftest":
         return selftest()
+    if a.cmd == "check":
+        return check_leak_set(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
     rep = build(a.dirs)
     regress = regressions(rep, json.load(open(a.baseline))) if a.baseline else None
     md = markdown(rep, regress, a.top)

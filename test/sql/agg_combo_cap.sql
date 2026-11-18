@@ -69,6 +69,18 @@ SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences 
 SET sift.test_limits = 'combo_cache_bytes=4096';
 SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
 
+-- the ids of a numeric leaf whose 3,000 distinct values lie far apart (900,000 positions) take bytes with their number, not with the range they lie in: the caches of 512 kB never start again
+CREATE TABLE sparse (id int PRIMARY KEY, k int, amount numeric(12, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO sparse SELECT i, i % 40, (i % 3000) * 3 + (i % 3000) % 7 / 100.0 FROM generate_series(1, 6000) i;
+CREATE INDEX sparse_col ON sparse USING sift_col (id, k, amount);
+CREATE TABLE cats (id int PRIMARY KEY, category_id int) WITH (autovacuum_enabled = false);
+INSERT INTO cats SELECT k, 1 + k % 6 FROM generate_series(0, 39) k;
+VACUUM (FREEZE, ANALYZE) sparse, cats;
+SET sift.test_limits = 'combo_cache_bytes=524288';
+SELECT c.pushed, c.restarted, c.nrows, c.differences
+FROM check_case('SELECT cats.category_id, sum(sparse.amount * cats.category_id) AS total FROM sparse JOIN cats ON cats.id = sparse.k GROUP BY 1') c;
+DROP TABLE sparse, cats;
+
 -- workers start their own caches again
 RESET sift.test_limits;
 SET sift.test_limits = 'combo_entries=64';

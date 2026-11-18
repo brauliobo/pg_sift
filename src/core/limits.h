@@ -227,6 +227,15 @@
 	X(eset_rows, "SIFT_ESET_ROWS", "col/spool.h", SIFT_ESET_ROWS, "entries", \
 	  "the entries of one order array that a segment writer keeps in memory (16 bytes each, a leaf holds the entries of its values and of its NULL rows apart) before it writes them to a temp file as a sorted run", \
 	  "none: past it the entries go to temp files (an error only from temp_file_limit or a full disk)", "-", 1) \
+	X(writer_min_budget, "SIFT_COLW_MIN_BUDGET", "col/seg.h", 16 * 1024 * 1024, "bytes", \
+	  "the least memory a segment writer of a build, merge or rewrite is given to hold its point arrays before it cuts the segment, whatever maintenance_work_mem is", \
+	  "none: a smaller maintenance_work_mem still writes the segments, the writer is cut at this much", "maintenance_work_mem", 1) \
+	X(window_min_bytes, "WINDOW_MIN", "col/maint/merge_window.c", 4 * 1024 * 1024, "bytes", \
+	  "the least memory the decoded units of the inputs of a column merge may hold before they are folded into one batch, whatever maintenance_work_mem is (two units at least)", \
+	  "none: the units are folded at this much", "maintenance_work_mem", 1) \
+	X(part_min_kb, "PART_MIN_KB", "col/maint/maint.c", 4096, "kB", \
+	  "the least size of a partition of a merge or rewrite, whatever maintenance_work_mem is", \
+	  "none: the partitions are of this size at least", "maintenance_work_mem", 1) \
 	X(tomb_log_kb, "SIFT_TOMB_LOG_KB", "core/tomb.h", SIFT_TOMB_LOG_KB, "kB", \
 	  "the tombstone log of a sift_table or of a sift_col index with track_changes that one backend keeps in memory (64 bytes an entry: the sorted entries, the scratch of a first look and the chain members), the entries of its own statement included; the entries past it are kept in sorted runs on temp files", \
 	  "none: past it the entries go to temp files (an error only from temp_file_limit or a full disk); a worker VACUUM is asked for at 33.5 million entries", "sift.tomb_log_limit", 0) \
@@ -236,6 +245,15 @@
 	X(max_segments, "SIFT_MAX_SEGMENTS", "core/sift.h", SIFT_MAX_SEGMENTS, "segments", \
 	  "directory entries of a sift or sift_col index (a sift_table has sift.table_max_segments for a test)", \
 	  "writers merge the smallest closed segments from 16 entries below it; a forced seal leaves the write buffer open (NOTICE)", "-", 1) \
+	X(build_serial_budget, "SIFT_COL_BUILD_SERIAL_BUDGET", "col/build.h", 64 * 1024 * 1024, "bytes", \
+	  "the least memory the writer of the serial CREATE INDEX of a sift_col index may hold before it cuts a segment, or a run of a key_cut build, whatever maintenance_work_mem is (half of it above)", \
+	  "none: a smaller maintenance_work_mem still builds, the segments or runs are cut at this much", "maintenance_work_mem", 1) \
+	X(build_min_budget, "SIFT_COL_BUILD_MIN_BUDGET", "col/build.h", 16 * 1024 * 1024, "bytes", \
+	  "the least memory a participant of a parallel CREATE INDEX of a sift_col index may hold before it cuts a segment, whatever its share of maintenance_work_mem is", \
+	  "none: the segments are cut at this much", "maintenance_work_mem", 1) \
+	X(scope_sort_min_kb, "SCOPE_SORT_MIN_KB", "col/maint/scope.c", 16384, "kB", \
+	  "the least the sorts of a scope refill hold between them and the writer of the scope segments is given, whatever maintenance_work_mem is (half of it above)", \
+	  "none: the sorts write the rest to temp files and the segments are cut at this much", "maintenance_work_mem", 1) \
 	X(term_bytes, "SIFT_MAX_TERM_BYTES", "core/sift.h", SIFT_MAX_TERM_BYTES, "bytes", \
 	  "a BM25 token", "the token is its first 236 bytes and a hash of all of it", "-", 0) \
 	X(term_tf, "SIFT_MAX_TF", "core/sift.h", SIFT_MAX_TF, "occurrences", \

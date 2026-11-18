@@ -14,16 +14,21 @@
 
 #ifdef SIFT_TESTING
 
-#include <malloc.h>
 #include <stdlib.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 #ifdef __linux__
 #include <sys/prctl.h>
 #endif
 
 #include "access/relation.h"
 #include "access/tupdesc.h"
+#include "catalog/pg_type.h"
 #include "fmgr.h"
+#include "storage/buffile.h"
 #include "storage/bufmgr.h"
+#include "storage/dsm.h"
 #include "storage/lmgr.h"
 #include "storage/ipc.h"
 #include "utils/builtins.h"
@@ -33,6 +38,7 @@
 #include "core/errctx.h"
 #include "core/sift.h"
 #include "core/catname.h"
+#include "col/dsmreg.h"
 
 PG_FUNCTION_INFO_V1(sift_test_leak);
 PG_FUNCTION_INFO_V1(sift_test_malloc_stats);
@@ -69,7 +75,7 @@ sift_leak_test_init(void)
 	on_proc_exit(leaked_contexts_at_exit, 0);
 }
 
-/* sift._test_leak(kind text, rel regclass) returns void: buffer, relcache, tupledesc, snapshot, lock, context, malloc */
+/* sift._test_leak(kind text, rel regclass) returns void: buffer, relcache, tupledesc, snapshot, lock, temp, dsm, shared, context, malloc, palloc */
 Datum
 sift_test_leak(PG_FUNCTION_ARGS)
 {
@@ -89,6 +95,8 @@ sift_test_leak(PG_FUNCTION_ARGS)
 	{
 		TupleDesc	td = CreateTemplateTupleDesc(1);
 
+		TupleDescInitBuiltinEntry(td, 1, "leaked", INT4OID, -1, 0);
+		sift_tupdesc_finalize(td);
 		td->tdrefcount = 1;		/* reference counted */
 		PinTupleDesc(td);		/* never released */
 	}
@@ -101,8 +109,19 @@ sift_test_leak(PG_FUNCTION_ARGS)
 		UnlockPage(rel, 0, ExclusiveLock);	/* never locked: "you don't own a lock" */
 		relation_close(rel, AccessShareLock);
 	}
+	else if (strcmp(kind, "temp") == 0)
+		(void) BufFileCreateTemp(false);	/* never closed */
+	else if (strcmp(kind, "dsm") == 0)
+		(void) dsm_create(4096, 0);		/* never detached */
+	else if (strcmp(kind, "shared") == 0)
+		sift_dsm_test_leak_user();		/* a shared table that a backend counted and never gave back */
 	else if (strcmp(kind, "context") == 0)
 		(void) AllocSetContextCreate(TopMemoryContext, "sift leaked", ALLOCSET_SMALL_SIZES);
+	else if (strcmp(kind, "palloc") == 0)
+	{
+		sink = MemoryContextAlloc(TopMemoryContext, 100);	/* a chunk of a long-lived context nothing points to: valgrind's definitely lost (scripts/valgrind.sh --leaks-selftest) */
+		sink = NULL;
+	}
 	else if (strcmp(kind, "malloc") == 0)
 	{
 		for (int i = 0; i < 256; i++)	/* many, so that no stale pointer on the stack hides them all */

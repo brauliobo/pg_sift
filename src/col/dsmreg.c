@@ -397,6 +397,21 @@ sift_dsm_entry(int i, const char **name, const char **build, uint64 *size, dsm_h
 	return true;
 }
 
+/* sift._test_leak('shared'): the first table of the directory counts one more backend that maps it, and none will give it back */
+void
+sift_dsm_test_leak_user(void)
+{
+	Dir		   *d = dir_segment();
+
+	for (int i = 0; d != NULL && i < DIR_ENTRIES; i++)
+		if (d->ent[i].handle != DSM_HANDLE_INVALID)
+		{
+			pg_atomic_fetch_add_u32(&d->ent[i].users, 1);
+			return;
+		}
+	ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("no shared table to leak a user of"), errhint("Call sift._test_dsm_join first.")));
+}
+
 /* sift._test_dsm_magic(magic): the magic of the directory, set to magic (a directory another library made); the one it had */
 uint32
 sift_dsm_test_magic(uint32 magic)
