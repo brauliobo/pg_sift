@@ -29,6 +29,8 @@ verify_search	slope	12	clean		select sift.verify('{m}_bm'::regclass, true);
 update_all	slope	12	clean		update {m} set amount = amount + 1;		
 update_all_text	slope	12	clean		update {m} set txt = txt || 'x', title = title || ' extra';		
 delete_all	slope	12	clean		delete from {m};		
+delete_scattered	slope	12	clean		delete from {m} where k_mid % 4 = 0;		
+read_deleted	slope	12	clean	delete from {m} where k_mid % 4 = 0;	select k_mid, count(*), sum(amount) from {m} group by 1;	=	
 insert_select	slope	12	clean		insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;		
 table_create_as	slope	132	open		create table {s} using sift_table as select * from {f} order by id;		grows with the rows loaded into a sift_table; TODO: name the allocation site (scripts/valgrind.sh --massif); measured 113, 113, 114 B/row
 table_update_all	slope	84	open	create table {s} using sift_table as select * from {f} order by id;	set sift.tomb_log_limit = '1MB'; update {s} set amount = amount + 1;		grows with the rows a whole-table update of a sift_table changes; TODO: name the allocation site (scripts/valgrind.sh --massif); measured 73, 73, 73 B/row
