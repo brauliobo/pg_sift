@@ -14,22 +14,8 @@ NOTICE:  sift_col index "events_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 VACUUM (FREEZE, ANALYZE) events;
-CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, differences bigint) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-  SET LOCAL sift.enable_agg = off;
-  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
-  SET LOCAL sift.enable_agg = on;
-  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
-  SELECT count(*) INTO differences FROM
-    ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
-  pushed := false;
-  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
-  END LOOP;
-  DROP TABLE r_off, r_on;
-  RETURN NEXT;
-END $$;
+\ir test/agg_check_pushed.sql
+\set ECHO none
 SELECT * FROM check_query($q$
  SELECT p.label, count(*) AS n, count(DISTINCT e.id) AS ids, avg(r.value::float8) AS value
  FROM events e
@@ -203,14 +189,14 @@ $q$);
 (1 row)
 
 -- A predicate-only lookup examines every candidate for each distinct input tuple.
--- Planning this large child must account for that work without executing the cross product.
+-- Planning this large child must account for that work without executing the cross product: the scan is priced at 1,394,099 here (floor 1,000,000 below). The normal plan,
+-- priced for the join's rows too, is 1.7 s against 0.7 s for the scan (PostgreSQL's own price for it is 791,615), so the scan is the plan the planner takes.
 DO $$
 DECLARE l text;
+  q text = $q$SELECT count(*) FROM events f JOIN generate_series(1, 50000) g(n) ON g.n < f.id WHERE f.id < 1000$q$;
 BEGIN
-  FOR l IN EXECUTE $q$EXPLAIN (COSTS OFF)
-    SELECT count(*) FROM events f JOIN generate_series(1, 50000) g(n) ON g.n < f.id
-    WHERE f.id < 1000$q$ LOOP
-    IF l LIKE '%Custom Scan (SiftAgg)%' THEN
+  FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
+    IF l LIKE '%Custom Scan (SiftAgg)%' AND substring(l from 'cost=[0-9.]+\.\.([0-9.]+) ')::numeric < 1000000 THEN
       RAISE EXCEPTION 'candidate predicate work was not priced';
     END IF;
   END LOOP;
