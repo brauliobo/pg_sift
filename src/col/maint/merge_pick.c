@@ -139,13 +139,24 @@ at_minimum(Relation index, const SiftMergePolicy *pol, const SiftSegEntry *sel, 
 	return (uint64) n <= Max(maint_part_count(bytes, (uint64) maint_part_kb * 1024, false), (rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS);
 }
 
+/* Of the segments of snap those the tiers may merge: not the immutable ones that are partitions, which the same merge would write again as they are */
+void
+maint_keep_overlays(SiftDirSnapshot *snap)
+{
+	int			k = 0;
+
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE || !maint_is_partition(&snap->segs[i]))
+			snap->segs[k++] = snap->segs[i];
+	snap->nsegs = k;
+}
+
 int
 maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
 {
 	SiftMergePolicy pol = {.tier_base = (uint64) sift_col_options(index)->write_buffer_limit * 1024, .fanin = SIFT_MERGE_FANIN, .mostly_dead = sift_col_mostly_dead};
 	SiftDirSnapshot *overlays;
-	int			n,
-				k = 0;
+	int			n;
 
 	maint_use_partitions(index, snap);
 	if (force)
@@ -161,10 +172,7 @@ maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSe
 	/* the tiers merge the overlays: the partitions of the same size would go back into one segment, and wait for their rewrite (or for the dead rows to fill them) */
 	overlays = palloc(sizeof(SiftDirSnapshot));
 	*overlays = *snap;
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE || !maint_is_partition(&snap->segs[i]))
-			overlays->segs[k++] = snap->segs[i];
-	overlays->nsegs = k;
+	maint_keep_overlays(overlays);
 	n = sift_merge_pick(index, &pol, overlays, false, sel);
 	pfree(overlays);
 	if (n > 0 && !clean_apart(index, snap, sel, n))

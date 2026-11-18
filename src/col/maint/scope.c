@@ -22,6 +22,20 @@
 #include "core/limits.h"
 #include "core/membudget.h"
 
+#ifdef SIFT_TESTING
+int			sift_test_col_scope_merges = 0;
+int			sift_test_col_scope_merge_limit = 0;
+
+static void
+scope_merge_counted(void)
+{
+	if (sift_test_col_scope_merge_limit > 0 && sift_test_col_scope_merges >= sift_test_col_scope_merge_limit)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift test: more than %d merges of scope segments", sift_test_col_scope_merge_limit),
+						errhint("The steps of the merge of the scope segments do not end: fix what makes a merge that writes as many segments as it read ask for another, not this limit.")));
+	sift_test_col_scope_merges++;
+}
+#endif
+
 /* The fill of the writers of a promotion: the found flags of the connections, and for an index with scopes the stamps of the fill that expands the rows (*sf; NULL for an index without) */
 SiftColFill *
 maint_scope_fill_begin(Relation index, MemoryContext cx, uint64 rows, struct SiftScopeFill **sf)
@@ -443,36 +457,70 @@ sift_scope_stamp_concurrent(Relation index)
 			;
 }
 
+/* What a set of scope segments is to the merge of everything: the bytes and rows it would write again, and whether a key lies alone in several of the segments */
+typedef struct ScopeSet
+{
+	uint64		bytes;
+	uint64		rows;
+	bool		runs;
+} ScopeSet;
+
 /*
- * Are the segments of scope s clean and does no key lie in two of them (the partitions of a merge, which a merge of all of them would write again as they are)? They are the end state of a
- * merge of everything: it ends the steps of the rewrite after a build and of sift.col_merge.
+ * Are the segments of scope s clean, and do the ranges of their keys share at most a boundary key? They are the partitions of a merge of everything, which a merge of all of them would
+ * write again as they are, but for the runs: a key that is alone in several of them.
  */
 static bool
-scope_apart(Relation index, const SiftSegEntry *sel, int n, int s)
+scope_chained(Relation index, const SiftSegEntry *sel, int n, int s, ScopeSet *set)
 {
 	int64		lo[SIFT_MAX_SEGMENTS],
 				hi[SIFT_MAX_SEGMENTS];
 	int			leaf = sift_col_rel(index)->scope_leaf[s];
-	bool		apart = true;
+	bool		chained = true;
 
-	for (int i = 0; i < n && apart; i++)
+	*set = (ScopeSet) {0};
+	for (int i = 0; i < n && chained; i++)
 	{
 		SiftColSegment *seg;
 
-		apart = !(sel[i].flags & SIFT_SEG_DIRTY);
-		if (!apart)
+		chained = !(sel[i].flags & SIFT_SEG_DIRTY);
+		if (!chained)
 			break;
+		set->bytes += sel[i].bytes;
+		set->rows += sel[i].ndocs;
 		seg = sift_cseg_open(index, &sel[i], CurrentMemoryContext);
 		maint_seg_key_range(seg, leaf, &lo[i], &hi[i]);
 		sift_cseg_close(seg);
 	}
-	for (int i = 0; i < n && apart; i++)
-		for (int j = i + 1; j < n && apart; j++)
-			apart = !((lo[i] < hi[j] && lo[j] < hi[i]) || (lo[i] == hi[i] && lo[j] == hi[j] && lo[i] == lo[j]));
-	return apart;
+	for (int i = 0; i < n && chained; i++)
+		for (int j = i + 1; j < n && chained; j++)
+		{
+			chained = !(lo[i] < hi[j] && lo[j] < hi[i]);
+			set->runs |= lo[i] == hi[i] && lo[j] == hi[j] && lo[i] == lo[j];
+		}
+	return chained;
 }
 
-/* The segments of scope s among those of the directory, and which of them the policy merges: by the tiers, or all of them (force) */
+/*
+ * Are the segments of scope s the end state of a merge of everything? They are chained, and the runs of a key among them are what the merge writes for their bytes: a key of more rows
+ * than a segment holds is in the fewest segments that hold it, and the runs of the participants of a build, which are more, are merged.
+ */
+static bool
+scope_apart(Relation index, const SiftSegEntry *sel, int n, int s, int room)
+{
+	ScopeSet	set;
+
+	return scope_chained(index, sel, n, s, &set) &&
+		(!set.runs || n <= maint_merge_parts(set.bytes, set.rows, maint_part_kb > 0 ? (uint64) maint_part_kb * 1024 : 0, true, room, maint_merge_maxout(room, n)));
+}
+
+/* The room the directory leaves for the segments a merge of n scope segments writes: besides the others, the inserters' */
+static int
+scope_room(const SiftDirSnapshot *all, int n)
+{
+	return Max(SIFT_MAX_SEGMENTS - 16 - (all->nsegs - n), 1);
+}
+
+/* The segments of scope s among those of the directory, and which of them the policy merges: by the tiers (of those that are not partitions), or all of them (force) */
 static int
 scope_pick(Relation index, const SiftDirSnapshot *all, int s, bool force, SiftSegEntry *sel)
 {
@@ -485,15 +533,19 @@ scope_pick(Relation index, const SiftDirSnapshot *all, int s, bool force, SiftSe
 		if (sift_seg_is_scope(&all->segs[i]) && sift_seg_scope_ordinal(&all->segs[i]) == s)
 			fam->segs[fam->nsegs++] = all->segs[i];
 	maint_use_partitions(index, fam);
+	if (!force)
+		maint_keep_overlays(fam);
 	n = sift_merge_pick(index, &pol, fam, force, sel);
 	pfree(fam);
-	return force && n > 1 && scope_apart(index, sel, n, s) ? 0 : n;
+	return force && n > 1 && scope_apart(index, sel, n, s, scope_room(all, n)) ? 0 : n;
 }
 
 /*
  * One step of the merge of the scope segments (col/scope.h): the segments of the first scope that has some to merge, by the tiers of the policy (all of them when force is asked, or
  * after a parallel build, whose participants each left a run of every key), into one segment or partitions of the range of the key. The entities are not merged with them. The stamp of
- * the output is the oldest of the inputs'. False: nothing to do.
+ * the output is the oldest of the inputs'. False: nothing to do, or nothing that makes progress: a merge of segments that were chained and clean writes them again when it writes as many,
+ * so the step goes on to the next scope. A scope that is merged and is not chained is chained after, one that is chained has fewer segments after, so a step that makes progress takes
+ * the pair (segments not chained or dirty, segments) of its scope down, and the steps end.
  */
 bool
 maint_scope_merge_step(Relation index, bool force)
@@ -501,21 +553,25 @@ maint_scope_merge_step(Relation index, bool force)
 	SiftDirSnapshot *all = palloc(sizeof(SiftDirSnapshot));
 	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
 	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
-	bool		done = false;
+	bool		progress = false;
 
 	sift_dir_read(index, all);
-	for (int s = 0; s < r->nscope && !done; s++)
+	for (int s = 0; s < r->nscope && !progress; s++)
 	{
 		int			n = scope_pick(index, all, s, force, sel);
+		ScopeSet	set;
 
 		if (n == 0)
 			continue;
-		maint_merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
-					   maint_part_kb > 0 ? (uint64) maint_part_kb * 1024 : 0, Max(SIFT_MAX_SEGMENTS - 16 - (all->nsegs - n), 1), NULL);
-		done = true;
+		progress = !scope_chained(index, sel, n, s, &set);
+#ifdef SIFT_TESTING
+		scope_merge_counted();
+#endif
+		progress |= maint_merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
+						   maint_part_kb > 0 ? (uint64) maint_part_kb * 1024 : 0, scope_room(all, n), NULL) < n;
 	}
 	pfree(all);
-	return done;
+	return progress;
 }
 
 /* Would a step of the merge of the scope segments find something to do (the rewrite is due for it) */

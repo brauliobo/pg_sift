@@ -100,6 +100,8 @@ extern PGDLLIMPORT int sift_test_col_spill_rows;	/* rows they hold */
 extern PGDLLIMPORT int sift_test_col_max_segments;
 extern PGDLLIMPORT bool sift_test_col_no_present;	/* a build writes no presence leaf: the layout of an index made before it */
 extern PGDLLIMPORT int sift_test_col_merge_slices;	/* slices the participants of the last parallel build merged in (0 = one process merged) */
+extern PGDLLIMPORT int sift_test_col_scope_merges;	/* merges of scope segments this session has written */
+extern PGDLLIMPORT int sift_test_col_scope_merge_limit;	/* the merge of scope segments that would be the one after this many stops with an error (0 = no limit) */
 extern PGDLLIMPORT bool sift_test_col_parallel_always;	/* a parallel build with key_cut is made whatever its merge (on: the tests of the participants run on small tables; off: build_pays decides) */
 extern PGDLLIMPORT int sift_test_col_merge_par_kb;	/* the input of a merge outside a build from which the workers make it, in kB (the gate MERGE_PAR_BYTES) */
 extern PGDLLIMPORT int sift_test_col_merge_workers;	/* workers that merge the segments of a parallel build (-1 = those that built them, 0 = the leader alone) */

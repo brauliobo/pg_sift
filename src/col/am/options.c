@@ -523,6 +523,12 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_merge_slices",
 							"Testing: slices the participants of the last parallel sift_col build merged in (0 = one process merged).",
 							NULL, &sift_test_col_merge_slices, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_scope_merges",
+							"Testing: merges of scope segments this session has written.",
+							NULL, &sift_test_col_scope_merges, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_scope_merge_limit",
+							"Testing: the merge of scope segments after this many of them (sift.test_col_scope_merges) stops with an error (0 = no limit).",
+							NULL, &sift_test_col_scope_merge_limit, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_temp_free_kb",
 							"Testing: kB of disk the temporary files of a sift_col build by key ranges may use, instead of what the temporary tablespaces have free (-1 = the disk).",
 							NULL, &sift_test_col_temp_free_kb, -1, -1, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);

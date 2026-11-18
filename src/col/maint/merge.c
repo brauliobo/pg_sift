@@ -188,11 +188,30 @@ out_next(void *arg, SiftColSegWriter *w)
 	return o->w;
 }
 
+/* The most segments a merge of n segments writes (not in slices) */
+int
+maint_merge_maxout(int max_parts, int n)
+{
+	return Min(MAX_PARTS, Max(max_parts, n));
+}
+
+/*
+ * The segments a merge writes: as many of part_bytes (0: one) as the live bytes make, within max_parts, and as many as the rows one segment may hold ask for, up to maxout.
+ * Segments that are apart and no more than this are the end state of the merge: it writes them again.
+ */
+int
+maint_merge_parts(uint64 live_bytes, uint64 live_rows, uint64 part_bytes, bool key_cut, int max_parts, int maxout)
+{
+	int			parts = part_bytes > 0 ? Max(1, (int) Min(Min(maint_part_count(live_bytes, part_bytes, key_cut), MAX_PARTS), max_parts)) : 1;
+
+	return Max(parts, (int) Min((live_rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS, (uint64) maxout));
+}
+
 /*
  * Merges the segments in[0..n) into one, or into partitions when part_bytes is set: the live bytes they hold are cut into as many segments of about
- * part_bytes each as fit max_parts (the new ones take the place of the first of the old ones, in one switch of the directory).
+ * part_bytes each as fit max_parts (the new ones take the place of the first of the old ones, in one switch of the directory). The number of segments written.
  */
-void
+int
 maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
 			   int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts, const MergeSlice *slice)
 {
@@ -282,14 +301,8 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		live_rows = Max((uint64) (live_rows * share), 1);
 		live_bytes = slice->bytes;
 	}
-	if (part_bytes > 0)
-	{
-		uint64		fit = maint_part_count(live_bytes, part_bytes, key_cut);
-
-		o.parts = Max(1, Min(Min(fit, MAX_PARTS), max_parts));
-	}
-	else if (slice && slice->win)
-		o.parts = max_parts;
+	o.maxout = slice ? (slice->win ? max_parts : 1) : maint_merge_maxout(max_parts, n);
+	o.parts = slice && slice->win && part_bytes == 0 ? max_parts : maint_merge_parts(live_bytes, live_rows, part_bytes, key_cut, max_parts, o.maxout);
 	o.live_rows = live_rows;
 	/* the output of a merge of overlays is an overlay too: lean, as the promotion of one (maint_is_overlay) */
 	if (sift_col_is_index(index))
@@ -297,8 +310,6 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		rewrite.lean = maint_is_overlay(live_rows, largest);
 		maint_set_unordered(&rewrite, schema, live_rows + overlay_rows, o.index_rows);
 	}
-	o.maxout = slice ? (slice->win ? max_parts : 1) : Min(MAX_PARTS, Max(max_parts, n));
-	o.parts = Max(o.parts, (int) Min((live_rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS, (uint64) o.maxout));
 	/* the writer of a merge may reside in maintenance_work_mem (the partitions are sized to it: maint_part_kb_for), and in what the partitions the directory allows need besides */
 	o.budget = sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE);
 	if (part_bytes > 0 || o.parts > 1)
@@ -427,7 +438,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 #endif
 		MemoryContextSwitchTo(old);
 		MemoryContextDelete(cx);
-		return;
+		return o.nneu;
 	}
 #ifdef SIFT_TESTING
 	if (sift_test_col_rollup_panic_armed || sift_test_col_merge_panic)
@@ -450,6 +461,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	SIFT_MEM_CHECKPOINT();
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
+	return o.nneu;
 }
 
 void
