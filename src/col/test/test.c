@@ -31,6 +31,8 @@ PG_FUNCTION_INFO_V1(sift_test_col_unit_of_block);
 
 PG_FUNCTION_INFO_V1(sift_test_col_formats);
 
+PG_FUNCTION_INFO_V1(sift_test_col_segment_keys);
+
 PG_FUNCTION_INFO_V1(sift_test_col_mirror);
 
 PG_FUNCTION_INFO_V1(sift_test_col_cuts);
@@ -84,6 +86,49 @@ sift_test_col_formats(PG_FUNCTION_ARGS)
 
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/* sift._test_col_segment_keys(index): for every immutable segment cut by a key, its units and rows and the range of its first key leaf over its units (lo > hi: no value): the segments of a cut by key that keeps each key in one segment share no value */
+Datum
+sift_test_col_segment_keys(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	SiftDirSnapshot *snap;
+
+	InitMaterializedSRF(fcinfo, 0);
+	snap = sift_dir_read(index);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		int64		lo = PG_INT64_MAX,
+					hi = PG_INT64_MIN;
+		Datum		v[5];
+		bool		nulls[5] = {false};
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE || !(snap->segs[i].flags & SIFT_SEG_BYKEY))
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		for (uint32 u = 0; u < seg->nsb; u++)
+		{
+			SiftCZone	z;
+
+			sift_cseg_zone(seg, seg->cut[0], u, &z);
+			if (z.nvals == z.nnull)
+				continue;
+			lo = Min(lo, z.min);
+			hi = Max(hi, z.max);
+		}
+		v[0] = Int64GetDatum(snap->segs[i].gen);
+		v[1] = Int32GetDatum((int32) seg->nsb);
+		v[2] = Int64GetDatum((int64) snap->segs[i].ndocs);
+		v[3] = Int64GetDatum(lo);
+		v[4] = Int64GetDatum(hi);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+		sift_cseg_close(seg);
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;

@@ -14,6 +14,9 @@ typedef struct OrderCtx
 	int			nleaf;
 } OrderCtx;
 
+/* How far from the exact point of a slice, in percent of the rows of a slice, a cut moves to fall between two values of the first key leaf */
+#define SIFT_SLICE_SLACK_PCT 12
+
 /* A bound of a slice of the key range, or of the rows of a unit: the first two leaves of the order, from the zone of a unit (no row is decoded to take it) */
 typedef struct BoundKey
 {
@@ -30,8 +33,9 @@ extern int	sift_colk_bound_order(const void *a, const void *b);
 extern uint32 sift_colk_first_unit(const OrderCtx *ctx, SiftColSegment *seg, const BoundKey *lo);
 /* A bound the rows of unit u of seg do not go below, from its zones */
 extern void sift_colk_unit_head(const OrderCtx *ctx, SiftColSegment *seg, uint32 u, BoundKey *bk);
-/* The sorted points that cut the rows of nseg segments into slices, in *n, and the bound before slice j of nslices */
+/* The sorted points that cut the rows of nseg segments into slices, in *n, and the bound before slice j of nslices (the point at j / nslices of the rows) */
 extern BoundKey *sift_colk_slice_bounds(const OrderCtx *ctx, SiftColSegment *const *seg, int nseg, uint64 *n);
-extern const BoundKey *sift_colk_slice_bound(const BoundKey *bk, uint64 n, int j, int nslices);
+/* ... aligned to the values of the first leaf within slack_pct of a slice either side; *depth: 1 when it is, 2 when the value is bigger than that */
+extern const BoundKey *sift_colk_slice_bound(const BoundKey *bk, uint64 n, int j, int nslices, uint32 slack_pct, uint32 *depth);
 
 #endif							/* SIFT_COL_ORDER_BOUND_H */

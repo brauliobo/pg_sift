@@ -854,8 +854,8 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 
 		if (nb == 0)
 			return 0;
-		m.lo = slice > 0 ? sift_colk_slice_bound(bk, nb, slice, nslices) : NULL;
-		m.hi = slice < nslices - 1 ? sift_colk_slice_bound(bk, nb, slice + 1, nslices) : NULL;
+		m.lo = slice > 0 ? sift_colk_slice_bound(bk, nb, slice, nslices, SIFT_SLICE_SLACK_PCT, NULL) : NULL;
+		m.hi = slice < nslices - 1 ? sift_colk_slice_bound(bk, nb, slice + 1, nslices, SIFT_SLICE_SLACK_PCT, NULL) : NULL;
 	}
 	/* the rows of the inputs that are not streams are loaded whole and sorted when they fit the budget, else sorted by a sort that spills to temporary files */
 	for (int i = 0; i < n; i++)

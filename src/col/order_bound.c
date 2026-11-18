@@ -113,7 +113,9 @@ sift_colk_slice_bounds(const OrderCtx *ctx, SiftColSegment *const *seg, int nseg
 		for (uint32 u = 0; u < seg[i]->nsb; u++)
 		{
 			BoundKey   *b = &bk[(*n)++];
-			int64		hi[2] = {0, 0};
+			int64		hi[2] = {0, 0},
+						lo1;
+			bool		nul1;
 			uint32		rows = seg[i]->sbdir[u].nrows;
 
 			memset(b, 0, sizeof(BoundKey));
@@ -128,6 +130,11 @@ sift_colk_slice_bounds(const OrderCtx *ctx, SiftColSegment *const *seg, int nseg
 				b->k[t] = b->nul[t] ? 0 : sift_crun_key(col, z.min);
 				hi[t] = b->nul[t] ? 0 : sift_crun_key(col, z.max);
 			}
+			lo1 = b->k[1];
+			nul1 = b->nul[1];
+			/* the unit's smallest second key bounds this unit, not the others that hold the same first key: the point stands before every row of that first key (depth 1) */
+			b->k[1] = PG_INT64_MIN;
+			b->nul[1] = false;
 			if (b->nul[0])
 			{
 				b->rows = rows;
@@ -137,12 +144,13 @@ sift_colk_slice_bounds(const OrderCtx *ctx, SiftColSegment *const *seg, int nseg
 			for (int q = 1; q < SLICE_POINTS; q++)
 			{
 				BoundKey   *p = &bk[(*n)++];
-				int			t = bound_leaves(ctx) > 1 && !b->nul[1] && b->k[0] == hi[0] ? 1 : 0;
+				int			t = bound_leaves(ctx) > 1 && !nul1 && b->k[0] == hi[0] ? 1 : 0;
+				int64		from = t == 1 ? lo1 : b->k[0];
 
 				memset(p, 0, sizeof(BoundKey));
 				p->k[0] = b->k[0];
 				p->k[1] = PG_INT64_MIN;
-				p->k[t] = b->k[t] + (int64) (((__int128) hi[t] - b->k[t]) * q / SLICE_POINTS);
+				p->k[t] = from + (int64) (((__int128) hi[t] - from) * q / SLICE_POINTS);
 				p->rows = Max(rows / SLICE_POINTS, 1);
 			}
 		}
@@ -150,24 +158,53 @@ sift_colk_slice_bounds(const OrderCtx *ctx, SiftColSegment *const *seg, int nseg
 	return bk;
 }
 
-/* The bound before slice j of nslices: the first point that j / nslices of the rows come before */
+/* How a bound cuts the key: 1 before every row of a value of the first leaf, 2 inside the rows of one */
+static uint32
+bound_depth(const BoundKey *bk)
+{
+	return bk->k[1] == PG_INT64_MIN && !bk->nul[1] ? 1 : 2;
+}
+
+static uint64
+distance(uint64 a, uint64 b)
+{
+	return a > b ? a - b : b - a;
+}
+
+/*
+ * The bound before slice j of nslices: the point that j / nslices of the rows come before. Within slack_pct of a slice's rows either side of it, the nearest point that cuts between values of the
+ * first leaf (depth 1) is taken instead, so that a value that fits a slice is in one segment; when there is none, the value is bigger than the slack allows for and the exact point is taken, inside it
+ * (depth 2). *depth, when asked for, says which.
+ */
 const BoundKey *
-sift_colk_slice_bound(const BoundKey *bk, uint64 n, int j, int nslices)
+sift_colk_slice_bound(const BoundKey *bk, uint64 n, int j, int nslices, uint32 slack_pct, uint32 *depth)
 {
 	uint64		total = 0,
-				seen = 0,
-				want;
+				want,
+				slack,
+				exact = n - 1,
+				best = n,
+				best_gap = 0;
 
 	for (uint64 i = 0; i < n; i++)
 		total += bk[i].rows;
 	want = total * j / nslices;
-	for (uint64 i = 0; i < n; i++)
-	{
-		if (seen >= want)
-			return &bk[i];
-		seen += bk[i].rows;
-	}
-	return &bk[n - 1];
+	slack = total / nslices * slack_pct / 100;
+	for (uint64 i = 0, before = 0; i < n; before += bk[i++].rows)
+		if (before >= want)
+		{
+			exact = i;
+			break;
+		}
+	for (uint64 i = 0, seen = 0; i < n; seen += bk[i++].rows)
+		if (distance(seen, want) <= slack && bound_depth(&bk[i]) == 1 && (best == n || distance(seen, want) < best_gap))
+		{
+			best = i;
+			best_gap = distance(seen, want);
+		}
+	if (depth != NULL)
+		*depth = best == n ? bound_depth(&bk[exact]) : 1;
+	return &bk[best == n ? exact : best];
 }
 
 /*

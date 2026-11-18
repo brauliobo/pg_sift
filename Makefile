@@ -376,6 +376,7 @@ TESTING_REGRESS += col_seg_head
 TESTING_REGRESS += col_seg_mirror
 TESTING_REGRESS += col_set_list_span
 TESTING_REGRESS += col_set_summary
+TESTING_REGRESS += col_slice_aligned
 TESTING_REGRESS += col_sorted_run
 TESTING_REGRESS += col_stmt_cid
 TESTING_REGRESS += col_stmt_cid_bm25
