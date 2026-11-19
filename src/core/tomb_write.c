@@ -89,8 +89,8 @@ sift_tomb_append_many(Relation rel, SiftTombLog *t, const SiftTomb *ents, int n)
 
 	/* VACUUM replaces the segment under the exclusive form of this lock: the current one is read inside it */
 	LockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
-	sift_dir_read(rel, t->dir);
-	if ((e = sift_tomb_find_seg(t->dir)) == NULL)
+	sift_dir_reload(rel, t->dir, t->cxt);
+	if ((e = sift_tomb_find_seg(*t->dir)) == NULL)
 		corrupt(rel, "There is no tombstone segment.");
 	tomb_append_seg(rel, e, ents, n);
 	UnlockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
@@ -243,8 +243,8 @@ sift_tomb_rewrite_dv(Relation rel, SiftTombLog *t, SiftTombKeep keep, SiftTombKe
 				keeping = false;
 
 	LockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
-	sift_dir_read(rel, t->dir);
-	if ((old = sift_tomb_find_seg(t->dir)) == NULL)
+	sift_dir_reload(rel, t->dir, t->cxt);
+	if ((old = sift_tomb_find_seg(*t->dir)) == NULL)
 		corrupt(rel, "There is no tombstone segment.");
 	sw.old_gen = old->gen;
 	tomb_reset(t, NULL);			/* the cache is rebuilt from the segment */
@@ -338,8 +338,8 @@ sift_tomb_rewrite_dv(Relation rel, SiftTombLog *t, SiftTombKeep keep, SiftTombKe
 #ifdef SIFT_TESTING
 	INSTR_TIME_SET_CURRENT(hold);
 #endif
-	sift_dir_read(rel, t->dir);
-	if ((old = sift_tomb_find_seg(t->dir)) == NULL || old->gen != sw.old_gen)
+	sift_dir_reload(rel, t->dir, t->cxt);
+	if ((old = sift_tomb_find_seg(*t->dir)) == NULL || old->gen != sw.old_gen)
 		corrupt(rel, "The tombstone segment was replaced while its rewrite was built.");
 	tail = tomb_read_tail(rel, old, t, &ntail, &tail_ext, &ntail_ext);
 	tomb_append_seg(rel, &sw.fresh, tail, ntail);

@@ -44,8 +44,7 @@ sift_tbl_net_refresh(Relation rel, SiftTblRel *st)
 		return;
 #endif
 	sift_tbl_refresh(rel, st);
-	snap = palloc(sizeof(SiftDirSnapshot));
-	*snap = st->dir;
+	snap = sift_dir_copy(st->dir);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -64,7 +63,8 @@ sift_tbl_net_refresh(Relation rel, SiftTblRel *st)
 			if (written > 0)
 				sift_log_maint(rel, "wrote the net pre-aggregates of", start, snap->segs[i].ndocs, written * BLCKSZ);
 			sift_tbl_refresh(rel, st);
-			*snap = st->dir;
+			pfree(snap);
+			snap = sift_dir_copy(st->dir);
 		}
 	}
 	pfree(snap);

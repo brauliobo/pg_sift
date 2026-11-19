@@ -27,7 +27,8 @@ PICK_BUDGET=$((24 * MB))
 LOWER="build_serial_budget=0,writer_min_budget=$MB"
 
 plan 10
-node_init bm 91 "autovacuum = off
+node_init bm 91 "sift.col_build_source = auto
+autovacuum = off
 max_parallel_workers_per_gather = 0
 max_worker_processes = 16
 max_parallel_workers = 8

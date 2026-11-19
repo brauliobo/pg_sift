@@ -135,7 +135,6 @@ static IndexBuildResult *
 serial_build(Relation heap, Relation index, IndexInfo *info, const BtPlan *plan)
 {
 	IndexBuildResult *res = palloc0(sizeof(IndexBuildResult));
-	SiftSegEntry *segs = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
 	/* the segments of a scope index are numbered by the metapage, whether or not the units of its entities are cut by key: its scope segments are */
 	bool		key_cut = sift_col_key_cut(sift_col_rel(index)) || sift_col_rel(index)->nscope > 0;
 	SiftWriteTarget *wt;
@@ -146,7 +145,7 @@ serial_build(Relation heap, Relation index, IndexInfo *info, const BtPlan *plan)
 	if (key_cut)
 		sift_colb_init_meta(index);
 	wt = sift_wt_begin(index, key_cut ? SIFT_WRITE_SHARED : SIFT_WRITE_BULK);
-	b = sift_colb_begin(index, wt, sift_colb_budget(1), SIFT_COL_BUILD_SEGMENTS, segs, false, 1, !info->ii_Concurrent);
+	b = sift_colb_begin(index, wt, sift_colb_budget(1), NULL, 0, false, 1, !info->ii_Concurrent);
 	b->btree = plan ? plan->btree : InvalidOid;
 	SIFT_MEM_SCOPE(col_build, b->cxt);
 	SpinLockInit(&acc->mutex);
@@ -177,7 +176,7 @@ serial_build(Relation heap, Relation index, IndexInfo *info, const BtPlan *plan)
 	if (!key_cut)
 		sift_store_init_meta_ex(wt, 0, 0, b->r->schema->hash, SIFT_COL_META_FLAG);
 	sift_wt_finish(wt);
-	sift_colb_publish(index, segs, nsegs, !info->ii_Concurrent && sift_col_track_on(index));
+	sift_colb_publish(index, sift_colb_segments(b), nsegs, !info->ii_Concurrent && sift_col_track_on(index));
 	sift_colb_free(b);
 	return res;
 }

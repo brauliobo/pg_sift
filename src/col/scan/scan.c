@@ -103,7 +103,7 @@ sift_col_open_table(Relation rel, const SiftColSchema *schema, const SiftDirSnap
 	SiftColSource *src = col_source(rel, rel, schema, mcxt, SIFT_COLO_NOWBUF | SIFT_COLO_NOCHECKS | COLO_TABLE);
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 
-	src->dir = *dir;
+	src->dir = sift_dir_copy(dir);
 	src->seg = palloc0(dir->nsegs * sizeof(ColCursor));
 	for (int i = 0; i < dir->nsegs; i++)
 	{
@@ -138,15 +138,15 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	src->snap = (flags & SIFT_COLO_SNAP_HELD) ? snapshot : RegisterSnapshot(snapshot);
 	leader_end = scan_view_load(src, heap, view);
 	segments_pin(src, flags);
-	sift_quarantine_net(index, src->dir.meta.flags);
+	sift_quarantine_net(index, src->dir->meta.flags);
 	col_hf_open(src);
 	SIFT_COL_OPEN_GATE();
-	if (!(src->dir.meta.flags & SIFT_COL_META_FLAG) || sift_dir_layout_differs(&src->dir, src->schema->hash))
+	if (!(src->dir->meta.flags & SIFT_COL_META_FLAG) || sift_dir_layout_differs(src->dir, src->schema->hash))
 		sift_lane_layout_error(index, "column definitions");
-	src->seg = palloc0(src->dir.nsegs * sizeof(ColCursor));
-	for (int i = 0; i < src->dir.nsegs; i++)
-		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
-			src->seg[src->nseg++].seg = sift_cseg_open(index, &src->dir.segs[i], mcxt);
+	src->seg = palloc0(src->dir->nsegs * sizeof(ColCursor));
+	for (int i = 0; i < src->dir->nsegs; i++)
+		if (src->dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			src->seg[src->nseg++].seg = sift_cseg_open(index, &src->dir->segs[i], mcxt);
 	col_dv_open(src);
 	/* no index: segments_current (scan_unit.c) is the directory rule of a column scan, and it holds the map's trust through a promotion, which adds a segment and replaces none */
 	sift_vis_begin(&src->vis, heap, snapshot, NULL, 0);
@@ -242,7 +242,7 @@ sift_col_heap_sbs(const SiftColSource *src)
 const struct SiftMetaPageData *
 sift_col_source_meta(const SiftColSource *src)
 {
-	return &src->dir.meta;
+	return &src->dir->meta;
 }
 
 const SiftColCounters *

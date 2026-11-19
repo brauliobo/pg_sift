@@ -194,11 +194,12 @@ fold_next(Fold *f)
 static uint64
 fold_clear(Relation index, Fold *f, IndexBulkDeleteResult *stats)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	int			order[SIFT_MAX_SEGMENTS];
+	SiftDirSnapshot *snap;
+	int		   *order;
 	uint64		removed = 0;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
+	order = palloc(Max(snap->nsegs, 1) * sizeof(int));
 	for (int k = 0, n = sift_dir_clear_order(snap, order); k < n; k++)
 	{
 		if (snap->segs[order[k]].kind == SIFT_SEG_IMMUTABLE)
@@ -210,6 +211,7 @@ fold_clear(Relation index, Fold *f, IndexBulkDeleteResult *stats)
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_TOMB)
 			maint_bulkdelete_tomb(index, &snap->segs[i], fold_dead, f, stats);
+	pfree(order);
 	pfree(snap);
 	return removed;
 }
@@ -267,9 +269,8 @@ sift_col_fold_marks(Relation index)
 	/* the deletion records are folded and dropped by the pass over the log that drops the marks: when there were no marks to clear, it is made here */
 	if (!dropped && log->dvecs > 0)
 	{
-		SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+		SiftDirSnapshot *snap = sift_dir_read(index);
 
-		sift_dir_read(index, snap);
 		for (int i = 0; i < snap->nsegs; i++)
 			if (snap->segs[i].kind == SIFT_SEG_TOMB)
 				maint_bulkdelete_tomb(index, &snap->segs[i], NULL, NULL, &stats);
@@ -344,8 +345,7 @@ sift_col_fold_due(Relation index)
 		return false;
 	if (log->fold_due)
 		return true;
-	snap = palloc(sizeof(SiftDirSnapshot));
-	sift_col_dir_read(index, snap, false);
+	snap = sift_col_dir_read(index, false);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			rows += snap->segs[i].ndocs;

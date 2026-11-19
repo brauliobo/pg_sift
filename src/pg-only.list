@@ -366,6 +366,11 @@ core/explain.h
 core/extver.c
 core/filter_test.c
 core/freelist.c
+core/dirchain.c
+core/dirchain.h
+core/dirchain_test.c
+core/dirpart.c
+core/dirpart.h
 core/freelist_alloc.c
 core/freelist_int.h
 core/handler.c
@@ -397,6 +402,7 @@ core/relocate.c
 core/restrict.c
 core/restrict.h
 core/restrict_test.c
+core/range_test.c
 core/ring_test.c
 core/sortruns.c
 core/sortruns.h

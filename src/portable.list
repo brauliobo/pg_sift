@@ -52,6 +52,7 @@ bm25/rank_search.c
 bm25/count.c
 bm25/parallel.c
 core/cpu.c
+core/range.c
 core/span.c
 # headers (the data tables and kernels included by the sources above come with them)
 core/sift.h
@@ -107,6 +108,7 @@ core/damage.h
 core/live.h
 bm25/segment.h
 bm25/segment_int.h
+core/range.h
 core/span.h
 core/store.h
 core/varint.h

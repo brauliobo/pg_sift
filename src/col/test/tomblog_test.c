@@ -100,10 +100,10 @@ sift_test_col_marks_paid(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftTombLog *log = sift_col_log(index);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	int64		paid;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	paid = log == NULL ? 0 : (int64) sift_col_marks_paid(index, &snap->meta, log->gen);
 	index_close(index, AccessShareLock);
 	PG_RETURN_INT64(paid);
@@ -226,11 +226,10 @@ Datum
 sift_test_col_log_format(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap = sift_dir_read(index);
 	const SiftSegEntry *e;
 	int32		format;
 
-	sift_dir_read(index, snap);
 	e = sift_tomb_find_seg(snap);
 	format = e == NULL ? 0 : e->format;
 	index_close(index, AccessShareLock);
@@ -418,7 +417,7 @@ Datum
 sift_test_tomb_header(PG_FUNCTION_ARGS)
 {
 	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), RowExclusiveLock);
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	const SiftSegEntry *e;
 	Buffer		buf;
 	TupleDesc	desc;
@@ -429,7 +428,7 @@ sift_test_tomb_header(PG_FUNCTION_ARGS)
 	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("function returning record called in context that cannot accept type record"),
 						errhint("Call it in the FROM clause.")));
-	sift_dir_read(rel, dir);
+	dir = sift_dir_read(rel);
 	if ((e = sift_tomb_find_seg(dir)) == NULL)
 		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("relation \"%s\" has no tombstone log", RelationGetRelationName(rel)),
 						errhint("Delete a row of a sift_table, or give a column index track_changes.")));
@@ -551,10 +550,10 @@ sift_test_col_conn_stamps(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;

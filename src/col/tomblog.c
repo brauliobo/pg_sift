@@ -30,7 +30,7 @@ typedef struct LogEnt
 	RelFileNumber relnumber;
 	bool		has_seg;		/* the index has its tombstone segment (an index does not lose it: VACUUM replaces it, a rebuild is another file) */
 	MemoryContext cxt;
-	SiftDirSnapshot dir;
+	SiftDirSnapshot *dir;
 	SiftTombLog log;
 } LogEnt;
 
@@ -91,6 +91,7 @@ log_ent(Relation index)
 	Oid			relid = RelationGetRelid(index);
 	bool		found;
 	LogEnt	   *e;
+	MemoryContext old;
 
 	if (log_tab == NULL)
 	{
@@ -113,12 +114,16 @@ log_ent(Relation index)
 		e->stale = false;
 		e->has_seg = false;
 		e->cxt = AllocSetContextCreate(CacheMemoryContext, "sift cache tombstone log", ALLOCSET_DEFAULT_SIZES);
-		memset(&e->dir, 0, sizeof(e->dir));
+		e->dir = NULL;
 		memset(&e->log, 0, sizeof(e->log));
 		sift_tomb_init(&e->log, e->cxt, &e->dir);
 		e->log.spill = true;
 	}
-	sift_dir_read_segs(index, &e->dir);
+	if (e->dir)
+		pfree(e->dir);
+	old = MemoryContextSwitchTo(e->cxt);
+	e->dir = sift_dir_read_segs(index);
+	MemoryContextSwitchTo(old);
 	return e;
 }
 
@@ -157,7 +162,7 @@ log_synced(Relation index, bool entries)
 	sift_col_tombs_flush();
 	e = log_ent(index);
 	SIFT_MEM_SCOPE(col_tomb_log, e->cxt);
-	seg = sift_tomb_find_seg(&e->dir);
+	seg = sift_tomb_find_seg(e->dir);
 
 	if (seg == NULL)
 		return NULL;
@@ -202,12 +207,12 @@ sift_col_log_appender(Relation index)
 	if (e != NULL && e->has_seg && !e->stale && e->relnumber == index->rd_locator.relNumber)
 		return &e->log;
 	e = log_ent(index);
-	if (sift_tomb_find_seg(&e->dir) == NULL)
+	if (sift_tomb_find_seg(e->dir) == NULL)
 	{
 		sift_col_log_create(index);
 		e = log_ent(index);
 	}
-	check_format(index, sift_tomb_find_seg(&e->dir));
+	check_format(index, sift_tomb_find_seg(e->dir));
 	e->has_seg = true;
 	return &e->log;
 }
@@ -224,10 +229,10 @@ sift_col_log_create(Relation index)
 	LogEnt	   *e = log_ent(index);
 	SiftSegEntry seg;
 
-	if (sift_tomb_find_seg(&e->dir) != NULL)
+	if (sift_tomb_find_seg(e->dir) != NULL)
 		return;
 	seg = sift_tomb_new_segment(index, SIFT_SEG_TOMB, SIFT_COL_FORMAT_ROWKEY);
-	sift_dir_update(index, &(SiftDirChange) {.fn = add_log_segment,.arg = &seg,.extra = InvalidBuffer});
+	sift_dir_update(index, &(SiftDirChange) {.fn = add_log_segment,.arg = &seg,.nadd = 1,.extra = InvalidBuffer});
 }
 
 typedef struct DropArg

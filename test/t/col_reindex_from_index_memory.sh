@@ -11,7 +11,8 @@ MB=1024
 MWM=8
 plan 8
 
-node_init cm 91 "autovacuum = off
+node_init cm 91 "sift.col_build_source = auto
+autovacuum = off
 max_parallel_workers_per_gather = 0
 sift.col_auto_merge = off
 sift.async_maintenance = off"

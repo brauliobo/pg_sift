@@ -28,8 +28,8 @@
 #define SIFT_COL_GATE_DELETE	8
 #endif
 
-/* The segments a build may write: the directory keeps room for the write buffer and a merge */
-#define SIFT_COL_BUILD_SEGMENTS	(SIFT_MAX_SEGMENTS - 7)
+/* The runs a key_cut build keeps before it merges some: they overlap in the key and the merge that ends the build opens them all, so this bounds its memory, not the directory */
+#define SIFT_COL_BUILD_RUNS		121
 extern PGDLLIMPORT int sift_col_build_source;
 extern void sift_col_build_define_gucs(void);
 /* The workers a build through a btree may have (the participants take ranges of the key; col/build/btree_par.c) */
@@ -45,8 +45,8 @@ extern Size sift_colb_budget(int nslots);
 extern void sift_colb_init_meta(Relation index);
 
 /*
- * segs has room for maxsegs entries. A segment is cut when its writer holds more than budget bytes, except the last one that
- * maxsegs allows. shared: a participant of a parallel build, which writes through a SHARED target and takes the generations of its
+ * A segment is cut when its writer holds more than budget bytes. segs: NULL, the build keeps its segments in an array that grows; else the entries of a participant of a parallel build,
+ * segcap of them (sift_colb_segs_bound). shared: a participant of a parallel build, which writes through a SHARED target and takes the generations of its
  * segments from the metapage; the rows and heap blocks it did go to the progress of the leader.
  */
 /* What the formula of the design notes looked at in the strings of an index being built, by kind and leaf (past the first SIFT_COL_SCAN_LEAVES none), summed over its participants: [0] the LZ4 chosen, [1] the zstd kept */
@@ -60,7 +60,10 @@ typedef struct ColScanAcc
 /* The writes of this backend add to acc until it is watched with NULL; the leader reports the sums with one NOTICE at the end of the build */
 extern void sift_colb_scan_watch(ColScanAcc *acc);
 extern void sift_colb_scan_report(Relation index, ColScanAcc *acc);
-extern ColBuild *sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots, bool scopes);
+extern ColBuild *sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, SiftSegEntry *segs, int segcap, bool shared, int nslots, bool scopes);
+/* The segments the build wrote, in the order of the directory: valid until it is freed */
+extern SiftSegEntry *sift_colb_segments(const ColBuild *b);
+extern int sift_colb_segs_bound(Relation index, uint32 nsbs);
 /* Scans the whole heap (serial build) or the superblock sb of nblocks heap blocks (parallel); both return the heap tuples scanned */
 extern double sift_colb_scan(ColBuild *b, Relation heap, IndexInfo *info);
 extern double sift_colb_scan_sb(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snapshot, uint32 sb, BlockNumber nblocks);
@@ -75,20 +78,20 @@ extern void sift_colb_free(ColBuild *b);
  */
 extern void sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs, bool stamped);
 
-/* The segments of a participant of a parallel build: slot i of the parts of maxsegs each (col/build_par.c) */
+/* The segments of a participant of a parallel build: slot i of the parts of segcap entries each (col/build_par.c) */
 typedef struct SiftColPart
 {
 	int			nsegs;
 	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
 } SiftColPart;
-extern Size sift_colp_part_size(int maxsegs);
-extern SiftColPart *sift_colp_part(char *parts, int maxsegs, int slot);
-extern SiftSegEntry *sift_colp_collect(char *parts, int maxsegs, int nslots, int *nsegs);
+extern Size sift_colp_part_size(int segcap);
+extern SiftColPart *sift_colp_part(char *parts, int segcap, int slot);
+extern SiftSegEntry *sift_colp_collect(char *parts, int segcap, int nslots, int *nsegs);
 
 /* col/build_par.c: the whole build with workers, NULL when none could be launched (nothing is written then) */
 extern IndexBuildResult *sift_colp_build(Relation heap, Relation index, IndexInfo *info);
 /* The merge of the segments of a parallel build by the participants, each a slice of the key range (col/build_par.c); false: no worker could be launched, the caller merges alone */
-extern bool sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int nslices, TimestampTz start);
+extern bool sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int nslices, TimestampTz start, bool partitions);
 
 /* The peak of the memory the build holds is noted where it grows (a batch, a run, a unit); a release library does not look */
 #ifdef SIFT_TESTING
@@ -100,7 +103,7 @@ extern void sift_colb_peak_note(void);
 #ifdef SIFT_TESTING
 /*
  * Parallel workers the last sift_col build of this session launched; the superblock (1 = the first) whose participant fails (0 = none);
- * kB the writer of a segment holds before the segment is cut (0 = by maintenance_work_mem); the segments a participant may hold (0 = the directory's room)
+ * kB the writer of a segment holds before the segment is cut (0 = by maintenance_work_mem)
  */
 extern PGDLLIMPORT int sift_test_col_workers;
 extern PGDLLIMPORT int sift_test_col_build_peak_kb;	/* kB of memory (contexts of the backend) the builds of the last statement of this session held above what it started with, at their peak */
@@ -116,7 +119,7 @@ extern PGDLLIMPORT int sift_test_col_spill_run_kb;	/* kB of memory a run of the 
 extern PGDLLIMPORT bool sift_test_col_build_runs_overlap;	/* a build with key_cut writes the runs of the table's order, as a key that is not a number does */
 extern PGDLLIMPORT int sift_test_col_spill_bytes;	/* bytes the temporary files of the last build by key ranges of this session took */
 extern PGDLLIMPORT int sift_test_col_spill_rows;	/* rows they hold */
-extern PGDLLIMPORT int sift_test_col_max_segments;
+extern PGDLLIMPORT int sift_test_col_build_runs;	/* the runs a key_cut build keeps before it merges some (0 = SIFT_COL_BUILD_RUNS) */
 extern PGDLLIMPORT bool sift_test_col_no_present;	/* a build writes no presence leaf: the layout of an index made before it */
 extern PGDLLIMPORT int sift_test_col_merge_slices;	/* slices the participants of the last parallel build merged in (0 = one process merged) */
 extern PGDLLIMPORT int sift_test_col_scope_merges;	/* merges of scope segments this session has written */

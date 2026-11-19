@@ -18,6 +18,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "core/membudget.h"
+#include "core/quarantine.h"
 #include "col/build/build_int.h"
 #include "col/conn.h"
 #include "col/scope.h"
@@ -111,10 +112,10 @@ replaced_index(Relation heap, Relation index, IndexInfo *info)
 
 typedef struct FromOld
 {
-	SiftSegEntry in[SIFT_MAX_SEGMENTS];
+	SiftSegEntry *in;
 	int			n;
 	int			nbuffers;
-	SiftSegEntry buffers[SIFT_MAX_SEGMENTS];
+	SiftSegEntry *buffers;
 } FromOld;
 
 /* The index REINDEX replaces, read through its superseded file, and whether it can give the rows */
@@ -131,13 +132,23 @@ struct ColOld
 static const char *
 old_state(Relation old, const SiftColRel *r, FromOld *f, uint64 *entries)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap = sift_col_dir_read(old, false);
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col from-index check", ALLOCSET_SMALL_SIZES);
-	SiftColSegment *seg[SIFT_MAX_SEGMENTS] = {NULL};
-	bool		stream[SIFT_MAX_SEGMENTS];
+	SiftColSegment **seg;
+	bool	   *stream;
 	const char *why = NULL;
+	int			nimm = 0,
+				nbuf = 0;
 
-	sift_col_dir_read(old, snap, false);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		nimm += snap->segs[i].kind == SIFT_SEG_IMMUTABLE;
+		nbuf += snap->segs[i].kind == SIFT_SEG_WBUF_OPEN || snap->segs[i].kind == SIFT_SEG_WBUF_SEALED;
+	}
+	/* check-memory: allow the entries of a directory, at most SIFT_DIR_WIDE_MAX */
+	f->in = palloc(Max(nimm, 1) * sizeof(SiftSegEntry));
+	/* check-memory: allow the entries of a directory, at most SIFT_DIR_WIDE_MAX */
+	f->buffers = palloc(Max(nbuf, 1) * sizeof(SiftSegEntry));
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
@@ -157,6 +168,8 @@ old_state(Relation old, const SiftColRel *r, FromOld *f, uint64 *entries)
 	}
 	if (f->n + f->nbuffers == 0)
 		why = "the index holds no rows";
+	seg = palloc0(Max(f->n, 1) * sizeof(SiftColSegment *));
+	stream = palloc(Max(f->n, 1) * sizeof(bool));
 	for (int i = 0; i < f->n && why == NULL; i++)
 	{
 		if (f->in[i].flags & SIFT_SEG_SCOPE)
@@ -275,7 +288,6 @@ build_from(Relation heap, Relation index, ColOld *o)
 	if (sift_test_col_from_index_mutant == 1)
 		f->nbuffers = 0;
 #endif
-	out = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
 	in = palloc((f->n + f->nbuffers) * sizeof(SiftSegEntry));
 	memcpy(in, f->in, f->n * sizeof(SiftSegEntry));
 	nin = f->n;
@@ -298,7 +310,7 @@ build_from(Relation heap, Relation index, ColOld *o)
 		}
 		MemoryContextDelete(run);
 	}
-	nout = sift_col_merge_from(index, o->view, in, nin, f->n, out, SIFT_COL_BUILD_SEGMENTS);
+	out = sift_col_merge_from(index, o->view, in, nin, f->n, &nout);
 	if (wt != NULL)
 	{
 		sift_wt_release(wt, release, nrelease);
@@ -338,7 +350,7 @@ colb_old_open(Relation heap, Relation index, IndexInfo *info)
 	o->view = view;
 	r = sift_col_rel(index);
 	if ((o->why = new_layout_refused(index, r)) == NULL)
-		o->why = old_state(view, r, &o->from, &o->rows);
+		o->why = sift_index_quarantined(view) ? "the index is out of service" : old_state(view, r, &o->from, &o->rows);
 	o->blocks = RelationGetNumberOfBlocks(view);
 	return o;
 }

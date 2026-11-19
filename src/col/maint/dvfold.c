@@ -34,11 +34,13 @@ sift_col_dv_settle_begin(Relation index)
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift deletion records", ALLOCSET_DEFAULT_SIZES);
 	DvSettle   *st = MemoryContextAllocZero(cxt, sizeof(DvSettle));
+	MemoryContext old;
 
 	st->index = index;
 	st->cxt = cxt;
-	st->dir = MemoryContextAlloc(cxt, sizeof(SiftDirSnapshot));
-	sift_dir_read(index, st->dir);
+	old = MemoryContextSwitchTo(cxt);
+	st->dir = sift_dir_read(index);
+	MemoryContextSwitchTo(old);
 	st->rec = MemoryContextAlloc(cxt, sizeof(SiftDvRec));
 	st->rows = MemoryContextAlloc(cxt, SIFT_COL_UNIT_MAX_ROWS * sizeof(uint32));
 	st->live = MemoryContextAlloc(cxt, SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));

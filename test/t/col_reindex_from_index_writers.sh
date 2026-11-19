@@ -9,7 +9,8 @@ plan 7
 
 SECS=$(knob SIFT_RIW_SECS 8 4)
 ROWS=$(knob SIFT_RIW_ROWS 20000 8000)
-node_init n 40 "autovacuum = off
+node_init n 40 "sift.col_build_source = auto
+autovacuum = off
 sift.col_auto_merge = off"
 node_start n || bail "start failed"
 D=$(dir n)

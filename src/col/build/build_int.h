@@ -50,7 +50,9 @@ struct ColBuild
 	bool		spill_tried;	/* the first full run decided whether the build goes by ranges */
 	Oid			btree;			/* key_cut: the btree the heap is read through, in the order of the key (col/build/btree.c) */
 	int			nsegs;
-	int			maxsegs;
+	int			segcap;			/* the entries segs has room for */
+	bool		segs_fixed;		/* segs is a participant's array in shared memory: it does not grow */
+	int			maxruns;		/* key_cut: the runs the build keeps before it merges some (the merge that ends it opens them all) */
 	bool		shared;			/* a participant of a parallel build */
 	uint64		total_rows;		/* the heap's estimate of the rows of the index */
 	uint64		entries;		/* the rows this build writes: those of the index, or the entries of a scope (from the sample of its keys) */
@@ -70,10 +72,11 @@ struct ColBuild
 	bool		metagen;		/* the generations of the segments are the metapage's, as a key-cut build's, though the units of the entities are not cut by key */
 };
 
-extern ColBuild *colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots, int scope, int nscope);
+extern ColBuild *colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, SiftSegEntry *segs, int segcap, bool shared, int nslots, int scope, int nscope);
+extern void colb_segs_room(ColBuild *b, int n);
 extern uint64	colb_next_gen(ColBuild *b);
 extern void colb_scope_cut(SiftColRel *r, int scope);
-extern void colb_scope_begin(ColBuild *b, SiftSegEntry *segs, int room);
+extern void colb_scope_begin(ColBuild *b);
 extern void colb_scope_feed(ColBuild *b, const SiftColBatch *src);
 extern void colb_scope_gather(ColBuild *b);
 extern void colb_scope_say_rollup(Relation index);

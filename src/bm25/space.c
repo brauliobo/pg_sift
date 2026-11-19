@@ -43,7 +43,7 @@ int64
 sift_maint_orphan_sweep(Relation index)
 {
 	Bitmapset  *cand = sift_store_orphans(index);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	Bitmapset  *ref;
 	SiftExtent *ext;
 	int			n;
@@ -55,7 +55,7 @@ sift_maint_orphan_sweep(Relation index)
 	if (!ConditionalLockPage(index, SIFT_LOAD_LOCK_BLKNO, ExclusiveLock))
 		return 0;
 	LockPage(index, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	ref = sift_store_referenced_blocks(index, snap);
 	cand = bms_del_members(cand, ref);
 	ext = sift_store_block_extents(cand, &n);
@@ -524,7 +524,7 @@ space_shift(Relation rel, SiftWriteTarget *wt, const void *arg)
 	shift->written = sift_store_shift(rel, wt, shift->entry, shift->budget, &fresh, &shift->release, &shift->nrelease);
 	if (shift->written == 0)
 		return;
-	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = shift->release,
+	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.nadd = 1,.release = shift->release,
 					.nrelease = shift->nrelease,.extra = InvalidBuffer});
 	sift_log_maint(rel, "shifted", start, shift->entry->ndocs, fresh.bytes);
 }
@@ -563,8 +563,8 @@ space_shift_round(Relation rel, const SiftDirSnapshot *snap, const SpaceSeg *seg
 static void
 space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	SpaceSeg   *seg = palloc(SIFT_MAX_SEGMENTS * sizeof(SpaceSeg));
+	SiftDirSnapshot *snap;
+	SpaceSeg   *seg = NULL;
 
 	while (budget > 0)
 	{
@@ -572,10 +572,11 @@ space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 		BlockNumber limit = 0;
 		int			n;
 
-		sift_dir_read(rel, snap);
+		snap = sift_dir_read(rel);
 		/* Relocation follows the same failure backoff as other automatic writes. Tail truncation remains available. */
 		if (in_backoff(&snap->meta))
 			break;
+		seg = seg ? repalloc(seg, Max(snap->nsegs, 1) * sizeof(SpaceSeg)) : palloc(Max(snap->nsegs, 1) * sizeof(SpaceSeg));
 		n = space_plan(rel, snap, budget, seg, &gain, &limit);
 		if (n == 0)
 		{
@@ -590,7 +591,8 @@ space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 			SiftExtent *release;
 			SpaceMove move;
 
-			sift_dir_read(rel, snap);
+			pfree(snap);
+			snap = sift_dir_read(rel);
 			if ((e = space_entry(snap, seg[i].gen)) == NULL)
 				continue;
 			release = e->kind == SIFT_SEG_IMMUTABLE ? sift_store_immutable_extents(rel, e, &nrelease) : sift_lane_extents(rel, e, &nrelease);
@@ -612,7 +614,8 @@ space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 		}
 	}
 done:
-	pfree(seg);
+	if (seg)
+		pfree(seg);
 	pfree(snap);
 }
 
@@ -645,8 +648,8 @@ space_shrink_step(Relation rel, SiftWriteTarget *wt, const void *arg)
 	if (sh->written == 0)
 		return;
 	SIFT_SPACE_TEST_POINT(5);
-	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = sh->release,
-					.nrelease = sh->nrelease,.extra = InvalidBuffer});
+	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.nadd = 1,.release = sh->release,
+					.nrelease = sh->nrelease,.chain_below = sh->keep,.extra = InvalidBuffer});
 	SIFT_SPACE_TEST_POINT(6);
 	sift_log_maint(rel, "shrunk", start, sh->entry->ndocs, fresh.bytes);
 }
@@ -655,9 +658,12 @@ space_shrink_step(Relation rel, SiftWriteTarget *wt, const void *arg)
 static SiftExtent *
 shrink_extents(Relation rel, const SiftDirSnapshot *snap, int *n)
 {
-	SiftExtent *all = palloc((SIFT_MAX_SEGMENTS * (SIFT_MAX_EXTENTS + 2) + 1) * sizeof(SiftExtent));
+	int			cap = snap->nchain + SIFT_MAX_EXTENTS + 2;
+	SiftExtent *all = palloc(cap * sizeof(SiftExtent));
 
 	*n = 0;
+	for (int i = 0; i < snap->nchain; i++)
+		all[(*n)++] = (SiftExtent) {.start = snap->chain[i],.nblocks = 1};
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		int			k;
@@ -666,6 +672,11 @@ shrink_extents(Relation rel, const SiftDirSnapshot *snap, int *n)
 		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
 			continue;
 		ext = sift_store_immutable_extents(rel, &snap->segs[i], &k);
+		if (*n + k > cap)
+		{
+			cap = Max(2 * cap, *n + k);
+			all = repalloc(all, cap * sizeof(SiftExtent));
+		}
 		memcpy(all + *n, ext, k * sizeof(SiftExtent));
 		*n += k;
 		pfree(ext);
@@ -709,12 +720,12 @@ shrink_keep(Relation rel, const SiftDirSnapshot *snap, const SiftExtent *ext, in
 BlockNumber
 sift_maint_shrink_target(Relation rel, int64 *movable)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	int			n;
 	SiftExtent *ext;
 	BlockNumber keep;
 
-	sift_dir_read(rel, snap);
+	snap = sift_dir_read(rel);
 	ext = shrink_extents(rel, snap, &n);
 	keep = shrink_fit(rel, snap, ext, n);
 	*movable = shrink_above(ext, n, keep);
@@ -727,18 +738,15 @@ sift_maint_shrink_target(Relation rel, int64 *movable)
 bool
 sift_maint_buffer_above_shrink(Relation rel)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	SiftExtent *ext;
 	int			n;
 	BlockNumber keep;
 	bool		above = false;
 
 	if (!online_cut_wanted(rel))
-	{
-		pfree(snap);
 		return false;
-	}
-	sift_dir_read(rel, snap);
+	snap = sift_dir_read(rel);
 	ext = shrink_extents(rel, snap, &n);
 	keep = shrink_keep(rel, snap, ext, n);
 	pfree(ext);
@@ -758,29 +766,45 @@ sift_maint_buffer_above_shrink(Relation rel)
 	return above;
 }
 
+static void
+space_chain_step(Relation rel, SiftWriteTarget *wt, const void *arg)
+{
+	sift_wt_publish(wt, &(SiftDirChange) {.chain_below = *(const BlockNumber *) arg,.extra = InvalidBuffer});
+}
+
+/* The pages of a chained directory at or above keep go below it (the segments are all below): the bytes written */
+static uint64
+shrink_chain(Relation rel, const SiftDirSnapshot *snap, BlockNumber keep)
+{
+	uint64		above = 0;
+
+	for (int i = 0; i < snap->nchain; i++)
+		above += snap->chain[i] >= keep;
+	if (above == 0 || run_step(rel, false, space_chain_step, &keep) != SIFT_STEP_DONE)
+		return 0;
+	return above * BLCKSZ;
+}
+
 uint64
 sift_maint_shrink(Relation rel, int elevel)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap = NULL;
 	uint64		total = 0;
 	uint64		budget;
 
 	if (!online_cut_wanted(rel))
-	{
-		pfree(snap);
 		return 0;
-	}
 	budget = (uint64) RelationGetNumberOfBlocks(rel) * BLCKSZ / SHRINK_SHARE;
 	while (budget > 0)
 	{
 		SiftExtent *ext;
 		int			n;
 		BlockNumber keep;
-		SpaceSeg   *seg = palloc(SIFT_MAX_SEGMENTS * sizeof(SpaceSeg));
+		SpaceSeg   *seg;
 		int			nseg = 0;
 		uint64		moved = 0;
 
-		sift_dir_read(rel, snap);
+		snap = sift_dir_read(rel);
 		if (in_backoff(&snap->meta))
 			break;
 		ext = shrink_extents(rel, snap, &n);
@@ -788,6 +812,7 @@ sift_maint_shrink(Relation rel, int elevel)
 		pfree(ext);
 		if (keep >= snap->meta.high_water)
 			break;
+		seg = palloc(Max(snap->nsegs, 1) * sizeof(SpaceSeg));
 		/* the segment that ends the file highest goes first: its pieces above keep are the ones that hold the cut; one that cannot move any goes to the next */
 		for (int i = 0; i < snap->nsegs; i++)
 		{
@@ -815,12 +840,15 @@ sift_maint_shrink(Relation rel, int elevel)
 		}
 		pfree(seg);
 		if (moved == 0)
+			moved = shrink_chain(rel, snap, keep);
+		if (moved == 0)
 			break;
 		budget -= Min(moved, budget);
 		total += moved;
 		CHECK_FOR_INTERRUPTS();
 	}
-	pfree(snap);
+	if (snap)
+		pfree(snap);
 	if (total > 0)
 		ereport(elevel, (errmsg("index \"%s\": moved %llu bytes of the segments that end the file into the holes below them", RelationGetRelationName(rel), (unsigned long long) total)));
 	return total;

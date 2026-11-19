@@ -333,9 +333,9 @@ kind_name(SiftSegKind kind)
 static SiftDirSnapshot *
 read_dir(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	return snap;
 }
 

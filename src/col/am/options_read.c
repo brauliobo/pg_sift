@@ -7,6 +7,7 @@
 #include "col/conn.h"
 #include "col/scope.h"
 #include "core/lane.h"
+#include "core/ops.h"
 
 const SiftColOptions *
 sift_col_options(Relation index)
@@ -67,9 +68,9 @@ sift_col_alter_check(Relation index)
 		return;
 	if (sift_col_paths_redecide(index))
 	{
-		SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+		SiftDirSnapshot *snap;
 
-		sift_dir_read(index, snap);
+		snap = sift_dir_read(index);
 		if (sift_segs_have_layout(snap->segs, snap->nsegs))
 			sift_lane_alter_refuse(index, "column definitions");
 		pfree(snap);

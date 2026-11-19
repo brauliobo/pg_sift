@@ -17,17 +17,17 @@ scan_load_wbuf_keys(SiftColSource *src, const SiftCWbufKeys *keys)
 
 	if (own)
 	{
-		src->wtok = MemoryContextAllocZero(src->mcxt, Max(src->dir.nsegs, 1) * sizeof(SiftCWbufToken));
+		src->wtok = MemoryContextAllocZero(src->mcxt, Max(src->dir->nsegs, 1) * sizeof(SiftCWbufToken));
 		src->nwtok = 0;
 	}
-	for (int i = 0; i < src->dir.nsegs; i++)
+	for (int i = 0; i < src->dir->nsegs; i++)
 	{
 		int			n;
 		bool		seg_partial;
 		SiftColBatch **bs;
 		TransactionId stamp = InvalidTransactionId;
 
-		if (!sift_seg_is_wbuf(&src->dir.segs[i]))
+		if (!sift_seg_is_wbuf(&src->dir->segs[i]))
 			continue;
 		/*
 		 * The version the scan read at open, not the current one, and that is enough. VACUUM bumps it after it flags records and before the heap frees their
@@ -36,10 +36,10 @@ scan_load_wbuf_keys(SiftColSource *src, const SiftCWbufKeys *keys)
 		 * of this scan, taken before the open, holds the heap back from removing anything it can see. An address freed after the open belongs to a row inserted
 		 * after that snapshot, which the heap check does not return.
 		 */
-		bs = sift_cwbuf_batches_keys(src->index, &src->dir.segs[i], src->schema, src->dir.version, keys, src->mcxt, &n, own ? &src->wtok[src->nwtok++] : NULL, &stamp, &seg_partial);
+		bs = sift_cwbuf_batches_keys(src->index, &src->dir->segs[i], src->schema, src->dir->version, keys, src->mcxt, &n, own ? &src->wtok[src->nwtok++] : NULL, &stamp, &seg_partial);
 		partial |= seg_partial;
 		for (int j = 0; j < n; j++)
-			scan_add_mem(src, bs[j], true, stamp, (src->dir.segs[i].flags & SIFT_SEG_ROOTS) != 0);
+			scan_add_mem(src, bs[j], true, stamp, (src->dir->segs[i].flags & SIFT_SEG_ROOTS) != 0);
 	}
 	if (partial)
 	{

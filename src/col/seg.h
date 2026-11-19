@@ -89,7 +89,6 @@ extern Size sift_colw_budget(Size mem, int resident_pct, Size base);
 #define SIFT_COLW_MERGE_BASE ((Size) 36 * 1024 * 1024)
 #define SIFT_COLW_MIN_BUDGET ((Size) 16 * 1024 * 1024)
 /* The budget the segments still to come need: the rows left over the segments left, at the rows per budget the last segment reached; never less than budget */
-extern Size sift_colw_fit_budget(Size budget, uint64 seg_rows, uint64 rows_left, int segs_left);
 /* Writes DICTS, ZONES, SBDIR, SCHEMA, the all-live LIVE pages and the header; fills the directory entry (kind IMMUTABLE, format, header_blk, sb_lo/hi, ndocs = rows, bytes) */
 extern void sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry);
 
@@ -185,13 +184,13 @@ sift_seg_scope_ordinal(const SiftSegEntry *e)
 }
 
 /* sift_dir_read for one family of readers: the entity family (everything but the scope segments: the readers of the rows of the index), or the scope segments alone (no write buffer, no log) */
-extern void sift_col_dir_read(Relation index, SiftDirSnapshot *snap, bool scope);
+extern SiftDirSnapshot *sift_col_dir_read(Relation index, bool scope);
 /* the segments of the family only (sift_dir_read_segs): for a caller that does not hand the snapshot to a scan */
-extern void sift_col_dir_read_segs(Relation index, SiftDirSnapshot *snap, bool scope);
+extern SiftDirSnapshot *sift_col_dir_read_segs(Relation index, bool scope);
 /* ... of a directory read already: keeps the segments of that family */
 extern void sift_col_dir_family(SiftDirSnapshot *snap, bool scope);
 /* both families from one read of the directory: the entity family into entity, the scope segments into scope */
-extern void sift_col_dir_read_families(Relation index, SiftDirSnapshot *entity, SiftDirSnapshot *scope);
+extern void sift_col_dir_read_families(Relation index, SiftDirSnapshot **entity, SiftDirSnapshot **scope);
 
 /* Index of the first unit whose id >= id, nsb if none (the id of a unit is a superblock of a segment cut by superblock and a sequence number of one cut by key) */
 extern uint32 sift_cseg_unit_lower_bound(const SiftColSegment *seg, uint32 id);

@@ -749,10 +749,10 @@ Datum
 sift_col_stamps(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
