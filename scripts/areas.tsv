@@ -107,7 +107,7 @@
 ^scripts/instr-budget-lib\.sh$	^tap-shell-instr_budget_lib$
 ^(bench/scaling/|scripts/scaling-gate\.sh$)	^tap-shell-scaling_slope$
 # the quick tier runs the scaling gate only for a change of what the geometry of a unit or a page depends on (the files that name SIFT_SB_SHIFT, the format and page headers: scripts/check-scaling-triggers.sh keeps this row whole); every col or agg change reaches it in the nightly
-^(Makefile$|src/core/(sift|page|limits)\.h$|src/col/api/(format|meta)\.h$|src/(bm25/(count|cscan_exec|iter|planner_path|prefix|rank_search|writer)|col/(build/run|build_par|seg/(points|verify)|test/query))\.c$)	{layout}
+^(Makefile$|src/core/(sift|page|limits)\.h$|src/col/api/(format|meta)\.h$|src/(bm25/(count|cscan_exec|iter|planner_path|prefix|rank_search|writer)|col/(build/(run|btree_par)|build_par|seg/(points|verify)|test/query))\.c$)	{layout}
 ^src/core/visibility\.c$	^tap-shell-sb_mask_small$
 ^scripts/(upgrade[-_]check\.sh|upgrade_check_(head|tail)\.sql)$	^tap-shell-upgrade_check$
 ^scripts/(static\.baseline|build-bench\.sql|lint\.sh|bench-tests\.sh|test-ci-claim\.sh|test-affected-untracked\.sh|test-affected-wide\.sh|test-ci-stop\.sh|test-build-id\.sh|test-ci-build-fail\.sh|test-ci-ready\.sh|test-scaling-gate\.sh|check-pg-bare\.sh|check-tap-timeouts\.sh|pg-bare\.allow|check-scaling-triggers\.sh|check-format-literals\.sh|check-compat-calls\.sh|check-relcache-slots\.sh|check-polling\.sh|polling\.allow|check-leak-hooks\.sh|check-raw-alloc\.sh|check-upper-paths\.sh|leak-hooks\.allow|instr-budget-cost\.sh|check-package-text\.sh|check-expected-oracle\.py|expected-oracle\.allow|check-codec-bytes\.py|codec-bytes\.allow|test-gen-docs-skip\.sh|test-gen-docs-public\.sh|format-literals\.tsv)	-
