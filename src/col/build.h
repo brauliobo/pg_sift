@@ -114,6 +114,7 @@ extern PGDLLIMPORT char *sift_test_vstore_columns;
 extern PGDLLIMPORT int sift_test_col_fail_sb;
 extern PGDLLIMPORT int sift_test_col_segment_kb;
 extern PGDLLIMPORT bool sift_test_col_from_index_off;	/* a REINDEX reads the heap even when the index it replaces could give the rows */
+extern PGDLLIMPORT bool sift_test_col_from_index_forced;	/* a REINDEX takes the rows from the index it replaces whenever it can, whatever the chooser prices */
 extern PGDLLIMPORT int sift_test_col_from_index_mutant;	/* a defect planted in the build from the replaced index (col/build/from_index.c) */
 extern PGDLLIMPORT int sift_test_col_from_index_used;	/* 1: the last build of this session took its rows from the index it replaced */
 extern PGDLLIMPORT int sift_test_col_spill_run_kb;	/* kB of memory a run of the ranges of a build by key ranges may take (0 = the fixed cap) */
