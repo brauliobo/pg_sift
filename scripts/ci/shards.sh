@@ -1,7 +1,8 @@
 # SIFT_CI_SHARD=K/N: cuts the queue into the slice of this runner, prints the plan for --plan, and refuses a run with no job. Sourced by scripts/ci.sh; not a script of its own.
 # The jobs are cut by weight (weights.sh: the seconds of a lane each took in a hosted run): the heaviest job goes to the shard with the least load so far, which balances the shards to
 # within a few percent (--selftest checks it, and that the shards are the plan exactly once). Shard 1 runs the checks of the harness. Before PostgreSQL 18 the jobs that run after the
-# pool (flavor installs, serial) are all the last shard's, which starts the pool with their weight already on it. A shard queues its jobs heaviest first (heaviest_first): a lane that
+# pool (flavor installs, serial) are all the last shard's, which starts the pool with their weight already on it, times the lanes of a hosted runner (AFTER_LANES: they run alone, every
+# second of theirs idles the other lanes). A shard queues its jobs heaviest first (heaviest_first): a lane that
 # takes a 6 minute job last ends the shard 6 minutes after the others.
 # The jobs that build older releases (the scripts of test/t that call build_old or scripts/old-lib-check.sh, and pg_upgrade) all go to the first shard: the workflow caches the built releases
 # for each shard, so a job that moved to another shard when the weights changed built them cold (compat_matrix 721 s and old_lib_refusal 525 s beside 190 and 79 warm, hosted run 42142749980)
@@ -21,7 +22,7 @@ shard_loads() {
 	local pool=$1 line id k i
 	SHARD_OF=() LOAD=()
 	for (( k = 0; k < pool; k++ )); do LOAD[k]=0; done
-	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && { weight_of "$id" "${SIFT_CI_DEEP:-}"; LOAD[pool - 1]=$(( LOAD[pool - 1] + WEIGHT )); }; done
+	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && { weight_of "$id" "${SIFT_CI_DEEP:-}"; LOAD[pool - 1]=$(( LOAD[pool - 1] + WEIGHT * AFTER_LANES )); }; done
 	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || ! pinned "$id" || { weight_of "$id" "${SIFT_CI_DEEP:-}"; SHARD_OF[$id]=0 LOAD[0]=$(( LOAD[0] + WEIGHT )); }; done
 	local -a NHEAVY=()
 	for (( k = 0; k < pool; k++ )); do NHEAVY[k]=0; done
