@@ -7,6 +7,7 @@
 #include "core/host.h"
 
 #include "core/page.h"
+#include "core/range.h"
 
 /* An interior page as its root lists it, and the first of its leaves in the leaves of the chain */
 typedef struct SiftDirInner
@@ -43,6 +44,8 @@ typedef struct SiftDirPart
 /* The partitions of a chain as read, in directory order (palloc'd; the number) */
 extern int	sift_dirchain_parts(const SiftDirChain *chain, SiftDirPart **parts);
 extern int	sift_dirchain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEntry **segs, SiftDirChain *chain);
+/* The entries of no partition and of the partitions that may hold a key with the prefix (of a key of ncomp components) only, and the pages read (the chain lists the leaves read) */
+extern int	sift_dirchain_read_prefix(Relation index, BlockNumber root, uint64 version, const SiftBound *prefix, uint32 ncomp, SiftSegEntry **segs, SiftDirChain *chain);
 extern BlockNumber sift_dirchain_write(Relation index, Buffer metabuf, uint64 version, const SiftDirChain *old, const SiftSegEntry *oldsegs,
 									   const SiftSegEntry *segs, int n, const SiftDirPart *parts, int nparts, BlockNumber below, SiftExtent *release, int *nrelease);
 
