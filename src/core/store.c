@@ -731,7 +731,8 @@ dir_edit_close(Relation index, SiftXlog *state, Buffer metabuf, Page mp, Page dp
 
 	check_dir_result(index, state, before, META(mp), dir->segs, dir->nsegs, SIFT_DIR_WIDE_MAX);
 	e->release = palloc((chg->nrelease + e->chain.nleaves + e->chain.ninner + 2 + dir->nsegs) * sizeof(SiftExtent));
-	memcpy(e->release, chg->release, chg->nrelease * sizeof(SiftExtent));
+	if (chg->nrelease > 0)
+		memcpy(e->release, chg->release, chg->nrelease * sizeof(SiftExtent));
 	e->nrelease = chg->nrelease;
 	if (!e->chained && nparts == 0 && dir->nsegs <= sift_dir_flat_max())
 	{
