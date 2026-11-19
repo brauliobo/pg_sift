@@ -100,7 +100,9 @@ check "churn on the primary had no failed transaction" test "$(cat "$P/pgbench.l
 check "readers on the standby had no failed transaction" grep -q "number of failed transactions: 0 " "$P/reader.log"
 catchup primary standby
 check "sift.check ran during the churn" grep -qE "number of transactions actually processed: [1-9]" "$P/check.log"
-check "sift.check found nothing wrong on the primary while the churn went on" test "$(sql primary "SELECT count(*) FROM check_found")" == 0
+out=$(sql primary "SELECT index, segment, problem, detail, at FROM check_found ORDER BY at")
+check "sift.check found nothing wrong on the primary while the churn went on" test -z "$out"
+out=
 
 CHECKS="SELECT (SELECT count(*) FROM sift._test_col_tids('o_col', '')) || ' ' || (SELECT count(*) FROM sift._test_col_tids('o_col', '0:lt:10;1:eq:paid'))
 	|| ' ' || (SELECT count(*) FROM orders) || ' ' || (SELECT count(*) FROM orders WHERE tenant_id < 10 AND status = 'paid')"
