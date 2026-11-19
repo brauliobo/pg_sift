@@ -232,6 +232,7 @@ bm25/segment_sql.h
 bm25/segment_test.c
 bm25/shrink.c
 bm25/space.c
+bm25/space_move.c
 bm25/step.c
 bm25/wbuf.c
 col/acct.c
