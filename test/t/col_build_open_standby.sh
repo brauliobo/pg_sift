@@ -22,7 +22,7 @@ sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 node_clone primary standby 5 "hot_standby_feedback = on"
 node_start standby || bail "standby start failed"
 
-SETTINGS=("SET sift.async_maintenance = off" "SET max_parallel_workers_per_gather = 0" "SET max_parallel_maintenance_workers = 0" "SET sift.test_col_segment_kb = 4000" "SET sift.col_unit_rows = 500")
+SETTINGS=("SET sift.test_col_open = 1" "SET sift.async_maintenance = off" "SET max_parallel_workers_per_gather = 0" "SET max_parallel_maintenance_workers = 0" "SET sift.test_col_segment_kb = 4000" "SET sift.col_unit_rows = 500")
 Q="SELECT coalesce(string_agg(k || ':' || n || ':' || s, ',' ORDER BY k), '') FROM (SELECT k, count(*) AS n, sum(id) AS s FROM ev WHERE k < 40 GROUP BY k) x"
 TEMP="SELECT 'temp=' || temp_bytes FROM pg_stat_database WHERE datname = current_database()"
 FLUSH="SELECT pg_stat_force_next_flush()"; CLEAR="SELECT pg_stat_clear_snapshot()"
@@ -68,7 +68,7 @@ printf '\\set i random(1, %s)\nUPDATE ev SET touched = touched + 1, note = note 
 printf '\\set i random(%s, %s)\nINSERT INTO ev (id, g, k, note, pad) VALUES (:i + 1000000, :i %% 7, :i %% 4, %s, %s) ON CONFLICT DO NOTHING;\n' "$ROWS" "$((ROWS * 2))" "'new'" "'p'" >"$d/ins.sql"
 printf '\\set i random(1, %s)\nDELETE FROM ev WHERE id = :i AND id %% 13 = 0;\n' "$ROWS" >"$d/del.sql"
 pgbench_bg primary 4 600 -f "$d/upd.sql@6" -f "$d/ins.sql@3" -f "$d/del.sql@1"
-PGOPTIONS="-c maintenance_work_mem=64MB -c sift.test_col_segment_kb=4000 -c sift.col_unit_rows=500" psql -X -q -h "$d/sock" -p "$(port primary)" -U postgres -d postgres \
+PGOPTIONS="-c maintenance_work_mem=64MB -c sift.test_col_segment_kb=4000 -c sift.col_unit_rows=500 -c sift.test_col_open=1" psql -X -q -h "$d/sock" -p "$(port primary)" -U postgres -d postgres \
 	-c "CREATE INDEX CONCURRENTLY ev_idx ON ev USING sift_col (id, k, g, note, pad) WITH (key_cut = 'k', point_tid_columns = 'off', order_array_columns = 'off')" >/dev/null 2>&1
 cic_rc=$?
 kill "$PGBENCH_PID" 2>/dev/null; wait "$PGBENCH_PID" 2>/dev/null
