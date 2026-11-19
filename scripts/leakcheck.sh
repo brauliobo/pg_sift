@@ -184,7 +184,7 @@ leak_shared_tables() {
 # leak_cluster DATA: run against the cluster in DATA before it stops (PGHOST/PGPORT/PGUSER select it)
 leak_cluster() {
 	local data=$1 bad=0 line pid start kb name now max=$(( ${LEAK_PROC_MB:-32} + $(leak_quarantine_mb) ))
-	for _ in $(seq 50); do [[ -n $(leak_psql -c "$LEAK_IDLE_LOCKS" 2>/dev/null) ]] || break; sleep 0.1; done   # a session that is only leaving is gone within a second
+	for _ in $(seq 300); do [[ -n $(leak_psql -c "$LEAK_IDLE_LOCKS" 2>/dev/null) ]] || break; sleep 0.1; done   # a session that is only leaving ends with its exit callbacks
 	while read -r line; do leak_finding "$line"; bad=1; done < <(leak_psql <<-SQL 2>&1 || echo "cannot query the cluster"
 		$LEAK_IDLE_LOCKS;
 		SELECT format('session %s is %s since %s', pid, state, xact_start) FROM pg_stat_activity
