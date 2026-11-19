@@ -14,12 +14,13 @@ so that a fix is not left unrecorded.
 Reads PGHOST, PGPORT, PGUSER, PGDATABASE like psql; needs Linux (/proc) and an installed pg_sift. Kind `cap` runs its statements in one backend with sift.backend_cache_kb at
 the ceiling (kB) and asserts that the caches hold at most that; the same statements with the budget off must hold more, or the case measures nothing.
 """
-import os, re, subprocess, sys
+import functools, os, re, subprocess, sys
 
 CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference is 1.8 MB
 BOUNDED = "'sift cache unit buffers'"   # a fixed count of spare buffers (UNIT_KEEP of UNIT_KEEP_BYTES, col/seg/seg.c): it grows to its 16 MB while repeats find larger units, and no further
-DEFAULT_BUDGET_KB = 256 * 1024   # sift.backend_cache_kb at its default: what a normal workload holds is what -1 holds
+DEFAULT_BUDGET_KB = 128 * 1024   # sift.backend_cache_kb at its default: what a normal workload holds is what -1 holds
 IDLE_CTX_KB = 1024        # kB its contexts may grow over the same statements
+IDLE_CACHE_KB = 4096      # sift.backend_cache_kb of the idle series: at the default 256 MB the caches fill about 1 kB a statement for the whole series (+620 kB over its last 1000 statements on one host, +1052 on a hosted one), which a window of 1000 statements does not tell from a leak; at 4 MB they are full long before it
 LEAK_KB = 512              # kB the contexts of a backend may hold more after 25 repeats than after 10
 SETTINGS = f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope-legacy.tsv")
@@ -92,15 +93,36 @@ def read_cases(only):
     return cases
 
 
-CACHE_HELD = """with c as (select path[cardinality(path)] as id from pg_backend_memory_contexts
-  where name in ('sift cache dictionaries', 'sift cache lookup tables', 'sift cache segments', 'sift cache partition facts', 'sift cache value store view'))
-select 'HELD', coalesce(sum(total_bytes), 0) / 1024 from pg_backend_memory_contexts m
-where m.path[cardinality(m.path)] in (select id from c) or m.path && (select coalesce(array_agg(id), '{}') from c);"""
+CTX_BY_PATH = """select m.name, p.name as parent, m.level, m.total_bytes from pg_backend_memory_contexts m
+  left join pg_backend_memory_contexts p on p.path[cardinality(p.path)] = m.path[cardinality(m.path) - 1]"""
+CTX_BY_PARENT = "select name, parent, level, total_bytes from pg_backend_memory_contexts"
+
+
+@functools.cache
+def contexts_sql():
+    """the contexts with their parent's name: PostgreSQL 18 replaced the parent column of pg_backend_memory_contexts by path"""
+    has_path = script("select count(*) from pg_attribute where attrelid = 'pg_backend_memory_contexts'::regclass and attname = 'path';").strip()
+    return CTX_BY_PATH if has_path == "1" else CTX_BY_PARENT
+
+
+def held_sql(roots, select):
+    """kB held by the memory contexts named in roots and by everything under them"""
+    names = ", ".join(f"'{r}'" for r in roots)
+    return f"""with recursive ctx as ({contexts_sql()}),
+keys(root, name, level) as (select name, name, level from ctx where name in ({names})
+  union select k.root, c.name, c.level from ctx c join keys k on c.parent = k.name and c.level = k.level + 1)
+{select};"""
+
+
+CACHES = ("sift cache dictionaries", "sift cache lookup tables", "sift cache segments", "sift cache partition facts", "sift cache value store view")
+def cache_held_sql():
+    return held_sql(CACHES, """select 'HELD', coalesce(sum(c.total_bytes), 0) / 1024 from ctx c
+where c.name in (select root from keys) or exists (select 1 from keys k where c.parent = k.name and c.level = k.level + 1)""")
 
 
 def cache_held_kb(n, op, budget_kb):
     fmt = dict(f=f"f{n}", d=f"d{n}", n=n)
-    out = script(SETTINGS + f"set sift.backend_cache_kb = {budget_kb};\n" + op.format(**fmt) + "\n" + CACHE_HELD)
+    out = script(SETTINGS + f"set sift.backend_cache_kb = {budget_kb};\n" + op.format(**fmt) + "\n" + cache_held_sql())
     m = re.search(r"HELD\|(\d+)", out)
     if not m:
         raise RuntimeError("cap: " + out.strip()[-200:])
@@ -124,17 +146,17 @@ def leakx_case(n, name, setup, op):
     return int(m.group(2)) - int(m.group(1))
 
 
-HELD_BY = """select 'HELD ' || :'tag' || ' ' || coalesce(string_agg(n || '=' || kb, ' ' order by n), '') from (select c.name n,
-  (select coalesce(sum(total_bytes), 0) / 1024 from pg_backend_memory_contexts m where m.path && array[c.id] or m.path[cardinality(m.path)] = c.id) kb
-  from (select name, path[cardinality(path)] id from pg_backend_memory_contexts
-        where name in ('sift cache dictionaries', 'sift cache lookup tables', 'sift cache segments')) c) x;"""
+def held_by_sql():
+    return held_sql(CACHES[:3], """select 'HELD ' || :'tag' || ' ' || coalesce(string_agg(n || '=' || kb, ' ' order by n), '') from (select r n,
+  (select coalesce(sum(c.total_bytes), 0) / 1024 from ctx c where c.name = r or exists (select 1 from keys k where k.root = r and c.parent = k.name and c.level = k.level + 1)) kb
+  from (select distinct root r from keys) x) y""")
 EVICT_ROWS = "select d.label, count(distinct f.txt), sum(f.amount) from {f} f join {d} d on d.id = f.k_hi group by 1 order by 1 limit 20;"
 
 
 def held_by(n, a, b, budget_kb):
     fmt = dict(f=f"f{n}", d=f"d{n}", n=n)
-    out = script(SETTINGS + f"set sift.backend_cache_kb = {budget_kb};\n" + a.format(**fmt) + "\n\\set tag A\n" + HELD_BY + "\n"
-                 + b.format(**fmt) + "\n\\set tag B\n" + HELD_BY)
+    out = script(SETTINGS + f"set sift.backend_cache_kb = {budget_kb};\n" + a.format(**fmt) + "\n\\set tag A\n" + held_by_sql() + "\n"
+                 + b.format(**fmt) + "\n\\set tag B\n" + held_by_sql())
     got = {}
     for tag, rest in re.findall(r"HELD (\w) (.*)", out):
         got[tag] = {k.split()[-1]: int(v.split(".")[0]) for k, v in (kv.split("=") for kv in re.findall(r"sift cache \w+ ?\w*=\d+", rest))}
@@ -172,7 +194,7 @@ def pinned_case(n, budget_kb):
     cur = "select id from {f} where title @@> 'wireless charger' order by id;".format(**fmt)
     count = script(SETTINGS + "select count(*) from {f} where title @@> 'wireless charger';".format(**fmt)).strip().splitlines()[-1]
     out = script(SETTINGS + f"set sift.backend_cache_kb = {budget_kb};\nbegin;\ndeclare c cursor for {cur[:-1]};\n\\echo FIRST\nfetch 10 from c;\n\\echo PRESSURE\n"
-                 + "\n".join(q.format(**fmt) for q in PIN_PRESSURE) + "\n\\set tag P\n" + HELD_BY + "\n\\echo REST\nfetch all from c;\n\\echo END\ncommit;\n")
+                 + "\n".join(q.format(**fmt) for q in PIN_PRESSURE) + "\n\\set tag P\n" + held_by_sql() + "\n\\echo REST\nfetch all from c;\n\\echo END\ncommit;\n")
     first, rest = out.split("FIRST\n", 1)[1].split("PRESSURE")[0], out.split("REST\n", 1)[1].split("END")[0]
     nrows = sum(1 for r in (first + rest).splitlines() if r.strip().isdigit())
     held = re.search(r"HELD P .*sift cache segments=(\d+)", out)
@@ -272,6 +294,7 @@ def idle_series(rows, total, mode, db):
     q("set client_min_messages=warning; set max_parallel_workers_per_gather=0; set work_mem='4MB'")
     if mode != "plain":
         q("select sift._test_thp_disable()")
+        q(f"set sift.backend_cache_kb = {IDLE_CACHE_KB}")
     if mode == "off":
         q("set sift.enable_scan = off; set sift.enable_agg = off")
     for st in setup:

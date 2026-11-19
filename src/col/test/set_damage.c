@@ -259,14 +259,14 @@ sift_test_col_super_damage(PG_FUNCTION_ARGS)
 {
 	static const uint8 masks[] = {0x01, 0x80};
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	int64		supers = 0,
 				damaged = 0,
 				refused = 0;
 	Datum		v[4];
 	bool		nulls[4] = {false};
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -310,7 +310,7 @@ section_file_damage(PG_FUNCTION_ARGS, bool (*span) (SiftColSegment *, uint64 *, 
 	static const uint8 masks[] = {0x01, 0x80};
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	int32		stride = Max(PG_GETARG_INT32(1), 1);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	int64		runs = 0,
 				damaged = 0,
 				refused = 0,
@@ -318,7 +318,7 @@ section_file_damage(PG_FUNCTION_ARGS, bool (*span) (SiftColSegment *, uint64 *, 
 	Datum		v[4];
 	bool		nulls[4] = {false};
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;

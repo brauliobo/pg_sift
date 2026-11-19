@@ -98,6 +98,7 @@ sift_cseg_unit_dead(SiftColSegment *seg, uint32 u, MemoryContext mcxt, SiftKey *
 	SiftCUnitView v;
 	DeadKey		key = {seg->index->rd_locator.dbOid, seg->index->rd_locator.relNumber, seg->entry.gen, u, 0};
 	DeadEnt    *e = NULL;
+	bool		scan_bound;
 	uint32		stamp,
 				n = seg->sbdir[u].nrows,
 				nd = 0,
@@ -107,7 +108,9 @@ sift_cseg_unit_dead(SiftColSegment *seg, uint32 u, MemoryContext mcxt, SiftKey *
 	if (!unit_dirty(seg, u))
 		return true;
 	stamp = sift_live_ndead(&PRIV(seg)->live);
-	if (dead_tab)
+	/* the records of a scan are of its snapshot: a list made with them is for that scan alone, and one made without them is not for it */
+	scan_bound = seg->dv != NULL && seg->dv->unit(seg->dv, seg, u) != NULL;
+	if (dead_tab && !scan_bound)
 		e = hash_search(dead_tab, &key, HASH_FIND, NULL);
 	if (e && e->stamp != stamp)
 		e = NULL;

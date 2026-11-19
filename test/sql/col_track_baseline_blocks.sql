@@ -1,0 +1,43 @@
+-- The baseline of track_changes (col/track.c) writes a tombstone for every address of the table that no version is live for. It reads no page that the visibility map says every
+-- transaction sees whole (such a page holds no dead version and no dead item), and looks at the versions of the others while it holds the page, so it costs the table one access
+-- of each of its pages that is not all-visible and none of the others, not one access of the heap for each row. The cost of the baseline is what REINDEX of the tracked index
+-- accesses in the heap more than REINDEX of the same index without track_changes, which is the build alone.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+
+CREATE TABLE bb (id int PRIMARY KEY, k int, v int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO bb SELECT i, i % 100, i, repeat('x', 100) FROM generate_series(1, 20000) i;
+CREATE INDEX bb_tracked ON bb USING sift_col (id, k, v) WITH (key_cut = 'k');
+CREATE INDEX bb_plain ON bb USING sift_col (id, k, v) WITH (key_cut = 'k', track_changes = 'off');
+DELETE FROM bb WHERE id % 50 = 0;
+SELECT sift.col_verify('bb_tracked', true), sift.col_verify('bb_plain', true);
+
+-- no page is all-visible: every page is read once
+SELECT pg_stat_force_next_flush() \gset
+SELECT coalesce(sum(heap_blks_read + heap_blks_hit), 0) AS b0 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
+REINDEX INDEX bb_plain;
+SELECT pg_stat_force_next_flush() \gset
+SELECT sum(heap_blks_read + heap_blks_hit) AS s1 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
+REINDEX INDEX bb_tracked;
+SELECT pg_stat_force_next_flush() \gset
+SELECT sum(heap_blks_read + heap_blks_hit) AS s2 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
+SELECT (:s2 - :s1) - (:s1 - :b0) = pg_relation_size('bb') / 8192 AS baseline_reads_each_page_once;
+
+-- every page is all-visible: the baseline reads the page of the visibility map that tells so (one for 32,000 pages) and none of the table
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) bb;
+SELECT relallvisible = relpages AS all_visible FROM pg_class WHERE relname = 'bb';
+SELECT pg_stat_force_next_flush() \gset
+SELECT coalesce(sum(heap_blks_read + heap_blks_hit), 0) AS b0 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
+REINDEX INDEX bb_plain;
+SELECT pg_stat_force_next_flush() \gset
+SELECT sum(heap_blks_read + heap_blks_hit) AS s1 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
+REINDEX INDEX bb_tracked;
+SELECT pg_stat_force_next_flush() \gset
+SELECT sum(heap_blks_read + heap_blks_hit) AS s2 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
+SELECT (:s2 - :s1) - (:s1 - :b0) AS baseline_reads_the_visibility_map_only;
+SELECT sift.col_verify('bb_tracked', true);
+
+DROP TABLE bb;
+DROP EXTENSION pg_sift;

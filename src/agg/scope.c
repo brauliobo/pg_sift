@@ -147,10 +147,10 @@ pair_counts(AggExec *ex, SiftScopeCounts *c)
 static uint64
 scope_entries(AggExec *ex)
 {
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	uint64		rows = 0;
 
-	sift_dir_read(ex->index, dir);
+	dir = sift_dir_read(ex->index);
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && sift_seg_is_scope(&dir->segs[i]))
 			rows += dir->segs[i].ndocs;

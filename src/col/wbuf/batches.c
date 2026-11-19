@@ -8,6 +8,7 @@
 #include "core/tomb.h"
 #include "col/wbuf/wbuf_int.h"
 #include "core/membudget.h"
+#include "core/ring.h"
 
 /* A live record kept for sorting: its payload is a copy in the arena of the read */
 typedef struct Held
@@ -84,6 +85,7 @@ typedef struct PageStamp
 typedef struct StampList
 {
 	Relation	index;
+	Size		hs;				/* the head of the pages of the buffer */
 	MemoryContext cx;
 	PageStamp  *p;
 	int			n,
@@ -193,23 +195,23 @@ fresh_add(void *arg, const RawRec *rec)
 
 /* Whether no record of the page, up to what the stamp read, was flagged dead since: its LSN is the stamp's (the pages of an index that is not WAL-logged keep theirs), or the dead are as many */
 static bool
-stamp_same(Relation index, Page page, const PageStamp *st)
+stamp_same(Relation index, Size hs, Page page, const PageStamp *st)
 {
-	return (PageGetLSN(page) == st->lsn && RelationNeedsWAL(index)) || wbuf_page_dead(index, page, 0, st->used) == st->dead;
+	return (PageGetLSN(page) == st->lsn && RelationNeedsWAL(index)) || wbuf_page_dead(index, hs, page, 0, st->used) == st->dead;
 }
 
 /* The records of the page that start in bytes from to upto and are flagged dead, added to those of the stamp */
 static void
 stamp_dead(StampList *sl, PageStamp *st, Page page, Size from, Size upto)
 {
-	uint32		n = wbuf_page_dead_list(sl->index, page, from, upto, NULL, NULL, 0);
+	uint32		n = wbuf_page_dead_list(sl->index, sl->hs, page, from, upto, NULL, NULL, 0);
 	uint64	   *keys;
 
 	if (n == 0)
 		return;
 	SIFT_REGROW_IN(sl->cx, st->dpos, (st->dead + n) * sizeof(uint32));
 	keys = palloc(n * sizeof(uint64));
-	(void) wbuf_page_dead_list(sl->index, page, from, upto, st->dpos + st->dead, keys, n);
+	(void) wbuf_page_dead_list(sl->index, sl->hs, page, from, upto, st->dpos + st->dead, keys, n);
 	pfree(keys);
 	st->dead += n;
 }
@@ -224,7 +226,7 @@ stamp_page(void *arg, BlockNumber blk, Page page, Size used)
 	if (last && last->blk == blk)
 	{
 		/* the page the last read ended in, with more records now. A read that skipped the check of the stamps (the version had not moved for its scan) has not looked at the ones before it */
-		if (!stamp_same(sl->index, page, last))
+		if (!stamp_same(sl->index, sl->hs, page, last))
 			sl->stale = true;
 		stamp_dead(sl, last, page, last->used, used);
 		last->lsn = PageGetLSN(page);
@@ -265,6 +267,7 @@ fresh_read(SiftCWbufReader *r, WbufLane *lane, StampList *stamp, Fresh *f)
 			if (stamp)
 			{
 				stamp[l].index = r->cur.index;
+				stamp[l].hs = r->hs;
 				stamp[l].stale = false;
 			}
 			wbuf_read_lane(r, r->it.head[l], &lane[l], fresh_add, f);
@@ -470,8 +473,17 @@ sift_cwbuf_inserted_since(Relation index, const SiftSegEntry *entry, const SiftC
 	return since;
 }
 
-SiftColBatch **
-sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n, SiftXWait *stamp)
+typedef struct KeyRead
+{
+	uint64		page_recs;
+	uint64		read_recs;
+	uint64		decoded;
+} KeyRead;
+
+/* The records of the buffer (those on the pages that meet keys, when it is given), as batches in mcxt; *kr what the reader went through */
+static SiftColBatch **
+batches_read(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, const SiftCWbufKeys *keys, MemoryContext mcxt, int *n, SiftXWait *stamp, TransactionId *scan_stamp,
+			 KeyRead *kr)
 {
 	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer batches", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(tmp);
@@ -481,17 +493,30 @@ sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchem
 	WbufLane	lane[SIFT_LANES];
 	Fresh		f;
 
+	if (keys)
+		wbuf_reader_keys(r, keys);
 	lanes_unread(lane);
 	fresh_read(r, lane, NULL, &f);
 	if (!set_fill(&s, r, &f))
 		SIFT_CORRUPT(index, "A write buffer record of segment %llu repeats an address.", (unsigned long long) entry->gen);
 	if (stamp)
 		fresh_stamp(&f, stamp);
+	if (scan_stamp)
+		*scan_stamp = set_stamp(&s);
+	*kr = (KeyRead) {r->page_recs, r->read_recs, f.nheld};
 	SIFT_MEM_CHECKPOINT();
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
 	*n = s.n;
 	return s.b;
+}
+
+SiftColBatch **
+sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n, SiftXWait *stamp)
+{
+	KeyRead		kr;
+
+	return batches_read(index, entry, schema, NULL, mcxt, n, stamp, NULL, &kr);
 }
 
 /* The last scan that held the set is over; a set that left the cache goes with it */
@@ -552,7 +577,7 @@ typedef struct DeadKeys
 static bool
 stamp_new_dead(Relation index, Page page, PageStamp *st, StampList *sl, DeadKeys *dk)
 {
-	uint32		n = wbuf_page_dead_list(index, page, 0, st->used, NULL, NULL, 0);
+	uint32		n = wbuf_page_dead_list(index, sl->hs, page, 0, st->used, NULL, NULL, 0);
 	uint32	   *pos;
 	uint64	   *key;
 	uint32		old = 0;
@@ -561,7 +586,7 @@ stamp_new_dead(Relation index, Page page, PageStamp *st, StampList *sl, DeadKeys
 		return false;
 	pos = palloc(Max(n, 1) * sizeof(uint32));
 	key = palloc(Max(n, 1) * sizeof(uint64));
-	(void) wbuf_page_dead_list(index, page, 0, st->used, pos, key, n);
+	(void) wbuf_page_dead_list(index, sl->hs, page, 0, st->used, pos, key, n);
 	for (uint32 i = 0; i < n; i++)
 	{
 		if (old < st->dead && st->dpos[old] == pos[i])
@@ -643,7 +668,7 @@ set_settle(BatchSet *s, Relation index)
 
 			sift_store_check_page(index, buf, SIFT_PT_WBUFDATA, s->gen);
 			page = BufferGetPage(buf);
-			if (!stamp_same(index, page, st))
+			if (!stamp_same(index, s->stamp[l].hs, page, st))
 				ok = stamp_new_dead(index, page, st, &s->stamp[l], &dk);
 			st->lsn = PageGetLSN(page);
 			UnlockReleaseBuffer(buf);
@@ -667,6 +692,16 @@ set_settle(BatchSet *s, Relation index)
 	return true;
 }
 
+/* The set of this buffer that this backend keeps */
+static BatchSet *
+set_kept_for(Relation index, const SiftSegEntry *entry)
+{
+	for (int i = 0; i < BATCH_SETS; i++)
+		if (sets[i] && sets[i]->rel == index->rd_locator.relNumber && sets[i]->db == index->rd_locator.dbOid && sets[i]->gen == entry->gen)
+			return sets[i];
+	return NULL;
+}
+
 /* The batches of the write buffer at its end now. Built with the rows read since the last scan of this backend when nothing else holds them, else built again. */
 static BatchSet *
 set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext tmp)
@@ -677,9 +712,7 @@ set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *sche
 
 	Fresh		f;
 
-	for (int i = 0; i < BATCH_SETS; i++)
-		if (sets[i] && sets[i]->rel == index->rd_locator.relNumber && sets[i]->db == index->rd_locator.dbOid && sets[i]->gen == entry->gen)
-			s = sets[i];
+	s = set_kept_for(index, entry);
 	if (s && (s->schema_hash != schema->hash || (s->refs > 0 && s->schema != schema)))
 	{
 		set_drop(s);
@@ -784,5 +817,142 @@ sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftC
 	/* b is NULL until the first batch is added: memcpy takes no NULL source, not even for zero bytes */
 	if (s->n > 0)
 		memcpy(out, s->b, s->n * sizeof(SiftColBatch *));
+	return out;
+}
+
+/*
+ * The buffers this backend has read for some keys, and what those reads decoded, in records of the pages they read: the rule that says when the whole buffer is worth reading for the next. A read
+ * of keys decodes the rows of the pages that meet them each time it is made (the set it builds is not kept), a read of the whole buffer decodes all of them once and the kept set serves the
+ * reads after it, so the reads of keys stay while what they have decoded, and the next as much as the last, is less than the buffer holds (what is paid on them is never more than one whole
+ * read), and a buffer whose pages the first read finds half or more of to hold the keys is read whole at once.
+ */
+typedef struct KeyReads
+{
+	Oid			db;
+	RelFileNumber rel;
+	uint64		gen;
+	uint64		spent;
+	uint64		last;
+	uint64		recs;
+	uint64		used;
+} KeyReads;
+
+#define KEY_READS	4
+
+static KeyReads key_reads[KEY_READS];
+
+static uint64 key_reads_clock;
+
+static KeyReads *
+key_reads_find(Relation index, const SiftSegEntry *entry)
+{
+	for (int i = 0; i < KEY_READS; i++)
+		if (key_reads[i].gen == entry->gen && key_reads[i].rel == index->rd_locator.relNumber && key_reads[i].db == index->rd_locator.dbOid)
+			return &key_reads[i];
+	return NULL;
+}
+
+static void
+key_reads_add(Relation index, const SiftSegEntry *entry, const KeyRead *kr)
+{
+	KeyReads   *k = key_reads_find(index, entry);
+
+	if (k == NULL)
+	{
+		k = &key_reads[0];
+		for (int i = 1; i < KEY_READS; i++)
+			if (key_reads[i].used < k->used)
+				k = &key_reads[i];
+		*k = (KeyReads) {.db = index->rd_locator.dbOid,.rel = index->rd_locator.relNumber,.gen = entry->gen};
+	}
+	k->spent += kr->read_recs;
+	k->last = kr->read_recs;
+	k->recs = kr->page_recs;
+	k->used = ++key_reads_clock;
+}
+
+
+/* The buffers this backend has written last: it is a session that reads them again, and its set is kept up to date by its own appends, so it reads them whole */
+typedef struct Written
+{
+	Oid			db;
+	RelFileNumber rel;
+	uint64		gen;
+} Written;
+
+#define WRITTEN	4
+
+static Written written[WRITTEN];
+
+static SiftRing written_ring;
+
+void
+wbuf_note_written(Relation index, uint64 gen)
+{
+	Written		w = {index->rd_locator.dbOid, index->rd_locator.relNumber, gen};
+
+	for (int i = 0; i < WRITTEN; i++)
+		if (memcmp(&written[i], &w, sizeof(w)) == 0)
+			return;
+	written[SIFT_RING_SLOT(written_ring, WRITTEN)] = w;
+}
+
+static bool
+written_here(Relation index, const SiftSegEntry *entry)
+{
+	for (int i = 0; i < WRITTEN; i++)
+		if (written[i].gen == entry->gen && written[i].rel == index->rd_locator.relNumber && written[i].db == index->rd_locator.dbOid)
+			return true;
+	return false;
+}
+
+#ifdef SIFT_TESTING
+void
+sift_cwbuf_key_reads_reset(void)
+{
+	memset(key_reads, 0, sizeof(key_reads));
+	memset(written, 0, sizeof(written));
+}
+#endif
+
+/* Whether the read of keys the buffer is to have is whole: the pages that meet the keys hold more than half of the records (the first read: a read of keys that decodes that much is followed by a whole one that costs the rest, and the two cost more than the whole read), or the reads of keys have spent what a whole read would */
+static bool
+key_read_whole(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, const SiftCWbufKeys *keys)
+{
+	const KeyReads *k = key_reads_find(index, entry);
+	MemoryContext tmp;
+	MemoryContext old;
+	SiftCWbufReader *r;
+	bool		whole;
+
+	if (k != NULL)
+		return k->spent + k->last >= k->recs;
+	tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer plan", ALLOCSET_DEFAULT_SIZES);
+	old = MemoryContextSwitchTo(tmp);
+	r = sift_cwbuf_open(index, entry, schema, tmp);
+	wbuf_reader_keys(r, keys);
+	wbuf_keys_plan(r);
+	whole = r->read_recs * 2 > r->page_recs;
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(tmp);
+	return whole;
+}
+
+SiftColBatch **
+sift_cwbuf_batches_keys(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, const SiftCWbufKeys *keys, MemoryContext mcxt, int *n,
+						SiftCWbufToken *tok, TransactionId *stamp, bool *partial)
+{
+	SiftColBatch **out;
+	KeyRead		kr;
+
+	*partial = false;
+	if (keys == NULL || entry->format < SIFT_COL_FORMAT_WBUFKEY || set_kept_for(index, entry) != NULL || written_here(index, entry) || key_read_whole(index, entry, schema, keys))
+		return sift_cwbuf_batches_shared(index, entry, schema, dirver, mcxt, n, tok, stamp);
+	*partial = true;
+	out = batches_read(index, entry, schema, keys, mcxt, n, NULL, stamp, &kr);
+	sift_cwbuf_decoded_note(index, entry->gen, kr.decoded);
+	key_reads_add(index, entry, &kr);
+	if (tok)
+		*tok = (SiftCWbufToken) {0, 0};
 	return out;
 }

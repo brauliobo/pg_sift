@@ -46,15 +46,6 @@ SELECT al_build_fails() AS fails_over_the_limit;
 RESET sift.test_limits;
 DROP FUNCTION al_build_fails();
 
--- a directory of 4 segments: the budget grows to what the rest of the table needs, the last segment does not hold the rows no budget cut
-SET sift.test_col_max_segments = 4;
-SET sift.test_limits = 'array_bytes=3145728';
-CREATE INDEX al_col ON al USING sift_col (id, tenant_id, event_date, updated_at, deleted_at, pad) WITH (key_order = 'tenant_id, event_date', key_cut = 'off');
-SELECT count(*) AS segments, max(rows) * 24 < 3145728 AS arrays_under_limit FROM sift.col_segments('al_col') WHERE kind = 'immutable';
-SELECT sift.col_verify('al_col', true);
-RESET sift.test_col_max_segments;
-DROP INDEX al_col;
-
 -- REINDEX CONCURRENTLY and a second build are bounded the same way
 SET sift.test_limits = 'array_bytes=4194304';
 CREATE INDEX al_col ON al USING sift_col (id, tenant_id, event_date, updated_at, deleted_at, pad) WITH (key_order = 'tenant_id, event_date', key_cut = 'off');

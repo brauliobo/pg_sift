@@ -178,7 +178,7 @@ seal_segment(Relation rel, SiftTblRel *st, const SiftSegEntry *e, SiftTblSeg *se
 		sw_dir.neu = &neu;
 	}
 	ext = sift_lane_extents(rel, e, &next);
-	sift_dir_update(rel, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw_dir,.release = ext,.nrelease = next,
+	sift_dir_update(rel, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw_dir,.nadd = 1,.release = ext,.nrelease = next,
 			.extra = InvalidBuffer,.immediate = st->fresh});
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
@@ -193,8 +193,7 @@ promote_sealed(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum)
 	bool		pressure;
 
 	pressure = dir_pressure(st);
-	dir = MemoryContextAlloc(CurrentMemoryContext, sizeof(SiftDirSnapshot));
-	*dir = st->dir;
+	dir = sift_dir_copy(st->dir);
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		const SiftSegEntry *e = &dir->segs[i];
@@ -232,7 +231,7 @@ sift_tbl_promote(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum
 /*
  * A writer closed a write buffer: promote the segments whose rows have settled, then merge the column segments (at most steps merges)
  * while the directory is more than half full. Only VACUUM merged, so a load in many transactions left one small column segment per closed
- * write buffer and ran out of the directory entries (SIFT_MAX_SEGMENTS) long before autovacuum came. A load in one transaction cannot
+ * write buffer and ran out of the directory entries (the directory limit) long before autovacuum came. A load in one transaction cannot
  * settle, and from half the directory on its write buffers become tagged groups (seg_class) that merge like the others, so it does not run
  * out of them either.
  * Everything here is under the maintenance lock, taken only if it is free (wait: an insert that finds the directory full waits for it, as for

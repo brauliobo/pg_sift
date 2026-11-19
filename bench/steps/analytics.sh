@@ -93,7 +93,7 @@ ensure_col() { # TABLE
   local table=$1 ddl t0 want
   ddl=$(col_ddl "$table")
   [[ -n $ddl ]] || { log "no sift_col DDL for $table: baseline only"; return 0; }
-  q -c "SELECT count(*) FROM pg_available_extensions WHERE name = '$A_COL_EXT'" | grep -qx 1 || { log "extension $A_COL_EXT is not installed: baseline only"; return 0; }
+  q -c "SELECT count(*) FROM pg_available_extensions WHERE name = '$A_COL_EXT'" | grep -x 1 >/dev/null || { log "extension $A_COL_EXT is not installed: baseline only"; return 0; }
   q -c "CREATE EXTENSION IF NOT EXISTS $A_COL_EXT"
   [[ $(q -c "SELECT count(*) FROM pg_am WHERE amname = '$A_COL_AM'") == 1 ]] || { log "this build of $A_COL_EXT has no $A_COL_AM access method: baseline only"; return 0; }
   want=$(echo "$ddl" | sha256sum | cut -c1-12)

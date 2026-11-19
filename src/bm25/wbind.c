@@ -252,7 +252,7 @@ bind_wbuf(SiftPlan *p)
 
 	for (int i = 0; i < p->nwbuf && !p->capped; i++)
 	{
-		SiftWbufReader *r = sift_wbuf_open(p->st->index, &p->st->dir.segs[p->wbufno[i]], p->mcxt,
+		SiftWbufReader *r = sift_wbuf_open(p->st->index, &p->st->dir->segs[p->wbufno[i]], p->mcxt,
 										 p->scoring ? wbuf_leaf_ok : wbuf_page_ok, p);
 		SiftWbufDoc	doc;
 		uint64		n,
@@ -306,12 +306,13 @@ void *
 sift_plan_export(const SiftPlan *p, Size *len)
 {
 	StringInfoData buf;
-	SharedBind	h = {.dir = p->st->dir,.seg_ndocs = p->seg_ndocs,.seg_sum_dl = p->seg_sum_dl,
+	SharedBind	h = {.dir_len = sift_dir_bytes(p->st->dir),.seg_ndocs = p->seg_ndocs,.seg_sum_dl = p->seg_sum_dl,
 					 .wbuf_ndocs = p->wbuf_ndocs,.wbuf_sum_dl = p->wbuf_sum_dl,
 					 .nmhit = p->nmhit, .nleaves = p->nleaves};
 
 	initStringInfo(&buf);
 	appendBinaryStringInfo(&buf, &h, sizeof(h));
+	appendBinaryStringInfo(&buf, p->st->dir, h.dir_len);
 	for (int64 i = 0; i < p->nmhit; i++)
 	{
 		SharedHit	sh = {p->mhit[i].key, p->mhit[i].score};
@@ -340,14 +341,27 @@ sift_plan_export(const SiftPlan *p, Size *len)
 const SiftDirSnapshot *
 sift_shared_dir(const void *shared)
 {
-	return &((const SharedBind *) shared)->dir;
+	return (const SiftDirSnapshot *) ((const char *) shared + sizeof(SharedBind));
+}
+
+/* The bind of a scan that exports only its directory: the header of a bind with nothing in it, then the directory */
+void *
+sift_dir_export(const SiftDirSnapshot *dir, Size *len)
+{
+	SharedBind	h = {.dir_len = sift_dir_bytes(dir)};
+	char	   *blob = palloc(sizeof(h) + h.dir_len);
+
+	memcpy(blob, &h, sizeof(h));
+	memcpy(blob + sizeof(h), dir, h.dir_len);
+	*len = sizeof(h) + h.dir_len;
+	return blob;
 }
 
 /* The write buffer half of the bind as the exporting participant had it */
 void
 import_wbuf(SiftPlan *p, const SharedBind *h)
 {
-	const char *at = (const char *) (h + 1);
+	const char *at = (const char *) (h + 1) + h->dir_len;
 
 	SIFT_INVARIANT(h->nleaves == p->nleaves, "sift: parallel participants bound different queries");
 	p->wbuf_ndocs = h->wbuf_ndocs;

@@ -232,6 +232,7 @@ bm25/segment_sql.h
 bm25/segment_test.c
 bm25/shrink.c
 bm25/space.c
+bm25/space_move.c
 bm25/step.c
 bm25/wbuf.c
 col/acct.c
@@ -249,6 +250,8 @@ col/chunk_test.c
 col/cluster.c
 col/codec_gen.h
 col/codec_test.c
+col/colspool.c
+col/colspool.h
 col/conn.c
 col/conn.h
 col/conn_decl.c
@@ -279,6 +282,8 @@ col/names.h
 col/names_text.c
 col/order.c
 col/order_units.c
+col/order_bound.c
+col/order_bound.h
 col/order_sort.c
 col/order_sort.h
 col/order_streams.c
@@ -287,6 +292,8 @@ col/pagg.h
 col/pg.h
 col/proj.c
 col/rollup.c
+col/rowfile.c
+col/rowfile.h
 col/rowkey.c
 col/rowpack.c
 col/rowpack.h
@@ -325,6 +332,7 @@ col/test/
 col/tomblog.c
 col/track.c
 col/track_drop.c
+col/track_dv.c
 col/track_hear.c
 col/track_hear.h
 col/track_made.c
@@ -358,6 +366,11 @@ core/explain.h
 core/extver.c
 core/filter_test.c
 core/freelist.c
+core/dirchain.c
+core/dirchain.h
+core/dirchain_test.c
+core/dirpart.c
+core/dirpart.h
 core/freelist_alloc.c
 core/freelist_int.h
 core/handler.c
@@ -389,6 +402,7 @@ core/relocate.c
 core/restrict.c
 core/restrict.h
 core/restrict_test.c
+core/range_test.c
 core/ring_test.c
 core/sortruns.c
 core/sortruns.h
@@ -401,6 +415,8 @@ core/store_test_am.c
 core/store_test_int.h
 core/tomb.c
 core/tomb.h
+core/tomb_dv.c
+core/tomb_dv.h
 core/tomb_hdr.c
 core/tomb_iter.c
 core/tomb_int.h

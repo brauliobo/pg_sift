@@ -1,0 +1,13 @@
+# The curated tests of the memcheck leak gate (scripts/valgrind.sh --leaks): NAME<TAB>seconds measured under memcheck (container, shared host, 2026-11-17). The sum stays within 900 s (scripts/mem-report.py check).
+bm25_rescan_context	38
+agg_scoped_lookup_cost	56
+agg_part_placeholder	41
+agg_jsonb_array	169
+shred_spec	44
+col_track_key_quoted	45
+col_batch_bits_bounds	41
+col_conn_declare	52
+col_scope_declare	66
+read_dict_ids	52
+tbl_basic	60
+col_rollup_worker	90

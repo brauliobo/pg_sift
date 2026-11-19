@@ -91,10 +91,37 @@ for _ in $(seq 100); do [[ $(sql gate "SELECT count(*) FROM pg_stat_activity WHE
 check "the cluster check fails on a session left in a transaction" cluster_fails "idle in transaction"
 kill "$holder" 2>/dev/null
 
-# a session that has just disconnected is still dropping its temporary tables, and holds their locks until it is gone: not a leak (on a loaded host the
-# check ran before the backend had exited). 3,000 tables make the exit slow enough to be caught.
-sql gate "DO \$\$ BEGIN FOR i IN 1..3000 LOOP EXECUTE format('CREATE TEMP TABLE tmp_%s (i int)', i); END LOOP; END \$\$" >/dev/null
-check "the cluster check waits for a backend that is still exiting" cluster_clean
+# a session that has just disconnected is still dropping its temporary tables, and holds their locks until it is gone: not a leak. A second session holds a
+# lock on a temporary table of the leaving one, which keeps its exit in progress until the check is seen waiting for it
+SESSION=(psql -X -q -h "$D/sock" -p "$(port gate)" -U postgres -d postgres)
+mkfifo "$D/leaver.in"
+"${SESSION[@]}" <"$D/leaver.in" >/dev/null 2>&1 &
+exec 7>"$D/leaver.in"
+echo "CREATE TEMP TABLE leaving (i int);" >&7
+temp_schema() { sql gate "SELECT relnamespace::regnamespace FROM pg_class WHERE relname = 'leaving'"; }
+count_locks() { sql gate "SELECT count(*) FROM pg_locks WHERE relation = '$(temp_schema).leaving'::regclass AND $1"; }
+lock_count_is() { [[ $(count_locks "$1") == "$2" ]]; }
+temp_table_exists() { [[ -n $(temp_schema) ]]; }
+until_true() { for _ in $(seq 100); do "$@" && return 0; sleep 0.1; done; return 1; }
+until_true temp_table_exists || bail "the temporary table was not created"
+( echo "BEGIN; LOCK TABLE $(temp_schema).leaving IN ACCESS SHARE MODE;"; sleep 30 ) 2>/dev/null 7>&- | "${SESSION[@]}" >/dev/null 2>&1 7>&- &
+exit_blocker=$!
+until_true lock_count_is granted 1 || bail "the lock on the temporary table was not taken"
+exec 7>&-
+until_true lock_count_is "NOT granted" 1 || bail "the exit of the leaving session is not blocked"
+[[ -n $(PGHOST=$D/sock PGPORT=$(port gate) PGUSER=postgres leak_psql -c "$LEAK_IDLE_LOCKS") ]] || bail "the leaving session holds no lock"
+cluster_waits_for_exit() {
+	PGHOST=$D/sock PGPORT=$(port gate) PGUSER=postgres SIFT_TMP=$D leak_cluster "$D/data" >"$D/exit.out" 2>&1 &
+	local checking=$! i
+	for i in $(seq 3000); do
+		kill -0 "$checking" 2>/dev/null || { out=$(<"$D/exit.out"); return 1; }
+		pgrep -P "$checking" -x sleep >/dev/null && break
+		sleep 0.01
+	done
+	kill "$exit_blocker"
+	wait "$checking" || { out=$(<"$D/exit.out"); return 1; }
+}
+check "the cluster check waits for a backend that is still exiting" cluster_waits_for_exit
 
 # a backend that dies on a signal is a crash
 off=$(logsize)
