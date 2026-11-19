@@ -1553,7 +1553,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** None of its own: a statement under the thresholds writes marks; a library before 5.1 does not write records.
 - **Upgrade from 5.0:** ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the first large delete after the library swap stamps the log 52, and a 5.0 library then refuses the index until it is built again.
 - **Advice:** Leave it: the records are chosen by the statement from what it deletes. VACUUM or the fold clears them; going back to 5.0 needs a VACUUM of the table and a REINDEX (docs/UPGRADING.md).
-- **Sources:** benchmark `test:col_dv_oracle`; [COL-DIRTY-UNITS](COL-DIRTY-UNITS.md)
+- **Sources:** benchmark `test:col_dv_oracle`; [COL-LAYOUT](COL-LAYOUT.md)
 
 #### auto(partition-open-by-key)
 
