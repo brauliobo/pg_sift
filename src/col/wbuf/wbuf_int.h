@@ -48,17 +48,69 @@ typedef struct SiftColRecHead
 	uint32		len;			/* payload bytes of this piece */
 } SiftColRecHead;
 
-#define HDRSIZE			sizeof(SiftLanePageHead)
+/*
+ * The head of a page of a buffer of format SIFT_COL_FORMAT_WBUFKEY (the entry says): the lane head, then the range of the keys of the rows that start on the page, the values of the leaf
+ * the index is cut by. The range is of the rows the page ever held (a row VACUUM flags dead stays in it, so a range is never narrower than what a read needs); a row whose key is NULL is in none
+ * (no condition on the key selects it) and a row whose key is an overflow value makes the page unskippable (SIFT_WBUFPAGE_KEYUNK).
+ */
+typedef struct SiftColPageHead
+{
+	SiftLanePageHead lane;
+	int64		kmin;
+	int64		kmax;
+} SiftColPageHead;
+
+#define SiftColPageKeys(page)	((SiftColPageHead *) SiftPageGetData(page))
+
+/* The head of a page of a buffer of this format */
+static inline Size
+wbuf_hs(uint16 format)
+{
+	return format >= SIFT_COL_FORMAT_WBUFKEY ? sizeof(SiftColPageHead) : sizeof(SiftLanePageHead);
+}
+
+/* The bytes of records an empty page holds */
+static inline Size
+wbuf_room(Size hs)
+{
+	return SIFT_PAGE_PAYLOAD - hs;
+}
 
 #define RECSIZE(len)	TYPEALIGN(4, sizeof(SiftColRecHead) + (Size) (len))
 
-#define EMPTY_ROOM		(SIFT_PAGE_PAYLOAD - HDRSIZE)
+
+/* The key of a row as its page keeps it: has is false for a NULL key, unknown for an overflow value; none of them for a buffer of a format without ranges (key NULL in wbuf_put_piece) */
+typedef struct WbufKey
+{
+	int			leaf;
+	bool		has;
+	bool		unknown;
+	int64		v;
+} WbufKey;
+
+extern void wbuf_payload_key(const SiftColSchema *schema, int leaf, uint16 flags, const char *payload, Size len, WbufKey *key);
+
+/* No row that starts on the page has a key the read asks for. Of a page whose range is of another leaf, or has a row it does not hold, nothing is known */
+static inline bool
+wbuf_page_misses(const SiftColPageHead *h, const SiftCWbufKeys *k)
+{
+	uint16		leaf = (h->lane.flags & SIFT_WBUFPAGE_LEAF_MASK) >> SIFT_WBUFPAGE_LEAF_SHIFT;
+
+	if (h->lane.flags & SIFT_WBUFPAGE_KEYUNK)
+		return false;
+	if (leaf == 0)
+		return h->lane.nrecs == 0;
+	if (leaf != k->leaf + 1)
+		return false;
+	return !(h->lane.flags & SIFT_WBUFPAGE_KEYS) || h->kmax < k->lo || h->kmin > k->hi;
+}
 
 /* The records of a page copy: the cursor and the checked record at it */
 typedef struct PageCursor
 {
 	Relation	index;
 	Page		page;
+	Size		hs;				/* the head of the page: wbuf_hs of the format of its buffer */
 	Size		pos;			/* record offset in the page */
 	Size		used;
 } PageCursor;
@@ -88,6 +140,11 @@ struct SiftCWbufReader
 	SiftSegEntry entry;
 	const SiftColSchema *schema;
 	MemoryContext mcxt;
+	Size		hs;				/* the head of the pages of the buffer */
+	const SiftCWbufKeys *keys;	/* the keys the reader is asked for: it reads no record of a page whose range of keys misses them (NULL: every page) */
+	bool		prev_spans;		/* the page before in the lane has a row that goes on in this one (its continuation is read whatever the range says) */
+	uint64		page_recs;		/* the records started on the pages the reader went through, read or not (the pages of a read of keys) */
+	uint64		read_recs;		/* those on the pages it read */
 	SiftLaneIter it;
 	void		(*pagefn) (void *arg, BlockNumber blk, Page page, Size used);	/* called for each page copied (col/wbuf/batches.c) */
 	void	   *pagearg;
@@ -125,9 +182,15 @@ typedef struct RawRec
 
 extern uint32	wbuf_limit_pages(Relation index);
 
+extern void	wbuf_reader_keys(SiftCWbufReader *r, const SiftCWbufKeys *keys);
+extern void	wbuf_keys_plan(SiftCWbufReader *r);
+extern void	wbuf_note_written(Relation index, uint64 gen);
+
 extern SiftCWbufReader *	wbuf_open_lazy(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt);
 
 extern void	wbuf_load_heads(SiftCWbufReader *r);
+
+extern void	wbuf_cursor_init(PageCursor *c, Relation index, Size hs);
 
 extern void	wbuf_cursor_set(PageCursor *c, Page page);
 
@@ -173,15 +236,27 @@ extern void	wbuf_arena_test_slots(int n);
 
 #endif
 
-extern void	wbuf_put_piece(Page page, const ItemPointerData *tid, uint16 flags, const char *payload, Size len);
+extern void	wbuf_put_piece(Page page, const ItemPointerData *tid, uint16 flags, const char *payload, Size len, const WbufKey *key);
 
-extern bool	wbuf_write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPointerData *tid, uint16 flags, const char *payload, Size len, BlockNumber *tail);
+extern bool	wbuf_write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPointerData *tid, uint16 flags, const char *payload, Size len, const WbufKey *key, BlockNumber *tail);
 
 extern void	wbuf_flag_overflow(Relation index, SiftCWbufHint *h, uint32 mask, uint32 jmask);
 
 extern void	wbuf_flush_for_read(Relation index);
 
 extern uint64	wbuf_count_rows(Relation index, const SiftSegEntry *entry, bool first_only);
+
+/* The format a buffer opened now has, and the leaf of its keys (-1: none) */
+extern uint16	wbuf_new_format(Relation index);
+
+/* What an empty page of the buffer the index opens holds: a pending row over it is written at once, in pieces, and a run of pending rows over it is flushed */
+static inline Size
+wbuf_empty_room(Relation index)
+{
+	return wbuf_room(wbuf_hs(wbuf_new_format(index)));
+}
+
+extern void	wbuf_refresh(Relation index, const SiftColSchema *schema, SiftCWbufHint *h);
 
 extern bool	wbuf_advance_page(SiftCWbufReader *r);
 
@@ -198,8 +273,8 @@ typedef struct WbufLane
 	Size		pos;
 } WbufLane;
 
-extern uint32 wbuf_page_dead(Relation index, Page page, Size from, Size upto);
-extern uint32 wbuf_page_dead_list(Relation index, Page page, Size from, Size upto, uint32 *pos, uint64 *key, uint32 cap);
+extern uint32 wbuf_page_dead(Relation index, Size hs, Page page, Size from, Size upto);
+extern uint32 wbuf_page_dead_list(Relation index, Size hs, Page page, Size from, Size upto, uint32 *pos, uint64 *key, uint32 cap);
 
 extern void	wbuf_read_lane(SiftCWbufReader *r, BlockNumber head, WbufLane *l, void (*fn) (void *arg, const RawRec *rec), void *arg);
 

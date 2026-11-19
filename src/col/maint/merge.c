@@ -8,6 +8,7 @@
 #include "utils/timestamp.h"
 #include "bm25/merge.h"
 #include "col/maint/maint_int.h"
+#include "col/order_bound.h"
 #include "col/point.h"
 #include "core/membudget.h"
 
@@ -18,6 +19,7 @@ static bool merge_recut;
 int			sift_test_col_rollup_panic_armed = 0;
 
 bool		sift_test_col_merge_panic = false;
+bool		sift_test_col_record_partitions = true;
 int			sift_test_col_merge_error = 0;
 
 int			sift_test_col_refresh_sleep_armed = 0;
@@ -72,6 +74,16 @@ tid_take(TidIn *t, uint32 sb, SiftColBatch *part, SiftColFreezeFn freeze, void *
 		sift_cbatch_add_from(part, t->buf, t->pos++);
 }
 
+static uint64
+inputs_bytes(const SiftSegEntry *in, int n)
+{
+	uint64		bytes = 0;
+
+	for (int i = 0; i < n; i++)
+		bytes += in[i].bytes;
+	return bytes;
+}
+
 /* The segments a merge writes: its output is one segment, or partitions, each done when it holds its share of the units */
 typedef struct MergeOut
 {
@@ -85,8 +97,8 @@ typedef struct MergeOut
 	uint64		expect;			/* the bytes of one partition, for the throttle */
 	uint64		units_left;		/* the bytes of units the partitions still to be written hold: the partition in hand is done at its share of them */
 	int			parts;
-	int			maxout;			/* the most segments the merge may write: the directory holds the ones it replaces and the room besides */
-	Size		budget;			/* the memory a segment writer may hold (sift_colw_full); grows when the segments left would not hold the rows left */
+	bool		by_budget;		/* a segment is also done when its writer holds its budget of memory: not the slices of a merge, which are the partitions their bytes make (one segment each) */
+	Size		budget;			/* the memory a segment writer may hold (sift_colw_full) */
 	uint64		live_rows;
 	struct SiftColFill *fill;	/* of the partition in hand */
 	uint64		rows_done;		/* the rows of the segments written */
@@ -95,8 +107,13 @@ typedef struct MergeOut
 	SiftWriteTarget *wt;
 	SiftColSegWriter *w;
 	MemoryContext pcx;
-	SiftSegEntry neu[MAX_PARTS];
+	SiftSegEntry *neu;			/* the segments written, in cx */
+	uint8		(*lo)[SIFT_BOUND_BYTES];	/* the lower bound of each, as its writer saw it; lo_known: every writer did */
+	bool		lo_known;
+	SiftBound	first_lo;		/* the bound of the segment in hand, from its first unit; first_ok: it has one */
+	bool		first_ok;
 	int			nneu;
+	int			ncap;
 	SiftXStamp	xstamp;			/* who inserted the rows of the segments merged, each settled: none when one does not say */
 	bool		roots;			/* every segment merged has SIFT_SEG_ROOTS */
 	int			scope;			/* the scope the segments merged hold the entries of (their cut is its key's), -1 for the entities of the index */
@@ -116,12 +133,25 @@ merge_roots(const SiftSegEntry *in, int n)
 	return true;
 }
 
+/* The lower bound of a partition is that of the least row of its first unit */
+static void
+out_first_unit(void *arg, const SiftColBatch *b)
+{
+	MergeOut   *o = arg;
+
+	o->first_ok = sift_colk_batch_bound(&(OrderCtx) {o->schema, o->cut, o->ncut}, b, false, &o->first_lo);
+}
+
 static void
 out_begin(MergeOut *o)
 {
-	/* a context of its own for each partition, so that the dictionaries and zones of those written do not pile up */
+	MemoryContext old;
+
+	/* a context of its own for each partition, so that its write target, dictionaries and zones do not pile up with those written */
 	o->pcx = AllocSetContextCreate(o->cx, "sift_col merge partition", ALLOCSET_DEFAULT_SIZES);
+	old = MemoryContextSwitchTo(o->pcx);
 	o->wt = sift_wt_begin(o->index, SIFT_WRITE_SHARED);
+	MemoryContextSwitchTo(old);
 	sift_wt_expect(o->wt, o->expect);
 	maint_throttle(o->wt);
 	o->w = sift_colw_begin(o->wt, sift_store_new_gen(o->index), o->schema, o->policy, o->format, o->pcx);
@@ -132,12 +162,32 @@ out_begin(MergeOut *o)
 	sift_colw_set_fill(o->w, o->fill);
 	if (o->pagg) sift_colw_set_preagg(o->w, o->pagg);
 	if (o->keyed)
+	{
 		sift_colw_set_keyed(o->w, sift_colk_aim_rows(o->index), o->cut, o->ncut);
+		o->first_ok = false;
+		sift_colw_on_first_unit(o->w, out_first_unit, o);
+	}
 }
 
 static void
 out_finish(MergeOut *o)
 {
+	MemoryContext old;
+
+	if (o->nneu == o->ncap)
+	{
+		if (o->ncap >= SIFT_DIR_WIDE_MAX)
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a merge of sift_col segments writes more than %d segments", SIFT_DIR_WIDE_MAX),
+							errhint("Raise maintenance_work_mem or sift.col_auto_merge_partition_kb: a segment is cut when its writer holds its share of the memory.")));
+		o->ncap = Min(Max(o->ncap * 2, 8), SIFT_DIR_WIDE_MAX);
+		o->neu = o->neu ? repalloc(o->neu, o->ncap * sizeof(SiftSegEntry)) : MemoryContextAlloc(o->cx, o->ncap * sizeof(SiftSegEntry));
+		o->lo = o->lo ? repalloc(o->lo, (Size) o->ncap * SIFT_BOUND_BYTES) : MemoryContextAlloc(o->cx, (Size) o->ncap * SIFT_BOUND_BYTES);
+	}
+	{
+		o->lo_known &= o->first_ok;
+		sift_bound_pack(&o->first_lo, o->lo[o->nneu]);
+	}
+	old = MemoryContextSwitchTo(o->pcx);
 	sift_colw_finish(o->w, &o->neu[o->nneu]);
 	sift_conn_fill_end(o->fill);
 	if (o->roots)
@@ -149,13 +199,23 @@ out_finish(MergeOut *o)
 	}
 	sift_seg_set_xstamp(&o->neu[o->nneu++], o->xstamp);
 	sift_wt_finish(o->wt);
+	MemoryContextSwitchTo(old);
 	o->w = NULL;
 	MemoryContextDelete(o->pcx);
 }
 
+/* Do the rows still to come make a short last segment (under the slack of the one in hand)? They then join it: a merge writes no stub that the next one has to merge again */
+static bool
+out_tail_is_short(const MergeOut *o, SiftColSegWriter *w)
+{
+	uint64		held = o->rows_done + sift_colw_rows(w);
+
+	return o->live_rows > held && (o->live_rows - held) * 100 <= (uint64) sift_colw_rows(w) * SIFT_SLICE_SLACK_PCT;
+}
+
 /* After each unit: the partition in hand is done when it holds its share; the writer of the next one is begun when a unit asks for it */
 static SiftColSegWriter *
-out_next(void *arg, SiftColSegWriter *w)
+out_next(void *arg, SiftColSegWriter *w, bool open)
 {
 	MergeOut   *o = arg;
 
@@ -169,17 +229,17 @@ out_next(void *arg, SiftColSegWriter *w)
 	}
 	/*
 	 * a partition is done at its share of the bytes still to write (a unit is the least it grows by: the shares of the rest make up for the overshoot, and the
-	 * last one is no short one); any segment, when its writer holds its budget of memory or SIFT_CPOINT_BUILD_ROWS rows
+	 * last one is no short one), a little later where a value of the first key leaf would be split (sift_colk_cut_near); any segment, when its writer holds its budget of memory (the same wait)
+	 * or SIFT_CPOINT_BUILD_ROWS rows; the budget leaves a last piece of under the slack to the segment before it (a unit is the least a segment grows by, so the inputs
+	 * of a merge whose budget is below them are written as many as they were read, not one more for the rows a cut at a unit leaves over)
 	 */
-	if (o->nneu + 1 < o->maxout && ((o->nneu + 1 < o->parts && sift_colw_bytes(w) >= o->units_left / (o->parts - o->nneu)) ||
-									sift_colw_full(w, o->budget - Min(o->held, o->budget / 2))))
+	if ((o->nneu + 1 < o->parts && sift_colk_cut_near(sift_colw_bytes(w), o->units_left / (o->parts - o->nneu), SIFT_SLICE_SLACK_PCT, open))
+		|| (o->by_budget && (sift_colw_rows(w) >= SIFT_CPOINT_BUILD_ROWS
+							 || (sift_colk_cut_near(sift_colw_memory(w), o->budget - Min(o->held, o->budget / 2), SIFT_SLICE_SLACK_PCT, open) && !out_tail_is_short(o, w)))))
 	{
-		uint64		rows = sift_colw_rows(w);
-
 		o->units_left -= Min(sift_colw_bytes(w), o->units_left);
-		o->rows_done += rows;
+		o->rows_done += sift_colw_rows(w);
 		out_finish(o);
-		o->budget = sift_colw_fit_budget(o->budget, rows, o->live_rows - o->rows_done, o->maxout - o->nneu);
 #ifdef SIFT_TESTING
 		if (sift_test_col_merge_panic)
 			elog(PANIC, "sift test: the merge stops after its first partition, before the segments replace the old ones");
@@ -188,32 +248,22 @@ out_next(void *arg, SiftColSegWriter *w)
 	return o->w;
 }
 
-/* The most segments a merge of n segments writes (not in slices) */
+/* The segments a merge writes: as many of part_bytes (0: one) as the live bytes make, and as many as the rows one segment may hold ask for */
 int
-maint_merge_maxout(int max_parts, int n)
+maint_merge_parts(uint64 live_bytes, uint64 live_rows, uint64 part_bytes, bool key_cut)
 {
-	return Min(MAX_PARTS, Max(max_parts, n));
-}
+	int			parts = part_bytes > 0 ? (int) Max(maint_part_count(live_bytes, part_bytes, key_cut), 1) : 1;
 
-/*
- * The segments a merge writes: as many of part_bytes (0: one) as the live bytes make, within max_parts, and as many as the rows one segment may hold ask for, up to maxout.
- * Segments that are apart and no more than this are the end state of the merge: it writes them again.
- */
-int
-maint_merge_parts(uint64 live_bytes, uint64 live_rows, uint64 part_bytes, bool key_cut, int max_parts, int maxout)
-{
-	int			parts = part_bytes > 0 ? Max(1, (int) Min(Min(maint_part_count(live_bytes, part_bytes, key_cut), MAX_PARTS), max_parts)) : 1;
-
-	return Max(parts, (int) Min((live_rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS, (uint64) maxout));
+	return Max(parts, (int) Min((live_rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS, (uint64) SIFT_DIR_WIDE_MAX));
 }
 
 /*
  * Merges the segments in[0..n) into one, or into partitions when part_bytes is set: the live bytes they hold are cut into as many segments of about
- * part_bytes each as fit max_parts (the new ones take the place of the first of the old ones, in one switch of the directory). The number of segments written.
+ * part_bytes each (the new ones take the place of the first of the old ones, in one switch of the directory). The number of segments written. window_parts: the segments a window asks for.
  */
 int
 maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
-			   int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts, const MergeSlice *slice)
+			   int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int window_parts, const MergeSlice *slice)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col merge", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext icx = AllocSetContextCreate(cx, "sift_col merge inputs", ALLOCSET_DEFAULT_SIZES);
@@ -223,11 +273,12 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	uint32	   *cur = palloc0(n * sizeof(uint32));
 	TidIn	   *tin = palloc0(n * sizeof(TidIn));
 	uint32	   *at = palloc(n * sizeof(uint32));
-	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
+	SiftMaintInputs mi = slice && slice->from ? (SiftMaintInputs) {.bytes = inputs_bytes(in, n)} : sift_maint_inputs(index, in, n);
 	MergeWindow *win = maint_window_begin(cx, schema, n);
 	int			nscope = sift_cschema_nscope(schema);
 	bool		scope = n > 0 && (in[0].flags & SIFT_SEG_SCOPE) != 0;	/* the segments are those of one scope: the rows of the entities are not merged with them */
-	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .xstamp = sift_col_is_index(index) ? sift_xstamp_inputs(in, n) : (SiftXStamp) {InvalidTransactionId, InvalidTransactionId, 0}, .roots = sift_col_is_index(index) && merge_roots(in, n),
+	const MergeSlice *part = slice && slice->nslices > 0 ? slice : NULL;
+	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .lo_known = true, .xstamp = sift_col_is_index(index) ? sift_xstamp_inputs(in, n) : (SiftXStamp) {InvalidTransactionId, InvalidTransactionId, 0}, .roots = sift_col_is_index(index) && merge_roots(in, n),
 		.scope = scope ? (int) in[0].pad : -1, .nconn = sift_cschema_nconn(schema)};
 	uint64		live_bytes = 0,
 				live_units = 0;
@@ -239,29 +290,35 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 				largest = 0,
 				overlay_rows = 0,
 				heap_sbs;
+	int			nimm = 0;
 	uint32		unit;
 	SiftCPaggSpec rewrite;
 	bool		resort = merge_recut,
 				by_key = false,
-				stream[SIFT_MAX_SEGMENTS];
+			   *stream = palloc0(Max(n, 1) * sizeof(bool));
 	int			cut[SIFT_COL_CUT_MAX] = {0},
 				ncut = 0;
 
 	merge_recut = false;
 	if (sift_col_is_index(index))
 	{
-		sift_col_pagg_rewrite(index, in, n, &rewrite);
+		/* the build of a REINDEX writes what the choices it has just made say, as a build from the heap does */
+		if (slice && slice->from)
+			rewrite = *pagg;
+		else
+			sift_col_pagg_rewrite(index, in, n, &rewrite);
 		pagg = &rewrite;
 	}
 	{
-		SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+		SiftDirSnapshot *dir;
 
-		sift_col_dir_read(index, dir, scope);
+		dir = sift_col_dir_read(slice && slice->from ? slice->from : index, scope);
 		for (int i = 0; i < dir->nsegs; i++)
 			if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			{
 				o.index_rows += dir->segs[i].ndocs;
 				largest = Max(largest, dir->segs[i].ndocs);
+				nimm += !(dir->segs[i].flags & SIFT_SEG_SCOPE);
 			}
 		overlay_rows = maint_overlay_rows(dir->segs, dir->nsegs, in, n);
 		pfree(dir);
@@ -271,7 +328,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		double		live;
 		uint64		units = 0;
 
-		seg[i] = sift_cseg_open(index, &in[i], AllocSetContextCreate(icx, "sift_col merge input", ALLOCSET_DEFAULT_SIZES));
+		seg[i] = sift_cseg_open(slice && i < slice->nfrom ? slice->from : index, &in[i], AllocSetContextCreate(icx, "sift_col merge input", ALLOCSET_DEFAULT_SIZES));
 		if (!sift_cschema_same_leaves(seg[i]->schema, schema, RelationGetDescr(index)))
 			corrupt(index, "Segment %llu was written for another column layout.", (unsigned long long) in[i].gen);
 		exact &= sift_cseg_kinds_exact(seg[i]);
@@ -292,26 +349,27 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	 * Equal partitions (a short last one would be an overlay of every later rewrite): as many as the live bytes of the inputs make of part_bytes, cut by
 	 * the bytes of units written, which are the part of a segment that grows with its rows (the dictionaries and the like grow with them)
 	 */
-	if (slice && slice->win && slice->bytes > 0 && slice->bytes < live_bytes)
+	if (part && part->win && part->bytes > 0 && part->bytes < live_bytes)
 	{
 		/* the inputs hold more than the window takes of them: the shares of the pieces are those of what it takes */
-		double		share = (double) slice->bytes / live_bytes;
+		double		share = (double) part->bytes / live_bytes;
 
 		live_units = (uint64) (live_units * share);
 		live_rows = Max((uint64) (live_rows * share), 1);
-		live_bytes = slice->bytes;
+		live_bytes = part->bytes;
 	}
-	o.maxout = slice ? (slice->win ? max_parts : 1) : maint_merge_maxout(max_parts, n);
-	o.parts = slice && slice->win && part_bytes == 0 ? max_parts : maint_merge_parts(live_bytes, live_rows, part_bytes, key_cut, max_parts, o.maxout);
+	o.parts = part && part->win && part_bytes == 0 ? window_parts : maint_merge_parts(live_bytes, live_rows, part_bytes, key_cut);
 	o.live_rows = live_rows;
+	o.by_budget = part == NULL;
 	/* the output of a merge of overlays is an overlay too: lean, as the promotion of one (maint_is_overlay) */
 	if (sift_col_is_index(index))
 	{
 		rewrite.lean = maint_is_overlay(live_rows, largest);
 		maint_set_unordered(&rewrite, schema, live_rows + overlay_rows, o.index_rows);
 	}
-	/* the writer of a merge may reside in maintenance_work_mem (the partitions are sized to it: maint_part_kb_for), and in what the partitions the directory allows need besides */
+	/* the writer of a merge may reside in maintenance_work_mem (the partitions are sized to it: maint_part_kb_for) */
 	o.budget = sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE);
+	/* the partitions are sized to that memory by an estimate: a writer that holds a share of the rows is not cut short of it, which would leave a piece under half a partition for every rewrite to merge again */
 	if (part_bytes > 0 || o.parts > 1)
 		o.budget = Max(o.budget, (Size) ((double) live_rows / o.parts * sift_colw_row_memory(pagg, schema->ncols)));
 #ifdef SIFT_TESTING
@@ -324,7 +382,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		format = Min(format, SIFT_COL_FORMAT_TAGS);
 	o.pagg = pagg;
 	o.format = format;
-	o.expect = mi.bytes / (slice ? slice->nslices : o.parts);
+	o.expect = mi.bytes / (part ? part->nslices : o.parts);
 	/*
 	 * Rows that stay sparse (no input denser than the floor in the superblocks it reaches, a segment cut by TID range reaching any of the heap's, nor
 	 * all of them together) stay in units of sift.col_unit_floor rows, in one segment: the rewrite of a partition is of rows that are not
@@ -356,14 +414,14 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 			memcpy(o.cut, cut, sizeof(o.cut));
 			o.ncut = ncut;
 			o.keyed = true;
-			if (slice == NULL)
+			if (part == NULL)
 				out_begin(&o);	/* a slice may hold no row: its writer is begun by its first unit */
 			sift_colk_merge(o.w, in, seg, n, freeze, freeze_arg, schema, cut, ncut,
 							by_tid && !key_cut ? unit : sift_colk_unit_rows(sift_colk_aim_rows(index)), maintenance_work_mem, o.cx, out_next, &o,
-							slice ? slice->i : 0, slice ? slice->nslices : 1,
+							part ? part->i : 0, part ? part->nslices : 1,
 							/* the units of the slices are numbered one after the other, by the rows that come before: the directory counts the units a segment spans */
-							slice && slice->win ? slice->win->unit_base : slice && key_cut ? live_rows * slice->i / slice->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0, stream,
-							slice ? slice->win : NULL, NULL);
+							part && part->win ? part->win->unit_base : part && key_cut ? live_rows * part->i / part->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0, stream,
+							part ? part->win : NULL, NULL);
 		}
 		for (int i = 0; i < n; i++)
 			cur[i] = seg[i]->nsb;
@@ -412,7 +470,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 				out_begin(&o);
 			sift_colw_add(o.w, rows);
 			maint_window_written(win);
-			out_next(&o, o.w);
+			out_next(&o, o.w, false);
 			CHECK_FOR_INTERRUPTS();
 		}
 	}
@@ -422,13 +480,16 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		out_finish(&o);
 	if (slice)
 	{
-		memcpy(slice->out, o.neu, o.nneu * sizeof(SiftSegEntry));
-		if (o.nneu == 0)
+		if (slice->made)
+			*slice->made = memcpy(MemoryContextAlloc(old, Max(o.nneu, 1) * sizeof(SiftSegEntry)), o.neu, o.nneu * sizeof(SiftSegEntry));
+		else if (o.nneu == 0)
 			*slice->out = (SiftSegEntry) {0};
+		else
+			memcpy(slice->out, o.neu, o.nneu * sizeof(SiftSegEntry));
 		if (slice->nout)
 			*slice->nout = o.nneu;
 #ifdef SIFT_TESTING
-		if (sift_test_col_merge_panic && slice->i == 0)
+		if (sift_test_col_merge_panic && part && part->i == 0)
 			elog(PANIC, "sift test: a slice of the merge of a build stops before the segments replace the old ones");
 		if (sift_test_col_refresh_sleep_ms > 0)
 		{
@@ -449,15 +510,8 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	if (sift_test_col_refresh_sleep_armed > 0)
 		pg_usleep(sift_test_col_refresh_sleep_armed * 1000L);
 #endif
-	{
-		int64		docs = 0;
-
-		for (int i = 0; i < o.nneu; i++)
-			docs += o.neu[i].ndocs;
-		sift_maint_replace_n(index, NULL, mi.gens, n, o.neu, o.nneu, mi.release, mi.nrelease,
-							 psprintf("merged %d column segments into %d of", n, o.nneu), start, docs);
-		maint_merge_settles(index, in, n, o.neu, o.nneu);
-	}
+	sift_col_merge_switch(index, in, n, o.neu, o.nneu, start, 0, part_bytes > 0 && key_cut && !scope && sift_col_is_index(index) && n == nimm ? o.nneu : 0, NULL,
+						 o.lo_known ? (const uint8 (*)[SIFT_BOUND_BYTES]) o.lo : NULL);
 	SIFT_MEM_CHECKPOINT();
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
@@ -489,17 +543,75 @@ sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int n
 	maint_merge_segments(index, r->schema, r->policy, &r->pagg, in, n, sift_col_format_minor, NULL, NULL, 0, 1, &(MergeSlice) {i, nslices, out});
 }
 
-/* The directory switch of a merge the participants made in slices: out[0..nout) replace in[0..n) */
+/* The merge of a REINDEX that takes its rows from the index it replaces: the partitions the writer's memory allows, none is put in the directory */
+SiftSegEntry *
+sift_col_merge_from(Relation index, Relation from, const SiftSegEntry *in, int n, int nfrom, int *nout)
+{
+	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
+	SiftDirSnapshot *snap = palloc0(offsetof(SiftDirSnapshot, segs) + n * sizeof(SiftSegEntry));
+	SiftSegEntry *made;
+
+	memcpy(snap->segs, in, n * sizeof(SiftSegEntry));
+	snap->nsegs = n;
+	maint_use_partitions(index, snap);
+	pfree(snap);
+	maint_merge_segments(index, r->schema, r->policy, &r->pagg, in, n, sift_col_format_minor, NULL, NULL,
+						 sift_col_key_cut(r) ? (uint64) maint_part_kb * 1024 : 0, 1,
+						 &(MergeSlice) {.made = &made,.nout = nout,.from = from,.nfrom = nfrom});
+	return made;
+}
+
+/*
+ * The lower bounds of the partitions part[0..n): the first starts where the range they tile does (lo0; NULL: at the lowest key), each of the others at the first row of its
+ * segment, which is above every row of the one before it
+ */
+static void
+part_bounds(Relation index, const SiftSegEntry *part, int n, const SiftBound *lo0, const uint8 (*known)[SIFT_BOUND_BYTES], uint8 (*lo)[SIFT_BOUND_BYTES])
+{
+	SiftBound	empty;
+
+	sift_bound_clear(&empty);
+	sift_bound_pack(lo0 ? lo0 : &empty, lo[0]);
+	for (int j = 1; j < n; j++)
+	{
+		if (known != NULL)
+		{
+			memcpy(lo[j], known[j], SIFT_BOUND_BYTES);
+			continue;
+		}
+		SiftColSegment *seg = sift_cseg_open(index, &part[j], CurrentMemoryContext);
+		SiftBound	b;
+
+		if (!sift_colk_segment_bound(seg, false, &b))
+			corrupt(index, "Segment %llu is a partition of the key and holds no row.", (unsigned long long) part[j].gen);
+		sift_bound_pack(&b, lo[j]);
+		sift_cseg_close(seg);
+	}
+}
+
+/*
+ * The directory switch of a merge: out[0..nout) replace in[0..n); out[part_first, part_first + part_n) tile the range that starts at lo0 (NULL: the lowest key) and are
+ * recorded as its partitions, each with the bound it starts at: known[i] is that of out[i] when the writers of the segments saw it (NULL: it is read from the segments)
+ */
 void
-sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start)
+sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start, int part_first, int part_n, const SiftBound *lo0,
+					  const uint8 (*known)[SIFT_BOUND_BYTES])
 {
 	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
+	uint8		(*lo)[SIFT_BOUND_BYTES] = palloc(Max(part_n, 1) * SIFT_BOUND_BYTES);
 	int64		docs = 0;
 
+#ifdef SIFT_TESTING
+	if (!sift_test_col_record_partitions)
+		part_n = 0;
+#endif
 	for (int i = 0; i < nout; i++)
 		docs += out[i].ndocs;
-	sift_maint_replace_n(index, NULL, mi.gens, n, out, nout, mi.release, mi.nrelease, psprintf("merged %d column segments into %d of", n, nout), start, docs);
+	if (part_n > 0)
+		part_bounds(index, &out[part_first], part_n, lo0, known ? known + part_first : NULL, lo);
+	sift_maint_replace_partitions(index, mi.gens, n, out, nout, mi.release, mi.nrelease, psprintf("merged %d column segments into %d of", n, nout), start, docs, part_first, part_n, lo);
 	maint_merge_settles(index, in, n, out, nout);
+	pfree(lo);
 }
 
 /* the workers that make one segment of a merge outside a build, besides the backend (maint_merge_par_bytes) */
@@ -518,10 +630,11 @@ sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftS
  * finds the partitions it leaves alone, of a parallel build (from MERGE_SLICES_MIN partitions) and of a merge or rewrite outside one (from 2: the rows are read by
  * the backend and one worker each, 1.7 -> 1.1 s at 64 MB of maintenance_work_mem); when the output is one segment, outside a build, a slice for each participant
  * from MERGE_PAR_BYTES. The participants take the slices, so the rows are read and written once, in parallel. Once in a build: the steps after it are not the
- * build's. false: the merge is made by one process.
+ * build's. whole: the segments are all those of the index, so the pieces are its partitions; of a part of them (a pass of the paced rewrite) the pieces are segments of no partition,
+ * as the serial merge writes them. false: the merge is made by one process.
  */
 static bool
-merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, int room)
+merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, bool whole)
 {
 	uint64		bytes = 0,
 				rows = 0;
@@ -540,7 +653,7 @@ merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, int r
 	}
 	if (cut)
 	{
-		nslices = Max(1, Min(Min((int) Min((bytes + share - 1) / share, MAX_PARTS), MAX_PARTS), room));
+		nslices = (int) Max(1, Min((bytes + share - 1) / share, (uint64) SIFT_DIR_WIDE_MAX));
 		if (nslices < (maint_after_build ? MERGE_SLICES_MIN : 2))
 			return false;
 		if (!maint_after_build)
@@ -548,36 +661,42 @@ merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, int r
 	}
 	else
 	{
-		if (bytes < maint_merge_par_bytes() || room < 2)
+		if (bytes < maint_merge_par_bytes())
 			return false;
 		workers = Min(workers, MERGE_WORKERS_MAX);
-		nslices = Min(workers + 1, room);
+		nslices = workers + 1;
 	}
 	/* a slice is one segment: it holds at most SIFT_CPOINT_BUILD_ROWS rows */
-	nslices = Max(nslices, (int) Min(Min((rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS, MAX_PARTS), room));
+	nslices = Max(nslices, (int) Min((rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS, (uint64) SIFT_DIR_WIDE_MAX));
 	maint_merge_workers = 0;
 #ifdef SIFT_TESTING
 	sift_test_col_merge_slices = nslices;
 #endif
-	return sift_colp_merge(index, sel, n, workers, nslices, GetCurrentTimestamp());
+	return sift_colp_merge(index, sel, n, workers, nslices, GetCurrentTimestamp(), cut && whole);
 }
 
 SiftStepResult
 maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
+	SiftDirSnapshot *snap;
+	SiftSegEntry *sel;
 	int			n;
-	int			room;
 	int			nimm = 0;
 	bool		cut = false,
-				paced = false;
+				paced = false,
+				bounded;
 	RollStep	rs = {0};
-	SiftSegEntry all[SIFT_MAX_SEGMENTS];
+	SiftSegEntry *all;
 	int			nall = 0;
 
-	sift_dir_read(index, snap);
+	sift_col_adopt_partitions(index);
+	snap = sift_dir_read(index);
 	int total = snap->nsegs;
+
+	/* check-memory: allow the entries of a directory, at most SIFT_DIR_WIDE_MAX */
+	sel = palloc(Max(total, 1) * sizeof(SiftSegEntry));
+	/* check-memory: allow the entries of a directory, at most SIFT_DIR_WIDE_MAX */
+	all = palloc(Max(total, 1) * sizeof(SiftSegEntry));
 	for (int i = 0; i < total; i++)
 		nimm += snap->segs[i].kind == SIFT_SEG_IMMUTABLE && !(snap->segs[i].flags & SIFT_SEG_SCOPE);
 	/* the merge and the rewrite are of the entity segments: a scope segment (col/scope.h) is cut by another key, and the two are never mixed */
@@ -589,6 +708,7 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 		snap->nsegs = keep;
 	}
 	n = goal == SIFT_GOAL_REWRITE ? maint_pick_rewrite(index, snap, sel, &cut, &paced, &rs) : maint_pick_merge(index, snap, force, sel);
+	bounded = goal != SIFT_GOAL_REWRITE && maint_force_bounded;
 	/* a pass of the rewrite of overlapping runs does about sift.col_auto_merge_pass_mb of them: the next VACUUM, worker or sift.col_maintain call goes on from the directory this one left */
 	if (paced && n > 0)
 	{
@@ -619,6 +739,8 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 		if (sift_col_redecide_busy(index))
 		{
 			pfree(snap);
+			pfree(sel);
+			pfree(all);
 			return SIFT_STEP_IDLE;
 		}
 		maint_redecided = true;
@@ -630,8 +752,6 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 			rs.on = false;
 		}
 	}
-	/* the new segments must fit the directory beside the others, with the room the inserters keep */
-	room = SIFT_MAX_SEGMENTS - 16 - (total - n);
 	pfree(snap);
 	if (n > 0)
 	{
@@ -646,13 +766,17 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 		const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 
 		if (rs.on)
-			maint_roll_merge(index, sel, n, &rs, Max(room, 1));
-		else if (!merge_by_workers(index, sel, n, cut, Max(room, 1)))
+			maint_roll_merge(index, sel, n, &rs);
+		else if (!merge_by_workers(index, sel, n, cut, n == nimm))
 			maint_merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
-						   cut ? (uint64) maint_part_kb * 1024 : 0, Max(room, 1), NULL);
+						   cut ? (uint64) maint_part_kb * 1024 : 0, 1, NULL);
 		if (keyed)
 			sift_col_auto_keys_report(index);
 	}
+	pfree(sel);
+	pfree(all);
+	if (n > 0 && bounded)
+		return maint_merge_next(index, force, goal, propagate, busy);
 	if (!sift_col_is_index(index) || sift_col_rel(index)->nscope == 0)
 		return n > 0 ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 	/* a merge of everything is of the scope segments too, in the same step */

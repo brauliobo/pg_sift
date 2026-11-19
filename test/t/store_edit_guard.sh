@@ -12,7 +12,7 @@ sql eg "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE t (v int)" "CREATE 
 
 page() { sql eg "SELECT lower, upper, type, gen FROM sift._test_page('t_idx', 1)"; }
 before=$(page)
-out=$(sql eg "SELECT sift._test_write('t_idx', 1, 30, 2, true)" 2>&1)
+out=$(sql eg "SELECT sift._test_write('t_idx', 1, 24, 2, true)" 2>&1)
 check "an edit inside its head is logged" test $? == 0
 for w in "8184 1" "8174 4"; do
 	pm=$(head -1 "$D/data/postmaster.pid")

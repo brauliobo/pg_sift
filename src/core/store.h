@@ -85,6 +85,7 @@
 #include "core/host.h"
 
 #include "core/page.h"
+#include "core/range.h"
 #include "core/xlog.h"
 #include "core/damage.h"
 
@@ -131,14 +132,31 @@ extern void sift_page_init(Page page, SiftPageType type, uint64 gen);
 extern void sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen);
 extern void sift_store_require_ready(Relation index);
 
-/* Directory snapshot: plain copy of metapage + directory (invariant I3) */
+/*
+ * Directory snapshot: plain copy of metapage + directory (invariant I3), of any number of entries up to SIFT_DIR_WIDE_MAX. It is one allocation made by
+ * sift_dir_read and its end holds the segments, so a copy of the bytes sift_dir_bytes says is a copy of the snapshot (the shared views of a scan do that);
+ * never declare one or size one with sizeof. chain lists the blocks of a chained directory, its root first, in the memory context of the read: it is meaningful in the snapshot
+ * sift_dir_read returned and not in a copy of its bytes.
+ */
 typedef struct SiftDirSnapshot
 {
 	SiftMetaPageData meta;
 	uint32		version;
 	int			nsegs;
-	SiftSegEntry segs[SIFT_MAX_SEGMENTS];
+	bool		partial;		/* sift_dir_read_range left out entries of the directory */
+	BlockNumber *chain;
+	int			nchain;
+	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
 } SiftDirSnapshot;
+
+/* The directory entries a writer keeps the index within: the policy of the writers (SIFT_DIR_POLICY_MAX; sift.test_limits lowers it), or for a sift_col index the capacity: its partitions make as many as its bytes ask */
+extern int	sift_dir_cap(const SiftMetaPageData *meta);
+
+/* The entries old[0..nold) a directory update replaces by neu[0..nneu), each a partition of its own, with the lineage the rules give it; lo: their lower bounds or NULL (core/dirchain.h) */
+/* The entries neu[0..nneu) replace old[0..nold), all of one partition: they are in it (a rewrite, a vacuum step) */
+extern void sift_dir_part_inherit(const uint64 *old, int nold, const SiftSegEntry *neu, int nneu);
+
+extern void sift_dir_part_replace(const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, const uint8 (*lo)[SIFT_BOUND_BYTES]);
 
 /*
  * Do the segments of the index hold documents written under other options than hash (the analyzer of a BM25 index, the leaf list of a column index)? An index with
@@ -172,8 +190,16 @@ sift_dir_bytes(const SiftDirSnapshot *dir)
 extern uint32 sift_store_meta_flags(Relation index);
 /* Whether the metapage holds the flag, read as it is: a page that is not a metapage holds none, and no error is raised for it (the report of the flags of an index that may be damaged) */
 extern bool sift_store_meta_has_flag(Relation index, uint32 flag);
-extern void sift_dir_read(Relation index, SiftDirSnapshot *snap);
-extern void sift_dir_read_segs(Relation index, SiftDirSnapshot *snap);
+extern SiftDirSnapshot *sift_dir_read(Relation index);
+/* The directory of the partitions that may hold a key of the range, and the entries that are no partition's (core/range.h sift_range_span) */
+extern SiftDirSnapshot *sift_dir_read_range(Relation index, const SiftKeyRange *keys);
+extern SiftDirSnapshot *sift_dir_read_segs(Relation index);
+/* An empty snapshot (zero entries, zero meta) with room for n entries */
+extern SiftDirSnapshot *sift_dir_alloc(int n);
+/* A copy of the snapshot in the current memory context, with no chain (the copy outlives the read) */
+extern SiftDirSnapshot *sift_dir_copy(const SiftDirSnapshot *snap);
+/* Replaces the snapshot a long-lived owner keeps in *slot (NULL at first) by a fresh read, kept in cxt */
+extern void sift_dir_reload(Relation index, SiftDirSnapshot **slot, MemoryContext cxt);
 extern bool sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags);
 extern void sift_store_rekey_layout(Relation index, uint32 hash);
 
@@ -210,6 +236,8 @@ typedef struct SiftDirChange
 	int			nrelease;
 	Buffer		extra;			/* InvalidBuffer if none */
 	bool		immediate;		/* no snapshot can hold the released extents (a relation still being written by its creator): reusable at once */
+	int			nadd;			/* the entries fn adds to the directory at most (a mutator that only edits or removes: 0); the working copy has room for the entries it has and these */
+	BlockNumber chain_below;	/* a chained directory: its pages at or above this block are written again below it (the shrink of the file); 0: they stay. ERROR when no free run below holds them */
 } SiftDirChange;
 
 typedef struct SiftWriteTarget SiftWriteTarget;
@@ -250,10 +278,13 @@ extern void sift_store_space_test_point(int phase);
 extern PGDLLIMPORT int sift_test_crash_dir;
 extern PGDLLIMPORT int sift_test_crash_kind;
 extern PGDLLIMPORT bool sift_test_crash_worker;
+extern PGDLLIMPORT bool sift_test_crash_chain;
 extern PGDLLIMPORT bool sift_test_cut_with_standby;
 extern PGDLLIMPORT int sift_test_dir_updates;
 extern void sift_store_dir_test_point(bool after);
+extern void sift_store_dir_test_chain_point(void);
 #define SIFT_DIR_TEST_POINT(after) sift_store_dir_test_point(after)
+#define SIFT_DIR_TEST_CHAIN_POINT() sift_store_dir_test_chain_point()
 extern void sift_store_dir_test_enter(void);
 extern void sift_store_dir_test_leave(bool publish);
 extern void sift_store_dir_test_books(void);
@@ -269,6 +300,7 @@ extern void sift_store_clear_test_point(void);
 #else
 #define SIFT_SPACE_TEST_POINT(phase) ((void) 0)
 #define SIFT_DIR_TEST_POINT(after) ((void) 0)
+#define SIFT_DIR_TEST_CHAIN_POINT() ((void) 0)
 #define SIFT_DIR_TEST_ENTER() ((void) 0)
 #define SIFT_DIR_TEST_LEAVE(publish) ((void) 0)
 #define SIFT_DIR_TEST_BOOKS() ((void) 0)

@@ -1,0 +1,42 @@
+-- The pages of a chained directory: a root and the leaves the entries fill, whatever the number of partitions. A leaf holds the entries of several partitions, a
+-- reference each, so that a directory of a hundred partitions is 2 pages, not 101 (a statement that spans the partitions reads the directory once per page); past a root of 127
+-- references the references go to interior pages. A read of one key reads the root, the interior page that lists its partition and the leaf that holds it.
+CREATE EXTENSION pg_sift_test CASCADE;
+
+CREATE FUNCTION digits(o int8, k int) RETURNS int[] LANGUAGE sql IMMUTABLE AS
+	$$ SELECT array_agg(((o >> (6 * (3 - i))) & 63)::int ORDER BY i) FROM generate_series(0, k - 1) i $$;
+
+CREATE TABLE sizes (head int, n int, partitions int, entries int, pages int, pages_of_one_key int);
+CREATE FUNCTION measure(head int, n int) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE idx regclass; o int8 := (n / 2) * 16384;
+BEGIN
+	EXECUTE format('CREATE TABLE dp_%s_%s (v int)', head, n);
+	EXECUTE format('CREATE INDEX dp_%s_%s_idx ON dp_%s_%s USING sift_store_test (v)', head, n, head, n);
+	idx := format('dp_%s_%s_idx', head, n)::regclass;
+	IF head > 0 THEN PERFORM sift._test_dir_edit(idx, 'ins', 0, head); END IF;
+	PERFORM sift._test_dir_nest(idx, head, 0, ARRAY(SELECT i::int8 * 16384 FROM generate_series(0, n - 1) i));
+	INSERT INTO sizes SELECT head, n, (SELECT count(*) FROM sift._test_dir_parts(idx)), nsegs, chain_blocks,
+		(SELECT max(nblocks) FROM sift._test_dir_prefix(idx, digits(o, 3), -1) AS p(gen, nblocks) WHERE gen = (SELECT gen FROM sift._test_dir_list(idx) WHERE ord = head + n / 2))
+	FROM sift._test_dir_info(idx);
+END $$;
+
+SELECT measure(0, 1);
+SELECT measure(0, 10);
+SELECT measure(0, 100);
+SELECT measure(5, 100);
+SELECT measure(0, 127);
+SELECT measure(0, 1000);
+SELECT * FROM sizes ORDER BY n, head;
+
+SELECT bool_and(sift._test_dir_check(format('dp_%s_%s_idx', head, n)::regclass) > 0) AS chains_sound FROM sizes;
+
+DO $$ DECLARE s record; BEGIN
+	FOR s IN SELECT head, n FROM sizes LOOP
+		EXECUTE format('DROP TABLE dp_%s_%s', s.head, s.n);
+	END LOOP;
+END $$;
+DROP TABLE sizes;
+DROP FUNCTION measure(int, int);
+DROP FUNCTION digits(int8, int);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -10,3 +10,4 @@ col_conn_declare	52
 col_scope_declare	66
 read_dict_ids	52
 tbl_basic	60
+col_rollup_worker	90

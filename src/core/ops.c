@@ -108,10 +108,10 @@ sift_maint_context(ErrorContextCallback *cb, Oid indexoid)
 static void
 check_analyzer_options(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	SiftAnalyzerConfig cfg;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	sift_analyzer_config_from_index(index, &cfg);
 	if (sift_dir_layout_differs(snap, cfg.hash))
 		sift_lane_alter_refuse(index, "analyzer options");

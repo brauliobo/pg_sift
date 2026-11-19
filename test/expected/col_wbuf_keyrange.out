@@ -1,0 +1,407 @@
+-- sift.col_wbuf_key_range: the pages of a write buffer of column format 55 hold the range of one integer key leaf (the first of the key_cut of the index), and a scan that
+-- asks for keys reads only the pages whose range meets them (col/wbuf/read.c, sift_cwbuf_batches_keys). The leaf is order_id (leaf 0: the id of the row, so each page holds a range of
+-- ids; the rows are small but the three of 1,000 items span pages) and then tenant_id (leaf 1: random, NULL, overflow and extreme values, so most pages meet most ranges). A read that skips
+-- pages never loses a row of the keys. A buffer that a whole read has kept is read from the kept set, and so is one whose reads of keys this backend has made have decoded what the buffer holds.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+CREATE TABLE t (doc int);
+CREATE INDEX t_idx ON t USING sift_col (doc) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "t_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t_idx');
+SELECT sift._test_col_wbuf_prepare('t_idx', 0, 0, true) IS NOT NULL AS prepared;
+ prepared 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t_idx', 7, 0, 3000) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+-- every page of the buffer says its leaf and its range
+SELECT count(*) > 16 AS pages, bool_and(leaf = 0) FILTER (WHERE nrecs > 0) AS leaf_zero, bool_and(kmin <= kmax) AS ordered,
+	   count(*) FILTER (WHERE nrecs > 0 AND kmin IS NULL) AS without_range, count(*) FILTER (WHERE flags & 2 <> 0) > 0 AS spans
+FROM sift._test_col_wbuf_pages('t_idx');
+ pages | leaf_zero | ordered | without_range | spans 
+-------+-----------+---------+---------------+-------
+ t     | t         | t       |             0 | t
+(1 row)
+
+-- the first read of the keys 1000 to 1100 decodes the pages that meet them, and every row of those keys is in it
+CREATE TABLE part AS SELECT * FROM sift._test_col_wbuf_keyed('t_idx', 7, 1000, 1100);
+SELECT count(*) < 3000 AS fewer_rows, bool_and(partial) AS partial, count(*) FILTER (WHERE id BETWEEN 1000 AND 1100) AS wanted FROM part;
+ fewer_rows | partial | wanted 
+------------+---------+--------
+ t          | t       |    101
+(1 row)
+
+-- the rows of every range are all there, the one of a row that spans pages and the ones next to it too
+CREATE TABLE ranges (lo int8, hi int8);
+INSERT INTO ranges VALUES (0, 0), (0, 40), (998, 1000), (999, 999), (1000, 1000), (1999, 2001), (2500, 2600), (2990, 2999), (2999, 5000), (-50, 10), (3000, 4000), (900000, 900001);
+SELECT r.lo, r.hi, count(k.id) FILTER (WHERE k.id BETWEEN r.lo AND r.hi) = greatest(least(r.hi, 2999) - greatest(r.lo, 0) + 1, 0) AS every_row
+FROM ranges r LEFT JOIN LATERAL sift._test_col_wbuf_keyed('t_idx', 7, r.lo, r.hi) k ON true GROUP BY r.lo, r.hi ORDER BY 1, 2;
+   lo   |   hi   | every_row 
+--------+--------+-----------
+    -50 |     10 | t
+      0 |      0 | t
+      0 |     40 | t
+    998 |   1000 | t
+    999 |    999 | t
+   1000 |   1000 | t
+   1999 |   2001 | t
+   2500 |   2600 | t
+   2990 |   2999 | t
+   2999 |   5000 | t
+   3000 |   4000 | t
+ 900000 | 900001 | t
+(12 rows)
+
+-- a read of every row keeps the set, and the reads of keys that follow are read from it
+CREATE TABLE allrows AS SELECT * FROM sift._test_col_wbuf_keyed('t_idx', 7, NULL, NULL);
+SELECT count(*) AS rows, count(DISTINCT id) AS ids, bool_or(partial) AS partial FROM allrows;
+ rows | ids  | partial 
+------+------+---------
+ 3000 | 3000 | f
+(1 row)
+
+SELECT count(*) = 3000 AS from_kept_set, bool_or(partial) AS partial FROM sift._test_col_wbuf_keyed('t_idx', 7, 1000, 1100);
+ from_kept_set | partial 
+---------------+---------
+ t             | f
+(1 row)
+
+-- VACUUM flags and rows appended since are in the next read of the keys
+SELECT sift._test_col_wbuf_delete('t_idx', 5) AS flagged;
+ flagged 
+---------
+     600
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t_idx', 7, 3000, 500) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+SELECT count(*) FILTER (WHERE id BETWEEN 2900 AND 3099) AS wanted, count(*) FILTER (WHERE id BETWEEN 2900 AND 2999 AND id % 5 = 0) AS dead
+FROM sift._test_col_wbuf_keyed('t_idx', 7, 2900, 3099);
+ wanted | dead 
+--------+------
+    180 |    0
+(1 row)
+
+SELECT sift._test_check('t_idx') AS orphans;
+ orphans 
+---------
+       0
+(1 row)
+
+-- the reads of keys of a backend go on while what they decoded is less than the buffer holds: four fifths of it takes the reads of a quarter of it, the fifth is a whole read whose set is kept
+-- (every read of keys above is the first of a backend that has not written the buffer: cold)
+CREATE TABLE t4 (doc int);
+CREATE INDEX t4_idx ON t4 USING sift_col (doc) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "t4_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t4_idx');
+SELECT sift._test_col_wbuf_prepare('t4_idx', 0, 0, true) IS NOT NULL AS prepared;
+ prepared 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t4_idx', 7, 0, 1000) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+SELECT count(*) < 1000 AS fewer_rows, bool_and(partial) AS partial FROM sift._test_col_wbuf_keyed('t4_idx', 7, 0, 250);
+ fewer_rows | partial 
+------------+---------
+ t          | t
+(1 row)
+
+SELECT bool_and(partial) AS partial FROM sift._test_col_wbuf_keyed('t4_idx', 7, 0, 250, false);
+ partial 
+---------
+ t
+(1 row)
+
+SELECT bool_and(partial) AS partial FROM sift._test_col_wbuf_keyed('t4_idx', 7, 0, 250, false);
+ partial 
+---------
+ t
+(1 row)
+
+SELECT count(*) >= 0 AS fourth FROM sift._test_col_wbuf_keyed('t4_idx', 7, 0, 250, false);
+ fourth 
+--------
+ t
+(1 row)
+
+SELECT count(*) AS rows, bool_or(partial) AS partial FROM sift._test_col_wbuf_keyed('t4_idx', 7, 10, 20, false);
+ rows | partial 
+------+---------
+ 1000 | f
+(1 row)
+
+-- a first read that would decode more than half of the buffer is a whole read at once
+CREATE TABLE t7 (doc int);
+CREATE INDEX t7_idx ON t7 USING sift_col (doc) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "t7_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t7_idx');
+SELECT sift._test_col_wbuf_prepare('t7_idx', 0, 0, true) IS NOT NULL AS prepared;
+ prepared 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t7_idx', 7, 0, 1000) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+SELECT count(*) AS rows, bool_or(partial) AS partial FROM sift._test_col_wbuf_keyed('t7_idx', 7, 0, 700);
+ rows | partial 
+------+---------
+ 1000 | f
+(1 row)
+
+-- a read that skips no page is a whole read at once, and so is any read of a backend that has written the buffer (it is a session that reads it again)
+CREATE TABLE t5 (doc int);
+CREATE INDEX t5_idx ON t5 USING sift_col (doc) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "t5_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t5_idx');
+SELECT sift._test_col_wbuf_prepare('t5_idx', 0, 0, true) IS NOT NULL AS prepared;
+ prepared 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t5_idx', 7, 0, 1000) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+SELECT count(*) AS rows, bool_or(partial) AS partial FROM sift._test_col_wbuf_keyed('t5_idx', 7, 0, 600, false);
+ rows | partial 
+------+---------
+ 1000 | f
+(1 row)
+
+CREATE TABLE t6 (doc int);
+CREATE INDEX t6_idx ON t6 USING sift_col (doc) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "t6_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t6_idx');
+SELECT sift._test_col_wbuf_prepare('t6_idx', 0, 0, true) IS NOT NULL AS prepared;
+ prepared 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t6_idx', 7, 0, 1000) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+SELECT count(*) AS rows, bool_or(partial) AS partial FROM sift._test_col_wbuf_keyed('t6_idx', 7, -9223372036854775808, 9223372036854775807);
+ rows | partial 
+------+---------
+ 1000 | f
+(1 row)
+
+-- a random key of rows of any size, with NULL and overflow values and the extremes, so that most pages meet most ranges; the twin index is read whole for the keys
+CREATE TABLE t2 (doc int);
+CREATE INDEX t2_idx ON t2 USING sift_col (doc) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "t2_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t2_idx');
+CREATE TABLE t2f (doc int);
+CREATE INDEX t2f_idx ON t2f USING sift_col (doc) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "t2f_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t2f_idx');
+SELECT sift._test_col_wbuf_prepare('t2_idx', 0, 1) IS NOT NULL AS prepared;
+ prepared 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_prepare('t2f_idx', 0, 1) IS NOT NULL AS prepared;
+ prepared 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t2_idx', 11, 0, 3000) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t2f_idx', 11, 0, 3000) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+SELECT bool_and(leaf = 1) FILTER (WHERE nrecs > 0) AS leaf_one, count(*) FILTER (WHERE flags & 16 <> 0) > 0 AS unknown_keys
+FROM sift._test_col_wbuf_pages('t2_idx');
+ leaf_one | unknown_keys 
+----------+--------------
+ t        | t
+(1 row)
+
+CREATE TABLE all2 AS SELECT * FROM sift._test_col_wbuf_keyed('t2f_idx', 11, NULL, NULL);
+CREATE TABLE ranges2 (lo int8, hi int8);
+INSERT INTO ranges2 VALUES (-1000, -990), (0, 0), (5, 50), (-1000, 1000), (-9223372036854775808, -9223372036854775808),
+	(9223372036854775807, 9223372036854775807), (100000, 200000), (-9223372036854775808, 9223372036854775807);
+SELECT r.lo, r.hi, (SELECT count(*) FROM all2 f WHERE f.key BETWEEN r.lo AND r.hi
+		AND NOT EXISTS (SELECT 1 FROM sift._test_col_wbuf_keyed('t2_idx', 11, r.lo, r.hi) k WHERE k.id = f.id)) AS lost
+FROM ranges2 r ORDER BY 1, 2;
+          lo          |          hi          | lost 
+----------------------+----------------------+------
+ -9223372036854775808 | -9223372036854775808 |    0
+ -9223372036854775808 |  9223372036854775807 |    0
+                -1000 |                 -990 |    0
+                -1000 |                 1000 |    0
+                    0 |                    0 |    0
+                    5 |                   50 |    0
+               100000 |               200000 |    0
+  9223372036854775807 |  9223372036854775807 |    0
+(8 rows)
+
+-- a row whose key is an overflow value has no key to compare and is in every read of keys, whatever the range of its page
+SELECT count(*) FILTER (WHERE unknown) > 0 AS has_unknown FROM all2;
+ has_unknown 
+-------------
+ t
+(1 row)
+
+SELECT r.lo, r.hi, (SELECT count(*) FROM all2 f WHERE f.unknown
+		AND NOT EXISTS (SELECT 1 FROM sift._test_col_wbuf_keyed('t2_idx', 11, r.lo, r.hi) k WHERE k.id = f.id)) AS lost_unknown
+FROM ranges2 r ORDER BY 1, 2;
+          lo          |          hi          | lost_unknown 
+----------------------+----------------------+--------------
+ -9223372036854775808 | -9223372036854775808 |            0
+ -9223372036854775808 |  9223372036854775807 |            0
+                -1000 |                 -990 |            0
+                -1000 |                 1000 |            0
+                    0 |                    0 |            0
+                    5 |                   50 |            0
+               100000 |               200000 |            0
+  9223372036854775807 |  9223372036854775807 |            0
+(8 rows)
+
+SELECT sift._test_check('t2_idx') AS orphans;
+ orphans 
+---------
+       0
+(1 row)
+
+-- a key that grows with the row, with NULL and overflow values: most pages have a narrow range and the ones with an overflow value are read for every range
+CREATE TABLE t8 (doc int);
+CREATE INDEX t8_idx ON t8 USING sift_col (doc) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "t8_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t8_idx');
+CREATE TABLE t8f (doc int);
+CREATE INDEX t8f_idx ON t8f USING sift_col (doc) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "t8f_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t8f_idx');
+SELECT sift._test_col_wbuf_prepare('t8_idx', 0, 1, true) IS NOT NULL AS prepared;
+ prepared 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_prepare('t8f_idx', 0, 1, true) IS NOT NULL AS prepared;
+ prepared 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t8_idx', 13, 0, 3000) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t8f_idx', 13, 0, 3000) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+SELECT count(*) FILTER (WHERE flags & 16 <> 0) > 0 AS unknown_pages, count(*) FILTER (WHERE nrecs > 0 AND flags & 16 = 0 AND flags & 8 <> 0) > 0 AS ranged_pages
+FROM sift._test_col_wbuf_pages('t8_idx');
+ unknown_pages | ranged_pages 
+---------------+--------------
+ t             | t
+(1 row)
+
+CREATE TABLE all8 AS SELECT * FROM sift._test_col_wbuf_keyed('t8f_idx', 13, NULL, NULL);
+CREATE TABLE ranges8 (lo int8, hi int8);
+INSERT INTO ranges8 VALUES (0, 0), (0, 40), (1500, 1520), (2990, 2999), (100000, 200000), (-50, -1);
+SELECT r.lo, r.hi, (SELECT count(*) FROM all8 f WHERE (f.key BETWEEN r.lo AND r.hi OR f.unknown)
+		AND NOT EXISTS (SELECT 1 FROM sift._test_col_wbuf_keyed('t8_idx', 13, r.lo, r.hi) k WHERE k.id = f.id)) AS lost
+FROM ranges8 r ORDER BY 1, 2;
+   lo   |   hi   | lost 
+--------+--------+------
+    -50 |     -1 |    0
+      0 |      0 |    0
+      0 |     40 |    0
+   1500 |   1520 |    0
+   2990 |   2999 |    0
+ 100000 | 200000 |    0
+(6 rows)
+
+SELECT count(*) AS rows, count(*) FILTER (WHERE unknown) AS unknown, bool_and(partial) AS partial FROM sift._test_col_wbuf_keyed('t8_idx', 13, 100000, 200000);
+ rows | unknown | partial 
+------+---------+---------
+ 3000 |      60 | f
+(1 row)
+
+-- an index with no key leaf keeps the pages without a range and reads every row
+CREATE TABLE t3 (doc int);
+CREATE INDEX t3_idx ON t3 USING sift_col (doc) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "t3_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t3_idx');
+SELECT sift._test_col_wbuf_prepare('t3_idx') IS NOT NULL AS prepared;
+ prepared 
+----------
+ t
+(1 row)
+
+SELECT sift._test_col_wbuf_append('t3_idx', 7, 0, 600) >= 0 AS appended;
+ appended 
+----------
+ t
+(1 row)
+
+SELECT count(*) > 0 AS pages, count(*) FILTER (WHERE leaf IS NOT NULL OR kmin IS NOT NULL) AS ranged FROM sift._test_col_wbuf_pages('t3_idx');
+ pages | ranged 
+-------+--------
+ t     |      0
+(1 row)
+
+SELECT count(*) AS rows, bool_or(partial) AS partial FROM sift._test_col_wbuf_keyed('t3_idx', 7, 0, 10);
+ rows | partial 
+------+---------
+  600 | f
+(1 row)
+
+DROP TABLE t, t2, t2f, t3, t4, t5, t6, t7, t8, t8f, part, ranges, ranges2, ranges8, allrows, all2, all8;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
