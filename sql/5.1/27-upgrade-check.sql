@@ -120,7 +120,7 @@ BEGIN
 			ELSIF hi = 46 AND tgt = '4.3' THEN
 				-- the strings of a column held by a shared value store (5.0): the setting writes them in the segments again and leaves change tracking and the structures of minors 15 to 44 as they are
 				adv := format('SET sift.col_value_store = off, then REINDEX INDEX %s writes the strings in the segments (minor 44 at the most), which %s reads', r.rel, tgt);
-			ELSIF hi >= 52 OR mnr >= 7 THEN
+			ELSIF mnr >= 7 OR (hi >= 52 AND tgt = '5.0') THEN
 				adv := format('%s with the %s files installed writes what %s reads; under this library SET sift.col_wbuf_key_range = off first (and VACUUM the table, which folds the deletion records of its log), and a key_cut index records its partitions, a chained directory, at its first rewrite (docs/UPGRADING.md, "What 5.1 writes that 5.0 does not read")',
 							  CASE r.amname WHEN 'sift_table' THEN 'VACUUM FULL ' || r.rel || ' (ACCESS EXCLUSIVE lock)' ELSE 'REINDEX INDEX ' || r.rel END, tgt, tgt);
 			ELSIF hi >= 33 THEN
