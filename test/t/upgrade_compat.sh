@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The library of a patch release over the files of the release before it (5.0.0 -> this tree; the update script of the extension is empty): one cluster writes the zoo of objects with the
+# The library of a release over the files of the release before it (5.0.0 or a later 5.0.x -> this tree; SIFT_UPGRADE_OLD_REF): one cluster writes the zoo of objects with the
 # release (every index kind, the maintenance and recovery states a long-lived cluster holds, a quarantined index, the leftovers of a killed CONCURRENTLY build, a prepared transaction and a
 # writer in flight), is stopped cleanly or crashed, and the same files are opened by this tree's library: every object verifies and answers as the heap, every write path and maintenance step
 # works and converges, the leftovers are repaired or dropped, the zoo goes through pg_dump into a fresh cluster. Then the other way as a smoke (this tree's files read by the release; reported).
@@ -143,6 +143,9 @@ run_variant() { # VARIANT OFFSET
 	check "$v: the workers left no error in the log" test "$(grep -cE 'ERROR:  .*sift|PANIC|TRAP' "$(dir "$n")/postgres.log")" == 0
 	sql "$n" "ALTER SYSTEM RESET autovacuum" "ALTER SYSTEM RESET sift.async_maintenance" "ALTER SYSTEM RESET sift.col_auto_merge" "ALTER SYSTEM RESET sift.col_auto_merge_wal_pct" "SELECT pg_reload_conf()" >/dev/null
 	compat after-workers "$v" "$n"
+	check "$v: REINDEX of every sift_col index of the release (its rows come from the cheapest source)" sql "$n" \
+		"DO \$\$ DECLARE u text; BEGIN FOR u IN SELECT unnest(ARRAY[$COLIDX]) LOOP EXECUTE format('REINDEX INDEX %s', u); END LOOP; END \$\$"
+	compat after-reindex "$v" "$n"
 
 	# the leftovers
 	if [[ $v == clean ]]; then

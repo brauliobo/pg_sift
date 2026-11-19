@@ -130,5 +130,5 @@ jobs:
           path: |
             ${{ runner.temp }}/sift-ci/logs
             ${{ runner.temp }}/sift-ci/**/valgrind/vg/*.log
-            ${{ runner.temp }}/sift-ci/**/valgrind/postgres.out
+            ${{ runner.temp }}/sift-ci/**/valgrind/cluster/postgres.log
           if-no-files-found: ignore

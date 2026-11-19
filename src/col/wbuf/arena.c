@@ -740,14 +740,13 @@ slot_buffer_alive(const ArenaSlot *c)
 
 	if ((index = try_relation_open(c->indexoid, AccessShareLock)) == NULL)
 		return false;
-	snap = palloc(sizeof(SiftDirSnapshot));
 	if (index->rd_locator.relNumber == c->rel)
 	{
-		sift_dir_read(index, snap);
+		snap = sift_dir_read(index);
 		for (int j = 0; j < snap->nsegs; j++)
 			alive |= snap->segs[j].gen == c->gen && (snap->segs[j].kind == SIFT_SEG_WBUF_OPEN || snap->segs[j].kind == SIFT_SEG_WBUF_SEALED);
+		pfree(snap);
 	}
-	pfree(snap);
 	relation_close(index, AccessShareLock);
 	return alive;
 }

@@ -285,7 +285,7 @@ dense_gang(AggExec *ex, Relation rel, Relation ix, ColNeed *need, int nneed, Den
 	cx = AllocSetContextCreate(CurrentMemoryContext, "lookup class gang", ALLOCSET_DEFAULT_SIZES);
 	/* the workers read the index of the table, and the rows this transaction holds back for it are in no page for them */
 	sift_col_flush_held();
-	src = sift_colsrc_open(rel, ix, ex->snap, cx, NULL);
+	src = sift_colsrc_open(rel, ix, ex->snap, cx, NULL, NULL);
 	vlen = sift_colsrc_view_size(src);
 	dictshm = sift_dictshm_prepare();
 	EnterParallelMode();

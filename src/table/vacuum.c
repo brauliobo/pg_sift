@@ -357,9 +357,9 @@ group_dead(Relation rel, SiftTblRel *st, VacState *v)
 static void
 note_groups(const SiftTblRel *st, VacState *v)
 {
-	for (int i = 0; i < st->dir.nsegs; i++)
-		if (sift_tbl_seg_unfrozen(&st->dir.segs[i]))
-			note_xid(v, st->dir.segs[i].reserved);
+	for (int i = 0; i < st->dir->nsegs; i++)
+		if (sift_tbl_seg_unfrozen(&st->dir->segs[i]))
+			note_xid(v, st->dir->segs[i].reserved);
 }
 
 /*
