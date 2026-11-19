@@ -5,6 +5,7 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
+SET sift.col_build_source = auto;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
@@ -91,7 +92,7 @@ SELECT ch_start('ch_sorted');
 REINDEX INDEX ch_sorted_idx;
 SELECT pg_stat_force_next_flush() \gset
 SELECT * FROM ch_note('ch_sorted');
-RESET sift.col_build_source;
+SET sift.col_build_source = auto;
 
 -- a table whose key is displaced: the key ranges are cheaper than the btree for CREATE INDEX, and the old index is cheaper than the key ranges for the REINDEX
 SELECT pg_stat_force_next_flush() \gset

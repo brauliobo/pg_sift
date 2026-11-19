@@ -8,6 +8,8 @@
  * has no old index that can give them (from_index.c), and its btree path is serial.
  */
 #include "postgres.h"
+
+#include <float.h>
 #include "access/tableam.h"
 #include "utils/guc.h"
 #include "utils/rel.h"
