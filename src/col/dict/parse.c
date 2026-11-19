@@ -280,10 +280,8 @@ sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used)
 		char	   *bytes;
 		SiftCDict  *d;
 
-		sift_cc_decode_strs(mcxt, p, len, head[1], &off, &bytes);
-		d = cdict_from(mcxt, head[1], off, bytes);
-		pfree(off);
-		pfree(bytes);
+		sift_cc_decode_strs(mcxt, p, len, head[1], DICT_MINCAP, 256, &off, &bytes);
+		d = cdict_adopt(mcxt, head[1], off, bytes, off[head[1]]);
 		*used = DICT_HEAD + len;
 		return d;
 	}

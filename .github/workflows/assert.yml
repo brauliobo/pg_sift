@@ -3,8 +3,11 @@ name: assert
 # The memory-debugging lanes (docs/SAFETY.md): sift on a PostgreSQL built from source with assertions, memory-context checking, clobbered
 # freed memory and randomized new memory (scripts/assert.sh), and the same server under valgrind memcheck (scripts/valgrind.sh). Weekly
 # and on demand, never blocking a pull request: a failure is a finding to read, not a gate.
-# No scheduled run is enabled in this repository: dispatch the workflow to run it.
+# The every-test leak check (scripts/leakcheck.sh, run by every driver) catches what the server logs and the shared tables show; the weekly memcheck leak gate (--leaks of
+# scripts/valgrind.sh) is the deep check for what no hook can see (a palloc chunk of a long-lived context nothing points to, a malloc that is never freed).
 on:
+  schedule:
+    - cron: '17 3 * * 0'
   workflow_dispatch:
     inputs:
       valgrind_tests:
@@ -112,6 +115,9 @@ jobs:
           SIFT_VALGRIND_FULL: ${{ inputs.valgrind_full && '1' || '' }}
         run: SIFT_CI_JOBS=valgrind scripts/ci.sh quick
 
+      - name: Memcheck leak gate
+        run: SIFT_CI_JOBS=valgrind-leaks scripts/ci.sh quick
+
       - name: Seconds of each memcheck test
         if: always()
         run: grep -h '^valgrind:' "$SIFT_CI_TMP"/logs/valgrind*.log || true
@@ -124,5 +130,5 @@ jobs:
           path: |
             ${{ runner.temp }}/sift-ci/logs
             ${{ runner.temp }}/sift-ci/**/valgrind/vg/*.log
-            ${{ runner.temp }}/sift-ci/**/valgrind/postgres.out
+            ${{ runner.temp }}/sift-ci/**/valgrind/cluster/postgres.log
           if-no-files-found: ignore

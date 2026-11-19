@@ -8,7 +8,7 @@ A `sift_col` index keeps every column in units of a few thousand rows. Beside th
 - **Measured**: one absolute figure, with the benchmark case (`bench/cases.tsv`), or the regression test it comes from. A figure is one backend, warm, on the rows named.
 - **Message**: the NOTICE or HINT of `CREATE INDEX` that names it (the id in [docs/MESSAGES.md](MESSAGES.md)).
 
-Every setting and option has its full row in [docs/OPTIONS.md](OPTIONS.md); the byte layout of each structure, by column format minor, is in [docs/FORMATS.md](FORMATS.md). `ALTER INDEX .. SET (option = ..)` applies to the segments written afterwards; a `REINDEX` (or the next merge) rewrites the older ones, and the older ones keep answering meanwhile.
+Every setting and option has its full row in [docs/OPTIONS.md](OPTIONS.md); the byte layout of each structure, by column format minor, is in [docs/FORMATS.md](FORMATS.md). Where each structure sits in the index, from segment to chunk, is in [docs/COL-LAYOUT.md](COL-LAYOUT.md). `ALTER INDEX .. SET (option = ..)` applies to the segments written afterwards; a `REINDEX` (or the next merge) rewrites the older ones, and the older ones keep answering meanwhile.
 
 ## Point lookups
 

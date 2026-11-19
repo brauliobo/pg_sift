@@ -41,8 +41,8 @@ double		sift_col_auto_merge_wal_pct = 5.0;
 bool
 maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev)
 {
-	int			idx[SIFT_MAX_SEGMENTS],
-				ncand = 0,
+	int		   *idx;
+	int			ncand = 0,
 				ntake = 0,
 				least = 2,
 				cut;
@@ -57,6 +57,7 @@ maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev)
 	if (v->nkover > 0 || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
 		return false;
 	cut = sift_col_rel(index)->cut[0];
+	idx = palloc(Max(v->n, 1) * sizeof(int));
 	for (int i = 0; i < v->n; i++)
 		large = Max(large, v->imm[i].bytes);
 	for (int i = 0; i < v->n; i++)
@@ -66,7 +67,10 @@ maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev)
 			idx[ncand++] = i;
 	}
 	if (ncand < 2)
+	{
+		pfree(idx);
 		return false;
+	}
 	limit = maint_part_kb > 0 ? (uint64) maint_part_kb * 512 : large / 2;
 	/* a merge writes about the bytes of its segments: a pass takes an eighth of max_wal_size at most, and sift.col_auto_merge_wal_pct percent of it, so that it forces no checkpoint of its own; the next pass takes the rest */
 	limit = Min(limit, ((uint64) max_wal_size_mb << 20) / 8);
@@ -92,7 +96,10 @@ maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev)
 	while (ntake > least && bytes * 100 < OVERLAY_GROWTH_PCT * v->imm[idx[ntake - 1]].bytes)
 		bytes -= v->imm[idx[--ntake]].bytes;
 	if (ntake < 2 || (!ev->forced && bytes * 100 < OVERLAY_GROWTH_PCT * v->imm[idx[ntake - 1]].bytes))
+	{
+		pfree(idx);
 		return false;
+	}
 	sp = palloc(Max(total_units, 1) * sizeof(KeySpan));
 	for (int a = 0; a < ntake; a++)
 	{
@@ -117,6 +124,7 @@ maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev)
 	{
 		memset(take, false, v->n);
 		pfree(sp);
+		pfree(idx);
 		return false;
 	}
 	qsort(sp, nspan, sizeof(KeySpan), span_cmp);
@@ -136,6 +144,7 @@ maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev)
 		}
 	}
 	pfree(sp);
+	pfree(idx);
 	return true;
 }
 
@@ -204,7 +213,7 @@ maint_pick_big_overlays(Relation index, const SiftDirSnapshot *snap, SiftSegEntr
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col big overlay pick", ALLOCSET_SMALL_SIZES);
 	RewriteView *v;
-	bool		big[SIFT_MAX_SEGMENTS] = {false};
+	bool	   *big;
 	int			deepest = -1,
 				depth = 0,
 				n = 0;
@@ -212,6 +221,7 @@ maint_pick_big_overlays(Relation index, const SiftDirSnapshot *snap, SiftSegEntr
 	if (maint_part_kb == 0 || maint_after_build || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
 		return 0;
 	v = maint_view_open(index, snap, cx);
+	big = MemoryContextAllocZero(cx, Max(v->n, 1) * sizeof(bool));
 	for (int i = 0; i < v->n; i++)
 		for (int j = 0; j < v->n && v->kover[i] && !big[i]; j++)
 			big[i] = v->kover[j] && v->imm[j].gen < v->imm[i].gen && v->klo[i] < v->khi[j] && v->klo[j] < v->khi[i];

@@ -38,6 +38,14 @@ SELECT count(*) AS paths_left FROM sift.table_paths WHERE relid::oid NOT IN (SEL
 SELECT count(*) AS options_left FROM sift.table_option_values WHERE rel::oid NOT IN (SELECT oid FROM pg_class);
 ALTER TABLE dh_wide ADD COLUMN extra int;
 
+-- the function of the hooks in an event trigger of a role's own, at an event where the statement has not locked its table yet
+CREATE TABLE dh_ev (a int);
+CREATE EVENT TRIGGER dh_ev_start ON ddl_command_start EXECUTE FUNCTION sift.table_ddl_check();
+ALTER TABLE dh_ev ADD COLUMN b int;
+ALTER TABLE dh_ev RENAME COLUMN b TO c;
+DROP EVENT TRIGGER dh_ev_start;
+DROP TABLE dh_ev;
+
 -- only a superuser
 CREATE ROLE dh_user;
 SET SESSION AUTHORIZATION dh_user;

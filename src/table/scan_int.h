@@ -6,23 +6,40 @@
 
 #include "table/table.h"
 
+typedef struct SiftTblParSeg
+{
+	uint64		gen;
+	BlockNumber hdr;
+	uint64		vbase;
+	uint32		vcap;
+	uint32		npages;
+} SiftTblParSeg;
+
+/* What the leader shares: the header, then the directory it read (dir_len bytes), then nsegs write buffer segments */
 typedef struct SiftTblParallel
 {
 	ParallelTableScanDescData base;
 	pg_atomic_uint64 next;		/* next unit to hand out: the write buffer pages, then the superblocks of the column groups */
 	uint64		nunits;
 	uint64		nwbuf;			/* units that are write buffer pages */
-	SiftDirSnapshot dir;		/* the directory every participant reads */
 	int			nsegs;
-	struct
-	{
-		uint64		gen;
-		BlockNumber hdr;
-		uint64		vbase;
-		uint32		vcap;
-		uint32		npages;
-	}			seg[SIFT_MAX_SEGMENTS];
+	Size		dir_len;
+	char		data[FLEXIBLE_ARRAY_MEMBER];
 } SiftTblParallel;
+
+#define SIFT_TBL_PAR_SEGS_AT(dir_len)	MAXALIGN(offsetof(SiftTblParallel, data) + (dir_len))
+
+static inline const SiftDirSnapshot *
+sift_tbl_par_dir(const SiftTblParallel *par)
+{
+	return (const SiftDirSnapshot *) par->data;
+}
+
+static inline const SiftTblParSeg *
+sift_tbl_par_seg(const SiftTblParallel *par)
+{
+	return (const SiftTblParSeg *) ((const char *) par + SIFT_TBL_PAR_SEGS_AT(par->dir_len));
+}
 
 typedef struct SiftTblScan
 {
@@ -44,7 +61,7 @@ typedef struct SiftTblScan
 	uint32		nrows;
 	uint32		ri;
 	const SiftTblRec *rec;		/* the write buffer record of the version last returned */
-	SiftDirSnapshot *dir;		/* the directory the scan reads (its own copy, or the leader's) */
+	const SiftDirSnapshot *dir;	/* the directory the scan reads (its own copy, or the leader's) */
 	SiftTblGroupScan *g;
 	Bitmapset  *want;			/* the attributes the reader of an index build uses (sift_tbl_gscan_want) */
 	bool		in_groups;		/* the versions come from g */

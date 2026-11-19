@@ -42,6 +42,7 @@ extern bool pricing_scratch;
 
 extern double rel_filter_ratio(PlannerInfo *root, RelOptInfo *rel);
 extern bool reads_column_index(Node *node, void *context);
+extern bool normal_units(AggCtx *c);
 extern double cte_list_keys(AggCtx *c, const JoinCtx *jc, int key);
 extern bool cte_guessed(AggCtx *c, const JoinCtx *jc);
 extern double cte_list_worth(AggCtx *c, const JoinCtx *jc, int k, Var *key);

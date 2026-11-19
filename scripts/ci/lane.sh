@@ -12,7 +12,7 @@ lane() {
 	LANE=lane$1
 	export SIFT_TMP=$BASE/$LANE SIFT_PORT=$((BASE_PORT + 10 * ($1 - 1)))
 	mkdir -p "$SIFT_TMP"
-	while kill -0 "$MAIN" 2>/dev/null; do
+	while kill -0 "$MAIN" 2>/dev/null && [[ ! -e $LOG/cap_exceeded ]]; do   # a run over its cap has stopped its servers: the jobs left would only fail
 		claim && rc=0 || rc=$?
 		case $rc in 1) break ;; 2) sleep 0.5; continue ;; esac
 		id=$CLAIMED
