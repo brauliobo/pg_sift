@@ -28,7 +28,4 @@ while IFS= read -r l; do
 	[[ -n $l ]] || continue
 	if [[ $l == *" PASS" ]]; then ok "${l#SLOPE }"; else not_ok "${l#SLOPE }"; fi
 done <<<"$lines"
-slope_diag() { PGHOST=$(dir ms)/sock PGPORT=$(port ms) PGUSER=postgres PGDATABASE=postgres REPEAT=3 python3 -I "$REPO/scripts/mem-diag.py" 2>&1 | sed 's/^/not ok 90 - /'; }
-grep -h . <<<"$lines" | sed 's/^/not ok 91 - /'
-slope_diag
 finish

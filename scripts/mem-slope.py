@@ -31,7 +31,6 @@ CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference 
 LEAK_KB = 512              # kB the contexts of a backend may hold more after 60 repeats than after 10
 VARIANCE_ROWS, VARIANCE_PCT = 2.0, 0.15   # two runs of a case differ by at most max(2 B/row, 15%)
 RUNS = int(os.environ.get("MEM_SLOPE_RUNS", "2"))
-PAGE_KB = os.sysconf("SC_PAGE_SIZE") // 1024
 ASYNC_OFF = "set sift.async_maintenance='off';\n"
 SETTINGS = ASYNC_OFF + f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.environ.get("MEM_SLOPE_TSV") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope.tsv")
@@ -58,11 +57,12 @@ def prepare(sql):
         raise RuntimeError("setup: " + err.strip())
 
 
-def anon_kb_fd(statm):
-    """the anonymous resident memory in kB: resident pages less those of files and shared memory (an open /proc/PID/statm read again from its start: no sleep between samples, so a
-    few MB that live for a few hundred microseconds are seen)"""
-    resident, shared = os.pread(statm, 256, 0).split()[1:3]
-    return (int(resident) - int(shared)) * PAGE_KB
+def anon_kb_fd(status):
+    """the anonymous resident memory in kB: RssAnon of an open /proc/PID/status, read again from its start (no sleep between samples, so a few MB that live for a few hundred
+    microseconds are seen). It sums the counters of every CPU; the resident and shared pages of /proc/PID/statm come from the batched counters, 0.17 MB lower at a 3.6 MB peak
+    on a 4-CPU arm64 runner"""
+    text = os.pread(status, 8192, 0)
+    return int(text[text.index(b"RssAnon:") + 8:].split()[0])
 
 
 def send(p, sql, marker):
@@ -86,13 +86,13 @@ def measure_mb(setup, warm, op):
     _, err = send(p, SETTINGS + "select sift._test_thp_disable();\nselect sift._test_malloc_stats(true);", "WARMDONE")
     if err:
         raise RuntimeError("warm: " + err)
-    statm = os.open(f"/proc/{pid}/statm", os.O_RDONLY)
-    base = anon_kb_fd(statm)
+    status = os.open(f"/proc/{pid}/status", os.O_RDONLY)
+    base = anon_kb_fd(status)
     peak, stop = [base], threading.Event()
 
     def sample():
         while not stop.is_set():
-            peak[0] = max(peak[0], anon_kb_fd(statm))
+            peak[0] = max(peak[0], anon_kb_fd(status))
 
     t = threading.Thread(target=sample)
     t.start()
@@ -100,7 +100,7 @@ def measure_mb(setup, warm, op):
     stop.set()
     t.join()
     out, hw_err = send(p, "select 'SCOPES', coalesce(sum(peak), 0) from sift._test_mem_highwater();", "HWDONE")
-    os.close(statm)
+    os.close(status)
     p.stdin.write("\\q\n")
     p.wait()
     if err or hw_err:
