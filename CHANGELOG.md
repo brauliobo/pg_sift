@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: col: a merge whose writer budget is below its inputs (a `maintenance_work_mem` lowered after the build) no longer writes one segment more than it read for the few rows a cut at a unit leaves over: a last piece of under 12% of the segment before it joins that segment, as the last partition of a merge into partitions already does. A merge writes at most as many segments as it read, or as its bytes make of the budget.
 - Fixed: col: the rewrite that ends a parallel `key_cut` build no longer merges the same segments again at every step: the writer of a merge into partitions holds the memory of a partition's rows, so it is not cut short of it and does not leave a piece under half a partition (a 1,000,000-row index: 80 s and 1.9 GB written, 1.5 s and 14 MB now).
 - Changed: pg_sift: the extension version is 5.0.2 (`pg_sift--5.0.1--5.0.2.sql` and `pg_sift--5.0.2--5.0.sql`, both empty): `ALTER EXTENSION pg_sift UPDATE` changes no object, the library does not need it.
 - Changed: col: the writer of a merge of a `key_cut` index that cuts its output into partitions waits for a value of the first key leaf to end when its cut would split it, up to 12% of the partition more (the slack the slices of a parallel merge have), and cuts inside a value that is bigger than that, at the first unit past it: a value that fits is in one segment. A partition holds up to 12% more bytes and a unit; nothing is read for it
