@@ -247,6 +247,84 @@ SELECT ch_path() AS path_scoped_reindex;
 SELECT sift.col_verify('ch_facts_idx', true);
 DROP TABLE ch_facts, ch_scope;
 
+-- what the NOTICE says about temporary files is what the build writes: no file for the rows from the btree or the old index, and the entries of the order arrays and point directories
+-- the segment writer sorts on temporary files, whichever path gives the rows, only when it has more of them than it keeps in memory (sift.test_limits eset_rows)
+CREATE FUNCTION ch_say() RETURNS TABLE (path text, says_entry_files bool, wrote_files bool) LANGUAGE sql AS $$
+	SELECT ch_path(), current_setting('sift.test_col_build_spill_said')::int = 1,
+		(SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database()) > m.temp_bytes FROM ch_mark m $$;
+CREATE TABLE ch_spill (LIKE ch_sorted) WITH (autovacuum_enabled = false);
+INSERT INTO ch_spill SELECT * FROM ch_sorted;
+CREATE INDEX ch_spill_k ON ch_spill (k);
+VACUUM (FREEZE, ANALYZE) ch_spill;
+\set ci_spill 'CREATE INDEX ch_spill_idx ON ch_spill USING sift_col (id, k, g, note, pad) WITH (key_cut = ''k'', order_array_columns = ''note'', point_tid_columns = ''off'')'
+\set ci_spill_off 'CREATE INDEX ch_spill_idx ON ch_spill USING sift_col (id, k, g, note, pad) WITH (key_cut = ''k'', order_array_columns = ''off'', point_tid_columns = ''off'')'
+SET sift.test_limits = 'eset_rows=1000';
+SET client_min_messages = notice;
+\set VERBOSITY default
+:ci_spill;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+DROP INDEX ch_spill_idx;
+SELECT pg_stat_force_next_flush() \gset
+SELECT ch_start();
+:ci_spill;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ch_say();
+SELECT pg_stat_force_next_flush() \gset
+SELECT ch_start();
+REINDEX INDEX ch_spill_idx;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ch_say();
+SET client_min_messages = notice;
+\set VERBOSITY default
+REINDEX INDEX ch_spill_idx;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+-- a heap that the btree does not serve cheaply: the key ranges write files besides, and the NOTICE says what the writer sorts as well
+SET client_min_messages = notice;
+\set VERBOSITY default
+CREATE INDEX ch_noisy_spill ON ch_noisy USING sift_col (id, k, g, note, pad) WITH (key_cut = 'k', order_array_columns = 'note', point_tid_columns = 'off');
+DROP INDEX ch_noisy_spill;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+SELECT pg_stat_force_next_flush() \gset
+SELECT ch_start();
+CREATE INDEX ch_noisy_spill ON ch_noisy USING sift_col (id, k, g, note, pad) WITH (key_cut = 'k', order_array_columns = 'note', point_tid_columns = 'off');
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ch_say();
+DROP INDEX ch_noisy_spill;
+-- no order array and no point directory: nothing for the writer to sort
+DROP INDEX ch_spill_idx;
+SELECT pg_stat_force_next_flush() \gset
+SELECT ch_start();
+:ci_spill_off;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ch_say();
+SELECT pg_stat_force_next_flush() \gset
+SELECT ch_start();
+REINDEX INDEX ch_spill_idx;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ch_say();
+-- order arrays on fewer rows than the writer keeps in memory
+RESET sift.test_limits;
+CREATE TABLE ch_few (LIKE ch_sorted) WITH (autovacuum_enabled = false);
+INSERT INTO ch_few SELECT * FROM ch_sorted WHERE id <= 12000;
+CREATE INDEX ch_few_k ON ch_few (k);
+VACUUM (FREEZE, ANALYZE) ch_few;
+SELECT pg_stat_force_next_flush() \gset
+SELECT ch_start();
+CREATE INDEX ch_few_idx ON ch_few USING sift_col (id, k, g, note, pad) WITH (key_cut = 'k', order_array_columns = 'note', point_tid_columns = 'off');
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ch_say();
+SELECT pg_stat_force_next_flush() \gset
+SELECT ch_start();
+REINDEX INDEX ch_few_idx;
+SELECT pg_stat_force_next_flush() \gset
+SELECT * FROM ch_say();
+DROP TABLE ch_few;
+DROP TABLE ch_spill;
+DROP FUNCTION ch_say();
+
 RESET sift.test_col_segment_kb;
 DROP TABLE ch_sorted, ch_noisy, ch_plain, ch_mark;
 DROP FUNCTION ch_path(), ch_start(), ch_note(), ch_same(regclass), ch_units(regclass);
