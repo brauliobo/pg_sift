@@ -497,6 +497,18 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 }
 
 
+static char *
+diag_hex(const uint8 *b)
+{
+	StringInfoData o;
+
+	initStringInfo(&o);
+	for (int i = 0; i < SIFT_BOUND_BYTES; i++)
+		appendStringInfo(&o, "%02x", b[i]);
+	return o.data;
+}
+#define DIAG_HEX(b) diag_hex(b)
+
 /* The lower bounds of the partitions are bounds and ascend strictly: the first need not be the empty one, a partition emptied by deletes may have been the first */
 static void
 step_part_bounds(void *arg)
@@ -508,7 +520,7 @@ step_part_bounds(void *arg)
 	for (int k = 0; k < cv->nparts; k++)
 	{
 		if (!sift_bound_unpack(cv->parts[k].lo, &lo))
-			corrupt(cv->index, "The lower bound of the partition " UINT64_FORMAT " is no bound.", cv->parts[k].lineage);
+			corrupt(cv->index, "The lower bound of the partition " UINT64_FORMAT " is no bound (step %d of %d: %s).", cv->parts[k].lineage, k, cv->nparts, DIAG_HEX(cv->parts[k].lo));
 		if (k > 0 && sift_bound_cmp(&prev, &lo) >= 0)
 			corrupt(cv->index, "The bounds of partitions %d and %d do not ascend.", k - 1, k);
 		prev = lo;
@@ -551,7 +563,7 @@ verify_partition(ColVerify *cv, const SiftSegEntry *e, SiftColSegment *seg)
 		if (at < (int) p->first || at >= (int) (p->first + p->n))
 			continue;
 		if (!sift_bound_unpack(p->lo, &lo) || (k + 1 < cv->nparts && !sift_bound_unpack(cv->parts[k + 1].lo, &next)))
-			corrupt(cv->index, "The lower bound of the partition " UINT64_FORMAT " is no bound.", p->lineage);
+			corrupt(cv->index, "The lower bound of the partition " UINT64_FORMAT " is no bound (segment %d of %d: %s | next %s).", p->lineage, k, cv->nparts, DIAG_HEX(p->lo), k + 1 < cv->nparts ? DIAG_HEX(cv->parts[k + 1].lo) : "-");
 		if (!sift_colk_rows_within(seg, &lo, k + 1 < cv->nparts ? &next : NULL))
 			corrupt(cv->index, "Segment %llu holds rows outside its partition " UINT64_FORMAT " of the key.", (unsigned long long) e->gen, p->lineage);
 		return;
