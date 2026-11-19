@@ -1,8 +1,6 @@
--- The memory of the open units of a build (scope col_build_open of core/membudget.h, sift._test_mem_highwater()): the rows of the values of the key that fill units are held packed as the open
--- units they fill and the units that are complete, until those take the share of the segment writer (a half of the memory of the open path), and are then written. What the scope holds at the end
--- of each row is under what the plan gave it, a quarter of that memory for the open units and a half for the units that wait, whatever the number of rows: 30,000, 35,000 and 40,000 rows of
--- the same table take the same, the units being written as they wait. A build that never writes the units that wait (mutant 6) holds them all and
--- grows with the rows.
+-- The memory of the open units of a build with no room for the files (scope col_build_open of core/membudget.h, sift._test_mem_highwater()): the rows of every range of the key are held packed as the
+-- open units they fill, and a unit that is complete is written as it is, so what the scope holds at the end of each row is under the cap of the open units (here 40 kB, a quarter of the build's memory by default) whatever the number
+-- of rows: 30,000, 35,000 and 40,000 rows of the same table take the same. A build that does not look at the cap (mutant 4) holds more than it and grows with the rows.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -11,6 +9,7 @@ SET sift.async_maintenance = off;
 SET sift.col_build_source = auto;
 SET sift.col_unit_rows = 100;
 SET sift.test_col_open = 1;
+SET sift.test_col_open_kb = 40;
 SET sift.test_col_segment_kb = 4000;
 
 CREATE TABLE om_all (id int, g int, k int, note text, pad text) WITH (autovacuum_enabled = false);
@@ -38,16 +37,15 @@ SELECT om_peak(30000);
 SELECT om_peak(35000);
 SELECT om_peak(40000);
 
-SELECT n, units > 0 AS units_written, peak > 0 AS measured, peak <= mem * 3 / 4 + 2 * unit AS under_the_share FROM peaks ORDER BY n;
+SELECT n, units > 0 AS units_written, peak > 0 AS measured, peak <= 40 * 1024 + 2 * unit AS under_the_share FROM peaks ORDER BY n;
 SELECT max(peak) < 1.25 * min(peak) AS the_same_at_every_size FROM peaks;
 
--- the units that wait never written
+-- the cap of the open units not looked at
 TRUNCATE peaks;
-SET sift.test_col_open_mutant = 6;
+SET sift.test_col_open_mutant = 4;
 SELECT om_peak(30000);
 SELECT om_peak(40000);
-SELECT bool_or(peak > mem * 3 / 4 + 2 * unit) AS over_the_share FROM peaks;
-SELECT (SELECT peak FROM peaks WHERE n = 40000) > 1.2 * (SELECT peak FROM peaks WHERE n = 30000) AS grows_with_the_rows;
+SELECT bool_or(peak > 40 * 1024 + 2 * unit) AS over_the_share FROM peaks;
 RESET sift.test_col_open_mutant;
 
 DROP FUNCTION om_peak(int);

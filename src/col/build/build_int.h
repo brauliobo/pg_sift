@@ -34,7 +34,6 @@ struct ColBuild
 	MemoryContext tmpcxt;		/* one tuple */
 	SiftWriteTarget *wt;
 	Size		budget;			/* memory a segment's writer may hold */
-	Size		spool_budget;	/* key_cut: the memory the chunks of the key ranges' files may hold (the build's budget, or what the open units leave of it) */
 	Size		run_cap;		/* key_cut: the most the rows of a run may take (run_budget) */
 	uint64		share;			/* key_cut: the rows the participant is expected to scan */
 	uint64		held_rows;		/* key_cut: the rows in held */
@@ -115,16 +114,11 @@ extern void colb_make_room(ColBuild *b);
 extern SiftColSegWriter *colb_writer_begin(ColBuild *b, MemoryContext *wcxt);
 extern void colb_writer_end(ColBuild *b, SiftColSegWriter *w, MemoryContext wcxt);
 extern bool colb_open_allowed(const ColBuild *b);
-extern bool colb_open_forced_zero_temp(void);
-extern bool colb_open_zero_temp(const ColOpen *o);
-extern void colb_open_notice(const ColBuild *b, const ColOpen *o);
-extern Size colb_open_mem(const ColOpen *o);
-extern ColOpen *colb_open_plan(ColBuild *b, int leaf, uint32 unit_rows, Size mem, double raw_unit, double packed_unit, int nranges, bool zero_temp);
-extern void colb_open_tail(const ColOpen *o, const ColBuild *b, const int64 **sample, uint32 *n, uint64 *entries);
-extern bool colb_open_take(ColBuild *b, const SiftColRow *row);
-extern void colb_open_split_held(ColBuild *b);
+extern bool colb_open_forced(void);
+extern ColOpen *colb_open_plan(ColBuild *b, int leaf, uint32 unit_rows, double raw_unit, double packed_unit, int nranges);
+extern void colb_open_take(ColBuild *b, const SiftColRow *row);
+extern void colb_open_take_held(ColBuild *b);
 extern void colb_open_finish(ColBuild *b);
-extern void colb_open_adopt(ColBuild *b);
 extern int64 colb_key_of(const SiftColDef *def, const SiftColValue *v);
 extern void colb_report_rows(ColBuild *b);
 extern int	colb_spill_leaf_of(const SiftColRel *r, uint64 nblocks, uint64 total_rows, Size budget);

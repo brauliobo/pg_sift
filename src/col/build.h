@@ -124,8 +124,8 @@ extern PGDLLIMPORT bool sift_test_col_build_runs_overlap;	/* a build with key_cu
 extern PGDLLIMPORT int sift_test_col_spill_bytes;	/* bytes the temporary files of the last build by key ranges of this session took */
 extern PGDLLIMPORT int sift_test_col_spill_rows;	/* rows they hold */
 extern PGDLLIMPORT int sift_test_col_build_runs;	/* the runs a key_cut build keeps before it merges some (0 = SIFT_COL_BUILD_RUNS) */
-extern PGDLLIMPORT int sift_test_col_open;	/* open units (col/build/open.c): -1 none, 0 as the build decides, 2 for every range of the key, no temporary files */
-extern PGDLLIMPORT int sift_test_col_open_mutant;	/* a defect in the open units of a build (open.c): 1 a value joins the unit of another, 2 the tail units are lost, 3 a unit is written twice, 4 the cap of the open units is not looked at, 5 the units that wait are not counted out when they are written, 6 the units that wait are never written before the end */
+extern PGDLLIMPORT int sift_test_col_open;	/* open units (col/build/open.c): -1 none, 0 as the build decides, 1 for every range of the key, no temporary files */
+extern PGDLLIMPORT int sift_test_col_open_mutant;	/* a defect in the open units of a build (open.c): 1 a value joins the unit of another, 2 the rows left when the scan ends are lost, 3 a unit is written twice, 4 the cap of the open units is not looked at */
 extern PGDLLIMPORT int sift_test_col_open_kb;	/* kB the open units may hold (0 = the first run's) */
 extern PGDLLIMPORT int sift_test_col_open_single;	/* the values of the key that have a range of their own (-1 = as many as the memory of the open units holds) */
 extern PGDLLIMPORT char sift_test_col_open_stats[256];	/* what the last build by open units did */

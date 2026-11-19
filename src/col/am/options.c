@@ -587,11 +587,11 @@ sift_col_init(void)
 							"Testing: bytes the temporary files of the last sift_col build by key ranges of this session took.",
 							NULL, &sift_test_col_spill_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_open",
-							"Testing: open units of a sift_col build (-1 none, 0 as the build decides, 1 for the values of the key that fill units whatever the others and the runs they take, 2 for every range of the key, with no temporary files).",
-							NULL, &sift_test_col_open, 0, -1, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+							"Testing: open units of a sift_col build (-1 none, 0 as the build decides, 1 every range of the key is an open unit whatever room the temporary files have).",
+							NULL, &sift_test_col_open, 0, -1, 1, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_open_mutant",
-							"Testing: a defect in the open units of a sift_col build (1 a value joins the unit of another, 2 the tail units are lost, 3 a unit is written twice, 4 the cap of the open units is not looked at, 5 the units that wait are not counted out when they are written, 6 the units that wait are never written before the end).",
-							NULL, &sift_test_col_open_mutant, 0, 0, 6, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+							"Testing: a defect in the open units of a sift_col build (1 a value joins the unit of another, 2 the rows left when the scan ends are lost, 3 a unit is written twice, 4 the cap of the open units is not looked at).",
+							NULL, &sift_test_col_open_mutant, 0, 0, 4, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_open_kb",
 							"Testing: kB the open units of a sift_col build may hold (0 = the memory of the first run).",
 							NULL, &sift_test_col_open_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
