@@ -41,13 +41,15 @@ BEGIN
 	RETURN md5(r);
 END $$;
 
--- what one REINDEX did: the build it took, the passes over the table's pages (accesses of its buffers over its pages), whether it wrote temporary files, and the answers of the index against the table's
+-- what one REINDEX did: the build it took, table_buffer_passes (every access of a buffer of the table, over its pages, rounded: a scan of the heap is one, and so is the sample of up to 64 pages
+-- that a heap build reads to count the rows it will get, which is why a build from the heap shows one more than the scans it makes), whether it wrote temporary files, and the answers of the index
+-- against the table's
 CREATE TABLE ri_mark (heap_buffers bigint, temp_bytes bigint);
 CREATE FUNCTION ri_start() RETURNS void LANGUAGE sql AS $$
 	TRUNCATE ri_mark;
 	INSERT INTO ri_mark SELECT coalesce((SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relname = 'ri_t'), 0),
 		(SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database()) $$;
-CREATE FUNCTION ri_note(step text, idx text DEFAULT 'ri_idx') RETURNS TABLE (step text, build text, table_passes int, temp_files bool, verified bool, same_answers bool)
+CREATE FUNCTION ri_note(step text, idx text DEFAULT 'ri_idx') RETURNS TABLE (step text, build text, table_buffer_passes int, temp_files bool, verified bool, same_answers bool)
 	LANGUAGE sql AS $$
 	SELECT step, CASE current_setting('sift.test_col_from_index_used') WHEN '1' THEN 'old index' ELSE 'heap' END,
 		round((coalesce((SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relname = 'ri_t'), 0) - m.heap_buffers) / (pg_relation_size('ri_t') / 8192.0))::int,
