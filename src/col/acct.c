@@ -113,7 +113,7 @@ sections(FunctionCallInfo fcinfo, int64 only_gen)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	SectionRows r = {.rsi = rsi};
 	SegSums		s = {0};
 	const SiftColSchema *sc = NULL;
@@ -133,7 +133,7 @@ sections(FunctionCallInfo fcinfo, int64 only_gen)
 		relation_close(rel, AccessShareLock);
 		return (Datum) 0;
 	}
-	sift_dir_read(rel, snap);
+	snap = sift_dir_read(rel);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;

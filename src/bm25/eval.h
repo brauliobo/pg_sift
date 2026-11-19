@@ -26,7 +26,7 @@
 typedef struct SiftIndexState
 {
 	Relation	index;
-	SiftDirSnapshot dir;
+	SiftDirSnapshot *dir;
 	SiftAnalyzer *analyzer;
 	MemoryContext mcxt;
 	void	   *priv;			/* eval-private: opened segments */
@@ -98,6 +98,7 @@ extern uint32 sift_plan_dir_version(const SiftPlan *plan);
  */
 extern void *sift_plan_export(const SiftPlan *plan, Size *len);
 extern const SiftDirSnapshot *sift_shared_dir(const void *shared);
+extern void *sift_dir_export(const SiftDirSnapshot *dir, Size *len);
 extern SiftPlan *sift_plan_bind_shared(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags,
 									   const void *shared);
 

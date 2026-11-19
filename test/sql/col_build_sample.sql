@@ -1,0 +1,40 @@
+-- The sample that cuts the key ranges of a build (sift_col build spill.c) is taken when the first full run finds that the table goes by ranges, not before the scan: a table whose rows fit a run
+-- is not read for it. Its keys are those of the key_cut column or expression of every row the index holds (a table of fewer rows than the sample asks for is read whole), and no range holds
+-- more than 1.25 of its share of the rows, the last of them also holding the rows with no key (a sample that read the first pages of the table, or that took too few keys, leaves the last range most of the rows).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+SET sift.col_unit_rows = 1200;
+
+CREATE TABLE sm (id int, k int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO sm SELECT i, (i::bigint * 7919 % 100003)::int, md5(i::text) FROM generate_series(1, 60000) i;
+INSERT INTO sm SELECT i, NULL, md5(i::text) FROM generate_series(60001, 60500) i;
+VACUUM (FREEZE, ANALYZE) sm;
+
+CREATE TABLE facts (what text, segment_kb int, ranges int, sample_keys int, skew numeric);
+CREATE FUNCTION sm_build(what text, kb int, cols text, opts text, pred text DEFAULT '') RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.test_col_segment_kb', kb::text, true);
+	EXECUTE format('CREATE INDEX sm_idx ON sm USING sift_col (%s) WITH (%s) %s', cols, opts, pred);
+	INSERT INTO facts SELECT what, kb, current_setting('sift.test_col_spool_ranges')::int, current_setting('sift.test_col_sample_keys')::int,
+		round(current_setting('sift.test_col_spill_range_max')::numeric * current_setting('sift.test_col_spool_ranges')::int / nullif(current_setting('sift.test_col_spill_rows')::int, 0), 2);
+	PERFORM sift.col_verify('sm_idx', true);
+	DROP INDEX sm_idx;
+END $$;
+SELECT sm_build('column', 500, 'id, k, pad', 'key_cut = ''k''');
+SELECT sm_build('column, one run', 12000, 'id, k, pad', 'key_cut = ''k''');
+SELECT sm_build('expression', 500, 'id, (k * 2), pad', 'key_cut = ''expr''');
+SELECT sm_build('partial', 500, 'pad, id, k', 'key_cut = ''k''', 'WHERE id % 3 <> 0');
+
+SELECT what, ranges >= 3 AS by_ranges, sample_keys, skew <= 1.25 AS skew_within_bound FROM facts WHERE ranges > 0 ORDER BY what;
+SELECT what, ranges, sample_keys FROM facts WHERE ranges = 0 ORDER BY what;
+SELECT sample_keys = (SELECT count(k) FROM sm) AS the_keys_of_every_row FROM facts WHERE what = 'column';
+SELECT sample_keys = (SELECT count(*) FROM sm WHERE k IS NOT NULL) AS the_keys_of_every_row FROM facts WHERE what = 'expression';
+SELECT sample_keys = (SELECT count(k) FROM sm WHERE id % 3 <> 0) AS the_keys_of_the_rows_it_holds FROM facts WHERE what = 'partial';
+
+RESET sift.col_unit_rows;
+DROP TABLE sm, facts;
+DROP FUNCTION sm_build(text, int, text, text, text);
+DROP EXTENSION pg_sift;

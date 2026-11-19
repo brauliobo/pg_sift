@@ -6,7 +6,7 @@
 # directory moved while it waited or not.
 . "$(dirname "$0")/lib.bash"
 
-plan 8
+plan 12
 node_init cr 63 "autovacuum = off
 sift.async_maintenance = off"
 node_start cr || bail "start failed"
@@ -20,7 +20,7 @@ await() {
 }
 start_holder() {
 	rm -f "$D/locked" "$D/release"
-	{ echo "SELECT pg_advisory_lock(20983, 18);"; echo "\\! touch '$D/locked'"; echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"; } | sql cr >/dev/null &
+	{ echo "SELECT pg_advisory_lock(20983, ${1:-18});"; echo "\\! touch '$D/locked'"; echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"; } | sql cr >/dev/null &
 	holder=$!
 	until [[ -e $D/locked ]]; do sleep 0.05; done
 }
@@ -40,6 +40,25 @@ gated_check() {
 	sql cr "LOAD 'pg_sift'" "$@" >/dev/null || bail "the statements of the gate failed: $*"
 	touch "$D/release"
 	wait "$holder" "$checker"
+	rm -f "$D/release"
+	found=$(cat "$D/found")
+}
+
+# store_gated_check MUTANT STATEMENT: the check stops in its walk of the blocks of the index, after it read the directory and before it reads the free list; the statement runs in a session
+# of its own until it ends or waits for a lock, the check goes on. $blocked is the number of sessions that waited for the maintenance lock, the problems of the check are in $found
+store_gated_check() {
+	local mutant=$1 checker other
+	shift
+	start_holder 19
+	sql cr "LOAD 'pg_sift'" "SET sift.test_check_gate = on" "SET sift.test_mutant = $mutant" "SELECT problem || ' ' || coalesce(detail, '') FROM sift.check('r_col')" >"$D/found" 2>&1 &
+	checker=$!
+	await || bail "the check did not reach its gate"
+	sql cr "LOAD 'pg_sift'" "$@" >/dev/null &
+	other=$!
+	until ! kill -0 "$other" 2>/dev/null || [[ $(sql cr "SELECT count(*) FROM pg_locks WHERE locktype = 'page' AND NOT granted") -ge 1 ]]; do sleep 0.05; done
+	blocked=$(sql cr "SELECT count(*) FROM pg_locks WHERE locktype = 'page' AND NOT granted")
+	touch "$D/release"
+	wait "$holder" "$checker" "$other"
 	rm -f "$D/release"
 	found=$(cat "$D/found")
 }
@@ -66,6 +85,21 @@ gated_check "SELECT sift.col_promote('r_col')"
 out=$found
 check "mutant: the check finds it after the directory moved while it waited" grep -q "is live in the index twice" <<<"$found"
 out=
+# the directory and the free list of the check are one view: a promotion between its two reads would free the blocks of the write buffer that the directory it read still lists
+fresh
+store_gated_check 0 "SELECT sift.col_promote('r_col')"
+out=$found
+check "a promotion waits for the check while it reads the blocks of the index, which it finds in order" test "$blocked" -eq 1 -a -z "$found"
+out=
+check "... and the promotion ran when the check let go" test "$(sql cr "SELECT count(*) FROM sift.col_segments('r_col') WHERE kind = 'immutable'")" -eq 2
+
+fresh
+store_gated_check 4 "SELECT sift.col_promote('r_col')"
+check "mutant: a check that takes no maintenance lock for its blocks lets the promotion through" test "$blocked" -eq 0
+out=$found
+check "mutant: and finds a block referenced by a segment and on the free list" grep -q "is referenced twice" <<<"$found"
+out=
+
 check "no lock was released that the backend did not own" test "$(grep -c "don't own a lock" "$D/postgres.log")" -eq 0
 check "no check left a maintenance lock behind" test "$(sql cr "SELECT count(*) FROM pg_locks WHERE locktype = 'page' AND granted")" == 0
 finish

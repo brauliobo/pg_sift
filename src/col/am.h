@@ -14,6 +14,7 @@
 #include "col/seg.h"
 #include "col/enc.h"
 #include "col/preagg.h"
+#include "core/range.h"
 #include "core/visibility.h"
 #include "col/wbuf.h"
 #include "col/conn.h"
@@ -81,6 +82,15 @@ extern void sift_col_row_key_prepare(Relation heap, Relation index);
 extern Oid sift_col_row_key_unique(Relation heap, AttrNumber att);
 /* Tombstones for the addresses the unique index lists for key that no version is live for (col/rowkey.c) */
 extern void sift_col_tomb_dead_keys(Relation index, Relation heap, Relation old_rel, struct Tuplestorestate *old_rows);
+
+/*
+ * The addresses a statement left dead in the index, held until it is done with them and then written to the log (col/track_dv.c): as deletion records for the units that hold enough of them, as
+ * marks for the rest
+ */
+typedef struct SiftColDead SiftColDead;
+extern SiftColDead *sift_col_dead_begin(Relation index, struct SiftTombLog *log);
+extern void sift_col_dead_add(SiftColDead *d, uint64 key);
+extern void sift_col_dead_end(SiftColDead *d);
 extern AttrNumber sift_col_row_key_attno(Relation index, Relation rel);
 /* The option track_changes (col/track.c): why the table is one a statement trigger cannot hear, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
 extern const char *sift_col_track_deaf(Relation heap);
@@ -139,6 +149,8 @@ extern PGDLLIMPORT bool sift_test_hf_ignore_stamp;
 /* Pages, ranges and masks the tombstone log made all-visible where the visibility map did not (tests) */
 extern PGDLLIMPORT int64 sift_col_hf_taken;
 extern PGDLLIMPORT int64 sift_col_hf_asked;
+/* The immutable segments the sources of this backend opened (tests) */
+extern PGDLLIMPORT int64 sift_col_segments_opened;
 extern PGDLLIMPORT int64 sift_col_hf_block_hits;
 /* The addresses of dead rows the probes of compact order blocks listed (tests) */
 extern PGDLLIMPORT int64 sift_col_probe_dead;
@@ -238,6 +250,8 @@ extern const char *sift_col_scope_key(Relation heap, Relation index, bool build)
 extern int	sift_test_col_rollup_panic;
 extern int	sift_test_col_rollup_panic_armed;
 extern bool sift_test_col_merge_panic;
+extern bool sift_test_col_record_partitions;
+extern bool sift_test_col_open_all;
 extern int sift_test_col_merge_error;
 extern int	sift_test_col_refresh_sleep_ms;		/* sift.test_col_refresh_sleep_ms: the refresh of a segment sleeps this long once the new segment is written */
 extern int	sift_test_col_refresh_sleep_armed;
@@ -285,6 +299,8 @@ extern void sift_col_datum_values(const SiftColDef *def, Datum d, bool name, Sif
 
 /* Built on first use from the index definition (ERROR for an unsupported type or a jsonb attribute without paths) */
 extern SiftColRel *sift_col_rel(Relation index);
+extern Relation sift_col_rel_file_view(Relation index, const RelFileLocator *loc);
+extern void sift_col_rel_file_view_close(Relation view);
 extern MemoryContext sift_col_rel_rowcxt(SiftColRel *r);
 /*
  * The same in mcxt, for a caller that holds it across a lock or an expression of the index: a reload of the relcache entry (any lock taken
@@ -310,8 +326,11 @@ extern uint32 sift_colk_run_rows(Relation index, SiftColBatch *const *in, int n)
 #define SIFT_COLK_SCOPE_FLOOR	2048
 extern uint32 sift_colk_aim_rows(Relation index);
 extern uint64 sift_colk_heap_sbs(Relation index);
-/* Called with NULL for the writer of the next output segment, and after each unit with the writer in hand: returns the writer to go on with (NULL: it was finished, the next unit asks for one) */
-typedef SiftColSegWriter *(*SiftColCutFn) (void *arg, SiftColSegWriter *w);
+/*
+ * Called with NULL for the writer of the next output segment, and after each unit with the writer in hand: returns the writer to go on with (NULL: it was finished, the next unit asks for one).
+ * open: the row after the unit has the value of the first key leaf the unit ends with, so a cut here splits a value between two segments
+ */
+typedef SiftColSegWriter *(*SiftColCutFn) (void *arg, SiftColSegWriter *w, bool open);
 extern int	sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const SiftColSchema *schema, const int *leaf, int nleaf, uint32 unit_rows, MemoryContext cx, uint32 unit_base);
 /*
  * A window of the key range of a merge: the rows of the inputs flagged in bounded that are below lo (when has_lo) or from hi on (when has_hi) of the first leaf of the
@@ -321,8 +340,8 @@ typedef struct SiftColWindow
 {
 	bool		has_lo;
 	bool		has_hi;
-	int64		lo;
-	int64		hi;
+	SiftBound	lo;
+	SiftBound	hi;
 	const bool *bounded;
 	uint32		unit_base;
 } SiftColWindow;
@@ -464,7 +483,12 @@ extern void sift_col_vacuum_notice(Relation heap, Relation index);
 extern BlockNumber sift_col_build_gap(Relation heap, Relation index);
 extern void sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers);
 extern void sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int nslices, SiftSegEntry *out);
-extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start);
+/* The merge of the build of a REINDEX: in[0..nfrom) are segments of the relation from, in[nfrom..n) of the index; returns the *nout segments written, which are not in the directory */
+extern SiftSegEntry *sift_col_merge_from(Relation index, Relation from, const SiftSegEntry *in, int n, int nfrom, int *nout);
+/* Records the partitions of a key-cut index that no step has (an index of 5.0): one directory update, no segment written, no generation changed. Under the maintenance lock; whether it recorded any */
+extern bool sift_col_adopt_partitions(Relation index);
+extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start, int part_first, int part_n, const SiftBound *lo0,
+								 const uint8 (*known)[SIFT_BOUND_BYTES]);
 extern bool sift_col_autovacuum_enabled(Relation heap);
 extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, TimestampTz *last);
 extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows);

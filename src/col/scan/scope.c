@@ -889,8 +889,7 @@ sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_na
 	SIFT_INVARIANT(keys != NULL || !once, "sift: a scope read of every key counts a row for each pair");
 	sorted = sorted_keys(keys, nkeys, &nk);
 	(void) sift_cwbuf_flush(index);
-	dir = palloc(sizeof(SiftDirSnapshot));
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	rd->view = sift_col_scope_view(heap, dir);
 	SIFT_COL_OPEN_GATE();
 	stored_changed(heap, index, snap, ord, km, dir, sorted, nk, once, leaves, nleaves, max_changed, rd);

@@ -67,8 +67,9 @@ typedef struct BuildState
 	SiftRun   **runs;
 	int			nruns;
 	int			maxruns;
-	SiftSegEntry segs[SIFT_MAX_SEGMENTS];
+	SiftSegEntry *segs;			/* the entries written so far: segcap of them are allocated */
 	int			nsegs;
+	int			segcap;
 	double		indexed;
 	uint32		analyzer_hash;
 	char		analyzer_config[SIFT_TSCONFIG_BYTES];	/* the stemmer's text search configuration, for the metapage */

@@ -6,6 +6,7 @@
 #include "postgres.h"
 #include "storage/buffile.h"
 #include "col/codec.h"
+#include "col/colspool.h"
 #include "col/compress.h"
 #include "col/rowfile.h"
 #include "col/rowpack.h"
@@ -31,6 +32,10 @@ struct SiftRowFile
 static int
 rowfile_alg(void)
 {
+#ifdef SIFT_TESTING
+	if (sift_test_col_spool_layer == 4)
+		return SIFT_CC_ALG_NONE;
+#endif
 	return sift_colz_available(SIFT_CC_ALG_LZ4) ? SIFT_CC_ALG_LZ4 : sift_colz_available(SIFT_CC_ALG_ZSTD) ? SIFT_CC_ALG_ZSTD : SIFT_CC_ALG_NONE;
 }
 

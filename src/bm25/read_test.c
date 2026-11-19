@@ -78,14 +78,14 @@ Datum
 sift_test_wbuf_reads(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift");
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	TupleDesc	tupdesc;
 	Datum		values[4] = {0, 0, 0, 0};
 	bool		nulls[4] = {false};
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN)
 		{

@@ -15,10 +15,11 @@ wbuf_open_lazy(Relation index, const SiftSegEntry *entry, const SiftColSchema *s
 	wbuf_flush_for_read(index);
 	r = MemoryContextAllocZero(mcxt, sizeof(SiftCWbufReader));
 	r->entry = *entry;
+	r->hs = wbuf_hs(entry->format);
 	r->schema = schema;
 	r->mcxt = mcxt;
 	r->page = MemoryContextAlloc(mcxt, BLCKSZ);
-	r->cur.index = index;
+	wbuf_cursor_init(&r->cur, index, r->hs);
 	r->cur.page = r->page;
 	r->val = MemoryContextAllocZero(mcxt, schema->ncols * sizeof(SiftColValue));
 	r->elem = MemoryContextAllocZero(mcxt, schema->ncols * sizeof(SiftColValue *));
@@ -28,12 +29,6 @@ wbuf_open_lazy(Relation index, const SiftSegEntry *entry, const SiftColSchema *s
 	for (int l = 0; l < SIFT_LANES; l++)
 		r->it.head[l] = InvalidBlockNumber;
 	return r;
-}
-
-void
-wbuf_load_heads(SiftCWbufReader *r)
-{
-	sift_lane_iter_init(&r->it, r->cur.index, &r->entry);
 }
 
 SiftCWbufReader *
@@ -62,12 +57,79 @@ sift_cwbuf_close(SiftCWbufReader *r)
 	pfree(r);
 }
 
+/*
+ * The pages that hold no row of the keys the reader was asked for are not copied: a page with a row that goes on in the next one is read (whatever its range says) and so is the page after it,
+ * which holds the rest of the row, and a page whose range is not known. A page that is read is read whole: its records that are not of the keys are the caller's to drop.
+ */
+static bool
+keys_skip(void *arg, Page src)
+{
+	SiftCWbufReader *r = arg;
+	const SiftColPageHead *h = SiftColPageKeys(src);
+	bool		spans = (h->lane.flags & SIFT_WBUFPAGE_SPANS) != 0;
+	bool		skip = !spans && !r->prev_spans && wbuf_page_misses(h, r->keys);
+
+	r->prev_spans = spans;
+	r->page_recs += h->lane.nrecs;
+	if (!skip)
+		r->read_recs += h->lane.nrecs;
+	return skip;
+}
+
+static void
+keys_arm(SiftCWbufReader *r)
+{
+	if (r->keys == NULL)
+		return;
+	r->it.skip = keys_skip;
+	r->it.skip_arg = r;
+}
+
+void
+wbuf_load_heads(SiftCWbufReader *r)
+{
+	sift_lane_iter_init(&r->it, r->cur.index, &r->entry);
+	keys_arm(r);
+}
+
+/* The reader reads no page that holds none of the keys (a buffer of a format without ranges is read whole) */
+void
+wbuf_reader_keys(SiftCWbufReader *r, const SiftCWbufKeys *keys)
+{
+	if (r->entry.format < SIFT_COL_FORMAT_WBUFKEY)
+		return;
+	r->keys = keys;
+	keys_arm(r);
+}
+
+/* Goes through the pages of the buffer with the judgement of a read of the keys, decoding none: page_recs and read_recs say what a read of them would decode */
+void
+wbuf_keys_plan(SiftCWbufReader *r)
+{
+	for (int l = 0; l < SIFT_LANES; l++)
+	{
+		if (!BlockNumberIsValid(r->it.head[l]))
+			continue;
+		r->it.lane = SIFT_LANES;
+		r->it.nextblk = r->it.head[l];
+		r->prev_spans = false;
+		while (sift_lane_iter_next(&r->it, r->page, r->hs))
+			;
+	}
+}
+
 bool
 wbuf_advance_page(SiftCWbufReader *r)
 {
-	if (!sift_lane_iter_next(&r->it, r->page, HDRSIZE))
+	if (!sift_lane_iter_next(&r->it, r->page, r->hs))
 		return false;
 	wbuf_cursor_set(&r->cur, r->page);
+	if (r->it.skipped)
+	{
+		r->cur.used = 0;
+		r->pflags = SiftLaneHead(r->page)->flags;
+		return true;
+	}
 	r->refready = false;
 	r->pflags = SiftLaneHead(r->page)->flags;
 	if (r->pagefn)
@@ -77,11 +139,12 @@ wbuf_advance_page(SiftCWbufReader *r)
 
 /* The records of a page that start in bytes from to upto and are flagged dead; from is the start of a record (0, or the used bytes of an earlier read of the page) */
 uint32
-wbuf_page_dead(Relation index, Page page, Size from, Size upto)
+wbuf_page_dead(Relation index, Size hs, Page page, Size from, Size upto)
 {
-	PageCursor	c = {.index = index};
+	PageCursor	c;
 	uint32		n = 0;
 
+	wbuf_cursor_init(&c, index, hs);
 	wbuf_cursor_set(&c, page);
 	c.pos = from;
 	while (c.pos < c.used && c.pos < upto)
@@ -100,11 +163,12 @@ wbuf_page_dead(Relation index, Page page, Size from, Size upto)
  * a set that kept the rows of the page tells the records flagged since by the positions it kept
  */
 uint32
-wbuf_page_dead_list(Relation index, Page page, Size from, Size upto, uint32 *pos, uint64 *key, uint32 cap)
+wbuf_page_dead_list(Relation index, Size hs, Page page, Size from, Size upto, uint32 *pos, uint64 *key, uint32 cap)
 {
-	PageCursor	c = {.index = index};
+	PageCursor	c;
 	uint32		n = 0;
 
+	wbuf_cursor_init(&c, index, hs);
 	wbuf_cursor_set(&c, page);
 	c.pos = from;
 	while (c.pos < c.used && c.pos < upto)
@@ -379,6 +443,7 @@ wbuf_read_lane(SiftCWbufReader *r, BlockNumber head, WbufLane *l, void (*fn) (vo
 
 	r->it.lane = SIFT_LANES;
 	r->it.nextblk = startblk;
+	r->prev_spans = false;
 	for (;;)
 	{
 		RawRec		rec;
