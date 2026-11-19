@@ -52,6 +52,7 @@ CHECKS+=(
 	'paging		scripts/check-paging.sh --selftest && scripts/check-paging.sh'
 	'null-results	scripts/check-null.sh --selftest && scripts/check-null.sh'
 	'locks		scripts/check-locks.sh --selftest && scripts/check-locks.sh'
+	'dir-snapshot	scripts/check-dir-snapshot.sh'
 	'focus		scripts/check-focus.sh --selftest && python3 -I scripts/focus-merge.py --selftest && scripts/check-focus.sh'
 	'guards		scripts/check-guards.sh && scripts/check-guards.sh --selftest'
 	'refusals	scripts/gen-refusals.sh --check'

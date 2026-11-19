@@ -45,7 +45,7 @@ typedef struct TestSeg
 
 
 extern void sleep_ms(int ms);
-extern bool find_segment(Relation index, uint64 gen, SiftDirSnapshot *snap, TestSeg *seg);
+extern bool find_segment(Relation index, uint64 gen, TestSeg *seg);
 extern uint64 read_segment(Relation index, const TestSeg *seg, int mode);
 extern uint64 seg_write(Relation index, uint64 nbytes, uint64 seed, uint32 piece, uint32 align);
 extern int64 seg_drop(Relation index, uint64 gen);

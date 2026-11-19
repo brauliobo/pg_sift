@@ -49,9 +49,21 @@ SELECT expect($$ UPDATE t SET v = 9 WHERE id <= 100 $$) AS update;
  ok
 (1 row)
 
-SELECT expect($$ DELETE FROM t WHERE id BETWEEN 200 AND 300 $$) AS delete;
- delete 
---------
+SELECT expect($$ DELETE FROM t WHERE id BETWEEN 200 AND 300 $$) AS delete_records;
+ delete_records 
+----------------
+ ok
+(1 row)
+
+SELECT expect($$ DELETE FROM t WHERE id BETWEEN 400 AND 405 $$) AS delete_marks;
+ delete_marks 
+--------------
+ ok
+(1 row)
+
+SELECT expect($$ UPDATE t SET id = id + 100000 WHERE id BETWEEN 500 AND 510 $$) AS update_the_key;
+ update_the_key 
+----------------
  ok
 (1 row)
 
@@ -71,7 +83,7 @@ VACUUM t;
 SELECT count(*) AS rows_now, count(*) FILTER (WHERE v = 9) AS nines, count(*) FILTER (WHERE v = 8) AS eights FROM t;
  rows_now | nines | eights 
 ----------+-------+--------
-    19900 |   100 |      1
+    19894 |   100 |      1
 (1 row)
 
 SELECT plan_of('SELECT count(*) FROM t WHERE v = 3') AS plan_while_out;
@@ -91,14 +103,14 @@ SELECT count(*) AS listed_after_reindex FROM sift.quarantine;
 SELECT count(*) AS rows_now, count(*) FILTER (WHERE v = 9) AS nines, count(*) FILTER (WHERE v = 8) AS eights FROM t;
  rows_now | nines | eights 
 ----------+-------+--------
-    19900 |   100 |      1
+    19894 |   100 |      1
 (1 row)
 
 SET sift.on_corruption = error;
 SELECT count(*) AS threes FROM t WHERE v = 3;
  threes 
 --------
-   2829
+   2828
 (1 row)
 
 SELECT count(*) AS check_problems FROM sift.check('t_idx', heapallindexed => true);
@@ -107,6 +119,71 @@ SELECT count(*) AS check_problems FROM sift.check('t_idx', heapallindexed => tru
               0
 (1 row)
 
+-- the write that meets the damage first: the statement trigger of a key column and the row trigger of ctid leave the index out and the statement goes on
+SET sift.on_corruption = quarantine;
+CREATE TABLE u (id int PRIMARY KEY, v int);
+CREATE TABLE w (id int PRIMARY KEY, v int);
+INSERT INTO u SELECT i, i % 7 FROM generate_series(1, 20000) i;
+INSERT INTO w SELECT i, i % 7 FROM generate_series(1, 20000) i;
+CREATE INDEX u_idx ON u USING sift_col (id, v);
+CREATE INDEX w_idx ON w USING sift_col (id, v) WITH (track_changes = ctid);
+SELECT sift._test_poke('u_idx', 2, 8176, 9, 2);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT sift._test_poke('w_idx', 2, 8176, 9, 2);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT expect(format($$ %s $$, q)) AS first_write FROM unnest(ARRAY[
+	'DELETE FROM u WHERE id BETWEEN 1 AND 300', 'UPDATE u SET id = id + 100000 WHERE id BETWEEN 301 AND 310', 'INSERT INTO u VALUES (30000, 1)',
+	'DELETE FROM w WHERE id BETWEEN 1 AND 300', 'UPDATE w SET v = 9 WHERE id BETWEEN 301 AND 310', 'INSERT INTO w VALUES (30000, 1)']) q;
+ first_write 
+-------------
+ ok
+ ok
+ ok
+ ok
+ ok
+ ok
+(6 rows)
+
+SELECT index, skipped_writes > 0 AS skipped FROM sift.quarantine WHERE index = 'u_idx';
+ERROR:  invalid input syntax for type oid: "u_idx"
+LINE 1: ...s > 0 AS skipped FROM sift.quarantine WHERE index = 'u_idx';
+                                                               ^
+SELECT expect($$ SELECT count(*) FROM w WHERE v = 3 $$) AS detecting_statement;
+          detecting_statement           
+----------------------------------------
+ XX002: sift index "w_idx" is corrupted
+(1 row)
+
+SELECT expect($$ DELETE FROM w WHERE id BETWEEN 400 AND 700 $$) AS delete_after_detection;
+ delete_after_detection 
+------------------------
+ ok
+(1 row)
+
+REINDEX INDEX u_idx;
+REINDEX INDEX w_idx;
+SET sift.on_corruption = error;
+SELECT (SELECT count(*) FROM u) AS u_rows, (SELECT count(*) FROM w) AS w_rows;
+ u_rows | w_rows 
+--------+--------
+  19701 |  19400
+(1 row)
+
+SELECT (SELECT count(*) FROM sift.check('u_idx', heapallindexed => true)) + (SELECT count(*) FROM sift.check('w_idx', heapallindexed => true)) AS check_problems;
+ check_problems 
+----------------
+              0
+(1 row)
+
+DROP TABLE u, w;
 DROP TABLE t;
 DROP FUNCTION expect(text), plan_of(text);
 DROP EXTENSION pg_sift_test;

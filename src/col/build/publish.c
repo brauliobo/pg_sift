@@ -58,7 +58,7 @@ sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs, bool stamped)
 			sift_seg_set_xstamp(&segs[i], (SiftXStamp) {next, InvalidTransactionId, 0});
 	}
 	qsort(segs, nsegs, sizeof(SiftSegEntry), seg_cmp);
-	sift_dir_update(index, &(SiftDirChange) {.fn = publish,.arg = &p,.extra = InvalidBuffer});
+	sift_dir_update(index, &(SiftDirChange) {.fn = publish,.arg = &p,.nadd = nsegs,.extra = InvalidBuffer});
 }
 
 /* The metapage, before a SHARED target allocates a block: the participants of a parallel build and a key_cut build, which gives pages back, write through one */

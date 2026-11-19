@@ -171,10 +171,10 @@ static const SiftColLeafStats *
 path_zones(Relation rel, SiftTblRel *st, const SiftTblLayout *l)
 {
 	struct SiftTblGroupCache *c = gcache_of(st);
-	uint64		key = st->dir.nsegs;
+	uint64		key = st->dir->nsegs;
 
-	for (int i = 0; i < st->dir.nsegs; i++)
-		key = key * 1000003 + st->dir.segs[i].gen * (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE);
+	for (int i = 0; i < st->dir->nsegs; i++)
+		key = key * 1000003 + st->dir->segs[i].gen * (st->dir->segs[i].kind == SIFT_SEG_IMMUTABLE);
 	if (c->pls && c->pkey == key)
 		return c->pls;
 	if (c->pls)
@@ -182,11 +182,11 @@ path_zones(Relation rel, SiftTblRel *st, const SiftTblLayout *l)
 	c->pls = MemoryContextAlloc(st->cxt, l->schema->ncols * sizeof(SiftColLeafStats));
 	for (int i = 0; i < l->schema->ncols; i++)
 		sift_col_leaf_stats_init(&c->pls[i]);
-	for (int i = 0; i < st->dir.nsegs; i++)
-		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
+	for (int i = 0; i < st->dir->nsegs; i++)
+		if (st->dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{
 			MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift_table path stats", ALLOCSET_SMALL_SIZES);
-			SiftColSegment *seg = sift_cseg_open(rel, &st->dir.segs[i], tmp);
+			SiftColSegment *seg = sift_cseg_open(rel, &st->dir->segs[i], tmp);
 
 			for (int k = 0; k < l->schema->ncols; k++)
 			{
@@ -294,9 +294,9 @@ sift_tbl_paths_complete(Relation rel, SiftTblRel *st)
 	const SiftTblLayout *l = layout_of(rel, st);
 
 	sift_tbl_refresh(rel, st);
-	for (int i = 0; i < st->dir.nsegs; i++)
+	for (int i = 0; i < st->dir->nsegs; i++)
 	{
-		const SiftSegEntry *e = &st->dir.segs[i];
+		const SiftSegEntry *e = &st->dir->segs[i];
 
 		/* the types of the values of a path are in a segment of column format minor 4 and later */
 		if (e->kind == SIFT_SEG_IMMUTABLE && (e->format < SIFT_COL_FORMAT_TAGS || !schema_has_paths(schema_of(rel, st, e), l->schema)))

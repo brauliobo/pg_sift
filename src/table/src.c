@@ -174,7 +174,7 @@ tbl_stats(Relation rel, SiftSrcStats *st)
 
 	memset(st, 0, sizeof(*st));
 	st->nrows = Max(rel->rd_rel->reltuples, 0);
-	st->nunits = SIFT_TBL_NEXT_VBLOCK(&tr->dir.meta) / SIFT_SB_PAGES + 1;
+	st->nunits = SIFT_TBL_NEXT_VBLOCK(&tr->dir->meta) / SIFT_SB_PAGES + 1;
 	st->allvisible_frac = 1.0;
 	st->exact_frac = exact_share(rel, tr, st->nunits);
 	sift_tbl_path_stats(rel, tr, ls, wovf, wjnull);
@@ -301,9 +301,9 @@ tbl_view_export(void *impl, void *buf)
 static void
 tbl_load_state(TblSource *t, SiftTblRel *st, const TblView *view)
 {
-	t->dir = palloc0(sizeof(SiftDirSnapshot));
 	if (view != NULL)
 	{
+		t->dir = palloc(view->dir_len);
 		memcpy(t->dir, view->data, view->dir_len);
 		t->nwbuf = view->nwbuf;
 		t->wbuf = sift_tbl_wbuf_copy((const SiftTblSeg *) ((const char *) view + view_wbuf_at(view->dir_len)), t->nwbuf, CurrentMemoryContext);
@@ -312,7 +312,7 @@ tbl_load_state(TblSource *t, SiftTblRel *st, const TblView *view)
 	else
 	{
 		sift_tomb_sync(t->rel, &st->tomb);
-		*t->dir = st->dir;
+		t->dir = sift_dir_copy(st->dir);
 		t->nwbuf = st->nwbuf;
 		t->wbuf = sift_tbl_wbuf_copy(st->wbuf, t->nwbuf, CurrentMemoryContext);
 		for (int i = 0; i < t->nwbuf; i++)
@@ -331,7 +331,7 @@ tbl_load_state(TblSource *t, SiftTblRel *st, const TblView *view)
 }
 
 static void *
-tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
+tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view, const SiftKeyRange *keys)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	TblSource  *t = palloc0(sizeof(TblSource));

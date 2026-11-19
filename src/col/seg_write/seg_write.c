@@ -594,14 +594,6 @@ sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols)
 	return sift_colw_leaves_memory(leaves, ords, spec->gorder_group > 0);
 }
 
-Size
-sift_colw_fit_budget(Size budget, uint64 seg_rows, uint64 rows_left, int segs_left)
-{
-	double		need = (double) rows_left / Max(segs_left, 1);
-
-	return need > (double) seg_rows ? (Size) ((double) budget * need / (double) Max(seg_rows, 1)) : budget;
-}
-
 void
 sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 {

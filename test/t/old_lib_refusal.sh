@@ -51,6 +51,8 @@ if ((rc != 77)); then # and the other way: the groups the older library tags und
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_PATCH=$patch SIFT_OLD_REF=v4.3.0 SIFT_TMP="$TAPDIR/old-lib-scope" SIFT_PORT=$((SIFT_PORT + 23)) "$REPO/scripts/old-lib-check.sh" scope 2>&1)
 	# and a scope of two paths (column format 49): the same release refuses it, and the index with a scope of one path stays at 45
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_PATCH=$patch SIFT_OLD_REF=v4.3.0 SIFT_TMP="$TAPDIR/old-lib-twohop" SIFT_PORT=$((SIFT_PORT + 24)) "$REPO/scripts/old-lib-check.sh" twohop 2>&1)
+	# and what 5.1 writes that 5.0 cannot read: deletion records (column format 52), the key-range pages of a write buffer (55, which raises the metapage to 1.7) and a chained directory (1.7)
+	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v5.0.0 SIFT_TMP="$TAPDIR/old-lib-m51" SIFT_PORT=$((SIFT_PORT + 26)) "$REPO/scripts/old-lib-check.sh" minors51 2>&1)
 	# and what the releases as released say of the 704-byte metapage of 5.0: the format error up to 3.2, corrupted from 3.3 to 4.3.5, the format error or a read from 4.3.6 (and for 4.3.0 with the patch of 4.3.6)
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_META_REFS="v3.2.3 v3.6.0 v4.1.4 v4.3.0 v4.3.5 v4.3.6 v4.3.0+patch" SIFT_TMP="$TAPDIR/old-lib-meta" SIFT_PORT=$((SIFT_PORT + 25)) "$REPO/scripts/old-lib-check.sh" meta 2>&1)
 fi
