@@ -14,9 +14,12 @@ the ceiling is the largest of three runs plus 15 percent and there is no floor. 
 
   scripts/mem-slope.py run [--rows N] [--only RE] [--shard I/N] [--reverse]   one SLOPE line a case: SLOPE name kind bytes/row ceiling status PASS|FAIL, and TIME name seconds
   scripts/mem-slope.py list [--only RE] [--shard I/N]                          the names of the cases of a shard (a case is in shard I when crc32(name) % N == I-1)
-  scripts/mem-slope.py determinism [--rows N] --only RE                        the cases run forward, forward again and in reverse: no slope differs by more than max(2 B/row, 15%)
+  scripts/mem-slope.py determinism [--rows N] --only RE                        the cases run forward, forward again and in reverse: no slope of the memory scopes of sift (exact bytes, not sampled) differs by more than max(2 B/row, 15%)
   scripts/mem-slope.py compare FILE FILE                                       the SLOPE lines of two runs, the same rule
   scripts/mem-slope.py selftest
+
+Kind `plateau`: a case whose memory rises to a bound within the first sizes and holds it (the VACUUM of a sift_table rises 80 B/row to 100,000 rows and then stays at 10.3 to 10.9 MB), measured by the slope between the
+second and the third size: the slope over all three is where the bend falls, which moves with the allocator and the host (15 to 20 B/row on x86, 26 on arm64, for 4 B/row beyond the bend).
 
 TSV columns: NAME KIND CEILING STATUS SETUP OPERATION [WARM] [REASON]; {f} {d} the tables of the case, {m} {s} a copy it may change, {n} its rows. Reads PGHOST, PGPORT,
 PGUSER, PGDATABASE like psql, MEM_SLOPE_MWM (maintenance_work_mem, 1MB), MEM_SLOPE_RUNS (2), MEM_SLOPE_SHARD (I/N) and MEM_SLOPE_TSV (another table of cases); needs Linux (/proc) and an installed pg_sift and
@@ -32,7 +35,7 @@ PAGE_KB = os.sysconf("SC_PAGE_SIZE") // 1024
 ASYNC_OFF = "set sift.async_maintenance='off';\n"
 SETTINGS = ASYNC_OFF + f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.environ.get("MEM_SLOPE_TSV") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope.tsv")
-STATUSES, KINDS = ("clean", "open", "noise"), ("slope", "leak")
+STATUSES, KINDS = ("clean", "open", "noise"), ("slope", "plateau", "leak")
 os.environ["LC_ALL"] = "C"
 
 
@@ -96,12 +99,13 @@ def measure_mb(setup, warm, op):
     _, err = send(p, op, "OPDONE")
     stop.set()
     t.join()
+    out, hw_err = send(p, "select 'SCOPES', coalesce(sum(peak), 0) from sift._test_mem_highwater();", "HWDONE")
     os.close(statm)
     p.stdin.write("\\q\n")
     p.wait()
-    if err:
-        raise RuntimeError("op: " + err)
-    return (peak[0] - base) / 1024.0
+    if err or hw_err:
+        raise RuntimeError("op: " + (err or hw_err))
+    return (peak[0] - base) / 1024.0, int(next(l for l in out if "SCOPES" in l).strip().split("|")[1]) / 1048576.0
 
 
 def build_tables(n):
@@ -170,8 +174,8 @@ def uses_copy(*sql):
     return any(k in s for s in sql for k in ("{m}", "{s}"))
 
 
-def slope_case(sizes, name, setup, warm, op):
-    peaks, highs = [], []
+def slope_case(sizes, name, setup, warm, op, first=0):
+    peaks, highs, exact = [], [], []
     for n in sizes:
         fmt = dict(f=f"f{n}", d=f"d{n}", m=f"m{n}", s=f"s{n}", n=n)
         runs = []
@@ -179,9 +183,11 @@ def slope_case(sizes, name, setup, warm, op):
             if uses_copy(setup, warm, op):
                 copy_table(n)
             runs.append(measure_mb(setup.removeprefix("@other ").format(**fmt), warm if warm == "=" else warm.format(**fmt), op.format(**fmt)))
-        peaks.append(min(runs))
-        highs.append(max(runs))
-    return (peaks[-1] - peaks[0]) * 1048576.0 / (sizes[-1] - sizes[0]), peaks, highs
+        peaks.append(min(r[0] for r in runs))
+        highs.append(max(r[0] for r in runs))
+        exact.append(min(r[1] for r in runs))
+    per_row = lambda v: (v[-1] - v[first]) * 1048576.0 / (sizes[-1] - sizes[first])
+    return per_row(peaks), peaks, highs, per_row(exact)
 
 
 def leak_case(n, name, op):
@@ -201,11 +207,11 @@ def run_case(sizes, name, kind, ceiling, status, setup, op, warm):
     if kind == "leak":
         grown = leak_case(sizes[1], name, op)
         ok = grown <= LEAK_KB
-        return ok, f"SLOPE {name} leak {grown} kB over 50 repeats, at most {LEAK_KB} kB {'PASS' if ok else 'FAIL'}", None, None
-    slope, peaks, highs = slope_case(sizes, name, setup, warm, op)
+        return ok, f"SLOPE {name} leak {grown} kB over 50 repeats, at most {LEAK_KB} kB {'PASS' if ok else 'FAIL'}", None, None, None
+    slope, peaks, highs, exact = slope_case(sizes, name, setup, warm, op, 1 if kind == "plateau" else 0)
     v = verdict(slope, ceiling, status)
     shown = '/'.join(f'{p:.1f}' for p in peaks)
-    return v == "PASS", f"SLOPE {name} slope {slope:.0f} B/row (peaks {shown} MB at {'/'.join(str(s) for s in sizes)} rows), ceiling {ceiling} [{status}] {v}", slope, [f"{p:.1f}" if p == h else f"{p:.1f}-{h:.1f}" for p, h in zip(peaks, highs)]
+    return v == "PASS", f"SLOPE {name} slope {slope:.0f} B/row (peaks {shown} MB at {'/'.join(str(s) for s in sizes)} rows{', slope from ' + str(sizes[1]) if kind == 'plateau' else ''}), ceiling {ceiling} [{status}] {v}", slope, [f"{p:.1f}" if p == h else f"{p:.1f}-{h:.1f}" for p, h in zip(peaks, highs)], exact
 
 
 def run_cases(sizes, cases):
@@ -270,10 +276,12 @@ def determinism(rows, only):
             runs[tag][c[0]] = run_case(sizes, *c[:7])[2:]
     bad = 0
     for name, *_ in cases:
-        got = [runs[t][name][0] for t in runs]
+        exact = [runs[t][name][2] for t in runs]
+        sampled = "/".join(f"{runs[t][name][0]:.0f}" for t in runs)
         peaks = "; ".join("/".join(runs[t][name][1]) for t in runs)
-        ok = all(spread_ok(got[0], g) for g in got[1:])
-        print(f"SLOPE {name} determinism {'/'.join(f'{g:.0f}' for g in got)} B/row (first, again, reverse; peaks {peaks} MB), at most max({VARIANCE_ROWS:.0f} B/row, {VARIANCE_PCT:.0%}) apart {'PASS' if ok else 'FAIL'}", flush=True)
+        ok = all(spread_ok(exact[0], e) for e in exact[1:])
+        print(f"SLOPE {name} determinism {'/'.join(f'{e:.0f}' for e in exact)} B/row of memory scopes (first, again, reverse), at most max({VARIANCE_ROWS:.0f} B/row, {VARIANCE_PCT:.0%}) apart; "
+              f"sampled peaks {sampled} B/row ({peaks} MB) {'PASS' if ok else 'FAIL'}", flush=True)
         bad += not ok
     return 1 if bad else 0
 
