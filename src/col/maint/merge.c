@@ -201,6 +201,7 @@ out_next(void *arg, SiftColSegWriter *w, bool open)
 	 * last one is no short one), a little later where a value of the first key leaf would be split (sift_colk_cut_near); any segment, when its writer holds its budget of memory (the same wait)
 	 * or SIFT_CPOINT_BUILD_ROWS rows
 	 */
+	elog(WARNING, "probe: seg %d rows %llu bytes %llu mem %llu units_left %llu parts %d budget %llu held %llu open %d", o->nneu, (unsigned long long) sift_colw_rows(w), (unsigned long long) sift_colw_bytes(w), (unsigned long long) sift_colw_memory(w), (unsigned long long) o->units_left, o->parts, (unsigned long long) o->budget, (unsigned long long) o->held, (int) open);
 	if ((o->nneu + 1 < o->parts && sift_colk_cut_near(sift_colw_bytes(w), o->units_left / (o->parts - o->nneu), SIFT_SLICE_SLACK_PCT, open))
 		|| (o->by_budget && (sift_colw_rows(w) >= SIFT_CPOINT_BUILD_ROWS
 							 || sift_colk_cut_near(sift_colw_memory(w), o->budget - Min(o->held, o->budget / 2), SIFT_SLICE_SLACK_PCT, open))))
