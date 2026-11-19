@@ -22,13 +22,15 @@
 #define OPEN_CAP_DIV		4	/* the open units hold a quarter of the memory of the open path, its writer a half, the encode of a unit the rest */
 #define OPEN_WRITER_DIV	2
 #define OPEN_WORK_DIV	4
-#define OPEN_MIN_SHARE	0.25	/* the open units take at least this share of the rows: a smaller share leaves the files of the key ranges less memory than their rows need, and they write more bytes than without open units */
-#define OPEN_MIN_UNITS	8	/* a value of the key has an open unit when its rows fill this many units: the rows past the last full unit are under an eighth of its units */
+#define OPEN_MIN_SHARE	0.99	/* the open units take this share of the rows at least: a read of a value also opens the runs of the others' files (3% of the rows in files: +41% blocks, 10%: +21 to 26%, 20%: +124 to 192%; none: +4 to 6%) */
+#define OPEN_MIN_UNITS	8	/* with no files, a value of the key has an open unit when its rows fill this many units */
+#define OPEN_KEPT_MIN_UNITS 32	/* a value of the key has an open unit with files only when its rows fill this many units: its last unit is short and a read of the value opens it, so a value of fewer units reads more than from the files (30 values of 20 units: +10%) */
+#define OPEN_WRITER_RUNS	1.0	/* the open units are written in one run: a value lies in every run, and each is a segment a read opens (ten values, 300,000 rows: 2.9 runs +73% instructions, 1.4 +37%, 0.7 +1.4%) */
 #define OPEN_SLOT_PACKED 1.75	/* a packed open unit holds this many times the bytes of a unit: the block it fills and the blocks it has compressed */
 #define OPEN_WORK_UNITS	4	/* encoding a unit takes about this many raw units of memory: the rows decoded from the packed form, and the cut of the unit */
 
 #ifdef SIFT_TESTING
-int			sift_test_col_open = 0;	/* -1 none, 0 as the build decides, 2 every range (no files) */
+int			sift_test_col_open = 0;	/* -1 none, 0 as the build decides, 1 the values that fill units whatever the others and the runs, 2 every range (no files) */
 int			sift_test_col_open_kb = 0;
 int			sift_test_col_open_single = -1;
 int			sift_test_col_open_mutant = 0;	/* 1 a value joins the unit of another, 2 the tail units are lost, 3 a unit is written twice, 4 the cap of the open units is not looked at, 5 the units that wait are not counted out when they are written, 6 the units that wait are never written before the end */
@@ -66,6 +68,7 @@ struct ColOpen
 {
 	ColRanges	g;
 	bool		zero_temp;		/* every range is an open unit, none goes to a file */
+	double		est_runs;		/* the runs the open units are written in: their packed bytes over the writer's budget */
 	uint32		unit_rows;
 	Size		raw_unit,
 				packed_unit;	/* the bytes a unit of rows takes in an open unit, raw and packed */
@@ -403,8 +406,8 @@ colb_open_split_held(ColBuild *b)
 static void
 open_say(const ColOpen *o)
 {
-	snprintf(sift_test_col_open_stats, sizeof(sift_test_col_open_stats), "ranges=%d single=%d est_rows=%llu rows=%llu units=%llu leftover=%llu evictions=%llu raw_kb=%zu pk_kb=%zu mem_kb=%zu peak_kb=%zu w_kb=%zu u_kb=%zu x_kb=%zu",
-			 o->g.n, o->nsingle, (unsigned long long) o->open_rows, (unsigned long long) o->rows, (unsigned long long) o->units, (unsigned long long) o->leftover_rows,
+	snprintf(sift_test_col_open_stats, sizeof(sift_test_col_open_stats), "ranges=%d single=%d est_runs=%.2f est_rows=%llu rows=%llu units=%llu leftover=%llu evictions=%llu raw_kb=%zu pk_kb=%zu mem_kb=%zu peak_kb=%zu w_kb=%zu u_kb=%zu x_kb=%zu",
+			 o->g.n, o->nsingle, o->est_runs, (unsigned long long) o->open_rows, (unsigned long long) o->rows, (unsigned long long) o->units, (unsigned long long) o->leftover_rows,
 			 (unsigned long long) o->evictions, o->raw_unit / 1024, o->packed_unit / 1024, o->mem / 1024, o->peak / 1024, o->wpeak / 1024, o->upeak / 1024, o->xpeak / 1024);
 }
 #endif
@@ -506,6 +509,12 @@ colb_open_tail(const ColOpen *o, const ColBuild *b, const int64 **sample, uint32
 	*entries = b->entries - Min(o->open_rows, b->entries);
 }
 
+#ifdef SIFT_TESTING
+#define open_forced()	(sift_test_col_open == 1)
+#else
+#define open_forced()	false
+#endif
+
 /* The files of the key ranges keep what the open path does not take: a quarter of the build's memory, and as much more as the share of the rows that the open units take */
 static void
 open_share(const ColBuild *b, ColOpen *o)
@@ -528,8 +537,8 @@ colb_open_mem(const ColOpen *o)
 }
 
 /*
- * The open units of the build, from the sample of the key: the values of the key that hold at least OPEN_MIN_UNITS units of rows (as many of them as the memory of the open units holds,
- * packed), or with no files every range. NULL when no value qualifies, or when the memory of the path does not hold the encode of a unit. mem is the memory the build gives the path, raw_unit
+ * The open units of the build, from the sample of the key: the values of the key that hold at least OPEN_KEPT_MIN_UNITS units of rows (as many of them as the memory of the open units holds,
+ * packed) that go in at most OPEN_WRITER_RUNS runs, or with no files every range. NULL when no value qualifies, when a read of them would open more runs, or when the memory of the path does not hold the encode of a unit. mem is the memory the build gives the path, raw_unit
  * and packed_unit the bytes a unit of rows takes decoded and packed.
  */
 ColOpen *
@@ -558,7 +567,7 @@ colb_open_plan(ColBuild *b, int leaf, uint32 unit_rows, Size mem, double raw_uni
 		max_single = sift_test_col_open_single;
 #endif
 	o->wbudget = mem / OPEN_WRITER_DIV;
-	o->nsingle = colb_ranges_isolate(b, &o->g, leaf, o->zero_temp ? nranges : 1, (uint64) unit_rows * OPEN_MIN_UNITS, o->zero_temp ? max_single / 2 : max_single);
+	o->nsingle = colb_ranges_isolate(b, &o->g, leaf, o->zero_temp ? nranges : 1, (uint64) unit_rows * (o->zero_temp ? OPEN_MIN_UNITS : OPEN_KEPT_MIN_UNITS), o->zero_temp ? max_single / 2 : max_single);
 	if (o->nsingle == 0 && !o->zero_temp)
 		return NULL;
 	o->tail = MemoryContextAlloc(b->cxt, b->nksample * sizeof(int64));
@@ -568,10 +577,13 @@ colb_open_plan(ColBuild *b, int leaf, uint32 unit_rows, Size mem, double raw_uni
 		else
 			o->tail[o->ntail++] = b->ksample[i];
 	o->open_rows = (uint64) ((double) b->entries * o->open_rows / b->nksample);
-	if (!o->zero_temp && o->open_rows < OPEN_MIN_SHARE * b->entries)
+	if (!o->zero_temp && !open_forced() && o->open_rows < OPEN_MIN_SHARE * b->entries)
 		return NULL;
 	if (!o->zero_temp)
 		open_share(b, o);
+	o->est_runs = (double) o->open_rows * (packed_unit - SIFT_ROWFILE_BLOCK_MAX) / unit_rows / Max(o->wbudget, 1);
+	if (!o->zero_temp && o->est_runs > OPEN_WRITER_RUNS && !open_forced())
+		return NULL;
 	if (o->mem / OPEN_WORK_DIV < OPEN_WORK_UNITS * raw_unit)
 		return NULL;
 	o->pk = MemoryContextAllocZero(b->cxt, o->g.n * sizeof(SiftRowFile *));
