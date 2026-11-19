@@ -36,6 +36,8 @@ PG_FUNCTION_INFO_V1(sift_test_col_types);
 
 #define TEST_WAIT		4	/* after the source is open, wait for advisory lock (WAIT_KEY, 1): lets a test run VACUUM or DML mid-scan */
 
+#define TEST_KEYS		64	/* open the source for the keys of the cut that the predicates confine the scan to: only the segments of the partitions that may hold them */
+
 #define WAIT_KEY		0x51F7
 
 static SiftColOp
@@ -208,9 +210,10 @@ ctest_scan_open(TestScan *ts, Oid indexoid, const char *preds, int flags)
 {
 	ts->index = sift_col_open_index(indexoid, AccessShareLock);
 	ts->heap = table_open(ts->index->rd_index->indrelid, AccessShareLock);
-	ts->src = sift_col_open(ts->heap, ts->index, GetActiveSnapshot(), CurrentMemoryContext,
-							((flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0) | ((flags & TEST_POINTS) ? SIFT_COLO_POINTS : 0) | ((flags & TEST_POINT_TIDS) ? SIFT_COLO_POINT_TIDS : 0) | ((flags & TEST_POINT_LAZY) ? SIFT_COLO_POINT_LAZY : 0), NULL);
 	parse_query(sift_col_rel(ts->index)->schema, preds, &ts->q);
+	ts->src = sift_col_open(ts->heap, ts->index, GetActiveSnapshot(), CurrentMemoryContext,
+							((flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0) | ((flags & TEST_POINTS) ? SIFT_COLO_POINTS : 0) | ((flags & TEST_POINT_TIDS) ? SIFT_COLO_POINT_TIDS : 0) | ((flags & TEST_POINT_LAZY) ? SIFT_COLO_POINT_LAZY : 0), NULL,
+							(flags & TEST_KEYS) && sift_col_key_range(ts->index, ts->q.top, ts->q.ntop, &ts->keys) ? &ts->keys : NULL);
 	sift_col_begin(ts->src, ts->q.top, ts->q.ntop, 0, PG_UINT32_MAX);
 	if (flags & TEST_WAIT)
 	{

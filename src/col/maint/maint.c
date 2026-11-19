@@ -30,7 +30,7 @@ int			sift_col_auto_merge_partition_kb = 0;
  * The size of a partition in effect for the directory in hand: sift.col_auto_merge_partition_kb, else the smaller of sift.vacuum_rewrite_limit (for an index
  * over it, so that the rewrite of a large index is a step for each partition, the lock let go between them, and not one step for all of it) and the share of
  * the memory a writer may take within maintenance_work_mem (sift_colw_budget): a global order weighs the key and address of each of its rows until the last unit is in, about 2.5 bytes
- * for each byte of segment (the entries wait on temp files, but the weight is what cuts the segment). The memory bound gives way to the directory: an index never has more than PART_DIVISOR partitions. 0: no partitions.
+ * for each byte of segment (the entries wait on temp files, but the weight is what cuts the segment). 0: no partitions.
  */
 int	maint_part_kb = 0;
 
@@ -43,7 +43,7 @@ maint_part_kb_for(uint64 bytes, double mem_ratio)
 
 	if (sift_col_auto_merge_partition_kb > 0)
 		return kb;
-	mem_kb = Max((uint64) (sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE) / 1024 / mem_ratio), Max(bytes / 1024 / PART_DIVISOR, (uint64) (sift_limit(part_min_kb, PART_MIN_KB) * MAINT_MEM_RATIO / mem_ratio)));
+	mem_kb = Max((uint64) (sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE) / 1024 / mem_ratio), (uint64) (sift_limit(part_min_kb, PART_MIN_KB) * MAINT_MEM_RATIO / mem_ratio));
 	if (bytes / 1024 > mem_kb && (kb == 0 || mem_kb < (uint64) kb))
 		kb = (int) Min(mem_kb, (uint64) INT_MAX);
 	return kb;

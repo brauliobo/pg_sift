@@ -149,6 +149,7 @@ typedef struct AggExec
 	List	   *initvals;		/* a worker: the values of the InitPlan outputs the leader ran (a list of the id of the Param and a Const for each), the worker has no executor state that holds them */
 	bool		started;
 	bool		open_deferred;	/* a top-N whose walk of the global order never reads the combos, the zone tests, the vectors or the group table: engine_open_rest makes them when the walk gives the scan to the units */
+	SiftKeyRange keys;			/* the keys the conditions confine the scan to (open_keys), when they do */
 	bool		param_scan;		/* conditions read parameters an enclosing query level sets (custom_exprs): a rescan starts the scan over (agg_rescan) */
 	bool		rescannable;	/* the parent may scan the node again (EXEC_FLAG_REWIND, BACKWARD or MARK): a spilled scan keeps the groups it returned */
 	int			child_flags;	/* the executor flags the child plans start with, when the first read of one starts them (agg_children) */

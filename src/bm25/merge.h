@@ -26,13 +26,16 @@ typedef struct SiftMergePolicy
 } SiftMergePolicy;
 
 /*
- * The immutable segments of snap to merge now, in sel (room for SIFT_MAX_SEGMENTS), and their number: fanin or more of one tier
+ * The immutable segments of snap to merge now, in sel (room for snap->nsegs entries), and their number: fanin or more of one tier
  * (at most 2 * fanin of it), else the smallest fanin when the directory has more than SIFT_MERGE_ENTRIES(fanin) entries, else a
  * lone segment that is more than dead_pct percent dead. force: all of them, a lone one only if some of its documents are dead (the rewrite
  * drops them and their terms). 0 when there is nothing to merge.
  */
 extern int	sift_merge_pick(Relation index, const SiftMergePolicy *policy, const SiftDirSnapshot *snap, bool force,
 							SiftSegEntry *sel);
+
+/* Are the n segments e[0..n) of one tier */
+extern bool	sift_merge_same_tier(const SiftMergePolicy *policy, const SiftSegEntry *e, int n);
 
 /* qsort order of segment entries: smallest first */
 extern int	sift_seg_bytes_cmp(const void *a, const void *b);

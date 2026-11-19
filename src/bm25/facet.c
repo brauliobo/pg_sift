@@ -369,10 +369,10 @@ collect_entries(Facets *f, SiftIndexState *st)
 	HASH_SEQ_STATUS seq;
 	WbufCount   *c;
 
-	f->fseg = MemoryContextAllocZero(f->mcxt, Max(st->dir.nsegs, 1) * sizeof(FacetSeg));
-	for (int i = 0; i < st->dir.nsegs; i++)
+	f->fseg = MemoryContextAllocZero(f->mcxt, Max(st->dir->nsegs, 1) * sizeof(FacetSeg));
+	for (int i = 0; i < st->dir->nsegs; i++)
 	{
-		const SiftSegEntry *entry = &st->dir.segs[i];
+		const SiftSegEntry *entry = &st->dir->segs[i];
 
 		if (entry->kind == SIFT_SEG_IMMUTABLE)
 		{

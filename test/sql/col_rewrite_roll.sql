@@ -2,6 +2,7 @@
 -- VACUUM after it leaves the file within a tenth and a partition of the live bytes. Nothing but the call starts it: the worker and VACUUM leave the dirty units as they are.
 -- The answers never change and the index verifies.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -37,6 +38,7 @@ BEGIN
 	SELECT x::text INTO b FROM (SELECT count(*), sum(amount), count(DISTINCT cust) FROM rr WHERE cust BETWEEN 10 AND 400) x;
 	RETURN a = b;
 END $$;
+-- every partition the steps record holds rows from its bound up to the next one
 -- the segments the rewrite leaves cover the keys disjointly: no key is in two of them (two may meet at the one key that ends one and starts the next); the overlays it took in did not
 CREATE FUNCTION rr_disjoint() RETURNS bool LANGUAGE sql AS $$
 	WITH r AS (SELECT a.segment, min(a.min::int) lo, max(a.max::int) hi FROM sift.col_unit_agg('rr_idx', 'cust') a
@@ -71,6 +73,7 @@ SELECT sift.col_maintenance_due('rr_idx') AS due;
 CALL rr_maintain();
 SELECT bool_and(NOT dirty) AS none_dirty, count(*) FILTER (WHERE bytes * 2 >= 1024 * 1024) >= 5 AS partitions FROM sift.col_segments('rr_idx') WHERE kind = 'immutable';
 SELECT rr_disjoint() AS partitions_disjoint;
+SELECT count(*) > 0 AS recorded, bool_and(rows_from_lo) AS rows_from_lo, bool_and(rows_below_next) AS rows_below_next FROM sift._test_col_part_bounds('rr_idx');
 VACUUM rr;
 SELECT rr_file_ok(10, 1) AS file_within_a_partition;
 SELECT sift.col_verify('rr_idx', true);
@@ -82,6 +85,7 @@ VACUUM rr;
 CALL rr_maintain();
 SELECT bool_and(NOT dirty) AS none_dirty FROM sift.col_segments('rr_idx') WHERE kind = 'immutable';
 SELECT rr_disjoint() AS partitions_disjoint;
+SELECT count(*) > 0 AS recorded, bool_and(rows_from_lo) AS rows_from_lo, bool_and(rows_below_next) AS rows_below_next FROM sift._test_col_part_bounds('rr_idx');
 VACUUM rr;
 SELECT rr_file_ok(10, 1) AS file_within_a_partition;
 SELECT sift.col_verify('rr_idx', true);
@@ -89,7 +93,6 @@ SELECT rr_same();
 
 -- partitions of several times the size a rewrite cuts at (the size was lowered since they were written) are rolled all the same: a step for each of them, as the pieces of the size
 -- now, and not the one switch of the rewrite of the whole index
-CREATE EXTENSION pg_sift_test CASCADE;
 CREATE FUNCTION rs_same() RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a text; b text;
 BEGIN
@@ -115,6 +118,7 @@ SELECT sift._test_dir_updates() AS d0 \gset
 SELECT sift.col_maintain('rs_idx') AS rolled;
 SELECT sift._test_dir_updates() - :d0 >= 5 AS a_step_for_each_partition;
 SELECT bool_and(NOT dirty) AS none_dirty FROM sift.col_segments('rs_idx') WHERE kind = 'immutable';
+SELECT count(*) > 0 AS recorded, bool_and(rows_from_lo) AS rows_from_lo, bool_and(rows_below_next) AS rows_below_next FROM sift._test_col_part_bounds('rs_idx');
 SELECT sift.col_verify('rs_idx', true);
 SELECT rs_same();
 DROP TABLE rs;

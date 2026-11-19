@@ -242,8 +242,8 @@
 	X(wide_dict_bytes, "-", "table/wide.c", 1073741823, "bytes", \
 	  "the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group", \
 	  "ERROR 54000 naming the column", "-", 1) \
-	X(max_segments, "SIFT_MAX_SEGMENTS", "core/sift.h", SIFT_MAX_SEGMENTS, "segments", \
-	  "directory entries of a sift or sift_col index (a sift_table has sift.table_max_segments for a test)", \
+	X(max_segments, "SIFT_DIR_POLICY_MAX", "core/page.h", SIFT_DIR_POLICY_MAX, "segments", \
+	  "directory entries a writer of a sift or sift_col index keeps it within (a sift_table has sift.table_max_segments for a test); a directory of more is a chain of pages, which holds 32,768", \
 	  "writers merge the smallest closed segments from 16 entries below it; a forced seal leaves the write buffer open (NOTICE)", "-", 1) \
 	X(build_serial_budget, "SIFT_COL_BUILD_SERIAL_BUDGET", "col/build.h", 64 * 1024 * 1024, "bytes", \
 	  "the least memory the writer of the serial CREATE INDEX of a sift_col index may hold before it cuts a segment, or a run of a key_cut build, whatever maintenance_work_mem is (half of it above)", \

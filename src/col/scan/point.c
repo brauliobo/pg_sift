@@ -104,15 +104,15 @@ sift_col_wbuf_lookup(SiftColSource *src, const SiftColPred *p, MemoryContext mcx
 	*n = 0;
 	if (!(src->flags & SIFT_COLO_NOWBUF))
 		return NULL;
-	for (int i = 0; i < src->dir.nsegs; i++)
+	for (int i = 0; i < src->dir->nsegs; i++)
 	{
 		ItemPointerData *t;
 		uint32		m;
 		uint64		r;
 
-		if (!sift_seg_is_wbuf(&src->dir.segs[i]))
+		if (!sift_seg_is_wbuf(&src->dir->segs[i]))
 			continue;
-		t = sift_cwbuf_lookup(src->index, &src->dir.segs[i], src->schema, p, src->mcxt, &m, &r);
+		t = sift_cwbuf_lookup(src->index, &src->dir->segs[i], src->schema, p, src->mcxt, &m, &r);
 		rows += r;
 		if (m > 0)
 		{
