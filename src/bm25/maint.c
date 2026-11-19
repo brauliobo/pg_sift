@@ -32,6 +32,7 @@
 #include "col/pg.h"
 #include "core/catname.h"
 #include "core/errctx.h"
+#include "core/inspect.h"
 #include "core/limits.h"
 #include "core/live.h"
 #include "bm25/maint.h"
@@ -222,8 +223,12 @@ replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, cons
 	maint_written += bytes;
 	sift_progress_step(nold, bytes);
 
+	if (sift_col_is_index(index))
+		sift_col_dv_switching(index, old, nold);
 	sift_dir_publish(index, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = release,
 			.nrelease = nrelease,.nadd = Max(nneu, 1),.extra = InvalidBuffer}, wt);
+	if (sift_col_is_index(index))
+		sift_col_dv_switched(index);
 	sift_log_maint(index, what, start, docs, bytes);
 }
 
@@ -466,6 +471,7 @@ sift_mops_open(const SiftMaintOps *ops, Oid indexoid, LOCKMODE lock)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a %s index", RelationGetRelationName(index), ops->name)));
+	sift_refuse_partitioned_index(index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX, RelationGetRelationName(index));
 	sift_store_require_ready(index);
 	return index;
 }

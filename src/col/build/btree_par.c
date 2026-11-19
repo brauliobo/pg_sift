@@ -30,7 +30,7 @@ typedef struct BtShared
 	SiftParCommon common;
 	Oid			btree;
 	Size		budget;
-	int			maxsegs;
+	int			segcap;
 	int			nslots;			/* participants planned: the memory and the directory are shared by them */
 	int			nlaunched;
 	int			nranges;
@@ -96,9 +96,9 @@ range_of(const BtShared *sh, int i)
 static void
 participate(BtShared *sh, char *parts, int slot, Relation heap, Relation index, IndexInfo *info, Snapshot snapshot)
 {
-	SiftColPart *part = sift_colp_part(parts, sh->maxsegs, slot);
+	SiftColPart *part = sift_colp_part(parts, sh->segcap, slot);
 	SiftWriteTarget *wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
-	ColBuild   *b = sift_colb_begin(index, wt, sh->budget, sh->maxsegs, part->segs, true, sh->nslots, false);
+	ColBuild   *b = sift_colb_begin(index, wt, sh->budget, part->segs, sh->segcap, true, sh->nslots, false);
 	double		reltuples = 0;
 	uint32		i;
 
@@ -158,7 +158,8 @@ colb_btree_build_par(Relation heap, Relation index, IndexInfo *info, const BtPla
 	SiftSegEntry *segs;
 	Size		keybytes = 0;
 	Snapshot	snapshot;
-	int			nsegs,
+	int			segcap,
+				nsegs,
 				pieces = (nworkers + 1) * RANGES_PER_PARTICIPANT;
 
 	att = TupleDescAttr(RelationGetDescr(bt), 0);
@@ -167,16 +168,17 @@ colb_btree_build_par(Relation heap, Relation index, IndexInfo *info, const BtPla
 		return NULL;
 	for (int i = 0; i < plan->nbound; i++)
 		keybytes += datumEstimateSpace(plan->bound[i].key, false, att->attbyval, att->attlen);
+	segcap = sift_colb_segs_bound(index, ((uint64) RelationGetNumberOfBlocks(heap) + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT);
 	snapshot = info->ii_Concurrent ? NULL : RegisterSnapshot(GetLatestSnapshot());
 	ldr = sift_par_enter(info->ii_Concurrent);
 	if (snapshot != NULL)
 		ldr->snapshot = snapshot;
 	if (!sift_par_setup(ldr, "sift_col_btree_worker", nworkers, offsetof(BtShared, keys) + keybytes,
-						mul_size(sift_colp_part_size(SIFT_COL_BUILD_SEGMENTS / (nworkers + 1)), nworkers + 1), true))
+						mul_size(sift_colp_part_size(segcap), nworkers + 1), true))
 		return NULL;
 	sh = ldr->shared;
 	*sh = (BtShared) {.common = {RelationGetRelid(heap), RelationGetRelid(index), info->ii_Concurrent}, .btree = plan->btree,
-		.budget = sift_colb_budget(nworkers + 1), .maxsegs = SIFT_COL_BUILD_SEGMENTS / (nworkers + 1), .nslots = nworkers + 1};
+		.budget = sift_colb_budget(nworkers + 1), .segcap = segcap, .nslots = nworkers + 1};
 	pg_atomic_init_u32(&sh->ready, 0);
 	pg_atomic_init_u32(&sh->next, 0);
 	SpinLockInit(&sh->scan.mutex);
@@ -200,7 +202,7 @@ colb_btree_build_par(Relation heap, Relation index, IndexInfo *info, const BtPla
 #ifdef SIFT_TESTING
 	sift_test_col_workers = sh->nlaunched;
 #endif
-	segs = sift_colp_collect(ldr->parts, sh->maxsegs, sh->nlaunched + 1, &nsegs);
+	segs = sift_colp_collect(ldr->parts, sh->segcap, sh->nlaunched + 1, &nsegs);
 	sift_par_end(ldr);
 	sift_colb_publish(index, segs, nsegs, !info->ii_Concurrent && sift_col_track_on(index));
 	return res;

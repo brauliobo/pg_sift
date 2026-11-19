@@ -434,10 +434,10 @@ void
 wbuf_refresh(Relation index, const SiftColSchema *schema, SiftCWbufHint *h)
 {
 	uint16		format = wbuf_new_format(index);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	sift_lane_refresh(index, schema->hash, "column definitions", wbuf_hs(format), format, SIFT_SEG_ROOTS_NOW, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].gen == h->gen)
 			h->format = snap->segs[i].format;

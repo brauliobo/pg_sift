@@ -71,13 +71,12 @@ sift_space_move(Relation rel, SiftWriteTarget *wt, const void *arg)
 bool
 sift_maint_relocate_test(Relation rel, uint64 recut)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap = sift_dir_read(rel);
 	SpaceMove	move = {0};
 	SiftExtent *release = NULL;
 	BlockNumber top = 0;
 	int			nrelease = 0;
 
-	sift_dir_read(rel, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		int			k;

@@ -296,6 +296,8 @@ extern void sift_col_datum_values(const SiftColDef *def, Datum d, bool name, Sif
 
 /* Built on first use from the index definition (ERROR for an unsupported type or a jsonb attribute without paths) */
 extern SiftColRel *sift_col_rel(Relation index);
+extern Relation sift_col_rel_file_view(Relation index, const RelFileLocator *loc);
+extern void sift_col_rel_file_view_close(Relation view);
 extern MemoryContext sift_col_rel_rowcxt(SiftColRel *r);
 /*
  * The same in mcxt, for a caller that holds it across a lock or an expression of the index: a reload of the relcache entry (any lock taken
@@ -478,6 +480,8 @@ extern void sift_col_vacuum_notice(Relation heap, Relation index);
 extern BlockNumber sift_col_build_gap(Relation heap, Relation index);
 extern void sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers);
 extern void sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int nslices, SiftSegEntry *out);
+/* The merge of the build of a REINDEX: in[0..nfrom) are segments of the relation from, in[nfrom..n) of the index; returns the *nout segments written, which are not in the directory */
+extern SiftSegEntry *sift_col_merge_from(Relation index, Relation from, const SiftSegEntry *in, int n, int nfrom, int *nout);
 /* Records the partitions of a key-cut index that no step has (an index of 5.0): one directory update, no segment written, no generation changed. Under the maintenance lock; whether it recorded any */
 extern bool sift_col_adopt_partitions(Relation index);
 extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start, int part_first, int part_n, const SiftBound *lo0);

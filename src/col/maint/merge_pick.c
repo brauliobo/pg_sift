@@ -6,6 +6,7 @@
 #include "bm25/merge.h"
 #include "col/maint/maint_int.h"
 #include "col/point.h"
+#include "core/dirpart.h"
 
 /*
  * Does the rewrite of a lone segment pay when dead_rewrite_pct is 0? (A unit that has net pre-aggregates costs a query what a clean one does.) A query reads a unit with a dead row net of the dead rows, about SIFT_COL_DEAD_ROW instructions each,
@@ -139,14 +140,15 @@ maint_part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut)
  * The segments a merge of entity segments of an index wrote when it wrote as many as it read: its writer cut them where it cuts, so a merge of segments that all are such writes them
  * again as they are, and they are the end state of the tiers and of the rewrite. The merges of scope segments say nothing of the entities.
  */
-#define SETTLED_MAX (2 * SIFT_MAX_SEGMENTS)
+#define SETTLED_MAX (2 * SIFT_DIR_WIDE_MAX)
 
 static struct
 {
 	Oid			index;
 	int			n;
 	int			next;
-	uint64		gens[SETTLED_MAX];
+	int			cap;
+	uint64	   *gens;
 }			settled;
 
 void
@@ -156,14 +158,19 @@ maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftS
 		return;
 	if (settled.index != RelationGetRelid(index))
 	{
-		memset(&settled, 0, sizeof(settled));
 		settled.index = RelationGetRelid(index);
+		settled.n = settled.next = 0;
 	}
 	for (int i = 0; i < nout; i++)
 	{
+		if (settled.n == settled.cap && settled.cap < SETTLED_MAX)
+		{
+			settled.cap = Min(Max(settled.cap * 2, 2 * SIFT_DIR_POLICY_MAX), SETTLED_MAX);
+			settled.gens = settled.gens ? repalloc(settled.gens, settled.cap * sizeof(uint64)) : MemoryContextAlloc(TopMemoryContext, settled.cap * sizeof(uint64));
+		}
 		settled.gens[settled.next] = out[i].gen;
-		settled.next = (settled.next + 1) % SETTLED_MAX;
-		settled.n = Min(settled.n + 1, SETTLED_MAX);
+		settled.next = (settled.next + 1) % settled.cap;
+		settled.n = Min(settled.n + 1, settled.cap);
 	}
 }
 
@@ -197,50 +204,30 @@ merge_cut_bytes(bool key_cut)
 	return kb * 1024;
 }
 
-typedef struct KeySpan
-{
-	int64		lo;
-	int64		hi;
-}			KeySpan;
-
-static int
-key_span_cmp(const void *a, const void *b)
-{
-	const KeySpan *x = a,
-			   *y = b;
-
-	return x->lo < y->lo ? -1 : x->lo > y->lo;
-}
-
-/* Do the key ranges of sel[0..n) of a key-cut index share at most a boundary key: a lookup of a key reads one of them */
+/* Are all of sel[0..n) in partitions the directory records: those share no key but at their bounds, and a lookup of a key reads one of them */
 static bool
-key_apart(Relation index, const SiftSegEntry *sel, int n)
+all_partitioned(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry *sel, int n)
 {
-	KeySpan    *span = palloc(n * sizeof(KeySpan));
-	bool		apart = true;
+	SiftSegEntry *entries;
+	SiftDirPart *part;
+	int			np = sift_dir_parts_read(index, snap, &entries, &part),
+				found = 0;
 
-	for (int i = 0; i < n; i++)
-	{
-		SiftColSegment *seg = sift_cseg_open(index, &sel[i], CurrentMemoryContext);
-
-		maint_seg_key_range(seg, sift_col_rel(index)->cut[0], &span[i].lo, &span[i].hi);
-		sift_cseg_close(seg);
-	}
-	qsort(span, n, sizeof(KeySpan), key_span_cmp);
-	for (int i = 1; i < n && apart; i++)
-		apart = span[i].lo >= span[i - 1].hi;
-	pfree(span);
-	return apart;
+	for (int k = 0; k < np; k++)
+		for (uint32 e = part[k].first; e < part[k].first + part[k].n; e++)
+			for (int i = 0; i < n; i++)
+				found += entries[e].gen == sel[i].gen;
+	return found == n;
 }
 
 /*
  * Force means merge to the minimum count of segments, so that a second force is a no-op: segments that are all partitions (from half the size to one and a half of
- * it: a merge cuts its partitions within that), clean, apart in the key when the index is cut by it, and no more of them than the partitions their bytes make are the
+ * it: a merge cuts its partitions within that), clean, partitions of the directory when the index is cut by a key, and no more of them than the partitions their bytes make are the
  * minimum, and writing them again would give the same ones (an index built by a parallel build, or merged by a force, is there). A segment over the size is cut
  * again, as a smaller allowance asks.
  */
 static bool
-at_minimum(Relation index, const SiftMergePolicy *pol, const SiftSegEntry *sel, int n)
+at_minimum(Relation index, const SiftMergePolicy *pol, const SiftDirSnapshot *snap, const SiftSegEntry *sel, int n)
 {
 	bool		key_cut = sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index));
 	uint64		cut = merge_cut_bytes(key_cut),
@@ -256,7 +243,7 @@ at_minimum(Relation index, const SiftMergePolicy *pol, const SiftSegEntry *sel, 
 		bytes += sel[i].bytes;
 		rows += sel[i].ndocs;
 	}
-	return (uint64) n <= Max(maint_part_count(bytes, cut, key_cut), (rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS) && (!key_cut || key_apart(index, sel, n));
+	return (uint64) n <= Max(maint_part_count(bytes, cut, key_cut), (rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS) && (!key_cut || all_partitioned(index, snap, sel, n));
 }
 
 /* Of the segments of snap those the tiers may merge: not the immutable ones that are partitions, which the same merge would write again as they are */
@@ -283,7 +270,7 @@ maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSe
 	if (force)
 	{
 		n = sift_merge_pick(index, &pol, snap, true, sel);
-		if (n > 0 && at_minimum(index, &pol, sel, n))
+		if (n > 0 && at_minimum(index, &pol, snap, sel, n))
 			return 0;
 		if (n > MERGE_FORCE_FANIN)
 		{

@@ -15,12 +15,6 @@ INSERT INTO ad SELECT g, 1 + (g::bigint * 7919 % 12)::int, date '2018-01-01' + (
 SET sift.test_col_record_partitions = off;
 CREATE INDEX ad_idx ON ad USING sift_col (id, dim, day, v, w) WITH (key_cut = 'dim, day', track_changes = 'id', dead_rewrite_pct = 100);
 VACUUM (FREEZE, ANALYZE) ad;
-SELECT sift.col_merge('ad_idx', true) >= 0 AS merged;
- merged 
---------
- t
-(1 row)
-
 RESET sift.test_col_record_partitions;
 SELECT count(*) > 10 AS partition_sized_segments, (SELECT count(*) FROM sift._test_dir_parts('ad_idx')) AS recorded FROM sift.col_segments('ad_idx') WHERE kind = 'immutable' AND bytes >= 256 * 1024;
  partition_sized_segments | recorded 
@@ -137,12 +131,6 @@ CREATE TABLE ae (id int PRIMARY KEY, dim int NOT NULL, day date NOT NULL, v int,
 INSERT INTO ae SELECT g, 1 + (g::bigint * 7919 % 12)::int, date '2018-01-01' + (((g::bigint * 2654435761) % 4294967296 / 65536) % 2900)::int, g % 100, (g::bigint * 40503 % 1000003)::int FROM generate_series(1, 400000) g;
 SET sift.test_col_record_partitions = off;
 CREATE INDEX ae_idx ON ae USING sift_col (id, dim, day, v, w) WITH (key_cut = 'dim, day');
-SELECT sift.col_merge('ae_idx', true) >= 0 AS merged;
- merged 
---------
- t
-(1 row)
-
 RESET sift.test_col_record_partitions;
 SELECT (SELECT count(*) FROM sift._test_dir_parts('ae_idx')) = 0 AS none_recorded;
  none_recorded 

@@ -53,14 +53,14 @@ sift_col_dead_begin(Relation index, SiftTombLog *log)
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift dead addresses", ALLOCSET_DEFAULT_SIZES);
 	SiftColDead *d = MemoryContextAllocZero(cxt, sizeof(SiftColDead));
-	SiftDirSnapshot *snap = MemoryContextAlloc(cxt, sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	d->index = index;
 	d->log = log;
 	d->cxt = cxt;
 	d->xid = GetCurrentTransactionId();
 	d->cid = sift_col_stmt_cid();
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		d->index_rows += snap->segs[i].kind == SIFT_SEG_IMMUTABLE ? snap->segs[i].ndocs : 0;
 	pfree(snap);
@@ -124,8 +124,8 @@ stamp_format(SiftColDead *d)
 {
 	const SiftSegEntry *e;
 
-	sift_dir_read(d->index, d->log->dir);
-	if ((e = sift_tomb_find_seg(d->log->dir)) != NULL && e->format < SIFT_COL_FORMAT_TOMBDV)
+	sift_dir_reload(d->index, d->log->dir, d->log->cxt);
+	if ((e = sift_tomb_find_seg(*d->log->dir)) != NULL && e->format < SIFT_COL_FORMAT_TOMBDV)
 	{
 		sift_tomb_set_format(d->index, SIFT_COL_FORMAT_TOMBDV);
 		CacheInvalidateRelcache(d->index);
@@ -176,7 +176,7 @@ find_units(SiftColDead *d, const SiftDirSnapshot *snap, Found *f)
 static uint64 *
 write_records(SiftColDead *d, uint32 *nrest)
 {
-	SiftDirSnapshot *snap = MemoryContextAlloc(d->cxt, sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	MemoryContext tmp = AllocSetContextCreate(d->cxt, "sift dead addresses lookup", ALLOCSET_DEFAULT_SIZES);
 	Found		f = {.d = d,.cxt = tmp};
 	uint64	   *rest = d->keys;
@@ -184,7 +184,7 @@ write_records(SiftColDead *d, uint32 *nrest)
 	*nrest = d->n;
 	f.resolved = MemoryContextAlloc(tmp, d->n * sizeof(uint64));
 	LockPage(d->index, SIFT_TOMB_LOCK_BLKNO, ShareLock);
-	sift_dir_read(d->index, snap);
+	snap = sift_dir_read(d->index);
 	if (!has_scope(snap))
 		find_units(d, snap, &f);
 #ifdef SIFT_TESTING

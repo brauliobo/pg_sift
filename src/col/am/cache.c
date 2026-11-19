@@ -461,7 +461,6 @@ sift_col_zones(Relation index, bool scope)
 SiftColIndexMeta *
 sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 {
-	const SiftColIndexMeta *d = sift_col_index_defs(index);
 	SiftColIndexMeta *m = palloc(sizeof(SiftColIndexMeta));
 	SiftDirSnapshot *snap;
 	Relation	heap;
@@ -469,7 +468,8 @@ sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 				visible,
 				clean;
 
-	*m = *d;
+	*m = *sift_col_index_defs(index);
+	m->cols = sift_col_rel_private(index, CurrentMemoryContext)->meta.cols;	/* the leaf definitions outlive the reloads of the cached state that the reads below cause */
 	snap = sift_col_dir_read(index, false);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
@@ -491,7 +491,7 @@ sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 	m->stats.nunits = sift_cseg_dir_units(snap);
 	m->stats.wbuf_ovf = sift_cwbuf_overflow(snap);
 	m->stats.wbuf_jnull = sift_cwbuf_jnull(snap);
-	heap = table_open(d->heapoid, AccessShareLock);
+	heap = table_open(m->heapoid, AccessShareLock);
 	relpages = RelationGetNumberOfBlocks(heap);
 	m->stats.heap_pages = relpages;
 	sift_vis_count(heap, relpages, &visible, &clean);

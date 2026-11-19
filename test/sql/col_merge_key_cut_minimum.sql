@@ -10,6 +10,7 @@ CREATE TABLE t (id int, dim int, day date, v int, w int) WITH (autovacuum_enable
 INSERT INTO t SELECT g, 1 + (g::bigint * 7919 % 12)::int, date '2018-01-01' + (((g::bigint * 2654435761) % 4294967296 / 65536) % 2900)::int, g % 100, (g::bigint * 40503 % 1000003)::int FROM generate_series(1, 400000) g;
 VACUUM (FREEZE, ANALYZE) t;
 SET sift.test_col_segment_kb = 64;
+SET sift.col_auto_merge_partition_kb = 64;
 CREATE INDEX t_cut ON t USING sift_col (dim, day, v, w) WITH (key_cut = 'dim, day');
 CREATE TABLE gens (step text, gens bigint[]);
 SELECT sift.col_merge('t_cut', true) > 0 AS merged;
@@ -21,6 +22,7 @@ SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET sift.test_col_segment_kb = 64;
+SET sift.col_auto_merge_partition_kb = 64;
 SET statement_timeout = '60s';
 SELECT sift.col_merge('t_cut', true) AS second_merge_steps;
 INSERT INTO gens SELECT 'second', array_agg(gen ORDER BY gen) FROM sift.col_segments('t_cut') WHERE kind = 'immutable';

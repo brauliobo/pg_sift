@@ -111,10 +111,10 @@ replaced_index(Relation heap, Relation index, IndexInfo *info)
 
 typedef struct FromOld
 {
-	SiftSegEntry in[SIFT_MAX_SEGMENTS];
+	SiftSegEntry *in;
 	int			n;
 	int			nbuffers;
-	SiftSegEntry buffers[SIFT_MAX_SEGMENTS];
+	SiftSegEntry *buffers;
 } FromOld;
 
 /* The index REINDEX replaces, read through its superseded file, and whether it can give the rows */
@@ -131,13 +131,16 @@ struct ColOld
 static const char *
 old_state(Relation old, const SiftColRel *r, FromOld *f, uint64 *entries)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap = sift_col_dir_read(old, false);
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col from-index check", ALLOCSET_SMALL_SIZES);
-	SiftColSegment *seg[SIFT_MAX_SEGMENTS] = {NULL};
-	bool		stream[SIFT_MAX_SEGMENTS];
+	SiftColSegment **seg;
+	bool	   *stream;
 	const char *why = NULL;
 
-	sift_col_dir_read(old, snap, false);
+	/* check-memory: allow the entries of a directory, at most SIFT_DIR_WIDE_MAX */
+	f->in = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
+	/* check-memory: allow the entries of a directory, at most SIFT_DIR_WIDE_MAX */
+	f->buffers = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
@@ -157,6 +160,8 @@ old_state(Relation old, const SiftColRel *r, FromOld *f, uint64 *entries)
 	}
 	if (f->n + f->nbuffers == 0)
 		why = "the index holds no rows";
+	seg = palloc0(Max(f->n, 1) * sizeof(SiftColSegment *));
+	stream = palloc(Max(f->n, 1) * sizeof(bool));
 	for (int i = 0; i < f->n && why == NULL; i++)
 	{
 		if (f->in[i].flags & SIFT_SEG_SCOPE)
@@ -275,7 +280,6 @@ build_from(Relation heap, Relation index, ColOld *o)
 	if (sift_test_col_from_index_mutant == 1)
 		f->nbuffers = 0;
 #endif
-	out = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
 	in = palloc((f->n + f->nbuffers) * sizeof(SiftSegEntry));
 	memcpy(in, f->in, f->n * sizeof(SiftSegEntry));
 	nin = f->n;
@@ -298,7 +302,7 @@ build_from(Relation heap, Relation index, ColOld *o)
 		}
 		MemoryContextDelete(run);
 	}
-	nout = sift_col_merge_from(index, o->view, in, nin, f->n, out, SIFT_COL_BUILD_SEGMENTS);
+	out = sift_col_merge_from(index, o->view, in, nin, f->n, &nout);
 	if (wt != NULL)
 	{
 		sift_wt_release(wt, release, nrelease);

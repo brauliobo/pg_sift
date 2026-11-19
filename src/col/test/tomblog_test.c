@@ -226,11 +226,10 @@ Datum
 sift_test_col_log_format(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap = sift_dir_read(index);
 	const SiftSegEntry *e;
 	int32		format;
 
-	sift_dir_read(index, snap);
 	e = sift_tomb_find_seg(snap);
 	format = e == NULL ? 0 : e->format;
 	index_close(index, AccessShareLock);

@@ -38,6 +38,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_formats);
 PG_FUNCTION_INFO_V1(sift_test_col_segment_keys);
 PG_FUNCTION_INFO_V1(sift_test_col_part_bounds);
 PG_FUNCTION_INFO_V1(sift_test_col_part_shift);
+PG_FUNCTION_INFO_V1(sift_test_col_cut_near);
 PG_FUNCTION_INFO_V1(sift_test_col_part_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_adopt);
 
@@ -229,6 +230,13 @@ shift_partition(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void
 	for (uint32 i = 0; i < ps->n; i++)
 		gens[i] = dir->segs[ps->first + i].gen;
 	sift_dir_part_replace(gens, ps->n, &dir->segs[ps->first], ps->n, (const uint8 (*)[SIFT_BOUND_BYTES]) ps->lo);
+}
+
+/* sift._test_col_cut_near(held, due_at, slack_pct, open): is a segment of held bytes done after a unit (col/order_bound.c) */
+Datum
+sift_test_col_cut_near(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(sift_colk_cut_near(PG_GETARG_INT64(0), PG_GETARG_INT64(1), PG_GETARG_INT32(2), PG_GETARG_BOOL(3)));
 }
 
 /* sift._test_col_part_shift(index, k): records the lower bound of the partition k+1 as that of the partition k, which then starts above rows it holds: what the check of a partition's rows finds */

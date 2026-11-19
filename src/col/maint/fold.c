@@ -17,15 +17,19 @@
 #include "core/ops.h"
 #include "col/wbuf.h"
 #include "core/tomb.h"
+#include "core/tomb_dv.h"
 
 /*
  * What a fold costs, in instructions and WAL in instructions (MAINT_WAL_BYTE: a MB of WAL weighs 0.6 G instructions, as in the price of a row of the rewrite): the segments are opened and the directory of
- * each unit decoded, 16 instructions for each row of the index (8.7 M for 548,000 rows in 57 units, one mark), a mark costs 55,000 more (the pages of its block bisected in every unit,
- * 19.4 M for 200 marks), and the WAL is the tombstone log written again, the liveness pages and the directory: 1 kB for one mark and 5 kB for 200 within a checkpoint, 90 kB for the
- * first of them after one (the pages go whole), so 64 kB are priced.
+ * each unit decoded, 16 instructions for each row of the index (a fold of records alone: 0.9 to 2.6 M instructions for 150,000 rows in 32 to 125 units); marks come with the walk of the pages of every unit
+ * against their addresses, 17 to 107 instructions for each row of the index, and 880 to 1,230 for each mark (2.5 and 16 M for 750 marks, 69 and 132 M for 75,000, in units of 8,192 rows and of
+ * 1,200 rows); a deletion record costs 90 to 140 instructions for each row it names; and the WAL is the tombstone log written again, the liveness pages and the directory: 1 kB for one mark and
+ * 5 kB for 200 within a checkpoint, 90 kB for the first of them after one (the pages go whole), so 64 kB are priced.
  */
 #define FOLD_ROW_PRICE		16.0
-#define FOLD_MARK_PRICE		55000.0
+#define FOLD_WALK_PRICE		35.0
+#define FOLD_MARK_PRICE		1100.0
+#define FOLD_DV_PRICE		120.0
 #define FOLD_WAL_PRICE		(64.0 * 1024 * MAINT_WAL_BYTE)
 
 /*
@@ -224,6 +228,7 @@ sift_col_fold_marks(Relation index)
 	IndexBulkDeleteResult stats = {0};
 	Fold		f = {0};
 	uint64		removed = 0;
+	bool		dropped = false;
 
 	if (RecoveryInProgress())
 		return 0;
@@ -259,6 +264,17 @@ sift_col_fold_marks(Relation index)
 	{
 		SIFT_MEM_CHECKPOINT();
 		removed += fold_clear(index, &f, &stats);
+		dropped = true;
+	}
+	/* the deletion records are folded and dropped by the pass over the log that drops the marks: when there were no marks to clear, it is made here */
+	if (!dropped && log->dvecs > 0)
+	{
+		SiftDirSnapshot *snap = sift_dir_read(index);
+
+		for (int i = 0; i < snap->nsegs; i++)
+			if (snap->segs[i].kind == SIFT_SEG_TOMB)
+				maint_bulkdelete_tomb(index, &snap->segs[i], NULL, NULL, &stats);
+		pfree(snap);
 	}
 	removed += (uint64) stats.tuples_removed;
 	/* a scan that began before reads the directory again: the heap marks pages all-visible after a pass the same way (sift_mops_bulkdelete) */
@@ -276,25 +292,40 @@ sift_col_fold_marks(Relation index)
 int64		sift_col_fold_counts;	/* sift._test_col_fold_counts: the passes over a log that counted the marks a fold could clear */
 #endif
 
-static uint64
+static void
 fold_ready(SiftTombLog *log, TransactionId horizon)
 {
 	SiftTombEach each;
 	const SiftTomb *a;
 	uint32		n;
-	uint64		ready = 0;
 
 #ifdef SIFT_TESTING
 	sift_col_fold_counts++;
 #endif
+	log->foldable = log->foldable_dv = 0;
 	sift_tomb_each_begin(&each, log, CurrentMemoryContext);
 	while ((a = sift_tomb_each_next(&each, &n)) != NULL)
 		for (uint32 i = 0; i < n; i++)
-			ready += (a[i].kind == SIFT_TOMB_DELETE || a[i].kind == SIFT_TOMB_UPDATE) &&
-				(a[i].xid == FrozenTransactionId || (TransactionIdIsNormal(a[i].xid) && TransactionIdPrecedes(a[i].xid, horizon)));
+		{
+			if (a[i].kind != SIFT_TOMB_DELETE && a[i].kind != SIFT_TOMB_UPDATE && a[i].kind != SIFT_TOMB_DVEC)
+				continue;
+			if (a[i].xid != FrozenTransactionId && !(TransactionIdIsNormal(a[i].xid) && TransactionIdPrecedes(a[i].xid, horizon)))
+				continue;
+			if (a[i].kind == SIFT_TOMB_DVEC)
+				log->foldable_dv += sift_dv_head_rows(&a[i]);
+			else
+				log->foldable++;
+		}
 	sift_tomb_each_end(&each);
-	log->foldable = ready;
-	return ready;
+}
+
+/* The price of a fold of the entries counted last for a log of rows rows: a log that was not counted is priced as one mark, the least a fold clears */
+static double
+fold_price(const SiftTombLog *log, uint64 rows)
+{
+	uint64		marks = log->foldable == 0 && log->foldable_dv == 0 ? 1 : log->foldable;
+
+	return FOLD_ROW_PRICE * (double) rows + (marks > 0 ? FOLD_WALK_PRICE * (double) rows : 0) + FOLD_MARK_PRICE * (double) marks + FOLD_DV_PRICE * (double) log->foldable_dv + FOLD_WAL_PRICE;
 }
 
 /*
@@ -308,24 +339,23 @@ sift_col_fold_due(Relation index)
 	SiftTombLog *log = sift_col_log(index);
 	SiftDirSnapshot *snap;
 	uint64		rows = 0,
-				paid,
-				ready;
-	double		cost;
+				paid;
 
 	if (log == NULL)
 		return false;
+	if (log->fold_due)
+		return true;
 	snap = sift_col_dir_read(index, false);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			rows += snap->segs[i].ndocs;
 	paid = sift_col_marks_paid(index, &snap->meta, log->gen);
 	pfree(snap);
-	cost = FOLD_ROW_PRICE * (double) rows + FOLD_MARK_PRICE * (double) Max(1, log->foldable) + FOLD_WAL_PRICE;
-	if ((double) paid < MAINT_HALF * cost)
+	if ((double) paid < MAINT_HALF * fold_price(log, rows))
 		return false;
-	ready = fold_ready(log, GetOldestNonRemovableTransactionId(NULL));
-	cost = FOLD_ROW_PRICE * (double) rows + FOLD_MARK_PRICE * (double) ready + FOLD_WAL_PRICE;
-	return ready > 0 && (double) paid >= MAINT_HALF * cost;
+	fold_ready(log, GetOldestNonRemovableTransactionId(NULL));
+	log->fold_due = log->foldable + log->foldable_dv > 0 && (double) paid >= MAINT_HALF * fold_price(log, rows);
+	return log->fold_due;
 }
 
 bool
