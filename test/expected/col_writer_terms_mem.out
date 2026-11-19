@@ -192,7 +192,7 @@ SELECT stage, count(DISTINCT n) AS sizes, count(DISTINCT segs) AS segment_counts
  stage | sizes | segment_counts | closes_segments 
 -------+-------+----------------+-----------------
  build |     5 |              5 | t
- merge |     5 |              3 | t
+ merge |     5 |              2 | t
 (2 rows)
 
 -- the bytes of a context do not follow the rows or the segments, and stay under the budget the writer is cut at
