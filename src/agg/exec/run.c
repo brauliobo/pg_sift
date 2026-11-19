@@ -648,14 +648,17 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	ex->lutcx->ecxt_param_list_info = params;
 	ex->lutcx->ecxt_param_exec_vals = ex->lutparams;
 	scope_keys_init(ex);
+	init_states(ex);
 	if (ex->kept)
 		ex->src = ex->kept;
 	else if (ex->param_scan && ex->spec->topn && ex->spec->nparts == 0)
-		ex->src = ex->kept = sift_colsrc_open(ex->heap, ex->index, snapshot, AllocSetContextCreate(ex->css.ss.ps.state->es_query_cxt, "sift agg source", ALLOCSET_SMALL_SIZES), ex->view);
+		ex->src = ex->kept = sift_colsrc_open(ex->heap, ex->index, snapshot, AllocSetContextCreate(ex->css.ss.ps.state->es_query_cxt, "sift agg source", ALLOCSET_SMALL_SIZES), ex->view, NULL);
 	else if (ex->spec->nparts > 0)
 		ex->src = sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt, ex->view);
+	else if (scope_open(ex, snapshot))
+		ex->src = scope_source(ex, snapshot);
 	else
-		ex->src = scope_open(ex, snapshot) ? scope_source(ex, snapshot) : sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt, ex->view);
+		ex->src = sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt, ex->view, ex->view == NULL && open_keys(ex, &ex->keys) ? &ex->keys : NULL);
 	/* the join a scope read runs in its place is another spec: whether the walk of the global order answers it alone is its own to say */
 	ex->open_deferred = ex->open_deferred && sift_topn_walks_alone(ex->spec);
 	if (ex->partoff)
@@ -669,7 +672,6 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 		ex->search = sift_search_open(ex->spec->search, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
 	if (ex->spec->topn)
 		ex->topn = sift_topn_open(ex->spec->topn, ex->lay, ex->src, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt, ex->widen);
-	init_states(ex);
 	register_preds(ex);
 	for (int j = 0; j < ex->spec->nkeys; j++)
 		register_key(ex, j);

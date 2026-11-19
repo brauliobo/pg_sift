@@ -135,7 +135,7 @@ typedef struct SiftTblRel
 	MemoryContext cxt;
 	bool		initialized;	/* blocks exist and carry the table layout */
 	bool		invalid;		/* relcache invalidation: replaced by the next sift_tbl_rel */
-	SiftDirSnapshot dir;
+	SiftDirSnapshot *dir;		/* in cxt: sift_tbl_dir_load replaces it */
 	int			nwbuf;
 	SiftTblSeg *wbuf;			/* [nwbuf], directory order = ascending vbase */
 	uint32		wbuf_version;	/* the directory version wbuf was built for (dir.version is also set by the readers of the directory that do not rebuild it) */

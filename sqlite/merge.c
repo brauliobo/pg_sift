@@ -157,7 +157,7 @@ int
 sq_merge_pick(SqStore *st, bool force, int fanin, uint64 *sel)
 {
 	SiftMergePolicy pol = {TIER_BASE, fanin};
-	SiftSegEntry in[SIFT_MAX_SEGMENTS];
+	SiftSegEntry in[SIFT_DIR_POLICY_MAX];
 	int			n = sift_merge_pick(sq_store_rel(st), &pol, sq_store_dir(st), force, in);
 
 	for (int i = 0; i < n; i++)

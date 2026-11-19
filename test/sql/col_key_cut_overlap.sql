@@ -37,12 +37,14 @@ CREATE FUNCTION ko_units() RETURNS text LANGUAGE sql AS $$
 SET enable_seqscan = off; SET enable_bitmapscan = off; SET enable_indexscan = off;
 
 -- a key is read in a unit of each run, and the rewrite is due though no segment is a small overlay or holds a dead row; the WAL budget of the churn does not hold it
+SELECT gen, rows, bytes, units, sb_lo, sb_hi FROM sift.col_segments('ko_idx') WHERE kind = 'immutable' ORDER BY gen;
 SELECT ko_units() AS before;
 SELECT ko_same() AS same_before;
 SELECT sift.col_maintenance_due('ko_idx', true) AS due;
 
 -- the rewrite cuts the key range into partitions: a key is in one of them, and nothing is due again
 SELECT sift.col_maintain('ko_idx') AS rewritten;
+SELECT gen, rows, bytes, units, sb_lo, sb_hi FROM sift.col_segments('ko_idx') WHERE kind = 'immutable' ORDER BY gen;
 SELECT sift.col_verify('ko_idx', true);
 SELECT ko_units() AS after;
 SELECT ko_same() AS same_after;

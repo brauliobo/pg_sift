@@ -219,13 +219,13 @@ define_reloptions(void)
 					  SIFT_DEFAULT_WRITE_BUFFER_LIMIT, 64, 1048576, ShareUpdateExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "vacuum_segments",
 					  "Directory entries (segments, the write buffer included) VACUUM merges the index down to; more keep VACUUM short and queries slower",
-					  SIFT_DEFAULT_VACUUM_SEGMENTS, 1, SIFT_MAX_SEGMENTS, ShareUpdateExclusiveLock);
+					  SIFT_DEFAULT_VACUUM_SEGMENTS, 1, SIFT_DIR_POLICY_MAX, ShareUpdateExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "merge_fanin",
 					  "Segments of a size tier that trigger a merge; a lower value merges more often and keeps fewer segments, a higher one merges less",
 					  SIFT_DEFAULT_MERGE_FANIN, SIFT_MERGE_MIN_FANIN, SIFT_MERGE_MAX_FANIN, ShareUpdateExclusiveLock);
 	add_int_reloption(sift_relopt_kind, "build_segments",
 					  "Segments written by CREATE INDEX, 0 for one per build participant",
-					  0, 0, SIFT_MAX_SEGMENTS / 2, AccessExclusiveLock);
+					  0, 0, SIFT_DIR_POLICY_MAX / 2, AccessExclusiveLock);
 	add_bool_reloption(sift_relopt_kind, "positions",
 					   "Store word positions, so phrase queries are decided by the index instead of rechecked in the heap (REINDEX to apply)",
 					   true, AccessExclusiveLock);

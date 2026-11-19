@@ -262,10 +262,10 @@ worker_exit(int code, Datum arg)
 static uint64
 new_gen(Relation index, const SiftDirSnapshot *before)
 {
-	SiftDirSnapshot *after = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *after;
 	uint64		gen = 0;
 
-	sift_dir_read(index, after);
+	after = sift_dir_read(index);
 	for (int i = 0; i < after->nsegs; i++)
 	{
 		bool		old = false;
@@ -283,13 +283,13 @@ new_gen(Relation index, const SiftDirSnapshot *before)
 static uint64
 refresh_segment(Relation index, uint64 rgen)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	/* check-memory: allow the merge takes it as arguments, and takes buffer and page locks only; sift.col_refresh runs under debug_discard_caches in cache_discard */
 	SiftColRel *rel = sift_col_rel(index);
 	uint64		gen = 0;
 
 	sift_maint_lock(index, true);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].gen == rgen && snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{
@@ -411,17 +411,18 @@ PG_FUNCTION_INFO_V1(sift_col_refresh);
 
 /* The generations of the immutable segments whose sidecar is not what the options ask now and that a rewrite can change (sift_cseg_pre_stale), in directory order */
 static int
-stale_segments(Relation index, uint64 *gens)
+stale_segments(Relation index, uint64 **gens)
 {
 	/* check-memory: allow between its uses the loop reads segments (buffer and spin locks); sift.col_refresh runs under debug_discard_caches in cache_discard */
 	SiftColRel *rel = sift_col_rel(index);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col refresh census", ALLOCSET_DEFAULT_SIZES);
 	RollupShared *sh = shared();
 	uint32		hash = options_hash(index);
 	int			n = 0;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
+	*gens = MemoryContextAlloc(CurrentMemoryContext, Max(snap->nsegs, 1) * sizeof(uint64));
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
@@ -444,7 +445,7 @@ stale_segments(Relation index, uint64 *gens)
 		sift_cseg_close(seg);
 		MemoryContextReset(cx);
 		if (stale)
-			gens[n++] = e->gen;
+			(*gens)[n++] = e->gen;
 	}
 	MemoryContextDelete(cx);
 	pfree(snap);
@@ -569,9 +570,8 @@ sift_col_caps(Relation index, SiftChoiceFn add, void *ctx)
 		any |= spec->rollup[r].list < 0;
 	if (!any && !spec->cal_all)
 		return;
-	snap = palloc(sizeof(SiftDirSnapshot));
 	cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col cap report", ALLOCSET_DEFAULT_SIZES);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -661,7 +661,7 @@ Datum
 sift_col_refresh(PG_FUNCTION_ARGS)
 {
 	Relation	index;
-	uint64		gens[SIFT_MAX_SEGMENTS];
+	uint64	   *gens;
 	uint32		hash;
 	int			limit,
 				n,
@@ -681,7 +681,7 @@ sift_col_refresh(PG_FUNCTION_ARGS)
 		ereport(ERROR, (errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION), errmsg("recovery is in progress"),
 						errhint("The pre-aggregates are refreshed on the primary.")));
 	hash = options_hash(index);
-	n = stale_segments(index, gens);
+	n = stale_segments(index, &gens);
 	for (; visited < n && done < limit; visited++)
 	{
 		uint64		gen;

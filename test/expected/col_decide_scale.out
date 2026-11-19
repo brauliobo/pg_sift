@@ -56,12 +56,11 @@ SELECT e AS estimate, k.paths FROM unnest(ARRAY[6000, 257000000, 1000000000]::fl
     1e+09 | auto: doc.* int4
 (3 rows)
 
--- a heap of an estimate no run count holds is refused without key_cut, whether or not the estimate fits 64 bits (PostgreSQL 17 stores the rows a CREATE INDEX saw in
--- reltuples, so the estimate is set again after the builds of kscale)
+-- a build has no count of segments to fit the estimate of the heap to, so one whose estimate is beyond any count, whether or not it fits 64 bits, builds the segments its rows make
+-- (PostgreSQL 17 stores the rows a CREATE INDEX saw in reltuples, so the estimate is set again after the builds of kscale)
 UPDATE pg_class SET reltuples = 3.4e38 WHERE relname = 'ds';
 CREATE INDEX ds_big ON ds USING sift_col (id, tenant_id) WITH (key_cut = 'off');
-ERROR:  the heap has about 18446744073709551615 rows for each process of the build: its 121 segments hold 8120172544
-HINT:  Set key_cut on a column to build by runs, or build on a partition of the table.
+DROP INDEX ds_big;
 UPDATE pg_class SET reltuples = 60000 WHERE relname = 'ds';
 -- sift.key_cut_decision reads the estimate too: the sample is the same, the verdict is
 CREATE INDEX ds_ix ON ds USING sift_col (id, tenant_id, ref_id, d, tags, v) WITH (key_cut = 'off');

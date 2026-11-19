@@ -80,11 +80,11 @@ overlay_worth(Relation index, const SiftMetaPageData *meta, const OverlayEv *ev)
 bool
 maint_wbuf_read_due(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	const double least = SIFT_COL_UNIT_MAX_ROWS / 4;
 	bool		due = false;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs && !due; i++)
 	{
 		double		paid;
@@ -127,11 +127,11 @@ buffer_share_due(Relation index, const SiftDirSnapshot *snap, uint64 rows)
 bool
 maint_wbuf_share_due(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	uint64		rows = 0;
 	bool		due;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			rows += snap->segs[i].ndocs;
@@ -181,14 +181,14 @@ sift_col_promote_tick(Relation index)
 const char *
 maint_rewrite_due(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col rewrite due", ALLOCSET_SMALL_SIZES);
 	SIFT_MEM_SCOPE(col_rewrite, cx);
 	RewriteView *v;
 	const char *why = NULL;
 	bool		partitioned,
 				overlay_due,
-				take[SIFT_MAX_SEGMENTS] = {false},
+				*take,
 				conn_stale,
 				buffer_due,
 				stale = false,
@@ -207,10 +207,11 @@ maint_rewrite_due(Relation index)
 	maint_pass_gen = 0;
 	maint_overlay_asked = false;
 	maint_redecided = false;
-	sift_col_dir_read(index, snap, false);
+	snap = sift_col_dir_read(index, false);
 	maint_use_partitions(index, snap);
 	partitioned = maint_part_kb > 0;
 	v = maint_view_open(index, snap, cx);
+	take = MemoryContextAllocZero(cx, Max(v->n, 1) * sizeof(bool));
 	conn_stale = v->conn_stale;
 	key_overlap = v->nkover;
 	overlay_due = maint_overlay_set(index, v, take, &ev) && overlay_worth(index, &snap->meta, &ev);

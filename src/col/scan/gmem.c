@@ -444,6 +444,9 @@ gkept_store(SiftColSource *src, MemoryContext cx, int leaf, int gleaf, int64 gva
 struct GOrdKept *
 gkept_find_free(const SiftColSource *src, int leaf, int gleaf, int64 gval, const GFreeTok *tok, int n)
 {
+	/* the rows of a unit that records end are those of the snapshot: an order made with them is not for another scan, and an order made without them is not for this one */
+	if (src->dvov != NULL)
+		return NULL;
 	for (int i = 0; i < GKEPT_N; i++)
 	{
 		GOrdKept   *k = gkept[i];
@@ -461,7 +464,7 @@ gkept_store_free(SiftColSource *src, MemoryContext cx, ColGOrdMem *g, int leaf, 
 {
 	GOrdKept   *k;
 
-	if (MemoryContextMemAllocated(cx, true) > GKEPT_BYTES)
+	if (MemoryContextMemAllocated(cx, true) > GKEPT_BYTES || src->dvov != NULL)
 	{
 		src->gfmem[v] = g;
 		return;

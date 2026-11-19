@@ -25,7 +25,7 @@
 int			sift_tbl_write_buffer_limit = 4096;	/* kB */
 bool		sift_tbl_wide_rows = true;	/* a row that does not fit a write buffer goes to tail pages (format 11) instead of being refused */
 int			sift_tbl_vblock_floor = 0;	/* testing: the first virtual block of a new write buffer at least */
-int			sift_tbl_max_segments = SIFT_MAX_SEGMENTS;	/* the directory entries a table may use (lowered by a test setting) */
+int			sift_tbl_max_segments = SIFT_DIR_POLICY_MAX;	/* the directory entries a table may use (lowered by a test setting) */
 int			sift_tbl_init_gate = 0;	/* testing: the first writer waits for this advisory lock before it writes the tombstone segment */
 int			sift_tbl_seal_gate = 0;	/* testing: the writer that closed a write buffer waits for this advisory lock before it flags the pages sealed */
 
@@ -125,6 +125,7 @@ sift_tbl_rel(Relation rel)
 		e->st->relnumber = rel->rd_locator.relNumber;
 		e->st->cxt = cxt;
 		e->st->tgt_blk = InvalidBlockNumber;
+		e->st->dir = MemoryContextAllocZero(cxt, offsetof(SiftDirSnapshot, segs));
 		sift_tomb_init(&e->st->tomb, cxt, &e->st->dir);
 		e->st->tomb.spill = true;
 		sift_tbl_opts_load(e->st);
@@ -167,7 +168,7 @@ sift_tbl_ensure_init(Relation rel)
 	SiftTblRel *st = sift_tbl_rel(rel);
 
 	/* a read between the first writer's metapage and its tombstone segment caches a table that is not laid out yet */
-	if (st->initialized && sift_tomb_find_seg(&st->dir) != NULL)
+	if (st->initialized && sift_tomb_find_seg(st->dir) != NULL)
 		return;
 	if (!BLOCKS_WRITTEN(rel))
 	{
@@ -184,17 +185,17 @@ sift_tbl_ensure_init(Relation rel)
 		sift_extension_unlock(rel);
 	}
 	sift_tbl_refresh(rel, st);
-	if (sift_tomb_find_seg(&st->dir) == NULL)
+	if (sift_tomb_find_seg(st->dir) == NULL)
 	{
 		InitArg		arg;
 
 		sift_tbl_gate(sift_tbl_init_gate);
 		LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-		sift_dir_read(rel, &st->dir);
-		if (sift_tomb_find_seg(&st->dir) == NULL)
+		sift_dir_reload(rel, &st->dir, st->cxt);
+		if (sift_tomb_find_seg(st->dir) == NULL)
 		{
 			arg.tomb = sift_tomb_new_segment(rel, SIFT_SEG_WBUF_OPEN, 0);
-			sift_dir_update(rel, &(SiftDirChange) {.fn = init_dir,.arg = &arg,.extra = InvalidBuffer});
+			sift_dir_update(rel, &(SiftDirChange) {.fn = init_dir,.arg = &arg,.nadd = 1,.extra = InvalidBuffer});
 		}
 		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 		sift_tbl_refresh(rel, st);
@@ -211,21 +212,21 @@ sift_tbl_refresh_full(Relation rel, SiftTblRel *st)
 	if (!BLOCKS_WRITTEN(rel))
 	{
 		st->initialized = false;
-		st->dir.nsegs = 0;
+		st->dir->nsegs = 0;
 		st->nwbuf = 0;
 		return;
 	}
-	sift_dir_read(rel, &st->dir);
-	if (st->dir.nsegs > 0 && !(st->dir.meta.flags & SIFT_TBL_META_FLAG))	/* flagged with the first segment */
-		corrupt(rel, "The metapage does not carry the sift_table flag (0x%x).", st->dir.meta.flags);
+	sift_dir_reload(rel, &st->dir, st->cxt);
+	if (st->dir->nsegs > 0 && !(st->dir->meta.flags & SIFT_TBL_META_FLAG))	/* flagged with the first segment */
+		corrupt(rel, "The metapage does not carry the sift_table flag (0x%x).", st->dir->meta.flags);
 	st->initialized = true;
-	for (int i = 0; i < st->dir.nsegs; i++)
-		n += is_wbuf(&st->dir.segs[i]);
+	for (int i = 0; i < st->dir->nsegs; i++)
+		n += is_wbuf(&st->dir->segs[i]);
 	st->wbuf = MemoryContextAllocZero(st->cxt, Max(n, 1) * sizeof(SiftTblSeg));
 	st->nwbuf = 0;
-	for (int i = 0; i < st->dir.nsegs; i++)
+	for (int i = 0; i < st->dir->nsegs; i++)
 	{
-		const SiftSegEntry *e = &st->dir.segs[i];
+		const SiftSegEntry *e = &st->dir->segs[i];
 		SiftTblSeg *s;
 
 		if (!is_wbuf(e))
@@ -239,7 +240,7 @@ sift_tbl_refresh_full(Relation rel, SiftTblRel *st)
 		s->vbase = (uint64) e->sb_lo * SIFT_TBL_VBLOCKS_SB;
 		s->vcap = (e->sb_hi - e->sb_lo + 1) * SIFT_TBL_VBLOCKS_SB;
 	}
-	st->wbuf_version = st->dir.version;
+	st->wbuf_version = st->dir->version;
 	if (old)
 		pfree(old);
 }
@@ -280,5 +281,5 @@ sift_tbl_nvblocks(Relation rel)
 	SiftTblRel *st = sift_tbl_rel(rel);
 
 	sift_tbl_refresh(rel, st);
-	return st->initialized ? SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) : 0;
+	return st->initialized ? SIFT_TBL_NEXT_VBLOCK(&st->dir->meta) : 0;
 }

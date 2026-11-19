@@ -11,6 +11,7 @@
 #ifndef SIFT_COL_H
 #define SIFT_COL_H
 
+#include "core/range.h"
 #include "core/varint.h"
 #include "col/kern.h"
 #include "col/wide.h"

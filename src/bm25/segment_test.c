@@ -50,12 +50,12 @@ sift_test_postings(PG_FUNCTION_ARGS)
 {
 	PostingsOut o = {(ReturnSetInfo *) fcinfo->resultinfo};
 	Relation	index;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift test postings", ALLOCSET_DEFAULT_SIZES);
 
 	InitMaterializedSRF(fcinfo, 0);
 	index = open_sift(PG_GETARG_OID(0), NULL);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftScoreRef ref = meta_ref(snap);
@@ -103,12 +103,12 @@ sift_test_segment_parts(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift test parts", ALLOCSET_DEFAULT_SIZES);
 
 	InitMaterializedSRF(fcinfo, 0);
 	index = open_sift(PG_GETARG_OID(0), NULL);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftScoreRef ref = meta_ref(snap);
@@ -181,13 +181,13 @@ sift_test_attr_dump(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift test attr", ALLOCSET_DEFAULT_SIZES);
 	static const char *const names[] = {"value", "null", "unknown"};
 
 	InitMaterializedSRF(fcinfo, 0);
 	index = open_sift(PG_GETARG_OID(0), NULL);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftSegment *seg;
@@ -249,11 +249,11 @@ sift_test_segment_formats(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
 	index = open_sift(PG_GETARG_OID(0), NULL);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		Datum		v[3] = {Int64GetDatum(snap->segs[i].gen), CStringGetTextDatum(kind_name(snap->segs[i].kind)),
@@ -301,11 +301,11 @@ sift_test_term_blob(PG_FUNCTION_ARGS)
 {
 	Relation	index = open_sift(PG_GETARG_OID(0), NULL);
 	text	   *term = PG_GETARG_TEXT_PP(1);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	Datum		v[5];
 	bool		nulls[5] = {0};
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftSegment *seg;

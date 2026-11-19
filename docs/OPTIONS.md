@@ -34,7 +34,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 103 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 105 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 41 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
@@ -1455,6 +1455,21 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on. To keep the footprint of a column: compression = 'auto; col=zstd' and REINDEX; the server log at DEBUG1 lists, at CREATE INDEX, the columns that took LZ4 (and the ones that came close) with their numbers.
 - **Sources:** benchmark `test:col_text_scanwrap`; [COLUMN-STORAGE](COLUMN-STORAGE.md#dictionaries-and-text)
 
+#### sift.col_build_source
+
+`sift_col` · default · since 5.1 · default auto
+
+- **What it does:** where CREATE INDEX and REINDEX of a sift_col index take their rows from: auto prices the heap scan (with the key ranges' files when the index has key_cut), the heap read in the order of a btree on the key (by one process or by the participants of a parallel build) and, for REINDEX, the index it replaces, and takes the cheapest, with no temporary file and no heap read where the btree or the old index serves; heap reads the heap as before 5.1
+- **Gain:** 300,000 rows, 13 columns and four path sets, key in heap order, maintenance_work_mem 64 MB, 3 alternating rounds (spread under 0.02%): CREATE INDEX 29.66 G instructions, 4.3 MB of temporary files and 42,010 heap block accesses through the key ranges, 17.02 G, no file and 33,839 accesses through the btree (-42.6%); REINDEX 29.58 G from the heap, 8.20 G, no file and no heap block from the old index (-72.3%)
+- **Gain and cost:** 1.74x fewer instructions (12640000k saved a query), index -1.8%, build -42.6%, automatic
+- **Impact:** index size: -1.8% through the btree (14,442,496 against 14,704,640 bytes), -2.7% from the old index (14,311,424 bytes), 300,000 rows; build, merge and writes: WAL 14.14 MB through the btree against 14.03 MB (+0.8%), 13.13 MB from the old index against 13.95 MB for a REINDEX from the heap (-5.9%); the choice itself costs 0.00% of the instructions of a build that has no other path (29.64 G against 29.64 G, 3 alternating rounds); other: No index growth (the same rows and units; the index is within 3% of the bytes the heap build writes). The choice reads the leaf level of each usable btree under an eighth of the heap in size, a sample of rows of the heap that prices the key ranges' files (not when the old index wins outright), and about a thousand blocks to measure what a read costs on the disk of the table; a btree whose heap is not in the order of the key reads blocks again, and the choice says so before it reads them.
+- **When:** A table of more than half a run whose key_cut is a number (integer, date, timestamp, numeric or float column) with a valid btree whose first column is that key, ascending (a primary key updated in place, a timestamp that follows the inserts); and a REINDEX of an index with the same layout, key and options, no scope, no connection and no value store, not CONCURRENTLY and not a rewrite of the table. Not a key of text, a btree with a predicate, descending or an expression first column, or a scope index (its second pass sorts its own rows).
+- **Default:** auto — 35 to 70% fewer instructions and no temporary file where the heap follows the key or the old index serves, chosen by a cost that is measured on the disk of the table and stated in the NOTICE; where it does not pay (a key displaced by updates) the key ranges are taken, so the setting is an off switch, not a tuning knob.
+- **Turn off:** SET sift.col_build_source = heap (session, role, database or server): the heap is scanned, with the key ranges' files for a key_cut index, and no btree is walked and no old index is opened
+- **Upgrade from 4.3:** Nothing changes in the files or the format; a CREATE INDEX or REINDEX after the update may read a btree or the old index, with no REINDEX needed.
+- **Advice:** Leave auto. The NOTICE of CREATE INDEX and REINDEX names the path, what each path that was priced would read and write, and how to turn the choice off; SET sift.col_build_source = heap for one statement reads the heap as releases before 5.1 did, and ALTER SYSTEM or ALTER ROLE .. SET makes it the rule. A table whose key follows its inserts (a serial key, a timestamp) and has a btree on the key builds with no temporary files; a REINDEX takes the index it replaces.
+- **Sources:** benchmark `test:col_build_choose`; [SIZING](SIZING.md#temporary-space-of-a-key_cut-build)
+
 #### sift.col_auto_connect
 
 `sift_col` · default · since 4.3 · default on
@@ -1510,6 +1525,21 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 4.3:** New in 5.0.
 - **Advice:** Leave at 10: a read patches the members whose pairs changed from the join, so a few changed members cost less than the rewrite of the scope segments. Lower it to hear of it sooner; scope segments never filled, or stamped under a journal a relation has since lost, are stale whatever the share. sift.col_connect_refresh_pct is the same rule for connected indexes.
 - **Sources:** benchmark `test:col_scope_journal`; [COL-SCOPE](COL-SCOPE.md#what-it-costs)
+
+#### sift.col_wbuf_key_range
+
+`sift_col` · default · since 5.1 · default on
+
+- **What it does:** a page of the write buffer says the range of the first key_cut column of its rows (an integer column), and a statement that asks for keys of that column reads only the pages that can hold them, not the whole buffer
+- **Gain:** first statement of a backend, 40,000 buffered rows, key_cut on a tenant column: equality 94.9 to 5.4 M instructions when the keys of an INSERT are ordered, 108 to 3.4 M for a key that is not in the buffer; clustered keys (200 rows of one key an INSERT) 95.0 to 9.8 M for a key in 25 of 200 pages and no gain for one in all of them; a random key in every row gains nothing (108.4 to 108.7 M, +0.3%); a second read of the same keys in a partial read costs up to 6.2 M against 0.7 M (40,000 rows, 25 of 200 pages) until the buffer is read whole and kept
+- **Gain and cost:** 17.60x fewer instructions (89500k saved a query), index +0.0%, build +0.3%, automatic
+- **Impact:** index size: 16 B a page of the buffer, which is never more than write_buffer_limit; build, merge and writes: insert of a 2,000-row batch +0.3% instructions (114.9 to 115.3 M, three alternating rounds, a 100,000-row table with 30 batches, a checkpoint after each); index pages written 619 to 618 and index WAL 91 to 92 B a row, within the noise of the rounds; other: 16 bytes a buffer page; an index made with it on has column format minor 55, which a library older than 5.1 refuses to open (REINDEX with the setting off writes the older minor)
+- **When:** a key_cut whose first column is an integer scalar (not a scope) and a statement with an equality, range or IN on it; the buffer of the index holds rows with that key in a part of its pages (an ordered or clustered load, a key that is rare or absent). A random key in every page reads them all, as before
+- **Default:** on — the first statement of a backend is the one that pays for the buffer and reads a part of it; a backend that goes on asking for keys reads the whole buffer once the partial reads have decoded as many rows as it holds, so no session pays more than twice the whole read; the 16 bytes a page are the write cost
+- **Turn off:** SET sift.col_wbuf_key_range = off (superuser) before the buffer is opened, or REINDEX with it off
+- **Upgrade from 4.3:** 5.0 reads and writes no minor 55: an index whose buffer was made by 5.1 with the setting on is refused by 5.0 until REINDEX with the setting off; indexes made by 5.0 are read as they are (no REINDEX), and take the setting at the next REINDEX
+- **Advice:** Leave on. Off writes buffers of minor 51, which a 5.0 library reads; set it off only before a downgrade, or where every key of every statement is in every page of the buffer
+- **Sources:** benchmark `test:col_wbuf_keyrange`; [USAGE](USAGE.md#maintenance-and-operations)
 
 ### opt-in
 
@@ -2509,16 +2539,16 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 #### sift.backend_cache_kb
 
-`sift_col`, `sift_table`, `BM25` · safety · default 262144 kB
+`sift_col`, `sift_table`, `BM25` · safety · default 131072 kB
 
 - **What it does:** the total a backend keeps in its caches of parsed dictionaries, bm25 segment bytes, joined-table rows, the strings of shared value stores and the facts of partitions for the next statement; the least recently used entry nobody holds goes first, from whichever cache has it
 - **Gain:** -
-- **Impact:** index size: -; build, merge and writes: -; other: at most 256 MB a backend for the three caches together (up to 480 MB before, 96 GB for 200 connections); the gate case cap_backend_caches holds 0.1 MB against a 4 MB budget where 9.5 MB were kept without one
+- **Impact:** index size: -; build, merge and writes: -; other: at most 128 MB a backend for the caches together (256 MB, 50 GB for 200 connections, in 5.0.1; up to 480 MB, 96 GB before): 25 GB for 200 connections; the gate case cap_backend_caches holds 0.1 MB against a 4 MB budget where 9.5 MB were kept without one
 - **When:** Always, on top of the limit of each cache (sift.agg_lookup_cache_kb and the dictionary and segment caches): an entry that alone is larger than the total is not kept and its statement parses or loads it for itself.
-- **Default:** 262144 kB — 256 MB is the largest lookup cache a backend could keep alone, so a backend with one big joined table keeps what it kept; the instructions of the hot lookup, dictionary and search statements are the same with the budget and without it.
+- **Default:** 131072 kB — 128 MB keeps whole every working set of the shapes matrix that 256 MB kept: two joined tables of 27 and 75 MB (102 MB held) and a rotation of lookups, text dictionaries and search (170 MB held, 112 MB counted) read the same instructions and blocks with either, cold and warm. At 64 MB the two joined tables lose their cache (the warm run reads 2.87 against 1.40 thousand million instructions and 8,659 blocks) and the rotation does too (7.92 against 6.04), and 96 MB still loses the rotation. 128 MB is the power of two over the smallest budget that loses nothing (112 MB), half the 5.0.1 worst case of a pool.
 - **Turn off:** SET sift.backend_cache_kb = -1 (session, role, database or postgresql.conf): each cache is limited by its own setting only
 - **Upgrade from 4.3:** no REINDEX: the setting is read when a cache admits an entry; a backend that holds more gives entries back as it needs room
-- **Advice:** Default 256 MB a backend; lower it on a server with many backends, raise it for a few backends that join large tables. -1 leaves each cache to its own setting.
+- **Advice:** Default 128 MB a backend; lower it on a server with many backends, raise it for a few backends that join large tables (a joined table whose rows alone are larger than the total is loaded again by every statement). -1 leaves each cache to its own setting.
 - **Sources:** benchmark `test:mem_slope`; [SIZING](SIZING.md#memory)
 
 #### sift.agg_lookup_shared_kb
@@ -2762,7 +2792,7 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-Defaults changed: sift.tomb_log_limit since 4.3; new: `sift.search_chunk_sbs`, `sift.col_scope_refresh_pct`, `sift.agg_scope`, `sift.scope_max_multiplicity`, `sift.col_unit_rows`, `sift.col_value_store`, `sift_col(scope)`, `sift_col(projection)`, `sift.backend_cache_kb`, `sift.on_corruption`.
+Defaults changed: sift.tomb_log_limit since 4.3; new: `sift.search_chunk_sbs`, `sift.col_scope_refresh_pct`, `sift.agg_scope`, `sift.scope_max_multiplicity`, `sift.col_wbuf_key_range`, `sift.col_unit_rows`, `sift.col_value_store`, `sift_col(scope)`, `sift_col(projection)`, `sift.col_build_source`, `sift.backend_cache_kb`, `sift.on_corruption`.
 
 | Option | 4.3 | 5.0 | Column format | What a 4.3 user gets after the update |
 |---|---|---|---|---|
@@ -2771,13 +2801,14 @@ Defaults changed: sift.tomb_log_limit since 4.3; new: `sift.search_chunk_sbs`, `
 | `sift.on_corruption` | new | quarantine |  | The default changed in 5.0: a damaged sift or sift_col index no longer breaks the application, it is taken out of service. No REINDEX is needed; set error to keep the earlier behaviour. |
 | `sift.col_wbuf_ref` | on | on |  | On by default from 4.3: after ALTER EXTENSION UPDATE the rows of a heap table that tracks changes go to the buffer as references. A write buffer that holds a reference is column format minor 44: a release before 4.3 refuses the index, so upgrade every server that reads the index (a standby too) before the primary writes one, or set sift.col_wbuf_ref = off first. No REINDEX. |
 | `sift.agg_case_filter` | on | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement. |
-| `sift.backend_cache_kb` | new | 262144 kB |  | no REINDEX: the setting is read when a cache admits an entry; a backend that holds more gives entries back as it needs room |
+| `sift.backend_cache_kb` | new | 131072 kB |  | no REINDEX: the setting is read when a cache admits an entry; a backend that holds more gives entries back as it needs room |
 | `sift.agg_dimmap_kb` | 65536 kB | 65536 kB |  | ALTER EXTENSION UPDATE is enough; nothing is rebuilt and no REINDEX is needed. |
 | `sift.agg_connect_found` | on | on |  | New in 4.3. |
 | `sift.agg_child_first` | on | on |  | New in 4.3. |
 | `sift.col_unit_rows` | new | 0 |  | Named sift.test_col_unit_rows before 5.0; nothing to do, it was never in a release. |
 | `sift.search_chunk_sbs` | new | 32 |  | Named sift.test_search_chunk_sbs before 5.0; nothing to do, it was never in a release. |
 | `sift.tomb_log_limit` | 8388608 kB | 65536 kB |  | 5.0.1 keeps the setting as the memory of the log: the entries past it are kept in sorted runs on temp files, so a DELETE or UPDATE of any number of rows completes (a first 5.0.1 candidate lowered the default to 1 GB with an error past it: reverted). The default is 64 MB, down from 8 GB: a backend that read a log of 16 million entries held 1 GB, and holds 64 MB now. |
+| `sift.col_build_source` | new | auto |  | Nothing changes in the files or the format; a CREATE INDEX or REINDEX after the update may read a btree or the old index, with no REINDEX needed. |
 | `sift.eval_methods` | '' | '' |  | 4.2 removed four names, so naming one is an error (the sign of -name is refused too): skip_trigger_lookup (always on: the statement trigger of track_changes leaves out the look at an UPDATE that kept the key), snapshot_masks (it had no code), latest_hint (it won nothing) and unit_rewrite (its writer is gone; segments an earlier release wrote with it stay readable and are vacuumed like the others, the automatic merge and rewrite leave them alone, and a forced sift.col_merge folds them): invalid value for parameter "sift.eval_methods": "snapshot_masks", DETAIL: Unknown evaluation method: snapshot_masks. Remove a removed name from ALTER DATABASE .. SET, ALTER SYSTEM and postgresql.conf before updating. Available after the extension library is loaded. Use the selection in the VACUUM session as well. |
 | `sift_col(connect)` | '' | '' | minor 44 | A new option: nothing changes for an index without it. The parent index of a connection is column format minor 44, which only 4.3 and later read. |
 | `sift_col(projection)` | new | '' |  | A new option: nothing changes for an index without it. ALTER EXTENSION UPDATE creates the definitions table and the status; an index that already lists a name is reported broken as not defined until the projection is created. No REINDEX. |
@@ -2788,6 +2819,7 @@ Defaults changed: sift.tomb_log_limit since 4.3; new: `sift.search_chunk_sbs`, `
 | `sift_col(scope)` | new | '' | minor 45, unreadable by 4.3 | A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 5.0 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the segments. |
 | `sift.agg_scope` | new | on |  | New in 5.0. |
 | `sift.scope_max_multiplicity` | new | 3 |  | New in 5.0. |
+| `sift.col_wbuf_key_range` | new | on |  | 5.0 reads and writes no minor 55: an index whose buffer was made by 5.1 with the setting on is refused by 5.0 until REINDEX with the setting off; indexes made by 5.0 are read as they are (no REINDEX), and take the setting at the next REINDEX |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts

@@ -53,8 +53,8 @@ ver_groups_prune(SiftTblRel *st, const SiftDirSnapshot *dir)
 
 		for (int k = 0; k < dir->nsegs && !used; k++)
 			used = dir->segs[k].gen == c->vg[i].gen;
-		for (int k = 0; k < st->dir.nsegs && !used; k++)
-			used = st->dir.segs[k].gen == c->vg[i].gen;
+		for (int k = 0; k < st->dir->nsegs && !used; k++)
+			used = st->dir->segs[k].gen == c->vg[i].gen;
 		if (used)
 			c->vg[n++] = c->vg[i];
 		else
