@@ -20,6 +20,7 @@
 #include "col/seg.h"
 #include "core/cmp.h"
 #include "core/membudget.h"
+#include "core/quarantine.h"
 #include "core/tomb_dv.h"
 
 /*
@@ -56,7 +57,7 @@ sift_col_dead_begin(Relation index, SiftTombLog *log)
 	d->index = index;
 	d->log = log;
 	d->cxt = cxt;
-	d->xid = GetCurrentTransactionId();
+	d->xid = sift_quarantine_write_xid();
 	d->cid = sift_col_stmt_cid();
 	return d;
 }
