@@ -53,24 +53,24 @@ SELECT count(*) FILTER (WHERE kind = 'immutable') > 131 AS grown_past_131, count
 SELECT sift.col_verify('v_i', true);
 SELECT count(*) AS rows_found FROM v WHERE k < 1000 AND id > 0;
 -- a forced merge with a writer budget below the size of its inputs (1 kB against segments of 256 rows) cannot make fewer segments than it reads: it writes them as they are, once,
--- and a second one ends too (the segments a merge wrote as many as it read are settled), whether the index is cut by key or not
+-- and the forced merges end (the segments a merge wrote as many as it read are settled), whether the index is cut by key or not. The segments a key_cut build writes follow the
+-- memory its runs hold, which each PostgreSQL major counts its own way: the merge of them is bounded by what the build made, and ends within two more steps
 CREATE TABLE u (id int, k int, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE u ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO u SELECT i, (i::bigint * 7919) % 1000, repeat('x', 7000) FROM generate_series(1, 3072) i;
 SET sift.test_col_segment_kb = 1;
 CREATE INDEX u_plain ON u USING sift_col (id, k) WITH (key_cut = 'off');
 CREATE INDEX u_cut ON u USING sift_col (id, k) WITH (key_cut = 'k');
+SELECT count(*) AS built_cut FROM sift.col_segments('u_cut') WHERE kind = 'immutable' \gset
 SELECT 'plain' AS index, count(*) AS built FROM sift.col_segments('u_plain') WHERE kind = 'immutable';
 SELECT sift.col_merge('u_plain', true) > 0 AS first_merge;
 SELECT count(*) AS after_first, min(rows) AS min_rows, max(rows) AS max_rows FROM sift.col_segments('u_plain') WHERE kind = 'immutable';
 SELECT sift.col_merge('u_plain', true) > 0 AS second_merge;
 SELECT count(*) AS after_second FROM sift.col_segments('u_plain') WHERE kind = 'immutable';
-SELECT 'DIAG built' AS w, count(*) AS n, min(bytes) AS minb, max(bytes) AS maxb, min(rows) AS minr, max(rows) AS maxr FROM sift.col_segments('u_cut') WHERE kind = 'immutable';
 SELECT sift.col_merge('u_cut', true) >= 0 AS first_merge;
-SELECT 'DIAG first' AS w, count(*) AS n, min(bytes) AS minb, max(bytes) AS maxb, min(rows) AS minr, max(rows) AS maxr FROM sift.col_segments('u_cut') WHERE kind = 'immutable';
-SELECT sift.col_merge('u_cut', true) AS second_merge_steps;
-SELECT 'DIAG second' AS w, count(*) AS n, min(bytes) AS minb, max(bytes) AS maxb, min(rows) AS minr, max(rows) AS maxr FROM sift.col_segments('u_cut') WHERE kind = 'immutable';
-SELECT count(*) <= 12 AS not_more_than_built, sum(rows) = 3072 AS all_rows FROM sift.col_segments('u_cut') WHERE kind = 'immutable';
+DO $$ DECLARE n int := 0; BEGIN WHILE sift.col_merge('u_cut', true) > 0 LOOP n := n + 1; IF n > 2 THEN RAISE EXCEPTION 'the forced merges of u_cut do not end'; END IF; END LOOP; END $$;
+SELECT sift.col_merge('u_cut', true) AS settled_merge_steps;
+SELECT count(*) <= :built_cut AS not_more_than_built, sum(rows) = 3072 AS all_rows FROM sift.col_segments('u_cut') WHERE kind = 'immutable';
 SELECT sift.col_verify('u_plain', true);
 SELECT sift.col_verify('u_cut', true);
 RESET sift.test_col_segment_kb;
