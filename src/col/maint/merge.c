@@ -182,6 +182,15 @@ out_finish(MergeOut *o)
 	MemoryContextDelete(o->pcx);
 }
 
+/* Do the rows still to come make a short last segment (under the slack of the one in hand)? They then join it: a merge writes no stub that the next one has to merge again */
+static bool
+out_tail_is_short(const MergeOut *o, SiftColSegWriter *w)
+{
+	uint64		held = o->rows_done + sift_colw_rows(w);
+
+	return o->live_rows > held && (o->live_rows - held) * 100 <= (uint64) sift_colw_rows(w) * SIFT_SLICE_SLACK_PCT;
+}
+
 /* After each unit: the partition in hand is done when it holds its share; the writer of the next one is begun when a unit asks for it */
 static SiftColSegWriter *
 out_next(void *arg, SiftColSegWriter *w, bool open)
@@ -199,11 +208,12 @@ out_next(void *arg, SiftColSegWriter *w, bool open)
 	/*
 	 * a partition is done at its share of the bytes still to write (a unit is the least it grows by: the shares of the rest make up for the overshoot, and the
 	 * last one is no short one), a little later where a value of the first key leaf would be split (sift_colk_cut_near); any segment, when its writer holds its budget of memory (the same wait)
-	 * or SIFT_CPOINT_BUILD_ROWS rows
+	 * or SIFT_CPOINT_BUILD_ROWS rows; the budget leaves a last piece of under the slack to the segment before it (a unit is the least a segment grows by, so the inputs
+	 * of a merge whose budget is below them are written as many as they were read, not one more for the rows a cut at a unit leaves over)
 	 */
 	if ((o->nneu + 1 < o->parts && sift_colk_cut_near(sift_colw_bytes(w), o->units_left / (o->parts - o->nneu), SIFT_SLICE_SLACK_PCT, open))
 		|| (o->by_budget && (sift_colw_rows(w) >= SIFT_CPOINT_BUILD_ROWS
-							 || sift_colk_cut_near(sift_colw_memory(w), o->budget - Min(o->held, o->budget / 2), SIFT_SLICE_SLACK_PCT, open))))
+							 || (sift_colk_cut_near(sift_colw_memory(w), o->budget - Min(o->held, o->budget / 2), SIFT_SLICE_SLACK_PCT, open) && !out_tail_is_short(o, w)))))
 	{
 		o->units_left -= Min(sift_colw_bytes(w), o->units_left);
 		o->rows_done += sift_colw_rows(w);
