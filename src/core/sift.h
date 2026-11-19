@@ -22,12 +22,14 @@
  * 1.6: write buffers of buffer format 6 (SIFT_WBUF_FORMAT_WIDE, below) in a BM25 index: an older library refuses the index instead of reading a buffer page
  *      with a header longer than it knows
  * 1.7: a chained directory (SIFT_DIR_CHAINED in block 1, core/page.h), in an index of any access method: an older library refuses the index instead of reading
- *      the empty block 1 as an index without segments
+ *      the empty block 1 as an index without segments; or a write buffer of a sift_col index with the range of a key in the head of its pages (column format 55,
+ *      SIFT_COL_FORMAT_WBUFKEY): an older library refuses the index instead of reading a page head longer than it knows as damage
  * SIFT_FORMAT_MINOR is what this build reads; a metapage starts at SIFT_FORMAT_MINOR_BASE, so that an index or table with neither is still
- * read by the 3.0 library (a sift_col index is never raised: its segment formats are the column engine's own, col/col.h; only a chained directory raises it)
+ * read by the 3.0 library (a sift_col index is never raised: its segment formats are the column engine's own, col/col.h; only a chained directory or a write buffer with key ranges raises it)
  */
 #define SIFT_FORMAT_MINOR		7
 #define SIFT_FORMAT_MINOR_DIRCHAIN	7	/* what a metapage with a chained directory needs */
+#define SIFT_FORMAT_MINOR_WBUFKEY	7	/* what a metapage of a sift_col index whose write buffer has the range of a key in its pages needs */
 #define SIFT_FORMAT_MINOR_CONFIG	5	/* what a metapage that names the text search configuration of the stemmer needs */
 #define SIFT_FORMAT_MINOR_VERS	3	/* what a sift_table with unfrozen rows needs: unchanged by 1.4 */
 #define SIFT_FORMAT_MINOR_BASE	2
