@@ -1,0 +1,3 @@
+child_table	child_col	parent_table	parent_col	relation	reads
+log	service_id	service	id	n:1	name,team_id,env
+service	team_id	team	id	n:1	owner,tier
