@@ -495,9 +495,13 @@ colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, SiftSegEntry *segs,
 		double		tuples,
 					allvisfrac;
 
-		table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
 		if (heap->rd_rel->relam == HEAP_TABLE_AM_OID)
+		{
+			pages = RelationGetNumberOfBlocks(heap);
 			tuples = heap_tuples(heap, pages);
+		}
+		else
+			table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
 		b->total_rows = b->entries = tuples >= (double) PG_UINT64_MAX ? PG_UINT64_MAX : (uint64) tuples;
 		b->share = b->total_rows / nslots;
 		b->heap_pages = pages;
