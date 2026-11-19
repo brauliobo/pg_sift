@@ -663,6 +663,27 @@ extern void sift_cunit_page_offsets(const SiftCUnitView *v, uint32 p, uint16 *of
 extern void sift_cunit_page_offsets_all(const SiftCUnitView *v);
 extern uint32 sift_cunit_find_rows(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows);
 extern uint32 sift_cunit_find_hits(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows, SiftKey *at);
+
+/*
+ * The heap addresses of a statement (ascending, once each) indexed by heap block, for finding them in many units: the first address of each block from the first to the last that holds
+ * one. A unit looks the block of each of its pages up in a step, where the walk of its pages and of the addresses steps over those it does not share with the other (the units of a key_cut
+ * that is not the order of the heap each hold a page at nearly every block).
+ */
+typedef struct SiftAddrIdx
+{
+	const SiftKey *keys;
+	uint32		n;
+	BlockNumber blk0;
+	BlockNumber blk1;
+	const uint32 *first;		/* first[b] to first[b + 1]: the addresses of block blk0 + b; blk1 - blk0 + 2 entries */
+} SiftAddrIdx;
+
+#define SIFT_ADDR_IDX_SPAN 8
+
+/* The index of the n addresses, in the current memory context; NULL when their blocks are so far apart that it would outweigh them (SIFT_ADDR_IDX_SPAN blocks for an address) */
+extern SiftAddrIdx *sift_addr_idx_make(const SiftKey *keys, uint32 n);
+/* The rows of a key-cut unit at the addresses of idx, ascending, and the addresses in at: as sift_cunit_find_hits for all the addresses */
+extern uint32 sift_cunit_find_addrs(const SiftCUnitView *v, const SiftAddrIdx *idx, uint32 *rows, SiftKey *at);
 extern void sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint32 n, SiftKey *out);
 /* Pages: index p in 0..npages-1 -> heap block sb * 256 + page, its row range and the 512-bit mask of its offsets */
 extern BlockNumber sift_cunit_page_block(const SiftCUnitView *v, uint32 sb, uint32 p);

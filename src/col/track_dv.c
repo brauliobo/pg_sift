@@ -87,6 +87,7 @@ typedef struct Found
 	SiftTomb   *slots;
 	uint32		nslots;
 	uint32		capslots;
+	SiftAddrIdx *idx;
 	uint64	   *resolved;			/* one bit for each key of the statement (SiftColDead.keys): set when a record ends it */
 } Found;
 
@@ -147,6 +148,10 @@ unresolved(const SiftColDead *d, const Found *f, uint32 *n)
 static void
 find_units(SiftColDead *d, const SiftDirSnapshot *snap, Found *f)
 {
+	MemoryContext old = MemoryContextSwitchTo(f->cxt);
+
+	f->idx = sift_addr_idx_make((const SiftKey *) d->keys, d->n);
+	MemoryContextSwitchTo(old);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -155,7 +160,7 @@ find_units(SiftColDead *d, const SiftDirSnapshot *snap, Found *f)
 			continue;
 		seg = sift_cseg_open(d->index, &snap->segs[i], f->cxt);
 		f->gen = snap->segs[i].gen;
-		sift_cseg_find_live(seg, (const SiftKey *) d->keys, d->n, found_unit, f);
+		sift_cseg_find_live(seg, (const SiftKey *) d->keys, d->n, f->idx, found_unit, f);
 		sift_cseg_close(seg);
 	}
 	SIFT_MEM_CHECKPOINT();

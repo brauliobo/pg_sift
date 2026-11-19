@@ -785,6 +785,39 @@ page_from_block(const SiftCUnitView *v, uint32 lo, BlockNumber blk)
 #define FIND_DENSE_KEYS 3			/* keys for each heap block of a unit from which its pages are probed for runs of them */
 #define FIND_PAGES_ONE_BY_ONE 3		/* the pages of a key-cut unit that are decoded alone before all are: a page costs more than the rest of the unit per row */
 
+/* The rows of a page (r0 to r1, their offsets in ko) at the addresses keys[ks] to keys[ke) of its block, appended to rows and at: each row looks its address up when the block has many more of them */
+static uint32
+page_hits(const SiftKey *keys, uint32 ks, uint32 ke, BlockNumber blk, const uint16 *ko, uint32 r0, uint32 r1, uint32 *rows, SiftKey *at, uint32 found)
+{
+	uint32		r = r0,
+				k = ks;
+
+	if ((r1 - r0) * FIND_ROWS_BISECT < ke - ks)
+		for (; r < r1 && k < ke; r++)
+		{
+			SiftKey		want = (SiftKey) blk << 16 | ko[r - r0];
+
+			k = sift_u64_from(keys, k, ke, want);
+			if (k < ke && keys[k] == want)
+			{
+				rows[found] = r;
+				at[found++] = keys[k++];
+			}
+		}
+	else
+		for (; k < ke; k++)
+		{
+			while (r < r1 && ko[r - r0] < (keys[k] & 0xFFFF))
+				r++;
+			if (r < r1 && ko[r - r0] == (keys[k] & 0xFFFF))
+			{
+				rows[found] = r;
+				at[found++] = keys[k];
+			}
+		}
+	return found;
+}
+
 /*
  * The rows of a unit (superblock sb for a unit that is not key-cut) that are at the heap addresses keys (ascending), ascending and once each, and their keys in
  * at: both lists are walked together, and each step that finds no match jumps by a bisection over the longer of what is left, so the cost is that of the shorter
@@ -830,17 +863,8 @@ sift_cunit_find_hits(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uin
 		ko = keyed_page_offsets(v, p);
 		if (dense && k + (r1 - r0) * FIND_ROWS_BISECT < n && (BlockNumber) (keys[k + (r1 - r0) * FIND_ROWS_BISECT] >> 16) == blk)
 		{
-			/* a page of few rows against many keys of its block: each row looks its key up, where the walk of both lists steps over every key */
 			kend = sift_u64_from(keys, k + (r1 - r0) * FIND_ROWS_BISECT, n, ((SiftKey) blk + 1) << 16);
-			for (; r < r1 && k < kend; r++)
-			{
-				k = sift_u64_from(keys, k, kend, (SiftKey) blk << 16 | ko[r - r0]);
-				if (k < kend && keys[k] == ((SiftKey) blk << 16 | ko[r - r0]))
-				{
-					rows[found] = r;
-					at[found++] = keys[k++];
-				}
-			}
+			found = page_hits(keys, k, kend, blk, ko, r0, r1, rows, at, found);
 			k = kend;
 		}
 		else
@@ -855,6 +879,54 @@ sift_cunit_find_hits(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uin
 				}
 			}
 		p++;
+	}
+	return found;
+}
+
+SiftAddrIdx *
+sift_addr_idx_make(const SiftKey *keys, uint32 n)
+{
+	SiftAddrIdx *x;
+	uint64		span;
+	uint32	   *first;
+	uint32		i = 0;
+
+	if (n == 0)
+		return NULL;
+	span = (uint64) (keys[n - 1] >> 16) - (keys[0] >> 16) + 1;
+	if (span > (uint64) SIFT_ADDR_IDX_SPAN * n)
+		return NULL;
+	x = palloc(sizeof(SiftAddrIdx));
+	first = palloc((span + 1) * sizeof(uint32));
+	for (uint64 b = 0; b < span; b++)
+	{
+		first[b] = i;
+		while (i < n && (keys[i] >> 16) - (keys[0] >> 16) == b)
+			i++;
+	}
+	first[span] = n;
+	*x = (SiftAddrIdx) {.keys = keys,.n = n,.blk0 = (BlockNumber) (keys[0] >> 16),.blk1 = (BlockNumber) (keys[n - 1] >> 16),.first = first};
+	return x;
+}
+
+uint32
+sift_cunit_find_addrs(const SiftCUnitView *v, const SiftAddrIdx *idx, uint32 *rows, SiftKey *at)
+{
+	uint32		found = 0,
+				decoded = 0;
+
+	sift_cunit_keyed_load(v);
+	for (uint32 p = page_from_block(v, 0, idx->blk0); p < v->npages && v->blocks[p] <= idx->blk1; p++)
+	{
+		BlockNumber blk = v->blocks[p];
+		uint32		ks = idx->first[blk - idx->blk0],
+					ke = idx->first[blk - idx->blk0 + 1];
+
+		if (ks == ke)
+			continue;
+		if (++decoded == FIND_PAGES_ONE_BY_ONE)
+			sift_cunit_page_offsets_all(v);
+		found = page_hits(idx->keys, ks, ke, blk, keyed_page_offsets(v, p), v->rowstart[p], v->rowstart[p + 1], rows, at, found);
 	}
 	return found;
 }

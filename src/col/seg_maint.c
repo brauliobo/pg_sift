@@ -276,7 +276,7 @@ keys_from_block(const SiftKey *keys, uint32 n, uint64 blk)
 
 /* The live rows of the unit among those at the heap addresses keys (ascending): ascending in rows, and their keys in at, the count; v is the unit's view */
 static uint32
-unit_live_rows(SiftColSegment *seg, uint32 u, const SiftKey *keys, uint32 n, uint32 *rows, SiftKey *at, uint64 *live, SiftCUnitView *v)
+unit_live_rows(SiftColSegment *seg, uint32 u, const SiftKey *keys, uint32 n, const SiftAddrIdx *idx, uint32 *rows, SiftKey *at, uint64 *live, SiftCUnitView *v)
 {
 	const SiftColSBRef *r = &seg->sbdir[u];
 	uint32		lo,
@@ -291,7 +291,7 @@ unit_live_rows(SiftColSegment *seg, uint32 u, const SiftKey *keys, uint32 n, uin
 	hi = keys_from_block(keys, n, v->keyed ? (uint64) v->kblk1 + 1 : (uint64) (r->id + 1) * SIFT_SB_PAGES);
 	if (lo == hi)
 		return 0;
-	nr = sift_cunit_find_hits(v, r->id, keys + lo, hi - lo, rows, at);
+	nr = idx != NULL && v->keyed ? sift_cunit_find_addrs(v, idx, rows, at) : sift_cunit_find_hits(v, r->id, keys + lo, hi - lo, rows, at);
 	sift_cseg_live(seg, u, live);
 	for (uint32 i = 0; i < nr; i++)
 		if (live[rows[i] / 64] >> (rows[i] % 64) & 1)
@@ -307,7 +307,7 @@ static int
 unit_find_live(SiftColSegment *seg, uint32 u, const SiftKey *keys, uint32 n, uint32 *rows, SiftKey *at, uint64 *live, uint64 *dead)
 {
 	SiftCUnitView v;
-	uint32		nl = unit_live_rows(seg, u, keys, n, rows, at, live, &v);
+	uint32		nl = unit_live_rows(seg, u, keys, n, NULL, rows, at, live, &v);
 
 	for (uint32 i = 0; i < nl; i++)
 		dead[i] = seg->sbdir[u].rank_base + rows[i];
@@ -347,7 +347,7 @@ sift_cseg_row_keys(SiftColSegment *seg, uint32 u, const uint32 *rows, uint32 nro
 }
 
 void
-sift_cseg_find_live(SiftColSegment *seg, const SiftKey *keys, uint32 n, SiftCsegFoundFn fn, void *arg)
+sift_cseg_find_live(SiftColSegment *seg, const SiftKey *keys, uint32 n, const SiftAddrIdx *idx, SiftCsegFoundFn fn, void *arg)
 {
 	uint32	   *rows = palloc(Min(n, SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint32));
 	SiftKey    *at = palloc(Min(n, SIFT_COL_UNIT_MAX_ROWS) * sizeof(SiftKey));
@@ -356,7 +356,7 @@ sift_cseg_find_live(SiftColSegment *seg, const SiftKey *keys, uint32 n, SiftCseg
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
 		SiftCUnitView v;
-		uint32		nl = unit_live_rows(seg, u, keys, n, rows, at, live, &v);
+		uint32		nl = unit_live_rows(seg, u, keys, n, idx, rows, at, live, &v);
 
 		if (nl == 0)
 			continue;
