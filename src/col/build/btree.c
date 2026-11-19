@@ -259,7 +259,7 @@ check_units(const ColBuild *b, const BtRange *rg)
 double
 colb_btree_scan(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snap, Oid btree, const BtRange *range)
 {
-	Relation	bt = index_open(btree, NoLock);
+	Relation	bt = index_open(btree, AccessShareLock);
 	BtFeed		feed = {0};
 	BtKey		key = {0};
 	ScanKeyData keys[2];
