@@ -179,6 +179,16 @@ mutant(int which)
 }
 
 static bool
+old_forced(void)
+{
+#ifdef SIFT_TESTING
+	return sift_test_col_from_index_forced;
+#else
+	return false;
+#endif
+}
+
+static bool
 btree_forced(void)
 {
 #ifdef SIFT_TESTING
@@ -243,7 +253,9 @@ choose_by_price(Relation index, Paths *p, int btree_participants, BuildPlan *pla
 		p->heap_us = p->heap_blocks * p->old_seq_us + p->rows * COLB_HEAP_ROW_US;
 		p->ranges = sift_col_key_cut(sift_col_rel(index));
 	}
-	if (p->btree != NULL && btree_forced())
+	if (old_serves(p->old) && old_forced())
+		plan->source = COLB_OLD;
+	else if (p->btree != NULL && btree_forced())
 		plan->source = COLB_BTREE;
 	else
 	{
