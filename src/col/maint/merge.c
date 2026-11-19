@@ -580,10 +580,11 @@ sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftS
  * finds the partitions it leaves alone, of a parallel build (from MERGE_SLICES_MIN partitions) and of a merge or rewrite outside one (from 2: the rows are read by
  * the backend and one worker each, 1.7 -> 1.1 s at 64 MB of maintenance_work_mem); when the output is one segment, outside a build, a slice for each participant
  * from MERGE_PAR_BYTES. The participants take the slices, so the rows are read and written once, in parallel. Once in a build: the steps after it are not the
- * build's. false: the merge is made by one process.
+ * build's. whole: the segments are all those of the index, so the pieces are its partitions; of a part of them (a pass of the paced rewrite) the pieces are segments of no partition,
+ * as the serial merge writes them. false: the merge is made by one process.
  */
 static bool
-merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut)
+merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, bool whole)
 {
 	uint64		bytes = 0,
 				rows = 0;
@@ -621,7 +622,7 @@ merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut)
 #ifdef SIFT_TESTING
 	sift_test_col_merge_slices = nslices;
 #endif
-	return sift_colp_merge(index, sel, n, workers, nslices, GetCurrentTimestamp(), cut);
+	return sift_colp_merge(index, sel, n, workers, nslices, GetCurrentTimestamp(), cut && whole);
 }
 
 SiftStepResult
@@ -716,7 +717,7 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 
 		if (rs.on)
 			maint_roll_merge(index, sel, n, &rs);
-		else if (!merge_by_workers(index, sel, n, cut))
+		else if (!merge_by_workers(index, sel, n, cut, n == nimm))
 			maint_merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
 						   cut ? (uint64) maint_part_kb * 1024 : 0, 1, NULL);
 		if (keyed)
