@@ -1,5 +1,5 @@
 -- The dictionaries and the point arrays of a segment writer are held per SEGMENT, not per table: the bytes of the context of each (col_writer_dict, col_writer_points) are the same for
--- 16,000 rows as for 32,000 while the segments grow from 8 to 32 (a build) and from 2 to 4 (a merge), because a segment is cut when its writer holds its budget and the writer is freed with it.
+-- 16,000 rows as for 32,000 while the segments grow from 8 to 32 (a build) and from 2 to 3 (a merge), because a segment is cut when its writer holds its budget and the writer is freed with it.
 -- sift.test_col_segment_kb makes the budget 256 kB for the build and 2 MB for the merge. The directory has no number of segments the build or the merge fits the rows to: no segment
 -- is cut larger than the budget says, so no context holds bytes in proportion to the rows of the table.
 CREATE EXTENSION pg_sift_test CASCADE;
