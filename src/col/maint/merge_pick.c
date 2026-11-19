@@ -142,23 +142,50 @@ maint_part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut)
  */
 #define SETTLED_MAX (2 * SIFT_DIR_WIDE_MAX)
 
+/* What a writer cuts by, besides the index: segments written under one cut are not the end state of another */
+typedef struct SettledCut
+{
+	int			part_kb;
+	int			work_mem_kb;
+	int			segment_kb;
+}			SettledCut;
+
 static struct
 {
 	Oid			index;
+	SettledCut	cut;
 	int			n;
 	int			next;
 	int			cap;
 	uint64	   *gens;
 }			settled;
 
+static SettledCut
+settled_cut_now(void)
+{
+	SettledCut	cut = {.part_kb = maint_part_kb,.work_mem_kb = maintenance_work_mem};
+
+#ifdef SIFT_TESTING
+	cut.segment_kb = sift_test_col_segment_kb;
+#endif
+	return cut;
+}
+
+static bool
+settled_for(Oid index, SettledCut cut)
+{
+	return settled.index == index && memcmp(&settled.cut, &cut, sizeof(SettledCut)) == 0;
+}
+
 void
 maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftSegEntry *out, int nout)
 {
 	if ((in[0].flags & SIFT_SEG_SCOPE) || nout < nin)
 		return;
-	if (settled.index != RelationGetRelid(index))
+	if (!settled_for(RelationGetRelid(index), settled_cut_now()))
 	{
 		settled.index = RelationGetRelid(index);
+		settled.cut = settled_cut_now();
 		settled.n = settled.next = 0;
 	}
 	for (int i = 0; i < nout; i++)
@@ -177,7 +204,7 @@ maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftS
 static bool
 settled_all(Relation index, const SiftSegEntry *sel, int n)
 {
-	if (settled.index != RelationGetRelid(index))
+	if (!settled_for(RelationGetRelid(index), settled_cut_now()))
 		return false;
 	for (int i = 0; i < n; i++)
 	{
