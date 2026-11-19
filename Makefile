@@ -162,6 +162,7 @@ TESTING_REGRESS += col_conn_reindex
 TESTING_REGRESS += col_conn_relocate
 TESTING_REGRESS += col_cube_priority
 TESTING_REGRESS += col_cube_rank
+TESTING_REGRESS += col_cut_aligned
 TESTING_REGRESS += col_damage
 TESTING_REGRESS += col_dead_delta
 TESTING_REGRESS += col_dead_keys_budget

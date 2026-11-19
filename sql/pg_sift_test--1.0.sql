@@ -342,6 +342,8 @@ CREATE FUNCTION sift._test_col_segment_keys(index regclass, OUT gen int8, OUT un
 CREATE FUNCTION sift._test_col_part_bounds(index regclass, OUT first int4, OUT n int4, OUT lo_empty bool, OUT rows_from_lo bool, OUT rows_below_next bool, OUT lo text)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_part_bounds' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_cut_near(held int8, due_at int8, slack_pct int4, open bool) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_col_cut_near' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_part_shift(index regclass, k int4) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_col_part_shift' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_cuts(index regclass, OUT gen int8, OUT bykey bool, OUT bytid bool, OUT cut int4[]) RETURNS SETOF record

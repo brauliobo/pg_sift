@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Changed: col: the writer of a merge of a `key_cut` index that cuts its output into partitions waits for a value of the first key leaf to end when its cut would split it, up to 12% of the partition more (the slack the slices of a parallel merge have), and cuts inside a value that is bigger than that, at the first unit past it: a value that fits is in one segment. A partition holds up to 12% more bytes and a unit; nothing is read for it
 - Changed: col: the slices of a merge of a `key_cut` index by workers are cut between values of the first key leaf when a value that fits a slice is within an eighth of a slice of the exact point, so that a key lies in one segment unless it is bigger than that; a value bigger than a slice is still cut inside, at its exact point.
 - Changed: core: an update of a chained directory keeps the interior pages it does not change, as it keeps the leaves: one changed leaf writes that leaf, the interior page over it and the root, not every interior page (up to 127 of them for 16,129 partitions)
 - Added: col: `sift.col_verify` checks that the rows of every segment of a partition lie from its lower bound up to below the bound of the next partition, and names the segment and partition that do not

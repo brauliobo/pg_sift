@@ -318,3 +318,9 @@ sift_colk_unit_head(const OrderCtx *ctx, SiftColSegment *seg, uint32 u, BoundKey
 		}
 	}
 }
+
+bool
+sift_colk_cut_near(uint64 held, uint64 due_at, uint32 slack_pct, bool open)
+{
+	return held >= due_at && (!open || held - due_at >= due_at / 100 * slack_pct);
+}

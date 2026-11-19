@@ -45,5 +45,11 @@ extern void sift_colk_unit_head(const OrderCtx *ctx, SiftColSegment *seg, uint32
 extern BoundKey *sift_colk_slice_bounds(const OrderCtx *ctx, SiftColSegment *const *seg, int nseg, uint64 *n);
 /* ... aligned to the values of the first leaf within slack_pct of a slice either side; *depth: 1 when it is, 2 when the value is bigger than that */
 extern const BoundKey *sift_colk_slice_bound(const BoundKey *bk, uint64 n, int j, int nslices, uint32 slack_pct, uint32 *depth);
+/*
+ * Is a segment of held bytes, written in the order of the key, done after a unit? It is due at due_at bytes; a cut there that would split a value of the first key leaf (open) waits for
+ * the value to end, up to slack_pct of due_at more bytes: a value that fits is in one segment, and a bigger one is cut inside, at the first unit past the slack. So a segment holds at most
+ * due_at * (100 + slack_pct) / 100 bytes and the unit that took it past that.
+ */
+extern bool sift_colk_cut_near(uint64 held, uint64 due_at, uint32 slack_pct, bool open);
 
 #endif							/* SIFT_COL_ORDER_BOUND_H */

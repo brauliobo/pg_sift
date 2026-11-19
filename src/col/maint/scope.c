@@ -365,7 +365,7 @@ scope_out_finish(ScopeOut *o)
 }
 
 static SiftColSegWriter *
-scope_out_next(void *arg, SiftColSegWriter *w)
+scope_out_next(void *arg, SiftColSegWriter *w, bool open)
 {
 	ScopeOut   *o = arg;
 

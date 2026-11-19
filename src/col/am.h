@@ -319,8 +319,11 @@ extern uint32 sift_colk_run_rows(Relation index, SiftColBatch *const *in, int n)
 #define SIFT_COLK_SCOPE_FLOOR	2048
 extern uint32 sift_colk_aim_rows(Relation index);
 extern uint64 sift_colk_heap_sbs(Relation index);
-/* Called with NULL for the writer of the next output segment, and after each unit with the writer in hand: returns the writer to go on with (NULL: it was finished, the next unit asks for one) */
-typedef SiftColSegWriter *(*SiftColCutFn) (void *arg, SiftColSegWriter *w);
+/*
+ * Called with NULL for the writer of the next output segment, and after each unit with the writer in hand: returns the writer to go on with (NULL: it was finished, the next unit asks for one).
+ * open: the row after the unit has the value of the first key leaf the unit ends with, so a cut here splits a value between two segments
+ */
+typedef SiftColSegWriter *(*SiftColCutFn) (void *arg, SiftColSegWriter *w, bool open);
 extern int	sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const SiftColSchema *schema, const int *leaf, int nleaf, uint32 unit_rows, MemoryContext cx, uint32 unit_base);
 /*
  * A window of the key range of a merge: the rows of the inputs flagged in bounded that are below lo (when has_lo) or from hi on (when has_hi) of the first leaf of the

@@ -380,10 +380,14 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 		out->keyed = true;
 		sift_cbatch_add_scoped_rows(out, (const SiftColRowRef *) u, sizeof(RowRef), (uint32) end, -1, 0, NULL);
 		if (w == NULL)
-			w = cutfn(cutarg, NULL);
+			w = cutfn(cutarg, NULL, false);
 		sift_colw_add(w, out);
 		if (cutfn)
-			w = cutfn(cutarg, w);
+		{
+			if (refs == NULL && n == end && !eof)
+				eof = !next(state, &win[n++]);
+			w = cutfn(cutarg, w, ctx->nleaf > 0 && (refs ? avail : n) > end && key_cmp(&u[end - 1], &u[end], ctx, 1) == 0);
+		}
 		if (refs)
 			pos += end;
 		else
