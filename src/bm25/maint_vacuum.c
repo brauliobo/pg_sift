@@ -55,16 +55,17 @@ bulkdelete_index(void *arg)
 	IndexBulkDeleteResult *stats = bd->stats;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift index vacuum", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	SiftErrCtx	ctx;
-	int			order[SIFT_MAX_SEGMENTS];
+	int		   *order;
 	SIFT_MEM_SCOPE(index_vacuum, cx);
 	double		removed = stats->tuples_removed;
 	bool		out = false;
 
 	sift_maint_lock(index, true);
 	sift_errctx_push(&ctx, RelationGetRelid(index));
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
+	order = palloc(Max(snap->nsegs, 1) * sizeof(int));
 	for (int k = 0, n = sift_dir_clear_order(snap, order); k < n; k++)
 	{
 		SIFT_BULKDELETE_GATE();
@@ -141,7 +142,7 @@ vacuumcleanup_index(void *arg)
 	Relation	index = info->index;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift index vacuum", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	SiftErrCtx	ctx;
 	bool		began;
 	SIFT_MEM_SCOPE(index_vacuum, cx);
@@ -181,7 +182,7 @@ vacuumcleanup_index(void *arg)
 	sift_maint_unlock(index);
 	if (ops->vacuum_done)
 		ops->vacuum_done(index);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	stats->num_pages = RelationGetNumberOfBlocks(index);
 	stats->estimated_count = false;
 	if (stats->num_index_tuples == 0)

@@ -5,6 +5,7 @@
 #  - key_cut: the rows of a run are held up to half of maintenance_work_mem and the run is sorted and written beside them, so the scope holds 2.1 times its budget (a run) and the files of
 #    the ranges a table of many runs is split into (8.3 kB each, at most 512): bound = 1.2 * maintenance_work_mem + 6 MB, and the fitted per-row term over the steps that fill the budget stays under SLOPE_MAX
 #  - without key_cut: the writer of a segment holds up to (maintenance_work_mem - 30 MB) / 1.4 as it estimates itself and up to 1.5 times that resident: bound = 1.5 * budget + 1.5 MB
+#  - a serial floor above half of maintenance_work_mem (the 64 MB of the shipped build, 2 MB here) is the budget of the runs, and the peak follows it and not the rows: under 2 times the floor + 6 MB
 #  - the same rows under the floor of the shipped build (64 MB for the serial build) are not held to maintenance_work_mem, and the same bound fails: the check proves the budget is what holds
 # The backend of each size is a new one; the maintenance worker and the merge of the build are off.
 . "$(dirname "$0")/lib.bash"
@@ -20,7 +21,7 @@ SLOPE_MAX=32
 MB=1048576
 LOWER="build_serial_budget=0,writer_min_budget=$MB"
 
-plan 10
+plan 12
 node_init cb 89 "autovacuum = off
 max_parallel_workers_per_gather = 0
 shared_buffers = 64MB
@@ -77,6 +78,10 @@ done
 # 1 MB: the files of the ranges climb to their cap, the rest is one batch of superblocks
 series 1 "WITH (key_cut = 'k_mid')" "$LOWER" $((12 * MB / 10 + 6 * MB))
 check "key_cut at 1 MB: every step is under 1.2 * maintenance_work_mem + 6 MB" test "$SERIES_OVER" -eq 0
+
+series 1 "WITH (key_cut = 'k_mid')" "build_serial_budget=$((2 * MB)),writer_min_budget=$MB" $((2 * 2 * MB + 6 * MB))
+check "key_cut at 1 MB under a serial floor of 2 MB: every step is under 2 * the floor + 6 MB" test "$SERIES_OVER" -eq 0
+check "key_cut at 1 MB under a serial floor of 2 MB: the fitted per-row term is at most $SLOPE_MAX bytes" test "$SERIES_SLOPE" -le "$SLOPE_MAX"
 
 series 8 "WITH (key_cut = 'k_mid')" "writer_min_budget=$MB" $((8 * MB * 12 / 10 + 6 * MB))
 check "key_cut at 8 MB under the shipped floor of 64 MB: the bound fails (the budget does not hold the rows)" test "$SERIES_OVER" -gt 0

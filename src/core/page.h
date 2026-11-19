@@ -14,6 +14,7 @@
 #include "core/host.h"
 
 #include "core/sift.h"
+#include "core/range.h"
 
 #define SIFT_METAPAGE_BLKNO		0
 #define SIFT_DIRECTORY_BLKNO	1
@@ -33,7 +34,9 @@ typedef enum SiftPageType
 	SIFT_PT_WBUFHEADER,			/* write buffer lane headers */
 	SIFT_PT_WBUFDATA,			/* write buffer doc records */
 	SIFT_PT_FREELIST,			/* free extent records */
-	SIFT_PT_FREE				/* unused, reclaimable */
+	SIFT_PT_FREE,				/* unused, reclaimable */
+	SIFT_PT_DIRROOT,			/* root of a chained directory (SiftChainRootData): gen = the directory version that wrote it */
+	SIFT_PT_DIRLEAF				/* run of directory entries of a chained directory (SiftChainLeafData): gen = the directory version that wrote it */
 } SiftPageType;
 
 typedef struct SiftPageOpaqueData
@@ -231,8 +234,73 @@ typedef struct SiftDirectoryData
 	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
 } SiftDirectoryData;
 
-StaticAssertDecl(offsetof(SiftDirectoryData, segs) + SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry)
+/* The entries block 1 holds: a directory of more is chained */
+#define SIFT_DIR_FLAT_MAX	128
+/* The entries the policy of the writers keeps a directory within (they merge from 16 below it, the build cuts its segments to fit it): a count of the policy, not a capacity; the chain holds SIFT_DIR_WIDE_MAX */
+#define SIFT_DIR_POLICY_MAX	128
+StaticAssertDecl(offsetof(SiftDirectoryData, segs) + SIFT_DIR_FLAT_MAX * sizeof(SiftSegEntry)
 				 <= SIFT_PAGE_PAYLOAD, "directory must fit one page");
+
+/*
+ * A chained directory (SIFT_DIR_CHAINED in block 1): block 1 keeps the version and the lock of the directory, no entry, and the block of the
+ * SIFT_PT_DIRROOT page where its entries start; the entries are in SIFT_PT_DIRLEAF pages in directory order, listed by that root, directly or through interior SIFT_PT_DIRROOT pages (SiftChainRootData.level). Pages of a chain are
+ * never changed once written: an update writes the leaves it changes and a new root, then one record flips the root and the version in block 1, and
+ * the old root and the replaced leaves go through the free list like the extents of a segment. A leaf is reused as it is while its entries stay
+ * together. The metapage is not changed by the shape of the directory (its struct is the one of 5.0, which an older library reads as before) but for
+ * the format minor SIFT_FORMAT_MINOR_DIRCHAIN that makes an older library refuse the index.
+ */
+#define SIFT_DIR_CHAINED	0x0001	/* SiftDirectoryData.reserved of block 1: the directory is never written back to block 1 once chained */
+#define SIFT_DIR_ROOT(dir)	(*(BlockNumber *) (dir)->segs)	/* of a chained block 1, in the place of its first entry */
+
+/*
+ * A reference to a page of the chain, 64 bytes. blk: the page; n: the entries below it; gen: the version the page was written under, which the page must say too.
+ * lo: the exact lower bound of the range the reference covers, 40 bytes, compared with memcmp: 3 key components of 9 bytes and the 6-byte TID of a point of a partition
+ * (core/range.h of the nested directory fills and reads it; a bound shorter than 40 bytes is padded with zeros, a shorter key sorts first like any memcmp). lineage: the
+ * identity of a partition, which survives a fold, a split and a merge; 0 is the set of the entries that are not partitions (an index of 5.0, promotions that no tail
+ * names): its references are the first ones of the root, all with lineage 0 and lo all zero, and a partition is a reference of lineage != 0 whose bounds ascend from there.
+ * A reference to an interior page has lineage 0 and the lo of its first reference. Nothing but the bound and the lineage is kept for a partition here: the stamps of its
+ * scopes are in the sidecar of its segment, the ones of its connections in its segment entries.
+ */
+typedef struct SiftChainRef
+{
+	BlockNumber blk;
+	uint32		n;
+	uint64		gen;
+	uint64		lineage;
+	uint8		lo[SIFT_BOUND_BYTES];
+} SiftChainRef;
+StaticAssertDecl(sizeof(SiftChainRef) == 64, "a reference of the chain is 64 bytes");
+
+/*
+ * A page of the references of the chain. level: how many pages of references lie below this one before the leaves, so that level 1 names leaves and level 2 names pages of
+ * level 1 (interior pages); a chain is at most 3 pages deep (root, interior, leaf), SIFT_CHAIN_LEVELS_MAX, and a reader refuses a level it does not know. nsegs: the
+ * entries below the page.
+ */
+typedef struct SiftChainRootData
+{
+	uint32		nrefs;
+	uint32		nsegs;
+	uint32		level;
+	uint32		reserved;
+	SiftChainRef ref[FLEXIBLE_ARRAY_MEMBER];
+} SiftChainRootData;
+#define SIFT_CHAIN_LEVELS_MAX	2
+
+typedef struct SiftChainLeafData
+{
+	uint32		n;
+	uint32		reserved;
+	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
+} SiftChainLeafData;
+
+#define SIFT_CHAIN_ROOT_CAP	((SIFT_PAGE_PAYLOAD - offsetof(SiftChainRootData, ref)) / sizeof(SiftChainRef))
+#define SIFT_CHAIN_LEAF_CAP	((SIFT_PAGE_PAYLOAD - offsetof(SiftChainLeafData, segs)) / sizeof(SiftSegEntry))
+#define SIFT_CHAIN_ROOT_USED(nrefs)	(offsetof(SiftChainRootData, ref) + (nrefs) * sizeof(SiftChainRef))
+#define SIFT_CHAIN_LEAF_USED(n)			(offsetof(SiftChainLeafData, segs) + (n) * sizeof(SiftSegEntry))
+/* The most entries a directory holds: below the 16 bits of SiftDirectoryData.nsegs, and what two levels of half-full pages hold */
+#define SIFT_DIR_WIDE_MAX	32768
+StaticAssertDecl(SIFT_DIR_WIDE_MAX <= SIFT_CHAIN_ROOT_CAP * SIFT_CHAIN_ROOT_CAP * (SIFT_CHAIN_LEAF_CAP / 2) && SIFT_DIR_WIDE_MAX <= PG_UINT16_MAX,
+				 "two levels of half-full pages hold the most entries");
 
 /* Immutable segment header page */
 typedef enum SiftSection
@@ -364,6 +432,10 @@ typedef struct SiftWbufWideHeaderData
 #define SIFT_WBUFPAGE_SEALED	0x0001
 #define SIFT_WBUFPAGE_SPANS	0x0002
 #define SIFT_WBUFPAGE_WIDE	0x0004	/* the wide bloom of the page is filled (set when the page is full: the pages being appended to have the small one) */
+#define SIFT_WBUFPAGE_KEYS	0x0008	/* column buffer of format SIFT_COL_FORMAT_WBUFKEY: some row that starts on the page has a key, and kmin..kmax of the page head hold the range of the keys */
+#define SIFT_WBUFPAGE_LEAF_SHIFT 8		/* the bits above hold the leaf the range is of, plus one (0: no row has started on the page) */
+#define SIFT_WBUFPAGE_LEAF_MASK	0xff00
+#define SIFT_WBUFPAGE_KEYUNK	0x0010	/* column buffer of format SIFT_COL_FORMAT_WBUFKEY: a row that starts on the page has a key the range cannot hold (an overflow value), so a read of a key range reads the page */
 
 #define SIFT_WBUF_DELETED	0x0001
 #define SIFT_WBUF_CONT		0x0002	/* more terms of the preceding doc: no dl, not counted */

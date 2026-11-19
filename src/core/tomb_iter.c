@@ -5,6 +5,7 @@
 #include "postgres.h"
 
 #include "core/tomb.h"
+#include "core/tomb_dv.h"
 #include "core/tomb_int.h"
 
 static void
@@ -97,6 +98,30 @@ sift_tomb_walk_next(SiftTombWalk *w)
 	w->copy = *(const SiftTomb *) sift_srun_cur_peek(&w->cur[from]);
 	sift_srun_cur_next(&w->cur[from]);
 	return &w->copy;
+}
+
+SiftTomb *
+sift_tomb_walk_next_rec(SiftTombWalk *w, SiftTomb *buf, uint32 *n)
+{
+	SiftTomb   *e = sift_tomb_walk_next(w);
+	uint32		want;
+
+	*n = 1;
+	if (e == NULL || e->kind != SIFT_TOMB_DVEC)
+		return e;
+	buf[0] = *e;
+	e = sift_tomb_walk_next(w);
+	SIFT_INVARIANT(e != NULL && e->kind == SIFT_TOMB_DVEC_BODY, "sift: a deletion record of the tombstone log is cut short");
+	buf[1] = *e;
+	want = sift_dv_slots_of(buf, SIFT_TOMB_CAP);
+	SIFT_INVARIANT(want != 0, "sift: a deletion record of the tombstone log is damaged");
+	for (*n = 2; *n < want; (*n)++)
+	{
+		e = sift_tomb_walk_next(w);
+		SIFT_INVARIANT(e != NULL && e->kind == SIFT_TOMB_DVEC_BODY, "sift: a deletion record of the tombstone log is cut short");
+		buf[*n] = *e;
+	}
+	return buf;
 }
 
 void

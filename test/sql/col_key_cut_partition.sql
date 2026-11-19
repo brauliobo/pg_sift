@@ -79,7 +79,7 @@ CREATE FUNCTION kpc_file_x100() RETURNS int LANGUAGE sql AS $$
 SELECT kpc_file_x100() > 160 AS twice_the_live_bytes;
 SET sift.vacuum_rewrite_limit = 1;
 VACUUM kp;
-SELECT kpc_file_x100() < 130 AS near_the_live_bytes;
+SELECT kpc_file_x100() < 110 AS near_the_live_bytes;
 SELECT sift.col_verify('kp_idx', true);
 SELECT kpc_same();
 
