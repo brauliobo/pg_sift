@@ -13,7 +13,7 @@ sql km "CREATE TABLE km (id int, cust int, d date, amount int, pad text) WITH (a
 	"VACUUM (FREEZE, ANALYZE) km" >/dev/null || bail "setup failed"
 # no order array: a serial id gets one by default (column format 38) and the format below names the key-cut units alone
 DDL="ON km USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d', point_tid_columns = 'off', order_array_columns = 'off')"
-small() { sql km "SET sift.test_col_segment_kb = 16" "SET sift.test_col_build_runs = 6" "SET max_parallel_maintenance_workers = 0" "$@"; }
+small() { sql km "SET sift.col_build_source = heap" "SET sift.test_col_segment_kb = 16" "SET sift.test_col_build_runs = 6" "SET max_parallel_maintenance_workers = 0" "$@"; }
 good() { test "$(sql km "SELECT indisvalid FROM pg_index WHERE indexrelid = 'km_idx'::regclass")" == t &&
 	test -z "$(sql km "SELECT sift.col_verify('km_idx', true)" 2>&1)" &&
 	test "$(sql km "SELECT count(*) < ${1:-6} AND bool_and(format = 34) FROM sift.col_segments('km_idx') WHERE kind = 'immutable'")" == t; }
@@ -24,7 +24,7 @@ check "CREATE INDEX merges the runs: valid, verified, fewer segments than the ru
 sql km "DROP INDEX km_idx" >/dev/null
 small "SET sift.test_col_build_runs = 3" "SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET min_parallel_table_scan_size = 0" "CREATE INDEX km_idx $DDL" >/dev/null
 check "the participants of a parallel build merge their own runs" good 99
-check "and a worker took part" test "$(sql km "SET sift.test_col_segment_kb = 16" "SET sift.test_col_build_runs = 3" "SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET min_parallel_table_scan_size = 0" "REINDEX INDEX km_idx" "SELECT current_setting('sift.test_col_workers')::int > 0")" == t
+check "and a worker took part" test "$(sql km "SET sift.col_build_source = heap" "SET sift.test_col_segment_kb = 16" "SET sift.test_col_build_runs = 3" "SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET min_parallel_table_scan_size = 0" "REINDEX INDEX km_idx" "SELECT current_setting('sift.test_col_workers')::int > 0")" == t
 
 small "REINDEX INDEX km_idx" >/dev/null
 check "REINDEX merges the runs" good
