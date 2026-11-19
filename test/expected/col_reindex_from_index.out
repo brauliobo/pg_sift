@@ -66,7 +66,7 @@ SELECT pg_stat_force_next_flush() \gset
 SELECT * FROM ri_note('heap build');
     step    | build | table_passes | temp_files | verified | same_answers 
 ------------+-------+--------------+------------+----------+--------------
- heap build | heap  |            2 | t          | t        | t
+ heap build | heap  |            3 | t          | t        | t
 (1 row)
 
 -- a clean index
@@ -198,7 +198,7 @@ SELECT pg_stat_force_next_flush() \gset
 SELECT * FROM ri_note('concurrently, buffered');
           step          | build | table_passes | temp_files | verified | same_answers 
 ------------------------+-------+--------------+------------+----------+--------------
- concurrently, buffered | heap  |            3 | t          | t        | t
+ concurrently, buffered | heap  |            4 | t          | t        | t
 (1 row)
 
 SELECT sift.col_promote('ri_idx') >= 0 AS promoted;
@@ -220,7 +220,7 @@ SELECT pg_stat_force_next_flush() \gset
 SELECT * FROM ri_note('concurrently, promoted');
           step          | build | table_passes | temp_files | verified | same_answers 
 ------------------------+-------+--------------+------------+----------+--------------
- concurrently, promoted | heap  |            3 | t          | t        | t
+ concurrently, promoted | heap  |            4 | t          | t        | t
 (1 row)
 
 -- an index that tracks changes (the table has a primary key) reads the table for the baseline of its log, one access of each page that is not all-visible, the map, and for nothing else (the buffers the build itself accessed: PostgreSQL reads a page of the visibility map after it on 17)
