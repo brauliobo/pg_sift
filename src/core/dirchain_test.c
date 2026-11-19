@@ -38,7 +38,7 @@ part_key(uint64 gen)
 {
 	static const int64 second[] = {PG_INT64_MIN, PG_INT64_MAX, 0};
 
-	return (BoundKey) {.k = {(int64) (gen / 3) - 5, second[gen % 3]},.nul = {false, gen % 3 == 2}};
+	return (BoundKey) {.k = {(int64) (gen / 3) - 5, second[gen % 3], PG_INT64_MIN},.nul = {false, gen % 3 == 2}};
 }
 
 /* nold entries from pos become nnew new ones, each a partition of its own, with the bound part_key names when bounded (sift_dir_part_replace) */

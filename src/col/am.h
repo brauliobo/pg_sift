@@ -14,6 +14,7 @@
 #include "col/seg.h"
 #include "col/enc.h"
 #include "col/preagg.h"
+#include "core/range.h"
 #include "core/visibility.h"
 #include "col/wbuf.h"
 #include "col/conn.h"
@@ -334,8 +335,8 @@ typedef struct SiftColWindow
 {
 	bool		has_lo;
 	bool		has_hi;
-	int64		lo;
-	int64		hi;
+	SiftBound	lo;
+	SiftBound	hi;
 	const bool *bounded;
 	uint32		unit_base;
 } SiftColWindow;

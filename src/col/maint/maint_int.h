@@ -164,7 +164,7 @@ typedef struct RollStep
 	bool		first;			/* the first step of the pass */
 	SiftColWindow win;
 	int			nhigh;			/* the overlay rows above the window are written as nhigh + 1 pieces, each as far as the windows of the partitions of its share go (the last, all the rest) */
-	int64		high[ROLL_PIECES];
+	SiftBound	high[ROLL_PIECES];
 	uint64		bytes;			/* the live bytes of the segments the step takes that its window holds */
 	int			parts;			/* the segments of the size of a partition they make */
 	bool	   *over;			/* of the segments of the view: the overlays, which hold rows of the key range of other segments */

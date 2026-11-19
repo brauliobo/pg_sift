@@ -15,10 +15,26 @@ row_null(const SiftColBatch *b, uint32 r, int leaf)
 	return v->nulls != NULL && sift_col_bit_test(v->nulls, r);
 }
 
+/* The leaves the zones of a unit describe */
+static inline int
+zone_leaves(const OrderCtx *c)
+{
+	return Min(c->nleaf, 2);
+}
+
+/* The leaves a bound holds: those of the key up to SIFT_BOUND_COMPS, and the address when the key has no more */
 static inline int
 bound_leaves(const OrderCtx *c)
 {
-	return Min(c->nleaf, 2);
+	return Min(c->nleaf, SIFT_BOUND_COMPS);
+}
+
+static BoundKey
+lowest_bound(void)
+{
+	BoundKey	bk = {{PG_INT64_MIN, PG_INT64_MIN, PG_INT64_MIN}};
+
+	return bk;
 }
 
 void
@@ -31,20 +47,23 @@ sift_colk_bound_pack(const OrderCtx *ctx, const BoundKey *bk, SiftBound *out)
 
 		SIFT_INVARIANT(fits, "a bound of %d leaves fits a partition", bound_leaves(ctx));
 	}
+	if (bk->has_tid)
+		SIFT_INVARIANT(sift_bound_push_tid(out, bk->tid), "the address of a bound fits a partition");
 }
 
 void
 sift_colk_bound_unpack(const OrderCtx *ctx, const SiftBound *b, BoundKey *bk)
 {
-	memset(bk, 0, sizeof(BoundKey));
+	*bk = lowest_bound();
 	for (int t = 0; t < bound_leaves(ctx); t++)
 	{
 		SiftComp	kind = sift_bound_comp(b, t, &bk->k[t]);
 
 		bk->nul[t] = kind == SIFT_COMP_NULL;
-		if (kind != SIFT_COMP_VALUE)
-			bk->k[t] = kind == SIFT_COMP_NONE ? PG_INT64_MIN : 0;
+		if (kind == SIFT_COMP_NULL)
+			bk->k[t] = 0;
 	}
+	bk->has_tid = sift_bound_tid(b, &bk->tid);
 }
 
 /* The bound of row r: the leaves of the order, then the address, which orders the rows of one key: that is the whole order only when the leaves fit the bound */
@@ -110,7 +129,7 @@ sift_colk_rows_within(SiftColSegment *seg, const SiftBound *lo, const SiftBound 
 	return (lo == NULL || sift_bound_cmp(&first, lo) >= 0) && (seg->ncut <= SIFT_BOUND_COMPS ? c < 0 : c <= 0);
 }
 
-/* Row r of b against the bound: key by key, NULL last; equal on the leaves the bound has, the row is at it */
+/* Row r of b against the bound: key by key, NULL last, then by address when the bound has one; equal on all it has, the row is at it */
 int
 sift_colk_bound_cmp(const OrderCtx *ctx, const SiftColBatch *b, uint32 r, const BoundKey *bk)
 {
@@ -130,7 +149,7 @@ sift_colk_bound_cmp(const OrderCtx *ctx, const SiftColBatch *b, uint32 r, const 
 		if (kr != bk->k[t])
 			return kr < bk->k[t] ? -1 : 1;
 	}
-	return 0;
+	return !bk->has_tid || b->keys[r] == bk->tid ? 0 : b->keys[r] < bk->tid ? -1 : 1;
 }
 
 /* Is every row of unit u of seg below lo? The leading leaf's zone says so when the unit has no NULL (they sort last) and its largest key is below: false is always safe */
@@ -168,14 +187,16 @@ sift_colk_bound_order(const void *a, const void *b)
 	const BoundKey *x = a,
 			   *y = b;
 
-	for (int t = 0; t < 2; t++)
+	for (int t = 0; t < SIFT_BOUND_COMPS; t++)
 	{
 		if (x->nul[t] != y->nul[t])
 			return x->nul[t] ? 1 : -1;
 		if (!x->nul[t] && x->k[t] != y->k[t])
 			return x->k[t] < y->k[t] ? -1 : 1;
 	}
-	return 0;
+	if (x->has_tid != y->has_tid)
+		return x->has_tid ? 1 : -1;
+	return !x->has_tid || x->tid == y->tid ? 0 : x->tid < y->tid ? -1 : 1;
 }
 
 /*
@@ -207,9 +228,9 @@ sift_colk_slice_bounds(const OrderCtx *ctx, SiftColSegment *const *seg, int nseg
 			bool		nul1;
 			uint32		rows = seg[i]->sbdir[u].nrows;
 
-			memset(b, 0, sizeof(BoundKey));
+			*b = lowest_bound();
 			b->rows = Max(rows / SLICE_POINTS, 1);
-			for (int t = 0; t < bound_leaves(ctx); t++)
+			for (int t = 0; t < zone_leaves(ctx); t++)
 			{
 				SiftCZone	z;
 				const SiftColDef *col = &seg[i]->schema->cols[ctx->leaf[t]];
@@ -233,12 +254,11 @@ sift_colk_slice_bounds(const OrderCtx *ctx, SiftColSegment *const *seg, int nseg
 			for (int q = 1; q < SLICE_POINTS; q++)
 			{
 				BoundKey   *p = &bk[(*n)++];
-				int			t = bound_leaves(ctx) > 1 && !nul1 && b->k[0] == hi[0] ? 1 : 0;
+				int			t = zone_leaves(ctx) > 1 && !nul1 && b->k[0] == hi[0] ? 1 : 0;
 				int64		from = t == 1 ? lo1 : b->k[0];
 
-				memset(p, 0, sizeof(BoundKey));
+				*p = lowest_bound();
 				p->k[0] = b->k[0];
-				p->k[1] = PG_INT64_MIN;
 				p->k[t] = from + (int64) (((__int128) hi[t] - from) * q / SLICE_POINTS);
 				p->rows = Max(rows / SLICE_POINTS, 1);
 			}
@@ -305,8 +325,8 @@ sift_colk_unit_head(const OrderCtx *ctx, SiftColSegment *seg, uint32 u, BoundKey
 {
 	bool		bounded = true;
 
-	*bk = (BoundKey) {{PG_INT64_MIN, PG_INT64_MIN}};
-	for (int t = 0; t < bound_leaves(ctx) && bounded; t++)
+	*bk = lowest_bound();
+	for (int t = 0; t < zone_leaves(ctx) && bounded; t++)
 	{
 		const SiftColDef *col = &seg->schema->cols[ctx->leaf[t]];
 		SiftCZone	z;

@@ -18,24 +18,29 @@ typedef struct OrderCtx
 /* How far from the exact point of a slice, in percent of the rows of a slice, a cut moves to fall between two values of the first key leaf */
 #define SIFT_SLICE_SLACK_PCT 12
 
-/* A bound of a slice of the key range, or of the rows of a unit: the first two leaves of the order, from the zone of a unit (no row is decoded to take it) */
+/*
+ * A bound of the key range: the leaves of the order up to SIFT_BOUND_COMPS (a leaf it does not set is the lowest key) and, when has_tid, the address that splits one key. The bounds of the slices
+ * of a merge and of the head of a unit are the first two leaves, from the zone of a unit (no row is decoded to take them); those of a window are the lower bound of a partition, exact
+ */
 typedef struct BoundKey
 {
-	int64		k[2];
-	bool		nul[2];
+	int64		k[SIFT_BOUND_COMPS];
+	bool		nul[SIFT_BOUND_COMPS];
+	bool		has_tid;
+	uint64		tid;
 	uint32		rows;			/* the rows of the unit the point stands for, a share of the points of the unit */
 } BoundKey;
 
-/* A bound as the lower bound of a partition of the directory (core/range.h), and back: the leaves it has; a bound that stops short reads as the lowest key of the leaves it lacks */
+/* A bound as the lower bound of a partition of the directory (core/range.h), and back: the leaves it has and its address; a bound that stops short reads as the lowest key of the leaves it lacks */
 extern void sift_colk_bound_pack(const OrderCtx *ctx, const BoundKey *bk, SiftBound *out);
 extern void sift_colk_bound_unpack(const OrderCtx *ctx, const SiftBound *b, BoundKey *bk);
 /* The bound of the least live row of a segment cut by a key, or of its greatest (the leaves of its cut and, up to SIFT_BOUND_COMPS of them, the address): false when it has none or records no cut */
 extern bool sift_colk_segment_bound(SiftColSegment *seg, bool last, SiftBound *out);
 /* Do the live rows of the segment lie from lo (NULL: no start) up to below hi (NULL: no end; at hi for a key of more leaves than a bound holds)? */
 extern bool sift_colk_rows_within(SiftColSegment *seg, const SiftBound *lo, const SiftBound *hi);
-/* Row r of b against the bound: key by key, NULL last; equal on the leaves the bound has, the row is at it */
+/* Row r of b against the bound: key by key, NULL last, then by address when the bound has one; equal on all it has, the row is at it */
 extern int	sift_colk_bound_cmp(const OrderCtx *ctx, const SiftColBatch *b, uint32 r, const BoundKey *bk);
-/* The order of two bounds (qsort); a bound on fewer leaves holds the lowest key of the others */
+/* The order of two bounds (qsort); a bound on fewer leaves holds the lowest key of the others, one without an address is before the ones with it */
 extern int	sift_colk_bound_order(const void *a, const void *b);
 /* The first unit of seg that may hold a row at or above lo */
 extern uint32 sift_colk_first_unit(const OrderCtx *ctx, SiftColSegment *seg, const BoundKey *lo);

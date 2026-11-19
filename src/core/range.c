@@ -140,6 +140,21 @@ sift_bound_comp(const SiftBound *b, uint32_t i, int64_t *v)
 	return SIFT_COMP_NONE;
 }
 
+bool
+sift_bound_tid(const SiftBound *b, uint64_t *tid)
+{
+	uint32_t	at = 0;
+
+	while (at < b->len && b->bytes[at] != TAG_TID)
+		at += 1 + elem_bytes(b->bytes[at]);
+	if (at >= b->len)
+		return false;
+	*tid = 0;
+	for (uint32_t k = 0; k < TID_BYTES; k++)
+		*tid = *tid << 8 | b->bytes[at + 1 + k];
+	return true;
+}
+
 int
 sift_bound_cmp(const SiftBound *a, const SiftBound *b)
 {

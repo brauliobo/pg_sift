@@ -827,8 +827,8 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 	OrderCtx	ctx = {schema, leaf, nleaf};
 	MergeSrc	m = {.in = palloc0_array(MergeIn, n + 1), .n = n, .ctx = &ctx, .freeze = freeze, .freeze_arg = freeze_arg, .cx = cx,
 					 .scratch = AllocSetContextCreate(cx, "sift_col merge unit", ALLOCSET_DEFAULT_SIZES), .budget = memory_kb * 1024};
-	BoundKey	wlo = {{0, PG_INT64_MIN}},
-				whi = {{0, PG_INT64_MIN}};
+	BoundKey	wlo,
+				whi;
 	uint64		loose = 0;
 	int			units;
 
@@ -836,18 +836,15 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = stream[i], .chunk = -1, .bounded = win ? win->bounded[i] : true};
 	if (win)
 	{
-		const SiftColDef *col = &schema->cols[leaf[0]];
-
 		Assert(nleaf > 0 && nslices == 1);
-		/* the bounds are on the first leaf alone: the rows of a key are all in or all out */
 		if (win->has_lo)
 		{
-			wlo.k[0] = sift_crun_key(col, win->lo);
+			sift_colk_bound_unpack(&ctx, &win->lo, &wlo);
 			m.lo = &wlo;
 		}
 		if (win->has_hi)
 		{
-			whi.k[0] = sift_crun_key(col, win->hi);
+			sift_colk_bound_unpack(&ctx, &win->hi, &whi);
 			m.hi = &whi;
 		}
 	}

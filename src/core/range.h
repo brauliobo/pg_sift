@@ -55,6 +55,8 @@ typedef enum SiftComp
 } SiftComp;
 
 extern SiftComp sift_bound_comp(const SiftBound *b, uint32_t i, int64_t *v);
+/* The address of a bound, when it has one */
+extern bool sift_bound_tid(const SiftBound *b, uint64_t *tid);
 
 /* The order of two bounds: below zero, zero, above zero */
 extern int	sift_bound_cmp(const SiftBound *a, const SiftBound *b);

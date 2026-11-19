@@ -13,6 +13,26 @@
  * for the ones after it), and what is below it, which new rows that came between the steps may be, stays an overlay. A step frees about the bytes it writes, so the next one writes
  * into them (each step is a transaction of its own in the worker): a step over every segment wrote all its output above them, and a VACUUM copied it down into the blocks they left.
  */
+static SiftBound
+bound_at(int64 first_leaf)
+{
+	SiftBound	b;
+
+	sift_bound_clear(&b);
+	sift_bound_push_i64(&b, first_leaf);
+	return b;
+}
+
+/* The first leaf of an edge of a window: NULL, which sorts after every integer, as the greatest */
+static int64
+edge_leaf(const SiftBound *b)
+{
+	int64		v = PG_INT64_MAX;
+
+	(void) sift_bound_comp(b, 0, &v);
+	return v;
+}
+
 /* The window of the key range of a partition (k in the order of the keys of the np partitions): from the end of the one before it to its own last key */
 static SiftColWindow
 partition_window(const RewriteView *v, const int *order, int np, int k)
@@ -20,9 +40,9 @@ partition_window(const RewriteView *v, const int *order, int np, int k)
 	SiftColWindow w = {.has_lo = k > 0,.has_hi = k < np - 1};
 
 	if (w.has_lo)
-		w.lo = v->khi[order[k - 1]] + 1;
+		w.lo = bound_at(v->khi[order[k - 1]] + 1);
 	if (w.has_hi)
-		w.hi = v->khi[order[k]] + 1;
+		w.hi = bound_at(v->khi[order[k]] + 1);
 	return w;
 }
 
@@ -32,7 +52,7 @@ overlay_in_window(const RewriteView *v, int i, const SiftColWindow *w)
 {
 	if (v->klo[i] > v->khi[i])
 		return !w->has_hi;
-	return (!w->has_lo || v->khi[i] >= w->lo) && (!w->has_hi || v->klo[i] < w->hi);
+	return (!w->has_lo || v->khi[i] >= edge_leaf(&w->lo)) && (!w->has_hi || v->klo[i] < edge_leaf(&w->hi));
 }
 
 /* The live bytes the step takes of a segment into its window: all of a partition, of an overlay the share of its key range the window holds (its rows spread evenly over it) */
@@ -45,8 +65,8 @@ window_bytes(const RewriteView *v, int i, const SiftColWindow *w, bool overlay)
 
 	if (!overlay || lo >= hi)
 		return (uint64) live;
-	lo = w->has_lo ? Max(lo, (double) w->lo) : lo;
-	hi = w->has_hi ? Min(hi, (double) w->hi) : hi;
+	lo = w->has_lo ? Max(lo, (double) edge_leaf(&w->lo)) : lo;
+	hi = w->has_hi ? Min(hi, (double) edge_leaf(&w->hi)) : hi;
 	return (uint64) (live * Max(hi - lo, 0.0) / ((double) v->khi[i] + 1 - (double) v->klo[i]));
 }
 
@@ -165,7 +185,7 @@ roll_pick(const RewriteView *v, bool *take, RollStep *rs)
 					groups = Min(ahead, ROLL_PIECES);
 
 		for (int g = 1; g < groups; g++)
-			rs->high[rs->nhigh++] = v->khi[order[at + (int) ((int64) g * ahead / groups)]] + 1;
+			rs->high[rs->nhigh++] = bound_at(v->khi[order[at + (int) ((int64) g * ahead / groups)]] + 1);
 	}
 	pfree(order);
 	return ROLL_STEP;
@@ -212,11 +232,7 @@ maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep 
 				nlow,
 				nwin;
 	SiftColWindow rest;
-	SiftBound	win_lo;
 
-	sift_bound_clear(&win_lo);
-	if (rs->win.has_lo)
-		sift_bound_push_i64(&win_lo, rs->win.lo);
 	for (int i = 0; i < n; i++)
 		if (rs->bounded[i])
 			over[nover++] = sel[i];
@@ -233,10 +249,12 @@ maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep 
 	nout += nwin;
 	for (int g = 0; rs->win.has_hi && nover > 0 && g <= rs->nhigh; g++)
 	{
-		rest = (SiftColWindow) {.has_lo = true,.lo = g == 0 ? rs->win.hi : rs->high[g - 1],.has_hi = g < rs->nhigh,.hi = g < rs->nhigh ? rs->high[g] : 0,.bounded = every};
+		rest = (SiftColWindow) {.has_lo = true,.lo = g == 0 ? rs->win.hi : rs->high[g - 1],.has_hi = g < rs->nhigh,.bounded = every};
+		if (rest.has_hi)
+			rest.hi = rs->high[g];
 		nout += roll_write(index, over, nover, &rest, 0, 1, &out[nout]);
 	}
-	sift_col_merge_switch(index, sel, n, out, nout, start, nlow, nwin, rs->win.has_lo ? &win_lo : NULL);
+	sift_col_merge_switch(index, sel, n, out, nout, start, nlow, nwin, rs->win.has_lo ? &rs->win.lo : NULL);
 	pfree(out);
 	pfree(over);
 	pfree(every);
