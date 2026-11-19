@@ -1,6 +1,6 @@
 /*
  * col/build/btree_probe.c - what a read of the heap costs on the disk it is on, measured at the start of a build
- * Whether the heap is read through a btree or the key ranges are written depends on what a random read costs against a sequential one, which is a property of the disk
+ * Whether the heap is read through a btree or the key ranges are written depends on what a random read costs against a sequential one, which is a trait of the disk
  * (a local NVMe answers in 10 to 20 microseconds, a network disk in some hundreds) and of the read stream the build reads through, not a number of the code. The probe
  * reads some hundreds of blocks of the heap at random and a stretch of them in order through a stream made as the build's (READ_STREAM_MAINTENANCE, so as many reads
  * in flight as maintenance_io_concurrency allows) and divides the time by the blocks that came from the disk, not from shared buffers. The system's cache cannot be
