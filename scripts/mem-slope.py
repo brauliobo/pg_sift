@@ -197,7 +197,7 @@ def run_case(sizes, name, kind, ceiling, status, setup, op, warm):
     slope, peaks, highs, exact = slope_case(sizes, name, setup, warm, op, 1 if kind == "plateau" else 0)
     v = verdict(slope, ceiling, status)
     shown = '/'.join(f'{p:.1f}' for p in peaks)
-    return v == "PASS", f"SLOPE {name} slope {slope:.0f} B/row (peaks {shown} MB at {'/'.join(str(s) for s in sizes)} rows{', slope from ' + str(sizes[1]) if kind == 'plateau' else ''}), ceiling {ceiling} [{status}] {v}", slope, [f"{p:.1f}" if p == h else f"{p:.1f}-{h:.1f}" for p, h in zip(peaks, highs)], exact
+    return v == "PASS", f"SLOPE {name} slope {slope:.0f} B/row (peaks {shown} MB at {'/'.join(str(s) for s in sizes)} rows{', slope from ' + str(sizes[1]) if kind == 'plateau' else ''}), ceiling {ceiling} [{status}], memory scopes {exact:.0f} B/row {v}", slope, [f"{p:.1f}" if p == h else f"{p:.1f}-{h:.1f}" for p, h in zip(peaks, highs)], exact
 
 
 def run_cases(sizes, cases):
