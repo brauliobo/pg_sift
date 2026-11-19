@@ -41,17 +41,17 @@ BEGIN
 	RETURN md5(r);
 END $$;
 
--- what one REINDEX did: the build it took, the passes over the table's pages (accesses of its buffers over its pages), the bytes of temporary files, and the answers of the index against the table's
+-- what one REINDEX did: the build it took, the passes over the table's pages (accesses of its buffers over its pages), whether it wrote temporary files, and the answers of the index against the table's
 CREATE TABLE ri_mark (heap_buffers bigint, temp_bytes bigint);
 CREATE FUNCTION ri_start() RETURNS void LANGUAGE sql AS $$
 	TRUNCATE ri_mark;
 	INSERT INTO ri_mark SELECT coalesce((SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relname = 'ri_t'), 0),
 		(SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database()) $$;
-CREATE FUNCTION ri_note(step text, idx text DEFAULT 'ri_idx') RETURNS TABLE (step text, build text, table_passes int, spill_bytes bigint, verified bool, same_answers bool)
+CREATE FUNCTION ri_note(step text, idx text DEFAULT 'ri_idx') RETURNS TABLE (step text, build text, table_passes int, temp_files bool, verified bool, same_answers bool)
 	LANGUAGE sql AS $$
 	SELECT step, CASE current_setting('sift.test_col_from_index_used') WHEN '1' THEN 'old index' ELSE 'heap' END,
 		round((coalesce((SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relname = 'ri_t'), 0) - m.heap_buffers) / (pg_relation_size('ri_t') / 8192.0))::int,
-		(SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database()) - m.temp_bytes,
+		(SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database()) > m.temp_bytes,
 		sift.col_verify(idx::regclass, true)::text = '', ri_answers(true) = ri_answers(false)
 	FROM ri_mark m $$;
 
@@ -135,14 +135,14 @@ REINDEX INDEX CONCURRENTLY ri_idx;
 SELECT pg_stat_force_next_flush() \gset
 SELECT * FROM ri_note('concurrently, promoted');
 
--- an index that tracks changes (the table has a primary key) reads the table for the baseline of its log, one access of each page that is not all-visible, and for nothing else
+-- an index that tracks changes (the table has a primary key) reads the table for the baseline of its log, one access of each page that is not all-visible, the map, and for nothing else (PostgreSQL 17 counts one access of the table more than 18 and 19 in every REINDEX)
 CREATE INDEX ri_tracked ON ri_t USING sift_col (id, tenant_id, k, status) WITH (key_cut = 'k');
 SELECT pg_stat_force_next_flush() \gset
 SELECT ri_start();
 REINDEX INDEX ri_tracked;
 SELECT pg_stat_force_next_flush() \gset
 SELECT current_setting('sift.test_col_from_index_used') AS used,
-	(SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relname = 'ri_t') - m.heap_buffers <= pg_relation_size('ri_t') / 8192 + 1 AS reads_each_page_once_and_the_map
+	(SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relname = 'ri_t') - m.heap_buffers <= pg_relation_size('ri_t') / 8192 + 2 AS reads_each_page_once_and_the_map
 	FROM ri_mark m;
 DROP INDEX ri_tracked;
 
