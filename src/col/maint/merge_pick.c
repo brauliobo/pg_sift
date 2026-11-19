@@ -413,7 +413,6 @@ maint_pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *se
 	v = maint_view_open(index, snap, cx);
 	take = MemoryContextAllocZero(cx, Max(v->n, 1) * sizeof(bool));
 	dirty_part = MemoryContextAllocZero(cx, Max(v->n, 1) * sizeof(bool));
-	rs->over = palloc0(Max(v->n, 1) * sizeof(bool));
 	rs->bounded = palloc0(Max(v->n, 1) * sizeof(bool));
 	/*
 	 * The units of a key-cut index are numbered by the sequence of the key, so the superblocks two segments hold in common say nothing of their rows
@@ -452,12 +451,10 @@ maint_pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *se
 	if (keyed)
 	{
 		OverlayEv	ev;
-		RollPick	roll = ROLL_NO;
+		bool		rolling = !maint_overlay_asked && maint_part_kb > 0 && !maint_after_build && v->np >= 2 && (work || maint_pass_gen != 0);
 
-		if (!maint_overlay_asked && maint_part_kb > 0 && !maint_after_build && (work || maint_pass_gen != 0))
-			roll = maint_roll_pick(v, take, rs);
-		if (roll != ROLL_NO)
-			rs->on = roll == ROLL_STEP;
+		if (rolling)
+			rs->on = maint_roll_pick(v, take, rs);
 		else if (maint_overlay_asked)
 		{
 			/* the overlays alone, whatever else holds a dead row or has no cut, and nothing after them: the pass ends when they are one (the rule asks again when the next ones pile up) */
@@ -485,7 +482,7 @@ maint_pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *se
 	for (int i = 0; i < v->n; i++)
 		if (take[i])
 		{
-			rs->bounded[nsel] = rs->over[i] && rs->on;
+			rs->bounded[nsel] = v->part[i] < 0 && rs->on;
 			sel[nsel++] = v->imm[i];
 			refresh |= v->stale[i];
 		}

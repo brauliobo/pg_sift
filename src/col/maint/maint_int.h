@@ -60,6 +60,9 @@ typedef struct RewriteView
 	int			nkover;
 	int64	   *klo,			/* the range of the cut leaf over the units of each segment of a key-cut index in partitions (klo > khi: no value) */
 			   *khi;
+	int		   *part;			/* the partition of the directory each segment is in (-1: none: an overlay) */
+	int			np;				/* the partitions the directory records, ascending by their lower bound: lo */
+	SiftBound  *lo;
 } RewriteView;
 
 extern int maint_merge_workers;
@@ -148,14 +151,7 @@ extern void maint_window_discard(MergeWindow *w, SiftColBatch *b);
 extern Size maint_window_peak(const MergeWindow *w);
 extern MemoryContext maint_window_context(const MergeWindow *w);
 
-/* The rolling rewrite of a key-cut index in partitions (roll.c) */
-typedef enum RollPick
-{
-	ROLL_NO,					/* the index is not in partitions that do not overlap: the other rules */
-	ROLL_STEP,
-	ROLL_DONE					/* every partition of the pass is rewritten */
-} RollPick;
-
+/* The rolling rewrite of a key-cut index in the partitions of its directory (roll.c) */
 #define ROLL_PIECES	8
 
 typedef struct RollStep
@@ -167,12 +163,12 @@ typedef struct RollStep
 	SiftBound	high[ROLL_PIECES];
 	uint64		bytes;			/* the live bytes of the segments the step takes that its window holds */
 	int			parts;			/* the segments of the size of a partition they make */
-	bool	   *over;			/* of the segments of the view: the overlays, which hold rows of the key range of other segments */
 	bool	   *bounded;		/* of the segments the step takes: the overlays, whose rows the window cuts */
 } RollStep;
 
 extern uint64 maint_part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut);
-extern RollPick maint_roll_pick(const RewriteView *v, bool *take, RollStep *rs);
+/* Picks the next step of the pass into take and rs: false when every partition of the pass is rewritten */
+extern bool maint_roll_pick(const RewriteView *v, bool *take, RollStep *rs);
 extern void maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep *rs);
 extern bool maint_scope_merge_step(Relation index, bool force);
 extern bool maint_scope_refill(Relation index, bool report);
