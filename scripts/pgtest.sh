@@ -89,7 +89,9 @@ install() {
 # The setting only the test library of this tree defines (the release library has none): a released library that runs on the data directory of the cluster (scripts/old-lib-check.sh) warns that
 # "sift" is a reserved prefix for it. The cluster of `start` gets it on the command line of the server of this tree, not in its postgresql.conf (`conf common`).
 # The clusters run with the default sift.on_corruption (quarantine), so that every write of every test goes through the guard of the quarantine; a test that asserts a corruption error says SET sift.on_corruption = error
-TREE_CONF="${SIFT_TESTING:+sift.test_scope_patch = on}"
+# the build chooser (sift.col_build_source = auto) reads the index a REINDEX replaces and says so in a notice with the seconds it took: the clusters of the regression tests read the heap, as
+# before 5.1, so that no expected output carries those seconds; the tests of the chooser say SET sift.col_build_source = auto
+TREE_CONF="sift.col_build_source = heap${SIFT_TESTING:+$'\n'sift.test_scope_patch = on}"
 # SIFT_MEMCENSUS=KB|on: every statement of every test that grows memory by KB (on: 1024) writes a SIFTMEM line to the server log
 [[ -z ${SIFT_TESTING:-} || -z ${SIFT_MEMCENSUS:-} ]] || TREE_CONF+=$'\n'"sift.test_memctx_census = $([[ $SIFT_MEMCENSUS == on ]] && echo 1024 || echo "$SIFT_MEMCENSUS")"
 tree_options() { local l; [[ -z $TREE_CONF ]] || while IFS= read -r l; do printf -- '-c %s ' "${l// = /=}"; done <<<"$TREE_CONF"; }

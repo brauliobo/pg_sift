@@ -117,21 +117,38 @@ SELECT (SELECT count(*) || ' ' || sum(amount) FROM kl WHERE cust = 42) = (SELECT
 SELECT sift.col_verify('kc_idx', true);
 DROP TABLE kl;
 
--- the rows of a table make runs (one for each superblock here), and the directory holds a fixed number of segments: the build merges the runs as it writes them
+-- the rows of a table make runs (one for each superblock here), and the merge that ends a key_cut build opens them all: the build merges the runs as it writes them
 -- (a row is written once for each level it reaches), so the memory it was given is enough for a table of any size: the runs that the memory makes are 8
--- segments, and with room for 6 the build leaves fewer, holding the same rows
+-- segments, and with 6 runs kept the build leaves fewer, holding the same rows
 SET sift.test_col_segment_kb = 16;
 SET sift.test_col_build_runs_overlap = on;
 CREATE INDEX kc_runs ON kc USING sift_col (id, cust, d, amount) WITH (point_tid_columns = 'off', key_cut = 'cust, d');
-SET sift.test_col_max_segments = 6;
+SET sift.test_col_build_runs = 6;
 CREATE INDEX kc_big ON kc USING sift_col (id, cust, d, amount) WITH (point_tid_columns = 'off', key_cut = 'cust, d');
-RESET sift.test_col_max_segments;
+RESET sift.test_col_build_runs;
 RESET sift.test_col_segment_kb;
 RESET sift.test_col_build_runs_overlap;
 SELECT count(*) AS runs, sum(rows) AS rows FROM sift.col_segments('kc_runs') WHERE kind = 'immutable';
 SELECT count(*) < 6 AS merged, bool_and(format = 17) AS key_cut_format, sum(rows) AS rows FROM sift.col_segments('kc_big') WHERE kind = 'immutable';
 SELECT sift.col_verify('kc_big', true);
 DROP INDEX kc_big, kc_runs;
+
+-- the write buffer of an index with an integer key_cut has key ranges in its pages (column format 55): a 5.0 library would read their head as damage, so the metapage is raised to 1.7, which it refuses
+-- with the format error; a buffer opened with the setting off, or an index without the option, stays at 1.2
+CREATE TABLE kw (id int, cust int);
+INSERT INTO kw SELECT i, i % 50 FROM generate_series(1, 2000) i;
+CREATE INDEX kw_idx ON kw USING sift_col (id, cust) WITH (key_cut = 'cust');
+SELECT minor AS built FROM sift.index_format('kw_idx');
+INSERT INTO kw SELECT i, i % 50 FROM generate_series(2001, 2100) i;
+SELECT minor AS with_key_ranges FROM sift.index_format('kw_idx');
+SET sift.col_wbuf_key_range = off;
+CREATE TABLE kn (id int, cust int);
+INSERT INTO kn SELECT i, i % 50 FROM generate_series(1, 2000) i;
+CREATE INDEX kn_idx ON kn USING sift_col (id, cust) WITH (key_cut = 'cust');
+INSERT INTO kn SELECT i, i % 50 FROM generate_series(2001, 2100) i;
+SELECT minor AS without_key_ranges FROM sift.index_format('kn_idx');
+RESET sift.col_wbuf_key_range;
+DROP TABLE kw, kn;
 
 DROP FUNCTION kchk(text), kunits(text);
 DROP TABLE kc, kp;

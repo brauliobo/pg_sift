@@ -147,10 +147,10 @@ pair_counts(AggExec *ex, SiftScopeCounts *c)
 static uint64
 scope_entries(AggExec *ex)
 {
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	uint64		rows = 0;
 
-	sift_dir_read(ex->index, dir);
+	dir = sift_dir_read(ex->index);
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && sift_seg_is_scope(&dir->segs[i]))
 			rows += dir->segs[i].ndocs;
@@ -310,7 +310,7 @@ entity_cheaper(AggExec *ex, Snapshot snapshot, uint64 changed, const SiftScopeRe
 	const SiftAggScope *sc = ex->spec->scope;
 	SiftScopeCounts c = unit_counts(ex, snapshot);
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
-	SiftSrcSource *entity = sift_colsrc_open(ex->heap, ex->index, snapshot, cx, ex->view);
+	SiftSrcSource *entity = sift_colsrc_open(ex->heap, ex->index, snapshot, cx, ex->view, NULL);
 	bool		cheaper;
 
 	if (rd != NULL)

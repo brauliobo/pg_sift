@@ -106,7 +106,7 @@ stub_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, 
 }
 
 static void *
-stub_open_source(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
+stub_open_source(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view, const SiftKeyRange *keys)
 {
 	return stub_open(heap, index, snapshot, mcxt, false);
 }

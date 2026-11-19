@@ -192,7 +192,7 @@ publish_drain(SiftFeed *f)
 {
 	SiftIdx    *ix = f->ix;
 	Manifest	m = ix->man;
-	ManSeg		segs[SIFT_MAX_SEGMENTS];
+	ManSeg		segs[SIFT_DIR_POLICY_MAX];
 	bool		have = f->ndocs > 0;
 
 	memcpy(segs, ix->segs, m.nsegs * sizeof(ManSeg));
@@ -232,9 +232,9 @@ publish_load(SiftFeed *f)
 	SiftIdx    *ix = f->ix;
 	Manifest	m = ix->man;
 	Manifest	old = ix->man;
-	ManSeg		oldsegs[SIFT_MAX_SEGMENTS];
-	int			oldg[SIFT_MAX_SEGMENTS];
-	uint32		oldblocks[SIFT_MAX_SEGMENTS];
+	ManSeg		oldsegs[SIFT_DIR_POLICY_MAX];
+	int			oldg[SIFT_DIR_POLICY_MAX];
+	uint32		oldblocks[SIFT_DIR_POLICY_MAX];
 	uint64		len = f->nev * sizeof(Ev);
 	bool		have = f->ndocs > 0;
 	char		path[600];

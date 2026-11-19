@@ -33,11 +33,21 @@ answer() { sql "$1" "${@:2}" 2>&1 | tr '\n' ' '; }
 agree() { local n=$1 want got; want=$(answer "$n" "${OFF[@]}" "${4:-$3}"); got=$(answer "$n" "${ON[@]}" "$3"); out="sift: $got / heap: $want"; [[ $got == "$want" && $got != *ERROR* && -n $got ]]; }
 sound() { local n=$1; shift; out=$(sql "$n" "SELECT c.index::text || ' ' || c.problem || ' ' || coalesce(c.detail, '') FROM unnest(coalesce((SELECT array_agg(inhrelid::regclass) FROM pg_inherits WHERE inhparent = $1::regclass), ARRAY[$1::regclass])) u, LATERAL sift.check(u) c" 2>&1); [[ -z $out ]]; }
 sound_all() { out=$(sql "$1" "SELECT index::text || ' ' || problem FROM sift.check() WHERE index::text <> ALL ('{${2:-}}')" 2>&1); [[ -z $out ]]; }
+# refused NODE QUERY: the library cannot read what a newer one wrote and says so with the format error and the hint, not with damage or an answer
+refused() { out=$(answer "$1" "${ON[@]}" "$2"); [[ $out =~ ERROR.*this\ build.*reads && $out == *REINDEX* && $out != *corrupted* ]]; }
+# kinds in REFUSED_KINDS (space separated) are the ones the library must refuse; every other kind verifies and answers as the heap
 compat() { # DIRECTION VARIANT NODE: one COMPAT line and one check for each object kind
 	local dir=$1 var=$2 n=$3 o kind ix q p ok
 	for o in "${OBJECTS[@]}"; do
 		IFS='|' read -r kind ix q p <<<"$o"
-		ok=FAIL; { sound "$n" "'$ix'" && agree "$n" "$ix" "$q" "$p"; } && ok=PASS
+		ok=FAIL
+		if [[ " ${REFUSED_KINDS:-} " == *" $kind "* ]]; then
+			refused "$n" "$q" && ok=PASS
+			echo "# COMPAT $kind $dir $var refused $ok"
+			check "$dir/$var: $kind ($ix) is refused with the format error" test "$ok" == PASS
+			continue
+		fi
+		{ sound "$n" "'$ix'" && agree "$n" "$ix" "$q" "$p"; } && ok=PASS
 		echo "# COMPAT $kind $dir $var $ok"
 		check "$dir/$var: $kind ($ix) verifies and answers as the heap" test "$ok" == PASS
 	done

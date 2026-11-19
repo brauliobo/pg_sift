@@ -19,6 +19,7 @@
 #include "access/stratnum.h"
 #include "access/table.h"
 #include "access/tableam.h"
+#include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "catalog/dependency.h"
 #include "catalog/namespace.h"
@@ -149,40 +150,50 @@ baseline(Relation index, Relation heap, SiftTombLog *log)
 	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
 	TransactionId xid = GetCurrentTransactionId();
 	CommandId	cid = GetCurrentCommandId(true);
+	Buffer		vmbuf = InvalidBuffer;
 
 	SIFT_TEST_GATE(sift_test_cleanup_gate, 11);
 	InitDirtySnapshot(dirty);
 	for (BlockNumber blk = 0; blk < nblocks; blk++)
 	{
-		Buffer		buf = ReadBuffer(heap, blk);
+		Buffer		buf;
 		Page		page;
 		OffsetNumber roots[MaxHeapTuplesPerPage];
 		bool		gone[MaxHeapTuplesPerPage];
 		int			n = 0;
 
 		CHECK_FOR_INTERRUPTS();
+		/* a page every transaction sees whole holds no dead version and no dead item: every root is live */
+		if (VM_ALL_VISIBLE(heap, blk, &vmbuf))
+			continue;
+		buf = ReadBuffer(heap, blk);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 		page = BufferGetPage(buf);
 		for (OffsetNumber off = FirstOffsetNumber, max = PageGetMaxOffsetNumber(page); off <= max; off++)
 		{
 			ItemId		lp = PageGetItemId(page, off);
+			ItemPointerData tid;
+			HeapTupleData tuple;
+			bool		all_dead;
 
 			if (!ItemIdIsUsed(lp) || (ItemIdIsNormal(lp) && HeapTupleHeaderIsHeapOnly((HeapTupleHeader) PageGetItem(page, lp))))
 				continue;
+			ItemPointerSet(&tid, blk, off);
 			roots[n] = off;
-			gone[n++] = ItemIdIsDead(lp);
+			gone[n++] = ItemIdIsDead(lp) || !heap_hot_search_buffer(&tid, heap, buf, &dirty, &tuple, &all_dead, true);
 		}
 		UnlockReleaseBuffer(buf);
 		for (int i = 0; i < n; i++)
 		{
 			ItemPointerData tid;
-			bool		all_dead;
 
 			ItemPointerSet(&tid, blk, roots[i]);
-			if (gone[i] || !table_index_fetch_tuple_check(heap, &tid, &dirty, &all_dead))
+			if (gone[i])
 				sift_tomb_append(index, log, sift_key_from_tid(&tid), xid, cid, SIFT_TOMB_DELETE, 0, 0);
 		}
 	}
+	if (BufferIsValid(vmbuf))
+		ReleaseBuffer(vmbuf);
 }
 
 /*
@@ -738,10 +749,10 @@ Datum
 sift_col_stamps(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];

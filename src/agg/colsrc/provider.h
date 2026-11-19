@@ -7,6 +7,7 @@
 #define SIFT_AGG_COLSRC_PROVIDER_H
 
 #include "agg/colsrc/exec.h"
+#include "core/range.h"
 
 struct SiftScopeRead;
 
@@ -34,13 +35,20 @@ typedef struct SiftSrcProvider
 	/* Optional, required with open_part: what changes the layout, statistics and pre-aggregates of an index besides its catalog entries and its table's (sift_colsrc_stamp) */
 	void		(*stamp) (Relation index, SiftSrcStamp *stamp);
 	/* view: what view_export wrote for another source of the statement (a parallel worker opens on the directory of its leader), NULL: read the directory now */
-	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
+	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view, const SiftKeyRange *keys);
+	/*
+	 * Optional (NULL: a source reads every segment): the keys of the index's cut that the tests z[0..nz) (conjuncts, no kids) confine the rows to, for open's keys: a source opened with them reads only
+	 * the segments of the partitions that may hold them. false: they confine none.
+	 */
+	bool		(*key_range) (Relation index, const SiftSrcPrune *z, int nz, SiftKeyRange *out);
+	/* Optional, required with key_range: the leaf of the first component of the index's cut, -1 when the index is not cut by a key (the rows of a partition lie in a range of it) */
+	int			(*key_leaf) (Relation index);
 	/* Optional (NULL: the provider has no scope indexes, col/scope.h): open for a scan that reads the scope segments of the index and nothing else */
 	void	   *(*open_scope) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
 	/* Optional (NULL: no scope indexes), on a source of open_scope before its first begin: the rows of the write buffers the read expands by the pairs rd->delta lists are units of the source (col/scan/scope_delta.c) */
 	void		(*scope_delta) (void *impl, const struct SiftScopeRead *rd);
 	/* Optional (NULL: the provider has no partitioned tables, sift_colsrc_can_part): open for a partition read as part of its partitioned table, whose privileges and row security were checked */
-	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
+	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view, const SiftKeyRange *keys);
 	/* Optional (NULL: the source reads no directory it could share), required with open_part: the bytes of the directory the source read, and their number; the participants of a parallel scan, and the partitions of one, number the units of its items by one copy */
 	Size		(*view_size) (void *impl);
 	void		(*view_export) (void *impl, void *buf);
