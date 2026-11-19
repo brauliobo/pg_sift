@@ -1,7 +1,7 @@
 /*
  * core/range_test.c - test-only SQL function sift._test_range_check, compiled only with SIFT_TESTING and registered by the pg_sift_test extension: the bounds of core/range.h against an
  * oracle that compares key tuples element by element and never their encoding. Keys are drawn from the extremes of int8, NULL, values that no bound uses (so that every gap between two
- * bounds holds a key) and heap addresses; the properties are the order of the encoding, the depth, the successor of a prefix, the overlap and containment of ranges and the span of the
+ * bounds holds a key) and heap addresses; what is checked is the order of the encoding, the depth, the successor of a prefix, the overlap and containment of ranges and the span of the
  * partitions of a random tiling that hold a prefix, the last two against a walk over every key of the domain.
  */
 #include "postgres.h"
