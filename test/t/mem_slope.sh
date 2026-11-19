@@ -26,6 +26,6 @@ plan $((n + 1))
 check "every case of the shard ran" test "$n" -eq "$(slope list | grep -c .)"
 while IFS= read -r l; do
 	[[ -n $l ]] || continue
-	if [[ $l == *" PASS" ]]; then ok "${l#SLOPE }"; else not_ok "${l#SLOPE }"; fi
+	slope_case "$l"
 done <<<"$lines"
 finish

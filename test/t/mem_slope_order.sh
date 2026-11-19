@@ -22,6 +22,6 @@ plan 6
 check "the five cases ran" test "$(grep -c . <<<"$lines")" -eq 5
 while IFS= read -r l; do
 	[[ -n $l ]] || continue
-	if [[ $l == *" PASS" ]]; then ok "${l#SLOPE }"; else not_ok "${l#SLOPE }"; fi
+	slope_case "$l"
 done <<<"$lines"
 finish

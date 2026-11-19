@@ -97,7 +97,8 @@ tap-shell-col_tier_apart	270
 installcheck-agg_preagg_rows	260
 installcheck-col_build_merge_ends	260
 installcheck-col_build_peers_unequal	260
-isolation	260
+isolation-1	260
+isolation-2	260
 tap-shell-pg_upgrade_33	260
 installcheck-agg_group_spill_fuzz	250
 installcheck-col_clustering	250

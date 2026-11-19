@@ -7,6 +7,9 @@ SLOW_PERL="001_crash 004_wal_consistency"
 SLOW_SHELL="leakcheck_gate store_crash replication store_replica index_build_crash store_concurrency col_wbuf_crash"
 # the memory slope gate of the quick tier in SLOPE_SHARDS jobs, each the cases whose crc32 of the name falls in its shard (the slope of a case does not depend on the others; the full tiers run the gate whole)
 SLOPE_SHARDS=3
+# the fault matrix of the quick tier in FAULT_SLICES jobs, each a balanced half of the operations (SIFT_FAULT_SLICE: the rows of an operation stay together)
+FAULT_SLICES=2
+fault_slices() { local k; for (( k = 1; k <= FAULT_SLICES; k++ )); do job "tap-shell-fault_matrix-$k" tap-shell 0 env "SIFT_FAULT_SLICE=$k/$FAULT_SLICES" "$S/pgtest.sh" tap fault_matrix; done; }
 slope_shards() { local k; for (( k = 1; k <= SLOPE_SHARDS; k++ )); do job "tap-shell-mem_slope-$k" tap-shell 0 env "MEM_SLOPE_SHARD=$k/$SLOPE_SHARDS" "$S/pgtest.sh" tap mem_slope; done; }
 # shellcheck disable=SC2046,SC2086  # the names are words
 if [[ $MODE == full ]]; then
@@ -192,10 +195,11 @@ else
 	installcheck $(named $SLOW_REGRESS)
 	tap_perl $(rest t .pl $SLOW_PERL)
 	# the scaling gate (a build of the 8-page flavour of the library and 50 s of timings) is a job of the quick tier only when the run was asked for it by the diff: scripts/areas.tsv names its files
-	if [[ -n ${SIFT_CI_AFFECTED:-} && tap-shell-scaling_slope =~ $SIFT_CI_AFFECTED ]]; then tap_shell $(rest t .sh $SLOW_SHELL mem_slope); else tap_shell $(rest t .sh $SLOW_SHELL mem_slope scaling_slope); fi
+	if [[ -n ${SIFT_CI_AFFECTED:-} && tap-shell-scaling_slope =~ $SIFT_CI_AFFECTED ]]; then tap_shell $(rest t .sh $SLOW_SHELL mem_slope fault_matrix); else tap_shell $(rest t .sh $SLOW_SHELL mem_slope fault_matrix scaling_slope); fi
 	slope_shards
+	fault_slices
 	installcheck_batches 12 $(rest sql .sql $SLOW_REGRESS)
-	job isolation isolation 1 "$S/isolation.sh"
+	isolation_slices
 	job isolation-emulated isolation-emulated 1 "$S/isolation.sh" --emulate cic_insert
 	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
 	job tools-build tools-build 0 "$S/check-tools-build.sh"

@@ -48,8 +48,17 @@ def full_tier(job):
 
 
 def quick_tier(job):
-    # the shards of the quick tier on x86-64 and PostgreSQL 17 and 18 (the other jobs run the same tests on a flavor of the server)
-    return job['name'].startswith('PostgreSQL') and not re.search('full tier|arm64|assertions|git', job['name'])
+    # the shards of the quick tier (the assertions jobs run a few tests on a flavor of the server)
+    return job['name'].startswith('PostgreSQL') and not re.search('full tier|assertions', job['name'])
+
+
+def flavour(job):
+    # the column of the weights a job feeds: its PostgreSQL major, 19 (built from git) and arm64 each have their own timings
+    return 'arm' if 'arm64' in job['name'] else int(PG_NAME.search(job['name'])[1])
+
+
+FLAVOURS = (17, 18, 19, 'arm')
+FALLBACK = {17: (18,), 18: (17,), 19: (18, 17), 'arm': (18, 17)}
 
 
 def parse(log):
@@ -99,43 +108,44 @@ def med(v):
     return int(statistics.median(v))
 
 
-def pick(per, test, major):
-    """The weight of a test on a major: the median of its passing times in the runs (one hosted run is noisy: the same test took 179 and 362 s beside different jobs),
-    else the mean of the medians of its sibling slices (difftest-col-8 of difftest-col-N), else the median on the other major, else the default 10."""
-    mine = per[major].get(test)
+def pick(per, test, flav):
+    """The weight of a test on a flavour: the median of its passing times in the runs (one hosted run is noisy: the same test took 179 and 362 s beside different jobs),
+    else the mean of the medians of its sibling slices (difftest-col-8 of difftest-col-N), else the median on the nearest flavour that has it, else the default 10."""
+    mine = per[flav].get(test)
     if mine:
         return med(mine)
     family = re.sub(r'-\d+$', '', test)
-    sib = [med(v) for t, v in per[major].items() if t != test and re.sub(r'-\d+$', '', t) == family]
-    other = per[35 - major].get(test)
-    return int(statistics.mean(sib)) if sib else med(other) if other else 10
+    sib = [med(v) for t, v in per[flav].items() if t != test and re.sub(r'-\d+$', '', t) == family]
+    if sib:
+        return int(statistics.mean(sib))
+    return next((med(per[o][test]) for o in FALLBACK[flav] if per[o].get(test)), 10)
 
 
 def weights(runs, cache, floor, in_tier):
-    per = {17: defaultdict(list), 18: defaultdict(list)}
+    per = {f: defaultdict(list) for f in FLAVOURS}
     for run in runs:
         for j in run_jobs(run)['jobs']:
-            m = PG_NAME.search(j['name'])
-            if not in_tier(j) or not m:
+            if not in_tier(j) or not PG_NAME.search(j['name']):
                 continue
             for test, status, secs in parse(job_log(run, j['databaseId'], cache))[0]:
                 if status == 'PASS':
-                    per[17 if int(m[1]) == 17 else 18][test].append(secs)
-    print('# job\tPostgreSQL 17 lane seconds\tPostgreSQL 18 lane seconds: the median of the passing jobs of runs ' + ' '.join(map(str, runs)) + ' (scripts/ci-times.py --weights; name three or more); the shards are cut by these, the other jobs weigh 10')
-    rows = [(test, pick(per, test, 17), pick(per, test, 18)) for test in set(per[17]) | set(per[18])]
-    for test, a, b in sorted(rows, key=lambda r: (-max(r[1], r[2]), r[0])):
-        if max(a, b) >= floor:
-            print(f'{test}\t{a}\t{b}')
+                    per[flavour(j)][test].append(secs)
+    print('# job\tPostgreSQL 17 lane seconds\t18\t19 (built from git)\tarm64 (18): the median of the passing jobs of runs ' + ' '.join(map(str, runs)) + ' (scripts/ci-times.py --weights; name three or more); the shards are cut by these, the other jobs weigh 10')
+    rows = [(test, *(pick(per, test, f) for f in FLAVOURS)) for test in set().union(*(set(per[f]) for f in FLAVOURS))]
+    for row in sorted(rows, key=lambda r: (-max(r[1:]), r[0])):
+        if max(row[1:]) >= floor:
+            print('\t'.join(map(str, row)))
 
 
 def selftest():
-    per = {17: defaultdict(list), 18: defaultdict(list)}
+    per = {f: defaultdict(list) for f in FLAVOURS}
     per[18]['t'] = [100, 110, 400]       # the newest run is the noisy one
     per[18]['s-1'] = [50, 60, 70]
     per[18]['s-2'] = [90]
     per[17]['o'] = [30, 50]
-    ok = (pick(per, 't', 18) == 110 and pick(per, 's-3', 18) == int(statistics.mean([60, 90])) and pick(per, 'o', 18) == 40 and pick(per, 'none', 17) == 10)
-    print('ci-times selftest: ' + ('the weight is the median of the runs, the mean of the sibling slices, the other major, else 10' if ok else 'FAIL: pick() differs'))
+    ok = (pick(per, 't', 18) == 110 and pick(per, 's-3', 18) == int(statistics.mean([60, 90])) and pick(per, 'o', 18) == 40 and pick(per, 'none', 17) == 10
+          and pick(per, 't', 'arm') == 110 and pick(per, 'o', 19) == 40)
+    print('ci-times selftest: ' + ('the weight is the median of the runs, the mean of the sibling slices, the nearest flavour, else 10' if ok else 'FAIL: pick() differs'))
     return 0 if ok else 1
 
 
