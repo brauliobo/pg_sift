@@ -27,7 +27,6 @@ struct SqStore
 	char		dir[512];		/* the index directory: new segments are written there */
 	SiftOptions opts;
 	char		optstr[256];	/* the strings of opts (stemmer, fields), which sit right after it */
-	SiftDirSnapshot snap;		/* what sift_dir_read returns */
 	uint32		dpp;			/* documents per page: docid d is key (d / dpp) << 16 | (d % dpp + 1) */
 	bool		slot_used[SIFT_NSLOTS];
 	int			gslot[SIFT_NSLOTS];	/* where each mapped slot sits in the reserved range */

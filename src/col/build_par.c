@@ -68,13 +68,50 @@ par_participants(double rows, int cols, bool point_dir, int maxp)
 	return chosen;
 }
 
+/* The segments of a participant: slot i is worker i, the last launched one the leader's */
+Size
+sift_colp_part_size(int segcap)
+{
+	return MAXALIGN(offsetof(SiftColPart, segs) + segcap * sizeof(SiftSegEntry));
+}
+
+SiftColPart *
+sift_colp_part(char *parts, int segcap, int slot)
+{
+	return (SiftColPart *) (parts + slot * sift_colp_part_size(segcap));
+}
+
+/* The segments of every participant that wrote one */
+SiftSegEntry *
+sift_colp_collect(char *parts, int segcap, int nslots, int *nsegs)
+{
+	SiftSegEntry *segs;
+
+	*nsegs = 0;
+	for (int slot = 0; slot < nslots; slot++)
+		*nsegs += sift_colp_part(parts, segcap, slot)->nsegs;
+	if (*nsegs > SIFT_DIR_WIDE_MAX)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col build needs more than %d segments", SIFT_DIR_WIDE_MAX),
+						errhint("Raise maintenance_work_mem: each segment holds up to half of it.")));
+	segs = palloc(*nsegs * sizeof(SiftSegEntry));
+	*nsegs = 0;
+	for (int slot = 0; slot < nslots; slot++)
+	{
+		SiftColPart *part = sift_colp_part(parts, segcap, slot);
+
+		memcpy(segs + *nsegs, part->segs, part->nsegs * sizeof(SiftSegEntry));
+		*nsegs += part->nsegs;
+	}
+	return segs;
+}
+
 typedef struct ColShared
 {
 	SiftParCommon common;
 	BlockNumber nblocks;		/* of the heap when the build started */
 	uint32		nsbs;			/* superblocks of those */
 	Size		budget;			/* of the segment writer of a participant */
-	int			maxsegs;		/* segments of a participant */
+	int			segcap;			/* segments of a participant (sift_colb_segs_bound) */
 	int			nslots;			/* participants planned (the leader included): the size of the parts */
 	int			nlaunched;		/* workers launched, set before ready */
 	BlockNumber gap;			/* the blocks reserved in front of the segments for the merge of the leader, gapn of them */
@@ -88,23 +125,10 @@ typedef struct ColShared
 	double		indexed;
 } ColShared;
 
-/* The segments of a participant: slot i is worker i, the last launched one the leader's */
-typedef struct ColPart
-{
-	int			nsegs;
-	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
-} ColPart;
-
-static Size
-part_size(int maxsegs)
-{
-	return MAXALIGN(offsetof(ColPart, segs) + maxsegs * sizeof(SiftSegEntry));
-}
-
-static ColPart *
+static SiftColPart *
 part_of(const ColShared *sh, char *parts, int slot)
 {
-	return (ColPart *) (parts + slot * part_size(sh->maxsegs));
+	return sift_colp_part(parts, sh->segcap, slot);
 }
 
 static void
@@ -123,9 +147,9 @@ add_counts(ColShared *sh, double reltuples, double indexed)
 static void
 participate(ColShared *sh, char *parts, int slot, Relation heap, Relation index, IndexInfo *info, Snapshot snapshot)
 {
-	ColPart    *part = part_of(sh, parts, slot);
+	SiftColPart *part = part_of(sh, parts, slot);
 	SiftWriteTarget *wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
-	ColBuild   *b = sift_colb_begin(index, wt, sh->budget, sh->maxsegs, part->segs, true, sh->nlaunched + 1, !sh->common.isconcurrent);
+	ColBuild   *b = sift_colb_begin(index, wt, sh->budget, part->segs, sh->segcap, true, sh->nlaunched + 1, !sh->common.isconcurrent);
 	double		reltuples = 0;
 
 	PG_TRY();
@@ -180,12 +204,13 @@ await_gate(ColShared *sh)
 }
 
 static void
-init_shared(ColShared *sh, Relation heap, Relation index, IndexInfo *info, int nslots)
+init_shared(ColShared *sh, Relation index, IndexInfo *info, BlockNumber nblocks, int nslots)
 {
-	*sh = (ColShared) {.common = {RelationGetRelid(heap), RelationGetRelid(index), info->ii_Concurrent},
-		.nblocks = RelationGetNumberOfBlocks(heap), .nslots = nslots,
-		.budget = sift_colb_budget(nslots), .maxsegs = SIFT_COL_BUILD_SEGMENTS / nslots};
+	*sh = (ColShared) {.common = {index->rd_index->indrelid, RelationGetRelid(index), info->ii_Concurrent},
+		.nblocks = nblocks, .nslots = nslots,
+		.budget = sift_colb_budget(nslots)};
 	sh->nsbs = ((uint64) sh->nblocks + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT;
+	sh->segcap = sift_colb_segs_bound(index, sh->nsbs);
 	pg_atomic_init_u32(&sh->ready, 0);
 	pg_atomic_init_u32(&sh->next, 0);
 	SpinLockInit(&sh->scan.mutex);
@@ -224,6 +249,8 @@ begin_parallel(Relation heap, Relation index, IndexInfo *info)
 	SiftParLeader *ldr;
 	ColShared  *sh;
 	BlockNumber pages;
+	BlockNumber nblocks;
+	uint32		nsbs;
 	double		tuples,
 				allvisfrac;
 
@@ -241,33 +268,17 @@ begin_parallel(Relation heap, Relation index, IndexInfo *info)
 	if (nworkers < 1)
 		return NULL;
 	ldr = sift_par_enter(info->ii_Concurrent);
+	nblocks = RelationGetNumberOfBlocks(heap);
+	nsbs = ((uint64) nblocks + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT;
 	if (!sift_par_setup(ldr, "sift_col_build_worker", nworkers, sizeof(ColShared),
-						mul_size(part_size(SIFT_COL_BUILD_SEGMENTS / (nworkers + 1)), nworkers + 1), info->ii_Concurrent))
+						mul_size(sift_colp_part_size(sift_colb_segs_bound(index, nsbs)), nworkers + 1), info->ii_Concurrent))
 		return NULL;
 	sh = ldr->shared;
-	init_shared(sh, heap, index, info, nworkers + 1);
+	init_shared(sh, index, info, nblocks, nworkers + 1);
 	if (!sift_par_launch(ldr, "sift_col", index, nworkers))
 		return NULL;
 	open_gate(sh, heap, index, ldr->pcxt->nworkers_launched);
 	return ldr;
-}
-
-/* The segments of every participant that wrote one */
-static SiftSegEntry *
-collect_segments(const SiftParLeader *ldr, int *nsegs)
-{
-	const ColShared *sh = ldr->shared;
-	SiftSegEntry *segs = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
-
-	*nsegs = 0;
-	for (int slot = 0; slot <= sh->nlaunched; slot++)
-	{
-		ColPart    *part = part_of(sh, ldr->parts, slot);
-
-		memcpy(segs + *nsegs, part->segs, part->nsegs * sizeof(SiftSegEntry));
-		*nsegs += part->nsegs;
-	}
-	return segs;
 }
 
 /*
@@ -281,7 +292,7 @@ typedef struct MergeShared
 	int			n;
 	int			nslices;
 	pg_atomic_uint32 next;
-	SiftSegEntry in[SIFT_COL_BUILD_SEGMENTS];
+	SiftSegEntry in[FLEXIBLE_ARRAY_MEMBER];
 } MergeShared;
 
 static void
@@ -294,7 +305,7 @@ merge_slices(MergeShared *sh, SiftSegEntry *out, Relation index)
 }
 
 bool
-sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int nslices, TimestampTz start)
+sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int nslices, TimestampTz start, bool partitions)
 {
 	SiftParLeader *ldr = sift_par_enter(false);
 	MergeShared *sh;
@@ -302,7 +313,7 @@ sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int
 			   *made;
 	int			nout = 0;
 
-	if (n > SIFT_COL_BUILD_SEGMENTS || !sift_par_setup(ldr, "sift_col_merge_worker", nworkers, sizeof(MergeShared), nslices * sizeof(SiftSegEntry), false))
+	if (!sift_par_setup(ldr, "sift_col_merge_worker", nworkers, offsetof(MergeShared, in) + n * sizeof(SiftSegEntry), nslices * sizeof(SiftSegEntry), false))
 		return false;
 	sh = ldr->shared;
 	out = ldr->parts;
@@ -319,7 +330,7 @@ sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int nworkers, int
 		if (out[i].ndocs > 0)
 			made[nout++] = out[i];
 	sift_par_end(ldr);
-	sift_col_merge_switch(index, in, n, made, nout, start);
+	sift_col_merge_switch(index, in, n, made, nout, start, 0, partitions ? nout : 0, NULL, NULL);
 	return true;
 }
 
@@ -370,7 +381,7 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 #ifdef SIFT_TESTING
 	sift_test_col_workers = sh->nlaunched;
 #endif
-	segs = collect_segments(ldr, &nsegs);
+	segs = sift_colp_collect(ldr->parts, sh->segcap, sh->nlaunched + 1, &nsegs);
 	gap = sh->gap;
 	gapn = sh->gapn;
 	nmerge = info->ii_Concurrent ? 0 : sh->nlaunched;

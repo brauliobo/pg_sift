@@ -7,7 +7,7 @@
 #   scripts/valgrind.sh --leaks [--major 17|18] [TEST...]   the leak gate: the curated tests of scripts/valgrind-leaks.tests (about ten minutes of memcheck) with leak checking, every definite
 #                                                       leak with a pg_sift frame failing the run unless a row of scripts/valgrind-leaks.allow (reviewed, one line of evidence each) covers it;
 #                                                       in scripts/ci.sh: SIFT_CI_LEAKS=1 scripts/ci.sh quick, or SIFT_CI_JOBS=valgrind-leaks scripts/ci.sh quick
-#   scripts/valgrind.sh --leaks-selftest                a planted leak (sift._test_leak('palloc'), test leak_planted) must fail that gate
+#   scripts/valgrind.sh --leaks-selftest                a planted leak (sift._test_leak('palloc'), test leak_planted) must fail that gate, and a planted context (planted.context = on) the per-test hooks of scripts/leakcheck.sh
 #
 # Memcheck is 20 to 50 times slower, so the default tests are the memory-sensitive paths (list below; SIFT_VALGRIND_FULL=1 adds the slow ones)
 # (`col_enc` alone takes over 30 minutes: name it to run it). The whole run is bounded by SIFT_VALGRIND_TIMEOUT seconds (default 3000; a run that hits it fails). The postmaster and every
@@ -37,9 +37,10 @@ source "$REPO/scripts/source-snapshot.sh"
 MASSIF=
 [[ ${1:-} != --massif ]] || { MASSIF=1; shift; }
 if [[ ${1:-} == --leaks-selftest ]]; then
-	out=$("$0" --leaks leak_planted 2>&1) && { echo "valgrind: the planted leak did not fail the leak gate"; exit 1; }
+	out=$(PGOPTIONS="-c planted.context=on" "$0" --leaks leak_planted 2>&1) && { echo "valgrind: the planted leak did not fail the leak gate"; exit 1; }
 	grep -q 'FAIL: .*sift_test_leak' <<<"$out" || { echo "valgrind: the leak gate failed, but not on the planted leak:"; tail -n 20 <<<"$out"; exit 1; }
-	echo "valgrind: the planted leak fails the leak gate"
+	grep -q 'leak in regress-leak_planted: .*sift leak: memory context' <<<"$out" || { echo "valgrind: the per-test hooks did not fail the planted context:"; tail -n 20 <<<"$out"; exit 1; }
+	echo "valgrind: the planted leak fails the leak gate, and the planted context the per-test hooks"
 	exit 0
 fi
 [[ ${1:-} != --leaks ]] || { export SIFT_VALGRIND_LEAKS=1 LEAKSET=1; shift; }
@@ -93,7 +94,7 @@ container() {
 	# the server build needs the network the first time (the tarball), the tests do not
 	"${run[@]}" "$image" /src/scripts/pg-assert.sh --valgrind "${PGA[@]}" >/dev/null || { rc=1; echo "valgrind: the PostgreSQL build in the container failed"; return 1; }
 	[[ -z ${SIFT_VALGRIND_ARTIFACTS:-} ]] || mkdir -p "$SIFT_VALGRIND_ARTIFACTS"
-	"${run[@]}" --network none -v "$tmp/scratch:/scratch" -e SIFT_TMP=/scratch -e SIFT_VALGRIND_INSIDE=1 -e KEEP="${KEEP:-}" \
+	"${run[@]}" --network none -v "$tmp/scratch:/scratch" -e SIFT_TMP=/scratch -e SIFT_VALGRIND_INSIDE=1 -e KEEP="${KEEP:-}" ${PGOPTIONS:+-e PGOPTIONS="$PGOPTIONS"} \
 		${SIFT_VALGRIND_ARTIFACTS:+-v "$SIFT_VALGRIND_ARTIFACTS:/artifacts" -e SIFT_VALGRIND_ARTIFACTS=/artifacts} ${SIFT_VALGRIND_LEAKS:+-e SIFT_VALGRIND_LEAKS=1} \
 		${SIFT_MASSIF_ROWS:+-e SIFT_MASSIF_ROWS="$SIFT_MASSIF_ROWS"} ${SIFT_VALGRIND_ACCUM:+-e SIFT_VALGRIND_ACCUM=1} ${SIFT_VALGRIND_ORIGINS:+-e SIFT_VALGRIND_ORIGINS=1} ${SIFT_VALGRIND_SIMD:+-e SIFT_VALGRIND_SIMD="$SIFT_VALGRIND_SIMD"} \
 		${SIFT_VALGRIND_TIMEOUT:+-e SIFT_VALGRIND_TIMEOUT="$SIFT_VALGRIND_TIMEOUT"} "$image" /src/scripts/valgrind.sh ${MASSIF:+--massif} "${PGA[@]}" "${TESTS[@]}" || rc=$?
@@ -147,7 +148,7 @@ rc=0
 ART=${SIFT_VALGRIND_ARTIFACTS:-}
 cleanup() {
 	pg_ctl -D "$DATA" -m immediate -t 120 stop >/dev/null 2>&1 || true
-	[[ -z $ART || -n $MASSIF ]] || cp -f "$WORK"/vg/*.log "$WORK/postgres.out" "$ART"/ 2>/dev/null || true
+	[[ -z $ART || -n $MASSIF ]] || cp -f "$WORK"/vg/*.log "$SIFT_TMP/postgres.log" "$ART"/ 2>/dev/null || true
 	(( rc )) || [[ -n ${KEEP:-} ]] || rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -163,9 +164,9 @@ LEAKS=(--leak-check=no)
 [[ -z ${SIFT_VALGRIND_LEAKS:-} ]] || LEAKS=(--leak-check=full --show-leak-kinds=definite,possible --errors-for-leak-kinds=none)
 VG=(valgrind --quiet "${DBG[@]}" --trace-children=yes "${LEAKS[@]}" --error-exitcode=99 --fullpath-after= --suppressions="$PREFIX/share/valgrind.supp"
 	--suppressions="$REPO/scripts/valgrind-sift.supp" --error-markers=VALGRINDERROR-BEGIN,VALGRINDERROR-END --log-file="$WORK/vg/%p.log" ${SIFT_VALGRIND_ORIGINS:+--track-origins=yes})
-nice "${VG[@]}" postgres -D "$DATA" >"$WORK/postgres.out" 2>&1 &
+nice "${VG[@]}" postgres -D "$DATA" >"$SIFT_TMP/postgres.log" 2>&1 &
 for _ in $(seq 600); do pg_isready -q -h "$SOCK" -p "$PORT" && break; sleep 1; done
-pg_isready -q -h "$SOCK" -p "$PORT" || { echo "valgrind: the server did not start in 600 s"; tail -n 20 "$WORK/postgres.out"; rc=1; exit 1; }
+pg_isready -q -h "$SOCK" -p "$PORT" || { echo "valgrind: the server did not start in 600 s"; tail -n 20 "$SIFT_TMP/postgres.log"; rc=1; exit 1; }
 createdb -U postgres "${SIFT_DB:-sift}" 2>/dev/null || true
 
 # one pg_regress per test: the seconds of each are printed (they size the default list), and the bound covers the whole loop

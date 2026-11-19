@@ -76,7 +76,7 @@ sift_col_net_write(SiftWriteTarget *wt, SiftColSegment *seg, const SiftSegEntry 
 	fresh.flags |= SIFT_SEG_NET;
 	fresh.bytes = entry->bytes + (blocks - (seg->sr.npages - keep_pages)) * BLCKSZ;
 	sift_wt_finish(wt);
-	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw_dir,.release = release,.nrelease = nrelease,.extra = InvalidBuffer});
+	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw_dir,.nadd = 1,.release = release,.nrelease = nrelease,.extra = InvalidBuffer});
 	return blocks + 1;
 }
 
@@ -101,7 +101,7 @@ net_write(Relation index, SiftWriteTarget *wt, const void *arg)
 void
 maint_net_refresh(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	uint64		largest = 0;
 
 	if (RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
@@ -110,7 +110,7 @@ maint_net_refresh(Relation index)
 	if (!sift_test_col_net)
 		return;
 #endif
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			largest = Max(largest, snap->segs[i].ndocs);

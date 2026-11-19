@@ -29,7 +29,11 @@ extern void sift_colsrc_stamp(Relation index, SiftSrcStamp *stamp);
  * scan's. mcxt holds everything the source allocates until sift_colsrc_close. view: the directory another source of the statement exported
  * (sift_colsrc_view_export), NULL to read it now.
  */
-extern SiftSrcSource *sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
+extern SiftSrcSource *sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view, const SiftKeyRange *keys);
+/* The leaf a scan of the index may be confined by (provider.h key_leaf), -1: none: a scan reads all of it */
+extern int	sift_colsrc_key_leaf(Relation index);
+/* The keys of the cut of index that the conjuncts z[0..nz) confine a scan to (provider.h key_range): the keys for sift_colsrc_open */
+extern bool sift_colsrc_key_range(Relation index, const SiftSrcPrune *z, int nz, SiftKeyRange *out);
 /* ... for a scan of the scope segments of an index that declares a scope (col/scope.h, agg/scope.c): the rows replicated by scope key, no entity row, no write buffer */
 extern SiftSrcSource *sift_colsrc_open_scope(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
 /* ... and the rows of the write buffers it expands by the pairs rd->delta lists, as its units  */

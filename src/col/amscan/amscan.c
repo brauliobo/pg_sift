@@ -271,9 +271,9 @@ sift_col_amendscan(IndexScanDesc scan)
  * the last probe still current under the same snapshot, and begins on them again: the directory and the headers of the segments are not read for every key.
  */
 static SiftColSource *
-col_scan_source(ColScanOpaque *so, IndexScanDesc scan, uint32 flags)
+col_scan_source(ColScanOpaque *so, IndexScanDesc scan, uint32 flags, const SiftKeyRange *keys)
 {
-	if (so->src != NULL && (so->sflags != flags || so->ssnap != scan->xs_snapshot || !sift_col_current(so->src)))
+	if (so->src != NULL && (so->sflags != flags || so->ssnap != scan->xs_snapshot || !sift_col_current(so->src) || !sift_col_covers(so->src, keys)))
 	{
 		sift_col_close(so->src);
 		so->src = NULL;
@@ -281,7 +281,7 @@ col_scan_source(ColScanOpaque *so, IndexScanDesc scan, uint32 flags)
 	}
 	if (so->src == NULL)
 	{
-		so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->scx, flags, NULL);
+		so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->scx, flags, NULL, keys);
 		so->sflags = flags;
 		so->ssnap = scan->xs_snapshot;
 	}
@@ -376,7 +376,8 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 		if (sift_col_wbuf_lookup_ok(&so->defs[so->preds[i].col], &so->preds[i]) && (wl < 0 || so->preds[i].nvals < so->preds[wl].nvals))
 			wl = i;
 	col_tomb_open(scan, so, rowkey);
-	so->src = col_scan_source(so, scan, SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS | (wl >= 0 ? SIFT_COLO_NOWBUF : 0) | (scan->xs_want_itup ? 0 : SIFT_COLO_POINT_TIDS | (lazy ? SIFT_COLO_POINT_LAZY : 0)));
+	so->src = col_scan_source(so, scan, SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS | (wl >= 0 ? SIFT_COLO_NOWBUF : 0) | (scan->xs_want_itup ? 0 : SIFT_COLO_POINT_TIDS | (lazy ? SIFT_COLO_POINT_LAZY : 0)),
+							  sat && sift_col_key_range(scan->indexRelation, so->preds, scan->numberOfKeys, &so->keys) ? &so->keys : NULL);
 	if (sat)
 	{
 		ItemPointerData *wt = NULL;

@@ -395,6 +395,13 @@ sift_colw_set_fill(SiftColSegWriter *w, SiftColFill *fill)
 	w->fill = fill;
 }
 
+void
+sift_colw_on_first_unit(SiftColSegWriter *w, SiftColFirstUnitFn fn, void *arg)
+{
+	w->first_fn = fn;
+	w->first_arg = arg;
+}
+
 static void colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 
 void
@@ -432,6 +439,8 @@ colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 			w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);
 	}
 	Assert(b->nrows > 0 && b->schema->ncols == ncols);
+	if (w->first_fn != NULL && w->nsb == 0)
+		w->first_fn(w->first_arg, b);
 	SIFT_INVARIANT(w->nsb == 0 || b->sb > w->sbdir[w->nsb - 1].id, "sift_col: superblock %u added after %u", b->sb,
 				   w->nsb > 0 ? w->sbdir[w->nsb - 1].id : 0);
 	if (w->nsb == w->capsb)
@@ -580,26 +589,28 @@ sift_colw_leaves_memory(int leaves, int ords, bool grouped)
 	return leaves ? (Size) leaves * 16 + (grouped ? (Size) ords * 9 : 0) + 24 + 32 : 0;
 }
 
-Size
-sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols)
+/* The leaves that keep (key, address) entries until the segment is done (a point directory or an order array), of them ords order arrays */
+int
+sift_colw_entry_leaves(const SiftCPaggSpec *spec, int ncols, int *ords)
 {
-	int			leaves = 0,
-				ords = 0;
+	int			leaves = 0;
 
+	*ords = 0;
 	for (int c = 0; c < ncols; c++)
 	{
 		leaves += spec->point_tid[c] || spec->gorder[c];
-		ords += spec->gorder[c] != 0;
+		*ords += spec->gorder[c] != 0;
 	}
-	return sift_colw_leaves_memory(leaves, ords, spec->gorder_group > 0);
+	return leaves;
 }
 
 Size
-sift_colw_fit_budget(Size budget, uint64 seg_rows, uint64 rows_left, int segs_left)
+sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols)
 {
-	double		need = (double) rows_left / Max(segs_left, 1);
+	int			ords;
+	int			leaves = sift_colw_entry_leaves(spec, ncols, &ords);
 
-	return need > (double) seg_rows ? (Size) ((double) budget * need / (double) Max(seg_rows, 1)) : budget;
+	return sift_colw_leaves_memory(leaves, ords, spec->gorder_group > 0);
 }
 
 void

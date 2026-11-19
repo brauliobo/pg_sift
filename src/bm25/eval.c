@@ -29,14 +29,14 @@ sift_state_open_dir(Relation index, MemoryContext mcxt, const SiftDirSnapshot *d
 	st->index = index;
 	st->mcxt = mcxt;
 	if (dir)
-		st->dir = *dir;
+		st->dir = sift_dir_copy(dir);
 	else
-		sift_dir_read(index, &st->dir);
+		st->dir = sift_dir_read(index);
 	sift_analyzer_config_from_index(index, &cfg);
-	if (sift_dir_layout_differs(&st->dir, cfg.hash))
+	if (sift_dir_layout_differs(st->dir, cfg.hash))
 		sift_lane_layout_error(index, "analyzer options");
 	st->analyzer = sift_analyzer_create(&cfg, mcxt);
-	st->priv = palloc0(Max(st->dir.nsegs, 1) * sizeof(SiftSegment *));
+	st->priv = palloc0(Max(st->dir->nsegs, 1) * sizeof(SiftSegment *));
 	MemoryContextSwitchTo(old);
 	return st;
 }
@@ -52,7 +52,7 @@ sift_state_close(SiftIndexState *st)
 {
 	SiftSegment **segs = st->priv;
 
-	for (int i = 0; i < st->dir.nsegs; i++)
+	for (int i = 0; i < st->dir->nsegs; i++)
 		if (segs[i])
 			sift_seg_close(segs[i]);
 }
@@ -92,7 +92,7 @@ state_segment(SiftIndexState *st, int i)
 
 	if (segs[i] == NULL)
 	{
-		segs[i] = sift_seg_open(st->index, &st->dir.segs[i], st->mcxt);
+		segs[i] = sift_seg_open(st->index, &st->dir->segs[i], st->mcxt);
 		sift_sr_release(&segs[i]->sr);
 	}
 	return segs[i];
@@ -467,7 +467,7 @@ wide_names(SiftPlan *p, EvalLeaf *l, char **ckey, int *cklen)
 static void
 widen_leaf(SiftPlan *p, EvalLeaf *l)
 {
-	SiftScoreRef ref = {(float4) p->st->dir.meta.k1, (float4) p->st->dir.meta.b, 0};
+	SiftScoreRef ref = {(float4) p->st->dir->meta.k1, (float4) p->st->dir->meta.b, 0};
 	char	   *ckey;
 	int			cklen;
 
@@ -611,11 +611,11 @@ plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, cons
 	p->queries = queries;
 	p->nqueries = nqueries;
 	p->mcxt = st->mcxt;
-	p->segno = MemoryContextAlloc(st->mcxt, Max(st->dir.nsegs, 1) * sizeof(int));
-	p->wbufno = MemoryContextAlloc(st->mcxt, Max(st->dir.nsegs, 1) * sizeof(int));
-	for (int i = 0; i < st->dir.nsegs; i++)
+	p->segno = MemoryContextAlloc(st->mcxt, Max(st->dir->nsegs, 1) * sizeof(int));
+	p->wbufno = MemoryContextAlloc(st->mcxt, Max(st->dir->nsegs, 1) * sizeof(int));
+	for (int i = 0; i < st->dir->nsegs; i++)
 	{
-		if (st->dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
+		if (st->dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
 		{
 			p->wbufno[p->nwbuf++] = i;
 			continue;
@@ -743,7 +743,7 @@ node_prob(const SiftPlan *p, const EvalNode *n, Estimate *est)
 uint32
 sift_plan_dir_version(const SiftPlan *p)
 {
-	return p->st->dir.version;
+	return p->st->dir->version;
 }
 
 double

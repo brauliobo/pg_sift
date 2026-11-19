@@ -18,6 +18,7 @@
 #define DIR(page)	((SiftDirectoryData *) SiftPageGetData(page))
 #define FL(page)	((SiftFreeListData *) SiftPageGetData(page))
 #define DIR_USED(n)	(offsetof(SiftDirectoryData, segs) + (n) * sizeof(SiftSegEntry))
+#define DIR_CHAINED_USED	(offsetof(SiftDirectoryData, segs) + sizeof(BlockNumber))
 #define FL_USED(n)	(offsetof(SiftFreeListData, ext) + (n) * sizeof(SiftFreeExtent))
 #define ULL(x)		((unsigned long long) (x))
 

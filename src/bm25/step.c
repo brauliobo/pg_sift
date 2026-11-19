@@ -567,10 +567,10 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 static bool
 still_there(Relation index, uint64 gen, SiftSegKind kind)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	bool		found;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	found = has_segment(snap, gen, kind);
 	pfree(snap);
 	return found;
@@ -580,10 +580,10 @@ still_there(Relation index, uint64 gen, SiftSegKind kind)
 SiftStepResult
 promote_next(Relation index, bool propagate, uint64 *busy)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	SiftStepResult	r = SIFT_STEP_IDLE;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs && r == SIFT_STEP_IDLE; i++)
 	{
 		SiftSegEntry s = snap->segs[i];
@@ -606,10 +606,21 @@ promote_next(Relation index, bool propagate, uint64 *busy)
 typedef struct MergeSel
 {
 	int			n;
-	SiftSegEntry seg[SIFT_MAX_SEGMENTS];
+	int			cap;			/* the entries seg and busy have room for: those of the directory last read */
+	SiftSegEntry *seg;
 	int			nbusy;			/* generations others claimed: the policy leaves them out */
-	uint64		busy[SIFT_MAX_SEGMENTS];
+	uint64	   *busy;
 } MergeSel;
+
+static void
+merge_sel_room(MergeSel *sel, int nsegs)
+{
+	if (nsegs <= sel->cap)
+		return;
+	sel->cap = Max(nsegs, 2 * sel->cap);
+	sel->seg = sel->seg ? repalloc(sel->seg, sel->cap * sizeof(SiftSegEntry)) : palloc(sel->cap * sizeof(SiftSegEntry));
+	sel->busy = sel->busy ? repalloc(sel->busy, sel->cap * sizeof(uint64)) : palloc(sel->cap * sizeof(uint64));
+}
 
 static bool
 is_busy(const MergeSel *sel, uint64 gen)
@@ -635,8 +646,7 @@ pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, bool dead_o
 	if (msel->nbusy > 0)
 	{
 		/* a segment another step claimed is still an entry of the directory but is not offered */
-		view = palloc(sizeof(SiftDirSnapshot));
-		*view = *snap;
+		view = sift_dir_copy(snap);
 		for (int i = 0; i < view->nsegs; i++)
 			if (is_busy(msel, view->segs[i].gen))
 				view->segs[i].kind = SIFT_SEG_WBUF_SEALED;
@@ -658,7 +668,7 @@ pick_policy(Relation index, const SiftDirSnapshot *snap, bool force, bool dead_o
 static int
 pick_smallest(const SiftDirSnapshot *snap, int want, int fanin, MergeSel *sel)
 {
-	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
+	SiftSegEntry *imm = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
 	uint64		sum = 0;
 	int			n = 0,
 				k = 0;
@@ -672,6 +682,7 @@ pick_smallest(const SiftDirSnapshot *snap, int want, int fanin, MergeSel *sel)
 		sel->seg[k] = imm[k];
 		sum += imm[k].bytes;
 	}
+	pfree(imm);
 	return k < 2 ? 0 : k;
 }
 
@@ -820,10 +831,10 @@ claim_all(Relation index, MergeSel *sel)
 static bool
 all_there(Relation index, const MergeSel *sel)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	bool		all = true;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < sel->n; i++)
 		all &= has_segment(snap, sel->seg[i].gen, SIFT_SEG_IMMUTABLE);
 	pfree(snap);
@@ -834,13 +845,16 @@ all_there(Relation index, const MergeSel *sel)
 SiftStepResult
 merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap = NULL;
 	MergeSel   *sel = palloc0(sizeof(MergeSel));
 	SiftStepResult	r = SIFT_STEP_IDLE;
 
 	for (int tries = 0; tries < CLAIM_TRIES && r == SIFT_STEP_IDLE; tries++)
 	{
-		sift_dir_read(index, snap);
+		if (snap != NULL)
+			pfree(snap);
+		snap = sift_dir_read(index);
+		merge_sel_room(sel, snap->nsegs);
 		if ((sel->n = pick_merge(index, snap, force, goal, sel)) == 0)
 			break;
 		/* a pick that met claimed segments learned them (at least one more), so it is not a try: the policy offers the rest next, and a step that leaves the claimed ones to their owners reaches a merge of its own */
@@ -856,6 +870,11 @@ merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint6
 	}
 	if (r == SIFT_STEP_IDLE && sel->nbusy > 0)
 		*busy = sel->busy[0];
+	if (sel->seg)
+	{
+		pfree(sel->seg);
+		pfree(sel->busy);
+	}
 	pfree(sel);
 	pfree(snap);
 	return r;
