@@ -22,7 +22,7 @@ check "key_cut, a merge that one process makes (no partitions): the build is mad
 check "no key_cut: the participants build it" test "$(built "SET sift.col_auto_merge_partition_kb = 0" "'off'" | cut -d' ' -f1)" -ge 1
 check "key_cut, a merge in 3 slices or more: the build is made by one" test "$(built "SET sift.col_auto_merge_partition_kb = 256" "'ts'")" == "0 0 "
 check "... with the test option the participants build it and merge it in the slices" test "$(built "SET sift.col_auto_merge_partition_kb = 256; SET sift.test_col_parallel_always = on" "'ts'" | cut -d' ' -f2)" -ge 3
-echo "# verify: $(sql mc "SELECT sift.col_verify('t_idx', true)" 2>&1 | head -c 600)"
-check "the index verifies" test -z "$(sql mc "SELECT sift.col_verify('t_idx', true)" 2>&1)"
+out=$(sql mc "SELECT sift.col_verify('t_idx', true)" 2>&1)
+check "the index verifies" test -z "$out"
 check "it answers as the heap does" test "$(sql mc "SET enable_seqscan = off" "SELECT count(*), sum(v) FROM t WHERE ts < 1000000000")" == "$(sql mc "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*), sum(v) FROM t WHERE ts < 1000000000")"
 finish

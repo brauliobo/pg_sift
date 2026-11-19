@@ -12,7 +12,7 @@ SET sift.async_maintenance = off;
 SET sift.test_col_segment_kb = 1500;
 SET sift.col_unit_rows = 1200;
 SET sift.test_col_pick_cache_blocks = 64;
-SET sift.test_col_spool_layer = 1;
+SET sift.test_col_spool_layer = 4;
 
 -- ch_sorted: k follows the heap; ch_noisy: half of it is displaced; ch_plain: k follows the heap and there is no btree
 SELECT setseed(0.42);
