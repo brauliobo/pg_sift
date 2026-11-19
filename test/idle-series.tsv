@@ -17,7 +17,7 @@ text_like	select count(*) from {f} where txt like '%99%'
 percentile	select percentile_cont(0.5) within group (order by amount) from {f}	
 partition_group	select k, count(*) from {p} group by 1 limit 2	
 update	update im set amount = amount + 1 where k_lo < 2	
-insert	insert into im select g+(select coalesce(max(id),9000000) from im where id>=9000000), g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless w'||g from generate_series(1,200) g	
+insert	insert into im select g+(select coalesce(max(id),9000000) from im where id>=9000000), g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless w'||g from generate_series(1,100) g	
 vacuum	vacuum im	
 col_merge	select sift.col_merge('im_col'::regclass, true)	-
 bm_merge	select sift.merge('im_bm'::regclass, true)	-

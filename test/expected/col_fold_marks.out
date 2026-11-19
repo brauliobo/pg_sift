@@ -86,7 +86,7 @@ SELECT (marks()).deleted AS delete_marks, dead() AS dead_before;
 SELECT * FROM chk('deleted, marks in the log');
            test            | same_as_heap | decided_by_log 
 ---------------------------+--------------+----------------
- deleted, marks in the log | t            |          20000
+ deleted, marks in the log | t            |          14238
 (1 row)
 
 SELECT sift._test_col_fold_marks('events_c') AS folded_deleted, (marks()).deleted AS delete_marks_after, dead() AS dead_after;
@@ -130,7 +130,7 @@ SELECT sift._test_col_fold_marks('events_c') AS folded_in_progress;
 SELECT * FROM chk('own deletes in progress');
           test           | same_as_heap | decided_by_log 
 -------------------------+--------------+----------------
- own deletes in progress | t            |          18462
+ own deletes in progress | t            |              0
 (1 row)
 
 COMMIT;

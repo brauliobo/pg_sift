@@ -12,6 +12,7 @@
 #endif
 #include "col/build/build_int.h"
 #include "col/point.h"
+#include "core/limits.h"
 
 /*
  * col/build/build.c - CREATE INDEX / REINDEX of a sift_col index: the heap scan forms the rows of one superblock at a time (a batch)
@@ -58,7 +59,7 @@ sift_colb_budget(int nslots)
 	if (sift_test_col_segment_kb > 0)
 		return (Size) sift_test_col_segment_kb * 1024;
 #endif
-	return Max(b, nslots == 1 ? SIFT_COL_BUILD_SERIAL_BUDGET : SIFT_COL_BUILD_MIN_BUDGET);
+	return Max(b, (Size) (nslots == 1 ? sift_limit(build_serial_budget, SIFT_COL_BUILD_SERIAL_BUDGET) : sift_limit(build_min_budget, SIFT_COL_BUILD_MIN_BUDGET)));
 }
 
 /* The segment a participant writes without key_cut: its writer within its share of maintenance_work_mem */
@@ -76,6 +77,18 @@ run_cap(int nslots)
 }
 
 /*
+ * The rows this participant will scan: the rows a heap page has given so far over the pages of the heap, which hold the rest of the scan whatever the planner's
+ * estimate (none for a table never analyzed, a stale one) says; the pages not yet read are those of the share that remain. The estimate stands before a page is read.
+ */
+static double
+colb_share_rows(const ColBuild *b)
+{
+	if (b->pages_seen == 0)
+		return (double) b->share;
+	return b->indexed / b->pages_seen * Max((double) b->pages_seen, (double) b->heap_pages / b->nslots);
+}
+
+/*
  * The memory the rows of a run may take (held, after the trims) before it is written: the budget in the bytes the batches took before they were trimmed, which it
  * was set for (the runs are the rows they were), or more when the runs of the participant's share of the rows would not fit the directory with it (a run past the
  * directory is merged with others while the table is scanned, and a row is written once more for each level of the merges: 6 million of 10 million rows at
@@ -84,7 +97,7 @@ run_cap(int nslots)
 Size
 colb_run_budget(ColBuild *b, Size held)
 {
-	double		need = (double) held / b->held_rows * b->share / Max(b->maxsegs - 3, 1);
+	double		need = (double) held / b->held_rows * colb_share_rows(b) / Max(b->maxsegs - 3, 1);
 
 	return Max((Size) ((double) b->budget * held / (held + b->trimmed)), (Size) Min(need, (double) b->run_cap));
 }
@@ -237,13 +250,13 @@ colb_write_run(ColBuild *b, bool last)
 }
 
 /*
- * The directory holds maxsegs segments, the last of them whatever is left: the rest of the table (the heap's estimate, a quarter over) must fit the segments
+ * The directory holds maxsegs segments, the last of them whatever is left: the rest of the table (the rows its pages have given so far over the pages left, a quarter over) must fit the segments
  * that remain, so a budget that would overrun them grows to what they need, instead of the last segment holding the rows no budget cut.
  */
 static void
 fit_budget(ColBuild *b, uint64 seg_rows)
 {
-	double		left = (double) b->share * 5 / 4 - b->indexed;
+	double		left = colb_share_rows(b) * 5 / 4 - b->indexed;
 
 	b->budget = sift_colw_fit_budget(b->budget, seg_rows, left > 0 ? (uint64) left : 0, b->maxsegs - b->nsegs);
 }
@@ -379,8 +392,8 @@ flush_page(ColBuild *b)
 }
 
 /* The rows indexed since the last report; a worker's go to the progress of the leader */
-static void
-report_rows(ColBuild *b)
+void
+colb_report_rows(ColBuild *b)
 {
 	pgstat_progress_parallel_incr_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) (b->indexed - b->reported));
 	b->reported = b->indexed;
@@ -400,6 +413,7 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	{
 		flush_page(b);
 		b->page = blk;
+		b->pages_seen++;
 	}
 	if (b->nrows == b->maxrows)
 	{
@@ -411,7 +425,7 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	MemoryContextReset(b->tmpcxt);
 	b->indexed++;
 	if (b->indexed - b->reported >= PROGRESS_ROWS)
-		report_rows(b);
+		colb_report_rows(b);
 }
 
 /* A participant's build without its fills: the families of a scope index (col/build/scope.c) are begun like the build of the entities, with their own cut and share the fill of the entities */
@@ -465,8 +479,10 @@ colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSe
 					allvisfrac;
 
 		table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
-		b->total_rows = tuples >= (double) PG_UINT64_MAX ? PG_UINT64_MAX : (uint64) tuples;
+		b->total_rows = b->entries = tuples >= (double) PG_UINT64_MAX ? PG_UINT64_MAX : (uint64) tuples;
 		b->share = b->total_rows / nslots;
+		b->heap_pages = pages;
+		b->nslots = nslots;
 		table_close(heap, NoLock);
 	}
 	return b;
@@ -494,12 +510,24 @@ sift_colb_scan(ColBuild *b, Relation heap, IndexInfo *info)
 	MemoryContext old = MemoryContextSwitchTo(b->cxt);
 	double		tuples;
 
-	if (sift_col_key_cut(b->r))
-		colb_spill_sample(b, heap, info);
-	tuples = table_index_build_scan(heap, b->index, info, false, true, build_cb, b, NULL);
+	if (OidIsValid(b->btree))
+	{
+		Snapshot	snap = RegisterSnapshot(info->ii_Concurrent ? GetTransactionSnapshot() : GetLatestSnapshot());
+
+		/* an MVCC scan does not see the tuples only an older snapshot sees, which the scan of a build takes: the index is not for the snapshots older than itself */
+		info->ii_BrokenHotChain = true;
+		tuples = colb_btree_scan(b, heap, info, snap, b->btree, NULL);
+		UnregisterSnapshot(snap);
+	}
+	else
+	{
+		if (sift_col_key_cut(b->r) || b->nscope > 0)
+			colb_spill_sample(b, heap, info);
+		tuples = table_index_build_scan(heap, b->index, info, false, true, build_cb, b, NULL);
+	}
 
 	MemoryContextSwitchTo(old);
-	report_rows(b);
+	colb_report_rows(b);
 	return tuples;
 }
 
@@ -520,7 +548,7 @@ sift_colb_scan_sb(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snapshot
 	tuples = table_index_build_range_scan(heap, b->index, info, true, false, false, 0, InvalidBlockNumber, build_cb, b, scan);
 	MemoryContextSwitchTo(old);
 	pgstat_progress_parallel_incr_param(PROGRESS_SCAN_BLOCKS_DONE, Min(SIFT_SB_PAGES, nblocks - start));
-	report_rows(b);
+	colb_report_rows(b);
 	return tuples;
 }
 
@@ -545,7 +573,7 @@ sift_colb_end(ColBuild *b)
 		colb_finish_runs(b->scope[s]);
 	sift_conn_fill_end(b->fill);
 	colb_scope_gather(b);
-	report_rows(b);
+	colb_report_rows(b);
 	return b->nsegs;
 }
 

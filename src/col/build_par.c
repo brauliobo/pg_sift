@@ -68,6 +68,36 @@ par_participants(double rows, int cols, bool point_dir, int maxp)
 	return chosen;
 }
 
+/* The segments of a participant: slot i is worker i, the last launched one the leader's */
+Size
+sift_colp_part_size(int maxsegs)
+{
+	return MAXALIGN(offsetof(SiftColPart, segs) + maxsegs * sizeof(SiftSegEntry));
+}
+
+SiftColPart *
+sift_colp_part(char *parts, int maxsegs, int slot)
+{
+	return (SiftColPart *) (parts + slot * sift_colp_part_size(maxsegs));
+}
+
+/* The segments of every participant that wrote one */
+SiftSegEntry *
+sift_colp_collect(char *parts, int maxsegs, int nslots, int *nsegs)
+{
+	SiftSegEntry *segs = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
+
+	*nsegs = 0;
+	for (int slot = 0; slot < nslots; slot++)
+	{
+		SiftColPart *part = sift_colp_part(parts, maxsegs, slot);
+
+		memcpy(segs + *nsegs, part->segs, part->nsegs * sizeof(SiftSegEntry));
+		*nsegs += part->nsegs;
+	}
+	return segs;
+}
+
 typedef struct ColShared
 {
 	SiftParCommon common;
@@ -88,23 +118,10 @@ typedef struct ColShared
 	double		indexed;
 } ColShared;
 
-/* The segments of a participant: slot i is worker i, the last launched one the leader's */
-typedef struct ColPart
-{
-	int			nsegs;
-	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
-} ColPart;
-
-static Size
-part_size(int maxsegs)
-{
-	return MAXALIGN(offsetof(ColPart, segs) + maxsegs * sizeof(SiftSegEntry));
-}
-
-static ColPart *
+static SiftColPart *
 part_of(const ColShared *sh, char *parts, int slot)
 {
-	return (ColPart *) (parts + slot * part_size(sh->maxsegs));
+	return sift_colp_part(parts, sh->maxsegs, slot);
 }
 
 static void
@@ -123,7 +140,7 @@ add_counts(ColShared *sh, double reltuples, double indexed)
 static void
 participate(ColShared *sh, char *parts, int slot, Relation heap, Relation index, IndexInfo *info, Snapshot snapshot)
 {
-	ColPart    *part = part_of(sh, parts, slot);
+	SiftColPart *part = part_of(sh, parts, slot);
 	SiftWriteTarget *wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 	ColBuild   *b = sift_colb_begin(index, wt, sh->budget, sh->maxsegs, part->segs, true, sh->nlaunched + 1, !sh->common.isconcurrent);
 	double		reltuples = 0;
@@ -195,17 +212,19 @@ init_shared(ColShared *sh, Relation heap, Relation index, IndexInfo *info, int n
 
 /*
  * Does a parallel build pay? Without key_cut the participants take disjoint superblocks and their segments stay as they are: the scan is shared and nothing follows
- * (1,000,000 rows of 13 columns: 1,700 ms alone, 780 ms with 2 workers, 340 ms with 8), as it does in a build that is not merged (CONCURRENTLY). With key_cut every
- * participant holds all the keys, and the merge that follows rewrites every row; the workers can only take it in slices of the key range, which read every input
- * again (instructions +77%, WAL twice, the file longer by the segments of the participants). On the tip (the rewrite of one process is 2.2 times faster than when the
- * slices were measured, and the grouped order arrays are built by default) it does not pay at any size measured: 13 columns, 1,000,000 rows, 64 MB of
- * `maintenance_work_mem`: 3,223 ms alone, 3,769 with 4 workers and 3,998 with 8 (CPU 3,201 / 3,736 / 3,962 ms of the backend alone); 4,000,000 rows: 13.7 s alone, 28.5 s with 4 and 29.1 s
- * with 8 on one core, so a key_cut index is built by one process (the test option sift.test_col_parallel_always keeps the participants' build for the tests of their merge).
+ * (1,000,000 rows of 13 columns: 1,700 ms alone, 780 ms with 2 workers, 340 ms with 8). With key_cut every participant holds all the keys, and the merge that follows
+ * rewrites every row; the workers can only take it in slices of the key range, which read every input again (instructions +77%, WAL twice, the file longer by the
+ * segments of the participants), and a concurrent build has no such merge at all: its participants' runs, each holding every key, would stay as the index. On the tip
+ * (the rewrite of one process is 2.2 times faster than when the slices were measured, and the grouped order arrays are built by default) it does not pay at any size measured:
+ * 13 columns, 1,000,000 rows, 64 MB of `maintenance_work_mem`: 3,223 ms alone, 3,769 with 4 workers and 3,998 with 8 (CPU 3,201 / 3,736 / 3,962 ms of the backend alone);
+ * 4,000,000 rows: 13.7 s alone, 28.5 s with 4 and 29.1 s with 8 on one core, so a key_cut index is built by one process, whichever form of CREATE INDEX or REINDEX makes it, and
+ * its rows go to the files of the ranges of the key (col/build/spill.c): the key is in one unit when the build ends (the test option sift.test_col_parallel_always keeps the
+ * participants' build for the tests of their merge).
  */
 static bool
 build_pays(Relation index, IndexInfo *info)
 {
-	if (info->ii_Concurrent || !sift_col_key_cut(sift_col_rel(index)))
+	if (!sift_col_key_cut(sift_col_rel(index)))
 		return true;
 #ifdef SIFT_TESTING
 	if (sift_test_col_parallel_always)
@@ -240,7 +259,7 @@ begin_parallel(Relation heap, Relation index, IndexInfo *info)
 		return NULL;
 	ldr = sift_par_enter(info->ii_Concurrent);
 	if (!sift_par_setup(ldr, "sift_col_build_worker", nworkers, sizeof(ColShared),
-						mul_size(part_size(SIFT_COL_BUILD_SEGMENTS / (nworkers + 1)), nworkers + 1), info->ii_Concurrent))
+						mul_size(sift_colp_part_size(SIFT_COL_BUILD_SEGMENTS / (nworkers + 1)), nworkers + 1), info->ii_Concurrent))
 		return NULL;
 	sh = ldr->shared;
 	init_shared(sh, heap, index, info, nworkers + 1);
@@ -248,24 +267,6 @@ begin_parallel(Relation heap, Relation index, IndexInfo *info)
 		return NULL;
 	open_gate(sh, heap, index, ldr->pcxt->nworkers_launched);
 	return ldr;
-}
-
-/* The segments of every participant that wrote one */
-static SiftSegEntry *
-collect_segments(const SiftParLeader *ldr, int *nsegs)
-{
-	const ColShared *sh = ldr->shared;
-	SiftSegEntry *segs = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
-
-	*nsegs = 0;
-	for (int slot = 0; slot <= sh->nlaunched; slot++)
-	{
-		ColPart    *part = part_of(sh, ldr->parts, slot);
-
-		memcpy(segs + *nsegs, part->segs, part->nsegs * sizeof(SiftSegEntry));
-		*nsegs += part->nsegs;
-	}
-	return segs;
 }
 
 /*
@@ -368,7 +369,7 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 #ifdef SIFT_TESTING
 	sift_test_col_workers = sh->nlaunched;
 #endif
-	segs = collect_segments(ldr, &nsegs);
+	segs = sift_colp_collect(ldr->parts, sh->maxsegs, sh->nlaunched + 1, &nsegs);
 	gap = sh->gap;
 	gapn = sh->gapn;
 	nmerge = info->ii_Concurrent ? 0 : sh->nlaunched;

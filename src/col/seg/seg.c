@@ -838,10 +838,16 @@ sift_col_dir_read_families(Relation index, SiftDirSnapshot *entity, SiftDirSnaps
 	sift_col_dir_family(scope, true);
 }
 
+static const SiftColDvUnit *
+dv_of(const SiftColSegment *seg, uint32 u)
+{
+	return seg->dv ? seg->dv->unit(seg->dv, seg, u) : NULL;
+}
+
 /* The dirty bit of the unit's SB, read from the LIVE page now: neither the directory snapshot nor an earlier read may stand for it, because
  * a scan must read liveness after it reads the all-visible mask */
-bool
-unit_dirty(SiftColSegment *seg, uint32 u)
+static bool
+unit_stored_dirty(SiftColSegment *seg, uint32 u)
 {
 	uint32		i;
 	uint8		b;
@@ -851,6 +857,12 @@ unit_dirty(SiftColSegment *seg, uint32 u)
 	i = seg->sbdir[u].id - seg->hdr->sb_lo;
 	b = sift_live_byte_kept(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &PRIV(seg)->live_pin);
 	return (b >> (i % 8)) & 1;
+}
+
+bool
+unit_dirty(SiftColSegment *seg, uint32 u)
+{
+	return dv_of(seg, u) != NULL || unit_stored_dirty(seg, u);
 }
 
 bool
@@ -875,7 +887,7 @@ sift_cseg_dirty_any(SiftColSegment *seg, uint32 first, uint32 n)
 
 		if (seg->sbdir[u].id < seg->hdr->sb_lo)
 			corrupt(seg, "Unit %u of %u (SB %u, the segment's SBs start at %u) is not a unit of this segment.", u, seg->nsb, seg->sbdir[u].id, seg->hdr->sb_lo);
-		any = sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf) >> (i % 8) & 1;
+		any = dv_of(seg, u) != NULL || (sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf) >> (i % 8) & 1);
 	}
 	if (BufferIsValid(buf))
 		UnlockReleaseBuffer(buf);
@@ -894,7 +906,7 @@ sift_cseg_dirty_units(SiftColSegment *seg, uint64 *bits)
 
 		if (seg->sbdir[u].id < seg->hdr->sb_lo)
 			corrupt(seg, "Unit %u of %u (SB %u, the segment's SBs start at %u) is not a unit of this segment.", u, seg->nsb, seg->sbdir[u].id, seg->hdr->sb_lo);
-		if (sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf) >> (i % 8) & 1)
+		if (dv_of(seg, u) != NULL || (sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf) >> (i % 8) & 1))
 			bits[u / 64] |= UINT64CONST(1) << (u % 64);
 	}
 	if (BufferIsValid(buf))
@@ -906,20 +918,25 @@ sift_cseg_live(SiftColSegment *seg, uint32 u, uint64 *bits)
 {
 	uint32		n,
 				nw;
+	const SiftColDvUnit *dv;
 
 	if (u >= seg->nsb)
 		corrupt(seg, "Unit %u of %u is not a unit of this segment.", u, seg->nsb);
+	dv = dv_of(seg, u);			/* the records are read before the liveness, as the log is (a fold clears the bits and then drops the records) */
 	n = seg->sbdir[u].nrows;
 	nw = SIFT_COL_NWORDS(n);
-	if (unit_dirty(seg, u))
-	{
+	if (unit_stored_dirty(seg, u))
 		sift_live_bits(&PRIV(seg)->live, seg->sbdir[u].rank_base, n, bits, nw);
-		return;
+	else
+	{
+		memset(bits, 0, nw * sizeof(uint64));
+		memset(bits, 0xFF, n / 64 * sizeof(uint64));
+		if (n % 64)
+			bits[n / 64] = (UINT64CONST(1) << (n % 64)) - 1;
 	}
-	memset(bits, 0, nw * sizeof(uint64));
-	memset(bits, 0xFF, n / 64 * sizeof(uint64));
-	if (n % 64)
-		bits[n / 64] = (UINT64CONST(1) << (n % 64)) - 1;
+	if (dv != NULL)
+		for (uint32 w = 0; w < nw; w++)
+			bits[w] &= ~dv->bits[w];
 }
 
 uint64

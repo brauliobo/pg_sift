@@ -17,6 +17,7 @@
 #include "core/cmp.h"
 #include "core/tomb.h"
 #include "core/tomb_int.h"
+#include "core/membudget.h"
 #include "core/rowmem.h"
 #include "core/damage.h"
 #define corrupt(rel, ...) \
@@ -89,6 +90,10 @@ tomb_reset(SiftTombLog *t, const SiftSegEntry *e)
 	memset(&t->keys, 0, sizeof(t->keys));
 	t->keys_cover = false;
 	t->nents = t->nrecent = 0;
+	t->foldable = t->foldable_dv = 0;
+	t->fold_due = false;
+	t->dvecs = 0;
+	t->dv_oldest = InvalidTransactionId;
 	sift_srun_reset(&t->spilled);
 	sift_srun_reset(&t->hotspilled);
 	if (t->hotm)
@@ -274,7 +279,13 @@ static void
 tomb_add(SiftTombLog *t, SiftTomb *batch, uint32 n)
 {
 	for (uint32 i = 0; i < n; i++)
-		if (batch[i].kind == SIFT_TOMB_UPDATE && (batch[i].flags & SIFT_TOMB_HOT))
+		if (batch[i].kind == SIFT_TOMB_DVEC)
+		{
+			t->dvecs++;
+			if (TransactionIdIsNormal(batch[i].xid) && (!TransactionIdIsNormal(t->dv_oldest) || TransactionIdPrecedes(batch[i].xid, t->dv_oldest)))
+				t->dv_oldest = batch[i].xid;
+		}
+		else if (batch[i].kind == SIFT_TOMB_UPDATE && (batch[i].flags & SIFT_TOMB_HOT))
 		{
 			if (t->hotm == NULL)
 			{
@@ -394,17 +405,23 @@ tomb_sync(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
 				capbatch = 0,
 				lastcnt;
 	uint64		synced;
-	uint64		chunk = t->spill ? Max(1024, tomb_mem_entries() / 4) : PG_UINT32_MAX;
+	uint64		chunk = t->spill ? Max(1, tomb_mem_entries() / 4) : PG_UINT32_MAX;
 	BlockNumber visited = 0,
 				last;
+	MemoryContext bcx,
+				oldcxt = CurrentMemoryContext;
 
 	if ((e = tomb_sync_header(rel, t, dir, &n, &blk)) == NULL)
 		return;
 	if (n == t->synced)
 		return;
 	/* the header says how many entries are new: the batch holds them, or a chunk of them that the memory of the log allows (appenders may add more while it is read) */
+	bcx = AllocSetContextCreate(CurrentMemoryContext, "sift tomb sync batch", ALLOCSET_SMALL_SIZES);
+	SIFT_MEM_SCOPE(tomb_sync_batch, bcx);
 	capbatch = Max(64, Min(n - t->synced, chunk) + SIFT_TOMB_CAP);
+	MemoryContextSwitchTo(bcx);
 	batch = sift_rows_alloc(capbatch * sizeof(SiftTomb));
+	MemoryContextSwitchTo(oldcxt);
 	synced = t->synced;
 	last = t->last;
 	lastcnt = t->lastcnt;
@@ -424,7 +441,7 @@ tomb_sync(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
 		if (nbatch + (tp->nent - from) > capbatch)
 		{
 			capbatch = Max(64, Max(capbatch * 2, nbatch + tp->nent));
-			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, batch, capbatch * sizeof(SiftTomb));
+			SIFT_REGROW_HUGE_IN(bcx, batch, capbatch * sizeof(SiftTomb));
 		}
 		for (uint32 i = from; i < tp->nent; i++)
 		{
@@ -440,6 +457,7 @@ tomb_sync(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
 		UnlockReleaseBuffer(buf);
 		if (nbatch >= chunk)
 		{
+			SIFT_MEM_CHECKPOINT();
 			tomb_add(t, batch, nbatch);
 			nbatch = 0;
 			t->synced = synced;
@@ -448,11 +466,14 @@ tomb_sync(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
 		}
 	}
 	if (nbatch > 0)
+	{
+		SIFT_MEM_CHECKPOINT();
 		tomb_add(t, batch, nbatch);
+	}
 	t->synced = synced;
 	t->last = last;
 	t->lastcnt = lastcnt;
-	pfree(batch);
+	MemoryContextDelete(bcx);
 }
 
 void

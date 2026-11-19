@@ -58,5 +58,9 @@ if [[ -n ${STATS:-} ]]; then
 	wait "$STATS" 2>/dev/null
 	cat "$LOG/stats.txt"
 fi
+# the skips, with their reasons (the logs of the jobs that passed are gone with the scratch directory; the retained summary has them), and the jobs that outgrew their estimate
+echo "jobs by state, and the skips with their reasons:"
+summary_report "$LOG/jobs.tsv" || failed=1
+[[ ! -s $LOG/estimates ]] || { echo "scratch above the estimate of EST_MB (scripts/ci/jobs.sh): job, measured MB, estimate MB"; sed 's/^/  /' "$LOG/estimates"; }
 printf 'wall %ss (%s lanes), peak scratch %s MB, logs %s\n' "$((SECONDS - t0))" "$LANES" "$(cat "$LOG/peak_mb" 2>/dev/null || echo '<2')" "$LOG"
 exit $failed

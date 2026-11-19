@@ -147,6 +147,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	for (int i = 0; i < src->dir.nsegs; i++)
 		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
 			src->seg[src->nseg++].seg = sift_cseg_open(index, &src->dir.segs[i], mcxt);
+	col_dv_open(src);
 	/* no index: segments_current (scan_unit.c) is the directory rule of a column scan, and it holds the map's trust through a promotion, which adds a segment and replaces none */
 	sift_vis_begin(&src->vis, heap, snapshot, NULL, 0);
 	SIFT_COL_JITTER();
@@ -280,38 +281,6 @@ sift_col_add_batches(SiftColSource *src, SiftColBatch *const *batches, int nbatc
 	src->nwtok = -1;
 	for (int i = 0; i < nbatches; i++)
 		scan_add_mem(src, batches[i], false, InvalidTransactionId, !sift_test_no_roots);
-}
-
-void
-scan_load_wbuf(SiftColSource *src)
-{
-	bool		own = src->nwtok >= 0;
-
-	if (own)
-	{
-		src->wtok = MemoryContextAllocZero(src->mcxt, Max(src->dir.nsegs, 1) * sizeof(SiftCWbufToken));
-		src->nwtok = 0;
-	}
-	for (int i = 0; i < src->dir.nsegs; i++)
-	{
-		int			n;
-		SiftColBatch **bs;
-		TransactionId stamp = InvalidTransactionId;
-
-		if (!sift_seg_is_wbuf(&src->dir.segs[i]))
-			continue;
-		/*
-		 * The version the scan read at open, not the current one, and that is enough. VACUUM bumps it after it flags records and before the heap frees their
-		 * addresses; batches kept at another version have their pages checked, and the flags the version shows are found. A flag it does not show (set after
-		 * the open, or before a bump the open preceded) leaves the batches as they were: its record belongs to a row dead to every snapshot, since the snapshot
-		 * of this scan, taken before the open, holds the heap back from removing anything it can see. An address freed after the open belongs to a row inserted
-		 * after that snapshot, which the heap check does not return.
-		 */
-		bs = sift_cwbuf_batches_shared(src->index, &src->dir.segs[i], src->schema, src->dir.version, src->mcxt, &n, own ? &src->wtok[src->nwtok++] : NULL, &stamp);
-		for (int j = 0; j < n; j++)
-			scan_add_mem(src, bs[j], true, stamp, (src->dir.segs[i].flags & SIFT_SEG_ROOTS) != 0);
-	}
-	src->mem_loaded = true;
 }
 
 static int
@@ -483,8 +452,7 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 	}
 	if (src->ptid_unsorted)
 		scan_ptid_merge_runs(src->ptid, src->nptid);
-	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
-		scan_load_wbuf(src);
+	scan_load_mem(src, preds, npreds);
 	src->order = palloc(Max(src->nmem, 1) * sizeof(ColMem *));
 	src->norder = 0;
 	for (int i = 0; i < src->nmem; i++)
@@ -515,8 +483,7 @@ sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, cons
 		return false;
 	MemoryContextReset(src->scan);
 	old = MemoryContextSwitchTo(src->scan);
-	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
-		scan_load_wbuf(src);
+	scan_load_mem(src, preds, npreds);
 	for (int i = 0; i < src->nmem && ok; i++)
 		if (src->mem[i].b->nrows > 0)
 		{

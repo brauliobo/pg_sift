@@ -1,0 +1,3 @@
+# scripts/check-codec-bytes.py: an exact size of a sift index in an expected file whose index is built with a compression that goes through LZ4 or zstd, and is no such size.
+# file:column<TAB>number of cells<TAB>why it is no size that follows the library. A new cell in the same column changes the number and fails the check.
+test/expected/col_index_basic.out:relation_blocks	1	an index of no rows: its two blocks are the metapage and the directory, whatever the compression

@@ -136,5 +136,12 @@ SCENARIOS+=(
 	"col_repair~SET sift.test_col_max_segments = 1@@CREATE INDEX docs_col ON docs USING sift_col (id, g, n)@@DELETE FROM docs WHERE id % 7 = 0@@VACUUM (INDEX_CLEANUP ON) docs@@SELECT sift._test_poke('docs_col', first_block, 32, 8, 1) FROM sift.col_extents('docs_col') WHERE what = 'liveness run'@@SELECT sift._test_poke('docs_col', first_block, 8178, 4, 2) FROM sift.col_extents('docs_col') WHERE what = 'liveness run'@@CHECKPOINT~SELECT count(*) FROM sift.col_repair('docs_col')"
 	"tbl_copy~$TBL@@COPY (SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i) TO '$D/load.csv' CSV~COPY tbl FROM '$D/load.csv' CSV; COPY tbl_h FROM '$D/load.csv' CSV"
 )
+# deletion records (core/tomb_dv.h): a committed statement deletes a fifth of the rows of an index that tracks its changes, so that the log holds records; the VACUUM and the fold clear their rows and drop them, the merge carries them to marks
+DVSET="ALTER TABLE docs ADD PRIMARY KEY (id); CREATE INDEX docs_col ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, track_changes = 'id')"
+SCENARIOS+=(
+	"dv_vacuum~$DVSET; DELETE FROM docs WHERE id % 5 = 0~VACUUM docs"
+	"dv_fold~$DVSET; DELETE FROM docs WHERE id % 5 = 0~SELECT sift._test_col_fold_marks('docs_col')"
+	"dv_merge~$DVSET; $(more 6001 7000); SELECT sift.col_promote('docs_col'); $(more 7001 8000); SELECT sift.col_promote('docs_col'); DELETE FROM docs WHERE id % 5 = 0~SELECT sift.col_merge('docs_col', true)"
+)
 DATA_OPS=" tbl_tomb tbl_copy "
 DAMAGED=" col_repair "

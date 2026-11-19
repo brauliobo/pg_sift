@@ -138,7 +138,7 @@ typedef struct SiftMetaPageData
 	uint32		maint_ok_ms;
 	uint16		maint_ok_job;	/* SiftJob */
 	uint16		shrink_blocked;	/* SiftShrinkBlock: why the last VACUUM left the file longer than the shrink target */
-	uint32		reserved;
+	uint32		inserted;		/* sift_col: the records of the write buffers promoted so far, modulo 2^32 (the word was reserved, 0 before: a library that does not know it leaves it as it is) */
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF
@@ -364,6 +364,10 @@ typedef struct SiftWbufWideHeaderData
 #define SIFT_WBUFPAGE_SEALED	0x0001
 #define SIFT_WBUFPAGE_SPANS	0x0002
 #define SIFT_WBUFPAGE_WIDE	0x0004	/* the wide bloom of the page is filled (set when the page is full: the pages being appended to have the small one) */
+#define SIFT_WBUFPAGE_KEYS	0x0008	/* column buffer of format SIFT_COL_FORMAT_WBUFKEY: some row that starts on the page has a key, and kmin..kmax of the page head hold the range of the keys */
+#define SIFT_WBUFPAGE_LEAF_SHIFT 8		/* the bits above hold the leaf the range is of, plus one (0: no row has started on the page) */
+#define SIFT_WBUFPAGE_LEAF_MASK	0xff00
+#define SIFT_WBUFPAGE_KEYUNK	0x0010	/* column buffer of format SIFT_COL_FORMAT_WBUFKEY: a row that starts on the page has a key the range cannot hold (an overflow value), so a read of a key range reads the page */
 
 #define SIFT_WBUF_DELETED	0x0001
 #define SIFT_WBUF_CONT		0x0002	/* more terms of the preceding doc: no dl, not counted */

@@ -6,15 +6,18 @@ results file, the tally of cells won, tied and lost follows its margins, and the
 """
 import argparse
 import importlib.util
+import itertools
 import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STEPS = os.path.join(HERE, '..', 'steps')
 sys.path.insert(0, STEPS)
 import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
+import extras  # noqa: E402
 import scope_stock_arms as arms  # noqa: E402
 import scope_stock_tables as tables  # noqa: E402
 
@@ -33,7 +36,7 @@ def raw_run(d, reads=READS, **meta):
     with open(os.path.join(d, 'run.meta'), 'w') as f:
         f.write(''.join('%s\t%s\n' % kv for kv in dict(
             dict(facts=240000, member_total=2648, pairs=3600, tenant_total=32, postgresql='18.6', pg_sift='5.0 (abc)', pg_ivm='1.17', size='quick', date='2026-11-13',
-                 arms=','.join(reads), skipped='none', tenants='1,4', classes=','.join(CLASSES)), **meta).items()))
+                 arms=','.join(reads), skipped='none', tenants='1,4', classes=','.join(CLASSES), load='load 0.10 0.20 0.30 cpu_pressure 1.00%'), **meta).items()))
     tsv(os.path.join(d, 'fixture.tsv'), 'tenant\tmember_total\tevents\tevents_pct\n', [(1, 1149, 120000, 49.5), (4, 268, 14000, 6.0)])
     for arm, (t1, t4) in reads.items():
         cells = [(arm, t, c, ms * 10, ms, 40, 3, ms * 12, ms * 2, 4, 30, 'md5' + c, 'ok', 'Scope Index')
@@ -133,6 +136,14 @@ class Merge(unittest.TestCase):
         self.assertIn('# pg_sift: 5.0 (def)', lines)
         self.assertIn('# pg_ivm: 1.17', lines)
         self.assertTrue(any(l.startswith('5.0 (def)\tt1:sum_by_month\tsift_scope\twarm_ms\t1.5') for l in lines))
+
+    def test_the_load_of_a_row_is_the_one_of_the_run_not_of_the_collect(self):
+        clock = itertools.count()
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(extras, 'host_load', side_effect=lambda: 'load now %s' % next(clock)):
+            os.makedirs(os.path.join(d, 'a')), os.makedirs(os.path.join(d, 'b'))
+            first, second = (open(collected(os.path.join(d, n))).read() for n in ('a', 'b'))
+        self.assertEqual(first, second)
+        self.assertIn('\tload 0.10 0.20 0.30 cpu_pressure 1.00%\t', first)
 
     def test_a_different_fixture_is_refused(self):
         with tempfile.TemporaryDirectory() as d:

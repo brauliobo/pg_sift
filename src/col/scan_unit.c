@@ -671,7 +671,7 @@ sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int c
 {
 	int			n = 0;
 
-	if ((src->flags & COLO_TABLE) || !src->mem_loaded)
+	if ((src->flags & COLO_TABLE) || !src->mem_loaded || src->mem_partial)
 		return false;
 	for (int i = 0; i < src->nmem; i++)
 		if (src->mem[i].b->nrows > 0)

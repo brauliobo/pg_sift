@@ -284,6 +284,7 @@ rows_desc(void)
 	TupleDescInitEntry(desc, 2, "sleaf", INT4OID, -1, 0);
 	TupleDescInitEntry(desc, 3, "skey", INT8OID, -1, 0);
 	TupleDescInitEntry(desc, 4, "hashes", BYTEAOID, -1, 0);
+	sift_tupdesc_finalize(desc);
 	return desc;
 }
 
