@@ -1,4 +1,4 @@
--- The preflight of an update that is not made yet: loads sift.upgrade_check() (the part sql/5.0/27-upgrade-check.sql, built into this file by scripts/sql-parts.sh) in a
+-- The preflight of an update that is not made yet: loads sift.upgrade_check() (the part sql/5.1/27-upgrade-check.sql, built into this file by scripts/sql-parts.sh) in a
 -- transaction that is rolled back and prints one row per finding, so that a database whose extension is older than the library can be checked.
 -- Run it as a superuser, on the primary, with the files of the new release installed and in a session that has not loaded the library before:
 --

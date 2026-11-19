@@ -282,7 +282,7 @@ Three `sift_col` options are accepted and ignored by 4.3 and still ignored by 5.
 
 ## What 5.1 writes that 5.0 does not read
 
-Three things are written that 5.0 refuses with the format error and never reads as damage ([FORMATS](FORMATS.md)): column format minor 52, column format minor 55 with the metapage minor 1.7 it raises, and a chained directory (metapage 1.7). `sift.upgrade_check` does not look at the stamp of a tombstone log. A 5.1 library reads every older minor; nothing is rebuilt.
+Three things are written that 5.0 refuses with the format error and never reads as damage ([FORMATS](FORMATS.md)): column format minor 52, column format minor 55 with the metapage minor 1.7 it raises, and a chained directory (metapage 1.7). `sift.upgrade_check('5.0')` lists each such index as a blocker with its command. A 5.1 library reads every older minor; nothing is rebuilt.
 
 | what | column format | to go back to 5.0 |
 |---|---|---|
@@ -556,7 +556,7 @@ An existing index or table keeps what it holds; the new default applies to units
 | column format minor 55 (the range of an integer key in every page of a write buffer), which raises the metapage to 1.7 | 5.1; 5.0 and older refuse the index with the format error of the metapage; `SET sift.col_wbuf_key_range = off` and `REINDEX` write the buffer of minor 51 and a metapage they read |
 | column format 46 (strings held by a shared value store) | 5.0; 4.3 and older refuse the segments and the store; `SET sift.col_value_store = off` and `REINDEX` write the strings in the segments (minor 44 at the most), `sift.col_format_minor` 14 does it for a release before 4.3 |
 
-`sql/5.0/27-upgrade-check.sql` holds this table; a release that adds a format adds its row there.
+`sql/5.1/27-upgrade-check.sql` holds this table; a release that adds a format adds its row there.
 
 ## Schema `sift` is open to PUBLIC since 3.3
 

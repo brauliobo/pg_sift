@@ -470,6 +470,10 @@ minors51() {
 		pass "this tree chains the directory of an index (metapage 1.7)" || fail "this tree chains the directory of an index (metapage 1.7)"
 	[[ $(psql_new -c "SELECT chained, format_minor FROM sift._test_dir_info('pl_ix')") == "f|2" ]] &&
 		pass "an index with none of the three stays at metapage 1.2" || fail "an index with none of the three stays at metapage 1.2"
+	[[ $(psql_new -c "SELECT string_agg(object || ':' || status, ' ' ORDER BY object) FROM sift.upgrade_check('5.0') WHERE kind = 'index'") == \
+		"ch_ix:blocker dv_ix:blocker pl_ix:ok wb_ix:blocker" ]] &&
+		pass "sift.upgrade_check('5.0') names the three indexes that 5.0 refuses and passes the other" ||
+		fail "sift.upgrade_check('5.0') names the three indexes that 5.0 refuses and passes the other"
 	want=$(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(v) FROM pl WHERE v > 100" | tail -1)
 	want_wb=$(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(v) FROM wb WHERE k = 3" | tail -1)
 	want_ch=$(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(v) FROM ch WHERE v > 100" | tail -1)

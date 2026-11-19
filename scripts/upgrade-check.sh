@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Upgrade preflight for several databases: runs sift.upgrade_check() in each and prints what to look at before
 # ALTER EXTENSION pg_sift UPDATE, a library swap or a downgrade. Nothing is changed: the function is loaded from sql/pg_sift_upgrade_check.sql (built from
-# sql/5.0/27-upgrade-check.sql, installed beside the extension scripts as pg_sift_upgrade_check.sql) in a transaction that is rolled back, so a database
+# sql/5.1/27-upgrade-check.sql, installed beside the extension scripts as pg_sift_upgrade_check.sql) in a transaction that is rolled back, so a database
 # whose extension is older than this checkout can be checked too (run it as a superuser, on the primary, with the new library files installed).
 # From 5.0 on, SELECT * FROM sift.upgrade_check() in the database does the same.
 #
