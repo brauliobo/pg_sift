@@ -60,14 +60,14 @@ test_ambuild(Relation heap, Relation index, IndexInfo *info)
 	IndexBuildResult *res = palloc0(sizeof(IndexBuildResult));
 
 	res->heap_tuples = table_index_build_scan(heap, index, info, true, false, build_cb, &bs, NULL);
-	pub.n = Min(bs.n, SIFT_MAX_SEGMENTS);
+	pub.n = Min(bs.n, SIFT_DIR_WIDE_MAX);
 	pub.entries = palloc(Max(pub.n, 1) * sizeof(SiftSegEntry));
 	for (int i = 0; i < pub.n; i++)
 		sift_test_write_segment(wt, i + 1, i64abs((int64) bs.v[i]), bs.v[i] < 0 ? 0 : (uint64) bs.v[i] + 1, 0, 0, &pub.entries[i]);
 	sift_store_init_meta(wt, sift_index_options(index), 0, "");
 	sift_wt_finish(wt);
 	if (pub.n > 0)
-		sift_dir_update(index, &(SiftDirChange) {.fn = publish_all, .arg = &pub, .extra = InvalidBuffer});
+		sift_dir_update(index, &(SiftDirChange) {.fn = publish_all, .arg = &pub, .nadd = pub.n, .extra = InvalidBuffer});
 	res->index_tuples = pub.n;
 	return res;
 }

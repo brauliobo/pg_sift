@@ -114,7 +114,8 @@ fit() { awk 'NF { n++; x[n] = $1; y[n] = $2; sx += $1; sy += $2 } END { mx = sx 
 U=$((SB_PAGES * TUPLES_PAGE))
 for mode in plain cut disjoint; do
 	cut=off; [[ $mode == plain ]] || cut=k_mid
-	sizes=("${SIZES[@]}"); [[ $mode != disjoint ]] || sizes=(36000 60000 96000 132000 168000)
+	# 13 segments of 0.5 to 1.5 partitions, apart in the key, are the minimum a forced merge leaves (the merge writes nothing): the disjoint steps are all past it
+	sizes=("${SIZES[@]}"); [[ $mode != disjoint ]] || sizes=(36000 132000 168000 204000 240000)
 	open_max=$((INPUTS + 1)); [[ $mode != disjoint ]] || open_max=1; [[ $mode != plain ]] || open_max=2
 	flat="" dictfit="" over="" tail_ok=1 total_bad=0 win_bad=0 chunk_bad=0 part_bad=0 spool_bad=0 dict_bad=0 dlast_bad=0 segs_bad=0 open_bad=0
 	for n in "${sizes[@]}"; do
@@ -139,6 +140,7 @@ for mode in plain cut disjoint; do
 		((dict <= dict_max && $(val "$out" col_merge_inputs) <= in_max)) || dict_bad=$((dict_bad + 1))
 		((open <= open_max * STR_LEAVES)) || open_bad=$((open_bad + 1))
 		((inputs == INPUTS + 1)) || segs_bad=$((segs_bad + 1))
+		((tree > 0)) || segs_bad=$((segs_bad + 1))
 		[[ $(val "$out" answers) == true ]] || segs_bad=$((segs_bad + 1))
 		((($(val "$out" last_dict)) == 0)) || dlast_bad=$((dlast_bad + 1))
 		((n < SATURATED[$mode])) || flat+="$n $((tree - dict))"$'\n'

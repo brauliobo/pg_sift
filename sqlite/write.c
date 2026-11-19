@@ -63,7 +63,7 @@ fanin(const SqVtab *vt)
 static int
 merge_steps(SqVtab *vt, int64_t max)
 {
-	uint64		sel[SIFT_MAX_SEGMENTS];
+	uint64		sel[SIFT_DIR_POLICY_MAX];
 	int64_t		steps = 0;
 
 	while (steps < max)
@@ -82,7 +82,7 @@ merge_steps(SqVtab *vt, int64_t max)
 static void
 optimize(SqVtab *vt)
 {
-	uint64		sel[SIFT_MAX_SEGMENTS];
+	uint64		sel[SIFT_DIR_POLICY_MAX];
 	int			at_once = 2 * fanin(vt);
 
 	for (;;)
@@ -102,7 +102,7 @@ sq_vt_flush(SqVtab *vt, bool automerge)
 {
 	if (!sq_inv_empty(vt->pend))
 	{
-		if (sq_store_dir(vt->st)->nsegs >= SIFT_MAX_SEGMENTS - 1 && merge_steps(vt, 1) == 0)
+		if (sq_store_dir(vt->st)->nsegs >= SIFT_DIR_POLICY_MAX - 1 && merge_steps(vt, 1) == 0)
 			optimize(vt);
 		sq_inv_write(vt->pend, vt->st);
 	}
@@ -219,13 +219,14 @@ static void
 rebuild(SqVtab *vt)
 {
 	sqlite3_stmt *q;
-	SiftDirSnapshot dir;
+	SiftDirSnapshot *dir;
 
 	sq_inv_clear(vt->pend);
 	sq_store_flush_pages(vt->st);
-	dir = *sq_store_dir(vt->st);
-	for (int i = 0; i < dir.nsegs; i++)
-		sq_store_retire(vt->st, dir.segs[i].gen);
+	dir = sift_dir_copy(sq_store_dir(vt->st));
+	for (int i = 0; i < dir->nsegs; i++)
+		sq_store_retire(vt->st, dir->segs[i].gen);
+	free(dir);
 	q = source_stmt(vt, SRC_ALL, 0);
 	while (sqlite3_step(q) == SQLITE_ROW)
 	{
@@ -377,11 +378,12 @@ remove_by_command(SqVtab *vt, sqlite3_value *rowid)
 static void
 delete_all(SqVtab *vt)
 {
-	SiftDirSnapshot dir = *sq_store_dir(vt->st);
+	SiftDirSnapshot *dir = sift_dir_copy(sq_store_dir(vt->st));
 
 	sq_inv_clear(vt->pend);
-	for (int i = 0; i < dir.nsegs; i++)
-		sq_store_retire(vt->st, dir.segs[i].gen);
+	for (int i = 0; i < dir->nsegs; i++)
+		sq_store_retire(vt->st, dir->segs[i].gen);
+	free(dir);
 	if (vt->content == SQ_CONTENT_INTERNAL)
 	{
 		char	   *t = shadow(vt, "content"),

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Isolation suite (test/isolation) driven by the server's pg_isolation_regress.
 #
-#   scripts/isolation.sh [--emulate] [SPEC...]
+#   scripts/isolation.sh [--emulate] [--slice K/N] [SPEC...]
 #
 # Runs the specs against sift in the scripts/pgtest.sh cluster, skipping a
 # spec while a feature named on its "# requires:" line reports "not
 # implemented". --emulate runs every spec against a stand-in (GIN index DDL,
 # SQL-reference matching; test/isolation/emulate.sql) to validate the specs,
 # their choreography and the expected output before the features land.
-# Results in $SIFT_TMP/isolation/<mode>. Exit 1 on any failure.
+# --slice K/N runs the Kth of N slices of the specs (every Nth one, in name order). Results in $SIFT_TMP/isolation/<mode>. Exit 1 on any failure.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
@@ -20,8 +20,13 @@ MODE=sift
 [[ ${1:-} == --emulate ]] && { MODE=emulate; shift; }
 OUT=${SIFT_TMP:-/tmp/sift-arch}/isolation/$MODE
 DB=sift_iso_$MODE
+SLICE=1/1
+[[ ${1:-} == --slice ]] && { SLICE=$2; shift 2; }
 SPECS=("$@")
 (( ${#SPECS[@]} )) || SPECS=($(basename -s .spec "$REPO"/test/isolation/specs/*.spec))
+SLICED=()
+for i in "${!SPECS[@]}"; do (( i % ${SLICE#*/} == ${SLICE%/*} - 1 )) && SLICED+=("${SPECS[i]}"); done
+SPECS=("${SLICED[@]}")
 
 # Emulation swaps sift index DDL for GIN, in specs and expected output alike
 translate() {

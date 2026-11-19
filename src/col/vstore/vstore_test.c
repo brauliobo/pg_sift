@@ -65,7 +65,7 @@ sift_test_vstore_info(PG_FUNCTION_ARGS)
 	Oid			store = sift_rel_must_exist(PG_GETARG_OID(0));
 	SiftVStore *vs = sift_vstore_open(store, AccessShareLock);
 	Relation	rel = table_open(store, NoLock);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	TupleDesc	td;
 	Datum		v[5];
 	bool		nl[5] = {false, false, false, false, false};
@@ -76,7 +76,7 @@ sift_test_vstore_info(PG_FUNCTION_ARGS)
 		elog(ERROR, "return type must be a row type");
 	v[2] = Int64GetDatum(sift_vstore_epoch(vs));
 	v[3] = Int64GetDatum(sift_vstore_ncodes(vs));
-	sift_dir_read(rel, snap);
+	snap = sift_dir_read(rel);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		runs += snap->segs[i].kind == SIFT_SEG_VALRUN && snap->segs[i].reserved == DatumGetInt64(v[2]);

@@ -32,6 +32,7 @@
 #include "core/cmp.h"
 #include "core/membudget.h"
 #include "core/rowmem.h"
+#include "core/quarantine.h"
 #include "core/restrict.h"
 #include "core/tomb.h"
 
@@ -54,8 +55,7 @@ journal_lineage(Relation index)
 
 	if (sift_col_rel(index)->journal_known)
 		return sift_col_rel(index)->journal_lineage;
-	dir = palloc(sizeof(SiftDirSnapshot));
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	if (!sift_tomb_peek_keys(index, dir, &k, &n))
 		memset(&k, 0, sizeof(k));
 	pfree(dir);
@@ -104,7 +104,7 @@ journal_record(Relation index, Oid keytype, Datum key, bool member, SiftTombKind
 
 	if (!sift_col_track_on(index) || journal_lineage(index) == 0 || !journal_word(keytype, key, member, &k))
 		return false;
-	*rec = (SiftTomb) {.key = SIFT_TOMB_KEYS_KEY,.xid = GetCurrentTransactionId(),.cid = sift_col_stmt_cid(),.succ = (uint64) k,.kind = kind,.flags = flags};
+	*rec = (SiftTomb) {.key = SIFT_TOMB_KEYS_KEY,.xid = sift_quarantine_write_xid(),.cid = sift_col_stmt_cid(),.succ = (uint64) k,.kind = kind,.flags = flags};
 	return true;
 }
 
@@ -372,13 +372,13 @@ sift_conn_take(Relation heap, Relation index, Snapshot resolve, SiftConnStamp *s
 bool
 sift_conn_gen(Relation index, SiftConnGen *gen)
 {
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	SiftTombKeys k;
 	uint64		n;
 	bool		cover;
 
 	sift_col_tombs_flush();
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	cover = sift_tomb_peek_keys(index, dir, &k, &n);
 	pfree(dir);
 	*gen = (SiftConnGen) {.lineage = k.lineage,.records = n,.trim = k.trim,.flags = 0};
@@ -465,13 +465,13 @@ key_table_grow(KeyRec *tab, uint32 *mask)
 static uint64
 inserted_since(Relation index, const SiftConnStamp *stamp)
 {
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	const SiftColSchema *schema;
 	uint64		since = 0;
 
 	sift_col_flush_held();
 	schema = sift_col_rel(index)->schema;
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		const SiftSegEntry *e = &dir->segs[i];
@@ -497,11 +497,11 @@ sift_conn_inserted_rows(Relation heap, Relation index, const SiftConnStamp *stam
 uint32
 sift_conn_horizon(Relation index)
 {
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	uint32		horizon;
 
 	sift_col_flush_held();
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	horizon = dir->meta.inserted;
 	for (int i = 0; i < dir->nsegs; i++)
 		if (sift_seg_is_wbuf(&dir->segs[i]))

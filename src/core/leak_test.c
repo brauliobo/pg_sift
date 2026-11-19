@@ -19,7 +19,11 @@
 #include <malloc.h>
 #endif
 #ifdef __linux__
+#include <fcntl.h>
+#include <signal.h>
 #include <sys/prctl.h>
+#include <time.h>
+#include <unistd.h>
 #endif
 
 #include "access/relation.h"
@@ -42,6 +46,8 @@
 PG_FUNCTION_INFO_V1(sift_test_leak);
 PG_FUNCTION_INFO_V1(sift_test_malloc_stats);
 PG_FUNCTION_INFO_V1(sift_test_thp_disable);
+PG_FUNCTION_INFO_V1(sift_test_rss_peak_start);
+PG_FUNCTION_INFO_V1(sift_test_rss_peak_stop);
 PG_FUNCTION_INFO_V1(sift_test_errctx_report);
 
 static void *volatile sink;		/* keeps the compiler from dropping the leaked allocations */
@@ -176,5 +182,113 @@ sift_test_thp_disable(PG_FUNCTION_ARGS)
 #endif
 	PG_RETURN_VOID();
 }
+
+#ifdef __linux__
+
+#define RSS_SAMPLE_NS 100000
+
+static int	rss_fd = -1;
+static timer_t rss_timer;
+static bool rss_running;
+static volatile int64 rss_peak_kb;
+
+/* RssAnon of /proc/self/status in kB: open, pread and a scan, all safe in a signal handler */
+static int64
+rss_anon_kb(void)
+{
+	char		buf[4096];
+	ssize_t		n = pread(rss_fd, buf, sizeof(buf) - 1, 0);
+	char	   *p;
+	int64		kb = 0;
+
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+	p = strstr(buf, "RssAnon:");
+	if (p == NULL)
+		return 0;
+	for (p += 8; *p == ' ' || *p == '\t'; p++)
+		;
+	for (; *p >= '0' && *p <= '9'; p++)
+		kb = kb * 10 + (*p - '0');
+	return kb;
+}
+
+static void
+rss_sample(void)
+{
+	int64		kb = rss_anon_kb();
+
+	if (kb > rss_peak_kb)
+		rss_peak_kb = kb;
+}
+
+static void
+rss_handler(int signo)
+{
+	int			saved = errno;
+
+	rss_sample();
+	errno = saved;
+}
+
+/*
+ * sift._test_rss_peak_start() returns bigint: the anonymous memory of this backend in kB, and from now on a timer of the backend
+ * samples it every 100 microseconds of wall time, in the signal handler, so a sample is taken whenever the backend runs
+ * and no other process (a polling reader, the other jobs of a runner) decides which part of a statement is seen.
+ */
+Datum
+sift_test_rss_peak_start(PG_FUNCTION_ARGS)
+{
+	struct sigevent ev = {0};
+	struct sigaction sa = {0};
+	struct itimerspec its = {{0, RSS_SAMPLE_NS}, {0, RSS_SAMPLE_NS}};
+
+	if (rss_running)
+		elog(ERROR, "the memory peak is already measured");
+	if (rss_fd < 0 && (rss_fd = open("/proc/self/status", O_RDONLY | O_CLOEXEC)) < 0)
+		elog(ERROR, "could not open /proc/self/status: %m");
+	rss_peak_kb = rss_anon_kb();
+	sa.sa_handler = rss_handler;
+	sa.sa_flags = SA_RESTART;
+	sigemptyset(&sa.sa_mask);
+	if (sigaction(SIGRTMIN, &sa, NULL) != 0)
+		elog(ERROR, "could not install the sampling handler: %m");
+	ev.sigev_notify = SIGEV_SIGNAL;
+	ev.sigev_signo = SIGRTMIN;
+	if (timer_create(CLOCK_MONOTONIC, &ev, &rss_timer) != 0 || timer_settime(rss_timer, 0, &its, NULL) != 0)
+		elog(ERROR, "could not start the sampling timer: %m");
+	rss_running = true;
+	PG_RETURN_INT64(rss_peak_kb);
+}
+
+/* sift._test_rss_peak_stop() returns bigint: the highest anonymous memory in kB since _test_rss_peak_start(), 0 when none runs */
+Datum
+sift_test_rss_peak_stop(PG_FUNCTION_ARGS)
+{
+	if (!rss_running)
+		PG_RETURN_INT64(0);
+	timer_delete(rss_timer);
+	rss_running = false;
+	rss_sample();
+	PG_RETURN_INT64(rss_peak_kb);
+}
+
+#else
+
+Datum
+sift_test_rss_peak_start(PG_FUNCTION_ARGS)
+{
+	elog(ERROR, "the memory peak is measured on Linux only");
+	PG_RETURN_NULL();
+}
+
+Datum
+sift_test_rss_peak_stop(PG_FUNCTION_ARGS)
+{
+	return sift_test_rss_peak_start(fcinfo);
+}
+
+#endif
 
 #endif							/* SIFT_TESTING */

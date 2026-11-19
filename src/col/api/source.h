@@ -217,12 +217,23 @@ typedef struct SiftColSuperTest
 extern void sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int dim, int hdim, uint64 need);
 
 /*
+ * The keys of the key_cut that a conjunction of predicates confines a scan to, when it confines it: the leading cut leaves each equal to a value (or NULL) and the next one in a range or
+ * a set, in the order of the bound (core/range.h). false: the predicates confine no key of the cut.
+ */
+extern bool sift_col_key_range(Relation index, const SiftColPred *preds, int npreds, SiftKeyRange *out);
+/* ... of any conjunction: leaf_keys gives the least and the greatest key of the leaf the conjunction admits (or that it admits NULL), false when it says nothing of the leaf */
+typedef bool (*SiftColLeafKeys) (int leaf, const void *arg, int64 *lo, int64 *hi, bool *null);
+extern bool sift_col_key_range_by(Relation index, SiftColLeafKeys leaf_keys, const void *arg, SiftKeyRange *out);
+
+/*
  * Opens the source: copies the directory (registered snapshot held until close), starts the visibility state (sift_vis) for snapshot, takes
  * PredicateLockRelation under SERIALIZABLE, checks SELECT on the table and refuses row-level security (ERRCODE_FEATURE_NOT_SUPPORTED) unless
  * SIFT_COLO_NOCHECKS. mcxt owns everything the source allocates (close releases buffers and pins, never memory). The caller holds
- * at least AccessShareLock on the heap and the index. view: the copy of the directory another source exported (sift_col_view_export), NULL to read it.
+ * at least AccessShareLock on the heap and the index. view: the copy of the directory another source exported (sift_col_view_export), NULL to read it. keys: a statement that reads only
+ * the rows of these keys of the cut (every row it reads satisfies the predicates they were made from) opens only the segments of the partitions that may hold them, and the segments no
+ * partition holds; NULL: all (a view is the directory as it was exported, and is not narrowed again).
  */
-extern SiftColSource *sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view);
+extern SiftColSource *sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view, const SiftKeyRange *keys);
 /*
  * The directory the source read, as bytes: what the participants of a parallel scan open their sources on, so that all of them number the units and the
  * batches of the write buffer by the same segments (a promotion between two opens moves rows from one range of superblocks to another).
@@ -239,6 +250,8 @@ extern void sift_col_close(SiftColSource *src);
 /* Makes a source that has begun no scan, counted no rows and set no count or super mode ready for another scan of the statement (the counters at zero, what the global order made forgotten); false when it has, or its directory changed: open again */
 extern bool sift_col_rescan(SiftColSource *src);
 extern bool sift_col_current(SiftColSource *src);
+/* Does the source hold the segments a statement confined to keys (NULL: not confined) reads: it was opened for the same keys, or all of the directory */
+extern bool sift_col_covers(const SiftColSource *src, const SiftKeyRange *keys);
 /* Releases the buffers the source keeps pinned between units (a partitioned table's scan leaves a partition for good); reading on takes them again */
 extern void sift_col_unpin(SiftColSource *src);
 

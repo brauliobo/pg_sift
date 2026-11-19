@@ -12,7 +12,7 @@ RETURNS TABLE (object text, kind text, detected text, status text, advice text)
 LANGUAGE plpgsql AS $fn$
 DECLARE
 	-- the first release that reads each column format minor (docs/FORMATS.md section 4), and the sift.col_format_minor that writes what a release reads
-	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4", "22": "3.5", "23": "3.5", "24": "3.5", "25": "3.6", "26": "3.6", "27": "3.6", "28": "3.6", "29": "3.6", "30": "3.6", "31": "3.6", "32": "3.6", "33": "3.7", "34": "3.7", "35": "3.7", "36": "3.7", "37": "3.7", "38": "3.7", "39": "3.7", "40": "4.0", "41": "4.0", "42": "4.0", "43": "4.0", "44": "4.3", "45": "5.0", "46": "5.0", "47": "5.0", "48": "5.0", "49": "5.0", "50": "5.0", "51": "5.0"}';
+	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4", "22": "3.5", "23": "3.5", "24": "3.5", "25": "3.6", "26": "3.6", "27": "3.6", "28": "3.6", "29": "3.6", "30": "3.6", "31": "3.6", "32": "3.6", "33": "3.7", "34": "3.7", "35": "3.7", "36": "3.7", "37": "3.7", "38": "3.7", "39": "3.7", "40": "4.0", "41": "4.0", "42": "4.0", "43": "4.0", "44": "4.3", "45": "5.0", "46": "5.0", "47": "5.0", "48": "5.0", "49": "5.0", "50": "5.0", "51": "5.0", "52": "5.1", "53": "5.1", "54": "5.1", "55": "5.1"}';
 	col_setting CONSTANT jsonb := '{"3.0": 3, "3.1": 4, "3.2": 6, "3.3": 15}';
 	-- the settings the 4.2 and 5.0 libraries removed, each with the value that is refused (a regular expression; null: any value) and what to say. sift.eval_methods lost only some of its methods
 	removed CONSTANT jsonb := '{"sift.eval_methods": ["(^|[^a-z_])(latest_hint|snapshot_masks|unit_rewrite|skip_trigger_lookup)([^a-z_]|$)", "the 4.2 library has removed that method (skip_trigger_lookup is always on) and refuses it in a SET"],
@@ -95,6 +95,8 @@ BEGIN
 		-- the first release that reads it
 		need := CASE WHEN r.amname = 'sift' THEN CASE WHEN mnr >= 6 THEN '4.2' WHEN mnr >= 5 THEN '4.0' WHEN mnr >= 4 THEN '3.7' WHEN mnr >= 3 THEN '3.1' ELSE '3.0' END
 					 ELSE coalesce(col_first->>greatest(hi, 3)::text, '3.0') END;
+		-- 5.1: a chained directory and the write buffer with key ranges raise the metapage to 1.7, a tombstone log with deletion records is stamped 52: a release before 5.1 refuses each
+		IF mnr >= 7 THEN need := '5.1'; END IF;
 		-- 4.2: the presence leaf of a jsonb column that may hold a NULL document ("<column>#present"): a release before 4.2 refuses the index
 		IF dpl AND string_to_array(need, '.')::int[] < ARRAY[4, 2] THEN need := '4.2'; END IF;
 		detected := format('format %s.%s', maj, mnr) ||
@@ -114,10 +116,13 @@ BEGIN
 				adv := format('ALTER INDEX %s RESET (hll_columns), then REINDEX INDEX %s writes units without sketches, which 3.3 reads', r.rel, r.rel);
 			ELSIF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'scope=%') THEN
 				-- a scope is written at minor 45 or more (a lowered setting refuses it), and a release before 5.0 refuses the option: the entity rows are what an older release reads
-				adv := format('DROP INDEX %s, then SET sift.col_format_minor = 14 and CREATE INDEX it again without the scope option writes the entities without the scope, which %s reads (the reads of the scope go through the join again; ALTER INDEX .. RESET (scope) is refused on an index that has segments)', r.rel, tgt);
+				adv := format('DROP INDEX %s, then SET sift.col_format_minor = 14 and CREATE INDEX it again without the scope option writes the index without the scope, which %s reads (the reads of the scope go through the join again; ALTER INDEX .. RESET (scope) is refused on an index that has segments)', r.rel, tgt);
 			ELSIF hi = 46 AND tgt = '4.3' THEN
 				-- the strings of a column held by a shared value store (5.0): the setting writes them in the segments again and leaves change tracking and the structures of minors 15 to 44 as they are
 				adv := format('SET sift.col_value_store = off, then REINDEX INDEX %s writes the strings in the segments (minor 44 at the most), which %s reads', r.rel, tgt);
+			ELSIF mnr >= 7 OR (hi >= 52 AND tgt = '5.0') THEN
+				adv := format('%s with the %s files installed writes what %s reads; under this library SET sift.col_wbuf_key_range = off first (and VACUUM the table, which folds the deletion records of its log), and a key_cut index records its partitions, a chained directory, at its first rewrite (docs/UPGRADING.md, "What 5.1 writes that 5.0 does not read")',
+							  CASE r.amname WHEN 'sift_table' THEN 'VACUUM FULL ' || r.rel || ' (ACCESS EXCLUSIVE lock)' ELSE 'REINDEX INDEX ' || r.rel END, tgt, tgt);
 			ELSIF hi >= 33 THEN
 				adv := format('SET sift.col_format_minor = 14, then %s writes the point directories with a power of two of slots, the units of a key_cut index by superblock (and without the sections of minors 15 to 32), which %s reads',
 							  CASE r.amname WHEN 'sift_table' THEN 'VACUUM FULL ' || r.rel || ' (ACCESS EXCLUSIVE lock)' ELSE 'REINDEX INDEX ' || r.rel END, tgt);

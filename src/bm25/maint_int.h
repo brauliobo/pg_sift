@@ -22,6 +22,19 @@ extern uint64 maint_written_bytes(void);
 extern bool claim(Relation index, uint64 gen, bool wait);
 extern void unclaim(Relation index, uint64 gen);
 extern SiftStepResult run_step(Relation index, bool propagate, StepFn fn, const void *arg);
+/* The relocation of one segment (bm25/space_move.c), run as a step by the space step (bm25/space.c) */
+typedef struct SpaceMove
+{
+	const SiftSegEntry *entry;
+	SiftExtent *release;
+	int			nrelease;
+	BlockNumber limit;
+	uint64		budget;
+	uint64		written;
+	BlockNumber header;
+	SiftRelocatePage relocate_page;
+} SpaceMove;
+extern void sift_space_move(Relation rel, SiftWriteTarget *wt, const void *arg);
 extern int64 backoff_ms(const SiftMetaPageData *meta);
 extern bool in_backoff(const SiftMetaPageData *meta);
 extern int promote_locked(const SiftMaintOps *ops, Relation index, bool seal_active, bool propagate);
