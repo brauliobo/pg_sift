@@ -276,9 +276,8 @@ maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSe
 		{
 			n = cheapest_window(sel, n, MERGE_FORCE_FANIN);
 			maint_force_bounded = true;
-			return settled_all(index, sel, n) ? 0 : n;
 		}
-		return n;
+		return n > 0 && settled_all(index, sel, n) ? 0 : n;
 	}
 	if (maint_part_kb == 0)
 	{

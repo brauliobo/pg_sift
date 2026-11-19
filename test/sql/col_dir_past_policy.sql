@@ -52,36 +52,52 @@ SELECT sift.col_promote('v_i') >= 0 AS promoted;
 SELECT count(*) FILTER (WHERE kind = 'immutable') > 131 AS grown_past_131, count(*) FILTER (WHERE kind = 'immutable') > 128 AS past_the_policy FROM sift.col_segments('v_i');
 SELECT sift.col_verify('v_i', true);
 SELECT count(*) AS rows_found FROM v WHERE k < 1000 AND id > 0;
--- a forced merge with a writer budget below the size of its inputs (1 kB against segments of 256 rows) cannot make fewer segments than it reads: it writes them as they are, once,
--- and the merge that follows one that wrote as many as it read ends (those segments are settled), whether the index is cut by key or not: a key-cut build writes overlapping runs,
--- more of them than superblocks on some PostgreSQL majors (14 of 12), and the merge of those may take a second step to write the segments as they are
+-- forced merges with a writer budget below the size of their inputs (1 kB against segments of 256 rows) end: the segments a merge wrote as many as it read are settled, so the next one
+-- leaves them. The segments a key-cut build makes depend on its estimate of the rows of the table (by ranges, a key in one segment, when the estimate says there are many runs, as a
+-- table with statistics does; else in runs that overlap, which sift.test_col_build_runs_overlap asks for): both are built, and no count of segments is asserted
 CREATE TABLE u (id int, k int, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE u ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO u SELECT i, (i::bigint * 7919) % 1000, repeat('x', 7000) FROM generate_series(1, 3072) i;
 SET sift.test_col_segment_kb = 1;
 CREATE INDEX u_plain ON u USING sift_col (id, k) WITH (key_cut = 'off');
-CREATE INDEX u_cut ON u USING sift_col (id, k) WITH (key_cut = 'k');
-SELECT 'PROBE-ENV', substr(version(), 1, 16), current_setting('max_parallel_maintenance_workers') AS mpmw, current_setting('min_parallel_table_scan_size') AS mpts, current_setting('max_worker_processes') AS mwp, current_setting('maintenance_work_mem') AS mwm, (SELECT relpages FROM pg_class WHERE relname = 'u') AS pages, current_setting('sift.test_col_parallel_always') AS always;
-SELECT 'PROBE-W u_cut', current_setting('sift.test_col_spool_ranges') AS ranges, current_setting('sift.test_col_spool_used_rows') AS spooled, (SELECT relpages || '/' || reltuples FROM pg_class WHERE relname = 'u') AS rel;
-SELECT 'PROBE-S u_cut ' || string_agg(rows || '/' || sb_lo || '-' || sb_hi || '/' || units, ' ' ORDER BY sb_lo, gen) FROM sift.col_segments('u_cut') WHERE kind = 'immutable';
-SELECT 'PROBE-Z u_cut ' || string_agg(sb || ':' || nrows || ':' || min || '-' || max, ' ' ORDER BY sb, min) FROM sift._test_col_zones('u_cut', 1);
-ANALYZE u;
-CREATE INDEX u_cut1 ON u USING sift_col (id, k) WITH (key_cut = 'k');
-SELECT 'PROBE-W u_cut1', current_setting('sift.test_col_spool_ranges') AS ranges, current_setting('sift.test_col_spool_used_rows') AS spooled, (SELECT relpages || '/' || reltuples FROM pg_class WHERE relname = 'u') AS rel;
-SELECT 'PROBE-S u_cut1 ' || string_agg(rows || '/' || sb_lo || '-' || sb_hi || '/' || units, ' ' ORDER BY sb_lo, gen) FROM sift.col_segments('u_cut1') WHERE kind = 'immutable';
-DROP INDEX u_cut1;
-SELECT count(*) AS built_cut FROM sift.col_segments('u_cut') WHERE kind = 'immutable' \gset
 SELECT 'plain' AS index, count(*) AS built FROM sift.col_segments('u_plain') WHERE kind = 'immutable';
 SELECT sift.col_merge('u_plain', true) > 0 AS first_merge;
 SELECT count(*) AS after_first, min(rows) AS min_rows, max(rows) AS max_rows FROM sift.col_segments('u_plain') WHERE kind = 'immutable';
 SELECT sift.col_merge('u_plain', true) > 0 AS second_merge;
 SELECT count(*) AS after_second FROM sift.col_segments('u_plain') WHERE kind = 'immutable';
-SELECT sift.col_merge('u_cut', true) >= 0 AS first_merge;
-SELECT sift.col_merge('u_cut', true) >= 0 AS second_merge;
-SELECT sift.col_merge('u_cut', true) AS third_merge_steps;
-SELECT count(*) <= :built_cut AS not_more_than_built, sum(rows) = 3072 AS all_rows FROM sift.col_segments('u_cut') WHERE kind = 'immutable';
+ANALYZE u;
+CREATE INDEX u_cut ON u USING sift_col (id, k) WITH (key_cut = 'k');
+SET sift.test_col_build_runs_overlap = on;
+CREATE INDEX u_run ON u USING sift_col (id, k) WITH (key_cut = 'k');
+RESET sift.test_col_build_runs_overlap;
+-- a unit for each segment; the key range of the table (0 to 999) is covered; a key is in one segment of the build by ranges and in every run of the build in runs
+SELECT i AS index, count(*) = (SELECT count(*) FROM sift.col_segments(i) WHERE kind = 'immutable') AS a_unit_each, min(z.min::bigint) = 0 AND max(z.max::bigint) = 999 AS covers_the_keys,
+	sum(z.nrows) = 3072 AS all_rows, count(*) FILTER (WHERE z.min::bigint <= 500 AND z.max::bigint >= 500) = CASE i::text WHEN 'u_cut' THEN 1 ELSE count(*) END AS key_in_one_range_or_every_run
+FROM unnest(ARRAY['u_cut', 'u_run']::regclass[]) i, LATERAL sift._test_col_zones(i, 1) z GROUP BY i ORDER BY i::text;
+-- forced merges, one statement each (a merge in the transaction of the one before it sees segments whose rows are not final), until one changes nothing: it comes within one more
+-- than the segments the index started with, and no row is lost
+CREATE TABLE u_log (idx regclass, round int, before int, steps int, after int, rows int8);
+CREATE FUNCTION u_round(i regclass, r int) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+	b int; s int;
+BEGIN
+	SELECT count(*) INTO b FROM sift.col_segments(i) WHERE kind = 'immutable';
+	s = sift.col_merge(i, true);
+	INSERT INTO u_log SELECT i, r, b, s, count(*), sum(g.rows) FROM sift.col_segments(i) g WHERE kind = 'immutable';
+END $$;
+\set ECHO none
+\o /dev/null
+SELECT format('SELECT u_round(%L, %s)', i, r) FROM unnest(ARRAY['u_plain', 'u_cut', 'u_run']::regclass[]) i,
+	LATERAL generate_series(1, 1 + (SELECT count(*) FROM sift.col_segments(i) WHERE kind = 'immutable')) r ORDER BY i::text, r
+\gexec
+\o
+\set ECHO all
+SELECT idx AS index, bool_or(steps = 0) AS ends, bool_and(rows = 3072) AS all_rows FROM u_log GROUP BY idx ORDER BY idx::text;
 SELECT sift.col_verify('u_plain', true);
 SELECT sift.col_verify('u_cut', true);
+SELECT sift.col_verify('u_run', true);
+DROP FUNCTION u_round(regclass, int);
+DROP TABLE u_log;
 RESET sift.test_col_segment_kb;
 DROP TABLE u;
 DROP TABLE v, peaks;
