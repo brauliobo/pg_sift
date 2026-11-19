@@ -3,17 +3,20 @@
 # entity between keys (entities in 0 to 6 keys), UPDATEs of the key of a pair, a reload of the pairs, aborted transactions and savepoints, promotion, merge, VACUUM and REINDEX in a random order, with a
 # long snapshot reader; after every step a battery (one key, sets of keys counted once, per pair, count/sum/distinct/top-N, the SQL forms) must be the plain join through the scope path, the planned plan
 # and the plain plan, and every read is either stored or says a documented fallback reason. The planner forms are probed by the
-# script (the planner's recognition of the join forms is not in every tree). Quick tier: seeds 1-2 of 5 steps on 6,000 rows; full: 24 seeds of 8 steps on 12,000 (about 3 minutes).
+# script (the planner's recognition of the join forms is not in every tree). Quick tier: seeds 1-2 of 5 steps on 6,000 rows; full: 24 seeds of 8 steps on 12,000 of each family, as two jobs of 12 (this file: seeds 1-12; col_scope_fuzz_b.sh: 13-24, full tier only): the 24 seeds of both families took 203 s on a quiet machine and 1200 s on a loaded one.
 # Every third seed is a union seed (the scope of a direct and a joined path: grants of a member, grants of a group, memberships; see the docstring of the script for --twohop-strict).
 # The duplicates family (--family dups) makes the pairs the distinct rows of a btree that is not unique, a pair being several rows.
 # SIFT_FUZZ_SEEDS / SIFT_FUZZ_DUP_SEEDS / SIFT_FUZZ_ROWS / SIFT_FUZZ_STEPS override.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-SEEDS=$(knob SIFT_FUZZ_SEEDS 1-24 1-2)
+case ${SIFT_FUZZ_SHARD:-a} in
+	a) SEEDS=$(knob SIFT_FUZZ_SEEDS 1-12 1-2) DUP_SEEDS=$(knob SIFT_FUZZ_DUP_SEEDS 1-12 1-2) ;;
+	b) SEEDS=$(knob SIFT_FUZZ_SEEDS 13-24 '') DUP_SEEDS=$(knob SIFT_FUZZ_DUP_SEEDS 13-24 '') ;;
+esac
+[[ -n $SEEDS ]] || { echo '1..0 # SKIP the seeds of this job run in the full tier only'; exit 0; }
 ROWS=$(knob SIFT_FUZZ_ROWS 12000 6000)
 STEPS=$(knob SIFT_FUZZ_STEPS 8 5)
-DUP_SEEDS=$(knob SIFT_FUZZ_DUP_SEEDS 1-24 1-2)
 
 node_init sf 5 "max_wal_size = 512MB
 shared_buffers = 128MB

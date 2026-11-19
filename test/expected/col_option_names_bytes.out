@@ -1,0 +1,17 @@
+-- Checking the value of a column-list option (preagg, rollup_leaves, calendar_columns) reads each name into a buffer of its own: the buffers go with the check,
+-- whatever the number of names, the quotes around them and the number of checks (the build reads the same lists into the relcache entry of the index and keeps none)
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SELECT o.option, o.opt, sift._test_option_syntax_bytes(o.option, o.opt, 1000) = sift._test_option_syntax_bytes(o.option, o.opt, 1) AS holds_nothing_per_check
+FROM (VALUES ('preagg', 'cube(a: m; "Order Id": m)'), ('preagg', 'rollup(items[].kind, items[].sub: items[].score)'), ('rollup_leaves', 'a, b, "c d"'), ('calendar_columns', 'a, b')) o(option, opt)
+ORDER BY 1, 2;
+      option      |                       opt                        | holds_nothing_per_check 
+------------------+--------------------------------------------------+-------------------------
+ calendar_columns | a, b                                             | t
+ preagg           | cube(a: m; "Order Id": m)                        | t
+ preagg           | rollup(items[].kind, items[].sub: items[].score) | t
+ rollup_leaves    | a, b, "c d"                                      | t
+(4 rows)
+
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -1,0 +1,238 @@
+-- col_scope_codedkey with the journal word of a string cut to 3 bits (sift.test_member_hash_bits): the tag a journal puts on a record of a pair is the word of its key, so the pairs of other keys are
+-- read as changes of the key's own, which can only widen what a run gives up. The rows are the join's all the same.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.col_unit_rows = 150;
+SET timezone = 'UTC';
+SET jit = off;
+SET client_min_messages = warning;
+SET sift.test_member_hash_bits = 3;
+\ir test/col_scope_codedkey_states.sql
+-- shared by col_scope_codedkey and col_scope_codedkey_collide: the fixtures, and the answers of a scope read of the entity rows by a text, varchar and uuid key in every state of the pairs and of the facts
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 60, timestamptz '2025-01-01' + i * interval '17 minutes', i % 7, (i * 37) % 1000 FROM generate_series(1, 24000) i;
+-- one table of pairs for each type of key; keys that differ in their bytes only: a case, a trailing space, an accent
+CREATE TABLE pairs_t (dim_a_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO pairs_t SELECT m, 'tenant-1' FROM generate_series(1, 60) m WHERE m % 6 < 5;
+INSERT INTO pairs_t SELECT m, 'tenant-2' FROM generate_series(1, 60) m WHERE m % 3 = 0;
+INSERT INTO pairs_t SELECT m, 'tenant-3' FROM generate_series(1, 60) m WHERE m IN (7, 8);
+INSERT INTO pairs_t SELECT m, 'Tenant-1' FROM generate_series(1, 12) m;
+INSERT INTO pairs_t SELECT m, 'tenant-1 ' FROM generate_series(20, 40) m;
+INSERT INTO pairs_t SELECT m, 'ténant-1' FROM generate_series(1, 60) m WHERE m % 10 = 0;
+CREATE TABLE pairs_v (dim_a_id int NOT NULL, tenant_id varchar(200) NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO pairs_v SELECT dim_a_id, tenant_id FROM pairs_t;
+CREATE TABLE pairs_u (dim_a_id int NOT NULL, tenant_id uuid NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO pairs_u SELECT dim_a_id, md5(tenant_id)::uuid FROM pairs_t;
+CREATE INDEX pairs_t_journal ON pairs_t USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX pairs_v_journal ON pairs_v USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX pairs_u_journal ON pairs_u USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+VACUUM (FREEZE, ANALYZE) events, pairs_t, pairs_v, pairs_u;
+CREATE INDEX events_t ON events USING sift_col (id, dim_a_id, created_at, kind, v)
+	WITH (key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at', scope = 'tenant_id: dim_a_id -> pairs_t(dim_a_id, tenant_id)');
+CREATE INDEX events_v ON events USING sift_col (id, dim_a_id, created_at, kind, v)
+	WITH (key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at', scope = 'tenant_id: dim_a_id -> pairs_v(dim_a_id, tenant_id)');
+CREATE INDEX events_u ON events USING sift_col (id, dim_a_id, created_at, kind, v)
+	WITH (key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at', scope = 'tenant_id: dim_a_id -> pairs_u(dim_a_id, tenant_id)');
+SELECT i AS index, count(*) FILTER (WHERE s.format >= 53) > 0 AS sidecar_written_by_the_build FROM (VALUES ('events_t'), ('events_v'), ('events_u')) v (i), LATERAL sift._test_col_formats(i::regclass) s GROUP BY 1 ORDER BY 1;
+  index   | sidecar_written_by_the_build 
+----------+------------------------------
+ events_t | t
+ events_u | t
+ events_v | t
+(3 rows)
+
+-- the keys of the reads: as the text of the key of each type
+CREATE TABLE keys (k text PRIMARY KEY);
+INSERT INTO keys VALUES ('tenant-1'), ('tenant-2'), ('tenant-3'), ('Tenant-1'), ('tenant-1 '), ('ténant-1'), ('tenant-new'), ('tenant-none');
+-- the statements of one key over the pairs of a type: t (text), v (varchar), u (uuid): the groups of its rows, and its newest rows
+CREATE FUNCTION scope_of(variant text, k text) RETURNS text LANGUAGE sql AS
+$$ SELECT format('e.dim_a_id IN (SELECT dim_a_id FROM pairs_%s WHERE tenant_id = %s)', variant,
+                 CASE variant WHEN 'u' THEN format('md5(%L)::uuid', k) WHEN 'v' THEN format('%L::varchar', k) ELSE quote_literal(k) END) $$;
+CREATE FUNCTION q(variant text, k text) RETURNS text LANGUAGE sql AS
+$$ SELECT 'SELECT kind, count(*) AS n, sum(v) AS s FROM events e WHERE ' || scope_of(variant, k) || ' GROUP BY kind' $$;
+CREATE FUNCTION ql(variant text, k text) RETURNS text LANGUAGE sql AS
+$$ SELECT 'SELECT id, created_at, kind FROM events e WHERE ' || scope_of(variant, k) || ' ORDER BY created_at DESC, id LIMIT 20' $$;
+CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	DROP TABLE IF EXISTS side_rows;
+	EXECUTE 'CREATE TEMP TABLE side_rows AS ' || q;
+	SELECT md5(coalesce(string_agg(t::text, '|' ORDER BY t::text), '')) INTO r FROM side_rows t;
+	DROP TABLE side_rows;
+	RETURN r;
+END $$;
+CREATE FUNCTION runs_of(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; r int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Scope Sidecar Runs' THEN r := regexp_replace(l, '^.*: ', '')::int; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION scope_topn(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text; r boolean := false;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		r := r OR l ~ 'Scope Index';
+	END LOOP;
+	RETURN r;
+END $$;
+-- for each type of key: the keys whose rows are not the join's with the runs (the entity scan) and without them, the keys that took runs, and the keys that took runs without being offered them;
+-- the keys whose newest rows are not the join's, and the keys whose newest rows were read by the scope (the top-N of the entity rows, as for an integer key)
+CREATE FUNCTION check_state(state text) RETURNS TABLE (st text, variant text, wrong_with_runs text, wrong_without_runs text, keys_with_runs text, runs_without_runs int, wrong_latest text, keys_latest_scoped text) LANGUAGE plpgsql AS $$
+DECLARE variant text; k text; join_md5 text; with_runs int; wrong1 text[]; wrong2 text[]; took text[]; leaked int; wrong3 text[]; scoped text[]; join_latest text;
+BEGIN
+	FOREACH variant IN ARRAY ARRAY['t', 'v', 'u'] LOOP
+		wrong1 := '{}'; wrong2 := '{}'; took := '{}'; leaked := 0; wrong3 := '{}'; scoped := '{}';
+		FOR k IN SELECT x.k FROM keys x ORDER BY x.k COLLATE "C" LOOP
+			SET LOCAL sift.agg_scope = on;
+			SET LOCAL sift.enable_agg = off;
+			join_md5 := rows_md5(q(variant, k));
+			join_latest := rows_md5(ql(variant, k));
+			SET LOCAL sift.enable_agg = on;
+			SET LOCAL sift.test_scope_entity = on;
+			SET LOCAL sift.test_scope_no_side = off;
+			IF rows_md5(q(variant, k)) <> join_md5 THEN wrong1 := wrong1 || k; END IF;
+			with_runs := runs_of(q(variant, k));
+			IF with_runs > 0 THEN took := took || k; END IF;
+			IF rows_md5(ql(variant, k)) <> join_latest THEN wrong3 := wrong3 || k; END IF;
+			IF scope_topn(ql(variant, k)) THEN scoped := scoped || k; END IF;
+			SET LOCAL sift.test_scope_no_side = on;
+			IF rows_md5(q(variant, k)) <> join_md5 THEN wrong2 := wrong2 || k; END IF;
+			leaked := leaked + runs_of(q(variant, k));
+		END LOOP;
+		RETURN QUERY SELECT state, variant, coalesce(array_to_string(wrong1, ','), ''), coalesce(array_to_string(wrong2, ','), ''), coalesce(array_to_string(took, ',')), leaked,
+			coalesce(array_to_string(wrong3, ','), ''), coalesce(array_to_string(scoped, ','), '');
+	END LOOP;
+END $$;
+SELECT * FROM check_state('fresh');
+  st   | variant | wrong_with_runs | wrong_without_runs |                     keys_with_runs                     | runs_without_runs | wrong_latest |                              keys_latest_scoped                               
+-------+---------+-----------------+--------------------+--------------------------------------------------------+-------------------+--------------+-------------------------------------------------------------------------------
+ fresh | t       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ fresh | v       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ fresh | u       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+(3 rows)
+
+-- a pair of a key ended, pairs inserted, a pair of another key moved, a key the store has not given pairs, and a key that has them in another case
+DELETE FROM pairs_t WHERE tenant_id = 'tenant-1' AND dim_a_id IN (10, 11, 40);
+INSERT INTO pairs_t VALUES (5, 'tenant-1'), (17, 'tenant-1'), (12, 'tenant-3');
+UPDATE pairs_t SET tenant_id = 'tenant-2' WHERE tenant_id = 'tenant-3' AND dim_a_id = 8;
+INSERT INTO pairs_t SELECT m, 'tenant-new' FROM generate_series(1, 10) m;
+DELETE FROM pairs_v WHERE tenant_id = 'tenant-1' AND dim_a_id IN (10, 11, 40);
+INSERT INTO pairs_v VALUES (5, 'tenant-1'), (17, 'tenant-1'), (12, 'tenant-3');
+UPDATE pairs_v SET tenant_id = 'tenant-2' WHERE tenant_id = 'tenant-3' AND dim_a_id = 8;
+INSERT INTO pairs_v SELECT m, 'tenant-new' FROM generate_series(1, 10) m;
+DELETE FROM pairs_u WHERE tenant_id = md5('tenant-1')::uuid AND dim_a_id IN (10, 11, 40);
+INSERT INTO pairs_u VALUES (5, md5('tenant-1')::uuid), (17, md5('tenant-1')::uuid), (12, md5('tenant-3')::uuid);
+UPDATE pairs_u SET tenant_id = md5('tenant-2')::uuid WHERE tenant_id = md5('tenant-3')::uuid AND dim_a_id = 8;
+INSERT INTO pairs_u SELECT m, md5('tenant-new')::uuid FROM generate_series(1, 10) m;
+SELECT * FROM check_state('pairs edited');
+      st      | variant | wrong_with_runs | wrong_without_runs |                keys_with_runs                 | runs_without_runs | wrong_latest |                              keys_latest_scoped                               
+--------------+---------+-----------------+--------------------+-----------------------------------------------+-------------------+--------------+-------------------------------------------------------------------------------
+ pairs edited | t       |                 |                    | tenant-1,tenant-1 ,tenant-2,ténant-1          |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ pairs edited | v       |                 |                    | tenant-1,tenant-1 ,tenant-2,ténant-1          |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ pairs edited | u       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+(3 rows)
+
+-- the merge writes the sidecars again from the pairs now, with the codes the store gave the new key
+SELECT sift.col_promote('events_t') IS NOT NULL AS promoted_t, sift.col_promote('events_v') IS NOT NULL AS promoted_v, sift.col_promote('events_u') IS NOT NULL AS promoted_u;
+ promoted_t | promoted_v | promoted_u 
+------------+------------+------------
+ t          | t          | t
+(1 row)
+
+SELECT sift.col_merge('events_t') IS NOT NULL AS merged_t, sift.col_merge('events_v') IS NOT NULL AS merged_v, sift.col_merge('events_u') IS NOT NULL AS merged_u;
+ merged_t | merged_v | merged_u 
+----------+----------+----------
+ t        | t        | t
+(1 row)
+
+SELECT * FROM check_state('merged');
+   st   | variant | wrong_with_runs | wrong_without_runs |                          keys_with_runs                           | runs_without_runs | wrong_latest |                              keys_latest_scoped                               
+--------+---------+-----------------+--------------------+-------------------------------------------------------------------+-------------------+--------------+-------------------------------------------------------------------------------
+ merged | t       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ merged | v       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ merged | u       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+(3 rows)
+
+SELECT sift.col_maintain('events_t') IS NOT NULL AS maintained_t, sift.col_maintain('events_v') IS NOT NULL AS maintained_v, sift.col_maintain('events_u') IS NOT NULL AS maintained_u;
+ maintained_t | maintained_v | maintained_u 
+--------------+--------------+--------------
+ t            | t            | t
+(1 row)
+
+SELECT * FROM check_state('maintained');
+     st     | variant | wrong_with_runs | wrong_without_runs |                          keys_with_runs                           | runs_without_runs | wrong_latest |                              keys_latest_scoped                               
+------------+---------+-----------------+--------------------+-------------------------------------------------------------------+-------------------+--------------+-------------------------------------------------------------------------------
+ maintained | t       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ maintained | v       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ maintained | u       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+(3 rows)
+
+-- new rows of members inside a run, rows deleted and a member moved
+INSERT INTO events SELECT i, 1 + i % 60, timestamptz '2025-01-01' + i * interval '17 minutes', i % 7, (i * 37) % 1000 FROM generate_series(24001, 24300) i;
+DELETE FROM events WHERE id % 97 = 0;
+UPDATE events SET dim_a_id = 7 WHERE id % 211 = 0;
+SELECT * FROM check_state('facts edited');
+      st      | variant | wrong_with_runs | wrong_without_runs | keys_with_runs | runs_without_runs | wrong_latest |                              keys_latest_scoped                               
+--------------+---------+-----------------+--------------------+----------------+-------------------+--------------+-------------------------------------------------------------------------------
+ facts edited | t       |                 |                    |                |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ facts edited | v       |                 |                    |                |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ facts edited | u       |                 |                    |                |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+(3 rows)
+
+VACUUM (FREEZE, ANALYZE) events, pairs_t, pairs_v, pairs_u;
+SELECT * FROM check_state('vacuumed');
+    st    | variant | wrong_with_runs | wrong_without_runs | keys_with_runs | runs_without_runs | wrong_latest |                              keys_latest_scoped                               
+----------+---------+-----------------+--------------------+----------------+-------------------+--------------+-------------------------------------------------------------------------------
+ vacuumed | t       |                 |                    |                |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ vacuumed | v       |                 |                    |                |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ vacuumed | u       |                 |                    |                |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+(3 rows)
+
+REINDEX INDEX events_t;
+REINDEX INDEX events_v;
+REINDEX INDEX events_u;
+SELECT * FROM check_state('reindexed');
+    st     | variant | wrong_with_runs | wrong_without_runs |                          keys_with_runs                           | runs_without_runs | wrong_latest |                              keys_latest_scoped                               
+-----------+---------+-----------------+--------------------+-------------------------------------------------------------------+-------------------+--------------+-------------------------------------------------------------------------------
+ reindexed | t       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ reindexed | v       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ reindexed | u       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+(3 rows)
+
+-- a key that left every pair has no run that stands for its members: its read is the join's
+DELETE FROM pairs_t WHERE tenant_id = 'tenant-2';
+DELETE FROM pairs_v WHERE tenant_id = 'tenant-2';
+DELETE FROM pairs_u WHERE tenant_id = md5('tenant-2')::uuid;
+SELECT * FROM check_state('key gone');
+    st    | variant | wrong_with_runs | wrong_without_runs |                 keys_with_runs                  | runs_without_runs | wrong_latest |                              keys_latest_scoped                               
+----------+---------+-----------------+--------------------+-------------------------------------------------+-------------------+--------------+-------------------------------------------------------------------------------
+ key gone | t       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-3,ténant-1   |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ key gone | v       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-3,ténant-1   |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ key gone | u       |                 |                    | Tenant-1,tenant-1 ,tenant-3,tenant-new,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+(3 rows)
+
+-- the newest rows tie on the time (the page ends inside a tie) and some of them are deleted
+INSERT INTO events SELECT 30000 + id, dim_a_id, created_at, kind, v FROM events WHERE id BETWEEN 24200 AND 24300;
+DELETE FROM events WHERE id BETWEEN 24270 AND 24300 AND id % 2 = 0;
+SELECT * FROM check_state('newest rows tied and deleted');
+              st              | variant | wrong_with_runs | wrong_without_runs | keys_with_runs | runs_without_runs | wrong_latest |                              keys_latest_scoped                               
+------------------------------+---------+-----------------+--------------------+----------------+-------------------+--------------+-------------------------------------------------------------------------------
+ newest rows tied and deleted | t       |                 |                    |                |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ newest rows tied and deleted | v       |                 |                    |                |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ newest rows tied and deleted | u       |                 |                    |                |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+(3 rows)
+
+SELECT sift.col_verify('events_t', true) IS NOT NULL AS verified_t, sift.col_verify('events_v', true) IS NOT NULL AS verified_v, sift.col_verify('events_u', true) IS NOT NULL AS verified_u;
+ verified_t | verified_v | verified_u 
+------------+------------+------------
+ t          | t          | t
+(1 row)
+
+DROP FUNCTION check_state(text), scope_topn(text), runs_of(text), rows_md5(text), ql(text, text), q(text, text), scope_of(text, text);
+DROP TABLE keys, events, pairs_t, pairs_v, pairs_u;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

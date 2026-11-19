@@ -10,7 +10,7 @@ INSERT INTO pairs SELECT 'acct-' || i, 1 + (i * 3 + 1) % 10 FROM generate_series
 INSERT INTO pairs SELECT a, 4 FROM unnest(ARRAY['', 'Acct-4', 'acct-4 ', 'ácct-4', repeat('long-', 400)]) a;
 UPDATE pairs SET tenant_id = 3 WHERE account = '';
 CREATE INDEX pairs_journal ON pairs USING sift_col (account, tenant_id) WITH (track_changes = 'ctid');
-CREATE INDEX events_col ON events USING sift_col (id, account, created_at, kind, amount) WITH (scope = 'tenant_id: account -> pairs(account, tenant_id)');
+CREATE INDEX events_col ON events USING sift_col (id, account, created_at, kind, amount) WITH (key_cut = 'created_at', scope = 'tenant_id: account -> pairs(account, tenant_id)');
 REINDEX INDEX events_col;
 -- a long account on a fact too
 INSERT INTO events VALUES (6001, repeat('long-', 400), date '2025-03-01', 'k1', 7), (6002, 'Acct-4', date '2025-03-02', 'k2', 8), (6003, 'acct-4 ', date '2025-03-03', 'k3', 9), (6004, 'ácct-4', date '2025-03-04', 'k0', 10);
@@ -66,11 +66,11 @@ INSERT INTO forms VALUES
 CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text; plan text := '';
 BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		plan := plan || l || E'\n';
 	END LOOP;
 	IF plan ~ 'Scope Index: ' THEN
-		RETURN 'scope read, ' || substring(plan from 'Scope Semantics: ([^\n]*)');
+		RETURN 'scope read' || CASE WHEN plan ~ 'Scope Keys: ([^\n]*\(1 keys\)|1)\n' THEN '' ELSE ', ' || substring(plan from 'Scope Semantics: ([^\n]*)') END;
 	END IF;
 	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';
 	RETURN CASE WHEN r IS NOT NULL THEN 'join, ' || r WHEN plan ~ 'Lookup Joins' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
@@ -104,7 +104,7 @@ CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Scope (Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed)' THEN
+		IF l ~ 'Scope (Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed|Sidecar Runs)' THEN
 			r := r || regexp_replace(l, '^ *Scope ', '') || '; ';
 		END IF;
 	END LOOP;

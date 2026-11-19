@@ -17,7 +17,9 @@
 #include "col/build/build_int.h"
 #include "col/conn.h"
 #include "col/scope.h"
+#include "col/side.h"
 #include "col/vstore/vstore.h"
+#include "col/colspool.h"
 #include "core/membudget.h"
 
 #ifdef SIFT_TESTING
@@ -91,6 +93,8 @@ sift_colb_peak_begin(void)
 	statement = GetCurrentStatementStartTimestamp();
 	peak_base = peak_max = peak_logged = MemoryContextMemAllocated(TopMemoryContext, true);
 	sift_test_col_build_peak_kb = 0;
+	sift_test_col_spill_bytes = sift_test_col_spill_rows = 0;
+	sift_test_col_spool_used_rows = sift_test_col_spool_est_bytes = sift_test_col_spool_ranges = 0;
 }
 
 void
@@ -129,12 +133,10 @@ sift_col_ambuildphasename(int64 phase)
 }
 
 static IndexBuildResult *
-serial_build(Relation heap, Relation index, IndexInfo *info)
+serial_build(Relation heap, Relation index, IndexInfo *info, const BtPlan *plan)
 {
 	IndexBuildResult *res = palloc0(sizeof(IndexBuildResult));
-	SiftSegEntry *segs = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
-	/* the segments of a scope index are numbered by the metapage, whether or not the units of its entities are cut by key: its scope segments are */
-	bool		key_cut = sift_col_key_cut(sift_col_rel(index)) || sift_col_rel(index)->nscope > 0;
+	bool		key_cut = sift_col_key_cut(sift_col_rel(index));
 	SiftWriteTarget *wt;
 	ColBuild   *b;
 	int			nsegs;
@@ -143,7 +145,8 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	if (key_cut)
 		sift_colb_init_meta(index);
 	wt = sift_wt_begin(index, key_cut ? SIFT_WRITE_SHARED : SIFT_WRITE_BULK);
-	b = sift_colb_begin(index, wt, sift_colb_budget(1), SIFT_COL_BUILD_SEGMENTS, segs, false, 1, !info->ii_Concurrent);
+	b = sift_colb_begin(index, wt, sift_colb_budget(1), NULL, 0, false, 1);
+	b->btree = plan ? plan->btree : InvalidOid;
 	SIFT_MEM_SCOPE(col_build, b->cxt);
 	SpinLockInit(&acc->mutex);
 	PG_TRY();
@@ -173,7 +176,7 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	if (!key_cut)
 		sift_store_init_meta_ex(wt, 0, 0, b->r->schema->hash, SIFT_COL_META_FLAG);
 	sift_wt_finish(wt);
-	sift_colb_publish(index, segs, nsegs, !info->ii_Concurrent && sift_col_track_on(index));
+	sift_colb_publish(index, sift_colb_segments(b), nsegs, !info->ii_Concurrent && sift_col_track_on(index));
 	sift_colb_free(b);
 	return res;
 }
@@ -182,10 +185,14 @@ static IndexBuildResult *
 build_index(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res = NULL;
+	Oid			buffered;
 	bool		chosen,
-				scoped;
+				scoped,
+				heap_only;
+	BuildPlan	plan;
 
-	/* the build reads the heap, which holds the rows this transaction has buffered for the index */
+	/* the build reads the heap, which holds the rows this transaction has buffered for the index: a build from the old index has not got them */
+	heap_only = sift_cwbuf_pending(&buffered) && buffered == RelationGetRelid(index);
 	sift_cwbuf_discard(RelationGetRelid(index));
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table"),
@@ -211,7 +218,7 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 	sift_conn_auto(heap, index);
 	sift_conn_resolve(heap, index);
 	sift_scope_resolve(heap, index, false, info->ii_Concurrent ? SIFT_JOURNAL_DEFER : SIFT_JOURNAL_PLAIN);
-	sift_scope_precheck(heap, index);
+	sift_scope_check_build(index);
 #ifdef SIFT_TESTING
 	sift_test_col_workers = 0;
 	sift_test_col_merge_slices = 0;
@@ -235,10 +242,16 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 		sift_scope_start(heap, index, true);
 		PushActiveSnapshot(GetLatestSnapshot());
 	}
-	if (info->ii_ParallelWorkers > 0 && !sift_col_journal_empty)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
+	plan = colb_choose(heap, index, info, heap_only);
+	if (plan.source == COLB_OLD)
+		res = colb_old_build(heap, index, plan.old);
+	else if (plan.source == COLB_BTREE && plan.participants > 1)
+		res = colb_btree_build_par(heap, index, info, plan.btree, plan.participants - 1);
+	else if (plan.source == COLB_HEAP && info->ii_ParallelWorkers > 0 && !sift_col_journal_empty)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
-		res = serial_build(heap, index, info);
+		res = serial_build(heap, index, info, plan.btree);
+	colb_choose_end(&plan);
 	if (scoped)
 		PopActiveSnapshot();
 #ifdef SIFT_TESTING
@@ -257,8 +270,8 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 		sift_col_track_reconcile(index);
 	sift_conn_start(heap, index);
 	sift_scope_start(heap, index, info->ii_Concurrent);
-	if (sift_scope_specs(index) != NULL)
-		sift_scope_floor_after_build(index);
+	if (sift_scope_specs(index) != NULL && !info->ii_Concurrent)
+		sift_col_side_build(index);
 	if (chosen)
 		sift_col_auto_keys_report(index);
 	sift_col_vacuum_notice(heap, index);

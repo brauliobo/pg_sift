@@ -1,4 +1,4 @@
--- The NOTICE that says which column format minor an index is written in names the minor of the scope option (45, read from 5.0), whatever the other choices of the build need, and its hint does not
+-- The NOTICE that says which column format minor an index is written in names the minor of the scope option (45, read from 5.0) as the least the index needs, whatever the other choices of the build need, says in its detail that an entity segment of 16 units or more is written at the minor of the scope sidecar (53), and its hint does not
 -- offer the setting that cannot lower it; an index without the option is unchanged.
 CREATE EXTENSION pg_sift;
 CREATE TABLE pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));

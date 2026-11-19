@@ -6,9 +6,9 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
+SET sift.test_scope_entity = on;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
 -- 8 keys; dim_a_id d has a pair with the keys 1 + d % 8 and 1 + (d + 3) % 8; 4,000 events
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, region_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO tenant_scope SELECT d, 1 + (d + j * 3) % 8, 1 + (d + j) % 3 FROM generate_series(1, 64) d, generate_series(0, 1) j;
@@ -97,7 +97,7 @@ WITH d AS (DELETE FROM tenant_scope WHERE tenant_id = 1 AND dim_a_id IN (SELECT 
 SELECT * FROM state_line()
  same | stored |      changed      | list_changed | list_patched | region_changed 
 ------+--------+-------------------+--------------+--------------+----------------
- t    | t      | {6,0,0,0,0,0,0,0} |            0 |            0 | {6,6,6,6}
+ t    | t      | {0,0,0,0,0,0,0,0} |            0 |            0 | {0,0,0,0}
 (1 row)
 
 SELECT 3 AS n, 'a pair moved from key 2 to key 3' AS state
@@ -110,7 +110,7 @@ UPDATE tenant_scope SET tenant_id = 3 WHERE tenant_id = 2 AND dim_a_id = (SELECT
 SELECT * FROM state_line()
  same | stored |      changed      | list_changed | list_patched | region_changed 
 ------+--------+-------------------+--------------+--------------+----------------
- t    | t      | {6,1,1,0,0,0,0,0} |            1 |            1 | {7,7,7,7}
+ t    | t      | {0,0,0,0,0,0,0,0} |            0 |            0 | {0,0,0,0}
 (1 row)
 
 SELECT 4 AS n, 'a pair of key 5 deleted' AS state
@@ -123,7 +123,7 @@ DELETE FROM tenant_scope WHERE tenant_id = 5 AND dim_a_id = (SELECT min(dim_a_id
 SELECT * FROM state_line()
  same | stored |      changed      | list_changed | list_patched | region_changed 
 ------+--------+-------------------+--------------+--------------+----------------
- t    | t      | {6,1,1,0,1,0,0,0} |            1 |            0 | {7,7,7,7}
+ t    | t      | {0,0,0,0,0,0,0,0} |            0 |            0 | {0,0,0,0}
 (1 row)
 
 SELECT 5 AS n, 'pairs of key 8 inserted for dim_a_id values with events and none yet in it' AS state
@@ -136,7 +136,7 @@ INSERT INTO tenant_scope SELECT d, 8, 5 FROM generate_series(1, 64) d WHERE d % 
 SELECT * FROM state_line()
  same | stored |      changed      | list_changed | list_patched | region_changed 
 ------+--------+-------------------+--------------+--------------+----------------
- t    | t      | {6,1,1,0,1,0,0,5} |            1 |            0 | {10,10,10,10}
+ t    | t      | {0,0,0,0,0,0,0,0} |            0 |            0 | {0,0,0,0}
 (1 row)
 
 SELECT 6 AS n, 'a pair of key 1 and region 2 gets region 4' AS state
@@ -149,21 +149,21 @@ UPDATE tenant_scope SET region_id = 4 WHERE dim_a_id = 40 AND tenant_id = 1
 SELECT * FROM state_line()
  same | stored |      changed      | list_changed | list_patched | region_changed 
 ------+--------+-------------------+--------------+--------------+----------------
- t    | t      | {7,1,1,0,1,0,0,5} |            1 |            0 | {11,11,11,11}
+ t    | t      | {0,0,0,0,0,0,0,0} |            0 |            0 | {0,0,0,0}
 (1 row)
 
 -- the patched dim_a_id values of the keys 1 and 5 after the states: the key that changed patches, the ones that did not patch nothing
 SELECT k, r.same, r.stored, r.changed, r.patched FROM generate_series(1, 8) k, LATERAL read_keys('events_col', 'tenant_id', ARRAY[k]::int8[]) r ORDER BY k;
  k | same | stored | changed | patched 
 ---+------+--------+---------+---------
- 1 | t    | t      |       7 |       7
- 2 | t    | t      |       1 |       0
- 3 | t    | t      |       1 |       1
+ 1 | t    | t      |       0 |       0
+ 2 | t    | t      |       0 |       0
+ 3 | t    | t      |       0 |       0
  4 | t    | t      |       0 |       0
- 5 | t    | t      |       1 |       0
+ 5 | t    | t      |       0 |       0
  6 | t    | t      |       0 |       0
  7 | t    | t      |       0 |       0
- 8 | t    | t      |       5 |       5
+ 8 | t    | t      |       0 |       0
 (8 rows)
 
 SELECT sift.col_verify('events_col', true);
@@ -183,13 +183,13 @@ END $$;
 SELECT sift.col_maintain('events_col') AS rewritten;
  rewritten 
 -----------
- t
+ f
 (1 row)
 
 SELECT * FROM state_line();
  same | stored |      changed      | list_changed | list_patched | region_changed 
 ------+--------+-------------------+--------------+--------------+----------------
- t    | t      | {0,0,0,0,0,0,0,0} |            0 |            0 | {11,11,11,11}
+ t    | t      | {0,0,0,0,0,0,0,0} |            0 |            0 | {0,0,0,0}
 (1 row)
 
 DROP TABLE states;

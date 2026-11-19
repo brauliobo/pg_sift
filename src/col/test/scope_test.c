@@ -29,7 +29,6 @@
 #include "core/host.h"
 
 PG_FUNCTION_INFO_V1(sift_test_member_hash);
-PG_FUNCTION_INFO_V1(sift_test_scope_expand);
 PG_FUNCTION_INFO_V1(sift_test_col_scope_entries);
 
 /* sift._test_member_hash(value): the word a journal records for a text, varchar or uuid member (sift_member_hash) */
@@ -44,52 +43,6 @@ sift_test_member_hash(PG_FUNCTION_ARGS)
 }
 
 /*
- * sift._test_scope_expand(rel, btree, member, key, fks): the scope entries the fill gives for the member keys of fks (NULLs kept), one row (ordinal, key) per entry; the
- * ordinal is the position in fks, from 0. The way it knows the pairs (read once or probed) is the one sift.test_conn_fill names.
- */
-Datum
-sift_test_scope_expand(PG_FUNCTION_ARGS)
-{
-	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
-	Oid			btree = PG_GETARG_OID(1);
-	AttrNumber	member = get_attnum(RelationGetRelid(rel), text_to_cstring(PG_GETARG_TEXT_PP(2))),
-				key = get_attnum(RelationGetRelid(rel), text_to_cstring(PG_GETARG_TEXT_PP(3)));
-	ArrayType  *arr = PG_GETARG_ARRAYTYPE_P(4);
-	int			n = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
-	Datum	   *vals;
-	bool	   *isnull;
-	int64	   *fk = palloc(Max(n, 1) * sizeof(int64));
-	uint64	   *nulls = palloc0((n / 64 + 1) * sizeof(uint64));
-	uint32	   *row = NULL;
-	int64	   *k = NULL;
-	uint32		cap = 0,
-				entries;
-	struct SiftScopeFill *f;
-
-	InitMaterializedSRF(fcinfo, 0);
-	deconstruct_array(arr, INT8OID, 8, true, TYPALIGN_DOUBLE, &vals, &isnull, &n);
-	for (int i = 0; i < n; i++)
-	{
-		fk[i] = isnull[i] ? 0 : DatumGetInt64(vals[i]);
-		if (isnull[i])
-			nulls[i / 64] |= (uint64) 1 << (i % 64);
-	}
-	f = sift_scope_fill_begin_rel(CurrentMemoryContext, rel, btree, member, key, n);
-	entries = sift_scope_fill_expand(f, 0, fk, nulls, n, &row, &k, &cap);
-	for (uint32 i = 0; i < entries; i++)
-	{
-		Datum		v[2] = {Int32GetDatum((int32) row[i]), Int64GetDatum(k[i])};
-		bool		nl[2] = {false, false};
-
-		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nl);
-	}
-	sift_scope_fill_end(f);
-	table_close(rel, NoLock);
-	return (Datum) 0;
-}
-
-/*
  * sift._test_col_scope_entries(index): every live entry of the scope segments, (generation, unit, address of the fact row, scope leaf, scope key) in the order the units are
  * stored; the scope leaf is the ordinal of its derived key among those of the schema
  */
@@ -98,11 +51,11 @@ sift_test_col_scope_entries(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	SiftColBatch *batch = sift_cbatch_create(CurrentMemoryContext, sift_col_rel(index)->schema);
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -142,9 +95,6 @@ sift_test_col_scope_entries(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(sift_test_col_scope_stamps);
-PG_FUNCTION_INFO_V1(sift_test_col_scope_filled);
-PG_FUNCTION_INFO_V1(sift_test_col_scope_floor);
-PG_FUNCTION_INFO_V1(sift_test_col_scope_unfill);
 
 /*
  * sift._test_col_scope_stamps(index): the stamp each segment holds for each scope of the index: (generation, family 'entities' or 'scope', the segment says its rows are
@@ -155,10 +105,10 @@ sift_test_col_scope_stamps(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		const SiftSegEntry *e = &dir->segs[i];
@@ -190,10 +140,10 @@ sift_test_col_scope_journal_stamps(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		const SiftSegEntry *e = &dir->segs[i];
@@ -215,76 +165,6 @@ sift_test_col_scope_journal_stamps(PG_FUNCTION_ARGS)
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
-}
-
-/* sift._test_col_scope_filled(index, key_name): does the floor of the stamps of the scope say anything (lineage not 0) */
-Datum
-sift_test_col_scope_filled(PG_FUNCTION_ARGS)
-{
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftScopeSpecs *sp = sift_scope_specs(index);
-	char	   *name = text_to_cstring(PG_GETARG_TEXT_PP(1));
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
-	bool		filled = false;
-
-	sift_dir_read(index, dir);
-	for (int i = 0; sp != NULL && i < sp->n; i++)
-		if (strcmp(sp->s[i]->key_name, name) == 0)
-		{
-			SiftConnStamp floor[SIFT_SCOPE_JOURNALS];
-
-			sift_scope_floor_get(&dir->meta, i, floor);
-			filled = floor[0].lineage != 0;
-		}
-	index_close(index, AccessShareLock);
-	PG_RETURN_BOOL(filled);
-}
-
-/* sift._test_col_scope_floor(index): the floor of the stamps of each journal of each scope: (scope, journal, lineage, xmin) */
-Datum
-sift_test_col_scope_floor(PG_FUNCTION_ARGS)
-{
-	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftScopeSpecs *sp = sift_scope_specs(index);
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
-
-	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, dir);
-	for (int s = 0; sp != NULL && s < sp->n; s++)
-	{
-		SiftConnStamp floor[SIFT_SCOPE_JOURNALS];
-
-		sift_scope_floor_get(&dir->meta, s, floor);
-		for (int j = 0; j < sift_scope_njournals(sp->s[s]); j++)
-		{
-			Datum		v[4] = {Int32GetDatum(s), Int32GetDatum(j), Int64GetDatum((int64) floor[j].lineage), TransactionIdGetDatum(floor[j].xmin)};
-			bool		nulls[4] = {false};
-
-			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
-		}
-	}
-	index_close(index, AccessShareLock);
-	return (Datum) 0;
-}
-
-static void
-clear_floor(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
-{
-	memset(meta->scope_floor, 0, sizeof(meta->scope_floor));
-}
-
-/* sift._test_col_scope_unfill(index): clears the floor of the stamps, as an index that was never filled has it */
-Datum
-sift_test_col_scope_unfill(PG_FUNCTION_ARGS)
-{
-	Relation	index = sift_col_open_index(PG_GETARG_OID(0), RowExclusiveLock);
-
-	sift_maint_lock(index, true);
-	sift_dir_update(index, &(SiftDirChange) {.fn = clear_floor,.extra = InvalidBuffer});
-	sift_maint_unlock(index);
-	index_close(index, RowExclusiveLock);
-	PG_RETURN_VOID();
 }
 
 PG_FUNCTION_INFO_V1(sift_test_in_scope);
@@ -352,7 +232,7 @@ in_scope(FunctionCallInfo fcinfo, const int64 *keys, int nkeys)
 			pfree(st->members);
 			pfree(st->keys);
 		}
-		st->members = sift_scope_members(heap, index, text_to_cstring(PG_GETARG_TEXT_PP(1)), NULL, snap, keys, nkeys, &st->n);
+		st->members = sift_scope_members(heap, index, text_to_cstring(PG_GETARG_TEXT_PP(1)), NULL, NULL, snap, keys, nkeys, &st->n);
 		st->keys = memcpy(palloc(nkeys * sizeof(int64)), keys, nkeys * sizeof(int64));
 		st->nkeys = nkeys;
 		st->index = indexoid;
@@ -404,8 +284,6 @@ sift_test_in_scope_set(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(sift_test_scope_legs);
-PG_FUNCTION_INFO_V1(sift_test_scope_price);
-PG_FUNCTION_INFO_V1(sift_test_scope_preagg_kept);
 PG_FUNCTION_INFO_V1(sift_test_scope_take);
 PG_FUNCTION_INFO_V1(sift_test_scope_journal_changes);
 PG_FUNCTION_INFO_V1(sift_test_scope_vouch);
@@ -516,120 +394,9 @@ sift_test_scope_journal_changes(PG_FUNCTION_ARGS)
 }
 
 
-/* sift._test_scope_price(counts...): what the units of a read and the entity path cost for the counts (col/scope.h SiftScopeCounts), in instructions: the pure price the executor and the planner share */
-Datum
-sift_test_scope_preagg_kept(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_FLOAT8(sift_scope_preagg_kept(PG_GETARG_INT64(0), PG_GETARG_INT64(1)));
-}
 
-Datum
-sift_test_scope_price(PG_FUNCTION_ARGS)
-{
-	SiftScopeCounts c = {
-		.nkeys = PG_GETARG_INT32(0),
-		.once = PG_GETARG_BOOL(1),
-		.units = PG_GETARG_INT64(2),
-		.entries = PG_GETARG_INT64(3),
-		.preagg = PG_GETARG_FLOAT8(4),
-		.entry_instr = PG_GETARG_FLOAT8(5),
-		.drops = PG_GETARG_INT32(6),
-		.key_pairs = PG_GETARG_INT64(7),
-		.changed = PG_GETARG_INT64(8),
-		.patch_units = PG_GETARG_INT64(9),
-		.patch_scan_rows = PG_GETARG_INT64(10),
-		.delta_rows = PG_GETARG_INT64(11),
-		.pairs = PG_GETARG_INT64(12),
-		.path_rows = PG_GETARG_INT64(13),
-		.path_units = PG_GETARG_INT64(14),
-		.scan_pairs = PG_GETARG_INT64(15),
-		.topn = PG_GETARG_BOOL(16),
-		.walk_units = PG_GETARG_INT64(17),
-		.group_frac = PG_GETARG_FLOAT8(18),
-		.group_units = PG_GETARG_FLOAT8(19),
-		.skip = PG_GETARG_FLOAT8(20),
-	};
-	TupleDesc	desc;
-	Datum		v[2] = {Float8GetDatum(sift_scope_units_price(&c)), Float8GetDatum(sift_scope_entity_price(&c))};
-	bool		nulls[2] = {false, false};
 
-	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
-}
 
-PG_FUNCTION_INFO_V1(sift_test_scope_refresh);
-
-/* sift._test_scope_refresh(rows, entries, columns, changed, patch_units, patch_scan_rows, delta_rows): the price of the refresh of the scope segments, of what a read pays for the changed members, and the reads of that price that make the refresh due (pure) */
-Datum
-sift_test_scope_refresh(PG_FUNCTION_ARGS)
-{
-	SiftScopeCounts c = {.changed = PG_GETARG_INT64(3),.patch_units = PG_GETARG_INT64(4),.patch_scan_rows = PG_GETARG_INT64(5),.delta_rows = PG_GETARG_INT64(6)};
-	double		refresh = sift_scope_refresh_price(PG_GETARG_INT64(0), PG_GETARG_INT64(1), (double) PG_GETARG_INT64(1) * PG_GETARG_INT32(2)),
-				read = sift_scope_changed_price(&c);
-	Datum		v[3] = {Float8GetDatum(refresh), Float8GetDatum(read), Int64GetDatum((int64) ceil(MAINT_HALF * refresh / Max(read, 1.0)))};
-	bool		nulls[3] = {false, false, read == 0};
-	TupleDesc	desc;
-
-	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
-}
-
-PG_FUNCTION_INFO_V1(sift_test_scope_paid);
-
-/* sift._test_scope_paid(index, scope): the instructions the reads of the server paid for the pairs changed since the floor of the scope, on top of the filled read: the metapage's and this backend's not yet written (col/scope_paid.c) */
-Datum
-sift_test_scope_paid(PG_FUNCTION_ARGS)
-{
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
-	uint64		paid;
-
-	sift_dir_read(index, dir);
-	paid = sift_scope_paid(index, &dir->meta, PG_GETARG_INT32(1));
-	index_close(index, AccessShareLock);
-	PG_RETURN_INT64((int64) paid);
-}
-
-PG_FUNCTION_INFO_V1(sift_test_scope_balance);
-
-/* sift._test_scope_balance(index): what the reads paid for the changed pairs of the index, and half of the price of its refresh (the rule of `stale scope` is paid >= half) */
-Datum
-sift_test_scope_balance(PG_FUNCTION_ARGS)
-{
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftScopeStale *st = sift_scope_stale_begin(index, CurrentMemoryContext);
-	Datum		v[2];
-	bool		nulls[2] = {false, false};
-	uint64		paid;
-	double		half;
-	TupleDesc	desc;
-
-	if (st == NULL)
-		elog(ERROR, "the index has no scope");
-	sift_scope_refresh_balance(st, &paid, &half);
-	sift_scope_stale_end(st);
-	index_close(index, AccessShareLock);
-	v[0] = Int64GetDatum((int64) paid);
-	v[1] = Float8GetDatum(half);
-	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
-}
-
-PG_FUNCTION_INFO_V1(sift_test_scope_paid_flush);
-
-/* sift._test_scope_paid_flush(index): this backend's sum is written to the metapage now, as the look does once for each naptime (col/scope_paid.c) */
-Datum
-sift_test_scope_paid_flush(PG_FUNCTION_ARGS)
-{
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-
-	sift_scope_paid_flush(index);
-	index_close(index, AccessShareLock);
-	PG_RETURN_VOID();
-}
 
 /* a predicate as text, NULL when the leg has none */
 static Datum

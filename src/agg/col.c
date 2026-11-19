@@ -627,7 +627,7 @@ col_walk_stamp(void *impl, SiftSrcWalkStamp *st, uint32 *mem, int cap, int *nmem
 
 	if (!sift_col_walk_stamp(((ColSource *) impl)->cs, &cs, mem, cap, nmem))
 		return false;
-	*st = (SiftSrcWalkStamp) {.index = cs.index,.file = cs.file,.version = cs.version,.scope = cs.scope};
+	*st = (SiftSrcWalkStamp) {.index = cs.index,.file = cs.file,.version = cs.version};
 	return true;
 }
 
@@ -763,15 +763,6 @@ col_preagg(Relation index, SiftSrcPreagg *pa)
 	sift_aggpre_spec(&spec, pa);
 }
 
-static bool
-col_unit_exact(void *impl, const SiftSrcUnit *unit)
-{
-	SiftColSegment *seg;
-
-	/* a whole segment answers from its key table only (sift_col_unit_hist): every other question of it is refused */
-	return sift_col_unit_whole(&((ColSource *) impl)->unit, &seg) || sift_col_unit_preagg_ok(&((ColSource *) impl)->unit);
-}
-
 static int
 col_unit_dead(void *impl, const SiftSrcUnit *unit, int mode)
 {
@@ -879,13 +870,10 @@ static const SiftSrcProvider col_provider = {
 	.owns_table = col_owns_table,
 	.layout = col_layout,
 	.stats = col_stats,
-	.scope_stats = sift_col_scope_stats,
 	.miss = sift_col_miss,
 	.stamp = col_stamp,
 	.open = col_open,
 	.open_part = col_open_part,
-	.open_scope = sift_col_open_scope,
-	.scope_delta = sift_col_open_scope_delta,
 	.view_size = col_view_size,
 	.view_export = col_view_export,
 	.part_count = sift_col_count_view,
@@ -968,6 +956,8 @@ static const SiftSrcProvider col_provider = {
 	.filter_wide = col_filter_wide,
 	.preagg = col_preagg,
 	.unit_exact = col_unit_exact,
+	.unit_run = col_unit_run,
+	.scope_side = col_scope_side,
 	.unit_dead = col_unit_dead,
 	.unit_except = col_unit_except,
 	.unit_agg = col_unit_agg,

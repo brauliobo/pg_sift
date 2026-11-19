@@ -43,11 +43,7 @@
 #include "core/restrict.h"
 
 bool		sift_agg_scope = true;
-double		sift_scope_max_multiplicity = 3.0;
 int			sift_col_scope_refresh_pct = 10;
-#ifdef SIFT_TESTING
-bool		sift_test_scope_patch = false;
-#endif
 
 /*
  * The checks of one column of a relation of the scope: it exists and is an integer, or a text, varchar or uuid column of a deterministic collation (col/scope_keys.c). A scope of one path needs
@@ -77,33 +73,16 @@ relation_column(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, con
 	return att;
 }
 
-/* The attribute of the index named name, InvalidAttrNumber when none */
-static AttrNumber
-index_attribute(Relation index, const char *name)
-{
-	for (int a = 1; a <= RelationGetNumberOfAttributes(index); a++)
-		if (strcmp(NameStr(TupleDescAttr(RelationGetDescr(index), a - 1)->attname), name) == 0)
-			return a;
-	return InvalidAttrNumber;
-}
-
-/* cols(..): each name is a column of the index, once. The member key and the derived key are kept whether or not they are named, so naming them is not an error */
+/* The options of a declaration made for the scope segments of 5.0, which the sidecar has no use for: they are read and said to be ignored */
 static void
-check_cols(Relation index, const SiftScopeSpec *s)
+notice_ignored(const SiftScopeSpec *s)
 {
-	foreach_ptr(char, name, s->cols)
-	{
-		if (strcmp(name, s->key_name) == 0)
-			continue;
-		if (index_attribute(index, name) == InvalidAttrNumber)
-			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("scope \"%s\": cols(..) names \"%s\", which is not a column of this index", s->key_name, name),
-							errhint("Name columns of the index: the scope segments keep those, the member key and the column the units are cut by.")));
-	}
-	for (int i = 0; i < list_length(s->cols); i++)
-		for (int j = 0; j < i; j++)
-			if (strcmp(list_nth(s->cols, i), list_nth(s->cols, j)) == 0)
-				ereport(ERROR, (errcode(ERRCODE_DUPLICATE_COLUMN), errmsg("scope \"%s\": cols(..) names \"%s\" twice", s->key_name, (char *) list_nth(s->cols, i)),
-								errhint("Name each column once.")));
+	if (s->cols != NIL)
+		ereport(NOTICE, (errmsg("scope \"%s\": the cols option is ignored", s->key_name),
+						 errdetail("The scope keeps no copy of the rows: it holds runs of the units of the index, which keep every column.")));
+	if (s->max_multiplicity > 0)
+		ereport(NOTICE, (errmsg("scope \"%s\": the max_multiplicity option is ignored", s->key_name),
+						 errdetail("The scope keeps no copy of the rows, so no number of keys a row has is too many.")));
 }
 
 /*
@@ -230,7 +209,6 @@ sift_scope_relation(Relation heap, Relation index, const SiftScopeSpec *s, Relat
 		ereport(ERROR, (errcode(ERRCODE_DUPLICATE_COLUMN), errmsg("scope \"%s\": the name of the derived key is a column of this index", s->key_name),
 						errhint("Give the derived key a name that no column of the index has: key_order names a column or a derived key.")));
 	open_table(heap, s, &s->rel, rel);
-	check_cols(index, s);
 	check_columns(*rel, s, &s->rel, member, scope_key);
 	if (!sift_keymap_same_kind(fkatt->atttypid, get_atttype(RelationGetRelid(*rel), *member)))
 		ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg("scope \"%s\": the member column \"%s\" of \"%s\" (%s) and the column \"%s\" of the index (%s) are not of one kind", s->key_name,
@@ -582,30 +560,6 @@ require_journals(const SiftScopeSpec *s, Relation *rel, const AttrNumber (*att)[
 }
 
 /*
- * The limit of each scope that states none, max_multiplicity(n) in its declaration, is the session's sift.scope_max_multiplicity at CREATE INDEX, written into the option so that it is the limit the index
- * was accepted under: REINDEX, a restore of a dump and the rebuild after pg_upgrade (which take no session setting) check the same one, and pay no build for a refusal.
- */
-static void
-record_limits(Relation index, const SiftScopeSpecs *specs)
-{
-	StringInfoData text;
-	bool		missing = false;
-
-	initStringInfo(&text);
-	for (int i = 0; i < specs->n; i++)
-	{
-		appendStringInfo(&text, "%s%s", i > 0 ? "; " : "", specs->s[i]->text);
-		if (specs->s[i]->max_multiplicity == 0)
-		{
-			appendStringInfo(&text, " max_multiplicity(%g)", sift_scope_max_multiplicity);
-			missing = true;
-		}
-	}
-	if (missing)
-		sift_col_set_option(index, "scope", text.data);
-}
-
-/*
  * CREATE INDEX, REINDEX and ALTER INDEX: finds the btree of each relation of each scope the option names (one for the pairs; a scope of two paths names three) and makes the dependency
  * of the index on it, so that DROP INDEX of the btree or DROP TABLE of the relation needs CASCADE (which drops this index) and a dump orders them first; removes the dependencies when the
  * option is off or not set. The dependency is the record of which btree defines the rows: CREATE INDEX and REINDEX (which write the scope segments) choose it by the rule and say which in a
@@ -634,6 +588,8 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky, SiftJournalMake m
 		Oid			btree[3],
 					journal;
 
+		if (!sticky)
+			notice_ignored(s);
 		sift_scope_relation(heap, index, s, &rel[0], &att[0][0], &att[0][1]);
 		for (int h = 1; h < npath; h++)
 			open_hop(heap, s, h, &rel[h], &att[h][0], &att[h][1]);
@@ -663,8 +619,16 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky, SiftJournalMake m
 	}
 	sync_edges(RelationGetRelid(index), keep);
 	list_free(keep);
-	if (specs != NULL && !sticky)
-		record_limits(index, specs);
+}
+
+void
+sift_scope_check_build(Relation index)
+{
+	if (sift_col_is_index(index) && sift_scope_specs(index) != NULL && sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("sift_col index \"%s\" has a scope, which sift.col_format_minor %d cannot write", RelationGetRelationName(index), sift_col_format_minor),
+						errdetail("A scope needs the units cut by key, written at sift.col_format_minor %d or more, and a release before 5.0 cannot read it.", SIFT_COL_FORMAT_PRESENCE),
+						errhint("Build it at the normal setting, or build the index without the scope, which an older library reads.")));
 }
 
 /* After ALTER INDEX of any option of a sift_col index: the scopes follow the option */
@@ -687,26 +651,6 @@ sift_scope_time_leaf(const SiftColDef *defs, int n)
 			(defs[id].type == SIFT_COLT_DATE || defs[id].type == SIFT_COLT_TIMESTAMP || defs[id].type == SIFT_COLT_TIMESTAMPTZ))
 			return id;
 	return -1;
-}
-
-/*
- * The leaves the scope segments of scope c keep values of: all of them without cols(..); else the derived key, the leaves of the listed columns and of the member key (a leaf of
- * a column is every leaf its attribute has, and the found flag of a connection follows its key's column), and the leaf the units are cut by after the key, whose values order them.
- */
-static void
-scope_kept(Relation index, const SiftScopeSpec *s, int own, int time, const SiftColDef *defs, int n, bool *kept)
-{
-	List	   *atts = NIL;
-
-	for (int id = 0; id < n; id++)
-		kept[id] = s->cols == NIL;
-	if (s->cols == NIL)
-		return;
-	atts = lappend_int(atts, sift_conn_index_column(index, get_attnum(index->rd_index->indrelid, s->fk)));
-	foreach_ptr(char, name, s->cols)
-		atts = lappend_int(atts, index_attribute(index, name));
-	for (int id = 0; id < n; id++)
-		kept[id] = (defs[id].flags & SIFT_COLD_SCOPE) ? id == own : id == time || list_member_int(atts, defs[id].attno);
 }
 
 /* Is the column of the pairs relation of the scope (its scope key, or its member) text, varchar or uuid */
@@ -742,11 +686,9 @@ sift_scope_member_text(Relation index, int scope)
 }
 
 int
-sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf, int *nscope, bool (*kept)[SIFT_COL_MAX_COLS])
+sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf, int *nscope)
 {
 	SiftScopeSpecs *specs = sift_scope_specs(index);
-	int			first = n,
-				time;
 
 	*nscope = 0;
 	for (int c = 0; specs != NULL && c < specs->n; c++)
@@ -763,39 +705,7 @@ sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf, int *nscop
 		n++;
 		(*nscope)++;
 	}
-	time = sift_scope_time_leaf(defs, first);
-	for (int c = 0; c < *nscope; c++)
-		scope_kept(index, specs->s[c], leaf[c], time, defs, n, kept[c]);
 	return n;
-}
-
-int
-sift_scope_find(Relation heap, Relation index, AttrNumber fk, Oid rel, AttrNumber member, AttrNumber scope_key, int *leaf, Oid *btree)
-{
-	SiftScopeSpecs *specs = sift_scope_specs(index);
-	const SiftColIndexMeta *meta = sift_col_index_defs(index);
-
-	for (int c = 0; specs != NULL && c < specs->n; c++)
-	{
-		const SiftScopeSpec *s = specs->s[c];
-		Relation	scope_rel;
-		AttrNumber	m,
-					k;
-		char	   *name = psprintf("%s#scope", s->key_name);
-
-		/* the pairs of a scope of two paths are not the rows of one relation */
-		if (s->joined != NULL || sift_conn_index_column(index, get_attnum(RelationGetRelid(heap), s->fk)) != fk ||
-			sift_conn_relation_oid(RelationGetRelid(heap), s->rel.schema, s->rel.name, NoLock, false) != rel ||
-			get_attnum(rel, s->rel.a) != member || get_attnum(rel, s->rel.b) != scope_key)
-			continue;
-		for (int i = 0; i < meta->ncols; i++)
-			if ((meta->cols[i].flags & SIFT_COLD_SCOPE) && strcmp(meta->cols[i].path, name) == 0)
-				*leaf = i;
-		*btree = sift_scope_relation_index(heap, index, s, &scope_rel, &m, &k);
-		table_close(scope_rel, NoLock);
-		return c;
-	}
-	return -1;
 }
 
 bool

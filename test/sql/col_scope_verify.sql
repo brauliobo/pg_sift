@@ -1,13 +1,12 @@
 -- sift.col_scope_verify: the scope index against the plain join for a sample of scope keys. A clean index gives no row; state the journal did not hear of (the testing mutant
 -- sift.test_no_track: the statement triggers of the pairs' journal write no record, as a bug of the tracking would) gives 'differs' for the keys whose answer changed and for those only;
--- a rebuild repairs it; a key not read from the stored units (a CREATE INDEX CONCURRENTLY makes unstamped segments) is 'unverified' with the reason, not clean.
+-- a rebuild of the journal index and of the index repairs it; a key not read from the stored units (a CREATE INDEX CONCURRENTLY makes unstamped segments) is 'unverified' with the reason, not clean.
 -- One path (plain and soft deleted pairs) and two paths are verified; the keys are drawn from the pairs or named.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.scope_max_multiplicity = 8;
 
 -- one path, unique pairs, 12 tenants of 50 members; member m is in (m % 4) of them
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
@@ -29,6 +28,7 @@ RESET sift.test_no_track;
 SELECT 'mutant, every key' AS state, scope_key, problem, scope_rows, join_rows, detail FROM sift.col_scope_verify('events_col', 100) ORDER BY scope_key;
 SELECT 'mutant, other keys' AS state, count(*) AS rows FROM sift.col_scope_verify('events_col', keys => ARRAY['1', '2', '4', '6', '7', '99']);
 SELECT 'mutant, named key' AS state, scope_key, problem FROM sift.col_scope_verify('events_col', keys => ARRAY['3']);
+REINDEX INDEX tenant_scope_journal;
 REINDEX INDEX events_col;
 SELECT 'after REINDEX' AS state, count(*) AS rows FROM sift.col_scope_verify('events_col', 100);
 
@@ -97,6 +97,8 @@ RESET sift.test_no_track;
 SELECT 'text, mutant' AS state, scope_key, problem FROM sift.col_scope_verify('events_text', 100, ARRAY['tenant-3', 'tenant-4', 'nobody']) ORDER BY scope_key;
 SELECT 'uuid, mutant' AS state, scope_key = md5('tenant-3') AS the_key, problem FROM sift.col_scope_verify('events_uuid', 100, ARRAY[md5('tenant-3'), md5('tenant-4')]) ORDER BY scope_key;
 SELECT 'text, mutant, every key' AS state, scope_key, problem FROM sift.col_scope_verify('events_text', 100) ORDER BY scope_key;
+REINDEX INDEX text_pairs_journal;
+REINDEX INDEX uuid_pairs_journal;
 REINDEX INDEX events_text;
 REINDEX INDEX events_uuid;
 SELECT 'text and uuid, after REINDEX' AS state, (SELECT count(*) FROM sift.col_scope_verify('events_text', 100)) + (SELECT count(*) FROM sift.col_scope_verify('events_uuid', 100)) AS rows;

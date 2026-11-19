@@ -433,10 +433,13 @@ export_bind(SiftScanState *ss)
 static void
 export_dir(SiftScanState *ss)
 {
-	SiftDirSnapshot dir;
+	SiftDirSnapshot *dir = sift_dir_read(ss->index);
+	Size		len;
+	void	   *blob = sift_dir_export(dir, &len);
 
-	sift_dir_read(ss->index, &dir);
-	sift_par_set_bind(ss->par.sh, ss->par.area, &dir, sizeof(dir));
+	sift_par_set_bind(ss->par.sh, ss->par.area, blob, len);
+	pfree(blob);
+	pfree(dir);
 	SIFT_TEST_GATE(sift_test_export_gate, 5);
 }
 

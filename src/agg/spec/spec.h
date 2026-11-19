@@ -50,8 +50,6 @@ typedef struct SiftAggScope
 	double		skip;			/* the share of the entries of the keys that the statement's own conditions leave out (the planner's selectivity of them on the table): the source tests those rows and aggregates none of them */
 	double		join_credit;	/* what the alternative's price holds for routing every row of the table to a group, which a statement with no group key does not pay (AGG_ALT_GROUP_ROW): not in the price the node chooses by, in the one of a read that ran (agg/scope.c join_ran_price) */
 	double		knot_rows;		/* the rows the alternative reads for one key of the average size: the entries of a read, over this, are the keys it has in those units */
-	double		rgroup_frac;	/* the share of the units key groups with the rollup of the rows answer, and the units of a group: a group is read in the place of its units (0, 1: none) */
-	double		rgroup_units;
 	double		rowwise;		/* the share of the entries the units' pre-aggregates do not answer, which are read and aggregated row by row (1: the spec cannot use them, or the units have changed members); for one key, of the plan's many for a read counted once */
 } SiftAggScope;
 
@@ -331,6 +329,8 @@ extern Datum sift_approx_trans(struct FunctionCallInfoBaseData *fcinfo);	/* agg/
 /* The one leaf a predicate of the rows (group -1) or of the elements of the array leaf group reads (-1: none), -2 if it is not a test of a plain leaf of that level (a combo, a late expression) */
 /* The leaf of a numeric program that is `leaf * mul + add` (a lone leaf, or int8 arithmetic with a constant that ends in the range-checked cast), -1 if it is more */
 extern int sift_aggnum_linear(const SiftAggNum *n, sift_i128 *mul, sift_i128 *add);
+extern bool sift_agg_scope_groups_by_key(const SiftAggSpec *s, const SiftSrcLayout *lay);
+extern bool sift_agg_scope_counts_pairs(const SiftAggScope *sc, bool key_read);
 extern int sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, int group);
 
 /* Is the (top level, row level) predicate a text test the source can run on the encoded form? The constants are palloc'd in CurrentMemoryContext */

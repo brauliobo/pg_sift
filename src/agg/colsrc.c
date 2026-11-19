@@ -67,14 +67,6 @@ sift_colsrc_stats_lazy(Relation rel, SiftSrcStats *st)
 	provider_of_rel(rel)->stats(rel, st);
 }
 
-bool
-sift_colsrc_scope_stats_lazy(Relation rel, SiftSrcStats *st)
-{
-	const SiftSrcProvider *prov = provider_of_rel(rel);
-
-	return prov->scope_stats != NULL && prov->scope_stats(rel, st);
-}
-
 void
 sift_colsrc_miss(Relation rel, SiftSrcStats *st)
 {
@@ -118,25 +110,6 @@ sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext
 	src->prov = prov;
 	src->impl = prov->open(heap, index, snapshot, mcxt, view);
 	return src;
-}
-
-SiftSrcSource *
-sift_colsrc_open_scope(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
-{
-	const SiftSrcProvider *prov = provider_of_rel(index);
-	SiftSrcSource *src = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
-
-	SIFT_INVARIANT(prov->open_scope != NULL, "sift: the source of this index has no scope segments");
-	src->prov = prov;
-	src->impl = prov->open_scope(heap, index, snapshot, mcxt, view);
-	return src;
-}
-
-void
-sift_colsrc_scope_delta(SiftSrcSource *src, const struct SiftScopeRead *rd)
-{
-	SIFT_INVARIANT(src->prov->scope_delta != NULL, "sift: the source of this index has no scope segments");
-	src->prov->scope_delta(src->impl, rd);
 }
 
 bool

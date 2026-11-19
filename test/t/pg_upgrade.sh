@@ -198,7 +198,6 @@ HOPSTATE="SELECT string_agg(o, ' ') FROM pg_class c, unnest(c.reloptions) o WHER
 	UNION ALL SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'hop_col'::regclass
 	AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i'"
 if [[ -z $OLD_REF ]]; then
-	q old postgres "ALTER DATABASE postgres SET sift.scope_max_multiplicity = 8" >/dev/null || bail "the multiplicity limit"
 	printf '%s;\n' "${TWOHOP_BASE[@]}" "${TWOHOP_INDEX[@]}" | qs old postgres >/dev/null || bail "the scope of two paths cannot be set up"
 	HOP_BEFORE=$(HOPQ old "$HOPSTATE")
 fi
@@ -327,7 +326,7 @@ if [[ -z $OLD_REF ]]; then
 	HOPQ new "UPDATE grants SET deleted_at = now() WHERE group_id = 3 AND deleted_at IS NULL" "INSERT INTO memberships (group_id, dim_a_id) VALUES (3, 150) ON CONFLICT DO NOTHING" \
 		"UPDATE grants SET deleted_at = now() WHERE dim_a_id % 17 = 0" >/dev/null
 	HOPQ new "REINDEX INDEX grants_by_member" "REINDEX INDEX grants_by_group" "REINDEX INDEX memberships_by_member" "REINDEX INDEX hop_col" >/dev/null
-	check "after writes to the three tables and a REINDEX of the three journals and of the scope index the reads are the join, the units are read, and the indexes verify" test "$(twohop_reads new)|$(twohop_why new)" == "same|stored" \
+	check "after writes to the three tables and a REINDEX of the three journals and of the scope index the reads are the join, the units are read, and the indexes verify" test "$(twohop_reads new)|$(twohop_why new)" == "same|entity" \
 		-a -z "$(HOPQ new "SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('grants_by_member', true)" "SELECT sift.col_verify('grants_by_group', true)" "SELECT sift.col_verify('memberships_by_member', true)" 2>&1)"
 else skip 3 "an index of a release has no scope of two paths"; fi
 

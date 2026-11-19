@@ -189,7 +189,6 @@ run_scan(AggExec *ex)
 				pass_begin(ex);
 		}
 	}
-	scan_delta(ex);
 	scan_tail(ex);
 }
 
@@ -621,18 +620,6 @@ engine_open_rest(AggExec *ex)
 	MemoryContextSwitchTo(old);
 }
 
-/* The source of a scope read: the scope segments, less the stored entries of the members that changed, with the rows no entry describes copied for each pair of their member (the delta) */
-static SiftSrcSource *
-scope_source(AggExec *ex, Snapshot snapshot)
-{
-	SiftSrcSource *src = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, ex->cxt, ex->scope_rd->view);
-	uint32		stored = sift_colsrc_nsb(src);
-
-	sift_colsrc_scope_delta(src, ex->scope_rd);
-	ex->delta_units = sift_colsrc_nsb(src) - stored;
-	return src;
-}
-
 /* The scan engine on the relations of the spec: shared by the node and by a parallel worker */
 void
 engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
@@ -655,7 +642,10 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	else if (ex->spec->nparts > 0)
 		ex->src = sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt, ex->view);
 	else
-		ex->src = scope_open(ex, snapshot) ? scope_source(ex, snapshot) : sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt, ex->view);
+	{
+		scope_open(ex, snapshot);
+		ex->src = sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt, ex->view);
+	}
 	/* the join a scope read runs in its place is another spec: whether the walk of the global order answers it alone is its own to say */
 	ex->open_deferred = ex->open_deferred && sift_topn_walks_alone(ex->spec);
 	if (ex->partoff)
@@ -676,6 +666,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	if (!ex->open_deferred)
 		register_combos(ex);
 	join_filters(ex, old);
+	scope_side_open(ex);
 	/* the planner takes only the joins that are (agg/order/shape.c, topn_joins_ok), and the scope conjunct is one more filter */
 	SIFT_INVARIANT(!ex->spec->topn || ex->njfilter == ex->spec->njoin + ex->scope_preds, "sift: a join of a top-N is not a filter of the scan");
 	pgagg_init(ex);
@@ -854,8 +845,6 @@ stats_run(AggExec *c)
 	sift_stat_add(SIFT_STAT_UNITS_PREAGG, c->n_pre_units);
 	sift_stat_add(SIFT_STAT_ROWS_DECODED, c->n_rows);
 	sift_stat_add(SIFT_STAT_ROWS_VETTED, cc.rows_vetted);
-	if (c->scope_note != NULL)
-		scope_paid_end(c);
 	if (OidIsValid(c->spec->indexoid))
 		/* the rows the log decided read no heap page: a VACUUM would not spare their scan anything */
 		sift_col_vacuum_tick(c->spec->indexoid, c->spec->heapoid, cc.rows_vetted - cc.rows_log, cc.dirty_rows);
@@ -989,6 +978,7 @@ const CustomExecMethods agg_exec_methods = {
 	.ExecCustomScan = agg_exec,
 	.EndCustomScan = agg_end,
 	.ReScanCustomScan = agg_rescan,
+	.ShutdownCustomScan = agg_shutdown,
 	.ExplainCustomScan = agg_explain,
 };
 

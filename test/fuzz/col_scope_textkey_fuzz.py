@@ -9,7 +9,7 @@ sift_col index with a scope on the pairs, and draws steps: batches of fact INSER
 keys that are new (the value store has never seen them: their pairs are all delta until the next build), a key that leaves every pair, aborted transactions and savepoints, reads inside a transaction,
 promotion, merge, VACUUM and REINDEX, with a REPEATABLE READ reader opened before the churn. After every step a battery (IN of one key and of a list with a key nobody has, EXISTS, a join for each
 pair, a group by the key of every key and of a list, a table of keys, a time window, a top-N) must give the rows of sift.enable_agg = off, and sift.col_verify must pass; the reader must read, through the
-scope and through the plain plan, the rows of its first read. A read is either stored from the units or says a documented Scope Fallback reason; right after a build the reads of one key are stored.
+scope and through the plain plan, the rows of its first read. A read is either from the entity rows or says a documented Scope Fallback reason (the join: a string member has no sidecar); right after a build the reads of one key of a scope of one path with an integer member take the entity rows, and a seed of one segment takes runs of the scope sidecar whatever the type of its key.
 With --two-paths the pairs are the union of the direct pairs (tenant_scope) and the pairs a key gets through the groups it is granted (grp_scope, memberships: the view pair_set), the index has the scope of two paths, and
 the churn also adds, deletes and moves grants of groups and memberships; the three relations have the key or member of the seed's types, the group is an integer.
 """
@@ -19,7 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from col_twin_fuzz import Sess, Fail, ERR, SETUP, OUT
 
 TWO = False
-FUZZ_SETUP = "LOAD 'pg_sift'; " + SETUP + " SET sift.agg_force = on; SET jit = off; SET sift.scope_max_multiplicity = 64;"
+FUZZ_SETUP = "LOAD 'pg_sift'; " + SETUP + " SET sift.agg_force = on; SET jit = off; SET sift.col_unit_rows = 150; SET sift.test_scope_entity = on;"
+ENTITY = False   # the seed has a scope of one path with an integer member: its reads take the entity rows, and their runs of the scope sidecar
 
 LIB = r"""
 CREATE OR REPLACE FUNCTION tk_cmp(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -30,11 +31,11 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'off', false);
 	EXECUTE 'SELECT coalesce(md5(string_agg(t::text, ''|'' ORDER BY t::text)), '''') FROM (' || q || ') t' INTO b;
 	PERFORM set_config('sift.enable_agg', on_, false);
-	RETURN (a = b)::text || '|' || (plan ~ 'Scope Index')::text || '|' || coalesce(substring(plan from 'Scope Fallback: ([^\n]*)'), '') || '|' || b;
+	RETURN (a = b)::text || '|' || (plan ~ 'Scope Index')::text || '|' || coalesce(substring(plan from 'Scope Fallback: ([^\n]*)'), '') || '|' || coalesce(substring(plan from 'Scope Sidecar Runs: ([0-9]+)'), '0') || '|' || b;
 END $$;
 """
 
-DOCUMENTED = re.compile(r'^(unfilled|snapshot|too many changed keys|patch dearer than the entity path|dedupe .*|column .* not in the scope units|.*journal.*|.*multiset.*|.*stamp.*|.*changed.*)$')
+DOCUMENTED = re.compile(r'^(disabled|join is cheaper for .*|no sidecar holds a run of the key|a text, varchar or uuid member|a group by the scope key|a row for each pair of several keys|.*multiset.*|scope segments of an older format \(REINDEX\))$')
 
 
 def lit(ktype, n):
@@ -88,6 +89,7 @@ class Seed:
         t = self.ktype
         fn, ft, rt, acc = self.member_sql()
         mc = self.mc
+        ko = f"key_order = '{mc}, created_at', key_cut = '{mc}, created_at', " if self.mode == 'int' else ''
         gen = (lambda ty: f", account {ty} GENERATED ALWAYS AS ({acc}(dim_a_id)) STORED") if acc else (lambda ty: '')
         vals = ', '.join(f'({n}, {self.k(n)})' for n in self.keys + self.spare)
         return f"""{f"SET sift.test_col_segment_kb = {self.segkb};" if self.segkb else ""}
@@ -104,7 +106,7 @@ CREATE INDEX tenant_scope_col ON tenant_scope USING sift_col ({mc}, tenant_id) W
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, kind int, v int, pad text{gen(ft)}) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT {self.fact_rows(1, self.rows)};
 {self.two_setup(rt, gen)}CREATE INDEX events_col ON events USING sift_col (id, {mc}, created_at, kind, v)
-	WITH (scope = '{self.declaration()}');
+	WITH ({ko}scope = '{self.declaration()}');
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events, tenant_scope, keys_n{', grp_scope, memberships' if self.two else ''};
 """
@@ -262,10 +264,10 @@ def run_battery(a, qs, stats, label, strict=False, first=None):
     got = {}
     empty = strict and a.run("SELECT 'rows', NOT EXISTS (SELECT 1 FROM events);").split('|')[-1].strip() == 't'   # no row, no segment to carry the stamp
     for line in out.strip().splitlines():
-        m = re.match(r'^(\d+)\|(true|false)\|(true|false)\|([^|]*)\|(.*)$', line)
+        m = re.match(r'^(\d+)\|(true|false)\|(true|false)\|([^|]*)\|(\d+)\|(.*)$', line)
         if not m:
             continue
-        i, same, engaged, why, h = int(m[1]), m[2] == 'true', m[3] == 'true', m[4], m[5]
+        i, same, engaged, why, runs, h = int(m[1]), m[2] == 'true', m[3] == 'true', m[4], int(m[5]), m[6]
         name, q = qs[i]
         if not same:
             raise Fail(f'{label}: {name}: the scope read differs from the plain plan: {q}')
@@ -273,12 +275,13 @@ def run_battery(a, qs, stats, label, strict=False, first=None):
             raise Fail(f'{label}: {name}: the reader saw other rows than its first read: {q}')
         stats['reads'] += 1
         stats['engaged'] += engaged
+        stats['runs'] += runs
         stats['fallback'] += bool(why)
         if why:
             stats['why ' + why] += 1
         if why and not DOCUMENTED.match(why):
             raise Fail(f'{label}: {name}: undocumented fallback reason "{why}"')
-        if strict and not empty and name == 'one key' and (not engaged or why):
+        if strict and ENTITY and not empty and name == 'one key' and (not engaged or why):
             raise Fail(f'{label}: {name}: not stored right after a build ({why or "no scope read"})')
         got[i] = h
     if len(got) != len(qs):
@@ -298,6 +301,8 @@ def run_seed(seed, rows, steps, out_dir):
     stats = collections.Counter()
     try:
         s = Seed(seed, rows)
+        global ENTITY
+        ENTITY = s.mode == 'int' and not s.two
         log.write(f'-- seed {seed} {vars(s)}\n')
         a.run(LIB)
         out = a.run(s.setup_sql())
@@ -338,8 +343,10 @@ def run_seed(seed, rows, steps, out_dir):
         run_battery(a, s.battery(), stats, 'rebuilt', strict=True)
         if not stats['engaged']:
             raise Fail('no read of the seed took the scope units')
+        if ENTITY and s.segkb == 0 and not stats['runs']:
+            raise Fail('no read of the seed took a run of the scope sidecar')
         why = ', '.join(f'{k[4:]} x{v}' for k, v in stats.most_common() if k.startswith('why '))
-        return 0, path, f"{'two paths, ' if s.two else ''}{s.ktype} key, {s.mode} member, reads={stats['reads']} scope={stats['engaged']} fallback={stats['fallback']} ({why})"
+        return 0, path, f"{'two paths, ' if s.two else ''}{s.ktype} key, {s.mode} member, reads={stats['reads']} scope={stats['engaged']} runs={stats['runs']} fallback={stats['fallback']} ({why})"
     except Fail as e:
         log.write(f'FAIL {e}\n')
         return 1, path, f'FAIL {str(e)[:600]}'

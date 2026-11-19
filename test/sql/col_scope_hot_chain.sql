@@ -1,7 +1,6 @@
 -- The entries of a sift_col index lead to the first version of a HOT chain, as the entries of every index do: an UPDATE that keeps the indexed columns links the new version to the old one, and the
--- address of the row stays the one of the first version (a redirect once VACUUM has pruned it), not the address the heap scan of the table reports for the live version. The scope segments hold the
--- addresses of the entity segments, whatever built them (CREATE INDEX, a promotion, a pair that changes) and whatever happened to the table since: the entries are the join of the rows the entity
--- segments hold with the pairs, and a scope read is the join.
+-- address of the row stays the one of the first version (a redirect once VACUUM has pruned it), not the address the heap scan of the table reports for the live version. Whatever built the entity
+-- segments (CREATE INDEX, a promotion, a pair that changes) and whatever happened to the table since, a scope read is the join.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -18,13 +17,6 @@ INSERT INTO events SELECT i, 1 + (i * 7919) % 320, timestamptz '2026-01-01' + (i
 -- the column no index holds: the update is a HOT one and the rows it touches are chains
 UPDATE events SET pad = 'y' WHERE id % 3 = 0;
 
--- every row of the entity segments with its scope keys through the pairs, by the address the entity segments hold; the entries of the scope segments must be exactly those
-CREATE FUNCTION entries_are_the_join() RETURNS boolean LANGUAGE plpgsql AS $$
-BEGIN
-	RETURN (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col'))
-		 = (SELECT md5(string_agg(r.tid::text || ':' || s.tenant_id, ',' ORDER BY r.tid, s.tenant_id))
-			FROM sift._test_col_read('events_col', 0) r JOIN events e ON e.id = r.val::int JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id);
-END $$;
 -- the addresses the entity segments hold that are not the address of a live row: the first versions of chains
 CREATE FUNCTION chain_roots() RETURNS bigint LANGUAGE plpgsql AS $$
 BEGIN
@@ -49,7 +41,7 @@ END $$;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
-SELECT chain_roots() > 1000 AS chains, entries_are_the_join();
+SELECT chain_roots() > 1000 AS chains;
 SELECT * FROM reads();
 
 -- more chains and a pair that changes and a member that moves: the rows of a member are keyed by the addresses of the entity segments, chains included
@@ -74,12 +66,11 @@ SELECT sift.col_verify('events_col', true);
 -- a rebuild writes the same addresses
 SELECT chain_roots() > 1000 AS chains;
 REINDEX INDEX events_col;
-SELECT entries_are_the_join();
 SELECT * FROM reads();
 SELECT sift.col_verify('events_col', true);
 
 DROP TABLE events, tenant_scope;
-DROP FUNCTION entries_are_the_join(), chain_roots(), reads();
+DROP FUNCTION chain_roots(), reads();
 DROP FUNCTION scope_run(text, text), scope_group_run(text), scope_reason_ok(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

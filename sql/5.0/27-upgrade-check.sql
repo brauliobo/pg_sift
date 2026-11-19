@@ -12,7 +12,7 @@ RETURNS TABLE (object text, kind text, detected text, status text, advice text)
 LANGUAGE plpgsql AS $fn$
 DECLARE
 	-- the first release that reads each column format minor (docs/FORMATS.md section 4), and the sift.col_format_minor that writes what a release reads
-	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4", "22": "3.5", "23": "3.5", "24": "3.5", "25": "3.6", "26": "3.6", "27": "3.6", "28": "3.6", "29": "3.6", "30": "3.6", "31": "3.6", "32": "3.6", "33": "3.7", "34": "3.7", "35": "3.7", "36": "3.7", "37": "3.7", "38": "3.7", "39": "3.7", "40": "4.0", "41": "4.0", "42": "4.0", "43": "4.0", "44": "4.3", "45": "5.0", "46": "5.0", "47": "5.0", "48": "5.0", "49": "5.0", "50": "5.0", "51": "5.0"}';
+	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4", "22": "3.5", "23": "3.5", "24": "3.5", "25": "3.6", "26": "3.6", "27": "3.6", "28": "3.6", "29": "3.6", "30": "3.6", "31": "3.6", "32": "3.6", "33": "3.7", "34": "3.7", "35": "3.7", "36": "3.7", "37": "3.7", "38": "3.7", "39": "3.7", "40": "4.0", "41": "4.0", "42": "4.0", "43": "4.0", "44": "4.3", "45": "5.0", "46": "5.0", "47": "5.0", "48": "5.0", "49": "5.0", "50": "5.0", "51": "5.0", "52": "5.1", "53": "5.1", "54": "5.1", "55": "5.1"}';
 	col_setting CONSTANT jsonb := '{"3.0": 3, "3.1": 4, "3.2": 6, "3.3": 15}';
 	-- the settings the 4.2 and 5.0 libraries removed, each with the value that is refused (a regular expression; null: any value) and what to say. sift.eval_methods lost only some of its methods
 	removed CONSTANT jsonb := '{"sift.eval_methods": ["(^|[^a-z_])(latest_hint|snapshot_masks|unit_rewrite|skip_trigger_lookup)([^a-z_]|$)", "the 4.2 library has removed that method (skip_trigger_lookup is always on) and refuses it in a SET"],
@@ -112,6 +112,8 @@ BEGIN
 				adv := format('ALTER INDEX %s SET (key_cut = ''off''), then REINDEX INDEX %s writes units by superblock, which 3.3 reads', r.rel, r.rel);
 			ELSIF hi = 20 AND tgt = '3.3' THEN
 				adv := format('ALTER INDEX %s RESET (hll_columns), then REINDEX INDEX %s writes units without sketches, which 3.3 reads', r.rel, r.rel);
+			ELSIF need = '5.1' AND tgt = '5.0' THEN
+				adv := format('REINDEX INDEX CONCURRENTLY %s with the 5.0 library builds it in what 5.0 reads (a scope index is the size of 5.0 again)', r.rel);
 			ELSIF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'scope=%') THEN
 				-- a scope is written at minor 45 or more (a lowered setting refuses it), and a release before 5.0 refuses the option: the entity rows are what an older release reads
 				adv := format('DROP INDEX %s, then SET sift.col_format_minor = 14 and CREATE INDEX it again without the scope option writes the entities without the scope, which %s reads (the reads of the scope go through the join again; ALTER INDEX .. RESET (scope) is refused on an index that has segments)', r.rel, tgt);

@@ -73,24 +73,24 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	int			nb;
 	SiftWriteTarget *wt = NULL;
 	SiftColSegWriter *w = NULL;
-	SiftSegEntry neu[1 + SIFT_SCOPE_MAX];
-	int			nneu = 1;
+	SiftSegEntry neu[1];
 	SiftExtent *pages;
 	int			npages;
 	TimestampTz start = GetCurrentTimestamp();
-	uint64		rows = 0;
+	uint64		rows = 0,
+				records,
+				buffer_pages;
 	SiftCPaggSpec rewrite = r->pagg;
 	SiftXWait	xwait = {InvalidTransactionId};
-	SiftScopeStamps stamps = {0};
 
 	sift_cwbuf_flag_sealed(index, sealed);
+	sift_cwbuf_summary(index, sealed, &records, &buffer_pages);
 	batches = sift_cwbuf_batches(index, sealed, schema, cx, &nb, &xwait);
 	if (nb > 0)
 	{
 		int			format = sift_col_format_minor;
 		uint32		unit = maint_floor_rows(index);
 		SiftColFill *fill;
-		struct SiftScopeFill *sf;
 		uint64		nbrows = 0,
 					largest = 0,
 					idx_rows;
@@ -104,7 +104,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		}
 		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, r->policy, format, cx);
-		fill = maint_scope_fill_begin(index, cx, nbrows, &sf);
+		fill = sift_conn_fill_begin(index, cx, nbrows);
 		sift_colw_set_fill(w, fill);
 		idx_rows = nbrows;
 		for (int i = 0; i < nin; i++)
@@ -137,22 +137,6 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		rows = sift_colw_rows(w);
 		sift_colw_finish(w, &neu[0]);
 		neu[0].flags |= sealed->flags & SIFT_SEG_ROOTS;
-		/* the rows go to the scope segments in the same switch of the directory as their entity segment */
-		if (sf != NULL)
-		{
-			ScopeRun   *run = maint_scope_run_begin(index, sf, cx);
-
-			for (int i = 0; i < nb; i++)
-			{
-				maint_scope_run_batch(run, batches[i]);
-				maint_scope_run_add(run, batches[i], 0, batches[i]->nrows);
-			}
-			nneu += maint_scope_run_write(run, wt, fill, idx_rows, format, neu + 1);
-			maint_scope_run_end(run);
-			for (int i = 1; i < nneu; i++)
-				neu[i].flags |= neu[0].flags & SIFT_SEG_ROOTS;
-			sift_scope_fill_stamps(sf, &stamps);
-		}
 		sift_conn_fill_end(fill);
 		/* as late as the rows are written: the transactions that finished while they were leave no bit in the stamp */
 		if (r->track)
@@ -160,10 +144,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		sift_wt_finish(wt);
 	}
 	pages = sift_cwbuf_pages(index, sealed, &npages);
-	/* the floor of the stamps goes down to this promotion's before its segments are published, whether or not it wrote a scope segment: its rows with no pair are exact as of it too */
-	if (stamps.n > 0)
-		sift_scope_floor_lower(index, &stamps);
-	sift_maint_replace_n(index, NULL, &sealed->gen, 1, neu, nb > 0 ? nneu : 0, pages, npages, "promoted a sealed column segment of", start, rows);
+	sift_maint_promote_n(index, sealed->gen, (uint32) records, neu, nb > 0 ? 1 : 0, pages, npages, "promoted a sealed column segment of", start, rows);
 	sift_cwbuf_arena_drop(index, sealed->gen);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
@@ -215,10 +196,10 @@ first_sealed(const SiftDirSnapshot *snap)
 SiftStepResult
 maint_promote_next(Relation index, bool propagate, uint64 *busy)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	const SiftSegEntry *s;
 
-	sift_col_dir_read(index, snap, false);
+	snap = sift_col_dir_read(index);
 	settle_stamps(index, snap);
 	if ((s = first_sealed(snap)) != NULL)
 	{

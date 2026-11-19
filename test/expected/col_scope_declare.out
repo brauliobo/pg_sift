@@ -126,11 +126,11 @@ SHOW sift.agg_scope;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num)
 	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  scope "tenant_id": 3,432 entries for 3,000 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
-NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "events_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
 SELECT edges('events_col') AS edges;
                  edges                  
@@ -154,13 +154,12 @@ SELECT format, rows, kind FROM sift.col_segments('events_col') WHERE kind = 'imm
  format | rows |   kind    
 --------+------+-----------
      45 | 3000 | immutable
-     45 | 3432 | immutable
-(2 rows)
+(1 row)
 
 SELECT o AS option FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'events_col' AND o LIKE 'scope=%';
-                                       option                                       
-------------------------------------------------------------------------------------
- scope=tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(3)
+                             option                             
+----------------------------------------------------------------
+ scope=tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)
 (1 row)
 
 -- a scope and no scope answer alike
@@ -213,9 +212,7 @@ SELECT format, kind FROM sift.col_segments('events_col') WHERE kind = 'immutable
 --------+-----------
      45 | immutable
      45 | immutable
-     45 | immutable
-     45 | immutable
-(4 rows)
+(2 rows)
 
 SELECT sift.col_verify('events_col', true);
  col_verify 
@@ -226,9 +223,9 @@ SELECT sift.col_verify('events_col', true);
 DROP TABLE events_plain;
 -- the text is the record: pg_dump writes it and a restore makes the same index
 SELECT regexp_replace(pg_get_indexdef('events_col'::regclass), '^.* WITH', 'WITH') AS definition;
-                                                                                definition                                                                                 
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- WITH (scope='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(3)', key_columns='auto: dim_a_id', track_changes=id, point_tid_columns='auto: id')
+                                                                      definition                                                                       
+-------------------------------------------------------------------------------------------------------------------------------------------------------
+ WITH (scope='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)', key_columns='auto: dim_a_id', track_changes=id, point_tid_columns='auto: id')
 (1 row)
 
 SELECT pg_get_indexdef('events_col'::regclass) AS ddl \gset
@@ -238,13 +235,13 @@ ERROR:  relation "events_col" does not exist
 LINE 1: SELECT edges('events_col') AS after_drop;
                      ^
 SELECT :'ddl' AS restore \gexec
-CREATE INDEX events_col ON public.events USING sift_col (id, dim_a_id, created_at, kind, label, value_num) WITH (scope='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(3)', key_columns='auto: dim_a_id', track_changes=id, point_tid_columns='auto: id')
+CREATE INDEX events_col ON public.events USING sift_col (id, dim_a_id, created_at, kind, label, value_num) WITH (scope='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)', key_columns='auto: dim_a_id', track_changes=id, point_tid_columns='auto: id')
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  scope "tenant_id": 3,546 entries for 3,100 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
-NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "events_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
 SELECT edges('events_col') AS after_restore;
              after_restore              
@@ -261,11 +258,11 @@ SELECT leaf, path FROM sift.col_leaves('events_col') WHERE path LIKE '%#scope';
 -- REINDEX, REINDEX CONCURRENTLY and ALTER INDEX of another option keep one dependency; the scope index and the btree can both be rebuilt
 REINDEX INDEX events_col;
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  scope "tenant_id": 3,546 entries for 3,100 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
-NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "events_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
 SELECT edges('events_col') AS after_reindex;
              after_reindex              
@@ -280,9 +277,9 @@ HINT:  The next VACUUM completes the log; REINDEX INDEX events_col without CONCU
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
-NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "events_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
-NOTICE:  scope "tenant_id": 3,546 entries for 3,100 rows (1.14 per row)
 SELECT edges('events_col') AS after_reindex_concurrently, (SELECT count(*) FROM pg_class WHERE relname LIKE 'events_col%') AS indexes;
        after_reindex_concurrently       | indexes 
 ----------------------------------------+---------
@@ -305,18 +302,17 @@ SELECT edges('events_col') AS after_btree_reindex_concurrently;
 
 REINDEX INDEX events_col;
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  scope "tenant_id": 3,546 entries for 3,100 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
-NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "events_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
 SELECT format, kind FROM sift.col_segments('events_col') WHERE kind = 'immutable';
  format |   kind    
 --------+-----------
      45 | immutable
-     45 | immutable
-(2 rows)
+(1 row)
 
 -- off, a new declaration and RESET change the leaf list: an index that has segments refuses them and keeps its dependencies
 SELECT try('ALTER INDEX events_col SET (scope = ''off'')');
@@ -342,11 +338,11 @@ CREATE TABLE events_empty (LIKE events);
 CREATE INDEX events_empty_col ON events_empty USING sift_col (id, dim_a_id, created_at, kind, label, value_num)
 	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  scope "tenant_id": 0 entries for 0 rows (0.00 per row)
 NOTICE:  sift_col index "events_empty_col": 1 automatic choice (key_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key; key_columns = dim_a_id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_empty_col');
-NOTICE:  sift_col index "events_empty_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "events_empty_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
 ALTER INDEX events_empty_col SET (scope = 'off');
 SELECT edges('events_empty_col') AS after_off;
@@ -406,11 +402,11 @@ DROP INDEX events_col;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num)
 	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  scope "tenant_id": 3,546 entries for 3,100 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
-NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "events_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
 -- the btree and the relation cannot go under the index; CASCADE takes the index with them
 SELECT try('DROP INDEX tenant_scope_pkey');
@@ -477,12 +473,11 @@ CREATE INDEX events_two ON events USING sift_col (id, dim_a_id, kind, value_num)
 		  connect = 'dim_a_id -> dim_a(id)');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
 NOTICE:  scope "Region Key": the pairs of "region_scope" are the rows of its unique btree "region_scope_region_id_dim_a_id_key"
-NOTICE:  scope "tenant_id": 3,100 entries for 3,100 rows (1.00 per row)
-NOTICE:  scope "Region Key": 3,100 entries for 3,100 rows (1.00 per row)
 NOTICE:  sift_col index "events_two": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_two');
-NOTICE:  sift_col index "events_two" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "events_two" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
 SELECT edges('events_two') AS edges;
                                                          edges                                                         
@@ -506,9 +501,7 @@ SELECT format, rows FROM sift.col_segments('events_two') WHERE kind = 'immutable
  format | rows 
 --------+------
      45 | 3100
-     45 | 3100
-     45 | 3100
-(3 rows)
+(1 row)
 
 SELECT sift.col_verify('events_two', true);
  col_verify 

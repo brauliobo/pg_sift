@@ -461,6 +461,13 @@ sift_wt_expect(SiftWriteTarget *wt, uint64 bytes)
 	wt->expect = bytes / BLCKSZ;
 }
 
+void
+sift_wt_expect_exact(SiftWriteTarget *wt, uint64 pages)
+{
+	wt->expect = pages;
+	wt->exact = true;
+}
+
 /* Transfer completed allocations to the published directory before any subsequent error can abort the write target. */
 void
 sift_wt_publish(SiftWriteTarget *wt, const SiftDirChange *chg)
@@ -575,6 +582,11 @@ run_want(const SiftStreamWriter *sw, uint32 min)
 {
 	uint64		expect = sw->wt->expect + sw->wt->expect / 16 + RUN_MIN;
 
+	if (sw->wt->exact)
+	{
+		SIFT_INVARIANT(sw->wt->expect > sw->blocks, "sift: a stream announced as %llu blocks writes more", ULL(sw->wt->expect));
+		return sw->wt->expect - sw->blocks;
+	}
 	if (sw->wt->expect == 0)
 		return sw->grow;
 	return Max(min, Min(sw->grow, expect > sw->blocks ? expect - sw->blocks : 0));

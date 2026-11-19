@@ -6,7 +6,6 @@ CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.scope_max_multiplicity = 8;
 
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
 INSERT INTO tenant_scope SELECT m, 1 + (m * 5 + j * 7) % 12 FROM generate_series(1, 300) m, generate_series(0, m % 6) j WHERE m % 25 <> 0;

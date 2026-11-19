@@ -17,12 +17,11 @@ KINDS=${SIFT_CL_KINDS:-btree gin sift_plain sift_track sift_scope sift_scope_new
 PT=pairs
 node_init cl 71 "autovacuum = off
 sift.col_auto_merge = off
-sift.scope_max_multiplicity = 8
 max_parallel_maintenance_workers = 0"
 node_start cl || bail "start failed"
 D=$(dir cl)
 FG=7101			# the advisory lock the expression of the btree and GIN indexes waits for in the build
-SG=7200			# sift.test_phase_gate of the build of sift_col: the phase gates are SG + the phase (2 scan, 3 write, 4 tail, 5 fill, 6 the journal of a relation of pairs that has none, while the build holds what it holds to make it)
+SG=7200			# sift.test_phase_gate of the build of sift_col: the phase gates are SG + the phase (2 scan, 3 write, 4 tail, 6 the journal of a relation of pairs that has none, while the build holds what it holds to make it)
 STRONG="'ShareLock', 'ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock'"
 sql cl "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE FUNCTION gate_i(int) RETURNS int LANGUAGE plpgsql IMMUTABLE AS \$\$ BEGIN IF current_setting('application_name') = 'build' THEN PERFORM pg_advisory_lock($FG); PERFORM pg_advisory_unlock($FG); END IF; RETURN \$1; END \$\$" \
@@ -214,15 +213,15 @@ for kind in $KINDS; do
 		sift_track)
 			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v)" ; G=sift ; P=(2 3 4) ;;
 		sift_scope)
-			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs(m, t)')" ; G=sift ; P=(2 3 4 5) ;;
+			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs(m, t)')" ; G=sift ; P=(2 3 4) ;;
 		sift_scope_new_journal)
-			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs2(m, t)')" ; G=sift ; P=(2 3 4 6 5) ; PT=pairs2 ;;
+			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs2(m, t)')" ; G=sift ; P=(2 3 4 6) ; PT=pairs2 ;;
 		reindex_btree)
 			C="CREATE INDEX k_ix ON t (gate_i(v))" ; G=fn ; P=(1) ;;
 		reindex_gin)
 			C="CREATE INDEX k_ix ON t USING gin (gate_a(a))" ; G=fn ; P=(1) ;;
 		reindex_sift_scope)
-			C="CREATE INDEX k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs(m, t)')" ; G=sift ; P=(2 3 4 5) ;;
+			C="CREATE INDEX k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs(m, t)')" ; G=sift ; P=(2 3 4) ;;
 		*) bail "unknown kind $kind" ;;
 	esac
 	if [[ $kind == reindex_* ]]; then

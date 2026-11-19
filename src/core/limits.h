@@ -227,15 +227,33 @@
 	X(eset_rows, "SIFT_ESET_ROWS", "col/spool.h", SIFT_ESET_ROWS, "entries", \
 	  "the entries of one order array that a segment writer keeps in memory (16 bytes each, a leaf holds the entries of its values and of its NULL rows apart) before it writes them to a temp file as a sorted run", \
 	  "none: past it the entries go to temp files (an error only from temp_file_limit or a full disk)", "-", 1) \
+	X(writer_min_budget, "SIFT_COLW_MIN_BUDGET", "col/seg.h", 16 * 1024 * 1024, "bytes", \
+	  "the least memory a segment writer of a build, merge or rewrite is given to hold its point arrays before it cuts the segment, whatever maintenance_work_mem is", \
+	  "none: a smaller maintenance_work_mem still writes the segments, the writer is cut at this much", "maintenance_work_mem", 1) \
+	X(window_min_bytes, "WINDOW_MIN", "col/maint/merge_window.c", 4 * 1024 * 1024, "bytes", \
+	  "the least memory the decoded units of the inputs of a column merge may hold before they are folded into one batch, whatever maintenance_work_mem is (two units at least)", \
+	  "none: the units are folded at this much", "maintenance_work_mem", 1) \
+	X(side_sink_max, "SIFT_ARRAY_UNLIMITED", "core/limits.h", SIFT_ARRAY_UNLIMITED, "bytes", \
+	  "the most the pages of a scope sidecar wait in memory while the sidecar of a segment is made, whatever maintenance_work_mem is (a quarter of it at most)", \
+	  "none outside a test: a sidecar that outgrows its buffer is put to the segment's pages as it is made, in runs of no known length, and the relation may grow by up to a run more than the sidecar", "maintenance_work_mem", 1) \
+	X(part_min_kb, "PART_MIN_KB", "col/maint/maint.c", 4096, "kB", \
+	  "the least size of a partition of a merge or rewrite, whatever maintenance_work_mem is", \
+	  "none: the partitions are of this size at least", "maintenance_work_mem", 1) \
 	X(tomb_log_kb, "SIFT_TOMB_LOG_KB", "core/tomb.h", SIFT_TOMB_LOG_KB, "kB", \
 	  "the tombstone log of a sift_table or of a sift_col index with track_changes that one backend keeps in memory (64 bytes an entry: the sorted entries, the scratch of a first look and the chain members), the entries of its own statement included; the entries past it are kept in sorted runs on temp files", \
 	  "none: past it the entries go to temp files (an error only from temp_file_limit or a full disk); a worker VACUUM is asked for at 33.5 million entries", "sift.tomb_log_limit", 0) \
 	X(wide_dict_bytes, "-", "table/wide.c", 1073741823, "bytes", \
 	  "the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group", \
 	  "ERROR 54000 naming the column", "-", 1) \
-	X(max_segments, "SIFT_MAX_SEGMENTS", "core/sift.h", SIFT_MAX_SEGMENTS, "segments", \
-	  "directory entries of a sift or sift_col index (a sift_table has sift.table_max_segments for a test)", \
+	X(max_segments, "SIFT_DIR_POLICY_MAX", "core/page.h", SIFT_DIR_POLICY_MAX, "segments", \
+	  "directory entries a writer of a sift or sift_col index keeps it within (a sift_table has sift.table_max_segments for a test); a directory of more is a chain of pages, which holds 32,768", \
 	  "writers merge the smallest closed segments from 16 entries below it; a forced seal leaves the write buffer open (NOTICE)", "-", 1) \
+	X(build_serial_budget, "SIFT_COL_BUILD_SERIAL_BUDGET", "col/build.h", 64 * 1024 * 1024, "bytes", \
+	  "the least memory the writer of the serial CREATE INDEX of a sift_col index may hold before it cuts a segment, or a run of a key_cut build, whatever maintenance_work_mem is (half of it above)", \
+	  "none: a smaller maintenance_work_mem still builds, the segments or runs are cut at this much", "maintenance_work_mem", 1) \
+	X(build_min_budget, "SIFT_COL_BUILD_MIN_BUDGET", "col/build.h", 16 * 1024 * 1024, "bytes", \
+	  "the least memory a participant of a parallel CREATE INDEX of a sift_col index may hold before it cuts a segment, whatever its share of maintenance_work_mem is", \
+	  "none: the segments are cut at this much", "maintenance_work_mem", 1) \
 	X(term_bytes, "SIFT_MAX_TERM_BYTES", "core/sift.h", SIFT_MAX_TERM_BYTES, "bytes", \
 	  "a BM25 token", "the token is its first 236 bytes and a hash of all of it", "-", 0) \
 	X(term_tf, "SIFT_MAX_TF", "core/sift.h", SIFT_MAX_TF, "occurrences", \
@@ -278,9 +296,6 @@
 	X(dict_block_bytes, "SIFT_DICT_BLOCK_MAX_BYTES", "bm25/dict.h", SIFT_DICT_BLOCK_MAX_BYTES, "bytes", \
 	  "one block of 32 terms of the dictionary of a BM25 segment, header included (a block takes about 22 kB at most: terms of 255 bytes with their inline postings and positions)", \
 	  "ERROR 54000 at build or merge", "-", 1) \
-	X(scope_batch_entries, "SIFT_SCOPE_BATCH_MAX_ENTRIES", "col/scope.h", SIFT_SCOPE_BATCH_MAX_ENTRIES, "entries", \
-	  "entries (a row of the batch and a scope key) that the rows of one batch expand to when a scope index is built, promoted or refilled: each row has an entry for every key of its member, 12 bytes each", \
-	  "ERROR 54000 naming max_multiplicity", "-", 1) \
 	X(rows_groups, "SIFT_ROWS_MAX_GROUPS", "agg/rows.h", SIFT_ROWS_MAX_GROUPS, "groups", \
 	  "groups the node that groups rows (SiftAggRows) holds: their count and the arrays of their keys and aggregates are 32 bits", \
 	  "normal plan (NOTICE), ERROR 54000 once rows were sent", "-", 1) \

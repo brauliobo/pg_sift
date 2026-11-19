@@ -265,15 +265,16 @@ typedef struct AggExec
 	int			nfound;			/* the joins answered from the flag of a connected index (join_found) */
 	uint64		found_keys;		/* the keys the journal of the parent names for them: the rows of those are outside the proof of the flag */
 	const char *found_why;		/* why a join of a connected index was not (the first of them) */
-	struct SiftScopeRead *scope_rd;	/* what the scan reads for its scope conjunct (scope_open): the scope units less the members that changed, plus the entity rows of those of them that have a pair now */
 	struct SiftKeyMap *scope_km;	/* a text or uuid scope key: the codes of its values for this execution (scope_keys_init) */
-	const char *scope_why;		/* ... or why it reads the entity rows of the members the scope relation lists (the word EXPLAIN prints) */
+	const char *scope_why;		/* why the scan reads what it reads (the word EXPLAIN prints after Scope Fallback); NULL: the entity rows of the members the scope lists */
 	uint64		scope_members;	/* ... and how many members it listed */
 	int			scope_preds;	/* the conjuncts scope_filter added to the spec */
+	bool		scope_side;		/* the source was told to hand the runs of the scope sidecar for the key (scope_side_open): its member conjunct, scope_pred, is the one they answer for */
+	const struct SiftAggPred *scope_pred;
+	uint64		n_scope_runs;	/* the units the source handed as runs of the scope sidecar */
 	double		scope_price;	/* what the model prices the read the node runs at, in instructions: the units (less the changed members) or the join as written; 0: not priced (scope_open) */
 	int64	   *scope_listed;	/* the members the entity rows are read for (scope_filter), which the workers get as listed */
-	uint32		delta_units;	/* the last superblocks of the source are the units of the delta of the scope read, which only the leader holds: the items of the workers end before them */
-	struct ScopeNote *scope_note;	/* the counts a scope read that found changed members priced under, for what it paid when it ends (scope_paid_end) */
+	struct SiftKeyMap *scope_mm;	/* a text, varchar or uuid member: the map the listed members are the codes of (negative: -1 for its first value), which the workers rebuild from the strings */
 	const void *scope_share;	/* a worker: what its leader decided for the scope conjunct (scope_share_build); the leader has none */
 	uint64		lookup_hscan;	/* the rows of the lookup tables read from the heap of the table (a scan or an index fetch), not from the leaves of an index */
 	int			nshared;		/* the lookup tables another node of the statement had loaded (map_load_shared) */

@@ -5,12 +5,11 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
-SET sift.scope_max_multiplicity = 8;
 SET jit = off;
+SET sift.test_scope_entity = on;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
 -- the narrowed read is taken whatever it costs: the price is the subject of col_scope_patch_price
-SET sift.test_scope_patch = on;
 
 -- 8 keys; dim_a_id d is in 1 + d % 3 of them (1 to 100), 101..120 have events and no pair
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));

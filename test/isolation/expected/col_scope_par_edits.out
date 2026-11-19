@@ -13,7 +13,7 @@ pg_advisory_lock
                 
 (1 row)
 
-step s1o: SELECT agree, parallel, stored FROM iso_sp_q(7021, 0, false); <waiting ...>
+step s1o: SELECT agree, parallel, sidecar FROM iso_sp_q(7021, 0, false); <waiting ...>
 step s3e: INSERT INTO iso_sp SELECT 30300 + g, 1 + (g * 17) % 400, 2, 'z' FROM generate_series(1, 200) g;
 		  INSERT INTO iso_sp_pairs SELECT m, 3 FROM generate_series(2, 400, 9) m ON CONFLICT DO NOTHING;
 		  DELETE FROM iso_sp_pairs WHERE group_id = 3 AND dim_a_id % 5 = 0;
@@ -30,9 +30,9 @@ t
 (1 row)
 
 step s1o: <... completed>
-agree|parallel|stored
------+--------+------
-t    |t       |t     
+agree|parallel|sidecar
+-----+--------+-------
+t    |t       |t      
 (1 row)
 
 step s1c: COMMIT;
@@ -50,7 +50,7 @@ pg_advisory_lock
                 
 (1 row)
 
-step s1i: SELECT agree, parallel, stored FROM iso_sp_q(0, 7022, false); <waiting ...>
+step s1i: SELECT agree, parallel, sidecar FROM iso_sp_q(0, 7022, false); <waiting ...>
 step s3e: INSERT INTO iso_sp SELECT 30300 + g, 1 + (g * 17) % 400, 2, 'z' FROM generate_series(1, 200) g;
 		  INSERT INTO iso_sp_pairs SELECT m, 3 FROM generate_series(2, 400, 9) m ON CONFLICT DO NOTHING;
 		  DELETE FROM iso_sp_pairs WHERE group_id = 3 AND dim_a_id % 5 = 0;
@@ -73,9 +73,9 @@ t
 (1 row)
 
 step s1i: <... completed>
-agree|parallel|stored
------+--------+------
-t    |t       |t     
+agree|parallel|sidecar
+-----+--------+-------
+t    |t       |t      
 (1 row)
 
 step s1c: COMMIT;
@@ -93,7 +93,7 @@ pg_advisory_lock
                 
 (1 row)
 
-step s1w: SELECT agree, parallel, stored FROM iso_sp_q(0, 0, true); <waiting ...>
+step s1w: SELECT agree, parallel, sidecar FROM iso_sp_q(0, 0, true); <waiting ...>
 step s3e: INSERT INTO iso_sp SELECT 30300 + g, 1 + (g * 17) % 400, 2, 'z' FROM generate_series(1, 200) g;
 		  INSERT INTO iso_sp_pairs SELECT m, 3 FROM generate_series(2, 400, 9) m ON CONFLICT DO NOTHING;
 		  DELETE FROM iso_sp_pairs WHERE group_id = 3 AND dim_a_id % 5 = 0;
@@ -117,9 +117,9 @@ t
 (1 row)
 
 step s1w: <... completed>
-agree|parallel|stored
------+--------+------
-t    |t       |t     
+agree|parallel|sidecar
+-----+--------+-------
+t    |t       |t      
 (1 row)
 
 step s1c: COMMIT;

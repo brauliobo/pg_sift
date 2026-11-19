@@ -7,9 +7,8 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
--- members in up to six keys on purpose: above the default limit of the multiplicity
-SET sift.scope_max_multiplicity = 8;
 SET jit = off;
+SET sift.test_scope_entity = on;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
 \ir test/scope_helpers.sql
@@ -88,17 +87,17 @@ END $$;
 \echo clean
 clean
 SELECT * FROM probe('facts', 'membership');
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | t      | none
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | none
- 3 | min and max per key                      | same    | units | t         | t      | none
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | none
- 5 | min and max, filter on the time          | same    | units | t         | t      | none
- 6 | dim_b in one key                         | same    | units | t         | f      | none
- 7 | dim_b in three keys                      | same    | units | t         | f      | none
- 8 | dim_b in no key                          | same    | units | t         | f      | none
- 9 | a row for each pair, no group            | same    | units | f         | t      | none
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT apply(%s) AS state', n), 'SELECT * FROM probe(''facts'', ''membership'')']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
@@ -109,17 +108,17 @@ SELECT apply(1) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'membership')
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | t      | read
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
- 3 | min and max per key                      | same    | units | t         | t      | read
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
- 5 | min and max, filter on the time          | same    | units | t         | t      | read
- 6 | dim_b in one key                         | same    | units | t         | f      | read
- 7 | dim_b in three keys                      | same    | units | t         | f      | read
- 8 | dim_b in no key                          | same    | units | t         | f      | read
- 9 | a row for each pair, no group            | same    | units | f         | t      | read
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT apply(2) AS state
@@ -129,17 +128,17 @@ SELECT apply(2) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'membership')
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | f      | read
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
- 3 | min and max per key                      | same    | units | t         | f      | read
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
- 5 | min and max, filter on the time          | same    | units | t         | f      | read
- 6 | dim_b in one key                         | same    | units | t         | f      | read
- 7 | dim_b in three keys                      | same    | units | t         | f      | read
- 8 | dim_b in no key                          | same    | units | t         | f      | read
- 9 | a row for each pair, no group            | same    | units | f         | f      | read
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT apply(3) AS state
@@ -149,17 +148,17 @@ SELECT apply(3) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'membership')
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | f      | none
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | none
- 3 | min and max per key                      | same    | units | t         | f      | none
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | none
- 5 | min and max, filter on the time          | same    | units | t         | f      | none
- 6 | dim_b in one key                         | same    | units | t         | f      | none
- 7 | dim_b in three keys                      | same    | units | t         | f      | none
- 8 | dim_b in no key                          | same    | units | t         | f      | none
- 9 | a row for each pair, no group            | same    | units | f         | f      | none
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT apply(4) AS state
@@ -169,17 +168,17 @@ SELECT apply(4) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'membership')
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | f      | read
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
- 3 | min and max per key                      | same    | units | t         | f      | read
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
- 5 | min and max, filter on the time          | same    | units | t         | f      | read
- 6 | dim_b in one key                         | same    | units | t         | f      | read
- 7 | dim_b in three keys                      | same    | units | t         | f      | read
- 8 | dim_b in no key                          | same    | units | t         | f      | read
- 9 | a row for each pair, no group            | same    | units | f         | f      | read
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT apply(5) AS state
@@ -189,17 +188,17 @@ SELECT apply(5) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'membership')
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | f      | none
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | none
- 3 | min and max per key                      | same    | units | t         | f      | none
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | none
- 5 | min and max, filter on the time          | same    | units | t         | f      | none
- 6 | dim_b in one key                         | same    | units | t         | f      | none
- 7 | dim_b in three keys                      | same    | units | t         | f      | none
- 8 | dim_b in no key                          | same    | units | t         | f      | none
- 9 | a row for each pair, no group            | same    | units | f         | f      | none
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT apply(6) AS state
@@ -209,17 +208,17 @@ SELECT apply(6) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'membership')
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | f      | none
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | none
- 3 | min and max per key                      | same    | units | t         | f      | none
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | none
- 5 | min and max, filter on the time          | same    | units | t         | f      | none
- 6 | dim_b in one key                         | same    | units | t         | f      | none
- 7 | dim_b in three keys                      | same    | units | t         | f      | none
- 8 | dim_b in no key                          | same    | units | t         | f      | none
- 9 | a row for each pair, no group            | same    | units | f         | f      | none
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT apply(7) AS state
@@ -229,17 +228,17 @@ SELECT apply(7) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'membership')
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | f      | read
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
- 3 | min and max per key                      | same    | units | t         | f      | read
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
- 5 | min and max, filter on the time          | same    | units | t         | f      | read
- 6 | dim_b in one key                         | same    | units | t         | f      | read
- 7 | dim_b in three keys                      | same    | units | t         | f      | read
- 8 | dim_b in no key                          | same    | units | t         | f      | read
- 9 | a row for each pair, no group            | same    | units | f         | f      | read
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT apply(8) AS state
@@ -249,17 +248,17 @@ SELECT apply(8) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'membership')
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | f      | read
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
- 3 | min and max per key                      | same    | units | t         | f      | read
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
- 5 | min and max, filter on the time          | same    | units | t         | f      | read
- 6 | dim_b in one key                         | same    | units | t         | f      | read
- 7 | dim_b in three keys                      | same    | units | t         | f      | read
- 8 | dim_b in no key                          | same    | units | t         | f      | read
- 9 | a row for each pair, no group            | same    | units | f         | f      | read
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT apply(9) AS state
@@ -269,17 +268,17 @@ SELECT apply(9) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'membership')
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | f      | read
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
- 3 | min and max per key                      | same    | units | t         | f      | read
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
- 5 | min and max, filter on the time          | same    | units | t         | f      | read
- 6 | dim_b in one key                         | same    | units | t         | f      | read
- 7 | dim_b in three keys                      | same    | units | t         | f      | read
- 8 | dim_b in no key                          | same    | units | t         | f      | read
- 9 | a row for each pair, no group            | same    | units | f         | f      | read
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT apply(10) AS state
@@ -289,17 +288,17 @@ SELECT apply(10) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'membership')
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | f      | read
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
- 3 | min and max per key                      | same    | units | t         | f      | read
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
- 5 | min and max, filter on the time          | same    | units | t         | f      | read
- 6 | dim_b in one key                         | same    | units | t         | f      | read
- 7 | dim_b in three keys                      | same    | units | t         | f      | read
- 8 | dim_b in no key                          | same    | units | t         | f      | read
- 9 | a row for each pair, no group            | same    | units | f         | f      | read
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT apply(11) AS state
@@ -309,17 +308,17 @@ SELECT apply(11) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'membership')
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | f      | read
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
- 3 | min and max per key                      | same    | units | t         | f      | read
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
- 5 | min and max, filter on the time          | same    | units | t         | f      | read
- 6 | dim_b in one key                         | same    | units | t         | f      | read
- 7 | dim_b in three keys                      | same    | units | t         | f      | read
- 8 | dim_b in no key                          | same    | units | t         | f      | read
- 9 | a row for each pair, no group            | same    | units | f         | f      | read
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT apply(12) AS state
@@ -329,17 +328,17 @@ SELECT apply(12) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'membership')
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | f      | read
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
- 3 | min and max per key                      | same    | units | t         | f      | read
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
- 5 | min and max, filter on the time          | same    | units | t         | f      | read
- 6 | dim_b in one key                         | same    | units | t         | f      | read
- 7 | dim_b in three keys                      | same    | units | t         | f      | read
- 8 | dim_b in no key                          | same    | units | t         | f      | read
- 9 | a row for each pair, no group            | same    | units | f         | f      | read
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT apply(13) AS state
@@ -349,17 +348,17 @@ SELECT apply(13) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'membership')
- n |                  label                   | verdict | route | group_key | preagg | delta 
----+------------------------------------------+---------+-------+-----------+--------+-------
- 1 | count and sum per key                    | same    | units | t         | f      | none
- 2 | count(DISTINCT member) per key           | same    | units | t         | f      | none
- 3 | min and max per key                      | same    | units | t         | f      | none
- 4 | count and sum, filter on a stored column | same    | units | t         | f      | none
- 5 | min and max, filter on the time          | same    | units | t         | f      | none
- 6 | dim_b in one key                         | same    | units | t         | f      | none
- 7 | dim_b in three keys                      | same    | units | t         | f      | none
- 8 | dim_b in no key                          | same    | units | t         | f      | none
- 9 | a row for each pair, no group            | same    | units | f         | f      | none
+ n |                  label                   | verdict |                route                | group_key | preagg | delta 
+---+------------------------------------------+---------+-------------------------------------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | a group by the scope key            | t         | f      | none
+ 2 | count(DISTINCT member) per key           | same    | a group by the scope key            | t         | f      | none
+ 3 | min and max per key                      | same    | a group by the scope key            | t         | f      | none
+ 4 | count and sum, filter on a stored column | same    | a group by the scope key            | t         | f      | none
+ 5 | min and max, filter on the time          | same    | a group by the scope key            | t         | f      | none
+ 6 | dim_b in one key                         | same    | a group by the scope key            | t         | f      | none
+ 7 | dim_b in three keys                      | same    | a group by the scope key            | t         | f      | none
+ 8 | dim_b in no key                          | same    | a group by the scope key            | t         | f      | none
+ 9 | a row for each pair, no group            | same    | a row for each pair of several keys | f         | f      | none
 (9 rows)
 
 SELECT sift.col_verify('facts_col', true);
@@ -409,7 +408,7 @@ SELECT 1
 SELECT * FROM sd_probe()
  same | units | with_key | with_delta | needs_join 
 ------+-------+----------+------------+------------
-    9 |     9 |        8 |          0 |          0
+    9 |     0 |        8 |          0 |          9
 (1 row)
 
 SELECT 2 AS n, 'buffered inserts of dim_b with active and soft deleted pairs' AS state
@@ -422,7 +421,7 @@ INSERT INTO sd_facts SELECT 10000 + i, 1 + (i * 37) % 220, timestamptz '2026-02-
 SELECT * FROM sd_probe()
  same | units | with_key | with_delta | needs_join 
 ------+-------+----------+------------+------------
-    9 |     9 |        8 |          9 |          0
+    9 |     0 |        8 |          0 |          9
 (1 row)
 
 SELECT 3 AS n, 'soft delete the pairs of dim_b that have buffered rows' AS state
@@ -435,7 +434,7 @@ UPDATE sd_pairs SET deleted_at = now() WHERE dim_a_id % 6 = 1 AND deleted_at IS 
 SELECT * FROM sd_probe()
  same | units | with_key | with_delta | needs_join 
 ------+-------+----------+------------+------------
-    9 |     9 |        8 |          9 |          0
+    9 |     0 |        8 |          0 |          9
 (1 row)
 
 SELECT 4 AS n, 'restore some' AS state
@@ -448,7 +447,7 @@ UPDATE sd_pairs SET deleted_at = NULL WHERE dim_a_id % 12 = 1
 SELECT * FROM sd_probe()
  same | units | with_key | with_delta | needs_join 
 ------+-------+----------+------------+------------
-    9 |     9 |        8 |          9 |          0
+    9 |     0 |        8 |          0 |          9
 (1 row)
 
 SELECT 5 AS n, 'promoted' AS state
@@ -466,7 +465,7 @@ SELECT sift.col_promote('sd_facts_col')
 SELECT * FROM sd_probe()
  same | units | with_key | with_delta | needs_join 
 ------+-------+----------+------------+------------
-    9 |     9 |        8 |          9 |          0
+    9 |     0 |        8 |          0 |          9
 (1 row)
 
 DROP TABLE sd_states, sd_facts, sd_pairs;

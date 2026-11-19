@@ -378,20 +378,6 @@ explain_topn(AggExec *ex, ExplainState *es)
 	sift_explain_end(&ln);
 }
 
-/* does a group key of the spec read the leaf: the key itself, as a number or as the value of the leaf */
-static bool
-group_reads(const SiftAggSpec *s, int leaf)
-{
-	sift_i128	mul,
-				add;
-
-	for (int j = 0; j < s->nkeys; j++)
-		if ((s->key[j].kind == SAK_LEAF && s->key[j].leaf == leaf) ||
-			(s->key[j].kind == SAK_NUM && sift_aggnum_linear(&s->key[j].num, &mul, &add) == leaf))
-			return true;
-	return false;
-}
-
 /* The scope conjunct (agg/scope.c): the scope it reads, and in a run the units it read of the scope segments or why it read the entity rows */
 static void
 explain_scope(AggExec *ex, ExplainState *es)
@@ -402,8 +388,6 @@ explain_scope(AggExec *ex, ExplainState *es)
 	SiftExplainLine ln;
 	SiftSrcCounters cc;
 	Relation	index;
-	int			kept,
-				all;
 
 	if (sc == NULL)
 	{
@@ -424,39 +408,25 @@ explain_scope(AggExec *ex, ExplainState *es)
 		ExplainPropertyText("Scope Keys", sc->param_desc, es);
 	/* a plain EXPLAIN has not opened the index */
 	index = ex->index ? ex->index : index_open(node->indexoid, AccessShareLock);
-	sift_scope_columns(index, sc->key_name, &kept, &all);
-	if (group_reads(node, sift_agg_scope_leaf(sift_colsrc_layout(index), sc->key_name)))
+	if (sift_agg_scope_groups_by_key(node, sift_colsrc_layout(index)))
 		ExplainPropertyText("Scope Group Key", sc->key_name, es);
 	if (index != ex->index)
 		index_close(index, NoLock);
-	ExplainPropertyText("Scope Columns", psprintf("%d of %d", kept, all), es);
 	ExplainPropertyText("Scope Semantics", sc->once ? "once" : "per pair", es);
 	if (!es->analyze || !ex->started)
 		return;
 	run_counters(ex, &cc);
 	if (ex->scope_why != NULL)
-	{
 		ExplainPropertyText("Scope Fallback", ex->scope_why, es);
-		if (ex->spec == node)
-			ExplainPropertyInteger("Scope Members Listed", NULL, ex->scope_members, es);
-		return;
-	}
-	if (ex->scope_rd->nexcept > 0 || ex->scope_rd->ndrop > 0)
-	{
-		ExplainPropertyInteger("Scope Changed Keys", NULL, ex->scope_rd->nchanged, es);
-		ExplainPropertyInteger("Scope Patched Keys", NULL, ex->scope_rd->npatch, es);
-		ExplainPropertyInteger("Scope Patched Rows", NULL, ex->scope_rd->patch_rows, es);
-		ExplainPropertyInteger("Scope Patched Units", NULL, ex->scope_rd->patch_units, es);
-	}
-	if (ex->scope_rd->delta_rows > 0)
-		ExplainPropertyInteger("Scope Delta Rows", NULL, ex->scope_rd->delta_rows, es);
-	if (ex->scope_rd->ndrop > 0)
-		ExplainPropertyInteger("Scope Dedupe Keys", NULL, ex->scope_rd->ndrop, es);
+	if (ex->spec == node)
+		ExplainPropertyInteger("Scope Members Listed", NULL, ex->scope_members, es);
+	if (ex->scope_side)
+		ExplainPropertyInteger("Scope Sidecar Runs", NULL, ex->n_scope_runs, es);
 	sift_explain_begin(&ln, es, "Scope Units");
 	sift_explain_int(&ln, "Scope Units Read", NULL, "read", ex->n_units, SIFT_XI_KEEP);
 	sift_explain_int(&ln, "Scope Units Skipped", NULL, "skipped", cc.units_pruned, SIFT_XI_KEEP);
 	sift_explain_end(&ln);
-	ExplainPropertyInteger("Scope Entries Read", NULL, ex->n_rows, es);
+	ExplainPropertyInteger("Scope Rows Read", NULL, ex->n_rows, es);
 }
 
 /* EXPLAIN ANALYZE: what the run did; the arms of a fused run report on its one pass */

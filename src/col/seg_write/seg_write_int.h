@@ -145,6 +145,8 @@ struct SiftColSegWriter
 	const SiftCcPolicy *pol;	/* [ncols] compression policy per leaf, NULL: plain chunks */
 	MemoryContext mcxt;
 	MemoryContext scxt;			/* the entries of the order arrays the writer holds (col/spool.h): a context of their own, to measure them */
+	MemoryContext dcxt;			/* the dictionaries of the STR leaves and the rows counted for their codes: what the strings of the segment take */
+	MemoryContext pcxt;			/* the arrays of the point directories and of the order arrays that keep theirs, and the tables built from them */
 	SiftStreamWriter *sw;
 	SiftCDict **dict;			/* [ncols], STR leaves */
 	uint32	   *vstore;			/* [ncols] the shared value store whose codes the dictionary of a STR leaf is written as (col/vstore/), 0: it holds its strings; NULL: none does */
@@ -234,6 +236,8 @@ extern void	segw_add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size uni
 extern void	segw_add_vers(SiftColSegWriter *w, const SiftColBatch *b);
 
 /* The key groups (col/seg_write/groups.c): the unit just encoded (its zones are in place) joins the open group of its key or opens one; at the end the closed ones are written by build_super */
+/* The spec of the cube of a group of rows of one scope key (dims that fit a run, their integer measures) and of its cells of days; the leaves the cube reads go to leaf[], returns how many */
+extern int	segw_group_spec(const SiftColSchema *s, const SiftCPaggSpec *pagg, SiftCPaggSpec *spec, SiftCPaggSpec *calspec, int *leaf);
 extern void	segw_kg_add(SiftColSegWriter *w, const SiftCPaggCol *cols, uint32 nrows);
 extern void	segw_kg_close(SiftColSegWriter *w);
 

@@ -7,13 +7,11 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
--- dim_a_id in up to six keys on purpose: above the default limit of the multiplicity
-SET sift.scope_max_multiplicity = 8;
 SET jit = off;
+SET sift.test_scope_entity = on;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
 -- the narrowed read is taken whatever it costs: the price is the subject of col_scope_patch_price
-SET sift.test_scope_patch = on;
 
 -- 12 keys; dim_a_id d is in 1 + d % 6 of them (1 to 6), 100..109 are in none, 301..320 have events and no pair; 20,000 padded events, some without a dim_a_id
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));

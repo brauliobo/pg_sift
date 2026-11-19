@@ -12,15 +12,12 @@ array-append	src/agg/spill/stream.c	act[k++] = act[a];	the active list is compac
 array-append	src/agg/wide.c	dig[n++] = (uint16) (u % 10000);	the limbs of a 128-bit value in base 10^4: at most 10 of the 16
 array-append	src/bm25/livestream.c	dl[n++] = row[o];	a term is buffered only while its df is within STREAM_POSTINGS (the arrays' size), or a full batch is flushed before the next row
 array-append	src/bm25/livestream.c	s->dl[s->n++] = dl;	a term is buffered only while its df is within STREAM_POSTINGS (the arrays' size), or a full batch is flushed before the next row
-array-append	src/bm25/merge.c	imm[n++] = snap->segs[i];	a loop over the entries of a directory snapshot, at most SIFT_MAX_SEGMENTS
 array-append	src/bm25/merge_ranges.c	segs[nlive++] = seg;	the segments are the input of the merge, at most MAX_MERGE_FANIN (checked before the worker starts)
 array-append	src/bm25/query_analyze.c	kids[nk++] = c;	allocated for the length of the list the loop walks
 blocknumber-sum	src/bm25/rank_search.c	BlockNumber blk = u->gid << SIFT_SB_SHIFT | (b * SIFT_BLK_PAGES + slot / SIFT_KERN_SLOTS);	the block of a page of a superblock of the heap: a heap block number, below 2^32 by PostgreSQL
 array-append	src/bm25/runs/merge.c	dl[n++] = top->ddl;	the batch is flushed at BATCH rows
 array-append	src/bm25/runs_int.h	v[n++] = (uint8) (x | 0x80);	a varint of 64 bits takes at most 10 bytes
 array-append	src/bm25/runs_int.h	v[n++] = (uint8) x;	a varint of 64 bits takes at most 10 bytes
-array-append	src/bm25/step.c	imm[n++] = snap->segs[i];	a loop over the entries of a directory snapshot, at most SIFT_MAX_SEGMENTS
-array-append	src/bm25/step.c	sel->busy[sel->nbusy++] = sel->seg[i].gen;	a loop over the entries of a directory snapshot, at most SIFT_MAX_SEGMENTS
 blocknumber-sum	src/bm25/walk.c	BlockNumber blk = dm->dir[i].sb * SIFT_SB_PAGES + p;	the heap block of a page of a superblock of the segment: a heap block number, below 2^32 by PostgreSQL
 array-append	src/bm25/writer.c	offs[n++] = k * 64 + __builtin_ctzll(m) + 1;	the offsets of one page: at most MaxHeapTuplesPerPage
 array-append	src/col/am/am.c	rels[n++] = rt_fetch(rti, ps->rtable)->relid;	allocated for stmt_result_count() relations, the count of the same range table
@@ -31,18 +28,13 @@ array-append	src/col/build/run.c	pick[n++] = low;	two picks, the loop runs twice
 array-append	src/col/gorder.c	anc[nan++] = kv[i];	the anchors are counted first and the writer returns when there are more than the array holds
 array-append	src/col/gquant.c	pos[n++] = (uint8) i;	the loop runs over SIFT_GQ_MB positions, the array holds that many
 cast-after-product	src/col/keycols/gorder.c	if ((double) sift_cdict_parsed_bytes((Size) (ndistinct * Min(width, 255)), (uint32) Min(ndistinct, (double) UINT32_MAX)) > (double) sift_cdict_cache_budget() * CDICT_CODES_PCT / 100.0)	ndistinct is a double estimate, the cast truncates it
-cast-after-product	src/col/maint/maint.c	mem_kb = Max((uint64) (sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE) / 1024 / mem_ratio), Max(bytes / 1024 / PART_DIVISOR, (uint64) (PART_MIN_KB * MAINT_MEM_RATIO / mem_ratio)));	a double estimate of kilobytes, the cast truncates it
-array-append	src/col/maint/merge.c	all[nall++] = snap->segs[i];	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_MAX_SEGMENTS
-cast-after-product	src/col/maint/merge.c	live_rows = Max((uint64) (live_rows * share), 1);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_MAX_SEGMENTS
-cast-after-product	src/col/maint/merge.c	live_units += (uint64) (units * live);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_MAX_SEGMENTS
-cast-after-product	src/col/maint/merge.c	live_units = (uint64) (live_units * share);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_MAX_SEGMENTS
-array-append	src/col/maint/roll.c	order[np++] = cand[c - 1];	a double estimate, the cast truncates it; the array is the directory entries, at most SIFT_MAX_SEGMENTS
-cast-after-product	src/col/maint/roll.c	return (uint64) (live * Max(hi - lo, 0.0) / ((double) v->khi[i] + 1 - (double) v->klo[i]));	a double estimate, the cast truncates it; the array is the directory entries, at most SIFT_MAX_SEGMENTS
+cast-after-product	src/col/maint/merge.c	live_rows = Max((uint64) (live_rows * share), 1);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
+cast-after-product	src/col/maint/merge.c	live_units += (uint64) (units * live);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
+cast-after-product	src/col/maint/merge.c	live_units = (uint64) (live_units * share);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
+cast-after-product	src/col/maint/roll.c	return (uint64) (live * Max(hi - lo, 0.0) / ((double) v->khi[i] + 1 - (double) v->klo[i]));	a double estimate, the cast truncates it; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
 cast-after-product	src/col/preagg/preagg.c	sumsq += (SiftCI128) (uint64) (k * k);	this branch is taken only when the zone lies within 2^31 of zero, so a square fits 62 bits
-array-append	src/col/rollup.c	gens[n++] = e->gen;	a loop over the entries of a directory snapshot, at most SIFT_MAX_SEGMENTS
 cast-after-product	src/col/scan_unit.c	sift_col_marks_note(src->index, src->hflog->gen, (uint64) (rows * COL_MARK_PREAGG_PRICE));	a double price, the cast truncates it
 array-append	src/col/scope_rows.c	m.pages[m.nrel++] = RelationGetNumberOfBlocks(rel);	one entry for each hop of the scope, at most 3
-cast-after-product	src/col/scope_sample.c	sift_scope_refuse(specs->s[s]->key_name, specs->s[s]->max_multiplicity, (uint64) (ratio * scaled_rows), scaled_rows, true, 0, 0);	a double ratio of rows, the cast truncates it
 array-append	src/col/seg/points.c	s->cur[s->n++] = t;	the lists are counted first and the stream is not used when there are more than TCUR_MAX
 cast-after-product	src/col/seg_write/summary.c	unit_agg_of(&w->zones[(Size) (k * fan + i) * ncols + c], sums ? &w->lagg[(Size) (k * fan + i) * ncols + c] : NULL, &ua[i]);	the index of a unit of the segment: nsb is a 32-bit count
 cast-after-product	src/col/wbuf/arena.c	values[8] = Int64GetDatum((int64) (a->nsegs * ARENA_SEG_PAGES - a->pages_free) * ARENA_PAGE);	the pages of the arena: at most ARENA_SEGS * ARENA_SEG_PAGES
@@ -57,9 +49,6 @@ blocknumber-sum	src/core/relocate.c	BlockNumber top = run->start + run->nblocks;
 blocknumber-sum	src/core/relocate.c	BlockNumber top = run->start + run->nblocks;	the extents of a segment are validated at read: start + nblocks is at most MaxBlockNumber (core/reader.c)
 array-append	src/core/xlog.h	x->full[x->n++] = (flags & GENERIC_XLOG_FULL_IMAGE) != 0;	GenericXLogRegisterBuffer, called on the line above, raises its own error past MAX_GENERIC_XLOG_PAGES buffers
 blocknumber-sum	src/table/analyze.c	BlockNumber end = numblocks == InvalidBlockNumber ? InvalidBlockNumber : start_blockno + numblocks;	the range of blocks PostgreSQL gives the sample: its own block numbers
-array-append	src/table/bulk.c	dir->segs[dir->nsegs++] = p->segs[i];	a loop over the entries of a directory (the old one, or the segments written by this bulk, cut at SIFT_MAX_SEGMENTS - 8)
-array-append	src/table/bulk.c	segs[n++] = ost->dir.segs[i];	a loop over the entries of a directory (the old one, or the segments written by this bulk, cut at SIFT_MAX_SEGMENTS - 8)
 blocknumber-sum	src/table/feed.c	BlockNumber vblock = seg->vbase + p;	the virtual block of a page of a write buffer: vbase + vcap is checked against MaxBlockNumber when the buffer is made (table/wbuf.c)
-array-append	src/table/freeze.c	gens[n++] = e->gen;	a loop over the entries of a directory snapshot, at most SIFT_MAX_SEGMENTS
-array-append	src/table/freeze.c	gone[n++] = st->dir.segs[i];	a loop over the entries of a directory snapshot, at most SIFT_MAX_SEGMENTS
 blocknumber-sum	src/table/promote.c	BlockNumber vblock = seg->vbase + p;	the virtual block of a page of a write buffer: vbase + vcap is checked against MaxBlockNumber when the buffer is made (table/wbuf.c)
+array-append	src/col/seg_write/side.c	leaf[nleaf++] = c;	each leaf of the schema once, so at most SIFT_COL_MAX_COLS, the size of the array

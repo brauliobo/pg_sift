@@ -6,7 +6,6 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET default_statistics_target = 1000;
-SET sift.test_scope_patch = off;
 
 -- 120 ids of 500 events each; the key 23 holds 80 of them, the keys 21 and 22 thirty each, the keys 1 to 20 three each
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);

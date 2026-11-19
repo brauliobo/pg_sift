@@ -18,6 +18,7 @@
 #include "col/am.h"
 #include "col/ktab.h"
 #include "col/pagg.h"
+#include "col/side.h"
 #include "core/damage.h"
 #include "core/host.h"
 
@@ -64,6 +65,8 @@ sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a)
 
 	if (sift_col_unit_super(unit, &seg, &u))
 		return sift_cseg_super_agg(seg, col, u, a);
+	if (sift_col_run_agg(unit, col, a))
+		return true;
 	if (unit->except >= 0 || !sift_col_unit_preagg_ok(unit))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
@@ -424,6 +427,21 @@ seg_hist(SiftColSegment *seg, uint32 u, bool net, int dim, MemoryContext mcxt, c
 	return sift_cpagg_rollup_dim(seg->schema, &r, dim, mcxt, out);
 }
 
+/* The histogram of dim of a cube of a run of the scope sidecar (the dims of lists and the calendar cells are not kept; a cell of a run too small to be worth a cube has none) */
+static bool
+run_hist(SiftColSegment *seg, const SideRun *run, const SideCell *cell, int dim, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCHistDim *out)
+{
+	int			found;
+
+	if (dim >= SIFT_PAGG_CAL || seg->schema->cols[dim].parent >= 0)
+		return false;
+	if (cell->len == 0)
+		return false;
+	if ((found = sift_cpagg_decode_dim(seg->schema, sift_side_cell_cube(seg, sift_cseg_side(seg), cell), cell->len, mcxt, dim, need, out)) < 0)
+		corrupt_cube(seg, run->first);
+	return found > 0;
+}
+
 /* The histogram of dim of a superunit: from its merged cube (the dims of lists and the calendar cells are not merged) */
 static bool
 super_hist(SiftColSegment *seg, uint32 k, int dim, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCHistDim *out)
@@ -448,6 +466,8 @@ bool
 sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCHistDim *out, SiftColDict *dict)
 {
 	SiftColSegment *seg;
+	const SideRun *run;
+	const SideCell *cell;
 	uint32		u;
 
 	if (sift_col_unit_whole(unit, &seg))
@@ -457,6 +477,11 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, const S
 		if (d == NULL)
 			return false;
 		*out = *d;
+	}
+	else if (sift_col_unit_run(unit, &seg, &run, &cell))
+	{
+		if (!run_hist(seg, run, cell, dim, mcxt, need, out))
+			return false;
 	}
 	else if (sift_col_unit_super(unit, &seg, &u))
 	{

@@ -7,7 +7,6 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET default_statistics_target = 1000;
-SET sift.test_scope_patch = off;
 -- 1200 items, one of 40 tenants each, 100 events each
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, 1 + i % 1200, date '2025-01-01' + i % 300, 'k' || i % 4, i % 100 FROM generate_series(1, 120000) i;
@@ -111,44 +110,44 @@ SELECT name, label(f) AS plan FROM cforms f ORDER BY name COLLATE "C";
 SELECT f.name, k.n AS keys, m.mode, o.chosen, o.why, o.same_rows
 FROM cforms f, (VALUES (1), (10), (30)) k(n), (VALUES ('force_generic_plan'), ('force_custom_plan')) m(mode), LATERAL outcome(f, m.mode, karg(f, k.n)) o
 ORDER BY f.name COLLATE "C", k.n, m.mode;
-                   name                   | keys |        mode        |   chosen   |             why             | same_rows 
-------------------------------------------+------+--------------------+------------+-----------------------------+-----------
- IN, ANY ($1)                             |    1 | force_custom_plan  | scope read |                             | t
- IN, ANY ($1)                             |    1 | force_generic_plan | scope read |                             | t
- IN, ANY ($1)                             |   10 | force_custom_plan  | scope read |                             | t
- IN, ANY ($1)                             |   10 | force_generic_plan | scope read |                             | t
- IN, ANY ($1)                             |   30 | force_custom_plan  | join       | join is cheaper for 30 keys | t
- IN, ANY ($1)                             |   30 | force_generic_plan | join       | join is cheaper for 30 keys | t
- IN, table of keys, a plan of its own     |    1 | force_custom_plan  | scope read |                             | t
- IN, table of keys, a plan of its own     |    1 | force_generic_plan | scope read |                             | t
- IN, table of keys, a plan of its own     |   10 | force_custom_plan  | scope read |                             | t
- IN, table of keys, a plan of its own     |   10 | force_generic_plan | scope read |                             | t
- IN, table of keys, a plan of its own     |   30 | force_custom_plan  | join       | join is cheaper for 30 keys | t
- IN, table of keys, a plan of its own     |   30 | force_generic_plan | join       | join is cheaper for 30 keys | t
- join, ANY ($1), a row for each pair      |    1 | force_custom_plan  | scope read |                             | t
- join, ANY ($1), a row for each pair      |    1 | force_generic_plan | scope read |                             | t
- join, ANY ($1), a row for each pair      |   10 | force_custom_plan  | scope read |                             | t
- join, ANY ($1), a row for each pair      |   10 | force_generic_plan | scope read |                             | t
- join, ANY ($1), a row for each pair      |   30 | force_custom_plan  | scope read |                             | t
- join, ANY ($1), a row for each pair      |   30 | force_generic_plan | scope read |                             | t
- join, table of keys, a row for each pair |    1 | force_custom_plan  | scope read |                             | t
- join, table of keys, a row for each pair |    1 | force_generic_plan | scope read |                             | t
- join, table of keys, a row for each pair |   10 | force_custom_plan  | scope read |                             | t
- join, table of keys, a row for each pair |   10 | force_generic_plan | scope read |                             | t
- join, table of keys, a row for each pair |   30 | force_custom_plan  | scope read |                             | t
- join, table of keys, a row for each pair |   30 | force_generic_plan | scope read |                             | t
- latest 5, ANY ($1)                       |    1 | force_custom_plan  | scope read |                             | t
- latest 5, ANY ($1)                       |    1 | force_generic_plan | scope read |                             | t
- latest 5, ANY ($1)                       |   10 | force_custom_plan  | scope read |                             | t
- latest 5, ANY ($1)                       |   10 | force_generic_plan | scope read |                             | t
- latest 5, ANY ($1)                       |   30 | force_custom_plan  | scope read |                             | t
- latest 5, ANY ($1)                       |   30 | force_generic_plan | scope read |                             | t
- top 5 ids, ANY ($1)                      |    1 | force_custom_plan  | scope read |                             | t
- top 5 ids, ANY ($1)                      |    1 | force_generic_plan | scope read |                             | t
- top 5 ids, ANY ($1)                      |   10 | force_custom_plan  | scope read |                             | t
- top 5 ids, ANY ($1)                      |   10 | force_generic_plan | scope read |                             | t
- top 5 ids, ANY ($1)                      |   30 | force_custom_plan  | join       | join is cheaper for 30 keys | t
- top 5 ids, ANY ($1)                      |   30 | force_generic_plan | join       | join is cheaper for 30 keys | t
+                   name                   | keys |        mode        | chosen |                 why                 | same_rows 
+------------------------------------------+------+--------------------+--------+-------------------------------------+-----------
+ IN, ANY ($1)                             |    1 | force_custom_plan  | join   | no sidecar holds a run of the key   | t
+ IN, ANY ($1)                             |    1 | force_generic_plan | join   | no sidecar holds a run of the key   | t
+ IN, ANY ($1)                             |   10 | force_custom_plan  | join   | join is cheaper for 10 keys         | t
+ IN, ANY ($1)                             |   10 | force_generic_plan | join   | join is cheaper for 10 keys         | t
+ IN, ANY ($1)                             |   30 | force_custom_plan  | join   | join is cheaper for 30 keys         | t
+ IN, ANY ($1)                             |   30 | force_generic_plan | join   | join is cheaper for 30 keys         | t
+ IN, table of keys, a plan of its own     |    1 | force_custom_plan  | join   | no sidecar holds a run of the key   | t
+ IN, table of keys, a plan of its own     |    1 | force_generic_plan | join   | no sidecar holds a run of the key   | t
+ IN, table of keys, a plan of its own     |   10 | force_custom_plan  | join   | join is cheaper for 10 keys         | t
+ IN, table of keys, a plan of its own     |   10 | force_generic_plan | join   | join is cheaper for 10 keys         | t
+ IN, table of keys, a plan of its own     |   30 | force_custom_plan  | join   | join is cheaper for 30 keys         | t
+ IN, table of keys, a plan of its own     |   30 | force_generic_plan | join   | join is cheaper for 30 keys         | t
+ join, ANY ($1), a row for each pair      |    1 | force_custom_plan  | join   | no sidecar holds a run of the key   | t
+ join, ANY ($1), a row for each pair      |    1 | force_generic_plan | join   | no sidecar holds a run of the key   | t
+ join, ANY ($1), a row for each pair      |   10 | force_custom_plan  | join   | a row for each pair of several keys | t
+ join, ANY ($1), a row for each pair      |   10 | force_generic_plan | join   | a row for each pair of several keys | t
+ join, ANY ($1), a row for each pair      |   30 | force_custom_plan  | join   | a row for each pair of several keys | t
+ join, ANY ($1), a row for each pair      |   30 | force_generic_plan | join   | a row for each pair of several keys | t
+ join, table of keys, a row for each pair |    1 | force_custom_plan  | join   | no sidecar holds a run of the key   | t
+ join, table of keys, a row for each pair |    1 | force_generic_plan | join   | no sidecar holds a run of the key   | t
+ join, table of keys, a row for each pair |   10 | force_custom_plan  | join   | a row for each pair of several keys | t
+ join, table of keys, a row for each pair |   10 | force_generic_plan | join   | a row for each pair of several keys | t
+ join, table of keys, a row for each pair |   30 | force_custom_plan  | join   | a row for each pair of several keys | t
+ join, table of keys, a row for each pair |   30 | force_generic_plan | join   | a row for each pair of several keys | t
+ latest 5, ANY ($1)                       |    1 | force_custom_plan  | join   | no sidecar holds a run of the key   | t
+ latest 5, ANY ($1)                       |    1 | force_generic_plan | join   | no sidecar holds a run of the key   | t
+ latest 5, ANY ($1)                       |   10 | force_custom_plan  | join   | join is cheaper for 10 keys         | t
+ latest 5, ANY ($1)                       |   10 | force_generic_plan | join   | join is cheaper for 10 keys         | t
+ latest 5, ANY ($1)                       |   30 | force_custom_plan  | join   | join is cheaper for 30 keys         | t
+ latest 5, ANY ($1)                       |   30 | force_generic_plan | join   | join is cheaper for 30 keys         | t
+ top 5 ids, ANY ($1)                      |    1 | force_custom_plan  | join   | no sidecar holds a run of the key   | t
+ top 5 ids, ANY ($1)                      |    1 | force_generic_plan | join   | no sidecar holds a run of the key   | t
+ top 5 ids, ANY ($1)                      |   10 | force_custom_plan  | join   | join is cheaper for 10 keys         | t
+ top 5 ids, ANY ($1)                      |   10 | force_generic_plan | join   | join is cheaper for 10 keys         | t
+ top 5 ids, ANY ($1)                      |   30 | force_custom_plan  | join   | join is cheaper for 30 keys         | t
+ top 5 ids, ANY ($1)                      |   30 | force_generic_plan | join   | join is cheaper for 30 keys         | t
 (36 rows)
 
 RESET plan_cache_mode;
@@ -173,22 +172,22 @@ BEGIN
 	DEALLOCATE ALL;
 END $$;
 SELECT f.name, c.* FROM cforms f, cached_keys(f, ARRAY[1, 30, 10, 30, 1, 20, 2]) c WHERE f.name IN ('IN, ANY ($1)', 'join, ANY ($1), a row for each pair') ORDER BY f.name COLLATE "C";
-                name                 | n  |   chosen   | same_rows 
--------------------------------------+----+------------+-----------
- IN, ANY ($1)                        |  1 | scope read | t
- IN, ANY ($1)                        | 30 | join       | t
- IN, ANY ($1)                        | 10 | scope read | t
- IN, ANY ($1)                        | 30 | join       | t
- IN, ANY ($1)                        |  1 | scope read | t
- IN, ANY ($1)                        | 20 | join       | t
- IN, ANY ($1)                        |  2 | scope read | t
- join, ANY ($1), a row for each pair |  1 | scope read | t
- join, ANY ($1), a row for each pair | 30 | scope read | t
- join, ANY ($1), a row for each pair | 10 | scope read | t
- join, ANY ($1), a row for each pair | 30 | scope read | t
- join, ANY ($1), a row for each pair |  1 | scope read | t
- join, ANY ($1), a row for each pair | 20 | scope read | t
- join, ANY ($1), a row for each pair |  2 | scope read | t
+                name                 | n  | chosen | same_rows 
+-------------------------------------+----+--------+-----------
+ IN, ANY ($1)                        |  1 | join   | t
+ IN, ANY ($1)                        | 30 | join   | t
+ IN, ANY ($1)                        | 10 | join   | t
+ IN, ANY ($1)                        | 30 | join   | t
+ IN, ANY ($1)                        |  1 | join   | t
+ IN, ANY ($1)                        | 20 | join   | t
+ IN, ANY ($1)                        |  2 | join   | t
+ join, ANY ($1), a row for each pair |  1 | join   | t
+ join, ANY ($1), a row for each pair | 30 | join   | t
+ join, ANY ($1), a row for each pair | 10 | join   | t
+ join, ANY ($1), a row for each pair | 30 | join   | t
+ join, ANY ($1), a row for each pair |  1 | join   | t
+ join, ANY ($1), a row for each pair | 20 | join   | t
+ join, ANY ($1), a row for each pair |  2 | join   | t
 (14 rows)
 
 RESET plan_cache_mode;
@@ -212,10 +211,10 @@ BEGIN
 	RETURN NEXT;
 END $$;
 SELECT * FROM rescanned(1) UNION ALL SELECT * FROM rescanned(30) ORDER BY n;
- n  |                       run                       | same_rows 
-----+-------------------------------------------------+-----------
-  1 | Keys: 1                                         | t
- 30 | Keys: 30; Fallback: join is cheaper for 30 keys | t
+ n  |                         run                          | same_rows 
+----+------------------------------------------------------+-----------
+  1 | Keys: 1; Fallback: no sidecar holds a run of the key | t
+ 30 | Keys: 30; Fallback: join is cheaper for 30 keys      | t
 (2 rows)
 
 -- the pairs change: the keys of a tenant leave and return (the changed pairs of its items, which the units of the scope read patch), the items of many tenants do, the items have
@@ -243,17 +242,17 @@ BEGIN
 	END LOOP;
 END $$;
 SELECT * FROM states('built');
- state |                form                 | tenants |   chosen   |             why             | same_rows 
--------+-------------------------------------+---------+------------+-----------------------------+-----------
- built | IN, ANY ($1)                        | 1 (22)  | scope read |                             | t
- built | IN, ANY ($1)                        | 4       | scope read |                             | t
- built | IN, ANY ($1)                        | 30      | join       | join is cheaper for 30 keys | t
- built | join, ANY ($1), a row for each pair | 1 (22)  | scope read |                             | t
- built | join, ANY ($1), a row for each pair | 4       | scope read |                             | t
- built | join, ANY ($1), a row for each pair | 30      | scope read |                             | t
- built | latest 5, ANY ($1)                  | 1 (22)  | scope read |                             | t
- built | latest 5, ANY ($1)                  | 4       | scope read |                             | t
- built | latest 5, ANY ($1)                  | 30      | scope read |                             | t
+ state |                form                 | tenants | chosen |                 why                 | same_rows 
+-------+-------------------------------------+---------+--------+-------------------------------------+-----------
+ built | IN, ANY ($1)                        | 1 (22)  | join   | no sidecar holds a run of the key   | t
+ built | IN, ANY ($1)                        | 4       | join   | join is cheaper for 4 keys          | t
+ built | IN, ANY ($1)                        | 30      | join   | join is cheaper for 30 keys         | t
+ built | join, ANY ($1), a row for each pair | 1 (22)  | join   | no sidecar holds a run of the key   | t
+ built | join, ANY ($1), a row for each pair | 4       | join   | a row for each pair of several keys | t
+ built | join, ANY ($1), a row for each pair | 30      | join   | a row for each pair of several keys | t
+ built | latest 5, ANY ($1)                  | 1 (22)  | join   | no sidecar holds a run of the key   | t
+ built | latest 5, ANY ($1)                  | 4       | join   | join is cheaper for 4 keys          | t
+ built | latest 5, ANY ($1)                  | 30      | join   | join is cheaper for 30 keys         | t
 (9 rows)
 
 SELECT churn(20, 22);
@@ -263,17 +262,17 @@ SELECT churn(20, 22);
 (1 row)
 
 SELECT * FROM states('20 of 30 items of a tenant changed');
-               state                |                form                 | tenants |   chosen   |             why             | same_rows 
-------------------------------------+-------------------------------------+---------+------------+-----------------------------+-----------
- 20 of 30 items of a tenant changed | IN, ANY ($1)                        | 1 (22)  | join       | join is cheaper for 1 key   | t
- 20 of 30 items of a tenant changed | IN, ANY ($1)                        | 4       | scope read |                             | t
- 20 of 30 items of a tenant changed | IN, ANY ($1)                        | 30      | join       | join is cheaper for 30 keys | t
- 20 of 30 items of a tenant changed | join, ANY ($1), a row for each pair | 1 (22)  | join       | join is cheaper for 1 key   | t
- 20 of 30 items of a tenant changed | join, ANY ($1), a row for each pair | 4       | scope read |                             | t
- 20 of 30 items of a tenant changed | join, ANY ($1), a row for each pair | 30      | join       | join is cheaper for 30 keys | t
- 20 of 30 items of a tenant changed | latest 5, ANY ($1)                  | 1 (22)  | join       | join is cheaper for 1 key   | t
- 20 of 30 items of a tenant changed | latest 5, ANY ($1)                  | 4       | scope read |                             | t
- 20 of 30 items of a tenant changed | latest 5, ANY ($1)                  | 30      | join       | join is cheaper for 30 keys | t
+               state                |                form                 | tenants | chosen |                 why                 | same_rows 
+------------------------------------+-------------------------------------+---------+--------+-------------------------------------+-----------
+ 20 of 30 items of a tenant changed | IN, ANY ($1)                        | 1 (22)  | join   | no sidecar holds a run of the key   | t
+ 20 of 30 items of a tenant changed | IN, ANY ($1)                        | 4       | join   | join is cheaper for 4 keys          | t
+ 20 of 30 items of a tenant changed | IN, ANY ($1)                        | 30      | join   | join is cheaper for 30 keys         | t
+ 20 of 30 items of a tenant changed | join, ANY ($1), a row for each pair | 1 (22)  | join   | no sidecar holds a run of the key   | t
+ 20 of 30 items of a tenant changed | join, ANY ($1), a row for each pair | 4       | join   | a row for each pair of several keys | t
+ 20 of 30 items of a tenant changed | join, ANY ($1), a row for each pair | 30      | join   | a row for each pair of several keys | t
+ 20 of 30 items of a tenant changed | latest 5, ANY ($1)                  | 1 (22)  | join   | no sidecar holds a run of the key   | t
+ 20 of 30 items of a tenant changed | latest 5, ANY ($1)                  | 4       | join   | join is cheaper for 4 keys          | t
+ 20 of 30 items of a tenant changed | latest 5, ANY ($1)                  | 30      | join   | join is cheaper for 30 keys         | t
 (9 rows)
 
 SELECT churn(30);
@@ -283,42 +282,42 @@ SELECT churn(30);
 (1 row)
 
 SELECT * FROM states('every pair of every tenant changed');
-               state                |                form                 | tenants | chosen |             why             | same_rows 
-------------------------------------+-------------------------------------+---------+--------+-----------------------------+-----------
- every pair of every tenant changed | IN, ANY ($1)                        | 1 (22)  | join   | join is cheaper for 1 key   | t
- every pair of every tenant changed | IN, ANY ($1)                        | 4       | join   | join is cheaper for 4 keys  | t
- every pair of every tenant changed | IN, ANY ($1)                        | 30      | join   | join is cheaper for 30 keys | t
- every pair of every tenant changed | join, ANY ($1), a row for each pair | 1 (22)  | join   | join is cheaper for 1 key   | t
- every pair of every tenant changed | join, ANY ($1), a row for each pair | 4       | join   | join is cheaper for 4 keys  | t
- every pair of every tenant changed | join, ANY ($1), a row for each pair | 30      | join   | join is cheaper for 30 keys | t
- every pair of every tenant changed | latest 5, ANY ($1)                  | 1 (22)  | join   | join is cheaper for 1 key   | t
- every pair of every tenant changed | latest 5, ANY ($1)                  | 4       | join   | join is cheaper for 4 keys  | t
- every pair of every tenant changed | latest 5, ANY ($1)                  | 30      | join   | too many changed keys       | t
+               state                |                form                 | tenants | chosen |                 why                 | same_rows 
+------------------------------------+-------------------------------------+---------+--------+-------------------------------------+-----------
+ every pair of every tenant changed | IN, ANY ($1)                        | 1 (22)  | join   | no sidecar holds a run of the key   | t
+ every pair of every tenant changed | IN, ANY ($1)                        | 4       | join   | join is cheaper for 4 keys          | t
+ every pair of every tenant changed | IN, ANY ($1)                        | 30      | join   | join is cheaper for 30 keys         | t
+ every pair of every tenant changed | join, ANY ($1), a row for each pair | 1 (22)  | join   | no sidecar holds a run of the key   | t
+ every pair of every tenant changed | join, ANY ($1), a row for each pair | 4       | join   | a row for each pair of several keys | t
+ every pair of every tenant changed | join, ANY ($1), a row for each pair | 30      | join   | a row for each pair of several keys | t
+ every pair of every tenant changed | latest 5, ANY ($1)                  | 1 (22)  | join   | no sidecar holds a run of the key   | t
+ every pair of every tenant changed | latest 5, ANY ($1)                  | 4       | join   | join is cheaper for 4 keys          | t
+ every pair of every tenant changed | latest 5, ANY ($1)                  | 30      | join   | join is cheaper for 30 keys         | t
 (9 rows)
 
 INSERT INTO tenant_scope SELECT dim_a_id, 1 + tenant_id % 40 FROM tenant_scope WHERE dim_a_id % 3 = 0 ON CONFLICT DO NOTHING;
 SELECT * FROM states('items of two tenants');
-        state         |                form                 | tenants | chosen |             why             | same_rows 
-----------------------+-------------------------------------+---------+--------+-----------------------------+-----------
- items of two tenants | IN, ANY ($1)                        | 1 (22)  | join   | join is cheaper for 1 key   | t
- items of two tenants | IN, ANY ($1)                        | 4       | join   | join is cheaper for 4 keys  | t
- items of two tenants | IN, ANY ($1)                        | 30      | join   | join is cheaper for 30 keys | t
- items of two tenants | join, ANY ($1), a row for each pair | 1 (22)  | join   | join is cheaper for 1 key   | t
- items of two tenants | join, ANY ($1), a row for each pair | 4       | join   | join is cheaper for 4 keys  | t
- items of two tenants | join, ANY ($1), a row for each pair | 30      | join   | join is cheaper for 30 keys | t
- items of two tenants | latest 5, ANY ($1)                  | 1 (22)  | join   | join is cheaper for 1 key   | t
- items of two tenants | latest 5, ANY ($1)                  | 4       | join   | join is cheaper for 4 keys  | t
- items of two tenants | latest 5, ANY ($1)                  | 30      | join   | too many changed keys       | t
+        state         |                form                 | tenants | chosen |                 why                 | same_rows 
+----------------------+-------------------------------------+---------+--------+-------------------------------------+-----------
+ items of two tenants | IN, ANY ($1)                        | 1 (22)  | join   | no sidecar holds a run of the key   | t
+ items of two tenants | IN, ANY ($1)                        | 4       | join   | join is cheaper for 4 keys          | t
+ items of two tenants | IN, ANY ($1)                        | 30      | join   | join is cheaper for 30 keys         | t
+ items of two tenants | join, ANY ($1), a row for each pair | 1 (22)  | join   | no sidecar holds a run of the key   | t
+ items of two tenants | join, ANY ($1), a row for each pair | 4       | join   | a row for each pair of several keys | t
+ items of two tenants | join, ANY ($1), a row for each pair | 30      | join   | a row for each pair of several keys | t
+ items of two tenants | latest 5, ANY ($1)                  | 1 (22)  | join   | no sidecar holds a run of the key   | t
+ items of two tenants | latest 5, ANY ($1)                  | 4       | join   | join is cheaper for 4 keys          | t
+ items of two tenants | latest 5, ANY ($1)                  | 30      | join   | join is cheaper for 30 keys         | t
 (9 rows)
 
 RESET plan_cache_mode;
 -- the keys by the rows of a table, and several keys of a row for each pair, over the pairs changed
 SELECT f.name, o.* FROM cforms f, LATERAL outcome(f, 'force_generic_plan', karg(f, 10)) o WHERE f.name IN ('IN, table of keys, a plan of its own', 'join, table of keys, a row for each pair', 'join, ANY ($1), a row for each pair') ORDER BY f.name COLLATE "C";
-                   name                   | chosen |             why             | same_rows 
-------------------------------------------+--------+-----------------------------+-----------
- IN, table of keys, a plan of its own     | join   | join is cheaper for 10 keys | t
- join, ANY ($1), a row for each pair      | join   | join is cheaper for 10 keys | t
- join, table of keys, a row for each pair | join   | join is cheaper for 10 keys | t
+                   name                   | chosen |                 why                 | same_rows 
+------------------------------------------+--------+-------------------------------------+-----------
+ IN, table of keys, a plan of its own     | join   | join is cheaper for 10 keys         | t
+ join, ANY ($1), a row for each pair      | join   | a row for each pair of several keys | t
+ join, table of keys, a row for each pair | join   | a row for each pair of several keys | t
 (3 rows)
 
 RESET plan_cache_mode;

@@ -4,7 +4,6 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
-SET sift.scope_max_multiplicity = 8;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
@@ -42,7 +41,6 @@ CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) W
 SET client_min_messages = warning;
 SELECT * FROM journals;
 SELECT unfilled('events_col') AS unfilled, same_as_join() AS same;
-SELECT count(*) AS stored_reads FROM sift._test_col_scope_stamps('events_col') WHERE family = 'scope' AND lineage <> 0;
 
 -- a second scope index of the relation finds the journal and makes none
 SET client_min_messages = notice;

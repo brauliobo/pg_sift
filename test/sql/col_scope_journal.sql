@@ -5,9 +5,8 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
--- members in up to six keys on purpose: above the default limit of the multiplicity
-SET sift.scope_max_multiplicity = 8;
 SET jit = off;
+SET sift.test_scope_entity = on;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
 
@@ -245,13 +244,6 @@ VACUUM tenant_scope;
 SELECT key FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'hor') WHERE key IS NOT NULL;
 SELECT why FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'hor', 0) LIMIT 1;
 
--- the multiplicity of a scope key is said when the index is built and bounded by the limit of the declaration (max_multiplicity)
-SET client_min_messages = notice;
-REINDEX INDEX events_col;
-SET client_min_messages = warning;
-SELECT try('ALTER INDEX events_col SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(1)'')') AS lowered;
-SELECT try('REINDEX INDEX events_col') AS refused;
-SELECT try('ALTER INDEX events_col SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)'')') AS raised;
 SELECT * FROM verdict();
 
 SELECT sift.col_verify('events_col', true);

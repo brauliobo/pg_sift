@@ -11,7 +11,6 @@
 
 #define WHY_BUFFER	"write buffer rows"
 #define WHY_OVERLAY	"overlay units"
-#define WHY_SCOPE	"scope segments"
 
 double		sift_col_auto_merge_buffer_pct = 1.0;
 int			sift_col_auto_merge_pass_mb = 1024;
@@ -80,11 +79,11 @@ overlay_worth(Relation index, const SiftMetaPageData *meta, const OverlayEv *ev)
 bool
 maint_wbuf_read_due(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	const double least = SIFT_COL_UNIT_MAX_ROWS / 4;
 	bool		due = false;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs && !due; i++)
 	{
 		double		paid;
@@ -127,11 +126,11 @@ buffer_share_due(Relation index, const SiftDirSnapshot *snap, uint64 rows)
 bool
 maint_wbuf_share_due(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	uint64		rows = 0;
 	bool		due;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			rows += snap->segs[i].ndocs;
@@ -181,17 +180,16 @@ sift_col_promote_tick(Relation index)
 const char *
 maint_rewrite_due(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col rewrite due", ALLOCSET_SMALL_SIZES);
 	SIFT_MEM_SCOPE(col_rewrite, cx);
 	RewriteView *v;
 	const char *why = NULL;
 	bool		partitioned,
 				overlay_due,
-				take[SIFT_MAX_SEGMENTS] = {false},
+				*take,
 				conn_stale,
 				buffer_due,
-				stale = false,
 				old_epoch = false;
 	uint64		listed = 0,
 				dirty = 0,
@@ -207,10 +205,11 @@ maint_rewrite_due(Relation index)
 	maint_pass_gen = 0;
 	maint_overlay_asked = false;
 	maint_redecided = false;
-	sift_col_dir_read(index, snap, false);
+	snap = sift_col_dir_read(index);
 	maint_use_partitions(index, snap);
 	partitioned = maint_part_kb > 0;
 	v = maint_view_open(index, snap, cx);
+	take = MemoryContextAllocZero(cx, Max(v->n, 1) * sizeof(bool));
 	conn_stale = v->conn_stale;
 	key_overlap = v->nkover;
 	overlay_due = maint_overlay_set(index, v, take, &ev) && overlay_worth(index, &snap->meta, &ev);
@@ -226,7 +225,6 @@ maint_rewrite_due(Relation index)
 			continue;
 		}
 		listed += seg->nsb;
-		stale |= v->stale[i];
 		old_epoch |= v->old_epoch[i];
 		if (e->flags & SIFT_SEG_DIRTY)
 			dirty += maint_dirty_units(seg);
@@ -262,10 +260,6 @@ maint_rewrite_due(Relation index)
 		why = "value store epoch";
 	else if (conn_stale)
 		why = "stale connection";
-	else if (stale || maint_scope_refill_due(index))
-		why = "stale scope";
-	else if (sift_col_rel(index)->nscope > 0 && maint_scope_merge_due(index, maint_after_build))
-		why = WHY_SCOPE;
 	if (why == NULL && buffer_due)
 		why = WHY_BUFFER;
 	SIFT_MEM_CHECKPOINT();
@@ -279,9 +273,9 @@ maint_rewrite_all(const char *why)
 	return strcmp(why, WHY_BUFFER) != 0;
 }
 
-/* The promotion of the write buffer and the merges of the overlays and of the scope segments are the incremental work of the workers and of VACUUM; the other reasons are met by writing the index again */
+/* The promotion of the write buffer and the merges of the overlays are the incremental work of the workers and of VACUUM; the other reasons are met by writing the index again */
 bool
 maint_reindex_wanted(const char *why)
 {
-	return maint_rewrite_all(why) && strcmp(why, WHY_OVERLAY) != 0 && strcmp(why, WHY_SCOPE) != 0;
+	return maint_rewrite_all(why) && strcmp(why, WHY_OVERLAY) != 0;
 }

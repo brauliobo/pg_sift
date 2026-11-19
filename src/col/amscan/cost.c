@@ -254,8 +254,8 @@ col_costestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *in
 		index_close(irel, AccessShareLock);
 		return;
 	}
-	est.ls = sift_col_leaf_stats(irel, false);
-	est.z = sift_col_zones(irel, false);
+	est.ls = sift_col_leaf_stats(irel);
+	est.z = sift_col_zones(irel);
 	memcpy(est.first, sift_col_rel(irel)->first, (index->nkeycolumns + 1) * sizeof(int));
 	est.nleaves = sift_col_rel(irel)->schema->ncols;
 	index_close(irel, AccessShareLock);

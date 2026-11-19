@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET sift.test_scope_entity = on;
 SET default_statistics_target = 1000;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

@@ -103,8 +103,7 @@ The diagnostic options (generated from [options.tsv](options.tsv)):
 | `sift.plan_scale` | sift_col, sift_table | plan as if the tables with a sift_col index had this many times the pages and rows, to see the planner's choice at a larger size (on every supported PostgreSQL) |
 | `sift.agg_force` | sift_col, sift_table | takes the aggregate scan wherever one is possible, whatever the plans cost, to time the plan the cost model refused |
 | `sift.eval_methods` | sift_col | selects the developer evaluation method named: penalty_maintenance prices the VACUUM that reads ask for |
-| `sift.agg_scope` | sift_col | the scan of an index with a scope answers a join to the scope relation, or IN and EXISTS over it, by the scope key from the scope segments of the index |
-| `sift.scope_max_multiplicity` | sift_col | the default of the most scope entries for each fact row (the entries of a scope over the rows of the table) that a new scope index accepts; CREATE INDEX writes the limit it accepted the scope under into the option (max_multiplicity(n), which a declaration may state), and REINDEX, a restore and the rebuild after pg_upgrade check that limit, not their session's; a scope above it is refused with its size and growth and the join answers it |
+| `sift.agg_scope` | sift_col | the scan of an index with a scope answers a join to the scope relation, or IN and EXISTS over it, by the scope key from the scope sidecar of the index and the member list of the pairs |
 <!-- sift-diagnostics:end -->
 
 ## Same word, three places

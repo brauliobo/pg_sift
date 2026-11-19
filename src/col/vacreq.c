@@ -262,13 +262,6 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 		flush_reads(indexoid);
 	if (!sift_col_auto_merge || !sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress())
 		return;
-	if (sift_scope_paid_pending(indexoid))
-	{
-		Relation	scoped = index_open(indexoid, AccessShareLock);
-
-		sift_scope_paid_flush(scoped);
-		index_close(scoped, AccessShareLock);
-	}
 	lk = look_of(indexoid);
 	lk->owed_vacuum += (double) vetted * PEN_VET_ROW;
 	/* a scan that checked a few rows in the heap saved nothing worth a VACUUM, but if it decoded the write buffer the reads may have paid for its promotion */

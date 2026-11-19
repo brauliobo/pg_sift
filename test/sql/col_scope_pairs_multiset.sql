@@ -8,10 +8,10 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
+SET sift.test_scope_entity = on;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
 -- the narrowed read is taken whatever it costs: the price is the subject of col_scope_patch_price
-SET sift.test_scope_patch = on;
 -- page costs that keep a SiftAgg plan the cheaper one whenever it is generated: the plan then depends on the shape of the statement
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

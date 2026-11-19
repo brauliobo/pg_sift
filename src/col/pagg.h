@@ -60,6 +60,8 @@ extern bool sift_col_unit_dead_leaf(const SiftColUnit *unit, int col, uint32 *nd
 
 /* The aggregate of a leaf (zone + exact sums). false when the unit may not answer or the leaf overflowed in it (SIFT_COLZ_OVERFLOW) */
 extern bool sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a);
+/* The zone of the time leaf of a unit that is the cube of a month of a run of the scope sidecar (col/scan/side.c) */
+extern bool sift_col_run_agg(const SiftColUnit *unit, int col, SiftCAgg *a);
 
 /*
  * The histogram of dim in the unit: GROUP BY dim -> count and, for the measures the unit stored (SiftCHistDim.meas), (non-NULL count, sum).

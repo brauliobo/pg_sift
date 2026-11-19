@@ -383,7 +383,15 @@ prune_init(AggExec *ex)
 
 	ex->skip = NULL;
 	for (int i = 0; i < ex->spec->npred; i++)
+	{
+		int			before = list_length(tests);
+
 		tests = zone_tests(ex, ex->spec->pred[i], tests);
+		/* the entries of the member conjunct of a scope read that a run answers for */
+		if (ex->scope_side && ex->spec->pred[i] == ex->scope_pred)
+			for (int k = before; k < list_length(tests); k++)
+				((SiftSrcPrune *) list_nth(tests, k))->scope = true;
+	}
 	ex->prune = MemoryContextAlloc(ex->cxt, Max(list_length(tests), 1) * sizeof(SiftSrcPrune));
 	foreach_ptr(SiftSrcPrune, z, tests)
 		if (z->nkids == 0)

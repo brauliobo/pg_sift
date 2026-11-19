@@ -644,8 +644,14 @@ sift_col_super_align(SiftColSource *src, uint32 sb)
 	{
 		SiftColSegment *seg = src->seg[i].seg;
 		uint32		u = sift_cseg_unit_lower_bound(seg, sb);
-		uint32		e = sift_cseg_super_align(seg, u);
+		uint32		e = u,
+					before;
 
+		do
+		{
+			before = e;
+			e = scan_side_align(src, seg, sift_cseg_super_align(seg, e));
+		} while (e != before);
 		if (e > u)
 			at = Max(at, e < seg->nsb ? seg->sbdir[e].id : seg->sbdir[seg->nsb - 1].id + 1);
 	}
@@ -671,6 +677,8 @@ sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int 
 bool
 col_super_inside(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n)
 {
+	if (src->side.on && src->side.covers != NULL)
+		return false;
 	for (int k = 0; k < src->nsuptest; k++)
 	{
 		const SiftColSuperTest *t = &src->suptest[k];

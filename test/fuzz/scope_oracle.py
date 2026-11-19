@@ -16,6 +16,9 @@ while the others read, roll back with savepoints, and read inside the transactio
   - on the STOCK node (once its subscription has caught up), on the STANDBY (once it replayed) and on the RESTORE node: each must equal the primary's plain answer, row for row.
 A seed in LATE mode (about a third of them) builds the scope index on facts whose pair relations are empty (the facts came before the grants: no scope segment, the stamp is the index's floor) and loads the
 pairs after the battery of the build; at the middle of its steps the rows whose member has a pair are deleted, VACUUM and a merge drain the scope segments, and the member of each row that stays is granted afterwards.
+The SIDE profile (the even seeds from 20: 22 soft, 24 one path, 26 two paths) is built so that the entity segments hold the scope sidecar and the reads take its runs: units of 150 rows (also for the maintenance worker, by ALTER DATABASE), key_order and key_cut on the member,
+kind and amount in the index, a key is a block of consecutive dim_b, so its rows fill whole units, and two reads of whole calendar months. The seed fails when no read took a run (stat runs). A pair edit leaves the runs of its dim_b stale until a merge makes the sidecar again: the
+answers in between are the validity rule's (a run whose member changed is read by its units), which the stock node judges.
 A step may also switch the cut of the units with ALTER INDEX .. SET (key_cut), check that ALTER INDEX .. SET/RESET (scope) of an index with segments is refused, or rename the tables and the index on every node while a merge and sift.col_scope_verify run and rename them back (its own random stream: the other draws of a seed stay).
 Windows of concurrent writers (pgbench) run with REPEATABLE READ and SERIALIZABLE readers on the primary and the standby that each compare the scope read with the plain plan inside their snapshot and with the answer
 of the first read of that snapshot; a CREATE INDEX CONCURRENTLY runs inside one of them. At the end of a seed sift.col_scope_verify must find no differing key on the primary and the standby, and the dump of the primary is
@@ -27,7 +30,9 @@ ERR = re.compile(r'^(ERROR|FATAL|PANIC|server closed|connection to server|psql: 
 TZ = "SET TimeZone = 'UTC'; SET client_min_messages = warning; SET max_parallel_workers_per_gather = 0; SET jit = off; SET lock_timeout = '60s';"
 WHY = {}
 VERIFY_EVERY = int(os.environ.get('SIFT_ORACLE_VERIFY_EVERY', '4'))   # sift.col_scope_verify after every this many steps (1: every step)
-STATS = {'compared': 0, 'scope_reads': 0, 'engaged': 0, 'windows': 0, 'own': 0, 'snapshots': 0, 'verify': 0, 'unverified': 0}
+SIDE_FROM = 20   # the seeds from here on, the even ones, are the side profile
+SIDE_STEPS = 4   # its steps read before and after the maintenance: the first one already catches a stale run, four cover the alternating edits
+STATS = {'compared': 0, 'scope_reads': 0, 'engaged': 0, 'windows': 0, 'own': 0, 'snapshots': 0, 'verify': 0, 'unverified': 0, 'runs': 0, 'sidecars': 0, 'segments': 0}
 
 
 class Fail(Exception):
@@ -97,11 +102,13 @@ def shell(cmd, env=None, check=True):
 class Shape:
     """The tables, the scope declaration, the reads in their plain form and the edits of the pairs of one shape."""
 
-    def __init__(self, name, rng, n_members, tenants, walk=False):
-        self.name, self.rng, self.M, self.T, self.walk = name, rng, n_members, tenants, walk
+    def __init__(self, name, rng, n_members, tenants, walk=False, side=False):
+        self.name, self.rng, self.M, self.T, self.walk, self.side = name, rng, n_members, tenants, walk, side
         self.G = max(6, n_members // 10)
         self.pad = rng.choice([800, 1500, 2400]) if walk else 0
         self.icols = rng.choice(['id, dim_a_id, created_at, d', 'id, dim_a_id, created_at, kind, amount, d'])
+        if side:   # the histogram dims the cubes of the runs hold (kind) and the measure (amount) are in the index
+            self.icols = 'id, dim_a_id, created_at, kind, amount, d'
         # a time series (created_at grows with the id, as in an append-only table, a few facts to an instant or none) or a cyclic one
         step = rng.choice([1, 9])
         self.created = (f"timestamptz '2026-01-01' + (i / {step}) * interval '40 seconds'" if rng.random() < 0.5
@@ -139,6 +146,16 @@ class Shape:
     def populate_pairs(self):
         M, T, G = self.M, self.T, self.G
         s = ''
+        if self.side:   # a key is a block of consecutive dim_b (and a few extra dim_b of the next key): its rows fill whole units, so a run of the sidecar stands for them
+            if self.name == 'union':
+                return (f"INSERT INTO group_members (group_id, dim_a_id) SELECT 1 + (m - 1) * {G} / {M}, m FROM generate_series(1, {M}) m;"
+                        f"INSERT INTO grants (tenant_id, group_id) SELECT 1 + (g - 1) * {T} / {G}, g FROM generate_series(1, {G}) g;"
+                        f"INSERT INTO grants (tenant_id, dim_a_id) SELECT 1 + m % {T}, m FROM generate_series(1, {M}) m WHERE m % 9 = 0 ON CONFLICT DO NOTHING;"
+                        "UPDATE grants SET deleted_at = now() WHERE id % 13 = 0 AND dim_a_id IS NOT NULL; UPDATE group_members SET deleted_at = now() WHERE id % 17 = 0;")
+            soft = ', CASE WHEN m % 11 = 0 THEN now() END' if self.name == 'soft' else ''
+            cols = 'dim_a_id, tenant_id' + (', deleted_at' if self.name == 'soft' else '')
+            return (f"INSERT INTO pairs ({cols}) SELECT m, 1 + (m - 1) * {T} / {M}{soft} FROM generate_series(1, {M}) m;"
+                    f"INSERT INTO pairs ({cols}) SELECT m, 1 + m % {T}{soft} FROM generate_series(1, {M}) m WHERE m % 9 = 0 ON CONFLICT DO NOTHING;")
         if self.walk:   # 200 member ids, each in the group of one of 10 tenants (one tenant is a tenth of the table)
             if self.name == 'union':
                 s += (f"INSERT INTO group_members (group_id, dim_a_id) SELECT 1 + m % {T}, m FROM generate_series(1, {M}) m; "
@@ -246,7 +263,30 @@ class Shape:
             ('distinct_by_month_cut', f"SELECT date_trunc('month', f.d) m, count(DISTINCT f.dim_a_id) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(k1)}) AND f.d >= date '2026-03-15' GROUP BY 1 ORDER BY 1"),
             ('distinct_by_month_keys', f"SELECT date_trunc('year', f.d) y, count(DISTINCT f.dim_a_id) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(K)}) GROUP BY 1 ORDER BY 1"),
             ('no_key', f"SELECT count(*) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(str(T + 50))})"),
-        ]
+        ] + self.month_queries(k1)
+
+    def month_queries(self, k):
+        """The side profile reads every key by kind, and whole calendar months of one: the cubes of the runs of the sidecar answer them."""
+        if not self.side:
+            return []
+        by_kind = [(f'kind_t{t}', f"SELECT f.kind, count(*), sum(f.amount) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(t)}) GROUP BY 1 ORDER BY 1")
+                   for t in range(1, self.T + 1)]
+        return by_kind + [(f'month_{m}_key', f"SELECT f.kind, count(*), sum(f.amount) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(k)}) "
+                                             f"AND f.created_at >= timestamptz '2026-{m:02d}-01' AND f.created_at < timestamptz '2026-{m + 1:02d}-01' GROUP BY 1 ORDER BY 1")
+                          for m in (1, 3)]
+
+    def side_edit(self, r, step):
+        """The side profile edits dim_b inside the blocks of the keys (removed, moved or granted again), alternating by step, and reads before any maintenance: the runs of the sidecar that hold those dim_b are stale."""
+        k, k2, x = r.randint(1, self.T), r.randint(1, self.T), r.randint(0, 4)
+        g, odd = r.randint(1, self.G), step % 2
+        if self.name == 'plain':
+            return (f"DELETE FROM pairs WHERE tenant_id = {k} AND dim_a_id % 5 = {x};" if not odd else
+                    f"UPDATE pairs p SET tenant_id = {k2} WHERE p.tenant_id = {k} AND p.dim_a_id % 7 = {x} AND NOT EXISTS (SELECT 1 FROM pairs q WHERE q.dim_a_id = p.dim_a_id AND q.tenant_id = {k2});")
+        if self.name == 'soft':
+            return (f"UPDATE pairs SET deleted_at = now() WHERE tenant_id = {k} AND dim_a_id % 5 = {x} AND deleted_at IS NULL;" if not odd else
+                    f"UPDATE pairs SET deleted_at = NULL WHERE tenant_id = {k} AND deleted_at IS NOT NULL;")
+        return (f"DELETE FROM group_members WHERE group_id = {g} AND dim_a_id % 3 = {x % 3};" if not odd else
+                f"UPDATE grants SET deleted_at = now() WHERE tenant_id = {k} AND group_id IS NOT NULL AND deleted_at IS NULL AND id % 2 = {x % 2};")
 
     # edits of the pairs: the SQL of one step, with a drawn seed for random()
     def pair_edit(self, r):
@@ -330,7 +370,7 @@ def fact_edit(r, M, state):
 # --------------------------------------------------------------------------------------------------------------------------------------------------------------- reads
 
 ARMS = {
-    'scope':   "SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL sift.enable_col_scan = on;",
+    'scope':   "SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL sift.test_scope_entity = on;",
     'planned': "SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = off; SET LOCAL sift.enable_col_scan = on;",
     'plain':   "SET LOCAL sift.enable_agg = off; SET LOCAL sift.enable_col_scan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; "
                "SET LOCAL enable_indexonlyscan = off;",
@@ -422,17 +462,21 @@ def wait_stock(p, *subs):
 
 
 def run_seed(a, seed):
+    t_seed = time.time()
+    runs_before = STATS['runs']
     rng = random.Random(seed)
     db = f'oracle{seed}'
     walk = seed % 2 == 1   # wide rows (about 5 to a page), rows dated by member, units cut by member: the top-N reads walk the superblocks by their zones
-    rows = min(a.rows, rng.choice([20000, 40000])) if walk else a.rows
-    shape = Shape(['plain', 'soft', 'union'][seed % 3], rng, max(60, rows // 25) if not walk else rng.choice([100, 200, 400]), rng.choice([10, 20]) if walk else 40, walk)
-    opts = rng.choice(['', ", write_buffer_limit = 64", ", key_cut = 'dim_a_id'", ", write_buffer_limit = 1024"])
+    side = seed >= SIDE_FROM and not walk   # keys are blocks of consecutive dim_b, units of 150 rows: the entity segments hold the scope sidecar and the reads take its runs
+    rows = min(a.rows, rng.choice([20000, 40000])) if walk else min(a.rows, 20000) if side else a.rows
+    shape = Shape(['plain', 'soft', 'union'][seed % 3], rng, max(60, rows // 25) if not walk else rng.choice([100, 200, 400]), rng.choice([10, 20]) if walk else 6 if side else 40, walk, side)
+    buffers = ['', ", write_buffer_limit = 1024"] if side else ['', ", write_buffer_limit = 64", ", write_buffer_limit = 1024"]
+    opts = rng.choice(buffers) + ", key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at'"
     if walk:
         opts = ", key_order = 'dim_a_id, created_at'"
-    patch = rng.choice(['on', 'off'])
-    seg = rng.choice([0, 64, 256])
+    seg = rng.choice([0, rows // 32])   # the segment budget of the writers, under 8 segments of the index (a merge of 8 of the same tier writes them again)
     urows = rng.choice([0, 150, 600])   # the rows a unit aims at (0: from the statistics of the table): a key of many units has superunits
+    urows = 150 if side else urows   # a segment needs 16 units (col/side.h SIDE_MIN_UNITS)
     late = seed <= 12 and random.Random(seed * 31 + 7).random() < 0.34   # the seeds above 12 (the mutant's) run as before
     out = a.out
     log = Gate(a).log
@@ -440,16 +484,19 @@ def run_seed(a, seed):
     root = Pg('admin', P, 'postgres', log, sift=False)
     for n in (P, B, R):
         Pg('admin', n, 'postgres', log, sift=False).run(f"DROP DATABASE IF EXISTS {db} WITH (FORCE); CREATE DATABASE {db};")
-    setup = (f"SET sift.test_scope_patch = {patch}; SET sift.scope_max_multiplicity = 64;" + (f" SET sift.test_col_segment_kb = {seg};" if seg else '') + (f" SET sift.col_unit_rows = {urows};" if urows else '')
+    setup = ("SET sift.test_scope_entity = on;" + (f" SET sift.test_col_segment_kb = {seg};" if seg else '') + (f" SET sift.col_unit_rows = {urows};" if urows else '')
              + os.environ.get('SIFT_ORACLE_SET', ''))
-    shell(f"echo 'seed {seed}: shape {shape.name} rows {rows} index options [{opts}] test_scope_patch {patch} segment_kb {seg} unit_rows {urows} late {late}' >> {out}/summary.txt")
-    print(f'seed {seed}: shape {shape.name}, {rows} rows, options [{opts}], patch {patch}, segment_kb {seg}, unit_rows {urows}, late {late}', flush=True)
+    shell(f"echo 'seed {seed}: shape {shape.name} rows {rows} index options [{opts}] segment_kb {seg} unit_rows {urows} late {late}' >> {out}/summary.txt")
+    print(f'seed {seed}: shape {shape.name}, {rows} rows, options [{opts}], segment_kb {seg}, unit_rows {urows}, late {late}', flush=True)
 
     # the base tables on the primary (with data) and on the stock node; the subscription copies the data
+    unit_rows_of = f"ALTER DATABASE {{}} SET sift.col_unit_rows = {urows};" if side else ''   # the background maintenance merges with no session setting: its units must not collapse a segment under 16 units
+    if side:
+        Pg('admin', P, 'postgres', log, sift=False).run(unit_rows_of.format(db))
     A = Pg('primary', P, db, log, "CREATE EXTENSION IF NOT EXISTS pg_sift; " + setup)
     SK = Pg('stock', B, db, log, sift=False)
     dbl = f'oraclel{seed}'
-    Pg('admin', R, 'postgres', log, sift=False).run(f"DROP DATABASE IF EXISTS {dbl} WITH (FORCE); CREATE DATABASE {dbl};")
+    Pg('admin', R, 'postgres', log, sift=False).run(f"DROP DATABASE IF EXISTS {dbl} WITH (FORCE); CREATE DATABASE {dbl};" + unit_rows_of.format(dbl))
     LP = Pg('logical-sift', R, dbl, log, "CREATE EXTENSION IF NOT EXISTS pg_sift; " + setup)
     A.run(shape.base_ddl() + shape.populate(rows, pairs=not late))
     SK.run(shape.base_ddl())
@@ -477,6 +524,7 @@ def run_seed(a, seed):
     def quiesce(step, label):
         """The battery on every node, compared with the plain plan on the primary and with the stock node."""
         qs = shape.queries(r, ntenants)
+        A.run("ANALYZE;")   # autovacuum is off: rows the steps and the writers added lie past the histograms, the plain arm plans a nested loop over the facts, and the standby, which has the statistics of the primary, takes minutes for a query
         # the three arms in one snapshot: switch the arm with SET LOCAL between the groups of statements
         text = "BEGIN ISOLATION LEVEL REPEATABLE READ;"
         for arm in ('scope', 'planned', 'plain'):
@@ -508,6 +556,8 @@ def run_seed(a, seed):
         for arm in ('scope', 'planned', 'plain'):
             sa = answers(SP, arm, qs)
             gate.compare(seed, step, f'{label} standby {arm} vs the stock node', qs, sa, stock, SP, arm, SK, 'stock')
+        STATS['sidecars'] += int(A.val("SELECT count(*) FROM sift.col_segments('facts_col') WHERE kind = 'immutable' AND format >= 53"))
+        STATS['segments'] += int(A.val("SELECT count(*) FROM sift.col_segments('facts_col') WHERE kind = 'immutable'"))
         # does the scope path engage (statistics only)
         for name, q in qs:
             plan = A.run(ARMS['scope'].replace('LOCAL ', '') + f" EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) {q}")
@@ -515,6 +565,7 @@ def run_seed(a, seed):
             how = 'units' if 'Scope Units:' in plan and not m else (m.group(1).strip() if m else ('no scope node' if 'Scope Index' not in plan else 'scope node, no units'))
             STATS['scope_reads'] += 1
             STATS['engaged'] += how == 'units'
+            STATS['runs'] += int((re.search(r'Scope Sidecar Runs: (\d+)', plan) or [0, 0])[1])
             WHY[f'{shape.name}/{name}: {how}'] = WHY.get(f'{shape.name}/{name}: {how}', 0) + 1
         A.run("RESET sift.enable_agg; RESET sift.agg_force; RESET sift.enable_col_scan; RESET enable_indexscan; RESET enable_bitmapscan; RESET enable_indexonlyscan;")
         return qs
@@ -697,13 +748,17 @@ def run_seed(a, seed):
             M2.run("ALTER INDEX facts_col_r RENAME TO facts_col;")
         quiesce(step, f'after the {kind} step')
 
-    steps = a.steps
+    steps = min(a.steps, SIDE_STEPS) if side else a.steps
     quiesce(0, 'after the build')
     if late:
         # the first pairs, after an index with no scope segment: the very next read is from the units, the new pairs patched
         edit(W, shape.populate_pairs())
         quiesce(0, 'after the pairs arrived')
     for step in range(1, steps + 1):
+        print(f'seed {seed} step {step} at {time.time() - t_seed:.0f} s', flush=True)
+        if side:
+            edit(W, shape.side_edit(r, step))
+            quiesce(step, f'step {step}, dim_b of the runs edited, no maintenance yet')
         for _ in range(r.randint(1, 3)):
             edit(W, r.choice([lambda: shape.pair_edit(r), lambda: fact_edit(r, shape.M, state), lambda: fact_edit(r, shape.M, state)])())
         if r.random() < 0.7:
@@ -727,14 +782,21 @@ def run_seed(a, seed):
             drain(step)
     # windows of concurrent writers, a CREATE INDEX CONCURRENTLY in one of them
     for w in range(a.windows):
+        print(f'seed {seed} window {w} at {time.time() - t_seed:.0f} s', flush=True)
+        A.run("ANALYZE;")
         cic = concurrent_window(steps + 1 + w, a.window_secs)
+        print(f'seed {seed} window {w} ran at {time.time() - t_seed:.0f} s', flush=True)
         quiesce(steps + 1 + w, f'after window {w}')
+        print(f'seed {seed} window {w} compared at {time.time() - t_seed:.0f} s', flush=True)
         has2 = A.val("SELECT count(*) FROM pg_class WHERE relname = 'facts_col2'") == '1'
         STATS['cic'] = STATS.get('cic', 0) + bool(cic)
         verify(steps + 1 + w)
         if has2:
             A.run("DROP INDEX facts_col2;")
     verify(steps + 10)
+    print(f'seed {seed} verified at {time.time() - t_seed:.0f} s', flush=True)
+    if side and STATS['runs'] == runs_before:
+        raise Fail(f'seed {seed}: no read of the scope index took a run of the sidecar ({STATS["sidecars"]} entity segments of {STATS["segments"]} had one)')
     # dump and restore: the restored database reads as the stock node does
     dump = f'{out}/seed{seed}.dump'
     host, port = P.rsplit(':', 1)
@@ -760,6 +822,7 @@ def run_seed(a, seed):
         p.close()
     os.remove(dump)
     shutil_rm(f'{out}/bench{seed}_*')
+    print(f'seed {seed} done in {time.time() - t_seed:.0f} s', flush=True)
     for node, name in ((P, db), (B, db), (R, db), (R, dbl)):
         admin = Pg('admin', node, 'postgres', log, sift=False)
         admin.run(f"DROP DATABASE {name} WITH (FORCE);")
@@ -771,10 +834,11 @@ def shutil_rm(pat):
 
 
 def parse_seeds(s):
-    if '-' in s:
-        lo, hi = s.split('-')
-        return list(range(int(lo), int(hi) + 1))
-    return [int(x) for x in s.split(',')]
+    seeds = []
+    for part in s.split(','):
+        lo, _, hi = part.partition('-')
+        seeds += range(int(lo), int(hi or lo) + 1)
+    return seeds
 
 
 def main():

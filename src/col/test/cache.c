@@ -33,7 +33,6 @@ PG_FUNCTION_INFO_V1(sift_test_col_stream_dicts);
 
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
 PG_FUNCTION_INFO_V1(sift_test_catalog_memos);
-PG_FUNCTION_INFO_V1(sift_test_scope_exact);
 
 PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
 
@@ -85,20 +84,6 @@ Datum
 sift_test_catalog_memos(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT64((int64) sift_catalog_memo_hits);
-}
-
-/* (index regclass) The share of the scope units of the index the planner takes to answer from their pre-aggregates (the statistics the price of a scope read starts from) */
-Datum
-sift_test_scope_exact(PG_FUNCTION_ARGS)
-{
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftSrcStats *st = palloc(sizeof(SiftSrcStats));
-	bool		ok = sift_col_scope_stats(index, st);
-
-	index_close(index, AccessShareLock);
-	if (!ok)
-		PG_RETURN_NULL();
-	PG_RETURN_FLOAT8(st->exact_frac);
 }
 
 Datum

@@ -5,18 +5,26 @@
 # units, planned and plain plans on the primary in one REPEATABLE READ snapshot, the stock node, the standby and the restored database. Reads inside the editing transaction (own command ids, savepoints), old
 # REPEATABLE READ and SERIALIZABLE snapshots across committed edits, a writer that stays open across VACUUM, promotion and merge, windows of pgbench writers with readers on the primary and the standby and a CREATE INDEX
 # CONCURRENTLY inside, REINDEX (also CONCURRENTLY), and sift.col_scope_verify on the primary, the standby and the restore. Odd seeds are the walk profile: wide rows, rows dated by member, units cut by member, the latest-N reads walk the superblocks by their zones, and one session alternates sift.agg_scope off and on (a latest-N read of a
-# scope index after a join read of the same keys returned older rows before the fix that stamps the walk with the source of its zones). Quick tier: seeds 1-3 of 4 steps on 20,000 rows; full: seeds 1-6 of 8 steps on 60,000.
-# SIFT_ORACLE_SEEDS / SIFT_ORACLE_ROWS / SIFT_ORACLE_STEPS / SIFT_ORACLE_WINDOWS override; SIFT_ORACLE_MUTANT=on|off|only (default on) picks the seeds, the mutant check or both (scripts/stability.sh runs the seeds of a round in shards and the mutant once); SIFT_ORACLE_OFFSET moves the four nodes (ports SIFT_PORT + offset .. + 3). Not covered: crash recovery
+# scope index after a join read of the same keys returned older rows before the fix that stamps the walk with the source of its zones). Even seeds from 20 are the side profile: the entity segments hold the scope sidecar (units of 150 rows, keys are blocks of consecutive members, kind and amount in the index) and the reads take its runs;
+# each of its steps first edits members inside the blocks and reads before any maintenance, so a run whose members changed is stale when it is read, and the seed fails when no read took a run. Mutant of the validity rule
+# (the changed members of a one-path scope dropped in journals_changed, col/scope_journal.c, not committed): seed 22 fails at its first step (a wrong answer of by_kind_key), seed 24 likewise. Quick tier: seeds 1-3 and the side seed 22 of 4 steps
+# on 20,000 rows; full: seeds 1-6 of 8 steps on 60,000 and the side seeds 22, 24, 26 of 4 steps on 20,000, as three jobs (this file: seeds 1-2 and the mutant check; col_scope_oracle_b.sh: seeds 3-4 and the side seeds
+# 22, 24; col_scope_oracle_c.sh: seeds 5-6 and the side seed 26, full tier only): the six seeds and the mutant took 1846 s on a loaded runner, a job 210-300 s at load 7.
+# SIFT_ORACLE_SEEDS / SIFT_ORACLE_ROWS / SIFT_ORACLE_STEPS / SIFT_ORACLE_WINDOWS override; SIFT_ORACLE_MUTANT=on|off|only (default on in this file, off in the others) picks the seeds, the mutant check or both (scripts/stability.sh runs the seeds of a round in shards and the mutant once); SIFT_ORACLE_OFFSET moves the four nodes (ports SIFT_PORT + offset .. + 3). Not covered: crash recovery
 # (col_scope_crash.sh), cross-major pg_upgrade (col_scope_upgrade.sh).
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-SEEDS=$(knob SIFT_ORACLE_SEEDS 1-6 1-3)
+case ${SIFT_ORACLE_SHARD:-a} in
+	a) SEEDS=$(knob SIFT_ORACLE_SEEDS 1-2 1-3,22) MUTANT=${SIFT_ORACLE_MUTANT:-on} ;;
+	b) SEEDS=$(knob SIFT_ORACLE_SEEDS 3-4,22,24 '') MUTANT=${SIFT_ORACLE_MUTANT:-off} ;;
+	c) SEEDS=$(knob SIFT_ORACLE_SEEDS 5-6,26 '') MUTANT=${SIFT_ORACLE_MUTANT:-off} ;;
+esac
+[[ -n $SEEDS || $MUTANT != off ]] || { echo '1..0 # SKIP the seeds of this job run in the full tier only'; exit 0; }
 ROWS=$(knob SIFT_ORACLE_ROWS 60000 20000)
 STEPS=$(knob SIFT_ORACLE_STEPS 8 4)
 WINDOWS=$(knob SIFT_ORACLE_WINDOWS 1 1)
 BASE=${SIFT_ORACLE_OFFSET:-80}
-MUTANT=${SIFT_ORACLE_MUTANT:-on}
 [[ $MUTANT != only ]] || SEEDS=
 
 REPL="wal_level = logical
@@ -30,14 +38,12 @@ shared_buffers = 128MB
 max_locks_per_transaction = 256
 autovacuum = off
 max_connections = 100"
-node_init ora_a "$BASE" "$REPL
-sift.scope_max_multiplicity = 64"
+node_init ora_a "$BASE" "$REPL"
 node_start ora_a || bail "primary start failed"
 node_init ora_b $((BASE + 2)) "$REPL"
 for k in '^sift[.]' '^extension_control_path' '^dynamic_library_path'; do sed_i "/$k/d" "$(dir ora_b)/data/postgresql.conf"; done
 node_start ora_b || bail "stock node start failed"
-node_init ora_r $((BASE + 3)) "$REPL
-sift.scope_max_multiplicity = 64"
+node_init ora_r $((BASE + 3)) "$REPL"
 node_start ora_r || bail "restore node start failed"
 sql ora_a "CREATE EXTENSION pg_sift" >/dev/null || bail "extension failed"
 node_clone ora_a ora_s $((BASE + 1)) "hot_standby_feedback = on

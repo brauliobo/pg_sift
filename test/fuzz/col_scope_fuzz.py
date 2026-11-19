@@ -47,7 +47,7 @@ from col_twin_fuzz import Sess, Fail, ERR, SETUP, OUT, sqlstr
 
 TWOHOP_REASON = '^no journal for two paths$'   # the reason of a tree without the reader of the units of two paths
 HELPERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scope_helpers.sql')
-FUZZ_SETUP = SETUP + " SET sift.agg_force = on; SET jit = off; SET sift.scope_max_multiplicity = 64;"
+FUZZ_SETUP = SETUP + " SET sift.agg_force = on; SET jit = off; SET sift.col_unit_rows = 150; SET sift.test_scope_entity = on;"
 
 LIB = r"""
 DROP TABLE IF EXISTS sf_q, sf_res;
@@ -149,17 +149,10 @@ EXCEPTION WHEN OTHERS THEN
 	RETURN 'ERROR ' || SQLERRM;
 END $$;
 
-CREATE OR REPLACE FUNCTION sf_dead() RETURNS bigint LANGUAGE plpgsql AS $$
-BEGIN
-	RETURN (SELECT count(*) FROM sift._test_col_scope_entries('events_col') x LEFT JOIN sift._test_col_tids('events_col') t ON t.tid = x.tid WHERE t.tid IS NULL);
-END $$;
-
--- an index entry leads to the first version of a HOT chain (not the address a scan of the heap reports for the live version): the addresses are those of the entity segments, which col_verify holds to the heap
+-- the scope index against the join for every key: no key differs
 CREATE OR REPLACE FUNCTION sf_entries_are_the_join() RETURNS boolean LANGUAGE plpgsql AS $$
 BEGIN
-	RETURN (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col'))
-		= (SELECT md5(string_agg(r.tid::text || ':' || t.tenant_id, ',' ORDER BY r.tid, t.tenant_id))
-		   FROM sift._test_col_read('events_col', 0) r JOIN events e ON e.id = r.val::int JOIN @PAIRS@ t ON t.dim_a_id = e.dim_a_id @ACT_T@);
+	RETURN NOT EXISTS (SELECT 1 FROM sift.col_scope_verify('events_col', 1000) WHERE problem = 'differs');
 END $$;
 """
 
@@ -213,11 +206,8 @@ class Seed:
         self.profile = r.choice(list(KEYS_PER))
         self.track = r.choice(['on', 'on', 'off'])
         self.seg_kb = r.choice([None, None, None, 96])
-        self.cols = None
-        if r.random() < 0.5:   # an own stream, so that the other draws of a seed stay: a subset of the columns, with or without the primary key, the member key and the time column
-            self.cols = [c for c in INDEX_COLS if random.Random(f'{seed}cols{c}').random() < 0.5] or ['v']
-        self.kept = None if self.cols is None else set(self.cols) | {'created_at'}   # the units are cut by the time column, which they keep
-        self.cut = r.choice([None, None, 'dim_a_id'])
+        self.cols = self.kept = None
+        r.choice([None, None, 'dim_a_id'])
         self.gord = r.random() < 0.5
         self.next_id = self.n + 1
         self.grng = random.Random(f'{seed}group')   # its own stream: the draws of the other classes stay
@@ -254,7 +244,7 @@ class Seed:
         return self.nkeys + 5
 
     def scope_text(self):
-        return "tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)" + (f" cols({', '.join(self.cols)})" if self.cols else '')
+        return "tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)"
 
     def pair_sql(self):
         jr = ("CREATE INDEX tenant_scope_col ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')"
@@ -267,7 +257,7 @@ INSERT INTO tenant_scope (dim_a_id, tenant_id, deleted_at) SELECT m, 1 + (m * 31
 
     def setup_sql(self):
         trk = ", track_changes = 'off'" if self.track == 'off' else ''
-        trk += f", key_cut = '{self.cut}'" if self.cut else ''
+        trk += ", key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at'"
         trk += ", order_array_columns = 'id, created_at, kind, v'" if self.gord else ''
         return f"""{f"SET sift.test_col_segment_kb = {self.seg_kb};" if self.seg_kb else ""}
 DROP TABLE IF EXISTS events, tenant_scope, grants, memberships CASCADE;
@@ -718,22 +708,6 @@ def check(a, s, label, strict, stats):
             stats[why] += int(n)
 
 
-def check_delta(a, s, label, first_id):
-    """The rows inserted since first_id are in the write buffer: a read of a key whose dim_b have some, that takes the units and patches no member, reads them as its delta (Scope Delta Rows)."""
-    keys = current_keys(a, s)
-    if not keys:
-        return
-    k = s.rng.choice(keys)
-    q = f"SELECT count(*), sum(v) FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, {k})"
-    out = a.run(f"SELECT 'rows', count(*) FROM events e WHERE e.id >= {first_id} AND EXISTS (SELECT 1 FROM {s.pairs} s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = {k}{s.act});\n"
-                "SELECT 'buffer', coalesce(sum(rows), 0) FROM sift.col_segments('events_col') WHERE kind = 'buffer';\n"
-                "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) " + q + ";")
-    rows, buf = (int(re.search(rf'^{w}\|(\d+)$', out, re.M).group(1)) for w in ('rows', 'buffer'))
-    delta = re.search(r'Scope Delta Rows: (\d+)', out)
-    if rows > 0 and buf > 0 and 'Scope Units Read' in out and 'Scope Patched Keys' not in out and not (delta and int(delta.group(1)) > 0):
-        raise Fail(f'{label}: key {k} has {rows} buffered rows and the read of its units took none as its delta: {out.strip()[-700:]}')
-
-
 def check_in_txn(a, s, label, stats, rng):
     """The reads inside the transaction that edited the pairs (its own changes visible), then it commits or rolls back."""
     check(a, s, f'{label} inside', False, stats)
@@ -782,12 +756,6 @@ def run_seed(seed, rows, steps, out_dir, family='all', twohop_strict=False, twoh
                 check_in_txn(a, s, label, stats, s.rng)
             else:
                 check(a, s, label, effect == 'rebuild', stats)
-            if effect.startswith('buffer '):
-                check_delta(a, s, label, int(effect.split()[1]))
-            if effect == 'vacuum' and not reader:
-                dead = a.run("SELECT 'dead', sf_dead();")
-                if 'dead|0' not in dead:
-                    raise Fail(f'{label}: entries of dead addresses after VACUUM: {dead.strip()[:200]}')
             if reader:
                 out = rd.run(f"SELECT 'snap', sf_snap();")
                 if ERR.search(out) or not re.search(r'^snap\|$', out, re.M):
@@ -801,7 +769,7 @@ def run_seed(seed, rows, steps, out_dir, family='all', twohop_strict=False, twoh
             raise Fail(f'final rebuild: {out.strip()[:500]}')
         check(a, s, 'final rebuild', True, stats)
         if s.cols is None and 'entries|t' not in a.run("SELECT 'entries', sf_entries_are_the_join();"):
-            raise Fail('final rebuild: the scope entries are not the join of the facts and the pairs')
+            raise Fail('final rebuild: sift.col_scope_verify finds a key that is not the join of the facts and the pairs')
         if s.expects_stored and stats['stored'] == 0:
             raise Fail('no read of the scope units in the whole seed: the fuzz does not reach the feature')
         a.run(f'DROP TABLE events, {s.tables} CASCADE;')

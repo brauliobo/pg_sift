@@ -44,7 +44,7 @@ typedef struct Qry
 				cappks;
 	Relation	rel;				/* the view */
 	SiftRel    *sr;
-	SiftDirSnapshot snap;
+	SiftDirSnapshot *snap;
 	Delta	   *dl;
 	int64		dlfrom;				/* docids above belong to the live segment */
 	int64	   *fdocs;				/* documents the filter allows, ascending */
@@ -362,18 +362,18 @@ view_open(Qry *q)
 
 	q->rel = sift_rel_view(ix->sr, &q->sr);
 	sift_analyzer_config_from_options(&ix->sr->opts, &cfg);
-	memset(&q->snap, 0, sizeof(q->snap));
-	q->snap.meta.analyzer_hash = cfg.hash;
-	q->snap.meta.k1 = ix->sr->opts.k1;
-	q->snap.meta.b = ix->sr->opts.b;
+	q->snap = sift_dir_alloc(n + 1);
+	q->snap->meta.analyzer_hash = cfg.hash;
+	q->snap->meta.k1 = ix->sr->opts.k1;
+	q->snap->meta.b = ix->sr->opts.b;
 	for (int i = 0; i < n; i++)
-		q->snap.segs[i] = ix->segs[i].e;
+		q->snap->segs[i] = ix->segs[i].e;
 	if (q->dl && q->dl->g >= 0)
 	{
-		q->snap.segs[n++] = q->dl->e;
+		q->snap->segs[n++] = q->dl->e;
 		sift_slot_attach(q->sr, SIFT_DELTA_SLOT, q->dl->g, q->dl->blocks);
 	}
-	q->snap.nsegs = n;
+	q->snap->nsegs = n;
 	q->dlfrom = ix->man.drained + ix->man.docbase;
 	q->sr->is_dead = excluded;
 	q->sr->dead_ctx = q;
@@ -388,14 +388,16 @@ view_close(Qry *q)
 	if (q->rel)
 		sift_rel_view_free(q->rel);
 	free(q->fdocs);
+	free(q->snap);
 	q->rel = NULL;
 	q->fdocs = NULL;
+	q->snap = NULL;
 }
 
 static SiftIndexState *
 open_state(Qry *q, MemoryContext cx)
 {
-	return sift_state_open_dir(q->rel, cx, &q->snap);
+	return sift_state_open_dir(q->rel, cx, q->snap);
 }
 
 static SiftPlan *

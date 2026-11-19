@@ -1,5 +1,5 @@
 -- The members a read lists to price the patch against the entity path come from the pairs, not from the rows of the journal index: a plain journal index of a relation whose pairs are the rows of
--- a partial unique btree holds the soft deleted rows too (sift.test_scope_patch off: the patch is priced). Each state of the relation is read from the units or the entity rows, whichever is
+-- a partial unique btree holds the soft deleted rows too (the planner prices the read). Each state of the relation is read from the sidecar runs or the join, whichever is
 -- cheaper, with the answer of the join on the active rows.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -37,7 +37,6 @@ CREATE INDEX memberships_journal ON memberships USING sift_col (dim_a_id, group_
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
 REINDEX INDEX facts_col;
 VACUUM (FREEZE, ANALYZE) facts;
-SET sift.test_scope_patch = off;
 SELECT * FROM compare();
 
 CREATE TABLE states (n int, label text, stmt text);
@@ -53,7 +52,6 @@ INSERT INTO states VALUES
 SELECT stmt FROM (SELECT n, 0 AS k, stmt FROM states
 	UNION ALL SELECT n, 1, format('SELECT %s AS n, %L AS state, differ, fell_back FROM compare()', n, label) FROM states) t ORDER BY n, k \gexec
 
-RESET sift.test_scope_patch;
 DROP TABLE facts, memberships, states CASCADE;
 DROP FUNCTION compare();
 DROP EXTENSION pg_sift_test;

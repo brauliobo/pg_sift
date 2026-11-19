@@ -1,13 +1,11 @@
 # Fixtures of the tests of the scope of two paths (a scope on the grants of a member and, through the memberships, on the grants of the groups the member is in): the tables, the three recorded
 # btrees (the partial unique btrees of the grants by member, of the grants by group and of the memberships), the three journal indexes, the facts and the scope index hop_col (twohop_setup NODE), the
-# oracle view hop_pairs (the SQL UNION of the three tables), twohop_reads NODE (the scope forms against the plain join over the oracle: same or DIFFERENT), twohop_why NODE (stored, or the fallback
-# reason of a read of one tenant), twohop_vouch NODE (what each journal's stamp in the scope segments says: ok or why not) and twohop_files NODE (the pgbench scripts that edit the three tables and
-# the facts). Members 1..200 are in one group, those that divide by four in two; the groups 1..12 and the members 1..200 have grants to the tenants 1..16; the members 100..109 have no grant.
+# oracle view hop_pairs (the SQL UNION of the three tables), twohop_reads NODE (the scope forms against the plain join over the oracle: same or DIFFERENT), twohop_why NODE (the fallback reason of a read
+# of one tenant: a scope of two paths has no sidecar, so it runs the join) and twohop_files NODE (the pgbench scripts that edit the three tables and the facts). Members 1..200 are in one group, those that divide by four in two; the groups 1..12 and the members 1..200 have grants to the tenants 1..16; the members 100..109 have no grant.
 
 TWOHOP_ROWS=$(knob SIFT_TWOHOP_ROWS 6000 3000)
 TWOHOP_SCOPE="tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)"
-TWOHOP_CONF="sift.scope_max_multiplicity = 64
-autovacuum = off"
+TWOHOP_CONF="autovacuum = off"
 
 TWOHOP_BASE=(
 	"CREATE TABLE grants (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz, CHECK (dim_a_id IS NULL OR group_id IS NULL)) WITH (autovacuum_enabled = false)"
@@ -34,12 +32,6 @@ TWOHOP_INDEX=(
 	"VACUUM (FREEZE, ANALYZE) hop_events, grants, memberships"
 )
 TWOHOP_FUNCS=(
-	"CREATE OR REPLACE FUNCTION hop_vouch() RETURNS text LANGUAGE plpgsql AS \$\$
-		BEGIN RETURN (SELECT string_agg(DISTINCT sift._test_scope_vouch('hop_col', 0, a.lineage, a.horizon, b.lineage, c.lineage), ',')
-			FROM sift._test_col_scope_journal_stamps('hop_col') a
-			JOIN sift._test_col_scope_journal_stamps('hop_col') b ON b.gen = a.gen AND b.family = a.family AND b.scope = a.scope AND b.journal = 1
-			JOIN sift._test_col_scope_journal_stamps('hop_col') c ON c.gen = a.gen AND c.family = a.family AND c.scope = a.scope AND c.journal = 2
-			WHERE a.family = 'scope' AND a.scope = 0 AND a.journal = 0); END \$\$"
 	"CREATE OR REPLACE FUNCTION hop_same(k int) RETURNS bool LANGUAGE plpgsql AS \$\$
 		DECLARE a text; b text; c text; d text;
 		BEGIN
@@ -70,10 +62,6 @@ TWOHOP_P_TOP="SELECT id FROM hop_events e WHERE e.dim_a_id IN (SELECT dim_a_id F
 TWOHOP_Q_PAIR="SELECT k, (SELECT count(*) FROM hop_events e WHERE sift.in_scope('hop_col'::regclass, 'tenant_id', e.dim_a_id, k)) FROM generate_series(1, 17) k ORDER BY k"
 # a join that is not a correlated sub-select: the SiftAgg plan of a sub-select over a view with a UNION that reads the parameter of its outer level (SELECT k, (SELECT count(*) FROM .. JOIN hop_pairs s .. WHERE s.tenant_id = k)) reads the child once and answers every k with the first one, with or without a scope index
 TWOHOP_P_PAIR="SELECT k, count(e.id) FROM generate_series(1, 17) k LEFT JOIN hop_pairs s ON s.tenant_id = k LEFT JOIN hop_events e ON e.dim_a_id = s.dim_a_id GROUP BY k ORDER BY k"
-# the entries of the rows of the table: a REINDEX also indexes the rows a standby's snapshot (hot_standby_feedback, reported once a second) still holds back, which are no row of the join
-TWOHOP_ENTRIES="SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('hop_col') WHERE tid IN (SELECT ctid FROM hop_events))
-	= (SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM hop_events e JOIN hop_pairs s ON s.dim_a_id = e.dim_a_id)"
-
 # the functions below send their statements through ${TWOHOP_SQL:-sql} (a node name, or a database name for a test that restores into databases) and read the index ${TWOHOP_IX:-hop_col}
 # twohop_reads NODE [SETTING...]: the scope forms (one tenant, a set counted once, a top-N, per pair) in a session with the settings, against the join over the oracle without sift
 twohop_reads() {
@@ -84,23 +72,13 @@ twohop_reads() {
 		== $($Q "$n" "SET sift.enable_agg = off" "$TWOHOP_P_ONE" "$TWOHOP_P_SET" "$TWOHOP_P_TOP" "$TWOHOP_P_PAIR" 2>&1) ]] && echo same || echo DIFFERENT
 }
 
-# twohop_why NODE [QUERY]: stored when the read of the scope units answered, else the reason of the fallback
+# twohop_why NODE [QUERY]: the reason the read of one tenant ran the join (Scope Fallback), or entity when it read the entity rows
 twohop_why() {
-	local Q=${TWOHOP_SQL:-sql} q=${2:-$TWOHOP_Q_ONE}
-	$Q "$1" "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "SET jit = off" \
-		"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ${q//hop_col/${TWOHOP_IX:-hop_col}}" | sed -n 's/^ *Scope Fallback: //p;s/^ *Scope Units: .*/stored/p' | head -n 1
+	local Q=${TWOHOP_SQL:-sql} q=${2:-$TWOHOP_Q_ONE} p
+	p=$($Q "$1" "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "SET jit = off" \
+		"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ${q//hop_col/${TWOHOP_IX:-hop_col}}")
+	sed -n 's/^ *Scope Fallback: //p' <<<"$p" | head -n 1 | grep . || { grep -q 'Scope Units' <<<"$p" && echo entity; } || echo none
 }
-
-# twohop_stat NODE LABEL: a number of the plan of the read of one tenant ("Scope Changed Keys": the members the journals say changed since the stamps; "Scope Patched Keys": those with a pair now), 0
-# when the units were not read
-twohop_stat() {
-	local n Q=${TWOHOP_SQL:-sql}
-	n=$($Q "$1" "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "SET jit = off" \
-		"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ${TWOHOP_Q_ONE//hop_col/${TWOHOP_IX:-hop_col}}" | sed -n "s/^ *Scope $2: //p" | head -n 1)
-	echo "${n:-0}"
-}
-
-twohop_vouch() { ${TWOHOP_SQL:-sql} "$1" "SELECT hop_vouch()"; }
 
 # twohop_files NODE: the pgbench arguments of scripts that edit the three tables and the facts, each in a transaction that cannot fail on a key
 twohop_files() {

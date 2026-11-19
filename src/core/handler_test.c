@@ -85,6 +85,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_vis_pause",
 							"Testing: the Nth visibility-map read of a scan waits for advisory lock (0x51F7, 1) first (0 = none).",
 							NULL, &sift_test_vis_pause, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_key_cut_unbounded",
+							 "Testing: the spools of the decision of the automatic key_cut keep every chunk in memory, whatever maintenance_work_mem (a mutant of the bound).",
+							 NULL, &sift_test_key_cut_unbounded, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_no_supersede",
 							 "Testing: an index with track_changes writes no tombstone for the entries an UPDATE replaces (a mutant of the supersede).",
 							 NULL, &sift_test_no_supersede, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -125,8 +128,11 @@ sift_handler_test_gucs(void)
 							 "Testing: the row triggers of track_changes = ctid write the address of the version a HOT update chain ends in, not the one of its root (a mutant of the tracking).",
 							 NULL, &sift_test_no_chain_root, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_mutant",
-							"Testing: a deliberate defect of the fault matrix: 1 a job keeps its progress slot, 2 the orphan triggers of a dropped index stay (0 = none).",
-							NULL, &sift_test_mutant, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+							"Testing: a deliberate defect of the fault matrix: 1 a job keeps its progress slot, 2 the orphan triggers of a dropped index stay, 3 the VACUUM of a sift_col index clears no row (0 = none).",
+							NULL, &sift_test_mutant, 0, 0, 3, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_check_gate",
+							 "Testing: sift.check of a sift_col index waits for advisory lock (0x51F7, 18) after each segment, outside the maintenance lock.",
+							 NULL, &sift_test_check_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_alter_gate",
 							 "Testing: the validation of the options of a sift_col index (ALTER INDEX .. SET) waits for advisory lock (0x51F7, 14).",
 							 NULL, &sift_test_alter_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

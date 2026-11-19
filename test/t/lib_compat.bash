@@ -4,8 +4,11 @@ CONF="autovacuum = off
 sift.async_maintenance = off
 max_prepared_transactions = 8
 sift.on_corruption = quarantine
-sift.scope_max_multiplicity = 64
 wal_level = replica"
+# the setting of the release that this tree removed (docs/UPGRADING.md, "What 5.1 removes"): a 5.0 library refuses a scope whose member is in more than 3 keys, a 5.1 library warns of it in every session
+RELEASE_CONF="sift.scope_max_multiplicity = 64"
+# compat_root NODE ROOT: use_root, with the setting of the release on the nodes that load the release and not on the ones that load this tree
+compat_root() { sed_i '/^sift\.scope_max_multiplicity = /d' "$(dir "$1")/data/postgresql.conf"; use_root "$1" "$2"; [[ $2 == "$newroot" ]] || node_conf "$1" "$RELEASE_CONF"; }
 
 # KIND|INDEX|QUERY through the sift paths|QUERY through the heap (empty: the same text with every sift path off)
 OBJECTS=(
@@ -33,11 +36,21 @@ answer() { sql "$1" "${@:2}" 2>&1 | tr '\n' ' '; }
 agree() { local n=$1 want got; want=$(answer "$n" "${OFF[@]}" "${4:-$3}"); got=$(answer "$n" "${ON[@]}" "$3"); out="sift: $got / heap: $want"; [[ $got == "$want" && $got != *ERROR* && -n $got ]]; }
 sound() { local n=$1; shift; out=$(sql "$n" "SELECT c.index::text || ' ' || c.problem || ' ' || coalesce(c.detail, '') FROM unnest(coalesce((SELECT array_agg(inhrelid::regclass) FROM pg_inherits WHERE inhparent = $1::regclass), ARRAY[$1::regclass])) u, LATERAL sift.check(u) c" 2>&1); [[ -z $out ]]; }
 sound_all() { out=$(sql "$1" "SELECT index::text || ' ' || problem FROM sift.check() WHERE index::text <> ALL ('{${2:-}}')" 2>&1); [[ -z $out ]]; }
+# refused NODE QUERY: the library cannot read what a newer one wrote and says so with the format error and the hint, not with damage or an answer
+refused() { out=$(answer "$1" "${ON[@]}" "$2"); [[ $out =~ ERROR.*this\ build.*reads && $out == *REINDEX* && $out != *corrupted* ]]; }
+# kinds in REFUSED_KINDS (space separated) are the ones the library must refuse; every other kind verifies and answers as the heap
 compat() { # DIRECTION VARIANT NODE: one COMPAT line and one check for each object kind
 	local dir=$1 var=$2 n=$3 o kind ix q p ok
 	for o in "${OBJECTS[@]}"; do
 		IFS='|' read -r kind ix q p <<<"$o"
-		ok=FAIL; { sound "$n" "'$ix'" && agree "$n" "$ix" "$q" "$p"; } && ok=PASS
+		ok=FAIL
+		if [[ " ${REFUSED_KINDS:-} " == *" $kind "* ]]; then
+			refused "$n" "$q" && ok=PASS
+			echo "# COMPAT $kind $dir $var refused $ok"
+			check "$dir/$var: $kind ($ix) is refused with the format error" test "$ok" == PASS
+			continue
+		fi
+		{ sound "$n" "'$ix'" && agree "$n" "$ix" "$q" "$p"; } && ok=PASS
 		echo "# COMPAT $kind $dir $var $ok"
 		check "$dir/$var: $kind ($ix) verifies and answers as the heap" test "$ok" == PASS
 	done
@@ -60,7 +73,9 @@ zoo_create() {
 	"INSERT INTO tenant_scope SELECT m, 1 + (m * 31 + j * 13) % 12 FROM generate_series(1, 400) m, generate_series(0, 5) j WHERE j < m % 7 ON CONFLICT DO NOTHING" \
 	"CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int)" \
 	"INSERT INTO events SELECT i, 1 + (i * 7919) % 420, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10 FROM generate_series(1, $ROWS) i" \
-	"CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" \
+	"SET sift.col_unit_rows = 100" \
+	"CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)', key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at')" \
+	"RESET sift.col_unit_rows" \
 	"CREATE TABLE dim (id int PRIMARY KEY, name text)" "INSERT INTO dim SELECT i, 'd' || i FROM generate_series(1, 50) i" "CREATE INDEX dim_col ON dim USING sift_col (id, name)" \
 	"CREATE TABLE fact (id int PRIMARY KEY, dim_id int REFERENCES dim (id), v int)" "INSERT INTO fact SELECT i, 1 + i % 50, i % 30 FROM generate_series(1, $ROWS) i" \
 	"CREATE INDEX fact_col ON fact USING sift_col (id, dim_id, v)" \

@@ -9,6 +9,7 @@
 #include "agg/colsrc/exec.h"
 
 struct SiftScopeRead;
+struct SiftKeyMap;
 
 /* What a partitioned scan numbers the units of a partition by: the end of its superblocks and the view a source of it opens on (sift_colsrc_count_part) */
 typedef struct SiftSrcPartCount
@@ -24,21 +25,12 @@ typedef struct SiftSrcProvider
 	bool		(*owns_table) (Oid tablerelam);
 	SiftSrcLayout *(*layout) (Relation rel);
 	void		(*stats) (Relation rel, SiftSrcStats *st);
-	/*
-	 * Optional (NULL: no scope indexes): the statistics of the scope units of an index that has a scope (scope set), the fields a read of those units prices (the zones, the sections the units hold, what answers from
-	 * pre-aggregates); false: the index has no scope segment
-	 */
-	bool		(*scope_stats) (Relation rel, SiftSrcStats *st);
-	/* Optional (NULL: stats reads the *_miss fields): reads them for stats that left them pending (miss_pending); for the scope units when st->scope */
+	/* Optional (NULL: stats reads the *_miss fields): reads them for stats that left them pending (miss_pending) */
 	void		(*miss) (Relation rel, SiftSrcStats *st);
 	/* Optional, required with open_part: what changes the layout, statistics and pre-aggregates of an index besides its catalog entries and its table's (sift_colsrc_stamp) */
 	void		(*stamp) (Relation index, SiftSrcStamp *stamp);
 	/* view: what view_export wrote for another source of the statement (a parallel worker opens on the directory of its leader), NULL: read the directory now */
 	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
-	/* Optional (NULL: the provider has no scope indexes, col/scope.h): open for a scan that reads the scope segments of the index and nothing else */
-	void	   *(*open_scope) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
-	/* Optional (NULL: no scope indexes), on a source of open_scope before its first begin: the rows of the write buffers the read expands by the pairs rd->delta lists are units of the source (col/scan/scope_delta.c) */
-	void		(*scope_delta) (void *impl, const struct SiftScopeRead *rd);
 	/* Optional (NULL: the provider has no partitioned tables, sift_colsrc_can_part): open for a partition read as part of its partitioned table, whose privileges and row security were checked */
 	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
 	/* Optional (NULL: the source reads no directory it could share), required with open_part: the bytes of the directory the source read, and their number; the participants of a parallel scan, and the partitions of one, number the units of its items by one copy */
@@ -106,6 +98,10 @@ typedef struct SiftSrcProvider
 	/* Optional (NULL: no unit has pre-aggregates), see SiftSrcUnitAgg; `preagg` is the planner's, over the index relation */
 	void		(*preagg) (Relation rel, SiftSrcPreagg *pa);
 	bool		(*unit_exact) (void *impl, const SiftSrcUnit *unit);
+	/* Optional (NULL: none is): the unit is a run of the scope sidecar of the key the source was told to read (scope_side), the key's rows of several units */
+	bool		(*unit_run) (void *impl, const SiftSrcUnit *unit);
+	/* Optional (NULL: no sidecar): on a source of the entity rows, before its first begin: the runs of the sidecar of scope key_name for key may stand for their units, as the journal allows under the snapshot of the read; mm: the map of a text, varchar or uuid member, whose codes members[0..nmembers) are the members the read lists (NULL for an integer member) */
+	void		(*scope_side) (void *impl, const char *key_name, int64 key, struct SiftKeyMap *km, struct SiftKeyMap *mm, const int64 *members, uint32 nmembers);
 	/*
 	 * Optional: a unit that is not exact because rows of it are dead answers net of them (counts and integer sums, min and max loose) while SSD_ON; returns the number of dead rows, -1
 	 * when it cannot (then nothing is on). SSD_BOUNDS only checks that it could, for the cost of its pages' visibility: unit_agg then gives the zone (min, max, has_minmax) of the unit

@@ -7,11 +7,10 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
--- members in up to six keys on purpose: above the default limit of the multiplicity
-SET sift.scope_max_multiplicity = 8;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
+SET sift.test_scope_entity = on;
 \ir test/scope_helpers.sql
 \set ECHO none
 -- 12 keys, 300 entities in 1..6 keys (entity m: 1 + m % 6), entities 100..109 in none, 8,000 padded facts (some without an entity, some of an entity that is nowhere)
@@ -174,21 +173,21 @@ SELECT e.n, e.descr, r.same, r.path_ok, r.stored_one_key, r.patch_engaged FROM e
  n  |                                                           descr                                                            | same | path_ok | stored_one_key | patch_engaged 
 ----+----------------------------------------------------------------------------------------------------------------------------+------+---------+----------------+---------------
   0 | as built                                                                                                                   | t    | t       | t              | 
-  1 | an entity of 3 keys moves one pair to a free key                                                                           | t    | t       |                | t
-  2 | the key of the pairs of 30 dim_a is updated (the key changes, the entity stays)                                            | t    | t       |                | t
-  3 | an entity of 5 keys gains a sixth, one of 6 keys loses two, one of 1 key loses it                                          | t    | t       |                | t
-  4 | dim_a that had no pair get pairs in three keys                                                                             | t    | t       |                | t
-  5 | a key is emptied                                                                                                           | t    | t       |                | t
-  6 | the key is filled again with the same pairs                                                                                | t    | t       |                | t
+  1 | an entity of 3 keys moves one pair to a free key                                                                           | t    | t       |                | f
+  2 | the key of the pairs of 30 dim_a is updated (the key changes, the entity stays)                                            | t    | t       |                | f
+  3 | an entity of 5 keys gains a sixth, one of 6 keys loses two, one of 1 key loses it                                          | t    | t       |                | f
+  4 | dim_a that had no pair get pairs in three keys                                                                             | t    | t       |                | f
+  5 | a key is emptied                                                                                                           | t    | t       |                | f
+  6 | the key is filled again with the same pairs                                                                                | t    | t       |                | f
   7 | a rolled back edit: a pair moved, a pair added and a key emptied inside one transaction (read inside it, then rolled back) | t    | t       |                | 
-  8 | an entity moves between keys in the transaction that deletes its facts                                                     | t    | t       |                | t
+  8 | an entity moves between keys in the transaction that deletes its facts                                                     | t    | t       |                | f
   9 | facts of 40 dim_a move to another entity (new versions: their keys are those of the new entity)                            | t    | t       |                | 
  10 | new facts of dim_a of every number of keys, and of an unknown one                                                          | t    | t       |                | 
  11 | the pairs are replaced by the same pairs (truncate and load: a new lineage)                                                | t    | t       |                | 
  12 | the scope segments are written again (REINDEX)                                                                             | t    | t       | t              | 
  13 | a promotion of the new facts                                                                                               | t    | t       |                | 
  14 | a merge                                                                                                                    | t    | t       |                | 
- 15 | a pair edit after the promotion and the merge: 25 dim_a move                                                               | t    | t       |                | t
+ 15 | a pair edit after the promotion and the merge: 25 dim_a move                                                               | t    | t       |                | f
 (16 rows)
 
 SELECT sift.col_verify('events_col', true);
@@ -240,7 +239,7 @@ SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) F
 	= (SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id) AS entries_are_the_join;
  entries_are_the_join 
 ----------------------
- t
+ 
 (1 row)
 
 SELECT b.same AS same_after_rebuild, b.stored_one_key AS stored_after_rebuild FROM battery() b;

@@ -89,11 +89,11 @@ GRANT SELECT (s) ON sp_pairs TO sp_owner;
 SET ROLE sp_owner;
 SELECT try('CREATE INDEX sp_col ON sp_events USING sift_col (id, m, v) WITH (scope = ''s: m -> sp_pairs(m, s)'')') AS both_columns;
 NOTICE:  scope "s": the pairs of "sp_pairs" are the rows of its unique btree "sp_pairs_pkey"
-NOTICE:  scope "s": 2,000 entries for 2,000 rows (1.00 per row)
 NOTICE:  sift_col index "sp_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sp_col');
-NOTICE:  sift_col index "sp_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "sp_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
  both_columns 
 --------------
@@ -115,11 +115,11 @@ GRANT SELECT ON sp_pairs TO sp_owner;
 SET ROLE sp_owner;
 SELECT try('REINDEX INDEX sp_col') AS reindex_with_select;
 NOTICE:  scope "s": the pairs of "sp_pairs" are the rows of its unique btree "sp_pairs_pkey"
-NOTICE:  scope "s": 2,000 entries for 2,000 rows (1.00 per row)
 NOTICE:  sift_col index "sp_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sp_col');
-NOTICE:  sift_col index "sp_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "sp_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
  reindex_with_select 
 ---------------------
@@ -181,13 +181,13 @@ GRANT SELECT (deleted) ON sp_soft TO sp_owner;
 SET ROLE sp_owner;
 SELECT try('CREATE INDEX sp_soft_col ON sp_events USING sift_col (id, m, v) WITH (scope = ''s: m -> sp_soft(m, s)'')') AS predicate_column_granted;
 NOTICE:  scope "s": the pairs of "sp_soft" are the rows of its unique btree "sp_soft_live" that satisfy (NOT deleted)
-NOTICE:  scope "s": 1,750 entries for 2,000 rows (0.88 per row)
 NOTICE:  sift_col index "sp_soft_col" stores columns id, m, v of index "sp_col", which has the same layout
 HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "sp_soft_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sp_soft_col');
-NOTICE:  sift_col index "sp_soft_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "sp_soft_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
  predicate_column_granted 
 --------------------------
@@ -212,13 +212,13 @@ SELECT try('CREATE INDEX sp_rls_col ON sp_events USING sift_col (id, m, v) WITH 
 NOTICE:  scope "s": "sp_rls" has row-level security enabled
 DETAIL:  A statement of a role the policies apply to reads its join to the relation as written.
 NOTICE:  scope "s": the pairs of "sp_rls" are the rows of its unique btree "sp_rls_pkey"
-NOTICE:  scope "s": 2,000 entries for 2,000 rows (1.00 per row)
 NOTICE:  sift_col index "sp_rls_col" stores columns id, m, v of index "sp_col", which has the same layout
 HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "sp_rls_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sp_rls_col');
-NOTICE:  sift_col index "sp_rls_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "sp_rls_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
  rls_bypassed 
 --------------

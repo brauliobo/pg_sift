@@ -26,6 +26,7 @@
 #include "utils/numeric.h"
 #include "utils/rel.h"
 
+#include "col/am.h"
 #include "col/scope.h"
 #include "agg/agg.h"
 #include "agg/agg_int.h"
@@ -846,7 +847,8 @@ key_pairs_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uin
 /*
  * The (member, key) pairs of the rows of rel (under snap) whose column key is one of the nkeys keys (ascending; NULL: every row), in the order of the leaves, from the leaves of its sift_col index ix: the
  * pairs a scope relation lists for the keys, read as the leaves of the index hold them. A string column is read as the codes of its map (mm for the member, km for the key: NULL for an integer column).
- * False (nothing read) when the index is not one of the whole table or holds a value a leaf cannot store.
+ * False (nothing read) when the index is not one of the whole table or holds a value a leaf cannot store, or when its log is not complete for snap: the leaves of an index made after the snapshot
+ * (a concurrent build) lack the pairs that ended before it, which the snapshot still sees.
  */
 bool
 lookcol_pairs(Relation rel, Oid ix, Snapshot snap, int member, int key, SiftKeyMap *mm, SiftKeyMap *km, const int64 *keys, int nkeys, SiftScopePair **out, uint32 *n)
@@ -854,7 +856,7 @@ lookcol_pairs(Relation rel, Oid ix, Snapshot snap, int member, int key, SiftKeyM
 	Relation	index = index_open(ix, AccessShareLock);
 	ColNeed		need[2] = {0};
 	KeyPairs	kp = {.keys = keys,.nkeys = nkeys,.mm = mm,.km = km};
-	bool		ok = (keys == NULL || nkeys > 0) && usable_index(index);
+	bool		ok = (keys == NULL || nkeys > 0) && usable_index(index) && sift_col_track_ok(index, rel, snap);
 
 	if (ok)
 	{

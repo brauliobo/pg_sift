@@ -109,11 +109,6 @@ typedef struct SiftSrcStats
 	double		mm_miss[SIFT_COLSRC_MAX_LEAVES];
 	double		roll_miss[SIFT_COLSRC_MAX_LEAVES];
 	double		rows_miss;		/* the same for the rollup of the rows */
-	double		rows_group_frac;	/* the share of the units of a scope read that key groups with the rollup of the rows cover (the group answers for its units), and the units a group has on average */
-	double		rows_group_units;
-	double		sets_frac;		/* the same for the key groups that keep the id sets by calendar month (the groups answer count(DISTINCT) by month for their units) */
-	double		sets_units;
-	bool		scope;			/* the statistics of the scope units of a scope index (SiftSrcProvider.scope_stats): the fields a read of them prices by its units, not the entity units' */
 	bool		miss_pending;	/* the four above are not read yet: counting the sections of the units costs reads, sift_colsrc_miss does it for the plan that prices a pre-aggregate answer */
 	double		ndistinct[SIFT_COLSRC_MAX_LEAVES];	/* distinct values of a scalar leaf (0: unknown) */
 	double		min[SIFT_COLSRC_MAX_LEAVES];		/* numeric leaves: smallest and largest value as double (0, 0 unknown) */
@@ -157,7 +152,6 @@ typedef struct SiftSrcWalkStamp
 	Oid			index;
 	uint32		file;
 	uint32		version;
-	uint32		scope;
 } SiftSrcWalkStamp;
 
 #endif							/* SIFT_AGG_COLSRC_META_H */

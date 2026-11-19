@@ -8,17 +8,17 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
+SET sift.col_unit_rows = 150;
 
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
-INSERT INTO tenant_scope SELECT d, 1 + (d + j * 3) % 8 FROM generate_series(1, 64) d, generate_series(0, 1) j;
+INSERT INTO tenant_scope SELECT d, 1 + ((d - 1) / 8 + j * 3) % 8 FROM generate_series(1, 64) d, generate_series(0, 1) j;
 CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
-CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, amount int) WITH (autovacuum_enabled = false);
-INSERT INTO events SELECT i, 1 + (i * 7) % 64, timestamptz '2026-01-01' + i * interval '9 minutes', i % 10 FROM generate_series(1, 4000) i;
-CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + (i * 7) % 64, timestamptz '2025-01-01' + i * interval '17 minutes', i % 7, i % 10 FROM generate_series(1, 24000) i;
 VACUUM (FREEZE, ANALYZE) events, tenant_scope;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, amount) WITH (key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 
--- one read of the key k: the rows against the join, whether the units were read
+-- one read of the key k: the rows against the join, whether the runs of the sidecar were taken
 CREATE FUNCTION read_key(k int8, OUT stored boolean, OUT same boolean) LANGUAGE plpgsql AS $$
 DECLARE
 	p jsonb;
@@ -26,13 +26,13 @@ DECLARE
 	b text;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
-	EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*), sum(amount) FROM events f WHERE sift.in_scope(''events_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[%s]::int8[])', k) INTO p;
-	EXECUTE format('SELECT json_agg(t)::text FROM (SELECT count(*), sum(amount) FROM events f WHERE sift.in_scope(''events_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[%s]::int8[])) t', k) INTO a;
+	EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT kind, count(*), sum(amount) FROM events f WHERE sift.in_scope(''events_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[%s]::int8[]) GROUP BY kind', k) INTO p;
+	EXECUTE format('SELECT json_agg(t)::text FROM (SELECT kind, count(*), sum(amount) FROM events f WHERE sift.in_scope(''events_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[%s]::int8[]) GROUP BY kind ORDER BY kind) t', k) INTO a;
 	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('SELECT json_agg(t)::text FROM (SELECT count(*), sum(amount) FROM events f WHERE f.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = %s)) t', k) INTO b;
+	EXECUTE format('SELECT json_agg(t)::text FROM (SELECT kind, count(*), sum(amount) FROM events f WHERE f.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = %s) GROUP BY kind ORDER BY kind) t', k) INTO b;
 	SET LOCAL sift.enable_agg = on;
 	same := a = b;
-	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
+	stored := jsonb_path_exists(p, '$.**."Scope Sidecar Runs" ? (@ > 0)');
 END $$;
 
 -- the first read asks the catalogs, the second is answered by the memos

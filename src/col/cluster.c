@@ -224,8 +224,8 @@ sift_col_clustering(PG_FUNCTION_ARGS)
 	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	double		width = PG_GETARG_FLOAT8(1) / 100.0;
 	const SiftColSchema *sc;
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
-	SiftColSegment **seg = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftColSegment *));
+	SiftDirSnapshot *dir;
+	SiftColSegment **seg;
 	int			nseg = 0;
 	int64		units = 0;
 
@@ -233,7 +233,8 @@ sift_col_clustering(PG_FUNCTION_ARGS)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("width_pct must be between 0 and 100")));
 	sc = sift_col_rel(index)->schema;
 	InitMaterializedSRF(fcinfo, 0);
-	sift_col_dir_read(index, dir, false);
+	dir = sift_col_dir_read(index);
+	seg = palloc(Max(dir->nsegs, 1) * sizeof(SiftColSegment *));
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			seg[nseg++] = sift_cseg_open(index, &dir->segs[i], CurrentMemoryContext);
@@ -329,9 +330,8 @@ sift_col_key_cut_note(Relation index)
 		goto done;
 	rel = sift_col_rel_private(index, cx);	/* the loops read catalogs, which reload the cached state */
 	sc = rel->schema;
-	dir = palloc(sizeof(SiftDirSnapshot));
-	seg = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftColSegment *));
-	sift_col_dir_read(index, dir, false);
+	dir = sift_col_dir_read(index);
+	seg = palloc(Max(dir->nsegs, 1) * sizeof(SiftColSegment *));
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{

@@ -92,7 +92,7 @@ parse_cols(const char *p, SiftScopeSpec *s, const char **err)
 	}
 }
 
-/* max_multiplicity(n) at p: the most entries a row the scope accepts, a number from 1 to 1,000,000 (the range of sift.scope_max_multiplicity) */
+/* max_multiplicity(n) at p: a number from 1 to 1,000,000, accepted and ignored */
 static const char *
 parse_limit(const char *p, SiftScopeSpec *s, const char **err)
 {

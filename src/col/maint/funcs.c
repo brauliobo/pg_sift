@@ -25,9 +25,6 @@ sift_col_open_inspect(Oid relid, const char *bm25_use)
 	Relation	index;
 
 	sift_inspect_expect(relid, "sift_col", bm25_use);
-	if (get_rel_relkind(relid) == RELKIND_PARTITIONED_INDEX)
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is a partitioned index, which holds no data", get_rel_name(relid)),
-						errhint("Inspect the index of one of its partitions.")));
 	index = sift_mops_open(&maint_col_ops, relid, AccessShareLock);
 	sift_check_inspect(index);
 	return index;
@@ -56,7 +53,7 @@ sift_col_maintenance_status(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	Relation	heap = relation_open(index->rd_index->indrelid, AccessShareLock);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	Datum		v[7],
 				blocked[6];
 	bool		nulls[7] = {0};
@@ -66,7 +63,7 @@ sift_col_maintenance_status(PG_FUNCTION_ARGS)
 	const char *why;
 	int			nblocked = 0;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	why = maint_rewrite_due(index);
 	if (!sift_col_auto_merge)
 		blocked[nblocked++] = CStringGetTextDatum("sift.col_auto_merge is off");
@@ -129,14 +126,14 @@ sift_col_repair(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index;
 	bool		dry_run = PG_GETARG_BOOL(1);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	PreventCommandIfReadOnly("sift.col_repair()");
 	PreventCommandDuringRecovery("sift.col_repair()");
 	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
 	InitMaterializedSRF(fcinfo, 0);
 	sift_maint_lock(index, true);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -185,7 +182,7 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), "index_info");
 	const SiftColIndexMeta *defs = sift_col_index_defs(index);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	SiftFreeStats fs;
 	Datum		v[16];
 	bool		nulls[16] = {0};
@@ -195,11 +192,11 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 				pagg_bytes = 0,
 				pagg_units = 0;
 	int			nwbuf = 0;
-	SiftDirSnapshot *plain = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *plain;
 
-	sift_col_dir_read(index, snap, false);
+	snap = sift_col_dir_read(index);
 	fs = sift_store_free_stats(index);
-	plain->nsegs = 0;
+	plain = sift_dir_alloc(snap->nsegs);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{
@@ -219,13 +216,14 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 		else if (snap->segs[i].kind != SIFT_SEG_TOMB)
 			nwbuf++;
 	units += sift_cseg_dir_units(plain);
+	pfree(plain);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
 	v[1] = Int64GetDatum(snap->meta.high_water);
 	v[2] = Int64GetDatum(fs.blocks);
 	v[3] = Int64GetDatum(fs.reusable);
 	v[4] = Int64GetDatum(fs.records);
 	v[5] = Int32GetDatum(snap->nsegs);
-	v[6] = Int32GetDatum(SIFT_MAX_SEGMENTS);
+	v[6] = Int32GetDatum(SIFT_DIR_POLICY_MAX);
 	v[7] = Int64GetDatum(rows);
 	v[8] = Int64GetDatum(bytes);
 	v[9] = Int64GetDatum(units);
@@ -346,9 +344,9 @@ sift_col_space(PG_FUNCTION_ARGS)
 	bool		nulls[12] = {0};
 	int64		movable;
 	BlockNumber to;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	sift_store_extent_map(index, tally_extent, &t);
 	to = sift_maint_shrink_target(index, &movable);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
@@ -373,11 +371,11 @@ Datum
 sift_col_shrink_history(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	Datum		v[2];
 	bool		nulls[2] = {0};
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	nulls[0] = snap->meta.shrink_blocked == SIFT_SHRINK_OPEN;
 	v[0] = CStringGetTextDatum(sift_shrink_block_name(snap->meta.shrink_blocked));
 	nulls[1] = snap->meta.last_shrink == 0;
@@ -391,10 +389,10 @@ sift_col_segments(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), "segments");
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
@@ -445,9 +443,9 @@ sift_col_segments(PG_FUNCTION_ARGS)
 void
 sift_col_stats(Relation index, SiftIndexStats *st)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
@@ -479,14 +477,14 @@ sift_col_leaves(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
 	const SiftColSchema *sc = sift_col_rel(index)->schema;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	int64	   *chunks = palloc0(sc->ncols * 5 * sizeof(int64)),
 			   *bytes = palloc0(sc->ncols * sizeof(int64)),
 			   *dict_n = palloc0(sc->ncols * sizeof(int64)),
 			   *dict_bytes = palloc0(sc->ncols * sizeof(int64));
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;

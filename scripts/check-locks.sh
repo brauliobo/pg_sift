@@ -153,19 +153,19 @@ count(Shared *s)
 }
 EOF
 	printf 'void\next(Relation rel)\n{\n\tsift_extension_lock(rel);\n}\n' >"$d/x.c"
-	verify "$d/e0.tsv" "$d/x.c" 2>/dev/null | grep -q 'sift_extension_lock' || { echo "check-locks: selftest: the extension lock helper passed"; exit 1; }
+	verify "$d/e0.tsv" "$d/x.c" 2>/dev/null | grep 'sift_extension_lock' >/dev/null || { echo "check-locks: selftest: the extension lock helper passed"; exit 1; }
 	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$d/a.c" take LockPage ExclusiveLock 1 page scope call pg same >"$d/t.tsv"
 	[[ -z $(verify "$d/t.tsv" "$d/a.c") ]] || { echo "check-locks: selftest: a listed lock was reported: $(verify "$d/t.tsv" "$d/a.c")"; exit 1; }
 	: >"$d/e.tsv"
 	[[ $(verify "$d/e.tsv" "$d/a.c" | wc -l) -eq 1 ]] || { echo "check-locks: selftest: a new lock passed"; exit 1; }
 	[[ $(verify "$d/e.tsv" "$d/b.c" | grep -c .) -eq 3 ]] || { echo "check-locks: selftest: b.c: expected the multi-line lock, the table_open and the recomputed unlock, got: $(verify "$d/e.tsv" "$d/b.c")"; exit 1; }
-	verify "$d/e.tsv" "$d/b.c" | grep -q 'index_open' && { echo "check-locks: selftest: a RowExclusiveLock open was reported"; exit 1; }
-	verify "$d/e.tsv" "$d/c.c" | grep -q 'palloc' || { echo "check-locks: selftest: an allocation under a spinlock passed"; exit 1; }
+	verify "$d/e.tsv" "$d/b.c" | grep 'index_open' >/dev/null && { echo "check-locks: selftest: a RowExclusiveLock open was reported"; exit 1; }
+	verify "$d/e.tsv" "$d/c.c" | grep 'palloc' >/dev/null || { echo "check-locks: selftest: an allocation under a spinlock passed"; exit 1; }
 	[[ $(verify "$d/e.tsv" "$d/c.c" | grep -c .) -eq 1 ]] || { echo "check-locks: selftest: a clean spinlock section was reported"; exit 1; }
 	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$d/a.c" take LockPage ExclusiveLock 2 page scope call pg same >"$d/t2.tsv"
-	verify "$d/t2.tsv" "$d/a.c" | grep -q 'row says x2' || { echo "check-locks: selftest: a changed count passed"; exit 1; }
+	verify "$d/t2.tsv" "$d/a.c" | grep 'row says x2' >/dev/null || { echo "check-locks: selftest: a changed count passed"; exit 1; }
 	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$d/a.c" gone LockPage ExclusiveLock 1 page scope call pg same >"$d/t3.tsv"
-	verify "$d/t3.tsv" "$d/a.c" | grep -q 'matches no acquisition' || { echo "check-locks: selftest: a stale row passed"; exit 1; }
+	verify "$d/t3.tsv" "$d/a.c" | grep 'matches no acquisition' >/dev/null || { echo "check-locks: selftest: a stale row passed"; exit 1; }
 	echo "check-locks: selftest ok"
 	exit 0
 fi

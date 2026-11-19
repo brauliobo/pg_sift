@@ -263,22 +263,6 @@ bitmap_set(MemoryContext mcxt, uint64 **bits, uint32 cap, uint32 i)
 	(*bits)[i >> 6] |= UINT64CONST(1) << (i & 63);
 }
 
-/* The bits from i to i + n, a word at a time */
-static void
-bitmap_set_range(MemoryContext mcxt, uint64 **bits, uint32 cap, uint32 i, uint32 n)
-{
-	if (*bits == NULL)
-		*bits = MemoryContextAllocZero(mcxt, words_of(cap) * sizeof(uint64));
-	for (uint32 end = i + n; i < end;)
-	{
-		uint32		upto = Min(end, (i | 63) + 1);
-		uint64		mask = (upto - i == 64 ? ~UINT64CONST(0) : (UINT64CONST(1) << (upto - i)) - 1) << (i & 63);
-
-		(*bits)[i >> 6] |= mask;
-		i = upto;
-	}
-}
-
 /* Appends one slot of a leaf: the key (0 for a NULL), whether it is NULL, whether it overflowed (then also NULL) and its tag: the JSON type of an overflow value (0: not known), else its kind (0: the leaf's own) */
 /* Room for extra more slots of a leaf */
 void
@@ -779,11 +763,10 @@ copy_str_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32 n
 }
 
 /*
- * n rows to dst, a leaf at a time, the elements of their arrays after their group: the row i is the row ref[i].row of the batch ref[i].b (the refs are stride bytes apart); scope_leaf >= 0: that leaf holds
- * scope_key in the copies, whatever the source has in it; kept (NULL: all): the leaves that are NULL in the copies when not set. A leaf of plain values is copied by one loop, the others a slot at a time.
+ * n rows to dst, a leaf at a time, the elements of their arrays after their group: the row i is the row ref[i].row of the batch ref[i].b (the refs are stride bytes apart). A leaf of plain values is copied by one loop, the others a slot at a time.
  */
 static void
-batch_copy_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32 n, int scope_leaf, int64 scope_key, const bool *kept)
+batch_copy_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32 n)
 {
 	const SiftColSchema *s = dst->schema;
 	uint32		base = dst->nrows;
@@ -800,21 +783,7 @@ batch_copy_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32
 
 		if (s->cols[id].parent >= 0)
 			continue;
-		if (id == scope_leaf)
-		{
-			vals_reserve(dst->mcxt, dv, n);
-			for (uint32 i = 0; i < n; i++)
-				dv->key[dv->n + i] = scope_key;
-			dv->n += n;
-		}
-		else if (kept != NULL && !kept[id] && s->cols[id].kind != SIFT_COLK_GROUP && store != SIFT_COLS_VAR)
-		{
-			vals_reserve(dst->mcxt, dv, n);
-			memset(dv->key + dv->n, 0, n * sizeof(int64));
-			bitmap_set_range(dst->mcxt, &dv->nulls, dv->cap, dv->n, n);
-			dv->n += n;
-		}
-		else if ((kept == NULL || kept[id]) && s->cols[id].kind != SIFT_COLK_GROUP && (store == SIFT_COLS_INT || store == SIFT_COLS_F4 || store == SIFT_COLS_F8))
+		if (s->cols[id].kind != SIFT_COLK_GROUP && (store == SIFT_COLS_INT || store == SIFT_COLS_F4 || store == SIFT_COLS_F8))
 		{
 			vals_reserve(dst->mcxt, dv, n);
 			for (uint32 i = 0; i < n; i++)
@@ -839,7 +808,7 @@ batch_copy_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32
 			dv->n += n;
 		}
 		/* the code map of a dictionary costs an entry for each code: it pays for several rows, a single row looks its string up */
-		else if (n > 1 && (kept == NULL || kept[id]) && store == SIFT_COLS_STR && s->cols[id].kind != SIFT_COLK_GROUP)
+		else if (n > 1 && store == SIFT_COLS_STR && s->cols[id].kind != SIFT_COLK_GROUP)
 			copy_str_rows(dst, ref, stride, n, id);
 		else
 			for (uint32 i = 0; i < n; i++)
@@ -850,14 +819,11 @@ batch_copy_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32
 							count;
 
 				dst->nrows = base + i;
-				if (kept != NULL && !kept[id])
-					put_value(dst, id, &(SiftColValue) {.isnull = true});
-				else
-					copy_slot(dst, src, id, r);
+				copy_slot(dst, src, id, r);
 				if (s->cols[id].kind != SIFT_COLK_GROUP)
 					continue;
 				first = src->col[id].eoff[r];
-				count = kept != NULL && !kept[id] ? 0 : src->col[id].eoff[r + 1] - first;
+				count = src->col[id].eoff[r + 1] - first;
 				batch_group_end(dst, id, count);
 				for (int c = id + 1; c < s->ncols; c++)
 					if (s->cols[c].parent == id)
@@ -877,30 +843,18 @@ batch_copy_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32
 #undef REF
 }
 
-static void
-batch_copy_row(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key, const bool *kept)
-{
-	SiftColRowRef ref = {src, r};
-
-	batch_copy_rows(dst, &ref, sizeof(ref), 1, scope_leaf, scope_key, kept);
-}
-
 void
 sift_cbatch_add_from(SiftColBatch *dst, const SiftColBatch *src, uint32 r)
 {
-	batch_copy_row(dst, src, r, -1, 0, NULL);
+	SiftColRowRef ref = {src, r};
+
+	batch_copy_rows(dst, &ref, sizeof(ref), 1);
 }
 
 void
-sift_cbatch_add_scoped(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key, const bool *kept)
+sift_cbatch_add_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32 n)
 {
-	batch_copy_row(dst, src, r, scope_leaf, scope_key, kept);
-}
-
-void
-sift_cbatch_add_scoped_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32 n, int scope_leaf, int64 scope_key, const bool *kept)
-{
-	batch_copy_rows(dst, ref, stride, n, scope_leaf, scope_key, kept);
+	batch_copy_rows(dst, ref, stride, n);
 }
 
 /* len rows of src from row r to dst, a leaf at a time: a schema of plain integer leaves (no group, no string) */
@@ -989,7 +943,7 @@ sift_cbatch_merge(SiftColBatch *dst, SiftColBatch *const *src, int nsrc)
 				continue;
 			}
 		}
-		batch_copy_row(dst, src[first], pos[first], -1, 0, NULL);
+		sift_cbatch_add_from(dst, src[first], pos[first]);
 		for (int i = 0; i < nsrc; i++)
 			if (pos[i] < src[i]->nrows && src[i]->keys[pos[i]] == min)
 				pos[i]++;

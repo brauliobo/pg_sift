@@ -7,6 +7,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
+SET sift.test_scope_entity = on;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
 
@@ -114,9 +115,7 @@ SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor
 -- two groups that have more members than the cap of the journal read are over it, and the patch is then priced against the entity path
 UPDATE grants SET deleted_at = now() WHERE id IN (3, 4);
 SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 5, :l1, :l2);
-SET sift.test_scope_patch = off;
 SELECT * FROM probe();
-RESET sift.test_scope_patch;
 SELECT * FROM probe();
 UPDATE grants SET deleted_at = NULL WHERE id IN (3, 4, 5);
 

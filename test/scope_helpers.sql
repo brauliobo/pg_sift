@@ -1,6 +1,6 @@
 \set ECHO none
 -- Shared by the scope index tests (\ir test/scope_helpers.sql; the fuzz test/fuzz/col_scope_fuzz.py sends this file to its sessions): the statement of a scope read against the plain join, and
--- the reasons the scan of a scope may give for reading the entity rows.
+-- the reasons the scan of a scope may give for running the join.
 --
 -- scope_reason_ok(why): whether a "Scope Fallback" reason is one of the documented ones (docs/COL-SCOPE.md).
 -- scope_group_run(q): a read of every key by the key of each pair, the join `f JOIN pairs m ON m.member = f.fk GROUP BY m.key`: the rows of q under the planner (the scope units, or the join the node runs where
@@ -9,8 +9,8 @@
 -- scope_run(q, plain): the scope form q and the plain form `plain` of one statement: same rows through the scope path, the planned plan and the plain plan (sift.enable_agg off), whether the
 --   scope units were read (stored), the fallback reason (why), the patched members (patched), whether the scan has a scope conjunct at all (engaged), and whether the path is accounted for (path_ok: stored, or a documented reason).
 CREATE FUNCTION scope_reason_ok(why text) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
-	SELECT why ~ '^(disabled|no scope index|column .* not in the scope units|unfilled|write buffer|'
-		'dedupe over work_mem|dedupe keys|no journal|log not complete|other lineage|trimmed|snapshot|snapshot older than the stamp|stamp aged|too many changed keys|'
+	SELECT why ~ '^(disabled|no scope index|no scope of that name is declared on the member key|join is cheaper for .*|no sidecar holds a run of the key|a text, varchar or uuid member|a group by the scope key|'
+		'a row for each pair of several keys|scope segments of an older format \(REINDEX\)|sift\.test_scope_join|'
 		'pairs are a multiset \(non-unique btree\): a join counts a fact once for each row)$'
 $$;
 

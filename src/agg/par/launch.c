@@ -113,9 +113,6 @@ par_launch(AggExec *ex)
 	ex->gp_n = ex->gp_mine = 0;
 	if (nw <= 0 || IsParallelWorker() || par_scan_small(ex))
 		return;
-	/* the delta of a scope read is scanned by the leader after the items: the float sums of the lanes and the order of a top-N cannot take rows outside them */
-	if (ex->delta_units > 0 && (sift_aggspec_ordered(ex->spec) || ex->spec->topn))
-		return;
 	vlen = sift_colsrc_view_size(ex->src);
 	spec_txt = nodeToString(ex->pack);
 	/* the rows of the spine are those of a plan the leader runs once, before the workers start: they read the rows from the shared memory */
@@ -215,7 +212,7 @@ par_launch(AggExec *ex)
 	if (dictshm)
 		shm_toc_insert(pcxt->toc, KEY_DICTSHM, shm_toc_allocate(pcxt->toc, 1));
 	ps = shm_toc_allocate(pcxt->toc, shared_size(ex->spec, ex->nvorder));
-	shared_init(ps, ex, sift_colsrc_nsb(ex->src) - ex->delta_units);
+	shared_init(ps, ex, sift_colsrc_nsb(ex->src));
 	/* the participants split the groups by the key the plan chose when the scan can: a worker takes the share of its number + 1, the leader that of the workers that did not start too */
 	ps->gpart_n = split_run_ok(ex) ? nw + 1 : 0;
 	shm_toc_insert(pcxt->toc, KEY_SHARED, ps);

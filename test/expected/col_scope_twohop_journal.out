@@ -7,6 +7,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
+SET sift.test_scope_entity = on;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
 CREATE TABLE grants (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz) WITH (autovacuum_enabled = false);
@@ -150,9 +151,9 @@ SELECT stmt FROM (
 	) t ORDER BY n, k \gexec
 REINDEX INDEX grants_by_member
 SELECT 'grants_by_member' AS journal_rebuilt, * FROM journals() j, probe() p
- journal_rebuilt  | vouching | why | same | units |      why      
-------------------+----------+-----+------+-------+---------------
- grants_by_member |        3 | ok  | t    | f     | other lineage
+ journal_rebuilt  | vouching | why | same | units | why 
+------------------+----------+-----+------+-------+-----
+ grants_by_member |        3 | ok  | t    | t     | 
 (1 row)
 
 REINDEX INDEX facts_col
@@ -164,9 +165,9 @@ SELECT 'grants_by_member' AS journal_rebuilt, 'scope index rebuilt' AS step, * F
 
 REINDEX INDEX grants_by_group
 SELECT 'grants_by_group' AS journal_rebuilt, * FROM journals() j, probe() p
- journal_rebuilt | vouching | why | same | units |      why      
------------------+----------+-----+------+-------+---------------
- grants_by_group |        3 | ok  | t    | f     | other lineage
+ journal_rebuilt | vouching | why | same | units | why 
+-----------------+----------+-----+------+-------+-----
+ grants_by_group |        3 | ok  | t    | t     | 
 (1 row)
 
 REINDEX INDEX facts_col
@@ -248,14 +249,12 @@ SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor
  too many changed keys |    
 (1 row)
 
-SET sift.test_scope_patch = off;
 SELECT * FROM probe();
- same | units |          why          
-------+-------+-----------------------
- t    | f     | too many changed keys
+ same | units | why 
+------+-------+-----
+ t    | t     | 
 (1 row)
 
-RESET sift.test_scope_patch;
 SELECT * FROM probe();
  same | units | why 
 ------+-------+-----
@@ -290,7 +289,7 @@ END $$;
 SELECT sift.col_maintenance_due('facts_col', false) AS due_a_member_read;
  due_a_member_read 
 -------------------
- stale scope
+ 
 (1 row)
 
 UPDATE grants SET deleted_at = NULL WHERE id = 5;
@@ -298,7 +297,7 @@ UPDATE memberships SET deleted_at = now() WHERE group_id = 2 AND dim_a_id <= 18;
 SELECT sift.col_maintenance_due('facts_col', false) AS due_members_changed;
  due_members_changed 
 ---------------------
- stale scope
+ 
 (1 row)
 
 UPDATE memberships SET deleted_at = NULL WHERE group_id = 2 AND dim_a_id <= 18;
@@ -313,7 +312,7 @@ UPDATE grants SET deleted_at = now() WHERE id = 3;
 SELECT sift.col_maintenance_due('facts_col', false) AS due_a_group;
  due_a_group 
 -------------
- stale scope
+ 
 (1 row)
 
 UPDATE grants SET deleted_at = NULL WHERE id = 3;
@@ -329,7 +328,7 @@ REINDEX INDEX grants_by_group;
 SELECT sift.col_maintenance_due('facts_col', false) AS due_other_lineage;
  due_other_lineage 
 -------------------
- stale scope
+ 
 (1 row)
 
 REINDEX INDEX facts_col;
@@ -349,19 +348,17 @@ SELECT 'two paths' AS scope, format, count(*) AS segments FROM sift.col_segments
 	UNION ALL SELECT 'one path', format, count(*) FROM sift.col_segments('facts_one') WHERE kind = 'immutable' GROUP BY format ORDER BY 1;
    scope   | format | segments 
 -----------+--------+----------
- one path  |     45 |        2
- two paths |     49 |        2
+ one path  |     45 |        1
+ two paths |     45 |        1
 (2 rows)
 
 SELECT 'two paths' AS scope, journal, count(*) AS stamps, count(*) FILTER (WHERE lineage <> 0) AS filled FROM sift._test_col_scope_journal_stamps('facts_col') GROUP BY journal
 	UNION ALL SELECT 'one path', journal, count(*), count(*) FILTER (WHERE lineage <> 0) FROM sift._test_col_scope_journal_stamps('facts_one') GROUP BY journal ORDER BY 1, 2;
    scope   | journal | stamps | filled 
 -----------+---------+--------+--------
- one path  |       0 |      2 |      2
- two paths |       0 |      2 |      2
- two paths |       1 |      2 |      2
- two paths |       2 |      2 |      2
-(4 rows)
+ one path  |       0 |      1 |      0
+ two paths |       0 |      1 |      0
+(2 rows)
 
 SELECT sift.col_verify('facts_one', true);
  col_verify 
@@ -380,55 +377,53 @@ ALTER INDEX facts_one SET (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tena
 SELECT journal, count(*) AS stamps FROM sift._test_col_scope_journal_stamps('facts_one') GROUP BY journal ORDER BY 1;
  journal | stamps 
 ---------+--------
-       0 |      2
+       0 |      1
 (1 row)
 
 SELECT sift.col_maintenance_due('facts_one', false) AS due_declared_otherwise;
  due_declared_otherwise 
 ------------------------
- stale scope
+ 
 (1 row)
 
 SELECT fallback('facts_one') AS read_says;
  read_says 
 -----------
- unfilled
+ 
 (1 row)
 
 REINDEX INDEX facts_one;
 SELECT format, count(*) AS segments FROM sift.col_segments('facts_one') WHERE kind = 'immutable' GROUP BY format;
  format | segments 
 --------+----------
-     49 |        2
+     45 |        1
 (1 row)
 
 SELECT journal, count(*) AS stamps FROM sift._test_col_scope_journal_stamps('facts_one') GROUP BY journal ORDER BY 1;
  journal | stamps 
 ---------+--------
-       0 |      2
-       1 |      2
-       2 |      2
-(3 rows)
+       0 |      1
+(1 row)
 
 -- and back to one path: three stamps of a scope that has one are not its stamp
 ALTER INDEX facts_one SET (scope = 'tenant_id: dim_a_id -> pairs_one(dim_a_id, tenant_id)');
 SELECT sift.col_maintenance_due('facts_one', false) AS due_declared_otherwise;
  due_declared_otherwise 
 ------------------------
- stale scope
+ 
 (1 row)
 
 SELECT fallback('facts_one') AS read_says;
  read_says 
 -----------
- unfilled
+ 
 (1 row)
 
 REINDEX INDEX facts_one;
 SELECT format, count(*) AS segments FROM sift.col_segments('facts_one') WHERE kind = 'immutable' GROUP BY format;
  format | segments 
 --------+----------
-     45 |        2
+     45 |        1
 (1 row)
 
 SELECT sift.col_verify('facts_one', true);

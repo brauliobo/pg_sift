@@ -131,24 +131,24 @@ SELECT f.name, m.mode, plan_of(f, m.mode) AS plan, same_rows(f, m.mode) AS same_
 FROM pforms f, (VALUES ('force_generic_plan'), ('force_custom_plan')) m(mode) ORDER BY f.name COLLATE "C", m.mode;
                           name                           |        mode        |                                    plan                                     | same_rows 
 ---------------------------------------------------------+--------------------+-----------------------------------------------------------------------------+-----------
- CTE, $1                                                 | force_custom_plan  | scope read, 1 keys, once                                                    | t
- CTE, $1                                                 | force_generic_plan | scope read, keys $1, once                                                   | t
- EXISTS, $1                                              | force_custom_plan  | scope read, 1 keys, once                                                    | t
- EXISTS, $1                                              | force_generic_plan | scope read, keys $1, once                                                   | t
+ CTE, $1                                                 | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ CTE, $1                                                 | force_generic_plan | scope read, keys $1, per pair                                               | t
+ EXISTS, $1                                              | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ EXISTS, $1                                              | force_generic_plan | scope read, keys $1, per pair                                               | t
  EXISTS, ANY ($1)                                        | force_custom_plan  | scope read, 3 keys, once                                                    | t
  EXISTS, ANY ($1)                                        | force_generic_plan | scope read, keys $1, once                                                   | t
- IN, $1                                                  | force_custom_plan  | scope read, 1 keys, once                                                    | t
- IN, $1                                                  | force_generic_plan | scope read, keys $1, once                                                   | t
+ IN, $1                                                  | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ IN, $1                                                  | force_generic_plan | scope read, keys $1, per pair                                               | t
  IN, ($1, $2)                                            | force_custom_plan  | scope read, 2 keys, once                                                    | t
  IN, ($1, $2)                                            | force_generic_plan | scope read, keys ARRAY[$1, $2], once                                        | t
  IN, ANY ($1)                                            | force_custom_plan  | scope read, 3 keys, once                                                    | t
  IN, ANY ($1)                                            | force_generic_plan | scope read, keys $1, once                                                   | t
  IN, ANY ($1) of bigint                                  | force_custom_plan  | scope read, 3 keys, once                                                    | t
  IN, ANY ($1) of bigint                                  | force_generic_plan | scope read, keys $1, once                                                   | t
- IN, a text $1 cast                                      | force_custom_plan  | scope read, 1 keys, once                                                    | t
- IN, a text $1 cast                                      | force_generic_plan | scope read, keys ($1)::integer, once                                        | t
- IN, scalar sub-select                                   | force_custom_plan  | scope read, keys (InitPlan 1).col1, once                                    | t
- IN, scalar sub-select                                   | force_generic_plan | scope read, keys (InitPlan 1).col1, once                                    | t
+ IN, a text $1 cast                                      | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ IN, a text $1 cast                                      | force_generic_plan | scope read, keys ($1)::integer, per pair                                    | t
+ IN, scalar sub-select                                   | force_custom_plan  | scope read, keys (InitPlan 1).col1, per pair                                | t
+ IN, scalar sub-select                                   | force_generic_plan | scope read, keys (InitPlan 1).col1, per pair                                | t
  IN, table of keys as ARRAY(SELECT ..)                   | force_custom_plan  | scope read, keys (InitPlan 1).col1, once                                    | t
  IN, table of keys as ARRAY(SELECT ..)                   | force_generic_plan | scope read, keys (InitPlan 1).col1, once                                    | t
  groups, ANY ($1)                                        | force_custom_plan  | scope read, 3 keys, once                                                    | t
@@ -167,8 +167,8 @@ FROM pforms f, (VALUES ('force_generic_plan'), ('force_custom_plan')) m(mode) OR
  join, other conditions                                  | force_generic_plan | scope read, keys $1, per pair                                               | t
  join, stable function                                   | force_custom_plan  | scope read, keys (current_setting('scope.tenant'::text))::integer, per pair | t
  join, stable function                                   | force_generic_plan | scope read, keys (current_setting('scope.tenant'::text))::integer, per pair | t
- latest 5, $1                                            | force_custom_plan  | scope read, 1 keys, once                                                    | t
- latest 5, $1                                            | force_generic_plan | scope read, keys $1, once                                                   | t
+ latest 5, $1                                            | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ latest 5, $1                                            | force_generic_plan | scope read, keys $1, per pair                                               | t
  miss: $1 and a column                                   | force_custom_plan  | join                                                                        | t
  miss: $1 and a column                                   | force_generic_plan | join                                                                        | t
  miss: join, ANY (ARRAY(SELECT ..)), a row for each pair | force_custom_plan  | join                                                                        | t
@@ -198,7 +198,7 @@ NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index 
 DETAIL:  arm: scope
 HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
 NOTICE:  miss: join, ANY (ARRAY(SELECT ..)), a row for each pair
-NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (several keys or every key, or the key as a group key, and a row counts once for each pair: where the units cannot answer the node runs the join, which the first pass does not have)
+NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (several keys (or an array of keys the execution evaluates) or every key, or the key as a group key, and a row counts once for each pair: only the join counts them, which the first pass does not have)
 DETAIL:  arm: scope
 HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
 NOTICE:  miss: keys by a join to the table of keys
@@ -245,23 +245,23 @@ INSERT INTO pargs VALUES
  ('latest 5, $1', 'NULL'), ('latest 5, $1', '4'),
  ('IN, ($1, $2)', 'NULL, 3'), ('IN, ($1, $2)', '3, 3');
 SELECT a.form, a.extra, arg_run(f, a.extra) AS run, same_rows(f, 'force_generic_plan', a.extra) AS same_rows FROM pargs a JOIN pforms f ON f.name = a.form ORDER BY a.form COLLATE "C", a.extra COLLATE "C";
-     form     |   extra    |             run              | same_rows 
---------------+------------+------------------------------+-----------
- IN, $1       | 11         | Keys: $1 (1 keys)            | t
- IN, $1       | 3          | Keys: $1 (1 keys)            | t
- IN, $1       | NULL       | Keys: $1 (0 keys)            | t
- IN, ($1, $2) | 3, 3       | Keys: ARRAY[$1, $2] (1 keys) | t
- IN, ($1, $2) | NULL, 3    | Keys: ARRAY[$1, $2] (1 keys) | t
- IN, ANY ($1) | '{11,12}'  | Keys: $1 (2 keys)            | t
- IN, ANY ($1) | '{3,3,4}'  | Keys: $1 (2 keys)            | t
- IN, ANY ($1) | '{3,NULL}' | Keys: $1 (1 keys)            | t
- IN, ANY ($1) | '{NULL}'   | Keys: $1 (0 keys)            | t
- IN, ANY ($1) | '{}'       | Keys: $1 (0 keys)            | t
- IN, ANY ($1) | NULL       | Keys: $1 (0 keys)            | t
- join, $1     | 3          | Keys: $1 (1 keys)            | t
- join, $1     | NULL       | Keys: $1 (0 keys)            | t
- latest 5, $1 | 4          | Keys: $1 (1 keys)            | t
- latest 5, $1 | NULL       | Keys: $1 (0 keys)            | t
+     form     |   extra    |                                    run                                    | same_rows 
+--------------+------------+---------------------------------------------------------------------------+-----------
+ IN, $1       | 11         | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key            | t
+ IN, $1       | 3          | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key            | t
+ IN, $1       | NULL       | Keys: $1 (0 keys); Fallback: join is cheaper for 0 keys                   | t
+ IN, ($1, $2) | 3, 3       | Keys: ARRAY[$1, $2] (1 keys); Fallback: no sidecar holds a run of the key | t
+ IN, ($1, $2) | NULL, 3    | Keys: ARRAY[$1, $2] (1 keys); Fallback: no sidecar holds a run of the key | t
+ IN, ANY ($1) | '{11,12}'  | Keys: $1 (2 keys); Fallback: join is cheaper for 2 keys                   | t
+ IN, ANY ($1) | '{3,3,4}'  | Keys: $1 (2 keys); Fallback: join is cheaper for 2 keys                   | t
+ IN, ANY ($1) | '{3,NULL}' | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key            | t
+ IN, ANY ($1) | '{NULL}'   | Keys: $1 (0 keys); Fallback: join is cheaper for 0 keys                   | t
+ IN, ANY ($1) | '{}'       | Keys: $1 (0 keys); Fallback: join is cheaper for 0 keys                   | t
+ IN, ANY ($1) | NULL       | Keys: $1 (0 keys); Fallback: join is cheaper for 0 keys                   | t
+ join, $1     | 3          | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key            | t
+ join, $1     | NULL       | Keys: $1 (0 keys); Fallback: join is cheaper for 0 keys                   | t
+ latest 5, $1 | 4          | Keys: $1 (1 keys)                                                         | t
+ latest 5, $1 | NULL       | Keys: $1 (0 keys)                                                         | t
 (15 rows)
 
 DROP TABLE pargs;
@@ -270,18 +270,18 @@ SELECT c.note, arg_run(f, c.keys) AS run, same_rows(f, 'force_generic_plan', c.k
 FROM (VALUES ('keys that have lists', $a$'{1,2,3}'$a$),
 			 ('more keys than the dedupe lists', quote_literal('{' || (SELECT string_agg(g::text, ',') FROM generate_series(1, 80) g) || '}'))) c(note, keys), pforms f
 WHERE f.name = 'groups, ANY ($1)' ORDER BY c.note COLLATE "C";
-              note               |                    run                    | same_rows 
----------------------------------+-------------------------------------------+-----------
- keys that have lists            | Keys: $1 (3 keys)                         | t
- more keys than the dedupe lists | Keys: $1 (80 keys); Fallback: dedupe keys | t
+              note               |                            run                            | same_rows 
+---------------------------------+-----------------------------------------------------------+-----------
+ keys that have lists            | Keys: $1 (3 keys); Fallback: join is cheaper for 3 keys   | t
+ more keys than the dedupe lists | Keys: $1 (80 keys); Fallback: join is cheaper for 80 keys | t
 (2 rows)
 
 SET work_mem = '64kB';
 SELECT 'lists over work_mem' AS note, arg_run(f, k.keys) AS run, same_rows(f, 'force_generic_plan', k.keys) AS same_rows
 FROM pforms f, (SELECT quote_literal('{' || string_agg(g::text, ',') || '}') AS keys FROM generate_series(1, 80) g) k WHERE f.name = 'groups, ANY ($1)';
-        note         |                        run                         | same_rows 
----------------------+----------------------------------------------------+-----------
- lists over work_mem | Keys: $1 (80 keys); Fallback: dedupe over work_mem | t
+        note         |                            run                            | same_rows 
+---------------------+-----------------------------------------------------------+-----------
+ lists over work_mem | Keys: $1 (80 keys); Fallback: join is cheaper for 80 keys | t
 (1 row)
 
 RESET work_mem;
@@ -305,24 +305,24 @@ BEGIN
 	DEALLOCATE ALL;
 END $$;
 SELECT f.name, c.* FROM pforms f, cached_args(f, ARRAY['3', '4', 'NULL', '3', '0', '10']) c WHERE f.name = 'IN, $1';
-  name  | extra |        run        | same_rows 
---------+-------+-------------------+-----------
- IN, $1 | 3     | Keys: $1 (1 keys) | t
- IN, $1 | 4     | Keys: $1 (1 keys) | t
- IN, $1 | NULL  | Keys: $1 (0 keys) | t
- IN, $1 | 3     | Keys: $1 (1 keys) | t
- IN, $1 | 0     | Keys: $1 (1 keys) | t
- IN, $1 | 10    | Keys: $1 (1 keys) | t
+  name  | extra |                              run                               | same_rows 
+--------+-------+----------------------------------------------------------------+-----------
+ IN, $1 | 3     | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ IN, $1 | 4     | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ IN, $1 | NULL  | Keys: $1 (0 keys); Fallback: join is cheaper for 0 keys        | t
+ IN, $1 | 3     | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ IN, $1 | 0     | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ IN, $1 | 10    | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
 (6 rows)
 
 SELECT f.name, c.* FROM pforms f, cached_args(f, ARRAY[$a$'{3}'$a$, $a$'{4,5}'$a$, $a$'{}'$a$, $a$'{3,4,5,6}'$a$, 'NULL']) c WHERE f.name = 'IN, ANY ($1)';
-     name     |    extra    |                                 run                                 | same_rows 
---------------+-------------+---------------------------------------------------------------------+-----------
- IN, ANY ($1) | '{3}'       | Keys: $1 (1 keys)                                                   | t
- IN, ANY ($1) | '{4,5}'     | Keys: $1 (2 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- IN, ANY ($1) | '{}'        | Keys: $1 (0 keys)                                                   | t
- IN, ANY ($1) | '{3,4,5,6}' | Keys: $1 (4 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- IN, ANY ($1) | NULL        | Keys: $1 (0 keys)                                                   | t
+     name     |    extra    |                              run                               | same_rows 
+--------------+-------------+----------------------------------------------------------------+-----------
+ IN, ANY ($1) | '{3}'       | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ IN, ANY ($1) | '{4,5}'     | Keys: $1 (2 keys); Fallback: join is cheaper for 2 keys        | t
+ IN, ANY ($1) | '{}'        | Keys: $1 (0 keys); Fallback: join is cheaper for 0 keys        | t
+ IN, ANY ($1) | '{3,4,5,6}' | Keys: $1 (4 keys); Fallback: join is cheaper for 4 keys        | t
+ IN, ANY ($1) | NULL        | Keys: $1 (0 keys); Fallback: join is cheaper for 0 keys        | t
 (5 rows)
 
 DROP FUNCTION cached_args(pforms, text[]);
@@ -350,73 +350,71 @@ PREPARE "IN, ANY ($1)"(int[]) AS SELECT kind, sum(amount) AS total, count(*) AS 
 PREPARE "join, $1"(int) AS SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = $1 GROUP BY kind
 PREPARE "latest 5, $1"(int) AS SELECT id, created_at FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1) ORDER BY created_at DESC, id LIMIT 5
 SELECT * FROM states('built');
- state |     form     |                                 run                                 | same_rows 
--------+--------------+---------------------------------------------------------------------+-----------
- built | IN, $1       | Keys: $1 (1 keys)                                                   | t
- built | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- built | join, $1     | Keys: $1 (1 keys)                                                   | t
- built | latest 5, $1 | Keys: $1 (1 keys)                                                   | t
+ state |     form     |                              run                               | same_rows 
+-------+--------------+----------------------------------------------------------------+-----------
+ built | IN, $1       | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ built | IN, ANY ($1) | Keys: $1 (3 keys); Fallback: join is cheaper for 3 keys        | t
+ built | join, $1     | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ built | latest 5, $1 | Keys: $1 (1 keys)                                              | t
 (4 rows)
 
 DELETE FROM tenant_scope WHERE dim_a_id = 10 AND tenant_id = 1;
 SELECT * FROM states('an ended pair');
-     state     |     form     |                                 run                                 | same_rows 
----------------+--------------+---------------------------------------------------------------------+-----------
- an ended pair | IN, $1       | Keys: $1 (1 keys)                                                   | t
- an ended pair | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- an ended pair | join, $1     | Keys: $1 (1 keys)                                                   | t
- an ended pair | latest 5, $1 | Keys: $1 (1 keys)                                                   | t
+     state     |     form     |                              run                               | same_rows 
+---------------+--------------+----------------------------------------------------------------+-----------
+ an ended pair | IN, $1       | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ an ended pair | IN, ANY ($1) | Keys: $1 (3 keys); Fallback: join is cheaper for 3 keys        | t
+ an ended pair | join, $1     | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ an ended pair | latest 5, $1 | Keys: $1 (1 keys)                                              | t
 (4 rows)
 
 INSERT INTO tenant_scope VALUES (370, 3), (371, 2), (371, 5), (371, 3);
 SELECT * FROM states('inserted pairs');
-     state      |     form     |                                 run                                 | same_rows 
-----------------+--------------+---------------------------------------------------------------------+-----------
- inserted pairs | IN, $1       | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
- inserted pairs | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
- inserted pairs | join, $1     | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
- inserted pairs | latest 5, $1 | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
+     state      |     form     |                              run                               | same_rows 
+----------------+--------------+----------------------------------------------------------------+-----------
+ inserted pairs | IN, $1       | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ inserted pairs | IN, ANY ($1) | Keys: $1 (3 keys); Fallback: join is cheaper for 3 keys        | t
+ inserted pairs | join, $1     | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ inserted pairs | latest 5, $1 | Keys: $1 (1 keys)                                              | t
 (4 rows)
 
 UPDATE events SET dim_a_id = 371 WHERE id <= 40;
 SELECT * FROM states('facts of a member of three keys moved, write buffer');
-                        state                        |     form     |                                 run                                 | same_rows 
------------------------------------------------------+--------------+---------------------------------------------------------------------+-----------
- facts of a member of three keys moved, write buffer | IN, $1       | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
- facts of a member of three keys moved, write buffer | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
- facts of a member of three keys moved, write buffer | join, $1     | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
- facts of a member of three keys moved, write buffer | latest 5, $1 | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
+                        state                        |     form     |                              run                               | same_rows 
+-----------------------------------------------------+--------------+----------------------------------------------------------------+-----------
+ facts of a member of three keys moved, write buffer | IN, $1       | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ facts of a member of three keys moved, write buffer | IN, ANY ($1) | Keys: $1 (3 keys); Fallback: join is cheaper for 3 keys        | t
+ facts of a member of three keys moved, write buffer | join, $1     | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ facts of a member of three keys moved, write buffer | latest 5, $1 | Keys: $1 (1 keys)                                              | t
 (4 rows)
 
 DELETE FROM tenant_scope WHERE dim_a_id = 20;
 SELECT * FROM states('every pair of a member ended');
-            state             |     form     |                                 run                                 | same_rows 
-------------------------------+--------------+---------------------------------------------------------------------+-----------
- every pair of a member ended | IN, $1       | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
- every pair of a member ended | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
- every pair of a member ended | join, $1     | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
- every pair of a member ended | latest 5, $1 | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
+            state             |     form     |                              run                               | same_rows 
+------------------------------+--------------+----------------------------------------------------------------+-----------
+ every pair of a member ended | IN, $1       | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ every pair of a member ended | IN, ANY ($1) | Keys: $1 (3 keys); Fallback: join is cheaper for 3 keys        | t
+ every pair of a member ended | join, $1     | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ every pair of a member ended | latest 5, $1 | Keys: $1 (1 keys)                                              | t
 (4 rows)
 
-SET sift.test_scope_patch = off;
 SELECT * FROM states('more changed pairs than the bound');
-               state               |     form     |                           run                           | same_rows 
------------------------------------+--------------+---------------------------------------------------------+-----------
- more changed pairs than the bound | IN, $1       | Keys: $1 (1 keys); Fallback: join is cheaper for 1 key  | t
- more changed pairs than the bound | IN, ANY ($1) | Keys: $1 (3 keys); Fallback: join is cheaper for 3 keys | t
- more changed pairs than the bound | join, $1     | Keys: $1 (1 keys); Fallback: join is cheaper for 1 key  | t
- more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback: join is cheaper for 1 key  | t
+               state               |     form     |                              run                               | same_rows 
+-----------------------------------+--------------+----------------------------------------------------------------+-----------
+ more changed pairs than the bound | IN, $1       | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ more changed pairs than the bound | IN, ANY ($1) | Keys: $1 (3 keys); Fallback: join is cheaper for 3 keys        | t
+ more changed pairs than the bound | join, $1     | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys)                                              | t
 (4 rows)
 
-RESET sift.test_scope_patch;
 REINDEX INDEX events_col;
 SELECT * FROM states('rebuilt');
-  state  |     form     |                                 run                                 | same_rows 
----------+--------------+---------------------------------------------------------------------+-----------
- rebuilt | IN, $1       | Keys: $1 (1 keys)                                                   | t
- rebuilt | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- rebuilt | join, $1     | Keys: $1 (1 keys)                                                   | t
- rebuilt | latest 5, $1 | Keys: $1 (1 keys)                                                   | t
+  state  |     form     |                              run                               | same_rows 
+---------+--------------+----------------------------------------------------------------+-----------
+ rebuilt | IN, $1       | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ rebuilt | IN, ANY ($1) | Keys: $1 (3 keys); Fallback: join is cheaper for 3 keys        | t
+ rebuilt | join, $1     | Keys: $1 (1 keys); Fallback: no sidecar holds a run of the key | t
+ rebuilt | latest 5, $1 | Keys: $1 (1 keys)                                              | t
 (4 rows)
 
 DEALLOCATE ALL;

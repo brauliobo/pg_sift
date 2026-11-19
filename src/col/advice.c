@@ -200,7 +200,7 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 	Relation	heap;
 	const SiftColRel *rel;
 	const SiftColSchema *sc;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col index advice", ALLOCSET_DEFAULT_SIZES);
 	Leaf	   *leaf;
 	Pair		pairs[PAIR_DIMS * (PAIR_DIMS - 1) / 2];
@@ -229,7 +229,7 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 		leaf[c].cand = d->parent < 0 && d->kind == SIFT_COLK_SCALAR && d->lanes <= 1 && !sift_col_def_is_image(d) && !is_date(d) &&
 			(d->store == SIFT_COLS_INT || (d->store == SIFT_COLS_STR && d->type == SIFT_COLT_TEXT));
 	}
-	sift_col_dir_read(index, snap, false);
+	snap = sift_col_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && !(snap->segs[i].flags & SIFT_SEG_SCOPE))
 		{

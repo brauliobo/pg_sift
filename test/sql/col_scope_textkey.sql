@@ -1,9 +1,12 @@
--- A scope key may be text, varchar or uuid (docs/COL-SCOPE.md "Key types"): the scope segments are cut by the code of the key in the value store of the key column of the pairs, and every read
+-- A scope key may be text, varchar or uuid (docs/COL-SCOPE.md "Key types"): the runs of the scope sidecar are keyed by the code of the key in the value store of the key column of the pairs, and every read
 -- (IN, EXISTS, join, ANY, a list, a parameter, a table of keys) translates the keys it is given through the map of its statement. The rows are those of the join in every state the integer
--- key is exact in: after pairs are added, removed and re-keyed, for a key the store has never seen (it has no stored unit, and its pairs are all delta), and for a key that left every pair.
+-- key is exact in: after pairs are added, removed and re-keyed, for a key the store has never seen (it has no run), and for a key that left every pair; a read of one key takes its runs.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.col_unit_rows = 150;
+SET sift.test_scope_entity = on;
 SET default_statistics_target = 1000;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -17,23 +20,26 @@ INSERT INTO tenant_scope SELECT i, 'tenant-' || (1 + (i * 3 + 1) % 10) FROM gene
 -- keys that differ in the bytes: a case, an accent, an empty key, a long one, a key with a space
 INSERT INTO tenant_scope SELECT 100 + i, k FROM unnest(ARRAY['Tenant-4', 'tenant-4 ', 'ténant-4', '', repeat('long-', 400)]) WITH ORDINALITY t (k, i);
 CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
-CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, amount)
+	WITH (key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 REINDEX INDEX events_col;
 
 -- the same shape with a varchar key and with a uuid key
 CREATE TABLE var_scope (dim_a_id int NOT NULL, tenant_id varchar(2000) NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO var_scope SELECT dim_a_id, tenant_id FROM tenant_scope;
 CREATE INDEX var_scope_journal ON var_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
-CREATE TABLE var_events (id int PRIMARY KEY, dim_a_id int, kind text, amount int) WITH (autovacuum_enabled = false);
-INSERT INTO var_events SELECT id, dim_a_id, kind, amount FROM events;
-CREATE INDEX var_events_col ON var_events USING sift_col (id, dim_a_id, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> var_scope(dim_a_id, tenant_id)');
+CREATE TABLE var_events (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO var_events SELECT id, dim_a_id, created_at, kind, amount FROM events;
+CREATE INDEX var_events_col ON var_events USING sift_col (id, dim_a_id, created_at, kind, amount)
+	WITH (key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at', scope = 'tenant_id: dim_a_id -> var_scope(dim_a_id, tenant_id)');
 REINDEX INDEX var_events_col;
 CREATE TABLE uuid_scope (dim_a_id int NOT NULL, tenant_id uuid NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO uuid_scope SELECT dim_a_id, md5(tenant_id)::uuid FROM tenant_scope;
 CREATE INDEX uuid_scope_journal ON uuid_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
-CREATE TABLE uuid_events (id int PRIMARY KEY, dim_a_id int, kind text, amount int) WITH (autovacuum_enabled = false);
-INSERT INTO uuid_events SELECT id, dim_a_id, kind, amount FROM events;
-CREATE INDEX uuid_events_col ON uuid_events USING sift_col (id, dim_a_id, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> uuid_scope(dim_a_id, tenant_id)');
+CREATE TABLE uuid_events (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO uuid_events SELECT id, dim_a_id, created_at, kind, amount FROM events;
+CREATE INDEX uuid_events_col ON uuid_events USING sift_col (id, dim_a_id, created_at, kind, amount)
+	WITH (key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at', scope = 'tenant_id: dim_a_id -> uuid_scope(dim_a_id, tenant_id)');
 REINDEX INDEX uuid_events_col;
 
 -- the tables of keys: the tenants of a user (user 1 has three, user 2 one, user 3 none)
@@ -76,11 +82,11 @@ INSERT INTO forms VALUES
 CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text; plan text := '';
 BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		plan := plan || l || E'\n';
 	END LOOP;
 	IF plan ~ 'Scope Index: ' THEN
-		RETURN 'scope read, ' || substring(plan from 'Scope Semantics: ([^\n]*)');
+		RETURN 'scope read' || CASE WHEN plan ~ 'Scope Keys: ([^\n]*\(1 keys\)|1)\n' THEN '' ELSE ', ' || substring(plan from 'Scope Semantics: ([^\n]*)') END;
 	END IF;
 	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';
 	RETURN CASE WHEN r IS NOT NULL THEN 'join, ' || r WHEN plan ~ 'Lookup Joins' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
@@ -109,12 +115,12 @@ BEGIN
 	RETURN a = b AND b = c;
 END $$;
 
--- what the run did: the reader's refusal, the keys it patched, the members it listed, else the units
+-- what the run did: the reader's refusal, the members it listed and the runs it took, else the units
 CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Scope (Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed)' THEN
+		IF l ~ 'Scope (Fallback|Members Listed|Sidecar Runs)' THEN
 			r := r || regexp_replace(l, '^ *Scope ', '') || '; ';
 		END IF;
 	END LOOP;
@@ -161,8 +167,8 @@ UPDATE events SET dim_a_id = 7 WHERE id % 50 = 0;
 UPDATE var_events SET dim_a_id = 7 WHERE id % 50 = 0;
 UPDATE uuid_events SET dim_a_id = 7 WHERE id % 50 = 0;
 INSERT INTO events SELECT 6000 + i, 1 + i % 360, date '2025-06-01', 'k0', 5 FROM generate_series(1, 300) i;
-INSERT INTO var_events SELECT id, dim_a_id, kind, amount FROM events WHERE id > 6000;
-INSERT INTO uuid_events SELECT id, dim_a_id, kind, amount FROM events WHERE id > 6000;
+INSERT INTO var_events SELECT id, dim_a_id, created_at, kind, amount FROM events WHERE id > 6000;
+INSERT INTO uuid_events SELECT id, dim_a_id, created_at, kind, amount FROM events WHERE id > 6000;
 SELECT 'facts changed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, count(*) AS forms FROM states();
 
 -- the stored units and the delta agree after the pairs are merged into the index (REINDEX) and after a VACUUM

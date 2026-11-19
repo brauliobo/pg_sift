@@ -8,7 +8,6 @@ src/bm25/funcs.c	keyed_indexes	guarded	the OID is the relid of an RTE of the sta
 src/bm25/funcs.c	match_selectivity	guarded	the index OID is a member of the relation's index list in the planner (the relation is locked by the parser)
 src/col/advice.c	sift_col_index_advice	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/am/am.c	sift_col_flush_held	guarded	the OID is one this backend queued for a write (sift_cwbuf_pending) in a transaction that holds its lock; the pending list is cleared for an index dropped in the transaction (sift_cwbuf_discard)
-src/col/am/cache.c	sift_col_index_meta	guarded	heapoid is the heap of an open index (the caller holds the index and a lock on its heap)
 src/col/am/rel.c	sift_col_index_stale	guarded	its only caller (agg/scope_unread.c) passes the OID of an index of a table of the planned statement, from RelationGetIndexList under the table's lock
 src/col/amscan/amscan.c	col_scan_begin	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/autocut/autocut.c	sift_col_key_cut_decision	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
@@ -22,7 +21,6 @@ src/col/conn_fill.c	sift_conn_fill_begin	guarded	the heap of an index this funct
 src/col/conn_fill.c	sift_conn_stale_begin	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/conn_keys.c	scan_btree_keys	guarded	btree is the pair btree found by find_recorded_btree/parent_index_for in the same statement under a lock on its table
 src/col/conn_probe.c	sift_conn_probe_begin_on	guarded	the btree OID is the one the caller just found and locked (the Assert on the lock)
-src/col/conn_probe.c	sift_conn_probe_open	guarded	the relations were locked by sift_conn_probe_begin_on and the locks are held to the end of the transaction (the Assert on the lock)
 src/col/keycols/keycols.c	write_options	unreachable	the OID is the constant of a system catalog, which cannot be dropped
 src/col/maint/funcs.c	sift_col_maintenance_status	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/names.c	follow_attribute	guarded	the index OID comes from RelationGetIndexList of the renamed table, which the ALTER TABLE holds with AccessExclusiveLock, or from referring_indexes() (a catalog scan whose indexes are locked here); an index dropped in between does not exist for the locked table
@@ -32,20 +30,7 @@ src/col/names.c	rename_attribute	unreachable	the OID is the constant of a system
 src/col/order_units.c	sift_colk_aim_rows	guarded	SearchSysCache1 is tested (tp != NULL) in the same condition; the relation is the heap of an open index
 src/col/pagg.c	pagg_open	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/rowkey.c	sift_col_row_key_attno	guarded	get_attname is called with missing_ok false: an unknown attribute number raises, the relation is open
-src/col/rowkey.c	sift_col_tomb_dead_keys	guarded	uoid is the unique index of the key found by the caller from the heap's index list under its lock
-src/col/scope_decl.c	dependent_indexes	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/scope_decl.c	find_recorded_btree	guarded	edge comes from the pg_depend scan of the scope; IndexGetRelation(edge, true) is tested against the heap before the open, and the heap is locked
-src/col/scope_decl.c	open_table	guarded	roid is the result of RangeVarGetRelid with the lock taken: the relation is locked and exists (missing_ok false raises 42P01)
-src/col/scope_decl.c	recorded_btree	guarded	GetSysCacheHashValue1 only hashes the OID for the invalidation callback; it needs no tuple
-src/col/scope_decl.c	relation_column	guarded	the relation is open (a valid OID); get_attnum returns InvalidAttrNumber for an unknown column and the function tests it right after
-src/col/scope_decl.c	sift_scope_relation	guarded	the relation is open (a valid OID); get_attnum returns InvalidAttrNumber for an unknown column and the function tests it right after
-src/col/scope_guard.c	journal_scan	guarded	the index OID comes from RelationGetIndexList of a heap this function holds open with a lock; DROP INDEX waits for the lock on the heap
-src/col/scope_guard.c	sift_scope_index_predicate	guarded	its callers pass an index of a table whose scope they read, from the dependency scan under the table's lock
 src/col/scope_guard.c	sift_scope_users	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/scope_journal.c	journal_add	guarded	jidx is the journal index recorded in the scope metadata of an open index and locked with the scope's relations
-src/col/scope_journal.c	journals_open	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/scope_journal.c	journals_open_memo	guarded	the relations are the ones the memo opened earlier in this transaction under a lock held to its end
-src/col/scope_journal.c	sift_scope_stale_begin	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/scope_make.c	sift_scope_journal_drop_unused	unreachable	the OID is the constant of a system catalog, which cannot be dropped
 src/col/shape.c	range_span	guarded	the type OID is the type of a column of an open relation or of an argument the executor resolved: it exists while the relation is held
 src/col/shape.c	sift_col_shape_of	guarded	the type OID is the type of a column of an open relation or of an argument the executor resolved: it exists while the relation is held

@@ -6,9 +6,9 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
+SET sift.test_scope_entity = on;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
 
 -- 8 keys; dim_a_id d has a pair with the keys 1 + d % 8 and 1 + (d + 3) % 8; 4,000 events
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, region_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);

@@ -1,0 +1,405 @@
+-- A scope of two paths (a grant a tenant has on a member and a grant on a group the member is in) has the scope sidecar of one path (col/side.h): its runs summarise the rows of the members of the
+-- distinct union of the two paths, and a run answers for its units only while the three journals (the direct grants, the grants of groups, the memberships) name no member within its span. Each state
+-- (they accumulate) is read for each tenant: the rows are the join's, with the runs taken and without them, and the runs the read took are those none of whose members an edit reached: a direct grant
+-- ended or made, a member added to or removed from a group, a group granted or revoked, a member moved between groups, edits of the facts, VACUUM, promotion, merge, a made-again sidecar and REINDEX.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.col_unit_rows = 150;
+SET timezone = 'UTC';
+SET jit = off;
+SET client_min_messages = warning;
+CREATE TABLE grants (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE TABLE memberships (id serial PRIMARY KEY, group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX memberships_active ON memberships (group_id, dim_a_id) WHERE deleted_at IS NULL;
+CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+-- members 1 to 400 in groups of ten: a unit holds the rows of two or three members, so a member whose pair ended leaves units that are still read for the others
+INSERT INTO memberships (group_id, dim_a_id) SELECT 1 + (m - 1) / 10, m FROM generate_series(1, 400) m;
+INSERT INTO grants (tenant_id, dim_a_id, group_id) VALUES
+	(1, NULL, 1), (1, 25, NULL), (1, NULL, 5),				-- tenant 1: groups 1 and 5, and a member of group 3
+	(2, NULL, 2), (2, NULL, 3), (2, 12, NULL),				-- tenant 2: groups 2 and 3, and a member of group 2 (a pair of both paths)
+	(3, 7, NULL), (3, 33, NULL), (3, 66, NULL), (3, NULL, 8),	-- tenant 3: three members and group 8
+	(4, 3, NULL), (4, 4, NULL), (4, NULL, 4);				-- tenant 4: two members and group 4
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO facts SELECT i, 1 + i % 400, timestamptz '2025-01-01' + i * interval '17 minutes', i % 7, (i * 37) % 1000 FROM generate_series(1, 24000) i;
+VACUUM (FREEZE, ANALYZE) facts, grants, memberships;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, v)
+	WITH (key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at',
+		scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+SELECT s.format >= 53 AS sidecar_written_by_the_build FROM sift._test_col_formats('facts_col') s;
+ sidecar_written_by_the_build 
+------------------------------
+ t
+(1 row)
+
+SELECT count(*) AS journals_of_the_sidecar FROM sift._test_scope_stamps('facts_col', 0) WHERE lineage <> 0;
+ journals_of_the_sidecar 
+-------------------------
+                       3
+(1 row)
+
+CREATE VIEW pair_oracle AS
+	SELECT dim_a_id AS member, tenant_id FROM grants WHERE deleted_at IS NULL AND dim_a_id IS NOT NULL
+	UNION
+	SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL;
+CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	DROP TABLE IF EXISTS side_rows;
+	EXECUTE 'CREATE TEMP TABLE side_rows AS ' || q;
+	SELECT md5(coalesce(string_agg(t::text, '|' ORDER BY t::text), '')) INTO r FROM side_rows t;
+	DROP TABLE side_rows;
+	RETURN r;
+END $$;
+CREATE FUNCTION runs_of(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; r int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Scope Sidecar Runs' THEN r := regexp_replace(l, '^.*: ', '')::int; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION q_scope(k int) RETURNS text LANGUAGE sql AS
+$$ SELECT format('SELECT kind, count(*) AS n, sum(v) AS s FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, %s) GROUP BY kind', k) $$;
+CREATE FUNCTION q_join(k int) RETURNS text LANGUAGE sql AS
+$$ SELECT format('SELECT kind, count(*) AS n, sum(v) AS s FROM facts f WHERE f.dim_a_id IN (SELECT member FROM pair_oracle WHERE tenant_id = %s) GROUP BY kind', k) $$;
+-- the line of a state: the rows against the join with the runs and without them, for each tenant, and the runs the read of each took
+CREATE FUNCTION state_line(OUT same_with_runs boolean, OUT same_without_runs boolean, OUT runs_by_tenant int[]) LANGUAGE plpgsql AS $$
+DECLARE k int; join_md5 text; with_md5 text; without_md5 text;
+BEGIN
+	same_with_runs := true; same_without_runs := true; runs_by_tenant := '{}';
+	FOR k IN 1..4 LOOP
+		SET LOCAL sift.enable_agg = off;
+		join_md5 := rows_md5(q_join(k));
+		SET LOCAL sift.enable_agg = on;
+		SET LOCAL sift.test_scope_entity = on;
+		SET LOCAL sift.test_scope_no_side = off;
+		with_md5 := rows_md5(q_scope(k));
+		runs_by_tenant := runs_by_tenant || runs_of(q_scope(k));
+		SET LOCAL sift.test_scope_no_side = on;
+		without_md5 := rows_md5(q_scope(k));
+		same_with_runs := same_with_runs AND with_md5 = join_md5;
+		same_without_runs := same_without_runs AND without_md5 = join_md5;
+	END LOOP;
+END $$;
+CREATE TABLE states (n int, label text, edit text, fresh boolean DEFAULT true);
+INSERT INTO states VALUES
+	(1, 'clean', 'SELECT 1'),
+	(2, 'a direct grant ended (tenant 1, member 25)', 'UPDATE grants SET deleted_at = now() WHERE tenant_id = 1 AND dim_a_id = 25'),
+	(3, 'a direct grant made (tenant 3, member 12)', 'INSERT INTO grants (tenant_id, dim_a_id) VALUES (3, 12)'),
+	(4, 'a member removed from a group of tenant 1', 'UPDATE memberships SET deleted_at = now() WHERE group_id = 1 AND dim_a_id = 3'),
+	(5, 'a member added to a group of tenant 1 (member 70 to group 5)', 'INSERT INTO memberships (group_id, dim_a_id) VALUES (5, 70)'),
+	(6, 'group 3 revoked from tenant 2', 'UPDATE grants SET deleted_at = now() WHERE tenant_id = 2 AND group_id = 3'),
+	(7, 'group 3 granted to tenant 4', 'INSERT INTO grants (tenant_id, group_id) VALUES (4, 3)'),
+	(8, 'a member moved from group 2 to group 8', 'UPDATE memberships SET group_id = 8 WHERE group_id = 2 AND dim_a_id = 15'),
+	(9, 'a member of two paths loses one of them (tenant 2, member 12 by the group)', 'UPDATE grants SET deleted_at = now() WHERE tenant_id = 2 AND dim_a_id = 12'),
+	(10, 'rows of dim_b of the pairs inserted, deleted and updated', 'INSERT INTO facts SELECT 24000 + i, 1 + i % 400, timestamptz ''2026-01-01'' + i * interval ''17 minutes'', i % 7, i % 1000 FROM generate_series(1, 200) i;
+		DELETE FROM facts WHERE dim_a_id IN (3, 25, 66) AND id % 3 = 0;
+		UPDATE facts SET v = v + 1, kind = (kind + 1) % 7 WHERE dim_a_id IN (7, 33) AND id % 5 = 0'),
+	(11, 'VACUUM', 'VACUUM facts, grants, memberships'),
+	(12, 'promoted', 'SELECT sift.col_promote(''facts_col'') IS NOT NULL'),
+	(13, 'merged', 'SELECT sift.col_merge(''facts_col'') IS NOT NULL'),
+	(14, 'the maintenance made the sidecar again', 'SELECT sift.col_maintain(''facts_col'') IS NOT NULL'),
+	(15, 'REINDEX', 'REINDEX INDEX facts_col');
+UPDATE states SET fresh = false WHERE n >= 11;
+SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state', n, label), CASE WHEN fresh THEN 'REINDEX INDEX facts_col' ELSE 'SELECT 1' END, edit, 'SELECT * FROM state_line()']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
+SELECT 1 AS n, 'clean' AS state
+ n | state 
+---+-------
+ 1 | clean
+(1 row)
+
+REINDEX INDEX facts_col
+SELECT 1
+ ?column? 
+----------
+        1
+(1 row)
+
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {1,1,1,1}
+(1 row)
+
+SELECT 2 AS n, 'a direct grant ended (tenant 1, member 25)' AS state
+ n |                   state                    
+---+--------------------------------------------
+ 2 | a direct grant ended (tenant 1, member 25)
+(1 row)
+
+REINDEX INDEX facts_col
+UPDATE grants SET deleted_at = now() WHERE tenant_id = 1 AND dim_a_id = 25
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {0,1,1,1}
+(1 row)
+
+SELECT 3 AS n, 'a direct grant made (tenant 3, member 12)' AS state
+ n |                   state                   
+---+-------------------------------------------
+ 3 | a direct grant made (tenant 3, member 12)
+(1 row)
+
+REINDEX INDEX facts_col
+INSERT INTO grants (tenant_id, dim_a_id) VALUES (3, 12)
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {1,1,0,1}
+(1 row)
+
+SELECT 4 AS n, 'a member removed from a group of tenant 1' AS state
+ n |                   state                   
+---+-------------------------------------------
+ 4 | a member removed from a group of tenant 1
+(1 row)
+
+REINDEX INDEX facts_col
+UPDATE memberships SET deleted_at = now() WHERE group_id = 1 AND dim_a_id = 3
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {0,1,1,1}
+(1 row)
+
+SELECT 5 AS n, 'a member added to a group of tenant 1 (member 70 to group 5)' AS state
+ n |                            state                             
+---+--------------------------------------------------------------
+ 5 | a member added to a group of tenant 1 (member 70 to group 5)
+(1 row)
+
+REINDEX INDEX facts_col
+INSERT INTO memberships (group_id, dim_a_id) VALUES (5, 70)
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {1,1,1,1}
+(1 row)
+
+SELECT 6 AS n, 'group 3 revoked from tenant 2' AS state
+ n |             state             
+---+-------------------------------
+ 6 | group 3 revoked from tenant 2
+(1 row)
+
+REINDEX INDEX facts_col
+UPDATE grants SET deleted_at = now() WHERE tenant_id = 2 AND group_id = 3
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {1,0,1,1}
+(1 row)
+
+SELECT 7 AS n, 'group 3 granted to tenant 4' AS state
+ n |            state            
+---+-----------------------------
+ 7 | group 3 granted to tenant 4
+(1 row)
+
+REINDEX INDEX facts_col
+INSERT INTO grants (tenant_id, group_id) VALUES (4, 3)
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {1,1,1,0}
+(1 row)
+
+SELECT 8 AS n, 'a member moved from group 2 to group 8' AS state
+ n |                 state                  
+---+----------------------------------------
+ 8 | a member moved from group 2 to group 8
+(1 row)
+
+REINDEX INDEX facts_col
+UPDATE memberships SET group_id = 8 WHERE group_id = 2 AND dim_a_id = 15
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {1,0,0,1}
+(1 row)
+
+SELECT 9 AS n, 'a member of two paths loses one of them (tenant 2, member 12 by the group)' AS state
+ n |                                   state                                    
+---+----------------------------------------------------------------------------
+ 9 | a member of two paths loses one of them (tenant 2, member 12 by the group)
+(1 row)
+
+REINDEX INDEX facts_col
+UPDATE grants SET deleted_at = now() WHERE tenant_id = 2 AND dim_a_id = 12
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {1,0,1,1}
+(1 row)
+
+SELECT 10 AS n, 'rows of dim_b of the pairs inserted, deleted and updated' AS state
+ n  |                          state                           
+----+----------------------------------------------------------
+ 10 | rows of dim_b of the pairs inserted, deleted and updated
+(1 row)
+
+REINDEX INDEX facts_col
+INSERT INTO facts SELECT 24000 + i, 1 + i % 400, timestamptz '2026-01-01' + i * interval '17 minutes', i % 7, i % 1000 FROM generate_series(1, 200) i;
+		DELETE FROM facts WHERE dim_a_id IN (3, 25, 66) AND id % 3 = 0;
+		UPDATE facts SET v = v + 1, kind = (kind + 1) % 7 WHERE dim_a_id IN (7, 33) AND id % 5 = 0
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {0,0,0,0}
+(1 row)
+
+SELECT 11 AS n, 'VACUUM' AS state
+ n  | state  
+----+--------
+ 11 | VACUUM
+(1 row)
+
+SELECT 1
+ ?column? 
+----------
+        1
+(1 row)
+
+VACUUM facts, grants, memberships
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {0,1,0,0}
+(1 row)
+
+SELECT 12 AS n, 'promoted' AS state
+ n  |  state   
+----+----------
+ 12 | promoted
+(1 row)
+
+SELECT 1
+ ?column? 
+----------
+        1
+(1 row)
+
+SELECT sift.col_promote('facts_col') IS NOT NULL
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {0,1,0,0}
+(1 row)
+
+SELECT 13 AS n, 'merged' AS state
+ n  | state  
+----+--------
+ 13 | merged
+(1 row)
+
+SELECT 1
+ ?column? 
+----------
+        1
+(1 row)
+
+SELECT sift.col_merge('facts_col') IS NOT NULL
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {0,1,0,0}
+(1 row)
+
+SELECT 14 AS n, 'the maintenance made the sidecar again' AS state
+ n  |                 state                  
+----+----------------------------------------
+ 14 | the maintenance made the sidecar again
+(1 row)
+
+SELECT 1
+ ?column? 
+----------
+        1
+(1 row)
+
+SELECT sift.col_maintain('facts_col') IS NOT NULL
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {0,1,0,0}
+(1 row)
+
+SELECT 15 AS n, 'REINDEX' AS state
+ n  |  state  
+----+---------
+ 15 | REINDEX
+(1 row)
+
+SELECT 1
+ ?column? 
+----------
+        1
+(1 row)
+
+REINDEX INDEX facts_col
+SELECT * FROM state_line()
+ same_with_runs | same_without_runs | runs_by_tenant 
+----------------+-------------------+----------------
+ t              | t                 | {1,1,1,1}
+(1 row)
+
+SELECT sift.col_verify('facts_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- one journal that no longer vouches (rebuilt: another lineage) takes every run back to the units, and the rows stay the join's; the next REINDEX stamps the sidecar again
+REINDEX INDEX memberships_by_member;
+SELECT 'the memberships journal rebuilt' AS state, * FROM state_line();
+              state              | same_with_runs | same_without_runs | runs_by_tenant 
+---------------------------------+----------------+-------------------+----------------
+ the memberships journal rebuilt | t              | t                 | {0,0,0,0}
+(1 row)
+
+REINDEX INDEX facts_col;
+SELECT 'REINDEX' AS state, * FROM state_line();
+  state  | same_with_runs | same_without_runs | runs_by_tenant 
+---------+----------------+-------------------+----------------
+ REINDEX | t              | t                 | {1,1,1,1}
+(1 row)
+
+-- a scope of two paths with the union as the statement writes it (the recognised form) takes the runs as the function does
+SET sift.test_scope_entity = on;
+SET sift.enable_agg = on;
+SELECT runs_of($q$SELECT kind, count(*) FROM facts f WHERE f.dim_a_id IN (
+	SELECT dim_a_id FROM grants WHERE tenant_id = 2 AND dim_a_id IS NOT NULL AND deleted_at IS NULL
+	UNION SELECT m.dim_a_id FROM grants g JOIN memberships m ON m.group_id = g.group_id WHERE g.tenant_id = 2 AND g.deleted_at IS NULL AND m.deleted_at IS NULL) GROUP BY kind$q$) > 0 AS union_statement_takes_runs;
+ union_statement_takes_runs 
+----------------------------
+ t
+(1 row)
+
+DROP TABLE states;
+DROP FUNCTION state_line(), q_scope(int), q_join(int), runs_of(text), rows_md5(text);
+DROP VIEW pair_oracle;
+DROP TABLE facts, grants, memberships;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

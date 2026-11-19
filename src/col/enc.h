@@ -331,16 +331,14 @@ extern void sift_cbatch_add_ver(SiftColBatch *b, const SiftColRow *row, uint32 x
 extern void sift_cbatch_add_from(SiftColBatch *dst, const SiftColBatch *src, uint32 r);
 /* Marks the rows with these keys (ascending, n > 0) dead: their slots and the unit image stay, no reader takes them */
 extern void sift_cbatch_mark_dead(SiftColBatch *b, const SiftKey *keys, int n);
-/* The same with the INT leaf scope_leaf (the derived key of a scope, SIFT_COLD_SCOPE) set to scope_key: a row of a scope segment is the fact row once for each of its scope keys, so the batch that takes them is keyed and unsorted; the leaves of kept (NULL: all) that are not set are NULL in the copy */
-extern void sift_cbatch_add_scoped(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key, const bool *kept);
 /* A row of a batch to copy: the batch and its row */
 typedef struct SiftColRowRef
 {
 	const SiftColBatch *b;
 	uint32		row;
 } SiftColRowRef;
-/* The same for n rows, ref[i] the i-th, the refs stride bytes apart (the first member of a larger struct): a leaf at a time, which costs a tenth of a row at a time */
-extern void sift_cbatch_add_scoped_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32 n, int scope_leaf, int64 scope_key, const bool *kept);
+/* n rows to dst, the row i being row ref[i].row of the batch ref[i].b (the refs are stride bytes apart) */
+extern void sift_cbatch_add_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32 n);
 /* Appends the rows of the sources merged by ascending key (each source ascending, same sb); on a repeated key the earlier source wins */
 extern void sift_cbatch_merge(SiftColBatch *dst, SiftColBatch *const *src, int nsrc);
 /*
@@ -662,7 +660,7 @@ extern void sift_cunit_keys(const SiftCUnitView *v, uint32 sb, SiftKey *keys);
 extern void sift_cunit_page_offsets(const SiftCUnitView *v, uint32 p, uint16 *offs);
 extern void sift_cunit_page_offsets_all(const SiftCUnitView *v);
 extern uint32 sift_cunit_find_rows(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows);
-extern uint32 sift_cunit_find_keys(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows);
+extern uint32 sift_cunit_find_hits(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows, SiftKey *at);
 extern void sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint32 n, SiftKey *out);
 /* Pages: index p in 0..npages-1 -> heap block sb * 256 + page, its row range and the 512-bit mask of its offsets */
 extern BlockNumber sift_cunit_page_block(const SiftCUnitView *v, uint32 sb, uint32 p);

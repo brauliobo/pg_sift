@@ -324,8 +324,8 @@ CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, 
   WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 ```
 
-`CREATE INDEX` makes the three journal indexes (one `NOTICE` each; [COL-SCOPE](COL-SCOPE.md#the-declaration) says how to make them first, to name or place them), says which btree of each path it recorded (one `NOTICE` each) and how many entries the scope holds for the rows. A member that an account reaches directly and through its
-groups is one pair, so a fact is in the units of the account once; the entries are the distinct pairs, within `sift.scope_max_multiplicity`.
+`CREATE INDEX` makes the three journal indexes (one `NOTICE` each; [COL-SCOPE](COL-SCOPE.md#the-declaration) says how to make them first, to name or place them) and says which btree of each path it recorded (one `NOTICE` each). A member that an account reaches directly and through its
+groups is one pair, so a fact is counted for the account once; the pairs are the distinct union.
 
 **Verify.**
 
@@ -337,19 +337,14 @@ SELECT count(*) FROM (
   SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id
    WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL) p;
 SELECT sift.col_verify('facts_col', true);                                 -- empty
-SELECT format, count(*) FROM sift.col_segments('facts_col') WHERE kind = 'immutable' GROUP BY format;   -- 49
 ```
 
-and `EXPLAIN` of a read of the scope has `Scope Units` and no `Scope Fallback` once the journals vouch. A scope whose reads say `Scope Fallback: no journal` is missing one of the three journal indexes
-(or has one that a row can be inserted outside of: a partial journal); `unfilled` is the `REINDEX` of the scope index after the journal that was made later (or the rewrite the maintenance makes); `other lineage` is a journal that was rebuilt (`REINDEX` of it): the maintenance fills the scope segments again, no `REINDEX` of the scope index.
+and `EXPLAIN` of a read of the scope shows `Scope Index` and, in 5.1, `Scope Fallback: join is cheaper for N keys` when the join costs less: a scope of two paths has the sidecar of one path (its runs hold the union of the two paths), and its reads run the join through the union where that is cheaper and return its rows. The index still needs the three journal indexes (a partial journal that a row can be inserted outside of does not qualify).
 
-**Monitor.** `sift.col_maintenance_due('facts_col', false)` says `stale scope` when so many members of the pairs or of the groups changed that a rewrite is cheaper than the patches
-(`sift.col_scope_refresh_pct`, the groups counted by their members) or when the reads of the server have paid half of the rewrite for the changed members (no read, no rewrite); `Scope Changed Keys` and `Scope Patched Rows` in `EXPLAIN (ANALYZE)` are the work of one read and `too many changed keys` is a read that
-fell to the entity rows (the reader's cap on the changed members). The journals pay a 32-byte record for each row of the three tables an `UPDATE` or `DELETE` ends or an `INSERT` adds; a statement that changes a column no
+**Monitor.** The journals pay a 32-byte record for each row of the three tables an `UPDATE` or `DELETE` ends or an `INSERT` adds; a statement that changes a column no
 index holds (a HOT update) writes none. A time dependent grant (`expires_at`) is a column the application or a scheduled `UPDATE` sets into the predicate (`WHERE deleted_at IS NULL AND NOT expired`): `now()` is refused in an index predicate.
 
-**What it measures.** 100,000 facts, 2,000 entities, 200 groups, 20 accounts, 3,321 pairs, a read of one account (instructions:u of the backend, millions): 6.02 cold and 1.34 warm with nothing changed since the
-build, 12.5 and 7.8 with one group (10 members) changed, 26.5 and 21.8 with 100 groups (1,090 members, 135 patched), where the join on the `UNION` takes 68.9 and 63.6.
+**What it measures.** 100,000 facts, 2,000 entities, 200 groups, 20 accounts, 3,321 pairs, a read of one account (instructions:u of the backend, millions): the join on the `UNION` takes 68.9 cold and 63.6 warm, which is what a read of this scope costs in 5.1; the scope segments of 5.0 read it in 6.02 cold and 1.34 warm with nothing changed since the build, 12.5 and 7.8 with one group (10 members) changed, 26.5 and 21.8 with 100 groups (1,090 members, 135 patched). The sidecar does not serve a scope of two paths yet.
 
 **Dump and restore.** The text of the scope is the record: `pg_dump` writes the declaration and the restore chooses the three btrees again by the rule (the only partial unique btree on the two
 columns, else the lowest oid of the plain ones). A rule that is settled by the oids of the btrees (two partial ones on a relation, or a partial and a plain one) can choose another one after a restore than
@@ -357,8 +352,7 @@ before it: name the btree with `using` where the choice must not depend on them 
 
 **Two paths or a pair table.** The pair table of the sections above is the right choice for arbitrary pair queries (a table anyone can join or filter), a condition on a third table (a group
 that is soft deleted itself, a tenant that is suspended: the view says it, the scope index cannot), a pair that is a view, or a time dependent pair swept by `sift.scope_expire_pairs`. The two paths are the right choice for the grants and memberships shape: the incremental maintenance is exact for every edit of the three tables (a grant, a membership, a
-member moved, a group emptied), there is no pair table to size, to vacuum and to keep by triggers, and an edit of one group costs the members of that group at the next read (6.5 M
-instructions for 10 members, above) and not a recompute of the account's pairs (164 M for a tenant of 11,884 pairs by key, a different fixture, in [the edit table](#what-an-assignment-edit-costs-by-pair-and-by-key)). The planner reads the join forms of the scope index of one path and of two from the units ([COL-SCOPE](COL-SCOPE.md#what-the-planner-recognises)).
+member moved, a group emptied), there is no pair table to size, to vacuum and to keep by triggers, and an edit of one group costs a journal record and not a recompute of the account's pairs (164 M instructions for a tenant of 11,884 pairs by key, a different fixture, in [the edit table](#what-an-assignment-edit-costs-by-pair-and-by-key)). The planner recognises the join forms of the scope index of one path and of two ([COL-SCOPE](COL-SCOPE.md#what-the-planner-recognises)); the reads of two paths run the join.
 
 ## Totals per key and month: a cube table
 
@@ -410,12 +404,12 @@ A change of the pairs folds the same way with the signs of the pair that comes o
 
 ### What it measures
 
-Fixture: 500,000 and 2,000,000 facts of 20,000 members, 60 tenants of skewed size, pairs of 2.7 and 5.4 per member, 10 kinds and 12 months (PostgreSQL 18.6, one backend, serial; every answer equals the join's). The tenants are the ones nearest 3% and 6% of the table.
+Fixture: 500,000 and 2,000,000 facts of 20,000 members, 60 tenants of skewed size, pairs of 2.7 and 5.4 per member, 10 kinds and 12 months (PostgreSQL 18.6, one backend, serial; every answer equals the join's). The tenants are the ones nearest 3% and 6% of the table. The scope index rows and columns below were measured with the 5.0 scope segments, which stored a copy of each row for each key; the 5.1 sidecar adds about 10% to the entity segments and reads a big key within 1.03 to 1.27 times the instructions of those segments ([COL-SCOPE](COL-SCOPE.md#the-expected-case)); the cube columns are unchanged.
 
 | | 500,000 facts, 2.7 | 500,000, 5.4 | 2,000,000, 2.7 | 2,000,000, 5.4 |
 |---|---|---|---|---|
 | table's `sift_col` index | 12.4 MB | 12.4 MB | 53 MB | 53 MB |
-| scope index (replicated): growth, build | +254% (+31 MB), 8.9 s | +489% (+60 MB), 17.7 s | +255% (+136 MB), 27.7 s | +482% (+256 MB), 36.9 s |
+| scope index (5.0, replicated): growth, build | +254% (+31 MB), 8.9 s | +489% (+60 MB), 17.7 s | +255% (+136 MB), 27.7 s | +482% (+256 MB), 36.9 s |
 | month cube: 7,200 cells, `sift_col` index + heap, build | 0.15 + 1.0 MB, 0.2 s | 0.15 + 1.0 MB, 0.2 s | 0.13 + 1.0 MB, 0.8 s | 0.13 + 1.0 MB, 0.8 s |
 | week cube: 31,800 cells | 0.64 + 3.7 MB | 0.63 + 3.7 MB | 0.60 + 3.7 MB | 0.59 + 3.7 MB |
 | day cube: about 215,000 cells | 4.9 + 21 MB | 5.2 + 22 MB | 5.2 + 22 MB | 5.1 + 22 MB |
@@ -445,7 +439,7 @@ What a change costs, 10,000 facts (or 100 pairs) on 500,000 facts at 2.7 pairs p
 
 At 5.4 pairs per member the count and sum cube costs 1,257 / 4.9 (insert), 2,081 / 5.5 (update) and 1,191 / 3.2 (delete), and the `min` and `max` cube 16.3 G instructions for the update and the delete. After every step the cube equals a fresh aggregation in all cells. The cube roughly doubles the instructions of a fact insert or delete and adds 0.7 G to an update; the scope index costs nothing more than the index of the table, except in its promotion (6 times), and answers the statements the cube cannot.
 
-Choose the scope index when the key is asked for rows, distinct counts, top N, latest N or filters on measures; the cube when the key is only asked for totals on whole months, the facts are inserted far more than they are updated or deleted, and the multiplicity makes the scope index large.
+Choose the scope index when the key is asked for rows, distinct counts, top N, latest N or filters on measures; the cube when the key is only asked for totals on whole months and the facts are inserted far more than they are updated or deleted.
 
 ## What an index of this kind does not answer yet
 

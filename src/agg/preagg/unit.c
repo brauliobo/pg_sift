@@ -110,10 +110,16 @@ static bool
 preagg_unit_try(AggExec *ex)
 {
 	bool		ok,
-				attempt;
+				attempt,
+				run;
 	int			dead;
 
 	ex->pa_xleaf = -1;
+	run = ex->scope_side && sift_colsrc_unit_run(ex->src, &ex->unit);
+	ex->n_scope_runs += run;
+	/* the member conjunct of a text, varchar or uuid member is no zone comparison: only a run answers for it, the other units are scanned and every row tests it */
+	if (ex->scope_mm != NULL && !run)
+		return false;
 	/* the id sets are those of the key groups: any other unit is scanned, with no look at its pre-aggregates */
 	if (ex->pa.dset && !preagg_dset_unit(ex))
 		return false;
@@ -273,7 +279,7 @@ preagg_init(AggExec *ex)
 	if (!sift_agg_preagg || (ex->spec->topn && ex->spec->naggs == 0 && ex->spec->nkeys == 0))
 		return;
 	sift_colsrc_preagg(ex->index ? ex->index : ex->spec->nparts > 0 ? sift_aggpart_heap(ex->src, 0) : ex->heap, &pa);
-	ex->pa_why = !pa.aggs && pa.ndims == 0 && pa.nrollups == 0 ? SPW_NONE : sift_aggspec_preagg_why(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);
+	ex->pa_why = !pa.aggs && pa.ndims == 0 && pa.nrollups == 0 ? SPW_NONE : sift_aggspec_preagg_why(scope_spec_plain(ex), ex->lay, ex->nbase, &pa, &ex->pa);
 	ex->pa_on = ex->pa_why == SPW_OK;
 	ex->pa_dead_sub = ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex, false);
 	ex->pa_dead = ex->pa_dead_sub || (ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex, true));
@@ -296,7 +302,7 @@ preagg_init(AggExec *ex)
 		if (!st->ready)
 			eval_operand(ex, p, st);
 		/* the tuples of the rollup of the rows test the comparison themselves, whatever interval it gives the zones */
-		if (ex->pa_on && !ex->pa.rows && (st->cnull || (p->kind == SAP_IN && !st->in_dense)))
+		if (ex->pa_on && !ex->pa.rows && (st->cnull || (p->kind == SAP_IN && !st->in_dense)) && !(ex->scope_side && p == ex->scope_pred))
 		{
 			/* the groups of the dim's histogram test an IN list with gaps, which gives the zones no interval: the sums cannot answer */
 			if (!st->cnull && p->leaf == ex->pa.hdim && !ex->pa.hcal)
@@ -358,7 +364,7 @@ preagg_init(AggExec *ex)
 		}
 	}
 	/* the key table of the leaf the histogram is of answers for a segment, when the comparisons are all on that leaf */
-	if (ex->pa_on && !PA_ROLLUP(ex->pa) && sift_agg_super && ex->search == NULL && !ex->pa.cal && !ex->pa.hcal && (ex->pa.dim >= 0 || ex->pa.hdim >= 0))
+	if (ex->pa_on && ex->scope_mm == NULL && !PA_ROLLUP(ex->pa) && sift_agg_super && ex->search == NULL && !ex->pa.cal && !ex->pa.hcal && (ex->pa.dim >= 0 || ex->pa.hdim >= 0))
 	{
 		int			key = ex->pa.dim >= 0 ? ex->pa.dim : ex->pa.hdim,
 					meas[SIFT_SRC_MAX_MEAS],

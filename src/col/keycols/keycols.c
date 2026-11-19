@@ -597,7 +597,7 @@ sift_col_auto_keys_report(Relation index)
 {
 	const SiftColRel *rel = sift_col_rel_private(index, CurrentMemoryContext);	/* the relcache frees the cached state on a reload, and the loop calls into readers */
 	const SiftCPaggSpec *spec = &rel->pagg;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col auto keys", ALLOCSET_DEFAULT_SIZES);
 	uint32		units = 0,
 				have[SIFT_COL_MAX_COLS] = {0},
@@ -605,7 +605,7 @@ sift_col_auto_keys_report(Relation index)
 	StringInfoData kept,
 				left;
 
-	sift_col_dir_read(index, snap, false);
+	snap = sift_col_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;

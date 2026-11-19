@@ -6,6 +6,7 @@
 #include "access/parallel.h"
 #include "col/maint/maint_int.h"
 #include "col/scope.h"
+#include "col/side.h"
 #include "core/live.h"
 #include "core/quarantine.h"
 #include "col/vstore/vstore.h"
@@ -19,8 +20,10 @@ maint_is_col(Relation index)
 void
 maint_bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
 {
-	SiftColSegment *seg = sift_cseg_open(index, e, CurrentMemoryContext);
+	SiftColSegment *seg;
 
+	SIFT_TEST_MUTANT(3, return);
+	seg = sift_cseg_open(index, e, CurrentMemoryContext);
 	sift_cseg_bulkdelete(seg, cb, cb_state, stats);
 	sift_cseg_close(seg);
 }
@@ -28,6 +31,7 @@ maint_bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDelet
 void
 maint_bulkdelete_wbuf(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
 {
+	SIFT_TEST_MUTANT(3, return);
 	sift_cwbuf_bulkdelete(index, e, sift_col_rel(index)->schema, cb, cb_state, stats);
 }
 
@@ -62,19 +66,19 @@ heap_row_dead(const ItemPointerData *tid, void *arg)
 void
 maint_reap_overflow(Relation index, Relation heap)
 {
-	const SiftColLeafStats *ls = sift_col_leaf_stats(index, false);
+	const SiftColLeafStats *ls = sift_col_leaf_stats(index);
 	SiftDirSnapshot *snap;
 	HeapDead	h;
-	int			order[SIFT_MAX_SEGMENTS];
+	int		   *order;
 	bool		flagged = false;
 
 	for (int c = 0; c < sift_col_index_defs(index)->ncols; c++)
 		flagged |= ls[c].has_ovf;
 	if (!flagged)
 		return;
-	snap = palloc(sizeof(SiftDirSnapshot));
 	h = (HeapDead) {.scan = sift_table_index_fetch_begin(heap),.slot = table_slot_create(heap, NULL),.nblocks = RelationGetNumberOfBlocks(heap)};
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
+	order = palloc(Max(snap->nsegs, 1) * sizeof(int));
 	for (int k = 0, n = sift_dir_clear_order(snap, order); k < n; k++)
 		if (snap->segs[order[k]].kind == SIFT_SEG_IMMUTABLE)
 		{
@@ -85,6 +89,7 @@ maint_reap_overflow(Relation index, Relation heap)
 		}
 	ExecDropSingleTupleTableSlot(h.slot);
 	table_index_fetch_end(h.scan);
+	pfree(order);
 	pfree(snap);
 }
 
@@ -98,12 +103,14 @@ IndexBulkDeleteResult *
 sift_col_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulkDeleteCallback callback, void *callback_state)
 {
 	/* the validation pass of a concurrent build is the only caller that asks for progress reports: VACUUM does not */
-	if (info->report_progress && sift_col_rel(info->index)->nscope > 0)
-	{
+	bool		validating = info->report_progress && sift_col_rel(info->index)->nscope > 0;
+
+	if (validating)
 		sift_scope_journals_validate();
-		sift_scope_stamp_concurrent(info->index);
-	}
-	return sift_mops_bulkdelete(&maint_col_ops, info, stats, callback, callback_state);
+	stats = sift_mops_bulkdelete(&maint_col_ops, info, stats, callback, callback_state);
+	if (validating)
+		sift_col_side_build(info->index);
+	return stats;
 }
 
 static void

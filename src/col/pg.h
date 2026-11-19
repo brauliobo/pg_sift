@@ -28,14 +28,12 @@
 
 /*
  * Per leaf (ncols entries, memoized per backend, valid until the index changes or the memo of 8192 indexes is dropped): what the zones and dictionaries of the immutable segments say, no chunk read.
- * The statistics are of the segments a read reads: the entity segments, or, with scope, the scope segments of an index that has a scope (NULL for an index that has none): their units are
- * cut by the scope key and the time, so their zones and sections are not those of the entity units.
  */
-extern const SiftColLeafStats *sift_col_leaf_stats(Relation index, bool scope);
+extern const SiftColLeafStats *sift_col_leaf_stats(Relation index);
 /* The chunks of the order blocks of leaf over the segments with a flag of flags in the pad word of the directory (SIFT_CGORD_*), read from the directories (the statistics only say which blocks have a compact one) */
 extern double sift_col_gorder_chunks(Relation index, int leaf, uint32 flags, bool complete_only);
 /* The sample of the unit zones of the integer leaves (same memo and validity as sift_col_leaf_stats) */
-extern const SiftColZones *sift_col_zones(Relation index, bool scope);
+extern const SiftColZones *sift_col_zones(Relation index);
 
 /*
  * How many units of the immutable segments hold the sections the options ask now (same memo as the leaf statistics, which a change of the options
@@ -48,12 +46,8 @@ typedef struct SiftColPreStats
 	double		mm[SIFT_COL_MAX_COLS];
 	double		roll[SIFT_COL_MAX_COLS];
 	double		rows;			/* the rollup of the rows */
-	double		gunits;			/* the units of a scope segment that a group with the rollup of the rows covers (counted in rows too), and the groups: the units answer by group */
-	double		rgroups;
-	double		sunits;			/* the same for the groups that keep the id sets by calendar month (counted in dim of the calendar leaf too) */
-	double		sgroups;
 } SiftColPreStats;
-extern const SiftColPreStats *sift_col_pre_stats(Relation index, bool scope);
+extern const SiftColPreStats *sift_col_pre_stats(Relation index);
 #ifdef SIFT_TESTING
 /* folds the statistics with the shared ring (*incremental: the segments opened) and without it (*full), and tells whether they are the same bytes */
 extern bool sift_col_leaf_fold_check(Relation index, int *incremental, int *full);
@@ -65,8 +59,6 @@ typedef struct SiftColLeafMemo
 {
 	const SiftColLeafStats *leaves;
 	const SiftColZones *zones;
-	const SiftColLeafStats *scope_leaves;	/* the same of the scope segments; NULL: the index has none */
-	const SiftColZones *scope_zones;
 } SiftColLeafMemo;
 /*
  * The leaf list and statistics of a sift_col index (allocates in CurrentMemoryContext; the stats read the directory and the visibility map).

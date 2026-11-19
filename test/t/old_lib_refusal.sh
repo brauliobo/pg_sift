@@ -46,11 +46,15 @@ if ((rc != 77)); then # and the other way: the groups the older library tags und
 	for ref in v3.2.3 v4.0.4 v4.1.4; do
 		out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=$ref SIFT_TMP="$TAPDIR/old-lib-pr-$ref" SIFT_PORT=$((SIFT_PORT + 22)) "$REPO/scripts/old-lib-check.sh" present 2>&1 | sed "s/^\(PASS\|FAIL\) /\1 $ref: /")
 	done
-	# and the scope index of 5.0 (column format 45): the 4.3 release with the metapage patch (what a 4.3.6 carries) refuses it with the format error and the standard hint, and reads an index without a scope
+	# and the scope sidecar of 5.1 (column format 53): the 4.3 release with the metapage patch (what a 4.3.6 carries) refuses it with the format error and the standard hint, and reads an index without a scope
 	patch=$REPO/scripts/old-lib-patches/v4.x-metapage-tail.patch
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_PATCH=$patch SIFT_OLD_REF=v4.3.0 SIFT_TMP="$TAPDIR/old-lib-scope" SIFT_PORT=$((SIFT_PORT + 23)) "$REPO/scripts/old-lib-check.sh" scope 2>&1)
-	# and a scope of two paths (column format 49): the same release refuses it, and the index with a scope of one path stays at 45
+	# and the sidecar of a scope of two paths (the same minor): the same release refuses it
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_PATCH=$patch SIFT_OLD_REF=v4.3.0 SIFT_TMP="$TAPDIR/old-lib-twohop" SIFT_PORT=$((SIFT_PORT + 24)) "$REPO/scripts/old-lib-check.sh" twohop 2>&1)
+	# and a scope index whose segments are too small for a sidecar (column format 45, the derived key of the scope): refused as in 5.0
+	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_PATCH=$patch SIFT_OLD_REF=v4.3.0 SIFT_TMP="$TAPDIR/old-lib-nosidecar" SIFT_PORT=$((SIFT_PORT + 27)) "$REPO/scripts/old-lib-check.sh" nosidecar 2>&1)
+	# and what 5.1 writes that 5.0 cannot read: deletion records (column format 52), the scope sidecar (53), the key-range pages of a write buffer (55, which raises the metapage to 1.7) and a chained directory (1.7)
+	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v5.0.0 SIFT_TMP="$TAPDIR/old-lib-m51" SIFT_PORT=$((SIFT_PORT + 26)) "$REPO/scripts/old-lib-check.sh" minors51 2>&1)
 	# and what the releases as released say of the 704-byte metapage of 5.0: the format error up to 3.2, corrupted from 3.3 to 4.3.5, the format error or a read from 4.3.6 (and for 4.3.0 with the patch of 4.3.6)
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_META_REFS="v3.2.3 v3.6.0 v4.1.4 v4.3.0 v4.3.5 v4.3.6 v4.3.0+patch" SIFT_TMP="$TAPDIR/old-lib-meta" SIFT_PORT=$((SIFT_PORT + 25)) "$REPO/scripts/old-lib-check.sh" meta 2>&1)
 fi

@@ -6,12 +6,11 @@
 -- group column's type is. The refusals say their reason (sift.explain_why, slug scope).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
-SET sift.scope_max_multiplicity = 8;
 SET jit = off;
+SET sift.test_scope_entity = on;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
 -- the units whatever they cost; the node's choice has its own section below
-SET sift.test_scope_patch = on;
 
 -- 40 tenants of each key type, the extremes of the type among them; member m is in 1 to 3 of them, the members 191..200 in none and 201..210 have facts and no pair
 CREATE TABLE tenants (n int PRIMARY KEY, k2 int2, k4 int4, k8 int8);
@@ -167,10 +166,8 @@ DEALLOCATE by_keys;
 RESET plan_cache_mode;
 
 -- the node's choice: with the price in charge the node runs the join where it costs less than the units for the keys it finds, and says so; the rows are the join's
-SET sift.test_scope_patch = off;
 SELECT f.n, r.planned, r.same FROM forms f, LATERAL gk(format(f.stmt, 'pairs4', '', '')) r WHERE f.n IN (1, 11) ORDER BY f.n;
 -- a group by the key through the join of the units: the same statement with the choice off reads the units
-SET sift.test_scope_patch = on;
 SELECT f.n, r.planned, r.same FROM forms f, LATERAL gk(format(f.stmt, 'pairs4', '', '')) r WHERE f.n IN (1, 11) ORDER BY f.n;
 
 -- soft deleted pairs: the pairs are the rows of a partial unique btree, so a join that does not state its predicate counts pairs the scope does not have: it keeps the join and says so; with the predicate

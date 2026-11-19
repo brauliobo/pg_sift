@@ -23,6 +23,7 @@
 #include "col/build/choices_gen.h"
 #include "agg/refuse.h"
 #include "col/scope.h"
+#include "col/side.h"
 #include "col/vstore/vstore.h"
 
 #define SUMMARY_LINE	100		/* characters of the first line of the summary */
@@ -94,7 +95,7 @@ stats(Derive *d)
 #ifdef SIFT_TESTING
 		sift_col_test_inval(d->index);	/* reading the leaf statistics can take a lock that reloads the entry */
 #endif
-		d->ls = sift_col_leaf_stats(d->index, false);
+		d->ls = sift_col_leaf_stats(d->index);
 	}
 	return d->ls;
 }
@@ -885,11 +886,10 @@ sift_col_choices_say(Relation heap, Relation index, int kinds, bool build)
 			(errmsg("sift_col index \"%s\": %s", name, head.data),
 			 errdetail_internal("%s", detail.data),
 			 errhint("Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices(%s);", quote_literal_cstr(sift_col_index_ref(index)))));
-	if (build && sift_scope_specs(index) != NULL)
-		colb_scope_say_rollup(index);
 	if (minor >= SIFT_COL_FORMAT_SCOPE && (kinds & SIFT_CHOICE_AUTO))
 		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\" has a scope: column format minor %d, which a library before %s cannot read", name, minor, minor_lib(minor)),
+				(errmsg("sift_col index \"%s\" has a scope: format minor %d or newer, which a library before %s cannot read", name, minor, minor_lib(minor)),
+				 errdetail("An entity segment of %d units or more also has the scope sidecar, column format minor %d, which 5.0 and older refuse.", SIDE_MIN_UNITS, SIFT_COL_FORMAT_SIDE),
 				 errhint("The scope option needs this format: build the index without it for the older library.")));
 	else if (minor > 0 && (kinds & SIFT_CHOICE_AUTO))
 		ereport(NOTICE,

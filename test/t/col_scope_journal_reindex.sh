@@ -1,42 +1,31 @@
 #!/usr/bin/env bash
-# A REINDEX of the journal index of the pairs is another lineage: the stamps of the scope segments are of the old one, so the reads say `other lineage` (the join answers, exactly) and the
-# maintenance sees the segments as stale. No read or worker rewrites for it: the reads go on answering from the join, and the rewrite the user runs (sift.col_maintain) fills them again with
-# no REINDEX of the scope index; the answers are the join's before, during and after.
+# A REINDEX of the journal index of the pairs is another lineage: the stamp of the scope sidecars is of the old one, so no run vouches for its members and the scope reads go on by reference, with the answer
+# of the join, exactly. No read or worker starts a rewrite for it; the merge step the user runs (sift.col_merge) writes the sidecars again with no REINDEX of the scope index; the answers are the join's
+# before, during and after.
 . "$(dirname "$0")/lib.bash"
+. "$(dirname "$0")/lib_side.bash"
 plan 8
 
 node_init jr 53 "autovacuum = off
-sift.col_auto_merge = on
-sift.maintenance_naptime = 200
-sift.scope_max_multiplicity = 8"
+sift.col_auto_merge = off
+$SIDE_CONF"
 node_start jr || bail "start failed"
-sql jr "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
-	"CREATE TABLE cp (m int NOT NULL, t int NOT NULL) WITH (autovacuum_enabled = false)" "CREATE UNIQUE INDEX cp_u ON cp (m, t)" \
-	"INSERT INTO cp SELECT m, 1 + (m * 7 + j * 5) % 16 FROM generate_series(1, 200) m, generate_series(0, 2) j WHERE j < m % 4 ON CONFLICT DO NOTHING" \
-	"CREATE INDEX cp_j ON cp USING sift_col (m, t) WITH (track_changes = 'ctid')" \
-	"CREATE TABLE ce (id int PRIMARY KEY, m int, d timestamptz, v int, pad text)" \
-	"INSERT INTO ce SELECT i, 1 + (i * 7919) % 210, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, 'x' FROM generate_series(1, 30000) i" \
-	>/dev/null || bail "setup failed"
-# the VACUUM comes in a session of its own, after the load's counters are flushed: the table is then quiet (nothing changed since its VACUUM), as a table nobody writes is,
-# so nothing but the reads of the scope index could have asked for a rewrite
-sql jr "VACUUM (FREEZE, ANALYZE) ce, cp" >/dev/null || bail "vacuum failed"
-sql jr "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (scope = 't: m -> cp(m, t)')" >/dev/null || bail "build failed"
+side_setup jr || bail "setup failed"
+side_facts jr 1 24000
+sql jr "VACUUM (FREEZE, ANALYZE) events, tenant_scope" >/dev/null || bail "vacuum failed"
+sql jr "CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, v) WITH ($SIDE_WITH)" >/dev/null || bail "build failed"
+READ=$(side_read 1) JOIN=$(side_join 1)
 
-READ="SELECT count(*), sum(v) FROM ce e WHERE sift.in_scope('ce_col'::regclass, 't', e.m, 6)"
-JOIN="SELECT count(*), sum(v) FROM ce e WHERE e.m IN (SELECT m FROM cp WHERE t = 6)"
-why() { sql jr "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $READ" | sed -n 's/^ *Scope Fallback: //p;s/^ *Scope Units: .*/stored/p' | head -n 1; }
-same() { [[ $(sql jr "SET sift.agg_force = on" "$READ" | tail -n 1) == $(sql jr "SET sift.enable_agg = off" "$JOIN" | tail -n 1) ]]; }
-
-check "the first build is filled: the read is from the scope units" test "$(why)" == stored
-sql jr "REINDEX INDEX cp_j" >/dev/null
-check "after a REINDEX of the journal the first read says other lineage" test "$(why)" == "other lineage"
-check "... and its answer is the join's" same
-for _ in $(seq 30); do why >/dev/null; done
-check "the reads start no rewrite: after 30 reads the first still says other lineage" test "$(why)" == "other lineage"
-sql jr "SELECT sift.col_maintain('ce_col')" >/dev/null
-check "the explicit rewrite fills the scope units again, with no REINDEX of the scope index" test "$(why)" == stored
-check "... with the same answer as the join" same
-sql jr "INSERT INTO cp SELECT 201 + i, 6 FROM generate_series(1, 5) i" >/dev/null
-check "a pair written after it is patched into the read, which is the join's" same
-check "... and no key differs from the join" test "$(sql jr "SELECT count(*) FROM sift.col_scope_verify('ce_col', 1000) WHERE problem <> 'unverified'" | tail -n 1)" == 0
+check "the first build writes the sidecars: the read takes their runs" test "$(side_format jr events_col)" == 53 -a "$(side_runs jr "$READ")" -gt 0
+sql jr "REINDEX INDEX tenant_scope_journal" >/dev/null
+check "after a REINDEX of the journal no run is taken" test "$(side_runs jr "$READ")" == 0
+check "... and the answer is the join's" side_same jr "$READ" "$JOIN"
+for _ in $(seq 30); do side_runs jr "$READ" >/dev/null; done
+check "the reads start no rewrite: after 30 reads no run is taken yet" test "$(side_runs jr "$READ")" == 0
+sql jr "SELECT sift.col_merge('events_col')" >/dev/null
+check "the merge step writes the sidecars again, with no REINDEX of the scope index: the runs are taken" test "$(side_runs jr "$READ")" -gt 0
+check "... with the same answer as the join" side_same jr "$READ" "$JOIN"
+sql jr "INSERT INTO tenant_scope SELECT m, 1 FROM generate_series(5, 59, 6) m" >/dev/null
+check "a pair written after it is read by reference, and the answer is the join's" side_same jr "$READ" "$JOIN"
+check "... and no key differs from the join, the index verifies" side_clean jr events_col
 finish

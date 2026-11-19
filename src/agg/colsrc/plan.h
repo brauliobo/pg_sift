@@ -21,7 +21,6 @@ extern void sift_colsrc_stats(Relation rel, SiftSrcStats *st);
 extern void sift_colsrc_stats_lazy(Relation rel, SiftSrcStats *st);
 extern void sift_colsrc_miss(Relation rel, SiftSrcStats *st);
 /* The statistics of the scope units of the index (SiftSrcStats.scope), the *_miss fields pending; false: it has none */
-extern bool sift_colsrc_scope_stats_lazy(Relation rel, SiftSrcStats *st);
 extern void sift_colsrc_stamp(Relation index, SiftSrcStamp *stamp);
 
 /*
@@ -30,11 +29,6 @@ extern void sift_colsrc_stamp(Relation index, SiftSrcStamp *stamp);
  * (sift_colsrc_view_export), NULL to read it now.
  */
 extern SiftSrcSource *sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
-/* ... for a scan of the scope segments of an index that declares a scope (col/scope.h, agg/scope.c): the rows replicated by scope key, no entity row, no write buffer */
-extern SiftSrcSource *sift_colsrc_open_scope(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
-/* ... and the rows of the write buffers it expands by the pairs rd->delta lists, as its units  */
-struct SiftScopeRead;
-extern void sift_colsrc_scope_delta(SiftSrcSource *src, const struct SiftScopeRead *rd);
 /* The bytes of the directory the source read, 0 when the provider has none to share; the participants of a parallel scan open on the leader's copy, whose superblocks and units all number the same */
 extern Size sift_colsrc_view_size(SiftSrcSource *src);
 extern void sift_colsrc_view_export(SiftSrcSource *src, void *buf);
@@ -162,6 +156,21 @@ static inline bool
 sift_colsrc_unit_exact(SiftSrcSource *src, const SiftSrcUnit *unit)
 {
 	return src->prov->unit_exact != NULL && src->prov->unit_exact(src->impl, unit);
+}
+
+static inline bool
+sift_colsrc_unit_run(SiftSrcSource *src, const SiftSrcUnit *unit)
+{
+	return src->prov->unit_run != NULL && src->prov->unit_run(src->impl, unit);
+}
+
+static inline bool
+sift_colsrc_scope_side(SiftSrcSource *src, const char *key_name, int64 key, struct SiftKeyMap *km, struct SiftKeyMap *mm, const int64 *members, uint32 nmembers)
+{
+	if (src->prov->scope_side == NULL)
+		return false;
+	src->prov->scope_side(src->impl, key_name, key, km, mm, members, nmembers);
+	return true;
 }
 
 static inline int

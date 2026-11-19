@@ -6,7 +6,6 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET default_statistics_target = 1000;
-SET sift.test_scope_patch = off;
 
 -- 5,000 ids of 60 events each in 50 tenants of 8 to 316 ids (the pairs 4,999), user 1 holds the 10 largest, user 2 three small, user 3 one of the middle and user 4 the 30 largest
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);

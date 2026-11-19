@@ -33,7 +33,7 @@ for so in "$@"; do
 	machine=$(readelf -h "$so" | sed -n 's/^ *Machine: *//p')
 	[[ $machine == AArch64 ]] || { echo "check-aarch64-baseline: $so: ELF machine is '$machine', not AArch64"; rc=1; continue; }
 	# the x86 SIMD kernels are compiled on x86-64 only; a symbol of one here means the wrong objects were linked
-	if readelf -sW "$so" | grep -qiE 'avx(2|512)|_pdep|_pext'; then echo "check-aarch64-baseline: $so: x86 kernel symbols"; rc=1; fi
+	if readelf -sW "$so" | grep -iE 'avx(2|512)|_pdep|_pext' >/dev/null; then echo "check-aarch64-baseline: $so: x86 kernel symbols"; rc=1; fi
 	out=$("$objdump" -d --no-show-raw-insn "$so" | awk -F'\t' -v lse="$re_lse" -v isa="$re_isa" -v pac="$re_pac" -v mte="$re_mte" -v crypto="$re_crypto" -v sve="$re_sve" '
 		/^[0-9a-f]+ <.*>:$/ { fn = $0; sub(/^[0-9a-f]+ </, "", fn); sub(/>:$/, "", fn); next }
 		NF >= 2 && $1 ~ /^ *[0-9a-f]+:/ {

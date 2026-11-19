@@ -3,7 +3,10 @@
 # resource manager records of a published sift_table, which a patch release does not change). Both directions, with the writes of every kind and the maintenance in between:
 #   up:   the primary runs the release (SIFT_UPGRADE_OLD_REF, default v5.0.0), the standby this tree (the standby is updated first), then the primary is updated and restarted
 #   down: the primary runs this tree, the standby the release (a rollback of the standby, or a standby that is not updated yet)
-# Each stage: the standby verifies every object and answers as the heap, and as the primary does.
+# Each stage: the standby verifies every object and answers as the heap, and as the primary does. The exceptions are the down direction: from the base backup on, the scope index of this tree has the
+# sidecar of its entity segments (column format 53; the merge of the maintenance rewrites the segments without one, and the index is read as before from then on), and after its first writes the deletion
+# records of a tracked index (column format 52) and the key-range pages of a key_cut write buffer (1.7 with minor 55): what 5.1 writes that 5.0 cannot read must be refused by the older standby with the format
+# error, not read as damage, and the tables of those indexes, which every plan opens, are refused with them; the rest of the zoo is read as before.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+' >&2; exit 1; }
 . "$(dirname "$0")/lib.bash"
 . "$(dirname "$0")/lib_compat.bash"
@@ -14,13 +17,19 @@ ROWS=$(knob SIFT_COMPAT_ROWS 6000 3000)
 newroot=$ROOT
 build_old "$OLD_REF"; oldroot=$OLDROOT
 
-same() { # PRIMARY STANDBY: every object answers the same on both
+side_format() { sed -n 's/^#define SIFT_COL_FORMAT_SIDE[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p' "$REPO/src/col/api/format.h"; }
+has_sidecar() { [[ $(sql "$1" "SELECT coalesce(max(format), 0) >= $(side_format) FROM sift.col_segments('events_col') WHERE kind = 'immutable'") == t ]]; }
+same() { # PRIMARY STANDBY: every object that the standby can read answers the same on both
 	local o kind ix q p a b
 	for o in "${OBJECTS[@]}"; do
 		IFS='|' read -r kind ix q p <<<"$o"
+		[[ " ${REFUSED_KINDS:-} " != *" $kind "* ]] || continue
 		a=$(answer "$1" "${ON[@]}" "$q"); b=$(answer "$2" "${ON[@]}" "$q"); out="primary: $a / standby: $b"
 		[[ $a == "$b" && $a != *ERROR* ]] || return 1
 	done
+}
+no_damage() { # STANDBY: sift.check() says no index is damaged (it may refuse an index with the format error)
+	out=$(sql "$1" "SELECT index::text || ' ' || problem FROM sift.check()" 2>&1); [[ $out != *corrupted* && ( -z $out || $out =~ this\ build.*reads ) ]]
 }
 write_load() { # NODE SEED: writes of every kind
 	sql "$1" \
@@ -42,29 +51,36 @@ stage() { # LABEL PRIMARY STANDBY
 	check "$1: the standby replays" catchup "$2" "$3"
 	compat "$1" standby "$3"
 	check "$1: the standby answers as the primary" same "$2" "$3"
-	check "$1: sift.check() of the standby is empty" sound_all "$3"
+	if [[ -z ${REFUSED_KINDS:-} ]]; then check "$1: sift.check() of the standby is empty" sound_all "$3"; else check "$1: sift.check() of the standby refuses what it cannot read" no_damage "$3"; fi
 }
 
 run() { # DIRECTION PRIMARY_ROOT STANDBY_ROOT OFFSET
 	local dir=$1 proot=$2 sroot=$3 p=cp_$1 s=cs_$1 off=$4
+	REFUSED_KINDS=
 	node_init "$p" "$off" "$CONF
 max_wal_senders = 4"
-	use_root "$p" "$proot"
+	compat_root "$p" "$proot"
 	node_start "$p" || bail "$dir: primary start failed"
 	zoo_create "$p" || bail "$dir: setup failed"
 	sql "$p" "VACUUM (ANALYZE) docs, kc, pt, events, fact, dim, trk_c, trk_i, vs" "CHECKPOINT" >/dev/null || bail "$dir: vacuum failed"
 	node_clone "$p" "$s" $((off + 1)) "hot_standby_feedback = on
 wal_receiver_status_interval = 1s"
-	use_root "$s" "$sroot"
+	compat_root "$s" "$sroot"
 	node_start "$s" || bail "$dir: standby start failed"
+	if [[ $dir == down ]]; then
+		check "$dir: the scope index has the sidecar (column format $(side_format))" has_sidecar "$p"
+		REFUSED_KINDS=scope
+	fi
 	stage "$dir: base backup" "$p" "$s"
 	write_load "$p" 100000
+	[[ $dir == up ]] || REFUSED_KINDS='bm25 col key-cut key-auto track-id scope'
 	stage "$dir: writes" "$p" "$s"
 	maintain "$p"
+	[[ $dir == up ]] || has_sidecar "$p" || REFUSED_KINDS='bm25 col key-cut key-auto track-id'
 	stage "$dir: maintenance" "$p" "$s"
 	if [[ $dir == up ]]; then
 		node_stop "$p"
-		use_root "$p" "$newroot"
+		compat_root "$p" "$newroot"
 		node_start "$p" || bail "$dir: the updated primary does not start"
 		check "$dir: the standby follows the updated primary" catchup "$p" "$s"
 		write_load "$p" 200000

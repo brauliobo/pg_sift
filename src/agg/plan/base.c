@@ -297,8 +297,6 @@ agg_base_once(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 		return agg_refuse(NO_SOURCE);
 	if (fs->scope != NULL && !sift_agg_scope_take(c, fs, &joined))
 		return agg_refuse(SCOPE);
-	if (c->scope_take != NULL)
-		scope_facts(c);
 	if (list_length(joined) > 1 && list_length(joined) == list_length(fs->rtis) - 1 && fs->lefts == NIL)
 		joined = joined_in_order(root, c->relid, joined);
 	c->nsiblings = list_length(joined) + (c->func_rti != 0);

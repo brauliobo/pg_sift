@@ -1,4 +1,4 @@
--- The NOTICE that says which column format minor an index is written in names the minor of the scope option (45, read from 5.0), whatever the other choices of the build need, and its hint does not
+-- The NOTICE that says which column format minor an index is written in names the minor of the scope option (45, read from 5.0) as the least the index needs, whatever the other choices of the build need, says in its detail that an entity segment of 16 units or more is written at the minor of the scope sidecar (53), and its hint does not
 -- offer the setting that cannot lower it; an index without the option is unchanged.
 CREATE EXTENSION pg_sift;
 CREATE TABLE pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));
@@ -12,11 +12,11 @@ INSERT INTO events SELECT i, i % 3000 + 1, timestamptz '2026-01-01' + (i || ' mi
 SET client_min_messages = notice;
 CREATE INDEX events_scope_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = 'tenant_id: dim_a_id -> pairs(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "pairs" are the rows of its unique btree "pairs_pkey"
-NOTICE:  scope "tenant_id": 20,000 entries for 20,000 rows (1.00 per row)
 NOTICE:  sift_col index "events_scope_col": 1 automatic choice (key_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key; key_columns = dim_a_id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_scope_col');
-NOTICE:  sift_col index "events_scope_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "events_scope_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
 CREATE INDEX events_plain_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num);
 NOTICE:  sift_col index "events_plain_col" stores columns id, dim_a_id, created_at, kind, value_num of index "events_scope_col", which has the same layout
@@ -27,7 +27,7 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 SELECT format AS minor, count(*) AS segments FROM sift.col_segments('events_scope_col') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
  minor | segments 
 -------+----------
-    45 |        2
+    45 |        1
 (1 row)
 
 DROP TABLE events;

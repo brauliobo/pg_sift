@@ -1,0 +1,73 @@
+-- cols(..) and max_multiplicity(..) of a scope declaration were options of the scope segments of 5.0, which kept a copy of the fact rows for each scope key. The scope of 5.1 keeps no copy (it holds runs
+-- of the units of the index, which keep every column), so a declaration that has them is accepted and CREATE INDEX and REINDEX say that they are ignored; the rows a scope read gives
+-- are the join's, and the index is as an index without them.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO tenant_scope SELECT i, 1 + i % 5 FROM generate_series(1, 500) i;
+INSERT INTO tenant_scope SELECT i, 6 FROM generate_series(1, 500, 7) i;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+NOTICE:  sift_col index "tenant_scope_journal": 1 automatic choice (track_changes)
+DETAIL:  track_changes = ctid
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tenant_scope_journal');
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind int NOT NULL, value_num int NOT NULL)
+	WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 500, timestamptz '2026-01-01' + i * interval '1 minute', i % 7, i FROM generate_series(1, 3000) i;
+CREATE FUNCTION answers(sql text) RETURNS text LANGUAGE plpgsql AS
+$$ DECLARE r text; BEGIN EXECUTE format('SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (%s) t', sql) INTO r; RETURN r; END $$;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num)
+	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind) max_multiplicity(1)');
+NOTICE:  scope "tenant_id": the cols option is ignored
+DETAIL:  The scope keeps no copy of the rows: it holds runs of the units of the index, which keep every column.
+NOTICE:  scope "tenant_id": the max_multiplicity option is ignored
+DETAIL:  The scope keeps no copy of the rows, so no number of keys a row has is too many.
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
+NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
+NOTICE:  sift_col index "events_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
+HINT:  The scope option needs this format: build the index without it for the older library.
+ALTER INDEX events_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(value_num)');
+REINDEX INDEX events_col;
+NOTICE:  scope "tenant_id": the cols option is ignored
+DETAIL:  The scope keeps no copy of the rows: it holds runs of the units of the index, which keep every column.
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
+NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
+NOTICE:  sift_col index "events_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
+HINT:  The scope option needs this format: build the index without it for the older library.
+SELECT reloptions FROM pg_class WHERE oid = 'events_col'::regclass;
+                                                                          reloptions                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {"key_columns=auto: dim_a_id",track_changes=id,"point_tid_columns=auto: id","scope=tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(value_num)"}
+(1 row)
+
+SET sift.enable_agg = on;
+SELECT answers('SELECT kind, count(*), sum(value_num) FROM events e JOIN tenant_scope s USING (dim_a_id) WHERE s.tenant_id = ' || k || ' GROUP BY kind') =
+       (SELECT answers('SELECT kind, count(*), sum(value_num) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ' || k || ') GROUP BY kind')) AS same_rows
+  FROM generate_series(1, 6) k;
+ same_rows 
+-----------
+ t
+ t
+ t
+ t
+ t
+ t
+(6 rows)
+
+SELECT sift.col_verify('events_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP TABLE events, tenant_scope;
+DROP FUNCTION answers(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

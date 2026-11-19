@@ -29,17 +29,7 @@
  */
 #define PRE_CENSUS_UNITS	16
 
-/*
- * What the planner reads of the immutable segments of one class: the entity segments, or the scope segments (SIFT_SEG_SCOPE) of an index that has a scope, whose units are cut by another key and so
- * have other zones, sections and pre-aggregates than the entity units a read of the entities reads (col/scope.h).
- */
-typedef struct ClassStats
-{
-	SiftColLeafStats *st;
-	SiftColZones *zones;
-	SiftColPreStats *pre;		/* NULL until the planner of an aggregate asks: counting the sections of the units reads them */
-}			ClassStats;
-
+/* What the planner reads of the immutable segments of the entity family (the scope segments of an index built by 5.0 are no part of it) */
 typedef struct LeafEntry
 {
 	Oid			index;			/* hash key */
@@ -48,7 +38,9 @@ typedef struct LeafEntry
 	uint32		dirver;			/* the version of the directory the stamp was made from: the same version is the same segments */
 	uint64		checked;		/* the planning (leaf_plan) that validated the stamp */
 	int			ncols;
-	ClassStats	cls[2];			/* [true]: st is NULL when the index has no scope segment */
+	SiftColLeafStats *st;
+	SiftColZones *zones;
+	SiftColPreStats *pre;		/* NULL until the planner of an aggregate asks: counting the sections of the units reads them */
 }			LeafEntry;
 
 static HTAB *leaf_cache;
@@ -70,14 +62,10 @@ zones_free(SiftColZones *zs)
 static void
 leaf_entry_free(LeafEntry *e)
 {
-	for (int k = 0; k < 2; k++)
-		if (e->cls[k].st != NULL)
-		{
-			pfree(e->cls[k].st);
-			if (e->cls[k].pre != NULL)
-				pfree(e->cls[k].pre);
-			zones_free(e->cls[k].zones);
-		}
+	pfree(e->st);
+	if (e->pre != NULL)
+		pfree(e->pre);
+	zones_free(e->zones);
 }
 
 /* the sample of the integer scalar leaves, in the memory that stays (TopMemoryContext) */
@@ -115,7 +103,6 @@ zones_shrink(SiftColZones *zs)
 typedef struct Fold
 {
 	LshmKind	kind;
-	bool		scope;			/* dir is the family of the scope segments, else that of the entity segments (sift_col_dir_read) */
 	SiftColLeafStats *st;
 	SiftColZones *zs;
 	SiftColPreStats *pre;
@@ -140,16 +127,16 @@ fold_reset(const Fold *f, int ncols)
 static bool
 fold_read(const Fold *f, RelFileNumber rel, uint64 stamp, int ncols)
 {
-	return f->kind == LSHM_PRE ? sift_col_leafshm_pre_read(rel, f->scope, stamp, f->pre) : sift_col_leafshm_read(rel, f->scope, stamp, ncols, f->st, f->zs);
+	return f->kind == LSHM_PRE ? sift_col_leafshm_pre_read(rel, stamp, f->pre) : sift_col_leafshm_read(rel, stamp, ncols, f->st, f->zs);
 }
 
 static void
 fold_write(const Fold *f, RelFileNumber rel, uint64 stamp, int ncols)
 {
 	if (f->kind == LSHM_PRE)
-		sift_col_leafshm_pre_write(rel, f->scope, stamp, f->pre);
+		sift_col_leafshm_pre_write(rel, stamp, f->pre);
 	else
-		sift_col_leafshm_write(rel, f->scope, stamp, ncols, f->st, f->zs);
+		sift_col_leafshm_write(rel, stamp, ncols, f->st, f->zs);
 }
 
 /* what the segment adds to the pre-aggregate counts: the units counted stand for the units of the segment */
@@ -172,19 +159,6 @@ fold_pre_seg(const SiftCPaggSpec *spec, SiftColSegment *seg, SiftColPreStats *pr
 			pre->roll[spec->rollup[k].list] += census.roll[k] * w;
 		else
 			pre->rows += census.roll[k] * w;
-	if (seg->entry.flags & SIFT_SEG_SCOPE)
-	{
-		uint32		groups,
-					units;
-
-		sift_cseg_super_rollups(seg, &groups, &units);
-		pre->rgroups += groups;
-		pre->gunits += units;
-		pre->rows += units;
-		sift_cseg_super_sets_count(seg, &groups, &units);
-		pre->sgroups += groups;
-		pre->sunits += units;
-	}
 }
 
 /* what the directory says of the leaves, whichever segments were folded */
@@ -252,7 +226,7 @@ fold(Relation index, const SiftDirSnapshot *dir, const Fold *f, bool shared, int
 			sift_stat_add(SIFT_STAT_LEAF_SHARED, 1);
 		k0 = nimm;
 	}
-	else if (shared && sift_col_leafshm_peek(index->rd_locator.relNumber, f->scope, f->kind, &prefix))
+	else if (shared && sift_col_leafshm_peek(index->rd_locator.relNumber, f->kind, &prefix))
 	{
 		int			k = nimm - 1;
 
@@ -304,13 +278,19 @@ fold(Relation index, const SiftDirSnapshot *dir, const Fold *f, bool shared, int
 		*folded = nfold;
 }
 
+static void
+leaf_dir_free(SiftDirSnapshot *own)
+{
+	if (own != NULL)
+		pfree(own);
+}
+
 static LeafEntry *
 leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 {
 	const int	ncols = sift_col_index_defs(index)->ncols;	/* the cached state is freed by a reload: nothing of it is held across a read of the directory or a segment */
-	SiftDirSnapshot own;
 	const SiftDirSnapshot *dir = snap;
-	SiftDirSnapshot *sdir = palloc(sizeof(SiftDirSnapshot));	/* the family of the scope segments */
+	SiftDirSnapshot *own = NULL;
 	uint64		stamp = index->rd_locator.relNumber,	/* REINDEX starts the generations over */
 				base;
 	Oid			key = RelationGetRelid(index);
@@ -321,7 +301,6 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 		e = hash_search(leaf_cache, &key, HASH_FIND, NULL);
 		if (e != NULL && e->checked == am_leaf_plan && e->ncols == ncols)
 		{
-			pfree(sdir);
 			return e;
 		}
 	}
@@ -331,25 +310,17 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	if (dir == NULL && e != NULL && e->base == base && e->ncols == ncols && e->dirver == sift_dir_version(index))
 	{
 		e->checked = am_leaf_plan;
-		pfree(sdir);
 		return e;
 	}
 	sift_stat_add(SIFT_STAT_LEAF_DIR_READ, 1);
 	if (dir == NULL)
 	{
-		sift_col_dir_read_families(index, &own, sdir);
-		dir = &own;
+		own = sift_col_dir_read_segs(index);
+		dir = own;
 	}
-	else
-		sift_col_dir_read_segs(index, sdir, true);
 	stamp = base;
-	for (int k = 0; k < 2; k++)
-	{
-		const SiftDirSnapshot *d = k == 0 ? dir : sdir;
-
-		for (int i = 0; i < d->nsegs; i++)
-			stamp = stamp * 31 + d->segs[i].gen * 8 + d->segs[i].format + 1 + ((d->segs[i].flags & SIFT_SEG_ROOTS) ? 1000003 : 0);	/* a rewrite of a segment changes its format, and the kinds it keeps */
-	}
+	for (int i = 0; i < dir->nsegs; i++)
+		stamp = stamp * 31 + dir->segs[i].gen * 8 + dir->segs[i].format + 1 + ((dir->segs[i].flags & SIFT_SEG_ROOTS) ? 1000003 : 0);	/* a rewrite of a segment changes its format, and the kinds it keeps */
 	if (leaf_cache == NULL)
 	{
 		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(LeafEntry), .hcxt = TopMemoryContext};
@@ -361,7 +332,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	{
 		e->checked = am_leaf_plan;
 		e->dirver = dir->version;
-		pfree(sdir);
+		leaf_dir_free(own);
 		return e;
 	}
 	if (e != NULL)
@@ -386,34 +357,27 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	e->dirver = dir->version;
 	e->checked = am_leaf_plan;
 	e->ncols = ncols;
-	memset(e->cls, 0, sizeof(e->cls));
-	for (int k = 0; k < 2; k++)
-	{
-		const SiftDirSnapshot *d = k == 0 ? dir : sdir;
-
-		if (k == 1 && d->nsegs == 0)
-			break;
-		e->cls[k].st = MemoryContextAllocZero(TopMemoryContext, ncols * sizeof(SiftColLeafStats));
-		e->cls[k].zones = zones_new(sift_col_index_defs(index));
-		fold(index, d, &(Fold) {.kind = LSHM_LEAF, .scope = k == 1, .st = e->cls[k].st, .zs = e->cls[k].zones}, true, NULL);
-	}
-	pfree(sdir);
+	e->pre = NULL;
+	e->st = MemoryContextAllocZero(TopMemoryContext, ncols * sizeof(SiftColLeafStats));
+	e->zones = zones_new(sift_col_index_defs(index));
+	fold(index, dir, &(Fold) {.kind = LSHM_LEAF, .st = e->st, .zs = e->zones}, true, NULL);
+	leaf_dir_free(own);
 	return e;
 }
 
 double
 sift_col_gorder_chunks(Relation index, int leaf, uint32 flags, bool complete_only)
 {
-	SiftDirSnapshot dir;
+	SiftDirSnapshot *dir;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col order chunks", ALLOCSET_DEFAULT_SIZES);
 	double		n = 0;
 
 	(void) sift_col_rel_private(index, cx);	/* opening segments reads catalogs and reloads the cached state */
-	sift_col_dir_read(index, &dir, false);
-	for (int i = 0; i < dir.nsegs; i++)
-		if (dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
+	dir = sift_col_dir_read(index);
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{
-			SiftColSegment *seg = sift_cseg_open(index, &dir.segs[i], cx);
+			SiftColSegment *seg = sift_cseg_open(index, &dir->segs[i], cx);
 
 			n += sift_cseg_gorder_chunks(seg, leaf, flags, complete_only);
 			sift_cseg_close(seg);
@@ -423,48 +387,48 @@ sift_col_gorder_chunks(Relation index, int leaf, uint32 flags, bool complete_onl
 }
 
 const SiftColPreStats *
-sift_col_pre_stats(Relation index, bool scope)
+sift_col_pre_stats(Relation index)
 {
-	ClassStats *cs = &leaf_cache_entry(index, NULL)->cls[scope];
+	LeafEntry  *e = leaf_cache_entry(index, NULL);
 
-	if (cs->pre == NULL)
+	if (e->pre == NULL)
 	{
-		SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+		SiftDirSnapshot *dir;
 		SiftColPreStats *pre = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColPreStats));
 
-		sift_col_dir_read(index, dir, scope);
-		fold(index, dir, &(Fold) {.kind = LSHM_PRE, .scope = scope, .pre = pre}, true, NULL);
-		cs->pre = pre;
+		dir = sift_col_dir_read(index);
+		fold(index, dir, &(Fold) {.kind = LSHM_PRE, .pre = pre}, true, NULL);
+		e->pre = pre;
 		pfree(dir);
 	}
-	return cs->pre;
+	return e->pre;
 }
 
 const SiftColLeafStats *
-sift_col_leaf_stats(Relation index, bool scope)
+sift_col_leaf_stats(Relation index)
 {
-	return leaf_cache_entry(index, NULL)->cls[scope].st;
+	return leaf_cache_entry(index, NULL)->st;
 }
 
 const SiftColZones *
-sift_col_zones(Relation index, bool scope)
+sift_col_zones(Relation index)
 {
-	return leaf_cache_entry(index, NULL)->cls[scope].zones;
+	return leaf_cache_entry(index, NULL)->zones;
 }
 
 SiftColIndexMeta *
 sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 {
-	const SiftColIndexMeta *d = sift_col_index_defs(index);
 	SiftColIndexMeta *m = palloc(sizeof(SiftColIndexMeta));
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	Relation	heap;
 	BlockNumber relpages,
 				visible,
 				clean;
 
-	*m = *d;
-	sift_col_dir_read(index, snap, false);
+	*m = *sift_col_index_defs(index);
+	m->cols = sift_col_rel_private(index, CurrentMemoryContext)->meta.cols;	/* the leaf definitions outlive the reloads of the cached state that the reads below cause */
+	snap = sift_col_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
@@ -485,7 +449,7 @@ sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 	m->stats.nunits = sift_cseg_dir_units(snap);
 	m->stats.wbuf_ovf = sift_cwbuf_overflow(snap);
 	m->stats.wbuf_jnull = sift_cwbuf_jnull(snap);
-	heap = table_open(d->heapoid, AccessShareLock);
+	heap = table_open(m->heapoid, AccessShareLock);
 	relpages = RelationGetNumberOfBlocks(heap);
 	m->stats.heap_pages = relpages;
 	sift_vis_count(heap, relpages, &visible, &clean);
@@ -496,10 +460,8 @@ sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 	{
 		LeafEntry  *e = leaf_cache_entry(index, snap);
 
-		memo->leaves = e->cls[0].st;
-		memo->zones = e->cls[0].zones;
-		memo->scope_leaves = e->cls[1].st;
-		memo->scope_zones = e->cls[1].zones;
+		memo->leaves = e->st;
+		memo->zones = e->zones;
 	}
 	pfree(snap);
 	return m;
@@ -552,13 +514,13 @@ sift_col_leaf_fold_check(Relation index, int *incremental, int *full)
 {
 	SiftColIndexMeta meta = *sift_col_index_defs(index);
 	const SiftColIndexMeta *d = &meta;
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	SiftColLeafStats *st[2];
 	SiftColPreStats *pre[2];
 	SiftColZones *zs[2];
 	bool		same;
 
-	sift_col_dir_read(index, dir, false);
+	dir = sift_col_dir_read(index);
 	for (int k = 0; k < 2; k++)
 	{
 		st[k] = MemoryContextAllocZero(TopMemoryContext, d->ncols * sizeof(SiftColLeafStats));

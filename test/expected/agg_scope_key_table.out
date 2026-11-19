@@ -190,25 +190,25 @@ SELECT name, label(q) FROM forms WHERE name IN ('IN, nested IN', 'join, one key 
 RESET sift.agg_scope;
 -- the keys the run read (NULLs and the repeats of the table are no keys), and the reader's verdict
 SELECT name, run_of(q) AS run FROM forms WHERE name LIKE 'IN, %' OR name LIKE 'join, %' AND name NOT LIKE '%sub-select%' ORDER BY name COLLATE "C";
-                     name                      |                               run                                
------------------------------------------------+------------------------------------------------------------------
- IN, nested IN                                 | Keys: (4 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, nested IN, NULL keys                      | Keys: (1 keys)
- IN, nested IN, a CTE of keys                  | Keys: (4 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, nested IN, a NULL key only                | Keys: (0 keys)
- IN, nested IN, a key repeated                 | Keys: (2 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, nested IN, bigint keys                    | Keys: (2 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, nested IN, conditions of the table        | Keys: (2 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, nested IN, every row                      | Keys: (5 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, nested IN, no keys                        | Keys: (0 keys)
- IN, nested IN, one key                        | Keys: (1 keys)
- IN, nested IN, partitioned table              | Keys: (3 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- join, a semi join of one key                  | Keys: (1 keys)
- join, one key a user                          | Keys: (1 keys)
- join, one key a user, the table in the middle | Keys: (1 keys)
- join, one key, a NULL key                     | Keys: (0 keys)
- join, one key, no row                         | Keys: (0 keys)
- join, several keys                            | Keys: (4 keys)
+                     name                      |                              run                              
+-----------------------------------------------+---------------------------------------------------------------
+ IN, nested IN                                 | Keys: (4 keys); Fallback: join is cheaper for 4 keys
+ IN, nested IN, NULL keys                      | Keys: (1 keys); Fallback: no sidecar holds a run of the key
+ IN, nested IN, a CTE of keys                  | Keys: (4 keys); Fallback: join is cheaper for 4 keys
+ IN, nested IN, a NULL key only                | Keys: (0 keys); Fallback: join is cheaper for 0 keys
+ IN, nested IN, a key repeated                 | Keys: (2 keys); Fallback: join is cheaper for 2 keys
+ IN, nested IN, bigint keys                    | Keys: (2 keys); Fallback: join is cheaper for 2 keys
+ IN, nested IN, conditions of the table        | Keys: (2 keys); Fallback: join is cheaper for 2 keys
+ IN, nested IN, every row                      | Keys: (5 keys); Fallback: join is cheaper for 5 keys
+ IN, nested IN, no keys                        | Keys: (0 keys); Fallback: join is cheaper for 0 keys
+ IN, nested IN, one key                        | Keys: (1 keys); Fallback: no sidecar holds a run of the key
+ IN, nested IN, partitioned table              | Keys: (3 keys); Fallback: join is cheaper for 3 keys
+ join, a semi join of one key                  | Keys: (1 keys); Fallback: no sidecar holds a run of the key
+ join, one key a user                          | Keys: (1 keys); Fallback: no sidecar holds a run of the key
+ join, one key a user, the table in the middle | Keys: (1 keys); Fallback: no sidecar holds a run of the key
+ join, one key, a NULL key                     | Keys: (0 keys); Fallback: join is cheaper for 0 keys
+ join, one key, no row                         | Keys: (0 keys); Fallback: join is cheaper for 0 keys
+ join, several keys                            | Keys: (4 keys); Fallback: a row for each pair of several keys
 (17 rows)
 
 -- row-level security that applies to the role (the owner is exempt): the policy of the table of keys is the visibility of every read of it, which a scan that reads it once itself would have to repeat
@@ -300,33 +300,33 @@ BEGIN
 	DEALLOCATE ALL;
 END $$;
 SELECT 'generic' AS mode, s.* FROM states('force_generic_plan') s;
-  mode   |           form           |                 step                 |                               run                                | same_rows 
----------+--------------------------+--------------------------------------+------------------------------------------------------------------+-----------
- generic | join, one key a user, $1 | built                                | Keys: (1 keys)                                                   | t
- generic | join, one key a user, $1 | a key changed                        | Keys: (1 keys)                                                   | t
- generic | join, one key a user, $1 | a key ended, a key added, a NULL key | Keys: (0 keys)                                                   | t
- generic | join, one key a user, $1 | no keys                              | Keys: (0 keys)                                                   | t
- generic | join, one key a user, $1 | restored                             | Keys: (1 keys)                                                   | t
- generic | nested IN, $1            | built                                | Keys: (3 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- generic | nested IN, $1            | a key changed                        | Keys: (3 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- generic | nested IN, $1            | a key ended, a key added, a NULL key | Keys: (3 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- generic | nested IN, $1            | no keys                              | Keys: (0 keys)                                                   | t
- generic | nested IN, $1            | restored                             | Keys: (3 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
+  mode   |           form           |                 step                 |                             run                             | same_rows 
+---------+--------------------------+--------------------------------------+-------------------------------------------------------------+-----------
+ generic | join, one key a user, $1 | built                                | Keys: (1 keys); Fallback: no sidecar holds a run of the key | t
+ generic | join, one key a user, $1 | a key changed                        | Keys: (1 keys); Fallback: no sidecar holds a run of the key | t
+ generic | join, one key a user, $1 | a key ended, a key added, a NULL key | Keys: (0 keys); Fallback: join is cheaper for 0 keys        | t
+ generic | join, one key a user, $1 | no keys                              | Keys: (0 keys); Fallback: join is cheaper for 0 keys        | t
+ generic | join, one key a user, $1 | restored                             | Keys: (1 keys); Fallback: no sidecar holds a run of the key | t
+ generic | nested IN, $1            | built                                | Keys: (3 keys); Fallback: join is cheaper for 3 keys        | t
+ generic | nested IN, $1            | a key changed                        | Keys: (3 keys); Fallback: join is cheaper for 3 keys        | t
+ generic | nested IN, $1            | a key ended, a key added, a NULL key | Keys: (3 keys); Fallback: join is cheaper for 3 keys        | t
+ generic | nested IN, $1            | no keys                              | Keys: (0 keys); Fallback: join is cheaper for 0 keys        | t
+ generic | nested IN, $1            | restored                             | Keys: (3 keys); Fallback: join is cheaper for 3 keys        | t
 (10 rows)
 
 SELECT 'custom' AS mode, s.* FROM states('force_custom_plan') s;
-  mode  |           form           |                 step                 |                               run                                | same_rows 
---------+--------------------------+--------------------------------------+------------------------------------------------------------------+-----------
- custom | join, one key a user, $1 | built                                | Keys: (1 keys)                                                   | t
- custom | join, one key a user, $1 | a key changed                        | Keys: (1 keys)                                                   | t
- custom | join, one key a user, $1 | a key ended, a key added, a NULL key | Keys: (0 keys)                                                   | t
- custom | join, one key a user, $1 | no keys                              | Keys: (0 keys)                                                   | t
- custom | join, one key a user, $1 | restored                             | Keys: (1 keys)                                                   | t
- custom | nested IN, $1            | built                                | Keys: (3 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- custom | nested IN, $1            | a key changed                        | Keys: (3 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- custom | nested IN, $1            | a key ended, a key added, a NULL key | Keys: (3 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- custom | nested IN, $1            | no keys                              | Keys: (0 keys)                                                   | t
- custom | nested IN, $1            | restored                             | Keys: (3 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
+  mode  |           form           |                 step                 |                             run                             | same_rows 
+--------+--------------------------+--------------------------------------+-------------------------------------------------------------+-----------
+ custom | join, one key a user, $1 | built                                | Keys: (1 keys); Fallback: no sidecar holds a run of the key | t
+ custom | join, one key a user, $1 | a key changed                        | Keys: (1 keys); Fallback: no sidecar holds a run of the key | t
+ custom | join, one key a user, $1 | a key ended, a key added, a NULL key | Keys: (0 keys); Fallback: join is cheaper for 0 keys        | t
+ custom | join, one key a user, $1 | no keys                              | Keys: (0 keys); Fallback: join is cheaper for 0 keys        | t
+ custom | join, one key a user, $1 | restored                             | Keys: (1 keys); Fallback: no sidecar holds a run of the key | t
+ custom | nested IN, $1            | built                                | Keys: (3 keys); Fallback: join is cheaper for 3 keys        | t
+ custom | nested IN, $1            | a key changed                        | Keys: (3 keys); Fallback: join is cheaper for 3 keys        | t
+ custom | nested IN, $1            | a key ended, a key added, a NULL key | Keys: (3 keys); Fallback: join is cheaper for 3 keys        | t
+ custom | nested IN, $1            | no keys                              | Keys: (0 keys); Fallback: join is cheaper for 0 keys        | t
+ custom | nested IN, $1            | restored                             | Keys: (3 keys); Fallback: join is cheaper for 3 keys        | t
 (10 rows)
 
 RESET plan_cache_mode;
@@ -350,18 +350,18 @@ INSERT INTO gforms VALUES
  ('3 groups', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM membership WHERE group_id IN (SELECT group_id FROM my_groups WHERE user_id = 1)) GROUP BY kind$q$),
  ('80 groups', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM membership WHERE group_id IN (SELECT group_id FROM my_groups WHERE user_id = 2)) GROUP BY kind$q$);
 SELECT name, label(q) AS plan, run_of(q) AS run, same(q) AS same_rows FROM gforms ORDER BY name;
-   name    |                                              plan                                               |                  run                   | same_rows 
------------+-------------------------------------------------------------------------------------------------+----------------------------------------+-----------
- 3 groups  | scope read, ARRAY(SELECT my_groups.group_id FROM my_groups WHERE (my_groups.user_id = 1)), once | Keys: (3 keys)                         | t
- 80 groups | scope read, ARRAY(SELECT my_groups.group_id FROM my_groups WHERE (my_groups.user_id = 2)), once | Keys: (80 keys); Fallback: dedupe keys | t
+   name    |                                              plan                                               |                          run                           | same_rows 
+-----------+-------------------------------------------------------------------------------------------------+--------------------------------------------------------+-----------
+ 3 groups  | scope read, ARRAY(SELECT my_groups.group_id FROM my_groups WHERE (my_groups.user_id = 1)), once | Keys: (3 keys); Fallback: join is cheaper for 3 keys   | t
+ 80 groups | scope read, ARRAY(SELECT my_groups.group_id FROM my_groups WHERE (my_groups.user_id = 2)), once | Keys: (80 keys); Fallback: join is cheaper for 80 keys | t
 (2 rows)
 
 SET work_mem = '64kB';
 SELECT name || ', work_mem 64kB' AS name, run_of(q) AS run, same(q) AS same_rows FROM gforms ORDER BY name;
-           name           |                       run                       | same_rows 
---------------------------+-------------------------------------------------+-----------
- 3 groups, work_mem 64kB  | Keys: (3 keys)                                  | t
- 80 groups, work_mem 64kB | Keys: (80 keys); Fallback: dedupe over work_mem | t
+           name           |                          run                           | same_rows 
+--------------------------+--------------------------------------------------------+-----------
+ 3 groups, work_mem 64kB  | Keys: (3 keys); Fallback: join is cheaper for 3 keys   | t
+ 80 groups, work_mem 64kB | Keys: (80 keys); Fallback: join is cheaper for 80 keys | t
 (2 rows)
 
 RESET work_mem;

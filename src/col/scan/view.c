@@ -10,19 +10,19 @@ typedef struct ColView
 {
 	uint32		heap_sbs;
 	bool		ends;			/* heap_sbs is the end a leader counted (its keyed units numbered); else the table's, as a source opened now counts them */
-	SiftDirSnapshot dir;			/* only the segments it lists are copied */
+	char		dir[FLEXIBLE_ARRAY_MEMBER] pg_attribute_aligned(MAXIMUM_ALIGNOF);	/* the directory: sift_dir_bytes of it */
 } ColView;
 
 /* The directory of the index and the end of its table's superblocks, now */
 static uint32
-view_read(Relation heap, Relation index, bool scope, SiftDirSnapshot *dir)
+view_read(Relation heap, Relation index, SiftDirSnapshot **dir)
 {
 	BlockNumber nblocks;
 
 	/* the rows this transaction holds back (wbuf/pending.c) are in no page yet, and a worker of a parallel scan has none of its own to flush */
 	(void) sift_cwbuf_flush(index);
 	nblocks = RelationGetNumberOfBlocks(heap);
-	sift_col_dir_read(index, dir, scope);
+	*dir = sift_col_dir_read(index);
 	return nblocks == 0 ? 0 : sift_block_sb(nblocks - 1) + 1;
 }
 
@@ -34,11 +34,11 @@ scan_view_load(SiftColSource *src, Relation heap, const void *view)
 
 	if (v != NULL)
 	{
-		memcpy(&src->dir, &v->dir, sift_dir_bytes(&v->dir));
+		src->dir = sift_dir_copy((const SiftDirSnapshot *) v->dir);
 		src->heap_sbs = v->heap_sbs;
 		return v->ends;
 	}
-	src->heap_sbs = view_read(heap, src->index, (src->flags & SIFT_COLO_SCOPE) != 0, &src->dir);
+	src->heap_sbs = view_read(heap, src->index, &src->dir);
 	return false;
 }
 
@@ -68,52 +68,35 @@ keyed_sbs(Relation index, const SiftDirSnapshot *dir, uint32 heap_sbs)
 void *
 sift_col_count_view(Relation heap, Relation index, MemoryContext mcxt, Size *len, uint32 *heap_sbs)
 {
-	SiftDirSnapshot dir;
+	SiftDirSnapshot *dir;
 	ColView    *v;
 
-	*heap_sbs = view_read(heap, index, false, &dir);
-	*heap_sbs = keyed_sbs(index, &dir, *heap_sbs);
-	*len = offsetof(ColView, dir) + sift_dir_bytes(&dir);
+	*heap_sbs = view_read(heap, index, &dir);
+	*heap_sbs = keyed_sbs(index, dir, *heap_sbs);
+	*len = offsetof(ColView, dir) + sift_dir_bytes(dir);
 	v = MemoryContextAlloc(mcxt, *len);
 	v->heap_sbs = *heap_sbs;
 	v->ends = true;
-	memcpy(&v->dir, &dir, sift_dir_bytes(&dir));
+	memcpy(v->dir, dir, sift_dir_bytes(dir));
+	pfree(dir);
 	return v;
 }
 
 bool
 sift_col_view_sb_heap(const void *view)
 {
-	const ColView *v = view;
+	const SiftDirSnapshot *dir = (const SiftDirSnapshot *) ((const ColView *) view)->dir;
 
-	for (int i = 0; i < v->dir.nsegs; i++)
-		if (v->dir.segs[i].kind == SIFT_SEG_IMMUTABLE && sift_cseg_keyed(&v->dir.segs[i]))
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && sift_cseg_keyed(&dir->segs[i]))
 			return false;
 	return true;
-}
-
-/* The view of the source of the scope segments that reads the directory dir (read by sift_scope_read), and the end of the table now: the source then reads what the scope read took its rows from */
-void *
-sift_col_scope_view(Relation heap, const SiftDirSnapshot *dir)
-{
-	SiftDirSnapshot *own = palloc(sift_dir_bytes(dir));
-	ColView    *v;
-	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
-
-	memcpy(own, dir, sift_dir_bytes(dir));
-	sift_col_dir_family(own, true);
-	v = palloc(offsetof(ColView, dir) + sift_dir_bytes(own));
-	v->heap_sbs = nblocks == 0 ? 0 : sift_block_sb(nblocks - 1) + 1;
-	v->ends = false;
-	memcpy(&v->dir, own, sift_dir_bytes(own));
-	pfree(own);
-	return v;
 }
 
 Size
 sift_col_view_size(const SiftColSource *src)
 {
-	return offsetof(ColView, dir) + sift_dir_bytes(&src->dir);
+	return offsetof(ColView, dir) + sift_dir_bytes(src->dir);
 }
 
 void
@@ -123,5 +106,5 @@ sift_col_view_export(const SiftColSource *src, void *buf)
 
 	v->heap_sbs = src->heap_sbs;
 	v->ends = true;
-	memcpy(&v->dir, &src->dir, sift_dir_bytes(&src->dir));
+	memcpy(v->dir, src->dir, sift_dir_bytes(src->dir));
 }

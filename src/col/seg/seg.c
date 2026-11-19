@@ -719,24 +719,28 @@ sift_cseg_gorder_bytes(SiftColSegment *seg)
 	return PRIV(seg)->gorder_bytes;
 }
 
+static int
+seg_lo_cmp(const void *a, const void *b)
+{
+	uint32		x = (*(const SiftSegEntry *const *) a)->sb_lo,
+				y = (*(const SiftSegEntry *const *) b)->sb_lo;
+
+	return (x > y) - (x < y);
+}
+
 /* The superblocks the immutable segments of dir cover: the ranges of the segments of a parallel build interleave, so they are not summed */
 uint64
 sift_cseg_dir_units(const SiftDirSnapshot *dir)
 {
-	const SiftSegEntry *imm[SIFT_MAX_SEGMENTS];
+	const SiftSegEntry **imm = palloc(Max(dir->nsegs, 1) * sizeof(SiftSegEntry *));
 	int			n = 0;
 	uint64		units = 0,
 				end = 0;
 
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
-		{
-			int			j = n++;
-
-			for (; j > 0 && imm[j - 1]->sb_lo > dir->segs[i].sb_lo; j--)
-				imm[j] = imm[j - 1];
-			imm[j] = &dir->segs[i];
-		}
+			imm[n++] = &dir->segs[i];
+	qsort(imm, n, sizeof(SiftSegEntry *), seg_lo_cmp);
 	for (int i = 0; i < n; i++)
 	{
 		uint64		lo = Max(imm[i]->sb_lo, end),
@@ -748,6 +752,7 @@ sift_cseg_dir_units(const SiftDirSnapshot *dir)
 			end = hi;
 		}
 	}
+	pfree(imm);
 	return units;
 }
 
@@ -774,7 +779,7 @@ range_end_cmp(const void *a, const void *b)
 uint64
 sift_cseg_dir_shared(const SiftDirSnapshot *dir, uint64 *listed)
 {
-	RangeEnd	ends[2 * SIFT_MAX_SEGMENTS];
+	RangeEnd   *ends = palloc(Max(2 * dir->nsegs, 1) * sizeof(RangeEnd));
 	int			n = 0,
 				depth = 0;
 	uint64		shared = 0;
@@ -796,52 +801,51 @@ sift_cseg_dir_shared(const SiftDirSnapshot *dir, uint64 *listed)
 			*listed += (ends[i + 1].at - ends[i].at) * depth;
 		}
 	}
+	pfree(ends);
 	return shared;
 }
 
 void
-sift_col_dir_family(SiftDirSnapshot *snap, bool scope)
+sift_col_dir_family(SiftDirSnapshot *snap)
 {
 	int			n = 0;
 
 	for (int i = 0; i < snap->nsegs; i++)
-		if (scope ? sift_seg_is_scope(&snap->segs[i]) : !sift_seg_is_scope(&snap->segs[i]))
+		if (!sift_seg_is_scope(&snap->segs[i]))
 			snap->segs[n++] = snap->segs[i];
 	snap->nsegs = n;
 }
 
-void
-sift_col_dir_read(Relation index, SiftDirSnapshot *snap, bool scope)
+SiftDirSnapshot *
+sift_col_dir_read(Relation index)
 {
-	sift_dir_read(index, snap);
+	SiftDirSnapshot *snap = sift_dir_read(index);
+
 	sift_cdict_retire(index, snap);
-	sift_col_dir_family(snap, scope);
+	sift_col_dir_family(snap);
+	return snap;
 }
 
-void
-sift_col_dir_read_segs(Relation index, SiftDirSnapshot *snap, bool scope)
+SiftDirSnapshot *
+sift_col_dir_read_segs(Relation index)
 {
-	sift_dir_read_segs(index, snap);
+	SiftDirSnapshot *snap = sift_dir_read_segs(index);
+
 	sift_cdict_retire(index, snap);
-	sift_col_dir_family(snap, scope);
+	sift_col_dir_family(snap);
+	return snap;
 }
 
-void
-sift_col_dir_read_families(Relation index, SiftDirSnapshot *entity, SiftDirSnapshot *scope)
+static const SiftColDvUnit *
+dv_of(const SiftColSegment *seg, uint32 u)
 {
-	sift_dir_read_segs(index, entity);
-	sift_cdict_retire(index, entity);
-	scope->version = entity->version;
-	scope->nsegs = entity->nsegs;
-	memcpy(scope->segs, entity->segs, entity->nsegs * sizeof(SiftSegEntry));
-	sift_col_dir_family(entity, false);
-	sift_col_dir_family(scope, true);
+	return seg->dv ? seg->dv->unit(seg->dv, seg, u) : NULL;
 }
 
 /* The dirty bit of the unit's SB, read from the LIVE page now: neither the directory snapshot nor an earlier read may stand for it, because
  * a scan must read liveness after it reads the all-visible mask */
-bool
-unit_dirty(SiftColSegment *seg, uint32 u)
+static bool
+unit_stored_dirty(SiftColSegment *seg, uint32 u)
 {
 	uint32		i;
 	uint8		b;
@@ -851,6 +855,12 @@ unit_dirty(SiftColSegment *seg, uint32 u)
 	i = seg->sbdir[u].id - seg->hdr->sb_lo;
 	b = sift_live_byte_kept(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &PRIV(seg)->live_pin);
 	return (b >> (i % 8)) & 1;
+}
+
+bool
+unit_dirty(SiftColSegment *seg, uint32 u)
+{
+	return dv_of(seg, u) != NULL || unit_stored_dirty(seg, u);
 }
 
 bool
@@ -875,7 +885,7 @@ sift_cseg_dirty_any(SiftColSegment *seg, uint32 first, uint32 n)
 
 		if (seg->sbdir[u].id < seg->hdr->sb_lo)
 			corrupt(seg, "Unit %u of %u (SB %u, the segment's SBs start at %u) is not a unit of this segment.", u, seg->nsb, seg->sbdir[u].id, seg->hdr->sb_lo);
-		any = sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf) >> (i % 8) & 1;
+		any = dv_of(seg, u) != NULL || (sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf) >> (i % 8) & 1);
 	}
 	if (BufferIsValid(buf))
 		UnlockReleaseBuffer(buf);
@@ -894,7 +904,7 @@ sift_cseg_dirty_units(SiftColSegment *seg, uint64 *bits)
 
 		if (seg->sbdir[u].id < seg->hdr->sb_lo)
 			corrupt(seg, "Unit %u of %u (SB %u, the segment's SBs start at %u) is not a unit of this segment.", u, seg->nsb, seg->sbdir[u].id, seg->hdr->sb_lo);
-		if (sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf) >> (i % 8) & 1)
+		if (dv_of(seg, u) != NULL || (sift_live_byte(&PRIV(seg)->live, sizeof(SiftLiveHeaderData) + i / 8, &buf) >> (i % 8) & 1))
 			bits[u / 64] |= UINT64CONST(1) << (u % 64);
 	}
 	if (BufferIsValid(buf))
@@ -906,20 +916,25 @@ sift_cseg_live(SiftColSegment *seg, uint32 u, uint64 *bits)
 {
 	uint32		n,
 				nw;
+	const SiftColDvUnit *dv;
 
 	if (u >= seg->nsb)
 		corrupt(seg, "Unit %u of %u is not a unit of this segment.", u, seg->nsb);
+	dv = dv_of(seg, u);			/* the records are read before the liveness, as the log is (a fold clears the bits and then drops the records) */
 	n = seg->sbdir[u].nrows;
 	nw = SIFT_COL_NWORDS(n);
-	if (unit_dirty(seg, u))
-	{
+	if (unit_stored_dirty(seg, u))
 		sift_live_bits(&PRIV(seg)->live, seg->sbdir[u].rank_base, n, bits, nw);
-		return;
+	else
+	{
+		memset(bits, 0, nw * sizeof(uint64));
+		memset(bits, 0xFF, n / 64 * sizeof(uint64));
+		if (n % 64)
+			bits[n / 64] = (UINT64CONST(1) << (n % 64)) - 1;
 	}
-	memset(bits, 0, nw * sizeof(uint64));
-	memset(bits, 0xFF, n / 64 * sizeof(uint64));
-	if (n % 64)
-		bits[n / 64] = (UINT64CONST(1) << (n % 64)) - 1;
+	if (dv != NULL)
+		for (uint32 w = 0; w < nw; w++)
+			bits[w] &= ~dv->bits[w];
 }
 
 uint64

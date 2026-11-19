@@ -51,7 +51,6 @@ void final_checks(AggExec *g, int64 ntuples);
 void lane_fold(AggExec *ex);
 void lanes_sum(AggExec *ex);
 void scan_items(AggExec *ex);
-void scan_delta(AggExec *ex);
 bool take_item(AggExec *ex, uint32 *item);
 void par_launch(AggExec *ex);
 void par_finish(AggExec *ex);

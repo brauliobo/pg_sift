@@ -14,8 +14,10 @@
 
 #include "col/order_sort.h"
 #include "col/seg.h"
+#include "col/build.h"
 #include "col/rowpack.h"
 #include "col/runs.h"
+#include "core/cmp.h"
 #include "core/compat.h"
 
 #ifdef SIFT_TESTING
@@ -29,6 +31,9 @@ struct SiftColSorter
 	const SiftColSchema *schema;
 	int			leaf[SIFT_COL_CUT_MAX];
 	int			nleaf;
+	int			work_kb;
+	AttrNumber	att[SIFT_COL_CUT_MAX + 1];
+	TupleDesc	desc;
 	Tuplesortstate *ts;
 	TupleTableSlot *put;
 	TupleTableSlot *get;
@@ -47,7 +52,6 @@ sift_colsort_begin(const SiftColSchema *schema, const int *leaf, int nleaf, int 
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftColSorter *s = palloc0(sizeof(SiftColSorter));
 	TupleDesc	desc = CreateTemplateTupleDesc(nleaf + 2);
-	AttrNumber	att[SIFT_COL_CUT_MAX + 1];
 	Oid			ops[SIFT_COL_CUT_MAX + 1],
 				coll[SIFT_COL_CUT_MAX + 1] = {InvalidOid};
 	bool		nulls[SIFT_COL_CUT_MAX + 1] = {false};
@@ -55,19 +59,21 @@ sift_colsort_begin(const SiftColSchema *schema, const int *leaf, int nleaf, int 
 	for (int i = 0; i <= nleaf; i++)
 	{
 		TupleDescInitEntry(desc, i + 1, "k", INT8OID, -1, 0);
-		att[i] = i + 1;
+		s->att[i] = i + 1;
 		ops[i] = Int8LessOperator;
 	}
 	TupleDescInitEntry(desc, nleaf + 2, "row", BYTEAOID, -1, 0);
 	sift_tupdesc_finalize(desc);
 	s->schema = schema;
 	s->nleaf = nleaf;
+	s->work_kb = work_kb;
+	s->desc = desc;
 	memcpy(s->leaf, leaf, nleaf * sizeof(int));
 	s->cx = cx;
 	s->rcx = AllocSetContextCreate(cx, "sift_col merge sort row", ALLOCSET_SMALL_SIZES);
 	s->put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 	s->get = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
-	s->ts = tuplesort_begin_heap(desc, nleaf + 1, att, ops, coll, nulls, work_kb, NULL, TUPLESORT_NONE);
+	s->ts = tuplesort_begin_heap(desc, nleaf + 1, s->att, ops, coll, nulls, work_kb, NULL, TUPLESORT_NONE);
 	initStringInfo(&s->buf);
 	s->in.val = palloc0(schema->ncols * sizeof(SiftColValue));
 	s->in.elem = palloc0((schema->ncols + 1) * sizeof(SiftColValue *));
@@ -75,65 +81,70 @@ sift_colsort_begin(const SiftColSchema *schema, const int *leaf, int nleaf, int 
 	return s;
 }
 
-/* Row r of b, or its copy for a scope key (scope_leaf >= 0: that leaf holds key in the copy, an integer leaf; kept: the leaves that are NULL in it when not set, as sift_cbatch_add_scoped) */
+/* The sort keys of a row: its leaves of the cut (NULL last), then the address */
+typedef struct SortKeys
+{
+	int64		key[SIFT_COL_CUT_MAX + 1];
+	bool		isnull[SIFT_COL_CUT_MAX + 1];
+	uint32		ver[2];
+} SortKeys;
+
+/* Row r of b: s->row, and its keys */
 static void
-put_row(SiftColSorter *s, const SiftColBatch *b, uint32 r, int scope_leaf, int64 key, const bool *kept)
+build_row(SiftColSorter *s, const SiftColBatch *b, uint32 r, SortKeys *k)
 {
 	const SiftColSchema *sc = s->schema;
-	uint32		ver[2] = {b->hasver ? b->xmin[r] : 0, b->hasver ? b->cmin[r] : 0};
 
-	ExecClearTuple(s->put);
+	k->ver[0] = b->hasver ? b->xmin[r] : 0;
+	k->ver[1] = b->hasver ? b->cmin[r] : 0;
 	for (int i = 0; i < s->nleaf; i++)
 	{
 		int			leaf = s->leaf[i];
 		const SiftCVals *v = &b->col[leaf];
 
-		s->put->tts_isnull[i] = leaf == scope_leaf ? false : (kept != NULL && !kept[leaf]) || (v->nulls != NULL && sift_col_bit_test(v->nulls, r));
-		s->put->tts_values[i] = Int64GetDatum(s->put->tts_isnull[i] ? 0 : sift_crun_key(&sc->cols[leaf], leaf == scope_leaf ? key : v->key[r]));
+		k->isnull[i] = v->nulls != NULL && sift_col_bit_test(v->nulls, r);
+		k->key[i] = k->isnull[i] ? 0 : sift_crun_key(&sc->cols[leaf], v->key[r]);
 	}
-	s->put->tts_isnull[s->nleaf] = false;
-	s->put->tts_values[s->nleaf] = Int64GetDatum((int64) b->keys[r]);
+	k->isnull[s->nleaf] = false;
+	k->key[s->nleaf] = (int64) b->keys[r];
 	sift_cbatch_row(b, r, &s->row);
-	for (int id = 0; scope_leaf >= 0 && id < sc->ncols; id++)
-	{
-		if (sc->cols[id].parent >= 0)
-			continue;
-		if (id == scope_leaf)
-		{
-			memset(&s->row.val[id], 0, sizeof(SiftColValue));
-			s->row.val[id].tag = SIFT_COLTAG_UNKNOWN;
-			s->row.val[id].v.i = key;
-		}
-		else if (kept != NULL && !kept[id] && sc->cols[id].kind != SIFT_COLK_GROUP && sc->cols[id].store != SIFT_COLS_VAR)
-		{
-			memset(&s->row.val[id], 0, sizeof(SiftColValue));
-			s->row.val[id].tag = SIFT_COLTAG_UNKNOWN;
-			s->row.val[id].isnull = true;
-		}
-	}
+}
+
+static void
+pack_row(SiftColSorter *s, const SiftColRow *row, const SortKeys *k)
+{
 	resetStringInfo(&s->buf);
 	appendStringInfoSpaces(&s->buf, VARHDRSZ);
-	appendBinaryStringInfo(&s->buf, (char *) ver, sizeof(ver));
-	sift_colrow_pack(&s->buf, sc, &s->row);
+	appendBinaryStringInfo(&s->buf, (const char *) k->ver, sizeof(k->ver));
+	sift_colrow_pack(&s->buf, s->schema, row);
 	SET_VARSIZE(s->buf.data, s->buf.len);
+}
+
+static void
+put_tuple(SiftColSorter *s, const SiftColRow *row, const SortKeys *k)
+{
+	ExecClearTuple(s->put);
+	for (int i = 0; i <= s->nleaf; i++)
+	{
+		s->put->tts_isnull[i] = k->isnull[i];
+		s->put->tts_values[i] = Int64GetDatum(k->key[i]);
+	}
+	pack_row(s, row, k);
 	s->put->tts_isnull[s->nleaf + 1] = false;
 	s->put->tts_values[s->nleaf + 1] = PointerGetDatum(s->buf.data);
 	ExecStoreVirtualTuple(s->put);
 	tuplesort_puttupleslot(s->ts, s->put);
-	sift_cbatch_row_free(&s->row);	/* its arrays are in the context of the batch, which may be reset before the next row */
-	s->rows++;
 }
 
 void
 sift_colsort_put(SiftColSorter *s, const SiftColBatch *b, uint32 r)
 {
-	put_row(s, b, r, -1, 0, NULL);
-}
+	SortKeys	k;
 
-void
-sift_colsort_put_scoped(SiftColSorter *s, const SiftColBatch *b, uint32 r, int scope_leaf, int64 key, const bool *kept)
-{
-	put_row(s, b, r, scope_leaf, key, kept);
+	build_row(s, b, r, &k);
+	put_tuple(s, &s->row, &k);
+	sift_cbatch_row_free(&s->row);	/* its arrays are in the context of the batch, which may be reset before the next row */
+	s->rows++;
 }
 
 void

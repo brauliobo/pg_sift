@@ -256,7 +256,7 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 			best = a;
 	/* a row for each pair of a member in several keys is what the join counts, and the units cannot when the member's pairs changed */
 	if (best == NULL)
-		return !sift_keymap_type(t->fk->vartype) && (s->scope->once || (!s->scope->all && s->scope->nkeys <= 1 && !t->key_read));
+		return !sift_keymap_type(t->fk->vartype) && !sift_agg_scope_counts_pairs(s->scope, t->key_read);
 	sc = memcpy(palloc(sizeof(SiftAggScope)), s->scope, sizeof(SiftAggScope));
 	sc->alt = agg_spec_keep(best->spec);
 	sc->alt->join = memcpy(palloc(best->spec->njoin * sizeof(SiftAggJoin)), best->spec->join, best->spec->njoin * sizeof(SiftAggJoin));
@@ -277,7 +277,6 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 	one_scope.nkeys = 1;
 	one.scope = &one_scope;
 	sc->rowwise = 1.0 - preagg_share(c, &one);
-	sc->rgroup_frac = preagg_groups(c, &one, &sc->rgroup_units);
 	s->scope = sc;
 	/* the node costs what the cheaper of its two ways does, and a hair less than the join it holds: the plan that can only be that join has no reason to win */
 	p->total_cost = Min(p->total_cost, best->total * (1.0 - 1e-6));

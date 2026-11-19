@@ -111,6 +111,8 @@ rollup_dim_leaf(const AggExec *ex, int leaf)
 bool
 preagg_zones(AggExec *ex)
 {
+	bool		run = ex->scope_side && sift_colsrc_unit_run(ex->src, &ex->unit);
+
 	ex->pa_xleaf = -1;
 	for (int k = 0; k < ex->nprune; k++)
 	{
@@ -118,6 +120,10 @@ preagg_zones(AggExec *ex)
 		SiftSrcUnitAgg a;
 
 		if (rollup_dim_leaf(ex, z->leaf))
+			continue;
+
+		/* the rows of a run are those of the members of the key already */
+		if (z->scope && run)
 			continue;
 
 		/*

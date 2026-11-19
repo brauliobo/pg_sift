@@ -178,7 +178,7 @@ preconditions() {
     check "the cases fit: ${CASES_RESERVE_GB} GB free under CASES_TMP=$cdir, $(( CASES_RESERVE_GB + 8 )) GB of memory available, CASES_MEM=$CASES_CAP at least $(( CASES_RESERVE_GB + 4 )) GB" \
       bash -c '[[ $1 -gt 0 ]] && (( $(df --output=avail -BG "$2" | tail -1 | tr -dc 0-9) >= $1 && $(awk "/MemAvailable/ {printf \"%d\", \$2 / 1048576}" /proc/meminfo) >= $1 + 8 && ${3} >= $1 + 4 ))' _ "$CASES_RESERVE_GB" "$fs" "${CASES_CAP%[Gg]}"
   fi
-  check "ports 56280 .. 56284 are free" bash -c "! ss -ltnH | grep -qE ':(5628[0-4])\b'"
+  check "ports 56280 .. 56284 are free" bash -c "! ss -ltnH | grep -E ':(5628[0-4])\b' >/dev/null"
   check "no containers of a store run exist (bench/bench store clean)" bash -c '[[ -z $(docker ps -a -q --filter label=sift-store) ]]'
   printf '  %s GB free in %s, %s GB in /tmp, %s GB of memory available\n' "$(df --output=avail -BG "$STORE" | tail -1 | tr -dc 0-9)" "$STORE" "$(df --output=avail -BG /tmp | tail -1 | tr -dc 0-9)" "$(awk '/MemAvailable/ {printf "%d", $2 / 1048576}' /proc/meminfo)"
   return $fail

@@ -300,7 +300,7 @@ sift_test_col_pre_stats(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	const SiftColPreStats *pre = sift_col_pre_stats(index, false);
+	const SiftColPreStats *pre = sift_col_pre_stats(index);
 
 	InitMaterializedSRF(fcinfo, 0);
 	for (int c = 0; c < sift_col_index_defs(index)->ncols; c++)

@@ -4,8 +4,8 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET sift.test_scope_entity = on;
 SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
 
 -- 60 members of 100 facts, the groups of ten members, the tenants 1 to 6 (a text key) each with the members of one group
 CREATE TABLE facts (id int PRIMARY KEY, m text, at timestamptz, amount int) WITH (autovacuum_enabled = false);

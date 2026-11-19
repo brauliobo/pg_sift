@@ -22,12 +22,14 @@ The local gate runs only the PostgreSQL of `pg_config` on `PATH`; GitHub CI also
 runs only the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-001' make check`).
 `scripts/coldiff.sh` is the differential test of the aggregate pushdown: plain SQL aggregates with `sift.enable_agg` off and on, results compared,
 with fixtures, scenarios and a self-test (also part of `make check`, docs/AGG.md).
-The scratch directory (`$TMPDIR/sift-ci-PID`, `SIFT_CI_TMP` picks another) peaks at about 1.1 GB (the same with `SANITIZE=1`; `CI_BUDGET_MB=900` brings it to 1 GB at the price of about a quarter more time, as the two big WAL tests then run one after the other). A lane starts a job when
-the estimated scratch of the running ones plus its own fits `CI_BUDGET_MB` (`EST_MB` in `scripts/ci/jobs.sh`), and a job's data goes when it passes.
-`SIFT_CI_STATS=1 make check` prints the peak by component (WAL, tables, temp files), lane and job, and the memory of the servers; run it when
-you add a heavy test, and give the job an estimate. The clusters are small (1 MB WAL segments, 48 MB `max_wal_size`, 32-64 MB buffers); the
+The scratch directory (`$TMPDIR/sift-ci-PID`, `SIFT_CI_TMP` picks another) of a quick shard stays under 3 GB: a lane starts a job when the estimated scratch of the running ones plus its own fits
+`CI_BUDGET_MB` (1800; `EST_MB` in `scripts/ci/jobs.sh`), a job's data (and its WAL) goes when it passes, and a shard over `CI_MAX_MB` (3072) fails. A run ends by listing the jobs that used more than their
+estimate: give them the measured number. `SIFT_CI_STATS=1 make check` prints the peak by component (WAL, tables, temp files), lane and job, and the memory of the servers; run it when
+you add a heavy test. The clusters are small (1 MB WAL segments, `max_wal_size` 512 MB, 128 MB when the scratch is tmpfs, 64 MB buffers); the
 crash, recovery and replication tests (`WAL_CONF` in `test/t/lib.bash`, `tap.sh` for the Perl ones) keep the default WAL segments and
 settings, since the WAL is what they test.
+A run keeps one line per job (state, seconds, scratch peak, skips and their reasons) in `$TMPDIR/sift-ci-summary/` after the logs of the passing jobs are gone; `scripts/ci.sh summary` lists the skips.
+A test says why it skips (`1..0 # SKIP reason`, `ok N # skip reason`, `SKIP: reason`): a skip without a reason fails its job.
 `scripts/replication.sh` (also part of `make check`) tests physical and logical replication on temporary clusters;
 `scripts/replication.sh --container` runs it with every node in its own docker container (`PG_IMAGE`, default `postgres:18`).
 `SIFT_TESTING=1` (the default for `pgtest.sh` and `make check`) also builds the test-only `pg_sift_test` extension and the `sift._test_*` functions; a normal `make install` never installs them. Switching it needs `make clean`.
@@ -56,6 +58,8 @@ damaged data, 40001 for a retry). `scripts/check-errors.sh` enforces it in the l
 comment on the call.
 
 **An expected output holds no failed verdict.** A test that compares two plans or two engines prints the verdict in a column (`agree`, `same`, `equal`, `match`, `ok`, `identical`, `equivalent`, `passed`, or a name made of them); `scripts/check-expected-oracle.py` (the `expected-oracle` step of `scripts/lint.sh`) fails an `f` or an empty cell (a NULL: the comparison did not say yes) in such a column of `test/expected/*.out` and the word `FAIL`, `MISMATCH` or `DIFFERENT` in a result cell, because a file accepted with one pins the disagreement as the right answer. An `f` or NULL that is the answer (a function named `match` asked a question it must refuse, a case with nothing to compare) is listed in `scripts/expected-oracle.allow` with its reason and its exact number of cells.
+
+**A test that prints the size of an index pins its codec.** The bytes of LZ4 and zstd change with the version of the library, and the default compression picks between them by the bytes each gives, so the exact bytes or pages of an index built with it are the ones of the machine that wrote the expected file. A test that prints them builds its indexes with `compression = 'none'` or with encodings only (`'for+delta+rle+dict+alp+scale'`; `SET sift.table_compression` the same for a `sift_table`); `scripts/check-codec-bytes.py` (the `codec-bytes` step of `scripts/lint.sh`) fails the others, and a column that is no size of an index is listed with its reason in `scripts/codec-bytes.allow`.
 
 **Messages have a row.** Every NOTICE, WARNING and INFO of `src/` and `sql/` is one row of `docs/messages.tsv` (the exact text, where and when, the decision, its benefit and trade-off with numbers quoted from `docs/options.tsv` or a cited file, how to switch it off), and `docs/MESSAGES.md` is generated from the rows. `scripts/gen-messages.sh --skeleton` prints the row of a message that has none, `scripts/gen-messages.sh` writes the page, and `scripts/gen-messages.sh --check` (lint) fails on a message without a row, a row without a message, a changed text, DETAIL or HINT, and a number that is in no cited measurement.
 

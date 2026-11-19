@@ -1,7 +1,7 @@
 # The steps of scripts/stability.sh. Tab separated: step, budget row of scripts/budgets.tsv, cluster (1: a scripts/pgtest.sh cluster is started for the command), est_s (the measured seconds of the
 # release build on this host, the order of the queue), command (run from the repository root; SIFT_TMP, SIFT_PORT, SIFT_ROOT and SIFT_INITDB_TEMPLATE are set per lane).
 # @pool KEY SEEDS: the pool a fuzzer or oracle draws its seeds from; {seeds:KEY:COUNT:SLOT} is the COUNT seeds of SLOT in the window of the round (scripts/stability.sh).
-# The oracle seeds 1-12 are the 12 profiles (3 shapes x walk/plain x late/not); 3 of them a round, so 4 rounds cover them, and the mutant check (SIFT_ORACLE_MUTANT=only) runs once a round.
+# The oracle seeds 1-12 are the 12 profiles (3 shapes x walk/plain x late/not); 3 of them a round, so 4 rounds cover them, and the mutant check (SIFT_ORACLE_MUTANT=only) runs once a round. The side seeds 22, 24, 26 (the sidecar profile) run every round.
 @pool	oracle	1-12
 @pool	txn	1-60
 @pool	txn-shapes	1-60
@@ -15,6 +15,7 @@
 oracle-1	tap:col_scope_oracle	0	260	SIFT_ORACLE_ROWS=20000 SIFT_ORACLE_STEPS=5 SIFT_ORACLE_VERIFY_EVERY=1 SIFT_ORACLE_MUTANT=off SIFT_ORACLE_SEEDS={seeds:oracle:1:0} scripts/pgtest.sh tap col_scope_oracle
 oracle-2	tap:col_scope_oracle	0	260	SIFT_ORACLE_ROWS=20000 SIFT_ORACLE_STEPS=5 SIFT_ORACLE_VERIFY_EVERY=1 SIFT_ORACLE_MUTANT=off SIFT_ORACLE_SEEDS={seeds:oracle:1:1} scripts/pgtest.sh tap col_scope_oracle
 oracle-3	tap:col_scope_oracle	0	260	SIFT_ORACLE_ROWS=20000 SIFT_ORACLE_STEPS=5 SIFT_ORACLE_VERIFY_EVERY=1 SIFT_ORACLE_MUTANT=off SIFT_ORACLE_SEEDS={seeds:oracle:1:2} scripts/pgtest.sh tap col_scope_oracle
+oracle-side	tap:col_scope_oracle	0	150	SIFT_ORACLE_ROWS=20000 SIFT_ORACLE_STEPS=4 SIFT_ORACLE_VERIFY_EVERY=1 SIFT_ORACLE_MUTANT=off SIFT_ORACLE_SEEDS=22,24,26 scripts/pgtest.sh tap col_scope_oracle
 oracle-mutant	tap:col_scope_oracle	0	110	SIFT_ORACLE_MUTANT=only scripts/pgtest.sh tap col_scope_oracle
 diff-fuzz	fuzz:diff_fuzz.py	1	360	python3 -I test/fuzz/diff_fuzz.py --seeds {seeds:diff:4:0} --queries 300 --rows 6000 --leader-on --out $SIFT_TMP/fz
 diff-fuzz-table	fuzz:diff_fuzz.py	1	500	python3 -I test/fuzz/diff_fuzz.py --table --seeds {seeds:diff-table:4:0} --queries 300 --rows 6000 --leader-on --out $SIFT_TMP/fz

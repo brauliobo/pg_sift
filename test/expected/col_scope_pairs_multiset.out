@@ -8,10 +8,10 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
+SET sift.test_scope_entity = on;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
 -- the narrowed read is taken whatever it costs: the price is the subject of col_scope_patch_price
-SET sift.test_scope_patch = on;
 -- page costs that keep a SiftAgg plan the cheaper one whenever it is generated: the plan then depends on the shape of the statement
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -92,12 +92,12 @@ INSERT INTO tenant_pairs (row_src, dim_a_id, tenant_id) SELECT 3, dim_a_id, tena
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
  n |             label             | verdict | route | delta | bounded 
 ---+-------------------------------+---------+-------+-------+---------
- 1 | one key IN, count and sum     | same    | units | patch | t
+ 1 | one key IN, count and sum     | same    | units | none  | t
  2 | one key EXISTS, count and sum | same    | units | none  | t
- 3 | a list of keys IN             | same    | units | patch | t
- 4 | one key, min and max          | same    | units | patch | t
- 5 | ten keys IN, min and max      | same    | units | patch | t
- 6 | top 5                         | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | none  | t
+ 6 | top 5                         | same    | units | none  | t
 (6 rows)
 
 SELECT 3 AS n, 'one of two duplicate rows deleted: the pair stays' AS state
@@ -110,12 +110,12 @@ DELETE FROM tenant_pairs WHERE id IN (SELECT min(id) FROM tenant_pairs WHERE dim
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
  n |             label             | verdict | route | delta | bounded 
 ---+-------------------------------+---------+-------+-------+---------
- 1 | one key IN, count and sum     | same    | units | patch | t
- 2 | one key EXISTS, count and sum | same    | units | patch | t
- 3 | a list of keys IN             | same    | units | patch | t
- 4 | one key, min and max          | same    | units | patch | t
- 5 | ten keys IN, min and max      | same    | units | patch | t
- 6 | top 5                         | same    | units | patch | t
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | none  | t
+ 6 | top 5                         | same    | units | none  | t
 (6 rows)
 
 SELECT 4 AS n, 'the last row of a pair deleted: the pair is gone' AS state
@@ -128,12 +128,12 @@ DELETE FROM tenant_pairs WHERE dim_a_id IN (10, 11)
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
  n |             label             | verdict | route | delta | bounded 
 ---+-------------------------------+---------+-------+-------+---------
- 1 | one key IN, count and sum     | same    | units | patch | t
- 2 | one key EXISTS, count and sum | same    | units | patch | t
- 3 | a list of keys IN             | same    | units | patch | t
- 4 | one key, min and max          | same    | units | patch | t
- 5 | ten keys IN, min and max      | same    | units | patch | t
- 6 | top 5                         | same    | units | patch | t
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | none  | t
+ 6 | top 5                         | same    | units | none  | t
 (6 rows)
 
 SELECT 5 AS n, 'a duplicate added, then the first row deleted: the pair stays' AS state
@@ -146,12 +146,12 @@ INSERT INTO tenant_pairs (row_src, dim_a_id, tenant_id) SELECT 4, dim_a_id, tena
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
  n |             label             | verdict | route | delta | bounded 
 ---+-------------------------------+---------+-------+-------+---------
- 1 | one key IN, count and sum     | same    | units | patch | t
- 2 | one key EXISTS, count and sum | same    | units | patch | t
- 3 | a list of keys IN             | same    | units | patch | t
- 4 | one key, min and max          | same    | units | patch | t
- 5 | ten keys IN, min and max      | same    | units | patch | t
- 6 | top 5                         | same    | units | patch | t
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | none  | t
+ 6 | top 5                         | same    | units | none  | t
 (6 rows)
 
 SELECT 6 AS n, 'the key of one of two duplicate rows moved: the old key stays, the new one is added' AS state
@@ -164,12 +164,12 @@ UPDATE tenant_pairs SET tenant_id = 1 + tenant_id % 10 WHERE id IN (SELECT max(i
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
  n |             label             | verdict | route | delta | bounded 
 ---+-------------------------------+---------+-------+-------+---------
- 1 | one key IN, count and sum     | same    | units | patch | t
- 2 | one key EXISTS, count and sum | same    | units | patch | t
- 3 | a list of keys IN             | same    | units | patch | t
- 4 | one key, min and max          | same    | units | patch | t
- 5 | ten keys IN, min and max      | same    | units | patch | t
- 6 | top 5                         | same    | units | patch | t
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | none  | t
+ 6 | top 5                         | same    | units | none  | t
 (6 rows)
 
 SELECT 7 AS n, 'a column that no btree holds updated on a duplicate row: nothing changes' AS state
@@ -182,12 +182,12 @@ UPDATE tenant_pairs SET row_src = 9 WHERE dim_a_id IN (38, 45)
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
  n |             label             | verdict | route | delta | bounded 
 ---+-------------------------------+---------+-------+-------+---------
- 1 | one key IN, count and sum     | same    | units | patch | t
- 2 | one key EXISTS, count and sum | same    | units | patch | t
- 3 | a list of keys IN             | same    | units | patch | t
- 4 | one key, min and max          | same    | units | patch | t
- 5 | ten keys IN, min and max      | same    | units | patch | t
- 6 | top 5                         | same    | units | patch | t
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | none  | t
+ 6 | top 5                         | same    | units | none  | t
 (6 rows)
 
 SELECT 8 AS n, 'buffered events of dim_a_id with duplicate rows, of ones whose pairs changed and of ones that did not' AS state
@@ -200,12 +200,12 @@ INSERT INTO events SELECT 6000 + i, CASE i % 4 WHEN 0 THEN 3 WHEN 1 THEN 17 WHEN
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
  n |             label             | verdict | route | delta | bounded 
 ---+-------------------------------+---------+-------+-------+---------
- 1 | one key IN, count and sum     | same    | units | patch | t
- 2 | one key EXISTS, count and sum | same    | units | patch | t
- 3 | a list of keys IN             | same    | units | patch | t
- 4 | one key, min and max          | same    | units | patch | t
- 5 | ten keys IN, min and max      | same    | units | patch | t
- 6 | top 5                         | same    | units | patch | t
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | none  | t
+ 6 | top 5                         | same    | units | none  | t
 (6 rows)
 
 SELECT 9 AS n, 'promoted (the buffers are in the segments; the changed pairs still leave their dim_a_id out of the units)' AS state
@@ -223,12 +223,12 @@ SELECT sift.col_promote('events_col')
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
  n |             label             | verdict | route | delta | bounded 
 ---+-------------------------------+---------+-------+-------+---------
- 1 | one key IN, count and sum     | same    | units | patch | t
- 2 | one key EXISTS, count and sum | same    | units | patch | t
- 3 | a list of keys IN             | same    | units | patch | t
- 4 | one key, min and max          | same    | units | patch | t
- 5 | ten keys IN, min and max      | same    | units | patch | t
- 6 | top 5                         | same    | units | patch | t
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | none  | t
+ 6 | top 5                         | same    | units | none  | t
 (6 rows)
 
 SELECT 10 AS n, 'merged' AS state
@@ -246,12 +246,12 @@ SELECT sift.col_merge('events_col', true)
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
  n |             label             | verdict | route | delta | bounded 
 ---+-------------------------------+---------+-------+-------+---------
- 1 | one key IN, count and sum     | same    | units | patch | t
- 2 | one key EXISTS, count and sum | same    | units | patch | t
- 3 | a list of keys IN             | same    | units | patch | t
- 4 | one key, min and max          | same    | units | patch | t
- 5 | ten keys IN, min and max      | same    | units | patch | t
- 6 | top 5                         | same    | units | patch | t
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | none  | t
+ 6 | top 5                         | same    | units | none  | t
 (6 rows)
 
 SELECT 11 AS n, 'the btree of the pairs rebuilt (the index keeps the one it recorded)' AS state
@@ -264,12 +264,12 @@ REINDEX INDEX tenant_pairs_pair
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
  n |             label             | verdict | route | delta | bounded 
 ---+-------------------------------+---------+-------+-------+---------
- 1 | one key IN, count and sum     | same    | units | patch | t
- 2 | one key EXISTS, count and sum | same    | units | patch | t
- 3 | a list of keys IN             | same    | units | patch | t
- 4 | one key, min and max          | same    | units | patch | t
- 5 | ten keys IN, min and max      | same    | units | patch | t
- 6 | top 5                         | same    | units | patch | t
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | none  | t
+ 6 | top 5                         | same    | units | none  | t
 (6 rows)
 
 SELECT 12 AS n, 'rebuilt (nothing changed since the stamp)' AS state
@@ -304,8 +304,8 @@ SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
  2 | one key EXISTS, count and sum | same    | units | none  | t
  3 | a list of keys IN             | same    | units | none  | t
  4 | one key, min and max          | same    | units | none  | t
- 5 | ten keys IN, min and max      | same    | units | patch | t
- 6 | top 5                         | same    | units | patch | t
+ 5 | ten keys IN, min and max      | same    | units | none  | t
+ 6 | top 5                         | same    | units | none  | t
 (6 rows)
 
 SELECT sift.col_verify('events_col', true);
@@ -326,8 +326,8 @@ SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
  2 | one key EXISTS, count and sum | same    | units | none  | t
  3 | a list of keys IN             | same    | units | none  | t
  4 | one key, min and max          | same    | units | none  | t
- 5 | ten keys IN, min and max      | same    | units | patch | t
- 6 | top 5                         | same    | units | patch | t
+ 5 | ten keys IN, min and max      | same    | units | none  | t
+ 6 | top 5                         | same    | units | none  | t
 (6 rows)
 
 REINDEX INDEX events_col
@@ -470,10 +470,9 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM events f WHERE sift.in_scope('events_co
    Index: events_col
    Scope Index: events_col (tenant_id)
    Scope Keys: 1
-   Scope Columns: 4 of 4
    Scope Semantics: once
    Pushed Aggregates: count(*)
-(7 rows)
+(6 rows)
 
 -- the same planned statements after the pairs changed again and a rebuild: IN is the scope read and the join is the join
 INSERT INTO tenant_pairs (row_src, dim_a_id, tenant_id) SELECT 6, dim_a_id, tenant_id FROM tenant_pairs WHERE tenant_id = 3 AND row_src = 1;
@@ -522,16 +521,21 @@ SET client_min_messages = notice;
 CREATE INDEX decl_facts_col ON decl_facts USING sift_col (id, dim_a_id, created_at) WITH (scope = 'tenant_id: dim_a_id -> decl_pairs(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "decl_pairs" (dim_a_id, tenant_id) are the distinct rows of its non-unique btree "decl_pairs_a"
 DETAIL:  A pair may be several rows: a read with the meaning of IN or EXISTS counts a fact once, a join counts it once for each row and runs as written.
-ERROR:  scope "tenant_id": 1,000 entries for 300 rows (3.33 per row) is over the limit of 3 entries a row
-HINT:  Above it the join answers the scope reads (the entity path); a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). max_multiplicity(n) in the scope option raises the limit, as SET sift.scope_max_multiplicity does for the next declaration.
+NOTICE:  sift_col index "decl_facts_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('decl_facts_col');
+NOTICE:  sift_col index "decl_facts_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
+HINT:  The scope option needs this format: build the index without it for the older library.
 SET client_min_messages = warning;
 SELECT c.relname AS btree, i.indisunique AS is_unique FROM pg_depend d JOIN pg_class c ON c.oid = d.refobjid JOIN pg_index i ON i.indexrelid = c.oid
 	WHERE d.objid = 'decl_facts_col'::regclass AND d.refclassid = 'pg_class'::regclass AND c.relam = (SELECT oid FROM pg_am WHERE amname = 'btree') ORDER BY 1;
-ERROR:  relation "decl_facts_col" does not exist
-LINE 2:  WHERE d.objid = 'decl_facts_col'::regclass AND d.refclassid...
-                         ^
+    btree     | is_unique 
+--------------+-----------
+ decl_pairs_a | f
+(1 row)
+
 DROP INDEX decl_facts_col;
-ERROR:  index "decl_facts_col" does not exist
 -- a unique btree on the two columns wins over a non-unique one, whatever the oids
 CREATE TABLE decl_unique (dim_a_id int NOT NULL, tenant_id int NOT NULL);
 INSERT INTO decl_unique SELECT DISTINCT 1 + i % 50, 1 + i % 7 FROM generate_series(1, 200) i;
@@ -541,11 +545,14 @@ CREATE INDEX decl_unique_journal ON decl_unique USING sift_col (dim_a_id, tenant
 SET client_min_messages = notice;
 CREATE INDEX decl_facts_col ON decl_facts USING sift_col (id, dim_a_id, created_at) WITH (scope = 'tenant_id: dim_a_id -> decl_unique(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "decl_unique" are the rows of its unique btree "decl_unique_pair"
-ERROR:  scope "tenant_id": 1,000 entries for 300 rows (3.33 per row) is over the limit of 3 entries a row
-HINT:  Above it the join answers the scope reads (the entity path); a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). max_multiplicity(n) in the scope option raises the limit, as SET sift.scope_max_multiplicity does for the next declaration.
+NOTICE:  sift_col index "decl_facts_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('decl_facts_col');
+NOTICE:  sift_col index "decl_facts_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
+HINT:  The scope option needs this format: build the index without it for the older library.
 SET client_min_messages = warning;
 DROP INDEX decl_facts_col;
-ERROR:  index "decl_facts_col" does not exist
 -- two partial btrees that are not unique: which rows are pairs would be a guess, USING names one
 CREATE TABLE decl_soft (id serial PRIMARY KEY, dim_a_id int NOT NULL, tenant_id int NOT NULL, deleted_at timestamptz);
 CREATE INDEX decl_soft_active ON decl_soft (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
@@ -558,11 +565,11 @@ SET client_min_messages = notice;
 CREATE INDEX decl_facts_col ON decl_facts USING sift_col (id, dim_a_id, created_at) WITH (scope = 'tenant_id: dim_a_id -> decl_soft(dim_a_id, tenant_id) using decl_soft_other');
 NOTICE:  scope "tenant_id": the pairs of "decl_soft" (dim_a_id, tenant_id) are the distinct rows of its non-unique btree "decl_soft_other" that satisfy (id > 0)
 DETAIL:  A pair may be several rows: a read with the meaning of IN or EXISTS counts a fact once, a join counts it once for each row and runs as written.
-NOTICE:  scope "tenant_id": 0 entries for 300 rows (0.00 per row)
 NOTICE:  sift_col index "decl_facts_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('decl_facts_col');
-NOTICE:  sift_col index "decl_facts_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "decl_facts_col" has a scope: format minor 45 or newer, which a library before 5.0 cannot read
+DETAIL:  An entity segment of 16 units or more also has the scope sidecar, column format minor 53, which 5.0 and older refuse.
 HINT:  The scope option needs this format: build the index without it for the older library.
 SET client_min_messages = warning;
 -- a btree of other columns, a deferrable unique one and an included column are no pairs

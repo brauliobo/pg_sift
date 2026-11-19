@@ -330,19 +330,6 @@ scan_items(AggExec *ex)
 	}
 }
 
-/* The units only the leader holds, the last of its source (the delta of a scope read): after the items, which end before them */
-void
-scan_delta(AggExec *ex)
-{
-	uint32		nsb = sift_colsrc_nsb(ex->src);
-
-	if (ex->par != NULL && ex->delta_units > 0 && !ex->pass_stop)
-	{
-		scan_units(ex, nsb - ex->delta_units, nsb);
-		item_done(ex, ex->shared->nitems);
-	}
-}
-
 /* the table of this participant passed the bound of a node that cannot spill: the leader, who gets the error of a worker, runs the statement again */
 void
 par_note_overflow(AggExec *ex)

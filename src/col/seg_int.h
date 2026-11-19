@@ -496,6 +496,8 @@ typedef struct SegPriv
 	Size		pagg_end;		/* offset of the sidecar in the ZONES section */
 	struct SegNet *net;		/* the net pre-aggregates of the dirty units (col/seg/net.c), NULL: the segment has none */
 	bool		net_read;
+	struct SiftSide *side;		/* the scope sidecar (col/seg/side.c), NULL: the segment has none */
+	bool		side_read;
 	const uint8 *mirror;		/* the mirror of the header page (MirrorHeader first, in the copy of the header), NULL: the segment has none */
 	bool		mirror_sound;	/* its checksum was checked, when a read first took from it (or by the backend, for the same header: SegHead.mirror_sound) */
 	struct SegHead *head;		/* the segment's head, which keeps that check for the backend */

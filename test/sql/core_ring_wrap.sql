@@ -23,13 +23,10 @@ SELECT format(v.q, g) FROM generate_series(1, 10) g, LATERAL (VALUES
 -- read before and after the pairs change: the price of a read is asked for when the pairs changed since the segments were filled, and the patch is not forced
 SET sift.enable_agg = on;
 SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
 SELECT format('SELECT count(*), sum(amount) FROM events%1$s f WHERE f.dim_a_id IN (SELECT dim_a_id FROM pairs%1$s m WHERE m.tenant_id = 3)', g) FROM generate_series(1, 10) g \gexec
 SELECT format('INSERT INTO pairs%1$s VALUES (70, 3), (71, 3)', g) FROM generate_series(1, 10) g \gexec
 SELECT format('SELECT count(*), sum(amount) FROM events%1$s f WHERE f.dim_a_id IN (SELECT dim_a_id FROM pairs%1$s m WHERE m.tenant_id = 3)', g) FROM generate_series(1, 10) g \gexec
-SET sift.test_scope_patch = off;
 SELECT format('SELECT count(*), sum(amount) FROM events%1$s f WHERE f.dim_a_id IN (SELECT dim_a_id FROM pairs%1$s m WHERE m.tenant_id = 3)', g) FROM generate_series(1, 10) g \gexec
-RESET sift.test_scope_patch;
 RESET sift.enable_agg;
 RESET sift.agg_force;
 
@@ -70,10 +67,8 @@ CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount
 	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 VACUUM (FREEZE, ANALYZE) facts;
 INSERT INTO memberships (group_id, dim_a_id) VALUES (2, 55), (3, 56);
-SET sift.test_scope_patch = on;
 SELECT bool_and(scope_same(format('SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[%s]::int8[])', 1 + g % 6)))
 	AS two_path_reads_equal_the_joins FROM generate_series(1, 12) g;
-RESET sift.test_scope_patch;
 
 -- the estimates of a BM25 index for twelve queries
 CREATE TABLE bm (id int PRIMARY KEY, tenant int, body text);

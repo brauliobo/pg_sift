@@ -8,7 +8,6 @@ SET client_min_messages = warning;
 SET jit = off;
 SET sift.agg_force = on;
 SET sift.agg_preagg = off;
-SET sift.scope_max_multiplicity = 8;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;

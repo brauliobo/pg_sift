@@ -21,13 +21,16 @@
 #include "utils/tuplesort.h"
 
 #include "col/am.h"
+#include "col/order_bound.h"
 #include "col/pg.h"
 #include "col/seg.h"
 #include "core/check.h"
 #include "core/cmp.h"
+#include "core/dirchain.h"
 #include "core/errctx.h"
 #include "core/ops.h"
 #include "core/membudget.h"
+#include "core/visibility.h"
 
 #define corrupt SIFT_CORRUPT
 
@@ -44,18 +47,12 @@ typedef struct RowHash
 	uint64		tags;
 	bool		known;
 	bool		strovf;
-	uint64		khash[SIFT_SCOPE_MAX];	/* a row of the entities: hash and rest over the leaves the scope segments of each scope with cols(..) keep, and strovf of them as bits */
-	uint64		krest[SIFT_SCOPE_MAX];
-	uint8		kovf;
-	int			sleaf;			/* an entry of a scope segment: the derived key leaf that holds its scope key, and the key (a row of the entities: -1) */
-	int64		skey;
 } RowHash;
 
 /*
  * One verification, in steps (core/check.h): the store and the directory, each segment, then what needs all of them. Memory: the keys of the live rows go to a
- * sort that spills (maintenance_work_mem), and so do the hashes of the rows, which are kept only when the index has scope segments or heapallindexed compares the
- * rows with the heap: one sort in the order of (address, scope leaf, scope key), where the rows of the entities (scope leaf -1) come before their copies in the scope
- * segments, and the heap scan, which goes by block, walks it with the rows of one block at a time.
+ * sort that spills (maintenance_work_mem), and so do the hashes of the rows, which are kept only when heapallindexed compares the rows with the heap: one sort in
+ * the order of the address, and the heap scan, which goes by block, walks it with the rows of one block at a time.
  */
 typedef struct ColVerify
 {
@@ -66,17 +63,17 @@ typedef struct ColVerify
 	SiftColRel *r;
 	MemoryContext cxt;
 	SiftDirSnapshot *snap;
+	SiftDirPart *parts;			/* the partitions of the directory's chain: their entries are those of snap from first on */
+	int			nparts;
 	SiftColBatch *batch;
 	Tuplesortstate *keys;
-	Tuplesortstate *rows;		/* the RowHash of every live entry, entities and scope segments */
+	Tuplesortstate *rows;		/* the RowHash of every live entry */
 	TupleTableSlot *put;
 	TupleTableSlot *get;
 	bytea	   *img;			/* the RowHash being put */
-	uint64		nscope;			/* the live entries of the scope segments */
 	const SiftSegEntry *seg;	/* the segment of the step */
 	uint64		ndocs;
 	bool		hashes;
-	bool		scoped;			/* the index has scope segments: the sorted rows are read twice with heapallindexed */
 	bool		heapallindexed;
 	bool		sorted;
 } ColVerify;
@@ -127,7 +124,7 @@ value_hashes(RowHash *rh, const SiftColDef *def, const SiftColValue *v)
 static RowHash
 row_hash(const SiftColSchema *sc, const SiftColRow *row, SiftKey key, const bool *kept)
 {
-	RowHash		rh = {.key = key,.known = true,.sleaf = -1};
+	RowHash		rh = {.key = key,.known = true};
 
 	for (int c = 0; c < sc->ncols; c++)
 	{
@@ -206,65 +203,6 @@ check_wide(Relation index, const SiftColSchema *sc, const SiftColRow *row)
 	}
 }
 
-/* The derived key leaf a row of a scope segment holds a key in: exactly one of them (the scope the segment is of) */
-static int
-scope_leaf_of(Relation index, const SiftColSchema *sc, const SiftColBatch *b, uint32 r)
-{
-	int			leaf = -1;
-
-	for (int c = 0; c < sc->ncols; c++)
-		if ((sc->cols[c].flags & SIFT_COLD_SCOPE) && !sift_col_bit_test(b->col[c].nulls, r))
-		{
-			if (leaf >= 0)
-				corrupt(index, "Row (%u,%u) of a scope segment holds the keys of two scopes.", sift_key_block(b->keys[r]), (uint32) (b->keys[r] & 0xFFFF));
-			leaf = c;
-		}
-	if (leaf < 0)
-		corrupt(index, "Row (%u,%u) of a scope segment holds no scope key.", sift_key_block(b->keys[r]), (uint32) (b->keys[r] & 0xFFFF));
-	return leaf;
-}
-
-/* Does the scope s keep values of some of the leaves only (cols(..))? */
-static bool
-scope_partial(const SiftColRel *r, int s)
-{
-	for (int c = 0; c < r->schema->ncols; c++)
-		if (!r->scope_cols[s][c])
-			return true;
-	return false;
-}
-
-/* The hashes of a row of the entities, and of its copy in each scope with cols(..): the leaves that scope keeps */
-static RowHash
-entity_hash(const SiftColRel *r, const SiftColRow *row, SiftKey key)
-{
-	RowHash		rh = row_hash(r->schema, row, key, NULL);
-
-	for (int s = 0; s < r->nscope; s++)
-		if (scope_partial(r, s))
-		{
-			RowHash		k = row_hash(r->schema, row, key, r->scope_cols[s]);
-
-			rh.khash[s] = k.hash;
-			rh.krest[s] = k.rest;
-			rh.kovf |= k.strovf << s;
-		}
-	return rh;
-}
-
-/* Does the entry of a scope segment hold the values its row of the entities has, in the leaves the scope keeps */
-static bool
-scope_same(const SiftColRel *r, const RowHash *e, const RowHash *s)
-{
-	int			so = 0;
-
-	while (r->scope_leaf[so] != s->sleaf)
-		so++;
-	if (!scope_partial(r, so))
-		return e->strovf ? e->rest == s->rest : e->hash == s->hash;
-	return (e->kovf >> so & 1) ? e->krest[so] == s->rest : e->khash[so] == s->hash;
-}
-
 static void
 put_key(ColVerify *cv, SiftKey key)
 {
@@ -278,30 +216,28 @@ put_key(ColVerify *cv, SiftKey key)
 static TupleDesc
 rows_desc(void)
 {
-	TupleDesc	desc = CreateTemplateTupleDesc(4);
+	TupleDesc	desc = CreateTemplateTupleDesc(2);
 
 	TupleDescInitEntry(desc, 1, "key", INT8OID, -1, 0);
-	TupleDescInitEntry(desc, 2, "sleaf", INT4OID, -1, 0);
-	TupleDescInitEntry(desc, 3, "skey", INT8OID, -1, 0);
-	TupleDescInitEntry(desc, 4, "hashes", BYTEAOID, -1, 0);
+	TupleDescInitEntry(desc, 2, "hashes", BYTEAOID, -1, 0);
+	sift_tupdesc_finalize(desc);
 	return desc;
 }
 
 static Tuplesortstate *
 rows_begin(ColVerify *cv)
 {
-	AttrNumber	att[] = {1, 2, 3};
-	Oid			ops[] = {Int8LessOperator, Int4LessOperator, Int8LessOperator};
-	Oid			coll[] = {InvalidOid, InvalidOid, InvalidOid};
-	bool		nullsfirst[] = {false, false, false};
+	AttrNumber	att[] = {1};
+	Oid			ops[] = {Int8LessOperator};
+	Oid			coll[] = {InvalidOid};
+	bool		nullsfirst[] = {false};
 	TupleDesc	desc = rows_desc();
 
 	cv->put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 	cv->get = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
 	cv->img = palloc(VARHDRSZ + sizeof(RowHash));
 	SET_VARSIZE(cv->img, VARHDRSZ + sizeof(RowHash));
-	return tuplesort_begin_heap(desc, 3, att, ops, coll, nullsfirst, maintenance_work_mem, NULL,
-								cv->heapallindexed && cv->scoped ? TUPLESORT_RANDOMACCESS : TUPLESORT_NONE);
+	return tuplesort_begin_heap(desc, 1, att, ops, coll, nullsfirst, maintenance_work_mem, NULL, TUPLESORT_NONE);
 }
 
 static void
@@ -312,10 +248,8 @@ put_row(ColVerify *cv, const RowHash *rh)
 	memcpy(VARDATA(cv->img), rh, sizeof(RowHash));
 	ExecClearTuple(cv->put);
 	cv->put->tts_values[0] = Int64GetDatum((int64) rh->key);
-	cv->put->tts_values[1] = Int32GetDatum(rh->sleaf);
-	cv->put->tts_values[2] = Int64GetDatum(rh->skey);
-	cv->put->tts_values[3] = PointerGetDatum(cv->img);
-	memset(cv->put->tts_isnull, false, 4);
+	cv->put->tts_values[1] = PointerGetDatum(cv->img);
+	memset(cv->put->tts_isnull, false, 2);
 	ExecStoreVirtualTuple(cv->put);
 	CurrentResourceOwner = cv->owner;
 	tuplesort_puttupleslot(cv->rows, cv->put);
@@ -333,7 +267,7 @@ next_row(ColVerify *cv, RowHash *rh)
 	more = tuplesort_gettupleslot(cv->rows, true, false, cv->get, NULL);
 	CurrentResourceOwner = step;
 	if (more)
-		memcpy(rh, VARDATA_ANY(DatumGetByteaPP(slot_getattr(cv->get, 4, &isnull))), sizeof(RowHash));
+		memcpy(rh, VARDATA_ANY(DatumGetByteaPP(slot_getattr(cv->get, 2, &isnull))), sizeof(RowHash));
 	return more;
 }
 
@@ -350,57 +284,25 @@ sort_rows(ColVerify *cv)
 	cv->sorted = true;
 }
 
-/* The rows of a decoded unit: each is checked on its own, its key goes to the duplicate sort, and its hashes are sorted when a scope segment or the heap is compared with them */
+/* The rows of a decoded unit: each is checked on its own, its key goes to the duplicate sort, and its hash is sorted when the heap is compared with them */
 static void
-collect_batch(ColVerify *cv, const SiftColBatch *b, bool scope)
+collect_batch(ColVerify *cv, const SiftColBatch *b)
 {
-	const SiftColRel *rel = cv->r;
-	const SiftColSchema *sc = rel->schema;
+	const SiftColSchema *sc = cv->r->schema;
 	SiftColRow	row = {0};
 
 	for (uint32 r_ = 0; r_ < b->nrows; r_++)
 	{
 		sift_cbatch_row(b, r_, &row);
 		check_wide(cv->index, sc, &row);
-		if (!scope)
-			put_key(cv, b->keys[r_]);
-		if (!scope && !cv->hashes)
-			continue;
-		if (scope)
+		put_key(cv, b->keys[r_]);
+		if (cv->hashes)
 		{
-			int			leaf = scope_leaf_of(cv->index, sc, b, r_);
-			int			s = 0;
-			RowHash		rh;
-
-			while (rel->scope_leaf[s] != leaf)
-				s++;
-			rh = row_hash(sc, &row, b->keys[r_], rel->scope_cols[s]);
-			rh.sleaf = leaf;
-			rh.skey = b->col[leaf].key[r_];
-			put_row(cv, &rh);
-			cv->nscope++;
-		}
-		else
-		{
-			RowHash		rh = entity_hash(rel, &row, b->keys[r_]);
+			RowHash		rh = row_hash(sc, &row, b->keys[r_], NULL);
 
 			put_row(cv, &rh);
 		}
 	}
-}
-
-/* The entries of the scope segments in the order of (address, scope leaf, scope key) */
-static int
-scope_cmp(const void *a, const void *b)
-{
-	const RowHash *x = a,
-			   *y = b;
-
-	if (x->key != y->key)
-		return SIFT_CMP3(x->key, y->key);
-	if (x->sleaf != y->sleaf)
-		return SIFT_CMP3(x->sleaf, y->sleaf);
-	return SIFT_CMP3(x->skey, y->skey);
 }
 
 #ifdef SIFT_TESTING
@@ -423,7 +325,7 @@ typedef struct HeapCheck
 	bool		eof;
 } HeapCheck;
 
-/* The rows of the entities of block blk: the sorted rows below it are not heap tuples the scan can still reach, those of scope segments are not compared with the heap */
+/* The rows of block blk: the sorted rows below it are not heap tuples the scan can still reach */
 static void
 heap_window(HeapCheck *hc, BlockNumber blk)
 {
@@ -441,7 +343,7 @@ heap_window(HeapCheck *hc, BlockNumber blk)
 		if (sift_key_block(hc->ahead.key) > blk)
 			break;
 		hc->have_ahead = false;
-		if (sift_key_block(hc->ahead.key) < blk || hc->ahead.sleaf >= 0)
+		if (sift_key_block(hc->ahead.key) < blk)
 			continue;
 		if (hc->nwin == hc->capwin)
 		{
@@ -491,6 +393,24 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 }
 
 
+/* The lower bounds of the partitions are bounds and ascend strictly: the first need not be the empty one, a partition emptied by deletes may have been the first */
+static void
+step_part_bounds(void *arg)
+{
+	ColVerify  *cv = arg;
+	SiftBound	prev,
+				lo;
+
+	for (int k = 0; k < cv->nparts; k++)
+	{
+		if (!sift_bound_unpack(cv->parts[k].lo, &lo))
+			corrupt(cv->index, "The lower bound of the partition " UINT64_FORMAT " is no bound.", cv->parts[k].lineage);
+		if (k > 0 && sift_bound_cmp(&prev, &lo) >= 0)
+			corrupt(cv->index, "The bounds of partitions %d and %d do not ascend.", k - 1, k);
+		prev = lo;
+	}
+}
+
 static void
 step_store(void *arg)
 {
@@ -499,9 +419,39 @@ step_store(void *arg)
 	cv->r = sift_col_rel_private(cv->index, cv->cxt);
 	cv->batch = sift_cbatch_create(cv->cxt, cv->r->schema);
 	sift_store_verify(cv->index);
-	sift_dir_read(cv->index, cv->snap);
+	cv->snap = sift_dir_read(cv->index);
 	if (!(cv->snap->meta.flags & SIFT_COL_META_FLAG) || sift_dir_layout_differs(cv->snap, cv->r->schema->hash))
 		corrupt(cv->index, "The metapage does not describe this column layout.");
+	if (cv->snap->nchain > 0)
+	{
+		SiftSegEntry *segs;
+		SiftDirChain chain;
+
+		(void) sift_dirchain_read(cv->index, cv->snap->chain[0], cv->snap->version, 0, &segs, &chain);
+		cv->nparts = sift_dirchain_parts(&chain, &cv->parts);
+	}
+}
+
+/* The rows of a segment of a partition lie from its lower bound up to below the bound of the next partition: a segment that straddles two is read by neither's bound */
+static void
+verify_partition(ColVerify *cv, const SiftSegEntry *e, SiftColSegment *seg)
+{
+	int			at = (int) (e - cv->snap->segs);
+
+	for (int k = 0; k < cv->nparts; k++)
+	{
+		const SiftDirPart *p = &cv->parts[k];
+		SiftBound	lo,
+					next;
+
+		if (at < (int) p->first || at >= (int) (p->first + p->n))
+			continue;
+		if (!sift_bound_unpack(p->lo, &lo) || (k + 1 < cv->nparts && !sift_bound_unpack(cv->parts[k + 1].lo, &next)))
+			corrupt(cv->index, "The lower bound of the partition " UINT64_FORMAT " is no bound.", p->lineage);
+		if (!sift_colk_rows_within(seg, &lo, k + 1 < cv->nparts ? &next : NULL))
+			corrupt(cv->index, "Segment %llu holds rows outside its partition " UINT64_FORMAT " of the key.", (unsigned long long) e->gen, p->lineage);
+		return;
+	}
 }
 
 static void
@@ -510,18 +460,16 @@ verify_immutable(ColVerify *cv, const SiftSegEntry *e)
 	MemoryContext segcx = AllocSetContextCreate(cv->cxt, "sift_col verify segment", ALLOCSET_DEFAULT_SIZES);
 	SiftColSegment *seg = sift_cseg_open(cv->index, e, segcx);
 	uint64		live = sift_cseg_verify(seg);
-	bool		scope = (e->flags & SIFT_SEG_SCOPE) != 0;
 
 	if (live != sift_cseg_live_rows(seg))
 		corrupt(cv->index, "Segment %llu holds %llu live rows, its liveness says %llu.", (unsigned long long) e->gen,
 				(unsigned long long) live, (unsigned long long) sift_cseg_live_rows(seg));
-	if (scope && !sift_cseg_keyed(e))
-		corrupt(cv->index, "Scope segment %llu is not cut by key.", (unsigned long long) e->gen);
-	cv->ndocs += scope ? 0 : e->ndocs;
-	for (uint32 u = 0; u < seg->nsb; u++)
+	cv->ndocs += (e->flags & SIFT_SEG_SCOPE) ? 0 : e->ndocs;
+	verify_partition(cv, e, seg);
+	for (uint32 u = 0; u < seg->nsb && !(e->flags & SIFT_SEG_SCOPE); u++)
 	{
 		sift_cseg_decode_unit(seg, u, cv->batch);
-		collect_batch(cv, cv->batch, scope);
+		collect_batch(cv, cv->batch);
 	}
 	sift_cseg_close(seg);
 	MemoryContextDelete(segcx);
@@ -537,7 +485,7 @@ verify_wbuf(ColVerify *cv, const SiftSegEntry *e)
 	sift_cwbuf_verify(cv->index, e, cv->r->schema);
 	bs = sift_cwbuf_batches(cv->index, e, cv->r->schema, segcx, &n, NULL);
 	for (int j = 0; j < n; j++)
-		collect_batch(cv, bs[j], false);
+		collect_batch(cv, bs[j]);
 	MemoryContextDelete(segcx);
 }
 
@@ -569,48 +517,117 @@ step_totals(void *arg)
 }
 
 static void
-step_duplicates(void *arg)
+keys_begin(ColVerify *cv)
 {
-	ColVerify  *cv = arg;
+	ResourceOwner step = CurrentResourceOwner;
+
+	CurrentResourceOwner = cv->owner;
+	cv->keys = tuplesort_begin_datum(INT8OID, Int8LessOperator, InvalidOid, false, maintenance_work_mem, NULL, TUPLESORT_NONE);
+	CurrentResourceOwner = step;
+}
+
+static void
+keys_end(ColVerify *cv)
+{
+	ResourceOwner step = CurrentResourceOwner;
+
+	CurrentResourceOwner = cv->owner;
+	tuplesort_end(cv->keys);
+	CurrentResourceOwner = step;
+}
+
+static bool
+duplicate_key(ColVerify *cv, int64 *dup)
+{
 	Datum		key,
 				prev = 0;
 	bool		isnull,
 				first = true;
+	ResourceOwner step = CurrentResourceOwner;
 
 	CurrentResourceOwner = cv->owner;
 	tuplesort_performsort(cv->keys);
 	while (tuplesort_getdatum(cv->keys, true, false, &key, &isnull, NULL))
 	{
 		if (!first && key == prev)
-			corrupt(cv->index, "Row (%u,%u) is live in the index twice.", sift_key_block(DatumGetInt64(key)), (uint32) (DatumGetInt64(key) & 0xFFFF));
+		{
+			*dup = DatumGetInt64(key);
+			CurrentResourceOwner = step;
+			return true;
+		}
 		prev = key;
 		first = false;
 	}
+	CurrentResourceOwner = step;
+	return false;
 }
 
 static void
-step_scope(void *arg)
+put_batch_keys(ColVerify *cv, const SiftColBatch *b)
+{
+	for (uint32 r_ = 0; r_ < b->nrows; r_++)
+		put_key(cv, b->keys[r_]);
+}
+
+static void
+put_segment_keys(ColVerify *cv, const SiftSegEntry *e)
+{
+	MemoryContext segcx = AllocSetContextCreate(cv->cxt, "sift_col verify keys", ALLOCSET_DEFAULT_SIZES);
+
+	if (e->kind == SIFT_SEG_IMMUTABLE)
+	{
+		SiftColSegment *seg = sift_cseg_open(cv->index, e, segcx);
+
+		for (uint32 u = 0; u < seg->nsb; u++)
+		{
+			sift_cseg_decode_unit(seg, u, cv->batch);
+			put_batch_keys(cv, cv->batch);
+		}
+		sift_cseg_close(seg);
+	}
+	else
+	{
+		int			n;
+		SiftColBatch **bs = sift_cwbuf_batches(cv->index, e, cv->r->schema, segcx, &n, NULL);
+
+		for (int j = 0; j < n; j++)
+			put_batch_keys(cv, bs[j]);
+	}
+	MemoryContextDelete(segcx);
+}
+
+/*
+ * The keys of the live rows of the directory as it is now, read in one hold of the maintenance lock. The segments of the walk were read at different times, and the
+ * index's VACUUM clears the entry of a dead row before the heap reuses its address: a row read live in a segment before the clear and again at its reused address in a
+ * segment after it is not a duplicate, and only a view no VACUUM, promotion or merge can cut shows which a duplicate is.
+ */
+static void
+keys_in_one_view(ColVerify *cv)
+{
+	SiftDirSnapshot *view;
+
+	keys_end(cv);
+	keys_begin(cv);
+	LockPage(cv->index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
+	view = sift_dir_read(cv->index);
+	for (int i = 0; i < view->nsegs; i++)
+		if (view->segs[i].kind != SIFT_SEG_TOMB && !sift_seg_is_scope(&view->segs[i]))
+			put_segment_keys(cv, &view->segs[i]);
+	UnlockPage(cv->index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
+	pfree(view);
+}
+
+static void
+step_duplicates(void *arg)
 {
 	ColVerify  *cv = arg;
-	RowHash		e = {0},
-				s,
-				prev = {0};
+	int64		dup;
 
-	sort_rows(cv);
-	while (next_row(cv, &s))
+	if (duplicate_key(cv, &dup))
 	{
-		if (s.sleaf < 0)
-		{
-			e = s;
-			continue;
-		}
-		if (prev.sleaf >= 0 && scope_cmp(&s, &prev) == 0)
-			corrupt(cv->index, "Row (%u,%u) is live twice in the scope segments under the scope key " INT64_FORMAT ".", sift_key_block(s.key), (uint32) (s.key & 0xFFFF), s.skey);
-		if (e.sleaf >= 0 || e.key != s.key)
-			corrupt(cv->index, "Row (%u,%u) of the scope segments is not in the segments of the entities.", sift_key_block(s.key), (uint32) (s.key & 0xFFFF));
-		if (!scope_same(cv->r, &e, &s))
-			corrupt(cv->index, "The values of row (%u,%u) in the scope segments differ from those of the segments of the entities.", sift_key_block(s.key), (uint32) (s.key & 0xFFFF));
-		prev = s;
+		keys_in_one_view(cv);
+		if (duplicate_key(cv, &dup))
+			corrupt(cv->index, "Row (%u,%u) is live in the index twice.", sift_key_block(dup), (uint32) (dup & 0xFFFF));
 	}
 }
 
@@ -624,27 +641,9 @@ step_heap(void *arg)
 					  .tmp = AllocSetContextCreate(cv->cxt, "sift_col verify tuple", ALLOCSET_DEFAULT_SIZES)};
 
 	sort_rows(cv);
-	if (cv->nscope > 0)
-	{
-		ResourceOwner step = CurrentResourceOwner;
-
-		CurrentResourceOwner = cv->owner;
-		tuplesort_rescan(cv->rows);
-		CurrentResourceOwner = step;
-	}
 	info->ii_Concurrent = true;
 	table_index_build_scan(heap, cv->index, info, true, false, heap_cb, &hc, table_beginscan_strat(heap, cv->snapshot, 0, NULL, true, false));
 	table_close(heap, AccessShareLock);
-}
-
-/* Whether the index has a scope segment: its entries are compared with the rows of the entities, which then keep their hashes */
-static bool
-has_scope_segments(const SiftDirSnapshot *snap)
-{
-	for (int i = 0; i < snap->nsegs; i++)
-		if (sift_seg_is_scope(&snap->segs[i]))
-			return true;
-	return false;
 }
 
 static void
@@ -663,15 +662,13 @@ col_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 	cv->cxt = AllocSetContextCreate(old, "sift_col verify", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(cv->cxt);
 	SIFT_MEM_SCOPE(col_verify, cv->cxt);
-	cv->snap = palloc(sizeof(SiftDirSnapshot));
 	sift_errctx_push_diagnostic(&cv->errctx, RelationGetRelid(index));
 	/* the snapshot is registered before the directory is read, and kept: the segments of the copy stay readable while they are verified one at a time */
 	sound = listed = sift_check_step(ck, SIFT_CHECK_WHOLE, step_store, cv);
 	if (listed)
 	{
-		cv->scoped = has_scope_segments(cv->snap);
-		cv->hashes = heapallindexed || cv->scoped;
-		cv->keys = tuplesort_begin_datum(INT8OID, Int8LessOperator, InvalidOid, false, maintenance_work_mem, NULL, TUPLESORT_NONE);
+		cv->hashes = heapallindexed;
+		keys_begin(cv);
 		if (cv->hashes)
 			cv->rows = rows_begin(cv);
 	}
@@ -680,21 +677,22 @@ col_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 		cv->seg = &cv->snap->segs[i];
 		sift_errctx_segment(&cv->errctx, cv->seg->gen);
 		sound &= sift_check_step(ck, cv->seg->gen, step_segment, cv);
+		SIFT_TEST_GATE(sift_test_check_gate, 18);
 		SIFT_MEM_CHECKPOINT();
 	}
 	sift_errctx_whole(&cv->errctx);
 	if (sound)
 		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_totals, cv);
 	if (sound)
+		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_part_bounds, cv);
+	if (sound)
 		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_duplicates, cv);
-	if (sound && cv->nscope > 0)
-		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_scope, cv);
 	if (sound && heapallindexed)
 		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_heap, cv);
 	SIFT_MEM_CHECKPOINT();
 	sift_errctx_pop(&cv->errctx);
 	if (cv->keys)
-		tuplesort_end(cv->keys);
+		keys_end(cv);
 	if (cv->rows)
 		tuplesort_end(cv->rows);
 	UnregisterSnapshot(snapshot);

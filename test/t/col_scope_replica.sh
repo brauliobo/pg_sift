@@ -2,32 +2,17 @@
 # Physical streaming replica (pg_basebackup) of a sift_col index with a scope (test/t/col_index_replica.sh is the model): the primary inserts, updates and deletes facts, edits the pairs of the scope relation
 # (inserts, deletes, moves an entity between keys: entities in 0 to 6 keys), vacuums, promotes and merges, while readers on the standby run REPEATABLE READ transactions that read one key through the scope path and
 # through the plain join inside the same snapshot (they must agree; no failed transaction). After the replay the standby answers the scope forms (one key, a set counted once, per pair, top-N) as the primary's
-# plain join does, the index verifies there, a REINDEX of the primary (the scope segments written again) replays to a standby that reads them (stored where the reader may, exact always), and the promoted
-# standby takes fact and pair writes and its scope reads are the join. The reads are under the real verdict of the reader (the journal of the pairs says which entities changed; the first scope index of a relation
-# is made again by a REINDEX to take its stamps). SIFT_COL_REPLICA_SECS sets the churn (15 s, 3 quick).
+# plain join does, the index verifies there, a REINDEX of the primary (the scope sidecars written again) replays to a standby that has them and reads as the join does, and the promoted standby takes fact and
+# pair writes and its scope reads are the join. SIFT_COL_REPLICA_SECS sets the churn (15 s, 3 quick).
 . "$(dirname "$0")/lib.bash"
 . "$(dirname "$0")/lib_twohop.bash"
+. "$(dirname "$0")/lib_side.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
-plan 19
-node_init scp 49 "sift.scope_max_multiplicity = 64
-wal_level = replica
-max_wal_senders = 4
-wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
-autovacuum = off"
-node_start scp || bail "primary start failed"
-sql scp "CREATE EXTENSION pg_sift_test CASCADE" \
-	"CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false)" \
-	"INSERT INTO tenant_scope SELECT m, 1 + (m * 31 + j * 13) % 40 FROM generate_series(1, 600) m, generate_series(0, 5) j WHERE j < m % 7 AND m NOT BETWEEN 100 AND 109" \
-	"CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')" \
-	"CREATE TABLE events (id bigserial PRIMARY KEY, dim_a_id int, created_at timestamptz NOT NULL, v int NOT NULL, pad text) WITH (autovacuum_enabled = false)" \
-	"INSERT INTO events (dim_a_id, created_at, v, pad) SELECT CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 9999 ELSE 1 + (i * 7919) % 650 END,
-		timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 60) FROM generate_series(1, 30000) i" \
-	"CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (write_buffer_limit = 64, scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" \
-	"REINDEX INDEX events_col" \
-	"VACUUM (FREEZE, ANALYZE) events, tenant_scope" \
-	"CREATE FUNCTION scope_same(k int) RETURNS bool LANGUAGE plpgsql AS \$\$
+plan 26
+SAME_FN=$(cat <<'EOF'
+CREATE FUNCTION scope_same(k int) RETURNS bool LANGUAGE plpgsql AS $$
 	DECLARE a text; b text; c text; d text;
 	BEGIN
 		PERFORM set_config('sift.agg_force', 'on', true);
@@ -41,7 +26,26 @@ sql scp "CREATE EXTENSION pg_sift_test CASCADE" \
 			WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = k) ORDER BY created_at DESC, id DESC LIMIT 20) t;
 		IF a <> b OR c IS DISTINCT FROM d THEN RAISE EXCEPTION 'scope_same(%): scope % join %; top20 scope % join %', k, a, b, left(c, 60), left(d, 60); END IF;
 		RETURN true;
-	END \$\$" \
+	END $$
+EOF
+)
+node_init scp 49 "wal_level = replica
+max_wal_senders = 4
+wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
+autovacuum = off
+$SIDE_CONF"
+node_start scp || bail "primary start failed"
+sql scp "CREATE EXTENSION pg_sift_test CASCADE" \
+	"CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false)" \
+	"INSERT INTO tenant_scope SELECT m, 1 + (m * 31 + j * 13) % 40 FROM generate_series(1, 600) m, generate_series(0, 5) j WHERE j < m % 7 AND m NOT BETWEEN 100 AND 109" \
+	"CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')" \
+	"CREATE TABLE events (id bigserial PRIMARY KEY, dim_a_id int, created_at timestamptz NOT NULL, v int NOT NULL, pad text) WITH (autovacuum_enabled = false)" \
+	"INSERT INTO events (dim_a_id, created_at, v, pad) SELECT CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 9999 ELSE 1 + (i * 7919) % 650 END,
+		timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 60) FROM generate_series(1, 30000) i" \
+	"CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (write_buffer_limit = 64, key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" \
+	"REINDEX INDEX events_col" \
+	"VACUUM (FREEZE, ANALYZE) events, tenant_scope" \
+	"$SAME_FN" \
 	"CREATE FUNCTION scope_set_same(ks int8[]) RETURNS bool LANGUAGE plpgsql AS \$\$
 	DECLARE a text; b text;
 	BEGIN
@@ -115,17 +119,64 @@ check "the standby reads every key through the scope path as its join does" test
 check "the same for sets of keys counted once" test "$(sql scs "SELECT scope_set_same('{2,9,31}') AND scope_set_same('{1,2,3,4,5,6}') AND scope_set_same('{40,41}') AND scope_set_same('{}')")" == t
 check "the standby reads as the primary does" test "$(sql scs "$SC")" == "$(sql scp "$SC")"
 check "the index verifies on the standby" test -z "$(sql scs "SELECT sift.col_verify('events_col', true)" 2>&1)"
-ENT="SELECT (SELECT count(*) FROM sift._test_col_scope_entries('events_col')) > 0"
-check "the standby holds scope segments" test "$(sql scs "$ENT")" == t
-
-# the scope segments written again, replayed: the standby reads them (stored where the reader may) and exactly
+# the scope sidecars written again, replayed: the standby has them and reads exactly
 sql scp "REINDEX INDEX events_col" >/dev/null
 catchup scp scs
-ENTJ="SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col') WHERE tid IN (SELECT ctid FROM events))
-	= (SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id)"
-check "after a REINDEX of the primary the scope entries of the standby are the join" test "$(sql scs "$ENTJ")" == t
+check "after a REINDEX of the primary the standby has the sidecar of the entity segments" test "$(side_format scs events_col)" == 53
 check "... and its reads are the join's" test "$(sql scs "$SC")" == t
 check "the index verifies on the standby after the REINDEX" test -z "$(sql scs "SELECT sift.col_verify('events_col', true)" 2>&1)"
+
+# a concurrent build while the writers of the primary go on, replayed by the standby: an index of a copy of the facts with the same scope is made with CREATE INDEX CONCURRENTLY and made again with REINDEX INDEX
+# CONCURRENTLY beside inserts of facts and edits of the pairs; a session of the standby that took its REPEATABLE READ snapshot before each build reads, under it, as the join does (the primary holds back what it
+# needs: hot_standby_feedback). Once the primary has vacuumed, both nodes read the keys through the second index as the join does and take the runs of its sidecars (written by the build, with no maintenance).
+SAME_B=${SAME_FN//scope_same/scope_same_b}
+SAME_B=${SAME_B//\'events_col\'/\'events_b_col\'}
+SAME_B=${SAME_B//events e/events_b e}
+sql scp "CREATE TABLE events_b (LIKE events INCLUDING DEFAULTS) WITH (autovacuum_enabled = false)" "ALTER TABLE events_b ADD PRIMARY KEY (id)" "INSERT INTO events_b SELECT * FROM events" "VACUUM (FREEZE, ANALYZE) events_b" "$SAME_B" >/dev/null || bail "the table of the second index failed"
+catchup scp scs
+CIC_B="CREATE INDEX CONCURRENTLY events_b_col ON events_b USING sift_col (id, dim_a_id, created_at, v) WITH (write_buffer_limit = 64, key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')"
+RUN_B="SELECT bool_and(scope_same_b(k)) FROM generate_series(1, 41) k"
+runs_b() { # NODE: the runs the reads of every key take through the second index
+	local k n=0
+	for k in $(seq 1 41); do n=$((n + $(side_runs "$1" "SELECT v, count(*), sum(id) FROM events_b e WHERE sift.in_scope('events_b_col'::regclass, 'tenant_id', e.dim_a_id, $k) GROUP BY v ORDER BY v"))); done
+	echo "$n"
+}
+fact_inserts() { # a few batches of facts (they wait in the write buffer, in no segment)
+	local i
+	for i in $(seq 1 20); do sql scp "INSERT INTO events_b (dim_a_id, created_at, v, pad) SELECT 1 + (random() * 660)::int, timestamptz '2026-06-01' + g * interval '1 minute', g % 10, 'y' FROM generate_series(1, 20) g" >/dev/null; done
+}
+pair_edits() { # a few edits of the pairs of the first dim_b: the runs whose span has none keep their summaries, and the journal is far from a rewrite that would trim the stamps
+	local i
+	for i in $(seq 1 30); do sql scp "DELETE FROM tenant_scope WHERE dim_a_id = $((1 + i % 20)) AND tenant_id = $((40 - i % 9))" "INSERT INTO tenant_scope VALUES ($((1 + i % 20)), $((40 - (i + 3) % 9))) ON CONFLICT DO NOTHING" >/dev/null; done
+}
+concurrent_under_writers() { # WHAT STATEMENT
+	side_rr_open scs
+	local xmin
+	xmin=$(side_rr_run "SELECT txid_snapshot_xmin(txid_current_snapshot())")
+	wait_for "[[ \$(sql scp \"SELECT coalesce(xmin::text::bigint <= $xmin, false) FROM pg_replication_slots WHERE slot_name = 'scs'\") == t ]]" 60 || bail "$1: the primary does not hold the xmin of the snapshot"
+	fact_inserts &
+	INSERTS=$!
+	pair_edits &
+	EDITS=$!
+	sql scp "$2" >"$P/build.out" 2>&1
+	check "$1: the build ends beside inserts of facts and edits of the pairs" test $? == 0
+	wait "$INSERTS" "$EDITS"
+	catchup scp scs
+	check "$1: the sidecars are on the standby before any maintenance of the index (format 53)" test "$(side_format scs events_b_col)" == 53
+	rr=$(side_rr_run "SELECT bool_and(scope_same_b(k)) FROM generate_series(1, 41) k")
+	check "$1: a REPEATABLE READ snapshot of the standby older than the build reads the join's rows" test "$rr" == t
+	side_rr_close
+	wait_for "[[ \$(sql scp \"SELECT coalesce(xmin::text::bigint > $xmin, true) FROM pg_replication_slots WHERE slot_name = 'scs'\") == t ]]" 60 || bail "$1: the primary holds the xmin of the closed snapshot"
+	sql scp "VACUUM (INDEX_CLEANUP on) events_b" "SELECT pg_current_xact_id()" >/dev/null   # a transaction after the build: the standby's snapshots are newer than the index's row of pg_index (indcheckxmin)
+	catchup scp scs
+	local sp ss rp rs v
+	sp=$(sql scp "$RUN_B"); ss=$(sql scs "$RUN_B"); rp=$(runs_b scp); rs=$(runs_b scs); v=$(sql scs "SELECT sift.col_verify('events_b_col', true)" 2>&1)
+	check "$1: both nodes read the keys through the index as the join does and take its runs; the index verifies on the standby" test "$sp|$ss" == "t|t" -a "$rp" -gt 0 -a "$rs" -gt 0 -a -z "$v"
+}
+sql scp "ALTER SYSTEM SET sift.col_auto_merge = off" "SELECT pg_reload_conf()" >/dev/null   # the merge step would write the sidecars again behind the reads
+concurrent_under_writers "CREATE INDEX CONCURRENTLY" "$CIC_B"
+concurrent_under_writers "REINDEX INDEX CONCURRENTLY" "REINDEX INDEX CONCURRENTLY events_b_col"
+sql scp "ALTER SYSTEM RESET sift.col_auto_merge" "SELECT pg_reload_conf()" >/dev/null
 
 # the scope of two paths (lib_twohop.bash), made on the primary after the standby exists: edits of the three tables on the primary while readers of the standby compare the scope path and the join of the
 # union inside each REPEATABLE READ snapshot
@@ -150,14 +201,13 @@ check "two paths: readers on the standby, the scope path and the join of the uni
 catchup scp scs
 check "two paths: the standby reads as the join of the union, and as the primary does" test "$(twohop_reads scs)|$(sql scs "SELECT bool_and(hop_same(k)) FROM generate_series(1, 17) k")" == "same|t" \
 	-a "$(sql scs "$TWOHOP_Q_PAIR")" == "$(sql scp "$TWOHOP_Q_PAIR")"
-diag "two paths: the standby says $(twohop_why scs); stamps $(twohop_vouch scs)"
 sql scp "REINDEX INDEX hop_col" >/dev/null
 catchup scp scs
 hop_after_reindex() {
-	out="entries $(sql scs "$TWOHOP_ENTRIES"), reads $(twohop_reads scs), verify: $(sql scs "SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('grants_by_member', true)" "SELECT sift.col_verify('grants_by_group', true)" "SELECT sift.col_verify('memberships_by_member', true)" 2>&1)"
-	[[ $out == "entries t, reads same, verify: " ]]
+	out="reads $(twohop_reads scs), verify: $(sql scs "SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('grants_by_member', true)" "SELECT sift.col_verify('grants_by_group', true)" "SELECT sift.col_verify('memberships_by_member', true)" 2>&1)"
+	[[ $out == "reads same, verify: " ]]
 }
-check "two paths: after a REINDEX of the primary the entries of the standby are the join, its reads are the join's and the indexes verify" hop_after_reindex
+check "two paths: after a REINDEX of the primary the reads of the standby are the join's and the indexes verify" hop_after_reindex
 
 node_promote scs
 for _ in $(seq 100); do [[ $(sql scs "SELECT pg_is_in_recovery()") == f ]] && break; sleep 0.1; done

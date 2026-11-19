@@ -15,7 +15,6 @@ src/col/codec_parse.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec
 src/col/ctest.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
 src/col/order.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
 src/col/scan/gfree.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
-src/col/scan/scope_segrows.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
 src/col/scan_int.h	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
 src/col/types.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
 src/col/unit.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c

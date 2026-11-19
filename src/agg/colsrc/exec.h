@@ -110,6 +110,7 @@ typedef struct SiftSrcPrune
 	int			nkids;
 	const struct SiftSrcPrune *kids;
 	int			nulltest;		/* SSN_ISNULL / SSN_NOTNULL: the entry tests the NULLs of the unit's zone (a unit with none, or with only NULLs, is skipped); lo and hi are unused */
+	bool		scope;			/* the member conjunct of a scope read: a run of the scope sidecar is the key's rows and answers for it (SiftColSuperTest.scope) */
 } SiftSrcPrune;
 #define SSN_ISNULL		1
 #define SSN_NOTNULL		2

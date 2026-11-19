@@ -6,7 +6,6 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.col_unit_rows = 1000;
 SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
 
 -- 400 members, 100 facts each, one member for each day: the units of the entity rows (cut by day, 1,000 rows) hold ten members each, and the facts of the members that change are in ten of the 40 units.
 -- The same data with an integer, text, varchar and uuid member, and with a text member of 300 bytes and more (every unit stores its strings inline)

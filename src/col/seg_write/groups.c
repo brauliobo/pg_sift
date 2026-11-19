@@ -15,62 +15,69 @@
  * its additions, which the units fix). The first calendar dim is a cube of its own (calspec: cells of a day, no measures) that the id sets by month are asked by: it is kept with them, so
  * that the reads of the dims never cross it
  */
-static void
-kg_spec(SiftColSegWriter *w, KeyGroups *g)
+int
+segw_group_spec(const SiftColSchema *s, const SiftCPaggSpec *pagg, SiftCPaggSpec *spec, SiftCPaggSpec *calspec, int *leaf)
 {
-	const SiftColSchema *s = w->schema;
 	bool		seen[SIFT_COL_MAX_COLS] = {false};
+	int			nleaf = 0;
 
-	g->spec = w->pagg;
-	g->spec.ndims = 0;
-	g->spec.nrollups = 0;
-	for (int r = 0; r < w->pagg.nrollups; r++)
-		if (w->pagg.rollup[r].list < 0)
+	*spec = *pagg;
+	spec->ndims = 0;
+	spec->nrollups = 0;
+	for (int r = 0; r < pagg->nrollups; r++)
+		if (pagg->rollup[r].list < 0)
 		{
-			SiftCPaggRollup *ru = &g->spec.rollup[g->spec.nrollups++];
+			SiftCPaggRollup *ru = &spec->rollup[spec->nrollups++];
 
-			*ru = w->pagg.rollup[r];
+			*ru = pagg->rollup[r];
 			for (int d = 0; d < ru->ndims; d++)
 				seen[ru->dim[d]] = true;
 			for (int m = 0; m < ru->nmeas; m++)
 				seen[ru->meas[m]] = true;
 		}
-	g->spec.permille = SIFT_PAGG_KEYGROUP_PERMILLE;
-	g->spec.max_groups = SIFT_PAGG_CUBE_GROUPS;
-	g->spec.minmax_groups = SIFT_PAGG_KEYGROUP_MINMAX_GROUPS;
-	g->calspec = g->spec;
-	g->calspec.ndims = g->calspec.nrollups = 0;
-	g->calspec.cal_groups = SIFT_PAGG_KEYGROUP_CAL_GROUPS;
-	for (int d = 0; d < w->pagg.ndims; d++)
+	spec->permille = SIFT_PAGG_KEYGROUP_PERMILLE;
+	spec->max_groups = SIFT_PAGG_CUBE_GROUPS;
+	spec->minmax_groups = SIFT_PAGG_KEYGROUP_MINMAX_GROUPS;
+	*calspec = *spec;
+	calspec->ndims = calspec->nrollups = 0;
+	calspec->cal_groups = SIFT_PAGG_KEYGROUP_CAL_GROUPS;
+	for (int d = 0; d < pagg->ndims; d++)
 	{
-		SiftCPaggDim dim = w->pagg.dim[d];
+		SiftCPaggDim dim = pagg->dim[d];
 
-		if (dim.cal && g->calspec.ndims == 0)
+		if (dim.cal && calspec->ndims == 0)
 		{
 			dim.grain = SIFT_CAL_DAY;		/* a key through the zone of the session is exact at the day of a date only (docs/COL-PREAGG.md) */
 			dim.nmeas = 0;
-			g->calspec.dim[g->calspec.ndims++] = dim;
+			calspec->dim[calspec->ndims++] = dim;
 			seen[dim.leaf] = true;
 		}
 		if (dim.cal || s->cols[dim.leaf].parent >= 0 || s->cols[dim.leaf].type == SIFT_COLT_DATE || s->cols[dim.leaf].type == SIFT_COLT_TIMESTAMP ||
 			s->cols[dim.leaf].type == SIFT_COLT_TIMESTAMPTZ)
 			continue;			/* the calendar cells of a time column answer what its histogram does */
 		dim.nmeas = 0;
-		for (int m = 0; m < w->pagg.dim[d].nmeas; m++)
+		for (int m = 0; m < pagg->dim[d].nmeas; m++)
 		{
-			int			leaf = w->pagg.dim[d].meas[m];
+			int			l = pagg->dim[d].meas[m];
 
-			if (s->cols[leaf].store == SIFT_COLS_INT && s->cols[leaf].parent < 0)
-				dim.meas[dim.nmeas++] = leaf;
+			if (s->cols[l].store == SIFT_COLS_INT && s->cols[l].parent < 0)
+				dim.meas[dim.nmeas++] = l;
 		}
-		g->spec.dim[g->spec.ndims++] = dim;
+		spec->dim[spec->ndims++] = dim;
 		seen[dim.leaf] = true;
 		for (int m = 0; m < dim.nmeas; m++)
 			seen[dim.meas[m]] = true;
 	}
 	for (int c = 0; c < s->ncols; c++)
 		if (seen[c])
-			g->leaf[g->nleaf++] = c;
+			leaf[nleaf++] = c;
+	return nleaf;
+}
+
+static void
+kg_spec(SiftColSegWriter *w, KeyGroups *g)
+{
+	g->nleaf = segw_group_spec(w->schema, &w->pagg, &g->spec, &g->calspec, g->leaf);
 }
 
 /* The rows the open group's arrays start with: most keys hold few, and each array of a leaf of the 131,072 rows a group may reach is a megabyte */

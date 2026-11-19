@@ -1,6 +1,7 @@
 # job	PostgreSQL 17 lane seconds	PostgreSQL 18 lane seconds: the median of the passing jobs of runs 42109149971 42118704860 42130202667 42138245661 (scripts/ci-times.py --weights; name three or more); the shards are cut by these, the other jobs weigh 10
 # a job that passed in none of these runs keeps the seconds it had
 # tap-shell-tbl_twin_fuzz*/col_twin_fuzz*: lane seconds of one PostgreSQL 18 run (hosted 42815952773), the same on 17 until measured
+# tap-shell-col_scope_fuzz*/col_scope_oracle*: seconds of one run on a quiet machine, until a hosted run replaces them
 tap-shell-compat_matrix	0	867
 difftest-2	851	851
 difftest-1	760	760
@@ -327,10 +328,15 @@ tap-shell-col_rollup_ondemand	20	19
 tap-shell-col_track_restore	20	20
 tap-shell-col_connect_dump	20	20
 tap-shell-col_connect_downgrade	35	35
-tap-shell-col_scope_fuzz	300	300
+tap-shell-col_scope_fuzz	110	110
+tap-shell-col_scope_fuzz_b	90	90
+tap-shell-col_scope_oracle	200	200
+tap-shell-col_scope_oracle_b	250	250
+tap-shell-col_scope_oracle_c	265	265
 tap-shell-col_scope_textkey_fuzz	200	200
 tap-shell-col_scope_crash	60	60
 tap-shell-col_scope_replica	50	50
+tap-shell-col_scope_codedkey_replica	20	20
 tap-shell-col_scope_concurrent_build	30	30
 tap-shell-col_build_concurrent_locks	90	90
 tap-shell-col_scope_first_stamp	30	30

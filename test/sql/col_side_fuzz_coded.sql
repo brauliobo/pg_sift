@@ -1,0 +1,168 @@
+-- col_side_fuzz with a text and a uuid scope key (the keys of the runs are codes of the value store of the key column) and with a text member (a run keeps a Bloom filter of the journal words
+-- of its members). Seeded random rounds of pair inserts, deletes and moves, row inserts, deletes and updates, VACUUM, promotion and merge (which write the sidecar again, with the codes the store
+-- holds): after every round the rows the entity scan gives for each key of each type, with the runs and without them, are the join's, and runs are taken.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.col_unit_rows = 150;
+SET timezone = 'UTC';
+SET jit = off;
+SET client_min_messages = warning;
+
+CREATE FUNCTION key_of(variant text, k int) RETURNS text LANGUAGE sql IMMUTABLE AS
+$$ SELECT CASE variant WHEN 'u' THEN format('md5(%L)::uuid', 'tenant-' || k) WHEN 'm' THEN k::text ELSE quote_literal('tenant-' || k) END $$;
+
+CREATE FUNCTION col_of(variant text) RETURNS text LANGUAGE sql IMMUTABLE AS
+$$ SELECT CASE variant WHEN 'm' THEN 'account' ELSE 'dim_a_id' END $$;
+
+CREATE FUNCTION mem_of(variant text, m int) RETURNS text LANGUAGE sql IMMUTABLE AS
+$$ SELECT CASE variant WHEN 'm' THEN quote_literal('acct-' || m) ELSE m::text END $$;
+
+CREATE TABLE pairs_t (dim_a_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+CREATE TABLE pairs_u (dim_a_id int NOT NULL, tenant_id uuid NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO pairs_t SELECT m, 'tenant-1' FROM generate_series(1, 80) m WHERE m % 7 <> 0;
+INSERT INTO pairs_t SELECT m, 'tenant-2' FROM generate_series(1, 80) m WHERE m % 3 = 0;
+INSERT INTO pairs_t SELECT m, 'tenant-3' FROM generate_series(30, 50) m;
+INSERT INTO pairs_t SELECT m, 'tenant-4' FROM generate_series(1, 80) m WHERE m % 4 = 1;
+INSERT INTO pairs_u SELECT dim_a_id, md5(tenant_id)::uuid FROM pairs_t;
+CREATE TABLE pairs_m (account text NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (account, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO pairs_m SELECT 'acct-' || dim_a_id, substr(tenant_id, 8)::int FROM pairs_t;
+CREATE INDEX pairs_t_journal ON pairs_t USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX pairs_u_journal ON pairs_u USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX pairs_m_journal ON pairs_m USING sift_col (account, tenant_id) WITH (track_changes = 'ctid');
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 80, timestamptz '2025-01-01' + i * interval '17 minutes', i % 7, (i * 37) % 1000 FROM generate_series(1, 24000) i;
+CREATE TABLE m_events (id int PRIMARY KEY, account text NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO m_events SELECT id, 'acct-' || dim_a_id, created_at, kind, v FROM events;
+VACUUM (FREEZE, ANALYZE) events, m_events, pairs_t, pairs_u, pairs_m;
+CREATE INDEX events_t ON events USING sift_col (id, dim_a_id, created_at, kind, v)
+	WITH (key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at', scope = 'tenant_id: dim_a_id -> pairs_t(dim_a_id, tenant_id)');
+CREATE INDEX events_u ON events USING sift_col (id, dim_a_id, created_at, kind, v)
+	WITH (key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at', scope = 'tenant_id: dim_a_id -> pairs_u(dim_a_id, tenant_id)');
+CREATE INDEX events_m ON m_events USING sift_col (id, account, created_at, kind, v)
+	WITH (key_cut = 'created_at', scope = 'tenant_id: account -> pairs_m(account, tenant_id)');
+
+CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	DROP TABLE IF EXISTS prop_rows;
+	EXECUTE 'CREATE TEMP TABLE prop_rows AS ' || q;
+	SELECT md5(coalesce(string_agg(t::text, '|' ORDER BY t::text), '')) INTO r FROM prop_rows t;
+	DROP TABLE prop_rows;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION runs_of(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; r int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Scope Sidecar Runs' THEN r := regexp_replace(l, '^.*: ', '')::int; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION q(variant text, k int) RETURNS text LANGUAGE sql AS
+$$ SELECT format('SELECT kind, count(*) AS n, sum(v) AS s FROM %1$s e WHERE e.%3$s IN (SELECT %3$s FROM pairs_%2$s WHERE tenant_id = %4$s) GROUP BY kind',
+                 CASE variant WHEN 'm' THEN 'm_events' ELSE 'events' END, variant, col_of(variant), key_of(variant, k)) $$;
+
+CREATE TABLE verdicts (round int, variant text, key int, same_with_runs bool, same_without_runs bool, runs int);
+
+CREATE FUNCTION check_round(round int) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE variant text; key int; join_md5 text; with_md5 text; without_md5 text; runs int;
+BEGIN
+	FOREACH variant IN ARRAY ARRAY['t', 'u', 'm'] LOOP
+		FOR key IN 1..4 LOOP
+			SET LOCAL sift.enable_agg = off;
+			join_md5 := rows_md5(q(variant, key));
+			SET LOCAL sift.enable_agg = on;
+			SET LOCAL sift.test_scope_entity = on;
+			SET LOCAL sift.test_scope_no_side = off;
+			with_md5 := rows_md5(q(variant, key));
+			runs := runs_of(q(variant, key));
+			SET LOCAL sift.test_scope_no_side = on;
+			without_md5 := rows_md5(q(variant, key));
+			INSERT INTO verdicts VALUES (round, variant, key, with_md5 = join_md5, without_md5 = join_md5, runs);
+		END LOOP;
+	END LOOP;
+END $$;
+
+-- one draw of the round, applied to the pairs of both types of key
+CREATE FUNCTION step(round int) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE op int := floor(random() * 7); m int := 1 + floor(random() * 80); k int := 1 + floor(random() * 4); n int; variant text;
+BEGIN
+	IF op BETWEEN 3 AND 5 THEN
+		IF op = 3 THEN
+			SELECT max(id) INTO n FROM events;
+			INSERT INTO events SELECT n + i, 1 + (n + i) % 80, timestamptz '2025-01-01' + (n + i) * interval '17 minutes', (n + i) % 7, ((n + i) * 37) % 1000 FROM generate_series(1, 200) i;
+			INSERT INTO m_events SELECT id, 'acct-' || dim_a_id, created_at, kind, v FROM events WHERE id > n;
+		ELSIF op = 4 THEN
+			DELETE FROM events WHERE dim_a_id = m AND id % 3 = 0;
+			DELETE FROM m_events WHERE account = 'acct-' || m AND id % 3 = 0;
+		ELSE
+			UPDATE events SET v = v + 1, kind = (kind + 1) % 7 WHERE dim_a_id = m AND id % 5 = 0;
+			UPDATE m_events SET v = v + 1, kind = (kind + 1) % 7 WHERE account = 'acct-' || m AND id % 5 = 0;
+		END IF;
+		RETURN;
+	END IF;
+	FOREACH variant IN ARRAY ARRAY['t', 'u', 'm'] LOOP
+		IF op = 0 THEN
+			EXECUTE format('DELETE FROM pairs_%s WHERE %s = %s AND tenant_id = %s', variant, col_of(variant), mem_of(variant, m), key_of(variant, k));
+		ELSIF op = 1 THEN
+			EXECUTE format('INSERT INTO pairs_%s VALUES (%s, %s) ON CONFLICT DO NOTHING', variant, mem_of(variant, m), key_of(variant, k));
+		ELSIF op = 2 THEN
+			EXECUTE format('UPDATE pairs_%1$s SET tenant_id = %3$s WHERE %5$s = %2$s AND tenant_id = %4$s AND NOT EXISTS (SELECT 1 FROM pairs_%1$s t WHERE t.%5$s = %2$s AND t.tenant_id = %3$s)',
+			               variant, mem_of(variant, m), key_of(variant, k), key_of(variant, 1 + k % 4), col_of(variant));
+		ELSE
+			EXECUTE format('DELETE FROM pairs_%s WHERE %s = %s AND tenant_id = %s', variant, col_of(variant), mem_of(variant, m), key_of(variant, k));
+			EXECUTE format('INSERT INTO pairs_%s VALUES (%s, %s) ON CONFLICT DO NOTHING', variant, mem_of(variant, m), key_of(variant, 1 + k % 4));
+		END IF;
+	END LOOP;
+END $$;
+
+CREATE FUNCTION round_of(round int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	IF round % 3 <> 0 THEN
+		PERFORM sift.col_promote('events_t');
+		PERFORM sift.col_merge('events_t');
+		PERFORM sift.col_maintain('events_t');
+		PERFORM sift.col_promote('events_u');
+		PERFORM sift.col_merge('events_u');
+		PERFORM sift.col_maintain('events_u');
+		PERFORM sift.col_promote('events_m');
+		PERFORM sift.col_merge('events_m');
+		PERFORM sift.col_maintain('events_m');
+	END IF;
+	PERFORM step(round);
+	IF round % 2 = 0 THEN PERFORM step(round); END IF;
+	PERFORM check_round(round);
+END $$;
+
+-- a merge while a transaction holds a pair change back (its own here) ends: a sidecar made under the same horizon would be as stale as the one it replaces
+SET statement_timeout = '120s';
+BEGIN;
+DELETE FROM pairs_t WHERE dim_a_id = 9;
+DELETE FROM pairs_u WHERE dim_a_id = 9;
+DELETE FROM pairs_m WHERE account = 'acct-9';
+SELECT sift.col_merge('events_t') >= 0 AND sift.col_merge('events_u') >= 0 AND sift.col_merge('events_m') >= 0 AS the_merges_end;
+ROLLBACK;
+RESET statement_timeout;
+
+SELECT setseed(0.42);
+SELECT check_round(0);
+\set ECHO none
+SELECT format('SELECT round_of(%s)', r) FROM generate_series(1, 40) r \gexec
+\set ECHO all
+VACUUM events, m_events, pairs_t, pairs_u, pairs_m;
+SELECT check_round(41);
+SELECT sift.col_merge('events_t') IS NOT NULL AND sift.col_merge('events_u') IS NOT NULL AND sift.col_merge('events_m') IS NOT NULL AS merged;
+SELECT check_round(42);
+
+SELECT variant, count(*) AS checks, count(*) FILTER (WHERE NOT same_with_runs) AS wrong_with_runs, count(*) FILTER (WHERE NOT same_without_runs) AS wrong_without_runs,
+       count(*) FILTER (WHERE runs > 0) > 0 AS runs_taken FROM verdicts GROUP BY 1 ORDER BY 1;
+SELECT sift.col_verify('events_t', true) IS NOT NULL AS verified_t, sift.col_verify('events_u', true) IS NOT NULL AS verified_u, sift.col_verify('events_m', true) IS NOT NULL AS verified_m;
+
+DROP FUNCTION round_of(int), step(int), check_round(int), q(text, int), runs_of(text), rows_md5(text), key_of(text, int), col_of(text), mem_of(text, int);
+DROP TABLE verdicts, events, m_events, pairs_t, pairs_u, pairs_m;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

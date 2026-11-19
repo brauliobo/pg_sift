@@ -103,7 +103,7 @@ sift_col_open_table(Relation rel, const SiftColSchema *schema, const SiftDirSnap
 	SiftColSource *src = col_source(rel, rel, schema, mcxt, SIFT_COLO_NOWBUF | SIFT_COLO_NOCHECKS | COLO_TABLE);
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 
-	src->dir = *dir;
+	src->dir = sift_dir_copy(dir);
 	src->seg = palloc0(dir->nsegs * sizeof(ColCursor));
 	for (int i = 0; i < dir->nsegs; i++)
 	{
@@ -138,15 +138,16 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	src->snap = (flags & SIFT_COLO_SNAP_HELD) ? snapshot : RegisterSnapshot(snapshot);
 	leader_end = scan_view_load(src, heap, view);
 	segments_pin(src, flags);
-	sift_quarantine_net(index, src->dir.meta.flags);
+	sift_quarantine_net(index, src->dir->meta.flags);
 	col_hf_open(src);
 	SIFT_COL_OPEN_GATE();
-	if (!(src->dir.meta.flags & SIFT_COL_META_FLAG) || sift_dir_layout_differs(&src->dir, src->schema->hash))
+	if (!(src->dir->meta.flags & SIFT_COL_META_FLAG) || sift_dir_layout_differs(src->dir, src->schema->hash))
 		sift_lane_layout_error(index, "column definitions");
-	src->seg = palloc0(src->dir.nsegs * sizeof(ColCursor));
-	for (int i = 0; i < src->dir.nsegs; i++)
-		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
-			src->seg[src->nseg++].seg = sift_cseg_open(index, &src->dir.segs[i], mcxt);
+	src->seg = palloc0(src->dir->nsegs * sizeof(ColCursor));
+	for (int i = 0; i < src->dir->nsegs; i++)
+		if (src->dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			src->seg[src->nseg++].seg = sift_cseg_open(index, &src->dir->segs[i], mcxt);
+	col_dv_open(src);
 	/* no index: segments_current (scan_unit.c) is the directory rule of a column scan, and it holds the map's trust through a promotion, which adds a segment and replaces none */
 	sift_vis_begin(&src->vis, heap, snapshot, NULL, 0);
 	SIFT_COL_JITTER();
@@ -241,7 +242,7 @@ sift_col_heap_sbs(const SiftColSource *src)
 const struct SiftMetaPageData *
 sift_col_source_meta(const SiftColSource *src)
 {
-	return &src->dir.meta;
+	return &src->dir->meta;
 }
 
 const SiftColCounters *
@@ -280,38 +281,6 @@ sift_col_add_batches(SiftColSource *src, SiftColBatch *const *batches, int nbatc
 	src->nwtok = -1;
 	for (int i = 0; i < nbatches; i++)
 		scan_add_mem(src, batches[i], false, InvalidTransactionId, !sift_test_no_roots);
-}
-
-void
-scan_load_wbuf(SiftColSource *src)
-{
-	bool		own = src->nwtok >= 0;
-
-	if (own)
-	{
-		src->wtok = MemoryContextAllocZero(src->mcxt, Max(src->dir.nsegs, 1) * sizeof(SiftCWbufToken));
-		src->nwtok = 0;
-	}
-	for (int i = 0; i < src->dir.nsegs; i++)
-	{
-		int			n;
-		SiftColBatch **bs;
-		TransactionId stamp = InvalidTransactionId;
-
-		if (!sift_seg_is_wbuf(&src->dir.segs[i]))
-			continue;
-		/*
-		 * The version the scan read at open, not the current one, and that is enough. VACUUM bumps it after it flags records and before the heap frees their
-		 * addresses; batches kept at another version have their pages checked, and the flags the version shows are found. A flag it does not show (set after
-		 * the open, or before a bump the open preceded) leaves the batches as they were: its record belongs to a row dead to every snapshot, since the snapshot
-		 * of this scan, taken before the open, holds the heap back from removing anything it can see. An address freed after the open belongs to a row inserted
-		 * after that snapshot, which the heap check does not return.
-		 */
-		bs = sift_cwbuf_batches_shared(src->index, &src->dir.segs[i], src->schema, src->dir.version, src->mcxt, &n, own ? &src->wtok[src->nwtok++] : NULL, &stamp);
-		for (int j = 0; j < n; j++)
-			scan_add_mem(src, bs[j], true, stamp, (src->dir.segs[i].flags & SIFT_SEG_ROOTS) != 0);
-	}
-	src->mem_loaded = true;
 }
 
 static int
@@ -478,13 +447,13 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 
 		scan_prune_segment(src, c, preds, npreds, zones, nzones, sb_lo, sb_hi, cached);
 		c->src = src;
+		scan_side_begin(src, c);
 		if (src->ahead_kept != NULL && !src->super && !src->whole && !src->pcnt)
 			sift_sr_ahead(&c->seg->sr, cursor_ahead, c, sift_cseg_units_len(c->seg));
 	}
 	if (src->ptid_unsorted)
 		scan_ptid_merge_runs(src->ptid, src->nptid);
-	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
-		scan_load_wbuf(src);
+	scan_load_mem(src, preds, npreds);
 	src->order = palloc(Max(src->nmem, 1) * sizeof(ColMem *));
 	src->norder = 0;
 	for (int i = 0; i < src->nmem; i++)
@@ -515,8 +484,7 @@ sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, cons
 		return false;
 	MemoryContextReset(src->scan);
 	old = MemoryContextSwitchTo(src->scan);
-	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
-		scan_load_wbuf(src);
+	scan_load_mem(src, preds, npreds);
 	for (int i = 0; i < src->nmem && ok; i++)
 		if (src->mem[i].b->nrows > 0)
 		{
@@ -859,101 +827,6 @@ sift_col_unit_batch(SiftColSource *src, SiftColBatch *b, SiftColUnit *unit)
 	unit->except = -1;
 	unit->priv = cu;
 	MemoryContextSwitchTo(old);
-}
-
-void
-sift_col_super(SiftColSource *src, bool on)
-{
-	src->super = on;
-	src->whole = 0;
-	src->pcnt = 0;
-	src->pcnt_int = src->pcnt_str = src->pcnt_elem = false;
-}
-
-void
-sift_col_count_range(SiftColSource *src, int leaf, SiftColOp op, const char *s, uint32 len)
-{
-	src->pcnt = leaf + 1;
-	src->pcnt_epoch++;
-	src->pcnt_int = src->pcnt_str = src->pcnt_elem = false;
-	src->pcnt_op = op;
-	src->pcnt_val = (SiftColValue) {.v.s = s, .len = len};
-	/* the strings that pass the test are those between two bounds in the order of the bytes (the test is bytewise: the C collation): a prefix is those from s up to, not including, the least string after them */
-	src->pcnt_alt = true;
-	memset(&src->pcnt_box, 0, sizeof(src->pcnt_box));
-	if (op == SIFT_COLOP_EQ || op == SIFT_COLOP_GT || op == SIFT_COLOP_GE || op == SIFT_COLOP_PREFIX)
-	{
-		src->pcnt_box.lo = s, src->pcnt_box.lolen = len, src->pcnt_box.lo_excl = op == SIFT_COLOP_GT;
-	}
-	if (op == SIFT_COLOP_EQ || op == SIFT_COLOP_LT || op == SIFT_COLOP_LE)
-	{
-		src->pcnt_box.hi = s, src->pcnt_box.hilen = len, src->pcnt_box.hi_excl = op == SIFT_COLOP_LT;
-	}
-	else if (op == SIFT_COLOP_PREFIX)
-	{
-		src->pcnt_box.hi = sift_cgord_prefix_end(s, len, &src->pcnt_box.hilen);
-		src->pcnt_box.hi_excl = true;
-	}
-}
-
-void
-sift_col_count_cmp(SiftColSource *src, int leaf)
-{
-	src->pcnt = leaf + 1;
-	src->pcnt_epoch++;
-	src->pcnt_int = true;
-	src->pcnt_str = src->pcnt_elem = false;
-}
-
-void
-sift_col_count_strs(SiftColSource *src, int leaf, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl)
-{
-	src->pcnt = leaf + 1;
-	src->pcnt_epoch++;
-	src->pcnt_int = src->pcnt_str = true;
-	src->pcnt_elem = false;
-	src->pcnt_box.lo = lo, src->pcnt_box.lolen = lolen, src->pcnt_box.lo_excl = lo_excl;
-	src->pcnt_box.hi = hi, src->pcnt_box.hilen = hilen, src->pcnt_box.hi_excl = hi_excl;
-	src->pcnt_box.collid = collid;
-}
-
-void
-sift_col_count_elem(SiftColSource *src)
-{
-	src->pcnt = 1;
-	src->pcnt_epoch++;
-	src->pcnt_int = src->pcnt_str = false;
-	src->pcnt_elem = true;
-}
-
-void
-sift_col_super_whole(SiftColSource *src, int leaf, const int *meas, int nmeas)
-{
-	src->whole = leaf + 1;
-	src->nwmeas = nmeas;
-	memcpy(src->wmeas, meas, nmeas * sizeof(int));
-}
-
-void
-sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit)
-{
-	ColUnit    *cu = unit->priv;
-
-	Assert(cu->nsu > 0);
-	/* the table could not answer: the segment's own superunits and units, and no other segment is tried */
-	if (cu->whole)
-		src->whole = 0;
-	if (cu->counted)
-		src->pcnt = 0;
-	for (int i = 0; i < src->nseg; i++)
-		if (src->seg[i].seg == cu->seg)
-		{
-			src->seg[i].cur = cu->u;
-			COL_HEAD_RESET(src);
-			src->seg[i].full = false;
-			src->seg[i].nosuper_to = cu->whole ? 0 : cu->u + cu->nsu;
-		}
-	src->cnt.units -= cu->nsu;
 }
 
 const SiftColSchema *

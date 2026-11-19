@@ -6,12 +6,11 @@
 -- group column's type is. The refusals say their reason (sift.explain_why, slug scope).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
-SET sift.scope_max_multiplicity = 8;
 SET jit = off;
+SET sift.test_scope_entity = on;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
 -- the units whatever they cost; the node's choice has its own section below
-SET sift.test_scope_patch = on;
 -- 40 tenants of each key type, the extremes of the type among them; member m is in 1 to 3 of them, the members 191..200 in none and 201..210 have facts and no pair
 CREATE TABLE tenants (n int PRIMARY KEY, k2 int2, k4 int4, k8 int8);
 INSERT INTO tenants SELECT n, (n - 20) * 1000 + n % 7, (n - 20) * 100000000 + n, (n - 20) * 200000000000000000::int8 / 5 + n FROM generate_series(1, 40) n;
@@ -106,82 +105,82 @@ $$;
 \echo int2
 int2
 SELECT * FROM probe('2');
- n  |                             label                             |         planned          | same | col_type 
-----+---------------------------------------------------------------+--------------------------+------+----------
-  1 | count and sum by the key                                      | Keys: all; Group Key: k2 | t    | smallint
-  2 | the key and kind, min, max, avg                               | Keys: all; Group Key: k2 | t    | smallint
-  3 | HAVING                                                        | Keys: all; Group Key: k2 | t    | smallint
-  4 | ORDER BY the key                                              | Keys: all; Group Key: k2 | t    | smallint
-  5 | top 3 groups by count                                         | Keys: all; Group Key: k2 | t    | smallint
-  6 | the key and the month                                         | Keys: all; Group Key: k2 | t    | smallint
-  7 | count(DISTINCT) by the key                                    | Keys: all; Group Key: k2 | t    | smallint
-  8 | SELECT DISTINCT the key                                       | Keys: all; Group Key: k2 | t    | smallint
-  9 | a list of keys                                                | Keys: 4; Group Key: k2   | t    | smallint
- 10 | one key                                                       | Keys: 1; Group Key: k2   | t    | smallint
- 11 | a row for each pair, no group                                 | Keys: all                | t    | bigint
- 12 | a group by another column of the facts                        | Keys: all                | t    | text
- 13 | the latest 5 rows of every key (a top-N, a row for each pair) | no scope read            | t    | integer
+ n  |                             label                             |                           planned                            | same | col_type 
+----+---------------------------------------------------------------+--------------------------------------------------------------+------+----------
+  1 | count and sum by the key                                      | Keys: all; Group Key: k2; Fallback: a group by the scope key | t    | smallint
+  2 | the key and kind, min, max, avg                               | Keys: all; Group Key: k2; Fallback: a group by the scope key | t    | smallint
+  3 | HAVING                                                        | Keys: all; Group Key: k2; Fallback: a group by the scope key | t    | smallint
+  4 | ORDER BY the key                                              | Keys: all; Group Key: k2; Fallback: a group by the scope key | t    | smallint
+  5 | top 3 groups by count                                         | Keys: all; Group Key: k2; Fallback: a group by the scope key | t    | smallint
+  6 | the key and the month                                         | Keys: all; Group Key: k2; Fallback: a group by the scope key | t    | smallint
+  7 | count(DISTINCT) by the key                                    | Keys: all; Group Key: k2; Fallback: a group by the scope key | t    | smallint
+  8 | SELECT DISTINCT the key                                       | Keys: all; Group Key: k2; Fallback: a group by the scope key | t    | smallint
+  9 | a list of keys                                                | Keys: 4; Group Key: k2; Fallback: a group by the scope key   | t    | smallint
+ 10 | one key                                                       | Keys: 1; Group Key: k2; Fallback: a group by the scope key   | t    | smallint
+ 11 | a row for each pair, no group                                 | Keys: all; Fallback: a row for each pair of several keys     | t    | bigint
+ 12 | a group by another column of the facts                        | Keys: all; Fallback: a row for each pair of several keys     | t    | text
+ 13 | the latest 5 rows of every key (a top-N, a row for each pair) | no scope read                                                | t    | integer
 (13 rows)
 
 \echo int4
 int4
 SELECT * FROM probe('4');
- n  |                             label                             |         planned          | same | col_type 
-----+---------------------------------------------------------------+--------------------------+------+----------
-  1 | count and sum by the key                                      | Keys: all; Group Key: k4 | t    | integer
-  2 | the key and kind, min, max, avg                               | Keys: all; Group Key: k4 | t    | integer
-  3 | HAVING                                                        | Keys: all; Group Key: k4 | t    | integer
-  4 | ORDER BY the key                                              | Keys: all; Group Key: k4 | t    | integer
-  5 | top 3 groups by count                                         | Keys: all; Group Key: k4 | t    | integer
-  6 | the key and the month                                         | Keys: all; Group Key: k4 | t    | integer
-  7 | count(DISTINCT) by the key                                    | Keys: all; Group Key: k4 | t    | integer
-  8 | SELECT DISTINCT the key                                       | Keys: all; Group Key: k4 | t    | integer
-  9 | a list of keys                                                | Keys: 4; Group Key: k4   | t    | integer
- 10 | one key                                                       | Keys: 1; Group Key: k4   | t    | integer
- 11 | a row for each pair, no group                                 | Keys: all                | t    | bigint
- 12 | a group by another column of the facts                        | Keys: all                | t    | text
- 13 | the latest 5 rows of every key (a top-N, a row for each pair) | no scope read            | t    | integer
+ n  |                             label                             |                           planned                            | same | col_type 
+----+---------------------------------------------------------------+--------------------------------------------------------------+------+----------
+  1 | count and sum by the key                                      | Keys: all; Group Key: k4; Fallback: a group by the scope key | t    | integer
+  2 | the key and kind, min, max, avg                               | Keys: all; Group Key: k4; Fallback: a group by the scope key | t    | integer
+  3 | HAVING                                                        | Keys: all; Group Key: k4; Fallback: a group by the scope key | t    | integer
+  4 | ORDER BY the key                                              | Keys: all; Group Key: k4; Fallback: a group by the scope key | t    | integer
+  5 | top 3 groups by count                                         | Keys: all; Group Key: k4; Fallback: a group by the scope key | t    | integer
+  6 | the key and the month                                         | Keys: all; Group Key: k4; Fallback: a group by the scope key | t    | integer
+  7 | count(DISTINCT) by the key                                    | Keys: all; Group Key: k4; Fallback: a group by the scope key | t    | integer
+  8 | SELECT DISTINCT the key                                       | Keys: all; Group Key: k4; Fallback: a group by the scope key | t    | integer
+  9 | a list of keys                                                | Keys: 4; Group Key: k4; Fallback: a group by the scope key   | t    | integer
+ 10 | one key                                                       | Keys: 1; Group Key: k4; Fallback: a group by the scope key   | t    | integer
+ 11 | a row for each pair, no group                                 | Keys: all; Fallback: a row for each pair of several keys     | t    | bigint
+ 12 | a group by another column of the facts                        | Keys: all; Fallback: a row for each pair of several keys     | t    | text
+ 13 | the latest 5 rows of every key (a top-N, a row for each pair) | no scope read                                                | t    | integer
 (13 rows)
 
 \echo int8
 int8
 SELECT * FROM probe('8');
- n  |                             label                             |         planned          | same | col_type 
-----+---------------------------------------------------------------+--------------------------+------+----------
-  1 | count and sum by the key                                      | Keys: all; Group Key: k8 | t    | bigint
-  2 | the key and kind, min, max, avg                               | Keys: all; Group Key: k8 | t    | bigint
-  3 | HAVING                                                        | Keys: all; Group Key: k8 | t    | bigint
-  4 | ORDER BY the key                                              | Keys: all; Group Key: k8 | t    | bigint
-  5 | top 3 groups by count                                         | Keys: all; Group Key: k8 | t    | bigint
-  6 | the key and the month                                         | Keys: all; Group Key: k8 | t    | bigint
-  7 | count(DISTINCT) by the key                                    | Keys: all; Group Key: k8 | t    | bigint
-  8 | SELECT DISTINCT the key                                       | Keys: all; Group Key: k8 | t    | bigint
-  9 | a list of keys                                                | Keys: 4; Group Key: k8   | t    | bigint
- 10 | one key                                                       | Keys: 1; Group Key: k8   | t    | bigint
- 11 | a row for each pair, no group                                 | Keys: all                | t    | bigint
- 12 | a group by another column of the facts                        | Keys: all                | t    | text
- 13 | the latest 5 rows of every key (a top-N, a row for each pair) | no scope read            | t    | integer
+ n  |                             label                             |                           planned                            | same | col_type 
+----+---------------------------------------------------------------+--------------------------------------------------------------+------+----------
+  1 | count and sum by the key                                      | Keys: all; Group Key: k8; Fallback: a group by the scope key | t    | bigint
+  2 | the key and kind, min, max, avg                               | Keys: all; Group Key: k8; Fallback: a group by the scope key | t    | bigint
+  3 | HAVING                                                        | Keys: all; Group Key: k8; Fallback: a group by the scope key | t    | bigint
+  4 | ORDER BY the key                                              | Keys: all; Group Key: k8; Fallback: a group by the scope key | t    | bigint
+  5 | top 3 groups by count                                         | Keys: all; Group Key: k8; Fallback: a group by the scope key | t    | bigint
+  6 | the key and the month                                         | Keys: all; Group Key: k8; Fallback: a group by the scope key | t    | bigint
+  7 | count(DISTINCT) by the key                                    | Keys: all; Group Key: k8; Fallback: a group by the scope key | t    | bigint
+  8 | SELECT DISTINCT the key                                       | Keys: all; Group Key: k8; Fallback: a group by the scope key | t    | bigint
+  9 | a list of keys                                                | Keys: 4; Group Key: k8; Fallback: a group by the scope key   | t    | bigint
+ 10 | one key                                                       | Keys: 1; Group Key: k8; Fallback: a group by the scope key   | t    | bigint
+ 11 | a row for each pair, no group                                 | Keys: all; Fallback: a row for each pair of several keys     | t    | bigint
+ 12 | a group by another column of the facts                        | Keys: all; Fallback: a row for each pair of several keys     | t    | text
+ 13 | the latest 5 rows of every key (a top-N, a row for each pair) | no scope read                                                | t    | integer
 (13 rows)
 
 -- a scope that keeps only the column v (and the member key and the time column): a statement that reads another one runs the join, which says why
 \echo cols(v)
 cols(v)
 SELECT * FROM probe('c');
- n  |                             label                             |                               planned                                | same | col_type 
-----+---------------------------------------------------------------+----------------------------------------------------------------------+------+----------
-  1 | count and sum by the key                                      | Keys: all; Group Key: kc                                             | t    | integer
-  2 | the key and kind, min, max, avg                               | Keys: all; Group Key: kc; Fallback: column id not in the scope units | t    | integer
-  3 | HAVING                                                        | Keys: all; Group Key: kc                                             | t    | integer
-  4 | ORDER BY the key                                              | Keys: all; Group Key: kc                                             | t    | integer
-  5 | top 3 groups by count                                         | Keys: all; Group Key: kc                                             | t    | integer
-  6 | the key and the month                                         | Keys: all; Group Key: kc                                             | t    | integer
-  7 | count(DISTINCT) by the key                                    | Keys: all; Group Key: kc                                             | t    | integer
-  8 | SELECT DISTINCT the key                                       | Keys: all; Group Key: kc                                             | t    | integer
-  9 | a list of keys                                                | Keys: 4; Group Key: kc                                               | t    | integer
- 10 | one key                                                       | Keys: 1; Group Key: kc                                               | t    | integer
- 11 | a row for each pair, no group                                 | Keys: all; Fallback: column id not in the scope units                | t    | bigint
- 12 | a group by another column of the facts                        | Keys: all; Fallback: column kind not in the scope units              | t    | text
- 13 | the latest 5 rows of every key (a top-N, a row for each pair) | no scope read                                                        | t    | integer
+ n  |                             label                             |                           planned                            | same | col_type 
+----+---------------------------------------------------------------+--------------------------------------------------------------+------+----------
+  1 | count and sum by the key                                      | Keys: all; Group Key: kc; Fallback: a group by the scope key | t    | integer
+  2 | the key and kind, min, max, avg                               | Keys: all; Group Key: kc; Fallback: a group by the scope key | t    | integer
+  3 | HAVING                                                        | Keys: all; Group Key: kc; Fallback: a group by the scope key | t    | integer
+  4 | ORDER BY the key                                              | Keys: all; Group Key: kc; Fallback: a group by the scope key | t    | integer
+  5 | top 3 groups by count                                         | Keys: all; Group Key: kc; Fallback: a group by the scope key | t    | integer
+  6 | the key and the month                                         | Keys: all; Group Key: kc; Fallback: a group by the scope key | t    | integer
+  7 | count(DISTINCT) by the key                                    | Keys: all; Group Key: kc; Fallback: a group by the scope key | t    | integer
+  8 | SELECT DISTINCT the key                                       | Keys: all; Group Key: kc; Fallback: a group by the scope key | t    | integer
+  9 | a list of keys                                                | Keys: 4; Group Key: kc; Fallback: a group by the scope key   | t    | integer
+ 10 | one key                                                       | Keys: 1; Group Key: kc; Fallback: a group by the scope key   | t    | integer
+ 11 | a row for each pair, no group                                 | Keys: all; Fallback: a row for each pair of several keys     | t    | bigint
+ 12 | a group by another column of the facts                        | Keys: all; Fallback: a row for each pair of several keys     | t    | text
+ 13 | the latest 5 rows of every key (a top-N, a row for each pair) | no scope read                                                | t    | integer
 (13 rows)
 
 -- the states the pairs and the events go through: the rows stay the join's, and the node runs the join where the reader refuses (a top-N cannot take the delta of a changed pair)
@@ -212,10 +211,10 @@ INSERT INTO events SELECT 6000 + i, CASE WHEN i % 40 = 0 THEN NULL ELSE 1 + (i *
 SELECT k, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE planned ~ 'Group Key') AS read_by_key, count(*) FILTER (WHERE planned ~ 'Fallback') AS join_run FROM unnest(ARRAY['2', '4', '8', 'c']) k, LATERAL probe(k) GROUP BY k ORDER BY k
  k | same | read_by_key | join_run 
 ---+------+-------------+----------
- 2 |   13 |          10 |        0
- 4 |   13 |          10 |        0
- 8 |   13 |          10 |        0
- c |   13 |          10 |        3
+ 2 |   13 |          10 |       12
+ 4 |   13 |          10 |       12
+ 8 |   13 |          10 |       12
+ c |   13 |          10 |       12
 (4 rows)
 
 SELECT 2 AS n, 'pairs inserted, ended and moved (every type), the events as they were' AS state
@@ -234,10 +233,10 @@ INSERT INTO pairs2 SELECT m, k2 FROM generate_series(1, 30) m, tenants WHERE n =
 SELECT k, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE planned ~ 'Group Key') AS read_by_key, count(*) FILTER (WHERE planned ~ 'Fallback') AS join_run FROM unnest(ARRAY['2', '4', '8', 'c']) k, LATERAL probe(k) GROUP BY k ORDER BY k
  k | same | read_by_key | join_run 
 ---+------+-------------+----------
- 2 |   13 |          10 |        0
- 4 |   13 |          10 |        0
- 8 |   13 |          10 |        0
- c |   13 |          10 |        3
+ 2 |   13 |          10 |       12
+ 4 |   13 |          10 |       12
+ 8 |   13 |          10 |       12
+ c |   13 |          10 |       12
 (4 rows)
 
 SELECT 3 AS n, 'buffered events of dim_b whose pairs changed' AS state
@@ -250,10 +249,10 @@ INSERT INTO events SELECT 6200 + i, 1 + (i * 11) % 60, timestamptz '2026-02-02',
 SELECT k, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE planned ~ 'Group Key') AS read_by_key, count(*) FILTER (WHERE planned ~ 'Fallback') AS join_run FROM unnest(ARRAY['2', '4', '8', 'c']) k, LATERAL probe(k) GROUP BY k ORDER BY k
  k | same | read_by_key | join_run 
 ---+------+-------------+----------
- 2 |   13 |          10 |        0
- 4 |   13 |          10 |        0
- 8 |   13 |          10 |        0
- c |   13 |          10 |        3
+ 2 |   13 |          10 |       12
+ 4 |   13 |          10 |       12
+ 8 |   13 |          10 |       12
+ c |   13 |          10 |       12
 (4 rows)
 
 SELECT 4 AS n, 'promoted' AS state
@@ -271,10 +270,10 @@ SELECT sift.col_promote('events_col')
 SELECT k, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE planned ~ 'Group Key') AS read_by_key, count(*) FILTER (WHERE planned ~ 'Fallback') AS join_run FROM unnest(ARRAY['2', '4', '8', 'c']) k, LATERAL probe(k) GROUP BY k ORDER BY k
  k | same | read_by_key | join_run 
 ---+------+-------------+----------
- 2 |   13 |          10 |        0
- 4 |   13 |          10 |        0
- 8 |   13 |          10 |        0
- c |   13 |          10 |        3
+ 2 |   13 |          10 |       12
+ 4 |   13 |          10 |       12
+ 8 |   13 |          10 |       12
+ c |   13 |          10 |       12
 (4 rows)
 
 SELECT 5 AS n, 'rebuilt (nothing changed since the stamp)' AS state
@@ -287,10 +286,10 @@ REINDEX INDEX events_col
 SELECT k, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE planned ~ 'Group Key') AS read_by_key, count(*) FILTER (WHERE planned ~ 'Fallback') AS join_run FROM unnest(ARRAY['2', '4', '8', 'c']) k, LATERAL probe(k) GROUP BY k ORDER BY k
  k | same | read_by_key | join_run 
 ---+------+-------------+----------
- 2 |   13 |          10 |        0
- 4 |   13 |          10 |        0
- 8 |   13 |          10 |        0
- c |   13 |          10 |        3
+ 2 |   13 |          10 |       12
+ 4 |   13 |          10 |       12
+ 8 |   13 |          10 |       12
+ c |   13 |          10 |       12
 (4 rows)
 
 SELECT sift.col_verify('events_col', true);
@@ -316,53 +315,51 @@ CREATE FUNCTION why(q text) RETURNS text LANGUAGE sql AS $$
 	SELECT coalesce((SELECT substring(r::text FROM 'the join runs as written \((.*)\)",') FROM sift.explain_why(q) r WHERE r::text ~ '^\(scope,' LIMIT 1), 'no scope refusal')
 $$;
 SELECT x.n, x.label, r.planned, r.same, why(x.stmt) FROM others x, LATERAL gk(x.stmt) r ORDER BY x.n;
- n  |                   label                    |            planned             | same |                                                    why                                                    
-----+--------------------------------------------+--------------------------------+------+-----------------------------------------------------------------------------------------------------------
-  1 | the key in an expression                   | no scope read                  | t    | the statement reads a column of the scope relation other than its key as a group key: (s.tenant / 2)
-  2 | the key as an aggregate argument           | no scope read                  | t    | the statement reads a column of the scope relation, and groups by none
-  3 | the key in a HAVING aggregate              | no scope read                  | t    | HAVING reads a column of the scope relation
-  4 | ROLLUP the key                             | no scope read                  | t    | the statement reads the key of the scope relation in grouping sets or DISTINCT ON
-  5 | a function of the key                      | no scope read                  | t    | the statement reads a column of the scope relation other than its key as a group key: pg_typeof(s.tenant)
-  6 | every key of an IN (a row counts once)     | no scope read                  | t    | the scope key is not bound by an equality or an IN list of constants or parameters
-  7 | a range of keys                            | no scope read                  | t    | the scope relation has another condition: (s.tenant > 0)
-  8 | a table of keys, grouped by the key (read) | Keys: parameter; Group Key: k4 | t    | no scope refusal
-  9 | the key and a table joined on it           | no scope read                  | t    | the statement reads a column of the table of keys
- 10 | a LEFT JOIN to the pairs                   | no scope read                  | t    | the scope relation is not joined by an inner or semi join (IN, EXISTS)
+ n  |                   label                    |                              planned                               | same |                                                    why                                                    
+----+--------------------------------------------+--------------------------------------------------------------------+------+-----------------------------------------------------------------------------------------------------------
+  1 | the key in an expression                   | no scope read                                                      | t    | the statement reads a column of the scope relation other than its key as a group key: (s.tenant / 2)
+  2 | the key as an aggregate argument           | no scope read                                                      | t    | the statement reads a column of the scope relation, and groups by none
+  3 | the key in a HAVING aggregate              | no scope read                                                      | t    | HAVING reads a column of the scope relation
+  4 | ROLLUP the key                             | no scope read                                                      | t    | the statement reads the key of the scope relation in grouping sets or DISTINCT ON
+  5 | a function of the key                      | no scope read                                                      | t    | the statement reads a column of the scope relation other than its key as a group key: pg_typeof(s.tenant)
+  6 | every key of an IN (a row counts once)     | no scope read                                                      | t    | the scope key is not bound by an equality or an IN list of constants or parameters
+  7 | a range of keys                            | no scope read                                                      | t    | the scope relation has another condition: (s.tenant > 0)
+  8 | a table of keys, grouped by the key (read) | Keys: parameter; Group Key: k4; Fallback: a group by the scope key | t    | no scope refusal
+  9 | the key and a table joined on it           | no scope read                                                      | t    | the statement reads a column of the table of keys
+ 10 | a LEFT JOIN to the pairs                   | no scope read                                                      | t    | the scope relation is not joined by an inner or semi join (IN, EXISTS)
 (10 rows)
 
 -- a prepared statement: the generic plan has the keys of each execution (an array parameter), a group by the key too
 SET plan_cache_mode = force_generic_plan;
 PREPARE by_keys(int4[]) AS SELECT s.tenant, count(*), sum(v) FROM events f JOIN pairs4 s ON s.dim_a_id = f.dim_a_id WHERE s.tenant = ANY ($1) GROUP BY s.tenant;
 SELECT planned, same FROM gk('EXECUTE by_keys(ARRAY[-2147483648, 0, 2147483647])');
-            planned             | same 
---------------------------------+------
- Keys: parameter; Group Key: k4 | t
+                              planned                               | same 
+--------------------------------------------------------------------+------
+ Keys: parameter; Group Key: k4; Fallback: a group by the scope key | t
 (1 row)
 
 SELECT planned, same FROM gk('EXECUTE by_keys(ARRAY[]::int4[])');
-            planned             | same 
---------------------------------+------
- Keys: parameter; Group Key: k4 | t
+                              planned                               | same 
+--------------------------------------------------------------------+------
+ Keys: parameter; Group Key: k4; Fallback: a group by the scope key | t
 (1 row)
 
 DEALLOCATE by_keys;
 RESET plan_cache_mode;
 -- the node's choice: with the price in charge the node runs the join where it costs less than the units for the keys it finds, and says so; the rows are the join's
-SET sift.test_scope_patch = off;
 SELECT f.n, r.planned, r.same FROM forms f, LATERAL gk(format(f.stmt, 'pairs4', '', '')) r WHERE f.n IN (1, 11) ORDER BY f.n;
- n  |                      planned                       | same 
-----+----------------------------------------------------+------
-  1 | Keys: all; Group Key: k4                           | t
- 11 | Keys: all; Fallback: join is cheaper for every key | t
+ n  |                           planned                            | same 
+----+--------------------------------------------------------------+------
+  1 | Keys: all; Group Key: k4; Fallback: a group by the scope key | t
+ 11 | Keys: all; Fallback: a row for each pair of several keys     | t
 (2 rows)
 
 -- a group by the key through the join of the units: the same statement with the choice off reads the units
-SET sift.test_scope_patch = on;
 SELECT f.n, r.planned, r.same FROM forms f, LATERAL gk(format(f.stmt, 'pairs4', '', '')) r WHERE f.n IN (1, 11) ORDER BY f.n;
- n  |         planned          | same 
-----+--------------------------+------
-  1 | Keys: all; Group Key: k4 | t
- 11 | Keys: all                | t
+ n  |                           planned                            | same 
+----+--------------------------------------------------------------+------
+  1 | Keys: all; Group Key: k4; Fallback: a group by the scope key | t
+ 11 | Keys: all; Fallback: a row for each pair of several keys     | t
 (2 rows)
 
 -- soft deleted pairs: the pairs are the rows of a partial unique btree, so a join that does not state its predicate counts pairs the scope does not have: it keeps the join and says so; with the predicate
@@ -384,12 +381,12 @@ INSERT INTO sd_forms VALUES
 	(3, 'through a view of the predicate', 'SELECT s.tenant, count(*), sum(v) FROM sd_events f JOIN sd_active s ON s.dim_a_id = f.dim_a_id GROUP BY s.tenant'),
 	(4, 'one key without the predicate', 'SELECT count(*), sum(v) FROM sd_events f JOIN sd_pairs s ON s.dim_a_id = f.dim_a_id WHERE s.tenant = 3');
 SELECT x.n, x.label, r.planned, r.same, why(x.stmt) FROM sd_forms x, LATERAL gk(x.stmt) r ORDER BY x.n;
- n |              label              |           planned            | same |                                                            why                                                             
----+---------------------------------+------------------------------+------+----------------------------------------------------------------------------------------------------------------------------
- 1 | without the predicate           | no scope read                | t    | the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it
- 2 | with the predicate              | Keys: all; Group Key: tenant | t    | no scope refusal
- 3 | through a view of the predicate | Keys: all; Group Key: tenant | t    | no scope refusal
- 4 | one key without the predicate   | no scope read                | t    | the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it
+ n |              label              |                             planned                              | same |                                                            why                                                             
+---+---------------------------------+------------------------------------------------------------------+------+----------------------------------------------------------------------------------------------------------------------------
+ 1 | without the predicate           | no scope read                                                    | t    | the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it
+ 2 | with the predicate              | Keys: all; Group Key: tenant; Fallback: a group by the scope key | t    | no scope refusal
+ 3 | through a view of the predicate | Keys: all; Group Key: tenant; Fallback: a group by the scope key | t    | no scope refusal
+ 4 | one key without the predicate   | no scope read                                                    | t    | the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it
 (4 rows)
 
 DROP TABLE forms, states, others, sd_forms;

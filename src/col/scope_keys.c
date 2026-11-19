@@ -201,13 +201,6 @@ sift_keymap_transient(Relation rel, AttrNumber att)
 	return sift_keymap_type(a->atttypid) ? sift_keymap_transient_of(a->atttypid, a->attcollation) : NULL;
 }
 
-/* The values a map with no store has a code for, in the order of their codes -1, -2, ...: another process interning them in this order has the same codes */
-uint32
-sift_keymap_transient_n(const SiftKeyMap *m)
-{
-	return m->extra != NULL ? m->extra->n : 0;
-}
-
 Oid
 sift_keymap_collation(const SiftKeyMap *m)
 {
@@ -233,26 +226,6 @@ intern_batch(SiftKeyMap *m, SiftCDict *batch)
 	sift_vstore_refresh(vs);
 	store_close(m, vs);
 	pfree(map);
-}
-
-/*
- * A writer's pass that meets every key of a relation: the values the store lacks are remembered, not interned one at a time (each would be a run of the store), and a code of 0 stands for them until
- * the pass is over (collect false), when they are appended as one run.
- */
-void
-sift_keymap_collect(SiftKeyMap *m, bool on)
-{
-	if (!OidIsValid(m->store))
-		return;
-	Assert(m->write);
-	if (on)
-	{
-		m->pending = sift_cdict_create(m->cx);
-		return;
-	}
-	if (m->pending->n > 0)
-		intern_batch(m, m->pending);
-	m->pending = NULL;
 }
 
 /* The code the store of the key has for the value, appended first by a writer (or, collecting, remembered to be: 0); -1 for a reader's value the store lacks */
@@ -338,12 +311,39 @@ sift_keymap_datum(SiftKeyMap *m, int64 code)
 	return PointerGetDatum(cstring_to_text_with_len(s, len));
 }
 
+/* The codes the store of the writer's map m gives the values of the transient map t, which the store lacks appended as one run: codes[-1 - c] for a code c of t (NULL: t has no value) */
+uint32 *
+sift_keymap_store_codes(SiftKeyMap *m, SiftKeyMap *t)
+{
+	SiftVStore *vs;
+	uint32	   *codes;
+	uint64		epoch,
+				ncodes;
+
+	Assert(m->write && !OidIsValid(t->store));
+	if (t->extra == NULL)
+		return NULL;
+	codes = palloc(t->extra->n * sizeof(uint32));
+	vs = store_open(m);
+	(void) sift_vstore_intern(vs, t->extra, &m->pol, codes, &epoch, &ncodes);
+	sift_vstore_refresh(vs);
+	store_close(m, vs);
+	return codes;
+}
+
 /* The bytes of the value a transient code stands for (a map with no store) */
 const char *
 sift_keymap_bytes(SiftKeyMap *m, int64 code, uint32 *len)
 {
 	Assert(code < 0);
 	return sift_cdict_str(m->extra, (uint32) (-1 - code), len);
+}
+
+/* How many values a transient map has a code for: the codes are -1 .. -n */
+uint32
+sift_keymap_transient_n(const SiftKeyMap *m)
+{
+	return m->extra != NULL ? m->extra->n : 0;
 }
 
 /* The journal word of the value a code stands for: a transient code (negative: the map's own) or a code of the store */
@@ -375,38 +375,4 @@ sift_keymap_find_bytes(SiftKeyMap *m, const char *s, uint32 len, int64 *code)
 
 	*code = -1 - i;
 	return i >= 0;
-}
-
-/*
- * The codes of the rows of a batch whose leaf holds the strings of dict (key: the codes of the dictionary, nulls: bit set = NULL, or NULL): one lookup for each value of the dictionary a row
- * holds, not for each row. intern: a value the map lacks gets a code (a writer's fill), else it has none (PG_INT64_MIN, as a NULL row has).
- */
-void
-sift_keymap_batch_codes(SiftKeyMap *m, const SiftCDict *dict, const int64 *key, const uint64 *nulls, uint32 nrows, bool intern, int64 *out)
-{
-	int64	   *memo = palloc(Max(dict->n, 1) * sizeof(int64));
-	int64		none = PG_INT64_MIN + 1;
-
-	for (uint32 i = 0; i < dict->n; i++)
-		memo[i] = none;
-	for (uint32 r = 0; r < nrows; r++)
-	{
-		int64		code = key[r];
-
-		out[r] = PG_INT64_MIN;
-		if (nulls != NULL && sift_col_bit_test(nulls, r))
-			continue;
-		if (memo[code] == none)
-		{
-			uint32		len;
-			const char *s = sift_cdict_str(dict, (uint32) code, &len);
-
-			if (intern)
-				(void) sift_keymap_code_bytes(m, s, len, &memo[code]);
-			else if (!sift_keymap_find_bytes(m, s, len, &memo[code]))
-				memo[code] = PG_INT64_MIN;
-		}
-		out[r] = memo[code];
-	}
-	pfree(memo);
 }

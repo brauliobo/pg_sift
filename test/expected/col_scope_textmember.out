@@ -5,6 +5,8 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET sift.test_scope_entity = on;
+SET sift.col_unit_rows = 150;
 SET default_statistics_target = 1000;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -39,7 +41,7 @@ INSERT INTO pairs SELECT 'acct-' || i, 1 + (i * 3 + 1) % 10 FROM generate_series
 INSERT INTO pairs SELECT a, 4 FROM unnest(ARRAY['', 'Acct-4', 'acct-4 ', 'ácct-4', repeat('long-', 400)]) a;
 UPDATE pairs SET tenant_id = 3 WHERE account = '';
 CREATE INDEX pairs_journal ON pairs USING sift_col (account, tenant_id) WITH (track_changes = 'ctid');
-CREATE INDEX events_col ON events USING sift_col (id, account, created_at, kind, amount) WITH (scope = 'tenant_id: account -> pairs(account, tenant_id)');
+CREATE INDEX events_col ON events USING sift_col (id, account, created_at, kind, amount) WITH (key_cut = 'created_at', scope = 'tenant_id: account -> pairs(account, tenant_id)');
 REINDEX INDEX events_col;
 -- a long account on a fact too
 INSERT INTO events VALUES (6001, repeat('long-', 400), date '2025-03-01', 'k1', 7), (6002, 'Acct-4', date '2025-03-02', 'k2', 8), (6003, 'acct-4 ', date '2025-03-03', 'k3', 9), (6004, 'ácct-4', date '2025-03-04', 'k0', 10);
@@ -68,13 +70,13 @@ VACUUM (FREEZE, ANALYZE) events, pairs, var_events, uuid_events, uuid_pairs, txt
 SELECT i AS index, format, count(*) AS segments FROM (VALUES ('events_col'), ('var_events_col'), ('uuid_events_col'), ('txt_events_col')) v (i), LATERAL sift.col_segments(i::regclass) GROUP BY 1, 2 ORDER BY 1, 2;
       index      | format | segments 
 -----------------+--------+----------
- events_col      |     50 |        2
+ events_col      |     53 |        1
  events_col      |        |        1
- txt_events_col  |     50 |        2
+ txt_events_col  |     50 |        1
  txt_events_col  |        |        1
- uuid_events_col |     50 |        2
+ uuid_events_col |     50 |        1
  uuid_events_col |        |        1
- var_events_col  |     50 |        2
+ var_events_col  |     50 |        1
  var_events_col  |        |        1
 (8 rows)
 
@@ -82,7 +84,7 @@ SELECT i AS index, format, count(*) AS segments FROM (VALUES ('events_col'), ('v
 SELECT count(*) AS entries, count(DISTINCT scope) AS scopes FROM sift._test_col_scope_entries('events_col');
  entries | scopes 
 ---------+--------
-    6104 |      1
+       0 |      0
 (1 row)
 
 SELECT (SELECT count(*) FROM events WHERE account IS NULL) AS null_facts, (SELECT count(*) FROM events WHERE account = '') AS empty_facts, (SELECT count(*) FROM pairs WHERE account = '') AS empty_pairs;
@@ -113,11 +115,11 @@ INSERT INTO forms VALUES
 CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text; plan text := '';
 BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		plan := plan || l || E'\n';
 	END LOOP;
 	IF plan ~ 'Scope Index: ' THEN
-		RETURN 'scope read, ' || substring(plan from 'Scope Semantics: ([^\n]*)');
+		RETURN 'scope read' || CASE WHEN plan ~ 'Scope Keys: ([^\n]*\(1 keys\)|1)\n' THEN '' ELSE ', ' || substring(plan from 'Scope Semantics: ([^\n]*)') END;
 	END IF;
 	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';
 	RETURN CASE WHEN r IS NOT NULL THEN 'join, ' || r WHEN plan ~ 'Lookup Joins' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
@@ -149,7 +151,7 @@ CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Scope (Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed)' THEN
+		IF l ~ 'Scope (Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed|Sidecar Runs)' THEN
 			r := r || regexp_replace(l, '^ *Scope ', '') || '; ';
 		END IF;
 	END LOOP;
@@ -158,16 +160,16 @@ END $$;
 SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name COLLATE "C";
                   name                   |                                           plan                                           | same_rows 
 -----------------------------------------+------------------------------------------------------------------------------------------+-----------
- EXISTS                                  | scope read, once                                                                         | t
- IN, a key nobody has                    | scope read, once                                                                         | t
+ EXISTS                                  | scope read                                                                               | t
+ IN, a key nobody has                    | scope read                                                                               | t
  IN, a list                              | scope read, once                                                                         | t
- IN, one key                             | scope read, once                                                                         | t
- IN, the tenant of the empty account     | scope read, once                                                                         | t
+ IN, one key                             | scope read                                                                               | t
+ IN, the tenant of the empty account     | scope read                                                                               | t
  every fact with a pair                  | join, the scope key is not bound by an equality or an IN list of constants or parameters | t
  group by the key and a column           | scope read, per pair                                                                     | t
  group by the key, every key             | scope read, per pair                                                                     | t
  join, a list, a row for each pair       | scope read, per pair                                                                     | t
- join, one key                           | scope read, per pair                                                                     | t
+ join, one key                           | scope read                                                                               | t
  text member, text key                   | scope read, once                                                                         | t
  text member, text key, group by the key | scope read, per pair                                                                     | t
  uuid member                             | scope read, once                                                                         | t
@@ -177,24 +179,24 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name COL
 (16 rows)
 
 SELECT name, run_of(q) AS run FROM forms ORDER BY name COLLATE "C";
-                  name                   |                       run                        
------------------------------------------+--------------------------------------------------
- EXISTS                                  | units
- IN, a key nobody has                    | units
- IN, a list                              | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, one key                             | units
- IN, the tenant of the empty account     | units
+                  name                   |                      run                      
+-----------------------------------------+-----------------------------------------------
+ EXISTS                                  | Sidecar Runs: 2
+ IN, a key nobody has                    | Sidecar Runs: 0
+ IN, a list                              | units
+ IN, one key                             | Sidecar Runs: 2
+ IN, the tenant of the empty account     | Sidecar Runs: 3
  every fact with a pair                  | units
- group by the key and a column           | units
- group by the key, every key             | units
- join, a list, a row for each pair       | units
- join, one key                           | units
- text member, text key                   | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- text member, text key, group by the key | units
- uuid member                             | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- uuid member, group by the key           | units
- varchar facts, group by the key         | units
- varchar facts, text pairs               | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
+ group by the key and a column           | Fallback: a group by the scope key
+ group by the key, every key             | Fallback: a group by the scope key
+ join, a list, a row for each pair       | Fallback: a row for each pair of several keys
+ join, one key                           | Sidecar Runs: 2
+ text member, text key                   | units
+ text member, text key, group by the key | Fallback: a group by the scope key
+ uuid member                             | units
+ uuid member, group by the key           | Fallback: a group by the scope key
+ varchar facts, group by the key         | Fallback: a group by the scope key
+ varchar facts, text pairs               | units
 (16 rows)
 
 CREATE FUNCTION states() RETURNS TABLE (name text, same_rows bool) LANGUAGE sql AS $$
@@ -211,12 +213,12 @@ SELECT 'added' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, cou
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'join, a list, a row for each pair', 'uuid member', 'text member, text key') ORDER BY name COLLATE "C";
-               name                |                       run                        
------------------------------------+--------------------------------------------------
- IN, one key                       | Changed Keys: 3; Patched Keys: 3
- join, a list, a row for each pair | Changed Keys: 3; Patched Keys: 3
- text member, text key             | Changed Keys: 3; Patched Keys: 3; Dedupe Keys: 1
- uuid member                       | Changed Keys: 3; Patched Keys: 3; Dedupe Keys: 1
+               name                |                      run                      
+-----------------------------------+-----------------------------------------------
+ IN, one key                       | Sidecar Runs: 0
+ join, a list, a row for each pair | Fallback: a row for each pair of several keys
+ text member, text key             | units
+ uuid member                       | units
 (4 rows)
 
 DELETE FROM pairs WHERE tenant_id = 4 AND account ~ '^acct-[0-9]*5$';
@@ -271,11 +273,11 @@ SELECT 'facts changed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differ
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a list', 'varchar facts, text pairs') ORDER BY name COLLATE "C";
-           name            |                run                 
----------------------------+------------------------------------
- IN, a list                | Changed Keys: 53; Patched Keys: 10
- IN, one key               | Changed Keys: 48; Patched Keys: 0
- varchar facts, text pairs | Changed Keys: 53; Patched Keys: 10
+           name            |       run       
+---------------------------+-----------------
+ IN, a list                | units
+ IN, one key               | Sidecar Runs: 0
+ varchar facts, text pairs | units
 (3 rows)
 
 -- the stored units and the join agree after the pairs are merged into the index (REINDEX), and read the units again
@@ -297,23 +299,23 @@ SELECT 'reindexed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing,
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms ORDER BY name COLLATE "C";
-                  name                   |  run  
------------------------------------------+-------
- EXISTS                                  | units
- IN, a key nobody has                    | units
+                  name                   |                      run                      
+-----------------------------------------+-----------------------------------------------
+ EXISTS                                  | Sidecar Runs: 0
+ IN, a key nobody has                    | Sidecar Runs: 0
  IN, a list                              | units
- IN, one key                             | units
- IN, the tenant of the empty account     | units
+ IN, one key                             | Sidecar Runs: 0
+ IN, the tenant of the empty account     | Sidecar Runs: 3
  every fact with a pair                  | units
- group by the key and a column           | units
- group by the key, every key             | units
- join, a list, a row for each pair       | units
- join, one key                           | units
+ group by the key and a column           | Fallback: a group by the scope key
+ group by the key, every key             | Fallback: a group by the scope key
+ join, a list, a row for each pair       | Fallback: a row for each pair of several keys
+ join, one key                           | Sidecar Runs: 0
  text member, text key                   | units
- text member, text key, group by the key | units
+ text member, text key, group by the key | Fallback: a group by the scope key
  uuid member                             | units
- uuid member, group by the key           | units
- varchar facts, group by the key         | units
+ uuid member, group by the key           | Fallback: a group by the scope key
+ varchar facts, group by the key         | Fallback: a group by the scope key
  varchar facts, text pairs               | units
 (16 rows)
 

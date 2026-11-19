@@ -7,11 +7,10 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
--- members in up to six keys on purpose: above the default limit of the multiplicity
-SET sift.scope_max_multiplicity = 8;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
+SET sift.test_scope_entity = on;
 \ir test/scope_helpers.sql
 
 -- 12 keys, 300 entities in 1..6 keys (entity m: 1 + m % 6), entities 100..109 in none, 8,000 padded facts (some without an entity, some of an entity that is nowhere)

@@ -649,7 +649,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 		return "the scope relation is not joined by an inner or semi join (IN, EXISTS)";
 	if (lj == NULL && scope_multiset(c->indexoid, sp->key_name))
 		return SCOPE_MULTISET;
-	once = lj != NULL || it.member_only;
+	sc.once = once = lj != NULL || it.member_only;
 	if (it.all && lj == NULL)
 		return "a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION";
 	pool = list_concat_copy(list_concat_copy(fs->quals, fs->scan_quals), lj ? list_concat_copy(lj->quals, lj->inner) : NIL);
@@ -733,9 +733,8 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	sc.all = keyq == NULL && lj == NULL && !it.member_only;
 	if (keyq == NULL && !sc.all)
 		return "the scope key is not bound by an equality or an IN list of constants or parameters";
-	/* several keys or every key counted for each pair, or a group key: where the units cannot (the reader refuses them, or the join costs less) the node runs the join the first pass priced, so it needs one */
-	if ((sc.all || sc.nkeys > 1 || key_read) && !once && t->alts == NIL)
-		return "several keys or every key, or the key as a group key, and a row counts once for each pair: where the units cannot answer the node runs the join, which the first pass does not have";
+	if (sift_agg_scope_counts_pairs(&sc, key_read) && t->alts == NIL)
+		return "several keys (or an array of keys the execution evaluates) or every key, or the key as a group key, and a row counts once for each pair: only the join counts them, which the first pass does not have";
 	if (it.is_union && rest != NIL)
 		return psprintf("the union of the two paths of the scope has another condition: %s", expr_text(c, linitial(rest)));
 	if (!it.is_union && (why = scope_pairs_proof(c, specs, sp, rti, map, nmap, rest)) != NULL)
@@ -747,7 +746,6 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	t->key_read = key_read;
 	t->fk = (Var *) copyObject(fk);
 	sc.key_name = sp->key_name;
-	sc.once = once;
 	t->sc = sc;
 	if (tabq == NULL)
 		t->pairs = find_base_rel(root, rti)->rows;

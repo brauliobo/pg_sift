@@ -7,9 +7,9 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
+SET sift.test_scope_entity = on;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
 
 CREATE TABLE grants (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int) WITH (autovacuum_enabled = false);
 CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id);

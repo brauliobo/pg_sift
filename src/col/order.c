@@ -8,10 +8,12 @@
 #include "core/cmp.h"
 #include "col/build.h"
 #include "col/enc.h"
+#include "col/order_bound.h"
 #include "col/order_sort.h"
 #include "col/runs.h"
 #include "col/seg.h"
 #include "core/damage.h"
+#include "core/membudget.h"
 
 #define SORT_CHUNK_ROWS		4096		/* the rows of the sort that one read of the merge takes */
 
@@ -22,12 +24,6 @@ typedef struct RowRef
 	uint32		chunk;			/* a merge: the chunk of its input that b is, to unpin when the row has left the window */
 } RowRef;
 
-typedef struct OrderCtx
-{
-	const SiftColSchema *schema;
-	const int  *leaf;
-	int			nleaf;
-} OrderCtx;
 
 static inline bool
 ref_null(const RowRef *x, int leaf)
@@ -382,12 +378,16 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 		sift_cbatch_reserve(out, (uint32) end);
 		seq++;
 		out->keyed = true;
-		sift_cbatch_add_scoped_rows(out, (const SiftColRowRef *) u, sizeof(RowRef), (uint32) end, -1, 0, NULL);
+		sift_cbatch_add_rows(out, (const SiftColRowRef *) u, sizeof(RowRef), (uint32) end);
 		if (w == NULL)
-			w = cutfn(cutarg, NULL);
+			w = cutfn(cutarg, NULL, false);
 		sift_colw_add(w, out);
 		if (cutfn)
-			w = cutfn(cutarg, w);
+		{
+			if (refs == NULL && n == end && !eof)
+				eof = !next(state, &win[n++]);
+			w = cutfn(cutarg, w, ctx->nleaf > 0 && (refs ? avail : n) > end && key_cmp(&u[end - 1], &u[end], ctx, 1) == 0);
+		}
 		if (refs)
 			pos += end;
 		else
@@ -458,6 +458,7 @@ typedef struct MergeIn
 	bool		done;
 	bool		bounded;		/* the lo and hi of the merge cut its rows */
 	bool		sorted;			/* the rows come from the sort of the inputs that are not streams (MergeSrc.sorter): the last input of the merge, whose rows the sort has ordered */
+	BoundKey	head;			/* a stream that waits (MergeSrc.wait): no row of it is below this, from the zones of its next unit */
 } MergeIn;
 
 /* The rows of a chunk stay where they were decoded until the window of the cut has copied them into a unit: a chunk is reused when no row of it is pinned by the window and its input has loaded another */
@@ -467,14 +468,6 @@ typedef struct MergeChunk
 	uint32		pins;
 	bool		held;			/* the loaded chunk of its input */
 } MergeChunk;
-
-/* A bound of a slice of the key range: the first two leaves of the order, from the zone of a unit (no row is decoded to take it) */
-typedef struct BoundKey
-{
-	int64		k[2];
-	bool		nul[2];
-	uint32		rows;			/* the rows of the unit the point stands for, a share of the points of the unit */
-} BoundKey;
 
 typedef struct MergeSrc
 {
@@ -492,164 +485,11 @@ typedef struct MergeSrc
 	MemoryContext cx;
 	MergeIn   **heap;			/* the inputs with rows left, the one whose next row comes first at 0 */
 	int			nheap;
+	MergeIn   **wait;			/* the streams not read yet, the one whose head is lowest at 0: an input is opened (its unit decoded, its dictionaries parsed) when the rows reach its head */
+	int			nwait;
 	const BoundKey *lo;			/* a slice of the key range: the rows from lo (NULL: from the first) up to hi (NULL: to the last), not including it */
 	const BoundKey *hi;
 } MergeSrc;
-
-static inline int
-bound_leaves(const OrderCtx *c)
-{
-	return Min(c->nleaf, 2);
-}
-
-/* Row r of b against the bound: key by key, NULL last; equal on the leaves the bound has, the row is at it */
-static int
-bound_cmp(const MergeSrc *m, const SiftColBatch *b, uint32 r, const BoundKey *bk)
-{
-	for (int t = 0; t < bound_leaves(m->ctx); t++)
-	{
-		int			leaf = m->ctx->leaf[t];
-		bool		nr = ref_null(&(RowRef) {b, r}, leaf);
-		int64		kr;
-
-		if (nr || bk->nul[t])
-		{
-			if (nr != bk->nul[t])
-				return nr ? 1 : -1;
-			continue;
-		}
-		kr = sift_crun_key(&m->ctx->schema->cols[leaf], b->col[leaf].key[r]);
-		if (kr != bk->k[t])
-			return kr < bk->k[t] ? -1 : 1;
-	}
-	return 0;
-}
-
-/* Is every row of unit u of seg below lo? The leading leaf's zone says so when the unit has no NULL (they sort last) and its largest key is below: false is always safe */
-static bool
-unit_below(const MergeSrc *m, SiftColSegment *seg, uint32 u, const BoundKey *lo)
-{
-	SiftCZone	z;
-
-	sift_cseg_zone(seg, m->ctx->leaf[0], u, &z);
-	return z.nnull == 0 && (lo->nul[0] || z.max < lo->k[0]);
-}
-
-/* The first unit of seg that may hold a row at or above lo: the units follow each other in the order of the key, so the ones below are found by halving */
-static uint32
-first_unit(const MergeSrc *m, SiftColSegment *seg, const BoundKey *lo)
-{
-	uint32		a = 0,
-				b = seg->nsb;
-
-	while (a < b)
-	{
-		uint32		mid = a + (b - a) / 2;
-
-		if (unit_below(m, seg, mid, lo))
-			a = mid + 1;
-		else
-			b = mid;
-	}
-	return a;
-}
-
-static int
-bound_order(const void *a, const void *b)
-{
-	const BoundKey *x = a,
-			   *y = b;
-
-	for (int t = 0; t < 2; t++)
-	{
-		if (x->nul[t] != y->nul[t])
-			return x->nul[t] ? 1 : -1;
-		if (!x->nul[t] && x->k[t] != y->k[t])
-			return x->k[t] < y->k[t] ? -1 : 1;
-	}
-	return 0;
-}
-
-/*
- * The bounds of the slices of a merge: points that cut the rows of the inputs into slices of about the same count, from the zones of the first two leaves. A unit holds
- * thousands of rows between its smallest and largest key of the first leaf (a build leaves a few units in each segment, every segment over the whole range), so the
- * smallest keys alone crowd at a few values and most slices hold no row: SLICE_POINTS points are taken in each unit, the first its smallest keys and the others
- * evenly between the smallest and largest of the first leaf (the rows of a unit counted as even in that range), and sorted; the bound before slice j of nslices is
- * the one that j / nslices of the rows come before. The same for every slice that asks, whatever the keys each input holds (the participants of a build hold the
- * rows of the superblocks they claimed). Returns the sorted bounds, in *n.
- */
-#define SLICE_POINTS 8
-
-static BoundKey *
-slice_bounds(const MergeSrc *m, SiftColSegment *const *seg, int nseg, uint64 *n)
-{
-	uint64		units = 0;
-	BoundKey   *bk;
-
-	for (int i = 0; i < nseg; i++)
-		units += seg[i]->nsb;
-	bk = palloc(Max(units, 1) * SLICE_POINTS * sizeof(BoundKey));
-	*n = 0;
-	for (int i = 0; i < nseg; i++)
-		for (uint32 u = 0; u < seg[i]->nsb; u++)
-		{
-			BoundKey   *b = &bk[(*n)++];
-			int64		hi[2] = {0, 0};
-			uint32		rows = seg[i]->sbdir[u].nrows;
-
-			memset(b, 0, sizeof(BoundKey));
-			b->rows = Max(rows / SLICE_POINTS, 1);
-			for (int t = 0; t < bound_leaves(m->ctx); t++)
-			{
-				SiftCZone	z;
-				const SiftColDef *col = &seg[i]->schema->cols[m->ctx->leaf[t]];
-
-				sift_cseg_zone(seg[i], m->ctx->leaf[t], u, &z);
-				b->nul[t] = z.nnull >= z.nvals;
-				b->k[t] = b->nul[t] ? 0 : sift_crun_key(col, z.min);
-				hi[t] = b->nul[t] ? 0 : sift_crun_key(col, z.max);
-			}
-					if (b->nul[0])
-			{
-				b->rows = rows;
-				continue;
-			}
-			/* a unit of one value of the first leaf is cut by the second */
-			for (int q = 1; q < SLICE_POINTS; q++)
-			{
-				BoundKey   *p = &bk[(*n)++];
-				int			t = bound_leaves(m->ctx) > 1 && !b->nul[1] && b->k[0] == hi[0] ? 1 : 0;
-
-				memset(p, 0, sizeof(BoundKey));
-				p->k[0] = b->k[0];
-				p->k[1] = PG_INT64_MIN;
-				p->k[t] = b->k[t] + (int64) (((__int128) hi[t] - b->k[t]) * q / SLICE_POINTS);
-				p->rows = Max(rows / SLICE_POINTS, 1);
-			}
-		}
-	qsort(bk, *n, sizeof(BoundKey), bound_order);
-	return bk;
-}
-
-/* The bound before slice j of nslices: the first point that j / nslices of the rows come before */
-static const BoundKey *
-slice_bound(const BoundKey *bk, uint64 n, int j, int nslices)
-{
-	uint64		total = 0,
-				seen = 0,
-				want;
-
-	for (uint64 i = 0; i < n; i++)
-		total += bk[i].rows;
-	want = total * j / nslices;
-	for (uint64 i = 0; i < n; i++)
-	{
-		if (seen >= want)
-			return &bk[i];
-		seen += bk[i].rows;
-	}
-	return &bk[n - 1];
-}
 
 /* A chunk no input holds and no row of the window points into gives its arrays back: the memory of a merge is the chunks of its inputs in hand, not the largest one each slot held */
 static void
@@ -697,7 +537,7 @@ load_chunk(MergeSrc *m, MergeIn *in)
 	else if (in->keyed)
 	{
 		if (m->lo && in->bounded && prev < 0)
-			in->next_unit = first_unit(m, seg, m->lo);
+			in->next_unit = sift_colk_first_unit(m->ctx, seg, m->lo);
 		while (b->nrows == 0 && in->next_unit < seg->nsb)
 		{
 			sift_cbatch_reserve(b, seg->sbdir[in->next_unit].nrows);
@@ -725,6 +565,7 @@ load_chunk(MergeSrc *m, MergeIn *in)
 	in->chunk = cur;
 	in->n = b->nrows;
 	in->pos = 0;
+	SIFT_MEM_CHECKPOINT_OF(col_merge_inputs);
 	if (in->n == 0)
 		in->done = true;
 	else
@@ -756,7 +597,7 @@ load_chunk(MergeSrc *m, MergeIn *in)
 	}
 	if (m->lo && in->bounded && !in->done)
 	{
-		while (in->pos < in->n && bound_cmp(m, in->ord[in->pos].b, in->ord[in->pos].r, m->lo) < 0)
+		while (in->pos < in->n && sift_colk_bound_cmp(m->ctx, in->ord[in->pos].b, in->ord[in->pos].r, m->lo) < 0)
 			in->pos++;
 		if (in->pos == in->n)
 			load_chunk(m, in);
@@ -767,7 +608,7 @@ load_chunk(MergeSrc *m, MergeIn *in)
 static bool
 in_window(const MergeSrc *m, const SiftColBatch *b, uint32 r)
 {
-	return (m->lo == NULL || bound_cmp(m, b, r, m->lo) >= 0) && (m->hi == NULL || bound_cmp(m, b, r, m->hi) < 0);
+	return (m->lo == NULL || sift_colk_bound_cmp(m->ctx, b, r, m->lo) >= 0) && (m->hi == NULL || sift_colk_bound_cmp(m->ctx, b, r, m->hi) < 0);
 }
 
 /* The rows of the inputs that are not streams go to the sort, but for the ones of an input the window cuts that are outside it (another merge writes them) */
@@ -828,6 +669,81 @@ heap_down(MergeSrc *m, int i)
 	m->heap[i] = x;
 }
 
+static void
+heap_push(MergeSrc *m, MergeIn *in)
+{
+	int			i = m->nheap++;
+
+	for (int p; i > 0 && in_before(m, in, m->heap[p = (i - 1) / 2]); i = p)
+		m->heap[i] = m->heap[p];
+	m->heap[i] = in;
+}
+
+static int
+wait_order(const MergeIn *a, const MergeIn *b)
+{
+	int			c = sift_colk_bound_order(&a->head, &b->head);
+
+	return c != 0 ? c : a < b ? -1 : 1;
+}
+
+/* A stream that waits: it has rows at or above its head, none below. An input with no row in the merge's slice is done without being read */
+static void
+wait_add(MergeSrc *m, MergeIn *in)
+{
+	int			at = m->nwait;
+
+	if (m->lo && in->bounded)
+		in->next_unit = sift_colk_first_unit(m->ctx, in->seg, m->lo);
+	if (in->next_unit >= in->seg->nsb)
+	{
+		in->done = true;
+		return;
+	}
+	sift_colk_unit_head(m->ctx, in->seg, in->next_unit, &in->head);
+	if (m->hi && in->bounded && sift_colk_bound_order(&in->head, m->hi) >= 0)
+	{
+		in->done = true;
+		return;
+	}
+	for (; at > 0 && wait_order(m->wait[at - 1], in) > 0; at--)
+		m->wait[at] = m->wait[at - 1];
+	m->wait[at] = in;
+	m->nwait++;
+}
+
+/* The waiting inputs the rows have reached are read: their head is not above the next row, and any when no input has one */
+static void
+wake_inputs(MergeSrc *m)
+{
+	while (m->nwait > 0)
+	{
+		MergeIn    *in = m->wait[0];
+
+		if (m->nheap > 0)
+		{
+			const RowRef *next = &m->heap[0]->ord[m->heap[0]->pos];
+
+			if (sift_colk_bound_cmp(m->ctx, next->b, next->r, &in->head) < 0)
+				return;
+		}
+		memmove(m->wait, m->wait + 1, --m->nwait * sizeof(MergeIn *));
+		load_chunk(m, in);
+		if (!in->done)
+			heap_push(m, in);
+	}
+}
+
+static bool
+merge_lazy(const MergeSrc *m, const MergeIn *in)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_col_merge_eager)
+		return false;
+#endif
+	return in->keyed && !in->sorted && m->ctx->nleaf > 0;
+}
+
 static bool
 merge_next(void *state, RowRef *r)
 {
@@ -837,28 +753,39 @@ merge_next(void *state, RowRef *r)
 	if (m->heap == NULL)
 	{
 		m->heap = MemoryContextAlloc(m->cx, m->n * sizeof(MergeIn *));
+		m->wait = MemoryContextAlloc(m->cx, m->n * sizeof(MergeIn *));
 		if (m->sorter && !m->presorted)
 			sort_fill(m);
 		for (int i = 0; i < m->n; i++)
 		{
-			if (!m->in[i].done)
-				load_chunk(m, &m->in[i]);
-			if (!m->in[i].done)
-				m->heap[m->nheap++] = &m->in[i];
+			MergeIn    *in = &m->in[i];
+
+			if (in->done)
+				continue;
+			if (merge_lazy(m, in))
+			{
+				wait_add(m, in);
+				continue;
+			}
+			load_chunk(m, in);
+			if (!in->done)
+				m->heap[m->nheap++] = in;
 		}
 		for (int i = m->nheap / 2 - 1; i >= 0; i--)
 			heap_down(m, i);
 	}
 	for (;;)
 	{
+		wake_inputs(m);
 		if (m->nheap == 0)
 			return false;
 		best = m->heap[0];
-		if (m->hi == NULL || !best->bounded || bound_cmp(m, best->ord[best->pos].b, best->ord[best->pos].r, m->hi) < 0)
+		if (m->hi == NULL || !best->bounded || sift_colk_bound_cmp(m->ctx, best->ord[best->pos].b, best->ord[best->pos].r, m->hi) < 0)
 			break;
 		/* the rest of this input is in the slices above */
 		m->chunk[best->chunk].held = false;
 		chunk_free(m, best->chunk);
+		sift_cseg_dict_release(best->seg);
 		best->done = true;
 		m->heap[0] = m->heap[--m->nheap];
 		if (m->nheap > 0)
@@ -900,8 +827,8 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 	OrderCtx	ctx = {schema, leaf, nleaf};
 	MergeSrc	m = {.in = palloc0_array(MergeIn, n + 1), .n = n, .ctx = &ctx, .freeze = freeze, .freeze_arg = freeze_arg, .cx = cx,
 					 .scratch = AllocSetContextCreate(cx, "sift_col merge unit", ALLOCSET_DEFAULT_SIZES), .budget = memory_kb * 1024};
-	BoundKey	wlo = {{0, PG_INT64_MIN}},
-				whi = {{0, PG_INT64_MIN}};
+	BoundKey	wlo,
+				whi;
 	uint64		loose = 0;
 	int			units;
 
@@ -909,30 +836,27 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = stream[i], .chunk = -1, .bounded = win ? win->bounded[i] : true};
 	if (win)
 	{
-		const SiftColDef *col = &schema->cols[leaf[0]];
-
 		Assert(nleaf > 0 && nslices == 1);
-		/* the bounds are on the first leaf alone: the rows of a key are all in or all out */
 		if (win->has_lo)
 		{
-			wlo.k[0] = sift_crun_key(col, win->lo);
+			sift_colk_bound_unpack(&ctx, &win->lo, &wlo);
 			m.lo = &wlo;
 		}
 		if (win->has_hi)
 		{
-			whi.k[0] = sift_crun_key(col, win->hi);
+			sift_colk_bound_unpack(&ctx, &win->hi, &whi);
 			m.hi = &whi;
 		}
 	}
 	if (nslices > 1)
 	{
 		uint64		nb;
-		BoundKey   *bk = slice_bounds(&m, seg, n, &nb);
+		BoundKey   *bk = sift_colk_slice_bounds(&ctx, seg, n, &nb);
 
 		if (nb == 0)
 			return 0;
-		m.lo = slice > 0 ? slice_bound(bk, nb, slice, nslices) : NULL;
-		m.hi = slice < nslices - 1 ? slice_bound(bk, nb, slice + 1, nslices) : NULL;
+		m.lo = slice > 0 ? sift_colk_slice_bound(bk, nb, slice, nslices, SIFT_SLICE_SLACK_PCT, NULL) : NULL;
+		m.hi = slice < nslices - 1 ? sift_colk_slice_bound(bk, nb, slice + 1, nslices, SIFT_SLICE_SLACK_PCT, NULL) : NULL;
 	}
 	/* the rows of the inputs that are not streams are loaded whole and sorted when they fit the budget, else sorted by a sort that spills to temporary files */
 	for (int i = 0; i < n; i++)

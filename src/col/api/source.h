@@ -132,7 +132,6 @@ typedef struct SiftColZone
 #define SIFT_COLO_POINT_TIDS	0x0020	/* ... and the heap addresses of a directory that lists them are returned as they are, without reading a unit (sift_col_point_tids): the caller wants no values of the rows, only the addresses, and has the heap check the condition again */
 #define SIFT_COLO_POINT_ROWS	0x0040	/* ... and a unit comes narrowed to the rows the directory lists (sift_col_point_narrow): the caller tests every predicate again on them, as it does on the rows of a unit */
 #define SIFT_COLO_POINT_LAZY	0x0080	/* ... and with SIFT_COLO_POINT_TIDS, the addresses of a lookup are handed over as the caller asks for them (sift_col_point_next), not all at the begin: a scan that stops after a few rows decodes a few */
-#define SIFT_COLO_SCOPE		0x0100	/* the source reads the scope segments of the index (col/scope.h) and nothing else: no entity segment, no write buffer; without it the source never sees a scope segment */
 #define SIFT_COLO_POINTS		0x0010	/* the scan may answer an equality or a short IN list from the point directory of a segment, whose rows are the fingerprint's: the caller has the heap check the condition again (sift_col_filter_points) */
 #define SIFT_COLO_SNAP_HELD		0x0004	/* the caller keeps the snapshot registered while the source is open: one registration for the thousands of sources of a partitioned table's scan (a resource owner holding that many registrations of one snapshot takes quadratic time to add and forget them) */
 
@@ -195,6 +194,21 @@ extern void sift_col_count_strs(SiftColSource *src, int leaf, uint32 collid, con
 extern void sift_col_count_elem(SiftColSource *src);
 extern bool sift_col_unit_counted(const SiftColUnit *unit, uint64 *rows);
 extern void sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit);
+/*
+ * The runs of the scope sidecar of a key (col/side.h): with sift_col_super(src, true) and a read of the scope's key, a segment that has a sidecar hands over each run for which valid says yes as one
+ * unit (sift_col_unit_run) of the key's rows in its units: the cube of all of them, or when the scan's only comparison is a range on the time leaf (sift_col_super_tests) that of each month inside it, one unit each. The units of a run are not read otherwise; a consumer that cannot answer from the
+ * run calls sift_col_unit_split, as for a group. The rows of the key in the units of the other runs, and in no run, are the caller's to read from the units: call before sift_col_begin
+ */
+struct SideRun;
+struct SideCell;
+struct SiftColSegment;
+typedef bool (*SiftColRunValid) (void *arg, struct SiftColSegment *seg, const struct SideRun *run);
+extern void sift_col_side_read(SiftColSource *src, int scope, int64 key, SiftColRunValid valid, void *arg);
+/* True when no member the read lists has a pair that changed since the sidecar of the segment was made: the runs of the key then hold every unit the segment has of its members */
+typedef bool (*SiftColSegCovers) (void *arg, struct SiftColSegment *seg);
+/* After sift_col_side_read: the member conjunct of the read is no zone test (a text, varchar or uuid member): only the runs answer for it, a group of units or a segment is never taken from its summary, and a segment that covers the members reads no unit outside the runs of the key */
+extern void sift_col_side_strict(SiftColSource *src, SiftColSegCovers covers);
+extern bool sift_col_unit_run(const SiftColUnit *unit, struct SiftColSegment **seg, const struct SideRun **run, const struct SideCell **cell);
 /* The superblocks a parallel range should span for a group of units to fit in it: several groups of the largest fan, whatever the number of segments that interleave */
 extern uint32 sift_col_super_span(SiftColSource *src);
 /* The first superblock at or after sb that no key group of a segment straddles: ranges cut there take a group whole (the end of one range is the start of the next) */
@@ -210,6 +224,7 @@ typedef struct SiftColSuperTest
 	int64		hi;
 	int			nvals;
 	const int64 *vals;
+	bool		scope;			/* the member conjunct of a scope read, which the runs of the scope sidecar answer for (sift_col_side_read); every other group of units is tried against it */
 } SiftColSuperTest;
 /* rollup: the statement is answered from the rollup of the rows, which only a key group of a scope segment holds: no other group is tried */
 #define SIFT_SUPER_NEED_ROWS	1		/* the groups tried hold the rollup of the rows */
@@ -298,10 +313,6 @@ struct SiftColBatch;
 extern void sift_col_add_batches(SiftColSource *src, struct SiftColBatch *const *batches, int nbatches);
 /* the batches of the superblocks outside [sb_lo, sb_hi) leave the source: their owner frees them, the next begin over them feeds them again */
 extern void sift_col_drop_batches(SiftColSource *src, uint32 sb_lo, uint32 sb_hi);
-
-/* The source of the scope segments of an index (SIFT_COLO_SCOPE), before sift_col_begin: the rows of the write buffers expanded by the pairs rd->delta lists, as units of memory (col/scan/scope_delta.c); the rows were selected by the reader (sift_scope_delta_select) */
-struct SiftScopeRead;
-extern void sift_col_scope_delta(SiftColSource *src, const struct SiftScopeRead *rd);
 
 /*
  * A batch (one SB, rows in key order, all live) as the unit the source is at, in place of the one it was at. Invalidates the vectors of the
@@ -617,7 +628,6 @@ typedef struct SiftColWalkStamp
 	Oid			index;
 	uint32		file;
 	uint32		version;
-	uint32		scope;			/* the zones are those of the scope segments, not of the entity segments */
 } SiftColWalkStamp;
 extern bool sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int cap, int *nmem);
 extern bool sift_col_unit_exact(const SiftColUnit *unit);
