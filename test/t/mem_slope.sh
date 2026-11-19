@@ -28,5 +28,4 @@ while IFS= read -r l; do
 	[[ -n $l ]] || continue
 	if [[ $l == *" PASS" ]]; then ok "${l#SLOPE }"; else not_ok "${l#SLOPE }"; fi
 done <<<"$lines"
-grep -h . <<<"$lines" | sed 's/^/not ok 91 - /'
 finish
