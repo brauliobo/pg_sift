@@ -159,7 +159,13 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		sift_conn_fill_end(fill);
 		/* as late as the rows are written: the transactions that finished while they were leave no bit in the stamp */
 		if (r->track)
-			sift_seg_set_xstamp(&neu[0], sift_xstamp_make(&xwait));
+		{
+			int			riw_open = xwait.n;
+			SiftXStamp	riw_st = sift_xstamp_make(&xwait);
+
+			elog(LOG, "RIWPROMOTE records=%d open_at_read=%d next=%u", (int) records, riw_open, riw_st.next);
+			sift_seg_set_xstamp(&neu[0], riw_st);
+		}
 		sift_wt_finish(wt);
 	}
 	pages = sift_cwbuf_pages(index, sealed, &npages);
@@ -218,10 +224,10 @@ first_sealed(const SiftDirSnapshot *snap)
 SiftStepResult
 maint_promote_next(Relation index, bool propagate, uint64 *busy)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	const SiftSegEntry *s;
 
-	sift_col_dir_read(index, snap, false);
+	snap = sift_col_dir_read(index, false);
 	settle_stamps(index, snap);
 	if ((s = first_sealed(snap)) != NULL)
 	{

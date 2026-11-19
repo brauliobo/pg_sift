@@ -39,7 +39,7 @@ static void
 make_room(Relation rel, SiftTblRel *st)
 {
 	sift_tbl_refresh(rel, st);
-	if (st->dir.nsegs >= sift_tbl_max_segments - 2 || dir_backpressure(st))
+	if (st->dir->nsegs >= sift_tbl_max_segments - 2 || dir_backpressure(st))
 		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), true,
 							   sift_tbl_opt_int(st, SIFT_TBLOPT_BACKPRESSURE) ? SIFT_TBL_ROOM_STEPS : SIFT_TBL_SETTLE_STEPS);
 }
@@ -59,8 +59,8 @@ load_lock_with_room(Relation rel, SiftTblRel *st, int n)
 	{
 		make_room(rel, st);
 		LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-		sift_dir_read(rel, &st->dir);
-		room = sift_tbl_max_segments - 2 - st->dir.nsegs;
+		sift_dir_reload(rel, &st->dir, st->cxt);
+		room = sift_tbl_max_segments - 2 - st->dir->nsegs;
 		if (room >= n || tries == LOAD_ROOM_TRIES)
 			break;
 		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
@@ -68,7 +68,7 @@ load_lock_with_room(Relation rel, SiftTblRel *st, int n)
 	if (room < 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir.nsegs),
+				 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir->nsegs),
 				 errdetail("The groups of a load cannot be merged as fast as it writes them: rows of running transactions are in the way."),
 				 errhint("Run VACUUM on the table, or end the transaction that wrote them.")));
 	return Min(n, room);
@@ -82,7 +82,7 @@ load_publish_all(Relation rel, SiftTblRel *st, Published *pub)
 	{
 		Published	part = {pub->segs + done, load_lock_with_room(rel, st, pub->n - done)};
 
-		sift_dir_update(rel, &(SiftDirChange) {.fn = load_publish_groups,.arg = &part,.extra = InvalidBuffer});
+		sift_dir_update(rel, &(SiftDirChange) {.fn = load_publish_groups,.arg = &part,.nadd = part.n,.extra = InvalidBuffer});
 		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 		done += part.n;
 		sift_tbl_refresh(rel, st);

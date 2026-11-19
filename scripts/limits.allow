@@ -78,3 +78,8 @@ TOMB_SLOTS	indexes whose tombstones a statement holds back for the page-wise app
 SIFT_TOMB_PRESSURE_ENTRIES	the length of the tombstone log of a sift_table at which the maintenance worker is asked for: a scheduling threshold, with no effect on what a statement may do
 SIFT_TOMB_SYNC_ENTRIES	the length of the tombstone log of a sift_table past which a ticking backend leaves the count of its tombstones to the worker: a scheduling threshold, with no effect on what a statement may do
 REFILL_SAMPLE_ENTRIES	the entries of each sampled unit that go to the sample of the key ranges of a refill sort (col/maint/scope.c): the size of a sample, the ranges only come out less even from a smaller one
+SIFT_COL_BTREE_WORKERS	participants of a build through a btree on the key at most (the directory holds the segments of each): a share of the directory, not a size a table may reach (col/build/btree_par.c)
+SIM_MAX_BLOCKS	blocks the cache of the choice between the btree and the key ranges simulates at most (the cache is scaled down by a power of two to it): bounds the memory of the walk, not what a table may hold (col/build/btree_pick.c)
+COST_MIN_US	the range (microseconds) a measured cost of a read of the heap is held to by the choice between a btree on the key and the key ranges (col/build/btree_probe.c): a read of a page in the memory of the system and a seek of a disk that spins; a noise bound of the measurement, not a size a table may reach
+COST_MAX_US	the upper end of that range
+PRICE_BYTES	bytes of rows the pricing of the key ranges' files may take (col/build/spill.c): bounds the memory of the pricing, not what a table may reach

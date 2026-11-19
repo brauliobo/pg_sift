@@ -91,11 +91,11 @@ lower_fn(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 void
 sift_scope_floor_lower(Relation index, const SiftScopeStamps *mine)
 {
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	bool		entities,
 				change = false;
 
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	entities = has_entities(dir->segs, dir->nsegs);
 	for (int s = 0; s < mine->n; s++)
 	{
@@ -159,12 +159,12 @@ sift_scope_floor_after_build(Relation index)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col scope floor", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	SiftScopeStamps *fs = palloc0(sizeof(SiftScopeStamps));
 	const SiftScopeSpecs *specs = sift_scope_specs(index);
 	bool		first = true;
 
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	fs->n = specs->n;
 	for (int s = 0; s < fs->n; s++)
 		fs->nj[s] = sift_scope_njournals(specs->s[s]);
