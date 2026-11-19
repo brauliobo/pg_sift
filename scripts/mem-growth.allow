@@ -24,7 +24,6 @@ double	agg/wide.c	w->bytes = repalloc(w->bytes, w->bcap);	open: wide values (num
 double	agg/wide.c	w->key = repalloc(w->key, w->dcap * 3 * sizeof(uint64));	open: wide values (numeric, text over 8 bytes) of one aggregate, one per distinct value: no limit but the group table check
 double	agg/wide.c	w->off = repalloc(w->off, (w->dcap + 1) * sizeof(uint32));	open: wide values (numeric, text over 8 bytes) of one aggregate, one per distinct value: no limit but the group table check
 double	bm25/step.c	pk->buf = repalloc(pk->buf, pk->cap = size * 2);	bounded: the size of one posting block of a cursor
-double	col/autocut/autocut.c	k->cells = k->cells ? repalloc(k->cells, k->cap * sizeof(Cell)) : palloc(k->cap * sizeof(Cell));	bounded: cells of the size sample of one segment cut
 double	col/dict/dict.c	d->off = repalloc(d->off, (d->cap + 1) * sizeof(uint32));	open: the entries of a dictionary under construction: segment writer, owned by the lane build-memory
 double	col/scan/scope.c	ps->p = ps->p ? repalloc(ps->p, ps->cap * sizeof(SiftScopePair)) : palloc(ps->cap * sizeof(SiftScopePair));	bounded: pairs of one scope read, under work_mem (sift_budget_check) in the caller
 double	col/scan/scope_delta.c	o->row = repalloc(o->row, o->cap * sizeof(DeltaRow));	bounded: rows of the changed keys of one scope delta, under sift.col_scope_refresh_pct
@@ -87,6 +86,7 @@ lifetime	col/am/rel.c	plan_memo = AllocSetContextCreate(TopMemoryContext, "sift 
 lifetime	col/amscan/amscan.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: emptied at the end of the transaction (ioss_pending)
 lifetime	col/dictcache.c	cache_cx = AllocSetContextCreate(TopMemoryContext, "sift cache dictionaries", ALLOCSET_DEFAULT_SIZES);	bounded: sift.dict_cache_kb, least recently used evicted, a pinned entry never
 lifetime	col/dsmreg.c	cx = MemoryContextSwitchTo(TopMemoryContext);	bounded: one record per attached dynamic shared memory segment, with its settings
+lifetime	col/maint/merge_pick.c	settled.gens = settled.gens ? repalloc(settled.gens, settled.cap * sizeof(uint64)) : MemoryContextAlloc(TopMemoryContext, settled.cap * sizeof(uint64));	bounded: the generations of the segments the last merges of one index wrote, at most 2 * SIFT_DIR_WIDE_MAX (a ring)
 lifetime	col/names.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: one name per index the statement or the backend asked about, flushed by the relcache callback
 lifetime	col/rowkey.c	dead_share.cxt = AllocSetContextCreate(TopMemoryContext, "sift dead share", ALLOCSET_DEFAULT_SIZES);	bounded: reset at the end of every transaction (dead_share_reset)
 lifetime	col/scan/gmem.c	gkept_cxt = AllocSetContextCreate(TopMemoryContext, "sift cache write buffer orders", ALLOCSET_DEFAULT_SIZES);	bounded: gord_mem_rows rows (2 million) and a fixed number of slots (gkept)
@@ -119,3 +119,5 @@ lifetime	table/store.c	rel->rd_amcache = MemoryContextAlloc(CacheMemoryContext, 
 loop	agg/lookcol.c	for (uint64 bits = rows[w]; bits != 0; bits &= bits - 1)	bounded: walks the set bits of a member bitmap into pairs under sift.agg_lookup_kb
 loop	bm25/cscan_exec.c	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))	bounded: the dimension set is capped at SIFT_SEMI_MAX_SET and the scan stops at it
 loop	bm25/liveness.c	for (; i < dm->nsb && used < rows; i++)	bounded: used < rows bounds the loop by the rows asked for
+lifetime	core/membudget.c	t = f->mark->trace = MemoryContextAllocZero(TopMemoryContext, sizeof(MemTrace));	bounded: one trace for each memory scope name (SIFT_MEM_NAMES, 256), 256 samples each, and only in a SIFT_TESTING build with sift.test_mem_trace on
+lifetime	core/membudget.c	mark->tree_kinds = MemoryContextAllocZero(TopMemoryContext, sizeof(MemKinds));	bounded: one census for each memory scope name (SIFT_MEM_NAMES, 256), SIFT_MEM_KINDS kinds each, and only in a SIFT_TESTING build with sift.test_mem_kinds on

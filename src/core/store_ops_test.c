@@ -125,11 +125,10 @@ Datum
 sift_test_maint_failures(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
-	SiftDirSnapshot snap;
+	SiftDirSnapshot *snap = sift_dir_read(index);
 
-	sift_dir_read(index, &snap);
 	relation_close(index, AccessShareLock);
-	PG_RETURN_INT32(snap.meta.flags & SIFT_META_FAILURES_MASK);
+	PG_RETURN_INT32(snap->meta.flags & SIFT_META_FAILURES_MASK);
 }
 
 /* sift._test_meta_size(): the bytes of the metapage struct, the most pd_lower of a metapage may cover */
@@ -276,19 +275,19 @@ sift_test_info(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
 	SMgrRelation smgr = RelationGetSmgr(index);
-	SiftDirSnapshot snap;
+	SiftDirSnapshot *snap;
 	SiftFreeStats fs;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, &snap);
+	snap = sift_dir_read(index);
 	fs = sift_store_free_stats(index);
-	put_info(rsinfo, "high_water", snap.meta.high_water);
+	put_info(rsinfo, "high_water", snap->meta.high_water);
 	put_info(rsinfo, "nblocks", RelationGetNumberOfBlocks(index));
 	put_info(rsinfo, "init_blocks", smgrexists(smgr, INIT_FORKNUM) ? (int64) smgrnblocks(smgr, INIT_FORKNUM) : -1);
-	put_info(rsinfo, "next_gen", snap.meta.next_gen);
-	put_info(rsinfo, "dir_version", snap.version);
-	put_info(rsinfo, "nsegs", snap.nsegs);
-	put_info(rsinfo, "freelist_head", BlockNumberIsValid(snap.meta.freelist_head) ? (int64) snap.meta.freelist_head : -1);
+	put_info(rsinfo, "next_gen", snap->meta.next_gen);
+	put_info(rsinfo, "dir_version", snap->version);
+	put_info(rsinfo, "nsegs", snap->nsegs);
+	put_info(rsinfo, "freelist_head", BlockNumberIsValid(snap->meta.freelist_head) ? (int64) snap->meta.freelist_head : -1);
 	put_info(rsinfo, "freelist_pages", fs.pages);
 	put_info(rsinfo, "free_extents", fs.records);
 	put_info(rsinfo, "free_blocks", fs.blocks);
@@ -606,12 +605,12 @@ sift_test_churn(PG_FUNCTION_ARGS)
 	uint64		rng = PG_GETARG_INT64(1);
 	int64		maxbytes = Max(PG_GETARG_INT64(2), 1);
 	uint64		op = sift_mix64(rng++) % 100;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	TestSeg		seg;
 	uint64		pick;
 	const char *what;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	pick = snap->nsegs > 0 ? snap->segs[sift_mix64(rng++) % snap->nsegs].gen : 0;
 	if (op < 35 && snap->nsegs < 96)
 	{
@@ -628,7 +627,7 @@ sift_test_churn(PG_FUNCTION_ARGS)
 	}
 	else if (op < 92 && pick)
 	{
-		if (find_segment(index, pick, snap, &seg))
+		if (find_segment(index, pick, &seg))
 		{
 			sleep_ms(sift_mix64(rng++) % 20);
 			read_segment(index, &seg, seg.align ? 0 : sift_mix64(rng++) % 2);

@@ -133,11 +133,15 @@ wait_checks() {
 	done
 }
 
+# fetch_land ARGS: git fetch into the clone with refs/land hidden from its negotiation and connectivity check: a ref one run deletes while another run's `rev-list --all` reads it
+# makes that rev-list die with "bad object refs/land/..." (the fetch fails with "did not send all necessary objects"), and the handles of other runs are no haves of this one
+fetch_land() { timeout 120 git -C "$CLONE" -c fetch.hideRefs=refs/land fetch -q "$@"; }
+
 # fetch_tip: origin/BASE of the clone. Landings run side by side and a fetch straight into the shared ref fails when another moved it between the fetch's read and its lock,
 # so the tip comes through a ref private to this run and is moved to origin/BASE without an expected old value (a held ref lock is waited for); --refmap= keeps the fetch from updating the shared ref itself
 fetch_tip() {
 	local h=refs/land/tip.$BASHPID sha
-	timeout 120 git -C "$CLONE" fetch -q --refmap= origin "+refs/heads/$base:$h" || return 1
+	fetch_land --refmap= origin "+refs/heads/$base:$h" || return 1
 	sha=$(git -C "$CLONE" rev-parse "$h"); git -C "$CLONE" update-ref -d "$h"
 	git -C "$CLONE" -c core.filesRefLockTimeout=10000 update-ref "refs/remotes/origin/$base" "$sha"
 }
@@ -152,7 +156,7 @@ changelog_check() {
 # they shared was deleted by one under the other
 fetch_pr_head() {
 	local h=refs/land/pr$1.$BASHPID sha
-	timeout 120 git -C "$CLONE" fetch -q origin "+refs/pull/$1/head:$h" || return 1
+	fetch_land origin "+refs/pull/$1/head:$h" || return 1
 	sha=$(git -C "$CLONE" rev-parse "$h"); git -C "$CLONE" update-ref -d "$h"
 	echo "$sha"
 }

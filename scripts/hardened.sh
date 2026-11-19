@@ -27,6 +27,7 @@ copy_git_sources "$REPO" "$WORK/tree"
 cd "$WORK/tree"
 export SIFT_TMP=$WORK/cluster SIFT_ROOT=$WORK/root
 scripts/pgtest.sh install
+drop_build "$WORK/tree"
 trap 'scripts/pgtest.sh stop >/dev/null 2>&1 || true; [[ -n ${KEEP:-} ]] || rm -rf "$WORK"' EXIT
 scripts/pgtest.sh start
 scripts/pgtest.sh regress "${TESTS[@]}"

@@ -32,6 +32,7 @@
 #include "col/pg.h"
 #include "core/catname.h"
 #include "core/errctx.h"
+#include "core/inspect.h"
 #include "core/limits.h"
 #include "core/live.h"
 #include "bm25/maint.h"
@@ -53,22 +54,22 @@
 int			sift_test_merge_max_kb = 0;
 int			sift_test_room_segments = 0;
 bool		sift_test_no_heap_positions = false;
-#define room_segments()		(sift_test_room_segments > 0 ? sift_test_room_segments : (int) sift_limit(max_segments, SIFT_MAX_SEGMENTS) - ROOM_SPARE)
+#define room_segments(snap)	(sift_test_room_segments > 0 ? sift_test_room_segments : sift_dir_cap(&(snap)->meta) - ROOM_SPARE)
 /* longest wait of an inserter for the maintenance of others (sift._test_maint_wait_us) */
 int64		sift_maint_wait_max_us = 0;
 #define wait_started()		GetCurrentTimestamp()
 #define wait_done(start)	(sift_maint_wait_max_us = Max(sift_maint_wait_max_us, GetCurrentTimestamp() - (start)))
 #else
-#define room_segments()		(SIFT_MAX_SEGMENTS - ROOM_SPARE)
+#define room_segments(snap)	(sift_dir_cap(&(snap)->meta) - ROOM_SPARE)
 #define wait_started()		((TimestampTz) 0)
 #define wait_done(start)	((void) (start))
 #endif
 #define ROOM_SPARE			16		/* directory entries below the limit from which inserters merge */
-#define ROOM_SEGMENTS		(SIFT_MAX_SEGMENTS - ROOM_SPARE)
+#define ROOM_SEGMENTS		(SIFT_DIR_POLICY_MAX - ROOM_SPARE)
 #define SELF_PROMOTE_SEALED	4		/* sealed segments from which an inserter promotes them itself */
 /* Whatever merge_fanin is, the policy merges (from SIFT_MERGE_ENTRIES entries) before inserters have to make room, and a merge fits a directory */
 StaticAssertDecl(SIFT_MERGE_ENTRIES(SIFT_MERGE_MAX_FANIN) + SELF_PROMOTE_SEALED + 1 < ROOM_SEGMENTS, "merge policy acts after the room threshold");
-StaticAssertDecl(2 * SIFT_MERGE_MAX_FANIN <= SIFT_MAX_SEGMENTS, "a merge of the largest merge_fanin overflows a directory");
+StaticAssertDecl(2 * SIFT_MERGE_MAX_FANIN <= SIFT_DIR_POLICY_MAX, "a merge of the largest merge_fanin overflows a directory");
 
 static Oid	options_index = InvalidOid;
 static TransactionId options_xid = InvalidTransactionId;
@@ -153,7 +154,7 @@ sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page 
 
 		Assert(at >= 0);
 
-		if (n + k > SIFT_MAX_SEGMENTS)
+		if (n + k > SIFT_DIR_WIDE_MAX)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("the directory has no room for the %d segments this merge wrote", k),
@@ -171,8 +172,13 @@ sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page 
 			}
 		}
 		n += k;
+		if (sw->part_n > 0)
+			sift_dir_part_replace(sw->old, sw->nold, &dir->segs[at + sw->part_first], sw->part_n, sw->part_lo);
+		else
+			sift_dir_part_inherit(sw->old, sw->nold, &dir->segs[at], k);
 	}
 	dir->nsegs = n;
+	meta->inserted += sw->inserted;
 	meta->flags &= ~SIFT_META_FAILURES_MASK;
 }
 
@@ -205,11 +211,11 @@ maint_written_bytes(void)
 	return maint_written;
 }
 
-void
-sift_maint_replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
-					 const char *what, TimestampTz start, int64 docs)
+static void
+replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
+		  const char *what, TimestampTz start, int64 docs, uint32 inserted, int part_first, int part_n, const uint8 (*part_lo)[SIFT_BOUND_BYTES])
 {
-	SiftMaintSwitch sw = {.old = old,.nold = nold,.neu = nneu > 0 ? neu : NULL,.more = nneu > 1 ? neu + 1 : NULL,.nmore = Max(nneu - 1, 0)};
+	SiftMaintSwitch sw = {.part_first = part_first,.part_n = part_n,.part_lo = part_lo,.old = old,.nold = nold,.neu = nneu > 0 ? neu : NULL,.more = nneu > 1 ? neu + 1 : NULL,.nmore = Max(nneu - 1, 0),.inserted = inserted};
 	uint64		bytes = 0;
 
 	for (int i = 0; i < nneu; i++)
@@ -217,9 +223,35 @@ sift_maint_replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int
 	maint_written += bytes;
 	sift_progress_step(nold, bytes);
 
+	if (sift_col_is_index(index))
+		sift_col_dv_switching(index, old, nold);
 	sift_dir_publish(index, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = release,
-			.nrelease = nrelease,.extra = InvalidBuffer}, wt);
+			.nrelease = nrelease,.nadd = Max(nneu, 1),.extra = InvalidBuffer}, wt);
+	if (sift_col_is_index(index))
+		sift_col_dv_switched(index);
 	sift_log_maint(index, what, start, docs, bytes);
+}
+
+void
+sift_maint_replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
+					 const char *what, TimestampTz start, int64 docs)
+{
+	replace_n(index, wt, old, nold, neu, nneu, release, nrelease, what, start, docs, 0, 0, 0, NULL);
+}
+
+/* The same where neu[part_first, part_first + part_n) are partitions of the key, one each, in the order of the key: they take the lineage of the partitions they replace (sift_dir_part_replace) */
+void
+sift_maint_replace_partitions(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
+							  const char *what, TimestampTz start, int64 docs, int part_first, int part_n, const uint8 (*part_lo)[SIFT_BOUND_BYTES])
+{
+	replace_n(index, NULL, old, nold, neu, nneu, release, nrelease, what, start, docs, 0, part_first, part_n, part_lo);
+}
+
+void
+sift_maint_promote_n(Relation index, uint64 sealed, uint32 records, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease, const char *what,
+					 TimestampTz start, int64 docs)
+{
+	replace_n(index, NULL, &sealed, 1, neu, nneu, release, nrelease, what, start, docs, records, 0, 0, NULL);
 }
 
 void
@@ -274,7 +306,7 @@ promote_locked(const SiftMaintOps *ops, Relation index, bool seal_active, bool p
 static bool
 make_room_locked(const SiftMaintOps *ops, Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	bool		room;
 
 	for (;;)
@@ -282,8 +314,8 @@ make_room_locked(const SiftMaintOps *ops, Relation index)
 		SiftStepResult	r;
 		uint64		busy = 0;
 
-		sift_dir_read(index, snap);
-		if (snap->nsegs < room_segments())
+		snap = sift_dir_read(index);
+		if (snap->nsegs < room_segments(snap))
 			break;
 		if ((r = ops->promote_next(index, false, &busy)) == SIFT_STEP_IDLE)
 			r = ops->merge_next(index, false, SIFT_GOAL_ANY, false, &busy);
@@ -297,7 +329,7 @@ make_room_locked(const SiftMaintOps *ops, Relation index)
 			break;
 		CHECK_FOR_INTERRUPTS();
 	}
-	room = snap->nsegs < room_segments();
+	room = snap->nsegs < room_segments(snap);
 	pfree(snap);
 	return room;
 }
@@ -324,11 +356,11 @@ sift_mops_promote(const SiftMaintOps *ops, Relation index, bool wait)
 bool
 sift_mops_make_room(const SiftMaintOps *ops, Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	SiftErrCtx	ctx;
 	bool		room = false;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	if (!in_backoff(&snap->meta))
 	{
 		TimestampTz start = GetCurrentTimestamp();
@@ -374,11 +406,11 @@ sift_mops_merge_step(const SiftMaintOps *ops, Relation index, bool wait)
 void
 sift_mops_after_seal(const SiftMaintOps *ops, Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	int			nsealed = 0;
 
-	sift_dir_read(index, snap);
-	if (snap->nsegs >= room_segments())
+	snap = sift_dir_read(index);
+	if (snap->nsegs >= room_segments(snap))
 		sift_mops_make_room(ops, index);
 	if (ops->seal(index, false) == 0)
 	{
@@ -387,7 +419,8 @@ sift_mops_after_seal(const SiftMaintOps *ops, Relation index)
 	}
 	if (sift_async_maintenance)
 		sift_maint_request_worker(index, ops->worker);
-	sift_dir_read(index, snap);
+	pfree(snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		nsealed += snap->segs[i].kind == SIFT_SEG_WBUF_SEALED;
 	if (nsealed >= SELF_PROMOTE_SEALED && !in_backoff(&snap->meta))
@@ -438,6 +471,7 @@ sift_mops_open(const SiftMaintOps *ops, Oid indexoid, LOCKMODE lock)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a %s index", RelationGetRelationName(index), ops->name)));
+	sift_refuse_partitioned_index(index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX, RelationGetRelationName(index));
 	sift_store_require_ready(index);
 	return index;
 }
@@ -495,7 +529,7 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation index)
 		n++;
 		CHECK_FOR_INTERRUPTS();
 		/* a step of the kind makes progress; this is the end of a kind that does not */
-		if (n >= SIFT_MAX_SEGMENTS)
+		if (n >= SIFT_DIR_POLICY_MAX)
 			break;
 		maint_lock_mode(index, true, ops->step_lock);
 		sift_errctx_push(&ctx, RelationGetRelid(index));
@@ -541,9 +575,9 @@ vacuum_truncates(Relation index)
 static void
 refresh_dead_tables(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && (snap->segs[i].flags & SIFT_SEG_DIRTY))
 		{
@@ -659,17 +693,14 @@ stay_end(Oid indexoid)
 bool
 sift_maint_request_worker(Relation index, const char *function)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	TimestampTz now = GetCurrentTimestamp();
 	bool		stays = sift_worker_stays(function);
 	bool		started;
 
 	if (stays && stay_alive(RelationGetRelid(index)))
-	{
-		pfree(snap);
 		return false;
-	}
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	started = (stays ? !in_backoff(&snap->meta) : now - snap->meta.maint_requested_at >= backoff_ms(&snap->meta) * INT64CONST(1000)) && !sift_index_out(index, snap->meta.flags);
 	pfree(snap);
 	if (!started)
@@ -728,10 +759,10 @@ sift_maint_worker_connect(Datum main_arg, ErrorContextCallback *errctx)
 bool
 sift_maint_wbuf_read_due(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	bool		due = false;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs && !due; i++)
 	{
 		double		paid;

@@ -5,12 +5,14 @@
 # A header another one pulled in can also differ by flavour (the files compiled only with SIFT_TESTING or SIFT_VULKAN are empty in the release one): where the server's headers are installed,
 # each .c file is also compiled without code generation (-fsyntax-only, 4 at a time, warnings kept out of the answer, an implicit declaration an error as in the Makefile) in the release
 # flavour and, when it names the macro or includes a file of src/ that does, with -DSIFT_TESTING and with -DSIFT_VULKAN. The Vulkan declarations are in the tree: it needs no SDK header.
+# A compile that passed is remembered (scripts/lint-cache.sh's directory, pg-includes.json) by the content of the file and of every file of src/ it includes, the compiler and the server: only the
+# files a change reaches are compiled again. CI and SIFT_LINT_NOCACHE=1 compile all of them.
 #   scripts/check-pg-includes.sh            the files of src/ (a header counts for itself, not for the files that include it), then the compile of the flavours
 #   scripts/check-pg-includes.sh --selftest
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 exec python3 -I - "$here" "${1:-}" <<'PY'
-import os, re, shutil, subprocess, sys, tempfile
+import hashlib, json, os, re, shutil, subprocess, sys, tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 root, arg = sys.argv[1], sys.argv[2]
@@ -87,8 +89,56 @@ def compile_failures(root, jobs, flags):
             r = subprocess.run([*cmd, *defs, f], cwd=root, capture_output=True, text=True)
             return None if r.returncode == 0 else (f, name, next((l for l in r.stderr.splitlines() if 'error' in l), r.stderr.strip()))
 
-        with ThreadPoolExecutor(4) as pool:
+        with ThreadPoolExecutor(max(4, (os.cpu_count() or 4) // 4)) as pool:
             return [r for r in pool.map(run, jobs) if r]
+
+
+def toolchain(flags):
+    """What a pass depends on besides the sources: the compiler, its flags and the server's version."""
+    cc = subprocess.run([os.environ.get('CC', 'cc'), '--version'], capture_output=True, text=True).stdout.splitlines()[0]
+    return '\0'.join([cc, *flags, subprocess.run(['pg_config', '--version'], capture_output=True, text=True).stdout.strip()])
+
+
+def job_keys(files, jobs, base):
+    """a digest of each job: its file and of the files of src/ it includes, transitively (the quoted includes are found in src/ or beside the includer)."""
+    text = dict(files)
+    own = {f: hashlib.sha256(t.encode(errors='replace')).hexdigest() for f, t in files}
+    inc = {f: [p for i in re.findall(r'#\s*include\s+"([^"]+)"', t) for p in ('src/' + i, os.path.join(os.path.dirname(f), i)) if p in text] for f, t in files}
+    keys = []
+    for job in jobs:
+        seen, todo = set(), [job[0]]
+        while todo:
+            f = todo.pop()
+            if f not in seen:
+                seen.add(f)
+                todo += inc.get(f, [])
+        keys.append(hashlib.sha256('\0'.join([base, job[1], *job[2], *(f + own[f] for f in sorted(seen))]).encode()).hexdigest())
+    return keys
+
+
+def cache_path():
+    if os.environ.get('CI') or os.environ.get('SIFT_LINT_NOCACHE'):
+        return None
+    base = os.environ.get('SIFT_LINT_CACHE') or os.path.join(os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache'), 'pg_sift', 'lint')
+    os.makedirs(base, exist_ok=True)
+    return os.path.join(base, 'pg-includes.json')
+
+
+def incremental_failures(root, files, jobs, flags, cache):
+    """(failures, number of compiles): the jobs whose key is not the one that passed are compiled, the passes are remembered in the file CACHE (None: no memory)."""
+    passed = json.load(open(cache)) if cache and os.path.exists(cache) else {}
+    keys = job_keys(files, jobs, toolchain(flags))
+    label = lambda j: ' '.join([j[0], j[1]])
+    todo = [(j, k) for j, k in zip(jobs, keys) if passed.get(label(j)) != k]
+    failed = compile_failures(root, [j for j, _ in todo], flags) if todo else []
+    if cache and todo:
+        bad = {(f, name) for f, name, _ in failed}
+        latest = json.load(open(cache)) if os.path.exists(cache) else {}
+        latest.update({label(j): k for j, k in todo if (j[0], j[1]) not in bad})
+        tmp = f'{cache}.{os.getpid()}'
+        json.dump(latest, open(tmp, 'w'))
+        os.replace(tmp, cache)
+    return failed, len(todo)
 
 
 if arg == '--selftest':
@@ -111,6 +161,19 @@ if arg == '--selftest':
             files = [(f, open(os.path.join(d, f)).read()) for f in ('src/a.c', 'src/b.c')]
             got = [(f, n) for f, n, _ in compile_failures(d, jobs(files), flags)]
             assert got == [('src/b.c', 'testing')], got
+            open(os.path.join(d, 'src', 'h.h'), 'w').write('int h(void);\n')
+            open(os.path.join(d, 'src', 'a.c'), 'w').write('#include "postgres.h"\n#include "h.h"\nint a(void) { return h(); }\n')
+            files = [(f, open(os.path.join(d, f)).read()) for f in ('src/a.c', 'src/b.c', 'src/h.h')]
+            cache = os.path.join(d, 'cache.json')
+            todo = [j for j in jobs(files) if j[1] != 'testing' or j[0] == 'src/a.c']
+            assert incremental_failures(d, files, todo, flags, cache) == ([], len(todo))
+            assert incremental_failures(d, files, todo, flags, cache) == ([], 0), 'a pass is not remembered'
+            open(os.path.join(d, 'src', 'h.h'), 'w').write('int h(void);\nint h2(void);\n')
+            files = [(f, open(os.path.join(d, f)).read()) for f in ('src/a.c', 'src/b.c', 'src/h.h')]
+            assert incremental_failures(d, files, todo, flags, cache)[1] == sum(j[0] == 'src/a.c' for j in todo), 'a change of an included header does not compile exactly its includers'
+            open(os.path.join(d, 'src', 'h.h'), 'w').write('int h(void)\n')
+            files = [(f, open(os.path.join(d, f)).read()) for f in ('src/a.c', 'src/b.c', 'src/h.h')]
+            assert [f for f, _, _ in incremental_failures(d, files, todo, flags, cache)[0]] == ['src/a.c'] * sum(j[0] == 'src/a.c' for j in todo), 'a failure is remembered as a pass'
     print('check-pg-includes selftest: ok')
     sys.exit(0)
 
@@ -126,10 +189,10 @@ if flags is None:
     print('check-pg-includes: the flavours were not compiled: no PostgreSQL server headers (pg_config --includedir-server)')
 else:
     todo = jobs(files)
-    failed = compile_failures(root, todo, flags)
+    failed, compiled = incremental_failures(root, files, todo, flags, cache_path())
     for f, name, err in failed:
         print(f'{f}: does not compile in the {name} flavour: {err}')
-    print(f'check-pg-includes: {len(todo)} compiles (release, SIFT_TESTING, SIFT_VULKAN), {len(failed)} failure(s)')
+    print(f'check-pg-includes: {len(todo)} compiles (release, SIFT_TESTING, SIFT_VULKAN) of which {compiled} not remembered, {len(failed)} failure(s)')
     hits += failed
 sys.exit(1 if hits else 0)
 PY

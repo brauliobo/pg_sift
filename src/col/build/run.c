@@ -6,12 +6,14 @@
 /* check-memory: allow-allocs the rows of one page of the heap (maxrows doubles to the rows of a block) */
 #include "postgres.h"
 #include "access/heapam.h"
+#include "catalog/pg_am_d.h"
 #include "commands/progress.h"
 #include "pgstat.h"
 #ifdef SIFT_TESTING
 #endif
 #include "col/build/build_int.h"
 #include "col/point.h"
+#include "core/limits.h"
 
 /*
  * col/build/build.c - CREATE INDEX / REINDEX of a sift_col index: the heap scan forms the rows of one superblock at a time (a batch)
@@ -24,17 +26,41 @@
 #ifdef SIFT_TESTING
 int			sift_test_col_segment_kb = 0;
 
-int			sift_test_col_max_segments = 0;
+int			sift_test_col_build_runs = 0;
 #endif
+
+/* Room for n more segments: a build that owns its array grows it, a participant's array is the shared one sized by sift_colb_segs_bound */
+void
+colb_segs_room(ColBuild *b, int n)
+{
+	if (b->nsegs + n <= b->segcap)
+		return;
+	if (b->segs_fixed || b->nsegs + n > SIFT_DIR_WIDE_MAX)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col build needs more than %d segments", Min(b->segcap, SIFT_DIR_WIDE_MAX)),
+						errhint("Raise maintenance_work_mem: each segment holds up to half of it.")));
+	b->segcap = Min(Max(b->segcap * 2, b->nsegs + n), SIFT_DIR_WIDE_MAX);
+	b->segs = repalloc(b->segs, b->segcap * sizeof(SiftSegEntry));
+}
+
+SiftSegEntry *
+sift_colb_segments(const ColBuild *b)
+{
+	return b->segs;
+}
+
+/* The segments one participant of a parallel build may write: the superblocks it may claim (a segment holds one at least), or the runs a key_cut build keeps, and those of its scopes */
+int
+sift_colb_segs_bound(Relation index, uint32 nsbs)
+{
+	return (int) Min((uint64) SIFT_DIR_WIDE_MAX, (sift_col_key_cut(sift_col_rel(index)) ? SIFT_COL_BUILD_RUNS : (uint64) nsbs) + (uint64) sift_col_rel(index)->nscope * SIFT_COL_BUILD_RUNS);
+}
 
 static void
 end_segment(ColBuild *b)
 {
 	if (b->w == NULL)
 		return;
-	if (b->nsegs == b->maxsegs)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col build needs more than %d segments", b->maxsegs),
-						errhint("Raise maintenance_work_mem: each segment holds up to half of it.")));
+	colb_segs_room(b, 1);
 	sift_colb_peak_note();
 	sift_colw_finish(b->w, &b->segs[b->nsegs++]);
 	sift_colb_peak_note();
@@ -58,7 +84,7 @@ sift_colb_budget(int nslots)
 	if (sift_test_col_segment_kb > 0)
 		return (Size) sift_test_col_segment_kb * 1024;
 #endif
-	return Max(b, nslots == 1 ? SIFT_COL_BUILD_SERIAL_BUDGET : SIFT_COL_BUILD_MIN_BUDGET);
+	return Max(b, (Size) (nslots == 1 ? sift_limit(build_serial_budget, SIFT_COL_BUILD_SERIAL_BUDGET) : sift_limit(build_min_budget, SIFT_COL_BUILD_MIN_BUDGET)));
 }
 
 /* The segment a participant writes without key_cut: its writer within its share of maintenance_work_mem */
@@ -75,29 +101,22 @@ run_cap(int nslots)
 	return (Size) maintenance_work_mem * 1024 * 11 / 16 / nslots;
 }
 
-/*
- * The memory the rows of a run may take (held, after the trims) before it is written: the budget in the bytes the batches took before they were trimmed, which it
- * was set for (the runs are the rows they were), or more when the runs of the participant's share of the rows would not fit the directory with it (a run past the
- * directory is merged with others while the table is scanned, and a row is written once more for each level of the merges: 6 million of 10 million rows at
- * 64 MB), up to run_cap.
- */
+/* The memory the rows of a run may take (held, after the trims) before it is written: the budget in the bytes the batches took before they were trimmed, which it was set for (the runs are the rows they were) */
 Size
 colb_run_budget(ColBuild *b, Size held)
 {
-	double		need = (double) held / b->held_rows * b->share / Max(b->maxsegs - 3, 1);
-
-	return Max((Size) ((double) b->budget * held / (held + b->trimmed)), (Size) Min(need, (double) b->run_cap));
+	return (Size) ((double) b->budget * held / (held + b->trimmed));
 }
 
 /*
  * Merges the segments of the lowest level that has fan of them (else of two) into one of the next level, and gives the pages of the inputs back to the free
- * list, where the runs written next take them. The directory holds a fixed number of segments, so a table whose rows make more runs than that is
- * built by merges as it is scanned: a row is written once for each level it reaches, which is log(fan) of the number of runs, not once for each run.
+ * list, where the runs written next take them. The runs of a key_cut build overlap in the key and the merge that ends it opens them all at once, so a table
+ * whose rows make more runs than maxruns is built by merges as it is scanned: a row is written once for each level it reaches, which is log(fan) of the number of runs.
  */
 static void
 compact(ColBuild *b)
 {
-	int			fan = Min(Max((b->maxsegs - 1) / 4, 2), 32),
+	int			fan = Min(Max((b->maxruns - 1) / 4, 2), 32),
 				count[16] = {0},
 				level = -1,
 				n = 0,
@@ -232,20 +251,8 @@ colb_write_run(ColBuild *b, bool last)
 	b->trimmed = 0;
 	MemoryContextReset(b->heldcxt);
 	/* room for the last run, which the end of the scan writes whatever is left */
-	while (!last && b->nsegs + 1 >= b->maxsegs)
+	while (!last && b->nsegs + 1 >= b->maxruns)
 		compact(b);
-}
-
-/*
- * The directory holds maxsegs segments, the last of them whatever is left: the rest of the table (the heap's estimate, a quarter over) must fit the segments
- * that remain, so a budget that would overrun them grows to what they need, instead of the last segment holding the rows no budget cut.
- */
-static void
-fit_budget(ColBuild *b, uint64 seg_rows)
-{
-	double		left = (double) b->share * 5 / 4 - b->indexed;
-
-	b->budget = sift_colw_fit_budget(b->budget, seg_rows, left > 0 ? (uint64) left : 0, b->maxsegs - b->nsegs);
 }
 
 void
@@ -290,13 +297,8 @@ colb_flush_batch(ColBuild *b)
 			sift_colw_set_preagg(b->w, &b->r->pagg);
 	}
 	sift_colw_add(b->w, b->batch);
-	if (sift_colw_full(b->w, b->budget) && b->nsegs + 1 < b->maxsegs)
-	{
-		uint64		rows = sift_colw_rows(b->w);
-
+	if (sift_colw_full(b->w, b->budget))
 		end_segment(b);
-		fit_budget(b, rows);
-	}
 	sift_cbatch_reset(b->batch, 0);
 }
 
@@ -379,8 +381,8 @@ flush_page(ColBuild *b)
 }
 
 /* The rows indexed since the last report; a worker's go to the progress of the leader */
-static void
-report_rows(ColBuild *b)
+void
+colb_report_rows(ColBuild *b)
 {
 	pgstat_progress_parallel_incr_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) (b->indexed - b->reported));
 	b->reported = b->indexed;
@@ -400,6 +402,7 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	{
 		flush_page(b);
 		b->page = blk;
+		b->pages_seen++;
 	}
 	if (b->nrows == b->maxrows)
 	{
@@ -411,12 +414,36 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	MemoryContextReset(b->tmpcxt);
 	b->indexed++;
 	if (b->indexed - b->reported >= PROGRESS_ROWS)
-		report_rows(b);
+		colb_report_rows(b);
+}
+
+/* The pages of a heap read for its rows: the layout of a build does not depend on the statistics of the table (none yet after a bulk load, or those of another size) */
+#define HEAP_SAMPLE_PAGES	64
+
+/* The rows of a heap of pages pages: the line pointers in use on pages spread over it, scaled to all of them */
+static double
+heap_tuples(Relation heap, BlockNumber pages)
+{
+	BlockNumber take = Min(pages, HEAP_SAMPLE_PAGES);
+	uint64		rows = 0;
+
+	for (BlockNumber i = 0; i < take; i++)
+	{
+		Buffer		buf = ReadBuffer(heap, (BlockNumber) ((uint64) i * pages / take));
+		Page		page;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		for (OffsetNumber off = FirstOffsetNumber, last = PageGetMaxOffsetNumber(page); off <= last; off++)
+			rows += ItemIdIsNormal(PageGetItemId(page, off));
+		UnlockReleaseBuffer(buf);
+	}
+	return take > 0 ? (double) rows * pages / take : 0;
 }
 
 /* A participant's build without its fills: the families of a scope index (col/build/scope.c) are begun like the build of the entities, with their own cut and share the fill of the entities */
 ColBuild *
-colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots, int scope, int nscope)
+colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, SiftSegEntry *segs, int segcap, bool shared, int nslots, int scope, int nscope)
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col build", ALLOCSET_DEFAULT_SIZES);
 	ColBuild   *b = MemoryContextAllocZero(cxt, sizeof(ColBuild));
@@ -443,20 +470,24 @@ colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSe
 #ifdef SIFT_TESTING
 	if (sift_test_col_segment_kb > 0)
 		b->run_cap = b->budget = (Size) sift_test_col_segment_kb * 1024;
-	if (sift_test_col_max_segments > 0)
-		maxsegs = Min(maxsegs, sift_test_col_max_segments);
 #endif
 	if (sift_col_key_cut(b->r))
 	{
+		b->maxruns = Max(SIFT_COL_BUILD_RUNS / parts, 3);
+#ifdef SIFT_TESTING
+		if (sift_test_col_build_runs > 0)
+			b->maxruns = Max(sift_test_col_build_runs / (1 + nscope), 3);
+#endif
 		b->heldcxt = AllocSetContextCreate(cxt, "sift_col build rows", ALLOCSET_DEFAULT_SIZES);
-		b->lvl = MemoryContextAllocZero(cxt, maxsegs);
+		b->lvl = MemoryContextAllocZero(cxt, b->maxruns);
 	}
 	b->batch = sift_cbatch_create(b->heldcxt ? b->heldcxt : cxt, b->r->schema);
 	b->maxrows = 512;
 	b->rows = MemoryContextAlloc(cxt, b->maxrows * sizeof(SiftColRow));
 	b->page = InvalidBlockNumber;
-	b->segs = segs;
-	b->maxsegs = maxsegs;
+	b->segs_fixed = segs != NULL;
+	b->segcap = segs != NULL ? segcap : 16;
+	b->segs = segs != NULL ? segs : MemoryContextAlloc(cxt, b->segcap * sizeof(SiftSegEntry));
 	b->shared = shared;
 	{
 		Relation	heap = table_open(index->rd_index->indrelid, NoLock);
@@ -464,27 +495,31 @@ colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSe
 		double		tuples,
 					allvisfrac;
 
-		table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
-		b->total_rows = tuples >= (double) PG_UINT64_MAX ? PG_UINT64_MAX : (uint64) tuples;
+		if (heap->rd_rel->relam == HEAP_TABLE_AM_OID)
+		{
+			pages = RelationGetNumberOfBlocks(heap);
+			tuples = heap_tuples(heap, pages);
+		}
+		else
+			table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
+		b->total_rows = b->entries = tuples >= (double) PG_UINT64_MAX ? PG_UINT64_MAX : (uint64) tuples;
 		b->share = b->total_rows / nslots;
+		b->heap_pages = pages;
+		b->nslots = nslots;
 		table_close(heap, NoLock);
 	}
 	return b;
 }
 
 ColBuild *
-sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots, bool scopes)
+sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, SiftSegEntry *segs, int segcap, bool shared, int nslots, bool scopes)
 {
 	int			nscope = scopes ? sift_col_rel(index)->nscope : 0;
-	ColBuild   *b = colb_alloc(index, wt, nscope > 0 ? budget / (1 + nscope) : budget, maxsegs / (1 + nscope), segs, shared, nslots, -1, nscope);
+	ColBuild   *b = colb_alloc(index, wt, nscope > 0 ? budget / (1 + nscope) : budget, segs, segcap, shared, nslots, -1, nscope);
 
 	b->fill = sift_conn_fill_begin(index, b->cxt, b->share);
 	if (nscope > 0)
-		colb_scope_begin(b, segs + b->maxsegs, maxsegs / (1 + nscope));
-	if (!sift_col_key_cut(b->r) && b->share > (uint64) b->maxsegs * SIFT_CPOINT_BUILD_ROWS)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the heap has about " UINT64_FORMAT " rows for each process of the build: its %d segments hold " UINT64_FORMAT,
-							   b->share, b->maxsegs, (uint64) b->maxsegs * SIFT_CPOINT_BUILD_ROWS),
-						errhint("Set key_cut on a column to build by runs, or build on a partition of the table.")));
+		colb_scope_begin(b);
 	return b;
 }
 
@@ -494,12 +529,24 @@ sift_colb_scan(ColBuild *b, Relation heap, IndexInfo *info)
 	MemoryContext old = MemoryContextSwitchTo(b->cxt);
 	double		tuples;
 
-	if (sift_col_key_cut(b->r))
-		colb_spill_sample(b, heap, info);
-	tuples = table_index_build_scan(heap, b->index, info, false, true, build_cb, b, NULL);
+	if (OidIsValid(b->btree))
+	{
+		Snapshot	snap = RegisterSnapshot(info->ii_Concurrent ? GetTransactionSnapshot() : GetLatestSnapshot());
+
+		/* an MVCC scan does not see the tuples only an older snapshot sees, which the scan of a build takes: the index is not for the snapshots older than itself */
+		info->ii_BrokenHotChain = true;
+		tuples = colb_btree_scan(b, heap, info, snap, b->btree, NULL);
+		UnregisterSnapshot(snap);
+	}
+	else
+	{
+		if (sift_col_key_cut(b->r) || b->nscope > 0)
+			colb_spill_sample(b, heap, info);
+		tuples = table_index_build_scan(heap, b->index, info, false, true, build_cb, b, NULL);
+	}
 
 	MemoryContextSwitchTo(old);
-	report_rows(b);
+	colb_report_rows(b);
 	return tuples;
 }
 
@@ -520,7 +567,7 @@ sift_colb_scan_sb(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snapshot
 	tuples = table_index_build_range_scan(heap, b->index, info, true, false, false, 0, InvalidBlockNumber, build_cb, b, scan);
 	MemoryContextSwitchTo(old);
 	pgstat_progress_parallel_incr_param(PROGRESS_SCAN_BLOCKS_DONE, Min(SIFT_SB_PAGES, nblocks - start));
-	report_rows(b);
+	colb_report_rows(b);
 	return tuples;
 }
 
@@ -545,7 +592,7 @@ sift_colb_end(ColBuild *b)
 		colb_finish_runs(b->scope[s]);
 	sift_conn_fill_end(b->fill);
 	colb_scope_gather(b);
-	report_rows(b);
+	colb_report_rows(b);
 	return b->nsegs;
 }
 

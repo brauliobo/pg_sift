@@ -15,5 +15,6 @@ extern void sift_check_inspect(Relation rel);
 
 /* Errors unless the relation uses the access method want ("sift", "sift_col"; NULL: any sift one); one of another sift access method is named with the function that serves it (use, may be NULL) */
 extern void sift_inspect_expect(Oid relid, const char *want, const char *use);
+extern void sift_refuse_partitioned_index(bool partitioned, const char *name);
 
 #endif							/* SIFT_INSPECT_H */

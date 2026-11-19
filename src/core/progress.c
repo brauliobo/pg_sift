@@ -101,10 +101,10 @@ progress_xact(XactEvent event, void *arg)
 static int64
 phase_total(Relation index, const char *phase)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	int64		n = 0;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		n += strcmp(phase, "promote") == 0 ? snap->segs[i].kind == SIFT_SEG_WBUF_SEALED : snap->segs[i].kind == SIFT_SEG_IMMUTABLE;
 	pfree(snap);

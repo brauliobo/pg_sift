@@ -24,6 +24,8 @@ extern PGDLLIMPORT int sift_test_room_segments;
 /* Testing knob (sift.test_no_heap_positions): promotions and merges take no positions from the heap, as 3.7.0 did */
 extern PGDLLIMPORT bool sift_test_no_heap_positions;
 extern PGDLLIMPORT int64 sift_maint_wait_max_us;
+/* Moves the segment that ends the file highest into the free blocks below it, units of recut (a mask) cut again: the switch of a split that copies units (bm25/space.c) */
+extern bool sift_maint_relocate_test(Relation rel, uint64 recut);
 #endif
 
 #include "core/store.h"
@@ -40,11 +42,15 @@ extern void sift_maint_options_written(Relation index);
  */
 typedef struct SiftMaintSwitch
 {
+	int			part_first;		/* the replacements neu[part_first, part_first + part_n) are partitions of the key (sift_dir_part_replace) */
+	int			part_n;
+	const uint8 (*part_lo)[SIFT_BOUND_BYTES];	/* the lower bound of each of them (NULL: unknown) */
 	const uint64 *old;			/* generations replaced */
 	int			nold;
 	const SiftSegEntry *neu;	/* the replacement or NULL */
 	const SiftSegEntry *more;	/* the replacements after neu */
 	int			nmore;
+	uint32		inserted;		/* the records of the write buffer the switch promotes (sift_col): added to the metapage's count of the rows that came in */
 } SiftMaintSwitch;
 
 extern void sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg);
@@ -70,6 +76,14 @@ extern void sift_maint_replace(Relation index, SiftWriteTarget *wt, const uint64
 /* The same with nneu replacements (neu[0..nneu)), side by side where the first replaced segment was, in one switch */
 extern void sift_maint_replace_n(Relation index, SiftWriteTarget *wt, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release,
 								 int nrelease, const char *what, TimestampTz start, int64 docs);
+
+extern void sift_maint_replace_partitions(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
+										 const char *what, TimestampTz start, int64 docs, int part_first, int part_n,
+										 const uint8 (*part_lo)[SIFT_BOUND_BYTES]);
+
+/* The promotion of a sealed write buffer of a sift_col index, which held `records` records (sift_cwbuf_summary): the one switch that replaces it also counts them as rows that came in */
+extern void sift_maint_promote_n(Relation index, uint64 sealed, uint32 records, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
+								 const char *what, TimestampTz start, int64 docs);
 
 /* Tells that a maintenance step of an index failed and is retried; kind: "sift" or "sift_col" */
 extern void sift_maint_warn_failure(const char *kind, const char *name, ErrorData *err);

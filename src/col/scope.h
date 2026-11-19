@@ -86,6 +86,8 @@ extern List *sift_scope_users(Oid index);
 extern Oid	sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumber member, AttrNumber key, Oid btree, SiftJournalMake make);
 /* The build of the journal that a concurrent build makes reads no row: the rows come in the validation pass (sift_scope_journals_validate) */
 extern bool sift_col_journal_empty;
+/* Set while validate_index fills such a journal: the pairs it adds were written before the journal began, so it keeps no record of them (the records are those of the writers since) */
+extern bool sift_col_journal_validating;
 /* The validation pass of a concurrent build: the journals the build made empty are filled from the heap under ShareUpdateExclusiveLock, then made valid, as validate_index does for a CREATE INDEX CONCURRENTLY */
 extern void sift_scope_journals_validate(void);
 extern bool sift_scope_journal_pending(Oid index);
