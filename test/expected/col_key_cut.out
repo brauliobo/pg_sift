@@ -359,6 +359,37 @@ SELECT sift.col_verify('kc_big', true);
 (1 row)
 
 DROP INDEX kc_big, kc_runs;
+-- the write buffer of an index with an integer key_cut has key ranges in its pages (column format 55): a 5.0 library would read their head as damage, so the metapage is raised to 1.7, which it refuses
+-- with the format error; a buffer opened with the setting off, or an index without the option, stays at 1.2
+CREATE TABLE kw (id int, cust int);
+INSERT INTO kw SELECT i, i % 50 FROM generate_series(1, 2000) i;
+CREATE INDEX kw_idx ON kw USING sift_col (id, cust) WITH (key_cut = 'cust');
+SELECT minor AS built FROM sift.index_format('kw_idx');
+ built 
+-------
+     2
+(1 row)
+
+INSERT INTO kw SELECT i, i % 50 FROM generate_series(2001, 2100) i;
+SELECT minor AS with_key_ranges FROM sift.index_format('kw_idx');
+ with_key_ranges 
+-----------------
+               7
+(1 row)
+
+SET sift.col_wbuf_key_range = off;
+CREATE TABLE kn (id int, cust int);
+INSERT INTO kn SELECT i, i % 50 FROM generate_series(1, 2000) i;
+CREATE INDEX kn_idx ON kn USING sift_col (id, cust) WITH (key_cut = 'cust');
+INSERT INTO kn SELECT i, i % 50 FROM generate_series(2001, 2100) i;
+SELECT minor AS without_key_ranges FROM sift.index_format('kn_idx');
+ without_key_ranges 
+--------------------
+                  2
+(1 row)
+
+RESET sift.col_wbuf_key_range;
+DROP TABLE kw, kn;
 DROP FUNCTION kchk(text), kunits(text);
 DROP TABLE kc, kp;
 DROP EXTENSION pg_sift;

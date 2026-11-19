@@ -6,6 +6,7 @@
 /* check-memory: allow-allocs the rows of one page of the heap (maxrows doubles to the rows of a block) */
 #include "postgres.h"
 #include "access/heapam.h"
+#include "catalog/pg_am_d.h"
 #include "commands/progress.h"
 #include "pgstat.h"
 #ifdef SIFT_TESTING
@@ -416,6 +417,30 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 		colb_report_rows(b);
 }
 
+/* The pages of a heap read for its rows: the layout of a build does not depend on the statistics of the table (none yet after a bulk load, or those of another size) */
+#define HEAP_SAMPLE_PAGES	64
+
+/* The rows of a heap of pages pages: the line pointers in use on pages spread over it, scaled to all of them */
+static double
+heap_tuples(Relation heap, BlockNumber pages)
+{
+	BlockNumber take = Min(pages, HEAP_SAMPLE_PAGES);
+	uint64		rows = 0;
+
+	for (BlockNumber i = 0; i < take; i++)
+	{
+		Buffer		buf = ReadBuffer(heap, (BlockNumber) ((uint64) i * pages / take));
+		Page		page;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		for (OffsetNumber off = FirstOffsetNumber, last = PageGetMaxOffsetNumber(page); off <= last; off++)
+			rows += ItemIdIsNormal(PageGetItemId(page, off));
+		UnlockReleaseBuffer(buf);
+	}
+	return take > 0 ? (double) rows * pages / take : 0;
+}
+
 /* A participant's build without its fills: the families of a scope index (col/build/scope.c) are begun like the build of the entities, with their own cut and share the fill of the entities */
 ColBuild *
 colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, SiftSegEntry *segs, int segcap, bool shared, int nslots, int scope, int nscope)
@@ -470,7 +495,13 @@ colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, SiftSegEntry *segs,
 		double		tuples,
 					allvisfrac;
 
-		table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
+		if (heap->rd_rel->relam == HEAP_TABLE_AM_OID)
+		{
+			pages = RelationGetNumberOfBlocks(heap);
+			tuples = heap_tuples(heap, pages);
+		}
+		else
+			table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
 		b->total_rows = b->entries = tuples >= (double) PG_UINT64_MAX ? PG_UINT64_MAX : (uint64) tuples;
 		b->share = b->total_rows / nslots;
 		b->heap_pages = pages;

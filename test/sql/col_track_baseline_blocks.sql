@@ -14,7 +14,7 @@ CREATE INDEX bb_plain ON bb USING sift_col (id, k, v) WITH (key_cut = 'k', track
 DELETE FROM bb WHERE id % 50 = 0;
 SELECT sift.col_verify('bb_tracked', true), sift.col_verify('bb_plain', true);
 
--- no page is all-visible: every page is read once
+-- no page is all-visible: every page is read once, plus the pages of its visibility map fork, which the baseline reads to know that
 SELECT pg_stat_force_next_flush() \gset
 SELECT coalesce(sum(heap_blks_read + heap_blks_hit), 0) AS b0 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
 REINDEX INDEX bb_plain;
@@ -23,7 +23,7 @@ SELECT sum(heap_blks_read + heap_blks_hit) AS s1 FROM pg_statio_user_tables WHER
 REINDEX INDEX bb_tracked;
 SELECT pg_stat_force_next_flush() \gset
 SELECT sum(heap_blks_read + heap_blks_hit) AS s2 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
-SELECT (:s2 - :s1) - (:s1 - :b0) = pg_relation_size('bb') / 8192 AS baseline_reads_each_page_once;
+SELECT (:s2 - :s1) - (:s1 - :b0) = (pg_relation_size('bb') + pg_relation_size('bb', 'vm')) / 8192 AS baseline_reads_each_page_once;
 
 -- every page is all-visible: the baseline reads the page of the visibility map that tells so (one for 32,000 pages) and none of the table
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) bb;

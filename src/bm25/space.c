@@ -772,17 +772,44 @@ space_chain_step(Relation rel, SiftWriteTarget *wt, const void *arg)
 	sift_wt_publish(wt, &(SiftDirChange) {.chain_below = *(const BlockNumber *) arg,.extra = InvalidBuffer});
 }
 
+static int
+chain_from(const SiftDirSnapshot *snap, BlockNumber blk)
+{
+	int			n = 0;
+
+	for (int i = 0; i < snap->nchain; i++)
+		n += snap->chain[i] >= blk;
+	return n;
+}
+
 /* The pages of a chained directory at or above keep go below it (the segments are all below): the bytes written */
 static uint64
 shrink_chain(Relation rel, const SiftDirSnapshot *snap, BlockNumber keep)
 {
-	uint64		above = 0;
+	uint64		above = chain_from(snap, keep);
 
-	for (int i = 0; i < snap->nchain; i++)
-		above += snap->chain[i] >= keep;
 	if (above == 0 || run_step(rel, false, space_chain_step, &keep) != SIFT_STEP_DONE)
 		return 0;
 	return above * BLCKSZ;
+}
+
+#define SPACE_CHAIN_SPARE	3	/* free blocks beside one for each page moved: the interior pages above a moved leaf and the root are written again too */
+
+/* The pages of a chained directory above the highest segment go to the lowest free blocks, the holes the replaced segments left (a directory update allocates at the end of the file): the bytes written */
+static uint64
+space_chain(Relation rel)
+{
+	SiftDirSnapshot *snap = sift_dir_read(rel);
+	SpaceSeg   *seg = palloc(Max(snap->nsegs, 1) * sizeof(SpaceSeg));
+	BlockNumber lo = snap->nchain > 0 && space_segments(rel, snap, seg) > 0 ? seg[0].end : 0,
+				hi = snap->nchain > 0 ? snap->meta.high_water : 0;
+	uint64		moved;
+
+	SIFT_BISECT(BlockNumber, mid, lo, hi, sift_store_free_below(rel, mid, 1) < chain_from(snap, mid) + SPACE_CHAIN_SPARE);
+	moved = shrink_chain(rel, snap, lo);
+	pfree(seg);
+	pfree(snap);
+	return moved;
 }
 
 uint64
@@ -892,6 +919,7 @@ cut_locked(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budg
 			(void) sift_recycle(rel);
 			SIFT_SPACE_TEST_POINT(1);
 			space_relocate(rel, budget, relocate_page);
+			space_copied += space_chain(rel);
 		}
 		freed = sift_store_truncate(rel);
 	}

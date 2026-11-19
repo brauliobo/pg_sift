@@ -67,6 +67,24 @@ repartition(SiftMetaPageData *meta, SiftDirectoryData *dir, int pos, int nold, i
 	sift_dir_part_replace(old, nold, &segs[pos], nnew, bounded ? lo : NULL);
 }
 
+/* the entry at pos is replaced by n new ones, which take its place in its partition (sift_dir_part_inherit) */
+static void
+grow_partition(SiftMetaPageData *meta, SiftDirectoryData *dir, int pos, int n)
+{
+	SiftSegEntry *segs = dir->segs;
+	uint64		home = segs[pos].gen;
+
+	memmove(&segs[pos + n], &segs[pos + 1], (dir->nsegs - pos - 1) * sizeof(SiftSegEntry));
+	for (int i = 0; i < n; i++)
+	{
+		uint64		gen = meta->next_gen++;
+
+		segs[pos + i] = (SiftSegEntry) {.gen = gen,.kind = SIFT_SEG_VALRUN,.header_blk = InvalidBlockNumber,.ndocs = gen * 7};
+	}
+	dir->nsegs += n - 1;
+	sift_dir_part_inherit(&home, 1, &segs[pos], n);
+}
+
 static void
 edit_entries(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
@@ -106,6 +124,8 @@ edit_entries(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *a
 		repartition(meta, dir, a->pos, a->n, a->n, true);
 	else if (strcmp(a->op, "split") == 0)
 		repartition(meta, dir, a->pos, 1, a->n, false);
+	else if (strcmp(a->op, "grow") == 0)
+		grow_partition(meta, dir, a->pos, a->n);
 	else if (strcmp(a->op, "merge") == 0)
 		repartition(meta, dir, a->pos, a->n, 1, false);
 	else if (strcmp(a->op, "set") == 0)
@@ -117,16 +137,17 @@ edit_entries(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *a
 		elog(ERROR, "unknown directory edit \"%s\"", a->op);
 }
 
-/* sift._test_dir_edit(index, op, pos, n): part makes the n entries from pos partitions of their own (new entries, one each), bound the same with a lower bound each (part_key), split cuts the partition at pos in n, merge makes the n from pos one; rechain writes the pages of a chain at or above block pos again below it; ins n new entries at pos, del n from pos, rev the n from pos, set (count a document in) the n from pos; the first generation inserted, else 0 */
+/* sift._test_dir_edit(index, op, pos, n): part makes the n entries from pos partitions of their own (new entries, one each), bound the same with a lower bound each (part_key), split cuts the partition at pos in n, grow replaces the entry at pos by n new ones in its partition, merge makes the n from pos one; rechain writes the pages of a chain at or above block pos again below it; ins n new entries at pos, del n from pos, rev the n from pos, set (count a document in) the n from pos; the first generation inserted, else 0 */
 Datum
 sift_test_dir_edit(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	DirEditArg	arg = {.op = text_to_cstring(PG_GETARG_TEXT_PP(1)),.pos = PG_GETARG_INT32(2),.n = PG_GETARG_INT32(3)};
 	SiftDirSnapshot *cur = sift_dir_read(index);
+	bool		adds = strcmp(arg.op, "ins") == 0 || strcmp(arg.op, "split") == 0 || strcmp(arg.op, "grow") == 0;
 
-	if ((strcmp(arg.op, "rechain") != 0 && (arg.pos < 0 || arg.n < 0 || arg.pos + (strcmp(arg.op, "ins") == 0 || strcmp(arg.op, "split") == 0 ? 0 : arg.n) > cur->nsegs || (strcmp(arg.op, "split") == 0 && arg.pos >= cur->nsegs))) ||
-		cur->nsegs + (strcmp(arg.op, "ins") == 0 || strcmp(arg.op, "split") == 0 ? arg.n : 0) > SIFT_DIR_WIDE_MAX)
+	if ((strcmp(arg.op, "rechain") != 0 && (arg.pos < 0 || arg.n < 0 || arg.pos + (adds ? 0 : arg.n) > cur->nsegs || (strcmp(arg.op, "ins") != 0 && adds && arg.pos >= cur->nsegs))) ||
+		cur->nsegs + (adds ? arg.n : 0) > SIFT_DIR_WIDE_MAX)
 		elog(ERROR, "directory edit %s %d %d does not fit %d entries", arg.op, arg.pos, arg.n, cur->nsegs);
 	MAINT_LOCK(index, ShareLock);
 	if (strcmp(arg.op, "rechain") == 0)
@@ -243,7 +264,7 @@ sift_test_dir_blocks(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-/* sift._test_dir_part_bounds(index): of the partitions of a sift_store_test index, whether the lower bound the chain holds is the one the partition was made with, packed, unpacked and compared leaf by leaf */
+/* sift._test_dir_part_bounds(index): of the partitions of a sift_store_test index, whether the lower bound the chain holds is the one the partition was made with, packed, unpacked and compared leaf by leaf, and whether it is a bound at all */
 Datum
 sift_test_dir_part_bounds(PG_FUNCTION_ARGS)
 {
@@ -265,8 +286,8 @@ sift_test_dir_part_bounds(PG_FUNCTION_ARGS)
 		bool		stored = sift_bound_unpack(parts[i].lo, &b);
 		BoundKey	lowest;
 		SiftBound	first_leaf;
-		Datum		values[3];
-		bool		nulls[3] = {0};
+		Datum		values[4];
+		bool		nulls[4] = {0};
 
 		if (stored)
 			sift_colk_bound_unpack(&two_leaves, &b, &got);
@@ -278,6 +299,7 @@ sift_test_dir_part_bounds(PG_FUNCTION_ARGS)
 		values[1] = BoolGetDatum(stored && memcmp(&got.k, &want.k, sizeof(want.k)) == 0 && memcmp(&got.nul, &want.nul, sizeof(want.nul)) == 0 &&
 								 memcmp(bytes, parts[i].lo, SIFT_BOUND_BYTES) == 0);
 		values[2] = BoolGetDatum(lowest.k[0] == want.k[0] && lowest.k[1] == PG_INT64_MIN && !lowest.nul[0] && !lowest.nul[1]);
+		values[3] = BoolGetDatum(stored);
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
 	relation_close(index, AccessShareLock);

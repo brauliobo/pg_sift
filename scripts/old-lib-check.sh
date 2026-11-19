@@ -27,6 +27,9 @@
 #   scripts/old-lib-check.sh scope                      the scope index of 5.0 (column format minor 45; SIFT_OLD_REF, default v4.3.0): this tree writes one index with a scope and one without; the older library refuses the first
 #                                                       with the format error and the standard hint (use a newer pg_sift), reads the second and the heap, and reads a plain index made in its place of the scope index
 #   scripts/old-lib-check.sh twohop                     the same for a scope of two paths (column format minor 49): the older library refuses it, an index with a scope of one path stays at 45
+#   scripts/old-lib-check.sh minors51                   what 5.1 writes that 5.0 cannot read (SIFT_OLD_REF, default v5.0.0): a tombstone log with deletion records (column format minor 52), the write buffer of a key_cut index with
+#                                                       the range of a key in its pages (minor 55, which raises the metapage to 1.7) and a chained directory (metapage 1.7); the older library refuses each with the
+#                                                       format error and the standard hint, reads an index without them as the heap, and reads the index again after a REINDEX under it
 #   scripts/old-lib-check.sh meta                       the metapage of 5.0 is longer (704 bytes) than 3.3 to 4.3.5 accept (they check its length before its format): what each release
 #                                                       in SIFT_META_REFS (default v3.2.3 v3.6.0 v4.3.5 v4.3.6; a +patch release is built with scripts/old-lib-patches/v4.x-metapage-tail.patch, what 4.3.6 carries)
 #                                                       says for an index with a scope and for a plain index that has served a read: the format error up to 3.2, "corrupted" from 3.3 to 4.3.5, the format error or a read from 4.3.6
@@ -429,6 +432,68 @@ scope() {
 	if grep -qE 'TRAP|terminated by signal|PANIC' "$log"; then fail "no crash in the log of the older server"; else pass "no crash in the log of the older server"; fi
 }
 
+# The three formats 5.1 writes that 5.0 reads as something else or not at all: the log holds deletion records (the first record stamps it with column format minor 52, which the log read refuses), a buffer
+# with key ranges (minor 55: 5.0 does not look at the format of a buffer entry and would read the longer page head as damage, so the metapage is raised to 1.7 with it) and a chained directory (1.7: block 1 holds no entry)
+minors51() {
+	local root log want want_wb want_ch fmt_dv fmt_wb q_dv q_wb q_ch q_pl
+	OLD_REF=${SIFT_OLD_REF:-v5.0.0}
+	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-minors51}
+	export SIFT_PORT=${SIFT_PORT:-56148}
+	fmt_dv=$(colfmt M1)
+	fmt_wb=$(colfmt WBUFKEY)
+	root=$(build) || exit $?
+	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
+	[[ -n ${KEEP:-} ]] || trap '"$PG" destroy >/dev/null 2>&1' EXIT
+	log=$SIFT_TMP/old-lib-minors51.log
+	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
+	q_dv="SET sift.agg_force = on; SET sift.enable_agg = on; SELECT count(*) || ':' || sum(v) FROM dv WHERE g = 3"
+	q_wb="SET sift.agg_force = on; SET sift.enable_agg = on; SELECT count(*) || ':' || sum(v) FROM wb WHERE k = 3"
+	q_ch="SET sift.agg_force = on; SET sift.enable_agg = on; SELECT count(*) || ':' || sum(v) FROM ch WHERE v > 100"
+	q_pl="SET sift.agg_force = on; SET sift.enable_agg = on; SELECT count(*) || ':' || sum(v) FROM pl WHERE v > 100"
+	"$PG" start >/dev/null || { echo "FAIL starting the cluster" >&2; exit 1; }
+	psql_new -c "CREATE EXTENSION pg_sift" -c "CREATE EXTENSION pg_sift_test" \
+		-c "CREATE TABLE dv (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = off)" \
+		-c "INSERT INTO dv SELECT i, i % 10, i FROM generate_series(1, 20000) i" \
+		-c "CREATE INDEX dv_ix ON dv USING sift_col (id, g, v) WITH (track_changes = 'id')" -c "VACUUM (FREEZE, ANALYZE) dv" -c "DELETE FROM dv WHERE id % 40 = 1" \
+		-c "CREATE TABLE wb (id int PRIMARY KEY, k int NOT NULL, v int NOT NULL)" -c "INSERT INTO wb SELECT i, i % 20, i FROM generate_series(1, 20000) i" \
+		-c "CREATE INDEX wb_ix ON wb USING sift_col (id, k, v) WITH (key_cut = 'k')" -c "INSERT INTO wb SELECT 20000 + i, i % 20, i FROM generate_series(1, 500) i" \
+		-c "SET sift.test_dir_flat_max = 1" -c "CREATE TABLE ch (id int PRIMARY KEY, v int NOT NULL)" -c "INSERT INTO ch SELECT i, i FROM generate_series(1, 20000) i" \
+		-c "CREATE INDEX ch_ix ON ch USING sift_col (id, v)" -c "RESET sift.test_dir_flat_max" \
+		-c "CREATE TABLE pl (id int PRIMARY KEY, v int NOT NULL)" -c "INSERT INTO pl SELECT i, i FROM generate_series(1, 20000) i" -c "CREATE INDEX pl_ix ON pl USING sift_col (id, v)" \
+		-c "VACUUM (FREEZE, ANALYZE) wb, ch, pl" >/dev/null || { fail "this tree writes the indexes"; "$PG" stop >/dev/null; return; }
+	[[ $(psql_new -c "SELECT sift._test_col_log_format('dv_ix')") == "$fmt_dv" ]] &&
+		pass "this tree stamps the log of deletion records with column format $fmt_dv" || fail "this tree stamps the log of deletion records with column format $fmt_dv"
+	[[ $(psql_new -c "SELECT chained, format_minor FROM sift._test_dir_info('wb_ix')") == "f|7" ]] &&
+		pass "this tree raises the metapage of a key_cut index with a key-range buffer (column format $fmt_wb) to 1.7 with its directory in block 1" ||
+		fail "this tree raises the metapage of a key_cut index with a key-range buffer (column format $fmt_wb) to 1.7 with its directory in block 1"
+	[[ $(psql_new -c "SELECT chained, format_minor FROM sift._test_dir_info('ch_ix')") == "t|7" ]] &&
+		pass "this tree chains the directory of an index (metapage 1.7)" || fail "this tree chains the directory of an index (metapage 1.7)"
+	[[ $(psql_new -c "SELECT chained, format_minor FROM sift._test_dir_info('pl_ix')") == "f|2" ]] &&
+		pass "an index with none of the three stays at metapage 1.2" || fail "an index with none of the three stays at metapage 1.2"
+	want=$(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(v) FROM pl WHERE v > 100" | tail -1)
+	want_wb=$(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(v) FROM wb WHERE k = 3" | tail -1)
+	want_ch=$(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(v) FROM ch WHERE v > 100" | tail -1)
+	psql_new -c "DROP EXTENSION pg_sift_test" >/dev/null
+	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts"; return; }
+	FORMAT_ERROR="column format 1\\.$fmt_dv"
+	expect_refused "the older library refuses the log with deletion records with the format error" "$q_dv"
+	[[ $ERR == *'Use a newer pg_sift'* ]] && pass "... and the standard hint" || fail "... and the standard hint (got [$ERR])"
+	FORMAT_ERROR='on-disk format 1\.7'
+	expect_refused "the older library refuses the buffer with key ranges with the metapage format error" "$q_wb"
+	[[ $ERR == *REINDEX* ]] && pass "... and the REINDEX hint" || fail "... and the REINDEX hint (got [$ERR])"
+	expect_refused "the older library refuses the chained directory with the metapage format error" "$q_ch"
+	expect_rows "... and reads the index with none of them as the heap" "$q_pl" "$want"
+	query "REINDEX INDEX wb_ix"
+	((RC == 0)) && pass "the older library rebuilds the index with key ranges" || fail "the older library rebuilds the index with key ranges ($ERR)"
+	expect_rows "... and reads it again with the answers of the heap" "$q_wb" "$want_wb"
+	query "REINDEX INDEX ch_ix"
+	((RC == 0)) && pass "the older library rebuilds the chained index" || fail "the older library rebuilds the chained index ($ERR)"
+	expect_rows "... and reads it again with the answers of the heap" "$q_ch" "$want_ch"
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
+	if grep -qE 'TRAP|terminated by signal|PANIC' "$log"; then fail "no crash in the log of the older server"; else pass "no crash in the log of the older server"; fi
+}
+
 # What a 4.x release says of a metapage written by this tree. 5.0 keeps what the reads paid, what the workers did last and the floor of a scope in the metapage (704 bytes, covered by pd_lower so that
 # WAL and full-page images keep them); every 4.x release checks pd_lower against its own 400 bytes before the format, so it called the index corrupted. The patch is what a 4.3.6 carries.
 meta() {
@@ -646,6 +711,7 @@ case ${1:-} in
 	present) present; exit $FAILED ;;
 	scope) scope; exit $FAILED ;;
 	twohop) scope twohop; exit $FAILED ;;
+	minors51) minors51; exit $FAILED ;;
 	meta) meta; exit $FAILED ;;
 	*) sed -n '2,12p' "$0"; exit 2 ;;
 esac

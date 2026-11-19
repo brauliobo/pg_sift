@@ -304,13 +304,16 @@ sift_store_require_ready(Relation index)
 
 /*
  * The metapage minor a build must read to understand the segment: the segment format of a BM25 segment, 1.3 for a column segment with unfrozen
- * rows (which an older build would show as final); the other column segments need no more than the base, their format is the column engine's own
+ * rows (which an older build would show as final), 1.7 for the write buffer of a column index whose pages hold key ranges (an older build reads their head as
+ * damage); the other column segments need no more than the base, their format is the column engine's own
  */
 static uint16
 seg_minor(Relation index, const SiftSegEntry *s)
 {
 	if (index->rd_rel->relam == sift_catalog()->am)
 		return Min(s->format, SIFT_FORMAT_MINOR);
+	if (sift_seg_is_wbuf(s) && s->format >= SIFT_COL_FORMAT_WBUFKEY)
+		return SIFT_FORMAT_MINOR_WBUFKEY;
 	return (s->flags & SIFT_SEG_VERS) ? SIFT_FORMAT_MINOR_VERS : SIFT_FORMAT_MINOR_BASE;
 }
 
@@ -728,7 +731,8 @@ dir_edit_close(Relation index, SiftXlog *state, Buffer metabuf, Page mp, Page dp
 
 	check_dir_result(index, state, before, META(mp), dir->segs, dir->nsegs, SIFT_DIR_WIDE_MAX);
 	e->release = palloc((chg->nrelease + e->chain.nleaves + e->chain.ninner + 2 + dir->nsegs) * sizeof(SiftExtent));
-	memcpy(e->release, chg->release, chg->nrelease * sizeof(SiftExtent));
+	if (chg->nrelease > 0)
+		memcpy(e->release, chg->release, chg->nrelease * sizeof(SiftExtent));
 	e->nrelease = chg->nrelease;
 	if (!e->chained && nparts == 0 && dir->nsegs <= sift_dir_flat_max())
 	{

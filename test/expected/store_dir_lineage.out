@@ -156,6 +156,40 @@ SELECT sift._test_dir_check('dn_idx') > 0 AS chain_sound;
 (1 row)
 
 DROP TABLE dn;
+-- an entry replaced by several stays in its partition and keeps its bound, however many entries the directory has (the list the update keeps of them grows by doubling from 16, which the 17th crosses)
+CREATE TABLE dg (v int);
+CREATE INDEX dg_idx ON dg USING sift_store_test (v);
+SELECT sift._test_dir_edit('dg_idx', 'ins', 0, 15) > 0 AS inserted;
+ inserted 
+----------
+ t
+(1 row)
+
+SELECT sift._test_dir_edit('dg_idx', 'bound', 0, 15) IS NOT NULL AS partitioned_bounded;
+ partitioned_bounded 
+---------------------
+ t
+(1 row)
+
+SELECT sift._test_dir_edit('dg_idx', 'grow', 14, 3) IS NOT NULL AS grown;
+ grown 
+-------
+ t
+(1 row)
+
+SELECT count(*) AS partitions, count(*) FILTER (WHERE lo_is_bound) AS bounds FROM sift._test_dir_part_bounds('dg_idx');
+ partitions | bounds 
+------------+--------
+         15 |     15
+(1 row)
+
+SELECT sift._test_dir_check('dg_idx') > 0 AS chain_sound;
+ chain_sound 
+-------------
+ t
+(1 row)
+
+DROP TABLE dg;
 DROP TABLE dm, lineages;
 DROP FUNCTION note(text);
 DROP EXTENSION pg_sift_test;

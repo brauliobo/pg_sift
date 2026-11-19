@@ -4,7 +4,6 @@
  * and the hash a plan is keyed by
  */
 #include "postgres.h"
-#include "pgstat.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "nodes/makefuncs.h"
@@ -459,6 +458,8 @@ sift_col_rel_file_view(Relation index, const RelFileLocator *loc)
 	view->rd_locator = *loc;
 	view->rd_smgr = NULL;
 	view->rd_amcache = NULL;
+	view->pgstat_enabled = false;
+	view->pgstat_info = NULL;
 	view->rd_indexcxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col replaced file", ALLOCSET_SMALL_SIZES);
 	return view;
 }
@@ -466,7 +467,6 @@ sift_col_rel_file_view(Relation index, const RelFileLocator *loc)
 void
 sift_col_rel_file_view_close(Relation view)
 {
-	pgstat_unlink_relation(view);
 	RelationCloseSmgr(view);
 	MemoryContextDelete(view->rd_indexcxt);
 	pfree(view);
