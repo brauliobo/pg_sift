@@ -86,6 +86,50 @@ row_bound(const OrderCtx *ctx, const SiftColBatch *b, uint32 r, SiftBound *out)
 	}
 }
 
+/* Rows x and y of b in the order of a bound: key by key, NULL last, then by address when the bound holds it */
+static int
+row_order(const OrderCtx *ctx, const SiftColBatch *b, uint32 x, uint32 y)
+{
+	for (int t = 0; t < Min(ctx->nleaf, SIFT_BOUND_COMPS); t++)
+	{
+		int			leaf = ctx->leaf[t];
+		bool		nx = row_null(b, x, leaf),
+					ny = row_null(b, y, leaf);
+		int64		kx,
+					ky;
+
+		if (nx || ny)
+		{
+			if (nx != ny)
+				return nx ? 1 : -1;
+			continue;
+		}
+		kx = sift_crun_key(&ctx->schema->cols[leaf], b->col[leaf].key[x]);
+		ky = sift_crun_key(&ctx->schema->cols[leaf], b->col[leaf].key[y]);
+		if (kx != ky)
+			return kx < ky ? -1 : 1;
+	}
+	return ctx->nleaf > SIFT_BOUND_COMPS ? 0 : (b->keys[x] > b->keys[y]) - (b->keys[x] < b->keys[y]);
+}
+
+bool
+sift_colk_batch_bound(const OrderCtx *ctx, const SiftColBatch *b, bool last, SiftBound *out)
+{
+	uint32		best = 0;
+
+	if (b->nrows == 0 || ctx->nleaf == 0)
+		return false;
+	for (uint32 r = 1; r < b->nrows; r++)
+	{
+		int			c = row_order(ctx, b, r, best);
+
+		if (last ? c >= 0 : c < 0)
+			best = r;
+	}
+	row_bound(ctx, b, best, out);
+	return true;
+}
+
 bool
 sift_colk_segment_bound(SiftColSegment *seg, bool last, SiftBound *out)
 {
@@ -101,15 +145,7 @@ sift_colk_segment_bound(SiftColSegment *seg, bool last, SiftBound *out)
 	{
 		sift_cseg_decode_unit_leaves(seg, last ? seg->nsb - 1 - i : i, want, b);
 		/* the rows of a unit are in the order of their addresses, not of the key: the least (the greatest) of them is the bound */
-		for (uint32 r = 0; r < b->nrows; r++)
-		{
-			SiftBound	row;
-
-			row_bound(&ctx, b, r, &row);
-			if (!found || (sift_bound_cmp(&row, out) < 0) != last)
-				*out = row;
-			found = true;
-		}
+		found = sift_colk_batch_bound(&ctx, b, last, out);
 	}
 	MemoryContextDelete(cx);
 	return found;

@@ -31,6 +31,16 @@ SELECT sift._test_dir_edit('dm_idx', 'ins', 60, 1) > 0 AS inserted_one;
 SELECT written() <= 5 AS few_pages_for_an_insert;
 SELECT sift._test_dir_check('dm_idx') > 0 AS chain_sound;
 SELECT count(*) AS entries FROM sift._test_dir_list('dm_idx');
+-- the entries a read returns follow the version of the directory, which the backend keeps them by: each edit shows in the next read, with room in the budget of the backend's caches
+-- (sift.backend_cache_kb) and with none
+SELECT sift._test_dir_edit('dm_idx', 'ins', 0, 2) > 0 AS inserted_two;
+SELECT count(*) AS entries_after_insert FROM sift._test_dir_list('dm_idx');
+SET sift.backend_cache_kb = 0;
+SELECT sift._test_dir_edit('dm_idx', 'del', 0, 3) IS NOT NULL AS deleted_three;
+SELECT count(*) AS entries_without_room FROM sift._test_dir_list('dm_idx');
+RESET sift.backend_cache_kb;
+SELECT sift._test_dir_edit('dm_idx', 'del', 0, 1) IS NOT NULL AS deleted_one;
+SELECT count(*) AS entries_with_room FROM sift._test_dir_list('dm_idx');
 DROP FUNCTION written();
 DROP TABLE dm, seen;
 DROP EXTENSION pg_sift_test;

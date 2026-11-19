@@ -119,6 +119,8 @@ log_ent(Relation index)
 		sift_tomb_init(&e->log, e->cxt, &e->dir);
 		e->log.spill = true;
 	}
+	if (e->dir && e->dir->version == sift_dir_version(index))
+		return e;
 	if (e->dir)
 		pfree(e->dir);
 	old = MemoryContextSwitchTo(e->cxt);

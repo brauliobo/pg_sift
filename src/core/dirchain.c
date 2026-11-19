@@ -9,7 +9,10 @@
 
 #include "storage/bufmgr.h"
 #include "access/xlog.h"
+#include "utils/hsearch.h"
+#include "utils/memutils.h"
 
+#include "core/cachebudget.h"
 #include "core/store_int.h"
 #include "core/dirchain.h"
 #include "core/range.h"
@@ -193,8 +196,10 @@ chain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEn
 				k0,
 				from = 0,
 				to;
+	uint32		leaf_end = 0;
 	int			n = 0;
 	bool		in_partitions = false;
+	SiftChainLeafData *leaf = NULL;
 
 	check_chain_page(index, buf, SIFT_PT_DIRROOT, version);
 	level = r->level;
@@ -252,31 +257,42 @@ chain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEn
 	if (keys != NULL)
 		ref_span(index, refs + k0, nrefs - k0, keys, &from, &to);
 	chain->leaf = palloc(Max(nrefs, 1) * sizeof(SiftChainRef));
+	buf = InvalidBuffer;
 	for (uint32 i = 0; i < nrefs; i++)
 	{
 		const SiftChainRef *ref = &refs[i];
-		SiftChainLeafData *leaf;
 
 		if (i >= k0 && (i - k0 < from || i - k0 >= to))
 			continue;
 		if (ref->n == 0 || ref->n > SIFT_CHAIN_LEAF_CAP || (uint32) n + ref->n > nsegs)
-			corrupt(index, "Directory leaf %u of root %u holds %u of the %u entries.", chain->nleaves, root, ref->n, nsegs);
+			corrupt(index, "Directory reference %u of root %u holds %u of the %u entries.", chain->nleaves, root, ref->n, nsegs);
 		if (ref->lineage == 0 ? in_partitions || !bound_is_zero(ref->lo) :
 			chain->nleaves > 0 && in_partitions && memcmp(chain->leaf[chain->nleaves - 1].lo, ref->lo, SIFT_BOUND_BYTES) > 0)
-			corrupt(index, "Directory leaf %u of root %u breaks the order of its partitions (lineage " UINT64_FORMAT ").", chain->nleaves, root, ref->lineage);
+			corrupt(index, "Directory reference %u of root %u breaks the order of its partitions (lineage " UINT64_FORMAT ").", chain->nleaves, root, ref->lineage);
 		in_partitions |= ref->lineage != 0;
-		buf = read_locked(index, ref->blk, BUFFER_LOCK_SHARE);
-		check_chain_page(index, buf, SIFT_PT_DIRLEAF, ref->gen);
-		leaf = (SiftChainLeafData *) SiftPageGetData(BufferGetPage(buf));
-		if (leaf->n != ref->n || SiftPageGetUsed(BufferGetPage(buf)) != SIFT_CHAIN_LEAF_USED(leaf->n))
-			corrupt(index, "Directory leaf %u holds %u entries in %u bytes, its root says %u.", ref->blk, leaf->n,
-					SiftPageGetUsed(BufferGetPage(buf)), ref->n);
-		memcpy(*segs + n, leaf->segs, ref->n * sizeof(SiftSegEntry));
+		if (chain->nleaves == 0 || chain->leaf[chain->nleaves - 1].blk != ref->blk)
+		{
+			if (BufferIsValid(buf))
+				UnlockReleaseBuffer(buf);
+			buf = read_locked(index, ref->blk, BUFFER_LOCK_SHARE);
+			check_chain_page(index, buf, SIFT_PT_DIRLEAF, ref->gen);
+			leaf = (SiftChainLeafData *) SiftPageGetData(BufferGetPage(buf));
+			if (SiftPageGetUsed(BufferGetPage(buf)) != SIFT_CHAIN_LEAF_USED(leaf->n))
+				corrupt(index, "Directory leaf %u holds %u entries in %u bytes.", ref->blk, leaf->n, SiftPageGetUsed(BufferGetPage(buf)));
+			chain_add_block(chain, ref->blk);
+			leaf_end = keys == NULL ? 0 : ref->at;
+		}
+		if ((keys == NULL ? ref->at != leaf_end : ref->at < leaf_end) || (uint32) ref->at + ref->n > leaf->n)
+			corrupt(index, "Directory leaf %u of root %u holds %u entries, a reference takes %u from %u.", ref->blk, root, leaf->n, ref->n, ref->at);
+		memcpy(*segs + n, leaf->segs + ref->at, ref->n * sizeof(SiftSegEntry));
 		n += ref->n;
+		leaf_end = ref->at + ref->n;
 		chain->leaf[chain->nleaves++] = *ref;
-		UnlockReleaseBuffer(buf);
-		chain_add_block(chain, ref->blk);
+		if (keys == NULL && (i + 1 == nrefs || refs[i + 1].blk != ref->blk) && leaf_end != leaf->n)
+			corrupt(index, "Directory leaf %u holds %u entries, its references take %u.", ref->blk, leaf->n, leaf_end);
 	}
+	if (BufferIsValid(buf))
+		UnlockReleaseBuffer(buf);
 	pfree(top);
 	if (level > 1)
 		pfree(refs);
@@ -284,6 +300,200 @@ chain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEn
 	if (keys == NULL && (uint32) n != nsegs)
 		corrupt(index, "Directory root %u says %u entries, its leaves hold %d.", root, nsegs, n);
 	return n;
+}
+
+/*
+ * The whole chain at a version, memoized per backend. A directory update stores a new version and a chain is immutable under one, so the entries of an index at a version are the
+ * same wherever they were read: a statement that asks for the directory again (each of its writers does, to find a segment, to open the tombstone log, to add a segment) copies the memo
+ * instead of reading and checking every page of the chain. One entry per index, dropped by the budget the backend's caches share (core/cachebudget.h) and by a newer version. The
+ * checks and the reports of the directory read the pages (sift_dirchain_read).
+ */
+typedef struct DirMemo
+{
+	RelFileLocator rel;			/* hash key */
+	BlockNumber root;
+	uint64		version;
+	uint64		used;
+	Size		bytes;
+	SiftDirChain chain;			/* leaf, inner and blocks point into data */
+	int			nsegs;
+	SiftSegEntry *segs;
+	char	   *data;
+} DirMemo;
+
+static HTAB *memos;
+static MemoryContext memo_cx;
+static Size memo_held;
+
+static Size
+memo_bytes(void)
+{
+	return memo_held;
+}
+
+static DirMemo *
+memo_oldest_entry(void)
+{
+	HASH_SEQ_STATUS seq;
+	DirMemo    *e,
+			   *oldest = NULL;
+
+	if (memos == NULL)
+		return NULL;
+	hash_seq_init(&seq, memos);
+	while ((e = hash_seq_search(&seq)) != NULL)
+		if (oldest == NULL || e->used < oldest->used)
+			oldest = e;
+	return oldest;
+}
+
+static uint64
+memo_oldest(void)
+{
+	DirMemo    *e = memo_oldest_entry();
+
+	return e ? e->used : UINT64_MAX;
+}
+
+static void
+memo_drop(DirMemo *e)
+{
+	RelFileLocator rel = e->rel;
+
+	memo_held -= e->bytes;
+	pfree(e->data);
+	hash_search(memos, &rel, HASH_REMOVE, NULL);
+}
+
+static void
+memo_evict(void)
+{
+	memo_drop(memo_oldest_entry());
+}
+
+static const SiftCacheKind memo_kind = {memo_bytes, memo_oldest, memo_evict};
+
+static void
+memo_init(void)
+{
+	HASHCTL		ctl = {.keysize = sizeof(RelFileLocator),.entrysize = sizeof(DirMemo)};
+
+	memo_cx = AllocSetContextCreate(TopMemoryContext, "sift cache directories", ALLOCSET_DEFAULT_SIZES);
+	ctl.hcxt = memo_cx;
+	memos = hash_create("sift chained directories", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	sift_cache_register(&memo_kind);
+}
+
+/* Where the arrays of a chain of nsegs entries lie in one allocation: entries, leaves, interior pages, blocks */
+static Size
+memo_bytes_of(int nsegs, const SiftDirChain *c)
+{
+	return nsegs * sizeof(SiftSegEntry) + c->nleaves * sizeof(SiftChainRef) + c->ninner * sizeof(SiftDirInner) + c->nblocks * sizeof(BlockNumber);
+}
+
+static DirMemo *
+memo_keep(Relation index, uint64 version, const SiftSegEntry *segs, int nsegs, const SiftDirChain *chain)
+{
+	Size		bytes = memo_bytes_of(nsegs, chain);
+	DirMemo    *e;
+	bool		found;
+	char	   *at;
+
+	if (memos == NULL)
+		memo_init();
+	if ((e = hash_search(memos, &index->rd_locator, HASH_FIND, NULL)) != NULL)
+		memo_drop(e);
+	if (!sift_cache_room(bytes))
+		return NULL;
+	e = hash_search(memos, &index->rd_locator, HASH_ENTER, &found);
+	e->root = chain->root;
+	e->version = version;
+	e->used = sift_cache_tick();
+	e->bytes = bytes;
+	e->nsegs = nsegs;
+	e->data = at = MemoryContextAlloc(memo_cx, Max(bytes, 1));
+	e->segs = (SiftSegEntry *) at;
+	memcpy(at, segs, nsegs * sizeof(SiftSegEntry));
+	at += nsegs * sizeof(SiftSegEntry);
+	e->chain = *chain;
+	e->chain.leaf = (SiftChainRef *) at;
+	memcpy(at, chain->leaf, chain->nleaves * sizeof(SiftChainRef));
+	at += chain->nleaves * sizeof(SiftChainRef);
+	e->chain.inner = (SiftDirInner *) at;
+	memcpy(at, chain->inner, chain->ninner * sizeof(SiftDirInner));
+	at += chain->ninner * sizeof(SiftDirInner);
+	e->chain.blocks = (BlockNumber *) at;
+	memcpy(at, chain->blocks, chain->nblocks * sizeof(BlockNumber));
+	e->chain.maxblocks = chain->nblocks;
+	memo_held += bytes;
+	return e;
+}
+
+static DirMemo *
+memo_find(Relation index, BlockNumber root, uint64 version)
+{
+	DirMemo    *e = memos == NULL ? NULL : hash_search(memos, &index->rd_locator, HASH_FIND, NULL);
+
+	if (e == NULL || e->root != root || e->version != version)
+		return NULL;
+	e->used = sift_cache_tick();
+	return e;
+}
+
+SiftDirEntries
+sift_dirchain_entries(Relation index, BlockNumber root, uint64 version)
+{
+	DirMemo    *e = memo_find(index, root, version);
+	SiftSegEntry *segs;
+	SiftDirChain chain = {0};
+	int			n;
+
+	if (e != NULL)
+		return (SiftDirEntries) {.segs = e->segs,.nsegs = e->nsegs,.blocks = e->chain.blocks,.nblocks = e->chain.nblocks,.kept = true};
+	n = chain_read(index, root, version, 0, &segs, &chain, NULL);
+	if ((e = memo_keep(index, version, segs, n, &chain)) == NULL)
+	{
+		pfree(chain.leaf);
+		pfree(chain.inner);
+		return (SiftDirEntries) {.segs = segs,.nsegs = n,.blocks = chain.blocks,.nblocks = chain.nblocks};
+	}
+	pfree(segs);
+	pfree(chain.leaf);
+	pfree(chain.inner);
+	pfree(chain.blocks);
+	return (SiftDirEntries) {.segs = e->segs,.nsegs = n,.blocks = e->chain.blocks,.nblocks = e->chain.nblocks,.kept = true};
+}
+
+void
+sift_dirchain_entries_release(SiftDirEntries *e)
+{
+	if (!e->kept)
+	{
+		pfree((void *) e->segs);
+		pfree((void *) e->blocks);
+	}
+}
+
+int
+sift_dirchain_load(Relation index, BlockNumber root, uint64 version, SiftSegEntry **segs, SiftDirChain *chain)
+{
+	DirMemo    *e = memo_find(index, root, version);
+	int			n;
+
+	if (e == NULL)
+	{
+		n = chain_read(index, root, version, 0, segs, chain, NULL);
+		memo_keep(index, version, *segs, n, chain);
+		return n;
+	}
+	*segs = memcpy(palloc(Max(e->nsegs, 1) * sizeof(SiftSegEntry)), e->segs, e->nsegs * sizeof(SiftSegEntry));
+	*chain = e->chain;
+	chain->leaf = memcpy(palloc(Max(e->chain.nleaves, 1) * sizeof(SiftChainRef)), e->chain.leaf, e->chain.nleaves * sizeof(SiftChainRef));
+	chain->inner = memcpy(palloc(Max(e->chain.ninner, 1) * sizeof(SiftDirInner)), e->chain.inner, e->chain.ninner * sizeof(SiftDirInner));
+	/* check-memory: allow the pages of one directory chain, 4 bytes each, which the entries it lists bound */
+	chain->blocks = memcpy(palloc(Max(e->chain.nblocks, 1) * sizeof(BlockNumber)), e->chain.blocks, e->chain.nblocks * sizeof(BlockNumber));
+	chain->maxblocks = Max(e->chain.nblocks, 1);
+	return e->nsegs;
 }
 
 int
@@ -383,43 +593,45 @@ put_page(ChainOut *o, SiftPageType type, Page *page)
 	return blk;
 }
 
-/* Entries [from, to) in leaves of as even a size as the leaf capacity allows */
+/*
+ * The groups g[a..b) in one leaf, a reference each. A group is the entries one reference names: a piece of the entries of no partition, or one partition. The groups of a
+ * leaf are consecutive in the directory, so their entries are one run of segs.
+ */
 static void
-put_leaves(ChainOut *o, const SiftSegEntry *segs, int from, int to)
-{
-	int			n = to - from;
-	int			leaves = (n + leaf_cap() - 1) / leaf_cap();
-
-	for (int i = 0; i < leaves; i++)
-	{
-		int			lo = from + (int) ((int64) n * i / leaves);
-		int			hi = from + (int) ((int64) n * (i + 1) / leaves);
-		Page		page;
-		SiftChainLeafData *leaf;
-		BlockNumber blk = put_page(o, SIFT_PT_DIRLEAF, &page);
-
-		leaf = (SiftChainLeafData *) SiftPageGetData(page);
-		leaf->n = hi - lo;
-		memcpy(leaf->segs, segs + lo, (hi - lo) * sizeof(SiftSegEntry));
-		SiftPageSetUsed(page, SIFT_CHAIN_LEAF_USED(leaf->n));
-		o->ref[o->nref++] = (SiftChainRef) {.blk = blk,.n = hi - lo,.gen = o->version};
-	}
-}
-
-/* A partition: its entries [from, to) in a leaf of their own */
-static void
-put_part(ChainOut *o, const SiftSegEntry *segs, const SiftDirPart *part)
+put_leaf(ChainOut *o, const SiftSegEntry *segs, const SiftDirPart *g, int a, int b)
 {
 	Page		page;
 	SiftChainLeafData *leaf;
 	BlockNumber blk = put_page(o, SIFT_PT_DIRLEAF, &page);
+	uint32		first = g[a].first;
 
 	leaf = (SiftChainLeafData *) SiftPageGetData(page);
-	leaf->n = part->n;
-	memcpy(leaf->segs, segs + part->first, part->n * sizeof(SiftSegEntry));
+	leaf->n = g[b - 1].first + g[b - 1].n - first;
+	memcpy(leaf->segs, segs + first, leaf->n * sizeof(SiftSegEntry));
 	SiftPageSetUsed(page, SIFT_CHAIN_LEAF_USED(leaf->n));
-	o->ref[o->nref] = (SiftChainRef) {.blk = blk,.n = part->n,.gen = o->version,.lineage = part->lineage};
-	memcpy(o->ref[o->nref++].lo, part->lo, SIFT_BOUND_BYTES);
+	for (int i = a; i < b; i++)
+	{
+		SiftChainRef *ref = &o->ref[o->nref++];
+
+		*ref = (SiftChainRef) {.blk = blk,.n = g[i].n,.at = g[i].first - first,.gen = o->version,.lineage = g[i].lineage};
+		memcpy(ref->lo, g[i].lo, SIFT_BOUND_BYTES);
+	}
+}
+
+/* The groups g[a..b) in the fewest leaves that take them whole, in order */
+static void
+put_leaves(ChainOut *o, const SiftSegEntry *segs, const SiftDirPart *g, int a, int b)
+{
+	while (a < b)
+	{
+		int			e = a;
+		uint32		used = 0;
+
+		while (e < b && used + g[e].n <= leaf_cap())
+			used += g[e++].n;
+		put_leaf(o, segs, g, a, e);
+		a = e;
+	}
 }
 
 /* A page of references [from, to) of ref, written as a level of its own: the references it holds are n entries below it */
@@ -466,7 +678,7 @@ static int
 ref_at(const ChainOut *o, int from, const SiftChainRef *ref)
 {
 	for (int i = from; i < o->nref; i++)
-		if (o->ref[i].blk == ref->blk)
+		if (o->ref[i].blk == ref->blk && o->ref[i].at == ref->at)
 			return i;
 	return -1;
 }
@@ -542,62 +754,202 @@ put_top(ChainOut *o, Relation index, int n, const SiftDirChain *old, bool *kept_
 	pfree(at);
 }
 
+/* The entries [a, b) of no partition as groups: in as many even pieces as a leaf asks for */
+static void
+fresh_groups(SiftDirPart *g, int *ng, int a, int b)
+{
+	int			pieces = (b - a + (int) leaf_cap() - 1) / (int) leaf_cap();
+
+	for (int i = 0; i < pieces; i++)
+		g[(*ng)++] = (SiftDirPart) {.first = a + (int64) (b - a) * i / pieces,.n = a + (int64) (b - a) * (i + 1) / pieces - (a + (int64) (b - a) * i / pieces)};
+}
+
 /*
- * Writes the chain of segs (n entries) that follows old (the chain being replaced, NULL when the directory was block 1 alone), whose entries were
- * oldsegs: interior pages stay as leaves do (put_top). A leaf of old that is at least half full and whose entries are found in segs as they were, together and in order, stays (a smaller one is
- * written again with the entries beside it, so that the leaves of a directory that grows by single entries stay half full and the root does not fill with small ones); the entries between two such leaves go to
- * new leaves; with below, a leaf at or above it is written again, and so is every page the update writes, below it. The metapage is locked exclusively (the blocks come from the free list under it). The blocks of old that the new chain does not
- * keep go to release (room for old->nleaves + 1); returns the new root, which nothing refers to yet.
+ * The groups of the new directory: the first head entries are of no partition, in the groups the old chain made of them while the entries of a group (at least half a leaf) are as they were and
+ * in pieces of even size between those, so that a directory that grows or shrinks by single entries keeps its leaves and its root does not fill with small groups; then the partitions.
+ */
+static SiftDirPart *
+dir_groups(const SiftDirChain *old, const SiftSegEntry *oldsegs, const SiftSegEntry *segs, int n, const GenPos *by_gen, int head, const SiftDirPart *parts, int nparts,
+		   int *ng)
+{
+	SiftDirPart *g = palloc0((head / (int) leaf_cap() + 2 * (old ? (int) old->nleaves : 0) + nparts + 3) * sizeof(SiftDirPart));
+	int			pos = 0;
+	int			off = 0;
+
+	*ng = 0;
+	for (uint32 k = 0; old && k < old->nleaves && old->leaf[k].lineage == 0; off += old->leaf[k].n, k++)
+	{
+		const SiftChainRef *ref = &old->leaf[k];
+		GenPos		key = {oldsegs[off].gen, 0};
+		const GenPos *hit = bsearch(&key, by_gen, n, sizeof(GenPos), cmp_genpos);
+
+		if (ref->n * 2 < leaf_cap() || hit == NULL || hit->pos < pos || hit->pos + ref->n > head ||
+			memcmp(segs + hit->pos, oldsegs + off, ref->n * sizeof(SiftSegEntry)) != 0)
+			continue;
+		fresh_groups(g, ng, pos, hit->pos);
+		g[(*ng)++] = (SiftDirPart) {.first = hit->pos,.n = ref->n};
+		pos = hit->pos + ref->n;
+	}
+	fresh_groups(g, ng, pos, head);
+	if (nparts > 0)
+		memcpy(g + *ng, parts, nparts * sizeof(SiftDirPart));
+	*ng += nparts;
+	return g;
+}
+
+/* The group of g that starts at entry first: -1 when none does */
+static int
+group_at(const SiftDirPart *g, int ng, int first)
+{
+	int			lo = 0,
+				hi = ng - 1;
+
+	while (lo <= hi)
+	{
+		int			mid = (lo + hi) / 2;
+
+		if (g[mid].first == first)
+			return mid;
+		if (g[mid].first < first)
+			lo = mid + 1;
+		else
+			hi = mid - 1;
+	}
+	return -1;
+}
+
+/* The group of g that the entries of old reference ref (the entries at oldsegs) are, with all they were: -1 when something of them changed */
+static int
+group_of(const SiftDirPart *g, int ng, const GenPos *by_gen, int n, const SiftSegEntry *segs, const SiftSegEntry *oldsegs, const SiftChainRef *ref)
+{
+	GenPos		key = {oldsegs[0].gen, 0};
+	const GenPos *hit = bsearch(&key, by_gen, n, sizeof(GenPos), cmp_genpos);
+	int			at = hit ? group_at(g, ng, hit->pos) : -1;
+
+	if (at < 0 || g[at].n != ref->n || g[at].lineage != ref->lineage || memcmp(g[at].lo, ref->lo, SIFT_BOUND_BYTES) != 0 ||
+		memcmp(segs + g[at].first, oldsegs, ref->n * sizeof(SiftSegEntry)) != 0)
+		return -1;
+	return at;
+}
+
+/* A leaf of the old chain that the new one may keep: its references name the groups g0, g0 + 1, ..., as they were */
+typedef struct OldLeaf
+{
+	uint32		ref0;
+	uint32		nref;
+	int			g0;
+	uint32		size;
+	bool		keep;
+} OldLeaf;
+
+/* The entries of the groups next to the kept ones, on the side of group at (dir -1: before it and down, +1: from it and up) up to the next kept group */
+static uint32
+open_entries(const SiftDirPart *g, const int *keep_ref, int ng, int at, int dir)
+{
+	uint32		n = 0;
+
+	for (; at >= 0 && at < ng && keep_ref[at] < 0; at += dir)
+		n += g[at].n;
+	return n;
+}
+
+/*
+ * Which groups keep the reference and the leaf of the old chain (keep_ref: the old reference, or -1): a leaf whose every reference names a group of the new directory as it
+ * was, together and in order, and that is not at or above below. A kept leaf that stands next to groups written anew goes into them when it is under half full or when the
+ * two fit one leaf, which costs no more pages written and keeps a directory of a hundred partitions in one leaf however its changes came.
+ */
+static void
+plan_keep(const SiftDirChain *old, const SiftSegEntry *oldsegs, const SiftSegEntry *segs, int n, const GenPos *by_gen, const SiftDirPart *g, int ng, BlockNumber below,
+		  int *keep_ref)
+{
+	OldLeaf    *leaves = palloc(Max(old->nleaves, 1) * sizeof(OldLeaf));
+	int			nleaves = 0;
+	int			off = 0;
+
+	for (uint32 k = 0; k < old->nleaves;)
+	{
+		OldLeaf		l = {.ref0 = k,.g0 = -1,.keep = !(BlockNumberIsValid(below) && old->leaf[k].blk >= below)};
+
+		for (; k < old->nleaves && old->leaf[k].blk == old->leaf[l.ref0].blk; k++)
+		{
+			int			at = l.keep ? group_of(g, ng, by_gen, n, segs, oldsegs + off, &old->leaf[k]) : -1;
+
+			l.keep = at >= 0 && (k == l.ref0 || at == l.g0 + (int) (k - l.ref0));
+			l.g0 = k == l.ref0 ? at : l.g0;
+			l.size += old->leaf[k].n;
+			off += old->leaf[k].n;
+		}
+		l.nref = k - l.ref0;
+		leaves[nleaves++] = l;
+	}
+	for (int c = 0; c < nleaves; c++)
+		for (uint32 j = 0; leaves[c].keep && j < leaves[c].nref; j++)
+			keep_ref[leaves[c].g0 + j] = leaves[c].ref0 + j;
+	for (bool again = true; again;)
+	{
+		again = false;
+		for (int c = 0; c < nleaves; c++)
+		{
+			OldLeaf    *l = &leaves[c];
+			uint32		left = l->keep ? open_entries(g, keep_ref, ng, l->g0 - 1, -1) : 0,
+						right = l->keep ? open_entries(g, keep_ref, ng, l->g0 + l->nref, 1) : 0;
+
+			bool		absorbed = (left > 0 && left + l->size <= leaf_cap()) || (right > 0 && right + l->size <= leaf_cap());
+
+			if (!l->keep || (left == 0 && right == 0) || (l->size * 2 >= leaf_cap() && !absorbed))
+				continue;
+			for (uint32 j = 0; j < l->nref; j++)
+				keep_ref[l->g0 + j] = -1;
+			l->keep = false;
+			again = true;
+		}
+	}
+	pfree(leaves);
+}
+
+/*
+ * Writes the chain of segs (n entries, the first head of them of no partition, then the nparts partitions) that follows old (the chain being replaced, NULL when the directory
+ * was block 1 alone), whose entries were oldsegs. Groups of entries (a piece of the entries of no partition, a partition) are put in leaves whole, several to a leaf, a reference each.
+ * A leaf of old stays as it is while all it names is as it was (plan_keep); the groups between two such leaves go to new leaves; interior pages stay as leaves do (put_top). With below,
+ * a leaf at or above it is written again, and so is every page the update writes, below it. The metapage is locked exclusively (the blocks come from the free list under it). The
+ * blocks of old that the new chain does not keep go to release (room for old->nleaves + old->ninner + 1); returns the new root, which nothing refers to yet.
  */
 BlockNumber
 sift_dirchain_write(Relation index, Buffer metabuf, uint64 version, const SiftDirChain *old, const SiftSegEntry *oldsegs,
 					const SiftSegEntry *segs, int n, const SiftDirPart *parts, int nparts, BlockNumber below, SiftExtent *release, int *nrelease)
 {
 	ChainOut	o = {.index = index,.metabuf = metabuf,.version = version,.below = below};
-	GenPos	   *by_gen = palloc(Max(n, 1) * sizeof(GenPos));
 	bool	   *kept = palloc0(((old ? old->nleaves : 0) + 1) * sizeof(bool));
 	bool	   *kept_inner = palloc0(((old ? old->ninner : 0) + 1) * sizeof(bool));
-	int			pos = 0;
-	int			off = 0;
-	int			head = nparts > 0 ? (int) parts[0].first : n;
+	GenPos	   *by_gen = palloc(Max(n, 1) * sizeof(GenPos));
+	SiftDirPart *g;
+	int			ng;
+	int		   *keep_ref;
 	BlockNumber rootblk;
 
-	o.ref = palloc((n / leaf_cap() + 2 * (old ? old->nleaves : 0) + nparts + 2) * sizeof(SiftChainRef));
 	for (int i = 0; i < n; i++)
 		by_gen[i] = (GenPos) {segs[i].gen, i};
 	qsort(by_gen, n, sizeof(GenPos), cmp_genpos);
-	for (uint32 k = 0; old && k < old->nleaves; off += old->leaf[k].n, k++)
+	g = dir_groups(old, oldsegs, segs, n, by_gen, nparts > 0 ? (int) parts[0].first : n, parts, nparts, &ng);
+	keep_ref = palloc(Max(ng, 1) * sizeof(int));
+	memset(keep_ref, -1, ng * sizeof(int));
+	if (old)
+		plan_keep(old, oldsegs, segs, n, by_gen, g, ng, below, keep_ref);
+	o.ref = palloc((ng + 1) * sizeof(SiftChainRef));
+	for (int i = 0; i < ng;)
 	{
-		const SiftChainRef *ref = &old->leaf[k];
-		GenPos		key = {oldsegs[off].gen, 0};
-		const GenPos *hit = bsearch(&key, by_gen, n, sizeof(GenPos), cmp_genpos);
+		int			j = i;
 
-		if (ref->lineage != 0 || ref->n * 2 < leaf_cap() || hit == NULL || hit->pos < pos || hit->pos + ref->n > head || (BlockNumberIsValid(below) && ref->blk >= below) ||
-			memcmp(segs + hit->pos, oldsegs + off, ref->n * sizeof(SiftSegEntry)) != 0)
-			continue;
-		put_leaves(&o, segs, pos, hit->pos);
-		o.ref[o.nref++] = *ref;
-		kept[k] = true;
-		pos = hit->pos + ref->n;
-	}
-	put_leaves(&o, segs, pos, head);
-	for (int p = 0; p < nparts; p++)
-	{
-		uint32		k = 0;
-		int			at = 0;
-
-		for (; old && k < old->nleaves; at += old->leaf[k].n, k++)
-			if (old->leaf[k].lineage == parts[p].lineage)
-				break;
-		if (old && k < old->nleaves && old->leaf[k].n == parts[p].n && memcmp(old->leaf[k].lo, parts[p].lo, SIFT_BOUND_BYTES) == 0 &&
-			!(BlockNumberIsValid(below) && old->leaf[k].blk >= below) &&
-			memcmp(segs + parts[p].first, oldsegs + at, parts[p].n * sizeof(SiftSegEntry)) == 0)
+		if (keep_ref[i] >= 0)
 		{
-			o.ref[o.nref++] = old->leaf[k];
-			kept[k] = true;
+			o.ref[o.nref++] = old->leaf[keep_ref[i]];
+			kept[keep_ref[i++]] = true;
+			continue;
 		}
-		else
-			put_part(&o, segs, &parts[p]);
+		while (j < ng && keep_ref[j] < 0)
+			j++;
+		put_leaves(&o, segs, g, i, j);
+		i = j;
 	}
 	put_top(&o, index, n, old, kept_inner, &rootblk);
 	flush_pending(&o);
@@ -608,10 +960,12 @@ sift_dirchain_write(Relation index, Buffer metabuf, uint64 version, const SiftDi
 			if (!kept_inner[k])
 				release[(*nrelease)++] = (SiftExtent) {old->inner[k].ref.blk, 1};
 		for (uint32 k = 0; k < old->nleaves; k++)
-			if (!kept[k])
+			if (!kept[k] && (k == 0 || old->leaf[k].blk != old->leaf[k - 1].blk))
 				release[(*nrelease)++] = (SiftExtent) {old->leaf[k].blk, 1};
 	}
 	pfree(by_gen);
+	pfree(g);
+	pfree(keep_ref);
 	pfree(kept);
 	pfree(kept_inner);
 	pfree(o.ref);
