@@ -19,8 +19,10 @@ maint_is_col(Relation index)
 void
 maint_bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
 {
-	SiftColSegment *seg = sift_cseg_open(index, e, CurrentMemoryContext);
+	SiftColSegment *seg;
 
+	SIFT_TEST_MUTANT(3, return);
+	seg = sift_cseg_open(index, e, CurrentMemoryContext);
 	sift_cseg_bulkdelete(seg, cb, cb_state, stats);
 	sift_cseg_close(seg);
 }
@@ -28,6 +30,7 @@ maint_bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDelet
 void
 maint_bulkdelete_wbuf(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
 {
+	SIFT_TEST_MUTANT(3, return);
 	sift_cwbuf_bulkdelete(index, e, sift_col_rel(index)->schema, cb, cb_state, stats);
 }
 
