@@ -311,7 +311,7 @@ sift_test_side_agg(PG_FUNCTION_ARGS)
 		preds[npreds++] = (SiftColPred) {time, SIFT_COLOP_GE, 1, &t_lo};
 		preds[npreds++] = (SiftColPred) {time, SIFT_COLOP_LT, 1, &t_hi};
 	}
-	src = sift_col_open(heap, index, GetActiveSnapshot(), CurrentMemoryContext, 0, NULL);
+	src = sift_col_open(heap, index, GetActiveSnapshot(), CurrentMemoryContext, 0, NULL, NULL);
 	if (mode & 1)
 	{
 		SiftColSuperTest tests[2] = {{meas, amount_min.v.i, PG_INT64_MAX, 0, NULL}, {time, t_lo.v.i, t_hi.v.i - 1, 0, NULL}};

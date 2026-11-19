@@ -60,6 +60,9 @@ extern void sift_colw_set_index_rows(SiftColSegWriter *w, uint64 rows);
 /* The rows the segment will hold, from the table's estimate or the partition the merge cuts: the arrays of the entries of the point directories and orders are allocated at that size, not grown by doubling */
 /* The units added from now on are key-cut (SiftColBatch.keyed) by the leaves cut[ncut], most significant first (none: by TID range); after set_preagg, before the first unit. The segment records them (SIFT_SEG_CUTREC) */
 extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, const int *cut, int ncut);
+/* fn sees the first unit the writer is given, as the batch it encodes (a merge takes the lower bound of its segment from it): before the first unit */
+typedef void (*SiftColFirstUnitFn) (void *arg, const SiftColBatch *b);
+extern void sift_colw_on_first_unit(SiftColSegWriter *w, SiftColFirstUnitFn fn, void *arg);
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
 extern void sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 /* A segment of a connected index: the found flags of the units added from now on are filled by fill (a host fill, col/conn.h) and its stamps are written with the segment; without it the leaves are what the batches hold and the stamps are empty */
@@ -81,6 +84,7 @@ extern Size sift_colw_memory(const SiftColSegWriter *w);
 extern bool sift_colw_full(const SiftColSegWriter *w, Size budget);
 /* An upper bound of the bytes of memory a writer with this spec holds for each row of a segment: its accumulators for the point directories and order arrays and the arrays the end of the segment builds from them (what sift_colw_memory counts) */
 extern Size sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols);
+extern int sift_colw_entry_leaves(const SiftCPaggSpec *spec, int ncols, int *ords);
 extern Size sift_colw_leaves_memory(int leaves, int ords, bool grouped);	/* ... of a table that has that many leaves, of them ords order arrays */
 extern Size sift_colw_budget(Size mem, int resident_pct, Size base);
 #define SIFT_COLW_BUILD_PCT 140
@@ -185,6 +189,8 @@ sift_seg_scope_ordinal(const SiftSegEntry *e)
 
 /* sift_dir_read for the readers of the rows of the index: the entity family, everything but the scope segments of an index built by 5.0 */
 extern SiftDirSnapshot *sift_col_dir_read(Relation index);
+/* ... of the partitions that may hold the keys only (sift_dir_read_range) */
+extern SiftDirSnapshot *sift_col_dir_read_range(Relation index, const SiftKeyRange *keys);
 /* the segments of the family only (sift_dir_read_segs): for a caller that does not hand the snapshot to a scan */
 extern SiftDirSnapshot *sift_col_dir_read_segs(Relation index);
 /* ... of a directory read already: keeps the segments of that family */

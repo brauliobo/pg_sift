@@ -28,8 +28,10 @@
 
 #ifdef SIFT_TESTING
 bool		sift_test_col_from_index_off = false;
+bool		sift_test_col_from_index_forced = false;
 int			sift_test_col_from_index_mutant = 0;
 int			sift_test_col_from_index_used = 0;
+int			sift_test_col_build_table_buffers = 0;
 #endif
 
 /* A version of the pg_class row of the index: where it is, where its update went, and the file it names */

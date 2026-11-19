@@ -254,7 +254,7 @@ create table m{n} as select * from f{n}; alter table m{n} add primary key (id); 
 PLAIN_PTC = PTC.replace(" using sift_col (k, cat, amount)", " (k, cat)")
 
 
-def idle_series(rows, total, mode, db):
+def idle_series(rows, total, mode, db, cache_kb=IDLE_CACHE_KB):
     """one backend, the statements of test/idle-series.tsv in turn (mode sift; off: the sift statements with sift.enable_scan and sift.enable_agg off, minus those that call sift functions; plain: in a database
     without the extension, the forms of the PLAIN column): its anonymous memory, the memory of its contexts and (with the extension) what malloc has given out, every 50 statements. With the extension the backend gets no transparent
     huge pages: under THP=always its memory grows by steps of 2 MB (AnonHugePages reached 94 MB of 115 MB in a run) when the kernel has huge pages to give, and a step is the whole band"""
@@ -294,7 +294,7 @@ def idle_series(rows, total, mode, db):
     q("set client_min_messages=warning; set max_parallel_workers_per_gather=0; set work_mem='4MB'")
     if mode != "plain":
         q("select sift._test_thp_disable()")
-        q(f"set sift.backend_cache_kb = {IDLE_CACHE_KB}")
+        q(f"set sift.backend_cache_kb = {cache_kb}")
     if mode == "off":
         q("set sift.enable_scan = off; set sift.enable_agg = off")
     for st in setup:
@@ -338,5 +338,5 @@ if __name__ == "__main__":
     only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else None
     if sys.argv[1:2] == ["idle"]:
         arg = lambda name, dflt: sys.argv[sys.argv.index(name) + 1] if name in sys.argv else dflt
-        sys.exit(idle_series(rows, int(arg("--statements", 12000)), arg("--mode", "sift"), arg("--db", "idle_" + arg("--mode", "sift"))))
+        sys.exit(idle_series(rows, int(arg("--statements", 12000)), arg("--mode", "sift"), arg("--db", "idle_" + arg("--mode", "sift")), int(arg("--cache-kb", IDLE_CACHE_KB))))
     sys.exit(run(rows, only))

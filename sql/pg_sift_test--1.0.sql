@@ -83,6 +83,14 @@ CREATE FUNCTION sift._test_dir_blocks(index regclass, OUT ord int4, OUT blk int8
 CREATE FUNCTION sift._test_dir_part_bounds(index regclass, OUT first int4, OUT lo_round_trips bool, OUT short_bound_lowest bool, OUT lo_is_bound bool)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_dir_part_bounds' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_nest(index regclass, pos int4, nold int4, ords int8[]) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_dir_nest' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_nested(index regclass, OUT first int4, OUT n int4, OUT ord int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_dir_nested' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_prefix(index regclass, digits int4[], tid int8, OUT gen int8, OUT pages int4)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_dir_prefix' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_dir_check(index regclass) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_dir_check' LANGUAGE C STRICT;
 -- everything inserted into the WAL so far is flushed
@@ -757,6 +765,8 @@ CREATE FUNCTION sift._test_hf_block_hits(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_hf_block_hits' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_hf_pages_asked(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_hf_pages_asked' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_segments_opened(reset bool DEFAULT false) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_segments_opened' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_probe_dead(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_probe_dead' LANGUAGE C STRICT;
 
@@ -856,3 +866,8 @@ CREATE FUNCTION sift._test_side_agg(index regclass, scope int, key int8, pairs t
 -- ... for each run of a key in the sidecars of the entity segments: its span and whether a read of the key under the pairs as they are now may take it (the journal rule)
 CREATE FUNCTION sift._test_side_valid(index regclass, scope int, key int8, OUT gen int8, OUT run int, OUT lo int8, OUT hi int8, OUT valid bool)
 	RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_side_valid' LANGUAGE C STRICT;
+-- src/core/leak_test.c: the peak of the anonymous memory of this backend between the two calls, sampled by a timer of the backend itself (kB; start returns the memory it began from, stop the peak, 0 when none runs)
+CREATE FUNCTION sift._test_rss_peak_start() RETURNS bigint
+	AS 'MODULE_PATHNAME', 'sift_test_rss_peak_start' LANGUAGE C;
+CREATE FUNCTION sift._test_rss_peak_stop() RETURNS bigint
+	AS 'MODULE_PATHNAME', 'sift_test_rss_peak_stop' LANGUAGE C;

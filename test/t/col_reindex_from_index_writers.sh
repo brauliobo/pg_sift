@@ -3,9 +3,10 @@
 # REINDEX of a sift_col index that tracks its changes takes the rows from the index it replaces (col/build/from_index.c) while writers commit and roll back around it: the writers
 # wait for its ShareLock between statements, so every round finds the index with the rows of the writers before it in segments and the write buffer, and the table's dead versions
 # no VACUUM has taken. After every round the heap-free read, the checked read and the heap give one answer and the index passes its check. REINDEX CONCURRENTLY is built from the heap
-# (its writers change the index it would read), and so are the answers it gives.
+# (its writers change the index it would read), and so are the answers it gives. The rounds force the source (sift.test_col_from_index_forced): the entries of the dead versions no VACUUM
+# has taken stay in the index and the heap drops them, so after enough writes the build prices the heap read below the old index (part 4), whatever the speed of the writers.
 . "$(dirname "$0")/lib.bash"
-plan 7
+plan 9
 
 SECS=$(knob SIFT_RIW_SECS 8 4)
 ROWS=$(knob SIFT_RIW_ROWS 20000 8000)
@@ -44,7 +45,7 @@ rounds() {
 	pgbench_bg n 8 "$((SECS + 2))" -f "$D/w.sql"
 	end=$((SECONDS + SECS))
 	while ((SECONDS < end)); do
-		[[ $(sql n "SET sift.async_maintenance = off" "$1" "SHOW sift.test_col_from_index_used" 2>/dev/null | tail -n 1) == 1 ]] && u=$((u + 1))
+		[[ $(sql n "SET sift.async_maintenance = off" "SET sift.test_col_from_index_forced = on" "$1" "SHOW sift.test_col_from_index_used" 2>/dev/null | tail -n 1) == 1 ]] && u=$((u + 1))
 		n=$((n + 1))
 	done
 	wait "$PGBENCH_PID"
@@ -74,4 +75,14 @@ diag "$(cat "$D/rounds") rounds, $(cat "$D/used") from the replaced index, $(fai
 check "REINDEX CONCURRENTLY under 8 writers: every round read the heap, no transaction failed" test "$(cat "$D/rounds")" -ge 3 -a "$(cat "$D/used")" == 0 -a "$(failed)" == 0
 check "... the three reads agree" differential
 check "... and the index passes its check" verified
+# 4. the dead entries of the replaced index grow with every write and the heap read does not: the build prices the heap below it, and the forced source still takes the old index
+used() { sql n "SET sift.async_maintenance = off" "SET sift.test_col_from_index_forced = $1" "REINDEX INDEX h_x" "SHOW sift.test_col_from_index_used" | tail -n 1; }
+priced_out=0
+for _ in $(seq 1 12); do
+	sql n "UPDATE h SET v = v + 1" >/dev/null
+	[[ $(used off) == 0 ]] && { priced_out=1; break; }
+done
+check "REINDEX after enough updates with no VACUUM: the heap read is priced below the old index and is taken" test "$priced_out" == 1
+sql n "UPDATE h SET v = v + 1" >/dev/null
+check "... and the forced source takes the old index all the same" test "$(used on)" == 1
 finish

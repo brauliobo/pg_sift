@@ -398,6 +398,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_rollup_panic",
 							"Testing: the rollup refresh worker PANICs after it wrote the new segment, before it replaces the old one (1 = yes). Set it in postgresql.conf: the worker reads no session setting.",
 							NULL, &sift_test_col_rollup_panic, 0, 0, 1, PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_open_all",
+							 "Testing: a scan opens every segment of the index, not only those of the partitions that may hold the keys its conditions confine it to (the answer is the same).",
+							 NULL, &sift_test_col_open_all, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_merge_panic",
 							 "Testing: a column merge (promotion excepted) PANICs after it wrote the new segment, before it replaces the old ones.",
 							 NULL, &sift_test_col_merge_panic, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -503,12 +506,18 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_from_index_off",
 							 "Testing: REINDEX reads the heap even when the index they replace could give the rows.",
 							 NULL, &sift_test_col_from_index_off, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_from_index_forced",
+							 "Testing: REINDEX takes the rows from the index it replaces whenever it can, whatever the choice of the build prices.",
+							 NULL, &sift_test_col_from_index_forced, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_from_index_mutant",
 							"Testing: a defect in the build from the replaced index (1: the write buffers are left out).",
 							NULL, &sift_test_col_from_index_mutant, 0, 0, 1, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_from_index_used",
 							"Testing: 1 when the last sift_col build of this session took its rows from the index it replaces, 0 when it read the heap.",
 							NULL, &sift_test_col_from_index_used, 0, 0, 1, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_build_table_buffers",
+							"Testing: the buffers of the table (any fork) the last sift_col build of this session accessed, as the statistics count them, from its start to its end.",
+							NULL, &sift_test_col_build_table_buffers, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_build_peak_kb",
 							"Testing: kB of memory the last sift_col build of this session held above what the backend started it with, at its peak.",
 							NULL, &sift_test_col_build_peak_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

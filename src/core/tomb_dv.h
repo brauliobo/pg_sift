@@ -23,7 +23,6 @@
 #define SIFT_TOMB_DV_BASE		(UINT64CONST(1) << 49)
 #define SIFT_DV_UNIT_BITS		24
 #define SIFT_DV_KEY(gen, part)	(SIFT_TOMB_DV_BASE | (((gen) & ((UINT64CONST(1) << 25) - 1)) << SIFT_DV_UNIT_BITS) | ((part) & ((UINT32_C(1) << SIFT_DV_UNIT_BITS) - 1)))
-#define SIFT_DV_KEY_IS(key)		((key) >= SIFT_TOMB_DV_BASE)
 
 typedef struct SiftDvDesc
 {

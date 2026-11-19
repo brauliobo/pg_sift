@@ -102,14 +102,28 @@ sift_colsrc_preagg(Relation rel, SiftSrcPreagg *pa)
 }
 
 SiftSrcSource *
-sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
+sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view, const SiftKeyRange *keys)
 {
 	const SiftSrcProvider *prov = provider_of_rel(index ? index : heap);
 	SiftSrcSource *src = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
 
 	src->prov = prov;
-	src->impl = prov->open(heap, index, snapshot, mcxt, view);
+	src->impl = prov->open(heap, index, snapshot, mcxt, view, keys);
 	return src;
+}
+
+int
+sift_colsrc_key_leaf(Relation index)
+{
+	const SiftSrcProvider *prov = provider_of_rel(index);
+
+	return prov->key_range != NULL ? prov->key_leaf(index) : -1;
+}
+
+bool
+sift_colsrc_key_range(Relation index, const SiftSrcPrune *z, int nz, SiftKeyRange *out)
+{
+	return provider_of_rel(index)->key_range(index, z, nz, out);
 }
 
 bool
@@ -127,7 +141,7 @@ sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryCo
 	SiftSrcSource *src = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
 
 	src->prov = prov;
-	src->impl = prov->open_part(heap, index, snapshot, mcxt, view);
+	src->impl = prov->open_part(heap, index, snapshot, mcxt, view, NULL);
 	return src;
 }
 

@@ -347,6 +347,41 @@ all_keys(int ncomp, Key *out)
 	return n;
 }
 
+/*
+ * The span of the range [keys[from], keys[upto]) is the partitions from the last that starts at or below its lower bound (before the first that starts at it, when the key is shared) up to
+ * those that start below its upper bound, counted one partition at a time
+ */
+static void
+span_between(SiftRng *r, Counts *c, const Tiling *t, const Key *keys, int nkeys)
+{
+	int			from = (int) below(r, nkeys),
+				upto = from + 1 + (int) below(r, nkeys - from);
+	SiftKeyRange range = {.shared = below(r, 2) == 0};
+	uint32_t	first,
+				last;
+	int			want_first = 0,
+				want_last = 0,
+				below_lo = 0;
+
+	encode(&keys[from], &range.keys.lo);
+	if (upto < nkeys)
+		encode(&keys[upto], &range.keys.hi);
+	else
+		sift_bound_clear(&range.keys.hi);
+	for (int i = 0; i < t->n; i++)
+	{
+		if (sift_bound_cmp(&t->enc[i], &range.keys.lo) <= 0)
+			want_first = i;
+		below_lo += sift_bound_cmp(&t->enc[i], &range.keys.lo) < 0;
+		want_last += upto >= nkeys || sift_bound_cmp(&t->enc[i], &range.keys.hi) < 0;
+	}
+	if (range.shared)
+		want_first = Max(below_lo - 1, 0);
+	sift_range_span(t->enc, bound_at, t->n, &range.keys, range.shared, &first, &last);
+	c->span++;
+	c->span_bad += (int) first != want_first || (int) last != want_last;
+}
+
 static void
 check_span(SiftRng *r, Counts *c, const Key *keys, int nkeys, int ncomp)
 {
@@ -356,6 +391,7 @@ check_span(SiftRng *r, Counts *c, const Key *keys, int nkeys, int ncomp)
 	bool		hit[TEST_PARTS] = {false};
 	uint32_t	first,
 				last;
+	SiftKeyRange keyrange;
 	int			lowest = -1,
 				highest = -1;
 
@@ -373,9 +409,11 @@ check_span(SiftRng *r, Counts *c, const Key *keys, int nkeys, int ncomp)
 			lowest = lowest < 0 ? i : lowest;
 			highest = i;
 		}
-	sift_prefix_span(t.enc, bound_at, t.n, ncomp, &ep, &first, &last);
+	sift_prefix_range(&ep, ncomp, &keyrange.keys);
+	sift_range_span(t.enc, bound_at, t.n, &keyrange.keys, false, &first, &last);
 	c->span++;
 	c->span_bad += lowest < 0 || (int) first != lowest || (int) last != highest + 1;
+	span_between(r, c, &t, keys, nkeys);
 }
 
 static bool

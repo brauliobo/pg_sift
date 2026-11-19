@@ -279,16 +279,31 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 	return res;
 }
 
+#ifdef SIFT_TESTING
+/* the buffers of the table (any fork) this backend has accessed and not yet reported to the statistics */
+static int64
+table_buffers(Relation heap)
+{
+	return heap->pgstat_info == NULL ? 0 : heap->pgstat_info->counts.blocks_fetched;
+}
+#endif
+
 IndexBuildResult *
 sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
 	Oid			outer = sift_col_building;
 	IndexBuildResult *res;
+#ifdef SIFT_TESTING
+	int64		before = table_buffers(heap);
+#endif
 
 	sift_col_building = RelationGetRelid(index);
 	PG_TRY();
 	{
 		res = build_index(heap, index, info);
+#ifdef SIFT_TESTING
+		sift_test_col_build_table_buffers = (int) (table_buffers(heap) - before);
+#endif
 	}
 	PG_FINALLY();
 	{

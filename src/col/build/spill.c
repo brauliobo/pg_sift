@@ -596,7 +596,10 @@ colb_spill_start(ColBuild *b)
 	}
 	b->spill = s;
 	foreach(lc, b->held)
+	{
 		colb_spill_batch(b, lfirst(lc));
+		sift_cbatch_release(lfirst(lc));
+	}
 	list_free(b->held);
 	b->held = NIL;
 	b->held_rows = 0;

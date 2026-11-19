@@ -1,6 +1,8 @@
 removed	test/expected/agg_child_predicates_1.out	17 18 18-arm64 19	
 removed	test/expected/agg_exists_elements_1.out	17 18 18-arm64 19	
 removed	test/expected/agg_group_order_1.out	17 18 18-arm64 19	
+removed	test/expected/agg_scope_param_keys_2.out	17 18 18-arm64 19	
+removed	test/expected/agg_scope_recognition_1.out	17 18 18-arm64 19	
 removed	test/expected/agg_semi_lut_1.out	17 18 18-arm64 19	
 removed	test/expected/col_gorder_group_range_1.out	17 18 18-arm64 19	
 removed	test/expected/col_topn_join_1.out	17 18 18-arm64 19	
@@ -27,17 +29,7 @@ test/expected/agg_scalar_dirty_1.out	5a24ace01cfb970250772c8f393f79e96350b82c	17
 test/expected/agg_scalar_dirty_1.out	7c2028eb91978e157ec048eecae9ee12f14fa725	17	only the deleted    | t      | same rows
 test/expected/agg_scalar_dirty_1.out	e0c7a3f0b74c4b0ea4502180aa0f1b95df605633	17	dropped, cast         | t      | same ERR 22023 cannot cast jsonb string to typ
 test/expected/agg_scalar_dirty_where_1.out	85deccbce3c6f678aba7e333ab055b2dcb254183	17	sub-select         | normal | same ERR 22P02 invalid input syntax for type doub
-test/expected/agg_scope_param_keys_1.out	028afff94b99f0328aa857452b59e269a6ec0e66	19	latest 5, $1                                            | force_custom_plan  |
-test/expected/agg_scope_param_keys_1.out	1a7fee691f493a6d20207897c398bd9120aad8fe	19	CTE, $1                                                 | force_custom_plan  |
-test/expected/agg_scope_param_keys_1.out	32de2e7459e082847a1656818a6bf9ad5f8acf66	19	IN, $1                                                  | force_custom_plan  |
-test/expected/agg_scope_param_keys_1.out	539b968e7a4145b3b6a4dac0c69d72f5778fbc0f	19	IN, a text $1 cast                                      | force_custom_plan  |
-test/expected/agg_scope_param_keys_1.out	cbafab979d05dead65468cbabd46cd3e2ce9c7ea	19	more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback:
-test/expected/agg_scope_param_keys_2.out	028afff94b99f0328aa857452b59e269a6ec0e66	17 18 18-arm64	latest 5, $1                                            | force_custom_plan  |
-test/expected/agg_scope_param_keys_2.out	1a7fee691f493a6d20207897c398bd9120aad8fe	17 18 18-arm64	CTE, $1                                                 | force_custom_plan  |
-test/expected/agg_scope_param_keys_2.out	32de2e7459e082847a1656818a6bf9ad5f8acf66	17 18 18-arm64	IN, $1                                                  | force_custom_plan  |
-test/expected/agg_scope_param_keys_2.out	a6e8bbef9af2f5a86f7534a7c48540e52b2f438b	17 18 18-arm64	IN, a text $1 cast                                      | force_custom_plan  |
-test/expected/agg_scope_param_keys_2.out	cbafab979d05dead65468cbabd46cd3e2ce9c7ea	17 18 18-arm64	more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback:
-test/expected/agg_scope_recognition_1.out	6bc29cda1b6c0fc38b3e9ca4bfd892a238a51160	17 18 18-arm64 19	more changed pairs than the bound | latest 5         | Fallback: join is cheape
+test/expected/agg_scope_param_keys_1.out	dbe17ae77edd14c02ffba943167067b6cc3a9b46	19	IN, scalar sub-select                                   | force_custom_plan  |
 test/expected/agg_scope_refusals_1.out	bf058ddb00d60ee3be7efa7d189946e8d611bef2	17 18 18-arm64 19	CTE used twice                                          | join, a sub-select ov
 test/expected/agg_semi_same_table_1.out	9a7e5ed03b6bc1ea89fa5c47be860d9499e7834b	18 18-arm64	0 | t
 test/expected/agg_spill_contexts_1.out	a879aa77beb39ff57c76ae083c7b0174dfda0c5d	17	kind     | select_ |      insert_       |     volatile_

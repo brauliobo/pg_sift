@@ -15,6 +15,15 @@ tier_of(const SiftSegEntry *s, const SiftMergePolicy *pol)
 	return t;
 }
 
+bool
+sift_merge_same_tier(const SiftMergePolicy *pol, const SiftSegEntry *e, int n)
+{
+	for (int i = 1; i < n; i++)
+		if (tier_of(&e[i], pol) != tier_of(&e[0], pol))
+			return false;
+	return true;
+}
+
 int
 sift_seg_bytes_cmp(const void *a, const void *b)
 {

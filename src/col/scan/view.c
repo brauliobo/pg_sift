@@ -15,20 +15,20 @@ typedef struct ColView
 
 /* The directory of the index and the end of its table's superblocks, now */
 static uint32
-view_read(Relation heap, Relation index, SiftDirSnapshot **dir)
+view_read(Relation heap, Relation index, const SiftKeyRange *keys, SiftDirSnapshot **dir)
 {
 	BlockNumber nblocks;
 
 	/* the rows this transaction holds back (wbuf/pending.c) are in no page yet, and a worker of a parallel scan has none of its own to flush */
 	(void) sift_cwbuf_flush(index);
 	nblocks = RelationGetNumberOfBlocks(heap);
-	*dir = sift_col_dir_read(index);
+	*dir = keys == NULL ? sift_col_dir_read(index) : sift_col_dir_read_range(index, keys);
 	return nblocks == 0 ? 0 : sift_block_sb(nblocks - 1) + 1;
 }
 
-/* The directory and the end of the source (its superblocks): those another source exported (view), else the table's now. true: the end is a leader's, counted with its keyed units */
+/* The directory and the end of the source (its superblocks): those another source exported (view), else the table's now (the partitions that may hold keys only). true: the end is a leader's, counted with its keyed units */
 bool
-scan_view_load(SiftColSource *src, Relation heap, const void *view)
+scan_view_load(SiftColSource *src, Relation heap, const void *view, const SiftKeyRange *keys)
 {
 	const ColView *v = view;
 
@@ -38,7 +38,9 @@ scan_view_load(SiftColSource *src, Relation heap, const void *view)
 		src->heap_sbs = v->heap_sbs;
 		return v->ends;
 	}
-	src->heap_sbs = view_read(heap, src->index, &src->dir);
+	src->heap_sbs = view_read(heap, src->index, keys, &src->dir);
+	if (keys != NULL)
+		src->keys = *keys;
 	return false;
 }
 
@@ -71,7 +73,7 @@ sift_col_count_view(Relation heap, Relation index, MemoryContext mcxt, Size *len
 	SiftDirSnapshot *dir;
 	ColView    *v;
 
-	*heap_sbs = view_read(heap, index, &dir);
+	*heap_sbs = view_read(heap, index, NULL, &dir);
 	*heap_sbs = keyed_sbs(index, dir, *heap_sbs);
 	*len = offsetof(ColView, dir) + sift_dir_bytes(dir);
 	v = MemoryContextAlloc(mcxt, *len);

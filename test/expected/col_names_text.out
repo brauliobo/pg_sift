@@ -120,40 +120,40 @@ CREATE INDEX nt_events_scope ON nt_events USING sift_col (id, dim_b_id, created_
 	WITH (scope = 'tenant_id: dim_b_id -> nt_pairs(dim_b_id, tenant_id) using nt_pairs_pkey cols(kind, value_num)');
 ANALYZE nt_pairs, nt_events;
 SELECT nt_opt('nt_events_scope', 'scope') AS scope;
-                                                       scope                                                        
---------------------------------------------------------------------------------------------------------------------
- tenant_id: dim_b_id -> nt_pairs(dim_b_id, tenant_id) using nt_pairs_pkey cols(kind, value_num) max_multiplicity(3)
+                                             scope                                              
+------------------------------------------------------------------------------------------------
+ tenant_id: dim_b_id -> nt_pairs(dim_b_id, tenant_id) using nt_pairs_pkey cols(kind, value_num)
 (1 row)
 
 ALTER TABLE nt_events RENAME COLUMN dim_b_id TO member_ref;
 ALTER TABLE nt_events RENAME COLUMN kind TO category;
 SELECT nt_opt('nt_events_scope', 'scope') AS fact_columns_renamed;
-                                                   fact_columns_renamed                                                   
---------------------------------------------------------------------------------------------------------------------------
- tenant_id: member_ref -> nt_pairs(dim_b_id, tenant_id) using nt_pairs_pkey cols(category, value_num) max_multiplicity(3)
+                                         fact_columns_renamed                                         
+------------------------------------------------------------------------------------------------------
+ tenant_id: member_ref -> nt_pairs(dim_b_id, tenant_id) using nt_pairs_pkey cols(category, value_num)
 (1 row)
 
 ALTER TABLE nt_pairs RENAME COLUMN dim_b_id TO pair_member;
 ALTER TABLE nt_pairs RENAME COLUMN tenant_id TO pair_scope;
 SELECT nt_opt('nt_events_scope', 'scope') AS pair_columns_renamed;
-                                                     pair_columns_renamed                                                     
-------------------------------------------------------------------------------------------------------------------------------
- tenant_id: member_ref -> nt_pairs(pair_member, pair_scope) using nt_pairs_pkey cols(category, value_num) max_multiplicity(3)
+                                           pair_columns_renamed                                           
+----------------------------------------------------------------------------------------------------------
+ tenant_id: member_ref -> nt_pairs(pair_member, pair_scope) using nt_pairs_pkey cols(category, value_num)
 (1 row)
 
 ALTER TABLE nt_pairs RENAME TO nt_grants;
 ALTER INDEX nt_pairs_pkey RENAME TO nt_grants_btree;
 SELECT nt_opt('nt_events_scope', 'scope') AS pairs_and_btree_renamed;
-                                                     pairs_and_btree_renamed                                                     
----------------------------------------------------------------------------------------------------------------------------------
- tenant_id: member_ref -> nt_grants(pair_member, pair_scope) using nt_grants_btree cols(category, value_num) max_multiplicity(3)
+                                           pairs_and_btree_renamed                                           
+-------------------------------------------------------------------------------------------------------------
+ tenant_id: member_ref -> nt_grants(pair_member, pair_scope) using nt_grants_btree cols(category, value_num)
 (1 row)
 
 ALTER TABLE nt_grants SET SCHEMA nt_s;
 SELECT nt_opt('nt_events_scope', 'scope') AS pairs_moved;
-                                                             pairs_moved                                                              
---------------------------------------------------------------------------------------------------------------------------------------
- tenant_id: member_ref -> nt_s.nt_grants(pair_member, pair_scope) using nt_grants_btree cols(category, value_num) max_multiplicity(3)
+                                                   pairs_moved                                                    
+------------------------------------------------------------------------------------------------------------------
+ tenant_id: member_ref -> nt_s.nt_grants(pair_member, pair_scope) using nt_grants_btree cols(category, value_num)
 (1 row)
 
 SELECT sift.col_verify('nt_events_scope');

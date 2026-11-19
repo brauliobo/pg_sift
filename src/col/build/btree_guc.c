@@ -18,6 +18,7 @@ typedef struct IntGuc
 static const IntGuc int_gucs[] = {
 	{"sift.test_col_build_btree", "Testing: the build of a sift_col index with key_cut by a btree on the key: 0 the chooser decides, 1 whenever a btree can, -1 never.", &sift_test_col_build_btree, 0, -1},
 	{"sift.test_col_build_source_used", "Testing: where the last sift_col build took its rows from: 0 the heap, 1 the heap through a btree, 2 the index it replaces.", &sift_test_col_build_source_used, 0, 0},
+	{"sift.test_col_build_spill_said", "Testing: 1 when the NOTICE of the last build's choice said that the segment writer sorts entries on temporary files.", &sift_test_col_build_spill_said, 0, 0},
 	{"sift.test_col_choose_mutant", "Testing: a defect in the choice of the path of a build (1: the dearest path is taken, 2: the room of the temporary files is not looked at).", &sift_test_col_choose_mutant, 0, 0},
 	{"sift.test_col_btree_entries", "Testing: entries of the btree the last build read the heap through.", &sift_test_col_btree_entries, 0, 0},
 	{"sift.test_col_btree_visible", "Testing: tuples the last build by btree found visible.", &sift_test_col_btree_visible, 0, 0},
@@ -29,9 +30,6 @@ static const IntGuc int_gucs[] = {
 	{"sift.test_col_pick_random", "Testing: of those, the blocks the last choice predicted are read at random.", &sift_test_col_pick_random, 0, 0},
 	{"sift.test_col_pick_spool_bytes", "Testing: bytes of temporary files the last choice estimated the key ranges write.", &sift_test_col_pick_spool_bytes, 0, 0},
 	{"sift.test_col_pick_walk_bytes", "Testing: bytes the walk of the last choice held (the simulated cache of heap blocks and the keys of the boundaries).", &sift_test_col_pick_walk_bytes, 0, 0},
-	{"sift.test_col_pick_probe_random_ns", "Testing: what the last choice measured a random read of the heap to cost, in ns (0: it did not measure).", &sift_test_col_pick_probe_random_ns, 0, 0},
-	{"sift.test_col_pick_probe_seq_ns", "Testing: what the last choice measured a block of a sequential read of the heap to cost, in ns (0: it did not measure).", &sift_test_col_pick_probe_seq_ns, 0, 0},
-	{"sift.test_col_pick_probe_reads", "Testing: blocks the last measurement read from the disk (the others were in shared buffers).", &sift_test_col_pick_probe_reads, 0, 0},
 };
 
 void
@@ -49,8 +47,5 @@ sift_col_btree_test_gucs(void)
 	DefineCustomRealVariable("sift.test_col_pick_seq_us",
 							 "Testing: what the choice takes a block of a sequential read of the heap to cost, in microseconds (-1 = measure it as a build does).",
 							 NULL, &sift_test_col_pick_seq_us, 10.0, -1.0, 1e6, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomRealVariable("sift.test_col_pick_temp_mb_us",
-							 "Testing: what the choice takes a MB of the temporary files of the key ranges to cost in one direction (the files are written and read once), in microseconds.",
-							 NULL, &sift_test_col_pick_temp_mb_us, 1000.0, 0.0, 1e9, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 }
 #endif

@@ -619,9 +619,9 @@ lookcol_read_units(const UnitScope *sc, Relation rel, Relation ix, Relation ix2,
 	ucx = AllocSetContextCreate(old, "lookup columns", ALLOCSET_DEFAULT_SIZES);
 	ux = AllocSetContextCreate(ucx, "lookup columns of a unit", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(ucx);
-	srcs[0] = sift_colsrc_open(rel, ix, sc->snap, ucx, sc->view);
+	srcs[0] = sift_colsrc_open(rel, ix, sc->snap, ucx, sc->view, NULL);
 	if (ix2 != NULL)
-		srcs[1] = sift_colsrc_open(rel, ix2, sc->snap, ucx, NULL);
+		srcs[1] = sift_colsrc_open(rel, ix2, sc->snap, ucx, NULL, NULL);
 	for (int p = 0; p < nneed; p++)
 		if (need[p].raw)
 			sift_colsrc_set_raw(srcs[need[p].ixn], need[p].lf->id);

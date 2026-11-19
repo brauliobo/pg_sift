@@ -45,6 +45,7 @@ PG_FUNCTION_INFO_V1(sift_test_log_chan);
 PG_FUNCTION_INFO_V1(sift_test_col_log_hidden);
 PG_FUNCTION_INFO_V1(sift_test_hf_taken);
 PG_FUNCTION_INFO_V1(sift_test_hf_pages_asked);
+PG_FUNCTION_INFO_V1(sift_test_col_segments_opened);
 PG_FUNCTION_INFO_V1(sift_test_probe_dead);
 PG_FUNCTION_INFO_V1(sift_test_hf_block_hits);
 PG_FUNCTION_INFO_V1(sift_test_xid_state);
@@ -303,6 +304,9 @@ SIFT_TEST_COUNTER_FN(sift_test_hf_taken, sift_col_hf_taken)
 /* sift._test_hf_pages_asked(reset bool): the heap pages the scans of this backend asked the tombstone log about (one for each page a walk uses, a superblock's worth for a mask) */
 SIFT_TEST_COUNTER_FN(sift_test_hf_pages_asked, sift_col_hf_asked)
 
+/* sift._test_col_segments_opened(reset bool): the immutable segments the sources of this backend opened */
+SIFT_TEST_COUNTER_FN(sift_test_col_segments_opened, sift_col_segments_opened)
+
 /* sift._test_probe_dead(reset bool): the addresses of dead rows that the heap probes of compact order blocks in this backend listed */
 SIFT_TEST_COUNTER_FN(sift_test_probe_dead, sift_col_probe_dead)
 
@@ -347,7 +351,7 @@ sift_test_col_unit_tombs(PG_FUNCTION_ARGS)
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	SiftTombLog *log = sift_col_log(index);
-	SiftColSource *src = sift_col_open(heap, index, GetActiveSnapshot(), CurrentMemoryContext, 0, NULL);
+	SiftColSource *src = sift_col_open(heap, index, GetActiveSnapshot(), CurrentMemoryContext, 0, NULL, NULL);
 	SiftColUnit unit;
 
 	InitMaterializedSRF(fcinfo, 0);

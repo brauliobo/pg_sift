@@ -1,88 +1,168 @@
-# job	PostgreSQL 17 lane seconds	PostgreSQL 18 lane seconds: the median of the passing jobs of runs 42118704860 42130202667 42142749980 42148513888 42152410447 (scripts/ci-times.py --weights; name three or more); the shards are cut by these, the other jobs weigh 10
-release-library-regress-1	144	276
-tap-shell-compat_matrix	0	257
-release-library-regress-2	118	239
-hardened	207	207
-tap-shell-pg_upgrade	9	161
-tap-shell-scaling_slope	0	157
-tap-shell-col_shrink	152	145
-tap-shell-sb_mask_small	1	152
-difftest-col	84	146
-fuzz	138	138
-plan-gate-tuned	75	133
-tap-shell-pg_upgrade_32	87	133
-difftest-mutants	131	131
-difftest	122	122
-difftest-fuzz-tbl	121	121
-plan-gate-table-tuned	112	108
-tap-shell-old_lib_refusal	0	110
-plan-gate-table	91	107
-difftest-fuzz	98	98
-tap-shell-col_track_ctid	97	77
-difftest-col-tbl	79	94
-tap-shell-pg_upgrade_33	85	91
-plan-gate	66	79
-tap-shell-pg_upgrade_31	66	75
-build	71	64
-tap-004_wal_consistency	27	61
-tap-shell-col_online_cut	56	36
-isolation	55	55
-tap-shell-tbl_load_workers	54	52
-installcheck-col_scan	48	53
-plan-gate-calibrate-tuned	36	53
-plan-gate-calibrate	49	51
-tap-001_crash	28	49
-tap-shell-col_build_kill	49	30
-tap-shell-col_auto_merge_dirty_reads	48	45
-tap-shell-store_replica	48	45
-tap-shell-tbl_load_ring	42	48
-installcheck-col_preagg_elem	37	45
-isa-baseline	37	44
-tap-shell-replica_mixed	0	44
-installcheck-batch4	43	36
-installcheck-batch1	31	42
-installcheck-tbl_preagg_calendar	42	26
-tap-017_tbl_autodefrag	40	40
-tap-shell-col_dict_shared_shm	22	38
-tap-shell-col_build_concurrent	37	16
-tap-shell-col_online_compact	37	18
-installcheck-col_key_order_auto	36	34
-difftest-nopos	35	35
-installcheck-batch5	30	33
-installcheck-batch9	27	31
-tap-015_space	29	31
-tap-shell-col_build_slices_standby	31	11
-tap-shell-col_build_standby_space	31	10
-tap-shell-vacuum_standby_cut	29	30
-installcheck-agg_trunc_zone	29	28
-installcheck-agg_group_stream	20	28
-installcheck-col_array_elems	28	21
-installcheck-tbl_key_table	28	24
-installcheck-tbl_writepath	26	23
-tap-shell-col_heapfree_replication	26	26
-tap-shell-tbl_load_stream	26	25
-installcheck-facets	11	25
-tap-shell-col_heapfree_xmin	25	3
-installcheck-agg_probe_rewrite	24	17
-installcheck-col_point_auto	14	24
-installcheck-agg_par_cost	23	15
-tap-shell-col_tomb_horizon	21	23
-installcheck-agg_calendar_step	22	21
-installcheck-batch10	22	16
-installcheck-col_text_prefilter	21	22
-tap-005_parallel_crash	9	22
-tap-shell-col_crash_matrix	16	22
-tap-shell-col_vacuum_request_hold	22	22
-tap-shell-replication	22	22
-installcheck-col_key_presence	21	14
-installcheck-col_or_equalities	14	21
-tap-012_postmaster_kill	15	21
-installcheck-agg_calendar_periodic	18	20
-installcheck-agg_preagg_elem	13	20
-tap-014_tbl_writepath	18	20
-tap-shell-col_heapfree_reads	20	6
-tap-shell-mem_slope-1	29	29
-tap-shell-mem_slope-2	50	50
-tap-shell-mem_slope-3	51	51
-tap-shell-mem_slope_order	21	21
-tap-shell-mem_slope_legacy	180	180
+# job	PostgreSQL 17 lane seconds	18	19 (built from git)	arm64 (18): the median of the passing jobs of runs 44588361815 44596589730 44603053598 (scripts/ci-times.py --weights; name three or more); the shards are cut by these, the other jobs weigh 10
+plan-gate-table-tuned	80	71	277	78
+fuzz	48	48	48	276
+tap-shell-fault_matrix-2	134	150	186	245
+tap-shell-fault_matrix-1	189	228	232	235
+tap-shell-col_scope_oracle	165	170	234	191
+release-library-regress-2	127	230	203	134
+isolation-2	174	186	199	228
+tap-shell-fault_matrix_standby	204	206	227	195
+isolation-1	174	180	219	196
+hardened	214	214	214	114
+tap-shell-upgrade_compat	1	213	0	207
+tap-shell-col_btree_build_memory	0	198	199	200
+installcheck-batch4	92	120	196	94
+tap-shell-pg_upgrade	8	189	194	178
+release-library-regress-1	142	156	191	144
+installcheck-col_scan	31	50	184	31
+tap-shell-col_shrink	132	140	143	165
+tap-shell-col_track_revouch	141	142	165	139
+difftest-col-tbl	59	40	155	134
+tap-shell-scaling_slope	0	155	142	95
+tap-shell-mem_slope-2	79	150	1	77
+tap-shell-compat_matrix	0	142	0	0
+tap-shell-old_lib_refusal	0	141	0	1
+shapes-surface	20	23	138	35
+plan-gate-tuned	81	58	123	60
+tap-shell-mem_slope-3	114	121	1	82
+difftest-fuzz-tbl	92	92	92	118
+plan-gate-table	62	63	118	57
+tap-shell-mem_idle_series	49	46	114	55
+difftest-fuzz	112	112	112	95
+tap-shell-col_vstore_drops	109	83	79	86
+difftest-col	46	108	62	75
+plan-gate	46	53	108	47
+tap-shell-mem_slope_order	55	92	101	76
+tap-shell-pg_upgrade_33	98	98	68	55
+tap-shell-col_track_ctid	96	92	90	94
+build	89	93	74	73
+difftest-txn	50	58	89	54
+tap-shell-pg_upgrade_32	87	85	59	47
+tap-shell-mem_slope_legacy	49	45	85	57
+tap-shell-extension_lifecycle	6	71	77	82
+installcheck-agg_lookup_gang	59	41	80	53
+tap-shell-mem_slope-1	72	80	1	63
+installcheck-batch6	48	39	75	41
+sb-flavour	75	75	66	66
+tap-shell-upgrade_compat_standby	1	58	0	64
+shapes-matrix	62	23	45	27
+difftest	49	49	49	61
+plan-gate-calibrate	24	25	61	24
+soak-col	61	46	57	51
+tap-shell-tbl_twin_fuzz	61	61	59	49
+tap-001_crash	17	31	60	33
+tap-shell-col_online_cut	53	59	57	56
+tap-shell-store_replica	57	45	50	36
+difftest-fuzz-vstore	53	53	53	47
+difftest-mutants	34	34	34	52
+tap-shell-col_dict_shared_shm	35	44	51	36
+installcheck-col_key_cut_segment_cap	33	30	48	27
+isa-baseline	48	41	41	0
+tap-shell-col_build_kill	48	28	30	30
+tap-shell-pg_upgrade_31	35	48	39	1
+tap-shell-tbl_first_writer_crash	48	37	47	37
+tap-shell-tbl_load_workers	47	31	48	33
+plan-gate-calibrate-tuned	29	46	47	24
+tap-shell-replica_mixed	0	47	1	42
+tap-004_wal_consistency	46	42	41	30
+installcheck-agg_parent_child	35	44	34	45
+installcheck-batch16	23	21	45	17
+tap-shell-col_vacuum_scan	45	44	45	44
+tap-shell-tbl_load_ring	42	22	45	23
+installcheck-col_preagg_elem	23	25	44	20
+installcheck-tbl_preagg_calendar	30	23	44	24
+tap-017_tbl_autodefrag	41	42	43	39
+tap-shell-col_scope_crash	37	26	43	30
+installcheck-col_array_elems	22	27	41	18
+tools-build	41	3	39	8
+tap-shell-col_online_compact	37	38	40	40
+installcheck-batch1	23	22	39	21
+installcheck-col_key_order_auto	18	32	39	18
+tap-shell-col_index_replica	39	37	20	31
+tap-shell-col_scope_replica	39	15	17	17
+tap-shell-col_build_concurrent	37	16	16	16
+tap-014_tbl_writepath	24	21	36	25
+tap-shell-vacuum_agg_snapshot	34	34	36	33
+installcheck-batch9	35	19	28	27
+tap-shell-col_reindex_concurrent	35	34	35	35
+tap-shell-col_tomb_horizon	19	19	35	19
+installcheck-agg_group_stream	19	20	34	19
+installcheck-batch18	18	14	33	12
+installcheck-col_dir_nested	20	17	33	13
+installcheck-agg_topn_offset_skip	16	16	32	11
+installcheck-batch8	16	20	32	16
+installcheck-col_build_paths	21	19	31	23
+tap-015_space	23	23	31	23
+tap-shell-col_cic_temp_files	18	28	31	16
+installcheck-batch17	14	13	30	14
+installcheck-col_scan_key_range	30	23	24	20
+tap-shell-col_build_exact_memory	0	13	30	16
+tap-shell-col_build_slices_standby	30	9	11	10
+tap-shell-col_cut_online_fallback	27	27	30	26
+tap-shell-col_heapfree_pending	29	30	23	29
+tap-shell-col_merge_flat_memory	0	22	30	25
+tap-shell-col_vacuum_space_idle	30	9	13	9
+tap-shell-vacuum_standby_cut	30	30	30	30
+installcheck-agg_preagg_rollup	16	15	29	13
+installcheck-col_key_cut_auto	13	17	29	17
+installcheck-tbl_key_table	17	16	29	17
+tap-shell-col_build_standby_space	29	10	9	9
+tap-shell-col_heapfree_replication	27	29	24	20
+difftest-txn-shapes	25	23	28	24
+installcheck-agg_preagg_elem	13	13	28	10
+tap-shell-col_crash_matrix	16	21	17	28
+tap-shell-col_order_layout_replica	27	28	12	8
+tap-shell-col_scope_paid_standby	24	25	28	26
+installcheck-agg_preagg_rows	16	12	27	11
+installcheck-col_or_equalities	12	27	26	27
+installcheck-agg_calendar_filter	13	18	26	12
+installcheck-cache_discard	1	1	26	0
+tap-shell-col_fold_marks_standby	26	25	26	26
+tap-shell-col_heapfree_reads	26	26	26	21
+tap-shell-quarantine_standby	25	25	25	26
+installcheck-agg_calendar_periodic	25	15	24	16
+installcheck-agg_join_keys_only_price	13	11	25	10
+tap-002_standby	12	10	25	12
+tap-shell-col_build_concurrent_locks	21	20	25	20
+tap-shell-col_dv_standby	24	25	24	18
+tap-shell-col_scope_journal_standby	25	25	20	24
+tap-shell-col_track_rebaseline	0	25	0	21
+tap-shell-tbl_load_stream	24	4	25	5
+installcheck-agg_group_order	11	9	24	9
+tap-012_postmaster_kill	14	19	24	18
+tap-shell-col_heapfree_xmin	19	24	19	24
+tap-shell-verdict_shared	23	24	18	24
+installcheck-agg_lookup_tests	15	15	23	14
+installcheck-agg_probe_rewrite	16	14	23	17
+installcheck-tbl_preagg	11	13	23	11
+installcheck-tbl_writepath	19	20	23	18
+tap-shell-col_scope_fuzz	19	18	23	19
+tap-shell-col_scope_textkey_fuzz	21	23	23	20
+tap-shell-col_vacuum_request_hold	22	22	23	22
+installcheck-agg_first_row_lookup	10	9	22	9
+installcheck-agg_spill_contexts	12	13	22	7
+installcheck-agg_trunc_zone	16	15	22	14
+installcheck-col_key_table	12	12	22	10
+installcheck-col_text_prefilter	11	20	22	14
+tap-shell-col_scope_dump	17	15	20	22
+difftest-bm25	21	14	17	18
+difftest-fuzz-having	21	21	21	21
+difftest-nopos	20	20	20	21
+difftest-txn-vstore	14	14	14	21
+installcheck-agg_par_join_split	10	10	21	9
+installcheck-agg_partitions_many	13	10	21	9
+installcheck-batch12	14	13	21	10
+installcheck-col_build_spool	12	16	21	8
+installcheck-col_gorder_group_compact	13	10	21	10
+installcheck-col_gorder_text_range	11	11	21	9
+installcheck-col_text_contains	9	9	21	9
+soak	17	18	21	21
+tap-shell-col_cut_skip_log	19	20	21	19
+tap-shell-col_reindex_from_index_writers	16	18	21	20
+tap-shell-col_track_drop_concurrently	21	21	21	21
+tap-shell-replication	21	19	21	20
+tap-shell-store_dir_nested_crash	19	16	21	16
+tap-shell-store_dirchain_crash	18	17	21	20
+installcheck-col_key_cut_range	9	11	20	11
+installcheck-col_partition_adopt	11	11	20	8
+installcheck-tbl_key_order	8	8	20	7

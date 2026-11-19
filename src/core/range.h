@@ -77,13 +77,24 @@ extern bool sift_range_meets_prefix(const SiftRange *r, const SiftBound *prefix)
  */
 extern uint32_t sift_range_apart(const SiftRange *r, const uint64_t *weight, uint32_t n, uint32_t *out);
 
+/* The keys a reader is confined to; shared: the key has more leaves than a bound holds (sift_range_span) */
+typedef struct SiftKeyRange
+{
+	SiftRange	keys;
+	bool		shared;
+} SiftKeyRange;
+
+/* Do two readers confined to these keys read the same partitions? */
+extern bool sift_key_range_equal(const SiftKeyRange *a, const SiftKeyRange *b);
+
 /*
- * The partitions of a tiling that hold keys with a prefix, as the contiguous span [*first, *last) of the n partitions whose lower bounds, ascending, at(refs, i) gives. The keys of the index have
- * ncomp components and an address: the span is from the partition of the lowest key with the prefix to that of the highest. It is empty (first == last) only when the first partition starts above
- * every such key, which a tiling that begins with the empty bound never does.
+ * The partitions of a tiling that may hold keys of the range [keys->lo, keys->hi), as the contiguous span [*first, *last) of the n partitions whose lower bounds, ascending, at(refs, i)
+ * gives. It is empty (first == last) only when the range is empty or the first partition starts above it, which a tiling that begins with the empty bound never does. shared: the key has
+ * more leaves than a bound holds, so a partition may hold rows at the lower bound of the next and the partitions that start at the same bound are all in the span.
  */
 typedef const SiftBound *(*SiftBoundAt) (const void *refs, uint32_t i);
-extern void sift_prefix_span(const void *refs, SiftBoundAt at, uint32_t n, uint32_t ncomp, const SiftBound *prefix, uint32_t *first,
-							 uint32_t *last);
+extern void sift_range_span(const void *refs, SiftBoundAt at, uint32_t n, const SiftRange *keys, bool shared, uint32_t *first, uint32_t *last);
+/* The range of the keys of ncomp components and an address that have the prefix */
+extern void sift_prefix_range(const SiftBound *prefix, uint32_t ncomp, SiftRange *out);
 
 #endif							/* SIFT_RANGE_H */

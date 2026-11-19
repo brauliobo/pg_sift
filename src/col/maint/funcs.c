@@ -399,6 +399,7 @@ sift_col_segments(PG_FUNCTION_ARGS)
 		Datum		v[12];
 		bool		nulls[12] = {0};
 
+		/* a log or a buffer lists its format only where it is one a 5.0 library refuses, so that the least format of the segments stays theirs */
 		v[0] = Int64GetDatum(e->gen);
 		v[1] = CStringGetTextDatum(e->kind == SIFT_SEG_IMMUTABLE ? "immutable" : e->kind == SIFT_SEG_TOMB ? "tombstones" :
 								   e->kind == SIFT_SEG_WBUF_OPEN ? "buffer" : "sealed buffer");
@@ -421,7 +422,9 @@ sift_col_segments(PG_FUNCTION_ARGS)
 		else if (e->kind == SIFT_SEG_TOMB)
 		{
 			v[2] = Int64GetDatum(sift_tomb_entries(index, snap));
-			nulls[3] = nulls[4] = nulls[5] = nulls[6] = nulls[7] = nulls[8] = nulls[9] = nulls[10] = nulls[11] = true;
+			nulls[3] = nulls[4] = nulls[5] = nulls[6] = nulls[7] = nulls[8] = nulls[9] = nulls[11] = true;
+			v[10] = Int32GetDatum(e->format);
+			nulls[10] = e->format < SIFT_COL_FORMAT_M1;
 		}
 		else
 		{
@@ -431,7 +434,9 @@ sift_col_segments(PG_FUNCTION_ARGS)
 			sift_cwbuf_summary(index, e, &nrows, &npages);
 			v[2] = Int64GetDatum(nrows);
 			v[3] = Int64GetDatum(npages * BLCKSZ);
-			nulls[4] = nulls[5] = nulls[6] = nulls[7] = nulls[8] = nulls[9] = nulls[10] = nulls[11] = true;
+			nulls[4] = nulls[5] = nulls[6] = nulls[7] = nulls[8] = nulls[9] = nulls[11] = true;
+			v[10] = Int32GetDatum(e->format);
+			nulls[10] = e->format < SIFT_COL_FORMAT_M1;
 		}
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 	}

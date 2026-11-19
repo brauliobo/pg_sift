@@ -238,7 +238,7 @@ VACUUM events, tenant_scope, region_scope, device_scope, org_grants, org_members
 SELECT * FROM state_line()
  same_with_runs | same_without_runs |   runs_by_read   
 ----------------+-------------------+------------------
- t              | t                 | {11,7,5,8,0,0,0}
+ t              | t                 | {11,7,5,8,1,0,0}
 (1 row)
 
 SELECT 10 AS n, 'promoted and merged' AS state
@@ -256,7 +256,7 @@ SELECT sift.col_promote('events_col') IS NOT NULL AND sift.col_merge('events_col
 SELECT * FROM state_line()
  same_with_runs | same_without_runs |   runs_by_read   
 ----------------+-------------------+------------------
- t              | t                 | {11,7,5,8,0,0,0}
+ t              | t                 | {11,7,5,8,1,0,0}
 (1 row)
 
 SELECT 11 AS n, 'REINDEX' AS state

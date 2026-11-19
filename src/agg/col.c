@@ -300,7 +300,7 @@ col_stamp(Relation index, SiftSrcStamp *st)
 }
 
 void *
-col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view)
+col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view, const SiftKeyRange *keys)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	ColSource  *src = palloc0(sizeof(ColSource));
@@ -309,7 +309,7 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 	src->heap = heap;
 	src->index = index;
 	src->snapshot = snapshot;
-	src->cs = sift_col_open(heap, index, snapshot, mcxt, flags, view);
+	src->cs = sift_col_open(heap, index, snapshot, mcxt, flags, view, keys);
 	pgstat_count_index_scan(index);	/* idx_scan counts the aggregate scans too */
 	sift_col_scan_note(index, src->cs);
 	src->lay = col_layout(index);
@@ -328,32 +328,20 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 }
 
 static void *
-col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
+col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view, const SiftKeyRange *keys)
 {
-	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, view);
+	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, view, keys);
 }
 
 /* a partition read through its partitioned table: the privileges and row security of the table were checked, not those of the partition */
 static void *
-col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
+col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view, const SiftKeyRange *keys)
 {
-	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, view);
+	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, view, NULL);
 
 	/* the open left the header page of each segment pinned, and a scan of thousands of partitions opens them all before it reads one */
 	sift_col_unpin(src->cs);
 	return src;
-}
-
-static Size
-col_view_size(void *impl)
-{
-	return sift_col_view_size(((ColSource *) impl)->cs);
-}
-
-static void
-col_view_export(void *impl, void *buf)
-{
-	sift_col_view_export(((ColSource *) impl)->cs, buf);
 }
 
 static void
@@ -873,6 +861,8 @@ static const SiftSrcProvider col_provider = {
 	.miss = sift_col_miss,
 	.stamp = col_stamp,
 	.open = col_open,
+	.key_range = col_key_range,
+	.key_leaf = col_key_leaf,
 	.open_part = col_open_part,
 	.view_size = col_view_size,
 	.view_export = col_view_export,

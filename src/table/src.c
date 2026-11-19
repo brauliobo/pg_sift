@@ -331,7 +331,7 @@ tbl_load_state(TblSource *t, SiftTblRel *st, const TblView *view)
 }
 
 static void *
-tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
+tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view, const SiftKeyRange *keys)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	TblSource  *t = palloc0(sizeof(TblSource));

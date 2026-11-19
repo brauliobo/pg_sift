@@ -34,6 +34,9 @@ typedef struct SiftMergePolicy
 extern int	sift_merge_pick(Relation index, const SiftMergePolicy *policy, const SiftDirSnapshot *snap, bool force,
 							SiftSegEntry *sel);
 
+/* Are the n segments e[0..n) of one tier */
+extern bool	sift_merge_same_tier(const SiftMergePolicy *policy, const SiftSegEntry *e, int n);
+
 /* qsort order of segment entries: smallest first */
 extern int	sift_seg_bytes_cmp(const void *a, const void *b);
 

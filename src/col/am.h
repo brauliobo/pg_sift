@@ -148,6 +148,8 @@ extern PGDLLIMPORT bool sift_test_hf_ignore_stamp;
 /* Pages, ranges and masks the tombstone log made all-visible where the visibility map did not (tests) */
 extern PGDLLIMPORT int64 sift_col_hf_taken;
 extern PGDLLIMPORT int64 sift_col_hf_asked;
+/* The immutable segments the sources of this backend opened (tests) */
+extern PGDLLIMPORT int64 sift_col_segments_opened;
 extern PGDLLIMPORT int64 sift_col_hf_block_hits;
 /* The addresses of dead rows the probes of compact order blocks listed (tests) */
 extern PGDLLIMPORT int64 sift_col_probe_dead;
@@ -248,6 +250,7 @@ extern int	sift_test_col_rollup_panic;
 extern int	sift_test_col_rollup_panic_armed;
 extern bool sift_test_col_merge_panic;
 extern bool sift_test_col_record_partitions;
+extern bool sift_test_col_open_all;
 extern int sift_test_col_merge_error;
 extern int	sift_test_col_refresh_sleep_ms;		/* sift.test_col_refresh_sleep_ms: the refresh of a segment sleeps this long once the new segment is written */
 extern int	sift_test_col_refresh_sleep_armed;
@@ -483,7 +486,8 @@ extern void sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, 
 extern SiftSegEntry *sift_col_merge_from(Relation index, Relation from, const SiftSegEntry *in, int n, int nfrom, int *nout);
 /* Records the partitions of a key-cut index that no step has (an index of 5.0): one directory update, no segment written, no generation changed. Under the maintenance lock; whether it recorded any */
 extern bool sift_col_adopt_partitions(Relation index);
-extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start, int part_first, int part_n, const SiftBound *lo0);
+extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start, int part_first, int part_n, const SiftBound *lo0,
+								 const uint8 (*known)[SIFT_BOUND_BYTES]);
 extern bool sift_col_autovacuum_enabled(Relation heap);
 extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, TimestampTz *last);
 extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows);

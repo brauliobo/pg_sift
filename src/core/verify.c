@@ -5,10 +5,12 @@
 
 #include "access/transam.h"
 #include "nodes/bitmapset.h"
+#include "storage/lmgr.h"
 
 #include "core/rowmem.h"
 #include "core/store.h"
 #include "core/store_int.h"
+#include "core/visibility.h"
 
 typedef struct BlockMap
 {
@@ -182,14 +184,33 @@ sift_store_referenced_blocks(Relation index, const SiftDirSnapshot *snap)
 	return referenced_blocks(index, snap, NULL, NULL);
 }
 
+/*
+ * The directory and the free list are read at two moments. A promotion or merge between them frees blocks that the directory still lists, and they would be
+ * counted twice, so a map of the blocks reads both in one hold of the maintenance lock.
+ */
+static SiftDirSnapshot *
+read_view(Relation index)
+{
+	SIFT_TEST_MUTANT(4, return sift_dir_read(index));
+	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
+	return sift_dir_read(index);
+}
+
+static void
+release_view(Relation index, SiftDirSnapshot *snap)
+{
+	pfree(snap);
+	SIFT_TEST_MUTANT(4, return);
+	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
+}
+
 void
 sift_store_extent_map(Relation index, SiftExtentVisit visit, void *arg)
 {
-	SiftDirSnapshot *snap;
+	SiftDirSnapshot *snap = read_view(index);
 
-	snap = sift_dir_read(index);
 	bms_free(referenced_blocks(index, snap, visit, arg));
-	pfree(snap);
+	release_view(index, snap);
 }
 
 static bool
@@ -267,10 +288,10 @@ sift_store_block_extents(const Bitmapset *set, int *n)
 void
 sift_store_verify(Relation index)
 {
-	SiftDirSnapshot *snap;
+	SiftDirSnapshot *snap = read_view(index);
 	BlockNumber nblocks;
 
-	snap = sift_dir_read(index);
+	SIFT_TEST_GATE(sift_test_check_gate, 19);
 	nblocks = RelationGetNumberOfBlocks(index);
 	if (nblocks < snap->meta.high_water)
 		corrupt(index, "Relation has %u blocks, below the high-water mark %u.", nblocks, snap->meta.high_water);
@@ -287,5 +308,5 @@ sift_store_verify(Relation index)
 				corrupt(index, "Generation %llu appears twice in the directory.", ULL(s->gen));
 	}
 	bms_free(sift_store_referenced_blocks(index, snap));
-	pfree(snap);
+	release_view(index, snap);
 }

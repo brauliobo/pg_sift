@@ -185,11 +185,11 @@ SELECT * FROM check_state('facts edited');
 
 VACUUM (FREEZE, ANALYZE) events, pairs_t, pairs_v, pairs_u;
 SELECT * FROM check_state('vacuumed');
-    st    | variant | wrong_with_runs | wrong_without_runs | keys_with_runs | runs_without_runs | wrong_latest |                              keys_latest_scoped                               
-----------+---------+-----------------+--------------------+----------------+-------------------+--------------+-------------------------------------------------------------------------------
- vacuumed | t       |                 |                    |                |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
- vacuumed | v       |                 |                    |                |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
- vacuumed | u       |                 |                    |                |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+    st    | variant | wrong_with_runs | wrong_without_runs |                          keys_with_runs                           | runs_without_runs | wrong_latest |                              keys_latest_scoped                               
+----------+---------+-----------------+--------------------+-------------------------------------------------------------------+-------------------+--------------+-------------------------------------------------------------------------------
+ vacuumed | t       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ vacuumed | v       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
+ vacuumed | u       |                 |                    | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,ténant-1 |                 0 |              | Tenant-1,tenant-1,tenant-1 ,tenant-2,tenant-3,tenant-new,tenant-none,ténant-1
 (3 rows)
 
 REINDEX INDEX events_t;

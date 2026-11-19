@@ -1,7 +1,7 @@
 # The scratch each job needs, in MB: the peak of its lane directory (the cluster of the lane in it) or of its own directory, plus 5%. scripts/ci/jobs.sh reads it to schedule the jobs under the
 # budget of the shard (CI_BUDGET_MB); a job not listed counts JOB_MB. A run lists the jobs above their row at its end. Made from the summaries a run retains:
 #   scripts/ci.sh --scratch FILE... > new && mv new scripts/scratch.tsv      (FILE: $TMPDIR/sift-ci-summary/*.tsv of the shards of the tier)
-tap-shell-mem_slope_legacy	2160
+tap-shell-mem_slope_legacy	1250
 tap-shell-col_scope_oracle_b	2040
 tap-shell-col_scope_oracle	1900
 tap-shell-col_scope_oracle_c	1800
@@ -100,7 +100,8 @@ tap-shell-col_tier_apart	270
 installcheck-agg_preagg_rows	260
 installcheck-col_build_merge_ends	260
 installcheck-col_build_peers_unequal	260
-isolation	260
+isolation-1	260
+isolation-2	260
 tap-shell-pg_upgrade_33	260
 installcheck-agg_group_spill_fuzz	250
 installcheck-col_clustering	250

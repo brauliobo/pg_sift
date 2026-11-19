@@ -21,7 +21,7 @@ sift_side_key_counts(Relation index, int scope, int64 key, SideKeyCounts *c)
 		const SideRun *runs;
 		uint32		n = 0;
 
-		if (e->kind != SIFT_SEG_IMMUTABLE || (e->flags & (SIFT_SEG_SCOPE | SIFT_SEG_NET)))
+		if (e->kind != SIFT_SEG_IMMUTABLE || (e->flags & SIFT_SEG_SCOPE))
 			continue;
 		seg = sift_cseg_open(index, e, CurrentMemoryContext);
 		sd = sift_cseg_side(seg);

@@ -836,6 +836,16 @@ sift_col_dir_read_segs(Relation index)
 	return snap;
 }
 
+/* The directory of the entries a reader of the keys needs (sift_dir_read_range): the dictionaries of the segments it leaves out are not retired, which a read of the whole does */
+SiftDirSnapshot *
+sift_col_dir_read_range(Relation index, const SiftKeyRange *keys)
+{
+	SiftDirSnapshot *snap = sift_dir_read_range(index, keys);
+
+	sift_col_dir_family(snap);
+	return snap;
+}
+
 static const SiftColDvUnit *
 dv_of(const SiftColSegment *seg, uint32 u)
 {

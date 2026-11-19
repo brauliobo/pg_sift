@@ -184,6 +184,8 @@ struct SiftColSegWriter
 	int			cut[SIFT_COL_CUT_MAX];
 	uint32		aim_rows;		/* the rows of a unit of the page cut of the table: a key-cut unit's cube is budgeted as that unit's */
 	bool		keyed;			/* the units are key-cut: the segment is column format minor 17 */
+	SiftColFirstUnitFn first_fn;	/* told the first unit (sift_colw_on_first_unit) */
+	void	   *first_arg;
 	uint8		format;			/* SiftSegEntry.format: what the writer was begun with (a segment with a version section needs SIFT_COL_FORMAT_VERS, the sift_table sees to it); 4 writes the tags of overflow values */
 	uint8		setting;		/* the minor the caller asked for, before the schema and the kinds narrowed it: 7 lets a cube hold min and max, 9 a unit the rollup of its rows, 10 a unit the small-set summary of a leaf, 12 the sorted run of a leaf */
 	SetAcc	   *set;			/* [ncols], NULL unless the segment keeps small-set summaries (sift_colw_set_preagg) */

@@ -41,7 +41,7 @@ every_key() { local t; for t in 1 2 3; do side_same mo "$(side_read $t)" "$(side
 
 # the change is the merging session's own: its snapshot sees it, the sidecar it makes is stamped with the horizon the open transaction holds back and is as stale as the one it replaces. The merge, the
 # rewrite of sift.col_maintain (due: rows deleted and vacuumed leave dirty units) and the sidecars of the segments it writes end, and write each sidecar once
-sql mo "DELETE FROM events WHERE id % 3 = 0" "VACUUM (INDEX_CLEANUP on) events" >/dev/null || bail "the deletes failed"
+sql mo "DELETE FROM events WHERE id % 3 = 0 AND dim_a_id <= 3" "VACUUM (INDEX_CLEANUP on) events" >/dev/null || bail "the deletes failed"
 check "a rewrite is due (rows deleted and vacuumed)" test -n "$(sql mo "SELECT rewrite_due FROM sift.col_maintenance_status('events_col')")"
 sess S
 say S "SET statement_timeout = '120s';"

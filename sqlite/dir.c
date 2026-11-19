@@ -330,6 +330,12 @@ sift_dir_read(Relation index)
 }
 
 SiftDirSnapshot *
+sift_dir_read_range(Relation index, const SiftKeyRange *keys)
+{
+	return sift_dir_read(index);
+}
+
+SiftDirSnapshot *
 sift_dir_read_segs(Relation index)
 {
 	SiftDirSnapshot *snap = sift_dir_read(index);

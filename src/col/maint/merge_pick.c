@@ -6,10 +6,12 @@
 #include "bm25/merge.h"
 #include "col/maint/maint_int.h"
 #include "col/point.h"
+#include "col/scope.h"
+#include "col/side.h"
 #include "core/dirpart.h"
 
 /*
- * Does the rewrite of a lone segment pay when dead_rewrite_pct is 0? (A unit that has net pre-aggregates costs a query what a clean one does.) A query reads a unit with a dead row net of the dead rows, about SIFT_COL_DEAD_ROW instructions each,
+ * Does the rewrite of a lone segment pay when dead_rewrite_pct is 0? (A unit that has net pre-aggregates costs a query what a clean one does, but a run of the scope sidecar stands for clean units only: more than sift.col_scope_refresh_pct percent of the units dirty is read by the units of the runs, and the rewrite brings them back.) A query reads a unit with a dead row net of the dead rows, about SIFT_COL_DEAD_ROW instructions each,
  * and by its rows, about SIFT_COL_DEAD_SCAN_ROW instructions each, once more than a tenth of the unit is dead: min(dead * 700, rows * 58) a unit (a grouped count and sum over 1,000,000
  * rows: 36 M with 5% of them dead in every unit, 58 M with 10%, 55 M with 20%; 300,000 rows: 13.5, 17.5, 16.7 M). The rewrite re-encodes every live row, 800 + 230 * bytes
  * instructions (1,000,000 rows: 2,200 at 6.2 bytes a row, 4,600 at 16.5 with three order arrays; one price a byte fits the chunks and the order arrays). It pays once the
@@ -22,6 +24,7 @@ rewrite_pays(SiftColSegment *seg, const SiftSegEntry *e)
 				scan = 0,
 				row_cost = SIFT_COL_REWRITE_ROW + SIFT_COL_REWRITE_BYTE * e->bytes / Max(e->ndocs, 1);
 	uint64	   *bits = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
+	uint32		dirty = 0;
 
 	if (live * 2 <= e->ndocs)
 		return true;
@@ -32,6 +35,7 @@ rewrite_pays(SiftColSegment *seg, const SiftSegEntry *e)
 
 		if (!sift_cseg_dirty(seg, u))
 			continue;
+		dirty++;
 		sift_cseg_live(seg, u, bits);
 		for (uint32 w = 0; w < SIFT_COL_NWORDS(n); w++)
 			dead += pg_popcount64(bits[w]);
@@ -41,7 +45,7 @@ rewrite_pays(SiftColSegment *seg, const SiftSegEntry *e)
 		scan += Min((uint64) dead * SIFT_COL_DEAD_ROW, (uint64) n * SIFT_COL_DEAD_SCAN_ROW);
 	}
 	pfree(bits);
-	return scan * SIFT_COL_DEAD_SCANS >= live * row_cost;
+	return (sift_cseg_side(seg) != NULL && (uint64) dirty * 100 > (uint64) seg->nsb * sift_col_scope_refresh_pct) || scan * SIFT_COL_DEAD_SCANS >= live * row_cost;
 }
 
 /* A segment worth a rewrite alone: more dead rows than dead_rewrite_pct (0: when the rewrite pays), or an overflow flag that only dead rows account for */
@@ -142,23 +146,50 @@ maint_part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut)
  */
 #define SETTLED_MAX (2 * SIFT_DIR_WIDE_MAX)
 
+/* What a writer cuts by, besides the index: segments written under one cut are not the end state of another */
+typedef struct SettledCut
+{
+	int			part_kb;
+	int			work_mem_kb;
+	int			segment_kb;
+}			SettledCut;
+
 static struct
 {
 	Oid			index;
+	SettledCut	cut;
 	int			n;
 	int			next;
 	int			cap;
 	uint64	   *gens;
 }			settled;
 
+static SettledCut
+settled_cut_now(void)
+{
+	SettledCut	cut = {.part_kb = maint_part_kb,.work_mem_kb = maintenance_work_mem};
+
+#ifdef SIFT_TESTING
+	cut.segment_kb = sift_test_col_segment_kb;
+#endif
+	return cut;
+}
+
+static bool
+settled_for(Oid index, SettledCut cut)
+{
+	return settled.index == index && memcmp(&settled.cut, &cut, sizeof(SettledCut)) == 0;
+}
+
 void
 maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftSegEntry *out, int nout)
 {
 	if ((in[0].flags & SIFT_SEG_SCOPE) || nout < nin)
 		return;
-	if (settled.index != RelationGetRelid(index))
+	if (!settled_for(RelationGetRelid(index), settled_cut_now()))
 	{
 		settled.index = RelationGetRelid(index);
+		settled.cut = settled_cut_now();
 		settled.n = settled.next = 0;
 	}
 	for (int i = 0; i < nout; i++)
@@ -177,7 +208,7 @@ maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftS
 static bool
 settled_all(Relation index, const SiftSegEntry *sel, int n)
 {
-	if (settled.index != RelationGetRelid(index))
+	if (!settled_for(RelationGetRelid(index), settled_cut_now()))
 		return false;
 	for (int i = 0; i < n; i++)
 	{
@@ -258,11 +289,83 @@ maint_keep_overlays(SiftDirSnapshot *snap)
 	snap->nsegs = k;
 }
 
+static bool
+is_overlay(const SiftSegEntry *e)
+{
+	return e->kind == SIFT_SEG_IMMUTABLE && !(e->flags & (SIFT_SEG_SCOPE | SIFT_SEG_UNIT)) && !maint_is_partition(e);
+}
+
+/*
+ * The fanin or more overlays of one tier that are consecutive in the key (e[0..n) are the entries of the partitions in key order, a partition between two overlays ends a run), at
+ * most twice the fanin, else the first fanin of the longest run when there are more overlays than the directory keeps. A merge cuts its output over the key range of its inputs:
+ * overlays picked by their size alone leave partitions that meet the ones between them, and the rewrite writes all of those again to make them disjoint.
+ */
+static int
+pick_key_run(const SiftMergePolicy *pol, const SiftSegEntry *e, int n, SiftSegEntry *sel)
+{
+	int			fanin = pol->fanin,
+				longest = 0,
+				longest_at = 0,
+				nover = 0;
+
+	for (int i = 0; i < n; i++)
+		nover += is_overlay(&e[i]);
+	for (int s = 0, end; s < n; s = end + 1)
+	{
+		for (end = s; end < n && is_overlay(&e[end]); end++)
+			;
+		if (end - s > longest)
+		{
+			longest = end - s;
+			longest_at = s;
+		}
+		for (int i = s; i + fanin <= end; i++)
+			if (sift_merge_same_tier(pol, &e[i], fanin))
+			{
+				int			k = fanin;
+
+				while (k < 2 * fanin && i + k < end && sift_merge_same_tier(pol, &e[i], k + 1))
+					k++;
+				memcpy(sel, &e[i], k * sizeof(SiftSegEntry));
+				return k;
+			}
+	}
+	if (longest < 2 || nover <= SIFT_MERGE_ENTRIES(fanin))
+		return 0;
+	memcpy(sel, &e[longest_at], Min(longest, fanin) * sizeof(SiftSegEntry));
+	return Min(longest, fanin);
+}
+
+/* The overlays the tiers merge: those of no partition hold rows of every key and merge by their sizes, those of the partitions as a run of the key (pick_key_run) */
+static int
+pick_overlays(Relation index, const SiftMergePolicy *pol, const SiftDirSnapshot *snap, SiftSegEntry *sel)
+{
+	SiftSegEntry *entries;
+	SiftDirPart *part;
+	int			np = sift_dir_parts_read(index, snap, &entries, &part),
+				nhead = np > 0 ? part[0].first : 0,
+				k = 0,
+				n;
+	SiftDirSnapshot *overlays = sift_dir_copy(snap);
+
+	if (np == 0)
+		maint_keep_overlays(overlays);
+	else
+	{
+		for (int i = 0; i < nhead; i++)
+			if (is_overlay(&entries[i]))
+				overlays->segs[k++] = entries[i];
+		overlays->nsegs = k;
+	}
+	n = sift_merge_pick(index, pol, overlays, false, sel);
+	pfree(overlays);
+	return n > 0 || np == 0 ? n : pick_key_run(pol, entries + nhead, part[np - 1].first + part[np - 1].n - nhead, sel);
+}
+
 int
 maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
 {
 	SiftMergePolicy pol = {.tier_base = (uint64) sift_col_options(index)->write_buffer_limit * 1024, .fanin = SIFT_MERGE_FANIN, .mostly_dead = sift_col_mostly_dead};
-	SiftDirSnapshot *overlays;
 	int			n;
 
 	maint_use_partitions(index, snap);
@@ -276,9 +379,8 @@ maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSe
 		{
 			n = cheapest_window(sel, n, MERGE_FORCE_FANIN);
 			maint_force_bounded = true;
-			return settled_all(index, sel, n) ? 0 : n;
 		}
-		return n;
+		return n > 0 && settled_all(index, sel, n) ? 0 : n;
 	}
 	if (maint_part_kb == 0)
 	{
@@ -286,10 +388,7 @@ maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSe
 		return n > 0 && (settled_all(index, sel, n) || clean_apart(index, snap, sel, n)) ? sift_merge_pick_dead(index, &pol, snap, sel) : n;
 	}
 	/* the tiers merge the overlays: the partitions of the same size would go back into one segment, and wait for their rewrite (or for the dead rows to fill them) */
-	overlays = sift_dir_copy(snap);
-	maint_keep_overlays(overlays);
-	n = sift_merge_pick(index, &pol, overlays, false, sel);
-	pfree(overlays);
+	n = pick_overlays(index, &pol, snap, sel);
 	if (n > 0 && !settled_all(index, sel, n) && !clean_apart(index, snap, sel, n))
 		return n;
 	return (n = maint_pick_big_overlays(index, snap, sel)) > 0 ? n : sift_merge_pick_dead(index, &pol, snap, sel);

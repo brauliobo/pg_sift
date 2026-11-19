@@ -106,7 +106,7 @@ if [[ $MODE == affected ]]; then
 	FAST='^(installcheck-|isolation-emulated$|coverage$|tools-build$)'
 	for f in ${FILES[@]+"${FILES[@]}"}; do
 		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
-		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation$'
+		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation-[0-9]+$'
 		elif [[ $f == bench/scaling/* || $f == scripts/scaling-gate.sh ]]; then FAST+='|^tap-shell-scaling_slope$'
 		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$'
 		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl|-vstore)?(-[12])?$'

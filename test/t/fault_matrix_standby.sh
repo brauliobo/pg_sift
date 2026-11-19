@@ -32,6 +32,7 @@ on_standby() { # the checks of a healthy node on the standby: indexes verify, st
 	[[ $plain == "$REF" ]] || { diag "the plain answers of the standby are not the primary's: $plain"; return 1; }
 	idx=$(sql sb "${IDX[@]}" "$QA" "$QB" 2>&1)
 	[[ $idx == "$plain" ]] || { diag "the answers through the indexes of the standby differ from its plain plan"; return 1; }
+	[[ $(sql sb "SELECT to_regclass('docs_sc') IS NULL") == t ]] || scope_healthy sb || return 1
 	[[ $(sql sb "SELECT count(*) FROM pg_class WHERE relname = 'tbl'") == 0 ]] ||
 		[[ $(sql sb "$QT tbl") == "$(sql cm "$QT tbl_h")" ]] || { diag "the sift_table of the standby differs from the heap twin of the primary"; return 1; }
 }

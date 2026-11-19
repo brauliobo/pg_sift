@@ -42,7 +42,6 @@ struct SiftColDead
 	MemoryContext cxt;
 	TransactionId xid;
 	CommandId	cid;
-	uint64		index_rows;			/* the rows of the segments, which a lookup reads */
 	uint64	   *keys;
 	uint32		n;
 	uint32		cap;
@@ -53,17 +52,12 @@ sift_col_dead_begin(Relation index, SiftTombLog *log)
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift dead addresses", ALLOCSET_DEFAULT_SIZES);
 	SiftColDead *d = MemoryContextAllocZero(cxt, sizeof(SiftColDead));
-	SiftDirSnapshot *snap;
 
 	d->index = index;
 	d->log = log;
 	d->cxt = cxt;
 	d->xid = GetCurrentTransactionId();
 	d->cid = sift_col_stmt_cid();
-	snap = sift_dir_read(index);
-	for (int i = 0; i < snap->nsegs; i++)
-		d->index_rows += snap->segs[i].kind == SIFT_SEG_IMMUTABLE ? snap->segs[i].ndocs : 0;
-	pfree(snap);
 	return d;
 }
 
@@ -214,10 +208,20 @@ unique_keys(uint64 *keys, uint32 n)
 	return k;
 }
 
-static uint64
-threshold(const SiftColDead *d)
+/* The addresses from which records pay: the lookup walks every row of the index, which the directory says */
+static bool
+records_pay(const SiftColDead *d)
 {
-	return Max(DV_MIN_ROWS, d->index_rows * DV_ROW_INSTR / DV_GAIN_INSTR);
+	SiftDirSnapshot *snap;
+	uint64		rows = 0;
+
+	if (d->n < DV_MIN_ROWS)
+		return false;
+	snap = sift_dir_read(d->index);
+	for (int i = 0; i < snap->nsegs; i++)
+		rows += snap->segs[i].kind == SIFT_SEG_IMMUTABLE ? snap->segs[i].ndocs : 0;
+	pfree(snap);
+	return d->n >= rows * DV_ROW_INSTR / DV_GAIN_INSTR;
 }
 
 static void
@@ -231,7 +235,7 @@ dead_flush(SiftColDead *d)
 		return;
 	sift_sort_u64(d->keys, d->n);
 	d->n = unique_keys(d->keys, d->n);
-	if (d->n >= threshold(d))
+	if (records_pay(d))
 		rest = write_records(d, &nrest);
 	append_marks(d, rest, nrest);
 	if (rest != d->keys)

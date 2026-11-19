@@ -521,9 +521,9 @@ scope_cic.gate-build.immediate	scope_cic	gate:build	immediate	full
 scope_cic.gate-tail.terminate	scope_cic	gate:tail	terminate	quick
 scope_cic.gate-tail.cancel	scope_cic	gate:tail	cancel	full
 scope_cic.gate-tail.immediate	scope_cic	gate:tail	immediate	full
-scope_cic.gate-fill.terminate	scope_cic	gate:fill	terminate	quick
-scope_cic.gate-fill.cancel	scope_cic	gate:fill	cancel	full
-scope_cic.gate-fill.immediate	scope_cic	gate:fill	immediate	full
+scope_cic.gate-side.terminate	scope_cic	gate:side	terminate	quick
+scope_cic.gate-side.cancel	scope_cic	gate:side	cancel	full
+scope_cic.gate-side.immediate	scope_cic	gate:side	immediate	full
 scope_cic_nj.gate-journal.terminate	scope_cic_nj	gate:journal	terminate	quick
 scope_cic_nj.gate-journal.cancel	scope_cic_nj	gate:journal	cancel	full
 scope_cic_nj.gate-journal.immediate	scope_cic_nj	gate:journal	immediate	full

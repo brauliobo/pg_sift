@@ -242,7 +242,7 @@ VACUUM facts, grants, memberships
 SELECT * FROM state_line()
  same_with_runs | same_without_runs | runs_by_tenant 
 ----------------+-------------------+----------------
- t              | t                 | {0,0,0,0}
+ t              | t                 | {10,10,10,10}
 (1 row)
 
 SELECT 12 AS n, 'promoted and merged' AS state
@@ -260,7 +260,7 @@ SELECT sift.col_promote('facts_col') IS NOT NULL AND sift.col_merge('facts_col')
 SELECT * FROM state_line()
  same_with_runs | same_without_runs | runs_by_tenant 
 ----------------+-------------------+----------------
- t              | t                 | {0,0,0,0}
+ t              | t                 | {10,10,10,10}
 (1 row)
 
 SELECT 13 AS n, 'REINDEX' AS state

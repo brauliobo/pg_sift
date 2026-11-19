@@ -213,8 +213,9 @@ out=$(for t in events tx_events ev_opts facts; do sql us "SET sift.enable_agg = 
 check "5.0 refuses the four indexes that hold the sidecar's minor with the format message and the hint, and reads no row" \
 	test "$(grep -c "has a segment of column format 1.$SIDE, this build reads 1.3 to 1.$SEGMENTS" <<<"$out")|$(grep -c 'HINT:  Use a newer pg_sift, or REINDEX.' <<<"$out")|$(grep -c '^[0-9]' <<<"$out")" == "4|4|0"
 q "REINDEX INDEX CONCURRENTLY events_col" "REINDEX INDEX CONCURRENTLY tx_events_col" "REINDEX INDEX CONCURRENTLY ev_opts_col" "REINDEX INDEX CONCURRENTLY facts_col" 2>&1
-check "REINDEX CONCURRENTLY with the 5.0 library builds the entity segments and the scope segments again" \
-	test "$(formats)" == "ev_opts_col:$ENTITY,$SEGMENTS events_col:$ENTITY,$SEGMENTS facts_col:$TWOHOP,$SEGMENTS tx_events_col:$CODED,$SEGMENTS"
+# the concurrent build of 5.0.1 and later leaves the entity segments of a scope of two paths at the minor of one path; 5.0.0 writes the minor of two
+rebuilt_formats() { [[ $(formats) =~ ^ev_opts_col:$ENTITY,$SEGMENTS\ events_col:$ENTITY,$SEGMENTS\ facts_col:($ENTITY|$TWOHOP),$SEGMENTS\ tx_events_col:$CODED,$SEGMENTS$ ]]; }
+check "REINDEX CONCURRENTLY with the 5.0 library builds the entity segments and the scope segments again" rebuilt_formats
 check "... and 5.0 answers as the join, with every index verified" test "$(q "SELECT count(*) FROM shapes WHERE ans_sift(q) <> ans_heap(q)")" == 0
 check "5.0: sift.col_verify finds nothing" test -z "$(unsound)"
 finish

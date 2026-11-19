@@ -32,12 +32,20 @@ cmp_partof(const void *a, const void *b)
 	return pg_cmp_u64(((const SiftPartOf *) a)->gen, ((const SiftPartOf *) b)->gen);
 }
 
+/* qsort and bsearch take a base that is never NULL: the list has none until its first partition */
+static void
+part_sort(SiftDirParts *e)
+{
+	if (e->n > 1)
+		qsort(e->of, e->n, sizeof(SiftPartOf), cmp_partof);
+}
+
 static const SiftPartOf *
 part_of(const SiftDirParts *e, uint64 gen)
 {
 	SiftPartOf		key = {.gen = gen};
 
-	return bsearch(&key, e->of, e->n, sizeof(SiftPartOf), cmp_partof);
+	return e->n > 0 ? bsearch(&key, e->of, e->n, sizeof(SiftPartOf), cmp_partof) : NULL;
 }
 
 /*
@@ -53,7 +61,7 @@ sift_dirpart_open(SiftDirParts *e, const SiftDirChain *chain, const SiftSegEntry
 		if (chain->leaf[k].lineage != 0)
 			for (uint32 i = 0; i < chain->leaf[k].n; i++)
 				part_add(e, old[at + i].gen, chain->leaf[k].lineage, chain->leaf[k].lo);
-	qsort(e->of, e->n, sizeof(SiftPartOf), cmp_partof);
+	part_sort(e);
 }
 
 /*
@@ -91,7 +99,7 @@ sift_dir_part_replace(const uint64 *old, int nold, const SiftSegEntry *neu, int 
 		if (gone != NULL)
 			gone->gen = PG_UINT64_MAX;
 	}
-	qsort(e->of, e->n, sizeof(SiftPartOf), cmp_partof);
+	part_sort(e);
 	while (e->n > 0 && e->of[e->n - 1].gen == PG_UINT64_MAX)
 		e->n--;
 	for (int j = 0; j < nneu; j++)
@@ -115,7 +123,7 @@ sift_dir_part_replace(const uint64 *old, int nold, const SiftSegEntry *neu, int 
 		part_add(e, neu[j].gen, id, lo ? lo[j] : NULL);
 	}
 	pfree(lin);
-	qsort(e->of, e->n, sizeof(SiftPartOf), cmp_partof);
+	part_sort(e);
 }
 
 /* The entries neu[0..nneu) take the place of old[0..nold) inside the one partition those were in: they are in it too. Entries of several partitions, or of none, leave them in no partition */
@@ -140,7 +148,7 @@ sift_dir_part_inherit(const uint64 *old, int nold, const SiftSegEntry *neu, int 
 	home = *found;
 	for (int j = 0; j < nneu; j++)
 		part_add(e, neu[j].gen, home.lineage, home.lo);
-	qsort(e->of, e->n, sizeof(SiftPartOf), cmp_partof);
+	part_sort(e);
 }
 
 typedef struct PartGroup
@@ -237,7 +245,7 @@ sift_dir_parts_read(Relation index, const SiftDirSnapshot *snap, SiftSegEntry **
 	*parts = NULL;
 	if (snap->nchain == 0)
 	{
-		*segs = snap->segs;
+		*segs = (SiftSegEntry *) snap->segs;
 		return 0;
 	}
 	(void) sift_dirchain_read(index, snap->chain[0], snap->version, 0, segs, &chain);

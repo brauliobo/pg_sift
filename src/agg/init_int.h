@@ -20,6 +20,7 @@ void register_pred(AggExec *ex, SiftAggPred *p);
 void register_preds(AggExec *ex);
 void prune_init(AggExec *ex);
 int sift_agg_cmp_only_leaf(AggExec *ex);
+bool open_keys(AggExec *ex, SiftKeyRange *out);
 int sift_agg_text_range(AggExec *ex, const SiftSrcStrTest **lo, const SiftSrcStrTest **hi);
 void part_prune_init(AggExec *ex);
 void str_init(AggExec *ex);

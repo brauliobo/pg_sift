@@ -9,7 +9,8 @@ The index is a file of 8 kB blocks. Block 0 is the metapage, block 1 the directo
 ```
 index file (8 kB blocks)
  |-- block 0   metapage        format, next generation, failure note, scope floor, read sums
- |-- block 1   directory       one page, at most 128 entries of 56 bytes (a build writes at most 121)
+ |-- block 1   directory       at most 128 entries of 56 bytes in the page, or, as a chain (format 1.7), the version and the lock only:
+ |                             the entries are in leaf pages that a root lists (up to 32,768 entries), and block 1 names the root
  |      entry kinds:
  |      IMMUTABLE ---> SEGMENT            a sorted run, never changed in place
  |      WBUF_OPEN / WBUF_SEALED ---> WRITE BUFFER   8 lanes of pages of row records
@@ -47,6 +48,8 @@ Side structures:
 | tombstone log | 32-byte entries (heap address, transaction, command, kind) of entries that stopped being live, and deletion records (one head, descriptor and body slots for the rows of a unit that a statement ended); only with `track_changes` | directory entry `TOMB` |
 | journal | not a structure of its own: records of kind `KEYCHG` (parent index) and `KEYADD` (a scope's pair relation) in a tombstone log | the log of the parent index or of the journal index |
 | scope sidecar (5.1) | for each scope key of an entity segment of 16 units or more, the runs of its units with a summary of each: whole pages after the segment's own stream, ending in a 16-byte trailer | no entry of its own: the segment's column format minor is 53 ([FORMATS.md](FORMATS.md)); the scope segments of 5.0 (`IMMUTABLE` entries with the flag `SIFT_SEG_SCOPE`, the rows replicated once for each scope key) are no longer written |
+| directory chain | the entries of a directory that outgrew block 1, in leaf pages (`SIFT_PT_DIRLEAF`) listed by a root (`SIFT_PT_DIRROOT`: for each leaf its page, the entries below it, the version that wrote it, the lineage of its partition and an exact lower bound of up to three key leaves and a heap address; interior pages of references past 127 leaves); an update writes the pages it changes first and flips block 1 in one record; a chained directory never returns to block 1 | metapage `dir_chain`, `SIFT_DIR_CHAINED` in block 1; `src/core/dirchain.c` |
+| partitions | the segments of a `key_cut` index that a rewrite cut by key: each is a leaf of the chain, named by a lineage that a rewrite keeps (a split keeps it for the part that holds the tail of the range, a merge for the lowest), with the exact lower bound of its range; a read confined to keys reads the references of the prefix of the key and opens only the segments of the partitions that may hold them | leaf references of the chain; `sift_dir_read_range` (`src/core/store.h`), `src/core/range.c` |
 | connected child | the child index holds leaves of its parent (`<fk>#found`, `<fk>.<column>`); its segments carry the stamp each was filled under | leaves in the schema, stamps in the SCHEMA section |
 | value store | the distinct strings of a column shared by several indexes of a table, a relation `<table>_<column>_sift_values`; a member's dictionary is a list of codes into it | its own directory of `VALRUN` entries |
 | parsed dictionaries | a per-backend cache, and a shared-memory cache; memory only, nothing on disk | `col/dictcache.c`, `col/dictshm.c` |
@@ -202,6 +205,7 @@ A key of a range-built `key_cut` index lies in one unit (two where its rows cros
 | leaf lists of the SQL types | `src/col/types.c` (`sift_col_att_leaves`); `src/col/shape.c`; `src/col/api/leaf.h`; `src/col/wide.h` |
 | jsonb groups and slots | `src/col/jsonb.c` (`add_group`, `fill_group`); `src/col/shred.h`; `src/col/shred_spec.c` |
 | insert into the write buffer | `src/col/am/am.c` (`sift_col_aminsert`); `src/col/wbuf/wbuf.c`; `src/col/wbuf/pending.c` (`sift_cwbuf_pend`, `sift_cwbuf_seal`) |
+| directory chain and partitions | `src/core/dirchain.c` (`sift_dirchain_write`); `src/core/range.c`; `src/core/store.c` (`sift_dir_read_range`, `store_update`) |
 | scan reads the buffer | `src/col/scan/memload.c` (`scan_load_wbuf`, `scan_load_mem`); `src/col/wbuf/batches.c` (`sift_cwbuf_batches_keys`); `src/col/wbuf/read.c` (`keys_skip`) |
 | promotion | `src/col/maint/promote.c` (`promote_one`, `maint_floor_rows`) |
 | merge and rewrite | `src/col/maint/merge.c` (`maint_merge_segments`); `src/col/maint/merge_pick.c`; `src/col/order.c` (`sift_colk_merge`) |

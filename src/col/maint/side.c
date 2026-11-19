@@ -100,6 +100,7 @@ side_write(Relation index, SiftWriteTarget *wt, const void *arg)
 	fresh.header_blk = sift_wt_write_seghdr(wt, old, list, nlist, mirror, mirror_len);
 	release[nrelease++] = (SiftExtent) {st->entry->header_blk, 1};
 	fresh.format = Max(fresh.format, SIFT_COL_FORMAT_SIDE);
+	fresh.flags &= ~SIFT_SEG_NET;
 	fresh.bytes = st->entry->bytes + (blocks - dropped) * BLCKSZ;
 	sift_wt_finish(wt);
 	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw_dir,.nadd = 1,.release = release,.nrelease = nrelease,.extra = InvalidBuffer});
@@ -107,11 +108,11 @@ side_write(Relation index, SiftWriteTarget *wt, const void *arg)
 	sift_cseg_close(seg);
 }
 
-/* An entity segment of rows and units enough, without a net section (a sidecar goes after the stream and before it) */
+/* An entity segment of rows and units enough */
 static bool
 side_eligible(const SiftSegEntry *e)
 {
-	return e->kind == SIFT_SEG_IMMUTABLE && !(e->flags & (SIFT_SEG_SCOPE | SIFT_SEG_NET)) && e->sb_hi - e->sb_lo + 1 >= SIDE_MIN_UNITS && e->ndocs > 0;
+	return e->kind == SIFT_SEG_IMMUTABLE && !(e->flags & SIFT_SEG_SCOPE) && e->sb_hi - e->sb_lo + 1 >= SIDE_MIN_UNITS && e->ndocs > 0;
 }
 
 /* Does a sidecar made now get other stamps than the ones of the scope's record: the same horizon of every journal (a transaction that is still open holds it back) leaves its runs as stale as they are */
@@ -157,28 +158,39 @@ side_stale(Relation index, SiftColSegment *seg, const SideScope *sc, Snapshot sn
 	return rows > 0 && touched * 100 > rows * sift_col_scope_refresh_pct && side_stamp_moves(index, sc, snap);
 }
 
+/* The pages of the segment's own stream when a sidecar or net pre-aggregates follow it, which a new sidecar replaces (0: neither) */
+static uint64
+side_stream_pages(SiftColSegment *seg)
+{
+	uint64		net_at;
+	uint64		end;
+
+	sift_cseg_net_pages(seg, &net_at);
+	end = sift_cseg_side(seg) != NULL ? sift_side_at(seg) : net_at;
+	return end == SIFT_PAYLOAD_BYTES(seg->sr.npages) ? 0 : SIFT_PAYLOAD_PAGE(end);
+}
+
 /* What the segment needs: a sidecar (nothing yet), a new one (a scope of the index has no record in it, or the stamp of one no longer vouches for its runs: *stream_pages is then the pages of the segment's stream before the old), or nothing */
 static bool
 side_needs(Relation index, const SiftSegEntry *e, const int *scopes, int nscopes, Snapshot snap, uint64 *stream_pages)
 {
 	SiftColSegment *seg;
 	const SiftSide *sd;
-	bool		needs = false;
+	bool		needs;
 
 	*stream_pages = 0;
 	if (!side_eligible(e))
 		return false;
-	if (e->format < SIFT_COL_FORMAT_SIDE)
-		return true;
 	seg = sift_cseg_open(index, e, CurrentMemoryContext);
 	sd = sift_cseg_side(seg);
+	needs = sd == NULL;
 	for (int i = 0; i < nscopes && !needs; i++)
 	{
 		const SideScope *sc = sift_side_scope(sd, scopes[i]);
 
 		needs = sc == NULL || side_stale(index, seg, sc, snap);
 	}
-	*stream_pages = needs ? SIFT_PAYLOAD_PAGE(sift_side_at(seg)) : 0;
+	*stream_pages = needs ? side_stream_pages(seg) : 0;
 	sift_cseg_close(seg);
 	return needs;
 }
@@ -194,6 +206,7 @@ sift_col_side_fill(Relation index, const SideScopeInput *in, int nin, SideCounts
 	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 	int			scopes[SIFT_SCOPE_MAX];
 	int			done = 0;
+	bool		net_dropped = false;
 
 	for (int i = 0; i < nin; i++)
 		scopes[i] = in[i].scope;
@@ -208,11 +221,14 @@ sift_col_side_fill(Relation index, const SideScopeInput *in, int nin, SideCounts
 		start = GetCurrentTimestamp();
 		if (run_step(index, true, side_write, &st) == SIFT_STEP_DONE && st.written > 0)
 		{
+			net_dropped |= (snap->segs[i].flags & SIFT_SEG_NET) != 0;
 			sift_log_maint(index, st.stream_pages > 0 ? "made the scope sidecar again of" : "wrote the scope sidecar of", start, snap->segs[i].ndocs, st.written * BLCKSZ);
 			done++;
 		}
 	}
 	pfree(snap);
+	if (net_dropped)
+		maint_net_refresh(index);
 	return done;
 }
 

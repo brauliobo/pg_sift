@@ -35,6 +35,8 @@ while IFS=$'\t' read -r job mb; do [[ $job == '#'* || -z $job ]] || EST_MB[$job]
 JOB_MB=100
 
 tap_perl() { local f; for f in "$@"; do job "tap-$f" tap 0 "$S/tap.sh" "t/$f.pl"; done; }
+ISOLATION_SLICES=2
+isolation_slices() { local k; for (( k = 1; k <= ISOLATION_SLICES; k++ )); do job "isolation-$k" isolation 1 "$S/isolation.sh" --slice "$k/$ISOLATION_SLICES"; done; }
 tap_shell() { local f; for f in "$@"; do job "tap-shell-$f" tap-shell 0 "$S/pgtest.sh" tap "$f"; done; }
 installcheck() { local t; for t in "$@"; do job "installcheck-$t" installcheck 1 "$S/pgtest.sh" regress "$t"; done; }
 # installcheck_batches N TEST...: the short tests, N to a pg_regress run in one database like make installcheck runs them: a run costs 0.3 s of

@@ -4,8 +4,8 @@
 PostgreSQL's sorts, hashes and aggregates honour work_mem and its maintenance honours maintenance_work_mem, so the memory of a statement does not follow the table.
 Every measurement is a backend of its own, on tables of N, 2N and 4N rows with work_mem and maintenance_work_mem at 1 MB: the SETUP of the case runs in a session that
 disconnects (what the operation reads is what a fresh backend finds), the measured backend connects, runs the WARM statements the case declares, returns what the C
-library can give back (sift._test_malloc_stats(true)) and reads its anonymous resident memory; the peak of that memory (sampled every millisecond from /proc, the minimum
-of RUNS runs) above that baseline is the cost of the operation at that size. The slope in bytes a row is the difference of the peaks of the largest and the smallest size
+library can give back (sift._test_malloc_stats(true)) and has the backend sample its own anonymous memory every 100 microseconds (sift._test_rss_peak_start: a timer signal in the backend, so
+no other process decides which part of a statement is seen); the peak of that memory (the minimum of RUNS runs) above that baseline is the cost of the operation at that size. The slope in bytes a row is the difference of the peaks of the largest and the smallest size
 over the difference of the rows, so no size depends on the one measured before it and no case on the one that ran before it (--shard and --reverse give the same slopes).
 A case passes when the slope is at most its ceiling. Status `clean`: the ceiling is the noise (CLEAN) and three runs stayed under it with margin. Status `open`: a case that
 grows with the data today has the largest of three runs plus 15 percent as its ceiling (a defect to fix, and its row goes to clean with the fix); a case whose slope is far under
@@ -25,13 +25,12 @@ TSV columns: NAME KIND CEILING STATUS SETUP OPERATION [WARM] [REASON]; {f} {d} t
 PGUSER, PGDATABASE like psql, MEM_SLOPE_MWM (maintenance_work_mem, 1MB), MEM_SLOPE_RUNS (2), MEM_SLOPE_SHARD (I/N) and MEM_SLOPE_TSV (another table of cases); needs Linux (/proc) and an installed pg_sift and
 pg_sift_test. Kind `leak` repeats a statement in one backend and asserts that the memory its contexts hold (pg_backend_memory_contexts) does not follow the number of statements.
 """
-import contextlib, io, os, re, subprocess, sys, threading, time, zlib
+import contextlib, io, os, re, subprocess, sys, time, zlib
 
 CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference is 1.8 MB
 LEAK_KB = 512              # kB the contexts of a backend may hold more after 60 repeats than after 10
 VARIANCE_ROWS, VARIANCE_PCT = 2.0, 0.15   # two runs of a case differ by at most max(2 B/row, 15%)
 RUNS = int(os.environ.get("MEM_SLOPE_RUNS", "2"))
-PAGE_KB = os.sysconf("SC_PAGE_SIZE") // 1024
 ASYNC_OFF = "set sift.async_maintenance='off';\n"
 SETTINGS = ASYNC_OFF + f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.environ.get("MEM_SLOPE_TSV") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope.tsv")
@@ -58,13 +57,6 @@ def prepare(sql):
         raise RuntimeError("setup: " + err.strip())
 
 
-def anon_kb_fd(statm):
-    """the anonymous resident memory in kB: resident pages less those of files and shared memory (an open /proc/PID/statm read again from its start: no sleep between samples, so a
-    few MB that live for a few hundred microseconds are seen)"""
-    resident, shared = os.pread(statm, 256, 0).split()[1:3]
-    return (int(resident) - int(shared)) * PAGE_KB
-
-
 def send(p, sql, marker):
     """sql then a marker line: what psql printed in between, and the first error"""
     p.stdin.write(sql + f"\n\\echo {marker}\n")
@@ -76,36 +68,30 @@ def send(p, sql, marker):
     return out, next((l.strip() for l in out if "ERROR" in l), None)
 
 
+PEAK_STOP = "select 'PEAK', sift._test_rss_peak_stop();"
+
+
+def num_of(out, tag):
+    return int(next(l for l in out if l.startswith(tag + "|")).strip().split("|")[1])
+
+
 def measure_mb(setup, warm, op):
     """setup, then warm (`=`: op itself), in a session of its own, so that the server holds what it holds after those whatever ran before; then a new backend:
-    SETTINGS, no transparent huge pages, what malloc can return, op; the peak anonymous memory above what it held before op, in MB"""
+    SETTINGS, no transparent huge pages, what malloc can return, op; the peak anonymous memory above what it held before op, in MB. The backend samples its own memory
+    (sift._test_rss_peak_start): a reader outside it takes its samples when the runner schedules it, and a statement of 20 ms may fall between two of them"""
     prepare(setup + "\n" + (op if warm.strip() == "=" else warm))
     p = psql()
-    out, _ = send(p, "select 'PID', pg_backend_pid();", "PIDDONE")
-    pid = int(next(l for l in out if "PID" in l).strip().split("|")[1])
-    _, err = send(p, SETTINGS + "select sift._test_thp_disable();\nselect sift._test_malloc_stats(true);", "WARMDONE")
+    out, err = send(p, SETTINGS + f"select sift._test_thp_disable();\nselect sift._test_malloc_stats(true);\n{PEAK_STOP}\nselect 'BASE', sift._test_rss_peak_start();", "WARMDONE")
     if err:
         raise RuntimeError("warm: " + err)
-    statm = os.open(f"/proc/{pid}/statm", os.O_RDONLY)
-    base = anon_kb_fd(statm)
-    peak, stop = [base], threading.Event()
-
-    def sample():
-        while not stop.is_set():
-            peak[0] = max(peak[0], anon_kb_fd(statm))
-
-    t = threading.Thread(target=sample)
-    t.start()
+    base = num_of(out, "BASE")
     _, err = send(p, op, "OPDONE")
-    stop.set()
-    t.join()
-    out, hw_err = send(p, "select 'SCOPES', coalesce(sum(peak), 0) from sift._test_mem_highwater();", "HWDONE")
-    os.close(statm)
+    out, hw_err = send(p, PEAK_STOP + "\nselect 'SCOPES', coalesce(sum(peak), 0) from sift._test_mem_highwater();", "HWDONE")
     p.stdin.write("\\q\n")
     p.wait()
     if err or hw_err:
         raise RuntimeError("op: " + (err or hw_err))
-    return (peak[0] - base) / 1024.0, int(next(l for l in out if "SCOPES" in l).strip().split("|")[1]) / 1048576.0
+    return (num_of(out, "PEAK") - base) / 1024.0, num_of(out, "SCOPES") / 1048576.0
 
 
 def build_tables(n):
@@ -211,7 +197,7 @@ def run_case(sizes, name, kind, ceiling, status, setup, op, warm):
     slope, peaks, highs, exact = slope_case(sizes, name, setup, warm, op, 1 if kind == "plateau" else 0)
     v = verdict(slope, ceiling, status)
     shown = '/'.join(f'{p:.1f}' for p in peaks)
-    return v == "PASS", f"SLOPE {name} slope {slope:.0f} B/row (peaks {shown} MB at {'/'.join(str(s) for s in sizes)} rows{', slope from ' + str(sizes[1]) if kind == 'plateau' else ''}), ceiling {ceiling} [{status}] {v}", slope, [f"{p:.1f}" if p == h else f"{p:.1f}-{h:.1f}" for p, h in zip(peaks, highs)], exact
+    return v == "PASS", f"SLOPE {name} slope {slope:.0f} B/row (peaks {shown} MB at {'/'.join(str(s) for s in sizes)} rows{', slope from ' + str(sizes[1]) if kind == 'plateau' else ''}), ceiling {ceiling} [{status}], memory scopes {exact:.0f} B/row {v}", slope, [f"{p:.1f}" if p == h else f"{p:.1f}-{h:.1f}" for p, h in zip(peaks, highs)], exact
 
 
 def run_cases(sizes, cases):

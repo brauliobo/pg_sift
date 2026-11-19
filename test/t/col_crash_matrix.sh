@@ -6,8 +6,7 @@
 # directory is the new one and nothing after it ran. For each operation the points are the first and the last of its updates (more in the full
 # run). After the restart (wal_consistency_checking = generic: crash recovery compares every page it rebuilds with the page the primary wrote) the
 # indexes verify (heapallindexed), the store checks pass, the answers through the indexes equal the plain plan and what the table held before, and
-# the operation, run again, completes and leaves it the same. An index with a scope (the scope_* scenarios) also has the scope entries of every row of its entity segments after the restart: the
-# promotion, the merge and the refill of its scope segments are each one switch of the directory. SIFT_CRASHMX_ITERS caps the number of crashes (default 70, 20 quick: the first and the last update of every operation).
+# the operation, run again, completes and leaves it the same. An index with a scope (the scope_* scenarios) is also verified against its pairs (sift.col_scope_verify) and answers its scope reads (sift.in_scope: one key, a set counted once) as the join does after the restart. SIFT_CRASHMX_ITERS caps the number of crashes (default 70, 20 quick: the first and the last update of every operation).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "$(dirname "$0")/lib.bash"
 
@@ -30,10 +29,11 @@ total=0
 for row in "${SCENARIOS[@]}"; do
 	IFS='~' read -r name setup op <<<"$row"
 	[[ -z ${SIFT_CRASHMX_ONLY:-} || $name =~ $SIFT_CRASHMX_ONLY ]] || continue
+	IFS=$'\x1f' read -ra ops <<<"${op//@@/$'\x1f'}"
 	fresh "$setup" || bail "$name: setup"
 	healthy || bail "$name: the starting state is not healthy"
 	# the directory updates of the operation, counted in a session of its own
-	k=$(sql cm "$op" "SELECT sift._test_dir_updates()" | tail -1)
+	k=$(sql cm "${ops[@]}" "SELECT sift._test_dir_updates()" | tail -1)
 	(( k > 0 )) || bail "$name: the operation published nothing"
 	points=(1 "-$k")
 	[[ -z $FULL ]] || points+=(-1 "$k" $(( (k + 1) / 2 )))
@@ -44,7 +44,7 @@ for row in "${SCENARIOS[@]}"; do
 		(( ++total <= ITERS )) || break 2
 		fresh "$setup" || bail "$name: setup"
 		pm=$(head -1 "$D/data/postmaster.pid")
-		sql cm "SET sift.test_crash_dir = $n" "$op" >/dev/null 2>&1
+		sql cm "SET sift.test_crash_dir = $n" "${ops[@]}" >/dev/null 2>&1
 		if ! await_exit "$pm"; then
 			not_ok "$name, update $n of $k: the process was not killed"
 			break 2
@@ -55,7 +55,7 @@ for row in "${SCENARIOS[@]}"; do
 			break 2
 		fi
 		if healthy; then
-			sql cm "$op" >/dev/null && healthy && ok "$name, kill $([[ $n -gt 0 ]] && echo before || echo after) update ${n#-} of $k: recovery, answers, the operation again" ||
+			sql cm "${ops[@]}" >/dev/null && healthy && ok "$name, kill $([[ $n -gt 0 ]] && echo before || echo after) update ${n#-} of $k: recovery, answers, the operation again" ||
 				{ not_ok "$name, kill at $n: after the operation run again"; diag "$(tail -5 "$D/postgres.log")"; }
 		else
 			not_ok "$name, kill at $n of $k: after recovery"
