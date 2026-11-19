@@ -285,11 +285,83 @@ maint_keep_overlays(SiftDirSnapshot *snap)
 	snap->nsegs = k;
 }
 
+static bool
+is_overlay(const SiftSegEntry *e)
+{
+	return e->kind == SIFT_SEG_IMMUTABLE && !(e->flags & (SIFT_SEG_SCOPE | SIFT_SEG_UNIT)) && !maint_is_partition(e);
+}
+
+/*
+ * The fanin or more overlays of one tier that are consecutive in the key (e[0..n) are the entries of the partitions in key order, a partition between two overlays ends a run), at
+ * most twice the fanin, else the first fanin of the longest run when there are more overlays than the directory keeps. A merge cuts its output over the key range of its inputs:
+ * overlays picked by their size alone leave partitions that meet the ones between them, and the rewrite writes all of those again to make them disjoint.
+ */
+static int
+pick_key_run(const SiftMergePolicy *pol, const SiftSegEntry *e, int n, SiftSegEntry *sel)
+{
+	int			fanin = pol->fanin,
+				longest = 0,
+				longest_at = 0,
+				nover = 0;
+
+	for (int i = 0; i < n; i++)
+		nover += is_overlay(&e[i]);
+	for (int s = 0, end; s < n; s = end + 1)
+	{
+		for (end = s; end < n && is_overlay(&e[end]); end++)
+			;
+		if (end - s > longest)
+		{
+			longest = end - s;
+			longest_at = s;
+		}
+		for (int i = s; i + fanin <= end; i++)
+			if (sift_merge_same_tier(pol, &e[i], fanin))
+			{
+				int			k = fanin;
+
+				while (k < 2 * fanin && i + k < end && sift_merge_same_tier(pol, &e[i], k + 1))
+					k++;
+				memcpy(sel, &e[i], k * sizeof(SiftSegEntry));
+				return k;
+			}
+	}
+	if (longest < 2 || nover <= SIFT_MERGE_ENTRIES(fanin))
+		return 0;
+	memcpy(sel, &e[longest_at], Min(longest, fanin) * sizeof(SiftSegEntry));
+	return Min(longest, fanin);
+}
+
+/* The overlays the tiers merge: those of no partition hold rows of every key and merge by their sizes, those of the partitions as a run of the key (pick_key_run) */
+static int
+pick_overlays(Relation index, const SiftMergePolicy *pol, const SiftDirSnapshot *snap, SiftSegEntry *sel)
+{
+	SiftSegEntry *entries;
+	SiftDirPart *part;
+	int			np = sift_dir_parts_read(index, snap, &entries, &part),
+				nhead = np > 0 ? part[0].first : 0,
+				k = 0,
+				n;
+	SiftDirSnapshot *overlays = sift_dir_copy(snap);
+
+	if (np == 0)
+		maint_keep_overlays(overlays);
+	else
+	{
+		for (int i = 0; i < nhead; i++)
+			if (is_overlay(&entries[i]))
+				overlays->segs[k++] = entries[i];
+		overlays->nsegs = k;
+	}
+	n = sift_merge_pick(index, pol, overlays, false, sel);
+	pfree(overlays);
+	return n > 0 || np == 0 ? n : pick_key_run(pol, entries + nhead, part[np - 1].first + part[np - 1].n - nhead, sel);
+}
+
 int
 maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
 {
 	SiftMergePolicy pol = {.tier_base = (uint64) sift_col_options(index)->write_buffer_limit * 1024, .fanin = SIFT_MERGE_FANIN, .mostly_dead = sift_col_mostly_dead};
-	SiftDirSnapshot *overlays;
 	int			n;
 
 	maint_use_partitions(index, snap);
@@ -312,10 +384,7 @@ maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSe
 		return n > 0 && (settled_all(index, sel, n) || clean_apart(index, snap, sel, n)) ? sift_merge_pick_dead(index, &pol, snap, sel) : n;
 	}
 	/* the tiers merge the overlays: the partitions of the same size would go back into one segment, and wait for their rewrite (or for the dead rows to fill them) */
-	overlays = sift_dir_copy(snap);
-	maint_keep_overlays(overlays);
-	n = sift_merge_pick(index, &pol, overlays, false, sel);
-	pfree(overlays);
+	n = pick_overlays(index, &pol, snap, sel);
 	if (n > 0 && !settled_all(index, sel, n) && !clean_apart(index, snap, sel, n))
 		return n;
 	return (n = maint_pick_big_overlays(index, snap, sel)) > 0 ? n : sift_merge_pick_dead(index, &pol, snap, sel);
