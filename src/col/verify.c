@@ -711,12 +711,12 @@ put_segment_keys(ColVerify *cv, const SiftSegEntry *e)
 static void
 keys_in_one_view(ColVerify *cv)
 {
-	SiftDirSnapshot *view = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *view;
 
 	keys_end(cv);
 	keys_begin(cv);
 	LockPage(cv->index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
-	sift_dir_read(cv->index, view);
+	view = sift_dir_read(cv->index);
 	for (int i = 0; i < view->nsegs; i++)
 		if (view->segs[i].kind != SIFT_SEG_TOMB && !sift_seg_is_scope(&view->segs[i]))
 			put_segment_keys(cv, &view->segs[i]);
