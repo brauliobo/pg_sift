@@ -398,6 +398,7 @@ sift_test_dir_prefix(PG_FUNCTION_ARGS)
 	int64		tid = PG_GETARG_INT64(2);
 	SiftDirSnapshot *snap = sift_dir_read(index);
 	SiftBound	prefix;
+	SiftKeyRange keys;
 	SiftDirChain chain;
 	SiftSegEntry *segs;
 	int			n;
@@ -408,7 +409,9 @@ sift_test_dir_prefix(PG_FUNCTION_ARGS)
 	if (tid >= 0)
 		sift_bound_push_tid(&prefix, tid);
 	InitMaterializedSRF(fcinfo, 0);
-	n = snap->nchain == 0 ? 0 : sift_dirchain_read_prefix(index, snap->chain[0], snap->version, &prefix, 3, &segs, &chain);
+	sift_prefix_range(&prefix, 3, &keys.keys);
+	keys.shared = false;
+	n = snap->nchain == 0 ? 0 : sift_dirchain_read_range(index, snap->chain[0], snap->version, &keys, &segs, &chain);
 	for (int i = 0; i < n; i++)
 	{
 		Datum		values[2] = {Int64GetDatum(segs[i].gen), Int32GetDatum(chain.nblocks)};

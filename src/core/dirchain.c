@@ -149,13 +149,13 @@ bound_of(const void *bounds, uint32 i)
 	return &((const SiftBound *) bounds)[i];
 }
 
-/* The span [*from, *to) of the n references, ascending by their lower bounds, whose ranges may hold a key with the prefix (core/range.h) */
+/* The span [*from, *to) of the n references, ascending by their lower bounds, whose ranges may hold a key of the range (core/range.h) */
 static void
-ref_span(Relation index, const SiftChainRef *ref, uint32 n, const SiftBound *prefix, uint32 ncomp, uint32 *from, uint32 *to)
+ref_span(Relation index, const SiftChainRef *ref, uint32 n, const SiftKeyRange *keys, uint32 *from, uint32 *to)
 {
 	SiftBound  *b = ref_bounds(index, ref, n);
 
-	sift_prefix_span(b, bound_of, n, ncomp, prefix, from, to);
+	sift_range_span(b, bound_of, n, &keys->keys, keys->shared, from, to);
 	pfree(b);
 }
 
@@ -173,11 +173,11 @@ zero_bounds(const SiftChainRef *ref, uint32 n)
 /*
  * The entries of the chain whose root is root, written under version, into *segs (allocated for the entries and room more), and the chain itself.
  * The caller holds the metapage and the directory, so no update runs; the pages are read once each, under a share lock.
- * With a prefix of a key of ncomp components only the entries of no partition and of the partitions that may hold a key with the prefix are read (the chain then
- * lists those leaves): the root says by their bounds which interior pages and leaves, and the others are not touched.
+ * With a range of keys only the entries of no partition and of the partitions that may hold a key of the range are read (the chain then lists those leaves): the root
+ * says by their bounds which interior pages and leaves, and the others are not touched.
  */
 static int
-chain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEntry **segs, SiftDirChain *chain, const SiftBound *prefix, uint32 ncomp)
+chain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEntry **segs, SiftDirChain *chain, const SiftKeyRange *keys)
 {
 	Buffer		buf = read_locked(index, root, BUFFER_LOCK_SHARE);
 	SiftChainRootData *r = (SiftChainRootData *) SiftPageGetData(BufferGetPage(buf));
@@ -205,15 +205,15 @@ chain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEn
 	nsegs = r->nsegs;
 	top = palloc(ntop * sizeof(SiftChainRef));
 	memcpy(top, r->ref, ntop * sizeof(SiftChainRef));
-	*chain = (SiftDirChain) {.root = root,.inner = palloc((level > 1 ? ntop : 1) * sizeof(SiftDirInner))};
+	*chain = (SiftDirChain) {.root = root,.nall = nsegs,.inner = palloc((level > 1 ? ntop : 1) * sizeof(SiftDirInner))};
 	chain_add_block(chain, root);
 	UnlockReleaseBuffer(buf);
 	*segs = palloc(Max(nsegs + room, 1) * sizeof(SiftSegEntry));
 	z = level > 1 ? zero_bounds(top, ntop) : 0;
 	pages_to = ntop;
-	if (prefix != NULL && level > 1)
+	if (keys != NULL && level > 1)
 	{
-		ref_span(index, top + z, ntop - z, prefix, ncomp, &pages_from, &pages_to);
+		ref_span(index, top + z, ntop - z, keys, &pages_from, &pages_to);
 		pages_from += z;
 		pages_to += z;
 	}
@@ -249,8 +249,8 @@ chain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEn
 	while (k0 < nrefs && refs[k0].lineage == 0)
 		k0++;
 	to = nrefs - k0;
-	if (prefix != NULL)
-		ref_span(index, refs + k0, nrefs - k0, prefix, ncomp, &from, &to);
+	if (keys != NULL)
+		ref_span(index, refs + k0, nrefs - k0, keys, &from, &to);
 	chain->leaf = palloc(Max(nrefs, 1) * sizeof(SiftChainRef));
 	for (uint32 i = 0; i < nrefs; i++)
 	{
@@ -281,7 +281,7 @@ chain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEn
 	if (level > 1)
 		pfree(refs);
 	check_lineages(index, chain, root);
-	if (prefix == NULL && (uint32) n != nsegs)
+	if (keys == NULL && (uint32) n != nsegs)
 		corrupt(index, "Directory root %u says %u entries, its leaves hold %d.", root, nsegs, n);
 	return n;
 }
@@ -289,13 +289,13 @@ chain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEn
 int
 sift_dirchain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEntry **segs, SiftDirChain *chain)
 {
-	return chain_read(index, root, version, room, segs, chain, NULL, 0);
+	return chain_read(index, root, version, room, segs, chain, NULL);
 }
 
 int
-sift_dirchain_read_prefix(Relation index, BlockNumber root, uint64 version, const SiftBound *prefix, uint32 ncomp, SiftSegEntry **segs, SiftDirChain *chain)
+sift_dirchain_read_range(Relation index, BlockNumber root, uint64 version, const SiftKeyRange *keys, SiftSegEntry **segs, SiftDirChain *chain)
 {
-	return chain_read(index, root, version, 0, segs, chain, prefix, ncomp);
+	return chain_read(index, root, version, 0, segs, chain, keys);
 }
 
 int

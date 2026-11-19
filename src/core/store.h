@@ -85,6 +85,7 @@
 #include "core/host.h"
 
 #include "core/page.h"
+#include "core/range.h"
 #include "core/xlog.h"
 #include "core/damage.h"
 
@@ -142,6 +143,7 @@ typedef struct SiftDirSnapshot
 	SiftMetaPageData meta;
 	uint32		version;
 	int			nsegs;
+	bool		partial;		/* sift_dir_read_range left out entries of the directory */
 	BlockNumber *chain;
 	int			nchain;
 	SiftSegEntry segs[FLEXIBLE_ARRAY_MEMBER];
@@ -189,6 +191,8 @@ extern uint32 sift_store_meta_flags(Relation index);
 /* Whether the metapage holds the flag, read as it is: a page that is not a metapage holds none, and no error is raised for it (the report of the flags of an index that may be damaged) */
 extern bool sift_store_meta_has_flag(Relation index, uint32 flag);
 extern SiftDirSnapshot *sift_dir_read(Relation index);
+/* The directory of the partitions that may hold a key of the range, and the entries that are no partition's (core/range.h sift_range_span) */
+extern SiftDirSnapshot *sift_dir_read_range(Relation index, const SiftKeyRange *keys);
 extern SiftDirSnapshot *sift_dir_read_segs(Relation index);
 /* An empty snapshot (zero entries, zero meta) with room for n entries */
 extern SiftDirSnapshot *sift_dir_alloc(int n);
