@@ -869,3 +869,9 @@ CREATE FUNCTION sift._test_malloc_stats(release bool DEFAULT false) RETURNS text
 -- src/core/leak_test.c: no transparent huge pages for this backend from now on (the memory gate reads anonymous memory in pages, not in steps of 2 MB)
 CREATE FUNCTION sift._test_thp_disable() RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_thp_disable' LANGUAGE C;
+
+-- src/core/leak_test.c: the peak of the anonymous memory of this backend between the two calls, sampled by a timer of the backend itself (kB; start returns the memory it began from, stop the peak, 0 when none runs)
+CREATE FUNCTION sift._test_rss_peak_start() RETURNS bigint
+	AS 'MODULE_PATHNAME', 'sift_test_rss_peak_start' LANGUAGE C;
+CREATE FUNCTION sift._test_rss_peak_stop() RETURNS bigint
+	AS 'MODULE_PATHNAME', 'sift_test_rss_peak_stop' LANGUAGE C;
