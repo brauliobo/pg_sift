@@ -718,9 +718,10 @@ sel_next(const SiftColSel *sel, uint32 from)
 /* The walk over the pages of a unit that hold a selected row: r is the next selected row, lo .. hi the rows of the page found, blk its heap block */
 typedef struct VetCursor
 {
-	const ColUnit *cu;
+	ColUnit    *cu;
 	const SiftColSel *sel;
 	const uint64 *av;
+	bool		lazy;			/* av lacks the log's answer for the pages not asked about yet (unit_page_allvisible) */
 	uint32		r;
 	uint32		p;
 	uint32		lo;
@@ -732,7 +733,7 @@ typedef struct VetCursor
 static bool
 vet_next(VetCursor *c)
 {
-	const ColUnit *cu = c->cu;
+	ColUnit    *cu = c->cu;
 
 	while (c->r < c->sel->nwords * 64)
 	{
@@ -742,7 +743,7 @@ vet_next(VetCursor *c)
 		c->lo = cu->v.rowstart[c->p];
 		c->hi = cu->v.rowstart[c->p + 1];
 		c->blk = sift_cunit_page_block(&cu->v, cu->sb, c->p);
-		allvis = c->av != NULL && sift_col_bit_test(c->av, cu->v.keyed ? c->p : c->blk & (SIFT_SB_PAGES - 1));
+		allvis = c->av != NULL && (c->lazy ? unit_page_allvisible(cu, c->p) : sift_col_bit_test(c->av, cu->v.keyed ? c->p : c->blk & (SIFT_SB_PAGES - 1)));
 		c->r = sel_next(c->sel, c->hi);
 #ifdef SIFT_TESTING
 		if (allvis && sift_test_col_paranoid)
@@ -777,7 +778,8 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 	VetCursor	cur,
 				ahead;
 	int			npages = 0;
-	bool		streamed = false;
+	bool		streamed = false,
+				lazy;
 	bool		hf = col_hf_unit(src, cu);
 	bool		few = hf && !cu->lane && !cu->v.keyed && !cu->av_ready && sift_col_sel_count(sel) <= VET_FEW_ROWS;
 	const uint64 *av = few ? unit_allvisible_vm(cu) : unit_allvisible(cu);
@@ -797,10 +799,13 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 	if (!few && cu->marked)
 		sift_col_marks_note(src->index, src->hflog->gen, (uint64) (sift_col_sel_count(sel) * COL_MARK_ROW_PRICE));
 	sift_cunit_keyed_load(&cu->v);
+	lazy = av != NULL && cu->v.keyed && sift_col_sel_count(sel) < cu->v.npages / 4;
+	if (av != NULL && cu->v.keyed && !lazy)
+		unit_pages_allvisible_log(cu);
 	if (sift_col_sel_count(sel) >= cu->v.nrows / 16)
 		sift_cunit_page_offsets_all(&cu->v);
 	/* the pages that hold a selected row, found from the rows: a unit lists thousands of pages and the selection a few dozen rows */
-	cur = (VetCursor) {cu, sel, av, sel_next(sel, 0)};
+	cur = (VetCursor) {cu, sel, av, lazy, sel_next(sel, 0)};
 	for (;;)
 	{
 		uint32		lo,
@@ -858,7 +863,7 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 			if (sift_col_bit_test(offmask, off - 1))
 				continue;
 #ifdef SIFT_TESTING
-			if (sift_test_col_paranoid && av != NULL && sift_col_bit_test(av, cu->v.keyed ? p : blk & (SIFT_SB_PAGES - 1)))
+			if (sift_test_col_paranoid && av != NULL && (cu->v.keyed ? unit_page_allvisible(cu, p) : sift_col_bit_test(av, blk & (SIFT_SB_PAGES - 1))))
 			{
 				/* the all-visible shortcut would have counted a row the snapshot does not see: report it, keep the shortcut's result */
 				paranoid_report(src, cu, blk, off);

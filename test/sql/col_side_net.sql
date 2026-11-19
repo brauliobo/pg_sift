@@ -98,6 +98,27 @@ SELECT * FROM state(1);
 SELECT * FROM state(2);
 SELECT sift.col_verify('events_col', true) IS NOT NULL AS verified;
 
+-- a delete burst and a key update burst that no VACUUM has followed: pages are not all-visible, so the units are read by reference and every row is vetted, whole key and month cell
+CREATE FUNCTION month_same(key int) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE q text; join_md5 text; scope_md5 text;
+BEGIN
+	q := format('SELECT kind, count(*) AS n, sum(v) AS s FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = %s) AND e.created_at >= %L AND e.created_at < %L GROUP BY kind',
+				key, '2025-06-01', '2025-07-01');
+	SET LOCAL sift.enable_agg = off;
+	join_md5 := rows_md5(q);
+	SET LOCAL sift.enable_agg = on;
+	scope_md5 := rows_md5(q);
+	RETURN scope_md5 = join_md5;
+END $$;
+DELETE FROM events WHERE (hashint4(id) & 2147483647) % 50 = 1;
+UPDATE events SET created_at = created_at + interval '1 day' WHERE (hashint4(id) & 2147483647) % 100 = 2;
+UPDATE events SET dim_a_id = 1 + dim_a_id % 60 WHERE (hashint4(id) & 2147483647) % 200 = 3;
+SELECT * FROM state(1);
+SELECT * FROM state(2);
+SELECT month_same(1) AS month_1, month_same(2) AS month_2;
+SELECT sift.col_verify('events_col', true) IS NOT NULL AS verified;
+
+DROP FUNCTION month_same(int);
 DROP FUNCTION state(int);
 DROP FUNCTION runs_valid(int);
 DROP FUNCTION plan_of(text);

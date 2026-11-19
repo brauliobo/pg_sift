@@ -489,6 +489,8 @@ minors51() {
 		"ch_ix:blocker dv_ix:blocker pl_ix:ok sc_ix:blocker tenant_scope_journal:ok wb_ix:blocker" ]] &&
 		pass "sift.upgrade_check('5.0') names the four indexes that 5.0 refuses and passes the others" ||
 		fail "sift.upgrade_check('5.0') names the four indexes that 5.0 refuses and passes the others"
+	[[ $(psql_new -c "SELECT string_agg(object, ' ' ORDER BY object) FROM sift.upgrade_check('5.0') WHERE advice LIKE 'REINDEX INDEX CONCURRENTLY%'") == "sc_ix" ]] &&
+		pass "... and advises the older library's REINDEX only for the index with a scope" || fail "... and advises the older library's REINDEX only for the index with a scope"
 	want=$(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(v) FROM pl WHERE v > 100" | tail -1)
 	want_wb=$(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(v) FROM wb WHERE k = 3" | tail -1)
 	want_ch=$(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(v) FROM ch WHERE v > 100" | tail -1)

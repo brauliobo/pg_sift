@@ -114,7 +114,7 @@ BEGIN
 				adv := format('ALTER INDEX %s SET (key_cut = ''off''), then REINDEX INDEX %s writes units by superblock, which 3.3 reads', r.rel, r.rel);
 			ELSIF hi = 20 AND tgt = '3.3' THEN
 				adv := format('ALTER INDEX %s RESET (hll_columns), then REINDEX INDEX %s writes units without sketches, which 3.3 reads', r.rel, r.rel);
-			ELSIF need = '5.1' AND tgt = '5.0' THEN
+			ELSIF need = '5.1' AND tgt = '5.0' AND EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'scope=%') THEN
 				adv := format('REINDEX INDEX CONCURRENTLY %s with the 5.0 library builds it in what 5.0 reads (a scope index is the size of 5.0 again)', r.rel);
 			ELSIF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'scope=%') THEN
 				-- a scope is written at minor 45 or more (a lowered setting refuses it), and a release before 5.0 refuses the option: the entity rows are what an older release reads

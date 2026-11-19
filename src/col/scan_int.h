@@ -214,7 +214,8 @@ typedef struct ColUnit
 	uint64		av[SIFT_PAGEMASK_WORDS];
 	bool		avvm_ready;
 	uint64		avvm[SIFT_PAGEMASK_WORDS];	/* the pages the visibility map holds all-visible, no page the log added (unit_allvisible_vm) */
-	uint64	   *avk;			/* a key-cut unit: the all-visible bit of its p-th page (unit_allvisible_keyed) */
+	uint64	   *avk;			/* a key-cut unit: the all-visible bit of its p-th page (unit_allvisible_keyed), the log's answer added for the pages in avk_known */
+	uint64	   *avk_known;
 	bool		marked;			/* a mark of the log lies in the heap blocks of the unit's pages, so the unit is read page by page (valid with av_ready) */
 	ColGroup   *grp;
 	ColSelCache selc;
@@ -428,6 +429,8 @@ extern bool unit_inline(ColUnit *cu, int col);
 extern SiftCDict *unit_dict(ColUnit *cu, int col);
 extern const uint64 *unit_allvisible(ColUnit *cu);
 extern const uint64 *unit_allvisible_vm(ColUnit *cu);
+extern bool unit_page_allvisible_log(ColUnit *cu, uint32 p);
+extern void unit_pages_allvisible_log(ColUnit *cu);
 extern ColGroup *unit_group(ColUnit *cu, int group);
 extern bool types_known(const ColUnit *cu, const SiftCChunk *c, uint32 mask, bool mixed, const uint64 *sel);
 
@@ -459,6 +462,13 @@ unit_keys(ColUnit *cu)
 
 /* col/scan_unit.c: do the rows of the stored unit of a scope source include a member the source leaves out (cu->live then is the unit's selection without them) */
 extern bool unit_except(ColUnit *cu);
+
+/* Is the p-th page of a key-cut unit (with a mask: unit_allvisible is not NULL) all-visible, by the map or by the log */
+static inline bool
+unit_page_allvisible(ColUnit *cu, uint32 p)
+{
+	return sift_col_bit_test(cu->avk, p) || (!sift_col_bit_test(cu->avk_known, p) && unit_page_allvisible_log(cu, p));
+}
 
 /*
  * Whether the stored unit has no dead row, read from the liveness pages now and after the all-visible mask: a page turns all-visible only

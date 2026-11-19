@@ -351,7 +351,10 @@ col_blocks_allvisible(SiftColSource *src, const SiftColSegment *seg, const Block
 			}
 }
 
-/* A key-cut unit's pages are anywhere in the heap: the all-visible bit of each is read from the map by block, in the order of the unit's pages (same rules as unit_allvisible) */
+/*
+ * A key-cut unit's pages are anywhere in the heap: the all-visible bit of each is read from the map by block, in the order of the unit's pages (same rules as unit_allvisible). The
+ * log is asked about the pages the map lacks when a read takes rows of the page (unit_page_allvisible), after the map as it must be: a read of a few rows by a month leaves most pages of the unit unasked.
+ */
 static const uint64 *
 unit_allvisible_keyed(ColUnit *cu)
 {
@@ -369,15 +372,49 @@ unit_allvisible_keyed(ColUnit *cu)
 		}
 		cu->marked = !cu->lane && hf_seg(cu->src, cu->seg);
 		sift_cunit_keyed_load(&cu->v);
-		nw = (cu->v.npages + 63) / 64;
-		cu->avk = MemoryContextAllocZero(cu->src->arena, Max(nw, 1) * sizeof(uint64));
+		nw = Max((cu->v.npages + 63) / 64, 1);
+		cu->avk = MemoryContextAllocZero(cu->src->arena, 2 * nw * sizeof(uint64));
+		cu->avk_known = cu->avk + nw;
 		if (!cu->lane && cu->src->vis.heap != NULL)
-			col_blocks_allvisible(cu->src, cu->seg, cu->v.blocks, cu->v.npages, cu->avk);
+			sift_vis_blocks_allvisible(&cu->src->vis, cu->v.blocks, cu->v.npages, cu->avk);
 		if (cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src))
-			memset(cu->avk, 0, Max(nw, 1) * sizeof(uint64));
+			memset(cu->avk, 0, nw * sizeof(uint64));
 		cu->av_ready = true;
 	}
 	return cu->avk;
+}
+
+/* The page, which the map lacks, holds no row that a tombstone deletes for the snapshot: the log's answer, kept; the directory is checked after it */
+bool
+unit_page_allvisible_log(ColUnit *cu, uint32 p)
+{
+	bool		clear = cu->marked && !col_hf_block_any(cu->src, cu->v.blocks[p]) &&
+		!(cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src));
+
+	if (clear)
+	{
+		sift_col_bit_set(cu->avk, p);
+		sift_col_hf_taken++;
+	}
+	sift_col_bit_set(cu->avk_known, p);
+	return clear;
+}
+
+/* The log's answer for all the pages of the unit, for a read that takes rows of many of them */
+void
+unit_pages_allvisible_log(ColUnit *cu)
+{
+	uint32		nw = (cu->avk_known - cu->avk);
+
+	for (uint32 p = 0; p < cu->v.npages && cu->marked; p++)
+		if (!sift_col_bit_test(cu->avk, p) && !col_hf_block_any(cu->src, cu->v.blocks[p]))
+		{
+			sift_col_bit_set(cu->avk, p);
+			sift_col_hf_taken++;
+		}
+	memset(cu->avk_known, 0xff, nw * sizeof(uint64));
+	if (cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src))
+		memset(cu->avk, 0, nw * sizeof(uint64));
 }
 
 const uint64 *
@@ -706,7 +743,7 @@ unit_pages_allvisible(ColUnit *cu)
 		if (av == NULL)			/* every page of the table is all-visible */
 			return true;
 		for (uint32 p = 0; p < cu->v.npages; p++)
-			if (!sift_col_bit_test(av, p))
+			if (!unit_page_allvisible(cu, p))
 				return false;
 		return true;
 	}
