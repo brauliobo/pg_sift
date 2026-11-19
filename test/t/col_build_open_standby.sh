@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The open units of a CREATE INDEX of a key_cut index (col/build/open.c: the values of the key that fill units are written as units of their own as the table is read, with no temporary file) on a
 # physical hot standby and under writers: the index verifies and answers as the heap on the standby; with no room for temporary files every range of the key is an open unit and none is written; a CREATE
-# INDEX CONCURRENTLY under inserts, updates and deletes gives an index that matches the heap; a build that is cancelled, terminated or whose cluster crashes leaves no temporary file and no index that reads wrong.
+# INDEX CONCURRENTLY under inserts, updates and deletes gives an index that matches the heap; a build that is cancelled, terminated or whose process dies leaves no temporary file and no index that reads wrong.
 . "$(dirname "$0")/lib.bash"
 plan 12
 
@@ -94,12 +94,12 @@ sql primary "SELECT pg_terminate_backend($(backend))" >/dev/null
 wait_for settled 120
 check "a terminated build leaves no temporary file and no index" test "$(tmpfiles)" = 0 -a "$(sql primary "SELECT count(*) FROM pg_class WHERE relname = 'ev_idx'")" = 0
 
-# the cluster crashes in the middle of a build
-bg_build
-wait_for building 60 || bail "the build never ran"
-sleep 0.5
-crash primary
-wait
+# the build's process dies before the index is published (sift.test_crash_dir: before its first directory update): crash recovery
+PM=$(head -1 "$(dir primary)/data/postmaster.pid")
+SIFT_TMP=$(dir primary) leak_expect 1 'terminated by signal 9'
+sql primary "${SETTINGS[@]}" "SET sift.test_crash_dir = 1" "$CREATE" >/dev/null 2>&1
+dead() { ! kill -0 "$PM" 2>/dev/null; }
+wait_for dead 120 || bail "the postmaster did not stop"
 node_start primary || bail "restart failed"
 check "after a crash in the middle of a build the cluster is up and there is no index" test "$(sql primary "SELECT count(*) FROM pg_class WHERE relname = 'ev_idx' AND relkind = 'i'")" = 0
 build "$CREATE"
