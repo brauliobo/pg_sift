@@ -47,6 +47,7 @@ bool		sift_test_build_gate = false;
 bool		sift_test_alter_gate = false;
 bool		sift_test_step_gate = false;
 bool		sift_test_repair_gate = false;
+bool		sift_test_check_gate = false;
 bool		sift_test_par_gate = false;
 int			sift_test_mutant = 0;
 bool		sift_test_rebuild_gate = false;
