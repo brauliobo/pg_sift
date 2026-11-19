@@ -1,0 +1,281 @@
+
+-- sift.upgrade_check(target): what to look at before ALTER EXTENSION pg_sift UPDATE, a library swap or a downgrade. It reads the catalogs and the
+-- metapages and changes nothing. One row per finding: object, kind (version, index, table, option, setting, test), detected (the version or format minor found),
+-- status (ok, warn, blocker) and advice. target, a release such as '3.1', asks what that release could not read: an index or table in a format
+-- it does not know is a blocker. docs/UPGRADING.md has the commands.
+--
+-- It is part of the extension from 5.0. Before the update, the database has the older extension: pg_sift_upgrade_check.sql (installed beside the scripts, built from
+-- this part by scripts/sql-parts.sh; scripts/upgrade-check.sh runs it) loads the function in a transaction that it rolls back. The format minors need sift.index_format
+-- of the loaded library (this release or later; without it those rows say so).
+CREATE OR REPLACE FUNCTION sift.upgrade_check(target text DEFAULT NULL)
+RETURNS TABLE (object text, kind text, detected text, status text, advice text)
+LANGUAGE plpgsql AS $fn$
+DECLARE
+	-- the first release that reads each column format minor (docs/FORMATS.md section 4), and the sift.col_format_minor that writes what a release reads
+	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4", "22": "3.5", "23": "3.5", "24": "3.5", "25": "3.6", "26": "3.6", "27": "3.6", "28": "3.6", "29": "3.6", "30": "3.6", "31": "3.6", "32": "3.6", "33": "3.7", "34": "3.7", "35": "3.7", "36": "3.7", "37": "3.7", "38": "3.7", "39": "3.7", "40": "4.0", "41": "4.0", "42": "4.0", "43": "4.0", "44": "4.3", "45": "5.0", "46": "5.0", "47": "5.0", "48": "5.0", "49": "5.0", "50": "5.0", "51": "5.0", "52": "5.1", "53": "5.1", "54": "5.1", "55": "5.1"}';
+	col_setting CONSTANT jsonb := '{"3.0": 3, "3.1": 4, "3.2": 6, "3.3": 15}';
+	-- the settings the 4.2 and 5.0 libraries removed, each with the value that is refused (a regular expression; null: any value) and what to say. sift.eval_methods lost only some of its methods
+	removed CONSTANT jsonb := '{"sift.eval_methods": ["(^|[^a-z_])(latest_hint|snapshot_masks|unit_rewrite|skip_trigger_lookup)([^a-z_]|$)", "the 4.2 library has removed that method (skip_trigger_lookup is always on) and refuses it in a SET"],
+		"sift.enable_col": [null, "the 4.2 library has removed this setting (it never changed a plan; sift.enable_col_scan and sift.enable_agg are the switches) and refuses it in a SET"],
+		"sift.table_auto_defrag_dead_pct": [null, "the 4.2 library has removed this setting (it has had no effect since 4.0; the background pass of a sift_table is asked for by the reads of the table) and refuses it in a SET"],
+		"sift.col_auto_merge_dirty_pct": [null, "the 5.0 library has removed this setting (a unit holding a dead row asks for the rewrite, whatever the share of the units; sift.col_auto_merge_wal_pct and the price of the reads pace it) and refuses it in a SET"]}';
+	tgt text := regexp_replace(target, '^([0-9]+\.[0-9]+).*$', '\1');
+	ext text;
+	lib text;
+	avail text;
+	r record;
+	dep record;
+	maj int;
+	mnr int;
+	lo int;
+	hi int;
+	need text;
+	adv text;
+	dpl boolean;
+BEGIN
+	IF target IS NOT NULL AND target !~ '^[0-9]+\.[0-9]+' THEN
+		RAISE EXCEPTION 'upgrade_check: target must be a release such as 3.1, not "%"', target USING ERRCODE = 'invalid_parameter_value';
+	END IF;
+	-- the library is loaded by its first call, which defines its settings
+	lib := sift.version();
+	SELECT extversion INTO ext FROM pg_extension WHERE extname = 'pg_sift';
+	SELECT default_version INTO avail FROM pg_available_extensions WHERE name = 'pg_sift';
+
+	object := 'pg_sift'; kind := 'version'; detected := format('extension %s, library %s', ext, lib);
+	IF string_to_array(lib, '.')::int[] < string_to_array(ext, '.')::int[] THEN
+		status := 'blocker'; advice := format('the library is older than the extension scripts: install pg_sift %s or later', ext);
+	ELSIF string_to_array(lib, '.')::int[] > string_to_array(ext, '.')::int[] THEN
+		status := 'warn';
+		advice := 'ALTER EXTENSION pg_sift UPDATE. The library writes its formats before the update runs (a sift index moves to a newer metapage minor at its next insert, a sift_col index and a sift_table write new segments in the newer column format), which an older library refuses: go back with the files only before the first write, else REINDEX with the older release';
+	ELSIF avail IS DISTINCT FROM ext THEN
+		status := 'warn'; detected := detected || format(' (%s is available)', avail); advice := 'ALTER EXTENSION pg_sift UPDATE';
+	ELSE
+		status := 'ok'; advice := NULL;
+	END IF;
+	RETURN NEXT;
+	-- 4.3.6 is the first 4.x release that refuses what 5.0 wrote in a metapage with the format message; an older one calls the sound index corrupted
+	IF string_to_array(ext, '.')::int[] < ARRAY[4, 3, 6] THEN
+		detected := format('extension %s is older than 4.3.6', ext); status := 'warn';
+		advice := 'install 4.3.6 on every node (standbys first) before moving to 5.0, so that a rollback or a standby that is not upgraded yet refuses a 5.0 index with the format message instead of reporting the index as corrupted';
+		RETURN NEXT;
+	END IF;
+
+	FOR r IN SELECT c.oid::regclass::text AS rel, c.oid AS relid, am.amname, c.reloptions AS opts
+			 FROM pg_class c JOIN pg_am am ON am.oid = c.relam
+			 WHERE am.amname IN ('sift', 'sift_col', 'sift_table') AND c.relkind IN ('i', 'r', 'm')
+			 ORDER BY 1
+	LOOP
+		object := r.rel; kind := CASE r.amname WHEN 'sift_table' THEN 'table' ELSE 'index' END;
+		IF pg_relation_size(r.relid) = 0 THEN
+			detected := 'nothing written yet'; status := 'ok'; advice := NULL;
+			RETURN NEXT;
+			CONTINUE;
+		END IF;
+		BEGIN
+			EXECUTE 'SELECT major, minor FROM sift.index_format($1)' INTO maj, mnr USING r.relid;
+			lo := NULL; hi := NULL; dpl := false;
+			IF r.amname = 'sift_col' THEN
+				SELECT min((to_jsonb(s)->>'format')::int), max((to_jsonb(s)->>'format')::int) INTO lo, hi FROM sift.col_segments(r.relid) s;
+				SELECT coalesce(bool_or(l.path LIKE '%#present'), false) INTO dpl FROM sift.col_leaves(r.relid) l;
+			ELSIF r.amname = 'sift_table' THEN
+				SELECT min((to_jsonb(s)->>'format')::int), max((to_jsonb(s)->>'format')::int) INTO lo, hi FROM sift.table_segments(r.relid) s;
+			END IF;
+		EXCEPTION
+			WHEN undefined_function THEN
+				detected := 'format unknown'; status := 'warn';
+				advice := 'the loaded library has no sift.index_format: install the new library files, start a new session and run this again';
+				RETURN NEXT;
+				CONTINUE;
+			WHEN OTHERS THEN
+				GET STACKED DIAGNOSTICS adv = PG_EXCEPTION_HINT;
+				detected := 'unreadable'; status := 'blocker'; advice := SQLERRM || coalesce('. ' || adv, '');
+				RETURN NEXT;
+				CONTINUE;
+		END;
+		-- the first release that reads it
+		need := CASE WHEN r.amname = 'sift' THEN CASE WHEN mnr >= 6 THEN '4.2' WHEN mnr >= 5 THEN '4.0' WHEN mnr >= 4 THEN '3.7' WHEN mnr >= 3 THEN '3.1' ELSE '3.0' END
+					 ELSE coalesce(col_first->>greatest(hi, 3)::text, '3.0') END;
+		-- 5.1: a chained directory and the write buffer with key ranges raise the metapage to 1.7, a tombstone log with deletion records is stamped 52: a release before 5.1 refuses each
+		IF mnr >= 7 THEN need := '5.1'; END IF;
+		-- 4.2: the presence leaf of a jsonb column that may hold a NULL document ("<column>#present"): a release before 4.2 refuses the index
+		IF dpl AND string_to_array(need, '.')::int[] < ARRAY[4, 2] THEN need := '4.2'; END IF;
+		detected := format('format %s.%s', maj, mnr) ||
+				 CASE WHEN hi IS NULL THEN '' WHEN lo = hi THEN ', column format ' || hi ELSE format(', column format %s to %s', lo, hi) END;
+		status := 'ok'; advice := NULL;
+		IF tgt IS NOT NULL AND string_to_array(need, '.')::int[] > string_to_array(tgt, '.')::int[] THEN
+			status := 'blocker';
+			IF dpl THEN
+				adv := format('REINDEX INDEX %s with %s writes the layout that %s reads; there is no setting (the forms NOT, IS FALSE and IS NULL of its jsonb columns read the table again)', r.rel, tgt, tgt);
+			ELSIF r.amname = 'sift' THEN
+				adv := format('%s cannot read this format: drop the index and CREATE INDEX it again with that release, or keep this library', tgt);
+			ELSIF hi = 5 THEN
+				adv := format('a schema with wide leaves is written for 3.2 and later at every setting: drop the index before going back to %s', tgt);
+			ELSIF hi = 17 AND tgt = '3.3' THEN
+				adv := format('ALTER INDEX %s SET (key_cut = ''off''), then REINDEX INDEX %s writes units by superblock, which 3.3 reads', r.rel, r.rel);
+			ELSIF hi = 20 AND tgt = '3.3' THEN
+				adv := format('ALTER INDEX %s RESET (hll_columns), then REINDEX INDEX %s writes units without sketches, which 3.3 reads', r.rel, r.rel);
+			ELSIF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'scope=%') THEN
+				-- a scope is written at minor 45 or more (a lowered setting refuses it), and a release before 5.0 refuses the option: the entity rows are what an older release reads
+				adv := format('DROP INDEX %s, then SET sift.col_format_minor = 14 and CREATE INDEX it again without the scope option writes the index without the scope, which %s reads (the reads of the scope go through the join again; ALTER INDEX .. RESET (scope) is refused on an index that has segments)', r.rel, tgt);
+			ELSIF hi = 46 AND tgt = '4.3' THEN
+				-- the strings of a column held by a shared value store (5.0): the setting writes them in the segments again and leaves change tracking and the structures of minors 15 to 44 as they are
+				adv := format('SET sift.col_value_store = off, then REINDEX INDEX %s writes the strings in the segments (minor 44 at the most), which %s reads', r.rel, tgt);
+			ELSIF hi >= 52 OR mnr >= 7 THEN
+				adv := format('%s with the %s files installed writes what %s reads; under this library SET sift.col_wbuf_key_range = off first (and VACUUM the table, which folds the deletion records of its log), and a key_cut index records its partitions, a chained directory, at its first rewrite (docs/UPGRADING.md, "What 5.1 writes that 5.0 does not read")',
+							  CASE r.amname WHEN 'sift_table' THEN 'VACUUM FULL ' || r.rel || ' (ACCESS EXCLUSIVE lock)' ELSE 'REINDEX INDEX ' || r.rel END, tgt, tgt);
+			ELSIF hi >= 33 THEN
+				adv := format('SET sift.col_format_minor = 14, then %s writes the point directories with a power of two of slots, the units of a key_cut index by superblock (and without the sections of minors 15 to 32), which %s reads',
+							  CASE r.amname WHEN 'sift_table' THEN 'VACUUM FULL ' || r.rel || ' (ACCESS EXCLUSIVE lock)' ELSE 'REINDEX INDEX ' || r.rel END, tgt);
+			ELSIF hi IN (30, 31, 32) THEN
+				adv := format('ALTER INDEX %s SET (order_array_columns = ''off''), then REINDEX INDEX %s writes the sorted runs without the global order, which %s reads', r.rel, r.rel, tgt);
+			ELSIF hi = 26 THEN
+				adv := format('the range, inet and cidr columns of the index keep the lanes of their containment operators: drop the index before going back to %s', tgt);
+			ELSIF hi = 25 THEN
+				adv := format('SET sift.col_format_minor = 14, then %s writes segments without the hash of the dictionaries (and without the sections of minors 15 to 24), which %s reads',
+							  CASE r.amname WHEN 'sift_table' THEN 'VACUUM FULL ' || r.rel || ' (ACCESS EXCLUSIVE lock)' ELSE 'REINDEX INDEX ' || r.rel END, tgt);
+			ELSIF hi = 24 THEN
+				adv := format('ALTER INDEX %s SET (count_columns = ''off'', key_columns = ''off'', key_table = off), then REINDEX INDEX %s writes segments without row counts, lists of runs and key tables, which %s reads', r.rel, r.rel, tgt);
+			ELSIF hi = 23 THEN
+				adv := format('ALTER INDEX %s SET (key_columns = ''off'', key_table = off), then REINDEX INDEX %s writes segments without lists of runs and key tables, which %s reads', r.rel, r.rel, tgt);
+			ELSIF hi = 22 THEN
+				adv := format('ALTER INDEX %s SET (key_table = off), then REINDEX INDEX %s writes segments without key tables, which %s reads', r.rel, r.rel, tgt);
+			ELSIF r.amname = 'sift_col' THEN
+				adv := format('SET sift.col_format_minor = %s and REINDEX INDEX %s writes what %s reads', col_setting->>tgt, r.rel, tgt);
+			ELSE
+				-- not ALTER TABLE .. SET ACCESS METHOD heap and back: it fails with "row is too big" on a row that does not fit a heap page, VACUUM FULL rewrites any row
+				adv := format('SET sift.col_format_minor = %s, then VACUUM FULL %s rewrites it in what %s reads (ACCESS EXCLUSIVE lock)',
+							  col_setting->>tgt, r.rel, tgt);
+			END IF;
+			-- the setting 14 writes no global order: the option stays on the index and its arrays are left out until a REINDEX at the normal setting
+			IF adv LIKE 'SET sift.col_format_minor = 14,%' AND EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'order_array_columns=%' AND o <> 'order_array_columns=off') THEN
+				adv := adv || '; the index keeps order_array_columns but is written without its arrays: an ORDER BY .. LIMIT above 32 rows on those columns reads their units (slower) until a REINDEX at the normal setting writes them again';
+			END IF;
+			advice := adv;
+		END IF;
+		RETURN NEXT;
+
+		IF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'mutable_limit=%') THEN
+			kind := 'option'; detected := 'mutable_limit'; status := 'warn';
+			advice := format('the deprecated name of write_buffer_limit: ALTER INDEX %s RESET (mutable_limit), then SET (write_buffer_limit = N)', r.rel);
+			RETURN NEXT;
+		END IF;
+
+		-- 5.0 removed these: they are still accepted, stored and ignored; RESET drops them
+		FOR dep IN SELECT * FROM (VALUES ('key_cut_rows', 'the units aim at the rows of an average superblock'),
+									   ('point_columns', 'name its columns in point_tid_columns to list their heap addresses'),
+									   ('order_columns', 'no sorted run is written; the order arrays, order_array_columns, answer what it did')) v(opt, what)
+		LOOP
+			CONTINUE WHEN NOT EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE dep.opt || '=%');
+			kind := 'option'; detected := dep.opt; status := 'warn';
+			advice := format('deprecated and ignored (%s): ALTER INDEX %s RESET (%s)', dep.what, r.rel, dep.opt);
+			RETURN NEXT;
+		END LOOP;
+	END LOOP;
+
+	-- an event trigger calls a function that only the library of the release that added it has (sift_table_paths_drop is 3.2's): with an older library the statement it
+	-- fires on fails in every session of the database. 3.3: ALTER TABLE and CREATE TRIGGER (table_ddl_check); 5.0: CREATE INDEX (col_build_lock) and every DROP of an index
+	-- (_col_value_store_sql_drop calls the 5.0 function that drops an unused value store) and every ALTER TABLE (col_names_follow and col_names_before, the names that follow a rename; _col_names_sql_drop, the rows of the tables that went)
+	IF tgt IS NOT NULL THEN
+		FOR r IN SELECT e.evtname::text AS name, v.since, v.fails FROM pg_event_trigger e JOIN pg_proc p ON p.oid = e.evtfoid
+				 JOIN (VALUES ('table_ddl_check', '3.3', 'ALTER TABLE and CREATE TRIGGER'), ('col_build_lock', '5.0', 'CREATE INDEX'),
+							  ('_col_value_store_sql_drop', '5.0', 'DROP INDEX'), ('_col_names_sql_drop', '5.0', 'DROP'), ('col_names_follow', '5.0', 'ALTER TABLE'),
+							  ('col_names_before', '5.0', 'ALTER TABLE')) v(fn, since, fails) ON v.fn = p.proname
+				 WHERE e.evtenabled <> 'D' AND p.pronamespace = 'sift'::regnamespace AND string_to_array(tgt, '.')::int[] < string_to_array(v.since, '.')::int[] ORDER BY 1
+		LOOP
+			object := r.name; kind := 'trigger'; detected := format('enabled, its function is in the %s library only', r.since); status := 'blocker';
+			advice := format('ALTER EVENT TRIGGER %s DISABLE before the %s library runs (it would fail every %s), ENABLE it when %s runs again', r.name, tgt, r.fails, r.since);
+			RETURN NEXT;
+		END LOOP;
+	END IF;
+
+	-- what the units written before an option, or the segments of a sift_table below the column format of its schema, lack (the extension of 3.3 on has the
+	-- function; an older one gets these rows after its update)
+	IF to_regprocedure('sift.upgrade_commands()') IS NOT NULL THEN
+		BEGIN
+			-- the RESET of a removed option is listed above, for a library that has no such row
+			FOR r IN SELECT * FROM sift.upgrade_commands() u WHERE u.required IS DISTINCT FROM true AND u.kind NOT IN ('reset', 'preload') LOOP
+				object := r.object::text; status := 'warn';
+				IF r.kind = 'skipped' THEN
+					kind := CASE WHEN (SELECT relkind FROM pg_class WHERE oid = r.object) = 'i' THEN 'index' ELSE 'table' END;
+					detected := 'locked by another session'; advice := 'sift.upgrade_commands() skipped it: ' || r.reason;
+				ELSE
+					kind := CASE r.kind WHEN 'rewrite' THEN 'table' ELSE 'option' END;
+					detected := split_part(r.reason, ': ', 1); advice := substr(r.reason, length(detected) + 3) || '; ' || r.command;
+				END IF;
+				RETURN NEXT;
+			END LOOP;
+		EXCEPTION WHEN undefined_function OR undefined_file OR lock_not_available THEN NULL;
+		END;
+	END IF;
+
+	-- settings outside the code: the server (file, command line), the session, ALTER DATABASE and ALTER ROLE
+	FOR r IN WITH set_by AS (
+				SELECT s.name, s.setting AS value, 'server (' || s.source || ')' AS scope FROM pg_settings s
+				WHERE s.name LIKE 'sift.%' AND s.source NOT IN ('default', 'override', 'database', 'user', 'database user')
+				UNION ALL
+				SELECT split_part(c, '=', 1), substr(c, strpos(c, '=') + 1),
+					   concat_ws(' ', CASE WHEN d.setrole <> 0 THEN 'ALTER ROLE ' || (SELECT rolname FROM pg_roles WHERE oid = d.setrole) END,
+										CASE WHEN d.setdatabase <> 0 THEN 'IN DATABASE ' || (SELECT datname FROM pg_database WHERE oid = d.setdatabase) END)
+				FROM pg_db_role_setting d, unnest(d.setconfig) c WHERE c LIKE 'sift.%'
+				UNION ALL
+				SELECT f.name, f.setting, 'file ' || f.sourcefile || ':' || f.sourceline FROM pg_file_settings f
+				WHERE f.name LIKE 'sift.%' AND NOT EXISTS (SELECT 1 FROM pg_settings p WHERE p.name = f.name)
+			 )
+			 SELECT b.name AS name, b.value AS value, b.scope AS scope, p.name IS NULL AS unknown, p.vartype AS vartype, p.boot_val AS boot_val
+			 FROM set_by b LEFT JOIN pg_settings p ON p.name = b.name
+			 ORDER BY b.name, b.scope
+	LOOP
+		object := r.name; kind := 'setting'; detected := format('%s = %s, set by %s', r.name, r.value, r.scope); status := 'warn'; advice := NULL;
+		IF r.name LIKE 'sift.test\_%' THEN
+			kind := 'test'; advice := 'a setting of the test build only: remove it';
+		ELSIF removed ? r.name THEN
+			CONTINUE;		-- the removed names are the blockers below
+		ELSIF r.unknown THEN
+			advice := 'the loaded library does not define it (removed, renamed or from another build): remove it, or PostgreSQL ignores it with a warning';
+		ELSIF r.vartype = 'bool' AND r.boot_val = 'on' AND lower(r.value) IN ('off', 'false', 'no', '0', 'f', 'n') THEN
+			advice := 'a feature is switched off here (a planner or maintenance setting that defaults on): RESET it unless that is meant';
+		ELSIF r.name = 'sift.col_format_minor' AND r.value <> r.boot_val THEN
+			advice := 'new column segments are written in an older format (for a standby on that release): RESET it once every node is upgraded';
+		ELSE
+			CONTINUE;
+		END IF;
+		RETURN NEXT;
+	END LOOP;
+
+	-- 4.2 and 5.0 removed the settings of `removed` (and latest_hint, snapshot_masks, unit_rewrite and skip_trigger_lookup, also with a leading -, from sift.eval_methods): a SET, ALTER ROLE, ALTER DATABASE and ALTER SYSTEM that
+	-- names one fails once that library is loaded, and where the server reads one (postgresql.conf, postgresql.auto.conf, a role or database setting) it is ignored with a warning in every session
+	FOR r IN SELECT x.name, x.scope, x.value, x.cmd, k.spec->>1 AS note FROM (
+				SELECT s.name, 'server (' || s.source || ')' AS scope, s.setting AS value,
+					   'remove it from postgresql.conf, or ALTER SYSTEM RESET ' || s.name || ' when it is in postgresql.auto.conf, then SELECT pg_reload_conf()' AS cmd
+				FROM pg_settings s WHERE removed ? s.name AND s.source NOT IN ('default', 'override', 'database', 'user', 'database user', 'session', 'client')
+				UNION ALL
+				SELECT f.name, 'file ' || f.sourcefile || ':' || f.sourceline, f.setting,
+					   'remove the line (ALTER SYSTEM RESET ' || f.name || ' when the file is postgresql.auto.conf), then SELECT pg_reload_conf()'
+				FROM pg_file_settings f WHERE removed ? f.name
+				UNION ALL
+				SELECT split_part(c, '=', 1), concat_ws(' ', CASE WHEN d.setrole <> 0 THEN 'ALTER ROLE ' || quote_ident(ro.rolname) END, CASE WHEN d.setdatabase <> 0 THEN 'IN DATABASE ' || quote_ident(db.datname) END),
+					   substr(c, strpos(c, '=') + 1),
+					   'ALTER ' || CASE WHEN d.setrole <> 0 THEN 'ROLE ' || quote_ident(ro.rolname) || CASE WHEN d.setdatabase <> 0 THEN ' IN DATABASE ' || quote_ident(db.datname) ELSE '' END
+									    WHEN d.setdatabase <> 0 THEN 'DATABASE ' || quote_ident(db.datname) ELSE 'ROLE ALL' END || ' RESET ' || split_part(c, '=', 1)
+				FROM pg_db_role_setting d LEFT JOIN pg_roles ro ON ro.oid = d.setrole LEFT JOIN pg_database db ON db.oid = d.setdatabase, unnest(d.setconfig) c
+				WHERE removed ? split_part(c, '=', 1)
+			 ) x
+			 JOIN jsonb_each(removed) k(name, spec) ON k.name = x.name
+			 WHERE k.spec->>0 IS NULL OR x.value ~* (k.spec->>0)
+			 ORDER BY x.name, x.scope
+	LOOP
+		object := r.name; kind := 'setting'; detected := format('%s = %s, set by %s', r.name, r.value, r.scope); status := 'blocker';
+		advice := r.note || ': ' || r.cmd;
+		RETURN NEXT;
+	END LOOP;
+
+	-- test-only objects left behind
+	FOR r IN SELECT extname FROM pg_extension WHERE extname = 'pg_sift_test' LOOP
+		object := r.extname; kind := 'test'; detected := 'extension installed'; status := 'warn';
+		advice := 'it needs the test build of the library and does not load in a release build: DROP EXTENSION pg_sift_test';
+		RETURN NEXT;
+	END LOOP;
+END
+$fn$;
+
+COMMENT ON FUNCTION sift.upgrade_check(text) IS 'What to look at before ALTER EXTENSION pg_sift UPDATE, a library swap or a downgrade, one row per finding (object, kind, detected, status ok, warn or blocker, advice); a target release such as 3.1 asks what that release could not read. Changes nothing; run it as a superuser';
