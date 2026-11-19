@@ -580,17 +580,27 @@ sift_colw_leaves_memory(int leaves, int ords, bool grouped)
 	return leaves ? (Size) leaves * 16 + (grouped ? (Size) ords * 9 : 0) + 24 + 32 : 0;
 }
 
-Size
-sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols)
+/* The leaves that keep (key, address) entries until the segment is done (a point directory or an order array), of them ords order arrays */
+int
+sift_colw_entry_leaves(const SiftCPaggSpec *spec, int ncols, int *ords)
 {
-	int			leaves = 0,
-				ords = 0;
+	int			leaves = 0;
 
+	*ords = 0;
 	for (int c = 0; c < ncols; c++)
 	{
 		leaves += spec->point_tid[c] || spec->gorder[c];
-		ords += spec->gorder[c] != 0;
+		*ords += spec->gorder[c] != 0;
 	}
+	return leaves;
+}
+
+Size
+sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols)
+{
+	int			ords;
+	int			leaves = sift_colw_entry_leaves(spec, ncols, &ords);
+
 	return sift_colw_leaves_memory(leaves, ords, spec->gorder_group > 0);
 }
 

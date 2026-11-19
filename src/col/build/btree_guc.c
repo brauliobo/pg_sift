@@ -18,6 +18,7 @@ typedef struct IntGuc
 static const IntGuc int_gucs[] = {
 	{"sift.test_col_build_btree", "Testing: the build of a sift_col index with key_cut by a btree on the key: 0 the chooser decides, 1 whenever a btree can, -1 never.", &sift_test_col_build_btree, 0, -1},
 	{"sift.test_col_build_source_used", "Testing: where the last sift_col build took its rows from: 0 the heap, 1 the heap through a btree, 2 the index it replaces.", &sift_test_col_build_source_used, 0, 0},
+	{"sift.test_col_build_spill_said", "Testing: 1 when the NOTICE of the last build's choice said that the segment writer sorts entries on temporary files.", &sift_test_col_build_spill_said, 0, 0},
 	{"sift.test_col_choose_mutant", "Testing: a defect in the choice of the path of a build (1: the dearest path is taken, 2: the room of the temporary files is not looked at).", &sift_test_col_choose_mutant, 0, 0},
 	{"sift.test_col_btree_entries", "Testing: entries of the btree the last build read the heap through.", &sift_test_col_btree_entries, 0, 0},
 	{"sift.test_col_btree_visible", "Testing: tuples the last build by btree found visible.", &sift_test_col_btree_visible, 0, 0},
