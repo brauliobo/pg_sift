@@ -253,7 +253,9 @@ StaticAssertDecl(offsetof(SiftDirectoryData, segs) + SIFT_DIR_FLAT_MAX * sizeof(
 #define SIFT_DIR_ROOT(dir)	(*(BlockNumber *) (dir)->segs)	/* of a chained block 1, in the place of its first entry */
 
 /*
- * A reference to a page of the chain, 64 bytes. blk: the page; n: the entries below it; gen: the version the page was written under, which the page must say too.
+ * A reference to a page of the chain, 64 bytes. blk: the page; n: the entries below it; at: where they start in a leaf (a leaf holds the entries of several consecutive
+ * partitions, each named by its own reference, so that a directory of a hundred partitions is a root and one leaf; 0 in a reference to an interior page); gen: the version
+ * the page was written under, which the page must say too.
  * lo: the exact lower bound of the range the reference covers, 40 bytes, compared with memcmp: 3 key components of 9 bytes and the 6-byte TID of a point of a partition
  * (core/range.h of the nested directory fills and reads it; a bound shorter than 40 bytes is padded with zeros, a shorter key sorts first like any memcmp). lineage: the
  * identity of a partition, which survives a fold, a split and a merge; 0 is the set of the entries that are not partitions (an index of 5.0, promotions that no tail
@@ -264,7 +266,8 @@ StaticAssertDecl(offsetof(SiftDirectoryData, segs) + SIFT_DIR_FLAT_MAX * sizeof(
 typedef struct SiftChainRef
 {
 	BlockNumber blk;
-	uint32		n;
+	uint16		n;
+	uint16		at;
 	uint64		gen;
 	uint64		lineage;
 	uint8		lo[SIFT_BOUND_BYTES];

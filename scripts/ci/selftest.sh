@@ -383,7 +383,7 @@ if [[ $MODE == --selftest ]]; then
 		for shard in full:1:3/9 full:1:9/9 quick::1/3 quick::3/3; do
 			IFS=: read -r m deep k <<<"$shard"
 			plan_of $m 18 "$deep" $k
-			[[ $PLAN_OUT == "$(env SIFT_CI_DEEP="$deep" SIFT_CI_SHARD=$k SIFT_CI_PG_MAJOR=18 "$0" --plan $m)" ]] || { echo "FAIL: the $m plan of shard $k made with all the shards differs from the plan of that shard alone"; bad=1; }
+			[[ $PLAN_OUT == "$(env SIFT_CI_DEEP="$deep" SIFT_CI_SHARD=$k SIFT_CI_PG_MAJOR=18 FLAVOUR=18 "$0" --plan $m)" ]] || { echo "FAIL: the $m plan of shard $k made with all the shards differs from the plan of that shard alone"; bad=1; }
 		done
 	fi
 	if st_on tooling; then

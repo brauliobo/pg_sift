@@ -110,6 +110,10 @@ typedef struct MergeOut
 	SiftColSegWriter *w;
 	MemoryContext pcx;
 	SiftSegEntry *neu;			/* the segments written, in cx */
+	uint8		(*lo)[SIFT_BOUND_BYTES];	/* the lower bound of each, as its writer saw it; lo_known: every writer did */
+	bool		lo_known;
+	SiftBound	first_lo;		/* the bound of the segment in hand, from its first unit; first_ok: it has one */
+	bool		first_ok;
 	int			nneu;
 	int			ncap;
 	SiftXStamp	xstamp;			/* who inserted the rows of the segments merged, each settled: none when one does not say */
@@ -129,6 +133,15 @@ merge_roots(const SiftSegEntry *in, int n)
 		if (!(in[i].flags & SIFT_SEG_ROOTS))
 			return false;
 	return true;
+}
+
+/* The lower bound of a partition is that of the least row of its first unit */
+static void
+out_first_unit(void *arg, const SiftColBatch *b)
+{
+	MergeOut   *o = arg;
+
+	o->first_ok = sift_colk_batch_bound(&(OrderCtx) {o->schema, o->cut, o->ncut}, b, false, &o->first_lo);
 }
 
 static void
@@ -152,7 +165,11 @@ out_begin(MergeOut *o)
 	sift_colw_set_fill(o->w, o->fill);
 	if (o->pagg) sift_colw_set_preagg(o->w, o->pagg);
 	if (o->keyed)
+	{
 		sift_colw_set_keyed(o->w, sift_colk_aim_rows(o->index), o->cut, o->ncut);
+		o->first_ok = false;
+		sift_colw_on_first_unit(o->w, out_first_unit, o);
+	}
 }
 
 static void
@@ -167,6 +184,11 @@ out_finish(MergeOut *o)
 							errhint("Raise maintenance_work_mem or sift.col_auto_merge_partition_kb: a segment is cut when its writer holds its share of the memory.")));
 		o->ncap = Min(Max(o->ncap * 2, 8), SIFT_DIR_WIDE_MAX);
 		o->neu = o->neu ? repalloc(o->neu, o->ncap * sizeof(SiftSegEntry)) : MemoryContextAlloc(o->cx, o->ncap * sizeof(SiftSegEntry));
+		o->lo = o->lo ? repalloc(o->lo, (Size) o->ncap * SIFT_BOUND_BYTES) : MemoryContextAlloc(o->cx, (Size) o->ncap * SIFT_BOUND_BYTES);
+	}
+	{
+		o->lo_known &= o->first_ok;
+		sift_bound_pack(&o->first_lo, o->lo[o->nneu]);
 	}
 	old = MemoryContextSwitchTo(o->pcx);
 	sift_colw_finish(o->w, &o->neu[o->nneu]);
@@ -271,7 +293,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	bool		scope = n > 0 && (in[0].flags & SIFT_SEG_SCOPE) != 0;	/* the segments are those of one scope: the rows of the entities are not merged with them */
 	const MergeSlice *part = slice && slice->nslices > 0 ? slice : NULL;
 	bool		build = slice && slice->from && sift_col_key_cut(sift_col_rel(index));	/* the rows of a key_cut REINDEX from the index it replaces */
-	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .xstamp = sift_col_is_index(index) ? sift_xstamp_inputs(in, n) : (SiftXStamp) {InvalidTransactionId, InvalidTransactionId, 0}, .roots = sift_col_is_index(index) && merge_roots(in, n),
+	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .lo_known = true, .xstamp = sift_col_is_index(index) ? sift_xstamp_inputs(in, n) : (SiftXStamp) {InvalidTransactionId, InvalidTransactionId, 0}, .roots = sift_col_is_index(index) && merge_roots(in, n),
 		.scope = scope ? (int) in[0].pad : -1, .nconn = sift_cschema_nconn(schema)};
 	uint64		live_bytes = 0,
 				live_units = 0;
@@ -505,7 +527,8 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	if (sift_test_col_refresh_sleep_armed > 0)
 		pg_usleep(sift_test_col_refresh_sleep_armed * 1000L);
 #endif
-	sift_col_merge_switch(index, in, n, o.neu, o.nneu, start, 0, part_bytes > 0 && key_cut && !scope && sift_col_is_index(index) && n == nimm ? o.nneu : 0, NULL);
+	sift_col_merge_switch(index, in, n, o.neu, o.nneu, start, 0, part_bytes > 0 && key_cut && !scope && sift_col_is_index(index) && n == nimm ? o.nneu : 0, NULL,
+						 o.lo_known ? (const uint8 (*)[SIFT_BOUND_BYTES]) o.lo : NULL);
 	SIFT_MEM_CHECKPOINT();
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
@@ -554,7 +577,7 @@ sift_col_merge_from(Relation index, Relation from, const SiftSegEntry *in, int n
  * segment, which is above every row of the one before it
  */
 static void
-part_bounds(Relation index, const SiftSegEntry *part, int n, const SiftBound *lo0, uint8 (*lo)[SIFT_BOUND_BYTES])
+part_bounds(Relation index, const SiftSegEntry *part, int n, const SiftBound *lo0, const uint8 (*known)[SIFT_BOUND_BYTES], uint8 (*lo)[SIFT_BOUND_BYTES])
 {
 	SiftBound	empty;
 
@@ -562,6 +585,11 @@ part_bounds(Relation index, const SiftSegEntry *part, int n, const SiftBound *lo
 	sift_bound_pack(lo0 ? lo0 : &empty, lo[0]);
 	for (int j = 1; j < n; j++)
 	{
+		if (known != NULL)
+		{
+			memcpy(lo[j], known[j], SIFT_BOUND_BYTES);
+			continue;
+		}
 		SiftColSegment *seg = sift_cseg_open(index, &part[j], CurrentMemoryContext);
 		SiftBound	b;
 
@@ -574,10 +602,11 @@ part_bounds(Relation index, const SiftSegEntry *part, int n, const SiftBound *lo
 
 /*
  * The directory switch of a merge: out[0..nout) replace in[0..n); out[part_first, part_first + part_n) tile the range that starts at lo0 (NULL: the lowest key) and are
- * recorded as its partitions, each with the bound it starts at
+ * recorded as its partitions, each with the bound it starts at: known[i] is that of out[i] when the writers of the segments saw it (NULL: it is read from the segments)
  */
 void
-sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start, int part_first, int part_n, const SiftBound *lo0)
+sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start, int part_first, int part_n, const SiftBound *lo0,
+					  const uint8 (*known)[SIFT_BOUND_BYTES])
 {
 	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
 	uint8		(*lo)[SIFT_BOUND_BYTES] = palloc(Max(part_n, 1) * SIFT_BOUND_BYTES);
@@ -590,7 +619,7 @@ sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftS
 	for (int i = 0; i < nout; i++)
 		docs += out[i].ndocs;
 	if (part_n > 0)
-		part_bounds(index, &out[part_first], part_n, lo0, lo);
+		part_bounds(index, &out[part_first], part_n, lo0, known ? known + part_first : NULL, lo);
 	sift_maint_replace_partitions(index, mi.gens, n, out, nout, mi.release, mi.nrelease, psprintf("merged %d column segments into %d of", n, nout), start, docs, part_first, part_n, lo);
 	maint_merge_settles(index, in, n, out, nout);
 	pfree(lo);

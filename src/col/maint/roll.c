@@ -173,7 +173,7 @@ maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep 
 			rest.hi = rs->high[g];
 		nout += roll_write(index, over, nover, &rest, 0, 1, &out[nout]);
 	}
-	sift_col_merge_switch(index, sel, n, out, nout, start, nlow, nwin, rs->win.has_lo ? &rs->win.lo : NULL);
+	sift_col_merge_switch(index, sel, n, out, nout, start, nlow, nwin, rs->win.has_lo ? &rs->win.lo : NULL, NULL);
 	pfree(out);
 	pfree(over);
 	pfree(every);

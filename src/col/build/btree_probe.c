@@ -22,10 +22,6 @@
 #ifdef SIFT_TESTING
 double		sift_test_col_pick_random_us = 80.0;
 double		sift_test_col_pick_seq_us = 10.0;
-double		sift_test_col_pick_temp_mb_us = 1000.0;
-int			sift_test_col_pick_probe_random_ns = 0;
-int			sift_test_col_pick_probe_seq_ns = 0;
-int			sift_test_col_pick_probe_reads = 0;
 #endif
 
 typedef struct ProbeFeed
@@ -45,7 +41,7 @@ probe_next(ReadStream *stream, void *data, void *per_buffer)
 
 /* Microseconds a block that came from the disk took, or 0 when none did */
 static double
-probe_read_us(Relation heap, const BlockNumber *blk, int n, int *reads)
+probe_read_us(Relation heap, const BlockNumber *blk, int n)
 {
 	ProbeFeed	feed = {blk, n, 0};
 	BufferAccessStrategy strategy = GetAccessStrategy(BAS_BULKREAD);
@@ -54,6 +50,7 @@ probe_read_us(Relation heap, const BlockNumber *blk, int n, int *reads)
 	instr_time	t0,
 				t1;
 	Buffer		buf;
+	int			reads;
 
 	INSTR_TIME_SET_CURRENT(t0);
 	while (BufferIsValid(buf = read_stream_next_buffer(stream, NULL)))
@@ -62,8 +59,8 @@ probe_read_us(Relation heap, const BlockNumber *blk, int n, int *reads)
 	read_stream_end(stream);
 	FreeAccessStrategy(strategy);
 	INSTR_TIME_SUBTRACT(t1, t0);
-	*reads = (int) (pgBufferUsage.shared_blks_read - read_before);
-	return *reads > 0 ? INSTR_TIME_GET_MICROSEC(t1) / (double) *reads : 0;
+	reads = (int) (pgBufferUsage.shared_blks_read - read_before);
+	return reads > 0 ? INSTR_TIME_GET_MICROSEC(t1) / (double) reads : 0;
 }
 
 static double
@@ -74,7 +71,7 @@ clamp_us(double us)
 
 /* A stretch of a relation read in order, from a place of it that is not the same twice: microseconds a block that came from the disk took */
 static double
-seq_probe_us(Relation rel, int *reads)
+seq_probe_us(Relation rel)
 {
 	BlockNumber nblocks = RelationGetNumberOfBlocks(rel);
 	int			n = (int) Min(PROBE_BLOCKS, nblocks / 4);
@@ -84,7 +81,7 @@ seq_probe_us(Relation rel, int *reads)
 
 	for (int i = 0; i < n; i++)
 		blk[i] = first + i;
-	us = probe_read_us(rel, blk, n, reads);
+	us = probe_read_us(rel, blk, n);
 	pfree(blk);
 	return us;
 }
@@ -93,26 +90,19 @@ static BtCosts
 probe(Relation heap)
 {
 	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
-	int			n = (int) Min(PROBE_BLOCKS, nblocks / 4),
-				rand_reads,
-				seq_reads;
+	int			n = (int) Min(PROBE_BLOCKS, nblocks / 4);
 	BlockNumber *blk = palloc_array(BlockNumber, Max(n, 1));
-	double		seq_us = seq_probe_us(heap, &seq_reads),
+	double		seq_us = seq_probe_us(heap),
 				rand_us;
 	BtCosts		c;
 
 	for (int i = 0; i < n; i++)
 		blk[i] = (BlockNumber) pg_prng_uint64_range(&pg_global_prng_state, 0, nblocks - 1);
-	rand_us = probe_read_us(heap, blk, n, &rand_reads);
+	rand_us = probe_read_us(heap, blk, n);
 	pfree(blk);
 	c.seq_us = clamp_us(seq_us);
 	c.random_us = Max(clamp_us(rand_us), c.seq_us);
 	c.measured = true;
-#ifdef SIFT_TESTING
-	sift_test_col_pick_probe_random_ns = (int) (rand_us * 1000);
-	sift_test_col_pick_probe_seq_ns = (int) (seq_us * 1000);
-	sift_test_col_pick_probe_reads = rand_reads;
-#endif
 	return c;
 }
 
@@ -120,13 +110,11 @@ probe(Relation heap)
 double
 colb_seq_us(Relation rel)
 {
-	int			reads;
-
 #ifdef SIFT_TESTING
 	if (sift_test_col_pick_seq_us >= 0)
 		return sift_test_col_pick_seq_us;
 #endif
-	return clamp_us(seq_probe_us(rel, &reads));
+	return clamp_us(seq_probe_us(rel));
 }
 
 /* The costs the choice of the path of a build is made at */
@@ -134,7 +122,6 @@ BtCosts
 colb_btree_costs(Relation heap)
 {
 #ifdef SIFT_TESTING
-	sift_test_col_pick_probe_random_ns = sift_test_col_pick_probe_seq_ns = sift_test_col_pick_probe_reads = 0;
 	if (sift_test_col_pick_random_us >= 0 && sift_test_col_pick_seq_us >= 0)
 		return (BtCosts) {.random_us = sift_test_col_pick_random_us, .seq_us = sift_test_col_pick_seq_us, .measured = false};
 #endif

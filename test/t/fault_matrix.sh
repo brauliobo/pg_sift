@@ -170,7 +170,7 @@ after_fault() { # NAME
 	[[ $(sql cm "$SLOTS") == 0 ]] || { echo "a progress or quarantine slot is left"; return 1; }
 	for _ in 1 2 3; do # an index another one depends on goes after it
 		for ix in $(sql cm "$INVALID"); do
-			out=$(sql cm "DROP INDEX CONCURRENTLY $ix" 2>&1) || [[ $out == *"other objects depend"* ]] ||
+			out=$(sql cm "DROP INDEX CONCURRENTLY IF EXISTS $ix" 2>&1) || [[ $out == *"other objects depend"* ]] ||
 				{ echo "DROP INDEX CONCURRENTLY of the INVALID $ix failed: $(head -c 300 <<<"$out" | tr '\n' ' ')"; return 1; }
 		done
 	done
