@@ -1,0 +1,14 @@
+# Drivers that start a server and test no sift code: FILE<TAB>reason. Anything that tests sift runs the leak check (scripts/check-leak-hooks.sh).
+bench/bench	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
+bench/examples/cluster.sh	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
+bench/focus/lab.py	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
+bench/perf/test_launcher.py	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
+bench/steps/cluster.sh	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
+bench/steps/writecost.sh	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
+bench/test/test_iolib.py	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
+scripts/dry-perf-gate.py	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
+scripts/old-lib-check.sh	starts the server of an older release on a data directory of this tree: the leaks of that release are not this tree's
+scripts/test-ci-build-fail.sh	a stub initdb in a copy of ci.sh: no server runs
+scripts/check-pg-bare.sh	starts no server: the commands are the text of its selftest
+test/t/lib_docker.bash	the nodes are containers of test/t/lib.bash: finish scans their logs (node_leakcheck here), the host process table the wait reads is not theirs
+test/t/lib_upgrade.bash	a layer of test/t/lib.bash: its nodes start through node_start and finish ends them with leak_end

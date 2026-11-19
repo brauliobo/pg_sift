@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Seekable order chunks (column format minor 44) beside plain ones (38) in one index: the ordered reads of top-N, OFFSET, range and IN list are the heap's over both, the index
-# verifies and takes writes; and a release that does not know minor 44 refuses the index at the directory, where a segment format it does not know is invalid,
-# refuses to read the table with it (an error that names the format, no wrong answer), and this tree reads the index again.
+# verifies and takes writes; and a 4.2 release refuses the index at the metapage, whose tail holds the count of the rows promoted from the write buffers (every promotion writes it),
+# refuses to read the table with it (an error, no wrong answer), and this tree reads the index again.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
@@ -42,10 +42,10 @@ node_stop sk
 use_root sk "$oldroot"
 node_start sk || bail "cannot start $ref"
 sql sk "SELECT sift.col_merge('au_ix', true)" >"$TAPDIR/old.out" 2>&1
-check "$ref refuses a merge: it names the segment format it does not read" test "$(grep -c 'segment of column format 1.44, this build reads' "$TAPDIR/old.out")" == 1
+check "$ref refuses a merge: the metapage holds the count of the rows that came in, a tail it does not know" test "$(grep -c 'Bad metapage' "$TAPDIR/old.out")" == 1
 sql sk "SELECT count(*) FROM au" >"$TAPDIR/old_read.out" 2>&1
 check "$ref refuses a read of the table the same way, and returns no row" \
-	test "$(grep -c 'segment of column format 1.44, this build reads' "$TAPDIR/old_read.out")" == 1 -a "$(grep -cE '^[0-9]+$' "$TAPDIR/old_read.out")" == 0
+	test "$(grep -c 'Bad metapage' "$TAPDIR/old_read.out")" == 1 -a "$(grep -cE '^[0-9]+$' "$TAPDIR/old_read.out")" == 0
 node_stop sk
 
 use_root sk "$newroot"
