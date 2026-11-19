@@ -15,6 +15,8 @@
 #include "utils/rel.h"
 #include "col/build/build_int.h"
 #include "col/scope.h"
+#include "col/spool.h"
+#include "core/limits.h"
 #include "core/membudget.h"
 
 #define SIFT_BUILD_SOURCE_AUTO	0
@@ -24,6 +26,7 @@ int			sift_col_build_source = SIFT_BUILD_SOURCE_AUTO;
 
 #ifdef SIFT_TESTING
 int			sift_test_col_build_source_used = 0;
+int			sift_test_col_build_spill_said = 0;
 int			sift_test_col_choose_mutant = 0;
 #endif
 
@@ -60,7 +63,18 @@ typedef struct Paths
 				old_seq_us;
 	bool		no_room;
 	double		room_mb;
+	int			spill_leaves;	/* the leaves whose entries the segment writer sorts on temporary files, from whatever path the rows come */
 } Paths;
+
+/* The leaves a segment writer keeps (key, address) entries of until the segment is done: past SIFT_ESET_ROWS of them it writes sorted runs to temporary files (col/spool.h) */
+static int
+writer_spill_leaves(Relation index, uint64 rows)
+{
+	int			ords;
+
+	return rows > (uint64) sift_limit(eset_rows, SIFT_ESET_ROWS) ?
+		sift_colw_entry_leaves(&sift_col_rel(index)->pagg, sift_col_rel(index)->schema->ncols, &ords) : 0;
+}
 
 static bool
 old_serves(const ColOld *old)
@@ -77,7 +91,7 @@ say_heap(StringInfo out, const Paths *p)
 	else if (p->ranges)
 		appendStringInfoString(out, ", temporary files not priced");
 	else
-		appendStringInfoString(out, ", no temporary files");
+		appendStringInfoString(out, ", no temporary files for the rows");
 	if (p->heap_priced)
 		appendStringInfo(out, ", %.2f s", p->heap_us / 1e6);
 	appendStringInfoString(out, ". ");
@@ -88,7 +102,7 @@ say_btree(StringInfo out, const Paths *p, int participants)
 {
 	const BtPlan *b = p->btree;
 
-	appendStringInfo(out, "btree \"%s\": %.0f heap blocks, %.0f at random, at %.1f us (%s), no temporary files, %.2f s with %d process%s",
+	appendStringInfo(out, "btree \"%s\": %.0f heap blocks, %.0f at random, at %.1f us (%s), no temporary files for the rows, %.2f s with %d process%s",
 					 b->name, b->reads, b->random_reads, b->cost.random_us, b->cost.measured ? "measured" : "set", b->btree_us / 1e6, participants, participants == 1 ? "" : "es");
 	if (p->heap_priced && b->break_even_us < 1e6)
 		appendStringInfo(out, ", as long as the key ranges at %.1f us", b->break_even_us);
@@ -99,7 +113,7 @@ static void
 say_old(StringInfo out, const Paths *p)
 {
 	if (old_serves(p->old))
-		appendStringInfo(out, "index it replaces: %llu entries in %u blocks, no heap block, no temporary files, %.2f s. ",
+		appendStringInfo(out, "index it replaces: %llu entries in %u blocks, no heap block, no temporary files for the rows, %.2f s. ",
 						 (unsigned long long) colb_old_rows(p->old), colb_old_blocks(p->old), p->old_us / 1e6);
 	else if (p->old != NULL)
 		appendStringInfo(out, "the index it replaces cannot give the rows: %s. ", colb_old_refusal(p->old));
@@ -117,18 +131,24 @@ paths_detail(const Paths *p, int participants)
 		say_btree(&out, p, participants);
 	say_heap(&out, p);
 	if (p->btrees != NULL && p->btrees[0] != '\0')
-		appendStringInfo(&out, "Btrees: %s.", p->btrees);
+		appendStringInfo(&out, "Btrees: %s. ", p->btrees);
+	if (p->spill_leaves > 0)
+		appendStringInfo(&out, "The segment writer sorts the entries of %d leaf%s (order arrays and point directories) on temporary files, from whichever path the rows come.",
+						 p->spill_leaves, p->spill_leaves == 1 ? "" : "es");
 	return out.data;
 }
 
 static void
 say_choice(Relation index, const BuildPlan *plan, const Paths *p)
 {
+#ifdef SIFT_TESTING
+	sift_test_col_build_spill_said = p->spill_leaves > 0;
+#endif
 	char	   *detail = paths_detail(p, plan->participants);
 	const char *name = sift_col_final_name(index);
 
 	if (plan->source == COLB_OLD)
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": rows taken from the index it replaces, no heap read and no temporary files", name),
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": rows taken from the index it replaces, no heap read and no row files", name),
 						 errdetail("%s", detail),
 						 errhint("SET sift.col_build_source = heap reads the heap, as releases before 5.1 did.")));
 	else if (plan->source == COLB_BTREE && p->no_room)
@@ -136,7 +156,7 @@ say_choice(Relation index, const BuildPlan *plan, const Paths *p)
 						 errdetail("The key ranges need about %.0f MB of temporary files, %.0f MB are allowed. %s", p->heap_mb, p->room_mb, detail),
 						 errhint("SET sift.col_build_source = heap reads the heap, as releases before 5.1 did.")));
 	else if (plan->source == COLB_BTREE)
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": heap read through the btree \"%s\" in key order, no temporary files", name, p->btree->name),
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": heap read through the btree \"%s\" in key order, no row files", name, p->btree->name),
 						 errdetail("%s", detail),
 						 errhint("SET sift.col_build_source = heap reads the heap, as releases before 5.1 did.")));
 	else
@@ -263,7 +283,7 @@ colb_choose(Relation heap, Relation index, IndexInfo *info, bool heap_only)
 
 	SIFT_MEM_SCOPE(col_build_choose, plan.cx);
 #ifdef SIFT_TESTING
-	sift_test_col_from_index_used = sift_test_col_build_source_used = 0;
+	sift_test_col_from_index_used = sift_test_col_build_source_used = sift_test_col_build_spill_said = 0;
 	sift_test_col_btree_entries = sift_test_col_btree_visible = sift_test_col_btree_blocks = 0;
 	sift_test_col_pick_entries = sift_test_col_pick_blocks = sift_test_col_pick_reads = sift_test_col_pick_random = sift_test_col_pick_spool_bytes = 0;
 #endif
@@ -272,6 +292,7 @@ colb_choose(Relation heap, Relation index, IndexInfo *info, bool heap_only)
 	table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
 	p.heap_blocks = RelationGetNumberOfBlocks(heap);
 	p.rows = (uint64) tuples;
+	p.spill_leaves = writer_spill_leaves(index, p.rows);
 	MemoryContextSwitchTo(plan.cx);
 	if (!heap_only)
 		p.old = colb_old_open(heap, index, info);

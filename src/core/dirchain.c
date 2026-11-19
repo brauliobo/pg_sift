@@ -9,7 +9,10 @@
 
 #include "storage/bufmgr.h"
 #include "access/xlog.h"
+#include "utils/hsearch.h"
+#include "utils/memutils.h"
 
+#include "core/cachebudget.h"
 #include "core/store_int.h"
 #include "core/dirchain.h"
 #include "core/range.h"
@@ -297,6 +300,200 @@ chain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEn
 	if (keys == NULL && (uint32) n != nsegs)
 		corrupt(index, "Directory root %u says %u entries, its leaves hold %d.", root, nsegs, n);
 	return n;
+}
+
+/*
+ * The whole chain at a version, memoized per backend. A directory update stores a new version and a chain is immutable under one, so the entries of an index at a version are the
+ * same wherever they were read: a statement that asks for the directory again (each of its writers does, to find a segment, to open the tombstone log, to add a segment) copies the memo
+ * instead of reading and checking every page of the chain. One entry per index, dropped by the budget the backend's caches share (core/cachebudget.h) and by a newer version. The
+ * checks and the reports of the directory read the pages (sift_dirchain_read).
+ */
+typedef struct DirMemo
+{
+	RelFileLocator rel;			/* hash key */
+	BlockNumber root;
+	uint64		version;
+	uint64		used;
+	Size		bytes;
+	SiftDirChain chain;			/* leaf, inner and blocks point into data */
+	int			nsegs;
+	SiftSegEntry *segs;
+	char	   *data;
+} DirMemo;
+
+static HTAB *memos;
+static MemoryContext memo_cx;
+static Size memo_held;
+
+static Size
+memo_bytes(void)
+{
+	return memo_held;
+}
+
+static DirMemo *
+memo_oldest_entry(void)
+{
+	HASH_SEQ_STATUS seq;
+	DirMemo    *e,
+			   *oldest = NULL;
+
+	if (memos == NULL)
+		return NULL;
+	hash_seq_init(&seq, memos);
+	while ((e = hash_seq_search(&seq)) != NULL)
+		if (oldest == NULL || e->used < oldest->used)
+			oldest = e;
+	return oldest;
+}
+
+static uint64
+memo_oldest(void)
+{
+	DirMemo    *e = memo_oldest_entry();
+
+	return e ? e->used : UINT64_MAX;
+}
+
+static void
+memo_drop(DirMemo *e)
+{
+	RelFileLocator rel = e->rel;
+
+	memo_held -= e->bytes;
+	pfree(e->data);
+	hash_search(memos, &rel, HASH_REMOVE, NULL);
+}
+
+static void
+memo_evict(void)
+{
+	memo_drop(memo_oldest_entry());
+}
+
+static const SiftCacheKind memo_kind = {memo_bytes, memo_oldest, memo_evict};
+
+static void
+memo_init(void)
+{
+	HASHCTL		ctl = {.keysize = sizeof(RelFileLocator),.entrysize = sizeof(DirMemo)};
+
+	memo_cx = AllocSetContextCreate(TopMemoryContext, "sift cache directories", ALLOCSET_DEFAULT_SIZES);
+	ctl.hcxt = memo_cx;
+	memos = hash_create("sift chained directories", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	sift_cache_register(&memo_kind);
+}
+
+/* Where the arrays of a chain of nsegs entries lie in one allocation: entries, leaves, interior pages, blocks */
+static Size
+memo_bytes_of(int nsegs, const SiftDirChain *c)
+{
+	return nsegs * sizeof(SiftSegEntry) + c->nleaves * sizeof(SiftChainRef) + c->ninner * sizeof(SiftDirInner) + c->nblocks * sizeof(BlockNumber);
+}
+
+static DirMemo *
+memo_keep(Relation index, uint64 version, const SiftSegEntry *segs, int nsegs, const SiftDirChain *chain)
+{
+	Size		bytes = memo_bytes_of(nsegs, chain);
+	DirMemo    *e;
+	bool		found;
+	char	   *at;
+
+	if (memos == NULL)
+		memo_init();
+	if ((e = hash_search(memos, &index->rd_locator, HASH_FIND, NULL)) != NULL)
+		memo_drop(e);
+	if (!sift_cache_room(bytes))
+		return NULL;
+	e = hash_search(memos, &index->rd_locator, HASH_ENTER, &found);
+	e->root = chain->root;
+	e->version = version;
+	e->used = sift_cache_tick();
+	e->bytes = bytes;
+	e->nsegs = nsegs;
+	e->data = at = MemoryContextAlloc(memo_cx, Max(bytes, 1));
+	e->segs = (SiftSegEntry *) at;
+	memcpy(at, segs, nsegs * sizeof(SiftSegEntry));
+	at += nsegs * sizeof(SiftSegEntry);
+	e->chain = *chain;
+	e->chain.leaf = (SiftChainRef *) at;
+	memcpy(at, chain->leaf, chain->nleaves * sizeof(SiftChainRef));
+	at += chain->nleaves * sizeof(SiftChainRef);
+	e->chain.inner = (SiftDirInner *) at;
+	memcpy(at, chain->inner, chain->ninner * sizeof(SiftDirInner));
+	at += chain->ninner * sizeof(SiftDirInner);
+	e->chain.blocks = (BlockNumber *) at;
+	memcpy(at, chain->blocks, chain->nblocks * sizeof(BlockNumber));
+	e->chain.maxblocks = chain->nblocks;
+	memo_held += bytes;
+	return e;
+}
+
+static DirMemo *
+memo_find(Relation index, BlockNumber root, uint64 version)
+{
+	DirMemo    *e = memos == NULL ? NULL : hash_search(memos, &index->rd_locator, HASH_FIND, NULL);
+
+	if (e == NULL || e->root != root || e->version != version)
+		return NULL;
+	e->used = sift_cache_tick();
+	return e;
+}
+
+SiftDirEntries
+sift_dirchain_entries(Relation index, BlockNumber root, uint64 version)
+{
+	DirMemo    *e = memo_find(index, root, version);
+	SiftSegEntry *segs;
+	SiftDirChain chain = {0};
+	int			n;
+
+	if (e != NULL)
+		return (SiftDirEntries) {.segs = e->segs,.nsegs = e->nsegs,.blocks = e->chain.blocks,.nblocks = e->chain.nblocks,.kept = true};
+	n = chain_read(index, root, version, 0, &segs, &chain, NULL);
+	if ((e = memo_keep(index, version, segs, n, &chain)) == NULL)
+	{
+		pfree(chain.leaf);
+		pfree(chain.inner);
+		return (SiftDirEntries) {.segs = segs,.nsegs = n,.blocks = chain.blocks,.nblocks = chain.nblocks};
+	}
+	pfree(segs);
+	pfree(chain.leaf);
+	pfree(chain.inner);
+	pfree(chain.blocks);
+	return (SiftDirEntries) {.segs = e->segs,.nsegs = n,.blocks = e->chain.blocks,.nblocks = e->chain.nblocks,.kept = true};
+}
+
+void
+sift_dirchain_entries_release(SiftDirEntries *e)
+{
+	if (!e->kept)
+	{
+		pfree((void *) e->segs);
+		pfree((void *) e->blocks);
+	}
+}
+
+int
+sift_dirchain_load(Relation index, BlockNumber root, uint64 version, SiftSegEntry **segs, SiftDirChain *chain)
+{
+	DirMemo    *e = memo_find(index, root, version);
+	int			n;
+
+	if (e == NULL)
+	{
+		n = chain_read(index, root, version, 0, segs, chain, NULL);
+		memo_keep(index, version, *segs, n, chain);
+		return n;
+	}
+	*segs = memcpy(palloc(Max(e->nsegs, 1) * sizeof(SiftSegEntry)), e->segs, e->nsegs * sizeof(SiftSegEntry));
+	*chain = e->chain;
+	chain->leaf = memcpy(palloc(Max(e->chain.nleaves, 1) * sizeof(SiftChainRef)), e->chain.leaf, e->chain.nleaves * sizeof(SiftChainRef));
+	chain->inner = memcpy(palloc(Max(e->chain.ninner, 1) * sizeof(SiftDirInner)), e->chain.inner, e->chain.ninner * sizeof(SiftDirInner));
+	/* check-memory: allow the pages of one directory chain, 4 bytes each, which the entries it lists bound */
+	chain->blocks = memcpy(palloc(Max(e->chain.nblocks, 1) * sizeof(BlockNumber)), e->chain.blocks, e->chain.nblocks * sizeof(BlockNumber));
+	chain->maxblocks = Max(e->chain.nblocks, 1);
+	return e->nsegs;
 }
 
 int

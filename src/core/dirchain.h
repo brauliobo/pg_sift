@@ -44,6 +44,23 @@ typedef struct SiftDirPart
 
 /* The partitions of a chain as read, in directory order (palloc'd; the number) */
 extern int	sift_dirchain_parts(const SiftDirChain *chain, SiftDirPart **parts);
+/*
+ * The entries and blocks of a whole chain at a version, from the backend's memo when it holds that version; valid until the next call that asks the backend's caches for room, so a caller
+ * copies at once and releases
+ */
+typedef struct SiftDirEntries
+{
+	const SiftSegEntry *segs;
+	int			nsegs;
+	const BlockNumber *blocks;
+	int			nblocks;
+	bool		kept;			/* in the memo: released by the budget, not by the caller */
+} SiftDirEntries;
+
+extern SiftDirEntries sift_dirchain_entries(Relation index, BlockNumber root, uint64 version);
+extern void sift_dirchain_entries_release(SiftDirEntries *e);
+/* sift_dirchain_read from the memo when it holds the version: the chain for the update that edits it; the checks of the directory read the pages */
+extern int	sift_dirchain_load(Relation index, BlockNumber root, uint64 version, SiftSegEntry **segs, SiftDirChain *chain);
 extern int	sift_dirchain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEntry **segs, SiftDirChain *chain);
 /* The entries of no partition and of the partitions that may hold a key of the range only , and the pages read (the chain lists the leaves read) */
 extern int	sift_dirchain_read_range(Relation index, BlockNumber root, uint64 version, const SiftKeyRange *keys, SiftSegEntry **segs, SiftDirChain *chain);

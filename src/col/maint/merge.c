@@ -7,6 +7,7 @@
 #include "postgres.h"
 #include "utils/timestamp.h"
 #include "bm25/merge.h"
+#include "col/build.h"
 #include "col/maint/maint_int.h"
 #include "col/order_bound.h"
 #include "col/point.h"
@@ -97,6 +98,7 @@ typedef struct MergeOut
 	uint64		expect;			/* the bytes of one partition, for the throttle */
 	uint64		units_left;		/* the bytes of units the partitions still to be written hold: the partition in hand is done at its share of them */
 	int			parts;
+	bool		build;			/* the rows of a key_cut REINDEX from the index it replaces: its streams take their extents as a build's do, not within the size the merges of the index expect */
 	bool		by_budget;		/* a segment is also done when its writer holds its budget of memory: not the slices of a merge, which are the partitions their bytes make (one segment each) */
 	Size		budget;			/* the memory a segment writer may hold (sift_colw_full) */
 	uint64		live_rows;
@@ -152,7 +154,8 @@ out_begin(MergeOut *o)
 	old = MemoryContextSwitchTo(o->pcx);
 	o->wt = sift_wt_begin(o->index, SIFT_WRITE_SHARED);
 	MemoryContextSwitchTo(old);
-	sift_wt_expect(o->wt, o->expect);
+	if (!o->build)
+		sift_wt_expect(o->wt, o->expect);
 	maint_throttle(o->wt);
 	o->w = sift_colw_begin(o->wt, sift_store_new_gen(o->index), o->schema, o->policy, o->format, o->pcx);
 	sift_colw_set_index_rows(o->w, o->index_rows);
@@ -248,13 +251,24 @@ out_next(void *arg, SiftColSegWriter *w, bool open)
 	return o->w;
 }
 
+static int
+parts_for_rows(int parts, uint64 live_rows)
+{
+	return Max(parts, (int) Min((live_rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS, (uint64) SIFT_DIR_WIDE_MAX));
+}
+
 /* The segments a merge writes: as many of part_bytes (0: one) as the live bytes make, and as many as the rows one segment may hold ask for */
 int
 maint_merge_parts(uint64 live_bytes, uint64 live_rows, uint64 part_bytes, bool key_cut)
 {
-	int			parts = part_bytes > 0 ? (int) Max(maint_part_count(live_bytes, part_bytes, key_cut), 1) : 1;
+	return parts_for_rows(part_bytes > 0 ? (int) Max(maint_part_count(live_bytes, part_bytes, key_cut), 1) : 1, live_rows);
+}
 
-	return Max(parts, (int) Min((live_rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS, (uint64) SIFT_DIR_WIDE_MAX));
+/* The segments of the rows of a build: the memory a run of a build from the heap holds (sift_colb_budget) is the most a writer is given for one */
+static int
+build_parts(uint64 live_rows, Size row_memory, Size budget)
+{
+	return parts_for_rows((int) Min(Max(((uint64) live_rows * row_memory + budget - 1) / budget, 1), (uint64) SIFT_DIR_WIDE_MAX), live_rows);
 }
 
 /*
@@ -278,6 +292,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	int			nscope = sift_cschema_nscope(schema);
 	bool		scope = n > 0 && (in[0].flags & SIFT_SEG_SCOPE) != 0;	/* the segments are those of one scope: the rows of the entities are not merged with them */
 	const MergeSlice *part = slice && slice->nslices > 0 ? slice : NULL;
+	bool		build = slice && slice->from && sift_col_key_cut(sift_col_rel(index));	/* the rows of a key_cut REINDEX from the index it replaces */
 	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .lo_known = true, .xstamp = sift_col_is_index(index) ? sift_xstamp_inputs(in, n) : (SiftXStamp) {InvalidTransactionId, InvalidTransactionId, 0}, .roots = sift_col_is_index(index) && merge_roots(in, n),
 		.scope = scope ? (int) in[0].pad : -1, .nconn = sift_cschema_nconn(schema)};
 	uint64		live_bytes = 0,
@@ -358,9 +373,11 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		live_rows = Max((uint64) (live_rows * share), 1);
 		live_bytes = part->bytes;
 	}
-	o.parts = part && part->win && part_bytes == 0 ? window_parts : maint_merge_parts(live_bytes, live_rows, part_bytes, key_cut);
+	o.parts = part && part->win && part_bytes == 0 ? window_parts :
+		build ? build_parts(live_rows, sift_colw_row_memory(pagg, schema->ncols), sift_colb_budget(1)) : maint_merge_parts(live_bytes, live_rows, part_bytes, key_cut);
 	o.live_rows = live_rows;
 	o.by_budget = part == NULL;
+	o.build = build;
 	/* the output of a merge of overlays is an overlay too: lean, as the promotion of one (maint_is_overlay) */
 	if (sift_col_is_index(index))
 	{
@@ -368,9 +385,9 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		maint_set_unordered(&rewrite, schema, live_rows + overlay_rows, o.index_rows);
 	}
 	/* the writer of a merge may reside in maintenance_work_mem (the partitions are sized to it: maint_part_kb_for) */
-	o.budget = sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE);
+	o.budget = build ? sift_colb_budget(1) : sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE);
 	/* the partitions are sized to that memory by an estimate: a writer that holds a share of the rows is not cut short of it, which would leave a piece under half a partition for every rewrite to merge again */
-	if (part_bytes > 0 || o.parts > 1)
+	if (part_bytes > 0 || o.parts > 1 || build)
 		o.budget = Max(o.budget, (Size) ((double) live_rows / o.parts * sift_colw_row_memory(pagg, schema->ncols)));
 #ifdef SIFT_TESTING
 	if (sift_test_col_segment_kb > 0 && !maint_after_build)
@@ -543,20 +560,14 @@ sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int n
 	maint_merge_segments(index, r->schema, r->policy, &r->pagg, in, n, sift_col_format_minor, NULL, NULL, 0, 1, &(MergeSlice) {i, nslices, out});
 }
 
-/* The merge of a REINDEX that takes its rows from the index it replaces: the partitions the writer's memory allows, none is put in the directory */
+/* The merge of a REINDEX that takes its rows from the index it replaces: the segments a build from the heap writes, none is put in the directory */
 SiftSegEntry *
 sift_col_merge_from(Relation index, Relation from, const SiftSegEntry *in, int n, int nfrom, int *nout)
 {
 	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
-	SiftDirSnapshot *snap = palloc0(offsetof(SiftDirSnapshot, segs) + n * sizeof(SiftSegEntry));
 	SiftSegEntry *made;
 
-	memcpy(snap->segs, in, n * sizeof(SiftSegEntry));
-	snap->nsegs = n;
-	maint_use_partitions(index, snap);
-	pfree(snap);
-	maint_merge_segments(index, r->schema, r->policy, &r->pagg, in, n, sift_col_format_minor, NULL, NULL,
-						 sift_col_key_cut(r) ? (uint64) maint_part_kb * 1024 : 0, 1,
+	maint_merge_segments(index, r->schema, r->policy, &r->pagg, in, n, sift_col_format_minor, NULL, NULL, 0, 1,
 						 &(MergeSlice) {.made = &made,.nout = nout,.from = from,.nfrom = nfrom});
 	return made;
 }
