@@ -11,6 +11,17 @@
 #include "col/scope.h"
 
 typedef struct ColSpill ColSpill;
+typedef struct ColOpen ColOpen;
+
+/* The key ranges a build cuts its rows into (col/build/ranges.c): range i holds the keys above bound[i - 1] up to bound[i], the last the rest and the NULLs; a single range holds one value of the key */
+typedef struct ColRanges
+{
+	int			n;
+	int			leaf;			/* the first leaf of the key */
+	const SiftColDef *def;
+	int64	   *bound;			/* [n - 1] */
+	bool	   *single;			/* [n] */
+} ColRanges;
 
 #define SCOPE_ROWS_FACTOR	2		/* the rows a scope family is expected to hold for each row of the table, to fit its segments to the directory (a bound: the average is the keys of a member) */
 
@@ -23,6 +34,7 @@ struct ColBuild
 	MemoryContext tmpcxt;		/* one tuple */
 	SiftWriteTarget *wt;
 	Size		budget;			/* memory a segment's writer may hold */
+	Size		spool_budget;	/* key_cut: the memory the chunks of the key ranges' files may hold (the build's budget, or what the open units leave of it) */
 	Size		run_cap;		/* key_cut: the most the rows of a run may take (run_budget) */
 	uint64		share;			/* key_cut: the rows the participant is expected to scan */
 	uint64		held_rows;		/* key_cut: the rows in held */
@@ -40,6 +52,7 @@ struct ColBuild
 	SiftSegEntry *segs;
 	uint8	   *lvl;			/* key_cut: how many times the rows of segs[i] were merged (a run is level 0) */
 	uint32		aim;			/* key_cut: the aim of the units of the runs, which the merges of them keep */
+	ColOpen    *open;			/* key_cut: the rows go to an open unit for each range (col/build/open.c) */
 	ColSpill   *spill;			/* key_cut: the rows go to a file for each range of the key (col/build/spill.c) */
 	uint64		spill_run_rows;	/* the rows of a run of the ranges: those the first run held, or what fits SPILL_RUN_BYTES of them */
 	uint32		spill_aim;		/* the aim of the units of the runs of the ranges: the first run's, whose batches held a superblock's rows */
@@ -91,6 +104,27 @@ extern bool colb_spill_start(ColBuild *b);
 extern void colb_spill_batch(ColBuild *b, const SiftColBatch *batch);
 extern void colb_spill_finish(ColBuild *b);
 extern int	colb_key_leaf(const SiftColRel *r);
+extern int	colb_range_of_key(const ColRanges *g, int64 key);
+extern int	colb_range_of_value(const ColRanges *g, const SiftColValue *v);
+extern int	colb_range_of_row(const ColRanges *g, const SiftColBatch *batch, uint32 r);
+extern bool colb_ranges_cut(ColBuild *b, ColRanges *g, int leaf, int nr, const int64 *sample, uint32 nsample);
+extern int	colb_ranges_isolate(ColBuild *b, ColRanges *g, int leaf, int nr, uint64 heavy_rows, int max_single);
+extern void colb_begin_segment(ColBuild *b);
+extern void colb_end_segment(ColBuild *b);
+extern void colb_make_room(ColBuild *b);
+extern SiftColSegWriter *colb_writer_begin(ColBuild *b, MemoryContext *wcxt);
+extern void colb_writer_end(ColBuild *b, SiftColSegWriter *w, MemoryContext wcxt);
+extern bool colb_open_allowed(const ColBuild *b);
+extern bool colb_open_forced_zero_temp(void);
+extern bool colb_open_zero_temp(const ColOpen *o);
+extern void colb_open_notice(const ColBuild *b, const ColOpen *o);
+extern Size colb_open_mem(const ColOpen *o);
+extern ColOpen *colb_open_plan(ColBuild *b, int leaf, uint32 unit_rows, Size mem, double raw_unit, double packed_unit, int nranges, bool zero_temp);
+extern void colb_open_tail(const ColOpen *o, const ColBuild *b, const int64 **sample, uint32 *n, uint64 *entries);
+extern bool colb_open_take(ColBuild *b, const SiftColRow *row);
+extern void colb_open_split_held(ColBuild *b);
+extern void colb_open_finish(ColBuild *b);
+extern void colb_open_adopt(ColBuild *b);
 extern int64 colb_key_of(const SiftColDef *def, const SiftColValue *v);
 extern void colb_report_rows(ColBuild *b);
 extern int	colb_spill_leaf_of(const SiftColRel *r, uint64 nblocks, uint64 total_rows, Size budget);

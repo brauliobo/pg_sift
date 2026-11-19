@@ -55,17 +55,24 @@ sift_colb_segs_bound(Relation index, uint32 nsbs)
 	return (int) Min((uint64) SIFT_DIR_WIDE_MAX, (sift_col_key_cut(sift_col_rel(index)) ? SIFT_COL_BUILD_RUNS : (uint64) nsbs) + (uint64) sift_col_rel(index)->nscope * SIFT_COL_BUILD_RUNS);
 }
 
-static void
-end_segment(ColBuild *b)
+/* The segment of a writer ends: its entry is the next of the build's */
+void
+colb_writer_end(ColBuild *b, SiftColSegWriter *w, MemoryContext wcxt)
+{
+	colb_segs_room(b, 1);
+	sift_colb_peak_note();
+	sift_colw_finish(w, &b->segs[b->nsegs++]);
+	sift_colb_peak_note();
+	MemoryContextDelete(wcxt);
+}
+
+void
+colb_end_segment(ColBuild *b)
 {
 	if (b->w == NULL)
 		return;
-	colb_segs_room(b, 1);
-	sift_colb_peak_note();
-	sift_colw_finish(b->w, &b->segs[b->nsegs++]);
-	sift_colb_peak_note();
+	colb_writer_end(b, b->w, b->wcxt);
 	b->w = NULL;
-	MemoryContextDelete(b->wcxt);
 }
 
 /* A parallel build and a key_cut one, whose merges leave gaps, reserve the generation in the metapage, the serial one numbers its segments */
@@ -213,6 +220,36 @@ compact(ColBuild *b)
 	MemoryContextDelete(cx);
 }
 
+/* A writer of a key-cut segment: the units of the runs, or of the open units, go into it. Its memory is in the context it returns */
+SiftColSegWriter *
+colb_writer_begin(ColBuild *b, MemoryContext *wcxt)
+{
+	SiftColSegWriter *w;
+
+	*wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
+	w = sift_colw_begin(b->wt, colb_next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, *wcxt);
+	if (b->fill != NULL)
+		sift_colw_set_fill(w, b->fill);
+	sift_colw_set_index_rows(w, b->total_rows);
+	sift_colw_set_preagg(w, &b->r->pagg);
+	sift_colw_set_keyed(w, b->aim, b->r->cut, b->r->ncut);
+	return w;
+}
+
+void
+colb_begin_segment(ColBuild *b)
+{
+	b->w = colb_writer_begin(b, &b->wcxt);
+}
+
+/* Room in the directory for the segment the next unit opens: the segments of the lowest level are merged into one while there is none */
+void
+colb_make_room(ColBuild *b)
+{
+	while (b->nsegs + 1 >= b->maxruns)
+		compact(b);
+}
+
 /*
  * An index with key_cut: the rows held since the last run are sorted by the key and written as a segment of their own (col/order.c), so the build holds
  * about its budget however large the table is. The segments of the runs overlap in the key; compact streams them into larger ones when the directory is full.
@@ -228,21 +265,15 @@ colb_write_run(ColBuild *b, bool last)
 
 	foreach(lc, b->held)
 		in[i++] = lfirst(lc);
-	b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
-	b->w = sift_colw_begin(b->wt, colb_next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
-	if (b->fill != NULL)
-		sift_colw_set_fill(b->w, b->fill);
-	sift_colw_set_index_rows(b->w, b->total_rows);
-	sift_colw_set_preagg(b->w, &b->r->pagg);
 	b->aim = b->spill_aim > 0 ? b->spill_aim : sift_colk_run_rows(b->index, in, n);
-	sift_colw_set_keyed(b->w, b->aim, b->r->cut, b->r->ncut);
+	colb_begin_segment(b);
 	/* the sort and the cut of the run allocate in the context of the segment, which goes with it: a scan holds its own context for the whole build */
 	old = MemoryContextSwitchTo(b->wcxt);
 	/* the runs of a build by ranges follow each other in the key as the partitions of a rewrite do: their units are numbered on from the last run's */
 	b->unit_base += sift_colk_write(b->w, in, n, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->wcxt, b->spill_final ? b->unit_base : 0) * (b->spill_final ? 1 : 0);
 	MemoryContextSwitchTo(old);
 	sift_colb_peak_note();
-	end_segment(b);
+	colb_end_segment(b);
 	b->lvl[b->nsegs - 1] = 0;
 	pfree(in);
 	list_free(b->held);
@@ -251,8 +282,8 @@ colb_write_run(ColBuild *b, bool last)
 	b->trimmed = 0;
 	MemoryContextReset(b->heldcxt);
 	/* room for the last run, which the end of the scan writes whatever is left */
-	while (!last && b->nsegs + 1 >= b->maxruns)
-		compact(b);
+	if (!last)
+		colb_make_room(b);
 }
 
 void
@@ -298,7 +329,7 @@ colb_flush_batch(ColBuild *b)
 	}
 	sift_colw_add(b->w, b->batch);
 	if (sift_colw_full(b->w, b->budget))
-		end_segment(b);
+		colb_end_segment(b);
 	sift_cbatch_reset(b->batch, 0);
 }
 
@@ -359,6 +390,8 @@ colb_add_row(ColBuild *b, const SiftColRow *row)
 {
 	uint32		sb = sift_block_sb(ItemPointerGetBlockNumberNoCheck(&row->tid));
 
+	if (b->open != NULL && colb_open_take(b, row))
+		return;
 	if (b->batch->nrows > 0 && b->batch->sb != sb)
 		colb_flush_batch(b);
 	if (b->batch->nrows == 0 && b->batch->sb != sb)
@@ -575,11 +608,15 @@ sift_colb_scan_sb(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snapshot
 void
 colb_finish_runs(ColBuild *b)
 {
+	if (b->open != NULL)
+		colb_open_finish(b);
 	if (b->spill != NULL)
 		colb_spill_finish(b);
-	else if (b->held != NIL)
+	if (b->open != NULL)
+		colb_open_adopt(b);
+	if (b->held != NIL)
 		colb_write_run(b, true);
-	end_segment(b);
+	colb_end_segment(b);
 }
 
 int

@@ -260,6 +260,16 @@ gord_strcmp(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid)
 	return varstr_cmp(a, (int) la, b, (int) lb, (Oid) collid);
 }
 
+#ifdef SIFT_TESTING
+static char *open_stats_unused;
+
+static const char *
+show_open_stats(void)
+{
+	return sift_test_col_open_stats;
+}
+#endif
+
 void
 sift_col_init(void)
 {
@@ -576,6 +586,21 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_spill_bytes",
 							"Testing: bytes the temporary files of the last sift_col build by key ranges of this session took.",
 							NULL, &sift_test_col_spill_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_open",
+							"Testing: open units of a sift_col build (0 none, 1 for the values of the key that fill units, 2 for every range of the key, with no temporary files).",
+							NULL, &sift_test_col_open, 0, -1, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_open_mutant",
+							"Testing: a defect in the open units of a sift_col build (1 a value joins the unit of another, 2 the tail units are lost, 3 a unit is written twice, 4 the cap of the open units is not looked at, 5 the units that wait are not counted out when they are written, 6 the units that wait are never written before the end).",
+							NULL, &sift_test_col_open_mutant, 0, 0, 6, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_open_kb",
+							"Testing: kB the open units of a sift_col build may hold (0 = the memory of the first run).",
+							NULL, &sift_test_col_open_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_open_single",
+							"Testing: the most values of the key that have an open unit of their own (-1 = half the ranges).",
+							NULL, &sift_test_col_open_single, -1, -1, 1000000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomStringVariable("sift.test_col_open_stats",
+							   "Testing: what the last sift_col build by open units did.",
+							   NULL, &open_stats_unused, "", PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, show_open_stats);
 	DefineCustomIntVariable("sift.test_col_spill_rows",
 							"Testing: rows the temporary files of the last sift_col build by key ranges of this session hold.",
 							NULL, &sift_test_col_spill_rows, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
