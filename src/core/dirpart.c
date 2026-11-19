@@ -131,21 +131,23 @@ void
 sift_dir_part_inherit(const uint64 *old, int nold, const SiftSegEntry *neu, int nneu)
 {
 	SiftDirParts *e = cur;
-	const SiftPartOf *home = NULL;
+	const SiftPartOf *found = NULL;
+	SiftPartOf	home;
 
 	Assert(e != NULL);
 	for (int i = 0; i < nold; i++)
 	{
 		const SiftPartOf *p = part_of(e, old[i]);
 
-		if (p == NULL || (home != NULL && home->lineage != p->lineage))
+		if (p == NULL || (found != NULL && found->lineage != p->lineage))
 			return;
-		home = p;
+		found = p;
 	}
-	if (home == NULL)
+	if (found == NULL)
 		return;
+	home = *found;
 	for (int j = 0; j < nneu; j++)
-		part_add(e, neu[j].gen, home->lineage, home->lo);
+		part_add(e, neu[j].gen, home.lineage, home.lo);
 	part_sort(e);
 }
 

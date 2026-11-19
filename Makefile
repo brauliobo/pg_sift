@@ -138,6 +138,7 @@ TESTING_REGRESS += col_batch_bits_bounds
 TESTING_REGRESS += col_build_choose
 TESTING_REGRESS += col_build_memory
 TESTING_REGRESS += col_build_merge_ends
+TESTING_REGRESS += col_build_merge_partitions
 TESTING_REGRESS += col_build_par_choice
 TESTING_REGRESS += col_build_par_rows
 TESTING_REGRESS += col_build_paths
