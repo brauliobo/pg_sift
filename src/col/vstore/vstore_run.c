@@ -368,7 +368,8 @@ write_run(SiftVStore *vs, const SiftCDict *src, uint32 from, uint32 lo, uint32 n
 {
 	Relation	rel = vs->rel;
 	uint32		hi = lo + n;
-	SiftCDict  *t = sift_cdict_create(CurrentMemoryContext);
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift value store run", ALLOCSET_DEFAULT_SIZES);
+	SiftCDict  *t = sift_cdict_create(cx);
 	StringInfoData out;
 	VRunHead	head = {VRUN_MAGIC, 1, vs->view->epoch, lo, hi - lo, 0};
 	SiftWriteTarget *wt;
@@ -418,6 +419,7 @@ write_run(SiftVStore *vs, const SiftCDict *src, uint32 from, uint32 lo, uint32 n
 	chg.nrelease = nrel;
 	sift_dir_update(rel, &chg);
 	pfree(out.data);
+	MemoryContextDelete(cx);
 }
 
 /*
