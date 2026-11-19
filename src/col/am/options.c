@@ -522,6 +522,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_from_index_used",
 							"Testing: 1 when the last sift_col build of this session took its rows from the index it replaces, 0 when it read the heap.",
 							NULL, &sift_test_col_from_index_used, 0, 0, 1, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_build_table_buffers",
+							"Testing: the buffers of the table (any fork) the last sift_col build of this session accessed, as the statistics count them, from its start to its end.",
+							NULL, &sift_test_col_build_table_buffers, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_build_peak_kb",
 							"Testing: kB of memory the last sift_col build of this session held above what the backend started it with, at its peak.",
 							NULL, &sift_test_col_build_peak_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

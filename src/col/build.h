@@ -107,6 +107,7 @@ extern void sift_colb_peak_note(void);
  */
 extern PGDLLIMPORT int sift_test_col_workers;
 extern PGDLLIMPORT int sift_test_col_build_peak_kb;	/* kB of memory (contexts of the backend) the builds of the last statement of this session held above what it started with, at their peak */
+extern PGDLLIMPORT int sift_test_col_build_table_buffers;	/* the buffers of the table (any fork) the last build of this session accessed itself, not the ones PostgreSQL accesses after it */
 extern void sift_colb_peak_begin(void);
 extern PGDLLIMPORT bool sift_test_col_build_peak_log;	/* the largest contexts are logged each time the peak grows by a MB */
 extern PGDLLIMPORT char *sift_test_vstore_columns;
