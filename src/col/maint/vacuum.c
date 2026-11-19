@@ -19,8 +19,10 @@ maint_is_col(Relation index)
 void
 maint_bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
 {
-	SiftColSegment *seg = sift_cseg_open(index, e, CurrentMemoryContext);
+	SiftColSegment *seg;
 
+	SIFT_TEST_MUTANT(3, return);
+	seg = sift_cseg_open(index, e, CurrentMemoryContext);
 	sift_cseg_bulkdelete(seg, cb, cb_state, stats);
 	sift_cseg_close(seg);
 }
@@ -28,6 +30,7 @@ maint_bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDelet
 void
 maint_bulkdelete_wbuf(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
 {
+	SIFT_TEST_MUTANT(3, return);
 	sift_cwbuf_bulkdelete(index, e, sift_col_rel(index)->schema, cb, cb_state, stats);
 }
 
@@ -65,16 +68,16 @@ maint_reap_overflow(Relation index, Relation heap)
 	const SiftColLeafStats *ls = sift_col_leaf_stats(index, false);
 	SiftDirSnapshot *snap;
 	HeapDead	h;
-	int			order[SIFT_MAX_SEGMENTS];
+	int		   *order;
 	bool		flagged = false;
 
 	for (int c = 0; c < sift_col_index_defs(index)->ncols; c++)
 		flagged |= ls[c].has_ovf;
 	if (!flagged)
 		return;
-	snap = palloc(sizeof(SiftDirSnapshot));
 	h = (HeapDead) {.scan = sift_table_index_fetch_begin(heap),.slot = table_slot_create(heap, NULL),.nblocks = RelationGetNumberOfBlocks(heap)};
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
+	order = palloc(Max(snap->nsegs, 1) * sizeof(int));
 	for (int k = 0, n = sift_dir_clear_order(snap, order); k < n; k++)
 		if (snap->segs[order[k]].kind == SIFT_SEG_IMMUTABLE)
 		{
@@ -85,6 +88,7 @@ maint_reap_overflow(Relation index, Relation heap)
 		}
 	ExecDropSingleTupleTableSlot(h.slot);
 	table_index_fetch_end(h.scan);
+	pfree(order);
 	pfree(snap);
 }
 

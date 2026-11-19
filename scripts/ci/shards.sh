@@ -35,10 +35,18 @@ shard_loads() {
 		SHARD_OF[$id]=$k LOAD[k]=$(( LOAD[k] + ${line% *} ))
 	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || pinned "$id" || [[ $id =~ $HEAVY_JOBS ]] || { weight_of "$id" "${SIFT_CI_DEEP:-}"; echo "$WEIGHT $id"; }; done | sort -s -k1,1nr)
 }
-# --plan with SIFT_CI_SHARD=all/N (full tier): the plans of the N shards in one run, each line prefixed with the number of its shard (--selftest asks for them all)
-if [[ -n $PLAN && $MODE == full && ${SIFT_CI_SHARD:-} =~ ^all/([0-9]+)$ ]]; then
+# shard_pool N: POOL, the shards the pool is cut into: the quick tier gives the jobs that run after the pool (flavor installs, serial: minutes long) a shard of their own; in the full tier
+# they are a few lane minutes and end the last shard
+shard_pool() {
+	local id
+	POOL=$1
+	[[ $MODE == full ]] || for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && (( $1 > 1 )) && { POOL=$(( $1 - 1 )); break; }; done
+}
+# --plan with SIFT_CI_SHARD=all/N: the plans of the N shards in one run, each line prefixed with the number of its shard (--selftest asks for them all)
+if [[ -n $PLAN && ${SIFT_CI_SHARD:-} =~ ^all/([0-9]+)$ ]]; then
 	NSHARDS=${BASH_REMATCH[1]}
-	shard_loads "$NSHARDS"
+	shard_pool "$NSHARDS"
+	shard_loads "$POOL"
 	for id in "${J_ID[@]}"; do
 		if [[ -v J_AFTER[$id] ]]; then k=$NSHARDS where=after; else k=$(( SHARD_OF[$id] + 1 )) where=pool; fi
 		echo "$k $id ${J_SUITE[$id]} $where ${J_CMD[$id]}"
@@ -48,9 +56,7 @@ fi
 SHARD=1
 if [[ ${SIFT_CI_SHARD:-} =~ ^([0-9]+)/([0-9]+)$ ]]; then
 	SHARD=${BASH_REMATCH[1]} NSHARDS=${BASH_REMATCH[2]} KEEP_IDS=() SUITES=()
-	POOL=$NSHARDS
-	# the quick tier gives the jobs that run after the pool (flavor installs, serial: minutes long) a shard of their own; in the full tier they are a few lane minutes and end the last shard
-	[[ $MODE == full ]] || for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && (( NSHARDS > 1 )) && { POOL=$(( NSHARDS - 1 )); break; }; done
+	shard_pool "$NSHARDS"
 	(( NSHARDS > 1 )) && shard_loads "$POOL"
 	for id in "${J_ID[@]}"; do
 		if [[ -v J_AFTER[$id] ]]; then (( NSHARDS > 1 && SHARD == NSHARDS )) || (( NSHARDS == 1 )) || continue

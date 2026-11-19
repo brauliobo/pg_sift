@@ -35,7 +35,7 @@ check "no temporary file is left after it" test "$(tmpfiles)" == 0
 sql ct "DROP INDEX ev_cc" >/dev/null
 
 out=$(cic "SET temp_file_limit = '8MB'" 2>&1)
-check "a temporary disk too small for the sort fails the statement" grep -q "temporary file size exceeds \"temp_file_limit\"" <<<"$out"
+check "a temporary disk too small for the sort fails the statement" grep -qE 'temporary file size exceeds "?temp_file_limit' <<<"$out"
 check "... and no temporary file is left" test "$(tmpfiles)" == 0
 sql ct "DROP INDEX IF EXISTS ev_cc" >/dev/null
 

@@ -229,9 +229,9 @@ mapped_add(AggExec *ex, int ai, uint32 g, uint32 id, int64 times)
 		default:
 			if (a->restype == NUMERICOID)
 			{
-				Datum		sum = DirectFunctionCall2(numeric_mul, DirectFunctionCall1(int8_numeric, Int64GetDatum(times)), val);
+				Datum		sum = times == 1 ? val : DirectFunctionCall2(numeric_mul, DirectFunctionCall1(int8_numeric, Int64GetDatum(times)), val);
 
-				acc->v[g] = acc->n[g] ? DirectFunctionCall2(numeric_add, acc->v[g], sum) : sum;
+				acc->v[g] = acc->n[g] ? DirectFunctionCall2(numeric_add, acc->v[g], sum) : datumCopy(sum, false, -1);
 			}
 			else
 			{

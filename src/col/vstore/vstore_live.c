@@ -84,12 +84,12 @@ typedef bool (*RefVisit) (void *arg, uint32 store, uint32 epoch, const uint32 *c
 static bool
 index_refs(Relation index, RefVisit fn, void *arg)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift value store usage", ALLOCSET_DEFAULT_SIZES);
 	bool		stop = false;
 	SIFT_MEM_SCOPE(vstore_gc, cx);
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; !stop && i < snap->nsegs; i++)
 	{
 		MemoryContext old;

@@ -301,7 +301,7 @@ sq_store_recover(SqStore *st)
 bool
 sq_store_preload(SqStore *st)
 {
-	const SiftDirSnapshot *d = &st->dir;
+	const SiftDirSnapshot *d = st->dir;
 	uint64		missing = 0;
 
 	if (st->cache == NULL)
@@ -336,6 +336,7 @@ sq_store_new(sqlite3 *db, const char *schema, const char *name, const SqOptions 
 {
 	SqStore    *st = calloc(1, sizeof(SqStore));
 
+	st->dir = sift_dir_alloc(SIFT_DIR_POLICY_MAX);
 	st->db = db;
 	st->schema = strdup(schema);
 	st->name = strdup(name);
@@ -357,6 +358,7 @@ sq_store_free(SqStore *st)
 {
 	finalize_all(st);
 	cache_free(st->cache);
+	free(st->dir);
 	free(st->dirty);
 	free(st->schema);
 	free(st->name);

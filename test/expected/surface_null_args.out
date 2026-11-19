@@ -44,6 +44,9 @@ SELECT call, sna_state(call) FROM (VALUES
 	('SELECT sift.table_verify(0::oid::regclass)'),
 	('SELECT sift.index_info(0::oid::regclass)'),
 	('SELECT * FROM sift.index_choices(''sna_part_col''::regclass)'),
+	('SELECT sift.index_format(''sna_part_col''::regclass)'),
+	('SELECT sift.col_promote(''sna_part_col''::regclass)'),
+	('SELECT sift.promote(''sna_part_col''::regclass)'),
 	('SELECT sift.key_cut_decision(''sna_part_col''::regclass)'),
 	('SELECT sift.col_index_info(''sna_part_col''::regclass)'),
 	('SELECT sift.col_index_info((SELECT gone FROM sna_oids)::regclass)'),
@@ -90,11 +93,14 @@ SELECT call, sna_state(call) FROM (VALUES
  SELECT sift._require_owner((SELECT gone FROM sna_oids)::regclass)                      | 42P01 relation with OID N does not exist
  SELECT sift.col_index_info('sna_part_col'::regclass)                                   | 42809 "sna_part_col" is a partitioned index, which holds no data
  SELECT sift.col_index_info((SELECT gone FROM sna_oids)::regclass)                      | 42P01 relation with OID N does not exist
+ SELECT sift.col_promote('sna_part_col'::regclass)                                      | 42809 "sna_part_col" is a partitioned index, which holds no data
  SELECT sift.col_verify((SELECT gone FROM sna_oids)::regclass)                          | 42P01 relation with OID N does not exist
  SELECT sift.index_format('sna_heap'::regclass)                                         | 42809 "sna_heap" is not a sift index
+ SELECT sift.index_format('sna_part_col'::regclass)                                     | 42809 "sna_part_col" is a partitioned index, which holds no data
  SELECT sift.index_format((SELECT gone FROM sna_oids)::regclass)                        | 42P01 relation with OID N does not exist
  SELECT sift.index_info(0::oid::regclass)                                               | 42P01 relation with OID 0 does not exist
  SELECT sift.key_cut_decision('sna_part_col'::regclass)                                 | 42809 "sna_part_col" is a partitioned index, which holds no data
+ SELECT sift.promote('sna_part_col'::regclass)                                          | 42809 "sna_part_col" is a partitioned index, which holds no data
  SELECT sift.suggest_paths('sna_t'::regclass, NULL, 3)                                  | 22004 sift.suggest_paths: the argument column_name must not be NULL
  SELECT sift.suggest_paths((SELECT gone FROM sna_oids)::regclass, 'doc', 3)             | 42P01 relation with OID N does not exist
  SELECT sift.suggest_paths(NULL, NULL, NULL)                                            | 22004 sift.suggest_paths: the argument rel must not be NULL
@@ -106,7 +112,7 @@ SELECT call, sna_state(call) FROM (VALUES
  SELECT sift.table_set_paths(0::oid::regclass, 'doc', NULL)                             | 42P01 relation with OID 0 does not exist
  SELECT sift.table_space(0::oid::regclass)                                              | 42P01 relation with OID 0 does not exist
  SELECT sift.table_verify(0::oid::regclass)                                             | 42P01 relation with OID 0 does not exist
-(39 rows)
+(42 rows)
 
 DROP FUNCTION sna_state(text);
 DROP TABLE sna_oids, sna_part, sna_heap, sna_idx_t, sna_t;

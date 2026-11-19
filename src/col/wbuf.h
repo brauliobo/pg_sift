@@ -22,7 +22,26 @@ typedef struct SiftCWbufHint
 	uint32		ovf_known;
 	uint32		jnull_known;	/* the same for the leaves with a JSON null */
 	uint64		ref_gen;		/* the write buffer whose directory entry is marked as one that holds references (SIFT_COL_FORMAT_REFBUF) */
+	uint16		format;			/* the format of the buffer gen: the head of its pages (SIFT_COL_FORMAT_WBUFKEY) */
 } SiftCWbufHint;
+
+/*
+ * The keys a read asks of the write buffers: only the rows whose key lies in [lo, hi] (every one of them satisfies the conjunction of predicates the scan was begun with). The key is the leaf
+ * sift_cwbuf_key_leaf names: the first of the key_cut of the index when it is a scalar integer leaf, which the pages of a buffer of format SIFT_COL_FORMAT_WBUFKEY hold the range of.
+ */
+typedef struct SiftCWbufKeys
+{
+	int			leaf;
+	int64		lo;
+	int64		hi;
+} SiftCWbufKeys;
+
+extern int sift_cwbuf_key_leaf(Relation index);
+#ifdef SIFT_TESTING
+/* a test that runs the buffers on an index of another access method (col/wbuf_test.c) names the leaf the pages hold the range of: -1 none, -2 the index's own */
+extern int sift_test_wbuf_key_leaf;
+extern void sift_cwbuf_key_reads_reset(void);
+#endif
 
 /*
  * The leaves a write buffer holds an overflow value of (a value the leaf cannot store, SiftColValue.overflow): a bit mask in the reserved word
@@ -52,6 +71,9 @@ extern bool sift_cwbuf_append(Relation index, SiftCWbufHint *hint, const SiftCol
  * (col/wbuf/ref.c: a tuple that is gone or is another one's is skipped). The heap is durable by its own WAL, which precedes the record of the index.
  */
 extern PGDLLIMPORT bool sift_col_wbuf_ref;
+
+/* sift.col_wbuf_key_range: the write buffers opened from now on have the range of the keys in the head of their pages (SIFT_COL_FORMAT_WBUFKEY) */
+extern PGDLLIMPORT bool sift_col_wbuf_key_range;
 
 /*
  * A row of a transaction that already wrote one is buffered in the backend (false: the index has no slot, append it) and reaches the lane with
@@ -118,6 +140,14 @@ typedef struct SiftCWbufToken
 extern SiftColBatch **sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext mcxt, int *n, SiftCWbufToken *tok,
 													TransactionId *stamp);
 
+/*
+ * The batches for a scan that asks for the rows with a key in *keys (NULL: all, as sift_cwbuf_batches_shared). The backend keeps one set of the whole buffer (the one above) once the reads
+ * that asked for some keys have decoded as many rows as the buffer holds: until then, and while it holds none, the batches are made of the records of the pages whose range of keys meets
+ * *keys (a buffer of a format without ranges has every page meet it), not kept, and *partial is set. A partial set has no token and is not to be kept by the scan.
+ */
+extern SiftColBatch **sift_cwbuf_batches_keys(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, const SiftCWbufKeys *keys, MemoryContext mcxt, int *n,
+											   SiftCWbufToken *tok, TransactionId *stamp, bool *partial);
+
 /* The heap addresses of the live records whose plain leaf holds one of the constants of the EQ or IN predicate (an overflow value is kept for the heap to check), ascending, in mcxt; no batch is built (sift_col_wbuf_lookup). *n = the count; *rows = the live records of the leaf */
 extern ItemPointerData *sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, const SiftColPred *pred, MemoryContext mcxt, uint32 *n, uint64 *rows);
 
@@ -158,6 +188,26 @@ extern uint64 sift_scans_paid(Relation index, const SiftMetaPageData *meta);
 extern bool sift_reads_pending(Oid index);
 extern void sift_reads_flush(Relation index, bool (*wbuf_met) (Relation), bool (*marks_met) (Relation));
 extern bool sift_col_marks_take(void);
+
+/*
+ * The switch contract of the deletion records (col/maint/dvfold.c, REPORT "switch contract"). A step that gives a column index a segment generation in place of others (merge, rewrite, promotion,
+ * relocation, the split of a partition, the fold of a tail) calls _rekey (or _switching, which is _rekey with no move) after it wrote the new segments and before it publishes the directory, and
+ * _switched after the publish: _rekey takes the lock that the writers of records share. Units that the new segments hold as they were (same rows in the same positions) are named in moves, one
+ * run of units of a generation to a run of units of another: their records are written again under the new names. Every other record that names a replaced generation is carried to marks, which
+ * name rows by heap address. A step that keeps the generation of its segment (shift, shrink, net pre-aggregates) calls neither.
+ */
+typedef struct SiftDvMove
+{
+	uint64		gen;			/* the replaced generation */
+	uint32		unit;			/* its first unit of the run */
+	uint32		nunits;			/* the units of the run (PG_UINT32_MAX: to the last unit of the segment) */
+	uint64		gen2;			/* the generation that holds the run */
+	uint32		unit2;			/* the unit of gen2 that the first unit of the run is */
+} SiftDvMove;
+
+extern void sift_col_dv_rekey(Relation index, const uint64 *old, int nold, const SiftDvMove *moves, int nmoves);
+extern void sift_col_dv_switching(Relation index, const uint64 *old, int nold);
+extern void sift_col_dv_switched(Relation index);
 /* Extents (header and data pages) for release after promotion; records, rows (deleted included) and pages */
 extern SiftExtent *sift_cwbuf_pages(Relation index, const SiftSegEntry *entry, int *n);
 extern void sift_cwbuf_summary(Relation index, const SiftSegEntry *entry, uint64 *nrows, uint64 *npages);

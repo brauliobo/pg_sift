@@ -43,6 +43,14 @@ intids_init(IntIds *x)
 	x->kmax = PG_INT64_MIN;
 }
 
+/* a table of a cache that holds `bytes`: the pages of a range the keys do not fill take at most an eighth of it (the rest is for the entries the ids name) */
+void
+intids_init_bounded(IntIds *x, Size bytes)
+{
+	intids_init(x);
+	x->free_span = Min(x->free_span, bytes / (8 * sizeof(uint32)));
+}
+
 static void
 free_pages(IntIds *x)
 {

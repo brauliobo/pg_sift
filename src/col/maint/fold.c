@@ -6,29 +6,48 @@
 #include "access/transam.h"
 #include "access/table.h"
 #include "access/xlog.h"
+#include "storage/buffile.h"
 #include "storage/bufmgr.h"
+#include "utils/memutils.h"
 #include "miscadmin.h"
 #include "storage/procarray.h"
 #include "col/maint/maint_int.h"
 #include "core/live.h"
+#include "core/membudget.h"
 #include "core/ops.h"
 #include "col/wbuf.h"
 #include "core/tomb.h"
+#include "core/tomb_dv.h"
 
 /*
  * What a fold costs, in instructions and WAL in instructions (MAINT_WAL_BYTE: a MB of WAL weighs 0.6 G instructions, as in the price of a row of the rewrite): the segments are opened and the directory of
- * each unit decoded, 16 instructions for each row of the index (8.7 M for 548,000 rows in 57 units, one mark), a mark costs 55,000 more (the pages of its block bisected in every unit,
- * 19.4 M for 200 marks), and the WAL is the tombstone log written again, the liveness pages and the directory: 1 kB for one mark and 5 kB for 200 within a checkpoint, 90 kB for the
- * first of them after one (the pages go whole), so 64 kB are priced.
+ * each unit decoded, 16 instructions for each row of the index (a fold of records alone: 0.9 to 2.6 M instructions for 150,000 rows in 32 to 125 units); marks come with the walk of the pages of every unit
+ * against their addresses, 17 to 107 instructions for each row of the index, and 880 to 1,230 for each mark (2.5 and 16 M for 750 marks, 69 and 132 M for 75,000, in units of 8,192 rows and of
+ * 1,200 rows); a deletion record costs 90 to 140 instructions for each row it names; and the WAL is the tombstone log written again, the liveness pages and the directory: 1 kB for one mark and
+ * 5 kB for 200 within a checkpoint, 90 kB for the first of them after one (the pages go whole), so 64 kB are priced.
  */
 #define FOLD_ROW_PRICE		16.0
-#define FOLD_MARK_PRICE		55000.0
+#define FOLD_WALK_PRICE		35.0
+#define FOLD_MARK_PRICE		1100.0
+#define FOLD_DV_PRICE		120.0
 #define FOLD_WAL_PRICE		(64.0 * 1024 * MAINT_WAL_BYTE)
+
+/*
+ * The keys of the marks come out of the walk of the log in ascending order. They are held a chunk at a time, up to what sift.tomb_log_limit allows (as many keys as the log may keep
+ * bytes), and the rest wait in a temp file in the same order: the memory of a fold does not follow the marks.
+ */
+#define FOLD_KEYS_START		1024
 
 typedef struct Fold
 {
-	SiftKey    *keys;			/* ascending once sorted */
+	MemoryContext cxt;			/* the keys and the file: the scope col_fold_keys */
+	SiftKey    *keys;			/* the chunk in hand, ascending */
 	uint32		n;
+	uint32		space;
+	uint32		cap;			/* the most keys a chunk holds */
+	BufFile    *spill;			/* the keys past the first chunk, once the walk is over */
+	uint64		left;			/* the keys of the file not read back yet */
+	bool		taken;			/* without a file: the chunk was handed out */
 	TransactionId newest;		/* the latest deleting transaction among those that are known */
 	Relation	heap;
 	BlockNumber nblocks;
@@ -78,6 +97,35 @@ foldable(Fold *f, const SiftTomb *t, TransactionId horizon)
 }
 
 static void
+fold_spill(Fold *f)
+{
+	if (f->spill == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(f->cxt);
+
+		f->spill = BufFileCreateTemp(false);
+		MemoryContextSwitchTo(old);
+	}
+	BufFileWrite(f->spill, f->keys, (size_t) f->n * sizeof(SiftKey));
+	f->left += f->n;
+	f->n = 0;
+}
+
+static void
+fold_push(Fold *f, SiftKey key)
+{
+	if (f->n == f->space && f->space < f->cap)
+	{
+		f->space = (uint32) Min((uint64) f->cap, (uint64) f->space * 2);
+		f->keys = repalloc_huge(f->keys, (Size) f->space * sizeof(SiftKey));
+		SIFT_MEM_CHECKPOINT();
+	}
+	if (f->n == f->space)
+		fold_spill(f);
+	f->keys[f->n++] = key;
+}
+
+static void
 fold_add(Fold *f, SiftTombLog *log, TransactionId horizon)
 {
 	SiftTombWalk w;
@@ -87,11 +135,16 @@ fold_add(Fold *f, SiftTombLog *log, TransactionId horizon)
 	while ((t = sift_tomb_walk_next(&w)) != NULL)
 		if (foldable(f, t, horizon))
 		{
-			f->keys[f->n++] = t->key;
+			fold_push(f, t->key);
 			if (TransactionIdIsNormal(t->xid) && (!TransactionIdIsValid(f->newest) || TransactionIdFollows(t->xid, f->newest)))
 				f->newest = t->xid;
 		}
 	sift_tomb_walk_end(&w);
+	if (f->spill != NULL)
+	{
+		fold_spill(f);
+		BufFileSeek(f->spill, 0, 0, SEEK_SET);
+	}
 }
 
 static int
@@ -112,17 +165,55 @@ fold_dead(ItemPointer tid, void *arg)
 	return bsearch(&key, f->keys, f->n, sizeof(SiftKey), key_cmp) != NULL;
 }
 
-/* The distinct keys of the marks, ascending: a row has one terminal mark, a repeat is a lock that precedes it or a copy */
-static void
-fold_sort(Fold *f)
+/* The next chunk of the keys of the marks, without repeats (a row has one terminal mark, a repeat is a lock that precedes it or a copy): false past the last */
+static bool
+fold_next(Fold *f)
 {
 	uint32		k = 0;
 
-	qsort(f->keys, f->n, sizeof(SiftKey), key_cmp);
+	if (f->spill == NULL)
+	{
+		if (f->taken)
+			return false;
+		f->taken = true;
+	}
+	else
+	{
+		f->n = (uint32) Min((uint64) f->cap, f->left);
+		f->left -= f->n;
+		BufFileReadExact(f->spill, f->keys, (size_t) f->n * sizeof(SiftKey));
+	}
 	for (uint32 i = 0; i < f->n; i++)
 		if (k == 0 || f->keys[k - 1] != f->keys[i])
 			f->keys[k++] = f->keys[i];
 	f->n = k;
+	return k > 0;
+}
+
+/* The chunk in hand cleared from the segments and the write buffers, then its tombstones dropped: a reader that took the log and then the liveness of an entry sees the tombstone or the clear bit */
+static uint64
+fold_clear(Relation index, Fold *f, IndexBulkDeleteResult *stats)
+{
+	SiftDirSnapshot *snap;
+	int		   *order;
+	uint64		removed = 0;
+
+	snap = sift_dir_read(index);
+	order = palloc(Max(snap->nsegs, 1) * sizeof(int));
+	for (int k = 0, n = sift_dir_clear_order(snap, order); k < n; k++)
+	{
+		if (snap->segs[order[k]].kind == SIFT_SEG_IMMUTABLE)
+			removed += sift_cseg_clear_keys(sift_cseg_open(index, &snap->segs[order[k]], CurrentMemoryContext), f->keys, f->n);
+		else
+			maint_bulkdelete_wbuf(index, &snap->segs[order[k]], fold_dead, f, stats);
+		SIFT_CLEAR_TEST_POINT();
+	}
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_TOMB)
+			maint_bulkdelete_tomb(index, &snap->segs[i], fold_dead, f, stats);
+	pfree(order);
+	pfree(snap);
+	return removed;
 }
 
 /*
@@ -134,11 +225,10 @@ sift_col_fold_marks(Relation index)
 {
 	SiftTombLog *log;
 	TransactionId horizon;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	IndexBulkDeleteResult stats = {0};
 	Fold		f = {0};
-	int			order[SIFT_MAX_SEGMENTS];
 	uint64		removed = 0;
+	bool		dropped = false;
 
 	if (RecoveryInProgress())
 		return 0;
@@ -156,84 +246,116 @@ sift_col_fold_marks(Relation index)
 	}
 	sift_tomb_sync_all(index, log);
 	horizon = GetOldestNonRemovableTransactionId(NULL);
-	f.keys = palloc((log->synced + 1) * sizeof(SiftKey));
+	f.cxt = AllocSetContextCreate(CurrentMemoryContext, "sift fold keys", ALLOCSET_DEFAULT_SIZES);
+	SIFT_MEM_SCOPE(col_fold_keys, f.cxt);
+	f.cap = (uint32) Min((uint64) sift_tomb_log_limit_kb * 1024 / sizeof(SiftKey), PG_INT32_MAX);
+	f.space = Min(FOLD_KEYS_START, f.cap);
+	f.keys = MemoryContextAllocHuge(f.cxt, (Size) f.space * sizeof(SiftKey));
 	f.heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	f.nblocks = RelationGetNumberOfBlocks(f.heap);
 	fold_add(&f, log, horizon);
 	if (BufferIsValid(f.buf))
 		ReleaseBuffer(f.buf);
 	table_close(f.heap, AccessShareLock);
-	if (f.n > 0)
+	/* a standby without feedback may hold a snapshot that does not see these deletes: it is cancelled before the bits clear, as the prune record of a VACUUM does for the heap */
+	if (TransactionIdIsValid(f.newest))
+		(void) sift_wal_snapshot_conflict(index, InvalidBlockNumber, FullTransactionIdFromAllowableAt(ReadNextFullTransactionId(), f.newest));
+	while (fold_next(&f))
 	{
-		fold_sort(&f);
-		sift_dir_read(index, snap);
-		/* a standby without feedback may hold a snapshot that does not see these deletes: it is cancelled before the bits clear, as the prune record of a VACUUM does for the heap */
-		if (TransactionIdIsValid(f.newest))
-			(void) sift_wal_snapshot_conflict(index, InvalidBlockNumber, FullTransactionIdFromAllowableAt(ReadNextFullTransactionId(), f.newest));
-		for (int k = 0, n = sift_dir_clear_order(snap, order); k < n; k++)
-		{
-			if (snap->segs[order[k]].kind == SIFT_SEG_IMMUTABLE)
-				removed += sift_cseg_clear_keys(sift_cseg_open(index, &snap->segs[order[k]], CurrentMemoryContext), f.keys, f.n);
-			else
-				maint_bulkdelete_wbuf(index, &snap->segs[order[k]], fold_dead, &f, &stats);
-			SIFT_CLEAR_TEST_POINT();
-		}
+		SIFT_MEM_CHECKPOINT();
+		removed += fold_clear(index, &f, &stats);
+		dropped = true;
+	}
+	/* the deletion records are folded and dropped by the pass over the log that drops the marks: when there were no marks to clear, it is made here */
+	if (!dropped && log->dvecs > 0)
+	{
+		SiftDirSnapshot *snap = sift_dir_read(index);
+
 		for (int i = 0; i < snap->nsegs; i++)
 			if (snap->segs[i].kind == SIFT_SEG_TOMB)
-				maint_bulkdelete_tomb(index, &snap->segs[i], fold_dead, &f, &stats);
-		removed += (uint64) stats.tuples_removed;
-		/* a scan that began before reads the directory again: the heap marks pages all-visible after a pass the same way (sift_mops_bulkdelete) */
-		if (removed > 0)
-			sift_dir_update(index, &(SiftDirChange) {.extra = InvalidBuffer});
+				maint_bulkdelete_tomb(index, &snap->segs[i], NULL, NULL, &stats);
+		pfree(snap);
 	}
+	removed += (uint64) stats.tuples_removed;
+	/* a scan that began before reads the directory again: the heap marks pages all-visible after a pass the same way (sift_mops_bulkdelete) */
+	if (removed > 0)
+		sift_dir_update(index, &(SiftDirChange) {.extra = InvalidBuffer});
+	if (f.spill != NULL)
+		BufFileClose(f.spill);
+	MemoryContextDelete(f.cxt);
 	sift_maint_unlock(index);
-	pfree(snap);
-	pfree(f.keys);
 	return removed;
 }
 
 /* The marks a fold could clear now: those of a delete or update that is frozen or older than the horizon (the rest wait for the snapshots that hold it, and a fold of them clears nothing) */
-static uint64
+#ifdef SIFT_TESTING
+int64		sift_col_fold_counts;	/* sift._test_col_fold_counts: the passes over a log that counted the marks a fold could clear */
+#endif
+
+static void
 fold_ready(SiftTombLog *log, TransactionId horizon)
 {
 	SiftTombEach each;
 	const SiftTomb *a;
 	uint32		n;
-	uint64		ready = 0;
 
+#ifdef SIFT_TESTING
+	sift_col_fold_counts++;
+#endif
+	log->foldable = log->foldable_dv = 0;
 	sift_tomb_each_begin(&each, log, CurrentMemoryContext);
 	while ((a = sift_tomb_each_next(&each, &n)) != NULL)
 		for (uint32 i = 0; i < n; i++)
-			ready += (a[i].kind == SIFT_TOMB_DELETE || a[i].kind == SIFT_TOMB_UPDATE) &&
-				(a[i].xid == FrozenTransactionId || (TransactionIdIsNormal(a[i].xid) && TransactionIdPrecedes(a[i].xid, horizon)));
+		{
+			if (a[i].kind != SIFT_TOMB_DELETE && a[i].kind != SIFT_TOMB_UPDATE && a[i].kind != SIFT_TOMB_DVEC)
+				continue;
+			if (a[i].xid != FrozenTransactionId && !(TransactionIdIsNormal(a[i].xid) && TransactionIdPrecedes(a[i].xid, horizon)))
+				continue;
+			if (a[i].kind == SIFT_TOMB_DVEC)
+				log->foldable_dv += sift_dv_head_rows(&a[i]);
+			else
+				log->foldable++;
+		}
 	sift_tomb_each_end(&each);
-	return ready;
 }
 
-/* Have the reads of the server paid for the fold of the marks of the log? What they paid is counted for the log in hand: a fold, or a VACUUM, makes a new one */
+/* The price of a fold of the entries counted last for a log of rows rows: a log that was not counted is priced as one mark, the least a fold clears */
+static double
+fold_price(const SiftTombLog *log, uint64 rows)
+{
+	uint64		marks = log->foldable == 0 && log->foldable_dv == 0 ? 1 : log->foldable;
+
+	return FOLD_ROW_PRICE * (double) rows + (marks > 0 ? FOLD_WALK_PRICE * (double) rows : 0) + FOLD_MARK_PRICE * (double) marks + FOLD_DV_PRICE * (double) log->foldable_dv + FOLD_WAL_PRICE;
+}
+
+/*
+ * Have the reads of the server paid for the fold of the marks of the log? What they paid is counted for the log in hand: a fold, or a VACUUM, makes a new one. The marks a fold clears are counted
+ * by a pass over all the entries of the log, which a scan that paid for some marks would make again and again: the last count is a floor (entries are added and only become clearable), and the log is
+ * counted again only when what the reads paid is half the cost of a fold of that many marks.
+ */
 bool
 sift_col_fold_due(Relation index)
 {
 	SiftTombLog *log = sift_col_log(index);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	uint64		rows = 0,
-				paid,
-				ready;
-	double		cost;
+				paid;
 
 	if (log == NULL)
 		return false;
-	ready = fold_ready(log, GetOldestNonRemovableTransactionId(NULL));
-	if (ready == 0)
-		return false;
-	sift_col_dir_read(index, snap, false);
+	if (log->fold_due)
+		return true;
+	snap = sift_col_dir_read(index, false);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			rows += snap->segs[i].ndocs;
 	paid = sift_col_marks_paid(index, &snap->meta, log->gen);
 	pfree(snap);
-	cost = FOLD_ROW_PRICE * (double) rows + FOLD_MARK_PRICE * (double) ready + FOLD_WAL_PRICE;
-	return (double) paid >= MAINT_HALF * cost;
+	if ((double) paid < MAINT_HALF * fold_price(log, rows))
+		return false;
+	fold_ready(log, GetOldestNonRemovableTransactionId(NULL));
+	log->fold_due = log->foldable + log->foldable_dv > 0 && (double) paid >= MAINT_HALF * fold_price(log, rows);
+	return log->fold_due;
 }
 
 bool

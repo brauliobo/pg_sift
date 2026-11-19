@@ -63,7 +63,7 @@ sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32
 }
 
 void
-sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 want, uint32 **off, char **bytes)
+sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 want, uint32 min_n, Size min_bytes, uint32 **off, char **bytes)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift string list", ALLOCSET_SMALL_SIZES);
 	uint32		n,
@@ -99,8 +99,8 @@ sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 want
 		CC_CORRUPT("raw string bytes length does not match");
 	lens = palloc(sizeof(uint32) * CC_CAP32(n));
 	nd_u32(nd, 0, lens);
-	o = MemoryContextAlloc(mcxt, sizeof(uint32) * (n + 1));
-	b = MemoryContextAlloc(mcxt, (size_t) total + 1);
+	o = MemoryContextAlloc(mcxt, sizeof(uint32) * ((size_t) Max(n, min_n) + 1));
+	b = MemoryContextAlloc(mcxt, Max((size_t) total + 1, min_bytes));
 	o[0] = 0;
 	for (uint32 i = 0; i < n; i++)
 	{

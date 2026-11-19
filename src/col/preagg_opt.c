@@ -284,7 +284,21 @@ sift_cpagg_cal_missing(const SiftColSchema *s, const SiftCPaggSpec *spec, int *o
 typedef struct OptCur
 {
 	const char *p;
+	MemoryContext names;
 } OptCur;
+
+typedef const char *(*OptParser) (OptCur *c, const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec);
+
+/* the names a parser reads (a buffer each) live in a context of their own for the length of the parse: the spec it fills and the message it returns are the caller's */
+static const char *
+parse_with(OptParser parser, const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	OptCur		cur = {opt, AllocSetContextCreate(CurrentMemoryContext, "sift option names", ALLOCSET_SMALL_SIZES)};
+	const char *bad = parser(&cur, opt, s, names, spec);
+
+	MemoryContextDelete(cur.names);
+	return bad;
+}
 
 static void
 skip_ws(OptCur *c)
@@ -297,7 +311,11 @@ skip_ws(OptCur *c)
 static char *
 take_name(OptCur *c)
 {
-	return sift_cpagg_name_take(&c->p, ":,;)");
+	MemoryContext old = MemoryContextSwitchTo(c->names);
+	char	   *name = sift_cpagg_name_take(&c->p, ":,;)");
+
+	MemoryContextSwitchTo(old);
+	return name;
 }
 
 static bool
@@ -516,10 +534,8 @@ parse_auto(OptCur *c, const SiftColSchema *s, const char *const *names, SiftCPag
  * One parser for both the syntax check (s == NULL: names are not resolved) and the real thing.
  */
 static const char *
-parse_option(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+parse_option(OptCur *c, const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
 {
-	OptCur		cur = {opt};
-	OptCur	   *c = &cur;
 
 	if (s)
 		sift_cpagg_spec_default(s, spec);
@@ -578,10 +594,8 @@ parse_option(const char *opt, const SiftColSchema *s, const char *const *names, 
 
 /* "off", or the dims "name, name, ..." (the measures are the numeric leaves of their lists) */
 static const char *
-parse_rollup_dims(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+parse_rollup_dims(OptCur *c, const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
 {
-	OptCur		cur = {opt};
-	OptCur	   *c = &cur;
 
 	if (is_word(opt, "off"))
 	{
@@ -636,10 +650,8 @@ rows_meas_ok(const SiftColSchema *s, const SiftColDef *m)
 
 /* "a, b" or "a, b: m1, m2" (dims, then measures) of the rows of a unit: the rollup of list -1 (column format minor 8); "off" and "" name none */
 static const char *
-parse_rows(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+parse_rows(OptCur *c, const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
 {
-	OptCur		cur = {opt};
-	OptCur	   *c = &cur;
 	SiftCPaggRollup ru = {.list = -1};
 	int			nrows = 0;
 	bool		named;
@@ -725,21 +737,19 @@ parse_rows(const char *opt, const SiftColSchema *s, const char *const *names, Si
 const char *
 sift_cpagg_rows_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
 {
-	return opt == NULL || rest_blank(opt) ? NULL : parse_rows(opt, s, names, spec->off ? &(SiftCPaggSpec) {0} : spec);
+	return opt == NULL || rest_blank(opt) ? NULL : parse_with(parse_rows, opt, s, names, spec->off ? &(SiftCPaggSpec) {0} : spec);
 }
 
 const char *
 sift_cpagg_rows_syntax(const char *opt)
 {
-	return opt == NULL || rest_blank(opt) ? NULL : parse_rows(opt, NULL, NULL, NULL);
+	return opt == NULL || rest_blank(opt) ? NULL : parse_with(parse_rows, opt, NULL, NULL, NULL);
 }
 
 /* "all", "off", or the date and timestamp columns "a, b" of the calendar cells of every unit (column format minor 8) */
 static const char *
-parse_calendar(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+parse_calendar(OptCur *c, const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
 {
-	OptCur		cur = {opt};
-	OptCur	   *c = &cur;
 	bool		all = is_word(opt, "all");
 
 	if (is_word(opt, "off"))
@@ -793,13 +803,13 @@ sift_cpagg_calendar_apply(const char *opt, const SiftColSchema *s, const char *c
 		}
 		return NULL;
 	}
-	return parse_calendar(opt, s, names, spec->off ? &(SiftCPaggSpec) {0} : spec);
+	return parse_with(parse_calendar, opt, s, names, spec->off ? &(SiftCPaggSpec) {0} : spec);
 }
 
 const char *
 sift_cpagg_calendar_syntax(const char *opt)
 {
-	return opt == NULL || rest_blank(opt) || is_word(opt, "auto") ? NULL : parse_calendar(opt, NULL, NULL, NULL);
+	return opt == NULL || rest_blank(opt) || is_word(opt, "auto") ? NULL : parse_with(parse_calendar, opt, NULL, NULL, NULL);
 }
 
 const char *
@@ -808,23 +818,23 @@ sift_cpagg_rollup_apply(const char *opt, const SiftColSchema *s, const char *con
 	if (opt == NULL || rest_blank(opt) || is_word(opt, "auto") || is_word(opt, "default"))
 		return NULL;
 	spec->rfixed = true;
-	return parse_rollup_dims(opt, s, names, spec);
+	return parse_with(parse_rollup_dims, opt, s, names, spec);
 }
 
 const char *
 sift_cpagg_rollup_syntax(const char *opt)
 {
-	return opt == NULL || rest_blank(opt) || is_word(opt, "auto") || is_word(opt, "default") ? NULL : parse_rollup_dims(opt, NULL, NULL, NULL);
+	return opt == NULL || rest_blank(opt) || is_word(opt, "auto") || is_word(opt, "default") ? NULL : parse_with(parse_rollup_dims, opt, NULL, NULL, NULL);
 }
 
 const char *
 sift_cpagg_spec_parse(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
 {
-	return parse_option(opt, s, names, spec);
+	return parse_with(parse_option, opt, s, names, spec);
 }
 
 const char *
 sift_cpagg_syntax(const char *opt)
 {
-	return parse_option(opt, NULL, NULL, NULL);
+	return parse_with(parse_option, opt, NULL, NULL, NULL);
 }

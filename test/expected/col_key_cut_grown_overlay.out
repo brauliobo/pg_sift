@@ -9,7 +9,7 @@ SET sift.async_maintenance = off;
 SET sift.vacuum_rewrite_limit = 1;
 SET sift.col_auto_merge_partition_kb = 512;
 SET sift.test_col_segment_kb = 7000;
-SET sift.col_build_key_ranges = off;
+SET sift.test_col_build_runs_overlap = on;
 CREATE TABLE go (id int, tenant_id int, d date, amount int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO go SELECT i, (i * 7919) % 400, date '2026-01-01' + (i * 31) % 300, i % 100, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) FROM generate_series(1, 168960) i;
 VACUUM (FREEZE, ANALYZE) go;

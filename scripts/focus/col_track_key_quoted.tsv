@@ -1,0 +1,1 @@
+col_track_key_quoted	src/col/am/options.c:am_col_amoptions src/col/am/options.c:row_key_unquote src/col/am/options_read.c:sift_col_options_row_key src/col/preagg_opt.c:sift_cpagg_name_take src/col/rowkey.c:sift_col_track_on src/col/test/alloc_test.c:sift_test_row_key_bytes
