@@ -25,7 +25,7 @@
 #define OPEN_MIN_SHARE	0.99	/* the open units take this share of the rows at least: a read of a value also opens the runs of the others' files (3% of the rows in files: +41% blocks, 10%: +21 to 26%, 20%: +124 to 192%; none: +4 to 6%) */
 #define OPEN_MIN_UNITS	8	/* with no files, a value of the key has an open unit when its rows fill this many units */
 #define OPEN_KEPT_MIN_UNITS 32	/* a value of the key has an open unit with files only when its rows fill this many units: its last unit is short and a read of the value opens it, so a value of fewer units reads more than from the files (30 values of 20 units: +10%) */
-#define OPEN_WRITER_RUNS	1.0	/* the open units are written in one run: a value lies in every run, and each is a segment a read opens (ten values, 300,000 rows: 2.9 runs +73% instructions, 1.4 +37%, 0.7 +1.4%) */
+#define OPEN_WRITER_RUNS	1.0	/* the open units are written in one run: a value lies in every run, and each is a segment a read opens (ten values, 300,000 rows: 2.6 runs +73% instructions, 1.3 +37%, 0.64 +1.4%) */
 #define OPEN_SLOT_PACKED 1.75	/* a packed open unit holds this many times the bytes of a unit: the block it fills and the blocks it has compressed */
 #define OPEN_WORK_UNITS	4	/* encoding a unit takes about this many raw units of memory: the rows decoded from the packed form, and the cut of the unit */
 
