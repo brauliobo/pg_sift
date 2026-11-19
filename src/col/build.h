@@ -130,6 +130,7 @@ extern PGDLLIMPORT int sift_test_col_merge_par_kb;	/* the input of a merge outsi
 extern PGDLLIMPORT int sift_test_col_merge_workers;	/* workers that merge the segments of a parallel build (-1 = those that built them, 0 = the leader alone) */
 extern PGDLLIMPORT int sift_test_col_temp_free_kb;	/* the disk space the temporary files of a build by key ranges may use, in kB (-1 = what the disks of the temporary tablespaces have free) */
 extern PGDLLIMPORT int sift_test_col_build_source_used;
+extern PGDLLIMPORT int sift_test_col_build_spill_said;	/* 1: the NOTICE of the last build's choice said that the segment writer sorts entries on temporary files */
 extern PGDLLIMPORT int sift_test_col_choose_mutant;
 extern PGDLLIMPORT int sift_test_col_build_btree;	/* the build by a btree on the key (col/build/btree.c): 0 the chooser decides, 1 whenever a btree can, -1 never */
 extern PGDLLIMPORT int sift_test_col_btree_entries;	/* entries of the btree the last build read, tuples it found visible and heap blocks it asked for */
