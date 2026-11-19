@@ -662,6 +662,9 @@ extern void sift_cunit_keys(const SiftCUnitView *v, uint32 sb, SiftKey *keys);
 extern void sift_cunit_page_offsets(const SiftCUnitView *v, uint32 p, uint16 *offs);
 extern void sift_cunit_page_offsets_all(const SiftCUnitView *v);
 extern uint32 sift_cunit_find_rows(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows);
+/* The offsets (1-based) of the rows of page p of a key-cut unit, decoded the first time a scan asks for the page */
+extern const uint16 *sift_cunit_keyed_page_offsets(const SiftCUnitView *v, uint32 p);
+extern uint32 sift_cunit_find_keyed(const SiftCUnitView *v, const SiftKey *keys, uint32 n, uint32 *rows, SiftKey *at);
 extern uint32 sift_cunit_find_hits(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows, SiftKey *at);
 
 /*
