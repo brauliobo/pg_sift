@@ -12,6 +12,7 @@ tap-shell-mem_slope-1	1260
 tap-shell-mem_slope	1250
 tap-shell-col_shrink	1240
 tap-shell-mem_slope_order	1070
+tap-shell-mem_slope_exact	1070
 difftest-fuzz	950
 difftest-fuzz-vstore	930
 installcheck-col_key_cut_segment_cap	870
