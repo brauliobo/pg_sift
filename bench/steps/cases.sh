@@ -41,7 +41,7 @@ while (( $# )); do
 done
 need psql python3 flock
 # the instruction ceilings need perf; a host that cannot count user instructions skips them, as plangate --planning does
-[[ -z $BUDGET ]] || perf stat -e instructions:u -x, true 2>&1 | grep -q instructions || { echo "cases: perf cannot count user instructions: the budget is skipped"; exit 0; }
+[[ -z $BUDGET ]] || perf stat -e instructions:u -x, true 2>&1 | grep instructions >/dev/null || { echo "cases: perf cannot count user instructions: the budget is skipped"; exit 0; }
 [[ -z ${CASES_UNCAPPED:-} ]] || capped() { nice "$@"; }   # a CI runner has no user session for systemd-run
 [[ -z $KEEP ]] || export CASES_KEEP=1   # the tables stay with the cluster
 [[ $CPUS =~ ^[1-9][0-9]*$ && $ROWS =~ ^[1-9][0-9]*$ ]] || die "--cpus and --rows take whole numbers"

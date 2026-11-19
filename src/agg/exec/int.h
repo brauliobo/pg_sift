@@ -15,6 +15,7 @@ extern void agg_test_wait(void);
 #define agg_test_wait() ((void) 0)
 #endif
 extern const CustomExecMethods agg_exec_methods;
+extern void agg_shutdown(CustomScanState *node);
 extern void agg_explain(CustomScanState *node, List *ancestors, ExplainState *es);
 extern void run_counters(AggExec *c, SiftSrcCounters *cc);
 

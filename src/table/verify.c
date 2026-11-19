@@ -35,10 +35,10 @@ step_directory(void *arg)
 	SiftTblRel *st = sift_tbl_rel(tv->rel);
 
 	sift_tbl_refresh(tv->rel, st);
-	tv->segs = palloc(Max(st->dir.nsegs, 1) * sizeof(SiftSegEntry));
-	for (int i = 0; i < st->dir.nsegs; i++)
-		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
-			tv->segs[tv->nsegs++] = st->dir.segs[i];
+	tv->segs = palloc(Max(st->dir->nsegs, 1) * sizeof(SiftSegEntry));
+	for (int i = 0; i < st->dir->nsegs; i++)
+		if (st->dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			tv->segs[tv->nsegs++] = st->dir->segs[i];
 }
 
 /* One segment under the maintenance lock for its length alone (as col/verify.c); the registered snapshot keeps the blocks of the others */

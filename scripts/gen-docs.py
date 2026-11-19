@@ -327,11 +327,11 @@ def generate(root):
 UNPUBLISHED = ('docs/COVERAGE.md',)   # generated for the maintainers, left out of the public tree (public-repo-allowlist): a checkout without it does not compare it, and says so
 
 
-FORMAT_PAGES = ('docs/FORMATS.md', 'docs/UPGRADING.md', 'docs/releases/v5.0.0.md')
+FORMAT_PAGES = ('docs/FORMATS.md', 'docs/UPGRADING.md')
 
 
 def format_docs(root):
-    """the newest column format minor the library reads (format.h) is the one FORMATS, UPGRADING and the release notes state"""
+    """the newest column format minor the library reads (format.h) is the one FORMATS and UPGRADING state (the notes of a release say the minor it read when it was made)"""
     h = read(os.path.join(root, 'src/col/api/format.h'))
     defs = dict(re.findall(r'#define (SIFT_COL_FORMAT_\w+)\s+(\w+)', h))
     top = defs['SIFT_COL_FORMAT_MAX_READ']
@@ -339,7 +339,7 @@ def format_docs(root):
     bad = []
     for page in FORMAT_PAGES:
         text = read(os.path.join(root, page))
-        ranges = [int(n) for n in re.findall(r'(?:minors|5\.0) 3 through (\d+)|any minor up to (\d+)', text) for n in n if n]
+        ranges = [int(n) for n in re.findall(r'(?:minors|5\.1) 3 through (\d+)|any minor up to (\d+)', text) for n in n if n]
         bad += ['%s says the library reads up to %d, format.h %d' % (page, n, top) for n in ranges if n != top]
         stated = []
         for lst in re.findall(r'minors? (\d+(?:(?:, | and )\d+)*)', text):

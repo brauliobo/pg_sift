@@ -284,7 +284,7 @@ segw_build_points(SiftColSegWriter *w)
 		}
 		if (a->want && !a->bad && a->n > 0)
 		{
-			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+			MemoryContext old = MemoryContextSwitchTo(w->pcxt);
 
 			initStringInfo(&a->tab);
 			MemoryContextSwitchTo(old);

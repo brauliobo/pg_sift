@@ -14,8 +14,6 @@
 #include "col/scope.h"
 #include "col/seg.h"
 
-#define SCOPE_ROWS_FACTOR	2		/* the rows a scope family is expected to hold for each row of the table, to fit its segments to the directory (a bound: the average is the keys of a member) */
-
 /* The cut of the units of a scope */
 void
 colb_scope_cut(SiftColRel *r, int scope)
@@ -23,9 +21,9 @@ colb_scope_cut(SiftColRel *r, int scope)
 	r->ncut = sift_scope_cut(r, scope, r->cut);
 }
 
-/* The builds of the scopes: segs has room for room segments of each. The fill of the entities (b->fill) becomes the one that also stamps the scopes */
+/* The builds of the scopes, each with a growing array of segments. The fill of the entities (b->fill) becomes the one that also stamps the scopes */
 void
-colb_scope_begin(ColBuild *b, SiftSegEntry *segs, int room)
+colb_scope_begin(ColBuild *b)
 {
 	b->nscope = b->r->nscope;
 	b->metagen = true;
@@ -33,12 +31,10 @@ colb_scope_begin(ColBuild *b, SiftSegEntry *segs, int room)
 	b->fill = sift_scope_fill_hook(b->sfill, b->fill, b->r->nconn);
 	for (int s = 0; s < b->nscope; s++)
 	{
-		ColBuild   *sb = colb_alloc(b->index, b->wt, b->budget, room, segs + (Size) s * room, false, 1, s, b->nscope);
+		ColBuild   *sb = colb_alloc(b->index, b->wt, b->budget, NULL, 0, false, 1, s, b->nscope);
 
 		sb->fill = b->fill;
-		/* the rows go to runs and merges only: the ranges of a spill are cut from a sample of the heap, which has no scope keys */
-		sb->spill_tried = true;
-		sb->share = b->total_rows * SCOPE_ROWS_FACTOR;
+		sb->share = sb->entries = b->total_rows * SCOPE_ROWS_FACTOR;
 		b->scope[s] = sb;
 	}
 }
@@ -142,7 +138,8 @@ colb_scope_gather(ColBuild *b)
 	{
 		const ColBuild *sb = b->scope[s];
 
-		memmove(b->segs + b->nsegs, sb->segs, sb->nsegs * sizeof(SiftSegEntry));
+		colb_segs_room(b, sb->nsegs);
+		memcpy(b->segs + b->nsegs, sb->segs, sb->nsegs * sizeof(SiftSegEntry));
 		for (int i = 0; i < sb->nsegs; i++)
 		{
 			b->segs[b->nsegs + i].flags |= SIFT_SEG_SCOPE;
@@ -158,10 +155,10 @@ colb_scope_gather(ColBuild *b)
 static double
 rollup_bytes(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	double		bytes = 0;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{

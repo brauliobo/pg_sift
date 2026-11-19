@@ -255,7 +255,7 @@ bind_scan(SiftScanState *ss)
 	const void *shared = ss->par.sh ? sift_par_get_bind(&ss->par, &len) : NULL;
 
 	ss->st = sift_state_open_dir(ss->index, ss->cxt, shared ? sift_shared_dir(shared) : NULL);
-	sift_quarantine_net(ss->index, ss->st->dir.meta.flags);
+	sift_quarantine_net(ss->index, ss->st->dir->meta.flags);
 	ss->plan = bind_queries(ss, ss->st, ss->mode == SIFT_MODE_RANKED ? shared : NULL);
 	ss->empty = ss->plan == NULL;
 }

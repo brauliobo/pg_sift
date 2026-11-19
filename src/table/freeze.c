@@ -120,13 +120,14 @@ freeze_groups_swap(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, v
 int
 sift_tbl_freeze_groups(Relation rel, SiftTblRel *st, TransactionId oldest)
 {
-	uint64		gens[SIFT_MAX_SEGMENTS];
+	uint64	   *gens;
 	int			n = 0;
 
 	sift_tbl_refresh(rel, st);
-	for (int i = 0; i < st->dir.nsegs; i++)
+	gens = palloc(Max(st->dir->nsegs, 1) * sizeof(uint64));
+	for (int i = 0; i < st->dir->nsegs; i++)
 	{
-		const SiftSegEntry *e = &st->dir.segs[i];
+		const SiftSegEntry *e = &st->dir->segs[i];
 
 		if (sift_tbl_seg_unfrozen(e) && group_final(rel, e, oldest))
 			gens[n++] = e->gen;
@@ -210,9 +211,9 @@ sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, SiftTb
 	SiftKey    *keys = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(SiftKey));
 	bool		done = true;
 
-	for (; done && scan->seg < st->dir.nsegs; scan->seg++, scan->unit = 0)
+	for (; done && scan->seg < st->dir->nsegs; scan->seg++, scan->unit = 0)
 	{
-		const SiftSegEntry *e = &st->dir.segs[scan->seg];
+		const SiftSegEntry *e = &st->dir->segs[scan->seg];
 		SiftColSegment *seg;
 
 		if (!sift_tbl_seg_unfrozen(e))
@@ -248,18 +249,19 @@ sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, SiftTb
 int
 sift_tbl_drop_dead_groups(Relation rel, SiftTblRel *st)
 {
-	SiftSegEntry gone[SIFT_MAX_SEGMENTS];
+	SiftSegEntry *gone;
 	int			n = 0;
 	SiftMaintInputs mi;
 
 	sift_tbl_refresh(rel, st);
-	for (int i = 0; i < st->dir.nsegs; i++)
-		if (sift_tbl_seg_unfrozen(&st->dir.segs[i]))
+	gone = palloc(Max(st->dir->nsegs, 1) * sizeof(SiftSegEntry));
+	for (int i = 0; i < st->dir->nsegs; i++)
+		if (sift_tbl_seg_unfrozen(&st->dir->segs[i]))
 		{
-			SiftColSegment *seg = sift_cseg_open(rel, &st->dir.segs[i], CurrentMemoryContext);
+			SiftColSegment *seg = sift_cseg_open(rel, &st->dir->segs[i], CurrentMemoryContext);
 
 			if (sift_cseg_live_rows(seg) == 0)
-				gone[n++] = st->dir.segs[i];
+				gone[n++] = st->dir->segs[i];
 			sift_cseg_close(seg);
 		}
 	if (n == 0)
@@ -317,9 +319,9 @@ sift_tbl_group_live_rows(Relation rel, SiftTblRel *st)
 {
 	double		n = 0;
 
-	for (int i = 0; i < st->dir.nsegs; i++)
+	for (int i = 0; i < st->dir->nsegs; i++)
 	{
-		const SiftSegEntry *e = &st->dir.segs[i];
+		const SiftSegEntry *e = &st->dir->segs[i];
 
 		if (e->kind != SIFT_SEG_IMMUTABLE)
 			continue;
@@ -341,9 +343,9 @@ sift_tbl_group_bulkdelete(Relation rel, SiftTblRel *st, IndexBulkDeleteCallback 
 {
 	IndexBulkDeleteResult stats = {0};
 
-	for (int i = 0; i < st->dir.nsegs; i++)
+	for (int i = 0; i < st->dir->nsegs; i++)
 	{
-		const SiftSegEntry *e = &st->dir.segs[i];
+		const SiftSegEntry *e = &st->dir->segs[i];
 		SiftColSegment *seg;
 
 		if (e->kind != SIFT_SEG_IMMUTABLE || e->sb_hi < sb_lo || e->sb_lo > sb_hi)
@@ -360,12 +362,12 @@ static int
 merge_smallest(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 {
 	const SiftTblLayout *l = layout_of(rel, st);
-	SiftSegEntry *cand = palloc(Max(st->dir.nsegs, 1) * sizeof(SiftSegEntry));
+	SiftSegEntry *cand = palloc(Max(st->dir->nsegs, 1) * sizeof(SiftSegEntry));
 	int			n = 0;
 
-	for (int i = 0; i < st->dir.nsegs; i++)
-		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE && schema_of(rel, st, &st->dir.segs[i])->hash == l->schema->hash)
-			cand[n++] = st->dir.segs[i];
+	for (int i = 0; i < st->dir->nsegs; i++)
+		if (st->dir->segs[i].kind == SIFT_SEG_IMMUTABLE && schema_of(rel, st, &st->dir->segs[i])->hash == l->schema->hash)
+			cand[n++] = st->dir->segs[i];
 	if (n >= 2)
 	{
 		qsort(cand, n, sizeof(SiftSegEntry), sift_seg_bytes_cmp);
@@ -400,9 +402,9 @@ merge_most_dead(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 				best_docs = 1;
 	int			n = 0;
 
-	for (int i = 0; i < st->dir.nsegs; i++)
+	for (int i = 0; i < st->dir->nsegs; i++)
 	{
-		const SiftSegEntry *e = &st->dir.segs[i];
+		const SiftSegEntry *e = &st->dir->segs[i];
 		SiftColSegment *seg;
 		uint64		dead;
 
@@ -439,14 +441,14 @@ merge_adjacent(Relation rel, SiftTblRel *st, SiftSegEntry *sel, int n)
 	const SiftTblLayout *l = layout_of(rel, st);
 	uint64		small = (uint64) sift_tbl_opt_int(st, SIFT_TBLOPT_WRITE_BUFFER_LIMIT) * 1024 / 2,
 				room = 2 * small;
-	SiftSegEntry *all = palloc(Max(st->dir.nsegs, 1) * sizeof(SiftSegEntry));
+	SiftSegEntry *all = palloc(Max(st->dir->nsegs, 1) * sizeof(SiftSegEntry));
 	int			na = 0,
 				lo = -1,
 				hi;
 
-	for (int i = 0; i < st->dir.nsegs; i++)
-		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE && schema_of(rel, st, &st->dir.segs[i])->hash == l->schema->hash)
-			all[na++] = st->dir.segs[i];
+	for (int i = 0; i < st->dir->nsegs; i++)
+		if (st->dir->segs[i].kind == SIFT_SEG_IMMUTABLE && schema_of(rel, st, &st->dir->segs[i])->hash == l->schema->hash)
+			all[na++] = st->dir->segs[i];
 	qsort(all, na, sizeof(SiftSegEntry), sift_tbl_cmp_sb_lo);
 	for (int i = 0; i < na && lo < 0; i++)
 		if (n == 1 ? all[i].gen == sel[0].gen : all[i].bytes < small && i + 1 < na && all[i + 1].bytes < small)
@@ -477,7 +479,7 @@ static int
 merge_pick(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 {
 	SiftMergePolicy pol = {(uint64) sift_tbl_opt_int(st, SIFT_TBLOPT_WRITE_BUFFER_LIMIT) * 1024, SIFT_MERGE_FANIN, no_dead};
-	int			n = sift_merge_pick(rel, &pol, &st->dir, false, sel);
+	int			n = sift_merge_pick(rel, &pol, st->dir, false, sel);
 
 	if (n == 0)
 		n = merge_most_dead(rel, st, sel);
@@ -490,13 +492,14 @@ uint64
 sift_tbl_merge(Relation rel, SiftTblRel *st, TransactionId oldest)
 {
 	const SiftTblLayout *l = layout_of(rel, st);
-	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
+	SiftSegEntry *sel;
 	XidFinal	fin = {.oldest = oldest};
 	SiftCPaggSpec spec;
 	uint64		bytes = 0;
 	int			n;
 
 	sift_tbl_refresh(rel, st);
+	sel = palloc(Max(st->dir->nsegs, 1) * sizeof(SiftSegEntry));
 	n = merge_pick(rel, st, sel);
 	for (int i = 0; i < n; i++)
 	{

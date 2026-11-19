@@ -32,6 +32,16 @@ sift_col_bit_test(const uint64 *bits, uint32 i)
 	return bits != NULL && ((bits[i >> 6] >> (i & 63)) & 1) != 0;
 }
 
+/* Whether one of the first n bits is set (NULL: none): the (n + 63) / 64 words a batch holds, not the SIFT_COL_NWORDS(n) of a decoded unit, which are padded to 512 bits and past the end of a batch */
+static inline bool
+sift_col_bits_any(const uint64 *bits, uint32 n)
+{
+	for (uint32 w = 0; bits != NULL && w < (n + 63) / 64; w++)
+		if (bits[w])
+			return true;
+	return false;
+}
+
 static inline void
 sift_col_bit_set(uint64 *bits, uint32 i)
 {

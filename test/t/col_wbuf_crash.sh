@@ -15,14 +15,19 @@ node_start cm || bail "start failed"
 D=$(dir cm)
 
 # one call of a client appends 40 rows with ids it alone owns and commits it with a row of done; a full segment is sealed;
-# the limit is 512 kB of lane pages per segment
-cat >"$D/append.sql" <<'SQL'
+# the limit is 512 kB of lane pages per segment. The calls stop at MAX_CALLS: no sealed buffer is promoted here, and the open one takes the
+# writes whenever its seal finds the directory full, so the rows the check reads (and the memory of its reader) would follow the speed of the
+# host and not the test
+MAX_CALLS=2000
+cat >"$D/append.sql" <<SQL
 SELECT nextval('calls') * 40 AS lo \gset
+\if :lo < $((MAX_CALLS * 40))
 BEGIN;
 SELECT sift._test_col_wbuf_append('t_idx', 7, :lo, 40) AS crossed \gset
 INSERT INTO done VALUES (:lo, 40);
 END;
 SELECT CASE WHEN :crossed > 0 THEN sift._test_col_wbuf_seal('t_idx') END;
+\endif
 SQL
 echo "SELECT sift._test_col_wbuf_delete('t_idx', 7);" >"$D/delete.sql"
 echo "CHECKPOINT;" >"$D/ckpt.sql"

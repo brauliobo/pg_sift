@@ -15,6 +15,7 @@
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+source "$REPO/scripts/source-snapshot.sh"
 build_only=; [[ ${1:-} != --build ]] || { build_only=1; shift; }
 base=${SIFT_TMP:-/tmp/sift-release-library}
 export SIFT_TMP=$base/run SIFT_ROOT=$base/run/root SIFT_PORT=$(( ${SIFT_PORT:-56100} + 8 )) SIFT_TESTING= SIFT_TEST_HELPERS=1
@@ -27,6 +28,6 @@ if [[ -n $build_only ]]; then
 	exit 0
 fi
 rc=0
-"$src/scripts/pgtest.sh" install && "$src/scripts/pgtest.sh" start && "$src/scripts/pgtest.sh" regress "$@" || rc=1
+"$src/scripts/pgtest.sh" install && drop_build "$src" && "$src/scripts/pgtest.sh" start && "$src/scripts/pgtest.sh" regress "$@" || rc=1
 "$src/scripts/pgtest.sh" stop || rc=1
 exit $rc

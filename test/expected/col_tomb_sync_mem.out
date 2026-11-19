@@ -1,0 +1,73 @@
+-- A backend that reads the tombstone log of an index (or of a sift_table) reads the entries of its pages in batches, sorts each into what it keeps (up to sift.tomb_log_limit) and
+-- spills the rest to sorted runs. The batch is a quarter of the entries the limit lets it keep, and a page: the scope tomb_sync_batch (test/mem-budgets.tsv, the limit and 16 kB) holds
+-- the same bytes at every size of the log (a per-row term of 0). It had a floor of 1024 entries, so a limit under 64 kB was not kept: at the smallest limit (16 kB) the batch was 4 times
+-- the limit, and the budget fails on it. The rows a scan reads are the same at 1 GB (the whole log in one batch) and at 16 kB (in runs).
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+-- tables of 4,000 to 16,000 rows: every row updated and one in four deleted, so the log holds 1.25 entries a row
+CREATE TABLE f4 (id int PRIMARY KEY, g int NOT NULL, v int) WITH (autovacuum_enabled = false);
+CREATE TABLE f8 (LIKE f4) WITH (autovacuum_enabled = false);
+CREATE TABLE f12 (LIKE f4) WITH (autovacuum_enabled = false);
+CREATE TABLE f16 (LIKE f4) WITH (autovacuum_enabled = false);
+INSERT INTO f4 SELECT i, i % 10, i FROM generate_series(1, 4000) i;
+INSERT INTO f8 SELECT i, i % 10, i FROM generate_series(1, 8000) i;
+INSERT INTO f12 SELECT i, i % 10, i FROM generate_series(1, 12000) i;
+INSERT INTO f16 SELECT i, i % 10, i FROM generate_series(1, 16000) i;
+SELECT format('CREATE INDEX %1$s_c ON %1$s USING sift_col (id, g, v) WITH (track_changes = ''id'')', t) FROM unnest(ARRAY['f4', 'f8', 'f12', 'f16']) t \gexec
+CREATE INDEX f4_c ON f4 USING sift_col (id, g, v) WITH (track_changes = 'id')
+CREATE INDEX f8_c ON f8 USING sift_col (id, g, v) WITH (track_changes = 'id')
+CREATE INDEX f12_c ON f12 USING sift_col (id, g, v) WITH (track_changes = 'id')
+CREATE INDEX f16_c ON f16 USING sift_col (id, g, v) WITH (track_changes = 'id')
+SELECT format('UPDATE %s SET v = v + 1', t) FROM unnest(ARRAY['f4', 'f8', 'f12', 'f16']) t \gexec
+UPDATE f4 SET v = v + 1
+UPDATE f8 SET v = v + 1
+UPDATE f12 SET v = v + 1
+UPDATE f16 SET v = v + 1
+SELECT format('DELETE FROM %s WHERE id %% 4 = 0', t) FROM unnest(ARRAY['f4', 'f8', 'f12', 'f16']) t \gexec
+DELETE FROM f4 WHERE id % 4 = 0
+DELETE FROM f8 WHERE id % 4 = 0
+DELETE FROM f12 WHERE id % 4 = 0
+DELETE FROM f16 WHERE id % 4 = 0
+CREATE TABLE census (rows int, peak int8);
+-- a fresh backend for each size reads the whole log
+\c -
+SET sift.tomb_log_limit = '16kB';
+SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
+SELECT count(*) AS read_the_log FROM sift._test_col_log_entries('f4_c') \gset
+INSERT INTO census SELECT 4000, peak FROM sift._test_mem_highwater() WHERE scope = 'tomb_sync_batch';
+\c -
+SET sift.tomb_log_limit = '16kB';
+SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
+SELECT count(*) AS read_the_log FROM sift._test_col_log_entries('f8_c') \gset
+INSERT INTO census SELECT 8000, peak FROM sift._test_mem_highwater() WHERE scope = 'tomb_sync_batch';
+\c -
+SET sift.tomb_log_limit = '16kB';
+SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
+SELECT count(*) AS read_the_log FROM sift._test_col_log_entries('f12_c') \gset
+INSERT INTO census SELECT 12000, peak FROM sift._test_mem_highwater() WHERE scope = 'tomb_sync_batch';
+\c -
+SET sift.tomb_log_limit = '16kB';
+SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
+SELECT count(*) AS read_the_log FROM sift._test_col_log_entries('f16_c') \gset
+INSERT INTO census SELECT 16000, peak FROM sift._test_mem_highwater() WHERE scope = 'tomb_sync_batch';
+SELECT count(*) = 4 AS every_size_synced, count(DISTINCT peak) = 1 AS same_bytes_at_every_size, max(peak) < 16384 + 16384 AS under_the_budget FROM census;
+ every_size_synced | same_bytes_at_every_size | under_the_budget 
+-------------------+--------------------------+------------------
+ t                 | t                        | t
+(1 row)
+
+-- the rows a scan reads are the same from the runs and from the whole log in memory
+SELECT md5(string_agg(id || ':' || g || ':' || v, ',' ORDER BY id)) AS rows_in_runs FROM f16 \gset
+\c -
+SET sift.tomb_log_limit = '1GB';
+SELECT md5(string_agg(id || ':' || g || ':' || v, ',' ORDER BY id)) = :'rows_in_runs' AS same_rows_in_memory FROM f16;
+ same_rows_in_memory 
+---------------------
+ t
+(1 row)
+
+DROP TABLE census, f4, f8, f12, f16;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

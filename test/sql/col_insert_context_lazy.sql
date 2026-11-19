@@ -1,0 +1,51 @@
+-- A backend that only reads a sift_col index holds no insert context for it: the memory of one inserted row is made by the first insert of the backend into the index, so the
+-- contexts a backend keeps follow the indexes it wrote, not the indexes it read (a partitioned table of a thousand partitions cost eight kB for each partition read). Exact
+-- counts of the contexts at three sizes of the partitioned table; the mutant makes the context with the index state and fails the first checks.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE lazy_p (id int, k int, v int) PARTITION BY RANGE (id);
+
+CREATE FUNCTION insert_contexts(OUT n int, OUT max_bytes int8) LANGUAGE sql AS
+$$ SELECT count(*)::int, coalesce(max(total_bytes), 0) FROM pg_backend_memory_contexts WHERE name = 'sift cache col insert' $$;
+
+-- 4, 8 and 16 partitions, each with a sift_col index, all read by a grouped aggregate and a lookup: none has an insert context
+CREATE FUNCTION grow(upto int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	FOR i IN (SELECT coalesce(count(*), 0) FROM pg_inherits WHERE inhparent = 'lazy_p'::regclass)..upto - 1 LOOP
+		EXECUTE format('CREATE TABLE lazy_p_%s PARTITION OF lazy_p FOR VALUES FROM (%s) TO (%s)', i, i * 100, i * 100 + 100);
+		EXECUTE format('INSERT INTO lazy_p_%s SELECT g, g %% 7, g FROM generate_series(%s, %s) g', i, i * 100, i * 100 + 99);
+		EXECUTE format('CREATE INDEX lazy_p_%s_c ON lazy_p_%s USING sift_col (id, k, v)', i, i);
+	END LOOP;
+END $$;
+CREATE TEMP TABLE steps (parts int, contexts int);
+DO $$
+DECLARE c int;
+BEGIN
+	FOREACH c IN ARRAY ARRAY[4, 8, 16] LOOP
+		PERFORM grow(c);
+		PERFORM k, count(*), sum(v) FROM lazy_p GROUP BY k;
+		PERFORM count(*) FROM lazy_p WHERE id BETWEEN 0 AND c * 100 AND k = 3;
+		INSERT INTO steps SELECT c, n FROM insert_contexts();
+	END LOOP;
+END $$;
+-- no insert context exists at any size
+SELECT parts, contexts FROM steps ORDER BY parts;
+SELECT n, max_bytes FROM insert_contexts();
+
+-- the first row a backend inserts into an index makes its context, and only that index's: one context for each index written, none for the others
+INSERT INTO lazy_p SELECT g, g % 7, g FROM generate_series(1000, 1003) g WHERE g < 1600;
+SELECT n = 1 AS one_index_written, max_bytes <= 8192 AS one_block FROM insert_contexts();
+INSERT INTO lazy_p SELECT i * 100 + 50, 1, 1 FROM generate_series(0, 15) i;
+SELECT n = 16 AS every_index_written, max_bytes <= 8192 AS one_block FROM insert_contexts();
+-- another row of an index that has its context makes no second
+INSERT INTO lazy_p SELECT i * 100 + 51, 1, 1 FROM generate_series(0, 15) i;
+SELECT n = 16 AS no_second_context FROM insert_contexts();
+SELECT count(*) AS rows_read FROM lazy_p;
+
+DROP TABLE lazy_p;
+DROP FUNCTION grow(int);
+DROP FUNCTION insert_contexts();
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# A key_cut build holds its rows in runs and writes one segment for each, and the directory has room for 121 of them: the build merges the runs as it writes them, so
+# A key_cut build holds its rows in runs and writes one segment for each; the merge that ends it opens them all, so it keeps at most 121: it merges the runs as it writes them, so
 # CREATE INDEX (serial and parallel), CREATE INDEX CONCURRENTLY, REINDEX and REINDEX CONCURRENTLY finish with the memory they have, however many runs the table makes.
-# sift.test_col_segment_kb stands for a table too large for maintenance_work_mem: 8 runs of a superblock for this one, and room for 6 segments.
+# sift.test_col_segment_kb stands for a table too large for maintenance_work_mem: 8 runs of a superblock for this one, of which it keeps 6.
 . "$(dirname "$0")/lib.bash"
 
 plan 9
@@ -13,7 +13,7 @@ sql km "CREATE TABLE km (id int, cust int, d date, amount int, pad text) WITH (a
 	"VACUUM (FREEZE, ANALYZE) km" >/dev/null || bail "setup failed"
 # no order array: a serial id gets one by default (column format 38) and the format below names the key-cut units alone
 DDL="ON km USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d', point_tid_columns = 'off', order_array_columns = 'off')"
-small() { sql km "SET sift.test_col_segment_kb = 16" "SET sift.test_col_max_segments = 6" "SET max_parallel_maintenance_workers = 0" "$@"; }
+small() { sql km "SET sift.test_col_segment_kb = 16" "SET sift.test_col_build_runs = 6" "SET max_parallel_maintenance_workers = 0" "$@"; }
 good() { test "$(sql km "SELECT indisvalid FROM pg_index WHERE indexrelid = 'km_idx'::regclass")" == t &&
 	test -z "$(sql km "SELECT sift.col_verify('km_idx', true)" 2>&1)" &&
 	test "$(sql km "SELECT count(*) < ${1:-6} AND bool_and(format = 34) FROM sift.col_segments('km_idx') WHERE kind = 'immutable'")" == t; }
@@ -22,9 +22,9 @@ small "CREATE INDEX km_idx $DDL" >/dev/null
 check "CREATE INDEX merges the runs: valid, verified, fewer segments than the runs, of format 34" good
 
 sql km "DROP INDEX km_idx" >/dev/null
-small "SET sift.test_col_max_segments = 3" "SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET min_parallel_table_scan_size = 0" "CREATE INDEX km_idx $DDL" >/dev/null
+small "SET sift.test_col_build_runs = 3" "SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET min_parallel_table_scan_size = 0" "CREATE INDEX km_idx $DDL" >/dev/null
 check "the participants of a parallel build merge their own runs" good 99
-check "and a worker took part" test "$(sql km "SET sift.test_col_segment_kb = 16" "SET sift.test_col_max_segments = 3" "SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET min_parallel_table_scan_size = 0" "REINDEX INDEX km_idx" "SELECT current_setting('sift.test_col_workers')::int > 0")" == t
+check "and a worker took part" test "$(sql km "SET sift.test_col_segment_kb = 16" "SET sift.test_col_build_runs = 3" "SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET min_parallel_table_scan_size = 0" "REINDEX INDEX km_idx" "SELECT current_setting('sift.test_col_workers')::int > 0")" == t
 
 small "REINDEX INDEX km_idx" >/dev/null
 check "REINDEX merges the runs" good

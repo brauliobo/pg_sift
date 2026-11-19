@@ -31,7 +31,7 @@
  * way that keeps the lock for the groups of a run
  */
 #define LOAD_RING_ROOM	32
-#define ring_room(st, held)		((st)->dir.nsegs + (held) + LOAD_RING_ROOM <= sift_tbl_max_segments - 2)
+#define ring_room(st, held)		((st)->dir->nsegs + (held) + LOAD_RING_ROOM <= sift_tbl_max_segments - 2)
 #define LOAD_SB_ROWS	((uint64) SIFT_TBL_VBLOCKS_SB * SIFT_TBL_MAX_OFF)
 /* The backend and three workers: the buffer of a run is LOAD_MAX_GROUPS * LOAD_SBS write buffers */
 #define LOAD_MAX_GROUPS	4

@@ -9,7 +9,12 @@
 static SiftSegEntry *
 next_entry(BuildState *bs, uint64 *gen)
 {
-	SIFT_INVARIANT(bs->nsegs < SIFT_MAX_SEGMENTS, "sift: build of \"%s\" ran out of directory entries", RelationGetRelationName(bs->index));
+	SIFT_INVARIANT(bs->nsegs < SIFT_DIR_WIDE_MAX, "sift: build of \"%s\" ran out of directory entries", RelationGetRelationName(bs->index));
+	if (bs->nsegs == bs->segcap)
+	{
+		bs->segcap = Max(2 * bs->segcap, SIFT_DIR_FLAT_MAX);
+		bs->segs = bs->segs ? repalloc(bs->segs, bs->segcap * sizeof(SiftSegEntry)) : MemoryContextAlloc(GetMemoryChunkContext(bs), bs->segcap * sizeof(SiftSegEntry));
+	}
 	*gen = bs->nsegs + 1;
 	return &bs->segs[bs->nsegs++];
 }
@@ -180,7 +185,7 @@ end_segment(BuildState *bs)
 	SiftSegEntry *entry;
 	SegLimits	lim = seg_limits(bs->budget);
 	/* the entries the segments still to come (one per forced boundary, and the last) leave */
-	int			room = SIFT_MAX_SEGMENTS - bs->nsegs - (bs->nbounds - bs->nextbound);
+	int			room = SIFT_DIR_POLICY_MAX - bs->nsegs - (bs->nbounds - bs->nextbound);
 
 	int			phase = bs->phase;
 
@@ -208,7 +213,7 @@ end_segment(BuildState *bs)
 	while (count_groups(bs->runs, bs->nruns, &lim) > room)
 	{
 		SIFT_INVARIANT(lim.df <= PG_INT64_MAX / 2, "sift: index \"%s\" would need more than %d segments", RelationGetRelationName(bs->index),
-					   SIFT_MAX_SEGMENTS);
+					   SIFT_DIR_POLICY_MAX);
 		lim.df *= 2;
 	}
 	while (first < bs->nruns)

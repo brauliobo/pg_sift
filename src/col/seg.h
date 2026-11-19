@@ -89,14 +89,31 @@ extern Size sift_colw_budget(Size mem, int resident_pct, Size base);
 #define SIFT_COLW_MERGE_BASE ((Size) 36 * 1024 * 1024)
 #define SIFT_COLW_MIN_BUDGET ((Size) 16 * 1024 * 1024)
 /* The budget the segments still to come need: the rows left over the segments left, at the rows per budget the last segment reached; never less than budget */
-extern Size sift_colw_fit_budget(Size budget, uint64 seg_rows, uint64 rows_left, int segs_left);
 /* Writes DICTS, ZONES, SBDIR, SCHEMA, the all-live LIVE pages and the header; fills the directory entry (kind IMMUTABLE, format, header_blk, sb_lo/hi, ndocs = rows, bytes) */
 extern void sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry);
 
 #define SIFT_COL_CUT_MAX 4	/* the leaves of a key_cut (or a scope's cut) at most */
 
+struct SiftColSegment;
+
+/*
+ * The rows of a unit that the deletion records of the tombstone log (core/tomb_dv.h) end for the snapshot of a scan: bits is the unit's rows with those set, ndead how many. A scan attaches
+ * a source of them to the segments it opens, and every read of the liveness of a unit (sift_cseg_dirty, sift_cseg_live and what is built on them) then sees them cleared; no other reader has one.
+ */
+typedef struct SiftColDvUnit
+{
+	uint32		ndead;
+	const uint64 *bits;
+} SiftColDvUnit;
+
+typedef struct SiftColDv
+{
+	const SiftColDvUnit *(*unit) (struct SiftColDv *dv, const struct SiftColSegment *seg, uint32 u);	/* NULL: no record of the snapshot ends a row of the unit */
+} SiftColDv;
+
 typedef struct SiftColSegment
 {
+	SiftColDv  *dv;				/* the records of the scan that opened the segment, NULL for the others */
 	Relation	index;
 	SiftSegEntry entry;
 	SiftSegHeaderData *hdr;		/* copy of the header page */
@@ -167,13 +184,13 @@ sift_seg_scope_ordinal(const SiftSegEntry *e)
 }
 
 /* sift_dir_read for one family of readers: the entity family (everything but the scope segments: the readers of the rows of the index), or the scope segments alone (no write buffer, no log) */
-extern void sift_col_dir_read(Relation index, SiftDirSnapshot *snap, bool scope);
+extern SiftDirSnapshot *sift_col_dir_read(Relation index, bool scope);
 /* the segments of the family only (sift_dir_read_segs): for a caller that does not hand the snapshot to a scan */
-extern void sift_col_dir_read_segs(Relation index, SiftDirSnapshot *snap, bool scope);
+extern SiftDirSnapshot *sift_col_dir_read_segs(Relation index, bool scope);
 /* ... of a directory read already: keeps the segments of that family */
 extern void sift_col_dir_family(SiftDirSnapshot *snap, bool scope);
 /* both families from one read of the directory: the entity family into entity, the scope segments into scope */
-extern void sift_col_dir_read_families(Relation index, SiftDirSnapshot *entity, SiftDirSnapshot *scope);
+extern void sift_col_dir_read_families(Relation index, SiftDirSnapshot **entity, SiftDirSnapshot **scope);
 
 /* Index of the first unit whose id >= id, nsb if none (the id of a unit is a superblock of a segment cut by superblock and a sequence number of one cut by key) */
 extern uint32 sift_cseg_unit_lower_bound(const SiftColSegment *seg, uint32 id);
@@ -597,6 +614,19 @@ extern int64 sift_cseg_reap_overflow(SiftColSegment *seg, SiftCsegDead dead, voi
  * adds to stats like sift_seg_bulkdelete.
  */
 extern int64 sift_cseg_clear_keys(SiftColSegment *seg, const SiftKey *keys, uint32 n);
+
+/*
+ * The live rows of seg at the heap addresses keys (ascending, once each), a unit at a time (units with none are skipped): fn gets the unit, its rows ascending, the addresses they hold in the same
+ * order, and how many. No bit is changed; the caller does not hold the maintenance lock and the segment is the one it opened, so a row may die while it looks (a record of it is then no harm).
+ */
+typedef void (*SiftCsegFoundFn) (uint32 u, const uint32 *rows, const SiftKey *at, uint32 nrows, void *arg);
+extern void sift_cseg_find_live(SiftColSegment *seg, const SiftKey *keys, uint32 n, SiftCsegFoundFn fn, void *arg);
+
+/* Clears the liveness bit of each of rows (ascending) of unit u that is set, as the index pass of a VACUUM does; the count cleared. The caller holds the maintenance lock */
+extern int64 sift_cseg_clear_rows(SiftColSegment *seg, uint32 u, const uint32 *rows, uint32 n);
+
+/* The addresses (blocks << 16 | offset) of rows of unit u of seg, ascending in rows: into out (nrows of them). Rows are the unit's own numbers */
+extern void sift_cseg_row_keys(SiftColSegment *seg, uint32 u, const uint32 *rows, uint32 nrows, SiftKey *out);
 extern int64 sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbstate, IndexBulkDeleteResult *stats);
 
 /*
@@ -677,6 +707,7 @@ sift_cseg_cut_order(const SiftColSegment *seg, const int *cut, int ncut)
 #ifdef SIFT_TESTING
 extern int64 sift_test_cut_probes;	/* sift._test_col_cut_probes(): the segments whose units sift_colk_streams has checked in this backend */
 extern bool sift_test_col_loose_inputs;	/* sift.test_col_loose_inputs: sift_colk_streams takes no keyed input as a stream */
+extern bool sift_test_col_merge_eager;	/* sift.test_col_merge_eager: a merge of streams reads the first unit of every input before its first row, as before the inputs waited for their key range */
 extern int sift_test_col_cut_record;	/* sift.test_col_cut_record: 1 writes a segment cut by a key as the 5.0 development builds before SIFT_SEG_CUTREC did (the flag SIFT_SEG_BYKEY or SIFT_SEG_BYTID, no record of the cut), 2 as 4.3 and older (neither) */
 extern bool sift_test_col_gorder_strings;	/* sift.test_col_gorder_strings: the global order of a text leaf keeps a copy of its strings (version 3, as before column format minor 42), not the dictionary codes of them */
 extern bool sift_test_col_gorder_unpacked;	/* sift.test_col_gorder_unpacked: the chunks of a global order code their addresses with 9 bits of offset (column format minor 37), not the bits of the largest */

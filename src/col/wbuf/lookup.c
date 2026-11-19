@@ -241,12 +241,22 @@ sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema
 	return out;
 }
 
+/* What the walkers of the pages of a buffer (VACUUM, verify) are given: the index, and the head of the pages of the buffer */
+typedef struct PageWalk
+{
+	Relation	index;
+	Size		hs;
+	const SiftColSchema *schema;
+} PageWalk;
+
 static int
 collect_rows(void *arg, Page page, Size *offs, ItemPointerData *tids)
 {
-	PageCursor	c = {.index = arg};
+	const PageWalk *w = arg;
+	PageCursor	c;
 	int			n = 0;
 
+	wbuf_cursor_init(&c, w->index, w->hs);
 	wbuf_cursor_set(&c, page);
 	while (c.pos < c.used)
 	{
@@ -255,7 +265,7 @@ collect_rows(void *arg, Page page, Size *offs, ItemPointerData *tids)
 
 		if (!(h->flags & (SIFT_COLR_CONT | SIFT_COLR_DELETED)))
 		{
-			offs[n] = c.pos;
+			offs[n] = c.hs + c.pos;
 			tids[n++] = h->tid;
 		}
 		c.pos += size;
@@ -266,7 +276,7 @@ collect_rows(void *arg, Page page, Size *offs, ItemPointerData *tids)
 static void
 flag_row(Page page, Size off)
 {
-	((SiftColRecHead *) (SiftLaneRecs(page, HDRSIZE) + off))->flags |= SIFT_COLR_DELETED;
+	((SiftColRecHead *) (SiftPageGetData(page) + off))->flags |= SIFT_COLR_DELETED;
 }
 
 int64
@@ -274,10 +284,11 @@ sift_cwbuf_bulkdelete(Relation index, const SiftSegEntry *entry, const SiftColSc
 					 void *cbstate, IndexBulkDeleteResult *stats)
 {
 	Page		page = palloc(BLCKSZ);
+	PageWalk	w = {index, wbuf_hs(entry->format), schema};
 	int64		removed;
 
 	wbuf_flush_for_read(index);
-	removed = sift_lane_bulkdelete(index, entry, HDRSIZE, RECSIZE(0), page, collect_rows, flag_row, index, cb, cbstate, stats);
+	removed = sift_lane_bulkdelete(index, entry, w.hs, RECSIZE(0), page, collect_rows, flag_row, &w, cb, cbstate, stats);
 	pfree(page);
 	return removed;
 }
@@ -300,13 +311,31 @@ sift_cwbuf_summary(Relation index, const SiftSegEntry *entry, uint64 *nrows, uin
 	*npages = 1 + sift_lane_npages(&hdr);
 }
 
+/* A record whole on its page, the values in it: its key is in the range of the page, the leaf of which the page names */
+static void
+verify_key(const PageWalk *w, Page page, const SiftColRecHead *h, BlockNumber blk)
+{
+	const SiftColPageHead *ph = SiftColPageKeys(page);
+	int			leaf = (int) ((ph->lane.flags & SIFT_WBUFPAGE_LEAF_MASK) >> SIFT_WBUFPAGE_LEAF_SHIFT) - 1;
+	WbufKey		key;
+
+	if (leaf < 0 || leaf >= w->schema->ncols)
+		SIFT_CORRUPT(w->index, "Write buffer block %u holds rows and names key leaf %d of %d.", blk, leaf, w->schema->ncols);
+	wbuf_payload_key(w->schema, leaf, h->flags, (const char *) (h + 1), h->len, &key);
+	if (key.has && (!(ph->lane.flags & SIFT_WBUFPAGE_KEYS) || key.v < ph->kmin || key.v > ph->kmax))
+		SIFT_CORRUPT(w->index, "Write buffer block %u holds a row with key " INT64_FORMAT " and its range is " INT64_FORMAT " to " INT64_FORMAT ".", blk, key.v,
+					 (ph->lane.flags & SIFT_WBUFPAGE_KEYS) ? ph->kmin : 0, (ph->lane.flags & SIFT_WBUFPAGE_KEYS) ? ph->kmax : 0);
+}
+
 static void
 verify_page(void *arg, Page page, BlockNumber blk)
 {
-	Relation	index = arg;
-	PageCursor	c = {.index = index};
+	const PageWalk *w = arg;
+	Relation	index = w->index;
+	PageCursor	c;
 	uint64		nrecs = 0;
 
+	wbuf_cursor_init(&c, index, w->hs);
 	wbuf_cursor_set(&c, page);
 	while (c.pos < c.used)
 	{
@@ -317,6 +346,9 @@ verify_page(void *arg, Page page, BlockNumber blk)
 			SIFT_CORRUPT(index, "A write buffer record has tid (%u,%u) and flags %x.", ItemPointerGetBlockNumberNoCheck(&h->tid),
 					ItemPointerGetOffsetNumberNoCheck(&h->tid), h->flags);
 		nrecs += !(h->flags & SIFT_COLR_CONT);
+		if (w->hs == sizeof(SiftColPageHead) && !(h->flags & (SIFT_COLR_CONT | SIFT_COLR_REF)) && !(SiftLaneHead(page)->flags & SIFT_WBUFPAGE_KEYUNK) &&
+			!((SiftLaneHead(page)->flags & SIFT_WBUFPAGE_SPANS) && c.pos + size == c.used))
+			verify_key(w, page, h, blk);
 		c.pos += size;
 	}
 	if (nrecs != SiftLaneHead(page)->nrecs)
@@ -331,9 +363,10 @@ sift_cwbuf_verify(Relation index, const SiftSegEntry *entry, const SiftColSchema
 	SiftColRow	row;
 	bool		deleted;
 	uint64		live = 0;
+	PageWalk	w = {index, wbuf_hs(entry->format), schema};
 
 	wbuf_flush_for_read(index);
-	sift_lane_verify(index, entry, HDRSIZE, verify_page, index);
+	sift_lane_verify(index, entry, w.hs, verify_page, &w);
 	r = sift_cwbuf_open(index, entry, schema, CurrentMemoryContext);
 	while (sift_cwbuf_next(r, &row, &deleted))
 		live += !deleted;

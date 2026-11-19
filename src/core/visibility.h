@@ -97,11 +97,13 @@ extern PGDLLIMPORT bool sift_test_build_gate;
 extern PGDLLIMPORT bool sift_test_alter_gate;
 extern PGDLLIMPORT bool sift_test_step_gate;
 extern PGDLLIMPORT bool sift_test_repair_gate;
+/* sift.test_check_gate: sift.check of a sift_col index waits for lock (0x51F7, 18) after each segment, outside the maintenance lock */
+extern PGDLLIMPORT bool sift_test_check_gate;
 extern PGDLLIMPORT bool sift_test_par_gate;
 extern PGDLLIMPORT bool sift_test_rebuild_gate;
 extern PGDLLIMPORT bool sift_test_intern_gate;
 extern PGDLLIMPORT bool sift_test_par_stats;
-/* sift.test_mutant: 1 a job keeps its progress slot, 2 the orphan triggers of a dropped index stay (defects the fault matrix must catch) */
+/* sift.test_mutant: 1 a job keeps its progress slot, 2 the orphan triggers of a dropped index stay, 3 the VACUUM of a sift_col index clears no row (defects the fault matrix and sift.check must catch) */
 extern PGDLLIMPORT int sift_test_mutant;
 extern void sift_test_wait(int key);
 extern void sift_test_wait_inval(int key);

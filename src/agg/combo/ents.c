@@ -154,7 +154,7 @@ combo_forget_priors(AggExec *ex, int ci)
 }
 
 /* the memory the caches of a scan hold together: half of hash memory, shared by its combos (at least COMBO_CACHE_MIN each) */
-static Size
+Size
 combo_cache_bytes(const AggExec *ex)
 {
 	Size		limit = sift_limit(combo_cache_bytes, SIFT_ARRAY_UNLIMITED);
@@ -209,7 +209,7 @@ combo_reset(AggExec *ex, int ci)
 			memset(&cs->id64[p], 0, sizeof(cs->id64[p]));
 		}
 		else if (leaf_wide(&ex->lay->leaf[cb->leaf[p]]))
-			id64_init(&cs->id64[p]);
+			id64_init(ex, &cs->id64[p]);
 		else if (cs->resettable && ex->lay->leaf[cb->leaf[p]].vtype == SCV_CODE)
 			cmap_forget(ex, ci, p);
 	MemoryContextSwitchTo(old);

@@ -432,7 +432,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	sift_store_init_meta(bs->wt, sift_index_options(index), bs->analyzer_hash, bs->analyzer_config);
 	sift_wt_finish(bs->wt);
 	if (bs->nsegs > 0)
-		sift_dir_update(index, &(SiftDirChange) {.fn = publish,.arg = bs,.extra = InvalidBuffer});
+		sift_dir_update(index, &(SiftDirChange) {.fn = publish,.arg = bs,.nadd = bs->nsegs,.extra = InvalidBuffer});
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(bs->cxt);
 	return res;
