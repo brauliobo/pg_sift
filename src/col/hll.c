@@ -294,9 +294,8 @@ sift_hll_build(const SiftColDef *def, const SiftCPaggCol *c, const SiftCDict *di
 
 	if (!c->ready)
 		return false;
-	for (uint32 i = 0; c->ovf && i < SIFT_COL_NWORDS(c->n); i++)
-		if (c->ovf[i])
-			return false;
+	if (sift_col_bits_any(c->ovf, c->n))
+		return false;
 	sift_hll_init(&h, CurrentMemoryContext);
 	for (uint32 i = 0; i < c->n; i++)
 	{

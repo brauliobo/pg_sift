@@ -58,7 +58,7 @@ sift_cchunk_strs(const SiftCChunk *c, MemoryContext mcxt, uint32 **off, char **b
 		if (!istr_split(c, &pre, &prelen, &pl, &len))
 			SIFT_DAMAGE_DATA(NULL, errmsg("invalid column chunk: the inline text payload is malformed"));
 	}
-	sift_cc_decode_strs(mcxt, pl, len, c->n, off, bytes);
+	sift_cc_decode_strs(mcxt, pl, len, c->n, 0, 0, off, bytes);
 }
 
 /* The lengths of the strings of a STRS or ISTR chunk, the keys of its VAR zone and of its row tests */

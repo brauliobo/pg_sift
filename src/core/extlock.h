@@ -7,6 +7,7 @@
  * in their scopes (core/errctx.h) and the catalog of sift is read; the section below reads no cache that a report could miss, and takes no heavyweight lock.
  * sift_extension_lock is for the one section that must exclude the members of a parallel build too (the append of a value store: the extension lock is the only heavyweight lock
  * that lock group members do not share, src/backend/storage/lmgr/README "group locking"); every other write extends through sift_extend_zeroed_to and holds the lock for that extension only.
+ * A test gate waits for an advisory lock, which is a heavyweight lock: it never waits under this one (sift_test_wait fails there), a gate of the directory updates waits when the lock is released.
  * scripts/check-extlock.sh fails a file that takes the lock or extends a relation under it any other way.
  */
 #ifndef SIFT_EXTLOCK_H
@@ -17,6 +18,9 @@
 
 extern void sift_extension_lock(Relation rel);
 extern void sift_extension_unlock(Relation rel);
+
+/* Whether this backend holds the lock taken by sift_extension_lock now (an error or a rolled back subtransaction released it without a call to the unlock) */
+extern bool sift_extension_held(void);
 
 /* The blocks of the relation up to nblocks zeroed, the last one returned locked: ExtendBufferedRelTo, which takes the lock itself */
 extern Buffer sift_extend_zeroed_to(Relation rel, BlockNumber nblocks);

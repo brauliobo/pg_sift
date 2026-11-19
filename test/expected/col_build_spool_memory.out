@@ -1,0 +1,96 @@
+-- The memory of the chunks a build by key ranges writes its rows to (scope col_build_spool of core/membudget.h, sift._test_mem_highwater()) is the share its plan was made for, whatever the
+-- number of rows: the bytes of the contexts of the chunks at the end of each batch are under the share (10 MB of the 12 MB of the build) at 24,000, 36,000 and 48,000 rows, and each row of
+-- capacity of a chunk (a spool of chunks for each of the ranges, so that the bytes follow the ranges and the chunk rows, which change with the rows: 4, 6 and 8 ranges, 2,048 rows of a chunk
+-- at the first two sizes and 1,024 at the last) takes under 1 KB (about 520 to 570 bytes on a server without assertions; 520 to 830 with them, whose sentinel byte sends an array of 4,096 bytes to a chunk of 8,192). The plan
+-- takes the share, the ranges and the bytes of a row of the first run and writes a chunk when its rows or its memory reach their part of it. A plan that ignores the share (chunks of 16,384 rows and no
+-- memory limit, sift.test_col_spool_unbounded) overruns the budget of the scope and the build stops with the error of the budget, at every size that has the ranges to fill it.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+SET sift.col_unit_rows = 1200;
+SET sift.test_col_segment_kb = 12000;
+SET sift.test_col_spool_share_kb = 10000;
+CREATE TABLE sp_all (id int, tenant_id int, parent_id int, status smallint, created_at timestamptz, updated_at timestamptz, a_count int, counter_a int,
+	kind text, label text, body text, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO sp_all
+SELECT i, i % 40, (i::bigint * 7919 % 3000)::int, (i % 5)::smallint, timestamptz '2026-01-01' + (i * 37 % 100000) * interval '1 minute',
+	timestamptz '2026-02-01' + (i % 777) * interval '1 hour', i % 11, i % 7, 'kind_' || (i % 9), 'label ' || (i % 300), 'sample text number ' || (i % 4000),
+	jsonb_build_object('metrics', (SELECT jsonb_object_agg('m' || k, ((i * k) % 50) / 10.0) FROM generate_series(1, 4 + i % 5) k),
+		'items', (SELECT jsonb_agg(jsonb_build_object('category', 'cat_' || ((i + k) % 30), 'strength', CASE (i + k) % 3 WHEN 0 THEN 'pos' WHEN 1 THEN 'neg' ELSE 'neu' END,
+			'score', ((i + k) % 10) / 2.0, 'sub', 'sub_' || ((i * k) % 12))) FROM generate_series(1, 1 + i % 4) k),
+		'label', 'doc ' || (i % 20), 'note', 'note ' || (i % 100))
+FROM generate_series(1, 48000) i;
+CREATE TABLE sp_t24000 AS SELECT * FROM sp_all WHERE id <= 24000;
+CREATE TABLE sp_t36000 AS SELECT * FROM sp_all WHERE id <= 36000;
+CREATE TABLE sp_t48000 AS SELECT * FROM sp_all;
+VACUUM (FREEZE, ANALYZE) sp_t24000;
+VACUUM (FREEZE, ANALYZE) sp_t36000;
+VACUUM (FREEZE, ANALYZE) sp_t48000;
+CREATE TABLE peaks (n int, ranges int, chunk_rows int, peak bigint);
+CREATE FUNCTION sp_peak(n int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM count(*) FROM sift._test_mem_highwater(true);
+	EXECUTE format('CREATE INDEX sp_idx ON sp_t%s USING sift_col (id, tenant_id, parent_id, status, created_at, updated_at, a_count, counter_a, kind, label, body, doc)
+		WITH (key_cut = ''parent_id'', paths = ''doc.metrics.* float8, doc.items[]{category text, strength text, score float8, sub text}, doc.label text, doc.note text'')', n);
+	INSERT INTO peaks SELECT n, current_setting('sift.test_col_spool_ranges')::int, current_setting('sift.test_col_spool_used_rows')::int, peak FROM sift._test_mem_highwater(false) WHERE scope = 'col_build_spool';
+	DROP INDEX sp_idx;
+END $$;
+SELECT sp_peak(24000);
+ sp_peak 
+---------
+ 
+(1 row)
+
+SELECT sp_peak(36000);
+ sp_peak 
+---------
+ 
+(1 row)
+
+SELECT sp_peak(48000);
+ sp_peak 
+---------
+ 
+(1 row)
+
+SELECT n, chunk_rows > 0 AS columns, peak > 0 AS measured, peak <= 10000 * 1024 AS under_the_share FROM peaks ORDER BY n;
+   n   | columns | measured | under_the_share 
+-------+---------+----------+-----------------
+ 24000 | t       | t        | t
+ 36000 | t       | t        | t
+ 48000 | t       | t        | t
+(3 rows)
+
+SELECT max(peak / (ranges::numeric * chunk_rows)) < 1024 AS bytes_a_chunk_row_under_1k FROM peaks;
+ bytes_a_chunk_row_under_1k 
+----------------------------
+ t
+(1 row)
+
+-- the plan that ignores its share
+CREATE FUNCTION sp_unbounded(n int) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.test_col_spool_unbounded', '1', true);
+	EXECUTE format('CREATE INDEX sp_idx ON sp_t%s USING sift_col (id, tenant_id, parent_id, status, created_at, updated_at, a_count, counter_a, kind, label, body, doc)
+		WITH (key_cut = ''parent_id'', paths = ''doc.metrics.* float8, doc.items[]{category text, strength text, score float8, sub text}, doc.label text, doc.note text'')', n);
+	DROP INDEX sp_idx;
+	RETURN 'built';
+EXCEPTION WHEN OTHERS THEN
+	RETURN regexp_replace(SQLERRM, '\d+ > \d+', 'N > B');
+END $$;
+SELECT sp_unbounded(48000) AS unbounded_plan;
+                                   unbounded_plan                                   
+------------------------------------------------------------------------------------
+ sift memory budget exceeded: col_build_spool: N > B bytes (col_build_budget + 4MB)
+(1 row)
+
+DROP FUNCTION sp_unbounded(int);
+DROP FUNCTION sp_peak(int);
+DROP TABLE peaks, sp_all, sp_t24000, sp_t36000, sp_t48000;
+RESET sift.test_col_segment_kb;
+RESET sift.test_col_spool_share_kb;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
