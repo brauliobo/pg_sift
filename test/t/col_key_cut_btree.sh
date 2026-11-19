@@ -8,7 +8,8 @@
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_BB_ROWS 120000 40000)
-node_init n 2 "autovacuum = off
+node_init n 2 "sift.col_build_source = auto
+autovacuum = off
 max_worker_processes = 16
 max_parallel_workers = 8
 shared_buffers = 64MB"
