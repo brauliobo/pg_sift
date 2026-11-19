@@ -136,11 +136,18 @@ old_state(Relation old, const SiftColRel *r, FromOld *f, uint64 *entries)
 	SiftColSegment **seg;
 	bool	   *stream;
 	const char *why = NULL;
+	int			nimm = 0,
+				nbuf = 0;
 
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		nimm += snap->segs[i].kind == SIFT_SEG_IMMUTABLE;
+		nbuf += snap->segs[i].kind == SIFT_SEG_WBUF_OPEN || snap->segs[i].kind == SIFT_SEG_WBUF_SEALED;
+	}
 	/* check-memory: allow the entries of a directory, at most SIFT_DIR_WIDE_MAX */
-	f->in = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
+	f->in = palloc(Max(nimm, 1) * sizeof(SiftSegEntry));
 	/* check-memory: allow the entries of a directory, at most SIFT_DIR_WIDE_MAX */
-	f->buffers = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
+	f->buffers = palloc(Max(nbuf, 1) * sizeof(SiftSegEntry));
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
