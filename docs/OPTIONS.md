@@ -34,7 +34,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 105 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 108 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 41 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
@@ -1541,6 +1541,48 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on. Off writes buffers of minor 51, which a 5.0 library reads; set it off only before a downgrade, or where every key of every statement is in every page of the buffer
 - **Sources:** benchmark `test:col_wbuf_keyrange`; [USAGE](USAGE.md#maintenance-and-operations)
 
+#### auto(deletion-records)
+
+`sift_col` · default · since 5.1 · default automatic
+
+- **What it does:** a statement that deletes at least 64 and 0.5% of the rows of a sift_col index with track_changes writes one record in the tombstone log for each unit it touches, where it wrote a 32-byte mark for each row; a read tests one record for a unit and keeps the pre-aggregates of the units that none touches
+- **Gain:** 150,000 rows in 125 units, between the delete and the fold, a filtered scan: 3.8 million instructions with 1% of the rows deleted (32.0 with marks), 9.6 with 10% (59.1), 6.3 with 50% (65.1); an aggregate over the table 2.0, 5.6 and 4.9 million (49.0, 127.2, 136.4); the fold of 15,000 marks 58 million instructions (349)
+- **Impact:** index size: -; build, merge and writes: -; other: Nothing stored in the segments; the log is stamped column format 52 at the first record, which a library before 5.1 refuses. The DELETE statement takes 1.17, 1.08 and 1.09 times the instructions of the same statement with marks at 1%, 10% and 50% of the rows; 0.9 to 4.6 bytes of WAL a row against 34
+- **When:** A DELETE of at least 64 rows and 0.5% of the rows of an index with track_changes, and the reads and the fold that follow it before the rows are cleared.
+- **Default:** automatic — Reads 6 to 28 times cheaper between the DELETE and the fold; the statement costs 8 to 17% more instructions than marks, and the fold of marks 6 to 11 times fewer.
+- **Turn off:** None of its own: a statement under the thresholds writes marks; a library before 5.1 does not write records.
+- **Upgrade from 5.0:** ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the first large delete after the library swap stamps the log 52, and a 5.0 library then refuses the index until it is built again.
+- **Advice:** Leave it: the records are chosen by the statement from what it deletes. VACUUM or the fold clears them; going back to 5.0 needs a VACUUM of the table and a REINDEX (docs/UPGRADING.md).
+- **Sources:** benchmark `test:col_dv_oracle`; [COL-DIRTY-UNITS](COL-DIRTY-UNITS.md)
+
+#### auto(partition-open-by-key)
+
+`sift_col` · default · since 5.1 · default automatic
+
+- **What it does:** an index scan or an aggregate scan whose conditions pin the leading columns of a key_cut to a value, and the next to a range or a short list, opens the segments of the partitions that may hold those keys, not every segment
+- **Gain:** a point read of one key, callgrind, steady backend: aggregate scan 689 to 233 thousand instructions on 43 partitions (561 to 166 on 34, 851 to 213 on 58), index scan 2.77 to 2.29 million on 58; blocks hit 175 to 72 (aggregate), 222 to 143 (scan)
+- **Impact:** index size: -; build, merge and writes: -; other: Nothing stored. An index of one partition pays about 0.8% more instructions (14 thousand of 1.7 million) for the directory read.
+- **When:** A key_cut index of several partitions and a statement with an equality, a range or an IN on its leading key columns.
+- **Default:** automatic — 3 to 4 times fewer instructions for a point read on 34 to 58 partitions; none where the keys are not pinned or the index has one partition.
+- **Turn off:** None: sift.test_col_open_all forces the full open in a testing build only.
+- **Upgrade from 5.0:** ALTER EXTENSION UPDATE: nothing to run. An index of 5.0 is opened by the keys once its partitions are recorded by its first maintenance step.
+- **Advice:** Leave it: the partitions come from the directory and the rows are those of a full open.
+- **Sources:** benchmark `test:col_scan_key_range`; [COL-LAYOUT](COL-LAYOUT.md)
+
+#### auto(chained-directory)
+
+`BM25`, `sift_col`, `sift_table` · default · since 5.1 · default automatic
+
+- **What it does:** an index whose directory outgrows block 1 (128 entries) becomes a chain of pages, up to 32,768 entries, so that a build or merge cuts a segment when its writer holds its share of maintenance_work_mem however many segments that makes
+- **Gain:** the writer of a build or merge holds the same bytes for 16,000 rows as for 132,000 (test col_writer_terms_mem); instr-budget-dirread: the chain adds 1.38% (250 partitions), 1.16% (500) and 0.94% (1,000) of the statement (gate 2%)
+- **Impact:** index size: -; build, merge and writes: -; other: A chain of one root and one leaf costs a read of two pages more than block 1; the directory of a chain of 1,000 partitions is read in 5 to 104 pages of 1,012 by the prefix of the key. Metapage 1.7, which a library before 5.1 refuses with the format error; no path leads back to block 1.
+- **When:** An index of more than 128 segments, a key_cut index whose partitions are recorded, and a build or merge that makes more segments than one page holds.
+- **Default:** automatic — No limit of 128 segments (121 per build); memory flat in the rows of a writer; maintenance bounded by a partition.
+- **Turn off:** None: a chained directory never returns to block 1; REINDEX writes a new index that starts in block 1.
+- **Upgrade from 5.0:** ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the first directory update that does not fit block 1 chains it, and a 5.0 library then refuses the index.
+- **Advice:** Nothing to set: the chain starts when the directory needs it. REINDEX with the 5.0 files installed writes an index that 5.0 reads.
+- **Sources:** benchmark `test:store_dirchain`; [COL-LAYOUT](COL-LAYOUT.md)
+
 ### opt-in
 
 #### sift(analyzer)
@@ -2820,6 +2862,9 @@ Defaults changed: sift.backend_cache_kb since 5.0; new: `sift.col_wbuf_key_range
 | `sift.agg_scope` | on | on |  | New in 5.0. |
 | `sift.scope_max_multiplicity` | 3 | 3 |  | New in 5.0. |
 | `sift.col_wbuf_key_range` | new | on |  | 5.0 reads and writes no minor 55: an index whose buffer was made by 5.1 with the setting on is refused by 5.0 until REINDEX with the setting off; indexes made by 5.0 are read as they are (no REINDEX), and take the setting at the next REINDEX |
+| `auto(deletion-records)` | automatic | automatic |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the first large delete after the library swap stamps the log 52, and a 5.0 library then refuses the index until it is built again. |
+| `auto(partition-open-by-key)` | automatic | automatic |  | ALTER EXTENSION UPDATE: nothing to run. An index of 5.0 is opened by the keys once its partitions are recorded by its first maintenance step. |
+| `auto(chained-directory)` | automatic | automatic |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the first directory update that does not fit block 1 chains it, and a 5.0 library then refuses the index. |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts
