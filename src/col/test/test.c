@@ -13,12 +13,13 @@
 #include "utils/array.h"
 #include "agg/agg.h"
 #include "agg/cost/model.h"
+#include "bm25/maint.h"
 #include "col/am.h"
 #include "col/gorder.h"
 #include "col/order_bound.h"
 #include "col/order_sort.h"
 #include "col/pagg.h"
-#include "core/dirchain.h"
+#include "core/dirpart.h"
 #include "core/sql.h"
 #include "core/visibility.h"
 #endif							/* SIFT_TESTING */
@@ -37,7 +38,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_formats);
 PG_FUNCTION_INFO_V1(sift_test_col_segment_keys);
 PG_FUNCTION_INFO_V1(sift_test_col_part_bounds);
 PG_FUNCTION_INFO_V1(sift_test_col_part_shift);
-PG_FUNCTION_INFO_V1(sift_test_col_cut_near);
+PG_FUNCTION_INFO_V1(sift_test_col_adopt);
 
 PG_FUNCTION_INFO_V1(sift_test_col_mirror);
 
@@ -140,6 +141,20 @@ sift_test_col_segment_keys(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
+/* sift._test_col_adopt(index): the step of the maintenance that records the partitions of a key-cut index that none was: whether it recorded any */
+Datum
+sift_test_col_adopt(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), RowExclusiveLock, "sift_col");
+	bool		recorded;
+
+	sift_maint_lock(index, true);
+	recorded = sift_col_adopt_partitions(index);
+	sift_maint_unlock(index);
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_BOOL(recorded);
+}
+
 typedef struct PartShift
 {
 	uint32		first;
@@ -156,13 +171,6 @@ shift_partition(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void
 	for (uint32 i = 0; i < ps->n; i++)
 		gens[i] = dir->segs[ps->first + i].gen;
 	sift_dir_part_replace(gens, ps->n, &dir->segs[ps->first], ps->n, (const uint8 (*)[SIFT_BOUND_BYTES]) ps->lo);
-}
-
-/* sift._test_col_cut_near(held, due_at, slack_pct, open): is a segment of held bytes done after a unit (col/order_bound.c) */
-Datum
-sift_test_col_cut_near(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_BOOL(sift_colk_cut_near(PG_GETARG_INT64(0), PG_GETARG_INT64(1), PG_GETARG_INT32(2), PG_GETARG_BOOL(3)));
 }
 
 /* sift._test_col_part_shift(index, k): records the lower bound of the partition k+1 as that of the partition k, which then starts above rows it holds: what the check of a partition's rows finds */
@@ -202,54 +210,50 @@ sift_test_col_part_bounds(PG_FUNCTION_ARGS)
 	SiftDirSnapshot *snap = sift_dir_read(index);
 	SiftDirPart *part;
 	SiftSegEntry *segs;
-	SiftDirChain chain;
+	int			np = sift_dir_parts_read(index, snap, &segs, &part);
 
 	InitMaterializedSRF(fcinfo, 0);
-	if (snap->nchain > 0)
+	for (int k = 0; k < np; k++)
 	{
-		(void) sift_dirchain_read(index, snap->chain[0], snap->version, 0, &segs, &chain);
-		for (int k = 0, np = sift_dirchain_parts(&chain, &part); k < np; k++)
+		SiftBound	lo,
+					next;
+		bool		from_lo = true,
+					below_next = true;
+		Datum		v[6];
+		bool		nulls[6] = {false};
+		StringInfoData text;
+
+		if (!sift_bound_unpack(part[k].lo, &lo) || (k + 1 < np && !sift_bound_unpack(part[k + 1].lo, &next)))
+			elog(ERROR, "sift test: the bound of a partition is no bound");
+		for (uint32 e = part[k].first; e < part[k].first + part[k].n; e++)
 		{
-			SiftBound	lo,
-						next;
-			bool		from_lo = true,
-						below_next = true;
-			Datum		v[6];
-			bool		nulls[6] = {false};
-			StringInfoData text;
+			SiftColSegment *seg = sift_cseg_open(index, &segs[e], CurrentMemoryContext);
 
-			if (!sift_bound_unpack(part[k].lo, &lo) || (k + 1 < np && !sift_bound_unpack(part[k + 1].lo, &next)))
-				elog(ERROR, "sift test: the bound of a partition is no bound");
-			for (uint32 e = part[k].first; e < part[k].first + part[k].n; e++)
-			{
-				SiftColSegment *seg = sift_cseg_open(index, &segs[e], CurrentMemoryContext);
-
-				from_lo &= sift_colk_rows_within(seg, &lo, NULL);
-				below_next &= sift_colk_rows_within(seg, NULL, k + 1 < np ? &next : NULL);
-				sift_cseg_close(seg);
-			}
-			initStringInfo(&text);
-			for (uint32 c = 0; c < SIFT_BOUND_COMPS; c++)
-			{
-				int64		key;
-				SiftComp	kind = sift_bound_comp(&lo, c, &key);
-
-				if (kind == SIFT_COMP_NONE)
-					break;
-				appendStringInfoString(&text, c > 0 ? "," : "");
-				if (kind == SIFT_COMP_NULL)
-					appendStringInfoString(&text, "NULL");
-				else
-					appendStringInfo(&text, INT64_FORMAT, key);
-			}
-			v[0] = Int32GetDatum((int32) part[k].first);
-			v[1] = Int32GetDatum((int32) part[k].n);
-			v[5] = CStringGetTextDatum(text.data);
-			v[2] = BoolGetDatum(lo.len == 0);
-			v[3] = BoolGetDatum(from_lo);
-			v[4] = BoolGetDatum(below_next);
-			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+			from_lo &= sift_colk_rows_within(seg, &lo, NULL);
+			below_next &= sift_colk_rows_within(seg, NULL, k + 1 < np ? &next : NULL);
+			sift_cseg_close(seg);
 		}
+		initStringInfo(&text);
+		for (uint32 c = 0; c < SIFT_BOUND_COMPS; c++)
+		{
+			int64		key;
+			SiftComp	kind = sift_bound_comp(&lo, c, &key);
+
+			if (kind == SIFT_COMP_NONE)
+				break;
+			appendStringInfoString(&text, c > 0 ? "," : "");
+			if (kind == SIFT_COMP_NULL)
+				appendStringInfoString(&text, "NULL");
+			else
+				appendStringInfo(&text, INT64_FORMAT, key);
+		}
+		v[0] = Int32GetDatum((int32) part[k].first);
+		v[1] = Int32GetDatum((int32) part[k].n);
+		v[5] = CStringGetTextDatum(text.data);
+		v[2] = BoolGetDatum(lo.len == 0);
+		v[3] = BoolGetDatum(from_lo);
+		v[4] = BoolGetDatum(below_next);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;

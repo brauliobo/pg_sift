@@ -70,6 +70,12 @@ extern bool sift_range_contains(const SiftRange *r, const SiftBound *key);
 extern bool sift_range_meets_prefix(const SiftRange *r, const SiftBound *prefix);
 
 /*
+ * The heaviest set of the n closed ranges r[i] = [lo, hi] (hi a bound) that are strictly apart (the hi of each below the lo of the next), with the weight of each: their indexes
+ * ascending in out[] (room for n), and their number. What a set of segments that tile the key range is, picked among the segments of one directory.
+ */
+extern uint32_t sift_range_apart(const SiftRange *r, const uint64_t *weight, uint32_t n, uint32_t *out);
+
+/*
  * The partitions of a tiling that hold keys with a prefix, as the contiguous span [*first, *last) of the n partitions whose lower bounds, ascending, at(refs, i) gives. The keys of the index have
  * ncomp components and an address: the span is from the partition of the lowest key with the prefix to that of the highest. It is empty (first == last) only when the first partition starts above
  * every such key, which a tiling that begins with the empty bound never does.

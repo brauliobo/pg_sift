@@ -247,6 +247,7 @@ extern const char *sift_col_scope_key(Relation heap, Relation index, bool build)
 extern int	sift_test_col_rollup_panic;
 extern int	sift_test_col_rollup_panic_armed;
 extern bool sift_test_col_merge_panic;
+extern bool sift_test_col_record_partitions;
 extern int sift_test_col_merge_error;
 extern int	sift_test_col_refresh_sleep_ms;		/* sift.test_col_refresh_sleep_ms: the refresh of a segment sleeps this long once the new segment is written */
 extern int	sift_test_col_refresh_sleep_armed;
@@ -476,6 +477,8 @@ extern void sift_col_vacuum_notice(Relation heap, Relation index);
 extern BlockNumber sift_col_build_gap(Relation heap, Relation index);
 extern void sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers);
 extern void sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int nslices, SiftSegEntry *out);
+/* Records the partitions of a key-cut index that no step has (an index of 5.0): one directory update, no segment written, no generation changed. Under the maintenance lock; whether it recorded any */
+extern bool sift_col_adopt_partitions(Relation index);
 extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftSegEntry *out, int nout, TimestampTz start, int part_first, int part_n, const SiftBound *lo0);
 extern bool sift_col_autovacuum_enabled(Relation heap);
 extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, TimestampTz *last);

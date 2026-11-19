@@ -61,7 +61,9 @@ typedef struct Counts
 				range,
 				range_bad,
 				depth,
-				depth_bad;
+				depth_bad,
+				apart,
+				apart_bad;
 } Counts;
 
 static int
@@ -451,8 +453,72 @@ check_range(SiftRng *r, Counts *c, const Key *bounds, int nbounds)
 	c->range_bad += bad;
 }
 
+enum
+{
+	APART_N = 9
+};
+
+/* Are the closed ranges a and b strictly apart: the end of one below the start of the other, by the tuples */
+static bool
+ranges_apart(const Key a[2], const Key b[2])
+{
+	return key_cmp(&a[1], &b[0]) < 0 || key_cmp(&b[1], &a[0]) < 0;
+}
+
+/* The heaviest set of strictly apart ranges that sift_range_apart picks, against every subset of the ranges: as heavy as the best, and each range apart from the next, in ascending order */
+static void
+check_apart(SiftRng *r, Counts *c)
+{
+	Key			k[APART_N][2];
+	SiftRange	rg[APART_N];
+	uint64_t	w[APART_N],
+				best = 0,
+				got = 0;
+	uint32_t	out[APART_N];
+	uint32_t	n = 1 + below(r, APART_N),
+				np;
+	bool		bad = false;
+
+	for (uint32_t i = 0; i < n; i++)
+	{
+		random_any(r, &k[i][0], false);
+		random_any(r, &k[i][1], false);
+		if (key_cmp(&k[i][0], &k[i][1]) > 0)
+		{
+			Key			t = k[i][0];
+
+			k[i][0] = k[i][1];
+			k[i][1] = t;
+		}
+		encode(&k[i][0], &rg[i].lo);
+		encode(&k[i][1], &rg[i].hi);
+		w[i] = 1 + below(r, 9);
+	}
+	for (uint32_t mask = 1; mask < (1u << n); mask++)
+	{
+		uint64_t	sum = 0;
+		bool		apart = true;
+
+		for (uint32_t i = 0; i < n; i++)
+			for (uint32_t j = i + 1; j < n && (mask >> i & 1); j++)
+				apart &= !(mask >> j & 1) || ranges_apart(k[i], k[j]);
+		for (uint32_t i = 0; i < n; i++)
+			sum += (mask >> i & 1) ? w[i] : 0;
+		if (apart && sum > best)
+			best = sum;
+	}
+	np = sift_range_apart(rg, w, n, out);
+	for (uint32_t i = 0; i < np; i++)
+	{
+		got += w[out[i]];
+		bad |= i > 0 && !(key_cmp(&k[out[i - 1]][1], &k[out[i]][0]) < 0);
+	}
+	c->apart++;
+	c->apart_bad += bad || got != best;
+}
+
 /*
- * (seed int8, rounds int4) returns int8[]: for each of order, successor, span, range, depth the checks made and the checks that failed, in that order: failures are 0 when the bounds are right
+ * (seed int8, rounds int4) returns int8[]: for each of order, successor, span, range, depth, apart the checks made and the checks that failed, in that order: failures are 0 when the bounds are right
  */
 Datum
 sift_test_range_check(PG_FUNCTION_ARGS)
@@ -464,7 +530,7 @@ sift_test_range_check(PG_FUNCTION_ARGS)
 	Key		   *bounds = palloc(MAX_BOUNDS * sizeof(Key));
 	int			nbounds;
 	int			nkeys[SIFT_BOUND_COMPS + 1];
-	Datum		out[10];
+	Datum		out[12];
 
 	sift_rng_seed(&rng, (uint64_t) PG_GETARG_INT64(0));
 	for (int a = 1; a <= SIFT_BOUND_COMPS; a++)
@@ -481,6 +547,7 @@ sift_test_range_check(PG_FUNCTION_ARGS)
 		check_next(&rng, &c);
 		check_span(&rng, &c, keys[ncomp], nkeys[ncomp], ncomp);
 		check_range(&rng, &c, bounds, nbounds);
+		check_apart(&rng, &c);
 	}
 	out[0] = Int64GetDatum(c.order);
 	out[1] = Int64GetDatum(c.order_bad);
@@ -492,7 +559,9 @@ sift_test_range_check(PG_FUNCTION_ARGS)
 	out[7] = Int64GetDatum(c.range_bad);
 	out[8] = Int64GetDatum(c.depth);
 	out[9] = Int64GetDatum(c.depth_bad);
-	PG_RETURN_ARRAYTYPE_P(construct_array_builtin(out, 10, INT8OID));
+	out[10] = Int64GetDatum(c.apart);
+	out[11] = Int64GetDatum(c.apart_bad);
+	PG_RETURN_ARRAYTYPE_P(construct_array_builtin(out, 12, INT8OID));
 }
 
 #endif							/* SIFT_TESTING */

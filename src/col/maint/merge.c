@@ -19,6 +19,7 @@ static bool merge_recut;
 int			sift_test_col_rollup_panic_armed = 0;
 
 bool		sift_test_col_merge_panic = false;
+bool		sift_test_col_record_partitions = true;
 int			sift_test_col_merge_error = 0;
 
 int			sift_test_col_refresh_sleep_armed = 0;
@@ -515,6 +516,10 @@ sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftS
 	uint8		(*lo)[SIFT_BOUND_BYTES] = palloc(Max(part_n, 1) * SIFT_BOUND_BYTES);
 	int64		docs = 0;
 
+#ifdef SIFT_TESTING
+	if (!sift_test_col_record_partitions)
+		part_n = 0;
+#endif
 	for (int i = 0; i < nout; i++)
 		docs += out[i].ndocs;
 	if (part_n > 0)
@@ -598,6 +603,7 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	SiftSegEntry *all;
 	int			nall = 0;
 
+	sift_col_adopt_partitions(index);
 	snap = sift_dir_read(index);
 	int total = snap->nsegs;
 

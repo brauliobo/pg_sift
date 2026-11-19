@@ -226,3 +226,18 @@ sift_dirpart_leave(SiftDirParts *e)
 	if (e->of != NULL)
 		pfree(e->of);
 }
+
+int
+sift_dir_parts_read(Relation index, const SiftDirSnapshot *snap, SiftSegEntry **segs, SiftDirPart **parts)
+{
+	SiftDirChain chain;
+
+	*parts = NULL;
+	if (snap->nchain == 0)
+	{
+		*segs = snap->segs;
+		return 0;
+	}
+	(void) sift_dirchain_read(index, snap->chain[0], snap->version, 0, segs, &chain);
+	return sift_dirchain_parts(&chain, parts);
+}

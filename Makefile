@@ -274,6 +274,7 @@ TESTING_REGRESS += col_option_names_bytes
 TESTING_REGRESS += col_order_layout
 TESTING_REGRESS += col_ordered_budget
 TESTING_REGRESS += col_overlay_unordered
+TESTING_REGRESS += col_partition_adopt
 TESTING_REGRESS += col_paths_auto
 TESTING_REGRESS += col_peers_dead_scan
 TESTING_REGRESS += col_point_array

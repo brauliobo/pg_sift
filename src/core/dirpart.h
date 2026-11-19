@@ -5,6 +5,7 @@
 #define SIFT_DIRPART_H
 
 #include "core/dirchain.h"
+#include "core/store.h"
 
 /* The partition an entry is in, by generation: the lineage and the bound of the partition */
 typedef struct SiftPartOf
@@ -28,5 +29,8 @@ extern void sift_dirpart_enter(SiftDirParts *e);
 extern void sift_dirpart_leave(SiftDirParts *e);
 /* The entries of no partition first, then each partition's, by bound; the partitions as the chain keeps them. Returns their number */
 extern int	sift_dirpart_arrange(Relation index, const SiftDirParts *e, SiftSegEntry *segs, int n, SiftDirPart **parts);
+
+/* The partitions the directory of index has as snap read it, in directory order (palloc'd), and the entries they are of: none, and the entries of snap, when it is not chained */
+extern int	sift_dir_parts_read(Relation index, const SiftDirSnapshot *snap, SiftSegEntry **segs, SiftDirPart **parts);
 
 #endif							/* SIFT_DIRPART_H */

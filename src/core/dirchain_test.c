@@ -7,7 +7,7 @@
  */
 #include "store_test_int.h"
 #include "col/order_bound.h"
-#include "core/dirchain.h"
+#include "core/dirpart.h"
 #include "core/store_int.h"
 #include "nodes/bitmapset.h"
 
@@ -208,21 +208,15 @@ sift_test_dir_parts(PG_FUNCTION_ARGS)
 	SiftDirSnapshot *snap = sift_dir_read(index);
 	SiftDirPart *parts;
 	SiftSegEntry *segs;
-	SiftDirChain chain;
-	int			np;
+	int			np = sift_dir_parts_read(index, snap, &segs, &parts);
 
 	InitMaterializedSRF(fcinfo, 0);
-	if (snap->nchain > 0)
+	for (int i = 0; i < np; i++)
 	{
-		(void) sift_dirchain_read(index, snap->chain[0], snap->version, 0, &segs, &chain);
-		np = sift_dirchain_parts(&chain, &parts);
-		for (int i = 0; i < np; i++)
-		{
-			Datum		values[4] = {Int32GetDatum(parts[i].first), Int32GetDatum(parts[i].n), Int64GetDatum(parts[i].lineage), Int64GetDatum(segs[parts[i].first].gen)};
-			bool		nulls[4] = {0};
+		Datum		values[4] = {Int32GetDatum(parts[i].first), Int32GetDatum(parts[i].n), Int64GetDatum(parts[i].lineage), Int64GetDatum(segs[parts[i].first].gen)};
+		bool		nulls[4] = {0};
 
-			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
-		}
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
 	relation_close(index, AccessShareLock);
 	return (Datum) 0;
@@ -237,37 +231,33 @@ sift_test_dir_part_bounds(PG_FUNCTION_ARGS)
 	SiftDirSnapshot *snap = sift_dir_read(index);
 	SiftDirPart *parts;
 	SiftSegEntry *segs;
-	SiftDirChain chain;
+	int			np = sift_dir_parts_read(index, snap, &segs, &parts);
 
 	InitMaterializedSRF(fcinfo, 0);
-	if (snap->nchain > 0)
+	for (int i = 0; i < np; i++)
 	{
-		(void) sift_dirchain_read(index, snap->chain[0], snap->version, 0, &segs, &chain);
-		for (int i = 0, np = sift_dirchain_parts(&chain, &parts); i < np; i++)
-		{
-			BoundKey	want = part_key(segs[parts[i].first].gen),
-						got;
-			SiftBound	b,
-						packed;
-			uint8		bytes[SIFT_BOUND_BYTES];
-			bool		stored = sift_bound_unpack(parts[i].lo, &b);
-			BoundKey	lowest;
-			SiftBound	first_leaf;
-			Datum		values[3];
-			bool		nulls[3] = {0};
+		BoundKey	want = part_key(segs[parts[i].first].gen),
+					got;
+		SiftBound	b,
+					packed;
+		uint8		bytes[SIFT_BOUND_BYTES];
+		bool		stored = sift_bound_unpack(parts[i].lo, &b);
+		BoundKey	lowest;
+		SiftBound	first_leaf;
+		Datum		values[3];
+		bool		nulls[3] = {0};
 
-			if (stored)
-				sift_colk_bound_unpack(&two_leaves, &b, &got);
-			sift_colk_bound_pack(&two_leaves, &want, &packed);
-			sift_bound_pack(&packed, bytes);
-			sift_colk_bound_pack(&one_leaf, &want, &first_leaf);
-			sift_colk_bound_unpack(&two_leaves, &first_leaf, &lowest);
-			values[0] = Int32GetDatum(parts[i].first);
-			values[1] = BoolGetDatum(stored && memcmp(&got.k, &want.k, sizeof(want.k)) == 0 && memcmp(&got.nul, &want.nul, sizeof(want.nul)) == 0 &&
-									 memcmp(bytes, parts[i].lo, SIFT_BOUND_BYTES) == 0);
-			values[2] = BoolGetDatum(lowest.k[0] == want.k[0] && lowest.k[1] == PG_INT64_MIN && !lowest.nul[0] && !lowest.nul[1]);
-			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
-		}
+		if (stored)
+			sift_colk_bound_unpack(&two_leaves, &b, &got);
+		sift_colk_bound_pack(&two_leaves, &want, &packed);
+		sift_bound_pack(&packed, bytes);
+		sift_colk_bound_pack(&one_leaf, &want, &first_leaf);
+		sift_colk_bound_unpack(&two_leaves, &first_leaf, &lowest);
+		values[0] = Int32GetDatum(parts[i].first);
+		values[1] = BoolGetDatum(stored && memcmp(&got.k, &want.k, sizeof(want.k)) == 0 && memcmp(&got.nul, &want.nul, sizeof(want.nul)) == 0 &&
+								 memcmp(bytes, parts[i].lo, SIFT_BOUND_BYTES) == 0);
+		values[2] = BoolGetDatum(lowest.k[0] == want.k[0] && lowest.k[1] == PG_INT64_MIN && !lowest.nul[0] && !lowest.nul[1]);
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
 	relation_close(index, AccessShareLock);
 	return (Datum) 0;

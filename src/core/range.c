@@ -3,6 +3,7 @@
  */
 #include <string.h>
 
+#include "core/host.h"
 #include "core/range.h"
 
 enum
@@ -294,4 +295,68 @@ sift_prefix_span(const void *refs, SiftBoundAt at, uint32_t n, uint32_t ncomp, c
 
 	*first = upto > 0 ? upto - 1 : 0;
 	*last = sift_bound_prefix_next(prefix, &next) ? count_below(refs, at, n, &next, false) : n;
+}
+
+/* The number of the first c candidates (ascending by their hi) whose hi is below lo */
+static uint32_t
+count_hi_below(const SiftRange *r, const uint32_t *cand, uint32_t c, const SiftBound *lo)
+{
+	uint32_t	a = 0,
+				b = c;
+
+	while (a < b)
+	{
+		uint32_t	mid = a + (b - a) / 2;
+
+		if (sift_bound_cmp(&r[cand[mid]].hi, lo) < 0)
+			a = mid + 1;
+		else
+			b = mid;
+	}
+	return a;
+}
+
+uint32_t
+sift_range_apart(const SiftRange *r, const uint64_t *weight, uint32_t n, uint32_t *out)
+{
+	uint32_t   *cand = palloc((n + 1) * sizeof(uint32_t)),
+			   *before = palloc((n + 1) * sizeof(uint32_t));
+	uint64_t   *best = palloc0((n + 1) * sizeof(uint64_t));
+	bool	   *used = palloc((n + 1) * sizeof(bool));
+	uint32_t	np = 0;
+
+	for (uint32_t i = 0, k; i < n; i++)
+	{
+		for (k = i; k > 0 && sift_bound_cmp(&r[cand[k - 1]].hi, &r[i].hi) > 0; k--)
+			cand[k] = cand[k - 1];
+		cand[k] = i;
+	}
+	for (uint32_t c = 0; c < n; c++)
+	{
+		before[c] = count_hi_below(r, cand, c, &r[cand[c]].lo);
+		used[c] = best[before[c]] + weight[cand[c]] > best[c];
+		best[c + 1] = used[c] ? best[before[c]] + weight[cand[c]] : best[c];
+	}
+	for (uint32_t c = n; c > 0;)
+	{
+		if (!used[c - 1])
+			c--;
+		else
+		{
+			out[np++] = cand[c - 1];
+			c = before[c - 1];
+		}
+	}
+	for (uint32_t k = 0; k < np / 2; k++)
+	{
+		uint32_t	t = out[k];
+
+		out[k] = out[np - 1 - k];
+		out[np - 1 - k] = t;
+	}
+	pfree(cand);
+	pfree(before);
+	pfree(best);
+	pfree(used);
+	return np;
 }
