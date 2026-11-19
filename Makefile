@@ -271,6 +271,7 @@ TESTING_REGRESS += col_merge_growth
 TESTING_REGRESS += col_merge_idempotent
 TESTING_REGRESS += col_merge_key_cut_minimum
 TESTING_REGRESS += col_merge_keys
+TESTING_REGRESS += col_merge_partition_setting
 TESTING_REGRESS += col_merge_settled
 TESTING_REGRESS += col_minmax_runs
 TESTING_REGRESS += col_option_names_bytes
