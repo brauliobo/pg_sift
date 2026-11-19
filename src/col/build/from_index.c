@@ -18,6 +18,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "core/membudget.h"
+#include "core/quarantine.h"
 #include "col/build/build_int.h"
 #include "col/conn.h"
 #include "col/scope.h"
@@ -349,7 +350,7 @@ colb_old_open(Relation heap, Relation index, IndexInfo *info)
 	o->view = view;
 	r = sift_col_rel(index);
 	if ((o->why = new_layout_refused(index, r)) == NULL)
-		o->why = old_state(view, r, &o->from, &o->rows);
+		o->why = sift_index_quarantined(view) ? "the index is out of service" : old_state(view, r, &o->from, &o->rows);
 	o->blocks = RelationGetNumberOfBlocks(view);
 	return o;
 }
