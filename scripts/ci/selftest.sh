@@ -211,7 +211,7 @@ if [[ $MODE == --selftest ]]; then
 		done
 	fi
 	if st_on shards-quick; then
-		# the quick tier of every flavour (PostgreSQL 17, 18, 19, arm64) is cut by weight: every job once, the shards within 15% of each other (the jobs after the pool counted in the last), and each
+		# the quick tier of every flavour (PostgreSQL 17, 18, 19, arm64) is cut by weight: every job once, the shards within 15% of each other (the jobs after the pool counted in the last, times the lanes they idle), and each
 		# shard queues its jobs heaviest first
 		for fl in 17 18 19 arm; do
 		for ns in 3 4; do
@@ -219,10 +219,11 @@ if [[ $MODE == --selftest ]]; then
 			got= lo='' hi=0
 			for (( k = 1; k <= ns; k++ )); do
 				plan_of quick $fl '' $k/$ns; got+=$PLAN_OUT$'\n'; l=0 prev=0
-				while read -r j _; do
-					MODE=quick weight_of "$j" '' $fl; l=$(( l + WEIGHT ))
+				while read -r j _ where _; do
+					MODE=quick weight_of "$j" '' $fl
 					(( prev == 0 || WEIGHT <= prev )) || { echo "FAIL: shard $k/$ns of the quick tier on $fl queues $j ($WEIGHT s) after a lighter job ($prev s)"; bad=1; }
 					prev=$WEIGHT
+					[[ $where == after ]] && l=$(( l + WEIGHT * AFTER_LANES )) || l=$(( l + WEIGHT ))
 				done <<<"$PLAN_OUT"
 				(( l > hi )) && hi=$l
 				[[ -z $lo ]] || (( l < lo )) && lo=$l

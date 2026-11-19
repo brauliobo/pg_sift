@@ -6,6 +6,7 @@ SLOW_REGRESS="tbl_bigtx tbl_writepath build_large_docs index_build_postings filt
 COL_SLICES_LEAN=8 COL_SLICES_DEEP=12 COL_SLICES_DEEP17=18   # slices of the column differential jobs of the full tier (below): the deep tier cuts them finer so that no job passes the hour, and before 18 runs the first half of twelfths
 COL_SLICES=$COL_SLICES_LEAN; [[ -z ${SIFT_CI_DEEP:-} ]] || COL_SLICES=$COL_SLICES_DEEP
 JOB_WEIGHT_DEFAULT=10
+AFTER_LANES=4   # the lanes of a hosted runner: a job that runs after the pool runs alone, so each second of it costs this many lane seconds of the shard
 # the shards are cut by the lane seconds each job took on its PostgreSQL major in a hosted run (scripts/ci-times.py --weights, the run is named in the header of each file; the other jobs
 # weigh JOB_WEIGHT_DEFAULT): scripts/weights-quick.tsv (the quick tier), weights-full.tsv (the full tier), weights-deep.tsv (the deep full tier).
 # Each line is: job, seconds on 17, on 18, on 19 (built from git) and on arm64; a file without the last two (the full tiers run on x86-64 17 and 18) weighs them like 18.
