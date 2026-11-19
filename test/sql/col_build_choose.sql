@@ -29,17 +29,17 @@ VACUUM (FREEZE, ANALYZE) ch_sorted, ch_noisy, ch_plain;
 CREATE FUNCTION ch_path() RETURNS text LANGUAGE sql AS
 $$ SELECT (ARRAY['heap', 'btree', 'old index'])[1 + current_setting('sift.test_col_build_source_used')::int] $$;
 
--- a build of the table's index: the path it took, whether it wrote temporary files and whether it read the heap (PostgreSQL 17 counts one access of the table in every REINDEX, 18 and 19 none)
-CREATE TABLE ch_mark (heap_buffers bigint, temp_bytes bigint);
-CREATE FUNCTION ch_start(t regclass) RETURNS void LANGUAGE plpgsql AS $$
+-- a build of the table's index: the path it took, whether it wrote temporary files and whether it accessed a buffer of the table itself (sift.test_col_build_table_buffers:
+-- what PostgreSQL reads of the table's files after the build, a page of the visibility map, is not the build's)
+CREATE TABLE ch_mark (temp_bytes bigint);
+CREATE FUNCTION ch_start() RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
 	TRUNCATE ch_mark;
-	INSERT INTO ch_mark SELECT coalesce((SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relid = t), 0),
-		(SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database());
+	INSERT INTO ch_mark SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database();
 END $$;
-CREATE FUNCTION ch_note(t regclass) RETURNS TABLE (path text, temp_files bool, reads_heap bool) LANGUAGE sql AS $$
+CREATE FUNCTION ch_note() RETURNS TABLE (path text, temp_files bool, reads_heap bool) LANGUAGE sql AS $$
 	SELECT ch_path(), (SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database()) > m.temp_bytes,
-		coalesce((SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relid = t), 0) - m.heap_buffers > 1 FROM ch_mark m $$;
+		current_setting('sift.test_col_build_table_buffers')::int > 0 FROM ch_mark m $$;
 
 \set ci_sorted 'CREATE INDEX ch_sorted_idx ON ch_sorted USING sift_col (id, k, g, note, pad) WITH (key_cut = ''k'')'
 \set ci_noisy 'CREATE INDEX ch_noisy_idx ON ch_noisy USING sift_col (id, k, g, note, pad) WITH (key_cut = ''k'')'
@@ -64,17 +64,17 @@ CREATE FUNCTION ch_units(t regclass) RETURNS numeric LANGUAGE sql AS $$
 -- the table in the order of the key, with a btree on it: CREATE INDEX reads the heap through the btree, the rows of the old index are cheaper still for the REINDEX that follows
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_sorted');
+SELECT ch_start();
 :ci_sorted;
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_sorted');
+SELECT * FROM ch_note();
 SELECT ch_units('ch_sorted') AS units, ch_same('ch_sorted') AS same_rows, sift.col_verify('ch_sorted_idx', true);
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_sorted');
+SELECT ch_start();
 REINDEX INDEX ch_sorted_idx;
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_sorted');
+SELECT * FROM ch_note();
 SELECT ch_units('ch_sorted') AS units, ch_same('ch_sorted') AS same_rows, sift.col_verify('ch_sorted_idx', true);
 
 -- the opt-out reads the heap for both, with the key ranges' files
@@ -82,63 +82,63 @@ SET sift.col_build_source = heap;
 DROP INDEX ch_sorted_idx;
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_sorted');
+SELECT ch_start();
 :ci_sorted;
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_sorted');
+SELECT * FROM ch_note();
 SELECT ch_units('ch_sorted') AS units, ch_same('ch_sorted') AS same_rows, sift.col_verify('ch_sorted_idx', true);
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_sorted');
+SELECT ch_start();
 REINDEX INDEX ch_sorted_idx;
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_sorted');
+SELECT * FROM ch_note();
 SET sift.col_build_source = auto;
 
 -- a table whose key is displaced: the key ranges are cheaper than the btree for CREATE INDEX, and the old index is cheaper than the key ranges for the REINDEX
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_noisy');
+SELECT ch_start();
 :ci_noisy;
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_noisy');
+SELECT * FROM ch_note();
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_noisy');
+SELECT ch_start();
 REINDEX INDEX ch_noisy_idx;
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_noisy');
+SELECT * FROM ch_note();
 SELECT ch_units('ch_noisy') AS units, ch_same('ch_noisy') AS same_rows, sift.col_verify('ch_noisy_idx', true);
 
 -- no btree at all: the heap for CREATE INDEX, the old index for REINDEX
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_plain');
+SELECT ch_start();
 :ci_plain;
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_plain');
+SELECT * FROM ch_note();
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_plain');
+SELECT ch_start();
 REINDEX INDEX ch_plain_idx;
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_plain');
+SELECT * FROM ch_note();
 SELECT ch_units('ch_plain') AS units, ch_same('ch_plain') AS same_rows, sift.col_verify('ch_plain_idx', true);
 
 -- an old index that cannot give the rows (another column format minor is asked for) is built from the heap
 SET sift.col_format_minor = 14;
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_sorted');
+SELECT ch_start();
 REINDEX INDEX ch_sorted_idx;
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_sorted');
+SELECT * FROM ch_note();
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_plain');
+SELECT ch_start();
 REINDEX INDEX ch_plain_idx;
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_plain');
+SELECT * FROM ch_note();
 RESET sift.col_format_minor;
 SELECT ch_same('ch_sorted') AS same_rows, sift.col_verify('ch_sorted_idx', true);
 
@@ -170,25 +170,25 @@ SET sift.test_col_choose_mutant = 1;
 DROP INDEX ch_noisy_idx;
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_noisy');
+SELECT ch_start();
 :ci_noisy;
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_noisy');
+SELECT * FROM ch_note();
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_noisy');
+SELECT ch_start();
 REINDEX INDEX ch_noisy_idx;
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_noisy');
+SELECT * FROM ch_note();
 SET sift.test_col_choose_mutant = 0;
 SET sift.test_col_temp_free_kb = 100;
 DROP INDEX ch_noisy_idx;
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_noisy');
+SELECT ch_start();
 :ci_noisy;
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_noisy');
+SELECT * FROM ch_note();
 SET sift.test_col_choose_mutant = 2;
 DROP INDEX ch_noisy_idx;
 CREATE FUNCTION ch_refused() RETURNS text LANGUAGE plpgsql AS $$
@@ -222,10 +222,10 @@ DELETE FROM ch_bloat WHERE id % 5 = 0;
 SET sift.test_col_build_btree = 1;
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
-SELECT ch_start('ch_bloat');
+SELECT ch_start();
 CREATE INDEX ch_bloat_idx ON ch_bloat USING sift_col (id, k, g, note, pad) WITH (key_cut = 'k');
 SELECT pg_stat_force_next_flush() \gset
-SELECT * FROM ch_note('ch_bloat');
+SELECT * FROM ch_note();
 SELECT current_setting('sift.test_col_btree_entries')::int > current_setting('sift.test_col_btree_visible')::int AS entries_of_dead_tuples,
        current_setting('sift.test_col_btree_visible')::int = (SELECT count(*) FROM ch_bloat) AS visible_are_the_rows;
 SELECT ch_units('ch_bloat') AS units, ch_same('ch_bloat') AS same_rows, sift.col_verify('ch_bloat_idx', true);
@@ -249,6 +249,6 @@ DROP TABLE ch_facts, ch_scope;
 
 RESET sift.test_col_segment_kb;
 DROP TABLE ch_sorted, ch_noisy, ch_plain, ch_mark;
-DROP FUNCTION ch_path(), ch_start(regclass), ch_note(regclass), ch_same(regclass), ch_units(regclass);
+DROP FUNCTION ch_path(), ch_start(), ch_note(), ch_same(regclass), ch_units(regclass);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

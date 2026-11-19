@@ -1,3 +1,6 @@
+-- REINDEX of a sift_col index from the index it replaces reads no block of the table: with every buffer of the table evicted first, the build accesses none (sift.test_col_build_table_buffers)
+-- and none of the main fork is in the cache afterwards. PostgreSQL itself may read a page of the visibility map after the build (17 does), so the other forks are only allowed to be that.
+-- A build from the heap, which the same steps must tell from it, reads the pages.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_buffercache;
 SET client_min_messages = warning;
@@ -5,49 +8,35 @@ SET sift.col_build_source = auto;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
-SELECT version();
 
-CREATE FUNCTION rh_forks(t regclass) RETURNS TABLE (fork text, blocks bigint, block_list text) LANGUAGE sql AS $$
-	SELECT (ARRAY['main', 'fsm', 'vm', 'init'])[relforknumber + 1], count(*), string_agg(relblocknumber::text, ',' ORDER BY relblocknumber)
-	FROM pg_buffercache WHERE relfilenode = pg_relation_filenode(t) AND reldatabase = (SELECT oid FROM pg_database WHERE datname = current_database())
-	GROUP BY relforknumber ORDER BY relforknumber $$;
-CREATE FUNCTION rh_evict(t regclass) RETURNS bigint LANGUAGE sql AS $$
+CREATE TABLE rh_t (id int, k int, g int, note text) WITH (autovacuum_enabled = false);
+INSERT INTO rh_t SELECT i, i, i % 7, 'note ' || (i % 50) FROM generate_series(1, 20000) i;
+VACUUM (FREEZE, ANALYZE) rh_t;
+CREATE INDEX rh_idx ON rh_t USING sift_col (id, k, g, note) WITH (key_cut = 'k', track_changes = 'off');
+
+CREATE FUNCTION rh_cached() RETURNS TABLE (main_fork_blocks bigint, other_forks_are_the_map bool) LANGUAGE sql AS $$
+	SELECT count(*) FILTER (WHERE relforknumber = 0), coalesce(bool_and(relforknumber = 2) FILTER (WHERE relforknumber <> 0), true)
+	FROM pg_buffercache WHERE relfilenode = pg_relation_filenode('rh_t') AND reldatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) $$;
+CREATE FUNCTION rh_evict() RETURNS bigint LANGUAGE sql AS $$
 	SELECT count(*) FROM (SELECT pg_buffercache_evict(bufferid) FROM pg_buffercache
-	WHERE relfilenode = pg_relation_filenode(t) AND reldatabase = (SELECT oid FROM pg_database WHERE datname = current_database())) e $$;
-CREATE FUNCTION rh_acc(t regclass) RETURNS bigint LANGUAGE sql AS $$
-	SELECT coalesce(sum(heap_blks_read + heap_blks_hit), 0)::bigint FROM pg_statio_user_tables WHERE relid = t $$;
+	WHERE relfilenode = pg_relation_filenode('rh_t') AND reldatabase = (SELECT oid FROM pg_database WHERE datname = current_database())) e $$;
 
--- with a visibility map (vacuumed) and without (never vacuumed)
-CREATE TABLE rh_v (id int, k int, g int, note text) WITH (autovacuum_enabled = false);
-CREATE TABLE rh_n (id int, k int, g int, note text) WITH (autovacuum_enabled = false);
-INSERT INTO rh_v SELECT i, i, i % 7, 'note ' || (i % 50) FROM generate_series(1, 20000) i;
-INSERT INTO rh_n SELECT * FROM rh_v;
-VACUUM (FREEZE, ANALYZE) rh_v;
-ANALYZE rh_n;
-CREATE INDEX rh_v_idx ON rh_v USING sift_col (id, k, g, note) WITH (key_cut = 'k', track_changes = 'off');
-CREATE INDEX rh_n_idx ON rh_n USING sift_col (id, k, g, note) WITH (key_cut = 'k', track_changes = 'off');
 CHECKPOINT;
+SELECT rh_evict() > 0 AS evicted;
+SELECT * FROM rh_cached();
+REINDEX INDEX rh_idx;
+SELECT current_setting('sift.test_col_from_index_used') AS used, current_setting('sift.test_col_build_table_buffers')::int AS build_table_buffers;
+SELECT * FROM rh_cached();
 
-SELECT 'v' AS tbl, rh_evict('rh_v'::regclass) AS evicted;
-SELECT 'v before' AS step, * FROM rh_forks('rh_v');
-SELECT pg_stat_force_next_flush() \gset
-CREATE TEMP TABLE rh_mark AS SELECT rh_acc('rh_v') AS acc;
-REINDEX INDEX rh_v_idx;
-SELECT pg_stat_force_next_flush() \gset
-SELECT current_setting('sift.test_col_from_index_used') AS used, current_setting('sift.test_col_build_table_buffers') AS build_buffers, rh_acc('rh_v') - acc AS accesses FROM rh_mark;
-SELECT 'v after' AS step, * FROM rh_forks('rh_v');
+CHECKPOINT;
+SELECT rh_evict() >= 0 AS evicted;
+SET sift.test_col_from_index_off = on;
+REINDEX INDEX rh_idx;
+RESET sift.test_col_from_index_off;
+SELECT current_setting('sift.test_col_from_index_used') AS used, current_setting('sift.test_col_build_table_buffers')::int > 0 AS build_reads_the_table;
+SELECT main_fork_blocks > 0 AS main_fork_read FROM rh_cached();
 
-SELECT 'n' AS tbl, rh_evict('rh_n'::regclass) AS evicted;
-SELECT 'n before' AS step, * FROM rh_forks('rh_n');
-SELECT pg_stat_force_next_flush() \gset
-TRUNCATE rh_mark;
-INSERT INTO rh_mark SELECT rh_acc('rh_n');
-REINDEX INDEX rh_n_idx;
-SELECT pg_stat_force_next_flush() \gset
-SELECT current_setting('sift.test_col_from_index_used') AS used, current_setting('sift.test_col_build_table_buffers') AS build_buffers, rh_acc('rh_n') - acc AS accesses FROM rh_mark;
-SELECT 'n after' AS step, * FROM rh_forks('rh_n');
-
-DROP TABLE rh_v, rh_n CASCADE;
-DROP FUNCTION rh_forks(regclass), rh_evict(regclass), rh_acc(regclass);
+DROP TABLE rh_t CASCADE;
+DROP FUNCTION rh_cached(), rh_evict();
 DROP EXTENSION pg_buffercache;
 DROP EXTENSION pg_sift;

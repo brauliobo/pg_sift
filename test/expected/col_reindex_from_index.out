@@ -223,7 +223,7 @@ SELECT * FROM ri_note('concurrently, promoted');
  concurrently, promoted | heap  |            3 | t          | t        | t
 (1 row)
 
--- an index that tracks changes (the table has a primary key) reads the table for the baseline of its log, one access of each page that is not all-visible, the map, and for nothing else (PostgreSQL 17 counts one access of the table more than 18 and 19 in every REINDEX)
+-- an index that tracks changes (the table has a primary key) reads the table for the baseline of its log, one access of each page that is not all-visible, the map, and for nothing else (the buffers the build itself accessed: PostgreSQL reads a page of the visibility map after it on 17)
 CREATE INDEX ri_tracked ON ri_t USING sift_col (id, tenant_id, k, status) WITH (key_cut = 'k');
 SELECT pg_stat_force_next_flush() \gset
 SELECT ri_start();
@@ -235,8 +235,7 @@ SELECT ri_start();
 REINDEX INDEX ri_tracked;
 SELECT pg_stat_force_next_flush() \gset
 SELECT current_setting('sift.test_col_from_index_used') AS used,
-	(SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relname = 'ri_t') - m.heap_buffers <= pg_relation_size('ri_t') / 8192 + 2 AS reads_each_page_once_and_the_map
-	FROM ri_mark m;
+	current_setting('sift.test_col_build_table_buffers')::int <= pg_relation_size('ri_t') / 8192 + 1 AS reads_each_page_once_and_the_map;
  used | reads_each_page_once_and_the_map 
 ------+----------------------------------
  1    | t
