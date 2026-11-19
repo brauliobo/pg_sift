@@ -653,7 +653,8 @@ SELECT site, wraps >= 1 AS crossed_the_wrap FROM sift._test_ring_sites() ORDER B
  t->oc_ring         | t
  track_memo_ring    | t
  unit_memo_ring     | t
-(14 rows)
+ written_ring       | t
+(15 rows)
 
 SELECT sift._test_ring_start(0);
  _test_ring_start 
