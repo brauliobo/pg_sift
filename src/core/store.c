@@ -412,7 +412,7 @@ sift_store_meta_has_flag(Relation index, uint32 flag)
  * leaves it zero)
  */
 static SiftDirSnapshot *
-dir_snapshot(Relation index, bool with_meta, int room)
+dir_snapshot(Relation index, bool with_meta, int room, const SiftKeyRange *keys)
 {
 	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
 	Buffer		dirbuf = lock_dir(index, BUFFER_LOCK_SHARE);
@@ -424,7 +424,9 @@ dir_snapshot(Relation index, bool with_meta, int room)
 	SiftDirChain chain = {0};
 	int			n;
 
-	if (root != 0)
+	if (root != 0 && keys != NULL)
+		n = sift_dirchain_read_range(index, root, dir->version, keys, &chained, &chain);
+	else if (root != 0)
 		n = sift_dirchain_read(index, root, dir->version, 0, &chained, &chain);
 	else
 		n = dir->nsegs;
@@ -437,6 +439,7 @@ dir_snapshot(Relation index, bool with_meta, int room)
 	}
 	snap->version = dir->version;
 	snap->nsegs = n;
+	snap->partial = root != 0 && (uint32) n < chain.nall;
 	snap->chain = chain.blocks;
 	snap->nchain = chain.nblocks;
 	memcpy(snap->segs, root != 0 ? chained : dir->segs, n * sizeof(SiftSegEntry));
@@ -454,7 +457,14 @@ dir_snapshot(Relation index, bool with_meta, int room)
 SiftDirSnapshot *
 sift_dir_read(Relation index)
 {
-	return dir_snapshot(index, true, 0);
+	return dir_snapshot(index, true, 0, NULL);
+}
+
+/* The directory less the segments of the partitions that hold no key of the range (sift_range_span): for a reader of those keys, never for a writer or a check of the whole */
+SiftDirSnapshot *
+sift_dir_read_range(Relation index, const SiftKeyRange *keys)
+{
+	return dir_snapshot(index, true, 0, keys);
 }
 
 /* The directory without the metapage: a caller that reads only the segments (one page where sift_dir_read reads two, while it is block 1 alone); meta is zero, so a copy of it for a scan that opens the index must be of sift_dir_read */
@@ -468,7 +478,7 @@ sift_dir_read_segs(Relation index)
 	if (dir_is_chained(dir))
 	{
 		UnlockReleaseBuffer(dirbuf);
-		return dir_snapshot(index, false, 0);
+		return dir_snapshot(index, false, 0, NULL);
 	}
 	snap = palloc0(offsetof(SiftDirSnapshot, segs) + dir->nsegs * sizeof(SiftSegEntry));
 	snap->version = dir->version;

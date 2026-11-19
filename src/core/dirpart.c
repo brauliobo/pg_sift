@@ -245,7 +245,7 @@ sift_dir_parts_read(Relation index, const SiftDirSnapshot *snap, SiftSegEntry **
 	*parts = NULL;
 	if (snap->nchain == 0)
 	{
-		*segs = snap->segs;
+		*segs = (SiftSegEntry *) snap->segs;
 		return 0;
 	}
 	(void) sift_dirchain_read(index, snap->chain[0], snap->version, 0, segs, &chain);

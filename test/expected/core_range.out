@@ -8,10 +8,10 @@ SELECT s AS seed, r[1] AS order_checks, r[2] AS order_failed, r[3] AS next_check
 FROM generate_series(1, 4) s, LATERAL (SELECT sift._test_range_check(s, 400) r) x;
  seed | order_checks | order_failed | next_checks | next_failed | span_checks | span_failed | range_checks | range_failed | depth_checks | depth_failed | apart_checks | apart_failed 
 ------+--------------+--------------+-------------+-------------+-------------+-------------+--------------+--------------+--------------+--------------+--------------+--------------
-    1 |          400 |            0 |         400 |           0 |         400 |           0 |          400 |            0 |          400 |            0 |          400 |            0
-    2 |          400 |            0 |         400 |           0 |         400 |           0 |          400 |            0 |          400 |            0 |          400 |            0
-    3 |          400 |            0 |         400 |           0 |         400 |           0 |          400 |            0 |          400 |            0 |          400 |            0
-    4 |          400 |            0 |         400 |           0 |         400 |           0 |          400 |            0 |          400 |            0 |          400 |            0
+    1 |          400 |            0 |         400 |           0 |         800 |           0 |          400 |            0 |          400 |            0 |          400 |            0
+    2 |          400 |            0 |         400 |           0 |         800 |           0 |          400 |            0 |          400 |            0 |          400 |            0
+    3 |          400 |            0 |         400 |           0 |         800 |           0 |          400 |            0 |          400 |            0 |          400 |            0
+    4 |          400 |            0 |         400 |           0 |         800 |           0 |          400 |            0 |          400 |            0 |          400 |            0
 (4 rows)
 
 DROP EXTENSION pg_sift_test;

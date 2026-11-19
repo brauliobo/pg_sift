@@ -497,7 +497,7 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 }
 
 
-/* The lower bounds of the partitions are bounds and ascend strictly: the first need not be the empty one, a partition emptied by deletes may have been the first */
+/* The lower bounds of the partitions are bounds and ascend (strictly, unless the key has more leaves than a bound holds): the first need not be the empty one, a partition emptied by deletes may have been the first */
 static void
 step_part_bounds(void *arg)
 {
@@ -509,7 +509,7 @@ step_part_bounds(void *arg)
 	{
 		if (!sift_bound_unpack(cv->parts[k].lo, &lo))
 			corrupt(cv->index, "The lower bound of the partition " UINT64_FORMAT " is no bound.", cv->parts[k].lineage);
-		if (k > 0 && sift_bound_cmp(&prev, &lo) >= 0)
+		if (k > 0 && sift_bound_cmp(&prev, &lo) >= (sift_col_rel(cv->index)->ncut > SIFT_BOUND_COMPS ? 1 : 0))
 			corrupt(cv->index, "The bounds of partitions %d and %d do not ascend.", k - 1, k);
 		prev = lo;
 	}

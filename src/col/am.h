@@ -149,6 +149,8 @@ extern PGDLLIMPORT bool sift_test_hf_ignore_stamp;
 /* Pages, ranges and masks the tombstone log made all-visible where the visibility map did not (tests) */
 extern PGDLLIMPORT int64 sift_col_hf_taken;
 extern PGDLLIMPORT int64 sift_col_hf_asked;
+/* The immutable segments the sources of this backend opened (tests) */
+extern PGDLLIMPORT int64 sift_col_segments_opened;
 extern PGDLLIMPORT int64 sift_col_hf_block_hits;
 /* The addresses of dead rows the probes of compact order blocks listed (tests) */
 extern PGDLLIMPORT int64 sift_col_probe_dead;
@@ -249,6 +251,7 @@ extern int	sift_test_col_rollup_panic;
 extern int	sift_test_col_rollup_panic_armed;
 extern bool sift_test_col_merge_panic;
 extern bool sift_test_col_record_partitions;
+extern bool sift_test_col_open_all;
 extern int sift_test_col_merge_error;
 extern int	sift_test_col_refresh_sleep_ms;		/* sift.test_col_refresh_sleep_ms: the refresh of a segment sleeps this long once the new segment is written */
 extern int	sift_test_col_refresh_sleep_armed;

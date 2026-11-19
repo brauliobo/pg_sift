@@ -301,15 +301,28 @@ lowest_with_prefix(const SiftBound *prefix, uint32_t ncomp)
 	return low;
 }
 
-void
-sift_prefix_span(const void *refs, SiftBoundAt at, uint32_t n, uint32_t ncomp, const SiftBound *prefix, uint32_t *first, uint32_t *last)
+bool
+sift_key_range_equal(const SiftKeyRange *a, const SiftKeyRange *b)
 {
-	SiftBound	low = lowest_with_prefix(prefix, ncomp),
-				next;
-	uint32_t	upto = count_below(refs, at, n, &low, true);
+	return a->shared == b->shared && sift_bound_cmp(&a->keys.lo, &b->keys.lo) == 0 && sift_bound_cmp(&a->keys.hi, &b->keys.hi) == 0;
+}
+
+void
+sift_prefix_range(const SiftBound *prefix, uint32_t ncomp, SiftRange *out)
+{
+	out->lo = lowest_with_prefix(prefix, ncomp);
+	if (!sift_bound_prefix_next(prefix, &out->hi))
+		sift_bound_clear(&out->hi);
+}
+
+void
+sift_range_span(const void *refs, SiftBoundAt at, uint32_t n, const SiftRange *keys, bool shared, uint32_t *first, uint32_t *last)
+{
+	uint32_t	upto = count_below(refs, at, n, &keys->lo, !shared);
 
 	*first = upto > 0 ? upto - 1 : 0;
-	*last = sift_bound_prefix_next(prefix, &next) ? count_below(refs, at, n, &next, false) : n;
+	*last = sift_range_unbounded_hi(keys) ? n : count_below(refs, at, n, &keys->hi, false);
+	*last = Max(*last, *first);
 }
 
 /* The number of the first c candidates (ascending by their hi) whose hi is below lo */

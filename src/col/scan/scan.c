@@ -124,19 +124,28 @@ sift_col_open_table(Relation rel, const SiftColSchema *schema, const SiftDirSnap
 	return src;
 }
 
+int64		sift_col_segments_opened;
+#ifdef SIFT_TESTING
+bool		sift_test_col_open_all = false;
+#endif
+
 SiftColSource *
-sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view)
+sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view, const SiftKeyRange *keys)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftColSource *src = col_source(heap, index, sift_col_rel(index)->schema, mcxt, flags);
 	bool		leader_end;
 
+#ifdef SIFT_TESTING
+	if (sift_test_col_open_all)
+		keys = NULL;
+#endif
 	if (!(flags & SIFT_COLO_NOCHECKS))
 		check_access(heap, flags);
 	if (IsolationIsSerializable())
 		PredicateLockRelation(heap, snapshot);
 	src->snap = (flags & SIFT_COLO_SNAP_HELD) ? snapshot : RegisterSnapshot(snapshot);
-	leader_end = scan_view_load(src, heap, view);
+	leader_end = scan_view_load(src, heap, view, keys);
 	segments_pin(src, flags);
 	sift_quarantine_net(index, src->dir->meta.flags);
 	col_hf_open(src);
@@ -147,6 +156,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	for (int i = 0; i < src->dir->nsegs; i++)
 		if (src->dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			src->seg[src->nseg++].seg = sift_cseg_open(index, &src->dir->segs[i], mcxt);
+	sift_col_segments_opened += src->nseg;
 	col_dv_open(src);
 	/* no index: segments_current (scan_unit.c) is the directory rule of a column scan, and it holds the map's trust through a promotion, which adds a segment and replaces none */
 	sift_vis_begin(&src->vis, heap, snapshot, NULL, 0);
@@ -172,6 +182,13 @@ sift_col_close(SiftColSource *src)
 	sift_vis_end(&src->vis);
 	if (!(src->flags & SIFT_COLO_SNAP_HELD))
 		UnregisterSnapshot(src->snap);
+}
+
+/* Does the source hold the segments a statement confined to keys (NULL: not confined) reads? */
+bool
+sift_col_covers(const SiftColSource *src, const SiftKeyRange *keys)
+{
+	return !src->dir->partial || (keys != NULL && sift_key_range_equal(&src->keys, keys));
 }
 
 /* Do the segments the source opened still stand in the directory of the index (a promotion adds one and replaces none) */

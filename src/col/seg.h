@@ -185,6 +185,8 @@ sift_seg_scope_ordinal(const SiftSegEntry *e)
 
 /* sift_dir_read for one family of readers: the entity family (everything but the scope segments: the readers of the rows of the index), or the scope segments alone (no write buffer, no log) */
 extern SiftDirSnapshot *sift_col_dir_read(Relation index, bool scope);
+/* ... of the partitions that may hold the keys only (sift_dir_read_range) */
+extern SiftDirSnapshot *sift_col_dir_read_range(Relation index, bool scope, const SiftKeyRange *keys);
 /* the segments of the family only (sift_dir_read_segs): for a caller that does not hand the snapshot to a scan */
 extern SiftDirSnapshot *sift_col_dir_read_segs(Relation index, bool scope);
 /* ... of a directory read already: keeps the segments of that family */
