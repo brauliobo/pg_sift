@@ -242,16 +242,6 @@ walkable(Relation heap, Relation bt)
 	return RelationGetNumberOfBlocks(bt) <= Max(RelationGetNumberOfBlocks(heap) / 8, SAMPLE_PAGES_MIN);
 }
 
-static double
-temp_mb_us(void)
-{
-#ifdef SIFT_TESTING
-	return sift_test_col_pick_temp_mb_us;
-#else
-	return TEMP_MB_US;
-#endif
-}
-
 /*
  * The time of both paths from the entries of the btree played through the cache, at the costs above, for a build of degree participants; NULL for a btree too
  * large to read before the build. The plan is made in the current context, the walk's own memory is freed.
@@ -309,7 +299,7 @@ price_files(Relation heap, Relation index, IndexInfo *info, BtPlan *c, BtPricing
 	price->row_bytes = colb_spill_price(heap, index, info, c->entries);
 	price->files_priced = true;
 	c->spool_mb = (double) c->entries * price->row_bytes / 1048576.0;
-	c->spool_us = c->heap_blocks * price->cost.seq_us + 2 * c->spool_mb * temp_mb_us() + c->entries * COLB_HEAP_ROW_US;
+	c->spool_us = c->heap_blocks * price->cost.seq_us + 2 * c->spool_mb * TEMP_MB_US + c->entries * COLB_HEAP_ROW_US;
 	c->break_even_us = c->random_reads > 0 ?
 		Min((c->spool_us * c->degree - c->seq_blocks * price->cost.seq_us - c->entries * COLB_BTREE_ROW_US) / c->random_reads, 1e6) : 1e6;
 #ifdef SIFT_TESTING
