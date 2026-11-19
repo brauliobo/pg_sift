@@ -18,12 +18,10 @@ END $$;
 CREATE TABLE r (id int, v int, pad text) WITH (autovacuum_enabled = false);
 ALTER TABLE r ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO r SELECT i, i % 10, repeat('x', 1000) FROM generate_series(1, 6000) i;
-SET sift.test_col_max_segments = 1;
 CREATE INDEX r_idx ON r USING sift_col (id, v);
 NOTICE:  sift_col index "r_idx": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('r_idx');
-RESET sift.test_col_max_segments;
 SELECT segments, units > 2 AS several_units FROM sift.col_index_info('r_idx');
  segments | several_units 
 ----------+---------------

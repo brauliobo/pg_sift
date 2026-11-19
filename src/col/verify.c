@@ -21,10 +21,12 @@
 #include "utils/tuplesort.h"
 
 #include "col/am.h"
+#include "col/order_bound.h"
 #include "col/pg.h"
 #include "col/seg.h"
 #include "core/check.h"
 #include "core/cmp.h"
+#include "core/dirchain.h"
 #include "core/errctx.h"
 #include "core/ops.h"
 #include "core/membudget.h"
@@ -67,6 +69,8 @@ typedef struct ColVerify
 	SiftColRel *r;
 	MemoryContext cxt;
 	SiftDirSnapshot *snap;
+	SiftDirPart *parts;			/* the partitions of the directory's chain: their entries are those of snap from first on */
+	int			nparts;
 	SiftColBatch *batch;
 	Tuplesortstate *keys;
 	Tuplesortstate *rows;		/* the RowHash of every live entry, entities and scope segments */
@@ -493,6 +497,24 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 }
 
 
+/* The lower bounds of the partitions are bounds and ascend (strictly, unless the key has more leaves than a bound holds): the first need not be the empty one, a partition emptied by deletes may have been the first */
+static void
+step_part_bounds(void *arg)
+{
+	ColVerify  *cv = arg;
+	SiftBound	prev,
+				lo;
+
+	for (int k = 0; k < cv->nparts; k++)
+	{
+		if (!sift_bound_unpack(cv->parts[k].lo, &lo))
+			corrupt(cv->index, "The lower bound of the partition " UINT64_FORMAT " is no bound.", cv->parts[k].lineage);
+		if (k > 0 && sift_bound_cmp(&prev, &lo) >= (sift_col_rel(cv->index)->ncut > SIFT_BOUND_COMPS ? 1 : 0))
+			corrupt(cv->index, "The bounds of partitions %d and %d do not ascend.", k - 1, k);
+		prev = lo;
+	}
+}
+
 static void
 step_store(void *arg)
 {
@@ -501,9 +523,39 @@ step_store(void *arg)
 	cv->r = sift_col_rel_private(cv->index, cv->cxt);
 	cv->batch = sift_cbatch_create(cv->cxt, cv->r->schema);
 	sift_store_verify(cv->index);
-	sift_dir_read(cv->index, cv->snap);
+	cv->snap = sift_dir_read(cv->index);
 	if (!(cv->snap->meta.flags & SIFT_COL_META_FLAG) || sift_dir_layout_differs(cv->snap, cv->r->schema->hash))
 		corrupt(cv->index, "The metapage does not describe this column layout.");
+	if (cv->snap->nchain > 0)
+	{
+		SiftSegEntry *segs;
+		SiftDirChain chain;
+
+		(void) sift_dirchain_read(cv->index, cv->snap->chain[0], cv->snap->version, 0, &segs, &chain);
+		cv->nparts = sift_dirchain_parts(&chain, &cv->parts);
+	}
+}
+
+/* The rows of a segment of a partition lie from its lower bound up to below the bound of the next partition: a segment that straddles two is read by neither's bound */
+static void
+verify_partition(ColVerify *cv, const SiftSegEntry *e, SiftColSegment *seg)
+{
+	int			at = (int) (e - cv->snap->segs);
+
+	for (int k = 0; k < cv->nparts; k++)
+	{
+		const SiftDirPart *p = &cv->parts[k];
+		SiftBound	lo,
+					next;
+
+		if (at < (int) p->first || at >= (int) (p->first + p->n))
+			continue;
+		if (!sift_bound_unpack(p->lo, &lo) || (k + 1 < cv->nparts && !sift_bound_unpack(cv->parts[k + 1].lo, &next)))
+			corrupt(cv->index, "The lower bound of the partition " UINT64_FORMAT " is no bound.", p->lineage);
+		if (!sift_colk_rows_within(seg, &lo, k + 1 < cv->nparts ? &next : NULL))
+			corrupt(cv->index, "Segment %llu holds rows outside its partition " UINT64_FORMAT " of the key.", (unsigned long long) e->gen, p->lineage);
+		return;
+	}
 }
 
 static void
@@ -520,6 +572,7 @@ verify_immutable(ColVerify *cv, const SiftSegEntry *e)
 	if (scope && !sift_cseg_keyed(e))
 		corrupt(cv->index, "Scope segment %llu is not cut by key.", (unsigned long long) e->gen);
 	cv->ndocs += scope ? 0 : e->ndocs;
+	verify_partition(cv, e, seg);
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
 		sift_cseg_decode_unit(seg, u, cv->batch);
@@ -658,12 +711,12 @@ put_segment_keys(ColVerify *cv, const SiftSegEntry *e)
 static void
 keys_in_one_view(ColVerify *cv)
 {
-	SiftDirSnapshot *view = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *view;
 
 	keys_end(cv);
 	keys_begin(cv);
 	LockPage(cv->index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
-	sift_dir_read(cv->index, view);
+	view = sift_dir_read(cv->index);
 	for (int i = 0; i < view->nsegs; i++)
 		if (view->segs[i].kind != SIFT_SEG_TOMB && !sift_seg_is_scope(&view->segs[i]))
 			put_segment_keys(cv, &view->segs[i]);
@@ -760,7 +813,6 @@ col_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 	cv->cxt = AllocSetContextCreate(old, "sift_col verify", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(cv->cxt);
 	SIFT_MEM_SCOPE(col_verify, cv->cxt);
-	cv->snap = palloc(sizeof(SiftDirSnapshot));
 	sift_errctx_push_diagnostic(&cv->errctx, RelationGetRelid(index));
 	/* the snapshot is registered before the directory is read, and kept: the segments of the copy stay readable while they are verified one at a time */
 	sound = listed = sift_check_step(ck, SIFT_CHECK_WHOLE, step_store, cv);
@@ -783,6 +835,8 @@ col_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 	sift_errctx_whole(&cv->errctx);
 	if (sound)
 		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_totals, cv);
+	if (sound)
+		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_part_bounds, cv);
 	if (sound)
 		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_duplicates, cv);
 	if (sound && cv->nscope > 0)

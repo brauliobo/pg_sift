@@ -54,7 +54,7 @@ tomb_close_runs(void *arg)
 }
 
 void
-sift_tomb_init(SiftTombLog *t, MemoryContext cxt, SiftDirSnapshot *dir)
+sift_tomb_init(SiftTombLog *t, MemoryContext cxt, SiftDirSnapshot **dir)
 {
 	t->cxt = cxt;
 	t->dir = dir;
@@ -90,7 +90,10 @@ tomb_reset(SiftTombLog *t, const SiftSegEntry *e)
 	memset(&t->keys, 0, sizeof(t->keys));
 	t->keys_cover = false;
 	t->nents = t->nrecent = 0;
-	t->foldable = 0;
+	t->foldable = t->foldable_dv = 0;
+	t->fold_due = false;
+	t->dvecs = 0;
+	t->dv_oldest = InvalidTransactionId;
 	sift_srun_reset(&t->spilled);
 	sift_srun_reset(&t->hotspilled);
 	if (t->hotm)
@@ -276,7 +279,13 @@ static void
 tomb_add(SiftTombLog *t, SiftTomb *batch, uint32 n)
 {
 	for (uint32 i = 0; i < n; i++)
-		if (batch[i].kind == SIFT_TOMB_UPDATE && (batch[i].flags & SIFT_TOMB_HOT))
+		if (batch[i].kind == SIFT_TOMB_DVEC)
+		{
+			t->dvecs++;
+			if (TransactionIdIsNormal(batch[i].xid) && (!TransactionIdIsNormal(t->dv_oldest) || TransactionIdPrecedes(batch[i].xid, t->dv_oldest)))
+				t->dv_oldest = batch[i].xid;
+		}
+		else if (batch[i].kind == SIFT_TOMB_UPDATE && (batch[i].flags & SIFT_TOMB_HOT))
 		{
 			if (t->hotm == NULL)
 			{
@@ -470,7 +479,7 @@ tomb_sync(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
 void
 sift_tomb_sync(Relation rel, SiftTombLog *t)
 {
-	tomb_sync(rel, t, t->dir);
+	tomb_sync(rel, t, *t->dir);
 }
 
 void
@@ -479,7 +488,7 @@ sift_tomb_sync_header(Relation rel, SiftTombLog *t)
 	uint64		n;
 	BlockNumber blk;
 
-	(void) tomb_sync_header(rel, t, t->dir, &n, &blk);
+	(void) tomb_sync_header(rel, t, *t->dir, &n, &blk);
 }
 
 /*
@@ -496,7 +505,7 @@ sift_tomb_sync_at(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
 void
 sift_tomb_sync_all(Relation rel, SiftTombLog *t)
 {
-	tomb_sync(rel, t, t->dir);
+	tomb_sync(rel, t, *t->dir);
 }
 
 /* The run of entries for key in the sorted array a: its first element and length */

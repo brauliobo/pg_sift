@@ -20,9 +20,9 @@ SELECT lower, upper FROM sift._test_page('t_idx', 1);
     32 |  8176
 (1 row)
 
--- block 1 is the directory: version, nsegs and reserved are in its payload, 8152 bytes from offset 24
+-- block 1 is the directory: version, nsegs and the flags are in its payload, 8152 bytes from offset 24
 SELECT w.what, expect(format($$ SELECT sift._test_write('t_idx', 1, %s, %s) $$, w.off, w.len))
-FROM (VALUES ('payload, in use', 30, 2), ('last payload byte, past pd_lower', 8175, 1), ('across the end of the payload', 8174, 4),
+FROM (VALUES ('payload, in use', 24, 2), ('last payload byte, past pd_lower', 8175, 1), ('across the end of the payload', 8174, 4),
 			 ('the generation word', 8184, 1), ('past pd_lower', 200, 4), ('pd_lower', 12, 2), ('pd_upper', 14, 2),
 			 ('pd_special', 16, 2)) w (what, off, len);
                what               |                                                            expect                                                            
@@ -38,7 +38,7 @@ FROM (VALUES ('payload, in use', 30, 2), ('last payload byte, past pd_lower', 81
 (8 rows)
 
 -- an append edit inside the head it logs goes through (past it, or in the special space, the server restarts: test/t/store_edit_guard.sh)
-SELECT expect($$ SELECT sift._test_write('t_idx', 1, 30, 2, true) $$);
+SELECT expect($$ SELECT sift._test_write('t_idx', 1, 24, 2, true) $$);
  expect 
 --------
  ok

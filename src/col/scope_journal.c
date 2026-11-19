@@ -624,10 +624,10 @@ sift_scope_refresh_half(Relation index, const SiftDirSnapshot *dir)
 void
 sift_scope_refresh_balance(SiftScopeStale *st, uint64 *paid, double *half)
 {
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 
 	*paid = 0;
-	sift_dir_read(st->index, dir);
+	dir = sift_dir_read(st->index);
 	for (int i = 0; i < st->n; i++)
 		if (st->s[i].vouches)
 			*paid += sift_scope_paid(st->index, &dir->meta, i);
@@ -671,11 +671,11 @@ scope_floor_stale(SiftScopeStale *st, const SiftMetaPageData *meta, int i)
 static bool
 floor_stale(SiftScopeStale *st)
 {
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	bool		stored = false,
 				stale = false;
 
-	sift_dir_read(st->index, dir);
+	dir = sift_dir_read(st->index);
 	for (int i = 0; i < dir->nsegs && !stored; i++)
 		stored = dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_seg_is_scope(&dir->segs[i]);
 	for (int i = 0; i < st->n && stored && !stale; i++)

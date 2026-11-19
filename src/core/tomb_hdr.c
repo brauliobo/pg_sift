@@ -36,8 +36,8 @@ sift_tomb_set_chan(Relation rel, SiftTombLog *t, const SiftTombChan *c)
 	bool		trim;
 
 	LockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
-	sift_dir_read(rel, t->dir);
-	if ((e = sift_tomb_find_seg(t->dir)) == NULL)
+	sift_dir_reload(rel, t->dir, t->cxt);
+	if ((e = sift_tomb_find_seg(*t->dir)) == NULL)
 		corrupt(rel, "There is no tombstone segment.");
 	hbuf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_EXCLUSIVE);
 	trim = SiftPageGetUsed(BufferGetPage(hbuf)) >= MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr) && SIFT_TOMB_HDR(BufferGetPage(hbuf))->keys.lineage != 0 &&
@@ -64,8 +64,8 @@ sift_tomb_set_keys(Relation rel, SiftTombLog *t, const SiftTombKeys *k)
 	SiftPageEdit ed;
 
 	LockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
-	sift_dir_read(rel, t->dir);
-	if ((e = sift_tomb_find_seg(t->dir)) == NULL)
+	sift_dir_reload(rel, t->dir, t->cxt);
+	if ((e = sift_tomb_find_seg(*t->dir)) == NULL)
 		corrupt(rel, "There is no tombstone segment.");
 	hbuf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_EXCLUSIVE);
 	if (SiftPageGetUsed(BufferGetPage(hbuf)) < MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr))

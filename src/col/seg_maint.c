@@ -274,30 +274,98 @@ keys_from_block(const SiftKey *keys, uint32 n, uint64 blk)
 	return lo;
 }
 
-/* The live rows of the unit among those at the heap addresses keys (ascending): their ranks in dead; the count */
-static int
-unit_find_live(SiftColSegment *seg, uint32 u, const SiftKey *keys, uint32 n, uint32 *rows, uint64 *live, uint64 *dead)
+/* The live rows of the unit among those at the heap addresses keys (ascending): ascending in rows, and their keys in at, the count; v is the unit's view */
+static uint32
+unit_live_rows(SiftColSegment *seg, uint32 u, const SiftKey *keys, uint32 n, uint32 *rows, SiftKey *at, uint64 *live, SiftCUnitView *v)
 {
 	const SiftColSBRef *r = &seg->sbdir[u];
-	SiftCUnitView v;
 	uint32		lo,
 				hi,
-				nr;
-	int			nd = 0;
+				nr,
+				nl = 0;
 
-	if (!sift_cseg_unit_view(seg, u, &v))
+	if (!sift_cseg_unit_view(seg, u, v))
 		corrupt(seg, "Unit %u (SB %u) does not parse.", u, r->id);
 	/* the keys of the heap blocks the unit spans */
-	lo = keys_from_block(keys, n, v.keyed ? v.kblk0 : (uint64) r->id * SIFT_SB_PAGES);
-	hi = keys_from_block(keys, n, v.keyed ? (uint64) v.kblk1 + 1 : (uint64) (r->id + 1) * SIFT_SB_PAGES);
+	lo = keys_from_block(keys, n, v->keyed ? v->kblk0 : (uint64) r->id * SIFT_SB_PAGES);
+	hi = keys_from_block(keys, n, v->keyed ? (uint64) v->kblk1 + 1 : (uint64) (r->id + 1) * SIFT_SB_PAGES);
 	if (lo == hi)
 		return 0;
-	nr = sift_cunit_find_keys(&v, r->id, keys + lo, hi - lo, rows);
+	nr = sift_cunit_find_hits(v, r->id, keys + lo, hi - lo, rows, at);
 	sift_cseg_live(seg, u, live);
 	for (uint32 i = 0; i < nr; i++)
 		if (live[rows[i] / 64] >> (rows[i] % 64) & 1)
+		{
+			rows[nl] = rows[i];
+			at[nl++] = at[i];
+		}
+	return nl;
+}
+
+/* The live rows of the unit among those at the heap addresses keys (ascending): their ranks in dead; the count */
+static int
+unit_find_live(SiftColSegment *seg, uint32 u, const SiftKey *keys, uint32 n, uint32 *rows, SiftKey *at, uint64 *live, uint64 *dead)
+{
+	SiftCUnitView v;
+	uint32		nl = unit_live_rows(seg, u, keys, n, rows, at, live, &v);
+
+	for (uint32 i = 0; i < nl; i++)
+		dead[i] = seg->sbdir[u].rank_base + rows[i];
+	return nl;
+}
+
+int64
+sift_cseg_clear_rows(SiftColSegment *seg, uint32 u, const uint32 *rows, uint32 n)
+{
+	const SiftColSBRef *r = &seg->sbdir[u];
+	uint64	   *live = palloc(SIFT_COL_NWORDS(r->nrows) * sizeof(uint64));
+	uint64	   *dead = palloc(Max(n, 1) * sizeof(uint64));
+	int			nd = 0;
+
+	sift_cseg_live(seg, u, live);
+	for (uint32 i = 0; i < n; i++)
+		if (live[rows[i] / 64] >> (rows[i] % 64) & 1)
 			dead[nd++] = r->rank_base + rows[i];
+	if (nd > 0)
+	{
+		sift_seg_mark_dirty(seg->index, &seg->entry);
+		sift_live_clear(&PRIV(seg)->live, r->id - seg->hdr->sb_lo, dead, nd);
+	}
+	pfree(live);
+	pfree(dead);
 	return nd;
+}
+
+void
+sift_cseg_row_keys(SiftColSegment *seg, uint32 u, const uint32 *rows, uint32 nrows, SiftKey *out)
+{
+	SiftCUnitView v;
+
+	if (!sift_cseg_unit_view(seg, u, &v))
+		corrupt(seg, "Unit %u (SB %u) does not parse.", u, seg->sbdir[u].id);
+	sift_cunit_row_keys(&v, v.keyed ? 0 : sift_cseg_unit_sb(seg, u), rows, nrows, out);
+}
+
+void
+sift_cseg_find_live(SiftColSegment *seg, const SiftKey *keys, uint32 n, SiftCsegFoundFn fn, void *arg)
+{
+	uint32	   *rows = palloc(Min(n, SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint32));
+	SiftKey    *at = palloc(Min(n, SIFT_COL_UNIT_MAX_ROWS) * sizeof(SiftKey));
+	uint64	   *live = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
+
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		SiftCUnitView v;
+		uint32		nl = unit_live_rows(seg, u, keys, n, rows, at, live, &v);
+
+		if (nl == 0)
+			continue;
+		fn(u, rows, at, nl, arg);
+		CHECK_FOR_INTERRUPTS();
+	}
+	pfree(rows);
+	pfree(at);
+	pfree(live);
 }
 
 /*
@@ -309,13 +377,14 @@ sift_cseg_clear_keys(SiftColSegment *seg, const SiftKey *keys, uint32 n)
 {
 	uint64	   *dead = palloc(Min(n, SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
 	uint32	   *rows = palloc(Min(n, SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint32));
+	SiftKey    *at = palloc(Min(n, SIFT_COL_UNIT_MAX_ROWS) * sizeof(SiftKey));
 	uint64	   *live = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
 	int64		removed = 0;
 
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
 		const SiftColSBRef *r = &seg->sbdir[u];
-		int			nd = unit_find_live(seg, u, keys, n, rows, live, dead);
+		int			nd = unit_find_live(seg, u, keys, n, rows, at, live, dead);
 
 		if (nd == 0)
 			continue;
@@ -327,6 +396,7 @@ sift_cseg_clear_keys(SiftColSegment *seg, const SiftKey *keys, uint32 n)
 	sift_cseg_close(seg);
 	pfree(dead);
 	pfree(rows);
+	pfree(at);
 	pfree(live);
 	return removed;
 }
