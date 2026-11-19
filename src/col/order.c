@@ -380,10 +380,14 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 		out->keyed = true;
 		sift_cbatch_add_scoped_rows(out, (const SiftColRowRef *) u, sizeof(RowRef), (uint32) end, -1, 0, NULL);
 		if (w == NULL)
-			w = cutfn(cutarg, NULL);
+			w = cutfn(cutarg, NULL, false);
 		sift_colw_add(w, out);
 		if (cutfn)
-			w = cutfn(cutarg, w);
+		{
+			if (refs == NULL && n == end && !eof)
+				eof = !next(state, &win[n++]);
+			w = cutfn(cutarg, w, ctx->nleaf > 0 && (refs ? avail : n) > end && key_cmp(&u[end - 1], &u[end], ctx, 1) == 0);
+		}
 		if (refs)
 			pos += end;
 		else
@@ -823,8 +827,8 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 	OrderCtx	ctx = {schema, leaf, nleaf};
 	MergeSrc	m = {.in = palloc0_array(MergeIn, n + 1), .n = n, .ctx = &ctx, .freeze = freeze, .freeze_arg = freeze_arg, .cx = cx,
 					 .scratch = AllocSetContextCreate(cx, "sift_col merge unit", ALLOCSET_DEFAULT_SIZES), .budget = memory_kb * 1024};
-	BoundKey	wlo = {{0, PG_INT64_MIN}},
-				whi = {{0, PG_INT64_MIN}};
+	BoundKey	wlo,
+				whi;
 	uint64		loose = 0;
 	int			units;
 
@@ -832,18 +836,15 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = stream[i], .chunk = -1, .bounded = win ? win->bounded[i] : true};
 	if (win)
 	{
-		const SiftColDef *col = &schema->cols[leaf[0]];
-
 		Assert(nleaf > 0 && nslices == 1);
-		/* the bounds are on the first leaf alone: the rows of a key are all in or all out */
 		if (win->has_lo)
 		{
-			wlo.k[0] = sift_crun_key(col, win->lo);
+			sift_colk_bound_unpack(&ctx, &win->lo, &wlo);
 			m.lo = &wlo;
 		}
 		if (win->has_hi)
 		{
-			whi.k[0] = sift_crun_key(col, win->hi);
+			sift_colk_bound_unpack(&ctx, &win->hi, &whi);
 			m.hi = &whi;
 		}
 	}
@@ -854,8 +855,8 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 
 		if (nb == 0)
 			return 0;
-		m.lo = slice > 0 ? sift_colk_slice_bound(bk, nb, slice, nslices) : NULL;
-		m.hi = slice < nslices - 1 ? sift_colk_slice_bound(bk, nb, slice + 1, nslices) : NULL;
+		m.lo = slice > 0 ? sift_colk_slice_bound(bk, nb, slice, nslices, SIFT_SLICE_SLACK_PCT, NULL) : NULL;
+		m.hi = slice < nslices - 1 ? sift_colk_slice_bound(bk, nb, slice + 1, nslices, SIFT_SLICE_SLACK_PCT, NULL) : NULL;
 	}
 	/* the rows of the inputs that are not streams are loaded whole and sorted when they fit the budget, else sorted by a sort that spills to temporary files */
 	for (int i = 0; i < n; i++)

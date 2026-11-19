@@ -3,7 +3,9 @@
 # resource manager records of a published sift_table, which a patch release does not change). Both directions, with the writes of every kind and the maintenance in between:
 #   up:   the primary runs the release (SIFT_UPGRADE_OLD_REF, default v5.0.0), the standby this tree (the standby is updated first), then the primary is updated and restarted
 #   down: the primary runs this tree, the standby the release (a rollback of the standby, or a standby that is not updated yet)
-# Each stage: the standby verifies every object and answers as the heap, and as the primary does.
+# Each stage: the standby verifies every object and answers as the heap, and as the primary does. The one exception is the down direction after the first writes of this tree: what 5.1
+# writes that 5.0 cannot read (the deletion records of a tracked index: column format 52; the key-range pages of a key_cut write buffer: 1.7 with minor 55) must be refused by the older
+# standby with the format error, not read as damage, and the tables of those indexes, which every plan opens, are refused with them; the rest of the zoo is read as before.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+' >&2; exit 1; }
 . "$(dirname "$0")/lib.bash"
 . "$(dirname "$0")/lib_compat.bash"
@@ -14,13 +16,17 @@ ROWS=$(knob SIFT_COMPAT_ROWS 6000 3000)
 newroot=$ROOT
 build_old "$OLD_REF"; oldroot=$OLDROOT
 
-same() { # PRIMARY STANDBY: every object answers the same on both
+same() { # PRIMARY STANDBY: every object that the standby can read answers the same on both
 	local o kind ix q p a b
 	for o in "${OBJECTS[@]}"; do
 		IFS='|' read -r kind ix q p <<<"$o"
+		[[ " ${REFUSED_KINDS:-} " != *" $kind "* ]] || continue
 		a=$(answer "$1" "${ON[@]}" "$q"); b=$(answer "$2" "${ON[@]}" "$q"); out="primary: $a / standby: $b"
 		[[ $a == "$b" && $a != *ERROR* ]] || return 1
 	done
+}
+no_damage() { # STANDBY: sift.check() says no index is damaged (it may refuse an index with the format error)
+	out=$(sql "$1" "SELECT index::text || ' ' || problem FROM sift.check()" 2>&1); [[ $out != *corrupted* && ( -z $out || $out =~ this\ build.*reads ) ]]
 }
 write_load() { # NODE SEED: writes of every kind
 	sql "$1" \
@@ -42,11 +48,12 @@ stage() { # LABEL PRIMARY STANDBY
 	check "$1: the standby replays" catchup "$2" "$3"
 	compat "$1" standby "$3"
 	check "$1: the standby answers as the primary" same "$2" "$3"
-	check "$1: sift.check() of the standby is empty" sound_all "$3"
+	if [[ -z ${REFUSED_KINDS:-} ]]; then check "$1: sift.check() of the standby is empty" sound_all "$3"; else check "$1: sift.check() of the standby refuses what it cannot read" no_damage "$3"; fi
 }
 
 run() { # DIRECTION PRIMARY_ROOT STANDBY_ROOT OFFSET
 	local dir=$1 proot=$2 sroot=$3 p=cp_$1 s=cs_$1 off=$4
+	REFUSED_KINDS=
 	node_init "$p" "$off" "$CONF
 max_wal_senders = 4"
 	use_root "$p" "$proot"
@@ -59,6 +66,7 @@ wal_receiver_status_interval = 1s"
 	node_start "$s" || bail "$dir: standby start failed"
 	stage "$dir: base backup" "$p" "$s"
 	write_load "$p" 100000
+	[[ $dir == up ]] || REFUSED_KINDS='bm25 col key-cut key-auto track-id'
 	stage "$dir: writes" "$p" "$s"
 	maintain "$p"
 	stage "$dir: maintenance" "$p" "$s"

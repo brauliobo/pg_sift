@@ -268,10 +268,25 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 				BufferGetBlockNumber(buf), type, (unsigned long long) gen, found.type, (unsigned long long) found.gen);
 }
 
-void
-sift_dir_read(Relation index, SiftDirSnapshot *snap)
+SiftDirSnapshot *
+sift_dir_alloc(int n)
 {
-	*snap = index->store->snap;
+	return calloc(1, offsetof(SiftDirSnapshot, segs) + n * sizeof(SiftSegEntry));
+}
+
+SiftDirSnapshot *
+sift_dir_copy(const SiftDirSnapshot *snap)
+{
+	SiftDirSnapshot *copy = sift_dir_alloc(snap->nsegs);
+
+	memcpy(copy, snap, sift_dir_bytes(snap));
+	return copy;
+}
+
+SiftDirSnapshot *
+sift_dir_read(Relation index)
+{
+	return sift_dir_alloc(0);
 }
 
 /* VACUUM's dirty flag of a segment: liveness here is the engine's, merges work on private copies of the pages */

@@ -16,9 +16,9 @@
 static SiftColSegment *
 next_column_segment(Relation rel, SiftTblRel *st, int *i)
 {
-	while (*i < st->dir.nsegs)
+	while (*i < st->dir->nsegs)
 	{
-		const SiftSegEntry *e = &st->dir.segs[(*i)++];
+		const SiftSegEntry *e = &st->dir->segs[(*i)++];
 
 		if (e->kind == SIFT_SEG_IMMUTABLE)
 			return sift_cseg_open(rel, e, CurrentMemoryContext);
@@ -183,8 +183,8 @@ sift_test_tbl_tagged(PG_FUNCTION_ARGS)
 
 	sift_tbl_require(rel);
 	sift_tbl_refresh(rel, st);
-	for (int i = 0; i < st->dir.nsegs; i++)
-		n += sift_tbl_seg_unfrozen(&st->dir.segs[i]);
+	for (int i = 0; i < st->dir->nsegs; i++)
+		n += sift_tbl_seg_unfrozen(&st->dir->segs[i]);
 	table_close(rel, AccessShareLock);
 	PG_RETURN_INT32(n);
 }

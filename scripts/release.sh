@@ -87,7 +87,7 @@ lint_tree() { ( cd "$1" && GITHUB_BASE_REF=main SIFT_NEUTRAL_REQUIRED=1 SIFT_PUB
 drop_figure_waivers() { awk '!/^figure /' "$1" >"$1.new" && mv "$1.new" "$1"; }   # not sed -i: BSD sed reads the expression as the backup suffix
 # the build inputs of the shipped files: a CI run whose commit differs from HEAD in none of them is evidence for HEAD (notes, versions and docs are not inputs;
 # neither is the allow list of the figure waivers, which the bump itself edits and the lint of the bumped tree reads)
-GUARDED=(src test scripts Makefile pg_sift.control 'sql/pg_sift--*.sql' sqlite mariadb ':!*.md' ':!*/VERSION' ':!scripts/release*' ':!scripts/bench-cases.allow')
+GUARDED=(src test scripts Makefile pg_sift.control 'sql/pg_sift--*.sql' 'sql/[0-9]*/*.sql' sqlite mariadb ':!*.md' ':!*/VERSION' ':!scripts/release*' ':!scripts/bench-cases.allow')
 selftest() {
 	local bad=0 v
 	t=$(mktemp -d) && trap 'rm -rf "$t"' EXIT   # global: the trap runs after the function
@@ -156,9 +156,10 @@ selftest() {
 	chk pass "the lint of the release commit requires the vocabulary and checks the public tree" env NEUTRAL_VOCAB_FILE="$t/voc" bash -c "$(declare -f lint_tree); lint_tree '$t/tree'"
 	# the bump edits the figure waivers: a run of the tree before it is still evidence for the tree after it, and a change of a build input is not
 	local r=$t/guarded
-	mkdir -p "$r/src" "$r/scripts" && ( cd "$r" && git init -q && echo a >src/a.c && echo a >scripts/bench-cases.allow && git add -A && env "${gid[@]}" git commit -q -m base )
+	mkdir -p "$r/src" "$r/scripts" "$r/sql/5.1" && ( cd "$r" && git init -q && echo a >src/a.c && echo a >sql/5.1/00-header.sql && echo a >scripts/bench-cases.allow && git add -A && env "${gid[@]}" git commit -q -m base )
 	chk pass "a change of the figure waivers leaves the build inputs as they were" bash -c 'cd "$1" && echo b >scripts/bench-cases.allow && git diff --quiet HEAD -- "${@:2}"' _ "$r" "${GUARDED[@]}"
 	chk fail "a change of a source file does not" bash -c 'cd "$1" && echo b >src/a.c && git diff --quiet HEAD -- "${@:2}"' _ "$r" "${GUARDED[@]}"
+	chk fail "a change of a part of the update script does not" bash -c 'cd "$1" && echo b >sql/5.1/00-header.sql && git diff --quiet HEAD -- "${@:2}"' _ "$r" "${GUARDED[@]}"
 	printf '# reasons\nfigure A line\twhy\nORDER BY offset\tcase x\nfigure B line\twhy\ncommit abc\tgate\n' >"$t/allow"
 	drop_figure_waivers "$t/allow"
 	chk pass "the bump drops the figure waivers and keeps the other lines of the allow list" bash -c '[[ $(cat "$1") == $(printf "# reasons\nORDER BY offset\tcase x\ncommit abc\tgate") ]]' _ "$t/allow"

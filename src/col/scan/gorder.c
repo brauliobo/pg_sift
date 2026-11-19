@@ -485,6 +485,8 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int 
 		if (!src->seg[i].gfree && !gorder_view(&src->seg[i], gorder_slot(src, i, col), want))
 			return -1;
 	}
+	if (src->mem_partial)
+		return -1;
 	if (!src->mem_loaded)
 		scan_load_wbuf(src);
 	if (nfree == 0)

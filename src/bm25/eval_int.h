@@ -135,10 +135,10 @@ typedef struct SharedHit
 	float4		score;
 } SharedHit;
 
-/* What follows the header: nmhit SharedHit, then for every leaf a count and that many WbufTermEnt */
+/* What follows the header: the directory snapshot (dir_len bytes), then nmhit SharedHit, then for every leaf a count and that many WbufTermEnt */
 typedef struct SharedBind
 {
-	SiftDirSnapshot dir;
+	Size		dir_len;
 	uint64		seg_ndocs;
 	uint64		seg_sum_dl;
 	uint64		wbuf_ndocs;
