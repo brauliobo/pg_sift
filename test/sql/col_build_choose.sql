@@ -29,7 +29,7 @@ VACUUM (FREEZE, ANALYZE) ch_sorted, ch_noisy, ch_plain;
 CREATE FUNCTION ch_path() RETURNS text LANGUAGE sql AS
 $$ SELECT (ARRAY['heap', 'btree', 'old index'])[1 + current_setting('sift.test_col_build_source_used')::int] $$;
 
--- a build of the table's index: the path it took, whether it wrote temporary files and whether it accessed a block of the heap
+-- a build of the table's index: the path it took, whether it wrote temporary files and whether it read the heap (PostgreSQL 17 counts one access of the table in every REINDEX, 18 and 19 none)
 CREATE TABLE ch_mark (heap_buffers bigint, temp_bytes bigint);
 CREATE FUNCTION ch_start(t regclass) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
@@ -37,9 +37,9 @@ BEGIN
 	INSERT INTO ch_mark SELECT coalesce((SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relid = t), 0),
 		(SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database());
 END $$;
-CREATE FUNCTION ch_note(t regclass) RETURNS TABLE (path text, temp_files bool, reads_heap numeric) LANGUAGE sql AS $$
+CREATE FUNCTION ch_note(t regclass) RETURNS TABLE (path text, temp_files bool, reads_heap bool) LANGUAGE sql AS $$
 	SELECT ch_path(), (SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database()) > m.temp_bytes,
-		coalesce((SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relid = t), 0) - m.heap_buffers FROM ch_mark m $$;
+		coalesce((SELECT sum(heap_blks_read + heap_blks_hit) FROM pg_statio_user_tables WHERE relid = t), 0) - m.heap_buffers > 1 FROM ch_mark m $$;
 
 \set ci_sorted 'CREATE INDEX ch_sorted_idx ON ch_sorted USING sift_col (id, k, g, note, pad) WITH (key_cut = ''k'')'
 \set ci_noisy 'CREATE INDEX ch_noisy_idx ON ch_noisy USING sift_col (id, k, g, note, pad) WITH (key_cut = ''k'')'
