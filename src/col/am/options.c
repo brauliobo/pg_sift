@@ -519,6 +519,9 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_from_index_off",
 							 "Testing: REINDEX reads the heap even when the index they replace could give the rows.",
 							 NULL, &sift_test_col_from_index_off, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_from_index_forced",
+							 "Testing: REINDEX takes the rows from the index it replaces whenever it can, whatever the choice of the build prices.",
+							 NULL, &sift_test_col_from_index_forced, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_from_index_mutant",
 							"Testing: a defect in the build from the replaced index (1: the write buffers are left out).",
 							NULL, &sift_test_col_from_index_mutant, 0, 0, 1, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
