@@ -10,6 +10,7 @@
 #include "postgres.h"
 
 #include "access/tableam.h"
+#include "access/xact.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/predicate.h"
@@ -22,44 +23,101 @@
 #include "table/table.h"
 #include "table/scan_int.h"
 
+/*
+ * The leader's image of the scan, built when the executor asks for its size and handed to the shared memory it allocates by that size:
+ * the directory has the size it has, and what is shared is what the size was taken from. Images are taken in the order the scans are
+ * initialized; a transaction or subtransaction that ends drops those not yet taken.
+ */
+typedef struct ParImage
+{
+	Oid			relid;
+	Size		len;
+	SiftTblParallel *par;
+} ParImage;
+
+static List *par_images;
+static bool par_hooked;
+
 static void
-par_fill(Relation rel, SiftTblParallel *par)
+par_xact_end(XactEvent event, void *arg)
+{
+	par_images = NIL;
+}
+
+static void
+par_subxact_end(SubXactEvent event, SubTransactionId mySubid, SubTransactionId parentSubid, void *arg)
+{
+	if (event == SUBXACT_EVENT_ABORT_SUB)
+		par_images = NIL;
+}
+
+static ParImage *
+par_image_build(Relation rel)
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
+	ParImage   *im;
+	MemoryContext old;
+	Size		dir_len;
+	SiftTblParSeg *seg;
 
 	sift_tbl_refresh(rel, st);
-	par->nsegs = st->nwbuf;
-	par->nunits = 0;
+	for (int i = 0; i < st->nwbuf; i++)
+		sift_tbl_seg_load(rel, &st->wbuf[i]);
+	if (!par_hooked)
+	{
+		RegisterXactCallback(par_xact_end, NULL);
+		RegisterSubXactCallback(par_subxact_end, NULL);
+		par_hooked = true;
+	}
+	old = MemoryContextSwitchTo(TopTransactionContext);
+	dir_len = sift_dir_bytes(st->dir);
+	im = palloc0(sizeof(ParImage));
+	im->relid = RelationGetRelid(rel);
+	im->len = SIFT_TBL_PAR_SEGS_AT(dir_len) + st->nwbuf * sizeof(SiftTblParSeg);
+	im->par = palloc0(im->len);
+	MemoryContextSwitchTo(old);
+	im->par->nsegs = st->nwbuf;
+	im->par->dir_len = dir_len;
+	memcpy(im->par->data, st->dir, dir_len);
+	seg = (SiftTblParSeg *) ((char *) im->par + SIFT_TBL_PAR_SEGS_AT(dir_len));
 	for (int i = 0; i < st->nwbuf; i++)
 	{
-		SiftTblSeg *seg = &st->wbuf[i];
+		const SiftTblSeg *w = &st->wbuf[i];
 
-		sift_tbl_seg_load(rel, seg);
-		par->seg[i].gen = seg->gen;
-		par->seg[i].hdr = seg->hdr;
-		par->seg[i].vbase = seg->vbase;
-		par->seg[i].vcap = seg->vcap;
-		par->seg[i].npages = seg->npages;
-		par->nunits += seg->npages;
+		seg[i] = (SiftTblParSeg) {.gen = w->gen,.hdr = w->hdr,.vbase = w->vbase,.vcap = w->vcap,.npages = w->npages};
+		im->par->nwbuf += w->npages;
 	}
-	par->nwbuf = par->nunits;
-	par->dir = st->dir;
-	par->nunits += SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) / SIFT_SB_PAGES + 1;
-	pg_atomic_write_u64(&par->next, 0);
-	SIFT_COL_OPEN_GATE();
+	im->par->nunits = im->par->nwbuf + SIFT_TBL_NEXT_VBLOCK(&st->dir->meta) / SIFT_SB_PAGES + 1;
+	return im;
 }
 
 Size
 sift_tbl_parallelscan_estimate(Relation rel)
 {
-	return sizeof(SiftTblParallel);
+	ParImage   *im = par_image_build(rel);
+	MemoryContext old = MemoryContextSwitchTo(TopTransactionContext);
+
+	par_images = lappend(par_images, im);
+	MemoryContextSwitchTo(old);
+	return im->len;
 }
 
 Size
 sift_tbl_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan)
 {
 	SiftTblParallel *par = (SiftTblParallel *) pscan;
+	ParImage   *im = NULL;
+	ListCell   *lc;
 
+	foreach(lc, par_images)
+		if (((ParImage *) lfirst(lc))->relid == RelationGetRelid(rel))
+		{
+			im = lfirst(lc);
+			par_images = foreach_delete_current(par_images, lc);
+			break;
+		}
+	SIFT_INVARIANT(im != NULL, "sift_table: a parallel scan is initialized without the image its size was taken from");
+	memcpy(par, im->par, im->len);
 #if PG_VERSION_NUM >= 180000
 	par->base.phs_locator = rel->rd_locator;
 #else
@@ -68,14 +126,15 @@ sift_tbl_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan)
 	par->base.phs_syncscan = false;
 	par->base.phs_snapshot_any = false;
 	par->base.phs_snapshot_off = 0;
-	par_fill(rel, par);
-	return sizeof(SiftTblParallel);
+	pg_atomic_init_u64(&par->next, 0);
+	SIFT_COL_OPEN_GATE();
+	return im->len;
 }
 
 void
 sift_tbl_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan)
 {
-	par_fill(rel, (SiftTblParallel *) pscan);
+	pg_atomic_write_u64(&((SiftTblParallel *) pscan)->next, 0);
 }
 
 /* Back to the position before the first row */
@@ -97,14 +156,13 @@ scan_open_state(Relation rel, SiftTblScan *s)
 	sift_tbl_refresh(rel, st);
 	if (s->par)
 	{
-		s->dir = &s->par->dir;
+		s->dir = sift_tbl_par_dir(s->par);
 		sift_tomb_sync_at(rel, &st->tomb, s->dir);
 	}
 	else
 	{
 		sift_tomb_sync(rel, &st->tomb);
-		s->dir = palloc(sizeof(SiftDirSnapshot));
-		*s->dir = st->dir;
+		s->dir = sift_dir_copy(st->dir);
 	}
 	s->nseg = s->par ? s->par->nsegs : st->nwbuf;
 	s->seg = s->nseg ? palloc0(s->nseg * sizeof(SiftTblSeg)) : NULL;
@@ -113,16 +171,16 @@ scan_open_state(Relation rel, SiftTblScan *s)
 		if (s->par)
 		{
 			/* the leader's list, not the directory as it is now: every participant reads the same units */
-			s->seg[i].gen = s->par->seg[i].gen;
-			s->seg[i].hdr = s->par->seg[i].hdr;
-			s->seg[i].vbase = s->par->seg[i].vbase;
-			s->seg[i].vcap = s->par->seg[i].vcap;
+			s->seg[i].gen = sift_tbl_par_seg(s->par)[i].gen;
+			s->seg[i].hdr = sift_tbl_par_seg(s->par)[i].hdr;
+			s->seg[i].vbase = sift_tbl_par_seg(s->par)[i].vbase;
+			s->seg[i].vcap = sift_tbl_par_seg(s->par)[i].vcap;
 		}
 		else
 			s->seg[i] = st->wbuf[i];
 		sift_tbl_seg_load(rel, &s->seg[i]);
 		if (s->par)
-			s->seg[i].npages = Min(s->seg[i].npages, s->par->seg[i].npages);
+			s->seg[i].npages = Min(s->seg[i].npages, sift_tbl_par_seg(s->par)[i].npages);
 	}
 	s->ndpages = 0;
 	for (int i = 0; i < s->nseg; i++)
@@ -137,7 +195,7 @@ scan_close_state(SiftTblScan *s)
 	if (s->seg)
 		pfree(s->seg);
 	if (!s->par)
-		pfree(s->dir);
+		pfree((SiftDirSnapshot *) s->dir);
 	if (s->g)
 		sift_tbl_gscan_end(s->g);
 	s->seg = NULL;
@@ -308,8 +366,8 @@ scan_next_unit(Relation rel, SiftTblScan *s)
 					return UNIT_GROUPS;
 				continue;
 			}
-			for (i = 0; i < s->nseg && u >= base + s->par->seg[i].npages; i++)
-				base += s->par->seg[i].npages;
+			for (i = 0; i < s->nseg && u >= base + sift_tbl_par_seg(s->par)[i].npages; i++)
+				base += sift_tbl_par_seg(s->par)[i].npages;
 			seg = &s->seg[i];
 			idx = u - base;
 		}

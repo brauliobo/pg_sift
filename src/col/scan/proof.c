@@ -40,14 +40,14 @@ sift_col_source_proof(SiftColSource *src, int found_leaf, SiftConnStamp *oldest,
 	SIFT_INVARIANT(conn >= 0, "sift: leaf %d is not the flag of a connection", found_leaf);
 	*oldest = (SiftConnStamp) {0};
 	*clean = true;
-	for (int i = 0; i < src->dir.nsegs; i++)
+	for (int i = 0; i < src->dir->nsegs; i++)
 	{
 		uint64		rows,
 					pages;
 
-		if (!sift_seg_is_wbuf(&src->dir.segs[i]))
+		if (!sift_seg_is_wbuf(&src->dir->segs[i]))
 			continue;
-		sift_cwbuf_summary(src->index, &src->dir.segs[i], &rows, &pages);
+		sift_cwbuf_summary(src->index, &src->dir->segs[i], &rows, &pages);
 		if (rows > 0)
 			return "write buffer";
 	}

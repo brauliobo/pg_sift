@@ -57,9 +57,21 @@ budget_bm25_verify(void)
 }
 
 static Size
+budget_col_btree_pick(void)
+{
+	return (((Size) 25165824UL));
+}
+
+static Size
 budget_col_build(void)
 {
 	return (((Size) 201326592UL));
+}
+
+static Size
+budget_col_build_choose(void)
+{
+	return (((Size) 4194304UL));
 }
 
 static Size
@@ -75,9 +87,33 @@ budget_col_conn_changed(void)
 }
 
 static Size
+budget_col_dead_keys(void)
+{
+	return (((Size) 100663296UL));
+}
+
+static Size
+budget_col_dv_overlay(void)
+{
+	return (((Size) 67108864UL));
+}
+
+static Size
+budget_col_dv_settle(void)
+{
+	return (((Size) 16777216UL));
+}
+
+static Size
 budget_col_fold_keys(void)
 {
 	return (((Size) sift_tomb_log_limit_kb * 1024) + ((Size) 65536UL));
+}
+
+static Size
+budget_col_from_index(void)
+{
+	return (((Size) 67108864UL));
 }
 
 static Size
@@ -220,10 +256,16 @@ static const struct
 	{"bm25_promote", budget_bm25_promote, "maintenance_work_mem + 8MB"},
 	{"bm25_search", budget_bm25_search, "work_mem + 32MB"},
 	{"bm25_verify", budget_bm25_verify, "maintenance_work_mem + 8MB"},
+	{"col_btree_pick", budget_col_btree_pick, "24MB"},
 	{"col_build", budget_col_build, "192MB (open: ceiling measured today)"},
+	{"col_build_choose", budget_col_build_choose, "4MB"},
 	{"col_build_spool", budget_col_build_spool, "col_build_budget + 4MB"},
 	{"col_conn_changed", budget_col_conn_changed, "32kB"},
+	{"col_dead_keys", budget_col_dead_keys, "96MB"},
+	{"col_dv_overlay", budget_col_dv_overlay, "64MB (open: ceiling measured today)"},
+	{"col_dv_settle", budget_col_dv_settle, "16MB"},
 	{"col_fold_keys", budget_col_fold_keys, "sift.tomb_log_limit + 64kB"},
+	{"col_from_index", budget_col_from_index, "64MB (open: ceiling measured today)"},
 	{"col_key_cut_cells", budget_col_key_cut_cells, "maintenance_work_mem + 8MB"},
 	{"col_key_cut_decision", budget_col_key_cut_decision, "maintenance_work_mem + 12MB"},
 	{"col_key_cut_layout", budget_col_key_cut_layout, "maintenance_work_mem + 64MB"},

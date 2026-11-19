@@ -13,16 +13,20 @@
 #include "utils/array.h"
 #include "agg/agg.h"
 #include "agg/cost/model.h"
+#include "bm25/maint.h"
 #include "col/am.h"
 #include "col/gorder.h"
+#include "col/order_bound.h"
 #include "col/order_sort.h"
 #include "col/pagg.h"
+#include "core/dirpart.h"
 #include "core/sql.h"
 #include "core/visibility.h"
 #endif							/* SIFT_TESTING */
 #include "col/test/test_int.h"
 #include "core/catname.h"
 #include "core/store.h"
+#include "core/store_test_int.h"
 
 #ifdef SIFT_TESTING
 PG_FUNCTION_INFO_V1(sift_test_col_gorder);
@@ -30,6 +34,13 @@ PG_FUNCTION_INFO_V1(sift_test_col_gorder);
 PG_FUNCTION_INFO_V1(sift_test_col_unit_of_block);
 
 PG_FUNCTION_INFO_V1(sift_test_col_formats);
+
+PG_FUNCTION_INFO_V1(sift_test_col_segment_keys);
+PG_FUNCTION_INFO_V1(sift_test_col_part_bounds);
+PG_FUNCTION_INFO_V1(sift_test_col_part_shift);
+PG_FUNCTION_INFO_V1(sift_test_col_cut_near);
+PG_FUNCTION_INFO_V1(sift_test_col_part_damage);
+PG_FUNCTION_INFO_V1(sift_test_col_adopt);
 
 PG_FUNCTION_INFO_V1(sift_test_col_mirror);
 
@@ -72,10 +83,10 @@ sift_test_col_formats(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		Datum		v[4] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(snap->segs[i].format),
@@ -89,16 +100,241 @@ sift_test_col_formats(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
+/* sift._test_col_segment_keys(index): for every immutable segment cut by a key, its units and rows and the range of its first key leaf over its units (lo > hi: no value): the segments of a cut by key that keeps each key in one segment share no value */
+Datum
+sift_test_col_segment_keys(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	SiftDirSnapshot *snap;
+
+	InitMaterializedSRF(fcinfo, 0);
+	snap = sift_dir_read(index);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		int64		lo = PG_INT64_MAX,
+					hi = PG_INT64_MIN;
+		Datum		v[5];
+		bool		nulls[5] = {false};
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE || !(snap->segs[i].flags & SIFT_SEG_BYKEY))
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		for (uint32 u = 0; u < seg->nsb; u++)
+		{
+			SiftCZone	z;
+
+			sift_cseg_zone(seg, seg->cut[0], u, &z);
+			if (z.nvals == z.nnull)
+				continue;
+			lo = Min(lo, z.min);
+			hi = Max(hi, z.max);
+		}
+		v[0] = Int64GetDatum(snap->segs[i].gen);
+		v[1] = Int32GetDatum((int32) seg->nsb);
+		v[2] = Int64GetDatum((int64) snap->segs[i].ndocs);
+		v[3] = Int64GetDatum(lo);
+		v[4] = Int64GetDatum(hi);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+		sift_cseg_close(seg);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/* sift._test_col_adopt(index): the step of the maintenance that records the partitions of a key-cut index that none was: whether it recorded any */
+Datum
+sift_test_col_adopt(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), RowExclusiveLock, "sift_col");
+	bool		recorded;
+
+	sift_maint_lock(index, true);
+	recorded = sift_col_adopt_partitions(index);
+	sift_maint_unlock(index);
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_BOOL(recorded);
+}
+
+typedef struct PartDamage
+{
+	uint64		gen;
+	SiftSegEntry entry;
+	uint8		lo[SIFT_BOUND_BYTES];
+} PartDamage;
+
+static void
+damage_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	PartDamage *d = arg;
+
+	sift_dir_part_replace(&d->gen, 1, &d->entry, 1, &d->lo);
+}
+
+/*
+ * sift._test_col_part_damage(index, k, how): records a wrong bound for partition k (of one segment): how 'equal' the bound of the partition before it, 'high' the greatest row of its segment,
+ * 'low' the greatest row of the segment before it (k >= 1 for 'equal' and 'low'). col_verify must refuse the directory
+ */
+Datum
+sift_test_col_part_damage(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), RowExclusiveLock, "sift_col");
+	int			k = PG_GETARG_INT32(1);
+	char	   *how = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	SiftDirSnapshot *snap = sift_dir_read(index);
+	SiftDirPart *part;
+	SiftSegEntry *segs;
+	int			np = sift_dir_parts_read(index, snap, &segs, &part);
+	bool		same = strcmp(how, "equal") == 0,
+				high = strcmp(how, "high") == 0;
+	int			from = high ? k : k - 1;
+	PartDamage	d;
+	SiftColSegment *seg;
+	SiftBound	b;
+
+	if (k < 0 || k >= np || part[k].n != 1 || from < 0 || (!same && !high && strcmp(how, "low") != 0))
+		elog(ERROR, "sift test: no partition %d of one segment to damage as \"%s\"", k, how);
+	d.entry = segs[part[k].first];
+	d.gen = d.entry.gen;
+	if (same)
+		memcpy(d.lo, part[from].lo, SIFT_BOUND_BYTES);
+	else
+	{
+		seg = sift_cseg_open(index, &segs[part[from].first], CurrentMemoryContext);
+		if (!sift_colk_segment_bound(seg, true, &b))
+			elog(ERROR, "sift test: the segment of partition %d holds no row", from);
+		sift_bound_pack(&b, d.lo);
+		sift_cseg_close(seg);
+	}
+	sift_maint_lock(index, true);
+	sift_dir_update(index, &(SiftDirChange) {.fn = damage_switch,.arg = &d,.extra = InvalidBuffer});
+	sift_maint_unlock(index);
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
+}
+
+typedef struct PartShift
+{
+	uint32		first;
+	uint32		n;
+	uint8		lo[SIFT_BOUND_BYTES];
+} PartShift;
+
+static void
+shift_partition(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	const PartShift *ps = arg;
+	uint64	   *gens = palloc(ps->n * sizeof(uint64));
+
+	for (uint32 i = 0; i < ps->n; i++)
+		gens[i] = dir->segs[ps->first + i].gen;
+	sift_dir_part_replace(gens, ps->n, &dir->segs[ps->first], ps->n, (const uint8 (*)[SIFT_BOUND_BYTES]) ps->lo);
+}
+
+/* sift._test_col_cut_near(held, due_at, slack_pct, open): is a segment of held bytes done after a unit (col/order_bound.c) */
+Datum
+sift_test_col_cut_near(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(sift_colk_cut_near(PG_GETARG_INT64(0), PG_GETARG_INT64(1), PG_GETARG_INT32(2), PG_GETARG_BOOL(3)));
+}
+
+/* sift._test_col_part_shift(index, k): records the lower bound of the partition k+1 as that of the partition k, which then starts above rows it holds: what the check of a partition's rows finds */
+Datum
+sift_test_col_part_shift(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), RowExclusiveLock, "sift_col");
+	int			k = PG_GETARG_INT32(1);
+	SiftDirSnapshot *snap = sift_dir_read(index);
+	SiftDirPart *part;
+	SiftSegEntry *segs;
+	SiftDirChain chain;
+	PartShift	ps;
+	int			np;
+
+	if (snap->nchain == 0)
+		elog(ERROR, "sift test: the directory of \"%s\" has no partitions", RelationGetRelationName(index));
+	(void) sift_dirchain_read(index, snap->chain[0], snap->version, 0, &segs, &chain);
+	np = sift_dirchain_parts(&chain, &part);
+	if (k < 0 || k + 1 >= np)
+		elog(ERROR, "sift test: partition %d has no partition after it (%d)", k, np);
+	ps = (PartShift) {.first = part[k].first,.n = part[k].n};
+	memcpy(ps.lo, part[k + 1].lo, SIFT_BOUND_BYTES);
+	MAINT_LOCK(index, ShareLock);
+	sift_dir_update(index, &(SiftDirChange) {.fn = shift_partition,.arg = &ps,.extra = InvalidBuffer});
+	MAINT_UNLOCK(index, ShareLock);
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
+}
+
+/* sift._test_col_part_bounds(index): for every partition of the directory chain, its entries and whether its lower bound is empty, whether the rows of its segments are all from it, and below the bound of the next partition */
+Datum
+sift_test_col_part_bounds(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	SiftDirSnapshot *snap = sift_dir_read(index);
+	SiftDirPart *part;
+	SiftSegEntry *segs;
+	int			np = sift_dir_parts_read(index, snap, &segs, &part);
+
+	InitMaterializedSRF(fcinfo, 0);
+	for (int k = 0; k < np; k++)
+	{
+		SiftBound	lo,
+					next;
+		bool		from_lo = true,
+					below_next = true;
+		Datum		v[6];
+		bool		nulls[6] = {false};
+		StringInfoData text;
+
+		if (!sift_bound_unpack(part[k].lo, &lo) || (k + 1 < np && !sift_bound_unpack(part[k + 1].lo, &next)))
+			elog(ERROR, "sift test: the bound of a partition is no bound");
+		for (uint32 e = part[k].first; e < part[k].first + part[k].n; e++)
+		{
+			SiftColSegment *seg = sift_cseg_open(index, &segs[e], CurrentMemoryContext);
+
+			from_lo &= sift_colk_rows_within(seg, &lo, NULL);
+			below_next &= sift_colk_rows_within(seg, NULL, k + 1 < np ? &next : NULL);
+			sift_cseg_close(seg);
+		}
+		initStringInfo(&text);
+		for (uint32 c = 0; c < SIFT_BOUND_COMPS; c++)
+		{
+			int64		key;
+			SiftComp	kind = sift_bound_comp(&lo, c, &key);
+
+			if (kind == SIFT_COMP_NONE)
+				break;
+			appendStringInfoString(&text, c > 0 ? "," : "");
+			if (kind == SIFT_COMP_NULL)
+				appendStringInfoString(&text, "NULL");
+			else
+				appendStringInfo(&text, INT64_FORMAT, key);
+		}
+		v[0] = Int32GetDatum((int32) part[k].first);
+		v[1] = Int32GetDatum((int32) part[k].n);
+		v[5] = CStringGetTextDatum(text.data);
+		v[2] = BoolGetDatum(lo.len == 0);
+		v[3] = BoolGetDatum(from_lo);
+		v[4] = BoolGetDatum(below_next);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
 /* sift._test_col_cuts(index): for every immutable segment, whether it is cut by a key (SIFT_SEG_BYKEY) or by TID range (SIFT_SEG_BYTID) and the leaves it records it is cut by (SIFT_SEG_CUTREC; empty: none) */
 Datum
 sift_test_col_cuts(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -161,10 +397,10 @@ sift_test_col_mirror(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -207,10 +443,10 @@ sift_test_col_dict_tsig(PG_FUNCTION_ARGS)
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	int			leaf = PG_GETARG_INT32(1);
 	text	   *needle = PG_GETARG_TEXT_PP(2);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -247,10 +483,10 @@ sift_test_col_dict_count(PG_FUNCTION_ARGS)
 	SiftColValue c = {.len = VARSIZE_ANY_EXHDR(val), .v.s = VARDATA_ANY(val)};
 	SiftColOp	op = strcmp(opname, "eq") == 0 ? SIFT_COLOP_EQ : strcmp(opname, "lt") == 0 ? SIFT_COLOP_LT : strcmp(opname, "le") == 0 ? SIFT_COLOP_LE :
 		strcmp(opname, "gt") == 0 ? SIFT_COLOP_GT : strcmp(opname, "ge") == 0 ? SIFT_COLOP_GE : SIFT_COLOP_PREFIX;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -316,10 +552,10 @@ sift_test_col_unit_of_block(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	BlockNumber blk = (BlockNumber) PG_GETARG_INT64(1);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -350,12 +586,12 @@ sift_test_col_gorder(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	int			leaf = PG_GETARG_INT32(1);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	int64		kv[SIFT_CGORD_CAP];
 	uint64		av[SIFT_CGORD_CAP];
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;

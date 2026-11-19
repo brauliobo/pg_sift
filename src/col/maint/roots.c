@@ -77,8 +77,8 @@ string_root_in_heap(Relation index, Relation heap)
 void
 maint_roots_verify(Relation index, Relation heap)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	RootsGens	g = {.gen = palloc(SIFT_MAX_SEGMENTS * sizeof(uint64))};
+	SiftDirSnapshot *snap;
+	RootsGens	g = {0};
 	uint64		ndocs = 0;
 	TimestampTz start = GetCurrentTimestamp();
 	MemoryContext cx = CurrentMemoryContext;
@@ -87,7 +87,8 @@ maint_roots_verify(Relation index, Relation heap)
 
 	if (RecoveryInProgress())
 		return;
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
+	g.gen = palloc(Max(snap->nsegs, 1) * sizeof(uint64));
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && !(snap->segs[i].flags & SIFT_SEG_ROOTS))
 		{

@@ -40,6 +40,8 @@ PG_FUNCTION_INFO_V1(sift_test_col_wbuf_torn);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_long);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_rows);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_batches);
+PG_FUNCTION_INFO_V1(sift_test_col_wbuf_keyed);
+PG_FUNCTION_INFO_V1(sift_test_col_wbuf_pages);
 PG_FUNCTION_INFO_V1(sift_test_col_dir_version);
 PG_FUNCTION_INFO_V1(sift_test_col_gkept_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_mem_encodes);
@@ -127,6 +129,8 @@ typedef struct TestRow
 	SiftColValue *elem[NCOLS];
 } TestRow;
 
+static bool small_rows;
+
 static void
 gen_str(pg_prng_state *st, SiftColValue *v, bool vocab)
 {
@@ -141,7 +145,7 @@ gen_str(pg_prng_state *st, SiftColValue *v, bool vocab)
 		v->len = strlen(w);
 		return;
 	}
-	v->len = r < 2 ? SIFT_COL_DICT_MAX_ENTRY : r < 4 ? pg_prng_uint64_range(st, 256, 20000) : r < 10 ? 0 : pg_prng_uint64_range(st, 1, 24);
+	v->len = small_rows ? (r < 10 ? 0 : pg_prng_uint64_range(st, 1, 24)) : r < 2 ? SIFT_COL_DICT_MAX_ENTRY : r < 4 ? pg_prng_uint64_range(st, 256, 20000) : r < 10 ? 0 : pg_prng_uint64_range(st, 1, 24);
 	v->v.s = palloc(v->len + 1);
 	for (uint32 i = 0; i < v->len; i++)
 		((char *) v->v.s)[i] = pg_prng_uint64_range(st, 0, 255);
@@ -236,6 +240,8 @@ gen_row(uint64 seed, uint64 id, TestRow *t)
 		if (s->cols[c].parent < 0 && c != 5)
 			gen_value(&st, &s->cols[c], &t->val[c]);
 	t->val[0].v.i = id;
+	if (small_rows && !t->val[1].isnull)
+		t->val[1].v.i = id;
 	*items = (SiftColValue) {0};
 	if (id % 1000 == 999)
 		items->v.i = 600 + pg_prng_uint64_range(&st, 0, 2400);
@@ -327,9 +333,9 @@ kind_name(SiftSegKind kind)
 static SiftDirSnapshot *
 read_dir(Relation index)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	return snap;
 }
 
@@ -346,6 +352,8 @@ sift_test_col_wbuf_prepare(PG_FUNCTION_ARGS)
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
 	uint32		hash = test_schema()->hash ^ (uint32) PG_GETARG_INT32(1);
 
+	sift_test_wbuf_key_leaf = PG_GETARG_INT32(2);
+	small_rows = PG_GETARG_BOOL(3);
 	sift_dir_update(index, &(SiftDirChange) {.fn = set_hash,.arg = &hash,.extra = InvalidBuffer});
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_INT64(test_schema()->hash);
@@ -538,6 +546,109 @@ sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 				put3(rsinfo, Int64GetDatum(snap->segs[i].gen), Int64GetDatum(b->sb), Int64GetDatum(check_row(seed, &row, false)));
 			}
 		}
+	}
+	relation_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/*
+ * (index regclass, seed int8, lo int8, hi int8, cold bool) -> (gen int8, id int8, key int8, unknown bool, partial bool): the live rows of every write buffer as a scan that asks for the keys lo to hi reads them
+ * (sift_cwbuf_batches_keys; NULL lo and hi ask for every row), each checked against its generator; key is the value of the key leaf of the row (NULL: a NULL or an overflow value, the second the one unknown says), partial says
+ * whether the batches are those of the pages that meet the keys. The set of a partial read holds every row with a key in the range. cold: this backend has read no buffer for keys before.
+ */
+Datum
+sift_test_col_wbuf_keyed(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
+	uint64		seed = PG_GETARG_INT64(1);
+	SiftCWbufKeys keys = {.leaf = sift_cwbuf_key_leaf(index)};
+	bool		any = !PG_ARGISNULL(2) && !PG_ARGISNULL(3);
+	SiftDirSnapshot *snap;
+
+	if (any)
+	{
+		keys.lo = PG_GETARG_INT64(2);
+		keys.hi = PG_GETARG_INT64(3);
+	}
+	if (PG_GETARG_BOOL(4))
+		sift_cwbuf_key_reads_reset();
+	InitMaterializedSRF(fcinfo, 0);
+	snap = read_dir(index);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		int			nb;
+		bool		partial;
+		SiftColBatch **batches;
+		SiftColRow	row = {0};
+
+		if (!sift_seg_is_wbuf(&snap->segs[i]))
+			continue;
+		batches = sift_cwbuf_batches_keys(index, &snap->segs[i], test_schema(), snap->version, any ? &keys : NULL, CurrentMemoryContext, &nb, NULL, NULL, &partial);
+		for (int k = 0; k < nb; k++)
+			for (uint32 x = 0; x < batches[k]->nrows; x++)
+			{
+				Datum		values[5];
+				bool		nulls[5] = {0};
+
+				if (sift_cbatch_dead(batches[k], x))
+					continue;
+				sift_cbatch_row(batches[k], x, &row);
+				values[0] = Int64GetDatum(snap->segs[i].gen);
+				values[1] = Int64GetDatum(check_row(seed, &row, false));
+				values[2] = Int64GetDatum(row.val[keys.leaf].v.i);
+				nulls[2] = row.val[keys.leaf].isnull;
+				values[3] = BoolGetDatum(row.val[keys.leaf].overflow);
+				values[4] = BoolGetDatum(partial);
+				tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+			}
+	}
+	relation_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/*
+ * (index regclass) -> (gen int8, blk int8, nrecs int4, flags int4, leaf int4, kmin int8, kmax int8): the data pages of every write buffer, the head of the pages of a buffer of
+ * format SIFT_COL_FORMAT_WBUFKEY with the leaf its range is of (-1: none yet) and the range (NULL: none); flags are the SIFT_WBUFPAGE_* bits
+ */
+Datum
+sift_test_col_wbuf_pages(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap;
+
+	InitMaterializedSRF(fcinfo, 0);
+	snap = read_dir(index);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		int			nb;
+		BlockNumber *blks;
+
+		if (!sift_seg_is_wbuf(&snap->segs[i]))
+			continue;
+		blks = sift_lane_blocks(index, &snap->segs[i], &nb);
+		for (int k = 0; k < nb; k++)
+		{
+			Buffer		buf = sift_lane_read_locked(index, blks[k], BUFFER_LOCK_SHARE);
+			const SiftColPageHead *h = SiftColPageKeys(BufferGetPage(buf));
+			bool		keyed = snap->segs[i].format >= SIFT_COL_FORMAT_WBUFKEY;
+			Datum		values[7];
+			bool		nulls[7] = {0};
+
+			values[0] = Int64GetDatum(snap->segs[i].gen);
+			values[1] = Int64GetDatum(blks[k]);
+			values[2] = Int32GetDatum(h->lane.nrecs);
+			values[3] = Int32GetDatum(h->lane.flags);
+			values[4] = Int32GetDatum(keyed ? (int) ((h->lane.flags & SIFT_WBUFPAGE_LEAF_MASK) >> SIFT_WBUFPAGE_LEAF_SHIFT) - 1 : -1);
+			values[5] = Int64GetDatum(h->kmin);
+			values[6] = Int64GetDatum(h->kmax);
+			nulls[4] = !keyed;
+			nulls[5] = nulls[6] = !keyed || !(h->lane.flags & SIFT_WBUFPAGE_KEYS);
+			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+			UnlockReleaseBuffer(buf);
+		}
+		pfree(blks);
 	}
 	relation_close(index, AccessShareLock);
 	return (Datum) 0;

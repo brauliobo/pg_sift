@@ -30,6 +30,7 @@ typedef struct ColScanOpaque
 	Snapshot	ssnap;			/* the snapshot the source was opened with, and the flags */
 	uint32		sflags;
 	SiftColPred *preds;
+	SiftKeyRange keys;			/* the keys the predicates confine the scan to, when they do (col_scan_begin) */
 	int			npreds;
 	bool		started;
 	bool		unsat;			/* a key no row can satisfy */

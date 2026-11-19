@@ -37,6 +37,8 @@ script:ci.sh	2700	3072	quick: about 1 min on 8 free cores (hosted quick lane 15 
 script:test-ci-build-fail.sh	120	50	a run with a stub build and a sleeping lint: 5 s idle, up to 90 s on a loaded runner, no server, scratch under 1 MB
 script:pgtest.sh	1800	3072	regress of the whole suite serially: 2,459 s release / 5,556 s cassert: run it sharded (scripts/ci.sh, SIFT_CI_JOBS=installcheck); one test or TAP is bounded by its own row
 script:soak.sh	900	1500	600 s of pgbench + setup (default --duration 600); 191-220 s in the quick tier (15 s soak hosted)
+script:instr-budget-dirread.sh	180	200	the instructions of a directory read at a flat and a forced chain of 1, 3 and 100 segments: one cluster, tables of a few thousand rows
+script:instr-budget-dirmemo.sh	180	200	the chain reads of single-row writes on a forced chain of 120 segments (a DELETE, four DELETEs, the first INSERT) against one read, and a statement after the first against a flat directory: one cluster, 120 one-row segments, 15 s measured
 script:colsoak.sh	600	1000	300 s default duration; 124 s in the full tier
 script:fuzz.sh	1200	1500	scale 10 sanitizer fuzz; hosted 'fuzz' job 514 s (698-1024 s on the deep tier)
 script:difftest.sh	900	1500	hosted difftest jobs 392-994 s per shard

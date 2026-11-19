@@ -18,7 +18,7 @@ import functools, os, re, subprocess, sys
 
 CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference is 1.8 MB
 BOUNDED = "'sift cache unit buffers'"   # a fixed count of spare buffers (UNIT_KEEP of UNIT_KEEP_BYTES, col/seg/seg.c): it grows to its 16 MB while repeats find larger units, and no further
-DEFAULT_BUDGET_KB = 256 * 1024   # sift.backend_cache_kb at its default: what a normal workload holds is what -1 holds
+DEFAULT_BUDGET_KB = 128 * 1024   # sift.backend_cache_kb at its default: what a normal workload holds is what -1 holds
 IDLE_CTX_KB = 1024        # kB its contexts may grow over the same statements
 IDLE_CACHE_KB = 4096      # sift.backend_cache_kb of the idle series: at the default 256 MB the caches fill about 1 kB a statement for the whole series (+620 kB over its last 1000 statements on one host, +1052 on a hosted one), which a window of 1000 statements does not tell from a leak; at 4 MB they are full long before it
 LEAK_KB = 512              # kB the contexts of a backend may hold more after 25 repeats than after 10
