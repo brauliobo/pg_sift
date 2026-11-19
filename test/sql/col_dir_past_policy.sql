@@ -4,7 +4,7 @@
 -- merge of it writes fewer, with the bytes of its writer flat in the segments it reads.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test CASCADE;
-SET client_min_messages = notice;
+SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.col_auto_merge = off;
 SET sift.async_maintenance = off;
@@ -68,7 +68,9 @@ SELECT count(*) AS after_first, min(rows) AS min_rows, max(rows) AS max_rows FRO
 SELECT sift.col_merge('u_plain', true) > 0 AS second_merge;
 SELECT count(*) AS after_second FROM sift.col_segments('u_plain') WHERE kind = 'immutable';
 SELECT sift.col_merge('u_cut', true) >= 0 AS first_merge;
-DO $$ DECLARE n int := 0; r int; c int; mn bigint; mx bigint; BEGIN FOR n IN 1 .. 20 LOOP SELECT count(*), min(rows), max(rows) INTO c, mn, mx FROM sift.col_segments('u_cut') WHERE kind = 'immutable'; RAISE NOTICE 'DIAG step % before: segs % rows % to %', n, c, mn, mx; r := sift.col_merge('u_cut', true); RAISE NOTICE 'DIAG step % merge returned %', n, r; EXIT WHEN r = 0; END LOOP; END $$;
+CREATE TABLE diag (n int, segs int, minr bigint, maxr bigint, ret int, gens text);
+DO $$ DECLARE r int; c int; mn bigint; mx bigint; BEGIN FOR n IN 1 .. 20 LOOP r := sift.col_merge('u_cut', true); SELECT count(*), min(rows), max(rows) INTO c, mn, mx FROM sift.col_segments('u_cut') WHERE kind = 'immutable'; INSERT INTO diag VALUES (n, c, mn, mx, r, (SELECT string_agg(gen::text, ',' ORDER BY gen) FROM sift.col_segments('u_cut') WHERE kind = 'immutable')); EXIT WHEN r = 0; END LOOP; END $$;
+SELECT * FROM diag ORDER BY n;
 DO $$ DECLARE n int := 0; BEGIN WHILE sift.col_merge('u_cut', true) > 0 LOOP n := n + 1; IF n > 2 THEN RAISE EXCEPTION 'the forced merges of u_cut do not end'; END IF; END LOOP; END $$;
 SELECT sift.col_merge('u_cut', true) AS settled_merge_steps;
 SELECT count(*) <= :built_cut AS not_more_than_built, sum(rows) = 3072 AS all_rows FROM sift.col_segments('u_cut') WHERE kind = 'immutable';
