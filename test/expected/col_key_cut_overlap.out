@@ -70,9 +70,9 @@ SELECT sift.col_verify('ko_idx', true);
 (1 row)
 
 SELECT ko_units() AS after;
-                      after                       
---------------------------------------------------
-  Units: 1 read, 12 pruned, 1 from pre-aggregates
+                      after                      
+-------------------------------------------------
+  Units: 1 read, 2 pruned, 1 from pre-aggregates
 (1 row)
 
 SELECT ko_same() AS same_after;

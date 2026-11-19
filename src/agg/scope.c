@@ -310,7 +310,7 @@ entity_cheaper(AggExec *ex, Snapshot snapshot, uint64 changed, const SiftScopeRe
 	const SiftAggScope *sc = ex->spec->scope;
 	SiftScopeCounts c = unit_counts(ex, snapshot);
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
-	SiftSrcSource *entity = sift_colsrc_open(ex->heap, ex->index, snapshot, cx, ex->view);
+	SiftSrcSource *entity = sift_colsrc_open(ex->heap, ex->index, snapshot, cx, ex->view, NULL);
 	bool		cheaper;
 
 	if (rd != NULL)

@@ -375,6 +375,50 @@ sift_agg_text_range(AggExec *ex, const SiftSrcStrTest **lo, const SiftSrcStrTest
 	return leaf;
 }
 
+/* Does a conjunct of p (p, or a conjunct of the ANDs below it) test the leaf? */
+static bool
+tests_leaf(const SiftAggPred *p, int leaf)
+{
+	if (p->kind == SAP_AND)
+	{
+		for (int i = 0; i < p->nchild; i++)
+			if (tests_leaf(p->child[i], leaf))
+				return true;
+		return false;
+	}
+	return p->leaf == leaf && (p->kind == SAP_CMP || p->kind == SAP_IN);
+}
+
+/*
+ * The keys of the cut of the index that the conjuncts of the WHERE confine the rows to, for the source that is about to be opened: it then reads the partitions that may hold them. The layout is the
+ * index's (the source's is made of the same), and the operands are evaluated here, once, as prune_init finds them made.
+ */
+bool
+open_keys(AggExec *ex, SiftKeyRange *out)
+{
+	int			leaf = ex->index == NULL ? -1 : sift_colsrc_key_leaf(ex->index);
+	List	   *tests = NIL;
+	SiftSrcPrune *z;
+	int			n = 0;
+	bool		confined = false;
+	bool		ok;
+
+	for (int i = 0; leaf >= 0 && i < ex->spec->npred && !confined; i++)
+		confined = tests_leaf(ex->spec->pred[i], leaf);
+	if (!confined)
+		return false;
+	ex->lay = sift_colsrc_layout(ex->index);
+	ex->nbase = ex->lay->nleaves;
+	for (int i = 0; i < ex->spec->npred; i++)
+		tests = zone_tests(ex, ex->spec->pred[i], tests);
+	z = palloc(Max(list_length(tests), 1) * sizeof(SiftSrcPrune));
+	foreach_ptr(SiftSrcPrune, t, tests)
+		z[n++] = *t;
+	ok = sift_colsrc_key_range(ex->index, z, n, out);
+	ex->lay = NULL;
+	return ok;
+}
+
 /* the entries of the leaves the conjuncts compare (preagg_zones), then those of the ORs: all of them prune the scan */
 void
 prune_init(AggExec *ex)

@@ -248,6 +248,7 @@ struct SiftColSource
 	const SiftColSchema *schema;
 	uint32		dir_checked;	/* the directory version segments_current last compared with, and its answer */
 	bool		dir_current;
+	SiftKeyRange keys;			/* the keys a partial directory (SiftDirSnapshot.partial) was read for */
 	Buffer		dirbuf;			/* the directory page, pinned while the source is open: segments_current reads its version without a buffer access */
 	SiftVis		vis;
 	SiftColVisibility visibility;
@@ -515,7 +516,7 @@ extern void	scan_load_mem(SiftColSource *src, const SiftColPred *preds, int npre
 extern void	scan_add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstamp, bool roots);
 extern bool	segments_current(SiftColSource *src);
 extern void	segments_pin(SiftColSource *src, uint32 flags);
-extern bool scan_view_load(SiftColSource *src, Relation heap, const void *view);
+extern bool scan_view_load(SiftColSource *src, Relation heap, const void *view, const SiftKeyRange *keys);
 extern MemoryContext gorder_cx(SiftColSource *src);
 extern bool	scan_window_empty(const uint64 *keep, const PruneRange *pr);
 extern int64 *	scan_point_keys(const SiftCTest *t, int *nkeys);

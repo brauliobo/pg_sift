@@ -27,6 +27,7 @@ typedef struct TestScan
 	Relation	index;
 	SiftColSource *src;
 	TestQuery	q;
+	SiftKeyRange keys;
 } TestScan;
 #endif							/* SIFT_TESTING */
 

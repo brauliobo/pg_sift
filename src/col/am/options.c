@@ -405,6 +405,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_rollup_panic",
 							"Testing: the rollup refresh worker PANICs after it wrote the new segment, before it replaces the old one (1 = yes). Set it in postgresql.conf: the worker reads no session setting.",
 							NULL, &sift_test_col_rollup_panic, 0, 0, 1, PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_open_all",
+							 "Testing: a scan opens every segment of the index, not only those of the partitions that may hold the keys its conditions confine it to (the answer is the same).",
+							 NULL, &sift_test_col_open_all, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_merge_panic",
 							 "Testing: a column merge (promotion excepted) PANICs after it wrote the new segment, before it replaces the old ones.",
 							 NULL, &sift_test_col_merge_panic, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
