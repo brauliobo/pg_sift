@@ -322,6 +322,7 @@ create_store(Relation heap, const char *col)
 	Oid			store;
 
 	TupleDescInitEntry(td, 1, col, TEXTOID, -1, 0);
+	sift_tupdesc_finalize(td);
 	store = sift_create_matview(name, RelationGetNamespace(heap), heap->rd_rel->relowner, vstore_am(), td, heap->rd_rel->relpersistence);
 	CommandCounterIncrement();
 	make_unpopulated_view(store, col);

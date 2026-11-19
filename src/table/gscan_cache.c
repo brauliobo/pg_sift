@@ -164,7 +164,7 @@ sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const uint64 *offm
 static bool
 fetch_kept(Relation rel, SiftTblRel *st, struct SiftTblGroupCache *c)
 {
-	if (!TransactionIdIsValid(TransactionXmin) || c->fetch_version != st->dir.version)
+	if (!TransactionIdIsValid(TransactionXmin) || c->fetch_version != st->dir->version)
 		return false;
 	if (c->fetch_xmin != TransactionXmin)
 	{
@@ -226,10 +226,10 @@ fetch_scan(Relation rel, SiftTblRel *st, uint32 sb)
 		pick = fetch_victim(c);
 		if (c->fetch[pick])
 			sift_tbl_gscan_end(c->fetch[pick]);
-		c->fetch[pick] = sift_tbl_gscan_begin(rel, RelationGetDescr(rel), st, &st->dir, NULL);
+		c->fetch[pick] = sift_tbl_gscan_begin(rel, RelationGetDescr(rel), st, st->dir, NULL);
 		c->fetch[pick]->park_fill = true;
 		c->fetch[pick]->point = true;
-		c->fetch_version = st->dir.version;
+		c->fetch_version = st->dir->version;
 		c->fetch_xmin = TransactionXmin;
 		MemoryContextSwitchTo(old);
 	}
@@ -270,7 +270,7 @@ sift_tbl_group_locate(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblGrou
 {
 	int			k;
 
-	if (!st->initialized || ItemPointerGetBlockNumberNoCheck(tid) >= SIFT_TBL_NEXT_VBLOCK(&st->dir.meta))
+	if (!st->initialized || ItemPointerGetBlockNumberNoCheck(tid) >= SIFT_TBL_NEXT_VBLOCK(&st->dir->meta))
 		return false;
 	*g = fetch_scan(rel, st, ItemPointerGetBlockNumberNoCheck(tid) / SIFT_SB_PAGES);
 	if (!gscan_find(*g, tid, &k, pos))
@@ -292,7 +292,7 @@ sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVe
 	uint32		pos;
 	bool		has;
 
-	if (!st->initialized || ItemPointerGetBlockNumberNoCheck(tid) >= SIFT_TBL_NEXT_VBLOCK(&st->dir.meta))
+	if (!st->initialized || ItemPointerGetBlockNumberNoCheck(tid) >= SIFT_TBL_NEXT_VBLOCK(&st->dir->meta))
 		return false;
 	g = fetch_scan(rel, st, ItemPointerGetBlockNumberNoCheck(tid) / SIFT_SB_PAGES);
 	has = gscan_find(g, tid, &k, &pos);

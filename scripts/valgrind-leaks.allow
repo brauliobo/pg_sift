@@ -1,0 +1,15 @@
+# Reviewed leak allow-list of the memcheck leak gate (scripts/valgrind.sh --leaks): a definite leak with a pg_sift frame that a row covers does not fail the gate.
+# FUNCTION[ < OUTER]<TAB>CLASS<TAB>EVIDENCE. FUNCTION is the innermost pg_sift frame of the record, OUTER (optional) a frame further out in its stack.
+# CLASS: pg-owned (the server allocated it for a sift call and keeps it), per-process (one block per process, never repeated), bounded-cache (a backend cache that empties whole at its cap),
+# entry-lifetime (state of one relcache entry, freed with it, bounded by the index definition). A leak that grows with the work is fixed at its allocation site, never listed here.
+# A row whose frame no longer appears in a run is reported as a note: delete it when the code under it is gone.
+col_layout < cached_facts	bounded-cache	the layout of a partition index read again when its stamp moves stays in "sift cache partition facts" with the earlier one: facts_replaced counts it and facts_empty resets the context whole at FACTS_CACHE entries (agg/from/facts.c), so the bytes are bounded by FACTS_CACHE layouts
+path_below < cached_facts	bounded-cache	the key-name buffer of a leaf path inside the layout above: same context, same bound
+read_facts < cached_facts	bounded-cache	the pre-aggregate block of the same re-read facts: same context, same bound
+sift_aggpart_pack_stats < cached_facts	bounded-cache	the packed statistics of the same re-read facts: same context, same bound
+lex < build_rel_with	entry-lifetime	the words of the shredder spec parser, in the context of the index relcache entry that holds the spec (col/shred_spec.c): bounded by the bytes of the paths option, freed when the entry is rebuilt
+parse_items < build_rel_with	entry-lifetime	the path steps of the same parse: same context, same bound
+take_image_marks < build_rel_with	entry-lifetime	the paths text of the shredder, copied once per relcache entry (col/jsonb.c)
+leading_key < build_rel_with	entry-lifetime	the first key of a path of the same parse: same context, same bound
+sift_col_shred_create < build_rel_with	entry-lifetime	the copy of the paths option the shredder keeps for the life of the entry
+sift_worker_announce	per-process	one psprintf of the process title of a worker, once per worker (core/worker.c)

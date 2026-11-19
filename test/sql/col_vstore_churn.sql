@@ -1,11 +1,10 @@
 -- Garbage in a shared value store goes by itself: rows replaced round after round leave codes that no segment names, VACUUM begins a new epoch when half of them
 -- are such and the store is large enough, and a later VACUUM removes it once no index names it. The server does not rewrite the indexes that name the old epoch:
 -- sift.col_maintenance_status recommends REINDEX for them, and the REINDEX is what lets the VACUUM remove it. The blocks of the removed epoch are used again by the
--- next rounds (the store does not grow for ever). The test clusters run with the worker off: this database turns it on.
+-- next rounds (the store does not grow for ever). The test clusters run with the maintenance worker off and the test keeps it off: a worker that promotes the write buffer in the middle of a
+-- statement, or vacuums and merges beside the VACUUM statements, changes the segments the garbage is counted on and the index the advice is read for.
 CREATE EXTENSION pg_sift;
 DO $$ BEGIN
-	EXECUTE format('ALTER DATABASE %I SET sift.async_maintenance = on', current_database());
-	EXECUTE format('ALTER DATABASE %I SET sift.col_auto_merge = on', current_database());
 	EXECUTE format('ALTER DATABASE %I SET sift.test_vstore_gc_kb = 0', current_database());
 END $$;
 \c
@@ -86,8 +85,6 @@ SELECT sift.col_verify('ch_a', true), sift.col_verify('ch_b', true);
 DROP FUNCTION ch_check(), ch_round(int), ch_compacted(), ch_advice();
 DROP TABLE ch, ch_size;
 DO $$ BEGIN
-	EXECUTE format('ALTER DATABASE %I RESET sift.async_maintenance', current_database());
-	EXECUTE format('ALTER DATABASE %I RESET sift.col_auto_merge', current_database());
 	EXECUTE format('ALTER DATABASE %I RESET sift.test_vstore_gc_kb', current_database());
 END $$;
 DROP EXTENSION pg_sift;

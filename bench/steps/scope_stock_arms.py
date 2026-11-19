@@ -469,8 +469,9 @@ def cmd_run(a):
         r = run_arm(cl, a, name, load_oracle(a.out) if name != 'stock_default' else None, a.out)
         save(a.out, r)
     cl.stop()
+    import extras
     with open(os.path.join(a.out, 'run.meta'), 'w') as f:
-        f.write(''.join(f'{k}\t{v}\n' for k, v in meta.items()))
+        f.write(''.join(f'{k}\t{v}\n' for k, v in dict(meta, load=extras.host_load()).items()))
 
 
 def cpu_model():
@@ -488,9 +489,8 @@ def cmd_collect(a):
     rows = []
 
     def add(case, arm, metric, value, n='', note=''):
-        rows.append(dict(version=meta['pg_sift'], case=case, arm=arm, metric=metric, value=value, n=n, load=load, note=note))
+        rows.append(dict(version=meta['pg_sift'], case=case, arm=arm, metric=metric, value=value, n=n, load=meta['load'], note=note))
 
-    load = extras.host_load()
     for r in read_tsv(os.path.join(raw, 'fixture.tsv')):
         for m in ('member_total', 'events', 'events_pct'):
             add('t' + r['tenant'], 'fixture', m, r[m])

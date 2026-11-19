@@ -20,7 +20,7 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" "CREATE EXTENSION pageinspec
 	END \$\$" \
 	"CREATE TABLE r (id int, v int, pad text) WITH (autovacuum_enabled = false)" "ALTER TABLE r ALTER COLUMN pad SET STORAGE PLAIN" \
 	"INSERT INTO r SELECT i, i % 10, repeat('x', 1000) FROM generate_series(1, 6000) i" \
-	"SET sift.test_col_max_segments = 1; CREATE INDEX r_idx ON r USING sift_col (id, v)" \
+	"CREATE INDEX r_idx ON r USING sift_col (id, v)" \
 	"DELETE FROM r WHERE id % 7 = 0" "VACUUM (INDEX_CLEANUP ON) r" >/dev/null || bail "setup failed"
 read -r LIVE NLIVE <<<"$(sql primary "SELECT first_block, nblocks FROM sift.col_extents('r_idx') WHERE what = 'liveness run'" | tr '|' ' ')"
 HEAP=$(sql primary "SELECT count(*) FROM r")

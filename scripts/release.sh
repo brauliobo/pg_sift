@@ -189,7 +189,7 @@ mkdir -p "$STATE"
 step() { # NAME KEY CMD...: CMD, unless the manifest has the step passed with that key and this is a --resume
 	local n=$1 k=$2 t=$SECONDS rc=0
 	shift 2
-	if [[ -n $RESUME ]] && cut -f1-3 "$MAN" 2>/dev/null | grep -qxF "$n"$'\t'pass$'\t'"$k"; then log "$n: passed before"; return 0; fi
+	if [[ -n $RESUME ]] && cut -f1-3 "$MAN" 2>/dev/null | grep -xF "$n"$'\t'pass$'\t'"$k" >/dev/null; then log "$n: passed before"; return 0; fi
 	log "$n"
 	"$@" || rc=$?
 	printf '%s\t%s\t%s\t%ss\t%s\n' "$n" "$( (( rc )) && echo fail || echo pass)" "$k" $((SECONDS - t)) "$(date '+%F %T')" >>"$MAN"
@@ -244,7 +244,7 @@ check_ci() {
 			g cat-file -e "$sha^{commit}" 2>/dev/null || g fetch -q origin "$sha" 2>/dev/null || continue
 			g diff --quiet "$sha" HEAD -- "${GUARDED[@]}" || continue
 			if [[ $st != completed ]]; then wait=$id; continue; fi
-			gh run view "$id" --json jobs --jq '[.jobs[] | select(.name == "changes") | .steps[] | select(.name == "Full scope" and .conclusion == "success")] | length' | grep -qx 1 || continue
+			gh run view "$id" --json jobs --jq '[.jobs[] | select(.name == "changes") | .steps[] | select(.name == "Full scope" and .conclusion == "success")] | length' | grep -x 1 >/dev/null || continue
 			echo "ci: run $id (${sha:0:7}) is green with full scope on the build inputs of HEAD"; return 0
 		done < <(gh run list --workflow ci.yml --limit 100 --json databaseId,headSha,status,conclusion,event --jq '.[] |
 			select(.event != "pull_request" and ((.status == "completed" and .conclusion == "success") or (.status != "completed" and .event != "schedule"))) | [.databaseId, .headSha, .status] | @tsv')
@@ -426,7 +426,7 @@ aur() {
 
 preflight
 T0=$SECONDS
-ci_skipped() { cut -f1-2 "$MAN" 2>/dev/null | grep -qx $'ci\tskipped'; }
+ci_skipped() { cut -f1-2 "$MAN" 2>/dev/null | grep -x $'ci\tskipped' >/dev/null; }
 [[ -z $RESUME ]] || ! ci_skipped || log "$CI_SKIPPED (recorded in the manifest)"
 step checks "$(g log -1 --format=%H -- "${GUARDED[@]}")" checks || exit 1
 step bump "$VERSION" bump || exit 1
