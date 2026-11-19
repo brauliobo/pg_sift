@@ -10,7 +10,7 @@ if [[ $MODE == --selftest ]]; then
 	st_on() { (( ! ${#ST_ONLY[@]} )) || [[ " ${ST_ONLY[*]} " == *" $1 "* ]]; }
 	for p in "${ST_ONLY[@]}"; do [[ " ${ST_PARTS[*]} " == *" $p "* ]] || { echo "ci.sh --selftest: no part $p (${ST_PARTS[*]})"; exit 2; }; done
 	unset SIFT_CI_JOBS SIFT_CI_AFFECTED SIFT_CI_SHARD SIFT_CI_DEEP   # a run of ci.sh that selected jobs starts this check (lint) with them set: the plans below are the whole plans
-	# plan_of MODE PG [DEEP [SHARD]]: sets PLAN_OUT to that plan; each distinct plan is made once (a run of --plan costs a second of CPU and the checks below ask for the same ones many times)
+	# plan_of MODE PG|arm [DEEP [SHARD]]: sets PLAN_OUT to that plan; each distinct plan is made once (a run of --plan costs a second of CPU and the checks below ask for the same ones many times)
 	ST=$(mktemp -d); trap 'rm -rf "$ST"' EXIT   # everything the selftest makes is under it
 	declare -A PLANS INSTALLS
 	installs() { [[ -n ${INSTALLS[$1]+x} ]] || { grep -E 'pgtest\.sh"? install' "$1" | grep -vE '^\s*#|echo' >/dev/null && INSTALLS[$1]=0 || INSTALLS[$1]=1; }; return "${INSTALLS[$1]}"; }
@@ -19,11 +19,11 @@ if [[ $MODE == --selftest ]]; then
 		local k="$1 $2 ${3:-} ${4:-}" out i n
 		if [[ -z ${PLANS[$k]+x} && ${4:-} =~ ^[0-9]+/([0-9]+)$ ]]; then   # a shard: the plans of all its shards in one run
 			n=${BASH_REMATCH[1]}
-			out=$(env SIFT_CI_DEEP="${3:-}" SIFT_CI_SHARD=all/$n SIFT_CI_PG_MAJOR="$2" "$0" --plan "$1") || return 1
+			out=$(env SIFT_CI_DEEP="${3:-}" SIFT_CI_SHARD=all/$n SIFT_CI_PG_MAJOR="${2/arm/18}" FLAVOUR="$2" "$0" --plan "$1") || return 1
 			for (( i = 1; i <= n; i++ )); do PLANS["$1 $2 ${3:-} $i/$n"]=$(awk -v k=$i '$1 == k { sub(/^[0-9]+ /, ""); print }' <<<"$out"); done
 		fi
 		if [[ -z ${PLANS[$k]+x} ]]; then
-			out=$(env SIFT_CI_DEEP="${3:-}" ${4:+SIFT_CI_SHARD=$4} SIFT_CI_PG_MAJOR="$2" "$0" --plan "$1") || return 1
+			out=$(env SIFT_CI_DEEP="${3:-}" ${4:+SIFT_CI_SHARD=$4} SIFT_CI_PG_MAJOR="${2/arm/18}" FLAVOUR="$2" "$0" --plan "$1") || return 1
 			PLANS[$k]=$out
 		fi
 		PLAN_OUT=${PLANS[$k]}
@@ -211,6 +211,115 @@ if [[ $MODE == --selftest ]]; then
 		done
 	fi
 	if st_on shards-quick; then
+		# the quick tier of every flavour (PostgreSQL 17, 18, 19, arm64) is cut by weight: every job once, the shards within 15% of each other (the jobs after the pool counted in the last), and each
+		# shard queues its jobs heaviest first
+		for fl in 17 18 19 arm; do
+		for ns in 3 4; do
+			plan_of quick $fl '' ; all=$(awk '{print $1}' <<<"$PLAN_OUT" | sort)
+			got= lo='' hi=0
+			for (( k = 1; k <= ns; k++ )); do
+				plan_of quick $fl '' $k/$ns; got+=$PLAN_OUT$'\n'; l=0 prev=0
+				while read -r j _; do
+					MODE=quick weight_of "$j" '' $fl; l=$(( l + WEIGHT ))
+					(( prev == 0 || WEIGHT <= prev )) || { echo "FAIL: shard $k/$ns of the quick tier on $fl queues $j ($WEIGHT s) after a lighter job ($prev s)"; bad=1; }
+					prev=$WEIGHT
+				done <<<"$PLAN_OUT"
+				(( l > hi )) && hi=$l
+				[[ -z $lo ]] || (( l < lo )) && lo=$l
+			done
+			[[ $all == "$(awk 'NF {print $1}' <<<"$got" | sort)" ]] || { echo "FAIL: the $ns shards of the quick tier on $fl are not the plan, each job once"; bad=1; }
+			(( hi * 100 <= lo * 115 )) || { echo "FAIL: the $ns shards of the quick tier on $fl are unbalanced by the weights (heaviest $hi s, lightest $lo s)"; bad=1; }
+		done
+		done
+	fi
+	if st_on slices; then
+		for deep in '' 1; do
+			cs=$COL_SLICES_LEAN; [[ -z $deep ]] || cs=$COL_SLICES_DEEP
+			# the column differential jobs of the full tier are slices of one corpus (lean 4, deep 12): K/N for K = 1..N, nothing else different between them (no subset of the variants,
+			# scenarios or queries), each slice has queries, no query is in two, and together they are the corpus the unsliced script selects. The lean slices are split between 17 and
+			# 18 (each once), the deep ones are all on 18
+			plan=
+			for pg in 18 $([[ -n $deep ]] || echo 17); do plan_of full $pg "$deep"; plan+=$PLAN_OUT$'\n'; done
+			for prefix in difftest-col difftest-col-tbl; do
+				n=0 ks='' rest='' union='' cd=''
+				while read -r id _ _ cmd; do
+					[[ $id =~ ^$prefix-[0-9]+$ ]] || continue
+					eval "args=($cmd)"
+					cd=${args[0]}; k=''; mine=()
+					for (( i = 1; i < ${#args[@]}; i++ )); do
+						if [[ ${args[i]} == --slice ]]; then k=${args[++i]}; else mine+=("${args[i]}"); fi
+					done
+					[[ $k =~ ^([0-9]+)/([0-9]+)$ ]] || { echo "FAIL: $id has no --slice K/N"; bad=1; continue; }
+					[[ " ${mine[*]} " != *" --variants "* && " ${mine[*]} " != *" --scenarios "* && " ${mine[*]} " != *" --corpus "* ]] ||
+						{ echo "FAIL: $id runs a subset of the variants, scenarios or queries (--scenario-slices alone may differ from the deep run)"; bad=1; }
+					[[ -z $rest || $rest == "${mine[*]}" ]] || { echo "FAIL: the slices of $prefix differ in more than --slice ($id)"; bad=1; }
+					rest=${mine[*]} n=$((n + 1)) ks+=" ${BASH_REMATCH[1]}"
+					[[ ${BASH_REMATCH[2]} == "$cs" ]] || { echo "FAIL: $id is a slice of ${BASH_REMATCH[2]}, COL_SLICES is $cs"; bad=1; }
+					part=$("$cd" --list "${mine[@]}" --slice "$k") || { echo "FAIL: $id: coldiff.sh --list"; bad=1; continue; }
+					[[ -n $part ]] || { echo "FAIL: $id selects no query"; bad=1; }
+					union+=$part$'\n'
+				done <<<"$plan"
+				(( n == cs )) || { echo "FAIL: $n slices of $prefix in the full plan, want $cs"; bad=1; }
+				[[ $(tr ' ' '\n' <<<"$ks" | grep . | sort -n | tr '\n' ' ') == "$(seq 1 "$cs" | tr '\n' ' ')" ]] || { echo "FAIL: the slices of $prefix are not 1..$cs:$ks"; bad=1; }
+				if [[ -n $cd ]]; then
+					whole=$(cd "$REPO/test/col/fixtures" && printf '%s\n' *.sql)   # the directory, not coldiff.sh's own idea of it
+					[[ -z $(sort <<<"$union" | grep . | uniq -d) ]] || { echo "FAIL: a query is in two slices of $prefix: $(sort <<<"$union" | grep . | uniq -d | head -3 | tr '\n' ' ')"; bad=1; }
+					[[ $(sort <<<"$union" | grep .) == "$(sort <<<"$whole")" ]] || { echo "FAIL: the slices of $prefix are not the whole corpus ($(grep -c . <<<"$union") of $(grep -c . <<<"$whole") queries)"; bad=1; }
+				fi
+			done
+			grep -q '^difftest-col-analytics ' <<<"$plan" || { echo "FAIL: the full plan ${deep:+(deep) }lacks difftest-col-analytics (the analytics suite is not in the slices)"; bad=1; }
+		done
+		# before PostgreSQL 18 the full tier runs half of the slices: the first and second of 4 (lean; 18 runs the others), the first nine of 18 (deep; 18 runs all 12)
+		for pg in 16 17; do
+			for deep in '' 1; do
+				plan_of full $pg "$deep"
+				n=$(grep -cE '^difftest-col-[0-9]+ ' <<<"$PLAN_OUT")
+				(( n == (deep ? COL_SLICES_DEEP17 : COL_SLICES_LEAN) / 2 )) || { echo "FAIL: PostgreSQL $pg ${deep:+deep }full plan has $n slices of difftest-col"; bad=1; }
+			done
+		done
+	fi
+	if st_on flavors; then
+		# the smoke of the release library (release_library_tests): each name is a test the release build runs, or the quick tier would silently drop it
+		plan_of quick 18
+		prod=$(grep '^release-library-regress-[12] ' <<<"$PLAN_OUT")
+		for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress jobs (no test of that name, a slow or test-only one)"; bad=1; }; done
+		# one list of the tests the release build cannot run (TESTING_REGRESS): the deep plan runs on the release library every test that make runs there (scripts/release-library-check.sh
+		# without names), except the slow ones, which are jobs of their own
+		plan_of quick 18 1
+		got=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /release-library-check\.sh$/) { for (j = i + 1; j <= NF; j++) print $j; next } }' <<<"$(grep '^release-library-regress-[12] ' <<<"$PLAN_OUT")" | sort)
+		# the Makefile refuses a pg_config older than 17 (the lint job of the hosted CI has none or a 16): the list is compared where there is a usable one
+		pgc=${PG_CONFIG:-pg_config}
+		if "$pgc" --version 2>/dev/null | grep -E '^PostgreSQL (1[7-9]|[2-9][0-9])' >/dev/null && [[ -r $("$pgc" --pgxs 2>/dev/null) ]]; then
+			want=$(printf 'include Makefile\nrelease-regress: ; @echo $(REGRESS)\n' | make -s -C "$REPO" USE_PGXS=1 SIFT_TESTING= -f - release-regress | tr ' ' '\n' | grep -vxF -f <(xargs -n1 <<<"$SLOW_REGRESS") | sort)
+			[[ -n $got && $got == "$want" ]] || { echo "FAIL: the release-library-regress job of the deep plan and the Makefile (REGRESS without TESTING_REGRESS) disagree on the tests of the release build: $(diff <(echo "$got") <(echo "$want") | grep '^[<>]' | head -4 | tr '\n' ' ')"; bad=1; }
+		else echo "plan: the tests of the release build are not compared with the Makefile (no pg_config of PostgreSQL 17 or newer)" >&2; fi
+		n=0; for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $ASSERT_SKIP ]] && n=$((n + 1)); done
+		(( n == 3 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 3 it names"; bad=1; }
+	fi
+	if st_on shards-full; then
+		# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard
+		for pg in 17 18; do
+		for deep in '' 1; do
+			ns=$("$0" --shards "$pg" "$deep")
+			plan_of full $pg "$deep"
+			all=$(awk '{print $1}' <<<"$PLAN_OUT" | sort)
+			got=
+			for (( k = 1; k <= ns; k++ )); do plan_of full $pg "$deep" $k/$ns; got+=$PLAN_OUT$'\n'; done
+			got=$(awk 'NF {print $1}' <<<"$got" | sort)
+			[[ $all == "$got" ]] || { echo "FAIL: the $ns shards of the full tier on PostgreSQL $pg ${deep:+deep }are not the plan, each job once"; bad=1; }
+			lo='' hi=0
+			for (( k = 1; k <= ns; k++ )); do
+				l=0
+				plan_of full $pg "$deep" $k/$ns
+				while read -r j _; do weight_of "$j" "$deep" "$pg"; l=$(( l + WEIGHT )); done <<<"$PLAN_OUT"
+				(( l > hi )) && hi=$l
+				[[ -z $lo ]] || (( l < lo )) && lo=$l
+			done
+			(( hi * 100 <= lo * 115 )) || { echo "FAIL: the shards of the full tier on PostgreSQL $pg ${deep:+deep }are unbalanced by the weights of scripts/ci.sh (heaviest $hi s, lightest $lo s)"; bad=1; }
+		done
+		done
+	fi
+	if st_on shards-quick; then
 		# the quick tier (PostgreSQL 18, no job after the pool) is cut by weight as well: every job once, and the shards within 15% of each other
 		for ns in 2 3; do
 			plan_of quick 18 '' ; all=$(awk '{print $1}' <<<"$PLAN_OUT" | sort)
@@ -227,7 +336,7 @@ if [[ $MODE == --selftest ]]; then
 	fi
 	if st_on slices; then
 		# the budget of a job: the slowest job of a hosted run is the floor of its shard, so a job over the ceiling is sliced or shrunk (CI_JOB_TIMEOUT kills it at 3 times the ceiling of its tier)
-		for tier in quick:300 full:1300; do
+		for tier in quick:330 full:1300; do
 			over=$(awk -F'\t' -v max="${tier#*:}" '!/^#/ && ($2 > max || $3 > max) {print $1 " " $2 "/" $3}' "$REPO/scripts/weights-${tier%:*}.tsv")
 			[[ -z $over ]] || { echo "FAIL: scripts/weights-${tier%:*}.tsv: a job takes more than ${tier#*:} lane seconds (PostgreSQL 17/18): $over"; bad=1; }
 		done
