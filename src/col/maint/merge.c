@@ -132,9 +132,13 @@ merge_roots(const SiftSegEntry *in, int n)
 static void
 out_begin(MergeOut *o)
 {
-	/* a context of its own for each partition, so that the dictionaries and zones of those written do not pile up */
+	MemoryContext old;
+
+	/* a context of its own for each partition, so that its write target, dictionaries and zones do not pile up with those written */
 	o->pcx = AllocSetContextCreate(o->cx, "sift_col merge partition", ALLOCSET_DEFAULT_SIZES);
+	old = MemoryContextSwitchTo(o->pcx);
 	o->wt = sift_wt_begin(o->index, SIFT_WRITE_SHARED);
+	MemoryContextSwitchTo(old);
 	sift_wt_expect(o->wt, o->expect);
 	maint_throttle(o->wt);
 	o->w = sift_colw_begin(o->wt, sift_store_new_gen(o->index), o->schema, o->policy, o->format, o->pcx);
@@ -151,6 +155,8 @@ out_begin(MergeOut *o)
 static void
 out_finish(MergeOut *o)
 {
+	MemoryContext old;
+
 	if (o->nneu == o->ncap)
 	{
 		if (o->ncap >= SIFT_DIR_WIDE_MAX)
@@ -159,6 +165,7 @@ out_finish(MergeOut *o)
 		o->ncap = Min(Max(o->ncap * 2, 8), SIFT_DIR_WIDE_MAX);
 		o->neu = o->neu ? repalloc(o->neu, o->ncap * sizeof(SiftSegEntry)) : MemoryContextAlloc(o->cx, o->ncap * sizeof(SiftSegEntry));
 	}
+	old = MemoryContextSwitchTo(o->pcx);
 	sift_colw_finish(o->w, &o->neu[o->nneu]);
 	sift_conn_fill_end(o->fill);
 	if (o->roots)
@@ -170,6 +177,7 @@ out_finish(MergeOut *o)
 	}
 	sift_seg_set_xstamp(&o->neu[o->nneu++], o->xstamp);
 	sift_wt_finish(o->wt);
+	MemoryContextSwitchTo(old);
 	o->w = NULL;
 	MemoryContextDelete(o->pcx);
 }
