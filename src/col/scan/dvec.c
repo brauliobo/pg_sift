@@ -1,6 +1,6 @@
 /*
  * col/scan/dvec.c - the deletion records of the tombstone log (core/tomb_dv.h) as the liveness a scan reads: the rows of a unit that a record ends for the snapshot are cleared in what the scan
- * sees of the unit, so a unit with records is one dirty unit (one record to find and one vector to take away) where marks make it leave the clean path row by row (docs/COL-HEAPFREE.md)
+ * sees of the unit, so a unit with records is one dirty unit (one record to find and one vector to take away) where marks make it leave the clean path row by row
  */
 #include "postgres.h"
 

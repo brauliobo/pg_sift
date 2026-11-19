@@ -286,7 +286,7 @@ One feature writes column format minor 52, which 5.0 refuses ([FORMATS](FORMATS.
 
 | what | column format | to go back to 5.0 |
 |---|---|---|
-| a statement that deletes many rows of a `sift_col` index with `track_changes` writes deletion records in the tombstone log (one for each unit it touches, [COL-HEAPFREE.md](COL-HEAPFREE.md) "Deletion records"); the log is stamped when the first record is written | 52 | `VACUUM` the table (the records are folded into the liveness and dropped), then `REINDEX` the index: the stamp stays on the log, and 5.0 refuses the index with the format message ("Use a newer pg_sift") until it is built again. Marks alone keep the minor of the log |
+| a statement that deletes many rows of a `sift_col` index with `track_changes` writes deletion records in the tombstone log (one for each unit it touches); the log is stamped when the first record is written | 52 | `VACUUM` the table (the records are folded into the liveness and dropped), then `REINDEX` the index: the stamp stays on the log, and 5.0 refuses the index with the format message ("Use a newer pg_sift") until it is built again. Marks alone keep the minor of the log |
 
 ## What 5.0 writes that 4.3 does not read
 

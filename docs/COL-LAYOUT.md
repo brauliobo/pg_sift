@@ -44,7 +44,7 @@ Side structures:
 | structure | what it is | where |
 |---|---|---|
 | write buffer | rows inserted since the last promotion, as records in pages | directory entries `WBUF_OPEN`, `WBUF_SEALED`; 8 lanes of page chains |
-| tombstone log | 32-byte entries (heap address, transaction, command, kind) of entries that stopped being live, and deletion records (one head, descriptor and body slots for the rows of a unit that a statement ended, `docs/COL-HEAPFREE.md`); only with `track_changes` | directory entry `TOMB` |
+| tombstone log | 32-byte entries (heap address, transaction, command, kind) of entries that stopped being live, and deletion records (one head, descriptor and body slots for the rows of a unit that a statement ended); only with `track_changes` | directory entry `TOMB` |
 | journal | not a structure of its own: records of kind `KEYCHG` (parent index) and `KEYADD` (a scope's pair relation) in a tombstone log | the log of the parent index or of the journal index |
 | scope segments | segments of the rows replicated once for each scope key, cut by that key | `IMMUTABLE` entries with the flag `SIFT_SEG_SCOPE`; the entry's `pad` is the scope's ordinal |
 | connected child | the child index holds leaves of its parent (`<fk>#found`, `<fk>.<column>`); its segments carry the stamp each was filled under | leaves in the schema, stamps in the SCHEMA section |
