@@ -87,8 +87,7 @@ typedef struct Found
 	SiftTomb   *slots;
 	uint32		nslots;
 	uint32		capslots;
-	uint64	   *resolved;
-	uint32		nres;
+	uint64	   *resolved;			/* one bit for each key of the statement (SiftColDead.keys): set when a record ends it */
 } Found;
 
 /* The rows of one unit: records when they take fewer slots than marks, else left for the marks */
@@ -99,9 +98,14 @@ found_unit(uint32 u, const uint32 *rows, const SiftKey *at, uint32 nrows, void *
 
 	if (sift_dv_count(rows, nrows) >= nrows)
 		return;
+	uint32		k = 0;
+
 	(void) sift_dv_encode(&f->slots, &f->nslots, &f->capslots, f->cxt, f->gen, u, f->d->xid, f->d->cid, rows, nrows);
-	memcpy(f->resolved + f->nres, at, nrows * sizeof(uint64));
-	f->nres += nrows;
+	for (uint32 i = 0; i < nrows; i++)
+	{
+		k = sift_u64_from(f->d->keys, k, f->d->n, at[i]);
+		f->resolved[k / 64] |= UINT64CONST(1) << (k % 64);
+	}
 }
 
 /* Does an immutable segment of the directory hold copies of the rows (a scope): a record would not end them */
@@ -127,21 +131,16 @@ stamp_format(SiftColDead *d)
 	}
 }
 
-/* The keys (ascending) of d that are not in the resolved keys (ascending): the ones left for marks */
+/* The keys (ascending) of d that no record ends: the ones left for marks */
 static uint64 *
 unresolved(const SiftColDead *d, const Found *f, uint32 *n)
 {
 	uint64	   *rest = MemoryContextAlloc(d->cxt, d->n * sizeof(uint64));
-	uint32		j = 0;
 
 	*n = 0;
 	for (uint32 i = 0; i < d->n; i++)
-	{
-		while (j < f->nres && f->resolved[j] < d->keys[i])
-			j++;
-		if (j == f->nres || f->resolved[j] != d->keys[i])
+		if (!(f->resolved[i / 64] >> (i % 64) & 1))
 			rest[(*n)++] = d->keys[i];
-	}
 	return rest;
 }
 
@@ -177,7 +176,7 @@ write_records(SiftColDead *d, uint32 *nrest)
 	uint64	   *rest = d->keys;
 
 	*nrest = d->n;
-	f.resolved = MemoryContextAlloc(tmp, d->n * sizeof(uint64));
+	f.resolved = MemoryContextAllocZero(tmp, SIFT_COL_NWORDS(d->n) * sizeof(uint64));
 	LockPage(d->index, SIFT_TOMB_LOCK_BLKNO, ShareLock);
 	snap = sift_dir_read(d->index);
 	if (!has_scope(snap))
@@ -189,7 +188,6 @@ write_records(SiftColDead *d, uint32 *nrest)
 	{
 		stamp_format(d);
 		sift_tomb_append_many(d->index, d->log, f.slots, (int) f.nslots);
-		sift_sort_u64(f.resolved, f.nres);
 		rest = unresolved(d, &f, nrest);
 	}
 	UnlockPage(d->index, SIFT_TOMB_LOCK_BLKNO, ShareLock);

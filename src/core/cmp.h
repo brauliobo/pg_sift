@@ -53,6 +53,23 @@ sift_term_cmp(const char *a, int alen, const char *b, int blen)
 		} \
 	} while (0)
 
+/* The first index of [lo, n) at which the ascending keys are not below at: a step or two when the lists run side by side, a bisection of the distance when not */
+static inline uint32_t
+sift_u64_from(const uint64_t *keys, uint32_t lo, uint32_t n, uint64_t at)
+{
+	uint32_t	hi = lo,
+				step = 1;
+
+	while (hi < n && keys[hi] < at)
+	{
+		lo = hi + 1;
+		hi = hi + step < n ? hi + step : n;
+		step *= 2;
+	}
+	SIFT_BISECT(uint32_t, m, lo, hi, keys[m] < at);
+	return lo;
+}
+
 /* does the sorted set hold a member in [lo, hi]? */
 static inline bool
 sift_set_meets_i64(const int64_t *set, uint32_t n, int64_t lo, int64_t hi)
