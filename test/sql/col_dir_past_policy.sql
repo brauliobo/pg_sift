@@ -59,6 +59,8 @@ CREATE TABLE u (id int, k int, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE u ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO u SELECT i, (i::bigint * 7919) % 1000, repeat('x', 7000) FROM generate_series(1, 3072) i;
 SET sift.test_col_segment_kb = 1;
+SELECT reltuples < 0 AS no_statistics FROM pg_class WHERE oid = 'u'::regclass;
+CREATE INDEX u_fresh ON u USING sift_col (id, k) WITH (key_cut = 'k');
 CREATE INDEX u_plain ON u USING sift_col (id, k) WITH (key_cut = 'off');
 SELECT 'plain' AS index, count(*) AS built FROM sift.col_segments('u_plain') WHERE kind = 'immutable';
 SELECT sift.col_merge('u_plain', true) > 0 AS first_merge;
@@ -66,14 +68,17 @@ SELECT count(*) AS after_first, min(rows) AS min_rows, max(rows) AS max_rows FRO
 SELECT sift.col_merge('u_plain', true) > 0 AS second_merge;
 SELECT count(*) AS after_second FROM sift.col_segments('u_plain') WHERE kind = 'immutable';
 ANALYZE u;
+SELECT reltuples = 3072 AS statistics FROM pg_class WHERE oid = 'u'::regclass;
 CREATE INDEX u_cut ON u USING sift_col (id, k) WITH (key_cut = 'k');
 SET sift.test_col_build_runs_overlap = on;
 CREATE INDEX u_run ON u USING sift_col (id, k) WITH (key_cut = 'k');
 RESET sift.test_col_build_runs_overlap;
+-- the layout of a build does not depend on the statistics of the table: the segments of the index built before any (the row estimate of the build is its own count of the heap)
+SELECT (SELECT array_agg(rows ORDER BY sb_lo, rows) FROM sift.col_segments('u_fresh') WHERE kind = 'immutable') = (SELECT array_agg(rows ORDER BY sb_lo, rows) FROM sift.col_segments('u_cut') WHERE kind = 'immutable') AS same_layout_without_statistics;
 -- a unit for each segment; the key range of the table (0 to 999) is covered; a key is in one segment of the build by ranges and in every run of the build in runs
 SELECT i AS index, count(*) = (SELECT count(*) FROM sift.col_segments(i) WHERE kind = 'immutable') AS a_unit_each, min(z.min::bigint) = 0 AND max(z.max::bigint) = 999 AS covers_the_keys,
-	sum(z.nrows) = 3072 AS all_rows, count(*) FILTER (WHERE z.min::bigint <= 500 AND z.max::bigint >= 500) = CASE i::text WHEN 'u_cut' THEN 1 ELSE count(*) END AS key_in_one_range_or_every_run
-FROM unnest(ARRAY['u_cut', 'u_run']::regclass[]) i, LATERAL sift._test_col_zones(i, 1) z GROUP BY i ORDER BY i::text;
+	sum(z.nrows) = 3072 AS all_rows, count(*) FILTER (WHERE z.min::bigint <= 500 AND z.max::bigint >= 500) = CASE i::text WHEN 'u_run' THEN count(*) ELSE 1 END AS key_in_one_range_or_every_run
+FROM unnest(ARRAY['u_fresh', 'u_cut', 'u_run']::regclass[]) i, LATERAL sift._test_col_zones(i, 1) z GROUP BY i ORDER BY i::text;
 -- forced merges, one statement each (a merge in the transaction of the one before it sees segments whose rows are not final), until one changes nothing: it comes within one more
 -- than the segments the index started with, and no row is lost
 CREATE TABLE u_log (idx regclass, round int, before int, steps int, after int, rows int8);
@@ -87,13 +92,14 @@ BEGIN
 END $$;
 \set ECHO none
 \o /dev/null
-SELECT format('SELECT u_round(%L, %s)', i, r) FROM unnest(ARRAY['u_plain', 'u_cut', 'u_run']::regclass[]) i,
+SELECT format('SELECT u_round(%L, %s)', i, r) FROM unnest(ARRAY['u_plain', 'u_fresh', 'u_cut', 'u_run']::regclass[]) i,
 	LATERAL generate_series(1, 1 + (SELECT count(*) FROM sift.col_segments(i) WHERE kind = 'immutable')) r ORDER BY i::text, r
 \gexec
 \o
 \set ECHO all
 SELECT idx AS index, bool_or(steps = 0) AS ends, bool_and(rows = 3072) AS all_rows FROM u_log GROUP BY idx ORDER BY idx::text;
 SELECT sift.col_verify('u_plain', true);
+SELECT sift.col_verify('u_fresh', true);
 SELECT sift.col_verify('u_cut', true);
 SELECT sift.col_verify('u_run', true);
 DROP FUNCTION u_round(regclass, int);
