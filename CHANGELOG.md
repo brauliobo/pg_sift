@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+## 5.0.2 - 2026-11-19
+
 - Changed: pg_sift: the extension version is 5.0.2 (`pg_sift--5.0.1--5.0.2.sql` and `pg_sift--5.0.2--5.0.sql`, both empty): `ALTER EXTENSION pg_sift UPDATE` changes no object, the library does not need it.
 - Fixed: check: `sift.check` and `sift.col_verify` of a `sift_col` index no longer report a row that is "live in the index twice" while a VACUUM and inserts run beside them. The check reads one segment at a time and lets go of the maintenance lock between two: a row it read live in a segment before the index's VACUUM cleared it, and again at the address a new row took after the heap reused it, in a segment it read later, is not a duplicate. A duplicate seen in the walk is judged again on the keys of the directory as it is then, read in one hold of the lock, and reported only if it holds there.
 - Fixed: col: planning an aggregate on a `sift_col` index read index metadata (the heap OID and the leaf definitions) from cached relcache state that the reads of the directory free whenever the entry reloads, after an invalidation. The planner now takes what it needs before the read.
