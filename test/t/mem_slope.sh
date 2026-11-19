@@ -2,7 +2,8 @@
 # The memory slope gate (scripts/mem-slope.py, test/mem-slope.tsv): reads, maintenance and writes at 50,000, 100,000 and 200,000 rows with work_mem and
 # maintenance_work_mem at 1 MB, every measurement in a fresh backend. An operation holds the memory its setting gives, not memory that follows the table: a clean case
 # stays within the noise of a row (12 bytes), an open one (a defect recorded with the slope it was measured at) may not grow faster than its ceiling, and a statement
-# repeated in one backend does not make its contexts grow. One SLOPE line a case; a fix of an open case turns its row to clean in the same commit.
+# repeated in one backend does not make its contexts grow. A row is judged on its basis: the bytes the memory scopes of sift counted (exact, the rows that grow in them) or the resident
+# peak (sampled, the rows whose memory is not in a scope; mem_slope_exact.sh proves the exact verdict). One SLOPE line a case; a fix of an open case turns its row to clean in the same commit.
 # A server built with assertions is skipped: it checks every allocation, so its resident peaks are not those of a release server.
 # MEM_SLOPE_SHARD=I/N runs the cases of one shard (crc32 of the case name), MEM_SLOPE_ROWS the smallest size: the slopes do not depend on which cases run beside them.
 . "$(dirname "$0")/lib.bash"

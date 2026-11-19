@@ -33,6 +33,7 @@ tap-shell-col_vstore_drops	109	83	79	86
 difftest-col	46	108	62	75
 plan-gate	46	53	108	47
 tap-shell-mem_slope_order	55	92	101	76
+tap-shell-mem_slope_exact	40	40	45	40
 tap-shell-pg_upgrade_33	98	98	68	55
 tap-shell-col_track_ctid	96	92	90	94
 build	89	93	74	73
