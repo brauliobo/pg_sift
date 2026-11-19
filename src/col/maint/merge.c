@@ -329,6 +329,9 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	}
 	/* the writer of a merge may reside in maintenance_work_mem (the partitions are sized to it: maint_part_kb_for) */
 	o.budget = sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE);
+	/* the partitions are sized to that memory by an estimate: a writer that holds a share of the rows is not cut short of it, which would leave a piece under half a partition for every rewrite to merge again */
+	if (part_bytes > 0 || o.parts > 1)
+		o.budget = Max(o.budget, (Size) ((double) live_rows / o.parts * sift_colw_row_memory(pagg, schema->ncols)));
 #ifdef SIFT_TESTING
 	if (sift_test_col_segment_kb > 0 && !maint_after_build)
 		o.budget = (Size) sift_test_col_segment_kb * 1024;
