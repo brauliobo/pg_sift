@@ -31,14 +31,14 @@ int			sift_test_col_spill_rows = 0;
 #define SAMPLE_SBS		512			/* superblocks the keys are taken from */
 #define CHUNKS_PER_RUN	4			/* a run is the chunks of the key that fit its memory, cut at a chunk end: its size is within a quarter of the budget */
 #define MAX_RANGES		512
+#define PRICE_SBS		16			/* superblocks the rows are taken from that price the files before a build */
+#define PRICE_ROWS		16384
+#define PRICE_BYTES		((Size) 8 << 20)	/* what the rows priced may take, whatever their width */
 #define BYTES_SAMPLE_ROWS	4096		/* rows of the first run that are written to a file that is only counted, to know what a row takes in the files */
 
 struct ColSpill
 {
-	int			n;				/* ranges */
-	int			leaf;			/* the first leaf of the key */
-	const SiftColDef *def;
-	int64	   *bound;			/* [n - 1]: range i holds the keys up to bound[i] (the last the rest and the NULLs) */
+	ColRanges	g;
 	MemoryContext cx;			/* the chunks of the ranges: the memory the build gives the spool, which holds the chunks of every range */
 	SiftChunkPlan *plan;		/* NULL: the rows of a range are packed in blocks, else they are columnar chunks */
 	SiftChunkSpool **chunk;
@@ -48,36 +48,10 @@ struct ColSpill
 };
 
 /* The key a row sorts by (the chunk's key of col/order.c) */
-static int64
-key_of(const SiftColDef *def, const SiftColValue *v)
+int64
+colb_key_of(const SiftColDef *def, const SiftColValue *v)
 {
 	return def->store == SIFT_COLS_INT ? v->v.i : sift_crun_key(def, sift_col_f8_key(v->v.f));
-}
-
-static int
-range_of_key(const ColSpill *s, int64 key)
-{
-	int			lo = 0,
-				hi = s->n - 1;
-
-	while (lo < hi)
-	{
-		int			mid = (lo + hi) / 2;
-
-		if (key <= s->bound[mid])
-			hi = mid;
-		else
-			lo = mid + 1;
-	}
-	return lo;
-}
-
-static int
-range_of(const ColSpill *s, const SiftColValue *v)
-{
-	if (v->isnull || v->overflow)
-		return s->n - 1;
-	return range_of_key(s, key_of(s->def, v));
 }
 
 static bool
@@ -91,19 +65,28 @@ ranges_wanted(void)
 }
 
 /* The first leaf of the key when it is a plain number (an integer, date, timestamp, numeric or float), else -1 */
-static int
-range_leaf(const ColBuild *b)
+int
+colb_key_leaf(const SiftColRel *r)
 {
-	const SiftColSchema *sc = b->r->schema;
+	const SiftColSchema *sc = r->schema;
 	int			leaf;
 
-	if (b->shared || b->r->ncut == 0)
+	if (r->ncut == 0)
 		return -1;
-	leaf = b->r->cut[0];
+	leaf = r->cut[0];
 	if (sc->cols[leaf].parent >= 0 || (sc->cols[leaf].store != SIFT_COLS_INT && sc->cols[leaf].store != SIFT_COLS_F4 && sc->cols[leaf].store != SIFT_COLS_F8) ||
 		sift_col_def_value_lanes(&sc->cols[leaf]) > 1)
 		return -1;
 	return leaf;
+}
+
+/* The leaf of the key of a build by key ranges: a table of more than half a run (budget), whose key is a plain number; else -1 */
+int
+colb_spill_leaf_of(const SiftColRel *r, uint64 nblocks, uint64 total_rows, Size budget)
+{
+	if (!ranges_wanted() || total_rows == 0 || nblocks * BLCKSZ < (uint64) budget / 2)
+		return -1;
+	return colb_key_leaf(r);
 }
 
 /* The keys the ranges of one build are cut at: those of the entities' key_cut, or the scope keys the members of the sampled rows have (a scope's units are cut by its key) */
@@ -142,7 +125,7 @@ sample_entity(Sample *sm, SampleKeys *k, ItemPointer tid, Datum *values, bool *i
 
 	sift_col_make_row(sm->b->r, tid, values, isnull, &row, sm->cx);
 	if (!row.val[k->leaf].isnull && !row.val[k->leaf].overflow && k->n < k->cap)
-		k->keys[k->n++] = key_of(&sm->b->r->schema->cols[k->leaf], &row.val[k->leaf]);
+		k->keys[k->n++] = colb_key_of(&sm->b->r->schema->cols[k->leaf], &row.val[k->leaf]);
 }
 
 static void
@@ -184,7 +167,7 @@ sample_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool ali
 static bool
 wants_ranges(const ColBuild *b, BlockNumber nblocks, uint64 expansion)
 {
-	return range_leaf(b) >= 0 && b->total_rows > 0 && (uint64) nblocks * BLCKSZ * expansion >= (uint64) b->budget / 2;
+	return !b->shared && colb_spill_leaf_of(b->r, (uint64) nblocks * expansion, b->total_rows, b->budget) >= 0;
 }
 
 static void
@@ -193,7 +176,7 @@ sample_add(Sample *sm, ColBuild *b, int scope)
 	SampleKeys *k = &sm->of[sm->nof++];
 
 	k->b = b;
-	k->leaf = range_leaf(b);
+	k->leaf = colb_key_leaf(b->r);
 	k->scope = scope;
 	k->cap = SAMPLE_KEYS * 2;
 	if (scope >= 0)
@@ -230,8 +213,6 @@ colb_spill_sample(ColBuild *b, Relation heap, IndexInfo *info)
 				take;
 	Sample		sm = {.b = b};
 
-	if (!ranges_wanted())
-		return;
 	if (sift_col_key_cut(b->r) && wants_ranges(b, nblocks, 1))
 		sample_add(&sm, b, -1);
 	for (int s = 0; s < b->nscope; s++)
@@ -255,38 +236,29 @@ colb_spill_sample(ColBuild *b, Relation heap, IndexInfo *info)
 		sample_finish(&sm.of[i]);
 }
 
-static int
-batch_range(const ColSpill *s, const SiftColBatch *batch, uint32 r)
-{
-	const SiftCVals *kv = &batch->col[s->leaf];
-
-	return sift_col_bit_test(kv->nulls, r) || sift_col_bit_test(kv->ovf, r) ? s->n - 1
-		: range_of_key(s, s->def->store == SIFT_COLS_INT ? kv->key[r] : sift_crun_key(s->def, kv->key[r]));
-}
-
 /* The rows of the batch go to the chunks of their ranges, a leaf at a time: the range of each row from the key leaf, then the rows of a range together */
 static void
 spill_batch_chunks(ColSpill *s, const SiftColBatch *batch)
 {
 	uint32		nr = batch->nrows;
 	uint16	   *rng = palloc(nr * sizeof(uint16));
-	uint32	   *start = palloc0((s->n + 1) * sizeof(uint32));
-	uint32	   *fill = palloc(s->n * sizeof(uint32));
+	uint32	   *start = palloc0((s->g.n + 1) * sizeof(uint32));
+	uint32	   *fill = palloc(s->g.n * sizeof(uint32));
 	SiftColRowRef *ref = palloc(nr * sizeof(SiftColRowRef));
 
 	for (uint32 r = 0; r < nr; r++)
 	{
-		int			i = batch_range(s, batch, r);
+		int			i = colb_range_of_row(&s->g, batch, r);
 
 		rng[r] = (uint16) i;
 		start[i + 1]++;
 	}
-	for (int i = 0; i < s->n; i++)
+	for (int i = 0; i < s->g.n; i++)
 		start[i + 1] += start[i];
-	memcpy(fill, start, s->n * sizeof(uint32));
+	memcpy(fill, start, s->g.n * sizeof(uint32));
 	for (uint32 r = 0; r < nr; r++)
 		ref[fill[rng[r]]++] = (SiftColRowRef) {batch, r};
-	for (int i = 0; i < s->n; i++)
+	for (int i = 0; i < s->g.n; i++)
 		if (start[i + 1] > start[i])
 		{
 			if (s->chunk[i] == NULL)
@@ -319,7 +291,7 @@ colb_spill_batch(ColBuild *b, const SiftColBatch *batch)
 		int			i;
 
 		sift_cbatch_row(batch, r, &row);
-		i = range_of(s, &row.val[s->leaf]);
+		i = colb_range_of_value(&s->g, &row.val[s->g.leaf]);
 		sift_rowfile_put(s->file[i], &row, 0, 0);
 		s->rows[i]++;
 	}
@@ -359,14 +331,34 @@ temp_room(void)
 	return room < 0 ? -1 : room * Max(n, 1) / 2;
 }
 
+/* Whether temporary files of need bytes are allowed (temp_file_limit, the room of the temporary tablespaces), and the most they may take (-1: no limit is known) */
+static bool
+spill_fits(double need, double *limit, double *room)
+{
+	*room = temp_room();
+	*limit = temp_file_limit >= 0 ? (double) temp_file_limit * 1024.0 : -1;
+	return (*limit < 0 || need <= *limit) && (*room < 0 || need <= *room);
+}
+
+bool
+colb_spill_fits(double need, double *allowed)
+{
+	double		limit,
+				room;
+	bool		fits = spill_fits(need, &limit, &room);
+
+	*allowed = limit < 0 ? room : room < 0 ? limit : Min(limit, room);
+	return fits;
+}
+
 /* A build by key ranges whose rows the temporary files cannot take is refused before they are written: runs that overlap in the key are not what the index is for */
 static void
 spill_refuse_unless_fits(const ColBuild *b, double need)
 {
-	double		room = temp_room();
-	double		limit = temp_file_limit >= 0 ? (double) temp_file_limit * 1024.0 : -1;
+	double		limit,
+				room;
 
-	if ((limit < 0 || need <= limit) && (room < 0 || need <= room))
+	if (spill_fits(need, &limit, &room))
 		return;
 	ereport(ERROR,
 			(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
@@ -376,35 +368,39 @@ spill_refuse_unless_fits(const ColBuild *b, double need)
 			 errhint("Raise temp_file_limit, set temp_tablespaces to a disk with more room, or free space on it.")));
 }
 
+static Size
+spill_run_cap(void)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_col_spill_run_kb > 0)
+		return (Size) sift_test_col_spill_run_kb * 1024;
+#endif
+	return SPILL_RUN_BYTES;
+}
+
 /* The rows of a run of the ranges: those the first run held, or the share of them that fits SPILL_RUN_BYTES when a large maintenance_work_mem made that run larger */
 static uint64
 spill_run_rows(const ColBuild *b, Size held_bytes)
 {
-	Size		cap = SPILL_RUN_BYTES;
-
-#ifdef SIFT_TESTING
-	if (sift_test_col_spill_run_kb > 0)
-		cap = (Size) sift_test_col_spill_run_kb * 1024;
-#endif
-	return Max((uint64) ((double) b->held_rows * Min(1.0, (double) cap / held_bytes)), 1);
+	return Max((uint64) ((double) b->held_rows * Min(1.0, (double) spill_run_cap() / held_bytes)), 1);
 }
 
 /* The bytes a row takes in the files, as the rows of the first run say: a sample of them goes through a file that is only counted */
 static double
-spill_row_bytes(const ColBuild *b, Size block)
+spill_row_bytes(const SiftColSchema *sc, const List *held, uint64 held_rows, Size block)
 {
 	StringInfoData scratch;
 	SiftRowFile *f;
 	SiftColRow	row = {0};
-	uint64		stride = Max(b->held_rows / BYTES_SAMPLE_ROWS, 1),
+	uint64		stride = Max(held_rows / BYTES_SAMPLE_ROWS, 1),
 				seen = 0,
 				taken = 0;
 	double		per_row;
 	ListCell   *lc;
 
 	initStringInfo(&scratch);
-	f = sift_rowfile_create(b->r->schema, &scratch, false, block, false);
-	foreach(lc, b->held)
+	f = sift_rowfile_create(sc, &scratch, SIFT_ROWS_COUNT, block, false);
+	foreach(lc, held)
 	{
 		const SiftColBatch *batch = lfirst(lc);
 
@@ -429,7 +425,7 @@ static SiftChunkPlan *
 spill_plan(const ColBuild *b, const ColSpill *s)
 {
 	SiftColRowRef *ref = palloc(SIFT_CHUNKPLAN_ROWS * sizeof(SiftColRowRef));
-	uint64	   *count = palloc0(s->n * sizeof(uint64));
+	uint64	   *count = palloc0(s->g.n * sizeof(uint64));
 	uint32		n = 0;
 	int			most = 0;
 	ListCell   *lc;
@@ -439,8 +435,8 @@ spill_plan(const ColBuild *b, const ColSpill *s)
 		return NULL;
 	foreach(lc, b->held)
 		for (uint32 r = 0; r < ((const SiftColBatch *) lfirst(lc))->nrows; r++)
-			count[batch_range(s, lfirst(lc), r)]++;
-	for (int i = 1; i < s->n; i++)
+			count[colb_range_of_row(&s->g, lfirst(lc), r)]++;
+	for (int i = 1; i < s->g.n; i++)
 		if (count[i] > count[most])
 			most = i;
 	foreach(lc, b->held)
@@ -448,13 +444,93 @@ spill_plan(const ColBuild *b, const ColSpill *s)
 		const SiftColBatch *batch = lfirst(lc);
 
 		for (uint32 r = 0; r < batch->nrows && n < SIFT_CHUNKPLAN_ROWS; r++)
-			if (batch_range(s, batch, r) == most)
+			if (colb_range_of_row(&s->g, batch, r) == most)
 				ref[n++] = (SiftColRowRef) {batch, r};
 	}
-	plan = sift_chunkplan_make(b->r->schema, ref, n, s->n, b->budget);
+	plan = sift_chunkplan_make(b->r->schema, ref, n, s->g.n, b->spool_budget);
 	pfree(count);
 	pfree(ref);
 	return plan;
+}
+
+typedef struct Price
+{
+	SiftColRel *r;
+	SiftColBatch *batch;
+	MemoryContext cx,
+				tmpcx;
+	ItemPointerData last;		/* the rows of a chunk plan ascend in address: a row of a HOT chain that comes after a later one is left out of the sample */
+	uint32		stride,
+				seen,
+				n;
+} Price;
+
+static void
+price_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive, void *state)
+{
+	Price	   *p = state;
+	SiftColRow	row;
+
+	if (++p->seen % p->stride != 0 || p->n == PRICE_ROWS || MemoryContextMemAllocated(p->cx, false) > PRICE_BYTES || ItemPointerCompare(tid, &p->last) <= 0)
+		return;
+	p->last = *tid;
+	sift_col_make_row(p->r, tid, values, isnull, &row, p->tmpcx);
+	sift_cbatch_add(p->batch, &row);
+	p->n++;
+	MemoryContextReset(p->tmpcx);
+}
+
+/*
+ * What a row takes in the files of the key ranges, from rows of superblocks spread over the table, priced as the first run's rows will be (the plan of the chunks, or
+ * the packed blocks when the budget does not hold the chunks of the ranges): the build knows the bytes of its files before it has read a run, which a choice of the
+ * path of the build and a refusal for want of room need.
+ */
+double
+colb_spill_price(Relation heap, Relation index, IndexInfo *info, uint64 total_rows)
+{
+	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
+	uint32		nsb = (nblocks + SIFT_SB_PAGES - 1) / SIFT_SB_PAGES,
+				take = Min(nsb, PRICE_SBS);
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col build price", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	Price		p = {.r = sift_col_rel_private(index, cx), .cx = cx, .tmpcx = AllocSetContextCreate(cx, "sift_col build price row", ALLOCSET_SMALL_SIZES)};
+	List	   *held = NIL;
+	SiftColRowRef *ref = palloc(PRICE_ROWS * sizeof(SiftColRowRef));
+	SiftChunkPlan *plan;
+	Size		share = sift_colb_budget(1);
+	uint32		n = 0;
+	int			nr;
+	double		per_row;
+	ListCell   *lc;
+
+#ifdef SIFT_TESTING
+	if (sift_test_col_segment_kb > 0)
+		share = (Size) sift_test_col_segment_kb * 1024;
+#endif
+	p.stride = (uint32) Max(((double) total_rows / nsb * take) / PRICE_ROWS, 1);
+	for (uint32 i = 0; i < take; i++)
+	{
+		BlockNumber start = (BlockNumber) ((uint64) i * nsb / take + nsb / take / 2) * SIFT_SB_PAGES;
+
+		if (start >= nblocks)
+			continue;
+		p.batch = sift_cbatch_create(cx, p.r->schema);
+		sift_cbatch_reset(p.batch, sift_block_sb(start));
+		ItemPointerSet(&p.last, 0, 0);
+		(void) table_index_build_range_scan(heap, index, info, false, false, false, start, Min(SIFT_SB_PAGES, nblocks - start), price_cb, &p, NULL);
+		held = lappend(held, p.batch);
+	}
+	foreach(lc, held)
+		for (uint32 r = 0; r < ((const SiftColBatch *) lfirst(lc))->nrows; r++)
+			ref[n++] = (SiftColRowRef) {lfirst(lc), r};
+	nr = (int) Min(Max(ceil((double) CHUNKS_PER_RUN * total_rows / Max((double) Min(share, spill_run_cap()) * n / Max(MemoryContextMemAllocated(cx, true), 1), 1)), 3), MAX_RANGES);
+	plan = n > 0 ? sift_chunkplan_make(p.r->schema, ref, n, nr, share) : NULL;
+	per_row = n == 0 ? 0 : plan != NULL ? sift_chunkplan_row_bytes(plan) :
+		spill_row_bytes(p.r->schema, held, n, Min(Max(share / ((Size) nr * 2), SIFT_ROWFILE_BLOCK_MIN), SIFT_ROWFILE_BLOCK_MAX));
+	SIFT_MEM_CHECKPOINT();
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
+	return per_row;
 }
 
 /*
@@ -463,49 +539,145 @@ spill_plan(const ColBuild *b, const ColSpill *s)
  * or a key of two values or fewer. The rows are spooled as columnar chunks when the memory the build gives the spool (its budget) holds a chunk of the plan for each range,
  * else packed in blocks, which take up to the budget between the ranges (at most 32 kB each).
  */
+/* The bytes an open unit of unit_rows rows takes as a batch: the rows of the first run, copied into a batch of a context of its own */
+static double
+open_raw_unit(const ColBuild *b, uint32 unit_rows)
+{
+	MemoryContext cx = AllocSetContextCreate(b->cxt, "sift_col build open unit probe", ALLOCSET_SMALL_SIZES);
+	SiftColBatch *x = sift_cbatch_create(cx, b->r->schema);
+	ListCell   *lc;
+	SiftColRow	row = {0};
+	double		bytes;
+
+	x->keyed = x->unsorted = true;
+	foreach(lc, b->held)
+	{
+		const SiftColBatch *src = lfirst(lc);
+
+		for (uint32 r = 0; r < src->nrows && x->nrows < unit_rows; r++)
+		{
+			sift_cbatch_row(src, r, &row);
+			sift_cbatch_add(x, &row);
+		}
+	}
+	sift_cbatch_row_free(&row);
+	bytes = (double) MemoryContextMemAllocated(cx, true) * unit_rows / Max(x->nrows, 1);
+	MemoryContextDelete(cx);
+	return bytes;
+}
+
+/* The bytes a unit of rows takes in the open units, raw and packed (a sample of the first run's rows goes through a block that is only counted) */
+static ColOpen *
+open_units_plan(ColBuild *b, int leaf, bool zero_temp)
+{
+	SiftColBatch **in = palloc_array(SiftColBatch *, list_length(b->held));
+	int			nin = 0;
+	ListCell   *lc;
+	uint32		unit_rows;
+	Size		mem = zero_temp ? b->budget : b->budget / 2;
+	double		raw_unit,
+				packed_unit;
+	ColOpen    *o;
+
+	foreach(lc, b->held)
+		in[nin++] = lfirst(lc);
+	b->spill_aim = sift_colk_run_rows(b->index, in, nin);
+	pfree(in);
+	unit_rows = sift_colk_unit_rows(b->spill_aim);
+	raw_unit = open_raw_unit(b, unit_rows);
+	packed_unit = spill_row_bytes(b->r->schema, b->held, b->held_rows, SIFT_ROWFILE_BLOCK_MAX) * unit_rows + SIFT_ROWFILE_BLOCK_MAX;
+	return colb_open_plan(b, leaf, unit_rows, mem, raw_unit, packed_unit, (int) Max(mem / 4 / raw_unit, 1), zero_temp);
+}
+
+/* The open units of the build: for the values of the key that fill units, and for every range when the files of the key ranges that remain would not be allowed */
+static ColOpen *
+open_units_choose(ColBuild *b, int leaf)
+{
+	ColOpen    *o = open_units_plan(b, leaf, colb_open_forced_zero_temp());
+	const int64 *sample;
+	uint32		nsample;
+	uint64		entries = b->entries;
+	double		need,
+				limit,
+				room;
+
+	if (o != NULL && colb_open_zero_temp(o))
+		return o;
+	if (o != NULL)
+		colb_open_tail(o, b, &sample, &nsample, &entries);
+	need = spill_row_bytes(b->r->schema, b->held, b->held_rows, SIFT_ROWFILE_BLOCK_MAX) * (double) entries;
+	if (spill_fits(need, &limit, &room))
+		return o;
+	o = open_units_plan(b, leaf, true);
+	if (o != NULL)
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": no room for the key ranges' files, every key range is an open unit", sift_col_final_name(b->index)),
+						 errdetail("The key ranges need about %.0f MB of temporary files, %.0f MB are allowed.", need / 1048576.0, Max(Min(limit < 0 ? room : limit, room < 0 ? limit : room), 0) / 1048576.0),
+						 errhint("SET sift.col_build_source = heap reads the heap, as releases before 5.1 did.")));
+	return o;
+}
+
+/*
+ * The rows held when the first run is full give the ranges: as many as runs the estimate of the rows of the table makes, cut at the quantiles of the key
+ * of those rows. False (the rows stay to be written as a run, in the order of the table) for a key that is not a number, a parallel participant
+ * or a key of two values or fewer. The rows are spooled as columnar chunks when the memory the build gives the spool (its budget) holds a chunk of the plan for each range,
+ * else packed in blocks, which take up to the budget between the ranges (at most 32 kB each).
+ * The values of the key that fill units have open units (col/build/open.c) and do not go to the files: the ranges are cut at the quantiles of the others.
+ */
 bool
 colb_spill_start(ColBuild *b)
 {
-	int			leaf = range_leaf(b);
+	int			leaf = b->shared ? -1 : colb_key_leaf(b->r);
 	int			nr;
 	Size		held_bytes;
-	uint64		run_rows;
+	uint64		run_rows,
+				entries = b->entries;
 	double		need;
 	Size		block;
 	ColSpill   *s;
 	SiftColBatch **in;
 	int			nin = 0;
 	ListCell   *lc;
+	ColOpen    *open = NULL;
+	const int64 *sample = b->ksample;
+	uint32		nsample = b->nksample;
 
 	if (!ranges_wanted())
 		return false;
 	if (leaf < 0 || b->ksample == NULL || b->entries == 0 || b->held_rows == 0)
 		return false;
 	held_bytes = MemoryContextMemAllocated(b->heldcxt, true);
-	run_rows = spill_run_rows(b, held_bytes);
-	nr = (int) ceil((double) CHUNKS_PER_RUN * b->entries / (double) run_rows);
-	if (nr < 3 || b->nksample < (uint32) nr * 8)
-		return false;
+	b->spool_budget = b->budget;
+	if (colb_open_allowed(b) && (open = open_units_choose(b, leaf)) != NULL)
+	{
+		b->open = open;
+		if (!colb_open_zero_temp(open))
+			colb_open_notice(b, open);
+		colb_open_tail(open, b, &sample, &nsample, &entries);
+		b->spool_budget = b->budget - colb_open_mem(open);
+		colb_open_split_held(b);
+		if (b->held_rows == 0)
+		{
+			list_free(b->held);
+			b->held = NIL;
+			MemoryContextReset(b->heldcxt);
+		}
+		if (colb_open_zero_temp(open))
+			return true;
+		held_bytes = MemoryContextMemAllocated(b->heldcxt, true);
+	}
+	run_rows = spill_run_rows(b, Max(held_bytes, 1));
+	nr = (int) ceil((double) CHUNKS_PER_RUN * entries / (double) run_rows);
+	if (b->held_rows == 0 || nr < 3 || nsample < (uint32) nr * 8)
+		return open != NULL;
 	nr = Min(nr, MAX_RANGES);
 
 	s = MemoryContextAllocZero(b->cxt, sizeof(ColSpill));
-	s->leaf = leaf;
-	s->def = &b->r->schema->cols[leaf];
-	s->bound = MemoryContextAlloc(b->cxt, nr * sizeof(int64));
-	for (int i = 0; i < nr - 1; i++)
-	{
-		int64		q = b->ksample[(uint64) (i + 1) * b->nksample / nr - 1];
-
-		if (s->n == 0 || q > s->bound[s->n - 1])
-			s->bound[s->n++] = q;
-	}
-	s->n++;						/* the last range holds the rest */
-	if (s->n < 3)
-		return false;
+	if (!colb_ranges_cut(b, &s->g, leaf, nr, sample, nsample))
+		return open != NULL;
 	/* the rows go to temporary files, as many bytes for each as those of one range of the first run take */
 	s->plan = spill_plan(b, s);
-	block = Min(Max(b->budget / ((Size) s->n * 2), SIFT_ROWFILE_BLOCK_MIN), SIFT_ROWFILE_BLOCK_MAX);
-	need = (s->plan != NULL ? sift_chunkplan_row_bytes(s->plan) : spill_row_bytes(b, block)) * (double) b->entries;
+	block = Min(Max(b->spool_budget / ((Size) s->g.n * 2), SIFT_ROWFILE_BLOCK_MIN), SIFT_ROWFILE_BLOCK_MAX);
+	need = (s->plan != NULL ? sift_chunkplan_row_bytes(s->plan) : spill_row_bytes(b->r->schema, b->held, b->held_rows, block)) * (double) entries;
 	spill_refuse_unless_fits(b, need);
 
 	in = palloc_array(SiftColBatch *, list_length(b->held));
@@ -514,17 +686,17 @@ colb_spill_start(ColBuild *b)
 	b->spill_run_rows = run_rows;
 	b->spill_aim = sift_colk_run_rows(b->index, in, nin);
 	s->cx = AllocSetContextCreate(b->cxt, "sift_col build spool", ALLOCSET_SMALL_SIZES);
-	s->rows = MemoryContextAllocZero(b->cxt, s->n * sizeof(uint64));
+	s->rows = MemoryContextAllocZero(b->cxt, s->g.n * sizeof(uint64));
 	if (s->plan != NULL)
-		s->chunk = MemoryContextAllocZero(b->cxt, s->n * sizeof(SiftChunkSpool *));
+		s->chunk = MemoryContextAllocZero(b->cxt, s->g.n * sizeof(SiftChunkSpool *));
 	else
 	{
 		MemoryContext old = MemoryContextSwitchTo(b->cxt);
 
-		s->file = palloc(s->n * sizeof(SiftRowFile *));
+		s->file = palloc(s->g.n * sizeof(SiftRowFile *));
 		initStringInfo(&s->scratch);
-		for (int i = 0; i < s->n; i++)
-			s->file[i] = sift_rowfile_create(b->r->schema, &s->scratch, true, block, false);
+		for (int i = 0; i < s->g.n; i++)
+			s->file[i] = sift_rowfile_create(b->r->schema, &s->scratch, SIFT_ROWS_FILE, block, false);
 		MemoryContextSwitchTo(old);
 	}
 	b->spill = s;
@@ -538,14 +710,14 @@ colb_spill_start(ColBuild *b)
 	pfree(in);
 #ifdef SIFT_TESTING
 	sift_test_col_spool_est_bytes = (int) Min(need, (double) INT_MAX);
-	sift_test_col_spool_ranges = s->n;
+	sift_test_col_spool_ranges = s->g.n;
 #endif
 	if (s->plan != NULL)
 		ereport(NOTICE, (errmsg("sift_col index \"%s\": %d key ranges, about %.1f MB of temporary files, in chunks of %u rows (%s)",
-								sift_col_final_name(b->index), s->n, need / 1048576.0, sift_chunkplan_rows(s->plan), sift_chunkplan_layer(s->plan))));
+								sift_col_final_name(b->index), s->g.n, need / 1048576.0, sift_chunkplan_rows(s->plan), sift_chunkplan_layer(s->plan))));
 	else
 		ereport(NOTICE, (errmsg("sift_col index \"%s\": %d key ranges, about %.1f MB of temporary files, packed in blocks",
-								sift_col_final_name(b->index), s->n, need / 1048576.0)));
+								sift_col_final_name(b->index), s->g.n, need / 1048576.0)));
 	return true;
 }
 
@@ -632,10 +804,10 @@ colb_spill_finish(ColBuild *b)
 	uint64		target = b->spill_run_rows;
 	int			i = 0;
 
-	for (int k = 0; k < s->n; k++)
+	for (int k = 0; k < s->g.n; k++)
 		range_seal(s, k);
 #ifdef SIFT_TESTING
-	for (int k = 0; k < s->n; k++)
+	for (int k = 0; k < s->g.n; k++)
 	{
 		sift_test_col_spill_bytes += (int) range_bytes(s, k);
 		sift_test_col_spill_rows += (int) s->rows[k];
@@ -652,12 +824,12 @@ colb_spill_finish(ColBuild *b)
 	b->trimmed = 0;
 	b->batch = sift_cbatch_create(b->heldcxt, sc);
 	b->batch->keyed = b->batch->unsorted = true;
-	while (i < s->n)
+	while (i < s->g.n)
 	{
 		uint64		rows = 0;
 		int			j = i;
 
-		while (j < s->n && (j == i || rows + s->rows[j] <= target))
+		while (j < s->g.n && (j == i || rows + s->rows[j] <= target))
 			rows += s->rows[j++];
 		for (int k = i; k < j; k++)
 			range_read(b, s, k, &row, rcx, target);

@@ -15,13 +15,121 @@ row_null(const SiftColBatch *b, uint32 r, int leaf)
 	return v->nulls != NULL && sift_col_bit_test(v->nulls, r);
 }
 
+/* The leaves the zones of a unit describe */
 static inline int
-bound_leaves(const OrderCtx *c)
+zone_leaves(const OrderCtx *c)
 {
 	return Min(c->nleaf, 2);
 }
 
-/* Row r of b against the bound: key by key, NULL last; equal on the leaves the bound has, the row is at it */
+/* The leaves a bound holds: those of the key up to SIFT_BOUND_COMPS, and the address when the key has no more */
+static inline int
+bound_leaves(const OrderCtx *c)
+{
+	return Min(c->nleaf, SIFT_BOUND_COMPS);
+}
+
+static BoundKey
+lowest_bound(void)
+{
+	BoundKey	bk = {{PG_INT64_MIN, PG_INT64_MIN, PG_INT64_MIN}};
+
+	return bk;
+}
+
+void
+sift_colk_bound_pack(const OrderCtx *ctx, const BoundKey *bk, SiftBound *out)
+{
+	sift_bound_clear(out);
+	for (int t = 0; t < bound_leaves(ctx); t++)
+	{
+		bool		fits = bk->nul[t] ? sift_bound_push_null(out) : sift_bound_push_i64(out, bk->k[t]);
+
+		SIFT_INVARIANT(fits, "a bound of %d leaves fits a partition", bound_leaves(ctx));
+	}
+	if (bk->has_tid)
+		SIFT_INVARIANT(sift_bound_push_tid(out, bk->tid), "the address of a bound fits a partition");
+}
+
+void
+sift_colk_bound_unpack(const OrderCtx *ctx, const SiftBound *b, BoundKey *bk)
+{
+	*bk = lowest_bound();
+	for (int t = 0; t < bound_leaves(ctx); t++)
+	{
+		SiftComp	kind = sift_bound_comp(b, t, &bk->k[t]);
+
+		bk->nul[t] = kind == SIFT_COMP_NULL;
+		if (kind == SIFT_COMP_NULL)
+			bk->k[t] = 0;
+	}
+	bk->has_tid = sift_bound_tid(b, &bk->tid);
+}
+
+/* The bound of row r: the leaves of the order, then the address, which orders the rows of one key: that is the whole order only when the leaves fit the bound */
+static void
+row_bound(const OrderCtx *ctx, const SiftColBatch *b, uint32 r, SiftBound *out)
+{
+	sift_bound_clear(out);
+	for (int t = 0; t < Min(ctx->nleaf, SIFT_BOUND_COMPS); t++)
+	{
+		int			leaf = ctx->leaf[t];
+		bool		fits = row_null(b, r, leaf) ? sift_bound_push_null(out) : sift_bound_push_i64(out, sift_crun_key(&ctx->schema->cols[leaf], b->col[leaf].key[r]));
+
+		SIFT_INVARIANT(fits, "a key of %d leaves fits a bound", ctx->nleaf);
+	}
+	if (ctx->nleaf <= SIFT_BOUND_COMPS)
+	{
+		bool		fits = sift_bound_push_tid(out, b->keys[r]);
+
+		SIFT_INVARIANT(fits, "the address of a row fits a bound");
+	}
+}
+
+bool
+sift_colk_segment_bound(SiftColSegment *seg, bool last, SiftBound *out)
+{
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col segment bound", ALLOCSET_SMALL_SIZES);
+	OrderCtx	ctx = {seg->schema, seg->cut, seg->ncut};
+	bool	   *want = MemoryContextAllocZero(cx, seg->schema->ncols * sizeof(bool));
+	SiftColBatch *b = sift_cbatch_create(cx, seg->schema);
+	bool		found = false;
+
+	for (int t = 0; t < ctx.nleaf; t++)
+		want[ctx.leaf[t]] = true;
+	for (uint32 i = 0; i < seg->nsb && !found && ctx.nleaf > 0; i++)
+	{
+		sift_cseg_decode_unit_leaves(seg, last ? seg->nsb - 1 - i : i, want, b);
+		/* the rows of a unit are in the order of their addresses, not of the key: the least (the greatest) of them is the bound */
+		for (uint32 r = 0; r < b->nrows; r++)
+		{
+			SiftBound	row;
+
+			row_bound(&ctx, b, r, &row);
+			if (!found || (sift_bound_cmp(&row, out) < 0) != last)
+				*out = row;
+			found = true;
+		}
+	}
+	MemoryContextDelete(cx);
+	return found;
+}
+
+/* Do the live rows of the segment lie from lo (NULL: no start) up to below hi (NULL: no end)? A segment with none lies anywhere. A key of more leaves than a bound holds has no address in it: a row may be at hi */
+bool
+sift_colk_rows_within(SiftColSegment *seg, const SiftBound *lo, const SiftBound *hi)
+{
+	SiftBound	first,
+				last;
+	int			c;
+
+	if (!sift_colk_segment_bound(seg, false, &first) || !sift_colk_segment_bound(seg, true, &last))
+		return true;
+	c = hi == NULL ? -1 : sift_bound_cmp(&last, hi);
+	return (lo == NULL || sift_bound_cmp(&first, lo) >= 0) && (seg->ncut <= SIFT_BOUND_COMPS ? c < 0 : c <= 0);
+}
+
+/* Row r of b against the bound: key by key, NULL last, then by address when the bound has one; equal on all it has, the row is at it */
 int
 sift_colk_bound_cmp(const OrderCtx *ctx, const SiftColBatch *b, uint32 r, const BoundKey *bk)
 {
@@ -41,7 +149,7 @@ sift_colk_bound_cmp(const OrderCtx *ctx, const SiftColBatch *b, uint32 r, const 
 		if (kr != bk->k[t])
 			return kr < bk->k[t] ? -1 : 1;
 	}
-	return 0;
+	return !bk->has_tid || b->keys[r] == bk->tid ? 0 : b->keys[r] < bk->tid ? -1 : 1;
 }
 
 /* Is every row of unit u of seg below lo? The leading leaf's zone says so when the unit has no NULL (they sort last) and its largest key is below: false is always safe */
@@ -79,14 +187,16 @@ sift_colk_bound_order(const void *a, const void *b)
 	const BoundKey *x = a,
 			   *y = b;
 
-	for (int t = 0; t < 2; t++)
+	for (int t = 0; t < SIFT_BOUND_COMPS; t++)
 	{
 		if (x->nul[t] != y->nul[t])
 			return x->nul[t] ? 1 : -1;
 		if (!x->nul[t] && x->k[t] != y->k[t])
 			return x->k[t] < y->k[t] ? -1 : 1;
 	}
-	return 0;
+	if (x->has_tid != y->has_tid)
+		return x->has_tid ? 1 : -1;
+	return !x->has_tid || x->tid == y->tid ? 0 : x->tid < y->tid ? -1 : 1;
 }
 
 /*
@@ -113,12 +223,14 @@ sift_colk_slice_bounds(const OrderCtx *ctx, SiftColSegment *const *seg, int nseg
 		for (uint32 u = 0; u < seg[i]->nsb; u++)
 		{
 			BoundKey   *b = &bk[(*n)++];
-			int64		hi[2] = {0, 0};
+			int64		hi[2] = {0, 0},
+						lo1;
+			bool		nul1;
 			uint32		rows = seg[i]->sbdir[u].nrows;
 
-			memset(b, 0, sizeof(BoundKey));
+			*b = lowest_bound();
 			b->rows = Max(rows / SLICE_POINTS, 1);
-			for (int t = 0; t < bound_leaves(ctx); t++)
+			for (int t = 0; t < zone_leaves(ctx); t++)
 			{
 				SiftCZone	z;
 				const SiftColDef *col = &seg[i]->schema->cols[ctx->leaf[t]];
@@ -128,6 +240,11 @@ sift_colk_slice_bounds(const OrderCtx *ctx, SiftColSegment *const *seg, int nseg
 				b->k[t] = b->nul[t] ? 0 : sift_crun_key(col, z.min);
 				hi[t] = b->nul[t] ? 0 : sift_crun_key(col, z.max);
 			}
+			lo1 = b->k[1];
+			nul1 = b->nul[1];
+			/* the unit's smallest second key bounds this unit, not the others that hold the same first key: the point stands before every row of that first key (depth 1) */
+			b->k[1] = PG_INT64_MIN;
+			b->nul[1] = false;
 			if (b->nul[0])
 			{
 				b->rows = rows;
@@ -137,12 +254,12 @@ sift_colk_slice_bounds(const OrderCtx *ctx, SiftColSegment *const *seg, int nseg
 			for (int q = 1; q < SLICE_POINTS; q++)
 			{
 				BoundKey   *p = &bk[(*n)++];
-				int			t = bound_leaves(ctx) > 1 && !b->nul[1] && b->k[0] == hi[0] ? 1 : 0;
+				int			t = zone_leaves(ctx) > 1 && !nul1 && b->k[0] == hi[0] ? 1 : 0;
+				int64		from = t == 1 ? lo1 : b->k[0];
 
-				memset(p, 0, sizeof(BoundKey));
+				*p = lowest_bound();
 				p->k[0] = b->k[0];
-				p->k[1] = PG_INT64_MIN;
-				p->k[t] = b->k[t] + (int64) (((__int128) hi[t] - b->k[t]) * q / SLICE_POINTS);
+				p->k[t] = from + (int64) (((__int128) hi[t] - from) * q / SLICE_POINTS);
 				p->rows = Max(rows / SLICE_POINTS, 1);
 			}
 		}
@@ -150,24 +267,53 @@ sift_colk_slice_bounds(const OrderCtx *ctx, SiftColSegment *const *seg, int nseg
 	return bk;
 }
 
-/* The bound before slice j of nslices: the first point that j / nslices of the rows come before */
+/* How a bound cuts the key: 1 before every row of a value of the first leaf, 2 inside the rows of one */
+static uint32
+bound_depth(const BoundKey *bk)
+{
+	return bk->k[1] == PG_INT64_MIN && !bk->nul[1] ? 1 : 2;
+}
+
+static uint64
+distance(uint64 a, uint64 b)
+{
+	return a > b ? a - b : b - a;
+}
+
+/*
+ * The bound before slice j of nslices: the point that j / nslices of the rows come before. Within slack_pct of a slice's rows either side of it, the nearest point that cuts between values of the
+ * first leaf (depth 1) is taken instead, so that a value that fits a slice is in one segment; when there is none, the value is bigger than the slack allows for and the exact point is taken, inside it
+ * (depth 2). *depth, when asked for, says which.
+ */
 const BoundKey *
-sift_colk_slice_bound(const BoundKey *bk, uint64 n, int j, int nslices)
+sift_colk_slice_bound(const BoundKey *bk, uint64 n, int j, int nslices, uint32 slack_pct, uint32 *depth)
 {
 	uint64		total = 0,
-				seen = 0,
-				want;
+				want,
+				slack,
+				exact = n - 1,
+				best = n,
+				best_gap = 0;
 
 	for (uint64 i = 0; i < n; i++)
 		total += bk[i].rows;
 	want = total * j / nslices;
-	for (uint64 i = 0; i < n; i++)
-	{
-		if (seen >= want)
-			return &bk[i];
-		seen += bk[i].rows;
-	}
-	return &bk[n - 1];
+	slack = total / nslices * slack_pct / 100;
+	for (uint64 i = 0, before = 0; i < n; before += bk[i++].rows)
+		if (before >= want)
+		{
+			exact = i;
+			break;
+		}
+	for (uint64 i = 0, seen = 0; i < n; seen += bk[i++].rows)
+		if (distance(seen, want) <= slack && bound_depth(&bk[i]) == 1 && (best == n || distance(seen, want) < best_gap))
+		{
+			best = i;
+			best_gap = distance(seen, want);
+		}
+	if (depth != NULL)
+		*depth = best == n ? bound_depth(&bk[exact]) : 1;
+	return &bk[best == n ? exact : best];
 }
 
 /*
@@ -179,8 +325,8 @@ sift_colk_unit_head(const OrderCtx *ctx, SiftColSegment *seg, uint32 u, BoundKey
 {
 	bool		bounded = true;
 
-	*bk = (BoundKey) {{PG_INT64_MIN, PG_INT64_MIN}};
-	for (int t = 0; t < bound_leaves(ctx) && bounded; t++)
+	*bk = lowest_bound();
+	for (int t = 0; t < zone_leaves(ctx) && bounded; t++)
 	{
 		const SiftColDef *col = &seg->schema->cols[ctx->leaf[t]];
 		SiftCZone	z;
@@ -193,4 +339,10 @@ sift_colk_unit_head(const OrderCtx *ctx, SiftColSegment *seg, uint32 u, BoundKey
 			bk->k[t] = bk->nul[t] ? 0 : sift_crun_key(col, z.min);
 		}
 	}
+}
+
+bool
+sift_colk_cut_near(uint64 held, uint64 due_at, uint32 slack_pct, bool open)
+{
+	return held >= due_at && (!open || held - due_at >= due_at / 100 * slack_pct);
 }

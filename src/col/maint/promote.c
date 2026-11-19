@@ -218,10 +218,10 @@ first_sealed(const SiftDirSnapshot *snap)
 SiftStepResult
 maint_promote_next(Relation index, bool propagate, uint64 *busy)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	const SiftSegEntry *s;
 
-	sift_col_dir_read(index, snap, false);
+	snap = sift_col_dir_read(index, false);
 	settle_stamps(index, snap);
 	if ((s = first_sealed(snap)) != NULL)
 	{

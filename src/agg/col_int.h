@@ -135,7 +135,17 @@ extern void col_gorder_group_at(void *impl, int i, int leaf, uint32 gi, int64 *g
 extern void col_stats_bygroup(SiftSrcStats *st, const SiftColLeafStats *ls, int ncols);
 extern const SiftSrcZones *col_zones(const SiftColZones *zs, const SiftColIndexMeta *meta, double nunits);
 extern bool sift_col_scope_stats(Relation index, SiftSrcStats *st);
-extern void *col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view);
+typedef struct ColZones
+{
+	const SiftSrcPrune *z;
+	int			nz;
+} ColZones;
+
+extern bool col_key_range(Relation index, const SiftSrcPrune *z, int nz, SiftKeyRange *out);
+extern int	col_key_leaf(Relation index);
+extern Size col_view_size(void *impl);
+extern void col_view_export(void *impl, void *buf);
+extern void *col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view, const SiftKeyRange *keys);
 extern void *sift_col_open_scope(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
 struct SiftScopeRead;
 extern void sift_col_open_scope_delta(void *impl, const struct SiftScopeRead *rd);

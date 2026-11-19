@@ -31,7 +31,7 @@ static bool bg_started,
 typedef struct Plan
 {
 	int			n;
-	ManSeg		src[SIFT_MAX_SEGMENTS];
+	ManSeg		src[SIFT_DIR_POLICY_MAX];
 } Plan;
 
 /* The segments to merge now, copied from the manifest; plan->n = 0 when there is nothing to do */
@@ -39,27 +39,29 @@ static void
 pick(SiftIdx *ix, bool full, Plan *plan)
 {
 	SiftMergePolicy pol = {.tier_base = (uint64) 1 << 20,.fanin = ix->fanin};
-	SiftDirSnapshot snap = {.nsegs = 0};
-	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
+	SiftDirSnapshot *snap;
+	SiftSegEntry sel[SIFT_DIR_POLICY_MAX];
 	bool		force;
 	int			n;
 
 	plan->n = 0;
 	RD_LOCK(ix);
 	force = full || (ix->ndead > 64 && ix->ndead * 4 > ix->ndoc);
-	snap.nsegs = ix->man.nsegs;
-	for (int i = 0; i < snap.nsegs; i++)
+	snap = sift_dir_alloc(ix->man.nsegs);
+	snap->nsegs = ix->man.nsegs;
+	for (int i = 0; i < snap->nsegs; i++)
 	{
-		snap.segs[i] = ix->segs[i].e;
+		snap->segs[i] = ix->segs[i].e;
 		if (force && ix->ndead > 0)		/* the engine's dead documents are not in the liveness bits: any segment may hold some */
-			snap.segs[i].flags |= SIFT_SEG_DIRTY;
+			snap->segs[i].flags |= SIFT_SEG_DIRTY;
 	}
-	n = sift_merge_pick(ix->rel, &pol, &snap, force, sel);
+	n = sift_merge_pick(ix->rel, &pol, snap, force, sel);
 	for (int i = 0; i < n; i++)
-		for (int j = 0; j < snap.nsegs; j++)
+		for (int j = 0; j < snap->nsegs; j++)
 			if (ix->segs[j].e.gen == sel[i].gen)
 				plan->src[plan->n++] = ix->segs[j];
 	RD_UNLOCK(ix);
+	free(snap);
 }
 
 typedef struct Merged
@@ -165,7 +167,7 @@ static void
 publish_merge(SiftIdx *ix, const Plan *plan, Merged *mg, int *oldg, uint32 *oldblocks)
 {
 	Manifest	m = ix->man;
-	ManSeg		segs[SIFT_MAX_SEGMENTS];
+	ManSeg		segs[SIFT_DIR_POLICY_MAX];
 	int64	   *ids,
 			   *pks,
 			   *dead;
@@ -236,8 +238,8 @@ merge_run(SiftIdx *ix, const Plan *plan)
 	Merged		mg = {0};
 	SiftRel    *msr;
 	Relation	mrel = sift_rel_create(ix->name, ix->dir, ix->man.dpp, &msr);
-	int			oldg[SIFT_MAX_SEGMENTS];
-	uint32		oldblocks[SIFT_MAX_SEGMENTS];
+	int			oldg[SIFT_DIR_POLICY_MAX];
+	uint32		oldblocks[SIFT_DIR_POLICY_MAX];
 	uint32		oldlog;
 	int			rc;
 

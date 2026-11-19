@@ -85,7 +85,7 @@ sift_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	SiftErrCtx	ctx;
 	int64		ntids = 0;
 
-	sift_quarantine_net(scan->indexRelation, st->dir.meta.flags);
+	sift_quarantine_net(scan->indexRelation, st->dir->meta.flags);
 	sift_errctx_push(&ctx, RelationGetRelid(scan->indexRelation));
 	sift_count_search(scan);
 	pgstat_count_index_scan(scan->indexRelation);

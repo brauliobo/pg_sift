@@ -123,11 +123,11 @@ get_hint(Relation index)
 static void
 refresh_hint(Relation index, WbufHint *h, uint32 analyzer_hash)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 
 	sift_lane_refresh(index, analyzer_hash, "analyzer options", hdr_size(new_format()), new_format(), 0, sift_maint_make_room,
 					  &h->gen, &h->hdr, h->tail);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].gen == h->gen)
 			h->format = snap->segs[i].format;

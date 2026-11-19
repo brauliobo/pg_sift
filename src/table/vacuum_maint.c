@@ -105,7 +105,7 @@ removable_tombs(Relation rel, SiftTblRel *st, bool all)
 static double
 dirty_share(const SiftTblRel *st, uint64 tombs)
 {
-	double		nsb = SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) / SIFT_SB_PAGES + 1;
+	double		nsb = SIFT_TBL_NEXT_VBLOCK(&st->dir->meta) / SIFT_SB_PAGES + 1;
 
 	return 1.0 - exp(-(double) tombs / nsb);
 }
@@ -119,7 +119,7 @@ sift_tbl_scan_note(Relation rel, SiftTblRel *st)
 {
 	if (!st->initialized)
 		return;
-	sift_scans_note(rel, &st->dir.meta);
+	sift_scans_note(rel, &st->dir->meta);
 	sift_reads_flush(rel, NULL, NULL);
 }
 
@@ -144,8 +144,8 @@ dead_wanted(const SiftTblRel *st, uint64 entries, uint64 tombs, uint64 seen, uin
 static bool
 settle_due(Relation rel, SiftTblRel *st)
 {
-	for (int i = 0; i < st->dir.nsegs; i++)
-		if (st->dir.segs[i].kind == SIFT_SEG_WBUF_SEALED && (st->dir.segs[i].flags & SIFT_TBL_SEG_WBUF))
+	for (int i = 0; i < st->dir->nsegs; i++)
+		if (st->dir->segs[i].kind == SIFT_SEG_WBUF_SEALED && (st->dir->segs[i].flags & SIFT_TBL_SEG_WBUF))
 			return st->settle_horizon != GetOldestNonRemovableTransactionId(rel);
 	return false;
 }
@@ -167,8 +167,8 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	sift_tbl_refresh(rel, st);
 	if (!st->initialized)
 		return;
-	scans = sift_scans_paid(rel, &st->dir.meta);
-	entries = sift_tomb_entries(rel, &st->dir);
+	scans = sift_scans_paid(rel, &st->dir->meta);
+	entries = sift_tomb_entries(rel, st->dir);
 	/* the log is read, by this backend, only when its length could pay for a pass: a ticking backend that does nothing else does not sync it; one too long for a backend is the worker's to count */
 	if (sift_tomb_over(entries))
 		tombs = entries;
@@ -187,8 +187,8 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	 * buffers: an append flood has half its file free at any moment, and a pass would cut it for the writers to extend it. The space is
 	 * asked for when no write buffer was opened since this backend last looked (the first look sees none to compare with).
 	 */
-	writing = SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) != st->defrag_vblock;
-	st->defrag_vblock = SIFT_TBL_NEXT_VBLOCK(&st->dir.meta);
+	writing = SIFT_TBL_NEXT_VBLOCK(&st->dir->meta) != st->defrag_vblock;
+	st->defrag_vblock = SIFT_TBL_NEXT_VBLOCK(&st->dir->meta);
 	/* a VACUUM rewrote the log, or a pass or a truncation used the free blocks: what is asked next is relative to what is left */
 	st->defrag_tombs = Min(st->defrag_tombs, tombs);
 	st->defrag_free = Min(st->defrag_free, fs.blocks);
@@ -290,13 +290,13 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 			if (pass != PASS_SETTLE)
 				sift_tbl_coalesce = sift_tbl_opt_bool(st, SIFT_TBLOPT_AUTO_DEFRAG_COALESCE);
 			sift_tbl_refresh(rel, st);
-			scans = sift_scans_paid(rel, &st->dir.meta);
+			scans = sift_scans_paid(rel, &st->dir->meta);
 			if (pass == PASS_SETTLE)
 			{
 				r->promoted = sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 				r->blocks_after = RelationGetNumberOfBlocks(rel);
 			}
-			else if (dead_wanted(st, sift_tomb_entries(rel, &st->dir), removable_tombs(rel, st, true), worker_tombs,
+			else if (dead_wanted(st, sift_tomb_entries(rel, st->dir), removable_tombs(rel, st, true), worker_tombs,
 								 scans - Min(scans, worker_scans)))
 			{
 				if (sift_tbl_opt_bool(st, SIFT_TBLOPT_AUTO_DEFRAG_INDEXES))
@@ -306,7 +306,7 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 				pass_cleared = true;
 				sift_tbl_refresh(rel, st);	/* the pass moved the log: the directory read before it points past the cut */
 				worker_tombs = removable_tombs(rel, st, true);
-				worker_scans = sift_scans_paid(rel, &st->dir.meta);
+				worker_scans = sift_scans_paid(rel, &st->dir->meta);
 			}
 			else
 				sift_tbl_maintain(rel, true, false, r);
