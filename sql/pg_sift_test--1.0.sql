@@ -80,7 +80,7 @@ CREATE FUNCTION sift._test_dir_parts(index regclass, OUT first int4, OUT n int4,
 CREATE FUNCTION sift._test_dir_blocks(index regclass, OUT ord int4, OUT blk int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_dir_blocks' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_dir_part_bounds(index regclass, OUT first int4, OUT lo_round_trips bool, OUT short_bound_lowest bool)
+CREATE FUNCTION sift._test_dir_part_bounds(index regclass, OUT first int4, OUT lo_round_trips bool, OUT short_bound_lowest bool, OUT lo_is_bound bool)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_dir_part_bounds' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_dir_check(index regclass) RETURNS int4
