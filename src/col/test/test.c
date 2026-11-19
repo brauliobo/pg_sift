@@ -38,6 +38,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_formats);
 PG_FUNCTION_INFO_V1(sift_test_col_segment_keys);
 PG_FUNCTION_INFO_V1(sift_test_col_part_bounds);
 PG_FUNCTION_INFO_V1(sift_test_col_part_shift);
+PG_FUNCTION_INFO_V1(sift_test_col_part_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_adopt);
 
 PG_FUNCTION_INFO_V1(sift_test_col_mirror);
@@ -153,6 +154,63 @@ sift_test_col_adopt(PG_FUNCTION_ARGS)
 	sift_maint_unlock(index);
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_BOOL(recorded);
+}
+
+typedef struct PartDamage
+{
+	uint64		gen;
+	SiftSegEntry entry;
+	uint8		lo[SIFT_BOUND_BYTES];
+} PartDamage;
+
+static void
+damage_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	PartDamage *d = arg;
+
+	sift_dir_part_replace(&d->gen, 1, &d->entry, 1, &d->lo);
+}
+
+/*
+ * sift._test_col_part_damage(index, k, how): records a wrong bound for partition k (of one segment): how 'equal' the bound of the partition before it, 'high' the greatest row of its segment,
+ * 'low' the greatest row of the segment before it (k >= 1 for 'equal' and 'low'). col_verify must refuse the directory
+ */
+Datum
+sift_test_col_part_damage(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), RowExclusiveLock, "sift_col");
+	int			k = PG_GETARG_INT32(1);
+	char	   *how = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	SiftDirSnapshot *snap = sift_dir_read(index);
+	SiftDirPart *part;
+	SiftSegEntry *segs;
+	int			np = sift_dir_parts_read(index, snap, &segs, &part);
+	bool		same = strcmp(how, "equal") == 0,
+				high = strcmp(how, "high") == 0;
+	int			from = high ? k : k - 1;
+	PartDamage	d;
+	SiftColSegment *seg;
+	SiftBound	b;
+
+	if (k < 0 || k >= np || part[k].n != 1 || from < 0 || (!same && !high && strcmp(how, "low") != 0))
+		elog(ERROR, "sift test: no partition %d of one segment to damage as \"%s\"", k, how);
+	d.entry = segs[part[k].first];
+	d.gen = d.entry.gen;
+	if (same)
+		memcpy(d.lo, part[from].lo, SIFT_BOUND_BYTES);
+	else
+	{
+		seg = sift_cseg_open(index, &segs[part[from].first], CurrentMemoryContext);
+		if (!sift_colk_segment_bound(seg, true, &b))
+			elog(ERROR, "sift test: the segment of partition %d holds no row", from);
+		sift_bound_pack(&b, d.lo);
+		sift_cseg_close(seg);
+	}
+	sift_maint_lock(index, true);
+	sift_dir_update(index, &(SiftDirChange) {.fn = damage_switch,.arg = &d,.extra = InvalidBuffer});
+	sift_maint_unlock(index);
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
 }
 
 typedef struct PartShift

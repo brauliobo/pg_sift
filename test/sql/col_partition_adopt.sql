@@ -75,6 +75,36 @@ SELECT sift.col_merge('ae_idx') >= 0 AS stepped;
 SELECT (SELECT count(*) FROM sift._test_dir_parts('ae_idx')) > 10 AS recorded_by_the_step;
 SELECT bool_and(rows_from_lo) AS rows_from_lo, bool_and(rows_below_next) AS rows_below_next FROM sift._test_col_part_bounds('ae_idx');
 
+-- a partition emptied by deletes holds no row to give its bound away: the bounds that do not ascend are what col_verify finds
+SET sift.test_col_record_partitions = off;
+CREATE INDEX af4 ON ae USING sift_col (id, dim, day, v, w) WITH (key_cut = 'dim, day', dead_rewrite_pct = 100);
+RESET sift.test_col_record_partitions;
+SELECT sift._test_col_adopt('af4') AS adopted;
+CREATE TEMP TABLE af4_range AS
+	SELECT split_part(lo, ',', 1)::int AS dim, split_part(lo, ',', 2)::int AS day, k
+	FROM (SELECT lo, row_number() OVER (ORDER BY first) - 1 AS k FROM sift._test_col_part_bounds('af4')) b WHERE k IN (2, 3);
+DELETE FROM ae WHERE (dim, day - date '2000-01-01') >= (SELECT dim, day FROM af4_range WHERE k = 2)
+	AND (dim, day - date '2000-01-01') <= (SELECT dim, day FROM af4_range WHERE k = 3);
+VACUUM (INDEX_CLEANUP ON) ae;
+SELECT sift.col_verify('af4', false);
+SELECT sift._test_col_part_damage('af4', 3, 'equal');
+SELECT sift.col_verify('af4', false);
+
+-- col_verify refuses a recorded bound that is wrong: the bound of the partition before it, one above a row of the partition, one at or below the rows of the partition before it
+SET sift.test_col_record_partitions = off;
+CREATE INDEX af1 ON ae USING sift_col (id, dim, day, v, w) WITH (key_cut = 'dim, day');
+CREATE INDEX af2 ON ae USING sift_col (id, dim, day, v, w) WITH (key_cut = 'dim, day');
+CREATE INDEX af3 ON ae USING sift_col (id, dim, day, v, w) WITH (key_cut = 'dim, day');
+RESET sift.test_col_record_partitions;
+SELECT sift._test_col_adopt('af1') AND sift._test_col_adopt('af2') AND sift._test_col_adopt('af3') AS adopted;
+SELECT sift.col_verify('af1', false);
+SELECT sift._test_col_part_damage('af1', 3, 'equal');
+SELECT sift.col_verify('af1', false);
+SELECT sift._test_col_part_damage('af2', 3, 'high');
+SELECT sift.col_verify('af2', false);
+SELECT sift._test_col_part_damage('af3', 3, 'low');
+SELECT sift.col_verify('af3', false);
+
 DROP FUNCTION chk(), pending();
 DROP TABLE before, ad, ae;
 DROP EXTENSION pg_sift_test;

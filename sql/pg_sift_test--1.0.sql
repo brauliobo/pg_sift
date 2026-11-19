@@ -341,6 +341,8 @@ CREATE FUNCTION sift._test_col_segment_keys(index regclass, OUT gen int8, OUT un
 -- the cut of every immutable segment: by a key (bykey) or by TID range (bytid), and the leaves it records (an empty array: none), src/col/test/test.c
 CREATE FUNCTION sift._test_col_adopt(index regclass) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_col_adopt' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_part_damage(index regclass, k int4, how text) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_col_part_damage' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_part_bounds(index regclass, OUT first int4, OUT n int4, OUT lo_empty bool, OUT rows_from_lo bool, OUT rows_below_next bool, OUT lo text)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_part_bounds' LANGUAGE C STRICT;

@@ -96,16 +96,18 @@ sift_colk_segment_bound(SiftColSegment *seg, bool last, SiftBound *out)
 	return found;
 }
 
-/* Do the live rows of the segment lie from lo (NULL: no start) up to below hi (NULL: no end)? A segment with none lies anywhere */
+/* Do the live rows of the segment lie from lo (NULL: no start) up to below hi (NULL: no end)? A segment with none lies anywhere. A key of more leaves than a bound holds has no address in it: a row may be at hi */
 bool
 sift_colk_rows_within(SiftColSegment *seg, const SiftBound *lo, const SiftBound *hi)
 {
 	SiftBound	first,
 				last;
+	int			c;
 
 	if (!sift_colk_segment_bound(seg, false, &first) || !sift_colk_segment_bound(seg, true, &last))
 		return true;
-	return (lo == NULL || sift_bound_cmp(&first, lo) >= 0) && (hi == NULL || sift_bound_cmp(&last, hi) < 0);
+	c = hi == NULL ? -1 : sift_bound_cmp(&last, hi);
+	return (lo == NULL || sift_bound_cmp(&first, lo) >= 0) && (seg->ncut <= SIFT_BOUND_COMPS ? c < 0 : c <= 0);
 }
 
 /* Row r of b against the bound: key by key, NULL last; equal on the leaves the bound has, the row is at it */

@@ -496,6 +496,24 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 }
 
 
+/* The lower bounds of the partitions are bounds and ascend strictly: the first need not be the empty one, a partition emptied by deletes may have been the first */
+static void
+step_part_bounds(void *arg)
+{
+	ColVerify  *cv = arg;
+	SiftBound	prev,
+				lo;
+
+	for (int k = 0; k < cv->nparts; k++)
+	{
+		if (!sift_bound_unpack(cv->parts[k].lo, &lo))
+			corrupt(cv->index, "The lower bound of the partition " UINT64_FORMAT " is no bound.", cv->parts[k].lineage);
+		if (k > 0 && sift_bound_cmp(&prev, &lo) >= 0)
+			corrupt(cv->index, "The bounds of partitions %d and %d do not ascend.", k - 1, k);
+		prev = lo;
+	}
+}
+
 static void
 step_store(void *arg)
 {
@@ -720,6 +738,8 @@ col_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 	sift_errctx_whole(&cv->errctx);
 	if (sound)
 		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_totals, cv);
+	if (sound)
+		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_part_bounds, cv);
 	if (sound)
 		sound = sift_check_step(ck, SIFT_CHECK_WHOLE, step_duplicates, cv);
 	if (sound && cv->nscope > 0)
