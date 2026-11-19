@@ -9,8 +9,8 @@ no other process decides which part of a statement is seen); the peak of that me
 over the difference of the rows, so no size depends on the one measured before it and no case on the one that ran before it (--shard and --reverse give the same slopes).
 A case passes when its slope is at most its ceiling, the slope of its BASIS: `exact` is the same measurement with the bytes the memory scopes of sift counted
 (sift._test_mem_highwater(): the peak of each scope in the measured backend, summed), which does not depend on where the allocator places its blocks or on when a sampler is scheduled (the
-same on 5.0.2, on the tree and on every flavour that runs the gate); `sampled` is the resident peak above, for the cases whose scopes count none of the growth (the memory is PostgreSQL's, a
-table's, outside them); `contexts` is the leak kind. A row is on `exact` when its scopes count 3 B/row or more, and its ceiling is that slope plus max(2 B/row, 15%): measured on the release
+same on 5.0.2, on the tree and on every flavour that runs the gate); `sampled` is the resident peak above, for the cases whose scopes count none or only a part of the growth (the memory is PostgreSQL's, a
+table's, outside them: growth outside the scopes stays gated); `contexts` is the leak kind. A row is on `exact` when its scopes count 3 B/row or more and most of its sampled slope, and its ceiling is that slope plus max(2 B/row, 15%): measured on the release
 and on the tree, a row that grew since the release is a regression to fix, not a ceiling to raise. Status `clean`: the ceiling is the noise (CLEAN) and three runs stayed under it with margin. Status `open`: a case that
 grows with the data today has the largest of three runs plus 15 percent as its ceiling (a defect to fix, and its row goes to clean with the fix); a case whose slope is far under
 its open ceiling fails too, so that a fix is not left unrecorded. Status `noise`: the slope moves from run to run with where the allocator places its blocks (or has no sign);
