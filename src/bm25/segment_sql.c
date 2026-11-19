@@ -38,12 +38,12 @@ sift_segments(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segments", ALLOCSET_DEFAULT_SIZES);
 
 	InitMaterializedSRF(fcinfo, 0);
 	index = open_sift(PG_GETARG_OID(0), "col_segments");
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
@@ -101,10 +101,10 @@ sift_segments(PG_FUNCTION_ARGS)
 void
 sift_bm25_stats(Relation index, SiftIndexStats *st)
 {
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift index stats", ALLOCSET_DEFAULT_SIZES);
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
@@ -147,12 +147,12 @@ Datum
 sift_index_info(PG_FUNCTION_ARGS)
 {
 	Relation	index = open_sift(PG_GETARG_OID(0), "col_index_info");
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	SiftFreeStats fs;
 	Datum		v[10];
 	bool		nulls[10] = {0};
 
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	fs = sift_store_free_stats(index);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
 	v[1] = Int64GetDatum(snap->meta.high_water);
@@ -160,7 +160,7 @@ sift_index_info(PG_FUNCTION_ARGS)
 	v[3] = Int64GetDatum(fs.reusable);
 	v[4] = Int64GetDatum(fs.records);
 	v[5] = Int32GetDatum(snap->nsegs);
-	v[6] = Int32GetDatum(SIFT_MAX_SEGMENTS);
+	v[6] = Int32GetDatum(SIFT_DIR_POLICY_MAX);
 	v[7] = Int64GetDatum(snap->meta.ndocs);
 	v[8] = Int64GetDatum(snap->meta.sum_dl);
 	nulls[9] = RecoveryInProgress();
@@ -211,8 +211,7 @@ sift_worker_state(PG_FUNCTION_ARGS)
 
 	if (index == NULL)
 		PG_RETURN_NULL();
-	snap = palloc(sizeof(SiftDirSnapshot));
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		sealed += snap->segs[i].kind == SIFT_SEG_WBUF_SEALED;
 	failures = snap->meta.flags & SIFT_META_FAILURES_MASK;
@@ -262,8 +261,7 @@ sift_worker_history(PG_FUNCTION_ARGS)
 		nulls[0] = nulls[1] = nulls[2] = nulls[3] = true;
 		PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 	}
-	snap = palloc(sizeof(SiftDirSnapshot));
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	nulls[0] = nulls[1] = nulls[2] = snap->meta.maint_ok_at == 0;
 	if (!nulls[0])
 	{
@@ -286,14 +284,14 @@ Datum
 sift_index_format(PG_FUNCTION_ARGS)
 {
 	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	Datum		v[4];
 	bool		nulls[4] = {0};
 	bool		bm25 = rel->rd_rel->relam == sift_catalog()->am;
 
 	sift_inspect_expect(RelationGetRelid(rel), NULL, NULL);
 	sift_check_inspect(rel);
-	sift_dir_read(rel, snap);
+	snap = sift_dir_read(rel);
 	v[0] = Int32GetDatum(snap->meta.format_major);
 	v[1] = Int32GetDatum(snap->meta.format_minor);
 	v[2] = BoolGetDatum((snap->meta.flags & SIFT_META_LONG_WORDS) != 0);
@@ -313,12 +311,12 @@ sift_segment_postings(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index;
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *snap;
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segment postings", ALLOCSET_DEFAULT_SIZES);
 
 	InitMaterializedSRF(fcinfo, 0);
 	index = open_sift(PG_GETARG_OID(0), NULL);
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftScoreRef ref = meta_ref(snap);
@@ -563,7 +561,7 @@ step_store(void *arg)
 	SiftAnalyzerConfig cfg;
 
 	sift_store_verify(bv->index);
-	sift_dir_read(bv->index, bv->snap);
+	bv->snap = sift_dir_read(bv->index);
 	opts = sift_index_options(bv->index);
 	sift_analyzer_config_from_index(bv->index, &cfg);
 	if (bv->snap->meta.k1 != (float4) opts->k1 || bv->snap->meta.b != (float4) opts->b ||
@@ -664,7 +662,6 @@ bm25_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 
 	bv->index = index;
 	bv->snapshot = snapshot;
-	bv->snap = palloc(sizeof(SiftDirSnapshot));
 	bv->cxt = AllocSetContextCreate(old, "sift verify", ALLOCSET_DEFAULT_SIZES);
 	bv->walk = AllocSetContextCreate(bv->cxt, "sift verify walk", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(bv->cxt);

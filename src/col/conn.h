@@ -205,6 +205,7 @@ extern bool sift_conn_integer_type(Oid typid);
 extern Oid	sift_conn_relation_oid(Oid index_table, const char *schema, const char *name, LOCKMODE lock, bool missing_ok);
 /* The connections a child index declares (ERROR for text that does not parse), NULL when it declares none */
 extern SiftConnSpecs *sift_conn_specs(Relation child_index);
+extern void sift_conn_specs_free(SiftConnSpecs *all);
 
 /*
  * The leaves a connected index takes from its parents (SIFT_COLD_FOUND): for each connection, in the order of the option, the flag that the parent row was found

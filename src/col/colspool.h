@@ -19,7 +19,7 @@ typedef struct SiftChunkSpool SiftChunkSpool;
 #define SIFT_CHUNKPLAN_ROWS	(4 * 16384)
 
 #ifdef SIFT_TESTING
-extern PGDLLIMPORT int sift_test_col_spool_layer;		/* 0: the plan picks, 1: the cascade alone, 2: lz4 layer, 3: zstd layer, 4: no compression at all */
+extern PGDLLIMPORT int sift_test_col_spool_layer;		/* 0: the plan picks, 1: the cascade alone, 2: lz4 layer, 3: zstd layer, 4: no compression at all, in the key ranges' row files too */
 extern PGDLLIMPORT int sift_test_col_spool_chunk_rows;	/* 0: from the memory share, else this many rows of a chunk */
 extern PGDLLIMPORT int sift_test_col_spool_share_kb;	/* 0: the share the build gives, else the memory all the spools of a build may hold, in kB */
 extern PGDLLIMPORT int sift_test_col_spool_unbounded;	/* 1: a chunk is as large as it can be and no memory limit flushes it (a mutant of the share) */

@@ -72,6 +72,8 @@ sift_col_gorder_groups_open(SiftColSource *src, int gcol, int kcol, const int64 
 	}
 	if (nfree == src->nseg || freerows > SIFT_CGORD_FREE_CAP(false))
 		return NULL;
+	if (src->mem_partial)
+		return NULL;
 	if (!src->mem_loaded)
 		scan_load_wbuf(src);
 	memrows = freerows;
