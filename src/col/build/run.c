@@ -390,8 +390,11 @@ colb_add_row(ColBuild *b, const SiftColRow *row)
 {
 	uint32		sb = sift_block_sb(ItemPointerGetBlockNumberNoCheck(&row->tid));
 
-	if (b->open != NULL && colb_open_take(b, row))
+	if (b->open != NULL)
+	{
+		colb_open_take(b, row);
 		return;
+	}
 	if (b->batch->nrows > 0 && b->batch->sb != sb)
 		colb_flush_batch(b);
 	if (b->batch->nrows == 0 && b->batch->sb != sb)
@@ -612,8 +615,6 @@ colb_finish_runs(ColBuild *b)
 		colb_open_finish(b);
 	if (b->spill != NULL)
 		colb_spill_finish(b);
-	if (b->open != NULL)
-		colb_open_adopt(b);
 	if (b->held != NIL)
 		colb_write_run(b, true);
 	colb_end_segment(b);
