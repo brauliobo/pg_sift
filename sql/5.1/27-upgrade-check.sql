@@ -116,7 +116,7 @@ BEGIN
 				adv := format('ALTER INDEX %s RESET (hll_columns), then REINDEX INDEX %s writes units without sketches, which 3.3 reads', r.rel, r.rel);
 			ELSIF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'scope=%') THEN
 				-- a scope is written at minor 45 or more (a lowered setting refuses it), and a release before 5.0 refuses the option: the entity rows are what an older release reads
-				adv := format('DROP INDEX %s, then SET sift.col_format_minor = 14 and CREATE INDEX it again without the scope option writes the entities without the scope, which %s reads (the reads of the scope go through the join again; ALTER INDEX .. RESET (scope) is refused on an index that has segments)', r.rel, tgt);
+				adv := format('DROP INDEX %s, then SET sift.col_format_minor = 14 and CREATE INDEX it again without the scope option writes the index without the scope, which %s reads (the reads of the scope go through the join again; ALTER INDEX .. RESET (scope) is refused on an index that has segments)', r.rel, tgt);
 			ELSIF hi = 46 AND tgt = '4.3' THEN
 				-- the strings of a column held by a shared value store (5.0): the setting writes them in the segments again and leaves change tracking and the structures of minors 15 to 44 as they are
 				adv := format('SET sift.col_value_store = off, then REINDEX INDEX %s writes the strings in the segments (minor 44 at the most), which %s reads', r.rel, tgt);
