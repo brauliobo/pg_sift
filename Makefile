@@ -183,6 +183,7 @@ TESTING_REGRESS += col_dir_past_policy
 TESTING_REGRESS += col_document_present
 TESTING_REGRESS += col_dsm_write_caches
 TESTING_REGRESS += col_dsm_write_statements
+TESTING_REGRESS += col_dv_key_range
 TESTING_REGRESS += col_dv_memory
 TESTING_REGRESS += col_dv_oracle
 TESTING_REGRESS += col_dv_reads_paid

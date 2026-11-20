@@ -29,7 +29,7 @@ src/col/names.c	follow_references	guarded	referring_indexes() is a catalog scan 
 src/col/names.c	rename_attribute	unreachable	the OID is the constant of a system catalog, which cannot be dropped
 src/col/order_units.c	sift_colk_aim_rows	guarded	SearchSysCache1 is tested (tp != NULL) in the same condition; the relation is the heap of an open index
 src/col/pagg.c	pagg_open	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/rowkey.c	sift_col_row_key_attno	guarded	get_attname is called with missing_ok false: an unknown attribute number raises, the relation is open
+src/col/rowkey.c	sift_col_index_attno_in	guarded	get_attname is called with missing_ok false: an unknown attribute number raises, the relation is open
 src/col/scope_guard.c	sift_scope_users	unreachable	the OID is the constant of a system catalog, which cannot be dropped
 src/col/scope_make.c	sift_scope_journal_drop_unused	unreachable	the OID is the constant of a system catalog, which cannot be dropped
 src/col/shape.c	range_span	guarded	the type OID is the type of a column of an open relation or of an argument the executor resolved: it exists while the relation is held

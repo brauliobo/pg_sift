@@ -87,10 +87,13 @@ extern void sift_col_tomb_dead_keys(Relation index, Relation heap, Relation old_
  * marks for the rest
  */
 typedef struct SiftColDead SiftColDead;
-extern SiftColDead *sift_col_dead_begin(Relation index, struct SiftTombLog *log);
+extern SiftColDead *sift_col_dead_begin(Relation index, struct SiftTombLog *log, Relation old_rel);
+/* A row of the statement (a slot of old_rel, of which the caller reads the attributes to upto): the units of the partitions that may hold none of the keys of such rows are not read to look the addresses up */
+extern void sift_col_dead_note_row(SiftColDead *d, TupleTableSlot *old, AttrNumber upto);
 extern void sift_col_dead_add(SiftColDead *d, uint64 key);
 extern void sift_col_dead_end(SiftColDead *d);
 extern AttrNumber sift_col_row_key_attno(Relation index, Relation rel);
+extern AttrNumber sift_col_index_attno_in(Relation index, int att, Relation rel);
 /* The option track_changes (col/track.c): why the table is one a statement trigger cannot hear, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
 extern const char *sift_col_track_deaf(Relation heap);
 extern void sift_col_track_init(void);
@@ -151,6 +154,8 @@ extern PGDLLIMPORT int64 sift_col_hf_asked;
 /* The immutable segments the sources of this backend opened (tests) */
 extern PGDLLIMPORT int64 sift_col_segments_opened;
 extern PGDLLIMPORT int64 sift_col_hf_block_hits;
+/* The immutable segments the lookup of the dead addresses of this backend's statements opened (tests) */
+extern PGDLLIMPORT int64 sift_col_dead_segments;
 /* The addresses of dead rows the probes of compact order blocks listed (tests) */
 extern PGDLLIMPORT int64 sift_col_probe_dead;
 
@@ -159,6 +164,18 @@ static inline bool
 sift_col_key_cut(const SiftColRel *r)
 {
 	return r->ncut > 0 && sift_col_format_minor >= SIFT_COL_FORMAT_PRESENCE;
+}
+
+/* The first leaf of the key_cut when it is a scalar integer leaf, whose values are the integers of the bounds of the partitions: -1 for an index cut by anything else */
+static inline int
+sift_col_int_cut_leaf(const SiftColRel *r)
+{
+	const SiftColDef *def;
+
+	if (!sift_col_key_cut(r))
+		return -1;
+	def = &r->schema->cols[r->cut[0]];
+	return def->parent < 0 && def->kind == SIFT_COLK_SCALAR && def->store == SIFT_COLS_INT ? r->cut[0] : -1;
 }
 
 /*

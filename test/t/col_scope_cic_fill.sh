@@ -60,15 +60,21 @@ held_build() { # SQL: the statement of a build session that stops at the gate; t
 	check "$what: the build ends" test $? == 0
 }
 changed_runs() { sql cf "SELECT count(*) FILTER (WHERE NOT valid) || '/' || count(*) FROM sift._test_side_valid('events_col', 0, 1)" | tail -n 1; }
-# the pairs that changed after the stamp are read by reference, the runs of the others are taken, and the answer is the join's; the runs are taken once VACUUM has said which rows are dead (the log of a
-# concurrent build is incomplete until then: docs/OPTIONS.md track_changes)
-after_writers() {
-	check "$1: before any maintenance the segments have the sidecar the build wrote" test "$(side_format cf events_col)" == 53
-	check "$1: every key reads as the join does" every_key
-	check "$1: the index verifies and no key differs from the join" side_clean cf events_col
-	sql cf "VACUUM (INDEX_CLEANUP on) events" >/dev/null
-	check "$1: the runs the pair changes left alone are taken, those they lie in are read by reference ($(changed_runs) of key 1)" test "$(side_runs cf "$(side_read 1)")" -gt 0 -a "$(changed_runs | cut -d/ -f1)" -ge 1
-	check "$1: the answer is the join's" every_key
+# the runs are taken once VACUUM has said which rows are dead (the log of a concurrent build is incomplete until then: docs/OPTIONS.md track_changes). Pair changes in more than REFRESH percent of the rows of the
+# runs (sift.col_scope_refresh_pct) make the VACUUM write the sidecar again, so every run is taken; with 100 the pairs that changed after the stamp are read by reference and the runs of the others are taken
+after_writers() { # WHAT REFRESH remade|by_reference
+	local what=$1 refresh=$2 changed
+	check "$what: before any maintenance the segments have the sidecar the build wrote" test "$(side_format cf events_col)" == 53
+	check "$what: every key reads as the join does" every_key
+	check "$what: the index verifies and no key differs from the join" side_clean cf events_col
+	sql cf "SET sift.col_scope_refresh_pct = $refresh" "VACUUM (INDEX_CLEANUP on) events" >/dev/null
+	changed=$(changed_runs)
+	if [[ $3 == remade ]]; then
+		check "$what: the VACUUM wrote the sidecar again from the pairs: every run is taken ($changed of key 1)" test "$(side_runs cf "$(side_read 1)")" -gt 0 -a "${changed%%/*}" == 0
+	else
+		check "$what: the runs the pair changes left alone are taken, those they lie in are read by reference ($changed of key 1)" test "$(side_runs cf "$(side_read 1)")" -gt 0 -a "${changed%%/*}" -ge 1
+	fi
+	check "$what: the answer is the join's" every_key
 }
 
 pairs_restored() { sql cf "DELETE FROM tenant_scope WHERE tenant_id = 1 AND dim_a_id IN (5, 11)" "UPDATE tenant_scope SET tenant_id = 1 WHERE dim_a_id = 58 AND tenant_id = 9" "INSERT INTO tenant_scope VALUES (2, 1)" >/dev/null; }
@@ -87,8 +93,8 @@ sql cf "DROP INDEX events_col" "TRUNCATE tenant_scope" "INSERT INTO tenant_scope
 
 # writers held out of nothing: the build is at the gate, the writers change the table and the pairs, and the build goes on
 held_build "CREATE INDEX CONCURRENTLY" "$CIC"
-after_writers "CREATE INDEX CONCURRENTLY with writers"
+after_writers "CREATE INDEX CONCURRENTLY with writers" 100 by_reference
 pairs_restored
 held_build "REINDEX INDEX CONCURRENTLY" "REINDEX INDEX CONCURRENTLY events_col"
-after_writers "REINDEX INDEX CONCURRENTLY with writers"
+after_writers "REINDEX INDEX CONCURRENTLY with writers" 10 remade
 finish

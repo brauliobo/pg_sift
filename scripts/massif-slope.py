@@ -156,11 +156,11 @@ def run(args):
     os.environ.update(PGHOST=args.sock, PGPORT=str(args.port), PGUSER="postgres", PGDATABASE="postgres")
     os.makedirs(args.out, exist_ok=True)
     sizes = [args.rows, args.rows * 4]
-    cases = {c[0]: c for c in ms.read_cases(None)}
+    cases = {c.name: c for c in ms.read_cases(None)}
     todo = [c for c in CASES if re.search(args.only or "", c)]
     native(args.data, lambda: (ms.script("create extension if not exists pg_sift;"), [ms.build_tables(n) for n in sizes]))
     for name in todo:
-        setup, op = EXTRA[name] if name in EXTRA else (cases[name][4], cases[name][5])
+        setup, op = EXTRA[name] if name in EXTRA else (cases[name].setup, cases[name].op)
         peaks = [run_case(ms, args, name, setup, op, n, f"{name}{n}") for n in sizes]
         rows = growth(*peaks)
         with open(os.path.join(args.out, f"growth_{name}.csv"), "w", newline="") as f:

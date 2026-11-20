@@ -767,6 +767,8 @@ CREATE FUNCTION sift._test_hf_pages_asked(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_hf_pages_asked' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_segments_opened(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_segments_opened' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_dead_segments(reset bool DEFAULT false) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_dead_segments' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_probe_dead(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_probe_dead' LANGUAGE C STRICT;
 

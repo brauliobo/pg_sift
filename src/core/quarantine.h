@@ -71,6 +71,11 @@ extern bool sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded
 extern void sift_quarantine_unprotected(SiftGuarded fn, void *arg);
 /* The guard's own subtransaction is starting, running or ending: the callbacks that write the rows a transaction holds do not take it for one of the user (it is the flush that started it) */
 extern bool sift_quarantine_guarding(void);
+/*
+ * The id a write stamps its records with: that of the transaction level it was called from, also inside a guard. The guard's subtransaction then takes no id of its own (it would cost the
+ * assignment and a lock on it at every write); a failed write leaves records of the caller's id in an index that damage has put out of service, whose records no read uses.
+ */
+extern TransactionId sift_quarantine_write_xid(void);
 
 /*
  * Where a scan opens, after it read the directory (meta_flags: the flags of its metapage): a plan made before the index left service is refused with SQLSTATE 40001, the one a
