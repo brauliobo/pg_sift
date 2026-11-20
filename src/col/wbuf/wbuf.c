@@ -409,17 +409,13 @@ int
 sift_cwbuf_key_leaf(Relation index)
 {
 	const SiftColRel *r;
-	const SiftColDef *def;
 
 #ifdef SIFT_TESTING
 	if (sift_test_wbuf_key_leaf != -2)
 		return sift_test_wbuf_key_leaf;
 #endif
 	r = sift_col_rel(index);
-	if (!sift_col_wbuf_key_range || !sift_col_key_cut(r) || r->nscope > 0)
-		return -1;
-	def = &r->schema->cols[r->cut[0]];
-	return def->parent < 0 && def->kind == SIFT_COLK_SCALAR && def->store == SIFT_COLS_INT ? r->cut[0] : -1;
+	return !sift_col_wbuf_key_range || r->nscope > 0 ? -1 : sift_col_int_cut_leaf(r);
 }
 
 /* The format a buffer opened now has: the one with ranges when the index has a key leaf */

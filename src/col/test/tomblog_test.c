@@ -46,6 +46,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_log_hidden);
 PG_FUNCTION_INFO_V1(sift_test_hf_taken);
 PG_FUNCTION_INFO_V1(sift_test_hf_pages_asked);
 PG_FUNCTION_INFO_V1(sift_test_col_segments_opened);
+PG_FUNCTION_INFO_V1(sift_test_col_dead_segments);
 PG_FUNCTION_INFO_V1(sift_test_probe_dead);
 PG_FUNCTION_INFO_V1(sift_test_hf_block_hits);
 PG_FUNCTION_INFO_V1(sift_test_xid_state);
@@ -306,6 +307,9 @@ SIFT_TEST_COUNTER_FN(sift_test_hf_pages_asked, sift_col_hf_asked)
 
 /* sift._test_col_segments_opened(reset bool): the immutable segments the sources of this backend opened */
 SIFT_TEST_COUNTER_FN(sift_test_col_segments_opened, sift_col_segments_opened)
+
+/* sift._test_col_dead_segments(reset bool): the immutable segments the lookup of the dead addresses of this backend's statements opened */
+SIFT_TEST_COUNTER_FN(sift_test_col_dead_segments, sift_col_dead_segments)
 
 /* sift._test_probe_dead(reset bool): the addresses of dead rows that the heap probes of compact order blocks in this backend listed */
 SIFT_TEST_COUNTER_FN(sift_test_probe_dead, sift_col_probe_dead)

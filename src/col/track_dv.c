@@ -6,10 +6,15 @@
  * What a statement pays to write records is the lookup of its addresses in the units: DV_ROW_INSTR for each row of the index (every unit is walked), which the marks' fold (col/maint/fold.c) pays
  * once for all the marks it clears. Records are written when the statement has at least as many addresses as pay for the lookup, rows * DV_ROW_INSTR / DV_GAIN_INSTR, and for the units where they
  * are smaller than the marks they replace.
+ *
+ * The lookup reads the units of the partitions that may hold a row of the statement and no others: the rows the statement noted (sift_col_dead_note_row) bound the first leaf of the key_cut of an index cut by an
+ * integer, and the directory is read for the keys between its least and its greatest (the partitions tile the key, so the others hold none of them). An address a unit of another partition holds (the version of
+ * a row that held another key) is no row of those units' partitions to look up: it stays a mark.
  */
 #include "postgres.h"
 
 #include "access/xact.h"
+#include "executor/tuptable.h"
 #include "storage/lmgr.h"
 #include "utils/inval.h"
 #include "utils/rel.h"
@@ -35,6 +40,7 @@
 #define DV_MIN_ROWS			64
 #define DV_KEYS_MAX			(1 << 20)
 #define MARKS_CHUNK			8192
+#define DV_ROUTE_PROBE		256			/* the rows of a statement noted before its keys are held against the partitions: a statement that spans all of them stops noting its rows */
 
 struct SiftColDead
 {
@@ -46,10 +52,21 @@ struct SiftColDead
 	uint64	   *keys;
 	uint32		n;
 	uint32		cap;
+	int			cut_leaf;		/* the integer leaf the rows are noted by: the first of the key_cut, -1 when it is not one */
+	AttrNumber	cut_att;		/* its attribute in the rows of the statement */
+	SiftColDef	cut_def;
+	bool		cut_name;
+	bool		cut_value;		/* a row had a key ... */
+	bool		cut_null;		/* ... or none */
+	uint32		cut_rows;
+	int64		cut_lo;
+	int64		cut_hi;
 };
 
+int64		sift_col_dead_segments;
+
 SiftColDead *
-sift_col_dead_begin(Relation index, SiftTombLog *log)
+sift_col_dead_begin(Relation index, SiftTombLog *log, Relation old_rel)
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift dead addresses", ALLOCSET_DEFAULT_SIZES);
 	SiftColDead *d = MemoryContextAllocZero(cxt, sizeof(SiftColDead));
@@ -59,7 +76,69 @@ sift_col_dead_begin(Relation index, SiftTombLog *log)
 	d->cxt = cxt;
 	d->xid = sift_quarantine_write_xid();
 	d->cid = sift_col_stmt_cid();
+	d->cut_leaf = sift_col_int_cut_leaf(sift_col_rel(index));
+	if (d->cut_leaf >= 0)
+	{
+		d->cut_def = sift_col_rel(index)->schema->cols[d->cut_leaf];
+		d->cut_name = sift_col_rel(index)->name[d->cut_def.attno];
+		d->cut_att = sift_col_index_attno_in(index, d->cut_def.attno, old_rel);
+		if (d->cut_att == InvalidAttrNumber)
+			d->cut_leaf = -1;
+	}
 	return d;
+}
+
+/* The keys of the first leaf of the cut that the noted rows hold: none noted bounds nothing, and a row without a key sorts after every key */
+static bool
+noted_keys(int leaf, const void *arg, int64 *lo, int64 *hi, bool *null)
+{
+	const SiftColDead *d = arg;
+
+	if (leaf != d->cut_leaf || !(d->cut_value || d->cut_null))
+		return false;
+	*null = !d->cut_value;
+	*lo = d->cut_value ? d->cut_lo : PG_INT64_MIN;
+	*hi = d->cut_value && !d->cut_null ? d->cut_hi : PG_INT64_MAX;
+	return true;
+}
+
+/* The directory less the partitions that hold no key of the noted rows: every unit the lookup reads is in it */
+static SiftDirSnapshot *
+dead_dir_read(const SiftColDead *d)
+{
+	SiftKeyRange range;
+
+	return sift_col_key_range_by(d->index, noted_keys, d, &range) ? sift_dir_read_range(d->index, &range) : sift_dir_read(d->index);
+}
+
+void
+sift_col_dead_note_row(SiftColDead *d, TupleTableSlot *old, AttrNumber upto)
+{
+	SiftColValue v;
+	bool		isnull;
+	Datum		key;
+
+	if (d->cut_leaf < 0)
+		return;
+	slot_getsomeattrs(old, Max(upto, d->cut_att));
+	key = slot_getattr(old, d->cut_att, &isnull);
+	if (isnull)
+		d->cut_null = true;
+	else
+	{
+		sift_col_datum_values(&d->cut_def, key, d->cut_name, &v);
+		d->cut_lo = d->cut_value ? Min(d->cut_lo, v.v.i) : v.v.i;
+		d->cut_hi = d->cut_value ? Max(d->cut_hi, v.v.i) : v.v.i;
+		d->cut_value = true;
+	}
+	if (++d->cut_rows == DV_ROUTE_PROBE)
+	{
+		SiftDirSnapshot *snap = dead_dir_read(d);
+
+		if (!snap->partial)
+			d->cut_leaf = -1;
+		pfree(snap);
+	}
 }
 
 static void
@@ -159,6 +238,7 @@ find_units(SiftColDead *d, const SiftDirSnapshot *snap, Found *f)
 		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
 			continue;
 		seg = sift_cseg_open(d->index, &snap->segs[i], f->cxt);
+		sift_col_dead_segments++;
 		f->gen = snap->segs[i].gen;
 		sift_cseg_find_live(seg, (const SiftKey *) d->keys, d->n, f->idx, found_unit, f);
 		sift_cseg_close(seg);
@@ -183,7 +263,7 @@ write_records(SiftColDead *d, uint32 *nrest)
 	*nrest = d->n;
 	f.resolved = MemoryContextAllocZero(tmp, SIFT_COL_NWORDS(d->n) * sizeof(uint64));
 	LockPage(d->index, SIFT_TOMB_LOCK_BLKNO, ShareLock);
-	snap = sift_dir_read(d->index);
+	snap = dead_dir_read(d);
 	if (!has_scope(snap))
 		find_units(d, snap, &f);
 #ifdef SIFT_TESTING
@@ -221,7 +301,7 @@ records_pay(const SiftColDead *d)
 
 	if (d->n < DV_MIN_ROWS)
 		return false;
-	snap = sift_dir_read(d->index);
+	snap = dead_dir_read(d);
 	for (int i = 0; i < snap->nsegs; i++)
 		rows += snap->segs[i].kind == SIFT_SEG_IMMUTABLE ? snap->segs[i].ndocs : 0;
 	pfree(snap);
