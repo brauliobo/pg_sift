@@ -2,6 +2,7 @@
 # name<TAB>group<TAB>since<TAB>description. group: empty = by the name prefix (col_ column index, table_ tables, else search), or search col table maint diag;
 # - = internal, not listed. A description is only for the objects of the released scripts (a later one gets COMMENT ON in the SQL), and for a family
 # of operator classes that a DO block creates (name with *: group and since are needed too).
+# A since on a single object says the release that first had it when the install scripts say a later one, because its part moved to a later script (an older release than the scripts' own).
 @@>			Full-text match of a text against a SiftQL query (words, phrases, prefixes, fuzzy terms, NOT, fields); a sift index answers it, with BM25 ranking through sift.score.
 match			The function behind @@> with the default analyzer; the planner rebinds it to the index analyzer.
 match_idx			The function behind @@> for a column whose sift index uses another analyzer.
@@ -75,7 +76,7 @@ indexes	diag
 shared_memory	diag		
 locks	diag		
 ddl_hooks	diag		
-upgrade_check	diag		
+upgrade_check	diag	5.0	
 index_format	diag		
 ddl_hooks_enable	maint		
 progress	maint		

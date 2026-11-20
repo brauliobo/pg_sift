@@ -2,6 +2,7 @@
 """The memory slope gate: what an operation holds against the rows of its table, measured at 3 sizes in fresh backends (test/mem-slope.tsv).
 
 PostgreSQL's sorts, hashes and aggregates honour work_mem and its maintenance honours maintenance_work_mem, so the memory of a statement does not follow the table.
+The tables and their indexes are built by one process (max_parallel_maintenance_workers 0): a parallel build splits the heap between its processes as they run, so the segments the cases start from, and the slope of a merge or a VACUUM over them, differed from build to build.
 Every measurement is a backend of its own, on tables of N, 2N and 4N rows with work_mem and maintenance_work_mem at 1 MB: the SETUP of the case runs in a session that
 disconnects (what the operation reads is what a fresh backend finds), the measured backend connects, runs the WARM statements the case declares, returns what the C
 library can give back (sift._test_malloc_stats(true)) and has the backend sample its own anonymous memory every 100 microseconds (sift._test_rss_peak_start: a timer signal in the backend, so
@@ -37,6 +38,7 @@ LEAK_KB = 512              # kB the contexts of a backend may hold more after 60
 VARIANCE_ROWS, VARIANCE_PCT = 2.0, 0.15   # two runs of a case differ by at most max(2 B/row, 15%)
 RUNS = int(os.environ.get("MEM_SLOPE_RUNS", "2"))
 ASYNC_OFF = "set sift.async_maintenance='off';\n"
+BUILD_SETTINGS = ASYNC_OFF + "set max_parallel_maintenance_workers=0;\n"
 SETTINGS = ASYNC_OFF + f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
 TSV = os.environ.get("MEM_SLOPE_TSV") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope.tsv")
 STATUSES, KINDS, BASES = ("clean", "open", "noise"), ("slope", "plateau", "leak"), ("exact", "sampled", "contexts")
@@ -132,7 +134,7 @@ def scope_breakdown(name, sizes, first, runs_by_size):
 
 
 def build_tables(n):
-    script(ASYNC_OFF + f"""
+    script(BUILD_SETTINGS + f"""
 drop table if exists f{n}, d{n} cascade;
 create table f{n} as
 select g as id, g as k_hi, g % 5000 as k_mid, g % 10 as k_lo, (array['DE','FR','US','BR','JP','AR','CL','PE'])[1 + g % 8] as cat,
@@ -153,7 +155,7 @@ vacuum analyze d{n};
 
 
 def copy_table(n):
-    script(ASYNC_OFF + f"""
+    script(BUILD_SETTINGS + f"""
 drop table if exists m{n}, s{n} cascade;
 create table m{n} as select * from f{n};
 alter table m{n} add primary key (id);
