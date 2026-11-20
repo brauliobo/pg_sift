@@ -7,7 +7,7 @@
 # scripts/upgrade_check_tail.sql).
 #
 #   scripts/sql-parts.sh targets   print the generated scripts
-#   scripts/sql-parts.sh build     write the generated scripts that are older than a part
+#   scripts/sql-parts.sh build     write the generated scripts whose text changed
 #   scripts/sql-parts.sh check     every part is NN-<context>.sql with a unique number
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -70,11 +70,16 @@ dirs() { ls -d sql/[0-9]*/ 2>/dev/null | sed 's#/$##'; }
 
 # the install script of the version: one line to refuse psql, then every script of the chain without its own
 build_base() {
-	local t=$1 b=$2 f
-	{
-		echo '\echo Use "CREATE EXTENSION pg_sift" to load this file. \quit'
-		for f in $(chain "$t") "$t"; do grep -v '^\\echo Use .* \\quit$' "$f"; done
-	} >"$b.new.$$" && mv "$b.new.$$" "$b"
+	local t=$1 f
+	echo '\echo Use "CREATE EXTENSION pg_sift" to load this file. \quit'
+	for f in $(chain "$t") "$t"; do grep -v '^\\echo Use .* \\quit$' "$f"; done
+}
+
+# a script is replaced only when its text changes, so a part that moved away or was deleted leaves no stale script and an unchanged one keeps its time
+publish() {
+	local dst=$1
+	cat >"$dst.new.$$"
+	if cmp -s "$dst.new.$$" "$dst"; then rm "$dst.new.$$"; else mv "$dst.new.$$" "$dst"; fi
 }
 
 case ${1:-} in
@@ -82,10 +87,9 @@ targets) scripts_targets ;;
 build)
 	for d in $(dirs); do
 		t=$(target "$d") b=$(base "$d") u=$(upgrade_check_part "$d")
-		[[ -f $t && -z $(find "$d" -name '*.sql' -newer "$t") ]] || { cat "$d"/*.sql >"$t.new.$$" && mv "$t.new.$$" "$t"; }
-		[[ -f $b && ! $t -nt $b ]] || build_base "$t" "$b"
-		[[ -z $u || (-f sql/pg_sift_upgrade_check.sql && -z $(find "$u" scripts/upgrade_check_head.sql scripts/upgrade_check_tail.sql -newer sql/pg_sift_upgrade_check.sql)) ]] ||
-			{ cat scripts/upgrade_check_head.sql "$u" scripts/upgrade_check_tail.sql >sql/pg_sift_upgrade_check.sql.new.$$ && mv sql/pg_sift_upgrade_check.sql.new.$$ sql/pg_sift_upgrade_check.sql; }
+		cat "$d"/*.sql | publish "$t"
+		build_base "$t" | publish "$b"
+		[[ -z $u ]] || cat scripts/upgrade_check_head.sql "$u" scripts/upgrade_check_tail.sql | publish sql/pg_sift_upgrade_check.sql
 	done ;;
 check)
 	for d in $(dirs); do
