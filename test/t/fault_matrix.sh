@@ -7,7 +7,7 @@
 #          stopped with pg_ctl -m immediate at the phase (crash recovery replays its WAL)
 # After the fault (and the restart) the invariants: nobody holds a lock, no progress or quarantine slot is left, the indexes verify and the answers through them are the plain plan's, an INVALID index is
 # dropped by DROP INDEX CONCURRENTLY and leaves no trigger of the log of changes behind, the operation run again completes, leaves the same state and grows the files by less than a half of what a clean run
-# makes, and the maintenance of every index has nothing due after sift.col_maintain. SIFT_FAULT_TIER=quick (SIFT_QUICK=1) runs the rows of the quick tier: one fault for each phase of each operation.
+# makes, and the maintenance of every index has nothing due after sift.col_maintain. SIFT_FAULT_TIER=quick (SIFT_QUICK=1) runs the rows of the quick tier: one fault for each phase of each operation. SIFT_FAULT_SLICE=K/N runs the Kth of N slices of the operations, balanced by their rows.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 HERE=$(dirname "$0")
 SCENARIO_NAMES=(bm25_build col_build bm25_promote col_promote bm25_merge col_merge scope_build scope_promote scope_merge scope_refill vacuum col_roll tbl_seal
@@ -170,7 +170,7 @@ after_fault() { # NAME
 	[[ $(sql cm "$SLOTS") == 0 ]] || { echo "a progress or quarantine slot is left"; return 1; }
 	for _ in 1 2 3; do # an index another one depends on goes after it
 		for ix in $(sql cm "$INVALID"); do
-			out=$(sql cm "DROP INDEX CONCURRENTLY $ix" 2>&1) || [[ $out == *"other objects depend"* ]] ||
+			out=$(sql cm "DROP INDEX CONCURRENTLY IF EXISTS $ix" 2>&1) || [[ $out == *"other objects depend"* ]] ||
 				{ echo "DROP INDEX CONCURRENTLY of the INVALID $ix failed: $(head -c 300 <<<"$out" | tr '\n' ' ')"; return 1; }
 		done
 	done
@@ -215,7 +215,8 @@ untamper() { # the slot of a dead process stays in shared memory until the serve
 # the selftest of the negative rows: every hook a mutant needs is in the source, every mutant has a tamper, and a run of the whole tier has all of them (a missing hook or tamper fails the
 # run here, and a mutant whose defect the invariants do not see fails its own row)
 mutants=$(awk -F'\t' '$5 == "mutant" {print $6}' "$HERE/fault_matrix.tsv" | sort -u)
-[[ -n ${SIFT_FAULT_ONLY:-} ]] || {
+SLICE=${SIFT_FAULT_SLICE:-1/1}
+[[ -n ${SIFT_FAULT_ONLY:-} || ${SLICE%/*} != 1 ]] || {
 	check "the tier has the eight mutants" test "$(wc -w <<<"$mutants")" == 8
 	for m in $mutants; do check "the mutant $m has its tamper" grep -q "^		$m) " "$HERE/fault_matrix.sh"; done
 	for k in 1 2; do check "the library has the hook of the mutant kind $k" grep -rq "SIFT_TEST_MUTANT($k," "$HERE/../../src"; done
@@ -223,10 +224,17 @@ mutants=$(awk -F'\t' '$5 == "mutant" {print $6}' "$HERE/fault_matrix.tsv" | sort
 
 mapfile -t ROWS < <(awk -F'\t' -v t="$TIER" 'NF >= 5 && $1 !~ /^#/ && (t == "full" || $5 == t || $5 == "mutant")' "$HERE/fault_matrix.tsv")
 ONLY=${SIFT_FAULT_ONLY:-}
+declare -A MINE   # the operations of this slice: the dearest first, each to the slice with the least cost so far (seconds a row: scope_cic_nj 20, col_promote 4, vacuum and col_roll 2, the others 1)
+while read -r op; do MINE[$op]=1; done < <(printf '%s\n' "${ROWS[@]}" | awk -F'\t' '
+	BEGIN { w["scope_cic_nj"] = 20; w["col_promote"] = 4; w["vacuum"] = 2; w["col_roll"] = 2 }
+	{ c[$2] += ($2 in w) ? w[$2] : 1 }
+	END { for (x in c) print c[x] "\t" x }' | sort -t$'\t' -k1,1nr -k2,2 | awk -F'\t' -v k="${SLICE%/*}" -v n="${SLICE#*/}" '
+	{ m = 1; for (i = 2; i <= n; i++) if (l[i] < l[m]) m = i; l[m] += $1; if (m == k) print $2 }')
 total=0
 for row in "${ROWS[@]}"; do
 	IFS=$'\t' read -r id name phase fault tier mutant expect <<<"$row"
 	[[ -z $ONLY || $id =~ $ONLY ]] || continue
+	[[ -v MINE[$name] ]] || continue
 	[[ -n ${KCOUNT[$name]:-} ]] || measure "$name"
 	if [[ $phase != gate:* ]] && (( ${KCOUNT[$name]} == 0 )); then
 		(( ++total )); skip 1 "$id: the operation publishes no directory update, its phases are the gates"

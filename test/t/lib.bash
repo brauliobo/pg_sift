@@ -74,6 +74,8 @@ wait_stable() {
 	wait_for stable_poll "$3"
 }
 diag() { sed 's/^/# /' <<<"$*"; }
+# slope_case LINE: a SLOPE line of scripts/mem-slope*.py as a comment (the job log of a passing test keeps comments, not its ok lines: the summary of scripts/ci.sh lists them) and as the result
+slope_case() { diag "$1"; if [[ $1 == *" PASS" ]]; then ok "${1#SLOPE }"; else not_ok "${1#SLOPE }"; fi; }
 # a failed check shows what the test had captured in $out: a hosted run lost the cause of one failure because its log said only which check failed
 check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; [[ -z ${out:-} ]] || diag "what the check read (out):"$'\n'"$(head -n 40 <<<"$out" | cut -c1-240)"; fi; }
 skip() { local n=$1; shift; for _ in $(seq "$n"); do NTEST=$((NTEST + 1)); echo "ok $NTEST # skip $*"; done; }

@@ -63,6 +63,8 @@ extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, const int 
 /* fn sees the first unit the writer is given, as the batch it encodes (a merge takes the lower bound of its segment from it): before the first unit */
 typedef void (*SiftColFirstUnitFn) (void *arg, const SiftColBatch *b);
 extern void sift_colw_on_first_unit(SiftColSegWriter *w, SiftColFirstUnitFn fn, void *arg);
+/* The units come in the order they are written, not in the order of the key: no record of the cut is made (after set_keyed, before the first unit) */
+extern void sift_colw_set_arrival(SiftColSegWriter *w);
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
 extern void sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 /* A segment of a connected index: the found flags of the units added from now on are filled by fill (a host fill, col/conn.h) and its stamps are written with the segment; without it the leaves are what the batches hold and the stamps are empty */
@@ -622,11 +624,11 @@ extern int64 sift_cseg_reap_overflow(SiftColSegment *seg, SiftCsegDead dead, voi
 extern int64 sift_cseg_clear_keys(SiftColSegment *seg, const SiftKey *keys, uint32 n);
 
 /*
- * The live rows of seg at the heap addresses keys (ascending, once each), a unit at a time (units with none are skipped): fn gets the unit, its rows ascending, the addresses they hold in the same
+ * The live rows of seg at the heap addresses keys (ascending, once each; idx, when the caller made one for them, finds them in the key-cut units), a unit at a time (units with none are skipped): fn gets the unit, its rows ascending, the addresses they hold in the same
  * order, and how many. No bit is changed; the caller does not hold the maintenance lock and the segment is the one it opened, so a row may die while it looks (a record of it is then no harm).
  */
 typedef void (*SiftCsegFoundFn) (uint32 u, const uint32 *rows, const SiftKey *at, uint32 nrows, void *arg);
-extern void sift_cseg_find_live(SiftColSegment *seg, const SiftKey *keys, uint32 n, SiftCsegFoundFn fn, void *arg);
+extern void sift_cseg_find_live(SiftColSegment *seg, const SiftKey *keys, uint32 n, const SiftAddrIdx *idx, SiftCsegFoundFn fn, void *arg);
 
 /* Clears the liveness bit of each of rows (ascending) of unit u that is set, as the index pass of a VACUUM does; the count cleared. The caller holds the maintenance lock */
 extern int64 sift_cseg_clear_rows(SiftColSegment *seg, uint32 u, const uint32 *rows, uint32 n);

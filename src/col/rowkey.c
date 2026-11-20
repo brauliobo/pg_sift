@@ -339,14 +339,20 @@ other_tracker(Relation index, Relation heap, AttrNumber hatt)
 	return false;
 }
 
-/* The attribute number of the key column of the index in the rows of rel, its table or a table above it (the transition table of a statement on a parent has the rowtype of the parent) */
+/* The attribute number in the rows of rel, the table of the index or a table above it (the transition table of a statement on a parent has the rowtype of the parent), of attribute att of the index: 0 for an expression */
+AttrNumber
+sift_col_index_attno_in(Relation index, int att, Relation rel)
+{
+	Oid			heapoid = index->rd_index->indrelid;
+	AttrNumber	hatt = index->rd_index->indkey.values[att - 1];
+
+	return RelationGetRelid(rel) == heapoid || hatt == 0 ? hatt : get_attnum(RelationGetRelid(rel), get_attname(heapoid, hatt, false));
+}
+
 AttrNumber
 sift_col_row_key_attno(Relation index, Relation rel)
 {
-	Oid			heapoid = index->rd_index->indrelid;
-	AttrNumber	hatt = index->rd_index->indkey.values[sift_col_rel(index)->rowkey_attno - 1];
-
-	return RelationGetRelid(rel) == heapoid ? hatt : get_attnum(RelationGetRelid(rel), get_attname(heapoid, hatt, false));
+	return sift_col_index_attno_in(index, sift_col_rel(index)->rowkey_attno, rel);
 }
 
 /* The key journal of a connected parent: a record for the key of every old row of the statement (more than the entries it ended, which is all the journal needs) */
@@ -423,7 +429,7 @@ dead_keys_write(void *arg)
 	}
 	if (sift_conn_journal_on(index))
 		journal_old_rows(index, old_rel, oatt, log, old_rows);
-	dead = sift_col_dead_begin(index, log);
+	dead = sift_col_dead_begin(index, log, old_rel);
 	if (dead_share_is(dk, heap, uoid))
 	{
 		for (int i = 0; i < dead_share.n; i++)
@@ -467,6 +473,7 @@ dead_keys_write(void *arg)
 
 			if (!(more = tuplestore_gettupleslot(old_rows, true, false, old)))
 				break;
+			sift_col_dead_note_row(dead, old, oatt);
 			key = slot_getattr(old, oatt, &isnull);
 			if (isnull)
 				continue;

@@ -10,13 +10,21 @@
 
 typedef struct SiftRowFile SiftRowFile;
 
+/* Where the blocks go: nowhere (the rows are only counted), a temporary file, or memory (the blocks stay in the memory context the file was created in until they are read back) */
+typedef enum SiftRowSink
+{
+	SIFT_ROWS_COUNT,
+	SIFT_ROWS_FILE,
+	SIFT_ROWS_MEMORY
+} SiftRowSink;
+
 /*
  * A file of rows of the schema, in the current resource owner's temporary files; scratch is the buffer the blocks are compressed into, shared by the
  * files of one caller. A block goes out when it holds block raw bytes, so the file holds up to twice that in memory. With file false no file is made and the
  * rows are only counted: sift_rowfile_bytes says what a file of them would take. With versions each row is preceded by the xmin and cmin of its version (the rows of a
  * build have none: false, and 0 to put).
  */
-extern SiftRowFile *sift_rowfile_create(const SiftColSchema *sc, StringInfo scratch, bool file, Size block, bool versions);
+extern SiftRowFile *sift_rowfile_create(const SiftColSchema *sc, StringInfo scratch, SiftRowSink sink, Size block, bool versions);
 #define SIFT_ROWFILE_BLOCK_MAX	((Size) 32 << 10)
 #define SIFT_ROWFILE_BLOCK_MIN	((Size) 1 << 10)	/* the least a block holds: under it the codec gains nothing */
 extern void sift_rowfile_put(SiftRowFile *f, const SiftColRow *row, uint32 xmin, uint32 cmin);

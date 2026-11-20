@@ -281,6 +281,10 @@ Three `sift_col` options are accepted and ignored by 4.3 and still ignored by 5.
 
 `order_layout` and `sift.col_format_minor` stay.
 
+## What 5.1 costs more than 5.0.2
+
+A statement that deletes many rows costs 1.08 to 1.18 times the instructions of 5.0.2 when the rows are scattered and about 1.02 times when they are all in one range of the key. The first write after the server starts costs about 0.4 million instructions more for an `INSERT` and 2.5 million (about 0.6 ms) more for an `UPDATE`: a planner fold over every segment, done once for each server and set of segments, and the opening of a write buffer; it is not paid by each statement. Reads between a DELETE and the next `VACUUM` cost less. The release notes list these under Known limits.
+
 ## What 5.1 writes that 5.0 does not read
 
 Three things are written that 5.0 refuses with the format error and never reads as damage ([FORMATS](FORMATS.md)): column format minor 52, column format minor 55 with the metapage minor 1.7 it raises, and a chained directory (metapage 1.7). `sift.upgrade_check('5.0')` lists each such index as a blocker with its command. A 5.1 library reads every older minor; nothing is rebuilt.

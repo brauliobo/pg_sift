@@ -32,6 +32,7 @@
 #include "core/cmp.h"
 #include "core/membudget.h"
 #include "core/rowmem.h"
+#include "core/quarantine.h"
 #include "core/restrict.h"
 #include "core/tomb.h"
 
@@ -103,7 +104,7 @@ journal_record(Relation index, Oid keytype, Datum key, bool member, SiftTombKind
 
 	if (!sift_col_track_on(index) || journal_lineage(index) == 0 || !journal_word(keytype, key, member, &k))
 		return false;
-	*rec = (SiftTomb) {.key = SIFT_TOMB_KEYS_KEY,.xid = GetCurrentTransactionId(),.cid = sift_col_stmt_cid(),.succ = (uint64) k,.kind = kind,.flags = flags};
+	*rec = (SiftTomb) {.key = SIFT_TOMB_KEYS_KEY,.xid = sift_quarantine_write_xid(),.cid = sift_col_stmt_cid(),.succ = (uint64) k,.kind = kind,.flags = flags};
 	return true;
 }
 

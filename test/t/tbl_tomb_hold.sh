@@ -2,7 +2,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # The time the rewrite of the tombstone log holds the exclusive lock of the log (the test build logs it) follows the entries appended while the new log is built, not the
 # entries of the log: VACUUM with a transaction open that keeps every entry (so the new log is as long as the old), the log in runs on temp files (sift.tomb_log_limit 1 MB),
-# at N and 4 N entries; then with the build held at its gate while 300 UPDATEs append. SIFT_TH_ROWS: N (100000 in a full run; the 1.6 M case of the measurement is 16 x N).
+# at N and 4 N entries; then with the build held at its gate while 300 UPDATEs append. What the hold reads under the lock is counted, not timed (the log line says how many entries it read: those appended meanwhile): a rewrite that read the log again under the lock would read N or 4 N. SIFT_TH_ROWS: N (100000 in a full run; the 1.6 M case of the measurement is 16 x N). SIFT_TH_ROWS: N (100000 in a full run; the 1.6 M case of the measurement is 16 x N).
 . "$(dirname "$0")/lib.bash"
 
 N=$(knob SIFT_TH_ROWS 100000 20000)
@@ -47,13 +47,13 @@ rewrite_of() { # n: the hold in microseconds
 }
 
 rewrite_of "$N"
-h1=$(field 1); k1=$(field 3)
-diag "N = $N: hold $h1 us, $(field 2) appended, $k1 kept"
+a1=$(field 2); k1=$(field 3)
+diag "N = $N: hold $(field 1) us, $a1 appended, $k1 kept"
 rewrite_of $((4 * N))
-h4=$(field 1); k4=$(field 3)
-diag "4 N = $((4 * N)): hold $h4 us, $(field 2) appended, $k4 kept"
+a4=$(field 2); k4=$(field 3)
+diag "4 N = $((4 * N)): hold $(field 1) us, $a4 appended, $k4 kept"
 check "the rewrite kept every entry (the new log is as long as the old)" test "$k1" -ge "$N" -a "$k4" -ge "$((4 * N))"
-check "no entry appended meanwhile: the exclusive hold of 4 N entries is at most twice that of N, and under 20 ms" test "$h4" -le "$((2 * h1 + 2000))" -a "$h4" -lt 20000
+check "no entry appended meanwhile: the hold reads no entry of a log of N or of 4 N (it reads the entries appended meanwhile, 0)" test "$a1" -eq 0 -a "$a4" -eq 0
 
 # entries appended while the build is held: the hold follows them
 sql primary "DROP TABLE IF EXISTS t" "CREATE TABLE t USING sift_table AS SELECT g AS id, g AS v FROM generate_series(1, $((4 * N)) + 1000) g" "VACUUM t" >/dev/null

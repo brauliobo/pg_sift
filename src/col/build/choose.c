@@ -19,9 +19,6 @@
 #include "core/limits.h"
 #include "core/membudget.h"
 
-#define SIFT_BUILD_SOURCE_AUTO	0
-#define SIFT_BUILD_SOURCE_HEAP	1
-
 int			sift_col_build_source = SIFT_BUILD_SOURCE_AUTO;
 
 #ifdef SIFT_TESTING

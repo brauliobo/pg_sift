@@ -1,0 +1,55 @@
+-- The memory of the open units of a build with no room for the files (scope col_build_open of core/membudget.h, sift._test_mem_highwater()): the rows of every range of the key are held packed as the
+-- open units they fill, and a unit that is complete is written as it is, so what the scope holds at the end of each row is under the cap of the open units (here 40 kB, a quarter of the build's memory by default) whatever the number
+-- of rows: 30,000, 35,000 and 40,000 rows of the same table take the same. A build that does not look at the cap (mutant 4) holds more than it and grows with the rows.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+SET sift.col_build_source = auto;
+SET sift.col_unit_rows = 100;
+SET sift.test_col_open = 1;
+SET sift.test_col_open_kb = 40;
+SET sift.test_col_segment_kb = 4000;
+
+CREATE TABLE om_all (id int, g int, k int, note text, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO om_all SELECT i, i % 7, CASE WHEN h % 100 < 60 THEN h % 4 ELSE 4 + (h / 100) % 3000 END, 'note ' || (i % 50), md5(i::text) || md5((i + 1)::text)
+FROM (SELECT i, (hashint4(i)::bigint & 2147483647) AS h FROM generate_series(1, 40000) i) s;
+CREATE TABLE om_t30000 AS SELECT * FROM om_all WHERE id <= 30000;
+CREATE TABLE om_t35000 AS SELECT * FROM om_all WHERE id <= 35000;
+CREATE TABLE om_t40000 AS SELECT * FROM om_all;
+VACUUM (FREEZE, ANALYZE) om_t30000;
+VACUUM (FREEZE, ANALYZE) om_t35000;
+VACUUM (FREEZE, ANALYZE) om_t40000;
+
+CREATE TABLE peaks (n int, peak bigint, mem bigint, unit bigint, units bigint);
+CREATE FUNCTION om_peak(n int) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE st text;
+BEGIN
+	PERFORM count(*) FROM sift._test_mem_highwater(true);
+	EXECUTE format('CREATE INDEX om_idx ON om_t%s USING sift_col (id, k, g, note, pad) WITH (key_cut = ''k'', point_tid_columns = ''off'', order_array_columns = ''off'')', n);
+	st := current_setting('sift.test_col_open_stats');
+	INSERT INTO peaks SELECT n, peak, (regexp_match(st, 'mem_kb=(\d+)'))[1]::bigint * 1024, (regexp_match(st, 'pk_kb=(\d+)'))[1]::bigint * 1024, (regexp_match(st, 'units=(\d+)'))[1]::bigint
+		FROM sift._test_mem_highwater(false) WHERE scope = 'col_build_open';
+	DROP INDEX om_idx;
+END $$;
+SELECT om_peak(30000);
+SELECT om_peak(35000);
+SELECT om_peak(40000);
+
+SELECT n, units > 0 AS units_written, peak > 0 AS measured, peak <= 40 * 1024 + 2 * unit AS under_the_share FROM peaks ORDER BY n;
+SELECT max(peak) < 1.25 * min(peak) AS the_same_at_every_size FROM peaks;
+
+-- the cap of the open units not looked at
+TRUNCATE peaks;
+SET sift.test_col_open_mutant = 4;
+SELECT om_peak(30000);
+SELECT om_peak(40000);
+SELECT bool_or(peak > 40 * 1024 + 2 * unit) AS over_the_share FROM peaks;
+RESET sift.test_col_open_mutant;
+
+DROP FUNCTION om_peak(int);
+DROP TABLE peaks, om_all, om_t30000, om_t35000, om_t40000;
+RESET sift.test_col_segment_kb;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

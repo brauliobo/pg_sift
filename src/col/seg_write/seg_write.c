@@ -108,7 +108,7 @@ segw_cut_flags(const SiftColSegWriter *w)
 		return SIFT_SEG_KEYED;
 	if (w->ncut == 0)
 		return SIFT_SEG_KEYED | SIFT_SEG_BYTID;
-	return SIFT_SEG_KEYED | SIFT_SEG_BYKEY | (CUT_RECORD() ? SIFT_SEG_CUTREC : 0);
+	return SIFT_SEG_KEYED | SIFT_SEG_BYKEY | (CUT_RECORD() && !w->arrival ? SIFT_SEG_CUTREC : 0);
 }
 
 /* The leaves a segment cut by a key is in the order of follow its schema, before the stamps (a reader of the stamps counts from the end of the section and never meets them): [leaf, int16 each][ncut][magic] */
@@ -359,6 +359,14 @@ sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, const int *cut, int nc
 		for (int c = 0; w->pt && c < w->schema->ncols; c++)
 			w->pt[c].want = w->pt[c].ord = false;
 	}
+}
+
+/* The units of the segment are in the order they were written (an open unit for each key range, col/build/open.c): it records no cut, as a segment written before the record, and a merge sorts it */
+void
+sift_colw_set_arrival(SiftColSegWriter *w)
+{
+	SIFT_INVARIANT(w->keyed && w->nsb == 0, "sift_col: the order of the units is set after the cut and before the first unit");
+	w->arrival = true;
 }
 
 /* the element of a list of strings (not a map): its directory lists the rows that own the value, so that an element test finds them without reading the units */
@@ -724,7 +732,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	initStringInfo(&schema);
 	sift_cschema_serialize(w->schema, &schema);
 	segw_sw_pad8(w->sw);
-	if (w->ncut > 0 && CUT_RECORD())
+	if (w->ncut > 0 && CUT_RECORD() && !w->arrival)
 		segw_put_cut(w, &schema);
 	if (w->schema->connected || w->schema->scoped)
 		segw_put_stamps(w, &schema);
