@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+## 5.1.0 - 2026-11-20
+
 - Changed: write: a scattered DELETE of many rows and the first write after the server starts cost more than before, and reads between a DELETE and the next `VACUUM` cost less; the numbers are in the 5.1.0 release notes under Known limits.
 - Improved: col: a statement that deletes many rows of an index with `track_changes` that has an integer `key_cut` looks their addresses up in the units of the partitions that may hold the keys of those rows, not in every unit of the index: the rows of the statement bound the first key column and the directory is read for that range. A statement whose rows are of every key reads what it read, and an address in a unit of another partition stays a mark.
 - Changed: col: a DELETE of many scattered rows of an index with `track_changes` that has a `key_cut` finds their addresses in the units with fewer steps: the addresses of the statement are indexed by heap block once, and a unit looks the block of each of its pages up in a step (the units of a `key_cut` that is not the order of the heap each hold a page at nearly every block, and the walk of the pages and the addresses stepped over each address for each of them); a page of few rows looks its rows up among the many addresses of its block; and the addresses that records end are marked with a bit each, no longer collected and sorted. The statement is cheaper from a tenth of the rows on and costs the same below a hundredth
