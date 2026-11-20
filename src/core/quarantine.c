@@ -280,6 +280,8 @@ ask_due(const QuarKey *key)
 
 /* inside sift_quarantine_guard: its subtransaction is the caller's own, not a user's */
 static bool guarding;
+/* the transaction id of the level a guarded write was called from: what it stamps its records with, so that the guard's subtransaction needs no id of its own */
+static TransactionId guard_xid;
 /* inside sift_quarantine_unprotected: the caller runs in a state in which no subtransaction can start */
 static int	unprotected;
 
@@ -657,6 +659,12 @@ sift_quarantine_guarding(void)
 	return guarding;
 }
 
+TransactionId
+sift_quarantine_write_xid(void)
+{
+	return guarding && TransactionIdIsValid(guard_xid) ? guard_xid : GetCurrentTransactionId();
+}
+
 /* Where the guard cannot run its subtransaction the work runs as it is: damage it finds fails the statement once, as under sift.on_corruption = error, and an index out of service is skipped */
 static bool
 run_plain(Relation index, SiftSkipKind kind, SiftGuarded fn, void *arg)
@@ -701,6 +709,7 @@ sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded fn, void *a
 		return run_plain(index, kind, fn, arg);
 	damage_unseen = false;
 	hook_xact();
+	guard_xid = kind == SIFT_SKIP_WRITE ? sift_quarantine_write_xid() : InvalidTransactionId;
 	guarding = true;
 	BeginInternalSubTransaction(NULL);
 	MemoryContextSwitchTo(cx);

@@ -1,0 +1,74 @@
+-- The lookup of the dead addresses of a statement reads the units of the partitions that may hold a key of the rows it deleted (col/track_dv.c): the segments it opens are those of the keys between
+-- the least and the greatest of them, a statement that spans every key opens every segment, and rows without a key and rows that changed key end up as the heap says.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+SET sift.test_col_segment_kb = 1024;
+SET sift.col_auto_merge_partition_kb = 16;
+SET sift.test_col_net = off;
+CREATE TABLE events (id int PRIMARY KEY, tenant_id int, counter_a int, w int, x bigint) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE (i::bigint * 7919 % 200)::int END, i, (i::bigint * 40503 % 1000003)::int, i::bigint * 2654435761 FROM generate_series(1, 100000) i;
+CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a, w, x) WITH (track_changes = 'id', key_cut = 'tenant_id');
+VACUUM (FREEZE, ANALYZE) events;
+SELECT sift.col_merge('events_c', true) IS NOT NULL AS merged;
+SELECT count(*) > 8 AS partitions FROM sift._test_dir_parts('events_c');
+
+CREATE FUNCTION segments() RETURNS int LANGUAGE sql AS $$ SELECT count(*)::int FROM sift.col_segments('events_c') WHERE kind = 'immutable' $$;
+CREATE FUNCTION same_as_heap(OUT agg bool, OUT keyed bool) LANGUAGE plpgsql AS $$
+DECLARE a text; o text; q text;
+BEGIN
+	agg := true; keyed := true;
+	FOREACH q IN ARRAY ARRAY[
+		'SELECT tenant_id, count(*), sum(counter_a) FROM events GROUP BY 1 ORDER BY 1',
+		'SELECT count(*), sum(counter_a), min(id), max(id) FROM events',
+		'SELECT count(*) FROM events WHERE tenant_id IS NULL',
+		'SELECT id FROM events WHERE tenant_id = 11 ORDER BY id']
+	LOOP
+		PERFORM set_config('sift.enable_agg', 'on', true);
+		EXECUTE 'SELECT string_agg(r::text, '';'') FROM (' || q || ') r' INTO a;
+		PERFORM set_config('sift.enable_agg', 'off', true);
+		EXECUTE 'SELECT string_agg(r::text, '';'') FROM (' || q || ') r' INTO o;
+		agg := agg AND a IS NOT DISTINCT FROM o;
+	END LOOP;
+END $$;
+
+SELECT sift._test_col_segments_opened(true) IS NOT NULL AS reset;
+SELECT sift._test_col_dead_segments(true) IS NOT NULL AS reset;
+
+-- three keys: only the partitions that may hold them are read
+DELETE FROM events WHERE tenant_id BETWEEN 10 AND 12;
+SELECT sift._test_col_dead_segments(true) BETWEEN 1 AND segments() / 2 AS some_segments;
+SELECT (SELECT count(*) FROM sift._test_col_log_records('events_c')) > 0 AS records_written;
+SELECT * FROM same_as_heap();
+
+-- one key
+DELETE FROM events WHERE tenant_id = 150;
+SELECT sift._test_col_dead_segments(true) BETWEEN 1 AND segments() / 2 AS some_segments;
+SELECT * FROM same_as_heap();
+
+-- every key
+DELETE FROM events WHERE id % 20 = 3 OR tenant_id IN (0, 199);
+SELECT sift._test_col_dead_segments(true) = segments() AS every_segment;
+SELECT * FROM same_as_heap();
+
+-- rows without a key and one key: the keys from that one to the end of the key, where the rows without one are
+DELETE FROM events WHERE tenant_id IS NULL OR tenant_id = 40;
+SELECT sift._test_col_dead_segments(true) BETWEEN 1 AND segments() AS segments_read;
+SELECT * FROM same_as_heap();
+
+-- a change of the key of the row and of the key of the index: the version of the old key is ended in its partition
+UPDATE events SET id = id + 1000000, tenant_id = 190 WHERE tenant_id = 60;
+SELECT sift._test_col_dead_segments(true) BETWEEN 1 AND segments() / 2 AS some_segments;
+SELECT * FROM same_as_heap();
+
+SELECT sift.col_maintain('events_c');
+VACUUM events;
+SELECT * FROM same_as_heap();
+SELECT sift.col_verify('events_c', true);
+DROP TABLE events;
+DROP FUNCTION segments();
+DROP FUNCTION same_as_heap();
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

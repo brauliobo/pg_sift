@@ -18,6 +18,7 @@ col/batch_unit.c
 col/chunk.c
 col/ctest.c
 col/unit.c
+col/unit_find.c
 col/codec/codec.c
 col/codec/filter.c
 col/codec/get.c

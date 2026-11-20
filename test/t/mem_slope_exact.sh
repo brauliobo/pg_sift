@@ -33,13 +33,18 @@ under=$(awk -v e="$exact" 'BEGIN { a = e * 0.15; if (a < 2) a = 2; print int(e -
 out=$(slope "$(dir mx)/cases.tsv")
 
 diag "$probe"
-diag "$(grep '^SLOPE ' <<<"$out")"
-plan 7
+diag "$(grep -E '^SCOPES ' <<<"$out")"
+sum_of() { awk -v n="$1" '$1 == "SCOPES" && $2 == n { for (i = 1; i <= NF; i++) if ($i == "B/row") s += $(i - 1) } END { printf "%.1f", s }' <<<"$out"; }
+under_sum=$(sum_of merge_under)
+plan 10
 check "the merge holds a slope that follows its rows ($exact B/row of memory scopes)" test "${exact%.*}" -ge 20
 check "the case recorded at its exact slope plus the allowance ($at B/row) passes" grep -q '^SLOPE merge_at .* on exact PASS$' <<<"$out"
 check "the same case with a ceiling of $under B/row, the allowance under its exact slope, fails" grep -q '^SLOPE merge_under .* on exact FAIL$' <<<"$out"
 check "the same case under the clean ceiling fails" grep -q '^SLOPE merge_clean .* on exact FAIL$' <<<"$out"
 check "an update that holds nothing passes the clean ceiling" grep -q '^SLOPE update_flat .* on exact PASS$' <<<"$out"
+check "the failing case prints the scopes that make its slope: they add up to its exact slope ($under_sum of $exact B/row)" awk -v a="$under_sum" -v b="$exact" 'BEGIN { exit !(a - b < 1.5 && b - a < 1.5) }'
+check "the failing case names at least two scopes" test "$(grep -c '^SCOPES merge_under ' <<<"$out")" -ge 2
+check "the cases that pass print no scopes" test "$(grep -c '^SCOPES \(merge_at\|update_flat\) ' <<<"$out")" -eq 0
 check "no case ended in an error" test -z "$(grep -h ERROR <<<"$out")"
 check "the harness read no error of the server" test ! -s "$(dir mx)/slope.err"
 finish

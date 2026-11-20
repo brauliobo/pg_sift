@@ -103,12 +103,32 @@ def measure_mb(setup, warm, op):
         raise RuntimeError("warm: " + err)
     base = num_of(out, "BASE")
     _, err = send(p, op, "OPDONE")
-    out, hw_err = send(p, PEAK_STOP + "\nselect 'SCOPES', coalesce(sum(peak), 0) from sift._test_mem_highwater();", "HWDONE")
+    out, hw_err = send(p, PEAK_STOP + "\nselect 'SCOPE', scope, peak from sift._test_mem_highwater();", "HWDONE")
     p.stdin.write("\\q\n")
     p.wait()
     if err or hw_err:
         raise RuntimeError("op: " + (err or hw_err))
-    return (num_of(out, "PEAK") - base) / 1024.0, num_of(out, "SCOPES") / 1048576.0
+    scopes = {l.split("|")[1]: int(l.strip().split("|")[2]) for l in out if l.startswith("SCOPE|")}
+    return (num_of(out, "PEAK") - base) / 1024.0, sum(scopes.values()) / 1048576.0, scopes
+
+
+def scope_breakdown(name, sizes, first, runs_by_size):
+    """what moved: for each memory scope the peak bytes of the run that gave the size's exact value (the smallest total), at every size, and its slope; the slopes of the
+    scopes add up to the exact slope of the case. The largest of the runs of a size is shown where it differs"""
+    chosen = [min(runs, key=lambda r: sum(r.values())) for runs in runs_by_size]
+    rows = sizes[-1] - sizes[first]
+    names = sorted({k for c in chosen for k in c} | {k for runs in runs_by_size for r in runs for k in r},
+                   key=lambda k: -abs(chosen[-1].get(k, 0) - chosen[first].get(k, 0)))
+    mb = lambda v: f"{v / 1048576.0:.2f}"
+    lines = []
+    for k in names:
+        vals = [c.get(k, 0) for c in chosen]
+        if not any(vals):
+            continue
+        high = [max(r.get(k, 0) for r in runs) for runs in runs_by_size]
+        spread = f" (largest run {'/'.join(mb(v) for v in high)})" if high != vals else ""
+        lines.append(f"SCOPES {name} {k} {'/'.join(mb(v) for v in vals)} MB at {'/'.join(str(n) for n in sizes)} rows, {(vals[-1] - vals[first]) * 1.0 / rows:.1f} B/row{spread}")
+    return lines
 
 
 def build_tables(n):
@@ -186,7 +206,7 @@ def uses_copy(*sql):
 
 
 def slope_case(sizes, name, setup, warm, op, first=0):
-    peaks, highs, exact = [], [], []
+    peaks, highs, exact, scopes = [], [], [], []
     for n in sizes:
         fmt = dict(f=f"f{n}", d=f"d{n}", m=f"m{n}", s=f"s{n}", n=n)
         runs = []
@@ -197,8 +217,9 @@ def slope_case(sizes, name, setup, warm, op, first=0):
         peaks.append(min(r[0] for r in runs))
         highs.append(max(r[0] for r in runs))
         exact.append(min(r[1] for r in runs))
+        scopes.append([r[2] for r in runs])
     per_row = lambda v: (v[-1] - v[first]) * 1048576.0 / (sizes[-1] - sizes[first])
-    return per_row(peaks), peaks, highs, per_row(exact)
+    return per_row(peaks), peaks, highs, per_row(exact), scopes
 
 
 def leak_case(n, name, op):
@@ -218,12 +239,14 @@ def run_case(sizes, c):
     if c.kind == "leak":
         grown = leak_case(sizes[1], c.name, c.op)
         ok = grown <= LEAK_KB
-        return ok, f"SLOPE {c.name} leak {grown} kB over 50 repeats, at most {LEAK_KB} kB {'PASS' if ok else 'FAIL'}", None, None, None
-    slope, peaks, highs, exact = slope_case(sizes, c.name, c.setup, c.warm, c.op, 1 if c.kind == "plateau" else 0)
+        return ok, f"SLOPE {c.name} leak {grown} kB over 50 repeats, at most {LEAK_KB} kB {'PASS' if ok else 'FAIL'}", None, None, None, []
+    first = 1 if c.kind == "plateau" else 0
+    slope, peaks, highs, exact, scopes = slope_case(sizes, c.name, c.setup, c.warm, c.op, first)
     v = verdict(gated(c.basis, slope, exact), c.ceiling, c.status)
     shown = '/'.join(f'{p:.1f}' for p in peaks)
     return v == "PASS", (f"SLOPE {c.name} slope {slope:.0f} B/row (peaks {shown} MB at {'/'.join(str(s) for s in sizes)} rows{', slope from ' + str(sizes[1]) if c.kind == 'plateau' else ''}), "
-                         f"memory scopes {exact:.1f} B/row, ceiling {c.ceiling} [{c.status}] on {c.basis} {v}"), slope, [f"{p:.1f}" if p == h else f"{p:.1f}-{h:.1f}" for p, h in zip(peaks, highs)], exact
+                         f"memory scopes {exact:.1f} B/row, ceiling {c.ceiling} [{c.status}] on {c.basis} {v}"), slope, [f"{p:.1f}" if p == h else f"{p:.1f}-{h:.1f}" for p, h in zip(peaks, highs)], exact, \
+        scope_breakdown(c.name, sizes, first, scopes) if v == "FAIL" and c.basis == "exact" else []
 
 
 def run_cases(sizes, cases):
@@ -231,10 +254,10 @@ def run_cases(sizes, cases):
     for c in cases:
         t0 = time.time()
         try:
-            ok, line, *_ = run_case(sizes, c)
+            ok, line, *_, breakdown = run_case(sizes, c)
         except RuntimeError as e:
-            ok, line = False, f"SLOPE {c.name} {c.kind} ERROR {e}"
-        print(line, flush=True)
+            ok, line, breakdown = False, f"SLOPE {c.name} {c.kind} ERROR {e}", []
+        print("\n".join([line, *breakdown]), flush=True)
         print(f"TIME {c.name} {time.time() - t0:.1f}", flush=True)
         bad += not ok
     return bad
@@ -308,6 +331,9 @@ def selftest():
     assert spread_ok(13, 11) and not spread_ok(13, 10) and spread_ok(200, 235) and not spread_ok(200, 240)
     with contextlib.redirect_stdout(io.StringIO()):
         assert compare("SLOPE a slope 10 B/row", "SLOPE a slope 12 B/row") == 0 and compare("SLOPE a slope 10 B/row", "SLOPE a slope 40 B/row") == 1
+    assert scope_breakdown("x", [10, 20, 40], 0, [[{"a": 1048576, "b": 0}], [{"a": 1048576}, {"a": 3145728}], [{"a": 1048576, "b": 4194304}, {"a": 1048576, "b": 2097152}]]) == [
+        "SCOPES x b 0.00/0.00/2.00 MB at 10/20/40 rows, 69905.1 B/row (largest run 0.00/0.00/4.00)",
+        "SCOPES x a 1.00/1.00/1.00 MB at 10/20/40 rows, 0.0 B/row (largest run 1.00/3.00/1.00)"]
     assert gated("exact", 53, 73) == 73 and gated("sampled", 53, 73) == 53
     assert verdict(gated("sampled", 53, 73), 62, "open") == "PASS" and verdict(gated("exact", 53, 73), 62, "open") == "FAIL" and verdict(gated("exact", 53, 73), 84, "open") == "PASS"
     assert verdict(gated("exact", 3, 60), 61, "open") == "PASS" and verdict(gated("exact", 3, 62), 61, "open") == "FAIL" and verdict(gated("exact", 80, 4), 6, "clean") == "PASS"
