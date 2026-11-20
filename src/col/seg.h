@@ -63,6 +63,8 @@ extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, const int 
 /* fn sees the first unit the writer is given, as the batch it encodes (a merge takes the lower bound of its segment from it): before the first unit */
 typedef void (*SiftColFirstUnitFn) (void *arg, const SiftColBatch *b);
 extern void sift_colw_on_first_unit(SiftColSegWriter *w, SiftColFirstUnitFn fn, void *arg);
+/* The units come in the order they are written, not in the order of the key: no record of the cut is made (after set_keyed, before the first unit) */
+extern void sift_colw_set_arrival(SiftColSegWriter *w);
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
 extern void sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 /* A segment of a connected index: the found flags of the units added from now on are filled by fill (a host fill, col/conn.h) and its stamps are written with the segment; without it the leaves are what the batches hold and the stamps are empty */

@@ -331,7 +331,7 @@ cut_sort_ranges(SiftColSorter *s, uint64 entries)
 
 		initStringInfo(&rg->scratch);
 		for (int i = 0; i < rg->n; i++)
-			rg->file[i] = sift_rowfile_create(s->schema, &rg->scratch, true, block, true);
+			rg->file[i] = sift_rowfile_create(s->schema, &rg->scratch, SIFT_ROWS_FILE, block, true);
 		MemoryContextSwitchTo(old);
 	}
 	tuplesort_end(s->ts);

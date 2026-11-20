@@ -75,6 +75,12 @@ budget_col_build_choose(void)
 }
 
 static Size
+budget_col_build_open(void)
+{
+	return (((Size) sift_colb_budget(1)) + ((Size) 4194304UL));
+}
+
+static Size
 budget_col_build_spool(void)
 {
 	return (((Size) sift_colb_budget(1)) + ((Size) 4194304UL));
@@ -259,6 +265,7 @@ static const struct
 	{"col_btree_pick", budget_col_btree_pick, "24MB"},
 	{"col_build", budget_col_build, "2*col_build_budget + 16MB"},
 	{"col_build_choose", budget_col_build_choose, "4MB"},
+	{"col_build_open", budget_col_build_open, "col_build_budget + 4MB"},
 	{"col_build_spool", budget_col_build_spool, "col_build_budget + 4MB"},
 	{"col_conn_changed", budget_col_conn_changed, "32kB"},
 	{"col_dead_keys", budget_col_dead_keys, "96MB"},

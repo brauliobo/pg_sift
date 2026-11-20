@@ -14,12 +14,23 @@
 
 #define ROWFILE_VARINT_LEN	10
 
+typedef struct MemBlock
+{
+	struct MemBlock *next;
+	uint32		raw;
+	uint32		stored;
+	char		data[FLEXIBLE_ARRAY_MEMBER];
+} MemBlock;
+
 struct SiftRowFile
 {
 	const SiftColSchema *sc;
 	Size		block;			/* the raw bytes a block holds: the rows that make it pass this */
 	MemoryContext cxt;			/* the memory of the file: the block is made again in it when the file is read */
-	BufFile    *file;			/* NULL: the rows are only counted */
+	BufFile    *file;			/* NULL: the rows are only counted, or kept in memory (head) */
+	MemBlock   *head,			/* the blocks kept in memory, oldest first */
+			   *tail;
+	bool		mem;
 	StringInfo	scratch;
 	StringInfoData blk;			/* the rows of the block being filled, or the block being read */
 	uint64		bytes;			/* the blocks that went out */
@@ -40,7 +51,7 @@ rowfile_alg(void)
 }
 
 SiftRowFile *
-sift_rowfile_create(const SiftColSchema *sc, StringInfo scratch, bool file, Size block, bool versions)
+sift_rowfile_create(const SiftColSchema *sc, StringInfo scratch, SiftRowSink sink, Size block, bool versions)
 {
 	SiftRowFile *f = palloc0(sizeof(SiftRowFile));
 
@@ -49,7 +60,8 @@ sift_rowfile_create(const SiftColSchema *sc, StringInfo scratch, bool file, Size
 	f->versions = versions;
 	f->cxt = CurrentMemoryContext;
 	f->scratch = scratch;
-	f->file = file ? BufFileCreateTemp(false) : NULL;
+	f->file = sink == SIFT_ROWS_FILE ? BufFileCreateTemp(false) : NULL;
+	f->mem = sink == SIFT_ROWS_MEMORY;
 	initStringInfo(&f->blk);
 	return f;
 }
@@ -80,6 +92,20 @@ flush_block(SiftRowFile *f)
 	{
 		BufFileWrite(f->file, hdr, sizeof(hdr));
 		BufFileWrite(f->file, data, hdr[1]);
+	}
+	else if (f->mem)
+	{
+		MemBlock   *m = MemoryContextAlloc(f->cxt, offsetof(MemBlock, data) + hdr[1]);
+
+		m->next = NULL;
+		m->raw = hdr[0];
+		m->stored = hdr[1];
+		memcpy(m->data, data, hdr[1]);
+		if (f->tail != NULL)
+			f->tail->next = m;
+		else
+			f->head = m;
+		f->tail = m;
 	}
 	f->bytes += sizeof(hdr) + hdr[1];
 	resetStringInfo(&f->blk);
@@ -114,11 +140,33 @@ sift_rowfile_seal(SiftRowFile *f)
 }
 
 static bool
+next_memory_block(SiftRowFile *f)
+{
+	MemBlock   *m = f->head;
+	int			alg = rowfile_alg();
+
+	if (m == NULL)
+		return false;
+	f->head = m->next;
+	enlargeStringInfo(&f->blk, m->raw);
+	if (m->stored == m->raw)
+		memcpy(f->blk.data, m->data, m->raw);
+	else
+		SIFT_INVARIANT(sift_colz_decompress(alg, m->data, m->stored, f->blk.data, m->raw), "sift_col build: a block of an open unit does not decompress");
+	f->at = f->blk.data;
+	f->end = f->blk.data + m->raw;
+	pfree(m);
+	return true;
+}
+
+static bool
 next_block(SiftRowFile *f)
 {
 	uint32		hdr[2];
 	int			alg = rowfile_alg();
 
+	if (f->mem)
+		return next_memory_block(f);
 	if (BufFileReadMaybeEOF(f->file, hdr, sizeof(hdr), true) == 0)
 		return false;
 	enlargeStringInfo(&f->blk, hdr[0]);
@@ -144,7 +192,7 @@ sift_rowfile_get(SiftRowFile *f, SiftColRow *row, uint32 *xmin, uint32 *cmin)
 
 		if (f->bytes == 0)
 			return false;
-		SIFT_INVARIANT(BufFileSeek(f->file, 0, 0, SEEK_SET) == 0, "sift_col build: cannot rewind the file of a key range");
+		SIFT_INVARIANT(f->mem || BufFileSeek(f->file, 0, 0, SEEK_SET) == 0, "sift_col build: cannot rewind the file of a key range");
 		MemoryContextSwitchTo(f->cxt);
 		initStringInfo(&f->blk);
 		MemoryContextSwitchTo(old);

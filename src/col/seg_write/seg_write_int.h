@@ -180,6 +180,7 @@ struct SiftColSegWriter
 	uint32		sb_lo;
 	uint32		sb_hi;
 	int			keycol;			/* the leaf the key-cut units are cut by (the first of cut), -1: none */
+	bool		arrival;		/* the units are in the order they were written, not the order of the key: the segment does not record a cut (sift_colw_set_arrival) */
 	int			ncut;			/* the leaves the units are cut by (the key_cut of the index, the cut of a scope), recorded after the schema; 0: by TID range */
 	int			cut[SIFT_COL_CUT_MAX];
 	uint32		aim_rows;		/* the rows of a unit of the page cut of the table: a key-cut unit's cube is budgeted as that unit's */

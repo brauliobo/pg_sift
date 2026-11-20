@@ -93,6 +93,7 @@ sift_colb_peak_begin(void)
 	peak_base = peak_max = peak_logged = MemoryContextMemAllocated(TopMemoryContext, true);
 	sift_test_col_build_peak_kb = 0;
 	sift_test_col_spill_bytes = sift_test_col_spill_rows = 0;
+	sift_test_col_open_stats[0] = 0;
 	sift_test_col_spool_used_rows = sift_test_col_spool_est_bytes = sift_test_col_spool_ranges = 0;
 }
 
