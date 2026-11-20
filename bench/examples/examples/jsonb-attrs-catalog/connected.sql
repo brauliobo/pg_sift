@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: event.(attrs->>'sku')::int -> catalog.sku: the join key is a jsonb member of the child
