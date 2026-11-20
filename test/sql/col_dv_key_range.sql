@@ -68,5 +68,7 @@ VACUUM events;
 SELECT * FROM same_as_heap();
 SELECT sift.col_verify('events_c', true);
 DROP TABLE events;
+DROP FUNCTION segments();
+DROP FUNCTION same_as_heap();
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
