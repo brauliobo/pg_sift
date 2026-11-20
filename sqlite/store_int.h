@@ -58,7 +58,7 @@ struct SqStore
 	int			ndirty,
 				dirty_cap;
 	/* directory */
-	SiftDirSnapshot dir;
+	SiftDirSnapshot *dir;				/* with room for SIFT_DIR_POLICY_MAX entries */
 	uint32		lversion;
 	BlockNumber hw;
 	uint64		next_gen;

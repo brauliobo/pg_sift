@@ -39,9 +39,9 @@ sift_table_segments(PG_FUNCTION_ARGS)
 	sift_check_inspect(rel);
 	InitMaterializedSRF(fcinfo, 0);
 	sift_tbl_refresh(rel, st);
-	for (int i = 0; i < st->dir.nsegs; i++)
+	for (int i = 0; i < st->dir->nsegs; i++)
 	{
-		const SiftSegEntry *e = &st->dir.segs[i];
+		const SiftSegEntry *e = &st->dir->segs[i];
 		/* columns 9 to 12 (format, unfrozen, min_xid, max_xid) are there when the SQL function declares them (pg_sift--3.0--3.1.sql); more values than columns are ignored */
 		Datum		v[12] = {0};
 		bool		nulls[12] = {0};
@@ -158,11 +158,11 @@ sift_table_space(PG_FUNCTION_ARGS)
 	sift_tbl_refresh_full(rel, st);
 	fs = RelationGetNumberOfBlocks(rel) > 0 ? sift_store_free_stats(rel) : (SiftFreeStats) {0};	/* nothing written yet: no metapage */
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(rel));
-	v[1] = Int64GetDatum(st->dir.meta.high_water);
+	v[1] = Int64GetDatum(st->dir->meta.high_water);
 	v[2] = Int64GetDatum(fs.blocks);
 	v[3] = Int64GetDatum(fs.reusable);
 	v[4] = Int64GetDatum(fs.records);
-	v[5] = Int64GetDatum((int64) MaxBlockNumber - (int64) SIFT_TBL_NEXT_VBLOCK(&st->dir.meta));
+	v[5] = Int64GetDatum((int64) MaxBlockNumber - (int64) SIFT_TBL_NEXT_VBLOCK(&st->dir->meta));
 	table_close(rel, AccessShareLock);
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }

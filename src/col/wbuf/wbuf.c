@@ -12,8 +12,11 @@ StaticAssertDecl(sizeof(SiftColRecHead) == 12, "the record head is 12 bytes");
 
 bool		sift_col_wbuf_ref = false;
 
+bool		sift_col_wbuf_key_range = true;
+
 #ifdef SIFT_TESTING
 int			sift_cwbuf_fail_grow = 0;
+int			sift_test_wbuf_key_leaf = -2;
 #endif
 
 uint32
@@ -23,18 +26,24 @@ wbuf_limit_pages(Relation index)
 }
 
 void
+wbuf_cursor_init(PageCursor *c, Relation index, Size hs)
+{
+	*c = (PageCursor) {.index = index,.hs = hs};
+}
+
+void
 wbuf_cursor_set(PageCursor *c, Page page)
 {
 	c->page = page;
 	c->pos = 0;
-	c->used = SiftPageGetUsed(page) - HDRSIZE;
+	c->used = SiftPageGetUsed(page) - c->hs;
 }
 
 /* The record at c->pos, checked; *size its length */
 const SiftColRecHead *
 wbuf_rec_at(PageCursor *c, Size *size)
 {
-	const SiftColRecHead *h = (const SiftColRecHead *) (SiftLaneRecs(c->page, HDRSIZE) + c->pos);
+	const SiftColRecHead *h = (const SiftColRecHead *) (SiftLaneRecs(c->page, c->hs) + c->pos);
 
 	if (c->pos + sizeof(SiftColRecHead) > c->used)
 		SIFT_CORRUPT(c->index, "A record header at byte %zu overruns the %zu used bytes of a write buffer page.", c->pos, c->used);
@@ -162,13 +171,42 @@ wbuf_ref_to_arena(Relation index, uint64 gen, const ItemPointerData *tid, const 
 	return put == ARENA_FULL;
 }
 
+/*
+ * The key of a row that starts on the page goes in its range. The range says which leaf it is of (the bits above SIFT_WBUFPAGE_LEAF_SHIFT of the flags, the leaf and one): the first row of a page
+ * names it, and a row of another key leaf (ALTER INDEX .. SET (key_cut) while the buffer was open), or one that comes after rows that were not noted, makes the page one a read of keys always reads.
+ */
+static void
+page_note_key(SiftColPageHead *h, const WbufKey *key)
+{
+	uint16		leaf = (h->lane.nrecs == 0 ? key->leaf + 1 : (h->lane.flags & SIFT_WBUFPAGE_LEAF_MASK) >> SIFT_WBUFPAGE_LEAF_SHIFT);
+
+	if (leaf != key->leaf + 1 || key->unknown)
+		h->lane.flags |= SIFT_WBUFPAGE_KEYUNK;
+	if (h->lane.nrecs == 0)
+		h->lane.flags |= (uint16) (leaf << SIFT_WBUFPAGE_LEAF_SHIFT);
+	if (!key->has)
+		return;
+	if (!(h->lane.flags & SIFT_WBUFPAGE_KEYS))
+	{
+		h->kmin = h->kmax = key->v;
+		h->lane.flags |= SIFT_WBUFPAGE_KEYS;
+	}
+	else
+	{
+		h->kmin = Min(h->kmin, key->v);
+		h->kmax = Max(h->kmax, key->v);
+	}
+}
+
 void
-wbuf_put_piece(Page page, const ItemPointerData *tid, uint16 flags, const char *payload, Size len)
+wbuf_put_piece(Page page, const ItemPointerData *tid, uint16 flags, const char *payload, Size len, const WbufKey *key)
 {
 	Size		used = SiftPageGetUsed(page),
 				size = RECSIZE(len);
 	SiftColRecHead *h = (SiftColRecHead *) (SiftPageGetData(page) + used);
 
+	if (key != NULL)
+		page_note_key(SiftColPageKeys(page), key);
 	h->tid = *tid;
 	h->flags = flags;
 	h->len = len;
@@ -194,6 +232,7 @@ typedef struct PieceArg
 	uint16		flags;
 	const char *payload;
 	Size		len;
+	const WbufKey *key;			/* of the first piece of a row of a buffer with ranges, else NULL */
 	bool		spans;			/* the row goes on in the next page */
 } PieceArg;
 
@@ -202,20 +241,21 @@ fill_piece(Page cp, Page np, Page hp, void *arg)
 {
 	PieceArg   *a = arg;
 
-	wbuf_put_piece(cp, a->tid, a->flags, a->payload, a->len);
+	wbuf_put_piece(cp, a->tid, a->flags, a->payload, a->len, a->key);
 	if (a->spans)
 		SiftLaneHead(cp)->flags |= SIFT_WBUFPAGE_SPANS;
 }
 
-/* Writes the row starting at the locked tail cur; returns whether the segment reached write_buffer_limit. Leaves the final tail block in *tail. */
+/* Writes the row starting at the locked tail cur; returns whether the segment reached write_buffer_limit. Leaves the final tail block in *tail. key: the row's key for the range of its page, NULL in a buffer without ranges */
 bool
-wbuf_write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPointerData *tid, uint16 flags, const char *payload, Size len,
+wbuf_write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPointerData *tid, uint16 flags, const char *payload, Size len, const WbufKey *key,
 		  BlockNumber *tail)
 {
 	bool		crossed = false,
 				first = true;
 	Size		done = 0;
 	uint32		limit = wbuf_limit_pages(index);
+	Size		hs = wbuf_hs(h->format);
 
 	for (;;)
 	{
@@ -228,15 +268,15 @@ wbuf_write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const Ite
 		{
 			SiftPageEdit ed;
 
-			sift_page_edit_begin(&ed, cur, SIFT_PAGE_DATA_OFFSET + HDRSIZE);
-			wbuf_put_piece(ed.page, tid, first ? flags : SIFT_COLR_CONT, payload + done, n);
+			sift_page_edit_begin(&ed, cur, SIFT_PAGE_DATA_OFFSET + hs);
+			wbuf_put_piece(ed.page, tid, first ? flags : SIFT_COLR_CONT, payload + done, n, first ? key : NULL);
 			sift_page_edit_end(index, &ed, 1);
 			break;
 		}
 		/* a row that fits an empty page moves there whole rather than splitting */
-		place = n > 0 && !(first && RECSIZE(len) <= EMPTY_ROOM);
-		pa = (PieceArg) {tid, first ? flags : SIFT_COLR_CONT, payload + done, n, done + n < len};
-		cur = sift_lane_grow(index, h->gen, h->hdr, lane, cur, HDRSIZE, limit, place ? fill_piece : NULL, &pa, &crossed);
+		place = n > 0 && !(first && RECSIZE(len) <= wbuf_room(hs));
+		pa = (PieceArg) {tid, first ? flags : SIFT_COLR_CONT, payload + done, n, first ? key : NULL, done + n < len};
+		cur = sift_lane_grow(index, h->gen, h->hdr, lane, cur, hs, limit, place ? fill_piece : NULL, &pa, &crossed);
 #ifdef SIFT_TESTING
 		if (sift_cwbuf_fail_grow > 0 && --sift_cwbuf_fail_grow == 0)
 			elog(ERROR, "sift_col write buffer: injected failure after a page link");	/* check-errors: allow */
@@ -319,8 +359,7 @@ wbuf_flag_overflow(Relation index, SiftCWbufHint *h, uint32 mask, uint32 jmask)
 	h->ovf_gen = h->gen;
 	if ((mask & ~h->ovf_known) == 0 && (jmask & ~h->jnull_known) == 0)
 		return;
-	snap = palloc(sizeof(SiftDirSnapshot));
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].gen == h->gen)
 		{
@@ -354,13 +393,107 @@ wbuf_flag_ref(Relation index, SiftCWbufHint *h)
 
 	if (h->ref_gen == h->gen)
 		return;
-	snap = palloc(sizeof(SiftDirSnapshot));
-	sift_dir_read(index, snap);
+	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].gen == h->gen && snap->segs[i].format < SIFT_COL_FORMAT_REFBUF)
 			sift_dir_update(index, &(SiftDirChange) {.fn = set_ref_format,.arg = &h->gen,.extra = InvalidBuffer});
 	h->ref_gen = h->gen;
 	pfree(snap);
+}
+
+/*
+ * The leaf whose range the pages of the buffers of the index hold: the first leaf of its key_cut when that is a scalar integer leaf of the table (a key the units are cut by, so the
+ * reads that name it by equality or range are those that gain), -1 for an index that has none or sift.col_wbuf_key_range off.
+ */
+int
+sift_cwbuf_key_leaf(Relation index)
+{
+	const SiftColRel *r;
+
+#ifdef SIFT_TESTING
+	if (sift_test_wbuf_key_leaf != -2)
+		return sift_test_wbuf_key_leaf;
+#endif
+	r = sift_col_rel(index);
+	return !sift_col_wbuf_key_range || r->nscope > 0 ? -1 : sift_col_int_cut_leaf(r);
+}
+
+/* The format a buffer opened now has: the one with ranges when the index has a key leaf */
+uint16
+wbuf_new_format(Relation index)
+{
+	return sift_cwbuf_key_leaf(index) >= 0 ? SIFT_COL_FORMAT_WBUFKEY : SIFT_COL_FORMAT_KINDS;
+}
+
+/* Finds or opens the active buffer; the hint says its generation, header, tails and format */
+void
+wbuf_refresh(Relation index, const SiftColSchema *schema, SiftCWbufHint *h)
+{
+	uint16		format = wbuf_new_format(index);
+	SiftDirSnapshot *snap;
+
+	sift_lane_refresh(index, schema->hash, "column definitions", wbuf_hs(format), format, SIFT_SEG_ROOTS_NOW, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
+	snap = sift_dir_read(index);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].gen == h->gen)
+			h->format = snap->segs[i].format;
+	pfree(snap);
+	wbuf_note_written(index, h->gen);
+}
+
+/* Moves p past the value of leaf def in a payload that put_value wrote */
+static const uint8 *
+skip_value(const SiftColDef *def, const uint8 *p)
+{
+	uint8		flag = *p++;
+	uint64		x;
+
+	if (flag & COLV_NULL)
+		return p;
+	if (def->kind == SIFT_COLK_GROUP)
+		return sift_get_varint64_n(p, p + 10, &x);
+	switch (def->store)
+	{
+		case SIFT_COLS_INT:
+			return sift_get_varint64_n(p, p + 10, &x);
+		case SIFT_COLS_F4:
+			return p + sizeof(float4);
+		case SIFT_COLS_F8:
+			return p + sizeof(double);
+		case SIFT_COLS_STR:
+			p = sift_get_varint64_n(p, p + 10, &x);
+			return p + x;
+	}
+	return p;
+}
+
+/*
+ * The key of the row that payload (what wbuf_encode_row wrote, the xid of the inserter first when flags says so) holds, for the range of its page: the value of top level leaf `leaf`, which
+ * is an integer (sift_cwbuf_key_leaf). A NULL key has none (no condition on the key selects it), an overflow value is unknown, and so is every key of an index with no key leaf.
+ */
+void
+wbuf_payload_key(const SiftColSchema *schema, int leaf, uint16 flags, const char *payload, Size len, WbufKey *key)
+{
+	const uint8 *p = (const uint8 *) payload + ((flags & SIFT_COLR_XMIN) ? sizeof(TransactionId) : 0);
+	uint64		x;
+
+	*key = (WbufKey) {.leaf = leaf};
+	if (leaf < 0)
+	{
+		key->unknown = true;
+		return;
+	}
+	for (int id = 0; id < leaf; id++)
+		if (schema->cols[id].parent < 0)
+			p = skip_value(&schema->cols[id], p);
+	if (*p & COLV_NULL)
+	{
+		key->unknown = (*p & COLV_OVERFLOW) != 0;
+		return;
+	}
+	(void) sift_get_varint64_n(p + 1, p + 11, &x);
+	key->has = true;
+	key->v = sift_unzigzag(x);
 }
 
 bool
@@ -375,16 +508,18 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 				jnull;
 	Size		len;
 	uint16		flags = wbuf_rec_flags(xmin, ref);
+	WbufKey		key;
 
 	initStringInfo(&buf);
 	if (TransactionIdIsValid(xmin))
 		appendBinaryStringInfo(&buf, (const char *) &xmin, sizeof(xmin));
 	ovf = wbuf_encode_row(&buf, schema, row, &jnull);
 	len = buf.len;
+	wbuf_payload_key(schema, sift_cwbuf_key_leaf(index), flags, buf.data, len, &key);
 	for (;;)
 	{
 		if (h->gen == 0)
-			sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
+			wbuf_refresh(index, schema, h);
 		wbuf_flag_overflow(index, h, ovf, jnull);
 		if (flags & SIFT_COLR_REF)
 			wbuf_flag_ref(index, h);
@@ -393,7 +528,7 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 		h->gen = 0;
 	}
 	crossed = wbuf_ref_to_arena(index, h->gen, &row->tid, buf.data, &len, &flags);
-	crossed |= wbuf_write_row(index, h, lane, tailbuf, &row->tid, flags, buf.data, len, &tail);
+	crossed |= wbuf_write_row(index, h, lane, tailbuf, &row->tid, flags, buf.data, len, h->format >= SIFT_COL_FORMAT_WBUFKEY ? &key : NULL, &tail);
 	h->tail[lane] = tail;
 	pfree(buf.data);
 	return crossed;

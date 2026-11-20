@@ -63,6 +63,36 @@ CREATE FUNCTION sift._test_maint_wait_us() RETURNS int8
 -- directory updates of this process since sift.test_crash_dir was set (the named crash points of the matrix in test/t/crash_matrix.sh)
 CREATE FUNCTION sift._test_dir_updates() RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_dir_updates_count' LANGUAGE C STRICT;
+-- the chained directory (core/dirchain_test.c): edit entries that name no storage (op ins|del|rev|set), list them, describe the directory, check the chain's blocks
+CREATE FUNCTION sift._test_dir_edit(index regclass, op text, pos int4, n int4) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_dir_edit' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_list(index regclass, OUT ord int4, OUT gen int8, OUT ndocs int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_dir_list' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_info(index regclass, OUT version int8, OUT nsegs int4, OUT chained bool,
+									OUT chain_blocks int4, OUT format_minor int4, OUT top_chain_block int8)
+	AS 'MODULE_PATHNAME', 'sift_test_dir_info' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_read_stale(index regclass) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_dir_read_stale' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_parts(index regclass, OUT first int4, OUT n int4, OUT lineage int8, OUT first_gen int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_dir_parts' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_blocks(index regclass, OUT ord int4, OUT blk int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_dir_blocks' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_part_bounds(index regclass, OUT first int4, OUT lo_round_trips bool, OUT short_bound_lowest bool, OUT lo_is_bound bool)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_dir_part_bounds' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_nest(index regclass, pos int4, nold int4, ords int8[]) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_dir_nest' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_nested(index regclass, OUT first int4, OUT n int4, OUT ord int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_dir_nested' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_prefix(index regclass, digits int4[], tid int8, OUT gen int8, OUT pages int4)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_dir_prefix' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dir_check(index regclass) RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_dir_check' LANGUAGE C STRICT;
 -- everything inserted into the WAL so far is flushed
 CREATE FUNCTION sift._test_flush_wal() RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_flush_wal' LANGUAGE C STRICT;
@@ -184,6 +214,9 @@ CREATE FUNCTION sift._test_filter(tids tid[], lossy_blocks int8[], maxbytes int8
 								  OUT has bool[], OUT block_mismatches int8)
 	AS 'MODULE_PATHNAME', 'sift_test_filter' LANGUAGE C STRICT;
 
+-- The bounds of core/range.h against an oracle (src/core/range_test.c): for order, successor, span, range and depth the checks made and failed, over rounds random cases
+CREATE FUNCTION sift._test_range_check(seed int8, rounds int4) RETURNS int8[]
+	AS 'MODULE_PATHNAME', 'sift_test_range_check' LANGUAGE C STRICT;
 -- The radix sort of core/cmp.h (src/core/cmp_test.c): n entries of random keys of bits1 and bits2 bits (bits2 < 0: one key) moved by offsets, sorted by it and by the comparison sort: do the arrays agree?
 CREATE FUNCTION sift._test_radix_sort(n int4, bits1 int4, bits2 int4, offset1 int8, offset2 int8, seed int8) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_radix_sort' LANGUAGE C STRICT;
@@ -208,6 +241,9 @@ CREATE FUNCTION sift._test_errctx_report(rel regclass, n int) RETURNS void
 -- n questions whether an index tracks a key, asked in a context of their own (src/col/test/alloc_test.c): the bytes that context holds, exact
 CREATE FUNCTION sift._test_row_key_bytes(idx regclass, n int) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_row_key_bytes' LANGUAGE C STRICT;
+-- n syntax checks of the value of an option (preagg, rollup_leaves, calendar_columns), asked in a context of their own (src/col/test/alloc_test.c): the bytes that context holds, exact
+CREATE FUNCTION sift._test_option_syntax_bytes(option text, opt text, n int) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_option_syntax_bytes' LANGUAGE C STRICT;
 -- whether sift_col_bits_any reads past the words of a vector of n bits (src/col/test/alloc_test.c): true when it found a bit in the set words that follow
 CREATE FUNCTION sift._test_bits_any_bounds(n int) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_bits_any_bounds' LANGUAGE C STRICT;
@@ -236,7 +272,7 @@ CREATE FUNCTION sift._test_col_enc_sizes(OUT shape text, OUT rows int8, OUT byte
 -- Write buffer lanes of the column engine (src/col/wbuf_test.c), on an index of the BM25 access method created on an empty table.
 -- Rows are generated from (seed, id) over a schema of orders with line items; prepare gives the index that schema's hash
 -- (xor hash_xor: a stale definition), limit sets the write buffer limit in kB.
-CREATE FUNCTION sift._test_col_wbuf_prepare(index regclass, hash_xor int4 DEFAULT 0) RETURNS int8
+CREATE FUNCTION sift._test_col_wbuf_prepare(index regclass, hash_xor int4 DEFAULT 0, key_leaf int4 DEFAULT -1, small_rows bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_prepare' LANGUAGE C STRICT;
 -- appends rows first .. first + n - 1; returns how many appends found the segment full. busy holds up to six lane tails while appending, so that
 -- the rows go to other lanes: for one session at a time (two of them would wait for each other's tails)
@@ -255,6 +291,14 @@ CREATE FUNCTION sift._test_col_wbuf_rows(index regclass, seed int8, OUT gen int8
 CREATE FUNCTION sift._test_col_wbuf_batches(index regclass, seed int8, shared bool DEFAULT false, dirver int8 DEFAULT -1, OUT gen int8, OUT sb int8, OUT id int8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_batches' LANGUAGE C STRICT;
+-- the rows a scan that asks for the keys lo to hi reads of the write buffers (NULL, NULL: every row), the value of their key leaf, and whether the set is that of the pages that meet the keys
+CREATE FUNCTION sift._test_col_wbuf_keyed(index regclass, seed int8, lo int8, hi int8, cold bool DEFAULT true, OUT gen int8, OUT id int8, OUT key int8, OUT unknown bool, OUT partial bool)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_keyed' LANGUAGE C;
+-- the data pages of the write buffers: the lane head and, for a buffer with ranges, the leaf and the range of the keys of the page
+CREATE FUNCTION sift._test_col_wbuf_pages(index regclass, OUT gen int8, OUT blk int8, OUT nrecs int4, OUT flags int4, OUT leaf int4, OUT kmin int8, OUT kmax int8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_pages' LANGUAGE C STRICT;
 -- the directory version a scan that opens now reads; dirver of _test_col_wbuf_batches reads as the scan that read it (-1: the current one)
 CREATE FUNCTION sift._test_col_dir_version(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_dir_version' LANGUAGE C STRICT;
@@ -313,7 +357,21 @@ CREATE FUNCTION sift._test_col_types(index regclass, leaf int4, tagmask int4, de
 CREATE FUNCTION sift._test_col_formats(index regclass, OUT gen int8, OUT format int4, OUT lstats bool, OUT roots bool) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_formats' LANGUAGE C STRICT;
 -- the ranges of the stream that the mirror of each segment keeps, and its bytes (src/col/seg/mirror.c); a byte of the stream read as itself xor a mask
+-- the units, rows and range of the first key leaf of every segment cut by a key (src/col/test/test.c)
+CREATE FUNCTION sift._test_col_segment_keys(index regclass, OUT gen int8, OUT units int4, OUT rows int8, OUT lo int8, OUT hi int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_segment_keys' LANGUAGE C STRICT;
 -- the cut of every immutable segment: by a key (bykey) or by TID range (bytid), and the leaves it records (an empty array: none), src/col/test/test.c
+CREATE FUNCTION sift._test_col_adopt(index regclass) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_col_adopt' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_part_damage(index regclass, k int4, how text) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_col_part_damage' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_part_bounds(index regclass, OUT first int4, OUT n int4, OUT lo_empty bool, OUT rows_from_lo bool, OUT rows_below_next bool, OUT lo text)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_part_bounds' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_cut_near(held int8, due_at int8, slack_pct int4, open bool) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_col_cut_near' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_part_shift(index regclass, k int4) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_col_part_shift' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_cuts(index regclass, OUT gen int8, OUT bykey bool, OUT bytid bool, OUT cut int4[]) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_cuts' LANGUAGE C STRICT;
 -- the segments of unrecorded cut that merges of this backend have checked unit by unit (src/col/order.c)
@@ -599,8 +657,12 @@ CREATE TEXT SEARCH TEMPLATE sift._test_syn (INIT = sift._test_syn_init, LEXIZE =
 -- the tombstone log of a heap column index (col/tomblog.c): add the segment, append an entry for a heap address by the current transaction, and list the entries in log order
 CREATE FUNCTION sift._test_col_fold_marks(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_fold_marks' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_relocate(index regclass, recut int4[] DEFAULT '{}') RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_col_relocate' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_marks_paid(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_marks_paid' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_fold_due(index regclass) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_col_fold_due' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_fold_counts() RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_fold_counts' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_log_create(index regclass) RETURNS void
@@ -609,6 +671,10 @@ CREATE FUNCTION sift._test_col_log_append(index regclass, tid tid) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_append' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_log_entries(index regclass, OUT tid tid, OUT xid xid, OUT cid int4, OUT kind int4, OUT flags int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_entries' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_log_records(index regclass, OUT xid xid, OUT cid int4, OUT gen int8, OUT part int4, OUT nrows int4, OUT bitmap bool) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_log_records' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_log_format(index regclass) RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_col_log_format' LANGUAGE C STRICT;
 
 -- the key journal of a connected parent index (col/conn.c): make it, take the stamp of a derivation, ask for the keys changed since a stamp, read the generation
 CREATE FUNCTION sift._test_conn_enable(index regclass) RETURNS int8
@@ -723,6 +789,10 @@ CREATE FUNCTION sift._test_hf_block_hits(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_hf_block_hits' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_hf_pages_asked(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_hf_pages_asked' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_segments_opened(reset bool DEFAULT false) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_segments_opened' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_dead_segments(reset bool DEFAULT false) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_dead_segments' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_probe_dead(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_probe_dead' LANGUAGE C STRICT;
 
@@ -811,3 +881,9 @@ CREATE FUNCTION sift._test_malloc_stats(release bool DEFAULT false) RETURNS text
 -- src/core/leak_test.c: no transparent huge pages for this backend from now on (the memory gate reads anonymous memory in pages, not in steps of 2 MB)
 CREATE FUNCTION sift._test_thp_disable() RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_thp_disable' LANGUAGE C;
+
+-- src/core/leak_test.c: the peak of the anonymous memory of this backend between the two calls, sampled by a timer of the backend itself (kB; start returns the memory it began from, stop the peak, 0 when none runs)
+CREATE FUNCTION sift._test_rss_peak_start() RETURNS bigint
+	AS 'MODULE_PATHNAME', 'sift_test_rss_peak_start' LANGUAGE C;
+CREATE FUNCTION sift._test_rss_peak_stop() RETURNS bigint
+	AS 'MODULE_PATHNAME', 'sift_test_rss_peak_stop' LANGUAGE C;

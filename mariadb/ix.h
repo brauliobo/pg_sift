@@ -32,7 +32,7 @@ extern __thread char sift_err_msg[1024];
 
 #define MAN_MAGIC		"SIFTMDB2"
 #define MDB_FORMAT		2
-#define MAX_SEGS		120		/* of the manifest: the rest of SIFT_MAX_SEGMENTS is for the live segment */
+#define MAX_SEGS		120		/* of the manifest: the rest of SIFT_DIR_POLICY_MAX is for the live segment */
 #define NMETA			6
 #define PAGE_LAYOUT_ID		((uint32) BLCKSZ << 8)
 
@@ -108,7 +108,7 @@ struct SiftIdx
 	Relation	rel;
 	SiftRel    *sr;
 	Manifest	man;
-	ManSeg		segs[SIFT_MAX_SEGMENTS];
+	ManSeg		segs[SIFT_DIR_POLICY_MAX];
 	char	   *cfg;
 	const char *meta[NMETA];	/* queue, keyexpr, source, textexpr, ... (values of cfg) */
 	bool		fresh;			/* queries read the queue */

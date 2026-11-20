@@ -360,7 +360,7 @@ sift_search_open(Node *spec, Relation heap, Snapshot snapshot, ExprContext *econ
 	s->snapshot = snapshot;
 	s->index = index_open(DatumGetObjectId(((Const *) linitial(l))->constvalue), AccessShareLock);
 	s->st = sift_state_open(s->index, cxt);
-	sift_quarantine_net(s->index, s->st->dir.meta.flags);
+	sift_quarantine_net(s->index, s->st->dir->meta.flags);
 	s->filter = sift_filter_create(cxt);
 	s->narms = list_length(l) - 1;
 	s->arm = palloc0(s->narms * sizeof(SearchArm));

@@ -373,10 +373,10 @@ sift_cschema_same_leaves(const SiftColSchema *old, const SiftColSchema *cur, Tup
 static bool
 segments_have_leaves(Relation index, const SiftColSchema *s)
 {
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	bool		same = true;
 
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	for (int i = 0; i < dir->nsegs && same; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{
@@ -446,6 +446,30 @@ sift_col_index_stale(Oid indexoid)
 
 	index_close(index, NoLock);
 	return stale;
+}
+
+/* The index with another file (the one REINDEX replaced): the relation entry over that file, with a state of its own; closed with sift_col_rel_file_view_close */
+Relation
+sift_col_rel_file_view(Relation index, const RelFileLocator *loc)
+{
+	Relation	view = palloc(sizeof(RelationData));
+
+	memcpy(view, index, sizeof(RelationData));
+	view->rd_locator = *loc;
+	view->rd_smgr = NULL;
+	view->rd_amcache = NULL;
+	view->pgstat_enabled = false;
+	view->pgstat_info = NULL;
+	view->rd_indexcxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col replaced file", ALLOCSET_SMALL_SIZES);
+	return view;
+}
+
+void
+sift_col_rel_file_view_close(Relation view)
+{
+	RelationCloseSmgr(view);
+	MemoryContextDelete(view->rd_indexcxt);
+	pfree(view);
 }
 
 SiftColRel *

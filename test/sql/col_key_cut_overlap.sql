@@ -44,7 +44,9 @@ SELECT sift.col_maintenance_due('ko_idx', true) AS due;
 -- the rewrite cuts the key range into partitions: a key is in one of them, and nothing is due again
 SELECT sift.col_maintain('ko_idx') AS rewritten;
 SELECT sift.col_verify('ko_idx', true);
-SELECT ko_units() AS after;
+-- a key is in one partition and the read opens that one alone: the units it opens are no more than the units of the largest segment, however the rewrite cut them (the cuts fall at the bytes of the units, which the compressor of the host moves by a unit)
+SELECT m[1]::int AS read, m[1]::int + m[2]::int <= (SELECT max(units) FROM sift.col_segments('ko_idx') WHERE kind = 'immutable') AS one_partition
+FROM (SELECT regexp_match(ko_units(), '(\d+) read, (\d+) pruned') AS m) x;
 SELECT ko_same() AS same_after;
 SELECT sift.col_maintenance_due('ko_idx', true) AS due_again;
 SELECT sift.col_maintain('ko_idx') AS rewritten_again;

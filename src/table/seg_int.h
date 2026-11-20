@@ -108,7 +108,7 @@ gcache_of(SiftTblRel *st)
 static inline bool
 dir_pressure(const SiftTblRel *st)
 {
-	return st->dir.nsegs > sift_tbl_max_segments / 2;
+	return st->dir->nsegs > sift_tbl_max_segments / 2;
 }
 
 /* The directory is past sift.table_backpressure percent of its entries: a writer settles, waiting for the maintenance lock, before it opens another write buffer */
@@ -117,7 +117,7 @@ dir_backpressure(const SiftTblRel *st)
 {
 	int			bp = sift_tbl_opt_int(st, SIFT_TBLOPT_BACKPRESSURE);
 
-	return bp > 0 && st->dir.nsegs * 100 > bp * sift_tbl_max_segments;
+	return bp > 0 && st->dir->nsegs * 100 > bp * sift_tbl_max_segments;
 }
 
 #endif							/* SIFT_SEG_INT_H */

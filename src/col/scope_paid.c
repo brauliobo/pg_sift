@@ -123,8 +123,7 @@ sift_scope_paid_flush(Relation index)
 	/* a metapage record, not a catalog row, but the contexts are the same: no write in a standby, a parallel operation or a VACUUM (sift_catalog_write_ok) */
 	if (!sift_scope_paid_pending(f.index) || RecoveryInProgress() || !sift_catalog_write_ok())
 		return;
-	dir = palloc(sizeof(SiftDirSnapshot));
-	sift_dir_read(index, dir);
+	dir = sift_dir_read(index);
 	f.half = sift_scope_refresh_half(index, dir);
 	pfree(dir);
 	sift_meta_update(index, add_pending, &f);

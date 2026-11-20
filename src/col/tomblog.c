@@ -19,6 +19,7 @@
 #include "col/am.h"
 #include "col/maint/maint_int.h"
 #include "core/tomb.h"
+#include "core/tomb_dv.h"
 #include "core/membudget.h"
 
 typedef struct LogEnt
@@ -29,7 +30,7 @@ typedef struct LogEnt
 	RelFileNumber relnumber;
 	bool		has_seg;		/* the index has its tombstone segment (an index does not lose it: VACUUM replaces it, a rebuild is another file) */
 	MemoryContext cxt;
-	SiftDirSnapshot dir;
+	SiftDirSnapshot *dir;
 	SiftTombLog log;
 } LogEnt;
 
@@ -90,6 +91,7 @@ log_ent(Relation index)
 	Oid			relid = RelationGetRelid(index);
 	bool		found;
 	LogEnt	   *e;
+	MemoryContext old;
 
 	if (log_tab == NULL)
 	{
@@ -112,12 +114,18 @@ log_ent(Relation index)
 		e->stale = false;
 		e->has_seg = false;
 		e->cxt = AllocSetContextCreate(CacheMemoryContext, "sift cache tombstone log", ALLOCSET_DEFAULT_SIZES);
-		memset(&e->dir, 0, sizeof(e->dir));
+		e->dir = NULL;
 		memset(&e->log, 0, sizeof(e->log));
 		sift_tomb_init(&e->log, e->cxt, &e->dir);
 		e->log.spill = true;
 	}
-	sift_dir_read_segs(index, &e->dir);
+	if (e->dir && e->dir->version == sift_dir_version(index))
+		return e;
+	if (e->dir)
+		pfree(e->dir);
+	old = MemoryContextSwitchTo(e->cxt);
+	e->dir = sift_dir_read_segs(index);
+	MemoryContextSwitchTo(old);
 	return e;
 }
 
@@ -156,7 +164,7 @@ log_synced(Relation index, bool entries)
 	sift_col_tombs_flush();
 	e = log_ent(index);
 	SIFT_MEM_SCOPE(col_tomb_log, e->cxt);
-	seg = sift_tomb_find_seg(&e->dir);
+	seg = sift_tomb_find_seg(e->dir);
 
 	if (seg == NULL)
 		return NULL;
@@ -201,12 +209,12 @@ sift_col_log_appender(Relation index)
 	if (e != NULL && e->has_seg && !e->stale && e->relnumber == index->rd_locator.relNumber)
 		return &e->log;
 	e = log_ent(index);
-	if (sift_tomb_find_seg(&e->dir) == NULL)
+	if (sift_tomb_find_seg(e->dir) == NULL)
 	{
 		sift_col_log_create(index);
 		e = log_ent(index);
 	}
-	check_format(index, sift_tomb_find_seg(&e->dir));
+	check_format(index, sift_tomb_find_seg(e->dir));
 	e->has_seg = true;
 	return &e->log;
 }
@@ -223,10 +231,10 @@ sift_col_log_create(Relation index)
 	LogEnt	   *e = log_ent(index);
 	SiftSegEntry seg;
 
-	if (sift_tomb_find_seg(&e->dir) != NULL)
+	if (sift_tomb_find_seg(e->dir) != NULL)
 		return;
 	seg = sift_tomb_new_segment(index, SIFT_SEG_TOMB, SIFT_COL_FORMAT_ROWKEY);
-	sift_dir_update(index, &(SiftDirChange) {.fn = add_log_segment,.arg = &seg,.extra = InvalidBuffer});
+	sift_dir_update(index, &(SiftDirChange) {.fn = add_log_segment,.arg = &seg,.nadd = 1,.extra = InvalidBuffer});
 }
 
 typedef struct DropArg
@@ -235,6 +243,7 @@ typedef struct DropArg
 	void	   *state;
 	TransactionId frozen;		/* a tombstone of a transaction that committed before this one holds the same for every snapshot: it is written as frozen */
 	TransactionId aged;			/* a journal record of a transaction before this one is dropped (log_vacuum has raised the trim of the journal to it first) */
+	DvSettle   *settle;			/* the deletion records: which of them the log is better without */
 	uint64		changed;
 } DropArg;
 
@@ -251,6 +260,9 @@ drop_keep(SiftTomb *t, void *arg)
 	DropArg    *d = arg;
 	ItemPointerData tid;
 
+	/* the slots of a deletion record are decided whole, by drop_dv */
+	if (t->kind == SIFT_TOMB_DVEC || t->kind == SIFT_TOMB_DVEC_BODY)
+		return true;
 	/*
 	 * A journal record (col/conn.h) names no heap address and is never frozen: a stamp older than the oldest transaction any snapshot can have still compares its horizon with
 	 * the record's transaction. It goes when its transaction aborted, and when it is so old that the comparison would wrap (the journal then vouches from the horizon on).
@@ -285,6 +297,17 @@ drop_keep(SiftTomb *t, void *arg)
 drop:
 	d->changed++;
 	return false;
+}
+
+/* A deletion record leaves the log when its transaction aborted, its segment was replaced, or every row it names is cleared (a fold or an index pass of VACUUM did): nothing is lost with it */
+static bool
+drop_dv(SiftTomb *slots, uint32 n, void *arg)
+{
+	DropArg    *d = arg;
+	bool		settled = sift_col_dv_settled(d->settle, slots, n);
+
+	d->changed += settled;
+	return !settled;
 }
 
 /* Records of the journal older than the age limit go with this VACUUM: the journal stops vouching for the horizons before the limit first, so that no reader takes the missing records for none */
@@ -328,22 +351,43 @@ log_changes(SiftTombLog *log, DropArg *d)
 			(void) drop_keep(&t, d);
 		}
 	sift_tomb_each_end(&each);
+	if (d->changed == 0 && log->dvecs > 0)
+	{
+		SiftTombWalk w;
+		SiftTomb	buf[SIFT_TOMB_CAP];
+		SiftTomb   *e;
+		uint32		nslots;
+
+		sift_tomb_walk_begin(&w, log);
+		while (d->changed == 0 && (e = sift_tomb_walk_next_rec(&w, buf, &nslots)) != NULL)
+			if (nslots > 1)
+				(void) drop_dv(e, nslots, d);
+		sift_tomb_walk_end(&w);
+	}
 }
 
 static void
-log_vacuum(Relation index, IndexBulkDeleteCallback cb, void *cb_state)
+log_vacuum(Relation index, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
 {
 	SiftTombLog *log = sift_col_log(index);
 	DropArg		d = {.cb = cb,.state = cb_state,.frozen = GetOldestNonRemovableTransactionId(NULL),.aged = ReadNextTransactionId() - (1U << 30)};
 	SiftTombChan chan;
+	uint64		cleared;
 
 	if (log == NULL)
 		return;
 	trim_journal(index, log, d.aged);
+	/* the records of transactions older than every snapshot are cleared from the units before anything is dropped, as the marks are: a reader that took the log and then the liveness sees the record or the clear bit */
+	cleared = sift_col_dv_fold(index, log, d.frozen);
+	if (stats != NULL)
+		stats->tuples_removed += (double) cleared;
+	d.settle = log->dvecs > 0 ? sift_col_dv_settle_begin(index) : NULL;
 	/* a log with nothing to drop or freeze is not rewritten (the rewrite copies it whole): the first change found says so */
 	log_changes(log, &d);
 	if (d.changed != 0)
-		(void) sift_tomb_rewrite(index, log, drop_keep, &d);
+		(void) sift_tomb_rewrite_dv(index, log, drop_keep, drop_dv, &d);
+	if (d.settle != NULL)
+		sift_col_dv_settle_end(d.settle);
 	chan = log->chan;
 	if ((chan.flags & SIFT_TOMB_COMPLETE) && TransactionIdIsNormal(chan.base_xid) && TransactionIdPrecedes(chan.base_xid, d.frozen) &&
 		sift_xid_state(chan.base_xid) == SIFT_XID_COMMITTED)
@@ -356,7 +400,7 @@ log_vacuum(Relation index, IndexBulkDeleteCallback cb, void *cb_state)
 void
 maint_bulkdelete_tomb(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
 {
-	log_vacuum(index, cb, cb_state);
+	log_vacuum(index, cb, cb_state, stats);
 }
 
 /* The cleanup of every VACUUM, also one that skipped the vacuuming of the indexes */
@@ -372,7 +416,7 @@ maint_vacuum_log(Relation index)
 	if (!IsInParallelMode())
 		(void) sift_col_track_rebaseline(index, heap);
 	table_close(heap, NoLock);
-	log_vacuum(index, NULL, NULL);
+	log_vacuum(index, NULL, NULL, NULL);
 }
 
 /* Test only: the entries the cache holds and the bytes of their contexts */
