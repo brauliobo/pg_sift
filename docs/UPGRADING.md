@@ -283,7 +283,7 @@ Three `sift_col` options are accepted and ignored by 4.3 and still ignored by 5.
 
 ## What 5.1 costs more than 5.0.2
 
-A statement that deletes many rows costs 1.08 to 1.18 times the instructions of 5.0.2 when the rows are scattered and 1.47 times when they are all of one key; the first write of each new backend costs about 0.4 million instructions more for an `INSERT` and 2.5 million (about 0.6 ms) more for an `UPDATE`. Reads between a DELETE and the next `VACUUM` cost less. The release notes list these under Known limits.
+A statement that deletes many rows costs 1.08 to 1.18 times the instructions of 5.0.2 when the rows are scattered and about 1.02 times when they are all in one range of the key. The first write after the server starts costs about 0.4 million instructions more for an `INSERT` and 2.5 million (about 0.6 ms) more for an `UPDATE`: a planner fold over every segment, done once for each server and set of segments, and the opening of a write buffer; it is not paid by each statement. Reads between a DELETE and the next `VACUUM` cost less. The release notes list these under Known limits.
 
 ## What 5.1 writes that 5.0 does not read
 
