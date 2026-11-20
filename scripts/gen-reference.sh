@@ -324,7 +324,12 @@ for k, o in sorted(objs.items(), key=lambda kv: kv[0][1]):
     ret = o['ret']
     if kind == 'operator':
         ret = objs.get(('function', o['fn']), {}).get('rawret', 'bool')
-    rows.append(dict(group=g, kind=kind, name=name, sig=o['sig'], ret=ret, since=since[k], desc=norm(desc or ''), link=None))
+    first = since[k]
+    if note and note[1] and '*' not in name:
+        if note[1] not in chain or vkey(note[1]) >= vkey(first):
+            err('docs/reference-notes.tsv:%d: %s is Since %s in the scripts: a Since in the notes must be an older version (the release that had it before its part moved to a later script)' % (note[3], name, first))
+        first = note[1]
+    rows.append(dict(group=g, kind=kind, name=name, sig=o['sig'], ret=ret, since=first, desc=norm(desc or ''), link=None))
 for name in sorted(globs):
     g, sn, d, _ = notes[name]
     if g != '-':
