@@ -33,6 +33,7 @@ CHECKS+=(
 	'tracked	! git ls-files | grep -E "(^|/)__pycache__/|[.]pyc$"'
 	'portable	scripts/lint-cache.sh portable src/portable.list src/portable-col.list $(grep -hvE '\''^[[:space:]]*(#|$)'\'' src/portable.list src/portable-col.list | sed '\''s#^#src/#'\'') src/core/host.h sqlite scripts/check-portable.sh -- scripts/check-portable.sh'
 	'classified	scripts/check-classified.sh --selftest && scripts/check-classified.sh'
+	'fuzz-core	python3 -I scripts/check-fuzz-core.py --selftest && python3 -I scripts/check-fuzz-core.py'
 	'update-drops	scripts/sql-parts.sh build && m=$(sed -n "s/^default_version *= *.\([0-9]*[.][0-9]*\).*/\1/p" pg_sift.control) && ! grep -nE "^(DROP|ALTER [A-Z ]* (DROP|RENAME))" sql/pg_sift--[0-9.]*--$m.sql'
 	'changelog-summary	[ "$(sed -n "/^## Unreleased/,/^## [^U]/p" CHANGELOG.md | grep -c "things worth reading")" -le 1 ] || { echo "CHANGELOG.md: Unreleased has two summary entries (\"things worth reading\"); a merge left the old wording beside the new one"; exit 1; }'
 	'neon-includes	for f in $(grep -l SIFT_HAVE_NEON src/*/*_neon.c src/core/visibility_popcnt.c); do grep -q -E "^#include \"core/(cpu|neon|simd_isa)[.]h\"" $f || { echo "$f: SIFT_HAVE_NEON is defined by core/cpu.h; without it the object is empty on AArch64 and the library does not link there"; exit 1; }; done'
