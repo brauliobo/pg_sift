@@ -1,0 +1,601 @@
+-- The flat rewrites of src/agg/flat that decorrelate, split, factor, defer and push down aggregates, one segment each, in a schema of its own. Every query runs as the rewrite and as the
+-- normal plan (sift.enable_agg off): the plan label and the answers are asserted. Replaces twelve tests of one fixture each.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+
+-- >>> agg_factor_constant
+CREATE SCHEMA s1;
+GRANT USAGE ON SCHEMA s1 TO PUBLIC;
+SET search_path = s1, public;
+SET sift.test_create_format1 = on;
+-- A sum of a numeric column times a value the statement asks once (a sub-select of one row, a parameter) is the sum of the column times that value: the scan computes the sum, the
+-- product is made above it. The rows must be those of the scan off, with no worker and with three, for a factor that is NULL, that has more digits than the column, a column with NaN, groups
+-- without a value, a HAVING and a filter. An average, a product of two columns and a factor that changes by row stay as they are.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE kinds (id int PRIMARY KEY, w numeric(8,3), n int);
+INSERT INTO kinds SELECT g, g / 8.0, CASE WHEN g % 4 = 0 THEN NULL ELSE g END FROM generate_series(1, 30) g;
+CREATE TABLE events (id int PRIMARY KEY, tenant_id int NOT NULL, status int NOT NULL, value_num numeric(10,2), loose numeric, qty int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT g, 1 + (g * 7919) % 400, 1 + g % 5, CASE WHEN g % 13 = 0 THEN NULL ELSE (g % 500) / 5.0 END,
+       CASE WHEN g % 997 = 0 THEN 'NaN'::numeric WHEN g % 7 = 0 THEN NULL ELSE (g % 300) / 7.0 END, g % 9 FROM generate_series(1, 30000) g;
+-- the groups of status 5 have no value at all
+UPDATE events SET value_num = NULL WHERE status = 5;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE events_rows AS SELECT * FROM events ORDER BY ctid;
+TRUNCATE events;
+INSERT INTO events SELECT * FROM events_rows;
+DROP TABLE events_rows;
+CREATE INDEX events_col ON events USING sift_col (id, tenant_id, status, value_num, loose, qty) WITH (key_cut = tenant_id);
+VACUUM (FREEZE, ANALYZE) events, kinds;
+
+CREATE TABLE factor_q (n int, label text, q text);
+INSERT INTO factor_q VALUES
+	(1, 'count of a table',                   'SELECT status, sum(value_num * (SELECT count(*) FROM kinds)) AS s FROM events GROUP BY 1'),
+	(2, 'factor on the left',                 'SELECT status, sum((SELECT count(*) FROM kinds) * value_num) AS s FROM events GROUP BY 1'),
+	(3, 'more digits than the column',        'SELECT status, sum(value_num * (SELECT sum(w) FROM kinds)) AS s FROM events GROUP BY 1'),
+	(4, 'a factor that is NULL',              'SELECT status, sum(value_num * (SELECT max(n) FROM kinds WHERE id > 100)) AS s FROM events GROUP BY 1'),
+	(5, 'a factor of an expression',          'SELECT status, sum(value_num * ((SELECT count(*) FROM kinds) + 0.5)) AS s FROM events GROUP BY 1'),
+	(6, 'a column with NaN',                  'SELECT status, sum(loose * (SELECT count(*) FROM kinds)) AS s FROM events GROUP BY 1'),
+	(7, 'two sums and a count',               'SELECT status, sum(value_num * (SELECT count(*) FROM kinds)) AS s, sum(value_num) AS t, count(*) AS c FROM events GROUP BY 1'),
+	(8, 'a having',                           'SELECT status, sum(value_num * (SELECT count(*) FROM kinds)) AS s FROM events GROUP BY 1 HAVING sum(value_num * (SELECT count(*) FROM kinds)) > 1000'),
+	(9, 'a filter',                           'SELECT status, sum(value_num * (SELECT count(*) FROM kinds)) FILTER (WHERE qty > 3) AS s FROM events GROUP BY 1'),
+	(10, 'no group',                          'SELECT sum(value_num * (SELECT count(*) FROM kinds)) AS s FROM events'),
+	(11, 'no row',                            'SELECT sum(value_num * (SELECT count(*) FROM kinds)) AS s FROM events WHERE id < 0'),
+	(12, 'an average',                        'SELECT status, avg(value_num * (SELECT count(*) FROM kinds)) AS s FROM events GROUP BY 1'),
+	(13, 'a product of two columns',          'SELECT status, sum(value_num * loose) AS s FROM events GROUP BY 1'),
+	(14, 'a factor that changes by row',      'SELECT status, sum(value_num * (SELECT w FROM kinds k WHERE k.id = events.qty + 1)) AS s FROM events GROUP BY 1'),
+	(15, 'a distinct sum',                    'SELECT status, sum(DISTINCT value_num * (SELECT count(*) FROM kinds)) AS s FROM events GROUP BY 1');
+-- the plan of each statement: the product made above the scan (the scan holds the sum of the column), the product in the scan, or the normal plan
+CREATE FUNCTION factor_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; scans int := 0; product int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		scans := scans + (l LIKE '%Custom Scan (SiftAgg)%')::int;
+		product := product + (l LIKE '%Pushed Aggregates:%' AND l LIKE '%value_num *%' OR l LIKE '%Pushed Aggregates:%' AND l LIKE '%* events.value_num%')::int;
+	END LOOP;
+	RETURN CASE WHEN scans = 0 THEN 'normal' WHEN product > 0 THEN 'scan, product in it' ELSE 'scan' END;
+END $$;
+CREATE FUNCTION factor_rows(q text, scan bool, workers int) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_with_workers_reset(q, scan, workers) $$;
+SELECT n, label, factor_plan(q) AS plan, factor_rows(q, true, 0) = factor_rows(q, false, 0) AS same, factor_rows(q, true, 3) = factor_rows(q, false, 0) AS same_workers FROM factor_q ORDER BY n;
+
+-- a parameter is the same for every row of one execution: the generic plan holds the sum
+SET plan_cache_mode = force_generic_plan;
+PREPARE by_param(numeric) AS SELECT status, sum(value_num * $1) AS s FROM events GROUP BY 1 ORDER BY 1;
+SELECT factor_plan('EXECUTE by_param(2.5)') AS plan;
+CREATE TABLE param_rows AS EXECUTE by_param(2.5);
+CREATE TABLE param_null AS EXECUTE by_param(NULL);
+SET sift.enable_agg = off;
+CREATE TABLE param_rows_off AS EXECUTE by_param(2.5);
+CREATE TABLE param_null_off AS EXECUTE by_param(NULL);
+RESET sift.enable_agg;
+SELECT NOT EXISTS (SELECT * FROM param_rows EXCEPT SELECT * FROM param_rows_off) AND NOT EXISTS (SELECT * FROM param_rows_off EXCEPT SELECT * FROM param_rows) AS same_param,
+       NOT EXISTS (SELECT * FROM param_null EXCEPT SELECT * FROM param_null_off) AND NOT EXISTS (SELECT * FROM param_null_off EXCEPT SELECT * FROM param_null) AS same_null,
+       (SELECT count(*) FROM param_null WHERE s IS NOT NULL) AS not_null_with_null_factor;
+DEALLOCATE by_param;
+RESET plan_cache_mode;
+
+DROP TABLE param_rows, param_null, param_rows_off, param_null_off;
+DROP FUNCTION factor_plan(text);
+DROP FUNCTION factor_rows(text, bool, int);
+DROP TABLE factor_q, events, kinds;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s1 CASCADE;
+RESET client_min_messages;
+-- <<< agg_factor_constant
+
+-- >>> agg_lateral_aggregate
+CREATE SCHEMA s2;
+GRANT USAGE ON SCHEMA s2 TO PUBLIC;
+SET search_path = s2, public;
+SET sift.test_create_format1 = on;
+-- `x LEFT JOIN LATERAL (SELECT avg(e) FROM f(x.doc) WHERE ..) s ON true` is one row for each row of x: the scan runs it as the grouping of the elements by the
+-- key of x, when x holds each key once. Where it does not (a join that repeats the keys, a count(*), an argument that is not NULL for a row that is not there)
+-- the query stays as written. The answers are the normal plan's.
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE docs (id int PRIMARY KEY, grp int NOT NULL, dim_id int NOT NULL, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO docs
+SELECT i, i % 7, 1 + i % 5,
+       CASE WHEN i % 11 = 0 THEN NULL WHEN i % 13 = 0 THEN '{}'::jsonb
+            ELSE jsonb_build_object('weight', i % 10, 'parts', coalesce((SELECT jsonb_agg(jsonb_build_object('score', CASE WHEN (i + j) % 5 = 0 THEN NULL ELSE (i * j) % 10 END)) FROM generate_series(1, i % 5) j), '[]'::jsonb)) END
+FROM generate_series(1, 6000) i;
+CREATE INDEX docs_col ON docs USING sift_col (id, grp, dim_id, doc) WITH (paths = 'doc.parts[]{score float8}, doc.weight float8');
+CREATE TABLE dims (id int PRIMARY KEY, kind text) WITH (autovacuum_enabled = false);
+INSERT INTO dims SELECT i, 'k' || i % 3 FROM generate_series(1, 5) i;
+CREATE TABLE tags (dim_id int, tag text) WITH (autovacuum_enabled = false);
+INSERT INTO tags SELECT 1 + i % 5, 't' || i FROM generate_series(1, 12) i;
+VACUUM (FREEZE, ANALYZE) docs;
+VACUUM (FREEZE, ANALYZE) dims;
+VACUUM (FREEZE, ANALYZE) tags;
+
+\ir test/agg_helpers.sql
+-- the plan reads what the pattern names in no node but the scan (docs, by default)
+CREATE FUNCTION reads_plan(q text, pat text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; found bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR l ~ pat; END LOOP;
+	RETURN found;
+END $$;
+CREATE FUNCTION check_query(name text, q text, pat text DEFAULT '(Seq Scan|Index Scan|Index Only Scan|Bitmap Heap Scan) on docs') RETURNS TABLE (label text, only_scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT name, runs_in_scan(q) AND NOT reads_plan(q, pat), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
+END $$;
+
+-- one row for a document: the average of its parts that have a score
+SELECT * FROM check_query('average of the parts', $q$
+ SELECT r.grp, count(r.id) AS n, round(avg(r.sv)::numeric, 6) AS sv
+ FROM (SELECT d.id, d.grp, s.sv FROM docs d
+       LEFT JOIN LATERAL (SELECT avg(o.score) AS sv FROM jsonb_to_recordset(d.doc['parts']) o(score float8) WHERE o.score IS NOT NULL) s ON true) r
+ GROUP BY r.grp
+$q$);
+-- several aggregates, a constant, an expression of the document, a filter of the elements by a column of the document
+SELECT * FROM check_query('sum min max count, a constant, an expression of the row', $q$
+ SELECT r.grp, count(r.id) AS n, round(avg(r.weight)::numeric, 6) AS weight, sum(r.total) AS total, min(r.lo) AS lo, max(r.hi) AS hi, sum(r.parts) AS parts, count(r.nothing) AS nothing
+ FROM (SELECT d.id, d.grp, CAST(d.doc ->> 'weight' AS float8) AS weight, s.total, s.lo, s.hi, s.parts, s.nothing FROM docs d
+       LEFT JOIN LATERAL (SELECT sum(o.score) AS total, min(o.score) AS lo, max(o.score * 2) AS hi, count(o.score) AS parts, CAST(NULL AS float8) AS nothing
+                          FROM jsonb_to_recordset(d.doc['parts']) o(score float8) WHERE o.score >= d.grp) s ON true) r
+ GROUP BY r.grp
+$q$);
+-- tables joined by their keys, a CTE that has each key once, a sub-select that keeps some documents (a sublink in its WHERE)
+SELECT * FROM check_query('joined by the key of the tables', $q$
+ WITH picked AS (SELECT DISTINCT id FROM dims WHERE kind <> 'k2')
+ SELECT r.kind, count(r.id) AS n, round(avg(r.sv)::numeric, 6) AS sv
+ FROM (SELECT d.id, d.kind, s.sv
+       FROM (SELECT docs.id, docs.doc, m.kind FROM docs INNER JOIN picked p ON p.id = docs.dim_id INNER JOIN dims m ON m.id = docs.dim_id
+             WHERE docs.grp IN (SELECT grp FROM docs WHERE id < 100)) d
+       LEFT JOIN LATERAL (SELECT avg(o.score) AS sv FROM jsonb_to_recordset(d.doc['parts']) o(score float8)) s ON true) r
+ GROUP BY r.kind
+$q$);
+-- tags repeat the keys of the documents: a document is as many rows as it has tags, and the grouping by the document would make them one
+SELECT * FROM check_query('a join that repeats the keys', $q$
+ SELECT r.grp, count(r.id) AS n, round(avg(r.sv)::numeric, 6) AS sv
+ FROM (SELECT d.id, d.grp, s.sv FROM (SELECT docs.id, docs.grp, docs.doc FROM docs INNER JOIN tags t ON t.dim_id = docs.dim_id) d
+       LEFT JOIN LATERAL (SELECT avg(o.score) AS sv FROM jsonb_to_recordset(d.doc['parts']) o(score float8)) s ON true) r
+ GROUP BY r.grp
+$q$);
+-- count(*) is 1 for the row of an outer join that has no element, and 0 for an aggregate of none
+SELECT * FROM check_query('count of rows', $q$
+ SELECT r.grp, count(r.id) AS n, sum(r.c) AS c
+ FROM (SELECT d.id, d.grp, s.c FROM docs d
+       LEFT JOIN LATERAL (SELECT count(*) AS c FROM jsonb_to_recordset(d.doc['parts']) o(score float8) WHERE o.score IS NOT NULL) s ON true) r
+ GROUP BY r.grp
+$q$);
+-- a coalesce of the argument is a value for the row that is not there
+SELECT * FROM check_query('a non-strict argument', $q$
+ SELECT r.grp, count(r.id) AS n, round(avg(r.sv)::numeric, 6) AS sv
+ FROM (SELECT d.id, d.grp, s.sv FROM docs d
+       LEFT JOIN LATERAL (SELECT avg(coalesce(o.score, 0)) AS sv FROM jsonb_to_recordset(d.doc['parts']) o(score float8)) s ON true) r
+ GROUP BY r.grp
+$q$);
+-- a sublink holds the lateral: the query around it reads docs in an ordinary plan, and the sublink's own plan is the scan that groups the elements
+SELECT * FROM check_query('a sublink', $q$
+ SELECT docs.id, docs.grp FROM docs
+ WHERE docs.id IN (SELECT r.id FROM (SELECT d.id, s.sv FROM docs d
+                                    LEFT JOIN LATERAL (SELECT avg(o.score) AS sv FROM jsonb_to_recordset(d.doc['parts']) o(score float8) WHERE o.score IS NOT NULL) s ON true) r
+                   WHERE r.sv > 4)
+ ORDER BY docs.id
+$q$, 'Function Scan');
+-- a sublink of a value (an InitPlan)
+SELECT * FROM check_query('a sublink of a value', $q$
+ SELECT docs.id, docs.dim_id FROM docs
+ WHERE docs.dim_id < (SELECT max(r.sv) FROM (SELECT d.id, s.sv FROM docs d
+                                           LEFT JOIN LATERAL (SELECT avg(o.score) AS sv FROM jsonb_to_recordset(d.doc['parts']) o(score float8)) s ON true) r)
+ ORDER BY docs.id
+$q$, 'Function Scan');
+-- the same sublink over documents repeated by their tags
+SELECT * FROM check_query('a sublink over a join that repeats the keys', $q$
+ SELECT docs.id, docs.grp FROM docs
+ WHERE docs.id IN (SELECT r.id FROM (SELECT d.id, s.sv FROM (SELECT docs.id, docs.doc FROM docs INNER JOIN tags t ON t.dim_id = docs.dim_id) d
+                                    LEFT JOIN LATERAL (SELECT avg(o.score) AS sv FROM jsonb_to_recordset(d.doc['parts']) o(score float8) WHERE o.score IS NOT NULL) s ON true) r
+                   WHERE r.sv > 4)
+ ORDER BY docs.id
+$q$, 'Function Scan');
+
+
+DROP TABLE docs, dims, tags;
+DROP FUNCTION reads_plan(text,text), check_query(text,text,text), outcome(text,boolean), runs_in_scan(text), runq(text,boolean), pushed(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s2 CASCADE;
+RESET client_min_messages;
+-- <<< agg_lateral_aggregate
+
+-- >>> agg_lateral_flatten
+CREATE SCHEMA s3;
+GRANT USAGE ON SCHEMA s3 TO PUBLIC;
+SET search_path = s3, public;
+SET sift.test_create_format1 = on;
+-- A lateral sub-select that PostgreSQL leaves in place on the nullable side of an outer join (a CTE read by `dates LEFT JOIN cte`) is pulled up
+-- inside its own query level, so that the scan reads the unnested document and the mapping table instead of a correlated child.
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE sources (id int PRIMARY KEY, enabled bool);
+INSERT INTO sources VALUES (1, true), (2, true), (3, false);
+CREATE TABLE labels (foreign_id int, source_key text, label text, sublabel text);
+INSERT INTO labels VALUES (1, 'catga_score', 'catg_b', NULL), (1, 'catgm_score', 'catg_f', 'sub_a'), (2, 'catga_score', 'tidy', NULL), (2, 'catga_score', 'tidy2', NULL);
+CREATE TABLE entries (id int, foreign_id int, day date, metrics_a jsonb);
+INSERT INTO entries
+SELECT i, 1 + i % 4, date '2026-01-01' + i % 20,
+       CASE i % 7 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN NULL WHEN 2 THEN '{"catga_score": 9, "catgm_score": 4}'::jsonb
+                  WHEN 3 THEN '{"catga_score": 6.5, "other_score": 2, "catgj": 5}'::jsonb
+                  ELSE jsonb_build_object('catga_score', i % 10, 'catgk_score', i % 7) END
+FROM generate_series(1, 20000) i;
+CREATE INDEX entries_col ON entries USING sift_col (id, foreign_id, day, metrics_a) WITH (paths = 'metrics_a.* float8');
+VACUUM (FREEZE, ANALYZE) entries;
+ANALYZE sources; ANALYZE labels;
+-- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
+\ir test/agg_helpers.sql
+CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
+END $$;
+-- the mapping table joined to the unnested members, below a date spine's outer join (no condition of the left join reads a table outside it)
+SELECT * FROM check_query('mapping below an outer join', $q$
+ WITH parsed AS (
+   SELECT e.id, e.day, s.category, s.subcategory, CAST(s.value AS float) AS score
+   FROM entries e
+   INNER JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, coalesce(l.sublabel, nullif(split_part(r.key, '_', 2), '')) AS subcategory, r.value
+                       FROM jsonb_each(e.metrics_a) r LEFT JOIN labels l ON l.foreign_id = e.foreign_id AND l.source_key = r.key) s ON true)
+ SELECT d.day, p.category, count(DISTINCT p.id) AS entries, avg(p.score) AS score
+ FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day
+ GROUP BY d.day, p.category
+$q$);
+-- the same with an equality of the source with a joined table (an equivalence class that reaches into the mapping join)
+SELECT * FROM check_query('equality with a joined table', $q$
+ WITH parsed AS (
+   SELECT e.id, e.day, s.category, CAST(s.value AS float) AS score
+   FROM entries e INNER JOIN sources src ON src.id = e.foreign_id AND src.enabled IS TRUE
+   INNER JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, r.value
+                       FROM jsonb_each(e.metrics_a) r LEFT JOIN labels l ON l.foreign_id = e.foreign_id AND l.source_key = r.key) s ON true)
+ SELECT d.day, p.category, count(DISTINCT p.id) AS entries, avg(p.score) AS score
+ FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day
+ GROUP BY d.day, p.category
+$q$);
+-- a sub-select with no join of its own, and one that reads two columns of the row
+SELECT * FROM check_query('plain lateral', $q$
+ WITH parsed AS (
+   SELECT e.id, e.day, s.category, CAST(s.value AS float) AS score
+   FROM entries e INNER JOIN LATERAL (SELECT split_part(key, '_', 1) AS category, value FROM jsonb_each(e.metrics_a) WHERE key <> 'catgj') s ON true)
+ SELECT d.day, p.category, count(*) AS n, sum(p.score) AS total
+ FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day
+ GROUP BY d.day, p.category
+$q$);
+-- without an enclosing outer join PostgreSQL plans the same query itself
+SELECT * FROM check_query('no outer join', $q$
+ SELECT s.category, count(*) AS n, sum(CAST(s.value AS float)) AS total
+ FROM entries e INNER JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, r.value
+                                     FROM jsonb_each(e.metrics_a) r LEFT JOIN labels l ON l.foreign_id = e.foreign_id AND l.source_key = r.key) s ON true
+ GROUP BY 1
+$q$);
+-- on the nullable side of a right join the columns of a sub-select are NULL for the rows the join does not match: not pulled up
+SELECT * FROM check_query('right join', $q$
+ SELECT s.category, z.id, count(e.id) AS n
+ FROM (entries e INNER JOIN LATERAL (SELECT 'c'::text AS category FROM jsonb_each(e.metrics_a) r) s ON true)
+ RIGHT JOIN sources z ON z.id = e.foreign_id + 10
+ GROUP BY 1, 2
+$q$);
+-- a sub-select that reads the columns of an earlier one
+SELECT * FROM check_query('chained', $q$
+ WITH parsed AS (
+   SELECT e.id, e.day, s.category, s2.k2
+   FROM entries e
+   JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, r.value
+                 FROM jsonb_each(e.metrics_a) r LEFT JOIN labels l ON l.foreign_id = e.foreign_id AND l.source_key = r.key) s ON true
+   JOIN LATERAL (SELECT s.category || 'x' AS k2 FROM sources z WHERE z.id = e.foreign_id) s2 ON true)
+ SELECT d.day, p.category, p.k2, count(DISTINCT p.id) AS n
+ FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day
+ GROUP BY 1, 2, 3
+$q$);
+-- A sub-select with a LIMIT is not pulled up: it stays a correlated child, with the same results.
+SELECT * FROM check_query('limit', $q$
+ WITH parsed AS (
+   SELECT e.id, e.day, s.label FROM entries e
+   INNER JOIN LATERAL (SELECT l.label FROM labels l WHERE l.foreign_id = e.foreign_id ORDER BY l.label LIMIT 1) s ON true)
+ SELECT d.day, p.label, count(*) FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day GROUP BY 1, 2
+$q$);
+-- Error timing: the cast of a member runs for the members of the rows that reach it, with PostgreSQL's SQLSTATE and message.
+INSERT INTO entries VALUES (20001, 1, '2026-02-01', '{"catga_score": 3000000000}'), (20002, 2, '2026-02-02', '{"catga_score": 1}');
+VACUUM (FREEZE, ANALYZE) entries;
+SELECT * FROM check_query('cast of an excluded row', $q$
+ WITH parsed AS (
+   SELECT e.id, e.day, s.category, CAST(s.value AS integer) AS score FROM entries e
+   INNER JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, r.value
+                       FROM jsonb_each(e.metrics_a) r LEFT JOIN labels l ON l.foreign_id = e.foreign_id AND l.source_key = r.key) s ON true
+   WHERE e.id <> 20001)
+ SELECT d.day, p.category, count(*) AS n, sum(p.score) AS total FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day GROUP BY 1, 2
+$q$);
+SELECT * FROM check_query('cast out of range', $q$
+ WITH parsed AS (
+   SELECT e.id, e.day, s.category, CAST(s.value AS integer) AS score FROM entries e
+   INNER JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, r.value
+                       FROM jsonb_each(e.metrics_a) r LEFT JOIN labels l ON l.foreign_id = e.foreign_id AND l.source_key = r.key) s ON true)
+ SELECT d.day, p.category, count(*) AS n, sum(p.score) AS total FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day GROUP BY 1, 2
+$q$);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
+DROP TABLE entries, labels, sources;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s3 CASCADE;
+RESET client_min_messages;
+-- <<< agg_lateral_flatten
+
+-- >>> agg_flat_key_lookup
+CREATE SCHEMA s4;
+GRANT USAGE ON SCHEMA s4 TO PUBLIC;
+SET search_path = s4, public;
+SET sift.test_create_format1 = on;
+-- A flattened lateral sub-select (agg/flat/) runs in the scan although the query also looks up the keys of its table in a CTE that reads another
+-- table with a column index: those few probes are not an ordinary plan the flat plan must be set against, and the estimates of the plan as written
+-- (the CTE's rows and the rows of each key) are low by two orders of magnitude. The same when the planner reads the table of that CTE as an input of a merge join: the join
+-- is priced for the few rows it reads of it, not for its index scan (30,000 members are priced 997 for the scan, over a quarter of the flat plan, and the join 22).
+-- Use default planner costs: the choice between the two forms is the point.
+SET client_min_messages = warning;	-- the NOTICE of the order array gives bytes a row that follow the sample of ANALYZE
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE sources (id int PRIMARY KEY, enabled bool);
+INSERT INTO sources SELECT i, i <> 7 FROM generate_series(1, 20) i;
+CREATE TABLE labels (foreign_id int, source_key text, label text);
+INSERT INTO labels SELECT s, k, upper(k) FROM generate_series(1, 20) s, unnest(ARRAY['alpha', 'beta', 'gamma']) k WHERE (s + length(k)) % 3 <> 0;
+-- the table the CTE of keys picks from: it has a column index, so the plan that reads it is an ordinary read of an indexed table (30,000 rows: only 3,000 of them have entries)
+CREATE TABLE dim_b (id int PRIMARY KEY, kind text);
+INSERT INTO dim_b SELECT i, CASE WHEN i % 7 = 0 THEN 'x' ELSE 'a' END FROM generate_series(1, 3750) i;
+CREATE INDEX members_col ON dim_b USING sift_col (id, kind);
+CREATE TABLE links (grp int, dim_b_id int);
+INSERT INTO links SELECT 1, i FROM generate_series(1, 100) i;
+INSERT INTO links SELECT 2, i FROM generate_series(301, 380) i;
+CREATE UNIQUE INDEX links_idx ON links (grp, dim_b_id);
+CREATE TABLE assigns (sub int, grp int, dim_b_id int);
+INSERT INTO assigns SELECT 9, 1, NULL;
+INSERT INTO assigns SELECT 9, NULL, i FROM generate_series(101, 400) i;
+-- the first 100 members hold 1,200 rows each, the others 20
+CREATE TABLE entries (id serial, dim_b_id int, foreign_id int, day date, metrics_a jsonb);
+INSERT INTO entries (dim_b_id, foreign_id, day, metrics_a)
+SELECT m.id, 1 + (m.id * 7 + g) % 20, date '2024-01-01' + (g * 37 + m.id * 11) % 900,
+       jsonb_build_object('alpha', (g % 10)::float, 'beta_x', ((g * 3) % 10)::float) || CASE WHEN g % 3 = 0 THEN jsonb_build_object('gamma', (g % 7)::float) ELSE '{}' END
+FROM dim_b m, LATERAL generate_series(1, CASE WHEN m.id <= 100 THEN 1200 ELSE 20 END) g WHERE m.id <= 3000;
+CREATE INDEX entries_col ON entries USING sift_col (id, dim_b_id, foreign_id, day, metrics_a) WITH (key_cut = 'dim_b_id', paths = 'metrics_a.* float8');
+CREATE INDEX entries_member ON entries (dim_b_id);
+VACUUM (FREEZE, ANALYZE) entries;
+ANALYZE dim_b; ANALYZE links; ANALYZE labels; ANALYZE sources; ANALYZE assigns;
+\ir test/agg_check_pushed.sql
+-- the members of a group that a subscription reaches, the entries of two periods with the labels of the unnested scores, and a spine of the periods
+SELECT * FROM check_query($q$
+ WITH picked AS MATERIALIZED (SELECT DISTINCT m.id FROM dim_b m
+   WHERE m.id IN (SELECT coalesce(a.dim_b_id, l.dim_b_id) FROM assigns a LEFT JOIN links l ON l.grp = a.grp WHERE a.sub = 9 AND coalesce(a.dim_b_id, l.dim_b_id) IS NOT NULL)
+     AND m.id IN (SELECT dim_b_id FROM links WHERE grp IN (1)) AND m.kind = 'a'),
+ periods AS (SELECT * FROM (VALUES ('current', daterange('2025-06-01', '2025-06-30', '[]')), ('previous', daterange('2024-06-01', '2024-06-30', '[]'))) p(period, range)),
+ parsed AS (
+   SELECT e.id, p.period, s.category, CAST(s.value AS float) AS score
+   FROM entries e JOIN periods p ON e.day <@ p.range JOIN picked ON picked.id = e.dim_b_id
+   JOIN sources src ON src.id = e.foreign_id AND src.enabled IS TRUE
+   INNER JOIN LATERAL (SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, r.value
+                       FROM jsonb_each(e.metrics_a) r LEFT JOIN labels l ON l.foreign_id = e.foreign_id AND l.source_key = r.key) s ON true)
+ SELECT d.period, x.category, count(DISTINCT x.id) AS entries, round(avg(x.score)::numeric, 6) AS score
+ FROM periods d LEFT JOIN parsed x ON x.period = d.period
+ GROUP BY d.period, x.category
+$q$);
+-- the same keys without the spine, and a sum
+SELECT * FROM check_query($q$
+ WITH picked AS MATERIALIZED (SELECT DISTINCT m.id FROM dim_b m
+   WHERE m.id IN (SELECT coalesce(a.dim_b_id, l.dim_b_id) FROM assigns a LEFT JOIN links l ON l.grp = a.grp WHERE a.sub = 9 AND coalesce(a.dim_b_id, l.dim_b_id) IS NOT NULL)
+     AND m.id IN (SELECT dim_b_id FROM links WHERE grp IN (1)) AND m.kind = 'a')
+ SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, count(*) AS n, sum(CAST(r.value AS float)) AS total
+ FROM entries e JOIN picked ON picked.id = e.dim_b_id
+ INNER JOIN LATERAL (SELECT key, value FROM jsonb_each(e.metrics_a)) r ON true
+ LEFT JOIN labels l ON l.foreign_id = e.foreign_id AND l.source_key = r.key
+ WHERE e.day >= '2025-06-01' AND e.day < '2025-07-01'
+ GROUP BY 1
+$q$);
+-- the other side of the quarter (PLAIN_READER_SHARE, cte/hook.c): the same statement over so few entries that the ordinary read of the members is over a quarter of the flat plan. The two plans are then
+-- weighed by their total costs, and the normal plan, cheaper for a few hundred rows, wins (not pushed); the rows are the same either way
+CREATE TABLE entries_few (LIKE entries INCLUDING DEFAULTS);
+INSERT INTO entries_few SELECT * FROM entries WHERE dim_b_id <= 100 AND id % 200 = 0;
+CREATE INDEX entries_few_col ON entries_few USING sift_col (id, dim_b_id, foreign_id, day, metrics_a) WITH (key_cut = 'dim_b_id', paths = 'metrics_a.* float8');
+CREATE INDEX entries_few_member ON entries_few (dim_b_id);
+VACUUM (FREEZE, ANALYZE) entries_few;
+SELECT * FROM check_query($q$
+ WITH picked AS MATERIALIZED (SELECT DISTINCT m.id FROM dim_b m
+   WHERE m.id IN (SELECT coalesce(a.dim_b_id, l.dim_b_id) FROM assigns a LEFT JOIN links l ON l.grp = a.grp WHERE a.sub = 9 AND coalesce(a.dim_b_id, l.dim_b_id) IS NOT NULL)
+     AND m.id IN (SELECT dim_b_id FROM links WHERE grp IN (1)) AND m.kind = 'a')
+ SELECT coalesce(l.label, split_part(r.key, '_', 1)) AS category, count(*) AS n, sum(CAST(r.value AS float)) AS total
+ FROM entries_few e JOIN picked ON picked.id = e.dim_b_id
+ INNER JOIN LATERAL (SELECT key, value FROM jsonb_each(e.metrics_a)) r ON true
+ LEFT JOIN labels l ON l.foreign_id = e.foreign_id AND l.source_key = r.key
+ GROUP BY 1
+$q$);
+DROP FUNCTION check_query(text);
+DROP TABLE entries_few, entries, assigns, links, dim_b, labels, sources;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s4 CASCADE;
+RESET client_min_messages;
+-- <<< agg_flat_key_lookup
+
+-- >>> agg_page_lookups
+CREATE SCHEMA s5;
+GRANT USAGE ON SCHEMA s5 TO PUBLIC;
+SET search_path = s5, public;
+SET sift.test_create_format1 = on;
+-- The one-row lookups of a page (LEFT JOIN LATERAL of a primary key, of an aggregate without GROUP BY, of a LIMIT 1, a LEFT JOIN on a unique key) are made for the rows
+-- of the page, not for every row that matches before ORDER BY .. LIMIT. The joins that can change the rows (a join that fans out, an inner join, a condition
+-- or an order on their columns) stay where they are, and the lookups above them wait. page_only: the left joins of the plan produce at most the rows of the page.
+-- Each statement gives the rows of the plan without the extension, whatever the plan.
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE dim_a (id int PRIMARY KEY, name text NOT NULL, kind text NOT NULL);
+INSERT INTO dim_a SELECT g, 'a' || g, 'k' || g % 4 FROM generate_series(1, 300) g;
+CREATE TABLE dim_b (id int PRIMARY KEY, url text NOT NULL);
+INSERT INTO dim_b SELECT g, 'u' || g FROM generate_series(1, 200) g;
+CREATE TABLE links_a (id int PRIMARY KEY, dim_a_id int NOT NULL, label text NOT NULL);
+INSERT INTO links_a SELECT g, 1 + g % 300, 'l' || g FROM generate_series(1, 900) g;
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, dim_b_id int, event_date date NOT NULL, status smallint NOT NULL, doc jsonb, deleted_at timestamp) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT g, 1 + (g * 7919) % 300, CASE WHEN g % 9 <> 0 THEN 1 + g % 2000 END, date '2025-01-01' + (g * 31) % 300, g % 5,
+       jsonb_build_object('lang', 'l' || g % 3, 'notes', jsonb_build_array(jsonb_build_object('score', g % 7), jsonb_build_object('score', g % 5))),
+       CASE WHEN g % 23 = 0 THEN timestamp '2025-06-01' END FROM generate_series(1, 937) g;
+CREATE INDEX events_col ON events USING sift_col (dim_a_id, event_date, status, deleted_at);
+VACUUM (FREEZE, ANALYZE) events, dim_a, dim_b, links_a;
+
+CREATE FUNCTION page(extra text, tail text, lim text DEFAULT 'LIMIT 3') RETURNS text LANGUAGE sql AS $$
+	SELECT 'SELECT e.id, e.event_date, e.status, a.name, b.url, s.summary FROM events e JOIN dim_a ON dim_a.id = e.dim_a_id ' || extra ||
+	       ' WHERE e.deleted_at IS NULL AND e.dim_a_id IN (SELECT id FROM dim_a WHERE kind <> ''k0'') ' || tail || ' ORDER BY e.event_date DESC NULLS LAST, e.id ' || lim
+$$;
+CREATE TABLE forms (name text PRIMARY KEY, q text);
+INSERT INTO forms VALUES
+	('lateral key lookups and an aggregate', page($x$
+		LEFT JOIN LATERAL (SELECT dim_a.name FROM dim_a WHERE dim_a.id = e.dim_a_id) a ON true
+		LEFT JOIN LATERAL (SELECT bb.url FROM dim_b bb WHERE bb.id = e.dim_b_id) b ON true
+		LEFT JOIN LATERAL (SELECT json_build_object('lang', e.doc ->> 'lang', 'avg', pl.avg) AS summary
+		                   FROM (SELECT avg(n.score) AS avg FROM jsonb_to_recordset(e.doc -> 'notes') AS n(score float)) pl) s ON true$x$, '')),
+	('left join on a key', page($x$
+		LEFT JOIN dim_a a ON a.id = e.dim_a_id LEFT JOIN dim_b b ON b.id = e.dim_b_id LEFT JOIN LATERAL (SELECT NULL::text AS summary) s ON true$x$, '')),
+	('lateral limit 1', page($x$
+		LEFT JOIN LATERAL (SELECT dim_a.name FROM dim_a WHERE dim_a.kind = e.status::text ORDER BY dim_a.id LIMIT 1) a ON true
+		LEFT JOIN LATERAL (SELECT bb.url FROM dim_b bb WHERE bb.id = e.dim_b_id) b ON true LEFT JOIN LATERAL (SELECT NULL::text AS summary) s ON true$x$, '')),
+	('offset', page($x$
+		LEFT JOIN LATERAL (SELECT dim_a.name FROM dim_a WHERE dim_a.id = e.dim_a_id) a ON true
+		LEFT JOIN LATERAL (SELECT bb.url FROM dim_b bb WHERE bb.id = e.dim_b_id) b ON true LEFT JOIN LATERAL (SELECT NULL::text AS summary) s ON true$x$, '', 'LIMIT 3 OFFSET 400')),
+	('one lookup, the rest fans out', page($x$
+		LEFT JOIN LATERAL (SELECT dim_a.name FROM dim_a WHERE dim_a.id = e.dim_a_id) a ON true
+		LEFT JOIN LATERAL (SELECT bb.url FROM dim_b bb WHERE bb.id = e.dim_b_id) b ON true
+		LEFT JOIN links_a l ON l.dim_a_id = e.dim_a_id LEFT JOIN LATERAL (SELECT NULL::text AS summary) s ON true$x$, '')),
+	('lookup of a column that is not a key', page($x$
+		LEFT JOIN LATERAL (SELECT dim_a.name FROM dim_a WHERE dim_a.kind = 'k1') a ON true
+		LEFT JOIN LATERAL (SELECT bb.url FROM dim_b bb WHERE bb.id = e.dim_b_id) b ON true LEFT JOIN LATERAL (SELECT NULL::text AS summary) s ON true$x$, '')),
+	('inner lateral', page($x$
+		INNER JOIN LATERAL (SELECT dim_a.name FROM dim_a WHERE dim_a.id = e.dim_a_id AND dim_a.kind <> 'k1') a ON true
+		LEFT JOIN LATERAL (SELECT bb.url FROM dim_b bb WHERE bb.id = e.dim_b_id) b ON true LEFT JOIN LATERAL (SELECT NULL::text AS summary) s ON true$x$, '')),
+	('condition on a looked up column', page($x$
+		LEFT JOIN LATERAL (SELECT dim_a.name FROM dim_a WHERE dim_a.id = e.dim_a_id) a ON true
+		LEFT JOIN LATERAL (SELECT bb.url FROM dim_b bb WHERE bb.id = e.dim_b_id) b ON true LEFT JOIN LATERAL (SELECT NULL::text AS summary) s ON true$x$, 'AND b.url <> ''u7''')),
+	('order by a looked up column', 'SELECT e.id, a.name, b.url FROM events e LEFT JOIN LATERAL (SELECT dim_a.name FROM dim_a WHERE dim_a.id = e.dim_a_id) a ON true ' ||
+		'LEFT JOIN LATERAL (SELECT bb.url FROM dim_b bb WHERE bb.id = e.dim_b_id) b ON true WHERE e.deleted_at IS NULL ORDER BY b.url NULLS LAST, e.id LIMIT 3'),
+	('no limit', page($x$
+		LEFT JOIN LATERAL (SELECT dim_a.name FROM dim_a WHERE dim_a.id = e.dim_a_id) a ON true
+		LEFT JOIN LATERAL (SELECT bb.url FROM dim_b bb WHERE bb.id = e.dim_b_id) b ON true LEFT JOIN LATERAL (SELECT NULL::text AS summary) s ON true$x$, 'AND e.id < 3000', ''));
+
+-- the rows the outer joins of the plan produce (the lookups run for them), and whether the rows are the plan without the extension's
+CREATE FUNCTION lookup_rows(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE p jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO p;
+	RETURN coalesce((SELECT max((n ->> 'Actual Rows')::numeric * coalesce((n ->> 'Actual Loops')::numeric, 1))::bigint
+	                 FROM jsonb_path_query(p, 'strict $.**.Plans[*] ? (@."Join Type" == "Left")') n), 0);
+END $$;
+CREATE FUNCTION rows_equal(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE format('SELECT string_agg(r::text, ''|'' ORDER BY ord) FROM (SELECT r, row_number() OVER () AS ord FROM (%s) r) x', q) INTO a;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	EXECUTE format('SELECT string_agg(r::text, ''|'' ORDER BY ord) FROM (SELECT r, row_number() OVER () AS ord FROM (%s) r) x', q) INTO b;
+	RETURN a IS NOT DISTINCT FROM b;
+END $$;
+SELECT name, lookup_rows(q) <= 3 AS page_only, rows_equal(q) AS rows_equal FROM forms ORDER BY name;
+
+DROP FUNCTION page(text, text, text), lookup_rows(text), rows_equal(text);
+DROP TABLE forms, events, dim_a, dim_b, links_a;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s5 CASCADE;
+RESET client_min_messages;
+-- <<< agg_page_lookups
+
+-- >>> agg_union_partial_agg
+CREATE SCHEMA s6;
+GRANT USAGE ON SCHEMA s6 TO PUBLIC;
+SET search_path = s6, public;
+SET sift.test_create_format1 = on;
+-- A GROUP BY over a UNION ALL of selects (`FROM (SELECT t0 AS ts, 1 AS q FROM events WHERE .. UNION ALL SELECT t1, -1 FROM events WHERE ..) ev GROUP BY bucket(ts)`)
+-- groups each arm by the keys and sums, counts, mins and maxes those groups above the union: the arms return one row per group, not one per row, and each arm that
+-- reads a table with a column index runs in the scan. The answers are the plain plan's, the aggregates that cannot be added up from groups (avg, DISTINCT, FILTER,
+-- float sums, an ordered aggregate), a UNION that removes duplicates and an arm that limits its rows keep the query as written, and so do arms that return a row
+-- for each group already (the grouping would only repeat the work of the one above).
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, kind text NOT NULL, t0 timestamp NOT NULL, t1 timestamp, t2 timestamp, n int, big bigint, amt numeric, f float8) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 500, (ARRAY['a', 'a', 'a', 'b', 'c', 'd'])[1 + i % 6], t0, CASE WHEN i % 7 <> 0 THEN t0 + (i % 30) * interval '1 minute' END,
+       CASE WHEN i % 7 NOT IN (0, 1) THEN t0 + (30 + i % 40) * interval '1 minute' END, CASE WHEN i % 11 <> 0 THEN i % 100 END, CASE WHEN i % 13 <> 0 THEN i * 100000000::bigint END, (i % 1000) / 8.0, i / 3.0
+FROM (SELECT i, timestamp '2025-12-01' + (hashint4(i) & 16777215) % 864000 * interval '3 seconds' AS t0 FROM generate_series(1, 40000) i) q;
+CREATE TABLE links_a (id int PRIMARY KEY, set_id int NOT NULL, dim_a_id int NOT NULL);
+INSERT INTO links_a SELECT i, 4, i FROM generate_series(1, 400) i;
+CREATE INDEX links_a_set ON links_a (set_id, dim_a_id);
+CREATE INDEX events_t0 ON events (t0);
+CREATE INDEX events_col ON events USING sift_col (dim_a_id, kind, t0, t1, t2, n, big, amt, f);
+VACUUM (FREEZE, ANALYZE) events;
+VACUUM (FREEZE, ANALYZE) links_a;
+
+\ir test/agg_helpers.sql
+-- in_scan: arms of the plan run in the scan; same: the rows are the plan's without the extension
+CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, in_scan bool, same bool, rows bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT name, pushed(q), runq(q, true) = runq(q, false), (SELECT count(*) FROM jsonb_array_elements(runq(q, true)::jsonb));
+END $$;
+
+-- the bucketed depth of a queue from three timestamps of the same rows, one arm for each
+SELECT * FROM check_query('date_bin over three arms, sums of constants', $q$
+ SELECT date_bin('15 minutes'::interval, ev.ts, timestamp '2000-01-01') AS bucket, ev.kind, ev.ord, sum(ev.queued) AS queued, sum(ev.active) AS active
+ FROM (
+   SELECT e.t0 AS ts, e.kind, 1 AS queued, 0 AS active, 0 AS ord FROM events e
+     WHERE e.kind IN ('a', 'b') AND e.t0 >= timestamp '2025-12-05' AND e.t0 < timestamp '2025-12-09' AND EXISTS (SELECT 1 FROM links_a l WHERE l.set_id = 4 AND l.dim_a_id = e.dim_a_id)
+   UNION ALL
+   SELECT e.t1, e.kind, -1, 1, 1 FROM events e
+     WHERE e.kind IN ('a', 'b') AND e.t1 >= timestamp '2025-12-05' AND e.t1 < timestamp '2025-12-09' AND EXISTS (SELECT 1 FROM links_a l WHERE l.set_id = 4 AND l.dim_a_id = e.dim_a_id)
+   UNION ALL
+   SELECT coalesce(e.t2, e.t1 + interval '1 hour'), e.kind, 0, -1, 2 FROM events e
+     WHERE e.kind IN ('a', 'b') AND e.t1 IS NOT NULL AND coalesce(e.t2, e.t1 + interval '1 hour') >= timestamp '2025-12-05' AND coalesce(e.t2, e.t1 + interval '1 hour') < timestamp '2025-12-09'
+       AND EXISTS (SELECT 1 FROM links_a l WHERE l.set_id = 4 AND l.dim_a_id = e.dim_a_id)
+ ) ev GROUP BY 1, 2, 3 $q$);
+-- the aggregates that groups add up, over columns: the types of the answers are the plain plan's (a count and a sum of ints are bigint, a sum of bigint is numeric)
+SELECT * FROM check_query('count, sum of int, bigint and numeric, min, max', $q$
+ SELECT date_trunc('day', ev.ts) AS d, ev.kind, count(*) AS c, count(ev.n) AS cn, sum(ev.n) AS sn, sum(ev.big) AS sb, sum(ev.amt) AS sa, min(ev.ts) AS lo, max(ev.kind) AS hi, min(ev.amt) AS lo_a
+ FROM (SELECT e.t0 AS ts, e.kind, e.n, e.big, e.amt FROM events e WHERE e.t0 >= timestamp '2025-12-02' UNION ALL SELECT e.t1, e.kind, e.n, e.big, e.amt FROM events e WHERE e.t1 >= timestamp '2025-12-02') ev
+ GROUP BY 1, 2 $q$);
+SELECT * FROM check_query('types of the answers', $q$
+ SELECT pg_typeof(count(*))::text c, pg_typeof(sum(ev.n))::text sn, pg_typeof(sum(ev.big))::text sb, pg_typeof(sum(ev.amt))::text sa, pg_typeof(min(ev.kind))::text lo
+ FROM (SELECT e.kind, e.n, e.big, e.amt, e.t0 FROM events e WHERE e.t0 >= timestamp '2025-12-02' UNION ALL SELECT e.kind, e.n, e.big, e.amt, e.t1 FROM events e WHERE e.t1 >= timestamp '2025-12-02') ev GROUP BY ev.kind $q$);
+SELECT * FROM check_query('HAVING and an expression of the aggregates, ORDER BY', $q$
+ SELECT ev.kind, sum(ev.n) * 2 AS twice
+ FROM (SELECT e.kind, e.n FROM events e WHERE e.t0 >= timestamp '2025-12-02' UNION ALL SELECT e.kind, e.n FROM events e WHERE e.t1 >= timestamp '2025-12-02') ev GROUP BY ev.kind HAVING count(*) > 10 ORDER BY 1 $q$);
+SELECT * FROM check_query('one key, an empty arm, an arm of NULL keys', $q$
+ SELECT date_trunc('hour', ev.ts) AS h, sum(ev.v) AS s, count(ev.ts) AS c
+ FROM (SELECT e.t0 AS ts, 1 AS v FROM events e WHERE e.t0 >= timestamp '2025-12-02' AND e.t0 < timestamp '2025-12-12'
+       UNION ALL SELECT e.t0, 5 FROM events e WHERE false
+       UNION ALL SELECT NULL::timestamp, 7 FROM events e WHERE e.id < 20) ev GROUP BY 1 $q$);
+SELECT * FROM check_query('a nested union', $q$
+ SELECT ev.kind, sum(ev.v) AS s
+ FROM (SELECT e.kind, 1 AS v FROM events e WHERE e.t0 >= timestamp '2025-12-02' UNION ALL (SELECT e.kind, 2 FROM events e WHERE e.t1 >= timestamp '2025-12-02' UNION ALL SELECT e.kind, 3 FROM events e WHERE e.t2 >= timestamp '2025-12-02')) ev GROUP BY 1 $q$);
+
+-- kept as written
+SELECT * FROM check_query('avg', $q$
+ SELECT ev.kind, avg(ev.n) AS a FROM (SELECT e.kind, e.n FROM events e WHERE e.t0 >= timestamp '2025-12-02' UNION ALL SELECT e.kind, e.n FROM events e WHERE e.t1 >= timestamp '2025-12-02') ev GROUP BY 1 $q$);
+SELECT * FROM check_query('count DISTINCT', $q$
+ SELECT ev.kind, count(DISTINCT ev.n) AS a FROM (SELECT e.kind, e.n FROM events e WHERE e.t0 >= timestamp '2025-12-02' UNION ALL SELECT e.kind, e.n FROM events e WHERE e.t1 >= timestamp '2025-12-02') ev GROUP BY 1 $q$);
+SELECT * FROM check_query('sum of float8 (the order of the additions changes the answer)', $q$
+ SELECT ev.kind, sum(ev.f) AS a FROM (SELECT e.kind, e.f FROM events e WHERE e.t0 >= timestamp '2025-12-02' UNION ALL SELECT e.kind, e.f FROM events e WHERE e.t1 >= timestamp '2025-12-02') ev GROUP BY 1 $q$);
+SELECT * FROM check_query('FILTER', $q$
+ SELECT ev.kind, count(*) FILTER (WHERE ev.n > 50) AS a FROM (SELECT e.kind, e.n FROM events e WHERE e.t0 >= timestamp '2025-12-02' UNION ALL SELECT e.kind, e.n FROM events e WHERE e.t1 >= timestamp '2025-12-02') ev GROUP BY 1 $q$);
+SELECT * FROM check_query('ordered aggregate', $q$
+ SELECT ev.kind, array_agg(ev.n ORDER BY ev.n) AS a FROM (SELECT e.kind, e.n FROM events e WHERE e.t0 >= timestamp '2025-12-02' AND e.id < 300 UNION ALL SELECT e.kind, e.n FROM events e WHERE e.t1 >= timestamp '2025-12-02' AND e.id < 300) ev GROUP BY 1 $q$);
+SELECT * FROM check_query('UNION removes duplicates', $q$
+ SELECT ev.kind, sum(ev.n) AS a FROM (SELECT e.kind, e.n FROM events e WHERE e.t0 >= timestamp '2025-12-02' UNION SELECT e.kind, e.n FROM events e WHERE e.t1 >= timestamp '2025-12-02') ev GROUP BY 1 $q$);
+SELECT * FROM check_query('an arm with LIMIT', $q$
+ SELECT ev.kind, sum(ev.n) AS a FROM (SELECT e.kind, e.n FROM events e WHERE e.t0 >= timestamp '2025-12-02' UNION ALL (SELECT e.kind, e.n FROM events e WHERE e.t1 >= timestamp '2025-12-02' ORDER BY e.id LIMIT 500)) ev GROUP BY 1 $q$);
+SELECT * FROM check_query('a join next to the union', $q$
+ SELECT d.kind, sum(ev.n) AS a FROM (SELECT e.id, e.n FROM events e WHERE e.t0 >= timestamp '2025-12-02' UNION ALL SELECT e.id, e.n FROM events e WHERE e.t1 >= timestamp '2025-12-02') ev JOIN events d ON d.id = ev.id GROUP BY 1 $q$);
+-- the arms return a row for each group already: the grouping of each arm would only repeat the one above
+SELECT * FROM check_query('the key of each arm is unique', $q$
+ SELECT ev.id, sum(ev.n) AS a FROM (SELECT e.id, e.n FROM events e WHERE e.t0 >= timestamp '2025-12-02' UNION ALL SELECT e.id, e.n FROM events e WHERE e.t1 >= timestamp '2025-12-02') ev GROUP BY 1 $q$);
+DROP TABLE events, links_a;
+DROP FUNCTION check_query(text,text), outcome(text,boolean), runs_in_scan(text), runq(text,boolean), pushed(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s6 CASCADE;
+RESET client_min_messages;
+-- <<< agg_union_partial_agg
+
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

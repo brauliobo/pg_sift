@@ -34,6 +34,11 @@ extern const char *sift_fmt_ratio(char *buf, size_t len, uint64_t heap_bytes, ui
 /* "31.8 MB, 33.4 B/row, 11.4x vs heap": the size of what was made, the bytes of a row when there are rows, the ratio when it is worth printing */
 extern const char *sift_fmt_size_summary(char *buf, size_t len, uint64_t bytes, uint64_t rows, uint64_t heap_bytes);
 
+#ifdef SIFT_TESTING
+/* sift.test_quiet_build_notice (testing build only): the summaries ignore how long an operation took, so that a regression test sees the same lines on a slow host as on a fast one */
+extern bool sift_test_quiet_build_notice;
+#endif
+
 /* Does a CREATE INDEX or REINDEX say what it made? Not when it was quick, small and chose nothing by itself, and did not change the format of an index */
 extern bool sift_ux_should_emit_build(int64_t elapsed_us, uint64_t rows, bool chose_by_itself, bool changed_format);
 

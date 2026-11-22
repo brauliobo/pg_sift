@@ -14,6 +14,7 @@
 #include "bm25/prefix.h"
 #include "core/catname.h"
 #include "core/crash_point.h"
+#include "core/format_ux.h"
 #include "core/meta_peek.h"
 #include "core/progress.h"
 #include "core/v1_col/tomb.h"
@@ -96,6 +97,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_create_format1",
 							 "Testing: the relations made while it is on take Format 1, whatever format a new relation takes by default.",
 							 NULL, &sift_test_create_format1, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_quiet_build_notice",
+							 "Testing: the summaries of a build and of a maintenance ignore how long it took (they speak for 10,000 rows, a choice or a format change only).",
+							 NULL, &sift_test_quiet_build_notice, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_vis_pause",
 							"Testing: the Nth visibility-map read of a scan waits for advisory lock (0x51F7, 1) first (0 = none).",
 							NULL, &sift_test_vis_pause, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

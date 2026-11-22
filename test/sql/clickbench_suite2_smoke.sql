@@ -1,0 +1,75 @@
+-- The shapes of the ClickBench queries and of the second analytical suite (a date-bucketed star join, a BM25 search with a facet), on 4,000 rows of the ClickBench columns:
+-- each one is planned with the column index (the node that runs it is named) and its answer is the one of the normal plan (sift.enable_agg off), so that a change of plan or of an
+-- answer in any of the core analytical patterns is a diff of this test and not a result of a benchmark.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.test_create_format1 = off;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+
+CREATE TABLE regions (region_id int PRIMARY KEY, name text NOT NULL, continent text NOT NULL);
+INSERT INTO regions SELECT g, 'region ' || g, (ARRAY['eu', 'na', 'sa', 'as', 'af'])[1 + g % 5] FROM generate_series(1, 40) g;
+CREATE TABLE hits (
+	watch_id bigint, user_id bigint, counter_id int, event_date date, event_time timestamp, url text, title text, search_phrase text, region_id int,
+	resolution_width int, is_refresh smallint, adv_engine_id smallint, mobile_model text, referer text);
+INSERT INTO hits
+SELECT g, 1000 + (g * 7919) % 900, 1 + g % 5, date '2013-07-01' + g % 31, timestamp '2013-07-01 00:00:00' + g * interval '97 seconds',
+	'http://site' || g % 40 || '.example/' || CASE WHEN g % 9 = 0 THEN 'google/' ELSE 'p/' END || g % 300,
+	CASE WHEN g % 6 = 0 THEN 'alpha report ' || g % 20 WHEN g % 6 = 1 THEN 'beta notes ' || g % 20 ELSE 'gamma ' || g % 50 END,
+	CASE WHEN g % 4 = 0 THEN '' ELSE 'phrase ' || g % 70 END, 1 + g % 40, 800 + (g % 6) * 160, g % 2, CASE WHEN g % 10 = 0 THEN 1 ELSE 0 END,
+	CASE WHEN g % 5 = 0 THEN '' ELSE 'model' || g % 12 END, 'http://ref' || g % 25 || '.example/'
+FROM generate_series(1, 4000) g;
+CREATE INDEX hits_col ON hits USING sift_col (watch_id, user_id, counter_id, event_date, event_time, url, title, search_phrase, region_id, resolution_width, is_refresh, adv_engine_id, mobile_model, referer);
+CREATE INDEX hits_bm ON hits USING sift (title);
+CREATE INDEX regions_col ON regions USING sift_col (region_id, name, continent);
+VACUUM (FREEZE, ANALYZE) hits, regions;
+
+CREATE TABLE shapes (n int, label text, sql text);
+INSERT INTO shapes VALUES
+ (1,  'count', 'SELECT count(*) FROM hits'),
+ (2,  'count with a filter', 'SELECT count(*) FROM hits WHERE adv_engine_id <> 0'),
+ (3,  'sum, count, avg', 'SELECT sum(adv_engine_id), count(*), avg(resolution_width) FROM hits'),
+ (4,  'avg of a bigint', 'SELECT avg(user_id) FROM hits'),
+ (5,  'count distinct of a bigint', 'SELECT count(DISTINCT user_id) FROM hits'),
+ (6,  'count distinct of a text', 'SELECT count(DISTINCT search_phrase) FROM hits'),
+ (7,  'min and max of a date', 'SELECT min(event_date), max(event_date) FROM hits'),
+ (8,  'group by a small key, ordered', 'SELECT adv_engine_id, count(*) FROM hits WHERE adv_engine_id <> 0 GROUP BY adv_engine_id ORDER BY count(*) DESC, 1'),
+ (9,  'group by region, distinct users, top 10', 'SELECT region_id, sum(adv_engine_id), count(*) AS c, avg(resolution_width), count(DISTINCT user_id) FROM hits GROUP BY region_id ORDER BY c DESC, region_id LIMIT 10'),
+ (10, 'group by a text with a filter, top 10', 'SELECT search_phrase, count(*) AS c FROM hits WHERE search_phrase <> '''' GROUP BY search_phrase ORDER BY c DESC, search_phrase LIMIT 10'),
+ (11, 'group by two keys, top 10', 'SELECT user_id, search_phrase, count(*) AS c FROM hits GROUP BY user_id, search_phrase ORDER BY c DESC, user_id, search_phrase LIMIT 10'),
+ (12, 'group by an expression of a timestamp', 'SELECT extract(minute FROM event_time)::int AS m, count(*) AS c FROM hits GROUP BY m ORDER BY m'),
+ (13, 'a point lookup of a user', 'SELECT watch_id, url FROM hits WHERE user_id = 1234 ORDER BY watch_id'),
+ (14, 'LIKE on a text, count', 'SELECT count(*) FROM hits WHERE url LIKE ''%google%'''),
+ (15, 'rows ordered by time, limit', 'SELECT watch_id, event_time FROM hits WHERE url LIKE ''%google%'' ORDER BY event_time, watch_id LIMIT 10'),
+ (16, 'date-bucketed star join', 'SELECT date_trunc(''week'', h.event_date) AS wk, r.continent, count(*) AS c, count(DISTINCT h.user_id) AS u FROM hits h JOIN regions r ON r.region_id = h.region_id GROUP BY 1, 2 ORDER BY 1, 2'),
+ (17, 'BM25 search with a facet', 'SELECT region_id, count(*) AS c FROM hits WHERE title @@> ''alpha report'' GROUP BY region_id ORDER BY c DESC, region_id LIMIT 5');
+
+CREATE FUNCTION node_of(q text) RETURNS text LANGUAGE plpgsql SET sift.enable_agg = on AS $$
+DECLARE l text; r text := 'normal plan';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(Sift[A-Za-z0-9]*\)' THEN r := substring(l from 'Custom Scan \((Sift[A-Za-z0-9]*)\)'); EXIT; END IF;
+		IF l ~ 'Index (Only )?Scan using hits_' THEN r := 'index scan'; END IF;
+		IF l ~ 'Bitmap Index Scan on hits_bm' THEN r := 'bm25 bitmap'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION answer_on(q text) RETURNS text LANGUAGE plpgsql SET sift.enable_agg = on AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE 'SELECT coalesce(string_agg(t::text, '';'' ORDER BY t::text), '''') FROM (' || q || ') t' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION answer_off(q text) RETURNS text LANGUAGE plpgsql SET sift.enable_agg = off AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE 'SELECT coalesce(string_agg(t::text, '';'' ORDER BY t::text), '''') FROM (' || q || ') t' INTO r;
+	RETURN r;
+END $$;
+
+SELECT n, label, node_of(sql) AS node, answer_on(sql) = answer_off(sql) AS same_answer FROM shapes ORDER BY n;
+
+DROP FUNCTION node_of(text), answer_on(text), answer_off(text);
+DROP TABLE shapes, hits, regions;
+DROP EXTENSION pg_sift;

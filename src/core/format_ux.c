@@ -119,16 +119,23 @@ sift_fmt_size_summary(char *buf, size_t len, uint64_t bytes, uint64_t rows, uint
 	return buf;
 }
 
+#ifdef SIFT_TESTING
+bool		sift_test_quiet_build_notice;
+#define TOOK_LONG(us)	(!sift_test_quiet_build_notice && (us) >= SIFT_UX_QUICK_US)
+#else
+#define TOOK_LONG(us)	((us) >= SIFT_UX_QUICK_US)
+#endif
+
 bool
 sift_ux_should_emit_build(int64_t elapsed_us, uint64_t rows, bool chose_by_itself, bool changed_format)
 {
-	return elapsed_us >= SIFT_UX_QUICK_US || rows >= SIFT_UX_SMALL_ROWS || chose_by_itself || changed_format;
+	return TOOK_LONG(elapsed_us) || rows >= SIFT_UX_SMALL_ROWS || chose_by_itself || changed_format;
 }
 
 bool
 sift_ux_should_emit_timing(int64_t elapsed_us)
 {
-	return elapsed_us >= SIFT_UX_QUICK_US;
+	return TOOK_LONG(elapsed_us);
 }
 
 static const char *

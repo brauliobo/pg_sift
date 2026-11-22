@@ -1,0 +1,84 @@
+-- Complexity guards without a clock: the counters of EXPLAIN (ANALYZE, BUFFERS) of one query at 2,000 and at 16,000 rows (8 times the rows, 1 granule of the column index of format major 2 against 8)
+-- the scan of a column index of format major 2) must grow as the algorithm says: a point or a short range lookup reads the same index blocks, a scan reads each row once (rows scanned and
+-- aggregated are the row counts, exactly) and its blocks grow no faster than its rows, a high-cardinality group holds one group for each key, a filter keeps exactly the rows that pass,
+-- a BM25 top-k search reads far fewer blocks than 8 times the ones of the small index. A return to a quadratic or per-row-linear step in these paths changes a counter, not a time.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.test_create_format1 = off;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+
+-- the node of the scan, and the blocks of the whole statement (hits and reads of the shared buffers)
+CREATE FUNCTION plan_of(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO j;
+	RETURN j->0->'Plan';
+END $$;
+CREATE FUNCTION blocks(q text) RETURNS int LANGUAGE sql AS $$
+	SELECT ((p->>'Shared Hit Blocks')::int + (p->>'Shared Read Blocks')::int) FROM plan_of(q) p
+$$;
+CREATE FUNCTION counter(q text, VARIADIC path text[]) RETURNS numeric LANGUAGE sql AS $$
+	SELECT coalesce((jsonb_path_query_first(p, 'strict $.** ? (@."Custom Plan Provider" like_regex "^SiftAgg")') #>> path)::numeric, -1) FROM plan_of(q) p
+$$;
+
+CREATE TABLE t2k (id int, g int, v int, s text, w text);
+INSERT INTO t2k SELECT i, i % 50, i % 1000, 'k' || i % 500, 'u' || i FROM generate_series(1, 2000) i;
+CREATE TABLE t16k (LIKE t2k);
+INSERT INTO t16k SELECT i, i % 50, i % 1000, 'k' || i % 500, 'u' || i FROM generate_series(1, 16000) i;
+CREATE INDEX t2k_ix ON t2k USING sift_col (id, g, v, s, w) WITH (key_order = 'id');
+CREATE INDEX t16k_ix ON t16k USING sift_col (id, g, v, s, w) WITH (key_order = 'id');
+VACUUM (FREEZE, ANALYZE) t2k, t16k;
+
+-- the lookups of one key and of a short range: the same index blocks (the manifest and the marks are searched, not read in full)
+CREATE FUNCTION index_scan(q text) RETURNS int LANGUAGE plpgsql AS $$
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off;
+	RETURN blocks(q);
+END $$;
+SELECT index_scan('SELECT * FROM t16k WHERE id = 12345') <= index_scan('SELECT * FROM t2k WHERE id = 1234') + 8 AS point_blocks_flat;
+SELECT index_scan('SELECT * FROM t16k WHERE id BETWEEN 12000 AND 12099') <= index_scan('SELECT * FROM t2k WHERE id BETWEEN 1200 AND 1299') + 8 AS range_blocks_flat;
+
+-- a full scan reads every granule once (1 granule, 8 granules) and returns every group
+CREATE FUNCTION granules(shape text) RETURNS TABLE (scanned_small numeric, scanned_big numeric, pruned_zone_big numeric, pruned_dict_big numeric, rows_big numeric)
+LANGUAGE plpgsql AS $$
+DECLARE qs text := format(shape, 't2k'); qb text := format(shape, 't16k');
+BEGIN
+	RETURN QUERY SELECT counter(qs, 'Sift', 'Granules', 'Scanned'), counter(qb, 'Sift', 'Granules', 'Scanned'), counter(qb, 'Sift', 'Granules', 'Pruned By Zone Map'),
+		counter(qb, 'Sift', 'Granules', 'Pruned By Dictionary'), counter(qb, 'Actual Rows');
+END $$;
+SELECT 'every granule once' AS shape, (granules('SELECT w, count(*) FROM %s GROUP BY w')).*;
+
+-- the memory of a high-cardinality group grows with its groups (8 times the groups, no more than 8 times the memory), no spill, one group for each key, and the blocks grow no faster than the rows
+CREATE FUNCTION memory(shape text) RETURNS TABLE (groups_small numeric, groups_big numeric, memory_linear bool, spills numeric, blocks_linear bool)
+LANGUAGE plpgsql AS $$
+DECLARE qs text := format(shape, 't2k'); qb text := format(shape, 't16k');
+BEGIN
+	RETURN QUERY SELECT counter(qs, 'Actual Rows'), counter(qb, 'Actual Rows'), counter(qb, 'Sift', 'I/O & Mem', 'Peak Memory') <= 8 * counter(qs, 'Sift', 'I/O & Mem', 'Peak Memory'),
+		counter(qb, 'Sift', 'I/O & Mem', 'Spills'), blocks(qb) <= 10 * greatest(blocks(qs), 1) + 8;
+END $$;
+SELECT 'one group for each key' AS shape, (memory('SELECT w, count(*) FROM %s GROUP BY w')).*;
+SELECT 'count distinct of a dictionary column' AS shape, (memory('SELECT g, count(DISTINCT s) FROM %s GROUP BY g')).*;
+SELECT 'IN list on a dictionary column' AS shape, (memory('SELECT g, count(*) FROM %s WHERE s IN (''k1'', ''k2'', ''k3'', ''k4'') GROUP BY g')).*;
+SELECT 'a filter that keeps 1 row in 100' AS shape, (memory('SELECT g, count(*), sum(v) FROM %s WHERE v < 10 GROUP BY g')).*;
+
+-- BM25: a top-k search reads a small share of the blocks of a table 8 times as large (the lazy tail and the bounds skip postings), and the counts of its matches are exact
+CREATE TABLE d2k (id int PRIMARY KEY, body text);
+INSERT INTO d2k SELECT g, (SELECT string_agg('w' || floor(300 * power(abs(hashint8(g * 131 + k)::float8 / 2147483648.0), 2.5))::int, ' ') FROM generate_series(1, 12) k) FROM generate_series(1, 2000) g;
+CREATE TABLE d16k (LIKE d2k INCLUDING ALL);
+INSERT INTO d16k SELECT g, (SELECT string_agg('w' || floor(300 * power(abs(hashint8(g * 131 + k)::float8 / 2147483648.0), 2.5))::int, ' ') FROM generate_series(1, 12) k) FROM generate_series(1, 16000) g;
+CREATE INDEX d2k_ix ON d2k USING sift (body);
+CREATE INDEX d16k_ix ON d16k USING sift (body);
+VACUUM (FREEZE, ANALYZE) d2k, d16k;
+CREATE FUNCTION topk_blocks(t text) RETURNS int LANGUAGE plpgsql AS $$
+BEGIN
+	SET LOCAL enable_seqscan = off;
+	RETURN blocks(format('SELECT id FROM %s WHERE body @@> ''w3 OR w7'' ORDER BY sift.score(ctid) DESC LIMIT 10', t));
+END $$;
+SELECT topk_blocks('d16k') < 4 * topk_blocks('d2k') + 16 AS topk_blocks_sublinear;
+SELECT (SELECT count(*) FROM d16k WHERE body @@> 'w3') = (SELECT count(*) FROM d16k WHERE body ~ '(^| )w3( |$)') AS match_count_exact;
+
+DROP TABLE t2k, t16k, d2k, d16k;
+DROP FUNCTION index_scan(text), granules(text), memory(text), topk_blocks(text), counter(text, text[]), blocks(text), plan_of(text);
+DROP EXTENSION pg_sift;

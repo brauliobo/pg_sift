@@ -1,0 +1,417 @@
+-- The window rewrites of src/agg/latest.c and src/agg/window.c, one segment each, in a schema of its own: row_number() = 1 as DISTINCT ON, row_number() <= N as an array cut,
+-- and the tie order under lag() and lead(). Every query runs as the rewrite and as the normal plan (sift.enable_agg off). Replaces four tests of one fixture each.
+CREATE EXTENSION pg_sift;
+
+-- >>> agg_latest_per_group
+CREATE SCHEMA s1;
+GRANT USAGE ON SCHEMA s1 TO PUBLIC;
+SET search_path = s1, public;
+SET sift.test_create_format1 = on;
+-- `SELECT .. FROM (SELECT .., row_number() OVER (PARTITION BY k ORDER BY o) rn FROM t) s WHERE rn = 1` is `SELECT DISTINCT ON (k) .. ORDER BY k, o`: the scan
+-- runs it in one pass where the window sorts every row. The answers are the normal plan's where the ORDER BY has no ties; with ties the row kept is one of
+-- the tie, in the window and in DISTINCT ON alike. A window that is not a lone row_number() with a PARTITION BY and an ORDER BY stays as written.
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE events (id int PRIMARY KEY, grp int NOT NULL, sub int, ts int, amount int NOT NULL, tie int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, i % 37, CASE WHEN i % 5 = 0 THEN NULL ELSE i % 3 END, CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 31) % 1000 END, i % 11, i % 4
+FROM generate_series(1, 5000) i;
+CREATE INDEX events_col ON events USING sift_col (id, grp, sub, ts, amount, tie);
+CREATE TABLE groups (grp int PRIMARY KEY, name text) WITH (autovacuum_enabled = false);
+INSERT INTO groups SELECT i, 'g' || i FROM generate_series(0, 36) i;
+VACUUM (FREEZE, ANALYZE) events;
+VACUUM (FREEZE, ANALYZE) groups;
+
+\ir test/agg_helpers.sql
+CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, in_scan bool, same bool, rows bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), (SELECT count(*) FROM jsonb_array_elements(outcome(q, true)::jsonb));
+END $$;
+-- why the rewrite was not made, from sift.explain_why
+CREATE FUNCTION window_why(q text) RETURNS text LANGUAGE sql AS $$
+	SELECT string_agg(DISTINCT substring(reason from '\(([^()]*)\)$'), '; ') FROM sift.explain_why(q) WHERE slug = 'window_first'
+$$;
+
+-- the filters that keep the first row, the column it makes read 1
+SELECT * FROM check_query('rn = 1', $q$ SELECT * FROM (SELECT id, grp, amount, row_number() OVER (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id) rn FROM events) t WHERE rn = 1 $q$);
+SELECT * FROM check_query('rn <= 1', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id) rn FROM events) t WHERE rn <= 1 $q$);
+SELECT * FROM check_query('rn < 2', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id) rn FROM events) t WHERE rn < 2 $q$);
+SELECT * FROM check_query('1 = rn', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id) rn FROM events) t WHERE 1 = rn $q$);
+SELECT * FROM check_query('1 >= rn', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id) rn FROM events) t WHERE 1 >= rn $q$);
+SELECT * FROM check_query('2 > rn', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id) rn FROM events) t WHERE 2 > rn $q$);
+SELECT * FROM check_query('rn = 1::bigint, rn read twice', $q$ SELECT id, grp, rn, rn + 1 AS next FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id) rn FROM events) t WHERE rn = 1::bigint AND rn <= 1 $q$);
+-- another condition of the outer query, a condition of the sub-select, a join
+SELECT * FROM check_query('conditions around', $q$
+ SELECT t.id, t.grp, g.name FROM (SELECT id, grp, amount, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM events WHERE amount > 2) t JOIN groups g ON g.grp = t.grp
+ WHERE t.rn = 1 AND t.amount > 5 $q$);
+-- the window's own shapes: two partition keys, an order key that is a partition key, a descending order of an expression, a frame (row_number() has none)
+SELECT * FROM check_query('two partition keys', $q$ SELECT * FROM (SELECT id, grp, sub, row_number() OVER (PARTITION BY grp, sub ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
+SELECT * FROM check_query('order key is a partition key', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY grp, id) rn FROM events) t WHERE rn = 1 $q$);
+SELECT * FROM check_query('order by an expression', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY amount * 1000 - id DESC) rn FROM events) t WHERE rn = 1 $q$);
+SELECT * FROM check_query('a frame', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) rn FROM events) t WHERE rn = 1 $q$);
+SELECT * FROM check_query('a named window', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER w rn FROM events WINDOW w AS (PARTITION BY grp ORDER BY id DESC)) t WHERE rn = 1 $q$);
+-- a CTE read once, a sub-select of a sub-select, a sublink
+SELECT * FROM check_query('CTE', $q$ WITH latest AS (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) SELECT id, grp FROM latest WHERE rn = 1 $q$);
+SELECT * FROM check_query('nested', $q$ SELECT count(*), sum(id) FROM (SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1) u $q$);
+SELECT * FROM check_query('sublink', $q$
+ SELECT g.grp, (SELECT t.id FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE t.rn = 1 AND t.grp = g.grp) AS latest FROM groups g $q$);
+
+-- NULLs: a NULL partition key is a group of its own, a NULL order key sorts where NULLS FIRST / LAST (and the default of ASC / DESC) put it
+SELECT * FROM check_query('NULL partition key', $q$ SELECT * FROM (SELECT id, sub, row_number() OVER (PARTITION BY sub ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
+SELECT o AS "order", (check_query('NULL order key ' || o, format($q$ SELECT * FROM (SELECT id, sub, ts, row_number() OVER (PARTITION BY sub ORDER BY ts %s, id) rn FROM events) t WHERE rn = 1 $q$, o))).*
+FROM unnest(ARRAY['', 'NULLS FIRST', 'DESC', 'DESC NULLS LAST']) o;
+-- under an ORDER BY of the outer query, on rn or not, and a LIMIT
+SELECT * FROM check_query('ORDER BY rn, LIMIT', $q$ SELECT id, grp, rn FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 ORDER BY rn, id LIMIT 5 $q$);
+SELECT * FROM check_query('ORDER BY rn DESC', $q$ SELECT id, grp, rn FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 ORDER BY rn DESC, grp $q$);
+SELECT runq($q$ SELECT id, grp, rn FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 ORDER BY id DESC LIMIT 3 $q$, true) =
+       runq($q$ SELECT id, grp, rn FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 ORDER BY id DESC LIMIT 3 $q$, false) AS same_limit;
+
+-- the window stays as written: a window function besides it, no PARTITION BY or ORDER BY, a sub-select that limits, a CTE read twice, the first row
+-- in a condition that is not a conjunct, the second row (the first N rows are agg_topn_rownumber)
+SELECT * FROM check_query('another window function', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn, count(*) OVER (PARTITION BY grp) n FROM events) t WHERE rn = 1 $q$);
+SELECT window_why($q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn, count(*) OVER (PARTITION BY grp) n FROM events) t WHERE rn = 1 $q$);
+SELECT * FROM check_query('no PARTITION BY', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
+SELECT * FROM check_query('no ORDER BY, a group of one', $q$ SELECT count(*) FROM (SELECT id, grp, row_number() OVER (PARTITION BY id) rn FROM events) t WHERE rn = 1 $q$);
+SELECT window_why($q$ SELECT * FROM (SELECT id, grp, row_number() OVER (ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
+SELECT * FROM check_query('a limit in the sub-select', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events ORDER BY id DESC LIMIT 1000) t WHERE rn = 1 $q$);
+SELECT window_why($q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events ORDER BY id DESC LIMIT 1000) t WHERE rn = 1 $q$);
+SELECT * FROM check_query('a CTE read twice', $q$
+ WITH latest AS (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events)
+ SELECT a.id, b.id AS other FROM latest a JOIN latest b ON b.grp = a.grp AND b.rn = 2 WHERE a.rn = 1 $q$);
+SELECT * FROM check_query('a MATERIALIZED CTE', $q$ WITH latest AS MATERIALIZED (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) SELECT id, grp FROM latest WHERE rn = 1 $q$);
+SELECT * FROM check_query('an OR', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 OR grp = 3 $q$);
+SELECT * FROM check_query('the second row', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 2 $q$);
+SELECT * FROM check_query('the first three rows are arrays', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
+SELECT * FROM check_query('a left join', $q$
+ SELECT g.grp, t.id FROM groups g LEFT JOIN (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events WHERE amount = 3) t ON t.grp = g.grp AND t.rn = 1 $q$);
+
+-- ties: the row of each group is one of the rows that tie for the first, whatever the plan (the scan keeps the first one it meets)
+CREATE FUNCTION first_of_tie(q text) RETURNS TABLE (groups bigint, not_first bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN QUERY EXECUTE format($f$
+		SELECT count(*), count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.grp = r.grp AND e.tie = r.tie AND e.id = r.id)
+		                                  OR EXISTS (SELECT 1 FROM events e WHERE e.grp = r.grp AND e.tie < r.tie))
+		FROM (%s) r$f$, q);
+END $$;
+SELECT * FROM first_of_tie($q$ SELECT grp, id, tie FROM (SELECT id, grp, tie, row_number() OVER (PARTITION BY grp ORDER BY tie) rn FROM events) t WHERE rn = 1 $q$);
+SELECT runs_in_scan($q$ SELECT grp, id, tie FROM (SELECT id, grp, tie, row_number() OVER (PARTITION BY grp ORDER BY tie) rn FROM events) t WHERE rn = 1 $q$);
+SELECT * FROM first_of_tie($q$ SELECT DISTINCT ON (grp) grp, id, tie FROM events ORDER BY grp, tie $q$);
+
+DROP FUNCTION first_of_tie(text);
+DROP TABLE events, groups;
+DROP FUNCTION window_why(text), check_query(text,text), outcome(text,boolean), runs_in_scan(text), runq(text,boolean), pushed(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s1 CASCADE;
+RESET client_min_messages;
+-- <<< agg_latest_per_group
+
+-- >>> agg_topn_rownumber
+CREATE SCHEMA s2;
+GRANT USAGE ON SCHEMA s2 TO PUBLIC;
+SET search_path = s2, public;
+SET sift.test_create_format1 = on;
+-- `WHERE rn <= N` over `row_number() OVER (PARTITION BY k ORDER BY o)` is the first N rows of each group: the scan runs it as the group's arrays of each
+-- column, ordered by o, cut at N and unnested with their ordinal (rn is the ordinal), where the window sorts every row. The answers are the normal plan's where
+-- the ORDER BY has no ties; with ties the rows kept are N of the tie, in the window and in the arrays alike. Anything else stays as written.
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE events (id int PRIMARY KEY, grp int NOT NULL, sub int, ts int, amount int NOT NULL, tie int NOT NULL, txt text, num numeric(10,2), tags int[]) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, i % 37, CASE WHEN i % 5 = 0 THEN NULL ELSE i % 3 END, CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 31) % 1000 END, i % 11, i % 4,
+       CASE WHEN i % 6 = 0 THEN NULL ELSE 't' || i % 13 END, CASE WHEN i % 9 = 0 THEN NULL ELSE i / 7.0 END, ARRAY[i, i + 1]
+FROM generate_series(1, 5000) i;
+CREATE INDEX events_col ON events USING sift_col (id, grp, sub, ts, amount, tie, txt, num);
+CREATE TABLE plain_events (id int PRIMARY KEY, grp int NOT NULL, ts int) WITH (autovacuum_enabled = false);
+INSERT INTO plain_events SELECT i, i % 37, i FROM generate_series(1, 500) i;
+VACUUM (FREEZE, ANALYZE) events;
+VACUUM (FREEZE, ANALYZE) plain_events;
+
+\ir test/agg_helpers.sql
+CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, in_scan bool, same bool, rows bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), (SELECT count(*) FROM jsonb_array_elements(outcome(q, true)::jsonb));
+END $$;
+CREATE FUNCTION window_why(q text) RETURNS text LANGUAGE sql AS $$
+	SELECT string_agg(DISTINCT substring(reason from '\(([^()]*)\)$'), '; ') FROM sift.explain_why(q) WHERE slug = 'window_first'
+$$;
+
+-- the bound, in its forms; rn is read: it is 1 to N
+SELECT * FROM check_query('rn <= 3', $q$ SELECT * FROM (SELECT id, grp, amount, row_number() OVER (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id) rn FROM events) t WHERE rn <= 3 $q$);
+SELECT * FROM check_query('rn < 4', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id) rn FROM events) t WHERE rn < 4 $q$);
+SELECT * FROM check_query('3 >= rn', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id) rn FROM events) t WHERE 3 >= rn $q$);
+SELECT * FROM check_query('4 > rn', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id) rn FROM events) t WHERE 4 > rn $q$);
+SELECT * FROM check_query('rn <= 2::bigint AND rn <= 5', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id) rn FROM events) t WHERE rn <= 2::bigint AND rn <= 5 $q$);
+SELECT * FROM check_query('N past the size of the groups', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id) rn FROM events) t WHERE rn <= 100000 $q$);
+SELECT * FROM check_query('rn = 1 AND rn <= 3 is the first row', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id) rn FROM events) t WHERE rn = 1 AND rn <= 3 $q$);
+SELECT * FROM check_query('rn read in expressions and ordered by', $q$
+ SELECT id, grp, rn, rn * 10 AS tenth FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 4 AND rn <> 3 ORDER BY rn DESC, grp LIMIT 20 $q$);
+-- the columns the arrays hold: text, numeric, NULLs, expressions, a column twice
+SELECT * FROM check_query('columns of several types', $q$ SELECT * FROM (SELECT id, grp, txt, num, ts, amount * 2 AS twice, txt || '!' AS bang, row_number() OVER (PARTITION BY grp ORDER BY id) rn FROM events) t WHERE rn <= 3 $q$);
+SELECT * FROM check_query('a column twice', $q$ SELECT * FROM (SELECT id, id AS again, grp, row_number() OVER (PARTITION BY grp ORDER BY id) rn FROM events) t WHERE rn <= 3 $q$);
+-- the window's shapes: NULL partition keys, two keys, orders with NULLS FIRST / LAST and DESC, an order key that is a partition key, a named window, a condition of the sub-select
+SELECT * FROM check_query('NULL partition key', $q$ SELECT * FROM (SELECT id, sub, row_number() OVER (PARTITION BY sub ORDER BY id DESC) rn FROM events) t WHERE rn <= 4 $q$);
+SELECT * FROM check_query('two partition keys', $q$ SELECT * FROM (SELECT id, grp, sub, row_number() OVER (PARTITION BY grp, sub ORDER BY id DESC) rn FROM events) t WHERE rn <= 2 $q$);
+SELECT o AS "order", (check_query('order ' || o, format($q$ SELECT * FROM (SELECT id, sub, ts, row_number() OVER (PARTITION BY sub ORDER BY ts %s, id) rn FROM events) t WHERE rn <= 3 $q$, o))).*
+FROM unnest(ARRAY['', 'NULLS FIRST', 'DESC', 'DESC NULLS LAST']) o;
+SELECT * FROM check_query('two order keys', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY amount DESC, tie, id) rn FROM events) t WHERE rn <= 3 $q$);
+SELECT * FROM check_query('order key is a partition key', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY grp, id) rn FROM events) t WHERE rn <= 3 $q$);
+SELECT * FROM check_query('a named window', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER w rn FROM events WINDOW w AS (PARTITION BY grp ORDER BY id DESC)) t WHERE rn <= 3 $q$);
+SELECT * FROM check_query('a condition of the sub-select and of the outer query', $q$
+ SELECT * FROM (SELECT id, grp, amount, row_number() OVER (PARTITION BY grp ORDER BY amount DESC, id) rn FROM events WHERE ts > 100) t WHERE rn <= 3 AND amount > 5 $q$);
+SELECT * FROM check_query('CTE', $q$ WITH ranked AS (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) SELECT id, grp, rn FROM ranked WHERE rn <= 2 $q$);
+SELECT * FROM check_query('under a join and an aggregate', $q$
+ SELECT t.grp, count(*) n, sum(t.amount) s FROM (SELECT id, grp, amount, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t JOIN events e ON e.id = t.id WHERE t.rn <= 5 GROUP BY t.grp $q$);
+
+-- the result keeps the type modifier of the column (an array element has none)
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+CREATE TEMP TABLE kept AS SELECT * FROM (SELECT id, num, row_number() OVER (PARTITION BY grp ORDER BY id) rn FROM events) t WHERE rn <= 3;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+SELECT format_type(atttypid, atttypmod) AS num_type FROM pg_attribute WHERE attrelid = 'kept'::regclass AND attname = 'num';
+DROP TABLE kept;
+
+-- ties: each group gives the N rows that come first in the order, whichever of the tie; rn is 1 to the number of rows it gave
+CREATE FUNCTION first_n_of_tie(q text, n int) RETURNS TABLE (groups bigint, wrong_tie_values bigint, wrong_rn bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN QUERY EXECUTE format($f$
+		WITH got AS (%s),
+		want AS (SELECT grp, array_agg(tie ORDER BY tie) FILTER (WHERE r <= %s) AS ties FROM (SELECT grp, tie, row_number() OVER (PARTITION BY grp ORDER BY tie) r FROM events) x GROUP BY grp),
+		have AS (SELECT grp, array_agg(tie ORDER BY tie) AS ties, array_agg(rn ORDER BY rn) AS rns FROM got GROUP BY grp)
+		SELECT count(*), count(*) FILTER (WHERE have.ties IS DISTINCT FROM want.ties),
+		       count(*) FILTER (WHERE have.rns IS DISTINCT FROM (SELECT array_agg(i::bigint) FROM generate_series(1, cardinality(want.ties)) i))
+		FROM have JOIN want USING (grp)$f$, q, n);
+END $$;
+SELECT * FROM first_n_of_tie($q$ SELECT grp, id, tie, rn FROM (SELECT id, grp, tie, row_number() OVER (PARTITION BY grp ORDER BY tie) rn FROM events) t WHERE rn <= 3 $q$, 3);
+SELECT * FROM first_n_of_tie($q$ SELECT grp, id, tie, rn FROM (SELECT id, grp, tie, row_number() OVER (PARTITION BY grp ORDER BY tie) rn FROM events) t WHERE rn <= 40 $q$, 40);
+SELECT runs_in_scan($q$ SELECT grp, id, tie, rn FROM (SELECT id, grp, tie, row_number() OVER (PARTITION BY grp ORDER BY tie) rn FROM events) t WHERE rn <= 3 $q$);
+
+-- as written: another window function, nothing to cut but the partition and rn, a column that is an array, a table with no column index, a grouped sub-select
+SELECT * FROM check_query('another window function', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn, count(*) OVER (PARTITION BY grp) n FROM events) t WHERE rn <= 3 $q$);
+SELECT * FROM check_query('only the partition and rn', $q$ SELECT * FROM (SELECT grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
+SELECT window_why($q$ SELECT * FROM (SELECT grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
+SELECT * FROM check_query('an array column', $q$ SELECT * FROM (SELECT id, grp, tags, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
+SELECT window_why($q$ SELECT * FROM (SELECT id, grp, tags, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
+SELECT * FROM check_query('no column index', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM plain_events) t WHERE rn <= 3 $q$);
+SELECT * FROM check_query('a grouped sub-select', $q$
+ SELECT * FROM (SELECT grp, c, row_number() OVER (PARTITION BY c % 3 ORDER BY c DESC, grp) rn FROM (SELECT grp, count(*) c FROM events GROUP BY grp) g) t WHERE rn <= 3 $q$);
+SELECT * FROM check_query('the second row only', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 2 $q$);
+
+-- the memory decides it: the scan keeps the first rows of every group in memory, which a sort of the window spills to disk, so the scan that runs for 37 groups
+-- of 135 rows is refused for 1,000 groups of 5 when the memory of a hash aggregate is 128 kB
+CREATE TABLE ranked (id int PRIMARY KEY, k37 int NOT NULL, k1000 int NOT NULL, ts int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO ranked SELECT i, i % 37, i % 1000, (i * 31) % 1000, i % 11 FROM generate_series(1, 5000) i;
+CREATE INDEX ranked_col ON ranked USING sift_col (id, k37, k1000, ts, amount);
+VACUUM (FREEZE, ANALYZE) ranked;
+CREATE FUNCTION plan_in_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE line text; found bool := false;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+	RETURN found;
+END $$;
+SET seq_page_cost = 64;
+SET work_mem = '64kB';
+SELECT k AS "partition key", plan_in_scan(format($q$ SELECT * FROM (SELECT id, amount, row_number() OVER (PARTITION BY %s ORDER BY ts DESC, id) rn FROM ranked) t WHERE rn <= 3 $q$, k)) AS in_scan
+FROM unnest(ARRAY['k37', 'k1000']) k;
+DROP FUNCTION plan_in_scan(text);
+DROP TABLE ranked;
+
+DROP FUNCTION first_n_of_tie(text, int);
+DROP TABLE events, plain_events;
+DROP FUNCTION window_why(text), check_query(text,text), outcome(text,boolean), runs_in_scan(text), runq(text,boolean), pushed(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s2 CASCADE;
+RESET client_min_messages;
+-- <<< agg_topn_rownumber
+
+-- >>> agg_window_topn
+CREATE SCHEMA s3;
+GRANT USAGE ON SCHEMA s3 TO PUBLIC;
+SET search_path = s3, public;
+SET sift.test_create_format1 = on;
+-- `SELECT .. FROM (SELECT .., row_number() OVER (PARTITION BY k ORDER BY o) rn FROM t) s WHERE rn <= N` for N > 1 is the groups' arrays cut at N inside the group,
+-- `(SELECT k, (array_agg(c ORDER BY o))[1:N] a FROM t GROUP BY k) g, LATERAL unnest(g.a)` (agg/latest.c), where the scan keeps only the first N rows of each group
+-- as the rows pass (SiftAggGen.topn, agg/gen_run.c) and the plan with the sort of every row is the other choice. Every statement runs with sift on and off and the rows are
+-- compared (md5 of the sorted rows; the orders have no ties, but for the rank() and dense_rank() ones); `sliced` says the plan holds the first rows of the groups (a pushed array_agg[1:N]), `in_scan` that the scan ran.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE wt (id int PRIMARY KEY, grp int NOT NULL, grp2 int NOT NULL, gn int, amount int, ts int NOT NULL, note text NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO wt SELECT i, i % 40, i % 3, CASE WHEN i % 9 = 0 THEN NULL ELSE i % 25 END, CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 37) % 500 END, (i * 101) % 9973, 'n' || i FROM generate_series(1, 30000) i;
+CREATE TABLE wtab (id int PRIMARY KEY, grp int NOT NULL, amount int, ts int NOT NULL, memo text NOT NULL) USING sift_table;
+INSERT INTO wtab SELECT i, i % 40, CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 37) % 500 END, (i * 101) % 9973, 'm' || (i % 977) FROM generate_series(1, 30000) i;
+CREATE TABLE dim (grp int PRIMARY KEY, label text NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO dim SELECT i, 'g' || i FROM generate_series(0, 39) i;
+CREATE TABLE sparse AS SELECT i AS id, i AS grp, (i * 7) % 100 AS amount FROM generate_series(1, 37500) i;
+CREATE INDEX wt_col ON wt USING sift_col (id, grp, grp2, gn, amount, ts, note) WITH (key_cut = grp);
+CREATE INDEX sparse_col ON sparse USING sift_col (id, grp, amount);
+VACUUM (FREEZE, ANALYZE) wt;
+VACUUM (FREEZE, ANALYZE) wtab;
+VACUUM (FREEZE, ANALYZE) dim;
+VACUUM (FREEZE, ANALYZE) sparse;
+
+CREATE TABLE shapes (ord serial, name text, q text);
+INSERT INTO shapes (name, q) VALUES
+  ('top 3',                 $q$SELECT * FROM (SELECT id, grp, amount, row_number() OVER (PARTITION BY grp ORDER BY amount DESC NULLS LAST, id) rn FROM wt) t WHERE rn <= 3$q$),
+  ('top 2 ascending',       $q$SELECT * FROM (SELECT id, grp, amount, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t WHERE rn < 3$q$),
+  ('bound on the left',     $q$SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC, id) rn FROM wt) t WHERE 4 >= rn$q$),
+  ('more than a group',     $q$SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id) rn FROM wt) t WHERE rn <= 5000$q$),
+  ('two partition columns', $q$SELECT * FROM (SELECT id, grp, grp2, row_number() OVER (PARTITION BY grp, grp2 ORDER BY amount NULLS FIRST, id) rn FROM wt) t WHERE rn <= 2$q$),
+  ('condition inside',      $q$SELECT * FROM (SELECT id, grp, amount, row_number() OVER (PARTITION BY grp ORDER BY amount DESC NULLS LAST, id) rn FROM wt WHERE amount > 100 AND grp < 30) t WHERE rn <= 3$q$),
+  ('condition outside',     $q$SELECT * FROM (SELECT id, grp, amount, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t WHERE rn <= 3 AND id > 2000$q$),
+  ('row number read',       $q$SELECT id, grp, rn, rn * 10 AS x FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t WHERE rn <= 3$q$),
+  ('partition not read',    $q$SELECT id, amount FROM (SELECT id, amount, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t WHERE rn <= 3$q$),
+  ('order by an expression', $q$SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts + id DESC, id) rn FROM wt) t WHERE rn <= 3$q$),
+  ('order by the partition', $q$SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY grp, ts, id) rn FROM wt) t WHERE rn <= 3$q$),
+  ('nullable partition',    $q$SELECT * FROM (SELECT id, gn, row_number() OVER (PARTITION BY gn ORDER BY ts, id) rn FROM wt) t WHERE rn <= 3$q$),
+  ('join inside',           $q$SELECT * FROM (SELECT w.id, d.label, row_number() OVER (PARTITION BY w.grp ORDER BY w.ts, w.id) rn FROM wt w JOIN dim d ON d.grp = w.grp) t WHERE rn <= 3$q$),
+  ('join outside',          $q$SELECT t.id, d.label, t.rn FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t JOIN dim d ON d.grp = t.grp WHERE t.rn <= 2 AND d.label <> 'g3'$q$),
+  ('aggregate on top',      $q$SELECT grp, sum(amount), count(*) FROM (SELECT grp, amount, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t WHERE rn <= 3 GROUP BY grp$q$),
+  ('nothing left',          $q$SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt WHERE amount > 1000) t WHERE rn <= 3$q$),
+  ('keys of one row',       $q$SELECT * FROM (SELECT id, grp, amount, row_number() OVER (PARTITION BY grp ORDER BY amount, id) rn FROM sparse) t WHERE rn <= 3$q$),
+  ('rank over a unique order', $q$SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY amount, id) rn FROM wt) t WHERE rn <= 3$q$),
+  ('second row only',       $q$SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t WHERE rn = 2$q$),
+  ('first row',             $q$SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t WHERE rn = 1$q$);
+
+-- a slice a[1:n] or an element a[n] of an array_agg with ORDER BY that the query writes itself is read the same way; the aggregate read whole anywhere is not
+INSERT INTO shapes (name, q) VALUES
+  ('slice',                 $q$SELECT grp, (array_agg(id ORDER BY amount DESC NULLS LAST, id))[1:3] FROM wt GROUP BY grp$q$),
+  ('element',               $q$SELECT grp, (array_agg(id ORDER BY ts, id))[2] FROM wt GROUP BY grp$q$),
+  ('element past the group', $q$SELECT grp, (array_agg(id ORDER BY ts, id))[900] FROM wt GROUP BY grp$q$),
+  ('two slices',            $q$SELECT grp, (array_agg(id ORDER BY ts, id))[1:2], (array_agg(id ORDER BY ts, id))[1:4] FROM wt GROUP BY grp$q$),
+  ('slice and whole',       $q$SELECT grp, (array_agg(id ORDER BY ts, id))[1:2], cardinality(array_agg(id ORDER BY ts, id)) FROM wt GROUP BY grp$q$),
+  ('slice with a filter',   $q$SELECT grp, (array_agg(id ORDER BY ts, id) FILTER (WHERE amount > 100))[1:3] FROM wt GROUP BY grp$q$),
+  ('text and NULLs first',  $q$SELECT grp, (array_agg(note ORDER BY gn NULLS FIRST, id DESC))[1:3] FROM wt GROUP BY grp$q$),
+  ('ties',                  $q$SELECT grp, (array_agg(amount ORDER BY amount))[1:5] FROM wt GROUP BY grp$q$),
+  ('descending, NULLs first', $q$SELECT grp, (array_agg(amount ORDER BY amount DESC NULLS FIRST))[1:5] FROM wt GROUP BY grp$q$),
+  ('slice of a join',       $q$SELECT d.label, (array_agg(w.id ORDER BY w.ts, w.id))[1:3] FROM wt w JOIN dim d ON d.grp = w.grp GROUP BY d.label$q$),
+  ('slice in HAVING',       $q$SELECT grp FROM wt GROUP BY grp HAVING (array_agg(id ORDER BY ts, id))[1:2] = ARRAY[(SELECT min(id) FROM wt WHERE ts = 0), 1]$q$),
+  ('no group',              $q$SELECT (array_agg(id ORDER BY ts, id))[1:3] FROM wt$q$),
+  ('many groups, a growing table', $q$SELECT ts, (array_agg(note ORDER BY id))[1:2], (array_agg(grp ORDER BY id))[1:2] FROM wt GROUP BY ts$q$);
+
+-- rank() and dense_rank() keep the rows that tie: the scan holds the rows of rank <= N (the N best and every row that ties with the N-th) or of dense_rank <= N (the N best
+-- values), and the window of the query ranks them. The orders below tie on purpose (amount has 500 values in groups of 3,000 rows, NULLs among them).
+INSERT INTO shapes (name, q) VALUES
+  ('rank, ties',            $q$SELECT * FROM (SELECT id, grp, amount, rank() OVER (PARTITION BY grp ORDER BY amount) rn FROM wt) t WHERE rn <= 3$q$),
+  ('rank, descending NULLs first', $q$SELECT * FROM (SELECT id, grp, amount, rank() OVER (PARTITION BY grp ORDER BY amount DESC NULLS FIRST) rn FROM wt) t WHERE rn <= 4$q$),
+  ('rank, NULLs last',      $q$SELECT * FROM (SELECT id, grp, amount, rank() OVER (PARTITION BY grp ORDER BY amount DESC NULLS LAST) rn FROM wt) t WHERE rn <= 2$q$),
+  ('rank = 1',              $q$SELECT * FROM (SELECT id, grp, amount, rank() OVER (PARTITION BY grp ORDER BY amount) rn FROM wt) t WHERE rn = 1$q$),
+  ('rank, N past the ties', $q$SELECT * FROM (SELECT id, grp, amount, rank() OVER (PARTITION BY grp ORDER BY ts / 40) rn FROM wt) t WHERE rn <= 100$q$),
+  ('rank, two order keys',  $q$SELECT * FROM (SELECT id, grp, amount, rank() OVER (PARTITION BY grp ORDER BY amount, ts / 100) rn FROM wt) t WHERE rn < 5$q$),
+  ('rank, two partition columns', $q$SELECT * FROM (SELECT id, grp, grp2, rank() OVER (PARTITION BY grp, grp2 ORDER BY amount NULLS FIRST) rn FROM wt) t WHERE rn <= 2$q$),
+  ('rank, nullable partition', $q$SELECT * FROM (SELECT id, gn, amount, rank() OVER (PARTITION BY gn ORDER BY amount) rn FROM wt) t WHERE rn <= 2$q$),
+  ('rank, read and ordered', $q$SELECT id, grp, rn * 10 AS x FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY amount) rn FROM wt) t WHERE rn <= 3 ORDER BY grp, rn, id$q$),
+  ('rank, condition inside', $q$SELECT * FROM (SELECT id, grp, amount, rank() OVER (PARTITION BY grp ORDER BY amount) rn FROM wt WHERE ts > 3000 AND grp < 30) t WHERE rn <= 3$q$),
+  ('rank, join outside',    $q$SELECT t.id, d.label, t.rn FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY amount) rn FROM wt) t JOIN dim d ON d.grp = t.grp WHERE t.rn <= 2$q$),
+  ('rank, aggregate on top', $q$SELECT grp, count(*), max(rn) FROM (SELECT grp, rank() OVER (PARTITION BY grp ORDER BY amount) rn FROM wt) t WHERE rn <= 3 GROUP BY grp$q$),
+  ('rank, order by the partition', $q$SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY grp) rn FROM wt) t WHERE rn <= 3$q$),
+  ('rank, many groups',     $q$SELECT * FROM (SELECT id, ts, rank() OVER (PARTITION BY ts ORDER BY id % 5) rn FROM wt) t WHERE rn <= 2$q$),
+  ('dense_rank, many groups', $q$SELECT * FROM (SELECT id, ts, dense_rank() OVER (PARTITION BY ts ORDER BY id % 5 DESC) rn FROM wt) t WHERE rn <= 2$q$),
+  ('rank, past 1,000',      $q$SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY amount) rn FROM wt) t WHERE rn <= 1500$q$),
+  ('dense_rank, ties',      $q$SELECT * FROM (SELECT id, grp, amount, dense_rank() OVER (PARTITION BY grp ORDER BY amount) rn FROM wt) t WHERE rn <= 3$q$),
+  ('dense_rank, descending NULLs first', $q$SELECT * FROM (SELECT id, grp, amount, dense_rank() OVER (PARTITION BY grp ORDER BY amount DESC NULLS FIRST) rn FROM wt) t WHERE rn <= 4$q$),
+  ('dense_rank = 1',        $q$SELECT * FROM (SELECT id, grp, amount, dense_rank() OVER (PARTITION BY grp ORDER BY amount) rn FROM wt) t WHERE rn = 1$q$),
+  ('dense_rank, two order keys', $q$SELECT * FROM (SELECT id, grp, amount, dense_rank() OVER (PARTITION BY grp ORDER BY amount, ts / 100) rn FROM wt) t WHERE rn <= 5$q$),
+  ('dense_rank, two partition columns', $q$SELECT * FROM (SELECT id, grp, grp2, dense_rank() OVER (PARTITION BY grp, grp2 ORDER BY amount) rn FROM wt) t WHERE rn <= 2$q$),
+  ('dense_rank, nullable partition', $q$SELECT * FROM (SELECT id, gn, amount, dense_rank() OVER (PARTITION BY gn ORDER BY amount) rn FROM wt) t WHERE rn <= 2$q$),
+  ('dense_rank, past 1,000', $q$SELECT * FROM (SELECT id, grp, dense_rank() OVER (PARTITION BY grp ORDER BY amount) rn FROM wt) t WHERE rn <= 1500$q$),
+  ('rank and row_number',   $q$SELECT * FROM (SELECT id, grp, rank() OVER w rn, row_number() OVER w r2 FROM wt WINDOW w AS (PARTITION BY grp ORDER BY amount)) t WHERE rn <= 3$q$),
+  ('sift_table, row_number', $q$SELECT id, grp, memo, rn FROM (SELECT id, grp, memo, row_number() OVER (PARTITION BY grp ORDER BY amount DESC NULLS LAST, id) rn FROM wtab) w WHERE rn <= 3$q$),
+  ('sift_table, rank',      $q$SELECT id, grp, memo, rn FROM (SELECT id, grp, memo, rank() OVER (PARTITION BY grp ORDER BY amount DESC NULLS LAST) rn FROM wtab) w WHERE rn <= 3$q$),
+  ('sift_table, dense_rank', $q$SELECT id, grp, memo, rn FROM (SELECT id, grp, memo, dense_rank() OVER (PARTITION BY grp ORDER BY amount DESC NULLS LAST) rn FROM wtab) w WHERE rn <= 2$q$),
+  ('percent_rank stays',    $q$SELECT * FROM (SELECT id, grp, percent_rank() OVER (PARTITION BY grp ORDER BY amount) rn FROM wt) t WHERE rn <= 0.01$q$);
+
+CREATE FUNCTION shape_check(q text) RETURNS TABLE (in_scan bool, sliced bool, same bool) LANGUAGE plpgsql AS
+$$ DECLARE l text; plan text := ''; a text; b text;
+BEGIN
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
+  in_scan := plan LIKE '%Custom Scan (SiftAgg)%';
+  sliced := plan LIKE '%array_agg(%)[1:%' OR plan LIKE '%array_agg(%)[rank <=%' OR plan LIKE '%array_agg(%)[dense_rank <=%';
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
+  PERFORM set_config('sift.enable_agg', 'off', true);
+  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO b;
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  same := a IS NOT DISTINCT FROM b;
+  RETURN NEXT;
+END $$;
+SELECT s.name, c.* FROM shapes s, LATERAL shape_check(s.q) c ORDER BY s.ord;
+
+SELECT count(*), min(rn), max(rn) FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t WHERE rn <= 3;
+
+DROP FUNCTION shape_check(text);
+DROP TABLE shapes, wt, wtab, dim, sparse;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s3 CASCADE;
+RESET client_min_messages;
+-- <<< agg_window_topn
+
+-- >>> agg_window_ties
+CREATE SCHEMA s4;
+GRANT USAGE ON SCHEMA s4 TO PUBLIC;
+SET search_path = s4, public;
+SET sift.test_create_format1 = on;
+-- A window function over sort keys that tie has no one answer in PostgreSQL: the rows of the tie reach the WindowAgg in the order of the plan below it, and lag() of a row of
+-- the tie is the row before it in that order. The scan below a WindowAgg changes that order and nothing else: the window functions are PostgreSQL's (the scan only computes
+-- the aggregates under them, and the first row of each group when it can prove a total order), so the rows come out as a multiset equal to the plan without the scan, and a
+-- LIMIT over the tied keys keeps one row of that multiset.
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, event_date date NOT NULL, value_num numeric(8,2) NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT g, 1 + g % 6, date '2025-01-01' + g % 40, (g % 17)::numeric / 4 FROM generate_series(1, 6000) g;
+CREATE INDEX events_col ON events USING sift_col (dim_a_id, event_date, value_num);
+VACUUM (FREEZE, ANALYZE) events;
+
+-- two identical rows of the current period for dim_a_id 1 (as two grouping sets give) and one of the period before: lag of the first row of the tie is the earlier period, of the second its twin
+CREATE VIEW periods AS
+SELECT dim_a_id, 'current' AS period, sum(value_num) AS v, count(*) AS n FROM events WHERE event_date >= '2025-01-21' GROUP BY dim_a_id
+UNION ALL SELECT 1, 'current', sum(value_num), count(*) FROM events WHERE event_date >= '2025-01-21' AND dim_a_id = 1
+UNION ALL SELECT dim_a_id, 'previous', sum(value_num), count(*) FROM events WHERE event_date < '2025-01-21' GROUP BY dim_a_id;
+
+CREATE FUNCTION rows_of(q text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN scan THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT string_agg(t::text, ''|'' ORDER BY t::text) FROM (%s) t', q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION has_node(q text, node text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%' || node || '%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+\set lagged 'SELECT dim_a_id, period, v, lag(v) OVER (PARTITION BY dim_a_id ORDER BY period DESC) AS before FROM periods'
+-- the rows of the window, scan on against off (the twin rows are alike, so which of them lags the other is not in the multiset), and the window is PostgreSQL's
+SELECT rows_of(:'lagged', true) = rows_of(:'lagged', false) AS same_rows, has_node(:'lagged', 'WindowAgg') AS window_agg;
+SELECT count(*) AS twins_in_partition FROM periods WHERE dim_a_id = 1 AND period = 'current';
+-- a LIMIT over the tied key keeps a row of the unlimited answer, with the scan on and off
+SELECT bool_and(position(l IN u) > 0) AS limited_row_is_a_row
+FROM (SELECT rows_of(:'lagged' || ' ORDER BY v DESC, dim_a_id LIMIT 1', s) AS l, rows_of(:'lagged', s) AS u FROM (VALUES (true), (false)) t(s)) x;
+-- the first row of each group (row_number() = 1) over a tied order: the scan keeps the first row of the tie it meets, PostgreSQL's plan one of them
+SELECT slug, used, (SELECT count(*) = count(DISTINCT dim_a_id) FROM (SELECT dim_a_id FROM (SELECT dim_a_id, row_number() OVER (PARTITION BY dim_a_id ORDER BY value_num DESC) AS rn FROM events) t WHERE rn = 1) o) AS one_row_per_group
+FROM sift.explain_why($q$SELECT dim_a_id, event_date FROM (SELECT dim_a_id, event_date, row_number() OVER (PARTITION BY dim_a_id ORDER BY value_num DESC) AS rn FROM events) t WHERE rn = 1$q$);
+
+DROP FUNCTION rows_of(text, bool), has_node(text, text);
+DROP VIEW periods;
+DROP TABLE events;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s4 CASCADE;
+RESET client_min_messages;
+-- <<< agg_window_ties
+
+DROP EXTENSION pg_sift;

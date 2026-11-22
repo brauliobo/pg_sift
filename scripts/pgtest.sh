@@ -103,7 +103,7 @@ install() {
 # the build chooser (sift.col_build_source = auto) reads the index a REINDEX replaces and says so in a notice with the seconds it took: the clusters of the regression tests read the heap, as
 # before 5.1, so that no expected output carries those seconds; the tests of the chooser say SET sift.col_build_source = auto
 # CREATE INDEX builds format major 2: the tests keep the indexes they create in format major 1 (the testing build only); the tests of format major 2 say SET sift.test_create_format1 = off
-TREE_CONF="${SIFT_TESTING:+sift.col_build_source = heap$'\n'sift.test_scope_patch = on$'\n'sift.test_create_format1 = on}"
+TREE_CONF="${SIFT_TESTING:+sift.col_build_source = heap$'\n'sift.test_scope_patch = on$'\n'sift.test_create_format1 = on$'\n'sift.test_quiet_build_notice = on}"
 # SIFT_MEMCENSUS=KB|on: every statement of every test that grows memory by KB (on: 1024) writes a SIFTMEM line to the server log
 [[ -z ${SIFT_TESTING:-} || -z ${SIFT_MEMCENSUS:-} ]] || TREE_CONF+=$'\n'"sift.test_memctx_census = $([[ $SIFT_MEMCENSUS == on ]] && echo 1024 || echo "$SIFT_MEMCENSUS")"
 tree_options() { local l; [[ -z $TREE_CONF ]] || while IFS= read -r l; do printf -- '-c %s ' "${l// = /=}"; done <<<"$TREE_CONF"; }

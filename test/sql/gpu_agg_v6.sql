@@ -151,6 +151,26 @@ SELECT same_both($$SELECT count(*), sum(w) FROM gx WHERE q < 500$$) AS dirty_ung
 SELECT same_both($$SELECT id % 5000, count(*), sum(w) FROM gx GROUP BY 1$$) AS dirty_hashed;
 SELECT same_both($$SELECT id, a FROM gx ORDER BY a DESC LIMIT 25$$) AS dirty_top;
 
+-- no device (a name no device has, whatever the build and the host): sift.gpu = auto and sift.gpu = on leave every scan to the CPU, with the CPU's rows, no error and the node saying
+-- that the device was not used; the router does not even price the device
+CREATE FUNCTION headless(q text, mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; scan bool := false; used bool := false; d bigint;
+BEGIN
+	PERFORM set_config('sift.gpu', mode, true), set_config('sift.gpu_device', 'no-such-device', true), set_config('sift.gpu_min_rows', '1', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		scan := scan OR l ~ 'Custom Scan \(Sift';
+		used := used OR (l ~ '^ *GPU: ' AND l !~ 'not used');
+	END LOOP;
+	CREATE TEMP TABLE h_on AS SELECT x::text AS r FROM (SELECT g, count(*), sum(w), max(a) FROM gx GROUP BY g) x;
+	PERFORM set_config('sift.gpu', 'off', true);
+	CREATE TEMP TABLE h_off AS SELECT x::text AS r FROM (SELECT g, count(*), sum(w), max(a) FROM gx GROUP BY g) x;
+	SELECT count(*) INTO d FROM ((TABLE h_on EXCEPT ALL TABLE h_off) UNION ALL (TABLE h_off EXCEPT ALL TABLE h_on)) x;
+	DROP TABLE h_on, h_off;
+	RETURN format('scan %s, device used %s, rows differing %s', scan, used, d);
+END $$;
+SELECT mode, headless($q$SELECT g, count(*), sum(w), max(a) FROM gx GROUP BY g$q$, mode) AS cpu_fallback FROM unnest(ARRAY['auto', 'on']) mode ORDER BY 1;
+DROP FUNCTION headless(text, text);
+
 DROP FUNCTION same_both(text), same(text), same_error(text), error_of(text), rejects(text, text);
 DROP TABLE gt, gx;
 DROP EXTENSION pg_sift;

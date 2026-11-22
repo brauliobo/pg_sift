@@ -127,6 +127,7 @@ SELECT dblink_disconnect('b');
 -- 6. on request: the lines themselves
 \if :{?show_messages}
 SET client_min_messages = notice;
+SET sift.test_quiet_build_notice = off;
 CREATE INDEX ev_said ON ev USING sift_col (g, v, s) WITH (key_order = 'auto', track_changes = off);
 REINDEX INDEX ev_said;
 DELETE FROM ev WHERE g < 20;

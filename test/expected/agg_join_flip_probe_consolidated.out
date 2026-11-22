@@ -1,0 +1,1375 @@
+-- The join flips and the probe rewrites of src/agg/plan and src/agg/flat (invert, partial, probe), one segment each, in a schema of its own: anti joins, the child-first gate,
+-- disabled-node ranking, the scan side of an inner join, LEFT JOIN child scans, partial joins, btree probes (also partial and unvacuumed) and sift_table probes. Replaces ten tests.
+CREATE EXTENSION pg_sift;
+-- >>> agg_anti_flip
+CREATE SCHEMA s1;
+GRANT USAGE ON SCHEMA s1 TO PUBLIC;
+SET search_path = s1, public;
+SET sift.test_create_format1 = on;
+-- The parents that have no child (a LEFT JOIN with a WHERE on a column of the child being NULL, or NOT EXISTS: an anti join) are counted from the child's scan with the
+-- parents as its lookup, as the LEFT JOIN is, where the child is much larger than the parents: the scan reads the keys that have children once and the parents that
+-- none of them names are the rows left. PostgreSQL 19 hands the planner the anti join for the LEFT JOIN as well; 17 and 18 hand the LEFT JOIN and its WHERE. The
+-- answers are those of the normal plan for every form, with NULL keys, children of no parent, an ON condition on both tables and a filter of the parents.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+CREATE TABLE af_parent (id int PRIMARY KEY, alt int, grp int, rank int) WITH (autovacuum_enabled = off);
+INSERT INTO af_parent SELECT g, CASE WHEN g % 7 = 0 THEN NULL ELSE g END, g % 25, g % 100 FROM generate_series(1, 2500) g;
+CREATE TABLE af_child (id int PRIMARY KEY, parent_id int, kind text, amount int) WITH (autovacuum_enabled = off);
+INSERT INTO af_child
+SELECT g, CASE WHEN g % 97 = 0 THEN NULL WHEN g % 53 = 0 THEN 30000 + g % 100 ELSE 1 + (g::bigint * 7919) % 15000 END, (ARRAY['a', 'b', 'c', 'd'])[1 + g % 4], g % 1000
+FROM generate_series(1, 50000) g;
+CREATE INDEX af_parent_col ON af_parent USING sift_col (id, alt, grp, rank);
+CREATE INDEX af_child_col ON af_child USING sift_col (id, parent_id, kind, amount);
+VACUUM (FREEZE, ANALYZE) af_parent, af_child;
+CREATE TABLE shapes (slug text, sql text);
+INSERT INTO shapes VALUES
+ ('left_join_childless_by_group', 'SELECT p.grp, count(*) AS parents FROM af_parent p LEFT JOIN af_child c ON c.parent_id = p.id AND c.kind = ''d'' WHERE c.id IS NULL GROUP BY 1'),
+ ('not_exists_childless_by_group', 'SELECT p.grp, count(*) AS parents FROM af_parent p WHERE NOT EXISTS (SELECT 1 FROM af_child c WHERE c.parent_id = p.id AND c.kind = ''d'') GROUP BY 1'),
+ ('not_exists_childless_count', 'SELECT count(*) AS parents FROM af_parent p WHERE NOT EXISTS (SELECT 1 FROM af_child c WHERE c.parent_id = p.id)'),
+ ('not_exists_childless_filtered_parents', 'SELECT p.grp, count(*) AS parents, sum(p.rank) AS ranks FROM af_parent p WHERE p.rank < 40 AND NOT EXISTS (SELECT 1 FROM af_child c WHERE c.parent_id = p.id AND c.amount > 500) GROUP BY 1'),
+ ('not_exists_on_both_tables', 'SELECT p.grp, count(*) AS parents FROM af_parent p WHERE NOT EXISTS (SELECT 1 FROM af_child c WHERE c.parent_id = p.id AND c.amount > p.rank * 8) GROUP BY 1'),
+ ('not_exists_null_parent_key', 'SELECT p.grp, count(*) AS parents FROM af_parent p WHERE NOT EXISTS (SELECT 1 FROM af_child c WHERE c.parent_id = p.alt) GROUP BY 1');
+CREATE FUNCTION plan_of(sql text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal plan';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	PERFORM set_config('sift.agg_force', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		IF l ~ 'Index: af_parent_col' THEN r := 'parents scanned'; END IF;
+		IF l ~ 'Index: af_child_col' THEN r := 'children scanned'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	PERFORM set_config('sift.agg_force', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+SELECT slug, plan_of(sql) AS plan, answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY slug;
+                 slug                  |       plan       | same_answers 
+---------------------------------------+------------------+--------------
+ left_join_childless_by_group          | children scanned | t
+ not_exists_childless_by_group         | children scanned | t
+ not_exists_childless_count            | children scanned | t
+ not_exists_childless_filtered_parents | children scanned | t
+ not_exists_null_parent_key            | children scanned | t
+ not_exists_on_both_tables             | children scanned | t
+(6 rows)
+
+DROP FUNCTION plan_of(text), answer(text, bool);
+DROP TABLE shapes, af_child, af_parent;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s1 CASCADE;
+RESET client_min_messages;
+-- <<< agg_anti_flip
+-- >>> agg_child_first_gate
+CREATE SCHEMA s2;
+GRANT USAGE ON SCHEMA s2 TO PUBLIC;
+SET search_path = s2, public;
+SET sift.test_create_format1 = on;
+-- sift.agg_child_first gates the plans that scan the child of a LEFT JOIN with the preserved parent as its lookup (and the two rewrites around it, docs/COL-CONNECT.md):
+-- on, the statement counts the children of each parent from a scan of the child; off, it is the lookup join, a scan of the parent that loads the child. The answers are the same, also for count(c) of the whole row of the child when most parents have no child (the nullable side: 0 for count(c), 1 for count(*)).
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+CREATE TABLE cf_parent (id int PRIMARY KEY, region int) WITH (autovacuum_enabled = false);
+INSERT INTO cf_parent SELECT g, g % 50 FROM generate_series(1, 20000) g;
+CREATE TABLE cf_child (id int PRIMARY KEY, parent_id int NOT NULL REFERENCES cf_parent, v int) WITH (autovacuum_enabled = false);
+INSERT INTO cf_child SELECT g, 1 + (g::bigint * 7919) % 20000, g % 1000 FROM generate_series(1, 200000) g;
+CREATE INDEX cf_parent_col ON cf_parent USING sift_col (id, region);
+NOTICE:  sift_col index "cf_parent_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cf_parent_col');
+CREATE INDEX cf_child_col ON cf_child USING sift_col (id, parent_id, v);
+NOTICE:  sift_col index "cf_child_col" connected to cf_parent(id) through foreign key "cf_child_parent_id_fkey"
+HINT:  connect = 'off' on the index turns it off.
+NOTICE:  sift_col index "cf_child_col": 3 automatic choices
+DETAIL:  key_columns = parent_id; order_array_columns = v (second order by parent_id: entity); track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cf_child_col');
+NOTICE:  sift_col index "cf_child_col" is column format minor 38, which a library before 3.7 cannot read
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('cf_child_col') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
+VACUUM (FREEZE, ANALYZE) cf_parent, cf_child;
+CREATE FUNCTION joins(q text, child_first bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'none'; BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	PERFORM set_config('sift.agg_child_first', child_first::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Lookup Joins:' THEN r := trim(l); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION answer(q text, scan bool, child_first bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	PERFORM set_config('sift.agg_child_first', child_first::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || q || ') t' INTO r;
+	RETURN r;
+END $$;
+SELECT q.name, joins(q.sql, true) AS child_first_on, joins(q.sql, false) AS child_first_off,
+       answer(q.sql, true, true) = answer(q.sql, false, true) AS on_equals_native,
+       answer(q.sql, true, false) = answer(q.sql, false, true) AS off_equals_native
+FROM (VALUES
+	('count per parent', 'SELECT p.id, count(c.id) FROM cf_parent p LEFT JOIN cf_child c ON c.parent_id = p.id GROUP BY p.id ORDER BY 2 DESC, 1 LIMIT 10'),
+	('sum per region', 'SELECT p.region, count(c.id), sum(c.v) FROM cf_parent p LEFT JOIN cf_child c ON c.parent_id = p.id GROUP BY p.region ORDER BY 1'),
+	('whole row of the child', 'SELECT p.region, count(c) AS c, count(*) AS s FROM cf_parent p LEFT JOIN cf_child c ON c.parent_id = p.id AND c.v = 3 GROUP BY p.region ORDER BY 1')
+) q (name, sql) ORDER BY q.name;
+          name          |           child_first_on            | child_first_off | on_equals_native | off_equals_native 
+------------------------+-------------------------------------+-----------------+------------------+-------------------
+ count per parent       | Lookup Joins: cf_parent (preserved) | none            | t                | t
+ sum per region         | Lookup Joins: cf_parent (preserved) | none            | t                | t
+ whole row of the child | Lookup Joins: c (subquery) (left)   | none            | t                | t
+(3 rows)
+
+DROP FUNCTION joins(text, bool), answer(text, bool, bool);
+DROP TABLE cf_child, cf_parent;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s2 CASCADE;
+RESET client_min_messages;
+-- <<< agg_child_first_gate
+-- >>> agg_flat_disabled_nodes
+CREATE SCHEMA s3;
+GRANT USAGE ON SCHEMA s3 TO PUBLIC;
+SET search_path = s3, public;
+SET sift.test_create_format1 = on;
+-- The plan of a rewrite (a LEFT JOIN counted from the child's groups, sift.agg_child_first) is set against the plan as written the way PostgreSQL ranks plans: the plan with fewer
+-- nodes that enable_* = off disabled first, then the cost. 17 has the penalty in the cost, 18 counts the nodes apart: the choice is the same on every major, and so are the rows.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+CREATE TABLE cw (grp int, a int) WITH (autovacuum_enabled = false);
+CREATE TABLE lk (id int PRIMARY KEY, name text);
+INSERT INTO cw SELECT 1 + i % 3, i % 5 FROM generate_series(1, 600) i;
+INSERT INTO cw SELECT 4, NULL FROM generate_series(1, 2);
+INSERT INTO lk VALUES (1, 'one'), (2, 'two'), (3, 'three'), (5, 'five');
+CREATE INDEX cw_col ON cw USING sift_col (grp, a);
+VACUUM (FREEZE, ANALYZE) cw, lk;
+CREATE FUNCTION set_up(settings text, scan bool, child_first bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config(o, 'on', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan', 'enable_hashjoin']) o;
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	PERFORM set_config('sift.agg_child_first', child_first::text, true);
+	EXECUTE settings;
+END $$;
+CREATE FUNCTION plan_of(q text, settings text, child_first bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal plan'; BEGIN
+	PERFORM set_up(settings, true, child_first);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'scan'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION answer(q text, settings text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_up(settings, scan, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || q || ') t' INTO r;
+	RETURN r;
+END $$;
+SELECT s.name AS settings, q.name AS statement, plan_of(q.sql, s.sets, true) AS child_first_on, plan_of(q.sql, s.sets, false) AS child_first_off,
+       answer(q.sql, s.sets, true) = answer(q.sql, s.sets, false) AS same_rows
+FROM (VALUES
+	('default', 'SELECT 1'),
+	('seqscan off', 'SET LOCAL enable_seqscan = off'),
+	('seqscan, hashjoin off', 'SET LOCAL enable_seqscan = off; SET LOCAL enable_hashjoin = off'),
+	('every table scan off', 'SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off')
+) s (name, sets),
+(VALUES
+	('the table as the nullable side', 'SELECT l.id, count(e) AS c, count(*) AS s FROM lk l LEFT JOIN cw e ON e.grp = l.id GROUP BY 1'),
+	('a list of values', 'SELECT v.g, count(e) AS c FROM (VALUES (1), (2), (9)) v (g) LEFT JOIN cw e ON e.grp = v.g GROUP BY 1')
+) q (name, sql)
+ORDER BY 1, 2;
+       settings        |           statement            | child_first_on | child_first_off | same_rows 
+-----------------------+--------------------------------+----------------+-----------------+-----------
+ default               | a list of values               | normal plan    | normal plan     | t
+ default               | the table as the nullable side | normal plan    | normal plan     | t
+ every table scan off  | a list of values               | scan           | normal plan     | t
+ every table scan off  | the table as the nullable side | scan           | normal plan     | t
+ seqscan off           | a list of values               | scan           | normal plan     | t
+ seqscan off           | the table as the nullable side | scan           | normal plan     | t
+ seqscan, hashjoin off | a list of values               | scan           | normal plan     | t
+ seqscan, hashjoin off | the table as the nullable side | scan           | normal plan     | t
+(8 rows)
+
+DROP FUNCTION answer(text, text, bool), plan_of(text, text, bool), set_up(text, bool, bool);
+DROP TABLE cw, lk;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s3 CASCADE;
+RESET client_min_messages;
+-- <<< agg_flat_disabled_nodes
+-- >>> agg_join_order
+CREATE SCHEMA s4;
+GRANT USAGE ON SCHEMA s4 TO PUBLIC;
+SET search_path = s4, public;
+SET sift.test_create_format1 = on;
+-- The scan of an inner join reads the table that is dear to load as its own rows and loads the small ones as lookups, whichever table the FROM list
+-- starts with.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE customers AS SELECT i AS id, (ARRAY['A', 'B', 'C', 'D'])[1 + i % 4] AS segment FROM generate_series(1, 2500) i;
+CREATE TABLE sales AS
+SELECT i AS id, 1 + (i::bigint * 7919 % 5000)::int AS customer_id, DATE '2024-01-01' + (i * 13) % 700 AS ordered, DATE '2024-01-01' + (i * 13) % 700 + (i * 31) % 40 AS shipped,
+	   (i % 97)::float8 AS amount
+FROM generate_series(1, 150000) i;
+CREATE INDEX customers_col ON customers USING sift_col (id, segment);
+CREATE INDEX sales_col ON sales USING sift_col (customer_id, ordered, shipped, amount);
+VACUUM (FREEZE, ANALYZE) customers, sales;
+\ir test/agg_helpers.sql
+\set ECHO none
+-- the index the Custom Scan (SiftAgg) of a plan reads
+CREATE FUNCTION scanned(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE line text; found text;
+BEGIN
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := coalesce(found, substring(line from 'Index: (\w+)')); END LOOP;
+  RETURN found;
+END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT outcome(q, false) = outcome(q, true) $$;
+CREATE TABLE shapes (name text, q text);
+INSERT INTO shapes VALUES
+ ('segment', $q$ SELECT segment, count(*) AS n, sum(amount) AS total FROM %s WHERE sales.customer_id = customers.id AND ordered < DATE '2025-03-01' GROUP BY 1 $q$),
+ ('late', $q$ SELECT segment, count(*) AS n FROM %s WHERE sales.customer_id = customers.id AND shipped > ordered + 30 AND segment IN ('A', 'B') GROUP BY 1 $q$);
+-- both orders of the FROM list scan the large table and give the answers of the normal plan
+SELECT name, scanned(format(q, 'customers, sales')) AS dimension_first, scanned(format(q, 'sales, customers')) AS fact_first,
+       same(format(q, 'customers, sales')) AS dimension_first_same, same(format(q, 'sales, customers')) AS fact_first_same
+FROM shapes ORDER BY name;
+  name   | dimension_first | fact_first | dimension_first_same | fact_first_same 
+---------+-----------------+------------+----------------------+-----------------
+ late    | sales_col       | sales_col  | t                    | t
+ segment | sales_col       | sales_col  | t                    | t
+(2 rows)
+
+-- a lookup table read whole from the leaves of a column index that holds its columns is priced below the same read from the heap
+CREATE TEMP TABLE load_price (leaves bool, scan_cost float8);
+SET sift.agg_lookup_columns = on;
+INSERT INTO load_price SELECT true, scan_cost FROM sift.explain_why(format((SELECT q FROM shapes WHERE name = 'segment'), 'sales, customers')) WHERE arm = 'single';
+SET sift.agg_lookup_columns = off;
+INSERT INTO load_price SELECT false, scan_cost FROM sift.explain_why(format((SELECT q FROM shapes WHERE name = 'segment'), 'sales, customers')) WHERE arm = 'single';
+RESET sift.agg_lookup_columns;
+SELECT (SELECT scan_cost FROM load_price WHERE leaves) < (SELECT scan_cost FROM load_price WHERE NOT leaves) AS cheaper_from_the_leaves;
+ cheaper_from_the_leaves 
+-------------------------
+ t
+(1 row)
+
+DROP FUNCTION scanned(text), same(text), outcome(text, bool), runs_in_scan(text), pushed(text), runq(text, bool);
+DROP TABLE shapes, sales, customers;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s4 CASCADE;
+RESET client_min_messages;
+-- <<< agg_join_order
+-- >>> agg_left_child_scan
+CREATE SCHEMA s5;
+GRANT USAGE ON SCHEMA s5 TO PUBLIC;
+SET search_path = s5, public;
+SET sift.test_create_format1 = on;
+-- A LEFT JOIN of two tables that both have a sift_col index: the scan may run over the child with the preserved parent as its lookup, as well as over the parent with the child as
+-- its lookup, and the price chooses. The answers are those of the normal plan, serial and with workers, before and after writes to the parent and to the child (a parent
+-- with no child, a child of no parent, a key changed, rows deleted).
+SET jit = off;
+SET sift.agg_force = on;
+CREATE TABLE parent (id int PRIMARY KEY, region int, kind int, name text) WITH (autovacuum_enabled = false);
+INSERT INTO parent SELECT i, i % 100, i % 10, CASE WHEN i % 17 = 0 THEN NULL ELSE 'p' || i END FROM generate_series(1, 20000) i;
+CREATE TABLE child (id int PRIMARY KEY, parent_id int, v int, ts date, flag bool) WITH (autovacuum_enabled = false);
+-- 200,000 children of 18,000 parents (the others have none), 1,000 of keys no parent has, and some NULL keys
+INSERT INTO child SELECT i, CASE WHEN i % 200 = 0 THEN NULL WHEN i % 200 = 1 THEN 30000 + i % 1000 ELSE 1 + (i * 7) % 18000 END, (i * 13) % 100,
+	date '2026-01-01' + (i % 300), i % 3 = 0 FROM generate_series(1, 200000) i;
+CREATE INDEX parent_col ON parent USING sift_col (id, region, kind, name);
+NOTICE:  sift_col index "parent_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = region, kind; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('parent_col');
+CREATE INDEX child_col ON child USING sift_col (id, parent_id, v, ts, flag);
+NOTICE:  sift_col index "child_col": 5 automatic choices
+DETAIL:  key_order = parent_id, ts; key_columns = parent_id; rollup_columns = v, flag;
+order_array_columns = ts (second order only); track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('child_col');
+NOTICE:  sift_col index "child_col" is column format minor 38, which a library before 3.7 cannot read
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('child_col') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
+VACUUM (FREEZE, ANALYZE) parent, child;
+CREATE TABLE shapes (slug text, sql text);
+INSERT INTO shapes VALUES
+ ('left_join_top_parents_by_children', $q$SELECT p.id, count(c.id) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY p.id ORDER BY 2 DESC, 1 LIMIT 10$q$),
+ ('left_join_count_by_region', $q$SELECT p.region, count(c.id), count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY 1$q$),
+ ('left_join_flagged_recent_sum_by_region', $q$SELECT p.region, sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.flag AND c.ts >= date '2026-06-01' GROUP BY 1$q$),
+ ('left_join_small_values_by_region', $q$SELECT p.region, count(*), count(c.flag), sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.v < 5 WHERE p.id > 100 GROUP BY p.region$q$),
+ ('left_join_count_distinct_value_by_kind', $q$SELECT p.kind, count(DISTINCT c.v), max(c.ts), min(p.name) FROM parent p LEFT JOIN child c ON c.parent_id = p.id WHERE p.region < 50 GROUP BY 1$q$),
+ ('left_join_childless_count_and_sum', $q$SELECT count(*) FILTER (WHERE c.id IS NULL), count(c.id), sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id$q$),
+ ('left_join_orphans_by_flag', $q$SELECT p.name IS NULL, c.flag, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY 1, 2$q$),
+ ('left_join_high_or_missing_by_region', $q$SELECT p.region, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id WHERE c.v > 90 OR c.v IS NULL GROUP BY 1$q$);
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+-- the table the scan runs over ('normal' when the statement has no scan)
+CREATE FUNCTION scanned(sql text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal'; BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		IF l ~ 'Index: child_col' THEN r := 'child'; ELSIF l ~ 'Index: parent_col' THEN r := 'parent'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION report(label text) RETURNS TABLE (stage text, workers int, shape text, same_answers bool, scan text) LANGUAGE plpgsql AS $$
+DECLARE w int; BEGIN
+	FOREACH w IN ARRAY ARRAY[0, 2] LOOP
+		PERFORM set_config('max_parallel_workers_per_gather', w::text, true);
+		PERFORM set_config('parallel_setup_cost', '0', true);
+		PERFORM set_config('parallel_tuple_cost', '0', true);
+		PERFORM set_config('min_parallel_table_scan_size', '0', true);
+		RETURN QUERY SELECT label, w, slug, answer(sql, true) = answer(sql, false), scanned(sql) FROM shapes ORDER BY slug;
+	END LOOP;
+END $$;
+SELECT * FROM report('built');
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+ stage | workers |                 shape                  | same_answers | scan  
+-------+---------+----------------------------------------+--------------+-------
+ built |       0 | left_join_childless_count_and_sum      | t            | child
+ built |       0 | left_join_count_by_region              | t            | child
+ built |       0 | left_join_count_distinct_value_by_kind | t            | child
+ built |       0 | left_join_flagged_recent_sum_by_region | t            | child
+ built |       0 | left_join_high_or_missing_by_region    | t            | child
+ built |       0 | left_join_orphans_by_flag              | t            | child
+ built |       0 | left_join_small_values_by_region       | t            | child
+ built |       0 | left_join_top_parents_by_children      | t            | child
+ built |       2 | left_join_childless_count_and_sum      | t            | child
+ built |       2 | left_join_count_by_region              | t            | child
+ built |       2 | left_join_count_distinct_value_by_kind | t            | child
+ built |       2 | left_join_flagged_recent_sum_by_region | t            | child
+ built |       2 | left_join_high_or_missing_by_region    | t            | child
+ built |       2 | left_join_orphans_by_flag              | t            | child
+ built |       2 | left_join_small_values_by_region       | t            | child
+ built |       2 | left_join_top_parents_by_children      | t            | child
+(16 rows)
+
+-- the parent written: parents with no child, a parent deleted, a region changed
+INSERT INTO parent SELECT i, i % 100, i % 10, 'new' FROM generate_series(20001, 20500) i;
+DELETE FROM parent WHERE id % 97 = 0;
+UPDATE parent SET region = (region + 1) % 100 WHERE id % 13 = 0;
+SELECT * FROM report('parent written');
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+     stage      | workers |                 shape                  | same_answers | scan  
+----------------+---------+----------------------------------------+--------------+-------
+ parent written |       0 | left_join_childless_count_and_sum      | t            | child
+ parent written |       0 | left_join_count_by_region              | t            | child
+ parent written |       0 | left_join_count_distinct_value_by_kind | t            | child
+ parent written |       0 | left_join_flagged_recent_sum_by_region | t            | child
+ parent written |       0 | left_join_high_or_missing_by_region    | t            | child
+ parent written |       0 | left_join_orphans_by_flag              | t            | child
+ parent written |       0 | left_join_small_values_by_region       | t            | child
+ parent written |       0 | left_join_top_parents_by_children      | t            | child
+ parent written |       2 | left_join_childless_count_and_sum      | t            | child
+ parent written |       2 | left_join_count_by_region              | t            | child
+ parent written |       2 | left_join_count_distinct_value_by_kind | t            | child
+ parent written |       2 | left_join_flagged_recent_sum_by_region | t            | child
+ parent written |       2 | left_join_high_or_missing_by_region    | t            | child
+ parent written |       2 | left_join_orphans_by_flag              | t            | child
+ parent written |       2 | left_join_small_values_by_region       | t            | child
+ parent written |       2 | left_join_top_parents_by_children      | t            | child
+(16 rows)
+
+-- the child written: a child of a parent that had none, a child moved to another parent, a key made NULL, rows deleted
+INSERT INTO child SELECT 300000 + i, 20001 + i % 500, i % 50, date '2026-12-01', true FROM generate_series(1, 2000) i;
+UPDATE child SET parent_id = 5 WHERE id % 61 = 0;
+UPDATE child SET parent_id = NULL WHERE id % 71 = 0;
+DELETE FROM child WHERE id % 53 = 2;
+SELECT * FROM report('child written');
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+     stage     | workers |                 shape                  | same_answers | scan  
+---------------+---------+----------------------------------------+--------------+-------
+ child written |       0 | left_join_childless_count_and_sum      | t            | child
+ child written |       0 | left_join_count_by_region              | t            | child
+ child written |       0 | left_join_count_distinct_value_by_kind | t            | child
+ child written |       0 | left_join_flagged_recent_sum_by_region | t            | child
+ child written |       0 | left_join_high_or_missing_by_region    | t            | child
+ child written |       0 | left_join_orphans_by_flag              | t            | child
+ child written |       0 | left_join_small_values_by_region       | t            | child
+ child written |       0 | left_join_top_parents_by_children      | t            | child
+ child written |       2 | left_join_childless_count_and_sum      | t            | child
+ child written |       2 | left_join_count_by_region              | t            | child
+ child written |       2 | left_join_count_distinct_value_by_kind | t            | child
+ child written |       2 | left_join_flagged_recent_sum_by_region | t            | child
+ child written |       2 | left_join_high_or_missing_by_region    | t            | child
+ child written |       2 | left_join_orphans_by_flag              | t            | child
+ child written |       2 | left_join_small_values_by_region       | t            | child
+ child written |       2 | left_join_top_parents_by_children      | t            | child
+(16 rows)
+
+-- the transaction's own rows
+BEGIN;
+INSERT INTO parent VALUES (99999, 7, 7, 'own');
+INSERT INTO child VALUES (999999, 99999, 1, date '2026-01-01', false), (999998, 99999, 2, date '2026-01-02', true);
+UPDATE parent SET region = 8 WHERE id = 5;
+SELECT * FROM report('own rows');
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+  stage   | workers |                 shape                  | same_answers | scan  
+----------+---------+----------------------------------------+--------------+-------
+ own rows |       0 | left_join_childless_count_and_sum      | t            | child
+ own rows |       0 | left_join_count_by_region              | t            | child
+ own rows |       0 | left_join_count_distinct_value_by_kind | t            | child
+ own rows |       0 | left_join_flagged_recent_sum_by_region | t            | child
+ own rows |       0 | left_join_high_or_missing_by_region    | t            | child
+ own rows |       0 | left_join_orphans_by_flag              | t            | child
+ own rows |       0 | left_join_small_values_by_region       | t            | child
+ own rows |       0 | left_join_top_parents_by_children      | t            | child
+ own rows |       2 | left_join_childless_count_and_sum      | t            | child
+ own rows |       2 | left_join_count_by_region              | t            | child
+ own rows |       2 | left_join_count_distinct_value_by_kind | t            | child
+ own rows |       2 | left_join_flagged_recent_sum_by_region | t            | child
+ own rows |       2 | left_join_high_or_missing_by_region    | t            | child
+ own rows |       2 | left_join_orphans_by_flag              | t            | child
+ own rows |       2 | left_join_small_values_by_region       | t            | child
+ own rows |       2 | left_join_top_parents_by_children      | t            | child
+(16 rows)
+
+ROLLBACK;
+VACUUM parent, child;
+SELECT * FROM report('vacuumed');
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
+  stage   | workers |                 shape                  | same_answers | scan  
+----------+---------+----------------------------------------+--------------+-------
+ vacuumed |       0 | left_join_childless_count_and_sum      | t            | child
+ vacuumed |       0 | left_join_count_by_region              | t            | child
+ vacuumed |       0 | left_join_count_distinct_value_by_kind | t            | child
+ vacuumed |       0 | left_join_flagged_recent_sum_by_region | t            | child
+ vacuumed |       0 | left_join_high_or_missing_by_region    | t            | child
+ vacuumed |       0 | left_join_orphans_by_flag              | t            | child
+ vacuumed |       0 | left_join_small_values_by_region       | t            | child
+ vacuumed |       0 | left_join_top_parents_by_children      | t            | child
+ vacuumed |       2 | left_join_childless_count_and_sum      | t            | child
+ vacuumed |       2 | left_join_count_by_region              | t            | child
+ vacuumed |       2 | left_join_count_distinct_value_by_kind | t            | child
+ vacuumed |       2 | left_join_flagged_recent_sum_by_region | t            | child
+ vacuumed |       2 | left_join_high_or_missing_by_region    | t            | child
+ vacuumed |       2 | left_join_orphans_by_flag              | t            | child
+ vacuumed |       2 | left_join_small_values_by_region       | t            | child
+ vacuumed |       2 | left_join_top_parents_by_children      | t            | child
+(16 rows)
+
+DROP FUNCTION report(text), scanned(text), answer(text, bool);
+DROP TABLE shapes, child, parent;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s5 CASCADE;
+RESET client_min_messages;
+-- <<< agg_left_child_scan
+-- >>> agg_left_partial
+CREATE SCHEMA s6;
+GRANT USAGE ON SCHEMA s6 TO PUBLIC;
+SET search_path = s6, public;
+SET sift.test_create_format1 = on;
+-- A table left-joined to a join of two small tables (every kind and region with its count, zero for the pairs of no event) cannot be one preserved lookup, so the join read every row of
+-- the table. The scan makes the groups of the rows by the columns the join equates and the query joins them to the pairs: a count is the group's (0 for a pair of none), a sum, min or max
+-- the group's (NULL for none), count(*) counts the row of a pair of none once. `partial` says the plan reads the groups in the scan, `rows_same` that the rows are those of sift off.
+-- What the groups cannot give (a float sum, avg, count(DISTINCT), a column of the table outside the aggregates, a WHERE on it) keeps the join.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE lp_kinds (id int PRIMARY KEY, name text NOT NULL);
+CREATE TABLE lp_regions (region text PRIMARY KEY);
+CREATE TABLE lp_events (id int PRIMARY KEY, kind_id int, region text, status text NOT NULL, qty int, amount numeric, ratio float8) WITH (autovacuum_enabled = false);
+INSERT INTO lp_kinds SELECT i, 'kind_' || i FROM generate_series(1, 8) i;
+INSERT INTO lp_regions SELECT 'r' || i FROM generate_series(1, 6) i;
+INSERT INTO lp_events SELECT i, CASE WHEN i % 89 = 0 THEN NULL ELSE 1 + i % 6 END, CASE WHEN i % 97 = 0 THEN NULL ELSE 'r' || (1 + i % 5) END,
+  (ARRAY['new','paid','void'])[1 + i % 3], CASE WHEN i % 13 = 0 THEN NULL ELSE i % 50 END, (i % 1000) / 10.0, (i % 70) / 7.0 FROM generate_series(1, 7500) i;
+CREATE INDEX lp_events_col ON lp_events USING sift_col (id, kind_id, region, status, qty, amount, ratio);
+VACUUM (FREEZE, ANALYZE) lp_kinds, lp_regions, lp_events;
+CREATE TABLE q (ord serial, name text, sql text);
+INSERT INTO q (name, sql) VALUES
+  ('count of a column',           $q$SELECT k.name, r.region, count(e.id) FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region GROUP BY 1, 2$q$),
+  ('count(*) and sums',           $q$SELECT k.name, r.region, count(*), sum(e.qty), sum(e.amount), min(e.amount), max(e.status) FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region GROUP BY 1, 2$q$),
+  ('a condition on the table',    $q$SELECT k.name, r.region, count(e.id), sum(e.qty) FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region AND e.status = 'paid' GROUP BY 1, 2$q$),
+  ('a condition on the pairs',    $q$SELECT k.name, r.region, count(*), count(e.id) FROM lp_kinds k JOIN lp_regions r ON true LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region AND k.id % 2 = 0 GROUP BY 1, 2$q$),
+  ('a WHERE on the pairs',        $q$SELECT k.name, r.region, count(e.id) FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region WHERE k.id <= 7 AND r.region <> 'r2' GROUP BY 1, 2$q$),
+  ('groups of several pairs',     $q$SELECT k.name, count(e.id), count(*), sum(e.qty) FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region GROUP BY 1$q$),
+  ('HAVING',                      $q$SELECT k.name, r.region, sum(e.qty) FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region GROUP BY 1, 2 HAVING sum(e.qty) > 5000 OR count(e.id) = 0$q$),
+  ('no GROUP BY',                 $q$SELECT count(*), count(e.id), sum(e.qty), max(e.amount) FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region$q$),
+  ('no GROUP BY, no pair',        $q$SELECT count(*), count(e.id), sum(e.qty) FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region WHERE k.id > 100$q$),
+  ('ORDER BY and LIMIT',          $q$SELECT k.name, r.region, count(e.id) c FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region GROUP BY 1, 2 ORDER BY c DESC, 1, 2 LIMIT 5$q$),
+  ('a float sum',                 $q$SELECT k.name, r.region, sum(e.ratio) FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region GROUP BY 1, 2$q$),
+  ('avg',                         $q$SELECT k.name, r.region, avg(e.qty) FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region GROUP BY 1, 2$q$),
+  ('count(DISTINCT)',             $q$SELECT k.name, r.region, count(DISTINCT e.status) FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region GROUP BY 1, 2$q$),
+  ('a column of the table',       $q$SELECT k.name, e.status, count(*) FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region GROUP BY 1, 2$q$),
+  ('a WHERE on the table',        $q$SELECT k.name, r.region, count(e.id) FROM lp_kinds k CROSS JOIN lp_regions r LEFT JOIN lp_events e ON e.kind_id = k.id AND e.region = r.region WHERE e.status IS NULL OR e.status = 'void' GROUP BY 1, 2$q$);
+CREATE FUNCTION partial_check(q text) RETURNS TABLE (partial bool, rows_same bool) LANGUAGE plpgsql AS
+$$ DECLARE l text; plan text := ''; a text; b text;
+BEGIN
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
+  partial := plan LIKE '%Subquery Scan on e%' AND plan LIKE '%Custom Scan (SiftAgg)%';
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
+  PERFORM set_config('sift.enable_agg', 'off', true);
+  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO b;
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  rows_same := a IS NOT DISTINCT FROM b;
+  RETURN NEXT;
+END $$;
+SELECT q.name, c.* FROM q, LATERAL partial_check(q.sql) c ORDER BY q.ord;
+           name           | partial | rows_same 
+--------------------------+---------+-----------
+ count of a column        | t       | t
+ count(*) and sums        | t       | t
+ a condition on the table | t       | t
+ a condition on the pairs | t       | t
+ a WHERE on the pairs     | t       | t
+ groups of several pairs  | t       | t
+ HAVING                   | t       | t
+ no GROUP BY              | t       | t
+ no GROUP BY, no pair     | f       | t
+ ORDER BY and LIMIT       | t       | t
+ a float sum              | f       | t
+ avg                      | f       | t
+ count(DISTINCT)          | f       | t
+ a column of the table    | f       | t
+ a WHERE on the table     | f       | t
+(15 rows)
+
+DROP FUNCTION partial_check(text);
+DROP TABLE q, lp_kinds, lp_regions, lp_events;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s6 CASCADE;
+RESET client_min_messages;
+-- <<< agg_left_partial
+-- >>> agg_probe_rewrite
+CREATE SCHEMA s7;
+GRANT USAGE ON SCHEMA s7 TO PUBLIC;
+SET search_path = s7, public;
+SET sift.test_create_format1 = on;
+-- A join to a large table on a btree column, and an EXISTS, NOT EXISTS or IN over one, has the same rows as the lateral child that is a probe of the btree for each key the scan meets;
+-- the planner makes that form too and keeps it where it costs less.
+SET client_min_messages = warning;
+SET jit = off;
+-- NULL keys in a tenth of the events, three thousand keys, ten events to each
+CREATE TABLE ev (id int, fk int, v int, d date) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, CASE WHEN i % 10 = 0 THEN NULL ELSE i % 3000 END, i % 7, date '2026-01-01' + i % 300 FROM generate_series(1, 30000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, fk, v, d);
+-- ten rows to a key, five statuses, no row for a key that is a multiple of seven
+CREATE TABLE lk (id int NOT NULL, parent int NOT NULL, status int, label text, weight int) WITH (autovacuum_enabled = false);
+INSERT INTO lk SELECT i, i % 3000, (i / 3000) % 5, 'l' || (i % 3000 % 3), i % 4 FROM generate_series(0, 14999) i WHERE i % 3000 % 7 <> 0;
+INSERT INTO lk SELECT i, i % 3000, (i / 3000) % 5, 'l' || (i % 3000 % 3), i % 4 FROM generate_series(30000, 18499) i WHERE i % 3000 % 7 <> 0;
+CREATE INDEX lk_cover ON lk (parent, status) INCLUDE (label, weight);
+-- a table of seven rows, below the size a probe is made for
+CREATE TABLE dm (v int);
+INSERT INTO dm SELECT generate_series(0, 6);
+VACUUM (FREEZE, ANALYZE) ev, lk, dm;
+CREATE FUNCTION probe_q(keys text, kind text) RETURNS text LANGUAGE sql AS $$
+	SELECT CASE kind
+		WHEN 'inner' THEN format('SELECT lk.label, count(*), sum(ev.v) FROM ev JOIN lk ON lk.parent = ev.fk AND lk.status = 2 WHERE ev.fk BETWEEN %s AND ev.d IS NOT NULL GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'inner_covered' THEN format('SELECT lk.label, count(*), sum(lk.weight) FROM ev JOIN lk ON lk.parent = ev.fk AND lk.status = 2 WHERE ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'left' THEN format('SELECT lk.label, count(*), sum(ev.v), count(lk.id) FROM ev LEFT JOIN lk ON lk.parent = ev.fk AND lk.status = 2 WHERE ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'left_null_keys' THEN format('SELECT lk.label, count(*), sum(ev.v) FROM ev LEFT JOIN lk ON lk.parent = ev.fk AND lk.status = 2 WHERE ev.id BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'semi' THEN format('SELECT ev.v, count(*) FROM ev WHERE ev.fk BETWEEN %s AND EXISTS (SELECT 1 FROM lk WHERE lk.parent = ev.fk AND lk.status = 4 AND lk.label = ''l1'') GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'anti' THEN format('SELECT ev.v, count(*) FROM ev WHERE ev.fk BETWEEN %s AND NOT EXISTS (SELECT 1 FROM lk WHERE lk.parent = ev.fk AND lk.status = 4 AND lk.label = ''l1'') GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'inner_heap' THEN format('SELECT lk.label, count(*), sum(lk.id) FROM ev JOIN lk ON lk.parent = ev.fk WHERE ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'system_column' THEN format('SELECT lk.label, count(*) FROM ev JOIN lk ON lk.parent = ev.fk AND lk.status = 2 WHERE ev.fk BETWEEN %s AND lk.ctid IS NOT NULL GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'comma_lateral' THEN format('SELECT x.w, count(*) FROM ev, lk, LATERAL (SELECT ev.v + 1 AS w) x WHERE lk.parent = ev.fk AND lk.status = 2 AND ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'comma' THEN format('SELECT lk.label, count(*), sum(ev.v) FROM ev, lk WHERE lk.parent = ev.fk AND lk.status = 2 AND ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'comma_three' THEN format('SELECT lk.label, count(*), sum(dm.v) FROM dm, ev, lk WHERE ev.v = dm.v AND lk.parent = ev.fk AND lk.status = 2 AND ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'not_in' THEN format('SELECT ev.v, count(*) FROM ev WHERE ev.fk BETWEEN %s AND ev.fk NOT IN (SELECT lk.parent FROM lk WHERE lk.status = 4 AND lk.label = ''l1'') GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'not_in_nullable' THEN format('SELECT ev.v, count(*) FROM ev WHERE ev.v < 3 AND ev.id BETWEEN %s AND ev.fk NOT IN (SELECT lk.parent FROM lk WHERE lk.status = 4 AND lk.label = ''l1'') GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'sublink' THEN format('SELECT ev.v, count(*) FROM ev JOIN lk ON lk.parent = ev.fk AND lk.status = 2 WHERE ev.fk BETWEEN %s AND (SELECT count(*) FROM dm WHERE dm.v = lk.weight) > 0 GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'sublink_in_list' THEN format('SELECT ev.v, count(*), max((SELECT dm.v FROM dm WHERE dm.v = lk.weight + 1)) FROM ev LEFT JOIN lk ON lk.parent = ev.fk AND lk.status = 2 WHERE ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'whole_row' THEN format('SELECT ev.v, count(lk), sum(length(lk::text)), count(*) FROM ev LEFT JOIN lk ON lk.parent = ev.fk AND lk.status = 2 WHERE ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'join_alias' THEN format('SELECT j.label, count(*), sum(j.weight) FROM (ev JOIN lk ON lk.parent = ev.fk AND lk.status = 2) AS j (eid, fk, v, d, lid, parent, status, label, weight) WHERE j.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'anti_two_tables' THEN format('SELECT dm.v, count(*) FROM ev, dm WHERE ev.v = dm.v AND ev.fk BETWEEN %s AND NOT EXISTS (SELECT 1 FROM lk WHERE lk.parent = ev.fk AND lk.status = 4 AND lk.label = ''l1'') GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'lateral_entry' THEN format('SELECT x.w, count(*) FROM ev JOIN lk ON lk.parent = ev.fk AND lk.status = 2, LATERAL (SELECT lk.weight + ev.v AS w) x WHERE ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'in' THEN format('SELECT ev.v, count(*) FROM ev WHERE ev.fk BETWEEN %s AND ev.fk IN (SELECT lk.parent FROM lk WHERE lk.status = 4 AND lk.label = ''l1'') GROUP BY 1 ORDER BY 1', keys)
+	END
+$$;
+-- whether the statement runs a probe of the table's btree for each key
+CREATE FUNCTION probes(sql text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text; r boolean := false; BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		r := r OR l ~ 'Lookup Joins: .*sift_probe';
+	END LOOP;
+	RETURN r;
+END $$;
+SELECT '100 AND 109' AS few \gset
+-- a few keys: the probes, and no bitmap scan in the child of one that fetches rows from the heap (the scan walks an index scan in its btree)
+CREATE FUNCTION bitmap_child(sql text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text; r boolean := false; BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		r := r OR l ~ 'Bitmap';
+	END LOOP;
+	RETURN r;
+END $$;
+SELECT bitmap_child(probe_q(:'few', 'inner_heap')) AS bitmap_child;
+ bitmap_child 
+--------------
+ f
+(1 row)
+
+-- the same rows read as a statement of their own are a bitmap scan
+SELECT bitmap_child('SELECT lk.id FROM lk WHERE lk.parent = 100') AS bitmap_as_written;
+ bitmap_as_written 
+-------------------
+ t
+(1 row)
+
+SELECT kind, probes(probe_q(:'few', kind)) AS few_keys
+FROM (VALUES ('inner'), ('inner_covered'), ('inner_heap'), ('left'), ('semi'), ('anti'), ('in'), ('comma'), ('comma_three'), ('not_in'), ('not_in_nullable'), ('system_column'), ('comma_lateral'), ('sublink'), ('sublink_in_list'), ('whole_row'), ('join_alias'), ('anti_two_tables'), ('lateral_entry')) q(kind) ORDER BY 1;
+      kind       | few_keys 
+-----------------+----------
+ anti            | t
+ anti_two_tables | t
+ comma           | t
+ comma_lateral   | f
+ comma_three     | t
+ in              | t
+ inner           | t
+ inner_covered   | t
+ inner_heap      | t
+ join_alias      | t
+ lateral_entry   | t
+ left            | t
+ not_in          | t
+ not_in_nullable | f
+ semi            | t
+ sublink         | f
+ sublink_in_list | f
+ system_column   | f
+ whole_row       | t
+(19 rows)
+
+-- the answers: the same without the rewrite and from the ordinary plan, in a serial and a parallel scan; keys that no row of the table has; the events without a key; keys twice
+CREATE FUNCTION answers(range text, kind text, mode text, workers int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', (mode <> 'normal')::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || probe_q(range, kind) || ') t' INTO r;
+	RETURN coalesce(r, '');
+END $$;
+CREATE FUNCTION compare_all() RETURNS TABLE (name text, kind text, workers int, same_answers boolean, not_empty boolean) LANGUAGE sql AS $$
+	SELECT k.name, q.kind, w.workers,
+		   answers(k.range, q.kind, 'probe', w.workers) = answers(k.range, q.kind, 'whole', w.workers) AND answers(k.range, q.kind, 'probe', w.workers) = answers(k.range, q.kind, 'normal', w.workers),
+		   answers(k.range, q.kind, 'probe', w.workers) <> ''
+	FROM (VALUES ('few', '100 AND 109'), ('one', '7 AND 7'), ('absent', '5000 AND 5004'), ('multiples_of_seven', '0 AND 20'), ('every', '0 AND 2999')) k(name, range),
+		 (VALUES ('inner'), ('inner_covered'), ('inner_heap'), ('left'), ('semi'), ('anti'), ('in'), ('comma'), ('comma_three'), ('not_in'), ('not_in_nullable'), ('system_column'), ('comma_lateral'), ('sublink'), ('sublink_in_list'), ('whole_row'), ('join_alias'), ('anti_two_tables'), ('lateral_entry')) q(kind), (VALUES (0), (3)) w(workers)
+	WHERE NOT (q.kind = 'left_null_keys')
+	ORDER BY 1, 2, 3
+$$;
+SELECT * FROM compare_all();
+        name        |      kind       | workers | same_answers | not_empty 
+--------------------+-----------------+---------+--------------+-----------
+ absent             | anti            |       0 | t            | f
+ absent             | anti            |       3 | t            | f
+ absent             | anti_two_tables |       0 | t            | f
+ absent             | anti_two_tables |       3 | t            | f
+ absent             | comma           |       0 | t            | f
+ absent             | comma           |       3 | t            | f
+ absent             | comma_lateral   |       0 | t            | f
+ absent             | comma_lateral   |       3 | t            | f
+ absent             | comma_three     |       0 | t            | f
+ absent             | comma_three     |       3 | t            | f
+ absent             | in              |       0 | t            | f
+ absent             | in              |       3 | t            | f
+ absent             | inner           |       0 | t            | f
+ absent             | inner           |       3 | t            | f
+ absent             | inner_covered   |       0 | t            | f
+ absent             | inner_covered   |       3 | t            | f
+ absent             | inner_heap      |       0 | t            | f
+ absent             | inner_heap      |       3 | t            | f
+ absent             | join_alias      |       0 | t            | f
+ absent             | join_alias      |       3 | t            | f
+ absent             | lateral_entry   |       0 | t            | f
+ absent             | lateral_entry   |       3 | t            | f
+ absent             | left            |       0 | t            | f
+ absent             | left            |       3 | t            | f
+ absent             | not_in          |       0 | t            | f
+ absent             | not_in          |       3 | t            | f
+ absent             | not_in_nullable |       0 | t            | f
+ absent             | not_in_nullable |       3 | t            | f
+ absent             | semi            |       0 | t            | f
+ absent             | semi            |       3 | t            | f
+ absent             | sublink         |       0 | t            | f
+ absent             | sublink         |       3 | t            | f
+ absent             | sublink_in_list |       0 | t            | f
+ absent             | sublink_in_list |       3 | t            | f
+ absent             | system_column   |       0 | t            | f
+ absent             | system_column   |       3 | t            | f
+ absent             | whole_row       |       0 | t            | f
+ absent             | whole_row       |       3 | t            | f
+ every              | anti            |       0 | t            | t
+ every              | anti            |       3 | t            | t
+ every              | anti_two_tables |       0 | t            | t
+ every              | anti_two_tables |       3 | t            | t
+ every              | comma           |       0 | t            | t
+ every              | comma           |       3 | t            | t
+ every              | comma_lateral   |       0 | t            | t
+ every              | comma_lateral   |       3 | t            | t
+ every              | comma_three     |       0 | t            | t
+ every              | comma_three     |       3 | t            | t
+ every              | in              |       0 | t            | t
+ every              | in              |       3 | t            | t
+ every              | inner           |       0 | t            | t
+ every              | inner           |       3 | t            | t
+ every              | inner_covered   |       0 | t            | t
+ every              | inner_covered   |       3 | t            | t
+ every              | inner_heap      |       0 | t            | t
+ every              | inner_heap      |       3 | t            | t
+ every              | join_alias      |       0 | t            | t
+ every              | join_alias      |       3 | t            | t
+ every              | lateral_entry   |       0 | t            | t
+ every              | lateral_entry   |       3 | t            | t
+ every              | left            |       0 | t            | t
+ every              | left            |       3 | t            | t
+ every              | not_in          |       0 | t            | t
+ every              | not_in          |       3 | t            | t
+ every              | not_in_nullable |       0 | t            | t
+ every              | not_in_nullable |       3 | t            | t
+ every              | semi            |       0 | t            | t
+ every              | semi            |       3 | t            | t
+ every              | sublink         |       0 | t            | t
+ every              | sublink         |       3 | t            | t
+ every              | sublink_in_list |       0 | t            | t
+ every              | sublink_in_list |       3 | t            | t
+ every              | system_column   |       0 | t            | t
+ every              | system_column   |       3 | t            | t
+ every              | whole_row       |       0 | t            | t
+ every              | whole_row       |       3 | t            | t
+ few                | anti            |       0 | t            | t
+ few                | anti            |       3 | t            | t
+ few                | anti_two_tables |       0 | t            | t
+ few                | anti_two_tables |       3 | t            | t
+ few                | comma           |       0 | t            | t
+ few                | comma           |       3 | t            | t
+ few                | comma_lateral   |       0 | t            | t
+ few                | comma_lateral   |       3 | t            | t
+ few                | comma_three     |       0 | t            | t
+ few                | comma_three     |       3 | t            | t
+ few                | in              |       0 | t            | t
+ few                | in              |       3 | t            | t
+ few                | inner           |       0 | t            | t
+ few                | inner           |       3 | t            | t
+ few                | inner_covered   |       0 | t            | t
+ few                | inner_covered   |       3 | t            | t
+ few                | inner_heap      |       0 | t            | t
+ few                | inner_heap      |       3 | t            | t
+ few                | join_alias      |       0 | t            | t
+ few                | join_alias      |       3 | t            | t
+ few                | lateral_entry   |       0 | t            | t
+ few                | lateral_entry   |       3 | t            | t
+ few                | left            |       0 | t            | t
+ few                | left            |       3 | t            | t
+ few                | not_in          |       0 | t            | t
+ few                | not_in          |       3 | t            | t
+ few                | not_in_nullable |       0 | t            | t
+ few                | not_in_nullable |       3 | t            | t
+ few                | semi            |       0 | t            | t
+ few                | semi            |       3 | t            | t
+ few                | sublink         |       0 | t            | t
+ few                | sublink         |       3 | t            | t
+ few                | sublink_in_list |       0 | t            | t
+ few                | sublink_in_list |       3 | t            | t
+ few                | system_column   |       0 | t            | t
+ few                | system_column   |       3 | t            | t
+ few                | whole_row       |       0 | t            | t
+ few                | whole_row       |       3 | t            | t
+ multiples_of_seven | anti            |       0 | t            | t
+ multiples_of_seven | anti            |       3 | t            | t
+ multiples_of_seven | anti_two_tables |       0 | t            | t
+ multiples_of_seven | anti_two_tables |       3 | t            | t
+ multiples_of_seven | comma           |       0 | t            | t
+ multiples_of_seven | comma           |       3 | t            | t
+ multiples_of_seven | comma_lateral   |       0 | t            | t
+ multiples_of_seven | comma_lateral   |       3 | t            | t
+ multiples_of_seven | comma_three     |       0 | t            | t
+ multiples_of_seven | comma_three     |       3 | t            | t
+ multiples_of_seven | in              |       0 | t            | t
+ multiples_of_seven | in              |       3 | t            | t
+ multiples_of_seven | inner           |       0 | t            | t
+ multiples_of_seven | inner           |       3 | t            | t
+ multiples_of_seven | inner_covered   |       0 | t            | t
+ multiples_of_seven | inner_covered   |       3 | t            | t
+ multiples_of_seven | inner_heap      |       0 | t            | t
+ multiples_of_seven | inner_heap      |       3 | t            | t
+ multiples_of_seven | join_alias      |       0 | t            | t
+ multiples_of_seven | join_alias      |       3 | t            | t
+ multiples_of_seven | lateral_entry   |       0 | t            | t
+ multiples_of_seven | lateral_entry   |       3 | t            | t
+ multiples_of_seven | left            |       0 | t            | t
+ multiples_of_seven | left            |       3 | t            | t
+ multiples_of_seven | not_in          |       0 | t            | t
+ multiples_of_seven | not_in          |       3 | t            | t
+ multiples_of_seven | not_in_nullable |       0 | t            | t
+ multiples_of_seven | not_in_nullable |       3 | t            | t
+ multiples_of_seven | semi            |       0 | t            | t
+ multiples_of_seven | semi            |       3 | t            | t
+ multiples_of_seven | sublink         |       0 | t            | t
+ multiples_of_seven | sublink         |       3 | t            | t
+ multiples_of_seven | sublink_in_list |       0 | t            | t
+ multiples_of_seven | sublink_in_list |       3 | t            | t
+ multiples_of_seven | system_column   |       0 | t            | t
+ multiples_of_seven | system_column   |       3 | t            | t
+ multiples_of_seven | whole_row       |       0 | t            | t
+ multiples_of_seven | whole_row       |       3 | t            | t
+ one                | anti            |       0 | t            | t
+ one                | anti            |       3 | t            | t
+ one                | anti_two_tables |       0 | t            | t
+ one                | anti_two_tables |       3 | t            | t
+ one                | comma           |       0 | t            | f
+ one                | comma           |       3 | t            | f
+ one                | comma_lateral   |       0 | t            | f
+ one                | comma_lateral   |       3 | t            | f
+ one                | comma_three     |       0 | t            | f
+ one                | comma_three     |       3 | t            | f
+ one                | in              |       0 | t            | f
+ one                | in              |       3 | t            | f
+ one                | inner           |       0 | t            | f
+ one                | inner           |       3 | t            | f
+ one                | inner_covered   |       0 | t            | f
+ one                | inner_covered   |       3 | t            | f
+ one                | inner_heap      |       0 | t            | f
+ one                | inner_heap      |       3 | t            | f
+ one                | join_alias      |       0 | t            | f
+ one                | join_alias      |       3 | t            | f
+ one                | lateral_entry   |       0 | t            | f
+ one                | lateral_entry   |       3 | t            | f
+ one                | left            |       0 | t            | t
+ one                | left            |       3 | t            | t
+ one                | not_in          |       0 | t            | t
+ one                | not_in          |       3 | t            | t
+ one                | not_in_nullable |       0 | t            | t
+ one                | not_in_nullable |       3 | t            | t
+ one                | semi            |       0 | t            | f
+ one                | semi            |       3 | t            | f
+ one                | sublink         |       0 | t            | f
+ one                | sublink         |       3 | t            | f
+ one                | sublink_in_list |       0 | t            | t
+ one                | sublink_in_list |       3 | t            | t
+ one                | system_column   |       0 | t            | f
+ one                | system_column   |       3 | t            | f
+ one                | whole_row       |       0 | t            | t
+ one                | whole_row       |       3 | t            | t
+(190 rows)
+
+-- the events without a key (a tenth of them: a NULL meets no row of the table, and the left join and NOT EXISTS keep them)
+SELECT kind, workers, answers('1 AND 400', kind, 'probe', workers) = answers('1 AND 400', kind, 'normal', workers) AS same_answers
+FROM (VALUES ('left_null_keys')) q(kind), (VALUES (0), (3)) w(workers) ORDER BY 1, 2;
+      kind      | workers | same_answers 
+----------------+---------+--------------
+ left_null_keys |       0 | t
+ left_null_keys |       3 | t
+(2 rows)
+
+-- rows changed since the last VACUUM, deleted, updated and inserted in the transaction, and rolled back
+UPDATE lk SET label = 'l1' WHERE parent BETWEEN 100 AND 104 AND status = 2;
+DELETE FROM lk WHERE parent = 106 AND status IN (2, 4);
+BEGIN;
+INSERT INTO lk SELECT 90000 + i, 105, 4, 'l1', 1 FROM generate_series(1, 3) i;
+INSERT INTO lk SELECT 91000 + i, 107, 2, 'l2', 1 FROM generate_series(1, 3) i;
+SELECT kind, workers, answers('100 AND 109', kind, 'probe', workers) = answers('100 AND 109', kind, 'normal', workers) AS same_answers
+FROM (VALUES ('inner'), ('left'), ('semi'), ('anti'), ('in'), ('comma'), ('not_in'), ('whole_row')) q(kind), (VALUES (0), (3)) w(workers) ORDER BY 1, 2;
+   kind    | workers | same_answers 
+-----------+---------+--------------
+ anti      |       0 | t
+ anti      |       3 | t
+ comma     |       0 | t
+ comma     |       3 | t
+ in        |       0 | t
+ in        |       3 | t
+ inner     |       0 | t
+ inner     |       3 | t
+ left      |       0 | t
+ left      |       3 | t
+ not_in    |       0 | t
+ not_in    |       3 | t
+ semi      |       0 | t
+ semi      |       3 | t
+ whole_row |       0 | t
+ whole_row |       3 | t
+(16 rows)
+
+ROLLBACK;
+SELECT kind, workers, answers('100 AND 109', kind, 'probe', workers) = answers('100 AND 109', kind, 'normal', workers) AS same_answers
+FROM (VALUES ('inner'), ('left'), ('semi'), ('anti'), ('in'), ('comma'), ('not_in'), ('whole_row')) q(kind), (VALUES (0), (3)) w(workers) ORDER BY 1, 2;
+   kind    | workers | same_answers 
+-----------+---------+--------------
+ anti      |       0 | t
+ anti      |       3 | t
+ comma     |       0 | t
+ comma     |       3 | t
+ in        |       0 | t
+ in        |       3 | t
+ inner     |       0 | t
+ inner     |       3 | t
+ left      |       0 | t
+ left      |       3 | t
+ not_in    |       0 | t
+ not_in    |       3 | t
+ semi      |       0 | t
+ semi      |       3 | t
+ whole_row |       0 | t
+ whole_row |       3 | t
+(16 rows)
+
+-- permissions: the sub-select reads the table as the statement does (a role that may read the events and not the table of the join is refused, by the sub-select too)
+CREATE FUNCTION denied(sql text) RETURNS boolean LANGUAGE plpgsql AS $$
+BEGIN EXECUTE sql; RETURN false; EXCEPTION WHEN insufficient_privilege THEN RETURN true; END $$;
+CREATE ROLE probe_reader;
+GRANT SELECT ON ev TO probe_reader;
+SET ROLE probe_reader;
+SELECT kind, denied(probe_q(:'few', kind)) AS denied FROM (VALUES ('inner'), ('left'), ('semi'), ('anti')) q(kind) ORDER BY 1;
+ kind  | denied 
+-------+--------
+ anti  | t
+ inner | t
+ left  | t
+ semi  | t
+(4 rows)
+
+RESET ROLE;
+REVOKE ALL ON ev FROM probe_reader;
+DROP ROLE probe_reader;
+DROP FUNCTION bitmap_child(text), compare_all(), answers(text, text, text, int), denied(text), probes(text), probe_q(text, text);
+DROP TABLE ev, lk, dm;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s7 CASCADE;
+RESET client_min_messages;
+-- <<< agg_probe_rewrite
+-- >>> agg_probe_partial
+CREATE SCHEMA s8;
+GRANT USAGE ON SCHEMA s8 TO PUBLIC;
+SET search_path = s8, public;
+SET sift.test_create_format1 = on;
+-- A join to a large table whose only btree on the join column is a partial one (the soft-delete index `(parent) WHERE deleted_at IS NULL`) is a probe of that btree for each
+-- key the scan meets when the join's own conditions imply the index predicate; where they do not, the table is read whole.
+SET client_min_messages = warning;
+SET jit = off;
+CREATE TABLE ev (id int, fk int, v int, d date) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, CASE WHEN i % 10 = 0 THEN NULL ELSE i % 3000 END, i % 7, date '2026-01-01' + i % 300 FROM generate_series(1, 30000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, fk, v, d);
+-- ten links to a key, a fifth of them deleted, none for a key that is a multiple of seven
+CREATE TABLE lk (id int NOT NULL, parent int NOT NULL, status int, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+INSERT INTO lk SELECT i, i % 3000, i % 5, CASE WHEN i % 5 = 0 THEN timestamptz '2026-02-01' END FROM generate_series(0, 18499) i WHERE i % 3000 % 7 <> 0;
+CREATE INDEX lk_live ON lk (parent) WHERE deleted_at IS NULL;
+VACUUM (FREEZE, ANALYZE) ev, lk;
+CREATE FUNCTION probe_q(keys text, kind text) RETURNS text LANGUAGE sql AS $$
+	SELECT CASE kind
+		WHEN 'inner' THEN format('SELECT lk.status, count(*), sum(ev.v) FROM ev JOIN lk ON lk.parent = ev.fk AND lk.deleted_at IS NULL WHERE ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'left' THEN format('SELECT lk.status, count(*), sum(ev.v), count(lk.id) FROM ev LEFT JOIN lk ON lk.parent = ev.fk AND lk.deleted_at IS NULL WHERE ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'comma' THEN format('SELECT lk.status, count(*), sum(ev.v) FROM ev, lk WHERE lk.parent = ev.fk AND lk.deleted_at IS NULL AND ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'status' THEN format('SELECT lk.status, count(*) FROM ev JOIN lk ON lk.parent = ev.fk AND lk.deleted_at IS NULL AND lk.status = 2 WHERE ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'no_predicate' THEN format('SELECT lk.status, count(*), sum(ev.v) FROM ev JOIN lk ON lk.parent = ev.fk WHERE ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'deleted' THEN format('SELECT lk.status, count(*), sum(ev.v) FROM ev JOIN lk ON lk.parent = ev.fk AND lk.deleted_at IS NOT NULL WHERE ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'other_column' THEN format('SELECT lk.status, count(*), sum(ev.v) FROM ev JOIN lk ON lk.parent = ev.fk AND lk.status = 2 WHERE ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+		WHEN 'range' THEN format('SELECT lk.status, count(*), sum(ev.v) FROM ev JOIN lk ON lk.parent = ev.fk AND lk.deleted_at < timestamptz ''2026-03-01'' WHERE ev.fk BETWEEN %s GROUP BY 1 ORDER BY 1', keys)
+	END
+$$;
+CREATE FUNCTION probes(sql text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text; r boolean := false; BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		r := r OR l ~ 'Lookup Joins: .*sift_probe';
+	END LOOP;
+	RETURN r;
+END $$;
+-- the join conditions that imply the predicate probe; the others do not (the rows with a deleted link, the other column, a range that implies nothing the index holds)
+SELECT kind, probes(probe_q('111 AND 119', kind)) AS few_keys
+FROM (VALUES ('inner'), ('left'), ('comma'), ('status'), ('no_predicate'), ('deleted'), ('other_column'), ('range')) q(kind) ORDER BY 1;
+     kind     | few_keys 
+--------------+----------
+ comma        | t
+ deleted      | f
+ inner        | t
+ left         | t
+ no_predicate | f
+ other_column | f
+ range        | f
+ status       | t
+(8 rows)
+
+-- the answers: the same without the rewrite and from the ordinary plan, in a serial and a parallel scan; keys that no row has; the events without a key
+CREATE FUNCTION answers(range text, kind text, mode text, workers int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', (mode <> 'normal')::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || probe_q(range, kind) || ') t' INTO r;
+	RETURN coalesce(r, '');
+END $$;
+CREATE FUNCTION compare_all() RETURNS TABLE (name text, kind text, workers int, same_answers boolean, not_empty boolean) LANGUAGE sql AS $$
+	SELECT k.name, q.kind, w.workers,
+		   answers(k.range, q.kind, 'probe', w.workers) = answers(k.range, q.kind, 'whole', w.workers) AND answers(k.range, q.kind, 'probe', w.workers) = answers(k.range, q.kind, 'normal', w.workers),
+		   answers(k.range, q.kind, 'probe', w.workers) <> ''
+	FROM (VALUES ('few', '111 AND 119'), ('one', '8 AND 8'), ('absent', '5000 AND 5004'), ('every', '0 AND 2999')) k(name, range),
+		 (VALUES ('inner'), ('left'), ('comma'), ('status'), ('no_predicate'), ('deleted'), ('other_column'), ('range')) q(kind),
+		 (VALUES (0), (3)) w(workers)
+	ORDER BY 1, 2, 3
+$$;
+SELECT * FROM compare_all();
+  name  |     kind     | workers | same_answers | not_empty 
+--------+--------------+---------+--------------+-----------
+ absent | comma        |       0 | t            | f
+ absent | comma        |       3 | t            | f
+ absent | deleted      |       0 | t            | f
+ absent | deleted      |       3 | t            | f
+ absent | inner        |       0 | t            | f
+ absent | inner        |       3 | t            | f
+ absent | left         |       0 | t            | f
+ absent | left         |       3 | t            | f
+ absent | no_predicate |       0 | t            | f
+ absent | no_predicate |       3 | t            | f
+ absent | other_column |       0 | t            | f
+ absent | other_column |       3 | t            | f
+ absent | range        |       0 | t            | f
+ absent | range        |       3 | t            | f
+ absent | status       |       0 | t            | f
+ absent | status       |       3 | t            | f
+ every  | comma        |       0 | t            | t
+ every  | comma        |       3 | t            | t
+ every  | deleted      |       0 | t            | t
+ every  | deleted      |       3 | t            | t
+ every  | inner        |       0 | t            | t
+ every  | inner        |       3 | t            | t
+ every  | left         |       0 | t            | t
+ every  | left         |       3 | t            | t
+ every  | no_predicate |       0 | t            | t
+ every  | no_predicate |       3 | t            | t
+ every  | other_column |       0 | t            | t
+ every  | other_column |       3 | t            | t
+ every  | range        |       0 | t            | t
+ every  | range        |       3 | t            | t
+ every  | status       |       0 | t            | t
+ every  | status       |       3 | t            | t
+ few    | comma        |       0 | t            | t
+ few    | comma        |       3 | t            | t
+ few    | deleted      |       0 | t            | t
+ few    | deleted      |       3 | t            | t
+ few    | inner        |       0 | t            | t
+ few    | inner        |       3 | t            | t
+ few    | left         |       0 | t            | t
+ few    | left         |       3 | t            | t
+ few    | no_predicate |       0 | t            | t
+ few    | no_predicate |       3 | t            | t
+ few    | other_column |       0 | t            | t
+ few    | other_column |       3 | t            | t
+ few    | range        |       0 | t            | t
+ few    | range        |       3 | t            | t
+ few    | status       |       0 | t            | t
+ few    | status       |       3 | t            | t
+ one    | comma        |       0 | t            | t
+ one    | comma        |       3 | t            | t
+ one    | deleted      |       0 | t            | f
+ one    | deleted      |       3 | t            | f
+ one    | inner        |       0 | t            | t
+ one    | inner        |       3 | t            | t
+ one    | left         |       0 | t            | t
+ one    | left         |       3 | t            | t
+ one    | no_predicate |       0 | t            | t
+ one    | no_predicate |       3 | t            | t
+ one    | other_column |       0 | t            | f
+ one    | other_column |       3 | t            | f
+ one    | range        |       0 | t            | f
+ one    | range        |       3 | t            | f
+ one    | status       |       0 | t            | f
+ one    | status       |       3 | t            | f
+(64 rows)
+
+-- links deleted, restored and added since the last VACUUM, in the transaction, and rolled back
+UPDATE lk SET deleted_at = timestamptz '2026-02-01' WHERE parent BETWEEN 111 AND 115 AND status = 1;
+UPDATE lk SET deleted_at = NULL WHERE parent BETWEEN 115 AND 118 AND status = 0;
+BEGIN;
+INSERT INTO lk SELECT 90000 + i, 116, 1, NULL FROM generate_series(1, 3) i;
+DELETE FROM lk WHERE parent = 117;
+SELECT kind, workers, answers('111 AND 119', kind, 'probe', workers) = answers('111 AND 119', kind, 'normal', workers) AS same_answers
+FROM (VALUES ('inner'), ('left'), ('comma'), ('status'), ('deleted')) q(kind), (VALUES (0), (3)) w(workers) ORDER BY 1, 2;
+  kind   | workers | same_answers 
+---------+---------+--------------
+ comma   |       0 | t
+ comma   |       3 | t
+ deleted |       0 | t
+ deleted |       3 | t
+ inner   |       0 | t
+ inner   |       3 | t
+ left    |       0 | t
+ left    |       3 | t
+ status  |       0 | t
+ status  |       3 | t
+(10 rows)
+
+ROLLBACK;
+SELECT kind, workers, answers('111 AND 119', kind, 'probe', workers) = answers('111 AND 119', kind, 'normal', workers) AS same_answers
+FROM (VALUES ('inner'), ('left'), ('comma'), ('status'), ('deleted')) q(kind), (VALUES (0), (3)) w(workers) ORDER BY 1, 2;
+  kind   | workers | same_answers 
+---------+---------+--------------
+ comma   |       0 | t
+ comma   |       3 | t
+ deleted |       0 | t
+ deleted |       3 | t
+ inner   |       0 | t
+ inner   |       3 | t
+ left    |       0 | t
+ left    |       3 | t
+ status  |       0 | t
+ status  |       3 | t
+(10 rows)
+
+DROP FUNCTION compare_all(), answers(text, text, text, int), probes(text), probe_q(text, text);
+DROP TABLE ev, lk;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s8 CASCADE;
+RESET client_min_messages;
+-- <<< agg_probe_partial
+-- >>> agg_probe_table_am
+CREATE SCHEMA s9;
+GRANT USAGE ON SCHEMA s9 TO PUBLIC;
+SET search_path = s9, public;
+SET sift.test_create_format1 = on;
+-- A correlated probe of a table of another access method (sift_table) fetches every entry through the access method, an Index Only Scan too: the scan that probes it does the work of
+-- the normal plan's nested loop and no less, so it is not chosen; the same probe of a heap table, whose entries an all-visible page gives from the btree, is. The answers are the same.
+-- The count of the NOT EXISTS and of the EXISTS (shapes 1 and 3 on the table of the other access method) is made from a scan of the fact table instead (agg/flat/invert.c), which reads less
+-- than the probes; the NOT EXISTS grouped by a column of the dimension (shape 5) from the same scan, which keeps the rows of the dimension nothing matched (agg/from/scan.c).
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+CREATE TABLE dim (id int PRIMARY KEY, grp int) WITH (autovacuum_enabled = false);
+INSERT INTO dim SELECT g, g % 7 FROM generate_series(1, 5000) g;
+CREATE INDEX dim_col ON dim USING sift_col (id, grp);
+NOTICE:  sift_col index "dim_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_col');
+-- the keys 4501 to 5000 have no fact
+CREATE TABLE fact_am (id bigint PRIMARY KEY, dim_id int) USING sift_table;
+INSERT INTO fact_am SELECT g, 1 + (hashint4(g) & 2147483647) % 4500 FROM generate_series(1, 100000) g;
+CREATE INDEX fact_am_k ON fact_am (dim_id);
+CREATE TABLE fact_h (id bigint PRIMARY KEY, dim_id int) WITH (autovacuum_enabled = false);
+INSERT INTO fact_h SELECT * FROM fact_am;
+CREATE INDEX fact_h_k ON fact_h (dim_id);
+VACUUM (FREEZE, ANALYZE) dim, fact_am, fact_h;
+CREATE TABLE shapes (n int, sql text);
+INSERT INTO shapes
+SELECT row_number() OVER (), format(q, t) FROM (VALUES
+ ($q$SELECT count(*) FROM dim d WHERE NOT EXISTS (SELECT 1 FROM %s f WHERE f.dim_id = d.id)$q$),
+ ($q$SELECT count(*) FROM dim d WHERE EXISTS (SELECT 1 FROM %s f WHERE f.dim_id = d.id)$q$),
+ ($q$SELECT d.grp, count(*) FROM dim d WHERE NOT EXISTS (SELECT 1 FROM %s f WHERE f.dim_id = d.id) GROUP BY 1 ORDER BY 1$q$)
+) q (q), (VALUES ('fact_am'), ('fact_h')) t (t);
+CREATE FUNCTION answer(sql text, force bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.agg_force', force::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION plan(sql text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal'; BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'SiftAgg'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+SELECT n, substring(sql from 'FROM (fact_\w+)') AS fact, plan(sql), answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY n;
+ n |  fact   |  plan   | same_answers 
+---+---------+---------+--------------
+ 1 | fact_am | SiftAgg | t
+ 2 | fact_h  | SiftAgg | t
+ 3 | fact_am | SiftAgg | t
+ 4 | fact_h  | SiftAgg | t
+ 5 | fact_am | SiftAgg | t
+ 6 | fact_h  | SiftAgg | t
+(6 rows)
+
+DROP FUNCTION plan(text), answer(text, bool);
+DROP TABLE shapes, dim, fact_am, fact_h;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s9 CASCADE;
+RESET client_min_messages;
+-- <<< agg_probe_table_am
+-- >>> agg_probe_unvacuumed
+CREATE SCHEMA s10;
+GRANT USAGE ON SCHEMA s10 TO PUBLIC;
+SET search_path = s10, public;
+SET sift.test_create_format1 = on;
+-- A table that was loaded and never vacuumed or analyzed has reltuples = -1 and nothing visible in its visibility map. The probe rewrite of an EXISTS, NOT EXISTS, NOT IN or
+-- join to a large btree table was refused for it (it asked pg_class for the rows), so the scan read the whole table or PostgreSQL kept its own plan: the planner's own estimate
+-- of the rows (from the pages and the row width) decides, as it does for the plans around it. A correlated LIMIT 1 child that the scan probes in its btree (probe_direct) is priced
+-- by what the probe takes, not by the normal plan's idea of the rows: it is the scan's plan in the three states.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+CREATE TABLE ev (id int, fk int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, 1 + i % 3000, i % 7 FROM generate_series(1, 150000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, fk, v);
+CREATE TABLE lk (id int NOT NULL, parent int NOT NULL, status int, label text, weight int) WITH (autovacuum_enabled = false);
+-- the index exists before the rows: the reltuples a btree build leaves in the table differs between PostgreSQL 17 (the rows) and 18 (-1), the state of the test is -1
+CREATE INDEX lk_cover ON lk (parent, status) INCLUDE (label, weight);
+INSERT INTO lk SELECT i, 1 + i % 3000, (i / 3000) % 5, 'l' || (i % 3000 % 3), i % 4 FROM generate_series(0, 74999) i;
+SELECT c.relname, c.reltuples, c.relallvisible FROM pg_class c WHERE c.relname IN ('ev', 'lk') ORDER BY 1;
+ relname | reltuples | relallvisible 
+---------+-----------+---------------
+ ev      |    150000 |             0
+ lk      |        -1 |             0
+(2 rows)
+
+CREATE FUNCTION probes(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF line LIKE '%Lookup Joins:%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE TABLE shapes (name text, q text);
+INSERT INTO shapes VALUES
+ ('not_in', $q$SELECT ev.v, count(*) FROM ev WHERE ev.fk BETWEEN 100 AND 159 AND ev.fk NOT IN (SELECT lk.parent FROM lk WHERE lk.status = 4 AND lk.label = 'l1') GROUP BY 1 ORDER BY 1$q$),
+ ('anti', $q$SELECT ev.v, count(*) FROM ev WHERE ev.fk BETWEEN 100 AND 159 AND NOT EXISTS (SELECT 1 FROM lk WHERE lk.parent = ev.fk AND lk.status = 4 AND lk.label = 'l1') GROUP BY 1 ORDER BY 1$q$),
+ ('semi', $q$SELECT ev.v, count(*) FROM ev WHERE ev.fk BETWEEN 100 AND 159 AND EXISTS (SELECT 1 FROM lk WHERE lk.parent = ev.fk AND lk.status = 4 AND lk.label = 'l1') GROUP BY 1 ORDER BY 1$q$),
+ ('lateral', $q$SELECT ev.v, count(*) FROM ev JOIN LATERAL (SELECT 1 FROM lk WHERE lk.parent = ev.fk AND lk.status = 0 LIMIT 1) x ON true WHERE ev.v < 5 GROUP BY 1 ORDER BY 1$q$),
+ ('join', $q$SELECT lk.label, count(*), sum(ev.v) FROM ev JOIN lk ON lk.parent = ev.fk AND lk.status = 2 WHERE ev.fk BETWEEN 100 AND 159 GROUP BY 1 ORDER BY 1$q$);
+-- never analyzed, never vacuumed
+SELECT name, probes(q) AS probed FROM shapes ORDER BY name;
+  name   | probed 
+---------+--------
+ anti    | t
+ join    | t
+ lateral | t
+ not_in  | t
+ semi    | t
+(5 rows)
+
+-- analyzed, not vacuumed (nothing all-visible)
+ANALYZE ev, lk;
+SELECT c.relname, c.relallvisible FROM pg_class c WHERE c.relname IN ('ev', 'lk') ORDER BY 1;
+ relname | relallvisible 
+---------+---------------
+ ev      |             0
+ lk      |             0
+(2 rows)
+
+SELECT name, probes(q) AS probed FROM shapes ORDER BY name;
+  name   | probed 
+---------+--------
+ anti    | t
+ join    | t
+ lateral | t
+ not_in  | t
+ semi    | t
+(5 rows)
+
+-- vacuumed
+VACUUM (FREEZE, ANALYZE) ev, lk;
+SELECT name, probes(q) AS probed FROM shapes ORDER BY name;
+  name   | probed 
+---------+--------
+ anti    | t
+ join    | t
+ lateral | t
+ not_in  | t
+ semi    | t
+(5 rows)
+
+DROP FUNCTION probes(text);
+DROP TABLE shapes, ev, lk;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s10 CASCADE;
+RESET client_min_messages;
+-- <<< agg_probe_unvacuumed
+DROP EXTENSION pg_sift;
