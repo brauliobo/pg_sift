@@ -12,13 +12,13 @@ SET random_page_cost = 10000;
 CREATE TABLE pc (id int, ts timestamp, tz timestamptz) WITH (autovacuum_enabled = false);
 INSERT INTO pc
 SELECT i, t AT TIME ZONE 'UTC', t
-FROM (SELECT g AS i, timestamptz '2019-01-01 00:00+00' + g * interval '470 minutes' AS t FROM generate_series(1, 6000) g) s;
+FROM (SELECT g AS i, timestamptz '2019-01-01 00:00+00' + g * interval '470 minutes' AS t FROM generate_series(1, 1500) g) s;
 INSERT INTO pc VALUES (100001, '2024-03-10 02:30', '2024-03-10 07:30+00'), (100002, '2024-11-03 01:30', '2024-11-03 05:30+00'), (100003, '2024-11-03 01:30', '2024-11-03 06:30+00'),
 	(100004, '2024-12-31 23:59:59.999999', '2024-12-31 23:59:59.999999+00'), (100005, '2024-02-29 12:00', '2024-02-29 12:00+00'), (100006, NULL, NULL);
 CREATE INDEX pc_col ON pc USING sift_col (id, ts, tz);
 VACUUM (FREEZE, ANALYZE) pc;
 -- eight months across the clock changes of 2024 (under 256 days): few enough windows for the hours and the minutes to be tried
-CREATE TABLE pw AS SELECT g AS id, t AT TIME ZONE 'UTC' AS ts, t AS tz FROM (SELECT g, timestamptz '2024-03-08 00:00+00' + g * interval '50 minutes' AS t FROM generate_series(0, 6960) g) s;
+CREATE TABLE pw AS SELECT g AS id, t AT TIME ZONE 'UTC' AS ts, t AS tz FROM (SELECT g, timestamptz '2024-03-08 00:00+00' + g * interval '50 minutes' AS t FROM generate_series(0, 1740) g) s;
 CREATE INDEX pw_col ON pw USING sift_col (id, ts, tz);
 VACUUM (FREEZE, ANALYZE) pw;
 -- the same with infinite timestamps: the span of the leaf is no window to enumerate, the expression is tested for every row

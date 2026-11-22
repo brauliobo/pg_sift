@@ -1,0 +1,536 @@
+-- The lookups of an aggregate scan. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
+CREATE EXTENSION pg_sift;
+-- >>> agg_lookup_columns_two_indexes
+CREATE SCHEMA s1;
+GRANT USAGE ON SCHEMA s1 TO PUBLIC;
+SET search_path = s1, public;
+-- A lookup table whose join columns are in two sift_col indexes, none of them holding all, is loaded from the leaves of both (the units of the two have the same rows, so the
+-- leaves of the second are read as the first's own), not from the heap: as classes of its keys when it is a dense table, as rows when its keys are sparse. Rows inserted
+-- since give the two indexes other units, and the load reads the heap then. The answers are those of the normal plan in every case, for a filter on a column of each index,
+-- a text column of the second, a LEFT JOIN, NULLs, and rows changed after the indexes were made.
+SET work_mem = '256MB';
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+CREATE TABLE ti_parent (id int PRIMARY KEY, a int, b int, tag text, sid int) WITH (autovacuum_enabled = false);
+INSERT INTO ti_parent SELECT g, g % 7, CASE WHEN g % 13 = 0 THEN NULL ELSE g % 11 END, (ARRAY['x', 'y', 'z', NULL])[1 + g % 4], g * 1000 FROM generate_series(1, 20000) g;
+CREATE TABLE ti_child (id int, parent_id int, sid int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ti_child SELECT g, CASE WHEN g % 50 = 0 THEN NULL ELSE 1 + (g * 7919) % 21000 END, 1000 * (1 + (g * 7919) % 21000), g % 100 FROM generate_series(1, 100000) g;
+CREATE INDEX ti_parent_col_a ON ti_parent USING sift_col (id, a, sid);
+CREATE INDEX ti_parent_col_b ON ti_parent USING sift_col (id, b, tag);
+CREATE INDEX ti_child_col ON ti_child USING sift_col (id, parent_id, sid, v);
+VACUUM (FREEZE, ANALYZE) ti_parent, ti_child;
+CREATE TABLE shapes (slug text, sql text);
+INSERT INTO shapes VALUES
+ ('dense_classes_two_columns', 'SELECT p.a, p.b, count(*), sum(c.v) FROM ti_child c JOIN ti_parent p ON p.id = c.parent_id GROUP BY 1, 2'),
+ ('dense_classes_text_of_second', 'SELECT p.a, p.tag, count(*), sum(c.v) FROM ti_child c JOIN ti_parent p ON p.id = c.parent_id GROUP BY 1, 2'),
+ ('dense_classes_filter_on_each', 'SELECT p.b, count(*) FROM ti_child c JOIN ti_parent p ON p.id = c.parent_id WHERE p.a = 3 AND p.b > 4 GROUP BY 1'),
+ ('dense_classes_left_join', 'SELECT p.a, p.b, count(*), count(p.id) FROM ti_child c LEFT JOIN ti_parent p ON p.id = c.parent_id GROUP BY 1, 2'),
+ ('sparse_keys_rows', 'SELECT p.a, p.b, p.tag, count(*), sum(c.v) FROM ti_child c JOIN ti_parent p ON p.sid = c.sid GROUP BY 1, 2, 3');
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	PERFORM set_config('sift.agg_force', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+-- how the lookup table was loaded: from the leaves of indexes, or from the heap
+CREATE FUNCTION loaded(sql text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'heap'; BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	PERFORM set_config('sift.agg_force', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP
+		IF l ~ 'Lookup: .*column loads' THEN r := 'index leaves'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+SELECT slug, loaded(sql) AS load, answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY slug;
+             slug             |     load     | same_answers 
+------------------------------+--------------+--------------
+ dense_classes_filter_on_each | index leaves | t
+ dense_classes_left_join      | index leaves | t
+ dense_classes_text_of_second | index leaves | t
+ dense_classes_two_columns    | index leaves | t
+ sparse_keys_rows             | index leaves | t
+(5 rows)
+
+-- rows added, changed and deleted after the indexes were made: both indexes took the same rows into units of the same rows
+INSERT INTO ti_parent SELECT g, g % 7, g % 11, 'w', g * 1000 FROM generate_series(20001, 20500) g;
+UPDATE ti_parent SET a = 5, tag = 'u' WHERE id % 97 = 0;
+DELETE FROM ti_parent WHERE id % 211 = 0;
+SELECT slug, loaded(sql) AS load, answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY slug;
+             slug             |     load     | same_answers 
+------------------------------+--------------+--------------
+ dense_classes_filter_on_each | index leaves | t
+ dense_classes_left_join      | index leaves | t
+ dense_classes_text_of_second | index leaves | t
+ dense_classes_two_columns    | index leaves | t
+ sparse_keys_rows             | index leaves | t
+(5 rows)
+
+-- an index made after those rows has other units than the one made before: the heap is read, the answers hold
+DROP INDEX ti_parent_col_b;
+CREATE INDEX ti_parent_col_b ON ti_parent USING sift_col (id, b, tag);
+SELECT slug, loaded(sql) AS load, answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY slug;
+             slug             | load | same_answers 
+------------------------------+------+--------------
+ dense_classes_filter_on_each | heap | t
+ dense_classes_left_join      | heap | t
+ dense_classes_text_of_second | heap | t
+ dense_classes_two_columns    | heap | t
+ sparse_keys_rows             | heap | t
+(5 rows)
+
+DROP FUNCTION answer(text, bool), loaded(text);
+DROP TABLE shapes, ti_child, ti_parent;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s1 CASCADE;
+RESET client_min_messages;
+-- <<< agg_lookup_columns_two_indexes
+-- >>> agg_lookup_computed_key
+CREATE SCHEMA s2;
+GRANT USAGE ON SCHEMA s2 TO PUBLIC;
+SET search_path = s2, public;
+-- A join on an expression of the lookup table's column (`d.ts::date = f.d`) has no column for its key: the table is read from the heap, and the reason EXPLAIN VERBOSE gives for it
+-- (Lookup Heap Reason) must not read a column that is not there. The answers are those of the normal plan.
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+CREATE TABLE ck_dim (id int, ts timestamp, a int) WITH (autovacuum_enabled = false);
+INSERT INTO ck_dim SELECT g, timestamp '2026-01-01' + (g % 300) * interval '1 day' + interval '5 hours', g % 7 FROM generate_series(1, 3000) g;
+CREATE TABLE ck_fact (id int, d date, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ck_fact SELECT g, date '2026-01-01' + g % 300, g % 100 FROM generate_series(1, 60000) g;
+CREATE INDEX ck_dim_col ON ck_dim USING sift_col (id, ts, a);
+CREATE INDEX ck_fact_col ON ck_fact USING sift_col (id, d, v);
+RESET client_min_messages;
+VACUUM (FREEZE, ANALYZE) ck_dim, ck_fact;
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.agg_force', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION why(sql text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; BEGIN
+	PERFORM set_config('sift.agg_force', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF) ' || sql LOOP
+		IF l ~ 'Lookup Heap Reason' THEN RETURN regexp_replace(l, '^ +', ''); END IF;
+	END LOOP;
+	RETURN NULL;
+END $$;
+SELECT answer(q, true) = answer(q, false) AS same_answers
+FROM (VALUES ($q$SELECT d.a, count(*), sum(f.v) FROM ck_fact f JOIN ck_dim d ON d.ts::date = f.d GROUP BY 1$q$)) v (q);
+ same_answers 
+--------------
+ t
+(1 row)
+
+-- no reason names a column when the key is an expression and every other column is a leaf
+SELECT why($q$SELECT d.a, count(*), sum(f.v) FROM ck_fact f JOIN ck_dim d ON d.ts::date = f.d GROUP BY 1$q$) IS NULL AS no_column_named;
+ no_column_named 
+-----------------
+ t
+(1 row)
+
+DROP FUNCTION answer(text, bool), why(text);
+DROP TABLE ck_fact, ck_dim;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s2 CASCADE;
+RESET client_min_messages;
+-- <<< agg_lookup_computed_key
+-- >>> agg_lookup_computed_value
+CREATE SCHEMA s3;
+GRANT USAGE ON SCHEMA s3 TO PUBLIC;
+SET search_path = s3, public;
+-- A column of the joined table that is an expression (lower(name), n * 2) is read from the leaf of an index that holds it, or computed from the leaves of the columns it reads
+-- when the index chosen for the load lacks it (upper(name) and n + 1 are in no index). A dense table (classes of the keys) keeps a computed column as the outcome of a test, so only a boolean one: a text or an integer
+-- expression is read as rows. The index chosen is the first by OID that holds the columns, here the one without the expressions. The answers are those of the normal plan.
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
+SET client_min_messages = warning;
+CREATE TABLE cv_dim (id int PRIMARY KEY, name text, n int) WITH (autovacuum_enabled = false);
+INSERT INTO cv_dim SELECT g, CASE g % 4 WHEN 0 THEN 'Alpha' WHEN 1 THEN 'BETA' WHEN 2 THEN 'Gamma' ELSE 'delta' END, g % 10 FROM generate_series(1, 5000) g;
+CREATE TABLE cv_fact (id int, dim_id int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO cv_fact SELECT g, 1 + g % 5000, g % 100 FROM generate_series(1, 60000) g;
+CREATE INDEX cv_dim_a ON cv_dim USING sift_col (id, name, n);
+CREATE INDEX cv_dim_b ON cv_dim USING sift_col (id, lower(name), (n * 2));
+CREATE INDEX cv_fact_col ON cv_fact USING sift_col (id, dim_id, v);
+RESET client_min_messages;
+VACUUM (FREEZE, ANALYZE) cv_dim, cv_fact;
+CREATE TABLE shapes (n int, sql text);
+INSERT INTO shapes VALUES
+ (1, $q$SELECT lower(d.name), count(*), sum(f.v) FROM cv_fact f JOIN cv_dim d ON d.id = f.dim_id GROUP BY 1$q$),
+ (2, $q$SELECT d.n * 2, count(*), sum(f.v) FROM cv_fact f JOIN cv_dim d ON d.id = f.dim_id GROUP BY 1$q$),
+ (3, $q$SELECT lower(d.name), d.n * 2, count(*) FROM cv_fact f JOIN cv_dim d ON d.id = f.dim_id GROUP BY 1, 2$q$),
+ (4, $q$SELECT lower(d.name) = 'beta', d.n * 2 > 6, count(*) FROM cv_fact f JOIN cv_dim d ON d.id = f.dim_id GROUP BY 1, 2$q$),
+ (5, $q$SELECT count(*) FILTER (WHERE lower(d.name) = 'beta'), sum(f.v) FILTER (WHERE d.n * 2 > 6) FROM cv_fact f JOIN cv_dim d ON d.id = f.dim_id$q$),
+ (6, $q$SELECT upper(d.name), count(*), sum(f.v) FROM cv_fact f JOIN cv_dim d ON d.id = f.dim_id GROUP BY 1$q$),
+ (7, $q$SELECT d.n + 1, lower(d.name) = 'beta', count(*) FROM cv_fact f JOIN cv_dim d ON d.id = f.dim_id GROUP BY 1, 2$q$);
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.agg_force', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+SELECT n, answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY n;
+ n | same_answers 
+---+--------------
+ 1 | t
+ 2 | t
+ 3 | t
+ 4 | t
+ 5 | t
+ 6 | t
+ 7 | t
+(7 rows)
+
+DROP FUNCTION answer(text, bool);
+DROP TABLE shapes, cv_fact, cv_dim;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s3 CASCADE;
+RESET client_min_messages;
+-- <<< agg_lookup_computed_value
+-- >>> agg_lookup_scoped
+CREATE SCHEMA s4;
+GRANT USAGE ON SCHEMA s4 TO PUBLIC;
+SET search_path = s4, public;
+-- A lookup table whose keys another lookup of the same scan leaf already limits (the rows of one subscription's list) is read for those keys alone: a scoped
+-- report does not classify or load the whole table. The plans are the planner's own (nothing is forced): the report of the whole table is the scan's, the scoped ones are the
+-- scan's only when it reads the few rows of the scope, and the answers are those of the normal plan.
+SET work_mem = '64MB';
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, (i * 7) % 100000, i % 11 FROM generate_series(1, 400000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
+NOTICE:  sift_col index "ev_col": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = id, k
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
+NOTICE:  sift_col index "ev_col" is column format minor 44, which a library before 4.3 cannot read
+DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ev_col') says how to turn each choice off.
+HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
+CREATE TABLE dd (k int PRIMARY KEY, a text, b text) WITH (autovacuum_enabled = false);
+INSERT INTO dd SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE 'a' || i END, CASE WHEN i % 5 = 0 THEN '  ' ELSE 'b' END FROM generate_series(0, 99999) i;
+CREATE INDEX dd_col ON dd USING sift_col (k, (nullif(btrim(a), '') IS NOT NULL), (nullif(btrim(b), '') IS NOT NULL));
+NOTICE:  sift_col index "dd_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = k
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dd_col');
+-- 50 lists of 2,000 keys each
+CREATE TABLE asg (sub int, k int, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+INSERT INTO asg SELECT i % 50, i, CASE WHEN i % 97 = 0 THEN now() END FROM generate_series(0, 99999) i;
+CREATE INDEX asg_sub_k ON asg (sub, k) WHERE deleted_at IS NULL;
+VACUUM (FREEZE, ANALYZE) ev, dd, asg;
+CREATE TABLE shapes (n int, sql text, scope_keys int);
+INSERT INTO shapes VALUES
+ (1, $q$SELECT ev.v % 3, count(DISTINCT dd.k), count(DISTINCT dd.k) FILTER (WHERE nullif(btrim(dd.a), '') IS NOT NULL),
+		count(DISTINCT dd.k) FILTER (WHERE nullif(btrim(dd.b), '') IS NULL) FROM ev JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$, 100000),
+ (2, $q$SELECT ev.v % 3, count(DISTINCT dd.k), count(DISTINCT dd.k) FILTER (WHERE nullif(btrim(dd.a), '') IS NOT NULL),
+		count(DISTINCT dd.k) FILTER (WHERE nullif(btrim(dd.b), '') IS NULL) FROM ev JOIN dd ON dd.k = ev.k
+		WHERE EXISTS (SELECT 1 FROM asg WHERE asg.deleted_at IS NULL AND asg.k = ev.k AND asg.sub = 3) GROUP BY 1 ORDER BY 1$q$, 2000),
+ (3, $q$SELECT dd.k % 7, count(*), count(DISTINCT dd.k) FROM ev JOIN dd ON dd.k = ev.k
+		WHERE EXISTS (SELECT 1 FROM asg WHERE asg.deleted_at IS NULL AND asg.k = ev.k AND asg.sub = 11) AND ev.v < 5 GROUP BY 1 ORDER BY 1$q$, 2000);
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+-- the plan the planner chose, and the rows its lookups read
+CREATE FUNCTION chosen(sql text, OUT scan bool, OUT rows_read bigint) LANGUAGE plpgsql AS $$
+DECLARE l text; BEGIN
+	scan := false; rows_read := 0;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP
+		scan := scan OR l ~ 'Custom Scan \(SiftAgg\)';
+		IF l ~ '(\d+) rows read' THEN rows_read := substring(l from '(\d+) rows read')::bigint; END IF;
+	END LOOP;
+END $$;
+-- shape 1 is the whole table: the scan; the scoped ones: the normal plan, or the scan having read the rows of the scope (a few thousand, not the 100,000 of the table)
+SELECT n, (c).scan AS scan, (c).rows_read < 3 * scope_keys AS reads_the_scope, answer(sql, true) = answer(sql, false) AS same_answers
+FROM (SELECT n, sql, scope_keys, chosen(sql) AS c FROM shapes) s ORDER BY n;
+ n | scan | reads_the_scope | same_answers 
+---+------+-----------------+--------------
+ 1 | t    | t               | t
+ 2 | t    | t               | t
+ 3 | t    | t               | t
+(3 rows)
+
+DROP FUNCTION chosen(text), answer(text, bool);
+DROP TABLE shapes, ev, dd, asg;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s4 CASCADE;
+RESET client_min_messages;
+-- <<< agg_lookup_scoped
+-- >>> agg_lookup_set_ratio_diff
+CREATE SCHEMA s5;
+GRANT USAGE ON SCHEMA s5 TO PUBLIC;
+SET search_path = s5, public;
+-- Differential test of the plan agg_lookup_set_ratio covers: a list of keys (a CTE of ids) that a statement joins and names again in an IN sub-select of the same column.
+-- Every statement runs with the aggregate scan off, on and forced (the rows are compared as sorted jsonb text, a total order of the whole row) and with the planner's own
+-- choice on and off, for scopes of 0, 1, 5, 60, 200 and all the entities, a scope that lists an entity twice and a NULL one, entities without rows, rows without an
+-- entity, a price or a unit, an empty period, and after updates, deletes and inserts of the rows and of the scopes between the runs.
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 100;
+CREATE TABLE units (id int PRIMARY KEY, flag bool);
+INSERT INTO units SELECT i, CASE WHEN i % 9 = 0 THEN true WHEN i % 11 = 0 THEN NULL ELSE false END FROM generate_series(1, 400) i;
+CREATE TABLE dim_c (id int PRIMARY KEY, slug text);
+INSERT INTO dim_c SELECT i, 'src' || i FROM generate_series(1, 12) i;
+-- the entities of a scope: group 0 is empty, 1 has one entity, 2 five, 3 sixty, 4 two hundred, 5 all 600; 6 lists an entity twice and a NULL one
+CREATE TABLE links (grp int, dim_a_id int);
+INSERT INTO links SELECT g - 1, (i * 7) % 600 FROM unnest(ARRAY[0, 1, 5, 60, 200, 600]) WITH ORDINALITY s(n, g), generate_series(0, 599) i WHERE i < n;
+INSERT INTO links VALUES (6, 3), (6, 3), (6, 4), (6, NULL), (6, 598);
+-- the entities 590 to 599 hold no rows; the first 20 hold most of them
+CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, unit_id int, foreign_id int, day date, price float8, latest bool, ccy text) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, CASE WHEN i % 41 = 0 THEN NULL WHEN i % 3 = 0 THEN i % 20 ELSE (i * 13) % 590 END,
+       CASE WHEN i % 29 = 0 THEN NULL ELSE 1 + (i * 17) % 400 END, 1 + i % 12, date '2024-01-01' + (i * 7) % 500,
+       CASE WHEN i % 23 = 0 THEN NULL ELSE 50 + (i * 31) % 300 END, i % 4 <> 0, CASE i % 5 WHEN 0 THEN NULL WHEN 1 THEN 'eur' ELSE 'usd' END
+FROM generate_series(1, 30000) i;
+CREATE INDEX ev_entity_day ON ev (dim_a_id, day);
+CREATE INDEX ev_col ON ev USING sift_col (id, dim_a_id, unit_id, foreign_id, day, price, latest, ccy);
+NOTICE:  sift_col index "ev_col": 3 automatic choices (key_columns, rollup_columns, track_changes)
+DETAIL:  key_columns = dim_a_id, unit_id; rollup_columns = latest, ccy; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
+VACUUM (FREEZE, ANALYZE) ev;
+ANALYZE units; ANALYZE dim_c; ANALYZE links;
+\ir test/agg_helpers.sql
+\set ECHO none
+-- the report of a scope: the ids as a CTE, joined and again in an IN list, the rows of a period by month and unit
+CREATE FUNCTION ls_stmt(form text, g int) RETURNS text LANGUAGE sql AS $f$ SELECT format(CASE form
+ WHEN 'twice' THEN $q$
+ WITH s AS (SELECT dim_a_id AS id FROM links WHERE grp = %s)
+ SELECT e.dim_a_id, date_trunc('month', e.day)::date AS month, e.unit_id, e.ccy, count(*) AS n, count(e.price) AS priced, round(avg(e.price)::numeric, 6) AS price,
+        round(sum(e.price)::numeric, 6) AS total, max(e.price) AS top, count(DISTINCT e.id) AS ids
+ FROM ev e JOIN s ON s.id = e.dim_a_id
+ JOIN dim_c r ON r.id = e.foreign_id AND r.slug IN ('src1', 'src2', 'src3', 'src7')
+ LEFT JOIN units u ON u.id = e.unit_id
+ WHERE e.latest AND u.flag IS NOT TRUE AND e.unit_id IS NOT NULL AND e.dim_a_id IN (SELECT id FROM s GROUP BY id) AND e.day >= '2024-03-01' AND e.day < '2025-03-01'
+ GROUP BY 1, 2, 3, 4 $q$
+ WHEN 'once' THEN $q$
+ WITH s AS (SELECT dim_a_id AS id FROM links WHERE grp = %s)
+ SELECT e.dim_a_id, date_trunc('month', e.day)::date AS month, e.unit_id, e.ccy, count(*) AS n, round(avg(e.price)::numeric, 6) AS price
+ FROM ev e JOIN s ON s.id = e.dim_a_id LEFT JOIN units u ON u.id = e.unit_id
+ WHERE e.latest AND u.flag IS NOT TRUE AND e.day >= '2024-03-01' AND e.day < '2025-03-01'
+ GROUP BY 1, 2, 3, 4 $q$
+ WHEN 'periods' THEN $q$
+ WITH s AS MATERIALIZED (SELECT dim_a_id AS id FROM links WHERE grp = %s),
+ periods AS (SELECT * FROM (VALUES ('current', daterange('2025-01-01', '2025-04-30', '[]')), ('previous', daterange('2024-01-01', '2024-04-30', '[]')),
+                                   ('empty', daterange('2031-01-01', '2031-02-01', '[]'))) p(period, range)),
+ parsed AS (SELECT e.id, e.dim_a_id, p.period, e.price FROM ev e JOIN periods p ON e.day <@ p.range JOIN s ON s.id = e.dim_a_id
+            WHERE e.dim_a_id IN (SELECT id FROM s))
+ SELECT d.period, count(x.id) AS n, count(DISTINCT x.dim_a_id) AS dim_a, count(x.price) AS priced, round(avg(x.price)::numeric, 6) AS price, round(sum(x.price)::numeric, 6) AS total
+ FROM periods d LEFT JOIN parsed x ON x.period = d.period GROUP BY d.period $q$
+ ELSE $q$
+ WITH s AS (SELECT dim_a_id AS id FROM links WHERE grp = %s)
+ SELECT count(*) AS n, count(DISTINCT e.dim_a_id) AS dim_a, count(e.price) AS priced, round(sum(e.price)::numeric, 6) AS total, min(e.day) AS first, max(e.day) AS last
+ FROM ev e JOIN s ON s.id = e.dim_a_id WHERE e.dim_a_id IN (SELECT id FROM s) $q$ END, g) $f$;
+CREATE FUNCTION ls_check(step text) RETURNS TABLE (label text, same bool, same_default bool, rows int) LANGUAGE plpgsql AS $f$
+DECLARE g int; f text; q text;
+BEGIN
+  FOREACH g IN ARRAY ARRAY[0, 1, 2, 3, 4, 5, 6] LOOP
+    FOREACH f IN ARRAY ARRAY['twice', 'once', 'periods', 'total'] LOOP
+      q := ls_stmt(f, g);
+      label := step || ' scope ' || g || ' ' || f;
+      same := outcome(q, false) = outcome(q, true);
+      same_default := runq(q, false) = runq(q, true);
+      rows := CASE WHEN outcome(q, true) LIKE '[%' THEN (SELECT count(*) FROM jsonb_array_elements(outcome(q, true)::jsonb)) WHEN outcome(q, true) = 'no rows' THEN 0 ELSE -1 END;
+      RETURN NEXT;
+    END LOOP;
+  END LOOP;
+END $f$;
+SELECT * FROM ls_check('initial');
+          label          | same | same_default | rows  
+-------------------------+------+--------------+-------
+ initial scope 0 twice   | t    | t            |     0
+ initial scope 0 once    | t    | t            |     0
+ initial scope 0 periods | t    | t            |     3
+ initial scope 0 total   | t    | t            |     1
+ initial scope 1 twice   | t    | t            |     6
+ initial scope 1 once    | t    | t            |    10
+ initial scope 1 periods | t    | t            |     3
+ initial scope 1 total   | t    | t            |     1
+ initial scope 2 twice   | t    | t            |    95
+ initial scope 2 once    | t    | t            |   226
+ initial scope 2 periods | t    | t            |     3
+ initial scope 2 total   | t    | t            |     1
+ initial scope 3 twice   | t    | t            |   372
+ initial scope 3 once    | t    | t            |  1120
+ initial scope 3 periods | t    | t            |     3
+ initial scope 3 total   | t    | t            |     1
+ initial scope 4 twice   | t    | t            |  1210
+ initial scope 4 once    | t    | t            |  3628
+ initial scope 4 periods | t    | t            |     3
+ initial scope 4 total   | t    | t            |     1
+ initial scope 5 twice   | t    | t            |  3369
+ initial scope 5 once    | t    | t            | 10617
+ initial scope 5 periods | t    | t            |     3
+ initial scope 5 total   | t    | t            |     1
+ initial scope 6 twice   | t    | t            |     8
+ initial scope 6 once    | t    | t            |   110
+ initial scope 6 periods | t    | t            |     3
+ initial scope 6 total   | t    | t            |     1
+(28 rows)
+
+-- the scan serves the statement of a scope when the table scans are off
+SELECT pushed(ls_stmt('twice', 3)) AS twice_pushed, pushed(ls_stmt('periods', 3)) AS periods_pushed;
+ twice_pushed | periods_pushed 
+--------------+----------------
+ t            | f
+(1 row)
+
+-- updates and deletes of the rows between the runs: days move, rows go, prices and entities become NULL
+UPDATE ev SET day = day + 40 WHERE id % 7 = 0;
+DELETE FROM ev WHERE id % 11 = 0;
+UPDATE ev SET price = NULL WHERE id % 13 = 0;
+UPDATE ev SET dim_a_id = NULL WHERE id % 17 = 0;
+SELECT * FROM ls_check('after dml');
+           label           | same | same_default | rows 
+---------------------------+------+--------------+------
+ after dml scope 0 twice   | t    | t            |    0
+ after dml scope 0 once    | t    | t            |    0
+ after dml scope 0 periods | t    | t            |    3
+ after dml scope 0 total   | t    | t            |    1
+ after dml scope 1 twice   | t    | t            |    5
+ after dml scope 1 once    | t    | t            |    9
+ after dml scope 1 periods | t    | t            |    3
+ after dml scope 1 total   | t    | t            |    1
+ after dml scope 2 twice   | t    | t            |  128
+ after dml scope 2 once    | t    | t            |  289
+ after dml scope 2 periods | t    | t            |    3
+ after dml scope 2 total   | t    | t            |    1
+ after dml scope 3 twice   | t    | t            |  368
+ after dml scope 3 once    | t    | t            | 1051
+ after dml scope 3 periods | t    | t            |    3
+ after dml scope 3 total   | t    | t            |    1
+ after dml scope 4 twice   | t    | t            | 1174
+ after dml scope 4 once    | t    | t            | 3383
+ after dml scope 4 periods | t    | t            |    3
+ after dml scope 4 total   | t    | t            |    1
+ after dml scope 5 twice   | t    | t            | 3123
+ after dml scope 5 once    | t    | t            | 9811
+ after dml scope 5 periods | t    | t            |    3
+ after dml scope 5 total   | t    | t            |    1
+ after dml scope 6 twice   | t    | t            |    7
+ after dml scope 6 once    | t    | t            |  142
+ after dml scope 6 periods | t    | t            |    3
+ after dml scope 6 total   | t    | t            |    1
+(28 rows)
+
+-- the scopes change: a group shrinks, grows, loses its entities, gets a duplicate and a NULL
+DELETE FROM links WHERE grp = 4 AND dim_a_id % 2 = 0;
+INSERT INTO links VALUES (1, 5), (1, 5), (2, NULL), (0, 7), (3, 595);
+DELETE FROM links WHERE grp = 5 AND dim_a_id > 300;
+SELECT * FROM ls_check('after links');
+            label            | same | same_default | rows 
+-----------------------------+------+--------------+------
+ after links scope 0 twice   | t    | t            |    5
+ after links scope 0 once    | t    | t            |  133
+ after links scope 0 periods | t    | t            |    3
+ after links scope 0 total   | t    | t            |    1
+ after links scope 1 twice   | t    | t            |   11
+ after links scope 1 once    | t    | t            |  131
+ after links scope 1 periods | t    | t            |    3
+ after links scope 1 total   | t    | t            |    1
+ after links scope 2 twice   | t    | t            |  128
+ after links scope 2 once    | t    | t            |  289
+ after links scope 2 periods | t    | t            |    3
+ after links scope 2 total   | t    | t            |    1
+ after links scope 3 twice   | t    | t            |  368
+ after links scope 3 once    | t    | t            | 1051
+ after links scope 3 periods | t    | t            |    3
+ after links scope 3 total   | t    | t            |    1
+ after links scope 4 twice   | t    | t            |  425
+ after links scope 4 once    | t    | t            | 2137
+ after links scope 4 periods | t    | t            |    3
+ after links scope 4 total   | t    | t            |    1
+ after links scope 5 twice   | t    | t            | 1852
+ after links scope 5 once    | t    | t            | 5823
+ after links scope 5 periods | t    | t            |    3
+ after links scope 5 total   | t    | t            |    1
+ after links scope 6 twice   | t    | t            |    7
+ after links scope 6 once    | t    | t            |  142
+ after links scope 6 periods | t    | t            |    3
+ after links scope 6 total   | t    | t            |    1
+(28 rows)
+
+INSERT INTO ev SELECT 30000 + i, 1 + i % 600, 1 + i % 400, 1 + i % 12, date '2025-01-01' + i % 120, 100 + i % 50, true, 'usd' FROM generate_series(1, 3000) i;
+SELECT * FROM ls_check('after insert');
+            label             | same | same_default | rows 
+------------------------------+------+--------------+------
+ after insert scope 0 twice   | t    | t            |    6
+ after insert scope 0 once    | t    | t            |  134
+ after insert scope 0 periods | t    | t            |    3
+ after insert scope 0 total   | t    | t            |    1
+ after insert scope 1 twice   | t    | t            |   11
+ after insert scope 1 once    | t    | t            |  133
+ after insert scope 1 periods | t    | t            |    3
+ after insert scope 1 total   | t    | t            |    1
+ after insert scope 2 twice   | t    | t            |  131
+ after insert scope 2 once    | t    | t            |  296
+ after insert scope 2 periods | t    | t            |    3
+ after insert scope 2 total   | t    | t            |    1
+ after insert scope 3 twice   | t    | t            |  386
+ after insert scope 3 once    | t    | t            | 1108
+ after insert scope 3 periods | t    | t            |    3
+ after insert scope 3 total   | t    | t            |    1
+ after insert scope 4 twice   | t    | t            |  468
+ after insert scope 4 once    | t    | t            | 2227
+ after insert scope 4 periods | t    | t            |    3
+ after insert scope 4 total   | t    | t            |    1
+ after insert scope 5 twice   | t    | t            | 1959
+ after insert scope 5 once    | t    | t            | 6138
+ after insert scope 5 periods | t    | t            |    3
+ after insert scope 5 total   | t    | t            |    1
+ after insert scope 6 twice   | t    | t            |    9
+ after insert scope 6 once    | t    | t            |  146
+ after insert scope 6 periods | t    | t            |    3
+ after insert scope 6 total   | t    | t            |    1
+(28 rows)
+
+VACUUM (ANALYZE) ev;
+SELECT * FROM ls_check('after vacuum');
+            label             | same | same_default | rows 
+------------------------------+------+--------------+------
+ after vacuum scope 0 twice   | t    | t            |    6
+ after vacuum scope 0 once    | t    | t            |  134
+ after vacuum scope 0 periods | t    | t            |    3
+ after vacuum scope 0 total   | t    | t            |    1
+ after vacuum scope 1 twice   | t    | t            |   11
+ after vacuum scope 1 once    | t    | t            |  133
+ after vacuum scope 1 periods | t    | t            |    3
+ after vacuum scope 1 total   | t    | t            |    1
+ after vacuum scope 2 twice   | t    | t            |  131
+ after vacuum scope 2 once    | t    | t            |  296
+ after vacuum scope 2 periods | t    | t            |    3
+ after vacuum scope 2 total   | t    | t            |    1
+ after vacuum scope 3 twice   | t    | t            |  386
+ after vacuum scope 3 once    | t    | t            | 1108
+ after vacuum scope 3 periods | t    | t            |    3
+ after vacuum scope 3 total   | t    | t            |    1
+ after vacuum scope 4 twice   | t    | t            |  468
+ after vacuum scope 4 once    | t    | t            | 2227
+ after vacuum scope 4 periods | t    | t            |    3
+ after vacuum scope 4 total   | t    | t            |    1
+ after vacuum scope 5 twice   | t    | t            | 1959
+ after vacuum scope 5 once    | t    | t            | 6138
+ after vacuum scope 5 periods | t    | t            |    3
+ after vacuum scope 5 total   | t    | t            |    1
+ after vacuum scope 6 twice   | t    | t            |    9
+ after vacuum scope 6 once    | t    | t            |  146
+ after vacuum scope 6 periods | t    | t            |    3
+ after vacuum scope 6 total   | t    | t            |    1
+(28 rows)
+
+DROP FUNCTION ls_check(text), ls_stmt(text, int), outcome(text, bool), runs_in_scan(text), pushed, runq;
+DROP TABLE ev, links, units, dim_c;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s5 CASCADE;
+RESET client_min_messages;
+-- <<< agg_lookup_set_ratio_diff
+DROP EXTENSION pg_sift;

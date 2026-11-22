@@ -1,1 +1,0 @@
-col_point_btree_price	src/agg/flat/decor.c:bound_column src/agg/flat/decor.c:decor_equality src/agg/flat/decor.c:decor_unique src/agg/flat/decor.c:reads_table

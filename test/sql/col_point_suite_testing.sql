@@ -1,0 +1,197 @@
+-- The point lookups, the tracking and the connections of a sift_col index. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+
+-- >>> col_point_array
+CREATE SCHEMA s1;
+GRANT USAGE ON SCHEMA s1 TO PUBLIC;
+SET search_path = s1, public;
+-- A unique key that follows the heap order (a serial id) gets the build's order array, not the point directory: the array is runs of consecutive heap addresses, so it answers the
+-- equality in a tenth of the bytes of the directory, for about the same instructions and fewer cold blocks. A key scattered over the heap keeps the directory (its array is as large and reads 2.5 times the instructions),
+-- and an index with no array of the build's ('off', a table under 100,000 rows) keeps the directory for the ordered key too. An array the user lists is the user's: whole, and the directory is not added to it.
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+
+CREATE TABLE pk (id int, uid int, ts timestamp, pad text);
+INSERT INTO pk SELECT i, (i::bigint * 7919 % 150011)::int, timestamp '2024-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second', md5(i::text)
+FROM generate_series(1, 150000) i;
+VACUUM (FREEZE, ANALYZE) pk;
+CREATE FUNCTION opt(regclass, text) RETURNS text LANGUAGE sql AS $$ SELECT coalesce((SELECT split_part(o, '=', 2) FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = $1 AND o LIKE $2 || '=%'), '-') $$;
+
+CREATE INDEX pk_auto ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off');
+-- the same index with the directory of the ordered key and no array of it: what the build chose before
+CREATE INDEX pk_dir ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off', point_tid_columns = 'id', order_array_columns = 'ts');
+SELECT i AS idx, opt(i::regclass, 'order_array_columns') AS order_arrays, opt(i::regclass, 'point_tid_columns') AS directory
+FROM unnest(ARRAY['pk_auto', 'pk_dir']) i ORDER BY 1;
+SELECT pg_relation_size('pk_auto') < pg_relation_size('pk_dir') AS smaller,
+	round(pg_relation_size('pk_dir')::numeric / pg_relation_size('pk_auto'), 1) AS dir_over_auto;
+-- the lookup of the key reads no unit and no row through the array, as through the directory
+SELECT i AS idx, c.units, c.rows_scanned FROM unnest(ARRAY['pk_auto', 'pk_dir']) i, LATERAL sift._test_col_counters(i::regclass, '0:eq:77777', 24) c ORDER BY 1;
+DROP INDEX pk_dir;
+SELECT sift.col_verify('pk_auto');
+
+SET enable_seqscan = off; SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT id, ts FROM pk WHERE id = 77777;
+SELECT count(*), min(id), max(ts) FROM pk WHERE id = 77777;
+SELECT count(*), min(id) FROM pk WHERE id IN (5, 77777, 149999, 150001);
+SET enable_seqscan = on; SET enable_bitmapscan = on;
+
+-- rows written after the build, a promotion and a merge keep the answers
+INSERT INTO pk SELECT 150000 + i, i, timestamp '2025-01-01' + i * interval '1 second', 'w' FROM generate_series(1, 3000) i;
+DELETE FROM pk WHERE id % 211 = 0;
+SELECT sift.col_promote('pk_auto'::regclass) >= 0 AS promoted;
+SELECT sift.col_merge('pk_auto'::regclass, true) >= 0 AS merged;
+SELECT sift.col_verify('pk_auto');
+SET enable_seqscan = off; SET enable_bitmapscan = off;
+SELECT count(*), min(id) FROM pk WHERE id IN (5, 77777, 150211, 151000, 152999);
+SET enable_seqscan = on; SET enable_bitmapscan = on;
+
+-- a rebuild decides again from the data it finds
+REINDEX INDEX pk_auto;
+SELECT opt('pk_auto', 'order_array_columns') AS order_arrays, opt('pk_auto', 'point_tid_columns') AS directory;
+DROP INDEX pk_auto;
+
+-- a key scattered over the heap keeps the directory (and its own array, as before); no array of the build's, or a table under 100,000 rows: the ordered key keeps the directory; a listed array replaces it
+CREATE INDEX pk_uid ON pk USING sift_col (uid, ts) WITH (key_cut = 'off', key_order = 'off');
+CREATE INDEX pk_off ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off', order_array_columns = 'off');
+CREATE INDEX pk_list ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off', order_array_columns = 'id');
+CREATE TABLE pks AS SELECT id, uid, ts, pad FROM pk WHERE id <= 90000;
+VACUUM (FREEZE, ANALYZE) pks;
+CREATE INDEX pks_i ON pks USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off');
+SELECT i AS idx, opt(i::regclass, 'order_array_columns') AS order_arrays, opt(i::regclass, 'point_tid_columns') AS directory
+FROM unnest(ARRAY['pk_uid', 'pk_off', 'pk_list', 'pks_i']) i ORDER BY 1;
+
+DROP FUNCTION opt(regclass, text);
+DROP TABLE pk, pks;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s1 CASCADE;
+RESET client_min_messages;
+-- <<< col_point_array
+
+-- >>> col_track_reindex_concurrently
+CREATE SCHEMA s2;
+GRANT USAGE ON SCHEMA s2 TO PUBLIC;
+SET search_path = s2, public;
+-- The copy that REINDEX CONCURRENTLY builds has no triggers of its own: the two triggers of the tracked index move to it at the swap (PostgreSQL moves what depends on the old index), so
+-- dropping the old index drops nothing that is on the table (DROP TRIGGER takes ACCESS EXCLUSIVE). The log of the copy is not complete (writers run beside the build); a plain REINDEX
+-- gives the baseline. The reads check the heap meanwhile and answer as it does.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO t SELECT i, i % 10, i FROM generate_series(1, 5000) i;
+CREATE INDEX t_c ON t USING sift_col (id, g, v);
+VACUUM (FREEZE, ANALYZE) t;
+
+CREATE FUNCTION triggers_of(idx regclass) RETURNS bigint LANGUAGE sql AS $$
+	SELECT count(*) FROM pg_trigger t JOIN pg_depend d ON d.refclassid = 'pg_trigger'::regclass AND d.refobjid = t.oid AND d.classid = 'pg_class'::regclass AND d.objid = idx
+	WHERE t.tgrelid = 't'::regclass AND t.tgname LIKE 'sift_track_%' $$;
+CREATE FUNCTION all_triggers() RETURNS bigint LANGUAGE sql AS $$
+	SELECT count(*) FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift_track_%' $$;
+CREATE FUNCTION answers() RETURNS text LANGUAGE plpgsql AS $$
+DECLARE free text; chk text; heap text; q text := 'SELECT string_agg(g || '':'' || n || '':'' || s, '' '' ORDER BY g) FROM (SELECT g, count(*) n, sum(v) s FROM t GROUP BY g) q';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	PERFORM set_config('sift.test_no_heapfree', 'false', true);
+	EXECUTE q INTO free;
+	PERFORM set_config('sift.test_no_heapfree', 'true', true);
+	EXECUTE q INTO chk;
+	PERFORM set_config('sift.enable_agg', 'false', true);
+	EXECUTE q INTO heap;
+	RETURN CASE WHEN free = heap AND chk = heap THEN 'same' ELSE 'DIFFERENT' END;
+END $$;
+
+SELECT triggers_of('t_c') AS triggers_of_index, all_triggers() AS triggers_on_table, answers();
+SELECT cur_flags FROM sift._test_log_chan('t_c');
+SELECT string_agg(oid::text, ',' ORDER BY oid) AS trigger_oids FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift_track_%' \gset
+-- the writers go on meanwhile, before and after the swap
+UPDATE t SET v = v + 1 WHERE id % 7 = 0;
+DELETE FROM t WHERE id % 11 = 0;
+REINDEX INDEX CONCURRENTLY t_c;
+SELECT relname, indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 't'::regclass ORDER BY 1;
+-- the same two triggers, now of the new index; none was made for the copy, and none left with the old index
+SELECT triggers_of('t_c') AS triggers_of_index, all_triggers() AS triggers_on_table, answers();
+SELECT string_agg(oid::text, ',' ORDER BY oid) = :'trigger_oids' AS the_same_triggers FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift_track_%';
+SELECT cur_flags AS flags_of_the_copy FROM sift._test_log_chan('t_c');
+DELETE FROM t WHERE id % 13 = 0;
+SELECT answers();
+-- again: the triggers of the first swap are the ones that move
+REINDEX INDEX CONCURRENTLY t_c;
+SELECT triggers_of('t_c') AS triggers_of_index, all_triggers() AS triggers_on_table, answers();
+-- a plain REINDEX gives the baseline and its own triggers
+REINDEX INDEX t_c;
+SELECT triggers_of('t_c') AS triggers_of_index, all_triggers() AS triggers_on_table, answers();
+SELECT cur_flags FROM sift._test_log_chan('t_c');
+-- an index that was made concurrently owns its triggers, and dropping it takes them
+CREATE INDEX CONCURRENTLY t_d ON t USING sift_col (id, g, v);
+SELECT triggers_of('t_d') AS triggers_of_t_d, all_triggers() AS triggers_on_table;
+DROP INDEX t_d;
+SELECT all_triggers() AS triggers_on_table;
+DROP TABLE t;
+DROP FUNCTION triggers_of(regclass), all_triggers(), answers();
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s2 CASCADE;
+RESET client_min_messages;
+-- <<< col_track_reindex_concurrently
+
+-- >>> col_track_shared_probe
+CREATE SCHEMA s3;
+GRANT USAGE ON SCHEMA s3 TO PUBLIC;
+SET search_path = s3, public;
+-- The update and delete triggers of the track_changes indexes of one table look up the same keys in the same unique index and find the same dead addresses: a statement probes the
+-- unique index once for all of them, not once for each index. Each index still gets its own tombstones (the answer is the log of each, equal to the one an only index writes).
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL, v int, w int) WITH (autovacuum_enabled = false, fillfactor = 100);
+INSERT INTO t SELECT i, i % 10, i, 0 FROM generate_series(1, 3000) i;
+CREATE INDEX t_a ON t USING sift_col (id, g, v);
+CREATE INDEX t_b ON t USING sift_col (id, g, w);
+CREATE INDEX t_c ON t USING sift_col (id, v);
+
+-- the scans of the primary key one statement made (statistics of the transaction), and the tombstones of the statement in the log of an index
+CREATE FUNCTION pk_scans() RETURNS int LANGUAGE sql AS
+  $$ SELECT coalesce(pg_stat_get_xact_numscans('t_pkey'::regclass), 0)::int $$;
+CREATE FUNCTION log_tombs(idx regclass) RETURNS int LANGUAGE sql AS
+  $$ SELECT count(*)::int FROM sift._test_col_log_entries(idx) WHERE kind = 1 AND txid_status(xid::text::bigint) IS DISTINCT FROM 'aborted' $$;
+
+-- three indexes
+BEGIN;
+SELECT pk_scans() AS before \gset
+DELETE FROM t WHERE id BETWEEN 1 AND 600;
+SELECT pk_scans() - :before AS d3_scans, log_tombs('t_a') AS d3_tombs \gset
+SELECT log_tombs('t_a') = log_tombs('t_b') AND log_tombs('t_b') = log_tombs('t_c') AS same_log;
+SELECT pk_scans() AS before \gset
+UPDATE t SET id = id + 100000 WHERE id BETWEEN 601 AND 900;
+SELECT pk_scans() - :before AS k3_scans, log_tombs('t_a') AS k3_tombs \gset
+SELECT log_tombs('t_a') = log_tombs('t_b') AND log_tombs('t_b') = log_tombs('t_c') AS same_log;
+ROLLBACK;
+
+-- one index
+DROP INDEX t_b;
+DROP INDEX t_c;
+BEGIN;
+SELECT pk_scans() AS before \gset
+DELETE FROM t WHERE id BETWEEN 1 AND 600;
+SELECT pk_scans() - :before AS d1_scans, log_tombs('t_a') AS d1_tombs \gset
+SELECT pk_scans() AS before \gset
+UPDATE t SET id = id + 100000 WHERE id BETWEEN 601 AND 900;
+SELECT pk_scans() - :before AS k1_scans, log_tombs('t_a') AS k1_tombs \gset
+ROLLBACK;
+
+-- the probe is shared: the scans of the key do not grow with the indexes, and the log of each is what an only index writes
+SELECT :d3_scans = :d1_scans AS delete_probe_shared, :d1_scans > 0 AS delete_probes,
+       :d3_tombs = :d1_tombs AS delete_same_log, :k3_tombs = :k1_tombs AS key_same_log;
+DROP FUNCTION pk_scans();
+DROP FUNCTION log_tombs(regclass);
+DROP TABLE t;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s3 CASCADE;
+RESET client_min_messages;
+-- <<< col_track_shared_probe
+
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

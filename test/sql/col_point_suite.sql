@@ -1,0 +1,336 @@
+-- The point lookups, the tracking and the connections of a sift_col index. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
+CREATE EXTENSION pg_sift;
+
+-- >>> col_point_auto_ordered
+CREATE SCHEMA s1;
+GRANT USAGE ON SCHEMA s1 TO PUBLIC;
+SET search_path = s1, public;
+-- The point directory by default for a key that follows the order of the table (an id from a sequence, no primary key): an equality reads the one unit of its range, and a unit is up to
+-- 47,000 rows, so once it costs 500,000 instructions more than the directory (about 42,000 rows; 1,000,000 rows, 60 keys: 0.72 ms of SiftAgg, 0.06 ms with the directory) the
+-- build writes point_tid_columns = 'auto: id'. 60,000 rows is the smallest table the floor lets through, and so the size of this test. Below it, a primary key (a b-tree of its own) and a
+-- key of few values get none; the aggregate over a few of its keys then has the index paths beside SiftAgg, and the answers are the heap's.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE FUNCTION popt(regclass) RETURNS text LANGUAGE sql AS $$ SELECT coalesce((SELECT split_part(o, '=', 2) FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = $1 AND o LIKE 'point_tid_columns=%'), '-') $$;
+
+CREATE TABLE po AS SELECT g AS id, g % 997 AS v, g % 7 AS w FROM generate_series(1, 60000) g;
+CREATE TABLE po_small AS SELECT g AS id, g % 997 AS v, g % 7 AS w FROM generate_series(1, 20000) g;
+CREATE TABLE po_pk (id int PRIMARY KEY, v int, w int);
+INSERT INTO po_pk SELECT g, g % 997, g % 7 FROM generate_series(1, 60000) g;
+CREATE TABLE po_few AS SELECT g AS id, g % 30 AS v, g % 7 AS w FROM generate_series(1, 60000) g;
+VACUUM (FREEZE, ANALYZE) po, po_small, po_pk, po_few;
+CREATE INDEX po_i ON po USING sift_col (id, v, w);
+CREATE INDEX po_small_i ON po_small USING sift_col (id, v, w);
+CREATE INDEX po_pk_i ON po_pk USING sift_col (id, v, w);
+CREATE INDEX po_few_i ON po_few USING sift_col (v, w);
+SELECT i AS idx, popt(i::regclass) AS point_tid_columns FROM unnest(ARRAY['po_i', 'po_small_i', 'po_pk_i', 'po_few_i']) i ORDER BY 1;
+
+-- the paths the index offers for the aggregate over a few keys (SiftAgg off: an index or bitmap scan, or the sequential scan their absence leaves)
+CREATE FUNCTION path_of(sql text) RETURNS text LANGUAGE plpgsql SET sift.enable_agg = off AS $$
+DECLARE l text; r text := 'seq';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		IF l ~ 'Index Scan|Bitmap Index Scan' THEN r := 'index'; EXIT; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+SELECT t AS tbl, path_of(format('SELECT count(*), sum(v) FROM %s WHERE id IN (7, 1008, 30001, 59999)', t)) AS path FROM unnest(ARRAY['po', 'po_small']) t ORDER BY 1;
+
+-- the answers: the directory and the scan against the heap, over keys in the table, out of it, NULL, and after DML
+CREATE FUNCTION answer(sql text, agg boolean) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', agg::text, true);
+	PERFORM set_config('sift.enable_col_scan', agg::text, true);
+	EXECUTE sql INTO r;
+	RETURN r;
+END $$;
+CREATE TABLE shapes (w text);
+INSERT INTO shapes VALUES ('id = 7'), ('id = 0'), ('id = 60001'), ('id IN (7, 1008, 30001, 59999, 60000)'), ('id = ANY (ARRAY[5, 5, 6, NULL])'), ('id IN (7, 8) AND v > 100');
+CREATE FUNCTION check_all() RETURNS TABLE (shapes bigint, differ bigint) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE answer(format('SELECT count(*) || %L || coalesce(sum(v), 0) || %L || coalesce(min(id), 0) FROM po WHERE %s', '/', '/', w), true)
+		IS DISTINCT FROM answer(format('SELECT count(*) || %L || coalesce(sum(v), 0) || %L || coalesce(min(id), 0) FROM po WHERE %s', '/', '/', w), false)) FROM shapes $$;
+SELECT * FROM check_all();
+DELETE FROM po WHERE id % 13 = 0;
+UPDATE po SET id = id + 1000000 WHERE id % 17 = 0;
+INSERT INTO po SELECT g, g % 997, 1 FROM generate_series(60001, 60300) g;
+SELECT * FROM check_all();
+
+DROP TABLE po, po_small, po_pk, po_few, shapes;
+DROP FUNCTION popt(regclass), path_of(text), answer(text, boolean), check_all();
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s1 CASCADE;
+RESET client_min_messages;
+-- <<< col_point_auto_ordered
+
+-- >>> col_point_btree_price
+CREATE SCHEMA s2;
+GRANT USAGE ON SCHEMA s2 TO PUBLIC;
+SET search_path = s2, public;
+-- A table with a b-tree and a sift_col index (an order array on the key, no point directory) looks up an IN list of keys by the one that reads them for less. The index scan on the
+-- order array is priced by its microseconds (a key sought in the sorted keys, 2.5 us measured) and the b-tree's by PostgreSQL's units of a cached probe (nine to the microsecond):
+-- 500 scattered keys of 300,000 rows were taken from the b-tree for three times its time (0.8 ms against 0.4); the cost of the keys the index looks up in its order array or
+-- its units now follows the time. The answers are the same either way.
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+
+CREATE TABLE pb (id int, v int, pad text DEFAULT repeat('x', 100));
+INSERT INTO pb (id, v) SELECT (i::bigint * 7919) % 300007, i % 997 FROM generate_series(1, 300000) i;
+CREATE INDEX pb_col ON pb USING sift_col (id, v) WITH (order_array_columns = 'id');
+CREATE INDEX pb_bt ON pb (id);
+VACUUM (FREEZE, ANALYZE) pb;
+CREATE TABLE pb_keys AS SELECT n, string_agg(((i::bigint * 7919) % 300007)::text, ',' ORDER BY i) AS list
+FROM unnest(ARRAY[1, 60, 500]) n, generate_series(1, 500) i WHERE i <= n GROUP BY n;
+
+CREATE FUNCTION pb_path(sql text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'heap';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		IF l ~ 'SiftAgg' THEN r := 'siftagg'; EXIT;
+		ELSIF l ~ 'pb_bt' THEN r := 'btree'; EXIT;
+		ELSIF l ~ 'pb_col' THEN r := 'sift_col'; EXIT;
+		END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+SELECT k AS keys, pb_path(format('SELECT count(*), sum(v) FROM pb WHERE id IN (%s)', (SELECT list FROM pb_keys WHERE n = k))) AS path
+FROM unnest(ARRAY[60, 500]) k;
+
+CREATE FUNCTION pb_run(k int, agg boolean) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_col_scan', agg::text, true);
+	PERFORM set_config('sift.enable_agg', agg::text, true);
+	EXECUTE format('SELECT concat_ws(%L, count(*), sum(v)) FROM pb WHERE id IN (%s)', ' ', (SELECT list FROM pb_keys WHERE n = k)) INTO r;
+	RETURN r;
+END $$;
+SELECT k AS keys, pb_run(k, true) = pb_run(k, false) AS same_rows FROM unnest(ARRAY[1, 60, 500]) k;
+
+DROP FUNCTION pb_path(text), pb_run(int, boolean);
+DROP TABLE pb, pb_keys;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s2 CASCADE;
+RESET client_min_messages;
+-- <<< col_point_btree_price
+
+-- >>> col_point_filter
+CREATE SCHEMA s3;
+GRANT USAGE ON SCHEMA s3 TO PUBLIC;
+SET search_path = s3, public;
+-- A lookup by the point directory of heap addresses (point_tid_columns) on a table written in (tenant, ts) order: (1) a covered query on an IN list or an equality is
+-- planned on the addresses (an index or bitmap scan and the heap), not through the index-only scan that reads every kept unit; (2) a key with a range on another column hands
+-- the heap only the rows of the range: a unit with many of the key's addresses is read and filtered, so the index scan has no row to recheck away.
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+
+CREATE TABLE pf (id int, tenant int, ts timestamp, pad text);
+ALTER TABLE pf ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO pf SELECT id, tenant, ts, repeat('x', 1000)
+FROM (SELECT i AS id, (i * 7919) % 40 AS tenant, timestamp '2024-01-01' + i * interval '10 minutes' AS ts FROM generate_series(1, 60000) i) s
+ORDER BY tenant, ts;
+CREATE INDEX pf_col ON pf USING sift_col (id sift.col_int4_ops, tenant sift.col_int4_ops, ts sift.col_timestamp_ops) WITH (point_tid_columns = 'id, tenant');
+VACUUM (ANALYZE, FREEZE) pf;
+SET sift.enable_col_scan = on;
+SET enable_seqscan = off;
+
+-- the node that reads the table, and the rows an index scan threw away after the recheck
+CREATE FUNCTION pf_node(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ '(Index Only Scan|Index Scan|Bitmap Heap Scan|Seq Scan) ' THEN RETURN regexp_replace(trim(l), '^-> *', ''); END IF;
+	END LOOP;
+END $$;
+CREATE FUNCTION pf_rechecked(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
+		IF l ~ 'Rows Removed by Index Recheck' THEN n := n + regexp_replace(l, '\D', '', 'g')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+CREATE FUNCTION pf_same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE format('SELECT md5(coalesce(string_agg(x::text, ''|'' ORDER BY x::text), '''')) FROM (%s) x', q) INTO a;
+	PERFORM set_config('sift.enable_col_scan', 'off', true);
+	EXECUTE format('SELECT md5(coalesce(string_agg(x::text, ''|'' ORDER BY x::text), '''')) FROM (%s) x', q) INTO b;
+	PERFORM set_config('sift.enable_col_scan', 'on', true);
+	RETURN a = b;
+END $$;
+
+-- (1) the covered lookups: one clause of the directory
+SELECT regexp_replace(pf_node('SELECT id, tenant FROM pf WHERE id IN (' || (SELECT string_agg((i * 997 % 60000 + 1)::text, ',') FROM generate_series(1, 60) i) || ')'), ' on pf.*| using.*', '') AS id_in_60;
+SELECT regexp_replace(pf_node('SELECT id, tenant FROM pf WHERE id = 4242'), ' on pf.*| using.*', '') AS id_eq;
+SELECT pf_same('SELECT id, tenant FROM pf WHERE id IN (' || (SELECT string_agg((i * 997 % 60000 + 1)::text, ',') FROM generate_series(1, 60) i) || ')') AS id_in_same,
+       pf_same('SELECT id, tenant FROM pf WHERE id = 4242') AS id_eq_same;
+-- a key with thousands of rows stays on the index-only scan (a handful of units answer it)
+SELECT regexp_replace(pf_node('SELECT tenant FROM pf WHERE tenant = 7'), ' on pf.*| using.*', '') AS key_rows;
+
+-- (2) a key and a range: the heap fetches the rows of the range only
+SELECT pf_rechecked('SELECT id, pad FROM pf WHERE tenant = 7 AND ts >= timestamp ''2024-03-01'' AND ts < timestamp ''2024-03-08''') AS rechecked_away,
+       pf_same('SELECT id, pad FROM pf WHERE tenant = 7 AND ts >= timestamp ''2024-03-01'' AND ts < timestamp ''2024-03-08''') AS same_rows,
+       (SELECT count(*) FROM pf WHERE tenant = 7 AND ts >= timestamp '2024-03-01' AND ts < timestamp '2024-03-08') AS rows_in_range;
+-- the whole key, and a range that holds none of its rows
+SELECT pf_same('SELECT id, pad FROM pf WHERE tenant = 7') AS whole_key, pf_same('SELECT id, pad FROM pf WHERE tenant = 7 AND ts > timestamp ''2030-01-01''') AS empty_range;
+
+DROP FUNCTION pf_node(text), pf_rechecked(text), pf_same(text);
+DROP TABLE pf;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s3 CASCADE;
+RESET client_min_messages;
+-- <<< col_point_filter
+
+-- >>> col_track_baseline_blocks
+CREATE SCHEMA s4;
+GRANT USAGE ON SCHEMA s4 TO PUBLIC;
+SET search_path = s4, public;
+-- The baseline of track_changes (col/v1/track.c) writes a tombstone for every address of the table that no version is live for. It reads no page that the visibility map says every
+-- transaction sees whole (such a page holds no dead version and no dead item), and looks at the versions of the others while it holds the page, so it costs the table one access
+-- of each of its pages that is not all-visible and none of the others, not one access of the heap for each row. The cost of the baseline is what REINDEX of the tracked index
+-- accesses in the heap more than REINDEX of the same index without track_changes, which is the build alone.
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+
+CREATE TABLE bb (id int PRIMARY KEY, k int, v int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO bb SELECT i, i % 100, i, repeat('x', 100) FROM generate_series(1, 20000) i;
+CREATE INDEX bb_tracked ON bb USING sift_col (id, k, v) WITH (key_cut = 'k');
+CREATE INDEX bb_plain ON bb USING sift_col (id, k, v) WITH (key_cut = 'k', track_changes = 'off');
+DELETE FROM bb WHERE id % 50 = 0;
+SELECT sift.col_verify('bb_tracked', true), sift.col_verify('bb_plain', true);
+
+-- no page is all-visible: every page is read once, plus the pages of its visibility map fork, which the baseline reads to know that
+SELECT pg_stat_force_next_flush() \gset
+SELECT coalesce(sum(heap_blks_read + heap_blks_hit), 0) AS b0 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
+REINDEX INDEX bb_plain;
+SELECT pg_stat_force_next_flush() \gset
+SELECT sum(heap_blks_read + heap_blks_hit) AS s1 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
+REINDEX INDEX bb_tracked;
+SELECT pg_stat_force_next_flush() \gset
+SELECT sum(heap_blks_read + heap_blks_hit) AS s2 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
+SELECT (:s2 - :s1) - (:s1 - :b0) = (pg_relation_size('bb') + pg_relation_size('bb', 'vm')) / 8192 AS baseline_reads_each_page_once;
+
+-- every page is all-visible: the baseline reads the page of the visibility map that tells so (one for 32,000 pages) and none of the table
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) bb;
+SELECT relallvisible = relpages AS all_visible FROM pg_class WHERE relname = 'bb';
+SELECT pg_stat_force_next_flush() \gset
+SELECT coalesce(sum(heap_blks_read + heap_blks_hit), 0) AS b0 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
+REINDEX INDEX bb_plain;
+SELECT pg_stat_force_next_flush() \gset
+SELECT sum(heap_blks_read + heap_blks_hit) AS s1 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
+REINDEX INDEX bb_tracked;
+SELECT pg_stat_force_next_flush() \gset
+SELECT sum(heap_blks_read + heap_blks_hit) AS s2 FROM pg_statio_user_tables WHERE relname = 'bb' \gset
+SELECT (:s2 - :s1) - (:s1 - :b0) AS baseline_reads_the_visibility_map_only;
+SELECT sift.col_verify('bb_tracked', true);
+
+DROP TABLE bb;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s4 CASCADE;
+RESET client_min_messages;
+-- <<< col_track_baseline_blocks
+
+-- >>> s55_dict_group
+CREATE SCHEMA s5;
+GRANT USAGE ON SCHEMA s5 TO PUBLIC;
+SET search_path = s5, public;
+-- A GROUP BY of text columns of a sift_col index that SiftAgg groups by the dictionary codes of the granules gives the groups of the plan without the index: one key, two keys, NULL keys,
+-- keys of a column that is not in the dictionary of every part, count(*) alone, and the answer after rows were added and deleted.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+CREATE TABLE s55_dg (id int, kind text, city text, v int, w float8) WITH (autovacuum_enabled = false);
+INSERT INTO s55_dg SELECT g, CASE WHEN g % 11 = 0 THEN NULL ELSE 'kind-' || g % 7 END, CASE WHEN g % 13 = 0 THEN NULL ELSE 'city ' || (g * 31) % 1000 END, g % 101, g / 3.0 FROM generate_series(1, 30000) g;
+CREATE INDEX s55_dg_col ON s55_dg USING sift_col (kind, city, v, w);
+VACUUM (FREEZE, ANALYZE) s55_dg;
+INSERT INTO s55_dg SELECT g, 'kind-' || g % 9, CASE WHEN g % 2 = 0 THEN 'new city ' || g % 50 END, g % 101, g / 3.0 FROM generate_series(30001, 34000) g;
+DELETE FROM s55_dg WHERE id % 17 = 0;
+
+CREATE FUNCTION s55_dg_same(q text) RETURNS TABLE (scan text, same bool) LANGUAGE plpgsql AS $$
+DECLARE
+	j jsonb;
+	got text;
+	want text;
+BEGIN
+	EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO j;
+	scan := CASE WHEN jsonb_path_exists(j, '$.** ? (@."Custom Plan Provider" like_regex "^SiftAgg")') THEN 'sift' ELSE 'normal' END;
+	EXECUTE 'SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (' || q || ') t' INTO got;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (' || q || ') t' INTO want;
+	RESET sift.enable_agg;
+	same := got = want;
+	RETURN NEXT;
+END $$;
+
+SELECT * FROM s55_dg_same('SELECT count(*) FROM s55_dg');
+SELECT * FROM s55_dg_same('SELECT kind, count(*), sum(v) FROM s55_dg GROUP BY kind');
+SELECT * FROM s55_dg_same('SELECT city, count(*), sum(w) FROM s55_dg GROUP BY city');
+SELECT * FROM s55_dg_same('SELECT kind, city, count(*), min(v), max(v) FROM s55_dg GROUP BY kind, city');
+DROP TABLE s55_dg;
+DROP FUNCTION s55_dg_same(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s5 CASCADE;
+RESET client_min_messages;
+-- <<< s55_dict_group
+
+-- >>> s55_table_cache
+CREATE SCHEMA s6;
+GRANT USAGE ON SCHEMA s6 TO PUBLIC;
+SET search_path = s6, public;
+-- A sift_table read through the granule cache of the backend: point lookups, IN lists, ranges and scans give the rows of a heap with the same history, with updates and deletes between the
+-- reads and a cache that holds one granule.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE s55_tc (id int PRIMARY KEY, k int, v text, n bigint) USING sift_table;
+CREATE TABLE s55_tc_ref (id int PRIMARY KEY, k int, v text, n bigint);
+INSERT INTO s55_tc SELECT g, g % 50, 'row ' || g || repeat('x', g % 40), g::bigint * 7 FROM generate_series(1, 30000) g;
+INSERT INTO s55_tc_ref SELECT * FROM s55_tc;
+VACUUM (FREEZE, ANALYZE) s55_tc;
+UPDATE s55_tc SET v = 'upd ' || id, n = n + 1 WHERE id % 97 = 0;
+UPDATE s55_tc_ref SET v = 'upd ' || id, n = n + 1 WHERE id % 97 = 0;
+DELETE FROM s55_tc WHERE id % 211 = 0;
+DELETE FROM s55_tc_ref WHERE id % 211 = 0;
+INSERT INTO s55_tc SELECT g, g % 50, 'late ' || g, g FROM generate_series(30001, 30500) g;
+INSERT INTO s55_tc_ref SELECT g, g % 50, 'late ' || g, g FROM generate_series(30001, 30500) g;
+
+CREATE FUNCTION s55_tc_same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE
+	got text;
+	want text;
+BEGIN
+	EXECUTE 'SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (' || q || ') t' INTO got;
+	EXECUTE 'SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (' || replace(q, 's55_tc', 's55_tc_ref') || ') t' INTO want;
+	RETURN got IS NOT DISTINCT FROM want;
+END $$;
+
+SET sift.backend_cache_kb = 64;
+SELECT s55_tc_same('SELECT * FROM s55_tc WHERE id = 97');
+SELECT s55_tc_same('SELECT * FROM s55_tc WHERE id = 211');
+SELECT s55_tc_same('SELECT * FROM s55_tc WHERE id = 30250');
+SELECT s55_tc_same('SELECT * FROM s55_tc WHERE id IN (1, 97, 194, 211, 5000, 29999, 30001, 30500, 99999)');
+SELECT s55_tc_same('SELECT * FROM s55_tc WHERE id BETWEEN 100 AND 900');
+SELECT s55_tc_same('SELECT id, v FROM s55_tc WHERE k = 7');
+SELECT s55_tc_same('SELECT k, count(*), sum(n), max(v) FROM s55_tc GROUP BY k');
+SELECT s55_tc_same('SELECT * FROM s55_tc');
+RESET sift.backend_cache_kb;
+SELECT s55_tc_same('SELECT * FROM s55_tc WHERE id IN (97, 98, 99)');
+DROP TABLE s55_tc, s55_tc_ref;
+DROP FUNCTION s55_tc_same(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s6 CASCADE;
+RESET client_min_messages;
+-- <<< s55_table_cache
+
+DROP EXTENSION pg_sift;

@@ -1,0 +1,293 @@
+-- The top-N scans. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+
+-- >>> col_topn_gorder_numeric
+CREATE SCHEMA s1;
+GRANT USAGE ON SCHEMA s1 TO PUBLIC;
+SET search_path = s1, public;
+-- ORDER BY a numeric(p <= 18, s) column LIMIT n [OFFSET m] is read from the global order of the column (its key is the number scaled by 10^s) like an integer key: the answers are those of
+-- a copy of the table without an index (the oracle) over NULLs, ties, DESC, NULLS FIRST and LAST, a second key, OFFSET, negative values, scales 0 and 6, deleted and updated rows, the write
+-- buffer and a promotion; a column with a NaN, a bound on the key and a wide numeric read the units.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+
+CREATE TABLE tt AS SELECT i AS id, CASE WHEN i % 31 = 0 THEN NULL ELSE (((i::bigint * 7919) % 30011) - 15000)::numeric / 100 END::numeric(12,2) AS n,
+	((((i::bigint * 104729) % 2003) - 1000)::numeric / 7)::numeric(18,6) AS m, ((i * 13) % 17)::numeric(5,0) AS z, i % 5 AS g
+FROM generate_series(1, 30000) i;
+CREATE INDEX tt_i ON tt USING sift_col (id, n, m, z, g) WITH (order_array_columns = 'n, m, z', write_buffer_limit = 256);
+VACUUM ANALYZE tt;
+CREATE TABLE tp AS SELECT * FROM tt;
+ANALYZE tp;
+
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.ids_agree_tt_tp(q) $$;
+
+CREATE TABLE tq (n int, q text);
+INSERT INTO tq SELECT row_number() OVER (), q FROM unnest(ARRAY[
+ 'SELECT id FROM @ ORDER BY n, id LIMIT 20 OFFSET 40', 'SELECT id FROM @ ORDER BY n DESC, id LIMIT 20 OFFSET 40', 'SELECT id FROM @ ORDER BY n NULLS FIRST, id LIMIT 20 OFFSET 40',
+ 'SELECT id FROM @ ORDER BY n DESC NULLS LAST, id LIMIT 20 OFFSET 40', 'SELECT id FROM @ ORDER BY n, id LIMIT 500', 'SELECT id FROM @ ORDER BY n, id DESC LIMIT 20 OFFSET 3000',
+ 'SELECT id FROM @ ORDER BY n LIMIT 20 OFFSET 12000', 'SELECT id FROM @ ORDER BY n, id LIMIT 20 OFFSET 29900', 'SELECT id FROM @ ORDER BY m, id LIMIT 20 OFFSET 40', 'SELECT id FROM @ ORDER BY m DESC, id LIMIT 20 OFFSET 2500',
+ 'SELECT id FROM @ ORDER BY z, id LIMIT 20 OFFSET 40', 'SELECT id FROM @ ORDER BY z DESC, m, id LIMIT 20 OFFSET 40', 'SELECT id FROM @ ORDER BY n, m, id LIMIT 20 OFFSET 40',
+ 'SELECT id, n FROM @ ORDER BY n, id LIMIT 20 OFFSET 40', 'SELECT id FROM @ WHERE g = 2 ORDER BY n, id LIMIT 20 OFFSET 40', 'SELECT id FROM @ WHERE n > 0 ORDER BY n, id LIMIT 20 OFFSET 40',
+ 'SELECT id FROM @ WHERE n IS NOT NULL ORDER BY n, id LIMIT 20 OFFSET 40']) q;
+SELECT n, global_order(replace(q, '@', 'tt')) AS global_order, same(q) AS answers FROM tq ORDER BY n;
+
+-- rows that changed: updated, deleted, a rolled-back update, the write buffer, a promotion
+UPDATE tt SET n = 3.5 WHERE id % 500 = 3;
+UPDATE tp SET n = 3.5 WHERE id % 500 = 3;
+UPDATE tt SET n = NULL WHERE id % 900 = 4;
+UPDATE tp SET n = NULL WHERE id % 900 = 4;
+DELETE FROM tt WHERE id % 700 = 9;
+DELETE FROM tp WHERE id % 700 = 9;
+BEGIN; UPDATE tt SET n = -999 WHERE id % 300 = 7; ROLLBACK;
+INSERT INTO tt SELECT 30000 + i, CASE WHEN i % 10 = 0 THEN NULL ELSE (i % 100)::numeric / 10 END, ((i % 7)::numeric / 3)::numeric(18,6), i % 17, 3 FROM generate_series(1, 400) i;
+INSERT INTO tp SELECT 30000 + i, CASE WHEN i % 10 = 0 THEN NULL ELSE (i % 100)::numeric / 10 END, ((i % 7)::numeric / 3)::numeric(18,6), i % 17, 3 FROM generate_series(1, 400) i;
+SELECT n, same(q) AS answers FROM tq ORDER BY n;
+SELECT sift.col_promote('tt_i') >= 0 AS promoted;
+SELECT n, same(q) AS answers FROM tq ORDER BY n;
+
+-- a NaN leaves its segment without an array, and a NaN in the write buffer reads the units: the answers are still the oracle's, NaN sorting after every number
+INSERT INTO tt VALUES (40001, 'NaN', 1, 1, 1), (40002, 12.5, 1, 1, 1);
+INSERT INTO tp VALUES (40001, 'NaN', 1, 1, 1), (40002, 12.5, 1, 1, 1);
+SELECT n, same(q) AS answers FROM tq WHERE n IN (1, 2, 5, 7) ORDER BY n;
+SELECT sift.col_promote('tt_i') >= 0 AS promoted;
+SELECT n, same(q) AS answers FROM tq WHERE n IN (1, 2, 5, 7) ORDER BY n;
+
+DROP TABLE tq, tt, tp;
+DROP FUNCTION global_order(text), same(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s1 CASCADE;
+RESET client_min_messages;
+-- <<< col_topn_gorder_numeric
+
+-- >>> col_topn_gorder_text_ties
+CREATE SCHEMA s2;
+GRANT USAGE ON SCHEMA s2 TO PUBLIC;
+SET search_path = s2, public;
+-- ORDER BY a text column, id LIMIT n (the page of a list with a stable order) is read from the global order of the text column like ORDER BY the column alone: the strings of the array
+-- are told apart by their bytes, a group of equal strings is fetched whole and put in order by the keys after the first, and the rows are the heap's. The answers are those of a copy
+-- of the table without an index (the oracle) over NULLs, ties, DESC, NULLS FIRST and LAST, bounds on the string, OFFSET, deleted and updated rows, the write buffer, a promotion;
+-- a collation that calls different strings equal keeps the scan that reads the units.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+SELECT setseed(0.42);
+
+CREATE TABLE tt AS SELECT i AS id, CASE WHEN i % 23 = 0 THEN NULL ELSE 't' || lpad(((i::bigint * 7919) % 3001)::text, 5, '0') END AS s,
+	CASE WHEN i % 29 = 0 THEN NULL ELSE ((i * 13) % 17) END AS g, (random() * 100)::int AS pad
+FROM generate_series(1, 30000) i;
+CREATE INDEX tt_i ON tt USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, g sift.col_int4_ops, pad sift.col_int4_ops) WITH (order_array_columns = 's', write_buffer_limit = 256);
+VACUUM ANALYZE tt;
+CREATE TABLE tp AS SELECT * FROM tt;
+ANALYZE tp;
+
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.ids_agree_tt_tp(q) $$;
+
+CREATE TABLE tq (n int, q text);
+INSERT INTO tq SELECT row_number() OVER (), q FROM unnest(ARRAY[
+ 'SELECT id FROM @ ORDER BY s, id LIMIT 20', 'SELECT id FROM @ ORDER BY s, id LIMIT 500', 'SELECT id FROM @ ORDER BY s DESC, id LIMIT 20', 'SELECT id FROM @ ORDER BY s, id DESC LIMIT 20',
+ 'SELECT id FROM @ ORDER BY s NULLS FIRST, id LIMIT 20', 'SELECT id FROM @ ORDER BY s DESC NULLS LAST, id LIMIT 20', 'SELECT id FROM @ ORDER BY s, g, id LIMIT 30', 'SELECT id FROM @ ORDER BY s, g DESC NULLS FIRST, id LIMIT 30',
+ 'SELECT id FROM @ WHERE s >= ''t01500'' ORDER BY s, id LIMIT 20', 'SELECT id FROM @ WHERE s > ''t01500'' ORDER BY s, id LIMIT 20 OFFSET 7', 'SELECT id FROM @ WHERE s < ''t00100'' ORDER BY s, id LIMIT 50',
+ 'SELECT id FROM @ WHERE s BETWEEN ''t00500'' AND ''t00520'' ORDER BY s, id LIMIT 100', 'SELECT id FROM @ WHERE s = ''t00007'' ORDER BY s, id LIMIT 20', 'SELECT id FROM @ ORDER BY s, id LIMIT 20 OFFSET 1000',
+ 'SELECT id FROM @ ORDER BY s, id LIMIT 20 OFFSET 29000', 'SELECT id FROM @ WHERE s >= ''zzz'' ORDER BY s, id LIMIT 20', 'SELECT id FROM @ WHERE s IS NOT NULL ORDER BY s, id LIMIT 20',
+ 'SELECT id FROM @ WHERE g = 3 ORDER BY s, id LIMIT 20', 'SELECT id FROM @ WHERE s LIKE ''t01%'' ORDER BY s, id LIMIT 20', 'SELECT id FROM @ ORDER BY s COLLATE "C", id LIMIT 20']) q;
+SELECT n, global_order(replace(q, '@', 'tt')) AS global_order, same(q) AS answers FROM tq ORDER BY n;
+
+-- rows that changed: updated, deleted, a rolled-back update, the write buffer, a promotion
+UPDATE tt SET s = 't01500' WHERE id % 500 = 3;
+UPDATE tp SET s = 't01500' WHERE id % 500 = 3;
+DELETE FROM tt WHERE id % 700 = 9;
+DELETE FROM tp WHERE id % 700 = 9;
+BEGIN; UPDATE tt SET s = 't00001' WHERE id % 300 = 7; ROLLBACK;
+INSERT INTO tt SELECT 30000 + i, CASE WHEN i % 10 = 0 THEN NULL ELSE 't01500' END, 5, 0 FROM generate_series(1, 400) i;
+INSERT INTO tp SELECT 30000 + i, CASE WHEN i % 10 = 0 THEN NULL ELSE 't01500' END, 5, 0 FROM generate_series(1, 400) i;
+SELECT n, same(q) AS answers FROM tq ORDER BY n;
+SELECT sift.col_promote('tt_i') >= 0 AS promoted;
+SELECT n, same(q) AS answers FROM tq ORDER BY n;
+
+-- a collation that calls different strings equal: the strings of a group would be told apart by their bytes, so the units are read
+CREATE COLLATION ci_ai (provider = icu, locale = 'und-u-ks-level1', deterministic = false);
+SELECT global_order('SELECT id FROM tt ORDER BY s COLLATE ci_ai, id LIMIT 20') AS nondeterministic_collation_global_order;
+SELECT (SELECT string_agg(id::text, ',') FROM (SELECT id FROM tt ORDER BY s COLLATE ci_ai, id LIMIT 20) x) =
+       (SELECT string_agg(id::text, ',') FROM (SELECT id FROM tp ORDER BY s COLLATE ci_ai, id LIMIT 20) x) AS nondeterministic_collation_answers;
+
+DROP COLLATION ci_ai;
+DROP TABLE tq, tt, tp;
+DROP FUNCTION global_order(text), same(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s2 CASCADE;
+RESET client_min_messages;
+-- <<< col_topn_gorder_text_ties
+
+-- >>> col_topn_hot
+CREATE SCHEMA s3;
+GRANT USAGE ON SCHEMA s3 TO PUBLIC;
+SET search_path = s3, public;
+-- ORDER BY <column> LIMIT n over a sift_col index after a HOT update: an UPDATE that leaves every indexed value as it was (a NULL set to NULL) is
+-- not a new index entry, so the entry names the root of the HOT chain, which is a redirect once the page is pruned (here by the next UPDATE).
+-- The scan reads the row the entry names as an index scan does, through the chain; the rows and their order are those of the plain plan.
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE hot (id int PRIMARY KEY, parent_id int, amount int) WITH (autovacuum_enabled = false, fillfactor = 75);
+INSERT INTO hot SELECT i, CASE WHEN i % 5 = 0 THEN NULL ELSE i % 50 END, i % 10 FROM generate_series(1, 6000) i;
+CREATE INDEX hot_col ON hot USING sift_col (id, parent_id, amount);
+VACUUM (FREEZE, ANALYZE) hot;
+
+-- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
+CREATE FUNCTION hot_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text; res text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE hot_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE hot_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM hot_a EXCEPT ALL SELECT pos, r FROM hot_b) UNION ALL (SELECT pos, r FROM hot_b EXCEPT ALL SELECT pos, r FROM hot_a)) d;
+	res := CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || ' ' || (SELECT count(*) FROM hot_b);
+	DROP TABLE hot_a, hot_b;
+	RETURN res;
+END $$;
+
+-- one update of rows whose key is NULL and stays NULL (HOT), and of rows whose key changes (a new entry)
+UPDATE hot SET parent_id = NULL WHERE id % 10 = 0;
+UPDATE hot SET amount = amount + 1 WHERE id % 10 = 5;
+UPDATE hot SET parent_id = 7 WHERE id % 10 = 3;
+
+SELECT hot_check($q$SELECT id, amount FROM hot ORDER BY parent_id DESC NULLS FIRST, id LIMIT 50$q$);
+SELECT hot_check($q$SELECT id, parent_id FROM hot ORDER BY amount DESC, id LIMIT 30$q$);
+SELECT hot_check($q$SELECT id, amount FROM hot ORDER BY parent_id NULLS LAST, amount, id LIMIT 40 OFFSET 3$q$);
+
+DROP TABLE hot;
+DROP FUNCTION hot_check(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s3 CASCADE;
+RESET client_min_messages;
+-- <<< col_topn_hot
+
+-- >>> col_topn_vec
+CREATE SCHEMA s4;
+GRANT USAGE ON SCHEMA s4 TO PUBLIC;
+SET search_path = s4, public;
+-- ORDER BY an int4, int8 or timestamp column LIMIT n over units of 512 rows or more: the unit's rows go to the heap through the range and
+-- min/max kernels (the segments of a unit by the best value they hold, those that cannot pass the bar left out) instead of one by one. Every key
+-- shape of the kernels (negative values, the ends of the integer range, ties, NULLs and many NULLs, a column that follows the table and one
+-- that does not, both directions, NULLS FIRST and LAST) under filters that leave most, some and few rows of a unit, compared with the plain plan.
+SET sift.async_maintenance = off;
+
+-- pad makes a page hold about 5 rows: 30000 rows are about 24 superblocks of about 1250 rows
+CREATE TABLE tv (id serial PRIMARY KEY, g int, b_clu bigint, b_rand bigint, b_ext bigint, i_ext int, ts_rand timestamp, b_mix bigint, b_nul bigint, pad text DEFAULT repeat('x', 1500));
+ALTER TABLE tv ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO tv (g, b_clu, b_rand, b_ext, i_ext, ts_rand, b_mix, b_nul)
+SELECT i % 10, i::bigint * 1000003 - 15000000000, (hashint4(i) & 2147483647) % 2000000 - 1000000,
+	   CASE WHEN i % 4999 = 0 THEN 9223372036854775807 WHEN i % 4999 = 1 THEN (-9223372036854775807 - 1) ELSE ((hashint4(i + 1) & 2147483647)::bigint << 20) - 1099511627776 END,
+	   CASE WHEN i % 4999 = 0 THEN 2147483647 WHEN i % 4999 = 1 THEN -2147483648 ELSE (hashint4(i + 2) & 2147483647) - 1073741824 END,
+	   timestamp '2020-01-01' + ((hashint4(i + 3) & 2147483647) % 100000000) * interval '1 second' + (i % 7) * interval '1 microsecond',
+	   CASE WHEN i % 9 = 0 THEN NULL ELSE (hashint4(i + 4) & 2147483647) % 50 END,
+	   CASE WHEN i % 10 = 0 THEN (hashint4(i + 5) & 2147483647) % 1000 END
+FROM generate_series(1, 30000) i;
+CREATE INDEX tv_col ON tv USING sift_col (id, g, b_clu, b_rand, b_ext, i_ext, ts_rand, b_mix, b_nul) WITH (point_tid_columns = 'off');
+VACUUM (ANALYZE) tv;
+
+CREATE FUNCTION tv_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
+
+-- one query in both plans: the md5 of its rows in order and whether the pushed plan is the top-N scan
+CREATE FUNCTION tv_run(q text, OUT pushed_md5 text, OUT plain_md5 text, OUT topn bool) LANGUAGE plpgsql AS $$
+DECLARE line text; plan text := '';
+BEGIN
+	PERFORM tv_mode(true);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	topn := plan ~ 'Top-N: ';
+	EXECUTE 'SELECT md5(string_agg(r, ''|'' ORDER BY pos)) FROM (SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x) y' INTO pushed_md5;
+	PERFORM tv_mode(false);
+	EXECUTE 'SELECT md5(string_agg(r, ''|'' ORDER BY pos)) FROM (SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x) y' INTO plain_md5;
+END $$;
+
+CREATE FUNCTION tv_stage(OUT queries int, OUT differ int, OUT not_topn int) LANGUAGE plpgsql AS $$
+DECLARE q text; r record;
+BEGIN
+	queries := 0;
+	differ := 0;
+	not_topn := 0;
+	FOR q IN
+		SELECT format('SELECT id, %1$s FROM tv %2$s ORDER BY %1$s %3$s %4$s, id LIMIT %5$s', k, f, d, nl, l)
+		FROM unnest(ARRAY['b_clu', 'b_rand', 'b_ext', 'i_ext', 'ts_rand', 'b_mix', 'b_nul']) k,
+			 unnest(ARRAY['', 'WHERE g < 8', 'WHERE g = 3', 'WHERE id % 97 = 0']) f,
+			 unnest(ARRAY['', 'DESC']) d, unnest(ARRAY['', 'NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[3, 700]) l
+		WHERE nl = '' OR k IN ('b_mix', 'b_nul')
+	LOOP
+		SELECT * INTO r FROM tv_run(q);
+		queries := queries + 1;
+		differ := differ + (r.pushed_md5 IS DISTINCT FROM r.plain_md5)::int;
+		not_topn := not_topn + (NOT r.topn)::int;
+	END LOOP;
+END $$;
+
+SELECT * FROM tv_stage();
+-- after deletes, updates that move rows and rows in the write buffer
+DELETE FROM tv WHERE id % 11 = 0;
+UPDATE tv SET b_rand = -b_rand, b_clu = b_clu + 7, ts_rand = ts_rand + interval '1 day' WHERE id % 13 = 0;
+INSERT INTO tv (g, b_clu, b_rand, b_ext, i_ext, ts_rand, b_mix, b_nul)
+SELECT i % 10, i * 7, i * 3 - 4000, i::bigint * 100000000000, i, timestamp '2021-01-01' + i * interval '1 minute', i % 5, NULL FROM generate_series(1, 200) i;
+SELECT * FROM tv_stage();
+
+DROP FUNCTION tv_stage();
+DROP FUNCTION tv_run(text);
+DROP FUNCTION tv_mode(bool);
+DROP TABLE tv;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s4 CASCADE;
+RESET client_min_messages;
+-- <<< col_topn_vec
+
+-- >>> col_topn_walk_price
+CREATE SCHEMA s5;
+GRANT USAGE ON SCHEMA s5 TO PUBLIC;
+SET search_path = s5, public;
+-- A list page of one group under a test of another column: the order array of the group is walked (a heap fetch for each entry it takes) or the units the zones
+-- leave are read (a row in about 35 instructions, every row of the units, not those the filters pass). The units hold 60,000 of 1,000,000 rows here: a test that
+-- most rows pass finds the page in tens of fetches and walks; one that few pass walks a thousand and reads the units.
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+
+CREATE TABLE wp (id bigint PRIMARY KEY, g int, d date, st int) WITH (autovacuum_enabled = false);
+INSERT INTO wp SELECT i, (i::bigint * 7919 % 40)::int, date '2020-01-01' + (i * 13 % 2000), (hashint4(i) & 2147483647) % 200 FROM generate_series(1, 1000000) i;
+VACUUM (FREEZE, ANALYZE) wp;
+CREATE INDEX wp_i ON wp USING sift_col (id, g, d, st) WITH (key_cut = 'g', key_order = 'g, d');
+
+SET sift.enable_agg = on;
+SET sift.agg_force = on;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = off;
+SET max_parallel_workers_per_gather = 0;
+CREATE FUNCTION wp_walks(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE pl text; walk bool := false;
+BEGIN
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
+		walk := walk OR pl ~ 'Global Order: true';
+	END LOOP;
+	RETURN walk;
+END $$;
+SELECT k, o, wp_walks(format('SELECT id, d FROM wp WHERE g = 17 AND st < %s ORDER BY %s LIMIT 20', k, o)) AS walks
+FROM unnest(ARRAY[100, 20, 4, 1]) k, unnest(ARRAY['d DESC', 'd DESC, id DESC']) o ORDER BY o, k DESC;
+
+DROP TABLE wp;
+DROP FUNCTION wp_walks(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s5 CASCADE;
+RESET client_min_messages;
+-- <<< col_topn_walk_price
+
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

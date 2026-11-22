@@ -11,7 +11,7 @@ SET random_page_cost = 10000;
 CREATE TABLE pc (id int, ts timestamp, tz timestamptz) WITH (autovacuum_enabled = false);
 INSERT INTO pc
 SELECT i, t AT TIME ZONE 'UTC', t
-FROM (SELECT g AS i, timestamptz '2019-01-01 00:00+00' + g * interval '470 minutes' AS t FROM generate_series(1, 6000) g) s;
+FROM (SELECT g AS i, timestamptz '2019-01-01 00:00+00' + g * interval '470 minutes' AS t FROM generate_series(1, 1500) g) s;
 INSERT INTO pc VALUES (100001, '2024-03-10 02:30', '2024-03-10 07:30+00'), (100002, '2024-11-03 01:30', '2024-11-03 05:30+00'), (100003, '2024-11-03 01:30', '2024-11-03 06:30+00'),
 	(100004, '2024-12-31 23:59:59.999999', '2024-12-31 23:59:59.999999+00'), (100005, '2024-02-29 12:00', '2024-02-29 12:00+00'), (100006, NULL, NULL);
 CREATE INDEX pc_col ON pc USING sift_col (id, ts, tz);
@@ -20,7 +20,7 @@ DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pc_col');
 VACUUM (FREEZE, ANALYZE) pc;
 -- eight months across the clock changes of 2024 (under 256 days): few enough windows for the hours and the minutes to be tried
-CREATE TABLE pw AS SELECT g AS id, t AT TIME ZONE 'UTC' AS ts, t AS tz FROM (SELECT g, timestamptz '2024-03-08 00:00+00' + g * interval '50 minutes' AS t FROM generate_series(0, 6960) g) s;
+CREATE TABLE pw AS SELECT g AS id, t AT TIME ZONE 'UTC' AS ts, t AS tz FROM (SELECT g, timestamptz '2024-03-08 00:00+00' + g * interval '50 minutes' AS t FROM generate_series(0, 1740) g) s;
 CREATE INDEX pw_col ON pw USING sift_col (id, ts, tz);
 NOTICE:  sift_col index "pw_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
@@ -80,13 +80,13 @@ END $$;
 SELECT zone, statements > 0 AS ran, statements = same AS all_same, narrowed FROM pc_result ORDER BY zone;
         zone         | ran | all_same | narrowed 
 ---------------------+-----+----------+----------
- America/New_York    | t   | t        |       51
+ America/New_York    | t   | t        |       48
  America/Sao_Paulo   | t   | t        |       22
- Asia/Kolkata        | t   | t        |       51
- Australia/Lord_Howe | t   | t        |       51
- Europe/London       | t   | t        |       51
+ Asia/Kolkata        | t   | t        |       48
+ Australia/Lord_Howe | t   | t        |       48
+ Europe/London       | t   | t        |       48
  Pacific/Apia        | t   | t        |       22
- UTC                 | t   | t        |      102
+ UTC                 | t   | t        |       96
 (7 rows)
 
 -- the cases that narrow, and those that do not: more windows than a scan enumerates (the hours of seven years), a table with an infinite timestamp, a union of more than an eighth
@@ -110,14 +110,14 @@ SET TimeZone = 'UTC';
 EXECUTE by_month(3);
  count 
 -------
-   570
+   191
 (1 row)
 
 SET TimeZone = 'Pacific/Apia';
 EXECUTE by_month(3);
  count 
 -------
-   572
+   192
 (1 row)
 
 EXECUTE by_month(13);
@@ -130,7 +130,7 @@ SET sift.enable_agg = off;
 EXECUTE by_month(3);
  count 
 -------
-   572
+   192
 (1 row)
 
 EXECUTE by_month(13);

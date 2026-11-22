@@ -57,7 +57,7 @@ fi
 # col_index_dict_tests 283, agg_bucket 188, agg_dense 114.
 if [[ -z $MASSIF ]] && (( ! ${#TESTS[@]} )); then
 	TESTS=(store_basic tbl_basic shred_values col_index_relcache verify_relcache col_dict_cache read_dict_ids aggstub_dict
-		agg_lookup_cache col_wbuf wbuf_lifecycle build_parallel agg_partial_index agg_distinct)
+		agg_lookup_pricing_suite col_wbuf wbuf_lifecycle build_parallel agg_partial_index agg_distinct)
 	[[ -z ${SIFT_VALGRIND_FULL:-} ]] || TESTS+=(col_index_basic col_index_parallel col_index_dict_tests agg_bucket agg_dense)
 	# SIFT_VALGRIND_ACCUM=1 adds the small tests of the paths that accumulate memory: merge, rewrite, fold and vacuum of a column index, the tombstone log,
 	# the scope journal, the value store, partitions, the lookup load and count(DISTINCT)

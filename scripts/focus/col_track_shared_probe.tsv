@@ -1,1 +1,0 @@
-col_track_shared_probe	src/col/am/rel.c:sift_col_peer_rel src/col/v1/build/choices.c:shared_columns src/col/v1/test/tomblog_test.c:sift_test_col_log_entries src/col/v1/track_drop.c:legacy_index src/col/v1/wbuf/arena.c:not_stored src/col/v1/wbuf/arena.c:sift_cwbuf_arena_gc src/core/restrict.c:sift_drop_object

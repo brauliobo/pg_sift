@@ -1,0 +1,297 @@
+-- The global order of a sift_col index. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+
+-- >>> col_gorder_text_range
+CREATE SCHEMA s1;
+GRANT USAGE ON SCHEMA s1 TO PUBLIC;
+SET search_path = s1, public;
+-- A range of a text column read from its global order: `txt >= 'k' ORDER BY txt LIMIT n`, a prefix (`LIKE 'abc%'`, `starts_with`), an equality, a BETWEEN and an OR of two
+-- half lines find the first and the last entry of the range in each segment and in the write buffer by comparing strings (the ranks of a segment are its own), as a b-tree descends to its first
+-- leaf, and read n entries. The answers are the heap's through ties, NULLs, the empty string, accents and case, both directions, OFFSET, DML, a write buffer, a promotion, a merge and a REINDEX,
+-- under the C collation and under a locale (a prefix is a range of the bytes: under a locale it reads the units).
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = notice;
+\set VERBOSITY terse
+
+CREATE TABLE tr (id int, c text COLLATE "C", l text COLLATE "en-x-icu", pad text DEFAULT repeat('x', 200));
+ALTER TABLE tr ALTER COLUMN pad SET STORAGE PLAIN;
+CREATE FUNCTION tr_str(i int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+	SELECT CASE i % 11 WHEN 0 THEN '' WHEN 1 THEN 'a' ELSE '' END
+		|| (ARRAY['Zeta', 'alpha', 'Alpha', 'ALPHA', 'beta-2', 'beta 2', 'Beta2', 'été', 'ete', 'Ete', 'zz', '_x', '10', '9', 'a-b', 'ab', 'A.B', 'ä', 'a', 'z'])[1 + (i * 7) % 20]
+		|| (i % 97)::text $$;
+INSERT INTO tr (id, c, l)
+SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE tr_str(i) END, CASE WHEN i % 37 = 0 THEN NULL ELSE tr_str(i * 3) END FROM generate_series(1, 9000) i;
+INSERT INTO tr (id, c, l) VALUES (9001, '', ''), (9002, NULL, NULL);
+CREATE INDEX tr_i ON tr USING sift_col (id sift.col_int4_ops, c sift.col_text_ops, l sift.col_text_ops) WITH (order_array_columns = 'c, l');
+SELECT sift.col_verify('tr_i');
+ANALYZE tr;
+
+-- an answer is right when the rows are the heap's, in order; 'global order' says the scan read the arrays
+CREATE FUNCTION tr_chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_ordered_rows_with_nulls(q) $$;
+
+-- the conditions: a bound that is a stored string, one between two, one before all and one after all, a prefix that matches a few, many and none
+CREATE TABLE trq (cond text);
+INSERT INTO trq
+SELECT format(f, col, b) FROM unnest(ARRAY['c', 'l']) col,
+	 unnest(ARRAY['%1$s >= %2$L', '%1$s > %2$L', '%1$s < %2$L', '%1$s <= %2$L', '%1$s = %2$L', '%1$s BETWEEN %2$L AND ''zz''', '%1$s >= %2$L AND %1$s < ''b''', '%1$s < %2$L OR %1$s > ''beta''']) f,
+	 unnest(ARRAY['', 'A', 'Alpha5', 'a', 'alpha', 'b', 'été3', 'zz9', '~']) b;
+INSERT INTO trq
+SELECT format(f, col, b) FROM unnest(ARRAY['c', 'l']) col,
+	 unnest(ARRAY['%1$s LIKE %2$L', 'starts_with(%1$s, %2$L)', '%1$s >= %2$L AND %1$s LIKE ''al%%''']) f,
+	 unnest(ARRAY['a%', 'al%', 'alpha1%', 'beta%', 'z%', 'zzz%', 'Q%', '%']) b;
+
+CREATE TABLE trs (q text);
+INSERT INTO trs SELECT format('SELECT %1$s FROM tr WHERE %2$s ORDER BY %1$s %3$s %4$s LIMIT %5$s OFFSET %6$s', col, cond, d, nl, l, o)
+FROM trq, unnest(ARRAY['c', 'l']) col, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 3000]) l, unnest(ARRAY[0, 5]) o
+WHERE substr(cond, 1, 1) = col OR cond LIKE 'starts_with(' || col || '%';
+SELECT count(*) AS statements FROM trs;
+SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q) % 4 = 0) r GROUP BY 1 ORDER BY 1;
+
+-- the rows of the write buffer, deletes, updates of the key, VACUUM, a promotion, a merge and a REINDEX
+CREATE FUNCTION tr_all(stage int) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q || stage) % 20 = 0) r GROUP BY 1 ORDER BY 1 $$;
+INSERT INTO tr (id, c, l) SELECT 20000 + i, tr_str(i * 13), tr_str(i * 17) FROM generate_series(1, 700) i;
+SELECT * FROM tr_all(1);
+DELETE FROM tr WHERE id % 7 = 0;
+UPDATE tr SET c = 'U' || c WHERE id % 11 = 0;
+UPDATE tr SET l = NULL WHERE id % 13 = 0;
+SELECT * FROM tr_all(2);
+VACUUM tr;
+SELECT * FROM tr_all(3);
+SELECT sift.col_promote('tr_i'::regclass) >= 0 AS promoted;
+SELECT sift.col_verify('tr_i');
+SELECT * FROM tr_all(4);
+INSERT INTO tr (id, c, l) SELECT 30000 + i, tr_str(i * 23), tr_str(i * 29) FROM generate_series(1, 300) i;
+SELECT * FROM tr_all(5);
+SELECT sift.col_merge('tr_i'::regclass, true) >= 0 AS merged;
+SELECT sift.col_verify('tr_i');
+SELECT * FROM tr_all(6);
+REINDEX INDEX tr_i;
+SELECT sift.col_verify('tr_i');
+SELECT * FROM tr_all(7);
+
+-- a sort under another collation, and an unbounded condition keep the units or the normal plan, and a condition on another column is tested on the heap row of each entry; the answers are the heap's
+SELECT tr_chk('SELECT c FROM tr WHERE c >= ''a'' AND id > 5 ORDER BY c LIMIT 10') AS other_column, tr_chk('SELECT c FROM tr WHERE c >= ''a'' ORDER BY c COLLATE "POSIX" LIMIT 10') AS posix_sort,
+	   tr_chk('SELECT c FROM tr WHERE c <> ''a'' ORDER BY c LIMIT 10') AS not_equal, tr_chk('SELECT c FROM tr WHERE lower(c) >= ''a'' ORDER BY c LIMIT 10') AS expression,
+	   tr_chk('SELECT l FROM tr WHERE l LIKE ''a%'' ORDER BY l LIMIT 10') AS locale_prefix;
+
+DROP TABLE tr, trq, trs CASCADE;
+DROP FUNCTION tr_chk(text), tr_all(int), tr_str(int);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s1 CASCADE;
+RESET client_min_messages;
+-- <<< col_gorder_text_range
+
+-- >>> col_gorder_text_bitmap
+CREATE SCHEMA s2;
+GRANT USAGE ON SCHEMA s2 TO PUBLIC;
+SET search_path = s2, public;
+-- A text column with an order array: an equality, a range and a BETWEEN of its strings read as a bitmap index scan hand the heap the rows of the units, not the addresses of
+-- the array, whose keys are the ranks of the segment's strings and not the codes of its dictionary. The counts are the heap's, under the C collation and under a locale, with a write buffer.
+-- Then 105,000 rows of 10 to a heap page (the late blocks are past 10,000), in segments cut by superblock and cut by a key, an integer and a text column with an array and a second
+-- condition on another column: the bitmap scan returns the rows of the seq scan over many ranges, the late blocks included.
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+\set VERBOSITY terse
+
+CREATE TABLE tb (id int, c text COLLATE "C", l text COLLATE "en-x-icu", pad text DEFAULT repeat('x', 200));
+ALTER TABLE tb ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO tb SELECT i, (ARRAY['Zeta', 'alpha', 'Alpha', 'beta', 'été', 'ete', 'zz', '10', 'a-b', 'ab'])[1 + i % 10] || (i % 97), (ARRAY['Zeta', 'alpha', 'Alpha', 'beta', 'été', 'ete', 'zz', '10', 'a-b', 'ab'])[1 + (i * 3) % 10] || (i % 89)
+FROM generate_series(1, 9000) i;
+CREATE INDEX tb_i ON tb USING sift_col (id sift.col_int4_ops, c sift.col_text_ops, l sift.col_text_ops) WITH (order_array_columns = 'c, l');
+INSERT INTO tb SELECT 20000 + i, 'alpha' || (i % 97), 'beta' || (i % 89) FROM generate_series(1, 300) i;
+ANALYZE tb;
+
+CREATE FUNCTION tb_count(cond text, bitmap bool) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	IF bitmap THEN
+		SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off;
+	ELSE
+		SET LOCAL sift.enable_col_scan = off; SET LOCAL sift.enable_agg = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = off;
+	END IF;
+	EXECUTE 'SELECT count(*) FROM tb WHERE ' || cond INTO n;
+	RETURN n;
+END $$;
+SELECT cond, tb_count(cond, true) = tb_count(cond, false) AS same, tb_count(cond, false) > 0 AS found
+FROM (VALUES ('c = ''alpha5'''), ('c = ''zz9'''), ('c = ''nothing'''), ('c >= ''alpha'' AND c < ''b'''), ('c BETWEEN ''Zeta5'' AND ''beta7'''), ('c < ''Alpha'''), ('c > ''zz90'''),
+			 ('l = ''beta5'''), ('l = ''ete3'''), ('l >= ''alpha'' AND l < ''b'''), ('l BETWEEN ''Alpha5'' AND ''beta7''')) q(cond);
+DROP TABLE tb;
+
+CREATE FUNCTION tb_count(tbl text, cond text, bitmap bool) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	IF bitmap THEN
+		SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off;
+	ELSE
+		SET LOCAL sift.enable_col_scan = off; SET LOCAL sift.enable_agg = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = off;
+	END IF;
+	EXECUTE format('SELECT count(*) FROM %I WHERE %s', tbl, cond) INTO n;
+	RETURN n;
+END $$;
+
+-- ts: segments cut by superblock (block ranges); tk: the same rows cut by a key that does not follow the heap
+CREATE TABLE ts (id int, k int, d int, c text COLLATE "C", flag int, pad text DEFAULT repeat('x', 800));
+ALTER TABLE ts ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ts SELECT i, (i * 7919) % 5003, i % 20011, 'k' || lpad(((i * 31) % 20011)::text, 5, '0'), CASE WHEN i % 5 = 0 THEN NULL ELSE i % 3 END FROM generate_series(1, 105000) i;
+CREATE TABLE tk (LIKE ts INCLUDING DEFAULTS);
+ALTER TABLE tk ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO tk SELECT * FROM ts;
+CREATE INDEX ts_i ON ts USING sift_col (id sift.col_int4_ops, d sift.col_int4_ops, c sift.col_text_ops, flag sift.col_int4_ops) WITH (order_array_columns = 'd, c', key_cut = 'off');
+CREATE INDEX tk_i ON tk USING sift_col (k sift.col_int4_ops, d sift.col_int4_ops, c sift.col_text_ops, flag sift.col_int4_ops) WITH (order_array_columns = 'd, c', key_cut = 'k');
+ANALYZE ts;
+ANALYZE tk;
+SELECT sift.col_verify('ts_i'), sift.col_verify('tk_i');
+SELECT pg_relation_size('ts') / 8192 > 10000 AS late_blocks;
+
+CREATE TABLE tq (cond text);
+INSERT INTO tq
+SELECT format(f, a, a + w) FROM unnest(ARRAY['d BETWEEN %s AND %s', 'd BETWEEN %s AND %s AND flag IS NULL', 'd >= %s AND d < %s AND flag = 1']) f,
+	   unnest(ARRAY[0, 500, 5000, 12000, 19990]) a, unnest(ARRAY[40, 900]) w;
+INSERT INTO tq
+SELECT format(f, a, b) FROM unnest(ARRAY['c BETWEEN %L AND %L', 'c BETWEEN %L AND %L AND flag IS NULL', 'c >= %L AND c < %L AND flag = 2']) f,
+	   (VALUES ('k00000', 'k00040'), ('k04000', 'k04900'), ('k10050', 'k10090'), ('k16500', 'k17400'), ('k19900', 'k19999')) v(a, b);
+SELECT t.tbl, count(*) AS conditions, count(*) FILTER (WHERE tb_count(t.tbl, q.cond, true) = tb_count(t.tbl, q.cond, false)) AS same,
+	   count(*) FILTER (WHERE tb_count(t.tbl, q.cond, false) > 0) AS found
+FROM tq q, (VALUES ('ts'), ('tk')) t(tbl) GROUP BY t.tbl ORDER BY 1;
+DROP TABLE ts, tk, tq;
+DROP FUNCTION tb_count(text, text, bool);
+DROP FUNCTION tb_count(text, bool);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s2 CASCADE;
+RESET client_min_messages;
+-- <<< col_gorder_text_bitmap
+
+-- >>> col_gorder_heap_order_ends
+CREATE SCHEMA s3;
+GRANT USAGE ON SCHEMA s3 TO PUBLIC;
+SET search_path = s3, public;
+-- A timestamp in heap order has the second order by the entity and, beside it, the ends of its plain order. The units are cut by another column (each holds the whole range of the
+-- timestamp), so ORDER BY ts LIMIT n over the table read the units of the newest rows; the ends answer it with n entries of each segment. A range in the middle and an OFFSET past the
+-- ends stay with the units, and a promotion and a merge keep the answers.
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+
+CREATE FUNCTION eo_chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_ordered_rows(q) $$;
+
+CREATE TABLE eo (id int, tenant_id int, ent_id int, created timestamp, updated timestamp, pad text);
+INSERT INTO eo SELECT i, i % 40, abs(hashint4(i)) % 3000, timestamp '2024-01-01' + i * interval '30 seconds', timestamp '2024-02-01' + i * interval '45 seconds',
+	   md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y')
+FROM generate_series(1, 120000) i;
+ANALYZE eo;
+CREATE INDEX eo_i ON eo USING sift_col (id, tenant_id, ent_id, created, updated, pad) WITH (key_cut = 'tenant_id');
+SELECT regexp_replace(reloption, '^(order_array_[a-z]+)=.*$', '\1') AS option, regexp_replace(reloption, '^[a-z_]+=', '') AS value
+FROM pg_class, unnest(reloptions) reloption WHERE relname = 'eo_i' AND reloption LIKE 'order_array_%' ORDER BY 1;
+SELECT sift.col_verify('eo_i');
+
+-- what the NOTICE of the build and index_choices say each column has
+SELECT value FROM sift.index_choices('eo_i') WHERE choice = 'order_array_columns';
+
+-- the page of the whole table, in both directions and as a later page, reads the ends
+SELECT col, d, result, count(*) FROM (
+	SELECT col, d, eo_chk(format('SELECT id, %s FROM eo ORDER BY %s %s, id LIMIT %s OFFSET %s', col, col, d, l, o)) AS result
+	FROM unnest(ARRAY['created', 'updated']) col, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 20, 500]) l, unnest(ARRAY[0, 30, 3000]) o) r
+GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+
+-- what the ends do not hold stays with the units: an offset past them, and a range in the middle of the column
+SELECT eo_chk('SELECT id, created FROM eo ORDER BY created DESC, id LIMIT 20 OFFSET 6000') AS past_the_ends,
+	   eo_chk('SELECT id, created FROM eo WHERE created >= timestamp ''2024-02-10'' AND created < timestamp ''2024-02-11'' ORDER BY created, id LIMIT 20') AS middle_range;
+SELECT eo_chk('SELECT id, created FROM eo WHERE tenant_id = 7 ORDER BY created DESC, id LIMIT 20') AS tenant_page,
+	   eo_chk('SELECT id, created FROM eo WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 20') AS entity_page;
+
+-- rows written after the build, a promotion and a merge keep the answers
+INSERT INTO eo SELECT 200000 + i, i % 40, i % 3000, timestamp '2024-06-01' + i * interval '1 second', timestamp '2024-07-01' + i * interval '1 second', 'w' FROM generate_series(1, 3000) i;
+UPDATE eo SET created = timestamp '2023-12-31' WHERE id IN (5, 6, 7);
+DELETE FROM eo WHERE id % 211 = 0;
+SELECT eo_chk('SELECT id, created FROM eo ORDER BY created DESC, id LIMIT 20') AS buffers_desc, eo_chk('SELECT id, created FROM eo ORDER BY created, id LIMIT 20') AS buffers_asc;
+SELECT sift.col_promote('eo_i'::regclass) >= 0 AS promoted;
+SELECT eo_chk('SELECT id, created FROM eo ORDER BY created DESC, id LIMIT 20') AS promoted_desc, eo_chk('SELECT id, updated FROM eo ORDER BY updated, id LIMIT 20') AS promoted_asc;
+SELECT sift.col_merge('eo_i'::regclass, true) >= 0 AS merged;
+SELECT eo_chk('SELECT id, created FROM eo ORDER BY created DESC, id LIMIT 20') AS merged_desc, eo_chk('SELECT id, updated FROM eo ORDER BY updated, id LIMIT 20') AS merged_asc;
+SELECT sift.col_verify('eo_i');
+
+DROP TABLE eo;
+DROP FUNCTION eo_chk(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s3 CASCADE;
+RESET client_min_messages;
+-- <<< col_gorder_heap_order_ends
+
+-- >>> col_gorder_keyed_large
+CREATE SCHEMA s4;
+GRANT USAGE ON SCHEMA s4 TO PUBLIC;
+SET search_path = s4, public;
+-- col_gorder_keyed at a size where the table is long: rows past heap block 12,000 (the units there are the ones a wrong address-to-unit mapping loses first), ranges
+-- on both sides of the 16,384 rows a range hands the heap as addresses, and several segments (a promotion). Bitmap scan and index scan against the heap.
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+CREATE TABLE kl (id int, ent int, d date, ts timestamp, del timestamp, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+ALTER TABLE kl ALTER COLUMN pad SET STORAGE PLAIN;
+SELECT setseed(0.7);
+INSERT INTO kl SELECT i, 1 + (random() * 59)::int, date '2022-01-01' + (random() * 1500)::int, timestamp '2022-01-01' + random() * 1500 * interval '1 day',
+	CASE WHEN random() < 0.04 THEN now() END, repeat('x', 150) FROM generate_series(1, 105000) i;
+VACUUM (FREEZE, ANALYZE) kl;
+SELECT pg_relation_size('kl') / 8192 > 20000 AS long_table;
+
+CREATE FUNCTION kl_rows(q text, how text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint := 0; used bool := false; pl text; r record;
+BEGIN
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_indexscan = on; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = on;
+	IF how = 'bitmap' THEN SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off;
+	ELSIF how = 'index' THEN SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;
+	ELSE SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off;
+	END IF;
+	FOR pl IN EXECUTE 'EXPLAIN (COSTS off) ' || q LOOP used := used OR pl LIKE '%kl_i%'; END LOOP;
+	IF (how = 'heap') = used THEN RETURN -1; END IF;
+	FOR r IN EXECUTE q LOOP n := n + 1; END LOOP;
+	RETURN n;
+END $$;
+
+-- ranges of 1 day to 400 days (about 100 to 40,000 rows) from 2 starts, with and without deleted_at IS NULL, and on the timestamp
+CREATE FUNCTION kl_check(layout text) RETURNS TABLE (layout text, cases int, differ int, below_limit int, above_limit int) LANGUAGE sql AS $$
+	WITH q AS (
+		SELECT format('SELECT id FROM kl WHERE d BETWEEN %L AND %L%s', a, a + w, CASE WHEN n THEN ' AND del IS NULL' ELSE '' END) AS q
+		FROM (SELECT date '2022-01-01' + s * 362 AS a FROM unnest(ARRAY[1, 3]) s) x, unnest(ARRAY[0, 30, 400]) w, (VALUES (true), (false)) v(n)
+		UNION ALL
+		SELECT format('SELECT id FROM kl WHERE ts >= %L AND ts < %L AND ent = %s', timestamp '2022-01-01' + s * 170 * interval '1 day', timestamp '2022-01-01' + (s * 170 + w) * interval '1 day', 1 + s)
+		FROM unnest(ARRAY[0, 2, 4]) s, unnest(ARRAY[1, 200]) w
+	), r AS (SELECT q, kl_rows(q, 'heap') AS h FROM q)
+	SELECT layout, count(*)::int, count(*) FILTER (WHERE kl_rows(q, 'bitmap') <> h OR kl_rows(q, 'index') <> h)::int,
+		count(*) FILTER (WHERE h < 16384)::int, count(*) FILTER (WHERE h >= 16384)::int
+	FROM r WHERE h > 0
+$$;
+
+CREATE INDEX kl_i ON kl USING sift_col (id, ent, d, ts, del) WITH (key_cut = 'ent', order_array_columns = 'd, ts');
+SELECT * FROM kl_check('one segment');
+INSERT INTO kl SELECT 105000 + i, 1 + (random() * 59)::int, date '2022-01-01' + (random() * 1500)::int, timestamp '2022-01-01' + random() * 1500 * interval '1 day', NULL, repeat('x', 150) FROM generate_series(1, 10000) i;
+UPDATE kl SET d = d + 2 WHERE id % 10 = 0;
+SELECT sift.col_promote('kl_i') >= 0 AS promoted;
+SELECT * FROM kl_check('promoted');
+REINDEX INDEX kl_i;
+SELECT * FROM kl_check('reindexed');
+
+DROP FUNCTION kl_check(text);
+DROP FUNCTION kl_rows(text, text);
+DROP TABLE kl;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s4 CASCADE;
+RESET client_min_messages;
+-- <<< col_gorder_keyed_large
+
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

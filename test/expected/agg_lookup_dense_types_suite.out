@@ -1,0 +1,396 @@
+-- The lookups of an aggregate scan. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+-- >>> agg_lookup_dense_far
+CREATE SCHEMA s1;
+GRANT USAGE ON SCHEMA s1 TO PUBLIC;
+SET search_path = s1, public;
+-- A table kept as classes of its keys whose keys outgrow the cache (more than 524,288 of them) is read with the line of each key asked for ahead: the answers are those of the
+-- normal plan, NULL keys and keys the table does not have included, and the table is classed.
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+CREATE TABLE far_dim (k int PRIMARY KEY, a smallint, b smallint) WITH (autovacuum_enabled = false);
+INSERT INTO far_dim SELECT g, g % 5, g % 3 FROM generate_series(1, 600000) g;
+CREATE TABLE far_fact (id int, k int, v int) WITH (autovacuum_enabled = false);
+-- one key in 997 is NULL, one in 1,009 is a key the dimension does not have
+INSERT INTO far_fact SELECT g, CASE WHEN g % 997 = 0 THEN NULL WHEN g % 1009 = 0 THEN 700000 + g ELSE 1 + (hashint4(g) & 2147483647) % 600000 END, g % 100
+FROM generate_series(1, 400000) g;
+CREATE INDEX far_dim_col ON far_dim USING sift_col (k, a, b);
+CREATE INDEX far_fact_col ON far_fact USING sift_col (id, k, v);
+VACUUM (FREEZE, ANALYZE) far_dim, far_fact;
+CREATE TABLE shapes (n int, sql text);
+INSERT INTO shapes VALUES
+ (1, $q$SELECT d.a, count(*), sum(f.v) FROM far_fact f LEFT JOIN far_dim d ON d.k = f.k GROUP BY 1$q$),
+ (2, $q$SELECT d.a, d.b, count(*) FROM far_fact f JOIN far_dim d ON d.k = f.k GROUP BY 1, 2$q$),
+ (3, $q$SELECT d.b, count(f.v), sum(f.v) FROM far_fact f LEFT JOIN far_dim d ON d.k = f.k WHERE f.v > 10 GROUP BY 1$q$);
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.agg_force', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION classed(sql text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; BEGIN
+	PERFORM set_config('sift.agg_force', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
+		IF l ~ 'Lookup: .*[1-9][0-9]* (rows classed|cached tables)' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+SELECT n, classed(sql), answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY n;
+ n | classed | same_answers 
+---+---------+--------------
+ 1 | t       | t
+ 2 | t       | t
+ 3 | t       | t
+(3 rows)
+
+DROP FUNCTION answer(text, bool), classed(text);
+DROP TABLE shapes, far_fact, far_dim;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s1 CASCADE;
+RESET client_min_messages;
+-- <<< agg_lookup_dense_far
+-- >>> agg_lookup_lazy_dict
+CREATE SCHEMA s2;
+GRANT USAGE ON SCHEMA s2 TO PUBLIC;
+SET search_path = s2, public;
+-- A lookup table loaded from the leaves of a sift_col index reads a text column whose dictionary the segment keeps in blocks (many entries, not loaded by the backend)
+-- through the string of the entry, not through the arrays of the whole dictionary: the rows are those of the normal plan, with NULLs and repeated strings.
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
+CREATE TABLE ev (id int, k int, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, i % 120000, i % 13 FROM generate_series(1, 240000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, k, amount) WITH (point_tid_columns = 'off');
+CREATE TABLE dm (k int PRIMARY KEY, county text, kind text) WITH (autovacuum_enabled = false);
+INSERT INTO dm SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE 'c' || md5((i % 20000)::text) END, 'kind' || i % 4 FROM generate_series(0, 119999) i;
+CREATE INDEX dm_col ON dm USING sift_col (k, county, kind);
+CREATE TABLE dm2 (LIKE dm INCLUDING ALL) WITH (autovacuum_enabled = false);
+INSERT INTO dm2 SELECT * FROM dm;
+CREATE INDEX dm2_col ON dm2 USING sift_col (k, county, kind);
+VACUUM (FREEZE, ANALYZE) ev, dm, dm2;
+CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_rows_and_differences(q) $$;
+-- the first read of a dictionary is a test of the table's own condition
+SELECT * FROM same('SELECT kind, sum(amount), count(*) FROM ev, dm2 WHERE ev.k = dm2.k AND county = ''c'' || md5(''17'') GROUP BY kind');
+ result_rows | vs_normal_plan 
+-------------+----------------
+           1 |              0
+(1 row)
+
+SELECT * FROM same('SELECT county, sum(amount), count(*) FROM ev, dm WHERE ev.k = dm.k GROUP BY county');
+ result_rows | vs_normal_plan 
+-------------+----------------
+       20001 |              0
+(1 row)
+
+SELECT * FROM same('SELECT county, kind, sum(amount) FROM ev, dm WHERE ev.k = dm.k GROUP BY county, kind');
+ result_rows | vs_normal_plan 
+-------------+----------------
+       20004 |              0
+(1 row)
+
+SELECT * FROM same('SELECT kind, count(DISTINCT county) FROM ev, dm WHERE ev.k = dm.k GROUP BY kind');
+ result_rows | vs_normal_plan 
+-------------+----------------
+           4 |              0
+(1 row)
+
+SELECT * FROM same('SELECT count(*) FROM ev, dm WHERE ev.k = dm.k AND county = ''c'' || md5(''17'')');
+ result_rows | vs_normal_plan 
+-------------+----------------
+           1 |              0
+(1 row)
+
+DROP FUNCTION same(text);
+DROP TABLE ev, dm, dm2;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s2 CASCADE;
+RESET client_min_messages;
+-- <<< agg_lookup_lazy_dict
+-- >>> agg_lookup_numeric_kept
+CREATE SCHEMA s3;
+GRANT USAGE ON SCHEMA s3 TO PUBLIC;
+SET search_path = s3, public;
+-- The numeric values a lookup table is loaded from the leaves of its index are made for each row and copied into the table: they end with the unit that was read, so the
+-- table keeps only its rows and fits the cache that its rows fit, however many rows it has.
+SET work_mem = '256MB';
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+SET sift.shared_cache_kb = 0;
+SET sift.backend_cache_kb = 32768;
+SET sift.agg_child_first = off;
+CREATE TABLE nk_fact (id int, k int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO nk_fact SELECT i, i % 200000, i % 11 FROM generate_series(1, 20000) i;
+CREATE INDEX nk_fact_col ON nk_fact USING sift_col (id, k, v);
+NOTICE:  sift_col index "nk_fact_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nk_fact_col');
+-- 200000 keys of 100 prices: the dictionary of the prices is small, the numerics of the rows are not
+CREATE TABLE nk_dim (k int PRIMARY KEY, price numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO nk_dim SELECT i, (i % 100) / 4.0 FROM generate_series(0, 199999) i;
+CREATE INDEX nk_dim_col ON nk_dim USING sift_col (k, price);
+NOTICE:  sift_col index "nk_dim_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = k
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nk_dim_col');
+VACUUM (FREEZE, ANALYZE) nk_fact, nk_dim;
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION got(sql text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'loaded'; BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
+		IF l ~ '[1-9]\d* cached tables' THEN r := 'cached'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+SELECT got(q) AS first, got(q) AS again, answer(q, true) = answer(q, false) AS same_answers
+FROM (VALUES ($q$SELECT d.price, count(*), sum(d.k) FROM nk_fact f LEFT JOIN nk_dim d ON d.k = f.k GROUP BY 1$q$)) v (q);
+ first  | again  | same_answers 
+--------+--------+--------------
+ loaded | cached | t
+(1 row)
+
+DROP FUNCTION answer(text, bool), got(text);
+DROP TABLE nk_fact, nk_dim;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s3 CASCADE;
+RESET client_min_messages;
+-- <<< agg_lookup_numeric_kept
+-- >>> agg_lookup_rows
+CREATE SCHEMA s4;
+GRANT USAGE ON SCHEMA s4 TO PUBLIC;
+SET search_path = s4, public;
+-- The rows of a joined table are kept by the ids of their key values and of their column values (one copy of each distinct value). Whatever the
+-- types, the repeated keys, the NULLs and the number of distinct values (the tables that find them grow), the rows of a join must be the same
+-- loaded for the query, taken from the cache and read by the normal plan.
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+CREATE TABLE ev (id int PRIMARY KEY, k text, kv varchar(20), n int, n8 bigint, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i,
+	CASE WHEN i % 41 = 0 THEN NULL WHEN i % 43 = 0 THEN '' ELSE 'k' || (i % 700) END,
+	CASE WHEN i % 37 = 0 THEN NULL ELSE 'v' || (i % 1500) || CASE WHEN i % 5 = 0 THEN repeat('é', 3) ELSE '' END END,
+	CASE WHEN i % 31 = 0 THEN NULL ELSE i % 90 END,
+	CASE WHEN i % 29 = 0 THEN NULL ELSE 4000000000 + i % 120 END,
+	(i % 1000) / 10.0
+FROM generate_series(1, 30000) i;
+CREATE INDEX ev_col ON ev USING sift_col (k, kv, n, n8, amount);
+NOTICE:  sift_col index "ev_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = n, n8
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
+VACUUM (FREEZE, ANALYZE) ev;
+-- every column type a join reads: by value (int, bigint, float8, bool, date), by reference (text, numeric, bytea, a fixed length uuid), NULLs among them
+CREATE TABLE dims (k text, kv varchar(20), n int, n8 bigint, label text, num numeric, f float8, b bool, dd date, bytes bytea, u uuid) WITH (autovacuum_enabled = false);
+INSERT INTO dims
+SELECT CASE WHEN i % 53 = 0 THEN NULL WHEN i % 59 = 0 THEN '' ELSE 'k' || (i % 700) END,
+	CASE WHEN i % 47 = 0 THEN NULL ELSE 'v' || (i % 1500) || CASE WHEN i % 5 = 0 THEN repeat('é', 3) ELSE '' END END,
+	CASE WHEN i % 61 = 0 THEN NULL ELSE i % 90 END,
+	CASE WHEN i % 67 = 0 THEN NULL ELSE 4000000000 + i % 120 END,
+	CASE WHEN i % 7 = 0 THEN NULL ELSE 'label ' || (i % 3000) END,
+	CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 500) / 8.0 END,
+	CASE WHEN i % 13 = 0 THEN NULL ELSE (i % 211) / 4.0 END,
+	CASE WHEN i % 17 = 0 THEN NULL ELSE i % 3 = 0 END,
+	CASE WHEN i % 19 = 0 THEN NULL ELSE date '2024-01-01' + i % 400 END,
+	CASE WHEN i % 23 = 0 THEN NULL ELSE decode(lpad(to_hex(i % 900), 4, '0'), 'hex') END,
+	CASE WHEN i % 25 = 0 THEN NULL ELSE md5((i % 400)::text)::uuid END
+FROM generate_series(1, 9000) i;
+VACUUM (FREEZE, ANALYZE) dims;
+CREATE FUNCTION nodes(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_nodes_cached_tables(q) $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_uncached bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_lookup_cache_differences(q) $$;
+-- one text key, repeated keys, NULL and empty keys on both sides, every column type
+\set left_join_wide_leaves 'SELECT coalesce(d.label, ''-'') AS label, coalesce(d.num::text, ''-'') AS num, d.b, d.dd, count(*) AS n, sum(ev.amount) AS total, sum(d.f) AS f FROM ev LEFT JOIN dims d ON d.k = ev.k GROUP BY 1, 2, 3, 4'
+\set left_join_bytes_uuid 'SELECT coalesce(encode(d.bytes, ''hex''), ''-'') AS bytes, coalesce(d.u::text, ''-'') AS u, count(*) AS n, sum(d.f) AS f FROM ev LEFT JOIN dims d ON d.k = ev.k GROUP BY 1, 2'
+SELECT nodes(:'left_join_wide_leaves');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 0 cached tables
+(1 row)
+
+SELECT nodes(:'left_join_wide_leaves');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 1 cached tables
+(1 row)
+
+SELECT * FROM same(:'left_join_wide_leaves');
+ result_rows | vs_uncached | vs_normal_plan 
+-------------+-------------+----------------
+        7491 |           0 |              0
+(1 row)
+
+SELECT nodes(:'left_join_bytes_uuid');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 0 cached tables
+(1 row)
+
+SELECT * FROM same(:'left_join_bytes_uuid');
+ result_rows | vs_uncached | vs_normal_plan 
+-------------+-------------+----------------
+        3859 |           0 |              0
+(1 row)
+
+-- a varchar key with multi-byte values, an inner join
+\set inner_join_kv 'SELECT coalesce(d.label, ''-'') AS label, d.b, count(*) AS n, sum(d.f) AS f FROM ev JOIN dims d ON d.kv = ev.kv GROUP BY 1, 2'
+SELECT nodes(:'inner_join_kv');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 0 cached tables
+(1 row)
+
+SELECT nodes(:'inner_join_kv');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 1 cached tables
+(1 row)
+
+SELECT * FROM same(:'inner_join_kv');
+ result_rows | vs_uncached | vs_normal_plan 
+-------------+-------------+----------------
+        3443 |           0 |              0
+(1 row)
+
+-- an integer and a bigint key together with a text one
+\set left_join_three_keys 'SELECT coalesce(d.label, ''-'') AS label, d.dd, count(*) AS n, sum(ev.amount) AS total FROM ev LEFT JOIN dims d ON d.n = ev.n AND d.n8 = ev.n8 AND d.k = ev.k GROUP BY 1, 2'
+SELECT nodes(:'left_join_three_keys');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 0 cached tables
+(1 row)
+
+SELECT nodes(:'left_join_three_keys');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 1 cached tables
+(1 row)
+
+SELECT * FROM same(:'left_join_three_keys');
+ result_rows | vs_uncached | vs_normal_plan 
+-------------+-------------+----------------
+        5990 |           0 |              0
+(1 row)
+
+-- one integer key: a semi join and an anti join
+\set in_subselect 'SELECT ev.n % 7 AS g, count(*) AS n, sum(ev.amount) AS total FROM ev WHERE ev.n IN (SELECT d.n FROM dims d WHERE d.n8 % 3 = 0) GROUP BY 1'
+\set not_exists 'SELECT ev.n % 7 AS g, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM dims d WHERE d.n = ev.n AND d.b) GROUP BY 1'
+SELECT nodes(:'in_subselect');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 0 cached tables
+(1 row)
+
+SELECT * FROM same(:'in_subselect');
+ result_rows | vs_uncached | vs_normal_plan 
+-------------+-------------+----------------
+           7 |           0 |              0
+(1 row)
+
+SELECT nodes(:'not_exists');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 0 cached tables
+(1 row)
+
+SELECT * FROM same(:'not_exists');
+ result_rows | vs_uncached | vs_normal_plan 
+-------------+-------------+----------------
+           8 |           0 |              0
+(1 row)
+
+-- arms that read other columns of a table share its kept rows: one entry holds the columns of them all, and a query that reads one of them takes it
+\set group_label 'SELECT d.label AS g, count(*) AS n FROM ev JOIN dims d ON d.n8 = ev.n8 GROUP BY 1'
+\set group_num_text 'SELECT d.num::text AS g, count(*) AS n FROM ev JOIN dims d ON d.n8 = ev.n8 GROUP BY 1'
+\set group_label_concat 'SELECT d.label || coalesce(d.num::text, ''-'') AS g, count(*) AS n FROM ev JOIN dims d ON d.n8 = ev.n8 GROUP BY 1'
+SELECT count(*) AS entries_before FROM pg_backend_memory_contexts WHERE name = 'sift cache lookup table' \gset
+SELECT nodes(:'group_label');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 0 cached tables
+(1 row)
+
+SELECT nodes(:'group_num_text');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 0 cached tables
+(1 row)
+
+SELECT nodes(:'group_label_concat');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 1 cached tables
+(1 row)
+
+SELECT nodes(:'group_label');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 1 cached tables
+(1 row)
+
+SELECT nodes(:'group_num_text');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 1 cached tables
+(1 row)
+
+SELECT count(*) - :entries_before AS new_entries FROM pg_backend_memory_contexts WHERE name = 'sift cache lookup table';
+ new_entries 
+-------------
+           1
+(1 row)
+
+SELECT * FROM same(:'group_label');
+ result_rows | vs_uncached | vs_normal_plan 
+-------------+-------------+----------------
+        3001 |           0 |              0
+(1 row)
+
+SELECT * FROM same(:'group_num_text');
+ result_rows | vs_uncached | vs_normal_plan 
+-------------+-------------+----------------
+         501 |           0 |              0
+(1 row)
+
+SELECT * FROM same(:'group_label_concat');
+ result_rows | vs_uncached | vs_normal_plan 
+-------------+-------------+----------------
+        3690 |           0 |              0
+(1 row)
+
+-- a preserved side with NULL keys: its rows no tuple matched are output rows
+SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off; SET enable_indexonlyscan = off; SET enable_hashjoin = off; SET enable_mergejoin = off;
+\set full_join_label_key 'SELECT coalesce(d.label, ''-'') AS label, coalesce(ev.k, ''-'') AS k, count(*) AS n FROM ev FULL JOIN dims d ON d.k = ev.k AND d.n = ev.n GROUP BY 1, 2'
+SELECT nodes(:'full_join_label_key');
+              nodes               
+----------------------------------
+ 1 SiftAgg nodes, 0 cached tables
+(1 row)
+
+SELECT * FROM same(:'full_join_label_key');
+ result_rows | vs_uncached | vs_normal_plan 
+-------------+-------------+----------------
+        8398 |           0 |              0
+(1 row)
+
+RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET enable_hashjoin; RESET enable_mergejoin;
+DROP FUNCTION nodes(text), same(text);
+DROP TABLE ev, dims;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s4 CASCADE;
+RESET client_min_messages;
+-- <<< agg_lookup_rows
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

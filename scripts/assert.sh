@@ -22,7 +22,7 @@ PGA=(--inject)
 TESTS=("$@")
 (( ${#TESTS[@]} )) || TESTS=(store_basic store_corrupt index_build_postings phrase_positions verify_corrupt query_errors colcodec_basic col_enc
 	col_index_basic col_wbuf shred_values tbl_basic tbl_agg facets agg_numeric_const_cmp agg_subplan_lut
-	cache_discard verify_relcache col_key_columns_auto agg_visibility_refusal col_wbuf_swap slot_owner extlock_errors)
+	cache_discard verify_relcache col_key_columns_auto agg_visibility_refusal col_wbuf_scan_seal_suite slot_owner extlock_errors)
 TAPS=(${SIFT_ASSERT_TAP-t/001_crash.pl t/003_wal_minimal.pl})
 # the shell TAP tests (they skip themselves on a server without what they need): DROP TABLE beside a worker stopped by injection points
 SHTAPS=(${SIFT_ASSERT_SHTAP-maint_lock_order col_lock_order bm25_cold_stems lookup_shared_claim})

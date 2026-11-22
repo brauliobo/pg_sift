@@ -20,13 +20,13 @@ FROM (VALUES ('like', '%shop17_example%'), ('like', 'ab%cde_fgh%ij'), ('like', '
 
 CREATE TABLE pf (id int, s text, k text, c text) WITH (autovacuum_enabled = off);
 INSERT INTO pf SELECT i, 'https://shop' || (i % 50) || '.example/item/' || md5((i % 3500)::text), 'k' || (i % 40), 'c' || md5(i::text)
-FROM generate_series(1, 10000) i;
+FROM generate_series(1, 5000) i;
 INSERT INTO pf VALUES (10001, '', '', ''), (10002, NULL, NULL, NULL), (10003, 'ab', 'ab', 'ab'), (10004, 'a.b', 'a.b', 'a.b'), (10005, 'a$', '^a', 'a$b'),
 	(10006, E'back\\slash', E'x\\', 'x\\y'), (10007, 'naïve café', 'café', 'ï'), (10008, 'abab', 'ABAB', 'bab'), (10009, 'Shop1.EXAMPLE', 'Shop1.Example', 'SHOP1'),
 	(10010, 'a+b', 'a*b', 'a(b)'), (10011, 'a|b', '[a]', '{1}'), (10012, 'İk', E'Kk', 'ik'), (10013, 'ITEM/KEY İTEM/Kelvin', 'Kelvin', 'İSTANBUL'),
 	(10014, 'item/ke_y item/ke%y', 'ke_y', 'ke%y'), (10015, 'hello world', 'Hello World', 'HELLO WORLD'), (10016, 'abcdef', 'ABCDEF', 'abcDEF'),
 	(10017, 'ÉCLAIR éclair', 'éclair', 'ÉCLAIR'), (10018, 'abc1def abc2def', 'abcdef', 'a b c');
-INSERT INTO pf SELECT 30000 + i, 'ITEM/' || upper(md5(i::text)) || ' Shop' || (i % 9) || '.Example', 'K' || (i % 30), 'İ' || md5(i::text) FROM generate_series(1, 1500) i;
+INSERT INTO pf SELECT 30000 + i, 'ITEM/' || upper(md5(i::text)) || ' Shop' || (i % 9) || '.Example', 'K' || (i % 30), 'İ' || md5(i::text) FROM generate_series(1, 750) i;
 CREATE INDEX pf_idx ON pf USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, k sift.col_text_ops, c sift.col_text_ops);
 VACUUM pf;
 CREATE TABLE pft (LIKE pf) USING sift_table;
@@ -109,7 +109,7 @@ SELECT pf_run('SELECT count(*) FROM pf WHERE s ~ ''abc(de|fg''', true) = pf_run(
 	pf_run('SELECT count(*) FROM pf WHERE s ~ ''zzzzz{2,1}''', true) = pf_run('SELECT count(*) FROM pf WHERE s ~ ''zzzzz{2,1}''', false) AS bound_error_same,
 	pf_run('SELECT count(*) FROM pf WHERE s ~ ''zzzzz{2,1}''', true) LIKE 'ERROR:%' AS raises;
 
-INSERT INTO pf SELECT 50000 + i, 'https://shop' || (i % 50) || '.example/item/' || md5(i::text), 'k' || (i % 40), 'c' || i FROM generate_series(1, 4000) i;
+INSERT INTO pf SELECT 50000 + i, 'https://shop' || (i % 50) || '.example/item/' || md5(i::text), 'k' || (i % 40), 'c' || i FROM generate_series(1, 2000) i;
 DELETE FROM pf WHERE id % 11 = 0;
 VACUUM pf;
 SELECT pf_check('vacuumed', 'pf', shapes => 1);

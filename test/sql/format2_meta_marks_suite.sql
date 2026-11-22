@@ -1,0 +1,817 @@
+-- Format major 2. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+CREATE EXTENSION pg_walinspect;
+
+-- >>> format2_manifest
+CREATE SCHEMA s1;
+GRANT USAGE ON SCHEMA s1 TO PUBLIC;
+SET search_path = s1, public;
+-- The partitioned manifest of format major 2: a copy on write tree of one, two and three levels, range lookups that read the pages of their range only, splits at the tail
+-- of a partition and the merge of neighbours.
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE q;
+	RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLSTATE || ' ' || SQLERRM;
+END $$;
+
+CREATE TABLE t (v int);
+CREATE INDEX t_idx ON t USING sift_store_test (v);
+SELECT sift._test_f2_init('t_idx');
+SELECT sift._test_f2_add_part('t_idx', 1, NULL, 100, 0, 1) > 0 AS added;
+
+-- A split makes an empty partition above the key; the key must be inside the partition and above every row of its parts
+SELECT sift._test_f2_split('t_idx', 1, NULL, 1000);
+SELECT regexp_replace(expect('SELECT sift._test_f2_split(''t_idx'', 1, NULL, 50)'), 'partition [0-9]+', 'partition N');
+SELECT regexp_replace(expect('SELECT sift._test_f2_split(''t_idx'', 2, 1000, 1000)'), 'partition [0-9]+', 'partition N');
+SELECT part_id, key_lo, key_hi, nparts, total_rows FROM sift._test_f2_partitions('t_idx');
+
+-- The empty one merges back
+SELECT sift._test_f2_merge('t_idx', 1, NULL, 2, 1000);
+SELECT part_id, key_lo, key_hi, nparts, total_rows FROM sift._test_f2_partitions('t_idx');
+SELECT sift._test_f2_split('t_idx', 1, NULL, 1000) > 1 AS split_again;
+
+-- Level 1: more than one page of partitions
+SELECT part_id AS tail_id FROM sift._test_f2_partitions('t_idx') WHERE key_lo = 1000 \gset
+SELECT sift._test_f2_split_many('t_idx', :tail_id, 1000, 150, 1001);
+SELECT partdir_level, npartitions, total_rows FROM sift._test_f2_meta('t_idx');
+SELECT sift._test_f2_check('t_idx');
+SELECT partitions, pages <= 3 AS few_pages FROM sift._test_f2_range('t_idx', 5000, 9000);
+SELECT partitions, pages FROM sift._test_f2_range('t_idx', 1, 2);
+SELECT partitions, pages > partitions / 100 AS whole_tree FROM sift._test_f2_range('t_idx', NULL, NULL);
+
+-- Level 2: more partitions than a level of 1 holds
+SELECT part_id AS last_id, key_lo AS last_lo FROM sift._test_f2_partitions('t_idx') WHERE key_hi IS NULL \gset
+SELECT sift._test_f2_split_many('t_idx', :last_id, :last_lo, 4400, 200000);
+SELECT partdir_level, npartitions FROM sift._test_f2_meta('t_idx');
+SELECT sift._test_f2_check('t_idx');
+SELECT partitions, pages <= 4 AS few_pages FROM sift._test_f2_range('t_idx', 400000000, 401000000);
+SELECT count(*) AS listed, count(*) FILTER (WHERE key_lo IS NULL) AS first_open, count(*) FILTER (WHERE key_hi IS NULL) AS last_open FROM sift._test_f2_partitions('t_idx');
+SELECT partdir_level, npartitions, total_rows FROM sift._test_f2_meta('t_idx');
+
+-- Neighbours that hold parts merge into one partition with the parts of both, while they hold less than 48MB together
+CREATE TABLE u (v int);
+CREATE INDEX u_idx ON u USING sift_store_test (v);
+SELECT sift._test_f2_init('u_idx');
+SELECT sift._test_f2_add_part('u_idx', 1, NULL, 100, 0, 1) > 0 AS lo_part;
+SELECT sift._test_f2_split('u_idx', 1, NULL, 1000) AS hi_id \gset
+SELECT sift._test_f2_add_part('u_idx', :hi_id, 1000, 50, 1000, 101) > 0 AS hi_part;
+SELECT sift._test_f2_merge('u_idx', 1, NULL, :hi_id, 1000);
+SELECT part_id, key_lo, key_hi, nparts, total_rows FROM sift._test_f2_partitions('u_idx');
+SELECT count(*) AS parts, sum(nrows) AS rows FROM sift._test_f2_parts('u_idx', 1, NULL);
+SELECT partdir_level, npartitions, total_rows FROM sift._test_f2_meta('u_idx');
+SELECT sift._test_f2_check('u_idx');
+
+DROP TABLE u;
+DROP TABLE t;
+DROP FUNCTION expect(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s1 CASCADE;
+RESET client_min_messages;
+-- <<< format2_manifest
+
+-- >>> format2_marks_read_paths
+CREATE SCHEMA s2;
+GRANT USAGE ON SCHEMA s2 TO PUBLIC;
+SET search_path = s2, public;
+-- Format major 2 tests a set of more than 8 keys on a chunk as it is stored (frame of reference, delta, runs, dictionary), and asks the storage for the pages of the granules a scan keeps
+-- in windows ahead of it also when no predicate is on the key: a predicate that rules out most granules reads little more than it uses. Every answer is the heap's.
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE via_index text; via_heap text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
+	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT' END;
+END $$;
+
+-- {tests the kernels of the stored form ran, pages asked ahead} of the scans of one query
+CREATE FUNCTION run(q text, OUT parity text, OUT kernels int8, OUT prefetched int8) LANGUAGE plpgsql AS $$
+DECLARE c int8[];
+BEGIN
+	PERFORM sift._test_f2_scan_counters(true);
+	parity := f2_same(q);
+	c := sift._test_f2_scan_counters(true);
+	kernels := c[11];
+	prefetched := c[12];
+END $$;
+
+-- 200000 rows; none of the columns but id is in the key: w is a delta (ascending), r a column of runs, d a dictionary of 50 strings, f a frame of reference
+CREATE TABLE rp (id int, w int, r int, d text COLLATE "C", f int, pad text);
+INSERT INTO rp SELECT i, i * 3, i / 2000, 'd' || lpad((i % 50)::text, 2, '0'), 1000000 + (i * 7919) % 5000, repeat('x', 40) FROM generate_series(1, 200000) i;
+CREATE INDEX rp_idx ON rp USING sift_col (id, w, r, d, f, pad) WITH (key_order = 'id');
+SELECT sift._test_f2_check('rp_idx') ~ '^parts=[0-9]+ ' AS consistent;
+
+-- Sets of up to 8 keys stay with the filters of the codec; more are tested by the kernels, on each of the shapes
+SELECT n, parity, CASE WHEN n IN (1, 3) THEN kernels > 0 END AS by_kernels FROM (VALUES
+	(1, 'SELECT id FROM rp WHERE f IN (1000001, 1000002, 1000003, 1000004, 1000005, 1000006, 1000007, 1000008)'),
+	(2, 'SELECT id FROM rp WHERE f IN (1000001, 1000002, 1000003, 1000004, 1000005, 1000006, 1000007, 1000008, 1000009)'),
+	(3, 'SELECT id FROM rp WHERE r IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 99)'),
+	(4, 'SELECT id FROM rp WHERE w IN (3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 599997, 5)')
+) v(n, q), LATERAL run(q) ORDER BY n;
+SELECT n, parity FROM (VALUES
+	(5, 'SELECT id FROM rp WHERE d IN (''d01'', ''d02'', ''d03'', ''d04'', ''d05'', ''d06'', ''d07'', ''d08'', ''d09'', ''nope'')'),
+	(6, 'SELECT id FROM rp WHERE f NOT IN (1000001, 1000002, 1000003, 1000004, 1000005, 1000006, 1000007, 1000008, 1000009)'),
+	(7, 'SELECT id FROM rp WHERE f IN (1000001, 1000002, 1000003, 1000004, 1000005, 1000006, 1000007, 1000008, 1000009) AND r < 40')
+) v(n, q), LATERAL run(q) ORDER BY n;
+
+-- A predicate that rules out most granules asks for the pages of the few it keeps, not of every granule; one that keeps all of them asks for all
+SELECT sel.parity, all_.parity AS parity_all, all_.prefetched > 0 AS full_scan_asks_ahead, sel.prefetched * 4 < all_.prefetched AS selective_asks_less
+FROM run('SELECT id FROM rp WHERE w BETWEEN 300000 AND 303000') sel, run('SELECT id FROM rp WHERE w >= 0') all_;
+
+DROP TABLE rp;
+DROP FUNCTION f2_same(text), run(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s2 CASCADE;
+RESET client_min_messages;
+-- <<< format2_marks_read_paths
+
+-- >>> format2_meta
+CREATE SCHEMA s3;
+GRANT USAGE ON SCHEMA s3 TO PUBLIC;
+SET search_path = s3, public;
+-- Format major 2: the metapage, the part-header sections, and the refusal of an index of another format major.
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE q;
+	RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLSTATE || ' ' || SQLERRM;
+END $$;
+
+-- An index of format major 1 is refused with the object-not-in-prerequisite-state class, naming REINDEX, and is neither corrupted nor quarantined: it reads on.
+CREATE TABLE legacy (id int, v int);
+INSERT INTO legacy SELECT g, g % 7 FROM generate_series(1, 2000) g;
+SET sift.test_create_format1 = on;
+CREATE INDEX legacy_col ON legacy USING sift_col (id, v);
+SET sift.test_create_format1 = off;
+SELECT regexp_replace(expect('SELECT sift._test_f2_meta(''legacy_col'')'), 'format major [0-9.]+', 'format major N');
+SELECT regexp_replace(expect('SELECT sift._test_f2_check(''legacy_col'')'), 'format major [0-9.]+', 'format major N');
+SELECT count(*) FROM legacy WHERE v = 3;
+
+-- A fresh index of format major 2
+CREATE TABLE t (v int);
+CREATE INDEX t_idx ON t USING sift_store_test (v);
+SELECT sift._test_f2_init('t_idx');
+SELECT major, minor, struct_size, npartitions, manifest_version, next_gen, total_rows, partdir_level, high_water - meta_slab_end AS data_zone_blocks
+FROM sift._test_f2_meta('t_idx');
+SELECT sift._test_f2_check('t_idx');
+
+-- A metapage of the pre-release layout (392 bytes) is refused as a format mismatch with a rebuild hint: it is neither corruption nor quarantined, and the bytes read again once sealed at the size it had
+SELECT sift._test_f2_meta_resize('t_idx', 392) AS full_size \gset
+SELECT expect('SELECT sift._test_f2_meta(''t_idx'')');
+SELECT expect('SELECT sift._test_f2_check(''t_idx'')');
+SELECT sift._test_f2_meta_resize('t_idx', :full_size) AS was;
+SELECT sift._test_f2_check('t_idx');
+
+-- Sections: written sorted by tag, read back with their checksums, an unknown optional tag skipped, an unknown required tag refused
+SELECT sift._test_f2_sections('t_idx', false, 100, 1000, 20000);
+SELECT sift._test_f2_sections('t_idx', false, 1, 1, 20000);
+SELECT sift._test_f2_sections('t_idx', false, 0, 1, 8152 * 1017);
+SELECT regexp_replace(expect('SELECT sift._test_f2_sections(''t_idx'', true, 1, 1, 20000)'), 'part [0-9]+', 'part N');
+SELECT sift._test_f2_check('t_idx');
+
+DROP TABLE legacy;
+DROP TABLE t;
+DROP FUNCTION expect(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s3 CASCADE;
+RESET client_min_messages;
+-- <<< format2_meta
+
+-- >>> format2_preagg_delta
+CREATE SCHEMA s4;
+GRANT USAGE ON SCHEMA s4 TO PUBLIC;
+SET search_path = s4, public;
+-- A pre-aggregate of a granule less its dead rows (the delta subtraction) stays exact up to 5% dead rows; past that, or when a dead row is the least or greatest of its group,
+-- the granule is read instead. Compacting rewrites the part with its pre-aggregate.
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+CREATE TABLE t (v int);
+CREATE INDEX t_idx ON t USING sift_store_test (v);
+SELECT sift._test_f2_init('t_idx');
+SELECT sift._test_f2_add_part('t_idx', 1, NULL, 20000, 0, 1, 0, 1, 0, true) > 0 AS added;
+SELECT min(part_gen) AS g FROM sift._test_f2_parts('t_idx', 1, NULL) \gset
+
+-- 64 dead rows of granule 0, none the least or greatest of its group: subtracted, and equal to the cube of the live rows
+SELECT sift._test_f2_delete('t_idx', 1, NULL, 1, 1, 64, 100);
+SELECT granule, kind, ndead, unsettled FROM sift._test_f2_dv('t_idx', 1, NULL, :g);
+SELECT sift._test_f2_preagg('t_idx', 1, NULL, :g, 0);
+
+-- 364 dead rows in the same granule are past the limit of 5% of its rows (and of 64 rows)
+SELECT sift._test_f2_delete('t_idx', 1, NULL, 1, 1000, 300, 2);
+SELECT granule, kind, ndead FROM sift._test_f2_dv('t_idx', 1, NULL, :g);
+SELECT sift._test_f2_preagg('t_idx', 1, NULL, :g, 0);
+
+-- A part made by compaction carries its pre-aggregate
+SELECT done, rows_in, rows_out, dead_dropped FROM sift._test_f2_compact('t_idx', 1, NULL, ARRAY[:g], true);
+SELECT level, nrows, ndead FROM sift._test_f2_parts('t_idx', 1, NULL);
+SELECT sift._test_f2_check('t_idx');
+
+DROP TABLE t;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s4 CASCADE;
+RESET client_min_messages;
+-- <<< format2_preagg_delta
+
+-- >>> format2_scopedir
+CREATE SCHEMA s5;
+GRANT USAGE ON SCHEMA s5 TO PUBLIC;
+SET search_path = s5, public;
+-- The scope directory of format major 2: a copy on write chain of pages the metapage names, with no ceiling on the number of scopes.
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE q;
+	RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLSTATE || ' ' || SQLERRM;
+END $$;
+
+CREATE TABLE t (v int);
+CREATE INDEX t_idx ON t USING sift_store_test (v);
+SELECT sift._test_f2_init('t_idx');
+SELECT sift._test_f2_add_part('t_idx', 1, NULL, 100, 0, 1) > 0 AS added;
+SELECT struct_size FROM sift._test_f2_meta('t_idx');
+
+-- No scope: no page read, no row
+SELECT count(*) AS scopes FROM sift._test_f2_scope_dir('t_idx');
+
+-- More scopes than the four of the first layout, kept in order whatever the order they come in
+SELECT sift._test_f2_scopes('t_idx', 10, 6) > 0 AS six;
+SELECT sift._test_f2_scopes('t_idx', 0, 3) > 0 AS three_more;
+SELECT scope_ord, flags, header_blk, meta_gen FROM sift._test_f2_scope_dir('t_idx');
+
+-- A ref of an ordinal that is there is replaced, not added
+SELECT sift._test_f2_scopes('t_idx', 12, 1) > 0 AS replaced;
+SELECT count(*) AS scopes, min(scope_ord) AS lo, max(scope_ord) AS hi FROM sift._test_f2_scope_dir('t_idx');
+
+-- One page holds 507 refs: 1200 scopes are a chain of three pages
+SELECT sift._test_f2_scopes('t_idx', 100, 1200) > 0 AS many;
+SELECT count(*) AS scopes, min(scope_ord) AS lo, max(scope_ord) AS hi, bool_and(flags = 1) AS active,
+	   bool_and(header_blk = 1000 + scope_ord) AS blocks, bool_and(meta_gen = 7 + scope_ord) AS gens FROM sift._test_f2_scope_dir('t_idx');
+SELECT sift._test_f2_check('t_idx');
+
+-- The pages of the directories a commit replaced are queued for reuse, and the allocator is whole
+SELECT sift._test_f2_fsm('t_idx') IS NOT NULL AS fsm_ok;
+SELECT sift._test_f2_reclaim('t_idx') >= 0 AS reclaimed;
+SELECT sift._test_f2_check('t_idx');
+
+-- The largest ordinal is 65534
+SELECT sift._test_f2_scopes('t_idx', 65534, 1) > 0 AS last_ord;
+SELECT regexp_replace(expect('SELECT sift._test_f2_scopes(''t_idx'', 65535, 1)'), 'index "[^"]*"', 'index X');
+SELECT count(*) AS scopes, max(scope_ord) AS hi FROM sift._test_f2_scope_dir('t_idx');
+
+DROP TABLE t;
+DROP FUNCTION expect(text);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s5 CASCADE;
+RESET client_min_messages;
+-- <<< format2_scopedir
+
+-- >>> format2_track
+CREATE SCHEMA s6;
+GRANT USAGE ON SCHEMA s6 TO PUBLIC;
+SET search_path = s6, public;
+-- track_changes on an index of format major 2: the row triggers of the table give each version a statement ends, at the address of its index entry, and the transaction writes those
+-- deletes for their partitions when it commits (a few as pending deletes, a bulk as deletion vectors). A scan leaves the rows a snapshot sees deleted out before VACUUM runs; the
+-- pre-aggregate of a granule less its deleted rows stays exact.
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+-- The rows the Bitmap Index Scan of a query returns (the heap is not asked to filter them: an exact scan returns what the query wants), and whether it agrees with the heap
+CREATE FUNCTION idx_rows(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON) ' || q INTO j;
+	RETURN (SELECT coalesce(sum(("n"->>'Actual Rows')::numeric * ("n"->>'Actual Loops')::numeric), -1)
+			FROM jsonb_path_query(j, 'strict $.** ? (@."Node Type" == "Bitmap Index Scan")') n);
+END $$;
+
+CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE via_index text; via_heap text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
+	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
+END $$;
+
+CREATE FUNCTION triggers(t regclass) RETURNS int LANGUAGE sql AS $$
+	SELECT count(*)::int FROM pg_trigger WHERE tgrelid = t AND tgname LIKE 'sift_track_%' $$;
+
+CREATE TABLE tk (id int, g int, v int, pad int);
+INSERT INTO tk SELECT i, i % 7, i, 0 FROM generate_series(1, 40000) i;
+CREATE INDEX tk_i ON tk USING sift_col (id, g, v) WITH (key_order = 'id', track_changes = 'ctid');
+SELECT triggers('tk') AS triggers_made;
+SELECT sift._test_f2_check_keys('tk_i');
+
+-- A few rows (below the bulk limit) are pending deletes of the partition; the scan leaves them out at once
+SELECT idx_rows('SELECT * FROM tk WHERE id BETWEEN 900 AND 3100') AS before_delete;
+DELETE FROM tk WHERE id IN (1000, 2000, 3000);
+SELECT idx_rows('SELECT * FROM tk WHERE id BETWEEN 900 AND 3100') AS after_delete, count(*) AS heap FROM tk WHERE id BETWEEN 900 AND 3100;
+SELECT has_pending, total_dead FROM sift._test_f2_partitions('tk_i');
+SELECT f2_same('SELECT * FROM tk WHERE id BETWEEN 900 AND 3100');
+
+-- A bulk goes to deletion vectors of the parts
+DELETE FROM tk WHERE id % 20 = 10 AND id BETWEEN 100 AND 30000;
+SELECT idx_rows('SELECT * FROM tk WHERE id BETWEEN 100 AND 30000') AS after_bulk, count(*) AS heap FROM tk WHERE id BETWEEN 100 AND 30000;
+SELECT has_pending, total_dead > 1000 AS dead_rows_marked FROM sift._test_f2_partitions('tk_i');
+SELECT f2_same('SELECT * FROM tk WHERE id BETWEEN 100 AND 30000 AND g = 3');
+
+-- What a transaction deletes is seen by its own scans, and written only when it commits
+BEGIN;
+DELETE FROM tk WHERE id BETWEEN 35000 AND 35009;
+SELECT idx_rows('SELECT * FROM tk WHERE id BETWEEN 34990 AND 35020') AS own_view;
+ROLLBACK;
+SELECT idx_rows('SELECT * FROM tk WHERE id BETWEEN 34990 AND 35020') AS after_rollback;
+BEGIN;
+DELETE FROM tk WHERE id BETWEEN 35000 AND 35004;
+SAVEPOINT s;
+DELETE FROM tk WHERE id BETWEEN 35005 AND 35009;
+SELECT idx_rows('SELECT * FROM tk WHERE id BETWEEN 34990 AND 35020') AS both_deletes;
+ROLLBACK TO s;
+SELECT idx_rows('SELECT * FROM tk WHERE id BETWEEN 34990 AND 35020') AS savepoint_rolled_back;
+COMMIT;
+SELECT idx_rows('SELECT * FROM tk WHERE id BETWEEN 34990 AND 35020') AS after_commit, count(*) AS heap FROM tk WHERE id BETWEEN 34990 AND 35020;
+
+-- Rows a transaction inserts and deletes
+BEGIN;
+INSERT INTO tk SELECT i, i % 7, i, 0 FROM generate_series(50001, 50200) i;
+DELETE FROM tk WHERE id BETWEEN 50001 AND 50150;
+COMMIT;
+SELECT idx_rows('SELECT * FROM tk WHERE id > 50000') AS inserted_and_deleted, count(*) AS heap FROM tk WHERE id > 50000;
+
+-- An UPDATE of an indexed column ends the old version and writes the new; one of a column no index holds, made in the page of its row, writes nothing
+UPDATE tk SET v = v + 1000000 WHERE id BETWEEN 5000 AND 5099;
+SELECT idx_rows('SELECT * FROM tk WHERE id BETWEEN 4990 AND 5110') AS after_update, count(*) AS heap FROM tk WHERE id BETWEEN 4990 AND 5110;
+SELECT f2_same('SELECT id, v FROM tk WHERE id BETWEEN 4990 AND 5110');
+UPDATE tk SET pad = 1 WHERE id BETWEEN 6000 AND 6049;
+SELECT f2_same('SELECT id, pad FROM tk WHERE id BETWEEN 5990 AND 6060');
+SELECT f2_same('SELECT * FROM tk WHERE id BETWEEN 1 AND 60000');
+
+-- The pre-aggregate of a granule less its deleted rows is exact while few rows are dead, and the granule is read when more are
+SELECT parts, granules, with_dead > 0 AS has_dead, corrected = with_dead - rescanned AS accounted, mismatched FROM sift._test_f2_preagg_index('tk_i', 1, 2);
+CREATE TABLE pa (id int, g int, v int);
+INSERT INTO pa SELECT i, i % 7, i FROM generate_series(1, 40000) i;
+CREATE INDEX pa_i ON pa USING sift_col (id, g, v) WITH (key_order = 'id', track_changes = 'ctid');
+DELETE FROM pa WHERE id % 100 = 50 AND id BETWEEN 100 AND 39000;
+SELECT 'one percent' AS dead, parts, granules, with_dead, corrected, rescanned, mismatched FROM sift._test_f2_preagg_index('pa_i', 1, 2);
+UPDATE pa SET v = v + 5 WHERE id % 50 = 25 AND id BETWEEN 100 AND 39000;
+SELECT 'one percent deleted, two updated' AS dead, parts, granules, with_dead, corrected, rescanned, mismatched FROM sift._test_f2_preagg_index('pa_i', 1, 2);
+DELETE FROM pa WHERE id % 25 = 7 AND id BETWEEN 100 AND 39000;
+SELECT 'about five percent' AS dead, parts, granules, with_dead, corrected, rescanned, mismatched FROM sift._test_f2_preagg_index('pa_i', 1, 2);
+SELECT f2_same('SELECT g, count(*), sum(v) FROM pa WHERE id BETWEEN 1 AND 39500 GROUP BY g');
+SELECT idx_rows('SELECT * FROM pa WHERE id BETWEEN 1 AND 39500') AS rows_after, count(*) AS heap FROM pa WHERE id BETWEEN 1 AND 39500;
+
+-- VACUUM folds what the triggers marked, compaction keeps the key invariants
+VACUUM tk;
+VACUUM pa;
+SELECT sift._test_f2_check_keys('tk_i') AS tk_keys, sift._test_f2_check_keys('pa_i') AS pa_keys;
+SELECT f2_same('SELECT * FROM tk WHERE id BETWEEN 1 AND 60000');
+SELECT idx_rows('SELECT * FROM pa WHERE id BETWEEN 1 AND 39500') AS pa_rows, count(*) AS heap FROM pa WHERE id BETWEEN 1 AND 39500;
+
+-- A row the index does not hold (a partial index) is deleted without a word
+CREATE TABLE part (id int, g int);
+INSERT INTO part SELECT i, i % 7 FROM generate_series(1, 5000) i;
+CREATE INDEX part_i ON part USING sift_col (id, g) WITH (key_order = 'id', track_changes = 'ctid') WHERE g > 3;
+DELETE FROM part WHERE g <= 3 AND id < 2000;
+DELETE FROM part WHERE g > 3 AND id < 2000;
+SELECT f2_same('SELECT * FROM part WHERE g > 3 AND id < 3000');
+VACUUM part;
+SELECT f2_same('SELECT * FROM part WHERE g > 3');
+
+-- Any column the option names tracks the same way; off drops the triggers, naming one makes them again
+CREATE TABLE pk (id int PRIMARY KEY, v int);
+INSERT INTO pk SELECT i, i FROM generate_series(1, 3000) i;
+CREATE INDEX pk_i ON pk USING sift_col (id, v) WITH (key_order = 'id', track_changes = 'id');
+SELECT triggers('pk') AS key_triggers;
+DELETE FROM pk WHERE id BETWEEN 100 AND 299;
+SELECT idx_rows('SELECT * FROM pk WHERE v BETWEEN 1 AND 500') AS key_rows, count(*) AS heap FROM pk WHERE v BETWEEN 1 AND 500;
+ALTER INDEX pk_i SET (track_changes = 'off');
+SELECT triggers('pk') AS triggers_off;
+DELETE FROM pk WHERE id BETWEEN 300 AND 399;
+SELECT f2_same('SELECT * FROM pk WHERE v BETWEEN 1 AND 500');
+ALTER INDEX pk_i SET (track_changes = 'ctid');
+SELECT triggers('pk') AS triggers_again;
+DELETE FROM pk WHERE id BETWEEN 400 AND 449;
+SELECT f2_same('SELECT * FROM pk WHERE v BETWEEN 1 AND 500');
+DROP INDEX pk_i;
+SELECT triggers('pk') AS triggers_dropped;
+
+DROP TABLE tk, pa, part, pk;
+DROP FUNCTION idx_rows(text), f2_same(text), triggers(regclass);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s6 CASCADE;
+RESET client_min_messages;
+-- <<< format2_track
+
+-- >>> format2_track_ctid
+CREATE SCHEMA s7;
+GRANT USAGE ON SCHEMA s7 TO PUBLIC;
+SET search_path = s7, public;
+-- track_changes of format major 2 is on by default and follows the address of the rows (ctid): any table, with or without a primary key of any type, one AFTER UPDATE OR DELETE row trigger,
+-- the delete of a row visible to scans at once, an UPDATE that no index column sees writing nothing, the rows of a transaction that ends them again never written, and a TRUNCATE leaving no
+-- row of its transaction behind.
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+CREATE FUNCTION idx_rows(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON) ' || q INTO j;
+	RETURN (SELECT coalesce(sum(("n"->>'Actual Rows')::numeric * ("n"->>'Actual Loops')::numeric), -1)
+			FROM jsonb_path_query(j, 'strict $.** ? (@."Node Type" == "Bitmap Index Scan")') n);
+END $$;
+
+CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE via_index text; via_heap text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
+	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
+END $$;
+
+CREATE FUNCTION triggers(t regclass) RETURNS int LANGUAGE sql AS $$
+	SELECT count(*)::int FROM pg_trigger WHERE tgrelid = t AND tgname LIKE 'sift_track_%' $$;
+
+-- What the index wrote since an LSN: the records of the generic resource manager are the index's
+CREATE FUNCTION index_records(since pg_lsn) RETURNS bigint LANGUAGE sql AS $$
+	SELECT count(*) FROM pg_get_wal_records_info(since, pg_current_wal_insert_lsn()) WHERE resource_manager = 'Generic' $$;
+
+-- One trigger, for UPDATE and DELETE of each row, on a table without a primary key, with a composite one, a uuid one and a text one, with no option said
+CREATE TABLE nopk (id int, g int, v int, pad int);
+CREATE TABLE cpk (a int, b int, g int, v int, PRIMARY KEY (a, b));
+CREATE TABLE upk (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), n int, v int);
+CREATE TABLE tpk (name text PRIMARY KEY, n int, v int);
+INSERT INTO nopk SELECT i, i % 7, i, 0 FROM generate_series(1, 30000) i;
+INSERT INTO cpk SELECT i % 100, i, i % 7, i FROM generate_series(1, 30000) i;
+INSERT INTO upk SELECT gen_random_uuid(), i, i FROM generate_series(1, 30000) i;
+INSERT INTO tpk SELECT 'k' || i, i, i FROM generate_series(1, 30000) i;
+CREATE INDEX nopk_i ON nopk USING sift_col (id, g, v) WITH (key_order = 'id');
+CREATE INDEX cpk_i ON cpk USING sift_col (b, g, v) WITH (key_order = 'b');
+CREATE INDEX upk_i ON upk USING sift_col (n, id, v) WITH (key_order = 'n');
+CREATE INDEX tpk_i ON tpk USING sift_col (n, name, v) WITH (key_order = 'n');
+SELECT triggers('nopk') AS nopk, triggers('cpk') AS cpk, triggers('upk') AS upk, triggers('tpk') AS tpk;
+SELECT t.tgtype & 1 <> 0 AS row_level, t.tgtype & 8 <> 0 AS on_delete, t.tgtype & 16 <> 0 AS on_update, t.tgtype & 4 = 0 AS not_insert
+FROM pg_trigger t WHERE t.tgrelid = 'nopk'::regclass AND t.tgname LIKE 'sift_track_%';
+
+-- A delete is seen by the scans of the index at once, before any VACUUM, whatever the key of the table
+DELETE FROM nopk WHERE id BETWEEN 100 AND 109;
+DELETE FROM cpk WHERE b BETWEEN 100 AND 109;
+DELETE FROM upk WHERE n BETWEEN 100 AND 109;
+DELETE FROM tpk WHERE n BETWEEN 100 AND 109;
+SELECT idx_rows('SELECT * FROM nopk WHERE id BETWEEN 90 AND 120') AS nopk,
+	   idx_rows('SELECT * FROM cpk WHERE b BETWEEN 90 AND 120') AS cpk,
+	   idx_rows('SELECT * FROM upk WHERE n BETWEEN 90 AND 120') AS upk,
+	   idx_rows('SELECT * FROM tpk WHERE n BETWEEN 90 AND 120') AS tpk;
+SELECT sum(total_dead) AS dead, bool_or(has_pending) AS pending FROM sift._test_f2_partitions('nopk_i');
+SELECT f2_same('SELECT * FROM nopk WHERE id BETWEEN 90 AND 120') AS nopk, f2_same('SELECT n, v FROM upk WHERE n BETWEEN 90 AND 120') AS upk;
+
+-- track_changes = off makes no trigger
+CREATE TABLE untracked (id int, v int);
+INSERT INTO untracked SELECT i, i FROM generate_series(1, 1000) i;
+CREATE INDEX untracked_i ON untracked USING sift_col (id, v) WITH (key_order = 'id', track_changes = 'off');
+SELECT triggers('untracked') AS triggers_off;
+DELETE FROM untracked WHERE id <= 10;
+SELECT f2_same('SELECT * FROM untracked WHERE id BETWEEN 1 AND 30') AS reads_check_the_heap;
+
+-- An UPDATE that no index column sees (a HOT update) writes nothing to the index; one that an index column sees is written in one record of the index
+CREATE TABLE hot (id int, g int, v int, pad int) WITH (fillfactor = 50);
+INSERT INTO hot SELECT i, i % 7, i, 0 FROM generate_series(1, 30000) i;
+CREATE INDEX hot_i ON hot USING sift_col (id, g, v) WITH (key_order = 'id');
+CHECKPOINT;
+SELECT pg_current_wal_insert_lsn() AS l0 \gset
+UPDATE hot SET pad = pad + 1 WHERE id BETWEEN 10 AND 19;
+SELECT index_records(:'l0') AS hot_update_index_records;
+UPDATE hot SET v = v + 1000000 WHERE id = 1000;
+SELECT pg_current_wal_insert_lsn() AS l1 \gset
+UPDATE hot SET v = v + 1000000 WHERE id = 2000;
+SELECT index_records(:'l1') AS warm_update_index_records;
+SELECT idx_rows('SELECT * FROM hot WHERE id IN (1000, 2000)') AS updated_rows, count(*) AS heap FROM hot WHERE id IN (1000, 2000);
+SELECT f2_same('SELECT * FROM hot WHERE id BETWEEN 1 AND 3000');
+-- the first update of a partition (no slab, no pending deletes yet) makes the pages of both in one record
+CREATE TABLE cold (id int, g int, v int) WITH (fillfactor = 50);
+INSERT INTO cold SELECT i, i % 7, i FROM generate_series(1, 30000) i;
+CREATE INDEX cold_i ON cold USING sift_col (id, g, v) WITH (key_order = 'id');
+SELECT has_slab, has_pending FROM sift._test_f2_partitions('cold_i');
+UPDATE cold SET v = v + 1000000 WHERE id = 1000;
+SELECT has_slab, has_pending FROM sift._test_f2_partitions('cold_i');
+SELECT f2_same('SELECT * FROM cold WHERE id BETWEEN 1 AND 3000');
+
+-- Rows a transaction inserts and ends again are never written: no record of the index, no dead row
+CREATE TABLE churn (id int, g int, v int);
+INSERT INTO churn SELECT i, i % 7, i FROM generate_series(1, 30000) i;
+CREATE INDEX churn_i ON churn USING sift_col (id, g, v) WITH (key_order = 'id');
+SELECT sum(total_rows) AS rows_before, sum(total_dead) AS dead_before FROM sift._test_f2_partitions('churn_i') \gset
+CHECKPOINT;
+SELECT pg_current_wal_insert_lsn() AS l2 \gset
+BEGIN;
+SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = off;
+INSERT INTO churn SELECT i, i % 7, i FROM generate_series(100001, 100500) i;
+DELETE FROM churn WHERE id > 100000;
+COMMIT;
+SELECT index_records(:'l2') AS insert_delete_index_records;
+SELECT sum(total_rows) = :rows_before AS no_new_rows, sum(total_dead) = :dead_before AS no_dead_rows, bool_or(has_pending) AS pending FROM sift._test_f2_partitions('churn_i');
+BEGIN;
+SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = off;
+INSERT INTO churn SELECT i, i % 7, i FROM generate_series(100001, 100500) i;
+UPDATE churn SET v = v + 1 WHERE id > 100000;
+UPDATE churn SET id = id + 1000 WHERE id > 100000 AND id <= 100250;
+COMMIT;
+SELECT idx_rows('SELECT * FROM churn WHERE id > 100000') AS surviving_rows, count(*) AS heap FROM churn WHERE id > 100000;
+SELECT sum(total_dead) = :dead_before AS no_dead_rows FROM sift._test_f2_partitions('churn_i');
+SELECT f2_same('SELECT * FROM churn WHERE id > 99000');
+-- a delete a savepoint can still undo is kept until the commit
+BEGIN;
+SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = off;
+INSERT INTO churn SELECT i, i % 7, i FROM generate_series(200001, 200100) i;
+SAVEPOINT s;
+DELETE FROM churn WHERE id > 200000 AND id <= 200050;
+ROLLBACK TO s;
+COMMIT;
+SELECT idx_rows('SELECT * FROM churn WHERE id > 200000') AS after_rollback_to, count(*) AS heap FROM churn WHERE id > 200000;
+BEGIN;
+SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = off;
+INSERT INTO churn SELECT i, i % 7, i FROM generate_series(300001, 300100) i;
+SAVEPOINT s;
+DELETE FROM churn WHERE id > 300000 AND id <= 300050;
+RELEASE s;
+COMMIT;
+SELECT idx_rows('SELECT * FROM churn WHERE id > 300000') AS after_release, count(*) AS heap FROM churn WHERE id > 300000;
+SELECT f2_same('SELECT * FROM churn WHERE id > 199000');
+
+-- A bulk delete keeps one deleter for each granule it touches, not one for each row
+CREATE TABLE bulk (id int, g int, v int);
+INSERT INTO bulk SELECT i, i % 7, i FROM generate_series(1, 40000) i;
+CREATE INDEX bulk_i ON bulk USING sift_col (id, g, v) WITH (key_order = 'id');
+DELETE FROM bulk WHERE id % 4 = 0;
+SELECT bytes < 10000 AS under_a_byte_a_dead_row FROM sift.index_size_breakdown('bulk_i') WHERE category = 'delvec_penddel';
+SELECT idx_rows('SELECT * FROM bulk WHERE id BETWEEN 1 AND 40000') AS rows_after, count(*) AS heap FROM bulk;
+SELECT f2_same('SELECT g, count(*) FROM bulk WHERE id BETWEEN 1 AND 40000 GROUP BY g');
+VACUUM bulk;
+SELECT f2_same('SELECT g, count(*) FROM bulk WHERE id BETWEEN 1 AND 40000 GROUP BY g');
+
+-- INSERT; TRUNCATE; COMMIT leaves no ghost row of the transaction in the index it rebuilt
+CREATE TABLE trunc (id int, g int, v int);
+INSERT INTO trunc SELECT i, i % 7, i FROM generate_series(1, 30000) i;
+CREATE INDEX trunc_i ON trunc USING sift_col (id, g, v) WITH (key_order = 'id');
+BEGIN;
+SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = off;
+INSERT INTO trunc SELECT i, i % 7, i FROM generate_series(40001, 40100) i;
+TRUNCATE trunc;
+COMMIT;
+SELECT count(*) AS heap, idx_rows('SELECT * FROM trunc WHERE id >= 0') AS index_rows FROM trunc;
+SELECT sift._test_f2_check_keys('trunc_i');
+BEGIN;
+INSERT INTO trunc SELECT i, i % 7, i FROM generate_series(1, 100) i;
+TRUNCATE trunc;
+INSERT INTO trunc SELECT i, i % 7, i FROM generate_series(1, 5) i;
+COMMIT;
+SELECT count(*) AS heap, idx_rows('SELECT * FROM trunc WHERE id >= 0') AS index_rows FROM trunc;
+SELECT triggers('trunc') AS trigger_kept;
+DELETE FROM trunc WHERE id = 3;
+SELECT idx_rows('SELECT * FROM trunc WHERE id >= 0') AS index_rows_after_delete, count(*) AS heap FROM trunc;
+SELECT f2_same('SELECT * FROM trunc WHERE id >= 0');
+
+-- Partitions: the row trigger of each leaf hears a statement on the parent; ALTER INDEX turns it off and on
+CREATE TABLE ev (id int, g int, v int) PARTITION BY RANGE (id);
+CREATE TABLE ev1 PARTITION OF ev FOR VALUES FROM (1) TO (20001);
+CREATE TABLE ev2 PARTITION OF ev FOR VALUES FROM (20001) TO (40001);
+INSERT INTO ev SELECT i, i % 7, i FROM generate_series(1, 40000) i;
+CREATE INDEX ev_i ON ev USING sift_col (id, g, v) WITH (key_order = 'id');
+SELECT triggers('ev') AS parent, triggers('ev1') AS leaf1, triggers('ev2') AS leaf2;
+DELETE FROM ev WHERE id IN (5, 6, 25000, 25001);
+SELECT idx_rows('SELECT * FROM ev1 WHERE id BETWEEN 1 AND 10') AS ev1, idx_rows('SELECT * FROM ev2 WHERE id BETWEEN 24990 AND 25010') AS ev2;
+UPDATE ev SET id = id + 20000 WHERE id BETWEEN 100 AND 109;
+SELECT f2_same('SELECT * FROM ev1 WHERE id BETWEEN 1 AND 40000 AND g = 3') AS ev1, f2_same('SELECT * FROM ev2 WHERE id BETWEEN 1 AND 40000 AND g = 3') AS ev2;
+SELECT indexrelid::regclass AS ev1_index FROM pg_index WHERE indrelid = 'ev1'::regclass \gset
+ALTER INDEX :ev1_index SET (track_changes = 'off');
+SELECT triggers('ev1') AS leaf1_off, triggers('ev2') AS leaf2_on;
+ALTER INDEX :ev1_index SET (track_changes = 'auto');
+SELECT triggers('ev1') AS leaf1_on;
+DELETE FROM ev WHERE id BETWEEN 200 AND 209;
+SELECT f2_same('SELECT * FROM ev1 WHERE id BETWEEN 1 AND 40000') AS ev1, f2_same('SELECT * FROM ev2 WHERE id BETWEEN 1 AND 40000') AS ev2;
+
+DROP INDEX nopk_i;
+SELECT triggers('nopk') AS triggers_dropped;
+DROP TABLE nopk, cpk, upk, tpk, untracked, hot, cold, churn, bulk, trunc, ev;
+DROP FUNCTION idx_rows(text), f2_same(text), triggers(regclass), index_records(pg_lsn);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s7 CASCADE;
+RESET client_min_messages;
+-- <<< format2_track_ctid
+
+-- >>> format2_prod_opts
+CREATE SCHEMA s8;
+GRANT USAGE ON SCHEMA s8 TO PUBLIC;
+SET search_path = s8, public;
+-- Format major 2 for the shapes of a large fact table: a column that holds a value on a few rows of most granules (a soft-delete stamp) keeps the rows it holds, not a bitmap of all
+-- of them, and WHERE col IS NULL / IS NOT NULL read the zones before the granules; the pre-aggregate of a granule less the union of its dead rows and those rows is exact; a JSONB key
+-- that rows have, lack or hold as a JSON null is one bit per row, so that jsonb ? 'key' is answered by the index without the heap; the partitions and their part lists are
+-- parsed once per backend and a commit of the manifest reloads the partition it changed; an UPDATE that stays in a partition writes its rows and its deletes in one record.
+SET sift.test_create_format1 = off;
+SET sift.enable_agg = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+-- The rows the Bitmap Index Scan of a query returns (the heap is not asked to filter them), and whether the answer of the index is the answer of the heap
+CREATE FUNCTION idx_rows(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON) ' || q INTO j;
+	RETURN (SELECT coalesce(sum(("n"->>'Actual Rows')::numeric * ("n"->>'Actual Loops')::numeric), -1)
+			FROM jsonb_path_query(j, 'strict $.** ? (@."Node Type" == "Bitmap Index Scan")') n);
+END $$;
+
+CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE via_index text; via_heap text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
+	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
+END $$;
+
+-- The shared buffers the planner of a query touched
+CREATE FUNCTION plan_buffers(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off;
+	EXECUTE 'EXPLAIN (BUFFERS, FORMAT JSON) ' || q INTO j;
+	RETURN coalesce((j->0->'Planning'->>'Shared Hit Blocks')::int, 0) + coalesce((j->0->'Planning'->>'Shared Read Blocks')::int, 0);
+END $$;
+
+-- What the scans since the last call did: {addresses exact, addresses the heap tests again, granules the zones ruled out, granules read, granules read for a sparse column's rows}
+CREATE FUNCTION scans() RETURNS text LANGUAGE sql AS $$
+	SELECT (c)[1] || ' exact, ' || (c)[2] || ' recheck, ' || (c)[3] || ' skipped, ' || (c)[4] || ' read, ' || (c)[5] || ' sparse'
+	FROM (SELECT sift._test_f2_scan_counters(true) AS c) s $$;
+
+-- A column with a value on a few rows of a granule keeps the rows that have it: 2 bytes each, and none at all when none has it; the bitmap stays for a column that has a value on
+-- more than one row in sixteen
+SELECT n, nvalid, sift._test_f2_sparse(n, nvalid) FROM (VALUES (8192, 0), (8192, 1), (8192, 19), (8192, 512), (8192, 513), (8192, 8180)) v(n, nvalid);
+
+-- A key that the rows of a granule all have, none has, or have but for a few, and the document shapes that hold it: the bits kept are the smallest of a list of the rows that have
+-- it, a list of those that lack it and a bitmap, or none; the rows read back are the rows that have it
+SELECT n, nvalid, njnull, noverflow, nrootkey, presence_only, sift._test_f2_key(n, nvalid, njnull, noverflow, nrootkey, presence_only)
+FROM (VALUES (8192, 8192, 0, 0, 0, false), (8192, 0, 0, 0, 0, false), (8192, 8000, 0, 0, 0, false), (8192, 100, 3, 2, 1, false), (8192, 8100, 40, 20, 10, false),
+			 (8192, 4000, 3, 2, 1, true), (8192, 3000, 0, 0, 0, false), (8192, 4000, 100, 100, 100, false)) v(n, nvalid, njnull, noverflow, nrootkey, presence_only);
+
+-- IS NULL and IS NOT NULL are answered by the zones: a column no row has a value on gives every row for IS NULL without reading it and no row, no granule read, for IS NOT NULL; a sparse
+-- column's IS NOT NULL reads the rows it lists; the answers are those of the heap
+CREATE TABLE sp (id int, g int, s text, z text);
+INSERT INTO sp SELECT i, i % 7, CASE WHEN i % 400 = 50 THEN 'x' END, NULL FROM generate_series(1, 40000) i;
+CREATE INDEX sp_i ON sp USING sift_col (id, g, s, z) WITH (key_order = 'id');
+SELECT sift._test_f2_check_keys('sp_i');
+SELECT scans() IS NOT NULL AS reset;
+SELECT idx_rows('SELECT * FROM sp WHERE z IS NULL') AS z_null;
+SELECT scans();
+SELECT idx_rows('SELECT * FROM sp WHERE z IS NOT NULL') AS z_not_null;
+SELECT scans();
+SELECT idx_rows('SELECT * FROM sp WHERE s IS NOT NULL') AS s_not_null, count(*) AS heap FROM sp WHERE s IS NOT NULL;
+SELECT scans();
+SELECT idx_rows('SELECT * FROM sp WHERE s IS NULL') AS s_null, count(*) AS heap FROM sp WHERE s IS NULL;
+SELECT scans();
+SELECT f2_same('SELECT id FROM sp WHERE s IS NOT NULL') AS s_not_null, f2_same('SELECT id FROM sp WHERE s IS NULL AND g = 3') AS s_null_g3;
+SELECT f2_same('SELECT id FROM sp WHERE z IS NULL AND s IS NOT NULL') AS both;
+
+-- The pre-aggregate of a granule less the union of its dead rows and the rows WHERE col IS NULL leaves out: a row that is both is taken out once. Taking the two lists out one after the
+-- other counts it twice (naive_mismatched), and the union is the cube of the rows that are left (mismatched)
+CREATE TABLE pe (id int, g int, v int, s text);
+INSERT INTO pe SELECT i, i % 7, i, CASE WHEN i % 400 = 50 THEN 'x' END FROM generate_series(1, 40000) i;
+CREATE INDEX pe_i ON pe USING sift_col (id, g, v, s) WITH (key_order = 'id', track_changes = 'ctid');
+SELECT granules, with_excl, corrected, rescanned, mismatched, naive_mismatched, dead, not_null, overlap FROM sift._test_f2_preagg_excl('pe_i', 1, 2, 3);
+DELETE FROM pe WHERE id % 800 IN (50, 7, 450);
+SELECT granules, with_excl, corrected > 0 AS corrected, rescanned, mismatched, naive_mismatched > 0 AS naive_wrong, dead, not_null, overlap > 0 AS overlap
+FROM sift._test_f2_preagg_excl('pe_i', 1, 2, 3);
+SELECT f2_same('SELECT g, count(*), sum(v) FROM pe WHERE s IS NULL GROUP BY g') AS grouped;
+SELECT f2_same('SELECT id FROM pe WHERE s IS NULL AND id BETWEEN 1 AND 3000') AS rows_left;
+
+-- jsonb ? 'key' on the leaf of a key: JSON null counts as present, a missing key and SQL NULL do not, a root array or string that holds the key does (as in PostgreSQL), and the index
+-- returns exactly the rows the heap does, none of them to be tested again
+CREATE TABLE ke (id int, g int, doc jsonb);
+INSERT INTO ke VALUES (1, 0, '{"flag_a": true}'), (2, 0, '{"flag_a": null}'), (3, 0, '{}'), (4, 0, '{"flag_a": {"x": 1}}'), (5, 0, '{"flag_a": [1, 2], "b": 2}'),
+	(6, 0, '{"b": 1}'), (7, 0, '[]'), (8, 0, '["flag_a"]'), (9, 0, '"flag_a"'), (10, 0, '"other"'), (11, 0, '42'), (12, 0, NULL), (13, 0, 'null'),
+	(14, 0, '[{"flag_a": 1}]'), (15, 0, '["a", "flag_a", "z"]'), (16, 0, '{"flag_a": "text"}'), (17, 0, '{"flag_a": 1.5}'), (18, 0, 'true');
+CREATE INDEX ke_i ON ke USING sift_col (id, g, doc sift.col_jsonb_ops) WITH (key_order = 'g', paths = 'doc.flag_a bool');
+SELECT scans() IS NOT NULL AS reset;
+SELECT idx_rows('SELECT id FROM ke WHERE doc ? ''flag_a''') AS index_rows;
+SELECT scans();
+SELECT count(*) AS heap_rows FROM ke WHERE doc ? 'flag_a';
+SELECT f2_same('SELECT id FROM ke WHERE doc ? ''flag_a''') AS same;
+SELECT string_agg(id::text, ',' ORDER BY id) AS present FROM ke WHERE doc ? 'flag_a';
+SELECT f2_same('SELECT id FROM ke WHERE NOT (doc ? ''flag_a'')') AS not_present;
+SELECT f2_same('SELECT id FROM ke WHERE doc ? ''flag_a'' AND id > 5') AS with_id;
+SELECT scans() IS NOT NULL AS reset;
+SELECT idx_rows('SELECT id FROM ke WHERE doc ? ''b''') AS index_rows;
+SELECT scans() AS untracked_key_is_tested_again;
+SELECT f2_same('SELECT id FROM ke WHERE doc ? ''b''') AS other_key;
+SELECT sift._test_f2_check_keys('ke_i');
+
+-- At the scale of a fact table's shape: a third of 40,000 documents have the key; the index returns their addresses exactly, no address is left for the heap to test
+CREATE TABLE kb (id int, g int, doc jsonb);
+INSERT INTO kb SELECT i, i % 5, CASE i % 6 WHEN 0 THEN '{"flag_a": true, "m": 1}'::jsonb WHEN 1 THEN '{"flag_a": null}'::jsonb WHEN 2 THEN '{"m": 2}'::jsonb
+									WHEN 3 THEN '{}'::jsonb WHEN 4 THEN NULL ELSE '["flag_a"]'::jsonb END FROM generate_series(1, 40000) i;
+CREATE INDEX kb_i ON kb USING sift_col (id, g, doc sift.col_jsonb_ops) WITH (key_order = 'id', paths = 'doc.flag_a bool');
+SELECT scans() IS NOT NULL AS reset;
+SELECT idx_rows('SELECT id FROM kb WHERE doc ? ''flag_a''') AS index_rows;
+SELECT scans();
+SELECT count(*) AS heap_rows FROM kb WHERE doc ? 'flag_a';
+SELECT f2_same('SELECT id, g FROM kb WHERE doc ? ''flag_a'' AND g = 2') AS same;
+UPDATE kb SET doc = '{"flag_a": 0}' WHERE id % 97 = 0;
+UPDATE kb SET doc = '{"m": 0}' WHERE id % 89 = 0;
+DELETE FROM kb WHERE id % 1000 = 5;
+SELECT f2_same('SELECT id FROM kb WHERE doc ? ''flag_a''') AS same_after_dml;
+
+-- The partitions and the part lists are parsed once per backend (built: the lists read; served: none); a commit of the manifest reloads the partition it changed and no other
+CREATE TABLE pc (v int);
+CREATE INDEX pc_idx ON pc USING sift_store_test (v);
+SELECT sift._test_f2_init('pc_idx');
+SELECT sift._test_f2_add_part('pc_idx', 1, NULL, 100, 0, 1) > 0 AS added;
+SELECT sift._test_f2_split('pc_idx', 1, NULL, 1000) > 1 AS split;
+SELECT part_id AS tail_id FROM sift._test_f2_partitions('pc_idx') WHERE key_lo = 1000 \gset
+SELECT sift._test_f2_split_many('pc_idx', :tail_id, 1000, 40, 1001);
+SELECT sift._test_f2_plan_cache(true) IS NOT NULL AS reset;
+SELECT partitions, parts, total_rows FROM sift._test_f2_plan_snapshot('pc_idx');
+SELECT sift._test_f2_plan_cache(true) AS "served,reloaded,built,private,lists_read";
+SELECT partitions, parts, total_rows FROM sift._test_f2_plan_snapshot('pc_idx');
+SELECT sift._test_f2_plan_cache(true) AS "served,reloaded,built,private,lists_read";
+SELECT sift._test_f2_add_part('pc_idx', 1, NULL, 100, 200, 5000) > 0 AS added;
+SELECT partitions, parts, total_rows FROM sift._test_f2_plan_snapshot('pc_idx');
+SELECT sift._test_f2_plan_cache(true) AS "served,reloaded,built,private,lists_read";
+
+-- Planning a query of an index touches a handful of shared buffers at most: the version of the manifest comes from the registry in shared memory, not from Block 0
+SELECT plan_buffers('SELECT count(*) FROM pe WHERE id BETWEEN 100 AND 200') <= 5 AS first_plan_at_most_5_buffers;
+SELECT plan_buffers('SELECT count(*) FROM pe WHERE id BETWEEN 100 AND 200') <= 5 AS warm_plan_at_most_5_buffers;
+SELECT plan_buffers('SELECT count(*) FROM kb WHERE doc ? ''flag_a''') <= 5 AS warm_jsonb_plan_at_most_5_buffers;
+
+-- An UPDATE of rows of one partition: the new versions and the deletes of the old ones are in one transaction, one partition lock and one record; the answers are those of the heap whether
+-- one row is updated, a few of them are, or a statement rolls back
+CREATE TABLE up (id int, g int, v int);
+INSERT INTO up SELECT i, i % 7, i FROM generate_series(1, 30000) i;
+CREATE INDEX up_i ON up USING sift_col (id, g, v) WITH (key_order = 'id', track_changes = 'ctid');
+UPDATE up SET v = v + 1 WHERE id = 100;
+UPDATE up SET v = v + 1 WHERE id = 101;
+UPDATE up SET v = v + 1 WHERE id IN (102, 103, 104);
+SELECT f2_same('SELECT id, v FROM up WHERE id BETWEEN 90 AND 120') AS few_rows;
+BEGIN;
+UPDATE up SET v = v + 5 WHERE id = 200;
+UPDATE up SET v = v + 5 WHERE id = 200;
+UPDATE up SET v = v + 5 WHERE id = 201;
+SAVEPOINT s;
+UPDATE up SET v = v + 7 WHERE id = 202;
+ROLLBACK TO s;
+COMMIT;
+SELECT f2_same('SELECT id, v FROM up WHERE id BETWEEN 190 AND 210') AS one_transaction;
+UPDATE up SET v = v + 1 WHERE id BETWEEN 1000 AND 1099;
+SELECT f2_same('SELECT id, v FROM up WHERE id BETWEEN 990 AND 1110') AS bulk_rows;
+UPDATE up SET v = v + 1 WHERE id IN (500, 20000, 29000);
+SELECT f2_same('SELECT id, v FROM up WHERE id IN (500, 20000, 29000)') AS rows_of_other_granules;
+SELECT f2_same('SELECT g, count(*), sum(v) FROM up GROUP BY g') AS grouped;
+SELECT idx_rows('SELECT * FROM up WHERE id BETWEEN 1 AND 30000') AS index_rows, count(*) AS heap_rows FROM up;
+SELECT sift._test_f2_check_keys('up_i');
+
+DROP TABLE sp, pe, ke, kb, pc, up;
+DROP FUNCTION idx_rows(text), f2_same(text), plan_buffers(text), scans();
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA s8 CASCADE;
+RESET client_min_messages;
+-- <<< format2_prod_opts
+
+DROP EXTENSION pg_walinspect;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
