@@ -132,13 +132,14 @@ cmp_keyat(const void *a, const void *b)
 	return (x > y) - (x < y);
 }
 
+/* Keys in one IN list: a long one is a statement the server takes longer to plan than to run, and may not take at all (max_allowed_packet) */
+#define HOST_IN_CHUNK	2048
+
 static int
 host_fetch(void *ctx, SiftIdx *ix, const int64_t *pks, size_t n, SxRow *rows, char *err, size_t errlen)
 {
-	Sql			s = {0};
-	MYSQL_RES  *r;
 	KeyAt	   *ord = malloc(n * sizeof(KeyAt));
-	MYSQL_ROW	row;
+	int			rc = 0;
 
 	for (size_t i = 0; i < n; i++)
 	{
@@ -146,39 +147,46 @@ host_fetch(void *ctx, SiftIdx *ix, const int64_t *pks, size_t n, SxRow *rows, ch
 		ord[i] = (KeyAt) {pks[i], i};
 	}
 	qsort(ord, n, sizeof(KeyAt), cmp_keyat);
-	sql_put(&s, SQL_PREFIX "SELECT %s, CONVERT(%s USING utf8mb4) FROM %s WHERE %s IN (", sx_cfg(ix, "keyexpr"),
-			sx_cfg(ix, "textexpr"), sx_cfg(ix, "source"), sx_cfg(ix, "keyexpr"));
-	put_keys(&s, pks, n);
-	sql_put(&s, ")");
-	r = sql_run(&s, err, errlen);
-	while (r && (row = SQL(fetch_row) (r)) != NULL)
+	for (size_t off = 0; off < n && rc == 0; off += HOST_IN_CHUNK)
 	{
-		KeyAt		key = {strtoll(row[0], NULL, 10), 0};
-		KeyAt	   *at = bsearch(&key, ord, n, sizeof(KeyAt), cmp_keyat);
+		Sql			s = {0};
+		MYSQL_RES  *r;
+		MYSQL_ROW	row;
 
-		if (at && row[1])
+		sql_put(&s, SQL_PREFIX "SELECT %s, CONVERT(%s USING utf8mb4) FROM %s WHERE %s IN (", sx_cfg(ix, "keyexpr"),
+				sx_cfg(ix, "textexpr"), sx_cfg(ix, "source"), sx_cfg(ix, "keyexpr"));
+		put_keys(&s, pks + off, (n - off < HOST_IN_CHUNK ? n - off : HOST_IN_CHUNK));
+		sql_put(&s, ")");
+		r = sql_run(&s, err, errlen);
+		while (r && (row = SQL(fetch_row) (r)) != NULL)
 		{
-			unsigned long *len = SQL(fetch_lengths) (r);
+			KeyAt		key = {strtoll(row[0], NULL, 10), 0};
+			KeyAt	   *at = bsearch(&key, ord, n, sizeof(KeyAt), cmp_keyat);
 
-			rows[at->at].text = malloc(len[1] + 1);
-			memcpy(rows[at->at].text, row[1], len[1] + 1);
-			rows[at->at].len = len[1];
+			if (at && row[1])
+			{
+				unsigned long *len = SQL(fetch_lengths) (r);
+
+				rows[at->at].text = malloc(len[1] + 1);
+				memcpy(rows[at->at].text, row[1], len[1] + 1);
+				rows[at->at].len = len[1];
+			}
 		}
+		if (r)
+			SQL(free_result) (r);
+		else
+			rc = -1;
+		sql_free(&s);
 	}
-	if (r)
-		SQL(free_result) (r);
-	sql_free(&s);
 	free(ord);
-	return r ? 0 : -1;
+	return rc;
 }
 
 static int
 host_exists(void *ctx, SiftIdx *ix, const int64_t *pks, size_t n, uint8_t *present, char *err, size_t errlen)
 {
-	Sql			s = {0};
-	MYSQL_RES  *r;
 	KeyAt	   *ord = malloc(n * sizeof(KeyAt));
-	MYSQL_ROW	row;
+	int			rc = 0;
 
 	for (size_t i = 0; i < n; i++)
 	{
@@ -186,24 +194,33 @@ host_exists(void *ctx, SiftIdx *ix, const int64_t *pks, size_t n, uint8_t *prese
 		ord[i] = (KeyAt) {pks[i], i};
 	}
 	qsort(ord, n, sizeof(KeyAt), cmp_keyat);
-	sql_put(&s, SQL_PREFIX "SELECT %s FROM %s WHERE %s IN (", sx_cfg(ix, "keyexpr"), sx_cfg(ix, "source"),
-			sx_cfg(ix, "keyexpr"));
-	put_keys(&s, pks, n);
-	sql_put(&s, ")");
-	r = sql_run(&s, err, errlen);
-	while (r && (row = SQL(fetch_row) (r)) != NULL)
+	for (size_t off = 0; off < n && rc == 0; off += HOST_IN_CHUNK)
 	{
-		KeyAt		key = {strtoll(row[0], NULL, 10), 0};
-		KeyAt	   *at = bsearch(&key, ord, n, sizeof(KeyAt), cmp_keyat);
+		Sql			s = {0};
+		MYSQL_RES  *r;
+		MYSQL_ROW	row;
 
-		if (at)
-			present[at->at] = 1;
+		sql_put(&s, SQL_PREFIX "SELECT %s FROM %s WHERE %s IN (", sx_cfg(ix, "keyexpr"), sx_cfg(ix, "source"),
+				sx_cfg(ix, "keyexpr"));
+		put_keys(&s, pks + off, (n - off < HOST_IN_CHUNK ? n - off : HOST_IN_CHUNK));
+		sql_put(&s, ")");
+		r = sql_run(&s, err, errlen);
+		while (r && (row = SQL(fetch_row) (r)) != NULL)
+		{
+			KeyAt		key = {strtoll(row[0], NULL, 10), 0};
+			KeyAt	   *at = bsearch(&key, ord, n, sizeof(KeyAt), cmp_keyat);
+
+			if (at)
+				present[at->at] = 1;
+		}
+		if (r)
+			SQL(free_result) (r);
+		else
+			rc = -1;
+		sql_free(&s);
 	}
-	if (r)
-		SQL(free_result) (r);
-	sql_free(&s);
 	free(ord);
-	return r ? 0 : -1;
+	return rc;
 }
 
 const SxHost host = {.queue = host_queue,.fetch = host_fetch,.exists = host_exists};

@@ -70,7 +70,7 @@ gf_eval(void *ctx, uint32 g, int slot, uint32 nrows, uint64 *active)
 {
 	GranuleFilter *gf = ctx;
 	uint64		mask[SIFT_CFILT_WORDS + 2];
-	SiftCfiltResult res = sift_granule_filter_compressed(gf->v, &gf->pp->cf[slot], mask);
+	SiftCfiltResult res = sift_granule_filter_compressed_live(gf->v, &gf->pp->cf[slot], active, mask);
 
 	if (res == SIFT_CFILT_UNSUPPORTED)
 		return false;

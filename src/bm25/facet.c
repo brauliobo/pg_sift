@@ -298,6 +298,13 @@ seg_view(Facets *f, FacetSeg *fs, int i)
 	return fs->view[i];
 }
 
+static Entry *
+ents_regrow(Facets *f, Entry *ents, Size cap)
+{
+	SIFT_REGROW_HUGE_IN(f->mcxt, ents, cap * sizeof(Entry));
+	return ents;
+}
+
 static void
 add_entry(Facets *f, const char *term, int len, int seg, const SiftTermInfo *info)
 {
@@ -305,7 +312,7 @@ add_entry(Facets *f, const char *term, int len, int seg, const SiftTermInfo *inf
 	{
 		f->entcap = Max(256, 2 * f->entcap);
 		facet_budget(f, 0);
-		SIFT_REGROW_HUGE_IN(f->mcxt, f->ent, f->entcap * sizeof(Entry));
+		f->ent = ents_regrow(f, f->ent, f->entcap);
 	}
 	if (f->nterms + len > f->termcap)
 	{
@@ -492,31 +499,54 @@ res_qsort_cmp(const void *a, const void *b)
 	return res_cmp(a, b);
 }
 
+/* The kept results of a bounded collection are a binary heap with the worst at the root (the last of the order of res_cmp), emit_results sorts them */
+static void
+res_up(Res *res, int64 i)
+{
+	Res			x = res[i];
+
+	for (; i > 0 && res_cmp(&res[(i - 1) / 2], &x) < 0; i = (i - 1) / 2)
+		res[i] = res[(i - 1) / 2];
+	res[i] = x;
+}
+
+static void
+res_down(Res *res, int64 n, int64 i)
+{
+	Res			x = res[i];
+
+	for (int64 c; (c = 2 * i + 1) < n; i = c)
+	{
+		if (c + 1 < n && res_cmp(&res[c + 1], &res[c]) > 0)
+			c++;
+		if (res_cmp(&res[c], &x) <= 0)
+			break;
+		res[i] = res[c];
+	}
+	res[i] = x;
+}
+
 static void
 res_add(Facets *f, Res r)
 {
-	int64		pos = f->nres;
-
 	if (f->nres == f->rescap && (!f->bounded || f->nres < f->lim))
 	{
 		f->rescap = Max(16, Min(2 * f->rescap, f->bounded ? f->lim : PG_INT64_MAX));
 		facet_budget(f, 0);
 		SIFT_REGROW_HUGE_IN(f->mcxt, f->res, f->rescap * sizeof(Res));
 	}
-	if (f->bounded)
+	if (!f->bounded)
+		f->res[f->nres++] = r;
+	else if (f->nres < f->lim)
 	{
-		int64		lo = 0,
-					hi = f->nres;
-
-		SIFT_BISECT(int64, mid, lo, hi, res_cmp(&f->res[mid], &r) <= 0);
-		if ((pos = lo) == f->lim)
-			return;
-		if (f->nres == f->lim)
-			f->nres--;
-		memmove(&f->res[pos + 1], &f->res[pos], (f->nres - pos) * sizeof(Res));
+		f->res[f->nres] = r;
+		res_up(f->res, f->nres++);
 	}
-	f->res[pos] = r;
-	f->nres++;
+	else if (res_cmp(&r, &f->res[0]) < 0)
+	{
+		f->res[0] = r;
+		res_down(f->res, f->nres, 0);
+	}
 }
 
 static int
@@ -552,6 +582,87 @@ val_cmp(const void *a, const void *b, void *arg)
 	return res_cmp(&rx, &ry);
 }
 
+/* Run r of the entries, which the segments add each in term order: where it is and where it ends */
+typedef struct EntRun
+{
+	int64		at;
+	int64		end;
+} EntRun;
+
+static bool
+run_before(const Facets *f, const EntRun *runs, int a, int b)
+{
+	return ent_cmp(&f->ent[runs[a].at], &f->ent[runs[b].at], (void *) f) < 0;
+}
+
+static void
+run_down(const Facets *f, const EntRun *runs, int *heap, int n, int i)
+{
+	int			x = heap[i];
+
+	for (int c; (c = 2 * i + 1) < n; i = c)
+	{
+		if (c + 1 < n && run_before(f, runs, heap[c + 1], heap[c]))
+			c++;
+		if (!run_before(f, runs, heap[c], x))
+			break;
+		heap[i] = heap[c];
+	}
+	heap[i] = x;
+}
+
+/* The entries in term order: the runs that the segments made are merged, O(V log S), a single run is in order already */
+static void
+sort_entries(Facets *f)
+{
+	EntRun	   *runs = palloc(Max(f->nseg + 1, 1) * sizeof(EntRun));
+	int		   *heap;
+	int			nruns = 0,
+				nheap;
+	Entry	   *out;
+	int64		n = 0;
+
+	for (int64 i = 0; i < f->nent; i++)
+		if (i == 0 || ent_cmp(&f->ent[i - 1], &f->ent[i], f) > 0)
+		{
+			if (nruns == f->nseg + 1)
+			{
+				qsort_arg(f->ent, f->nent, sizeof(Entry), ent_cmp, f);
+				pfree(runs);
+				return;
+			}
+			if (nruns > 0)
+				runs[nruns - 1].end = i;
+			runs[nruns++].at = i;
+		}
+	if (nruns <= 1)
+	{
+		pfree(runs);
+		return;
+	}
+	runs[nruns - 1].end = f->nent;
+	heap = palloc(nruns * sizeof(int));
+	out = ents_regrow(f, NULL, f->entcap);
+	for (int i = 0; i < nruns; i++)
+		heap[i] = i;
+	nheap = nruns;
+	for (int i = nheap / 2 - 1; i >= 0; i--)
+		run_down(f, runs, heap, nheap, i);
+	while (nheap > 0)
+	{
+		EntRun	   *r = &runs[heap[0]];
+
+		out[n++] = f->ent[r->at++];
+		if (r->at == r->end)
+			heap[0] = heap[--nheap];
+		run_down(f, runs, heap, nheap, 0);
+	}
+	pfree(f->ent);
+	f->ent = out;
+	pfree(heap);
+	pfree(runs);
+}
+
 /* The distinct values, most promising first */
 static Value *
 collect_values(Facets *f, int64 *nvals)
@@ -561,7 +672,7 @@ collect_values(Facets *f, int64 *nvals)
 
 	facet_budget(f, Max(f->nent, 1) * sizeof(Value));
 	vals = MemoryContextAllocHuge(f->mcxt, Max(f->nent, 1) * sizeof(Value));
-	qsort_arg(f->ent, f->nent, sizeof(Entry), ent_cmp, f);
+	sort_entries(f);
 	for (int64 i = 0, j; i < f->nent; i = j)
 	{
 		uint64		bound = 0;
@@ -584,7 +695,7 @@ cannot_enter(const Facets *f, const Value *v)
 
 	if (!f->bounded || f->nres < f->lim)
 		return false;
-	worst = &f->res[f->lim - 1];
+	worst = &f->res[0];
 	r = (Res) {f->terms + v->e->off, v->e->len, v->bound};
 	return res_cmp(&r, worst) > 0;
 }
@@ -601,7 +712,7 @@ count_values(Facets *f, bool nulls)
 		const Value *v = &vals[i];
 		int64		n;
 
-		if (f->bounded && f->nres == f->lim && v->bound < f->res[f->lim - 1].n)
+		if (f->bounded && f->nres == f->lim && v->bound < f->res[0].n)
 			break;
 		if (cannot_enter(f, v))
 			continue;
@@ -666,8 +777,7 @@ check_indexes(Facets *f)
 static void
 emit_results(ReturnSetInfo *rsinfo, Facets *f)
 {
-	if (!f->bounded)
-		qsort(f->res, f->nres, sizeof(Res), res_qsort_cmp);
+	qsort(f->res, f->nres, sizeof(Res), res_qsort_cmp);
 	for (int64 i = 0; i < f->nres && (f->lim < 0 || i < f->lim); i++)
 	{
 		Datum		values[2];

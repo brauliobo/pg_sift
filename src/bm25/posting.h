@@ -196,6 +196,8 @@ typedef struct SiftGroupBounds
  * every group from its first to its last without reading the postings.
  */
 extern const SiftGroupBounds *sift_post_bounds(SiftPostingCursor *c, int *n);
+/* The largest bound of any posting of the term: that of its groups, which sift_post_bounds lists */
+extern uint8 sift_post_max_bound(const SiftPostingCursor *c);
 
 /*
  * tf of every posting of the cursor's current group, rank order; tf needs

@@ -600,14 +600,20 @@ stream_begin(CustomScanState *node, EState *estate, int eflags)
 			foreach_ptr(Node, a, list_nth(cs->custom_private, PRIV_AGGS))
 			{
 				if (equal(a, te->expr))
+				{
 					st->entry[i] = -1 - j;
+					break;
+				}
 				j++;
 			}
 		else
 			foreach_ptr(Node, k, list_nth(cs->custom_private, PRIV_KEYS))
 			{
 				if (equal(k, te->expr))
+				{
 					st->entry[i] = j;
+					break;
+				}
 				j++;
 			}
 		i++;

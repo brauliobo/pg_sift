@@ -144,6 +144,7 @@ typedef struct AggExec
 	uint32		captouch;
 	uint64		cur_order;
 	PredState  *ps;
+	int			ps_cap;			/* the room of ps, in states */
 	KeyState   *ks;
 	DictSlot	dslot[NDICT_SLOTS];
 	uint64		dtick;
@@ -264,6 +265,7 @@ typedef struct AggExec
 	SiftSrcStrTest *jstr;		/* the keys of the inner and semi joins by a text leaf, as tests the source runs on the encoded form (join_filters) */
 	JstrTrial  *jtrial;			/* what each of them kept of the rows it saw, until it is dropped (unit_conjuncts) */
 	int			njstr;
+	int			jstr_cap;		/* the room of jstr and jtrial */
 	int			njpass;			/* the joins that pass the tuples the key filter let through (semi_pass) */
 	int			nfound;			/* the joins answered from the flag of a connected index (join_found) */
 	uint64		found_keys;		/* the keys the journal of the parent names for them: the rows of those are outside the proof of the flag */

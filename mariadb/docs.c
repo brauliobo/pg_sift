@@ -37,6 +37,27 @@ in_sorted(const int64 *a, size_t n, int64 v)
 	return i < n && a[i] == v;
 }
 
+/* The first position of a[0, n) at or after pos whose value is not below v: a gallop from pos, then a bisection of its last step */
+size_t
+lower_bound_from(const int64 *a, size_t n, size_t pos, int64 v)
+{
+	size_t		lo = pos,
+				step = 1,
+				hi;
+
+	if (pos >= n || a[pos] >= v)
+		return pos;
+	while (lo + step < n && a[lo + step] < v)
+	{
+		lo += step;
+		step <<= 1;
+	}
+	hi = Min(lo + step, n);
+	lo++;
+	SIFT_BISECT(size_t, mid, lo, hi, a[mid] < v);
+	return lo;
+}
+
 bool
 is_dead(const SiftIdx *ix, int64 docid)
 {
@@ -53,9 +74,13 @@ static void
 latest_grow(SiftIdx *ix)
 {
 	Slot	   *old = ix->latest;
-	size_t		oldcap = ix->caplatest;
+	size_t		oldcap = ix->caplatest,
+				nlive = 0;
 
-	ix->caplatest = oldcap ? oldcap * 2 : 1024;
+	for (size_t i = 0; i < oldcap; i++)
+		nlive += old[i].used && old[i].val;
+	/* the slots of removed pks are not carried over: the table grows only for the live ones, and a rolling window of keys stays the size of the window */
+	ix->caplatest = oldcap == 0 ? 1024 : nlive * 4 >= oldcap ? oldcap * 2 : nlive * 8 < oldcap && oldcap > 1024 ? oldcap / 2 : oldcap;
 	ix->latest = calloc(ix->caplatest, sizeof(Slot));
 	ix->nlatest = 0;
 	for (size_t i = 0; i < oldcap; i++)

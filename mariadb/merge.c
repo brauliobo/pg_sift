@@ -31,6 +31,7 @@ static bool bg_started,
 typedef struct Plan
 {
 	int			n;
+	bool		full;
 	ManSeg		src[SIFT_DIR_POLICY_MAX];
 } Plan;
 
@@ -150,12 +151,16 @@ filter_docs(const SiftIdx *ix, const Merged *mg, int64 **ids, int64 **pks, int64
 	*ids = malloc((ix->ndoc + 1) * sizeof(int64));
 	*pks = malloc((ix->ndoc + 1) * sizeof(int64));
 	*dead = malloc((ix->ndead + 1) * sizeof(int64));
-	for (size_t i = 0; i < ix->ndoc; i++)
-		if (!bsearch(&ix->ids[i], mg->dropped, mg->ndropped, sizeof(int64), sift_cmp_i64))
-		{
-			(*ids)[n] = ix->ids[i];
-			(*pks)[n++] = ix->pks[i];
-		}
+	/* the ids and the dropped documents ascend: one pass over both; the dead ones are in the order of their deletion */
+	for (size_t i = 0, d = 0; i < ix->ndoc; i++)
+	{
+		while (d < mg->ndropped && mg->dropped[d] < ix->ids[i])
+			d++;
+		if (d < mg->ndropped && mg->dropped[d] == ix->ids[i])
+			continue;
+		(*ids)[n] = ix->ids[i];
+		(*pks)[n++] = ix->pks[i];
+	}
 	for (size_t i = 0; i < ix->ndead; i++)
 		if (!bsearch(&ix->dead[i], mg->dropped, mg->ndropped, sizeof(int64), sift_cmp_i64))
 			(*dead)[nd++] = ix->dead[i];
@@ -168,14 +173,15 @@ publish_merge(SiftIdx *ix, const Plan *plan, Merged *mg, int *oldg, uint32 *oldb
 {
 	Manifest	m = ix->man;
 	ManSeg		segs[SIFT_DIR_POLICY_MAX];
-	int64	   *ids,
-			   *pks,
-			   *dead;
-	size_t		n,
-				ndead;
+	int64	   *ids = NULL,
+			   *pks = NULL,
+			   *dead = NULL;
+	size_t		n = 0,
+				ndead = 0;
 	uint64		len;
 	int			nkeep = 0;
 	int64		bytes = 0;
+	bool		filtered = plan->full || mg->ndropped > 0;
 
 	for (uint32 i = 0; i < m.nsegs; i++)
 		if (!in_plan(plan, &ix->segs[i]))
@@ -184,12 +190,17 @@ publish_merge(SiftIdx *ix, const Plan *plan, Merged *mg, int *oldg, uint32 *oldb
 		fail("sift: a segment of the merge is gone");
 	if (mg->have)
 		segs[nkeep++] = mg->ms;
-	n = filter_docs(ix, mg, &ids, &pks, &dead, &ndead);
+	/* A merge that drops no document changes neither the documents nor the log: a replay would bring back the ones it dropped */
+	if (filtered)
+		n = filter_docs(ix, mg, &ids, &pks, &dead, &ndead);
 	m.nsegs = nkeep;
-	m.logno++;
 	m.version++;
-	write_compact_log(ix, m.logno, ids, pks, n, &len);
-	m.log_len = len;
+	if (filtered)
+	{
+		m.logno++;
+		write_compact_log(ix, m.logno, ids, pks, n, &len);
+		m.log_len = len;
+	}
 	write_manifest(ix, &m, segs);
 	WR_LOCK(ix);
 	for (int i = 0; i < plan->n; i++)
@@ -198,16 +209,19 @@ publish_merge(SiftIdx *ix, const Plan *plan, Merged *mg, int *oldg, uint32 *oldb
 		oldblocks[i] = ix->sr->slot_blocks[plan->src[i].slot];
 		sift_slot_detach(ix->sr, plan->src[i].slot);
 	}
-	free(ix->ids);
-	free(ix->pks);
-	free(ix->dead);
-	ix->ids = ids;
-	ix->pks = pks;
-	ix->dead = dead;
-	ix->ndoc = n;
-	ix->capdoc = ix->ndoc + 1;
-	ix->ndead = ndead;
-	ix->capdead = ndead + 1;
+	if (filtered)
+	{
+		free(ix->ids);
+		free(ix->pks);
+		free(ix->dead);
+		ix->ids = ids;
+		ix->pks = pks;
+		ix->dead = dead;
+		ix->ndoc = n;
+		ix->capdoc = ix->ndoc + 1;
+		ix->ndead = ndead;
+		ix->capdead = ndead + 1;
+	}
 	ix->man.logno = m.logno;
 	ix->man.log_len = m.log_len;
 	ix->man.version = m.version;
@@ -284,12 +298,15 @@ merge_run(SiftIdx *ix, const Plan *plan)
 		path_of(ix, path, sizeof(path), plan->src[i].file);
 		unlink(path);
 	}
+	RD_LOCK(ix);
+	if (ix->man.logno != oldlog)
 	{
 		char		path[600];
 
 		log_path(ix, oldlog, path, sizeof(path));
 		unlink(path);
 	}
+	RD_UNLOCK(ix);
 }
 
 void
@@ -307,6 +324,7 @@ merge_sets(SiftIdx *ix, bool full)
 			break;
 		}
 		pick(ix, full, plan);
+		plan->full = full;
 		if (plan->n == 0)
 		{
 			free(plan);

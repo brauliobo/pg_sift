@@ -14,6 +14,9 @@
 /* The summary of scope ord that plan (the directory of the index as of now) names, NULL when there is none; valid, and held in the cache, until mcxt is reset */
 extern const SiftScopeMeta *sift_f2_scope_cache_get(Relation index, const SiftPlanSnapshot *plan, int ord, MemoryContext mcxt);
 
+/* The same for a summary the cache holds already: NULL when it does not (nothing is read, nothing is pinned: valid until the entry is dropped, so a caller copies what it needs at once) */
+extern const SiftScopeMeta *sift_f2_scope_cache_peek(Relation index, const SiftPlanSnapshot *plan, int ord);
+
 /* The settled-change slot of m, an entry of the cache, and the context the entry owns (what the slot holds is dropped with the entry) */
 struct SiftF2ScopeSnap;
 extern struct SiftF2ScopeSnap **sift_f2_scope_cache_overlay(const SiftScopeMeta *m, MemoryContext *entry_cx);

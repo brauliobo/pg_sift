@@ -326,10 +326,17 @@ analyze_bool(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg, cons
 			npos++;
 		if (npos == 0)
 			return sift_query_new_node(SQ_NOTHING, raw->loc);
-		for (int j = npos; j < m; j++)
-			for (int i = 0; i < npos; i++)
-				if (node_cmp_shape(kids[i], kids[j]->child[0]) == 0)
-					return sift_query_new_node(SQ_NOTHING, raw->loc);
+		for (int i = 0, j = npos; i < npos && j < m;)
+		{
+			int			c = node_cmp_shape(kids[i], kids[j]->child[0]);
+
+			if (c == 0)
+				return sift_query_new_node(SQ_NOTHING, raw->loc);
+			if (c < 0)
+				i++;
+			else
+				j++;
+		}
 	}
 	if (m == 1)
 		return kids[0];

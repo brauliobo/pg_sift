@@ -13,6 +13,8 @@
 #include "col/f2/col_stats.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_cache.h"
+#include "col/f2/f2_scope.h"
+#include "col/f2/f2_scope_cache.h"
 #include "col/f2/f2_v6_bridge.h"
 #include "col/granule/granule.h"
 
@@ -256,6 +258,26 @@ view_size(uint32 ncols, uint32 nparts, uint32 nsample)
 		MAXALIGN(nsample * sizeof(SiftSampleGranule)) + MAXALIGN((Size) ncols * nsample * sizeof(SiftCardZone));
 }
 
+/* The scope roots of the summary the backend holds for the first scope (its keys ascending, as the roots are), and the sum of their rows once for every estimate that asks for the mean root */
+static void
+fold_scope(SiftCardStatsView *v, Relation index, const SiftPlanSnapshot *plan)
+{
+	const SiftScopeMeta *m = sift_f2_scope_cache_peek(index, plan, 0);
+	SiftCardScopeRoot *roots;
+
+	if (m == NULL || m->hdr.nkeys == 0)
+		return;
+	/* check-memory: allow one root of the summary the cache already holds, whose roots array is as long */
+	roots = MemoryContextAlloc(plan->cx, m->hdr.nkeys * sizeof(SiftCardScopeRoot));
+	for (uint32 i = 0; i < m->hdr.nkeys; i++)
+	{
+		roots[i] = (SiftCardScopeRoot) {.key = m->roots[i].scope_key,.nrows = m->roots[i].row_count};
+		v->scope_total_rows += m->roots[i].row_count;
+	}
+	v->scope = roots;
+	v->n_scope = m->hdr.nkeys;
+}
+
 static SiftCardStatsView *
 build_view(Relation index, const SiftF2Rel *f, const SiftPlanSnapshot *plan)
 {
@@ -333,6 +355,8 @@ build_view(Relation index, const SiftF2Rel *f, const SiftPlanSnapshot *plan)
 		for (uint32 s = 0; s < nsample; s++)
 			((SiftCardZone *) v->sample_zones)[(size_t) c * nsample + s] = lf.zones && lf.n == granules ? lf.z[(uint64) s * stride] : (SiftCardZone) {.min = INT64_MIN,.max = INT64_MAX};
 	}
+	if (sift_f2_scoped(index))
+		fold_scope(v, index, plan);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(work);
 	return v;

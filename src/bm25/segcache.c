@@ -37,7 +37,7 @@ typedef struct CacheEnt
 	int			pins;
 	bool		ready;			/* filled by its first user */
 	uint64		used;			/* sift_cache_tick() of the last use */
-	dlist_node	node;			/* in lru: least recently used first */
+	dlist_node	node;			/* in pinned while some context holds it, else in lru, least recently released first */
 } CacheEnt;
 
 typedef struct Unpin
@@ -57,6 +57,7 @@ static HTAB *cache;
 static MemoryContext cache_cx;
 static Size cache_bytes;
 static dlist_head lru = DLIST_STATIC_INIT(lru);
+static dlist_head pinned = DLIST_STATIC_INIT(pinned);
 
 static void
 ent_drop(CacheEnt *e)
@@ -73,23 +74,24 @@ ent_unpin(void *arg)
 	Unpin	   *u = arg;
 	CacheEnt   *e = hash_search(cache, &u->key, HASH_FIND, NULL);
 
-	if (e && --e->pins == 0 && !e->ready)
-		ent_drop(e);
+	if (e && --e->pins == 0)
+	{
+		if (!e->ready)
+			ent_drop(e);
+		else
+		{
+			e->used = sift_cache_tick();
+			dlist_delete(&e->node);
+			dlist_push_tail(&lru, &e->node);
+		}
+	}
 }
 
+/* The least recently released entry: only entries nobody holds are in lru */
 static CacheEnt *
 ent_victim(void)
 {
-	dlist_iter	it;
-
-	dlist_foreach(it, &lru)
-	{
-		CacheEnt   *e = dlist_container(CacheEnt, node, it.cur);
-
-		if (e->pins == 0)
-			return e;
-	}
-	return NULL;
+	return dlist_is_empty(&lru) ? NULL : dlist_container(CacheEnt, node, dlist_head_node(&lru));
 }
 
 static uint64
@@ -158,7 +160,7 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 				e->pins = 0;
 				e->ready = false;
 				e->used = sift_cache_tick();
-				dlist_push_tail(&lru, &e->node);
+				dlist_push_tail(&pinned, &e->node);
 				cache_bytes += size;
 			}
 			else
@@ -167,8 +169,11 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 		else
 		{
 			e->used = sift_cache_tick();
-			dlist_delete(&e->node);
-			dlist_push_tail(&lru, &e->node);
+			if (e->pins == 0)
+			{
+				dlist_delete(&e->node);
+				dlist_push_tail(&pinned, &e->node);
+			}
 		}
 		if (e)
 		{

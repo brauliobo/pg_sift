@@ -94,6 +94,9 @@ pos_gallop(const uint32 *v, uint32 n, uint32 j, uint32 want)
 	return lo + 1;
 }
 
+/* A rarest term with more positions than this in a doc may not be the one with the fewest there */
+#define PHRASE_DRIVE_MIN	4
+
 /* Two terms, the common phrase: the first start both hold decides, no list of starts is built */
 static bool
 phrase_match2(PosCtx *c, const PhraseCheck *ph)
@@ -104,6 +107,15 @@ phrase_match2(PosCtx *c, const PhraseCheck *ph)
 	const SiftPosBuf *pa = posctx_positions(c, ph->leaf[ph->order[0]]),
 			   *pb = posctx_positions(c, ph->leaf[ph->order[1]]);
 
+	/* the term with fewer positions in this doc drives: the other is galloped into */
+	if (pa->n > pb->n)
+	{
+		const SiftPosBuf *tp = pa;
+		uint32		to = oa;
+
+		pa = pb, pb = tp;
+		oa = ob, ob = to;
+	}
 	for (uint32 x = 0; x < pa->n; x++)
 	{
 		uint32		want;
@@ -125,18 +137,25 @@ static bool
 phrase_match(PosCtx *c, const PhraseCheck *ph)
 {
 	uint32		n = 0;
+	int			drive = 0;
 
 	if (ph->nterms == 2)
 		return phrase_match2(c, ph);
-	for (int k = 0; k < ph->nterms; k++)
+	/* the starts come from the term with the fewest positions in this doc (the rarest by df, unless the doc has it often), the others narrow them in order */
+	if (posctx_positions(c, ph->leaf[ph->order[0]])->n > PHRASE_DRIVE_MIN)
+		for (int k = 1; k < ph->nterms; k++)
+			if (posctx_positions(c, ph->leaf[ph->order[k]])->n < posctx_positions(c, ph->leaf[ph->order[drive]])->n)
+				drive = k;
+	for (int s = 0; s < ph->nterms; s++)
 	{
+		int			k = s == 0 ? drive : s - 1 < drive ? s - 1 : s;
 		uint32		i = ph->order[k],
 					o = ph->offs ? ph->offs[i] : i,
 					j = 0,
 					m = 0;
 		const SiftPosBuf *pb = posctx_positions(c, ph->leaf[i]);
 
-		if (k == 0)
+		if (s == 0)
 		{
 			if (pb->n > c->startcap)
 			{

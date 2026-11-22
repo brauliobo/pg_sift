@@ -149,6 +149,7 @@ extern bool in_sorted(const int64 *a, size_t n, int64 v);
 extern bool is_dead(const SiftIdx *ix, int64 docid);
 extern int64 latest_get(const SiftIdx *ix, int64 pk);
 extern int64 pk_of(const SiftIdx *ix, int64 docid);
+extern size_t lower_bound_from(const int64 *a, size_t n, size_t pos, int64 v);
 extern void apply_event(SiftIdx *ix, int64 docid, int64 pk, int64 op);
 extern void finish_events(SiftIdx *ix);
 extern void reset_docs(SiftIdx *ix);

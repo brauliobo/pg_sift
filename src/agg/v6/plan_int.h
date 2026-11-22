@@ -24,7 +24,10 @@ typedef struct V6Plan
 	const SiftF2Rel *f2;
 	SiftF2Store *store;			/* a sift_table: its store, whose attributes are those of the table */
 	SiftV6Spec	spec;
+	int			cap_aggs;		/* the room of spec.agg and spec.func */
+	int			cap_funcs;
 	List	   *scan_tlist;
+	Bitmapset  *scan_vars;		/* the entries of scan_tlist that are plain columns (a Var), by varno */
 	SiftFilterReg *freg;		/* the distinct FILTER clauses of the statement */
 	bool		in_filter;		/* compiling a FILTER clause: its operands are constants, which the clause folds into its bitmaps at plan time */
 	struct SiftV6Ext *xseed;	/* the dimensions or the unnest the join of the statement makes of its relations (v6_ext.h); NULL for a scan of the fact relation alone */

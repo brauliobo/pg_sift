@@ -227,17 +227,6 @@ term_bound_at(const RkTerm *t, uint32 gid)
 	return &t->gb[lo];
 }
 
-/* The score bound of the leaves in order, with leaf (when >= 0) bounded by v instead */
-float4
-sum_ub(const SiftPlan *p, const float4 *ub, int leaf, float4 v)
-{
-	float4		s = 0;
-
-	for (int i = 0; i < p->nleaves; i++)
-		s += i == leaf ? v : ub[i];
-	return s;
-}
-
 /*
  * Marks the terms that can lift a document over theta in block b: a term
  * whose own bound, with the other leaves at their best, cannot exceed theta
@@ -259,17 +248,23 @@ block_terms(SiftPlan *p, RankSeg *rs, int b, float4 theta, float4 *ub)
 				ub[i] = Max(ub[i], t[j].ubw * (float4) t[j].bb->blk_bound[b]);
 		}
 	}
-	if (!(sum_ub(p, ub, -1, 0) > theta))
+	double		total = 0,
+				slack = sum_ub_slack(p->nleaves);
+
+	for (int i = 0; i < p->nleaves; i++)
+		total += (double) ub[i];
+	if (!(total * slack > (double) theta))
 		return false;
 	for (int i = 0; i < p->nleaves; i++)
 	{
 		RkTerm	   *t = rs->term + rs->first[i];
+		double		other = total - (double) ub[i];
 
 		for (int j = 0; p->leaves[i].scoring && p->leaves[i].nterms[rs->s] > 1 && j < p->leaves[i].nterms[rs->s]; j++)
 		{
 			float4		v = t[j].ubw * (float4) (t[j].act ? t[j].bb->blk_bound[b] : 0);
 
-			t[j].act = t[j].act && (v >= ub[i] || sum_ub(p, ub, i, v) > theta);
+			t[j].act = t[j].act && (v >= ub[i] || (other + (double) v) * slack > (double) theta);
 		}
 	}
 	return true;
@@ -570,6 +565,21 @@ attr_filter(const SiftPlan *p, SiftSegment *seg, const SiftDocChunk *dc, int b, 
 	return want != 0;
 }
 
+/* Leaves by falling bound, equal bounds by leaf: the order the insertion of leaf_order makes */
+#define LEAF_ORDER_SORT	16
+
+static int
+leaf_ub_cmp(const void *a, const void *b, void *arg)
+{
+	const float4 *ub = arg;
+	int			x = *(const int *) a,
+				y = *(const int *) b;
+
+	if (ub[x] != ub[y])
+		return ub[x] > ub[y] ? -1 : 1;
+	return x < y ? -1 : x > y;
+}
+
 /*
  * The leaves present in the block (ub > 0) by descending bound, ties by leaf,
  * and rest[i], the sum of the bounds after ord[i]; returns their number.
@@ -585,10 +595,17 @@ leaf_order(const SiftPlan *p, const float4 *ub, int *ord, float4 *rest)
 		{
 			int			j = n++;
 
+			if (n > LEAF_ORDER_SORT)
+			{
+				ord[j] = i;
+				continue;
+			}
 			for (; j > 0 && ub[ord[j - 1]] < ub[i]; j--)
 				ord[j] = ord[j - 1];
 			ord[j] = i;
 		}
+	if (n > LEAF_ORDER_SORT)
+		qsort_arg(ord, n, sizeof(int), leaf_ub_cmp, (void *) ub);
 	for (int k = n - 1; k >= 0; k--)
 	{
 		rest[k] = sum;

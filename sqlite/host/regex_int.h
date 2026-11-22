@@ -73,6 +73,11 @@ typedef struct Rx					/* re_guts */
 	pg_wchar   *pfx;
 	int			npfx;
 	bool		exact;
+	bool		start_anchored;		/* every match starts at the beginning of the string: only that start is tried */
+	uint32_t   *lgen;				/* lookaround runs: the run (generation) that last visited each (pc, pos) */
+	size_t		lgencap;
+	uint32_t	cur_gen,
+				look_gen;			/* the generation of the lookaround run in progress, 0: none */
 } Rx;
 
 typedef struct Comp

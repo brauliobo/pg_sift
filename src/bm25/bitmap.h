@@ -101,7 +101,14 @@ struct sift_cur {
 			uint64_t cpos;              /* and the bit of its high bits after the last posting decoded */
 			sift_tid blk[SIFT_LIST_BLOCK];
 		} ls;
-		struct { sift_cur **kid; int k; } op;
+		struct {
+			sift_cur **kid;
+			int k;
+			sift_cur **hp;          /* OR of more than SIFT_OR_HEAP_MIN kids: k pointers of room for a heap of the kids, NULL without */
+			int hlen;               /* hp[0, hlen) is a min-heap on the group each kid is at */
+			uint8_t heapified;      /* hp and hlen are current */
+			uint64_t est;           /* the postings the cursor can yield at most (cur_est), known when it is made */
+		} op;
 	};
 };
 
@@ -142,6 +149,9 @@ void sift_cur_blob(sift_cur *c, const uint8_t *blob, size_t len, uint8_t *buf);
 void sift_cur_tids(sift_cur *c, const sift_tid *t, uint32_t n, uint8_t *buf);
 void sift_cur_and(sift_cur *c, sift_cur **kid, int k, uint8_t *buf);
 void sift_cur_or(sift_cur *c, sift_cur **kid, int k, uint8_t *buf);
+/* an OR of more than SIFT_OR_HEAP_MIN kids seeks with a heap of them kept in hp, room for k kids */
+#define SIFT_OR_HEAP_MIN 8
+void sift_cur_or_heap(sift_cur *c, sift_cur **hp);
 void sift_cur_andnot(sift_cur *c, sift_cur **kid, uint8_t *buf);   /* kid[0] AND NOT kid[1] */
 /* the ascending distinct gids of a LIST cursor that has not been used (out holds sift_blob_n entries); the cursor must be rewound afterwards */
 uint32_t sift_cur_gids(sift_cur *c, uint32_t *out);

@@ -256,9 +256,13 @@ sip_joins(PlannerInfo *root, RelOptInfo *rel)
 		if (ec->ec_merged != NULL || ec->ec_has_const || ec->ec_has_volatile || !bms_is_member(rel->relid, ec->ec_relids))
 			continue;
 		foreach_node(EquivalenceMember, fact, ec->ec_members)
+		{
+			if (fact->em_is_child)
+				continue;
 			foreach_node(EquivalenceMember, dim, ec->ec_members)
-				if (!fact->em_is_child && !dim->em_is_child && sip_join(root, rel, (Node *) fact->em_expr, (Node *) dim->em_expr))
+				if (!dim->em_is_child && sip_join(root, rel, (Node *) fact->em_expr, (Node *) dim->em_expr))
 					return true;
+		}
 	}
 	return false;
 }

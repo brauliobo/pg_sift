@@ -53,7 +53,9 @@ typedef struct DocMap
 	uint64		dir_off;
 	uint64		recs_end;		/* where the SB records end: the directory, or the INCLUDE records after them */
 	uint32		ncols;			/* INCLUDE columns the segment holds */
-	SiftAttrRef *adir;			/* their records, by SB, read on the first use */
+	SiftAttrRef *adir;			/* their records, by SB, read once the query needs more than a few (attr_ref) */
+	SiftAttrRef atmp;			/* the one record read alone, valid until the next attr_ref */
+	int			areads;			/* records read alone so far */
 	int64		acur[SIFT_ATTR_MAXCOLS];	/* the SB whose record of the column is in arec, -1 none */
 	uint8	   *arec[SIFT_ATTR_MAXCOLS];
 	Size		arecap[SIFT_ATTR_MAXCOLS];

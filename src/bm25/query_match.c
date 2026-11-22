@@ -169,13 +169,21 @@ fuzzy_dead_prefix(const char *q, int qlen, const char *t, int tlen, int k)
 	tw = to_wchar(t + l, tlen - l, tb, &m);
 	for (int j = 0; j <= n; j++)
 		prev[j] = j;
+	/*
+	 * Only the cells within k of the diagonal can be at most k (a cell off it is at least that many edits away), so each row is
+	 * computed on the band [i - k, i + k] with k + 1 just outside it
+	 */
 	for (int i = 1; i <= m; i++)
 	{
-		int			best = row[0] = i;
+		int			best = row[0] = i,
+					lo = Max(1, i - k),
+					hi = Min(n, i + k);
 		int		   *tmp;
 
 		off += char_len(t + off, t + tlen);
-		for (int j = 1; j <= n; j++)
+		if (lo > 1)
+			row[lo - 1] = k + 1;
+		for (int j = lo; j <= hi; j++)
 		{
 			int			v = Min(prev[j - 1] + (tw[i - 1] != qw[j - 1]), Min(prev[j], row[j - 1]) + 1);
 
@@ -184,6 +192,8 @@ fuzzy_dead_prefix(const char *q, int qlen, const char *t, int tlen, int k)
 		}
 		if (best > k)
 			return off;
+		if (hi < n)
+			row[hi + 1] = k + 1;
 		tmp = prev, prev = row, row = tmp;
 	}
 	return 0;
@@ -228,6 +238,7 @@ struct SiftDoc
 	int		   *id;				/* token -> distinct term */
 	int		   *next;			/* token -> next token of the same term, -1 */
 	int		   *first;			/* distinct term -> first token */
+	int		   *tf;				/* distinct term -> its tokens */
 	int		   *slots;			/* open addressing: term + 1, 0 = free */
 	uint32		mask;
 	uint8	   *sec;			/* token -> 0-based section of the text (split at SIFT_FIELD_SEP), NULL when there is one */
@@ -263,6 +274,7 @@ doc_group(SiftDoc *d)
 	d->next = palloc(d->ntok * sizeof(int));
 	d->first = palloc(d->ntok * sizeof(int));
 	last = palloc(d->ntok * sizeof(int));
+	d->tf = palloc0(d->ntok * sizeof(int));
 	d->nterms = 0;
 	for (int t = 0; t < d->ntok; t++)
 	{
@@ -279,6 +291,7 @@ doc_group(SiftDoc *d)
 			d->next[last[id]] = t;
 		d->id[t] = id;
 		d->next[t] = -1;
+		d->tf[id]++;
 		last[id] = t;
 	}
 }
@@ -330,12 +343,70 @@ doc_count_tokens(const SiftDoc *d, int field, const SiftQNode *leaf, const char 
 	return n;
 }
 
-/* The terms at their positions (adjacent unless stop words lie between), found on the tokens: a phrase never needs the term grouping */
+/* Documents with more tokens than this find a phrase from the occurrences of its rarest term, not by a pass over their tokens */
+#define PHRASE_SCAN_MAX	64
+
+/* The token at position want, which is at or before (from) token t on one side: -1 when the document has none */
+static int
+token_at(const SiftToken *tok, int ntok, int t, uint32 want)
+{
+	if (want < tok[t].pos)
+		while (t > 0 && tok[t - 1].pos >= want)
+			t--;
+	else
+		while (t < ntok && tok[t].pos < want)
+			t++;
+	return t < ntok && tok[t].pos == want ? t : -1;
+}
+
+/* The phrase from the tokens of its rarest term: each of them fixes where the others must be (O(min tf * terms)) */
 static bool
-eval_phrase(const SiftDoc *d, const SiftQNode *n)
+eval_phrase_anchored(SiftDoc *d, const SiftQNode *n)
+{
+	int		   *ids = palloc(n->nterms * sizeof(int));
+	int			anchor = 0;
+	bool		found = false;
+
+	for (int i = 0; i < n->nterms; i++)
+	{
+		if ((ids[i] = doc_find(d, n->terms[i], n->termlens[i])) < 0)
+		{
+			pfree(ids);
+			return false;
+		}
+		if (d->tf[ids[i]] < d->tf[ids[anchor]])
+			anchor = i;
+	}
+	for (int t = d->first[ids[anchor]]; t >= 0 && !found; t = d->next[t])
+	{
+		uint32		off = n->offs ? n->offs[anchor] : anchor,
+					start;
+		int			i = 0;
+
+		if (d->tok[t].pos < off)
+			continue;
+		start = d->tok[t].pos - off;
+		for (; i < n->nterms; i++)
+		{
+			int			j = token_at(d->tok, d->ntok, t, start + (n->offs ? n->offs[i] : i));
+
+			if (j < 0 || d->id[j] != ids[i])
+				break;
+		}
+		found = i == n->nterms;
+	}
+	pfree(ids);
+	return found;
+}
+
+/* The terms at their positions (adjacent unless stop words lie between), found on the tokens */
+static bool
+eval_phrase(SiftDoc *d, const SiftQNode *n)
 {
 	const SiftToken *tok = d->tok;
 
+	if (d->ntok > PHRASE_SCAN_MAX)
+		return eval_phrase_anchored(d, n);
 	for (int t = 0; t + n->nterms <= d->ntok; t++)
 	{
 		int			i = 0,
@@ -453,12 +524,8 @@ sift_doc_ntokens(const SiftDoc *d)
 int
 sift_doc_tf(SiftDoc *d, int i)
 {
-	int			tf = 0;
-
 	doc_group(d);
-	for (int t = d->first[i]; t >= 0; t = d->next[t])
-		tf++;
-	return tf;
+	return d->tf[i];
 }
 
 int
@@ -479,7 +546,14 @@ sift_doc_term_tf(SiftDoc *d, const char *term, int len)
 
 		return at < 0 ? 0 : sift_doc_tf(d, at);
 	}
-	return doc_count_tokens(d, field, &(SiftQNode) {.kind = SQ_TERM, .text = (char *) term, .textlen = len}, NULL, 0);
+	{
+		int			at = doc_find(d, term, len),
+					n = 0;
+
+		for (int t = at < 0 ? -1 : d->first[at]; t >= 0; t = d->next[t])
+			n += (d->sec ? d->sec[t] : 0) + 1 == field;
+		return n;
+	}
 }
 
 int

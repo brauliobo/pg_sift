@@ -21,9 +21,13 @@ op_cursor(SegCurs *cs, MemoryContext cx, EvalKind kind, sift_cur **kid, int k)
 	if (kind == EN_AND)
 		sift_cur_and(c, kid, k, cursor_buf(cx));
 	else
+	{
 		sift_cur_or(c, kid, k, cursor_buf(cx));
+		if (k > SIFT_OR_HEAP_MIN)
+			sift_cur_or_heap(c, MemoryContextAlloc(cx, k * sizeof(sift_cur *)));
+	}
 	if (cs)
-		cs->ops = list_append_unique_ptr(cs->ops, c);
+		cs->ops = lappend(cs->ops, c);
 	return c;
 }
 

@@ -14,6 +14,7 @@
 
 #include <math.h>
 
+#include "bm25/analyze.h"
 #include "bm25/eval.h"
 #include "bm25/eval_int.h"
 #include "bm25/prefix.h"
@@ -179,6 +180,47 @@ indexed_leaf(SiftPlan *p, const SiftQNode *n, Place at)
 	return term_leaf(p, n, term, len + n->textlen, at, NULL);
 }
 
+/* A phrase with more terms than this finds its repeated terms by hash, not by comparing every pair */
+#define PHRASE_PAIRWISE_MAX	16
+
+static bool
+same_phrase_term(const SiftQNode *n, int i, int j)
+{
+	return n->termlens[j] == n->termlens[i] && memcmp(n->terms[j], n->terms[i], n->termlens[i]) == 0;
+}
+
+/* first[i]: the first term of the phrase equal to term i */
+static void
+phrase_first_terms(const SiftQNode *n, int *first)
+{
+	uint32		size = 32,
+				mask;
+	int		   *slot;
+
+	if (n->nterms <= PHRASE_PAIRWISE_MAX)
+	{
+		for (int i = 0; i < n->nterms; i++)
+			for (first[i] = 0; first[i] < i && !same_phrase_term(n, i, first[i]); first[i]++)
+				;
+		return;
+	}
+	while (size < 2 * (uint32) n->nterms)
+		size *= 2;
+	mask = size - 1;
+	slot = palloc0(size * sizeof(int));
+	for (int i = 0; i < n->nterms; i++)
+	{
+		uint32		h = (uint32) sift_term_hash(n->terms[i], n->termlens[i]) & mask;
+
+		while (slot[h] && !same_phrase_term(n, i, slot[h] - 1))
+			h = (h + 1) & mask;
+		if (slot[h] == 0)
+			slot[h] = i + 1;
+		first[i] = slot[h] - 1;
+	}
+	pfree(slot);
+}
+
 /*
  * A phrase read as the AND of its distinct terms, each scoring with the
  * phrase's boost
@@ -189,27 +231,28 @@ relax_phrase(SiftPlan *p, const SiftQNode *n, Place at)
 	EvalNode  **kids = MemoryContextAlloc(p->mcxt, n->nterms * sizeof(EvalNode *));
 	int			nk = 0;
 	int		   *leaf = MemoryContextAlloc(p->mcxt, n->nterms * sizeof(int));
+	int		   *first = palloc(n->nterms * sizeof(int));
 	EvalNode   *and;
 
+	phrase_first_terms(n, first);
 	for (int i = 0; i < n->nterms; i++)
 	{
-		int			j;
-
-		for (j = 0; j < i; j++)
-			if (n->termlens[j] == n->termlens[i] && memcmp(n->terms[j], n->terms[i], n->termlens[i]) == 0)
-				break;
-		if (j < i)
+		if (first[i] < i)
 		{
-			leaf[i] = leaf[j];
+			leaf[i] = leaf[first[i]];
 			continue;
 		}
 		kids[nk++] = term_leaf(p, n, n->terms[i], n->termlens[i], at, n);
 		leaf[i] = kids[nk - 1]->leaf;
 	}
+	pfree(first);
 	if (at.positive)
 	{
-		p->phr = p->phr ? repalloc(p->phr, (p->nphr + 1) * sizeof(PhraseCheck)) :
-			MemoryContextAlloc(p->mcxt, sizeof(PhraseCheck));
+		if (p->nphr == p->phrcap)
+		{
+			p->phrcap = Max(4, 2 * p->phrcap);
+			SIFT_REGROW_IN(p->mcxt, p->phr, (Size) p->phrcap * sizeof(PhraseCheck));
+		}
 		p->phr[p->nphr++] = (PhraseCheck) {n->nterms, leaf, NULL, n->offs, at.required};
 	}
 	and = en_make(p, EN_AND, nk, kids);
@@ -508,28 +551,51 @@ bind_segment_totals(SiftPlan *p, const void *shared)
 	p->stats.avgdl = p->seg_sum_dl;
 }
 
+typedef struct PhraseOrder
+{
+	const uint64 *df;
+	const int  *leaf;
+} PhraseOrder;
+
+/* Terms by ascending df of their leaf, equal dfs by position in the phrase */
+static int
+phrase_order_cmp(const void *a, const void *b, void *arg)
+{
+	const PhraseOrder *po = arg;
+	int			x = *(const int *) a,
+				y = *(const int *) b;
+	uint64		dx = po->df[po->leaf[x]],
+				dy = po->df[po->leaf[y]];
+
+	if (dx != dy)
+		return dx < dy ? -1 : 1;
+	return x < y ? -1 : x > y;
+}
+
 /* Orders the terms of every phrase by df over the segments and finds where the positions decide */
 static void
 phrase_prepare(SiftPlan *p)
 {
 	uint64	   *df = MemoryContextAllocZero(p->mcxt, Max(p->nleaves, 1) * sizeof(uint64));
+	bool	   *seen = palloc0(Max(p->nleaves, 1) * sizeof(bool));
 
 	p->heap = p->scoring ? p->recheck : p->hardrecheck;
 	if (p->nphr == 0)
+	{
+		pfree(seen);
 		return;
+	}
 	p->pleaf = MemoryContextAlloc(p->mcxt, p->nleaves * sizeof(int));
 	for (int i = 0; i < p->nphr; i++)
 		for (int j = 0; j < p->phr[i].nterms; j++)
 		{
-			int			leaf = p->phr[i].leaf[j],
-						k;
+			int			leaf = p->phr[i].leaf[j];
 
 			for (int s = 0; df[leaf] == 0 && s < p->nsegs; s++)
 				df[leaf] += p->leaves[leaf].nterms[s] ? p->leaves[leaf].terms[s][0].info.df : 0;
-			for (k = 0; k < p->npleaf && p->pleaf[k] != leaf; k++)
-				;
-			if (k == p->npleaf && p->phr[i].required)
+			if (!seen[leaf] && p->phr[i].required)
 				p->pleaf[p->npleaf++] = leaf;
+			seen[leaf] |= p->phr[i].required;
 		}
 	p->phok = MemoryContextAlloc(p->mcxt, Max(p->nsegs * p->nphr, 1) * sizeof(bool));
 	p->segheap = MemoryContextAllocZero(p->mcxt, Max(p->nsegs, 1) * sizeof(bool));
@@ -542,9 +608,20 @@ phrase_prepare(SiftPlan *p)
 		{
 			int			k = j;
 
+			if (ph->nterms > PHRASE_PAIRWISE_MAX)
+			{
+				ph->order[j] = j;
+				continue;
+			}
 			for (; k > 0 && df[ph->leaf[ph->order[k - 1]]] > df[ph->leaf[j]]; k--)
 				ph->order[k] = ph->order[k - 1];
 			ph->order[k] = j;
+		}
+		if (ph->nterms > PHRASE_PAIRWISE_MAX)
+		{
+			PhraseOrder po = {df, ph->leaf};
+
+			qsort_arg(ph->order, ph->nterms, sizeof(int), phrase_order_cmp, &po);
 		}
 		for (int s = 0; s < p->nsegs; s++)
 		{
@@ -563,6 +640,7 @@ phrase_prepare(SiftPlan *p)
 	p->heap |= p->nmhit > 0;
 	for (int s = 0; s < p->nsegs; s++)
 		p->heap |= p->segheap[s];
+	pfree(seen);
 }
 
 static SiftPlan *

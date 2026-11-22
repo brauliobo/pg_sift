@@ -428,6 +428,38 @@ sift_seg_attr_ncols(SiftSegment *seg)
 	return seg->fmt >= SIFT_SEGFMT_ATTR ? (int) docmap(seg)->ncols : 0;
 }
 
+/*
+ * The directory of the INCLUDE records is nsb * ncols entries: a query that touches a few superblocks (a selective LIMIT) reads only the entries it
+ * uses, and the whole directory is loaded, from the segment cache when an earlier query left it there, once it needs more than ATTR_POINT_READS
+ * or once it is no bigger than a page
+ */
+#define ATTR_POINT_READS	16
+#define ATTR_POINT_MIN		8192
+
+static const SiftAttrRef *
+attr_dir_ref(SiftSegment *seg, DocMap *dm, int64 i, int col)
+{
+	Size		bytes = (Size) dm->nsb * dm->ncols * sizeof(SiftAttrRef);
+	uint64		off = dm->dir_off + (uint64) dm->nsb * sizeof(SiftDocSBRef);
+	void	   *dir,
+			   *handle;
+
+	if (bytes > ATTR_POINT_MIN && dm->areads < ATTR_POINT_READS && !sift_segcache_has(&seg->sr, SIFT_SEGCACHE_ATTRDIR, off, bytes))
+	{
+		dm->areads++;
+		seg_read(seg, off + ((uint64) i * dm->ncols + col) * sizeof(SiftAttrRef), sizeof(SiftAttrRef), &dm->atmp);
+		return &dm->atmp;
+	}
+	if (!sift_segcache_get(&seg->sr, SIFT_SEGCACHE_ATTRDIR, off, bytes, seg->mcxt, &dir, &handle))
+	{
+		seg_read(seg, off, bytes, dir);
+		if (handle)
+			sift_segcache_ready(handle);
+	}
+	dm->adir = dir;
+	return &dm->adir[i * dm->ncols + col];
+}
+
 /* The directory entry of the INCLUDE column col of the SB at index i of the docmap directory */
 static const SiftAttrRef *
 attr_ref(SiftSegment *seg, DocMap *dm, int64 i, int col)
@@ -435,13 +467,9 @@ attr_ref(SiftSegment *seg, DocMap *dm, int64 i, int col)
 	const SiftAttrRef *a;
 
 	if (dm->adir == NULL)
-	{
-		SiftAttrRef *dir = MemoryContextAlloc(seg->mcxt, (Size) dm->nsb * dm->ncols * sizeof(SiftAttrRef));
-
-		seg_read(seg, dm->dir_off + dm->nsb * sizeof(SiftDocSBRef), (Size) dm->nsb * dm->ncols * sizeof(SiftAttrRef), dir);
-		dm->adir = dir;
-	}
-	a = &dm->adir[i * dm->ncols + col];
+		a = attr_dir_ref(seg, dm, i, col);
+	else
+		a = &dm->adir[i * dm->ncols + col];
 	if (a->off < dm->recs_end || a->len < sizeof(SiftAttrColHdr) || a->off % 4 != 0 || a->off + a->len > dm->dir_off)
 		corrupt(seg, "INCLUDE record of SB %u (%u bytes at %llu) is outside the records.", dm->dir[i].sb, a->len, ULL(a->off));
 	return a;

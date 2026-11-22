@@ -507,10 +507,16 @@ sift_seg_cursor_posting(SiftSegCursor *c, SiftKey *key, uint8 *tf, uint16 *dl, c
 void
 sift_seg_live_stats(SiftSegment *seg, uint64 *ndocs, uint64 *sum_dl)
 {
-	SiftSegCursor *c = sift_seg_cursor(seg, 0, NULL, 0);
+	SiftSegCursor *c;
 	SiftKey		key;
 	uint16		dl;
 
+	if (!(seg->entry.flags & SIFT_SEG_DIRTY) || seg->fmt >= SIFT_SEGFMT_LIVEROWS)
+	{
+		sift_seg_live_totals(seg, ndocs, sum_dl);
+		return;
+	}
+	c = sift_seg_cursor(seg, 0, NULL, 0);
 	*ndocs = *sum_dl = 0;
 	while (sift_seg_cursor_doc(c, &key, &dl))
 	{

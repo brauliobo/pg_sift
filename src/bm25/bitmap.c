@@ -641,10 +641,56 @@ static const sift_grp *and_seek(sift_cur *c, uint32_t target)
 	return found < 0 ? NULL : ended(c);
 }
 
+/* ORs the groups of the kids at the group mg (all kids of the heap are at or after it): the kids at mg are a subtree from the root */
+static void or_merge_at(sift_cur *c, uint32_t mg, int hlen)
+{
+	sift_cur **kid = c->op.hp;
+	const sift_grp *acc = NULL;
+	int nb = 0, nstk = 0, stk[40], i = 0;
+	for (;;) {
+		if (i < hlen && kid[i]->state == 1 && kid[i]->g.gid == mg) {
+			sift_cur *k = kid[i];
+			if (!acc) acc = &k->g;
+			else sift_k->or2(acc, &k->g, &c->g, c->buf + (nb++ & 1) * SIFT_GRP_BYTES), acc = &c->g;
+			if (2 * i + 2 < hlen) stk[nstk++] = 2 * i + 2;
+			i = 2 * i + 1;
+		} else if (nstk) i = stk[--nstk];
+		else break;
+	}
+	if (acc != &c->g) c->g = *acc;
+	c->state = 1;
+}
+
+static const sift_grp *or_seek_heap(sift_cur *c, uint32_t target)
+{
+	sift_cur **kid = c->op.hp;
+	int hlen, parked = 0;
+	if (!c->op.heapified || c->state == 0) c->op.hlen = or_heap_build(kid, c->op.kid, c->op.k);
+	hlen = c->op.hlen;
+	while (hlen > 0 && or_cur_gid(kid[0]) < (int64_t)target) {
+		sift_cur *k = kid[0];
+		if (sift_seek(k, target)) {
+			or_sift_down(kid, hlen, 0);
+			continue;
+		}
+		/* a kid with no group for this seek that is not exhausted (an operator under sift_seek_eq) is left out until the heap is rebuilt */
+		parked += k->state != 2;
+		kid[0] = kid[--hlen];
+		kid[hlen] = k;
+		or_sift_down(kid, hlen, 0);
+	}
+	c->op.hlen = hlen;
+	c->op.heapified = !parked;
+	if (hlen == 0) return seek_limit == UINT32_MAX ? ended(c) : NULL;
+	or_merge_at(c, kid[0]->g.gid, hlen);
+	return &c->g;
+}
+
 static const sift_grp *or_seek(sift_cur *c, uint32_t target)
 {
 	if (c->state == 2) return NULL;
 	if (c->state == 1 && c->g.gid >= target) return &c->g;
+	if (c->op.hp && c->op.k > SIFT_OR_HEAP_MIN) return or_seek_heap(c, target);
 	uint32_t mg = UINT32_MAX;
 	for (int i = 0; i < c->op.k; i++) {
 		const sift_grp *g = sift_seek(c->op.kid[i], target);
@@ -703,41 +749,49 @@ const sift_grp *sift_seek_eq(sift_cur *c, uint32_t gid)
 static void op_init(sift_cur *c, const sift_grp *(*seek)(sift_cur *, uint32_t), sift_cur **kid, int k, uint8_t *buf)
 {
 	cur_init(c, seek, buf);
-	c->op.kid = kid, c->op.k = k;
+	c->op.kid = kid, c->op.k = k, c->op.hp = NULL, c->op.hlen = 0, c->op.heapified = 0, c->op.est = 0;
 }
 
-/* postings an unpositioned cursor can yield at most, to put the rarest kid of an AND first */
+/* postings an unpositioned cursor can yield at most, to put the rarest kid of an AND first: the operators know it when they are made */
 static uint64_t cur_est(const sift_cur *c)
 {
-	uint64_t n = 0;
 	if (c->seek == gr_seek) return c->gr.base[c->gr.ng];
 	if (c->seek == ls_seek) return c->ls.n;
-	if (c->seek == or_seek) {
-		for (int i = 0; i < c->op.k; i++) n += cur_est(c->op.kid[i]);
-		return n;
-	}
-	if (c->seek == andnot_seek) return cur_est(c->op.kid[0]);
-	n = UINT64_MAX;
-	for (int i = 0; i < c->op.k; i++) {
-		uint64_t e = cur_est(c->op.kid[i]);
-		if (e < n) n = e;
-	}
-	return n;
+	return c->op.est || c->op.k != 1 ? c->op.est : cur_est(c->op.kid[0]);
 }
 
 void sift_cur_and(sift_cur *c, sift_cur **kid, int k, uint8_t *buf)
 {
 	op_init(c, and_seek, kid, k, buf);
+	c->op.est = UINT64_MAX;
+	for (int i = 0; i < k; i++) {
+		uint64_t e = cur_est(kid[i]);
+		if (e < c->op.est) c->op.est = e;
+	}
 	for (int i = 1; i < k; i++) {
 		sift_cur *x = kid[i];
 		uint64_t e = cur_est(x);
-		int j = i;
-		for (; j > 0 && cur_est(kid[j - 1]) > e; j--) kid[j] = kid[j - 1];
-		kid[j] = x;
+		int lo = 0, hi = i;
+		while (lo < hi) {
+			int mid = lo + (hi - lo) / 2;
+			if (cur_est(kid[mid]) > e) hi = mid;
+			else lo = mid + 1;
+		}
+		memmove(kid + lo + 1, kid + lo, (size_t)(i - lo) * sizeof *kid);
+		kid[lo] = x;
 	}
 }
-void sift_cur_or(sift_cur *c, sift_cur **kid, int k, uint8_t *buf) { op_init(c, or_seek, kid, k, buf); }
-void sift_cur_andnot(sift_cur *c, sift_cur **kid, uint8_t *buf) { op_init(c, andnot_seek, kid, 2, buf); }
+void sift_cur_or(sift_cur *c, sift_cur **kid, int k, uint8_t *buf)
+{
+	op_init(c, or_seek, kid, k, buf);
+	for (int i = 0; i < k; i++) c->op.est += cur_est(kid[i]);
+}
+void sift_cur_or_heap(sift_cur *c, sift_cur **hp) { c->op.hp = hp; }
+void sift_cur_andnot(sift_cur *c, sift_cur **kid, uint8_t *buf)
+{
+	op_init(c, andnot_seek, kid, 2, buf);
+	c->op.est = cur_est(kid[0]);
+}
 
 static uint64_t and_count2(sift_cur **kid)
 {

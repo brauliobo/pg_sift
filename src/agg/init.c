@@ -402,7 +402,8 @@ init_states(AggExec *ex)
 {
 	SiftAggSpec *s = ex->spec;
 
-	ex->ps = MemoryContextAllocZero(ex->cxt, Max(s->npreds_total, 1) * sizeof(PredState));
+	ex->ps_cap = Max(s->npreds_total, 1);
+	ex->ps = MemoryContextAllocZero(ex->cxt, ex->ps_cap * sizeof(PredState));
 	ex->ks = MemoryContextAllocZero(ex->cxt, Max(s->nkeys, 1) * sizeof(KeyState));
 }
 

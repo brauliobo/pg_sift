@@ -18,6 +18,16 @@
 #include "agg/gen_int.h"
 #include "core/cmp.h"
 
+/* The states of the predicates have room for n of them: the table doubles, so the predicates a scan adds one at a time cost no more than the last doubling */
+void
+sift_agg_ps_room(AggExec *ex, int n)
+{
+	if (n <= ex->ps_cap)
+		return;
+	ex->ps_cap = Max(ex->ps_cap * 2, n);
+	ex->ps = repalloc(ex->ps, (Size) ex->ps_cap * sizeof(PredState));
+}
+
 /*
  * A tuple of an inner or semi join needs a row of the table with its key, so the keys of the loaded table are a conjunct of the scan,
  * `leaf IN (keys)`: the leaf's zones, the source's filters and the row bitmaps apply it before a tuple is made, where the join would
@@ -87,8 +97,12 @@ join_filter_str(AggExec *ex, int ci, int k, int leaf, MemoryContext caller)
 	m = ex->cs[ci].map;
 	if (!m->ktext[k] || m->lazy || m->kd[k].n == 0 || m->kd[k].n > Min(JSTR_MAX_KEYS, Max(256, ex->heap->rd_rel->reltuples / 16)))
 		return;
-	ex->jstr = ex->jstr ? repalloc(ex->jstr, (ex->njstr + 1) * sizeof(SiftSrcStrTest)) : palloc(sizeof(SiftSrcStrTest));
-	ex->jtrial = ex->jtrial ? repalloc(ex->jtrial, (ex->njstr + 1) * sizeof(JstrTrial)) : palloc(sizeof(JstrTrial));
+	if (ex->njstr == ex->jstr_cap)
+	{
+		ex->jstr_cap = Max(ex->jstr_cap * 2, 8);
+		SIFT_REGROW(ex->jstr, (Size) ex->jstr_cap * sizeof(SiftSrcStrTest));
+		SIFT_REGROW(ex->jtrial, (Size) ex->jstr_cap * sizeof(JstrTrial));
+	}
 	ex->jtrial[ex->njstr] = (JstrTrial) {0};
 	t = &ex->jstr[ex->njstr++];
 	vals = palloc(m->kd[k].n * sizeof(SiftColValue));
@@ -430,7 +444,7 @@ join_filters(AggExec *ex, MemoryContext caller)
 						ex->cs[ci].map = map_load(ex, ci);
 						MemoryContextSwitchTo(ex->cxt);
 					}
-					ex->ps = repalloc(ex->ps, (total + 1) * sizeof(PredState));
+					sift_agg_ps_room(ex, total + 1);
 					memset(&ex->ps[total], 0, sizeof(PredState));
 					live = join_own_rows(ex, ci, join_live_rows(ex, ci, caller));
 					p = join_filter_lut(ex, ci, k, leaf, total, live);
@@ -455,7 +469,7 @@ join_filters(AggExec *ex, MemoryContext caller)
 			if (ex->cs[ci].map->ktext[k] || ex->cs[ci].map->dcls)
 				continue;
 			/* the table of the predicate is the state of the id it is given: make room first */
-			ex->ps = repalloc(ex->ps, (total + 1) * sizeof(PredState));
+			sift_agg_ps_room(ex, total + 1);
 			memset(&ex->ps[total], 0, sizeof(PredState));
 			/* the keys of an anti join are the rows that match, whatever a join after it does with them */
 			live = j->kind == SJ_ANTI ? NULL : join_live_rows(ex, ci, caller);

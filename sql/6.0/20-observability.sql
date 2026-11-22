@@ -4,19 +4,25 @@
 
 -- sift.health: one row per thing to do, error first, then warn, then info; no row when everything is as it should be. action_sql is a statement to run (or a setting to change).
 -- Format 1 is never an error: a sift_col index or sift_table of Format 1 is listed once as info, with the optional upgrade.
-CREATE OR REPLACE FUNCTION sift.health(rel regclass DEFAULT NULL)
+-- The checks of sift.health over the rows of sift.status given as jsonb (one object per relation, relation and table_name as oids), so that a caller that has the rows already (sift.indexes) reads
+-- them once. rel names the relation the rows are of (NULL: every one), which is what the two checks that are not of a relation ask.
+CREATE OR REPLACE FUNCTION sift_internal.health_over(statuses jsonb, rel regclass DEFAULT NULL)
 RETURNS TABLE (relation regclass, severity text, check_name text, detail text, action_sql text)
 	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $fn$
 	WITH cfg AS (
 		SELECT coalesce((SELECT setting FROM pg_settings WHERE name = 'sift.async_maintenance'), 'on') = 'off' AS async_off,
 			   coalesce((SELECT setting::int8 FROM pg_settings WHERE name = 'sift.shared_cache_kb'), 65536) AS shared_kb
-	), st AS (
-		SELECT s.*, i.indisvalid AND i.indisready AS is_valid, h.relpages, h.relallvisible, w.error_code, w.last_error, w.next_retry,
+	), st AS MATERIALIZED (
+		SELECT s.relation::regclass AS relation, s.table_name::regclass AS table_name, s.am, s.format_major, s.size_bytes, s.quarantined, s.quarantine_reason, s.vblocks_left,
+			   s.maint_failures, s.free_bytes, s.shrink_blocked_by, s.dead_pct, s.dead_rows, s.live_rows, s.last_maint_at, s.l0_parts, s.l0_slabs, s.scopes,
+			   i.indisvalid AND i.indisready AS is_valid, h.relpages, h.relallvisible, w.error_code, w.last_error, w.next_retry,
 			   s.live_rows + s.dead_rows AS total_rows
-		FROM sift.status(rel) s
+		FROM jsonb_to_recordset(statuses) AS s(relation oid, table_name oid, am text, format_major int2, size_bytes int8, quarantined bool, quarantine_reason text, vblocks_left int8,
+										 maint_failures int4, free_bytes int8, shrink_blocked_by text, dead_pct numeric, dead_rows int8, live_rows int8, last_maint_at timestamptz,
+										 l0_parts int4, l0_slabs int4, scopes int2)
 		LEFT JOIN pg_index i ON i.indexrelid = s.relation
 		LEFT JOIN pg_class h ON h.oid = s.table_name
-		LEFT JOIN sift.workers w ON w.relation = s.relation
+		LEFT JOIN sift.workers w ON w.relation = s.relation::regclass
 	), found AS (
 		SELECT s.relation, 'info' AS severity, 'format_upgrade_available' AS check_name,
 			   'Format 1.x (fully supported; optional REINDEX INDEX CONCURRENTLY upgrades to Format 2.0)' AS detail,
@@ -83,6 +89,14 @@ RETURNS TABLE (relation regclass, severity text, check_name text, detail text, a
 	)
 	SELECT f.relation, f.severity, f.check_name, f.detail, f.action_sql
 	FROM found f
+$fn$;
+COMMENT ON FUNCTION sift_internal.health_over(jsonb, regclass) IS 'Internal: the checks of sift.health over the rows of sift.status (jsonb), unordered';
+
+CREATE OR REPLACE FUNCTION sift.health(rel regclass DEFAULT NULL)
+RETURNS TABLE (relation regclass, severity text, check_name text, detail text, action_sql text)
+	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $fn$
+	SELECT f.relation, f.severity, f.check_name, f.detail, f.action_sql
+	FROM sift_internal.health_over((SELECT coalesce(jsonb_agg(to_jsonb(s) || jsonb_build_object('relation', s.relation::oid, 'table_name', s.table_name::oid)), '[]') FROM sift.status(rel) s), rel) f
 	ORDER BY CASE f.severity WHEN 'error' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, f.relation::text NULLS LAST, f.check_name
 $fn$;
 COMMENT ON FUNCTION sift.health(regclass) IS 'What to do about the sift indexes and tables of the database (or about one), a row each, errors first: severity (error, warn, info), a stable check_name, the numbers behind it and action_sql, a statement to run. No row when all is well. A relation of Format 1 is listed as info (format_upgrade_available), never as an error.';
@@ -102,9 +116,10 @@ RETURNS TABLE (kind text, pid int4, relation regclass, part_id int8, job text, p
 			   coalesce(sum(p.refusals), 0)::int8 AS refusals
 		FROM sift.shared_memory_pools() p
 	), q AS (
-		SELECT j.*, extract(epoch FROM now() - j.started_at) AS elapsed_s
+		SELECT j.*, extract(epoch FROM now() - j.started_at) AS elapsed_s, a.wait_event
 		FROM sift_internal.maint_queue() j
 		LEFT JOIN pg_index i ON i.indexrelid = j.relation
+		LEFT JOIN pg_stat_activity a ON a.pid = j.pid
 		WHERE sift._may_inspect(coalesce(i.indrelid, j.relation)::regclass)
 	)
 	SELECT CASE WHEN q.queued THEN 'queued' ELSE 'worker' END, q.pid, q.relation::regclass, q.part_id, q.job, q.phase, q.priority, q.done, q.total,
@@ -112,7 +127,7 @@ RETURNS TABLE (kind text, pid int4, relation regclass, part_id int8, job text, p
 		   q.bytes_written, CASE WHEN NOT q.queued THEN (q.elapsed_s * 1000)::int8 END,
 		   CASE WHEN NOT q.queued THEN round(q.bytes_written / 1048576.0 / NULLIF(q.elapsed_s, 0), 2) END,
 		   CASE WHEN NOT q.queued AND q.done > 0 THEN round((q.elapsed_s * (q.total - q.done) / q.done)::numeric, 1) END,
-		   q.started_at, (SELECT a.wait_event FROM pg_stat_activity a WHERE a.pid = q.pid),
+		   q.started_at, q.wait_event,
 		   pc.workers_active, pc.workers_max, pc.pacer_mode, pc.pacer_delay_ms, pc.oltp_active_backends,
 		   shm.used, shm.lim, round(100.0 * shm.used / NULLIF(shm.lim, 0), 2), shm.refusals
 	FROM q CROSS JOIN pc CROSS JOIN shm
@@ -126,6 +141,13 @@ COMMENT ON FUNCTION sift.activity() IS 'The maintenance jobs that run and wait n
 
 -- sift.indexes: the columns of 5.1 first (kind, table and bytes keep their names), then the 6.0 columns. size is for the eye, size_bytes for a program; a ratio is NULL when its denominator is 0.
 CREATE OR REPLACE VIEW sift.indexes AS
+	WITH st AS MATERIALIZED (
+		SELECT s.* FROM sift.status() s
+	), hl AS (
+		SELECT k.relation, CASE WHEN bool_or(k.severity = 'error') THEN 'error' WHEN bool_or(k.severity = 'warn') THEN 'warn' ELSE 'info' END AS health
+		FROM sift_internal.health_over((SELECT coalesce(jsonb_agg(to_jsonb(s) || jsonb_build_object('relation', s.relation::oid, 'table_name', s.table_name::oid)), '[]') FROM st s)) k
+		WHERE k.relation IS NOT NULL GROUP BY k.relation
+	)
 	SELECT l.relation, l.kind, l."table", l.bytes, l.segments, l.format, l.state,
 		   l."table" AS table_name, l.kind AS am, coalesce(h.health, 'ok') AS health,
 		   s.live_rows + s.dead_rows AS rows, s.dead_pct, pg_size_pretty(l.bytes) AS size, l.bytes AS size_bytes,
@@ -153,9 +175,8 @@ CREATE OR REPLACE VIEW sift.indexes AS
 		  CROSS JOIN LATERAL sift.worker_state(c.oid) w
 		  CROSS JOIN LATERAL sift.index_format(c.oid) f
 		  WHERE c.relkind IN ('r', 'm') AND sift._may_inspect(c.oid)) l
-	LEFT JOIN sift.status() s ON s.relation = l.relation
-	LEFT JOIN (SELECT k.relation, CASE WHEN bool_or(k.severity = 'error') THEN 'error' WHEN bool_or(k.severity = 'warn') THEN 'warn' ELSE 'info' END AS health
-			   FROM sift.health() k WHERE k.relation IS NOT NULL GROUP BY k.relation) h ON h.relation = l.relation;
+	LEFT JOIN st s ON s.relation = l.relation
+	LEFT JOIN hl h ON h.relation = l.relation;
 COMMENT ON VIEW sift.indexes IS 'One row per sift object the caller can read, whatever its access method and format: relation, table, access method, format, state (invalid, locked, quarantined, failing, maintaining or ready), worst health severity, rows, dead rows, size, bytes per row, compression ratio, space utilization, parts by level, scopes and format_note. kind, table and bytes are the 5.1 columns.';
 GRANT SELECT ON sift.indexes TO PUBLIC;
 

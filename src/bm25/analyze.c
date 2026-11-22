@@ -304,18 +304,6 @@ bag_add(SiftAnalyzer *a, size_t *used, int *nterms, int n, int tf)
 	return *nterms - 1;
 }
 
-/* Byte length of the first nchars characters of w[0..len) */
-static int
-prefix_bytes(const SiftAnalyzer *a, const char *w, int len, int nchars)
-{
-	int			i = 0;
-
-	for (; nchars > 0 && i < len; nchars--)
-		for (i++; a->utf8 && i < len && ((uint8) w[i] & 0xC0) == 0x80; i++)
-			;
-	return i;
-}
-
 /*
  * Counts the prefix terms "SEP prefix" (or "field SEP prefix") of the words
  * and field words bag[0..nwords) (their lengths 1..prefix_len in characters,
@@ -340,8 +328,12 @@ bag_add_prefixes(SiftAnalyzer *a, size_t *used, int *nterms, int nwords)
 		wlen = a->bag[t].len - skip;
 		for (int l = 1; l <= a->cfg.prefix_len && prev < wlen; l++)
 		{
-			int			n = prefix_bytes(a, a->buf + a->bag[t].off + skip, wlen, l);
+			const char *w = a->buf + a->bag[t].off + skip;
+			int			n = prev + 1;
 			char	   *dst;
+
+			while (a->utf8 && n < wlen && ((uint8) w[n] & 0xC0) == 0x80)
+				n++;
 
 			ENSURE(a, buf, bufcap, *used + 2 + n + DST_CAP);
 			dst = a->buf + *used;

@@ -182,7 +182,9 @@ extern PGDLLIMPORT int sift_docdir_min_sb;
 typedef enum SiftSegcacheKind
 {
 	SIFT_SEGCACHE_DOCDIR,
-	SIFT_SEGCACHE_BLOB
+	SIFT_SEGCACHE_BLOB,
+	SIFT_SEGCACHE_ATTRDIR,
+	SIFT_SEGCACHE_BOUNDS
 } SiftSegcacheKind;
 
 extern bool sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, MemoryContext mcxt,

@@ -14,6 +14,26 @@ int			sift_test_rank_mode = -1;
 SiftRankStats sift_rank_stats;
 #endif
 
+/* The cursor a leaf is found by in the kids of the root OR: found by a scan up to this many, else by a bisection of them sorted by pointer */
+#define LEAF_MAP_SCAN	16
+
+typedef struct LeafCur
+{
+	const sift_cur *cur;
+	int			leaf;
+} LeafCur;
+
+static int
+leafcur_cmp(const void *a, const void *b)
+{
+	const LeafCur *x = a,
+			   *y = b;
+
+	if (x->cur != y->cur)
+		return (uintptr_t) x->cur < (uintptr_t) y->cur ? -1 : 1;
+	return x->leaf < y->leaf ? -1 : x->leaf > y->leaf;
+}
+
 /* The bounds of one leaf in segment s: the max over its terms per SB */
 static void
 leaf_bounds(SiftPlan *p, RankSeg *rs, int leaf, MemoryContext cx)
@@ -355,11 +375,9 @@ term_bounds(SiftPlan *p, RankSeg *rs, int leaf)
 	for (int j = 0; j < p->leaves[leaf].nterms[rs->s]; j++)
 	{
 		RkTerm	   *t = &rs->term[rs->first[leaf] + j];
-		uint8		top = 0;
-
 		t->gb = sift_post_bounds(t->pc, &t->ngb);
-		for (int k = 0; k < t->ngb; k++)
-			top = Max(top, t->gb[k].bound);
+		uint8		top = t->ngb > 0 ? sift_post_max_bound(t->pc) : 0;
+
 		t->ubw = sift_kern_ub_weight(t->w, p->stats.avgdl, ref, p->nleaves);
 		t->tub = t->ubw * (float4) top;
 		rs->lmax[leaf] = Max(rs->lmax[leaf], t->tub);
@@ -429,19 +447,38 @@ rank_open_seg(SiftRanker *r, int s)
 
 		rs->kidleaf = MemoryContextAlloc(p->mcxt, rs->nug * sizeof(int));
 		rs->kidskip = MemoryContextAllocZero(p->mcxt, rs->nug * sizeof(bool));
+		LeafCur    *lcs = palloc(Max(p->nleaves, 1) * sizeof(LeafCur));
+		int			nlc = 0;
+
+		for (int i = 0; i < p->nleaves; i++)
+		{
+			const EvalLeaf *l = &p->leaves[i];
+			sift_cur   *lc = rs->cs.leafor[i] ? rs->cs.leafor[i] :
+			l->scoring && l->nterms[s] == 1 ? sift_post_cursor(rs->cs.leafpc[i][0]) : NULL;
+
+			if (lc != NULL)
+				lcs[nlc++] = (LeafCur) {lc, i};
+		}
+		if (nlc > LEAF_MAP_SCAN && nk > LEAF_MAP_SCAN)
+			qsort(lcs, nlc, sizeof(LeafCur), leafcur_cmp);
 		for (int k = 0; k < nk; k++)
 		{
-			rs->kidleaf[k] = -1;
-			for (int i = 0; i < p->nleaves; i++)
-			{
-				const EvalLeaf *l = &p->leaves[i];
-				sift_cur   *lc = rs->cs.leafor[i] ? rs->cs.leafor[i] :
-				l->scoring && l->nterms[s] == 1 ? sift_post_cursor(rs->cs.leafpc[i][0]) : NULL;
+			int			lo = 0,
+						hi = nlc;
 
-				if (lc != NULL && kid[k] == lc)
-					rs->kidleaf[k] = i;
+			rs->kidleaf[k] = -1;
+			if (nlc <= LEAF_MAP_SCAN || nk <= LEAF_MAP_SCAN)
+			{
+				for (int i = 0; i < nlc; i++)
+					if (lcs[i].cur == kid[k])
+						rs->kidleaf[k] = lcs[i].leaf;
+				continue;
 			}
+			SIFT_BISECT(int, mid, lo, hi, (uintptr_t) lcs[mid].cur <= (uintptr_t) kid[k]);
+			if (lo > 0 && lcs[lo - 1].cur == kid[k])
+				rs->kidleaf[k] = lcs[lo - 1].leaf;
 		}
+		pfree(lcs);
 		rs->leaf_kid = MemoryContextAllocZero(p->mcxt, Max(p->nleaves, 1) * sizeof(bool));
 		rs->ordpos = MemoryContextAlloc(p->mcxt, Max(p->nleaves, 1) * sizeof(int));
 		for (int i = 0; i < p->nleaves; i++)

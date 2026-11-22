@@ -90,6 +90,7 @@ sift_runs_cuts(SiftRun **runs, int nruns, Size budget, uint64 min_bytes, int tar
 	RunReader  *rd = runs_open_readers(runs, nruns, budget, &positions, &ndocs);
 	RunSample  *all = NULL;
 	int			nall = 0,
+				cap = 0,
 				ncuts;
 
 	for (int i = 0; i < nruns; i++)
@@ -97,7 +98,11 @@ sift_runs_cuts(SiftRun **runs, int nruns, Size budget, uint64 min_bytes, int tar
 		int			n;
 		RunSample  *smp = run_samples(&rd[i], runs[i], &n);
 
-		SIFT_REGROW(all, (nall + n) * sizeof(RunSample));
+		if (nall + n > cap)
+		{
+			cap = Max(64, Max(2 * cap, nall + n));
+			SIFT_REGROW(all, (Size) cap * sizeof(RunSample));
+		}
 		memcpy(all + nall, smp, n * sizeof(RunSample));
 		nall += n;
 	}
@@ -117,8 +122,14 @@ reader_to_term(RunReader *rd, const SiftRun *run, const SiftTermCut *lo)
 	RunSample  *smp = run_samples(rd, run, &n);
 	uint64		at = n > 0 ? smp[0].off : 0;
 
-	for (int i = 1; lo && i < n && sift_term_cmp(smp[i].term, smp[i].len, lo->term, lo->len) <= 0; i++)
-		at = smp[i].off;
+	if (lo && n > 1)
+	{
+		int			l = 1,
+					r = n;
+
+		SIFT_BISECT(int, mid, l, r, sift_term_cmp(smp[mid].term, smp[mid].len, lo->term, lo->len) <= 0);
+		at = smp[l - 1].off;
+	}
 	if (n == 0)
 	{
 		rd->len = 0;

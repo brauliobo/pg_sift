@@ -126,6 +126,7 @@ struct SiftPlan
 	bool		hardrecheck;	/* unranked scans: a negated phrase, every candidate is rechecked in the heap */
 	PhraseCheck *phr;			/* phrases decided by positions where the segment has them; the heap decides the other candidates */
 	int			nphr;
+	int			phrcap;
 	int		   *pleaf;			/* the distinct leaves of the required phrases */
 	int			npleaf;
 	bool	   *phok;			/* [nsegs * nphr] the segment holds the positions of all terms of the phrase */
@@ -414,6 +415,23 @@ extern SIFT_INTERNAL void bind_wbuf(SiftPlan *p);
 extern SIFT_INTERNAL void import_wbuf(SiftPlan *p, const SharedBind *h);
 extern SIFT_INTERNAL void bind_scoring(SiftPlan *p);
 
+/* The terms a deferred leaf keeps (at most WIDE_TOP_MAX): the ones with the largest bounds, then the largest df, then the smallest bytes */
+typedef struct TopTerm
+{
+	char	   *term;
+	int			len;
+	uint8		mb;				/* the largest bound over the segments */
+	double		ldf;
+	SiftTermInfo *info;			/* [segment] the term's entry, ldf 0 where it has none */
+} TopTerm;
+
+typedef struct TopTerms
+{
+	int			e;
+	int			n;
+	TopTerm	   *t;
+} TopTerms;
+
 /* The most terms a wide leaf reads one by one: the ones its weighing keeps, and the ones a search widens it to before it reads them as one union */
 #define WIDE_TOP_MAX	64
 
@@ -423,6 +441,10 @@ extern SIFT_INTERNAL bool expand_tail(SiftPlan *p, EvalLeaf *l, int s, int limit
 extern SIFT_INTERNAL void tail_wide_names(SiftPlan *p, EvalLeaf *l);
 extern SIFT_INTERNAL void tail_widen_leaf(SiftPlan *p, EvalLeaf *l);
 extern SIFT_INTERNAL void tail_defer_leaf(SiftPlan *p, EvalLeaf *l);
+extern SIFT_INTERNAL int tail_wbuf_terms(EvalLeaf *l, LeafTerm **out);
+extern SIFT_INTERNAL double tail_wide_blended_df(SiftPlan *p, EvalLeaf *l, TopTerms *tt);
+extern SIFT_INTERNAL double tail_weigh_top(SiftPlan *p, EvalLeaf *l, TopTerms *tt);
+extern SIFT_INTERNAL void tail_top_install(SiftPlan *p, EvalLeaf *l, TopTerms *tt, float4 w);
 extern SIFT_INTERNAL void score_wbuf(SiftPlan *p);
 extern SIFT_INTERNAL const LeafTerm *leaf_weighed(const EvalLeaf *l, const char *term, int len);
 

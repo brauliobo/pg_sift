@@ -42,8 +42,9 @@ struct SqInv
 				dcap,
 				ndead;
 	bool		docs_sorted;		/* keys ascend in arrival order */
-	uint32	   *dmap;				/* key -> ord + 1, open addressing */
+	uint32	   *dmap;				/* key -> ord + 1, open addressing: a removed doc keeps its slot until its key is added again or the table is rebuilt */
 	uint32		dmask;
+	uint32		dused;				/* slots of dmap in use */
 	InvTerm   **slots;				/* open addressing by term hash */
 	uint32		smask;
 	InvTerm   **terms;
@@ -63,6 +64,7 @@ sq_inv_new(bool positions)
 	inv->positions = positions;
 	inv->docs_sorted = true;
 	inv->dmask = 1023;
+	inv->dused = 0;
 	inv->dmap = calloc(inv->dmask + 1, sizeof(uint32));
 	inv->smask = 4095;
 	inv->slots = calloc(inv->smask + 1, sizeof(InvTerm *));
@@ -95,6 +97,7 @@ sq_inv_clear(SqInv *inv)
 	inv->npost = 0;
 	inv->docs_sorted = true;
 	inv->dmask = 1023;
+	inv->dused = 0;
 	inv->dmap = calloc(inv->dmask + 1, sizeof(uint32));
 	inv->smask = 4095;
 	inv->slots = calloc(inv->smask + 1, sizeof(InvTerm *));
@@ -127,19 +130,27 @@ key_hash(SiftKey k)
 	return (uint32) (sift_fib64(k) >> 32);
 }
 
+/* Rebuilds the table of the live docs, twice as large only when they fill half of it: the slots of removed docs are not carried over */
 static void
 dmap_grow(SqInv *inv)
 {
-	uint32		mask = inv->dmask * 2 + 1;
-	uint32	   *m = calloc(mask + 1, sizeof(uint32));
+	uint32		mask = inv->dmask;
+	uint32	   *m;
 
+	if ((inv->ndocs - inv->ndead + 1) * 2 > mask)
+		mask = mask * 2 + 1;
+	m = calloc(mask + 1, sizeof(uint32));
+	inv->dused = 0;
 	for (uint32 ord = 0; ord < inv->ndocs; ord++)
 	{
 		uint32		h = key_hash(inv->key[ord]) & mask;
 
+		if (inv->dead[ord])
+			continue;
 		while (m[h])
 			h = (h + 1) & mask;
 		m[h] = ord + 1;
+		inv->dused++;
 	}
 	free(inv->dmap);
 	inv->dmap = m;
@@ -164,13 +175,23 @@ add_doc(SqInv *inv, SiftKey key, uint32 dl)
 	inv->key[ord] = key;
 	inv->dl[ord] = Min(dl, SIFT_MAX_DL);
 	inv->dead[ord] = 0;
-	inv->ndocs++;
-	if (inv->ndocs * 2 > inv->dmask)
+	if ((inv->dused + 1) * 2 > inv->dmask)
 		dmap_grow(inv);
+	inv->ndocs++;
 	h = key_hash(key) & inv->dmask;
 	while (inv->dmap[h])
+	{
+		uint32		eord = inv->dmap[h] - 1;
+
+		if (inv->key[eord] == key && inv->dead[eord])
+		{
+			inv->dmap[h] = ord + 1;
+			return ord;
+		}
 		h = (h + 1) & inv->dmask;
+	}
 	inv->dmap[h] = ord + 1;
+	inv->dused++;
 	return ord;
 }
 

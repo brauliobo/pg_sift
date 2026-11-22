@@ -16,6 +16,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
+#include "optimizer/tlist.h"
 #include "parser/parsetree.h"
 #include "port/pg_bitutils.h"
 #include "utils/array.h"
@@ -894,17 +895,19 @@ List *
 sift_v6_scan_tlist(const List *exprs, Index relid, NodeTag extra)
 {
 	List	   *tlist = NIL;
+	Bitmapset  *seen_vars = NULL;
 
 	foreach_ptr(Node, n, pull_var_clause((Node *) exprs, PVC_INCLUDE_AGGREGATES | PVC_INCLUDE_WINDOWFUNCS | PVC_INCLUDE_PLACEHOLDERS))
 	{
-		bool		seen = false;
+		const bool	var = IsA(n, Var) && ((Var *) n)->varno == relid && ((Var *) n)->varlevelsup == 0 && bms_is_empty(((Var *) n)->varnullingrels);
+		const int	bit = var ? ((Var *) n)->varattno - FirstLowInvalidHeapAttributeNumber : 0;
 
 		if (nodeTag(n) != extra && (!IsA(n, Var) || ((Var *) n)->varno != relid || ((Var *) n)->varlevelsup != 0))
 			return NIL;
-		foreach_node(TargetEntry, te, tlist)
-			seen |= equal(te->expr, n);
-		if (!seen)
-			tlist = lappend(tlist, makeTargetEntry((Expr *) copyObject(n), list_length(tlist) + 1, NULL, false));
+		if (var ? bms_is_member(bit, seen_vars) : tlist_member((Expr *) n, tlist) != NULL)
+			continue;
+		seen_vars = var ? bms_add_member(seen_vars, bit) : seen_vars;
+		tlist = lappend(tlist, makeTargetEntry((Expr *) copyObject(n), list_length(tlist) + 1, NULL, false));
 	}
 	return tlist;
 }

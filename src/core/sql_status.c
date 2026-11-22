@@ -38,6 +38,7 @@
 #include "core/f2/fsm.h"
 #include "core/f2/manifest.h"
 #include "core/inspect.h"
+#include "core/memtrack.h"
 #include "core/quarantine.h"
 #include "core/shm_manifest.h"
 #include "core/sql_api.h"
@@ -244,6 +245,13 @@ typedef struct F2Tally
 	Due			due;
 } F2Tally;
 
+/* A reason noted already comes before d in the Due order: noting d would change nothing */
+static bool
+due_ranked(const F2Tally *t, Due d)
+{
+	return t->due != DUE_NONE && t->due < d;
+}
+
 static void
 due_note(F2Tally *t, Due d)
 {
@@ -273,6 +281,7 @@ part_sizes(const SiftPart *part, F2Tally *t)
 	t->granules += part->hdr.ngranules;
 }
 
+/* Each reason is noted only when it outranks the one noted already (due_note keeps the first of the Due order): the plans that cost a scan of the parts of the partition are made only for a reason that could still win */
 static void
 partition_due(F2Tally *t, const SiftPartitionEntry *e, const SiftPartDesc *pd, int np)
 {
@@ -290,12 +299,18 @@ partition_due(F2Tally *t, const SiftPartitionEntry *e, const SiftPartDesc *pd, i
 		return;
 	for (int p = 0; p < np; p++)
 		has_l0 |= pd[p].level == 0;
-	(void) sift_compact_plan(pd, np, UINT64_MAX, PG_INT64_MIN, &ngroups);
-	if (ngroups > 0)
-		due_note(t, has_l0 ? DUE_L0_COMPACT : DUE_MERGE);
-	(void) sift_compact_candidates(pd, np, &ncand);
-	if (ncand > 0)
-		due_note(t, DUE_DEAD_REWRITE);
+	if (!due_ranked(t, has_l0 ? DUE_L0_COMPACT : DUE_MERGE))
+	{
+		(void) sift_compact_plan(pd, np, UINT64_MAX, PG_INT64_MIN, &ngroups);
+		if (ngroups > 0)
+			due_note(t, has_l0 ? DUE_L0_COMPACT : DUE_MERGE);
+	}
+	if (!due_ranked(t, DUE_DEAD_REWRITE))
+	{
+		(void) sift_compact_candidates(pd, np, &ncand);
+		if (ncand > 0)
+			due_note(t, DUE_DEAD_REWRITE);
+	}
 }
 
 /* What waits for a flush or a fold: the rows of the slab, and the deletes of the pending chain (the successor record of an UPDATE is not one) */
@@ -318,15 +333,18 @@ partition_dirty_rows(Relation rel, const SiftPartitionEntry *e)
 	return dirty;
 }
 
+/* The headers of the parts of one partition are read, counted and let go before the next partition's: the memory of the tally follows the partition with the most parts, not the relation */
 static void
 tally_partitions(Relation rel, F2Tally *t)
 {
 	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+	MemoryContext scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift status partition");
 
 	t->partitions = mr.n;
 	for (int i = 0; i < mr.n; i++)
 	{
 		const SiftPartitionEntry *e = &mr.entries[i];
+		MemoryContext old = MemoryContextSwitchTo(scratch);
 		int			np;
 		SiftPartDesc *pd = sift_manifest_read_parts(rel, e, &np);
 
@@ -342,7 +360,10 @@ tally_partitions(Relation rel, F2Tally *t)
 			part_sizes(sift_part_open_desc(rel, &pd[p], (uint32) e->part_id), t);
 		}
 		partition_due(t, e, pd, np);
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(scratch);
 	}
+	MemoryContextDelete(scratch);
 }
 
 static void

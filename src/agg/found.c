@@ -151,7 +151,7 @@ pred_node(AggExec *ex, SiftAggPredKind kind, int *total, int leaf, int op, int n
 	p->nchild = nchild;
 	p->child = nchild ? palloc0(nchild * sizeof(SiftAggPred *)) : NULL;
 	p->desc = pstrdup(desc);
-	ex->ps = repalloc(ex->ps, *total * sizeof(PredState));
+	sift_agg_ps_room(ex, *total);
 	memset(&ex->ps[p->id], 0, sizeof(PredState));
 	return p;
 }

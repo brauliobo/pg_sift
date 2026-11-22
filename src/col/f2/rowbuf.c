@@ -21,22 +21,32 @@ value_slot_bytes(SiftCellKind kind)
 static void
 build_groups(SiftRowBuf *rb)
 {
-	int			fill = 0;
+	int16	   *group_of = palloc(rb->ncols * sizeof(int16));
+	int16	   *next = palloc((rb->ncols + 1) * sizeof(int16));
 
 	rb->groups = MemoryContextAlloc(rb->cx, rb->ncols * sizeof(int16));
 	rb->child_off = MemoryContextAllocZero(rb->cx, (rb->ncols + 1) * sizeof(int16));
 	rb->children = MemoryContextAlloc(rb->cx, rb->ncols * sizeof(int16));
 	for (int g = 0; g < rb->ncols; g++)
-		if (sift_rowbuf_is_group(rb, g))
-			rb->groups[rb->ngroups++] = g;
-	for (int gi = 0; gi < rb->ngroups; gi++)
 	{
-		rb->child_off[gi] = fill;
-		for (int c = 0; c < rb->ncols; c++)
-			if (rb->parent[c] == rb->groups[gi])
-				rb->children[fill++] = c;
+		group_of[g] = -1;
+		if (sift_rowbuf_is_group(rb, g))
+		{
+			group_of[g] = (int16) rb->ngroups;
+			rb->groups[rb->ngroups++] = g;
+		}
 	}
-	rb->child_off[rb->ngroups] = fill;
+	for (int c = 0; c < rb->ncols; c++)
+		if (rb->parent[c] >= 0 && group_of[rb->parent[c]] >= 0)
+			rb->child_off[group_of[rb->parent[c]] + 1]++;
+	for (int gi = 0; gi < rb->ngroups; gi++)
+		rb->child_off[gi + 1] += rb->child_off[gi];
+	memcpy(next, rb->child_off, (rb->ngroups + 1) * sizeof(int16));
+	for (int c = 0; c < rb->ncols; c++)
+		if (rb->parent[c] >= 0 && group_of[rb->parent[c]] >= 0)
+			rb->children[next[group_of[rb->parent[c]]]++] = c;
+	pfree(group_of);
+	pfree(next);
 }
 
 SiftRowBuf *

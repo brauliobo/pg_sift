@@ -706,7 +706,10 @@ window_begin(CustomScanState *node, EState *estate, int eflags)
 			foreach_ptr(Node, wf, list_nth(cs->custom_private, PRIV_FUNCS))
 			{
 				if (equal(wf, te->expr))
+				{
 					st->entry[i] = -1 - f;
+					break;
+				}
 				f++;
 			}
 		i++;

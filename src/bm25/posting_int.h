@@ -42,6 +42,9 @@ typedef struct SiftPosBlk
 	uint64		ub;				/* of the unary codes of the gaps */
 	uint64		upos;			/* of the code of gap ug, where the last read stopped */
 	uint64		ug;
+	uint64		uck_g[4];		/* checkpoints of the scan at the gaps of postings 0, 8, 16 and 24, as the reads pass them: a seek back starts from the last one before its gap */
+	uint64		uck_pos[4];
+	uint8		uck_valid;		/* bit c: checkpoint c is set */
 	uint32		k;
 	uint32		wf;
 	uint32		multi;			/* bit i: posting i has several occurrences */

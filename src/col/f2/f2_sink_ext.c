@@ -62,6 +62,10 @@ struct SiftF2Pull
 	void	   *child_data[SIFT_F2_PULL_MAX_CHILD];
 	uint64	   *child_valid[SIFT_F2_PULL_MAX_CHILD];
 	uint32		n_elems;
+	SiftGranVecCursor cur[SIFT_F2_PULL_MAX_COLS];	/* the cursor of each column of the granule, opened by its first slice: the chunk is opened once for all of them */
+	bool		cur_on[SIFT_F2_PULL_MAX_COLS];
+	SiftGranVecCursor child_cur[SIFT_F2_PULL_MAX_CHILD];	/* the strings of an element column live as long as its cursor */
+	int			nchild_cur;
 
 	SiftVec		vec[SIFT_F2_PULL_MAX_COLS];
 	uint64	   *valid[SIFT_F2_PULL_MAX_COLS];
@@ -213,6 +217,21 @@ granule_chunks(const SiftF2Pull *p, int *chunks)
 	return nc;
 }
 
+/* The cursors of the granule are closed before its memory goes: what a batch points to lives until then */
+static void
+close_cursors(SiftF2Pull *p)
+{
+	for (int i = 0; i < p->spec.ncols; i++)
+		if (p->cur_on[i])
+		{
+			sift_vec_cursor_close(&p->cur[i]);
+			p->cur_on[i] = false;
+		}
+	for (int c = 0; c < p->nchild_cur; c++)
+		sift_vec_cursor_close(&p->child_cur[c]);
+	p->nchild_cur = 0;
+}
+
 static void
 decode_children(SiftF2Pull *p)
 {
@@ -227,6 +246,8 @@ decode_children(SiftF2Pull *p)
 
 		tmp.data = palloc_aligned(SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 		tmp.valid = tv;
+		sift_vec_cursor_open(&p->gv, spec->child[c].leaf, tmp.type, &p->child_cur[c]);
+		p->nchild_cur = c + 1;
 		p->child_data[c] = palloc(Max((Size) p->n_elems * es, 1) + SIFT_VEC_PAD);
 		p->child_valid[c] = palloc0(words * sizeof(uint64));
 		for (uint32 at = 0; at < p->n_elems; at += SIFT_VEC_LEN)
@@ -234,7 +255,7 @@ decode_children(SiftF2Pull *p)
 			const uint16 cnt = (uint16) Min(SIFT_VEC_LEN, p->n_elems - at);
 			const SiftVariantExcStream *exc = NULL;
 
-			sift_granule_decode_vec(&p->gv, spec->child[c].leaf, (uint16) at, cnt, &tmp, &exc);
+			sift_vec_cursor_decode(&p->child_cur[c], (uint16) at, cnt, &tmp, &exc);
 			memcpy((char *) p->child_data[c] + (Size) at * es, tmp.data, (Size) cnt * es);
 			for (uint16 i = 0; i < cnt; i++)
 				if (tmp.all_valid || ((tv[i >> 6] >> (i & 63)) & 1))
@@ -298,6 +319,7 @@ begin_granule(SiftF2Pull *p)
 	MemoryContext old;
 	uint64	   *tids;
 
+	close_cursors(p);
 	MemoryContextReset(p->gcx);
 	old = MemoryContextSwitchTo(p->gcx);
 	p->is_slab = false;
@@ -325,6 +347,7 @@ begin_slab(SiftF2Pull *p)
 	int			npages;
 	MemoryContext old;
 
+	close_cursors(p);
 	MemoryContextReset(p->gcx);
 	old = MemoryContextSwitchTo(p->gcx);
 	p->slab_pending = false;
@@ -444,7 +467,15 @@ fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 			const SiftVariantExcStream *exc = NULL;
 
 			p->vec[i].valid = p->valid[i];
-			sift_granule_decode_vec(&p->gv, p->spec.col[i].leaf, off, cnt, &p->vec[i], &exc);
+			if (!p->cur_on[i])
+			{
+				MemoryContext old = MemoryContextSwitchTo(p->gcx);
+
+				sift_vec_cursor_open(&p->gv, p->spec.col[i].leaf, p->vec[i].type, &p->cur[i]);
+				MemoryContextSwitchTo(old);
+				p->cur_on[i] = true;
+			}
+			sift_vec_cursor_decode(&p->cur[i], off, cnt, &p->vec[i], &exc);
 			if (exc != NULL)
 				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a column of the index holds a value its vector cannot"),
 						errhint("Read the column through a scan that decodes exceptions.")));

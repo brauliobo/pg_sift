@@ -160,6 +160,8 @@ cache_unlink(SqCache *c, uint32 s)
 static bool
 cache_evict_one(SqCache *c)
 {
+	if (c->all_held)
+		return false;
 	for (uint32 steps = 0; steps < 2 * c->hard; steps++)
 	{
 		uint32		s = c->hand;
@@ -177,6 +179,7 @@ cache_evict_one(SqCache *c)
 		c->evictions++;
 		return true;
 	}
+	c->all_held = true;
 	return false;
 }
 
@@ -239,6 +242,7 @@ cache_get(SqStore *st, uint32 unit)
 	s = c->freelist[--c->nfree];
 	c->misses++;
 	read_unit(st, unit, c->base + (size_t) s * st->unit);
+	c->all_held = false;
 	c->slot[s] = (SqSlot) {.chunk = unit, .valid = 1, .ref = 1, .next = c->bucket[chunk_hash(c, unit)]};
 	c->bucket[chunk_hash(c, unit)] = s + 1;
 	c->nvalid++;
@@ -251,6 +255,8 @@ cache_invalidate(SqStore *st)
 {
 	SqCache    *c = st->cache;
 
+	if (c)
+		c->all_held = false;
 	for (uint32 i = 0; c && i < c->hard; i++)
 		if (c->slot[i].valid && c->slot[i].pins <= 0)
 		{
@@ -275,7 +281,10 @@ cache_drop_unit(SqStore *st, uint32 unit)
 	int64_t		f = st->cache ? cache_find(st->cache, unit) : -1;
 
 	if (f >= 0 && st->cache->slot[f].pins <= 0 && !st->cache->slot[f].dirty)
+	{
 		cache_unlink(st->cache, f);
+		st->cache->all_held = false;
+	}
 }
 
 void
@@ -292,6 +301,8 @@ sq_store_recover(SqStore *st)
 {
 	SqCache    *c = st->cache;
 
+	if (c)
+		c->all_held = false;
 	for (uint32 i = 0; c && i < c->hard; i++)
 		c->slot[i].pins = 0;
 	__atomic_store_n(&st->npinned, 0, __ATOMIC_RELAXED);
@@ -309,6 +320,11 @@ sq_store_preload(SqStore *st)
 	if (st->resident_epoch == st->epoch + 1 && st->resident_version == d->version &&
 		st->resident_evictions == st->cache->evictions)
 		return true;
+	for (int i = 0; i < d->nsegs; i++)
+		missing += d->segs[i].header_blk / st->P - d->segs[i].reserved / st->P + 1;
+	if (missing > st->cache->soft)
+		return false;
+	missing = 0;
 	for (int i = 0; i < d->nsegs; i++)
 		for (uint32 u = d->segs[i].reserved / st->P; u <= d->segs[i].header_blk / st->P; u++)
 			missing += cache_find(st->cache, u) < 0;
@@ -591,6 +607,7 @@ sq_unpin(Buffer buf)
 	{
 		__atomic_fetch_sub(&sl->pins, 1, __ATOMIC_RELEASE);
 		__atomic_fetch_sub(&st->npinned, 1, __ATOMIC_RELAXED);
+		__atomic_store_n(&st->cache->all_held, false, __ATOMIC_RELAXED);
 	}
 }
 
@@ -686,6 +703,8 @@ sq_store_flush_pages(SqStore *st)
 		sl->dirty = 0;
 		sl->queued = 0;
 	}
+	if (st->ndirty)
+		st->cache->all_held = false;
 	st->ndirty = 0;
 	sqlite3_blob_close(st->wblob);
 	st->wblob = NULL;

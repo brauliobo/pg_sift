@@ -262,14 +262,34 @@ sift_post_rewind(SiftPostingCursor *c)
 	memset(&c->next, 0, sizeof(SiftTfPos));
 }
 
+/* Terms with at least this many groups have their bounds kept in the segment cache */
+#define BOUNDS_CACHE_MIN_NG	64
+
+uint8
+sift_post_max_bound(const SiftPostingCursor *c)
+{
+	return c->info.max_bound;
+}
+
 const SiftGroupBounds *
 sift_post_bounds(SiftPostingCursor *c, int *n)
 {
 	if (c->bounds == NULL && c->gs)
 	{
 		const uint8 *row = c->blkrows;
+		void	   *handle = NULL;
+		Size		bytes = Max(c->ng, 1) * sizeof(SiftGroupBounds);
+		void	   *obj = NULL;
+		bool		kept = c->sr != NULL && c->ng >= BOUNDS_CACHE_MIN_NG;
 
-		c->bounds = MemoryContextAllocHuge(c->mcxt, Max(c->ng, 1) * sizeof(SiftGroupBounds));
+		/* the bounds of a long term are kept for the next query of the backend: unpacking them is a pass over the term's groups */
+		if (kept && sift_segcache_get(c->sr, SIFT_SEGCACHE_BOUNDS, c->info.post_off, bytes, c->mcxt, &obj, &handle))
+		{
+			c->bounds = obj;
+			c->nbounds = c->ng;
+			return c->bounds;
+		}
+		c->bounds = kept ? obj : MemoryContextAllocHuge(c->mcxt, bytes);
 		for (uint32 i = 0; i < c->ng; i++)
 		{
 			SiftGroupBounds *b = &c->bounds[i];
@@ -284,6 +304,8 @@ sift_post_bounds(SiftPostingCursor *c, int *n)
 			else
 				memset(b->blk_bound, b->bound, SIFT_BLKS_PER_SB);
 		}
+		if (handle)
+			sift_segcache_ready(handle);
 		c->nbounds = c->ng;
 	}
 	else if (c->bounds == NULL)
@@ -365,18 +387,25 @@ l1_count(const uint8 *l1, uint32 r, uint32 n)
 	return cnt;
 }
 
-/* Stream position of rank r, counted from the start (LIST random access) */
+/*
+ * Stream position of rank r (LIST random access): counted on from the position the last decode left (c->next) when that lies
+ * at or before r, from the start otherwise, so the blocks of a term in rank order cost one pass over its L1 bits in all
+ */
 static SiftTfPos
-list_tf_pos(const SiftPostingCursor *c, uint32 r)
+list_tf_seek(const SiftPostingCursor *c, uint32 r)
 {
-	SiftTfPos	pos = {.rank = r};
+	SiftTfPos	pos = c->next.rank <= r ? c->next : (SiftTfPos) {0, 0, 0};
 
-	pos.nib = sift_popcount(c->l1, r / 8);
-	if (r % 8)
-		pos.nib += sift_pc64(c->l1[r / 8] & ((1u << (r % 8)) - 1));
-	if (pos.nib > c->info.nnib)
-		sift_codec_corrupt("tf stream: the L1 bits count more nibbles than the stream holds");
-	pos.esc = escapes(c->nib, pos.nib);
+	if (r > pos.rank)
+	{
+		uint32		skip = l1_count(c->l1, pos.rank, r - pos.rank);
+
+		if (pos.nib > c->info.nnib || skip > c->info.nnib - pos.nib)
+			sift_codec_corrupt("tf stream: the L1 bits count more nibbles than the stream holds");
+		pos.esc += escapes_from(c->nib, pos.nib, skip);
+		pos.rank = r;
+		pos.nib += skip;
+	}
 	return pos;
 }
 
@@ -430,7 +459,7 @@ sift_post_group_tf(SiftPostingCursor *c, uint8 *tf)
 	if (c->gs)
 		pos = (SiftTfPos) {g->base, c->gs[c->cur.gr.i].nib_base, c->gs[c->cur.gr.i].esc_base};
 	else
-		pos = c->next.rank == g->base ? c->next : list_tf_pos(c, g->base);
+		pos = list_tf_seek(c, g->base);
 	tf_check(c, &pos, n);
 	POST_STAT(group_tf, 1);
 	sift_kern->tf_decode(tf, c->l1, c->nib, c->esc, &pos, n);
@@ -461,22 +490,26 @@ sift_post_block_tf(SiftPostingCursor *c, uint32 blk_rank, uint32 blk_cnt, uint8 
 	if ((uint64) g->base + n > c->info.df)
 		sift_codec_corrupt("tf stream: a group lies past the last posting");
 	if (c->gs)
-		pos = (SiftTfPos) {g->base, c->gs[c->cur.gr.i].nib_base, c->gs[c->cur.gr.i].esc_base};
-	else
-		pos = c->next.rank == g->base ? c->next : list_tf_pos(c, g->base);
-	if (blk_rank > 0)
 	{
-		uint32		skip = l1_count(c->l1, pos.rank, blk_rank);
+		pos = (SiftTfPos) {g->base, c->gs[c->cur.gr.i].nib_base, c->gs[c->cur.gr.i].esc_base};
+		if (blk_rank > 0)
+		{
+			uint32		skip = l1_count(c->l1, pos.rank, blk_rank);
 
-		if (pos.nib > c->info.nnib || skip > c->info.nnib - pos.nib)
-			sift_codec_corrupt("tf stream: the nibbles before a block are not inside the stream");
-		pos.esc += escapes_from(c->nib, pos.nib, skip);
-		pos.rank += blk_rank;
-		pos.nib += skip;
+			if (pos.nib > c->info.nnib || skip > c->info.nnib - pos.nib)
+				sift_codec_corrupt("tf stream: the nibbles before a block are not inside the stream");
+			pos.esc += escapes_from(c->nib, pos.nib, skip);
+			pos.rank += blk_rank;
+			pos.nib += skip;
+		}
 	}
+	else
+		pos = list_tf_seek(c, g->base + blk_rank);
 	tf_check(c, &pos, blk_cnt);
 	POST_STAT(block_tf, 1);
 	sift_kern->tf_decode(tf, c->l1, c->nib, c->esc, &pos, blk_cnt);
+	if (!c->gs)
+		c->next = pos;
 }
 
 static inline uint32

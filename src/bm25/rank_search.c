@@ -285,19 +285,25 @@ term_cursor(RankSeg *rs, RkTerm *t)
 static void
 unit_terms(SiftPlan *p, RankSeg *rs, float4 theta)
 {
+	double		total = 0,
+				slack = sum_ub_slack(p->nleaves);
+
+	for (int i = 0; i < p->nleaves; i++)
+		total += (double) rs->lmax[i];
 	for (int i = 0; i < p->nleaves; i++)
 	{
 		RkTerm	   *t = rs->term + rs->first[i];
 		sift_cur   *orc = rs->cs.leafor[i];
 		int			nt = p->leaves[i].nterms[rs->s],
 					nlive = 0;
+		double		other = total - (double) rs->lmax[i];
 
 		for (int j = 0; p->leaves[i].scoring && j < nt; j++)
 		{
 			t[j].g = NULL;
 			t[j].based = false;
 			t[j].located = t[j].sought = false;
-			t[j].live = nt == 1 || sum_ub(p, rs->lmax, i, t[j].tub) > theta;
+			t[j].live = nt == 1 || (other + (double) t[j].tub) * slack > (double) theta;
 			if (orc && t[j].live)
 				orc->op.kid[nlive++] = term_cursor(rs, &t[j]);
 		}

@@ -3,6 +3,7 @@
  */
 
 #include "bm25/kernels.h"
+#include "core/cmp.h"
 #include "core/live.h"
 #include "core/memtrack.h"
 #include "core/popcount.h"
@@ -611,6 +612,8 @@ typedef struct DeadScan
 	bool		windowed;		/* the dead rows of the segment are counted in more than one window: a posting is looked for from the first SB of the window */
 	uint32		wlo,
 				whi;			/* the SBs of the window */
+	uint32	   *dsb;			/* the SBs of the window with dead docs, ascending: the postings of a term are looked for there only */
+	uint32		ndsb;
 } DeadScan;
 
 /* The dead docs of the SB at position i of the SB directory (present and not live), as a group of the rows' width; *bytes: what it and its row for each page take */
@@ -674,15 +677,34 @@ dead_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 		return true;
 	}
 	n = 0;
-	for (const sift_grp *g = ds->windowed ? sift_seek(cur, ds->wlo) : sift_next(cur); g && (!ds->windowed || g->gid <= ds->whi); g = sift_next(cur))
+	/* a leapfrog between the SBs with dead docs and the term's: the SBs of the term that are clean are not decoded */
+	for (uint32 d = 0; d < ds->ndsb;)
 	{
-		const sift_grp *d;
+		uint32		want = ds->dsb[d],
+					pg = sift_cur_peek_gid(cur, want);
 
-		if (g->gid < seg->hdr->sb_lo || g->gid > seg->hdr->sb_hi)
-			corrupt(seg, "A posting lies in SB %u, outside the segment's %u to %u.", g->gid, seg->hdr->sb_lo, seg->hdr->sb_hi);
-		d = ds->grp[g->gid - seg->hdr->sb_lo];
-		if (d)
-			n += sift_grp_and_count(g, d);
+		if (pg == UINT32_MAX)
+			break;
+		if (pg < seg->hdr->sb_lo || pg > seg->hdr->sb_hi)
+			corrupt(seg, "A posting lies in SB %u, outside the segment's %u to %u.", pg, seg->hdr->sb_lo, seg->hdr->sb_hi);
+		if (pg == want)
+		{
+			n += sift_grp_and_count(sift_seek(cur, want), ds->grp[want - seg->hdr->sb_lo]);
+			d++;
+			continue;
+		}
+		for (d++; d < ds->ndsb && ds->dsb[d] < pg;)
+		{
+			uint32		step = 1,
+						lo = d,
+						hi;
+
+			while (lo + step < ds->ndsb && ds->dsb[lo + step] < pg)
+				lo += step, step *= 2;
+			hi = Min(lo + step, ds->ndsb);
+			d = lo + 1;
+			SIFT_BISECT(uint32, mid, d, hi, ds->dsb[mid] < pg);
+		}
 	}
 	ds->dead[info->slot] += n;
 	MemoryContextReset(ds->tcxt);
@@ -698,6 +720,7 @@ dead_window(DeadScan *ds, DocMap *dm, const uint8 *dirty, int64 i, Size rows, Me
 	Size		used = 0;
 
 	*any = false;
+	ds->ndsb = 0;
 	ds->wlo = dm->dir[i].sb;
 	for (; i < dm->nsb && used < rows; i++)
 	{
@@ -717,6 +740,7 @@ dead_window(DeadScan *ds, DocMap *dm, const uint8 *dirty, int64 i, Size rows, Me
 					for (uint64 m = g->pages[j]; m != 0; m &= m - 1, row += g->w)
 						memcpy(bits + ((Size) j * 64 + pg_rightmost_one_pos64(m)) * g->w, row, g->w);
 				ds->flat[idx] = (sift_dead_sb) {.bits = bits,.w = g->w};
+				ds->dsb[ds->ndsb++] = dm->dir[i].sb;
 				*any = true;
 			}
 		}
@@ -745,6 +769,7 @@ count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead)
 	ds.tcxt = AllocSetContextCreate(cx, "sift dead postings term", ALLOCSET_DEFAULT_SIZES);
 	ds.grp = MemoryContextAllocZero(cx, (Size) h->nsb * sizeof(sift_grp *));
 	ds.flat = MemoryContextAllocZero(cx, (Size) h->nsb * sizeof(sift_dead_sb));
+	ds.dsb = MemoryContextAlloc(cx, (Size) Max(h->nsb, 1) * sizeof(uint32));
 	memset(dead, 0, (Size) h->nslots * sizeof(uint32));
 	sift_live2_dirty(&l, h, dirty);
 	live2(seg)->rok = false;

@@ -67,16 +67,134 @@ sift_like_verify(const SiftLikeNeedle *nd, const uint8 *at)
 }
 
 static inline bool
-matches_at(const SiftLikeNeedle *nd, const uint8 *hay, size_t pos)
+ends_match(const SiftLikeNeedle *nd, const uint8 *hay, size_t pos)
 {
 	if (nd->fold)
-		return ascii_lower(hay[pos]) == nd->first && ascii_lower(hay[pos + nd->len - 1]) == nd->last && sift_like_verify(nd, hay + pos);
-	return hay[pos] == nd->first && hay[pos + nd->len - 1] == nd->last && sift_like_verify(nd, hay + pos);
+		return ascii_lower(hay[pos]) == nd->first && ascii_lower(hay[pos + nd->len - 1]) == nd->last;
+	return hay[pos] == nd->first && hay[pos + nd->len - 1] == nd->last;
+}
+
+static inline uint8
+hay_byte(const SiftLikeNeedle *nd, const uint8 *hay, size_t at)
+{
+	return nd->fold ? ascii_lower(hay[at]) : hay[at];
+}
+
+/* The maximal suffix of the needle under the byte order (rev: the reverse order) and its period, as the critical factorization of Crochemore and Perrin wants them */
+static ptrdiff_t
+max_suffix(const uint8 *x, size_t m, bool rev, size_t *period)
+{
+	ptrdiff_t	ms = -1;
+	size_t		j = 0,
+				k = 1,
+				p = 1;
+
+	while (j + k < m)
+	{
+		const uint8 a = x[j + k],
+					b = x[ms + (ptrdiff_t) k];
+
+		if (rev ? a > b : a < b)
+		{
+			j += k;
+			k = 1;
+			p = j - ms;
+		}
+		else if (a == b)
+		{
+			if (k != p)
+				k++;
+			else
+			{
+				j += p;
+				k = 1;
+			}
+		}
+		else
+		{
+			ms = (ptrdiff_t) j;
+			j = ms + 1;
+			k = p = 1;
+		}
+	}
+	*period = p;
+	return ms;
+}
+
+/* Two-Way (Crochemore and Perrin): O(hlen + len) bytes compared whatever the bytes are, no allocation */
+int64
+sift_like_find_twoway(const SiftLikeNeedle *nd, const uint8 *hay, size_t hlen)
+{
+	const uint8 *x = nd->bytes;
+	const size_t m = nd->len;
+	size_t		p1,
+				p2,
+				per,
+				j = 0;
+	ptrdiff_t	i1 = max_suffix(x, m, false, &p1),
+				i2 = max_suffix(x, m, true, &p2),
+				ell = i1 > i2 ? i1 : i2;
+
+	if (m == 0)
+		return 0;
+	per = i1 > i2 ? p1 : p2;
+	if (hlen < m)
+		return -1;
+	if (memcmp(x, x + per, (size_t) (ell + 1)) == 0)
+	{
+		ptrdiff_t	memory = -1;
+
+		while (j + m <= hlen)
+		{
+			ptrdiff_t	i = (ell > memory ? ell : memory) + 1;
+
+			while ((size_t) i < m && x[i] == hay_byte(nd, hay, i + j))
+				i++;
+			if ((size_t) i >= m)
+			{
+				i = ell;
+				while (i > memory && x[i] == hay_byte(nd, hay, i + j))
+					i--;
+				if (i <= memory)
+					return (int64) j;
+				j += per;
+				memory = (ptrdiff_t) (m - per) - 1;
+			}
+			else
+			{
+				j += (size_t) (i - ell);
+				memory = -1;
+			}
+		}
+		return -1;
+	}
+	per = (size_t) Max(ell + 1, (ptrdiff_t) m - ell - 1) + 1;
+	while (j + m <= hlen)
+	{
+		ptrdiff_t	i = ell + 1;
+
+		while ((size_t) i < m && x[i] == hay_byte(nd, hay, i + j))
+			i++;
+		if ((size_t) i >= m)
+		{
+			i = ell;
+			while (i >= 0 && x[i] == hay_byte(nd, hay, i + j))
+				i--;
+			if (i < 0)
+				return (int64) j;
+			j += per;
+		}
+		else
+			j += (size_t) (i - ell);
+	}
+	return -1;
 }
 
 int64
 sift_like_find_scalar(const SiftLikeNeedle *nd, const uint8 *hay, size_t hlen)
 {
+	size_t		spent = 0;
+
 	if (nd->len == 0)
 		return 0;
 	if (hlen < nd->len)
@@ -88,8 +206,19 @@ sift_like_find_scalar(const SiftLikeNeedle *nd, const uint8 *hay, size_t hlen)
 		return p == NULL ? -1 : (int64) (p - hay);
 	}
 	for (size_t pos = 0; pos + nd->len <= hlen; pos++)
-		if (matches_at(nd, hay, pos))
+	{
+		if (!ends_match(nd, hay, pos))
+			continue;
+		if (sift_like_verify(nd, hay + pos))
 			return (int64) pos;
+		spent += nd->len;
+		if (spent > SIFT_LIKE_VERIFY_BUDGET(pos))
+		{
+			const int64 r = sift_like_find_twoway(nd, hay + pos + 1, hlen - pos - 1);
+
+			return r < 0 ? -1 : (int64) pos + 1 + r;
+		}
+	}
 	return -1;
 }
 

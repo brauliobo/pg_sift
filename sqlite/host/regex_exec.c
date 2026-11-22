@@ -13,6 +13,7 @@ typedef struct RxMatch
 #define MAXSTACK	(1 << 20)			/* backtrack entries */
 #define MAXMEMO		((size_t) 1 << 28)	/* bits of the visited set */
 #define BUDGET		5000000				/* steps of one pg_regexec */
+#define MAXGEN		((size_t) 1 << 22)	/* lookaround stamp cells */
 #define R_FAIL		(-1)
 #define R_BUDGET	(-2)
 
@@ -96,6 +97,40 @@ visited(Rx *x, int pc, int pos)
 	return was;
 }
 
+/* A (pc, pos) state of the lookaround run of generation gen is explored once: a state of the body fails for the same target wherever it is reached from */
+static bool
+visited_look(Rx *x, int pc, int pos)
+{
+	size_t		at = (size_t) pc * (x->len + 1) + pos;
+	bool		was = x->lgen[at] == x->look_gen;
+
+	x->lgen[at] = x->look_gen;
+	return was;
+}
+
+/* A new generation for a lookaround run (0 when the states of the string are too many to stamp, then the run is not memoized); stamps are cleared only when the counter wraps */
+static uint32_t
+next_gen(Rx *x)
+{
+	size_t		cells = (size_t) x->nprog * (x->len + 1);
+
+	if (!x->memo || cells > MAXGEN)
+		return 0;
+	if (cells > x->lgencap)
+	{
+		x->lgencap = cells;
+		x->lgen = x->lgen ? repalloc(x->lgen, cells * sizeof(uint32_t)) : palloc(cells * sizeof(uint32_t));
+		memset(x->lgen, 0, cells * sizeof(uint32_t));
+		x->cur_gen = 0;
+	}
+	if (++x->cur_gen == 0)
+	{
+		memset(x->lgen, 0, x->lgencap * sizeof(uint32_t));
+		x->cur_gen = 1;
+	}
+	return x->cur_gen;
+}
+
 static bool
 assertion(const Rx *x, int kind, const pg_wchar *s, int len, int pos)
 {
@@ -123,13 +158,16 @@ look_holds(Rx *x, const pg_wchar *s, int len, int pc, int pos)
 {
 	long		r = R_FAIL;
 	int			j;
+	uint32_t	outer = x->look_gen;
 
 	x->nest++;
+	x->look_gen = next_gen(x);
 	if (!(x->prog[pc].x & 2))
 		r = run(x, s, len, pc + 1, pos, -1);
 	else
 		for (j = pos; j >= 0 && r == R_FAIL; j--)
 			r = run(x, s, len, pc + 1, j, pos);
+	x->look_gen = outer;
 	x->nest--;
 	return r == R_BUDGET ? r : r >= 0;
 }
@@ -149,7 +187,7 @@ run(Rx *x, const pg_wchar *s, int len, int pc, int pos, int target)
 
 		if (++x->steps > BUDGET)
 			return R_BUDGET;
-		if (x->memo && !x->nest && visited(x, pc, pos))
+		if (x->memo && (x->nest ? x->look_gen && visited_look(x, pc, pos) : visited(x, pc, pos)))
 			goto fail;
 		switch (in->op)
 		{
@@ -266,6 +304,7 @@ pg_regexec(regex_t *re, const pg_wchar *string, size_t len, size_t search_start,
 	x->sp = 0;
 	x->steps = 0;
 	x->nest = 0;
+	x->look_gen = 0;
 	memset(x->slots, -1, x->nslots * sizeof(int));
 	if (x->memo)
 	{
@@ -278,7 +317,9 @@ pg_regexec(regex_t *re, const pg_wchar *string, size_t len, size_t search_start,
 		}
 		memset(x->seen, 0, (bits + 7) / 8);
 	}
-	for (st = search_start; st <= len && end < 0; st++)
+	if (x->start_anchored && search_start > 0)
+		return REG_NOMATCH;
+	for (st = search_start; st <= (x->start_anchored ? 0 : len) && end < 0; st++)
 		if ((end = run(x, string, len, 0, st, -1)) == R_BUDGET)
 			return RX_ESPACE;
 	if (end < 0)

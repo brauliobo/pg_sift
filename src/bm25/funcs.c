@@ -23,6 +23,7 @@
 #include "utils/selfuncs.h"
 
 #include "core/sift.h"
+#include "bm25/analyze.h"
 #include "bm25/estimate.h"
 #include "bm25/eval.h"
 #include "core/ops.h"
@@ -164,6 +165,7 @@ typedef struct MatchCache
 	text	   *qtext;
 	SiftAnalyzer *analyzer;
 	SiftQuery  *query;
+	struct HighlightIndex *hl;	/* the positive leaves of the query by kind, made by the first sift.highlight */
 } MatchCache;
 
 static MatchCache *
@@ -184,6 +186,7 @@ match_cache(FunctionCallInfo fcinfo, text *q, Oid index)
 		return c;
 
 	c->query = NULL;
+	c->hl = NULL;
 	MemoryContextReset(c->mcxt);
 	old = MemoryContextSwitchTo(c->mcxt);
 	analyzer_config(index, &cfg);
@@ -515,29 +518,132 @@ sift_max_score(PG_FUNCTION_ARGS)
 	return scan_only("max_score");
 }
 
-/* Does the token match a positive leaf of n? */
-static bool
-token_hit(const SiftQNode *n, const SiftToken *t)
+/*
+ * The positive leaves of a query as a highlight sees them: the words (SQ_TERM, and the terms of a phrase) in a table, so a token is
+ * looked up and not compared with every leaf, and the leaves that match many words (prefixes, patterns, fuzzy terms) in a list
+ */
+typedef struct HighlightIndex
+{
+	const SiftQNode **slots;	/* [mask + 1]: a node whose text, or the term of a phrase at tlen, is the word; NULL when free */
+	int		   *tix;			/* the term of the phrase at the slot, -1 for a SQ_TERM */
+	uint32		mask;
+	const SiftQNode **wild;
+	int			nwild;
+	int			nexact;
+} HighlightIndex;
+
+static void
+hl_count(const SiftQNode *n, int *nexact, int *nwild)
 {
 	switch (n->kind)
 	{
 		case SQ_AND:
 		case SQ_OR:
 			for (int i = 0; i < n->nchild; i++)
-				if (token_hit(n->child[i], t))
-					return true;
-			return false;
+				hl_count(n->child[i], nexact, nwild);
+			return;
 		case SQ_PHRASE:
-			for (int i = 0; i < n->nterms; i++)
-				if (n->termlens[i] == t->len && memcmp(n->terms[i], t->str, t->len) == 0)
-					return true;
-			return false;
+			*nexact += n->nterms;
+			return;
 		case SQ_NOT:
 		case SQ_NOTHING:
-			return false;
+			return;
+		case SQ_TERM:
+			(*nexact)++;
+			return;
 		default:
-			return sift_query_leaf_match(n, t->str, t->len);
+			(*nwild)++;
 	}
+}
+
+static void
+hl_word(const SiftQNode *n, int ti, const char **s, int *len)
+{
+	*s = ti < 0 ? n->text : n->terms[ti];
+	*len = ti < 0 ? n->textlen : n->termlens[ti];
+}
+
+static void
+hl_add(HighlightIndex *hl, const SiftQNode *n)
+{
+	switch (n->kind)
+	{
+		case SQ_AND:
+		case SQ_OR:
+			for (int i = 0; i < n->nchild; i++)
+				hl_add(hl, n->child[i]);
+			return;
+		case SQ_PHRASE:
+		case SQ_TERM:
+			for (int i = 0; i < (n->kind == SQ_TERM ? 1 : n->nterms); i++)
+			{
+				const char *s;
+				int			len;
+				uint32		h;
+
+				hl_word(n, n->kind == SQ_TERM ? -1 : i, &s, &len);
+				for (h = (uint32) sift_term_hash(s, len) & hl->mask; hl->slots[h] != NULL; h = (h + 1) & hl->mask)
+				{
+					const char *o;
+					int			olen;
+
+					hl_word(hl->slots[h], hl->tix[h], &o, &olen);
+					if (olen == len && memcmp(o, s, len) == 0)
+						break;
+				}
+				if (hl->slots[h] == NULL)
+				{
+					hl->slots[h] = n;
+					hl->tix[h] = n->kind == SQ_TERM ? -1 : i;
+				}
+			}
+			return;
+		case SQ_NOT:
+		case SQ_NOTHING:
+			return;
+		default:
+			hl->wild[hl->nwild++] = n;
+	}
+}
+
+static HighlightIndex *
+highlight_index(const SiftQNode *root, MemoryContext cx)
+{
+	HighlightIndex *hl = MemoryContextAllocZero(cx, sizeof(HighlightIndex));
+	int			nexact = 0,
+				nwild = 0;
+	uint32		size = 8;
+
+	hl_count(root, &nexact, &nwild);
+	while (size < 2 * (uint32) nexact)
+		size *= 2;
+	hl->mask = size - 1;
+	hl->nexact = nexact;
+	hl->slots = MemoryContextAllocZero(cx, size * sizeof(SiftQNode *));
+	hl->tix = MemoryContextAlloc(cx, size * sizeof(int));
+	hl->wild = MemoryContextAlloc(cx, Max(nwild, 1) * sizeof(SiftQNode *));
+	hl_add(hl, root);
+	return hl;
+}
+
+/* Does the token match a positive leaf of the query? */
+static bool
+token_hit(const HighlightIndex *hl, const SiftToken *t)
+{
+	if (hl->nexact > 0)
+		for (uint32 h = (uint32) sift_term_hash(t->str, t->len) & hl->mask; hl->slots[h] != NULL; h = (h + 1) & hl->mask)
+		{
+			const char *o;
+			int			olen;
+
+			hl_word(hl->slots[h], hl->tix[h], &o, &olen);
+			if (olen == t->len && memcmp(o, t->str, t->len) == 0)
+				return true;
+		}
+	for (int i = 0; i < hl->nwild; i++)
+		if (sift_query_leaf_match(hl->wild[i], t->str, t->len))
+			return true;
+	return false;
 }
 
 static const char *
@@ -565,13 +671,15 @@ sift_highlight(PG_FUNCTION_ARGS)
 		PG_RETURN_NULL();
 	c = match_cache(fcinfo, PG_GETARG_TEXT_PP(1), PG_ARGISNULL(4) ? InvalidOid : PG_GETARG_OID(4));
 	a = c->analyzer;
+	if (c->hl == NULL)
+		c->hl = highlight_index(c->query->root, c->mcxt);
 	doc = PG_GETARG_TEXT_PP(0);
 	s = VARDATA_ANY(doc);
 	ntok = sift_analyze_tokens(a, s, VARSIZE_ANY_EXHDR(doc), &toks);
 	initStringInfo(&buf);
 	for (int i = 0; i < ntok; i++)
 	{
-		if (!token_hit(c->query->root, &toks[i]))
+		if (!token_hit(c->hl, &toks[i]))
 			continue;
 		appendBinaryStringInfo(&buf, s + done, toks[i].start - done);
 		appendStringInfo(&buf, "%s", start_tag);

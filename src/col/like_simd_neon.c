@@ -26,7 +26,8 @@ sift_like_find_neon(const SiftLikeNeedle *nd, const uint8 *hay, size_t hlen)
 				vl = vdupq_n_u8(nd->last),
 				of = vdupq_n_u8(nd->first_or),
 				ol = vdupq_n_u8(nd->last_or);
-	size_t		i = 0;
+	size_t		i = 0,
+				spent = 0;
 
 	while (i + m - 1 + 16 <= hlen)
 	{
@@ -40,6 +41,13 @@ sift_like_find_neon(const SiftLikeNeedle *nd, const uint8 *hay, size_t hlen)
 
 			if (sift_like_verify(nd, hay + i + (tz >> 2)))
 				return (int64) (i + (tz >> 2));
+			spent += m;
+			if (spent > SIFT_LIKE_VERIFY_BUDGET(i))
+			{
+				const int64 r = sift_like_find_twoway(nd, hay + i, hlen - i);
+
+				return r < 0 ? -1 : (int64) i + r;
+			}
 			mask &= ~(UINT64CONST(0xF) << (tz & ~3U));
 		}
 		i += 16;

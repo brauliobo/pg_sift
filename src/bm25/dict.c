@@ -257,8 +257,18 @@ find_block(SiftDict *d, const char *term, int len)
 	/* root entries [rlo, rhi) may hold the block: rlo after the last < p */
 	SIFT_BISECT(int64, mid, lo, hi, d->root[mid] < p);
 	rlo = Max(lo - 1, 0);
-	for (rhi = lo; rhi < d->nroot && d->root[rhi] == p; rhi++)
-		;
+	rhi = lo;
+	if (lo < d->nroot && d->root[lo] == p)
+	{
+		int64		step = 1,
+					from = lo;
+
+		while (from + step < d->nroot && d->root[from + step] == p)
+			from += step, step *= 2;
+		rhi = from + 1;
+		bhi = Min(from + step, (int64) d->nroot);
+		SIFT_BISECT(int64, mid, rhi, bhi, d->root[mid] == p);
+	}
 	if (rhi == 0)
 		return -1;
 	blo = rlo * SIFT_DICT_ROOT_FANOUT;
@@ -515,15 +525,14 @@ struct SiftTermMatcher
 	char	   *hi;				/* NULL: unbounded */
 	int			hilen;
 	char		field;			/* terms of a field start with this byte, else 0 */
-	char	   *skip;			/* the key of the last sift_matcher_skip */
+	char		skip[SIFT_MAX_TERM_BYTES + 1];	/* the key of the last sift_matcher_skip */
 };
 
-/* Smallest string above every string starting with s[0..len): NULL if none */
+/* Smallest string above every string starting with s[0..len), made in r (room for len bytes): NULL if none */
 static char *
-successor(const char *s, int *len)
+successor_into(const char *s, int *len, char *r)
 {
-	char	   *r = pnstrdup(s, *len);
-
+	memcpy(r, s, *len);
 	while (*len > 0)
 	{
 		if ((uint8) r[*len - 1] < 0xFF)
@@ -534,6 +543,12 @@ successor(const char *s, int *len)
 		(*len)--;
 	}
 	return NULL;
+}
+
+static char *
+successor(const char *s, int *len)
+{
+	return successor_into(s, len, palloc(*len));
 }
 
 /* Unescaped literal prefix of a folded wildcard pattern */
@@ -658,11 +673,9 @@ sift_matcher_skip(SiftTermMatcher *m, const char *term, int len, const char **ne
 	dead = sift_query_leaf_dead_prefix(m->leaf, term + skip, len - skip);
 	if (dead == 0)
 		return false;
-	if (m->skip)
-		pfree(m->skip);
 	*nextlen = dead + skip;
-	*next = m->skip = successor(term, nextlen);
-	if (m->skip == NULL)
+	*next = successor_into(term, nextlen, m->skip);
+	if (*next == NULL)
 		*nextlen = 0;
 	return true;
 }

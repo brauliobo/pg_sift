@@ -34,6 +34,7 @@ typedef struct SqCache
 				hard;					/* units it may hold while the rest is pinned */
 	uint32		nvalid;
 	uint32		hand;
+	bool		all_held;				/* a sweep found every unit pinned or edited: none is looked at again until one is released (an eviction is O(1) while the cache is full of them) */
 	uint64		hits,
 				misses,
 				evictions;

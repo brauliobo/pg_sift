@@ -26,25 +26,30 @@
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_tbl.h"
 
-#define VM_SCAN_MAX_BLKS	((BlockNumber) 1 << 18)
+#define VM_SCAN_MAX_BLKS	((BlockNumber) 1 << 14)
+#define VM_PROBE_BUDGET		((uint32) 1 << 16)
 
 /*
  * The heap blocks from the least to the greatest address of the part that are not all-visible, for an AGG overlay: those are the only places a row of the part can have died without the part
- * knowing. -1 when the part has no address range, the range is too wide to look at, or there are more than an overlay is made for.
+ * knowing. -1 when the part has no address range, the range is too wide to look at, the statement's budget of visibility-map probes (*budget) cannot pay for it, or there are more than an
+ * overlay is made for.
  */
 static int
-dirty_blocks(Relation heap, const SiftPartDesc *d, Buffer *vmbuf, BlockNumber *out)
+dirty_blocks(Relation heap, const SiftPartDesc *d, Buffer *vmbuf, BlockNumber *out, uint32 *budget)
 {
 	ItemPointerData lo,
 				hi;
 	int			n = 0;
+	uint32		span;
 
 	if (d->tid_max == 0)
 		return -1;
 	sift_f2_tid_set(&lo, d->tid_min);
 	sift_f2_tid_set(&hi, d->tid_max);
-	if (ItemPointerGetBlockNumber(&hi) - ItemPointerGetBlockNumber(&lo) >= VM_SCAN_MAX_BLKS)
+	span = ItemPointerGetBlockNumber(&hi) - ItemPointerGetBlockNumber(&lo) + 1;
+	if (span > VM_SCAN_MAX_BLKS || span > *budget)
 		return -1;
+	*budget -= span;
 	for (BlockNumber b = ItemPointerGetBlockNumber(&lo); b <= ItemPointerGetBlockNumber(&hi); b++)
 		if (!VM_ALL_VISIBLE(heap, b, vmbuf))
 		{
@@ -56,7 +61,7 @@ dirty_blocks(Relation heap, const SiftPartDesc *d, Buffer *vmbuf, BlockNumber *o
 }
 
 static SiftProjHostVis
-part_vis(const SiftV6ProjHost *h, const SiftPartDesc *d, SiftProjKind kind, FullTransactionId xmin, Buffer *vmbuf, BlockNumber *dirty, int *ndirty)
+part_vis(const SiftV6ProjHost *h, const SiftPartDesc *d, SiftProjKind kind, FullTransactionId xmin, Buffer *vmbuf, BlockNumber *dirty, int *ndirty, uint32 *vm_budget)
 {
 	SiftVisClass c = sift_vis_part_class(d, false, xmin);
 	SiftProjVisIn in = {.inserts_settled = sift_vis_part_inserts_settled(d, xmin),.has_dv = d->dv_blk != InvalidBlockNumber,.dv_settled = c == SIFT_VIS_PART_SETTLED_DV,
@@ -64,7 +69,7 @@ part_vis(const SiftV6ProjHost *h, const SiftPartDesc *d, SiftProjKind kind, Full
 
 	*ndirty = 0;
 	if (in.inserts_settled && in.heap_host && !in.sort_kind)
-		in.ndirty_blocks = dirty_blocks(h->heap, d, vmbuf, dirty);
+		in.ndirty_blocks = dirty_blocks(h->heap, d, vmbuf, dirty, vm_budget);
 	*ndirty = Max(in.ndirty_blocks, 0);
 	return sift_proj_vis_class(&in);
 }
@@ -87,23 +92,11 @@ part_patched_attrs(const SiftV6ProjHost *h, SiftTblVis *vis, const SiftPartition
 	return bloom;
 }
 
-/* The addresses of the partition the snapshot sees deleted by a pending delete or by this transaction's own deletes; NULL when there are none */
+/* The addresses of the partition the snapshot sees deleted by a pending delete or by this transaction's own deletes (staged_px, built once for the scan); NULL when there are none */
 static const SiftPendDelIndex *
-partition_pending(const SiftV6ProjHost *h, const SiftPartitionEntry *e, const uint64 *staged, int nstaged)
+partition_pending(const SiftV6ProjHost *h, const SiftPartitionEntry *e, const SiftPendDelIndex *staged_px)
 {
-	int			n;
-	uint64	   *dead;
-
-	if (h->heap == NULL)
-		return sift_tbl_f2_pending_index(h->rel, e, h->snap);
-	dead = sift_f2_pending_dead(h->rel, e, h->snap, &n);
-	if (nstaged > 0)
-	{
-		dead = dead != NULL ? repalloc(dead, (n + nstaged) * sizeof(uint64)) : palloc(nstaged * sizeof(uint64));
-		memcpy(dead + n, staged, nstaged * sizeof(uint64));
-		n += nstaged;
-	}
-	return n > 0 ? sift_pdel_idx_build(dead, n) : NULL;
+	return h->heap == NULL ? sift_tbl_f2_pending_index(h->rel, e, h->snap) : sift_f2_pending_index(h->rel, e, h->snap, staged_px);
 }
 
 SiftV6BaseParts
@@ -114,13 +107,17 @@ sift_v6_host_base(const SiftV6ProjHost *h, const SiftPlanSnapshot *plan, SiftPro
 	Buffer		vmbuf = InvalidBuffer;
 	SiftTblVis	vis;
 	BlockNumber dirty[SIFT_PROJ_MAX_DIRTY_VM_BLKS];
+	Size		alloc_dirty;
 	int			total = 0,
 				nstaged = 0,
-				cap_dirty = 0;
+				ndirty = 0;
+	uint32		vm_budget = VM_PROBE_BUDGET;
 	uint64	   *staged = h->heap != NULL ? sift_stage_dead(h->rel, h->snap, &nstaged) : NULL;
+	const SiftPendDelIndex *staged_px = sift_f2_staged_index(staged, nstaged);
 
 	for (int i = 0; i < plan->npartitions; i++)
 		total += plan->partlists[i].nparts;
+	alloc_dirty = Max(total, 1);
 	b.part = palloc(Max(total, 1) * sizeof(SiftPartDesc));
 	b.part_id = palloc(Max(total, 1) * sizeof(uint32));
 	b.part_seg = palloc(Max(total, 1) * sizeof(int));
@@ -129,7 +126,7 @@ sift_v6_host_base(const SiftV6ProjHost *h, const SiftPlanSnapshot *plan, SiftPro
 	b.seg_start = palloc((plan->npartitions + 1) * sizeof(int));
 	b.seg_pdel = palloc(Max(plan->npartitions, 1) * sizeof(SiftPendDelIndex *));
 	b.dirty_off = palloc((total + 1) * sizeof(uint32));
-	b.dirty_blk = palloc(Max(total, 1) * sizeof(BlockNumber));
+	b.dirty_blk = palloc(alloc_dirty * sizeof(BlockNumber));
 	if (h->heap == NULL)
 		sift_tbl_f2_vis_begin(&vis, h->rel, h->snap);
 	for (int i = 0; i < plan->npartitions; i++)
@@ -138,7 +135,7 @@ sift_v6_host_base(const SiftV6ProjHost *h, const SiftPlanSnapshot *plan, SiftPro
 		const SiftPlanPartList *list = &plan->partlists[i];
 
 		b.seg_start[i] = b.n;
-		b.seg_pdel[i] = partition_pending(h, e, staged, nstaged);
+		b.seg_pdel[i] = partition_pending(h, e, staged_px);
 		for (int k = 0; k < list->nparts; k++)
 		{
 			int			nd;
@@ -146,20 +143,21 @@ sift_v6_host_base(const SiftV6ProjHost *h, const SiftPlanSnapshot *plan, SiftPro
 			b.part[b.n] = list->parts[k];
 			b.part_id[b.n] = (uint32) e->part_id;
 			b.part_seg[b.n] = i;
-			b.vis[b.n] = part_vis(h, &list->parts[k], kind, xmin, &vmbuf, dirty, &nd);
+			b.vis[b.n] = part_vis(h, &list->parts[k], kind, xmin, &vmbuf, dirty, &nd, &vm_budget);
 			b.cd_bloom[b.n] = part_patched_attrs(h, &vis, e, &list->parts[k]);
-			b.dirty_off[b.n] = cap_dirty;
-			if (nd > 0)
+			b.dirty_off[b.n] = ndirty;
+			if (ndirty + nd > alloc_dirty)
 			{
-				b.dirty_blk = repalloc(b.dirty_blk, (cap_dirty + nd) * sizeof(BlockNumber));
-				memcpy(b.dirty_blk + cap_dirty, dirty, nd * sizeof(BlockNumber));
-				cap_dirty += nd;
+				alloc_dirty = Max(alloc_dirty * 2, ndirty + nd);
+				b.dirty_blk = repalloc(b.dirty_blk, alloc_dirty * sizeof(BlockNumber));
 			}
+			memcpy(b.dirty_blk + ndirty, dirty, nd * sizeof(BlockNumber));
+			ndirty += nd;
 			b.n++;
 		}
 	}
 	b.seg_start[plan->npartitions] = b.n;
-	b.dirty_off[b.n] = cap_dirty;
+	b.dirty_off[b.n] = ndirty;
 	if (BufferIsValid(vmbuf))
 		ReleaseBuffer(vmbuf);
 	return b;

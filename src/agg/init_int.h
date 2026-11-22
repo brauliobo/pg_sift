@@ -16,6 +16,7 @@ Node *init_param_mutator(Node *n, AggExec *ex);
 List *init_values(AggExec *ex);
 extern bool level_param(Node *n);
 void init_states(AggExec *ex);
+void sift_agg_ps_room(AggExec *ex, int n);
 void register_pred(AggExec *ex, SiftAggPred *p);
 void register_preds(AggExec *ex);
 void prune_init(AggExec *ex);

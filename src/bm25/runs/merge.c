@@ -139,15 +139,38 @@ runs_merge_docs(MergeOut *mo, RunReader *rd, int nruns)
 	binaryheap_free(heap);
 }
 
+/* Runs to merge before the next keys are a heap, not a scan */
+#define MERGE_HEAP_MIN	4
+
+/* act[0, n) as a min-heap on the next key of each run: sift act[i] down */
+static void
+act_down(RunReader **act, int n, int i)
+{
+	RunReader  *x = act[i];
+
+	for (int c; (c = 2 * i + 1) < n; i = c)
+	{
+		if (c + 1 < n && act[c + 1]->pkey < act[c]->pkey)
+			c++;
+		if (act[c]->pkey >= x->pkey)
+			break;
+		act[i] = act[c];
+	}
+	act[i] = x;
+}
+
 /*
  * Postings of the n runs positioned on one term in key order, in batches;
  * act is scratch for n runs. A run drains while its key stays below the
- * others', so runs with disjoint ranges cost one pass each.
+ * others', so runs with disjoint ranges cost one pass each. Many runs are
+ * a heap on their next key: the limit of the run on top is the smaller of
+ * the keys of its two children.
  */
 static void
 merge_postings(Batch *bt, RunReader **cur, int n, RunReader **act)
 {
 	int			live = 0;
+	bool		heap;
 
 	for (int i = 0; i < n; i++)
 	{
@@ -156,18 +179,26 @@ merge_postings(Batch *bt, RunReader **cur, int n, RunReader **act)
 		if (runs_post_next(cur[i]))
 			act[live++] = cur[i];
 	}
+	heap = live > MERGE_HEAP_MIN;
+	for (int i = heap ? live / 2 - 1 : -1; i >= 0; i--)
+		act_down(act, live, i);
 	while (live > 0)
 	{
 		int			m = 0;
 		SiftKey		limit = PG_UINT64_MAX;
 		RunReader  *r;
 
-		for (int i = 1; i < live; i++)
-			if (act[i]->pkey < act[m]->pkey)
-				m = i;
-		for (int i = 0; i < live; i++)
-			if (i != m)
-				limit = Min(limit, act[i]->pkey);
+		if (heap)
+			limit = live == 1 ? limit : live == 2 ? act[1]->pkey : Min(act[1]->pkey, act[2]->pkey);
+		else
+		{
+			for (int i = 1; i < live; i++)
+				if (act[i]->pkey < act[m]->pkey)
+					m = i;
+			for (int i = 0; i < live; i++)
+				if (i != m)
+					limit = Min(limit, act[i]->pkey);
+		}
 		r = act[m];
 		for (;;)
 		{
@@ -180,6 +211,8 @@ merge_postings(Batch *bt, RunReader **cur, int n, RunReader **act)
 			if (r->pkey >= limit)
 				break;
 		}
+		if (heap && live > 0)
+			act_down(act, live, 0);
 		CHECK_FOR_INTERRUPTS();
 	}
 }

@@ -34,6 +34,8 @@ struct MemoryContextData
 	char	   *bump;
 	char	   *bump_end;
 	MemoryContextCallback *cbs;			/* the reset callbacks, last registered first */
+	size_t		self_allocated;			/* the sizes of the chunks of this context, and of its tree: kept when a chunk comes or goes, read by MemoryContextMemAllocated */
+	size_t		tree_allocated;
 };
 
 _Thread_local MemoryContext CurrentMemoryContext;
@@ -91,6 +93,15 @@ AllocSetContextCreate(MemoryContext parent, const char *name, size_t min, size_t
 	return cx;
 }
 
+/* A large chunk of cx came (delta > 0) or went: counted in cx and in every context above it, atomically, for the threads that allocate in contexts under one parent */
+static inline void
+cx_account(MemoryContext cx, ssize_t delta)
+{
+	__atomic_fetch_add(&cx->self_allocated, (size_t) delta, __ATOMIC_RELAXED);
+	for (MemoryContext p = cx; p != NULL; p = p->parent)
+		__atomic_fetch_add(&p->tree_allocated, (size_t) delta, __ATOMIC_RELAXED);
+}
+
 static void
 chunk_link(MemoryContext cx, SqChunk *c)
 {
@@ -108,6 +119,7 @@ cx_free_chunks(MemoryContext cx)
 		n = c->next;
 		free(c->base);
 	}
+	cx_account(cx, -(ssize_t) __atomic_load_n(&cx->self_allocated, __ATOMIC_RELAXED));
 	cx->large.next = cx->large.prev = &cx->large;
 	cx->bump = cx->bump_end = NULL;
 }
@@ -173,14 +185,7 @@ MemoryContextDelete(MemoryContext cx)
 size_t
 MemoryContextMemAllocated(MemoryContext cx, bool recurse)
 {
-	size_t		n = 0;
-
-	for (SqChunk *c = cx->large.next; c != &cx->large; c = c->next)
-		n += c->size;
-	if (recurse)
-		for (MemoryContext ch = cx->child; ch; ch = ch->nextsib)
-			n += MemoryContextMemAllocated(ch, true);
-	return n;
+	return __atomic_load_n(recurse ? &cx->tree_allocated : &cx->self_allocated, __ATOMIC_RELAXED);
 }
 
 static void *
@@ -198,6 +203,7 @@ cx_alloc_large(MemoryContext cx, Size size, Size align)
 	c->cx = cx;
 	c->flags = SQ_F_LARGE;
 	chunk_link(cx, c);
+	cx_account(cx, (ssize_t) size);
 	return c + 1;
 }
 
@@ -293,6 +299,7 @@ pfree(void *p)
 	{
 		c->prev->next = c->next;
 		c->next->prev = c->prev;
+		cx_account(c->cx, -(ssize_t) c->size);
 		free(c->base);
 	}
 }

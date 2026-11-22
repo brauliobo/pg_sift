@@ -68,40 +68,74 @@ wbuf_leaf_ok(void *arg, const uint64 *bloom, int nwords)
 	return false;
 }
 
-/* The first position from i of the hash in h[0..n), or n */
-static uint32
-hash_from(const uint32 *h, uint32 n, uint32 i, uint32 x)
+/*
+ * The plain leaves of the plan by their term, for the pass over the terms of a doc: head[] is an open addressed table of the first leaf
+ * with each distinct term, next[] chains the leaves that share it; the other leaves (matchers) are in wild[]
+ */
+typedef struct WbufTab
 {
-#ifdef __SSE2__
-	__m128i		vx = _mm_set1_epi32((int) x);
+	int32	   *head;
+	int32	   *next;
+	uint32		mask;
+	int		   *wild;
+	int			nwild;
+	int			nexact;
+} WbufTab;
 
-	for (; i + 4 <= n; i += 4)
-	{
-		int			m = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(_mm_loadu_si128((const __m128i *) (h + i)), vx)));
-
-		if (m)
-			return i + __builtin_ctz(m);
-	}
-#endif
-	for (; i < n; i++)
-		if (h[i] == x)
-			break;
-	return i;
+static bool
+leaf_has_term(const EvalLeaf *l, uint32 hash, const char *t, int len)
+{
+	return l->hash == hash && l->node->textlen == len && memcmp(l->node->text, t, len) == 0;
 }
 
-/* The position of a plain leaf's term in the doc and its bytes, or -1: the hashes are compared first, the bytes only of one that is equal */
-static int
-exact_pos(const EvalLeaf *l, const SiftWbufDoc *d, const char **term)
+static void
+wbuf_tab_build(const SiftPlan *p, WbufTab *tab)
 {
-	for (uint32 i = hash_from(d->hash, d->nterms, 0, l->hash); i < d->nterms; i = hash_from(d->hash, d->nterms, i + 1, l->hash))
-	{
-		const char *t = d->terms + sift_sum_u8(d->len, i);
+	uint32		size = 8;
 
-		if (d->len[i] == l->node->textlen && memcmp(t, l->node->text, d->len[i]) == 0)
+	*tab = (WbufTab) {.next = palloc(Max(p->nleaves, 1) * sizeof(int32)),.wild = palloc(Max(p->nleaves, 1) * sizeof(int))};
+	for (int i = 0; i < p->nleaves; i++)
+		tab->nexact += p->leaves[i].m == NULL;
+	while (size < 2 * (uint32) tab->nexact)
+		size *= 2;
+	tab->mask = size - 1;
+	tab->head = palloc0(size * sizeof(int32));
+	for (int i = 0; i < p->nleaves; i++)
+	{
+		const EvalLeaf *l = &p->leaves[i];
+		uint32		s;
+
+		if (l->m != NULL)
 		{
-			*term = t;
-			return (int) i;
+			tab->wild[tab->nwild++] = i;
+			continue;
 		}
+		for (s = l->hash & tab->mask; tab->head[s]; s = (s + 1) & tab->mask)
+			if (leaf_has_term(&p->leaves[tab->head[s] - 1], l->hash, l->node->text, l->node->textlen))
+				break;
+		tab->next[i] = tab->head[s] ? tab->head[s] - 1 : -1;
+		tab->head[s] = i + 1;
+	}
+}
+
+static void
+wbuf_tab_free(WbufTab *tab)
+{
+	pfree(tab->head);
+	pfree(tab->next);
+	pfree(tab->wild);
+}
+
+/* The first leaf of the plain leaves with the term of the doc at hash/t/len, or -1 */
+static int
+wbuf_tab_find(const SiftPlan *p, const WbufTab *tab, uint32 hash, const char *t, int len)
+{
+	for (uint32 s = hash & tab->mask; tab->head[s]; s = (s + 1) & tab->mask)
+	{
+		int			li = tab->head[s] - 1;
+
+		if (leaf_has_term(&p->leaves[li], hash, t, len))
+			return li;
 	}
 	return -1;
 }
@@ -171,45 +205,45 @@ leaf_wbuf_count(SiftPlan *p, EvalLeaf *l, const char *t, int len)
 }
 
 /*
- * Which leaves the doc has a term of (hit[]), and one more document for every term of a scoring leaf that it has
- * (deleted docs count like in the statistics). A plain leaf is found by its hash, and its entry of the table of
- * document frequencies is kept in ent[]: a doc costs a pass over its hashes for each leaf, not a hash table lookup for every hit.
+ * Which leaves the doc has a term of (hit[]), and one more document for every term of a scoring leaf that it has (deleted docs
+ * count like in the statistics): one pass over the terms of the doc, a plain leaf found by its hash in the table of the leaves, and
+ * its entry of the table of document frequencies kept in ent[].
  */
 static void
-doc_hits(SiftPlan *p, const SiftWbufDoc *d, bool *hit, WbufTermEnt **ent)
+doc_hits(SiftPlan *p, const WbufTab *tab, const SiftWbufDoc *d, bool *hit, WbufTermEnt **ent)
 {
-	for (int i = 0; i < p->nleaves; i++)
-	{
-		EvalLeaf   *l = &p->leaves[i];
-		const char *t = d->terms;
+	const char *t = d->terms;
 
-		hit[i] = false;
-		if (l->m == NULL)
+	memset(hit, 0, Max(p->nleaves, 1));
+	for (int j = 0; j < d->nterms; t += d->len[j++])
+	{
+		int			li = tab->nexact > 0 ? wbuf_tab_find(p, tab, d->hash[j], t, d->len[j]) : -1;
+
+		for (int k = li; k >= 0; k = tab->next[k])
 		{
-			if (exact_pos(l, d, &t) < 0)
-				continue;
-			hit[i] = true;
-			if (l->scoring && p->scoring)
+			hit[k] = true;
+			if (p->leaves[k].scoring && p->scoring)
 			{
-				if (ent[i] == NULL)
+				if (ent[k] == NULL)
 				{
 					char		key[SIFT_MAX_TERM_BYTES + 1] = {0};
 
-					memcpy(key, t, l->node->textlen);
-					ent[i] = leaf_wbuf_term(p, l, key);
+					memcpy(key, t, d->len[j]);
+					ent[k] = leaf_wbuf_term(p, &p->leaves[k], key);
 				}
-				ent[i]->df++;
+				ent[k]->df++;
 			}
-			continue;
 		}
-		for (int j = 0; j < d->nterms; t += d->len[j++])
+		for (int w = 0; w < tab->nwild; w++)
 		{
-			if (!sift_matcher_match(l->m, t, d->len[j]))
+			EvalLeaf   *l = &p->leaves[tab->wild[w]];
+			bool		counts = l->scoring && p->scoring;
+
+			if ((!counts && hit[tab->wild[w]]) || !sift_matcher_match(l->m, t, d->len[j]))
 				continue;
-			hit[i] = true;
-			if (!(l->scoring && p->scoring))
-				break;
-			leaf_wbuf_count(p, l, t, d->len[j]);
+			hit[tab->wild[w]] = true;
+			if (counts)
+				leaf_wbuf_count(p, l, t, d->len[j]);
 		}
 	}
 }
@@ -247,6 +281,9 @@ bind_wbuf(SiftPlan *p)
 	int64		cap = 0;
 	bool	   *hit = palloc(Max(p->nleaves, 1) * sizeof(bool));
 	WbufTermEnt **ent = palloc0(Max(p->nleaves, 1) * sizeof(WbufTermEnt *));
+	WbufTab		tab;
+
+	wbuf_tab_build(p, &tab);
 
 	for (int i = 0; i < p->nwbuf && !p->capped; i++)
 	{
@@ -267,7 +304,7 @@ bind_wbuf(SiftPlan *p)
 				dead_dl += doc.dl;
 				continue;
 			}
-			doc_hits(p, &doc, hit, ent);
+			doc_hits(p, &tab, &doc, hit, ent);
 			if (!doc_matches(p, p->root, hit))
 				continue;
 			if (p->nmhit == cap)
@@ -295,6 +332,7 @@ bind_wbuf(SiftPlan *p)
 	}
 	pfree(hit);
 	pfree(ent);
+	wbuf_tab_free(&tab);
 	p->wbuf_ndocs = ndocs - dead_docs;
 	p->wbuf_sum_dl = sum_dl - dead_dl;
 	bind_stats(p, p->wbuf_ndocs, p->wbuf_sum_dl);
@@ -390,29 +428,6 @@ import_wbuf(SiftPlan *p, const SharedBind *h)
 	bind_stats(p, h->wbuf_ndocs, h->wbuf_sum_dl);
 }
 
-/* The terms of a scoring leaf that only write buffer docs have weigh like the others: by df over the whole index */
-static int
-leaf_wbuf_terms(EvalLeaf *l, LeafTerm **out)
-{
-	HASH_SEQ_STATUS seq;
-	WbufTermEnt *e;
-	int			n = 0;
-
-	if (l->mtab == NULL)
-		return 0;
-	hash_seq_init(&seq, l->mtab);
-	while ((e = hash_seq_search(&seq)) != NULL)
-	{
-		LeafTerm   *t = palloc0(sizeof(LeafTerm));
-
-		t->term = e->term;
-		t->len = strlen(e->term);
-		t->info.df = t->info.ldf = e->df;
-		out[n++] = t;
-	}
-	return n;
-}
-
 /*
  * The df a leaf is weighed by: its terms' dfs as independent chances of a document having any of them, never below the
  * largest. Only the distinct live terms count, so it does not depend on how many of them the expansion limit keeps.
@@ -437,366 +452,6 @@ leaf_blended_df(double ndocs, const double *ldf, int n)
 	return Min(Max(df, max_df), ndocs);
 }
 
-/* One source of the terms of a wide leaf in byte order: a segment's dictionary, or the sorted terms of the write buffer docs */
-typedef struct TermStream
-{
-	SiftSegment *seg;			/* NULL: the write buffer */
-	SiftDictIter *it;
-	LeafTerm  **wb;
-	int			nwb;
-	int			iwb;
-	bool		more;			/* term and ldf hold the next term */
-	char		term[SIFT_MAX_TERM_BYTES];
-	int			len;
-	double		ldf;
-	SiftTermInfo info;			/* a segment's term: its dictionary entry, live counts, valid until the stream moves on */
-} TermStream;
-
-/* The next live term of the leaf with a posting left in the source; sets more to false at the end */
-static void
-stream_next(TermStream *ts, const EvalLeaf *l, const char *hi, int hilen)
-{
-	const char *term;
-	int			len;
-	SiftTermInfo info;
-
-	ts->more = false;
-	if (ts->seg == NULL)
-	{
-		if (ts->iwb == ts->nwb)
-			return;
-		ts->len = ts->wb[ts->iwb]->len;
-		memcpy(ts->term, ts->wb[ts->iwb]->term, ts->len);
-		ts->ldf = ts->wb[ts->iwb++]->info.ldf;
-		ts->more = true;
-		return;
-	}
-	while (sift_dict_iter_next(ts->it, &term, &len, &info))
-	{
-		bool		dirty = (ts->seg->entry.flags & SIFT_SEG_DIRTY) != 0;
-
-		if (hi && sift_term_cmp(term, len, hi, hilen) >= 0)
-			return;
-		if (!sift_matcher_match(l->m, term, len) || (dirty && !sift_seg_term_live(ts->seg, &info)))
-			continue;
-		sift_seg_term_stats(ts->seg, &info);
-		memcpy(ts->term, term, len);
-		ts->len = len;
-		ts->info = info;
-		ts->ldf = info.ldf;
-		ts->more = true;
-		return;
-	}
-}
-
-/* The terms a deferred leaf keeps (at most WIDE_TOP_MAX): the ones with the largest bounds, then the largest df, then the smallest bytes */
-typedef struct TopTerm
-{
-	char	   *term;
-	int			len;
-	uint8		mb;				/* the largest bound over the segments */
-	double		ldf;
-	SiftTermInfo *info;			/* [segment] the term's entry, ldf 0 where it has none */
-} TopTerm;
-
-typedef struct TopTerms
-{
-	int			e;
-	int			n;
-	TopTerm	   *t;
-} TopTerms;
-
-static bool
-top_beats(uint8 mb, double ldf, const char *term, int len, const TopTerm *t)
-{
-	if (mb != t->mb)
-		return mb > t->mb;
-	if (ldf != t->ldf)
-		return ldf > t->ldf;
-	return sift_term_cmp(term, len, t->term, t->len) < 0;
-}
-
-static int
-top_cmp(const void *a, const void *b)
-{
-	const TopTerm *x = a,
-			   *y = b;
-
-	return sift_term_cmp(x->term, x->len, y->term, y->len);
-}
-
-/* A term the leaf does not keep: the segments' bounds of the terms left out (in[s]: the segment has it, none: info[s].ldf is 0 where it has not) */
-static void
-top_left_out(EvalLeaf *l, const SiftTermInfo *info, const bool *in, int nsegs)
-{
-	for (int s = 0; s < nsegs; s++)
-		if ((in == NULL || in[s]) && info[s].ldf > 0)
-			l->tail_mb[s] = Max(l->tail_mb[s], info[s].max_bound);
-}
-
-static void
-top_set(SiftPlan *p, TopTerm *t, const char *term, int len, uint8 mb, double ldf, const SiftTermInfo *info, const bool *in)
-{
-	t->term = MemoryContextAlloc(p->mcxt, len);
-	memcpy(t->term, term, len);
-	t->len = len;
-	t->mb = mb;
-	t->ldf = ldf;
-	t->info = MemoryContextAllocZero(p->mcxt, p->nsegs * sizeof(SiftTermInfo));
-	for (int s = 0; s < p->nsegs; s++)
-		if (in[s])
-		{
-			t->info[s] = info[s];
-			if (info[s].flags & SIFT_TERM_INLINE && info[s].pos_len > 0)
-				t->info[s].inline_pos = memcpy(MemoryContextAlloc(p->mcxt, info[s].pos_len), info[s].inline_pos, info[s].pos_len);
-		}
-}
-
-static void
-top_free(SiftPlan *p, TopTerm *t)
-{
-	for (int s = 0; s < p->nsegs; s++)
-		if (t->info[s].flags & SIFT_TERM_INLINE && t->info[s].pos_len > 0)
-			pfree((void *) t->info[s].inline_pos);
-	pfree(t->info);
-	pfree(t->term);
-}
-
-/* The kept terms are a binary heap with the worst at the root, so that a term that is not among the best is turned away by one comparison */
-static bool
-top_better(const TopTerm *a, const TopTerm *b)
-{
-	return top_beats(a->mb, a->ldf, a->term, a->len, b);
-}
-
-static void
-top_sift_up(TopTerm *t, int i)
-{
-	TopTerm		x = t[i];
-
-	for (; i > 0 && top_better(&t[(i - 1) / 2], &x); i = (i - 1) / 2)
-		t[i] = t[(i - 1) / 2];
-	t[i] = x;
-}
-
-static void
-top_sift_down(TopTerm *t, int n, int i)
-{
-	TopTerm		x = t[i];
-
-	for (int c; (c = 2 * i + 1) < n; i = c)
-	{
-		if (c + 1 < n && top_better(&t[c], &t[c + 1]))
-			c++;
-		if (!top_better(&x, &t[c]))
-			break;
-		t[i] = t[c];
-	}
-	t[i] = x;
-}
-
-/* A distinct term of the leaf with a posting in some segment: kept when its bound is among the largest, else left out (in[s]: the segment has it, info[s] its entry there) */
-static void
-top_consider(SiftPlan *p, EvalLeaf *l, TopTerms *tt, const char *term, int len, double ldf, const SiftTermInfo *info, const bool *in)
-{
-	uint8		mb = 0;
-	bool		any = false;
-
-	for (int s = 0; s < p->nsegs; s++)
-		if (in[s])
-		{
-			mb = Max(mb, info[s].max_bound);
-			l->all_mb[s] = Max(l->all_mb[s], info[s].max_bound);
-			any = true;
-		}
-	if (!any)
-		return;
-	if (tt->n < tt->e)
-	{
-		top_set(p, &tt->t[tt->n], term, len, mb, ldf, info, in);
-		top_sift_up(tt->t, tt->n++);
-	}
-	else if (top_beats(mb, ldf, term, len, &tt->t[0]))
-	{
-		top_left_out(l, tt->t[0].info, NULL, p->nsegs);
-		top_free(p, &tt->t[0]);
-		top_set(p, &tt->t[0], term, len, mb, ldf, info, in);
-		top_sift_down(tt->t, tt->n, 0);
-	}
-	else
-		top_left_out(l, info, in, p->nsegs);
-}
-
-/* The kept terms as the leaf's terms in each segment, ascending, weighed w */
-static void
-top_install(SiftPlan *p, EvalLeaf *l, TopTerms *tt, float4 w)
-{
-	qsort(tt->t, tt->n, sizeof(TopTerm), top_cmp);
-	for (int s = 0; s < p->nsegs; s++)
-	{
-		int			n = 0;
-
-		for (int i = 0; i < tt->n; i++)
-			n += tt->t[i].info[s].ldf > 0;
-		l->terms[s] = n ? MemoryContextAlloc(p->mcxt, n * sizeof(LeafTerm)) : NULL;
-		l->nterms[s] = n;
-		n = 0;
-		for (int i = 0; i < tt->n; i++)
-			if (tt->t[i].info[s].ldf > 0)
-			{
-				LeafTerm   *t = &l->terms[s][n++];
-
-				*t = (LeafTerm) {.len = tt->t[i].len,.info = tt->t[i].info[s],.w = w};
-				t->term = memcpy(MemoryContextAlloc(p->mcxt, t->len), tt->t[i].term, t->len);
-			}
-	}
-	for (int i = 0; i < tt->n; i++)
-	{
-		pfree(tt->t[i].info);
-		pfree(tt->t[i].term);
-	}
-	pfree(tt->t);
-}
-
-/* The accumulation of leaf_blended_df over the distinct terms of a wide leaf, in byte order */
-typedef struct WideAcc
-{
-	double		ndocs,
-				max_df,
-				none,
-				first;
-	uint64		n;
-	bool		saturated;
-} WideAcc;
-
-static void
-wide_acc(WideAcc *a, double df)
-{
-	if (a->n++ == 0)
-		a->first = df;
-	if (a->ndocs <= 0 || a->saturated)
-		return;
-	if (df >= a->ndocs)
-		a->saturated = true;
-	else
-	{
-		a->max_df = Max(a->max_df, df);
-		a->none += log(1.0 - df / a->ndocs);
-	}
-}
-
-static double
-wide_result(const WideAcc *a)
-{
-	if (a->n == 1)
-		return a->first;
-	if (a->ndocs <= 0)
-		return 0;
-	if (a->saturated)
-		return a->ndocs;
-	return Min(Max(a->ndocs * (1.0 - exp(a->none)), a->max_df), a->ndocs);
-}
-
-/* The distinct terms of a leaf that a single segment holds and the write buffer does not: the terms of its dictionary as they come */
-static void
-wide_one_segment(SiftPlan *p, EvalLeaf *l, TopTerms *tt, TermStream *ts, const char *hi, int hilen, WideAcc *a)
-{
-	bool		in = true;
-	SiftTermInfo info;
-
-	for (; ts->more; stream_next(ts, l, hi, hilen))
-	{
-		if (ts->ldf <= 0)
-			continue;
-		info = ts->info;
-		if (tt)
-			top_consider(p, l, tt, ts->term, ts->len, ts->ldf, &info, &in);
-		wide_acc(a, ts->ldf);
-	}
-}
-
-/* The distinct terms over the segments and the write buffer: the minimum of the streams, the df of it over the streams that hold it */
-static void
-wide_merge(SiftPlan *p, EvalLeaf *l, TopTerms *tt, TermStream *ts, const char *hi, int hilen, WideAcc *acc)
-{
-	int			ns = p->nsegs + 1;
-	SiftTermInfo *cur_info = palloc(ns * sizeof(SiftTermInfo));
-	bool	   *cur_in = palloc(ns * sizeof(bool)),
-			   *cur_eq = palloc(ns * sizeof(bool));
-
-	for (;;)
-	{
-		const TermStream *min = NULL;
-		double		df = 0;
-		char		cur[SIFT_MAX_TERM_BYTES];
-		int			curlen;
-
-		for (int i = 0; i < ns; i++)
-			if (ts[i].more && (min == NULL || sift_term_cmp(ts[i].term, ts[i].len, min->term, min->len) < 0))
-				min = &ts[i];
-		if (min == NULL)
-			break;
-		memcpy(cur, min->term, curlen = min->len);
-		for (int i = 0; i < ns; i++)
-			if (ts[i].more && sift_term_cmp(ts[i].term, ts[i].len, cur, curlen) == 0)
-			{
-				df += ts[i].ldf;
-				cur_eq[i] = true;
-				cur_in[i] = i < p->nsegs && ts[i].ldf > 0;
-				cur_info[i] = ts[i].info;
-			}
-			else
-				cur_eq[i] = cur_in[i] = false;
-		if (df > 0 && tt)
-			top_consider(p, l, tt, cur, curlen, df, cur_info, cur_in);
-		for (int i = 0; i < ns; i++)
-			if (cur_eq[i])
-				stream_next(&ts[i], l, i < p->nsegs ? hi : NULL, hilen);
-		if (df > 0)
-			wide_acc(acc, df);
-	}
-	pfree(cur_info);
-	pfree(cur_in);
-	pfree(cur_eq);
-}
-
-/*
- * The blended df of a wide leaf, from a merge of the dictionaries of the segments and the terms of the write buffer in byte order, one distinct term at a
- * time: the terms are not kept, and the accumulation is that of leaf_blended_df over the distinct terms in the same order.
- */
-static double
-wide_blended_df(SiftPlan *p, EvalLeaf *l, TopTerms *tt)
-{
-	WideAcc		acc = {.ndocs = p->stats.ndocs};
-	TermStream *ts = palloc0((p->nsegs + 1) * sizeof(TermStream));
-	LeafTerm  **wb = palloc(Max(l->mtab ? hash_get_num_entries(l->mtab) : 0, 1) * sizeof(LeafTerm *));
-	const char *lo,
-			   *hi;
-	int			lolen,
-				hilen;
-
-	sift_matcher_bounds(l->m, &lo, &lolen, &hi, &hilen);
-	for (int s = 0; s < p->nsegs; s++)
-	{
-		ts[s].seg = p->seg[s];
-		ts[s].it = sift_dict_iter(p->seg[s]->dict, lo, lolen, CurrentMemoryContext);
-		stream_next(&ts[s], l, hi, hilen);
-	}
-	ts[p->nsegs].wb = wb;
-	ts[p->nsegs].nwb = leaf_wbuf_terms(l, wb);
-	qsort(wb, ts[p->nsegs].nwb, sizeof(LeafTerm *), leaf_term_cmp);
-	stream_next(&ts[p->nsegs], l, NULL, 0);
-	if (p->nsegs == 1 && ts[1].nwb == 0)
-		wide_one_segment(p, l, tt, &ts[0], hi, hilen, &acc);
-	else
-		wide_merge(p, l, tt, ts, hi, hilen, &acc);
-	for (int s = 0; s < p->nsegs; s++)
-		sift_sr_release(&p->seg[s]->sr);
-	pfree(ts);
-	pfree(wb);
-	return wide_result(&acc);
-}
-
 /* The terms of a leaf over all segments and the write buffer, ascending, with the df of each over the index */
 static int
 leaf_all_terms(SiftPlan *p, EvalLeaf *l, LeafTerm ***out)
@@ -811,45 +466,10 @@ leaf_all_terms(SiftPlan *p, EvalLeaf *l, LeafTerm ***out)
 	for (int s = 0; s < p->nsegs; s++)
 		for (int i = 0; i < l->nterms[s]; i++)
 			all[n++] = &l->terms[s][i];
-	n += leaf_wbuf_terms(l, all + n);
+	n += tail_wbuf_terms(l, all + n);
 	qsort(all, n, sizeof(LeafTerm *), leaf_term_cmp);
 	*out = all;
 	return n;
-}
-
-/* The top terms of a deferred leaf and the blended df, from the dictionaries; the leaf reads no term before this */
-static double
-weigh_top(SiftPlan *p, EvalLeaf *l, TopTerms *tt)
-{
-	tt->e = Min(Max(sift_max_expansions, 1), WIDE_TOP_MAX);
-	tt->t = palloc0(tt->e * sizeof(TopTerm));
-	l->tail_mb = MemoryContextAllocZero(p->mcxt, Max(p->nsegs, 1));
-	l->all_mb = MemoryContextAllocZero(p->mcxt, Max(p->nsegs, 1));
-	return wide_blended_df(p, l, tt);
-}
-
-/* The kept terms of the deferred leaf (top_install) once its weight is known */
-static void
-install_top(SiftPlan *p, EvalLeaf *l, TopTerms *tt)
-{
-	top_install(p, l, tt, l->wide_w);
-	l->warm = false;
-}
-
-void
-sift_plan_install_top(SiftPlan *p)
-{
-	for (int i = 0; i < p->nleaves; i++)
-	{
-		EvalLeaf   *l = &p->leaves[i];
-		TopTerms	tt = {0};
-
-		if (l->warm)
-		{
-			weigh_top(p, l, &tt);
-			install_top(p, l, &tt);
-		}
-	}
 }
 
 /*
@@ -870,10 +490,10 @@ weigh_leaf(SiftPlan *p, EvalLeaf *l)
 	if (l->wide)
 	{
 		if (!l->deferred)
-			df_blend = wide_blended_df(p, l, NULL);
+			df_blend = tail_wide_blended_df(p, l, NULL);
 		else if (!sift_wide_memo_warm(p, l, &df_blend))
 		{
-			df_blend = weigh_top(p, l, &tt);
+			df_blend = tail_weigh_top(p, l, &tt);
 			sift_wide_memo_store(p, l, df_blend, l->all_mb);
 		}
 	}
@@ -903,7 +523,7 @@ weigh_leaf(SiftPlan *p, EvalLeaf *l)
 		if (l->deferred)
 		{
 			if (!l->warm)
-				top_install(p, l, &tt, w);
+				tail_top_install(p, l, &tt, w);
 		}
 		else
 			for (int s = 0; s < p->nsegs; s++)
@@ -943,44 +563,47 @@ leaf_weighed(const EvalLeaf *l, const char *term, int len)
 	return *(LeafTerm **) bsearch(&k, l->uniq, l->nuniq, sizeof(LeafTerm *), leaf_term_cmp);
 }
 
-/* Best term of the leaf in a write buffer doc, weighed like the others; a wide leaf has one term, with the best tf of its words */
-static float4
-wbuf_leaf_score(const EvalLeaf *l, const SiftWbufDoc *d, float4 knorm)
-{
-	const char *t = d->terms;
-	float4		best = 0;
-	int			wtf = 0;
-	int			j;
-
-	if (l->m == NULL)
-		return (j = exact_pos(l, d, &t)) < 0 ? 0 : sift_kern_bm25(leaf_weighed(l, t, d->len[j])->w, d->tf[j], knorm);
-	for (j = 0; j < d->nterms; t += d->len[j++])
-		if (sift_matcher_match(l->m, t, d->len[j]))
-		{
-			if (l->wide)
-				wtf = Max(wtf, d->tf[j]);
-			else
-				best = Max(best, sift_kern_bm25(leaf_weighed(l, t, d->len[j])->w, d->tf[j], knorm));
-		}
-	return wtf > 0 ? sift_kern_bm25(leaf_weighed(l, l->wide, l->widelen)->w, Min(wtf, SIFT_MAX_TF), knorm) : best;
-}
-
 /*
- * Write buffer matches score at bind from their records: the leaves in canonical order, a phrase as the AND
- * of its terms (the text decides at verify, like for the immutable candidates).
+ * Write buffer matches score at bind from their records: the leaves in canonical order, a phrase as the AND of its terms (the text
+ * decides at verify, like for the immutable candidates). All the terms of a leaf weigh the same, and the score of a term grows with
+ * its tf, so a leaf scores its best tf (the best of the tfs of its words, for a wide leaf) at its weight: one pass over the terms
+ * of the doc finds the best tf of every leaf.
  */
 void
 score_wbuf(SiftPlan *p)
 {
+	WbufTab		tab;
+	uint8	   *best = palloc(Max(p->nleaves, 1));
+	float4	   *w = palloc(Max(p->nleaves, 1) * sizeof(float4));
+
+	wbuf_tab_build(p, &tab);
+	for (int j = 0; j < p->nleaves; j++)
+		w[j] = p->leaves[j].nuniq > 0 ? p->leaves[j].uniq[0]->w : 0;
 	for (int64 i = 0; i < p->nmhit; i++)
 	{
 		WbufHit	   *h = &p->mhit[i];
-		float4		knorm = sift_kern_knorm1(&p->bm, h->doc->dl),
+		const SiftWbufDoc *d = h->doc;
+		const char *t = d->terms;
+		float4		knorm = sift_kern_knorm1(&p->bm, d->dl),
 					score = 0;
 
+		memset(best, 0, Max(p->nleaves, 1));
+		for (int j = 0; j < d->nterms; t += d->len[j++])
+		{
+			int			li = tab.nexact > 0 ? wbuf_tab_find(p, &tab, d->hash[j], t, d->len[j]) : -1;
+
+			for (int k = li; k >= 0; k = tab.next[k])
+				best[k] = Max(best[k], d->tf[j]);
+			for (int x = 0; x < tab.nwild; x++)
+				if (p->leaves[tab.wild[x]].scoring && sift_matcher_match(p->leaves[tab.wild[x]].m, t, d->len[j]))
+					best[tab.wild[x]] = Max(best[tab.wild[x]], d->tf[j]);
+		}
 		for (int j = 0; j < p->nleaves; j++)
-			if (p->leaves[j].scoring)
-				score += wbuf_leaf_score(&p->leaves[j], h->doc, knorm);
+			if (p->leaves[j].scoring && best[j] > 0)
+				score += sift_kern_bm25(w[j], best[j], knorm);
 		h->score = score;
 	}
+	wbuf_tab_free(&tab);
+	pfree(best);
+	pfree(w);
 }

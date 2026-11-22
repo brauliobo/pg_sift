@@ -44,7 +44,17 @@ extern void rank_sort_units(SiftRanker *r);
 extern void rank_widen(SiftRanker *r, float4 theta);
 extern void seg_rewind(RankSeg *rs);
 extern const SiftGroupBounds * term_bound_at(const RkTerm *t, uint32 gid);
-extern float4 sum_ub(const SiftPlan *p, const float4 *ub, int leaf, float4 v);
+
+/*
+ * The factor that makes a double sum of the non-negative leaf bounds an upper bound of their float4 left-to-right sum: each
+ * float4 addition rounds by at most 2^-24 relative, so the sum of n terms is off by less than (n + 1) * 2^-23. Pruning with it
+ * keeps every term the float4 sum would keep; the scores are computed in leaf order elsewhere.
+ */
+static inline double
+sum_ub_slack(int nleaves)
+{
+	return 1.0 + (double) (nleaves + 1) / 8388608.0;
+}
 extern bool block_terms(SiftPlan *p, RankSeg *rs, int b, float4 theta, float4 *ub);
 extern int score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *fs, const SiftTidBridgeSB *bsb, const SiftDocChunk *dc, int b, float4 theta,
 					   const float4 *ub, uint32 live);

@@ -195,7 +195,8 @@ gen(Comp *c, int n)
 typedef struct Pfx					/* every match of a node starts with w; whole: it matches nothing else */
 {
 	pg_wchar   *w;
-	int			n;
+	int			n,
+				cap;
 	bool		whole;
 } Pfx;
 
@@ -204,7 +205,11 @@ pcat(Pfx a, Pfx b)
 {
 	if (b.n)
 	{
-		a.w = a.n ? repalloc(a.w, (a.n + b.n) * sizeof(pg_wchar)) : palloc(b.n * sizeof(pg_wchar));
+		if (a.n + b.n > a.cap)
+		{
+			a.cap = Max(a.n + b.n, 2 * a.cap);
+			a.w = a.w ? repalloc(a.w, a.cap * sizeof(pg_wchar)) : palloc(a.cap * sizeof(pg_wchar));
+		}
 		memcpy(a.w + a.n, b.w, b.n * sizeof(pg_wchar));
 		a.n += b.n;
 		pfree(b.w);
@@ -232,7 +237,7 @@ static Pfx
 pfx(const Comp *c, int n)
 {
 	const Node *nd = &c->nodes[n];
-	Pfx			r = {NULL, 0, false};
+	Pfx			r = {NULL, 0, 0, false};
 	int			i;
 
 	switch (nd->t)
@@ -244,6 +249,7 @@ pfx(const Comp *c, int n)
 			if (!c->icase || flip(nd->a) == nd->a)
 			{
 				r.w = palloc(sizeof(pg_wchar));
+				r.cap = 1;
 				r.w[0] = nd->a;
 				r.n = 1;
 				r.whole = true;
@@ -323,7 +329,7 @@ static Rx *
 finish(Comp *c, int root)
 {
 	Rx		   *x = palloc0(sizeof(Rx));
-	Pfx			p = {NULL, 0, false};
+	Pfx			p = {NULL, 0, 0, false};
 
 	x->prog = c->prog;
 	x->nprog = c->nprog;
@@ -340,7 +346,8 @@ finish(Comp *c, int root)
 	c->prog = NULL;
 	c->sets = NULL;
 	c->rng = NULL;
-	if (!c->nlanch && anchored(c, root, false))
+	x->start_anchored = !c->nlanch && anchored(c, root, false);
+	if (x->start_anchored)
 		p = pfx(c, root);
 	x->pfx = p.w;
 	x->npfx = p.n;
@@ -407,6 +414,7 @@ pg_regfree(regex_t *re)
 	drop(x->slots);
 	drop(x->stk);
 	drop(x->seen);
+	drop(x->lgen);
 	drop(x->pfx);
 	pfree(x);
 	re->magic = 0;

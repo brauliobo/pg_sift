@@ -217,13 +217,54 @@ scan_cost(const V6Plan *p, double groups, Cost *startup, Cost *total)
 	}
 }
 
+/* A column of the scan's own relation as the member of scan_vars it is (-1: e is not one: the other entries are told apart by equal()) */
+static int
+scan_var_bit(const Expr *e)
+{
+	const Var  *v = (const Var *) e;
+
+	return IsA(e, Var) && v->varlevelsup == 0 && bms_is_empty(v->varnullingrels) && v->varno < 1024 ? (int) v->varno * 2048 + v->varattno - FirstLowInvalidHeapAttributeNumber : -1;
+}
+
+static bool
+scan_tlist_has(const V6Plan *p, const Expr *e)
+{
+	const int	bit = scan_var_bit(e);
+
+	if (bit >= 0)
+		return bms_is_member(bit, p->scan_vars);
+	foreach_node(TargetEntry, te, p->scan_tlist)
+		if (equal(te->expr, e))
+			return true;
+	return false;
+}
+
 static void
 add_scan_var(V6Plan *p, Expr *e)
 {
-	foreach_node(TargetEntry, te, p->scan_tlist)
-		if (equal(te->expr, e))
-			return;
+	const int	bit = scan_var_bit(e);
+
+	if (scan_tlist_has(p, e))
+		return;
+	if (bit >= 0)
+		p->scan_vars = bms_add_member(p->scan_vars, bit);
 	p->scan_tlist = lappend(p->scan_tlist, makeTargetEntry(copyObject(e), list_length(p->scan_tlist) + 1, NULL, false));
+}
+
+/* Room for one more aggregate and function in the spec: the arrays double */
+static void
+spec_room(V6Plan *p, bool func)
+{
+	int		   *cap = func ? &p->cap_funcs : &p->cap_aggs;
+	const int	n = func ? p->spec.nfuncs : p->spec.naggs;
+
+	if (n < *cap)
+		return;
+	*cap = Max(*cap * 2, 8);
+	if (func)
+		SIFT_REGROW(p->spec.func, (Size) *cap * sizeof(SiftV6Func));
+	else
+		SIFT_REGROW(p->spec.agg, (Size) *cap * sizeof(SiftV6Agg));
 }
 
 bool
@@ -378,7 +419,7 @@ compile_agg(V6Plan *p, Aggref *a)
 		if (cls == SV6C_TEXT && !((g.kind == SV6_MIN || g.kind == SV6_MAX) ? sift_collate_is_c(coll) : sift_text_bytes_equal(coll)))
 			return false;
 	}
-	p->spec.agg = p->spec.agg ? repalloc(p->spec.agg, (p->spec.naggs + 1) * sizeof(SiftV6Agg)) : palloc((p->spec.naggs + 1) * sizeof(SiftV6Agg));
+	spec_room(p, false);
 	p->spec.agg[p->spec.naggs++] = g;
 	add_scan_var(p, (Expr *) a);
 	return true;
@@ -412,9 +453,9 @@ compile_grouping(V6Plan *p, GroupingFunc *gf)
 			return false;
 		i++;
 	}
-	p->spec.func = p->spec.func ? repalloc(p->spec.func, (p->spec.nfuncs + 1) * sizeof(SiftV6Func)) : palloc((p->spec.nfuncs + 1) * sizeof(SiftV6Func));
+	spec_room(p, true);
 	p->spec.func[p->spec.nfuncs] = f;
-	p->spec.agg = p->spec.agg ? repalloc(p->spec.agg, (p->spec.naggs + 1) * sizeof(SiftV6Agg)) : palloc((p->spec.naggs + 1) * sizeof(SiftV6Agg));
+	spec_room(p, false);
 	p->spec.agg[p->spec.naggs++] = (SiftV6Agg) {.kind = SV6_GROUPING,.arg = {.attno = p->spec.nfuncs++},.restype = INT4OID};
 	add_scan_var(p, (Expr *) gf);
 	return true;
@@ -425,13 +466,9 @@ compile_aggs(V6Plan *p, Node *e)
 {
 	foreach_ptr(Node, n, pull_var_clause(e, PVC_INCLUDE_AGGREGATES))
 	{
-		bool		seen = false;
-
 		if (!IsA(n, Aggref) && !IsA(n, GroupingFunc))
 			continue;
-		foreach_node(TargetEntry, te, p->scan_tlist)
-			seen |= equal(te->expr, n);
-		if (!seen && !(IsA(n, Aggref) ? compile_agg(p, (Aggref *) n) : compile_grouping(p, (GroupingFunc *) n)))
+		if (!scan_tlist_has(p, (Expr *) n) && !(IsA(n, Aggref) ? compile_agg(p, (Aggref *) n) : compile_grouping(p, (GroupingFunc *) n)))
 			return false;
 	}
 	return true;
@@ -793,9 +830,8 @@ reads_outside_scan_tlist(Node *e, void *context)
 
 	if (e == NULL)
 		return false;
-	foreach_node(TargetEntry, te, p->scan_tlist)
-		if (equal(te->expr, e))
-			return false;
+	if (scan_tlist_has(p, (const Expr *) e))
+		return false;
 	if (IsA(e, Var) || IsA(e, Aggref) || IsA(e, GroupingFunc) || IsA(e, PlaceHolderVar))
 		return true;
 	return expression_tree_walker(e, reads_outside_scan_tlist, context);
@@ -815,7 +851,9 @@ sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 
 	p->spec = (SiftV6Spec) {.relid = p->relid,.is_table = p->store != NULL,.ext = p->xseed};
 	p->freg = sift_freg_create(CurrentMemoryContext);
+	p->cap_aggs = p->cap_funcs = 0;
 	p->scan_tlist = NIL;
+	p->scan_vars = NULL;
 	p->text = NULL;
 	exprs = sift_v6_collapse_offset_sums((Node *) p->out->reltarget->exprs);
 	having = sift_v6_collapse_offset_sums(extra->havingQual);

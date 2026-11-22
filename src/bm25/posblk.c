@@ -232,6 +232,7 @@ sift_posblk_open(SiftPosBlk *bk, const uint8 *b, uint32 len, uint32 k)
 	bk->b = b;
 	bk->nbits = nbits;
 	bk->k = k;
+	bk->uck_valid = 0;
 	if (b[0] & BLK_MULTI)
 	{
 		multi = br_get(b, bp, k);
@@ -290,7 +291,15 @@ unary_seek(SiftPosBlk *bk, uint64 g)
 	uint64		skip;
 
 	if (g < bk->ug)
+	{
 		bk->upos = bk->ub, bk->ug = 0;
+		for (int c = 3; c >= 0; c--)
+			if ((bk->uck_valid >> c & 1) && bk->uck_g[c] <= g)
+			{
+				bk->upos = bk->uck_pos[c], bk->ug = bk->uck_g[c];
+				break;
+			}
+	}
 	skip = g - bk->ug;
 	bk->ug = g;
 	while (skip > 0)
@@ -353,6 +362,12 @@ sift_posblk_get(SiftPosBlk *bk, uint32 i, uint32 *v)
 		return true;
 	if (!unary_seek(bk, bk->gofs[i]))
 		return false;
+	if ((i & 7) == 0)
+	{
+		bk->uck_g[i >> 3] = bk->ug;
+		bk->uck_pos[i >> 3] = bk->upos;
+		bk->uck_valid |= 1 << (i >> 3);
+	}
 	rbp = bk->rb + (uint64) bk->gofs[i] * bk->kr;
 	for (uint32 j = 1; j < n; j++)
 	{

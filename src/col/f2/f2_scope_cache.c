@@ -217,6 +217,20 @@ sift_f2_scope_cache_get(Relation index, const SiftPlanSnapshot *plan, int ord, M
 	return &e->meta;
 }
 
+const SiftScopeMeta *
+sift_f2_scope_cache_peek(Relation index, const SiftPlanSnapshot *plan, int ord)
+{
+	const SiftManifestScopeRef *ref = sift_f2_scope_cache_ref(plan, ord);
+	ScopeKey	key = {.locator = index->rd_locator,.ord = ord};
+	ScopeEntry *e;
+
+	if (ref == NULL || cache == NULL)
+		return NULL;
+	key.meta_gen = ref->meta_gen;
+	e = hash_search(cache, &key, HASH_FIND, NULL);
+	return e != NULL ? &e->meta : NULL;
+}
+
 bool
 sift_f2_scope_cache_rings(const SiftScopeMeta *m)
 {

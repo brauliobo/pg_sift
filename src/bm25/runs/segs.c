@@ -81,6 +81,7 @@ sift_segs_cuts(SiftSegment **segs, int nsegs, uint64 min_bytes, int target, Sift
 	SegSamples	ss = {0};
 	RunSample  *all = NULL;
 	int			nall = 0,
+				cap = 0,
 				ncuts;
 
 	for (int i = 0; i < nsegs; i++)
@@ -93,7 +94,11 @@ sift_segs_cuts(SiftSegment **segs, int nsegs, uint64 min_bytes, int target, Sift
 		sift_dict_samples(segs[i]->dict, SEG_SAMPLES, seg_sample, &ss);
 		if (ss.n > 0)
 			ss.all[ss.n - 1].vol = Max(post->off + post->len, ss.all[ss.n - 1].off) - ss.all[ss.n - 1].off + ss.terms * TERM_COST;
-		SIFT_REGROW(all, (nall + ss.n) * sizeof(RunSample));
+		if (nall + ss.n > cap)
+		{
+			cap = Max(64, Max(2 * cap, nall + ss.n));
+			SIFT_REGROW(all, (Size) cap * sizeof(RunSample));
+		}
 		memcpy(all + first, ss.all, ss.n * sizeof(RunSample));
 		nall += ss.n;
 	}

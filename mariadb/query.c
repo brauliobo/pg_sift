@@ -50,6 +50,8 @@ typedef struct Qry
 	int64	   *fdocs;				/* documents the filter allows, ascending */
 	size_t		nfdocs;
 	SiftFilter *filter;
+	size_t		id_pos,				/* where live_pk_seq found the last document in the keys of the index and in the live segment */
+				dl_pos;
 } Qry;
 
 /* ------------------------------------------------ the live segment */
@@ -517,6 +519,23 @@ run_count(Qry *q, MemoryContext cx)
 	sift_state_close(st);
 }
 
+/* live_pk for documents in ascending order, as sift_eval_pages gives them: each search starts where the last one ended */
+static int64
+live_pk_seq(Qry *q, int64 docid)
+{
+	if (docid > q->dlfrom)
+	{
+		q->dl_pos = lower_bound_from(q->dl->dids, q->dl->nd, q->dl_pos, docid);
+		if (q->dl_pos == q->dl->nd || q->dl->dids[q->dl_pos] != docid)
+			fail("sift: document %lld is not in the live segment", (long long) docid);
+		return q->dl->dpks[q->dl_pos];
+	}
+	q->id_pos = lower_bound_from(q->ix->ids, q->ix->ndoc, q->id_pos, docid);
+	if (q->id_pos == q->ix->ndoc || q->ix->ids[q->id_pos] != docid)
+		fail("sift: document %lld has no row key in the event log", (long long) docid);
+	return q->ix->pks[q->id_pos];
+}
+
 static void
 collect_page(void *arg, BlockNumber blk, const uint64 *offmask)
 {
@@ -529,7 +548,7 @@ collect_page(void *arg, BlockNumber blk, const uint64 *offmask)
 
 			if (q->npks == q->cappks)
 				q->pks = realloc(q->pks, (q->cappks = q->cappks ? q->cappks * 2 : 1024) * sizeof(int64));
-			q->pks[q->npks++] = live_pk(q, docid);
+			q->pks[q->npks++] = live_pk_seq(q, docid);
 		}
 }
 

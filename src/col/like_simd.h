@@ -45,6 +45,14 @@ extern int64 sift_like_find(const SiftLikeNeedle *nd, const uint8 *hay, size_t h
 /* The same, with a scalar loop, for the tests and for the platforms with no vector body */
 extern int64 sift_like_find_scalar(const SiftLikeNeedle *nd, const uint8 *hay, size_t hlen);
 
+/*
+ * The same in O(hlen + len) bytes compared for any bytes. The searches above compare the first and the last byte and verify the rest, which costs a verification per candidate: when the
+ * verifications of the candidates that failed have compared more than SIFT_LIKE_VERIFY_BUDGET(scanned) bytes (a needle and a string that are both runs of one byte with one other in the needle),
+ * they go on from the position they have reached with this one.
+ */
+extern int64 sift_like_find_twoway(const SiftLikeNeedle *nd, const uint8 *hay, size_t hlen);
+#define SIFT_LIKE_VERIFY_BUDGET(scanned) (4 * (size_t) (scanned) + 1024)
+
 /* Whether a string holds the needle */
 extern SiftLikeVerdict sift_like_test(const SiftLikeNeedle *nd, const uint8 *s, uint32 len);
 

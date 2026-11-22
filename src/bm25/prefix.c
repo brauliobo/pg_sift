@@ -27,6 +27,17 @@
 /* The superblocks of a segment are kept in chunks that are made when a posting first lands in one: a sparse segment takes memory for the superblocks it has postings in, not for its span */
 #define SB_CHUNK		256
 
+/* A superblock with at most this many postings is merged by sorting them; a denser one in the table of slots */
+#define UNION_SPARSE_MAX	2048
+
+/* A term the pass found: later windows read its postings without the scan of the dictionary and the matcher */
+typedef struct CapTerm
+{
+	SiftTermInfo info;
+	uint32		sb_lo;			/* the first and last superblock it has postings in */
+	uint32		sb_hi;
+} CapTerm;
+
 /* The postings gathered for one superblock, slot << 8 | tf, in arrival order */
 typedef struct SbPostings
 {
@@ -59,7 +70,14 @@ typedef struct Union
 	uint32		from;			/* the superblocks of the pass */
 	uint32		to;
 	uint64	   *count;			/* counting: postings of every superblock of the segment, else NULL */
-	uint8	   *acc;			/* tf of every slot of the superblock being merged */
+	uint8	   *acc;			/* tf of every slot of the superblock being merged (a dense one), made by the first */
+	uint64		dirty[(1 << SLOT_BITS) / 64 / 64];	/* the blocks of 64 slots of acc that hold a tf */
+	CapTerm    *terms;			/* the terms of the pass over the segment, while it fits half the budget (terms_capped: it did not) */
+	uint32		nterms;
+	uint32		termcap;
+	bool		capture;
+	bool		terms_capped;
+	bool		replay;			/* the passes of windows read terms, not the dictionary */
 	sift_tid   *tids;
 	uint8	   *tf;
 	SiftKey    *keys;			/* the merged superblock: allocated by the first */
@@ -92,6 +110,13 @@ union_check(const Union *u, uint32 gid, SiftKey key)
 		corrupt_union(u->seg, "a posting lies outside the segment's superblocks or has no offset");
 }
 
+static void *
+union_regrow(Union *u, void *p, Size n)
+{
+	SIFT_REGROW_HUGE_IN(u->cx, p, n);
+	return p;
+}
+
 static inline SbPostings *
 union_sb(const Union *u, uint32 gid)
 {
@@ -117,9 +142,12 @@ union_direct(const Union *u)
 }
 
 static inline void
-union_max(const Union *u, uint32 slot, uint8 tf)
+union_max(Union *u, uint32 slot, uint8 tf)
 {
+	if (u->acc == NULL)
+		u->acc = MemoryContextAllocZero(u->cx, 1 << SLOT_BITS);
 	u->acc[slot] = u->scoring ? Max(u->acc[slot], tf) : 1;
+	u->dirty[slot >> 12] |= UINT64CONST(1) << ((slot >> 6) & 63);
 }
 
 /* Gathers a posting of the window (its tf is merged on the spot in a window of one superblock) */
@@ -138,7 +166,7 @@ union_add(Union *u, uint32 gid, SiftKey key, uint8 tf)
 	if (b->n == b->cap)
 	{
 		b->cap = Max(64, 2 * b->cap);
-		SIFT_REGROW_HUGE_IN(u->cx, b->e, b->cap * sizeof(uint32));
+		b->e = union_regrow(u, b->e, b->cap * sizeof(uint32));
 	}
 	b->e[b->n++] = SLOT(key) << 8 | tf;
 }
@@ -188,29 +216,35 @@ union_skip(void *arg, const char *term, int len, const char **next, int *nextlen
 	return sift_matcher_skip(((Union *) arg)->m, term, len, next, nextlen);
 }
 
-static bool
-union_term(void *arg, const char *term, int len, const SiftTermInfo *info)
+static inline void
+cap_note(CapTerm *ct, uint32 gid)
 {
-	Union	   *u = arg;
+	ct->sb_lo = Min(ct->sb_lo, gid);
+	ct->sb_hi = Max(ct->sb_hi, gid);
+}
+
+/* The postings of a term in the superblocks [from, to] of the pass; ct (a term of the capture) learns the superblocks it lies in */
+static void
+union_postings(Union *u, const SiftTermInfo *info, CapTerm *ct)
+{
 	SiftPostingCursor *c;
 	sift_cur   *cur;
 
-	if (!sift_matcher_match(u->m, term, len))
-		return true;
-	if (info->max_bound < u->min_bound)
-	{
-		u->left_out = Max(u->left_out, info->max_bound);
-		return true;
-	}
 	if (info->flags & SIFT_TERM_INLINE)
 	{
 		for (uint32 i = 0; i < info->df; i++)
+		{
+			SiftKey		key = info->inline_keys[i];
+
+			if (ct)
+				cap_note(ct, SIFT_GID(key));
 			if (u->count)
-				union_count(u, SIFT_GID(info->inline_keys[i]), 1);
+				union_count(u, SIFT_GID(key), 1);
 			else
-				union_add(u, SIFT_GID(info->inline_keys[i]), info->inline_keys[i], info->inline_tf[i]);
+				union_add(u, SIFT_GID(key), key, info->inline_tf[i]);
+		}
 		union_over_budget(u, 0);
-		return true;
+		return;
 	}
 	c = sift_post_open(&u->seg->sr, info, u->tcxt);
 	sift_sr_unlock(&u->seg->sr);
@@ -221,6 +255,8 @@ union_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 		uint32		k;
 
 		CHECK_FOR_INTERRUPTS();
+		if (ct)
+			cap_note(ct, g->gid);
 		union_over_budget(u, n);
 		if (u->count)
 		{
@@ -234,6 +270,49 @@ union_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 			union_add(u, g->gid, u->tids[j], u->scoring ? u->tf[j] : 1);
 	}
 	MemoryContextReset(u->tcxt);
+}
+
+/* Keeps the term for the later windows, unless the terms of the segment would take more than half the budget */
+static CapTerm *
+union_capture(Union *u, const SiftTermInfo *info)
+{
+	CapTerm    *ct;
+
+	if (u->terms_capped)
+		return NULL;
+	if ((uint64) (u->nterms + 1) * sizeof(CapTerm) > u->budget / 2)
+	{
+		u->terms_capped = true;
+		if (u->terms)
+			pfree(u->terms);
+		u->terms = NULL;
+		return NULL;
+	}
+	if (u->nterms == u->termcap)
+	{
+		u->termcap = Max(256, 2 * u->termcap);
+		u->terms = union_regrow(u, u->terms, (Size) u->termcap * sizeof(CapTerm));
+	}
+	ct = &u->terms[u->nterms++];
+	ct->info = *info;
+	ct->sb_lo = UINT32_MAX;
+	ct->sb_hi = 0;
+	return ct;
+}
+
+static bool
+union_term(void *arg, const char *term, int len, const SiftTermInfo *info)
+{
+	Union	   *u = arg;
+
+	if (!sift_matcher_match(u->m, term, len))
+		return true;
+	if (info->max_bound < u->min_bound)
+	{
+		u->left_out = Max(u->left_out, info->max_bound);
+		return true;
+	}
+	union_postings(u, info, u->capture ? union_capture(u, info) : NULL);
 	return true;
 }
 
@@ -278,33 +357,57 @@ union_live(Union *u, SiftKey *keys, uint8 *tf, int n)
 	return k;
 }
 
-/*
- * Moves the nonzero slots of acc (the tf of every slot of a superblock) to keys and tf in slot order and zeroes them; returns their number.
- * A block of 64 slots with none is skipped at the width of the clone: the superblock has 128 KB of them, mostly zero.
- */
-SIFT_FMV_DEFINE(static, uint32, drain_acc, (uint8 *SIFT_RESTRICT acc, SiftKey *SIFT_RESTRICT keys, uint8 *SIFT_RESTRICT tf, SiftKey base), (acc, keys, tf, base),
+/* Moves the nonzero slots of acc (the tf of every slot of a superblock) to keys and tf in slot order and zeroes them; returns their number: only the blocks that hold a tf are read */
+static uint32
+drain_acc(Union *u, SiftKey *keys, uint8 *tf, SiftKey base)
 {
 	uint32		n = 0;
 
-	for (uint32 blk = 0; blk < (1 << SLOT_BITS); blk += 64)
+	for (int w = 0; w < (int) lengthof(u->dirty); w++)
 	{
-		uint8		any = 0;
-
-		for (int j = 0; j < 64; j++)
-			any |= acc[blk + j];
-		if (!any)
-			continue;
-		for (uint32 slot = blk; slot < blk + 64; slot++)
+		for (uint64 m = u->dirty[w]; m != 0; m &= m - 1)
 		{
-			if (acc[slot] == 0)
-				continue;
-			keys[n] = base | (SiftKey) (slot / SLOT_OFFS) << 16 | (slot % SLOT_OFFS + 1);
-			tf[n++] = acc[slot];
-			acc[slot] = 0;
+			uint32		blk = (w * 64 + pg_rightmost_one_pos64(m)) * 64;
+
+			for (uint32 slot = blk; slot < blk + 64; slot++)
+			{
+				if (u->acc[slot] == 0)
+					continue;
+				keys[n] = base | (SiftKey) (slot / SLOT_OFFS) << 16 | (slot % SLOT_OFFS + 1);
+				tf[n++] = u->acc[slot];
+				u->acc[slot] = 0;
+			}
 		}
+		u->dirty[w] = 0;
 	}
 	return n;
-})
+}
+
+static int
+slot_cmp(const void *a, const void *b)
+{
+	return pg_cmp_u32(*(const uint32 *) a, *(const uint32 *) b);
+}
+
+/* The postings of a sparse superblock sorted by slot and tf, the best tf of a slot last: one pass keeps it */
+static uint32
+sparse_merge(Union *u, SbPostings *b, SiftKey *keys, uint8 *tf, SiftKey base)
+{
+	uint32		n = 0;
+
+	qsort(b->e, b->n, sizeof(uint32), slot_cmp);
+	for (uint32 j = 0; j < b->n;)
+	{
+		uint32		slot = b->e[j] >> 8;
+		uint8		best = b->e[j] & 0xFF;
+
+		while (++j < b->n && b->e[j] >> 8 == slot)
+			best = b->e[j] & 0xFF;
+		keys[n] = base | (SiftKey) (slot / SLOT_OFFS) << 16 | (slot % SLOT_OFFS + 1);
+		tf[n++] = u->scoring ? best : 1;
+	}
+	return n;
+}
 
 /*
  * Merges the superblock's postings into the writer, in key order: a document that has several words
@@ -329,16 +432,21 @@ union_emit(Union *u, uint32 gid)
 	}
 	keys = u->keys;
 	tf = u->mtf;
+	if (b != NULL && b->n <= UNION_SPARSE_MAX)
+		n = sparse_merge(u, b, keys, tf, (SiftKey) gid << (SIFT_SB_SHIFT + 16));
+	else
+	{
+		for (uint32 j = 0; b != NULL && j < b->n; j++)
+			union_max(u, b->e[j] >> 8, b->e[j] & 0xFF);
+		n = u->acc ? drain_acc(u, keys, tf, (SiftKey) gid << (SIFT_SB_SHIFT + 16)) : 0;
+	}
 	if (b != NULL)
 	{
-		for (uint32 j = 0; j < b->n; j++)
-			union_max(u, b->e[j] >> 8, b->e[j] & 0xFF);
 		if (b->e)
 			pfree(b->e);
 		b->e = NULL;
 		b->n = 0;
 	}
-	n = drain_acc(u->acc, keys, tf, (SiftKey) gid << (SIFT_SB_SHIFT + 16));
 	if (sift_seg_sb_dirty(u->seg, gid))
 		n = union_live(u, keys, tf, n);
 	if (n == 0)
@@ -365,8 +473,17 @@ union_scan(Union *u, uint32 from, uint32 to)
 	UNION_STAT(true, passes, sift_prefix_stats.passes + 1);
 	UNION_STAT(from != u->seg->hdr->sb_lo || to != u->seg->hdr->sb_hi, windows, sift_prefix_stats.windows + 1);
 	UNION_STAT(from == to && u->count == NULL && u->seg->hdr->sb_lo != u->seg->hdr->sb_hi, direct, sift_prefix_stats.direct + 1);
-	sift_matcher_bounds(u->m, &lo, &lolen, &hi, &hilen);
-	sift_dict_scan_skipping(u->seg->dict, lo, lolen, hi, hilen, sift_matcher_skips(u->m) ? union_skip : NULL, union_term, u);
+	if (u->replay)
+	{
+		for (uint32 i = 0; i < u->nterms; i++)
+			if (u->terms[i].sb_hi >= from && u->terms[i].sb_lo <= to)
+				union_postings(u, &u->terms[i].info, NULL);
+	}
+	else
+	{
+		sift_matcher_bounds(u->m, &lo, &lolen, &hi, &hilen);
+		sift_dict_scan_skipping(u->seg->dict, lo, lolen, hi, hilen, sift_matcher_skips(u->m) ? union_skip : NULL, union_term, u);
+	}
 	sift_sr_release(&u->seg->sr);
 	UNION_STAT(!union_direct(u) && u->total > sift_prefix_stats.peak, peak, u->total);
 }
@@ -429,14 +546,19 @@ union_build(SiftSegment *seg, SiftTermMatcher *m, const SiftScoreRef *ref, bool 
 	u.sb = palloc0(((h->sb_hi - h->sb_lo + SB_CHUNK) / SB_CHUNK) * sizeof(SbPostings *));
 	u.tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
 	u.tf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
-	u.acc = palloc0(1 << SLOT_BITS);
 	memset(info, 0, sizeof(SiftTermInfo));
+	u.capture = true;
 	union_scan(&u, h->sb_lo, h->sb_hi);
+	u.capture = false;
+	u.replay = !u.terms_capped;
 	if (u.count)
 		union_windows(&u);
+	else if (union_direct(&u))
+		union_emit(&u, h->sb_lo);
 	else
-		for (uint32 sb = h->sb_lo; sb <= h->sb_hi; sb++)
-			union_emit(&u, sb);
+		for (uint32 c = 0; c * SB_CHUNK <= h->sb_hi - h->sb_lo; c++)
+			for (uint32 i = c * SB_CHUNK; u.sb[c] && i < Min(h->sb_hi - h->sb_lo + 1, (c + 1) * SB_CHUNK); i++)
+				union_emit(&u, h->sb_lo + i);
 	if (u.any)
 		blob = sift_postw_end_term_mem(u.w, info, mcxt);
 	info->ldf = info->df;		/* the union holds live docs only */
@@ -469,6 +591,7 @@ typedef struct CacheEnt
 	uint8		left_out;		/* the largest bound among the terms the union left out */
 	Size		size;
 	uint64		used;			/* sift_cache_tick() of its last use */
+	int			pins;			/* threads copying the blob: a pinned entry is out of the list, so no eviction reaches it */
 	struct CacheEnt *newer;		/* the entries by use: the list ends are the newest and the oldest */
 	struct CacheEnt *older;
 } CacheEnt;
@@ -585,12 +708,13 @@ cache_put(const CacheKey *k, const SiftTermInfo *info, const uint8 *blob, uint8 
 	e->blob = copy;
 	e->left_out = left_out;
 	e->size = size;
+	e->pins = 0;
 	cache_link_newest(e);
 }
 
 /*
  * A cached blob answers a scoring request, and the other way round only with its own kind; the union of all the terms answers a request that leaves terms out
- * (it holds them, which the caller's score allows), and a union that leaves terms out answers the request for the same bound only. The caller holds the cache lock.
+ * (it holds them, which the caller's score allows), and a union that leaves terms out answers the request for the same bound only. The caller holds the cache lock and pins the entry before it lets go.
  */
 static CacheEnt *
 cache_find(const SiftSegment *seg, const char *key, int keylen, bool scoring, int min_bound)
@@ -607,11 +731,6 @@ cache_find(const SiftSegment *seg, const char *key, int keylen, bool scoring, in
 			cache_key(seg, key, keylen, !plain, bounds[b], &k);
 			e = hash_search(cache, &k, HASH_FIND, NULL);
 		}
-	if (e)
-	{
-		cache_unlink(e);
-		cache_link_newest(e);
-	}
 	return e;
 }
 
@@ -636,9 +755,15 @@ sift_prefix_union(SiftSegment *seg, SiftTermMatcher *m, const char *key, int key
 		if (e)
 		{
 			*info = e->info;
-			blob = blob_copy(mcxt, e->blob, info);
 			if (left_out)
 				*left_out = e->left_out;
+			if (e->pins++ == 0)
+				cache_unlink(e);
+			sift_host_cache_unlock();
+			blob = blob_copy(mcxt, e->blob, info);
+			sift_host_cache_lock();
+			if (--e->pins == 0)
+				cache_link_newest(e);
 			sift_host_cache_unlock();
 			return blob;
 		}
