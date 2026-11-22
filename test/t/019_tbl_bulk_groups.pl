@@ -1,4 +1,4 @@
-# sift.table_bulk_groups: COPY writes column groups directly. The rows are a heap twin's on the primary and on a standby that replays the
+# The bulk_groups option of a sift_table (on by default): COPY writes column groups directly. The rows are a heap twin's on the primary and on a standby that replays the
 # groups under generic WAL consistency checking, the store verifies clean, a backend killed with SIGKILL in the middle of a COPY (groups
 # published, rows still waiting in the backend) leaves no row of it visible after crash recovery and nothing the next VACUUM cannot
 # reclaim, and a published table keeps the write buffers.
@@ -13,7 +13,7 @@ use Test::More;
 use IPC::Run qw(start finish);
 
 my $rows = knob('SIFT_ROWS', 60000, 40000);
-my $conf = "autovacuum = off\nsift.table_bulk_groups = on\nsift.table_write_buffer_limit = 2048\nwal_consistency_checking = 'generic'";
+my $conf = "autovacuum = off\nwal_consistency_checking = 'generic'";
 my $digest = 'SELECT count(*) || $$:$$ || coalesce(sum(id), 0) || $$:$$ || coalesce(sum(hashtextextended(id::text || grp::text || v || pad, 0)::numeric), 0) FROM %s';
 my $awk = q{awk '{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }'};
 my $kinds = q{SELECT count(*) FILTER (WHERE kind = 'columns') || $$:$$ || count(*) FILTER (WHERE kind LIKE '%%buffer') FROM sift.table_segments($$%s$$)};
@@ -21,7 +21,7 @@ my $kinds = q{SELECT count(*) FILTER (WHERE kind = 'columns') || $$:$$ || count(
 sub digest { return $_[0]->safe_psql('postgres', sprintf($digest, $_[1])) }
 sub copy_sql { my ($t, $lo, $hi) = @_; return "COPY $t FROM PROGRAM \$\$seq $lo $hi | $awk\$\$" }
 sub twin_sql { my ($t, $lo, $hi) = @_; return "INSERT INTO $t SELECT g, g % 7, 'row ' || g, lpad(g::text, 300, '0') FROM generate_series($lo, $hi) g" }
-sub create_sql { my ($t, $am) = @_; return "CREATE TABLE $t (id int, grp int, v text, pad text) USING $am" }
+sub create_sql { my ($t, $am) = @_; return "CREATE TABLE $t (id int, grp int, v text, pad text) USING $am" . ($am eq 'sift_table' ? "; SELECT sift.table_set_option('$t', 'write_buffer_limit', '2048kB')" : '') }
 # the groups the table has and the write buffers (none: nothing went through them)
 sub kinds { return $_[0]->safe_psql('postgres', sprintf($kinds, $_[1])) }
 

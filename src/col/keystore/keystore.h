@@ -43,6 +43,8 @@ extern void sift_keystore_note_drop(Oid relid);
 typedef struct SiftKeyStore SiftKeyStore;
 
 extern SiftKeyStore *sift_keystore_open(Oid store, LOCKMODE lock);
+/* ... the runs of an epoch: a 5.x store reached the epoch of its compactions, a store 6.0 writes has epoch 0 */
+extern SiftKeyStore *sift_keystore_open_epoch(Oid store, LOCKMODE lock, uint64 epoch);
 extern void sift_keystore_close(SiftKeyStore *ks);
 /* map[i] = the code in the store of the key i of the batch; the keys it has not got are appended as one run; returns how many were */
 extern uint32 sift_keystore_intern(SiftKeyStore *ks, const SiftCDict *batch, const SiftCcPolicy *pol, uint32 *map);

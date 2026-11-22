@@ -64,14 +64,12 @@ for row in "${SCENARIOS[@]}"; do
 	unset seen
 done
 
-# the worker that promotes a closed write buffer of a sift_table (sift.table_async_promote), killed in its first publication and after it
+# the worker that promotes a closed write buffer of a sift_table (sift.async_maintenance), killed in its first publication and after it
 node_stop cm
 node_conf cm "sift.async_maintenance = on
-sift.table_async_promote = on
-sift.maintenance_naptime = 200ms
-sift.table_write_buffer_limit = 2048"
+sift.maintenance_naptime = 200ms"
 node_start cm || bail "restart for the worker"
-TW="CREATE TABLE s (id bigint, v text) USING sift_table WITH (autovacuum_enabled = false); CREATE TABLE h (id bigint, v text)"
+TW="CREATE TABLE s (id bigint, v text) USING sift_table WITH (autovacuum_enabled = false); SELECT sift.table_set_option('s', 'write_buffer_limit', '2048kB'); SELECT sift.table_set_option('s', 'async_promote', 'on'); CREATE TABLE h (id bigint, v text)"
 LOAD="DO \$\$ BEGIN FOR i IN 1 .. 30 LOOP
 	INSERT INTO s SELECT g, repeat(chr(97 + (g % 26)::int), 300 + (g % 400)::int) FROM generate_series(i * 1000, i * 1000 + 999) g;
 	INSERT INTO h SELECT g, repeat(chr(97 + (g % 26)::int), 300 + (g % 400)::int) FROM generate_series(i * 1000, i * 1000 + 999) g;
@@ -100,5 +98,5 @@ for n in 1 -1; do
 	check "the worker killed $([[ $n -gt 0 ]] && echo before || echo after) its first update: the rows are the twin's after recovery" test "$got" == "$(sql cm "$DIG h")"
 	check "and the table, vacuumed, still holds them" test "$(sql cm "VACUUM s" "$DIG s")" == "$got"
 done
-echo "1..$NTEST"
+done_testing
 finish

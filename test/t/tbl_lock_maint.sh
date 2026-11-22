@@ -20,7 +20,7 @@ sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test CASCADE" \
 	"COPY src TO '$D/load.csv' CSV" \
 	"CREATE TABLE lt (id int, grp int, amount numeric(10,2), pad text) USING sift_table" \
 	"CREATE TABLE ht (LIKE lt)" \
-	"CREATE TABLE lt2 (id int, grp int, amount numeric(10,2), pad text) USING sift_table" >/dev/null || bail "setup failed"
+	"CREATE TABLE lt2 (id int, grp int, amount numeric(10,2), pad text) USING sift_table" "SELECT sift.table_set_option('lt2', 'write_buffer_limit', '2048kB')" >/dev/null || bail "setup failed"
 plan 8
 
 digest() { sql primary "SELECT count(*) || ':' || md5(string_agg(id || ':' || grp || ':' || amount || ':' || pad, ',' ORDER BY id)) FROM $1" | tail -1; }
@@ -62,7 +62,7 @@ COPY=$!
 check "the COPY waits in the writing of its groups" wait_for "waiting_at $PH_LOAD" 60
 INSERTS=$((ROWS > 6000 ? ROWS : 6000))
 BURST="DO \$\$ BEGIN FOR i IN 1..$INSERTS LOOP INSERT INTO lt2 VALUES (-i, i % 500, 1, repeat(md5(i::text), 32)); END LOOP; END \$\$"
-out=$(sql primary "SET lock_timeout = '3s'" "SET sift.table_write_buffer_limit = 2048" "$BURST" 2>&1)  # timeout-ok: the product waits for no lock, the timeout is the failure
+out=$(sql primary "SET lock_timeout = '3s'" "$BURST" 2>&1)  # timeout-ok: the product waits for no lock, the timeout is the failure
 check "an INSERT whose write buffer fills rotates it while the run is written" test -z "$out"
 release
 wait "$COPY"

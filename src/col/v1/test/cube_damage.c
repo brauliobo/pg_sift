@@ -161,7 +161,11 @@ sift_test_col_cube_damage(PG_FUNCTION_ARGS)
 		if (rows)
 			rows_damage(sift_col_rel(ts.index)->schema, blob, len, cx, &r);
 		else
-			sift_test_cube_damage(sift_col_rel(ts.index)->schema, &sift_col_rel(ts.index)->pagg, blob, len, sift_cseg_ecube(seg, u, &elen), elen, cx, &r);
+		{
+			const uint8 *ecube = sift_cseg_ecube(seg, u, &elen);
+
+			sift_test_cube_damage(sift_col_rel(ts.index)->schema, &sift_col_rel(ts.index)->pagg, blob, len, ecube, elen, cx, &r);
+		}
 	}
 	ctest_scan_close(&ts);
 	v[0] = Int64GetDatum(r.blobs);

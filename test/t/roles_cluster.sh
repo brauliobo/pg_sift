@@ -44,7 +44,7 @@ ANSWERS="SELECT (SELECT count(*) || ':' || sum(id) FROM app.docs WHERE body @@> 
 	(SELECT string_agg(g || '=' || n || '/' || s, ',' ORDER BY g) FROM (SELECT g, count(*) n, sum(val) s FROM app.facts GROUP BY g) x) || ' ' ||
 	(SELECT count(*) FROM app.part WHERE body @@> 'part')"
 WANT=$(q rl_src rl_owner "SET enable_seqscan = off" "SET sift.enable_agg = on" "$ANSWERS" | tail -1)
-PLAIN=$(q rl_src rl_owner "SET sift.enable_scan = off" "SET sift.enable_count = off" "SET sift.enable_agg = off" "SET enable_indexscan = off" "SET enable_bitmapscan = off" "$ANSWERS" | tail -1)
+PLAIN=$(q rl_src rl_owner "SET sift.enable_scan = off" "SET sift.enable_agg = off" "SET enable_indexscan = off" "SET enable_bitmapscan = off" "$ANSWERS" | tail -1)
 check "the owner reads every kind of sift object in the source database, as the plain plans do" test "$WANT" == "$PLAIN"
 
 # --- pg_dump of the schema by its owner, pg_restore by its owner

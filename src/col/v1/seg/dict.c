@@ -6,18 +6,6 @@
 #include "col/compress.h"
 #include "col/v1/seg_int.h"
 
-/* A dictionary of a 5.x shared value store is a healthy index that this release does not read: not damage, so no quarantine; the index is rebuilt online */
-static void
-dict_ref_refused(SiftColSegment *seg, int col)
-{
-	Relation	index = seg->index;
-
-	ereport(ERROR,
-			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-			 errmsg("sift_col index \"%s\" leaf %d references a 5.x shared column value store not read by pg_sift 6.0", RelationGetRelationName(index), col),
-			 errhint("Rebuild the index online into Format 2.0 with REINDEX INDEX CONCURRENTLY.")));
-}
-
 /* Where the dictionary of leaf col lies in the stream: offset and length (up to the next dictionary or the end of the section) */
 void
 seg_dict_region(SiftColSegment *seg, int col, uint64 *off, uint64 *len)
@@ -73,7 +61,7 @@ dict_load(SiftColSegment *seg, int col, MemoryContext mcxt)
 
 		seg_read(seg, at, sizeof(head), head);
 		if (head[0] == DICT_REF)
-			dict_ref_refused(seg, col);
+			return seg_dict_ref_load(seg, col, at, len, mcxt);
 		if (head[0] == DICT_PLAIN && (len - DICT_HEAD) / sizeof(uint32) >= (uint64) head[1] + 1)
 		{
 			d = sift_cdict_plain_begin(mcxt, head[1]);
@@ -538,8 +526,6 @@ sift_cseg_look_at(SiftColSegment *seg, int col, uint64 off, uint64 len, bool bis
 	hashed = (head[0] & DICT_HASHED) != 0;
 	packed = (head[0] & DICT_PERM_PACKED) != 0;
 	head[0] &= ~DICT_FLAGS;
-	if (head[0] == DICT_REF)
-		dict_ref_refused(seg, col);
 	if (head[0] != DICT_LOOKUP && head[0] != DICT_LOOKUP_COUNT && head[0] != DICT_BLOCKS && head[0] != DICT_PLAIN)
 		return NULL;
 	l = seg_look_alloc(seg);

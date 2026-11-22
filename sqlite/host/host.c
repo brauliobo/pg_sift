@@ -519,6 +519,12 @@ sift_mem_used(SiftMemTracker *t)
 	return t->last_used;
 }
 
+void
+sift_mem_rebase(SiftMemTracker *t)
+{
+	t->base = MemoryContextMemAllocated(t->root_cx, true);
+}
+
 SiftMemPressure
 sift_mem_pressure(SiftMemTracker *t, bool exact)
 {

@@ -100,7 +100,7 @@ COMMENT ON FUNCTION sift.shared_memory_pools() IS 'The five pools of the shared 
 CREATE OR REPLACE FUNCTION sift.approx_percentile(rel regclass, col text, p float8, where_sql text DEFAULT NULL)
 RETURNS float8
 	AS 'MODULE_PATHNAME', 'sift_approx_percentile' LANGUAGE C STABLE PARALLEL RESTRICTED;
-COMMENT ON FUNCTION sift.approx_percentile(regclass, text, float8, text) IS 'The least value of a column whose share of the rows is at least p (0 to 1): from the quantile sketches of the sift_col index when it keeps them (sketches = ''kll(col)'') and at most 1% of the rows are dead, pending or in a part without one, else exact; where_sql is a filter and always answers exactly. NaN, NULL and infinite dates are no values. A date is days and a timestamp microseconds since 2000-01-01.';
+COMMENT ON FUNCTION sift.approx_percentile(regclass, text, float8, text) IS 'The least value of a column whose share of the rows is at least p (0 to 1): read from the quantile sketches of the sift_col index when it keeps them (sketches = ''kll(col)'') and at most 1% of the rows are dead, pending or in a part without one, else exact; where_sql is a filter and always answers exactly. NaN, NULL and infinite dates are no values.';
 
 CREATE OR REPLACE FUNCTION sift.approx_quantiles(rel regclass, col text, ps float8[], where_sql text DEFAULT NULL)
 RETURNS float8[]

@@ -6,6 +6,9 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## 6.0.0 - 2026-11-22
 
+- Fixed: col: a 5.x `sift_col` index whose text columns use the shared column value store is read by 6.0 as before (every segment dictionary that refers to the store is read from the store of the column, at the epoch it names), with no REINDEX; `sift.upgrade_check()` lists such an index as information, not as a blocker.
+- Fixed: col: `CREATE INDEX`, `REINDEX` and the restore of `pg_upgrade` keep in Format Major 1 an index that declares or is the target of a `connect`, and a scope of two paths or over pairs that are not integers, which Format Major 2 does not hold; they were refused or built in a format that the connections could not read.
+- Fixed: check: `sift.check(heapallindexed)`, `sift.col_verify(index, true)` and `sift.verify(index, true)` of a Format Major 2 index compare the addresses of its rows with those the heap shows to a snapshot, instead of refusing.
 - Added: format: Format Major 2 for new `sift_col` indexes and `sift_table` tables: a smaller footprint, key-order pruning, pre-aggregates and unified maintenance; every 5.x index and table keeps working in Format Major 1 and upgrades online with `REINDEX INDEX CONCURRENTLY` or `sift.upgrade_table()`; see [docs/UPGRADING.md](docs/UPGRADING.md).
 - Changed: config: the release has 27 `sift.*` settings; removed settings and options are accepted and ignored with a notice so dumps and `ALTER INDEX .. RESET` keep working; `sift.upgrade_check()` lists them before the upgrade.
 - Changed: agg: `SiftAgg` is a 2,048-row SIMD-vectorized executor with fused pipelines, star joins, windows, Top-N and CTE streams; `sift.parallel_scan` is on by default and `sift.agg_exact_float` restores bit-identical row-order `float8` sums.

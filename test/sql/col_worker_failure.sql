@@ -14,7 +14,7 @@ SELECT failures, error_code, last_error FROM sift.workers WHERE index = 'cw_idx'
 SET sift.async_maintenance = off;
 INSERT INTO cw (v, t) SELECT g, md5(g::text) FROM generate_series(1, 30000) g;
 SELECT sift.col_promote('cw_idx') >= 0 AS settled;
-RESET sift.async_maintenance;
+SET sift.async_maintenance = on;
 
 -- a few rows seal a write buffer and ask for a worker, whose promotion fails; nothing of this session runs a step meanwhile
 INSERT INTO cw (v, t) SELECT g, md5(g::text) FROM generate_series(30001, 31500) g;
@@ -33,6 +33,7 @@ SELECT sift.col_promote('cw_idx') >= 0 AS promoted;
 SELECT failures, last_error FROM sift.workers WHERE index = 'cw_idx'::regclass;
 SELECT sift.col_verify('cw_idx');
 
+RESET sift.async_maintenance;
 ALTER DATABASE :"db" RESET sift.test_fail_pages;
 DROP TABLE cw;
 DROP EXTENSION pg_sift_test;

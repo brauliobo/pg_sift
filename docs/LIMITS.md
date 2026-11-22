@@ -52,6 +52,22 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | values of an IN set sent as a zone filter | `8 values` | a larger set is not used as a zone filter | — | `agg/init_filter.c` `FILTER_MAX_SET` |
 | groups the node that groups rows (SiftAggRows) holds: their count and the arrays of their keys and aggregates are 32 bits | `2,147,483,648 groups` | normal plan (NOTICE), ERROR 54000 once rows were sent | — | `agg/rows.h` `SIFT_ROWS_MAX_GROUPS` |
 | parts one small relation of a star join is read in when it does not fit hash memory: each part is one more pass over the facts | `65,536 parts` | ERROR 54000 naming work_mem and hash_mem_multiplier | `work_mem, hash_mem_multiplier` | `agg/v6/v6_star_run.c` `STAR_MAX_PARTS` |
+| PARTITION BY keys, and ORDER BY keys, of a window the window operator runs | `4 keys` | normal plan | — | `agg/window.h` `SIFT_WIN_MAX_KEYS` |
+| window functions of one window the window operator runs | `8 functions` | normal plan | — | `agg/window.h` `SIFT_WIN_MAX_FUNCS` |
+| LAG and LEAD offset the window operator reads | `4,096 rows` | normal plan | — | `agg/window.h` `SIFT_WIN_MAX_OFFSET` |
+| PARTITION BY keys, and ORDER BY keys, of a window of a SiftAgg scan | `4 keys` | normal plan | — | `agg/v6/v6_datebin_win.h` `SIFT_WINX_MAX_KEYS` |
+| window functions of a window of a SiftAgg scan | `16 functions` | normal plan | — | `agg/v6/v6_datebin_win.h` `SIFT_WINX_MAX_FUNCS` |
+| FILTER clauses of the window functions of a SiftAgg scan | `64 filters` | normal plan | — | `agg/v6/v6_datebin_win.h` `SIFT_WINX_MAX_FILTERS` |
+| LAG and LEAD offset of a window of a SiftAgg scan | `4,096 rows` | normal plan | — | `agg/v6/v6_datebin_win.h` `SIFT_WINX_MAX_OFFSET` |
+| value registers of a compiled expression | `16 registers` | the expression is not compiled: normal plan | — | `agg/vexpr.h` `SIFT_VEXPR_MAX_REGS` |
+| boolean slots of a compiled expression | `16 masks` | the expression is not compiled: normal plan | — | `agg/vexpr.h` `SIFT_VEXPR_MAX_MASKS` |
+| operations of a compiled expression | `64 operations` | the expression is not compiled: normal plan | — | `agg/vexpr.h` `SIFT_VEXPR_MAX_OPS` |
+| arguments of a call, and arms of a CASE, in a compiled expression | `17 arguments` | the expression is not compiled: normal plan | — | `agg/vexpr.h` `SIFT_VEXPR_MAX_ARGS` |
+| aggregates one stream node folds | `16 aggregates` | normal plan | — | `agg/v6/v6_stream.h` `SIFT_V6_STREAM_MAX_AGGS` |
+| distinct FILTER clauses one stream node folds | `4 filters` | normal plan | — | `agg/v6/v6_stream.h` `SIFT_V6_STREAM_MAX_FILTERS` |
+| distinct FILTER clauses of the aggregates of one scan, evaluated once per batch | `64 filters` | normal plan | — | `agg/v6/v6_filter_pivot.h` `SIFT_PIVOT_MAX_FILTERS` |
+| equality column pairs of a join of two SiftAgg scans | `8 columns` | normal plan | — | `agg/v6/join.c` `JOIN_MAX_KEYS` |
+| count(DISTINCT) aggregates of one scan a parallel plan runs | `32 aggregates` | the scan runs without parallel workers | — | `agg/v6/v6_par.h` `SIFT_PAR_MAX_DIST` |
 
 ## Column index (`src/col`)
 
@@ -108,6 +124,13 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | segments waiting for the rollup refresh worker, for all databases (sift.col_rollup_queue) | `64 segments` | the request is dropped and counted (sift.col_rollup_counters); the scan reads the units and a later scan asks again | — | `col/v1/rollup.c` `ROLLUP_QUEUE` |
 | databases with a rollup refresh worker running | `8 databases` | no worker is started for the database; its requests wait in the queue, and sift.col_rollup_refresh(index) refreshes them in a session | — | `col/v1/rollup.c` `ROLLUP_WORKERS` |
 | workers of a parallel CREATE INDEX of a sift_col index besides the leader (the directory is shared by the participants and leaves 7 segments to each of 16) | `15 workers` | fewer workers are launched than max_parallel_maintenance_workers allows | `max_parallel_maintenance_workers` | `col/v1/build_par.c` `MAX_WORKERS` |
+| key columns, INCLUDE columns and measures of one projection (each list) | `32 columns` | sift.create_projection refuses the spec (too many columns) | — | `col/f2/f2_proj.h` `SIFT_PROJ_MAX_COLS` |
+| columns a part keeps a quantile sketch of; the sketches option names at most twice this many columns | `256 columns` | ERROR 54000 naming the option | — | `col/f2/f2_kll.h` `SIFT_F2_KLL_MAX_COLS` |
+| columns of a part that get a point directory: the ones with the most distinct values | `3 columns` | the other columns are read as before (the rows are the same) | — | `col/f2/f2_point_dir.h` `SIFT_POINT_MAX_COLS` |
+| constants of an equality or IN list the point directory answers | `64 values` | the granules are read (the rows are the same) | — | `col/f2/f2_point_dir.h` `SIFT_POINT_MAX_VALUES` |
+| highest attribute number a part records the default of an added column for (the PostgreSQL limit of the columns of a table) | `1,664 attributes` | a record that names more is damage (the part is not read) | — | `col/f2/f2_defaults.h` `SIFT_DEFAULTS_MAX_ATTNUM` |
+| the default of a text column added to a Format 2.0 table, which the parts record | `16,777,216 (16 MiB) bytes` | the default is refused: a default value is larger than a part keeps | — | `col/f2/f2_defaults.h` `SIFT_DEFAULTS_MAX_VALUE` |
+| the dictionary of the zstd compression of a part | `16,384 (16 KiB) bytes` | a larger dictionary is not written; the part is compressed without it | — | `col/compress.h` `SIFT_ZSTD_DICT_MAX_BYTES` |
 
 ## Search index, storage and queries (`src/core`, `src/bm25`)
 
@@ -136,6 +159,7 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | ranking units of a top-k query up to which the batched block-max ranking is used | `2,048 units` | normal plan: the query is ranked by max-score over the superblocks instead | — | `bm25/bounds.c` `RANK_BATCH_MAX_UNITS` |
 | blocks of segment pages one wave of the read-ahead of a ranked query asks for | `512 blocks` | the next wave starts after the blocks of this one | — | `core/store.h` `SIFT_PREFETCH_MAX_BLKS` |
 | backends whose epoch the registry of the manifests in shared memory tracks: a snapshot is pinned without a lock by the backends numbered below it | `256 backends` | a backend numbered above it pins a snapshot under the lock of its slot | — | `core/shm_manifest.h` `SIFT_SHM_EPOCH_SLOTS` |
+| background maintenance workers the scheduler runs at one time | `8 workers` | a larger sift.max_maint_workers runs this many | `sift.max_maint_workers` | `core/maint_sched.h` `SIFT_MAINT_MAX_WORKERS` |
 
 ## `sift_table` (`src/table`)
 
@@ -143,4 +167,5 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 |---|---|---|---|---|
 | the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group | `1,073,741,823 (~1024 MiB) bytes` | ERROR 54000 naming the column | — | `table/v1/wide.c` |
 | virtual blocks of TIDs of a sift_table, never reused (sift.table_space: vblocks_left) | `4,294,967,294 blocks` | ERROR 54000, VACUUM FULL renumbers them | — | `table/v1/wbuf.c` |
+| decoded granules of sift_table the cache of a backend keeps | `64 granules` | the oldest granule is dropped and read again when needed | — | `table/f2/f2_gcache.h` `SIFT_F2_GCACHE_MAX_GRANULES` |
 

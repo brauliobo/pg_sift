@@ -104,5 +104,5 @@ done
 node_promote sb
 wait_for "[[ \$(sql sb \"SELECT pg_is_in_recovery()\") == f ]]" 60 || bail "the standby did not promote"
 if sql sb "$VERIFY" >&2; then ok "the promoted standby verifies every index"; else not_ok "the promoted standby does not verify"; fi
-echo "1..$NTEST"
+done_testing
 finish

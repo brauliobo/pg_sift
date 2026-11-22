@@ -11,8 +11,7 @@ REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
 plan 19
-node_init scp 49 "sift.scope_max_multiplicity = 64
-wal_level = replica
+node_init scp 49 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
 autovacuum = off"
@@ -24,7 +23,7 @@ sql scp "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE events (id bigserial PRIMARY KEY, dim_a_id int, created_at timestamptz NOT NULL, v int NOT NULL, pad text) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO events (dim_a_id, created_at, v, pad) SELECT CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 9999 ELSE 1 + (i * 7919) % 650 END,
 		timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 60) FROM generate_series(1, 30000) i" \
-	"CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (write_buffer_limit = 64, scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" \
+	"CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (write_buffer_limit = 64, scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(64)')" \
 	"REINDEX INDEX events_col" \
 	"VACUUM (FREEZE, ANALYZE) events, tenant_scope" \
 	"CREATE FUNCTION scope_same(k int) RETURNS bool LANGUAGE plpgsql AS \$\$

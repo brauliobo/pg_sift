@@ -19,6 +19,7 @@ extension_lifecycle.sh	1
 leakcheck_gate.sh	4
 maint_lock_order.sh	1
 maint_standby.sh	2
+quarantine_standby.sh	1
 store_replica.sh	3
 tbl_defrag_scans_durable.sh	4
 vacuum_standby_cut.sh	2

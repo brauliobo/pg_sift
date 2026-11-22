@@ -22,7 +22,7 @@ sql kw "CREATE TABLE dpairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, dele
 	"INSERT INTO dpairs SELECT m, 1 + (m * 7 + j * 5) % 16 FROM generate_series(1, 200) m, generate_series(0, 2) j WHERE j < m % 4 ON CONFLICT DO NOTHING" \
 	"CREATE INDEX dpairs_journal ON dpairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')" \
 	"CREATE TABLE one_events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int, pad text) WITH (autovacuum_enabled = false)" "INSERT INTO one_events SELECT * FROM hop_events" \
-	"CREATE INDEX hop_one ON one_events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> dpairs(dim_a_id, tenant_id)')" \
+	"CREATE INDEX hop_one ON one_events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> dpairs(dim_a_id, tenant_id) max_multiplicity(64)')" \
 	"REINDEX INDEX hop_one" >/dev/null || bail "one path index failed"
 cat >"$D/hd.sql" <<'EOF'
 \set m random(1, 200)

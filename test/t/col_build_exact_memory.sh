@@ -26,7 +26,6 @@ plan 12
 node_init cb 89 "autovacuum = off
 max_parallel_workers_per_gather = 0
 shared_buffers = 64MB
-sift.col_auto_merge = off
 sift.async_maintenance = off
 extension_control_path = '$root$(pg_config --sharedir):\$system'
 dynamic_library_path = '$root$(pg_config --pkglibdir):\$libdir'"

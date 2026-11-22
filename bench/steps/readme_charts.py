@@ -435,7 +435,8 @@ def render_analytics_svg(data):
     for t in ticks:
         tx = X(t)
         is_dec = t in (1, 10, 100, 1000)
-        body.append(f'  <line class="grid" x1="{fnum(tx)}" y1="{top - 6}" x2="{fnum(tx)}" y2="{top + plot_h}" stroke-width="{"1.1" if is_dec else "0.7"}" {"" if is_dec else "stroke-dasharray=\"3 3\""}/>')
+        dash = '' if is_dec else 'stroke-dasharray="3 3"'
+        body.append(f'  <line class="grid" x1="{fnum(tx)}" y1="{top - 6}" x2="{fnum(tx)}" y2="{top + plot_h}" stroke-width="{"1.1" if is_dec else "0.7"}" {dash}/>')
         lbl = f'{t:g} ms' if t < 1000 else f'{t // 1000} s'
         body.append(f'  <text class="tick" x="{fnum(tx)}" y="{top + plot_h + 16}" font-size="10.5" text-anchor="middle">{lbl}</text>')
     body.append(f'  <line class="axis" x1="{left}" y1="{top - 6}" x2="{left}" y2="{top + plot_h}" stroke-width="1"/>')

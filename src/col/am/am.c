@@ -5,8 +5,11 @@
 #include "postgres.h"
 #include "utils/rel.h"
 #include "access/genam.h"
+#include "access/table.h"
 #include "col/am.h"
 #include "col/am/am_int.h"
+#include "col/f2/f2.h"
+#include "col/pg.h"
 #include "bm25/am.h"
 #include "core/meta_peek.h"
 #include "core/f2/f2_progress.h"
@@ -41,16 +44,55 @@ sift_col_flush_held(void)
 			format_ops[major]->flush_held();
 }
 
+/* What format major 2 does not hold stays in format major 1: a connection (the index that declares it and the indexes it connects to) and a scope that format major 2 does not summarize */
+static bool
+format1_only(Relation index)
+{
+	Relation	heap = table_open(index->rd_index->indrelid, NoLock);
+	bool		only = sift_col_options_connect(index)[0] != '\0' || sift_conn_children(RelationGetRelid(index)) != NIL || !sift_f2s_index_summarizable(heap, index);
+
+	table_close(heap, NoLock);
+	return only;
+}
+
 static IndexBuildResult *
 route_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
-	return sift_col_ops_for_build()->ambuild(heap, index, info);
+	IndexBuildResult *result;
+	bool		format1 = format1_only(index);
+
+	if (format1)
+		sift_tbl_push_new_format(SIFT_FORMAT_MAJOR);
+	PG_TRY();
+	{
+		result = sift_col_ops_for_build()->ambuild(heap, index, info);
+	}
+	PG_FINALLY();
+	{
+		if (format1)
+			sift_tbl_pop_new_format();
+	}
+	PG_END_TRY();
+	return result;
 }
 
 static void
 route_ambuildempty(Relation index)
 {
-	sift_col_ops_for_build()->ambuildempty(index);
+	bool		format1 = format1_only(index);
+
+	if (format1)
+		sift_tbl_push_new_format(SIFT_FORMAT_MAJOR);
+	PG_TRY();
+	{
+		sift_col_ops_for_build()->ambuildempty(index);
+	}
+	PG_FINALLY();
+	{
+		if (format1)
+			sift_tbl_pop_new_format();
+	}
+	PG_END_TRY();
 }
 
 /*

@@ -3,6 +3,7 @@
 -- sift.test_blob_max and sift.test_dict_max lower the limits to bytes a test can reach; the runs of the
 -- build merge only while their terms and dictionaries fit them together.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE bl (id serial, body text);

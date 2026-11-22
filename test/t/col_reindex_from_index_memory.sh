@@ -15,7 +15,6 @@ plan 8
 node_init cm 91 "sift.col_build_source = auto
 autovacuum = off
 max_parallel_workers_per_gather = 0
-sift.col_auto_merge = off
 sift.async_maintenance = off"
 node_start cm || bail "start failed"
 sql cm "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" >/dev/null || bail "extension failed"

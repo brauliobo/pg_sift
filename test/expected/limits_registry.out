@@ -19,6 +19,8 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  cube_dims           | SIFT_PAGG_MAX_DIMS              |         16 | t         | f
  cube_groups         | SIFT_PAGG_DEF_GROUPS            |        256 | t         | f
  cube_measures       | SIFT_PAGG_MAX_MEAS              |          8 | t         | f
+ defaults_attnum     | SIFT_DEFAULTS_MAX_ATTNUM        |       1664 | t         | f
+ defaults_bytes      | SIFT_DEFAULTS_MAX_VALUE         |   16777216 | t         | f
  dict_block_bytes    | SIFT_DICT_BLOCK_MAX_BYTES       |      65535 | t         | t
  dict_bytes          | SIFT_COL_DICT_MAX_BYTES         |   67108864 | t         | f
  dict_entry          | SIFT_COL_DICT_MAX_ENTRY         |        255 | t         | f
@@ -35,6 +37,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  first_order_cols    | SIFT_AGG_MAX_FORD               |          8 | t         | t
  first_out_cols      | SIFT_AGG_MAX_FOUT               |         16 | t         | f
  float_ops           | SIFT_AGG_MAX_VX                 |         16 | t         | f
+ gcache_granules     | SIFT_F2_GCACHE_MAX_GRANULES     |         64 | t         | f
  generic_args        | SIFT_AGG_MAX_GARGS              |        100 | t         | f
  generic_leaves      | SIFT_AGG_MAX_GLEAVES            |          4 | t         | f
  gord_free_rows      | SIFT_CGORD_FREE_MAX             |      65536 | t         | t
@@ -52,6 +55,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  join_keys           | SIFT_AGG_MAX_JKEYS              |          3 | t         | f
  joins               | SIFT_AGG_MAX_JOINS              |         32 | t         | t
  key_store_codes     | SIFT_KEYSTORE_MAX_CODES         | 1073741824 | t         | t
+ kll_cols            | SIFT_F2_KLL_MAX_COLS            |        256 | t         | f
  layout_leaves       | SIFT_COLSRC_MAX_LEAVES          |        128 | t         | f
  lookup_kb           | -                               |       2048 | t         | t
  lookup_shared_bytes | SHARE_MAX                       | 1073741824 | t         | f
@@ -59,6 +63,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  lst_min_units       | LST_MIN_UNITS                   |         64 | t         | t
  lst_share_div       | LST_SHARE_DIV                   |         33 | t         | t
  maint_backoff_ms    | BACKOFF_MAX_MS                  |    3600000 | t         | f
+ maint_workers       | SIFT_MAINT_MAX_WORKERS          |          8 | t         | f
  max_segments        | SIFT_DIR_POLICY_MAX             |        128 | t         | t
  merge_disk_peak     | -                               |          2 | t         | f
  merge_fanin         | MERGE_MAX_FANIN                 |         64 | t         | f
@@ -66,16 +71,21 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  num_in_list         | AGG_MAX_NUM_IN                  |         64 | t         | t
  par_build_rows      | PAR_BUILD_ROWS                  |     150000 | t         | t
  par_build_workers   | MAX_WORKERS                     |         15 | t         | f
+ par_dist            | SIFT_PAR_MAX_DIST               |         32 | t         | f
  param_set_elems     | AGG_PARAM_SET_ELEMS             |       1000 | t         | t
  part_key_tests      | KEYS_MAX_TESTS                  |      20000 | t         | t
  partition_memory    | SIFT_AGG_PART_FLOOR             |   16777216 | t         | t
  partitions          | SIFT_AGG_MAX_PARTS              |      32768 | t         | t
  phrase_terms        | SIFT_MAX_PHRASE                 |        128 | t         | t
+ pivot_filters       | SIFT_PIVOT_MAX_FILTERS          |         64 | t         | f
+ point_cols          | SIFT_POINT_MAX_COLS             |          3 | t         | f
+ point_values        | SIFT_POINT_MAX_VALUES           |         64 | t         | f
  pre_census_units    | -                               |         16 | t         | t
  prefetch_blocks     | SIFT_PREFETCH_MAX_BLKS          |        512 | t         | f
  prefix_index        | SIFT_MAX_PREFIX_INDEX           |         15 | t         | f
  presence_pct        | SIFT_CSET_PRES_PCT              |          3 | t         | f
  progress_slots      | PROGRESS_SLOTS                  |         64 | t         | f
+ proj_cols           | SIFT_PROJ_MAX_COLS              |         32 | t         | f
  quarantine_entries  | QUAR_ENTRIES                    |        256 | t         | t
  query_bytes         | SIFT_QUERY_MAX_BYTES            |     262144 | t         | t
  query_depth         | SIFT_MAX_DEPTH                  |         32 | t         | f
@@ -108,6 +118,8 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  shred_text          | SIFT_SHRED_MAX_TEXT             |    1048576 | t         | f
  skip_pending        | GORD_PEND_MAX                   |    1048576 | t         | t
  star_join_parts     | STAR_MAX_PARTS                  |      65536 | t         | f
+ stream_aggs         | SIFT_V6_STREAM_MAX_AGGS         |         16 | t         | f
+ stream_filters      | SIFT_V6_STREAM_MAX_FILTERS      |          4 | t         | f
  string_bytes        | SIFT_COL_MAX_VALUE              | 1073741823 | t         | t
  super_fan_max       | SIFT_SUPER_MAX_FAN              |        256 | t         | f
  table_vblocks       | -                               | 4294967294 | t         | f
@@ -119,12 +131,25 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  topn_rows           | SIFT_TOPN_MAX_ROWS              |     100000 | t         | t
  unit_bytes          | SIFT_COL_UNIT_MAX_BYTES         | 1073741823 | t         | t
  unit_rows           | SIFT_COL_UNIT_MAX_ROWS          |      74496 | t         | f
+ v6_join_keys        | JOIN_MAX_KEYS                   |          8 | t         | f
+ vexpr_args          | SIFT_VEXPR_MAX_ARGS             |         17 | t         | f
+ vexpr_masks         | SIFT_VEXPR_MAX_MASKS            |         16 | t         | f
+ vexpr_ops           | SIFT_VEXPR_MAX_OPS              |         64 | t         | f
+ vexpr_regs          | SIFT_VEXPR_MAX_REGS             |         16 | t         | f
  virtual_leaves      | SIFT_AGG_MAX_VLEAVES            |         16 | t         | t
  wide_conjuncts      | SIFT_AGG_MAX_WIDE               |          8 | t         | f
  wide_dict_bytes     | -                               | 1073741823 | t         | t
  wide_digits         | SIFT_COL_MAX_WIDE_SCALE         |         38 | t         | f
+ win_funcs           | SIFT_WIN_MAX_FUNCS              |          8 | t         | f
+ win_keys            | SIFT_WIN_MAX_KEYS               |          4 | t         | f
+ win_offset          | SIFT_WIN_MAX_OFFSET             |       4096 | t         | f
+ winx_filters        | SIFT_WINX_MAX_FILTERS           |         64 | t         | f
+ winx_funcs          | SIFT_WINX_MAX_FUNCS             |         16 | t         | f
+ winx_keys           | SIFT_WINX_MAX_KEYS              |          4 | t         | f
+ winx_offset         | SIFT_WINX_MAX_OFFSET            |       4096 | t         | f
  write_buffer_kb     | SIFT_DEFAULT_WRITE_BUFFER_LIMIT |       4096 | t         | f
-(120 rows)
+ zstd_dict_bytes     | SIFT_ZSTD_DICT_MAX_BYTES        |      16384 | t         | f
+(145 rows)
 
 -- a hooked limit is lowered for the session and comes back with RESET
 SET sift.test_limits = 'query_bytes=64, phrase_terms=3';

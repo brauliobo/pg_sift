@@ -21,7 +21,7 @@ D=$(dir primary)
 sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE src AS SELECT g AS id, g % 500 AS grp, (g % 997)::numeric(10,2) AS amount, md5(g::text) || md5((g * 7)::text) AS pad FROM generate_series(1, $ROWS) g" \
 	"COPY src TO '$D/load.csv' CSV" \
-	"CREATE TABLE lt (id int, grp int, amount numeric(10,2), pad text) USING sift_table" >/dev/null || bail "setup failed"
+	"CREATE TABLE lt (id int, grp int, amount numeric(10,2), pad text) USING sift_table" "SELECT sift.table_set_option('lt', 'write_buffer_limit', '2048kB')" >/dev/null || bail "setup failed"
 { head -n $((ROWS - 1)) "$D/load.csv"; echo 'x,1,1,y'; } >"$D/bad.csv"
 node_clone primary standby 3 "hot_standby_feedback = on
 wal_receiver_status_interval = 1s
@@ -29,8 +29,8 @@ wal_consistency_checking = 'generic'"
 node_start standby || bail "standby start failed"
 catchup primary standby || bail "the standby did not catch up"
 
-SERIAL=("SET max_parallel_maintenance_workers = 0" "SET sift.table_write_buffer_limit = 2048" "SET sift.test_load_unit_bytes = 128" "SET sift.test_par_workers = 0")
-RING=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.table_write_buffer_limit = 2048" "SET sift.test_load_unit_bytes = 128" "SET sift.test_par_workers = 0")
+SERIAL=("SET max_parallel_maintenance_workers = 0" "SET sift.test_load_unit_bytes = 128" "SET sift.test_par_workers = 0")
+RING=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.test_load_unit_bytes = 128" "SET sift.test_par_workers = 0")
 COPYSQL="COPY lt FROM '$D/load.csv' CSV"
 digest() { sql "$1" "SELECT count(*) || ':' || md5(string_agg(id || ':' || ctid::text || ':' || amount, ',' ORDER BY id, ctid)) FROM lt" | tail -1; }
 rows() { sql "$1" "SELECT count(*) || ':' || md5(string_agg(id || ':' || grp || ':' || amount || ':' || pad, ',' ORDER BY id, grp, amount, pad)) FROM lt" | tail -1; }
@@ -97,5 +97,5 @@ sql primary "${SERIAL[@]}" "$COPYSQL" >/dev/null
 check "... the same load works afterwards, with the same rows (the TIDs of the failed load are not reused)" test "$(rows primary)" == "$onerows"
 check "... the standby counts as the primary" same_on_standby
 
-echo "1..$NTEST"
+done_testing
 finish

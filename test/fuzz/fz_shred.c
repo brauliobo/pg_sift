@@ -400,17 +400,21 @@ shred_run(void *a)
 	}
 	if (flags & 1)
 	{
-		/* the lookup form: the declared keys of an object, found one by one */
+		/* the lookup form: the declared keys of the object the driver has entered, found one by one */
 		sift_shred_begin(sh);
-		for (int i = 0, n = sift_shred_object_keys(sh); i < n; i++)
+		if (sift_shred_enter(sh, false))
 		{
-			int			len;
-			const char *key = sift_shred_object_key(sh, i, &len);
+			for (int i = 0, n = sift_shred_object_keys(sh); i < n; i++)
+			{
+				int			len;
+				const char *key = sift_shred_object_key(sh, i, &len);
 
-			if (len < 0 || len > SIFT_SHRED_MAX_KEY_BYTES * 4)
-				fz_bad("object key %d has length %d", i, len);
-			for (int k = 0; k < len; k++)
-				(void) key[k];
+				if (len < 0 || len > SIFT_SHRED_MAX_KEY_BYTES * 4)
+					fz_bad("object key %d has length %d", i, len);
+				for (int k = 0; k < len; k++)
+					(void) key[k];
+			}
+			sift_shred_leave(sh);
 		}
 	}
 	sift_shred_free(sh);

@@ -26,7 +26,7 @@ same() { # PRIMARY STANDBY: every object that the standby can read answers the s
 	done
 }
 no_damage() { # STANDBY: sift.check() says no index is damaged (it may refuse an index with the format error)
-	out=$(sql "$1" "SELECT index::text || ' ' || problem FROM sift.check()" 2>&1); [[ $out != *corrupted* && ( -z $out || $out =~ this\ build.*reads ) ]]
+	out=$(problems "$1" "$SIFT_RELS"); [[ $out != *corrupted* && ( -z $out || $out =~ this\ build.*reads ) ]]
 }
 write_load() { # NODE SEED: writes of every kind
 	sql "$1" \
@@ -60,6 +60,7 @@ max_wal_senders = 4"
 	node_start "$p" || bail "$dir: primary start failed"
 	zoo_create "$p" || bail "$dir: setup failed"
 	sql "$p" "VACUUM (ANALYZE) docs, kc, pt, events, fact, dim, trk_c, trk_i, vs" "CHECKPOINT" >/dev/null || bail "$dir: vacuum failed"
+	[[ $dir == up ]] || old_verify_fns "$p"
 	node_clone "$p" "$s" $((off + 1)) "hot_standby_feedback = on
 wal_receiver_status_interval = 1s"
 	use_root "$s" "$sroot"

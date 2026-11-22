@@ -68,6 +68,7 @@ typedef struct SiftRecMerge
 	const SiftRadixShape *shape;
 	SiftSaltedHT *ht;
 	uint64		dist_bytes;
+	uint8	   *ext_copy;		/* the state block of the record in hand, in storage aligned for the states: a record is aligned to 8 bytes */
 } SiftRecMerge;
 
 extern void sift_rec_merge(SiftRecMerge *m, const uint8 *rec);

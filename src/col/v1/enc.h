@@ -131,7 +131,8 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
 #define DICT_LOOKUP		2
 #define DICT_BLOCKS		3
 #define DICT_LOOKUP_COUNT	4			/* form 2, then (4-aligned) the rows of the strings below each place in byte order, a block of DICT_BLOCK places at a time */
-#define DICT_REF		5			/* column format minor 46 of 5.x: the code in a shared value store, which this release does not read: the form is refused */
+#define DICT_REF		5			/* column format minor 46 of 5.x: the strings are in the shared value store of the column (col/keystore/), the dictionary holds their codes */
+#define DICT_REF_WORDS	5
 #define DICT_HASHED		0x10		/* or'ed into form 2, 3 or 4: after everything of the form (4-aligned), a hash of the strings to their codes */
 #define DICT_PERM_PACKED	0x20		/* or'ed into form 2 or 4: code[] holds its n codes in sift_cdict_perm_bits(n) bits each, lowest first, the bytes padded to 4 (column format minor 39) */
 #define DICT_FLAGS		(DICT_HASHED | DICT_PERM_PACKED)

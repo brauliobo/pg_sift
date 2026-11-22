@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sift.col_wbuf_ref against the heap: a seeded random sequence of inserts (committed, rolled back, a savepoint rolled back), updates (HOT and not), deletes, VACUUMs (the index
+# The write-buffer arena against the heap: a seeded random sequence of inserts (committed, rolled back, a savepoint rolled back), updates (HOT and not), deletes, VACUUMs (the index
 # cleaned or not, FREEZE), promotions of the buffer, arena slots taken away and given back, a server that stops and starts, and a server that is killed, over one table. After every step
 # the answers of the engine are the heap's (the plan of the engine against the native plan of the same table), the index verifies, and once the arena has the rows (no restart since) the
 # heap is not read for them. SIFT_ARENA_SEEDS seeds (default 24, 3 quick) of SIFT_ARENA_STEPS steps (30, 12).
@@ -10,8 +10,6 @@ STEPS=$(knob SIFT_ARENA_STEPS 30 12)
 plan "$SEEDS"
 node_init fz 7 "autovacuum = off
 sift.async_maintenance = off
-sift.col_auto_merge = off
-sift.col_wbuf_ref = on
 max_parallel_workers_per_gather = 0
 checkpoint_timeout = 30s"
 node_start fz || bail "start failed"
@@ -29,7 +27,7 @@ sql fz "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE FUNCTION same_as_heap() RETURNS boolean LANGUAGE plpgsql AS \$\$ DECLARE n text; s text; BEGIN
 		PERFORM set_config('sift.enable_agg', 'off', true); n := answers(); PERFORM set_config('sift.enable_agg', 'on', true); s := answers(); RETURN n = s; END \$\$" \
 	>/dev/null || bail "setup failed"
-rebuilt() { sql fz "SELECT rows_rebuilt FROM sift.col_arena_status()"; }
+rebuilt() { sql fz "SELECT rows_rebuilt FROM sift._test_col_arena_status()"; }
 
 # one step of a seed; $1 the kind, $2 a number it uses; the id ranges of the inserts are disjoint (the step number)
 step() {

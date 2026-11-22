@@ -49,6 +49,31 @@ out=$("$BASH" -c '
 	for _ in {1..50}; do [[ -e $LOG/cap_exceeded ]] && { echo "capped $(cat "$LOG/peak_mb")"; break; }; sleep 0.2; done
 	kill "$w" "$MAIN" 2>/dev/null; wait "$w" "$MAIN" 2>/dev/null; rm -rf "$BASE"' _ "$REPO" 2>&1)
 [[ $out == 'capped 2' ]] || fail "the watchdog does not stop a run over its cap while a job has no directory yet: $out"
+# a job that failed sheds its data and keeps its logs: a run of many failures would reach the cap, and the watchdog stops every server of the run at it
+out=$("$BASH" -c '
+	set -uo pipefail
+	eval "$(sed -n "/^shed() {/,/^}/p" "$1/scripts/ci/claim.sh")"
+	SIFT_TMP=$(mktemp -d "$TMP/lane.XXXXXX"); declare -A J_CLUSTER=([x]=0)
+	mkdir -p "$SIFT_TMP/x/node/data/base" "$SIFT_TMP/x/node/tap/log" "$SIFT_TMP/x/regress/t"
+	head -c 100000 /dev/zero >"$SIFT_TMP/x/node/data/base/rel"; echo l >"$SIFT_TMP/x/node/postgres.log"; echo l >"$SIFT_TMP/x/node/tap/log/a.log"; echo d >"$SIFT_TMP/x/regress/t/regression.diffs"
+	shed x
+	echo "$(find "$SIFT_TMP/x" -type f | sed "s|$SIFT_TMP/x/||" | sort | tr "\n" " ")"
+	mkdir -p "$SIFT_TMP/x/again"; echo d >"$SIFT_TMP/x/again/data"; KEEP=1 shed x; [[ -f $SIFT_TMP/x/again/data ]] && echo kept' _ "$REPO" 2>&1)
+[[ $out == 'node/postgres.log node/tap/log/a.log regress/t/regression.diffs 
+kept' ]] || fail "a failed job does not shed its data and keep its logs: $out"
+# the summary of a run that hit its cap names the cause and the jobs that never started, and a suite whose log was never made does not read its own file
+out=$(LC_ALL=C "$BASH" -c '
+	set -uo pipefail
+	REPO=$1 S=$1/scripts
+	source "$S/ci/skips.sh"
+	BASE=$(mktemp -d "$TMP/base.XXXXXX") LOG=$BASE/logs t0=$SECONDS LANES=1 HARNESS=() SUITES=(isa-baseline installcheck)
+	mkdir -p "$LOG"
+	J_ID=(isa-baseline installcheck-a installcheck-b); declare -A J_SUITE=([isa-baseline]=isa-baseline [installcheck-a]=installcheck [installcheck-b]=installcheck)
+	echo "installcheck-a installcheck PASS 3 0 lane1 1 4 0.5 0" >"$LOG/results"; echo ok >"$LOG/installcheck-a.log"; : >"$LOG/jobs.tsv"
+	echo "disk cap exceeded: 3098 MB > 3072 MB (CI_MAX_MB)" >"$LOG/cap_exceeded"
+	source "$S/ci/summary.sh"' _ "$REPO" 2>&1)
+[[ $out == *'disk cap exceeded: 3098 MB'*'not run: isa-baseline'*'not run: installcheck-b'* && $out != *'input file is output file'* && $out != *'No such file'* ]] ||
+	fail "the summary of a run over its cap does not name the cause and the jobs that did not start: $out"
 # a script that sources ci.sh is the $0 of its calls: every `"$0" --plan` started that script again, and so on without end (a profiling harness did, with 41,665 processes
 # below one `bash /tmp/tmp.X quick`; bounded to 600 tasks the old ci.sh was still running after 12 s). ci.sh refuses to run outside a checkout, and stops at depth 8 inside one
 if command -v timeout >/dev/null; then

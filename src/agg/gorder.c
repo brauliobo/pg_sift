@@ -394,7 +394,7 @@ groups_order(AggExec *ex)
 				old;
 	OrdCol	   *col;
 	int			bits = 0;
-	uint32	   *out;
+	uint32	   *out = NULL;
 	bool		sorted = true;
 
 	if (n < 2)

@@ -32,7 +32,7 @@ sub answers
 {
 	my ($node) = @_;
 	my $q2 = 'SELECT count(*), sum(v), sum(length(note)) FROM r2 WHERE g = 3; SELECT count(*), sum(v) FROM r2 WHERE body @@> $$even$$; SELECT v FROM r2 WHERE id IN (8, 13, 4998)';
-	my $off = 'SET sift.enable_scan = off; SET sift.enable_count = off; SET sift.enable_agg = off; SET enable_indexscan = off; SET enable_bitmapscan = off;';
+	my $off = 'SET sift.enable_scan = off; SET sift.enable_agg = off; SET enable_indexscan = off; SET enable_bitmapscan = off;';
 	my $seq2 = $node->safe_psql('postgres', "$off $q2");
 	is($node->safe_psql('postgres', "SET enable_seqscan = off; $q2"), $seq2, 'the indexes of the second table read the rows a sequential scan does');
 	is($node->safe_psql('postgres', "SET enable_seqscan = off; SET enable_indexscan = off; $q2"), $seq2, 'a bitmap scan of them reads the same');

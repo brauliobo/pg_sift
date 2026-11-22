@@ -23,11 +23,69 @@
 /* the bytes of a row of a lookup table besides its columns: the hash entry and the row's header (about 48 in all for an integer key and a text column, measured) */
 #define AGG_LOOKUP_ROW_OVERHEAD	64
 
+#define AGG_LOOKUP_MARGIN		1.15	/* the allocator's chunk rounding of what the model counts */
+#define AGG_LOOKUP_TEXT_KEY		16		/* the bytes of a text key value the model assumes */
+
 /* Do `rows` rows of `width` bytes fit the lookup tables the scan loads when it starts? */
 bool
 agg_lookup_fits(double rows, int width)
 {
 	return rows * (width + AGG_LOOKUP_ROW_OVERHEAD) <= (double) agg_lookup_limit_kb() * 1024;
+}
+
+static double
+pow2_ge(double x, double lo)
+{
+	double		p = lo;
+
+	while (p < x)
+		p *= 2.0;
+	return p;
+}
+
+/* the bytes of a hash directory of n distinct values (agg/lookup/int.h: 32 and 64 slots to start, doubled as n outgrows half of them) and its arrays of `per` bytes a value */
+static double
+dict_bytes(double n, double per)
+{
+	return pow2_ge(n * 2.0, 64.0) * sizeof(uint32) + pow2_ge(n, 32.0) * per;
+}
+
+/*
+ * The bytes of the lookup table (MapTab, agg/lookup/map.c, find.c) a scan loads of `stored` rows: the arrays map_grow_to sizes (the rows `reserved` for a table read whole, else the
+ * next power of two), the key and column dictionaries, the chains map_index_rows makes, and 15% for the allocator. A table kept as its keys (lazy) has the int64 of each row, not
+ * the key ids and their chains until a use that is not the byte table asks for them (map_ensure); its columns are stored all the same: that use reads them.
+ */
+double
+agg_lookup_map_bytes(const SiftAggJoin *j, double stored, bool reserved, bool lazy, double key_nd, const double *col_nd, const int *col_width)
+{
+	double		cap = reserved ? stored : pow2_ge(stored, 256.0),
+				bytes = cap * (lazy ? sizeof(int64) : j->nkey * sizeof(uint32));
+
+	if (stored <= 0.0)
+		return 0.0;
+	for (int c = 0; c < j->ncol; c++)
+	{
+		double		nd = Min(Max(col_nd[c], 1.0), stored);
+
+		if (get_typbyval(j->coltype[c]))
+			bytes += cap * (sizeof(Datum) + 1);
+		else
+			bytes += cap * sizeof(uint32) + dict_bytes(nd, sizeof(Datum) + sizeof(uint32)) + nd * (Max(col_width[c], 4) + VARHDRSZ);
+	}
+	if (sift_aggjoin_preserves(j->kind))
+		bytes += stored;
+	if (lazy)
+		return bytes * AGG_LOOKUP_MARGIN;
+	for (int k = 0; k < j->nkey; k++)
+	{
+		double		nd = Min(Max(key_nd, 1.0), stored);
+
+		if (sift_bytes_key_type(j->keytype[k]))
+			bytes += dict_bytes(nd, sizeof(char *) + 2 * sizeof(uint32)) + nd * AGG_LOOKUP_TEXT_KEY;
+		else
+			bytes += reserved ? pow2_ge(stored * 2.0, 64.0) * sizeof(uint32) + stored * sizeof(int64) : dict_bytes(nd, sizeof(int64));
+	}
+	return (bytes + pow2_ge(stored, 64.0) * sizeof(uint32) + stored * sizeof(uint32)) * AGG_LOOKUP_MARGIN;
 }
 
 static bool

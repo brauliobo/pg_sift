@@ -144,6 +144,7 @@ exact_answer(const KllTarget *t, const char *where, bool scalar, Datum ps, Datum
 	bool		isnull;
 	Datum		d;
 
+	sift_rel_must_exist(t->heap);
 	initStringInfo(&q);
 	appendStringInfo(&q, "SELECT percentile_disc($1) WITHIN GROUP (ORDER BY v) FROM (SELECT %s AS v FROM %s WHERE (%s)%s) s WHERE v IS NOT NULL AND v <> 'NaN'::float8", expr,
 					 quote_qualified_identifier(get_namespace_name(get_rel_namespace(t->heap)), get_rel_name(t->heap)), where, finite);

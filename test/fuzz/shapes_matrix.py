@@ -262,8 +262,8 @@ def configs(sess):
          'generic': ['plan_cache_mode=force_generic_plan'], 'custom': ['plan_cache_mode=force_custom_plan'],
          'generic_force_w2': ['plan_cache_mode=force_generic_plan', 'sift.agg_force=on'] + PAR,
          'noscan': ['sift.enable_scan=off'], 'noagg': ['sift.enable_agg=off'], 'nocolscan': ['sift.enable_col_scan=off', 'sift.agg_force=on'],
-         'nocount': ['sift.enable_count=off'], 'notopn': ['sift.enable_topn=off', 'sift.agg_force=on'], 'pscan': ['sift.parallel_scan=on'] + PAR,
-         'plan_lo': ['sift.plan_scale=1', 'sift.agg_force=on'], 'plan_hi': ['sift.plan_scale=1000000'], 'cheap_idx': ['random_page_cost=1.01', 'seq_page_cost=4']}
+         'notopn': ['sift.enable_agg=off', 'sift.agg_force=on'], 'pscan': ['sift.parallel_scan=on'] + PAR,
+         'plan_lo': ['sift.test_plan_scale=1', 'sift.agg_force=on'], 'plan_hi': ['sift.test_plan_scale=1000000'], 'cheap_idx': ['random_page_cost=1.01', 'seq_page_cost=4']}
     for e in server_enables(sess):
         c[f'no_{e}'] = [f'enable_{e}=off']
         c[f'no_{e}_force'] = [f'enable_{e}=off', 'sift.agg_force=on']

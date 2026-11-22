@@ -147,7 +147,7 @@ else
 	# the test-only build (TESTING_REGRESS of the Makefile; scripts/check-testing-regress.sh keeps a test that calls a sift._test_ function in it) are not run.
 	# A test gives the same answers on both builds unless it refers to a test-only name (a sift.test_ setting, a sift._test_ function, pg_sift_test) behind a guard, or forces a
 	# parallel build (max_parallel_maintenance_workers above 0): the release library builds some indexes in one process where the test library keeps the participants
-	# (build_pays in src/col/build_par.c), so a test that counts the segments of that build says so only on the release library. Those run, with a smoke of STOCK_SMOKE, one test
+	# (build_pays in src/col/v1/build_par.c), so a test that counts the segments of that build says so only on the release library. Those run, with a smoke of STOCK_SMOKE, one test
 	# or more of each area, which loads and uses the library users get. The deep tier on 18 runs all of them (about 350 tests,
 	# 760 to 1170 s on one lane in run 40193282663, against about 25 tests); on 17 the smoke is enough
 	release_library_tests() {

@@ -670,9 +670,9 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host, int effective_max)
 {
 	TimestampTz now = host->now();
 	bool		cold_ok = !host->defer_cold();
-	SiftPacerTier tier;
+	SiftPacerTier tier = SIFT_TIER_P0;
 	SiftMaintKick res = SIFT_KICK_WOKE;
-	Oid			db;
+	Oid			db = InvalidOid;
 	int			i, j, w = -1, procno = -1;
 
 	begin(m);

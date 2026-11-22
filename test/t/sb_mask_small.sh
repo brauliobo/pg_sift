@@ -12,7 +12,7 @@ if ((rc == 77)); then echo '1..0 # SKIP the 8-page flavour needs PostgreSQL 18';
 ((rc == 0)) || { echo '1..1'; echo 'not ok 1 - build of the 8-page flavour'; exit 1; }
 
 node_init sb 32 "autovacuum = off
-sift.col_auto_merge = off
+sift.async_maintenance = off
 extension_control_path = '$root$(pg_config --sharedir):\$system'
 dynamic_library_path = '$root$(pg_config --pkglibdir):\$libdir'"
 node_start sb || bail "start failed"

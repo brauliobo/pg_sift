@@ -32,8 +32,8 @@ queue_at(SiftParCoord *c, int w)
 	return (shm_mq *) ((char *) c + c->mq_off + (Size) w * c->mq_size);
 }
 
-#define COORD_HDR	TYPEALIGN(PG_CACHE_LINE_SIZE, sizeof(SiftParCoord))
-#define MORSEL_SPAN	TYPEALIGN(PG_CACHE_LINE_SIZE, sift_morsel_size(1))
+#define COORD_HDR	TYPEALIGN(SIFT_PAR_SHM_ALIGN, sizeof(SiftParCoord))
+#define MORSEL_SPAN	TYPEALIGN(SIFT_PAR_SHM_ALIGN, sift_morsel_size(1))
 
 static Size
 mq_size_for(int n_workers)
@@ -50,7 +50,7 @@ sift_par_coord_size(uint32 max_chunks, int n_workers)
 Size
 sift_par_coord_size_custom(uint32 max_chunks)
 {
-	return PG_CACHE_LINE_SIZE + COORD_HDR + MORSEL_SPAN + mul_size(SIFT_RADIX_CHUNK_SIZE, max_chunks);
+	return SIFT_PAR_SHM_ALIGN + COORD_HDR + MORSEL_SPAN + mul_size(SIFT_RADIX_CHUNK_SIZE, max_chunks);
 }
 
 uint32
@@ -79,7 +79,7 @@ coord_reset_parts(SiftParCoord *c)
 static SiftParCoord *
 coord_init(void *raw, dsm_segment *seg, uint32 n_parts, uint32 max_chunks, int n_workers, uint32 local_cap, Size mq_size)
 {
-	SiftParCoord *c = (SiftParCoord *) TYPEALIGN(PG_CACHE_LINE_SIZE, raw);
+	SiftParCoord *c = (SiftParCoord *) TYPEALIGN(SIFT_PAR_SHM_ALIGN, raw);
 	const uint32 one_part_of_granules = 1;
 
 	Assert(seg != NULL && n_workers >= 0);

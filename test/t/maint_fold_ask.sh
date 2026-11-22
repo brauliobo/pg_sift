@@ -7,7 +7,7 @@
 plan 5
 node_init fa 75 "autovacuum = off
 sift.test_col_net = off
-sift.col_auto_merge = on
+sift.async_maintenance = on
 sift.maintenance_naptime = 200
 log_min_messages = debug1"
 node_start fa || bail "start failed"

@@ -380,7 +380,7 @@ compile_grouping(V6Plan *p, GroupingFunc *gf)
 static bool
 compile_aggs(V6Plan *p, Node *e)
 {
-	foreach_node(Node, n, pull_var_clause(e, PVC_INCLUDE_AGGREGATES))
+	foreach_ptr(Node, n, pull_var_clause(e, PVC_INCLUDE_AGGREGATES))
 	{
 		bool		seen = false;
 

@@ -30,8 +30,8 @@ out=$(dbq src "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"INSERT INTO tenant_scope SELECT m, 1 + (m * 31 + j * 13) % 12 FROM generate_series(1, 400) m, generate_series(0, 5) j WHERE j < m % 7 ON CONFLICT DO NOTHING" \
 	"CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int, pad text) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO events SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE 1 + (i * 7919) % 420 END, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 60) FROM generate_series(1, 9000) i" \
-	"CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" \
-	"CREATE INDEX events_col2 ON events USING sift_col (id, dim_a_id, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" 2>&1) || bail "setup failed: $(tail -3 <<<"$out")"
+	"CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(64)')" \
+	"CREATE INDEX events_col2 ON events USING sift_col (id, dim_a_id, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(64)')" 2>&1) || bail "setup failed: $(tail -3 <<<"$out")"
 # the scope of two paths: its tables and btrees, without the journals the fixture makes by hand
 dbq src "${TWOHOP_BASE[@]:0:9}" "${TWOHOP_BASE[@]:12:3}" "CREATE INDEX hop_col ON hop_events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = '$TWOHOP_SCOPE')" \
 	"VACUUM (FREEZE, ANALYZE) hop_events, grants, memberships, tenant_scope, events" >/dev/null || bail "the scope of two paths failed"

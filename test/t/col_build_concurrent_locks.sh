@@ -17,8 +17,7 @@
 KINDS=${SIFT_CL_KINDS:-btree gin sift_plain sift_track sift_scope sift_scope_new_journal reindex_btree reindex_gin reindex_sift_scope}
 PT=pairs
 node_init cl 71 "autovacuum = off
-sift.col_auto_merge = off
-sift.scope_max_multiplicity = 8
+sift.async_maintenance = off
 max_parallel_maintenance_workers = 0"
 node_start cl || bail "start failed"
 D=$(dir cl)
@@ -215,15 +214,15 @@ for kind in $KINDS; do
 		sift_track)
 			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v)" ; G=sift ; P=(2 3 4) ;;
 		sift_scope)
-			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs(m, t)')" ; G=sift ; P=(2 3 4 5) ;;
+			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs(m, t) max_multiplicity(8)')" ; G=sift ; P=(2 3 4 5) ;;
 		sift_scope_new_journal)
-			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs2(m, t)')" ; G=sift ; P=(2 3 4 6 5) ; PT=pairs2 ;;
+			C="CREATE INDEX CONCURRENTLY k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs2(m, t) max_multiplicity(8)')" ; G=sift ; P=(2 3 4 6 5) ; PT=pairs2 ;;
 		reindex_btree)
 			C="CREATE INDEX k_ix ON t (gate_i(v))" ; G=fn ; P=(1) ;;
 		reindex_gin)
 			C="CREATE INDEX k_ix ON t USING gin (gate_a(a))" ; G=fn ; P=(1) ;;
 		reindex_sift_scope)
-			C="CREATE INDEX k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs(m, t)')" ; G=sift ; P=(2 3 4 5) ;;
+			C="CREATE INDEX k_ix ON t USING sift_col (id, m, d, v) WITH (scope = 'tenant: m -> pairs(m, t) max_multiplicity(8)')" ; G=sift ; P=(2 3 4 5) ;;
 		*) bail "unknown kind $kind" ;;
 	esac
 	if [[ $kind == reindex_* ]]; then
@@ -239,5 +238,5 @@ for kind in $KINDS; do
 	open_writer "$kind" k_ix "$C" "$G" "${P[0]}"
 	sql cl "DROP INDEX k_ix" >/dev/null
 done
-echo "1..$NTEST"
+done_testing
 finish

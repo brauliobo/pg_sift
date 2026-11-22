@@ -88,7 +88,7 @@ INSERT INTO v6_conds VALUES
     ('b > $1', 2500), ('a = $1', 42), ('a = $1', NULL), ('b <= $1 + 10', 100), ('NOT (a > $1)', 50),
     ('a = ANY (ARRAY[1, 2, 3])', NULL), ('a IS NOT DISTINCT FROM 5', NULL), ('id > 2900', NULL), ('b % 7 = 0', NULL), ('a::text = ''5''', NULL), ('n / 3 > 1', NULL);
 
-SELECT cond, p, got IS NULL AS refused, got IS NOT NULL AND got = sift_truth AS same
+SELECT cond, p, got IS NULL AS refused, got IS NULL OR got = sift_truth AS same
 FROM (SELECT cond, p, sift._test_v6_filter('v6t_idx_v6', cond, p) AS got, v6_truth(cond, p) AS sift_truth FROM v6_conds) AS r
 ORDER BY refused, cond, p;
 

@@ -80,8 +80,8 @@ check "the index has one row in pg_class" test "$(rows_of_index)" == 1
 check "a scan of pg_class ends without an error" test "$(sql vc "SELECT count(*) > 0 FROM pg_class" 2>&1)" == t
 check "VACUUM pg_class ends without an error" test "$(sql vc "VACUUM pg_class" 2>&1 | grep -c ERROR)" == 0
 check "the log has no error" test "$(errors)" == 0
-# no worker writes the choices either, when sift.col_auto_merge is on: the explicit rewrite does, in a transaction of its own
-sql vc "ALTER DATABASE postgres SET sift.col_auto_merge = on" >/dev/null
+# no worker writes the choices either, when sift.async_maintenance is on: the explicit rewrite does, in a transaction of its own
+sql vc "ALTER DATABASE postgres SET sift.async_maintenance = on" >/dev/null
 idle() { for _ in $(seq 200); do [[ $(sql vc "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'sift%'") == 0 ]] && return 0; sleep 0.1; done; return 1; }
 chosen() {
 	local it start

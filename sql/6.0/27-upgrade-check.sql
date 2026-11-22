@@ -287,14 +287,14 @@ BEGIN
 		RETURN NEXT;
 	END LOOP;
 
-	-- 4b. a shared value store of a column (DICT_REF, 5.0 and 5.1): 6.0 does not read it, and a 5.1 library can still name the indexes that use it; they are rebuilt online before the library is swapped
+	-- 4b. a shared value store of a column (DICT_REF, 5.0 and 5.1): 6.0 reads it as before, and a 5.1 library can still name the indexes that use it; an optional REINDEX under 6.0 makes them Format 2.0
 	IF string_to_array(lib, '.')::int[] < ARRAY[6, 0]
 	   AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang WHERE p.oid = to_regprocedure('sift.col_value_store_members()') AND l.lanname = 'c') THEN
 		FOR r IN EXECUTE 'SELECT m.index_name::text AS rel, pg_relation_size(m.index_name) AS bytes FROM sift.col_value_store_members() m WHERE m.state = ''shared'' ORDER BY 2, 1'
 		LOOP
-			ord := 4; phase := 'pre_dep'; object := r.rel; kind := 'index'; detected := 'shared column value store (DICT_REF)'; status := 'blocker'; size_bytes := r.bytes;
-			advice := 'pg_sift 6.0 does not read the shared column value store: rebuild the index online into Format 2.0 before the library is swapped';
-			action_sql := format('SET sift.col_value_store = off; REINDEX INDEX CONCURRENTLY %s;', r.rel);
+			ord := 4; phase := 'post_optional_upgrade'; object := r.rel; kind := 'index'; detected := 'shared column value store (DICT_REF)'; status := 'info'; size_bytes := r.bytes;
+			advice := 'pg_sift 6.0 reads the shared column value store as before; optional REINDEX INDEX CONCURRENTLY under 6.0 rebuilds the index into Format 2.0';
+			action_sql := format('REINDEX INDEX CONCURRENTLY %s;', r.rel);
 			RETURN NEXT;
 		END LOOP;
 	END IF;
@@ -386,4 +386,4 @@ BEGIN
 	FROM plan p ORDER BY 1;
 END
 $fn$;
-COMMENT ON FUNCTION sift.migrate_plan(text) IS 'The runbook of the update to 6.0 in order, one statement a row: reset the settings that 6.0 removes (pre_guc), the views that depend on a changed function (pre_dep), ALTER EXTENSION pg_sift UPDATE (upgrade_ext), then the optional upgrade of each Format 1 relation, smallest first (post_optional_upgrade), the cleanup of stored options (post_cleanup) and the checks (post_verify). Nothing runs: action_sql is NULL where a file is edited by hand.';
+COMMENT ON FUNCTION sift.migrate_plan(text) IS 'The runbook of the update to 6.0 in order, one statement a row: reset the removed settings (pre_guc), the views that depend on a changed function (pre_dep), ALTER EXTENSION pg_sift UPDATE (upgrade_ext), the optional upgrade of each Format 1 relation (post_optional_upgrade), cleanup (post_cleanup) and checks (post_verify). Nothing runs: action_sql is NULL where a file is edited by hand.';

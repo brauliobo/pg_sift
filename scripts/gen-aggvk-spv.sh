@@ -57,5 +57,5 @@ if [ "${1:-}" = "--check" ]; then
 else
 	cp "$tmp/out.h" "$OUT"
 	echo "gen-aggvk-spv: wrote $OUT"
-	for n in $NAMES; do printf '  %-14s %7d bytes\n' "$n" "$(stat -c %s "$tmp/$n.spv")"; done
+	for n in $NAMES; do printf '  %-14s %7d bytes\n' "$n" "$(wc -c <"$tmp/$n.spv" | tr -d " ")"; done
 fi

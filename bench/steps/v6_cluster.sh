@@ -134,7 +134,7 @@ v6_cluster_start() { # [GUC=VALUE...]: per start, on top of postgresql.conf (io_
 		cat "$LOG_FILE" >&2
 		return 1
 	fi
-	"$PG_BIN/psql" -h "$SOCK_DIR" -p "$PORT" -U postgres -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname = 'bench'" | grep -q 1 \
+	[[ $("$PG_BIN/psql" -h "$SOCK_DIR" -p "$PORT" -U postgres -d postgres -Atqc "SELECT count(*) FROM pg_database WHERE datname = 'bench'") == 1 ]] \
 		|| "$PG_BIN/createdb" -h "$SOCK_DIR" -p "$PORT" -U postgres bench
 }
 

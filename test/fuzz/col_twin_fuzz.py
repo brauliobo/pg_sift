@@ -12,7 +12,7 @@ see rows of transactions in progress, and stamps that wait for them; SIFT_FUZZ_H
 (`SET sift.test_hf_ignore_stamp = on;` takes every segment for stamped: a mutant the holders of a seed must catch). After every step a sample of the queries (top-N both ways, OFFSET small and deep,
 ranges with LIMIT, IN lists, group top-N, NULL regions, text keys) must give the same ordered rows through the forced sift plan, the planned one, a forced b-tree plan and a
 forced heap plan, and col_verify must pass. A REPEATABLE READ reader opened before the churn must read, through the arrays and through the heap, the rows it first read. The
-seed also draws track_changes on or off, sift.col_wbuf_ref, key_cut, the segment size and, in a testing build, sift.test_col_gorder_seek (every chunk seekable).
+seed also draws track_changes on or off, sift.test_col_wbuf_ref, key_cut, the segment size and, in a testing build, sift.test_col_gorder_seek (every chunk seekable).
 """
 import argparse, os, random, re, subprocess, sys, time
 
@@ -317,7 +317,7 @@ def run_seed(seed, n, steps):
     trk = ", track_changes = 'off'" if cfg['track'] == 'off' else ''
     kc = '' if cfg['key_cut'] == 'auto' else ", key_cut = 'off'"
     ts = rng.choice(["TIMESTAMP '2026-01-01' + i * interval '1 minute'", f"TIMESTAMP '2026-01-01' + ((i * 7919) % {n}) * interval '1 minute'"])
-    flags = f"SET sift.test_col_segment_kb = {cfg['seg_kb']}; SET sift.col_wbuf_ref = {cfg['wbuf']};" + (' SET sift.test_col_gorder_seek = on;' if cfg['seek'] else '')
+    flags = f"SET sift.test_col_segment_kb = {cfg['seg_kb']}; SET sift.test_col_wbuf_ref = {cfg['wbuf']};" + (' SET sift.test_col_gorder_seek = on;' if cfg['seek'] else '')
     a, rd = Sess('writer', log, SETUP), Sess('reader', log, SETUP)
     hold = os.environ.get('SIFT_FUZZ_HOLD', '1') != '0'
     hs = [Sess(f'holder{k}', log, SETUP) for k in range(2 if hold else 0)]

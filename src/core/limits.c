@@ -16,9 +16,16 @@
 #include "agg/rows.h"
 #include "agg/spec.h"
 #include "agg/topn.h"
+#include "agg/v6/v6_datebin_win.h"
+#include "agg/v6/v6_filter_pivot.h"
 #include "bm25/dict.h"
 #include "bm25/query.h"
 #include "col/col.h"
+#include "col/compress.h"
+#include "col/f2/f2_defaults.h"
+#include "col/f2/f2_kll.h"
+#include "col/f2/f2_point_dir.h"
+#include "col/f2/f2_proj.h"
 #include "col/v1/gorder.h"
 #include "col/v1/preagg.h"
 #include "col/scope.h"
@@ -27,7 +34,9 @@
 #include "col/keystore/keystore.h"
 #include "col/v1/wide.h"
 #include "core/limits.h"
+#include "core/maint_sched.h"
 #include "core/sift.h"
+#include "table/f2/f2_gcache.h"
 
 const int64_t sift_limit_default[SIFT_LIM_COUNT] = {
 #define X(id, macro, file, value, unit, what, behaviour, setting, hooked) [SIFT_LIM_##id] = (value),

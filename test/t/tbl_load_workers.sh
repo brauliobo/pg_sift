@@ -20,14 +20,14 @@ D=$(dir primary)
 sql primary "CREATE EXTENSION pg_sift" \
 	"CREATE TABLE src AS SELECT g AS id, g % 500 AS grp, (g % 997)::numeric(10,2) AS amount, md5(g::text) || md5((g * 7)::text) AS pad FROM generate_series(1, $ROWS) g" \
 	"COPY src TO '$D/load.csv' CSV" \
-	"CREATE TABLE lt (id int, grp int, amount numeric(10,2), pad text) USING sift_table" \
+	"CREATE TABLE lt (id int, grp int, amount numeric(10,2), pad text) USING sift_table" "SELECT sift.table_set_option('lt', 'write_buffer_limit', '2048kB')" \
 	"CREATE INDEX lt_bm ON lt USING sift (pad)" >/dev/null || bail "setup failed"
 node_clone primary standby 3 "hot_standby_feedback = on
 wal_receiver_status_interval = 1s"
 node_start standby || bail "standby start failed"
 catchup primary standby || bail "the standby did not catch up"
 
-OPTS=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.table_write_buffer_limit = 2048" "SET sift.test_load_unit_bytes = $(knob SIFT_LW_UNIT 0 128)" "SET sift.test_par_workers = 0")
+OPTS=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.test_load_unit_bytes = $(knob SIFT_LW_UNIT 0 128)" "SET sift.test_par_workers = 0")
 COPYSQL="COPY lt FROM '$D/load.csv' CSV"
 GATE=7000
 digest() { sql "$1" "SELECT count(*) || ':' || md5(string_agg(id || ':' || ctid::text || ':' || amount, ',' ORDER BY id)) FROM lt" | tail -1; }
@@ -145,5 +145,5 @@ attempt "a worker killed with kill -9" kill9worker
 if restart "$PM"; then ok "the primary restarts and the standby streams again"; recovered "worker killed"; else not_ok "the primary restarts"; fi
 attempt "the backend killed with kill -9" kill9leader
 if restart "$PM"; then ok "the primary restarts and the standby streams again"; recovered "backend killed"; else not_ok "the primary restarts"; fi
-echo "1..$NTEST"
+done_testing
 finish

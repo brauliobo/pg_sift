@@ -155,10 +155,13 @@ DROP TABLE kl_before;
 -- options
 CREATE INDEX bad ON k USING sift (v) WITH (analyzer = keyword, stemmer = en);
 ERROR:  analyzer = keyword cannot be combined with stemmer, prefix_index or fields
+HINT:  Use analyzer = 'text' for stemming, prefixes or weighted fields, or drop those options for exact keyword matching.
 CREATE INDEX bad ON k USING sift (v) WITH (analyzer = keyword, prefix_index = 2);
 ERROR:  analyzer = keyword cannot be combined with stemmer, prefix_index or fields
+HINT:  Use analyzer = 'text' for stemming, prefixes or weighted fields, or drop those options for exact keyword matching.
 CREATE INDEX bad ON k USING sift (v) WITH (analyzer = keyword, fields = 'a');
 ERROR:  analyzer = keyword cannot be combined with stemmer, prefix_index or fields
+HINT:  Use analyzer = 'text' for stemming, prefixes or weighted fields, or drop those options for exact keyword matching.
 CREATE INDEX bad ON k USING sift (v) WITH (analyzer = nope);
 ERROR:  invalid value for enum option "analyzer": nope
 DETAIL:  Valid values are "text" and "keyword".

@@ -26,7 +26,7 @@ check "the merge leaves the file over 1.6 times the live bytes" test "$loose" -g
 
 # dead rows in many units (a VACUUM that does not cut marks them) make a rewrite due, and nothing starts it
 sql defer "UPDATE t SET amount = amount + 1 WHERE id % 20 = 1" "ALTER INDEX t_idx SET (vacuum_truncate = false)" "VACUUM t" "ALTER INDEX t_idx RESET (vacuum_truncate)" "SELECT pg_current_xact_id()" >/dev/null
-SETS=("SET sift.col_auto_merge = on")
+SETS=("SET sift.async_maintenance = on")
 check "a rewrite is due" test "$(sql defer "${SETS[@]}" "SELECT sift.col_maintenance_due('t_idx') IS NOT NULL")" == t
 sql defer "${SETS[@]}" "VACUUM t" >/dev/null
 sql defer "SELECT pg_current_xact_id()" >/dev/null

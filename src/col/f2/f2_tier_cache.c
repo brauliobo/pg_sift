@@ -187,12 +187,14 @@ adopt_directory(SiftTierCache *c)
 		else if (sscanf(de->d_name, "%16llx%16llx-%8x.chk%n", &hi, &lo, &idx, &len) == 3 && de->d_name[len] == '\0' && stat(path, &st) == 0 && st.st_size > (off_t) sizeof(ChunkTrailer) &&
 				 st.st_size - sizeof(ChunkTrailer) <= c->chunk_bytes)
 		{
+			struct timespec mtime = sift_stat_mtime(&st);
+
 			if (nf == cap)
 			{
 				cap = cap ? cap * 2 : 256;
 				f = f ? repalloc(f, cap * sizeof(Found)) : palloc(cap * sizeof(Found));
 			}
-			f[nf++] = (Found) {hi, lo, idx, st.st_size - sizeof(ChunkTrailer), (int64) st.st_mtim.tv_sec * 1000000000 + st.st_mtim.tv_nsec};
+			f[nf++] = (Found) {hi, lo, idx, st.st_size - sizeof(ChunkTrailer), (int64) mtime.tv_sec * 1000000000 + mtime.tv_nsec};
 		}
 	}
 	if (d != NULL)

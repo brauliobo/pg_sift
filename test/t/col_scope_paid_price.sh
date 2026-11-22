@@ -9,8 +9,7 @@
 plan 6
 
 node_init pp 60 "autovacuum = off
-sift.col_auto_merge = off
-sift.scope_max_multiplicity = 8
+sift.async_maintenance = off
 sift.test_scope_patch = off"
 node_start pp || bail "start failed"
 sql pp "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "SET client_min_messages = warning" \
@@ -21,7 +20,7 @@ sql pp "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "SET client_mi
 	"CREATE TABLE events (id int PRIMARY KEY, m int, d date, kind text, amount int)" \
 	"INSERT INTO events SELECT i, 1 + (i::bigint * 7919) % 3000, date '2025-01-01' + i % 365, 'k' || i % 7, i % 100 FROM generate_series(1, 300000) i" \
 	"VACUUM (FREEZE, ANALYZE) events, ts" \
-	"CREATE INDEX events_col ON events USING sift_col (id, m, d, kind, amount) WITH (scope = 't: m -> ts(m, t)')" \
+	"CREATE INDEX events_col ON events USING sift_col (id, m, d, kind, amount) WITH (scope = 't: m -> ts(m, t) max_multiplicity(8)')" \
 	"VACUUM (FREEZE, ANALYZE) events, ts" >/dev/null || bail "setup failed"
 
 COUNT="SELECT count(*) FROM events e WHERE e.m IN (SELECT m FROM ts WHERE t = 1)"

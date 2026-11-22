@@ -416,12 +416,12 @@ sift_test_radix_par(PG_FUNCTION_ARGS)
 	EnterParallelMode();
 	pcxt = CreateParallelContext("pg_sift", "sift_radix_test_worker", workers);
 	shm_toc_estimate_chunk(&pcxt->estimator, size);
-	shm_toc_estimate_chunk(&pcxt->estimator, sizeof(Params));
+	shm_toc_estimate_chunk(&pcxt->estimator, sizeof(Params) + SIFT_PAR_SHM_ALIGN);
 	shm_toc_estimate_keys(&pcxt->estimator, 2);
 	InitializeParallelDSM(pcxt);
 	if (pcxt->seg == NULL)
 		elog(ERROR, "no shared memory for the parallel test");
-	shared = shm_toc_allocate(pcxt->toc, sizeof(Params));
+	shared = (Params *) TYPEALIGN(SIFT_PAR_SHM_ALIGN, shm_toc_allocate(pcxt->toc, sizeof(Params) + SIFT_PAR_SHM_ALIGN));
 	*shared = p;
 	c = sift_par_coord_init(shm_toc_allocate(pcxt->toc, size), pcxt->seg, max_chunks, workers, p.granules, PG_GETARG_INT32(5));
 	shm_toc_insert(pcxt->toc, KEY_COORD, c);

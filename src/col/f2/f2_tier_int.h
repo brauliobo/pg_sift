@@ -4,6 +4,9 @@
 #ifndef SIFT_F2_TIER_INT_H
 #define SIFT_F2_TIER_INT_H
 
+#include <sys/stat.h>
+#include <time.h>
+
 #include "col/f2/f2_tier.h"
 
 #define SIFT_TIER_CHUNK		(UINT32_C(1) << 20)
@@ -20,6 +23,16 @@ extern SiftTierStatus sift_tier_uri_parse(const char *uri, SiftTierUri *u, SiftT
 
 /* An object name the backends accept: the alphabet of a location, no "..", no leading or doubled slash, at most 160 bytes */
 extern bool sift_tier_key_ok(const char *key);
+
+static inline struct timespec
+sift_stat_mtime(const struct stat *st)
+{
+#ifdef __APPLE__
+	return st->st_mtimespec;
+#else
+	return st->st_mtim;
+#endif
+}
 
 /* ---- libcurl, opened with dlopen ---- */
 

@@ -7,7 +7,7 @@
 # title, default, gain, cost: the row of the "Decisions at a glance" table (all four, or none for a message that is not a decision); gain and cost are short. benefit, tradeoff: the full figures with their conditions.
 # Every number of gain, cost, benefit and tradeoff is quoted: it must be in a row of docs/options.tsv named in `option` (comma separated keys) or in a file of `evidence` (comma separated paths); a cell without a number says "no measured number yet" or "n/a: reason".
 # doc: file#heading of docs/ for the longer explanation.
-# kind, choice, why, off: a row with a kind is one line of the summary that CREATE INDEX and REINDEX print and of sift.index_choices(index), derived from the finished index by src/col/build/choices.c
+# kind, choice, why, off: a row with a kind is one line of the summary that CREATE INDEX and REINDEX print and of sift.index_choices(index), derived from the finished index by src/col/v1/build/choices.c
 #   (no emitter of its own, and its message, detail and hint are not a source literal). auto: a choice the index holds; advice: a suggestion; limit: where a cap left units without what was asked; action: something to do
 #   (a row that is also raised where the source says, like track-changes-concurrent, keeps its message, detail and hint). choice: the name in the summary; why: one plain sentence, 100 characters at most, no number that is not measured;
 #   off: the command that turns it off, %s the index name. sift.help(id) returns the row. docs/messages-length.allow lists the older cells over the length limit (first line 100 characters, detail 200, hint 100, no ".." shorthand).

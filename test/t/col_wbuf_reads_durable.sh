@@ -5,7 +5,6 @@
 plan 8
 
 node_init rd 58 "autovacuum = off
-sift.col_auto_merge = off
 sift.async_maintenance = off"
 node_start rd || bail "start failed"
 sql rd "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "SET client_min_messages = warning" \

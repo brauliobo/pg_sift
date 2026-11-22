@@ -7,8 +7,7 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 5
-node_init pm 32 "sift.scope_max_multiplicity = 8
-wal_level = replica
+node_init pm 32 "wal_level = replica
 max_wal_senders = 4
 max_prepared_transactions = 8
 autovacuum = off"
@@ -24,7 +23,7 @@ node_clone pm sb 33 "hot_standby_feedback = on
 wal_receiver_status_interval = 1s"
 node_start sb || bail "standby start failed"
 D=$(dir pm)
-SCOPE="scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'"
+SCOPE="scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)'"
 READ="SELECT count(*), sum(v) FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, 12)"
 PLAIN="SELECT count(*), sum(v) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 12)"
 

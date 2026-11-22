@@ -14,6 +14,7 @@
 set -euo pipefail
 cd "${SIFT_TREE:-$(dirname "$0")/../..}"
 
+: "${PGHOST:?PGHOST names the server under test (a socket directory or a host, with PGPORT)}"
 N=${1:?usage: bench-pg.sh ROWS [REPS]}
 REPS=${2:-7}
 MODES=${MODES:-"cpu1 cpu4 gpu auto"}

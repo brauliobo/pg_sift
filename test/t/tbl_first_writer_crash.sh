@@ -51,5 +51,5 @@ check "... the table is empty" test "$(rows primary)" == 0
 sql primary "$LOAD" >/dev/null
 check "... the standby replays the load" catchup primary standby
 check "... and has the same rows" test "$(rows standby)" == "$ROWS"
-echo "1..$NTEST"
+done_testing
 finish

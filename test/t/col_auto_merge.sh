@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# What the churn of a sift_col index leaves to the user (sift.col_auto_merge, on by default): the end of a VACUUM starts a background worker that seals the write
+# What the churn of a sift_col index leaves to the user (sift.async_maintenance, on by default): the end of a VACUUM starts a background worker that seals the write
 # buffer and promotes it, the incremental work, and never rewrites the index: the units with a dead row stay as they are, sift.col_maintenance_due names the reason, sift.col_maintenance_status
 # recommends REINDEX, and the explicit sift.col_maintain call (or REINDEX) rewrites every segment into one. With the setting off the worker does not run either; and with the maintenance lock
 # held (a VACUUM stopped at its cleanup gate, a testing build) the call is skipped while queries and inserts go on.
@@ -27,7 +27,7 @@ advice() { sql am "SELECT coalesce((SELECT b FROM unnest(blocked_by) b WHERE b L
 groups() { sql am "SET sift.enable_agg = $1" "SET max_parallel_workers_per_gather = 0" "SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT kind, count(*), sum(amount) FROM facts GROUP BY kind) x" | tail -1; }
 
 # 1. on: the VACUUM asks for the worker, which promotes the write buffer and leaves the dirty units for the user
-sql am "ALTER DATABASE postgres SET sift.col_auto_merge = on" >/dev/null
+sql am "ALTER DATABASE postgres SET sift.async_maintenance = on" >/dev/null
 BEFORE=$(grep -c 'rewrote (' "$D/postgres.log")
 churn 1
 sql am "VACUUM facts" >/dev/null
@@ -39,12 +39,12 @@ check "the rewrite is due, and the status recommends REINDEX with the reason" te
 check "the answers are the heap's" test "$(groups on)" == "$(groups off)"
 
 # 2. off: the VACUUM leaves the index as its policy does, the call rewrites it
-sql am "ALTER DATABASE postgres SET sift.col_auto_merge = off" >/dev/null
+sql am "ALTER DATABASE postgres SET sift.async_maintenance = off" >/dev/null
 churn 2
 sql am "VACUUM facts" >/dev/null
 check "off: it is due and sift.col_maintain rewrites it" test "$(due) $(sql am "SELECT sift.col_maintain('facts_idx')")" == "dirty units t"
 check "off: one clean segment after the call, and nothing is due" test "$(state)|$(due)|$(advice)" == "1 segments, 0 dirty, 0 buffered|not due|"
-sql am "ALTER DATABASE postgres SET sift.col_auto_merge = on" >/dev/null
+sql am "ALTER DATABASE postgres SET sift.async_maintenance = on" >/dev/null
 
 # 3. the maintenance lock held by a VACUUM stopped at its cleanup: the call is skipped, readers and writers go on
 churn 4
@@ -56,7 +56,7 @@ rm -f "$D/locked" "$D/release"
 } | sql am >/dev/null &
 hp=$!
 until [[ -e $D/locked ]]; do sleep 0.05; done
-sql am "LOAD 'pg_sift'" "SET sift.test_cleanup_gate = on" "SET sift.col_auto_merge = off" "VACUUM facts" >"$D/vacuum" 2>&1 &
+sql am "LOAD 'pg_sift'" "SET sift.test_cleanup_gate = on" "SET sift.async_maintenance = off" "VACUUM facts" >"$D/vacuum" 2>&1 &
 vp=$!
 for _ in $(seq 400); do [[ $(sql am "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted") -ge 1 ]] && break; sleep 0.05; done
 skipped=$(timeout 20 psql -X -At -q -h "$D/sock" -p "$(port am)" -U postgres -d postgres -c "SELECT sift.col_maintain('facts_idx')" | tail -1)

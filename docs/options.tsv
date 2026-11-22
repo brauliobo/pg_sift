@@ -1,4 +1,4 @@
-# One row per release option (96 total in pg_sift 6.0: 27 GUCs, 36 sift_col, 16 sift, 17 sift_table).
+# One row per release option (97 total in pg_sift 6.0: 27 GUCs, 37 sift_col, 16 sift, 17 sift_table).
 # key<TAB>applies<TAB>values<TAB>purpose<TAB>link<TAB>since
 sift.agg_exact_float	sift_col, sift_table	`on`, `off`	Force bit-identical row-order float8 summation instead of parallel IEEE-754 sums	ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg	6.0
 sift.async_maintenance	all	`on`, `off`	Run the background maintenance scheduler: L0 flush, compaction, scope refresh, and sift_table defrag	OPERATIONS.md#5-emergency-switches	1.0
@@ -33,8 +33,9 @@ sift_col(dead_rewrite_pct)	sift_col	`0..100`	Dead-row percentage triggering comp
 sift_col(key_order)	sift_col	`'c1 [DESC], ...'` (1..8), `auto`, `off`	Physical sort and partition key inside Format Major 2 parts	ANALYTICS.md#2-physical-sort-and-partitioning-key_order	5.0
 sift_col(paths)	sift_col	`auto` or path spec	JSONB shredding paths	ANALYTICS.md#4-shredding-jsonb-columns-paths	3.4
 sift_col(preagg)	sift_col	`auto`, `off`, `cube(...); rollup(...); calendar(...)`	Granule pre-aggregate cube, rollup, and calendar definitions	ANALYTICS.md#3-pre-aggregates-preagg	3.0
-sift_col(projection)	sift_col	tag string	Named projection registry tag	REFERENCE.md#column-index-and-scopes-sift_col	5.0
+sift_col(projection)	sift_col	tag string	Named projection registry tag	REFERENCE.md#column-index-and-scopes	5.0
 sift_col(scope)	sift_col	`'name: fk -> rel(member, key) [cluster] [topk(...)] [null_filter(...)]'`	Entity-Once multi-tenant/hierarchy scope declarations with automatic primary-parent clustering	SCOPES.md#1-declaring-a-scope	5.0
+sift_col(skip_index)	sift_col	`'column: bloom'`, `'column: trigram'`, comma separated	High-cardinality skipping index per column: Bloom for equality and IN, trigram for LIKE and ILIKE	ANALYTICS.md#1-designing-a-sift_col-index	6.0
 sift_col(sketches)	sift_col	`'hll(col, ...); kll(col, ...)'`	Opt-in approximate sketches for sift.approx_count_distinct() and quantiles	ANALYTICS.md#8-approximate-distinct-counts-siftapprox_count_distinct	6.0
 sift_col(track_changes)	sift_col	`auto`, `off`	Heap-address (ctid) change tracking for COW deletion vectors; works on any table, no primary key needed	ANALYTICS.md#9-change-tracking-track_changes	3.4
 sift_col(vacuum_truncate)	sift_col	`true`, `false`	Truncate reclaimed trailing blocks during VACUUM	OPERATIONS.md#34-space-free-extents-and-vblocks_left-siftspace	1.2

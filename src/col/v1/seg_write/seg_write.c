@@ -129,7 +129,7 @@ segw_put_cut(const SiftColSegWriter *w, StringInfo schema)
 SiftColSegWriter *
 sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, const SiftCcPolicy *pol, int format, MemoryContext parent, Size budget)
 {
-	MemoryContext mcxt = sift_mem_allocset_create(parent, "sift col segment writer");
+	MemoryContext mcxt = AllocSetContextCreate(parent, "sift col segment writer", ALLOCSET_SMALL_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftColSegWriter *w = palloc0(sizeof(SiftColSegWriter));
 
@@ -141,9 +141,9 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->pol = pol;
 	w->mcxt = mcxt;
 	sift_mem_init_sub(&w->tracker, "col_writer", mcxt, false, budget);
-	w->scxt = sift_mem_allocset_create(mcxt, "sift col order spool");
-	w->dcxt = sift_mem_allocset_create(mcxt, "sift col writer dict");
-	w->pcxt = sift_mem_allocset_create(mcxt, "sift col writer points");
+	w->scxt = AllocSetContextCreate(mcxt, "sift col order spool", ALLOCSET_SMALL_SIZES);
+	w->dcxt = AllocSetContextCreate(mcxt, "sift col writer dict", ALLOCSET_SMALL_SIZES);
+	w->pcxt = AllocSetContextCreate(mcxt, "sift col writer points", ALLOCSET_SMALL_SIZES);
 	w->format = sift_col_write_minor(schema, format, true);
 	w->setting = format;
 	w->sw = sift_sw_begin(wt, gen);
@@ -170,6 +170,7 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	initStringInfo(&w->xecube);
 	w->sbdir = palloc(w->capsb * sizeof(SiftColSBRef));
 	initStringInfo(&w->buf);
+	sift_mem_rebase(&w->tracker);
 	MemoryContextSwitchTo(old);
 	return w;
 }

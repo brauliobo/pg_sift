@@ -52,13 +52,13 @@ out=$(dbq src "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"CREATE INDEX group_scope_journal ON group_scope USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid')" \
 	"CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int, pad text) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO events SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 999 ELSE 1 + (i * 7919) % 420 END, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 60) FROM generate_series(1, 9000) i" \
-	"CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" \
+	"CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(64)')" \
 	"CREATE TABLE events2 (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO events2 SELECT id, dim_a_id, created_at, v FROM events" \
-	"CREATE INDEX events_two ON events2 USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id); group_id: dim_a_id -> group_scope(dim_a_id, group_id)')" \
+	"CREATE INDEX events_two ON events2 USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(64); group_id: dim_a_id -> group_scope(dim_a_id, group_id) max_multiplicity(64)')" \
 	"VACUUM (FREEZE, ANALYZE) events, events2, tenant_scope, group_scope" 2>&1) || bail "setup failed: $(tail -3 <<<"$out")"
 dbq src "${TWOHOP_STMTS[@]}" "CREATE UNIQUE INDEX grants_direct_all ON grants (dim_a_id, tenant_id)" \
-	"CREATE INDEX hop_using ON hop_events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) using grants_direct_all | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)')" \
+	"CREATE INDEX hop_using ON hop_events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) using grants_direct_all | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(64)')" \
 	"REINDEX INDEX hop_using" "VACUUM (FREEZE, ANALYZE) hop_events, grants, memberships" >/dev/null || bail "the scopes of two paths failed"
 hopstate() { # DB: of both indexes, the option, the edges to the btrees and the journals, the entries, the reads, and how many of the two btrees of the direct grants cannot be dropped
 	local db=$1 ix out=
@@ -74,12 +74,12 @@ TWO="SELECT count(*) FROM pg_depend WHERE classid = 'pg_class'::regclass AND obj
 check "the index with two scopes depends on both btrees and both journal indexes" test "$(dbq src "$TWO")" == 4
 HOP=$(hopstate src)
 check "the source: both scopes of two paths depend on the three btrees (the rule's, and the one that using names) and the three journals, the entries and the reads are the join's" test "$HOP" == \
-	"hop_col: scope=$TWOHOP_SCOPE max_multiplicity(64) | grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member | entries t | reads same; hop_using: scope=tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) using grants_direct_all | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(64) | grants_by_group grants_by_member grants_direct_all grants_group memberships_active memberships_by_member | entries t | reads same; refused 2"
+	"hop_col: scope=$TWOHOP_SCOPE | grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member | entries t | reads same; hop_using: scope=tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) using grants_direct_all | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(64) | grants_by_group grants_by_member grants_direct_all grants_group memberships_active memberships_by_member | entries t | reads same; refused 2"
 pg_dump "${S[@]}" -Fc -f "$D/src.custom" src
 pg_dump "${S[@]}" -Fp -f "$D/src.sql" src
 check "pg_dump writes the text of the option" test "$(grep -c "scope='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(64)'" "$D/src.sql")" == 1
 line() { grep -n "$1" "$D/src.sql" | head -n 1 | cut -d: -f1; }
-check "pg_dump writes the text of both scopes of two paths, with the using of one" test "$(grep -c "scope='$TWOHOP_SCOPE max_multiplicity(64)'" "$D/src.sql")" == 1 -a "$(grep -c "using grants_direct_all | grants(group_id" "$D/src.sql")" == 1
+check "pg_dump writes the text of both scopes of two paths, with the using of one" test "$(grep -c "scope='$TWOHOP_SCOPE'" "$D/src.sql")" == 1 -a "$(grep -c "using grants_direct_all | grants(group_id" "$D/src.sql")" == 1
 check "the btrees of the pairs are made before the indexes that read them" \
 	test "$(line 'tenant_scope_pkey PRIMARY KEY')" -lt "$(line 'CREATE INDEX events_col ')" -a "$(line 'group_scope_group_id_dim_a_id_key')" -lt "$(line 'CREATE INDEX events_two ')"
 check "the index that journals the pairs is made before the index that reads them" test "$(line 'CREATE INDEX tenant_scope_journal')" -lt "$(line 'CREATE INDEX events_col ')"
@@ -109,7 +109,7 @@ diag "$NOTICES"
 
 # two scope indexes of one table made by a parallel restore
 {
-	dbq src "CREATE INDEX events_three ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" >/dev/null
+	dbq src "CREATE INDEX events_three ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(64)')" >/dev/null
 	pg_dump "${S[@]}" -Fc -f "$D/same.custom" src
 	runs=0
 	for run in 1 2 3 4 5 6; do fresh rs; [[ $(pg_restore "${S[@]}" -j8 -d rs "$D/same.custom" 2>&1 | errors) == 0 ]] && runs=$((runs + 1)); done

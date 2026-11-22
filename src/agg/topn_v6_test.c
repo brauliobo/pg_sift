@@ -232,7 +232,7 @@ sift_test_topn(PG_FUNCTION_ARGS)
 	d->spec.offset = (uint64) PG_GETARG_INT64(11);
 	d->spec.with_ties = PG_GETARG_BOOL(12);
 
-	q = palloc0(sift_morsel_size(1));
+	q = palloc_aligned(sift_morsel_size(1), SIFT_PAR_SHM_ALIGN, MCXT_ALLOC_ZERO);
 	sift_morsel_init(q, 1, &one, (uint32) workers);
 	for (int w = 0; w < workers; w++)
 	{

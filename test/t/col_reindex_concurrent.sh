@@ -10,7 +10,7 @@ plan 12
 SECS=$(knob SIFT_RC_SECS 12 6)
 ROWS=$(knob SIFT_RC_ROWS 20000 8000)
 node_init n 40 "autovacuum = off
-sift.col_auto_merge = off"
+sift.async_maintenance = off"
 node_start n || bail "start failed"
 D=$(dir n)
 sql n "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \

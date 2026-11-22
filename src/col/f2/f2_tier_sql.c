@@ -20,6 +20,7 @@
 #include "col/f2/col_meta.h"
 #include "col/f2/f2_tier_host.h"
 #include "col/pg.h"
+#include "core/catname.h"
 #include "core/meta_peek.h"
 #include "core/sift.h"
 #include "core/xlog.h"
@@ -53,7 +54,7 @@ acl_relid(Relation rel)
 static Relation
 open_f2_rel(Oid relid)
 {
-	Relation	rel = relation_open(relid, ShareUpdateExclusiveLock);
+	Relation	rel = relation_open(sift_rel_must_exist(relid), ShareUpdateExclusiveLock);
 
 	if (!is_col_index(rel) && !sift_tbl_is_table(rel))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table or a sift_col index", RelationGetRelationName(rel))));
@@ -201,7 +202,7 @@ check_ttl_column(Relation rel, const SiftF2Store *store, const char *col)
 {
 	AttrNumber	attno = get_attnum(RelationGetRelid(rel), col);
 
-	if (sift_tier_time_slot(rel, store, col) < 0)
+	if (attno == InvalidAttrNumber || sift_tier_time_slot(rel, store, col) < 0)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("\"%s\" is not a time column of \"%s\"", col, RelationGetRelationName(rel)),
 						errhint("The TTL runs on one of the first date or timestamp columns of the table (those of key_order first).")));
 	if (!TupleDescAttr(RelationGetDescr(rel), attno - 1)->attnotnull)

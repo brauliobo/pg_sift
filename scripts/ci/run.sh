@@ -35,7 +35,7 @@ for (( n = 1; n <= LANES; n++ )); do
 done
 wait "${pids[@]}" ${lint:-} ${spantest:-}
 # the jobs that install a flavor of the server's own library (flavor_job) run alone, now that no worker of a lane is left to load it
-for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && run_job "$id" && tidy "$id"; done
+for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || continue; if run_job "$id"; then tidy "$id"; else shed "$id"; fi; done
 step leakcheck leakcheck "$S/leakcheck.sh" scan "$BASE"
 # reports and uploads, never fails the run: the memory slope tests are the gates
 [[ -z ${SIFT_MEMCENSUS:-} ]] || step mem-report mem-report bash -c 'python3 -I "$0/mem-report.py" report "$1" ${SIFT_MEMREPORT_BASELINE:+--baseline "$SIFT_MEMREPORT_BASELINE"} --out "$1/report.md" --json "$1/report.json" || true' "$S" "$SIFT_MEMCENSUS_DIR"

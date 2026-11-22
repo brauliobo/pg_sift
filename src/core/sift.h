@@ -78,6 +78,9 @@
 #define SIFT_OFFMASK_WORDS		8
 #define SIFT_SIMD_ALIGN			64
 
+/* Zeroed storage for n of a type with a member aligned beyond MAXALIGN: palloc0 does not give that alignment */
+#define sift_palloc0_aligned(T, n) ((T *) palloc_aligned(sizeof(T) * (n), _Alignof(T), MCXT_ALLOC_ZERO))
+
 /* Limits */
 #define SIFT_MAX_TERM_BYTES		255
 #define SIFT_MAX_TF				255

@@ -302,7 +302,82 @@
 	  "a backend numbered above it pins a snapshot under the lock of its slot", "-", 0) \
 	X(star_join_parts, "STAR_MAX_PARTS", "agg/v6/v6_star_run.c", 65536, "parts", \
 	  "parts one small relation of a star join is read in when it does not fit hash memory: each part is one more pass over the facts", \
-	  "ERROR 54000 naming work_mem and hash_mem_multiplier", "work_mem, hash_mem_multiplier", 0)
+	  "ERROR 54000 naming work_mem and hash_mem_multiplier", "work_mem, hash_mem_multiplier", 0) \
+	X(proj_cols, "SIFT_PROJ_MAX_COLS", "col/f2/f2_proj.h", SIFT_PROJ_MAX_COLS, "columns", \
+	  "key columns, INCLUDE columns and measures of one projection (each list)", \
+	  "sift.create_projection refuses the spec (too many columns)", "-", 0) \
+	X(kll_cols, "SIFT_F2_KLL_MAX_COLS", "col/f2/f2_kll.h", SIFT_F2_KLL_MAX_COLS, "columns", \
+	  "columns a part keeps a quantile sketch of; the sketches option names at most twice this many columns", \
+	  "ERROR 54000 naming the option", "-", 0) \
+	X(point_cols, "SIFT_POINT_MAX_COLS", "col/f2/f2_point_dir.h", SIFT_POINT_MAX_COLS, "columns", \
+	  "columns of a part that get a point directory: the ones with the most distinct values", \
+	  "the other columns are read as before (the rows are the same)", "-", 0) \
+	X(point_values, "SIFT_POINT_MAX_VALUES", "col/f2/f2_point_dir.h", SIFT_POINT_MAX_VALUES, "values", \
+	  "constants of an equality or IN list the point directory answers", \
+	  "the granules are read (the rows are the same)", "-", 0) \
+	X(defaults_attnum, "SIFT_DEFAULTS_MAX_ATTNUM", "col/f2/f2_defaults.h", SIFT_DEFAULTS_MAX_ATTNUM, "attributes", \
+	  "highest attribute number a part records the default of an added column for (the PostgreSQL limit of the columns of a table)", \
+	  "a record that names more is damage (the part is not read)", "-", 0) \
+	X(defaults_bytes, "SIFT_DEFAULTS_MAX_VALUE", "col/f2/f2_defaults.h", SIFT_DEFAULTS_MAX_VALUE, "bytes", \
+	  "the default of a text column added to a Format 2.0 table, which the parts record", \
+	  "the default is refused: a default value is larger than a part keeps", "-", 0) \
+	X(win_keys, "SIFT_WIN_MAX_KEYS", "agg/window.h", 4, "keys", \
+	  "PARTITION BY keys, and ORDER BY keys, of a window the window operator runs", \
+	  "normal plan", "-", 0) \
+	X(win_funcs, "SIFT_WIN_MAX_FUNCS", "agg/window.h", 8, "functions", \
+	  "window functions of one window the window operator runs", \
+	  "normal plan", "-", 0) \
+	X(win_offset, "SIFT_WIN_MAX_OFFSET", "agg/window.h", 4096, "rows", \
+	  "LAG and LEAD offset the window operator reads", \
+	  "normal plan", "-", 0) \
+	X(winx_keys, "SIFT_WINX_MAX_KEYS", "agg/v6/v6_datebin_win.h", SIFT_WINX_MAX_KEYS, "keys", \
+	  "PARTITION BY keys, and ORDER BY keys, of a window of a SiftAgg scan", \
+	  "normal plan", "-", 0) \
+	X(winx_funcs, "SIFT_WINX_MAX_FUNCS", "agg/v6/v6_datebin_win.h", SIFT_WINX_MAX_FUNCS, "functions", \
+	  "window functions of a window of a SiftAgg scan", \
+	  "normal plan", "-", 0) \
+	X(winx_filters, "SIFT_WINX_MAX_FILTERS", "agg/v6/v6_datebin_win.h", SIFT_WINX_MAX_FILTERS, "filters", \
+	  "FILTER clauses of the window functions of a SiftAgg scan", \
+	  "normal plan", "-", 0) \
+	X(winx_offset, "SIFT_WINX_MAX_OFFSET", "agg/v6/v6_datebin_win.h", SIFT_WINX_MAX_OFFSET, "rows", \
+	  "LAG and LEAD offset of a window of a SiftAgg scan", \
+	  "normal plan", "-", 0) \
+	X(vexpr_regs, "SIFT_VEXPR_MAX_REGS", "agg/vexpr.h", 16, "registers", \
+	  "value registers of a compiled expression", \
+	  "the expression is not compiled: normal plan", "-", 0) \
+	X(vexpr_masks, "SIFT_VEXPR_MAX_MASKS", "agg/vexpr.h", 16, "masks", \
+	  "boolean slots of a compiled expression", \
+	  "the expression is not compiled: normal plan", "-", 0) \
+	X(vexpr_ops, "SIFT_VEXPR_MAX_OPS", "agg/vexpr.h", 64, "operations", \
+	  "operations of a compiled expression", \
+	  "the expression is not compiled: normal plan", "-", 0) \
+	X(vexpr_args, "SIFT_VEXPR_MAX_ARGS", "agg/vexpr.h", 17, "arguments", \
+	  "arguments of a call, and arms of a CASE, in a compiled expression", \
+	  "the expression is not compiled: normal plan", "-", 0) \
+	X(stream_aggs, "SIFT_V6_STREAM_MAX_AGGS", "agg/v6/v6_stream.h", 16, "aggregates", \
+	  "aggregates one stream node folds", \
+	  "normal plan", "-", 0) \
+	X(stream_filters, "SIFT_V6_STREAM_MAX_FILTERS", "agg/v6/v6_stream.h", 4, "filters", \
+	  "distinct FILTER clauses one stream node folds", \
+	  "normal plan", "-", 0) \
+	X(pivot_filters, "SIFT_PIVOT_MAX_FILTERS", "agg/v6/v6_filter_pivot.h", SIFT_PIVOT_MAX_FILTERS, "filters", \
+	  "distinct FILTER clauses of the aggregates of one scan, evaluated once per batch", \
+	  "normal plan", "-", 0) \
+	X(v6_join_keys, "JOIN_MAX_KEYS", "agg/v6/join.c", 8, "columns", \
+	  "equality column pairs of a join of two SiftAgg scans", \
+	  "normal plan", "-", 0) \
+	X(maint_workers, "SIFT_MAINT_MAX_WORKERS", "core/maint_sched.h", SIFT_MAINT_MAX_WORKERS, "workers", \
+	  "background maintenance workers the scheduler runs at one time", \
+	  "a larger sift.max_maint_workers runs this many", "sift.max_maint_workers", 0) \
+	X(gcache_granules, "SIFT_F2_GCACHE_MAX_GRANULES", "table/f2/f2_gcache.h", SIFT_F2_GCACHE_MAX_GRANULES, "granules", \
+	  "decoded granules of sift_table the cache of a backend keeps", \
+	  "the oldest granule is dropped and read again when needed", "-", 0) \
+	X(zstd_dict_bytes, "SIFT_ZSTD_DICT_MAX_BYTES", "col/compress.h", SIFT_ZSTD_DICT_MAX_BYTES, "bytes", \
+	  "the dictionary of the zstd compression of a part", \
+	  "a larger dictionary is not written; the part is compressed without it", "-", 0) \
+	X(par_dist, "SIFT_PAR_MAX_DIST", "agg/v6/v6_par.h", 32, "aggregates", \
+	  "count(DISTINCT) aggregates of one scan a parallel plan runs", \
+	  "the scan runs without parallel workers", "-", 0)
 
 typedef enum SiftLimitId
 {

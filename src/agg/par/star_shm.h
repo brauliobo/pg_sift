@@ -127,7 +127,7 @@ sift_star_sip(SiftStarDimBundle *b, int d)
 static inline SiftDimShm *
 sift_star_table(SiftStarDimBundle *b, int d)
 {
-	return b->dims[d].elided ? NULL : (SiftDimShm *) TYPEALIGN(PG_CACHE_LINE_SIZE, (char *) b + b->dims[d].dim_shm_off);
+	return b->dims[d].elided ? NULL : (SiftDimShm *) TYPEALIGN(SIFT_PAR_SHM_ALIGN, (char *) b + b->dims[d].dim_shm_off);
 }
 
 static inline const SiftDimPayloadShm *

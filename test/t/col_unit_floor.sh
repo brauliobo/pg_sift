@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sift.col_unit_floor: the overlays that churn leaves are units cut by TID range, in a plain index. Crash: a PANIC in the tier merge of overlays that stay sparse and
+# sift.test_col_unit_floor: the overlays that churn leaves are units cut by TID range, in a plain index. Crash: a PANIC in the tier merge of overlays that stay sparse and
 # in the merge of all of them, with overlays cut by TID range and by superblock among the inputs, leaves the index as it was (verifies, answers the heap's) and the merges,
 # asked again, complete. Replica: a hot standby replays the promotions and merges, answers as the primary does, a ctid range included (a unit cut by TID range is no
 # block range). Upgrade: the index the last release wrote is read, promoted into and merged by this one, which cuts the overlays by TID range from then on.
@@ -12,7 +12,6 @@ wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
 autovacuum = off
 max_parallel_maintenance_workers = 0
 sift.async_maintenance = off
-sift.col_auto_merge = off
 sift.test_col_net = off
 sift.test_col_floor_sbs = 4"
 node_start fl || bail "start failed"
@@ -53,7 +52,7 @@ check "and the index verifies and answers the heap's" test "$(verified && echo o
 
 # the merge of all of them: the base is cut by superblock, the overlays by TID range and by superblock. VACUUM seals the write buffer only once it holds a quarter of
 # write_buffer_limit, so rows may stay in it, and the merge of all would promote them as a segment of its own before it PANICs: promote them here, to compare the segments
-sql fl "SET sift.col_unit_floor = 0" "UPDATE fl SET amount = amount + 1 WHERE id % 10 = 8" "VACUUM fl" "SELECT sift.col_promote('fl_idx')" >/dev/null
+sql fl "SET sift.test_col_unit_floor = 0" "UPDATE fl SET amount = amount + 1 WHERE id % 10 = 8" "VACUUM fl" "SELECT sift.col_promote('fl_idx')" >/dev/null
 sql fl "CHECKPOINT" >/dev/null
 BEFORE=$(segs)
 check "the merge of all PANICs once its segment is written" panics "SET sift.test_col_merge_panic = on" "SELECT sift.col_merge('fl_idx', true)"
@@ -107,7 +106,7 @@ sift.async_maintenance = off"
 	node_start old || bail "cannot start the new library"
 	sql old "ALTER EXTENSION pg_sift UPDATE" >/dev/null || bail "SQL update"
 	check "this library reads what $ref wrote: same segments, verifies, answers the heap's" same "$(segs old)|$(verified old && echo ok)|$(answer on old)" "$OLDSEGS|ok|$WANT"
-	sql old "SET sift.col_auto_merge = off" "UPDATE fl SET amount = amount + 1 WHERE id % 10 = 1" "VACUUM fl" "SELECT sift.col_promote('fl_idx')" >/dev/null
+	sql old "SET sift.async_maintenance = off" "UPDATE fl SET amount = amount + 1 WHERE id % 10 = 1" "VACUUM fl" "SELECT sift.col_promote('fl_idx')" >/dev/null
 	check "its promotion next to those segments is a few units cut by TID range" test "$(sql old "SELECT units FROM sift.col_segments('fl_idx') WHERE kind = 'immutable' ORDER BY gen DESC LIMIT 1")" -le 3
 	check "the index verifies and answers the heap's with both kinds of segment, a ctid range included" same "$(verified old && echo ok)|$(answer on old)|$(ctidq on old)" "ok|$(answer off old)|$(ctidq off old)"
 	check "the merge of all of them is a unit for each superblock again" \
@@ -115,5 +114,5 @@ sift.async_maintenance = off"
 	check "and the index verifies and answers the heap's" same "$(verified old && echo ok)|$(answer on old)" "ok|$(answer off old)"
 	node_stop old
 fi
-echo "1..$NTEST"
+done_testing
 finish

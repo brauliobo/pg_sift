@@ -101,6 +101,16 @@ sift_check_relation(SiftCheck *ck, Oid relid, bool heapallindexed)
 		sift_bm25_check(ck, relid, heapallindexed);
 }
 
+PG_FUNCTION_INFO_V1(sift_check_raise);
+
+/* sift_internal.check_raise(object, heapallindexed): sift.check() in its raising mode, the first problem as the error of the engine that found it */
+Datum
+sift_check_raise(PG_FUNCTION_ARGS)
+{
+	sift_check_relation(NULL, PG_GETARG_OID(0), PG_GETARG_BOOL(1));
+	PG_RETURN_VOID();
+}
+
 PG_FUNCTION_INFO_V1(sift_check_one);
 
 /* sift._check(object, heapallindexed, max_problems): the problems of one index or table, a row each */

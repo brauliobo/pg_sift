@@ -42,19 +42,19 @@ typedef struct Shared
 static Size
 queue_off(uint32 parts)
 {
-	return TYPEALIGN(PG_CACHE_LINE_SIZE, offsetof(Shared, sizes) + sizeof(uint32) * parts);
+	return TYPEALIGN(SIFT_PAR_SHM_ALIGN, offsetof(Shared, sizes) + sizeof(uint32) * parts);
 }
 
 static Size
 visits_off(uint32 parts)
 {
-	return queue_off(parts) + TYPEALIGN(PG_CACHE_LINE_SIZE, sift_morsel_size(parts));
+	return queue_off(parts) + TYPEALIGN(SIFT_PAR_SHM_ALIGN, sift_morsel_size(parts));
 }
 
 static Size
 shared_size(uint32 parts, uint32 total)
 {
-	return PG_CACHE_LINE_SIZE + visits_off(parts) + (Size) total * sizeof(pg_atomic_uint32);
+	return SIFT_PAR_SHM_ALIGN + visits_off(parts) + (Size) total * sizeof(pg_atomic_uint32);
 }
 
 static SiftMorselQueue *
@@ -87,7 +87,7 @@ part_sizes(uint32 *sizes, uint32 parts, uint32 granules, uint64 seed)
 static Shared *
 shared_init(void *raw, uint32 parts, uint32 granules, uint64 seed, uint32 participants)
 {
-	Shared	   *s = (Shared *) TYPEALIGN(PG_CACHE_LINE_SIZE, raw);
+	Shared	   *s = (Shared *) TYPEALIGN(SIFT_PAR_SHM_ALIGN, raw);
 	uint32		total = 0;
 
 	memset(s, 0, offsetof(Shared, sizes));

@@ -42,9 +42,9 @@ eval { $reader->quit };
 # would do, but it invalidates the cache of the session) must not release a page that still takes rows: that row was lost, its insert had
 # succeeded.
 $node->safe_psql('postgres', 'CREATE TABLE s (id int, v text) USING sift_table');
+$node->safe_psql('postgres', "SELECT sift.table_set_option('s', 'write_buffer_limit', '2048kB')");	# the table opens write buffers of 256 pages
 my $closer = $node->background_psql('postgres');
 my $held = $node->background_psql('postgres');
-$held->query_safe('SET sift.table_write_buffer_limit = 2048');	# the session that opens a write buffer sets its size: 256 pages
 $held->query_safe('INSERT INTO s VALUES (0, $$first$$)');
 my $gate2 = $node->background_psql('postgres');
 $gate2->query_safe('SELECT pg_advisory_lock(7102)');

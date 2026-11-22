@@ -25,7 +25,7 @@ D=$(dir primary)
 sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE src AS SELECT g AS id, g % 500 AS grp, (g % 997)::numeric(10,2) AS amount, md5(g::text) || md5((g * 7)::text) AS pad FROM generate_series(1, $ROWS) g" \
 	"COPY src TO '$D/load.csv' CSV" \
-	"CREATE TABLE lt (id int, grp int, amount numeric(10,2), pad text) USING sift_table" \
+	"CREATE TABLE lt (id int, grp int, amount numeric(10,2), pad text) USING sift_table" "SELECT sift.table_set_option('lt', 'write_buffer_limit', '2048kB')" \
 	"CREATE INDEX lt_grp ON lt (grp)" >/dev/null || bail "setup failed"
 # three times the rows: enough groups for the stages that need several (the ring publishes the segments taken between two groups)
 cat "$D/load.csv" "$D/load.csv" "$D/load.csv" >"$D/big.csv"
@@ -37,7 +37,7 @@ wal_consistency_checking = 'generic'"
 node_start standby || bail "standby start failed"
 catchup primary standby || bail "the standby did not catch up"
 
-OPTS=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.table_write_buffer_limit = 2048" "SET sift.test_load_unit_bytes = $(knob SIFT_LR_UNIT 0 128)" "SET sift.test_par_workers = 0" "SET sift.test_load_publish = 1")
+OPTS=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.test_load_unit_bytes = $(knob SIFT_LR_UNIT 0 128)" "SET sift.test_par_workers = 0" "SET sift.test_load_publish = 1")
 COPYSQL="COPY lt FROM '$D/load.csv' CSV"
 GATE=7000
 digest() { sql "$1" "SELECT count(*) || ':' || md5(string_agg(id || ':' || ctid::text || ':' || amount, ',' ORDER BY id, ctid)) FROM lt" | tail -1; }
@@ -174,5 +174,5 @@ check "a savepoint rolled back after the ring ran: the second load only" test "$
 check "... the rows at the TIDs of a single load" test "$(digest primary | cut -d: -f1)" == "$ROWS"
 check "... no block left over after VACUUM" test "$(sql primary "VACUUM lt" "SELECT sift._test_check('lt')" | tail -1)" == 0
 reset
-echo "1..$NTEST"
+done_testing
 finish

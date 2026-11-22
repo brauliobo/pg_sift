@@ -62,7 +62,7 @@ ASSERT_MARK='RestoreSnapshot|PushActiveSnapshot|GetActiveSnapshot|ParallelWorker
 ASSERT_JOBS='^installcheck-(agg_(par_|subplan|two_level|lookup_shared|.*parallel|cte_|plan_|nested_ctes|statement_cte|.*_cost$|.*_scope$|.*lateral|.*subplan|.*placeholder)|aggstub_parallel|col_.*parallel|col_topn_rescan_keep|parallel_)'
 # the tests the assertions build leaves to the other builds: they load 130,000 documents into a sift_col index and compare cost ratios, 557 to 729 s each there (run 40193282663),
 # 18 to 26 s everywhere else, and the planner paths they reach (agg_cte_inline_upper, _nested, agg_cte_hoist...) stay in the family
-ASSERT_SKIP='^installcheck-agg_cte_inline_(horizon|band|rows)$'
+ASSERT_SKIP='^installcheck-agg_cte_inline_(band|rows)$'
 # What a push runs on the compatibility entries (PostgreSQL 17, PostgreSQL 19, AArch64), the one shard each: what depends on the major or the architecture, the regression tests
 # (the SQL surface, the planner and executor hooks, the NEON kernels), the isolation specs, the crash, standby and upgrade tests, the corpus and the plan bands. The differential tests, the fuzzers,
 # the soaks and the slopes run on the PostgreSQL 18 x86 entry

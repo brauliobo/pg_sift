@@ -14,7 +14,7 @@ max_parallel_workers_per_gather = 0
 shared_buffers = 64MB
 max_wal_size = 1GB
 min_parallel_table_scan_size = 64kB
-sift.col_auto_merge = off"
+sift.async_maintenance = off"
 node_start mx || bail "start failed"
 sql mx "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" >/dev/null || bail "extension failed"
 

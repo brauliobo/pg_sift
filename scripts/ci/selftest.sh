@@ -196,7 +196,7 @@ if [[ $MODE == --selftest ]]; then
 			[[ -n $got && $got == "$want" ]] || { echo "FAIL: the release-library-regress job of the deep plan and the Makefile (REGRESS without TESTING_REGRESS) disagree on the tests of the release build: $(diff <(echo "$got") <(echo "$want") | grep '^[<>]' | head -4 | tr '\n' ' ')"; bad=1; }
 		else echo "plan: the tests of the release build are not compared with the Makefile (no pg_config of PostgreSQL 17 or newer)" >&2; fi
 		n=0; for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $ASSERT_SKIP ]] && n=$((n + 1)); done
-		(( n == 3 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 3 it names"; bad=1; }
+		(( n == 2 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 2 it names"; bad=1; }
 	fi
 	if st_on shards-full; then
 		# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard
@@ -306,7 +306,7 @@ if [[ $MODE == --selftest ]]; then
 			[[ -n $got && $got == "$want" ]] || { echo "FAIL: the release-library-regress job of the deep plan and the Makefile (REGRESS without TESTING_REGRESS) disagree on the tests of the release build: $(diff <(echo "$got") <(echo "$want") | grep '^[<>]' | head -4 | tr '\n' ' ')"; bad=1; }
 		else echo "plan: the tests of the release build are not compared with the Makefile (no pg_config of PostgreSQL 17 or newer)" >&2; fi
 		n=0; for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $ASSERT_SKIP ]] && n=$((n + 1)); done
-		(( n == 3 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 3 it names"; bad=1; }
+		(( n == 2 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 2 it names"; bad=1; }
 	fi
 	if st_on shards-full; then
 		# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard
@@ -486,15 +486,19 @@ if [[ $MODE == --selftest ]]; then
 		want=$("$REPO/scripts/budget.sh" limits script:ci.sh | cut -d' ' -f2)
 		[[ -n $want && $cap == "$want" ]] || { echo "FAIL: the scratch cap of the quick tier (CI_MAX_MB '$cap' in scripts/ci/config.sh) is not the tmpfs budget of script:ci.sh in scripts/budgets.tsv ('$want')"; bad=1; }
 		# the scratch table (scripts/scratch.tsv): a row is a job of a plan and a number of MB, and scratch_table keeps the row of a job no summary has, replaces a measured one (plus 5%, to ten) and drops one
-		# measured under 150 MB (a job that failed keeps its row)
+		# measured under 150 MB; a job that failed only raises its row
 		known=$(for m in quick full; do for pg in 17 18; do for deep in '' 1; do plan_of $m $pg "$deep"; echo "$PLAN_OUT"; done; done; done | awk '{ print $1 }' | sort -u)
 		stale=$(grep -v '^#' "$REPO/scripts/scratch.tsv" | cut -f1 | sort | comm -23 - <(echo "$known") | paste -sd' ' -)
 		[[ -z $stale ]] || { echo "FAIL: scripts/scratch.tsv has rows for jobs that are in no plan: $stale (scripts/ci.sh --scratch FILE... updates the table)"; bad=1; }
 		grep -v '^#' "$REPO/scripts/scratch.tsv" | grep -vE $'^[a-z0-9_-]+\t[0-9]+$' >/dev/null && { echo "FAIL: scripts/scratch.tsv has a row that is not job, tab, MB"; bad=1; }
-		printf '# header\nkept\t500\nreplaced\t900\nshrunk\t400\n' >"$ST/table.tsv"
-		printf 'replaced\tPASS\t5\t1000\t0\t\nshrunk\tPASS\t5\t120\t0\t\nnew\tPASS\t5\t200\t0\t\nsmall\tPASS\t5\t90\t0\t\nreplaced\tPASS\t5\t800\t0\t\nkept\tFAIL\t5\t10\t0\t\n' >"$ST/runs.tsv"
-		[[ $(scratch_table "$ST/table.tsv" "$ST/runs.tsv" | paste -sd'|' -) == '# header|replaced	1050|kept	500|new	210' ]] ||
+		printf '# header\nkept\t500\nreplaced\t900\nshrunk\t400\nraised\t300\nfailsmall\t300\n' >"$ST/table.tsv"
+		printf 'replaced\tPASS\t5\t1000\t0\t\nshrunk\tPASS\t5\t120\t0\t\nnew\tPASS\t5\t200\t0\t\nsmall\tPASS\t5\t90\t0\t\nreplaced\tPASS\t5\t800\t0\t\nkept\tFAIL\t5\t10\t0\t\nraised\tFAIL\t5\t700\t0\t\nfailsmall\tFAIL\t5\t200\t0\t\nnewfail\tFAIL\t5\t400\t0\t\n' >"$ST/runs.tsv"
+		[[ $(scratch_table "$ST/table.tsv" "$ST/runs.tsv" | paste -sd'|' -) == '# header|replaced	1050|raised	740|kept	500|newfail	420|failsmall	300|new	210' ]] ||
 			{ echo "FAIL: scratch_table does not keep, replace and drop rows as measured: $(scratch_table "$ST/table.tsv" "$ST/runs.tsv" | paste -sd'|' -)"; bad=1; }
+		# a regression batch that no run has measured counts BATCH_MB, not JOB_MB: the scheduler admits jobs by these estimates, and a batch peaks at several hundred MB
+		got=$(bash -c 'REPO=$1; S=$REPO/scripts; set -- --plan quick; MODE=$1; usage() { :; }; for f in affected weights procs skips config jobs; do . "$REPO/scripts/ci/$f.sh"; done
+			EST_MB=(); installcheck_batches agg_selftest_a agg_selftest_b >/dev/null; echo "${EST_MB[installcheck-batch1]:-} $BATCH_MB"' _ "$REPO")
+		[[ -n ${got% *} && ${got% *} == "${got#* }" ]] || { echo "FAIL: an unmeasured regression batch does not count BATCH_MB in scripts/ci/jobs.sh ('$got')"; bad=1; }
 		# the skips of a job: each form of skip line gives its reason, a line that is not a skip gives none, and a skip with no reason is named; the retained summary of a run lists the skips
 		# of its jobs and fails when one has no reason. No test script says a skip without one
 		t=$ST/skips.log

@@ -1,0 +1,1 @@
+v6_guc_surface	src/agg/order/paths.c:topn_paths src/agg/order/paths.c:topn_paths_one src/agg/plan/paths.c:scans_column_source src/agg/two/level.c:sift_agg_two_level src/agg/two/spine.c:spine_item src/agg/two/spine.c:two_from src/agg/v6/scope_v6.c:pairs_subquery src/col/am/options.c:show_open_stats

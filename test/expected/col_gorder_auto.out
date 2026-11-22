@@ -85,11 +85,11 @@ SELECT min(format) AS format FROM sift.col_segments('ga_list') WHERE kind = 'imm
      38
 (1 row)
 
--- the update list is for an option that names columns: off is not a gain to reindex for
-SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE object = 'ga_off'::regclass;
- commands 
-----------
-        0
+-- off is not a gain to reindex for: the update list holds only optional cleanup (two deprecated options to reset, the optional REINDEX of Format 1), nothing required
+SELECT count(*) FILTER (WHERE required) AS required_commands, count(*) AS total_commands FROM sift.upgrade_commands() WHERE object = 'ga_off'::regclass;
+ required_commands | total_commands 
+-------------------+----------------
+                 0 |              3
 (1 row)
 
 DROP INDEX ga_auto, ga_off, ga_list;

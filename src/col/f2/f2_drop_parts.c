@@ -27,6 +27,7 @@
 #include "col/f2/f2_gbuf.h"
 #include "col/f2/f2_tier_host.h"
 #include "col/f2/part_format.h"
+#include "core/catname.h"
 #include "core/compat.h"
 #include "core/f2/fsm.h"
 #include "core/meta_peek.h"
@@ -219,7 +220,7 @@ sift_f2_drop_parts_before(Relation rel, SiftF2Store *store, int slot, int64 cuto
 static Relation
 open_table(Oid relid)
 {
-	Relation	rel = relation_open(relid, ShareUpdateExclusiveLock);
+	Relation	rel = relation_open(sift_rel_must_exist(relid), ShareUpdateExclusiveLock);
 
 	if (rel->rd_rel->relkind == RELKIND_INDEX)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("\"%s\" is an index: dropping its parts would leave it without rows its table keeps", RelationGetRelationName(rel)),
@@ -254,7 +255,7 @@ time_slot_of(Relation rel, SiftF2Store *store, const char *col)
 		name = pstrdup(NameStr(TupleDescAttr(RelationGetDescr(rel), store->leaf_attno[leaf] - 1)->attname));
 	}
 	attno = get_attnum(RelationGetRelid(rel), name);
-	if (sift_tier_time_slot(rel, store, name) < 0)
+	if (attno == InvalidAttrNumber || sift_tier_time_slot(rel, store, name) < 0)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("\"%s\" is not a time column of \"%s\"", name, RelationGetRelationName(rel)),
 						errhint("The retention runs on one of the first date or timestamp columns of the table (those of key_order first).")));
 	if (!TupleDescAttr(RelationGetDescr(rel), attno - 1)->attnotnull)

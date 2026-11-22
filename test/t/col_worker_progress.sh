@@ -25,7 +25,7 @@ let_go() { touch "$D/release"; wait "$HOLDER"; }
 
 # 1. a maintenance worker held when it enters its promote phase (the first of its phases)
 hold 12
-sql wp "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 1" >/dev/null
+sql wp "ALTER DATABASE postgres SET sift.async_maintenance = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 1" >/dev/null
 churn 1
 sql wp "VACUUM facts" >/dev/null
 waiting() { [[ $(sql wp "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted") -ge 1 ]]; }
@@ -36,7 +36,7 @@ let_go
 gone() { [[ $(rows) == 0 ]]; }
 check "the row is gone when the promotion ends" wait_for gone 60
 check "the promotion did its work: nothing is left in the write buffer" bash -c "[[ \$(psql -X -At -h '$D/sock' -p $(port wp) -U postgres -d postgres -c \"SELECT coalesce(sum(rows), 0) FROM sift.col_segments('facts_idx') WHERE kind <> 'immutable'\") == 0 ]]"
-sql wp "ALTER DATABASE postgres RESET sift.test_progress_gate" "ALTER DATABASE postgres SET sift.col_auto_merge = off" >/dev/null
+sql wp "ALTER DATABASE postgres RESET sift.test_progress_gate" "ALTER DATABASE postgres SET sift.async_maintenance = off" >/dev/null
 
 # 2. the merges of a VACUUM, held at its cleanup gate
 churn 2

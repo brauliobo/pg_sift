@@ -64,8 +64,8 @@ def variants(r, fam):
     if fam in ('topn', 'trail', 'toplat', 'toplook'):  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)
         v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
     if fam == 'dead':  # the dead rows scanned, and any share of them netted
-        v.append(('nodelta', 'sift.enable_agg=on;sift.agg_dead_delta=0;max_parallel_workers_per_gather=0'))
-        v.append(('alldead', 'sift.enable_agg=on;sift.agg_dead_delta=100;max_parallel_workers_per_gather=0'))
+        v.append(('nodelta', 'sift.enable_agg=on;sift.test_agg_dead_delta=0;max_parallel_workers_per_gather=0'))
+        v.append(('alldead', 'sift.enable_agg=on;sift.test_agg_dead_delta=100;max_parallel_workers_per_gather=0'))
     if fam == 'window':  # the index scan alone, with the pushdown off: the access method answers a range too
         v.append(('amscan', 'sift.enable_agg=off;sift.enable_col_scan=on;max_parallel_workers_per_gather=0'))
     if fam == 'numsum':  # every SIMD level of the host (a level it lacks runs the next lower one): the sums must be the same bytes
@@ -85,14 +85,14 @@ def variants(r, fam):
               ('scopeprice', 'sift.enable_agg=on;sift.test_scope_patch=off;max_parallel_workers_per_gather=0'),
               ('scopegeneric', 'sift.enable_agg=on;sift.test_scope_patch=off;plan_cache_mode=force_generic_plan;max_parallel_workers_per_gather=0')]
     if fam in ('twolevel', 'union', 'lookup', 'oneleaf', 'setkeys'):
-        v.append(('arms', 'sift.enable_agg=on;sift.agg_two_level=off;sift.agg_fuse=off;max_parallel_workers_per_gather=0'))
+        v.append(('arms', 'sift.enable_agg=on;sift.test_agg_two_level=off;max_parallel_workers_per_gather=0'))
     extra = [
         ('par', 'sift.enable_agg=on;' + PAR % (r.choice([1, 2, 3, 4]), r.choice(LEADER))),
         ('parscalar', 'sift.enable_agg=on;sift.simd=scalar;' + PAR % (r.choice([2, 3]), r.choice(LEADER))),
         ('plainpar', 'sift.enable_agg=off;' + PAR % (2, 'on')),
         ('nolookup', 'sift.enable_agg=on;sift.agg_lookup_pushdown=off;sift.agg_share_lookups=off;max_parallel_workers_per_gather=0'),
-        ('nodense', 'sift.enable_agg=on;sift.agg_dense=off;sift.simd=scalar;max_parallel_workers_per_gather=0'),
-        ('notopn', 'sift.enable_agg=on;sift.enable_topn=off;max_parallel_workers_per_gather=0'),
+        ('nodense', 'sift.enable_agg=on;sift.test_agg_dense=off;sift.simd=scalar;max_parallel_workers_per_gather=0'),
+        ('notopn', 'sift.enable_agg=off;max_parallel_workers_per_gather=0'),
         ('bitset', 'sift.enable_agg=on;sift.test_limits=bits_set_values=4;max_parallel_workers_per_gather=0'),
         ('childwarm', 'sift.enable_agg=on;sift.test_child_warm=on;max_parallel_workers_per_gather=0'),
     ]

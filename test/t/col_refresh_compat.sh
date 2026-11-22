@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sift.col_refresh on an index the real 3.0.1 library wrote (an index without any of the sections of 3.3): after ALTER EXTENSION UPDATE the new library
-# finds its segments stale for a changed option and rewrites them. At sift.col_format_minor = 3, the lowest, the segments stay what 3.0 reads: the 3.0.1 library
+# finds its segments stale for a changed option and rewrites them. At sift.test_col_format_minor = 3, the lowest, the segments stay what 3.0 reads: the 3.0.1 library
 # then verifies the index, answers from it as before and takes more writes. A segment of a higher minor is left as written below its setting.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -41,8 +41,8 @@ check "with both off its options and its segments agree: nothing is stale" test 
 sql legacy "ALTER INDEX items_idx SET (preagg = 'cube(kind: val, amt; grp: val)')" >/dev/null
 check "the option leaves the old segments stale" test "$(sql legacy "SELECT remaining FROM sift.col_refresh('items_idx', 0)")" -ge 1
 N=$(sql legacy "SELECT remaining FROM sift.col_refresh('items_idx', 0)")
-check "refreshed at sift.col_format_minor = 3, every segment is rewritten and stays minor 3 or below" \
-	test "$(sql legacy "SET sift.col_format_minor = 3" "SELECT refreshed || ' ' || remaining FROM sift.col_refresh('items_idx')")|$(sql legacy "SELECT max(format) <= 3 FROM sift.col_segments('items_idx') WHERE kind = 'immutable'")" == "$N 0|t"
+check "refreshed at sift.test_col_format_minor = 3, every segment is rewritten and stays minor 3 or below" \
+	test "$(sql legacy "SET sift.test_col_format_minor = 3" "SELECT refreshed || ' ' || remaining FROM sift.col_refresh('items_idx')")|$(sql legacy "SELECT max(format) <= 3 FROM sift.col_segments('items_idx') WHERE kind = 'immutable'")" == "$N 0|t"
 check "the refreshed index verifies and answers as the heap does" test "$(verify && echo ok)|$(sql legacy "SET sift.enable_agg = off" "$Q")|$(sql legacy "SET sift.enable_agg = on" "SET seq_page_cost = 10000" "$Q")" == "ok|$want|$want"
 node_stop legacy
 
@@ -63,9 +63,9 @@ sql legacy "ALTER INDEX items_idx SET (cube_minmax = true, preagg = 'default')" 
 check "a refresh under the default setting writes the minor the options ask for (7)" \
 	test "$(sql legacy "SELECT refreshed > 0 FROM sift.col_refresh('items_idx')")|$(sql legacy "SELECT min(format) FROM sift.col_segments('items_idx') WHERE kind = 'immutable'")" == "t|7"
 sql legacy "ALTER INDEX items_idx SET (cube_minmax = false)" >/dev/null
-check "a refresh under sift.col_format_minor = 3 leaves that segment as written, stale for the option as it is" \
-	test "$(sql legacy "SET sift.col_format_minor = 3" "SELECT refreshed || ' ' || remaining FROM sift.col_refresh('items_idx')")|$(sql legacy "SELECT min(format) FROM sift.col_segments('items_idx') WHERE kind = 'immutable'")" == "0 0|7"
+check "a refresh under sift.test_col_format_minor = 3 leaves that segment as written, stale for the option as it is" \
+	test "$(sql legacy "SET sift.test_col_format_minor = 3" "SELECT refreshed || ' ' || remaining FROM sift.col_refresh('items_idx')")|$(sql legacy "SELECT min(format) FROM sift.col_segments('items_idx') WHERE kind = 'immutable'")" == "0 0|7"
 check "the new library still verifies it and answers as the heap does" test "$(verify && echo ok)|$(sql legacy "SET sift.enable_agg = on" "SET seq_page_cost = 10000" "SELECT count(*) FROM items")" == "ok|25500"
 node_stop legacy
-echo "1..$NTEST"
+done_testing
 finish

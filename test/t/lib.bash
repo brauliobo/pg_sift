@@ -33,6 +33,9 @@ PKGLIBDIR=$( (( PG_MAJOR < 18 )) || printf %s "$ROOT")$(pg_config --pkglibdir 2>
 DLSUFFIX=.so; [[ $(uname) != Darwin ]] || DLSUFFIX=.dylib   # the suffix of a PostgreSQL module
 NTEST=0
 NFAIL=0
+BAILED=0
+PLANNED=
+PLAN_OPEN=
 NODES=()
 declare -A POOL_DB=()   # the pooled nodes: name -> database of the cluster of the lane (pool_init)
 POOL_SCRIPT=$(basename "$0" .sh)
@@ -41,6 +44,8 @@ trap cleanup EXIT
 
 cleanup() {
 	local name
+	(( BAILED )) || plan_audit
+	plan_close
 	pool_drop_all
 	for name in "${NODES[@]}"; do
 		pg_ctl -D "$(dir "$name")/data" -m immediate stop >/dev/null 2>&1
@@ -52,7 +57,13 @@ cleanup() {
 node_mb() { du -sm "$(dir "$1")" | cut -f1; }
 
 # TAP output
-plan() { echo "1..$1"; }
+# plan N: the tests the script means to run. The plan line comes last, after the leak checks of finish (plan_close), so that a check that fails there is a test of its own and not
+# a test beyond the plan; a script that ran another number than N fails by that (plan_audit)
+plan() { PLANNED=$1; PLAN_OPEN=1; }
+# done_testing: a script with no fixed number of tests; its plan is the tests it ran
+done_testing() { PLAN_OPEN=1; }
+plan_audit() { [[ -z $PLANNED ]] || { (( NTEST == PLANNED )) || not_ok "the script ran $NTEST tests, planned $PLANNED"; PLANNED=; }; }
+plan_close() { [[ -z $PLAN_OPEN ]] || { PLAN_OPEN=; echo "1..$NTEST"; }; }
 ok() { NTEST=$((NTEST + 1)); echo "ok $NTEST - $*"; }
 # a failed check shows the end of every node log: what the servers did around it is rarely there on a rerun
 not_ok() {
@@ -92,7 +103,7 @@ slope_case() { diag "$1"; if [[ $1 == *" PASS" ]]; then ok "${1#SLOPE }"; else n
 # a failed check shows what the test had captured in $out: a hosted run lost the cause of one failure because its log said only which check failed
 check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; [[ -z ${out:-} ]] || diag "what the check read (out):"$'\n'"$(head -n 40 <<<"$out" | cut -c1-240)"; fi; }
 skip() { local n=$1; shift; for _ in $(seq "$n"); do NTEST=$((NTEST + 1)); echo "ok $NTEST # skip $*"; done; }
-bail() { NFAIL=$((NFAIL + 1)); echo "Bail out! $*"; exit 1; }   # a bail keeps the node logs
+bail() { BAILED=1; NFAIL=$((NFAIL + 1)); echo "Bail out! $*"; exit 1; }   # a bail keeps the node logs
 # sed -i in place on GNU and BSD sed (BSD's takes the next word as the suffix)
 sed_i() { sed -i.bak "$1" "$2" && rm -f "$2.bak"; }
 # build_old REF: sets OLDROOT to the root of the released library REF (scripts/old-lib-check.sh); the test is skipped when the release cannot be built on this host
@@ -223,13 +234,15 @@ node_conf() { real_node "$1" node_conf; printf '%s\n' "$2" >>"$(dir "$1")/data/p
 # use_root NODE ROOT: NODE loads the sift installed under ROOT (a released library built by scripts/old-lib-check.sh, or $newroot, the one of this
 # tree). Only this tree defines the sift. settings scripts/pgtest.sh conf sets: a released library warns that "sift" is a reserved prefix in the first statement of a session, and the test
 # compares what the statements print.
+declare -gA NODE_ROOT
 use_root() {
 	local conf=$(dir "$1")/data/postgresql.conf tree k
 	real_node "$1" use_root
 	ROOT=$2
-	tree=$("$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf | grep -E '^sift\.[a-z_]+ = ')
+	NODE_ROOT[$1]=$2
+	tree=$("$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf | grep -E '^sift\.[a-z0-9_]+ = ')
 	while IFS=' ' read -r k _; do sed_i "/^${k//./\\.} = /d" "$conf"; done <<<"$tree"
-	[[ $ROOT != "$newroot" ]] || printf '%s\n' "$tree" >>"$conf"
+	[[ $ROOT != "$newroot" ]] || { printf '%s\n' "$tree" >>"$conf"; sed_i '/^sift\.scope_max_multiplicity = /d' "$conf"; }
 	node_conf "$1" "extension_control_path = '$ROOT$(pg_config --sharedir):\$system'
 dynamic_library_path = '$ROOT$(pg_config --pkglibdir):\$libdir'"
 }
@@ -404,12 +417,14 @@ upgrade_failed() {
 
 finish() {
 	local name out
+	plan_audit
 	for name in "${!POOL_DB[@]}"; do
 		out=$(pool_end "$name" 2>&1) || { not_ok "leak check of node $name"; diag "$out"; }
 	done
 	for name in "${NODES[@]}"; do
 		out=$(node_leakcheck "$name" 2>&1) || { not_ok "leak check of node $name"; diag "$out"; }
 	done
+	plan_close
 	[[ $NFAIL -eq 0 ]] || diag "$NFAIL of $NTEST failed"
 	exit $((NFAIL > 0))
 }

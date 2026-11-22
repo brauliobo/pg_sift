@@ -20,9 +20,16 @@ typedef struct ViewPiece
 	SiftCDict  *d;
 } ViewPiece;
 
+/* A view holds the runs of one epoch of a store: 6.0 writes epoch 0, a 5.x store has the epoch its compactions reached */
+typedef struct ViewKey
+{
+	Oid			store;
+	uint64		epoch;
+} ViewKey;
+
 typedef struct KeyStoreView
 {
-	Oid			store;			/* first: the hash key */
+	ViewKey		key;			/* first: the hash key */
 	MemoryContext cx;
 	bool		loaded;
 	uint64	   *slots;			/* the table of the codes below indexed (NULL until an appender asks), nslots of them */
@@ -40,11 +47,11 @@ typedef struct KeyStoreView
 typedef struct ViewPin
 {
 	MemoryContextCallback cb;
-	Oid			store;
+	ViewKey		key;
 	bool		held;
 } ViewPin;
 
-KeyStoreView *kview_open(Oid store, ViewPin **pin);
+KeyStoreView *kview_open(Oid store, uint64 epoch, ViewPin **pin);
 void kview_release(ViewPin *pin);
 void kview_reset(KeyStoreView *v);
 void kview_add(KeyStoreView *v, uint64 lo, uint64 dbase, SiftCDict *d);

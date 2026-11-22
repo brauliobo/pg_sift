@@ -2,8 +2,8 @@
 # The settings across an update: a database that the newest 3.2 release wrote, with ALTER DATABASE / ALTER ROLE ... SET sift.* stored (settings that exist in 3.2
 # and 3.3, and one the new library does not know: a setting a release removed or renamed). After the library is replaced and ALTER EXTENSION UPDATE: the session still
 # starts (the unknown name is a warning, "removing it", not an error), the stored settings apply, the defaults that 3.3 changed are the shipped ones
-# (sift.col_auto_merge on, within 5% of the WAL), the update prints nothing about the auto merge and sift.col_maintenance_status answers for the old index,
-# CREATE INDEX says nothing about the auto merge (a default that is on needs no word), and pg_dump -C | psql (the stored settings of the database and of the role in it travel with the dump) brings
+# (sift.async_maintenance on, no WAL rate), the update prints nothing about the maintenance and sift.col_maintenance_status answers for the old index,
+# CREATE INDEX says nothing about the maintenance (a default that is on needs no word), and pg_dump -C | psql (the stored settings of the database and of the role in it travel with the dump) brings
 # the same settings and a verifying index back.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -30,22 +30,22 @@ want=$(qd app "SET sift.enable_agg = off" "SELECT g, count(*) FROM docs GROUP BY
 node_stop us
 
 use_root us "$newroot"
-for k in table_auto_defrag col_auto_merge col_auto_merge_wal_pct test_scope_patch test_memctx_census; do sed_i "/^sift\\.$k = /d" "$(dir us)/data/postgresql.conf"; done   # the shipped defaults, not those of the test clusters
+for k in async_maintenance test_scope_patch test_memctx_census; do sed_i "/^sift\\.$k = /d" "$(dir us)/data/postgresql.conf"; done   # the shipped defaults, not those of the test clusters
 node_start us || bail "cannot start this tree on $ref data"
 upd=$(qd app "ALTER EXTENSION pg_sift UPDATE" 2>&1); rc=$?
 check "ALTER EXTENSION UPDATE from $ref" test $rc -eq 0
-check "the update prints nothing about the auto merge" test "$(grep -c 'col_auto_merge' <<<"$upd$(err)")" == 0
+check "the update prints nothing about the maintenance" test "$(grep -c 'async_maintenance' <<<"$upd$(err)")" == 0
 qd app "SELECT sift.version()" >/dev/null; rc=$?
 check "a session starts with a stored setting the library does not know" test $rc -eq 0
 check "it says that the setting is removed, as a warning" grep -q 'invalid configuration parameter name "sift.retired_setting", removing it' "$TAPDIR/err.txt"
 check "the stored settings that still exist apply (database and role in it)" test "$(qd app "SELECT sift.version()" "SHOW sift.enable_agg" "SHOW sift.simd" | tail -n 2 | tr '\n' ' ')" == "off scalar "
-check "sift.col_auto_merge is on in a database that never set it" test "$(qd postgres "LOAD 'pg_sift'" "SHOW sift.col_auto_merge")" == on
-check "sift.col_auto_merge_wal_pct is the shipped 5" test "$(qd postgres "LOAD 'pg_sift'" "SHOW sift.col_auto_merge_wal_pct")" == 5
+check "sift.async_maintenance is on in a database that never set it" test "$(qd postgres "LOAD 'pg_sift'" "SHOW sift.async_maintenance")" == on
+check "sift.maintenance_wal_rate is the shipped 0 (no limit)" test "$(qd postgres "LOAD 'pg_sift'" "SHOW sift.maintenance_wal_rate")" == 0
 check "sift.col_maintenance_status answers for the index the release wrote" test "$(qd app "SELECT count(*) FROM sift.col_maintenance_status('docs_col')")" -ge 1
 check "the index the release wrote answers as it did" test "$(qd app "SET sift.enable_agg = off" "SELECT g, count(*) FROM docs GROUP BY g ORDER BY g" | tr '\n' ' ')" == "$want"
 check "col_verify and verify pass" test -z "$(qd app "SELECT sift.col_verify('docs_col', true)" "SELECT sift.verify('docs_idx', true)" 2>&1 | grep -v '^$' | grep -iv 'true\|^t$')"
 qd app "CREATE INDEX docs_col2 ON docs USING sift_col (id, g)" >/dev/null
-check "CREATE INDEX says nothing about the auto merge" test "$(grep -c 'sift.col_auto_merge' "$TAPDIR/err.txt")" == 0
+check "CREATE INDEX says nothing about the maintenance" test "$(grep -c 'sift.async_maintenance' "$TAPDIR/err.txt")" == 0
 
 # the dump: the database with its settings, dropped and restored
 PGHOST=$(dir us)/sock PGPORT=$(port us) PGUSER=postgres pg_dump -C -d app -f "$(dir us)/app.sql" || bail "pg_dump failed"

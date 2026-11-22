@@ -3,7 +3,10 @@
  */
 #include "core/host.h"
 
+#include <stdalign.h>
+
 #include "agg/group/rec.h"
+#include "agg/vec.h"
 
 enum
 {
@@ -104,7 +107,9 @@ sift_rec_flush_ht(const SiftSaltedHT *ht, const SiftRadixShape *sh, SiftRecBuf *
 
 	SIFT_HT_FOREACH(ht, s)
 	{
-		put(arg, s->hash64, buf->p, build_state(buf, ht, sh, s));
+		uint32		len = build_state(buf, ht, sh, s);
+
+		put(arg, s->hash64, buf->p, len);
 		if (sh->ext_dist_off != SIFT_HT_NO_EXT)
 		{
 			const SiftDistSet *set = *(SiftDistSet **) (sift_ht_ext(ht, s) + sh->ext_dist_off);
@@ -115,10 +120,16 @@ sift_rec_flush_ht(const SiftSaltedHT *ht, const SiftRadixShape *sh, SiftRecBuf *
 
 			if (set && set->wide)
 				while (sift_dist_next_bytes(set, &pos, &vbytes, &vlen))
-					put(arg, s->hash64, buf->p, build_distinct(buf, ht, s, REC_DISTINCT_BYTES, vlen, vbytes, vlen));
+				{
+					len = build_distinct(buf, ht, s, REC_DISTINCT_BYTES, vlen, vbytes, vlen);
+					put(arg, s->hash64, buf->p, len);
+				}
 			else
 				while (set && sift_dist_next(set, &pos, &v))
-					put(arg, s->hash64, buf->p, build_distinct(buf, ht, s, REC_DISTINCT, v, NULL, 0));
+				{
+					len = build_distinct(buf, ht, s, REC_DISTINCT, v, NULL, 0);
+					put(arg, s->hash64, buf->p, len);
+				}
 		}
 	}
 }
@@ -134,6 +145,16 @@ merge_group(SiftRecMerge *m, uint64 hash, const SiftInlineKey16 *key, const uint
 	if (!found && m->shape->init)
 		m->shape->init(m->shape, d, m->ht->ext_stride ? sift_ht_ext(m->ht, d) : NULL);
 	return d;
+}
+
+static const uint8 *
+aligned_ext(SiftRecMerge *m, const uint8 *ext)
+{
+	if (m->ht->ext_stride == 0)
+		return NULL;
+	if (m->ext_copy == NULL)
+		m->ext_copy = MemoryContextAllocAligned(m->ht->cxt, m->ht->ext_stride, alignof(SiftI128), 0);
+	return memcpy(m->ext_copy, ext, m->ht->ext_stride);
 }
 
 void
@@ -152,7 +173,7 @@ sift_rec_merge(SiftRecMerge *m, const uint8 *rec)
 		memcpy(&src, rec + sizeof(h), sizeof(src));
 		d = merge_group(m, src.hash64, &src.key, ext + m->ht->ext_stride, src.key.wide.key_len);
 		if (sh->merge)
-			sh->merge(sh, d, m->ht->ext_stride ? sift_ht_ext(m->ht, d) : NULL, &src, m->ht->ext_stride ? ext : NULL);
+			sh->merge(sh, d, m->ht->ext_stride ? sift_ht_ext(m->ht, d) : NULL, &src, aligned_ext(m, ext));
 	}
 	else
 	{

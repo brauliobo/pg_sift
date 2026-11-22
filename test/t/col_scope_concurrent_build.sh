@@ -10,8 +10,7 @@
 . "$(dirname "$0")/lib_twohop.bash"
 
 plan 14
-node_init scb 52 "sift.scope_max_multiplicity = 8
-autovacuum = off"
+node_init scb 52 "autovacuum = off"
 node_start scb || bail "start failed"
 D=$(dir scb)
 S=(-X -q -h "$D/sock" -p "$(port scb)" -U postgres -v ON_ERROR_STOP=1)
@@ -26,7 +25,7 @@ sql scb "CREATE EXTENSION pg_sift_test CASCADE" \
 sql scb "ALTER EVENT TRIGGER sift_col_build_lock DISABLE" >/dev/null
 build() { # NAME: a session that takes ShareLock on the table, waits for the other one to take it, then builds
 	psql "${S[@]}" -c "BEGIN" -c "LOCK TABLE events IN SHARE MODE" -c "SELECT pg_sleep(1.5)" \
-		-c "CREATE INDEX $1 ON events USING sift_col (id, dim_a_id, created_at, v) WITH (track_changes = 'off', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" \
+		-c "CREATE INDEX $1 ON events USING sift_col (id, dim_a_id, created_at, v) WITH (track_changes = 'off', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)')" \
 		-c "COMMIT" -d postgres >"$D/$1.out" 2>&1
 }
 build events_a &
@@ -47,7 +46,7 @@ sql scb "ALTER EVENT TRIGGER sift_col_build_lock ENABLE" >/dev/null
 # the same without the barrier, with the default change tracking: the log of each index installs two triggers on the table at the end of its build (CREATE TRIGGER takes ShareRowExclusiveLock),
 # so two builds that run at the same time were each waiting for the other's ShareLock. The statement takes the lock first now (an event trigger before CREATE INDEX of a sift_col index).
 race() { # NAME
-	psql "${S[@]}" -d postgres -c "CREATE INDEX $1 ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" >"$D/$1.out" 2>&1
+	psql "${S[@]}" -d postgres -c "CREATE INDEX $1 ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)')" >"$D/$1.out" 2>&1
 }
 race events_c &
 A=$!
@@ -62,7 +61,6 @@ check "both verify, and the log of each is complete" test -z "$(sql scb "SELECT 
 
 # the scope of two paths under concurrent writers
 SECS=$(knob SIFT_SCB_SECS 12 6)
-sql scb "ALTER DATABASE postgres SET sift.scope_max_multiplicity = 64" >/dev/null
 twohop_setup scb || bail "the fixtures of the scope of two paths failed"
 check "two paths: built, the three stamps vouch and the reads are the join" test "$(twohop_vouch scb)|$(twohop_reads scb)" == "ok|same"
 FILES=($(twohop_files scb))

@@ -18,7 +18,7 @@ autovacuum = off
 shared_buffers = 128MB
 max_locks_per_transaction = 512
 max_wal_size = 256MB
-sift.col_auto_merge = off
+sift.async_maintenance = off
 extension_control_path = '$root$(pg_config --sharedir):\$system'
 dynamic_library_path = '$root$(pg_config --pkglibdir):\$libdir'"
 node_start sg || bail "start failed"

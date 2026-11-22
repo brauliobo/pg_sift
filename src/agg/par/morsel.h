@@ -56,6 +56,10 @@ typedef struct SiftMorselQueue
 	uint32		part_start[FLEXIBLE_ARRAY_MEMBER];	/* n_parts + 1: the flat index of the first granule of each part, then the total */
 } pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftMorselQueue;
 
+/* The alignment of every shared block that holds a queue: its base and the offsets of the queues in it */
+#define SIFT_PAR_SHM_ALIGN		(2 * PG_CACHE_LINE_SIZE)
+
+StaticAssertDecl(_Alignof(SiftMorselQueue) == SIFT_PAR_SHM_ALIGN, "a queue is placed at the alignment of its type");
 StaticAssertDecl(sizeof(SiftMorselLane) == PG_CACHE_LINE_SIZE && offsetof(SiftMorselQueue, lanes) == PG_CACHE_LINE_SIZE,
 				 "every lane of the morsel queue is alone on its cache line");
 

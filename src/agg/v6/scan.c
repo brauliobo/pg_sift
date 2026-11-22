@@ -663,7 +663,7 @@ sift_v6_scan_run_ext(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Rela
 SiftV6Fold *
 sift_v6_fold_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, SiftV6Recheck recheck, void *recheck_arg)
 {
-	V6Scan	   *s = palloc0(sizeof(V6Scan));
+	V6Scan	   *s = sift_palloc0_aligned(V6Scan, 1);
 
 	s->spec = spec;
 	s->group = g;
@@ -719,7 +719,7 @@ sift_v6_fold_end(SiftV6Fold *s)
 SiftV6Scan *
 sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats, SiftV6BatchFn emit, void *emit_arg)
 {
-	V6Scan	   *s = palloc0(sizeof(V6Scan));
+	V6Scan	   *s = sift_palloc0_aligned(V6Scan, 1);
 
 	s->spec = spec;
 	s->stats = stats;
@@ -796,7 +796,7 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 	int		   *leaves;
 	int			nleaves = 0;
 
-	a.s = palloc0(cohort->narms * sizeof(V6Scan));
+	a.s = sift_palloc0_aligned(V6Scan, cohort->narms);
 	for (int i = 0; i < cohort->narms; i++)
 	{
 		a.s[i] = (V6Scan) {.spec = arms[i].spec,.group = arms[i].group,.stats = arms[i].stats,.gate = arms[i].gate};

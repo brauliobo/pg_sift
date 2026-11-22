@@ -6,7 +6,6 @@
 #include "postgres.h"
 
 #include "utils/hsearch.h"
-#include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -81,7 +80,7 @@ gcache_evict_all(void)
 }
 
 static void
-gcache_invalidate(Datum arg pg_attribute_unused(), Oid relid)
+gcache_invalidate(uint32 hashvalue)
 {
 	HASH_SEQ_STATUS seq;
 	GEntry	   *e;
@@ -90,7 +89,7 @@ gcache_invalidate(Datum arg pg_attribute_unused(), Oid relid)
 		return;
 	hash_seq_init(&seq, gcache);
 	while ((e = hash_seq_search(&seq)) != NULL)
-		if (!OidIsValid(relid) || e->relid == relid)
+		if (sift_f2_inval_hits(e->relid, hashvalue))
 		{
 			sift_f2_gbuf_unref(e->gb);
 			hash_search(gcache, &e->key, HASH_REMOVE, NULL);
@@ -108,7 +107,7 @@ gcache_init(void)
 	ctl.hcxt = gcache_cx;
 	gcache = hash_create("sift cache f2 table granules", SIFT_F2_GCACHE_MAX_GRANULES * 2, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	sift_cache_register(&gcache_kind);
-	CacheRegisterRelcacheCallback(gcache_invalidate, (Datum) 0);
+	sift_f2_invalidator_register(gcache_invalidate);
 }
 
 SiftF2GranuleBuf *

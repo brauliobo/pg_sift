@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The rewrite of a sift_col index (sift.col_maintain, the work of sift.col_auto_merge) beside readers, writers and VACUUM: a writer updates, deletes and inserts
+# The rewrite of a sift_col index (sift.col_maintain, the work of sift.async_maintenance) beside readers, writers and VACUUM: a writer updates, deletes and inserts
 # in small transactions, VACUUM runs, the rewrite runs again and again (it is skipped while VACUUM holds the maintenance lock), and a reader compares in one
 # repeatable read snapshot the answer of the column scan with the heap's. They all go on until the rewrite has run three times (it waits for the snapshots that hold the
 # blocks of the last one, so how long that takes is not for a script to fix) and the reader has compared 30 snapshots. No answer differs, nothing fails, and the index verifies and ends clean.

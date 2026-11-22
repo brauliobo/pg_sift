@@ -1,4 +1,4 @@
-# The background pass of a sift_table (sift.table_auto_defrag) is safe to leave on: next to a heap twin that gets the same writes, a table
+# The background pass of a sift_table (sift.async_maintenance, the auto_defrag option of a table) is safe to leave on: next to a heap twin that gets the same writes, a table
 # that is cleaned, merged and shortened by workers while it is written and read returns the same rows at every moment; a standby replays
 # every page the passes write and the primary compares each with its image (wal_consistency_checking = generic); a worker killed in the
 # middle of a pass (SIGKILL, with the cost delay holding it there) leaves the table as it was or as the pass would have left it, and the
@@ -16,8 +16,8 @@ my $rows = knob('SIFT_ROWS', 20000, 6000);
 my $worker = qr/table maintenance worker finished/;
 
 my $primary = sift_node('defrag_primary', allows_streaming => 1);
-$primary->append_conf('postgresql.conf', "autovacuum = off\nwal_consistency_checking = 'generic'\nsift.table_auto_defrag = on\n"
-	. "sift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\nsift.table_write_buffer_limit = 2048\nmax_parallel_maintenance_workers = 0\n"
+$primary->append_conf('postgresql.conf', "autovacuum = off\nwal_consistency_checking = 'generic'\nsift.async_maintenance = on\n"
+	. "sift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\nmax_parallel_maintenance_workers = 0\n"
 	. "max_parallel_workers_per_gather = 0\nshared_buffers = 64MB");
 $primary->start;
 install_sift($primary);
@@ -39,6 +39,8 @@ sub digest
 	return $node->safe_psql('postgres', sprintf($digest, $t));
 }
 
+sub defrag { return "SELECT sift.table_set_option('$_[0]', 'auto_defrag', '$_[1]')" }
+
 # one write to the table and to its twin; the session never asks for a pass itself (the reads that follow do, once there are enough of them)
 sub both
 {
@@ -46,7 +48,8 @@ sub both
 	for my $name ($t, "${t}_h")
 	{
 		(my $stmt = $sql) =~ s/\bTBL\b/$name/g;
-		$primary->safe_psql('postgres', "SET sift.table_auto_defrag = off; $stmt");
+		$stmt = defrag($t, 'off') . "; $stmt" if $name eq $t;
+		$primary->safe_psql('postgres', $stmt);
 	}
 }
 
@@ -54,7 +57,8 @@ sub both
 sub readers
 {
 	my ($t) = @_;
-	$primary->safe_psql('postgres', 'SET sift.table_auto_defrag = off; ' . "SELECT count(*) FROM $t;" x 50);
+	$primary->safe_psql('postgres', defrag($t, 'off') . '; ' . "SELECT count(*) FROM $t;" x 50);
+	$primary->safe_psql('postgres', defrag($t, 'on'));
 	sleep 1;
 }
 
@@ -63,6 +67,7 @@ sub twins
 	my ($t) = @_;
 	$primary->safe_psql('postgres', qq{
 		CREATE TABLE $t (id int, v bigint, kind int, pad text) USING sift_table WITH (autovacuum_enabled = false);
+		SELECT sift.table_set_option('$t', 'write_buffer_limit', '2048kB');
 		CREATE TABLE ${t}_h (LIKE $t) WITH (autovacuum_enabled = false);
 		CREATE INDEX ${t}_id ON $t (id);
 	});
@@ -109,7 +114,7 @@ subtest 'a standby replays what the passes write' => sub {
 subtest 'a worker killed in the middle of a pass' => sub {
 	plan skip_all => 'the extent check needs the testing build' unless $testing;
 	# the cost delay holds the worker in the middle of the pass: the smallest cost limit makes every point of the pass a sleep of four delays
-	$primary->safe_psql('postgres', "ALTER SYSTEM SET sift.table_auto_defrag_delay = 100; ALTER SYSTEM SET vacuum_cost_limit = 1; SELECT pg_reload_conf()");
+	$primary->safe_psql('postgres', "ALTER SYSTEM SET sift.maintenance_cost_delay = 100; ALTER SYSTEM SET vacuum_cost_limit = 1; SELECT pg_reload_conf()");
 	twins('k');
 	both('k', 'DELETE FROM TBL WHERE id % 10 < 5');
 	both('k', 'UPDATE TBL SET v = v + 1 WHERE id % 10 = 7');
@@ -127,11 +132,11 @@ subtest 'a worker killed in the middle of a pass' => sub {
 	same('k', 'with the writes made during the pass');
 	kill_expected($pid);
 	ok($primary->wait_for_log(qr/database system is ready to accept connections/, $offset), 'the server recovered');
-	$primary->safe_psql('postgres', "ALTER SYSTEM RESET sift.table_auto_defrag_delay; ALTER SYSTEM RESET vacuum_cost_limit; SELECT pg_reload_conf()");
+	$primary->safe_psql('postgres', "ALTER SYSTEM RESET sift.maintenance_cost_delay; ALTER SYSTEM RESET vacuum_cost_limit; SELECT pg_reload_conf()");
 	is(digest($primary, 'k'), $before, 'the rows are those of before the pass');
 	same('k', 'after the crash');
 	is($primary->safe_psql('postgres', "SELECT sift._test_check('k') >= 0"), 't', 'every extent has one owner');
-	$primary->safe_psql('postgres', "SET sift.table_auto_defrag = off; SELECT * FROM sift.table_maintain('k')");
+	$primary->safe_psql('postgres', defrag('k', 'off') . "; SELECT * FROM sift.table_maintain('k')");
 	same('k', 'after the next pass');
 	$primary->safe_psql('postgres', 'VACUUM k');
 	same('k', 'after VACUUM');

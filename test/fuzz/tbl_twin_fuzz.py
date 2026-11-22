@@ -233,9 +233,9 @@ def check_writer(ctx, name, out, txns):
 
 
 MODES = {
-    'default': 'RESET sift.enable_count; RESET enable_seqscan; RESET enable_indexscan; RESET enable_indexonlyscan; RESET enable_bitmapscan;',
-    'index': 'RESET sift.enable_count; SET enable_seqscan = off; SET enable_bitmapscan = off; RESET enable_indexscan; RESET enable_indexonlyscan;',
-    'seq': 'SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off; SET sift.enable_count = off; RESET enable_seqscan;',
+    'default': 'RESET sift.enable_scan; RESET enable_seqscan; RESET enable_indexscan; RESET enable_indexonlyscan; RESET enable_bitmapscan;',
+    'index': 'RESET sift.enable_scan; SET enable_seqscan = off; SET enable_bitmapscan = off; RESET enable_indexscan; RESET enable_indexonlyscan;',
+    'seq': 'SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off; SET sift.enable_scan = off; RESET enable_seqscan;',
 }
 
 FULL = f"""
@@ -349,13 +349,15 @@ def run_seed(label, seed, budget, hold=None):
     prof = seed % 3
     p_hold = (0.7, 0.4, 0.15)[prof] if hold is None else hold
     p_reader = (0.25, 0.4, 0.5)[prof]
-    cfg = f"SET sift.table_dead_rewrite_pct = {rng.choice([30, 10, 60])}; SET sift.table_hot_update = {rng.choice(['on', 'off'])};"
-    ctx.log('config', f'seed={seed} profile={prof} {cfg}')
+    hot = rng.choice(['on', 'off'])
+    cfg = f"SET sift.dead_rewrite_pct = {rng.choice([30, 10, 60])};"
+    ctx.log('config', f'seed={seed} profile={prof} {cfg} hot_update={hot}')
     S = {}
     try:
         ck = S['CK'] = Sess('CK', ctx, cfg)
         ck.send(f"DROP TABLE IF EXISTS {T}, {H};\n"
                 f"CREATE TABLE {T} (pk int PRIMARY KEY, v int, grp int, pad text) USING sift_table;\n"
+                f"SELECT sift.table_set_option('{T}', 'hot_update', '{hot}');\n"
                 f"CREATE TABLE {H} (pk int PRIMARY KEY, v int, grp int, pad text);")
         out = ck.wait_one(60)
         if ERR.search(out):

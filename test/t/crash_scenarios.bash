@@ -1,7 +1,7 @@
 # The scenarios of the crash and fault matrices (col_crash_matrix.sh, fault_matrix.sh) on the node "cm": the table docs and the operations that publish a directory of an index, the
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # verification of a healthy state (every sift index verifies against its heap and passes the store check, the answers through the indexes are the plain plan's).
-PLAIN=("SET sift.enable_agg = off" "SET sift.enable_scan = off" "SET sift.enable_count = off" "SET enable_indexscan = off" "SET enable_bitmapscan = off")
+PLAIN=("SET sift.enable_agg = off" "SET sift.enable_scan = off" "SET enable_indexscan = off" "SET enable_bitmapscan = off")
 IDX=("SET sift.enable_agg = on" "SET seq_page_cost = 10000" "SET enable_seqscan = off")
 QA="SELECT g, count(*), sum(n), min(id), max(id) FROM docs GROUP BY g ORDER BY g"
 QB="SELECT count(*), sum(id) FROM docs WHERE body @@> 'alpha3 beta4'"
@@ -22,7 +22,7 @@ scope_check() { # the highest id of a row that is in an entity segment
 # a key_cut index in partitions of 512 kB whose rolling rewrite then runs at 64 kB: each partition is a step that writes its window as several pieces in one switch of the directory (statements of a setup split at @@: a VACUUM
 # cannot be in a transaction)
 ROLL="INSERT INTO docs SELECT i, i % 9, i % 100, md5(i::text) FROM generate_series(6001, 100000) i@@CREATE INDEX docs_ck ON docs USING sift_col (id, g, n, body) WITH (key_cut = 'n', dead_rewrite_pct = 100)"
-ROLL+="@@SET sift.test_col_net = off@@SET sift.col_auto_merge = on@@SET sift.test_col_partition_kb = 512@@UPDATE docs SET g = g + 1 WHERE id % 7 = 0@@VACUUM docs@@SELECT sift.col_maintain('docs_ck')@@UPDATE docs SET g = g + 1 WHERE id % 5 = 0@@VACUUM docs"
+ROLL+="@@SET sift.test_col_net = off@@SET sift.async_maintenance = on@@SET sift.test_col_partition_kb = 512@@UPDATE docs SET g = g + 1 WHERE id % 7 = 0@@VACUUM docs@@SELECT sift.col_maintain('docs_ck')@@UPDATE docs SET g = g + 1 WHERE id % 5 = 0@@VACUUM docs"
 TBL="CREATE TABLE tbl (id int, g int, n int) USING sift_table WITH (autovacuum_enabled = false); CREATE TABLE tbl_h (id int, g int, n int)"
 
 # scenario ~ setup (after the base table and its rows) ~ the operation
@@ -39,7 +39,7 @@ SCENARIOS=(
 	"scope_refill~$SCOPE; $(scope_check 8000); $(more 6001 8000); SELECT sift.col_promote('docs_sc')~UPDATE gp SET t = t; SELECT sift.col_maintain('docs_sc')"
 	"vacuum~$BM25; $COL; DELETE FROM docs WHERE id % 3 = 0; UPDATE docs SET n = n + 1 WHERE id % 7 = 0~VACUUM docs"
 	"col_net~$COL; DELETE FROM docs WHERE id % 3 = 0; UPDATE docs SET n = n + 1 WHERE id % 7 = 0~VACUUM docs"
-	"col_roll~$ROLL~SET sift.test_col_net = off; SET sift.col_auto_merge = on; SET sift.test_col_partition_kb = 64; SELECT sift.col_maintain('docs_ck')"
+	"col_roll~$ROLL~SET sift.test_col_net = off; SET sift.async_maintenance = on; SET sift.test_col_partition_kb = 64; SELECT sift.col_maintain('docs_ck')"
 	"tbl_seal~$TBL; INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i; INSERT INTO tbl_h SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i; DELETE FROM tbl WHERE id % 5 = 0; DELETE FROM tbl_h WHERE id % 5 = 0~VACUUM tbl"
 )
 
@@ -95,7 +95,7 @@ gate_spec() { # GATE: the gate of the phase "gate:GATE"
 		build) adv2 8; GATE_SET=("SET sift.test_build_gate = on") ;;
 		drop) adv2 9; GATE_SET=("SET sift.test_drop_gate = on") ;;
 		cleanup) adv2 2; GATE_SET=("SET sift.test_cleanup_gate = on") ;;
-		rebuild) adv2 11; GATE_SET=("SET sift.test_rebuild_gate = on" "SET sift.agg_force = on" "SET sift.col_wbuf_ref = on" "SET max_parallel_workers_per_gather = 0") ;;
+		rebuild) adv2 11; GATE_SET=("SET sift.test_rebuild_gate = on" "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0") ;;
 		intern) adv2 12; GATE_SET=("SET sift.test_intern_gate = on") ;;
 		bulkdelete) adv1 100; GATE_SET=("SET sift.test_bulkdelete_gate = 100") ;;
 		tail) adv1 7004; GATE_SET=("SET sift.test_phase_gate = 7000") ;;

@@ -693,8 +693,9 @@ merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, bool 
 	return sift_colp_merge(index, sel, n, workers, nslices, GetCurrentTimestamp(), cut && whole);
 }
 
-SiftStepResult
-maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy)
+/* One step of the merge or the rewrite, in the memory context of the step; again is set when a bounded merge has more to do */
+static SiftStepResult
+maint_merge_step(Relation index, bool force, SiftMergeGoal goal, bool *again)
 {
 	SiftDirSnapshot *snap;
 	SiftSegEntry *sel;
@@ -787,7 +788,10 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	pfree(sel);
 	pfree(all);
 	if (n > 0 && bounded)
-		return maint_merge_next(index, force, goal, propagate, busy);
+	{
+		*again = true;
+		return SIFT_STEP_DONE;
+	}
 	if (!sift_col_is_index(index) || sift_col_rel(index)->nscope == 0)
 		return n > 0 ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 	/* a merge of everything is of the scope segments too, in the same step */
@@ -801,4 +805,21 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	if (goal == SIFT_GOAL_REWRITE && maint_scope_refill_due(index) && maint_scope_refill(index, false))
 		return SIFT_STEP_DONE;
 	return maint_scope_merge_step(index, force || maint_after_build) ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
+}
+
+SiftStepResult
+maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate pg_attribute_unused(), uint64 *busy pg_attribute_unused())
+{
+	for (;;)
+	{
+		MemoryContext step = sift_mem_allocset_create(CurrentMemoryContext, "sift col maint step");
+		MemoryContext old = MemoryContextSwitchTo(step);
+		bool		again = false;
+		SiftStepResult res = maint_merge_step(index, force, goal, &again);
+
+		MemoryContextSwitchTo(old);
+		MemoryContextDelete(step);
+		if (!again)
+			return res;
+	}
 }

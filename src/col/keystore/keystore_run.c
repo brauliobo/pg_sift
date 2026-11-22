@@ -52,7 +52,7 @@ typedef struct VRunHead
 {
 	uint32		magic;
 	uint32		version;
-	uint64		epoch;			/* always 0: a store has one epoch since 6.0 */
+	uint64		epoch;
 	uint64		base;
 	uint32		n;
 	uint32		pad;
@@ -74,12 +74,18 @@ ks_corrupt(Relation rel, const char *what)
 SiftKeyStore *
 sift_keystore_open(Oid store, LOCKMODE lock)
 {
+	return sift_keystore_open_epoch(store, lock, 0);
+}
+
+SiftKeyStore *
+sift_keystore_open_epoch(Oid store, LOCKMODE lock, uint64 epoch)
+{
 	SiftKeyStore *ks = palloc(sizeof(SiftKeyStore));
 
 	ks->rel = table_open(sift_rel_must_exist(store), lock);
 	if (!sift_keystore_is_store(store))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a scope key store", RelationGetRelationName(ks->rel))));
-	ks->view = kview_open(store, &ks->pin);
+	ks->view = kview_open(store, epoch, &ks->pin);
 	return ks;
 }
 
@@ -100,14 +106,14 @@ cmp_base(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
-/* The runs of the store in code order */
+/* The runs of the epoch of the store in code order */
 static int
-dir_runs(const SiftDirSnapshot *snap, SiftSegEntry *runs)
+dir_runs(const SiftDirSnapshot *snap, uint64 epoch, SiftSegEntry *runs)
 {
 	int			n = 0;
 
 	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_VALRUN)
+		if (snap->segs[i].kind == SIFT_SEG_VALRUN && snap->segs[i].reserved == epoch)
 			runs[n++] = snap->segs[i];
 	qsort(runs, n, sizeof(SiftSegEntry), cmp_base);
 	return n;
@@ -146,10 +152,8 @@ load_run(SiftKeyStore *ks, const SiftSegEntry *e)
 	sift_cache_room(e->bytes);
 	sift_sr_init(&sr, ks->rel, ext, next, e->gen);
 	head = sift_sr_get(&sr, 0, e->bytes, scratch);
-	if (head->magic != VRUN_MAGIC || head->base != e->sum_dl || head->n != e->ndocs)
+	if (head->magic != VRUN_MAGIC || head->epoch != v->key.epoch || head->base != e->sum_dl || head->n != e->ndocs)
 		ks_corrupt(ks->rel, "a run does not match its directory entry");
-	if (head->epoch != 0)
-		ks_corrupt(ks->rel, "a run of a later epoch: this store was shared by 5.x indexes, REINDEX the indexes of its table");
 	run = sift_cdict_parse(v->cx, (const char *) head + sizeof(VRunHead), e->bytes - sizeof(VRunHead), &used);
 	if (run == NULL || run->n != head->n)
 		ks_corrupt(ks->rel, "a run does not parse");
@@ -255,7 +259,7 @@ view_refresh(SiftKeyStore *ks)
 
 	snap = sift_dir_read(ks->rel);
 	runs = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
-	n = dir_runs(snap, runs);
+	n = dir_runs(snap, ks->view->key.epoch, runs);
 	if (!ks->view->loaded)
 		kview_reset(ks->view);
 	for (int i = 0; i < n; i++)
@@ -387,7 +391,7 @@ static void
 merge_runs(SiftKeyStore *ks, const SiftCcPolicy *pol, const SiftDirSnapshot *snap)
 {
 	SiftSegEntry *runs = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
-	int			n = dir_runs(snap, runs),
+	int			n = dir_runs(snap, ks->view->key.epoch, runs),
 				best = 0;
 	uint64		best_bytes = UINT64_MAX;
 
@@ -507,7 +511,7 @@ sift_keystore_intern(SiftKeyStore *ks, const SiftCDict *batch_in, const SiftCcPo
 	pfree(view_refresh(ks));
 	map_codes(ks, batch, map);
 	{
-		MemoryContext batch_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift scope key batch");
+		MemoryContext batch_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift cache scope key batch");
 		SiftCDict  *fresh = sift_cdict_create(batch_cx);
 		uint32		lo = ks->view->total;
 

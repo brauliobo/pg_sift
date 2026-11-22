@@ -12,7 +12,7 @@ use Test::More;
 
 my $rows = knob('SIFT_ROWS', 20000, 20000);
 my $limit = knob('SIFT_MAX_SEGMENTS', 8, 8);
-my $conf = "sift.table_max_segments = $limit\nsift.table_write_buffer_limit = 2048\nwal_consistency_checking = 'generic'";
+my $conf = "sift.table_max_segments = $limit\nwal_consistency_checking = 'generic'";
 my $digest = 'SELECT count(*) || $$:$$ || coalesce(sum(id), 0) || $$:$$ || coalesce(md5(string_agg(id || v, $$,$$ ORDER BY id)), $$-$$) FROM %s';
 my $load = "INSERT INTO %s SELECT g, repeat('x', 1000) || g FROM generate_series(1, $rows) g";
 # a loop of single-row INSERTs: no command closes the write buffers as a whole
@@ -21,6 +21,7 @@ my %loads = (command => $load, loop => $loop);
 my $tagged = 'SELECT sift._test_tbl_tagged($$%s$$) > 0';
 my $want = $rows . ':' . $rows * ($rows + 1) / 2;
 
+sub wbl { return "SELECT sift.table_set_option('$_[0]', 'write_buffer_limit', '2048kB')" }
 sub digest { return $_[0]->safe_psql('postgres', sprintf($digest, $_[1])) }
 sub count { return $_[0]->safe_psql('postgres', "SELECT count(*) FROM $_[1]") }
 
@@ -39,7 +40,7 @@ $standby->append_conf('postgresql.conf', $conf);
 $standby->start;
 
 subtest 'a standby replays the groups of a running transaction and sees the rows at its commit' => sub {
-	$primary->safe_psql('postgres', 'CREATE TABLE r (id int, v text) USING sift_table WITH (autovacuum_enabled = false); CREATE INDEX r_id ON r (id)');
+	$primary->safe_psql('postgres', 'CREATE TABLE r (id int, v text) USING sift_table WITH (autovacuum_enabled = false); CREATE INDEX r_id ON r (id); ' . wbl('r'));
 	my $bg = $primary->background_psql('postgres');
 	$bg->query_safe('BEGIN');
 	$bg->query_safe(sprintf($load, 'r'));
@@ -62,7 +63,7 @@ subtest 'a standby replays the groups of a running transaction and sees the rows
 for my $kind (sort keys %loads) {
 subtest "a rollback of a $kind load leaves nothing on either node and VACUUM returns the space" => sub {
 	my ($t, $sql) = ("a_$kind", $loads{$kind});
-	$primary->safe_psql('postgres', "CREATE TABLE $t (id int, v text) USING sift_table WITH (autovacuum_enabled = false)");
+	$primary->safe_psql('postgres', "CREATE TABLE $t (id int, v text) USING sift_table WITH (autovacuum_enabled = false); " . wbl($t));
 	$primary->safe_psql('postgres', 'BEGIN; ' . sprintf($sql, $t) . '; ROLLBACK');
 	$primary->wait_for_catchup($standby);
 	is(count($primary, $t) . count($standby, $t), '00', 'no rows');
@@ -79,7 +80,7 @@ subtest "a rollback of a $kind load leaves nothing on either node and VACUUM ret
 for my $kind (sort keys %loads) {
 subtest "a crash in the middle of a $kind load leaves nothing" => sub {
 	my ($t, $sql) = ("c_$kind", $loads{$kind});
-	$primary->safe_psql('postgres', "CREATE TABLE $t (id int, v text) USING sift_table WITH (autovacuum_enabled = false); INSERT INTO $t VALUES (-1, \$\$before\$\$)");
+	$primary->safe_psql('postgres', "CREATE TABLE $t (id int, v text) USING sift_table WITH (autovacuum_enabled = false); " . wbl($t) . "; INSERT INTO $t VALUES (-1, \$\$before\$\$)");
 	my $bg = $primary->background_psql('postgres', on_error_stop => 0);
 	my $pid = $bg->query_safe('SELECT pg_backend_pid()');
 	$bg->query_safe('BEGIN');
@@ -101,7 +102,7 @@ subtest "a crash in the middle of a $kind load leaves nothing" => sub {
 }
 
 subtest 'a commit survives an immediate stop' => sub {
-	$primary->safe_psql('postgres', 'CREATE TABLE d (id int, v text) USING sift_table WITH (autovacuum_enabled = false)');
+	$primary->safe_psql('postgres', 'CREATE TABLE d (id int, v text) USING sift_table WITH (autovacuum_enabled = false); ' . wbl('d'));
 	$primary->safe_psql('postgres', 'BEGIN; ' . sprintf($load, 'd') . '; COMMIT');
 	my $before = digest($primary, 'd');
 	is($before =~ /^\Q$want\E:/ ? 1 : 0, 1, "the rows are $want");

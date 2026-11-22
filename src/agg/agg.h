@@ -158,6 +158,8 @@ extern PGDLLIMPORT bool sift_agg_key_skew;
 extern int agg_lookup_limit_kb(void);
 extern int agg_param_set_elems(void);
 extern bool agg_lookup_fits(double rows, int width);
+extern double agg_lookup_map_bytes(const struct SiftAggJoin *j, double stored, bool reserved, bool lazy, double key_nd,
+								   const double *col_nd, const int *col_width);
 
 /* agg/first.c: does a unique index of the table hold only columns among atts */
 extern bool sift_agg_unique_key(Oid relid, int nkey, int nord, const int *atts, List **cols);

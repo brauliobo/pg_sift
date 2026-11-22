@@ -11,7 +11,7 @@ node_init mo 34 "autovacuum = off
 max_parallel_workers_per_gather = 0
 shared_buffers = 64MB
 max_wal_size = 1GB
-sift.col_auto_merge = off"
+sift.async_maintenance = off"
 node_start mo || bail "start failed"
 sql mo "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" >/dev/null || bail "extension failed"
 

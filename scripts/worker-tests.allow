@@ -1,2 +1,1 @@
 # Regress tests that turn the maintenance worker on and print what it changes: NAME (no .sql), a tab, the reason the output does not depend on the worker's timing (scripts/check-worker-tests.sh).
-col_wbuf_read_priced	the subject is the worker that promotes a buffer the reads paid for: the promotion waits for a condition (wr_wait), and the table that is only written is asserted as not promoted

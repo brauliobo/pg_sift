@@ -134,14 +134,14 @@ run_variant() { # VARIANT OFFSET
 
 	# the maintenance workers converge the churn the release left and the writes after it
 	sql "$n" "UPDATE docs SET n = n + 1 WHERE id % 2 = 0" "DELETE FROM trk_c WHERE id % 3 = 0" "DELETE FROM trk_i WHERE id % 3 = 0" "UPDATE kc SET v = v + 1 WHERE id % 2 = 0" >/dev/null
-	sql "$n" "ALTER SYSTEM SET sift.async_maintenance = on" "ALTER SYSTEM SET sift.col_auto_merge = on" "ALTER SYSTEM SET sift.col_auto_merge_wal_pct = 10" "ALTER SYSTEM SET autovacuum = on" "ALTER SYSTEM SET autovacuum_naptime = 2" "SELECT pg_reload_conf()" >/dev/null
+	sql "$n" "ALTER SYSTEM SET sift.async_maintenance = on" "ALTER SYSTEM SET autovacuum = on" "ALTER SYSTEM SET autovacuum_naptime = 2" "SELECT pg_reload_conf()" >/dev/null
 	due() { sql "$n" "SELECT count(*) FROM unnest(ARRAY[$COLIDX]) u WHERE sift.col_maintenance_due(u::regclass) IS NOT NULL"; }
 	wait_for "test \$(due) == 0" 60
 	diag "$v: indexes still due after 60 s of the workers (their WAL pacing may hold them): $(due)"
 	for _ in 1 2 3; do sql "$n" "SELECT sift.col_maintain(u::regclass) FROM unnest(ARRAY[$COLIDX]) u WHERE sift.col_maintenance_due(u::regclass) IS NOT NULL" >/dev/null; done
 	check "$v: maintenance converges: col_maintain leaves no index due" test "$(due)" == 0
 	check "$v: the workers left no error in the log" test "$(grep -cE 'ERROR:  .*sift|PANIC|TRAP' "$(dir "$n")/postgres.log")" == 0
-	sql "$n" "ALTER SYSTEM RESET autovacuum" "ALTER SYSTEM RESET sift.async_maintenance" "ALTER SYSTEM RESET sift.col_auto_merge" "ALTER SYSTEM RESET sift.col_auto_merge_wal_pct" "SELECT pg_reload_conf()" >/dev/null
+	sql "$n" "ALTER SYSTEM RESET autovacuum" "ALTER SYSTEM RESET sift.async_maintenance" "SELECT pg_reload_conf()" >/dev/null
 	compat after-workers "$v" "$n"
 	check "$v: REINDEX of every sift_col index of the release (its rows come from the cheapest source)" sql "$n" \
 		"DO \$\$ DECLARE u text; BEGIN FOR u IN SELECT unnest(ARRAY[$COLIDX]) LOOP EXECUTE format('REINDEX INDEX %s', u); END LOOP; END \$\$"

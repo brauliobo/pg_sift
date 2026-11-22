@@ -52,7 +52,7 @@ measure() {
 	reset
 	scripts/pgtest.sh start >/dev/null
 	"$@" >/dev/null 2>&1 || echo "focus-gen: $* failed (its rows are what ran)" >&2
-	scripts/pgtest.sh stop >/dev/null
+	scripts/pgtest.sh stop >/dev/null || echo "focus-gen: the leak gate failed after $* (its rows are what ran)" >&2
 	executed >"$out"
 }
 

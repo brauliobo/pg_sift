@@ -29,7 +29,9 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+import tmpfs  # noqa: E402
 from v6_harness import INDEX_COLS, INDEX_KEY_ORDER, INDEX_PATHS, PgClient, events_insert_sql, events_table_ddl  # noqa: E402
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 COLUMNS = ['suite', 'probe', 'io_method', 'workers', 'rows', 'median_ms', 'speedup', 'blks_read', 'blks_hit', 'gate_pass', 'read_stream', 'throughput', 'blk_read_ms', 'p99_ms', 'wal', 'wait_pct']
 RUNS = 3
@@ -358,7 +360,7 @@ def cmd_suite_c(args):
     pg, out = pg_of(args), Rows(args.out, args.rows, args.control)
     prepare_c(pg, args)
     clients, results = [int(c) for c in args.clients.split(',')], {}
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(dir=tmpfs.require_tmpfs(tmpfs.root())) as tmp:
         scripts = {}
         for name, text in WRITE_SCRIPTS.items():
             scripts[name] = os.path.join(tmp, name + '.sql')

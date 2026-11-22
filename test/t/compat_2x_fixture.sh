@@ -29,7 +29,7 @@ agree() {
 	for p in "${PAIRS[@]}"; do
 		q=${p%% => *} pred=${p#* => }
 		a=$(sql fx "SET enable_seqscan = off" "SELECT count(*) || ':' || coalesce(sum(id), 0) FROM docs WHERE body @@> '$q'") || return 1
-		h=$(sql fx "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SET sift.enable_scan = off" "SET sift.enable_count = off" \
+		h=$(sql fx "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SET sift.enable_scan = off" \
 			"SELECT count(*) || ':' || coalesce(sum(id), 0) FROM docs WHERE $pred") || return 1
 		[[ $a == "$h" ]] || bad+=("'$q' index $a heap $h")
 	done

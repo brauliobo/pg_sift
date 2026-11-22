@@ -10,6 +10,7 @@
 #include "access/tableam.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
+#include "utils/lsyscache.h"
 #include "utils/snapmgr.h"
 
 #include "col/f2/delvec.h"
@@ -208,6 +209,30 @@ pairs_grow(SiftMemTracker *t, SiftScopeMemberKey **pairs, uint32 *cap)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the pairs of the scope do not fit in maintenance_work_mem"), errhint("Raise maintenance_work_mem.")));
 	*pairs = *pairs ? repalloc(*pairs, (Size) ncap * sizeof(SiftScopeMemberKey)) : sift_mem_alloc(t, t->root_cx, (Size) ncap * sizeof(SiftScopeMemberKey));
 	*cap = ncap;
+}
+
+/* Format 2 summarizes the scopes over one relation of integer pairs; the other indexes of a scope stay in format major 1 */
+bool
+sift_f2s_index_summarizable(Relation heap, Relation index)
+{
+	SiftScopeSpecs *specs = sift_scope_specs(index);
+
+	for (int i = 0; specs != NULL && i < specs->n; i++)
+	{
+		Relation	pairs;
+		AttrNumber	member,
+					key;
+		bool		ok;
+
+		if (specs->s[i]->joined != NULL)
+			return false;
+		sift_scope_relation(heap, index, specs->s[i], &pairs, &member, &key);
+		ok = int_type(get_atttype(RelationGetRelid(pairs), member)) && int_type(get_atttype(RelationGetRelid(pairs), key));
+		table_close(pairs, NoLock);
+		if (!ok)
+			return false;
+	}
+	return true;
 }
 
 bool

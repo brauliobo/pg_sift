@@ -36,10 +36,10 @@ views_drop_gone(Oid keep)
 	stores_changed = false;
 	hash_seq_init(&seq, views);
 	while ((v = hash_seq_search(&seq)) != NULL)
-		if (v->store != keep && !SearchSysCacheExists1(RELOID, ObjectIdGetDatum(v->store)))
+		if (v->key.store != keep && !SearchSysCacheExists1(RELOID, ObjectIdGetDatum(v->key.store)))
 		{
 			MemoryContextDelete(v->cx);
-			hash_search(views, &v->store, HASH_REMOVE, NULL);
+			hash_search(views, &v->key, HASH_REMOVE, NULL);
 		}
 }
 
@@ -99,9 +99,9 @@ views_evict_all(void)
 static const SiftCacheKind views_kind = {"col_keystore_view", views_oldest, views_evict_one, views_evict_all};
 
 static void
-view_unpin(Oid store)
+view_unpin(const ViewKey *key)
 {
-	KeyStoreView *v = hash_search(views, &store, HASH_FIND, NULL);
+	KeyStoreView *v = hash_search(views, key, HASH_FIND, NULL);
 
 	if (v != NULL)
 		v->pins--;
@@ -113,27 +113,27 @@ view_pin_release(void *arg)
 	ViewPin    *p = arg;
 
 	if (p->held)
-		view_unpin(p->store);
+		view_unpin(&p->key);
 	p->held = false;
 }
 
 static KeyStoreView *
-view_get(Oid store)
+view_get(const ViewKey *key)
 {
 	bool		found;
 	KeyStoreView *v;
 
 	if (views == NULL)
 	{
-		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(KeyStoreView), .hcxt = sift_cache_root_context()};
+		HASHCTL		ctl = {.keysize = sizeof(ViewKey), .entrysize = sizeof(KeyStoreView), .hcxt = sift_cache_root_context()};
 
 		views = hash_create("sift scope key store views", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		CacheRegisterSyscacheCallback(RELOID, stores_relcache_changed, (Datum) 0);
 		sift_cache_register(&views_kind);
 	}
 	if (stores_changed)
-		views_drop_gone(store);
-	v = hash_search(views, &store, HASH_ENTER, &found);
+		views_drop_gone(key->store);
+	v = hash_search(views, key, HASH_ENTER, &found);
 	if (!found)
 	{
 		v->cx = sift_cache_create_context("sift cache scope key store view");
@@ -176,14 +176,15 @@ kview_add(KeyStoreView *v, uint64 lo, uint64 dbase, SiftCDict *d)
 
 /* The view of a store, pinned until kview_release or the end of the current memory context, whichever comes first */
 KeyStoreView *
-kview_open(Oid store, ViewPin **pin)
+kview_open(Oid store, uint64 epoch, ViewPin **pin)
 {
-	KeyStoreView *v = view_get(store);
+	ViewKey		key = {.store = store,.epoch = epoch};
+	KeyStoreView *v = view_get(&key);
 	ViewPin    *p = palloc(sizeof(ViewPin));
 
 	v->pins++;
 	v->used = sift_cache_tick();
-	*p = (ViewPin) {{view_pin_release, p, NULL}, store, true};
+	*p = (ViewPin) {{view_pin_release, p, NULL}, key, true};
 	MemoryContextRegisterResetCallback(CurrentMemoryContext, &p->cb);
 	sift_cache_commit();
 	*pin = p;

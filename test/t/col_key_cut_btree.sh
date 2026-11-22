@@ -20,7 +20,7 @@ sql n "CREATE EXTENSION pg_sift" \
 	"CREATE INDEX orders_created_at ON orders (created_at)" \
 	"VACUUM (FREEZE, ANALYZE) orders" >/dev/null || bail "setup failed"
 
-SETTINGS=("SET sift.async_maintenance = off" "SET max_parallel_workers_per_gather = 0" "SET sift.test_col_segment_kb = 1500" "SET sift.col_unit_rows = 1200"
+SETTINGS=("SET sift.async_maintenance = off" "SET max_parallel_workers_per_gather = 0" "SET sift.test_col_segment_kb = 1500" "SET sift.test_col_unit_rows = 1200"
 	"SET maintenance_work_mem = '512MB'" "SET min_parallel_table_scan_size = 0")
 GROUPS_Q="SELECT coalesce(string_agg(tenant_id || ':' || n || ':' || s, ',' ORDER BY tenant_id), '') FROM (SELECT tenant_id, count(*) AS n, sum(amount) AS s FROM orders GROUP BY tenant_id) x"
 BUILD="CREATE INDEX orders_idx ON orders USING sift_col (id, tenant_id, created_at, amount) WITH (key_cut = 'created_at')"
@@ -108,5 +108,5 @@ concurrent "CREATE INDEX CONCURRENTLY" 0 "${BUILD/CREATE INDEX/CREATE INDEX CONC
 concurrent "REINDEX CONCURRENTLY" 0 "REINDEX INDEX CONCURRENTLY orders_idx"
 sql n "DROP INDEX orders_idx" >/dev/null
 concurrent "CREATE INDEX CONCURRENTLY by workers" 4 "${BUILD/CREATE INDEX/CREATE INDEX CONCURRENTLY}"
-echo "1..$NTEST"
+done_testing
 finish

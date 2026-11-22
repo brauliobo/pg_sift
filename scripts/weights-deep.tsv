@@ -227,7 +227,6 @@ installcheck-agg_lookup_load	23	16
 tap-008_tbl_promote	20	23
 tap-016_space_cache	23	17
 tap-shell-col_refresh_crash	23	19
-tap-shell-col_rollup_ondemand	18	23
 tap-shell-compat_30_fixture	16	23
 tap-shell-verdict_shared	23	20
 installcheck-agg_cte_inline_rest	22	22

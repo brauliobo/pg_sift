@@ -7,9 +7,8 @@
 plan 8
 
 node_init jr 53 "autovacuum = off
-sift.col_auto_merge = on
-sift.maintenance_naptime = 200
-sift.scope_max_multiplicity = 8"
+sift.async_maintenance = on
+sift.maintenance_naptime = 200"
 node_start jr || bail "start failed"
 sql jr "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"CREATE TABLE cp (m int NOT NULL, t int NOT NULL) WITH (autovacuum_enabled = false)" "CREATE UNIQUE INDEX cp_u ON cp (m, t)" \
@@ -21,7 +20,7 @@ sql jr "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 # the VACUUM comes in a session of its own, after the load's counters are flushed: the table is then quiet (nothing changed since its VACUUM), as a table nobody writes is,
 # so nothing but the reads of the scope index could have asked for a rewrite
 sql jr "VACUUM (FREEZE, ANALYZE) ce, cp" >/dev/null || bail "vacuum failed"
-sql jr "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (scope = 't: m -> cp(m, t)')" >/dev/null || bail "build failed"
+sql jr "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (scope = 't: m -> cp(m, t) max_multiplicity(8)')" >/dev/null || bail "build failed"
 
 READ="SELECT count(*), sum(v) FROM ce e WHERE sift.in_scope('ce_col'::regclass, 't', e.m, 6)"
 JOIN="SELECT count(*), sum(v) FROM ce e WHERE e.m IN (SELECT m FROM cp WHERE t = 6)"

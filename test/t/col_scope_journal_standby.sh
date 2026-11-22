@@ -20,7 +20,7 @@ sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"CREATE TABLE ev (id int PRIMARY KEY, m int NOT NULL, v int NOT NULL, pad text) WITH (autovacuum_enabled = off)" \
 	"INSERT INTO ev SELECT i, 1 + i % 210, i % 10, repeat('x', 80) FROM generate_series(1, 6000) i" \
 	"CREATE INDEX ts_journal ON tenant_scope USING sift_col (m, t) WITH (track_changes = 'ctid')" \
-	"CREATE INDEX ev_col ON ev USING sift_col (id, m, v) WITH (scope = 't: m -> tenant_scope(m, t)')" \
+	"CREATE INDEX ev_col ON ev USING sift_col (id, m, v) WITH (scope = 't: m -> tenant_scope(m, t) max_multiplicity(64)')" \
 	"REINDEX INDEX ev_col" "VACUUM (FREEZE, ANALYZE) ev" "VACUUM tenant_scope" "CHECKPOINT" >/dev/null || bail "setup failed"
 node_clone primary standby 3 "hot_standby_feedback = off
 wal_receiver_status_interval = 1s"

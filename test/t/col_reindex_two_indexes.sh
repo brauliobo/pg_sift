@@ -11,7 +11,7 @@ plan 8
 ROUNDS=$(knob SIFT_RL_ROUNDS 30 12)
 ROWS=$(knob SIFT_RL_ROWS 20000 8000)
 node_init n 62 "autovacuum = off
-sift.col_auto_merge = off
+sift.async_maintenance = off
 deadlock_timeout = 200ms"
 node_start n || bail "start failed"
 D=$(dir n)

@@ -6,6 +6,7 @@ array-append	src/agg/chunkfilter.c	p[np++] = (SiftColPred) {r->col, SIFT_COLOP_L
 array-append	src/agg/col.c	preds[n++] = src->flt.pred[i];	preds is COL_PREDS_MAX entries: the sum of the caps of the predicates that are copied into it
 array-append	src/agg/col.c	preds[n++] = src->spred[i];	preds is COL_PREDS_MAX entries: the sum of the caps of the predicates that are copied into it
 array-append	src/agg/col.c	preds[n++] = src->wpred[i];	preds is COL_PREDS_MAX entries: the sum of the caps of the predicates that are copied into it
+array-append	src/agg/hybrid_agg_exec.c	keys[n++] = sift_f2_tid(&hit);	the batch is flushed at POINT_BATCH rows, right after the append, and n starts again at 0
 array-append	src/agg/lookclass.c	m->idx[m->n++] = p;	each distinct need is added once, at most nneed <= MAX_NEED
 cast-after-product	src/agg/par/split.c	return (uint32) (((uint64) (h * SPLIT_MUL) * n) >> 32);	a multiplicative hash of 32-bit values: the wrap is the hash
 array-append	src/agg/spill/stream.c	act[k++] = act[a];	the active list is compacted in place, k never passes the index being read

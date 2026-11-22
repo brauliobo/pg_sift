@@ -5,10 +5,16 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
+#include "access/table.h"
+#include "access/tableam.h"
+#include "catalog/index.h"
 #include "catalog/pg_class.h"
+#include "utils/snapmgr.h"
 
 #include "col/f2/f2.h"
 #include "col/f2/f2_store.h"
+#include "core/memtrack.h"
 #include "core/page_io.h"
 
 static void
@@ -137,4 +143,105 @@ sift_f2_check_keys(Relation rel)
 		parts += np;
 	}
 	return psprintf("parts=%llu granules=%llu rows=%llu exact", (unsigned long long) parts, (unsigned long long) granules, (unsigned long long) rows);
+}
+
+typedef struct TidList
+{
+	SiftMemTracker *mem;
+	uint64	   *tid;
+	uint64		n;
+	uint64		cap;
+} TidList;
+
+static void
+tid_add(TidList *l, const ItemPointerData *tid)
+{
+	if (l->n == l->cap)
+	{
+		uint64		ncap = Min(Max(1024, l->cap * 2), MaxAllocSize / sizeof(uint64));
+
+		if (ncap == l->cap || sift_mem_would_exceed(l->mem, (Size) (ncap - l->cap) * sizeof(uint64)))
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the addresses of the rows do not fit in maintenance_work_mem"), errhint("Raise maintenance_work_mem.")));
+		l->tid = l->tid ? repalloc(l->tid, (Size) ncap * sizeof(uint64)) : sift_mem_alloc(l->mem, l->mem->root_cx, (Size) ncap * sizeof(uint64));
+		l->cap = ncap;
+	}
+	l->tid[l->n++] = ((uint64) ItemPointerGetBlockNumber(tid) << 16) | ItemPointerGetOffsetNumber(tid);
+}
+
+static void
+heap_tid_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive, void *state)
+{
+	if (alive)
+		tid_add(state, tid);
+}
+
+static int
+tid_cmp(const void *a, const void *b)
+{
+	uint64		x = *(const uint64 *) a,
+				y = *(const uint64 *) b;
+
+	return x < y ? -1 : x > y;
+}
+
+static void
+sorted(TidList *l)
+{
+	qsort(l->tid, l->n, sizeof(uint64), tid_cmp);
+}
+
+static void
+heap_tids(Relation heap, Relation index, Snapshot snap, TidList *l)
+{
+	IndexInfo  *info = BuildIndexInfo(index);
+
+	info->ii_Concurrent = true;
+	table_index_build_scan(heap, index, info, true, false, heap_tid_cb, l, table_beginscan_strat(heap, snap, 0, NULL, true, false));
+}
+
+static void
+index_tids(Relation heap, Relation index, Snapshot snap, TidList *l)
+{
+	IndexScanDesc scan = sift_index_beginscan(heap, index, snap, 0);
+	ItemPointer tid;
+
+	index_rescan(scan, NULL, 0, NULL, 0);
+	while ((tid = index_getnext_tid(scan, ForwardScanDirection)) != NULL)
+		tid_add(l, tid);
+	index_endscan(scan);
+}
+
+/* Every row the heap shows to a snapshot is a live row of the index and the index holds no other: the two sorted lists of their addresses are the same */
+void
+sift_f2_check_heap(Relation index)
+{
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	Snapshot	snap = RegisterSnapshot(GetTransactionSnapshot());
+	SiftMemTracker mem;
+	TidList		want = {.mem = &mem},
+				have = {.mem = &mem};
+
+	sift_mem_init(&mem, "f2 heap check", CurrentMemoryContext, true, SIFT_BUDGET_MAINT_MEM, 1, 1);
+	heap_tids(heap, index, snap, &want);
+	index_tids(heap, index, snap, &have);
+	sorted(&want);
+	sorted(&have);
+	for (uint64 i = 0, j = 0; i < want.n || j < have.n;)
+	{
+		uint64		w = i < want.n ? want.tid[i] : PG_UINT64_MAX,
+					h = j < have.n ? have.tid[j] : PG_UINT64_MAX;
+
+		if (w == h)
+		{
+			i++;
+			j++;
+		}
+		else if (w < h)
+			SIFT_CORRUPT(index, "The heap tuple (%u,%u) is visible to the snapshot and is not in the index.", (unsigned) (w >> 16), (unsigned) (w & 0xFFFF));
+		else
+			SIFT_CORRUPT(index, "The index holds a row at (%u,%u) that the heap does not show to the snapshot.", (unsigned) (h >> 16), (unsigned) (h & 0xFFFF));
+	}
+	sift_mem_end(&mem);
+	UnregisterSnapshot(snap);
+	table_close(heap, AccessShareLock);
 }

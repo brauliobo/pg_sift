@@ -134,9 +134,9 @@ SELECT sift._test_poke('t_idx', 4, 8178, 1, 2);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
-                                                                                        expect                                                                                         
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Block 4: the page flags (1) or reserved word (0) of the special space are not zero. | REINDEX INDEX public.t_idx rebuilds it from the table.
+                                                                                         expect                                                                                         
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Block 4: the page flags (1) or partition word (0) of the special space are not zero. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 SELECT fresh();
@@ -152,9 +152,9 @@ SELECT sift._test_poke('t_idx', 4, 8180, 65535, 4);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_seg_read('t_idx', 1) $$);
-                                                                                          expect                                                                                           
--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- XX002: sift index "t_idx" is corrupted | Block 4: the page flags (0) or reserved word (65535) of the special space are not zero. | REINDEX INDEX public.t_idx rebuilds it from the table.
+                                                                                           expect                                                                                           
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ XX002: sift index "t_idx" is corrupted | Block 4: the page flags (0) or partition word (65535) of the special space are not zero. | REINDEX INDEX public.t_idx rebuilds it from the table.
 (1 row)
 
 -- Metapage magic, format version, high-water mark
@@ -262,9 +262,9 @@ SELECT sift._test_poke('t_idx', 0, 28, 2, 2);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                                                                                  expect                                                                                                  
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- 55000: sift index "t_idx" has on-disk format 2.2, this build (pg_sift <version>) reads formats 1.0 to 1.7 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
+                                                                                              expect                                                                                              
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 55000: sift index "t_idx" uses on-disk format 2.2, newer than this pg_sift supports (up to 1.7) | Upgrade the pg_sift library to the release that wrote this index, on every node that reads it.
 (1 row)
 
 SELECT fresh();
@@ -280,9 +280,9 @@ SELECT sift._test_poke('t_idx', 0, 30, 8, 2);
 (1 row)
 
 SELECT expect($$ SELECT sift._test_check('t_idx') $$);
-                                                                                                  expect                                                                                                  
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- 55000: sift index "t_idx" has on-disk format 1.8, this build (pg_sift <version>) reads formats 1.0 to 1.7 | Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.
+                                                                                              expect                                                                                              
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 55000: sift index "t_idx" uses on-disk format 1.8, newer than this pg_sift supports (up to 1.7) | Upgrade the pg_sift library to the release that wrote this index, on every node that reads it.
 (1 row)
 
 SELECT fresh();

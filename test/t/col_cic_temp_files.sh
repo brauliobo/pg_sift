@@ -5,7 +5,7 @@
 plan 7
 
 node_init ct 57 "autovacuum = off
-sift.col_auto_merge = off
+sift.async_maintenance = off
 temp_file_limit = -1"
 node_start ct || bail "start failed"
 sql ct "CREATE EXTENSION pg_sift" \

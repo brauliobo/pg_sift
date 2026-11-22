@@ -118,7 +118,7 @@ def dml_floor(r, ctx):
     m = r.choice([13, 40, 97, 211])
     ids = f'id % {m} = {r.randrange(m)}'
     e = r.randrange(14)
-    st = ['SET sift.test_col_floor_sbs = 2', f'SET sift.col_unit_floor = {r.choice([64, 128, 256, 1024])}']
+    st = ['SET sift.test_col_floor_sbs = 2', f'SET sift.test_col_unit_floor = {r.choice([64, 128, 256, 1024])}']
     if e < 4:
         c = r.choice(KCUT_KEYS)
         return st + [f'UPDATE ufl SET {c} = {r.choice(KCUT_COLS[c]).format(d=r.randrange(1, 40))} WHERE {ids}']
@@ -135,7 +135,7 @@ def dml_floor(r, ctx):
     if e == 10:
         return st + ["SELECT sift.col_promote('ufl_idx')"]
     if e == 11:
-        return st + ["SET sift.col_unit_floor = 0", f'UPDATE ufl SET amount = amount + 1 WHERE {ids}', 'VACUUM ufl', "SELECT sift.col_promote('ufl_idx')"]
+        return st + ["SET sift.test_col_unit_floor = 0", f'UPDATE ufl SET amount = amount + 1 WHERE {ids}', 'VACUUM ufl', "SELECT sift.col_promote('ufl_idx')"]
     if e == 12:
         return st + [r.choice(["SELECT sift.col_merge('ufl_idx', true)", "SELECT sift.col_merge('ufl_idx', false)", "SELECT count(*) FROM sift.col_refresh('ufl_idx')", 'REINDEX INDEX ufl_idx'])]
     return st + ['ANALYZE ufl']

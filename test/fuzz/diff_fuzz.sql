@@ -8,8 +8,8 @@
 CREATE FUNCTION fz.apply(spec text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE kv text; g text;
 BEGIN
-	FOREACH g IN ARRAY ARRAY['plan_cache_mode', 'sift.enable_agg', 'sift.agg_preagg', 'sift.agg_two_level', 'sift.agg_fuse', 'sift.agg_lookup_pushdown',
-							 'sift.agg_share_lookups', 'sift.agg_dense', 'sift.enable_topn', 'sift.simd', 'sift.agg_rows', 'sift.agg_semi_lut',
+	FOREACH g IN ARRAY ARRAY['plan_cache_mode', 'sift.enable_agg', 'sift.agg_preagg', 'sift.test_agg_two_level', 'sift.agg_lookup_pushdown',
+							 'sift.agg_share_lookups', 'sift.test_agg_dense', 'sift.simd', 'sift.agg_rows', 'sift.agg_semi_lut',
 							 'sift.agg_join_filter', 'max_parallel_workers_per_gather', 'parallel_setup_cost', 'parallel_tuple_cost',
 							 'min_parallel_table_scan_size', 'min_parallel_index_scan_size', 'parallel_leader_participation', 'seq_page_cost',
 							 'random_page_cost', 'enable_nestloop', 'enable_hashjoin', 'enable_mergejoin', 'enable_seqscan', 'enable_sort', 'sift.enable_col_scan',

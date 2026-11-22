@@ -10,7 +10,7 @@
 
 #include "agg/v6/v6_par.h"
 
-#define BLOCK_ALIGN	(2 * PG_CACHE_LINE_SIZE)
+#define BLOCK_ALIGN	SIFT_PAR_SHM_ALIGN
 #define LINE(n)		TYPEALIGN(BLOCK_ALIGN, (n))
 
 uint32

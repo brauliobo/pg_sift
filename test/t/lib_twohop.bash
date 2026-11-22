@@ -5,9 +5,8 @@
 # the facts). Members 1..200 are in one group, those that divide by four in two; the groups 1..12 and the members 1..200 have grants to the tenants 1..16; the members 100..109 have no grant.
 
 TWOHOP_ROWS=$(knob SIFT_TWOHOP_ROWS 6000 3000)
-TWOHOP_SCOPE="tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)"
-TWOHOP_CONF="sift.scope_max_multiplicity = 64
-autovacuum = off"
+TWOHOP_SCOPE="tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(64)"
+TWOHOP_CONF="autovacuum = off"
 
 TWOHOP_BASE=(
 	"CREATE TABLE grants (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz, CHECK (dim_a_id IS NULL OR group_id IS NULL)) WITH (autovacuum_enabled = false)"

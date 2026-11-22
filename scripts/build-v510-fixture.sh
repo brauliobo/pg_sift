@@ -5,7 +5,7 @@
 #   scripts/build-v510-fixture.sh [--force] [OUT]
 #
 # OUT (default /tmp/sift-v510-lib, or $SIFT_V510_LIBDIR) gets the layout of a DESTDIR install:
-#   OUT/<pkglibdir>/pg_sift.so   OUT/<sharedir>/extension/pg_sift--5.1.sql, pg_sift.control, ...
+#   OUT/<pkglibdir>/pg_sift$DLSUFFIX   OUT/<sharedir>/extension/pg_sift--5.1.sql, pg_sift.control, ...
 # The release comes from `git archive $SIFT_V510_REF` (default v5.1.0) of the repository $SIFT_V510_SRC (default: the
 # repository of this script); the checkout is never touched. PG_CONFIG selects the server (default pg_config).
 set -euo pipefail

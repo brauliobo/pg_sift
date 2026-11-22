@@ -20,9 +20,10 @@ my $txns = knob('SIFT_TXNS', 6, 6);
 my $copy_rows = knob('SIFT_COPY_ROWS', 10000, 10000);
 my $clients = 8;
 my $limit = knob('SIFT_MAX_SEGMENTS', 8, 8);
-my $conf = "sift.table_max_segments = $limit\nsift.table_write_buffer_limit = 2048";
+my $conf = "sift.table_max_segments = $limit";
 # VACUUM does not cut the file while a standby streams (43e42dc9c): the test of the returned space needs the testing setting, as 006, 008, 013 and 015
 my $primary_conf = "$conf\nwal_consistency_checking = 'generic'\nsift.test_cut_with_standby = on";
+sub wbl { return "SELECT sift.table_set_option('$_[0]', 'write_buffer_limit', '2048kB')" }
 # order independent, so that the rows (a kilobyte each) need no sort
 my $digest = 'SELECT count(*) || $$:$$ || coalesce(sum(id), 0) || $$:$$ || coalesce(sum(hashtextextended(id || v, 0)::numeric), 0) FROM %s';
 # rows lo..hi, one INSERT of one row per command
@@ -97,7 +98,7 @@ $standby->start;
 subtest 'a standby replays a loop of single-row INSERTs and sees the rows at the commit only' => sub {
 	# vacuum_truncate = false: a VACUUM that moves or cuts the file replays an exclusive lock, which cancels the standby's snapshot (as a
 	# heap's truncation does); the snapshot of the third subtest is held across the VACUUM
-	$primary->safe_psql('postgres', 'CREATE TABLE r (id int PRIMARY KEY, v text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false)');
+	$primary->safe_psql('postgres', 'CREATE TABLE r (id int PRIMARY KEY, v text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false); ' . wbl('r'));
 	my $bg = $primary->background_psql('postgres');
 	$bg->query_safe('BEGIN');
 	$bg->query_safe(loop_sql('r', 1, $rows));
@@ -143,7 +144,7 @@ subtest 'a repeatable read snapshot of the standby survives a freeze on the prim
 };
 
 subtest 'a crash in the middle of a loop leaves nothing' => sub {
-	$primary->safe_psql('postgres', 'CREATE TABLE c (id int PRIMARY KEY, v text) USING sift_table WITH (autovacuum_enabled = false); INSERT INTO c VALUES (-1, $$before$$)');
+	$primary->safe_psql('postgres', 'CREATE TABLE c (id int PRIMARY KEY, v text) USING sift_table WITH (autovacuum_enabled = false); ' . wbl('c') . '; INSERT INTO c VALUES (-1, $$before$$)');
 	my $bg = $primary->background_psql('postgres', on_error_stop => 0);
 	my $pid = $bg->query_safe('SELECT pg_backend_pid()');
 	$bg->query_until(qr/started/, "\\echo started\nBEGIN;\n" . loop_sql('c', 1, 2 * $rows) . ";\n");
@@ -167,7 +168,7 @@ subtest 'a crash in the middle of a loop leaves nothing' => sub {
 };
 
 subtest 'a crash with the loop done and the transaction open leaves nothing' => sub {
-	$primary->safe_psql('postgres', 'CREATE TABLE o (id int PRIMARY KEY, v text) USING sift_table WITH (autovacuum_enabled = false); INSERT INTO o VALUES (-1, $$before$$)');
+	$primary->safe_psql('postgres', 'CREATE TABLE o (id int PRIMARY KEY, v text) USING sift_table WITH (autovacuum_enabled = false); ' . wbl('o') . '; INSERT INTO o VALUES (-1, $$before$$)');
 	my $bg = $primary->background_psql('postgres', on_error_stop => 0);
 	my $pid = $bg->query_safe('SELECT pg_backend_pid()');
 	$bg->query_until(qr/started/, "\\echo started\nBEGIN;\n" . loop_sql('o', 1, $rows) . ";\nSELECT pg_sleep(600);\n");
@@ -188,7 +189,7 @@ subtest 'a crash with the loop done and the transaction open leaves nothing' => 
 };
 
 subtest 'a commit survives an immediate stop' => sub {
-	$primary->safe_psql('postgres', 'CREATE TABLE d (id int PRIMARY KEY, v text) USING sift_table WITH (autovacuum_enabled = false)');
+	$primary->safe_psql('postgres', 'CREATE TABLE d (id int PRIMARY KEY, v text) USING sift_table WITH (autovacuum_enabled = false); ' . wbl('d'));
 	$primary->safe_psql('postgres', 'BEGIN; ' . loop_sql('d', 1, $rows) . '; COMMIT');
 	twin($primary, 'd', 1, $rows);
 	my $before = digest($primary, 'd');
@@ -232,6 +233,7 @@ subtest 'concurrent writers, readers and COPYs agree with a heap twin' => sub {
 	$node->safe_psql('postgres', 'CREATE EXTENSION pg_sift_test');
 	$node->safe_psql('postgres', q{
 		CREATE TABLE s (id bigint, batch bigint, v text) USING sift_table WITH (autovacuum_enabled = false);
+		SELECT sift.table_set_option('s', 'write_buffer_limit', '2048kB');
 		CREATE TABLE h (id bigint, batch bigint, v text) WITH (autovacuum_enabled = false);
 		CREATE INDEX s_id ON s (id);
 		CREATE INDEX h_id ON h (id);
@@ -328,7 +330,7 @@ subtest 'a loop in the transaction that created the table survives a crash with 
 	for my $threshold ('0', '1GB')
 	{
 		my $t = 'min_' . ($threshold eq '0' ? 'sync' : 'wal');
-		$node->safe_psql('postgres', "SET wal_skip_threshold = '$threshold'; BEGIN; CREATE TABLE $t (id int PRIMARY KEY, v text) USING sift_table; " . loop_sql($t, 1, $rows) . '; COMMIT');
+		$node->safe_psql('postgres', "SET wal_skip_threshold = '$threshold'; BEGIN; CREATE TABLE $t (id int PRIMARY KEY, v text) USING sift_table; " . wbl($t) . "; " . loop_sql($t, 1, $rows) . '; COMMIT');
 		twin($node, $t, 1, $rows);
 		my $want = digest($node, "${t}_h");
 		is(digest($node, $t), $want, "$t: the rows are the heap twin's");
@@ -338,7 +340,7 @@ subtest 'a loop in the transaction that created the table survives a crash with 
 		agree_index($node, $t, "$t: after crash recovery");
 		$node->safe_psql('postgres', "VACUUM $t");
 		is(digest($node, $t), $want, "$t: and after VACUUM");
-		$node->safe_psql('postgres', "SET wal_skip_threshold = '$threshold'; BEGIN; CREATE TABLE ${t}_rb (id int, v text) USING sift_table; " . loop_sql("${t}_rb", 1, $rows) . '; ROLLBACK');
+		$node->safe_psql('postgres', "SET wal_skip_threshold = '$threshold'; BEGIN; CREATE TABLE ${t}_rb (id int, v text) USING sift_table; " . wbl("${t}_rb") . "; " . loop_sql("${t}_rb", 1, $rows) . '; ROLLBACK');
 		$node->stop('immediate');
 		$node->start;
 		is(count_tables($node, "${t}_rb"), 0, "$t: a rolled back table is gone after a crash");

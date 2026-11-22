@@ -18,12 +18,14 @@ SELECT 'dense' || CASE WHEN i % 4 = 0 THEN ' quarter' ELSE '' END
 FROM generate_series(1, 20000) i;
 -- LIST blobs below sift.grouped_min_df, GROUPED above; the second index makes the small terms GROUPED too, with ARRAY containers (format 2), the
 -- third with PACKED ones (format 3)
+SET client_min_messages = warning;
 CREATE INDEX rc_list ON rc USING sift (body);
 SET sift.grouped_min_df = 10;
 SET sift.test_segfmt = 2;
 CREATE INDEX rc_grp ON rc USING sift (body);
 SET sift.test_segfmt = 3;
 CREATE INDEX rc_pk ON rc USING sift (body);
+RESET client_min_messages;
 RESET sift.grouped_min_df;
 RESET sift.test_segfmt;
 SELECT idx, term, CASE WHEN flags & 4 = 0 THEN 'tf' ELSE 'all tf 1' END AS tfs, CASE WHEN flags & 1 = 1 THEN 'LIST' ELSE 'GROUPED' END AS kind

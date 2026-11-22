@@ -33,7 +33,7 @@ rm -f "$D/locked" "$D/release"
 HOLDER=$!
 until [[ -e $D/locked ]]; do sleep 0.05; done
 for t in t1 t2 t3; do load ws $t; done
-sql ws "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 1" >/dev/null
+sql ws "ALTER DATABASE postgres SET sift.async_maintenance = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 1" >/dev/null
 for t in t1 t2 t3; do change $t; done
 check "two workers of sift are held at the gate" wait_for waiting 60
 sleep 2
@@ -58,7 +58,7 @@ sift.test_col_net = off"
 node_start wd || bail "start of wd failed"
 sqld() { local db=$1; shift; PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir wd)/sock" -p "$(port wd)" -U postgres -d "$db" "${@/#/--command=}"; }
 sql wd "CREATE DATABASE dd" >/dev/null
-sqld dd "CREATE EXTENSION pg_sift" "ALTER DATABASE dd SET sift.col_auto_merge = on" >/dev/null || bail "setup of dd failed"
+sqld dd "CREATE EXTENSION pg_sift" "ALTER DATABASE dd SET sift.async_maintenance = on" >/dev/null || bail "setup of dd failed"
 sqld dd "CREATE TABLE t $TABLE" "INSERT INTO t SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 20000) g" \
 	"CREATE INDEX t_idx ON t USING sift_col (id, key, kind, amount, h1, h2, h3)" "VACUUM t" >/dev/null || bail "load of t failed"
 sqld dd "UPDATE t SET amount = amount + 1 WHERE id % 5 = 0" "VACUUM t" >/dev/null

@@ -43,6 +43,8 @@ typedef struct SiftF2Rel
 } SiftF2Rel;
 
 extern SiftF2Rel *sift_f2_rel(Relation index);
+/* Does format major 2 build this index: its scopes are over one relation of integer pairs (the other indexes stay in format major 1) */
+extern bool sift_f2s_index_summarizable(Relation heap, Relation index);
 
 /* The leaf of the key of the jsonb attribute attno that jsonb_exists(document, key) is answered from (-1: none keeps it) */
 extern int	sift_f2_key_leaf(const SiftF2Rel *f, int attno, const char *key, int len);
@@ -171,6 +173,7 @@ extern SiftManifestRead sift_f2_settled_manifest(Relation rel, const SiftPartSpe
 extern Datum sift_col_v2_sql(SiftColSqlFn fn, FunctionCallInfo fcinfo);
 extern void sift_f2_check(struct SiftCheck *ck, Oid indexoid, bool heapallindexed);
 extern void sift_f2_check_relation(struct SiftCheck *ck, Relation rel);
+extern void sift_f2_check_heap(Relation index);
 
 /* Checks the key invariants of every part (f2_check.c); ERROR when one fails, else a summary */
 extern char *sift_f2_check_keys(Relation index);

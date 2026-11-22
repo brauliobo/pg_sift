@@ -21,8 +21,8 @@ enum
 	PH_DONE
 };
 
-#define QUEUE_SPAN		TYPEALIGN(PG_CACHE_LINE_SIZE, sift_morsel_size(1))
-#define HDR_SPAN		TYPEALIGN(PG_CACHE_LINE_SIZE, sizeof(SiftDimShm))
+#define QUEUE_SPAN		TYPEALIGN(SIFT_PAR_SHM_ALIGN, sift_morsel_size(1))
+#define HDR_SPAN		TYPEALIGN(SIFT_PAR_SHM_ALIGN, sizeof(SiftDimShm))
 #define N_GRANULES(n)	(((n) + SIFT_DIM_BLOCK_ROWS - 1) / SIFT_DIM_BLOCK_ROWS)
 #define MAX_ROWS		(UINT32_C(1) << 31)
 #define N_BLOCKS(nb)	(((nb) + SIFT_DIM_SCAN_BUCKETS - 1) / SIFT_DIM_SCAN_BUCKETS)
@@ -42,10 +42,10 @@ layout_bytes(uint32 nrows, uint32 n_queues, uint32 n_slots)
 {
 	const uint32 nb = buckets_for(nrows);
 
-	return HDR_SPAN + n_queues * QUEUE_SPAN + TYPEALIGN(PG_CACHE_LINE_SIZE, mul_size(sizeof(uint32), N_BLOCKS(nb))) +
-		TYPEALIGN(PG_CACHE_LINE_SIZE, mul_size(sizeof(uint32), (Size) nb + 1)) +
-		TYPEALIGN(PG_CACHE_LINE_SIZE, mul_size(sizeof(SiftDimEntry), nrows)) +
-		TYPEALIGN(PG_CACHE_LINE_SIZE, mul_size(mul_size(sizeof(uint32), nb), n_slots));
+	return HDR_SPAN + n_queues * QUEUE_SPAN + TYPEALIGN(SIFT_PAR_SHM_ALIGN, mul_size(sizeof(uint32), N_BLOCKS(nb))) +
+		TYPEALIGN(SIFT_PAR_SHM_ALIGN, mul_size(sizeof(uint32), (Size) nb + 1)) +
+		TYPEALIGN(SIFT_PAR_SHM_ALIGN, mul_size(sizeof(SiftDimEntry), nrows)) +
+		TYPEALIGN(SIFT_PAR_SHM_ALIGN, mul_size(mul_size(sizeof(uint32), nb), n_slots));
 }
 
 /* The participants whose histograms the table has, or 0 for a table that counts with atomic adds: a table of few buckets, whose matrix is a small share of its size and fits */
@@ -72,13 +72,13 @@ layout_size(uint32 nrows, uint32 n_participants)
 Size
 sift_dim_shm_size(uint32 nrows, uint32 n_participants)
 {
-	return add_size(layout_size(nrows, n_participants), PG_CACHE_LINE_SIZE);
+	return add_size(layout_size(nrows, n_participants), SIFT_PAR_SHM_ALIGN);
 }
 
 Size
 sift_dim_shm_size_upto(uint32 max_rows, uint32 n_participants)
 {
-	return add_size(Max(layout_bytes(max_rows, 2, 0), layout_bytes(Min(max_rows, SIFT_DIM_HIST_BUCKETS), 1, n_participants)), PG_CACHE_LINE_SIZE);
+	return add_size(Max(layout_bytes(max_rows, 2, 0), layout_bytes(Min(max_rows, SIFT_DIM_HIST_BUCKETS), 1, n_participants)), SIFT_PAR_SHM_ALIGN);
 }
 
 bool
@@ -114,7 +114,7 @@ hist_of(SiftDimShm *d, uint32 slot)
 SiftDimShm *
 sift_dim_shm_init(void *raw, uint32 nrows, uint32 n_participants)
 {
-	SiftDimShm *d = (SiftDimShm *) TYPEALIGN(PG_CACHE_LINE_SIZE, raw);
+	SiftDimShm *d = (SiftDimShm *) TYPEALIGN(SIFT_PAR_SHM_ALIGN, raw);
 	const uint32 granules = N_GRANULES(nrows);
 	const uint32 slots = slots_for(nrows, n_participants);
 	Size		at = HDR_SPAN;
@@ -134,11 +134,11 @@ sift_dim_shm_init(void *raw, uint32 nrows, uint32 n_participants)
 		at += QUEUE_SPAN;
 	}
 	d->totals_off = at;
-	d->counts_off = d->totals_off + TYPEALIGN(PG_CACHE_LINE_SIZE, sizeof(uint32) * d->n_blocks);
-	d->entries_off = d->counts_off + TYPEALIGN(PG_CACHE_LINE_SIZE, sizeof(uint32) * ((Size) d->nbuckets + 1));
+	d->counts_off = d->totals_off + TYPEALIGN(SIFT_PAR_SHM_ALIGN, sizeof(uint32) * d->n_blocks);
+	d->entries_off = d->counts_off + TYPEALIGN(SIFT_PAR_SHM_ALIGN, sizeof(uint32) * ((Size) d->nbuckets + 1));
 	d->hist_off = d->entries_off + sizeof(SiftDimEntry) * nrows;
-	d->hist_off = TYPEALIGN(PG_CACHE_LINE_SIZE, d->hist_off);
-	d->total_bytes = d->hist_off + TYPEALIGN(PG_CACHE_LINE_SIZE, sizeof(uint32) * (Size) d->nbuckets * slots);
+	d->hist_off = TYPEALIGN(SIFT_PAR_SHM_ALIGN, d->hist_off);
+	d->total_bytes = d->hist_off + TYPEALIGN(SIFT_PAR_SHM_ALIGN, sizeof(uint32) * (Size) d->nbuckets * slots);
 	Assert(d->total_bytes == layout_size(nrows, n_participants));
 	sift_morsel_init(queue_of(d, 0), 1, &granules, n_participants);
 	if (!slots)

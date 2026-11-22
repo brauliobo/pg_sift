@@ -34,3 +34,4 @@ SELECT raises($$SELECT * FROM sift.drop_parts_before('dp', now(), 'payload')$$) 
 
 DROP TABLE dp, dp_heap, dp_nottime;
 DROP FUNCTION raises(text);
+DROP EXTENSION pg_sift;

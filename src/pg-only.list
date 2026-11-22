@@ -427,6 +427,7 @@ col/v1/scope_paid.c
 col/v1/scope_rows.c
 col/v1/scope_sample.c
 col/v1/seg/dead.c
+col/v1/seg/dict_ref.c
 col/v1/seg/live.c
 col/v1/seg/probe.c
 col/v1/supersede.c

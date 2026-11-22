@@ -51,6 +51,10 @@ printf 'SELECT 3 AS two;\n two \n-----\n   3\n(1 row)\n\n' >>"$SIFT_REGRESS_DIR/
 "$pg" regress "${names[@]}" >"$tmp/out" 2>&1 && { echo "FAIL: a batch with a diff passed"; fail=1; }
 grep -q 't07' "$tmp/out" || { echo "FAIL: the diff is not attributed to t07"; tail -n 20 "$tmp/out"; fail=1; }
 expect diff 't07'
+grep -q 't07' "$SIFT_TMP/regress/t01/regression.diffs" || { echo "FAIL: the first pass of the failed batch lost its regression.diffs to the cuts"; fail=1; }
+cuts=$("$pg" psql -d postgres -qAt -c "SELECT count(*) FROM pg_database WHERE datname LIKE 'contrib_regression_t01_%'")
+[[ $cuts == 0 ]] || { echo "FAIL: the cuts of the failed batch left $cuts databases in the cluster"; fail=1; }
+[[ ! -e $SIFT_TMP/regress/cut/t11-10 && -e $SIFT_TMP/regress/cut/t01-10.report ]] || { echo "FAIL: a cut keeps the output of a batch that passed or drops that of one that failed: $(ls "$SIFT_TMP/regress/cut")"; fail=1; }
 printf 'CREATE TABLE tbl_t07 (a int);\nINSERT INTO tbl_t07 VALUES (1);\nSELECT a FROM tbl_t07;\nDROP TABLE tbl_t07;\n' >"$SIFT_REGRESS_DIR/sql/t07.sql"
 printf 'CREATE TABLE tbl_t07 (a int);\nINSERT INTO tbl_t07 VALUES (1);\nSELECT a FROM tbl_t07;\n a \n---\n 1\n(1 row)\n\nDROP TABLE tbl_t07;\n' >"$SIFT_REGRESS_DIR/expected/t07.out"
 
@@ -60,6 +64,14 @@ printf 'CREATE TABLE tbl_t06 (a int);\n' >>"$SIFT_REGRESS_DIR/expected/t05.out"
 "$pg" regress "${names[@]}" >"$tmp/out" 2>&1 && { echo "FAIL: a batch with a test that leaves another's table passed"; fail=1; }
 grep -q 'LEFTOVER t05: .*tbl_t06' "$tmp/out" || { echo "FAIL: the leftover is not attributed to t05"; tail -n 20 "$tmp/out"; fail=1; }
 ! grep -qE '^not ok - t06|LEFTOVER t06' "$tmp/out" || { echo "FAIL: t06 is blamed for the table t05 left"; fail=1; }
+
+# the server is gone (the watchdog of the run stopped it at its cap): the cut says so once and stops, it does not run every half into a refused connection
+"$pg" stop >/dev/null 2>&1
+SIFT_READY_SECS=2 "$pg" regress "${names[@]:0:8}" >"$tmp/out" 2>&1 && { echo "FAIL: a batch on a stopped server passed"; fail=1; }
+gone=$(grep -c 'the server is gone' "$tmp/out")
+[[ $gone == 1 ]] || { echo "FAIL: a batch on a stopped server said $gone times that the server is gone, want 1"; tail -n 20 "$tmp/out"; fail=1; }
+refused=$(grep -c 'No such file' "$tmp/out")
+(( refused <= 12 )) || { echo "FAIL: a batch on a stopped server printed $refused refused connections"; fail=1; }
 
 (( fail == 0 )) && echo "regress batch ok: a clean batch is one run, a leftover, a diff and a table left to another test are each attributed to their test"
 exit $fail

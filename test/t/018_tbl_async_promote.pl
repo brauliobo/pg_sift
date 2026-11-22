@@ -1,4 +1,4 @@
-# sift_table promotion off the writer's path (sift.table_async_promote): the backend that closes a write buffer asks a worker to promote it, so a
+# sift_table promotion off the writer's path (sift.async_maintenance): the backend that closes a write buffer asks a worker to promote it, so a
 # load that commits as it goes ends with column segments and no VACUUM; the rows are a heap twin's, a crash while the writers and the worker
 # run loses none of a committed transaction and splits none, and with sift.async_maintenance off the writer promotes it itself.
 use strict;
@@ -14,8 +14,8 @@ use IPC::Run qw(start finish);
 my $clients = 4;
 my $txns = knob('SIFT_TXNS', 2000, 1500);
 my $node = sift_node('async_promote');
-$node->append_conf('postgresql.conf', "autovacuum = off\nsift.table_async_promote = on\nsift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\n"
-	. "sift.table_write_buffer_limit = 2048\nmax_parallel_maintenance_workers = 0");
+$node->append_conf('postgresql.conf', "autovacuum = off\nsift.async_maintenance = on\nsift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\n"
+	. "max_parallel_maintenance_workers = 0");
 $node->start;
 install_sift($node);
 
@@ -24,7 +24,7 @@ my $digest = 'SELECT count(*) || $$:$$ || count(DISTINCT id) || $$:$$ || sum(id)
 sub digest { return $node->safe_psql('postgres', sprintf($digest, $_[0])); }
 sub segs { return $node->safe_psql('postgres', "SELECT count(*) FROM sift.table_segments('s') WHERE kind = '$_[0]'"); }
 
-$node->safe_psql('postgres', 'CREATE TABLE s (id bigint, v text) USING sift_table WITH (autovacuum_enabled = false); CREATE TABLE h (id bigint, v text) USING heap');
+$node->safe_psql('postgres', 'CREATE TABLE s (id bigint, v text) USING sift_table WITH (autovacuum_enabled = false); SELECT sift.table_set_option(\'s\', \'write_buffer_limit\', \'2048kB\'); SELECT sift.table_set_option(\'s\', \'async_promote\', \'on\'); CREATE TABLE h (id bigint, v text) USING heap');
 my $dir = PostgreSQL::Test::Utils::tempdir;
 open(my $f, '>', "$dir/w.sql") or die;
 print $f "\\set cnt :cnt + 1\n\\set id :client_id * 1000000 + :cnt\nBEGIN;\n"
@@ -110,7 +110,7 @@ foreach my $reader (sort keys %readers)
 		my $settled = 0;
 		for (1 .. 60)
 		{
-			$node->safe_psql('postgres', "SET sift.table_auto_defrag = on; $set; $query");
+			$node->safe_psql('postgres', "$set; $query");
 			$settled = segs('sealed buffer') == 0;
 			last if $settled;
 			select(undef, undef, undef, 0.25);

@@ -7,6 +7,7 @@
 #   bench/test/clickbench-smoke.sh [ROWS]       default 20000
 #   CH_IMAGE=clickhouse/clickhouse-server:26.9 DUCKDB_BIN=/path/duckdb bench/test/clickbench-smoke.sh
 set -euo pipefail
+. "$(dirname "$0")/../../scripts/leakcheck.sh"
 
 ROWS=${1:-20000}
 STEPS=$(cd "$(dirname "$0")/../steps" && pwd)
@@ -15,7 +16,7 @@ PGPORT=${SMOKE_PGPORT:-55439} CHPORT=${SMOKE_CHPORT:-18129} CH=sift-cbpkg-ch-$$
 CH_IMAGE=${CH_IMAGE:-clickhouse/clickhouse-server:26.9.19.9}
 DUCKDB_BIN=${DUCKDB_BIN:-$(command -v duckdb || true)}
 PGBIN=$(pg_config --bindir)
-export PGHOST=$TMP PGPORT PGUSER=${USER:-postgres} PYTHONDONTWRITEBYTECODE=1
+export PGHOST=$TMP PGPORT SIFT_TMP=$TMP PGUSER=${USER:-postgres} PYTHONDONTWRITEBYTECODE=1
 
 cleanup() {
 	docker rm -f "$CH" >/dev/null 2>&1 || true
@@ -25,11 +26,13 @@ cleanup() {
 trap cleanup EXIT
 
 "$PGBIN/initdb" -D "$TMP/pg" -A trust -U "$PGUSER" >/dev/null
-"$PGBIN/pg_ctl" -D "$TMP/pg" -w -l "$TMP/pg.log" -o "-p $PGPORT -k $TMP -c listen_addresses= -c shared_buffers=256MB" start >/dev/null
+"$PGBIN/pg_ctl" -D "$TMP/pg" -w -l "$TMP/postgres.log" -o "-p $PGPORT -k $TMP -c listen_addresses= -c shared_buffers=256MB" start >/dev/null
+leak_baseline "$TMP/pg"
 
 arms=pg
 args=(--work "$TMP/work" --scale "$ROWS" --pg-datadir "$TMP/pg" --threads 2)
-if psql -X -qAt -d postgres -c "SELECT 1 FROM pg_available_extensions WHERE name = 'pg_sift'" | grep -q 1; then
+[[ $(psql -X -qAt -d postgres -c "SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift'") == 1 ]] && has_sift=1 || has_sift=0
+if ((has_sift)); then
 	psql -X -q -d postgres -c 'CREATE DATABASE smoke_probe'
 	psql -X -q -d smoke_probe -c 'CREATE EXTENSION pg_sift' 2>/dev/null || true
 	[[ $(psql -X -qAt -d smoke_probe -c "SELECT count(*) FROM pg_am WHERE amname = 'sift_col'" 2>/dev/null) == 1 ]] && arms+=,sift_col
@@ -62,4 +65,5 @@ python3 "$STEPS/clickbench.py" report --in "$TMP/clickbench.tsv" --md "$TMP/BENC
 grep -c $'\tmd5_equal\t1\t' "$TMP/clickbench.tsv" | sed 's/^/smoke: md5_equal rows equal: /'
 ! grep -q $'\tmd5_equal\t0\t' "$TMP/clickbench.tsv"
 if [[ -n ${SMOKE_KEEP:-} ]]; then mkdir -p "$SMOKE_KEEP" && cp "$TMP/clickbench.tsv" "$TMP/BENCHMARKS.md" "$TMP/clickbench.svg" "$SMOKE_KEEP/"; fi
+leak_end "$TMP/pg" "$TMP" "$PGBIN/pg_ctl" -D "$TMP/pg" -m fast -w stop >/dev/null
 echo "smoke: ok"

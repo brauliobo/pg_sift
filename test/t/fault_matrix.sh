@@ -270,5 +270,5 @@ for row in "${ROWS[@]}"; do
 	[[ -z ${mutant:-} ]] || untamper "$mutant"
 done
 (( total > 0 )) || bail "no case ran"
-echo "1..$NTEST"
+done_testing
 finish

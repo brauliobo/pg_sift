@@ -5,9 +5,8 @@
 plan 8
 
 node_init pd 57 "autovacuum = off
-sift.col_auto_merge = on
+sift.async_maintenance = on
 sift.maintenance_naptime = 200
-sift.scope_max_multiplicity = 8
 sift.test_scope_patch = off"
 node_start pd || bail "start failed"
 sql pd "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
@@ -18,7 +17,7 @@ sql pd "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"INSERT INTO ce SELECT i, 1 + (i * 7919) % 2100, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, 'x' FROM generate_series(1, 200000) i" \
 	>/dev/null || bail "setup failed"
 sql pd "VACUUM (FREEZE, ANALYZE) ce, cp" >/dev/null || bail "vacuum failed"
-sql pd "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (key_order = 'm, d', scope = 't: m -> cp(m, t)')" >/dev/null || bail "build failed"
+sql pd "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (key_order = 'm, d', scope = 't: m -> cp(m, t) max_multiplicity(8)')" >/dev/null || bail "build failed"
 
 JOIN="SELECT count(*), sum(v) FROM ce e WHERE e.m IN (SELECT m FROM cp WHERE t = 6)"
 reads() { sql pd "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "DO \$\$ BEGIN FOR i IN 1..$1 LOOP PERFORM ${JOIN#SELECT }; END LOOP; END \$\$" >/dev/null; }
@@ -61,14 +60,14 @@ check "the second part, after the crash, makes the rewrite due and starts none: 
 sql pd "SELECT sift.col_maintain('ce_col')" >/dev/null
 check "the explicit rewrite writes the scope segments again, and what the reads paid is not owed to the new segments" test "$(gens)" != "$G0" -a "$(paid)" -eq 0
 
-# more scope indexes than the 64 slots of the table of the shared memory: each one counts (a churn under sift.col_scope_refresh_pct: the rewrite is not due by the pairs alone)
+# more scope indexes than the 64 slots of the table of the shared memory: each one counts (a churn under the refresh threshold: the rewrite is not due by the pairs alone)
 for i in $(seq 1 70); do
 	sql pd "CREATE TABLE p$i (m int NOT NULL, t int NOT NULL)" "CREATE UNIQUE INDEX p${i}_u ON p$i (m, t)" \
 		"INSERT INTO p$i SELECT m, 1 + m % 4 FROM generate_series(1, 200) m" \
 		"CREATE INDEX p${i}_j ON p$i USING sift_col (m, t) WITH (track_changes = 'ctid')" \
 		"CREATE TABLE e$i (id int PRIMARY KEY, m int, v int)" "INSERT INTO e$i SELECT i, 1 + i % 200, i % 10 FROM generate_series(1, 2000) i" \
 		"VACUUM (FREEZE, ANALYZE) p$i, e$i" \
-		"CREATE INDEX e${i}_col ON e$i USING sift_col (id, m, v) WITH (scope = 't: m -> p$i(m, t)')" \
+		"CREATE INDEX e${i}_col ON e$i USING sift_col (id, m, v) WITH (scope = 't: m -> p$i(m, t) max_multiplicity(8)')" \
 		"DELETE FROM p$i WHERE m % 40 = 0" "INSERT INTO p$i SELECT m, 1 + (m + 1) % 4 FROM generate_series(1, 200) m WHERE m % 40 = 0" >/dev/null || bail "index $i failed"
 done
 sql pd "SET sift.test_scope_patch = on" "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" \

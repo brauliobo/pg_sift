@@ -28,7 +28,7 @@ BEGIN
 	RETURN r;
 END $$;
 CREATE FUNCTION seq_ids(q text) RETURNS text LANGUAGE plpgsql
-	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off SET sift.enable_count = off AS $$
+	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off AS $$
 DECLARE r text;
 BEGIN
 	EXECUTE 'SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM rk WHERE body @@> $1' INTO r USING q;

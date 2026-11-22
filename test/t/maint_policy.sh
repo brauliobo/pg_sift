@@ -12,7 +12,7 @@
 plan 21
 node_init mp 71 "autovacuum = off
 sift.test_col_net = off
-sift.col_auto_merge = on
+sift.async_maintenance = on
 sift.maintenance_naptime = 200
 sift.log_min_duration = 0"
 node_start mp || bail "start failed"
@@ -92,7 +92,7 @@ check "and still no rewrite was made" test "$(rewrites)" == 0
 node_init ms 73 "autovacuum = off
 max_worker_processes = 2
 sift.test_col_net = off
-sift.col_auto_merge = on"
+sift.async_maintenance = on"
 node_start ms || bail "start of ms failed"
 sql ms "CREATE EXTENSION pg_sift" "CREATE TABLE t (id int, k int) WITH (autovacuum_enabled = false)" "INSERT INTO t SELECT g, g % 10 FROM generate_series(1, 2000) g" \
 	"CREATE INDEX t_idx ON t USING sift_col (id, k)" "ALTER DATABASE postgres SET sift.vacuum_rewrite_limit = 0" \

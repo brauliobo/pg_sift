@@ -15,7 +15,7 @@ static void
 unsupported(Relation index, const char *what)
 {
 	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col index \"%s\" cannot be built in format major 2 with %s", RelationGetRelationName(index), what),
-					errhint("Leave format_major at 1, or take %s out of the index.", what)));
+					errhint("Build the index in format major 1, or take %s out of the index.", what)));
 }
 
 static SiftCellKind

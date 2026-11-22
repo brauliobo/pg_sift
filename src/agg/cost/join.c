@@ -775,6 +775,27 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 	return tuples;
 }
 
+/* the bytes of the lookup table of a join that loads `rows` rows: the rows that pass its own filter are stored, a table read whole sizes its map to its rows (agg/lookup/load.c) */
+static double
+join_table_bytes(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double rows)
+{
+	const SiftAggJoin *j = &jc->j;
+	RelOptInfo *jrel = find_base_rel(c->root, jc->rti);
+	Oid			relid = planner_rt_fetch(jc->rti, c->root)->relid;
+	bool		own = sift_agg_lookup_pushdown && j->fslot >= 0 && !sift_aggjoin_preserves(j->kind) && !slot_reads_leaf(&s->combo[jc->combo], j->fslot);
+	double		stored = own ? Min(rows, Max(jrel->rows, 1.0)) : rows,
+				key_nd = Min(stored, Max(jrel->tuples, 1.0) / Max(join_rows_per_key(jc, Max(jrel->tuples, 1.0)), 1.0)),
+				col_nd[SIFT_AGG_MAX_JCOLS];
+	int			col_width[SIFT_AGG_MAX_JCOLS];
+
+	for (int col = 0; col < j->ncol; col++)
+	{
+		col_nd[col] = joined_distinct(c, jc, col);
+		col_width[col] = j->colexpr[col] == NULL ? get_attavgwidth(relid, j->colatt[col]) : 0;
+	}
+	return agg_lookup_map_bytes(j, stored, !own && rows >= jrel->tuples, join_keys_only(c, s, jc), key_nd, col_nd, col_width);
+}
+
 /* does each lookup table the scan loads fit half of work_mem, which agg/lookup/load.c holds the load to? */
 bool
 agg_lookup_tables_fit(AggCtx *c, SiftAggSpec *s)
@@ -782,16 +803,16 @@ agg_lookup_tables_fit(AggCtx *c, SiftAggSpec *s)
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		double		row_cost,
-					rows;
-		int			width;
+					rows,
+					bytes;
 
 		if (jc->j.params != NIL || jc->cpath != NULL || join_dense(c, s, jc))
 			continue;
 		rows = join_load_rows(c, s, jc, &row_cost);
-		width = find_base_rel(c->root, jc->rti)->reltarget->width;
-		if (!agg_lookup_fits(rows, width))
-			return agg_refuse_limit(JOIN_CHILD, lookup_kb, agg_lookup_limit_kb(), "%s is estimated at %.0f rows of width %d",
-									planner_rt_fetch(jc->rti, c->root)->eref->aliasname, rows, width);
+		bytes = join_table_bytes(c, s, jc, rows);
+		if (bytes > (double) agg_lookup_limit_kb() * 1024)
+			return agg_refuse_limit(JOIN_CHILD, lookup_kb, agg_lookup_limit_kb(), "%s is estimated at %.0f rows (%.0f kB)",
+									planner_rt_fetch(jc->rti, c->root)->eref->aliasname, rows, bytes / 1024);
 	}
 	return true;
 }

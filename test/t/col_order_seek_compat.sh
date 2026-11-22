@@ -12,7 +12,6 @@ plan 8
 
 build_old "$ref"; oldroot=$OLDROOT
 node_init sk 47 'autovacuum = off
-sift.col_auto_merge = off
 sift.async_maintenance = off
 max_parallel_maintenance_workers = 0'
 use_root sk "$newroot"

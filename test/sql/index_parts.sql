@@ -4,8 +4,10 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 CREATE TABLE d (id int, body text);
 INSERT INTO d SELECT g, concat_ws(' ', 'common', 'w' || g % 50, CASE WHEN g % 3 = 0 THEN 'common' END, 'u' || g) FROM generate_series(1, 20000) g;
+SET client_min_messages = warning;
 CREATE INDEX d_pos ON d USING sift (body);
 CREATE INDEX d_off ON d USING sift (body) WITH (positions = off);
+RESET client_min_messages;
 
 CREATE FUNCTION part(idx regclass, p text) RETURNS bigint LANGUAGE sql AS
 $$ SELECT coalesce(sum(bytes), 0) FROM sift._test_segment_parts(idx) WHERE part = p $$;

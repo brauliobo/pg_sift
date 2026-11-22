@@ -31,7 +31,7 @@ workers() { sql wi "SELECT $1 FROM sift.workers WHERE index = 'facts_idx'::regcl
 
 # 1. a maintenance worker held at the start of its promotion: its identity while it works
 hold
-sql wi "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 1" >/dev/null
+sql wi "ALTER DATABASE postgres SET sift.async_maintenance = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 1" >/dev/null
 churn 1
 sql wi "VACUUM facts" >/dev/null
 check "a worker of sift is running" await_worker

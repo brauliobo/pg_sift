@@ -69,5 +69,5 @@ while IFS= read -r line; do
 done <<<"$out"
 ((rc == 0 || NFAIL > 0)) || not_ok "scripts/old-lib-check.sh run failed (exit $rc)"
 ((NTEST > 0)) || not_ok "scripts/old-lib-check.sh run produced no result"
-echo "1..$NTEST"
+done_testing
 finish

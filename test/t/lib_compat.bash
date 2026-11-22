@@ -4,7 +4,6 @@ CONF="autovacuum = off
 sift.async_maintenance = off
 max_prepared_transactions = 8
 sift.on_corruption = quarantine
-sift.scope_max_multiplicity = 64
 wal_level = replica"
 
 # KIND|INDEX|QUERY through the sift paths|QUERY through the heap (empty: the same text with every sift path off)
@@ -31,8 +30,33 @@ OFF=("SET sift.enable_agg = off" "SET sift.enable_scan = off" "SET sift.enable_c
 answer() { sql "$1" "${@:2}" 2>&1 | tr '\n' ' '; }
 # agree NODE INDEX QUERY [HEAPQUERY]: the answer through the sift paths is the heap's
 agree() { local n=$1 want got; want=$(answer "$n" "${OFF[@]}" "${4:-$3}"); got=$(answer "$n" "${ON[@]}" "$3"); out="sift: $got / heap: $want"; [[ $got == "$want" && $got != *ERROR* && -n $got ]]; }
-sound() { local n=$1; shift; out=$(sql "$n" "SELECT c.index::text || ' ' || c.problem || ' ' || coalesce(c.detail, '') FROM unnest(coalesce((SELECT array_agg(inhrelid::regclass) FROM pg_inherits WHERE inhparent = $1::regclass), ARRAY[$1::regclass])) u, LATERAL sift.check(u) c" 2>&1); [[ -z $out ]]; }
-sound_all() { out=$(sql "$1" "SELECT index::text || ' ' || problem FROM sift.check() WHERE index::text <> ALL ('{${2:-}}')" 2>&1); [[ -z $out ]]; }
+SIFT_RELS="(SELECT array_agg(c.oid::regclass) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname IN ('sift', 'sift_col', 'sift_table') AND c.relkind IN ('i', 'r'))"
+# old_verify_fns NODE: compat_old.check_rows(relations), the verification of the library an older standby of NODE runs. The standby has the catalog of NODE, whose sift.check is this tree's
+# function, and a library of an older release may not have its entry point: the entry points of the older library's own verification are bound here, while this tree's library runs
+# (a C function is looked up at its first call)
+old_verify_fns() {
+	sql "$1" "SET check_function_bodies = off" "CREATE SCHEMA compat_old" \
+		"CREATE FUNCTION compat_old.verify(regclass, bool) RETURNS void LANGUAGE C STRICT AS 'pg_sift', 'sift_verify'" \
+		"CREATE FUNCTION compat_old.col_verify(regclass, bool) RETURNS void LANGUAGE C STRICT AS 'pg_sift', 'sift_col_verify'" \
+		"CREATE FUNCTION compat_old.table_verify(regclass) RETURNS bigint LANGUAGE C STRICT AS 'pg_sift', 'sift_table_verify'" "RESET check_function_bodies" \
+		"CREATE FUNCTION compat_old.check_rows(regclass[]) RETURNS SETOF text LANGUAGE plpgsql AS \$f\$ DECLARE r regclass; am text; BEGIN FOREACH r IN ARRAY \$1 LOOP
+			SELECT a.amname INTO am FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE c.oid = r;
+			BEGIN CASE am WHEN 'sift' THEN PERFORM compat_old.verify(r, true); WHEN 'sift_col' THEN PERFORM compat_old.col_verify(r, true); ELSE PERFORM compat_old.table_verify(r); END CASE;
+			EXCEPTION WHEN OTHERS THEN RETURN NEXT r::text || ' ' || SQLERRM; END; END LOOP; END \$f\$" >/dev/null
+}
+# on_older_library NODE: the node runs a library older than this tree's over a catalog that has compat_old
+on_older_library() { [[ ${NODE_ROOT[$1]:-$newroot} != "$newroot" && $(sql "$1" "SELECT to_regprocedure('compat_old.check_rows(regclass[])') IS NOT NULL") == t ]]; }
+# problems NODE RELATIONS: the problems sift.check finds in the relations (an SQL expression of a regclass array), a row each: the relation, the problem
+problems() {
+	if on_older_library "$1"; then sql "$1" "SELECT p FROM compat_old.check_rows($2) p" 2>&1
+	else sql "$1" "SELECT c.index::text || ' ' || c.problem || ' ' || coalesce(c.detail, '') FROM unnest($2) u, LATERAL sift.check(u) c" 2>&1; fi
+}
+sound() { local n=$1; shift; out=$(problems "$n" "coalesce((SELECT array_agg(inhrelid::regclass) FROM pg_inherits WHERE inhparent = $1::regclass), ARRAY[$1::regclass])"); [[ -z $out ]]; }
+sound_all() {
+	if on_older_library "$1"; then out=$(problems "$1" "$SIFT_RELS" | grep -vE "^(${2//,/|}) ")
+	else out=$(sql "$1" "SELECT index::text || ' ' || problem FROM sift.check() WHERE index::text <> ALL ('{${2:-}}')" 2>&1); fi
+	[[ -z $out ]]
+}
 # refused NODE QUERY: the library cannot read what a newer one wrote and says so with the format error and the hint, not with damage or an answer
 refused() { out=$(answer "$1" "${ON[@]}" "$2"); [[ $out =~ ERROR.*this\ build.*reads && $out == *REINDEX* && $out != *corrupted* ]]; }
 # kinds in REFUSED_KINDS (space separated) are the ones the library must refuse; every other kind verifies and answers as the heap
@@ -50,6 +74,7 @@ compat() { # DIRECTION VARIANT NODE: one COMPAT line and one check for each obje
 		{ sound "$n" "'$ix'" && agree "$n" "$ix" "$q" "$p"; } && ok=PASS
 		echo "# COMPAT $kind $dir $var $ok"
 		check "$dir/$var: $kind ($ix) verifies and answers as the heap" test "$ok" == PASS
+		[[ $ok == PASS ]] || diag "$out"
 	done
 }
 heap_counts() { sql "$1" "SELECT 'docs=' || count(*) FROM docs" "SELECT 'tbl=' || count(*) FROM tbl" "SELECT 'trk=' || count(*) FROM trk_c" "SELECT 'vs=' || count(*) FROM vs" | tr '\n' ' '; }
@@ -70,7 +95,7 @@ zoo_create() {
 	"INSERT INTO tenant_scope SELECT m, 1 + (m * 31 + j * 13) % 12 FROM generate_series(1, 400) m, generate_series(0, 5) j WHERE j < m % 7 ON CONFLICT DO NOTHING" \
 	"CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int)" \
 	"INSERT INTO events SELECT i, 1 + (i * 7919) % 420, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10 FROM generate_series(1, $ROWS) i" \
-	"CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" \
+	"CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(64)')" \
 	"CREATE TABLE dim (id int PRIMARY KEY, name text)" "INSERT INTO dim SELECT i, 'd' || i FROM generate_series(1, 50) i" "CREATE INDEX dim_col ON dim USING sift_col (id, name)" \
 	"CREATE TABLE fact (id int PRIMARY KEY, dim_id int REFERENCES dim (id), v int)" "INSERT INTO fact SELECT i, 1 + i % 50, i % 30 FROM generate_series(1, $ROWS) i" \
 	"CREATE INDEX fact_col ON fact USING sift_col (id, dim_id, v)" \

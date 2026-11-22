@@ -32,12 +32,16 @@ summary_report() {
 		END { printf "%d jobs: %d pass, %d fail, %d skip; %d report skips\n", NR, n["PASS"], n["FAIL"], n["SKIP"], skipped; exit bad > 0 }' "$@"
 }
 # scratch_table TABLE FILE...: the rows of scripts/scratch.tsv (job, MB) after the retained summaries: a job they measured at 150 MB or more gets its largest peak plus 5%, to ten; one they measured
-# below that loses its row (the default estimate holds); a job they do not have, or that failed (the servers of a run past its cap are stopped), keeps the row it had. The comment lines of TABLE stay first; the rows are largest first
+# below that loses its row (the default estimate holds); a job they do not have keeps the row it had. A job that failed (or whose servers a run past its cap stopped) only raises its row: its peak is
+# at least what it needs, and a run in which every job fails would otherwise leave the table as it was and trip the cap again. The comment lines of TABLE stay first; the rows are largest first
 scratch_table() {
 	grep '^#' "$1"
-	awk -F'\t' 'FNR == NR { if ($0 !~ /^#/ && NF) old[$1] = $2; next }
-		$2 != "FAIL" { seen[$1] = 1; if ($4 > peak[$1]) peak[$1] = $4 }
+	awk -F'\t' 'function round(mb) { return int((mb * 1.05 + 9) / 10) * 10 }
+		FNR == NR { if ($0 !~ /^#/ && NF) old[$1] = $2; next }
+		$2 != "FAIL" { seen[$1] = 1; if ($4 > peak[$1]) peak[$1] = $4; next }
+		$4 > low[$1] { low[$1] = $4 }
 		END { for (j in old) if (!(j in seen)) out[j] = old[j]
-			for (j in peak) if (peak[j] >= 150) out[j] = int((peak[j] * 1.05 + 9) / 10) * 10
+			for (j in peak) if (peak[j] >= 150) out[j] = round(peak[j])
+			for (j in low) if (!(j in seen) && low[j] >= 150 && round(low[j]) > out[j]) out[j] = round(low[j])
 			for (j in out) printf "%s\t%d\n", j, out[j] }' "$@" | sort -t$'\t' -k2,2nr -k1,1
 }

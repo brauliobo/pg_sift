@@ -523,6 +523,42 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_build_runs",
 							"Testing: runs a sift_col build with key_cut keeps before it merges some (0 = the default).",
 							NULL, &sift_test_col_build_runs, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_format_minor",
+							"Testing: the column format minor of the segments written (the default is the newest).",
+							NULL, &sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_unit_rows",
+							"Testing: the rows a key-cut unit aims at (0 = the rows of 256 average heap pages).",
+							NULL, &sift_col_unit_rows, 0, 0, 1 << 20, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_unit_floor",
+							"Testing: rows per unit below which a promotion or overlay merge cuts by TID range (0 = a unit per superblock).",
+							NULL, &sift_col_unit_floor, 2048, 0, 1 << 20, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.test_col_merge_frag",
+							 "Testing: units listed per superblock from which a sift_col index is fragmented.",
+							 NULL, &sift_col_auto_merge_fragmentation, 2.0, 1.0, 1000.0, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.test_col_merge_wal_pct",
+							 "Testing: percent of max_wal_size one pass of the merge of the overlays may write (0 = no share).",
+							 NULL, &sift_col_auto_merge_wal_pct, 5.0, 0.0, 100.0, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.test_col_merge_buf_pct",
+							 "Testing: percent of its rows the write buffer holds above which it is due.",
+							 NULL, &sift_col_auto_merge_buffer_pct, 1.0, 0.0, 100.0, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_rollup_on_demand",
+							 "Testing: a scan that reads units for lack of their rollups asks the worker to rebuild them.",
+							 NULL, &sift_col_rollup_on_demand, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_conn_refresh_pct",
+							"Testing: percent of the parent rows whose keys changed from which a connection is stale.",
+							NULL, &sift_col_connect_refresh_pct, 10, 0, 100, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_wbuf_ref",
+							 "Testing: a row goes to the write buffer as a reference to its heap tuple, not as its values.",
+							 NULL, &sift_col_wbuf_ref, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_wbuf_key_range",
+							 "Testing: the pages of the write buffers of an integer key_cut index hold the range of their keys.",
+							 NULL, &sift_col_wbuf_key_range, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_auto_connect",
+							 "Testing: CREATE INDEX connects an index to the sift_col indexes its foreign keys reference.",
+							 NULL, &sift_col_auto_connect, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_scope_refresh_pct",
+							"Testing: percent of the scope pairs changed from which the scope segments are stale.",
+							NULL, &sift_col_scope_refresh_pct, 10, 0, 100, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 #endif
 	col_relopt_kind = add_reloption_kind();
 	add_int_reloption(col_relopt_kind, "write_buffer_limit",

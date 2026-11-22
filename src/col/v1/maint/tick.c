@@ -64,7 +64,7 @@ sift_col_maint_tick(Oid indexoid, int64 dirty_rows)
 	sift_stat_add(SIFT_STAT_ROWS_DIRTY, dirty_rows);
 	if (sift_reads_pending(indexoid))
 		flush_reads(indexoid);
-	if (!sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress())
+	if (!IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress())
 		return;
 	if (sift_scope_paid_pending(indexoid))
 	{
@@ -73,6 +73,8 @@ sift_col_maint_tick(Oid indexoid, int64 dirty_rows)
 		sift_scope_paid_flush(scoped);
 		index_close(scoped, AccessShareLock);
 	}
+	if (!sift_async_maintenance)
+		return;
 	marked = sift_col_marks_take();
 	lk = look_of(indexoid);
 	now = GetCurrentTimestamp();

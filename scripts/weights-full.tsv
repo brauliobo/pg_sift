@@ -317,7 +317,6 @@ installcheck-tbl_zone_prune	20	20
 plan-gate-calibrate	20	12
 tap-007_tbl_logical	16	20
 tap-009_tbl_concurrent	13	20
-tap-shell-col_rollup_ondemand	20	19
 tap-shell-col_track_restore	20	20
 tap-shell-col_connect_dump	20	20
 tap-shell-col_connect_downgrade	35	35

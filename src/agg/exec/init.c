@@ -164,6 +164,45 @@ sift_agg_init(void)
 							 "Testing: a top-N scan waits, once its source is open and before it reads a unit, for the advisory lock (20983, 1) to be free.",
 							 NULL, &sift_test_agg_wait, false,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_agg_probe_rewrite",
+							 "Testing: a join to a lookup table is planned as a probe of its keys.",
+							 NULL, &sift_agg_probe_rewrite, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_agg_two_level",
+							 "Testing: a left join of aggregates is one two-level scan node.",
+							 NULL, &sift_agg_two_level_on, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_agg_probe_direct",
+							 "Testing: the probe of a correlated child reads its entries directly.",
+							 NULL, &sift_agg_probe_direct, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_agg_float_step",
+							 "Testing: a float8 sum restarts its steps when the values change in size.",
+							 NULL, &sift_agg_float_step, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_agg_dead_delta",
+							"Testing: percent of dead rows a segment may hold before a scan reads its units instead of the pre-aggregates.",
+							NULL, &sift_agg_dead_delta, 15, 0, 100, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.test_plan_scale",
+							 "Testing: the factor the cost of a plan without a scan is scaled by.",
+							 NULL, &sift_plan_scale, 1.0, 1.0, 1e6, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.test_agg_rollup_cost",
+							 "Testing: the factor the cost of reading a rollup is scaled by.",
+							 NULL, &sift_agg_rollup_cost, 1.0, 0.0, 100.0, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_agg_par_min_rows",
+							"Testing: rows below which an aggregate scan takes no workers.",
+							NULL, &sift_agg_par_min_rows, 80000, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_search_chunk_sbs",
+							"Testing: superblocks of a chunk of a search scan.",
+							NULL, &sift_search_chunk_sbs, 32, 1, 1024, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_agg_super",
+							 "Testing: a scan answers from the summaries of groups of units.",
+							 NULL, &sift_agg_super, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_topn_zone_keys",
+							 "Testing: a top-N scan orders the units by the zone keys of its sort column.",
+							 NULL, &sift_topn_zone_keys, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_topn_walk",
+							 "Testing: a top-N scan walks the order of its sort column.",
+							 NULL, &sift_topn_walk, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_agg_dense",
+							 "Testing: a group by of a small integer key uses direct arrays.",
+							 NULL, &sift_agg_dense, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 #endif
 }
 

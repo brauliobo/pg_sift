@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tap: pooled
-# The reads of an index never ask for a rewrite (sift.col_auto_merge). Rows deleted from one segment leave its units dirty after the VACUUM, and a dirty unit is not served from the
+# The reads of an index never ask for a rewrite (sift.async_maintenance). Rows deleted from one segment leave its units dirty after the VACUUM, and a dirty unit is not served from the
 # point directory: every read of a key in it reads the unit (60 keys: 0.90 M instructions before the VACUUM, 1.75 M after it). However many reads pay for it, no worker rewrites
 # the index: the units stay dirty, the answers are the table's, sift.col_maintenance_status recommends REINDEX, and the REINDEX is what makes the reads cheap again.
 . "$(dirname "$0")/lib.bash"
@@ -14,7 +14,7 @@ D=$(dir rd)
 sql rd "CREATE EXTENSION pg_sift" "CREATE TABLE t (id int, k int, v int, pad text)" \
 	"INSERT INTO t SELECT g, g % 3000, g % 1000, md5(g::text) FROM generate_series(1, 300000) g" \
 	"CREATE INDEX t_c ON t USING sift_col (id, k, v)" "VACUUM (ANALYZE, FREEZE) t" >/dev/null || bail "setup failed"
-sql rd "ALTER DATABASE postgres SET sift.col_auto_merge = on" >/dev/null
+sql rd "ALTER DATABASE postgres SET sift.async_maintenance = on" >/dev/null
 
 dirty() { sql rd "SELECT coalesce(sum(units) FILTER (WHERE dirty), 0) FROM sift.col_segments('t_c')"; }
 ids=$(seq 1 333 20000 | head -60 | paste -sd, -)

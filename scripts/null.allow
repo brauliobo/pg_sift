@@ -52,3 +52,12 @@ src/agg/hybrid_semi_plan.c	exists_key_set	list-first	the sub-select is an EXISTS
 src/agg/hybrid_store.c	init_quals	list-first	custom_private was made by sift_hybrid_plan_path or sift_hybrid_agg_plan_path with the qinfo as its second entry
 src/agg/hybrid_store.c	sift_hybrid_open	list-first	custom_private and custom_exprs were made by sift_hybrid_plan_path or sift_hybrid_agg_plan_path: ints, qinfo, estimate; the query is the first expression
 src/bm25/planner_ties.c	tie_hybrid_scan	list-first	custom_private of a SiftHybridScan starts with its ints (agg/hybrid_int.h)
+src/agg/hybrid_plan.c	sift_hybrid_plan_path	list-first	custom_private of the path is list_make4(ints, list_make1(query), store quals, quals), built by the path creation of this file
+src/agg/v6/join.c	join_begin	list-first	custom_private is list_make1(ints), built by the plan of this file from the ints of its path
+src/agg/v6/join_asof.c	asof_plan_path	list-first	custom_private of the path is list_make3(ints, vars, sub_attno), built by the path creation of this file
+src/agg/v6/join_asof.c	asof_begin	list-first	custom_private is list_make1(ints), built by the plan of this file from the ints of its path
+src/agg/v6/plan.c	sift_agg_v6_plan_path	list-first	custom_private of the path is list_make3(spec, scan tlist, having), built by the path creation of this file
+src/agg/v6/scope_v6.c	pairs_table	list-first	pairs_query is set only by pairs_subquery, which accepts a query of single_table_query: exactly one range table entry
+src/agg/v6/scope_v6.c	compile_topk	list-first	topk_shape_ok, which the only caller tests first, requires list_length(sortClause) == 1
+src/agg/v6/v6_proj_sort_plan.c	sort_plan_path	list-first	custom_private is sort_pack(): list_make5 whose first list is the ints, with the table flag and the index OID first
+src/agg/v6/v6_vexpr.c	sift_v6_plan_scan	list-first	custom_private is the list every caller of sift_v6_add_path passes (stream, window, SIP, top-N): a list of at least three, the scan tlist second

@@ -928,3 +928,8 @@ CREATE FUNCTION sift._test_rss_peak_start() RETURNS bigint
 	AS 'MODULE_PATHNAME', 'sift_test_rss_peak_start' LANGUAGE C;
 CREATE FUNCTION sift._test_rss_peak_stop() RETURNS bigint
 	AS 'MODULE_PATHNAME', 'sift_test_rss_peak_stop' LANGUAGE C;
+
+-- src/col/v1/wbuf/arena.c: the shared arena of the write buffers of Format 1 (sift.col_arena_status() of 6.0 is the empty answer of a library without one)
+CREATE FUNCTION sift._test_col_arena_status(OUT slots_in_use int4, OUT slots int4, OUT bytes_in_use int8, OUT rows_stored int8, OUT put_fallbacks int8,
+											OUT seals_forced int8, OUT rows_rebuilt int8, OUT segments int4, OUT bytes_taken int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_col_arena_status' LANGUAGE C STRICT STABLE;

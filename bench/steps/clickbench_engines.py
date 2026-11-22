@@ -13,6 +13,7 @@ import urllib.parse
 import uuid
 
 import clickbench_md5 as md5
+import tmpfs  # noqa: F401  (tempfile on tmpfs)
 
 END = '__END__'
 CLEAN_ENV = {k: v for k, v in os.environ.items() if k not in ('AI_AGENT', 'CLAUDECODE')}
@@ -214,7 +215,7 @@ class DuckArm:
         return wall, (times[-1] if times else None), [l for l in out if not l.startswith('Run Time (s)')]
 
     def rows(self, q):
-        with tempfile.TemporaryDirectory(prefix='sift-cbpkg-') as d:
+        with tempfile.TemporaryDirectory(prefix='sift-cbpkg-', dir=tmpfs.require_tmpfs(tmpfs.root())) as d:
             f = os.path.join(d, 'out.csv')
             self.exec("COPY (%s) TO '%s' (FORMAT csv, HEADER false, DELIMITER '\\t', NULL '\\N')" % (q.render_verify('duckdb'), f))
             return md5.decode_csv_tab(open(f, newline='').read())

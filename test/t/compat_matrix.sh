@@ -48,7 +48,7 @@ QB2="SELECT count(*), sum(n) FROM docs WHERE body @@> 'beta7 NOT alpha1'"
 TWIN="SELECT count(*), sum(id), sum(g * 3 + n) FROM"
 IDX=("SET sift.enable_agg = on" "SET seq_page_cost = 10000")
 PLAIN=("SET sift.enable_agg = off" "SET enable_indexscan = off" "SET enable_bitmapscan = off")
-PLAIN_NEW=("${PLAIN[@]}" "SET sift.enable_scan = off" "SET sift.enable_count = off")
+PLAIN_NEW=("${PLAIN[@]}" "SET sift.enable_scan = off")
 
 # ans MODE SUFFIX WHAT: the answers of the queries WHAT (d docs, j jt, t tbl, b BM25 on docs) over the tables with the suffix, in plan mode idx or plain
 ans() {
@@ -161,7 +161,7 @@ sift.async_maintenance = off'
 		BIGQ="SELECT id, length(v), md5(v) FROM tbl_big ORDER BY id"
 		bigwant=$(q "SELECT 1, 2000000, md5(repeat('b', 2000000))" "SELECT 2, 5000000, md5(repeat('a', 5000000))" | tr '\n' ' ')
 		check "$ref: the row of 2 MB the release buffered is read" test "$(q "$BIGQ" | tr '\n' ' ')" == "$(sed 's/ 2|.*//' <<<"$bigwant") "
-		q "SET sift.table_wide_rows = on" "INSERT INTO tbl_big VALUES (2, repeat('a', 5000000))" >/dev/null
+		q "INSERT INTO tbl_big VALUES (2, repeat('a', 5000000))" >/dev/null
 		check "$ref: the wide row opens a buffer of format 11" test "$(q "SELECT count(*) FROM sift.table_segments('tbl_big') WHERE kind = 'sealed buffer' AND format = 11")" == 1
 		check "$ref: both rows are read" test "$(q "$BIGQ" | tr '\n' ' ')" == "$bigwant"
 		q "VACUUM tbl_big" >/dev/null
@@ -178,7 +178,7 @@ sift.async_maintenance = off'
 	# opts out of what is on by default. Refused: one clone for each newer minor, and an index at the defaults with no option
 	q "DROP INDEX docs_idx" >/dev/null	# a BM25 segment has no setting for an older reader: the release refuses a newer format by design
 	# the setting exists once a function of the library ran in the session
-	lowest=$(q "SELECT count(*) FROM sift.col_segments('docs_col')" "SELECT min_val FROM pg_settings WHERE name = 'sift.col_format_minor'" | tail -1)
+	lowest=$(q "SELECT count(*) FROM sift.col_segments('docs_col')" "SELECT min_val FROM pg_settings WHERE name = 'sift.test_col_format_minor'" | tail -1)
 	check "$ref: the lowest column format minor is 3" test "$lowest" == 3
 	# fmt minor: the setting, and the minor the segments are stamped with (the clone at the defaults has no setting)
 	formats=("lo $lowest")
@@ -196,7 +196,7 @@ sift.async_maintenance = off'
 	refused=" cm ca rd sc su dk kp pt kc ex hl df "
 	for f in "${formats[@]}"; do
 		read -r fmt minor <<<"$f"
-		set="SET sift.col_format_minor = $minor"; [[ $fmt != df && $fmt != pt && $fmt != kc && $fmt != ex && $fmt != hl ]] || set="SELECT 1"	# the option or the data stamps 16, 17, 19 or 20 at the default setting (15)
+		set="SET sift.test_col_format_minor = $minor"; [[ $fmt != df && $fmt != pt && $fmt != kc && $fmt != ex && $fmt != hl ]] || set="SELECT 1"	# the option or the data stamps 16, 17, 19 or 20 at the default setting (15)
 		q "$set" \
 			"CREATE TABLE docs_$fmt AS SELECT ${SRC[$fmt]:-*} FROM docs" "CREATE INDEX docs_${fmt}_col ON docs_$fmt USING sift_col (${COLS[$fmt]:-id, g, n}) WITH (write_buffer_limit = 2048${OPT[$fmt]:-})" \
 			"INSERT INTO docs_$fmt (id, g, n, body) SELECT i, i % 9, i % 100, 'x' FROM generate_series(20001, 20400) i" "SELECT sift.col_promote('docs_${fmt}_col')" \
@@ -210,13 +210,13 @@ sift.async_maintenance = off'
 		# a minor 3 segment stores no types: 3.1 refuses an astext leaf of it at query time with the REINDEX hint, by design
 		kind=$textkind; [[ $fmt != lo ]] || kind=text
 		# the clones are written without the presence leaf (sift.test_col_no_present: the layout of an index made before 4.2), so that the release reads them
-		q "SET sift.col_format_minor = $minor" "SET sift.test_col_no_present = on" \
+		q "SET sift.test_col_format_minor = $minor" "SET sift.test_col_no_present = on" \
 			"CREATE TABLE jt_$fmt AS TABLE jt" "CREATE INDEX jt_${fmt}_col ON jt_$fmt USING sift_col (id, items, attr) WITH (paths = 'items[]{s text}, attr->a ${kind}')" \
 			"INSERT INTO jt_$fmt SELECT i, '[{\"s\":\"gift\"}]', '{\"a\":1}' FROM generate_series(4001, 4200) i" >/dev/null || bail "$ref $fmt jt"
 		# the presence of the documents (the leaf that CREATE INDEX writes for a jsonb column that may be NULL) is a leaf of the layout, not a minor: the release refuses that index (its metapage does not describe the layout)
-		[[ $fmt != lo ]] || q "SET sift.col_format_minor = $minor" "CREATE TABLE jt_dp AS TABLE jt" "CREATE INDEX jt_dp_col ON jt_dp USING sift_col (id, items, attr) WITH (paths = 'items[]{s text}, attr->a ${kind}')" >/dev/null || bail "$ref jt_dp"
+		[[ $fmt != lo ]] || q "SET sift.test_col_format_minor = $minor" "CREATE TABLE jt_dp AS TABLE jt" "CREATE INDEX jt_dp_col ON jt_dp USING sift_col (id, items, attr) WITH (paths = 'items[]{s text}, attr->a ${kind}')" >/dev/null || bail "$ref jt_dp"
 		if [[ $hastbl == yes ]]; then
-			q "SET sift.col_format_minor = $minor" "CREATE TABLE tbl_$fmt (LIKE tbl) USING sift_table" "INSERT INTO tbl_$fmt SELECT * FROM tbl" "VACUUM (FREEZE) tbl_$fmt" \
+			q "SET sift.test_col_format_minor = $minor" "CREATE TABLE tbl_$fmt (LIKE tbl) USING sift_table" "INSERT INTO tbl_$fmt SELECT * FROM tbl" "VACUUM (FREEZE) tbl_$fmt" \
 				"INSERT INTO tbl_$fmt SELECT i, i % 9, i % 100 FROM generate_series(20001, 20300) i" >/dev/null || bail "$ref $fmt table"
 		fi
 	done
@@ -235,7 +235,7 @@ sift.async_maintenance = off'
 	if [[ $hastbl == yes ]]; then
 		# the two sift_table formats that no index shows: the calendar cells of a timestamp column (8) and the write buffer of a row on tail pages (11)
 		q "CREATE TABLE tbl_ca (id int, at timestamp) USING sift_table" "INSERT INTO tbl_ca SELECT i, timestamp '2026-01-01' + i * interval '1 hour' FROM generate_series(1, 3000) i" "VACUUM tbl_ca" \
-			"SET sift.table_wide_rows = on" "CREATE TABLE tbl_wr (id int, v text) USING sift_table" "INSERT INTO tbl_wr VALUES (1, repeat('a', 5000000)), (2, 'short')" >/dev/null || bail "$ref table clones"
+			"CREATE TABLE tbl_wr (id int, v text) USING sift_table" "INSERT INTO tbl_wr VALUES (1, repeat('a', 5000000)), (2, 'short')" >/dev/null || bail "$ref table clones"
 		check "$ref: tbl_ca holds column format 8" test "$(q "SELECT string_agg(DISTINCT format::text, ',') FROM sift.table_segments('tbl_ca') WHERE kind = 'columns'")" == 8
 		check "$ref: tbl_wr holds a buffer of format 11" test "$(q "SELECT count(*) FROM sift.table_segments('tbl_wr') WHERE kind = 'sealed buffer' AND format = 11")" == 1
 	fi
@@ -291,7 +291,7 @@ sift.async_maintenance = off'
 		use_root mx "$newroot"
 		node_start mx || bail "cannot restart this tree for the downgrade"
 		q "CREATE TABLE dgb AS SELECT id, body FROM docs" "CREATE INDEX dgb_idx ON dgb USING sift (body)" "INSERT INTO dgb SELECT i, 'alpha' || i % 5 FROM generate_series(30001, 30500) i" \
-			"SET sift.table_wide_rows = on" "CREATE TABLE tbl_wr2 (id int, v text) USING sift_table" "INSERT INTO tbl_wr2 VALUES (1, repeat('a', 5000000)), (2, 'short')" >/dev/null || bail "downgrade setup"
+			"CREATE TABLE tbl_wr2 (id int, v text) USING sift_table" "INSERT INTO tbl_wr2 VALUES (1, repeat('a', 5000000)), (2, 'short')" >/dev/null || bail "downgrade setup"
 		DGB="SELECT count(*), sum(id) FROM dgb WHERE body @@> 'alpha3 beta4'"
 		bidx=$(q "SET enable_seqscan = off" "$DGB" | tail -1)
 		blockers=$(uc --to 3.2 postgres | awk '$1 == "blocker"')
@@ -299,9 +299,9 @@ sift.async_maintenance = off'
 		check "3.2 downgrade: it lists the clones of every newer minor and the sift_tables" test "$(grep -cE ' (docs_(cm|ca|rd|sc|su|dk|kp|pt|kc|df)_col|tbl_ca|tbl_wr2) ' <<<"$blockers")" -ge 12
 		check "3.2 downgrade: it lists the BM25 index (segment format 4, metapage minor 1.4: the release refuses it)" test "$(grep -c ' dgb_idx ' <<<"$blockers")" == 1
 		check "3.2 downgrade: it lists the two event triggers whose function the release does not have" test "$(grep -cE ' sift_table_(ddl_check|repack_guard) +trigger ' <<<"$blockers")" == 2
-		q "ALTER SYSTEM SET sift.col_format_minor = 6" "SELECT pg_reload_conf()" >/dev/null
-		for _ in $(seq 100); do [[ $(q "SHOW sift.col_format_minor") == 6 ]] && break; sleep 0.1; done
-		check "3.2 downgrade: the setting is 6 for every new session" test "$(q "SHOW sift.col_format_minor")" == 6
+		q "ALTER SYSTEM SET sift.test_col_format_minor = 6" "SELECT pg_reload_conf()" >/dev/null
+		for _ in $(seq 100); do [[ $(q "SHOW sift.test_col_format_minor") == 6 ]] && break; sleep 0.1; done
+		check "3.2 downgrade: the setting is 6 for every new session" test "$(q "SHOW sift.test_col_format_minor")" == 6
 		under_old=()
 		while read -r _ obj kind rest; do
 			case $kind in
@@ -377,7 +377,7 @@ sift.async_maintenance = off'
 		use_root mx "$newroot"
 		node_start mx || bail "cannot restart this tree after the downgrade"
 		check "3.2 downgrade: this tree's library runs again" test "$(q "SELECT sift.version()")" == "$cur"
-		q "ALTER EVENT TRIGGER sift_table_ddl_check ENABLE" "ALTER EVENT TRIGGER sift_table_repack_guard ENABLE" "ALTER SYSTEM RESET sift.col_format_minor" "SELECT pg_reload_conf()" >/dev/null
+		q "ALTER EVENT TRIGGER sift_table_ddl_check ENABLE" "ALTER EVENT TRIGGER sift_table_repack_guard ENABLE" "ALTER SYSTEM RESET sift.test_col_format_minor" "SELECT pg_reload_conf()" >/dev/null
 		check "3.2 downgrade: forward again: the event triggers are enabled" test "$(q "SELECT string_agg(evtenabled::text, '') FROM pg_event_trigger WHERE evtname IN ('sift_table_ddl_check', 'sift_table_repack_guard')")" == OO
 		check "3.2 downgrade: forward again: ALTER TABLE works with this tree's library" q "ALTER TABLE dgb DROP COLUMN extra"
 		check "3.2 downgrade: forward again: the indexes verify" verify_all "sift.col_verify('docs_df_col', true)" "sift.verify('dgb_idx', true)"
@@ -390,5 +390,5 @@ sift.async_maintenance = off'
 done
 # an aborted loop must not pass: every release runs more than 30 checks
 check "every release of the matrix ran to its end" test "$NTEST" -gt $((30 * ${#MATRIX[@]}))
-echo "1..$NTEST"
+done_testing
 finish

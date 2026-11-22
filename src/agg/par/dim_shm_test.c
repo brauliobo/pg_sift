@@ -100,7 +100,7 @@ probe_key(const Params *p, uint32 i)
 static SiftMorselQueue *
 align_queue(void *raw)
 {
-	return (SiftMorselQueue *) TYPEALIGN(PG_CACHE_LINE_SIZE, raw);
+	return (SiftMorselQueue *) TYPEALIGN(SIFT_PAR_SHM_ALIGN, raw);
 }
 
 /* The build, then the probes the participant claims, answered into file; the microseconds of the build */
@@ -280,7 +280,7 @@ sift_test_dim_shm(PG_FUNCTION_ARGS)
 	const bool	fits = sift_dim_shm_fits(p.nrows, participants);
 	const uint32 probe_granules = (p.probes + PROBE_BLOCK - 1) / PROBE_BLOCK;
 	const Size	dim_size = sift_dim_shm_size(p.nrows, participants),
-				pq_size = sift_morsel_size(1) + PG_CACHE_LINE_SIZE;
+				pq_size = sift_morsel_size(1) + SIFT_PAR_SHM_ALIGN;
 	ParallelContext *pcxt = NULL;
 	SiftDimShm *d;
 	Params	   *shared = &p;
@@ -318,7 +318,7 @@ sift_test_dim_shm(PG_FUNCTION_ARGS)
 		EnterParallelMode();
 		pcxt = CreateParallelContext("pg_sift", "sift_dim_shm_test_worker", workers);
 		shm_toc_estimate_chunk(&pcxt->estimator, dim_size);
-		shm_toc_estimate_chunk(&pcxt->estimator, sizeof(Params));
+		shm_toc_estimate_chunk(&pcxt->estimator, sizeof(Params) + SIFT_PAR_SHM_ALIGN);
 		shm_toc_estimate_chunk(&pcxt->estimator, sizeof(SharedFileSet));
 		shm_toc_estimate_chunk(&pcxt->estimator, pq_size);
 		shm_toc_estimate_keys(&pcxt->estimator, 4);
@@ -326,7 +326,7 @@ sift_test_dim_shm(PG_FUNCTION_ARGS)
 		if (pcxt->seg == NULL)
 			elog(ERROR, "no shared memory for the parallel test");
 		d = sift_dim_shm_init(shm_toc_allocate(pcxt->toc, dim_size), p.nrows, workers + 1);
-		shared = shm_toc_allocate(pcxt->toc, sizeof(Params));
+		shared = (Params *) TYPEALIGN(SIFT_PAR_SHM_ALIGN, shm_toc_allocate(pcxt->toc, sizeof(Params) + SIFT_PAR_SHM_ALIGN));
 		fs = shm_toc_allocate(pcxt->toc, sizeof(SharedFileSet));
 		pq = align_queue(shm_toc_allocate(pcxt->toc, pq_size));
 	}

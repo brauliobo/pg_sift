@@ -443,7 +443,11 @@ parse_sort(Parser *ps, SiftProjSpec *s)
 				dup |= s->key[i].leaf == c;
 			for (int i = 0; i < s->ninclude; i++)
 				dup |= s->include[i] == c;
-			if (!dup && s->ninclude < SIFT_PROJ_MAX_COLS)
+			if (dup)
+				continue;
+			if (s->ninclude >= SIFT_PROJ_MAX_COLS)
+				fail(ps, "%s", "too many columns");
+			else
 				s->include[s->ninclude++] = (int16) c;
 		} while (!ps->failed && accept_sym(ps, ','));
 		expect_sym(ps, ')');
@@ -582,7 +586,9 @@ parse_group(Parser *ps, SiftProjSpec *s)
 		for (int i = 0; i < s->nmeas; i++)
 			if (s->meas[i].fn == m.fn && s->meas[i].leaf == m.leaf && same_filter(&s->meas[i], &m))
 				fail(ps, "%s", "a measure is listed twice");
-		if (!ps->failed && s->nmeas < SIFT_PROJ_MAX_COLS)
+		if (s->nmeas >= SIFT_PROJ_MAX_COLS)
+			fail(ps, "%s", "too many columns");
+		else if (!ps->failed)
 			s->meas[s->nmeas++] = m;
 	} while (!ps->failed && accept_sym(ps, ','));
 	parse_where(ps, s);

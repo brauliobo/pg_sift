@@ -5,13 +5,11 @@
 
 -- @deprecated sift.check
 CREATE OR REPLACE FUNCTION sift.verify(index regclass, heapallindexed bool DEFAULT false) RETURNS void
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
-BEGIN PERFORM sift_internal.require_am(index, 'sift'); PERFORM sift_internal.check_raise(index, heapallindexed); END $$;
+	AS 'MODULE_PATHNAME', 'sift_verify' LANGUAGE C STRICT VOLATILE;
 
 -- @deprecated sift.check
 CREATE OR REPLACE FUNCTION sift.col_verify(index regclass, heapallindexed bool DEFAULT false) RETURNS void
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
-BEGIN PERFORM sift_internal.require_am(index, 'sift_col'); PERFORM sift_internal.check_raise(index, heapallindexed); END $$;
+	AS 'MODULE_PATHNAME', 'sift_col_verify' LANGUAGE C STRICT VOLATILE;
 
 -- @deprecated sift.check; the live rows of the table as before
 CREATE OR REPLACE FUNCTION sift.table_verify(tbl regclass) RETURNS bigint
@@ -80,19 +78,11 @@ BEGIN
 					   coalesce(sum(g.preagg_bytes), 0)::int8 AS preagg_bytes FROM sift.parts(index) g) p;
 END $$;
 
--- @deprecated sift.space; the owner of the last extent and where it ends come from sift.col_extents, the shrink target is NULL
+-- @deprecated sift.space; the entry point of 5.1, which answers for Format 1 (tail and shrink target) and Format 2.0
 CREATE OR REPLACE FUNCTION sift.col_space(index regclass, OUT relation_blocks int8, OUT high_water int8, OUT used_blocks int8, OUT reusable_blocks int8,
 										  OUT pending_blocks int8, OUT free_extents int4, OUT largest_free_extent int8, OUT tail_what text, OUT tail_gen int8,
 										  OUT tail_end int8, OUT shrink_to int8, OUT shrink_blocks int8) RETURNS record
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
-BEGIN
-	SELECT s.relation_blocks, s.high_water, s.used_blocks, s.reusable_blocks, s.pending_blocks, s.free_extents::int4, s.largest_free_extent,
-		   t.what, t.gen, t.first_block + t.nblocks, NULL::int8, NULL::int8
-	INTO col_space.relation_blocks, col_space.high_water, col_space.used_blocks, col_space.reusable_blocks, col_space.pending_blocks, col_space.free_extents,
-		 col_space.largest_free_extent, col_space.tail_what, col_space.tail_gen, col_space.tail_end, col_space.shrink_to, col_space.shrink_blocks
-	FROM sift.space(index) s
-	LEFT JOIN LATERAL (SELECT e.what, e.gen, e.first_block, e.nblocks FROM sift.col_extents(index) e ORDER BY e.first_block + e.nblocks DESC LIMIT 1) t ON true;
-END $$;
+	AS 'MODULE_PATHNAME', 'sift_col_space' LANGUAGE C STRICT VOLATILE;
 
 -- @deprecated sift.space
 CREATE OR REPLACE FUNCTION sift.table_space(tbl regclass, OUT relation_blocks int8, OUT high_water int8, OUT free_blocks int8, OUT reusable_blocks int8,
@@ -167,35 +157,42 @@ CREATE OR REPLACE FUNCTION sift.col_arena_status(OUT slots_in_use int4, OUT slot
 	SELECT 0, 0, 0::int8, 0::int8, 0::int8, 0::int8, 0::int8, 0, 0::int8
 $$;
 
--- @deprecated sift.parts: no segment keeps a stamp
+-- @deprecated sift.parts: Format 1 keeps a stamp per segment, Format 2.0 none
 CREATE OR REPLACE FUNCTION sift.col_stamps(index regclass, OUT gen bigint, OUT entries bigint, OUT stamp xid) RETURNS SETOF record
-	LANGUAGE sql STRICT STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
-	SELECT NULL::bigint, NULL::bigint, NULL::xid WHERE false
-$$;
+	LANGUAGE plpgsql STRICT STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+BEGIN
+	PERFORM sift_internal.require_am(index, 'sift_col');
+	PERFORM sift_internal.require_inspect(index);
+	IF (SELECT f.major FROM sift.index_format(index) f) = 1 THEN
+		RETURN QUERY SELECT * FROM sift_internal.v1_col_stamps(index);
+	END IF;
+END $$;
 
 -- @deprecated: the triggers of track_changes were converted to dependents of their index in 4.2.1; nothing is left to convert
 CREATE OR REPLACE FUNCTION sift.col_track_convert() RETURNS integer
 	LANGUAGE sql VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$ SELECT 0 $$;
 
--- @deprecated sift.status, sift.health: whether track_changes is set; the log is not read
+-- @deprecated sift.status, sift.health: the entry point of 5.1, which answers for Format 1 and Format 2.0
 CREATE OR REPLACE FUNCTION sift.col_tracking(index regclass, OUT track_changes bool, OUT triggers bool, OUT complete bool, OUT heap_free bool) RETURNS record
-	LANGUAGE sql STRICT STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
-	SELECT NOT coalesce('track_changes=off' = ANY (c.reloptions), false), false, false, false FROM pg_class c WHERE c.oid = index
-$$;
+	AS 'MODULE_PATHNAME', 'sift_col_tracking' LANGUAGE C STRICT VOLATILE;
 
 -- @deprecated sift.col_granules: a unit is a granule
 CREATE OR REPLACE FUNCTION sift.col_unit_agg(index regclass, leaf text, OUT segment int8, OUT sb int4, OUT rows int4, OUT exact bool, OUT nvals int8,
 											 OUT nnull int8, OUT min text, OUT max text, OUT sum numeric, OUT sumsq numeric, OUT sum_float float8) RETURNS SETOF record
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
-	SELECT NULL::int8, NULL::int4, NULL::int4, NULL::bool, NULL::int8, NULL::int8, NULL::text, NULL::text, NULL::numeric, NULL::numeric, NULL::float8 WHERE false
-$$;
+	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+BEGIN
+	PERFORM sift_internal.require_am(index, 'sift_col');
+	PERFORM sift._require_select((SELECT indrelid FROM pg_index WHERE indexrelid = index));
+END $$;
 
 -- @deprecated sift.col_granules
 CREATE OR REPLACE FUNCTION sift.col_unit_hist(index regclass, dim text, measure text DEFAULT NULL, OUT segment int8, OUT sb int4, OUT exact bool, OUT key text,
 											  OUT n int8, OUT nn int8, OUT sum numeric, OUT sum_float float8) RETURNS SETOF record
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
-	SELECT NULL::int8, NULL::int4, NULL::bool, NULL::text, NULL::int8, NULL::int8, NULL::numeric, NULL::float8 WHERE false
-$$;
+	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+BEGIN
+	PERFORM sift_internal.require_am(index, 'sift_col');
+	PERFORM sift._require_select((SELECT indrelid FROM pg_index WHERE indexrelid = index));
+END $$;
 
 -- @deprecated sift.activity: pre-aggregates are rewritten by the maintenance step, no request queue is kept
 CREATE OR REPLACE FUNCTION sift.col_rollup_counters(OUT requested int8, OUT refreshed int8, OUT skipped int8, OUT dropped int8, OUT queued int4,
@@ -270,7 +267,7 @@ COMMENT ON FUNCTION sift.col_maintain(regclass) IS 'Deprecated: sift.maintain. T
 COMMENT ON FUNCTION sift.table_maintain(regclass) IS 'Deprecated: sift.maintain.';
 COMMENT ON FUNCTION sift.index_info(regclass) IS 'Deprecated: sift.space and sift.status. max_segments and sum_dl are NULL.';
 COMMENT ON FUNCTION sift.col_index_info(regclass) IS 'Deprecated: sift.space and sift.parts. max_segments and leaves are NULL.';
-COMMENT ON FUNCTION sift.col_space(regclass) IS 'Deprecated: sift.space. The owner of the last block and the shrink target are NULL.';
+COMMENT ON FUNCTION sift.col_space(regclass) IS 'Deprecated: sift.space. The tail and the shrink target are NULL for Format 2.0.';
 COMMENT ON FUNCTION sift.table_space(regclass) IS 'Deprecated: sift.space.';
 COMMENT ON FUNCTION sift.col_segments(regclass) IS 'Deprecated: sift.parts. Format 2.0 has no superblock range: NULL.';
 COMMENT ON FUNCTION sift.table_segments(regclass) IS 'Deprecated: sift.parts. Format 2.0 has no superblock range: NULL.';
@@ -278,9 +275,9 @@ COMMENT ON FUNCTION sift.refusal_actions() IS 'Deprecated: sift.refusal_slugs, w
 COMMENT ON FUNCTION sift.stats() IS 'Deprecated: sift.stats(false), the totals of the server; sift.stats(true) has the figures of this session.';
 COMMENT ON FUNCTION sift.upgrade_commands() IS 'Deprecated: sift.migrate_plan and sift.upgrade_check. Nothing is required after the update; the rows are the optional steps.';
 COMMENT ON FUNCTION sift.col_arena_status() IS 'Deprecated: the arena of write buffers is gone; all zero.';
-COMMENT ON FUNCTION sift.col_stamps(regclass) IS 'Deprecated: no rows.';
+COMMENT ON FUNCTION sift.col_stamps(regclass) IS 'Deprecated: the segment stamps of Format 1; no rows for Format 2.0.';
 COMMENT ON FUNCTION sift.col_track_convert() IS 'Deprecated: nothing is left to convert; 0.';
-COMMENT ON FUNCTION sift.col_tracking(regclass) IS 'Deprecated: whether track_changes is set.';
+COMMENT ON FUNCTION sift.col_tracking(regclass) IS 'Deprecated: sift.status and sift.health. Whether the log is complete and read without the heap.';
 COMMENT ON FUNCTION sift.col_unit_agg(regclass, text) IS 'Deprecated: sift.col_granules. No rows.';
 COMMENT ON FUNCTION sift.col_unit_hist(regclass, text, text) IS 'Deprecated: sift.col_granules. No rows.';
 COMMENT ON FUNCTION sift.col_rollup_counters() IS 'Deprecated: sift.activity. All zero.';

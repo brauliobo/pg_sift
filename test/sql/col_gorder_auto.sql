@@ -33,8 +33,8 @@ CREATE INDEX ga_list ON ga USING sift_col (id, r, g, ts, pad) WITH (order_array_
 SELECT relname, reloptions FROM pg_class WHERE relname IN ('ga_off', 'ga_list') ORDER BY 1;
 -- the whole order of a listed column is minor 38, which 3.7 reads and 3.6 does not (the NOTICE of a listed column says so)
 SELECT min(format) AS format FROM sift.col_segments('ga_list') WHERE kind = 'immutable';
--- the update list is for an option that names columns: off is not a gain to reindex for
-SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE object = 'ga_off'::regclass;
+-- off is not a gain to reindex for: the update list holds only optional cleanup (two deprecated options to reset, the optional REINDEX of Format 1), nothing required
+SELECT count(*) FILTER (WHERE required) AS required_commands, count(*) AS total_commands FROM sift.upgrade_commands() WHERE object = 'ga_off'::regclass;
 DROP INDEX ga_auto, ga_off, ga_list;
 
 -- a narrow index of small columns: the arrays would be a third of it

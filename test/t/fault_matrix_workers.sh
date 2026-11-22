@@ -34,7 +34,7 @@ trigger() { # KIND: makes the worker start
 configure() { # KIND on|off
 	if [[ $2 == on ]]; then
 		case $1 in
-			col) sql wk "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 1" >/dev/null ;;
+			col) sql wk "ALTER DATABASE postgres SET sift.async_maintenance = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 1" >/dev/null ;;
 			bm25) sql wk "ALTER DATABASE postgres SET sift.test_step_gate = on" >/dev/null ;;
 		esac
 	else
@@ -100,5 +100,5 @@ for kind in ${SIFT_WORKER_KINDS:-col bm25}; do
 		check "$id: and answers as the table does" answers "$kind"
 	done
 done
-echo "1..$NTEST"
+done_testing
 finish

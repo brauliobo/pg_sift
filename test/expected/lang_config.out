@@ -74,6 +74,7 @@ CREATE INDEX le_empty ON le USING sift (body) WITH (stemmer = 'public.lang_empty
 ERROR:  text search configuration "public.lang_empty" maps no word tokens
 CREATE INDEX le_kw ON le USING sift (body) WITH (stemmer = 'german', analyzer = keyword);
 ERROR:  analyzer = keyword cannot be combined with stemmer, prefix_index or fields
+HINT:  Use analyzer = 'text' for stemming, prefixes or weighted fields, or drop those options for exact keyword matching.
 DROP TABLE le;
 -- documents from word lists, per language
 CREATE TABLE lang_words (cfg text, words text[]);

@@ -158,7 +158,9 @@ sync_dir_of(const char *path)
 static void
 file_etag(const struct stat *st, char *etag)
 {
-	snprintf(etag, SIFT_TIER_ETAG_LEN, "f%llx-%llx-%llx", (unsigned long long) st->st_size, (unsigned long long) st->st_mtim.tv_sec, (unsigned long long) st->st_mtim.tv_nsec);
+	struct timespec mtime = sift_stat_mtime(st);
+
+	snprintf(etag, SIFT_TIER_ETAG_LEN, "f%llx-%llx-%llx", (unsigned long long) st->st_size, (unsigned long long) mtime.tv_sec, (unsigned long long) mtime.tv_nsec);
 }
 
 static bool

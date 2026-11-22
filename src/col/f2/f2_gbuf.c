@@ -7,7 +7,6 @@
 
 #include "catalog/pg_class_d.h"
 #include "utils/hsearch.h"
-#include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -41,17 +40,7 @@ typedef struct PinEntry
 static HTAB *pin_cache = NULL;
 static MemoryContext pin_root = NULL;
 
-static void gbuf_invalidate(Datum arg, Oid relid);
-
-static void
-gbuf_register_invalidation(void)
-{
-	static bool registered = false;
-
-	if (!registered)
-		CacheRegisterRelcacheCallback(gbuf_invalidate, (Datum) 0);
-	registered = true;
-}
+static void gbuf_invalidate(uint32 hashvalue);
 
 static void
 pin_drop(PinEntry *e)
@@ -113,14 +102,14 @@ pin_drop_unwanted(SiftF2PartPin *pin)
 }
 
 static void
-pins_invalidate(Oid relid)
+pins_invalidate(uint32 hashvalue)
 {
 	HASH_SEQ_STATUS seq;
 	PinEntry   *e;
 
 	hash_seq_init(&seq, pin_cache);
 	while ((e = hash_seq_search(&seq)) != NULL)
-		if (e->relid == relid)
+		if (sift_f2_inval_hits(e->relid, hashvalue))
 		{
 			if (e->pin->refcnt == 0)
 				pin_drop(e);
@@ -146,7 +135,7 @@ pin_cache_init(void)
 	pin_cache = hash_create("sift cache f2 table part pins", PIN_CACHE_MAX, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	pin_root = ctl.hcxt;
 	sift_cache_register(&pin_kind);
-	gbuf_register_invalidation();
+	sift_f2_invalidator_register(gbuf_invalidate);
 }
 
 static void
@@ -474,6 +463,7 @@ typedef struct TidIndex
 	Oid			relid;
 	uint64		manifest_version;
 	uint64		tick;			/* sift_cache_tick() of its last use */
+	MemoryContext cx;			/* holds slots and loose */
 	int			n;
 	TidSlot    *slots;			/* the parts with an envelope, ascending by tid_min */
 	int			nloose;
@@ -524,8 +514,7 @@ tid_index_drop(TidIndex *ix)
 {
 	RelFileLocator locator = ix->locator;
 
-	pfree(ix->slots);
-	pfree(ix->loose);
+	MemoryContextDelete(ix->cx);
 	hash_search(tid_indexes, &locator, HASH_REMOVE, NULL);
 }
 
@@ -541,7 +530,7 @@ tid_index_evict_one(void)
 }
 
 static void
-tid_indexes_invalidate(Oid relid)
+tid_indexes_invalidate(uint32 hashvalue)
 {
 	HASH_SEQ_STATUS seq;
 	TidIndex   *ix;
@@ -550,17 +539,17 @@ tid_indexes_invalidate(Oid relid)
 		return;
 	hash_seq_init(&seq, tid_indexes);
 	while ((ix = hash_seq_search(&seq)) != NULL)
-		if (ix->relid == relid)
+		if (sift_f2_inval_hits(ix->relid, hashvalue))
 			tid_index_drop(ix);
 }
 
 static void
-gbuf_invalidate(Datum arg pg_attribute_unused(), Oid relid)
+gbuf_invalidate(uint32 hashvalue)
 {
 	if (pin_cache != NULL)
-		pins_invalidate(relid);
+		pins_invalidate(hashvalue);
 	if (tid_indexes != NULL)
-		tid_indexes_invalidate(relid);
+		tid_indexes_invalidate(hashvalue);
 }
 
 static void
@@ -580,8 +569,9 @@ tid_index_build(const SiftPlanSnapshot *v)
 
 	for (int i = 0; i < v->npartitions; i++)
 		total += v->partlists[i].nparts;
-	ix.slots = MemoryContextAlloc(tid_cx, sizeof(TidSlot) * Max(total, 1));
-	ix.loose = MemoryContextAlloc(tid_cx, sizeof(TidSlot) * Max(total, 1));
+	ix.cx = AllocSetContextCreateInternal(tid_cx, "sift cache f2 tid index", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, SIFT_MEM_MAX_BLOCK);
+	ix.slots = MemoryContextAlloc(ix.cx, sizeof(TidSlot) * Max(total, 1));
+	ix.loose = MemoryContextAlloc(ix.cx, sizeof(TidSlot) * Max(total, 1));
 	for (int i = 0; i < v->npartitions; i++)
 		for (int j = 0; j < v->partlists[i].nparts; j++)
 		{
@@ -612,7 +602,7 @@ tid_index_of(Relation rel, const SiftPlanSnapshot *v)
 		tid_cx = ctl.hcxt;
 		tid_indexes = hash_create("sift cache f2 tid indexes", TID_INDEX_MAX, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		sift_cache_register(&tid_index_kind);
-		gbuf_register_invalidation();
+		sift_f2_invalidator_register(gbuf_invalidate);
 	}
 	e = hash_search(tid_indexes, &v->locator, HASH_FIND, NULL);
 	if (e != NULL && e->manifest_version == v->manifest_version)
@@ -624,10 +614,7 @@ tid_index_of(Relation rel, const SiftPlanSnapshot *v)
 	built.relid = RelationGetRelid(rel);
 	built.tick = sift_cache_tick();
 	if (e != NULL)
-	{
-		pfree(e->slots);
-		pfree(e->loose);
-	}
+		MemoryContextDelete(e->cx);
 	else if (hash_get_num_entries(tid_indexes) >= TID_INDEX_MAX)
 		tid_index_evict_one();
 	e = hash_search(tid_indexes, &v->locator, HASH_ENTER, NULL);

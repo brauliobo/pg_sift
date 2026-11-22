@@ -27,21 +27,21 @@ refused() { dbq "$1" "$2" 2>&1 | grep -c "is over the limit of $3 entries a row"
 fresh src
 dbq src "${SETUP[@]}" >/dev/null || bail "setup failed"
 check "a scope of 5 entries a row is refused by the default limit" test "$(refused src "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (scope = '$DECL')" 3)" == 1
-out=$(dbq src "SET sift.scope_max_multiplicity = 8" "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (scope = '$DECL')" "$OPT" 2>&1)
-check "with the setting raised it is accepted, and the option records the limit" test "$(dbq src "$OPT")" == "scope=$DECL max_multiplicity(8)"
-check "REINDEX in a session with the default setting is accepted under the recorded limit" test "$(dbq src "REINDEX INDEX ce_col" 2>&1 | errors)" == 0 -a "$(dbq src "$OPT")" == "scope=$DECL max_multiplicity(8)"
+out=$(dbq src "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (scope = '$DECL max_multiplicity(8)')" "$OPT" 2>&1)
+check "with the limit declared it is accepted, and the option records it" test "$(dbq src "$OPT")" == "scope=$DECL max_multiplicity(8)"
+check "REINDEX is accepted under the recorded limit" test "$(dbq src "REINDEX INDEX ce_col" 2>&1 | errors)" == 0 -a "$(dbq src "$OPT")" == "scope=$DECL max_multiplicity(8)"
 check "the reads of the rebuilt index are the join's" test "$(dbq src "SET sift.agg_force = on" "SELECT count(*), sum(v) FROM ce e WHERE sift.in_scope('ce_col'::regclass, 't', e.m, 5)" | tail -n 1)" == \
 	"$(dbq src "SET sift.enable_agg = off" "SELECT count(*), sum(v) FROM ce e WHERE e.m IN (SELECT m FROM cp WHERE t = 5)" | tail -n 1)"
-dbq src "ALTER INDEX ce_col SET (scope = '$DECL max_multiplicity(2)')" "SET sift.scope_max_multiplicity = 8" >/dev/null
-check "a limit the declaration states wins over the setting of the session: the REINDEX is refused at 2" test "$(refused src "SET sift.scope_max_multiplicity = 8; REINDEX INDEX ce_col" 2)" == 1
+dbq src "ALTER INDEX ce_col SET (scope = '$DECL max_multiplicity(2)')" >/dev/null
+check "the limit the declaration states is the limit: the REINDEX is refused at 2" test "$(refused src "REINDEX INDEX ce_col" 2)" == 1
 dbq src "ALTER INDEX ce_col SET (scope = '$DECL max_multiplicity(6.5)')" >/dev/null
-check "... and one the declaration states is not changed by a build under another setting" test "$(dbq src "REINDEX INDEX ce_col" 2>&1 | errors)" == 0 -a "$(dbq src "$OPT")" == "scope=$DECL max_multiplicity(6.5)"
+check "... and a limit that allows the scope is kept by the REINDEX" test "$(dbq src "REINDEX INDEX ce_col" 2>&1 | errors)" == 0 -a "$(dbq src "$OPT")" == "scope=$DECL max_multiplicity(6.5)"
 
 pg_dump "${S[@]}" -Fc -f "$D/src.custom" src
 pg_dump "${S[@]}" -Fp -f "$D/src.sql" src
 check "pg_dump writes the limit in the option" test "$(grep -c "scope='$DECL max_multiplicity(6.5)'" "$D/src.sql")" == 1
 fresh r1
-check "pg_restore in a session with the default setting makes the index under the recorded limit" test "$(pg_restore "${S[@]}" -d r1 "$D/src.custom" 2>&1 | errors)" == 0 -a "$(dbq r1 "$OPT")" == "scope=$DECL max_multiplicity(6.5)"
+check "pg_restore makes the index under the recorded limit" test "$(pg_restore "${S[@]}" -d r1 "$D/src.custom" 2>&1 | errors)" == 0 -a "$(dbq r1 "$OPT")" == "scope=$DECL max_multiplicity(6.5)"
 fresh r2
 check "pg_dump | psql, the same" test "$(psql -X -q "${S[@]}" -d r2 -f "$D/src.sql" 2>&1 | errors)" == 0 -a "$(dbq r2 "$OPT")" == "scope=$DECL max_multiplicity(6.5)"
 check "REINDEX of the restored index is accepted too" test "$(dbq r2 "REINDEX INDEX ce_col" 2>&1 | errors)" == 0

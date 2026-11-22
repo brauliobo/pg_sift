@@ -6,7 +6,7 @@ plan 1
 node_init pv 69 "autovacuum = off
 log_min_messages = debug1
 sift.maintenance_naptime = 1000
-sift.col_auto_merge = on"
+sift.async_maintenance = on"
 node_start pv || bail "start failed"
 D=$(dir pv)
 sql pv "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2), pad text)" \

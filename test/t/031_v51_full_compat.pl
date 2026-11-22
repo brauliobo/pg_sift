@@ -11,6 +11,7 @@ use strict;
 use warnings FATAL => 'all';
 use FindBin;
 use lib $FindBin::RealBin;
+use SiftTest ();
 use SiftCompat;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;

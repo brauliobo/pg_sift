@@ -73,5 +73,5 @@ variant() { # LABEL OPTIONS
 
 variant "key_cut" "WITH (key_cut = grp)"
 variant "no key_cut" ""
-echo "1..$NTEST"
+done_testing
 finish

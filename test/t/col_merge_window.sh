@@ -9,7 +9,6 @@
 plan 7
 node_init mw 61 "autovacuum = off
 max_parallel_workers_per_gather = 0
-sift.col_auto_merge = off
 sift.async_maintenance = off"
 node_start mw || bail "start failed"
 sql mw "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension failed"

@@ -370,6 +370,8 @@ typedef struct DictLook
 } DictLook;
 
 extern void seg_dict_region(SiftColSegment *seg, int col, uint64 *off, uint64 *len);
+/* The dictionary of form DICT_REF at off of the stream, len bytes: a plain dictionary of the strings of its codes in the shared value store (seg/dict_ref.c) */
+extern SiftCDict *seg_dict_ref_load(SiftColSegment *seg, int col, uint64 at, uint64 len, MemoryContext mcxt);
 extern DictLook *seg_look_alloc(SiftColSegment *seg);
 extern int64 seg_look_find(const SiftCDictLook *look, const char *s, uint32 len);
 

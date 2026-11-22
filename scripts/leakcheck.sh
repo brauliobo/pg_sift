@@ -164,21 +164,28 @@ LEAK_IDLE_LOCKS="SELECT format('session %s %s holds %s on %s', a.pid, a.state, l
 
 # The shared tables of the test library (col/dsmreg.c) count the backends that map them: with no client session left every count is 0. A backend gives
 # its count back when it detaches its segments, after it left pg_stat_activity, so the read repeats while any is above 0. Needs the test library
-# (pg_sift_test); a cluster without it (a released library, whose build still ships the helper extension) has no counts to read
+# (pg_sift_test): a cluster without the extension (a released library, whose build still ships the helper extension; a stock node that never loads pg_sift) has no counts to read.
+# A standby cannot create the probe database: it reads the counts in the database that replicated the extension, and has none to read without it
 leak_shared_tables() {
-	local out
+	local out db=leakcheck_probe
 	[[ -n ${SIFT_TESTING-1} ]] || return 0
 	[[ -z $(leak_psql -c "SELECT 1 FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()") ]] || return 0
-	leak_psql -c "CREATE DATABASE leakcheck_probe" >/dev/null
-	PGOPTIONS="-c client_min_messages=warning" leak_psql -d leakcheck_probe -c "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null
+	if [[ $(leak_psql -c "SELECT pg_is_in_recovery()") == t ]]; then
+		[[ -n $(leak_psql -c "SELECT 1 FROM pg_extension WHERE extname = 'pg_sift_test'") ]] || return 0
+		db=postgres
+	else
+		[[ -n $(leak_psql -c "SELECT 1 FROM pg_available_extensions WHERE name = 'pg_sift_test'") ]] || return 0
+		leak_psql -c "CREATE DATABASE $db" >/dev/null
+		PGOPTIONS="-c client_min_messages=warning" leak_psql -d "$db" -c "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null
+	fi
 	for _ in $(seq 100); do
-		out=$(leak_psql -d leakcheck_probe -c "SELECT format('shared table %s is mapped by %s backend(s) with no session left', name, users)
+		out=$(leak_psql -d "$db" -c "SELECT format('shared table %s is mapped by %s backend(s) with no session left', name, users)
 			FROM sift._test_dsm_entries() WHERE users > 0")
 		[[ -n $out ]] || break
 		sleep 0.05
 	done
 	[[ -z $out ]] || echo "$out"
-	leak_psql -c "DROP DATABASE leakcheck_probe WITH (FORCE)" >/dev/null
+	[[ $db == postgres ]] || leak_psql -c "DROP DATABASE $db WITH (FORCE)" >/dev/null
 }
 
 # leak_cluster DATA: run against the cluster in DATA before it stops (PGHOST/PGPORT/PGUSER select it)

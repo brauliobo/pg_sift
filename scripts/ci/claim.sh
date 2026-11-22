@@ -8,6 +8,16 @@ tidy() {
 	else "$S/leakcheck.sh" scan "$SIFT_TMP/$1" >/dev/null 2>&1 && rm -rf "${SIFT_TMP:?}/$1"; fi
 }
 
+# shed ID: the data of a job that failed goes as well, and what the report and the artifact read stays (logs, diffs, outputs, the files of the leak gate): a run with many failures would
+# otherwise fill the scratch directory, and the watchdog (scripts/ci/scratch.sh) stops every server of the run at its cap, which fails the jobs that are left for that and not for their own reason
+shed() {
+	if [[ ${J_CLUSTER[$1]} == 1 ]]; then "$S/pgtest.sh" clean >/dev/null 2>&1; return; fi
+	[[ -z ${KEEP:-} && -z ${SIFT_TAP_KEEP:-} ]] || return 0
+	find "${SIFT_TMP:?}/$1" -type f ! \( -name '*.log' -o -name '*.diffs' -o -name '*.out' -o -name '*.report' -o -name 'asan.*' -o -name 'ubsan.*' -o -name 'leakcheck.*' \) -delete 2>/dev/null
+	find "${SIFT_TMP:?}/$1" -mindepth 1 -type d -empty -delete 2>/dev/null
+	return 0
+}
+
 # claim: sets CLAIMED to the first job of the queue that nobody has claimed and whose estimate fits the budget with the ones
 # running (the first job always fits); returns 1 when the queue is empty, 2 when nothing fits yet. The lock is a directory: macOS has no flock
 # A lane that dies holding the lock would hang the others in this loop until the job timeout, so the lock names its owner (pid) and a waiter removes a lock whose owner is

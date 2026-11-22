@@ -34,6 +34,9 @@ rest() {
 declare -A EST_MB=()
 while IFS=$'\t' read -r job mb; do [[ $job == '#'* || -z $job ]] || EST_MB[$job]=$mb; done <"$REPO/scripts/scratch.tsv"
 JOB_MB=100
+# a regression batch (about 32 tests in one database) peaks at 650 MB (the median of the 34 batches the quick shards of ci/6.0-rc3 measured), 6.5 times JOB_MB: the batches are cut anew by every plan, so
+# the row of a batch that no run has measured is this, not JOB_MB
+BATCH_MB=650
 
 # build_checks: the two checks of the build tree. A shard that installs a staged root (SIFT_PREBUILT_ROOT, scripts/ci-build.sh) has no objects and no headers to run them on: the job
 # reports what the build stage recorded for them
@@ -89,5 +92,6 @@ installcheck_batches() {
 		read -ra b <<<"$names"
 		job "installcheck-batch$((++i))" installcheck 1 "$S/pgtest.sh" regress "${b[@]}"
 		W_BATCH[installcheck-batch$i]=$(batch_weight "$load")
+		EST_MB[installcheck-batch$i]=${EST_MB[installcheck-batch$i]:-$BATCH_MB}
 	done < <(regress_pack "${sel[@]}")
 }

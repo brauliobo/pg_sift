@@ -24,6 +24,7 @@
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 
+#include "core/catname.h"
 #include "core/meta_peek.h"
 #include "core/ops.h"
 #include "table/f2/f2_tbl.h"
@@ -33,7 +34,7 @@ PG_FUNCTION_INFO_V1(sift_upgrade_table);
 static Relation
 open_for_upgrade(Oid relid)
 {
-	Relation	rel = table_open(relid, AccessExclusiveLock);
+	Relation	rel = table_open(sift_rel_must_exist(relid), AccessExclusiveLock);
 
 	sift_tbl_require(rel);
 	if (pg_class_aclcheck(relid, GetUserId(), ACL_MAINTAIN) != ACLCHECK_OK)

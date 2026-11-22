@@ -500,12 +500,20 @@ sift_mops_cut_free_end(const SiftMaintOps *ops, Relation index)
 int
 sift_mops_rewrite(const SiftMaintOps *ops, Relation index)
 {
+	return sift_mops_rewrite_ex(ops, index, NULL);
+}
+
+/* A rewrite pass; promoted, when given, is what the pass promoted from the write buffer */
+int
+sift_mops_rewrite_ex(const SiftMaintOps *ops, Relation index, int *promoted)
+{
 	const char *why;
 	TimestampTz start = GetCurrentTimestamp();
 	SiftErrCtx	ctx;
 	bool		all,
 				began;
-	int			n = 0;
+	int			n = 0,
+				sealed;
 
 	if (!maint_lock_mode(index, false, ops->step_lock))
 		return -1;
@@ -519,7 +527,9 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation index)
 	all = ops->rewrite_all == NULL || ops->rewrite_all(why);
 	began = sift_progress_begin(index, SIFT_JOB_REWRITE);
 	sift_progress_phase(index, "promote");
-	promote_locked(ops, index, true, true);
+	sealed = promote_locked(ops, index, true, true);
+	if (promoted != NULL)
+		*promoted = sealed;
 	sift_progress_phase(index, "merge");
 	/* the lock is let go between the steps, so that VACUUM and the writers wait for one partition of the rewrite and not for all of it; the rewrite waits for it in turn */
 	for (;;)

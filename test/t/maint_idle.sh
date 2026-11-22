@@ -5,7 +5,7 @@
 
 plan 4
 node_init mi 72 "autovacuum = off
-sift.col_auto_merge = on
+sift.async_maintenance = on
 sift.test_col_net = off
 sift.maintenance_naptime = 2000
 sift.log_min_duration = 0"

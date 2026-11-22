@@ -206,6 +206,7 @@ extern Datum sift_mops_sql_merge(const SiftMaintOps *ops, PG_FUNCTION_ARGS);
  * (sift.col_maintain, the merge that ends a parallel build): no worker and no VACUUM does. Returns the merges made, -1 when nothing was due or the lock was busy.
  */
 extern int	sift_mops_rewrite(const SiftMaintOps *ops, Relation index);
+extern int	sift_mops_rewrite_ex(const SiftMaintOps *ops, Relation index, int *promoted);
 
 /* Like sift_maint_request_worker, but a request is not dropped for coming within the naptime of another: the worker itself leaves when it has nothing to do */
 extern bool sift_maint_register_worker(Relation index, SiftWorkerKind kind);

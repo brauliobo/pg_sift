@@ -14,7 +14,7 @@ node_init ms 33 "autovacuum = off
 max_parallel_workers_per_gather = 0
 shared_buffers = 64MB
 max_wal_size = 1GB
-sift.col_auto_merge = off"
+sift.async_maintenance = off"
 node_start ms || bail "start failed"
 if [[ $(sql ms "SHOW debug_assertions") == on ]]; then echo '1..0 # SKIP an assert build checks every allocation: its resident peaks sit 0.7 to 3.2 MB above a normal build on the same exact context bytes'; exit 0; fi
 sql ms "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" >/dev/null || bail "extension failed"

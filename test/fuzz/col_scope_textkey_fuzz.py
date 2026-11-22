@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from col_twin_fuzz import Sess, Fail, ERR, SETUP, OUT
 
 TWO = False
-FUZZ_SETUP = "LOAD 'pg_sift'; " + SETUP + " SET sift.agg_force = on; SET jit = off; SET sift.scope_max_multiplicity = 64;"
+FUZZ_SETUP = "LOAD 'pg_sift'; " + SETUP + " SET sift.agg_force = on; SET jit = off;"
 
 LIB = r"""
 CREATE OR REPLACE FUNCTION tk_cmp(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -112,7 +112,8 @@ VACUUM (FREEZE, ANALYZE) events, tenant_scope, keys_n{', grp_scope, memberships'
     def declaration(self):
         mc = self.mc
         one = f'tenant_id: {mc} -> tenant_scope({mc}, tenant_id)'
-        return one + f' | grp_scope(group_id, tenant_id) via memberships(group_id, {mc})' if self.two else one
+        decl = one + f' | grp_scope(group_id, tenant_id) via memberships(group_id, {mc})' if self.two else one
+        return decl + ' max_multiplicity(64)'
 
     def two_setup(self, rt, gen):
         """The grants of groups, the memberships and the view of the union, with the journals of the three relations."""

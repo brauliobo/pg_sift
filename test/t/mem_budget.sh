@@ -7,7 +7,7 @@
 plan 19
 node_init mb 61 "autovacuum = off
 max_parallel_workers_per_gather = 0
-sift.col_auto_merge = off"
+sift.async_maintenance = off"
 node_start mb || bail "start failed"
 sql mb "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension failed"
 sql mb "CREATE TABLE d AS SELECT g AS id, 'wireless charger model m' || g % 500 || ' w' || g AS body FROM generate_series(1, 20000) g" \
@@ -37,7 +37,7 @@ sql mb "CREATE TABLE c AS SELECT g AS id, g % 7 AS k, g % 500 AS k2, 'n' || g % 
 	"CREATE INDEX c_col ON c USING sift_col (id, k, k2, txt, amount)" >/dev/null || bail "column table failed"
 SCOPE=agg_group; check "an aggregate scan over its lowered budget fails naming agg_group" red "SELECT k2, count(*), sum(amount) FROM c GROUP BY 1"
 SCOPE=agg_group_nospill; check "a scan that cannot spill over its lowered budget fails naming agg_group_nospill" red "SELECT count(*), sum(amount) FROM c"
-sql mb "SET sift.table_inline_promote = off" "CREATE TABLE wb (id int, v text) USING sift_table" \
+sql mb "CREATE TABLE wb (id int, v text) USING sift_table" "SELECT sift.table_set_option('wb', 'inline_promote', 'off')" \
 	"INSERT INTO wb SELECT g, repeat('x', 1000) || g FROM generate_series(1, 40000) g" >/dev/null || bail "write buffer table failed"
 agg_peak() { sql mb "SET work_mem = '1MB'" "$1" "SELECT peak FROM sift._test_mem_highwater() WHERE scope = 'agg_group'" | tail -1; }
 check "an aggregate over 40 MB of unpromoted rows holds under 16 MB, flat in the rows (50 MB before one superblock at a time)" \

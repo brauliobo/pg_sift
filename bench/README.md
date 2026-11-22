@@ -263,7 +263,7 @@ The engines that are not pg_sift are measured once per host, dataset, settings a
 |---|---|
 | `bench` | the entry point: `bench/bench --help` |
 | `versions.env` | every pinned version, date and checksum |
-| `v6_harness.py`, `compare_rounds.py`, `run_round.sh` | the 6.0 scaling ladder, its comparison with `baselines/v510.tsv` and the script that runs both on a throwaway cluster (`v6-core`) |
+| `v6_harness/`, `compare_rounds.py`, `run_round.sh` | the 6.0 scaling ladder, its comparison with `baselines/v510.tsv` and the script that runs both on a throwaway cluster (`v6-core`) |
 | `bench_scaling.sh` | the scaling suites A (workers), B (cold I/O) and C (writers) of Spec 14 (`scaling-io`) |
 | `baselines/` | the committed measurements of the previous release that `compare_rounds.py` compares a round with |
 | `engines.tsv` | the A/B engines in table order: id, chart and Markdown labels, chart color |

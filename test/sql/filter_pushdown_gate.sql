@@ -11,7 +11,9 @@ SELECT i, i % 40,
 	CASE WHEN i % 5 < 3 THEN repeat('common ', 1 + i % 3) ELSE '' END || CASE WHEN i IN (7, 11127, 20007) THEN 'zzrare ' ELSE '' END ||
 	'w' || i % 97 || repeat(' filler' || i % 11, 1 + i % 13), repeat('p', 100)
 FROM generate_series(1, 24000) i;
+SET client_min_messages = warning;
 CREATE INDEX fg_body ON fg USING sift (body);
+RESET client_min_messages;
 CREATE INDEX fg_grp ON fg (grp);
 ANALYZE fg;
 

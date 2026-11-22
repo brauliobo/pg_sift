@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sift.col_wbuf_ref: the values of the buffered rows are in the arena, in the shared memory of the server that inserted them. A server that starts again (a crash, kill -9),
+# The write-buffer arena: the values of the buffered rows are in the arena, in the shared memory of the server that inserted them. A server that starts again (a crash, kill -9),
 # a standby (it replays the records, nobody fills its arena) and a standby that was promoted have none: the first reader builds the entries from the heap, one reader at a time, and every
 # reader after it takes them from the arena. The rows are a mix of what the heap does to tuples: committed, rolled back, savepoint rolled back, updated (HOT and not), deleted and pruned
 # without the index cleaned, frozen. At each step the answers of the engine are the heap's.
@@ -12,8 +12,6 @@ max_wal_senders = 4
 wal_keep_size = 256MB
 autovacuum = off
 sift.async_maintenance = off
-sift.col_auto_merge = off
-sift.col_wbuf_ref = on
 max_parallel_workers_per_gather = 0"
 node_start primary || bail "primary start failed"
 D=$(dir primary)
@@ -53,12 +51,12 @@ sql primary "INSERT INTO a SELECT i, i % 10, i, 'x' FROM generate_series(1, $ROW
 	"SELECT sift._test_arena_slots(0)" "INSERT INTO a SELECT 800000 + i, i % 10, i, 'n' FROM generate_series(1, 500) i" "SELECT sift._test_arena_slots(256)" \
 	"INSERT INTO a SELECT 900000 + i, i % 10, i, 'm' FROM generate_series(1, 500) i" >/dev/null || bail "workload failed"
 BUFFERED=$(sql primary "SELECT rows FROM sift.col_segments('a_ix') WHERE kind = 'buffer'")
-stats() { sql "$1" "SELECT rows_rebuilt FROM sift.col_arena_status()"; }
+stats() { sql "$1" "SELECT rows_rebuilt FROM sift._test_col_arena_status()"; }
 same() { [[ $(sql "$1" "SELECT same_as_heap()") == t ]]; }
 
 check "the primary: the buffer holds $BUFFERED rows and the engine gives the heap's answers" same primary
 check "the primary: no row was built from the heap; 500 rows were written with their values (no slot), the buffer holds both kinds of record" \
-	test "$(stats primary)" == 0 -a "$(sql primary 'SELECT put_fallbacks >= 500 FROM sift.col_arena_status()')" == t
+	test "$(stats primary)" == 0 -a "$(sql primary 'SELECT put_fallbacks >= 500 FROM sift._test_col_arena_status()')" == t
 
 check "the primary: the connected child gives the normal plan's rows" test "$(sql primary 'SELECT same_conn()')" == t
 

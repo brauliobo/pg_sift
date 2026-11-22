@@ -12,10 +12,13 @@ summarize() {
 			if (lo == "" || $7 < lo) lo = $7; if ($8 > hi) hi = $8 }
 		END { printf "%s %d %d %s%s\n", (bad != "" || n == 0 || n < expect ? "FAIL" : "PASS"), hi - lo, sk, (nl > 1 ? nl "_lanes" : lane), bad }' "$LOG/results"
 }
+# not_run SUITE: the jobs of the suite that never started (a run over its cap starts no more), which is why a suite can be red with no failed job
+not_run() { local id; for id in "${J_ID[@]}"; do [[ ${J_SUITE[$id]} == "$1" ]] && ! grep -q "^$id " "$LOG/results" && printf ' %s' "$id"; done; return 0; }
 echo
 green=$'\e[32m' red=$'\e[31m' off=$'\e[0m'
 [[ -t 1 ]] || green= red= off=
 failed=0
+[[ ! -e $LOG/cap_exceeded ]] || { failed=1; echo "$red$(cat "$LOG/cap_exceeded"): every server of the run was stopped, the jobs that were running failed on that and the others did not start$off"; }
 # the suites in the order of the report (a suite not listed follows the others)
 ORDER=(build simd-level "${HARNESS[@]}")
 for s in isa-baseline installcheck isolation-emulated isolation fuzz hardened static difftest-mutants soak soak-gin soak-col difftest difftest-nopos tap-shell tap "${SUITES[@]}"; do
@@ -26,8 +29,9 @@ for s in "${ORDER[@]}" leakcheck; do
 	line=$(printf '%s %-20s %5ss  %s skip lines  (%s)' "$status" "$s" "$secs" "$skips" "${where/_/ }")
 	if [[ $status == PASS ]]; then echo "$green$line$off"; else failed=1; echo "$red$line$off"; fi
 	# the log of a split suite: the logs of its jobs, in order
-	[[ -f $LOG/$s.log ]] || for id in "${J_ID[@]}"; do [[ ${J_SUITE[$id]} == "$s" ]] && { echo "== $id"; cat "$LOG/$id.log"; }; done >"$LOG/$s.log"
+	[[ -f $LOG/$s.log ]] || for id in "${J_ID[@]}"; do [[ ${J_SUITE[$id]} == "$s" && $id != "$s" && -f $LOG/$id.log ]] && { echo "== $id"; cat "$LOG/$id.log"; }; done >"$LOG/$s.log"
 	[[ -z ${bad:-} ]] || echo "$red  failed:$bad$off"
+	[[ $status == PASS ]] || { skipped=$(not_run "$s"); [[ -z $skipped ]] || echo "$red  not run:$skipped$off"; }
 	# on a hosted runner the failed ids are an annotation of the job (readable through the API while the run goes) and a line of the step summary
 	[[ -z ${bad:-} || -z ${GITHUB_ACTIONS:-} ]] || { echo "::error title=FAILED JOB::$s:$bad"; echo "- **$s** failed:$bad" >>"${GITHUB_STEP_SUMMARY:-/dev/null}"; }
 	# a regression test and a TAP test name what failed, with the lines of the diff of a regression test (a runner that keeps no files, macOS, has this log only; the files are artifacts)
@@ -37,7 +41,6 @@ for s in "${ORDER[@]}" leakcheck; do
 		else tail -n 15 "$LOG/$id.log" 2>/dev/null | cut -c1-400; fi | sed "s/^/$red    /; s/\$/$off/"   # any other job (isolation, a differential test): the end of its log, the hosted log is all there is of it
 	done
 done
-[[ ! -e $LOG/cap_exceeded ]] || { failed=1; echo "$red$(cat "$LOG/cap_exceeded")$off"; }
 # a server that crashed: the log of its job says only that psql lost the connection; the signal and the statement the backend ran are in the server log
 if (( failed )); then
 	find "$BASE" -path "$LOG" -prune -o -name '*.log' -print 2>/dev/null | xargs -r grep -hE -A1 'was terminated by signal|^TRAP:|PANIC:' 2>/dev/null | cut -c1-300 | head -n 30 |

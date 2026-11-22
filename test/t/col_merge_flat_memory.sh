@@ -47,7 +47,6 @@ node_init mf 90 "autovacuum = off
 max_parallel_workers_per_gather = 0
 shared_buffers = 128MB
 max_wal_size = 2GB
-sift.col_auto_merge = off
 sift.shared_cache_kb = 0
 sift.async_maintenance = off
 extension_control_path = '$root$(pg_config --sharedir):\$system'

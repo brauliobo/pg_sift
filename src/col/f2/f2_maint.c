@@ -374,11 +374,10 @@ f2_verify(FunctionCallInfo fcinfo)
 {
 	Relation	index = open_f2(PG_GETARG_OID(0));
 
-	if (PG_GETARG_BOOL(1))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift.col_verify(heapallindexed) does not check an index of format major 2 against its heap yet"),
-						errhint("Run sift.col_verify(index) for the allocator, the manifest and the order of the parts.")));
 	(void) sift_fsm_check(index);
 	ereport(NOTICE, (errmsg("sift_col index \"%s\": %s", RelationGetRelationName(index), sift_f2_check_keys(index))));
+	if (PG_GETARG_BOOL(1))
+		sift_f2_check_heap(index);
 	index_close(index, AccessShareLock);
 	PG_RETURN_VOID();
 }
@@ -401,6 +400,12 @@ check_keys(void *arg)
 	(void) sift_f2_check_keys(arg);
 }
 
+static void
+check_heap(void *arg)
+{
+	sift_f2_check_heap(arg);
+}
+
 void
 sift_f2_check_relation(SiftCheck *ck, Relation rel)
 {
@@ -413,10 +418,9 @@ sift_f2_check(SiftCheck *ck, Oid indexoid, bool heapallindexed)
 {
 	Relation	index = open_f2(indexoid);
 
-	if (heapallindexed)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift.check(heapallindexed) does not check an index of format major 2 against its heap yet"),
-						errhint("Run sift.check(index) for the allocator, the manifest and the order of the parts.")));
 	sift_f2_check_relation(ck, index);
+	if (heapallindexed)
+		(void) sift_check_step(ck, SIFT_CHECK_WHOLE, check_heap, index);
 	index_close(index, AccessShareLock);
 }
 
@@ -476,17 +480,17 @@ f2_maintenance_status(FunctionCallInfo fcinfo)
 	Oid			heapoid = index->rd_index->indrelid;
 	SiftColMetaPageData meta = sift_col_meta_read(index);
 	const PgStat_StatTabEntry *tab = pgstat_fetch_stat_tabentry(heapoid);
+	static const char *const reasons[] = {"sift.async_maintenance is off", "standby", "temporary table"};
+	const bool	blocked_by[lengthof(reasons)] = {!sift_async_maintenance, RecoveryInProgress(),
+												 index->rd_rel->relpersistence == RELPERSISTENCE_TEMP};
 	Datum		v[7] = {0};
-	Datum		blocked[3];
+	Datum		blocked[lengthof(reasons)];
 	bool		nulls[7] = {false};
 	int			nblocked = 0;
 
-	if (!sift_async_maintenance)
-		blocked[nblocked++] = CStringGetTextDatum("sift.async_maintenance is off");
-	if (RecoveryInProgress())
-		blocked[nblocked++] = CStringGetTextDatum("standby");
-	if (index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
-		blocked[nblocked++] = CStringGetTextDatum("temporary table");
+	for (int i = 0; i < lengthof(reasons); i++)
+		if (blocked_by[i])
+			blocked[nblocked++] = CStringGetTextDatum(reasons[i]);
 	v[0] = ObjectIdGetDatum(heapoid);
 	nulls[1] = nulls[2] = nulls[3] = tab == NULL;
 	if (tab != NULL)
@@ -509,7 +513,7 @@ f2_tracking(FunctionCallInfo fcinfo)
 {
 	Relation	index = open_f2(PG_GETARG_OID(0));
 	bool		on = sift_col_track_on(index);
-	Datum		v[4] = {BoolGetDatum(on), BoolGetDatum(on), BoolGetDatum(true), BoolGetDatum(on)};
+	Datum		v[4] = {BoolGetDatum(on), BoolGetDatum(on), BoolGetDatum(on), BoolGetDatum(on)};
 	bool		nulls[4] = {false};
 
 	index_close(index, AccessShareLock);

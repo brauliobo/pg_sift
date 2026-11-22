@@ -172,6 +172,16 @@ sift_f2_attr_has_leaf(Form_pg_attribute att)
 /* The cell of the value of an attribute; with spill, a varlena over SIFT_F2_WIDE_THRESHOLD becomes a null cell tagged SIFT_F2_TAG_WIDE_RAW that keeps the raw value as its payload */
 extern void sift_f2_cell_of_datum(Form_pg_attribute att, Datum d, MemoryContext row_cx, bool spill, SiftCell *c);
 
+/*
+ * The relation invalidations of the Format 2.0 caches (the stores, the part pins, the address indexes, the granules): the backend takes one syscache callback on RELOID, whose
+ * slots are its own (relcache callback slots are shared with every library, and running out is a FATAL), and it runs the invalidators registered here. An invalidator gets the
+ * hash value of the relation that changed or was dropped, 0 for all of them, and asks sift_f2_inval_hits whether a relation of its cache is meant.
+ */
+typedef void (*SiftF2Invalidator) (uint32 hashvalue);
+
+extern void sift_f2_invalidator_register(SiftF2Invalidator fn);
+extern bool sift_f2_inval_hits(Oid relid, uint32 hashvalue);
+
 extern PGDLLIMPORT const SiftF2HostOps sift_col_host_ops;
 extern PGDLLIMPORT const SiftF2HostOps sift_tbl_host_ops;
 

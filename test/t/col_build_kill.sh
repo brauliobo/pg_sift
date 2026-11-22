@@ -118,5 +118,5 @@ for n in "${points[@]}"; do
 	elif restart; then recovered "$what" || true
 	else not_ok "$what: restart"; fi
 done
-echo "1..$NTEST"
+done_testing
 finish

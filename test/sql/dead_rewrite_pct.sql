@@ -4,7 +4,9 @@ SET enable_seqscan = off;
 SET sift.async_maintenance = off;
 CREATE TABLE dr (id serial, body text) WITH (autovacuum_enabled = off);
 INSERT INTO dr (body) SELECT 'k' || (i % 7) || ' g' || (i % 1000) || ' common' FROM generate_series(1, 10000) i;
+SET client_min_messages = warning;
 CREATE INDEX dr_idx ON dr USING sift (body) WITH (build_segments = 1);
+RESET client_min_messages;
 CREATE TEMP TABLE built AS SELECT gen FROM sift.segments('dr_idx');
 SELECT count(*) AS segments FROM built;
 

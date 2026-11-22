@@ -391,7 +391,8 @@ sift_proj_move_part(Relation rel, uint16 proj_id, uint64 proj_gen)
 	SiftColMetaPageData meta = sift_col_meta_read(rel);
 	int			nrefs,
 				nb;
-	const SiftManifestProjRef *ref = ref_by_id(sift_manifest_read_projs(rel, &meta, &nrefs), nrefs, proj_id);
+	const SiftManifestProjRef *refs = sift_manifest_read_projs(rel, &meta, &nrefs);
+	const SiftManifestProjRef *ref = ref_by_id(refs, nrefs, proj_id);
 	SiftProjParts cur;
 	const SiftPartDesc *d = NULL;
 	SiftProjLink *link = NULL;
@@ -423,7 +424,9 @@ sift_proj_move_part(Relation rel, uint16 proj_id, uint64 proj_gen)
 		.drop_src_gens = &link->src_gen,.ndrop_links = 1,.add_links = &moved_link,.nadd_links = 1};
 	if (commit_move(rel, &delta))
 		return true;
-	sift_fsm_release(rel, sift_part_blocks(sift_part_open_desc(rel, &moved, SIFT_PROJ_PART_ID), &nb), nb, InvalidFullTransactionId);
+	SiftExtent *extents = sift_part_blocks(sift_part_open_desc(rel, &moved, SIFT_PROJ_PART_ID), &nb);
+
+	sift_fsm_release(rel, extents, nb, InvalidFullTransactionId);
 	return false;
 }
 

@@ -127,7 +127,7 @@ sift_star_test_worker(dsm_segment *seg, shm_toc *toc)
 		CHECK_FOR_INTERRUPTS();
 		SPIN_DELAY();
 	}
-	sift_star_build((SiftStarDimBundle *) TYPEALIGN(PG_CACHE_LINE_SIZE, bundle_of(toc)), src);
+	sift_star_build((SiftStarDimBundle *) TYPEALIGN(SIFT_PAR_SHM_ALIGN, bundle_of(toc)), src);
 }
 
 static int64 *
@@ -323,20 +323,20 @@ sift_test_star(PG_FUNCTION_ARGS)
 	bundle_size = sift_star_size(specs, n_dims, workers + 1);
 	if (workers == 0)
 	{
-		s = palloc0(shared_size);
+		s = palloc_aligned(shared_size, SIFT_PAR_SHM_ALIGN, MCXT_ALLOC_ZERO);
 		raw_bundle = palloc(bundle_size);
 	}
 	else
 	{
 		EnterParallelMode();
 		pcxt = CreateParallelContext("pg_sift", "sift_star_test_worker", workers);
-		shm_toc_estimate_chunk(&pcxt->estimator, shared_size);
+		shm_toc_estimate_chunk(&pcxt->estimator, shared_size + SIFT_PAR_SHM_ALIGN);
 		shm_toc_estimate_chunk(&pcxt->estimator, bundle_size);
 		shm_toc_estimate_keys(&pcxt->estimator, 2);
 		InitializeParallelDSM(pcxt);
 		if (pcxt->seg == NULL)
 			elog(ERROR, "no shared memory for the parallel test");
-		s = shm_toc_allocate(pcxt->toc, shared_size);
+		s = (Shared *) TYPEALIGN(SIFT_PAR_SHM_ALIGN, shm_toc_allocate(pcxt->toc, shared_size + SIFT_PAR_SHM_ALIGN));
 		raw_bundle = shm_toc_allocate(pcxt->toc, bundle_size);
 		memset(s, 0, shared_size);
 	}

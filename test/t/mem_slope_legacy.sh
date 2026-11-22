@@ -13,7 +13,6 @@ node_init ms 33 "autovacuum = off
 max_parallel_workers_per_gather = 0
 shared_buffers = 64MB
 max_wal_size = 1GB
-sift.col_auto_merge = off
 sift.shared_cache_kb = 0
 sift.async_maintenance = off"
 node_start ms || bail "start failed"

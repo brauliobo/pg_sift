@@ -37,7 +37,7 @@ def parse(path):
                 m = re.match(r"PG_FUNCTION_INFO_V1\((\w+)\)", line)
                 if m:
                     names.add("pg_finfo_" + m.group(1))
-                m = re.match(r"[A-Z][A-Z0-9_]+\((\w+)\b", line)
+                m = re.match(r"[A-Z][A-Z0-9_]+\((?:\s*(?:static|extern)?\s*,)?\s*(\w+)\b", line)
                 if m:
                     names.add(m.group(1))
                 if line.startswith("#"):

@@ -12,7 +12,7 @@ ROUNDS=$(knob SIFT_RT_ROUNDS 30 10)
 GATE=7311
 DECIDED=7312
 node_init n 63 "autovacuum = off
-sift.col_auto_merge = off
+sift.async_maintenance = off
 deadlock_timeout = 200ms"
 node_start n || bail "start failed"
 D=$(dir n)
@@ -23,7 +23,7 @@ sql n "CREATE EXTENSION pg_sift" \
 # one aggregate for each index (h_a has no v, h_b no g): the planner reads it from the index that holds its columns
 QA="SELECT g, count(*) FROM h GROUP BY g ORDER BY 1"
 QB="SELECT count(*), sum(v) FROM h WHERE id > 100"
-read_with() { sql n "SET sift.col_auto_merge = on" "SET sift.enable_agg = $1" "SET seq_page_cost = 10000" "SET max_parallel_workers_per_gather = 0" "SET sift.test_no_heapfree = off" "$QA" "$QB"; }
+read_with() { sql n "SET sift.async_maintenance = on" "SET sift.enable_agg = $1" "SET seq_page_cost = 10000" "SET max_parallel_workers_per_gather = 0" "SET sift.test_no_heapfree = off" "$QA" "$QB"; }
 ans() { read_with "$([[ $1 == heap ]] && echo off || echo on)"; }
 tracking() { sql n "SELECT complete AND triggers FROM sift.col_tracking('$1')"; }
 ntrig() { sql n "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'h'::regclass AND tgname LIKE 'sift_track_%'"; }

@@ -78,18 +78,23 @@ maintain_directory(const SiftApiRel *r, MaintainResult *res)
 			sift_bm25_stats(index, &before);
 		else
 			sift_col_stats(index, &before);
-		res->promoted = promote_locked(ops, index, true, true);
-		while (ops->merge_next(index, false, SIFT_GOAL_ANY, true, &busy_gen) == SIFT_STEP_DONE)
+		if (ops->rewrite_due != NULL && ops->rewrite_due(index) != NULL)
 		{
-			res->merged++;
-			CHECK_FOR_INTERRUPTS();
-		}
-		sift_maint_unlock(index);
-		if (ops->rewrite_due != NULL)
-		{
-			int			rewritten = sift_mops_rewrite(ops, index);
+			int			rewritten;
 
-			res->merged += Max(0, rewritten);
+			sift_maint_unlock(index);
+			rewritten = sift_mops_rewrite_ex(ops, index, &res->promoted);
+			res->merged = Max(0, rewritten);
+		}
+		else
+		{
+			res->promoted = promote_locked(ops, index, true, true);
+			while (ops->merge_next(index, false, SIFT_GOAL_ANY, true, &busy_gen) == SIFT_STEP_DONE)
+			{
+				res->merged++;
+				CHECK_FOR_INTERRUPTS();
+			}
+			sift_maint_unlock(index);
 		}
 		sift_mops_cut_free_end(ops, index);
 		if (r->am == SIFT_API_BM25)

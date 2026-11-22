@@ -377,7 +377,7 @@ spill_run_cap(Size run_cap)
 	if (sift_test_col_spill_run_kb > 0)
 		return (Size) sift_test_col_spill_run_kb * 1024;
 #endif
-	return Min(run_cap, MaxAllocSize / 4 * 3);
+	return Min(Max(run_cap, SIFT_MEM_MIN_MAINT_BYTES), MaxAllocSize / 4 * 3);
 }
 
 /* The rows of a run of the ranges: those the first run held, or the share of them that fits spill_run_cap when a large maintenance_work_mem made that run larger */

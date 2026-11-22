@@ -7,8 +7,7 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 32
-node_init jw 34 "sift.scope_max_multiplicity = 8
-autovacuum = off
+node_init jw 34 "autovacuum = off
 max_prepared_transactions = 8"
 node_start jw || bail "start failed"
 D=$(dir jw)
@@ -18,7 +17,7 @@ sql jw "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int)" \
 	"INSERT INTO events SELECT i, 1 + i % 300, timestamptz '2026-01-01' + i * interval '1 minute', i % 10 FROM generate_series(1, 9000) i" \
 	"VACUUM (FREEZE, ANALYZE) events, tenant_scope" >/dev/null || bail "setup failed"
-SCOPE="scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'"
+SCOPE="scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)'"
 CIC="CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH ($SCOPE)"
 GATE=7300
 TAIL=4 JOURNAL=6 FILL=5

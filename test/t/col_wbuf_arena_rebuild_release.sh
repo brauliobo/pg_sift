@@ -7,8 +7,6 @@
 plan 6
 node_init rr 33 "autovacuum = off
 sift.async_maintenance = off
-sift.col_auto_merge = off
-sift.col_wbuf_ref = on
 max_parallel_workers_per_gather = 0"
 node_start rr || bail "start failed"
 D=$(dir rr)

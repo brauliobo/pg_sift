@@ -7,8 +7,7 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 7
-node_init fs 62 "sift.scope_max_multiplicity = 8
-autovacuum = off"
+node_init fs 62 "autovacuum = off"
 node_start fs || bail "start failed"
 D=$(dir fs)
 sql fs "CREATE EXTENSION pg_sift_test CASCADE" \
@@ -18,7 +17,7 @@ sql fs "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int)" \
 	"INSERT INTO events SELECT i, 1 + i % 400, timestamptz '2026-01-01' + i * interval '1 minute', i % 10 FROM generate_series(1, 20000) i" \
 	"VACUUM (FREEZE, ANALYZE) events, tenant_scope" >/dev/null || bail "setup failed"
-SCOPE="scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'"
+SCOPE="scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)'"
 READ="SELECT count(*), sum(v) FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, 12)"
 PLAIN="SELECT count(*), sum(v) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 12)"
 fallback() { # the verdict of the scope read: its fallback, "units" when it read the units

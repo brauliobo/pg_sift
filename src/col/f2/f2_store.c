@@ -32,6 +32,36 @@ typedef struct StoreEntry
 static HTAB *store_cache = NULL;
 static bool store_cache_registered = false;
 
+#define MAX_INVALIDATORS	4
+
+static SiftF2Invalidator invalidators[MAX_INVALIDATORS];
+static int	ninvalidators = 0;
+
+static void
+relation_invalidated(Datum arg pg_attribute_unused(), int cacheid pg_attribute_unused(), uint32 hashvalue)
+{
+	for (int i = 0; i < ninvalidators; i++)
+		invalidators[i] (hashvalue);
+}
+
+void
+sift_f2_invalidator_register(SiftF2Invalidator fn)
+{
+	for (int i = 0; i < ninvalidators; i++)
+		if (invalidators[i] == fn)
+			return;
+	SIFT_INVARIANT(ninvalidators < MAX_INVALIDATORS, "more than %d Format 2.0 cache invalidators", MAX_INVALIDATORS);
+	if (ninvalidators == 0)
+		CacheRegisterSyscacheCallback(RELOID, relation_invalidated, (Datum) 0);
+	invalidators[ninvalidators++] = fn;
+}
+
+bool
+sift_f2_inval_hits(Oid relid, uint32 hashvalue)
+{
+	return hashvalue == 0 || GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(relid)) == hashvalue;
+}
+
 static void
 drop_entry(StoreEntry *e)
 {
@@ -40,7 +70,7 @@ drop_entry(StoreEntry *e)
 }
 
 static void
-store_invalidate(Datum arg pg_attribute_unused(), int cacheid pg_attribute_unused(), uint32 hashvalue)
+store_invalidate(uint32 hashvalue)
 {
 	HASH_SEQ_STATUS seq;
 	StoreEntry *e;
@@ -49,8 +79,29 @@ store_invalidate(Datum arg pg_attribute_unused(), int cacheid pg_attribute_unuse
 		return;
 	hash_seq_init(&seq, store_cache);
 	while ((e = hash_seq_search(&seq)) != NULL)
-		if (hashvalue == 0 || GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(e->relid)) == hashvalue)
+		if (sift_f2_inval_hits(e->relid, hashvalue))
 			drop_entry(e);
+}
+
+/* DROP COLUMN and ALTER COLUMN TYPE change pg_attribute rows and leave the pg_class row alone: the store follows the descriptor, so any attribute row of its relation drops it */
+static void
+store_attr_invalidate(Datum arg pg_attribute_unused(), int cacheid pg_attribute_unused(), uint32 hashvalue)
+{
+	HASH_SEQ_STATUS seq;
+	StoreEntry *e;
+
+	if (store_cache == NULL)
+		return;
+	hash_seq_init(&seq, store_cache);
+	while ((e = hash_seq_search(&seq)) != NULL)
+	{
+		bool		hit = hashvalue == 0;
+
+		for (int a = 1; !hit && a <= e->store->natts; a++)
+			hit = GetSysCacheHashValue2(ATTNUM, ObjectIdGetDatum(e->relid), Int16GetDatum(a)) == hashvalue;
+		if (hit)
+			drop_entry(e);
+	}
 }
 
 /* the entry used longest ago of those no statement of the transaction may hold */
@@ -111,7 +162,8 @@ store_cache_init(void)
 	store_cache = hash_create("sift cache f2 stores", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	if (!store_cache_registered)
 	{
-		CacheRegisterSyscacheCallback(RELOID, store_invalidate, (Datum) 0);
+		sift_f2_invalidator_register(store_invalidate);
+		CacheRegisterSyscacheCallback(ATTNUM, store_attr_invalidate, (Datum) 0);
 		sift_cache_register(&store_cache_kind);
 		store_cache_registered = true;
 	}

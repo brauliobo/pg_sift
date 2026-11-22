@@ -575,10 +575,17 @@ sift_shred_full(const SiftShred *sh)
 	return sh->nframes > 0 && sh->frames[sh->nframes - 1].truncated;
 }
 
+static const SiftShredNode *
+entered_node(const SiftShred *sh)
+{
+	SIFT_INVARIANT(sh->nframes > 0, "sift shred: the keys of an object are asked outside of one");
+	return sh->frames[sh->nframes - 1].node;
+}
+
 int
 sift_shred_object_keys(const SiftShred *sh)
 {
-	const SiftShredNode *n = sh->frames[sh->nframes - 1].node;
+	const SiftShredNode *n = entered_node(sh);
 
 	return n->kind == N_OBJ ? n->nmembers : 0;
 }
@@ -586,7 +593,7 @@ sift_shred_object_keys(const SiftShred *sh)
 const char *
 sift_shred_object_key(const SiftShred *sh, int i, int *len)
 {
-	const Member *m = &sh->frames[sh->nframes - 1].node->members[i];
+	const Member *m = &entered_node(sh)->members[i];
 
 	*len = m->len;
 	return m->key;

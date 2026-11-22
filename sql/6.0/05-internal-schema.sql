@@ -16,17 +16,9 @@ CREATE OR REPLACE FUNCTION sift_internal.format_note(am text, major int, size_by
 $$;
 COMMENT ON FUNCTION sift_internal.format_note(text, int, int8) IS 'Internal: the one-line note of sift.status() and sift.indexes on the format of a relation';
 
--- What sift.verify, sift.col_verify and sift.table_verify did: an error on the first problem sift.check finds.
+-- What sift.table_verify does: the error of the first problem sift.check finds, with its SQLSTATE, detail, hint and context.
 CREATE OR REPLACE FUNCTION sift_internal.check_raise(rel regclass, heapallindexed bool) RETURNS void
-	LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $fn$
-DECLARE
-	p record;
-BEGIN
-	FOR p IN SELECT c.problem, c.detail FROM sift.check(rel, heapallindexed, 1) c LOOP
-		RAISE EXCEPTION '%: %', p.problem, p.detail USING ERRCODE = 'data_corrupted', HINT = 'sift.check lists every problem of the relation';
-	END LOOP;
-END
-$fn$;
+	AS 'MODULE_PATHNAME', 'sift_check_raise' LANGUAGE C STRICT VOLATILE;
 COMMENT ON FUNCTION sift_internal.check_raise(regclass, bool) IS 'Internal: raises the first problem of sift.check, for the deprecated verify functions';
 
 -- The ALTER DATABASE command that preloads the library for the database, or NULL when the library is preloaded already or the caller may not read the two settings
@@ -47,6 +39,9 @@ COMMENT ON FUNCTION sift_internal.preload_hint() IS 'Internal: the command that 
 CREATE OR REPLACE FUNCTION sift_internal.require_am(rel regclass, want text) RETURNS void
 	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog AS $fn$
 BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = rel) THEN
+		RAISE EXCEPTION 'relation with OID % does not exist', rel::oid USING ERRCODE = 'undefined_table';
+	END IF;
 	IF NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_am a ON a.oid = c.relam
 				   WHERE c.oid = rel AND a.amname = ANY (CASE want WHEN 'sift' THEN ARRAY['sift', 'sift_col'] ELSE ARRAY[want] END)) THEN
 		RAISE EXCEPTION '"%" is not a %', (SELECT relname FROM pg_class WHERE oid = rel), CASE want WHEN 'sift_table' THEN want ELSE want || ' index' END
@@ -56,12 +51,30 @@ END
 $fn$;
 COMMENT ON FUNCTION sift_internal.require_am(regclass, text) IS 'Internal: raises the error of 5.1 unless the relation is of the access method the deprecated function serves (sift_col, sift_table, or sift for a sift or sift_col index)';
 
+-- The right the inspectors of a sift_col index ask for: the caller may read the table of the index, maintain it, or is a member of pg_monitor (sift.col_segments, sift.col_index_info).
+CREATE OR REPLACE FUNCTION sift_internal.require_inspect(index regclass) RETURNS void
+	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $fn$
+DECLARE
+	heap regclass := (SELECT indrelid FROM pg_index WHERE indexrelid = index);
+BEGIN
+	IF NOT sift._may_inspect(heap) THEN
+		RAISE EXCEPTION 'permission denied for index "%"', (SELECT relname FROM pg_class WHERE oid = index)
+			USING ERRCODE = 'insufficient_privilege', DETAIL = format('Only a role that can read table "%s", maintain it, or is a member of pg_monitor can do this.', heap::text);
+	END IF;
+END
+$fn$;
+COMMENT ON FUNCTION sift_internal.require_inspect(regclass) IS 'Internal: raises permission denied unless the caller may inspect the index, as the inspectors of 5.1 did';
+
 -- What a segment of Format 1 knows and sift.parts does not list: its dirty flag and its own column format. The deprecated sift.col_segments and sift.table_segments read a relation of
 -- Format 1 through these (the entry points of 5.1) and a relation of Format 2.0 through sift.parts.
 CREATE OR REPLACE FUNCTION sift_internal.v1_col_segments(index regclass, OUT gen int8, OUT kind text, OUT rows int8, OUT bytes int8, OUT sb_lo int4, OUT sb_hi int4,
 														 OUT units int4, OUT dirty bool, OUT dead_rows int8, OUT extents int4, OUT format int4, OUT preagg_bytes int8)
 	RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_col_segments' LANGUAGE C STRICT VOLATILE;
 COMMENT ON FUNCTION sift_internal.v1_col_segments(regclass) IS 'Internal: the segments of a sift_col index of Format 1, with their dirty flag and column format';
+
+CREATE OR REPLACE FUNCTION sift_internal.v1_col_stamps(index regclass, OUT gen bigint, OUT entries bigint, OUT stamp xid)
+	RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_col_stamps' LANGUAGE C STRICT STABLE;
+COMMENT ON FUNCTION sift_internal.v1_col_stamps(regclass) IS 'Internal: the segment xid stamps of a sift_col index of Format 1';
 
 CREATE OR REPLACE FUNCTION sift_internal.v1_table_segments(tbl regclass, OUT gen int8, OUT kind text, OUT rows int8, OUT bytes int8, OUT sb_lo int4, OUT sb_hi int4,
 														   OUT units int4, OUT dead_rows int8, OUT format int4, OUT unfrozen bool, OUT min_xid xid, OUT max_xid xid)

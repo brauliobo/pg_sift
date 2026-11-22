@@ -208,14 +208,14 @@ def scan(*paths):
             objs[key] = o
             continue
         s = s_clean
-        m = re.match(r'CREATE\s+AGGREGATE\s+sift\.(\w+)\s*\(', s, re.I)
+        m = re.match(r'CREATE\s+(?:OR\s+REPLACE\s+)?AGGREGATE\s+sift\.(\w+)\s*\(', s, re.I)
         if m:
             close = matching(s, m.end() - 1)
             fin = re.search(r'FINALFUNC\s*=\s*sift\.(\w+)', s, re.I)
             ret = objs[('function', fin.group(1))]['rawret'] if fin and ('function', fin.group(1)) in objs else '-'
             objs[('function', m.group(1))] = dict(kind='function', sig='sift.%s(%s)' % (m.group(1), norm(s[m.end():close])), ret=ret, internal=False, rawret=ret)
             continue
-        m = re.match(r'CREATE\s+(?:OR\s+REPLACE\s+)?(VIEW|TABLE)\s+sift\.(\w+)', s, re.I)
+        m = re.match(r'CREATE\s+(?:OR\s+REPLACE\s+)?(VIEW|TABLE)\s+(?:IF\s+NOT\s+EXISTS\s+)?sift\.(\w+)', s, re.I)
         if m:
             k = m.group(1).lower()
             objs[(k, m.group(2))] = dict(kind=k, sig='sift.' + m.group(2), ret='-', internal=False)
@@ -235,6 +235,8 @@ def scan(*paths):
         if m:
             k = {'operator class': 'opclass', 'aggregate': 'function'}.get(norm(m.group(1)).lower(), m.group(1).lower())
             name = m.group(2)
+            if '.' in name:
+                continue    # another schema than sift (sift_internal): not in the reference
             types = ','.join(norm(t) for t in split_top(m.group(3)[1:-1])) if m.group(3) else ''
             if (k, '%s(%s)' % (name, types)) in objs:
                 name = '%s(%s)' % (name, types)    # the comment of an overload
@@ -283,9 +285,6 @@ for k, text in comments.items():
 for k in upgrades:
     if k not in comments:
         err('the upgrade script into %s has a COMMENT on %s %s that sql/pg_sift--%s.sql lacks' % (latest, k[0], k[1], latest))
-for k in comments:
-    if k not in objs:
-        err('COMMENT on %s %s: no such object in sql/pg_sift--%s.sql' % (k[0], k[1], latest))
 
 # ---- the notes ----
 notes = {}   # name -> (group, since, description, line)
@@ -305,6 +304,9 @@ by_name = {}
 for k in objs:
     by_name.setdefault(objs[k].get('fname', k[1]), []).append(k)
 globs = {name for name in notes if '*' in name}
+for k in comments:
+    if k not in objs and not (k[0] == 'opclass' and any(fnmatch.fnmatch(k[1], g) for g in globs)):   # a DO block creates the operator classes of the families of the notes
+        err('COMMENT on %s %s: no such object in sql/pg_sift--%s.sql' % (k[0], k[1], latest))
 for name, (g, sn, d, n) in notes.items():
     if name not in globs and name not in by_name:
         err('docs/reference-notes.tsv:%d: %s is not an object of sql/pg_sift--%s.sql' % (n, name, latest))

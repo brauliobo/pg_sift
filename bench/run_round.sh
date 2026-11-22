@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bench/run_round.sh [--docs] [--verify-diff] [--scales N,N,N | --release-scale [N,N,N]] [WORKTREE [ROUND [PORT]]]
 #
-# The 6.0 core harness (bench/v6_harness.py) on a throwaway cluster: builds pg_sift from WORKTREE (default: this checkout) in /tmp/sift-bench-build/ROUND, runs a cluster in /tmp/sift-bench-ROUND,
+# The 6.0 core harness (bench/v6_harness/) on a throwaway cluster: builds pg_sift from WORKTREE (default: this checkout) in /tmp/sift-bench-build/ROUND, runs a cluster in /tmp/sift-bench-ROUND,
 # measures the 10k -> 40k -> 160k scaling ladder (growth factors, memory flatness, compression, WAL, write amplification, OLTP, dirty state, Q1-Q8, soft delete, planning, idle memory)
 # and removes the cluster. Nothing is written into WORKTREE. No Docker, no root. About 25 s of measurement at the default ladder.
 #   --docs            also write docs/results/v6-core.tsv of this checkout (scripts/gen-docs.py reads it)
@@ -39,9 +39,9 @@ v6_cluster_build
 v6_cluster_start
 mkdir -p "$OUT_DIR"
 
-echo "[bench] running v6_harness.py"
+echo "[bench] running v6_harness"
 t_bench=$(date +%s.%N)
-nice -n 10 python3 "$BENCH_DIR/v6_harness.py" \
+PYTHONPATH="$BENCH_DIR" PYTHONDONTWRITEBYTECODE=1 nice -n 10 python3 -m v6_harness \
 	--host "$SOCK_DIR" --port "$PORT" --db bench --user postgres \
 	--round "$ROUND" --git-sha "$GIT_SHA" --git-branch "$GIT_BRANCH" --build-sec "$BUILD_SEC" --make-jobs "$MAKE_JOBS" \
 	--out-dir "$OUT_DIR" ${HARNESS_ARGS[@]+"${HARNESS_ARGS[@]}"}

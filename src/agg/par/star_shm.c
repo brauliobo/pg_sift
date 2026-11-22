@@ -8,7 +8,7 @@
 
 #include "agg/par/star_shm.h"
 
-#define ALIGN_UP(x)		TYPEALIGN(PG_CACHE_LINE_SIZE, (x))
+#define ALIGN_UP(x)		TYPEALIGN(SIFT_PAR_SHM_ALIGN, (x))
 #define BLOCK_ROWS		SIFT_DIM_BLOCK_ROWS
 #define N_BLOCKS(rows)	(((rows) + BLOCK_ROWS - 1) / BLOCK_ROWS)
 
@@ -130,7 +130,7 @@ layout(const SiftStarDimSpec *dims, int n, uint32 n_participants, SiftStarDimBun
 Size
 sift_star_size(const SiftStarDimSpec *dims, int n, uint32 n_participants)
 {
-	return add_size(layout(dims, n, n_participants, NULL), PG_CACHE_LINE_SIZE);
+	return add_size(layout(dims, n, n_participants, NULL), SIFT_PAR_SHM_ALIGN);
 }
 
 bool
@@ -142,7 +142,7 @@ sift_star_fits(const SiftStarDimSpec *dims, int n, uint32 n_participants)
 SiftStarDimBundle *
 sift_star_init(void *raw, const SiftStarDimSpec *dims, int n, uint32 n_participants)
 {
-	SiftStarDimBundle *b = (SiftStarDimBundle *) TYPEALIGN(PG_CACHE_LINE_SIZE, raw);
+	SiftStarDimBundle *b = (SiftStarDimBundle *) TYPEALIGN(SIFT_PAR_SHM_ALIGN, raw);
 
 	memset(b, 0, sizeof(*b));
 	b->magic = SIFT_STAR_MAGIC;

@@ -132,8 +132,10 @@ class Shape:
     def populate(self, n, pairs=True):
         """The facts, and the pairs unless pairs is False (populate_pairs makes them later)."""
         M, T, G = self.M, self.T, self.G
-        s = (f"INSERT INTO facts (id, dim_a_id, created_at, kind, amount{'' if self.walk else ', pad'}) SELECT i, {('1 + i % ' + str(M)) if self.walk else f'1 + (i::bigint * 7919 % {M + 20})::int'}, {self.created}, "
-             f"i % 7, (i * 13) % 1000{'' if self.walk else ", 'x'"} FROM generate_series(1, {n}) i;")
+        pad_col, pad_val = ('', '') if self.walk else (', pad', ", 'x'")
+        dim = ('1 + i % ' + str(M)) if self.walk else f'1 + (i::bigint * 7919 % {M + 20})::int'
+        s = (f"INSERT INTO facts (id, dim_a_id, created_at, kind, amount{pad_col}) SELECT i, {dim}, {self.created}, "
+             f"i % 7, (i * 13) % 1000{pad_val} FROM generate_series(1, {n}) i;")
         return s + (self.populate_pairs() if pairs else '')
 
     def populate_pairs(self):
@@ -182,8 +184,8 @@ class Shape:
 
     def scope_clause(self):
         if self.name == 'union':
-            return 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via group_members(group_id, dim_a_id)'
-        return 'tenant_id: dim_a_id -> pairs(dim_a_id, tenant_id)'
+            return 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via group_members(group_id, dim_a_id) max_multiplicity(64)'
+        return 'tenant_id: dim_a_id -> pairs(dim_a_id, tenant_id) max_multiplicity(64)'
 
     def scope_index(self, name, opts, concurrently=False):
         c = ' CONCURRENTLY' if concurrently else ''
@@ -440,7 +442,7 @@ def run_seed(a, seed):
     root = Pg('admin', P, 'postgres', log, sift=False)
     for n in (P, B, R):
         Pg('admin', n, 'postgres', log, sift=False).run(f"DROP DATABASE IF EXISTS {db} WITH (FORCE); CREATE DATABASE {db};")
-    setup = (f"SET sift.test_scope_patch = {patch}; SET sift.scope_max_multiplicity = 64;" + (f" SET sift.test_col_segment_kb = {seg};" if seg else '') + (f" SET sift.col_unit_rows = {urows};" if urows else '')
+    setup = (f"SET sift.test_scope_patch = {patch};" + (f" SET sift.test_col_segment_kb = {seg};" if seg else '') + (f" SET sift.test_col_unit_rows = {urows};" if urows else '')
              + os.environ.get('SIFT_ORACLE_SET', ''))
     shell(f"echo 'seed {seed}: shape {shape.name} rows {rows} index options [{opts}] test_scope_patch {patch} segment_kb {seg} unit_rows {urows} late {late}' >> {out}/summary.txt")
     print(f'seed {seed}: shape {shape.name}, {rows} rows, options [{opts}], patch {patch}, segment_kb {seg}, unit_rows {urows}, late {late}', flush=True)

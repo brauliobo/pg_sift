@@ -8,7 +8,7 @@
 plan 4
 node_init sy 74 "autovacuum = off
 sift.test_col_net = off
-sift.col_auto_merge = on
+sift.async_maintenance = on
 sift.maintenance_naptime = 2000"
 node_start sy || bail "start failed"
 D=$(dir sy)

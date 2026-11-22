@@ -15,7 +15,7 @@
 #define SIFT_UX_QUANTITY	40		/* room for any one quantity ("1,844,674,407,370,955,161 rows" is the longest) */
 #define SIFT_UX_LINE		256		/* room for a summary line */
 
-#define SIFT_UX_QUICK_US	(100 * INT64_C(1000))	/* an operation under this long and under SIFT_UX_SMALL_ROWS rows says nothing unless it chose something */
+#define SIFT_UX_QUICK_US	(1000 * INT64_C(1000))	/* an operation under this long and under SIFT_UX_SMALL_ROWS rows says nothing unless it chose something */
 #define SIFT_UX_SMALL_ROWS	10000
 #define SIFT_UX_RATIO_FLOOR	(64 * UINT64_C(1024))	/* a heap smaller than this makes no ratio worth printing */
 

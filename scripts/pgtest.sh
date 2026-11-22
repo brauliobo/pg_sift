@@ -198,9 +198,10 @@ ready() {
 	local i
 	for ((i = 0; i < ${SIFT_READY_SECS:-300} * 2; i++)); do
 		pg_isready -q -h "$SOCK" -p "$PORT" && return 0
+		[[ -f $DATA/postmaster.pid ]] || break
 		sleep 0.5
 	done
-	echo "pgtest: the cluster at $SOCK does not accept connections after ${SIFT_READY_SECS:-300} s" >&2
+	echo "pgtest: the cluster at $SOCK does not accept connections (no postmaster, or not ready after ${SIFT_READY_SECS:-300} s)" >&2
 	return 1
 }
 
@@ -218,28 +219,43 @@ clean() {
 # fresh database (contrib_regression_<first>, the output in $TMP/regress/<first>), then ONE look at the server log (leak_after) and ONE at what the
 # run left in the database (scripts/leftovers.sql; scripts/leftovers.allow gives the objects a test may leave, and why). A run that finds a diff, a leak or a
 # leftover is cut in halves, each in a fresh database, until the single tests that fail are named: the green path pays the checks once for the batch,
-# and the failure path says which test is guilty, whatever an earlier test of the batch left behind.
+# and the failure path says which test is guilty, whatever an earlier test of the batch left behind. The first pass stays whole in $TMP/regress/<first> (its
+# regression.diffs and report): a cut keeps its output in $TMP/regress/cut/ and drops its database at once, so that a batch of failures does not fill the scratch
+# directory of the lane (the watchdog of scripts/ci/scratch.sh stops every server of the run when it passes its cap).
 regress() {
 	if (( ! $# )); then make -C "$REPO" USE_PGXS=1 installcheck PGUSER=postgres; return; fi
 	batch_run "$@" && return 0
-	if (( $# == 1 )); then batch_report "$1"; return 1; fi
+	if (( $# == 1 )); then batch_report "$1" "$1"; return 1; fi
 	echo "pgtest: regress: the batch of $# tests starting at $1 failed; cutting it in halves to name the tests" >&2
-	local report; report=$(<"$TMP/regress/$1.report")
-	bisect_batch "$report" "$@" || true
+	bisect_batch "$(<"$TMP/regress/$1.report")" "$@" || true
 	return 1
 }
 
-# batch_run TEST...: the batch in one pg_regress run and its checks; the findings (diffs, leaks, leftovers) go to $TMP/regress/<first>.report, not to the terminal
-# (REGRESS_QUIET=1 also keeps the progress of pg_regress back, for the runs that cut a failed batch). 0 when every test passed and left nothing
+# batch_key TEST...: the name of the output of a batch in $TMP/regress: <first> for the whole batch, cut/<first>-<count> for a half or less of it (REGRESS_CUT is set)
+batch_key() { echo "${REGRESS_CUT:+cut/}$1${REGRESS_CUT:+-$#}"; }
+
+# batch_run TEST...: the batch in one pg_regress run and its checks; the findings (diffs, leaks, leftovers) go to $TMP/regress/<key>.report, not to the terminal
+# (a cut, REGRESS_CUT=1, also keeps the progress of pg_regress back, and drops its database and the output of a batch that passed). 0 when every test passed and left nothing
 batch_run() {
-	local first=$1 db=contrib_regression_$1 out=$TMP/regress/$1 report pats now left rc=0
-	report=$TMP/regress/$first.report
-	mkdir -p "$TMP/regress"; : >"$report"
-	leak_before "regress-$first" "$TMP/postgres.log"
-	if ! if [[ -n ${REGRESS_QUIET:-} ]]; then pg_regress "$out" "$db" "$@" >/dev/null; else pg_regress "$out" "$db" "$@"; fi; then
+	local key db rc=0
+	key=$(batch_key "$@")
+	db=contrib_regression_$1${REGRESS_CUT:+_$#}
+	batch_checks "$key" "$db" "$@" || rc=1
+	[[ -z ${REGRESS_CUT:-} ]] || dropdb -U postgres --force --if-exists "$db" || rc=1
+	(( rc )) || [[ -z ${REGRESS_CUT:-} ]] || rm -rf "$TMP/regress/$key" "$TMP/regress/$key.report"
+	return $rc
+}
+
+batch_checks() {
+	local key=$1 db=$2 out report pats now left rc=0 unit
+	shift 2
+	out=$TMP/regress/$key report=$TMP/regress/$key.report unit=regress-${key//\//-}
+	mkdir -p "$(dirname "$out")"; : >"$report"
+	leak_before "$unit" "$TMP/postgres.log"
+	if ! if [[ -n ${REGRESS_CUT:-} ]]; then pg_regress "$out" "$db" "$@" >/dev/null; else pg_regress "$out" "$db" "$@"; fi; then
 		rc=1; cat "$out/regression.diffs" >>"$report" 2>/dev/null
 	fi
-	leak_after "regress-$first" "$DATA" "$db" 2>>"$report" || { rc=1; echo "not ok - leaks memory or resources" >>"$report"; }
+	leak_after "$unit" "$DATA" "$db" 2>>"$report" || { rc=1; echo "not ok - leaks memory or resources" >>"$report"; }
 	(( rc == 0 )) || return 1
 	pats=$(IFS='|'; echo "$*")
 	now=$(db_left "$db")
@@ -249,26 +265,28 @@ batch_run() {
 	return 1
 }
 
-# batch_report TEST: what the failed run of the single TEST found, named after it
-batch_report() { sed "s/^LEFTOVER: /LEFTOVER $1: /; s/^not ok - /not ok - $1 /" "$TMP/regress/$1.report"; }
+# batch_report KEY TEST: what the failed run of the single TEST (output KEY) found, named after it
+batch_report() { sed "s/^LEFTOVER: /LEFTOVER $2: /; s/^not ok - /not ok - $2 /" "$TMP/regress/$1.report"; }
 
 # bisect_batch REPORT TEST...: REPORT is what the batch of TEST... found. Runs each half alone; 1 as soon as a half fails (the tests that fail alone are reported by name),
-# else the tests only fail together: REPORT is all there is to say
+# else the tests only fail together: REPORT is all there is to say. 2 when the server is gone: no half can run
 bisect_batch() {
-	local report=$1 half rc=0
+	local report=$1 half rc1 rc2
 	shift
 	half=$(( $# / 2 ))
-	cut_batch "${@:1:half}" || rc=1
-	cut_batch "${@:half+1}" || rc=1
-	(( rc )) || { echo "pgtest: regress: no half of the batch fails alone, so it is the tests together; what the batch found:" >&2; echo "$report"; }
+	cut_batch "${@:1:half}" && rc1=0 || rc1=$?
+	(( rc1 != 2 )) || return 2
+	cut_batch "${@:half+1}" && rc2=0 || rc2=$?
+	(( rc2 != 2 )) || return 2
+	(( rc1 || rc2 )) || { echo "pgtest: regress: no half of the batch fails alone, so it is the tests together; what the batch found:" >&2; echo "$report"; }
 	return 1
 }
 cut_batch() {
-	local report
-	REGRESS_QUIET=1 batch_run "$@" && return 0
-	if (( $# == 1 )); then batch_report "$1"; return 1; fi
-	report=$(<"$TMP/regress/$1.report")
-	bisect_batch "$report" "$@"
+	local REGRESS_CUT=1
+	ready || { echo "pgtest: regress: the server is gone, so the batch of $# tests starting at $1 was not run" >&2; return 2; }
+	batch_run "$@" && return 0
+	if (( $# == 1 )); then batch_report "$(batch_key "$@")" "$1"; return 1; fi
+	bisect_batch "$(<"$TMP/regress/$(batch_key "$@").report")" "$@"
 }
 
 # db_left DB: what scripts/leftovers.sql finds in DB (the objects of the database, not those of the cluster)

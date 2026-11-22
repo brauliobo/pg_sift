@@ -47,7 +47,7 @@ from col_twin_fuzz import Sess, Fail, ERR, SETUP, OUT, sqlstr
 
 TWOHOP_REASON = '^no journal for two paths$'   # the reason of a tree without the reader of the units of two paths
 HELPERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scope_helpers.sql')
-FUZZ_SETUP = SETUP + " SET sift.agg_force = on; SET jit = off; SET sift.scope_max_multiplicity = 64;"
+FUZZ_SETUP = SETUP + " SET sift.agg_force = on; SET jit = off;"
 
 LIB = r"""
 DROP TABLE IF EXISTS sf_q, sf_res;
@@ -169,7 +169,7 @@ INSERT INTO sfp_s SELECT m, 1 + (m + j) % 4 FROM generate_series(1, 40) m, gener
 CREATE INDEX sfp_j ON sfp_s USING sift_col (m, k) WITH (track_changes = 'ctid');
 CREATE TABLE sfp (id int PRIMARY KEY, m int, t timestamp, v int);
 INSERT INTO sfp SELECT i, 1 + i % 40, TIMESTAMP '2026-01-01' + i * interval '1 hour', i % 7 FROM generate_series(1, 4000) i;
-CREATE INDEX sfp_i ON sfp USING sift_col (id, m, t, v) WITH (scope = 'k: m -> sfp_s(m, k)');
+CREATE INDEX sfp_i ON sfp USING sift_col (id, m, t, v) WITH (scope = 'k: m -> sfp_s(m, k) max_multiplicity(64)');
 REINDEX INDEX sfp_i;
 VACUUM (FREEZE, ANALYZE) sfp, sfp_s;
 CREATE OR REPLACE FUNCTION sf_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -254,7 +254,7 @@ class Seed:
         return self.nkeys + 5
 
     def scope_text(self):
-        return "tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)" + (f" cols({', '.join(self.cols)})" if self.cols else '')
+        return "tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)" + (f" cols({', '.join(self.cols)})" if self.cols else '') + " max_multiplicity(64)"
 
     def pair_sql(self):
         jr = ("CREATE INDEX tenant_scope_col ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')"
@@ -481,7 +481,7 @@ class UnionSeed(Seed):
 
     def scope_text(self):
         return ("tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)"
-                + (f" cols({', '.join(self.cols)})" if self.cols else ''))
+                + (f" cols({', '.join(self.cols)})" if self.cols else '') + " max_multiplicity(64)")
 
     # the pairs as SQL says them: the one definition every plain form reads
     def pair_set_sql(self):

@@ -16,6 +16,7 @@ use File::Copy qw(copy);
 use File::Path qw(make_path);
 use File::Basename qw(basename);
 use FindBin ();
+use SiftTest ();
 use Test::More;
 
 our @EXPORT = qw(v510_root v60_root make_server_tree install_sift_version pg_major sql digest format_of fixture_sql dml snapshot agree_with_heap formats filenodes vacuum_all

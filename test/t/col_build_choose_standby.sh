@@ -21,7 +21,7 @@ sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 node_clone primary standby 3 "hot_standby_feedback = on"
 node_start standby || bail "standby start failed"
 
-SETTINGS=("SET sift.async_maintenance = off" "SET max_parallel_workers_per_gather = 0" "SET sift.test_col_segment_kb = 1500" "SET sift.col_unit_rows = 1200" "SET maintenance_work_mem = '512MB'")
+SETTINGS=("SET sift.async_maintenance = off" "SET max_parallel_workers_per_gather = 0" "SET sift.test_col_segment_kb = 1500" "SET sift.test_col_unit_rows = 1200" "SET maintenance_work_mem = '512MB'")
 GROUPS_Q="SELECT coalesce(string_agg(tenant_id || ':' || n || ':' || s, ',' ORDER BY tenant_id), '') FROM (SELECT tenant_id, count(*) AS n, sum(amount) AS s FROM orders GROUP BY tenant_id) x"
 TEMP="SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database()"
 FLUSH="SELECT pg_stat_force_next_flush()" ; CLEAR="SELECT pg_stat_clear_snapshot()"

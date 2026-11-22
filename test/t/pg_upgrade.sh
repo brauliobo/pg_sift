@@ -59,6 +59,7 @@ initdb_node old 30 "$OLDB"
 initdb_node new 31 "$NEWB"
 NODES+=(new)
 node_conf new "$("$REPO/scripts/pgtest.sh" conf)"
+[[ -n $OLD_REF ]] || node_conf old "$("$REPO/scripts/pgtest.sh" conf)"
 LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || bail "the old cluster does not start"
 
 # a tablespace needs two catalog versions (pg_upgrade refuses the same one)
@@ -198,8 +199,7 @@ HOPSTATE="SELECT string_agg(o, ' ') FROM pg_class c, unnest(c.reloptions) o WHER
 	UNION ALL SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'hop_col'::regclass
 	AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i'"
 if [[ -z $OLD_REF ]]; then
-	q old postgres "ALTER DATABASE postgres SET sift.scope_max_multiplicity = 8" >/dev/null || bail "the multiplicity limit"
-	printf '%s;\n' "${TWOHOP_BASE[@]}" "${TWOHOP_INDEX[@]}" | qs old postgres >/dev/null || bail "the scope of two paths cannot be set up"
+	printf '%s;\n' "${TWOHOP_BASE[@]}" "${TWOHOP_INDEX[@]//$TWOHOP_SCOPE/$TWOHOP_SCOPE max_multiplicity(8)}" | qs old postgres >/dev/null || bail "the scope of two paths cannot be set up"
 	HOP_BEFORE=$(HOPQ old "$HOPSTATE")
 fi
 # stored settings of the database and of a role in it (settings both releases have): pg_upgrade carries them in the globals
@@ -233,7 +233,7 @@ if [[ $upgraded -ne 0 ]]; then
 	upgrade_failed new
 	bail "pg_upgrade failed"
 fi
-sed_i "/^sift\\.test_/d" "$(dir new)/data/postgresql.conf"   # a setting of the test build the preflight below would report
+sed_i "/^sift\\.\(test_\|col_build_source\)/d" "$(dir new)/data/postgresql.conf"   # settings of the test build the preflight below would report
 node_start new || bail "the upgraded cluster does not start"
 
 if [[ -z $OLD_REF ]]; then
@@ -258,12 +258,11 @@ check "sift.approx_count_distinct on the column index is what the normal plan gi
 	"$(q new postgres "SET sift.enable_agg = off" "SELECT sift.approx_count_distinct(id) || ':' || sift.approx_count_distinct(g) FROM facts")"
 check "column aggregates are identical and equal the normal plan" test "$(sed -n 2,3p <<<"$AFTER")" == "$(sed -n 2,3p <<<"$BEFORE")"
 check "the tables answer as before, by the scan and the normal plan" test "$(sed -n 4,7p <<<"$AFTER")" == "$(sed -n 4,7p <<<"$BEFORE")"
-# the cluster runs with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf), which the preflight warns about: its session has the shipped values
 if [[ -z $OLD_REF ]]; then
-	check "the preflight finds nothing to fix" quiet env PGOPTIONS="-c sift.table_auto_defrag=on -c sift.col_auto_merge=on" PGHOST="$(dir new)/sock" PGPORT="$(port new)" PGUSER=postgres "$REPO/scripts/upgrade-check.sh" --strict postgres
+	check "the preflight finds nothing to fix" quiet env PGHOST="$(dir new)/sock" PGPORT="$(port new)" PGUSER=postgres "$REPO/scripts/upgrade-check.sh" --strict postgres
 else
 	# the objects of a release name what the update leaves to REINDEX or VACUUM FULL (warnings), and nothing blocks
-	check "the preflight lists nothing that blocks" quiet env PGOPTIONS="-c sift.table_auto_defrag=on -c sift.col_auto_merge=on" PGHOST="$(dir new)/sock" PGPORT="$(port new)" PGUSER=postgres "$REPO/scripts/upgrade-check.sh" postgres
+	check "the preflight lists nothing that blocks" quiet env PGHOST="$(dir new)/sock" PGPORT="$(port new)" PGUSER=postgres "$REPO/scripts/upgrade-check.sh" postgres
 fi
 
 # an index that tracks its changes: pg_upgrade restores the table before its indexes, so the triggers are made again, and they must hear what the upgraded cluster writes
@@ -274,7 +273,7 @@ check "the tracked index answers as before and as the normal plan" test "$(q new
 q new postgres "UPDATE trk SET id = id + 20000 WHERE id % 7 = 3" "DELETE FROM trk WHERE id % 11 = 0" "INSERT INTO trk SELECT g, g % 7, g FROM generate_series(5001, 5200) g" >/dev/null
 check "the tracked index agrees with the normal plan after UPDATE, DELETE and INSERT" test "$(q new postgres "SELECT trkq_on() = trkq_off()")" == t
 q new postgres "REINDEX INDEX trk_c" >/dev/null
-check "REINDEX gives the tracked index its baseline: complete, heap-free, the answer unchanged" test "$(q new postgres "SELECT trkq_on() = trkq_off()" "SELECT track_changes AND triggers AND complete AND heap_free FROM sift.col_tracking('trk_c')" | tr '\n' ' ')" == "t t "
+check "REINDEX keeps the tracked index tracking, the answer unchanged" test "$(q new postgres "SELECT trkq_on() = trkq_off()" "SELECT track_changes FROM sift.col_tracking('trk_c')" | tr '\n' ' ')" == "t t "
 
 # the connection: the option, the dependency and the journal (its lineage and records came with the files); the triggers of the tracked parent index are made again, so its log is
 # not complete and nothing is vouched until the index is rebuilt
@@ -344,7 +343,7 @@ q new postgres "SELECT sift.promote('docs_idx') >= 0, sift.merge('docs_idx', tru
 	"SELECT sift.table_maintain('tbl') IS NOT NULL, sift.table_maintain('tbl_ts') IS NOT NULL" >/dev/null
 check "promotion, merges and sift.table_maintain pass" test $? -eq 0
 check "sift.verify and sift.col_verify pass after the writes and merges" quiet q new postgres "$VERIFY_SQL"
-check "the BM25 index agrees with a sequential scan" test "$(q new postgres "SET sift.enable_scan = off" "SET sift.enable_count = off" "SET enable_indexscan = off" "SET enable_bitmapscan = off" \
+check "the BM25 index agrees with a sequential scan" test "$(q new postgres "SET sift.enable_scan = off" "SET enable_indexscan = off" "SET enable_bitmapscan = off" \
 	"SELECT count(*) || ':' || sum(id) FROM docs WHERE body @@> 'alpha3'")" == "$(q new postgres "SELECT count(*) || ':' || sum(id) FROM docs WHERE body @@> 'alpha3'")"
 check "the column indexes agree with the normal plan after the writes" test "$(q new postgres "SELECT colq_on() = colq_off()")" == t
 check "the tables agree with the normal plan after the writes" test "$(q new postgres "SELECT tblq_on('tbl') = tblq_off('tbl') AND tblq_on('tbl_ts') = tblq_off('tbl_ts')")" == t

@@ -15,7 +15,7 @@ sift.maintenance_naptime = 200"
 node_start wl || bail "start failed"
 D=$(dir wl)
 TABLE="(id int, key int, kind text, amount numeric(10,2), pad text)"
-sql wl "CREATE EXTENSION pg_sift" "ALTER DATABASE postgres SET sift.col_auto_merge = on" >/dev/null || bail "setup failed"
+sql wl "CREATE EXTENSION pg_sift" "ALTER DATABASE postgres SET sift.async_maintenance = on" >/dev/null || bail "setup failed"
 for t in t1 t2 t3; do
 	sql wl "CREATE TABLE $t $TABLE" "INSERT INTO $t SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 20000) g" \
 		"CREATE INDEX ${t}_idx ON $t USING sift_col (id, key, kind, amount)" "VACUUM $t" >/dev/null || bail "load of $t failed"

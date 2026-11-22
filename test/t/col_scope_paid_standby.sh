@@ -9,9 +9,8 @@ node_init pp 58 "autovacuum = off
 wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
-sift.col_auto_merge = on
+sift.async_maintenance = on
 sift.maintenance_naptime = 200
-sift.scope_max_multiplicity = 8
 sift.test_scope_patch = off"
 node_start pp || bail "primary start failed"
 sql pp "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
@@ -22,12 +21,12 @@ sql pp "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"INSERT INTO ce SELECT i, 1 + (i * 7919) % 2100, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, 'x' FROM generate_series(1, 200000) i" \
 	>/dev/null || bail "setup failed"
 sql pp "VACUUM (FREEZE, ANALYZE) ce, cp" >/dev/null || bail "vacuum failed"
-sql pp "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (key_order = 'm, d', scope = 't: m -> cp(m, t)')" >/dev/null || bail "build failed"
+sql pp "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (key_order = 'm, d', scope = 't: m -> cp(m, t) max_multiplicity(8)')" >/dev/null || bail "build failed"
 sql pp "WITH d AS (DELETE FROM cp WHERE abs(hashtext(m || '/' || t || '/b')) % 100 < 2 RETURNING m, t) INSERT INTO cp SELECT 1 + (m + 37) % 2000, t FROM d ON CONFLICT DO NOTHING" "CHECKPOINT" >/dev/null
 
 node_clone pp ps 59 "hot_standby_feedback = on
 wal_receiver_status_interval = 1s
-sift.col_auto_merge = on
+sift.async_maintenance = on
 sift.maintenance_naptime = 200
 sift.test_scope_patch = off"
 node_start ps || bail "standby start failed"

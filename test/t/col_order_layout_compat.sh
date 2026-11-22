@@ -77,5 +77,5 @@ if [[ $(sql legacy "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_col
 	check "and the reads are the heap's" test "$(verify && echo ok)|$(sql legacy "SET sift.enable_agg = off" "$ORD")" == "ok|$(sql legacy "$ORD")"
 else skip 5 "a release build has no test settings (the compact order needs sift.test_col_gorder_ends to be written for a small table)"; fi
 node_stop legacy
-echo "1..$NTEST"
+done_testing
 finish

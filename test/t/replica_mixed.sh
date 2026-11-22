@@ -4,7 +4,7 @@
 #   up:   the primary runs the newest 3.2 release, the standby this tree (the standby is updated first, as usual): the standby answers the queries of the
 #         BM25, sift_col and sift_table objects the release wrote and keeps writing as the primary does (inserts, updates, deletes, VACUUM), as the primary answers
 #         them and as the plain plan does, sift.verify and sift.col_verify are clean on it.
-#   down: the primary runs this tree at the column format minor the release reads (sift.col_format_minor = 6, the setting of the rollback in docs/UPGRADING.md
+#   down: the primary runs this tree at the column format minor the release reads (sift.test_col_format_minor = 6, the setting of the rollback in docs/UPGRADING.md
 #         section 4) and writes BM25 segments of format 3 and the narrow write buffer (sift.test_segfmt, sift.test_wbuf_narrow in its sessions: the release
 #         refuses format 4 and the buffer of format 6, which a rollback rebuilds with REINDEX), the standby the release: the same checks.
 # The release is built from its tag by scripts/old-lib-check.sh (PostgreSQL 18).
@@ -81,5 +81,5 @@ wal_receiver_status_interval = 1s"
 }
 
 run up "$oldroot" "$newroot"
-run down "$newroot" "$oldroot" "sift.col_format_minor = 6"
+run down "$newroot" "$oldroot" "sift.test_col_format_minor = 6"
 finish

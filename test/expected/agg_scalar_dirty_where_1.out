@@ -168,7 +168,7 @@ SELECT n, plan_of(q) AS plan, outcome(q) FROM w_q ORDER BY n;
 SET sift.enable_agg = on;
 SET sift.explain_refusals = on;
 EXPLAIN (COSTS OFF) SELECT grp, count(*) FROM w_t WHERE (doc ->> 'v')::float8 > 3 AND 100 / (grp + 1) > 3 GROUP BY grp;
-NOTICE:  SiftAgg not used: dirty_order: a condition casts a path whose value some unit cannot store, and PostgreSQL may test it before a condition that would drop the row whose value raises, or after one that raises too (doc.v: PostgreSQL decides whether the cast of a row that raises runs before another condition drops the row)
+NOTICE:  SiftAgg not used: dirty_order: a condition casts a path whose value some granule cannot store, and PostgreSQL may evaluate it before a filter that drops the row (doc.v: PostgreSQL decides whether the cast of a row that raises runs before another condition drops the row)
 DETAIL:  arm: single
 HINT:  None needed, PostgreSQL's order of the conditions decides; put the guard in a CASE or a sub-select so that it runs first.
                                                       QUERY PLAN                                                       
@@ -182,7 +182,7 @@ HINT:  None needed, PostgreSQL's order of the conditions decides; put the guard 
 (6 rows)
 
 EXPLAIN (COSTS OFF) SELECT grp, count(*) FROM w_t WHERE (doc ->> 'v')::float8 > 3 AND (doc ->> 'n')::int4 > 1 GROUP BY grp;
-NOTICE:  SiftAgg not used: dirty_order: a condition casts a path whose value some unit cannot store, and PostgreSQL may test it before a condition that would drop the row whose value raises, or after one that raises too (doc.v: PostgreSQL decides whether the cast of a row that raises runs before another condition drops the row)
+NOTICE:  SiftAgg not used: dirty_order: a condition casts a path whose value some granule cannot store, and PostgreSQL may evaluate it before a filter that drops the row (doc.v: PostgreSQL decides whether the cast of a row that raises runs before another condition drops the row)
 DETAIL:  arm: single
 HINT:  None needed, PostgreSQL's order of the conditions decides; put the guard in a CASE or a sub-select so that it runs first.
                                                              QUERY PLAN                                                             
@@ -196,9 +196,9 @@ HINT:  None needed, PostgreSQL's order of the conditions decides; put the guard 
 (6 rows)
 
 EXPLAIN (COSTS OFF) SELECT grp, count(*) FROM w_t WHERE (doc ->> 'v')::float8 > 3 OR grp = 1 GROUP BY grp;
-NOTICE:  SiftAgg not used: dirty_units: some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does (doc.v: a condition on the cast is none of a comparison with a constant, an IN list of integers and a NULL test (an OR, an expression of it, a boolean))
+NOTICE:  SiftAgg not used: dirty_units: some granule holds values a leaf the query reads cannot store, so the scan cannot guarantee SQL error parity (doc.v: a condition on the cast is none of a comparison with a constant, an IN list of integers and a NULL test (an OR, an expression of it, a boolean))
 DETAIL:  arm: single
-HINT:  Find the leaf with values it cannot store in sift.col_leaves, fix the data or the type of its path, and REINDEX.
+HINT:  Inspect sift.col_leaves(<index>) for overflow leaves, fix the data or path type, and rebuild with REINDEX INDEX CONCURRENTLY.
                                                QUERY PLAN                                               
 --------------------------------------------------------------------------------------------------------
  GroupAggregate
@@ -210,9 +210,9 @@ HINT:  Find the leaf with values it cannot store in sift.col_leaves, fix the dat
 (6 rows)
 
 EXPLAIN (COSTS OFF) SELECT grp, count(*) FROM w_t WHERE (doc ->> 'ok')::bool GROUP BY grp;
-NOTICE:  SiftAgg not used: dirty_units: some unit holds values a leaf the query reads cannot store, and the scan could not read those rows again as SQL does (doc.ok: a condition on the cast is none of a comparison with a constant, an IN list of integers and a NULL test (an OR, an expression of it, a boolean))
+NOTICE:  SiftAgg not used: dirty_units: some granule holds values a leaf the query reads cannot store, so the scan cannot guarantee SQL error parity (doc.ok: a condition on the cast is none of a comparison with a constant, an IN list of integers and a NULL test (an OR, an expression of it, a boolean))
 DETAIL:  arm: single
-HINT:  Find the leaf with values it cannot store in sift.col_leaves, fix the data or the type of its path, and REINDEX.
+HINT:  Inspect sift.col_leaves(<index>) for overflow leaves, fix the data or path type, and rebuild with REINDEX INDEX CONCURRENTLY.
                       QUERY PLAN                       
 -------------------------------------------------------
  GroupAggregate

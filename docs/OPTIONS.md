@@ -58,7 +58,7 @@
 Passed in `CREATE INDEX ... WITH (...)` or modified with `ALTER INDEX ... SET (...)`.
 
 <!-- sift-reloptions:start -->
-### Column Index (`sift_col`) — 36 Reloptions
+### Column Index (`sift_col`) — 37 Reloptions
 
 | Option | Default | Values | Purpose |
 |---|---|---|---|
@@ -85,7 +85,7 @@ Passed in `CREATE INDEX ... WITH (...)` or modified with `ALTER INDEX ... SET (.
 | `point_columns` | `''` | text | Deprecated and ignored; point_tid_columns lists the heap addresses of the rows of a column ([ANALYTICS.md](ANALYTICS.md#1-designing-a-sift_col-index)) |
 | `point_tid_columns` | `''` | `col, col` | List heap addresses in the point directory so an equality or short IN list reads no unit ([ANALYTICS.md](ANALYTICS.md#1-designing-a-sift_col-index)) |
 | `preagg` | `''` | `auto`, `off`, `cube(...); rollup(...); calendar(...)` | Granule pre-aggregate cube, rollup, and calendar definitions ([ANALYTICS.md](ANALYTICS.md#3-pre-aggregates-preagg)) |
-| `projection` | `''` | tag string | Named projection registry tag ([REFERENCE.md](REFERENCE.md#column-index-and-scopes-sift_col)) |
+| `projection` | `''` | tag string | Named projection registry tag ([REFERENCE.md](REFERENCE.md#column-index-and-scopes)) |
 | `return_columns` | `''` | `col, col` | Return text, varchar and uuid columns from the segment dictionary in an index-only scan ([ANALYTICS.md](ANALYTICS.md#1-designing-a-sift_col-index)) |
 | `rollup` | `''` | text | Deprecated alias of rollup_leaves, which wins when both are set ([ANALYTICS.md](ANALYTICS.md#1-designing-a-sift_col-index)) |
 | `rollup_columns` | `''` | `col, col`, `col, col: measure, ...`, `auto`, `off` | Pick the low-cardinality column pairs whose GROUP BY and filter are read from a per-unit rollup ([ANALYTICS.md](ANALYTICS.md#1-designing-a-sift_col-index)) |
@@ -94,6 +94,7 @@ Passed in `CREATE INDEX ... WITH (...)` or modified with `ALTER INDEX ... SET (.
 | `rollup_on_demand` | `true` | `true`, `false` | A scan that reads units for lack of their rollups asks the worker to rebuild them ([ANALYTICS.md](ANALYTICS.md#1-designing-a-sift_col-index)) |
 | `scope` | `''` | `'name: fk -> rel(member, key) [cluster] [topk(...)] [null_filter(...)]'` | Entity-Once multi-tenant/hierarchy scope declarations with automatic primary-parent clustering ([SCOPES.md](SCOPES.md#1-declaring-a-scope)) |
 | `sketches` | `''` | `'hll(col, ...); kll(col, ...)'` | Opt-in approximate sketches for sift.approx_count_distinct() and quantiles ([ANALYTICS.md](ANALYTICS.md#8-approximate-distinct-counts-siftapprox_count_distinct)) |
+| `skip_index` | `''` | `'column: bloom'`, `'column: trigram'`, comma separated | High-cardinality skipping index per column: Bloom for equality and IN, trigram for LIKE and ILIKE ([ANALYTICS.md](ANALYTICS.md#1-designing-a-sift_col-index)) |
 | `superunit` | `16` | `0`, `2..256` | Store merged sums and cubes per group of units so a scan no predicate cuts through reads one summary ([ANALYTICS.md](ANALYTICS.md#1-designing-a-sift_col-index)) |
 | `track_changes` | `'auto'` | `auto`, `off` | Heap-address (ctid) change tracking for COW deletion vectors; works on any table, no primary key needed ([ANALYTICS.md](ANALYTICS.md#9-change-tracking-track_changes)) |
 | `vacuum_truncate` | `true` | `true`, `false` | Truncate reclaimed trailing blocks during VACUUM ([OPERATIONS.md](OPERATIONS.md#34-space-free-extents-and-vblocks_left-siftspace)) |

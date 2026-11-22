@@ -13,10 +13,9 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
 plan 135
-# the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
+# the test clusters run with sift.async_maintenance off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
-node_init uc 21 "sift.table_auto_defrag = on
-sift.col_auto_merge = on"
+node_init uc 21 "sift.async_maintenance = on"
 sed_i "/^sift\\.test_/d" "$(dir uc)/data/postgresql.conf"   # a setting of the test build the preflight would report: the clean database stays clean
 node_start uc || bail "start failed"
 q postgres "CREATE DATABASE clean" "CREATE DATABASE cfg" "CREATE DATABASE old" >/dev/null
@@ -103,7 +102,7 @@ check "sift.upgrade_commands gives the same indexes, one command each (no text i
 	"SELECT string_agg(kind || ' ' || required::text || ' ' || command, ' ' ORDER BY ord) FROM (SELECT *, row_number() OVER () ord FROM sift.upgrade_commands()) c WHERE kind = 'reindex'")" == \
 	"reindex false REINDEX INDEX CONCURRENTLY public.facts_late; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_roll; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_set;"
 # cube_minmax and superunit are on unless the index says otherwise: an index written before 3.3 lacks them, and a REINDEX gives them
-q clean "SET sift.col_format_minor = 6" "CREATE INDEX facts_legacy ON facts USING sift_col (id, g, n)" >/dev/null
+q clean "SET sift.test_col_format_minor = 6" "CREATE INDEX facts_legacy ON facts USING sift_col (id, g, n)" >/dev/null
 out=$(uc clean)
 check "an index of an older format built with the defaults warns about cube_minmax and superunit, with the REINDEX" grep -q -E '^warn +facts_legacy +option +cube_minmax with column format [0-9]+ .*superunit with column format [0-9]+.*REINDEX INDEX CONCURRENTLY public\.facts_legacy;' <<<"$out"
 q clean "REINDEX INDEX CONCURRENTLY public.facts_legacy" >/dev/null
@@ -125,7 +124,7 @@ check "to 3.3: an index with a global order is a blocker" test -n "$(row "$(uc -
 check "to 3.5: the same index is a blocker that says to write the setting 14 and that its arrays are left out" grep -q -E "^blocker +facts_gord .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_gord.*written without its arrays: an ORDER BY \.\. LIMIT above 32 rows on those columns reads their units \(slower\) until a REINDEX at the normal setting writes them again" <<<"$(uc --to 3.5 clean)"
 check "to 3.6: the same index is a blocker that says to write the setting 14 and that its arrays are left out" grep -q -E "^blocker +facts_gord .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_gord.*written without its arrays: an ORDER BY \.\. LIMIT above 32 rows on those columns reads their units \(slower\) until a REINDEX at the normal setting writes them again" <<<"$(uc --to 3.6 clean)"
 check "to 3.7: the same index is ok" test -z "$(row "$(uc --to 3.7 clean)" blocker facts_gord)"
-q clean "SET sift.col_format_minor = 14" "REINDEX INDEX facts_gord" >/dev/null
+q clean "SET sift.test_col_format_minor = 14" "REINDEX INDEX facts_gord" >/dev/null
 check "to 3.6: the advice makes the index readable" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_gord)"
 check "... and it is written without the arrays: column format 12 (the setting 14 writes no array), and the preflight says the option waits for a REINDEX" grep -q -E '^warn +facts_gord +option +order_array_columns with column format 12 ' <<<"$(uc clean)"
 q clean "REINDEX INDEX facts_gord" >/dev/null
@@ -147,7 +146,7 @@ if [[ $(q clean "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_col_go
 	check "and one whose keys tie much keeps the whole order: column format 38 to 40" grep -q -E '^ok +gord_auto_ties +index +format 1\.[0-9]+, column format (3[89]|40)' <<<"$(uc clean)"
 	check "to 3.7: the compact order is a blocker that says to write the setting 14" grep -q -E "^blocker +gord_compact .*SET sift.col_format_minor = 14, then REINDEX INDEX gord_compact" <<<"$(uc --to 3.7 clean)"
 	check "to 4.0: the compact order is ok" test -z "$(row "$(uc --to 4.0 clean)" blocker gord_compact)"
-	q clean "SET sift.col_format_minor = 14" "REINDEX INDEX gord_compact" >/dev/null
+	q clean "SET sift.test_col_format_minor = 14" "REINDEX INDEX gord_compact" >/dev/null
 	check "to 3.7: the advice makes the index readable" test -z "$(row "$(uc --to 3.7 clean)" blocker gord_compact)"
 	q clean "SET sift.test_limits = 'gord_seek_pct=0'" "SET sift.test_col_gorder_ends = 64" "ALTER INDEX gord_whole SET (order_layout = 'compact')" "REINDEX INDEX gord_whole" >/dev/null
 	check "order_layout = compact and a REINDEX write column format 41" grep -q -E '^ok +gord_whole +index +format 1\.[0-9]+, column format 41' <<<"$(uc clean)"
@@ -161,7 +160,7 @@ q clean "CREATE TABLE gord_text AS SELECT i AS id, md5(i::text) AS name FROM gen
 	"CREATE INDEX gord_text_i ON gord_text USING sift_col (id, name) WITH (order_array_columns = 'name')" >/dev/null
 check "an index with the order array of a text column is column format 42 or 44 (seekable chunks)" grep -q -E '^ok +gord_text_i +index +format 1\.[0-9]+, column format (42|44)' <<<"$(uc clean)"
 check "to 3.7: it is a blocker that says to write the setting 14" grep -q -E "^blocker +gord_text_i .*SET sift.col_format_minor = 14, then REINDEX INDEX gord_text_i" <<<"$(uc --to 3.7 clean)"
-q clean "SET sift.col_format_minor = 14" "REINDEX INDEX gord_text_i" >/dev/null
+q clean "SET sift.test_col_format_minor = 14" "REINDEX INDEX gord_text_i" >/dev/null
 check "to 3.7: the advice makes the index readable" test -z "$(row "$(uc --to 3.7 clean)" blocker gord_text_i)"
 q clean "DROP TABLE gord_text" >/dev/null
 # the key table of a segment is column format 22: 3.4 refuses it, an index written with key_table = off is column format 15; fat repeats below 1,024 strings, so no dictionary hash (column format 25) hides the 22
@@ -176,7 +175,7 @@ q clean "CREATE TABLE run_facts AS SELECT i AS id, 1 + (hashint4(i / 100) & 2147
 	"CREATE INDEX facts_runs ON run_facts USING sift_col (id, set_id, v, pad) WITH (key_cut = 'set_id')" >/dev/null
 check "an index with key-cut units and lists of runs is column format 34 or later" grep -q -E '^ok +facts_runs +index +format 1\.[0-9]+, column format (3[4-9]|[4-9][0-9])' <<<"$(uc clean)"
 check "to 3.4: an index with key-cut units is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_runs .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_runs" <<<"$(uc --to 3.4 clean)"
-q clean "SET sift.col_format_minor = 14" "REINDEX INDEX facts_runs" >/dev/null
+q clean "SET sift.test_col_format_minor = 14" "REINDEX INDEX facts_runs" >/dev/null
 check "to 3.4: the advice makes the index readable" test -z "$(row "$(uc --to 3.4 clean)" blocker facts_runs)"
 q clean "DROP TABLE run_facts" >/dev/null
 # a text dictionary read in place has row counts (count_columns) and a hash of its strings: column format 25, which 3.5 refuses too
@@ -189,7 +188,7 @@ q clean "CREATE INDEX facts_exact ON key_facts USING sift_col (id, k) WITH (cube
 check "an index with a point directory is column format 35 or later" grep -q -E '^ok +facts_exact +index +format 1\.[0-9]+, column format (3[5-9]|[4-9][0-9])' <<<"$(uc clean)"
 check "to 3.6: an index with a point directory is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_exact .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_exact" <<<"$(uc --to 3.6 clean)"
 check "... and an index with no order arrays is not told about arrays" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_exact | grep "without its arrays")"
-q clean "SET sift.col_format_minor = 14" "REINDEX INDEX facts_exact" >/dev/null
+q clean "SET sift.test_col_format_minor = 14" "REINDEX INDEX facts_exact" >/dev/null
 check "to 3.6: the advice makes the index readable" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_exact)"
 q clean "DROP INDEX facts_exact" >/dev/null
 q clean "DROP TABLE key_facts" >/dev/null
@@ -199,7 +198,7 @@ check "an index with an option set after its units is listed" test "$(q clean "S
 q clean "REINDEX INDEX CONCURRENTLY public.scat_late" >/dev/null
 check "after the listed REINDEX the index is not listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'scat_late'::regclass")" == 0
 # a text index built by this release is not listed (upgrade_path.sh has the one without the mark), a keyword index never; a sift_table below the format of its schema
-q clean "CREATE INDEX docs_kw ON docs USING sift (body) WITH (analyzer = keyword)" "SET sift.col_format_minor = 6" "CREATE TABLE months_old (id int, at timestamp) USING sift_table" \
+q clean "CREATE INDEX docs_kw ON docs USING sift (body) WITH (analyzer = keyword)" "SET sift.test_col_format_minor = 6" "CREATE TABLE months_old (id int, at timestamp) USING sift_table" \
 	"INSERT INTO months_old SELECT g, timestamp '2026-01-01' + g * interval '1 hour' FROM generate_series(1, 3000) g" "VACUUM months_old" >/dev/null
 check "no text index is required, and a keyword index is not listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE required")" == 0
 check "a sift_table written below column format 8 is listed with a VACUUM FULL" test "$(q clean "SELECT kind || ' ' || command FROM sift.upgrade_commands() WHERE object = 'months_old'::regclass")" == "rewrite VACUUM FULL public.months_old;"
@@ -310,23 +309,23 @@ check "the removed setting is no warning of the generic check" test "$(grep -c -
 q postgres "ALTER SYSTEM RESET sift.enable_col" "ALTER ROLE ev_role RESET sift.enable_col" "ALTER DATABASE ev_db RESET sift.enable_col" "ALTER ROLE ev_role IN DATABASE ev_db RESET sift.table_auto_defrag_dead_pct" "ALTER DATABASE ev_db RESET sift.col_auto_merge_dirty_pct" >/dev/null
 check "after the commands nothing of it is left" test "$(uc v42 | grep -cE 'sift\.(enable_col|col_auto_merge_dirty_pct)')" == 0
 # a scope is column format 45 and a scope of two paths (the grants of a member and of a group, and the memberships: three stamps in a segment) column format 49: 4.3 reads neither, 5.0 both
-q postgres "CREATE DATABASE hop" "ALTER DATABASE hop SET sift.scope_max_multiplicity = 8" >/dev/null
+q postgres "CREATE DATABASE hop" >/dev/null
 printf '%s;\n' "CREATE EXTENSION pg_sift" "${TWOHOP_BASE[@]}" "${TWOHOP_INDEX[@]}" "CREATE TABLE one_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id))" "INSERT INTO one_pairs SELECT m, 1 + m % 12 FROM generate_series(1, 200) m" \
 	"CREATE INDEX one_pairs_journal ON one_pairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')" "CREATE TABLE one_events (id int PRIMARY KEY, dim_a_id int, v int)" \
 	"INSERT INTO one_events SELECT i, 1 + i % 200, i % 10 FROM generate_series(1, 2000) i" \
-	"CREATE INDEX one_col ON one_events USING sift_col (id, dim_a_id, v) WITH (scope = 'tenant_id: dim_a_id -> one_pairs(dim_a_id, tenant_id)')" "REINDEX INDEX one_col" |
+	"CREATE INDEX one_col ON one_events USING sift_col (id, dim_a_id, v) WITH (scope = 'tenant_id: dim_a_id -> one_pairs(dim_a_id, tenant_id) max_multiplicity(8)')" "REINDEX INDEX one_col" |
 	PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir uc)/sock" -p "$(port uc)" -U postgres -d hop -f - >/dev/null || bail "the scopes cannot be set up"
 out=$(uc hop)
 check "a scope of one path is column format 45, one of two paths is column format 49" grep -q -E '^ok +one_col +index +format 1\.[0-9]+, column format 45' <<<"$out" && grep -q -E '^ok +hop_col +index +format 1\.[0-9]+, column format 49' <<<"$out"
 # a scope whose key is text, varchar or uuid is column format 50 (its units are cut by the codes of the key's value store): 4.3 and 5.0 builds before it refuse it, 5.0 reads it
 printf '%s;\n' "CREATE TABLE txt_pairs (dim_a_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (dim_a_id, tenant_id))" "INSERT INTO txt_pairs SELECT m, 'tenant-' || (1 + m % 12) FROM generate_series(1, 200) m" \
 	"CREATE INDEX txt_pairs_journal ON txt_pairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')" \
-	"CREATE INDEX txt_col ON one_events USING sift_col (id, dim_a_id, v) WITH (scope = 'tenant_id: dim_a_id -> txt_pairs(dim_a_id, tenant_id)')" "REINDEX INDEX txt_col" |
+	"CREATE INDEX txt_col ON one_events USING sift_col (id, dim_a_id, v) WITH (scope = 'tenant_id: dim_a_id -> txt_pairs(dim_a_id, tenant_id) max_multiplicity(8)')" "REINDEX INDEX txt_col" |
 	PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir uc)/sock" -p "$(port uc)" -U postgres -d hop -f - >/dev/null || bail "the scope of a text key cannot be set up"
 printf '%s;\n' "CREATE TABLE txm_pairs (acct text NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (acct, tenant_id))" "INSERT INTO txm_pairs SELECT 'acct-' || m, 1 + m % 12 FROM generate_series(1, 200) m" \
 	"CREATE INDEX txm_pairs_journal ON txm_pairs USING sift_col (acct, tenant_id) WITH (track_changes = 'ctid')" \
 	"CREATE TABLE txm_events (id int PRIMARY KEY, acct text, v int)" "INSERT INTO txm_events SELECT i, 'acct-' || (1 + i % 200), i FROM generate_series(1, 1000) i" \
-	"CREATE INDEX txm_col ON txm_events USING sift_col (id, acct, v) WITH (scope = 'tenant_id: acct -> txm_pairs(acct, tenant_id)')" "REINDEX INDEX txm_col" |
+	"CREATE INDEX txm_col ON txm_events USING sift_col (id, acct, v) WITH (scope = 'tenant_id: acct -> txm_pairs(acct, tenant_id) max_multiplicity(8)')" "REINDEX INDEX txm_col" |
 	PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir uc)/sock" -p "$(port uc)" -U postgres -d hop -f - >/dev/null || bail "the scope of a text member cannot be set up"
 out=$(uc hop)
 check "a scope of a text member is column format 50" grep -q -E '^ok +txm_col +index +format 1\.[0-9]+, column format 50' <<<"$out"
@@ -346,16 +345,16 @@ check "the preflight lists no REINDEX for the scope indexes or their journals" t
 check "a scope of two paths the older library cannot read is a finding with an advice, not an error" test "$(uc --to 4.3 hop | grep -c -E '^blocker +hop_col .+')" == 1
 check "the advice for a scope names the DROP, the setting 14 and the CREATE INDEX without the scope" grep -q -E '^blocker +one_col .*DROP INDEX one_col, then SET sift\.col_format_minor = 14 and CREATE INDEX it again without the scope option ' <<<"$(uc --to 4.3 hop)"
 # the setting alone cannot write a scope (it used to fail with "duplicate segment generation"): the build says so and names the build without the scope
-err=$(q hop "SET sift.col_format_minor = 14" "REINDEX INDEX one_col" 2>&1)
+err=$(q hop "SET sift.test_col_format_minor = 14" "REINDEX INDEX one_col" 2>&1)
 check "the setting 14 with the scope on refuses the REINDEX and names the build without the scope" grep -q -E 'has a scope, which sift.col_format_minor 14 cannot write' <<<"$err"
 # the advised commands, as written
 err=$(q hop "ALTER INDEX one_col RESET (scope)" 2>&1)
 check "RESET (scope) of an index with segments is refused" grep -q 'while it holds data' <<<"$err"
-q hop "DROP INDEX one_col" "SET sift.col_format_minor = 14" "CREATE INDEX one_col ON one_events USING sift_col (id, dim_a_id, v)" >/dev/null || bail "the advised commands for a scope fail"
+q hop "DROP INDEX one_col" "SET sift.test_col_format_minor = 14" "CREATE INDEX one_col ON one_events USING sift_col (id, dim_a_id, v)" >/dev/null || bail "the advised commands for a scope fail"
 out=$(uc --to 4.3 hop)
 check "after the advice the index is column format 14 or less" grep -q -E '^ok +one_col +index +format 1\.[0-9]+, column format (1[0-4]|[0-9])([^0-9]|$)' <<<"$out"
 check "... and no blocker to 4.3" test -z "$(row "$out" blocker one_col)"
 check "... and it answers like the table" test "$(q hop "SELECT sum(v) FROM one_events WHERE id < 500")" == "$(q hop "SET sift.enable_agg = off" "SELECT sum(v) FROM one_events WHERE id < 500")"
-q hop "DROP INDEX hop_col" "SET sift.col_format_minor = 14" "CREATE INDEX hop_col ON hop_events USING sift_col (id, dim_a_id, created_at, v)" >/dev/null || bail "the advised commands for a scope of two paths fail"
+q hop "DROP INDEX hop_col" "SET sift.test_col_format_minor = 14" "CREATE INDEX hop_col ON hop_events USING sift_col (id, dim_a_id, created_at, v)" >/dev/null || bail "the advised commands for a scope of two paths fail"
 check "the same for a scope of two paths: no blocker to 4.3" test -z "$(row "$(uc --to 4.3 hop)" blocker hop_col)"
 finish

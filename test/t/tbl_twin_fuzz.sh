@@ -25,7 +25,6 @@ HOLD=$(knob SIFT_FUZZ_HOLD 0.5 1)
 node_init tw 36 "autovacuum = on
 autovacuum_naptime = 2s
 sift.maintenance_naptime = 200
-sift.table_auto_defrag = on
 sift.async_maintenance = on
 sift.backend_cache_kb = ${SIFT_FUZZ_TOMB_LIMIT:-65536}
 max_wal_size = 512MB

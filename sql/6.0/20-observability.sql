@@ -156,7 +156,7 @@ CREATE OR REPLACE VIEW sift.indexes AS
 	LEFT JOIN sift.status() s ON s.relation = l.relation
 	LEFT JOIN (SELECT k.relation, CASE WHEN bool_or(k.severity = 'error') THEN 'error' WHEN bool_or(k.severity = 'warn') THEN 'warn' ELSE 'info' END AS health
 			   FROM sift.health() k WHERE k.relation IS NOT NULL GROUP BY k.relation) h ON h.relation = l.relation;
-COMMENT ON VIEW sift.indexes IS 'One row per sift object of the database the caller can read, whatever its access method and format: relation, table, access method, format, state (invalid, locked, quarantined, failing, maintaining or ready), the worst severity of sift.health, rows, dead rows, size, bytes per row, compression ratio, space utilization, the parts by level, scopes and format_note. kind, table and bytes are the columns of 5.1 (am, table_name and size_bytes).';
+COMMENT ON VIEW sift.indexes IS 'One row per sift object the caller can read, whatever its access method and format: relation, table, access method, format, state (invalid, locked, quarantined, failing, maintaining or ready), worst health severity, rows, dead rows, size, bytes per row, compression ratio, space utilization, parts by level, scopes and format_note. kind, table and bytes are the 5.1 columns.';
 GRANT SELECT ON sift.indexes TO PUBLIC;
 
 -- sift.locks: the page locks of a sift index or sift_table named. A Format 2.0 relation locks virtual blocks at the top of the block range (a partition stripe, the relation, a bulk load, a worker, a split);

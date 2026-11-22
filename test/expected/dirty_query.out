@@ -11,7 +11,9 @@ CREATE FUNCTION dq_text(id int) RETURNS text LANGUAGE sql IMMUTABLE
 	RETURN chr(98 + id % 7) || ' ' || chr(106 + id % 13) || CASE WHEN id % 10 = 0 THEN ' pad' ELSE '' END;
 CREATE TABLE dq (id int PRIMARY KEY, body text) WITH (autovacuum_enabled = off);
 INSERT INTO dq SELECT i, dq_text(i) FROM generate_series(1, 70000) i;
+SET client_min_messages = warning;
 CREATE INDEX dq_idx ON dq USING sift (body);
+RESET client_min_messages;
 -- a random third of the rows, and all of the pages around the end of the first superblock
 DELETE FROM dq WHERE hashint4(id) % 3 = 0 OR id BETWEEN 54000 AND 58000;
 VACUUM dq;
@@ -127,7 +129,9 @@ SELECT * FROM dq_check();
 -- the whole group, a term on a few pages page by page, and the pages of rows deleted since the VACUUM are left to the heap.
 CREATE TABLE dq2 (id int PRIMARY KEY, body text) WITH (autovacuum_enabled = off, fillfactor = 10);
 INSERT INTO dq2 SELECT i, chr(98 + i % 7) || ' ' || chr(106 + i % 13) || CASE WHEN i % 997 = 0 THEN ' z' ELSE '' END FROM generate_series(1, 18000) i;
+SET client_min_messages = warning;
 CREATE INDEX dq2_idx ON dq2 USING sift (body);
+RESET client_min_messages;
 DELETE FROM dq2 WHERE id <= 3000 AND id % 3 <> 0;
 VACUUM dq2;
 SELECT dirty, sb_hi - sb_lo + 1 > 2 AS superblocks FROM sift.segments('dq2_idx');

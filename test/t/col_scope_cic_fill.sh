@@ -7,9 +7,8 @@
 plan 4
 
 node_init cf 54 "autovacuum = off
-sift.col_auto_merge = on
-sift.maintenance_naptime = 200
-sift.scope_max_multiplicity = 8"
+sift.async_maintenance = on
+sift.maintenance_naptime = 200"
 node_start cf || bail "start failed"
 sql cf "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"CREATE TABLE cp (m int NOT NULL, t int NOT NULL) WITH (autovacuum_enabled = false)" "CREATE UNIQUE INDEX cp_u ON cp (m, t)" \
@@ -17,7 +16,7 @@ sql cf "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"CREATE INDEX cp_j ON cp USING sift_col (m, t) WITH (track_changes = 'ctid')" \
 	"CREATE TABLE ce (id int PRIMARY KEY, m int, d timestamptz, v int, pad text)" \
 	"INSERT INTO ce SELECT i, 1 + (i * 7919) % 210, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, 'x' FROM generate_series(1, 30000) i" \
-	"VACUUM (FREEZE, ANALYZE) ce, cp" "CREATE INDEX CONCURRENTLY ce_col ON ce USING sift_col (id, m, d, v) WITH (scope = 't: m -> cp(m, t)')" >/dev/null || bail "setup failed"
+	"VACUUM (FREEZE, ANALYZE) ce, cp" "CREATE INDEX CONCURRENTLY ce_col ON ce USING sift_col (id, m, d, v) WITH (scope = 't: m -> cp(m, t) max_multiplicity(8)')" >/dev/null || bail "setup failed"
 
 READ="SELECT count(*), sum(v) FROM ce e WHERE sift.in_scope('ce_col'::regclass, 't', e.m, 5)"
 JOIN="SELECT count(*), sum(v) FROM ce e WHERE e.m IN (SELECT m FROM cp WHERE t = 5)"

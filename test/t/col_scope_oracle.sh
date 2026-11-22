@@ -30,14 +30,12 @@ shared_buffers = 128MB
 max_locks_per_transaction = 256
 autovacuum = off
 max_connections = 100"
-node_init ora_a "$BASE" "$REPL
-sift.scope_max_multiplicity = 64"
+node_init ora_a "$BASE" "$REPL"
 node_start ora_a || bail "primary start failed"
 node_init ora_b $((BASE + 2)) "$REPL"
 for k in '^sift[.]' '^extension_control_path' '^dynamic_library_path'; do sed_i "/$k/d" "$(dir ora_b)/data/postgresql.conf"; done
 node_start ora_b || bail "stock node start failed"
-node_init ora_r $((BASE + 3)) "$REPL
-sift.scope_max_multiplicity = 64"
+node_init ora_r $((BASE + 3)) "$REPL"
 node_start ora_r || bail "restore node start failed"
 sql ora_a "CREATE EXTENSION pg_sift" >/dev/null || bail "extension failed"
 node_clone ora_a ora_s $((BASE + 1)) "hot_standby_feedback = on
