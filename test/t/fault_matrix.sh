@@ -14,7 +14,8 @@ SCENARIO_NAMES=(bm25_build col_build bm25_promote col_promote bm25_merge col_mer
 	col_cic track_cic scope_cic scope_cic_nj reindex_col reindex_col_c reindex_scope_c vs_intern vs_compact vs_gc tbl_tomb tbl_copy
 	alter_refresh alter_reloption col_repair)
 GATES=(col_build:build col_cic:build track_cic:build scope_cic:build scope_cic:tail scope_cic:fill scope_cic_nj:journal reindex_col:build drop_track:drop vacuum:bulkdelete
-	vacuum:cleanup vs_intern:intern alter_reloption:alter col_repair:repair_before col_repair:repair_after tbl_tomb:tombwrite tbl_tomb:tombmerge tbl_seal:tombrewrite tbl_copy:load)
+	vacuum:cleanup vs_intern:intern alter_reloption:alter col_repair:repair_before col_repair:repair_after tbl_tomb:tombwrite tbl_tomb:tombmerge tbl_seal:tombrewrite tbl_copy:load
+	f2_col_build:f2manifest f2_reindex:f2manifest f2_vacuum:f2manifest)
 gen() { # the rows of the matrix: every operation at the phases of its directory updates, and at the gates
 	local op ph fault quick
 	quick=$(for op in "${SCENARIO_NAMES[@]}"; do for ph in b1:terminate bm:cancel bk:error a1:error ak:immediate ak:cancel; do printf '%s.%s.%s\t\n' "$op" "${ph%:*}" "${ph#*:}"; done; done)

@@ -500,3 +500,12 @@ tbl_seal.gate-tombrewrite.immediate	tbl_seal	gate:tombrewrite	immediate	full
 tbl_copy.gate-load.terminate	tbl_copy	gate:load	terminate	quick
 tbl_copy.gate-load.cancel	tbl_copy	gate:load	cancel	full
 tbl_copy.gate-load.immediate	tbl_copy	gate:load	immediate	full
+f2_col_build.gate-f2manifest.terminate	f2_col_build	gate:f2manifest	terminate	quick
+f2_col_build.gate-f2manifest.cancel	f2_col_build	gate:f2manifest	cancel	full
+f2_col_build.gate-f2manifest.immediate	f2_col_build	gate:f2manifest	immediate	full
+f2_reindex.gate-f2manifest.terminate	f2_reindex	gate:f2manifest	terminate	quick
+f2_reindex.gate-f2manifest.cancel	f2_reindex	gate:f2manifest	cancel	full
+f2_reindex.gate-f2manifest.immediate	f2_reindex	gate:f2manifest	immediate	full
+f2_vacuum.gate-f2manifest.terminate	f2_vacuum	gate:f2manifest	terminate	quick
+f2_vacuum.gate-f2manifest.cancel	f2_vacuum	gate:f2manifest	cancel	full
+f2_vacuum.gate-f2manifest.immediate	f2_vacuum	gate:f2manifest	immediate	full

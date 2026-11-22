@@ -48,5 +48,29 @@ check "after a sync and a merge" 2,4 "$(idx '"power plant"' news)"
 check "after a restart" 2,4 "$(idx '"power plant"' news)"
 SIFT_SIMD=scalar "$SRV" restart
 check "after a restart with SIFT_SIMD=scalar" 2,4 "$(idx '"power plant"' news)"
+# a differential check on 200 generated documents: the index answers what LIKE answers, before and after DML
+sql "CREATE TABLE gen (id BIGINT PRIMARY KEY, body TEXT)"
+sql "INSERT INTO gen WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 200)
+  SELECT n, CONCAT_WS(' ', ELT(1 + n % 7, 'alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta'),
+    ELT(1 + n % 11, 'iota', 'kappa', 'lambda', 'sigma', 'tau', 'upsilon', 'phi', 'chi', 'psi', 'omega', 'theta'),
+    ELT(1 + n % 13, 'north', 'south', 'east', 'west', 'up', 'down', 'left', 'right', 'near', 'far', 'high', 'low', 'mid')) FROM s"
+sql "CALL sift_attach('gen', 'gen', 'id', 't.body', 32)" >/dev/null
+word() { echo "CONCAT(' ', body, ' ') LIKE '% $1 %'"; }
+differ() {
+  check "$1: AND" "$(like gen "$(word alpha) AND $(word kappa)")" "$(idx 'alpha AND kappa' gen)"
+  check "$1: OR" "$(like gen "$(word eta) OR $(word psi)")" "$(idx 'eta OR psi' gen)"
+  check "$1: phrase" "$(like gen "CONCAT(' ', body, ' ') LIKE '% beta lambda %'")" "$(idx '"beta lambda"' gen)"
+  check "$1: count" "$(like gen "$(word gamma)" | tr ',' '\n' | grep -c .)" "$(cnt gamma gen)"
+}
+differ "200 documents, from the queue"
+sync gen
+differ "200 documents, from the segment"
+sql "DELETE FROM gen WHERE id % 3 = 0"
+sql "UPDATE gen SET body = CONCAT(body, ' kappa') WHERE id % 5 = 1"
+differ "after DML"
+sync gen
+differ "after DML and a sync"
+check_match "an index that does not exist is an error" "ERROR" "$(sqle "SELECT sift_count('missing', 'alpha')")"
+sql "CALL sift_detach('gen')" >/dev/null
 sql "CALL sift_detach('news')" >/dev/null
 finish

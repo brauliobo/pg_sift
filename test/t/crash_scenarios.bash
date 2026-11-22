@@ -53,6 +53,12 @@ VERIFY="DO \$\$ DECLARE r record; BEGIN
 		IF scope_missing() > 0 THEN RAISE EXCEPTION 'a row of an entity segment has no scope entry'; END IF;
 	END IF;
 END \$\$"
+VERIFY_F2="DO \$\$ DECLARE r record; BEGIN
+	FOR r IN SELECT c.oid::regclass AS ix FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' LOOP
+		PERFORM sift.col_verify(r.ix);
+		IF EXISTS (SELECT 1 FROM sift.check(r.ix)) THEN RAISE EXCEPTION 'sift.check finds a problem in %', r.ix; END IF;
+	END LOOP;
+END \$\$"
 # the answers of everything the scenario created, in a mode
 answers() {
 	local -n mode=$1
@@ -64,7 +70,7 @@ answers() {
 }
 healthy() { # the indexes verify and the answers through them are the plain plan's and REF
 	local plain
-	sql cm "$VERIFY" >&2 || return 1
+	sql cm "$([[ ${name:-} == f2_* ]] && echo "$VERIFY_F2" || echo "$VERIFY")" >&2 || return 1
 	plain=$(answers PLAIN)
 	[[ $plain == "$REF" ]] || { diag "the plain answers changed: $plain"; return 1; }
 	[[ $(answers IDX) == "$plain" ]] || { diag "the answers through the indexes differ from the plain plan"; return 1; }
@@ -105,6 +111,7 @@ gate_spec() { # GATE: the gate of the phase "gate:GATE"
 		tombrewrite) adv1 7007; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
 		tombwrite) adv1 7008; GATE_SET=("SET sift.test_phase_gate = 7000" "SET sift.backend_cache_kb = 16") ;;
 		tombmerge) adv1 7009; GATE_SET=("SET sift.test_phase_gate = 7000" "SET sift.backend_cache_kb = 16") ;;
+		f2manifest) adv1 7010; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
 		alter) adv2 14; GATE_SET=("SET sift.test_alter_gate = on") ;;
 		repair_before) adv2 15; GATE_SET=("SET sift.test_repair_gate = on") ;;
 		repair_after) adv2 16; GATE_SET=("SET sift.test_repair_gate = on") ;;
@@ -130,6 +137,13 @@ SCENARIOS+=(
 	"alter_reloption~$COL~ALTER INDEX docs_col SET (write_buffer_limit = 8192)"
 	"col_repair~CREATE INDEX docs_col ON docs USING sift_col (id, g, n)@@DELETE FROM docs WHERE id % 7 = 0@@VACUUM (INDEX_CLEANUP ON) docs@@SELECT sift._test_poke('docs_col', first_block, 32, 8, 1) FROM sift.col_extents('docs_col') WHERE what = 'liveness run'@@SELECT sift._test_poke('docs_col', first_block, 8178, 4, 2) FROM sift.col_extents('docs_col') WHERE what = 'liveness run'@@CHECKPOINT~SELECT count(*) FROM sift.col_repair('docs_col')"
 	"tbl_copy~$TBL@@COPY (SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i) TO '$D/load.csv' CSV~COPY tbl FROM '$D/load.csv' CSV; COPY tbl_h FROM '$D/load.csv' CSV"
+)
+# Format 2 (the default of a release build; the testing build keeps format 1 unless asked): the manifest commits of a build, a rebuild and a VACUUM
+F2="SET sift.test_create_format1 = off"
+SCENARIOS+=(
+	"f2_col_build~~$F2@@$COL"
+	"f2_reindex~$F2@@$COL~$F2@@REINDEX INDEX docs_col"
+	"f2_vacuum~$F2@@$COL@@DELETE FROM docs WHERE id % 3 = 0@@UPDATE docs SET n = n + 1 WHERE id % 7 = 0~$F2@@VACUUM docs"
 )
 # deletion records (core/v1_col/tomb_dv.h): a committed statement deletes a fifth of the rows of an index that tracks its changes, so that the log holds records; the VACUUM and the fold clear their rows and drop them, the merge carries them to marks
 DVSET="ALTER TABLE docs ADD PRIMARY KEY (id); CREATE INDEX docs_col ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, track_changes = 'id')"

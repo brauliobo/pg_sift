@@ -34,3 +34,26 @@ SET smoke.version = :'to';
 DO $$ BEGIN ASSERT (SELECT extversion FROM pg_extension WHERE extname = 'pg_sift') = current_setting('smoke.version'); END $$;
 CALL pg_temp.check_sift();
 DO $$ BEGIN ASSERT to_regprocedure('sift.table_find_stale_versions(regclass,integer)') IS NOT NULL; END $$;
+
+CREATE TABLE facts (id int, g int, v int);
+INSERT INTO facts SELECT i, i % 7, i FROM generate_series(1, 4000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, g, v);
+CREATE TABLE tfacts (id int, g int, v int) USING sift_table;
+INSERT INTO tfacts SELECT id, g, v FROM facts;
+VACUUM (ANALYZE) facts, tfacts;
+CREATE PROCEDURE pg_temp.check_agg() LANGUAGE plpgsql AS $$
+DECLARE
+	want text := (SELECT string_agg(g || ':' || c || ':' || s, ',' ORDER BY g) FROM (SELECT i % 7 AS g, count(*) AS c, sum(i) AS s FROM generate_series(1, 4000) i GROUP BY 1) x);
+	tbl text; got text;
+BEGIN
+	SET LOCAL sift.agg_force = on;
+	FOREACH tbl IN ARRAY ARRAY['facts', 'tfacts'] LOOP
+		ASSERT (SELECT string_agg(l, E'\n') FROM pg_temp.explain(format('SELECT g, count(*), sum(v) FROM %s GROUP BY g', tbl)) l) ~ 'Custom Scan \(SiftAgg', tbl;
+		EXECUTE format('SELECT string_agg(g || '':'' || c || '':'' || s, '','' ORDER BY g) FROM (SELECT g, count(*) AS c, sum(v) AS s FROM %s GROUP BY g) x', tbl) INTO got;
+		ASSERT got = want, tbl;
+	END LOOP;
+END $$;
+CALL pg_temp.check_agg();
+SET sift.simd = 'scalar';
+CALL pg_temp.check_agg();
+RESET sift.simd;
