@@ -28,7 +28,17 @@ typedef struct CardPart
 	SiftColStats cs;
 	bool		has_cs;
 	uint32		ng;
+	int			seq;			/* the place of the part in the manifest */
 } CardPart;
+
+static void
+card_swap(CardPart *a, CardPart *b)
+{
+	CardPart	t = *a;
+
+	*a = *b;
+	*b = t;
+}
 
 typedef struct CardSample
 {
@@ -36,13 +46,37 @@ typedef struct CardSample
 	uint32		g;
 } CardSample;
 
-static int
-by_rows_desc(const void *x, const void *y)
+/* The order of the chosen parts: the most rows first, the earlier of the manifest first among equals */
+static bool
+ranks_before(const CardPart *a, const CardPart *b)
 {
-	const CardPart *a = x,
-			   *b = y;
+	return a->d->nrows != b->d->nrows ? a->d->nrows > b->d->nrows : a->seq < b->seq;
+}
 
-	return a->d->nrows < b->d->nrows ? 1 : a->d->nrows > b->d->nrows ? -1 : 0;
+static int
+by_rank(const void *x, const void *y)
+{
+	return ranks_before(x, y) ? -1 : ranks_before(y, x) ? 1 : 0;
+}
+
+/* out[0 .. n) as a heap whose root is the part that ranks last of those kept: a part ranking before it takes its place */
+static void
+heap_down(CardPart *out, int n, int i)
+{
+	for (;;)
+	{
+		int			l = 2 * i + 1,
+					last = i;
+
+		if (l < n && ranks_before(&out[last], &out[l]))
+			last = l;
+		if (l + 1 < n && ranks_before(&out[last], &out[l + 1]))
+			last = l + 1;
+		if (last == i)
+			return;
+		card_swap(&out[i], &out[last]);
+		i = last;
+	}
 }
 
 static int
@@ -50,28 +84,32 @@ choose_parts(Relation index, const SiftPlanSnapshot *plan, CardPart *out, bool *
 {
 	int			n = 0,
 				total = 0;
-	CardPart   *all_parts = palloc(Max(plan->npartitions, 1) * sizeof(CardPart) * 4);
-	int			cap = Max(plan->npartitions, 1) * 4;
 
 	for (int i = 0; i < plan->npartitions; i++)
 		for (int j = 0; j < plan->partlists[i].nparts; j++)
 		{
-			if (total == cap)
+			CardPart	c = {.pi = i,.d = &plan->partlists[i].parts[j],.part_id = plan->partitions[i].part_id,.seq = total++};
+
+			if (n < SIFT_V6_CARD_PARTS)
 			{
-				cap *= 2;
-				all_parts = repalloc(all_parts, cap * sizeof(CardPart));
+				out[n++] = c;
+				if (n == SIFT_V6_CARD_PARTS)
+					for (int k = n / 2 - 1; k >= 0; k--)
+						heap_down(out, n, k);
 			}
-			all_parts[total++] = (CardPart) {.pi = i,.d = &plan->partlists[i].parts[j],.part_id = plan->partitions[i].part_id};
+			else if (ranks_before(&c, &out[0]))
+			{
+				out[0] = c;
+				heap_down(out, n, 0);
+			}
 		}
-	qsort(all_parts, total, sizeof(CardPart), by_rows_desc);
-	n = Min(total, SIFT_V6_CARD_PARTS);
+	qsort(out, n, sizeof(CardPart), by_rank);
 	*all = n == total;
 	*read_rows = 0;
 	for (int k = 0; k < n; k++)
 	{
 		CardPart   *p = &out[k];
 
-		*p = all_parts[k];
 		p->part = sift_part_open_desc(index, p->d, (uint32) p->part_id);
 		p->ng = p->part->hdr.ngranules;
 		p->dir = sift_part_granule_dir(index, p->part);
@@ -84,7 +122,6 @@ choose_parts(Relation index, const SiftPlanSnapshot *plan, CardPart *out, bool *
 
 		out[k].has_cs = blob != NULL && sift_col_stats_open(blob, len, out[k].part->hdr.ncols, out[k].ng, &out[k].cs) == NULL;
 	}
-	pfree(all_parts);
 	return n;
 }
 

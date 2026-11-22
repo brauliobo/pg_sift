@@ -4,10 +4,14 @@
  */
 #include "core/host.h"
 
+#include <ctype.h>
+
 #include "miscadmin.h"
+#include "port/pg_bitutils.h"
 
 #include "col/f2/f2_tier_int.h"
 #include "col/f2/part_format.h"
+#include "core/hash.h"
 
 bool
 sift_tier_part_eligible(const SiftPartDesc *d, int slot, int64 cutoff)
@@ -289,27 +293,88 @@ keylist_add(void *arg, const char *key)
 	strcpy(l->keys[l->n++], key);
 }
 
+/* The parts the directory names, by (partition, generation): the keys of the objects are made from the two */
+typedef struct RefSlot
+{
+	uint64		part_gen;
+	uint32		part_id;
+	bool		used;
+} RefSlot;
+
+typedef struct RefSet
+{
+	RefSlot    *slots;
+	uint32		mask;
+} RefSet;
+
+static uint32
+ref_home(const RefSet *set, uint32 part_id, uint64 part_gen)
+{
+	return (uint32) (sift_fmix64(((uint64) part_id << 32) ^ part_gen) & set->mask);
+}
+
+static void
+ref_set_build(RefSet *set, const SiftTierPartRef *refs, int nrefs)
+{
+	set->mask = pg_nextpower2_32(Max(2 * (uint32) nrefs, 16)) - 1;
+	set->slots = palloc0((set->mask + 1) * sizeof(RefSlot));
+	for (int i = 0; i < nrefs; i++)
+	{
+		uint32		h = ref_home(set, refs[i].part_id, refs[i].part_gen);
+
+		while (set->slots[h].used)
+			h = (h + 1) & set->mask;
+		set->slots[h] = (RefSlot) {refs[i].part_gen, refs[i].part_id, true};
+	}
+}
+
+static bool
+ref_set_has(const RefSet *set, uint32 part_id, uint64 part_gen)
+{
+	for (uint32 h = ref_home(set, part_id, part_gen); set->slots[h].used; h = (h + 1) & set->mask)
+		if (set->slots[h].part_id == part_id && set->slots[h].part_gen == part_gen)
+			return true;
+	return false;
+}
+
+/* The object a key names of a scope: the key sift_tier_object_key makes of that partition and generation, and no other spelling of them */
+static bool
+key_names_part(const RefSet *set, uint64 scope_id, const char *key)
+{
+	char		canon[160];
+	char	   *end;
+	unsigned long long id,
+				gen;
+	const char *at = key + 18;	/* past "r" and the 16 hex digits of the scope and "/" */
+
+	if (strlen(key) < 18 || at[0] != 'p' || !isdigit((unsigned char) at[1]))
+		return false;
+	id = strtoull(at + 1, &end, 10);
+	if (id > PG_UINT32_MAX || end[0] != '-' || end[1] != 'g' || !isdigit((unsigned char) end[2]))
+		return false;
+	gen = strtoull(end + 2, &end, 10);
+	return sift_tier_object_key(canon, sizeof(canon), scope_id, (uint32) id, gen) > 0 && strcmp(canon, key) == 0 && ref_set_has(set, (uint32) id, gen);
+}
+
 SiftTierStatus
 sift_tier_sweep_orphans(SiftTierBackend *be, uint64 scope_id, const SiftTierPartRef *refs, int nrefs, int *ndeleted, SiftTierErr *err)
 {
-	char		prefix[32],
-				key[160];
+	char		prefix[32];
 	KeyList		l = {0};
 	SiftTierStatus st;
+	RefSet		named;
 
 	*ndeleted = 0;
 	snprintf(prefix, sizeof(prefix), "r%016llx/", (unsigned long long) scope_id);
+	ref_set_build(&named, refs, nrefs);
 	st = be->ops->list(be, prefix, keylist_add, &l, err);
 	for (int i = 0; i < l.n && st == SIFT_TIER_OK; i++)
 	{
-		bool		named = false;
-
 		CHECK_FOR_INTERRUPTS();
-		for (int k = 0; k < nrefs && !named; k++)
-			named = sift_tier_object_key(key, sizeof(key), scope_id, refs[k].part_id, refs[k].part_gen) > 0 && strcmp(key, l.keys[i]) == 0;
-		if (!named && (st = be->ops->del(be, l.keys[i], err)) == SIFT_TIER_OK)
+		if (!key_names_part(&named, scope_id, l.keys[i]) && (st = be->ops->del(be, l.keys[i], err)) == SIFT_TIER_OK)
 			(*ndeleted)++;
 	}
+	pfree(named.slots);
 	for (int i = 0; i < l.n; i++)
 		pfree(l.keys[i]);
 	if (l.keys)

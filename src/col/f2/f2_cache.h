@@ -33,6 +33,8 @@ typedef struct SiftPlanSnapshot
 	int			npartitions;
 	SiftPartitionEntry *partitions;	/* in key order */
 	SiftPlanPartList *partlists;	/* [npartitions], the list of partitions[i] */
+	uint32	   *part_id_ht;		/* the place of a partition in partitions, plus one, by part_id (open addressing, a power of two long); NULL for a directory of at most 16 partitions */
+	uint32		part_id_mask;
 	int			nscopes;
 	SiftManifestScopeRef *scopes;	/* ascending by scope_ord */
 	struct SiftCardStatsView *card_view;	/* the statistics folded for the planner (f2_v6_card.c), one allocation in cx; NULL until built, and again when the directory is read anew */

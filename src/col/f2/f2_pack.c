@@ -6,6 +6,7 @@
  */
 #include "core/host.h"
 
+#include "port/pg_bitutils.h"
 #include "storage/lmgr.h"
 
 #include "col/f2/compact.h"
@@ -111,25 +112,47 @@ survey(Relation rel, int *n)
 	return cands;
 }
 
-/* First fit, the longest first: the bin of each candidate */
+/* The room a bin has left for a part, 0 when it holds the most slots a page names */
+static uint32
+bin_room(const PackBin *b)
+{
+	uint32		used = MAXALIGN(b->used);
+
+	return b->n < SIFT_PACKED_MAX_SLOTS && used < SIFT_PAGE_PAYLOAD ? SIFT_PAGE_PAYLOAD - used : 0;
+}
+
+/* First fit, the longest first: the bin of each candidate; a tree of the greatest room under each node finds the first bin a part fits in without looking at the others */
 static int
 assign_bins(PackCand *cands, int n, PackBin *bins)
 {
+	uint32		leaves = pg_nextpower2_32(Max(n, 1));
+	uint32	   *room = palloc0(2 * leaves * sizeof(uint32));
 	int			nbins = 0;
 
 	qsort(cands, n, sizeof(PackCand), cand_len_desc);
 	for (int i = 0; i < n; i++)
 	{
-		int			b = 0;
+		uint32		v = 1;
+		int			b;
 
-		while (b < nbins && !(bins[b].n < SIFT_PACKED_MAX_SLOTS && MAXALIGN(bins[b].used) + cands[i].len <= SIFT_PAGE_PAYLOAD))
-			b++;
-		if (b == nbins)
-			bins[nbins++] = (PackBin) {.used = sizeof(SiftPackedPageData)};
+		if (room[1] < cands[i].len)
+		{
+			b = nbins++;
+			bins[b] = (PackBin) {.used = sizeof(SiftPackedPageData)};
+		}
+		else
+		{
+			while (v < leaves)
+				v = room[v << 1] >= cands[i].len ? v << 1 : (v << 1) | 1;
+			b = (int) (v - leaves);
+		}
 		bins[b].used = MAXALIGN(bins[b].used) + cands[i].len;
 		bins[b].n++;
 		cands[i].bin = b;
+		for (v = leaves + b, room[v] = bin_room(&bins[b]); v > 1; v >>= 1)
+			room[v >> 1] = Max(room[v], room[v ^ 1]);
 	}
+	pfree(room);
 	qsort(cands, n, sizeof(PackCand), cand_bin_cmp);
 	return nbins;
 }
@@ -151,18 +174,37 @@ source_pages(const PackCand *c, int n)
 	return pages;
 }
 
-/* The locks of a swap, innermost first: a compaction of the partition is held off (it frees the same header blocks), and a packed source page is judged and freed one backend at a time */
+/* The locks of a swap, innermost first: a compaction of the partition is held off (it frees the same header blocks); the locks of the splits is the batch's, taken once for the pages it judges */
 static void
-unlock_swap(Relation rel, uint64 part_id, bool packed_source)
+unlock_swap(Relation rel, uint64 part_id)
 {
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-	if (packed_source)
-		UnlockPage(rel, SIFT_F2_SPLIT_LOCK_BLKNO, ExclusiveLock);
 	UnlockPage(rel, SIFT_COMPACT_LOCK_BLKNO(part_id), ExclusiveLock);
 }
 
+/* The parts of a batch that have left their packed pages, ascending by generation, and the slots of the manifest as it was read for the batch: what a page is judged by */
+typedef struct PackJudge
+{
+	SiftLivePackedSet live;
+	SiftPartRef left[SIFT_PACKED_MAX_SLOTS];
+	int			nleft;
+} PackJudge;
+
+static void
+left_add(PackJudge *j, SiftPartRef ref)
+{
+	int			at = j->nleft++;
+
+	while (at > 0 && j->left[at - 1].part_gen > ref.part_gen)
+	{
+		j->left[at] = j->left[at - 1];
+		at--;
+	}
+	j->left[at] = ref;
+}
+
 static bool
-swap_to_slot(Relation rel, const PackCand *c, BlockNumber blk, int slot)
+swap_to_slot(Relation rel, const PackCand *c, BlockNumber blk, int slot, PackJudge *judge)
 {
 	SiftManifestRead mr;
 	SiftPartDesc *parts,
@@ -178,8 +220,6 @@ swap_to_slot(Relation rel, const PackCand *c, BlockNumber blk, int slot)
 	if (!ConditionalLockPage(rel, SIFT_COMPACT_LOCK_BLKNO(c->part_id), ExclusiveLock))
 		return false;
 	packed_source = c->from != InvalidBlockNumber;
-	if (packed_source)
-		LockPage(rel, SIFT_F2_SPLIT_LOCK_BLKNO, ExclusiveLock);
 	LockPage(rel, SIFT_PART_LOCK_BLKNO(c->part_id), ExclusiveLock);
 	mr = sift_manifest_read_range(rel, c->key_lo, NULL);
 	parts = mr.n > 0 && mr.entries[0].part_id == c->part_id ? sift_manifest_read_parts(rel, &mr.entries[0], &np) : NULL;
@@ -187,17 +227,23 @@ swap_to_slot(Relation rel, const PackCand *c, BlockNumber blk, int slot)
 		p++;
 	if (parts == NULL || p == np || parts[p].header_blk != c->d.header_blk)
 	{
-		unlock_swap(rel, c->part_id, packed_source);
+		unlock_swap(rel, c->part_id);
 		return false;
 	}
 	upd = parts[p];
 	upd.header_blk = blk;
 	upd.flags = (upd.flags & ~(SIFT_PART_FLAG_PACKED_SLOT | SIFT_PART_PACK_SLOT_MASK)) | SIFT_PART_PACK_FLAGS(slot);
-	if (c->from == InvalidBlockNumber || sift_packed_unreferenced(rel, c->from, &leaving, 1))
+	if (packed_source)
+	{
+		left_add(judge, leaving);
+		if (sift_packed_unreferenced_in(rel, c->from, judge->left, judge->nleft, &judge->live))
+			rel_ext[nrel++] = (SiftExtent) {c->d.header_blk, 1};
+	}
+	else
 		rel_ext[nrel++] = (SiftExtent) {c->d.header_blk, 1};
 	e = (SiftManifestEdit) {.part_id = c->part_id,.key_lo = mr.entries[0].key_lo,.update_parts = &upd,.expect_parts = &parts[p],.nupdate = 1,.release = rel_ext,.nrelease = nrel};
 	sift_manifest_commit(rel, &e);
-	unlock_swap(rel, c->part_id, packed_source);
+	unlock_swap(rel, c->part_id);
 	return true;
 }
 
@@ -205,6 +251,8 @@ static int
 pack_batch(Relation rel, const PackCand *c, int n)
 {
 	SiftPackItem items[SIFT_PACKED_MAX_SLOTS] = {0};
+	PackJudge  *judge = palloc(sizeof(PackJudge));
+	bool		packed_source = false;
 	BlockNumber blk;
 	int			swapped = 0;
 
@@ -217,7 +265,21 @@ pack_batch(Relation rel, const PackCand *c, int n)
 	}
 	blk = sift_pack_write(rel, items, n);
 	for (int i = 0; i < n; i++)
-		swapped += swap_to_slot(rel, &c[i], blk, i);
+		packed_source |= c[i].from != InvalidBlockNumber;
+	judge->nleft = 0;
+	if (packed_source)
+	{
+		LockPage(rel, SIFT_F2_SPLIT_LOCK_BLKNO, ExclusiveLock);
+		sift_live_packed_set_build(rel, &judge->live);
+	}
+	for (int i = 0; i < n; i++)
+		swapped += swap_to_slot(rel, &c[i], blk, i, judge);
+	if (packed_source)
+	{
+		sift_live_packed_set_free(&judge->live);
+		UnlockPage(rel, SIFT_F2_SPLIT_LOCK_BLKNO, ExclusiveLock);
+	}
+	pfree(judge);
 	if (swapped == 0)
 		sift_fsm_release(rel, &(SiftExtent) {blk, 1}, 1, InvalidFullTransactionId);
 	return swapped;

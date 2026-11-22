@@ -34,8 +34,7 @@ typedef struct F2V6Ctx
 	const SiftColRel *rel;
 	const SiftPlanSnapshot *plan;
 	Snapshot	snap;
-	uint64	   *staged;
-	int			nstaged;
+	const SiftPendDelIndex *staged_px;	/* the rows its transaction deleted, as a set the pending deletes of each partition add to */
 	IndexFetchTableData *fetch;
 	TupleTableSlot *slot;
 	Buffer		vmbuf;

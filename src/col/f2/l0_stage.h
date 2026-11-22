@@ -18,7 +18,22 @@ typedef struct SiftStagePart
 	uint64		part_id;
 	uint8		key_lo[SIFT_BOUND_BYTES];
 	SiftRowBuf *rb;
+	uint64		mem_seen;		/* what of rb->mem_bytes the stage has counted */
+	uint32		rows_seen;		/* and of rb->n */
+	uint64		tid_min;		/* the least and the greatest address added since the buffer was made (not narrowed when a row goes) */
+	uint64		tid_max;
 } SiftStagePart;
+
+/* The address of a staged row to the buffer and the place of the row in it (open addressing; part_idx tells an empty slot and a gone one) */
+typedef struct SiftStageTidSlot
+{
+	uint64		tid;
+	uint32		part_idx;
+	uint32		row_idx;
+} SiftStageTidSlot;
+
+#define SIFT_STG_TID_EMPTY	UINT32_MAX
+#define SIFT_STG_TID_TOMB	(UINT32_MAX - 1)
 
 /* A row of the index the transaction deleted: the key its entry was made with (it routes the delete to its partition), its address and the delete's own transaction and command */
 typedef struct SiftStageDel
@@ -43,6 +58,7 @@ typedef enum SiftStageEvent
 } SiftStageEvent;
 
 struct SiftTxnStage;
+struct SiftCdRemapCache;
 typedef void (*SiftStageHostEvent) (Relation rel, struct SiftTxnStage *st, SiftStageEvent ev, SubTransactionId sub, SubTransactionId parent);
 
 typedef struct SiftTxnStage
@@ -53,12 +69,24 @@ typedef struct SiftTxnStage
 	SiftManifestRead routing;	/* the partitions as of the version the rows were routed by */
 	SiftStagePart *parts;
 	int			nparts;
-	uint64		mem_bytes;
+	int			cap_parts;
+	uint32	   *part_htab;		/* the part_id of a buffer to its place in parts, plus one (open addressing) */
+	uint32		part_htab_mask;
+	uint64		mem_bytes;		/* the memory of the row buffers of all parts */
+	uint64		total_rows;		/* the rows of all of them */
+	uint64		tid_min;		/* the least and the greatest address of those rows (UINT64_MAX and 0 when there are none) */
+	uint64		tid_max;
+	SiftStageTidSlot *tid_htab;	/* every staged row by address, built by the first look for one and kept as rows come and go; not valid after a flush, a rollback to a savepoint or a re-route until built again */
+	uint32		tid_htab_mask;
+	uint32		tid_htab_used;	/* live and gone slots */
+	uint32		tid_htab_live;
+	bool		tid_htab_valid;
 	SiftStageDel *dels;
 	int			ndels;
 	int			capdels;
 	uint32	   *del_htab;		/* the address of a delete to its place in dels, plus one (open addressing); NULL before the first delete */
 	uint32		del_htab_cap;
+	struct SiftCdRemapCache *cd_cache;	/* a sift_col index: the address changes of the column delta chain of each partition the transaction updated rows of, kept for its next updates (col/f2/f2_col_delta_srv.c) */
 	void	   *host_stage;		/* what the host of the relation stages besides rows and deletes (a table: its column delta records), NULL for none */
 	SiftStageHostEvent host_event;	/* the host's answer to the events above, set with host_stage */
 	uint32		bulk_rows;		/* a bulk insert (sift_stage_set_bulk): the rows at which the buffer of a partition is written; 0: the stage flushes at work_mem */

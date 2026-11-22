@@ -211,6 +211,7 @@ sift_part_count_visible(Relation rel, const SiftPartDesc *d, uint32 part_id, con
 	for (uint32 g = 0; g < part->hdr.ngranules; g++)
 	{
 		const SiftDvGran *dg = dv ? sift_dv_granule(dv, g) : NULL;
+		SiftDvCursor dc;
 		bool		hit = px != NULL && sift_pdel_idx_may_hit_granule(px, &tix[g]);
 		FullTransactionId dv_xid = dg != NULL ? dg->xid_max : InvalidFullTransactionId;
 		SiftVisClass gc = pc == SIFT_VIS_PART_SETTLED_DV ? pc : sift_vis_granule_class(d, &dir[g], dv_xid, hit, sx);
@@ -227,10 +228,11 @@ sift_part_count_visible(Relation rel, const SiftPartDesc *d, uint32 part_id, con
 			vers = sift_part_read_vers(rel, part, dir, g);
 		if (hit)
 			tids = sift_part_read_tids(rel, part, dir, g);
+		sift_dv_cursor_init(&dc, dg);
 		for (int r = 0; r < n; r++)
 		{
 			bool		dead = false;
-			const SiftDvXmaxEntry *x = dg ? sift_dv_find(dg, r, &dead) : NULL;
+			const SiftDvXmaxEntry *x = sift_dv_cursor_find(&dc, r, &dead);
 
 			if (gc == SIFT_VIS_PER_ROW)
 				st->rows_checked++;

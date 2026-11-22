@@ -31,8 +31,7 @@ struct SiftF2Pull
 	MemoryContext ecx;			/* the partition entry: its pending deletes and its slab */
 	MemoryContext pcx;			/* the part: its header, directory and deletion vector */
 	MemoryContext gcx;			/* the granule or the slab: its record, ids and decoded elements */
-	uint64	   *staged;
-	int			nstaged;
+	const SiftPendDelIndex *staged_px;
 
 	int			ent;			/* the next partition entry */
 	int			pi;				/* the next part of its list */
@@ -106,7 +105,12 @@ sift_f2_pull_begin(Relation index, Snapshot snap, const SiftF2PullSpec *spec)
 	p->gcx = sift_mem_allocset_create(cx, "sift f2 pull granule");
 	p->r = sift_col_rel(index);
 	sift_stage_flush(index);
-	p->staged = sift_stage_dead(index, snap, &p->nstaged);
+	{
+		int			nstaged;
+		uint64	   *staged = sift_stage_dead(index, snap, &nstaged);
+
+		p->staged_px = sift_f2_staged_index(staged, nstaged);
+	}
 	p->plan = sift_plan_cache_get(index, cx);
 	for (int i = 0; i < spec->ncols; i++)
 	{
@@ -142,9 +146,6 @@ sift_f2_pull_single_runs(Relation index)
 static void
 begin_entry(SiftF2Pull *p)
 {
-	int			npend;
-	uint64	   *pend;
-
 	MemoryContextReset(p->ecx);
 	p->e = &p->plan->partitions[p->ent];
 	p->list = &p->plan->partlists[p->ent];
@@ -154,14 +155,7 @@ begin_entry(SiftF2Pull *p)
 	{
 		MemoryContext old = MemoryContextSwitchTo(p->ecx);
 
-		pend = sift_f2_pending_dead(p->index, p->e, p->snap, &npend);
-		if (p->nstaged > 0)
-		{
-			pend = pend != NULL ? repalloc(pend, (npend + p->nstaged) * sizeof(uint64)) : palloc(p->nstaged * sizeof(uint64));
-			memcpy(pend + npend, p->staged, p->nstaged * sizeof(uint64));
-			npend += p->nstaged;
-		}
-		p->px = npend > 0 ? sift_pdel_idx_build(pend, npend) : NULL;
+		p->px = sift_f2_pending_index(p->index, p->e, p->snap, p->staged_px);
 		MemoryContextSwitchTo(old);
 	}
 	p->ent++;

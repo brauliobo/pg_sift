@@ -94,8 +94,7 @@ sift_f2_par_plan_build(IndexScanDesc scan, SiftF2ParPlan *out)
 /* What a participant keeps between the runs of granules it takes: the pending deletes of the partition and the part it has open */
 typedef struct MorselCx
 {
-	const uint64 *staged;		/* the leader's list of the rows the transaction deleted */
-	int			nstaged;
+	const SiftPendDelIndex *staged_px;	/* the rows the transaction deleted (the leader's list), as one set for every partition */
 	uint64		px_part_id;
 	const SiftPendDelIndex *px;
 	bool		have_px;
@@ -140,8 +139,7 @@ sift_f2_scan_morsel_begin(IndexScanDesc scan, SiftF2Sink sink, void *arg, const 
 						errhint("Run the statement with sift.enable_agg = off: the heap decides such a qual.")));
 	if (!s->compiled)
 		compile_preds(s, sift_col_rel(scan->indexRelation)->schema);
-	m->staged = staged_dead;
-	m->nstaged = (int) nstaged;
+	m->staged_px = sift_f2_staged_index(staged_dead, (int) nstaged);
 	m->part_cx = sift_mem_allocset_create(s->cx, "sift f2 morsel part");
 	m->release = (MemoryContextCallback) {.func = release_at_reset,.arg = m};
 	MemoryContextRegisterResetCallback(s->cx, &m->release);
@@ -160,19 +158,9 @@ entry_of(const SiftParPartRef *ref)
 static const SiftPendDelIndex *
 morsel_px(Relation rel, MorselCx *m, const SiftPartitionEntry *e, Snapshot snap)
 {
-	int			npend;
-	uint64	   *pend;
-
 	if (m->have_px && m->px_part_id == e->part_id)
 		return m->px;
-	pend = sift_f2_pending_dead(rel, e, snap, &npend);
-	if (m->nstaged > 0)
-	{
-		pend = pend != NULL ? repalloc(pend, (npend + m->nstaged) * sizeof(uint64)) : palloc(m->nstaged * sizeof(uint64));
-		memcpy(pend + npend, m->staged, m->nstaged * sizeof(uint64));
-		npend += m->nstaged;
-	}
-	m->px = npend > 0 ? sift_pdel_idx_build(pend, npend) : NULL;
+	m->px = sift_f2_pending_index(rel, e, snap, m->staged_px);
 	m->px_part_id = e->part_id;
 	m->have_px = true;
 	return m->px;

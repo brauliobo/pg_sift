@@ -5,7 +5,9 @@
 
 #include "col/f2/part_format.h"
 #include "col/f2/preagg_delta.h"
+#include "core/hash.h"
 #include "core/page_io.h"
+#include "port/pg_bitutils.h"
 
 static int
 cell_cmp(const void *a, const void *b)
@@ -14,6 +16,18 @@ cell_cmp(const void *a, const void *b)
 				y = ((const SiftPreaggCell *) b)->key;
 
 	return x < y ? -1 : x > y;
+}
+
+/* The cell of a key in cells (first seen order) through the table of slots, each a cell number plus one: the cells that are there are found without a walk of them all */
+static SiftPreaggCell *
+cell_slot(SiftPreaggCell *cells, uint32 *slots, uint32 mask, int64 key, uint32 **slot)
+{
+	uint32		i = (uint32) (sift_fmix64((uint64) key) & mask);
+
+	while (slots[i] != 0 && cells[slots[i] - 1].key != key)
+		i = (i + 1) & mask;
+	*slot = &slots[i];
+	return slots[i] != 0 ? &cells[slots[i] - 1] : NULL;
 }
 
 SiftPreaggCell *
@@ -25,22 +39,24 @@ sift_preagg_build(const SiftGranuleView *v, int dim_col, int measure_col, int *n
 	bool	   *dnull = palloc(n * sizeof(bool)),
 			   *vnull = palloc(n * sizeof(bool));
 	SiftPreaggCell *cells = palloc(Max(n, 1) * sizeof(SiftPreaggCell));
+	uint32		mask = pg_nextpower2_32(Max(2 * (uint32) n, 16)) - 1;
+	uint32	   *slots = palloc0((mask + 1) * sizeof(uint32));
 	int			nc = 0;
 
 	sift_granule_ints(v, dim_col, dim, dnull);
 	sift_granule_ints(v, measure_col, val, vnull);
 	for (int r = 0; r < n; r++)
 	{
-		SiftPreaggCell *c = NULL;
+		uint32	   *slot;
+		SiftPreaggCell *c;
 
 		if (dnull[r])
 			continue;
-		for (int k = 0; k < nc && c == NULL; k++)
-			if (cells[k].key == dim[r])
-				c = &cells[k];
+		c = cell_slot(cells, slots, mask, dim[r], &slot);
 		if (c == NULL)
 		{
 			c = &cells[nc++];
+			*slot = nc;
 			*c = (SiftPreaggCell) {.key = dim[r],.min = PG_INT64_MAX,.max = PG_INT64_MIN};
 		}
 		if (vnull[r])
@@ -51,6 +67,7 @@ sift_preagg_build(const SiftGranuleView *v, int dim_col, int measure_col, int *n
 		c->min = Min(c->min, val[r]);
 		c->max = Max(c->max, val[r]);
 	}
+	pfree(slots);
 	qsort(cells, nc, sizeof(SiftPreaggCell), cell_cmp);
 	*ncells = nc;
 	return cells;
@@ -136,21 +153,25 @@ sift_excl_union_u16(const uint16 *a, uint16 na, const uint16 *b, uint16 nb, uint
 	return n;
 }
 
+/* The cells of granule g of the section (a first[ngranules + 1] of cell numbers, padded, then the cells): the two numbers of the granule and its cells are read, not the section */
 SiftPreaggCell *
 sift_part_read_preagg(Relation rel, const struct SiftPart *part, uint32 g, int *ncells)
 {
-	uint64		len;
-	char	   *sec = sift_part_read_section(rel, part, SEC_PREAGG, &len);
-	const uint32 *first;
+	const SiftSecDirEntry *sec = sift_part_section(part, SEC_PREAGG);
+	uint32		ng = part->hdr.ngranules;
+	uint64		head = MAXALIGN((ng + 1) * sizeof(uint32));
+	uint32		span[2];
 	SiftPreaggCell *out;
 
 	if (sec == NULL)
 		return NULL;
-	first = (const uint32 *) sec;
-	if (len < (part->hdr.ngranules + 1) * sizeof(uint32) || first[part->hdr.ngranules] * sizeof(SiftPreaggCell) + MAXALIGN((part->hdr.ngranules + 1) * sizeof(uint32)) != len)
-		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The pre-aggregate section holds %llu bytes for %u granules.", (unsigned long long) len, part->hdr.ngranules);
-	*ncells = first[g + 1] - first[g];
+	if (sec->len < head || g >= ng)
+		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The pre-aggregate section holds %llu bytes for %u granules.", (unsigned long long) sec->len, ng);
+	sift_part_read_section_bytes(rel, part, sec, g * sizeof(uint32), sizeof(span), span);
+	if (span[0] > span[1] || head + (uint64) span[1] * sizeof(SiftPreaggCell) > sec->len)
+		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The pre-aggregate section holds %llu bytes for %u granules.", (unsigned long long) sec->len, ng);
+	*ncells = span[1] - span[0];
 	out = palloc(Max(*ncells, 1) * sizeof(SiftPreaggCell));
-	memcpy(out, sec + MAXALIGN((part->hdr.ngranules + 1) * sizeof(uint32)) + first[g] * sizeof(SiftPreaggCell), *ncells * sizeof(SiftPreaggCell));
+	sift_part_read_section_bytes(rel, part, sec, head + (uint64) span[0] * sizeof(SiftPreaggCell), (uint64) *ncells * sizeof(SiftPreaggCell), out);
 	return out;
 }

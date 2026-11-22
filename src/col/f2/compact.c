@@ -8,6 +8,7 @@
 #include "storage/procarray.h"
 
 #include "col/f2/compact.h"
+#include "col/f2/f2_part_idx.h"
 #include "core/memtrack.h"
 #include "col/f2/delete.h"
 #include "col/f2/delvec_delta.h"
@@ -55,8 +56,10 @@ release_part(const SiftPart *part, SiftExtent **rel_ext, int *nrel)
 {
 	int			nb;
 	SiftExtent *blocks = sift_part_blocks(part, &nb);
+	int			have = (int) (GetMemoryChunkSpace(*rel_ext) / sizeof(SiftExtent));
 
-	*rel_ext = repalloc(*rel_ext, (*nrel + nb + 1) * sizeof(SiftExtent));
+	if (*nrel + nb + 1 > have)
+		*rel_ext = repalloc(*rel_ext, Max(2 * have, *nrel + nb + 16) * sizeof(SiftExtent));
 	memcpy(*rel_ext + *nrel, blocks, nb * sizeof(SiftExtent));
 	*nrel += nb;
 }
@@ -103,8 +106,9 @@ add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_i
 		SiftGranuleView v = sift_granule_open_part(rel, part, rec, gd.data_len, &gd);
 		SiftRowVer *vers = sift_part_read_vers(rel, part, dir, g);
 		SiftRowBuf *one = sift_rowbuf_new(spec);
-		const SiftDvGran *dg = dv ? sift_dv_granule(dv, g) : NULL;
+		SiftDvCursor dc;
 
+		sift_dv_cursor_init(&dc, dv ? sift_dv_granule(dv, g) : NULL);
 		sift_rowbuf_add_granule_mapped(one, &v, vers, spec, code_map, remap);
 		if (fold != NULL)
 			sift_compact_fold->apply(fold, d->part_gen, g, one, rel_ext, nrel);
@@ -114,8 +118,7 @@ add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_i
 			Inserter	ins = inserter_of(one->xmin[r], hc, &res->stripped);
 
 			res->rows_in++;
-			if (dg != NULL)
-				(void) sift_dv_find(dg, r, &dead);
+			(void) sift_dv_cursor_find(&dc, r, &dead);
 			if (dead)
 			{
 				res->dead_dropped++;
@@ -286,26 +289,26 @@ static CompactIn *
 read_inputs(Relation rel, uint64 part_id, const SiftPartDesc *parts, int nparts, const uint64 *gens, int ngens)
 {
 	CompactIn  *in = palloc(Max(ngens, 1) * sizeof(CompactIn));
+	SiftPartGenIndex by_gen;
 
+	sift_part_gen_idx_init(&by_gen, parts, nparts);
 	for (int i = 0; i < ngens; i++)
 	{
-		int			found = -1;
+		const SiftPartDesc *found = sift_part_gen_idx_find(&by_gen, gens[i]);
 
-		for (int p = 0; p < nparts; p++)
-			if (parts[p].part_gen == gens[i])
-				found = p;
-		if (found < 0)
+		if (found == NULL)
 			ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu has no part of generation %llu", (unsigned long long) part_id, (unsigned long long) gens[i])));
-		in[i].d = parts[found];
-		in[i].part = sift_part_open(rel, parts[found].header_blk, parts[found].part_gen, (uint32) part_id);
+		in[i].d = *found;
+		in[i].part = sift_part_open(rel, found->header_blk, found->part_gen, (uint32) part_id);
 		in[i].part->io_mode = SIFT_IOS_MAINT_SEQ;
 		in[i].dir = sift_part_granule_dir(rel, in[i].part);
 		in[i].grows = palloc(Max(in[i].part->hdr.ngranules, 1) * sizeof(uint16));
 		for (uint32 g = 0; g < in[i].part->hdr.ngranules; g++)
 			in[i].grows[g] = in[i].dir[g].nrows;
-		in[i].dv_len = parts[found].dv_blk != InvalidBlockNumber ? sift_dv_stream_len(rel, parts[found].dv_blk) : 0;
-		in[i].dv = parts[found].dv_blk != InvalidBlockNumber ? sift_dv_read(rel, &parts[found], (uint32) part_id, in[i].grows) : NULL;
+		in[i].dv_len = found->dv_blk != InvalidBlockNumber ? sift_dv_stream_len(rel, found->dv_blk) : 0;
+		in[i].dv = found->dv_blk != InvalidBlockNumber ? sift_dv_read(rel, found, (uint32) part_id, in[i].grows) : NULL;
 	}
+	sift_part_gen_idx_free(&by_gen);
 	return in;
 }
 
@@ -423,15 +426,16 @@ dv_delta(Relation rel, const CompactIn *in, const SiftDv *now, SiftPendDelRec **
 	for (int i = 0; i < now->ndirty; i++)
 	{
 		const SiftDvGran *dg = &now->gran[i];
-		const SiftDvGran *bg = in->dv ? sift_dv_granule(in->dv, dg->granule_id) : NULL;
+		SiftDvCursor bc;
 		uint64	   *tids = NULL;
+
+		sift_dv_cursor_init(&bc, in->dv ? sift_dv_granule(in->dv, dg->granule_id) : NULL);
 
 		for (int k = 0; k < dg->ndead; k++)
 		{
 			bool		dead = false;
 
-			if (bg != NULL)
-				(void) sift_dv_find(bg, dg->rows[k], &dead);
+			(void) sift_dv_cursor_find(&bc, dg->rows[k], &dead);
 			if (dead)
 				continue;
 			if (tids == NULL)
@@ -482,28 +486,52 @@ any_packed_slot(const CompactIn *in, int ngens)
 	return false;
 }
 
-/* The packed pages that no part is a slot of once the inputs are gone, written to out as the extents the commit releases; how many */
+static int
+ref_by_gen(const void *a, const void *b)
+{
+	uint64		x = ((const SiftPartRef *) a)->part_gen,
+				y = ((const SiftPartRef *) b)->part_gen;
+
+	return x < y ? -1 : x > y;
+}
+
+static int
+blk_cmp(const void *a, const void *b)
+{
+	BlockNumber x = *(const BlockNumber *) a,
+				y = *(const BlockNumber *) b;
+
+	return x < y ? -1 : x > y;
+}
+
+/* The packed pages that no part is a slot of once the inputs are gone, written to out as the extents the commit releases; how many: the manifest is read once for all of them */
 static int
 release_packed_pages(Relation rel, uint64 part_id, const CompactIn *in, int ngens, SiftExtent *out)
 {
 	SiftPartRef *leaving = palloc(Max(ngens, 1) * sizeof(SiftPartRef));
+	BlockNumber *pages = palloc(Max(ngens, 1) * sizeof(BlockNumber));
 	int			nleaving = 0,
+				npages = 0,
 				n = 0;
+	SiftLivePackedSet live;
 
 	for (int i = 0; i < ngens; i++)
 		if (in[i].d.flags & SIFT_PART_FLAG_PACKED_SLOT)
+		{
 			leaving[nleaving++] = (SiftPartRef) {(uint32) part_id, in[i].d.part_gen};
-	for (int i = 0; i < ngens; i++)
+			pages[npages++] = in[i].d.header_blk;
+		}
+	if (npages > 0)
 	{
-		bool		seen = false;
-
-		if (!(in[i].d.flags & SIFT_PART_FLAG_PACKED_SLOT))
-			continue;
-		for (int k = 0; k < i; k++)
-			seen |= (in[k].d.flags & SIFT_PART_FLAG_PACKED_SLOT) && in[k].d.header_blk == in[i].d.header_blk;
-		if (!seen && sift_packed_unreferenced(rel, in[i].d.header_blk, leaving, nleaving))
-			out[n++] = (SiftExtent) {in[i].d.header_blk, 1};
+		qsort(leaving, nleaving, sizeof(SiftPartRef), ref_by_gen);
+		qsort(pages, npages, sizeof(BlockNumber), blk_cmp);
+		sift_live_packed_set_build(rel, &live);
+		for (int i = 0; i < npages; i++)
+			if ((i == 0 || pages[i] != pages[i - 1]) && sift_packed_unreferenced_in(rel, pages[i], leaving, nleaving, &live))
+				out[n++] = (SiftExtent) {pages[i], 1};
+		sift_live_packed_set_free(&live);
 	}
+	pfree(pages);
 	pfree(leaving);
 	return n;
 }
@@ -531,6 +559,7 @@ sift_partition_compact_online(Relation rel, uint64 part_id, const uint8 *key_lo,
 	SiftPartDesc out[2];
 	SiftPendDelRec *delta = NULL;
 	SiftXidHorizonCache hc;
+	SiftPartGenIndex by_gen = {0};
 	void	   *fold;
 	bool		packed;
 
@@ -560,27 +589,28 @@ sift_partition_compact_online(Relation rel, uint64 part_id, const uint8 *key_lo,
 	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	mr = sift_manifest_read_range(rel, key_lo, NULL);
 	parts = mr.n > 0 && mr.entries[0].part_id == part_id ? sift_manifest_read_parts(rel, &mr.entries[0], &nparts) : NULL;
+	if (parts != NULL)
+		sift_part_gen_idx_init(&by_gen, parts, nparts);
 	for (int i = 0; i < ngens && parts != NULL; i++)
 	{
-		int			p = 0;
+		const SiftPartDesc *now_d = sift_part_gen_idx_find(&by_gen, gens[i]);
 
-		while (p < nparts && parts[p].part_gen != gens[i])
-			p++;
-		if (p == nparts)
+		if (now_d == NULL)
 			parts = NULL;
-		else if (parts[p].header_blk != in[i].d.header_blk)
+		else if (now_d->header_blk != in[i].d.header_blk)
 			parts = NULL;
-		else if (parts[p].dv_gen != in[i].d.dv_gen || parts[p].dv_blk != in[i].d.dv_blk ||
-				 (parts[p].dv_blk != InvalidBlockNumber && sift_dv_stream_len(rel, parts[p].dv_blk) != in[i].dv_len))
+		else if (now_d->dv_gen != in[i].d.dv_gen || now_d->dv_blk != in[i].d.dv_blk ||
+				 (now_d->dv_blk != InvalidBlockNumber && sift_dv_stream_len(rel, now_d->dv_blk) != in[i].dv_len))
 		{
-			SiftDv	   *now = sift_dv_read(rel, &parts[p], (uint32) part_id, in[i].grows);
+			SiftDv	   *now = sift_dv_read(rel, now_d, (uint32) part_id, in[i].grows);
 
 			dv_delta(rel, &in[i], now, &delta, &ndelta, &capdelta);
-			in[i].d = parts[p];
+			in[i].d = *now_d;
 		}
 		else
-			in[i].d = parts[p];
+			in[i].d = *now_d;
 	}
+	sift_part_gen_idx_free(&by_gen);
 	if (parts == NULL)
 	{
 		release_outputs(rel, part_id, out, nout);
@@ -619,29 +649,53 @@ partition_idle(const SiftPartitionEntry *e)
 	return e->l0_slab_blk == InvalidBlockNumber && e->pend_del_blk == InvalidBlockNumber && (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0;
 }
 
-/* A transaction that holds a partition for its rows (table/f2/f2_lock_esc.h) holds the split lock shared: the merge yields to it and comes again with the next pass */
+/* The entry of a partition as it is now, in place of the one a read of the manifest gave: only the fields a flush changes differ, the partitions themselves cannot move under the lock of the splits */
+static void
+refresh_entry(Relation rel, SiftPartitionEntry *e)
+{
+	if (!sift_manifest_find_entry(rel, e->part_id, e->key_lo, e))
+		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) e->part_id)));
+}
+
+/*
+ * A transaction that holds a partition for its rows (table/f2/f2_lock_esc.h) holds the split lock shared: the merge yields to it and comes again with the next pass. The manifest is read
+ * once, under the lock that no split or merge passes: the neighbours are walked in one pass, the pair at the cursor judged by its entries as they are now, and a merged partition is judged
+ * again against the one after it (the one before it was judged against its smaller self and did not join, so it does not join the larger).
+ */
 int
 sift_compact_merge_neighbours(Relation rel)
 {
 	int			merged = 0;
-	bool		more = ConditionalLockPage(rel, SIFT_F2_SPLIT_LOCK_BLKNO, ExclusiveLock);
 
-	while (more)
+	if (!ConditionalLockPage(rel, SIFT_F2_SPLIT_LOCK_BLKNO, ExclusiveLock))
+		return 0;
 	{
 		SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+		int		   *next = palloc(Max(mr.n, 1) * sizeof(int));
 		int			i = 0;
 
-		while (i + 1 < mr.n && !(partition_idle(&mr.entries[i]) && partition_idle(&mr.entries[i + 1]) &&
-								 mr.entries[i].total_bytes + mr.entries[i + 1].total_bytes < SIFT_PARTITION_MERGE_BYTES))
-			i++;
-		more = i + 1 < mr.n;
-		if (more)
+		for (int k = 0; k < mr.n; k++)
+			next[k] = k + 1 < mr.n ? k + 1 : -1;
+		while (i >= 0 && next[i] >= 0)
 		{
-			sift_manifest_merge(rel, mr.entries[i].part_id, mr.entries[i].key_lo, mr.entries[i + 1].part_id, mr.entries[i + 1].key_lo);
-			merged++;
+			SiftPartitionEntry *a = &mr.entries[i],
+					   *b = &mr.entries[next[i]];
+
+			refresh_entry(rel, a);
+			refresh_entry(rel, b);
+			if (partition_idle(a) && partition_idle(b) && a->total_bytes + b->total_bytes < SIFT_PARTITION_MERGE_BYTES)
+			{
+				sift_manifest_merge(rel, a->part_id, a->key_lo, b->part_id, b->key_lo);
+				merged++;
+				a->total_bytes += b->total_bytes;
+				memcpy(a->key_hi, b->key_hi, SIFT_BOUND_BYTES);
+				next[i] = next[next[i]];
+			}
+			else
+				i = next[i];
 		}
-		else
-			UnlockPage(rel, SIFT_F2_SPLIT_LOCK_BLKNO, ExclusiveLock);
+		pfree(next);
 	}
+	UnlockPage(rel, SIFT_F2_SPLIT_LOCK_BLKNO, ExclusiveLock);
 	return merged;
 }

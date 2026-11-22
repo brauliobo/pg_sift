@@ -25,7 +25,7 @@ struct SiftProjCursor
 	bool		dead_only;
 	SiftProjSpans spans;		/* the granules to read */
 	uint32		nread;			/* granules read */
-	const SiftDvGran *dg;		/* the deletion vector's granule of the rows in hand */
+	SiftDvCursor dgc;			/* the deletion vector's granule of the rows in hand */
 	SiftRowBuf *one;
 	int			r;
 };
@@ -84,7 +84,7 @@ load_granule(SiftProjCursor *c, uint32 g)
 	SiftGranuleView v = sift_granule_open_part(c->rel, c->part, rec, gd.data_len, &gd);
 
 	c->one = sift_rowbuf_new(c->spec);
-	c->dg = c->dv ? sift_dv_granule(c->dv, g) : NULL;
+	sift_dv_cursor_init(&c->dgc, c->dv ? sift_dv_granule(c->dv, g) : NULL);
 	sift_rowbuf_add_granule(c->one, &v, NULL, c->spec, NULL);
 	c->r = 0;
 	c->nread++;
@@ -102,8 +102,7 @@ sift_proj_cursor_next(SiftProjCursor *c, const SiftRowBuf **rows, int *r)
 			int			at = c->r++;
 			bool		dead = false;
 
-			if (c->dg != NULL)
-				(void) sift_dv_find(c->dg, at, &dead);
+			(void) sift_dv_cursor_find(&c->dgc, at, &dead);
 			if (dead == c->dead_only)
 			{
 				*rows = c->one;

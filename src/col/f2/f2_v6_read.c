@@ -30,7 +30,12 @@ f2v6_begin(MemoryContext cx, Snapshot snap, Oid indexoid)
 	c->rel = sift_col_rel(c->index);
 	c->schema = c->rel->schema;
 	sift_stage_flush(c->index);
-	c->staged = sift_stage_dead(c->index, snap, &c->nstaged);
+	{
+		int			nstaged;
+		uint64	   *staged = sift_stage_dead(c->index, snap, &nstaged);
+
+		c->staged_px = sift_f2_staged_index(staged, nstaged);
+	}
 	c->plan = sift_plan_cache_get(c->index, cx);
 	c->vm_blk = InvalidBlockNumber;
 	sift_xid_cache_init(&c->xc, snap);
@@ -54,16 +59,7 @@ f2v6_end(F2V6Ctx *c)
 const SiftPendDelIndex *
 f2v6_pending(F2V6Ctx *c, const SiftPartitionEntry *e)
 {
-	int			npend;
-	uint64	   *pend = sift_f2_pending_dead(c->index, e, c->snap, &npend);
-
-	if (c->nstaged > 0)
-	{
-		pend = pend != NULL ? repalloc(pend, (npend + c->nstaged) * sizeof(uint64)) : palloc(c->nstaged * sizeof(uint64));
-		memcpy(pend + npend, c->staged, c->nstaged * sizeof(uint64));
-		npend += c->nstaged;
-	}
-	return npend > 0 ? sift_pdel_idx_build(pend, npend) : NULL;
+	return sift_f2_pending_index(c->index, e, c->snap, c->staged_px);
 }
 
 bool

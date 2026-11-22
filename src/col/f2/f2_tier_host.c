@@ -7,6 +7,7 @@
 #include "storage/lmgr.h"
 #include "utils/rel.h"
 
+#include "col/f2/f2_part_idx.h"
 #include "col/f2/f2_tier_host.h"
 #include "col/f2/part_format.h"
 #include "core/damage.h"
@@ -90,30 +91,54 @@ extents_add(SiftExtent *v, int *n, int *cap, SiftExtent e)
 	return v;
 }
 
-/* The packed pages the dropped parts are slots of that no part which stays is a slot of: each once */
+static int
+ref_by_gen(const void *a, const void *b)
+{
+	uint64		x = ((const SiftPartRef *) a)->part_gen,
+				y = ((const SiftPartRef *) b)->part_gen;
+
+	return x < y ? -1 : x > y;
+}
+
+static int
+blk_cmp(const void *a, const void *b)
+{
+	BlockNumber x = *(const BlockNumber *) a,
+				y = *(const BlockNumber *) b;
+
+	return x < y ? -1 : x > y;
+}
+
+/* The packed pages the dropped parts are slots of that no part which stays is a slot of: each once, the manifest read once for all */
 static SiftExtent *
-packed_pages_add(Relation rel, uint64 part_id, const SiftPartDesc *parts, int nparts, const uint64 *gens, int ngens, SiftExtent *v, int *n, int *cap)
+packed_pages_add(Relation rel, uint64 part_id, const SiftPartGenIndex *by_gen, const uint64 *gens, int ngens, SiftExtent *v, int *n, int *cap)
 {
 	SiftPartRef *leaving = palloc(Max(ngens, 1) * sizeof(SiftPartRef));
+	BlockNumber *pages = palloc(Max(ngens, 1) * sizeof(BlockNumber));
 	int			nleaving = 0;
+	SiftLivePackedSet live;
 
 	for (int i = 0; i < ngens; i++)
 	{
-		const SiftPartDesc *d = sift_tier_find_part(parts, nparts, gens[i]);
+		const SiftPartDesc *d = sift_part_gen_idx_find(by_gen, gens[i]);
 
 		if (d != NULL && (d->flags & SIFT_PART_FLAG_PACKED_SLOT))
+		{
+			pages[nleaving] = d->header_blk;
 			leaving[nleaving++] = (SiftPartRef) {(uint32) part_id, d->part_gen};
+		}
 	}
-	for (int i = 0; i < nleaving; i++)
+	if (nleaving > 0)
 	{
-		const SiftPartDesc *d = sift_tier_find_part(parts, nparts, leaving[i].part_gen);
-		bool		seen = false;
-
-		for (int k = 0; k < i; k++)
-			seen |= sift_tier_find_part(parts, nparts, leaving[k].part_gen)->header_blk == d->header_blk;
-		if (!seen && sift_packed_unreferenced(rel, d->header_blk, leaving, nleaving))
-			v = extents_add(v, n, cap, (SiftExtent) {d->header_blk, 1});
+		qsort(leaving, nleaving, sizeof(SiftPartRef), ref_by_gen);
+		qsort(pages, nleaving, sizeof(BlockNumber), blk_cmp);
+		sift_live_packed_set_build(rel, &live);
+		for (int i = 0; i < nleaving; i++)
+			if ((i == 0 || pages[i] != pages[i - 1]) && sift_packed_unreferenced_in(rel, pages[i], leaving, nleaving, &live))
+				v = extents_add(v, n, cap, (SiftExtent) {pages[i], 1});
+		sift_live_packed_set_free(&live);
 	}
+	pfree(pages);
 	pfree(leaving);
 	return v;
 }
@@ -124,10 +149,12 @@ sift_tier_release_extents(Relation rel, uint64 part_id, const SiftPartDesc *part
 	SiftExtent *v = NULL;
 	int			n = 0,
 				cap = 0;
+	SiftPartGenIndex by_gen;
 
+	sift_part_gen_idx_init(&by_gen, parts, nparts);
 	for (int i = 0; i < ngens; i++)
 	{
-		const SiftPartDesc *d = sift_tier_find_part(parts, nparts, gens[i]);
+		const SiftPartDesc *d = sift_part_gen_idx_find(&by_gen, gens[i]);
 
 		if (d == NULL)
 			continue;
@@ -143,7 +170,8 @@ sift_tier_release_extents(Relation rel, uint64 part_id, const SiftPartDesc *part
 			v = extents_add(v, &n, &cap, (SiftExtent) {d->dv_blk, d->dv_nblocks});
 	}
 	if (dropped)
-		v = packed_pages_add(rel, part_id, parts, nparts, gens, ngens, v, &n, &cap);
+		v = packed_pages_add(rel, part_id, &by_gen, gens, ngens, v, &n, &cap);
+	sift_part_gen_idx_free(&by_gen);
 	*out = v;
 	return n;
 }

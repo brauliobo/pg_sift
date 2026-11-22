@@ -17,9 +17,10 @@
 #include "col/f2/f2_proj.h"
 #include "col/f2/f2_scope.h"
 #include "col/f2/f2_store.h"
-#include "col/f2/l0_stage.h"
+#include "col/f2/l0_stage_int.h"
 #include "col/f2/part_vis.h"
 #include "col/f2/scan/scan_int.h"
+#include "core/hash.h"
 #include "core/xid_cache.h"
 
 /* ---- what the chain asks of transactions ---- */
@@ -187,18 +188,132 @@ sift_cdi_scan_remaps(const F2Scan *s, uint32 g)
 
 /* ---- the UPDATE ---- */
 
+/*
+ * What an UPDATE asks of the chain of a partition, kept for the next of the transaction: the address changes (a map built from every page of the chain), the pages the chain has, and the
+ * bytes of the records the transaction staged for the partition. The chain is the same while the partition entry has the generation it was read at (an append to the chain is a commit of
+ * the manifest), and the staged bytes are counted again when the stage's records are not the ones counted (a subtransaction ended, the rows were written).
+ */
+typedef struct CdCacheEntry
+{
+	uint64		part_id;
+	uint64		manifest_gen;
+	bool		loaded;
+	uint32		chain_npages;
+	SiftCdRemapMap *rm;
+	uint64		staged_bytes;
+	bool		staged_valid;
+} CdCacheEntry;
+
+struct SiftCdRemapCache
+{
+	MemoryContext cx;
+	CdCacheEntry *entries;
+	int			n;
+	int			cap;
+	uint32	   *ht;				/* the place in entries of a part_id, plus one */
+	uint32		mask;
+};
+
+static struct SiftCdRemapCache *
+cache_of(SiftTxnStage *st)
+{
+	struct SiftCdRemapCache *c = st->cd_cache;
+
+	if (c != NULL)
+		return c;
+	c = MemoryContextAllocZero(TopTransactionContext, sizeof(*c));
+	c->cx = AllocSetContextCreate(TopTransactionContext, "sift col delta remap cache", ALLOCSET_SMALL_SIZES);
+	c->cap = 8;
+	c->entries = MemoryContextAlloc(c->cx, c->cap * sizeof(CdCacheEntry));
+	c->mask = 15;
+	c->ht = MemoryContextAllocZero(c->cx, (c->mask + 1) * sizeof(uint32));
+	st->cd_cache = c;
+	return c;
+}
+
+static void
+cache_grow(struct SiftCdRemapCache *c)
+{
+	c->mask = c->mask * 2 + 1;
+	pfree(c->ht);
+	c->ht = MemoryContextAllocZero(c->cx, (c->mask + 1) * sizeof(uint32));
+	for (int i = 0; i < c->n; i++)
+	{
+		uint32		h = (uint32) (sift_fmix64(c->entries[i].part_id) & c->mask);
+
+		while (c->ht[h] != 0)
+			h = (h + 1) & c->mask;
+		c->ht[h] = i + 1;
+	}
+}
+
+static CdCacheEntry *
+cache_entry(struct SiftCdRemapCache *c, uint64 part_id)
+{
+	uint32		h = (uint32) (sift_fmix64(part_id) & c->mask);
+
+	for (; c->ht[h] != 0; h = (h + 1) & c->mask)
+		if (c->entries[c->ht[h] - 1].part_id == part_id)
+			return &c->entries[c->ht[h] - 1];
+	if (c->n == c->cap)
+	{
+		c->cap *= 2;
+		c->entries = repalloc(c->entries, c->cap * sizeof(CdCacheEntry));
+	}
+	c->entries[c->n] = (CdCacheEntry) {.part_id = part_id};
+	c->ht[h] = ++c->n;
+	if ((uint32) c->n * 2 > c->mask + 1)
+		cache_grow(c);
+	return &c->entries[c->n - 1];
+}
+
+void
+sift_cdi_cache_staged_changed(SiftTxnStage *st)
+{
+	for (int i = 0; st->cd_cache != NULL && i < st->cd_cache->n; i++)
+		st->cd_cache->entries[i].staged_valid = false;
+}
+
+void
+sift_cdi_cache_free(SiftTxnStage *st)
+{
+	if (st->cd_cache == NULL)
+		return;
+	MemoryContextDelete(st->cd_cache->cx);
+	pfree(st->cd_cache);
+	st->cd_cache = NULL;
+}
+
+/* The entry of the partition as the chain is now: read again when the partition entry is of another generation than the one the map was built from */
+static CdCacheEntry *
+chain_entry(Relation index, SiftTxnStage *st, const SiftPartitionEntry *e)
+{
+	struct SiftCdRemapCache *c = cache_of(st);
+	CdCacheEntry *ent = cache_entry(c, e->part_id);
+	MemoryContext old;
+
+	if (ent->loaded && ent->manifest_gen == e->manifest_gen)
+		return ent;
+	sift_cd_remap_free(ent->rm);
+	old = MemoryContextSwitchTo(c->cx);
+	ent->rm = sift_cdi_remap_load(index, e);
+	MemoryContextSwitchTo(old);
+	ent->chain_npages = (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0 ? sift_manifest_read_col_delta(index, e).npages : 0;
+	ent->manifest_gen = e->manifest_gen;
+	ent->loaded = true;
+	return ent;
+}
+
 /* Where the row at tid is in a part, and that it still has the address there: a row that moved on has left it, and the heap may have given the address to another row */
 static bool
-locate_row(Relation index, SiftF2Store *store, uint64 tid, SiftF2Loc *loc)
+locate_row(Relation index, SiftF2Store *store, SiftTxnStage *st, uint64 tid, SiftF2Loc *loc, CdCacheEntry **ent)
 {
-	SiftCdRemapMap *rm;
 	bool		moved;
 
 	if (!sift_f2_locate_published(index, store, tid, loc))
 		return false;
-	rm = sift_cdi_remap_load(index, &loc->entry);
-	moved = rm != NULL && sift_cd_remap_supersedes(rm, loc->gb->pin->part_gen, loc->gb->granule_id, loc->row, tid);
-	sift_cd_remap_free(rm);
+	*ent = chain_entry(index, st, &loc->entry);
+	moved = sift_cd_remap_supersedes((*ent)->rm, loc->gb->pin->part_gen, loc->gb->granule_id, loc->row, tid);
 	if (moved)
 		sift_f2_gbuf_unref(loc->gb);
 	return !moved;
@@ -212,20 +327,31 @@ key_absent_of(const SiftF2Rel *f, const SiftF2LeafDiff *d, bool *absent)
 }
 
 static uint32
-stage_pages(const SiftTxnStage *st, uint64 part_id)
+stage_pages(const SiftTxnStage *st, CdCacheEntry *ent)
 {
-	return st->host_stage == NULL ? 0 : (uint32) ((sift_col_delta_stage_part_bytes(st->host_stage, part_id) + SIFT_COL_DELTA_PAGE_ROOM - 1) / SIFT_COL_DELTA_PAGE_ROOM);
+	if (st->host_stage == NULL)
+		return 0;
+	if (!ent->staged_valid)
+	{
+		ent->staged_bytes = sift_col_delta_stage_part_bytes(st->host_stage, ent->part_id);
+		ent->staged_valid = true;
+	}
+	return (uint32) ((ent->staged_bytes + SIFT_COL_DELTA_PAGE_ROOM - 1) / SIFT_COL_DELTA_PAGE_ROOM);
 }
 
 static void
-stage_record(SiftTxnStage *st, const SiftPartitionEntry *e, const uint8 *rec)
+stage_record(SiftTxnStage *st, CdCacheEntry *ent, const SiftPartitionEntry *e, const uint8 *rec)
 {
+	SiftColDeltaEntryHdr h;
+
 	if (st->host_stage == NULL)
 	{
 		st->host_stage = MemoryContextAllocZero(TopTransactionContext, sizeof(SiftColDeltaStage));
 		st->host_event = sift_col_delta_stage_event;
 	}
+	memcpy(&h, rec, sizeof(h));
 	sift_col_delta_stage_add(st->host_stage, e->part_id, e->key_lo, GetCurrentSubTransactionId(), rec);
+	ent->staged_bytes += h.rec_bytes;
 	st->host_pending++;
 }
 
@@ -236,6 +362,7 @@ sift_cdi_stage_update(const SiftF2DiffEnv *env, SiftTxnStage *st, HeapTuple oldt
 	SiftF2Store *store = sift_f2_store_open(env->index);
 	SiftF2DiffResult res;
 	SiftF2Loc	loc;
+	CdCacheEntry *ent;
 	SiftF2AdmitIn in;
 	SiftColDeltaTarget target;
 	bool		absent[SIFT_F2_DIFF_MAX_LEAVES];
@@ -246,20 +373,20 @@ sift_cdi_stage_update(const SiftF2DiffEnv *env, SiftTxnStage *st, HeapTuple oldt
 		return false;
 	sift_f2_diff_update(env, oldt, newt, &res);
 	if (res.pred != SIFT_PRED_BOTH || res.key_changed || res.leaves.rejected ||
-		sift_f2_scope_reads_any(env->index, res.leaves.leaf, res.leaves.nchanged) || !locate_row(env->index, store, old_tid, &loc))
+		sift_f2_scope_reads_any(env->index, res.leaves.leaf, res.leaves.nchanged) || !locate_row(env->index, store, st, old_tid, &loc, &ent))
 		return false;
 	target = (SiftColDeltaTarget) {.part_gen = loc.gb->pin->part_gen,.granule_id = loc.gb->granule_id,.row_ordinal = loc.row,.tid = old_tid};
 	key_absent_of(f, &res.leaves, absent);
 	len = sift_cdi_encode(rec, sizeof(rec), &target, GetCurrentTransactionId(), GetCurrentCommandId(false), GetCurrentTransactionNestLevel() > 1, false, sift_f2_tid(&newt->t_self), f->kinds,
 						  res.leaves.leaf, res.leaves.cell, absent, res.leaves.nchanged);
 	in = (SiftF2AdmitIn) {.tracked = true,.pred = res.pred,.nchanged_leaves = res.leaves.nchanged,.total_leaves = f->ncols,.payload_bytes = len,
-		.chain_pages = (loc.entry.flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0 ? sift_manifest_read_col_delta(env->index, &loc.entry).npages : 0,.staged_pages = stage_pages(st, loc.entry.part_id)};
+		.chain_pages = ent->chain_npages,.staged_pages = stage_pages(st, ent)};
 	if (len == 0 || sift_f2_col_delta_admit_index(&in) != SIFT_F2A_OK || !sift_stage_cancel_tid(st, sift_f2_tid(&newt->t_self)))
 	{
 		sift_f2_gbuf_unref(loc.gb);
 		return false;
 	}
-	stage_record(st, &loc.entry, rec);
+	stage_record(st, ent, &loc.entry, rec);
 	sift_f2_gbuf_unref(loc.gb);
 	return true;
 }

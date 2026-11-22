@@ -11,11 +11,32 @@
 extern int	sift_f2_f8_cmp(double a, double b);
 extern int	sift_f2_str_cmp(const char *a, uint32 alen, const char *b, uint32 blen);
 
+/* The constants of an IN or NOT IN predicate with many of them, hashed on the first row that is tested (one probe instead of a walk of the list); lists of fewer than SIFT_PRED_SET_MIN_VALS are walked */
+#define SIFT_PRED_SET_MIN_VALS	9
+
+typedef struct SiftPredSet
+{
+	MemoryContext cx;
+	bool		built;
+	bool		has_nan;
+	uint32		mask;
+	uint32	   *slots;			/* the place in vals plus one, 0: empty */
+} SiftPredSet;
+
+extern bool sift_f2_in_i64(SiftPredSet *ps, const SiftColPred *p, int64 v);
+extern bool sift_f2_in_f8(SiftPredSet *ps, const SiftColPred *p, double v);
+extern bool sift_f2_in_str(SiftPredSet *ps, const SiftColPred *p, const char *s, uint32 len);
+
+/* The tests take no set (NULL) where the caller keeps none: the list is walked */
+/* One set for each of the n predicates, kept in cx */
+extern SiftPredSet *sift_f2_pred_sets_new(MemoryContext cx, int n);
+
 /* Whether a comparison that gave c satisfies op */
 extern bool sift_f2_cmp_op(SiftColOp op, int c);
 
 /* Whether the string satisfies a predicate on a string leaf (the vals of the predicate are the constants) */
 extern bool sift_f2_str_pred(const SiftColPred *p, const char *s, uint32 len);
+extern bool sift_f2_str_pred_in(SiftPredSet *ps, const SiftColPred *p, const char *s, uint32 len);
 
 /* Whether the collation of a string predicate keeps the bytes from deciding it (a nondeterministic collation; a range under a collation that does not order by bytes): the heap decides */
 extern bool sift_f2_collation_undecided(const SiftColPred *p);

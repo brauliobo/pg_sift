@@ -66,9 +66,11 @@ struct SiftStoreScan
 	SiftF2TimeWin tw;
 	SiftTblVis	tvis;			/* a sift_table */
 	SiftColDeltaScan *delta;	/* a sift_table */
-	uint64	   *staged;			/* a sift_col: the deletes of the transaction not yet in a pending delete */
-	int			nstaged;
+	const SiftPendDelIndex *staged_px;	/* a sift_col: the deletes of the transaction not yet in a pending delete, as a set */
 	bool	   *want;
+	SiftPredSet *psets;			/* the constants of each IN predicate, hashed when the list is long */
+	int		   *check_cols;		/* the wanted leaves that are not NaN leaves: the ones whose unsure cells a table scan refuses */
+	int			ncheck;
 	bool		wide;
 	bool		possible;
 	const SiftPlanSnapshot *view;
@@ -92,6 +94,8 @@ struct SiftStorePart
 	uint32		g;				/* the next granule of the span */
 	SiftF2GranuleBuf *gb;
 	const uint64 *tids;
+	int		   *active;			/* the check_cols of the scan that carry tags in the granule loaded */
+	int			nactive;
 	ColView    *views;
 	bool		pend_hit;
 	bool		any_dead;
@@ -103,7 +107,7 @@ struct SiftStorePart
 /* ---- the predicates on the stored values ---- */
 
 static Verdict
-pred_row(const SiftColDef *d, const SiftColPred *p, const ColView *cv, int r)
+pred_row(const SiftColDef *d, const SiftColPred *p, SiftPredSet *ps, const ColView *cv, int r)
 {
 	bool		isnull = cv->isnull[r];
 
@@ -118,15 +122,9 @@ pred_row(const SiftColDef *d, const SiftColPred *p, const ColView *cv, int r)
 	if (sift_f2_undecided(d, p))
 		return V_MAYBE;
 	if (cv->kind == SIFT_CELL_STR)
-		return sift_f2_str_pred(p, cv->s[r], cv->slen[r]) ? V_YES : V_NO;
+		return sift_f2_str_pred_in(ps, p, cv->s[r], cv->slen[r]) ? V_YES : V_NO;
 	if (p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_NOTIN)
-	{
-		bool		in = false;
-
-		for (int j = 0; j < p->nvals && !in; j++)
-			in = cv->kind == SIFT_CELL_INT ? cv->i[r] == p->vals[j].v.i : sift_f2_f8_cmp(cv->f[r], p->vals[j].v.f) == 0;
-		return in == (p->op == SIFT_COLOP_IN) ? V_YES : V_NO;
-	}
+		return (cv->kind == SIFT_CELL_INT ? sift_f2_in_i64(ps, p, cv->i[r]) : sift_f2_in_f8(ps, p, cv->f[r])) == (p->op == SIFT_COLOP_IN) ? V_YES : V_NO;
 	return sift_f2_cmp_op(p->op, cv->kind == SIFT_CELL_INT ? (cv->i[r] < p->vals[0].v.i ? -1 : cv->i[r] > p->vals[0].v.i) : sift_f2_f8_cmp(cv->f[r], p->vals[0].v.f)) ? V_YES : V_NO;
 }
 
@@ -139,7 +137,7 @@ row_verdict(const SiftStorePart *p, int r)
 	for (int k = 0; k < s->o->npreds; k++)
 	{
 		const SiftColPred *pr = &s->o->preds[k];
-		Verdict		v = pred_row(&s->store->schema->cols[pr->col], pr, &p->views[pr->col], r);
+		Verdict		v = pred_row(&s->store->schema->cols[pr->col], pr, &s->psets[k], &p->views[pr->col], r);
 
 		if (v == V_NO)
 			return V_NO;
@@ -305,16 +303,7 @@ table_pending(SiftStoreScan *s, const SiftPartitionEntry *e)
 static SiftPendDelIndex *
 index_pending(SiftStoreScan *s, const SiftPartitionEntry *e)
 {
-	int			n;
-	uint64	   *dead = sift_f2_pending_dead(s->o->rel, e, s->o->snap, &n);
-
-	if (s->nstaged > 0)
-	{
-		dead = dead != NULL ? repalloc(dead, (n + s->nstaged) * sizeof(uint64)) : palloc(s->nstaged * sizeof(uint64));
-		memcpy(dead + n, s->staged, s->nstaged * sizeof(uint64));
-		n += s->nstaged;
-	}
-	return n > 0 ? sift_pdel_idx_build(dead, n) : NULL;
+	return sift_f2_pending_index(s->o->rel, e, s->o->snap, s->staged_px);
 }
 
 /* ---- a granule ---- */
@@ -328,13 +317,24 @@ in_bridge(const SiftTidBridge *br, uint64 tid)
 }
 
 static void
+select_tagged_cols(SiftStorePart *p)
+{
+	const SiftStoreScan *s = p->s;
+
+	p->nactive = 0;
+	for (int k = 0; k < s->ncheck; k++)
+		if (p->views[s->check_cols[k]].tag != NULL)
+			p->active[p->nactive++] = s->check_cols[k];
+}
+
+static void
 refuse_unsure_cells(const SiftStorePart *p, int r)
 {
-	for (int leaf = 0; leaf < p->s->store->ncols; leaf++)
+	for (int k = 0; k < p->nactive; k++)
 	{
-		const ColView *v = &p->views[leaf];
+		const ColView *v = &p->views[p->active[k]];
 
-		if (p->s->want[leaf] && !(p->s->o->nan_leaves != NULL && p->s->o->nan_leaves[leaf]) && v->tag != NULL && v->isnull[r] && v->tag[r] == SIFT_COLTAG_UNSURE)
+		if (v->isnull[r] && v->tag[r] == SIFT_COLTAG_UNSURE)
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a numeric NaN cannot be aggregated on the stored values"),
 							errhint("Run the statement with sift.enable_agg = off.")));
 	}
@@ -352,6 +352,7 @@ granule_batch(SiftStorePart *p, SiftF2Batch *b)
 	memset(p->live, 0, sizeof(p->live));
 	memset(p->maybe, 0, sizeof(p->maybe));
 	load_views(p);
+	select_tagged_cols(p);
 	if (s->vis->granule != NULL)
 		s->vis->granule(p);
 	for (int r = 0; r < n; r++)
@@ -364,7 +365,7 @@ granule_batch(SiftStorePart *p, SiftF2Batch *b)
 		if (v == V_MAYBE && !s->o->emit_maybe)
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a qual of the aggregate cannot be decided on the stored values"),
 							errhint("Run the statement with sift.enable_agg = off: the heap decides such a qual.")));
-		if (v == V_YES && s->store->host->host_kind == SIFT_F2_HOST_TABLE)
+		if (v == V_YES)
 			refuse_unsure_cells(p, r);
 		p->live[r >> 6] |= (uint64) (v == V_YES) << (r & 63);
 		p->maybe[r >> 6] |= (uint64) (v == V_MAYBE) << (r & 63);
@@ -503,6 +504,7 @@ part_new(SiftStoreScan *s, const SiftPartitionEntry *e, const SiftPartDesc *d, c
 	p->px = px;
 	p->gcx = sift_mem_allocset_create(s->cx, "sift f2 store scan granule");
 	p->views = MemoryContextAllocZero(s->cx, sizeof(ColView) * s->store->ncols);
+	p->active = MemoryContextAlloc(s->cx, sizeof(int) * Max(s->ncheck, 1));
 	return p;
 }
 
@@ -561,8 +563,7 @@ run_reset(SiftStoreScan *s)
 	foreach_ptr(SiftStorePart, p, s->run)
 		part_close(p);
 	foreach_ptr(SiftPendDelIndex, px, s->pxs)
-		if (px != NULL)
-			sift_pdel_idx_free(px);
+		sift_pdel_idx_release(px, s->staged_px);
 	list_free(s->run);
 	list_free(s->pxs);
 	s->run = s->pxs = NIL;
@@ -608,11 +609,16 @@ sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 	s->vis = table ? &table_vis : &index_vis;
 	s->f = rel_of(o->store);
 	s->want = MemoryContextAllocZero(cx, sizeof(bool) * o->store->ncols);
+	s->psets = sift_f2_pred_sets_new(cx, o->npreds);
 	s->wide = table && sift_tbl_extra(o->store)->has_wide;
 	for (int i = 0; i < o->nleaves; i++)
 		s->want[o->leaves[i]] = true;
 	for (int k = 0; k < o->npreds; k++)
 		s->want[o->preds[k].col] = true;
+	s->check_cols = MemoryContextAlloc(cx, sizeof(int) * Max(o->store->ncols, 1));
+	for (int leaf = 0; leaf < o->store->ncols && table; leaf++)
+		if (s->want[leaf] && !(o->nan_leaves != NULL && o->nan_leaves[leaf]))
+			s->check_cols[s->ncheck++] = leaf;
 	s->possible = sift_f2_key_set(&s->f, o->preds, o->npreds, &s->ks) && sift_f2_time_window(&s->f, o->preds, o->npreds, &s->tw);
 	sift_f2_key_plan(&s->f, o->store->schema->cols, o->preds, o->npreds, &s->plan);
 	s->possible = s->possible && s->plan.state != SIFT_KEY_PLAN_EMPTY;
@@ -625,7 +631,12 @@ sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 		s->delta = sift_col_delta_scan_begin(o->rel, &s->tvis, cx);
 	}
 	else
-		s->staged = sift_stage_dead(o->rel, o->snap, &s->nstaged);
+	{
+		int			nstaged;
+		uint64	   *staged = sift_stage_dead(o->rel, o->snap, &nstaged);
+
+		s->staged_px = sift_f2_staged_index(staged, nstaged);
+	}
 	return s;
 }
 

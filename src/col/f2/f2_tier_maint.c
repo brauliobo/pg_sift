@@ -13,6 +13,7 @@
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 
+#include "col/f2/f2_part_idx.h"
 #include "col/f2/f2_tier_host.h"
 #include "col/f2/part_format.h"
 #include "core/crash_point.h"
@@ -70,17 +71,20 @@ ttl_commit(const Step *s, int slot, int64 cutoff, const SiftPartitionEntry *e)
 	SiftPartDesc *upd = palloc(Max(plan->nmark + plan->nunmark, 1) * sizeof(SiftPartDesc));
 	SiftExtent *rel_ext;
 	SiftManifestEdit edit;
+	SiftPartGenIndex by_gen;
 
+	sift_part_gen_idx_init(&by_gen, parts, np);
 	for (int i = 0; i < plan->nmark; i++)
 	{
-		upd[nupd] = *sift_tier_find_part(parts, np, plan->mark_gens[i]);
+		upd[nupd] = *sift_part_gen_idx_find(&by_gen, plan->mark_gens[i]);
 		upd[nupd++].ext_flags |= SIFT_PART_EXT_EXPIRED;
 	}
 	for (int i = 0; i < plan->nunmark; i++)
 	{
-		upd[nupd] = *sift_tier_find_part(parts, np, plan->unmark_gens[i]);
+		upd[nupd] = *sift_part_gen_idx_find(&by_gen, plan->unmark_gens[i]);
 		upd[nupd++].ext_flags &= (uint8) ~SIFT_PART_EXT_EXPIRED;
 	}
+	sift_part_gen_idx_free(&by_gen);
 	if (plan->ndrop + nupd > 0)
 	{
 		nrel = sift_tier_release_extents(s->rel, e->part_id, parts, np, plan->drop_gens, plan->ndrop, true, &rel_ext);

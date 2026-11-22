@@ -268,6 +268,26 @@ typedef struct SiftPartRef
  */
 extern bool sift_packed_unreferenced(Relation rel, BlockNumber blk, const SiftPartRef *leaving, int nleaving);
 
+/* The slots every part of the manifest holds, by (packed page, generation), read in one pass: with it a batch of pages is judged without a read of the manifest for each slot of each */
+typedef struct SiftLivePackedKey
+{
+	BlockNumber header_blk;		/* InvalidBlockNumber: the slot of the table is empty */
+	uint64		part_gen;
+} SiftLivePackedKey;
+
+typedef struct SiftLivePackedSet
+{
+	SiftLivePackedKey *slots;
+	uint32		mask;
+	uint32		count;
+} SiftLivePackedSet;
+
+extern void sift_live_packed_set_build(Relation rel, SiftLivePackedSet *set);
+extern void sift_live_packed_set_free(SiftLivePackedSet *set);
+
+/* sift_packed_unreferenced judged by a set built when the manifest was last read (leaving ascending by part_gen): parts it names that have left since keep their page for the next judgement, none that came since is missed */
+extern bool sift_packed_unreferenced_in(Relation rel, BlockNumber blk, const SiftPartRef *leaving, int nleaving, const SiftLivePackedSet *live);
+
 /* A batch of parts whose bytes are written as one packed page: the slot of item i is i */
 typedef struct SiftPackItem
 {
@@ -294,6 +314,9 @@ extern void *sift_part_read_section(Relation rel, const SiftPart *part, uint16 t
 
 /* len bytes of the stream from byte off: through a stream of the blocks when they span pages (core/io_stream.h) */
 extern void sift_part_read_bytes(Relation rel, const SiftPart *part, uint64 off, uint64 len, void *dst);
+
+/* len bytes of a section from byte off of it, without the checksum of the rest (a reader that takes a slice of a large section) */
+extern void sift_part_read_section_bytes(Relation rel, const SiftPart *part, const SiftSecDirEntry *sec, uint64 off, uint64 len, void *dst);
 
 /* Bytes of the stream and where they go in the buffer the caller gives */
 typedef struct SiftByteRange

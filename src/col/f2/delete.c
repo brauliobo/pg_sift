@@ -9,22 +9,9 @@
 #include "col/f2/delvec_delta.h"
 #include "col/f2/f2_col_delta_idx.h"
 #include "col/f2/f2_del_slab.h"
+#include "col/f2/f2_part_idx.h"
+#include "core/hash.h"
 #include "core/page_io.h"
-
-typedef struct TidAt
-{
-	uint64		tid;
-	uint16		row;
-} TidAt;
-
-static int
-tidat_cmp(const void *a, const void *b)
-{
-	uint64		x = ((const TidAt *) a)->tid,
-				y = ((const TidAt *) b)->tid;
-
-	return x < y ? -1 : x > y;
-}
 
 /* A row that is dead already is an older one whose address a later row took after a VACUUM: a delete of that address is for another row */
 static bool
@@ -56,65 +43,220 @@ locate_remapped(const SiftPart *part, const SiftCdRemapMap *rm, const SiftPendDe
 	return nm;
 }
 
-/* The live row of the sorted granule that has the address raw in the part: a row that moved to another address has left it, a dead one is an older row the heap gave the address to again */
-static const TidAt *
-find_row(const TidAt *at, int nrows, uint64 tid, const SiftCdRemapMap *rm, uint64 part_gen, uint32 g, const SiftDv *base)
+/* The targets by address, ties by their place in recs: what a granule or a part finds the ones in its range of addresses in */
+typedef struct DelOrder
 {
-	int			lo = 0,
-				hi = nrows;
+	const SiftPendDelRec *recs;
+	uint32	   *ord;
+	int			n;
+} DelOrder;
 
-	while (lo < hi)
+static int
+ord_cmp(const void *a, const void *b, void *arg)
+{
+	const SiftPendDelRec *recs = arg;
+	uint32		x = *(const uint32 *) a,
+				y = *(const uint32 *) b;
+
+	if (recs[x].tid != recs[y].tid)
+		return recs[x].tid < recs[y].tid ? -1 : 1;
+	return x < y ? -1 : x > y;
+}
+
+static DelOrder
+del_order(const SiftPendDelRec *recs, int n)
+{
+	DelOrder	o = {.recs = recs,.ord = palloc(Max(n, 1) * sizeof(uint32)),.n = n};
+
+	for (int i = 0; i < n; i++)
+		o.ord[i] = i;
+	qsort_arg(o.ord, n, sizeof(uint32), ord_cmp, (void *) recs);
+	return o;
+}
+
+/* The places in ord of the first target above lo, less one, and of the first above hi: the targets of [lo, hi] */
+static void
+ord_range(const DelOrder *o, uint64 lo, uint64 hi, int *from, int *to)
+{
+	int			a = 0,
+				b = o->n;
+
+	while (a < b)
 	{
-		int			mid = lo + (hi - lo) / 2;
+		int			mid = a + ((b - a) >> 1);
 
-		if (at[mid].tid < tid)
-			lo = mid + 1;
+		if (o->recs[o->ord[mid]].tid < lo)
+			a = mid + 1;
 		else
-			hi = mid;
+			b = mid;
 	}
-	for (; lo < nrows && at[lo].tid == tid; lo++)
-		if ((rm == NULL || !sift_cd_remap_supersedes(rm, part_gen, g, at[lo].row, tid)) && !row_dead(base, g, at[lo].row))
-			return &at[lo];
-	return NULL;
+	*from = a;
+	b = o->n;
+	while (a < b)
+	{
+		int			mid = a + ((b - a) >> 1);
+
+		if (o->recs[o->ord[mid]].tid <= hi)
+			a = mid + 1;
+		else
+			b = mid;
+	}
+	*to = a;
+}
+
+/* The targets of the granule not yet found whose address is in its range and whose block its filter may hold, by address, ties by place in recs */
+static int
+granule_candidates(const DelOrder *o, const SiftTidIndexEntry *ix, const bool *done, uint32 *cand)
+{
+	int			from,
+				to,
+				k = 0;
+
+	ord_range(o, ix->tid_min, ix->tid_max, &from, &to);
+	for (int j = from; j < to; j++)
+		if (!done[o->ord[j]] && (ix->blk_bloom & sift_tid_block_bit(o->recs[o->ord[j]].tid)) != 0)
+			cand[k++] = o->ord[j];
+	return k;
+}
+
+/* More candidates than this are looked up in a table of their addresses; fewer are compared with each row */
+#define DEL_LINEAR_CANDIDATES	16
+
+typedef struct CandSet
+{
+	const SiftPendDelRec *recs;
+	const uint32 *cand;
+	int			n;
+	uint32	   *slots;			/* the place in cand of the first of an address, plus one (NULL: the candidates are compared in turn) */
+	uint32		mask;
+} CandSet;
+
+static void
+cand_set_init(CandSet *cs, const SiftPendDelRec *recs, const uint32 *cand, int n)
+{
+	*cs = (CandSet) {.recs = recs,.cand = cand,.n = n};
+	if (n <= DEL_LINEAR_CANDIDATES)
+		return;
+	cs->mask = pg_nextpower2_32(2 * (uint32) n) - 1;
+	cs->slots = palloc0((cs->mask + 1) * sizeof(uint32));
+	for (int i = 0; i < n; i++)
+	{
+		uint32		h = (uint32) (sift_fmix64(recs[cand[i]].tid) & cs->mask);
+
+		while (cs->slots[h] != 0 && recs[cand[cs->slots[h] - 1]].tid != recs[cand[i]].tid)
+			h = (h + 1) & cs->mask;
+		if (cs->slots[h] == 0)
+			cs->slots[h] = i + 1;
+	}
+}
+
+/* The first of the candidates (they ascend by address) that has the address, or -1 */
+static int
+cand_first(const CandSet *cs, uint64 tid)
+{
+	if (cs->slots == NULL)
+	{
+		for (int i = 0; i < cs->n; i++)
+			if (cs->recs[cs->cand[i]].tid == tid)
+				return i;
+		return -1;
+	}
+	for (uint32 h = (uint32) (sift_fmix64(tid) & cs->mask); cs->slots[h] != 0; h = (h + 1) & cs->mask)
+		if (cs->recs[cs->cand[cs->slots[h] - 1]].tid == tid)
+			return cs->slots[h] - 1;
+	return -1;
+}
+
+static int
+by_target_cmp(const void *a, const void *b, void *arg)
+{
+	const uint32 *cand = arg;
+	uint32		x = cand[*(const int *) a],
+				y = cand[*(const int *) b];
+
+	return x < y ? -1 : x > y;
+}
+
+/* The rows of the granule that the candidates name, marked in the order of the targets; a row that moved to another address has left its raw one, a dead one is an older row the heap gave the address to again */
+static int
+mark_granule(const SiftPart *part, uint32 g, const uint64 *tids, int nrows, const DelOrder *o, const uint32 *cand, int nc, bool *done, SiftDvMark *marks, const SiftDv *base, const SiftCdRemapMap *rm)
+{
+	CandSet		cs;
+	int		   *row = palloc(nc * sizeof(int));
+	int		   *emit = palloc(nc * sizeof(int));
+	int			ne = 0;
+
+	cand_set_init(&cs, o->recs, cand, nc);
+	for (int c = 0; c < nc; c++)
+		row[c] = -1;
+	for (int r = 0; r < nrows; r++)
+		for (int c = cand_first(&cs, tids[r]); c >= 0 && c < nc && o->recs[cand[c]].tid == tids[r]; c++)
+			if (row[c] < 0 && (rm == NULL || !sift_cd_remap_supersedes(rm, part->hdr.part_gen, g, r, tids[r])) && !row_dead(base, g, r))
+				row[c] = r;
+	for (int c = 0; c < nc; c++)
+		if (row[c] >= 0)
+			emit[ne++] = c;
+	qsort_arg(emit, ne, sizeof(int), by_target_cmp, (void *) cand);
+	for (int e = 0; e < ne; e++)
+	{
+		uint32		i = cand[emit[e]];
+
+		marks[e] = (SiftDvMark) {g, (uint16) row[emit[e]], o->recs[i].xmax, o->recs[i].cmax};
+		done[i] = true;
+	}
+	if (cs.slots != NULL)
+		pfree(cs.slots);
+	pfree(row);
+	pfree(emit);
+	return ne;
+}
+
+static int
+locate_ordered(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, const DelOrder *o, bool *done, SiftDvMark *marks, const SiftDv *base, const SiftCdRemapMap *rm)
+{
+	int			nm = rm != NULL ? locate_remapped(part, rm, o->recs, o->n, done, marks, base) : 0;
+	uint64		len;
+	const SiftTidIndexEntry *tix = sift_part_read_section(rel, part, SEC_TID_INDEX, &len);
+	uint32	   *cand = palloc(Max(o->n, 1) * sizeof(uint32));
+
+	if (tix == NULL || len != (uint64) part->hdr.ngranules * sizeof(*tix))
+		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The part has no usable TID index.");
+	for (uint32 g = 0; g < part->hdr.ngranules; g++)
+	{
+		int			nc = granule_candidates(o, &tix[g], done, cand);
+
+		if (nc > 0)
+			nm += mark_granule(part, g, sift_part_read_tids(rel, part, dir, g), dir[g].nrows, o, cand, nc, done, marks + nm, base, rm);
+	}
+	pfree(cand);
+	return nm;
 }
 
 /* Marks the rows of the part that the unresolved TIDs name; the TIDs it marked are set in done. rm: the address changes of the partition's column delta chain, NULL when it has none */
 int
 sift_del_locate(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, const SiftPendDelRec *recs, int n, bool *done, SiftDvMark *marks, const SiftDv *base, const SiftCdRemapMap *rm)
 {
-	int			nm = rm != NULL ? locate_remapped(part, rm, recs, n, done, marks, base) : 0;
-	uint64		len;
-	const SiftTidIndexEntry *tix = sift_part_read_section(rel, part, SEC_TID_INDEX, &len);
+	DelOrder	o = del_order(recs, n);
+	int			nm = locate_ordered(rel, part, dir, &o, done, marks, base, rm);
 
-	if (tix == NULL || len != (uint64) part->hdr.ngranules * sizeof(*tix))
-		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The part has no usable TID index.");
-	for (uint32 g = 0; g < part->hdr.ngranules; g++)
-	{
-		bool		any = false;
-		TidAt	   *at;
-		uint64	   *tids;
-
-		for (int i = 0; i < n && !any; i++)
-			any = !done[i] && recs[i].tid >= tix[g].tid_min && recs[i].tid <= tix[g].tid_max && (tix[g].blk_bloom & sift_tid_block_bit(recs[i].tid)) != 0;
-		if (!any)
-			continue;
-		tids = sift_part_read_tids(rel, part, dir, g);
-		/* check-memory: allow the rows of one granule, at most SIFT_GRANULE_ROWS */
-		at = palloc(dir[g].nrows * sizeof(TidAt));
-		for (int r = 0; r < dir[g].nrows; r++)
-			at[r] = (TidAt) {tids[r], r};
-		qsort(at, dir[g].nrows, sizeof(TidAt), tidat_cmp);
-		for (int i = 0; i < n; i++)
-		{
-			const TidAt *hit = done[i] ? NULL : find_row(at, dir[g].nrows, recs[i].tid, rm, part->hdr.part_gen, g, base);
-
-			if (hit == NULL)
-				continue;
-			marks[nm++] = (SiftDvMark) {g, hit->row, recs[i].xmax, recs[i].cmax};
-			done[i] = true;
-		}
-	}
+	pfree(o.ord);
 	return nm;
+}
+
+/* Whether a target not yet found has an address of the envelope of the part */
+static bool
+part_may_hold(const DelOrder *o, const SiftPartDesc *d, const bool *done)
+{
+	int			from,
+				to;
+
+	if (d->tid_max == 0)
+		return true;
+	ord_range(o, d->tid_min, d->tid_max, &from, &to);
+	for (int j = from; j < to; j++)
+		if (!done[o->ord[j]])
+			return true;
+	return false;
 }
 
 static uint16 *
@@ -224,6 +366,9 @@ sift_del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendD
 	bool	   *done,
 			   *taken;
 	PartMarks  *pm;
+	DelOrder	order;
+	SiftU64Set	remapped;
+	int			remaining = 0;
 	SiftCdRemapMap *rm;
 	SiftPartDesc *updated;
 	SiftExtent *rel_ext;
@@ -259,19 +404,32 @@ sift_del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendD
 	parts = sift_manifest_read_parts(rel, &entry, &nparts);
 	pm = palloc0(Max(nparts, 1) * sizeof(PartMarks));
 	taken = palloc0(Max(nparts, 1) * sizeof(bool));
-	for (int p = 0; p < nparts; p++)
+	order = del_order(recs, n);
+	sift_u64_set_init(&remapped, rm != NULL ? rm->n : 0);
+	for (int i = 0; rm != NULL && i < rm->n; i++)
+		sift_u64_set_add(&remapped, rm->slot[i].part_gen);
+	for (int i = 0; i < n; i++)
+		remaining += !done[i];
+	for (int p = 0; p < nparts && remaining > 0; p++)
 	{
-		SiftPart   *part = sift_part_open_desc(rel, &parts[p], (uint32) part_id);
-		SiftGranuleDesc *dir = sift_part_granule_dir(rel, part);
+		SiftPart   *part;
+		SiftGranuleDesc *dir;
+
+		if (!sift_u64_set_has(&remapped, parts[p].part_gen) && !part_may_hold(&order, &parts[p], done))
+			continue;
+		part = sift_part_open_desc(rel, &parts[p], (uint32) part_id);
+		dir = sift_part_granule_dir(rel, part);
 
 		pm[p].ngranules = part->hdr.ngranules;
 		pm[p].grows = granule_rows(dir, part->hdr.ngranules);
 		if (parts[p].dv_blk != InvalidBlockNumber)
 			pm[p].base = sift_dv_unabort(sift_dv_read(rel, &parts[p], (uint32) part_id, pm[p].grows), &pm[p].unaborted);
 		pm[p].marks = palloc(Max(n, 1) * sizeof(SiftDvMark));
-		pm[p].nm = sift_del_locate(rel, part, dir, recs, n, done, pm[p].marks, pm[p].base, rm);
+		pm[p].nm = locate_ordered(rel, part, dir, &order, done, pm[p].marks, pm[p].base, rm);
 		resolved += pm[p].nm;
+		remaining -= pm[p].nm;
 	}
+	sift_u64_set_free(&remapped);
 	sift_cd_remap_free(rm);
 	append_deltas(rel, part_id, parts, pm, nparts, recs, n, taken);
 	for (int p = 0; p < nparts; p++)

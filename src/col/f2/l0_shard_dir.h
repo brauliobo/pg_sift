@@ -17,9 +17,6 @@
 #include "access/transam.h"
 #include "storage/bufpage.h"
 
-#define SIFT_PEND_DEL_PAGES_SHIFT	8
-#define SIFT_PEND_DEL_PAGES_MASK	UINT16_C(0xFF00)
-
 #define SIFT_L0_SHARD_MAX			4
 #define SIFT_L0_SHARD_UNKEYED		8
 #define SIFT_L0_SHARD_ABS_MAX		8
@@ -68,20 +65,6 @@ StaticAssertDecl(sizeof(SiftL0ShardBatch) == 16, "SiftL0ShardBatch is 16 bytes")
 #define SIFT_L0_SL(pg)		((SiftL0SlabPageData *) ((char *) (pg) + SIFT_L0_PAGE_DATA_OFFSET))
 #define SIFT_L0_PD(pg)		((SiftPendDelPageData *) ((char *) (pg) + SIFT_L0_PAGE_DATA_OFFSET))
 #define SIFT_L0_DIR(pg)		((SiftL0ShardDirData *) ((char *) (pg) + SIFT_L0_PAGE_DATA_OFFSET + sizeof(SiftL0SlabPageData)))
-
-static inline uint16
-sift_pd_chain_pages(uint16 flags)
-{
-	uint16		p = (flags & SIFT_PEND_DEL_PAGES_MASK) >> SIFT_PEND_DEL_PAGES_SHIFT;
-
-	return p == 0 ? 1 : p;
-}
-
-static inline uint16
-sift_pd_set_chain_pages(uint16 flags, uint16 pages)
-{
-	return (flags & ~SIFT_PEND_DEL_PAGES_MASK) | ((uint16) Min(pages, 255) << SIFT_PEND_DEL_PAGES_SHIFT);
-}
 
 static inline uint32
 sift_l0_shard_count(bool unkeyed)

@@ -27,6 +27,8 @@ typedef struct SiftF2PartPin
 	uint64		lru_tick;
 	MemoryContext cx;
 	MemoryContext dv_cx;
+	struct PinEntry *entry;		/* its place in the cache of pins (f2_gbuf.c): a release finds it without a search */
+	struct SiftGranIntervalIdx *gidx;	/* the granules by their addresses, made when a lookup first meets a part of many granules (f2_locate.c); lives in cx */
 
 	SiftPart   *part;
 	SiftPartDesc desc;
@@ -84,7 +86,9 @@ typedef struct SiftF2GranuleBuf
 
 	/* A granule of the point cache (sift_f2_gbuf_load_lazy): only the chunks asked for are read */
 	SiftLazyGranule *lazy;		/* NULL: rec holds every chunk */
-	bool		tids_sorted;
+	bool		tids_sorted;	/* the addresses do not descend, set where they are read */
+	uint16	   *tid_ht;			/* when they do: the rows by address, plus one (open addressing), made at the first lookup */
+	uint32		tid_ht_mask;
 	bool		cached;
 } SiftF2GranuleBuf;
 
@@ -101,8 +105,11 @@ extern SiftF2GranuleBuf *sift_f2_gbuf_ref(SiftF2GranuleBuf *gb);
 extern void sift_f2_gbuf_unref(SiftF2GranuleBuf *gb);
 extern const uint64 *sift_f2_gbuf_tids(SiftF2GranuleBuf *gb);
 
-/* The row of the granule that has the address, or -1: a binary search when the granule's addresses ascend (a lazy granule says so), else a scan */
+/* The first row of the granule that has the address, or -1: a binary search when the granule's addresses ascend, else a table of the rows by address */
 extern int	sift_f2_gbuf_row_of(SiftF2GranuleBuf *gb, uint64 tid);
+
+/* The first row with the address after row `after` (-1: from the first), or -1: the rows of an address VACUUM gave to a later row are walked one by one */
+extern int	sift_f2_gbuf_row_next(SiftF2GranuleBuf *gb, uint64 tid, int after);
 
 /* Column phys of the granule decoded (once): integers, floats or string cells, and for string columns that may hold wide values their tags */
 extern void sift_f2_gbuf_decode(SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, bool wide);

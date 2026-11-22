@@ -44,3 +44,23 @@ sift_f2_pending_dead(Relation rel, const SiftPartitionEntry *e, Snapshot snap, i
 	*n = m;
 	return dead;
 }
+
+/* The staged deletes of the transaction as the set every partition of a scan adds its pending deletes to: built once, NULL for none */
+SiftPendDelIndex *
+sift_f2_staged_index(const uint64 *staged, int nstaged)
+{
+	return sift_pdel_idx_chain(staged, nstaged, NULL);
+}
+
+/* The set of the pending deletes of the partition the snapshot sees, with the staged ones (staged_px): the one of the transaction itself when the partition has none; NULL when neither has */
+SiftPendDelIndex *
+sift_f2_pending_index(Relation rel, const SiftPartitionEntry *e, Snapshot snap, const SiftPendDelIndex *staged_px)
+{
+	int			n;
+	uint64	   *dead = sift_f2_pending_dead(rel, e, snap, &n);
+	SiftPendDelIndex *px = sift_pdel_idx_chain(dead, n, staged_px);
+
+	if (dead != NULL)
+		pfree(dead);
+	return px;
+}

@@ -25,6 +25,7 @@
 
 #include "col/f2/f2_drop_parts.h"
 #include "col/f2/f2_gbuf.h"
+#include "col/f2/f2_part_idx.h"
 #include "col/f2/f2_tier_host.h"
 #include "col/f2/part_format.h"
 #include "core/catname.h"
@@ -96,10 +97,12 @@ int
 sift_drop_wide_extents(Relation rel, SiftF2Store *store, uint32 part_id, const SiftPartDesc *parts, int np, const uint64 *gens, int ngens, SiftExtent **release, int nrelease)
 {
 	SiftExtVec	v = {.ext = *release,.n = nrelease,.cap = nrelease};
+	SiftPartGenIndex by_gen;
 
+	sift_part_gen_idx_init(&by_gen, parts, np);
 	for (int i = 0; i < ngens && sift_tbl_extra(store)->has_wide; i++)
 	{
-		SiftF2PartPin *pin = sift_f2_pin_open(rel, store, sift_tier_find_part(parts, np, gens[i]), part_id);
+		SiftF2PartPin *pin = sift_f2_pin_open(rel, store, sift_part_gen_idx_find(&by_gen, gens[i]), part_id);
 		int			ng;
 		uint32	   *g = exception_granules(rel, pin->part, &ng);
 
@@ -108,6 +111,7 @@ sift_drop_wide_extents(Relation rel, SiftF2Store *store, uint32 part_id, const S
 		pfree(g);
 		sift_f2_pin_release(pin);
 	}
+	sift_part_gen_idx_free(&by_gen);
 	*release = v.ext;
 	return v.n;
 }
@@ -125,11 +129,11 @@ count_expired(Drop *d, const SiftPartitionEntry *e)
 }
 
 static SiftPartDesc *
-flagged(const SiftPartDesc *parts, int np, const uint64 *gens, int n, bool expired, SiftPartDesc *out)
+flagged(const SiftPartGenIndex *by_gen, const uint64 *gens, int n, bool expired, SiftPartDesc *out)
 {
 	for (int i = 0; i < n; i++)
 	{
-		out[i] = *sift_tier_find_part(parts, np, gens[i]);
+		out[i] = *sift_part_gen_idx_find(by_gen, gens[i]);
 		out[i].ext_flags = expired ? (out[i].ext_flags | SIFT_PART_EXT_EXPIRED) : (uint8) (out[i].ext_flags & ~SIFT_PART_EXT_EXPIRED);
 	}
 	return out;
@@ -146,9 +150,12 @@ commit_partition(Drop *d, const SiftPartitionEntry *e)
 	SiftTtlPlan *plan = sift_drop_plan(parts, np, d->slot, d->cutoff, d->horizon, sift_drop_time_dirty(&anchor, d->slot), &tally);
 	SiftPartDesc *upd = palloc(sizeof(SiftPartDesc) * Max(plan->nmark + plan->nunmark, 1));
 	SiftExtent *rel_ext;
+	SiftPartGenIndex by_gen;
 
-	flagged(parts, np, plan->mark_gens, plan->nmark, true, upd);
-	flagged(parts, np, plan->unmark_gens, plan->nunmark, false, upd + plan->nmark);
+	sift_part_gen_idx_init(&by_gen, parts, np);
+	flagged(&by_gen, plan->mark_gens, plan->nmark, true, upd);
+	flagged(&by_gen, plan->unmark_gens, plan->nunmark, false, upd + plan->nmark);
+	sift_part_gen_idx_free(&by_gen);
 	if (plan->ndrop + plan->nmark + plan->nunmark > 0)
 	{
 		nrel = sift_tier_release_extents(d->rel, e->part_id, parts, np, plan->drop_gens, plan->ndrop, true, &rel_ext);

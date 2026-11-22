@@ -75,6 +75,10 @@ typedef struct SiftRowBuf
 	const char ***xpay;			/* per column, once a value keeps its payload: the payload of each value */
 	uint32	  **xplen;
 	int16	   *parent;			/* of the spec; NULL when no column holds elements */
+	int16		ngroups;		/* the columns of lengths (those that have elements), as groups[0 .. ngroups) ascending */
+	int16	   *groups;
+	int16	   *child_off;		/* [ngroups + 1]: the columns of elements of groups[i] are children[child_off[i] .. child_off[i + 1]), ascending */
+	int16	   *children;
 	uint32	  **estart;			/* per column of lengths: the first element of each row and, past the last row, the elements there are (so n + 1 entries) */
 	uint32	   *nelem;
 	uint32	   *ecap;
@@ -162,6 +166,15 @@ extern int	sift_rowbuf_drop_sub(SiftRowBuf *rb, SubTransactionId sub, SubTransac
 /* Removes the rows for which drop(rb, r, arg) says so (it may change the rows it keeps); returns the rows removed */
 typedef bool (*SiftRowDrop) (SiftRowBuf *rb, int r, void *arg);
 extern int	sift_rowbuf_drop_if(SiftRowBuf *rb, SiftRowDrop drop, void *arg);
+
+/* Row row goes: where no column holds elements the last row takes its place (the order of the rows is not kept: sift_rowbuf_sort gives it), else the rows after it move up one (sift_rowbuf_drops_move_last) */
+extern void sift_rowbuf_drop_at(SiftRowBuf *rb, int row);
+
+static inline bool
+sift_rowbuf_drops_move_last(const SiftRowBuf *rb)
+{
+	return rb->estart == NULL;
+}
 
 /* Row r as a cell of column c */
 extern SiftCell sift_rowbuf_cell(const SiftRowBuf *rb, int c, int r);

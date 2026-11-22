@@ -5,6 +5,7 @@
 
 #include "col/f2/delvec_delta.h"
 #include "core/f2/meta.h"
+#include "core/hash.h"
 #include "core/xlog.h"
 
 #ifndef SIFT_HREF_STANDALONE
@@ -286,47 +287,165 @@ sift_dvd_base_crc(const char *bytes, uint32 base_len)
 
 /* ---- deserialize ---- */
 
-/* The rows added to the granule of the vector (ascending; one already dead keeps its first deleter) */
-static void
-add_rows(SiftDv *dv, int *cap, uint32 gid, uint16 grows, const uint16 *rows, uint32 n, SiftDvXmaxEntry x, const SiftDvOps *ops)
+/* The rows the chunks of the tail name for one granule, in the order the chunks come: a row named twice keeps the first deleter */
+typedef struct DeltaRow
 {
-	int			i = 0;
-	SiftDvGran *g;
-	uint16	   *nr;
-	SiftDvXmaxEntry *nx;
-	int			k = 0,
-				a = 0,
-				b = 0;
+	uint16		row;
+	uint32		seq;
+	SiftDvXmaxEntry x;
+} DeltaRow;
 
-	while (i < dv->ndirty && dv->gran[i].granule_id < gid)
-		i++;
-	if (i == dv->ndirty || dv->gran[i].granule_id != gid)
+typedef struct DeltaBucket
+{
+	uint32		gid;
+	uint16		grows;
+	int			n;
+	int			cap;
+	DeltaRow   *rows;
+	FullTransactionId xid_max;
+} DeltaBucket;
+
+typedef struct DeltaBuckets
+{
+	DeltaBucket *b;
+	int			n;
+	int			cap;
+	int32	   *slots;			/* the place in b plus one, 0: empty; a power of two long, at most half full */
+	uint32		mask;
+	uint32		seq;
+} DeltaBuckets;
+
+static void
+buckets_free(DeltaBuckets *bs)
+{
+	for (int i = 0; i < bs->n; i++)
+		pfree(bs->b[i].rows);
+	pfree(bs->b);
+	pfree(bs->slots);
+}
+
+static void
+buckets_init(DeltaBuckets *bs)
+{
+	*bs = (DeltaBuckets) {.cap = 16,.mask = 63};
+	bs->b = palloc(bs->cap * sizeof(DeltaBucket));
+	bs->slots = palloc0((bs->mask + 1) * sizeof(int32));
+}
+
+static void
+buckets_rehash(DeltaBuckets *bs)
+{
+	pfree(bs->slots);
+	bs->mask = bs->mask * 2 + 1;
+	bs->slots = palloc0((bs->mask + 1) * sizeof(int32));
+	for (int i = 0; i < bs->n; i++)
 	{
-		if (dv->ndirty == *cap)
-		{
-			*cap = Max(8, *cap * 2);
-			dv->gran = repalloc(dv->gran, *cap * sizeof(SiftDvGran));
-		}
-		memmove(&dv->gran[i + 1], &dv->gran[i], (dv->ndirty - i) * sizeof(SiftDvGran));
-		dv->gran[i] = (SiftDvGran) {.granule_id = gid,.granule_rows = grows,.rows = palloc(1),.xmax = palloc(1)};
-		dv->ndirty++;
+		uint32		h = (uint32) (sift_fmix64(bs->b[i].gid) & bs->mask);
+
+		while (bs->slots[h] != 0)
+			h = (h + 1) & bs->mask;
+		bs->slots[h] = i + 1;
 	}
-	g = &dv->gran[i];
-	nr = palloc((g->ndead + n) * sizeof(uint16));
-	nx = palloc((g->ndead + n) * sizeof(SiftDvXmaxEntry));
-	while (a < g->ndead || b < (int) n)
+}
+
+static DeltaBucket *
+bucket_of(DeltaBuckets *bs, uint32 gid, uint16 grows)
+{
+	uint32		h = (uint32) (sift_fmix64(gid) & bs->mask);
+
+	for (; bs->slots[h] != 0; h = (h + 1) & bs->mask)
+		if (bs->b[bs->slots[h] - 1].gid == gid)
+			return &bs->b[bs->slots[h] - 1];
+	if (bs->n == bs->cap)
 	{
-		if (b == (int) n || (a < g->ndead && g->rows[a] <= rows[b]))
+		bs->cap *= 2;
+		bs->b = repalloc(bs->b, bs->cap * sizeof(DeltaBucket));
+	}
+	bs->b[bs->n] = (DeltaBucket) {.gid = gid,.grows = grows,.cap = 16,.rows = palloc(16 * sizeof(DeltaRow))};
+	bs->slots[h] = ++bs->n;
+	if ((uint64) bs->n * 2 > (uint64) bs->mask + 1)
+		buckets_rehash(bs);
+	return &bs->b[bs->n - 1];
+}
+
+static void
+bucket_add(DeltaBuckets *bs, uint32 gid, uint16 grows, const uint16 *rows, uint32 n, SiftDvXmaxEntry x, const SiftDvOps *ops)
+{
+	DeltaBucket *b = bucket_of(bs, gid, grows);
+
+	if (b->n + (int) n > b->cap)
+	{
+		b->cap = Max(b->cap * 2, b->n + (int) n);
+		/* check-memory: allow the rows of the chunks of one delta tail, which a fold of the tail bounds */
+		b->rows = repalloc(b->rows, b->cap * sizeof(DeltaRow));
+	}
+	for (uint32 r = 0; r < n; r++)
+		b->rows[b->n++] = (DeltaRow) {.row = rows[r],.seq = bs->seq,.x = x};
+	bs->seq++;
+	if (TransactionIdIsValid(x.xmax))
+	{
+		FullTransactionId f = ops->fxid(ops->ctx, x.xmax);
+
+		if (!FullTransactionIdIsValid(b->xid_max) || FullTransactionIdFollows(f, b->xid_max))
+			b->xid_max = f;
+	}
+}
+
+static int
+delta_row_cmp(const void *a, const void *b)
+{
+	const DeltaRow *x = a;
+	const DeltaRow *y = b;
+
+	if (x->row != y->row)
+		return x->row < y->row ? -1 : 1;
+	return x->seq < y->seq ? -1 : x->seq > y->seq;
+}
+
+static int
+bucket_cmp(const void *a, const void *b)
+{
+	const DeltaBucket *x = a;
+	const DeltaBucket *y = b;
+
+	return x->gid < y->gid ? -1 : x->gid > y->gid;
+}
+
+/* The rows of the bucket ascending, a row once (its first deleter) */
+static void
+bucket_settle(DeltaBucket *b)
+{
+	int			k = 0;
+
+	qsort(b->rows, b->n, sizeof(DeltaRow), delta_row_cmp);
+	for (int i = 0; i < b->n; i++)
+		if (k == 0 || b->rows[k - 1].row != b->rows[i].row)
+			b->rows[k++] = b->rows[i];
+	b->n = k;
+}
+
+/* The granule of the vector with the rows of the bucket added (a row already dead keeps the deleter it has) */
+static void
+gran_merge(SiftDvGran *g, const DeltaBucket *b)
+{
+	uint16	   *nr = palloc((g->ndead + b->n) * sizeof(uint16));
+	SiftDvXmaxEntry *nx = palloc((g->ndead + b->n) * sizeof(SiftDvXmaxEntry));
+	int			a = 0,
+				i = 0,
+				k = 0;
+
+	while (a < g->ndead || i < b->n)
+	{
+		if (i == b->n || (a < g->ndead && g->rows[a] <= b->rows[i].row))
 		{
-			if (b < (int) n && g->rows[a] == rows[b])
-				b++;
+			i += i < b->n && g->rows[a] == b->rows[i].row;
 			nr[k] = g->rows[a];
 			nx[k++] = g->xmax[a++];
 		}
 		else
 		{
-			nr[k] = rows[b++];
-			nx[k++] = x;
+			nr[k] = b->rows[i].row;
+			nx[k++] = b->rows[i++].x;
 		}
 	}
 	pfree(g->rows);
@@ -334,13 +453,52 @@ add_rows(SiftDv *dv, int *cap, uint32 gid, uint16 grows, const uint16 *rows, uin
 	g->rows = nr;
 	g->xmax = nx;
 	g->ndead = k;
-	if (TransactionIdIsValid(x.xmax))
-	{
-		FullTransactionId f = ops->fxid(ops->ctx, x.xmax);
+	if (FullTransactionIdIsValid(b->xid_max) && (!FullTransactionIdIsValid(g->xid_max) || FullTransactionIdFollows(b->xid_max, g->xid_max)))
+		g->xid_max = b->xid_max;
+}
 
-		if (!FullTransactionIdIsValid(g->xid_max) || FullTransactionIdFollows(f, g->xid_max))
-			g->xid_max = f;
+static SiftDvGran
+gran_new(const DeltaBucket *b)
+{
+	SiftDvGran	g = {.granule_id = b->gid,.granule_rows = b->grows,.ndead = b->n,.xid_max = b->xid_max};
+
+	g.rows = palloc(Max(b->n, 1) * sizeof(uint16));
+	g.xmax = palloc(Max(b->n, 1) * sizeof(SiftDvXmaxEntry));
+	for (int i = 0; i < b->n; i++)
+	{
+		g.rows[i] = b->rows[i].row;
+		g.xmax[i] = b->rows[i].x;
 	}
+	return g;
+}
+
+/* The vector with the rows of every bucket: one merge of the granules of the vector with the buckets, both ascending by granule */
+static void
+buckets_apply(SiftDv *dv, DeltaBuckets *bs)
+{
+	SiftDvGran *out = palloc((dv->ndirty + bs->n) * sizeof(SiftDvGran));
+	int			a = 0,
+				k = 0;
+
+	qsort(bs->b, bs->n, sizeof(DeltaBucket), bucket_cmp);
+	for (int i = 0; i < bs->n; i++)
+	{
+		bucket_settle(&bs->b[i]);
+		while (a < dv->ndirty && dv->gran[a].granule_id < bs->b[i].gid)
+			out[k++] = dv->gran[a++];
+		if (a < dv->ndirty && dv->gran[a].granule_id == bs->b[i].gid)
+		{
+			gran_merge(&dv->gran[a], &bs->b[i]);
+			out[k++] = dv->gran[a++];
+		}
+		else
+			out[k++] = gran_new(&bs->b[i]);
+	}
+	while (a < dv->ndirty)
+		out[k++] = dv->gran[a++];
+	pfree(dv->gran);
+	dv->gran = out;
+	dv->ndirty = k;
 }
 
 static const char *
@@ -421,37 +579,46 @@ read_granule(SiftDv *dv, const SiftDvGranuleEntry *e, const SiftDvHeaderData *h,
 }
 
 static const char *
-read_tail(SiftDv *dv, int *cap, const char *bytes, uint32 from, uint32 len, const uint16 *granule_rows, uint32 ngranules, const SiftDvOps *ops)
+read_tail(SiftDv *dv, const char *bytes, uint32 from, uint32 len, const uint16 *granule_rows, uint32 ngranules, const SiftDvOps *ops)
 {
-	for (uint32 pos = from; pos < len;)
+	DeltaBuckets bs;
+	const char *why = NULL;
+
+	buckets_init(&bs);
+	for (uint32 pos = from; pos < len && why == NULL;)
 	{
-		SiftDvDeltaChunkHdr c;
-		uint32		need;
+		SiftDvDeltaChunkHdr c = {0};
+		uint32		need = 0;
 
 		if (len - pos < sizeof(c))
-			return "a chunk of the delta tail is cut off";
-		memcpy(&c, bytes + pos, sizeof(c));
-		need = SIFT_DV_CHUNK_BYTES(c.nmarks);
-		if (c.magic != SIFT_DV_DELTA_MAGIC || c.nmarks == 0 || c.nmarks > SIFT_DV_DELTA_MAX_MARKS || c.granule_id >= ngranules || (c.chunk_flags & ~SIFT_DV_DELTA_SETTLED) != 0)
-			return "a chunk of the delta tail has no magic, no rows, a granule that is not in the part or flags that are not its";
-		if (need > len - pos || ((c.chunk_flags & SIFT_DV_DELTA_SETTLED) != 0 && (c.xmax != InvalidTransactionId || c.cmax != 0)))
-			return "a chunk of the delta tail lies outside the vector or is settled and has a deleter";
+			why = "a chunk of the delta tail is cut off";
+		else
+		{
+			memcpy(&c, bytes + pos, sizeof(c));
+			need = SIFT_DV_CHUNK_BYTES(c.nmarks);
+		}
+		if (why == NULL && (c.magic != SIFT_DV_DELTA_MAGIC || c.nmarks == 0 || c.nmarks > SIFT_DV_DELTA_MAX_MARKS || c.granule_id >= ngranules || (c.chunk_flags & ~SIFT_DV_DELTA_SETTLED) != 0))
+			why = "a chunk of the delta tail has no magic, no rows, a granule that is not in the part or flags that are not its";
+		if (why == NULL && (need > len - pos || ((c.chunk_flags & SIFT_DV_DELTA_SETTLED) != 0 && (c.xmax != InvalidTransactionId || c.cmax != 0))))
+			why = "a chunk of the delta tail lies outside the vector or is settled and has a deleter";
+		if (why == NULL)
 		{
 			uint16	   *rows = palloc(c.nmarks * sizeof(uint16));
 
 			memcpy(rows, bytes + pos + sizeof(c), c.nmarks * sizeof(uint16));
-			for (uint32 r = 0; r < c.nmarks; r++)
+			for (uint32 r = 0; r < c.nmarks && why == NULL; r++)
 				if (rows[r] >= granule_rows[c.granule_id] || (r > 0 && rows[r] <= rows[r - 1]))
-				{
-					pfree(rows);
-					return "a chunk of the delta tail lists a row out of order or out of range";
-				}
-			add_rows(dv, cap, c.granule_id, granule_rows[c.granule_id], rows, c.nmarks, (SiftDvXmaxEntry) {c.xmax, c.cmax}, ops);
+					why = "a chunk of the delta tail lists a row out of order or out of range";
+			if (why == NULL)
+				bucket_add(&bs, c.granule_id, granule_rows[c.granule_id], rows, c.nmarks, (SiftDvXmaxEntry) {c.xmax, c.cmax}, ops);
 			pfree(rows);
+			pos += need;
 		}
-		pos += need;
 	}
-	return NULL;
+	if (why == NULL)
+		buckets_apply(dv, &bs);
+	buckets_free(&bs);
+	return why;
 }
 
 SiftDv *
@@ -462,7 +629,6 @@ sift_dvd_deserialize(const char *bytes, uint32 len, uint64 part_gen, uint64 dv_g
 	SiftDv	   *dv;
 	bool		tail;
 	uint32		base_len;
-	int			cap;
 
 	*why = NULL;
 	if (len < sizeof(SiftDvHeaderData) || h->magic != SIFT_DV_MAGIC || h->version != SIFT_DV_VERSION || h->stream_len != len)
@@ -483,12 +649,11 @@ sift_dvd_deserialize(const char *bytes, uint32 len, uint64 part_gen, uint64 dv_g
 	dv->part_gen = part_gen;
 	dv->dv_gen = dv_gen;
 	dv->ngranules = h->ngranules;
-	cap = Max(h->ndirty_granules, 1);
-	dv->gran = palloc0(cap * sizeof(SiftDvGran));
+	dv->gran = palloc0(Max(h->ndirty_granules, 1) * sizeof(SiftDvGran));
 	for (uint32 i = 0; i < h->ndirty_granules && *why == NULL; i++)
 		*why = read_granule(dv, &ent[i], h, bytes, base_len, granule_rows);
 	if (*why == NULL && tail)
-		*why = read_tail(dv, &cap, bytes, base_len, len, granule_rows, h->ngranules, ops);
+		*why = read_tail(dv, bytes, base_len, len, granule_rows, h->ngranules, ops);
 	if (*why != NULL)
 	{
 		for (int i = 0; i < dv->ndirty; i++)

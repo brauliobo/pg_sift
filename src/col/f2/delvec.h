@@ -117,6 +117,32 @@ extern uint64 sift_dv_ndead(const SiftDv *dv);
 /* The deleter of a dead row: its entry in the granule, or NULL when the row is not dead */
 extern const SiftDvXmaxEntry *sift_dv_find(const SiftDvGran *g, uint16 row, bool *dead);
 
+/* sift_dv_find for the rows of a granule asked in ascending order: the place of the last is kept, so a walk of all rows is one pass over the dead ones (g may be NULL: none is dead) */
+typedef struct SiftDvCursor
+{
+	const SiftDvGran *gran;
+	int			pos;
+} SiftDvCursor;
+
+static inline void
+sift_dv_cursor_init(SiftDvCursor *c, const SiftDvGran *g)
+{
+	*c = (SiftDvCursor) {.gran = g};
+}
+
+static inline const SiftDvXmaxEntry *
+sift_dv_cursor_find(SiftDvCursor *c, uint16 row, bool *dead)
+{
+	if (c->gran == NULL)
+		return NULL;
+	while (c->pos < c->gran->ndead && c->gran->rows[c->pos] < row)
+		c->pos++;
+	if (c->pos == c->gran->ndead || c->gran->rows[c->pos] != row)
+		return NULL;
+	*dead = true;
+	return &c->gran->xmax[c->pos];
+}
+
 /* The dead rows of a granule as a bitmap of 8192 bits */
 extern void sift_dv_mask(const SiftDvGran *g, uint8 *bitmap);
 

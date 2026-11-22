@@ -15,7 +15,10 @@
 #define SIFT_PEND_DEL_MAGIC		0x5044454CU		/* "PDEL" */
 #define SIFT_PEND_DEL_SEALED	(UINT16_C(1) << 0)
 #define SIFT_PEND_DEL_SHARD_DIR	(UINT16_C(1) << 1)	/* the page is a shard directory's (col/f2/l0_shard_dir.h) */
+#define SIFT_PEND_DEL_REV		(UINT16_C(1) << 2)	/* prev_blk links the page to the older one and the entry names the newest: an append touches that page alone; without it next_blk links the head to the newer */
 #define SIFT_PEND_DEL_FOLD_PAGES 4
+#define SIFT_PEND_DEL_PAGES_SHIFT	8
+#define SIFT_PEND_DEL_PAGES_MASK	UINT16_C(0xFF00)
 
 typedef struct SiftPendDelRec
 {
@@ -55,6 +58,21 @@ StaticAssertDecl(offsetof(SiftPendDelPageData, recs) == 32, "SiftPendDelPageData
 
 #define SIFT_PEND_DEL_CAP		((SIFT_PAGE_PAYLOAD - offsetof(SiftPendDelPageData, recs)) / sizeof(SiftPendDelRec))
 
+/* The pages of a chain, kept in the flags of its newest page (bits 8..15); 0 is one */
+static inline uint16
+sift_pd_chain_pages(uint16 flags)
+{
+	uint16		p = (flags & SIFT_PEND_DEL_PAGES_MASK) >> SIFT_PEND_DEL_PAGES_SHIFT;
+
+	return p == 0 ? 1 : p;
+}
+
+static inline uint16
+sift_pd_set_chain_pages(uint16 flags, uint16 pages)
+{
+	return (flags & ~SIFT_PEND_DEL_PAGES_MASK) | ((uint16) Min(pages, 255) << SIFT_PEND_DEL_PAGES_SHIFT);
+}
+
 /* Appends the records to the chain of the partition (created on the first); returns the pages the chain has now */
 extern int	sift_pend_del_append(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec *recs, int n);
 
@@ -87,13 +105,20 @@ typedef struct SiftPendDelIndex
 	uint32		n;
 	uint32		mask;			/* the slots of htab less one: a power of two, at least twice n */
 	uint64	   *htab;			/* an address in the slot of its hash, 0 for a free one (an address has an offset, so is not 0) */
+	const struct SiftPendDelIndex *parent;	/* a set built once for a scan (its transaction's staged deletes) that this one adds to; not owned */
 } SiftPendDelIndex;
 
 /* The set of the n addresses (n > 0, in any order) */
 extern SiftPendDelIndex *sift_pdel_idx_build(const uint64 *tids, int n);
 
-/* The set and its table; NULL is no set */
+/* The set of the addresses of disk, added to parent: parent itself when disk is empty (NULL when both are); the envelope of the set is that of both */
+extern SiftPendDelIndex *sift_pdel_idx_chain(const uint64 *disk, int ndisk, const SiftPendDelIndex *parent);
+
+/* The set and its table, not its parent; NULL is no set */
 extern void sift_pdel_idx_free(SiftPendDelIndex *px);
+
+/* Frees px unless it is the parent that sift_pdel_idx_chain gave back */
+extern void sift_pdel_idx_release(SiftPendDelIndex *px, const SiftPendDelIndex *parent);
 
 static inline bool
 sift_pdel_idx_may_hit_granule(const SiftPendDelIndex *px, const SiftTidIndexEntry *ix)
@@ -104,13 +129,11 @@ sift_pdel_idx_may_hit_granule(const SiftPendDelIndex *px, const SiftTidIndexEntr
 static inline bool
 sift_pdel_idx_has(const SiftPendDelIndex *px, uint64 tid)
 {
-	for (uint32 slot = (uint32) ((tid * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & px->mask;; slot = (slot + 1) & px->mask)
-	{
-		if (px->htab[slot] == tid)
-			return true;
-		if (px->htab[slot] == 0)
-			return false;
-	}
+	for (; px != NULL; px = px->parent)
+		for (uint32 slot = (uint32) ((tid * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & px->mask; px->htab[slot] != 0; slot = (slot + 1) & px->mask)
+			if (px->htab[slot] == tid)
+				return true;
+	return false;
 }
 
 #endif							/* SIFT_PEND_DEL_H */

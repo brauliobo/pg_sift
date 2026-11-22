@@ -561,6 +561,7 @@ TESTING_REGRESS += format2_marks_read_paths
 TESTING_REGRESS += format2_meta
 TESTING_REGRESS += format2_mutation
 TESTING_REGRESS += format2_mvcc_churn
+TESTING_REGRESS += format2_on63c_parity
 TESTING_REGRESS += format2_pack_16b
 TESTING_REGRESS += format2_pack_fsst_auto
 TESTING_REGRESS += format2_parallel_conc

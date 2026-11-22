@@ -43,13 +43,45 @@ typedef struct SiftCdRemap
 	uint64		new_tid;
 } SiftCdRemap;
 
-/* The newest address change of each row the writers the ops accept made, found by the row or by the address it has now */
+/* What the address changes of a part, or of a granule of it, say of the heap blocks of the new addresses: their range and the bloom of their blocks (sift_tid_block_bit) */
+typedef struct SiftCdSummary
+{
+	uint64		part_gen;
+	uint32		granule_id;		/* the summary of a part: 0 */
+	BlockNumber blk_min;
+	BlockNumber blk_max;
+	uint64		blk_bloom;
+	int			first;			/* the entries of slot it sums: [first, first + n) */
+	int			n;
+} SiftCdSummary;
+
+/*
+ * The newest address change of each row the writers the ops accept made, found by the row or by the address it has now: by search of the arrays, and by a hash of each when there are more
+ * than SIFT_CD_REMAP_HASH_MIN of them. parts and grans sum the changes of each part and of each granule (the same order as slot).
+ */
 typedef struct SiftCdRemapMap
 {
 	int			n;
 	SiftCdRemap *slot;			/* ascending by (part_gen, granule, row) */
 	SiftCdRemap *by_new;		/* ascending by new_tid */
+	uint32	   *slot_ht;		/* the place in slot of the change of a row, plus one; NULL for few changes */
+	uint32	   *new_ht;			/* the place in by_new of the change that made an address, plus one */
+	uint32		ht_mask;
+	int			nparts;
+	SiftCdSummary *parts;
+	int			ngrans;
+	SiftCdSummary *grans;
 } SiftCdRemapMap;
+
+#define SIFT_CD_REMAP_HASH_MIN	16
+
+/* The changes of the granule, in the row order: [pos, end) of slot, advanced as the rows of the granule are asked in ascending order */
+typedef struct SiftCdRemapCursor
+{
+	const SiftCdRemapMap *rm;
+	int			pos;
+	int			end;
+} SiftCdRemapCursor;
 
 /* NULL when the chain has none; ops->visible says which writers count (a vacuum and a delete: the committed ones and the transaction itself) */
 extern SiftCdRemapMap *sift_cd_remap_build(const SiftColDeltaChain *chain, const SiftColDeltaOps *ops);
@@ -60,6 +92,11 @@ extern const SiftCdRemap *sift_cd_remap_by_new(const SiftCdRemapMap *m, uint64 t
 
 /* The address the row has now, 0 when the chain moved it never */
 extern uint64 sift_cd_remap_new_tid(const SiftCdRemapMap *m, uint64 part_gen, uint32 granule_id, uint16 row);
+
+extern void sift_cd_remap_cursor_init(SiftCdRemapCursor *cur, const SiftCdRemapMap *rm, uint64 part_gen, uint32 granule_id);
+
+/* The address the row has now, 0 when the chain moved it never; rows are asked in ascending order */
+extern uint64 sift_cd_remap_cursor_new_tid(SiftCdRemapCursor *cur, uint16 row);
 
 /* The row of the place has moved to an address other than raw_tid: raw_tid is no row of the index any more, and the heap may give it to another */
 extern bool sift_cd_remap_supersedes(const SiftCdRemapMap *m, uint64 part_gen, uint32 granule_id, uint16 row, uint64 raw_tid);

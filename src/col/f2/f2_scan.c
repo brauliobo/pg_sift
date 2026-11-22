@@ -72,10 +72,19 @@ emit(F2Scan *s, const SiftColSchema *schema, uint64 tid, Verdict v, const ColVie
 static bool
 has_exceptions(const SiftVariantExcSummary *ex, int nex, uint32 g, int col)
 {
-	for (int i = 0; i < nex; i++)
-		if (ex[i].granule == g && ex[i].col == col)
-			return true;
-	return false;
+	int			lo = 0,
+				hi = nex;
+
+	while (lo < hi)
+	{
+		int			mid = lo + ((hi - lo) >> 1);
+
+		if (ex[mid].granule < g || (ex[mid].granule == g && ex[mid].col < col))
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo < nex && ex[lo].granule == g && ex[lo].col == col;
 }
 
 static int
@@ -210,6 +219,7 @@ compile_preds(F2Scan *s, const SiftColSchema *schema)
 
 	s->cf = MemoryContextAlloc(s->cx, Max(s->npreds, 1) * sizeof(SiftCfiltPred));
 	s->cf_ok = MemoryContextAllocZero(s->cx, Max(s->npreds, 1));
+	s->psets = sift_f2_pred_sets_new(s->cx, s->npreds);
 	for (int k = 0; k < s->npreds; k++)
 	{
 		const SiftColDef *d = &schema->cols[s->preds[k].col];
@@ -231,7 +241,10 @@ part_preds(Relation rel, const F2Scan *s, const SiftColSchema *schema, const Sif
 {
 	const SiftPartDicts *ds = sift_part_dicts(rel, part);
 	bool		meets = true;
+	bool	   *col_has_exc = palloc0(schema->ncols);
 
+	for (int i = 0; i < nexc; i++)
+		col_has_exc[exc[i].col] = true;
 	pp->skip = sift_skip_open(rel, part);
 	pp->sq = palloc0(Max(s->npreds, 1) * sizeof(SiftSkipQuery *));
 	pp->cf = palloc(Max(s->npreds, 1) * sizeof(SiftCfiltPred));
@@ -246,12 +259,8 @@ part_preds(Relation rel, const F2Scan *s, const SiftColSchema *schema, const Sif
 		if (dict != NULL && (SIFT_COLOP_IS_EXT(p->op) || (s->cf_ok[k] && pp->cf[k].str)))
 		{
 			SiftDictPredCache *dc = sift_dict_pred_prepare(p, dict->n, dict->off, dict->bytes);
-			bool		has_exc = false;
-
-			for (int i = 0; i < nexc && !has_exc; i++)
-				has_exc = exc[i].col == p->col;
 			pp->cf[k].part = dc;
-			meets &= dc->n_matches + dc->n_maybe > 0 || has_exc;
+			meets &= dc->n_matches + dc->n_maybe > 0 || col_has_exc[p->col];
 		}
 		else if (s->cf_ok[k] && pp->cf[k].str && (p->op == SIFT_COLOP_EQ || p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_PREFIX))
 		{
@@ -664,22 +673,42 @@ part_skipped(const F2Scan *s, uint64 gen)
 	return s->nskip_gens > 0 && bsearch(&gen, s->skip_gens, s->nskip_gens, sizeof(uint64), tid_cmp) != NULL;
 }
 
+/* The first partition that reaches the lower bound: the partitions tile the key space in order, so those whose range ends before it are one prefix */
+static int
+first_reaching(const SiftPlanSnapshot *plan, const uint8 *lo)
+{
+	int			a = 0,
+				b = plan->npartitions;
+
+	while (a < b)
+	{
+		int			mid = a + ((b - a) >> 1);
+
+		if (sift_manifest_overlaps(plan->partitions[mid].key_lo, plan->partitions[mid].key_hi, lo, NULL))
+			b = mid;
+		else
+			a = mid + 1;
+	}
+	return a;
+}
+
 void
 walk_units(Relation rel, F2Scan *s, const SiftPlanSnapshot *plan, Snapshot snap, const uint64 *staged, int nstaged, bool want_px, F2UnitFn fn, void *arg)
 {
 	const uint8 *lo = s->keys.hull.has_lo ? s->keys.hull.lo : NULL,
 			   *hi = s->keys.hull.has_hi ? s->keys.hull.hi : NULL;
+	const SiftPendDelIndex *staged_px = want_px ? sift_f2_staged_index(staged, nstaged) : NULL;
 
 	sift_f2_maint_note_parts(rel, plan->partitions, plan->npartitions, NULL, NULL);
-	for (int i = 0; i < plan->npartitions; i++)
+	for (int i = first_reaching(plan, lo); i < plan->npartitions; i++)
 	{
 		const SiftPartitionEntry *e = &plan->partitions[i];
 		const SiftPlanPartList *list = &plan->partlists[i];
 		SiftPendDelIndex *px = NULL;
 		bool		in_window = sift_f2_entry_meets_time(e, &s->time);
 
-		if (!sift_manifest_overlaps(e->key_lo, e->key_hi, lo, hi))
-			continue;
+		if (!sift_manifest_overlaps(e->key_lo, e->key_hi, NULL, hi))
+			break;
 		if (!in_window && e->l0_slab_blk == InvalidBlockNumber)
 		{
 			F2_STAT(partitions_time_skipped);
@@ -687,18 +716,7 @@ walk_units(Relation rel, F2Scan *s, const SiftPlanSnapshot *plan, Snapshot snap,
 			continue;
 		}
 		if (want_px)
-		{
-			int			npend;
-			uint64	   *pend = sift_f2_pending_dead(rel, e, snap, &npend);
-
-			if (nstaged > 0)
-			{
-				pend = pend != NULL ? repalloc(pend, (npend + nstaged) * sizeof(uint64)) : palloc(nstaged * sizeof(uint64));
-				memcpy(pend + npend, staged, nstaged * sizeof(uint64));
-				npend += nstaged;
-			}
-			px = npend > 0 ? sift_pdel_idx_build(pend, npend) : NULL;
-		}
+			px = sift_f2_pending_index(rel, e, snap, staged_px);
 		if (e->l0_slab_blk != InvalidBlockNumber && !s->survey)
 			fn(s, rel, &(F2Unit) {e, NULL, px}, arg);
 		for (int p = 0; p < list->nparts; p++)

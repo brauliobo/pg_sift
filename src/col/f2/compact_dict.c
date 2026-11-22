@@ -21,6 +21,45 @@ entry_cmp(const SiftPartDict *a, uint32 ia, const SiftPartDict *b, uint32 ib)
 	return c != 0 ? c : (la > lb) - (la < lb);
 }
 
+/* The parts ordered by the entry each is at, the least first: a binary heap of part numbers, so that the next entry of the merge costs O(log parts) */
+typedef struct DictHeap
+{
+	const SiftPartDict *const *in;
+	const uint32 *cur;
+	int		   *part;
+	int			n;
+} DictHeap;
+
+static bool
+heap_before(const DictHeap *h, int a, int b)
+{
+	int			c = entry_cmp(h->in[a], h->cur[a], h->in[b], h->cur[b]);
+
+	return c < 0 || (c == 0 && a < b);
+}
+
+static void
+heap_down(DictHeap *h, int i)
+{
+	for (;;)
+	{
+		int			l = 2 * i + 1,
+					least = i;
+
+		if (l < h->n && heap_before(h, h->part[l], h->part[least]))
+			least = l;
+		if (l + 1 < h->n && heap_before(h, h->part[l + 1], h->part[least]))
+			least = l + 1;
+		if (least == i)
+			return;
+		int			t = h->part[i];
+
+		h->part[i] = h->part[least];
+		h->part[least] = t;
+		i = least;
+	}
+}
+
 /* The merge of the dictionaries in[0 .. nparts) of column c into m->dict[c], and the map of the codes of each */
 static void
 merge_column(SiftDictMerge *m, int c, const SiftPartDict *const *in)
@@ -29,37 +68,41 @@ merge_column(SiftDictMerge *m, int c, const SiftPartDict *const *in)
 	uint64		nbytes = 0;
 	uint32	   *cur = palloc0(m->nparts * sizeof(uint32));
 	SiftPartDict *out = &m->dict[c];
+	DictHeap	h = {in, cur, palloc(m->nparts * sizeof(int)), 0};
 
 	for (int k = 0; k < m->nparts; k++)
 	{
 		total += in[k]->n;
 		nbytes += in[k]->off[in[k]->n];
 		m->map[k * m->ncols + c] = (SiftCodeMap) {palloc(in[k]->n * sizeof(uint32)), in[k]->n};
+		if (in[k]->n > 0)
+			h.part[h.n++] = k;
 	}
+	for (int i = h.n / 2 - 1; i >= 0; i--)
+		heap_down(&h, i);
 	out->col = c;
 	out->off = palloc((total + 1) * sizeof(uint32));
 	out->bytes = palloc(Max(nbytes, 1));
 	out->off[0] = 0;
-	for (;;)
+	while (h.n > 0)
 	{
-		int			best = -1;
-		const SiftPartDict *b;
-		uint32		bi;
+		const SiftPartDict *b = in[h.part[0]];
+		uint32		bi = cur[h.part[0]];
 
-		for (int k = 0; k < m->nparts; k++)
-			if (cur[k] < in[k]->n && (best < 0 || entry_cmp(in[k], cur[k], in[best], cur[best]) < 0))
-				best = k;
-		if (best < 0)
-			break;
-		b = in[best];
-		bi = cur[best];
 		memcpy(out->bytes + out->off[out->n], b->bytes + b->off[bi], b->off[bi + 1] - b->off[bi]);
 		out->off[out->n + 1] = out->off[out->n] + (b->off[bi + 1] - b->off[bi]);
-		for (int k = 0; k < m->nparts; k++)
-			if (cur[k] < in[k]->n && entry_cmp(in[k], cur[k], b, bi) == 0)
-				((uint32 *) m->map[k * m->ncols + c].to)[cur[k]++] = out->n;
+		while (h.n > 0 && entry_cmp(in[h.part[0]], cur[h.part[0]], b, bi) == 0)
+		{
+			int			k = h.part[0];
+
+			((uint32 *) m->map[k * m->ncols + c].to)[cur[k]++] = out->n;
+			if (cur[k] == in[k]->n)
+				h.part[0] = h.part[--h.n];
+			heap_down(&h, 0);
+		}
 		out->n++;
 	}
+	pfree(h.part);
 	pfree(cur);
 }
 

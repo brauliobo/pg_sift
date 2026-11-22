@@ -165,6 +165,9 @@ extern int	sift_f2_granule_spans(Relation rel, const SiftPart *part, const SiftF
 
 /* The addresses a snapshot sees deleted by the pending deletes of a partition, ascending (NULL: none) */
 extern uint64 *sift_f2_pending_dead(Relation index, const SiftPartitionEntry *e, Snapshot snap, int *n);
+struct SiftPendDelIndex;
+extern struct SiftPendDelIndex *sift_f2_staged_index(const uint64 *staged, int nstaged);
+extern struct SiftPendDelIndex *sift_f2_pending_index(Relation index, const SiftPartitionEntry *e, Snapshot snap, const struct SiftPendDelIndex *staged_px);
 
 /* The manifest with the slabs of the partitions written out as parts and the delta tails of their deletion vectors folded into the vectors */
 extern SiftManifestRead sift_f2_settled_manifest(Relation rel, const SiftPartSpec *spec);

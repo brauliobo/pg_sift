@@ -139,9 +139,9 @@ clean_granule(const DeadList *dead, const SiftPartDesc *d, const SiftTidIndexEnt
 
 /* The address of a row a vacuum is offered: the one its row has now, never the one it had, whose tuple the heap reclaims while the row stays */
 static uint64
-offered_tid(const DeadList *dead, uint64 part_gen, uint32 g, int row, uint64 raw)
+offered_tid(SiftCdRemapCursor *moves, int row, uint64 raw)
 {
-	uint64		moved = sift_cd_remap_new_tid(dead->rm, part_gen, g, (uint16) row);
+	uint64		moved = sift_cd_remap_cursor_new_tid(moves, (uint16) row);
 
 	return moved != 0 ? moved : raw;
 }
@@ -179,23 +179,26 @@ offer_part(Relation rel, const SiftPartitionEntry *e, const SiftPartDesc *d, Ind
 			g0++;
 			continue;
 		}
+		n = 1;
 		while (n < SIFT_TID_BATCH_GRANULES && g0 + n < part->hdr.ngranules && !clean_granule(dead, d, tix != NULL ? &tix[g0 + n] : NULL, g0 + n))
 			n++;
 		tids = sift_part_read_tids_batch(rel, part, dir, g0, n, SIFT_IOS_MAINT_SEQ);
 		for (uint32 i = 0; i < n; i++)
 		{
-			const SiftDvGran *dg = dv ? sift_dv_granule(dv, g0 + i) : NULL;
+			SiftDvCursor dc;
+			SiftCdRemapCursor moves;
 
+			sift_dv_cursor_init(&dc, dv ? sift_dv_granule(dv, g0 + i) : NULL);
+			sift_cd_remap_cursor_init(&moves, dead->rm, d->part_gen, g0 + i);
 			for (int r = 0; r < dir[g0 + i].nrows; r++)
 			{
 				bool		gone = false;
 
-				if (dg != NULL)
-					(void) sift_dv_find(dg, r, &gone);
+				(void) sift_dv_cursor_find(&dc, r, &gone);
 				if (gone)
 					continue;
 				live++;
-				offer_tid(offered_tid(dead, d->part_gen, g0 + i, r, tids[i][r]), cb, state, dead);
+				offer_tid(offered_tid(&moves, r, tids[i][r]), cb, state, dead);
 			}
 			pfree(tids[i]);
 		}

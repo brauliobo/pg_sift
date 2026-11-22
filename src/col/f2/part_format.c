@@ -13,6 +13,7 @@
 #include "core/f2/fsm.h"
 #include "core/f2/io_stream.h"
 #include "col/f2/f2_tier.h"
+#include "core/hash.h"
 #include "core/page_io.h"
 
 #define PHDR(p)		((SiftPartHeaderData *) SiftPageGetData(p))
@@ -30,7 +31,7 @@ secin_cmp(const void *a, const void *b)
 	return (int) ((const SiftSecInput *) a)->tag - (int) ((const SiftSecInput *) b)->tag;
 }
 
-/* The extents the next writes of this backend take their blocks from before the allocator is asked (sift_part_prefer_extents): of one relation file, for the length of the move that asked */
+/* The extents the next writes of this backend take their blocks from before the allocator is asked (sift_part_prefer_extents): of one relation file, for the length of the move that asked; the first of them is the one taken from, the memory of the rest stays the transaction's */
 static SiftExtent *preferred = NULL;
 static int	npreferred = 0;
 static RelFileLocator preferred_locator;
@@ -106,7 +107,11 @@ take_preferred(Relation rel, uint64 *want, uint64 chunk, SiftExtent *out)
 		preferred[0].start += take;
 		preferred[0].nblocks -= take;
 		if (preferred[0].nblocks == 0)
-			memmove(preferred, preferred + 1, --npreferred * sizeof(SiftExtent));
+		{
+			preferred++;
+			if (--npreferred == 0)
+				preferred = NULL;
+		}
 	}
 	return n;
 }
@@ -571,37 +576,123 @@ sift_part_inline_image(Relation rel, const SiftPartDesc *d, uint32 part_id, uint
 	return p->inline_payload;
 }
 
+static uint32
+live_home(const SiftLivePackedSet *set, BlockNumber blk, uint64 part_gen)
+{
+	return (uint32) (sift_fmix64(part_gen ^ ((uint64) blk << 32)) & set->mask);
+}
+
+static void
+live_add(SiftLivePackedSet *set, BlockNumber blk, uint64 part_gen)
+{
+	uint32		h = live_home(set, blk, part_gen);
+
+	while (set->slots[h].header_blk != InvalidBlockNumber)
+		h = (h + 1) & set->mask;
+	set->slots[h] = (SiftLivePackedKey) {blk, part_gen};
+	set->count++;
+}
+
+static bool
+live_has(const SiftLivePackedSet *set, BlockNumber blk, uint64 part_gen)
+{
+	for (uint32 h = live_home(set, blk, part_gen); set->slots[h].header_blk != InvalidBlockNumber; h = (h + 1) & set->mask)
+		if (set->slots[h].header_blk == blk && set->slots[h].part_gen == part_gen)
+			return true;
+	return false;
+}
+
+static void
+live_grow(SiftLivePackedSet *set)
+{
+	SiftLivePackedKey *old = set->slots;
+	uint32		n = set->mask + 1;
+
+	set->mask = n * 2 - 1;
+	set->slots = palloc((set->mask + 1) * sizeof(SiftLivePackedKey));
+	for (uint32 i = 0; i <= set->mask; i++)
+		set->slots[i].header_blk = InvalidBlockNumber;
+	set->count = 0;
+	for (uint32 i = 0; i < n; i++)
+		if (old[i].header_blk != InvalidBlockNumber)
+			live_add(set, old[i].header_blk, old[i].part_gen);
+	pfree(old);
+}
+
+void
+sift_live_packed_set_build(Relation rel, SiftLivePackedSet *set)
+{
+	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+
+	set->mask = 63;
+	set->slots = palloc((set->mask + 1) * sizeof(SiftLivePackedKey));
+	for (uint32 i = 0; i <= set->mask; i++)
+		set->slots[i].header_blk = InvalidBlockNumber;
+	set->count = 0;
+	for (int k = 0; k < mr.n; k++)
+	{
+		int			np;
+		SiftPartDesc *parts = sift_manifest_read_parts(rel, &mr.entries[k], &np);
+
+		for (int j = 0; j < np; j++)
+		{
+			if (!(parts[j].flags & SIFT_PART_FLAG_PACKED_SLOT))
+				continue;
+			if ((uint64) (set->count + 1) * 2 > (uint64) set->mask + 1)
+				live_grow(set);
+			live_add(set, parts[j].header_blk, parts[j].part_gen);
+		}
+		pfree(parts);
+	}
+}
+
+void
+sift_live_packed_set_free(SiftLivePackedSet *set)
+{
+	pfree(set->slots);
+	set->slots = NULL;
+}
+
 bool
-sift_packed_unreferenced(Relation rel, BlockNumber blk, const SiftPartRef *leaving, int nleaving)
+sift_packed_unreferenced_in(Relation rel, BlockNumber blk, const SiftPartRef *leaving, int nleaving, const SiftLivePackedSet *live)
 {
 	Page		page = read_page_copy(rel, blk);
 	const SiftPackedPageData *pp = (const SiftPackedPageData *) SiftPageGetData(page);
-	SiftManifestRead mr;
 
 	sift_page_expect(rel, page, blk, SIFT_PT_PACKED_PART, 0, 0);
 	if (pp->magic != SIFT_PACKED_MAGIC || !sift_page_sum_ok(page) || pp->nslots == 0 || pp->nslots > SIFT_PACKED_MAX_SLOTS)
 		SIFT_CORRUPT(rel, "Block %u: the packed page has the wrong magic, slot count or checksum.", blk);
-	mr = sift_manifest_read_range(rel, NULL, NULL);
 	for (int i = 0; i < pp->nslots; i++)
 	{
 		const SiftPackedSlot *s = &pp->slots[i];
-		bool		leaves = false;
+		int			lo = 0,
+					hi = nleaving;
 
-		for (int k = 0; k < nleaving; k++)
-			leaves |= leaving[k].part_gen == s->part_gen;
-		if (leaves)
-			continue;
-		for (int k = 0; k < mr.n; k++)
+		while (lo < hi)
 		{
-			int			np;
-			SiftPartDesc *parts = sift_manifest_read_parts(rel, &mr.entries[k], &np);
+			int			mid = lo + (hi - lo) / 2;
 
-			for (int j = 0; j < np; j++)
-				if (parts[j].part_gen == s->part_gen && parts[j].header_blk == blk)
-					return false;
+			if (leaving[mid].part_gen < s->part_gen)
+				lo = mid + 1;
+			else
+				hi = mid;
 		}
+		if ((lo == nleaving || leaving[lo].part_gen != s->part_gen) && live_has(live, blk, s->part_gen))
+			return false;
 	}
 	return true;
+}
+
+bool
+sift_packed_unreferenced(Relation rel, BlockNumber blk, const SiftPartRef *leaving, int nleaving)
+{
+	SiftLivePackedSet live;
+	bool		free;
+
+	sift_live_packed_set_build(rel, &live);
+	free = sift_packed_unreferenced_in(rel, blk, leaving, nleaving, &live);
+	sift_live_packed_set_free(&live);
+	return free;
 }
 
 int
@@ -848,6 +939,16 @@ sift_part_read_section(Relation rel, const SiftPart *part, uint16 tag, uint64 *l
 		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "Section 0x%04x of the part does not match its checksum.", tag);
 	*len = s->len;
 	return out;
+}
+
+void
+sift_part_read_section_bytes(Relation rel, const SiftPart *part, const SiftSecDirEntry *sec, uint64 off, uint64 len, void *dst)
+{
+	Assert(off + len <= sec->len);
+	if (sec->flags & SIFT_SEC_FLAG_INLINE)
+		memcpy(dst, part->inline_payload + sec->off + off, len);
+	else
+		sift_part_read_bytes(rel, part, sec->off + off, len, dst);
 }
 
 SiftExtent *

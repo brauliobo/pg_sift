@@ -60,6 +60,7 @@ typedef struct F2Scan
 	const bool *sink_dict;		/* per sink leaf: taken as dictionary codes when the chunk has them */
 	MemoryContext cx;
 	SiftColPred *preds;
+	SiftPredSet *psets;			/* the constants of each IN predicate, hashed when the list is long (f2_pred.h) */
 	int			npreds;
 	SiftF2KeySet keys;
 	SiftF2TimeWin time;

@@ -32,6 +32,7 @@
 #include "core/f2/fsm.h"
 #include "core/f2/meta.h"
 #include "core/inspect.h"
+#include "core/memtrack.h"
 #include "core/meta_peek.h"
 #include "core/ops.h"
 #include "core/sql.h"
@@ -342,6 +343,7 @@ f2_leaves(FunctionCallInfo fcinfo)
 	const SiftColSchema *schema = sift_col_rel(index)->schema;
 	LeafCensus *lc = palloc0(Max(schema->ncols, 1) * sizeof(LeafCensus));
 	SiftManifestRead mr = sift_manifest_read_range(index, NULL, NULL);
+	MemoryContext granule_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift leaves granule");
 
 	InitMaterializedSRF(fcinfo, 0);
 	for (int i = 0; i < mr.n; i++)
@@ -355,20 +357,19 @@ f2_leaves(FunctionCallInfo fcinfo)
 
 			for (uint32 g = 0; g < part->hdr.ngranules; g++)
 			{
+				MemoryContext old = MemoryContextSwitchTo(granule_cx);
 				SiftGranuleDesc gd;
 				char	   *rec = sift_part_read_granule(index, part, g, &gd);
 				SiftGranuleView v = sift_granule_open_part(index, part, rec, gd.data_len, &gd);
 
 				for (int c = 0; c < Min((int) v.hdr->nchunks, schema->ncols); c++)
-				{
-					SiftChunk	ch;
-
-					sift_chunk_open(&v, c, &ch);
-					census_chunk(&lc[c], ch.ref);
-				}
+					census_chunk(&lc[c], &v.hdr->chunks[c]);
+				MemoryContextSwitchTo(old);
+				MemoryContextReset(granule_cx);
 			}
 		}
 	}
+	MemoryContextDelete(granule_cx);
 	for (int c = 0; c < schema->ncols; c++)
 	{
 		const SiftColDef *d = &schema->cols[c];

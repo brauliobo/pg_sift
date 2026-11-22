@@ -211,22 +211,22 @@ put_row_compact(StringInfo s, const SiftRowBuf *rb, int r)
 			else if (!cell.isnull)
 				put_value(s, rb->kinds[c], &cell);
 		}
-	for (int g = 0; g < rb->ncols; g++)
+	for (int gi = 0; gi < rb->ngroups; gi++)
 	{
-		if (!sift_rowbuf_is_group(rb, g))
-			continue;
-		for (int c = 0; c < rb->ncols; c++)
-			if (rb->parent[c] == g)
-				for (uint32 j = rb->estart[g][r]; j < rb->estart[g][r + 1]; j++)
-				{
-					SiftCell	cell = sift_rowbuf_cell(rb, c, j);
+		int			g = rb->groups[gi];
 
-					appendStringInfoChar(s, (char) cell_state(&cell));
-					if (cell.isnull && cell.tag != 0)
-						put_tag(s, &cell);
-					else if (!cell.isnull)
-						put_value(s, rb->kinds[c], &cell);
-				}
+		for (int k = rb->child_off[gi]; k < rb->child_off[gi + 1]; k++)
+			for (uint32 j = rb->estart[g][r]; j < rb->estart[g][r + 1]; j++)
+			{
+				int			c = rb->children[k];
+				SiftCell	cell = sift_rowbuf_cell(rb, c, j);
+
+				appendStringInfoChar(s, (char) cell_state(&cell));
+				if (cell.isnull && cell.tag != 0)
+					put_tag(s, &cell);
+				else if (!cell.isnull)
+					put_value(s, rb->kinds[c], &cell);
+			}
 	}
 }
 
@@ -285,23 +285,22 @@ get_row_compact(const char *p, const char *end, SiftRowBuf *rb, const SiftPartSp
 			get_cell(&p, end, rb->kinds[c], (mask[(2 * k) / 8] >> ((2 * k) % 8)) & 3, &cells[c]);
 			k++;
 		}
-	for (int g = 0; g < rb->ncols; g++)
+	for (int gi = 0; gi < rb->ngroups; gi++)
 	{
-		uint32		cnt = cells[g].isnull ? 0 : (uint32) cells[g].i;
+		uint32		cnt = cells[rb->groups[gi]].isnull ? 0 : (uint32) cells[rb->groups[gi]].i;
 
-		if (!sift_rowbuf_is_group(rb, g))
-			continue;
-		for (int c = 0; c < rb->ncols; c++)
-			if (rb->parent[c] == g)
+		for (int k = rb->child_off[gi]; k < rb->child_off[gi + 1]; k++)
+		{
+			int			c = rb->children[k];
+
+			elem[c] = palloc(Max(cnt, 1) * sizeof(SiftCell));
+			for (uint32 j = 0; j < cnt; j++)
 			{
-				elem[c] = palloc(Max(cnt, 1) * sizeof(SiftCell));
-				for (uint32 j = 0; j < cnt; j++)
-				{
-					int			state = (uint8) *p++;
+				int			state = (uint8) *p++;
 
-					get_cell(&p, end, rb->kinds[c], state, &elem[c][j]);
-				}
+				get_cell(&p, end, rb->kinds[c], state, &elem[c][j]);
 			}
+		}
 	}
 	sift_row_key(spec, cells, *tid, key);
 	sift_rowbuf_add(rb, *tid, b->xmin, b->cmin, 0, key, cells, (const SiftCell *const *) elem);

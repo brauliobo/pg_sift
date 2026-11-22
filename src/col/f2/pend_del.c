@@ -83,6 +83,31 @@ sift_pdel_idx_build(const uint64 *tids, int n)
 	return px;
 }
 
+SiftPendDelIndex *
+sift_pdel_idx_chain(const uint64 *disk, int ndisk, const SiftPendDelIndex *parent)
+{
+	SiftPendDelIndex *px;
+
+	if (ndisk == 0)
+		return (SiftPendDelIndex *) parent;
+	px = sift_pdel_idx_build(disk, ndisk);
+	if (parent != NULL)
+	{
+		px->parent = parent;
+		px->tid_min = Min(px->tid_min, parent->tid_min);
+		px->tid_max = Max(px->tid_max, parent->tid_max);
+		px->blk_bloom |= parent->blk_bloom;
+	}
+	return px;
+}
+
+void
+sift_pdel_idx_release(SiftPendDelIndex *px, const SiftPendDelIndex *parent)
+{
+	if (px != parent)
+		sift_pdel_idx_free(px);
+}
+
 void
 sift_pdel_idx_free(SiftPendDelIndex *px)
 {
@@ -113,40 +138,67 @@ sift_pend_del_unpair(SiftPendDelRec *recs, int n, SiftPendDelRec *keep, int *nke
 	return out;
 }
 
+/* The records of a chain from the oldest page: a chain made new (SIFT_PEND_DEL_REV) is walked from its newest page back, a forward one from its first; the pages are in the order of their records */
 SiftPendDelRec *
 sift_pend_del_read(Relation rel, uint64 part_id, BlockNumber head, int *n, BlockNumber **pages, int *npages)
 {
-	int			cap = 64,
-				np = 0;
-	SiftPendDelRec *out = palloc(cap * sizeof(SiftPendDelRec));
+	int			cap = 8,
+				np = 0,
+				total = 0;
+	BlockNumber *blks = palloc(cap * sizeof(BlockNumber));
+	SiftPendDelRec **chunk = palloc(cap * sizeof(SiftPendDelRec *));
+	int		   *nrecs = palloc(cap * sizeof(int));
+	SiftPendDelRec *out;
+	bool		rev = false;
 
-	*n = 0;
-	if (pages != NULL)
-		*pages = palloc(16 * sizeof(BlockNumber));
 	for (BlockNumber blk = head; blk != InvalidBlockNumber;)
 	{
 		Buffer		buf = lock_pd(rel, blk, (uint32) part_id, BUFFER_LOCK_SHARE);
 		Page		page = BufferGetPage(buf);
 
-		if (*n + PD(page)->nrecs > cap)
+		if (np == cap)
 		{
-			cap = Max(cap * 2, *n + PD(page)->nrecs);
-			out = repalloc(out, cap * sizeof(SiftPendDelRec));
+			cap *= 2;
+			blks = repalloc(blks, cap * sizeof(BlockNumber));
+			chunk = repalloc(chunk, cap * sizeof(SiftPendDelRec *));
+			nrecs = repalloc(nrecs, cap * sizeof(int));
 		}
-		memcpy(out + *n, PD(page)->recs, PD(page)->nrecs * sizeof(SiftPendDelRec));
-		*n += PD(page)->nrecs;
-		if (pages != NULL)
-		{
-			if (np % 16 == 15)
-				*pages = repalloc(*pages, (np + 17) * sizeof(BlockNumber));
-			(*pages)[np] = blk;
-		}
+		rev = np == 0 ? (PD(page)->flags & SIFT_PEND_DEL_REV) != 0 : rev;
+		blks[np] = blk;
+		nrecs[np] = PD(page)->nrecs;
+		chunk[np] = memcpy(palloc(Max(nrecs[np], 1) * sizeof(SiftPendDelRec)), PD(page)->recs, nrecs[np] * sizeof(SiftPendDelRec));
+		total += nrecs[np];
 		np++;
 		blk = PD(page)->next_blk;
 		UnlockReleaseBuffer(buf);
 	}
+	/* check-memory: allow the records of the pages of one chain, which the fold at SIFT_PEND_DEL_FOLD_PAGES pages bounds */
+	out = palloc(Max(total, 1) * sizeof(SiftPendDelRec));
+	*n = 0;
+	for (int i = 0; i < np; i++)
+	{
+		int			at = rev ? np - 1 - i : i;
+
+		memcpy(out + *n, chunk[at], nrecs[at] * sizeof(SiftPendDelRec));
+		*n += nrecs[at];
+		pfree(chunk[at]);
+	}
+	if (rev)
+		for (int i = 0; i < np / 2; i++)
+		{
+			BlockNumber t = blks[i];
+
+			blks[i] = blks[np - 1 - i];
+			blks[np - 1 - i] = t;
+		}
+	if (pages != NULL)
+		*pages = blks;
+	else
+		pfree(blks);
 	if (npages != NULL)
 		*npages = np;
+	pfree(chunk);
+	pfree(nrecs);
 	return out;
 }
 
@@ -171,13 +223,15 @@ sift_pend_del_stamp(Relation rel, uint64 part_id, BlockNumber head)
 	return st;
 }
 
-BlockNumber
-sift_pend_del_first(SiftXlog *x, Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n)
+/* A page that is the newest of a chain of chain_pages (SIFT_PEND_DEL_REV), linked to the one it follows (prev), holding recs */
+static BlockNumber
+pd_new_page(SiftXlog *x, Relation rel, uint32 part_id, BlockNumber prev, int chain_pages, const SiftPendDelRec *recs, int n)
 {
 	BlockNumber blk = sift_fsm_alloc_meta_page(rel);
 	Page		pg = sift_xlog_register(x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE);
 
-	pd_init(pg, sift_manifest_new_gen(rel, 1), (uint32) part_id, InvalidBlockNumber);
+	pd_init(pg, sift_manifest_new_gen(rel, 1), part_id, prev);
+	PD(pg)->flags = SIFT_PEND_DEL_REV | sift_pd_set_chain_pages(0, chain_pages);
 	memcpy(PD(pg)->recs, recs, n * sizeof(SiftPendDelRec));
 	PD(pg)->nrecs = n;
 	pd_widen(pg, recs, n);
@@ -185,12 +239,35 @@ sift_pend_del_first(SiftXlog *x, Relation rel, uint64 part_id, const SiftPendDel
 	return blk;
 }
 
+BlockNumber
+sift_pend_del_first(SiftXlog *x, Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n)
+{
+	return pd_new_page(x, rel, (uint32) part_id, InvalidBlockNumber, 1, recs, n);
+}
+
 static BlockNumber
-write_first_page(Relation rel, uint32 part_id, const SiftPendDelRec *recs, int n)
+write_next_page(Relation rel, uint32 part_id, BlockNumber prev, int chain_pages, const SiftPendDelRec *recs, int n)
 {
 	SiftXlog	x = sift_xlog_start(rel);
-	BlockNumber blk = sift_pend_del_first(&x, rel, part_id, recs, n);
+	BlockNumber blk = pd_new_page(&x, rel, part_id, prev, chain_pages, recs, n);
 
+	sift_xlog_done(&x);
+	return blk;
+}
+
+/* The page that continues a forward chain, as the chains of earlier versions are: the last page links to it, it carries no length */
+static BlockNumber
+write_forward_page(Relation rel, uint32 part_id, const SiftPendDelRec *recs, int n)
+{
+	SiftXlog	x = sift_xlog_start(rel);
+	BlockNumber blk = sift_fsm_alloc_meta_page(rel);
+	Page		pg = sift_xlog_register(&x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE);
+
+	pd_init(pg, sift_manifest_new_gen(rel, 1), part_id, InvalidBlockNumber);
+	memcpy(PD(pg)->recs, recs, n * sizeof(SiftPendDelRec));
+	PD(pg)->nrecs = n;
+	pd_widen(pg, recs, n);
+	pd_seal(pg);
 	sift_xlog_done(&x);
 	return blk;
 }
@@ -214,11 +291,26 @@ tail_of(Relation rel, uint32 part_id, BlockNumber head, int *pages)
 	}
 }
 
+/* The page an append goes to, locked exclusively: the newest of a chain made new, and the last of a forward one (walked to); *pages is the length of the chain */
+static Buffer
+append_target(Relation rel, uint32 part_id, BlockNumber head, int *pages)
+{
+	Buffer		buf = lock_pd(rel, head, part_id, BUFFER_LOCK_EXCLUSIVE);
+
+	if (PD(BufferGetPage(buf))->flags & SIFT_PEND_DEL_REV)
+	{
+		*pages = sift_pd_chain_pages(PD(BufferGetPage(buf))->flags);
+		return buf;
+	}
+	UnlockReleaseBuffer(buf);
+	return lock_pd(rel, tail_of(rel, part_id, head, pages), part_id, BUFFER_LOCK_EXCLUSIVE);
+}
+
 bool
 sift_pend_del_place(SiftXlog *x, Relation rel, uint64 part_id, BlockNumber head, const SiftPendDelRec *recs, int n)
 {
 	int			pages;
-	Buffer		buf = lock_pd(rel, tail_of(rel, (uint32) part_id, head, &pages), (uint32) part_id, BUFFER_LOCK_EXCLUSIVE);
+	Buffer		buf = append_target(rel, (uint32) part_id, head, &pages);
 	Page		pg = BufferGetPage(buf);
 
 	if (pages >= SIFT_PEND_DEL_FOLD_PAGES || (int) SIFT_PEND_DEL_CAP - PD(pg)->nrecs < n)
@@ -245,6 +337,41 @@ whole_pairs(const SiftPendDelRec *recs, int n, int room)
 	return take;
 }
 
+/* A page for the records past the end of the chain: after a chain made new, the page names the one it follows and the entry of the partition names the page; after a forward one, the last page links to it */
+static void
+extend_chain(Relation rel, uint64 part_id, const uint8 *key_lo, BlockNumber *head, Buffer buf, int *pages, const SiftPendDelRec *recs, int take)
+{
+	BlockNumber old = BufferGetBlockNumber(buf);
+	bool		rev = (PD(BufferGetPage(buf))->flags & SIFT_PEND_DEL_REV) != 0;
+	BlockNumber blk;
+
+	UnlockReleaseBuffer(buf);
+	if (rev)
+	{
+		SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo,.set_pend_del = true};
+
+		blk = write_next_page(rel, (uint32) part_id, old, *pages + 1, recs, take);
+		e.new_pend_del_blk = blk;
+		sift_manifest_commit(rel, &e);
+		*head = blk;
+	}
+	else
+	{
+		SiftXlog	x;
+		Page		pg;
+
+		blk = write_forward_page(rel, (uint32) part_id, recs, take);
+		buf = lock_pd(rel, old, (uint32) part_id, BUFFER_LOCK_EXCLUSIVE);
+		x = sift_xlog_start(rel);
+		pg = sift_xlog_register(&x, buf, 0);
+		PD(pg)->next_blk = blk;
+		PD(pg)->flags |= SIFT_PEND_DEL_SEALED;
+		pd_seal(pg);
+		sift_xlog_done(&x);
+	}
+	(*pages)++;
+}
+
 int
 sift_pend_del_append(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec *recs, int n)
 {
@@ -266,14 +393,13 @@ sift_pend_del_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Si
 			SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo,.set_pend_del = true};
 
 			take = whole_pairs(recs, n, (int) SIFT_PEND_DEL_CAP);
-			e.new_pend_del_blk = head = write_first_page(rel, (uint32) part_id, recs, take);
+			e.new_pend_del_blk = head = write_next_page(rel, (uint32) part_id, InvalidBlockNumber, 1, recs, take);
 			sift_manifest_commit(rel, &e);
 			pages = 1;
 		}
 		else
 		{
-			BlockNumber tail = tail_of(rel, (uint32) part_id, head, &pages);
-			Buffer		buf = lock_pd(rel, tail, (uint32) part_id, BUFFER_LOCK_EXCLUSIVE);
+			Buffer		buf = append_target(rel, (uint32) part_id, head, &pages);
 			SiftXlog	x = sift_xlog_start(rel);
 			Page		pg = sift_xlog_register(&x, buf, 0);
 			int			room = SIFT_PEND_DEL_CAP - PD(pg)->nrecs;
@@ -289,20 +415,9 @@ sift_pend_del_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Si
 			}
 			else
 			{
-				BlockNumber blk;
-
 				sift_xlog_abort(&x);
-				UnlockReleaseBuffer(buf);
 				take = whole_pairs(recs, n, (int) SIFT_PEND_DEL_CAP);
-				blk = write_first_page(rel, (uint32) part_id, recs, take);
-				buf = lock_pd(rel, tail, (uint32) part_id, BUFFER_LOCK_EXCLUSIVE);
-				x = sift_xlog_start(rel);
-				pg = sift_xlog_register(&x, buf, 0);
-				PD(pg)->next_blk = blk;
-				PD(pg)->flags |= SIFT_PEND_DEL_SEALED;
-				pd_seal(pg);
-				sift_xlog_done(&x);
-				pages++;
+				extend_chain(rel, part_id, key_lo, &head, buf, &pages, recs, take);
 			}
 		}
 		recs += take;

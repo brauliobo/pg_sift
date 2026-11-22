@@ -4,11 +4,13 @@
 #include "postgres.h"
 
 #include "lib/ilist.h"
+#include "port/pg_bitutils.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 
 #include "col/f2/col_meta.h"
 #include "col/f2/f2_cache.h"
+#include "core/hash.h"
 #include "core/memtrack.h"
 #include "core/cachebudget.h"
 #include "core/shm_manifest.h"
@@ -126,27 +128,65 @@ pin(SiftPlanSnapshot *s, MemoryContext mcxt)
 	return s;
 }
 
-/* The lists of s that are those of the partition entries, in the order of the directory: a partition keeps its place among the others, so the walk over the old lists only moves forward */
+#define PART_ID_HT_MIN_PARTITIONS	16
+
+static uint32
+part_id_home(uint64 part_id, uint32 mask)
+{
+	return (uint32) (sift_fmix64(part_id) & mask);
+}
+
+/* The table of the places of entries[0 .. n) by part_id: a slot holds the place plus one, 0 is empty */
+static uint32 *
+part_id_table(const SiftPartitionEntry *entries, int n, uint32 *mask)
+{
+	uint32		size = pg_nextpower2_32(Max(2 * (uint32) n, 32));
+	uint32	   *ht = palloc0(size * sizeof(uint32));
+
+	*mask = size - 1;
+	for (int i = 0; i < n; i++)
+	{
+		uint32		h = part_id_home(entries[i].part_id, *mask);
+
+		while (ht[h] != 0)
+			h = (h + 1) & *mask;
+		ht[h] = i + 1;
+	}
+	return ht;
+}
+
+static int
+part_id_place(const SiftPartitionEntry *entries, const uint32 *ht, uint32 mask, uint64 part_id)
+{
+	for (uint32 h = part_id_home(part_id, mask); ht[h] != 0; h = (h + 1) & mask)
+		if (entries[ht[h] - 1].part_id == part_id)
+			return ht[h] - 1;
+	return -1;
+}
+
+/* The lists of s that are those of the partition entries, found by part_id in a table of the old ones: a partition a split added is told from the others in one probe, however many of them there are */
 static void
 reuse_lists(const SiftPlanSnapshot *s, const SiftManifestRead *mr, SiftPlanPartList *out, bool *reused)
 {
-	int			from = 0;
+	uint32		mask;
+	uint32	   *ht;
 
+	if (s->npartitions == 0)
+		return;
+	ht = s->part_id_ht != NULL ? s->part_id_ht : part_id_table(s->partitions, s->npartitions, &mask);
+	mask = s->part_id_ht != NULL ? s->part_id_mask : mask;
 	for (int i = 0; i < mr->n; i++)
 	{
-		int			k = from;
+		int			k = part_id_place(s->partitions, ht, mask, mr->entries[i].part_id);
 
-		while (k < s->npartitions && s->partlists[k].part_id != mr->entries[i].part_id)
-			k++;
-		if (k == s->npartitions)
-			continue;
-		from = k + 1;
-		if (s->partlists[k].manifest_gen == mr->entries[i].manifest_gen)
+		if (k >= 0 && s->partlists[k].manifest_gen == mr->entries[i].manifest_gen)
 		{
 			out[i] = s->partlists[k];
 			reused[k] = true;
 		}
 	}
+	if (ht != s->part_id_ht)
+		pfree(ht);
 }
 
 /* The part list of one partition in the shared snapshot: the parts first, then the generation that says they are all there */
@@ -282,6 +322,9 @@ load(SiftPlanSnapshot *s, Relation rel, const SiftShmIndexMeta *meta)
 	memcpy(entries, mr.entries, mr.n * sizeof(SiftPartitionEntry));
 	if (nscopes > 0)
 		memcpy(kept, scopes, nscopes * sizeof(SiftManifestScopeRef));
+	if (s->part_id_ht != NULL)
+		pfree(s->part_id_ht);
+	s->part_id_ht = mr.n > PART_ID_HT_MIN_PARTITIONS ? part_id_table(entries, mr.n, &s->part_id_mask) : NULL;
 	s->partitions = entries;
 	s->partlists = lists;
 	s->npartitions = mr.n;
@@ -387,8 +430,13 @@ sift_plan_card_put(const SiftPlanSnapshot *snap, struct SiftCardStatsView *view)
 const SiftPartitionEntry *
 sift_plan_entry(const SiftPlanSnapshot *snap, uint64 part_id)
 {
-	for (int i = 0; i < snap->npartitions; i++)
-		if (snap->partitions[i].part_id == part_id)
-			return &snap->partitions[i];
+	int			i = -1;
+
+	if (snap->part_id_ht != NULL)
+		i = part_id_place(snap->partitions, snap->part_id_ht, snap->part_id_mask, part_id);
+	for (int k = 0; snap->part_id_ht == NULL && i < 0 && k < snap->npartitions; k++)
+		i = snap->partitions[k].part_id == part_id ? k : i;
+	if (i >= 0)
+		return &snap->partitions[i];
 	ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
 }

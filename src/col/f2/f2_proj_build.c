@@ -13,6 +13,7 @@
 #include "storage/lmgr.h"
 
 #include "col/f2/delvec.h"
+#include "col/f2/f2_part_idx.h"
 #include "col/f2/f2_proj.h"
 #include "col/f2/f2_store.h"
 #include "col/f2/part_format.h"
@@ -174,32 +175,31 @@ refresh_projection(Relation rel, const SiftF2Store *store, const SiftProjColumns
 	SiftProjParts cur = sift_manifest_read_proj_parts(rel, ref);
 	SiftProjRefreshPlan plan = sift_proj_refresh_plan(ref, base, nbase, &cur);
 	SiftProjPartSpec *pps = palloc(sizeof(SiftProjPartSpec));
+	SiftPartGenIndex by_gen;
+	SiftU64Set	built_src;
 
 	sift_proj_part_spec(store, spec, cols, pps);
 	out->parts = palloc(Max(plan.nbuild, 1) * sizeof(SiftPartDesc));
 	out->links = palloc(Max(plan.nbuild, 1) * sizeof(SiftProjLink));
 	out->proj_id = ref->proj_id;
+	sift_part_gen_idx_init(&by_gen, base, nbase);
 	for (int i = 0; i < plan.nbuild; i++)
-	{
-		const SiftPartDesc *d = NULL;
-
-		for (int k = 0; k < nbase; k++)
-			if (base[k].part_gen == plan.build_gens[i])
-				d = &base[k];
-		if (write_part(rel, store, ref, spec, cols, pps, d, (uint32) base_part_id, &out->parts[out->n], &out->links[out->n]))
+		if (write_part(rel, store, ref, spec, cols, pps, sift_part_gen_idx_find(&by_gen, plan.build_gens[i]), (uint32) base_part_id, &out->parts[out->n], &out->links[out->n]))
 			out->n++;
-	}
+	sift_part_gen_idx_free(&by_gen);
 	out->ndrop = 0;
 	out->drop_proj = palloc(Max(plan.ndrop, 1) * sizeof(uint64));
 	out->drop_src = palloc(Max(plan.ndrop, 1) * sizeof(uint64));
+	sift_u64_set_init(&built_src, out->n);
+	for (int k = 0; k < out->n; k++)
+		sift_u64_set_add(&built_src, out->links[k].src_gen);
 	for (int i = 0; i < plan.ndrop; i++)
-		for (int k = 0; k < out->n; k++)
-			if (out->links[k].src_gen == plan.drop_src_gens[i])
-			{
-				out->drop_proj[out->ndrop] = plan.drop_proj_gens[i];
-				out->drop_src[out->ndrop++] = plan.drop_src_gens[i];
-				break;
-			}
+		if (sift_u64_set_has(&built_src, plan.drop_src_gens[i]))
+		{
+			out->drop_proj[out->ndrop] = plan.drop_proj_gens[i];
+			out->drop_src[out->ndrop++] = plan.drop_src_gens[i];
+		}
+	sift_u64_set_free(&built_src);
 	sift_proj_refresh_plan_free(&plan);
 	return out->n;
 }

@@ -52,61 +52,77 @@ xmax_bounds(const SiftDvGran *g, FullTransactionId next, FullTransactionId *lo, 
 		}
 }
 
+/* The rows of base (ascending) and of the new marks of the granule (ascending, one for each row) as the rows of g, the row of base kept where both have it */
+static void
+merge_rows(SiftDvGran *g, const SiftDvGran *base, const Tup *m, int nm)
+{
+	int			cap = (base != NULL ? base->ndead : 0) + nm,
+				i = 0,
+				k = 0;
+
+	g->rows = palloc(Max(cap, 1) * sizeof(uint16));
+	g->xmax = palloc(Max(cap, 1) * sizeof(SiftDvXmaxEntry));
+	while ((base != NULL && i < base->ndead) || k < nm)
+	{
+		if (k == nm || (base != NULL && i < base->ndead && base->rows[i] <= m[k].row))
+		{
+			if (k < nm && m[k].row == base->rows[i])
+				k++;
+			g->rows[g->ndead] = base->rows[i];
+			g->xmax[g->ndead++] = base->xmax[i++];
+		}
+		else
+		{
+			g->rows[g->ndead] = m[k].row;
+			g->xmax[g->ndead++] = m[k++].x;
+		}
+	}
+}
+
+/* The marks are sorted by granule and row alone (a mark of a row already dead keeps the first); the granules of base that no mark names are copied, and the others merged row by row */
 SiftDv *
 sift_dv_merge(const SiftDv *base, const SiftDvMark *marks, int n, uint64 part_gen, uint64 dv_gen, uint32 ngranules, const uint16 *granule_rows)
 {
-	int			nbase = 0,
-				nt = 0,
-				k = 0;
-	Tup		   *t;
+	int			nbase = base != NULL ? base->ndirty : 0,
+				b = 0,
+				i = 0;
+	Tup		   *t = palloc((n + 1) * sizeof(Tup));
 	SiftDv	   *dv = palloc0(sizeof(SiftDv));
 	FullTransactionId next = ReadNextFullTransactionId(),
 				lo;
 
-	if (base != NULL)
-		for (int i = 0; i < base->ndirty; i++)
-			nbase += base->gran[i].ndead;
-	t = palloc((nbase + n + 1) * sizeof(Tup));
-	if (base != NULL)
-		for (int i = 0; i < base->ndirty; i++)
-			for (int r = 0; r < base->gran[i].ndead; r++)
-			{
-				t[nt] = (Tup) {base->gran[i].granule_id, base->gran[i].rows[r], base->gran[i].xmax[r], nt};
-				nt++;
-			}
-	for (int i = 0; i < n; i++)
+	for (int k = 0; k < n; k++)
 	{
-		if (marks[i].granule >= ngranules || marks[i].row >= granule_rows[marks[i].granule])
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift: row %u of granule %u is not in the part", marks[i].row, marks[i].granule)));
-		t[nt] = (Tup) {marks[i].granule, marks[i].row, {marks[i].xmax, marks[i].cmax}, nt};
-		nt++;
+		if (marks[k].granule >= ngranules || marks[k].row >= granule_rows[marks[k].granule])
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift: row %u of granule %u is not in the part", marks[k].row, marks[k].granule)));
+		t[k] = (Tup) {marks[k].granule, marks[k].row, {marks[k].xmax, marks[k].cmax}, k};
 	}
-	qsort(t, nt, sizeof(Tup), tup_cmp);
+	qsort(t, n, sizeof(Tup), tup_cmp);
 	dv->part_gen = part_gen;
 	dv->dv_gen = dv_gen;
 	dv->ngranules = ngranules;
-	dv->gran = palloc0((Max(nt, 1)) * sizeof(SiftDvGran));
-	for (int i = 0; i < nt;)
+	dv->gran = palloc0((nbase + n + 1) * sizeof(SiftDvGran));
+	while (b < nbase || i < n)
 	{
-		int			j = i;
+		uint32		gid = b == nbase ? t[i].granule : i == n ? base->gran[b].granule_id : Min(base->gran[b].granule_id, t[i].granule);
+		const SiftDvGran *bg = b < nbase && base->gran[b].granule_id == gid ? &base->gran[b++] : NULL;
 		SiftDvGran *g = &dv->gran[dv->ndirty++];
+		int			j = i,
+					m = 0;
 
-		while (j < nt && t[j].granule == t[i].granule)
-			j++;
-		g->granule_id = t[i].granule;
-		g->granule_rows = granule_rows[t[i].granule];
-		g->rows = palloc((j - i) * sizeof(uint16));
-		g->xmax = palloc((j - i) * sizeof(SiftDvXmaxEntry));
-		for (k = i; k < j; k++)
+		while (j < n && t[j].granule == gid)
 		{
-			if (k > i && t[k].row == t[k - 1].row)
-				continue;
-			g->rows[g->ndead] = t[k].row;
-			g->xmax[g->ndead++] = t[k].x;
+			if (j == i || t[j].row != t[j - 1].row)
+				t[i + m++] = t[j];
+			j++;
 		}
+		g->granule_id = gid;
+		g->granule_rows = granule_rows[gid];
+		merge_rows(g, bg, t + i, m);
 		xmax_bounds(g, next, &lo, &g->xid_max);
 		i = j;
 	}
+	pfree(t);
 	return dv;
 }
 

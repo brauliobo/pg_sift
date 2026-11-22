@@ -11,6 +11,16 @@
 #include "agg/v6/v6_proj_pred.h"
 #include "col/f2/f2_proj.h"
 
+/* Where the stored columns of a measure are in the layout of the part a row is absorbed from: found once for the layout, not for each row */
+typedef struct StoredCols
+{
+	const SiftProjSpec *src;
+	const SiftProjLayoutCol *layout;
+	int			nlayout;
+	int			rows;
+	int			at[SIFT_PROJ_MAX_COLS][3];	/* per measure of src: the count, the sum's high, low and non-null count, or the extreme */
+} StoredCols;
+
 struct SiftProjCube
 {
 	SiftProjSpec spec;
@@ -21,8 +31,9 @@ struct SiftProjCube
 	uint64	   *hash;
 	int32	   *tab;			/* index into g + 1, 0: empty */
 	int			tabcap;
-	char	  **arena;			/* the bytes of the strings of the keys */
-	int			narena;
+	SiftStrArena strs;			/* the bytes of the strings of the keys */
+	bool		settled;		/* no group has lost its last row since settle ran */
+	StoredCols	stored_cols;
 	SiftCell   *rows_out;
 	SiftCell   *scratch;		/* a row of the relation (one cell per column) the filters of stored rows are tested on */
 };
@@ -91,6 +102,8 @@ sift_proj_cube_new(const SiftProjSpec *s, const SiftProjColumns *cols)
 
 	c->spec = *s;
 	c->cols = cols;
+	c->settled = true;
+	sift_str_arena_init(&c->strs, CurrentMemoryContext);
 	return c;
 }
 
@@ -102,16 +115,13 @@ sift_proj_cube_free(SiftProjCube *c)
 		pfree(c->g[i].key);
 		pfree(c->g[i].st);
 	}
-	for (int i = 0; i < c->narena; i++)
-		pfree(c->arena[i]);
+	sift_str_arena_free(&c->strs);
 	if (c->g != NULL)
 		pfree(c->g);
 	if (c->hash != NULL)
 		pfree(c->hash);
 	if (c->tab != NULL)
 		pfree(c->tab);
-	if (c->arena != NULL)
-		pfree(c->arena);
 	if (c->rows_out != NULL)
 		pfree(c->rows_out);
 	if (c->scratch != NULL)
@@ -134,17 +144,6 @@ rehash(SiftProjCube *c, int tabcap)
 			at = (at + 1) & (tabcap - 1);
 		c->tab[at] = i + 1;
 	}
-}
-
-static char *
-arena_copy(SiftProjCube *c, const char *s, uint32 len)
-{
-	char	   *p = palloc(Max(len, 1));
-
-	memcpy(p, s, len);
-	c->arena = c->arena == NULL ? palloc(sizeof(char *)) : repalloc(c->arena, (c->narena + 1) * sizeof(char *));
-	c->arena[c->narena++] = p;
-	return p;
 }
 
 static SiftProjGroup *
@@ -172,7 +171,7 @@ group_for(SiftProjCube *c, const SiftCell *key)
 	memcpy(g->key, key, c->spec.nkeys * sizeof(SiftCell));
 	for (int i = 0; i < c->spec.nkeys; i++)
 		if (!key[i].isnull && key[i].s != NULL)
-			g->key[i].s = arena_copy(c, key[i].s, key[i].slen);
+			g->key[i].s = sift_str_arena_copy(&c->strs, key[i].s, key[i].slen);
 	g->rows = 0;
 	g->st = palloc0(Max(c->spec.nmeas, 1) * sizeof(SiftProjMState));
 	c->hash[c->ngroups++] = h;
@@ -295,6 +294,7 @@ sift_proj_cube_add(SiftProjCube *c, const SiftCell *row, int sign)
 		return false;
 	key_of_row(&c->spec, c->cols, row, key);
 	g = group_for(c, key);
+	c->settled = false;
 	g->rows += sign;
 	for (int m = 0; m < c->spec.nmeas; m++)
 		measure_add(&g->st[m], &c->spec.meas[m], c->cols, row, sign);
@@ -310,28 +310,56 @@ find_col(const SiftProjLayoutCol *layout, int n, int measure, SiftProjRole role)
 	return -1;
 }
 
+static const StoredCols *
+stored_cols_of(SiftProjCube *c, const SiftProjSpec *src, const SiftProjLayoutCol *layout, int n)
+{
+	StoredCols *sc = &c->stored_cols;
+
+	if (sc->src == src && sc->layout == layout && sc->nlayout == n)
+		return sc;
+	*sc = (StoredCols) {src, layout, n, find_col(layout, n, -1, SPR_ROWS)};
+	for (int m = 0; m < src->nmeas; m++)
+		switch (src->meas[m].fn)
+		{
+			case SPM_COUNT_DISTINCT:
+				break;
+			case SPM_COUNT_STAR:
+			case SPM_COUNT:
+				sc->at[m][0] = find_col(layout, n, m, SPR_COUNT);
+				break;
+			case SPM_SUM:
+			case SPM_AVG:
+				sc->at[m][0] = find_col(layout, n, m, SPR_SUM_HI);
+				sc->at[m][1] = find_col(layout, n, m, SPR_SUM_LO);
+				sc->at[m][2] = find_col(layout, n, m, SPR_SUM_NN);
+				break;
+			default:
+				sc->at[m][0] = find_col(layout, n, m, src->meas[m].fn == SPM_MIN ? SPR_MIN : SPR_MAX);
+				break;
+		}
+	return sc;
+}
+
 static SiftProjMState
-state_of_stored(const SiftProjSpec *src, const SiftProjLayoutCol *layout, int n, int m, const SiftCell *stored)
+state_of_stored(const SiftProjSpec *src, const int *at, int m, const SiftCell *stored)
 {
 	SiftProjMState st = {0};
-	int			at;
 
 	switch (src->meas[m].fn)
 	{
 		case SPM_COUNT_STAR:
 		case SPM_COUNT:
-			st.cnt = stored[find_col(layout, n, m, SPR_COUNT)].i;
+			st.cnt = stored[at[0]].i;
 			break;
 		case SPM_SUM:
 		case SPM_AVG:
-			st.sum = (int128) (((uint128) (uint64) stored[find_col(layout, n, m, SPR_SUM_HI)].i << 64) | (uint64) stored[find_col(layout, n, m, SPR_SUM_LO)].i);
-			st.cnt = stored[find_col(layout, n, m, SPR_SUM_NN)].i;
+			st.sum = (int128) (((uint128) (uint64) stored[at[0]].i << 64) | (uint64) stored[at[1]].i);
+			st.cnt = stored[at[2]].i;
 			break;
 		default:
-			at = find_col(layout, n, m, src->meas[m].fn == SPM_MIN ? SPR_MIN : SPR_MAX);
-			st.has = !stored[at].isnull;
-			st.mi = stored[at].i;
-			st.mf = stored[at].f;
+			st.has = !stored[at[0]].isnull;
+			st.mi = stored[at[0]].i;
+			st.mf = stored[at[0]].f;
 			break;
 	}
 	return st;
@@ -376,7 +404,8 @@ sift_proj_cube_absorb(SiftProjCube *c, const SiftProjSpec *src, const SiftProjLa
 {
 	SiftCell	key[SIFT_PROJ_MAX_COLS];
 	SiftProjGroup *g;
-	int64		rows = stored[find_col(layout, nlayout, -1, SPR_ROWS)].i;
+	const StoredCols *sc = stored_cols_of(c, src, layout, nlayout);
+	int64		rows = stored[sc->rows].i;
 
 	for (int i = 0; i < c->spec.nkeys; i++)
 	{
@@ -385,6 +414,7 @@ sift_proj_cube_absorb(SiftProjCube *c, const SiftProjSpec *src, const SiftProjLa
 			key[i].i = sift_proj_trunc_cell((SiftProjTime) c->cols->col[c->spec.key[i].leaf].time, key[i].i, (SiftProjUnit) map->unit[i]);
 	}
 	g = group_for(c, key);
+	c->settled = false;
 	g->rows += rows;
 	for (int j = 0; j < c->spec.nmeas; j++)
 	{
@@ -392,7 +422,7 @@ sift_proj_cube_absorb(SiftProjCube *c, const SiftProjSpec *src, const SiftProjLa
 
 		if (map->filter_mode[j] == SPFM_ON_KEY && !stored_filter_passes(c, layout, nlayout, &c->spec.meas[j], stored))
 			continue;
-		in = map->src_meas[j] < 0 ? (SiftProjMState) {.cnt = rows} : state_of_stored(src, layout, nlayout, map->src_meas[j], stored);
+		in = map->src_meas[j] < 0 ? (SiftProjMState) {.cnt = rows} : state_of_stored(src, sc->at[map->src_meas[j]], map->src_meas[j], stored);
 		measure_merge(&g->st[j], &c->spec.meas[j], c->cols, &in);
 	}
 }
@@ -406,6 +436,7 @@ sift_proj_cube_size(const SiftProjCube *c)
 SiftProjGroup *
 sift_proj_cube_touch(SiftProjCube *c, const SiftCell *key)
 {
+	c->settled = false;
 	return group_for(c, key);
 }
 
@@ -415,6 +446,9 @@ settle(SiftProjCube *c)
 {
 	int			n = 0;
 
+	if (c->settled)
+		return;
+	c->settled = true;
 	for (int i = 0; i < c->ngroups; i++)
 	{
 		if (c->g[i].rows == 0)

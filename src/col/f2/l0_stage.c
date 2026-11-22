@@ -17,11 +17,15 @@
 #include "col/f2/f2_vacuum_run.h"
 #include "col/f2/f2.h"
 #include "col/f2/l0_href.h"
-#include "col/f2/l0_stage.h"
+#include "col/f2/l0_stage_int.h"
 #include "col/f2/part_vis.h"
+#include "core/hash.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
 #include "core/quarantine.h"
+
+/* A range of addresses this short is looked for by each address in the table, a longer one by a walk of the rows */
+#define SIFT_STG_POINT_PROBES	16
 
 static List *stages = NIL;
 static bool callbacks_registered = false;
@@ -35,138 +39,33 @@ sift_stage_define_gucs(void)
 							NULL, &sift_dead_rewrite_pct, 15, 1, 100, PGC_USERSET, 0, NULL, NULL, NULL);
 }
 
-static int
-route(const SiftManifestRead *m, const uint8 *key)
+int
+sift_stage_route(const SiftManifestRead *m, const uint8 *key)
 {
-	int			i = 0;
+	int			lo = 0,
+				hi = m->n;
 
-	while (i + 1 < m->n && memcmp(m->entries[i + 1].key_lo, key, SIFT_BOUND_BYTES) <= 0)
-		i++;
-	return i;
-}
-
-static int
-del_cmp(const void *a, const void *b)
-{
-	const SiftStageDel *x = a,
-			   *y = b;
-	int			c = memcmp(x->key, y->key, SIFT_BOUND_BYTES);
-
-	return c != 0 ? c : (x->tid > y->tid) - (x->tid < y->tid);
-}
-
-/* The deletes of a partition (the entry of the manifest read it was cut by): dels[from, to) of the sorted deletes of the transaction */
-typedef struct DelRun
-{
-	int			entry;
-	int			from;
-	int			to;
-	bool		done;
-} DelRun;
-
-/* The records of a run: one for a delete, the adjacent pair of the old address and its successor for an update (nrecs of them); the top xid ends them at the commit, each its own while the transaction runs */
-static SiftPendDelRec *
-run_recs(const SiftTxnStage *st, const DelRun *r, int *nrecs, bool at_end)
-{
-	SiftPendDelRec *recs = palloc(2 * (r->to - r->from) * sizeof(SiftPendDelRec));
-	TransactionId top = GetTopTransactionId();
-	int			n = 0;
-
-	for (int i = r->from; i < r->to; i++)
+	while (lo < hi)
 	{
-		const SiftStageDel *d = &st->dels[i];
+		int			mid = lo + ((hi - lo) >> 1);
 
-		recs[n++] = (SiftPendDelRec) {.tid = d->tid | (d->is_update ? SIFT_PD_TID_UPDATED : 0),.xmax = at_end ? top : d->xmax,.cmax = d->cmax};
-		if (d->is_update)
-			recs[n++] = (SiftPendDelRec) {.tid = d->succ_tid | SIFT_PD_TID_SUCC,.xmax = InvalidTransactionId,.cmax = 0};
+		if (memcmp(m->entries[mid].key_lo, key, SIFT_BOUND_BYTES) <= 0)
+			lo = mid + 1;
+		else
+			hi = mid;
 	}
-	*nrecs = n;
-	return recs;
+	return Max(lo - 1, 0);
 }
 
-/* The deletes of the transaction sorted by key, cut into the runs of the partitions they belong to */
-static DelRun *
-del_runs(SiftTxnStage *st, const SiftManifestRead *mr, int *nruns)
+int
+sift_stage_addr_cmp(const void *a, const void *b)
 {
-	DelRun	   *runs = palloc(Max(st->ndels, 1) * sizeof(DelRun));
+	uint64		x = *(const uint64 *) a,
+				y = *(const uint64 *) b;
 
-	*nruns = 0;
-	qsort(st->dels, st->ndels, sizeof(SiftStageDel), del_cmp);
-	for (int i = 0, j; i < st->ndels; i = j)
-	{
-		int			p = route(mr, st->dels[i].key);
-
-		for (j = i; j < st->ndels && route(mr, st->dels[j].key) == p; j++)
-			;
-		runs[(*nruns)++] = (DelRun) {.entry = p,.from = i,.to = j};
-	}
-	return runs;
+	return x < y ? -1 : x > y;
 }
 
-static bool
-tid_drops(SiftRowBuf *rb, int r, void *arg)
-{
-	return rb->tid[r] == *(const uint64 *) arg;
-}
-
-bool
-sift_stage_cancel_tid(SiftTxnStage *st, uint64 tid)
-{
-	for (int i = 0; i < st->nparts; i++)
-		if (sift_rowbuf_drop_if(st->parts[i].rb, tid_drops, &tid) > 0)
-			return true;
-	return false;
-}
-
-/* The deletes of the transaction for the partitions they belong to, after its rows; at the end the transaction's top xid ends them, the command stays */
-static void
-write_deletes(Relation rel, SiftTxnStage *st, bool at_end)
-{
-	SiftManifestRead mr;
-	DelRun	   *runs;
-	int			nruns;
-
-	if (st->ndels == 0)
-		return;
-	mr = sift_manifest_read_range(rel, NULL, NULL);
-	runs = del_runs(st, &mr, &nruns);
-	for (int i = 0; i < nruns; i++)
-	{
-		const SiftPartitionEntry *e = &mr.entries[runs[i].entry];
-		int			nrecs;
-		SiftPendDelRec *recs = run_recs(st, &runs[i], &nrecs, at_end);
-
-		sift_del_route(rel, e->part_id, e->key_lo, recs, nrecs, &st->spec);
-		pfree(recs);
-	}
-	st->ndels = 0;
-}
-
-static void
-flush_deletes(Relation rel, SiftTxnStage *st, bool at_end)
-{
-	MemoryContext scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift stage deletes");
-	MemoryContext caller = MemoryContextSwitchTo(scratch);
-
-	write_deletes(rel, st, at_end);
-	MemoryContextSwitchTo(caller);
-	MemoryContextDelete(scratch);
-}
-
-/* Drops the deletes of the runs that were written with the rows of their partition */
-static void
-drop_done_deletes(SiftTxnStage *st, const DelRun *runs, int nruns)
-{
-	int			kept = 0;
-
-	for (int r = 0; r < nruns; r++)
-		for (int i = runs[r].from; i < runs[r].to && !runs[r].done; i++)
-			st->dels[kept++] = st->dels[i];
-	st->ndels = kept;
-}
-
-static void flush_stage(Relation rel, SiftTxnStage *st, bool at_end);
-static void bulk_check(Relation rel, SiftTxnStage *st, SiftStagePart *p);
 static SiftTxnStage *stage_of(Relation rel);
 
 /* ---- the deletes in memory: found by address, and written as they pass half of work_mem ---- */
@@ -244,8 +143,8 @@ flush_deletes_chunk(SiftTxnStage *st)
 {
 	Relation	rel = relation_open(st->relid, RowExclusiveLock);
 
-	flush_stage(rel, st, false);
-	flush_deletes(rel, st, false);
+	sift_stage_flush_rows(rel, st, false);
+	sift_stage_flush_deletes(rel, st, false);
 	relation_close(rel, NoLock);
 	del_htab_rebuild(st);
 }
@@ -255,9 +154,8 @@ free_stage(SiftTxnStage *st)
 {
 	if (st->host_stage != NULL)
 		st->host_event(NULL, st, SIFT_STAGE_FREE, 0, 0);
-	for (int i = 0; i < st->nparts; i++)
-		sift_rowbuf_free(st->parts[i].rb);
-	st->nparts = 0;
+	sift_cdi_cache_free(st);
+	sift_stage_reset_parts(st);
 	st->ndels = 0;
 }
 
@@ -311,8 +209,8 @@ stage_xact(XactEvent event, void *arg)
 				continue;
 			if (RelFileLocatorEquals(st->locator, rel->rd_locator) && !sift_quarantine_skips(rel, SIFT_SKIP_WRITE))
 			{
-				flush_stage(rel, st, true);
-				flush_deletes(rel, st, true);
+				sift_stage_flush_rows(rel, st, true);
+				sift_stage_flush_deletes(rel, st, true);
 			}
 			relation_close(rel, NoLock);
 		}
@@ -338,7 +236,11 @@ stage_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId par
 		int			kept = 0;
 
 		for (int i = 0; i < st->nparts; i++)
-			(void) sift_rowbuf_drop_sub(st->parts[i].rb, mySubid, event == SUBXACT_EVENT_COMMIT_SUB ? parentSubid : 0);
+			if (sift_rowbuf_drop_sub(st->parts[i].rb, mySubid, event == SUBXACT_EVENT_COMMIT_SUB ? parentSubid : 0) > 0)
+			{
+				sift_stage_part_changed(st, &st->parts[i]);
+				sift_stage_tid_invalidate(st);
+			}
 		for (int i = 0; i < st->ndels; i++)
 		{
 			if (st->dels[i].subxid == mySubid && event == SUBXACT_EVENT_ABORT_SUB)
@@ -349,6 +251,7 @@ stage_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId par
 		}
 		st->ndels = kept;
 		del_htab_rebuild(st);
+		sift_cdi_cache_staged_changed(st);
 		if (st->host_stage != NULL)
 			st->host_event(NULL, st, event == SUBXACT_EVENT_COMMIT_SUB ? SIFT_STAGE_SUB_COMMIT : SIFT_STAGE_SUB_ABORT, mySubid, parentSubid);
 	}
@@ -382,49 +285,228 @@ sift_stage_get(Relation rel, const SiftPartSpec *spec)
 	st->spec.col_ids = spec->col_ids ? memcpy(palloc(spec->ncol_ids * sizeof(SiftPartColIdentity)), spec->col_ids, spec->ncol_ids * sizeof(SiftPartColIdentity)) : NULL;
 	st->spec.defaults = spec->defaults ? memcpy(palloc(spec->defaults_len), spec->defaults, spec->defaults_len) : NULL;
 	st->routing = sift_manifest_read_range(rel, NULL, NULL);
+	st->tid_min = UINT64_MAX;
 	stages = lappend(stages, st);
 	stage_epoch++;
 	MemoryContextSwitchTo(old);
 	return st;
 }
 
-static SiftStagePart *
-stage_part(SiftTxnStage *st, const SiftPartitionEntry *e)
+static uint32
+part_home(const SiftTxnStage *st, uint64 part_id)
+{
+	return (uint32) (sift_fmix64(part_id) & st->part_htab_mask);
+}
+
+static void
+part_htab_rebuild(SiftTxnStage *st)
+{
+	MemoryContext old = MemoryContextSwitchTo(TopTransactionContext);
+
+	if (st->part_htab != NULL)
+		pfree(st->part_htab);
+	st->part_htab_mask = pg_nextpower2_32(Max(4 * (uint32) st->nparts, 16)) - 1;
+	st->part_htab = palloc0((st->part_htab_mask + 1) * sizeof(uint32));
+	MemoryContextSwitchTo(old);
+	for (int i = 0; i < st->nparts; i++)
+	{
+		uint32		h = part_home(st, st->parts[i].part_id);
+
+		while (st->part_htab[h] != 0)
+			h = (h + 1) & st->part_htab_mask;
+		st->part_htab[h] = i + 1;
+	}
+}
+
+SiftStagePart *
+sift_stage_part_get(SiftTxnStage *st, const SiftPartitionEntry *e)
+{
+	MemoryContext old;
+	SiftStagePart *p;
+
+	if (st->part_htab != NULL)
+		for (uint32 h = part_home(st, e->part_id); st->part_htab[h] != 0; h = (h + 1) & st->part_htab_mask)
+			if (st->parts[st->part_htab[h] - 1].part_id == e->part_id)
+				return &st->parts[st->part_htab[h] - 1];
+	old = MemoryContextSwitchTo(TopTransactionContext);
+	if (st->nparts == st->cap_parts)
+	{
+		st->cap_parts = st->cap_parts > 0 ? st->cap_parts * 2 : 8;
+		st->parts = st->parts ? repalloc(st->parts, st->cap_parts * sizeof(SiftStagePart)) : palloc(st->cap_parts * sizeof(SiftStagePart));
+	}
+	p = &st->parts[st->nparts];
+	*p = (SiftStagePart) {.part_id = e->part_id,.rb = sift_rowbuf_new(&st->spec),.tid_min = UINT64_MAX};
+	memcpy(p->key_lo, e->key_lo, SIFT_BOUND_BYTES);
+	MemoryContextSwitchTo(old);
+	st->nparts++;
+	if (st->part_htab == NULL || (uint32) st->nparts * 2 > st->part_htab_mask + 1)
+		part_htab_rebuild(st);
+	else
+	{
+		uint32		h = part_home(st, e->part_id);
+
+		while (st->part_htab[h] != 0)
+			h = (h + 1) & st->part_htab_mask;
+		st->part_htab[h] = st->nparts;
+	}
+	sift_stage_part_changed(st, p);
+	return p;
+}
+
+void
+sift_stage_part_changed(SiftTxnStage *st, SiftStagePart *p)
+{
+	st->mem_bytes += p->rb->mem_bytes - p->mem_seen;
+	st->total_rows += (uint64) p->rb->n - p->rows_seen;
+	p->mem_seen = p->rb->mem_bytes;
+	p->rows_seen = p->rb->n;
+}
+
+void
+sift_stage_reset_parts(SiftTxnStage *st)
+{
+	for (int i = 0; i < st->nparts; i++)
+		sift_rowbuf_free(st->parts[i].rb);
+	st->nparts = 0;
+	st->mem_bytes = 0;
+	st->total_rows = 0;
+	st->tid_min = UINT64_MAX;
+	st->tid_max = 0;
+	if (st->part_htab != NULL)
+		memset(st->part_htab, 0, (st->part_htab_mask + 1) * sizeof(uint32));
+	sift_stage_tid_invalidate(st);
+}
+
+void
+sift_stage_renew_part(SiftTxnStage *st, SiftStagePart *p)
 {
 	MemoryContext old;
 
-	for (int i = 0; i < st->nparts; i++)
-		if (st->parts[i].part_id == e->part_id)
-			return &st->parts[i];
+	sift_rowbuf_free(p->rb);
 	old = MemoryContextSwitchTo(TopTransactionContext);
-	st->parts = st->parts ? repalloc(st->parts, (st->nparts + 1) * sizeof(SiftStagePart)) : palloc((st->nparts + 1) * sizeof(SiftStagePart));
-	st->parts[st->nparts] = (SiftStagePart) {.part_id = e->part_id,.rb = sift_rowbuf_new(&st->spec)};
-	memcpy(st->parts[st->nparts].key_lo, e->key_lo, SIFT_BOUND_BYTES);
+	p->rb = sift_rowbuf_new(&st->spec);
 	MemoryContextSwitchTo(old);
-	return &st->parts[st->nparts++];
+	p->tid_min = UINT64_MAX;
+	p->tid_max = 0;
+	sift_stage_part_changed(st, p);
+	sift_stage_tid_invalidate(st);
 }
 
-static uint64
-stage_mem(const SiftTxnStage *st)
-{
-	uint64		m = 0;
+/* ---- the rows in memory by address ---- */
 
+static uint32
+tid_home(const SiftTxnStage *st, uint64 tid)
+{
+	return (uint32) (sift_fmix64(tid) & st->tid_htab_mask);
+}
+
+/* An empty table for live rows, at most half full: the slots are all ones, which is an empty slot */
+static void
+tid_htab_alloc(SiftTxnStage *st, uint32 live)
+{
+	uint32		cap = pg_nextpower2_32(Max(2 * live, 64));
+
+	if (st->tid_htab != NULL)
+		pfree(st->tid_htab);
+	st->tid_htab = MemoryContextAlloc(TopTransactionContext, cap * sizeof(SiftStageTidSlot));
+	memset(st->tid_htab, 0xFF, cap * sizeof(SiftStageTidSlot));
+	st->tid_htab_mask = cap - 1;
+	st->tid_htab_used = 0;
+	st->tid_htab_live = 0;
+}
+
+static void
+tid_htab_put(SiftTxnStage *st, uint64 tid, uint32 part_idx, uint32 row_idx)
+{
+	uint32		h = tid_home(st, tid);
+
+	while (st->tid_htab[h].part_idx < SIFT_STG_TID_TOMB)
+		h = (h + 1) & st->tid_htab_mask;
+	st->tid_htab_used += st->tid_htab[h].part_idx == SIFT_STG_TID_EMPTY;
+	st->tid_htab[h] = (SiftStageTidSlot) {.tid = tid,.part_idx = part_idx,.row_idx = row_idx};
+	st->tid_htab_live++;
+}
+
+static void
+tid_htab_build(SiftTxnStage *st)
+{
+	tid_htab_alloc(st, (uint32) st->total_rows);
 	for (int i = 0; i < st->nparts; i++)
-		m += st->parts[i].rb->mem_bytes;
-	return m;
+		for (int r = 0; r < st->parts[i].rb->n; r++)
+			tid_htab_put(st, st->parts[i].rb->tid[r], i, r);
+	st->tid_htab_valid = true;
+}
+
+static void
+tid_htab_ensure(SiftTxnStage *st)
+{
+	if (!st->tid_htab_valid)
+		tid_htab_build(st);
+}
+
+void
+sift_stage_tid_invalidate(SiftTxnStage *st)
+{
+	st->tid_htab_valid = false;
+}
+
+static void
+tid_htab_add(SiftTxnStage *st, uint64 tid, uint32 part_idx, uint32 row_idx)
+{
+	if ((uint64) (st->tid_htab_used + 1) * 10 > (uint64) (st->tid_htab_mask + 1) * 6)
+		tid_htab_build(st);
+	else
+		tid_htab_put(st, tid, part_idx, row_idx);
+}
+
+/* The slot of the row of the buffer at the place (the table is valid, the row is staged) */
+static SiftStageTidSlot *
+tid_htab_find(SiftTxnStage *st, uint64 tid, uint32 part_idx, uint32 row_idx)
+{
+	for (uint32 h = tid_home(st, tid);; h = (h + 1) & st->tid_htab_mask)
+	{
+		SiftStageTidSlot *s = &st->tid_htab[h];
+
+		if (s->part_idx == SIFT_STG_TID_EMPTY)
+			return NULL;
+		if (s->tid == tid && s->part_idx == part_idx && s->row_idx == row_idx)
+			return s;
+	}
+}
+
+static bool
+tid_htab_has(const SiftTxnStage *st, uint64 tid)
+{
+	for (uint32 h = tid_home(st, tid); st->tid_htab[h].part_idx != SIFT_STG_TID_EMPTY; h = (h + 1) & st->tid_htab_mask)
+		if (st->tid_htab[h].tid == tid && st->tid_htab[h].part_idx < SIFT_STG_TID_TOMB)
+			return true;
+	return false;
+}
+
+void
+sift_stage_row_added(SiftTxnStage *st, SiftStagePart *p, uint64 tid)
+{
+	sift_stage_part_changed(st, p);
+	st->tid_min = Min(st->tid_min, tid);
+	st->tid_max = Max(st->tid_max, tid);
+	p->tid_min = Min(p->tid_min, tid);
+	p->tid_max = Max(p->tid_max, tid);
+	if (st->tid_htab_valid)
+		tid_htab_add(st, tid, (uint32) (p - st->parts), (uint32) (p->rb->n - 1));
 }
 
 void
 sift_stage_add(Relation rel, SiftTxnStage *st, const uint8 *key, uint64 tid, uint32 xmin, uint32 cmin, const SiftCell *cells, const SiftCell *const *elem)
 {
-	SiftStagePart *p = stage_part(st, &st->routing.entries[route(&st->routing, key)]);
+	SiftStagePart *p = sift_stage_part_get(st, &st->routing.entries[sift_stage_route(&st->routing, key)]);
 	MemoryContext old = MemoryContextSwitchTo(p->rb->cx);
 
 	sift_rowbuf_add(p->rb, tid, xmin, cmin, GetCurrentSubTransactionId(), key, cells, elem);
 	MemoryContextSwitchTo(old);
+	sift_stage_row_added(st, p, tid);
 	if (st->bulk_rows > 0)
-		bulk_check(rel, st, p);
-	else if (stage_mem(st) >= (uint64) work_mem * 1024)
+		sift_stage_bulk_check(rel, st, p);
+	else if (sift_stage_mem(st) >= (uint64) work_mem * 1024)
 		sift_stage_flush(rel);
 }
 
@@ -476,88 +558,123 @@ sift_stage_delete_spec_abort(SiftTxnStage *st, const uint8 *key, uint64 tid)
 	st->dels[st->ndels - 1].xmax = FrozenTransactionId;
 }
 
-static bool
-drop_address(SiftRowBuf *rb, int r, void *arg)
+/* The row at the place goes (the table is valid): the table follows the rows the buffer moves */
+static void
+drop_row(SiftTxnStage *st, uint32 part_idx, uint32 row_idx)
 {
-	return rb->tid[r] == *(const uint64 *) arg;
+	SiftStagePart *p = &st->parts[part_idx];
+	SiftRowBuf *rb = p->rb;
+	SiftStageTidSlot *gone = tid_htab_find(st, rb->tid[row_idx], part_idx, row_idx);
+	uint32		last = rb->n - 1;
+	uint64		moved = rb->tid[last];
+
+	gone->part_idx = SIFT_STG_TID_TOMB;
+	st->tid_htab_live--;
+	sift_rowbuf_drop_at(rb, row_idx);
+	if (!sift_rowbuf_drops_move_last(rb))
+		for (uint32 r = row_idx; r < (uint32) rb->n; r++)
+			tid_htab_find(st, rb->tid[r], part_idx, r + 1)->row_idx = r;
+	else if (row_idx != last)
+		tid_htab_find(st, moved, part_idx, last)->row_idx = row_idx;
+	sift_stage_part_changed(st, p);
+}
+
+/* The first buffer that holds a row at the address and the last row of it there, or false */
+static bool
+tid_last_row(const SiftTxnStage *st, uint64 tid, uint32 *part_idx, uint32 *row_idx)
+{
+	bool		found = false;
+
+	for (uint32 h = tid_home(st, tid); st->tid_htab[h].part_idx != SIFT_STG_TID_EMPTY; h = (h + 1) & st->tid_htab_mask)
+	{
+		const SiftStageTidSlot *s = &st->tid_htab[h];
+
+		if (s->tid != tid || s->part_idx >= SIFT_STG_TID_TOMB)
+			continue;
+		if (!found || s->part_idx < *part_idx || (s->part_idx == *part_idx && s->row_idx > *row_idx))
+		{
+			*part_idx = s->part_idx;
+			*row_idx = s->row_idx;
+			found = true;
+		}
+	}
+	return found;
+}
+
+bool
+sift_stage_cancel_tid(SiftTxnStage *st, uint64 tid)
+{
+	uint32		part_idx,
+				row_idx;
+	uint32		first;
+
+	if (st->total_rows == 0 || tid < st->tid_min || tid > st->tid_max)
+		return false;
+	tid_htab_ensure(st);
+	if (!tid_last_row(st, tid, &first, &row_idx))
+		return false;
+	do
+		drop_row(st, first, row_idx);
+	while (tid_last_row(st, tid, &part_idx, &row_idx) && part_idx == first);
+	return true;
 }
 
 bool
 sift_stage_cancel_insert(SiftTxnStage *st, uint64 tid)
 {
-	for (int i = 0; i < st->nparts; i++)
-		if (sift_rowbuf_drop_if(st->parts[i].rb, drop_address, &tid) > 0)
-			return true;
-	return false;
+	return sift_stage_cancel_tid(st, tid);
 }
 
-static int
-addr_cmp(const void *a, const void *b)
+static bool
+part_holds_in(const SiftStagePart *p, uint64 lo, uint64 hi)
 {
-	uint64		x = *(const uint64 *) a,
-				y = *(const uint64 *) b;
-
-	return x < y ? -1 : x > y;
+	if (p->rb->n == 0 || hi < p->tid_min || lo > p->tid_max)
+		return false;
+	for (int r = 0; r < p->rb->n; r++)
+		if (p->rb->tid[r] >= lo && p->rb->tid[r] <= hi)
+			return true;
+	return false;
 }
 
 bool
 sift_stage_holds_in(Relation rel, uint64 lo, uint64 hi)
 {
-	const SiftTxnStage *st = stage_of(rel);
+	SiftTxnStage *st = stage_of(rel);
 
-	if (st != NULL && st->host_pending > 0)
+	if (st == NULL)
+		return false;
+	if (st->host_pending > 0)
 		return true;
-	for (int i = 0; st != NULL && i < st->nparts; i++)
-		for (int r = 0; r < st->parts[i].rb->n; r++)
-			if (st->parts[i].rb->tid[r] >= lo && st->parts[i].rb->tid[r] <= hi)
+	if (st->total_rows == 0 || lo > hi || hi < st->tid_min || lo > st->tid_max)
+		return false;
+	if (hi - lo > SIFT_STG_POINT_PROBES)
+	{
+		for (int i = 0; i < st->nparts; i++)
+			if (part_holds_in(&st->parts[i], lo, hi))
 				return true;
-	return false;
-}
-
-typedef struct TidAt
-{
-	uint64		tid;
-	int			at;
-} TidAt;
-
-static int
-tid_at_cmp(const void *a, const void *b)
-{
-	return addr_cmp(&((const TidAt *) a)->tid, &((const TidAt *) b)->tid);
+		return false;
+	}
+	tid_htab_ensure(st);
+	for (uint64 tid = lo;; tid++)
+	{
+		if (tid_htab_has(st, tid))
+			return true;
+		if (tid == hi)
+			return false;
+	}
 }
 
 void
 sift_stage_rows_among(Relation rel, const uint64 *tids, int n, bool *held)
 {
-	const SiftTxnStage *st = stage_of(rel);
-	TidAt	   *sorted;
+	SiftTxnStage *st = stage_of(rel);
 
-	if (st == NULL || n == 0)
+	if (st == NULL || n == 0 || st->total_rows == 0)
 		return;
-	sorted = palloc(n * sizeof(TidAt));
+	tid_htab_ensure(st);
 	for (int i = 0; i < n; i++)
-		sorted[i] = (TidAt) {tids[i], i};
-	qsort(sorted, n, sizeof(TidAt), tid_at_cmp);
-	for (int p = 0; p < st->nparts; p++)
-		for (uint32 r = 0; r < st->parts[p].rb->n; r++)
-		{
-			uint64		tid = st->parts[p].rb->tid[r];
-			int			lo = 0,
-						hi = n;
-
-			while (lo < hi)
-			{
-				int			mid = (lo + hi) / 2;
-
-				if (sorted[mid].tid < tid)
-					lo = mid + 1;
-				else
-					hi = mid;
-			}
-			for (; lo < n && sorted[lo].tid == tid; lo++)
-				held[sorted[lo].at] = true;
-		}
-	pfree(sorted);
+		if (tid_htab_has(st, tids[i]))
+			held[i] = true;
 }
 
 const SiftTxnStage *
@@ -579,279 +696,8 @@ sift_stage_dead(Relation rel, Snapshot snap, int *n)
 	for (int i = 0; i < st->ndels; i++)
 		if (sift_vis_deleted(st->dels[i].xmax, st->dels[i].cmax, snap))
 			dead[(*n)++] = st->dels[i].tid;
-	qsort(dead, *n, sizeof(uint64), addr_cmp);
+	qsort(dead, *n, sizeof(uint64), sift_stage_addr_cmp);
 	return dead;
-}
-
-/* The wide values of the rows go to their own extents here and nowhere sooner: a transaction that aborts has written none */
-static void
-spill_wide_blobs(Relation rel, SiftRowBuf *rb)
-{
-	const SiftF2HostOps *host = sift_f2_store_open(rel)->host;
-
-	if (host->spill_wide_blobs != NULL)
-		host->spill_wide_blobs(rel, rb);
-}
-
-static bool
-fused_run(const SiftStagePart *p, const DelRun *run)
-{
-	return run != NULL && p->rb->n < SIFT_L0_FUSE_ROWS && run->to - run->from < SIFT_BULK_DEL_MIN;
-}
-
-/* The rows of a partition of an index over a heap as references to the tuples the heap holds: the rows are not written */
-static bool
-append_refs(Relation rel, SiftTxnStage *st, SiftStagePart *p, DelRun *run)
-{
-	uint32		n = p->rb->n;
-	SiftL0HeapRef *refs = palloc(n * sizeof(SiftL0HeapRef));
-	bool		done = false;
-
-	for (uint32 r = 0; r < n; r++)
-	{
-		refs[r] = (SiftL0HeapRef) {.xmin = p->rb->xmin[r]};
-		sift_f2_tid_set(&refs[r].ctid, p->rb->tid[r]);
-	}
-	if (fused_run(p, run))
-	{
-		int			nrecs;
-		SiftPendDelRec *recs = run_recs(st, run, &nrecs, true);
-
-		run->done = sift_l0_href_append_deleting(rel, p->part_id, p->key_lo, refs, n, recs, nrecs);
-		pfree(recs);
-		done = run->done;
-	}
-	done = done || sift_l0_href_append(rel, p->part_id, p->key_lo, refs, n);
-	pfree(refs);
-	return done;
-}
-
-/* Writes the rows of one partition as a part (or as references or a slab batch when they are few) */
-static void
-flush_part(Relation rel, SiftTxnStage *st, SiftStagePart *p, DelRun *run)
-{
-	SiftColIn  *cols;
-	SiftRows	r;
-	SiftPartDesc d;
-	SiftManifestEdit e = {.part_id = p->part_id,.key_lo = p->key_lo};
-
-	if (p->rb->n == 0)
-		return;
-	if (!st->by_value && sift_f2_store_open(rel)->host->host_kind == SIFT_F2_HOST_INDEX && p->rb->n <= SIFT_L0_HEAPREF_BATCH_MAX && append_refs(rel, st, p, run))
-		return;
-	spill_wide_blobs(rel, p->rb);
-	if (p->rb->n < SIFT_L0_MICRO_MIN)
-	{
-		sift_rowbuf_sort(p->rb, &st->spec);
-		if (fused_run(p, run))
-		{
-			int			nrecs;
-			SiftPendDelRec *recs = run_recs(st, run, &nrecs, true);
-
-			run->done = sift_l0_slab_append_deleting(rel, p->part_id, p->key_lo, p->rb, recs, nrecs, &st->spec);
-			pfree(recs);
-			if (run->done)
-				return;
-		}
-		if (sift_l0_slab_append(rel, p->part_id, p->key_lo, p->rb, &st->spec))
-			return;
-	}
-	bool		cold = st->bulk_rows > 0 && p->rb->n >= SIFT_BATCH_COLD_MIN_ROWS;
-	uint16		level = cold ? SIFT_MAX_PART_LEVEL : p->rb->n >= SIFT_L0_TO_L1_DIRECT_ROWS ? 1 : 0;
-	SiftCompressTier tier = cold ? SIFT_TIER_COLD_L2 : level > 0 ? SIFT_TIER_WARM_L1 : SIFT_TIER_HOT_L0;
-
-	cols = palloc(Max(st->spec.ncols, 1) * sizeof(SiftColIn));
-	sift_rowbuf_sort(p->rb, &st->spec);
-	sift_rowbuf_cluster(p->rb, &st->spec, tier);
-	r = sift_rowbuf_rows(p->rb, cols, &st->spec);
-	r.bulk_tail = cold;
-	d = sift_part_write_rows(rel, (uint32) p->part_id, sift_manifest_new_gen(rel, 1), level, tier, &r);
-	e.add_parts = &d;
-	e.nadd = 1;
-	sift_manifest_commit(rel, &e);
-}
-
-static void
-flush_and_renew(Relation rel, SiftTxnStage *st, SiftStagePart *p, DelRun *run)
-{
-	MemoryContext old;
-
-	flush_part(rel, st, p, run);
-	sift_rowbuf_free(p->rb);
-	old = MemoryContextSwitchTo(TopTransactionContext);
-	p->rb = sift_rowbuf_new(&st->spec);
-	MemoryContextSwitchTo(old);
-}
-
-/* The buffer of a partition that holds the flush count is written at once; the largest buffer is when all hold the budget (checked every SIFT_BATCH_RESET_ROWS rows of a buffer, not for each row) */
-static void
-bulk_check(Relation rel, SiftTxnStage *st, SiftStagePart *p)
-{
-	SiftManifestRead now;
-	SiftStagePart *big = p;
-
-	if (p->rb->n < (int) st->bulk_rows && ((p->rb->n % SIFT_BATCH_RESET_ROWS) != 0 || stage_mem(st) < st->bulk_budget))
-		return;
-	for (int i = 0; i < st->nparts; i++)
-		if (st->parts[i].rb->n > big->rb->n)
-			big = &st->parts[i];
-	now = sift_manifest_read_range(rel, NULL, NULL);
-	if (!sift_manifest_same_topology(&now, &st->routing))
-		flush_stage(rel, st, false);
-	else
-		flush_and_renew(rel, st, big, NULL);
-}
-
-static DelRun *
-run_of(DelRun *runs, int nruns, const SiftManifestRead *mr, uint64 part_id)
-{
-	for (int i = 0; i < nruns; i++)
-		if (mr->entries[runs[i].entry].part_id == part_id)
-			return &runs[i];
-	return NULL;
-}
-
-static void
-top_xid_rows(SiftRowBuf *rb)
-{
-	TransactionId top = GetTopTransactionId();
-
-	for (int r = 0; r < rb->n; r++)
-		if (TransactionIdIsNormal(rb->xmin[r]))
-			rb->xmin[r] = top;
-}
-
-/*
- * A row the transaction staged and deleted again (an INSERT its own DELETE or UPDATE ended) is in no snapshot a later statement can have: at the commit, when no subtransaction can roll back
- * either of the two, both are dropped, and nothing of the row is ever written. The rows and the deletes are matched by the address of the version.
- */
-typedef struct Cancel
-{
-	uint64	   *dead;			/* the addresses of the staged deletes, ascending */
-	int			ndead;
-	bool	   *hit;
-} Cancel;
-
-static bool
-cancels(SiftRowBuf *rb, int r, void *arg)
-{
-	Cancel	   *c = arg;
-	const uint64 *at = bsearch(&rb->tid[r], c->dead, c->ndead, sizeof(uint64), addr_cmp);
-
-	if (at == NULL)
-		return false;
-	c->hit[at - c->dead] = true;
-	return true;
-}
-
-static void
-cancel_staged(SiftTxnStage *st)
-{
-	Cancel		c = {.ndead = st->ndels};
-	int			kept = 0;
-	int			cancelled = 0;
-
-	if (st->ndels == 0)
-		return;
-	c.dead = palloc(st->ndels * sizeof(uint64));
-	for (int i = 0; i < st->ndels; i++)
-		c.dead[i] = st->dels[i].tid;
-	qsort(c.dead, st->ndels, sizeof(uint64), addr_cmp);
-	c.hit = palloc0(st->ndels * sizeof(bool));
-	for (int i = 0; i < st->nparts; i++)
-		cancelled += sift_rowbuf_drop_if(st->parts[i].rb, cancels, &c);
-	if (cancelled == 0)
-		return;
-	for (int i = 0; i < st->ndels; i++)
-	{
-		const uint64 *at = bsearch(&st->dels[i].tid, c.dead, c.ndead, sizeof(uint64), addr_cmp);
-		const uint64 *succ = st->dels[i].is_update ? bsearch(&st->dels[i].succ_tid, c.dead, c.ndead, sizeof(uint64), addr_cmp) : NULL;
-
-		if (c.hit[at - c.dead])
-			continue;
-		st->dels[i].is_update = st->dels[i].is_update && (succ == NULL || !c.hit[succ - c.dead]);
-		st->dels[kept++] = st->dels[i];
-	}
-	st->ndels = kept;
-}
-
-/*
- * Writes the rows the transaction staged. at_end: the transaction is about to commit or prepare, so what is staged is its own and that of its committed subtransactions (an
- * aborted one dropped its rows): they are written under the top transaction id, which is one version of a batch where the subtransactions are one each, and which no reader asks
- * pg_subtrans about. The deletes go with the rows of their partition when few of both are written.
- */
-static bool
-staged_part(const SiftPartitionEntry *e, void *arg)
-{
-	const SiftTxnStage *st = arg;
-
-	for (int i = 0; i < st->nparts; i++)
-		if (st->parts[i].part_id == e->part_id)
-			return true;
-	return false;
-}
-
-static void
-write_stage(Relation rel, SiftTxnStage *st, bool at_end)
-{
-	SiftManifestRead now = sift_manifest_read_range(rel, NULL, NULL);
-	DelRun	   *runs = NULL;
-	int			nruns = 0;
-	MemoryContext old;
-
-	if (at_end)
-	{
-		cancel_staged(st);
-		for (int i = 0; i < st->nparts; i++)
-			top_xid_rows(st->parts[i].rb);
-	}
-	if (!sift_manifest_same_topology(&now, &st->routing))
-	{
-		SiftRowBuf *all = sift_rowbuf_new(&st->spec);
-
-		for (int i = 0; i < st->nparts; i++)
-			for (int r = 0; r < st->parts[i].rb->n; r++)
-				sift_rowbuf_copy_row(all, st->parts[i].rb, r, st->parts[i].rb->xmin[r], st->parts[i].rb->cmin[r], st->parts[i].rb->subxid[r]);
-		for (int i = 0; i < st->nparts; i++)
-			sift_rowbuf_free(st->parts[i].rb);
-		st->nparts = 0;
-		old = MemoryContextSwitchTo(TopTransactionContext);
-		pfree(st->routing.entries);
-		st->routing = now;
-		st->routing.entries = memcpy(palloc(now.n * sizeof(SiftPartitionEntry)), now.entries, now.n * sizeof(SiftPartitionEntry));
-		MemoryContextSwitchTo(old);
-		for (int r = 0; r < all->n; r++)
-			sift_rowbuf_copy_row(stage_part(st, &now.entries[route(&now, all->keys[r])])->rb, all, r, all->xmin[r], all->cmin[r], all->subxid[r]);
-		sift_rowbuf_free(all);
-	}
-	if (at_end)
-		runs = del_runs(st, &now, &nruns);
-	for (int i = 0; i < st->nparts; i++)
-		flush_and_renew(rel, st, &st->parts[i], run_of(runs, nruns, &now, st->parts[i].part_id));
-	sift_f2_maint_note_parts(rel, now.entries, now.n, staged_part, st);
-	if (at_end)
-		drop_done_deletes(st, runs, nruns);
-}
-
-#ifdef SIFT_TESTING
-uint64		sift_stage_flushes = 0;
-#endif
-
-/* The buffers that writing parts takes are the flush's own: a statement that flushes at each full index page does not keep them in its executor context */
-static void
-flush_stage(Relation rel, SiftTxnStage *st, bool at_end)
-{
-	MemoryContext scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift stage flush");
-	MemoryContext caller = MemoryContextSwitchTo(scratch);
-
-#ifdef SIFT_TESTING
-	sift_stage_flushes += st->nparts > 0 || st->ndels > 0;
-#endif
-	write_stage(rel, st, at_end);
-	MemoryContextSwitchTo(caller);
-	MemoryContextDelete(scratch);
-	if (st->host_stage != NULL)
-		st->host_event(rel, st, at_end ? SIFT_STAGE_FLUSH_AT_END : SIFT_STAGE_FLUSH, 0, 0);
 }
 
 void
@@ -860,7 +706,7 @@ sift_stage_flush(Relation rel)
 	SiftTxnStage *st = stage_of(rel);
 
 	if (st != NULL)
-		flush_stage(rel, st, false);
+		sift_stage_flush_rows(rel, st, false);
 }
 
 void
@@ -871,7 +717,7 @@ sift_stage_flush_all(void)
 		Relation	rel = relation_open(st->relid, RowExclusiveLock);
 
 		if (RelFileLocatorEquals(st->locator, rel->rd_locator))
-			flush_stage(rel, st, false);
+			sift_stage_flush_rows(rel, st, false);
 		relation_close(rel, NoLock);
 	}
 }
@@ -880,11 +726,8 @@ uint64
 sift_stage_rows(Relation rel)
 {
 	const SiftTxnStage *st = stage_of(rel);
-	uint64		n = 0;
 
-	for (int i = 0; st != NULL && i < st->nparts; i++)
-		n += st->parts[i].rb->n;
-	return n;
+	return st != NULL ? st->total_rows : 0;
 }
 
 bool
@@ -892,5 +735,5 @@ sift_stage_has_pending(Relation rel)
 {
 	const SiftTxnStage *st = stage_of(rel);
 
-	return st != NULL && (st->ndels > 0 || st->host_pending > 0 || sift_stage_rows(rel) > 0);
+	return st != NULL && (st->ndels > 0 || st->host_pending > 0 || st->total_rows > 0);
 }

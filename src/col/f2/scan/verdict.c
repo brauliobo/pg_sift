@@ -7,7 +7,7 @@
 #include "core/popcount.h"
 
 static Verdict
-pred_row(const SiftColDef *d, const SiftColPred *p, const ColView *cv, int r)
+pred_row(const SiftColDef *d, const SiftColPred *p, SiftPredSet *ps, const ColView *cv, int r)
 {
 	bool		isnull;
 
@@ -31,15 +31,9 @@ pred_row(const SiftColDef *d, const SiftColPred *p, const ColView *cv, int r)
 	if (sift_f2_undecided(d, p))
 		return V_MAYBE;
 	if (cv->kind == SIFT_CELL_STR)
-		return (Verdict) sift_f2_str_verdict(p, cv->s[r], cv->slen[r]);
+		return (Verdict) (p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_NOTIN ? (sift_f2_str_pred_in(ps, p, cv->s[r], cv->slen[r]) ? SIFT_LIKE_YES : SIFT_LIKE_NO) : sift_f2_str_verdict(p, cv->s[r], cv->slen[r]));
 	if (p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_NOTIN)
-	{
-		bool		in = false;
-
-		for (int j = 0; j < p->nvals && !in; j++)
-			in = cv->kind == SIFT_CELL_INT ? cv->i[r] == p->vals[j].v.i : sift_f2_f8_cmp(cv->f[r], p->vals[j].v.f) == 0;
-		return in == (p->op == SIFT_COLOP_IN) ? V_YES : V_NO;
-	}
+		return (cv->kind == SIFT_CELL_INT ? sift_f2_in_i64(ps, p, cv->i[r]) : sift_f2_in_f8(ps, p, cv->f[r])) == (p->op == SIFT_COLOP_IN) ? V_YES : V_NO;
 	return sift_f2_cmp_op(p->op, cv->kind == SIFT_CELL_INT ? (cv->i[r] < p->vals[0].v.i ? -1 : cv->i[r] > p->vals[0].v.i) : sift_f2_f8_cmp(cv->f[r], p->vals[0].v.f)) ? V_YES : V_NO;
 }
 
@@ -54,7 +48,7 @@ sift_f2_row_verdict(const SiftColSchema *schema, const F2Scan *s, const ColView 
 
 		if (decided[k])
 			continue;
-		v = pred_row(&schema->cols[s->preds[k].col], &s->preds[k], &views[s->preds[k].col], r);
+		v = pred_row(&schema->cols[s->preds[k].col], &s->preds[k], &s->psets[k], &views[s->preds[k].col], r);
 
 		if (v == V_NO)
 			return V_NO;

@@ -12,11 +12,13 @@
 #include <unistd.h>
 
 #include "miscadmin.h"
+#include "port/pg_bitutils.h"
 
 #include "col/f2/f2_tier_int.h"
 
 #define CHUNK_MAGIC		0x4B434653U		/* "SFCK" */
-#define NBUCKETS		4096
+#define MIN_BUCKETS		64
+#define MAX_FIRST_BUCKETS	(UINT32_C(1) << 20)
 #define MAX_RUN_BYTES	(UINT32_C(16) << 20)
 
 typedef struct Chunk
@@ -44,23 +46,28 @@ struct SiftTierCache
 	uint32		chunk_bytes;
 	Chunk	   *mru;
 	Chunk	   *lru;
-	Chunk	   *buckets[NBUCKETS];
+	Chunk	  **buckets;		/* a power of two of chains, doubled when a chain would average more than three quarters of a chunk */
+	uint32		nbuckets;
 	SiftTierCacheStats st;
 	uint64		store_errors;
 };
 
 static uint32
-bucket_of(uint64 hi, uint64 lo, uint32 idx)
+hash_of(uint64 hi, uint64 lo, uint32 idx)
 {
-	uint64		h = (hi * 31 + lo + idx) * UINT64CONST(0x9E3779B97F4A7C15);
+	return (uint32) (((hi * 31 + lo + idx) * UINT64CONST(0x9E3779B97F4A7C15)) >> 24);
+}
 
-	return (uint32) (h >> 40) & (NBUCKETS - 1);
+static uint32
+bucket_of(const SiftTierCache *c, uint64 hi, uint64 lo, uint32 idx)
+{
+	return hash_of(hi, lo, idx) & (c->nbuckets - 1);
 }
 
 static Chunk *
 find(SiftTierCache *c, uint64 hi, uint64 lo, uint32 idx)
 {
-	for (Chunk *e = c->buckets[bucket_of(hi, lo, idx)]; e != NULL; e = e->hnext)
+	for (Chunk *e = c->buckets[bucket_of(c, hi, lo, idx)]; e != NULL; e = e->hnext)
 		if (e->hash_hi == hi && e->hash_lo == lo && e->idx == idx)
 			return e;
 	return NULL;
@@ -103,7 +110,7 @@ static void
 drop(SiftTierCache *c, Chunk *e)
 {
 	char		path[600];
-	Chunk	  **pp = &c->buckets[bucket_of(e->hash_hi, e->hash_lo, e->idx)];
+	Chunk	  **pp = &c->buckets[bucket_of(c, e->hash_hi, e->hash_lo, e->idx)];
 
 	while (*pp != e)
 		pp = &(*pp)->hnext;
@@ -116,12 +123,36 @@ drop(SiftTierCache *c, Chunk *e)
 	pfree(e);
 }
 
+/* The chains again, twice as many: a cache of many chunks keeps a chain of about one however much it holds */
+static void
+grow_buckets(SiftTierCache *c)
+{
+	uint32		n = c->nbuckets * 2;
+	Chunk	  **buckets = MemoryContextAllocZero(c->cx, n * sizeof(Chunk *));
+
+	for (uint32 i = 0; i < c->nbuckets; i++)
+		for (Chunk *e = c->buckets[i], *next; e != NULL; e = next)
+		{
+			uint32		b = hash_of(e->hash_hi, e->hash_lo, e->idx) & (n - 1);
+
+			next = e->hnext;
+			e->hnext = buckets[b];
+			buckets[b] = e;
+		}
+	pfree(c->buckets);
+	c->buckets = buckets;
+	c->nbuckets = n;
+}
+
 static Chunk *
 add(SiftTierCache *c, uint64 hi, uint64 lo, uint32 idx, uint32 bytes)
 {
 	Chunk	   *e = MemoryContextAllocZero(c->cx, sizeof(Chunk));
-	uint32		b = bucket_of(hi, lo, idx);
+	uint32		b;
 
+	if (c->st.resident_chunks * 4 > (uint64) c->nbuckets * 3)
+		grow_buckets(c);
+	b = bucket_of(c, hi, lo, idx);
 	e->hash_hi = hi;
 	e->hash_lo = lo;
 	e->idx = idx;
@@ -224,6 +255,8 @@ sift_tier_cache_open(const char *dir, uint64 budget_bytes, uint32 chunk_bytes, S
 	snprintf(c->dir, sizeof(c->dir), "%s", dir);
 	c->budget = budget_bytes;
 	c->chunk_bytes = chunk_bytes;
+	c->nbuckets = pg_nextpower2_32(Max(MIN_BUCKETS, (uint32) Min(budget_bytes / chunk_bytes * 2, MAX_FIRST_BUCKETS)));
+	c->buckets = MemoryContextAllocZero(c->cx, c->nbuckets * sizeof(Chunk *));
 	snprintf(probe, sizeof(probe), "%s/", dir);
 	for (char *p = probe + 1; *p; p++)
 		if (*p == '/')
@@ -232,6 +265,7 @@ sift_tier_cache_open(const char *dir, uint64 budget_bytes, uint32 chunk_bytes, S
 			if (mkdir(probe, 0700) != 0 && errno != EEXIST)
 			{
 				sift_tier_fail(err, SIFT_TIER_E_IO, "the cache directory %s cannot be made: %m", dir);
+				pfree(c->buckets);
 				pfree(c);
 				return NULL;
 			}
@@ -251,6 +285,7 @@ sift_tier_cache_close(SiftTierCache *c)
 		lru_unlink(c, e);
 		pfree(e);
 	}
+	pfree(c->buckets);
 	pfree(c);
 }
 

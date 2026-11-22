@@ -17,6 +17,28 @@ value_slot_bytes(SiftCellKind kind)
 	return 2 + (kind == SIFT_CELL_INT || kind == SIFT_CELL_F8 ? 8 : 12);
 }
 
+/* The columns of elements of each group, in one counting pass: a row is then walked as its groups and the children of each, not as every column for every group */
+static void
+build_groups(SiftRowBuf *rb)
+{
+	int			fill = 0;
+
+	rb->groups = MemoryContextAlloc(rb->cx, rb->ncols * sizeof(int16));
+	rb->child_off = MemoryContextAllocZero(rb->cx, (rb->ncols + 1) * sizeof(int16));
+	rb->children = MemoryContextAlloc(rb->cx, rb->ncols * sizeof(int16));
+	for (int g = 0; g < rb->ncols; g++)
+		if (sift_rowbuf_is_group(rb, g))
+			rb->groups[rb->ngroups++] = g;
+	for (int gi = 0; gi < rb->ngroups; gi++)
+	{
+		rb->child_off[gi] = fill;
+		for (int c = 0; c < rb->ncols; c++)
+			if (rb->parent[c] == rb->groups[gi])
+				rb->children[fill++] = c;
+	}
+	rb->child_off[rb->ngroups] = fill;
+}
+
 SiftRowBuf *
 sift_rowbuf_new(const SiftPartSpec *spec)
 {
@@ -47,6 +69,7 @@ sift_rowbuf_new(const SiftPartSpec *spec)
 		for (int c = 0; c < ncols; c++)
 			if (rb->parent[c] >= 0)
 				rb->estart[rb->parent[c]] = MemoryContextAllocZero(cx, 2 * sizeof(uint32));
+		build_groups(rb);
 	}
 	rb->row_slot_bytes = sizeof(uint64) + 3 * sizeof(uint32) + SIFT_BOUND_BYTES;
 	for (int c = 0; c < ncols; c++)
@@ -119,20 +142,22 @@ reserve(SiftRowBuf *rb, int extra)
 }
 
 static void
-reserve_elems(SiftRowBuf *rb, int g, uint32 extra)
+reserve_elems(SiftRowBuf *rb, int gi, uint32 extra)
 {
+	int			g = rb->groups[gi];
 	uint32		need = rb->nelem[g] + extra,
 				newcap;
 
 	if (need <= rb->ecap[g])
 		return;
 	newcap = Max(Max(64, rb->ecap[g] + rb->ecap[g] / 4), need);
-	for (int c = 0; c < rb->ncols; c++)
-		if (rb->parent[c] == g)
-		{
-			grow_column(rb, c, rb->ecap[g], newcap);
-			rb->mem_bytes += (uint64) (newcap - rb->ecap[g]) * value_slot_bytes(rb->kinds[c]);
-		}
+	for (int k = rb->child_off[gi]; k < rb->child_off[gi + 1]; k++)
+	{
+		int			c = rb->children[k];
+
+		grow_column(rb, c, rb->ecap[g], newcap);
+		rb->mem_bytes += (uint64) (newcap - rb->ecap[g]) * value_slot_bytes(rb->kinds[c]);
+	}
 	rb->ecap[g] = newcap;
 }
 
@@ -222,19 +247,16 @@ sift_rowbuf_add(SiftRowBuf *rb, uint64 tid, uint32 xmin, uint32 cmin, SubTransac
 	for (int c = 0; c < rb->ncols; c++)
 		if (!sift_rowbuf_is_child(rb, c))
 			set_cell(rb, rb->n, c, &cells[c]);
-	for (int g = 0; g < rb->ncols; g++)
+	for (int gi = 0; gi < rb->ngroups; gi++)
 	{
-		uint32		cnt;
+		int			g = rb->groups[gi];
+		uint32		cnt = cells[g].isnull ? 0 : (uint32) cells[g].i;
 
-		if (!sift_rowbuf_is_group(rb, g))
-			continue;
-		cnt = cells[g].isnull ? 0 : (uint32) cells[g].i;
 		rb->estart[g][rb->n] = rb->nelem[g];
-		reserve_elems(rb, g, cnt);
-		for (int c = 0; c < rb->ncols; c++)
-			if (rb->parent[c] == g)
-				for (uint32 j = 0; j < cnt; j++)
-					set_cell(rb, rb->nelem[g] + j, c, &elem[c][j]);
+		reserve_elems(rb, gi, cnt);
+		for (int k = rb->child_off[gi]; k < rb->child_off[gi + 1]; k++)
+			for (uint32 j = 0; j < cnt; j++)
+				set_cell(rb, rb->nelem[g] + j, rb->children[k], &elem[rb->children[k]][j]);
 		rb->nelem[g] += cnt;
 		rb->estart[g][rb->n + 1] = rb->nelem[g];
 	}
@@ -543,23 +565,21 @@ gather_column(SiftRowBuf *rb, int c, const uint32 *src_start, const uint32 *cnt,
 static void
 reorder_elements(SiftRowBuf *rb, const int *perm)
 {
-	for (int g = 0; g < rb->ncols; g++)
+	for (int gi = 0; gi < rb->ngroups; gi++)
 	{
+		int			g = rb->groups[gi];
 		uint32	   *src = palloc(Max(rb->n, 1) * sizeof(uint32)),
 				   *cnt = palloc(Max(rb->n, 1) * sizeof(uint32)),
 				   *start = rb->estart[g];
 		uint32		total = 0;
 
-		if (!sift_rowbuf_is_group(rb, g))
-			continue;
 		for (int k = 0; k < rb->n; k++)
 		{
 			src[k] = start[perm[k]];
 			cnt[k] = start[perm[k] + 1] - start[perm[k]];
 		}
-		for (int c = 0; c < rb->ncols; c++)
-			if (rb->parent[c] == g)
-				gather_column(rb, c, src, cnt, rb->n, rb->nelem[g]);
+		for (int k = rb->child_off[gi]; k < rb->child_off[gi + 1]; k++)
+			gather_column(rb, rb->children[k], src, cnt, rb->n, rb->nelem[g]);
 		for (int k = 0; k < rb->n; k++)
 		{
 			start[k] = total;
@@ -600,6 +620,38 @@ sift_rowbuf_drop_sub(SiftRowBuf *rb, SubTransactionId sub, SubTransactionId to)
 	return sift_rowbuf_drop_if(rb, sub_drops, &m);
 }
 
+/* Row src of the arrays of the rows put in the place of row dst (the values of the elements stay where they are) */
+static void
+move_row(SiftRowBuf *rb, int dst, int src)
+{
+	rb->tid[dst] = rb->tid[src];
+	rb->xmin[dst] = rb->xmin[src];
+	rb->cmin[dst] = rb->cmin[src];
+	rb->subxid[dst] = rb->subxid[src];
+	memcpy(rb->keys[dst], rb->keys[src], SIFT_BOUND_BYTES);
+	for (int c = 0; c < rb->ncols; c++)
+	{
+		if (sift_rowbuf_is_child(rb, c))
+			continue;
+		rb->isnull[c][dst] = rb->isnull[c][src];
+		rb->tag[c][dst] = rb->tag[c][src];
+		if (rb->kinds[c] == SIFT_CELL_INT)
+			rb->i[c][dst] = rb->i[c][src];
+		else if (rb->kinds[c] == SIFT_CELL_F8)
+			rb->f[c][dst] = rb->f[c][src];
+		else
+		{
+			rb->s[c][dst] = rb->s[c][src];
+			rb->slen[c][dst] = rb->slen[c][src];
+		}
+		if (rb->xpay[c] != NULL)
+		{
+			rb->xpay[c][dst] = rb->xpay[c][src];
+			rb->xplen[c][dst] = rb->xplen[c][src];
+		}
+	}
+}
+
 int
 sift_rowbuf_drop_if(SiftRowBuf *rb, SiftRowDrop drop, void *arg)
 {
@@ -614,77 +666,68 @@ sift_rowbuf_drop_if(SiftRowBuf *rb, SiftRowDrop drop, void *arg)
 			dropped++;
 			continue;
 		}
-		for (int g = 0; g < rb->ncols; g++)
+		for (int gi = 0; gi < rb->ngroups; gi++)
 		{
-			uint32		from,
-						cnt;
+			int			g = rb->groups[gi];
+			uint32		from = rb->estart[g][r],
+						cnt = rb->estart[g][r + 1] - from;
 
-			if (!sift_rowbuf_is_group(rb, g))
-				continue;
-			from = rb->estart[g][r];
-			cnt = rb->estart[g][r + 1] - from;
-			for (int c = 0; c < rb->ncols; c++)
-				if (rb->parent[c] == g && from != total[g])
+			for (int k = rb->child_off[gi]; k < rb->child_off[gi + 1] && from != total[g]; k++)
+			{
+				int			c = rb->children[k];
+
+				memmove(&rb->isnull[c][total[g]], &rb->isnull[c][from], cnt * sizeof(bool));
+				memmove(&rb->tag[c][total[g]], &rb->tag[c][from], cnt);
+				if (rb->kinds[c] == SIFT_CELL_INT)
+					memmove(&rb->i[c][total[g]], &rb->i[c][from], cnt * sizeof(int64));
+				else if (rb->kinds[c] == SIFT_CELL_F8)
+					memmove(&rb->f[c][total[g]], &rb->f[c][from], cnt * sizeof(double));
+				else
 				{
-					memmove(&rb->isnull[c][total[g]], &rb->isnull[c][from], cnt * sizeof(bool));
-					memmove(&rb->tag[c][total[g]], &rb->tag[c][from], cnt);
-					if (rb->kinds[c] == SIFT_CELL_INT)
-						memmove(&rb->i[c][total[g]], &rb->i[c][from], cnt * sizeof(int64));
-					else if (rb->kinds[c] == SIFT_CELL_F8)
-						memmove(&rb->f[c][total[g]], &rb->f[c][from], cnt * sizeof(double));
-					else
-					{
-						memmove(&rb->s[c][total[g]], &rb->s[c][from], cnt * sizeof(char *));
-						memmove(&rb->slen[c][total[g]], &rb->slen[c][from], cnt * sizeof(uint32));
-					}
-					if (rb->xpay[c] != NULL)
-					{
-						memmove(&rb->xpay[c][total[g]], &rb->xpay[c][from], cnt * sizeof(char *));
-						memmove(&rb->xplen[c][total[g]], &rb->xplen[c][from], cnt * sizeof(uint32));
-					}
+					memmove(&rb->s[c][total[g]], &rb->s[c][from], cnt * sizeof(char *));
+					memmove(&rb->slen[c][total[g]], &rb->slen[c][from], cnt * sizeof(uint32));
 				}
+				if (rb->xpay[c] != NULL)
+				{
+					memmove(&rb->xpay[c][total[g]], &rb->xpay[c][from], cnt * sizeof(char *));
+					memmove(&rb->xplen[c][total[g]], &rb->xplen[c][from], cnt * sizeof(uint32));
+				}
+			}
 			rb->estart[g][keep] = total[g];
 			total[g] += cnt;
 		}
 		if (keep != r)
-		{
-			rb->tid[keep] = rb->tid[r];
-			rb->xmin[keep] = rb->xmin[r];
-			rb->cmin[keep] = rb->cmin[r];
-			rb->subxid[keep] = rb->subxid[r];
-			memcpy(rb->keys[keep], rb->keys[r], SIFT_BOUND_BYTES);
-			for (int c = 0; c < rb->ncols; c++)
-			{
-				if (sift_rowbuf_is_child(rb, c))
-					continue;
-				rb->isnull[c][keep] = rb->isnull[c][r];
-				rb->tag[c][keep] = rb->tag[c][r];
-				if (rb->kinds[c] == SIFT_CELL_INT)
-					rb->i[c][keep] = rb->i[c][r];
-				else if (rb->kinds[c] == SIFT_CELL_F8)
-					rb->f[c][keep] = rb->f[c][r];
-				else
-				{
-					rb->s[c][keep] = rb->s[c][r];
-					rb->slen[c][keep] = rb->slen[c][r];
-				}
-				if (rb->xpay[c] != NULL)
-				{
-					rb->xpay[c][keep] = rb->xpay[c][r];
-					rb->xplen[c][keep] = rb->xplen[c][r];
-				}
-			}
-		}
+			move_row(rb, keep, r);
 		keep++;
 	}
 	rb->n = keep;
-	for (int g = 0; g < rb->ncols; g++)
-		if (sift_rowbuf_is_group(rb, g))
-		{
-			rb->estart[g][keep] = total[g];
-			rb->nelem[g] = total[g];
-		}
+	for (int gi = 0; gi < rb->ngroups; gi++)
+	{
+		int			g = rb->groups[gi];
+
+		rb->estart[g][keep] = total[g];
+		rb->nelem[g] = total[g];
+	}
 	return dropped;
+}
+
+static bool
+is_row(SiftRowBuf *rb, int r, void *arg)
+{
+	return r == *(const int *) arg;
+}
+
+void
+sift_rowbuf_drop_at(SiftRowBuf *rb, int row)
+{
+	if (rb->estart != NULL)
+	{
+		(void) sift_rowbuf_drop_if(rb, is_row, &row);
+		return;
+	}
+	if (row != rb->n - 1)
+		move_row(rb, row, rb->n - 1);
+	rb->n--;
 }
 
 typedef struct SortCtx

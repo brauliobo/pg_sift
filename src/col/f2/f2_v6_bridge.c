@@ -13,6 +13,8 @@
 #include "utils/memutils.h"
 
 #include "col/am.h"
+#include "col/f2/f2.h"
+#include "col/f2/f2_marks.h"
 #include "col/f2/f2_v6_bridge.h"
 #include "col/f2/f2_v6_read.h"
 #include "col/f2/f2_pred.h"
@@ -89,6 +91,9 @@ typedef struct F2Run
 	const SiftPartitionEntry *e;
 	MemoryContext cx;			/* the granule in cur, reset when the next is read */
 	uint32		g;				/* the next granule to read */
+	uint32		spans[SIFT_F2_MAX_RANGES][2];	/* the granules the key ranges of the quals can reach: [spans[i][0], spans[i][1]) */
+	int			nspans;
+	int			span;			/* the span of the next granule */
 	F2V6Gran	cur;
 	int			pos;
 	bool		live;
@@ -115,12 +120,16 @@ struct F2Src
 	int			bound_leaf[SIFT_V6_MAX_BOUNDS];
 	SiftF2TimeWin win;
 	SiftF2KeySet keys;			/* the integers of the lead key the bounds of the quals leave */
+	SiftKeyPlan keyplan;		/* and the ranges of the whole key they leave */
 	bool		possible;		/* false: none */
 	SiftV6SkipStats skips;
 	int			pi;				/* the next partition */
 	MemoryContext part_cx;		/* the runs of the current partition */
 	F2Run		runs[F2_MAX_RUNS];
 	int			nruns;
+	int			heap[F2_MAX_RUNS];	/* the runs that have a row, the one whose row comes first at the top (merged sources) */
+	int			nheap;
+	bool		heap_ready;
 	int			cur_run;		/* the run an unsorted source reads */
 	/* the batch */
 	SiftVec		vec[SIFT_V6_MAX_COLS];
@@ -164,7 +173,8 @@ key_set_init(F2Src *s)
 			n++;
 		}
 	}
-	s->possible = sift_f2_key_set(f, preds, n, &s->keys);
+	sift_f2_key_plan(f, s->c->schema->cols, preds, n, &s->keyplan);
+	s->possible = sift_f2_key_set(f, preds, n, &s->keys) && s->keyplan.state != SIFT_KEY_PLAN_EMPTY;
 }
 
 bool
@@ -265,11 +275,18 @@ run_next_granule(F2Src *s, F2Run *r)
 		MemoryContextSwitchTo(old);
 		return r->live = r->cur.n > 0;
 	}
-	while (r->g < r->part->ngranules)
+	while (r->span < r->nspans)
 	{
-		const uint32 g = r->g++;
+		uint32		g;
 		MemoryContext old;
 
+		r->g = Max(r->g, r->spans[r->span][0]);
+		if (r->g >= r->spans[r->span][1])
+		{
+			r->span++;
+			continue;
+		}
+		g = r->g++;
 		if (sift_f2_v6_ruled_out(s, r->zones, g, r->part->dir[g].nrows))
 		{
 			s->skips.granules++;
@@ -294,6 +311,7 @@ run_add(F2Src *s, const SiftPartitionEntry *e, F2V6Part *part, const SiftPendDel
 		r->zones = MemoryContextAllocZero(s->part_cx, Max(s->quals.nbounds, 1) * sizeof(SiftZone *));
 		for (int b = 0; b < s->quals.nbounds; b++)
 			r->zones[b] = f2v6_zones(s->c, part, s->bound_leaf[b]);
+		r->nspans = sift_f2_granule_spans(s->c->index, part->part, s->c->f, &s->keys, &s->keyplan, r->spans);
 	}
 	return r;
 }
@@ -318,6 +336,7 @@ partition_open(F2Src *s)
 		}
 		MemoryContextReset(s->part_cx);
 		s->nruns = 0;
+		s->heap_ready = false;
 		old = MemoryContextSwitchTo(s->part_cx);
 		px = f2v6_pending(s->c, e);
 		if (e->l0_slab_blk != InvalidBlockNumber)
@@ -562,6 +581,49 @@ run_live_row(F2Src *s, F2Run *r)
 	return r->live && run_next_granule(s, r) && run_live_row(s, r);
 }
 
+/* The run whose row comes first; runs of equal rows (an address is one row) by their place */
+static bool
+heap_before(const F2Src *s, int a, int b)
+{
+	const int	c = cmp_rows(s, &s->runs[a], &s->runs[b]);
+
+	return c < 0 || (c == 0 && a < b);
+}
+
+static void
+heap_down(F2Src *s, int i)
+{
+	for (;;)
+	{
+		int			l = 2 * i + 1,
+					m = i,
+					t;
+
+		if (l < s->nheap && heap_before(s, s->heap[l], s->heap[m]))
+			m = l;
+		if (l + 1 < s->nheap && heap_before(s, s->heap[l + 1], s->heap[m]))
+			m = l + 1;
+		if (m == i)
+			return;
+		t = s->heap[i];
+		s->heap[i] = s->heap[m];
+		s->heap[m] = t;
+		i = m;
+	}
+}
+
+static void
+heap_build(F2Src *s)
+{
+	s->nheap = 0;
+	for (int i = 0; i < s->nruns; i++)
+		if (run_live_row(s, &s->runs[i]))
+			s->heap[s->nheap++] = i;
+	for (int i = s->nheap / 2 - 1; i >= 0; i--)
+		heap_down(s, i);
+	s->heap_ready = true;
+}
+
 /* The rows of the runs of the partition in order, a batch of at most SIFT_VEC_LEN; fewer when the partition ends */
 static int
 merge_next(F2Src *s)
@@ -570,20 +632,22 @@ merge_next(F2Src *s)
 
 	batch_reset(s);
 	memset(s->live_mask, 0, sizeof(s->live_mask));
-	while (n < SIFT_VEC_LEN)
+	if (!s->heap_ready)
+		heap_build(s);
+	while (n < SIFT_VEC_LEN && s->nheap > 0)
 	{
-		F2Run	   *best = NULL;
+		F2Run	   *best = &s->runs[s->heap[0]];
 
-		for (int i = 0; i < s->nruns; i++)
-			if (run_live_row(s, &s->runs[i]) && (best == NULL || cmp_rows(s, &s->runs[i], best) < 0))
-				best = &s->runs[i];
-		if (best == NULL)
-		{
-			s->nruns = 0;
-			break;
-		}
 		fill_rows(s, &best->cur, best->pos++, 1, n, true);
 		set_bit(s->live_mask, n++, true);
+		if (!run_live_row(s, best))
+			s->heap[0] = s->heap[--s->nheap];
+		heap_down(s, 0);
+	}
+	if (s->nheap == 0)
+	{
+		s->nruns = 0;
+		s->heap_ready = false;
 	}
 	return n;
 }

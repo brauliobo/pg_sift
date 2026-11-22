@@ -10,6 +10,8 @@
 #include "col/f2/f2_pred_ext.h"
 #include "col/like_simd.h"
 #include "core/compat.h"
+#include "core/hash.h"
+#include "port/pg_bitutils.h"
 
 int
 sift_f2_f8_cmp(double a, double b)
@@ -47,6 +49,133 @@ sift_f2_cmp_op(SiftColOp op, int c)
 	}
 }
 
+static uint64
+str_hash(const char *s, uint32 len)
+{
+	uint64		h = UINT64CONST(0xcbf29ce484222325);
+
+	for (uint32 i = 0; i < len; i++)
+		h = (h ^ (uint8) s[i]) * UINT64CONST(0x100000001b3);
+	return sift_fmix64(h);
+}
+
+static uint64
+f8_hash(double v)
+{
+	uint64		bits;
+
+	v = v == 0 ? 0.0 : v;
+	memcpy(&bits, &v, sizeof(bits));
+	return sift_fmix64(bits);
+}
+
+SiftPredSet *
+sift_f2_pred_sets_new(MemoryContext cx, int n)
+{
+	SiftPredSet *ps = MemoryContextAllocZero(cx, Max(n, 1) * sizeof(SiftPredSet));
+
+	for (int k = 0; k < n; k++)
+		ps[k].cx = cx;
+	return ps;
+}
+
+typedef uint64 (*ValHash) (const SiftColValue *v);
+
+static uint64
+val_hash_i64(const SiftColValue *v)
+{
+	return sift_fmix64((uint64) v->v.i);
+}
+
+static uint64
+val_hash_f8(const SiftColValue *v)
+{
+	return f8_hash(v->v.f);
+}
+
+static uint64
+val_hash_str(const SiftColValue *v)
+{
+	return str_hash(v->v.s, v->len);
+}
+
+static void
+pred_set_build(SiftPredSet *ps, const SiftColPred *p, ValHash hash, bool floats)
+{
+	ps->mask = pg_nextpower2_32(2 * (uint32) p->nvals) - 1;
+	ps->slots = MemoryContextAllocZero(ps->cx, (ps->mask + 1) * sizeof(uint32));
+	for (int j = 0; j < p->nvals; j++)
+	{
+		uint32		h;
+
+		if (floats && isnan(p->vals[j].v.f))
+		{
+			ps->has_nan = true;
+			continue;
+		}
+		for (h = (uint32) (hash(&p->vals[j]) & ps->mask); ps->slots[h] != 0; h = (h + 1) & ps->mask)
+			;
+		ps->slots[h] = j + 1;
+	}
+	ps->built = true;
+}
+
+bool
+sift_f2_in_i64(SiftPredSet *ps, const SiftColPred *p, int64 v)
+{
+	if (ps == NULL || p->nvals < SIFT_PRED_SET_MIN_VALS)
+	{
+		for (int j = 0; j < p->nvals; j++)
+			if (v == p->vals[j].v.i)
+				return true;
+		return false;
+	}
+	if (!ps->built)
+		pred_set_build(ps, p, val_hash_i64, false);
+	for (uint32 h = (uint32) (sift_fmix64((uint64) v) & ps->mask); ps->slots[h] != 0; h = (h + 1) & ps->mask)
+		if (p->vals[ps->slots[h] - 1].v.i == v)
+			return true;
+	return false;
+}
+
+bool
+sift_f2_in_f8(SiftPredSet *ps, const SiftColPred *p, double v)
+{
+	if (ps == NULL || p->nvals < SIFT_PRED_SET_MIN_VALS)
+	{
+		for (int j = 0; j < p->nvals; j++)
+			if (sift_f2_f8_cmp(v, p->vals[j].v.f) == 0)
+				return true;
+		return false;
+	}
+	if (!ps->built)
+		pred_set_build(ps, p, val_hash_f8, true);
+	if (isnan(v))
+		return ps->has_nan;
+	for (uint32 h = (uint32) (f8_hash(v) & ps->mask); ps->slots[h] != 0; h = (h + 1) & ps->mask)
+		if (sift_f2_f8_cmp(v, p->vals[ps->slots[h] - 1].v.f) == 0)
+			return true;
+	return false;
+}
+
+bool
+sift_f2_in_str(SiftPredSet *ps, const SiftColPred *p, const char *s, uint32 len)
+{
+	if (ps == NULL || p->nvals < SIFT_PRED_SET_MIN_VALS)
+	{
+		for (int j = 0; j < p->nvals; j++)
+			if (sift_f2_str_cmp(s, len, p->vals[j].v.s, p->vals[j].len) == 0)
+				return true;
+		return false;
+	}
+	if (!ps->built)
+		pred_set_build(ps, p, val_hash_str, false);
+	for (uint32 h = (uint32) (str_hash(s, len) & ps->mask); ps->slots[h] != 0; h = (h + 1) & ps->mask)
+		if (sift_f2_str_cmp(s, len, p->vals[ps->slots[h] - 1].v.s, p->vals[ps->slots[h] - 1].len) == 0)
+			return true;
+	return false;
+}
+
 static bool
 str_contains(const char *s, uint32 len, const char *needle, uint32 nlen)
 {
@@ -66,6 +195,12 @@ str_icontains(const char *s, uint32 len, const char *needle, uint32 nlen)
 bool
 sift_f2_str_pred(const SiftColPred *p, const char *s, uint32 len)
 {
+	return sift_f2_str_pred_in(NULL, p, s, len);
+}
+
+bool
+sift_f2_str_pred_in(SiftPredSet *ps, const SiftColPred *p, const char *s, uint32 len)
+{
 	const SiftColValue *v = &p->vals[0];
 
 	switch (p->op)
@@ -82,13 +217,7 @@ sift_f2_str_pred(const SiftColPred *p, const char *s, uint32 len)
 			return !str_contains(s, len, v->v.s, v->len);
 		case SIFT_COLOP_IN:
 		case SIFT_COLOP_NOTIN:
-			{
-				bool		in = false;
-
-				for (int j = 0; j < p->nvals && !in; j++)
-					in = sift_f2_str_cmp(s, len, p->vals[j].v.s, p->vals[j].len) == 0;
-				return in == (p->op == SIFT_COLOP_IN);
-			}
+			return sift_f2_in_str(ps, p, s, len) == (p->op == SIFT_COLOP_IN);
 		default:
 			return sift_f2_cmp_op(p->op, sift_f2_str_cmp(s, len, v->v.s, v->len));
 	}
