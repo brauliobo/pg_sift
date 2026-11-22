@@ -25,6 +25,7 @@ slot_of(SiftXidSlot *slots, TransactionId xid)
 	return &slots[h];
 }
 
+/* MEM[MEM-CORE-09]: stack/scan embedded SiftXidCache (544 B per scan; no heap alloc) */
 void
 sift_xid_cache_init(SiftXidCache *c, Snapshot snap)
 {

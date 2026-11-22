@@ -124,6 +124,7 @@ registry(void)
 {
 	if (table == NULL)
 	{
+		/* MEM[MEM-SHM-03]: DSM registry sift_shm_manifest (164224 B fixed; 256 epochs + 512 slots) */
 		void	   *raw = sift_dsm_try(REGISTRY_NAME, sizeof(Table) + PG_CACHE_LINE_SIZE, table_init);
 
 		if (raw == NULL)
@@ -183,6 +184,7 @@ area_attach(Table *t, bool create)
 	if (area != NULL)
 		return area;
 	if (area_cx == NULL)
+		/* MEM[MEM-IDLE-13]: cachebudget manifest dsa_area handle ctx (~42 KB per attached backend) */
 		area_cx = sift_cache_create_context("sift cache manifest area");
 	old = MemoryContextSwitchTo(area_cx);
 	LWLockAcquire(&t->area_lock, LW_EXCLUSIVE);
@@ -192,6 +194,7 @@ area_attach(Table *t, bool create)
 			a = dsa_attach(t->area_handle);
 		else if (create)
 		{
+			/* MEM[MEM-CORE-10]: DSM-backed dsa_create/dsa_attach for shared manifest snapshots */
 			a = dsa_create(t->tranche);
 			t->area_handle = dsa_get_handle(a);
 		}
@@ -392,6 +395,7 @@ area_leave(int code, Datum arg)
  * table of lists are one allocation, so that making or freeing a snapshot takes the lock of the area once, whatever the partitions it has; the lists a query reads later are allocations of
  * their own
  */
+/* MEM[MEM-CORE-11]: DSA snapshot sub-alloc helper (coalesce into MEM-SHM-04) */
 static dsa_pointer
 snap_build(Table *t, dsa_area *a, const RelFileLocator *locator, const SiftShmSnapSpec *spec)
 {
@@ -407,6 +411,7 @@ snap_build(Table *t, dsa_area *a, const RelFileLocator *locator, const SiftShmSn
 
 	if (!sift_shm_reserve_shared(SIFT_SHM_MANIFEST, total))
 		return InvalidDsaPointer;
+	/* MEM[MEM-SHM-04]: DSA manifest snapshot single contiguous alloc (charged to SIFT_SHM_MANIFEST) */
 	self = dsa_allocate_extended(a, total, DSA_ALLOC_ZERO | DSA_ALLOC_NO_OOM);
 	if (self == InvalidDsaPointer)
 	{

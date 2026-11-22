@@ -100,7 +100,8 @@ sift_bulk_run_page(SiftBulkRun *run)
 void
 sift_bulk_run_write(SiftBulkRun *run, BlockNumber blk, Page page)
 {
-	smgr_bulk_write(run->state, blk, (BulkWriteBuffer) page, false);
+	/* STOR[STOR-WAL-01]: smgr_bulk_write page_std=true (omits 3-7 KB empty hole from WAL) */
+	smgr_bulk_write(run->state, blk, (BulkWriteBuffer) page, true);
 }
 
 void

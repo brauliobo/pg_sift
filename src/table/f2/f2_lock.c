@@ -36,14 +36,27 @@
 
 SIFT_BACKEND_LOCAL SiftRowLockStripe *stripes = NULL;
 SIFT_BACKEND_LOCAL LWLockPadded *stripe_locks = NULL;
+SIFT_BACKEND_LOCAL uint16 *stripe_n = NULL;
 
 static bool
 tier1_attached(void)
 {
-	SiftEscStripe *esc;
-	LWLockPadded *esc_locks;
+	SiftRowLockShmLayout *layout;
 
-	return stripes != NULL || sift_lock_shm_attach(&stripes, &stripe_locks, &esc, &esc_locks);
+	if (stripes != NULL)
+		return true;
+	if ((layout = sift_lock_shm_attach()) == NULL)
+		return false;
+	stripes = layout->stripes;
+	stripe_locks = layout->stripe_locks;
+	stripe_n = layout->stripe_n;
+	return true;
+}
+
+static uint16 *
+nentries(const SiftRowLockStripe *s)
+{
+	return &stripe_n[s - stripes];
 }
 
 /* ---- the entries ---- */
@@ -75,7 +88,7 @@ stripe_of(const SiftRowLockKey *k)
 static SiftRowLockEntry *
 find_entry(SiftRowLockStripe *s, const SiftRowLockKey *k)
 {
-	for (int i = 0; i < s->nentries; i++)
+	for (int i = 0; i < *nentries(s); i++)
 		if (memcmp(&s->entries[i].key, k, sizeof(*k)) == 0)
 			return &s->entries[i];
 	return NULL;
@@ -84,7 +97,7 @@ find_entry(SiftRowLockStripe *s, const SiftRowLockKey *k)
 static void
 remove_entry(SiftRowLockStripe *s, SiftRowLockEntry *e)
 {
-	*e = s->entries[--s->nentries];
+	*e = s->entries[--*nentries(s)];
 }
 
 static inline LockTupleMode
@@ -272,24 +285,25 @@ static SiftRowLockEntry *
 make_room(Relation rel, SiftRowLockStripe *s)
 {
 	SiftRowLockEntry *oldest = NULL;
+	uint16	   *n = nentries(s);
 
-	for (int i = 0; i < s->nentries; i++)
+	for (int i = 0; i < *n; i++)
 	{
 		reap_prepared(&s->entries[i]);
 		if (removable(rel, &s->entries[i]) || idle(&s->entries[i]))
 		{
 			remove_entry(s, &s->entries[i]);
-			return &s->entries[s->nentries++];
+			return &s->entries[(*n)++];
 		}
 	}
-	for (int i = 0; i < s->nentries; i++)
+	for (int i = 0; i < *n; i++)
 		if ((s->entries[i].flags & SIFT_ROWLOCK_COMMITTED_UPD) != 0 && s->entries[i].nholders == 0 &&
 			(oldest == NULL || FullTransactionIdPrecedes(s->entries[i].updater_fxid, oldest->updater_fxid)))
 			oldest = &s->entries[i];
 	if (oldest == NULL)
 		return NULL;
 	remove_entry(s, oldest);
-	return &s->entries[s->nentries++];
+	return &s->entries[(*n)++];
 }
 
 static SiftRowLockEntry *
@@ -299,7 +313,7 @@ entry_for_write(Relation rel, SiftRowLockStripe *s, const SiftRowLockKey *k)
 
 	if (e != NULL)
 		return e;
-	e = s->nentries < SIFT_ROWLOCK_BUCKETS ? &s->entries[s->nentries++] : make_room(rel, s);
+	e = *nentries(s) < SIFT_ROWLOCK_BUCKETS ? &s->entries[(*nentries(s))++] : make_room(rel, s);
 	if (e != NULL)
 	{
 		memset(e, 0, sizeof(*e));
@@ -690,7 +704,7 @@ sift_tbl_rowlock_drop_rel(const RelFileLocator *loc)
 	for (int si = 0; si < SIFT_ROWLOCK_PARTITIONS; si++)
 	{
 		LWLockAcquire(&stripe_locks[si].lock, LW_EXCLUSIVE);
-		for (int i = 0; i < stripes[si].nentries;)
+		for (int i = 0; i < stripe_n[si];)
 			if (RelFileLocatorEquals(stripes[si].entries[i].key.locator, *loc))
 				remove_entry(&stripes[si], &stripes[si].entries[i]);
 			else

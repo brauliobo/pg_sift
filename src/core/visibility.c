@@ -560,6 +560,7 @@ page_cache_entry(SiftVis *v, BlockNumber blk, bool *found)
 	{
 		HASHCTL		ctl = {.keysize = sizeof(BlockNumber), .entrysize = sizeof(PageVis), .hcxt = v->mcxt};
 
+		/* MEM[MEM-CORE-04]: query-scoped page visibility HTAB (256 init; capped at 4096 pages) */
 		v->pagevis = hash_create("sift page visibility", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 	if (hash_get_num_entries(v->pagevis) >= SIFT_VIS_PAGE_CACHE_MAX)

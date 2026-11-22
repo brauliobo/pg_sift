@@ -119,6 +119,7 @@ static List *par_images = NIL;
 Size
 sift_tbl_f2_parallelscan_estimate(Relation rel)
 {
+	/* MEM[MEM-TBL-12]: TopTransactionContext parallel scan unit image (pfree after init) */
 	ParImage   *im = MemoryContextAlloc(TopTransactionContext, sizeof(ParImage));
 	MemoryContext old = MemoryContextSwitchTo(TopTransactionContext);
 
@@ -166,6 +167,7 @@ sift_tbl_f2_parallelscan_reinitialize(Relation rel pg_attribute_unused(), Parall
 
 typedef struct SiftTblF2Page SiftTblF2Page;
 
+/* MEM[MEM-TBL-04]: struct SiftTblF2Scan (1816 B packed; per-scan ctx + rowcx) */
 typedef struct SiftTblF2Scan
 {
 	TableScanDescData base;
@@ -284,6 +286,7 @@ sift_tbl_f2_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKe
 	s->base.rs_parallel = pscan;
 	s->ops = &sift_tbl_v2_ops;
 	s->store = sift_f2_store_open(rel);
+	/* MEM[MEM-TBL-10]: query-scoped f2 scan ctx (256 KB max) + rowcx (1 KB small; reset/row) */
 	s->cx = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 scan");
 	s->rowcx = AllocSetContextCreate(s->cx, "sift f2 scan row", ALLOCSET_SMALL_SIZES);
 	s->pdel_part = 0;
@@ -605,6 +608,7 @@ sift_tbl_f2_scan_granule_rows(TableScanDesc scan)
 
 /* ---- the rows of one virtual block: bitmap scans and TABLESAMPLE ---- */
 
+/* MEM[MEM-TBL-05]: struct SiftTblF2Page (5840 B lazy on bitmap/sample scan + patches ctx) */
 struct SiftTblF2Page
 {
 	uint16		n;

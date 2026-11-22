@@ -174,6 +174,7 @@ lazy_drop(SiftF2Slot *ss)
 static void
 slot_init(TupleTableSlot *slot)
 {
+	/* MEM[MEM-TBL-14]: slot-scoped f2 slot rowcx (ALLOCSET_SMALL_SIZES; reset per tuple) */
 	((SiftF2Slot *) slot)->rowcx = AllocSetContextCreate(slot->tts_mcxt, "sift f2 slot row", ALLOCSET_SMALL_SIZES);
 }
 

@@ -534,6 +534,7 @@ sw_flush(SiftStreamWriter *sw)
  * RUN_MAX blocks as before, then a 16th of what is written, up to RUN_BIG (a metapage-locked
  * extension of 64 MB at most).
  */
+/* STOR[STOR-F2-09]: V1 stream writer speculative run reservation (16..8192 blk spare tails) */
 static uint32
 run_cap(const SiftStreamWriter *sw)
 {

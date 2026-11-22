@@ -8,6 +8,7 @@
 
 #include "col/f2/col_meta.h"
 #include "core/f2/manifest.h"
+#include "core/f2/meta.h"
 
 typedef struct BlkVec
 {
@@ -200,6 +201,7 @@ extern int	sift_mf_find_leaf(const Tree *t, const uint8 *key_lo);
 extern bool sift_mf_find_entry_at(Relation rel, const SiftColMetaPageData *meta, uint64 part_id, const uint8 *key_lo, SiftPartitionEntry *out, int *pages);
 extern BlockNumber sift_mf_new_page_blk(Relation rel, BlkVec *created);
 extern void sift_mf_write_image(Relation rel, BlockNumber blk, const char *image);
+extern void sift_mf_log_image(SiftNewPageLog *log, BlockNumber blk, const char *image);
 
 /* The scope directory (core/manifest/scopedir.c) */
 extern void sift_mf_build_scopes(Relation rel, Tree *t, Change *ch, const SiftManifestEdit *e, BlkVec *created);

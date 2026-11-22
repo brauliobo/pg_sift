@@ -17,6 +17,7 @@
 int			sift_shared_cache_kb = 64 * 1024;
 
 /* the share of the limit of each pool, in percent */
+/* MEM[MEM-SHM-21]: shm_ledger 5-pool split (25/25/10/20/20% of sift.shared_cache_kb) */
 static const int pool_pct[SIFT_SHM_NPOOL] = {
 	[SIFT_SHM_MANIFEST] = 25,
 	[SIFT_SHM_AGG_LOOKUP] = 20,
@@ -103,6 +104,7 @@ ledger_get(void)
 {
 	if (ledger == NULL)
 	{
+		/* MEM[MEM-SHM-02]: DSM ledger sift_shm_ledger (768 B fixed; 5x128 B pool counters) */
 		void	   *raw = sift_dsm_try(LEDGER_NAME, sizeof(SiftShmLedger) + PG_CACHE_LINE_SIZE, ledger_init);
 
 		if (raw != NULL)

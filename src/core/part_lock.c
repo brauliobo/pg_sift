@@ -33,6 +33,7 @@ stripe_table(void)
 {
 	if (stripes == NULL)
 	{
+		/* MEM[MEM-SHM-09]: DSM partition lock stripes (32896 B fixed; 256x128 B cacheline stripes) */
 		stripes = stripes_base(sift_dsm_join(TABLE_NAME, sizeof(SiftPartLockShm) + PG_CACHE_LINE_SIZE, stripes_init));
 		sift_tranche_register(stripes->stripe[0].lock.tranche, TRANCHE_NAME);
 	}

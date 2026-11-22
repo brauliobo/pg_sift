@@ -251,6 +251,14 @@ sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, SiftTb
 	return done;
 }
 
+/* A group with unfrozen rows, or any column segment with a cleared liveness bit, may hold no live row; opening it tells */
+static bool
+may_be_all_dead(const SiftSegEntry *e)
+{
+	return sift_tbl_seg_unfrozen(e) || (e->kind == SIFT_SEG_IMMUTABLE && (e->flags & SIFT_SEG_DIRTY) != 0 && (e->flags & SIFT_SEG_SCOPE) == 0);
+}
+
+/* STOR[STOR-TBL-15]: v1 drop 100%-dead frozen segs + merge old-schema dead segs (fixes permanent bloat) */
 int
 sift_tbl_drop_dead_groups(Relation rel, SiftTblRel *st)
 {
@@ -261,7 +269,7 @@ sift_tbl_drop_dead_groups(Relation rel, SiftTblRel *st)
 	sift_tbl_refresh(rel, st);
 	gone = palloc(Max(st->dir->nsegs, 1) * sizeof(SiftSegEntry));
 	for (int i = 0; i < st->dir->nsegs; i++)
-		if (sift_tbl_seg_unfrozen(&st->dir->segs[i]))
+		if (may_be_all_dead(&st->dir->segs[i]))
 		{
 			SiftColSegment *seg = sift_cseg_open(rel, &st->dir->segs[i], CurrentMemoryContext);
 

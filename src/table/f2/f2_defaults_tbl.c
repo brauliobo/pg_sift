@@ -48,6 +48,7 @@ defaults_of_desc(Relation rel)
 {
 	TupleDesc	desc = RelationGetDescr(rel);
 	SiftSchemaDefaults *d = sift_defaults_new();
+	/* MEM[MEM-TBL-17]: transient table defaults decode ctx (ALLOCSET_SMALL_SIZES) */
 	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift table defaults", ALLOCSET_SMALL_SIZES);
 
 	for (int a = 1; a <= desc->natts; a++)

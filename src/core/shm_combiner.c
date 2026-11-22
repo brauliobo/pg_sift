@@ -12,6 +12,7 @@ typedef struct CombLead
 
 SIFT_SHM_BACKEND_LOCAL CombLead lead_state;
 
+/* MEM[MEM-CORE-15]: SHM flat-combiner queue state (caller-owned SHM region) */
 void
 sift_comb_pool_init(SiftCombPool *pool)
 {

@@ -64,6 +64,7 @@ write_tierdir(Relation rel, uint64 gen, uint64 version, const SiftTierPartRef *r
 	BlockNumber *blks = palloc(npages * sizeof(BlockNumber));
 	PGAlignedBlock img;
 	BlockNumber head;
+	SiftNewPageLog log = SIFT_NEWLOG_BEGIN(rel);
 
 	for (int p = 0; p < npages; p++)
 		blks[p] = sift_mf_new_page_blk(rel, created);
@@ -72,8 +73,9 @@ write_tierdir(Relation rel, uint64 gen, uint64 version, const SiftTierPartRef *r
 		int			from = p * SIFT_TIERDIR_CAP;
 
 		sift_tier_page_fill(img.data, gen, version, p + 1 < npages ? blks[p + 1] : InvalidBlockNumber, refs + from, Min(n - from, (int) SIFT_TIERDIR_CAP));
-		sift_mf_write_image(rel, blks[p], img.data);
+		sift_mf_log_image(&log, blks[p], img.data);
 	}
+	sift_newlog_end(&log);
 	head = blks[0];
 	pfree(blks);
 	return head;

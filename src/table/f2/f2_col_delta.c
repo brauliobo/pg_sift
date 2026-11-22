@@ -406,9 +406,31 @@ xid_min(FullTransactionId a, FullTransactionId b)
 	return !FullTransactionIdIsValid(a) || FullTransactionIdPrecedes(b, a) ? b : a;
 }
 
+uint32
+sift_col_delta_batch_pages(const SiftColDeltaBatch *b)
+{
+	uint32		pages = 0,
+				room = 0;
+
+	for (uint32 off = 0; off < b->nbytes;)
+	{
+		SiftColDeltaEntryHdr h;
+
+		memcpy(&h, b->bytes + off, sizeof(h));
+		if (pages == 0 || room < h.rec_bytes)
+		{
+			pages++;
+			room = (uint32) SIFT_COL_DELTA_PAGE_ROOM;
+		}
+		room -= h.rec_bytes;
+		off += h.rec_bytes;
+	}
+	return pages;
+}
+
 /*
  * A bound on time the chain did not patch before is published before the record that patches it is written, so that a crash in between leaves a bound that is only too wide. The records go
- * to the newest page while they fit and the rest to pages of their own; each new page is published with the anchor that names it, and until then no reader can reach it.
+ * to the newest page while they fit and the rest to pages of their own; the new pages are published together with the one anchor that names the newest, and until then no reader can reach them.
  */
 void
 sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, SiftColDeltaBatch *b, FullTransactionId next)
@@ -418,6 +440,8 @@ sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, 
 	uint16		flags = a->flags | anchor_flags_of(b->page_flags);
 	FullTransactionId bmin = b->min_xid,
 				bmax = b->max_xid;
+	uint32		npages;
+	uint64		gen = 0;
 
 	if (fresh || leaves)
 		flags = leaves ? (uint16) (flags & ~SIFT_CDLA_TID_ONLY) : (uint16) (flags | SIFT_CDLA_TID_ONLY);
@@ -429,18 +453,23 @@ sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, 
 	}
 	if (sift_col_delta_anchor_has_chain(a) && w->append_head(w->ctx, a->delta_head_blkno, b, next))
 		a->max_xid = sift_fxid_max(a->max_xid, bmax);
+	/* STOR[STOR-TBL-06]: batched col_delta page gen + single commit_anchor (1 vs N manifest/Block-0 WAL recs) */
+	npages = sift_col_delta_batch_pages(b);
+	if (npages > 0)
+		gen = w->reserve_gens(w->ctx, npages);
 	for (uint32 off = 0; off < b->nbytes;)
 	{
 		SiftColDeltaBatch part;
 
 		batch_take(b, &off, (uint32) SIFT_COL_DELTA_PAGE_ROOM, next, &part);
-		a->delta_head_blkno = w->new_page(w->ctx, &part, a->delta_head_blkno, (uint16) (a->npages + 1));
+		a->delta_head_blkno = w->new_page(w->ctx, &part, a->delta_head_blkno, (uint16) (a->npages + 1), gen++);
 		a->npages++;
 		a->min_xid = xid_min(a->min_xid, bmin);
 		a->max_xid = sift_fxid_max(a->max_xid, bmax);
-		w->commit_anchor(w->ctx, a);
 		sift_col_delta_batch_free(&part);
 	}
+	if (npages > 0)
+		w->commit_anchor(w->ctx, a);
 	sift_col_delta_batch_free(b);
 }
 
@@ -458,6 +487,7 @@ sift_col_delta_chain_read(const SiftColDeltaAnchor *anchor, const SiftColDeltaPa
 		return "the anchor of a chain is not one of this format";
 	if (!sift_col_delta_anchor_has_chain(anchor))
 		return NULL;
+	/* MEM[MEM-TBL-15]: caller-scoped col_delta chain arena (npages * 8 KB; freed by chain_free) */
 	out->arena = palloc((Size) n * BLCKSZ);
 	out->blks = palloc(sizeof(BlockNumber) * n);
 	for (int i = n - 1; i >= 0 && why == NULL; i--)
@@ -510,6 +540,7 @@ sift_col_delta_chain_min_xid(const SiftColDeltaChain *c)
 
 /* ---- the verdict of a modify ---- */
 
+/* MEM[MEM-TBL-07]: backend BSS EPQ ack ring epq_acks (~512 B; COW clean idle) */
 static SiftTblEpqAck epq_acks[SIFT_EPQ_ACK_SLOTS];
 static int	epq_next = 0;
 

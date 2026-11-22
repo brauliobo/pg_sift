@@ -247,13 +247,15 @@ typedef struct SiftColDeltaWriter
 	void	   *ctx;
 	/* The records of b that fit the newest page, appended to it in place and logged as one change; false when none fits (b is as it was) */
 	bool		(*append_head) (void *ctx, BlockNumber head, SiftColDeltaBatch *b, FullTransactionId next);
-	/* A page of its own for the records of b (at most one page of them) after the page prev, whose depth is depth - 1; its block */
-	BlockNumber (*new_page) (void *ctx, const SiftColDeltaBatch *b, BlockNumber prev, uint16 depth);
-	/* The anchor made the anchor of the partition, in the one change of the manifest that also publishes a new page */
+	/* n generations reserved for the pages of a flush in one change of the metapage; the first */
+	uint64		(*reserve_gens) (void *ctx, uint32 n);
+	/* A page of its own, of generation gen, for the records of b (at most one page of them) after the page prev, whose depth is depth - 1; its block */
+	BlockNumber (*new_page) (void *ctx, const SiftColDeltaBatch *b, BlockNumber prev, uint16 depth, uint64 gen);
+	/* The anchor made the anchor of the partition, in the one change of the manifest that also publishes the new pages */
 	void		(*commit_anchor) (void *ctx, const SiftColDeltaAnchor *a);
 } SiftColDeltaWriter;
 
-/* All the records of b into the chain a names: the newest page first, then pages of their own, each published with the anchor; a is the chain's anchor after, b empty */
+/* All the records of b into the chain a names: the newest page first, then pages of their own, all published with one anchor; a is the chain's anchor after, b empty */
 extern void sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, SiftColDeltaBatch *b, FullTransactionId next);
 
 /* An empty page of the chain of the partition: prev_blk and the depth of the page it follows */
@@ -637,7 +639,10 @@ extern SiftHorizonStatus sift_col_delta_horizon_status(void *ctx, TransactionId 
 extern void sift_col_delta_write_chain(Relation rel, const SiftPartitionEntry *entry, SiftColDeltaBatch *batches, int nbatches, FullTransactionId next, SiftColDeltaAnchor *anchor);
 
 /* The parts of the entry that hold a record a compaction at the horizon would fold, added to gens (no duplicate); the new count. VACUUM names them to the compaction */
-extern int	sift_col_delta_fold_gens(Relation rel, const SiftPartitionEntry *entry, const SiftPartDesc *parts, int nparts, FullTransactionId horizon, uint64 *gens, int ngens);
+extern int	sift_col_delta_fold_gens(Relation rel, const SiftPartitionEntry *entry, const SiftPartDesc *parts, int nparts, FullTransactionId horizon, bool aggressive, uint64 *gens, int ngens);
+
+/* The pages a batch takes when its records are put on pages of their own */
+extern uint32 sift_col_delta_batch_pages(const SiftColDeltaBatch *b);
 
 /* The fold of a partition's records into its compaction (SiftCompactFold, col/f2/compact.h): installed once, when the table access method is loaded */
 extern void sift_col_delta_fold_install(void);
@@ -675,7 +680,7 @@ extern SiftColDeltaPartMap *sift_col_delta_scan_part_map(const SiftColDeltaScan 
 extern SiftColDeltaVerdict sift_col_delta_modify_verdict(Relation rel, const SiftF2Loc *loc, uint64 tid, CommandId cid, Snapshot snap);
 extern void sift_col_delta_ack_latest(Relation rel, const SiftF2Loc *loc, uint64 tid, CommandId cid);
 
-/* VACUUM: the oldest writer of the chain of the entry (invalid with none), the removal of a chain that holds nothing a snapshot could need, and the check of the manifest */
+/* VACUUM: the oldest writer of the chain of the entry (invalid with none), the removal of a chain that holds nothing a snapshot could need (a chain that holds some is rewritten onto fewer pages), and the check of the manifest */
 extern FullTransactionId sift_col_delta_min_xid(Relation rel, const SiftPartitionEntry *entry);
 extern bool sift_col_delta_gc(Relation rel, uint64 part_id, const uint8 *key_lo, FullTransactionId oldest_fx);
 extern void sift_col_delta_check(Relation rel, const SiftPartitionEntry *entry);

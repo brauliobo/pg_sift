@@ -32,12 +32,14 @@ qset(void)
 	static SiftQSet *q;
 
 	if (q == NULL)
+		/* MEM[MEM-SHM-08]: DSM quarantine rel set sift_quarantine_set (3096 B fixed; 256 locators) */
 		q = sift_dsm_join("sift_quarantine_set", sizeof(SiftQSet), qset_init);
 	return q;
 }
 
 #define QSET_HASH	(2 * SIFT_QSET_SLOTS)
 
+/* MEM[MEM-CORE-01]: backend BSS quarantine mirror (3088 B; lazy-init when n > 0) */
 static struct
 {
 	uint64		gen;

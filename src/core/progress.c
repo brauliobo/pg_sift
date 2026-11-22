@@ -70,6 +70,7 @@ static Progress *
 table(void)
 {
 	if (shared == NULL && !unavailable)
+		/* MEM[MEM-SHM-10]: DSM maintenance progress table (4616 B fixed; 64x72 B slots) */
 		unavailable = (shared = sift_dsm_try(PROGRESS_NAME, sizeof(Progress), progress_init)) == NULL;
 	return shared;
 }

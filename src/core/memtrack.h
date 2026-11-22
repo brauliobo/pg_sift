@@ -88,6 +88,8 @@ extern MemoryContext sift_mem_generation_create(MemoryContext parent, const char
 extern void sift_mem_release_os(Size freed_bytes);
 /* hands the free heap of the process back to the system now */
 extern void sift_mem_trim_os(void);
+/* the same when the process heap holds at least min_free_bytes of free chunks (glibc; elsewhere nothing) */
+extern void sift_mem_trim_if_free(Size min_free_bytes);
 
 /*
  * A structure that grows with the data of one statement (the values of a facet, the rows a search holds, a verification of a segment) and that no

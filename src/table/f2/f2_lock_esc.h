@@ -51,17 +51,18 @@ StaticAssertDecl(sizeof(SiftPartEscEntry) == 64, "SiftPartEscEntry must occupy o
 
 typedef struct SiftEscStripe
 {
-	int			nentries;
 	SiftPartEscEntry entries[SIFT_ESC_BUCKETS];
 } SiftEscStripe;
 
-/* The one named segment of the table: both tiers and their locks, 1.05 MiB */
+/* The one named segment of the table: both tiers and their locks, 1.05 MiB; the entries in use of a stripe are counted beside the stripes (a count inside would pad a stripe by a cache line) */
 typedef struct SiftRowLockShmLayout
 {
 	SiftRowLockStripe stripes[SIFT_ROWLOCK_PARTITIONS];
 	LWLockPadded stripe_locks[SIFT_ROWLOCK_PARTITIONS];
 	SiftEscStripe esc_stripes[SIFT_ESC_STRIPES];
 	LWLockPadded esc_locks[SIFT_ESC_STRIPES];
+	uint16		stripe_n[SIFT_ROWLOCK_PARTITIONS];
+	uint16		esc_n[SIFT_ESC_STRIPES];
 } SiftRowLockShmLayout;
 
 /* What a row lock of the mode takes of the relation and partition locks: once as an intention, and as the coarse lock that holds all rows of its range */
@@ -116,8 +117,8 @@ typedef void (*SiftTier1ReleaseCb) (const RelFileLocator *loc, uint64 part_id, S
 /* The memory the locks of the transaction keep, in tier 1 and here: it is reset when the transaction ends, so an idle backend holds none */
 extern MemoryContext sift_rowlock_txn_cx(void);
 
-/* The table in shared memory of this backend, true where there is one; false, and the whole of the locking in the lock manager of the server, where /dev/shm has no room */
-extern bool sift_lock_shm_attach(SiftRowLockStripe **stripes, LWLockPadded **stripe_locks, SiftEscStripe **esc, LWLockPadded **esc_locks);
+/* The table in shared memory of this backend; NULL where /dev/shm has no room, and the whole of the locking is in the lock manager of the server */
+extern SiftRowLockShmLayout *sift_lock_shm_attach(void);
 extern bool sift_lock_pglm_only(void);
 
 /*

@@ -15,8 +15,9 @@
 
 #include "core/memtrack.h"
 
-#define TRIM_PEAK_BYTES		((Size) 4 * 1024 * 1024)
-#define TRIM_ACCUM_BYTES	((Size) 8 * 1024 * 1024)
+/* MEM[MEM-IDLE-14]: glibc malloc_trim thresholds (1 MB peak / 2 MB accum release-to-OS) */
+#define TRIM_PEAK_BYTES		((Size) 1024 * 1024)
+#define TRIM_ACCUM_BYTES	((Size) 2 * 1024 * 1024)
 
 static Size trim_accum;
 
@@ -127,6 +128,7 @@ sift_mem_end(SiftMemTracker *t)
 	sift_mem_release_os(peak);
 }
 
+/* MEM[MEM-CORE-03]: bounded AllocSet factory (8 KB init / 256 KB max block; SIFT_MEM_MAX_BLOCK) */
 MemoryContext
 sift_mem_allocset_create(MemoryContext parent, const char *name)
 {
@@ -146,6 +148,15 @@ sift_mem_trim_os(void)
 	malloc_trim(0);
 #endif
 	trim_accum = 0;
+}
+
+void
+sift_mem_trim_if_free(Size min_free_bytes)
+{
+#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 33)
+	if (mallinfo2().fordblks >= min_free_bytes)
+		sift_mem_trim_os();
+#endif
 }
 
 void

@@ -33,6 +33,8 @@
 #include "col/f2/f2_tier_host.h"
 #include "table/f2/f2_tbl.h"
 
+#define SIFT_VAC_L0_FLUSH_ROWS 2048
+
 typedef struct VacCtx
 {
 	Relation	rel;
@@ -70,10 +72,17 @@ vc_max_bytes(void)
 	return (uint64) maintenance_work_mem * 1024;
 }
 
+static uint32
+vc_max_tids(void)
+{
+	return (uint32) Max(1024, vc_max_bytes() / 2 / sizeof(uint64));
+}
+
 static TidStore *
 batch_store(const VacCtx *vc)
 {
-	TidStore   *ts = TidStoreCreateLocal((size_t) maintenance_work_mem * 1024, true);
+	/* MEM[MEM-TBL-03]: table vacuum dead TIDs (sorted array <= mwm/2 + TidStore <= mwm/2; was 2x mwm) */
+	TidStore   *ts = TidStoreCreateLocal(vc_max_bytes() / 2, true);
 	OffsetNumber offsets[MaxHeapTuplesPerPage];
 	uint32		i = 0;
 
@@ -126,7 +135,7 @@ void
 sift_tbl_f2_vacuum_dead_tids(void *vac_ctx, const uint64 *tids, uint32 ntids)
 {
 	VacCtx	   *vc = vac_ctx;
-	uint32		max = (uint32) Max(1024, (uint64) maintenance_work_mem * 1024 / sizeof(uint64));
+	uint32		max = vc_max_tids();
 
 	for (uint32 i = 0; i < ntids; i++)
 	{
@@ -199,9 +208,10 @@ collect_part(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *e, const 
 /* ---- freezing ---- */
 
 static bool
-settle_due(const SiftPartDesc *d, FullTransactionId target_fx)
+settle_due(const SiftPartDesc *d, FullTransactionId oldest_fx)
 {
-	return d->dv_blk != InvalidBlockNumber && (d->flags & SIFT_PART_FLAG_DV_SETTLED) == 0 && FullTransactionIdPrecedes(d->dv_max_xid, target_fx);
+	/* STOR[STOR-TBL-02]: DV xmax settle horizon (8B/dead_row + 24B/granule; oldest_fx vs 50M-XID freeze_fx) */
+	return d->dv_blk != InvalidBlockNumber && (d->flags & SIFT_PART_FLAG_DV_SETTLED) == 0 && FullTransactionIdPrecedes(d->dv_max_xid, oldest_fx);
 }
 
 /* The settled deletion vector of a part is written; the descriptor that names it is nd, and old the extent it replaces, for the commit of the partition to publish */
@@ -234,7 +244,7 @@ settle_dv(Relation rel, const SiftPartitionEntry *e, const SiftPartDesc *cur, Fu
  * name blocks that a delete released since): the lock is taken, the entry and the parts read, and the partition committed once for all of them.
  */
 static void
-settle_or_seal_parts(Relation rel, const SiftPartitionEntry *cand, const uint64 *gens, int ngens, FullTransactionId oldest_fx, FullTransactionId target_fx, SiftXidHorizonCache *hc)
+settle_or_seal_parts(Relation rel, const SiftPartitionEntry *cand, const uint64 *gens, int ngens, FullTransactionId oldest_fx, SiftXidHorizonCache *hc)
 {
 	SiftPartitionEntry e;
 	SiftU64Set	want;
@@ -262,7 +272,7 @@ settle_or_seal_parts(Relation rel, const SiftPartitionEntry *cand, const uint64 
 		{
 			if (!sift_u64set_has(&want, parts[i].part_gen))
 				continue;
-			if (settle_due(&parts[i], target_fx))
+			if (settle_due(&parts[i], oldest_fx))
 				settle_dv(rel, &e, &parts[i], oldest_fx, &update[nupdate], &release[nrelease++]);
 			else
 			{
@@ -284,12 +294,23 @@ settle_or_seal_parts(Relation rel, const SiftPartitionEntry *cand, const uint64 
 }
 
 static bool
-needs_compaction(const SiftPartDesc *d, FullTransactionId target)
+needs_compaction(const SiftPartDesc *d, FullTransactionId target, int dead_pct)
 {
 	if (d->ext_flags & SIFT_PART_EXT_REMOTE)
 		return false;
-	return d->level == 0 || (d->nrows > 0 && d->ndead * 100 >= d->nrows * (uint64) sift_dead_rewrite_pct) ||
+	/* STOR[STOR-TBL-04]: dead-part compaction gate (relopt dead_rewrite_pct + 0-WAL drop when ndead==nrows) */
+	return d->level == 0 || (d->nrows > 0 && d->ndead * 100 >= d->nrows * (uint64) dead_pct) ||
 		((d->flags & SIFT_PART_FLAG_UNFROZEN) != 0 && FullTransactionIdPrecedes(d->min_xid, target));
+}
+
+static bool
+slab_flush_due(Relation rel, const SiftPartitionEntry *cand, FullTransactionId oldest_fx, bool aggressive)
+{
+	if (cand->l0_slab_blk == InvalidBlockNumber)
+		return false;
+	if (aggressive || cand->pend_del_blk != InvalidBlockNumber)
+		return aggressive || FullTransactionIdPrecedes(cand->min_xid, oldest_fx);
+	return FullTransactionIdPrecedes(cand->min_xid, oldest_fx) && sift_l0_slab_rows(rel, cand->part_id, cand->l0_slab_blk) >= SIFT_VAC_L0_FLUSH_ROWS;
 }
 
 static void
@@ -305,12 +326,16 @@ freeze_partition(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *cand,
 				nsettle = 0;
 	SiftCompactResult res;
 	SiftXidHorizonCache hc;
+	int			dead_pct = store->opts.dead_rewrite_pct > 0 ? store->opts.dead_rewrite_pct : sift_dead_rewrite_pct;
 
-	if (cand->l0_slab_blk != InvalidBlockNumber && (aggressive || FullTransactionIdPrecedes(cand->min_xid, target_fx)))
+	/* STOR[STOR-TBL-03]: L0 slab + pend_del vacuum horizon (40B+96B+raw rows / 16B/del; oldest_fx vs freeze_fx) */
+	if (slab_flush_due(rel, cand, oldest_fx, aggressive))
 		sift_l0_slab_flush(rel, cand->part_id, cand->key_lo, &store->spec);
-	if (cand->pend_del_blk != InvalidBlockNumber && (aggressive || FullTransactionIdPrecedes(cand->min_xid, target_fx)))
+	if (cand->pend_del_blk != InvalidBlockNumber && (aggressive || FullTransactionIdPrecedes(cand->min_xid, oldest_fx)))
 		sift_del_bulk(rel, cand->part_id, cand->key_lo, NULL, 0, true, &store->spec);
 	(void) sift_dv_consolidate(rel, cand->part_id, cand->key_lo);
+	if ((cand->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
+		(void) sift_col_delta_gc(rel, cand->part_id, cand->key_lo, oldest_fx);
 	if (!sift_manifest_find_entry(rel, cand->part_id, cand->key_lo, &e))
 		return;
 	parts = sift_manifest_read_parts(rel, &e, &np);
@@ -319,7 +344,7 @@ freeze_partition(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *cand,
 	{
 		if (parts[i].ndead > 0 || (parts[i].flags & SIFT_PART_FLAG_UNFROZEN) != 0)
 			collect_part(vc, store, &e, &parts[i], cutoffs->OldestXmin);
-		if (needs_compaction(&parts[i], target_fx))
+		if (needs_compaction(&parts[i], target_fx, dead_pct))
 		{
 			gens = gens == NULL ? palloc(sizeof(uint64) * np) : gens;
 			gens[ngens++] = parts[i].part_gen;
@@ -330,11 +355,11 @@ freeze_partition(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *cand,
 			settle[nsettle++] = parts[i].part_gen;
 		}
 	}
-	settle_or_seal_parts(rel, &e, settle, nsettle, oldest_fx, target_fx, &hc);
+	settle_or_seal_parts(rel, &e, settle, nsettle, oldest_fx, &hc);
 	if ((e.flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 	{
 		gens = gens == NULL ? palloc(sizeof(uint64) * np) : gens;
-		ngens = sift_col_delta_fold_gens(rel, &e, parts, np, oldest_fx, gens, ngens);
+		ngens = sift_col_delta_fold_gens(rel, &e, parts, np, oldest_fx, aggressive, gens, ngens);
 	}
 	if (ngens > 0)
 		(void) sift_partition_compact_online(rel, e.part_id, e.key_lo, gens, ngens, &store->spec, PG_INT64_MIN, oldest_fx, &res);
@@ -420,6 +445,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	int			elevel = (params->options & VACOPT_VERBOSE) != 0 ? INFO : DEBUG2;
 	SiftF2TableTrace trace = {0};
 	SiftColMetaPageData meta;
+	/* STOR[STOR-TBL-01]: vacuum_rel resolves UNSPECIFIED to ENABLED/DISABLED before the AM runs, so the gate is the resolved value (tail shrink of the free trailing extents) */
 	const bool	truncate = params->truncate == VACOPTVALUE_ENABLED && store->opts.vacuum_truncate;
 
 	sift_f2_vacuum_progress_begin(rel);

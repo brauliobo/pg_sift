@@ -12,6 +12,7 @@
 
 #include "col/f2/compact.h"
 #include "core/crash_point.h"
+#include "core/memtrack.h"
 #include "core/u64set.h"
 #include "core/xid_cache.h"
 #include "table/f2/f2_col_delta.h"
@@ -134,6 +135,7 @@ release_wide(Relation rel, const char *ref, uint32 len, SiftExtent **release, in
 	*release = repalloc(*release, sizeof(SiftExtent) * pg_nextpower2_32(Max(16, *nrelease + v.n + 1)));
 	memcpy(*release + *nrelease, v.ext, sizeof(SiftExtent) * v.n);
 	*nrelease += v.n;
+	pfree(v.ext);
 }
 
 static void
@@ -244,14 +246,22 @@ static Placement
 place_rows(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, const uint64 *want, int nwant)
 {
 	Placement	pl = {.v = palloc(sizeof(Placed) * Max(nwant, 1))};
+	/* MEM[MEM-TBL-02]: col_delta fold per-granule scratch ctx (reset each granule in place_rows) */
+	MemoryContext pcx = sift_mem_allocset_create(CurrentMemoryContext, "sift column delta fold part"),
+				gcx = sift_mem_allocset_create(pcx, "sift column delta fold granule"),
+				outer = CurrentMemoryContext;
 
 	for (int k = 0; k < nout && nwant > 0; k++)
 	{
-		SiftPart   *part = sift_part_open(rel, out[k].header_blk, out[k].part_gen, (uint32) part_id);
-		SiftGranuleDesc *dir = sift_part_granule_dir(rel, part);
+		SiftPart   *part;
+		SiftGranuleDesc *dir;
 		uint64		len;
-		const SiftTidIndexEntry *tix = sift_part_read_section(rel, part, SEC_TID_INDEX, &len);
+		const SiftTidIndexEntry *tix;
 
+		MemoryContextSwitchTo(pcx);
+		part = sift_part_open(rel, out[k].header_blk, out[k].part_gen, (uint32) part_id);
+		dir = sift_part_granule_dir(rel, part);
+		tix = sift_part_read_section(rel, part, SEC_TID_INDEX, &len);
 		SIFT_INVARIANT(tix != NULL && len == (uint64) part->hdr.ngranules * sizeof(*tix), "a part written by a compaction has no TID index");
 		for (uint32 g = 0; g < part->hdr.ngranules; g++)
 		{
@@ -259,12 +269,18 @@ place_rows(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, cons
 
 			if (!wanted_in(want, nwant, tix[g].tid_min, tix[g].tid_max))
 				continue;
+			MemoryContextSwitchTo(gcx);
 			tids = sift_part_read_tids(rel, part, dir, g);
 			for (uint16 r = 0; r < dir[g].nrows; r++)
 				if (in_sorted(want, nwant, tids[r]))
 					pl.v[pl.n++] = (Placed) {tids[r], out[k].part_gen, g, r};
+			MemoryContextReset(gcx);
+			MemoryContextSwitchTo(pcx);
 		}
+		MemoryContextSwitchTo(outer);
+		MemoryContextReset(pcx);
 	}
+	MemoryContextDelete(pcx);
 	qsort(pl.v, pl.n, sizeof(Placed), placed_cmp);
 	return pl;
 }
@@ -316,7 +332,7 @@ sift_col_delta_fold_install(void)
 /* ---- the parts VACUUM sends to the compaction ---- */
 
 int
-sift_col_delta_fold_gens(Relation rel, const SiftPartitionEntry *entry, const SiftPartDesc *parts, int nparts, FullTransactionId horizon, uint64 *gens, int ngens)
+sift_col_delta_fold_gens(Relation rel, const SiftPartitionEntry *entry, const SiftPartDesc *parts, int nparts, FullTransactionId horizon, bool aggressive, uint64 *gens, int ngens)
 {
 	SiftColDeltaChain chain;
 	SiftColDeltaCompactPlan plan;
@@ -327,6 +343,12 @@ sift_col_delta_fold_gens(Relation rel, const SiftPartitionEntry *entry, const Si
 
 	if (!sift_col_delta_load_chain(rel, entry, 0, &chain))
 		return ngens;
+	/* STOR[STOR-TBL-09]: col_delta fold write-amp gate (avoid full L2 part rewrite below FOLD_PAGES=4 threshold) */
+	if (!aggressive && chain.npages < SIFT_COL_DELTA_FOLD_PAGES)
+	{
+		sift_col_delta_chain_free(&chain);
+		return ngens;
+	}
 	sift_xid_horizon_init(&hc, horizon);
 	sift_col_delta_compact_plan(&chain, live, nparts, live, nparts, &hz, UINT32_MAX, &plan);
 	/* a part in object storage is not rewritten: its deltas stay in the chain and are applied when it is read */

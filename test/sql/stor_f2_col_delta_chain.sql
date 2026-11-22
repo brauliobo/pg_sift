@@ -1,0 +1,54 @@
+-- Format 2.0 sift_table column deltas: a multi-page flush, the records of aborted writers dropped from a chain that holds live ones too, and the VACUUM folds.
+-- Every check prints one row (name, ok).
+CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE cd (id int PRIMARY KEY, a int, b int, c int, d int, note text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false);
+INSERT INTO cd SELECT g, g, g, g, g, 'row ' || g FROM generate_series(1, 20000) g;
+VACUUM cd;
+
+-- a flush of several pages
+UPDATE cd SET a = a + 1 WHERE id <= 4000;
+SELECT 'the bulk update is visible', count(*) = 4000 AND min(a) = 2 AND max(a) = 4001 AS ok FROM cd WHERE id <= 4000;
+
+-- a transaction that flushes its records in the middle (a read of its own rows) and then rolls back leaves dead records in a chain that holds live ones too:
+-- the rounds of rollback, update and VACUUM do not grow the file
+CREATE FUNCTION round_trip(lo int, hi int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	UPDATE cd SET b = -1 WHERE id BETWEEN lo AND hi;
+	PERFORM count(*) FROM cd WHERE b = -1;
+	RAISE EXCEPTION 'abort';
+EXCEPTION WHEN raise_exception THEN NULL;
+END $$;
+SELECT round_trip(4001, 7000);
+UPDATE cd SET c = c + 1 WHERE id BETWEEN 9001 AND 9100;
+VACUUM cd;
+SELECT pg_relation_size('cd') AS first_size \gset
+SELECT round_trip(4001, 7000);
+UPDATE cd SET c = c + 1 WHERE id BETWEEN 9101 AND 9200;
+VACUUM cd;
+SELECT round_trip(4001, 7000);
+UPDATE cd SET c = c + 1 WHERE id BETWEEN 9201 AND 9300;
+VACUUM cd;
+SELECT round_trip(4001, 7000);
+UPDATE cd SET c = c + 1 WHERE id BETWEEN 9301 AND 9400;
+VACUUM cd;
+SELECT 'the rounds do not grow the file', pg_relation_size('cd') <= :first_size * 1.5 AS ok;
+SELECT 'every committed value is there', count(*) = 4000 AND sum(a) = (SELECT sum(g + 1) FROM generate_series(1, 4000) g) AS ok FROM cd WHERE id <= 4000;
+SELECT 'the rolled back ones are not', count(*) = 0 AS ok FROM cd WHERE b < 0;
+SELECT 'the later updates are', count(*) = 400 AND sum(c) = (SELECT sum(g + 1) FROM generate_series(9001, 9400) g) AS ok FROM cd WHERE id BETWEEN 9001 AND 9400;
+
+-- a short chain, then the aggressive VACUUM
+UPDATE cd SET d = d + 1 WHERE id = 15000;
+VACUUM cd;
+SELECT 'the row has its value', d = 15001 AS ok FROM cd WHERE id = 15000;
+VACUUM (FREEZE) cd;
+SELECT 'the row still has its value', d = 15001 AS ok FROM cd WHERE id = 15000;
+SELECT 'every row is there', count(*) = 20000 AS ok FROM cd;
+
+DROP TABLE cd;
+DROP FUNCTION round_trip(int, int);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

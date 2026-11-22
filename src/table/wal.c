@@ -69,9 +69,10 @@ sift_tbl_check_publication(Relation rel)
 	return true;
 }
 
+/* STOR[STOR-TBL-12]: logical WAL old_key dedup (avoids double HeapTuple filter + leak in f2_dml.c:104-126) */
 /* The replica identity part of an old row: all of it, the identity key columns, or nothing */
-static HeapTuple
-old_key(Relation rel, HeapTuple old)
+HeapTuple
+sift_tbl_old_key(Relation rel, HeapTuple old)
 {
 	TupleDesc	desc = RelationGetDescr(rel);
 	Bitmapset  *key;
@@ -97,13 +98,12 @@ old_key(Relation rel, HeapTuple old)
 }
 
 void
-sift_tbl_log_change(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple old)
+sift_tbl_log_key(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple key)
 {
 	static const uint8 info[] = {[SIFT_TBL_OP_INSERT] = XLOG_SIFT_TBL_INSERT,[SIFT_TBL_OP_UPDATE] = XLOG_SIFT_TBL_UPDATE,
 	[SIFT_TBL_OP_DELETE] = XLOG_SIFT_TBL_DELETE};
 	SiftTblChange hdr = {.rlocator = rel->rd_locator};
 	HeapTuple	newtup = newrow ? heap_tuple_from_minimal_tuple(newrow) : NULL;
-	HeapTuple	key = old ? old_key(rel, old) : NULL;
 
 	hdr.newlen = newtup ? newtup->t_len : 0;
 	hdr.oldlen = key ? key->t_len : 0;
@@ -117,6 +117,14 @@ sift_tbl_log_change(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple o
 	XLogInsert(SIFT_TBL_RMGR_ID, info[op]);
 	if (newtup)
 		heap_freetuple(newtup);
+}
+
+void
+sift_tbl_log_change(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple old)
+{
+	HeapTuple	key = old ? sift_tbl_old_key(rel, old) : NULL;
+
+	sift_tbl_log_key(rel, op, newrow, key);
 	if (key && key != old)
 		heap_freetuple(key);
 }

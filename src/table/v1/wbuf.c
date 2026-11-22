@@ -425,6 +425,7 @@ sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId x
 		}
 		if ((rec.flags & SIFT_TBL_REC_OVF) && ovf_gen != st->tgt_gen)
 		{
+			/* STOR[STOR-TBL-16]: v1 wbuf OVFDATA 582B slot[291] overhead (ABI-locked) + orphan ovf page cleanup on retry */
 			if (!BlockNumberIsValid(rec.aux = write_overflow(rel, st, st->tgt_gen, mtup)))
 			{
 				st->tgt_blk = InvalidBlockNumber;	/* the segment of the target is full or sealed: row and bytes go to the next */

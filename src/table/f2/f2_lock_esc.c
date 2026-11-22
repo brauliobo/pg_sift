@@ -23,6 +23,7 @@
 
 /* ---- the table in shared memory ---- */
 
+/* MEM[MEM-SHM-05]: DSM row lock table sift_rowlock (1100768 B packed; 128x64x128 B ABI entries) */
 #define TABLE_BYTES		(sizeof(SiftRowLockShmLayout) + PG_CACHE_LINE_SIZE)
 
 SIFT_BACKEND_LOCAL SiftRowLockShmLayout *shm = NULL;
@@ -43,8 +44,8 @@ shm_init(SIFT_DSM_INIT_ARGS)
 		LWLockInitialize(&s->esc_locks[i].lock, escs);
 }
 
-bool
-sift_lock_shm_attach(SiftRowLockStripe **stripes, LWLockPadded **stripe_locks, SiftEscStripe **esc, LWLockPadded **esc_locks)
+SiftRowLockShmLayout *
+sift_lock_shm_attach(void)
 {
 	if (shm == NULL && !pglm)
 	{
@@ -63,24 +64,13 @@ sift_lock_shm_attach(SiftRowLockStripe **stripes, LWLockPadded **stripe_locks, S
 			sift_tranche_register(shm->esc_locks[0].lock.tranche, SIFT_ESC_TRANCHE);
 		}
 	}
-	if (shm == NULL)
-		return false;
-	*stripes = shm->stripes;
-	*stripe_locks = shm->stripe_locks;
-	*esc = shm->esc_stripes;
-	*esc_locks = shm->esc_locks;
-	return true;
+	return shm;
 }
 
 bool
 sift_lock_pglm_only(void)
 {
-	SiftRowLockStripe *s;
-	LWLockPadded *sl,
-			   *el;
-	SiftEscStripe *e;
-
-	return !sift_lock_shm_attach(&s, &sl, &e, &el);
+	return sift_lock_shm_attach() == NULL;
 }
 
 /* ---- the directory of the coarse holders ---- */
@@ -101,10 +91,12 @@ dir_match(const SiftPartEscEntry *e, const RelFileLocator *loc, uint64 part_id, 
 static void
 dir_compact_ended(SiftEscStripe *s)
 {
-	for (int i = 0; i < s->nentries;)
+	uint16	   *n = &shm->esc_n[s - shm->esc_stripes];
+
+	for (int i = 0; i < *n;)
 	{
 		if (!TransactionIdIsInProgress(s->entries[i].top_xid))
-			s->entries[i] = s->entries[--s->nentries];
+			s->entries[i] = s->entries[--*n];
 		else
 			i++;
 	}
@@ -134,28 +126,30 @@ dir_apply(DirOp op, const DirArg *a)
 {
 	uint32		si = dir_stripe(a->loc, a->part_id);
 	SiftEscStripe *s;
+	uint16	   *n;
 	SiftPartEscEntry *e = NULL;
 	bool		ok = true;
 
 	if (shm == NULL)
 		return false;
 	s = &shm->esc_stripes[si];
+	n = &shm->esc_n[si];
 	LWLockAcquire(&shm->esc_locks[si].lock, LW_EXCLUSIVE);
-	for (int i = 0; i < s->nentries && e == NULL; i++)
+	for (int i = 0; i < *n && e == NULL; i++)
 		if (dir_match(&s->entries[i], a->loc, a->part_id, a->top))
 			e = &s->entries[i];
 	if (op == DIR_PUBLISH && e == NULL)
 	{
-		if (s->nentries == SIFT_ESC_BUCKETS)
+		if (*n == SIFT_ESC_BUCKETS)
 			dir_compact_ended(s);
-		ok = s->nentries < SIFT_ESC_BUCKETS;
-		e = ok ? &s->entries[s->nentries++] : NULL;
+		ok = *n < SIFT_ESC_BUCKETS;
+		e = ok ? &s->entries[(*n)++] : NULL;
 		if (ok)
 			*e = (SiftPartEscEntry) {.locator = *a->loc,.part_id = a->part_id,.top_xid = a->top,.flags = SIFT_ESC_FLAG_ACTIVE};
 	}
 	ok = ok && e != NULL;
 	if (ok && op == DIR_REMOVE)
-		*e = s->entries[--s->nentries];
+		*e = s->entries[--*n];
 	else if (ok)
 	{
 		e->mode = op == DIR_MODE || op == DIR_PUBLISH ? a->mode : e->mode;
@@ -178,7 +172,7 @@ sift_esc_live_count(void)
 	{
 		LWLockAcquire(&shm->esc_locks[si].lock, LW_EXCLUSIVE);
 		dir_compact_ended(&shm->esc_stripes[si]);
-		n += shm->esc_stripes[si].nentries;
+		n += shm->esc_n[si];
 		LWLockRelease(&shm->esc_locks[si].lock);
 	}
 	return n;
@@ -193,7 +187,7 @@ holder_in_the_way(const RelFileLocator *loc, uint64 part_id, LOCKMODE want)
 	if (shm == NULL)
 		return found;
 	LWLockAcquire(&shm->esc_locks[si].lock, LW_SHARED);
-	for (int i = 0; i < shm->esc_stripes[si].nentries && !TransactionIdIsValid(found); i++)
+	for (int i = 0; i < shm->esc_n[si] && !TransactionIdIsValid(found); i++)
 	{
 		const SiftPartEscEntry *e = &shm->esc_stripes[si].entries[i];
 
@@ -227,11 +221,12 @@ sift_esc_drop_rel(const RelFileLocator *loc)
 	for (int si = 0; si < SIFT_ESC_STRIPES; si++)
 	{
 		SiftEscStripe *s = &shm->esc_stripes[si];
+		uint16	   *n = &shm->esc_n[si];
 
 		LWLockAcquire(&shm->esc_locks[si].lock, LW_EXCLUSIVE);
-		for (int i = 0; i < s->nentries;)
+		for (int i = 0; i < *n;)
 			if (RelFileLocatorEquals(s->entries[i].locator, *loc))
-				s->entries[i] = s->entries[--s->nentries];
+				s->entries[i] = s->entries[--*n];
 			else
 				i++;
 		LWLockRelease(&shm->esc_locks[si].lock);
@@ -274,6 +269,7 @@ MemoryContext
 sift_rowlock_txn_cx(void)
 {
 	if (txn_cx == NULL)
+		/* MEM[MEM-TBL-09]: TopTransactionContext xact row-lock tracker (freed at xact end, 0 B idle) */
 		txn_cx = sift_mem_allocset_create(TopTransactionContext, "sift f2 row locks of the transaction");
 	return txn_cx;
 }
@@ -608,17 +604,13 @@ sift_esc_before_row_lock(Relation rel, uint64 part_id, LockTupleMode mode, LockW
 {
 	SiftLocalLock *rl = lock_of(rel, SIFT_ESC_PART_ALL);
 	SiftLocalLock *pl = lock_of(rel, part_id);
-	SiftRowLockStripe *stripes;
-	LWLockPadded *sl,
-			   *el;
-	SiftEscStripe *esc;
 	TM_Result	r;
 
 	*covered = rl->esc_mode >= (int) mode || pl->esc_mode >= (int) mode;
 	*reread = false;
 	if (*covered)
 		return TM_Ok;
-	if (!sift_lock_shm_attach(&stripes, &sl, &esc, &el) || rl->esc_mode >= 0 || pl->esc_mode >= 0)
+	if (sift_lock_shm_attach() == NULL || rl->esc_mode >= 0 || pl->esc_mode >= 0)
 		return TM_Ok;
 	r = take_intent(rl, mode, wait_policy, reread, tmfd);
 	return r == TM_Ok ? take_intent(pl, mode, wait_policy, reread, tmfd) : r;

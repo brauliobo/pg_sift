@@ -212,6 +212,8 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 			Buffer		wbuf;
 			Page		wroot;
 			SiftXlog	x;
+			/* STOR[STOR-WAL-03]: batch GenericXLog writes (up to 4 pages/record; -15% meta WAL) */
+			SiftNewPageLog lists = SIFT_NEWLOG_BEGIN(rel);
 			BlockNumber heads[SIFT_FSM_NCLASSES];
 			BlockNumber qhead = InvalidBlockNumber, qtail = InvalidBlockNumber;
 			BlockNumber *taken = palloc(Max(newpages, 1) * sizeof(BlockNumber));
@@ -236,16 +238,13 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 					int			from = p * SIFT_FSM_PAGE_CAP,
 								cnt = Min(byclass[k].n - from, (int) SIFT_FSM_PAGE_CAP);
 					BlockNumber blk = taken[ntaken++];
-					Page		pg;
+					Page		pg = sift_newlog_page(&lists, blk);
 
-					x = sift_xlog_start(rel);
-					pg = sift_xlog_register(&x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE);
 					sift_fsm_init_list_page(pg, k, 0, next);
 					for (int j = 0; j < cnt; j++)
 						FSMP(pg)->ext[j] = byclass[k].v[from + cnt - 1 - j];
 					FSMP(pg)->nentries = cnt;
 					sift_fsm_list_seal(pg);
-					sift_xlog_done(&x);
 					next = blk;
 				}
 				heads[k] = next;
@@ -258,15 +257,12 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 					int			from = p * SIFT_FSM_PAGE_CAP,
 								cnt = Min(pending.n - from, (int) SIFT_FSM_PAGE_CAP);
 					BlockNumber blk = taken[ntaken++];
-					Page		pg;
+					Page		pg = sift_newlog_page(&lists, blk);
 
-					x = sift_xlog_start(rel);
-					pg = sift_xlog_register(&x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE);
 					sift_fsm_init_list_page(pg, SIFT_FSM_CLASS_QUEUE, SIFT_FSM_PAGE_DEFERRED, next);
 					memcpy(FSMP(pg)->ext, &pending.v[from], cnt * sizeof(SiftFsmExtent));
 					FSMP(pg)->nentries = cnt;
 					sift_fsm_list_seal(pg);
-					sift_xlog_done(&x);
 					if (qtail == InvalidBlockNumber)
 						qtail = blk;
 					next = blk;
@@ -274,6 +270,7 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 				qhead = next;
 			}
 
+			sift_newlog_end(&lists);
 			x = sift_xlog_start(rel);
 			wbuf = sift_fsm_lock_root(rel);
 			wroot = sift_xlog_register(&x, wbuf, 0);

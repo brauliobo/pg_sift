@@ -20,12 +20,18 @@ sift_mf_new_page_blk(Relation rel, BlkVec *created)
 	return blk;
 }
 
+/* STOR[STOR-WAL-03]: batch GenericXLog writes (up to 4 pages/record; -15% meta WAL) */
+void
+sift_mf_log_image(SiftNewPageLog *log, BlockNumber blk, const char *image)
+{
+	memcpy(sift_newlog_page(log, blk), image, BLCKSZ);
+}
+
 void
 sift_mf_write_image(Relation rel, BlockNumber blk, const char *image)
 {
-	SiftXlog	x = sift_xlog_start(rel);
-	Page		pg = sift_xlog_register(&x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE);
+	SiftNewPageLog log = SIFT_NEWLOG_BEGIN(rel);
 
-	memcpy(pg, image, BLCKSZ);
-	sift_xlog_done(&x);
+	sift_mf_log_image(&log, blk, image);
+	sift_newlog_end(&log);
 }

@@ -39,13 +39,13 @@ SELECT n AS asked, (sift._test_f2_alloc('t_idx', n)).nblocks_out AS got FROM unn
 SELECT sift._test_f2_fsm('t_idx');
                                    _test_f2_fsm                                    
 -----------------------------------------------------------------------------------
- c0=0 c1=0 c2=0 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=0/0 meta_free=31/32
+ c0=0 c1=0 c2=0 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=0/0 meta_free=15/16
 (1 row)
 
 SELECT sift._test_f2_check('t_idx');
              _test_f2_check              
 -----------------------------------------
- parts=0 quarantined=0/0 meta_free=31/32
+ parts=0 quarantined=0/0 meta_free=15/16
 (1 row)
 
 -- Four adjacent single blocks, released without a transaction to wait for, join into one extent of 4 blocks
@@ -92,7 +92,7 @@ SELECT sift._test_f2_release('t_idx', :s4, 1, 'none');
 SELECT sift._test_f2_fsm('t_idx');
                                    _test_f2_fsm                                    
 -----------------------------------------------------------------------------------
- c0=0 c1=0 c2=0 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=4/4 meta_free=30/32
+ c0=0 c1=0 c2=0 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=4/4 meta_free=14/16
 (1 row)
 
 SELECT sift._test_f2_reclaim('t_idx');
@@ -104,13 +104,13 @@ SELECT sift._test_f2_reclaim('t_idx');
 SELECT sift._test_f2_fsm('t_idx');
                                    _test_f2_fsm                                    
 -----------------------------------------------------------------------------------
- c0=0 c1=0 c2=1 c3=0 c4=1 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=0/0 meta_free=13/16
+ c0=0 c1=0 c2=1 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=0/0 meta_free=14/16
 (1 row)
 
 SELECT sift._test_f2_check('t_idx');
              _test_f2_check              
 -----------------------------------------
- parts=0 quarantined=0/0 meta_free=13/16
+ parts=0 quarantined=0/0 meta_free=14/16
 (1 row)
 
 -- A block released by a transaction still running is not handed out; once that transaction is past, it is
@@ -130,7 +130,7 @@ SELECT sift._test_f2_reclaim('t_idx');
 SELECT sift._test_f2_fsm('t_idx');
                                    _test_f2_fsm                                    
 -----------------------------------------------------------------------------------
- c0=1 c1=1 c2=2 c3=1 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=1/1 meta_free=10/16
+ c0=1 c1=1 c2=0 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=1/1 meta_free=12/16
 (1 row)
 
 SELECT (sift._test_f2_alloc('t_idx', 1)).start <> :q1 AS other_block;
@@ -142,7 +142,7 @@ SELECT (sift._test_f2_alloc('t_idx', 1)).start <> :q1 AS other_block;
 SELECT sift._test_f2_check('t_idx');
              _test_f2_check              
 -----------------------------------------
- parts=0 quarantined=1/1 meta_free=27/32
+ parts=0 quarantined=1/1 meta_free=13/16
 (1 row)
 
 SELECT (a).start AS q2 FROM (SELECT sift._test_f2_alloc('t_idx', 1) AS a) q \gset
@@ -161,13 +161,13 @@ SELECT sift._test_f2_reclaim('t_idx');
 SELECT sift._test_f2_fsm('t_idx');
                                    _test_f2_fsm                                    
 -----------------------------------------------------------------------------------
- c0=3 c1=3 c2=2 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=2/2 meta_free=11/16
+ c0=1 c1=0 c2=0 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=2/2 meta_free=13/16
 (1 row)
 
 SELECT sift._test_f2_check('t_idx');
              _test_f2_check              
 -----------------------------------------
- parts=0 quarantined=2/2 meta_free=11/16
+ parts=0 quarantined=2/2 meta_free=13/16
 (1 row)
 
 -- The metadata slabs grow when their blocks run low, and give blocks back
@@ -180,7 +180,7 @@ SELECT count(sift._test_f2_meta_alloc('t_idx')) AS pages FROM generate_series(1,
 SELECT sift._test_f2_check('t_idx');
               _test_f2_check               
 -------------------------------------------
- parts=0 quarantined=2/2 meta_free=207/512
+ parts=0 quarantined=2/2 meta_free=209/512
 (1 row)
 
 -- A stream is exactly the blocks it asks for, in extents cut off the end of the relation when no free extent holds them
@@ -211,7 +211,7 @@ SELECT sift._test_f2_reclaim('t_idx');
 SELECT sift._test_f2_fsm('t_idx');
                                     _test_f2_fsm                                     
 -------------------------------------------------------------------------------------
- c0=1 c1=0 c2=3 c3=1 c4=0 c5=1 c6=1 c7=0 c8=0 c9=0 c10=0 queue=1/1 meta_free=205/512
+ c0=1 c1=0 c2=1 c3=0 c4=0 c5=1 c6=1 c7=0 c8=0 c9=0 c10=0 queue=1/1 meta_free=206/512
 (1 row)
 
 SELECT count(*) AS extents, sum(nblocks_out) AS got
@@ -224,13 +224,13 @@ SELECT count(*) AS extents, sum(nblocks_out) AS got
 SELECT sift._test_f2_fsm('t_idx');
                                     _test_f2_fsm                                     
 -------------------------------------------------------------------------------------
- c0=1 c1=0 c2=4 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=1/1 meta_free=208/512
+ c0=1 c1=0 c2=0 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=1/1 meta_free=209/512
 (1 row)
 
 SELECT sift._test_f2_check('t_idx');
               _test_f2_check               
 -------------------------------------------
- parts=0 quarantined=1/1 meta_free=208/512
+ parts=0 quarantined=1/1 meta_free=209/512
 (1 row)
 
 -- Free extents are handed out lowest first, and a stream below a block bound takes only what lies below it
@@ -270,7 +270,7 @@ SELECT count(*) AS extents FROM sift._test_f2_alloc_below('t_idx', 1000000, :lo 
 SELECT sift._test_f2_check('t_idx');
               _test_f2_check               
 -------------------------------------------
- parts=0 quarantined=1/1 meta_free=207/512
+ parts=0 quarantined=1/1 meta_free=208/512
 (1 row)
 
 -- An extent past the largest class is refused

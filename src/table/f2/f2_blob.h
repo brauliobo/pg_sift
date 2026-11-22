@@ -14,6 +14,7 @@
 #include "col/f2/rowbuf.h"
 #include "core/page.h"
 
+/* STOR[STOR-TBL-10]: wide blob spill threshold 16KiB + batched gen alloc (avoids 8KiB/row frag + 40B ref) */
 #define SIFT_TBL_WIDE_THRESHOLD		SIFT_F2_WIDE_THRESHOLD
 #define SIFT_TBL_BLOB_MAGIC			0x424C4F42U		/* "BLOB" */
 #define SIFT_TBL_BLOB_MAX			((Size) MaxAllocSize)

@@ -51,6 +51,7 @@
 #include "table/wal.h"
 
 #define SIFT_TBL_ROWS_PER_VBLOCK	MaxHeapTuplesPerPage
+#define SIFT_TBL_VBLOCK_FIRST_RESERVE 16	/* vblocks the first single-row refill of a session takes: 4,656 addresses */
 #define SIFT_TBL_VBLOCK_RESERVE		1024	/* vblocks taken from the metapage at once: one Block 0 lock per 297,984 rows */
 #define SIFT_TBL_VBLOCK_BULK_RESERVE 8192	/* the same for a bulk insert: one Block 0 lock per 2,383,872 rows */
 #define SIFT_TBL_OFFMASK_WORDS		((SIFT_TBL_ROWS_PER_VBLOCK + 64) / 64)
@@ -79,6 +80,7 @@ typedef struct SiftTblTidPool
 {
 	uint64		next_vblock;
 	uint64		end_vblock;
+	uint32		refill_vblocks;
 	OffsetNumber next_off;
 } SiftTblTidPool;
 

@@ -115,7 +115,7 @@ sift_fsm_slabs_idle(const SiftFsmSlabTable *t, uint32 meta_free, ExtVec *out)
 			empty[n++] = &t->slab[i];
 	qsort(empty, n, sizeof(empty[0]), slab_start_desc);
 	for (int i = 0; i < n; i++)
-		if (meta_free - empty[i]->nblocks >= SIFT_FSM_META_RESERVE)
+		if (meta_free - empty[i]->nblocks >= sift_fsm_meta_reserve(t))
 		{
 			sift_fsm_extvec_add(out, empty[i]->start, empty[i]->nblocks, InvalidFullTransactionId);
 			meta_free -= empty[i]->nblocks;
@@ -220,11 +220,13 @@ sift_fsm_claim_slab(FsmCtx *c)
 	UnlockReleaseBuffer(rootbuf);
 }
 
+/* STOR[STOR-F2-03]: FSM small-index meta reserve and multi-extent fallback (cuts EOF growth) */
 bool
 sift_fsm_below_reserve(FsmCtx *c)
 {
 	Buffer		rootbuf = sift_fsm_lock_root(c->rel);
-	bool		low = FSMM(BufferGetPage(rootbuf))->meta_free_count < SIFT_FSM_META_RESERVE;
+	Page		root = BufferGetPage(rootbuf);
+	bool		low = FSMM(root)->meta_free_count < sift_fsm_meta_reserve(SLABS(root));
 
 	UnlockReleaseBuffer(rootbuf);
 	return low;

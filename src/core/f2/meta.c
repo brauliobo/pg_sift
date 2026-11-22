@@ -209,3 +209,22 @@ sift_xlog_done(SiftXlog *x)
 	for (int i = 0; i < x->n; i++)
 		UnlockReleaseBuffer(x->buf[i]);
 }
+
+void
+sift_newlog_end(SiftNewPageLog *l)
+{
+	if (l->x.n == 0)
+		return;
+	sift_xlog_done(&l->x);
+	l->x.n = 0;
+}
+
+Page
+sift_newlog_page(SiftNewPageLog *l, BlockNumber blk)
+{
+	if (l->x.n == MAX_GENERIC_XLOG_PAGES)
+		sift_newlog_end(l);
+	if (l->x.n == 0)
+		l->x = sift_xlog_start(l->index);
+	return sift_xlog_register(&l->x, sift_blk_new(l->index, blk), GENERIC_XLOG_FULL_IMAGE);
+}

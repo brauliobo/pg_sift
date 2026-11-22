@@ -549,6 +549,7 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 		vacuum_cleanup(rel, &v);
 		if (st->initialized)
 		{
+			/* STOR[STOR-TBL-14]: v1 vacuum tail truncate gate: vacuum_rel passes the resolved ENABLED/DISABLED, so the gate stays as it is (shrink of the free file tail) */
 			vacuum_space(rel, st, &v, params->truncate == VACOPTVALUE_ENABLED, elevel);
 			note_groups(st, &v);
 		}

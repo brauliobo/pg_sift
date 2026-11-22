@@ -48,7 +48,11 @@ sift_tbl_f2_tid_next(Relation rel, SiftF2Store *store, ItemPointer tid)
 	SiftTblTidPool *p = &sift_tbl_extra(store)->pool;
 
 	if (p->next_vblock >= p->end_vblock)
-		tid_refill(rel, p, SIFT_TBL_VBLOCK_RESERVE);
+	{
+		/* STOR[STOR-TBL-11]: adaptive vblock TID reserve (16->1024 vblocks; tightens SEC_TID_INDEX delta width) */
+		p->refill_vblocks = Min(Max(p->refill_vblocks * 4, SIFT_TBL_VBLOCK_FIRST_RESERVE), SIFT_TBL_VBLOCK_RESERVE);
+		tid_refill(rel, p, p->refill_vblocks);
+	}
 	ItemPointerSet(tid, (BlockNumber) p->next_vblock, p->next_off);
 	if (++p->next_off > SIFT_TBL_ROWS_PER_VBLOCK)
 	{
@@ -92,22 +96,17 @@ sift_tbl_f2_log_guard(Relation rel, uint64 newlen, uint64 oldlen)
 static HeapTuple
 identity_of_old(Relation rel, TupleTableSlot *old)
 {
-	TupleDesc	desc = RelationGetDescr(rel);
-	Bitmapset  *key;
-	bool	   *isnull;
+	HeapTuple	full,
+				key;
 
 	if (rel->rd_rel->relreplident == REPLICA_IDENTITY_NOTHING)
 		return NULL;
 	slot_getallattrs(old);
-	if (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
-		return heap_form_tuple(desc, old->tts_values, old->tts_isnull);
-	key = RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_IDENTITY_KEY);
-	if (key == NULL)
-		return NULL;
-	isnull = palloc(sizeof(bool) * desc->natts);
-	for (int a = 1; a <= desc->natts; a++)
-		isnull[a - 1] = old->tts_isnull[a - 1] || !bms_is_member(a - FirstLowInvalidHeapAttributeNumber, key);
-	return heap_form_tuple(desc, old->tts_values, isnull);
+	full = heap_form_tuple(RelationGetDescr(rel), old->tts_values, old->tts_isnull);
+	key = sift_tbl_old_key(rel, full);
+	if (key != full)
+		heap_freetuple(full);
+	return key;
 }
 
 static void
@@ -120,9 +119,11 @@ log_published(Relation rel, SiftTblOp op, TupleTableSlot *newslot, TupleTableSlo
 	if (newslot != NULL)
 		newrow = ExecFetchSlotMinimalTuple(newslot, &free_new);
 	sift_tbl_f2_log_guard(rel, newrow != NULL ? newrow->t_len : 0, old != NULL ? old->t_len : 0);
-	sift_tbl_log_change(rel, op, newrow, old);
+	sift_tbl_log_key(rel, op, newrow, old);
 	if (free_new)
 		pfree(newrow);
+	if (old != NULL)
+		heap_freetuple(old);
 }
 
 static void
@@ -419,7 +420,7 @@ sift_tbl_f2_bulk_begin(SiftTblF2Bulk *b, Relation rel, CommandId cid, bool froze
 {
 	b->rel = rel;
 	b->store = sift_f2_store_open(rel);
-	b->stage = sift_stage_get(rel, &b->store->spec);
+	b->stage = sift_tbl_f2_stage_bulk(rel, b->store);
 	b->frozen = frozen;
 	b->cid = cid;
 	b->nrows = 0;

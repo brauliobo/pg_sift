@@ -288,6 +288,26 @@ peek_lowest(FsmCtx *c, int cls, BlockNumber *start)
 	return found;
 }
 
+/* The class, from `cls` up, of the free extent that starts lowest; SIFT_FSM_NCLASSES when there is none */
+static int
+lowest_class(FsmCtx *c, int cls)
+{
+	int			found = SIFT_FSM_NCLASSES;
+	BlockNumber lowest = InvalidBlockNumber;
+
+	for (int k = cls; k < SIFT_FSM_NCLASSES; k++)
+	{
+		BlockNumber start;
+
+		if (peek_lowest(c, k, &start) && (found == SIFT_FSM_NCLASSES || start < lowest))
+		{
+			found = k;
+			lowest = start;
+		}
+	}
+	return found;
+}
+
 /* The class, from `cls` up, of the free extent that starts lowest, reclaiming the queue once when there is none; SIFT_FSM_NCLASSES when the file must grow. Allocating at the lowest address keeps the end of the file free to be cut */
 static int
 find_class(FsmCtx *c, int cls)
@@ -296,20 +316,10 @@ find_class(FsmCtx *c, int cls)
 	{
 		Buffer		rootbuf = sift_fsm_lock_root(c->rel);
 		bool		queued = FSMM(BufferGetPage(rootbuf))->quarantine_extents > 0;
-		int			found = SIFT_FSM_NCLASSES;
-		BlockNumber lowest = InvalidBlockNumber;
+		int			found;
 
 		UnlockReleaseBuffer(rootbuf);
-		for (int k = cls; k < SIFT_FSM_NCLASSES; k++)
-		{
-			BlockNumber start;
-
-			if (peek_lowest(c, k, &start) && (found == SIFT_FSM_NCLASSES || start < lowest))
-			{
-				found = k;
-				lowest = start;
-			}
-		}
+		found = lowest_class(c, cls);
 		if (found < SIFT_FSM_NCLASSES || !queued || round == 1)
 			return found;
 		sift_fsm_reclaim_locked(c, NULL);
@@ -426,6 +436,23 @@ sift_fsm_alloc_below(Relation rel, uint64 npages, BlockNumber max_blk, SiftExten
 	return n;
 }
 
+/* The class of the smaller free extent a stream takes before it extends the file, when none of the class it wants is free: the largest that leaves at most SIFT_FSM_REUSE_PIECES extents of it for the n blocks still wanted and fits the room of the caller; the class of the free extent it is carved from in *from, -1 when there is none */
+static int
+reuse_class(FsmCtx *c, uint64 nblocks, int cls, int room, int *from)
+{
+	for (int j = cls - 1; j >= SIFT_FSM_MIN_REUSE_CLASS; j--)
+	{
+		uint64		pieces = (nblocks + SIFT_FSM_CLASS_BLOCKS(j) - 1) / SIFT_FSM_CLASS_BLOCKS(j);
+
+		if (pieces > SIFT_FSM_REUSE_PIECES)
+			break;
+		if (pieces <= (uint64) room && (*from = lowest_class(c, j)) < SIFT_FSM_NCLASSES)
+			return j;
+	}
+	return -1;
+}
+
+/* STOR[STOR-F2-03]: FSM small-index meta reserve and multi-extent fallback (cuts EOF growth) */
 int
 sift_fsm_alloc_stream(Relation rel, uint64 nblocks, SiftExtent *out, int max)
 {
@@ -436,11 +463,14 @@ sift_fsm_alloc_stream(Relation rel, uint64 nblocks, SiftExtent *out, int max)
 	{
 		uint32		top = (uint32) Min(nblocks, SIFT_FSM_MAX_EXTENT);
 		int			cls = sift_fsm_class_floor(top),
-					k = find_class(&c, cls);
+					k = find_class(&c, cls),
+					small = -1;
 
 		if (n == max)
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: a stream of more than %d extents", max),
 							errhint("Write the stream in several parts.")));
+		if (k == SIFT_FSM_NCLASSES && (small = reuse_class(&c, nblocks, cls, max - n, &k)) >= 0)
+			cls = small;
 		out[n] = take_extent(&c, k, k == SIFT_FSM_NCLASSES ? top : SIFT_FSM_CLASS_BLOCKS(cls));
 		nblocks -= out[n].nblocks;
 		n++;

@@ -43,6 +43,7 @@
 #include "core/catname.h"
 #include "col/dsmreg.h"
 
+/* MEM[MEM-CORE-16]: test-only intentional leak fixture (SIFT_TESTING) */
 PG_FUNCTION_INFO_V1(sift_test_leak);
 PG_FUNCTION_INFO_V1(sift_test_malloc_stats);
 PG_FUNCTION_INFO_V1(sift_test_thp_disable);

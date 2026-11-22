@@ -68,6 +68,7 @@ write_scopedir(Relation rel, uint64 gen, uint64 version, const SiftManifestScope
 	int			npages = (n + SIFT_SCOPEDIR_CAP - 1) / SIFT_SCOPEDIR_CAP;
 	BlockNumber *blks = palloc(npages * sizeof(BlockNumber));
 	PGAlignedBlock img;
+	SiftNewPageLog log = SIFT_NEWLOG_BEGIN(rel);
 
 	for (int p = 0; p < npages; p++)
 		blks[p] = sift_mf_new_page_blk(rel, created);
@@ -87,8 +88,9 @@ write_scopedir(Relation rel, uint64 gen, uint64 version, const SiftManifestScope
 		memcpy(d->entries, refs + from, cnt * sizeof(SiftManifestScopeRef));
 		SiftPageSetUsed(img.data, offsetof(SiftScopeDirPageData, entries) + cnt * sizeof(SiftManifestScopeRef));
 		sift_page_seal(img.data);
-		sift_mf_write_image(rel, blks[p], img.data);
+		sift_mf_log_image(&log, blks[p], img.data);
 	}
+	sift_newlog_end(&log);
 	return blks[0];
 }
 

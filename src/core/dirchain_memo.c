@@ -70,6 +70,8 @@ memo_init(void)
 
 	memo_cx = sift_cache_create_context("sift cache directories");
 	ctl.hcxt = memo_cx;
+	/* MEM[MEM-IDLE-19]: cachebudget directory chain memo HTAB (16 init; evictable LRU) */
+	/* MEM[MEM-CORE-05]: cachebudget dirchain HTAB (16 init; bounded by sift_cache_room) */
 	memos = hash_create("sift chained directories", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	sift_cache_register(&memo_kind);
 }

@@ -120,6 +120,7 @@ sift_tbl_rel(Relation rel)
 	}
 	if (!found)
 	{
+		/* MEM[MEM-TBL-18]: legacy v1 table relcache ctx (CacheMemoryContext; migrate to cachebudget) */
 		MemoryContext cxt = AllocSetContextCreate(CacheMemoryContext, "sift cache table", ALLOCSET_DEFAULT_SIZES);
 
 		e->st = MemoryContextAllocZero(cxt, sizeof(SiftTblRel));

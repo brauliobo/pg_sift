@@ -105,6 +105,19 @@ extern const SiftMetaCommon *sift_store_open_meta(Relation rel, Page page, SiftA
 /* Logs the record of x and unlocks and releases every buffer it registered */
 extern void sift_xlog_done(SiftXlog *x);
 
+/* The new pages of one write (a chain of list pages), each a full image, logged up to MAX_GENERIC_XLOG_PAGES to a record: nothing names them before the change that publishes them */
+typedef struct SiftNewPageLog
+{
+	Relation	index;
+	SiftXlog	x;
+} SiftNewPageLog;
+
+#define SIFT_NEWLOG_BEGIN(rel)	((SiftNewPageLog) {.index = (rel)})
+
+/* The working copy of the new page blk, to build; the record it is in is logged when it is full or at sift_newlog_end */
+extern Page sift_newlog_page(SiftNewPageLog *l, BlockNumber blk);
+extern void sift_newlog_end(SiftNewPageLog *l);
+
 /* Sets struct_size, pd_lower and the checksum of a metapage whose struct was changed in the working copy of a record */
 extern void sift_meta_seal(Page page, Size struct_size);
 

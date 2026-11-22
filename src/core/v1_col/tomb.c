@@ -291,6 +291,7 @@ tomb_add(SiftTombLog *t, SiftTomb *batch, uint32 n)
 			{
 				HASHCTL		ctl = {.keysize = sizeof(uint64),.entrysize = sizeof(HotLink),.hcxt = t->cxt};
 
+				/* MEM[MEM-CORE-06]: query-scoped v1 tomb chain HTAB (64 init entries) */
 				t->hotm = hash_create("sift_table chain members", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 			}
 			((HotLink *) hash_search(t->hotm, &batch[i].succ, HASH_ENTER, NULL))->pred = batch[i].key;
@@ -415,6 +416,7 @@ tomb_sync(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
 	if (n == t->synced)
 		return;
 	/* the header says how many entries are new: the batch holds them, or a chunk of them that the memory of the log allows (appenders may add more while it is read) */
+	/* MEM[MEM-CORE-07]: transient v1 tomb sync batch ctx (ALLOCSET_SMALL_SIZES) */
 	bcx = AllocSetContextCreate(CurrentMemoryContext, "sift tomb sync batch", ALLOCSET_SMALL_SIZES);
 	SiftMemTracker mt_tomb_sync_batch;
 

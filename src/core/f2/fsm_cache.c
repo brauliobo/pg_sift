@@ -6,6 +6,7 @@
 #include "col/f2/part_format.h"
 #include "core/f2/fsm.h"
 
+/* MEM[MEM-CORE-08]: backend BSS FSM extent cache (fixed small ring; COW clean idle) */
 void
 sift_fsm_cache_discard_rel(Relation rel)
 {

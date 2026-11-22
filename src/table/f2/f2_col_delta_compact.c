@@ -123,6 +123,7 @@ same_row(const Rec *a, const Rec *b)
 static void
 keep_later_records_of_a_blocked_row(Rec *v, int n)
 {
+	/* MEM[MEM-TBL-01]: col_delta compact scratch (in-place sort; bounded <= MAX_PAGES) */
 	Rec		   *sorted = palloc(sizeof(Rec) * Max(n, 1));
 	bool		blocked = false;
 

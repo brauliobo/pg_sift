@@ -15,6 +15,7 @@
 
 #define CACHE_BLOCK_MAX		(64 * 1024)
 #define CACHE_TRIM_BYTES	((Size) 256 * 1024)
+#define CACHE_IDLE_TRIM_FREE_BYTES	((Size) 128 * 1024)
 
 int			sift_backend_cache_kb = 16 * 1024;
 
@@ -33,10 +34,12 @@ MemoryContext
 sift_cache_root_context(void)
 {
 	if (cache_root == NULL)
-		cache_root = AllocSetContextCreate(TopMemoryContext, "SiftBackendCacheContext", 8 * 1024, 8 * 1024, CACHE_BLOCK_MAX);
+		/* MEM[MEM-IDLE-08]: TopMemoryContext SiftBackendCacheContext root (1 KB min; capped by backend_cache_kb) */
+		cache_root = AllocSetContextCreate(TopMemoryContext, "SiftBackendCacheContext", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, CACHE_BLOCK_MAX);
 	return cache_root;
 }
 
+/* MEM[MEM-CORE-12]: cachebudget child ctx factory (1 KB init / 256 KB max; small sizes) */
 MemoryContext
 sift_cache_create_context_in(MemoryContext parent, const char *name)
 {
@@ -157,14 +160,21 @@ sift_cache_commit(void)
 	return sift_cache_room(0);
 }
 
+/* MEM[MEM-IDLE-15]: xact-end cache commit + idle malloc_trim hook (reclaims >= 128 KB) */
 static void
 cache_xact_event(XactEvent event, void *arg)
 {
+	bool		used;
+
 	if (event != XACT_EVENT_COMMIT && event != XACT_EVENT_ABORT)
 		return;
+	used = clock_now != xact_floor;
 	xact_floor = clock_now;
-	if (cache_root != NULL)
-		sift_cache_commit();
+	if (cache_root == NULL)
+		return;
+	sift_cache_commit();
+	if (used)
+		sift_mem_trim_if_free(CACHE_IDLE_TRIM_FREE_BYTES);
 }
 
 static void

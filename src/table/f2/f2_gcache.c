@@ -31,8 +31,6 @@ typedef struct GEntry
 	dlist_node	lru;			/* the least recently used first: the order of the ticks */
 } GEntry;
 
-#define GCACHE_FLOOR_BYTES	((Size) 8 << 20)
-
 static HTAB *gcache = NULL;
 static MemoryContext gcache_cx = NULL;
 static dlist_head gcache_lru = DLIST_STATIC_INIT(gcache_lru);
@@ -107,6 +105,7 @@ gcache_invalidate(uint32 hashvalue)
 
 static const SiftCacheKind gcache_kind = {"table_f2_point_cache", gcache_oldest, gcache_evict_one, gcache_evict_all};
 
+/* MEM[MEM-TBL-08]: cachebudget f2 table granule cache (no 8 MiB floor; calls sift_cache_commit) */
 static void
 gcache_init(void)
 {
@@ -156,6 +155,7 @@ sift_f2_gcache_get(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 
 	e->relhash = sift_f2_rel_hash(rel);
 	e->tick = sift_cache_tick();
 	dlist_push_tail(&gcache_lru, &e->lru);
+	sift_cache_commit();
 	return gb;
 }
 
@@ -179,7 +179,7 @@ sift_f2_gcache_forget(const RelFileLocator *locator)
 void
 sift_f2_gcache_charge(void)
 {
-	Size		limit = sift_backend_cache_kb == 0 ? 0 : Max(GCACHE_FLOOR_BYTES, (Size) sift_backend_cache_kb * 1024 / 2);
+	Size		limit = (Size) sift_backend_cache_kb * 1024 / 2;
 
 	if (gcache == NULL || hash_get_num_entries(gcache) == 0)
 		return;

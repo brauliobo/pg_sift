@@ -29,6 +29,7 @@
 #include "core/cmp.h"
 
 /* VACUUM's truncation of a heap gives back at least this many blocks, or a 16th of the relation */
+/* STOR[STOR-F2-08]: V1 freelist truncate floor and min-run blindness (8 MB / 128 KB holes) */
 #define TRUNCATE_MIN_BLOCKS	1000
 #define TRUNCATE_FRACTION	16
 

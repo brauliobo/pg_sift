@@ -100,6 +100,7 @@ sift_maint_shmem_size(void)
 	return sizeof(SiftMaintShmem);
 }
 
+/* MEM[MEM-CORE-14]: SHM maintenance scheduler lock/queue state (inside MEM-SHM-06) */
 void
 sift_maint_shmem_init(SiftMaintShmem *m, int tranche_id, uint32 max_workers, uint32 naptime_ms)
 {

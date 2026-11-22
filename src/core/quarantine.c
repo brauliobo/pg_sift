@@ -54,6 +54,7 @@ static QuarShm *shared;
 static bool unavailable;
 static bool damage_unseen;		/* damage of a sift index was recorded since a catch last looked, and the SQLSTATE of the last */
 static int	damage_code;
+/* MEM[MEM-CORE-02]: backend BSS local quarantine + asks (3296 B; COW clean until error) */
 QuarEntry	sift_quar_local[QUAR_LOCAL];
 static bool unpublished;
 
@@ -83,6 +84,7 @@ QuarShm *
 sift_quar_table(void)
 {
 	if (shared == NULL && !unavailable)
+		/* MEM[MEM-SHM-07]: DSM quarantine table sift_quarantine_1 (65544 B packed; 256x256 B entries) */
 		unavailable = (shared = sift_dsm_try(QUAR_NAME, sizeof(QuarShm), quar_init)) == NULL;
 	return shared;
 }
@@ -682,7 +684,8 @@ meta_flagged(Relation index)
 	{
 		HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(FlagMemo),.hcxt = sift_cache_create_context("sift cache quarantine flags")};
 
-		flag_memo = hash_create("sift quarantine flags", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		/* MEM[MEM-IDLE-20]: cachebudget quarantine flag_memo HTAB (16 init; registered evictable) */
+		flag_memo = hash_create("sift quarantine flags", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 	if ((m = hash_search(flag_memo, &relid, HASH_FIND, NULL)) != NULL)
 		return m->flagged;

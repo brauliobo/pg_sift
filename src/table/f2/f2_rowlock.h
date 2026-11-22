@@ -72,7 +72,6 @@ StaticAssertDecl(offsetof(SiftRowLockEntry, delta_ver) == 60, "delta_ver sits at
 
 typedef struct SiftRowLockStripe
 {
-	int			nentries;
 	SiftRowLockEntry entries[SIFT_ROWLOCK_BUCKETS];
 } SiftRowLockStripe;
 

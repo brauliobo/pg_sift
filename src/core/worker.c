@@ -139,6 +139,7 @@ refused_level(SiftJob job)
 	uint64		seen;
 	uint64		now = GetCurrentTimestamp();
 
+	/* MEM[MEM-SHM-12]: DSM worker refusal + slots sift_refused_2/sift_workers_2 (144 B fixed) */
 	if (last == NULL && (last = sift_dsm_try("sift_refused_2", sizeof(own), refused_init)) == NULL)
 		last = own;
 	seen = pg_atomic_read_u64(&last[job]);

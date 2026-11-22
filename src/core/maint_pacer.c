@@ -70,6 +70,7 @@ telemetry(void)
 	static SiftPacerTelemetry own;
 	static SiftPacerTelemetry *t;
 
+	/* MEM[MEM-SHM-11]: DSM pacer telemetry sift_pacer_1 (104 B fixed) */
 	if (t == NULL && (t = sift_dsm_try(TELEMETRY_NAME, sizeof(own), telemetry_init)) == NULL)
 	{
 		SIFT_DSM_INIT_CALL(telemetry_init, &own);
@@ -279,8 +280,12 @@ sift_wt_pace_worker(SiftWriteTarget *wt)
 void
 sift_maint_ring_open(void)
 {
-	MemoryContext old = MemoryContextSwitchTo(sift_cache_create_context("sift cache maintenance ring"));
+	MemoryContext old;
 
+	if (sift_maint_ring != NULL)
+		return;
+	/* MEM[MEM-IDLE-21]: cachebudget singleton maintenance ring ctx (1 KB; BAS_VACUUM strategy) */
+	old = MemoryContextSwitchTo(sift_cache_create_context("sift cache maintenance ring"));
 	sift_maint_ring = GetAccessStrategy(BAS_VACUUM);
 	MemoryContextSwitchTo(old);
 }

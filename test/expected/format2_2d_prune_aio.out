@@ -366,7 +366,7 @@ SELECT array_agg(b ORDER BY i) = array_agg(b ORDER BY b) AND min(b) <= (:'held':
 SELECT sift._test_f2_check('fs_idx');
              _test_f2_check              
 -----------------------------------------
- parts=0 quarantined=0/0 meta_free=28/32
+ parts=0 quarantined=0/0 meta_free=15/16
 (1 row)
 
 -- The free run at the end of the file is given back: the extents at its end are released, the high-water mark falls to the live blocks and the file is cut there
@@ -412,7 +412,7 @@ SELECT (sift._test_f2_alloc('fs_idx', 1024)).start <= :run1 AS tail_reused;
 SELECT sift._test_f2_check('fs_idx');
              _test_f2_check              
 -----------------------------------------
- parts=0 quarantined=0/0 meta_free=28/32
+ parts=0 quarantined=0/0 meta_free=15/16
 (1 row)
 
 -- Block 0 keeps the summary of the partitions inline, and the check of the manifest compares it with the directory

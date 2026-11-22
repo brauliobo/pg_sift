@@ -197,6 +197,7 @@ write_chain(Relation rel, uint64 gen, uint64 version, uint32 proj_id, const char
 	BlockNumber *blks;
 	PGAlignedBlock img;
 	BlockNumber head;
+	SiftNewPageLog log = SIFT_NEWLOG_BEGIN(rel);
 
 	if (n == 0)
 		return InvalidBlockNumber;
@@ -220,8 +221,9 @@ write_chain(Relation rel, uint64 gen, uint64 version, uint32 proj_id, const char
 		memcpy(d->entries, entries + (size_t) from * esize, cnt * esize);
 		SiftPageSetUsed(img.data, offsetof(SiftProjDirPageData, entries) + cnt * esize);
 		sift_page_seal(img.data);
-		sift_mf_write_image(rel, blks[p], img.data);
+		sift_mf_log_image(&log, blks[p], img.data);
 	}
+	sift_newlog_end(&log);
 	head = blks[0];
 	pfree(blks);
 	return head;
@@ -234,6 +236,7 @@ write_part_list(Relation rel, uint64 gen, const SiftPartDesc *parts, int n, BlkV
 	BlockNumber *blks;
 	PGAlignedBlock img;
 	BlockNumber head;
+	SiftNewPageLog log = SIFT_NEWLOG_BEGIN(rel);
 
 	if (n == 0)
 		return InvalidBlockNumber;
@@ -256,8 +259,9 @@ write_part_list(Relation rel, uint64 gen, const SiftPartDesc *parts, int n, BlkV
 		memcpy(l->parts, parts + from, cnt * sizeof(SiftPartDesc));
 		SiftPageSetUsed(img.data, offsetof(SiftPartListPageData, parts) + cnt * sizeof(SiftPartDesc));
 		sift_page_seal(img.data);
-		sift_mf_write_image(rel, blks[p], img.data);
+		sift_mf_log_image(&log, blks[p], img.data);
 	}
+	sift_newlog_end(&log);
 	head = blks[0];
 	pfree(blks);
 	return head;

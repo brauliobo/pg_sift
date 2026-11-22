@@ -50,6 +50,7 @@ fetch_new(Relation rel, MemoryContext parent)
 	f->store = sift_f2_store_open(rel);
 	f->cx = parent;
 	f->delta = sift_col_delta_scan_begin(rel, &f->vis, parent);
+	/* MEM[MEM-TBL-11]: query-scoped f2 TID fetch ctx + rowcx (ALLOCSET_SMALL_SIZES) */
 	f->rowcx = AllocSetContextCreate(parent, "sift f2 fetch row", ALLOCSET_SMALL_SIZES);
 	return f;
 }

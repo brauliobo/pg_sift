@@ -476,6 +476,7 @@ sift_col_delta_stage_plan(Relation rel, const SiftColDeltaPlan *plan, CommandId 
 	SIFT_INVARIANT(n > 0, "an admitted column delta does not fit a record");
 	if (st->host_stage == NULL)
 	{
+		/* MEM[MEM-TBL-16]: TopTransactionContext staged col_deltas (items[] + rec copies) */
 		st->host_stage = MemoryContextAllocZero(TopTransactionContext, sizeof(SiftColDeltaStage));
 		st->host_event = sift_col_delta_stage_event;
 	}
@@ -502,6 +503,8 @@ typedef struct DiskChain
 	Relation	rel;
 	const SiftPartitionEntry *entry;
 	SiftColDeltaAnchor *capture;	/* the anchor is the caller's to publish */
+	uint64		gen_next;		/* generations reserved ahead for the pages of all the batches of a chain */
+	uint32		gen_left;
 } DiskChain;
 
 static void
@@ -580,14 +583,27 @@ disk_append_head(void *ctx, BlockNumber head, SiftColDeltaBatch *b, FullTransact
 	return true;
 }
 
+static uint64
+disk_reserve_gens(void *ctx, uint32 n)
+{
+	DiskChain  *d = ctx;
+	uint64		first;
+
+	if (d->gen_left < n)
+		return sift_manifest_new_gen(d->rel, n);
+	first = d->gen_next;
+	d->gen_next += n;
+	d->gen_left -= n;
+	return first;
+}
+
 static BlockNumber
-disk_new_page(void *ctx, const SiftColDeltaBatch *b, BlockNumber prev, uint16 depth)
+disk_new_page(void *ctx, const SiftColDeltaBatch *b, BlockNumber prev, uint16 depth, uint64 gen)
 {
 	DiskChain  *d = ctx;
 	Relation	rel = d->rel;
 	uint32		part_id = (uint32) d->entry->part_id;
 	BlockNumber blk = sift_fsm_alloc_meta_page(rel);
-	uint64		gen = sift_manifest_new_gen(rel, 1);
 	SiftXlog	x = sift_xlog_start(rel);
 	Page		page = sift_xlog_register(&x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE);
 
@@ -601,8 +617,17 @@ void
 sift_col_delta_write_chain(Relation rel, const SiftPartitionEntry *entry, SiftColDeltaBatch *batches, int nbatches, FullTransactionId next, SiftColDeltaAnchor *anchor)
 {
 	DiskChain	d = {.rel = rel,.entry = entry,.capture = anchor};
-	SiftColDeltaWriter w = {.ctx = &d,.append_head = disk_append_head,.new_page = disk_new_page,.commit_anchor = disk_commit_anchor};
+	SiftColDeltaWriter w = {.ctx = &d,.append_head = disk_append_head,.reserve_gens = disk_reserve_gens,.new_page = disk_new_page,.commit_anchor = disk_commit_anchor};
 
+	uint32		pages = 0;
+
+	for (int i = 0; i < nbatches; i++)
+		pages += sift_col_delta_batch_pages(&batches[i]);
+	if (pages > 0)
+	{
+		d.gen_next = sift_manifest_new_gen(rel, pages);
+		d.gen_left = pages;
+	}
 	*anchor = sift_col_delta_anchor_none();
 	for (int i = 0; i < nbatches; i++)
 	{
@@ -617,7 +642,7 @@ append_locked(Relation rel, const SiftPartitionEntry *e, SiftColDeltaBatch *b, F
 {
 	SiftColDeltaAnchor a = sift_manifest_read_col_delta(rel, e);
 	DiskChain	d = {.rel = rel,.entry = e};
-	SiftColDeltaWriter w = {.ctx = &d,.append_head = disk_append_head,.new_page = disk_new_page,.commit_anchor = disk_commit_anchor};
+	SiftColDeltaWriter w = {.ctx = &d,.append_head = disk_append_head,.reserve_gens = disk_reserve_gens,.new_page = disk_new_page,.commit_anchor = disk_commit_anchor};
 
 	sift_col_delta_chain_append(&w, &a, b, next);
 }
@@ -680,6 +705,7 @@ sift_col_delta_stage_event(Relation rel, SiftTxnStage *st, SiftStageEvent ev, Su
 			flush_stage(rel, cd);
 			st->host_pending = 0;
 			break;
+		/* STOR[STOR-TBL-07]: mid-txn col_delta stage coalesce (eliminates dup >=40B recs before 32-page cap) */
 		case SIFT_STAGE_FLUSH:
 			flush_stage(rel, cd);
 			st->host_pending = 0;
@@ -731,7 +757,38 @@ sift_col_delta_horizon_status(void *ctx, TransactionId xid, FullTransactionId *f
 	return sift_xid_horizon_status(hc, xid);
 }
 
-/* Every record is an aborted writer's or a gone part's: the pages go and the partition has no chain, and no row of any part is written. False when a record stays. */
+/* The records that stay, put on fewer pages than the chain has, in the one change of the manifest that replaces the chain; false when they would not take fewer */
+static bool
+shrink_chain(Relation rel, const SiftPartitionEntry *e, const SiftColDeltaChain *chain, const SiftColDeltaCompactPlan *plan)
+{
+	FullTransactionId next = ReadNextFullTransactionId();
+	SiftColDeltaAnchor anchor;
+	SiftColDeltaBatch *batches;
+	SiftExtent *release;
+	int			nbatches;
+
+	batches = sift_col_delta_compact_carry(plan, next, NULL, &nbatches);
+	if (nbatches >= chain->npages)
+	{
+		for (int i = 0; i < nbatches; i++)
+			sift_col_delta_batch_free(&batches[i]);
+		pfree(batches);
+		return false;
+	}
+	sift_col_delta_write_chain(rel, e, batches, nbatches, next, &anchor);
+	release = palloc(sizeof(SiftExtent) * chain->npages);
+	for (int i = 0; i < chain->npages; i++)
+		release[i] = (SiftExtent) {chain->blks[i], 1};
+	sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = e->part_id,.key_lo = e->key_lo,.set_col_delta = true,.new_col_delta = anchor,.release = release,.nrelease = chain->npages});
+	pfree(release);
+	pfree(batches);
+	return true;
+}
+
+/*
+ * Every record is an aborted writer's or a gone part's: the pages go and the partition has no chain, and no row of any part is written. False when a record stays; the records that stay
+ * are then written onto fewer pages when the chain holds dead ones.
+ */
 bool
 sift_col_delta_gc(Relation rel, uint64 part_id, const uint8 *key_lo, FullTransactionId oldest_fx)
 {
@@ -770,6 +827,9 @@ sift_col_delta_gc(Relation rel, uint64 part_id, const uint8 *key_lo, FullTransac
 		sift_manifest_commit(rel, &edit);
 		pfree(release);
 	}
+	/* STOR[STOR-TBL-08]: partial col_delta chain compaction (reclaim up to 31/32 dead 8KiB pages when ncarry>0) */
+	else if (plan.ndropped > 0)
+		(void) shrink_chain(rel, &e, &chain, &plan);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	sift_col_delta_compact_plan_free(&plan);
 	sift_col_delta_chain_free(&chain);

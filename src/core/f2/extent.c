@@ -15,6 +15,8 @@ sift_extlist_write(Relation rel, uint64 part_gen, uint32 part_id, const SiftExte
 	int			npages = (n + SIFT_EXTLIST_CAP - 1) / SIFT_EXTLIST_CAP;
 	BlockNumber *blks = palloc(npages * sizeof(BlockNumber));
 	PGAlignedBlock img;
+	/* STOR[STOR-WAL-03]: batch GenericXLog writes (up to 4 pages/record; -15% meta WAL) */
+	SiftNewPageLog log = SIFT_NEWLOG_BEGIN(rel);
 
 	for (int p = 0; p < npages; p++)
 		blks[p] = sift_fsm_alloc_meta_page(rel);
@@ -22,8 +24,6 @@ sift_extlist_write(Relation rel, uint64 part_gen, uint32 part_id, const SiftExte
 	{
 		int			from = p * SIFT_EXTLIST_CAP,
 					cnt = Min(n - from, (int) SIFT_EXTLIST_CAP);
-		SiftXlog	x = sift_xlog_start(rel);
-		Page		pg = sift_xlog_register(&x, sift_blk_new(rel, blks[p]), GENERIC_XLOG_FULL_IMAGE);
 
 		sift_page_init_part(img.data, SIFT_PT_EXTLIST, part_gen, part_id);
 		EXTL(img.data)->magic = SIFT_EXTLIST_MAGIC;
@@ -33,9 +33,9 @@ sift_extlist_write(Relation rel, uint64 part_gen, uint32 part_id, const SiftExte
 		memcpy(EXTL(img.data)->ext, ext + from, cnt * sizeof(SiftExtent));
 		SiftPageSetUsed(img.data, offsetof(SiftExtentListPageData, ext) + cnt * sizeof(SiftExtent));
 		sift_page_seal(img.data);
-		memcpy(pg, img.data, BLCKSZ);
-		sift_xlog_done(&x);
+		memcpy(sift_newlog_page(&log, blks[p]), img.data, BLCKSZ);
 	}
+	sift_newlog_end(&log);
 	return blks[0];
 }
 

@@ -156,9 +156,9 @@ SELECT sift._test_f2_slab_flush('s_idx', 1, NULL);
 (1 row)
 
 SELECT sift._test_f2_check('s_idx');
-             _test_f2_check              
------------------------------------------
- parts=1 quarantined=3/3 meta_free=25/32
+             _test_f2_check             
+----------------------------------------
+ parts=1 quarantined=3/3 meta_free=9/16
 (1 row)
 
 -- Deletes: below 64 rows they wait in the pending buffer and are subtracted when counting; more go straight to deletion vectors
@@ -322,9 +322,9 @@ SELECT granule, kind, ndead, unsettled FROM sift._test_f2_dv('a_idx', 1, NULL, :
 (1 row)
 
 SELECT sift._test_f2_check('a_idx');
-             _test_f2_check              
------------------------------------------
- parts=1 quarantined=3/3 meta_free=24/32
+             _test_f2_check             
+----------------------------------------
+ parts=1 quarantined=3/3 meta_free=8/16
 (1 row)
 
 DROP TABLE t;

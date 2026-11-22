@@ -595,6 +595,7 @@ sift_store_tail_blocks(Relation index)
  * scan or a cached block number (see below) that the truncation could outdate; a standby replays
  * the lock first and cancels what holds one there.
  */
+/* STOR[STOR-F2-08]: V1 freelist truncate floor and min-run blindness (8 MB / 128 KB holes) */
 BlockNumber
 sift_store_truncate(Relation index)
 {

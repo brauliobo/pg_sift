@@ -25,5 +25,7 @@ extern bool sift_tbl_check_publication(Relation rel);
 extern bool sift_tbl_published(Relation rel);
 /* newrow: the row after the change (NULL for DELETE); old: the row before it (NULL for INSERT), reduced to its replica identity */
 extern void sift_tbl_log_change(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple old);
+extern void sift_tbl_log_key(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple key);
+extern HeapTuple sift_tbl_old_key(Relation rel, HeapTuple old);
 
 #endif

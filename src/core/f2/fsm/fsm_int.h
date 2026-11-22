@@ -13,8 +13,12 @@
 #define SLABS(page)	((SiftFsmSlabTable *) (SiftPageGetData(page) + SIFT_FSM_SLABS_OFF))
 #define FSMP(page)	((SiftFsmPageData *) SiftPageGetData(page))
 
+/* STOR[STOR-F2-03]: FSM small-index meta reserve and multi-extent fallback (cuts EOF growth) */
 #define SIFT_FSM_META_RESERVE	16	/* free metadata blocks kept in the slabs: a step that writes a list page never finds none, and no slab is given back that would leave fewer */
+#define SIFT_FSM_SMALL_META_RESERVE	8	/* the same for a relation of at most SIFT_FSM_KEEP_SLABS slabs: it claims its next slab later and holds half the blocks idle */
 #define SIFT_FSM_KEEP_SLABS		2	/* the slabs a quiet relation keeps: the first, and one warm one so that a burst does not claim and give back a slab in turn */
+#define SIFT_FSM_MIN_REUSE_CLASS	2	/* a stream takes free extents of 4 blocks and more before it extends the file */
+#define SIFT_FSM_REUSE_PIECES	16		/* ... and no more than this many extents of one class for what it still wants */
 
 /* One call of the allocator: block 0 held exclusively by the caller */
 typedef struct FsmCtx
@@ -57,6 +61,12 @@ extern BlockNumber sift_fsm_slab_take(Page root);
 extern void sift_fsm_slab_put(Relation rel, Page root, BlockNumber blk);
 extern void sift_fsm_claim_slab(FsmCtx *c);
 extern BlockNumber sift_fsm_alloc_meta_locked(FsmCtx *c);
+
+static inline uint32
+sift_fsm_meta_reserve(const SiftFsmSlabTable *t)
+{
+	return t->nslabs <= SIFT_FSM_KEEP_SLABS ? SIFT_FSM_SMALL_META_RESERVE : SIFT_FSM_META_RESERVE;
+}
 
 /* Makes metadata blocks available: the matured pages of the queue go back to the bitmaps first, a new slab is claimed only when the free blocks are still under the reserve */
 extern void sift_fsm_grow_meta(FsmCtx *c);

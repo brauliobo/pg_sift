@@ -248,6 +248,7 @@ sift_manifest_read_range(Relation rel, const uint8 *lo, const uint8 *hi)
 	SiftPartitionEntry *inl;
 	int			ninl;
 	SiftColMetaPageData meta = sift_col_meta_read_inline(rel, &inl, &ninl);
+	/* MEM[MEM-CORE-13]: caller-scoped SiftManifestRead partition array (n * 192 B) */
 	SiftManifestRead out = {.entries = palloc(Max(ninl, 16) * sizeof(SiftPartitionEntry)),.version = meta.manifest_version};
 	int			cap = Max(ninl, 16);
 
@@ -275,6 +276,7 @@ write_partlist(Relation rel, uint64 part_id, uint64 gen, const SiftPartDesc *par
 	int			npages = (n + SIFT_PARTLIST_CAP - 1) / SIFT_PARTLIST_CAP;
 	BlockNumber *blks;
 	PGAlignedBlock img;
+	SiftNewPageLog log = SIFT_NEWLOG_BEGIN(rel);
 
 	if (n == 0)
 		return InvalidBlockNumber;
@@ -303,8 +305,9 @@ write_partlist(Relation rel, uint64 part_id, uint64 gen, const SiftPartDesc *par
 			SiftPageSetUsed(img.data, SiftPageGetUsed(img.data) + sizeof(*anchor));
 		}
 		sift_page_seal(img.data);
-		sift_mf_write_image(rel, blks[p], img.data);
+		sift_mf_log_image(&log, blks[p], img.data);
 	}
+	sift_newlog_end(&log);
 	return blks[0];
 }
 
@@ -332,6 +335,7 @@ write_leaves(Relation rel, const SiftPartitionEntry *ents, int n, uint64 version
 	int			nl = (n + SIFT_PARTDIR_LEAF_CAP - 1) / SIFT_PARTDIR_LEAF_CAP;
 	int			per = nl > 0 ? (n + nl - 1) / nl : 0;
 	PGAlignedBlock img;
+	SiftNewPageLog log = SIFT_NEWLOG_BEGIN(rel);
 
 	for (int i = 0; i < nl; i++)
 	{
@@ -343,12 +347,13 @@ write_leaves(Relation rel, const SiftPartitionEntry *ents, int n, uint64 version
 		PDIR(img.data)->nentries = cnt;
 		memcpy(LEAF(img.data), ents + from, cnt * sizeof(SiftPartitionEntry));
 		dir_seal(img.data);
-		sift_mf_write_image(rel, blk, img.data);
+		sift_mf_log_image(&log, blk, img.data);
 		out[i] = (SiftPartDirKey) {.child_blk = blk,.npartitions = cnt,.time0_min = PG_INT64_MAX,.time0_max = PG_INT64_MIN};
 		memcpy(out[i].key_lo, ents[from].key_lo, SIFT_BOUND_BYTES);
 		for (int j = from; j < from + cnt; j++)
 			key_take_entry(&out[i], &ents[j]);
 	}
+	sift_newlog_end(&log);
 	return nl;
 }
 

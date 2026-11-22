@@ -67,7 +67,7 @@ write_pages(Relation rel, const SiftTblBlobRef *ref, const char *stored)
 }
 
 static SiftTblBlobRef *
-write_blob(Relation rel, const char *raw, uint32 raw_len)
+write_blob(Relation rel, const char *raw, uint32 raw_len, uint64 gen)
 {
 	uint16		flags = 0;
 	uint32		stored_len;
@@ -84,16 +84,33 @@ write_blob(Relation rel, const char *raw, uint32 raw_len)
 	ref->crc32c = sift_crc32c(stored, stored_len);
 	ref->flags = flags;
 	ref->nextents = (uint16) next;
-	ref->gen = sift_manifest_new_gen(rel, 1);
+	ref->gen = gen;
 	memcpy(ref->ext, ext, sizeof(SiftExtent) * next);
 	write_pages(rel, ref, stored);
+	if (stored != raw)
+		pfree((char *) stored);
 	pfree(ext);
 	return ref;
+}
+
+static uint32
+count_wide(const SiftRowBuf *rb)
+{
+	uint32		n = 0;
+
+	for (int c = 0; c < rb->ncols; c++)
+		if (rb->tag[c] != NULL)
+			for (int r = 0; r < rb->n; r++)
+				n += rb->tag[c][r] == SIFT_COLTAG_WIDE_RAW;
+	return n;
 }
 
 void
 sift_tbl_blob_spill_rows(Relation rel, SiftRowBuf *rb)
 {
+	uint32		nwide = count_wide(rb);
+	uint64		gen = nwide > 0 ? sift_manifest_new_gen(rel, nwide) : 0;
+
 	for (int c = 0; c < rb->ncols; c++)
 	{
 		if (rb->tag[c] == NULL)
@@ -104,7 +121,7 @@ sift_tbl_blob_spill_rows(Relation rel, SiftRowBuf *rb)
 
 			if (rb->tag[c][r] != SIFT_COLTAG_WIDE_RAW)
 				continue;
-			ref = write_blob(rel, rb->xpay[c][r], rb->xplen[c][r]);
+			ref = write_blob(rel, rb->xpay[c][r], rb->xplen[c][r], gen++);
 			rb->xpay[c][r] = (const char *) ref;
 			rb->xplen[c][r] = (uint32) SIFT_TBL_BLOB_REF_SIZE(ref->nextents);
 			rb->tag[c][r] = SIFT_COLTAG_WIDE_BLOB;
