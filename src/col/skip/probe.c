@@ -21,8 +21,7 @@ typedef struct EntryMeta
 struct SiftSkipReader
 {
 	MemoryContext cx;			/* what the reader keeps between granules lives here, whatever context a probe runs in */
-	uint64		sec_off;
-	uint64		sec_len;
+	SiftSecDirEntry sec;
 	SiftSkipIndexHeader h;
 	SiftSkipColDesc *desc;
 	EntryMeta  *meta;
@@ -57,17 +56,16 @@ sift_skip_open(Relation rel, const SiftPart *part)
 		return NULL;
 	r = palloc0(sizeof(SiftSkipReader));
 	r->cx = CurrentMemoryContext;
-	r->sec_off = sec->off;
-	r->sec_len = sec->len;
+	r->sec = *sec;
 	if (sec->len < sizeof(r->h))
 		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The skipping indexes of the part are shorter than their header.");
-	sift_part_read_bytes(rel, part, sec->off, sizeof(r->h), &r->h);
+	sift_part_read_section_bytes(rel, part, sec, 0, sizeof(r->h), &r->h);
 	if (r->h.magic != SIFT_SKIP_MAGIC || r->h.version != SIFT_SKIP_VERSION || r->h.ngranules != ng ||
 		sec->len < sizeof(r->h) + (uint64) r->h.nentries * sizeof(SiftSkipColDesc))
 		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The skipping indexes of the part do not describe its granules.");
 	r->desc = palloc(Max(r->h.nentries, 1) * sizeof(SiftSkipColDesc));
 	r->meta = palloc0(Max(r->h.nentries, 1) * sizeof(EntryMeta));
-	sift_part_read_bytes(rel, part, sec->off + sizeof(r->h), (uint64) r->h.nentries * sizeof(SiftSkipColDesc), r->desc);
+	sift_part_read_section_bytes(rel, part, sec, sizeof(r->h), (uint64) r->h.nentries * sizeof(SiftSkipColDesc), r->desc);
 	for (uint32 i = 0; i < r->h.nentries; i++)
 	{
 		const SiftSkipColDesc *d = &r->desc[i];
@@ -201,14 +199,14 @@ load_meta(Relation rel, const SiftPart *part, SiftSkipReader *r, int e)
 {
 	EntryMeta  *m = &r->meta[e];
 	uint32		ng = r->h.ngranules;
-	uint64		at = r->sec_off + r->desc[e].meta_off;
+	uint64		at = r->desc[e].meta_off;
 
 	if (m->off == NULL)
 	{
 		m->off = MemoryContextAlloc(r->cx, (ng + 1) * sizeof(uint32));
 		m->flags = MemoryContextAlloc(r->cx, Max(ng, 1));
-		sift_part_read_bytes(rel, part, at, (uint64) (ng + 1) * sizeof(uint32), m->off);
-		sift_part_read_bytes(rel, part, at + (uint64) (ng + 1) * sizeof(uint32), ng, m->flags);
+		sift_part_read_section_bytes(rel, part, &r->sec, at, (uint64) (ng + 1) * sizeof(uint32), m->off);
+		sift_part_read_section_bytes(rel, part, &r->sec, at + (uint64) (ng + 1) * sizeof(uint32), ng, m->flags);
 	}
 	return m;
 }
@@ -425,7 +423,7 @@ sift_skip_probe(Relation rel, const SiftPart *part, SiftSkipReader *r, const Sif
 			return SIFT_SKIP_PRUNE;
 		if (m->flags[g] != SIFT_SKIP_GRAN_PRESENT)
 			continue;
-		if (m->off[g + 1] < m->off[g] || (uint64) d->data_off + m->off[g + 1] > r->sec_len)
+		if (m->off[g + 1] < m->off[g] || (uint64) d->data_off + m->off[g + 1] > r->sec.len)
 			SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "A payload of the skipping indexes of the part lies outside it.");
 		len = m->off[g + 1] - m->off[g];
 		if (len > r->buf_cap)
@@ -433,7 +431,7 @@ sift_skip_probe(Relation rel, const SiftPart *part, SiftSkipReader *r, const Sif
 			r->buf = r->buf ? repalloc(r->buf, len) : MemoryContextAlloc(r->cx, len);
 			r->buf_cap = len;
 		}
-		sift_part_read_bytes(rel, part, r->sec_off + d->data_off + m->off[g], len, r->buf);
+		sift_part_read_section_bytes(rel, part, &r->sec, d->data_off + m->off[g], len, r->buf);
 		v = judge(q, d, r->buf, len, no_nulls);
 		if (v == SIFT_SKIP_PRUNE)
 			return v;

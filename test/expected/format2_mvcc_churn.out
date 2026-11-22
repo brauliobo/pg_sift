@@ -258,14 +258,14 @@ SELECT sift._test_f2_init('s_idx');
 (1 row)
 
 BEGIN;
-SELECT sift._test_f2_stage('s_idx', 100, 0, 1, -1);
+SELECT sift._test_f2_stage('s_idx', 300, 0, 1, -1);
  _test_f2_stage 
 ----------------
  
 (1 row)
 
 SAVEPOINT a;
-SELECT sift._test_f2_stage('s_idx', 100, 10000, 100000, -1);
+SELECT sift._test_f2_stage('s_idx', 300, 10000, 100000, -1);
  _test_f2_stage 
 ----------------
  
@@ -273,7 +273,7 @@ SELECT sift._test_f2_stage('s_idx', 100, 10000, 100000, -1);
 
 ROLLBACK TO a;
 SAVEPOINT b;
-SELECT sift._test_f2_stage('s_idx', 100, 20000, 200000, -1);
+SELECT sift._test_f2_stage('s_idx', 300, 20000, 200000, -1);
  _test_f2_stage 
 ----------------
  
@@ -286,7 +286,7 @@ SELECT count(*) AS parts, bool_and(min_xid = :top AND max_xid = :top) AS under_t
 	FROM sift._test_f2_parts('s_idx', 1, NULL) p, LATERAL sift._test_f2_part_xids('s_idx', 1, NULL, p.part_gen);
  parts | under_top_xid | rows 
 -------+---------------+------
-     1 | t             |  200
+     1 | t             |  600
 (1 row)
 
 -- The heap's visibility map: a granule of a table that VACUUM made all-visible is counted without a heap page, rows on pages that are not all-visible are asked of the heap, a part

@@ -373,6 +373,7 @@ typedef struct SiftExcHeader
 
 #define SIFT_EXC_MASK_WORDS		(SIFT_GRANULE_ROWS / 64)
 #define SIFT_EXC_SPARSE_MAX		511
+#define SIFT_EXC_MASK_MIN_ROWS	2048
 #define SIFT_EXC_MASKED			UINT16_C(1)
 /* Every entry is a bare kind (no payload): the block is the header and the kind of each row of the chunk as a cascade of the codec (payload_bytes: its bytes), the entries and the mask are made when the chunk is opened */
 #define SIFT_EXC_KINDS_PACKED	UINT16_C(1 << 1)

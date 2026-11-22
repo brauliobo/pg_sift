@@ -144,7 +144,7 @@ put_str_dict(StringInfo sec, int c, const SiftDictEnc *d, const SiftCcPolicy *po
  * lists of the codec, the table as stored, the dictionary as it is): the granules keep only the codes, or code their strings by the table, or compress them by the dictionary.
  */
 static void
-put_dicts(const SiftRows *rows, SiftDictEnc **dicts, const SiftPartCodecs *pc, StringInfo sec)
+put_dicts(const SiftRows *rows, SiftCompressTier tier, SiftDictEnc **dicts, const SiftPartCodecs *pc, StringInfo sec)
 {
 	int			nd = pc->nentries;
 	SiftDictsEntry *ent;
@@ -154,7 +154,8 @@ put_dicts(const SiftRows *rows, SiftDictEnc **dicts, const SiftPartCodecs *pc, S
 
 	for (int c = 0; c < rows->ncols; c++)
 		nd += dicts != NULL && dicts[c] != NULL;
-	sift_cc_policy_tier(&pol, SIFT_TIER_WARM_L1, rows->compress_alg);
+	/* STOR[STOR-CODEC-01]: SEC_DICTS compression policy follows the tier of the part (L2 parts: -15..35% dictionary bytes) */
+	sift_cc_policy_tier(&pol, tier, rows->compress_alg);
 	/* check-memory: allow one entry for each column of the part, not for each row */
 	ent = palloc0(nd * sizeof(SiftDictsEntry));
 	hdr[0] = nd;
@@ -338,7 +339,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 		promos = part_promos(rows, dicts, &npromo);
 		codecs = sift_part_codecs_train(rows, tier, (SiftDictEnc *const *) dicts, promos, rows->adopt_dicts);
 		if (dicts != NULL || codecs->nentries > 0)
-			put_dicts(rows, dicts, codecs, &dictsec);
+			put_dicts(rows, tier, dicts, codecs, &dictsec);
 	}
 	stats = sift_col_stats_begin((uint16) nc);
 	for (int g = 0; g < ng; g++)
@@ -546,6 +547,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 		appendBinaryStringInfo(&ts, (char *) tstride_off, (ng + 1) * sizeof(uint32));
 		pad8(&ts);
 		appendBinaryStringInfo(&ts, tstride.data, tstride.len);
+		/* STOR[STOR-CODEC-08]: raw 16 B granule tstride entries (512 B/granule uncompressed) */
 		sift_part_add_section(secs, &nsec, SEC_GRANULE_TSTRIDE, 0, ts.data, ts.len, false);
 	}
 	if (excs.len > 0)

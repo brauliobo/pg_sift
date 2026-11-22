@@ -26,7 +26,7 @@ maint_window_begin(MemoryContext cx, const SiftColSchema *schema, int inputs, Si
 {
 	MergeWindow *w = MemoryContextAllocZero(cx, sizeof(MergeWindow));
 
-	w->cx = AllocSetContextCreate(cx, "sift_col merge window", ALLOCSET_DEFAULT_SIZES);
+	w->cx = sift_mem_allocset_create(cx, "sift_col merge window");
 	w->schema = schema;
 	w->budget = budget;
 	w->use = MemoryContextAlloc(w->cx, (inputs + 1) * sizeof(SiftColBatch *));

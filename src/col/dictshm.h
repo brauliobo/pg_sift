@@ -14,9 +14,9 @@
 typedef struct DictKey
 {
 	RelFileLocator rel;
+	BlockNumber header_blk;
 	uint64		gen;
 	uint64		ndocs;			/* read from the segment: a damaged one must not share the entry of an intact one */
-	BlockNumber header_blk;
 	int32		col;
 	uint32		unit;			/* UINT32_MAX: the dictionary of the leaf, else the list lengths of that unit */
 } DictKey;

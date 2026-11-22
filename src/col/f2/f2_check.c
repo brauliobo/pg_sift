@@ -135,7 +135,7 @@ check_part(Relation rel, const SiftPartSpec *current, const SiftPartitionEntry *
 		{
 			SiftZone	z;
 
-			sift_part_read_bytes(rel, part, zs->off + ((uint64) spec->sort_cols[0] * part->hdr.ngranules + g) * sizeof(z), sizeof(z), &z);
+			sift_part_read_section_bytes(rel, part, zs, ((uint64) spec->sort_cols[0] * part->hdr.ngranules + g) * sizeof(z), sizeof(z), &z);
 			if (zmin <= zmax ? (z.flags & SIFT_ZONE_NONE) || z.min != zmin || z.max != zmax : !(z.flags & SIFT_ZONE_NONE))
 				SIFT_CORRUPT(rel, "Part %llu: the zone of the lead key column of granule %u is not the range of its rows.", (unsigned long long) d->part_gen, g);
 		}

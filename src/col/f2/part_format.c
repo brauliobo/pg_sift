@@ -201,6 +201,48 @@ fits_header_page(const SiftSecInput *secs, int nsec)
 	return bytes <= SIFT_PAGE_PAYLOAD;
 }
 
+/* The sections the readers reach through sift_part_read_section or sift_part_read_section_bytes, which may sit in the header page */
+static bool
+inlinable(uint16 tag)
+{
+	return tag == SEC_GRANULE_DIR || tag == SEC_DICTS || tag == SEC_TID_INDEX || tag == SEC_GRANULE_TSTRIDE || tag == SEC_VARIANT_EXC || tag == SEC_PREAGG || tag == SEC_POINT ||
+		tag == SEC_SKIP_INDEX || tag == SEC_KLL || tag == SEC_KEY_MARKS || tag == SEC_COL_STATS || tag == SEC_SCHEMA_DEFAULTS;
+}
+
+static int
+len_cmp(const void *a, const void *b)
+{
+	uint64		x = (*(const SiftSecInput *const *) a)->len,
+				y = (*(const SiftSecInput *const *) b)->len;
+
+	return x < y ? -1 : x > y;
+}
+
+/* STOR[STOR-COL-01]: greedy inline of the small metadata sections in SIFT_PT_PARTHDR (reclaims ~7.3 KB of header slack and a tail page per part) */
+static void
+inline_small_sections(SiftSecInput *secs, int nsec)
+{
+	uint64		room = SIFT_PAGE_PAYLOAD - sizeof(SiftPartHeaderData) - (uint64) nsec * sizeof(SiftSecDirEntry) - SIFT_INLINE_EXTENT_RESERVE;
+	/* check-memory: allow one pointer for each section of the part */
+	const SiftSecInput **cand = palloc(Max(nsec, 1) * sizeof(*cand));
+	int			n = 0;
+
+	for (int i = 0; i < nsec; i++)
+	{
+		if (secs[i].inline_in_header)
+			room -= Min(room, (uint64) MAXALIGN(secs[i].len));
+		else if (secs[i].fill == NULL && inlinable(secs[i].tag))
+			cand[n++] = &secs[i];
+	}
+	qsort(cand, n, sizeof(*cand), len_cmp);
+	for (int i = 0; i < n && MAXALIGN(cand[i]->len) <= room; i++)
+	{
+		room -= MAXALIGN(cand[i]->len);
+		((SiftSecInput *) cand[i])->inline_in_header = true;
+	}
+	pfree(cand);
+}
+
 /* The envelope of the addresses of the rows of the part, from its SEC_TID_INDEX: what lets a lookup by address skip the parts that cannot hold it */
 static void
 tid_envelope(const SiftPartIn *in, SiftPartDesc *d)
@@ -268,6 +310,8 @@ sift_part_write(Relation rel, const SiftPartIn *in)
 	memcpy(secs, in->sections, nsec * sizeof(SiftSecInput));
 	qsort(secs, nsec, sizeof(SiftSecInput), secin_cmp);
 	inline_stream = fits_header_page(secs, nsec);
+	if (!inline_stream)
+		inline_small_sections(secs, nsec);
 	for (int i = 0; i < nsec; i++)
 	{
 		secs[i].inline_in_header |= inline_stream;

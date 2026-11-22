@@ -144,6 +144,7 @@ column_nnz(const SiftColIn *c, int nrows)
 	return nnz;
 }
 
+/* STOR[STOR-COL-07]: SEC_POINT raw uint32 hash directory (~8 B/row capped by SIFT_POINT_MAX_PCT) */
 static uint64
 column_bytes(int nnz)
 {
@@ -212,11 +213,10 @@ sift_point_dir_open(Relation rel, const SiftPart *part, MemoryContext cx)
 	if (se == NULL)
 		return NULL;
 	pd = MemoryContextAllocZero(cx, sizeof(SiftPointDir));
-	pd->off = se->off;
-	pd->len = se->len;
+	pd->sec = *se;
 	if (se->len < sizeof(SiftPointHdr))
 		SIFT_DAMAGE_DATA(rel, errmsg("sift: a point directory is shorter than its header"));
-	sift_part_read_bytes(rel, part, se->off, Min(se->len, sizeof(head)), head);
+	sift_part_read_section_bytes(rel, part, se, 0, Min(se->len, sizeof(head)), head);
 	memcpy(&pd->hdr, head, sizeof(pd->hdr));
 	if (pd->hdr.magic != SIFT_POINT_MAGIC || pd->hdr.version != SIFT_POINT_VERSION || pd->hdr.ncols == 0 || pd->hdr.ncols > SIFT_POINT_MAX_COLS ||
 		se->len < sizeof(SiftPointHdr) + pd->hdr.ncols * sizeof(SiftPointCol))
@@ -281,7 +281,7 @@ sift_point_dir_cands(Relation rel, const SiftPart *part, const SiftPointDir *pd,
 
 		if (p->vals[j].isnull)
 			continue;
-		sift_part_read_bytes(rel, part, pd->off + col->off_buckets + (uint64) b * 4, sizeof(range), range);
+		sift_part_read_section_bytes(rel, part, &pd->sec, col->off_buckets + (uint64) b * 4, sizeof(range), range);
 		if (range[0] > range[1] || range[1] > col->nentries)
 			SIFT_DAMAGE_DATA(rel, errmsg("sift: a point directory bucket is past its entries"));
 		cnt = range[1] - range[0];
@@ -291,7 +291,7 @@ sift_point_dir_cands(Relation rel, const SiftPart *part, const SiftPointDir *pd,
 			pc->ref = pc->ref != NULL ? repalloc(pc->ref, cap * sizeof(uint32)) : palloc(cap * sizeof(uint32));
 		}
 		if (cnt > 0)
-			sift_part_read_bytes(rel, part, pd->off + col->off_entries + (uint64) range[0] * 4, (uint64) cnt * 4, pc->ref + pc->n);
+			sift_part_read_section_bytes(rel, part, &pd->sec, col->off_entries + (uint64) range[0] * 4, (uint64) cnt * 4, pc->ref + pc->n);
 		pc->n += cnt;
 	}
 	MemoryContextSwitchTo(old);

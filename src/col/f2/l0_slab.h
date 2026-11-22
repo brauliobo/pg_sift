@@ -24,7 +24,8 @@
 #define SIFT_L0_SLAB_NOCRC_OPEN	(UINT16_C(1) << 4)	/* an open page keeps crc32c 0: the sum is made once, when the page is sealed */
 #define SIFT_L0_SLAB_MAX_PAGES	64
 #define SIFT_L0_SLAB_FLUSH_ROWS	4096
-#define SIFT_L0_MICRO_MIN		64
+/* STOR[STOR-F2-01]: transactions under 256 rows share a micro-slab instead of one part and three metadata page copies each */
+#define SIFT_L0_MICRO_MIN		256
 #define SIFT_L0_FUSE_ROWS		16		/* fewer rows than this and the deletes of their partition are written in the record of the rows (sift_l0_slab_append_deleting) */
 #define SIFT_L0_COMPACT_ROWS	16
 #define SIFT_L0_BATCH_ROW_COMPACT UINT16_C(1)

@@ -1,0 +1,58 @@
+-- Storage and memory of the columnar parts: the small metadata sections ride in the header page and the size breakdown counts them, a constant bool column and a column without nulls
+-- cost no bitmap, and the answers are the heap's.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE TABLE sm (id bigint, flag boolean, tag text, v int);
+INSERT INTO sm SELECT i, true, 'g' || (i % 20), i % 1000 FROM generate_series(1, 20000) i;
+CREATE INDEX sm_idx ON sm USING sift_col (id, flag, tag, v) WITH (key_order = 'id');
+SELECT bytes > 0 AS dicts_counted FROM sift.index_size_breakdown('sm_idx') WHERE category = 'dicts';
+ dicts_counted 
+---------------
+ t
+(1 row)
+
+SELECT sum(bytes) < 262144 AS index_is_small FROM sift.index_size_breakdown('sm_idx');
+ index_is_small 
+----------------
+ t
+(1 row)
+
+SET enable_seqscan = off;
+SELECT count(*) FILTER (WHERE flag) AS flagged, count(DISTINCT tag) AS tags, sum(v) AS total FROM sm WHERE id > 0;
+ flagged | tags |  total  
+---------+------+---------
+   20000 |   20 | 9990000
+(1 row)
+
+SELECT count(*) AS point_hits FROM sm WHERE tag = 'g7';
+ point_hits 
+------------
+       1000
+(1 row)
+
+RESET enable_seqscan;
+SELECT count(*) FILTER (WHERE flag) AS flagged, count(DISTINCT tag) AS tags, sum(v) AS total FROM sm;
+ flagged | tags |  total  
+---------+------+---------
+   20000 |   20 | 9990000
+(1 row)
+
+SELECT sift.create_projection('sm_idx', 'by_v', 'ORDER BY v, id');
+ create_projection 
+-------------------
+ t
+(1 row)
+
+VACUUM sm;
+SELECT count(*) AS projected FROM (SELECT id FROM sm WHERE v >= 990 ORDER BY v, id LIMIT 5) q;
+ projected 
+-----------
+         5
+(1 row)
+
+DROP TABLE sm;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

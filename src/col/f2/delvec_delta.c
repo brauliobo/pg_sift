@@ -881,16 +881,21 @@ sift_dv_stamp(Relation rel, BlockNumber dv_blk)
 	return c;
 }
 
+#define SIFT_DV_CONSOLIDATE_TAIL_BYTES	1024
+
 static bool
 has_tail(Relation rel, const SiftPartDesc *d)
 {
 	Buffer		buf;
+	const SiftDvHeaderData *h;
 	bool		tail;
 
 	if (d->dv_blk == InvalidBlockNumber || d->dv_nblocks != 1)
 		return false;
 	buf = sift_blk_read(rel, d->dv_blk, BUFFER_LOCK_SHARE);
-	tail = (DV_HDR(BufferGetPage(buf))->flags & SIFT_DV_FLAG_DELTA_TAIL) != 0;
+	h = DV_HDR(BufferGetPage(buf));
+	/* STOR[STOR-F2-06]: consolidate a delvec once its delta tail holds 1024 B or the page is 3/4 full (no page rewrite for a 16 B delta) */
+	tail = (h->flags & SIFT_DV_FLAG_DELTA_TAIL) != 0 && (h->stream_len - h->pad >= SIFT_DV_CONSOLIDATE_TAIL_BYTES || h->stream_len > SIFT_PAGE_PAYLOAD / 4 * 3);
 	UnlockReleaseBuffer(buf);
 	return tail;
 }

@@ -7,6 +7,15 @@
 
 int			sift_dead_rewrite_pct = 15;
 
+/* STOR[STOR-F2-07]: a part whose column-delta chain holds this many pages is folded by a compaction of its own (the chain grew until 15% of the rows were dead) */
+#define SIFT_COMPACT_COL_DELTA_BLOCKS	4
+
+static bool
+part_has_long_delta_chain(const SiftPartDesc *p)
+{
+	return p->col_delta_blk != InvalidBlockNumber && p->col_delta_nblocks >= SIFT_COMPACT_COL_DELTA_BLOCKS;
+}
+
 static bool
 part_is_dead(const SiftPartDesc *p)
 {
@@ -104,6 +113,7 @@ sift_compact_plan(const SiftPartDesc *parts, int nparts, uint64 budget, int64 ho
 					small = 0,
 					dead = 0,
 					aged = 0,
+					chained = 0,
 					n = 0;
 		bool		cold = tier % 2;
 		uint64		bytes = 0,
@@ -118,15 +128,16 @@ sift_compact_plan(const SiftPartDesc *parts, int nparts, uint64 budget, int64 ho
 				level_bytes += parts[i].nbytes;
 				dead += part_is_dead(&parts[i]);
 				aged += part_has_aged(&parts[i], hot_cut);
+				chained += part_has_long_delta_chain(&parts[i]);
 			}
 		all = level == 0 ? l0_due(count, level_bytes, settled_bytes(parts, nparts, cold)) : count >= SIFT_COMPACT_FANOUT;
 		if (level == 0)
 			small = 0;
-		if (!all && small < 2 && dead == 0 && aged == 0)
+		if (!all && small < 2 && dead == 0 && aged == 0 && chained == 0)
 			continue;
 		for (int i = 0; i < nparts; i++)
 			if (plannable(&parts[i], level, cold) &&
-				((all && !part_is_consolidated(&parts[i])) || part_is_dead(&parts[i]) || part_has_aged(&parts[i], hot_cut) ||
+				((all && !part_is_consolidated(&parts[i])) || part_is_dead(&parts[i]) || part_has_aged(&parts[i], hot_cut) || part_has_long_delta_chain(&parts[i]) ||
 				 (small >= 2 && part_is_small(&parts[i]))))
 				at[n++] = &parts[i];
 		qsort(at, n, sizeof(SiftPartDesc *), by_size);

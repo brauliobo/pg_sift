@@ -47,7 +47,9 @@ typedef struct ShredAttr
 struct SiftColShredAdapter
 {
 	SiftShredSpec *spec;
-	SiftShred  *sh;
+	SiftShred  *sh;				/* created by the first row shredded (shred_of) */
+	MemoryContext mcxt;			/* the parent of the shredder: the owner of the adapter */
+	bool		keep_payloads;
 	int			natts;
 	ShredAttr  *attr;			/* [natts + 1] */
 	char	  **attname;		/* [natts + 1] */
@@ -217,6 +219,7 @@ sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const c
 	const SiftShredSpec *spec;
 
 	a->natts = natts;
+	a->mcxt = mcxt;
 	a->attr = palloc0((a->natts + 1) * sizeof(ShredAttr));
 	for (int i = 1; i <= a->natts; i++)
 	{
@@ -240,8 +243,6 @@ sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const c
 			add_column(a, &a->attr[attr_of(a, spec->cols[c].name)], c, -1, LEAF_ROOT_COL, 0);
 	for (int g = 1; g < spec->ngroups; g++)
 		add_group(a, &a->attr[attr_of(a, spec->groups[g].name)], g);
-	/* lives as long as the relcache entry, like the other backend caches (scripts/leakcheck.sh exempts "sift cache" contexts) */
-	a->sh = sift_shred_create(spec, NULL, true);
 	MemoryContextSwitchTo(old);
 	return a;
 }
@@ -337,11 +338,29 @@ sift_col_shred_leaf(const SiftColShredAdapter *a, int attno, int i, SiftColDef *
 		def->parent += a->attr[attno].base;
 }
 
+/* MEM[MEM-IDLE-16]: lazy shredder ctx + frames + cdict (0 B for an index that is only read; ~5 KB on the first row shredded; lives as long as its owner) */
+static SiftShred *
+shred_of(SiftColShredAdapter *a)
+{
+	if (a->sh == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(a->mcxt);
+
+		a->sh = sift_shred_create(a->spec, NULL, true);
+		MemoryContextSwitchTo(old);
+		if (a->keep_payloads)
+			a->sh->pay_fn = sift_shred_pay_jsonb;
+	}
+	return a->sh;
+}
+
 /* A value a leaf cannot hold is kept as the payload of its slot (SiftColValue.xp), as a jsonb datum: what a part of format major 2 keeps in the exceptions of its granules */
 void
 sift_col_shred_keep_payloads(SiftColShredAdapter *a)
 {
-	a->sh->pay_fn = sift_shred_pay_jsonb;
+	a->keep_payloads = true;
+	if (a->sh != NULL)
+		a->sh->pay_fn = sift_shred_pay_jsonb;
 }
 
 /* does the array attribute keep its image beside its elements */
@@ -426,7 +445,7 @@ static void
 fill_group(SiftColShredAdapter *a, const ShredAttr *at, int gl, SiftColRow *row, int first, MemoryContext mcxt)
 {
 	const ShredLeaf *gleaf = &at->leaf[gl];
-	const SiftShredGroup *grp = &a->sh->doc.grp[gleaf->group];
+	const SiftShredGroup *grp = &shred_of(a)->doc.grp[gleaf->group];
 	SiftColValue *gv = &row->val[first + gl];
 	uint32		n = grp->n;
 
@@ -436,7 +455,7 @@ fill_group(SiftColShredAdapter *a, const ShredAttr *at, int gl, SiftColRow *row,
 		gv->isnull = true;
 		gv->overflow = grp->lstate[0] == SIFT_SHRED_OVERFLOW;
 		if (gv->overflow)
-			keep_payload(gv, &a->sh->doc, -(1 + gleaf->group), 0);
+			keep_payload(gv, &shred_of(a)->doc, -(1 + gleaf->group), 0);
 		return;
 	}
 	gv->v.i = n;
@@ -448,9 +467,9 @@ fill_group(SiftColShredAdapter *a, const ShredAttr *at, int gl, SiftColRow *row,
 		for (uint32 k = 0; k < n; k++)
 		{
 			if (l->kind == LEAF_MAP_KEY)
-				set_key(&e[k], a->sh, grp->keyid[k]);
+				set_key(&e[k], shred_of(a), grp->keyid[k]);
 			else
-				set_value(&e[k], &a->sh->doc, &a->sh->doc.col[l->col], a->spec->cols[l->col].type, k);
+				set_value(&e[k], &shred_of(a)->doc, &shred_of(a)->doc.col[l->col], a->spec->cols[l->col].type, k);
 		}
 		row->elem[first + i] = e;
 	}
@@ -459,7 +478,7 @@ fill_group(SiftColShredAdapter *a, const ShredAttr *at, int gl, SiftColRow *row,
 static void
 shred_row_fill(SiftColShredAdapter *a, const Datum *values, const bool *isnull, SiftShredRecheck *rc)
 {
-	SiftShred  *sh = a->sh;
+	SiftShred  *sh = shred_of(a);
 
 	if (rc)
 		sift_shred_recheck_begin(rc);
@@ -491,7 +510,7 @@ void
 sift_col_shred_row_rc(SiftColShredAdapter *a, const Datum *values, const bool *isnull, SiftColRow *row, const int *first,
 					  MemoryContext mcxt, SiftShredRecheck *rc)
 {
-	SiftShred  *sh = a->sh;
+	SiftShred  *sh = shred_of(a);
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftShredLimits limits = sh->limits;
 

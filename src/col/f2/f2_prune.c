@@ -262,7 +262,7 @@ first_true(Relation rel, const SiftPart *part, const SiftSecDirEntry *zs, int co
 		uint32		mid = lo + (hi - lo) / 2;
 		SiftZone	z;
 
-		sift_part_read_bytes(rel, part, zs->off + ((uint64) col * part->hdr.ngranules + mid) * sizeof(z), sizeof(z), &z);
+		sift_part_read_section_bytes(rel, part, zs, ((uint64) col * part->hdr.ngranules + mid) * sizeof(z), sizeof(z), &z);
 		if (probe(&z, k, flags))
 			hi = mid;
 		else

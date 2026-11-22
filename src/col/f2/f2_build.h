@@ -9,8 +9,6 @@
 #include "nodes/execnodes.h"
 #include "utils/rel.h"
 
-#define SIFT_F2_BUILD_MIN_BUDGET	(UINT64CONST(4) << 20)
-
 typedef struct SiftF2Build SiftF2Build;
 
 /* A participant's build state in the current memory context; the budget of a run is its share of maintenance_work_mem among nparticipants */

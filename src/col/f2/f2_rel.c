@@ -179,8 +179,11 @@ sift_f2_rel(Relation index)
 	f->spec = (SiftPartSpec) {.ncols = n,.kinds = f->kinds,.nsort = f->nkey,.sort_cols = f->key_cols,.hints = f->hints,.scales = f->scales,.key_leaf = f->has_keys ? f->key_leaf : NULL,
 	.parent = f->has_groups ? f->parent : NULL};
 	memcpy(f->spec.sort_flags, o->ko_flags, sizeof(f->spec.sort_flags));
-	sift_f2_kll_columns(index, r, sift_col_options_sketches(index), &f->kll);
-	f->spec.kll = f->kll.n > 0 ? &f->kll : NULL;
+	SiftF2KllCols kll;
+
+	sift_f2_kll_columns(index, r, sift_col_options_sketches(index), &kll);
+	f->kll = kll.n > 0 ? memcpy(palloc(sizeof(kll)), &kll, sizeof(kll)) : NULL;
+	f->spec.kll = f->kll;
 	time_leaves(f, r->schema);
 	if (r->nscope > 0 && sift_scope_time_leaf(r->schema->cols, n) >= 0)
 		f->spec.time_col = sift_scope_time_leaf(r->schema->cols, n) + 1;

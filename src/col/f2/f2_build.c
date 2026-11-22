@@ -52,7 +52,7 @@ struct SiftF2Build
 };
 typedef struct SiftF2Build BuildState;
 
-/* A run is written when it fills its share of memory. Short of that it ends at a whole granule, the last one that the share holds at the width of the rows so far, so no granule of it is short and no run goes over */
+/* STOR[STOR-COL-02]: a run ends at its share of memory or at the whole granule that would overshoot it (a run holds at least one granule; no 4 MiB floor) */
 static bool
 run_full(const BuildState *bs)
 {
@@ -166,7 +166,8 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool tupl
 uint64
 sift_f2_build_budget(int nparticipants)
 {
-	return Max(SIFT_F2_BUILD_MIN_BUDGET, (uint64) maintenance_work_mem * 1024 * 3 / 4 / Max(nparticipants, 1));
+	/* MEM[MEM-COL-11]: f2 build run budget, the share of 3/4 of maintenance_work_mem of each participant (no floor; a run holds at least one granule) */
+	return (uint64) maintenance_work_mem * 1024 * 3 / 4 / Max(nparticipants, 1);
 }
 
 SiftF2Build *

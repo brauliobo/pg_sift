@@ -463,6 +463,7 @@ drop_dv(SiftTomb *slots, uint32 n, void *arg)
 }
 
 /* Records of the journal older than the age limit go with this VACUUM: the journal stops vouching for the horizons before the limit first, so that no reader takes the missing records for none */
+/* STOR[STOR-COL-12]: V1 tomblog full rewrite on vacuum delta (full-log WAL on 1 change) */
 static void
 trim_journal(Relation index, SiftTombLog *log, TransactionId aged)
 {

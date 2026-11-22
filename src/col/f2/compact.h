@@ -28,14 +28,15 @@ extern PGDLLIMPORT int sift_test_compact_delete;
  * Beside parts of a level above a few small ones are not worth a merge, which writes them again and the summaries that name them: they wait until they are a SIFT_COMPACT_L0_SHARE-th of those parts,
  * or until SIFT_COMPACT_L0_MAX of them are there.
  */
-#define SIFT_COMPACT_L0_FANOUT		4
+/* STOR[STOR-F2-01]: L0 fanout 6 and direct L1 from 1024 rows write each row once fewer (F5 WA, B/row) */
+#define SIFT_COMPACT_L0_FANOUT		6
 #define SIFT_COMPACT_L0_BYTES		(UINT64_C(4) << 20)
 #define SIFT_COMPACT_L0_SHARE		4
 #define SIFT_COMPACT_L0_MAX			(4 * SIFT_COMPACT_L0_FANOUT)
 #define SIFT_MAX_PART_LEVEL			2
 
 /* A batch of at least this many rows is written as a part of level 1 at once, not as one of level 0 that the next compaction rewrites */
-#define SIFT_L0_TO_L1_DIRECT_ROWS	2048
+#define SIFT_L0_TO_L1_DIRECT_ROWS	1024
 /*
  * Rows whose first time column is older than the hot cut (SIFT_HOT_WINDOW_DAYS before now, from a day boundary) are cold: a compaction writes them as a part of their own
  * (SIFT_PART_FLAG_TIME_COLD) and the rest as a hot one, so that a late arrival or an old row's change does not stretch the time bounds of the hot parts. Cold parts are

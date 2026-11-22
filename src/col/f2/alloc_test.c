@@ -266,7 +266,7 @@ sift_test_f2_leaf_zones(PG_FUNCTION_ARGS)
 		{
 			SiftZone	z;
 
-			sift_part_read_bytes(rel, part, zs->off + ((uint64) leaf * part->hdr.ngranules + g) * sizeof(z), sizeof(z), &z);
+			sift_part_read_section_bytes(rel, part, zs, ((uint64) leaf * part->hdr.ngranules + g) * sizeof(z), sizeof(z), &z);
 			flags |= z.flags;
 			if (sift_f2_zone_verdict(d, &pred, &z, SIFT_GRANULE_ROWS, false) == Z_NONE)
 				none++;

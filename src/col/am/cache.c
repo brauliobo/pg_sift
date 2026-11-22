@@ -279,7 +279,8 @@ static void
 fold(Relation index, const SiftDirSnapshot *dir, const Fold *f, bool shared, int *folded)
 {
 	const int	ncols = sift_col_index_defs(index)->ncols;
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col leaf statistics", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-COL-08]: per-segment cache contexts start at 1 KB, not 8 KB (7 KB per cached entry) */
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col leaf statistics", ALLOCSET_SMALL_SIZES);
 	const SiftColRel *rel = sift_col_rel_private(index, cx);	/* the loops open segments, which read catalogs and reload the cached state */
 	const SiftColIndexMeta *d = &rel->meta;
 	const SiftCPaggSpec *spec = &rel->pagg;
@@ -470,7 +471,7 @@ double
 sift_col_gorder_chunks(Relation index, int leaf, uint32 flags, bool complete_only)
 {
 	SiftDirSnapshot *dir;
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col order chunks", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col order chunks", ALLOCSET_SMALL_SIZES);
 	double		n = 0;
 
 	(void) sift_col_rel_private(index, cx);	/* opening segments reads catalogs and reloads the cached state */

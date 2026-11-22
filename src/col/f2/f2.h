@@ -38,7 +38,8 @@ typedef struct SiftF2Rel
 	bool		has_keys;
 	bool		has_groups;
 	int64		time_unit[SIFT_MANIFEST_TIME_COLS];	/* microseconds in one step of the time column: 1 for a timestamp, a day for a date; 0: no such time column */
-	SiftF2KllCols kll;			/* the columns of the kll groups of the sketches option, as leaves */
+	/* MEM[MEM-COL-15]: SiftF2Rel 280 B; the 1 KB SiftF2KllCols is allocated only with the sketches option (-1028 B) */
+	SiftF2KllCols *kll;			/* the columns of the kll groups of the sketches option, as leaves */
 	SiftPartSpec spec;			/* spec.time_cols names the time columns */
 } SiftF2Rel;
 

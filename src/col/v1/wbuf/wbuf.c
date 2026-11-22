@@ -274,6 +274,7 @@ wbuf_write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const Ite
 			break;
 		}
 		/* a row that fits an empty page moves there whole rather than splitting */
+		/* STOR[STOR-COL-11]: V1 wbuf page-break rule on 2-4 KB rows (up to 50% tail slack) */
 		place = n > 0 && !(first && RECSIZE(len) <= wbuf_room(hs));
 		pa = (PieceArg) {tid, first ? flags : SIFT_COLR_CONT, payload + done, n, first ? key : NULL, done + n < len};
 		cur = sift_lane_grow(index, h->gen, h->hdr, lane, cur, hs, limit, place ? fill_piece : NULL, &pa, &crossed);

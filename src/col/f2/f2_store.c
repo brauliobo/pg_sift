@@ -137,7 +137,8 @@ store_cache_init(void)
 {
 	HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(StoreEntry),.hcxt = sift_cache_create_context("sift cache f2 stores")};
 
-	store_cache = hash_create("sift cache f2 stores", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	/* MEM[MEM-IDLE-12]: cachebudget f2 stores HTAB (16 init entries; evictable LRU) */
+	store_cache = hash_create("sift cache f2 stores", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	if (!store_cache_registered)
 	{
 		sift_f2_invalidator_register(store_invalidate);
@@ -155,6 +156,7 @@ host_of(Relation rel)
 static SiftF2Store *
 store_build(Relation rel)
 {
+	/* MEM[MEM-IDLE-03]: cachebudget f2 store per-rel ctx (struct + shared-nothing option copies; evictable LRU; committed by sift_f2_store_open callers) */
 	MemoryContext cx = sift_cache_create_context("sift cache f2 store");
 	SiftF2Store *s = MemoryContextAllocZero(cx, sizeof(SiftF2Store));
 
@@ -162,7 +164,9 @@ store_build(Relation rel)
 	s->locator = rel->rd_locator;
 	s->host = host_of(rel);
 	s->cx = cx;
-	s->row_cx = AllocSetContextCreateInternal(cx, "sift cache f2 row", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, SIFT_MEM_MAX_BLOCK);
+	/* MEM[MEM-IDLE-04]: cachebudget f2 store row_cx (table DML only: an index store has none, 0 B idle; 1 KB min for a table) */
+	if (s->host->host_kind != SIFT_F2_HOST_INDEX)
+		s->row_cx = AllocSetContextCreateInternal(cx, "sift cache f2 row", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, SIFT_MEM_MAX_BLOCK);
 	s->natts = RelationGetDescr(rel)->natts;
 	s->host->load_options(rel, s, cx);
 	return s;

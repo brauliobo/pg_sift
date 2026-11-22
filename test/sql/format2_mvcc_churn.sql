@@ -81,12 +81,12 @@ CREATE TABLE s (v int);
 CREATE INDEX s_idx ON s USING sift_store_test (v);
 SELECT sift._test_f2_init('s_idx');
 BEGIN;
-SELECT sift._test_f2_stage('s_idx', 100, 0, 1, -1);
+SELECT sift._test_f2_stage('s_idx', 300, 0, 1, -1);
 SAVEPOINT a;
-SELECT sift._test_f2_stage('s_idx', 100, 10000, 100000, -1);
+SELECT sift._test_f2_stage('s_idx', 300, 10000, 100000, -1);
 ROLLBACK TO a;
 SAVEPOINT b;
-SELECT sift._test_f2_stage('s_idx', 100, 20000, 200000, -1);
+SELECT sift._test_f2_stage('s_idx', 300, 20000, 200000, -1);
 RELEASE b;
 SELECT pg_current_xact_id()::text::int8 AS top \gset
 COMMIT;

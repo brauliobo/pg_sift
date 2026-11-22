@@ -32,16 +32,18 @@
 
 typedef struct LshmEnt
 {
-	bool		used;
-	RelFileNumber rel;
-	Oid			db;
-	bool		scope;
-	LshmKind	kind;
+	/* MEM[MEM-SHM-15]: DSM leaf stats dir entry (48 B, was 56; 4096 entries: -32 KB) */
 	uint64		stamp;
 	Size		off,
 				len;
 	uint64		tick;			/* oldest goes when the directory is full */
+	RelFileNumber rel;
+	Oid			db;
+	LshmKind	kind;
+	bool		used;
+	bool		scope;
 }			LshmEnt;
+StaticAssertDecl(sizeof(LshmEnt) == 48, "LshmEnt is 48 bytes");
 
 typedef struct Lshm
 {

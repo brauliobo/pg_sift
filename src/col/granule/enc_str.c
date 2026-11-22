@@ -224,11 +224,12 @@ put_fsst(StringInfo s, const SiftColIn *col, int n, int nn, const SiftChunkOpts 
 	return pays;
 }
 
-/* Whether the symbol table's strings are kept over the codec's list of them: the cold level keeps them when they are no more than a twentieth larger (a scan of them is the faster), the others when no more than a third */
+/* Whether the symbol table's strings are kept over the codec's list of them: the deepest cold level keeps them when no larger, the others when no more than a third larger */
 static bool
 fsst_beats_block(Size fsst, Size block, SiftCompressTier tier)
 {
-	return tier == SIFT_TIER_COLD_L2 ? fsst * 100 <= block * 105 : block * 4 > fsst * 3;
+	/* STOR[STOR-CODEC-04]: L2 takes FSST only when it is no larger than the zstd block (1.00x, was 1.05x; B/str) */
+	return tier == SIFT_TIER_COLD_L2 ? fsst <= block : block * 4 > fsst * 3;
 }
 
 /* The strings of a cold column that no dictionary holds: the symbol table, or the codec's list when that is smaller by more than the margin of fsst_beats_block or the table does not pay (or the owner keeps compression off) */
@@ -331,6 +332,10 @@ fixed16_enc(int hint)
 	return hint == SIFT_CHINT_UUID ? SIFT_CENC_UUID16 : hint == SIFT_CHINT_NUM128 ? SIFT_CENC_NUM128 : SIFT_CENC_INTERVAL16;
 }
 
+#define DICT_TRIAL_DIV		8
+#define UUID_PROBE_ROWS		64
+#define UUID_PREFIX_MAX		8
+
 /* 16-byte values as the cascades of their two halves: a half that is constant (the upper half of a numeric that fits 64 bits) costs 8 bytes */
 static void
 put_halves(StringInfo s, const char *const *p, const bool *isnull, int n, int nn, const SiftChunkOpts *opt)
@@ -345,6 +350,33 @@ put_halves(StringInfo s, const char *const *p, const bool *isnull, int n, int nn
 		sift_put_cc_ints(s, lane, nn, opt);
 	}
 	pfree(lane);
+}
+
+/* STOR[STOR-CODEC-05]: ids that share their top 32 bits (UUIDv7, UUIDv1, ULID) split into FIXED16 halves (-4..6 B/id); random UUIDv4 stay raw 16 B/id */
+static bool
+uuid_clustered(const SiftColIn *col, int n)
+{
+	uint32		seen[UUID_PREFIX_MAX];
+	int			ns = 0,
+				probed = 0,
+				step = Max(n / UUID_PROBE_ROWS, 1);
+
+	for (int i = 0; i < n && probed < UUID_PROBE_ROWS; i += step)
+	{
+		uint32		top;
+		int			k = 0;
+
+		if (col->isnull != NULL && col->isnull[i])
+			continue;
+		probed++;
+		memcpy(&top, col->s[i], 4);
+		while (k < ns && seen[k] != top)
+			k++;
+		if (k == ns && ns++ == UUID_PREFIX_MAX)
+			return false;
+		seen[k] = top;
+	}
+	return probed > 0;
 }
 
 void
@@ -401,8 +433,26 @@ sift_chunk_put_str(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 		}
 		if (nd > 0)
 		{
-			put_dict(s, col->s, col->slen, code, first, nd, nn, opt);
-			ref->enc |= SIFT_CENC_DICT_CODE;
+			/* STOR[STOR-CODEC-04]: a granule dictionary over an eighth of the values is kept only if the zstd block is not 5% smaller (B/str) */
+			bool		block_wins = false;
+			StringInfoData dict,
+						block;
+			bool		with_dict = false;
+
+			if (cold && (uint64) nd * DICT_TRIAL_DIV > (uint64) nn)
+			{
+				initStringInfo(&dict);
+				initStringInfo(&block);
+				put_dict(&dict, col->s, col->slen, code, first, nd, nn, opt);
+				with_dict = put_block(&block, col->s, col->slen, col->isnull, n, nn, opt);
+				block_wins = (uint64) block.len * 100 < (uint64) dict.len * 95;
+				appendBinaryStringInfo(s, block_wins ? block.data : dict.data, block_wins ? block.len : dict.len);
+				pfree(dict.data);
+				pfree(block.data);
+			}
+			else
+				put_dict(s, col->s, col->slen, code, first, nd, nn, opt);
+			ref->enc |= block_wins ? SIFT_CENC_STR_BLOCK | (with_dict ? SIFT_ENC_PART_DICT : 0) : SIFT_CENC_DICT_CODE;
 			pfree(code);
 			pfree(first);
 			return;
@@ -445,7 +495,7 @@ sift_chunk_put_str(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 	}
 	if (fixed)
 	{
-		if (cold && col->hint != SIFT_CHINT_UUID)
+		if (cold && (col->hint != SIFT_CHINT_UUID || uuid_clustered(col, n)))
 		{
 			put_halves(s, col->s, col->isnull, n, nn, opt);
 			ref->enc |= SIFT_CENC_FIXED16;

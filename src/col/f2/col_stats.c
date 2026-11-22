@@ -206,11 +206,21 @@ sift_col_stats_granule(SiftColStatsBuilder *b, int c, uint32 nrows, uint32 nnull
 void *
 sift_col_stats_finish(SiftColStatsBuilder *b, uint32 ngranules, uint64 *len)
 {
-	uint64		size = sift_col_stats_size(b->ncols, true);
-	uint8	   *out = palloc0(size);
-	SiftColStatsHdr hdr = {.magic = SIFT_COL_STATS_MAGIC,.version = SIFT_COL_STATS_VERSION,.ncols = b->ncols,.ngranules = ngranules,.flags = SIFT_COLSTATS_HAS_NULLS};
-	uint8	   *recs = out + sizeof(hdr),
-			   *nulls = recs + (size_t) b->ncols * sizeof(SiftPartColStat);
+	bool		has_nulls = false;
+	uint64		size;
+	uint8	   *out;
+	SiftColStatsHdr hdr = {.magic = SIFT_COL_STATS_MAGIC,.version = SIFT_COL_STATS_VERSION,.ncols = b->ncols,.ngranules = ngranules};
+	uint8	   *recs,
+			   *nulls;
+
+	for (int c = 0; c < b->ncols; c++)
+		has_nulls |= b->col[c].nulls > 0;
+	/* STOR[STOR-COL-09]: the per-column null counts are written only when a column has a null (8*ncols B saved) */
+	hdr.flags = has_nulls ? SIFT_COLSTATS_HAS_NULLS : 0;
+	size = sift_col_stats_size(b->ncols, has_nulls);
+	out = palloc0(size);
+	recs = out + sizeof(hdr);
+	nulls = recs + (size_t) b->ncols * sizeof(SiftPartColStat);
 
 	memcpy(out, &hdr, sizeof(hdr));
 	for (int c = 0; c < b->ncols; c++)
@@ -228,7 +238,8 @@ sift_col_stats_finish(SiftColStatsBuilder *b, uint32 ngranules, uint64 *len)
 		st.est_ndv = (uint32) Min(Max(ndv, nonnull > 0 ? 1 : 0), Min(nonnull, PG_UINT32_MAX));
 		st.flags = (a->rows > 0 && a->nulls == a->rows ? SIFT_COLSTAT_ALL_NULL : 0) | (a->exact ? SIFT_COLSTAT_NDV_EXACT : 0);
 		memcpy(recs + (size_t) c * sizeof(st), &st, sizeof(st));
-		memcpy(nulls + (size_t) c * sizeof(uint64), &a->nulls, sizeof(uint64));
+		if (has_nulls)
+			memcpy(nulls + (size_t) c * sizeof(uint64), &a->nulls, sizeof(uint64));
 	}
 	*len = size;
 	pfree(b->col);
@@ -244,7 +255,7 @@ open_any(const void *blob, uint64 len, uint16 ncols, SiftColStats *cs)
 	if (len < sizeof(hdr))
 		return false;
 	memcpy(&hdr, blob, sizeof(hdr));
-	return sift_col_stats_open(blob, len, ncols, hdr.ngranules, cs) == NULL && cs->nulls != NULL;
+	return sift_col_stats_open(blob, len, ncols, hdr.ngranules, cs) == NULL;
 }
 
 void *

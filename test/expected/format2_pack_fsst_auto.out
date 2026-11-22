@@ -23,13 +23,13 @@ FROM (VALUES ('decimal'), ('outliers'), ('noisy'), ('wideexp'), ('special'), ('r
  decimal  | none | enc=ALP bytes=17496 wrapped=f legacy=ok vec=ok tags=ok
  decimal  | zstd | enc=ALP bytes=17496 wrapped=f legacy=ok vec=ok tags=ok
  noisy    | none | enc=ALP_RD bytes=56504 wrapped=f legacy=ok vec=ok tags=ok
- noisy    | zstd | enc=ALP_RD bytes=56504 wrapped=f legacy=ok vec=ok tags=ok
+ noisy    | zstd | enc=FLOAT_BSS bytes=49660 wrapped=t legacy=ok vec=ok tags=ok
  outliers | none | enc=ALP_RD bytes=53928 wrapped=f legacy=ok vec=ok tags=ok
- outliers | zstd | enc=ALP_RD bytes=53928 wrapped=f legacy=ok vec=ok tags=ok
+ outliers | zstd | enc=FLOAT_BSS bytes=48079 wrapped=t legacy=ok vec=ok tags=ok
  random   | none | enc=ALP_RD bytes=56568 wrapped=f legacy=ok vec=ok tags=ok
  random   | zstd | enc=ALP_RD bytes=56568 wrapped=f legacy=ok vec=ok tags=ok
  special  | none | enc=ALP_RD bytes=55416 wrapped=f legacy=ok vec=ok tags=ok
- special  | zstd | enc=ALP_RD bytes=55416 wrapped=f legacy=ok vec=ok tags=ok
+ special  | zstd | enc=FLOAT_BSS bytes=45836 wrapped=t legacy=ok vec=ok tags=ok
  wideexp  | none | enc=FLOAT_RAW bytes=65536 wrapped=f legacy=ok vec=ok tags=ok
  wideexp  | zstd | enc=FLOAT_BSS bytes=23815 wrapped=t legacy=ok vec=ok tags=ok
 (12 rows)

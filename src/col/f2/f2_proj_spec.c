@@ -855,6 +855,7 @@ sift_proj_layout(const SiftProjSpec *s, const SiftProjColumns *cols, SiftProjLay
 		}
 		return n;
 	}
+	/* STOR[STOR-COL-06]: projection agg duplicate SPR_COUNT/SPR_SUM_NN columns (8 B/group raw) */
 	out[n++] = (SiftProjLayoutCol) {SPR_ROWS, SIFT_CELL_INT, -1, -1};
 	for (int m = 0; m < s->nmeas; m++)
 	{

@@ -12,6 +12,7 @@
 
 #define CC_COLD_MIN_ROWS	256
 #define CC_COLD_GAIN_PCT	8
+#define CC_COLD_GAIN_L2_PCT	3
 #define CC_DBYTE_BLOCK		1024
 
 /* ---- reader ---- */
@@ -262,6 +263,8 @@ cc_cold_leaf(const CcW *w, StringInfo out, int start, const int64 *v, uint32 n, 
 	StringInfoData cand;
 	bool		more = new_nodes(w, n);
 	uint32		B = width_of(range);
+	/* STOR[STOR-CODEC-06]: the deepest cold level (no fast decode) takes a byte-wise delta or byte planes for a 3% gain, the others for 8% (granule_int/num) */
+	int			gain = w->pol->fast_decode ? CC_COLD_GAIN_PCT : CC_COLD_GAIN_L2_PCT;
 
 	initStringInfo(&pk.node);
 	appendBinaryStringInfo(&pk.node, out->data + start, out->len - start);
@@ -280,7 +283,7 @@ cc_cold_leaf(const CcW *w, StringInfo out, int start, const int64 *v, uint32 n, 
 	{
 		initStringInfo(&cand);
 		cc_emit_forbyte(&cand, v, n, min, B);
-		pick_offer(&pk, &cand, SIFT_CCN_FORBYTE, W <= 16 ? 0 : CC_COLD_GAIN_PCT, false);
+		pick_offer(&pk, &cand, SIFT_CCN_FORBYTE, W <= 16 ? 0 : gain, false);
 	}
 	if (more)
 	{
@@ -291,12 +294,12 @@ cc_cold_leaf(const CcW *w, StringInfo out, int start, const int64 *v, uint32 n, 
 		if (drange <= 0xFFFFFFFFu)
 		{
 			dbyte_node(&cand, v, n, dmin, width_of(drange));
-			pick_offer(&pk, &cand, SIFT_CCN_DELTA_BYTE, CC_COLD_GAIN_PCT, true);
+			pick_offer(&pk, &cand, SIFT_CCN_DELTA_BYTE, gain, true);
 		}
 		if (B >= 2)
 		{
 			bss_node(&cand, v, n, min, B);
-			pick_offer(&pk, &cand, SIFT_CCN_BSS, CC_COLD_GAIN_PCT, true);
+			pick_offer(&pk, &cand, SIFT_CCN_BSS, gain, true);
 		}
 	}
 	out->len = start;

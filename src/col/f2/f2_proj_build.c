@@ -12,6 +12,7 @@
 #include "utils/lsyscache.h"
 #include "storage/lmgr.h"
 
+#include "col/f2/compact.h"
 #include "col/f2/delvec.h"
 #include "col/f2/f2_part_idx.h"
 #include "col/f2/f2_proj.h"
@@ -128,6 +129,7 @@ write_part(Relation rel, const SiftF2Store *store, const SiftManifestProjRef *re
 	SiftColIn  *in = palloc(pps->nlay * sizeof(SiftColIn));
 	uint64		gen;
 	SiftRows	rows;
+	SiftCompressTier tier;
 
 	if (spec->kind == SIFT_PROJ_AGG)
 		b.cube = sift_proj_cube_new(spec, cols);
@@ -149,9 +151,11 @@ write_part(Relation rel, const SiftF2Store *store, const SiftManifestProjRef *re
 	}
 	gen = sift_manifest_new_gen(rel, 1);
 	sift_rowbuf_sort(b.out, &pps->spec);
-	(void) sift_rowbuf_cluster(b.out, &pps->spec, SIFT_TIER_WARM_L1);
+	/* STOR[STOR-COL-03]: the projection part inherits the base part level and tier (cold base: cold codecs) */
+	tier = base->level >= SIFT_MAX_PART_LEVEL ? SIFT_TIER_COLD_L2 : SIFT_TIER_WARM_L1;
+	(void) sift_rowbuf_cluster(b.out, &pps->spec, tier);
 	rows = sift_rowbuf_rows(b.out, in, &pps->spec);
-	*out = sift_part_write_rows(rel, SIFT_PROJ_PART_ID, gen, 1, SIFT_TIER_WARM_L1, &rows);
+	*out = sift_part_write_rows(rel, SIFT_PROJ_PART_ID, gen, Max(base->level, 1), tier, &rows);
 	*link = sift_proj_link_make(ref, spec, base, gen, b.where_exc);
 	sift_rowbuf_free(b.out);
 	return true;

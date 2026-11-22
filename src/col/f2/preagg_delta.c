@@ -9,6 +9,7 @@
 #include "core/page_io.h"
 #include "port/pg_bitutils.h"
 
+/* STOR[STOR-COL-08]: SEC_PREAGG 48 B/cell delta table (eligible for PARTHDR inline) */
 static int
 cell_cmp(const void *a, const void *b)
 {

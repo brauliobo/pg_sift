@@ -286,6 +286,7 @@ load(SiftPlanSnapshot *s, Relation rel, const SiftShmIndexMeta *meta)
 	SiftManifestScopeRef *scopes;
 	int			nscopes;
 	SiftManifestRead mr = read_directory(rel, meta, &shm, &scopes, &nscopes);
+	/* MEM[MEM-IDLE-07]: cachebudget plan snapshot ctx (1 KB init + partitions + part lists + card view; evictable LRU) */
 	MemoryContext prev = MemoryContextSwitchTo(s->cx);
 	SiftPlanPartList *lists = palloc0(Max(mr.n, 1) * sizeof(SiftPlanPartList));
 	bool	   *reused = palloc0(Max(s->npartitions, 1));
@@ -309,6 +310,7 @@ load(SiftPlanSnapshot *s, Relation rel, const SiftShmIndexMeta *meta)
 	for (int k = 0; k < s->npartitions; k++)
 		if (!reused[k])
 			pfree(s->partlists[k].parts);
+	pfree(reused);
 	if (s->card_view != NULL)
 		pfree(s->card_view);
 	s->card_view = NULL;
@@ -425,6 +427,8 @@ sift_plan_card_put(const SiftPlanSnapshot *snap, struct SiftCardStatsView *view)
 	s->card_view = view;
 	s->card_built = true;
 	s->size = MemoryContextMemAllocated(s->cx, true);
+	/* MEM[MEM-IDLE-07]: the card view joins the plan snapshot (plan->cx), so the cache budget is enforced once it is added */
+	(void) sift_cache_commit();
 }
 
 const SiftPartitionEntry *

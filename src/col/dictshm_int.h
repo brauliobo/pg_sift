@@ -34,15 +34,17 @@ typedef enum
 
 typedef struct DshmEnt
 {
-	uint8		state;
-	uint32		asks;			/* times it was read, by all backends: a dictionary asked often is worth its hash table and sorted order (dict.c) */
+	/* MEM[MEM-SHM-14]: DSM shared dict dir entry (88 B, was 96; 512 entries: -4 KB; DictKey has no padding) */
 	uint64		orows;			/* rows of top-N scans compared with its strings, by all backends and statements (SiftCDict.orows): the sorted order is worth making at DICT_ORDER_ROWS times its entries */
-	int32		pins;			/* backends reading the record in place: its bytes are not overwritten while there are any */
 	DictKey		key;
 	Size		off,
 				len;
 	uint64		tick;			/* oldest of a bucket goes when it is full */
+	uint32		asks;			/* times it was read, by all backends: a dictionary asked often is worth its hash table and sorted order (dict.c) */
+	int32		pins;			/* backends reading the record in place: its bytes are not overwritten while there are any */
+	uint8		state;
 }			DshmEnt;
+StaticAssertDecl(sizeof(DshmEnt) == 88, "DshmEnt is 88 bytes");
 
 typedef struct DshmFlight
 {

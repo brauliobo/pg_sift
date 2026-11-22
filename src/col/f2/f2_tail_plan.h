@@ -7,7 +7,8 @@
 
 #include "core/host.h"
 
-#define SIFT_TAIL_RELOCATE_PCT	20
+/* STOR[STOR-F2-04]: the tail is relocated once 10% of the file trails the holder (was 20%: up to 19.9% of trailing bloat survived every VACUUM) */
+#define SIFT_TAIL_RELOCATE_PCT	10
 #define SIFT_TAIL_MAX_MOVES		8
 
 typedef enum SiftTailKind

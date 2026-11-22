@@ -317,6 +317,7 @@ dir_edit(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 	DirEdit    *ed = arg;
 	int			k = 0;
 
+	/* STOR[STOR-COL-10]: keystore run 16 KB min page pair per intern batch (until merge threshold) */
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		bool		gone = false;

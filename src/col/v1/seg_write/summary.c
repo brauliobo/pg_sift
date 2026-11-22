@@ -132,6 +132,7 @@ build_super(SiftColSegWriter *w, StringInfo out)
 		MemoryContextReset(cx);
 	}
 	cdir[nsu] = cubes.len;
+	/* STOR[STOR-COL-13]: V1 uncompressed superunit summary and fixed 1024 B wbuf bloom (12.6%/pg) */
 	h.cubedir_off = cubes.len > 0 ? ALIGN8(sizeof(SuperHeader) + (Size) nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64) + (Size) h.nleaf * nsu * sizeof(SiftCSuperLeaf)) : 0;
 	h.cube_bytes = cubes.len;
 	MemoryContextSwitchTo(old);

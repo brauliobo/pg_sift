@@ -873,7 +873,7 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 {
 	OrderCtx	ctx = {schema, leaf, nleaf};
 	MergeSrc	m = {.in = palloc0_array(MergeIn, n + 1), .n = n, .ctx = &ctx, .freeze = freeze, .freeze_arg = freeze_arg, .cx = cx,
-					 .scratch = AllocSetContextCreate(cx, "sift_col merge unit", ALLOCSET_DEFAULT_SIZES), .budget = memory_kb * 1024, .inputs = inputs, .free_head = -1};
+					 .scratch = sift_mem_allocset_create(cx, "sift_col merge unit"), .budget = memory_kb * 1024, .inputs = inputs, .free_head = -1};
 	BoundKey	wlo,
 				whi;
 	uint64		loose = 0;

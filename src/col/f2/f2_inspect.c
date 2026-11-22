@@ -199,8 +199,6 @@ stream_bytes(Relation rel, const SiftPart *part, uint64 *bytes)
 		const SiftSecDirEntry *s = &part->secdir[i];
 		uint64		got = s->len;
 
-		if (s->flags & SIFT_SEC_FLAG_INLINE)
-			continue;
 		if (s->tag == SEC_GRANULES)
 			got = granule_bytes(rel, part, bytes);
 		else

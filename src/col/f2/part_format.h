@@ -30,6 +30,7 @@ StaticAssertDecl(sizeof(SiftSecDirEntry) == 24, "SiftSecDirEntry must be 24 byte
 #define SIFT_SEC_FLAG_REQUIRED	(UINT16_C(1) << 0)	/* a reader that does not know the tag refuses the part */
 #define SIFT_SEC_FLAG_INLINE	(UINT16_C(1) << 1)
 #define SIFT_SEC_FLAG_COMPRESSED (UINT16_C(1) << 2)
+#define SIFT_INLINE_EXTENT_RESERVE	256	/* the bytes of the header page the sections left for extents: 32 of them */
 #define SIFT_SEC_FLAG_NO_CRC	(UINT16_C(1) << 3)	/* a large stream section whose granules carry their own sums */
 
 typedef enum SiftSectionTag

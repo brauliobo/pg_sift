@@ -41,10 +41,12 @@ sift_f2_pin_zones(Relation rel, SiftF2PartPin *pin, int leaf)
 
 	if (zs == NULL || zs->len != (uint64) pin->part->hdr.ncols * ng * sizeof(SiftZone))
 		return NULL;
+	if (pin->zones == NULL)
+		pin->zones = MemoryContextAllocZero(pin->cx, (uint64) pin->part->hdr.ncols * sizeof(SiftZone *));
 	if (pin->zones[leaf] == NULL)
 	{
 		pin->zones[leaf] = MemoryContextAlloc(pin->cx, (uint64) ng * sizeof(SiftZone));
-		sift_part_read_bytes(rel, pin->part, zs->off + (uint64) leaf * ng * sizeof(SiftZone), (uint64) ng * sizeof(SiftZone), pin->zones[leaf]);
+		sift_part_read_section_bytes(rel, pin->part, zs, (uint64) leaf * ng * sizeof(SiftZone), (uint64) ng * sizeof(SiftZone), pin->zones[leaf]);
 	}
 	return pin->zones[leaf];
 }

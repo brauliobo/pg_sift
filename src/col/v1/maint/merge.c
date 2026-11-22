@@ -150,7 +150,8 @@ out_begin(MergeOut *o)
 	MemoryContext old;
 
 	/* a context of its own for each partition, so that its write target, dictionaries and zones do not pile up with those written */
-	o->pcx = AllocSetContextCreate(o->cx, "sift_col merge partition", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-COL-01]: v1 merge bounded context tree (sift_mem_allocset_create: 8 KB init, 256 KB max block) */
+	o->pcx = sift_mem_allocset_create(o->cx, "sift_col merge partition");
 	old = MemoryContextSwitchTo(o->pcx);
 	o->wt = sift_wt_begin(o->index, SIFT_WRITE_SHARED);
 	MemoryContextSwitchTo(old);
@@ -277,8 +278,8 @@ int
 maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
 			   int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int window_parts, const MergeSlice *slice)
 {
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col merge", ALLOCSET_DEFAULT_SIZES);
-	MemoryContext icx = AllocSetContextCreate(cx, "sift_col merge inputs", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift_col merge");
+	MemoryContext icx = sift_mem_allocset_create(cx, "sift_col merge inputs");
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftMemTracker mt_merge;
 	SiftMemTracker mt_inputs;
@@ -344,7 +345,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		double		live;
 		uint64		units = 0;
 
-		seg[i] = sift_cseg_open(slice && i < slice->nfrom ? slice->from : index, &in[i], AllocSetContextCreate(icx, "sift_col merge input", ALLOCSET_DEFAULT_SIZES));
+		seg[i] = sift_cseg_open(slice && i < slice->nfrom ? slice->from : index, &in[i], sift_mem_allocset_create(icx, "sift_col merge input"));
 		if (!sift_cschema_same_leaves(seg[i]->schema, schema, RelationGetDescr(index)))
 			corrupt(index, "Segment %llu was written for another column layout.", (unsigned long long) in[i].gen);
 		exact &= sift_cseg_kinds_exact(seg[i]);
@@ -472,6 +473,9 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 				{
 					sift_cbatch_reserve(b, seg[i]->sbdir[cur[i]].nrows);
 					sift_cseg_decode_unit_freeze(seg[i], cur[i]++, b, freeze, freeze_arg);
+					/* MEM[MEM-COL-02]: v1 merge input dictionary of an exhausted segment is released at once (one parsed dictionary per live input) */
+					if (cur[i] >= seg[i]->nsb)
+						sift_cseg_dict_release(seg[i]);
 				}
 				if (b->nrows > 0)
 					maint_window_add(win, b, sb);

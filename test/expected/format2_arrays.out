@@ -157,13 +157,13 @@ SELECT * FROM leaf_diff();
 SELECT sift._test_f2_check_keys('docs_i') AS keys_mutated;
             keys_mutated            
 ------------------------------------
- parts=3 granules=3 rows=6553 exact
+ parts=3 granules=3 rows=6908 exact
 (1 row)
 
 SELECT sift._test_f2_array_layout('docs_i') AS layout_mutated;
           layout_mutated          
 ----------------------------------
- granules=3 lists=9 blocks=309 ok
+ granules=3 lists=9 blocks=327 ok
 (1 row)
 
 SELECT (SELECT count(*) FROM expected) = (SELECT count(*) FROM actual) AS same_leaf_count_mutated;

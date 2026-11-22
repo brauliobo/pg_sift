@@ -684,7 +684,7 @@ dict_shared(SiftCDict *d, const DictKey *k)
 static MemoryContext
 dict_cx(SiftColSegment *seg)
 {
-	return AllocSetContextCreate(seg->mcxt, "sift cache segment dictionary", ALLOCSET_DEFAULT_SIZES);
+	return AllocSetContextCreate(seg->mcxt, "sift cache segment dictionary", ALLOCSET_SMALL_SIZES);
 }
 
 /* The dictionary in the cache, else the one another backend parsed, read in the shared memory it lies in: it was found worth its parse, and reading it costs a lookup */

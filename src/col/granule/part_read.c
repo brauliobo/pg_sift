@@ -190,7 +190,7 @@ sift_part_read_gdesc(Relation rel, const SiftPart *part, uint32 g)
 
 	if (ds == NULL || ds->len != (uint64) part->hdr.ngranules * sizeof(d) || g >= part->hdr.ngranules)
 		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The granule directory of the part does not hold granule %u.", g);
-	sift_part_read_bytes(rel, part, ds->off + (uint64) g * sizeof(d), sizeof(d), &d);
+	sift_part_read_section_bytes(rel, part, ds, (uint64) g * sizeof(d), sizeof(d), &d);
 	return d;
 }
 
@@ -537,16 +537,6 @@ sift_part_read_tids_batch(Relation rel, const SiftPart *part, const SiftGranuleD
 	return out;
 }
 
-/* The bytes [at, at + len) of a section of the part */
-static void
-section_slice(Relation rel, const SiftPart *part, const SiftSecDirEntry *sec, uint64 at, uint64 len, void *dst)
-{
-	if (sec->flags & SIFT_SEC_FLAG_INLINE)
-		memcpy(dst, part->inline_payload + sec->off + at, len);
-	else
-		sift_part_read_bytes(rel, part, sec->off + at, len, dst);
-}
-
 /* The offsets of the strides of each granule of the part: the whole section is read (and its checksum compared) once, for all its granules */
 static const PartAux *
 tstride_aux(Relation rel, const SiftPart *part)
@@ -588,6 +578,6 @@ sift_part_read_tstride(Relation rel, const SiftPart *part, uint32 g, int *n)
 		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The time stride index of the part does not hold granule %u.", g);
 	*n = a->tstride_off[g + 1] - a->tstride_off[g];
 	out = palloc(Max(*n, 1) * sizeof(SiftTimeStride));
-	section_slice(rel, part, sec, a->tstride_data + (uint64) a->tstride_off[g] * sizeof(SiftTimeStride), (uint64) *n * sizeof(SiftTimeStride), out);
+	sift_part_read_section_bytes(rel, part, sec, a->tstride_data + (uint64) a->tstride_off[g] * sizeof(SiftTimeStride), (uint64) *n * sizeof(SiftTimeStride), out);
 	return out;
 }

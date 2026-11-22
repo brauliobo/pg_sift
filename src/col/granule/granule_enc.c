@@ -85,6 +85,7 @@ put_row_list(StringInfo s, const bool *isnull, int n, bool want_null, uint16 cnt
 }
 
 /* The validity of a column, apart from its body: nothing when every row has a value or none, else a list of the rows without one or of the rows with one, whichever are few, else a bit per row; the count of rows with a value */
+/* STOR[STOR-CODEC-09]: null bitmap 0 B empty/full, sparse <=1/16, dense raw (1024 B/granule) */
 static int
 put_validity(StringInfo s, const bool *isnull, int n, SiftChunkRef *ref)
 {
@@ -158,7 +159,8 @@ put_exceptions(StringInfo s, const SiftColIn *col, int n, SiftChunkRef *ref, con
 				appendBinaryStringInfo(&pay, col->xpay[i], len);
 		}
 	h.payload_bytes = pay.len;
-	if (h.n_entries > SIFT_EXC_SPARSE_MAX)
+	/* STOR[STOR-CODEC-07]: the 1024 B exception mask is written only for granules of 2048 rows or more (the reader rebuilds it from the entries) */
+	if (h.n_entries > SIFT_EXC_SPARSE_MAX && n >= SIFT_EXC_MASK_MIN_ROWS)
 		h.flags |= SIFT_EXC_MASKED;
 	if (pay.len == 0)
 	{
@@ -257,7 +259,7 @@ sift_chunk_put_int(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 		sift_put_cc_ints(s, vals, nn, opt);
 		ref->enc |= SIFT_CENC_NUM64;
 	}
-	else if (col->hint == SIFT_CHINT_BOOL)
+	else if (col->hint == SIFT_CHINT_BOOL && min != max)
 	{
 		put_bits(s, vals, nn);
 		ref->enc |= SIFT_CENC_BOOL_BITS;
@@ -287,6 +289,7 @@ sift_chunk_put_int(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 	}
 	else if (min == max)
 	{
+		/* STOR[STOR-CODEC-02]: a constant column, bool included, is 8 B of INT_CONST, not a 1024 B bitmap (-1016 B/granule) */
 		appendBinaryStringInfo(s, (char *) &min, 8);
 		ref->enc |= SIFT_CENC_INT_CONST;
 	}
@@ -302,6 +305,8 @@ static const int64 f8_p10i[16] = {1, 10, 100, 1000, 10000, 100000, 1000000, 1000
 #define SIFT_ALP_SWEET			6755399441055744.0
 #define SIFT_ALP_FAST_MAX		2.0e15
 #define SIFT_F8_SAMPLE			64
+#define SIFT_F8_BSS_SAMPLE		256
+#define SIFT_F8_BSS_FRAME		18
 
 static int	wrap_alg(const SiftChunkOpts *opt);
 
@@ -368,7 +373,8 @@ f8_est_alp(const double *samp, uint32 sn, uint32 nn)
 			best_e = e;
 		}
 	}
-	if ((uint64) best * 100 < (uint64) sn * 85)
+	/* STOR[STOR-CODEC-03]: the ALP estimate takes the 90% exact floor of alp_build, not 85% (no false ALP pick that falls back to raw) */
+	if ((uint64) best * 100 < (uint64) sn * 90)
 		return UINT64_MAX;
 	for (uint32 i = 0; i < sn; i++)
 	{
@@ -454,19 +460,26 @@ f8_est_alprd(const uint64 *ubits, uint32 sn, uint32 nn, uint8 tz)
 
 /* The bytes of the byte-split doubles of a sample under the algorithm that wraps the chunk */
 static uint64
-f8_est_bss(const uint64 *ubits, uint32 sn, uint32 nn, int alg)
+f8_est_bss(const double *vals, uint32 nn, int alg)
 {
-	uint8		bss[SIFT_F8_SAMPLE * 8],
-				zout[SIFT_F8_SAMPLE * 8 + 256];
+	uint8		bss[SIFT_F8_BSS_SAMPLE * 8],
+				zout[SIFT_F8_BSS_SAMPLE * 8 + 256];
+	uint32		sn = Min(nn, (uint32) SIFT_F8_BSS_SAMPLE);
 	Size		zlen;
 
 	if (alg <= 0 || !sift_colz_available(alg))
 		return UINT64_MAX;
 	for (uint32 i = 0; i < sn; i++)
+	{
+		uint64		u;
+
+		memcpy(&u, &vals[(uint64) i * nn / sn], 8);
 		for (int b = 0; b < 8; b++)
-			bss[b * sn + i] = (uint8) (ubits[i] >> (8 * b));
+			bss[b * sn + i] = (uint8) (u >> (8 * b));
+	}
 	zlen = sift_colz_compress(alg, 0, bss, (Size) sn * 8, zout, sizeof(zout));
-	return zlen > 0 ? (uint64) zlen * nn / sn + 16 : UINT64_MAX;
+	/* STOR[STOR-CODEC-03]: the BSS estimate wraps a 256-value sample (2 KB) and leaves the fixed zstd frame header out of the extrapolation (bytes) */
+	return zlen > 0 ? (uint64) (zlen - Min(zlen, (Size) SIFT_F8_BSS_FRAME)) * nn / sn + SIFT_F8_BSS_FRAME : UINT64_MAX;
 }
 
 /*
@@ -504,7 +517,7 @@ f8_select_plan(F8Plan *plan, const double *vals, uint32 nn, const SiftChunkOpts 
 	plan->raw_cap = (uint64) nn * 8 * 95 / 100;
 	est_alp = f8_est_alp(samp, sn, nn);
 	est_rd = f8_est_alprd(ubits, sn, nn, tz);
-	est_bss = f8_est_bss(ubits, sn, nn, walg);
+	est_bss = f8_est_bss(vals, nn, walg);
 	fam = Min(est_alp, est_rd);
 	if (fam == UINT64_MAX && est_bss == UINT64_MAX)
 		plan->primary = F8_PICK_RAW;
@@ -933,7 +946,8 @@ sift_chunk_put(StringInfo body, const SiftColIn *col, int n, SiftChunkRef *ref, 
 		put_exceptions(&out, col, n, ref, opt);
 	appendBinaryStringInfo(&out, keys.data, keys.len);
 	appendBinaryStringInfo(&out, data.data, data.len);
-	if (wrappable(ref->enc))
+	/* STOR[STOR-CODEC-05]: a cold uuid chunk that is still raw is random ids, which no wrapper shrinks (no zstd pass over 128 KB) */
+	if (wrappable(ref->enc) && !(col->hint == SIFT_CHINT_UUID && SIFT_TIER_IS_COLD(opt->tier)))
 		wrap_chunk(&out, wrap_alg(opt), ref, !SIFT_TIER_IS_COLD(opt->tier), opt->tier == SIFT_TIER_COLD_L2);
 	appendBinaryStringInfo(body, out.data, out.len);
 	pfree(val.data);

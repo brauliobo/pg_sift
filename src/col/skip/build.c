@@ -273,7 +273,8 @@ str_granule(Builder *b, int col, int g, const SiftColIn *c, int n, const SiftDic
 		*empty = true;
 		return false;
 	}
-	if (dict != NULL && dict->n <= SIFT_SKIP_DICT_MAX)
+	/* STOR[STOR-COL-04]: no DICT_BITSET on a one-granule part (the dict itself answers) (ng<=1: 0 B) */
+	if (dict != NULL && dict->n <= SIFT_SKIP_DICT_MAX && b->ng > 1)
 	{
 		uint32		nwords = (dict->n + 63) / 64;
 		uint64		bits[SIFT_SKIP_DICT_MAX / 64] = {0};

@@ -40,6 +40,8 @@ typedef struct PinEntry
 } PinEntry;
 
 #define PIN_CACHE_MAX	256
+#define PIN_CACHE_INIT	32
+#define PIN_CX_MAX_BLOCK	(16 * 1024)
 
 static struct
 {
@@ -173,7 +175,8 @@ pin_cache_init(void)
 	HASHCTL		ctl = {.keysize = sizeof(PinKey),.entrysize = sizeof(PinEntry),.hcxt = sift_cache_create_context("sift cache f2 table part pins")};
 
 	pins.cx = ctl.hcxt;
-	pins.by_key = hash_create("sift cache f2 table part pins", PIN_CACHE_MAX, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	/* MEM[MEM-IDLE-10]: cachebudget f2 part pins HTAB (32 init entries; grows to PIN_CACHE_MAX) */
+	pins.by_key = hash_create("sift cache f2 table part pins", PIN_CACHE_INIT, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	pins.by_rel = rel_lists_create("sift cache f2 table part pins by relation", pins.cx);
 	dlist_init(&pins.free_lru);
 	sift_cache_register(&pin_kind);
@@ -185,13 +188,17 @@ pin_load_dv(Relation rel, SiftF2PartPin *pin, const SiftPartDesc *d)
 {
 	uint16	   *rows;
 
-	MemoryContextReset(pin->dv_cx);
+	if (pin->dv_cx != NULL)
+		MemoryContextReset(pin->dv_cx);
 	pin->dv = NULL;
 	pin->dv_gen = d->dv_gen;
 	pin->dv_len = 0;
 	if (d->dv_blk == InvalidBlockNumber)
 		return;
 	pin->dv_len = sift_dv_stream_len(rel, d->dv_blk);
+	/* MEM[MEM-IDLE-06]: cachebudget f2 part pin lazy dv_cx (0 B if no delvec; 1 KB min on first load) */
+	if (pin->dv_cx == NULL)
+		pin->dv_cx = AllocSetContextCreateInternal(pin->cx, "sift cache f2 part pin dv", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, SIFT_MEM_MAX_BLOCK);
 	rows = MemoryContextAlloc(pin->dv_cx, sizeof(uint16) * pin->part->hdr.ngranules);
 	for (uint32 g = 0; g < pin->part->hdr.ngranules; g++)
 		rows[g] = pin->gdir[g].nrows;
@@ -206,7 +213,8 @@ pin_load_dv(Relation rel, SiftF2PartPin *pin, const SiftPartDesc *d)
 static SiftF2PartPin *
 pin_build(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
 {
-	MemoryContext cx = AllocSetContextCreateInternal(pins.cx, "sift cache f2 part pin", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, SIFT_MEM_MAX_BLOCK);
+	/* MEM[MEM-IDLE-05]: cachebudget f2 part pin ctx (1 KB init / 16 KB max block so the header image and section arrays are exact-fit chunks; evictable LRU) */
+	MemoryContext cx = AllocSetContextCreateInternal(pins.cx, "sift cache f2 part pin", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, PIN_CX_MAX_BLOCK);
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftF2PartPin *pin = palloc0(sizeof(SiftF2PartPin));
 	uint64		len;
@@ -216,9 +224,7 @@ pin_build(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_i
 	pin->part_gen = d->part_gen;
 	pin->part_id = part_id;
 	pin->cx = cx;
-	pin->dv_cx = AllocSetContextCreateInternal(cx, "sift cache f2 part pin dv", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, SIFT_MEM_MAX_BLOCK);
 	pin->part = sift_part_open_desc(rel, d, part_id);
-	pin->zones = palloc0(pin->part->hdr.ncols * sizeof(SiftZone *));
 	pin->gdir = sift_part_granule_dir(rel, pin->part);
 	pin->tidx = sift_part_read_section(rel, pin->part, SEC_TID_INDEX, &len);
 	pin->dicts = sift_part_dicts(rel, pin->part);

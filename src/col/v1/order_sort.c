@@ -90,7 +90,7 @@ ts_begin(SiftColSorter *s)
 SiftColSorter *
 sift_colsort_begin(const SiftColSchema *schema, const int *leaf, int nleaf, int work_kb)
 {
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col merge sort", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift_col merge sort");
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftColSorter *s = palloc0(sizeof(SiftColSorter));
 	TupleDesc	desc = CreateTemplateTupleDesc(nleaf + 2);

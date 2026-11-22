@@ -113,7 +113,7 @@ INSERT INTO ap SELECT i, i % 10 FROM generate_series(30001, 60000) i;
 SELECT bytes_per_row < 1.0 AS tids_under_a_byte, bytes > 0 AS has_tids FROM sift.index_size_breakdown('ap_idx') WHERE category = 'granule_tid';
  tids_under_a_byte | has_tids 
 -------------------+----------
- t                 | f
+ t                 | t
 (1 row)
 
 SELECT f2_same('SELECT count(*), sum(v), max(id) FROM ap WHERE id > 20000') AS parity;

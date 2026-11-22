@@ -46,9 +46,7 @@ defaultsizes	bm25/segment_sql.c	8
 defaultsizes	bm25/segment_test.c	3
 defaultsizes	bm25/step.c	1
 defaultsizes	bm25/walk.c	1
-defaultsizes	col/am/cache.c	2
 defaultsizes	col/codec_test.c	1
-defaultsizes	col/dictcache.c	1
 defaultsizes	col/shred.c	2
 defaultsizes	col/v1/amscan/amscan.c	4
 defaultsizes	col/v1/amscan/ordered.c	3
@@ -65,12 +63,8 @@ defaultsizes	col/v1/keycols/cube.c	1
 defaultsizes	col/v1/keycols/keycols.c	3
 defaultsizes	col/v1/maint/dvfold.c	1
 defaultsizes	col/v1/maint/fold.c	1
-defaultsizes	col/v1/maint/merge.c	4
-defaultsizes	col/v1/maint/merge_window.c	1
 defaultsizes	col/v1/maint/promote.c	1
 defaultsizes	col/v1/maint/scope.c	7
-defaultsizes	col/v1/order.c	1
-defaultsizes	col/v1/order_sort.c	1
 defaultsizes	col/v1/order_streams.c	1
 defaultsizes	col/v1/rollup.c	2
 defaultsizes	col/v1/rowkey.c	2

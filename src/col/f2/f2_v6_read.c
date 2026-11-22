@@ -273,7 +273,7 @@ f2v6_zones(F2V6Ctx *c, const F2V6Part *p, int leaf)
 	if (zs == NULL || zs->len != (uint64) p->part->hdr.ncols * ng * sizeof(SiftZone))
 		return NULL;
 	z = palloc(ng * sizeof(SiftZone));
-	sift_part_read_bytes(c->index, p->part, zs->off + (uint64) leaf * ng * sizeof(SiftZone), (uint64) ng * sizeof(SiftZone), z);
+	sift_part_read_section_bytes(c->index, p->part, zs, (uint64) leaf * ng * sizeof(SiftZone), (uint64) ng * sizeof(SiftZone), z);
 	for (uint32 g = 0; p->cd != NULL && g < ng; g++)
 	{
 		const SiftColDeltaGranMap *gm = sift_col_delta_gran_map(p->cd, g);

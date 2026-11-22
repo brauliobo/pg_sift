@@ -136,7 +136,7 @@ part_zones(Relation index, const CardPart *p, int leaf)
 	if (zs == NULL || zs->len != (uint64) p->part->hdr.ncols * p->ng * sizeof(SiftZone))
 		return NULL;
 	z = palloc(p->ng * sizeof(SiftZone));
-	sift_part_read_bytes(index, p->part, zs->off + (uint64) leaf * p->ng * sizeof(SiftZone), (uint64) p->ng * sizeof(SiftZone), z);
+	sift_part_read_section_bytes(index, p->part, zs, (uint64) leaf * p->ng * sizeof(SiftZone), (uint64) p->ng * sizeof(SiftZone), z);
 	return z;
 }
 
@@ -191,6 +191,7 @@ fold_leaf(Relation index, const CardPart *parts, int nparts, int leaf, LeafFold 
 			else
 				lf->key_known &= (z[g].flags & SIFT_ZONE_KEY_ALL_ABSENT) != 0;
 		}
+		pfree((SiftZone *) z);
 	}
 }
 
@@ -281,7 +282,8 @@ fold_scope(SiftCardStatsView *v, Relation index, const SiftPlanSnapshot *plan)
 static SiftCardStatsView *
 build_view(Relation index, const SiftF2Rel *f, const SiftPlanSnapshot *plan)
 {
-	MemoryContext work = sift_mem_allocset_create(CurrentMemoryContext, "sift card view");
+	/* MEM[MEM-COL-30]: transient card view work ctx (small sizes; the zones of each leaf are freed as they are folded; the view itself lives in plan->cx) */
+	MemoryContext work = AllocSetContextCreateInternal(CurrentMemoryContext, "sift card view", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, SIFT_MEM_MAX_BLOCK);
 	MemoryContext old = MemoryContextSwitchTo(work);
 	const uint64 live = plan->total_rows - plan->total_dead;
 	CardPart	chosen[SIFT_V6_CARD_PARTS];

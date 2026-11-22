@@ -61,8 +61,7 @@ extern bool sift_point_dir_build(const SiftRows *rows, const int *gstart, int ng
 /* The header of the section of an opened part (copied into cx), or NULL when it has none */
 typedef struct SiftPointDir
 {
-	uint64		off;
-	uint64		len;
+	SiftSecDirEntry sec;
 	SiftPointHdr hdr;
 	SiftPointCol cols[SIFT_POINT_MAX_COLS];
 } SiftPointDir;

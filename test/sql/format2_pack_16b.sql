@@ -21,7 +21,7 @@ CREATE TABLE pk (id bigint, entity_id int, event_date date, updated_at timestamp
 INSERT INTO pk SELECT i, 1 + (i * 7919) % 300, DATE '2024-01-01' + (i % 730)::int, TIMESTAMPTZ '2025-01-01' + i * INTERVAL '180 seconds' + ((i * 97) % 1800) * INTERVAL '1 second',
 	'tag-' || ((i * 97) % 50000), 'INV-' || lpad(i::text, 8, '0'), ((i * 104729) % 100000) / 100.0, ((i * 31) % 1000) / 10.0, jsonb_build_object('tag', 'n-' || (i % 500))
 FROM generate_series(1::bigint, 100000) i;
-SET maintenance_work_mem = '4MB';
+SET maintenance_work_mem = '6MB';
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX pk_idx ON pk USING sift_col (id, entity_id, event_date, updated_at, tag, inv, amount, score, notes) WITH (key_order = 'entity_id, event_date', paths = 'notes.tag text');
 RESET maintenance_work_mem;
