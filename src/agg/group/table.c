@@ -16,7 +16,7 @@
 static void *
 acc_array(AggExec *ex, uint32 cap, uint32 keep, size_t size)
 {
-	char	   *p = MemoryContextAlloc(ex->tcxt, cap * size);
+	char	   *p = MemoryContextAlloc(ex->tcxt, (size_t) cap * size);
 
 	memset(p + (size_t) keep * size, 0, (size_t) (cap - keep) * size);
 	return p;

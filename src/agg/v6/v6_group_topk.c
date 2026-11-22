@@ -181,6 +181,7 @@ sift_gtopk_put(SiftGTopK *t, const Datum *values, const bool *isnull)
 	if (t->n < t->k)
 	{
 		if (t->n >= Min(t->k, 1024U) && (t->n & (t->n - 1)) == 0)
+			/* check-memory: allow k is at most SIFT_TOPK_MAX_K */
 			t->rows = repalloc(t->rows, Min((uint64) t->k, (uint64) t->n * 2) * sizeof(TopRow));
 		t->rows[t->n] = (TopRow) {0};
 		fill_row(t, &t->rows[t->n], values, isnull);

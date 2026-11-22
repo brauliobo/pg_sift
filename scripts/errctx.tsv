@@ -29,6 +29,7 @@ src/col/granule/tid.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
 src/col/granule/granule_vec.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
 src/col/f2/l0_slab.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
 src/col/granule/granule_filter.c	src/col/f2/scan/fetch.c
+src/col/granule/cfilt_str_simd.c	src/col/f2/scan/fetch.c
 src/table/f2/f2_ddl.c	-
 src/col/f2/f2_point_dir.c	src/col/f2/scan/fetch.c
 src/col/granule/granule_codes.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c

@@ -79,6 +79,7 @@ agg/lookshm.c
 agg/lookup/
 agg/lookup_int.h
 agg/lookvalid.c
+agg/ltree.h
 agg/memo.c
 agg/memo.h
 agg/order/
@@ -126,6 +127,8 @@ agg/refuse.c
 agg/refuse.h
 agg/rows.c
 agg/rows.h
+agg/rows_psort.c
+agg/rows_psort.h
 agg/scope.c
 agg/scope_keys.c
 agg/scope_legs.c
@@ -333,6 +336,8 @@ col/gpu.h
 col/gpu_unwrap.c
 col/granule/cfilt_cc.c
 col/granule/cfilt_cc.h
+col/granule/cfilt_str_simd.c
+col/granule/cfilt_str_simd.h
 col/granule/enc_str.c
 col/granule/granule.c
 col/granule/granule.h
@@ -434,6 +439,7 @@ col/v1/scope_floor.c
 col/v1/scope_paid.c
 col/v1/scope_rows.c
 col/v1/scope_sample.c
+col/v1/seg/dict_ref.c
 col/v1/seg/dead.c
 col/v1/seg/dict_ref.c
 col/v1/seg/live.c
@@ -466,6 +472,8 @@ core/crash_point.h
 core/crash_point_test.c
 core/dirchain.c
 core/dirchain.h
+core/dirchain_int.h
+core/dirchain_memo.c
 core/dirchain_test.c
 core/dirpart.c
 core/dirpart.h
@@ -549,9 +557,11 @@ core/progress.c
 core/progress.h
 core/quarantine.c
 core/quarantine.h
+core/quarantine_int.h
 core/quarantine_plan.c
 core/quarantine_set.c
 core/quarantine_set.h
+core/quarantine_sql.c
 core/range_test.c
 core/reader.c
 core/reads.c
@@ -597,6 +607,7 @@ core/v1_col/tomb_hdr.c
 core/v1_col/tomb_int.h
 core/v1_col/tomb_iter.c
 core/v1_col/tomb_write.c
+core/u64set.h
 core/verify.c
 core/visibility.c
 core/visibility_popcnt.c
@@ -784,6 +795,7 @@ core/tidbridge_test.c
 col/scope_v6/test/scope_v6_rings_test.c
 core/f2/f2_pace.c
 core/f2/f2_pace.h
+core/f2/fsm/reclaim.c
 core/f2/fsm/slab.c
 core/f2/manifest/pages.c
 col/f2/compact_plan.c
@@ -817,6 +829,7 @@ col/granule/granule_point_test.c
 col/granule/point_decode.c
 core/f2/fsm/release_guard.c
 core/f2/manifest/part_edit.c
+core/f2/manifest/tree_io.c
 col/f2/f2_scope_slot.c
 col/f2/f2_drop_parts.c
 col/f2/f2_drop_parts.h

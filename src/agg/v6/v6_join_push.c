@@ -300,8 +300,7 @@ push_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 	const Var  *dim_var = lsecond(join);
 	const int	resno = sift_v6_child_resno(((Plan *) linitial(custom_plans))->targetlist, dim_var);
 
-	if (resno == 0)
-		elog(ERROR, "the small side of the join does not give its join column");
+	SIFT_INVARIANT(resno != 0, "sift: the small side of the join does not give its join column");
 	cs->scan.plan.targetlist = tlist;
 	cs->scan.scanrelid = 0;
 	cs->flags = best->flags;

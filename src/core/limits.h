@@ -267,7 +267,7 @@
 	X(rows_groups, "SIFT_ROWS_MAX_GROUPS", "agg/rows.h", SIFT_ROWS_MAX_GROUPS, "groups", \
 	  "groups the node that groups rows (SiftAggRows) holds: their count and the arrays of their keys and aggregates are 32 bits", \
 	  "normal plan (NOTICE), ERROR 54000 once rows were sent", "-", 1) \
-	X(quarantine_entries, "QUAR_ENTRIES", "core/quarantine.c", 256, "index files", \
+	X(quarantine_entries, "QUAR_ENTRIES", "core/quarantine_int.h", 256, "index files", \
 	  "index files the registry of the server holds out of service (sift.quarantine); the metapage of an index holds it out as well once a worker has flagged it (persisted)", \
 	  "the entry of the oldest index that is persisted is taken, else the oldest: an index whose entry was taken without a flag is in service again until its damage is read again", "-", 1) \
 	X(shared_tables, "DIR_ENTRIES", "col/dsmreg.c", 1024, "tables", \

@@ -59,6 +59,15 @@ extern List *sift_v6_group_exprs_of(PlannerInfo *root);
 /* The path of the plan for the output relation; a spec with parts reads each of their indexes into the same groups */
 extern void sift_v6_add_group_path(V6Plan *p, RelOptInfo *output_rel, List *group_exprs, List *having);
 
+/* The relation of the plan as the scan reads it, and the operator family of an attribute of the host */
+extern SiftV6Rel sift_v6_plan_rel(const V6Plan *p);
+extern Oid sift_v6_plan_opfamily(const V6Plan *p, int att);
+
+/* plan_qual.c: the quals of the index scan; the index holds every row the statement reads; the quals of the statement compiled into p->spec (false: the scan cannot decide one) */
+extern Expr *sift_v6_index_qual(V6Plan *p, Expr *clause);
+extern bool sift_v6_index_complete(const V6Plan *p);
+extern bool sift_v6_compile_quals(V6Plan *p);
+
 /* A column of the fact relation that its index holds as a plain leaf of the class of its type */
 extern bool sift_v6_plan_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out);
 /* The statement is one the node may answer, whatever its relations; and the relation is a plain table the node may read (no inheritance, sampling or security quals) */

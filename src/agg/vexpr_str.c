@@ -3,10 +3,8 @@
  */
 #include "core/host.h"
 
-#include "common/hashfn.h"
-#include "port/pg_bitutils.h"
-
 #include "agg/vexpr_str.h"
+#include "core/hash.h"
 
 /* ---- the arena of the strings of a batch ---- */
 
@@ -374,6 +372,23 @@ item_cmp(const void *a, const void *b)
 	return sift_vstr_cmp_bytes(x->p, x->len, y->p, y->len);
 }
 
+/* The slot hash of the strings of a set: whole words folded, then the tail */
+static uint32
+set_hash(const unsigned char *p, uint32 len)
+{
+	uint64		h = len;
+	uint64		w;
+
+	for (; len >= 8; p += 8, len -= 8)
+	{
+		memcpy(&w, p, 8);
+		h = sift_fold64(h, w);
+	}
+	w = 0;
+	memcpy(&w, p, len);
+	return (uint32) sift_fmix64(sift_fold64(h, w));
+}
+
 SiftVstrSet *
 sift_vstr_set_build(const char *const *p, const uint32 *len, const bool *isnull, uint32 n)
 {
@@ -409,11 +424,15 @@ sift_vstr_set_build(const char *const *p, const uint32 *len, const bool *isnull,
 	pfree(it);
 	if (s->n >= SIFT_VSTR_HASH_MIN)
 	{
-		s->mask = (uint32) pg_nextpower2_64((uint64) s->n * 2) - 1;
+		uint32		slots = SIFT_VSTR_HASH_MIN * 2;
+
+		while (slots < s->n * 2)
+			slots <<= 1;
+		s->mask = slots - 1;
 		s->tab = palloc0((Size) (s->mask + 1) * sizeof(uint32));
 		for (uint32 i = 0; i < s->n; i++)
 		{
-			uint32		h = hash_bytes((const unsigned char *) sift_vstr_bytes(&s->v[i]), (int) s->v[i].len) & s->mask;
+			uint32		h = set_hash((const unsigned char *) sift_vstr_bytes(&s->v[i]), s->v[i].len) & s->mask;
 
 			while (s->tab[h])
 				h = (h + 1) & s->mask;
@@ -435,7 +454,7 @@ sift_vstr_set_has(const SiftVstrSet *s, const char *p, uint32 len)
 
 		if (!((s->len_mask >> (len & 63)) & 1))
 			return false;
-		for (h = hash_bytes((const unsigned char *) p, (int) len) & s->mask; s->tab[h]; h = (h + 1) & s->mask)
+		for (h = set_hash((const unsigned char *) p, len) & s->mask; s->tab[h]; h = (h + 1) & s->mask)
 		{
 			const SiftStrView *e = &s->v[s->tab[h] - 1];
 

@@ -32,6 +32,7 @@ agg/kern_cases.h
 agg/kern_int.h
 agg/kern_neon.c
 agg/kern_vec.h
+agg/nth.h
 agg/vec.h
 agg/vexpr_str.c
 agg/vexpr_str.h
@@ -75,6 +76,7 @@ col/shred_kern_neon.c
 col/shred_spec.c
 col/shred_vec.h
 col/v1/batch.c
+col/v1/batch_int.h
 col/v1/batch_unit.c
 col/v1/chunk.c
 col/v1/ctest.c

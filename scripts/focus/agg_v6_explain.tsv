@@ -1,1 +1,0 @@
-agg_v6_explain	src/agg/exec/explain.c:sift_agg_explain_v6 src/agg/exec/explain.c:size_text src/agg/exec/explain.c:xl_begin src/agg/exec/explain.c:xl_bytes src/agg/exec/explain.c:xl_end src/agg/exec/explain.c:xl_int src/agg/exec/explain.c:xl_item src/agg/exec/explain.c:xl_pct src/agg/exec/explain.c:xl_text src/agg/exec/explain_test.c:sift_test_explain_v6

@@ -73,9 +73,10 @@ sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 	for (int i = 0; i < spec->nkeys; i++)
 		TupleDescInitEntry(desc, i + 1, NULL, spec->key[i].typid, -1, 0);
 	TupleDescInitEntry(desc, spec->nkeys + 1, NULL, INT8OID, -1, 0);
+	sift_tupdesc_finalize(desc);
 	r->spec = spec;
 	r->run = sift_v6_topk_run_new(cx, spec, desc);
-	r->tmp = AllocSetContextCreate(cx, "sift agg v6 rows", ALLOCSET_DEFAULT_SIZES);
+	r->tmp = sift_mem_allocset_create(cx, "sift agg v6 rows");
 	MemoryContextSwitchTo(old);
 	return r;
 }

@@ -21,7 +21,9 @@
 static bool
 func_named(Oid funcid, const char *name)
 {
-	return get_func_namespace(funcid) == PG_CATALOG_NAMESPACE && strcmp(get_func_name(funcid), name) == 0;
+	char	   *fname = get_func_name(funcid);
+
+	return fname != NULL && get_func_namespace(funcid) == PG_CATALOG_NAMESPACE && strcmp(fname, name) == 0;
 }
 
 /* ---- SUM(x + C) ---- */

@@ -51,8 +51,8 @@
 #include "table/dispatch.h"
 #include "core/catname.h"
 
-static SiftV6Rel
-rel_of(const V6Plan *p)
+SiftV6Rel
+sift_v6_plan_rel(const V6Plan *p)
 {
 	return (SiftV6Rel) {.relid = p->rel->relid,.index = p->index,.colrel = p->colrel,.f2 = p->f2};
 }
@@ -89,8 +89,8 @@ host_nleaves(const V6Plan *p, int att)
 	return p->store != NULL ? sift_f2_store_attr_leaves(p->store, att) : p->colrel->nleaves[att];
 }
 
-static Oid
-host_opfamily(const V6Plan *p, int att)
+Oid
+sift_v6_plan_opfamily(const V6Plan *p, int att)
 {
 	return p->store != NULL ? p->store->opfamily[att] : p->index->opfamily[att - 1];
 }
@@ -154,7 +154,7 @@ sift_v6_plan_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 static bool
 read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
-	const SiftV6Rel rel = rel_of(p);
+	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
 	return column_of(p, e, numeric_ok, out) ||
 		(p->store == NULL && (sift_v6_json_read(&rel, e, out) ||
@@ -332,8 +332,6 @@ kind_takes(SiftV6Kind kind, Oid typid)
 	}
 }
 
-static Expr *index_qual(V6Plan *p, Expr *clause);
-
 /* FILTER (WHERE ..): a conjunction of the quals of a scan, over the columns of the index; the same clause of two aggregates is one clause (at most 64 of them: a bit of the mask of a row each) */
 static bool
 compile_filter(V6Plan *p, Expr *filter, int *fclause)
@@ -346,7 +344,7 @@ compile_filter(V6Plan *p, Expr *filter, int *fclause)
 	p->in_filter = true;
 	foreach_ptr(Expr, c, make_ands_implicit(filter))
 	{
-		Expr	   *q = index_qual(p, c);
+		Expr	   *q = sift_v6_index_qual(p, c);
 
 		if (q == NULL)
 			return false;
@@ -600,171 +598,6 @@ compile_keys(V6Plan *p, List *group_exprs)
 	return p->spec.nkeys > 0 || group_exprs == NIL;
 }
 
-/* a constant, or a parameter the scan reads when it starts (and again when it is rescanned) */
-static bool
-operand_usable(const V6Plan *p, const Node *n)
-{
-	if (IsA(n, Param))
-		return !p->in_filter && (((const Param *) n)->paramkind == PARAM_EXTERN || ((const Param *) n)->paramkind == PARAM_EXEC);
-	return IsA(n, Const) && !((const Const *) n)->constisnull;
-}
-
-static bool
-is_operand(const Node *n)
-{
-	return IsA(n, Const) || IsA(n, Param);
-}
-
-static Expr *
-index_var(const Var *v, int col)
-{
-	return (Expr *) makeVar(INDEX_VAR, col + 1, v->vartype, v->vartypmod, v->varcollid, 0);
-}
-
-/* The strategy of a comparison of the column with a constant or parameter: of the operator class, or, on an index, <> and NOT LIKE '%literal%' (agg/v6/v6_qual.h) that only a scan outside a FILTER clause has; 0: not one the scan decides */
-static int
-compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const Node *operand)
-{
-	const bool	text = sift_v6_class(col->typid) == SV6C_TEXT;
-	const Oid	family = host_opfamily(p, col->attno);
-	const bool	index = p->store == NULL;
-	int			strat = get_op_opfamily_strategy(q->opno, family);
-
-	if (strat == 0 && index && !p->in_filter)
-		strat = sift_v6_qual_private_strategy(q->opno, family);
-	if (text && !sift_text_bytes_equal(q->inputcollid))
-		return 0;
-	switch (strat)
-	{
-		case BTLessStrategyNumber:
-		case BTLessEqualStrategyNumber:
-		case BTGreaterEqualStrategyNumber:
-		case BTGreaterStrategyNumber:
-			return text ? 0 : strat;
-		case BTEqualStrategyNumber:
-			return strat;
-		case COL_STRAT_NE:
-			return sift_v6_class(col->typid) == SV6C_F64 || xtime_pair(col->typid, exprType(operand)) ? 0 : strat;
-		case COL_STRAT_LIKE:
-		case COL_STRAT_NOT_LIKE:
-			return index && text && IsA(operand, Const) && sift_v6_qual_like_exact((const Const *) operand) ? strat : 0;
-		default:
-			return 0;
-	}
-}
-
-static Expr *
-qual_compare(V6Plan *p, OpExpr *op)
-{
-	Node	   *l,
-			   *r;
-	OpExpr	   *q = copyObject(op);
-	SiftV6Col	col;
-
-	if (list_length(op->args) != 2)
-		return NULL;
-	l = linitial(q->args);
-	r = lsecond(q->args);
-	if (IsA(r, Var) && is_operand(l))
-	{
-		Node	   *t = l;
-
-		q->opno = get_commutator(q->opno);
-		if (!OidIsValid(q->opno))
-			return NULL;
-		q->opfuncid = get_opcode(q->opno);
-		l = r;
-		r = t;
-		q->args = list_make2(l, r);
-	}
-	if (!column_of(p, (Expr *) l, false, &col) || !operand_usable(p, r) || compare_strategy(p, q, &col, r) == 0)
-		return NULL;
-	linitial(q->args) = index_var((Var *) l, col.attno - 1);
-	return (Expr *) q;
-}
-
-static Expr *
-qual_in_list(V6Plan *p, ScalarArrayOpExpr *sa)
-{
-	ScalarArrayOpExpr *q = copyObject(sa);
-	SiftV6Col	col;
-
-	if (!sa->useOr || (p->index != NULL && !p->index->amsearcharray) || list_length(sa->args) != 2 || !IsA(lsecond(sa->args), Const) ||
-		!column_of(p, linitial(sa->args), false, &col) || ((Const *) lsecond(sa->args))->constisnull || sift_v6_class(col.typid) == SV6C_F64 ||
-		get_op_opfamily_strategy(sa->opno, host_opfamily(p, col.attno)) != BTEqualStrategyNumber ||
-		(sift_v6_class(col.typid) == SV6C_TEXT && !sift_text_bytes_equal(sa->inputcollid)))
-		return NULL;
-	linitial(q->args) = index_var(linitial(sa->args), col.attno - 1);
-	return (Expr *) q;
-}
-
-static Expr *
-qual_null_test(V6Plan *p, NullTest *nt)
-{
-	NullTest   *q = copyObject(nt);
-	SiftV6Col	col;
-
-	if (nt->argisrow || !column_of(p, nt->arg, true, &col))
-		return NULL;
-	q->arg = index_var((Var *) nt->arg, col.attno - 1);
-	return (Expr *) q;
-}
-
-static Expr *
-index_qual(V6Plan *p, Expr *clause)
-{
-	switch (nodeTag(clause))
-	{
-		case T_OpExpr:
-			return qual_compare(p, (OpExpr *) clause);
-		case T_ScalarArrayOpExpr:
-			return qual_in_list(p, (ScalarArrayOpExpr *) clause);
-		case T_NullTest:
-			return qual_null_test(p, (NullTest *) clause);
-		default:
-			return NULL;
-	}
-}
-
-/* the clauses of the query imply the predicate of a partial index: every row the query reads is in the index */
-static bool
-index_complete(const V6Plan *p)
-{
-	List	   *clauses = NIL;
-
-	if (p->index == NULL || p->index->indpred == NIL)
-		return true;
-	foreach_node(RestrictInfo, ri, p->rel->baserestrictinfo)
-		clauses = lappend(clauses, ri->clause);
-	return predicate_implied_by(p->index->indpred, clauses, false);
-}
-
-static bool
-compile_quals(V6Plan *p)
-{
-	const SiftV6Rel rel = rel_of(p);
-
-	foreach_node(RestrictInfo, ri, p->rel->baserestrictinfo)
-	{
-		Expr	   *q;
-		List	   *jq;
-
-		if (p->index != NULL && p->index->indpred != NIL && predicate_implied_by(list_make1(ri->clause), p->index->indpred, false))
-			continue;
-		if (!ri->pseudoconstant && sift_v6_text_qual(p, ri))
-			continue;
-		q = ri->pseudoconstant ? NULL : index_qual(p, ri->clause);
-		jq = ri->pseudoconstant || q != NULL || p->store != NULL ? NIL : sift_v6_json_qual(&rel, ri->clause);
-		if (q == NULL && jq == NIL)
-			return false;
-		if (q != NULL)
-			p->spec.indexqual = lappend(p->spec.indexqual, q);
-		else
-			p->spec.jsonqual = lappend(p->spec.jsonqual, jq);
-	}
-	return sift_v6_compile_text(p);
-}
-
 bool
 sift_v6_plan_query_ok(PlannerInfo *root, RelOptInfo *output_rel)
 {
@@ -864,7 +697,7 @@ sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 bool
 sift_v6_compile_on(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 {
-	return index_complete(p) && sift_v6_compile_head(p, extra, group_exprs) && compile_quals(p);
+	return sift_v6_index_complete(p) && sift_v6_compile_head(p, extra, group_exprs) && sift_v6_compile_quals(p);
 }
 
 void
@@ -953,7 +786,7 @@ add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		p.colrel = sift_col_rel(irel);
 		p.f2 = p.colrel->stale ? NULL : sift_f2_rel(irel);
 		p.spec = (SiftV6Spec) {.relid = ix->indexoid,.rows = true,.topk = k};
-		ok = p.f2 != NULL && index_complete(&p) && rows_keys(&p) && rows_outputs(&p) && compile_quals(&p);
+		ok = p.f2 != NULL && sift_v6_index_complete(&p) && rows_keys(&p) && rows_outputs(&p) && sift_v6_compile_quals(&p);
 		index_close(irel, NoLock);
 		if (!ok)
 			continue;

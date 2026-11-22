@@ -517,6 +517,12 @@ sift_mem_allocset_create(MemoryContext parent, const char *name)
 	return AllocSetContextCreate(parent, name, ALLOCSET_DEFAULT_SIZES);
 }
 
+void
+sift_mem_rebase(SiftMemTracker *t)
+{
+	t->base = MemoryContextMemAllocated(t->root_cx, true);
+}
+
 Size
 sift_mem_used(SiftMemTracker *t)
 {
@@ -538,6 +544,15 @@ sift_mem_pressure(SiftMemTracker *t, bool exact)
 	Size		used = exact ? sift_mem_used(t) : t->last_used;
 
 	return used >= t->hard_limit ? SIFT_MEM_HARD : used >= t->soft_limit ? SIFT_MEM_SOFT : SIFT_MEM_OK;
+}
+
+/* the dictionaries of a 5.x shared value store (col/v1/seg/dict_ref.c) are read by the PostgreSQL host only: this host holds no 5.x index */
+#include "col/v1/seg_int.h"
+
+SiftCDict *
+seg_dict_ref_load(SiftColSegment *seg, int col, uint64 at, uint64 len, MemoryContext mcxt)
+{
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a 5.x shared column value store is read by the PostgreSQL host only")));
 }
 
 /* the cache budget (core/cachebudget.h): this host keeps every entry that alone fits the budget and never evicts for another */

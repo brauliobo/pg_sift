@@ -120,10 +120,10 @@ sift_wide_batch_init(SiftWideBatch *wb, MemoryContext cx, uint16 rows)
 {
 	*wb = (SiftWideBatch) {.cap = 64 * 1024,.cap_rows = rows};
 	wb->buf = MemoryContextAlloc(cx, wb->cap);
-	wb->off = MemoryContextAlloc(cx, rows * sizeof(uint32));
-	wb->len = MemoryContextAlloc(cx, rows * sizeof(uint32));
-	wb->nulls = MemoryContextAlloc(cx, rows * sizeof(uint64));
-	wb->hash = MemoryContextAlloc(cx, rows * sizeof(uint64));
+	wb->off = MemoryContextAlloc(cx, rows * sizeof(uint32)); /* check-memory: allow rows is a uint16 */
+	wb->len = MemoryContextAlloc(cx, rows * sizeof(uint32)); /* check-memory: allow rows is a uint16 */
+	wb->nulls = MemoryContextAlloc(cx, rows * sizeof(uint64)); /* check-memory: allow rows is a uint16 */
+	wb->hash = MemoryContextAlloc(cx, rows * sizeof(uint64)); /* check-memory: allow rows is a uint16 */
 }
 
 void

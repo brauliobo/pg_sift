@@ -162,10 +162,12 @@ int_datum(Oid type, int64 v)
 static int
 index_position(const Relation ix, AttrNumber att)
 {
-	for (int i = 0; i < ix->rd_index->indnkeyatts; i++)
-		if (ix->rd_index->indkey.values[i] == att)
-			return i + 1;
-	elog(ERROR, "the pairs of the scope are read through a btree that does not have column %d", att);
+	int			i = 0;
+
+	while (i < ix->rd_index->indnkeyatts && ix->rd_index->indkey.values[i] != att)
+		i++;
+	SIFT_INVARIANT(i < ix->rd_index->indnkeyatts, "sift: the pairs of the scope are read through a btree that does not have column %d", att);
+	return i + 1;
 }
 
 static int

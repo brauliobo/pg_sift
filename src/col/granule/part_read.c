@@ -11,6 +11,7 @@
 #include "col/granule/part_int.h"
 #include "col/f2/preagg_delta.h"
 #include "core/page_io.h"
+#include "core/ring.h"
 
 typedef struct DdictCb
 {
@@ -356,7 +357,7 @@ typedef struct PartAux
 } PartAux;
 
 static PartAux *part_aux_tab[PART_AUX_SLOTS];
-static uint32 part_aux_next;
+static SiftRing part_aux_ring;
 
 static void
 part_aux_reset(void *arg)
@@ -387,7 +388,7 @@ part_aux(const SiftPart *part)
 	for (int i = 0; i < PART_AUX_SLOTS; i++)
 		if (part_aux_tab[i] != NULL && part_aux_tab[i]->part == part && part_aux_tab[i]->part_gen == part->hdr.part_gen && part_aux_tab[i]->header_blk == part->header_blk)
 			return part_aux_tab[i];
-	slot = part_aux_next++ % PART_AUX_SLOTS;
+	slot = SIFT_RING_SLOT(part_aux_ring, PART_AUX_SLOTS);
 	a = part_aux_tab[slot];
 	if (a != NULL && a->cx == cx)
 		part_aux_drop_data(a);

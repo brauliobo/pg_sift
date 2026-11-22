@@ -332,7 +332,7 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 	uint64		slack = unit_rows / 4;
 	uint64		want = unit_rows + slack + 1;
 	SiftColBatch *out = sift_cbatch_create(cx, schema);
-	RowRef	   *win = refs ? NULL : palloc_array(RowRef, 2 * want + 2);
+	RowRef	   *win = refs ? NULL : palloc_array(RowRef, 2 * (size_t) want + 2);
 	TidPos	   *tidpos = palloc_array(TidPos, want);
 	RowRef	   *tidtmp = palloc_array(RowRef, want);
 	uint64		n = 0, pos = 0, whead = 0;

@@ -12,3 +12,4 @@ scripts/old-lib-check.sh	the older release library, built once; its clusters are
 bench/steps/lib.sh	the cells of the servers that are not under test, a few MB of JSON, written once per pass and read by the next (a reboot emptied the tmpfs they were on)
 bench/steps/store.py	the default of the same cache directory
 bench/README.md	the text that names the cache directory
+scripts/check-complexity.sh	the sites of each source by its size and modification time, a few kB, read to skip a file that did not change

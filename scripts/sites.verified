@@ -1,8 +1,10 @@
 # scripts/sites.verified: FILE TAB FUNCTION TAB VERDICT TAB REASON. A catalog or relcache call that SQL can reach and whose result is not tested (scripts/check-sites.py), read: guarded (the reason says where the OID is checked or held), fixed (a regress case in surface_null_args), unreachable (why no dropped or invalid OID gets there).
 src/agg/approx.c	sift_approx_trans	guarded	the type is get_fn_expr_argtype of the call: a type the parser resolved; the function tests the hash function of the entry (OidIsValid) and raises when it has none
+src/agg/flat/keypush.c	join_equality	guarded	the type is the vartype of a Var of the statement being planned, which the parser resolved; lookup_type_cache raises for an unknown type, it never returns NULL
 src/agg/refuse.c	tables_have_sift_index	guarded	the OID is the relid of an RTE of the statement being planned or executed: the parser locked the relation, so it cannot be dropped before the statement ends
 src/agg/scope_unread.c	sift_agg_scope_unread	guarded	the OID is the relid of an RTE of the statement being planned or executed: the parser locked the relation, so it cannot be dropped before the statement ends
 src/agg/scope_unread.c	unread_reason	guarded	only the name of an index of the statement's table in a message: sift_rel_label-style %s with get_rel_name of an index opened and locked by the caller; a NULL name prints as (null), it is not dereferenced
+src/agg/v6/scope_v6_match.c	paths_exclusive	guarded	the relation is a leg of the scope of the index, which depends on it (sift_depend of col/scope_decl.c): DROP of the relation is refused while the index exists; table_open raises for a missing relation
 src/bm25/facet.c	sift_facet_counts	guarded	the heap is the heap of the facet index, which open_index checked (sift_rel_must_exist) and holds open
 src/bm25/funcs.c	keyed_indexes	guarded	the OID is the relid of an RTE of the statement being planned or executed: the parser locked the relation, so it cannot be dropped before the statement ends
 src/bm25/funcs.c	match_selectivity	guarded	the index OID is a member of the relation's index list in the planner (the relation is locked by the parser)

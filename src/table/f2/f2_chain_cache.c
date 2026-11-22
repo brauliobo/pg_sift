@@ -150,17 +150,19 @@ chain_evict_all(void)
 static const SiftCacheKind chain_kind = {"table_f2_chain_cache", chain_oldest, chain_evict_one, chain_evict_all};
 
 static void
-chain_invalidate(Datum arg pg_attribute_unused(), Oid relid)
+chain_invalidate(uint32 hashvalue)
 {
 	for (int i = 0; i < CHAIN_SLOTS; i++)
-		if (slots[i].cx != NULL && (!OidIsValid(relid) || slots[i].relid == relid))
+		if (slots[i].cx != NULL && sift_f2_inval_hits(slots[i].relid, hashvalue))
 			slot_drop(&slots[i]);
 }
 
 void
 sift_chain_cache_forget_rel(Oid relid)
 {
-	chain_invalidate((Datum) 0, relid);
+	for (int i = 0; i < CHAIN_SLOTS; i++)
+		if (slots[i].cx != NULL && slots[i].relid == relid)
+			slot_drop(&slots[i]);
 }
 
 static void
@@ -168,7 +170,7 @@ chain_init(void)
 {
 	chain_cx = sift_cache_create_context("sift cache f2 table chains");
 	sift_cache_register(&chain_kind);
-	CacheRegisterRelcacheCallback(chain_invalidate, (Datum) 0);
+	sift_f2_invalidator_register(chain_invalidate);
 }
 
 static Slot *

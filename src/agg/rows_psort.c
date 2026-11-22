@@ -8,6 +8,7 @@
 
 #include "agg/ltree.h"
 #include "agg/rows_psort.h"
+#include "core/host.h"
 
 #define PS_FANIN		64
 #define PS_READ_PAIRS	4096	/* 64 kB of a run a read */
@@ -239,8 +240,7 @@ merge_begin(RowsPSort *s, const PsRun *run, int n)
 		r->file = run[i].file;
 		r->left = run[i].npairs;
 		r->buf = MemoryContextAlloc(s->cx, PS_READ_PAIRS * sizeof(RowsPair));
-		if (BufFileSeek(r->file, 0, 0, SEEK_SET) != 0)
-			elog(ERROR, "could not rewind a run of a distinct sort");
+		SIFT_INVARIANT(BufFileSeek(r->file, 0, 0, SEEK_SET) == 0, "sift: could not rewind a run of a distinct sort");
 		reader_fill(r);
 	}
 	sift_ltree_init(&m->lt, n, merge_less, m);

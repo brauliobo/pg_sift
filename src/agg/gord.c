@@ -501,7 +501,7 @@ static bool
 text_skip(SiftGOrd *g, uint32 k, uint32 *clo, int rounds, bool resume)
 {
 	static const double frac[] = {0.9, 0.5, 0.2};
-	char	   *cand = palloc(g->ncur * SIFT_CGORD_STR_MAX);
+	char	   *cand = palloc((Size) g->ncur * SIFT_CGORD_STR_MAX);
 	uint32	   *tmp = palloc(g->ncur * sizeof(uint32)),
 			   *clen = palloc(g->ncur * sizeof(uint32));
 	int		   *ord = palloc(g->ncur * sizeof(int));

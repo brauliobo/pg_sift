@@ -130,8 +130,7 @@ merge_begin(OsaRuns *rs, const OsaFile *run, int k)
 		s->file = run[i].file;
 		s->left = run[i].n;
 		s->buf = MemoryContextAlloc(rs->cxt, OSA_RB * sizeof(OsaSlot));
-		if (BufFileSeek(s->file, 0, 0, SEEK_SET) != 0)
-			elog(ERROR, "could not rewind a run of an ordered set");
+		SIFT_INVARIANT(BufFileSeek(s->file, 0, 0, SEEK_SET) == 0, "sift: could not rewind a run of an ordered set");
 		src_fill(s);
 	}
 	sift_ltree_init(&m->lt, k, merge_less, m);

@@ -289,6 +289,7 @@ validate_merge(ValidateCtx *v, Snapshot snapshot, IndexAddrs *idx)
 
 	TupleDescInitEntry(desc, 1, "root", INT8OID, -1, 0);
 	TupleDescInitEntry(desc, 2, "own", INT8OID, -1, 0);
+	sift_tupdesc_finalize(desc);
 	mine = tuplesort_begin_heap(desc, 1, &sortcol, &sortop, &coll, &nulls_first, maintenance_work_mem, NULL, TUPLESORT_NONE);
 	put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 	rows = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);

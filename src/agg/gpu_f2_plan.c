@@ -105,7 +105,7 @@ heap_vm_clean(HeapVm *vm, BlockNumber first, BlockNumber last)
 
 	while (b <= last)
 	{
-		const BlockNumber page_end = Min(last, (b / VM_BLOCKS_PER_PAGE + 1) * VM_BLOCKS_PER_PAGE - 1);
+		const BlockNumber page_end = Min((uint64) last, ((uint64) b / VM_BLOCKS_PER_PAGE + 1) * VM_BLOCKS_PER_PAGE - 1);
 		const uint8 *map;
 
 		if ((b & 0xFFFF) == 0)

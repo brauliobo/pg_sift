@@ -1,3 +1,6 @@
 # scripts/check-codec-bytes.py: an exact size of a sift index in an expected file whose index is built with a compression that goes through LZ4 or zstd, and is no such size.
 # file:column<TAB>number of cells<TAB>why it is no size that follows the library. A new cell in the same column changes the number and fails the check.
 test/expected/col_index_basic.out:relation_blocks	1	an index of no rows: its two blocks are the metapage and the directory, whatever the compression
+test/expected/format2_storage_codec_suite.out:pages	2	the header pages of the synthetic parts of pk_a_idx that sift._test_f2_add_part adds (12 parts, 12 pages inline, 2 packed): a count of parts, no size of the library; the check reads the indexes of every segment of the file as one
+test/expected/format2_storage_codec_suite.out:parts_on_the_page	2	the parts of the synthetic partitions of pk_a_idx and pk_b_idx that share a packed page (4): a count of parts, no size of the library; the check reads the indexes of every segment of the file as one
+test/expected/format2_storage_codec_suite.out:dict_bytes_at_build	1	the dictionary bytes of lg_idx read from sift.index_size_breakdown before the delete, compared with those after it in the same segment; the cell passed in its own file (format2_granule), which the check reads alone

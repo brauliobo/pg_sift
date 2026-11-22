@@ -48,7 +48,7 @@ sift_v6_topk_run_new(MemoryContext cx, const SiftV6Spec *spec, TupleDesc desc)
 
 	r->spec = spec;
 	r->desc = desc;
-	r->tmp = AllocSetContextCreate(cx, "sift agg v6 top k", ALLOCSET_DEFAULT_SIZES);
+	r->tmp = sift_mem_allocset_create(cx, "sift agg v6 top k");
 	for (int i = 0; i < spec->ntopk; i++)
 	{
 		const SiftV6TopKItem *it = &spec->topk_item[i];

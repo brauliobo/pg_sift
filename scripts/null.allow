@@ -26,6 +26,12 @@ src/agg/plan_exists.c	compile_exists	list-first	exists_subquery accepted a sub-s
 src/agg/plan_rows.c	rows_plan_path	list-first	custom_private of the rows path is built by the path creation of this file with two entries
 src/agg/plan_scope.c	initplan_rows	list-first	sp is an init plan of the root: its plan_id is the 1-based position of its plan in glob->subplans
 src/agg/two/spine.c	arm_input	planner-array	a singleton relid set is the one base relation of the query: agg_base takes the NULL of a relation without an entry
+src/agg/v6/scope_v6_match.c	first_path	list-first	select_only(a) was true: the query has exactly one target entry
+src/agg/v6/scope_v6_match.c	match_left	list-first	s is the Query this function builds, whose FROM list is the list_make1 of its one RangeTblRef
+src/agg/v6/scope_v6_match.c	second_path	list-first	select_only(b) was true: the query has exactly one target entry
+src/agg/v6/v6_join_push.c	push_begin	list-first	cs is the CustomScan of push_plan_path, whose custom_private is a list_make2 of the spec and the join
+src/agg/v6/v6_join_push.c	push_plan_path	list-first	best is a CustomPath of this node: its custom_private is the list_make4 of add_push_path (spec, scan tlist, quals, join)
+src/agg/v6/v6_plan_rewrite.c	sift_v6_topk_paths	list-first	cp is a CustomPath of sift_v6_group_path_methods, whose custom_private is the list_make3 of plan.c (spec, scan tlist, having)
 src/bm25/analyze_config.c	sift_analyze_validate_fields	null-result	the fields were validated as comma separated before the loop, so every field before s ends with a comma
 src/bm25/cscan_exec.c	sift_begin	list-first	custom_private is built by make_path with every SIFT_PRIV_ slot and custom_exprs by sift_plan_scan with its five lists
 src/bm25/cscan_exec.c	sift_explain	list-first	custom_exprs is built by sift_plan_scan and sift_plan_count with five lists, the first being the queries
@@ -58,6 +64,5 @@ src/agg/v6/join_asof.c	asof_plan_path	list-first	custom_private of the path is l
 src/agg/v6/join_asof.c	asof_begin	list-first	custom_private is list_make1(ints), built by the plan of this file from the ints of its path
 src/agg/v6/plan.c	sift_agg_v6_plan_path	list-first	custom_private of the path is list_make3(spec, scan tlist, having), built by the path creation of this file
 src/agg/v6/scope_v6.c	pairs_table	list-first	pairs_query is set only by pairs_subquery, which accepts a query of single_table_query: exactly one range table entry
-src/agg/v6/scope_v6.c	compile_topk	list-first	topk_shape_ok, which the only caller tests first, requires list_length(sortClause) == 1
 src/agg/v6/v6_proj_sort_plan.c	sort_plan_path	list-first	custom_private is sort_pack(): list_make5 whose first list is the ints, with the table flag and the index OID first
 src/agg/v6/v6_vexpr.c	sift_v6_plan_scan	list-first	custom_private is the list every caller of sift_v6_add_path passes (stream, window, SIP, top-N): a list of at least three, the scan tlist second

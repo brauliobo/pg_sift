@@ -173,10 +173,14 @@ split_conditions(List *quals, int varno, AttrNumber key, AttrNumber member, Cond
 static bool
 first_path(const Query *a, const SiftScopeLeg *leg, Cond *c)
 {
-	List	   *quals = a->jointree->quals != NULL ? make_ands_implicit((Expr *) a->jointree->quals) : NIL;
-	const Var  *v = (const Var *) ((TargetEntry *) linitial(a->targetList))->expr;
+	List	   *quals;
+	const Var  *v;
 
-	return select_only(a) && a->distinctClause == NIL && a->setOperations == NULL && list_length(a->rtable) == 1 && list_length(a->jointree->fromlist) == 1 && IsA(linitial(a->jointree->fromlist), RangeTblRef) &&
+	if (!select_only(a))
+		return false;
+	quals = a->jointree->quals != NULL ? make_ands_implicit((Expr *) a->jointree->quals) : NIL;
+	v = (const Var *) ((TargetEntry *) linitial(a->targetList))->expr;
+	return a->distinctClause == NIL && a->setOperations == NULL && list_length(a->rtable) == 1 && list_length(a->jointree->fromlist) == 1 && IsA(linitial(a->jointree->fromlist), RangeTblRef) &&
 		plain_rte(a, 1, leg->rel) != NULL && IsA(v, Var) && v->varno == 1 && v->varattno == leg->member && split_conditions(quals, 1, leg->key, leg->member, c) && holds_predicate(leg->pred, c->rest, 1);
 }
 
@@ -190,11 +194,14 @@ second_path(const Query *b, const SiftScopeLeg *leg, Expr **key)
 			   *on_via = NIL;
 	int			g,
 				m;
-	const Var  *v = (const Var *) ((TargetEntry *) linitial(b->targetList))->expr;
+	const Var  *v;
 	bool		joined = false;
 	Cond		c;
 
-	if (!select_only(b) || b->distinctClause != NIL || b->setOperations != NULL || !flatten((Node *) b->jointree, &rtis, &quals) || list_length(rtis) != 2 || !IsA(v, Var))
+	if (!select_only(b) || b->distinctClause != NIL || b->setOperations != NULL || !flatten((Node *) b->jointree, &rtis, &quals) || list_length(rtis) != 2)
+		return false;
+	v = (const Var *) ((TargetEntry *) linitial(b->targetList))->expr;
+	if (!IsA(v, Var))
 		return false;
 	g = linitial_int(rtis);
 	m = lsecond_int(rtis);

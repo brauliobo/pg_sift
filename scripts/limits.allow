@@ -211,3 +211,19 @@ SIFT_PAR_RING_MAX_BYTES	memory bound of the chunks of the two-stage parallel str
 SIFT_PAR_TWO_STAGE_MAX_GROUPS	size of the table a participant of the two-stage parallel strategy keeps before it hands it over (the direct-table bound of the cost model): a speed choice, the rows are the same
 SIFT_PAR_WIDE_WORKERS	the number of parallel workers from which the radix strategy uses more partitions: a tuning bound, the rows are the same
 V6_NUMERIC_MAX_DIGITS	size of the digit buffer of a 128-bit numeric (the largest value of the format has 12 base-10000 digits): a representation size, not a limit a user reaches
+CHAIN_SLOTS	slots of the backend cache of delta chains of a table (table/f2/f2_chain_cache.c): an internal cache bound, the rows the statement reads are the same
+OSA_MAX_RUNS	sorted runs an ordered-set aggregate keeps while its scan goes on (agg/osa_runs.c): past it OSA_FANIN of them merge into one and the answer is the same
+PART_AUX_SLOTS	slots of the cache of the auxiliary records of the parts a scan reads (col/granule/part_read.c): an internal cache bound with no visible effect
+PIN_CX_MAX_BLOCK	largest block of the memory context of the part pins (col/f2/f2_gbuf.c): an internal allocation size
+QUAR_CACHE_SLOTS	slots of the memo of the quarantine verdicts of a backend (core/quarantine.c): an internal cache bound with no visible effect
+SIFT_F2S_EXCL_SLOTS	the granules whose excluded rows an overlay remembers, the last ones asked for (col/f2/f2_scope_int.h): a cache of one statement, a miss reads them again and the rows are the same
+SIFT_HYB_ACL_MAX_KEYS	mirrors SIFT_SEMI_MAX_SET, which has a row in SIFT_LIMITS
+SIFT_PACK_MAX_BYTES	bytes of the packed group key of one row (agg/v6/v6_group_fast.h): past it the keys are hashed one by one and the rows are the same
+SIFT_PACK_MAX_KEYS	group keys of the packed group key (agg/v6/v6_group_fast.h): past it the keys are hashed one by one and the rows are the same
+SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS	pair edits the journal may name for a scope overlay to serve a read (col/scope_v6/overlay.h): past them the overlay is not opened and the read goes the other way, the rows are the same
+SIFT_TOPK_MAX_ITEMS	sort items of the group Top-K of a SiftAggV6 scan (agg/v6/v6_group_topk.h): a statement with more keeps the normal plan and the rows are the same
+SIFT_TOPK_MAX_K	LIMIT plus OFFSET of the group Top-K of a SiftAggV6 scan (agg/v6/v6_group_topk.h): a statement above it keeps the normal plan and the rows are the same
+SIFT_V6_MAX_CASE	arms of a CASE of a derived column of a SiftAggV6 scan (agg/v6/v6.h): a statement with more keeps the normal plan and the rows are the same
+SIFT_V6_MAX_DERIVE	derived columns of one SiftAggV6 scan (agg/v6/v6.h): a statement with more keeps the normal plan and the rows are the same
+SIFT_V6_MAX_TOPK_ITEMS	sort items of the Top-K of a SiftAggV6 scan (agg/v6/v6.h): a statement with more keeps the normal plan and the rows are the same
+SNAP_MAX_READS	the cubes of keys a scope snapshot keeps for one statement (col/f2/f2_scope_snap.c), a ring: the oldest read is dropped and a key asked for again is read again, the rows are the same
