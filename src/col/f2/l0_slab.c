@@ -421,6 +421,27 @@ sift_l0_slab_rows(Relation rel, uint64 part_id, BlockNumber head)
 	return rows;
 }
 
+SiftChainStamp
+sift_l0_slab_stamp(Relation rel, uint64 part_id, BlockNumber head)
+{
+	SiftChainStamp st = {0};
+
+	for (BlockNumber blk = head; blk != InvalidBlockNumber;)
+	{
+		Buffer		buf = lock_slab(rel, blk, (uint32) part_id, BUFFER_LOCK_SHARE);
+		const SiftL0SlabPageData *sl = SL(BufferGetPage(buf));
+
+		st.lsn += PageGetLSN(BufferGetPage(buf));
+		st.count += sl->page_rows;
+		st.pages++;
+		if (!FullTransactionIdIsValid(st.max_xid) || FullTransactionIdFollows(sl->max_xid, st.max_xid))
+			st.max_xid = sl->max_xid;
+		blk = sl->next_blk;
+		UnlockReleaseBuffer(buf);
+	}
+	return st;
+}
+
 static bool
 batch_fits(Page page, const char *rec)
 {

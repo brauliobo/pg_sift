@@ -90,6 +90,7 @@ rec_from_meta(const SiftScopeMeta *m, const SiftScopeL2Root *root, SiftKeyRec *r
 		rec->nodes[i].block_off = nd->ref_off;
 		rec->nodes[i].from = m;
 	}
+	SIFT_INVARIANT(!m->topk_packed, "scope refresh: the rings of the summary were not unpacked");
 	if (root->flags & SIFT_L2_HAS_TOPK)
 		rec->topk = m->topk.p + root->topk_off;
 	rec->topk_wide = (m->hdr.flags & SIFT_SMETA_TOPK_WIDE) != 0;

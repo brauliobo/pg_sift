@@ -695,7 +695,10 @@ col/f2/f2_proj_spec.c
 col/f2/f2_proj_sql.c
 col/f2/f2_scope.c
 col/f2/f2_scope.h
+col/f2/f2_scope_cache.c
+col/f2/f2_scope_cache.h
 col/f2/f2_scope_cells.c
+col/f2/f2_scope_delta.c
 col/f2/f2_scope_over.c
 col/f2/f2_scope_pack.c
 col/f2/f2_scope_pairs.c
@@ -738,6 +741,8 @@ col/scope_v6/heap.c
 col/scope_v6/int.h
 col/scope_v6/meta.h
 col/scope_v6/object.c
+col/scope_v6/overlay.c
+col/scope_v6/overlay.h
 col/scope_v6/pairmap.c
 col/scope_v6/refresh.c
 col/scope_v6/route.c

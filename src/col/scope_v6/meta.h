@@ -557,6 +557,8 @@ typedef struct SiftScopePairMap
 /* pairs is sorted in place; multiset keeps the repeated pairs (a member of the relation twice counts twice) */
 extern SiftScopePairMap *sift_spm_build(SiftScopeMemberKey *pairs, uint32 n, bool multiset);
 extern void sift_spm_free(SiftScopePairMap *pm);
+/* The map with the pairs of members (ascending, distinct) replaced by now (by member, then key); keys new to pm are appended to scope_keys, for the reads of one statement only, never for a build or refresh */
+extern SiftScopePairMap *sift_spm_patched(const SiftScopePairMap *pm, const int64 *members, uint32 nm, const SiftScopeMemberKey *now, uint32 nnow);
 /* The keys of a member: the range [*lo, *hi) of key_ordinals; the cursor advances by galloping when members arrive ascending */
 extern bool sift_spm_find(SiftScopePairMap *pm, int64 member, uint32 *lo, uint32 *hi);
 extern bool sift_spm_range_hits(const SiftScopePairMap *pm, int64 lo, int64 hi);
@@ -737,12 +739,18 @@ struct SiftScopeMeta
 	uint32		ntopk_rings;	/* the rings of a key: 1, or the count of the header's SiftScopeTopKDesc */
 	char	   *topk_raw;		/* topk.p when the section is stored LZ4-compressed: the bytes it was unpacked to */
 	uint64		topk_stored;	/* the bytes the section takes in the object */
+	MemoryContext topk_cx;		/* topk_packed: the context the rings are unpacked in, that of the bytes of the object */
+	bool		topk_packed;	/* opened with SIFT_SMETA_OPEN_LAZY_TOPK and the section is LZ4-compressed: topk is not readable before sift_scope_meta_ensure_topk */
 	const SiftScopeL2Root *roots;
 	const SiftScopeL1Node *nodes;
 	const SiftScopeL0SliceEntry *slices;
 };
 
 extern bool sift_scope_meta_open(SiftScopeMeta *m, const char *base, uint64 len);
+/* SIFT_SMETA_OPEN_LAZY_TOPK leaves the rings packed: a statement that reads cubes only never pays for them; the one that reads rings unpacks them once (sift_scope_meta_ensure_topk, into the context of the bytes) */
+#define SIFT_SMETA_OPEN_LAZY_TOPK	1
+extern bool sift_scope_meta_open_ex(SiftScopeMeta *m, const char *base, uint64 len, uint32 flags);
+extern bool sift_scope_meta_ensure_topk(SiftScopeMeta *m);
 /* The null_filter leaf of a scope with SIFT_SMETA_NULL_FILTERED, else -1. Such a scope serves only a query that requires that leaf IS NULL (is_null_leaf, -1: none) */
 extern int sift_scope_null_filter_leaf(const SiftScopeMeta *m);
 extern bool sift_scope_serves_null_filter(const SiftScopeMeta *m, int is_null_leaf);
@@ -977,5 +985,11 @@ typedef struct SiftScopePartSwap
  * range of granule indexes in the part map (marked by part_gen 0), so no ref of another node changes.
  */
 extern void sift_scope_refresh_parts(const SiftScopeMeta *old, const SiftScopeBuildSpec *spec, SiftScopePairMap *pm, const SiftScopePartSwap *swap, const SiftScopeGranSource *src, StringInfo out, SiftScopeBuildStats *stats);
+
+/* A compaction and pair edits in one pass (sift_scope_refresh_parts): the nodes of a key with a retired ref or a changed member of dirty (ascending by key) are built again, every other node and key is copied as bytes */
+extern void sift_scope_refresh_combined(const SiftScopeMeta *old, const SiftScopeBuildSpec *spec, SiftScopePairMap *pm, const SiftScopePartSwap *swap, const SiftScopeDirty *dirty, uint32 ndirty, const SiftScopeGranSource *src, StringInfo out, SiftScopeBuildStats *stats);
+
+/* The keys of old whose summary may hold one of the members, or whose pairs in pm now list one, each with the members that may touch it: the dirty set of a refresh */
+extern uint32 sift_scope_dirty_fast(const SiftScopeMeta *old, SiftScopePairMap *pm, const int64 *members, uint32 nm, SiftScopeDirty **out);
 
 #endif							/* SIFT_COL_SCOPE_V6_META_H */

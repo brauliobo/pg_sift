@@ -1,0 +1,95 @@
+SET
+DROP TABLE
+CREATE TABLE
+INSERT 0 40000
+CREATE TABLE
+INSERT 0 60
+CREATE TABLE
+INSERT 0 60
+INSERT 0 20
+CREATE INDEX
+CREATE TABLE
+INSERT 0 40000
+CREATE INDEX
+CREATE TABLE
+INSERT 0 300
+INSERT 0 9
+CREATE TABLE
+INSERT 0 60000
+CREATE INDEX
+VACUUM
+VACUUM
+VACUUM
+ANALYZE
+ANALYZE
+ANALYZE
+CREATE TABLE
+CREATE FUNCTION
+ check_phase 
+-------------
+ 
+(1 linha)
+
+ check_phase 
+-------------
+ 
+(1 linha)
+
+ check_phase 
+-------------
+ 
+(1 linha)
+
+DELETE 8000
+DELETE 8000
+DELETE 12000
+INSERT 0 500
+INSERT 0 500
+INSERT 0 500
+ check_phase 
+-------------
+ 
+(1 linha)
+
+ check_phase 
+-------------
+ 
+(1 linha)
+
+ check_phase 
+-------------
+ 
+(1 linha)
+
+VACUUM
+VACUUM
+VACUUM
+ check_phase 
+-------------
+ 
+(1 linha)
+
+ check_phase 
+-------------
+ 
+(1 linha)
+
+ check_phase 
+-------------
+ 
+(1 linha)
+
+  phase   | pairs | tried | served | mismatches 
+----------+-------+-------+--------+------------
+ clean    | in_pm |   119 | t      |          0
+ clean    | in_pp |   119 | t      |          0
+ clean    | in_pr |   119 | t      |          0
+ edited   | in_pm |   119 | t      |          0
+ edited   | in_pp |   119 | t      |          0
+ edited   | in_pr |   119 | t      |          0
+ vacuumed | in_pm |   119 | t      |          0
+ vacuumed | in_pp |   119 | t      |          0
+ vacuumed | in_pr |   119 | t      |          0
+(9 linhas)
+
+DROP TABLE

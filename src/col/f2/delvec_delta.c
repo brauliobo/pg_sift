@@ -705,6 +705,17 @@ sift_dv_stream_len(Relation rel, BlockNumber dv_blk)
 	return len;
 }
 
+SiftChainStamp
+sift_dv_stamp(Relation rel, BlockNumber dv_blk)
+{
+	Buffer		buf = sift_blk_read(rel, dv_blk, BUFFER_LOCK_SHARE);
+	const SiftDvHeaderData *h = DV_HDR(BufferGetPage(buf));
+	SiftChainStamp c = {.lsn = PageGetLSN(BufferGetPage(buf)),.count = h->ndead_total,.pages = h->stream_len,.max_xid = h->xid_max};
+
+	UnlockReleaseBuffer(buf);
+	return c;
+}
+
 static bool
 has_tail(Relation rel, const SiftPartDesc *d)
 {

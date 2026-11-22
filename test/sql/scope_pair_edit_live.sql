@@ -1,0 +1,94 @@
+-- The scope aggregate read from the summary while the pairs of the scope are edited under it: a member added to a key or taken out, moved between keys, with the rows of the table changing
+-- too (a slab, deletes, updates), for one key and for a list of keys. Every query is run with the node and with the heap (sift.enable_agg) and the answers are compared; the first word says they
+-- agree, the second that the plan is the node's, the third where it read, the fourth how the summary was served.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.test_create_format1 = off;
+SET TimeZone = 'UTC';
+
+CREATE TABLE entity_parents (entity_id int NOT NULL, parent_id int NOT NULL, PRIMARY KEY (entity_id, parent_id)) WITH (autovacuum_enabled = false);
+INSERT INTO entity_parents SELECT e, 1 + e % 9 FROM generate_series(1, 400) e;
+INSERT INTO entity_parents SELECT e, 1 + (e + 4) % 9 FROM generate_series(1, 400) e WHERE e % 7 = 0;
+CREATE TABLE events (id int PRIMARY KEY, entity_id int, event_date date, amount numeric(12,2), score float8, status int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, CASE WHEN i % 53 = 0 THEN NULL ELSE 1 + (i * 7919) % 400 END, DATE '2024-01-01' + i % 500, CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 700) / 4.0 END,
+	CASE WHEN i % 13 = 0 THEN NULL ELSE (i % 90) * 0.5 END, i % 5 FROM generate_series(1, 12000) i;
+CREATE INDEX events_s ON events USING sift_col (id, entity_id, event_date, amount, score, status) WITH (key_order = 'entity_id, event_date', scope = 'parent_id: entity_id -> entity_parents(entity_id, parent_id)', track_changes = 'ctid');
+ANALYZE events;
+ANALYZE entity_parents;
+
+CREATE FUNCTION scope_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; plan text := ''; l text; read text := '-'; cube text := '-';
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		plan := plan || l;
+		IF l LIKE '%Scope Read: %' THEN read := split_part(trim(substr(l, position('Scope Read: ' in l) + 12)), ' (', 1); END IF;
+		IF l LIKE '%Scope Cube: %' THEN cube := trim(substr(l, position('Scope Cube: ' in l) + 12)); END IF;
+	END LOOP;
+	EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO b;
+	RETURN (CASE WHEN a IS DISTINCT FROM b THEN 'DIFFERENT' ELSE 'same' END) || ' ' || (CASE WHEN plan LIKE '%SiftAggV6Scope%' THEN 'scope' ELSE 'normal' END) || ' ' || read || ' ' || cube || ' ' ||
+		substr(q, 1, 40) || ' ... ' || right(q, 50);
+END $$;
+
+CREATE FUNCTION scope_queries() RETURNS SETOF text LANGUAGE sql AS $$ SELECT unnest(ARRAY[
+	'SELECT count(*), sum(e.amount), avg(e.score) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 4',
+	'SELECT count(*), sum(e.amount), avg(e.score) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 5',
+	'SELECT count(*), min(e.amount), max(e.score), min(e.id), max(e.status) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 4',
+	'SELECT count(*), sum(e.status) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 12',
+	'SELECT count(*), sum(e.amount) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 999',
+	'SELECT ep.parent_id, count(*), sum(e.amount) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id GROUP BY ep.parent_id',
+	'SELECT ep.parent_id, date_trunc(''month'', e.event_date), count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 4 GROUP BY 1, 2',
+	'SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 4 AND e.event_date >= DATE ''2024-06-01'' AND e.event_date < DATE ''2024-07-01''',
+	'SELECT count(*), sum(e.amount), min(e.score) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id IN (4, 5, 12)',
+	'SELECT ep.parent_id, count(*), sum(e.amount) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = ANY (ARRAY[4, 5, 12, 999]) GROUP BY ep.parent_id',
+	'SELECT ep.parent_id, date_trunc(''month'', e.event_date), count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2'
+]) $$;
+
+\set check 'SELECT scope_same(q) FROM scope_queries() q'
+
+-- clean
+:check;
+
+-- members added to a key
+INSERT INTO entity_parents VALUES (1, 4), (2, 4), (4, 4), (500, 4);
+:check;
+
+-- members taken out of a key
+DELETE FROM entity_parents WHERE parent_id = 4 AND entity_id IN (9, 10, 11, 12, 13);
+:check;
+
+-- a member moved from one key to another, and a key that had no member
+UPDATE entity_parents SET parent_id = 12 WHERE entity_id IN (20, 21) AND parent_id = 3;
+INSERT INTO entity_parents VALUES (30, 12), (31, 12);
+:check;
+
+-- the rows of the table change as well: a slab, deletes, an update
+INSERT INTO events VALUES (20001, 1, DATE '2024-06-10', 10.5, 1.5, 1), (20002, 30, DATE '2024-06-11', 11.5, 2.5, 2), (20003, 500, DATE '2024-06-12', 12.5, 3.5, 3);
+:check;
+DELETE FROM events WHERE id IN (101, 102, 103, 104, 20001) OR id % 41 = 0;
+UPDATE events SET amount = amount + 1, event_date = event_date + 3 WHERE id % 19 = 0;
+:check;
+
+-- an edit of the pairs in a transaction that is not yet committed is not read from the summary
+BEGIN;
+INSERT INTO entity_parents VALUES (42, 5), (43, 5);
+:check;
+ROLLBACK;
+:check;
+
+-- a VACUUM of the table and of the pairs, then more of both
+VACUUM events;
+VACUUM entity_parents;
+:check;
+DELETE FROM entity_parents WHERE entity_id BETWEEN 100 AND 130 AND parent_id = 5;
+INSERT INTO events SELECT 30000 + i, 1 + (i * 31) % 400, DATE '2024-05-20' + i % 40, i % 97, (i % 31) * 0.25, i % 5 FROM generate_series(1, 300) i;
+:check;
+
+DROP TABLE events;
+DROP TABLE entity_parents;
+DROP FUNCTION scope_same(text);
+DROP FUNCTION scope_queries();

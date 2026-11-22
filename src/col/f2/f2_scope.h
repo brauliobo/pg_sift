@@ -11,6 +11,7 @@
 
 #include "col/f2/f2.h"
 #include "col/scope_v6/meta.h"
+#include "col/scope_v6/overlay.h"
 
 /* The scopes the relation declares, and whether it declares any */
 extern int	sift_f2_nscopes(Relation rel);
@@ -44,6 +45,9 @@ struct SiftF2Scope
 	MemoryContext cx;
 	int			ord;
 	SiftScopeMeta meta;
+	const SiftScopeMeta *cached;	/* the entry of the backend's cache (f2_scope_cache.h) that meta copies: not the scope's to close, its rings unpacked by sift_f2_scope_rings; NULL when the scope read the object itself */
+	int64	   *changed;		/* the members whose pairs changed since the summary for the keys the read asked for, ascending, each a member the keys may have gained or lost (f2_scope_delta.c) */
+	uint32		nchanged;
 	SiftScopeEntity entity;
 	Snapshot	snap;
 	uint64		max_part_gen;
@@ -57,8 +61,17 @@ struct SiftF2Scope
  * rows it leaves out (`WHERE deleted_at IS NULL`): the entity side counts them with the rows of the deletion vectors, so that the cubes read less them (sift_f2_scope_excl_ok).
  */
 extern SiftF2Scope *sift_f2_scope_open(Relation rel, int ord, Snapshot snap, int excl_col);
-/* Opened for the statement's snapshot with what the summary lacks (the parts it does not name, slabs) or counts too many (pending deletes, inserters not settled) read from the parts; NULL when the scope has no summary, the pairs changed, or those rows are more than a read is worth */
-extern SiftF2Scope *sift_f2_scope_open_live(Relation rel, int ord, Snapshot snap, int excl_col);
+/* Opened for the statement's snapshot with what the summary lacks (the parts it does not name, slabs) or counts too many (pending deletes, inserters not settled) read from the parts; NULL when the scope has no summary, the journals cannot name the pair edits, or those rows are more than a read is worth. A read of the scope keys keys[0..nkeys) (ascending, distinct): the pairs of those keys may have been edited since the summary (at most SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS members, named by the journal), which sift_f2_scope_key_cube overlays; nkeys 0: any key, and no edit is tolerated */
+extern SiftF2Scope *sift_f2_scope_open_keys(Relation rel, int ord, Snapshot snap, int excl_col, const int64 *keys, uint32 nkeys);
+/* How the opened summary is served */
+extern SiftScopeServeMode sift_f2_scope_mode(const SiftF2Scope *sc);
+/* The rows the summary lacks that the snapshot sees (slabs, parts written since) hold some of the key that may rank among the first rows of a ring: its order leaf is not the time, or `missing` rows are still wanted, or one is as new as last */
+extern bool sift_f2_scope_added_rank(const SiftF2Scope *sc, int64 key, int ring, int missing, const SiftScopeNewest *last);
+/*
+ * The cube of key for the query (q->month: one month, or all), the summary's with the rows the snapshot does not see out and the rows it lacks in, under the pairs as they are now. false: the key has no row
+ * for the query. *exact false: a minimum or maximum the read needs cannot be kept after the edits: the read must not answer from the summary.
+ */
+extern bool sift_f2_scope_key_cube(SiftF2Scope *sc, int64 key, const SiftScopeQueryNeeds *q, SiftScopeCubeAcc *out, bool *exact);
 /* The ring (0: the time leaf) of an opened summary whose order leaf is the column col, -1 when it has none */
 extern int	sift_f2_scope_ring_of(const SiftF2Scope *sc, int col);
 /* Can the column be the order of a ring (a timestamp, a date or an integer), and can its NULLs be told from its values for a query that keeps the NULL rows of scope ord */
@@ -79,16 +92,19 @@ typedef struct SiftF2ScopeCell
 /* The leaves[0 .. nleaves - 1] of the rows of the entity parts that rows (gidx, row_ord of a ring) name, as cells[k * nleaves + j]; a string is made in the current memory context */
 extern void sift_f2_scope_cells(SiftF2Scope *sc, const SiftScopeNewest *rows, int nrows, const int *leaves, int nleaves, SiftF2ScopeCell *cells);
 
-/* The refreshes this backend has made, by how: the whole summary again, the parts that changed, the keys whose pairs changed */
+/* The refreshes this backend has made, by how: the whole summary again, the parts that changed, the keys whose pairs changed, both */
 typedef struct SiftF2ScopeRefreshes
 {
 	int			full;
 	int			parts;
 	int			dirty;
+	int			combined;		/* the parts that changed and the pairs of some keys in one pass */
 } SiftF2ScopeRefreshes;
 
 extern SiftF2ScopeRefreshes sift_f2_scope_refreshes;
 extern void sift_f2_scope_close(SiftF2Scope *sc);
+/* The rings of a summary the cache lent are readable: a statement that reads cubes only never unpacks them; false when the section is damaged */
+extern bool sift_f2_scope_rings(SiftF2Scope *sc);
 
 /* The summary describes the entity parts of the manifest and the pairs as they are, and the schema of the leaves: false after a compaction, a part written since, an edit of the pairs or of the table */
 extern bool sift_f2_scope_current(Relation rel, int ord);

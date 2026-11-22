@@ -12,6 +12,7 @@
 #include "col/f2/part_vis.h"
 #include "col/scope.h"
 #include "core/f2/f2_gate.h"
+#include "core/cmp.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
 
@@ -226,7 +227,7 @@ sift_f2_scope_build(Relation heap, Relation rel)
  * are built again and the new granules are added (sift_scope_refresh_parts); when only some pairs changed (the journal names their members) the nodes that may hold a changed member are built
  * again (sift_scope_refresh_dirty). Both at once, or pairs the journal cannot name, build the summary again.
  */
-#define REFRESH_MEMBERS_MAX	512
+#define REFRESH_MEMBERS_MAX	8192
 
 SiftF2ScopeRefreshes sift_f2_scope_refreshes;
 
@@ -323,67 +324,49 @@ refresh_parts(Relation heap, Relation rel, SiftF2Store *store, const SiftF2Scope
 	return p;
 }
 
-static int
-pair_order(const void *a, const void *b)
+/* The members of the journal, ascending and without repeats */
+static uint32
+sorted_members(int64 *v, uint32 n)
 {
-	const SiftScopeMemberKey *x = a,
-			   *y = b;
+	uint32		u = 0;
 
-	if (x->key != y->key)
-		return x->key < y->key ? -1 : 1;
-	return x->member < y->member ? -1 : x->member > y->member;
+	qsort(v, n, sizeof(int64), sift_cmp_i64);
+	for (uint32 i = 0; i < n; i++)
+		if (u == 0 || v[u - 1] != v[i])
+			v[u++] = v[i];
+	return u;
 }
 
-/* The keys whose summary may hold a changed member (a node says so) or whose pairs now list one, each with the changed members it may be affected by */
-static uint32
-dirty_of(const SiftScopeMeta *old, SiftScopePairMap *pm, const int64 *members, uint32 nm, SiftScopeDirty **out)
+/* The summary after a compaction, pair edits, or both at once: each takes the one pass that rebuilds only the nodes it touches */
+static void
+refresh_object(const SiftScopeMeta *old, const SiftScopeBuildSpec *spec, SiftScopePairMap *pm, const PartDiff *diff, const SiftConnKeys *changed, const SiftScopeGranSource *src, StringInfo out)
 {
-	uint32		n = 0,
-				cap = 64,
-				nd = 0;
-	SiftScopeMemberKey *c = palloc(cap * sizeof(SiftScopeMemberKey));
-	SiftScopeDirty *dd;
-	int64	   *mem;
+	SiftScopePartSwap swap = {.old_gens = diff->retired,.nold = diff->nretired,.added = diff->added,.nadded = diff->nadded};
+	SiftScopeDirty *dirty = NULL;
+	const bool	parts = diff->nretired > 0 || diff->nadded > 0;
+	uint32		nd = 0;
 
-#define NOTE(k, m) do { if (n == cap) c = repalloc(c, (cap *= 2) * sizeof(SiftScopeMemberKey)); c[n++] = (SiftScopeMemberKey) {(m), (k)}; } while (0)
-	for (uint32 k = 0; k < old->hdr.nkeys; k++)
+	if (changed->n > 0)
 	{
-		const SiftScopeL2Root *root = &old->roots[k];
+		int64	   *members = memcpy(palloc(changed->n * sizeof(int64)), changed->keys, changed->n * sizeof(int64));
 
-		for (uint32 i = 0; i < nm; i++)
-			for (uint32 v = 0; v < root->l1_count; v++)
-				if (sift_scope_node_has_member(old, &old->nodes[root->l1_first + v], members[i]))
-				{
-					NOTE(root->scope_key, members[i]);
-					break;
-				}
+		nd = sift_scope_dirty_fast(old, pm, members, sorted_members(members, changed->n), &dirty);
 	}
-	for (uint32 i = 0; i < nm; i++)
+	if (parts && nd > 0)
 	{
-		uint32		lo,
-					hi;
-
-		if (sift_spm_find(pm, members[i], &lo, &hi))
-			for (uint32 q = lo; q < hi; q++)
-				NOTE(pm->scope_keys[pm->key_ordinals[q]], members[i]);
+		sift_scope_refresh_combined(old, spec, pm, &swap, dirty, nd, src, out, NULL);
+		sift_f2_scope_refreshes.combined++;
 	}
-#undef NOTE
-	qsort(c, n, sizeof(SiftScopeMemberKey), pair_order);
-	dd = palloc(Max(n, 1) * sizeof(SiftScopeDirty));
-	mem = palloc(Max(n, 1) * sizeof(int64));
-	for (uint32 i = 0, u = 0; i < n; i++)
+	else if (parts)
 	{
-		if (i > 0 && pair_order(&c[i - 1], &c[i]) == 0)
-			continue;
-		mem[u] = c[i].member;
-		if (nd == 0 || dd[nd - 1].key != c[i].key)
-			dd[nd++] = (SiftScopeDirty) {.key = c[i].key,.members = &mem[u],.nmembers = 0};
-		dd[nd - 1].nmembers++;
-		u++;
+		sift_scope_refresh_parts(old, spec, pm, &swap, src, out, NULL);
+		sift_f2_scope_refreshes.parts++;
 	}
-	pfree(c);
-	*out = dd;
-	return nd;
+	else
+	{
+		sift_scope_refresh_dirty(old, spec, pm, dirty, nd, src, out, NULL);
+		sift_f2_scope_refreshes.dirty++;
+	}
 }
 
 static SiftManifestScopeRef
@@ -426,7 +409,7 @@ refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCf
 		sift_scope_meta_close(&old);
 		return (SiftManifestScopeRef) {0};
 	}
-	if (!known || (changed.n > 0) == (diff.nretired > 0 || diff.nadded > 0))
+	if (!known || (changed.n == 0 && diff.nretired == 0 && diff.nadded == 0))
 	{
 		sift_scope_meta_close(&old);
 		sift_f2_scope_refreshes.full++;
@@ -440,21 +423,7 @@ refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCf
 	p = refresh_parts(heap, rel, store, &cfg, snap, pm, mr, &old);
 	src = sift_f2s_source(p);
 	initStringInfo(&out);
-	if (changed.n > 0)
-	{
-		SiftScopeDirty *dirty;
-		uint32		nd = dirty_of(&old, pm, changed.keys, changed.n, &dirty);
-
-		sift_scope_refresh_dirty(&old, &spec, pm, dirty, nd, &src, &out, NULL);
-		sift_f2_scope_refreshes.dirty++;
-	}
-	else
-	{
-		SiftScopePartSwap swap = {.old_gens = diff.retired,.nold = diff.nretired,.added = diff.added,.nadded = diff.nadded};
-
-		sift_scope_refresh_parts(&old, &spec, pm, &swap, &src, &out, NULL);
-		sift_f2_scope_refreshes.parts++;
-	}
+	refresh_object(&old, &spec, pm, &diff, &changed, &src, &out);
 	ref = write_object(rel, cfg.ord, &out, gen, pm->nkeys);
 	pfree(out.data);
 	sift_spm_free(pm);

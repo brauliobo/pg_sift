@@ -1,0 +1,82 @@
+SET
+DROP TABLE
+CREATE TABLE
+INSERT 0 30000
+CREATE TABLE
+INSERT 0 40
+INSERT 0 1
+INSERT 0 3
+CREATE INDEX
+VACUUM
+ANALYZE
+DROP TABLE
+CREATE TABLE
+CREATE FUNCTION
+You are now connected to database "rt_scope_topn_ties" as user "postgres".
+SET
+ check_phase 
+-------------
+ 
+(1 row)
+
+DELETE 3335
+You are now connected to database "rt_scope_topn_ties" as user "postgres".
+SET
+ check_phase 
+-------------
+ 
+(1 row)
+
+VACUUM
+You are now connected to database "rt_scope_topn_ties" as user "postgres".
+SET
+ check_phase 
+-------------
+ 
+(1 row)
+
+INSERT 0 400
+You are now connected to database "rt_scope_topn_ties" as user "postgres".
+SET
+ check_phase 
+-------------
+ 
+(1 row)
+
+VACUUM
+You are now connected to database "rt_scope_topn_ties" as user "postgres".
+SET
+ check_phase 
+-------------
+ 
+(1 row)
+
+UPDATE 3867
+You are now connected to database "rt_scope_topn_ties" as user "postgres".
+SET
+ check_phase 
+-------------
+ 
+(1 row)
+
+VACUUM
+You are now connected to database "rt_scope_topn_ties" as user "postgres".
+SET
+ check_phase 
+-------------
+ 
+(1 row)
+
+        phase         | tried | answered_by_ring | mismatches 
+----------------------+-------+------------------+------------
+ after delete         |    98 |               98 |          0
+ clean                |    98 |               98 |          0
+ inserted             |    98 |               28 |          0
+ updated              |    98 |               14 |          0
+ updated and vacuumed |    98 |               98 |          0
+ vacuumed             |    98 |               98 |          0
+ vacuumed again       |    98 |               28 |          0
+(7 rows)
+
+DROP TABLE
+DROP FUNCTION

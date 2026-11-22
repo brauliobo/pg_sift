@@ -1,6 +1,6 @@
 /*
  * agg/v6/scope_v6_run.c - the executor of the scope aggregate of SiftAggV6 (planned by scope_v6.c): the cube of each key the statement reads, or of each month of it, as the tuples of the scan.
- * The summary, with the rows of the parts it does not count read as the snapshot sees them, answers only when the index has heard of every change the snapshot sees (sift_f2_scope_open_live) and the cubes can say what the statement asks
+ * The summary, with the rows of the parts it does not count read as the snapshot sees them, answers only when the index has heard of every change the snapshot sees (sift_f2_scope_open_keys) and the cubes can say what the statement asks
  * (months are those of UTC: a timestamptz is cut into them only where the session writes its times in UTC); when they cannot, the node runs the aggregate over the join as the planner priced it,
  * which the path holds as its child.
  */
@@ -22,6 +22,7 @@
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/fmgrprotos.h"
+#include "utils/lsyscache.h"
 #include "utils/numeric.h"
 #include "utils/timestamp.h"
 
@@ -31,6 +32,8 @@
 #include "col/am.h"
 #include "col/col.h"
 #include "col/f2/f2_scope.h"
+#include "core/page_io.h"
+#include "core/cmp.h"
 #include "core/memtrack.h"
 #include "core/compat.h"
 
@@ -59,6 +62,8 @@ typedef struct ScopeState
 	SiftV6Group *group;
 	SiftV6ScanStats stats;
 	int64		members;
+	bool		inexact;		/* a minimum or maximum cannot be kept after the pair edits: the join answers */
+	SiftScopeServeMode mode;	/* how the summary served the read */
 } ScopeState;
 
 static void
@@ -75,7 +80,7 @@ scope_begin(CustomScanState *node, EState *estate, int eflags)
 	if (st->spec->key_given)
 	{
 		st->key = ExecInitExpr(linitial(cs->custom_exprs), &node->ss.ps);
-		st->key_type = exprType(linitial(cs->custom_exprs));
+		st->key_type = st->spec->key_array ? get_element_type(exprType(linitial(cs->custom_exprs))) : exprType(linitial(cs->custom_exprs));
 	}
 	if (st->spec->ranged)
 	{
@@ -103,6 +108,49 @@ key_value(ScopeState *st, bool *isnull)
 	Datum		d = ExecEvalExprSwitchContext(st->key, ec, isnull);
 
 	return *isnull ? 0 : st->key_type == INT2OID ? (int64) DatumGetInt16(d) : st->key_type == INT4OID ? (int64) DatumGetInt32(d) : DatumGetInt64(d);
+}
+
+static int64
+int_of(Oid typid, Datum d)
+{
+	return typid == INT2OID ? (int64) DatumGetInt16(d) : typid == INT4OID ? (int64) DatumGetInt32(d) : DatumGetInt64(d);
+}
+
+/* More keys than this are the join's: each costs a cube */
+#define SCOPE_KEYS_MAX	256
+
+/* The scope keys the statement names, ascending and distinct (those of its array, the one key, or none for a NULL), in *keys; false when they are more than a read is worth */
+static bool
+key_list(ScopeState *st, int64 **keys, uint32 *nkeys)
+{
+	bool		isnull = true;
+	Datum		d = st->spec->key_given ? ExecEvalExprSwitchContext(st->key, st->css.ss.ps.ps_ExprContext, &isnull) : (Datum) 0;
+	Datum	   *vals;
+	bool	   *nulls;
+	int			n = 0;
+	uint32		u = 0;
+
+	*keys = palloc(sizeof(int64));
+	*nkeys = 0;
+	if (isnull)
+		return true;
+	if (!st->spec->key_array)
+	{
+		(*keys)[(*nkeys)++] = int_of(st->key_type, d);
+		return true;
+	}
+	deconstruct_array_builtin(DatumGetArrayTypeP(d), st->key_type, &vals, &nulls, &n);
+	if (n > SCOPE_KEYS_MAX)
+		return false;
+	*keys = palloc(Max(n, 1) * sizeof(int64));
+	for (int i = 0; i < n; i++)
+		if (!nulls[i])
+			(*keys)[u++] = int_of(st->key_type, vals[i]);
+	qsort(*keys, u, sizeof(int64), sift_cmp_i64);
+	for (uint32 i = 0; i < u; i++)
+		if (*nkeys == 0 || (*keys)[*nkeys - 1] != (*keys)[i])
+			(*keys)[(*nkeys)++] = (*keys)[i];
+	return true;
 }
 
 static Datum
@@ -256,11 +304,19 @@ month_window(ScopeState *st, MonthWindow *w)
 }
 
 static bool
-read_cube(SiftF2Scope *sc, const SiftScopeL2Root *root, SiftScopeQueryNeeds q, const MonthWindow *w, SiftScopeCubeAcc *out)
+read_cube(ScopeState *st, SiftF2Scope *sc, const SiftScopeL2Root *root, int64 key, SiftScopeQueryNeeds q, const MonthWindow *w, SiftScopeCubeAcc *out)
 {
 	SiftScopeDeltaStats stats = {0};
 	bool		any = false;
 
+	if (sc->nchanged > 0)
+	{
+		bool		exact;
+		const bool	has = sift_f2_scope_key_cube(sc, key, &q, out, &exact);
+
+		st->inexact |= !exact;
+		return has;
+	}
 	if (root == NULL)
 		return false;
 	if (!w->ranged)
@@ -317,14 +373,14 @@ read_months(ScopeState *st, SiftF2Scope *sc, const SiftScopeL2Root *root, SiftSc
 }
 
 static void
-read_key(ScopeState *st, SiftF2Scope *sc, const SiftScopeL2Root *root, const SiftScopeQueryNeeds *q, const MonthWindow *w)
+read_key(ScopeState *st, SiftF2Scope *sc, const SiftScopeL2Root *root, int64 key, const SiftScopeQueryNeeds *q, const MonthWindow *w)
 {
 	SiftScopeCubeAcc cube;
 
 	st->keys_read++;
-	if (read_cube(sc, root, *q, w, &cube))
+	if (read_cube(st, sc, root, key, *q, w, &cube))
 	{
-		add_row(st, &cube, root->scope_key, 0);
+		add_row(st, &cube, key, 0);
 		sift_scube_free(&cube);
 	}
 	else if (!st->spec->by_key && !st->spec->grouped_const)
@@ -335,32 +391,64 @@ read_key(ScopeState *st, SiftF2Scope *sc, const SiftScopeL2Root *root, const Sif
 	}
 }
 
+/* The cubes of the keys added, for a statement that names several keys and does not group by them: the aggregates of the join over all of them (a row of the facts counts once for each key its member is in) */
 static bool
-read_summary(ScopeState *st, SiftF2Scope *sc, const MonthWindow *w)
+read_merged(ScopeState *st, SiftF2Scope *sc, const int64 *keys, uint32 nkeys, const SiftScopeQueryNeeds *q, const MonthWindow *w)
+{
+	SiftScopeCubeAcc all;
+	bool		any = false;
+
+	for (uint32 i = 0; i < nkeys; i++)
+	{
+		SiftScopeCubeAcc c;
+
+		st->keys_read++;
+		if (!read_cube(st, sc, sift_scope_l2_find(&sc->meta, keys[i]), keys[i], *q, w, &c))
+			continue;
+		if (any)
+		{
+			sift_scube_merge(&all, &c, NULL);
+			sift_scube_free(&c);
+		}
+		else
+			all = c;
+		any = true;
+	}
+	if (any)
+	{
+		add_row(st, &all, 0, 0);
+		sift_scube_free(&all);
+	}
+	else if (!st->spec->grouped_const)
+	{
+		SiftScopeCubeAcc none = {0};
+
+		add_row(st, &none, 0, 0);
+	}
+	return !st->inexact;
+}
+
+static bool
+read_summary(ScopeState *st, SiftF2Scope *sc, const MonthWindow *w, const int64 *keys, uint32 nkeys)
 {
 	const SiftScopeQueryNeeds q = {.minmax = needs_minmax(st->spec),.month = SIFT_SCOPE_NO_MONTH};
-	bool		isnull = false;
-	const SiftScopeL2Root *given = NULL;
 	bool		ok = true;
 
-	if (st->spec->key_given)
+	if (st->spec->key_array && !st->spec->by_key)
+		return read_merged(st, sc, keys, nkeys, &q, w);
+	for (uint32 i = 0; i < (st->spec->key_given ? Max(nkeys, 1) : sc->meta.hdr.nkeys); i++)
 	{
-		const int64 key = key_value(st, &isnull);
+		const int64 key = st->spec->key_given && i < nkeys ? keys[i] : 0;
+		const SiftScopeL2Root *root = !st->spec->key_given ? &sc->meta.roots[i] : i < nkeys ? sift_scope_l2_find(&sc->meta, key) : NULL;
 
-		given = isnull ? NULL : sift_scope_l2_find(&sc->meta, key);
-		if (given == NULL && st->spec->by_month)
-			return true;
-	}
-	for (uint32 i = 0; i < (st->spec->key_given ? 1 : sc->meta.hdr.nkeys); i++)
-	{
-		const SiftScopeL2Root *root = st->spec->key_given ? given : &sc->meta.roots[i];
-
+		if (st->spec->by_month && st->spec->key_given && root == NULL)
+			continue;
 		if (st->spec->by_month)
 			ok = ok && read_months(st, sc, root, q, w);
 		else
-			read_key(st, sc, root, &q, w);
+			read_key(st, sc, root, st->spec->key_given ? key : root->scope_key, &q, w);
 	}
-	return ok;
+	return ok && !st->inexact;
 }
 
 /* The months of the cubes are those of UTC: a statement that cuts a timestamptz into the months of another zone is the join's */
@@ -368,12 +456,6 @@ static bool
 months_exact(const ScopeState *st)
 {
 	return !st->spec->by_month || sift_scope_monthmap_tz_safe(st->spec->month_type == TIMESTAMPTZOID, zone_is_utc(session_timezone));
-}
-
-static int64
-int_of(Oid typid, Datum d)
-{
-	return typid == INT2OID ? (int64) DatumGetInt16(d) : typid == INT4OID ? (int64) DatumGetInt32(d) : DatumGetInt64(d);
 }
 
 /* The members of the pairs of the key K, as the snapshot sees the relation of the pairs: the array the scan of the facts takes as the list of the member column */
@@ -504,15 +586,79 @@ topk_rows(ScopeState *st, SiftF2Scope *sc, const SiftScopeNewest *rows, int n)
 	return true;
 }
 
+typedef struct TieRow
+{
+	SiftScopeNewest e;
+	int64		tie;
+} TieRow;
+
+static int
+tie_row_cmp(const void *a, const void *b, void *desc)
+{
+	const TieRow *x = a,
+			   *y = b;
+
+	if (x->e.time != y->e.time)
+		return x->e.time > y->e.time ? -1 : 1;
+	if (x->tie != y->tie)
+		return (x->tie < y->tie) != *(bool *) desc ? -1 : 1;
+	return 0;
+}
+
 /*
- * ORDER BY ring leaf DESC LIMIT n of the facts of the key: the first n entries of its ring (of the rows with one value, the order among them is the ring's). The ring is NULLS LAST, so it is
- * the order of the statement when the leaf cannot be NULL or the statement puts the NULLs last and the key has n rows with a value.
+ * The first n rows of the ring leaf in the order of the second leaf where the ring leaf is equal. Where the cut falls inside the rows of one value the ring does not hold them all: the live rows
+ * of the key with that value are read whole (sift_scope_ring_ties). Returns the rows kept (n), or -1 when the leaf holds no value of a row.
+ */
+static int
+topk_tie_order(ScopeState *st, SiftF2Scope *sc, const SiftScopeL2Root *root, int ring, SiftScopeNewest *rows, int n, bool tie_at_cut)
+{
+	const int	leaf = sift_col_rel(st->rel)->first[st->spec->tie_col];
+	SiftScopeNewest *flat = rows;
+	SiftF2ScopeCell *cells;
+	TieRow	   *c;
+	int			total = n;
+
+	if (tie_at_cut)
+	{
+		SiftScopeNewest *ties;
+		int			keep = 0;
+		const int	nties = (int) sift_scope_ring_ties(&sc->meta, root, ring, rows[n - 1].time, &sc->entity, &ties);
+
+		while (rows[keep].time != rows[n - 1].time)
+			keep++;
+		total = keep + nties;
+		if (total < n)
+			return -1;
+		flat = palloc(total * sizeof(SiftScopeNewest));
+		memcpy(flat, rows, keep * sizeof(SiftScopeNewest));
+		memcpy(flat + keep, ties, nties * sizeof(SiftScopeNewest));
+	}
+	cells = palloc(total * sizeof(SiftF2ScopeCell));
+	sift_f2_scope_cells(sc, flat, total, &leaf, 1, cells);
+	c = palloc(total * sizeof(TieRow));
+	for (int i = 0; i < total; i++)
+	{
+		if (cells[i].isnull)
+			return -1;
+		c[i] = (TieRow) {flat[i], cells[i].i};
+	}
+	qsort_arg(c, total, sizeof(TieRow), tie_row_cmp, (void *) &st->spec->tie_desc);
+	for (int i = 0; i < n; i++)
+		rows[i] = c[i].e;
+	return n;
+}
+
+/*
+ * ORDER BY ring leaf DESC [, tie leaf] LIMIT n of the facts of the key: the first n entries of its ring (of the rows with one value, the order among them is the ring's, or the tie leaf's). The ring is
+ * NULLS LAST, so it is the order of the statement when the leaf cannot be NULL or the statement puts the NULLs last and the key has n rows with a value. Under edits the ring's rows that the snapshot
+ * does not see are skipped (the entity tells), and it answers only when none of the rows it lacks can rank among the first n.
  */
 static bool
 topk_read(ScopeState *st, SiftF2Scope *sc)
 {
 	const ScopeSpec *sp = st->spec;
-	bool		isnull;
+	bool		isnull,
+				tie_at_cut;
 	const int64 key = key_value(st, &isnull);
 	const SiftScopeL2Root *root = isnull ? NULL : sift_scope_l2_find(&sc->meta, key);
 	const int	ring = sift_f2_scope_ring_of(sc, sp->ring_col);
@@ -520,12 +666,33 @@ topk_read(ScopeState *st, SiftF2Scope *sc)
 	uint32		from_ring;
 	int			n;
 
+	if (!sift_f2_scope_rings(sc))
+		SIFT_CORRUPT(sc->rel, "The summary of scope %d is damaged.", sp->ord);
 	if (ring < 0 || !sift_scope_ring_serves(&sc->meta, ring, sp->nulls_first, sp->leaf_not_null))
 		return false;
 	if (root == NULL)
-		return true;
-	n = (int) sift_scope_latest_ring(&sc->meta, root, ring, sp->limit, false, &sc->entity, rows, &from_ring, NULL);
-	return (n == sp->limit || sp->leaf_not_null) && topk_rows(st, sc, rows, n);
+		return !sift_f2_scope_added_rank(sc, key, ring, sp->limit, NULL);
+	n = (int) sift_scope_latest_ring(&sc->meta, root, ring, sp->limit, false, &sc->entity, rows, &from_ring, sp->tie_col > 0 ? &tie_at_cut : NULL);
+	if ((n != sp->limit && !sp->leaf_not_null) || sift_f2_scope_added_rank(sc, key, ring, sp->limit - n, n > 0 ? &rows[n - 1] : NULL))
+		return false;
+	if (sp->tie_col > 0 && n > 0 && (n = topk_tie_order(st, sc, root, ring, rows, n, tie_at_cut)) < 0)
+		return false;
+	return topk_rows(st, sc, rows, n);
+}
+
+/* The summary for the statement's snapshot: of the keys it names the pairs may have been edited since; a read of every key, of months or of a window or ring answers only from pairs as they were */
+static SiftF2Scope *
+open_summary(ScopeState *st, EState *estate, const int64 *keys, uint32 nkeys)
+{
+	const ScopeSpec *sp = st->spec;
+	SiftF2Scope *sc = sift_f2_scope_open_keys(st->rel, sp->ord, estate->es_snapshot, sp->excl_col, keys, nkeys);
+
+	if (sc != NULL && sc->nchanged > 0 && (sp->by_month || sp->ranged || sp->topk))
+	{
+		sift_f2_scope_close(sc);
+		return NULL;
+	}
+	return sc;
 }
 
 static void
@@ -534,13 +701,16 @@ scope_run(ScopeState *st, EState *estate)
 	MemoryContext old = MemoryContextSwitchTo(st->rcx);
 	SiftF2Scope *sc = NULL;
 	MonthWindow w;
+	int64	   *keys = NULL;
+	uint32		nkeys = 0;
 
 	st->started = true;
-	if (months_exact(st) && month_window(st, &w) && (!st->spec->topk || sift_f2_scope_servable(st->rel, st->spec->ord, estate->es_snapshot)))
-		sc = sift_f2_scope_open_live(st->rel, st->spec->ord, estate->es_snapshot, st->spec->excl_col);
+	if (months_exact(st) && month_window(st, &w) && key_list(st, &keys, &nkeys))
+		sc = open_summary(st, estate, keys, nkeys);
 	if (sc != NULL)
 	{
-		st->from_summary = st->spec->topk ? topk_read(st, sc) : read_summary(st, sc, &w);
+		st->mode = sift_f2_scope_mode(sc);
+		st->from_summary = st->spec->topk ? topk_read(st, sc) : read_summary(st, sc, &w, keys, nkeys);
 		sift_f2_scope_close(sc);
 		if (!st->from_summary)
 		{
@@ -622,7 +792,7 @@ scope_reset(ScopeState *st)
 	st->vals = NULL;
 	st->nulls = NULL;
 	st->nrows = st->at = 0;
-	st->started = st->from_summary = false;
+	st->started = st->from_summary = st->inexact = false;
 	st->keys_read = 0;
 }
 
@@ -666,7 +836,10 @@ scope_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	}
 	ExplainPropertyText("Scope Read", !st->started ? "summary or join" : st->from_summary ? (st->spec->topk ? "ring" : "summary") : "join (the summary is not exact for the snapshot)", es);
 	if (st->started && st->from_summary && !st->spec->topk)
+	{
+		ExplainPropertyText("Scope Cube", st->mode == SIFT_SERVE_DELTA_CUBE ? "delta" : "clean", es);
 		ExplainPropertyUInteger("Scope Keys Read", NULL, st->keys_read, es);
+	}
 }
 
 static const CustomExecMethods scope_exec_methods = {

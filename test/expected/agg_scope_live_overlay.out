@@ -48,9 +48,9 @@ CREATE FUNCTION scope_queries() RETURNS SETOF text LANGUAGE sql AS $$ SELECT unn
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope summary SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -65,9 +65,9 @@ INSERT INTO events VALUES (20004, 22, NULL, 13.5, NULL, 4);
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -79,9 +79,9 @@ INSERT INTO events SELECT 30000 + i, 1 + (i * 31) % 400, DATE '2024-05-20' + i %
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -93,9 +93,9 @@ DELETE FROM events WHERE id IN (101, 102, 103, 104, 20001, 20002, 30005, 30006);
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -108,9 +108,9 @@ UPDATE events SET amount = amount + 1, event_date = event_date + 3 WHERE id % 19
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -124,9 +124,9 @@ INSERT INTO events SELECT 40000 + i, 1 + (i * 17) % 400, DATE '2024-07-01' + i %
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -137,9 +137,9 @@ UPDATE events SET score = score + 1 WHERE id BETWEEN 40001 AND 40300;
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -150,9 +150,9 @@ DELETE FROM events WHERE id BETWEEN 40100 AND 40250;
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -167,9 +167,9 @@ PREPARE TRANSACTION 'overlay_held';
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -180,9 +180,9 @@ COMMIT PREPARED 'overlay_held';
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -196,9 +196,9 @@ PREPARE TRANSACTION 'overlay_aborted';
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -209,9 +209,9 @@ ROLLBACK PREPARED 'overlay_aborted';
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -225,9 +225,9 @@ DELETE FROM events WHERE id BETWEEN 600 AND 700;
  same scope join SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope join SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope join SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope join SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope join SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -238,9 +238,9 @@ ROLLBACK;
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -254,9 +254,9 @@ COMMIT;
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -300,9 +300,9 @@ ROLLBACK;
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -310,15 +310,15 @@ ROLLBACK;
 INSERT INTO entity_parents SELECT e, 4 FROM generate_series(1, 400) e WHERE e % 40 = 1 ON CONFLICT DO NOTHING;
 DELETE FROM entity_parents WHERE parent_id = 4 AND entity_id % 45 = 4;
 :check;
-                                                   scope_same                                                    
------------------------------------------------------------------------------------------------------------------
- same scope join SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
+                                                     scope_same                                                     
+--------------------------------------------------------------------------------------------------------------------
+ same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope join SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope join SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
- same scope join SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
- same scope join SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
 VACUUM events;
@@ -328,9 +328,9 @@ VACUUM events;
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope join SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 
@@ -344,9 +344,9 @@ DELETE FROM events WHERE id % 4 <> 1;
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
- same normal - SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
+ same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same normal - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
+ same scope summary SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
  same scope summary SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
 (7 rows)
 

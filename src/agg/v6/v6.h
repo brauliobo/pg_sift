@@ -245,6 +245,9 @@ extern bool sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOpt
 extern bool sift_v6_plan_shape(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 /* The index holds attribute att (1-based), of the class, in one plain leaf the scan decodes as it is stored */
 extern bool sift_v6_leaf_holds(const SiftColRel *r, int att, SiftV6Class cls);
+/* The same for column att of a sift_table (1-based) */
+struct SiftF2Store;
+extern bool sift_v6_table_leaf_holds(const struct SiftF2Store *store, int att, SiftV6Class cls);
 extern bool sift_v6_agg_kind(const Aggref *a, SiftV6Kind *kind);
 /* The aggregate of the facts of a join as a scan of the index (the tuple of its scan tlist): false when a key, an aggregate or a qual of the facts is not one the scan decides (scope_v6.c adds the members of a scope key) */
 extern bool sift_v6_compile_fact(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *out, IndexOptInfo *ix, GroupPathExtraData *extra, SiftV6Spec *spec, List **scan_tlist);

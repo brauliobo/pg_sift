@@ -1,0 +1,48 @@
+SET
+DROP TABLE
+CREATE TABLE
+INSERT 0 60000
+INSERT 0 0
+CREATE TABLE
+INSERT 0 300
+INSERT 0 60
+CREATE INDEX
+VACUUM
+ANALYZE
+CREATE TABLE
+INSERT 0 8
+CREATE TABLE
+CREATE FUNCTION
+ check_shapes 
+--------------
+ 
+(1 linha)
+
+DELETE 12000
+INSERT 0 500
+DELETE 32
+INSERT 0 0
+ check_shapes 
+--------------
+ 
+(1 linha)
+
+VACUUM
+ check_shapes 
+--------------
+ 
+(1 linha)
+
+    shape     | tried | pushed | mismatches 
+--------------+-------+--------+------------
+ anti         |    24 |      0 |          0
+ bykind       |    24 |     24 |          0
+ count        |    24 |     24 |          0
+ having       |    24 |     24 |          0
+ repeating    |    24 |      0 |          0
+ semi         |    24 |     24 |          0
+ semi grouped |    24 |     24 |          0
+ window       |    24 |     24 |          0
+(8 linhas)
+
+DROP TABLE

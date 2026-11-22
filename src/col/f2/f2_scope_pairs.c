@@ -6,7 +6,17 @@
 /* check-memory: allow-allocs the arrays follow the pairs of the scope relation, which the build holds in memory by design */
 #include "postgres.h"
 
+#include "access/genam.h"
+#include "access/relation.h"
+#include "access/skey.h"
+#include "access/stratnum.h"
+#include "access/table.h"
+#include "access/tableam.h"
+#include "utils/fmgroids.h"
+#include "catalog/pg_type.h"
 #include "utils/memutils.h"
+
+#include "col/scope.h"
 
 #include "col/f2/f2_scope_int.h"
 #include "core/cachebudget.h"
@@ -117,4 +127,102 @@ sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, S
 	MemoryContextRegisterResetCallback(reader, &pin->cb);
 	cache.pins++;
 	return cache.pm;
+}
+
+static Oid
+int_eq_proc(Oid type)
+{
+	return type == INT2OID ? F_INT2EQ : type == INT4OID ? F_INT4EQ : F_INT8EQ;
+}
+
+static Datum
+int_datum(Oid type, int64 v)
+{
+	return type == INT2OID ? Int16GetDatum((int16) v) : type == INT4OID ? Int32GetDatum((int32) v) : Int64GetDatum(v);
+}
+
+static int
+index_position(const Relation ix, AttrNumber att)
+{
+	for (int i = 0; i < ix->rd_index->indnkeyatts; i++)
+		if (ix->rd_index->indkey.values[i] == att)
+			return i + 1;
+	elog(ERROR, "the pairs of the scope are read through a btree that does not have column %d", att);
+}
+
+/* The pairs of a scope of two paths for the changed members and the keys asked: the pairs of both paths now, as the snapshot sees them, cut to those */
+static SiftScopePairMap *
+edited_two_paths(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged)
+{
+	SiftScopePairMap *all = sift_f2s_load_pairs(heap, rel, sc, snap);
+	SiftScopeMemberKey *now = palloc(sizeof(SiftScopeMemberKey) * Max(nchanged * nkeys, 1));
+	uint32		n = 0;
+	SiftScopePairMap *pm;
+
+	for (uint32 i = 0; i < nchanged; i++)
+	{
+		uint32		lo,
+					hi;
+
+		if (!sift_spm_find(all, changed[i], &lo, &hi))
+			continue;
+		for (uint32 k = 0; k < nkeys; k++)
+			for (uint32 j = lo; j < hi; j++)
+				if (all->scope_keys[all->key_ordinals[j]] == keys[k])
+				{
+					now[n++] = (SiftScopeMemberKey) {changed[i], keys[k]};
+					break;
+				}
+	}
+	pm = sift_spm_patched(object, changed, nchanged, now, n);
+	pfree(now);
+	sift_spm_free(all);
+	return pm;
+}
+
+/*
+ * The pairs of the changed members (ascending, distinct) that are now, for the scope keys the read asks for: each (member, key) is looked up in the btree that defines the pairs, as the snapshot sees it,
+ * and the map of the object has them replaced (sift_spm_patched). Every other pair of the map is as it was written, because the journal names every member whose pairs changed.
+ */
+static SiftScopePairMap *
+edited_one_path(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged)
+{
+	Relation	prel;
+	AttrNumber	a,
+				b;
+	Relation	ix = index_open(sift_scope_relation_index(heap, rel, sc->spec, &prel, &a, &b), AccessShareLock);
+	const Oid	ta = TupleDescAttr(prel->rd_att, a - 1)->atttypid,
+				tb = TupleDescAttr(prel->rd_att, b - 1)->atttypid;
+	const int	pa = index_position(ix, a),
+				pb = index_position(ix, b);
+	TupleTableSlot *slot = table_slot_create(prel, NULL);
+	IndexScanDesc scan = sift_index_beginscan(prel, ix, snap, 2);
+	SiftScopeMemberKey *now = palloc(sizeof(SiftScopeMemberKey) * Max(nchanged * nkeys, 1));
+	uint32		n = 0;
+	SiftScopePairMap *pm;
+
+	for (uint32 i = 0; i < nchanged; i++)
+		for (uint32 k = 0; k < nkeys; k++)
+		{
+			ScanKeyData sk[2];
+
+			ScanKeyInit(&sk[0], pa, BTEqualStrategyNumber, int_eq_proc(ta), int_datum(ta, changed[i]));
+			ScanKeyInit(&sk[1], pb, BTEqualStrategyNumber, int_eq_proc(tb), int_datum(tb, keys[k]));
+			index_rescan(scan, sk, 2, NULL, 0);
+			if (index_getnext_slot(scan, ForwardScanDirection, slot))
+				now[n++] = (SiftScopeMemberKey) {changed[i], keys[k]};
+		}
+	pm = sift_spm_patched(object, changed, nchanged, now, n);
+	pfree(now);
+	ExecDropSingleTupleTableSlot(slot);
+	index_endscan(scan);
+	index_close(ix, NoLock);
+	table_close(prel, NoLock);
+	return pm;
+}
+
+SiftScopePairMap *
+sift_f2s_edited_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged)
+{
+	return sc->spec->joined != NULL ? edited_two_paths(heap, rel, sc, snap, object, keys, nkeys, changed, nchanged) : edited_one_path(heap, rel, sc, snap, object, keys, nkeys, changed, nchanged);
 }

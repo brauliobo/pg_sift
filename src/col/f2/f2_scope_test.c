@@ -99,10 +99,10 @@ sift_test_f2_scope_info(PG_FUNCTION_ARGS)
 
 	if (sc == NULL)
 		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("index \"%s\" has no summary for scope %d", RelationGetRelationName(rel), PG_GETARG_INT32(1))));
-	t = cstring_to_text(psprintf("keys=%u parts=%u granules=%llu flags=%x rings=%u bytes=%llu refreshes=%d/%d/%d sections=l0:%llu l1:%llu topk:%llu monthmap:%llu l2:%llu keydir:%llu dict:%llu route:%llu",
+	t = cstring_to_text(psprintf("keys=%u parts=%u granules=%llu flags=%x rings=%u bytes=%llu refreshes=%d/%d/%d combined=%d sections=l0:%llu l1:%llu topk:%llu monthmap:%llu l2:%llu keydir:%llu dict:%llu route:%llu",
 								 sc->meta.hdr.nkeys, sc->meta.hdr.nparts,
 								 (unsigned long long) sc->meta.hdr.total_granules, sc->meta.hdr.flags, sc->meta.ntopk_rings, (unsigned long long) sc->meta.len,
-								 sift_f2_scope_refreshes.full, sift_f2_scope_refreshes.parts, sift_f2_scope_refreshes.dirty,
+								 sift_f2_scope_refreshes.full, sift_f2_scope_refreshes.parts, sift_f2_scope_refreshes.dirty, sift_f2_scope_refreshes.combined,
 								 (unsigned long long) sc->meta.l0.len, (unsigned long long) sc->meta.l1.len, (unsigned long long) sc->meta.topk.len,
 								 (unsigned long long) sc->meta.monthmap.len, (unsigned long long) sc->meta.l2.len, (unsigned long long) sc->meta.keydir.len,
 								 (unsigned long long) sc->meta.dict.len, (unsigned long long) sc->meta.ent_route.len));

@@ -15,6 +15,7 @@
 
 #include "col/f2/delvec.h"
 #include "col/f2/part_format.h"
+#include "core/f2/manifest.h"
 #include "core/xid_cache.h"
 
 #define SIFT_DV_DELTA_MAGIC			UINT16_C(0x4443)	/* "DC" */
@@ -106,6 +107,9 @@ extern void sift_dv_write_batch(Relation rel, uint32 part_id, const SiftDv *cons
 
 /* The bytes of the vector at dv_blk, its delta tail included: what a cache of the decoded vector compares, as a delta changes them and not the generation */
 extern uint32 sift_dv_stream_len(Relation rel, BlockNumber dv_blk);
+
+/* The words of the page of the vector that a delta changes (its length, the dead rows, the greatest deleter, the LSN of the page): what a cache of what the vector means compares */
+extern SiftChainStamp sift_dv_stamp(Relation rel, BlockNumber dv_blk);
 
 /* Folds the delta tails of the parts of the partition into whole vectors (one manifest commit) before a compaction counts the dead rows: how many were folded */
 extern int	sift_dv_consolidate(Relation rel, uint64 part_id, const uint8 *key_lo);

@@ -8,6 +8,8 @@
 #include "postgres.h"
 
 #include "col/f2/f2_scope.h"
+#include "col/f2/f2_scope_cache.h"
+#include "col/f2/f2_scope_snap.h"
 #include "col/f2/l0_slab.h"
 #include "col/f2/part_vis.h"
 #include "core/cmp.h"
@@ -15,41 +17,34 @@
 
 #include "col/f2/f2_scope_int.h"
 
-typedef struct AddedLink
+struct GoneGranule
 {
-	int64		key;
-	uint32		row;
-} AddedLink;
+	SiftF2ScopeSlot *s;
+	uint32		g;
+	uint32		n;
+	uint16	   *rows;
+};
 
 struct SiftF2ScopeRowSet
 {
 	uint32		n;
 	uint32		cap;
 	int64	   *member;
-	uint8	   *member_null;
 	int64	   *time;
 	uint8	   *time_null;
 	int64	   *dim[SIFT_SCOPE_DIMS_CAP];
 	int64	   *meas[SIFT_SCOPE_MEAS_CAP];
 	uint8	   *meas_null[SIFT_SCOPE_MEAS_CAP];
 	SiftScopeRows rows;
-	uint32		nlinks;
-	AddedLink  *link;
+	uint32		nruns;
+	uint32	   *run_first;		/* the rows are ordered by member: run j is rows run_first[j] .. run_first[j + 1] - 1, those of one member */
+	uint32		nkeys;			/* the keys of the pairs of the object, ascending (key_val), each with the runs of the members that hold it: key_run[key_off[k] .. key_off[k + 1] - 1] */
+	int64	   *key_val;
+	uint32	   *key_off;
+	uint32	   *key_run;
+	SiftScopeShape shape;		/* the rows are kept for other statements: nothing here points into the one that read them */
 	const SiftF2ScopeCfg *sc;
-	SiftF2ScopeParts *owner;
-	struct GoneGranule *gran;	/* the granules the rows were read from, ascending by first row; their cells but the member are read when a key asks for one of their rows (gone_fill) */
-	uint32		ngran;
 };
-
-typedef struct GoneGranule
-{
-	SiftF2ScopeSlot *s;
-	uint32		g;
-	uint32		first;
-	uint32		n;
-	uint16	   *rows;
-	bool		filled;
-} GoneGranule;
 
 static SiftTidIndexEntry *
 slot_tix(SiftF2ScopeParts *p, SiftF2ScopeSlot *s)
@@ -82,6 +77,7 @@ sift_f2s_unseen_rows(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, uint16 *
 
 	if (!s->unseen)
 		return n;
+	(void) sift_f2s_slot_px(p, s);
 	dir = sift_f2s_slot_gdir(p, s);
 	part = sift_f2s_slot_part(p, s);
 	if (s->px != NULL && sift_pdel_idx_may_hit_granule(s->px, &slot_tix(p, s)[g]))
@@ -108,9 +104,9 @@ rowset_new(const SiftF2ScopeCfg *sc, uint32 cap)
 	struct SiftF2ScopeRowSet *a = palloc0(sizeof(*a));
 
 	a->sc = sc;
+	a->shape = sc->shape;
 	a->cap = cap;
 	a->member = palloc(cap * sizeof(int64));
-	a->member_null = palloc(cap);
 	if (sc->time_leaf >= 0)
 	{
 		a->time = palloc(cap * sizeof(int64));
@@ -126,16 +122,15 @@ rowset_new(const SiftF2ScopeCfg *sc, uint32 cap)
 	return a;
 }
 
+/* Row i of a decoded granule, after the rows of a (room for it made); a row of no member counts for no key and is left out */
 static void
-rowset_set_member(struct SiftF2ScopeRowSet *a, uint32 k, const SiftScopeRows *r, uint32 i)
+rowset_append(struct SiftF2ScopeRowSet *a, const SiftScopeRows *r, uint32 i)
 {
-	a->member[k] = r->member[i];
-	a->member_null[k] = r->member_null[i];
-}
+	const uint32 k = a->n;
 
-static void
-rowset_set_cells(struct SiftF2ScopeRowSet *a, uint32 k, const SiftScopeRows *r, uint32 i)
-{
+	if (r->member_null[i])
+		return;
+	a->member[k] = r->member[i];
 	if (a->time != NULL)
 	{
 		a->time[k] = r->time[i];
@@ -148,14 +143,7 @@ rowset_set_cells(struct SiftF2ScopeRowSet *a, uint32 k, const SiftScopeRows *r, 
 		a->meas[m][k] = r->meas[m][i];
 		a->meas_null[m][k] = r->meas_null[m][i];
 	}
-}
-
-/* Row i of a decoded granule, after the rows of a (room for it made) */
-static void
-rowset_append(struct SiftF2ScopeRowSet *a, const SiftScopeRows *r, uint32 i)
-{
-	rowset_set_member(a, a->n, r, i);
-	rowset_set_cells(a, a->n++, r, i);
+	a->n++;
 }
 
 /* The rows of a decoded granule but those in gone (ascending) */
@@ -183,10 +171,9 @@ added_slab(struct SiftF2ScopeRowSet *a, SiftF2ScopeParts *p, const SiftRowBuf *r
 		const uint32 k = a->n;
 
 		if (!sift_vis_inserted_cached(&p->xc, rb->xmin[r], rb->cmin[r]) || (px != NULL && sift_pdel_idx_has(px, rb->tid[r])) ||
-			(p->excl_leaf >= 0 && !rb->isnull[p->excl_leaf][r]))
+			(p->excl_leaf >= 0 && !rb->isnull[p->excl_leaf][r]) || rb->isnull[sc->member_leaf][r])
 			continue;
 		a->member[k] = rb->i[sc->member_leaf][r];
-		a->member_null[k] = rb->isnull[sc->member_leaf][r];
 		if (a->time != NULL)
 		{
 			a->time[k] = rb->i[sc->time_leaf][r] * sc->time_unit;
@@ -208,43 +195,50 @@ added_slab(struct SiftF2ScopeRowSet *a, SiftF2ScopeParts *p, const SiftRowBuf *r
 	}
 }
 
-static int
-link_order(const void *a, const void *b)
-{
-	const AddedLink *x = a,
-			   *y = b;
+static void rowset_index(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a);
 
-	if (x->key != y->key)
-		return x->key < y->key ? -1 : 1;
-	return x->row < y->row ? -1 : x->row > y->row;
+static int
+by_member(const void *a, const void *b, void *arg)
+{
+	const int64 *m = arg;
+	const uint32 x = *(const uint32 *) a,
+				y = *(const uint32 *) b;
+
+	return m[x] < m[y] ? -1 : m[x] > m[y] ? 1 : x < y ? -1 : x > y;
 }
 
-/* Each row to the keys its member belongs to, by key */
+/* Orders the rows by member and tells the runs: a key's cube is the rows of the runs of the members it owns, whatever the pairs are by then */
 static void
-rowset_link(struct SiftF2ScopeRowSet *a, SiftScopePairMap *pm)
+rowset_finish(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a)
 {
-	uint32		total = 0;
+	const uint32 n = a->n;
+	uint32	   *perm = palloc(Max(n, 1) * sizeof(uint32));
 
-	for (uint32 i = 0; i < a->n; i++)
+	for (uint32 i = 0; i < n; i++)
+		perm[i] = i;
+	qsort_arg(perm, n, sizeof(uint32), by_member, a->member);
+#define GATHER(arr, T) do { T *o = palloc(Max(n, 1) * sizeof(T)); for (uint32 i = 0; i < n; i++) o[i] = (arr)[perm[i]]; pfree(arr); (arr) = o; } while (0)
+	GATHER(a->member, int64);
+	if (a->time != NULL)
 	{
-		uint32		lo,
-					hi;
-
-		if (!a->member_null[i] && sift_spm_find(pm, a->member[i], &lo, &hi))
-			total += hi - lo;
+		GATHER(a->time, int64);
+		GATHER(a->time_null, uint8);
 	}
-	a->link = palloc(Max(total, 1) * sizeof(AddedLink));
-	for (uint32 i = 0; i < a->n; i++)
+	for (int d = 0; d < a->sc->shape.ndims; d++)
+		GATHER(a->dim[d], int64);
+	for (int m = 0; m < a->sc->shape.nmeas; m++)
 	{
-		uint32		lo,
-					hi;
-
-		if (!a->member_null[i] && sift_spm_find(pm, a->member[i], &lo, &hi))
-			for (uint32 q = lo; q < hi; q++)
-				a->link[a->nlinks++] = (AddedLink) {pm->scope_keys[pm->key_ordinals[q]], i};
+		GATHER(a->meas[m], int64);
+		GATHER(a->meas_null[m], uint8);
 	}
-	qsort(a->link, a->nlinks, sizeof(AddedLink), link_order);
-	a->rows = (SiftScopeRows) {.n = a->n,.member = a->member,.member_null = a->member_null,.time = a->time,.time_null = a->time_null};
+#undef GATHER
+	a->run_first = palloc((n + 1) * sizeof(uint32));
+	for (uint32 i = 0; i < n; i++)
+		if (i == 0 || a->member[i] != a->member[i - 1])
+			a->run_first[a->nruns++] = i;
+	a->run_first[a->nruns] = n;
+	pfree(perm);
+	a->rows = (SiftScopeRows) {.n = n,.member = a->member,.time = a->time,.time_null = a->time_null};
 	for (int d = 0; d < a->sc->shape.ndims; d++)
 		a->rows.dim[d] = a->dim[d];
 	for (int m = 0; m < a->sc->shape.nmeas; m++)
@@ -252,43 +246,116 @@ rowset_link(struct SiftF2ScopeRowSet *a, SiftScopePairMap *pm)
 		a->rows.meas[m] = a->meas[m];
 		a->rows.meas_null[m] = a->meas_null[m];
 	}
+	rowset_index(p, a);
+	a->sc = NULL;
 }
 
-/* The first link of the key */
+static const SiftScopePairMap *
+object_pairs(SiftF2ScopeParts *p)
+{
+	return p->pm_object != NULL ? p->pm_object : sift_f2s_pairs(p);
+}
+
+/* The runs of the members each key of the pairs of the object holds, by key, so that a key's rows are read without a pass over the runs of the others */
+static void
+rowset_index(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a)
+{
+	SiftScopePairMap *pm = (SiftScopePairMap *) object_pairs(p);
+	uint32	   *fill = palloc0((pm->nkeys + 1) * sizeof(uint32));
+
+	a->nkeys = pm->nkeys;
+	a->key_val = memcpy(palloc(Max(pm->nkeys, 1) * sizeof(int64)), pm->scope_keys, pm->nkeys * sizeof(int64));
+	a->key_off = palloc0((pm->nkeys + 1) * sizeof(uint32));
+	for (int pass = 0; pass < 2; pass++)
+	{
+		for (uint32 j = 0; j < a->nruns; j++)
+		{
+			uint32		lo,
+						hi;
+
+			if (!sift_spm_find(pm, a->member[a->run_first[j]], &lo, &hi))
+				continue;
+			for (uint32 q = lo; q < hi; q++)
+			{
+				const uint32 ord = pm->key_ordinals[q];
+
+				if (pass == 0)
+					a->key_off[ord + 1]++;
+				else
+					a->key_run[a->key_off[ord] + fill[ord]++] = j;
+			}
+		}
+		if (pass == 0)
+		{
+			for (uint32 k = 0; k < pm->nkeys; k++)
+				a->key_off[k + 1] += a->key_off[k];
+			a->key_run = palloc(Max(a->key_off[pm->nkeys], 1) * sizeof(uint32));
+		}
+	}
+	pfree(fill);
+}
+
+static const int64 *
+find_i64(const int64 *v, uint32 n, int64 x)
+{
+	return n > 0 ? bsearch(&x, v, n, sizeof(int64), sift_cmp_i64) : NULL;
+}
+
+/* The run of the member, UINT32_MAX when the set has none */
 static uint32
-link_first(const struct SiftF2ScopeRowSet *a, int64 key)
+run_of(const struct SiftF2ScopeRowSet *a, int64 member)
 {
 	uint32		lo = 0,
-				hi = a->nlinks;
+				hi = a->nruns;
 
 	while (lo < hi)
 	{
-		uint32		mid = lo + (hi - lo) / 2;
+		const uint32 mid = lo + (hi - lo) / 2;
 
-		if (a->link[mid].key < key)
+		if (a->member[a->run_first[mid]] < member)
 			lo = mid + 1;
 		else
 			hi = mid;
 	}
-	return lo;
+	return lo < a->nruns && a->member[a->run_first[lo]] == member ? lo : UINT32_MAX;
 }
 
-static void gone_fill(struct SiftF2ScopeRowSet *a, uint32 row);
+/* The runs of the members the key owns under the pairs of the read: those the object's pairs give it, but for the members the pairs of the read changed, and those of them it holds now */
+static uint32 *
+key_runs(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a, int64 key, uint32 *n)
+{
+	const int64 *at = find_i64(a->key_val, a->nkeys, key);
+	const uint32 ord = at != NULL ? (uint32) (at - a->key_val) : 0;
+	const uint32 first = at != NULL ? a->key_off[ord] : 0,
+				last = at != NULL ? a->key_off[ord + 1] : 0;
+	uint32	   *runs = palloc(Max(last - first + p->nchanged, 1) * sizeof(uint32));
+
+	*n = 0;
+	for (uint32 i = first; i < last; i++)
+		if (find_i64(p->changed, p->nchanged, a->member[a->run_first[a->key_run[i]]]) == NULL)
+			runs[(*n)++] = a->key_run[i];
+	for (uint32 c = 0; c < p->nchanged; c++)
+	{
+		const uint32 j = run_of(a, p->changed[c]);
+
+		if (j != UINT32_MAX && sift_f2s_owns(p, p->changed[c], key))
+			runs[(*n)++] = j;
+	}
+	return runs;
+}
 
 static bool
-rowset_cube(struct SiftF2ScopeRowSet *a, int64 scope_key, int32 month, SiftScopeCubeAcc *out)
+rowset_cube(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a, int64 scope_key, int32 month, SiftScopeCubeAcc *out)
 {
-	sift_scube_init(out, a->sc->shape);
-	for (uint32 i = link_first(a, scope_key); i < a->nlinks && a->link[i].key == scope_key; i++)
-	{
-		const uint32 row = a->link[i].row;
+	uint32		nruns;
+	uint32	   *runs = key_runs(p, a, scope_key, &nruns);
 
-		if (a->gran != NULL)
-			gone_fill(a, row);
-
-		if (month == SIFT_SCOPE_NO_MONTH || (a->time != NULL && !a->time_null[row] && sift_scope_month_of(a->time[row]) == month))
-			sift_scube_add_row(out, &a->rows, row, NULL);
-	}
+	sift_scube_init(out, a->shape);
+	for (uint32 r = 0; r < nruns; r++)
+		for (uint32 i = a->run_first[runs[r]]; i < a->run_first[runs[r] + 1]; i++)
+			if (month == SIFT_SCOPE_NO_MONTH || (a->time != NULL && !a->time_null[i] && sift_scope_month_of(a->time[i]) == month))
+				sift_scube_add_row(out, &a->rows, i, NULL);
+	pfree(runs);
 	if (out->row_count > 0)
 		return true;
 	sift_scube_free(out);
@@ -298,42 +365,72 @@ rowset_cube(struct SiftF2ScopeRowSet *a, int64 scope_key, int32 month, SiftScope
 bool
 sift_f2s_added_cube(void *arg, int64 scope_key, int32 month, SiftScopeCubeAcc *out)
 {
-	const SiftF2ScopeParts *p = arg;
+	SiftF2ScopeParts *p = arg;
 
-	return rowset_cube(p->added, scope_key, month, out);
+	return rowset_cube(p, p->added, scope_key, month, out);
 }
 
 uint32
 sift_f2s_added_months(void *arg, int64 scope_key, const int32 **months)
 {
-	const SiftF2ScopeParts *p = arg;
-	const struct SiftF2ScopeRowSet *a = p->added;
-	const uint32 first = link_first(a, scope_key);
-	int32	   *all = palloc(Max(a->nlinks - first, 1) * sizeof(int32));
-	uint32		n = 0;
+	SiftF2ScopeParts *p = arg;
+	struct SiftF2ScopeRowSet *a = p->added;
+	int32	   *all = palloc(Max(a->n, 1) * sizeof(int32));
+	uint32		nruns,
+				n = 0;
+	uint32	   *runs = key_runs(p, a, scope_key, &nruns);
 
-	for (uint32 i = first; a->time != NULL && i < a->nlinks && a->link[i].key == scope_key; i++)
-		if (!a->time_null[a->link[i].row])
-			all[n++] = sift_scope_month_of(a->time[a->link[i].row]);
+	for (uint32 r = 0; a->time != NULL && r < nruns; r++)
+		for (uint32 i = a->run_first[runs[r]]; i < a->run_first[runs[r] + 1]; i++)
+			if (!a->time_null[i])
+				all[n++] = sift_scope_month_of(a->time[i]);
+	pfree(runs);
 	qsort(all, n, sizeof(int32), sift_cmp_i32);
 	*months = all;
 	return n;
 }
 
-/* The rows of the overlay a read is worth: a tenth of those of the parts the summary names, within bounds */
+/* The rows of the overlay a read is worth: a tenth of those of the parts the summary names, within bounds; for rows the backend keeps (settled) the reads that follow pay nothing for them, so more */
 static uint64
 overlay_cap(const SiftF2ScopeParts *p)
 {
+	const bool	kept = p->settled_ok;
 	uint64		object_rows = 0;
 
 	for (int i = 0; i < p->n; i++)
 		object_rows += p->s[i].d.nrows;
-	return Min(Max(object_rows / 100 * SIFT_SCOPE_OVERLAY_PCT, SIFT_SCOPE_OVERLAY_MIN_ROWS), SIFT_SCOPE_OVERLAY_MAX_ROWS);
+	return Min(Max(object_rows / 100 * (kept ? SIFT_SCOPE_OVERLAY_KEPT_PCT : SIFT_SCOPE_OVERLAY_PCT), SIFT_SCOPE_OVERLAY_MIN_ROWS), SIFT_SCOPE_OVERLAY_MAX_ROWS);
+}
+
+/* The pending deletes of each partition of the manifest the snapshot sees, built when first asked for */
+const SiftPendDelIndex *
+sift_f2s_slot_px(SiftF2ScopeParts *p, SiftF2ScopeSlot *s)
+{
+	if (!s->px_lazy)
+		return s->px;
+	for (int k = 0; k < p->mr.n; k++)
+	{
+		if (p->mr.entries[k].part_id != s->part_id)
+			continue;
+		if (!p->px_built[k])
+		{
+			int			ndead = 0;
+			uint64	   *dead = sift_f2_pending_dead(p->rel, &p->mr.entries[k], p->snap, &ndead);
+			MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(p));
+
+			p->px_part[k] = ndead > 0 ? sift_pdel_idx_build(dead, ndead) : NULL;
+			p->px_built[k] = true;
+			MemoryContextSwitchTo(old);
+		}
+		s->px = p->px_part[k];
+	}
+	s->px_lazy = false;
+	return s->px;
 }
 
 /* The partitions of the manifest the snapshot sees: the pending deletes of each (set on its parts) and its slab, read; false when they are more than a read is worth */
 static bool
-load_partitions(SiftF2ScopeParts *p, const SiftManifestRead *mr, SiftRowBuf **slab, const SiftPendDelIndex **px, uint64 max_rows)
+load_partitions(SiftF2ScopeParts *p, const SiftManifestRead *mr, SiftRowBuf **slab, uint64 max_rows)
 {
 	const FullTransactionId xmin = sift_vis_snap_xmin(p->snap);
 	const SiftF2Rel *f = sift_f2_rel(p->rel);
@@ -347,7 +444,8 @@ load_partitions(SiftF2ScopeParts *p, const SiftManifestRead *mr, SiftRowBuf **sl
 		uint64	   *dead = sift_f2_pending_dead(p->rel, e, p->snap, &ndead);
 
 		npend += ndead;
-		px[k] = ndead > 0 ? sift_pdel_idx_build(dead, ndead) : NULL;
+		p->px_part[k] = ndead > 0 ? sift_pdel_idx_build(dead, ndead) : NULL;
+		p->px_built[k] = true;
 		for (int i = 0; i < p->n + p->nadd; i++)
 		{
 			SiftF2ScopeSlot *s = &p->s[i];
@@ -355,8 +453,8 @@ load_partitions(SiftF2ScopeParts *p, const SiftManifestRead *mr, SiftRowBuf **sl
 
 			if (s->part_id != e->part_id)
 				continue;
-			s->px = px[k];
-			s->unseen = px[k] != NULL || !settled;
+			s->px = p->px_part[k];
+			s->unseen = p->px_part[k] != NULL || !settled;
 			rows += i >= p->n || !settled ? s->d.nrows : 0;
 		}
 		if (e->l0_slab_blk != InvalidBlockNumber)
@@ -368,10 +466,28 @@ load_partitions(SiftF2ScopeParts *p, const SiftManifestRead *mr, SiftRowBuf **sl
 			sift_l0_slab_read(p->rel, e->part_id, e->l0_slab_blk, slab[k], &f->spec, p->snap, &pages, &npages);
 			rows += slab[k]->n;
 		}
-		if (rows > max_rows || npend > SIFT_SCOPE_OVERLAY_PEND_MAX)
+		if (rows > max_rows || npend > (p->settled_ok ? max_rows : SIFT_SCOPE_OVERLAY_PEND_MAX))
 			return false;
 	}
 	return true;
+}
+
+/* The slots of the partitions that have pending deletes may hold rows the snapshot does not see; which of them is left to the first read of their rows (sift_f2s_slot_px) */
+static void
+slots_unseen_lazy(SiftF2ScopeParts *p, const SiftManifestRead *mr)
+{
+	const FullTransactionId xmin = sift_vis_snap_xmin(p->snap);
+
+	for (int k = 0; k < mr->n; k++)
+		for (int i = 0; i < p->n + p->nadd; i++)
+		{
+			SiftF2ScopeSlot *s = &p->s[i];
+
+			if (s->part_id != mr->entries[k].part_id)
+				continue;
+			s->px_lazy = mr->entries[k].pend_del_blk != InvalidBlockNumber;
+			s->unseen = s->px_lazy || !sift_vis_part_inserts_settled(&s->d, xmin);
+		}
 }
 
 /* The parts of the manifest the summary does not name, after the ones it does */
@@ -392,7 +508,8 @@ add_unnamed_parts(SiftF2ScopeParts *p, const SiftManifestRead *mr, const SiftSco
 			part = sift_part_open(p->rel, parts[j].header_blk, parts[j].part_gen, (uint32) mr->entries[k].part_id);
 			if (part->hdr.ngranules == 0)
 				continue;
-			p->s = repalloc(p->s, (p->n + p->nadd + 1) * sizeof(SiftF2ScopeSlot));
+			if (p->n + p->nadd == p->cap)
+				p->s = repalloc(p->s, (p->cap = Max(p->cap * 2, 16)) * sizeof(SiftF2ScopeSlot));
 			p->s[p->n + p->nadd++] = (SiftF2ScopeSlot) {.part_gen = parts[j].part_gen,.part_id = mr->entries[k].part_id,.d = parts[j],.ng = part->hdr.ngranules,.part = part};
 		}
 	}
@@ -417,44 +534,89 @@ added_parts_rows(struct SiftF2ScopeRowSet *a, SiftF2ScopeParts *p)
 		}
 }
 
-bool
-sift_f2s_overlay_open(SiftF2ScopeParts *p, const SiftManifestRead *mr, const SiftScopeMeta *m)
+/* The rows the summary lacks that the snapshot sees, in the context of the change the backend keeps when there is one */
+static struct SiftF2ScopeRowSet *
+added_open(SiftF2ScopeParts *p, const SiftManifestRead *mr, SiftRowBuf **slab, MemoryContext cx)
 {
-	SiftRowBuf **slab = palloc0(Max(mr->n, 1) * sizeof(SiftRowBuf *));
-	const SiftPendDelIndex **px = palloc0(Max(mr->n, 1) * sizeof(SiftPendDelIndex *));
+	MemoryContext old = MemoryContextSwitchTo(cx);
 	uint64		cap = 0;
 	struct SiftF2ScopeRowSet *a;
 
-	sift_xid_cache_init(&p->xc, p->snap);
-	add_unnamed_parts(p, mr, m);
-	if (!load_partitions(p, mr, slab, px, overlay_cap(p)))
-		return false;
 	for (int i = p->n; i < p->n + p->nadd; i++)
 		cap += p->s[i].d.nrows;
 	for (int k = 0; k < mr->n; k++)
 		cap += slab[k] != NULL ? slab[k]->n : 0;
-	if (cap == 0)
+	a = cap == 0 ? NULL : rowset_new(p->sc, (uint32) cap);
+	if (a != NULL)
+	{
+		added_parts_rows(a, p);
+		for (int k = 0; k < mr->n; k++)
+			if (slab[k] != NULL)
+				added_slab(a, p, slab[k], p->px_part[k]);
+		rowset_finish(p, a);
+	}
+	MemoryContextSwitchTo(old);
+	return a;
+}
+
+bool
+sift_f2s_overlay_open(SiftF2ScopeParts *p, const SiftManifestRead *mr, const SiftScopeMeta *m, const SiftScopeMeta *cached)
+{
+	SiftRowBuf **slab = palloc0(Max(mr->n, 1) * sizeof(SiftRowBuf *));
+	uint64		stamp;
+	MemoryContext rows_cx = GetMemoryChunkContext(p);
+	bool		ok;
+
+	p->mr = *mr;
+	p->px_part = palloc0(Max(mr->n, 1) * sizeof(SiftPendDelIndex *));
+	p->px_built = palloc0(Max(mr->n, 1));
+	sift_xid_cache_init(&p->xc, p->snap);
+	add_unnamed_parts(p, mr, m);
+	p->settled_ok = cached != NULL && p->excl_leaf < 0 && sift_f2s_overlay_stamp(p, mr, &stamp);
+	if (p->settled_ok && (p->settled = sift_f2_scope_snap_find(cached, stamp)) != NULL)
+	{
+		slots_unseen_lazy(p, mr);
+		p->added = p->settled->added;
+		p->gone = p->settled->gone;
+		p->gone_many = p->settled->gone_many;
 		return true;
-	a = rowset_new(p->sc, (uint32) cap);
-	added_parts_rows(a, p);
+	}
+	if (p->settled_ok)
+	{
+		p->settled = sift_f2_scope_snap_start(cached, stamp);
+		rows_cx = p->settled->cx;
+	}
+	ok = load_partitions(p, mr, slab, overlay_cap(p));
+	if (ok)
+	{
+		p->added = added_open(p, mr, slab, rows_cx);
+		if (p->settled != NULL)
+		{
+			p->settled->added = p->added;
+			sift_f2_scope_snap_keep(cached, p->settled);
+			sift_f2_scope_snap_grown(p->settled, GetMemoryChunkContext(p));
+		}
+	}
+	else if (p->settled != NULL)
+	{
+		sift_f2_scope_snap_drop(p->settled);
+		p->settled = NULL;
+	}
 	for (int k = 0; k < mr->n; k++)
 		if (slab[k] != NULL)
-		{
-			added_slab(a, p, slab[k], px[k]);
 			sift_rowbuf_free(slab[k]);
-		}
-	rowset_link(a, sift_f2s_pairs(p));
-	p->added = a;
-	return true;
+	return ok;
 }
 
 /* The granules of the parts the summary names that hold rows the snapshot does not see, each with those rows; false when they are more than max */
 static bool
-gone_granules(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a, uint64 max, uint32 *total)
+gone_granules(SiftF2ScopeParts *p, struct GoneGranule **out, uint32 *ngran, uint64 max, uint32 *total)
 {
 	uint32		cap = 0;
+	struct GoneGranule *gran = NULL;
 
 	*total = 0;
+	*ngran = 0;
 	for (int i = 0; i < p->n; i++)
 	{
 		SiftF2ScopeSlot *s = &p->s[i];
@@ -468,91 +630,64 @@ gone_granules(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a, uint64 max, uint
 				continue;
 			if (*total + n > max)
 				return false;
-			if (a->ngran == cap)
+			if (*ngran == cap)
 			{
 				cap = Max(cap * 2, 16);
-				a->gran = a->gran == NULL ? palloc(cap * sizeof(GoneGranule)) : repalloc(a->gran, cap * sizeof(GoneGranule));
+				gran = gran == NULL ? palloc(cap * sizeof(struct GoneGranule)) : repalloc(gran, cap * sizeof(struct GoneGranule));
 			}
-			a->gran[a->ngran++] = (GoneGranule) {s, g, *total, n, memcpy(palloc(n * sizeof(uint16)), rows, n * sizeof(uint16)), false};
+			gran[(*ngran)++] = (struct GoneGranule) {s, g, n, memcpy(palloc(n * sizeof(uint16)), rows, n * sizeof(uint16))};
 			*total += n;
 		}
 	}
+	*out = gran;
 	return true;
 }
 
-/* The members of the rows of every granule, which tell the keys the rows count for */
-static void
-gone_members(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a)
+/* The rows of every granule of gran, decoded once: which keys they count for is told by the pairs of each read */
+static struct SiftF2ScopeRowSet *
+gone_rows(SiftF2ScopeParts *p, const struct GoneGranule *gran, uint32 ngran, uint32 total)
 {
-	for (uint32 k = 0; k < a->ngran; k++)
+	struct SiftF2ScopeRowSet *a = rowset_new(p->sc, Max(total, 1));
+
+	for (uint32 k = 0; k < ngran; k++)
 	{
-		const GoneGranule *gr = &a->gran[k];
 		SiftScopeRows r = {0};
 		MemoryContext old;
 
 		MemoryContextReset(p->gcx);
 		old = MemoryContextSwitchTo(p->gcx);
-		sift_f2s_decode_rows(p, gr->s, gr->g, gr->rows, gr->n, true, &r);
+		sift_f2s_decode_rows(p, gran[k].s, gran[k].g, gran[k].rows, gran[k].n, false, &r);
 		MemoryContextSwitchTo(old);
-		for (uint32 i = 0; i < gr->n; i++)
-			rowset_set_member(a, gr->first + i, &r, i);
+		for (uint32 i = 0; i < gran[k].n; i++)
+			rowset_append(a, &r, i);
 	}
-}
-
-/* The cells of the granule that holds row, read the first time a key asks for one of its rows: the granules whose rows belong to no key asked for are never read */
-static void
-gone_fill(struct SiftF2ScopeRowSet *a, uint32 row)
-{
-	uint32		lo = 0,
-				hi = a->ngran;
-	GoneGranule *gr;
-	SiftScopeRows r = {0};
-	MemoryContext old;
-
-	while (hi - lo > 1)
-	{
-		const uint32 mid = lo + (hi - lo) / 2;
-
-		if (a->gran[mid].first <= row)
-			lo = mid;
-		else
-			hi = mid;
-	}
-	gr = &a->gran[lo];
-	if (gr->filled)
-		return;
-	MemoryContextReset(a->owner->gcx);
-	old = MemoryContextSwitchTo(a->owner->gcx);
-	sift_f2s_decode_rows(a->owner, gr->s, gr->g, gr->rows, gr->n, false, &r);
-	MemoryContextSwitchTo(old);
-	for (uint32 i = 0; i < gr->n; i++)
-		rowset_set_cells(a, gr->first + i, &r, i);
-	gr->filled = true;
+	rowset_finish(p, a);
+	return a;
 }
 
 static void
 gone_open(SiftF2ScopeParts *p)
 {
-	MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(p));
-	struct SiftF2ScopeRowSet *a = palloc0(sizeof(*a));
-	uint32		total;
+	struct GoneGranule *gran = NULL;
+	uint32		ngran,
+				total;
 
-	a->owner = p;
-	if (gone_granules(p, a, overlay_cap(p), &total))
+	if (gone_granules(p, &gran, &ngran, overlay_cap(p), &total))
 	{
-		struct SiftF2ScopeRowSet *g = rowset_new(p->sc, Max(total, 1));
+		MemoryContext old = MemoryContextSwitchTo(p->settled != NULL ? p->settled->cx : GetMemoryChunkContext(p));
 
-		g->owner = p;
-		g->gran = a->gran;
-		g->ngran = a->ngran;
-		g->n = total;
-		gone_members(p, g);
-		rowset_link(g, sift_f2s_pairs(p));
-		p->gone = g;
+		p->gone = gone_rows(p, gran, ngran, total);
+		MemoryContextSwitchTo(old);
 	}
 	else
 		p->gone_many = true;
-	MemoryContextSwitchTo(old);
+	if (p->settled != NULL)
+	{
+		p->settled->gone = p->gone;
+		p->settled->gone_many = p->gone_many;
+		p->settled->gone_read = true;
+		sift_f2_scope_snap_grown(p->settled, GetMemoryChunkContext(p));
+	}
 }
 
 SiftScopeGone
@@ -560,9 +695,9 @@ sift_f2s_gone_cube(void *arg, int64 scope_key, int32 month, SiftScopeCubeAcc *ou
 {
 	SiftF2ScopeParts *p = arg;
 
-	if (p->gone == NULL && !p->gone_many)
+	if (p->gone == NULL && !p->gone_many && !(p->settled != NULL && p->settled->gone_read))
 		gone_open(p);
 	if (p->gone_many)
 		return SIFT_GONE_MANY;
-	return rowset_cube(p->gone, scope_key, month, out) ? SIFT_GONE_ROWS : SIFT_GONE_NONE;
+	return rowset_cube(p, p->gone, scope_key, month, out) ? SIFT_GONE_ROWS : SIFT_GONE_NONE;
 }

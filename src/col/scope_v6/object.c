@@ -546,6 +546,28 @@ sift_scope_meta_close(SiftScopeMeta *m)
 bool
 sift_scope_meta_open(SiftScopeMeta *m, const char *base, uint64 len)
 {
+	return sift_scope_meta_open_ex(m, base, len, 0);
+}
+
+bool
+sift_scope_meta_ensure_topk(SiftScopeMeta *m)
+{
+	bool		ok = true;
+
+	if (m->topk_packed)
+	{
+		MemoryContext old = MemoryContextSwitchTo(m->topk_cx);
+
+		ok = topk_unpack(m, true);
+		MemoryContextSwitchTo(old);
+		m->topk_packed = !ok;
+	}
+	return ok;
+}
+
+bool
+sift_scope_meta_open_ex(SiftScopeMeta *m, const char *base, uint64 len, uint32 flags)
+{
 	SiftScopeTrailer tr;
 	const SiftScopeSecEntry *dir;
 	SiftScopeSection hdr;
@@ -598,6 +620,13 @@ sift_scope_meta_open(SiftScopeMeta *m, const char *base, uint64 len)
 		if (dir[i].flags & ~(dir[i].tag == SEC_SCOPE_TOPK ? SIFT_SEC_LZ4 : 0U))
 			return false;
 		lz4 |= dir[i].tag == SEC_SCOPE_TOPK && (dir[i].flags & SIFT_SEC_LZ4);
+	}
+	if (lz4 && (flags & SIFT_SMETA_OPEN_LAZY_TOPK))
+	{
+		m->topk_stored = m->topk.len;
+		m->topk_cx = CurrentMemoryContext;
+		m->topk_packed = true;
+		return true;
 	}
 	return topk_unpack(m, lz4);
 }

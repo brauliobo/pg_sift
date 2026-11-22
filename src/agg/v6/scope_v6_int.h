@@ -23,7 +23,8 @@ typedef struct ScopeSpec
 	int			ord;
 	bool		by_key;			/* GROUP BY the key: a tuple for every key of the summary */
 	Oid			key_type;
-	bool		key_given;		/* key = constant: the one key */
+	bool		key_given;		/* key = constant, or key = ANY(array): the keys the statement names */
+	bool		key_array;		/* key_given by an array: the sorted distinct keys it holds; the cubes of the keys, added when the statement does not group by the key */
 	bool		grouped_const;	/* GROUP BY of columns that are constants: no tuple when there is no row */
 	bool		by_month;		/* GROUP BY date_trunc('month', time leaf) */
 	Oid			month_type;		/* timestamptz or timestamp: what date_trunc answers */
@@ -42,12 +43,16 @@ typedef struct ScopeSpec
 	bool		nulls_first;
 	bool		leaf_not_null;	/* the ring leaf cannot be NULL: the ring (NULLS LAST) serves an order that puts NULLs first */
 	int			limit;
+	int			tie_col;		/* topk: the second ORDER BY leaf (never NULL, an integer or a time), 0: none */
+	bool		tie_desc;
 	int			ncols;
 	int			col[SCOPE_COLS_MAX];
 	int			naggs;
 	SiftV6Agg  *agg;
 } ScopeSpec;
 
+/* A relation of the plain kind the scope planner reads: a table without inheritance, sampling or security quals */
+extern bool sift_v6_plain_table(const RangeTblEntry *rte);
 extern List *sift_v6_scope_spec_pack(const ScopeSpec *s);
 extern ScopeSpec *sift_v6_scope_spec_unpack(const List *ints);
 

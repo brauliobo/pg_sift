@@ -227,6 +227,7 @@ sift_scope_topk_get_ring(const SiftScopeMeta *m, const SiftScopeL2Root *r, uint3
 				n;
 	uint64		at;
 
+	SIFT_INVARIANT(!m->topk_packed, "scope rings are read before sift_scope_meta_ensure_topk unpacked them");
 	memset(out, 0, sizeof(*out) * SIFT_SCOPE_TOPK_CAP);
 	if (!sift_scope_ring_present(m, r, ring))
 		return 0;

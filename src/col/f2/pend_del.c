@@ -150,6 +150,27 @@ sift_pend_del_read(Relation rel, uint64 part_id, BlockNumber head, int *n, Block
 	return out;
 }
 
+SiftChainStamp
+sift_pend_del_stamp(Relation rel, uint64 part_id, BlockNumber head)
+{
+	SiftChainStamp st = {0};
+
+	for (BlockNumber blk = head; blk != InvalidBlockNumber;)
+	{
+		Buffer		buf = lock_pd(rel, blk, (uint32) part_id, BUFFER_LOCK_SHARE);
+		const SiftPendDelPageData *pd = PD(BufferGetPage(buf));
+
+		st.lsn += PageGetLSN(BufferGetPage(buf));
+		st.count += pd->nrecs;
+		st.pages++;
+		if (!FullTransactionIdIsValid(st.max_xid) || FullTransactionIdFollows(pd->max_xid, st.max_xid))
+			st.max_xid = pd->max_xid;
+		blk = pd->next_blk;
+		UnlockReleaseBuffer(buf);
+	}
+	return st;
+}
+
 BlockNumber
 sift_pend_del_first(SiftXlog *x, Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n)
 {

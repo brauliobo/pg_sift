@@ -69,6 +69,9 @@ extern bool sift_pend_del_place(SiftXlog *x, Relation rel, uint64 part_id, Block
  */
 extern int	sift_pend_del_unpair(SiftPendDelRec *recs, int n, SiftPendDelRec *keep, int *nkeep);
 
+/* The stamp of the chain at head: one page header read for each page, no record copied */
+extern SiftChainStamp sift_pend_del_stamp(Relation rel, uint64 part_id, BlockNumber head);
+
 /* The records of the chain at head, in order, and the blocks of its pages */
 extern SiftPendDelRec *sift_pend_del_read(Relation rel, uint64 part_id, BlockNumber head, int *n, BlockNumber **pages, int *npages);
 

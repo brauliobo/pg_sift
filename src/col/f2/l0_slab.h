@@ -84,6 +84,9 @@ extern bool sift_l0_slab_append_deleting(Relation rel, uint64 part_id, const uin
 /* The rows of the chain at head, from the headers of its pages: one page read for each page of the chain, no batch decoded */
 extern uint64 sift_l0_slab_rows(Relation rel, uint64 part_id, BlockNumber head);
 
+/* The stamp of the chain at head: one page header read for each page, no batch decoded */
+extern SiftChainStamp sift_l0_slab_stamp(Relation rel, uint64 part_id, BlockNumber head);
+
 /* Reads the rows of the chain at head into rb (its kinds are those of the columns): a chain of batches as they are, a chain of heap references as the rows of the tuples snap sees; the pages of the chain are returned when asked */
 extern void sift_l0_slab_read(Relation rel, uint64 part_id, BlockNumber head, SiftRowBuf *rb, const SiftPartSpec *spec, Snapshot snap, BlockNumber **pages, int *npages);
 

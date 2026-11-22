@@ -108,9 +108,9 @@ typedef struct Hits
 	uint32		cap;
 } Hits;
 
-/* For each dirty key, the granules whose member zone holds one of its changed members: one look at the zone of every granule */
+/* For each dirty key, the granules of the parts (a part with part_gen 0 is gone) whose member zone holds one of its changed members: one look at the zone of every granule */
 static void
-granules_hit(const SiftScopeMeta *old, const SiftScopeDirty *dirty, uint32 ndirty, const SiftScopeGranSource *src, Hits *hits)
+granules_hit(const SiftScopePartMapEntry *parts, uint32 nparts, const SiftScopeDirty *dirty, uint32 ndirty, const SiftScopeGranSource *src, Hits *hits)
 {
 	uint32		total = 0,
 				nall = 0;
@@ -123,8 +123,8 @@ granules_hit(const SiftScopeMeta *old, const SiftScopeDirty *dirty, uint32 ndirt
 		for (uint32 i = 0; i < dirty[k].nmembers; i++)
 			all[nall++] = dirty[k].members[i];
 	qsort(all, nall, sizeof(int64), sift_cmp_i64);
-	for (uint32 e = 0; e < old->hdr.nparts; e++)
-		for (uint32 g = old->parts[e].base_granule_idx; old->parts[e].part_gen != 0 && g < old->parts[e].base_granule_idx + old->parts[e].ngranules; g++)
+	for (uint32 e = 0; e < nparts; e++)
+		for (uint32 g = parts[e].base_granule_idx; parts[e].part_gen != 0 && g < parts[e].base_granule_idx + parts[e].ngranules; g++)
 		{
 			SiftScopeGranHead h;
 
@@ -206,7 +206,7 @@ sift_scope_refresh_dirty(const SiftScopeMeta *old, const SiftScopeBuildSpec *spe
 	uint32	   *pass;
 
 	memset(&job, 0, sizeof(job));
-	granules_hit(old, dirty, ndirty, src, hits);
+	granules_hit(old->parts, old->hdr.nparts, dirty, ndirty, src, hits);
 	job.plans = palloc0(sizeof(SiftKeyPlan) * Max(ndirty, 1));
 	for (uint32 k = 0; k < ndirty; k++)
 	{
@@ -456,4 +456,214 @@ sift_scope_refresh_parts(const SiftScopeMeta *old, const SiftScopeBuildSpec *spe
 		route_homes_pass(&job, old->hdr.nparts, pass, npass - (job.all_hi - job.all_lo));
 	sift_refresh_run(&job, src, out, stats);
 	sift_spm_free(job.sub);
+}
+
+/* ---------------------------------------------------------------------------
+ * 3. A compaction and pair edits in one pass
+ * ------------------------------------------------------------------------- */
+
+/* The plan of a key: the nodes that hold a retired granule go, and with the pair edits of d (NULL: none) those that may hold one of its members or a granule of h; false when nothing is to be done for the key */
+static bool
+plan_combined_key(const SiftScopeMeta *old, const SiftScopeL2Root *r, int64 key, bool takes_new, const SiftScopeDirty *d, const Hits *h, const Range *retired, uint32 nretired, SiftKeyPlan *p)
+{
+	bool		any = false;
+	uint32	   *kept;
+	uint32		nkept = 0;
+
+	p->key = key;
+	p->old = r;
+	p->dirty_node = palloc0(sizeof(bool) * Max(r == NULL ? 0 : r->l1_count, 1));
+	for (uint32 i = 0; r != NULL && i < r->l1_count; i++)
+	{
+		const SiftScopeL1Node *nd = &old->nodes[r->l1_first + i];
+		SiftScopeGranRef refs[SIFT_SCOPE_L1_CAP];
+
+		SIFT_INVARIANT(nd->nrefs <= SIFT_SCOPE_L1_CAP, "scope refresh: a node of %u refs", nd->nrefs);
+		sift_scope_node_refs(old, nd, refs);
+		for (uint32 q = 0; q < nd->nrefs && !p->dirty_node[i]; q++)
+			p->dirty_node[i] = in_ranges(retired, nretired, refs[q].global_granule_idx) || (d != NULL && in_sorted(h->g, h->n, refs[q].global_granule_idx));
+		for (uint32 c = 0; d != NULL && c < d->nmembers && !p->dirty_node[i]; c++)
+			p->dirty_node[i] = sift_scope_node_has_member(old, nd, d->members[c]);
+		any |= p->dirty_node[i];
+	}
+	if (!any && !takes_new && d == NULL)
+	{
+		pfree(p->dirty_node);
+		return false;
+	}
+	sift_plan_drops(old, p);
+	kept = palloc(sizeof(uint32) * Max(p->ndrop, 1));
+	for (uint32 i = 0; i < p->ndrop; i++)
+		if (!in_ranges(retired, nretired, p->drop[i]))
+			kept[nkept++] = p->drop[i];
+	p->mask = palloc(sizeof(uint32) * Max(nkept + (h != NULL ? h->n : 0), 1));
+	p->nmask = union_sorted(kept, nkept, h != NULL ? h->g : NULL, h != NULL ? h->n : 0, p->mask);
+	pfree(kept);
+	return true;
+}
+
+void
+sift_scope_refresh_combined(const SiftScopeMeta *old, const SiftScopeBuildSpec *spec, SiftScopePairMap *pm, const SiftScopePartSwap *swap, const SiftScopeDirty *dirty, uint32 ndirty, const SiftScopeGranSource *src, StringInfo out, SiftScopeBuildStats *stats)
+{
+	SiftRefreshJob job;
+	Range	   *retired = palloc(sizeof(*retired) * Max(swap->nold, 1));
+	Hits	   *hits = palloc0(sizeof(*hits) * Max(ndirty, 1));
+	uint32		nretired = 0,
+				total = (uint32) old->hdr.total_granules,
+				nkeys = 0,
+				ntouched,
+				npass;
+	int64	   *keys,
+			   *touched;
+	uint32	   *pass;
+
+	memset(&job, 0, sizeof(job));
+	job.parts = palloc(sizeof(*job.parts) * (old->hdr.nparts + swap->nadded + 1));
+	memcpy(job.parts, old->parts, sizeof(*job.parts) * old->hdr.nparts);
+	for (uint32 i = 0; i < swap->nold; i++)
+	{
+		uint32		p = 0;
+
+		while (p < old->hdr.nparts && job.parts[p].part_gen != swap->old_gens[i])
+			p++;
+		SIFT_INVARIANT(p < old->hdr.nparts, "scope refresh: part %llu is not in the summary", (unsigned long long) swap->old_gens[i]);
+		job.parts[p].part_gen = 0;
+	}
+	for (uint32 p = 0; p < old->hdr.nparts; p++)
+		if (job.parts[p].part_gen == 0 && old->parts[p].part_gen != 0)
+			retired[nretired++] = (Range) {job.parts[p].base_granule_idx, job.parts[p].base_granule_idx + job.parts[p].ngranules};
+	job.nparts = old->hdr.nparts;
+	job.max_part_gen = old->hdr.max_part_gen;
+	for (uint32 i = 0; i < swap->nadded; i++)
+	{
+		job.parts[job.nparts++] = (SiftScopePartMapEntry) {swap->added[i].part_gen, total, swap->added[i].ngranules};
+		total += swap->added[i].ngranules;
+		job.max_part_gen = Max(job.max_part_gen, swap->added[i].part_gen);
+	}
+	job.total_granules = total;
+	job.all_lo = (uint32) old->hdr.total_granules;
+	job.all_hi = total;
+
+	granules_hit(job.parts, old->hdr.nparts, dirty, ndirty, src, hits);
+	touched = keys_touched(pm, src, job.all_lo, job.all_hi, &ntouched);
+	job.plans = palloc0(sizeof(SiftKeyPlan) * Max(old->hdr.nkeys + ntouched + ndirty, 1));
+	keys = palloc(sizeof(int64) * Max(old->hdr.nkeys + ntouched + ndirty, 1));
+	for (uint32 ik = 0, it = 0, id = 0; ik < old->hdr.nkeys || it < ntouched || id < ndirty;)
+	{
+		const bool	has_old = ik < old->hdr.nkeys,
+					has_new = it < ntouched,
+					has_dirty = id < ndirty;
+		int64		key = has_old ? old->roots[ik].scope_key : has_new ? touched[it] : dirty[id].key;
+		const SiftScopeL2Root *r;
+		const SiftScopeDirty *d;
+		bool		takes_new;
+
+		if (has_new)
+			key = Min(key, touched[it]);
+		if (has_dirty)
+			key = Min(key, dirty[id].key);
+		r = has_old && old->roots[ik].scope_key == key ? &old->roots[ik++] : NULL;
+		takes_new = has_new && touched[it] == key;
+		it += takes_new;
+		d = has_dirty && dirty[id].key == key ? &dirty[id] : NULL;
+		if (plan_combined_key(old, r, key, takes_new, d, d != NULL ? &hits[id] : NULL, retired, nretired, &job.plans[nkeys]))
+			keys[nkeys++] = key;
+		id += d != NULL;
+	}
+	job.nplans = nkeys;
+	job.old = old;
+	job.spec = *spec;
+	job.sub = key_pairs(pm, keys, nkeys, (spec->flags & SIFT_SMETA_MULTISET) != 0);
+	npass = pass_list(job.plans, nkeys, &pass);
+	pass = repalloc(pass, sizeof(uint32) * (npass + (job.all_hi - job.all_lo) + 1));
+	for (uint32 g = job.all_lo; g < job.all_hi; g++)
+		pass[npass++] = g;
+	job.pass = pass;
+	job.npass = npass;
+	if (old->ent_route.p != NULL && (swap->nold > 0 || swap->nadded > 0))
+		route_homes_pass(&job, old->hdr.nparts, pass, npass - (job.all_hi - job.all_lo));
+	sift_refresh_run(&job, src, out, stats);
+	sift_spm_free(job.sub);
+}
+
+/* ---------------------------------------------------------------------------
+ * 4. The keys a set of changed members may touch
+ * ------------------------------------------------------------------------- */
+
+typedef struct Noted
+{
+	SiftScopeMemberKey *v;
+	uint32		n;
+	uint32		cap;
+} Noted;
+
+static void
+note(Noted *c, int64 key, int64 member)
+{
+	if (c->n == c->cap)
+		c->v = repalloc(c->v, sizeof(SiftScopeMemberKey) * (c->cap *= 2));
+	c->v[c->n++] = (SiftScopeMemberKey) {member, key};
+}
+
+static int
+noted_order(const void *a, const void *b)
+{
+	const SiftScopeMemberKey *x = a,
+			   *y = b;
+
+	if (x->key != y->key)
+		return x->key < y->key ? -1 : 1;
+	return x->member < y->member ? -1 : x->member > y->member;
+}
+
+uint32
+sift_scope_dirty_fast(const SiftScopeMeta *old, SiftScopePairMap *pm, const int64 *members, uint32 nm, SiftScopeDirty **out)
+{
+	int64	   *sorted = palloc(sizeof(int64) * Max(nm, 1));
+	Noted		c = {palloc(sizeof(SiftScopeMemberKey) * 64), 0, 64};
+	SiftScopeDirty *dd;
+	int64	   *mem;
+	uint32		nd = 0;
+
+	memcpy(sorted, members, sizeof(int64) * nm);
+	qsort(sorted, nm, sizeof(int64), sift_cmp_i64);
+	for (uint32 k = 0; k < old->hdr.nkeys; k++)
+	{
+		const SiftScopeL2Root *root = &old->roots[k];
+
+		for (uint32 v = 0; v < root->l1_count; v++)
+		{
+			const SiftScopeL1Node *nd1 = &old->nodes[root->l1_first + v];
+
+			for (uint32 j = lower_bound(sorted, nm, nd1->member_lo); j < nm && sorted[j] <= nd1->member_hi; j++)
+				if (sift_scope_node_has_member(old, nd1, sorted[j]))
+					note(&c, root->scope_key, sorted[j]);
+		}
+	}
+	for (uint32 i = 0; i < nm; i++)
+	{
+		uint32		lo,
+					hi;
+
+		if (sift_spm_find(pm, sorted[i], &lo, &hi))
+			for (uint32 q = lo; q < hi; q++)
+				note(&c, pm->scope_keys[pm->key_ordinals[q]], sorted[i]);
+	}
+	qsort(c.v, c.n, sizeof(SiftScopeMemberKey), noted_order);
+	dd = palloc(Max(c.n, 1) * sizeof(SiftScopeDirty));
+	mem = palloc(Max(c.n, 1) * sizeof(int64));
+	for (uint32 i = 0, u = 0; i < c.n; i++)
+	{
+		if (i > 0 && noted_order(&c.v[i - 1], &c.v[i]) == 0)
+			continue;
+		mem[u] = c.v[i].member;
+		if (nd == 0 || dd[nd - 1].key != c.v[i].key)
+			dd[nd++] = (SiftScopeDirty) {.key = c.v[i].key,.members = &mem[u],.nmembers = 0};
+		dd[nd - 1].nmembers++;
+		u++;
+	}
+	pfree(c.v);
+	pfree(sorted);
+	*out = dd;
+	return nd;
 }

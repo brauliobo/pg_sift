@@ -14,7 +14,9 @@
 #include "utils/snapmgr.h"
 
 #include "col/f2/delvec.h"
+#include "col/f2/f2_cache.h"
 #include "col/f2/f2_scope.h"
+#include "col/f2/f2_scope_cache.h"
 #include "col/f2/f2_store_schema.h"
 #include "col/f2/part_vis.h"
 #include "col/scope.h"
@@ -110,9 +112,7 @@ member_ok(const SiftColDef *member)
 bool
 sift_f2s_supported(Relation rel, const SiftF2Store *store, int ord)
 {
-	const SiftScopeSpecs *specs = sift_scope_specs(rel);
-
-	return specs != NULL && ord < specs->n && specs->s[ord]->joined == NULL && member_ok(member_def(store, ord));
+	return member_ok(member_def(store, ord));
 }
 
 bool
@@ -133,9 +133,6 @@ sift_f2s_cfg(Relation rel, const SiftF2Store *store, int ord, SiftF2ScopeCfg *sc
 	const SiftColDef *member = member_def(store, ord);
 	const char *kind = sift_f2s_is_table(store) ? "table" : "index";
 
-	if (sp->joined != NULL)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\" of %s \"%s\" has two paths, which format major 2 does not summarize yet", sp->key_name, kind, RelationGetRelationName(rel)),
-						errhint("Declare the scope over one relation.")));
 	if (!member_ok(member))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\" of %s \"%s\" has a member key that is not an integer column", sp->key_name, kind, RelationGetRelationName(rel)),
 						errhint("Declare the scope over an integer member column.")));
@@ -189,31 +186,7 @@ sift_f2_scope_reads_any(Relation rel, const int16 *leaves, int n)
 	return false;
 }
 
-/* The pairs (member, scope key) of the btree the declaration records, as the snapshot sees them */
-static int64
-key_value(Oid type, Datum d)
-{
-	return type == INT2OID ? (int64) DatumGetInt16(d) : type == INT4OID ? (int64) DatumGetInt32(d) : DatumGetInt64(d);
-}
-
-static bool
-int_type(Oid type)
-{
-	return type == INT2OID || type == INT4OID || type == INT8OID;
-}
-
-static void
-pairs_grow(SiftMemTracker *t, SiftScopeMemberKey **pairs, uint32 *cap)
-{
-	uint32		ncap = Min(Max(1024, *cap * 2), MaxAllocSize / sizeof(SiftScopeMemberKey));
-
-	if (ncap == *cap || sift_mem_would_exceed(t, (Size) (ncap - *cap) * sizeof(SiftScopeMemberKey)))
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the pairs of the scope do not fit in maintenance_work_mem"), errhint("Raise maintenance_work_mem.")));
-	*pairs = *pairs ? repalloc(*pairs, (Size) ncap * sizeof(SiftScopeMemberKey)) : sift_mem_alloc(t, t->root_cx, (Size) ncap * sizeof(SiftScopeMemberKey));
-	*cap = ncap;
-}
-
-/* Format 2 summarizes the scopes over one relation of integer pairs; the other indexes of a scope stay in format major 1 */
+/* Format 2 summarizes the scopes whose pairs are integers; the other indexes of a scope stay in format major 1 */
 bool
 sift_f2s_index_summarizable(Relation heap, Relation index)
 {
@@ -226,10 +199,8 @@ sift_f2s_index_summarizable(Relation heap, Relation index)
 					key;
 		bool		ok;
 
-		if (specs->s[i]->joined != NULL)
-			return false;
 		sift_scope_relation(heap, index, specs->s[i], &pairs, &member, &key);
-		ok = int_type(get_atttype(RelationGetRelid(pairs), member)) && int_type(get_atttype(RelationGetRelid(pairs), key));
+		ok = sift_f2s_int_type(get_atttype(RelationGetRelid(pairs), member)) && sift_f2s_int_type(get_atttype(RelationGetRelid(pairs), key));
 		table_close(pairs, NoLock);
 		if (!ok)
 			return false;
@@ -250,55 +221,10 @@ sift_f2s_ready(Relation rel, const SiftF2Store *store, int ord)
 	ok = OidIsValid(sift_scope_relation_index(rel, rel, sift_scope_specs(rel)->s[ord], &pairs, &a, &b));
 	if (ok)
 	{
-		ok = int_type(TupleDescAttr(pairs->rd_att, a - 1)->atttypid) && int_type(TupleDescAttr(pairs->rd_att, b - 1)->atttypid);
+		ok = sift_f2s_int_type(TupleDescAttr(pairs->rd_att, a - 1)->atttypid) && sift_f2s_int_type(TupleDescAttr(pairs->rd_att, b - 1)->atttypid);
 		table_close(pairs, NoLock);
 	}
 	return ok && sift_scope_has_journal(rel, ord);
-}
-
-SiftScopePairMap *
-sift_f2s_load_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap)
-{
-	Relation	prel;
-	AttrNumber	a,
-				b;
-	Oid			btree = sift_scope_relation_index(heap, rel, sc->spec, &prel, &a, &b);
-	Relation	ix = index_open(btree, AccessShareLock);
-	IndexScanDesc scan = sift_index_beginscan(prel, ix, snap, 0);
-	TupleTableSlot *slot = table_slot_create(prel, NULL);
-	Oid			ta = TupleDescAttr(prel->rd_att, a - 1)->atttypid,
-				tb = TupleDescAttr(prel->rd_att, b - 1)->atttypid;
-	SiftScopeMemberKey *pairs = NULL;
-	uint32		n = 0,
-				cap = 0;
-	SiftMemTracker mem;
-	SiftScopePairMap *pm;
-
-	if (!int_type(ta) || !int_type(tb))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the pairs of scope \"%s\" are not integers", sc->spec->key_name),
-						errhint("Format major 2 summarizes scopes whose member and key are integer columns.")));
-	sift_mem_init(&mem, "scope pairs", CurrentMemoryContext, true, SIFT_BUDGET_MAINT_MEM, 1, 1);
-	index_rescan(scan, NULL, 0, NULL, 0);
-	while (index_getnext_slot(scan, ForwardScanDirection, slot))
-	{
-		bool		na,
-					nb;
-		Datum		m = slot_getattr(slot, a, &na),
-					k = slot_getattr(slot, b, &nb);
-
-		if (na || nb)
-			continue;
-		if (n == cap)
-			pairs_grow(&mem, &pairs, &cap);
-		pairs[n++] = (SiftScopeMemberKey) {key_value(ta, m), key_value(tb, k)};
-	}
-	pm = sift_spm_build(pairs, n, sift_scope_pairs_multiset(rel, sc->spec));
-	sift_mem_end(&mem);
-	ExecDropSingleTupleTableSlot(slot);
-	index_endscan(scan);
-	index_close(ix, NoLock);
-	table_close(prel, NoLock);
-	return pm;
 }
 
 /* The rings of a summary are those its header names: the time leaf and up to three order leaves */
@@ -339,36 +265,48 @@ scope_abandon(MemoryContext cx, MemoryContext old, Relation rel, Relation heap)
 	return NULL;
 }
 
+/* The summary of scope ord as the directory names it: the entry of the backend's cache when the statement reads the cubes of a snapshot (live), else the object read from its part, rings unpacked */
+static const SiftScopeMeta *
+scope_object(Relation rel, const SiftPlanSnapshot *plan, int ord, MemoryContext cx, bool live, SiftScopeMeta *own)
+{
+	const SiftManifestScopeRef *ref = sift_f2_scope_cache_ref(plan, ord);
+	uint64		len;
+	char	   *bytes;
+
+	if (ref == NULL)
+		return NULL;
+	if (live)
+		return sift_f2_scope_cache_get(rel, plan, ord, cx);
+	bytes = sift_f2_scope_read_object(rel, sift_part_open(rel, ref->header_blk, ref->meta_gen, 0), &len);
+	if (bytes == NULL || !sift_scope_meta_open(own, bytes, len))
+		SIFT_CORRUPT(rel, "The summary of scope %d is damaged.", ord);
+	return own;
+}
+
 /* live: the rows the summary lacks or counts too many for the snapshot are read from the parts (f2_scope_over.c); NULL when it cannot be served from the summary and the parts */
 static SiftF2Scope *
-scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live)
+scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const int64 *keys, uint32 nkeys)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
-	SiftColMetaPageData meta = sift_col_meta_read(rel);
-	int			n;
-	SiftManifestScopeRef *refs = sift_manifest_read_scopes(rel, &meta, &n);
-	SiftManifestScopeRef *ref = NULL;
+	const SiftPlanSnapshot *plan = sift_plan_cache_get(rel, CurrentMemoryContext);
 	SiftManifestRead mr;
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift scope reader");
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftF2Scope *sc = palloc0(sizeof(SiftF2Scope));
 	SiftF2ScopeCfg *cfg = palloc(sizeof(SiftF2ScopeCfg));
 	SiftF2ScopeParts *p;
-	uint64		len;
-	SiftPart   *part;
-	char	   *bytes;
+	const SiftScopeMeta *meta;
 	Relation	heap = sift_f2s_is_table(store) ? rel : table_open(sift_scope_fact_oid(rel), AccessShareLock);
 
-	for (int i = 0; i < n; i++)
-		if (refs[i].scope_ord == ord && (refs[i].flags & SIFT_SCOPEREF_ACTIVE))
-			ref = &refs[i];
-	if (ref == NULL)
+	meta = scope_object(rel, plan, ord, cx, live, &sc->meta);
+	if (meta == NULL)
 		return scope_abandon(cx, old, rel, heap);
+	if (meta != &sc->meta)
+	{
+		sc->meta = *meta;
+		sc->cached = meta;
+	}
 	sift_f2s_cfg(rel, store, ord, cfg);
-	part = sift_part_open(rel, ref->header_blk, ref->meta_gen, 0);
-	bytes = sift_f2_scope_read_object(rel, part, &len);
-	if (bytes == NULL || !sift_scope_meta_open(&sc->meta, bytes, len))
-		SIFT_CORRUPT(rel, "The summary of scope %d is damaged.", ord);
 	sift_f2s_cfg_rings_of(cfg, store, &sc->meta);
 	mr = sift_manifest_read_range(rel, NULL, NULL);
 	p = sift_f2s_parts_new(rel, store, heap, cfg, snap, NULL, sc->meta.hdr.nparts);
@@ -380,18 +318,13 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live)
 
 		if (e->part_gen == 0)
 			continue;
-		for (int k = 0; k < mr.n && !found; k++)
-		{
-			int			np;
-			SiftPartDesc *parts = sift_manifest_read_parts(rel, &mr.entries[k], &np);
-
-			for (int j = 0; j < np && !found; j++)
-				if (parts[j].part_gen == e->part_gen)
+		for (int k = 0; k < plan->npartitions && !found; k++)
+			for (int j = 0; j < plan->partlists[k].nparts && !found; j++)
+				if (plan->partlists[k].parts[j].part_gen == e->part_gen)
 				{
-					(void) sift_f2s_parts_add(p, &parts[j], mr.entries[k].part_id, e->base_granule_idx, e->ngranules);
+					(void) sift_f2s_parts_add(p, &plan->partlists[k].parts[j], plan->partitions[k].part_id, e->base_granule_idx, e->ngranules);
 					found = true;
 				}
-		}
 		if (!found && live)
 			return scope_abandon(cx, old, rel, heap);
 		if (!found)
@@ -401,8 +334,17 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live)
 	}
 	if (p->excl_leaf >= 0 && !sift_f2s_leaf_direct(p, p->excl_leaf))
 		return scope_abandon(cx, old, rel, heap);
-	p->pair_gen = live ? ref->meta_gen : 0;
-	if (live && !(sift_f2s_deltas_clear(rel, store, ord, &mr) && sift_f2s_pairs_unchanged(rel, ord, &sc->meta, snap) && sift_f2s_overlay_open(p, &mr, &sc->meta)))
+	if (live && !(sift_f2s_deltas_clear(rel, store, ord, &mr) && sift_f2s_pair_edits(rel, ord, &sc->meta, snap, keys, nkeys, &sc->changed, &sc->nchanged)))
+		return scope_abandon(cx, old, rel, heap);
+	p->pair_gen = live ? sift_f2_scope_cache_ref(plan, ord)->meta_gen : 0;
+	if (live && sc->nchanged > 0)
+	{
+		p->pm_object = sift_f2s_pairs(p);
+		p->changed = sc->changed;
+		p->nchanged = sc->nchanged;
+		p->pm = sift_f2s_edited_pairs(heap, rel, cfg, snap, p->pm_object, keys, nkeys, sc->changed, sc->nchanged);
+	}
+	if (live && !sift_f2s_overlay_open(p, &mr, &sc->meta, sc->cached))
 		return scope_abandon(cx, old, rel, heap);
 	sc->rel = rel;
 	sc->cx = cx;
@@ -424,18 +366,18 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live)
 SiftF2Scope *
 sift_f2_scope_open(Relation rel, int ord, Snapshot snap, int excl_col)
 {
-	return scope_open(rel, ord, snap, excl_col, false);
+	return scope_open(rel, ord, snap, excl_col, false, NULL, 0);
 }
 
-/* The summary read for the snapshot of a statement whatever the parts and the slabs hold that it does not count (NULL: it cannot be served, the join answers) */
+/* The summary read for the snapshot of a statement whatever the parts and the slabs hold that it does not count, and the pairs of the keys it reads as the journal says they changed (NULL: it cannot be served, the join answers) */
 SiftF2Scope *
-sift_f2_scope_open_live(Relation rel, int ord, Snapshot snap, int excl_col)
+sift_f2_scope_open_keys(Relation rel, int ord, Snapshot snap, int excl_col, const int64 *keys, uint32 nkeys)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 
 	if (snap->snapshot_type != SNAPSHOT_MVCC || sift_f2s_unreadable(rel, store, snap) || !sift_f2s_supported(rel, store, ord))
 		return NULL;
-	return scope_open(rel, ord, snap, excl_col, true);
+	return scope_open(rel, ord, snap, excl_col, true, keys, nkeys);
 }
 
 void
@@ -444,10 +386,22 @@ sift_f2_scope_close(SiftF2Scope *sc)
 	Relation	heap = sc->heap;
 	bool		own_heap = heap != sc->rel;
 
-	sift_scope_meta_close(&sc->meta);
+	if (sc->cached == NULL)
+		sift_scope_meta_close(&sc->meta);
 	MemoryContextDelete(sc->cx);
 	if (own_heap)
 		table_close(heap, NoLock);
+}
+
+bool
+sift_f2_scope_rings(SiftF2Scope *sc)
+{
+	if (sc->cached == NULL)
+		return true;
+	if (!sift_f2_scope_cache_rings(sc->cached))
+		return false;
+	sc->meta = *sc->cached;
+	return true;
 }
 
 int

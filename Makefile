@@ -626,6 +626,7 @@ TESTING_REGRESS += quarantine_vacuum
 TESTING_REGRESS += quarantine_views
 TESTING_REGRESS += read_%
 TESTING_REGRESS += scope_overlay_parity
+TESTING_REGRESS += scope_pair_edit_live
 TESTING_REGRESS += segfmt_%
 TESTING_REGRESS += shm_ledger
 TESTING_REGRESS += shm_manifest

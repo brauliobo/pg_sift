@@ -71,6 +71,15 @@ StaticAssertDecl(offsetof(SiftScopeDirPageData, entries) == 32, "SiftScopeDirPag
 
 #define SIFT_SCOPEDIR_CAP		((SIFT_PAGE_PAYLOAD - offsetof(SiftScopeDirPageData, entries)) / sizeof(SiftManifestScopeRef))
 
+/* What a chain of pages (a slab, pending deletes) holds, read from its page headers: it changes with every append or rewrite of a page */
+typedef struct SiftChainStamp
+{
+	uint64		lsn;			/* sum of the page LSNs */
+	uint64		count;			/* rows or records of the pages */
+	uint32		pages;
+	FullTransactionId max_xid;
+} SiftChainStamp;
+
 /*
  * The key of the end of the key space is all zero bytes in key_hi, as the lower bound of the first partition is in key_lo. The time bounds are those of the immutable parts of its list, not of the
  * rows of its slab (the slab is always read): a partition with no part has the empty range [INT64_MAX, INT64_MIN].

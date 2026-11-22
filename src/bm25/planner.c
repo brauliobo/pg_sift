@@ -20,6 +20,7 @@
 #include "agg/agg.h"
 #include "agg/plan_int.h"
 #include "agg/v6/v6.h"
+#include "agg/v6/v6_join_push.h"
 #include "agg/v6/v6_join.h"
 #include "agg/v6/v6_live.h"
 #include "core/compat.h"
@@ -638,6 +639,7 @@ sift_planner_init(void)
 	RegisterCustomScanMethods(&sift_agg_v6_plan_methods);
 	RegisterCustomScanMethods(&sift_agg_v6_join_plan_methods);
 	RegisterCustomScanMethods(&sift_agg_v6_asof_plan_methods);
+	RegisterCustomScanMethods(&sift_agg_v6_push_plan_methods);
 	sift_agg_v6_live_register();
 	prev_pathlist_hook = set_rel_pathlist_hook;
 	set_rel_pathlist_hook = sift_set_rel_pathlist;

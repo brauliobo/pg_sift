@@ -40,6 +40,7 @@ sift_f2s_parts_new(Relation rel, SiftF2Store *store, Relation heap, const SiftF2
 	p->pm = pm;
 	p->gcx = sift_mem_allocset_create(CurrentMemoryContext, "sift scope granule");
 	p->scx = sift_mem_allocset_create(CurrentMemoryContext, "sift scope strides");
+	p->mcx = sift_mem_allocset_create(CurrentMemoryContext, "sift scope member granule");
 	return p;
 }
 
@@ -559,6 +560,12 @@ ent_owns(void *arg, int64 member, int64 key)
 	return owns_member(arg, member, key);
 }
 
+bool
+sift_f2s_owns(SiftF2ScopeParts *p, int64 member, int64 key)
+{
+	return owns_member(p, member, key);
+}
+
 static uint32
 ent_scan_stride(void *arg, uint32 gidx, uint32 stride, bool impure, int64 key, SiftScopeNewest *out)
 {
@@ -718,6 +725,30 @@ ent_granule_cube(void *arg, uint32 gidx, int32 month, SiftScopeCubeAcc *out, con
 	return false;
 }
 
+static SiftScopeRows *
+member_rows(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g)
+{
+	const uint32 gidx = s->base + g;
+	MemoryContext old;
+	SiftScopeRows *r;
+
+	for (int i = 0; i < p->nm; i++)
+		if (p->mgidx[i] == gidx)
+			return p->mrows[i];
+	if (p->nm == SIFT_F2S_MEMBER_GRANULES)
+	{
+		MemoryContextReset(p->mcx);
+		p->nm = 0;
+	}
+	old = MemoryContextSwitchTo(p->mcx);
+	r = palloc0(sizeof(SiftScopeRows));
+	decode_rows(p, s, g, r);
+	MemoryContextSwitchTo(old);
+	p->mgidx[p->nm] = gidx;
+	p->mrows[p->nm++] = r;
+	return r;
+}
+
 static bool
 ent_member_cube(void *arg, int64 member, int32 month, SiftScopeCubeAcc *out)
 {
@@ -733,25 +764,21 @@ ent_member_cube(void *arg, int64 member, int32 month, SiftScopeCubeAcc *out)
 		for (uint32 g = 0; g < s->ng; g++)
 		{
 			SiftZone	z = sift_f2s_slot_zone(p, s, p->sc->member_leaf, g);
-			SiftScopeRows r = {0};
 			const uint16 *gone;
+			SiftScopeRows *r;
 			uint32		ng;
-			MemoryContext old;
 
 			if (!(z.flags & SIFT_ZONE_NONE) && (member < z.min || member > z.max))
 				continue;
 			ng = granule_excl(p, s, g, &gone);
-			MemoryContextReset(p->gcx);
-			old = MemoryContextSwitchTo(p->gcx);
-			decode_rows(p, s, g, &r);
-			MemoryContextSwitchTo(old);
-			for (uint32 row = 0; row < r.n; row++)
+			r = member_rows(p, s, g);
+			for (uint32 row = 0; row < r->n; row++)
 			{
-				if (r.member_null[row] || r.member[row] != member || has_row(gone, ng, row))
+				if (r->member_null[row] || r->member[row] != member || has_row(gone, ng, row))
 					continue;
-				if (month != SIFT_SCOPE_NO_MONTH && (r.time_null[row] || sift_scope_month_of(r.time[row]) != month))
+				if (month != SIFT_SCOPE_NO_MONTH && (r->time_null[row] || sift_scope_month_of(r->time[row]) != month))
 					continue;
-				sift_scube_add_row(out, &r, row, NULL);
+				sift_scube_add_row(out, r, row, NULL);
 			}
 		}
 	}

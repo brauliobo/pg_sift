@@ -31,6 +31,7 @@
 #include "agg/v6/v6_par_pg.h"
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6.h"
+#include "agg/v6/v6_join_push.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_vexpr.h"
 #include "agg/v6/v6_argext.h"
@@ -118,6 +119,12 @@ bool
 sift_v6_leaf_holds(const SiftColRel *r, int att, SiftV6Class cls)
 {
 	return leaf_class_ok(&r->schema->cols[r->first[att]], r->nleaves[att], cls);
+}
+
+bool
+sift_v6_table_leaf_holds(const SiftF2Store *store, int att, SiftV6Class cls)
+{
+	return att > 0 && att <= store->natts && leaf_class_ok(&store->schema->cols[store->att_first[att]], sift_f2_store_attr_leaves(store, att), cls);
 }
 
 static bool
@@ -775,6 +782,7 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 		sift_v6_star_upper_paths(root, input_rel, output_rel, extra);
 		sift_v6_unnest_upper_paths(root, input_rel, output_rel, extra);
 		sift_agg_v6_scope_upper_paths(root, input_rel, output_rel, extra);
+		sift_agg_v6_join_push_paths(root, input_rel, output_rel, extra);
 		return;
 	}
 	if (!sift_v6_plan_shape(root, input_rel, output_rel))
@@ -826,15 +834,23 @@ sift_v6_group_exprs_of(PlannerInfo *root)
 bool
 sift_v6_compile_fact(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *out, IndexOptInfo *ix, GroupPathExtraData *extra, SiftV6Spec *spec, List **scan_tlist)
 {
-	V6Plan		p = {.root = root,.rel = fact,.out = out,.relid = ix->indexoid,.index = ix};
-	List	   *group_exprs = sift_v6_group_exprs_of(root);
-	Relation	irel = index_open(ix->indexoid, AccessShareLock);
+	const Oid	relid = ix != NULL ? ix->indexoid : planner_rt_fetch(fact->relid, root)->relid;
+	V6Plan		p = {.root = root,.rel = fact,.out = out,.relid = relid,.index = ix};
+	Relation	rel = ix != NULL ? index_open(relid, AccessShareLock) : table_open(relid, AccessShareLock);
 	bool		ok;
 
-	p.colrel = sift_col_rel(irel);
-	p.f2 = sift_f2_rel(irel);
-	ok = sift_v6_compile_on(&p, extra, group_exprs);
-	index_close(irel, NoLock);
+	if (ix != NULL)
+	{
+		p.colrel = sift_col_rel(rel);
+		p.f2 = sift_f2_rel(rel);
+	}
+	else
+		p.store = sift_f2_store_open(rel);
+	ok = sift_v6_compile_on(&p, extra, sift_v6_group_exprs_of(root));
+	if (ix != NULL)
+		index_close(rel, NoLock);
+	else
+		table_close(rel, NoLock);
 	*spec = p.spec;
 	*scan_tlist = p.scan_tlist;
 	return ok;

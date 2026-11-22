@@ -24,6 +24,7 @@
 #include "optimizer/prep.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
+#include "rewrite/rewriteManip.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
@@ -32,6 +33,7 @@
 #include "agg/plan/format_ops.h"
 #include "agg/spec/spec.h"
 #include "agg/v6/scope_v6_int.h"
+#include "agg/v6/scope_v6_match.h"
 #include "col/am.h"
 #include "col/am/format_ops.h"
 #include "col/col.h"
@@ -51,6 +53,7 @@ typedef struct ScopePlan
 	SiftF2ScopeLayout layout;
 	SiftScopeLeg leg;
 	Query	   *pairs_query;	/* the single-table sub-select or CTE the pairs are, NULL for the relation itself */
+	Query	   *pairs_raw;		/* a sub-select or CTE of another form: it is the pairs of a scope of two paths when scope_matches says so (pairs_query then stands for it) */
 	Expr	   *key_expr;
 	Expr	   *lo_expr;
 	Expr	   *hi_expr;
@@ -208,26 +211,71 @@ key_operand(const ScopePlan *p, OpExpr *op, bool inner, Expr **rhs)
 	return true;
 }
 
-/* The one condition on the pairs is the key = K, from the statement or from the sub-select; none: every key (only a statement that groups by the key) */
+/* key = ANY(array of integers), an array constant or a parameter: IN (K1, K2, ...) */
+static bool
+key_array_operand(const ScopePlan *p, ScalarArrayOpExpr *sa, bool inner, Expr **rhs)
+{
+	Node	   *l,
+			   *r;
+
+	if (!sa->useOr || list_length(sa->args) != 2 || get_op_opfamily_strategy(sa->opno, INTEGER_BTREE_FAM_OID) != BTEqualStrategyNumber)
+		return false;
+	l = linitial(sa->args);
+	r = lsecond(sa->args);
+	if (!(inner ? IsA(l, Var) && ((Var *) l)->varattno == p->leg.key : is_key_var(p, l)) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) || !is_int(get_element_type(exprType(r))))
+		return false;
+	*rhs = (Expr *) r;
+	return true;
+}
+
+static bool
+key_clause(const ScopePlan *p, Node *clause, bool inner, Expr **rhs)
+{
+	if (IsA(clause, OpExpr))
+		return key_operand(p, (OpExpr *) clause, inner, rhs);
+	return IsA(clause, ScalarArrayOpExpr) && key_array_operand(p, (ScalarArrayOpExpr *) clause, inner, rhs);
+}
+
+/* The conditions of the statement on the pairs besides the key are the predicate of the unique btree that makes the pairs, no more and no less: it reads exactly the rows that are pairs */
+static bool
+pairs_predicate_ok(const ScopePlan *p, List *rest, bool inner)
+{
+	List	   *pred = copyObject(p->leg.pred);
+
+	if (pred == NIL || rest == NIL)
+		return pred == rest;
+	ChangeVarNodes((Node *) pred, 1, inner ? 1 : p->pairs->relid, 0);
+	return predicate_implied_by(pred, rest, false) && predicate_implied_by(rest, pred, false);
+}
+
+/* The conditions on the pairs are the key = K or key IN (K1, K2, ...), from the statement or from the sub-select, and the predicate of the pairs; no key: every key (only a statement that groups by the key) */
 static bool
 compile_key_filter(ScopePlan *p)
 {
 	List	   *outer = p->pairs->baserestrictinfo;
 	List	   *inner = p->pairs_query != NULL && p->pairs_query->jointree->quals != NULL ? make_ands_implicit((Expr *) p->pairs_query->jointree->quals) : NIL;
+	List	   *rest_outer = NIL,
+			   *rest_inner = NIL;
 	Expr	   *rhs = NULL;
+	int			nkeys = 0;
 
-	if (list_length(outer) + list_length(inner) > 1)
-		return false;
 	foreach_node(RestrictInfo, ri, outer)
-		if (!IsA(ri->clause, OpExpr) || !key_operand(p, (OpExpr *) ri->clause, false, &rhs))
-			return false;
+		if (key_clause(p, (Node *) ri->clause, false, &rhs))
+			nkeys++;
+		else
+			rest_outer = lappend(rest_outer, ri->clause);
 	foreach_ptr(Node, q, inner)
-		if (!IsA(q, OpExpr) || !key_operand(p, (OpExpr *) q, true, &rhs))
-			return false;
+		if (key_clause(p, q, true, &rhs))
+			nkeys++;
+		else
+			rest_inner = lappend(rest_inner, q);
+	if (nkeys > 1 || (p->pairs_query != NULL ? rest_outer != NIL || !pairs_predicate_ok(p, rest_inner, true) : !pairs_predicate_ok(p, rest_outer, false)))
+		return false;
 	if (rhs == NULL)
 		return p->spec.by_key;
 	p->key_expr = rhs;
 	p->spec.key_given = true;
+	p->spec.key_array = type_is_array(exprType((Node *) rhs));
 	return true;
 }
 
@@ -356,11 +404,42 @@ compile_groups(ScopePlan *p)
 	return true;
 }
 
+/* The join the node falls back to leaves its columns as the statement names them: the scan tlist follows that order (what only the HAVING names comes last) */
+static void
+order_like_target(ScopePlan *p, const PathTarget *target)
+{
+	List	   *sorted = NIL;
+	int			col[SCOPE_COLS_MAX],
+				n = 0;
+
+	foreach_ptr(Expr, e, target->exprs)
+		for (int i = 0; i < p->spec.ncols; i++)
+			if (equal(((TargetEntry *) list_nth(p->scan_tlist, i))->expr, e) && !list_member_ptr(sorted, list_nth(p->scan_tlist, i)))
+			{
+				col[n++] = p->spec.col[i];
+				sorted = lappend(sorted, list_nth(p->scan_tlist, i));
+			}
+	foreach_node(TargetEntry, te, p->scan_tlist)
+		if (!list_member_ptr(sorted, te))
+		{
+			col[n++] = p->spec.col[te->resno - 1];
+			sorted = lappend(sorted, te);
+		}
+	for (int i = 0; i < n; i++)
+		((TargetEntry *) list_nth(sorted, i))->resno = i + 1;
+	memcpy(p->spec.col, col, n * sizeof(int));
+	p->scan_tlist = sorted;
+}
+
 static bool
 compile_target(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 {
-	return compile_groups(p) && compile_key_filter(p) && compile_fact_quals(p) && (p->spec.by_key || p->spec.key_given) && (!p->spec.grouped_const || p->spec.key_given) &&
-		compile_exprs(p, (Node *) out->reltarget->exprs) && (extra->havingQual == NULL || compile_exprs(p, extra->havingQual));
+	if (!(compile_groups(p) && compile_key_filter(p) && compile_fact_quals(p) && (p->spec.by_key || p->spec.key_given) && (!p->spec.grouped_const || p->spec.key_given) &&
+		  (!p->spec.key_array || p->spec.by_key || !p->spec.by_month) &&
+		  compile_exprs(p, (Node *) out->reltarget->exprs) && (extra->havingQual == NULL || compile_exprs(p, extra->havingQual))))
+		return false;
+	order_like_target(p, out->reltarget);
+	return true;
 }
 
 /* s.member = f.fk and nothing else joins the two: the equivalence class of the two columns has no other member */
@@ -389,8 +468,8 @@ joined_by_member(const ScopePlan *p, AttrNumber fk)
 	return false;
 }
 
-static bool
-plain_table(const RangeTblEntry *rte)
+bool
+sift_v6_plain_table(const RangeTblEntry *rte)
 {
 	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && rte->securityQuals == NIL;
 }
@@ -398,7 +477,7 @@ plain_table(const RangeTblEntry *rte)
 static bool
 plain_relation(PlannerInfo *root, RelOptInfo *rel)
 {
-	return rel != NULL && rel->reloptkind == RELOPT_BASEREL && plain_table(planner_rt_fetch(rel->relid, root)) && rel->lateral_relids == NULL && rel->joininfo == NIL;
+	return rel != NULL && rel->reloptkind == RELOPT_BASEREL && sift_v6_plain_table(planner_rt_fetch(rel->relid, root)) && rel->lateral_relids == NULL && rel->joininfo == NIL;
 }
 
 /* One table, its rows by one condition, its columns as they are: no row it says is another's (a security qual, a limit, a grouping, a second relation) */
@@ -407,7 +486,7 @@ single_table_query(const Query *q)
 {
 	if (q->commandType != CMD_SELECT || q->hasAggs || q->hasWindowFuncs || q->hasSubLinks || q->hasTargetSRFs || q->hasRowSecurity || q->groupClause != NIL || q->distinctClause != NIL ||
 		q->sortClause != NIL || q->limitCount != NULL || q->limitOffset != NULL || q->setOperations != NULL || q->cteList != NIL || q->rowMarks != NIL || q->havingQual != NULL ||
-		list_length(q->rtable) != 1 || list_length(q->jointree->fromlist) != 1 || !plain_table(linitial(q->rtable)) || !IsA(linitial(q->jointree->fromlist), RangeTblRef))
+		list_length(q->rtable) != 1 || list_length(q->jointree->fromlist) != 1 || !sift_v6_plain_table(linitial(q->rtable)) || !IsA(linitial(q->jointree->fromlist), RangeTblRef))
 		return false;
 	foreach_node(TargetEntry, te, q->targetList)
 		if (te->resjunk || !IsA(te->expr, Var) || ((Var *) te->expr)->varno != 1)
@@ -428,7 +507,7 @@ pairs_subquery(PlannerInfo *root, const RelOptInfo *rel)
 		foreach_node(CommonTableExpr, cte, root->parse->cteList)
 			if (strcmp(cte->ctename, rte->ctename) == 0)
 				q = castNode(Query, cte->ctequery);
-	return q != NULL && single_table_query(q) ? q : NULL;
+	return q;
 }
 
 static bool
@@ -438,10 +517,15 @@ pairs_ok(ScopePlan *p)
 
 	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || rel->joininfo != NIL)
 		return false;
-	if (plain_table(planner_rt_fetch(rel->relid, p->root)))
+	if (sift_v6_plain_table(planner_rt_fetch(rel->relid, p->root)))
 		return true;
 	p->pairs_query = pairs_subquery(p->root, rel);
-	return p->pairs_query != NULL;
+	if (p->pairs_query != NULL && !single_table_query(p->pairs_query))
+	{
+		p->pairs_raw = p->pairs_query;
+		p->pairs_query = NULL;
+	}
+	return p->pairs_query != NULL || p->pairs_raw != NULL;
 }
 
 static Oid
@@ -464,8 +548,11 @@ static bool
 scope_matches(ScopePlan *p, int ord)
 {
 	SiftScopeLeg legs[2];
+	const int	nlegs = sift_scope_legs(p->irel, ord, legs);
 
-	if (sift_scope_legs(p->irel, ord, legs) != 1 || legs[0].rel != pairs_table(p) || legs[0].pred != NIL ||
+	if (p->pairs_raw != NULL)
+		p->pairs_query = nlegs == 2 ? sift_v6_match_two_paths(p->pairs_raw, legs) : NULL;
+	if (nlegs != (p->pairs_raw != NULL ? 2 : 1) || (p->pairs_raw != NULL && p->pairs_query == NULL) || legs[0].rel != pairs_table(p) ||
 		sift_scope_pairs_multiset(p->irel, sift_scope_specs(p->irel)->s[ord]) || !sift_f2_scope_layout(p->irel, ord, &p->layout))
 		return false;
 	p->leg = legs[0];
@@ -491,7 +578,7 @@ reset_spec(ScopePlan *p, int ord)
 static bool
 compile_scan(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 {
-	if (!compile_key_filter(p) || !p->spec.key_given)
+	if (!compile_key_filter(p) || !p->spec.key_given || p->spec.key_array)
 		return false;
 	p->spec = (ScopeSpec) {.relid = p->spec.relid,.is_table = p->spec.is_table,.ord = p->spec.ord,.key_type = p->spec.key_type,.key_given = true,.scan = true,.pairs_rel = pairs_table(p),
 	.pairs_key_att = p->leg.key,.pairs_member_att = p->leg.member,.member_col = p->layout.member_col};
@@ -563,7 +650,8 @@ topk_shape_ok(PlannerInfo *root, RelOptInfo *input_rel)
 {
 	const Query *q = root->parse;
 	const bool	plain = !q->hasAggs && q->groupClause == NIL && q->groupingSets == NIL && !q->hasWindowFuncs && !q->hasDistinctOn && q->distinctClause == NIL && !q->hasTargetSRFs;
-	const bool	limited = q->limitCount != NULL && IsA(q->limitCount, Const) && q->limitOffset == NULL && q->limitOption == LIMIT_OPTION_COUNT && list_length(q->sortClause) == 1;
+	const bool	limited = q->limitCount != NULL && IsA(q->limitCount, Const) && (q->limitOffset == NULL || IsA(q->limitOffset, Const)) && q->limitOption == LIMIT_OPTION_COUNT &&
+		(list_length(q->sortClause) == 1 || list_length(q->sortClause) == 2);
 
 	return sift_enable_agg && q->commandType == CMD_SELECT && plain && limited && !q->hasRowSecurity && root->rowMarks == NIL && root->limit_tuples >= 1 &&
 		root->limit_tuples <= SCOPE_TOPK_MAX && root->join_info_list == NIL && bms_num_members(input_rel->relids) == 2;
@@ -581,6 +669,33 @@ compile_order(ScopePlan *p, SortGroupClause *sgc)
 	p->spec.ring_col = col;
 	p->spec.nulls_first = sgc->nulls_first;
 	p->spec.leaf_not_null = bms_is_member(v->varattno, p->fact->notnullattnums);
+	return true;
+}
+
+/* The second ORDER BY leaf: an integer or a time that is never NULL, in either direction: the rows the ring leaf does not tell apart are ordered by it */
+static bool
+compile_tie(ScopePlan *p, SortGroupClause *sgc)
+{
+	const Var  *v = (const Var *) get_sortgroupclause_expr(sgc, p->root->parse->targetList);
+	const int	col = IsA(v, Var) ? index_col_of(p, v) : -1;
+	const int	strat = col > 0 ? get_op_opfamily_strategy(sgc->sortop, p->index->opfamily[col - 1]) : 0;
+
+	if (col < 1 || !bms_is_member(v->varattno, p->fact->notnullattnums) || (strat != BTLessStrategyNumber && strat != BTGreaterStrategyNumber))
+		return false;
+	switch (v->vartype)
+	{
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+		case DATEOID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+			break;
+		default:
+			return false;
+	}
+	p->spec.tie_col = col;
+	p->spec.tie_desc = strat == BTGreaterStrategyNumber;
 	return true;
 }
 
@@ -613,8 +728,9 @@ compile_topk(ScopePlan *p, const PathTarget *target)
 	{
 		reset_spec(p, ord);
 		p->v6_tlist = NIL;
-		ok = scope_matches(p, ord) && compile_key_filter(p) && p->spec.key_given && compile_fact_quals(p) && !p->spec.ranged &&
-			compile_order(p, linitial_node(SortGroupClause, p->root->parse->sortClause)) && compile_output(p, target);
+		ok = scope_matches(p, ord) && compile_key_filter(p) && p->spec.key_given && !p->spec.key_array && compile_fact_quals(p) && !p->spec.ranged &&
+			compile_order(p, linitial_node(SortGroupClause, p->root->parse->sortClause)) &&
+			(list_length(p->root->parse->sortClause) == 1 || compile_tie(p, lsecond_node(SortGroupClause, p->root->parse->sortClause))) && compile_output(p, target);
 	}
 	relation_close(p->irel, NoLock);
 	p->spec.topk = ok;
@@ -679,6 +795,7 @@ sift_v6_scope_spec_pack(const ScopeSpec *s)
 	ints = lappend_int(ints, s->is_table);
 	ints = list_concat(ints, list_make5_int(s->scan, (int) s->pairs_rel, s->pairs_key_att, s->pairs_member_att, s->member_col));
 	ints = list_concat(ints, list_make5_int(s->topk, s->ring_col, s->nulls_first, s->leaf_not_null, s->limit));
+	ints = list_concat(ints, list_make3_int(s->key_array, s->tie_col, s->tie_desc));
 	for (int i = 0; i < s->ncols; i++)
 		ints = lappend_int(ints, s->col[i]);
 	for (int j = 0; j < s->naggs; j++)
@@ -690,7 +807,7 @@ ScopeSpec *
 sift_v6_scope_spec_unpack(const List *ints)
 {
 	ScopeSpec  *s = palloc0(sizeof(ScopeSpec));
-	int			at = 26;
+	int			at = 29;
 
 	s->relid = (Oid) list_nth_int(ints, 0);
 	s->ord = list_nth_int(ints, 1);
@@ -718,6 +835,9 @@ sift_v6_scope_spec_unpack(const List *ints)
 	s->nulls_first = list_nth_int(ints, 23);
 	s->leaf_not_null = list_nth_int(ints, 24);
 	s->limit = list_nth_int(ints, 25);
+	s->key_array = list_nth_int(ints, 26);
+	s->tie_col = list_nth_int(ints, 27);
+	s->tie_desc = list_nth_int(ints, 28);
 	for (int i = 0; i < s->ncols; i++)
 		s->col[i] = list_nth_int(ints, at++);
 	s->agg = palloc(Max(s->naggs, 1) * sizeof(SiftV6Agg));
@@ -732,9 +852,11 @@ fallback_path(const ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupP
 {
 	AggClauseCosts costs = {0};
 	AggStrategy strategy = p->root->processed_groupClause != NIL ? AGG_HASHED : p->root->parse->groupClause != NIL ? AGG_SORTED : AGG_PLAIN;
+	PathTarget *scan = make_pathtarget_from_tlist(p->scan_tlist);
 
 	get_agg_clause_costs(p->root, AGGSPLIT_SIMPLE, &costs);
-	return (Path *) create_agg_path(p->root, out, input_rel->cheapest_total_path, out->reltarget, strategy, AGGSPLIT_SIMPLE,
+	set_pathtarget_cost_width(p->root, scan);
+	return (Path *) create_agg_path(p->root, out, input_rel->cheapest_total_path, scan, strategy, AGGSPLIT_SIMPLE,
 									p->root->processed_groupClause, (List *) extra->havingQual, &costs, groups);
 }
 
@@ -743,7 +865,7 @@ add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathEx
 {
 	CustomPath *cp = makeNode(CustomPath);
 	const double groups = p->spec.scan ? (p->v6.nkeys == 0 ? 1.0 : clamp_row_est(Min(p->fact->rows, 1000.0))) :
-		clamp_row_est((p->spec.key_given ? 1.0 : Min(p->pairs->tuples, 1000.0)) * (p->spec.by_month ? 24 : 1));
+		clamp_row_est((p->spec.key_array && p->spec.by_key ? 10.0 : p->spec.key_given ? 1.0 : Min(p->pairs->tuples, 1000.0)) * (p->spec.by_month ? 24 : 1));
 
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = out;
